@@ -3474,6 +3474,13 @@ button.mini.btn-sq.tpl-ico {
   gap: 10px;
 }
 
+/* 「自定义触发线 / 保留原文 / 摘要上限」那一组行靠 hidden 收起，但 .agent-menu-option 的
+   display:flex 会盖掉浏览器默认的 [hidden]{display:none} —— 不在这里压回去，非自定义档
+   仍会露出一排没意义的数字框。 */
+.agent-menu-input-row[hidden] {
+  display: none;
+}
+
 .agent-menu-input-row:hover {
   background: transparent
 }
@@ -6435,6 +6442,18 @@ body.theme-light button.hist-proc-bar:hover {
 
 .dsh-stream > .dsh-seg-say {
   color: var(--ink)
+}
+
+/* 长文流式预览的提示条（本次需求）：只在单段正文超过 64KB 的降级期间挂着，
+   定稿整段 markdown 重建后自然消失 —— 它不能跟着正文一起变成正文的一部分。
+   独占一行（block）：跟着正文跑会在句子末尾接出「…标点。（长回复：…）」，读着像正文。 */
+.dsh-stream > .dsh-seg-say > .dsh-stream-hint {
+  display: block;
+  margin: 8px 0 0;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--muted);
+  opacity: .75
 }
 
 .n-out .dsh-out-live {

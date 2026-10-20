@@ -2,9 +2,9 @@
 
 Package a piece of canvas processing (text / agent / function / save — any inner subgraph) into a tool **the agent can call directly**: give it a tool name, a description and input/output params, and the model in a smart session can call it like a function — params flow in through ports, results flow back to the session.
 
-A tool node is a **super-like container**: the processing it runs is its **inner subgraph** (child nodes attached under it, same mechanism as a super node), executed topologically on ▶ or an agent call; its configuration lives in `toolConfig` (`name` / `description` / `inputs` / `outputs`).
+A tool node is a **super-like container**: the processing it runs is its **inner subgraph** (child nodes attached under it, same mechanism as a node layer), executed topologically on ▶ or an agent call; its configuration lives in `toolConfig` (`name` / `description` / `inputs` / `outputs`).
 
-Create: right-click empty canvas → **Tools** → **Tool (agent-callable · input/output param ports)**.
+Create: right-click empty canvas → **Other Nodes** → **Tool (agent-callable · input/output param ports)**.
 
 ## Settings (params are ports)
 Click **Settings** in the node header to open the settings window (every parameter is edited there; the tool card itself keeps just the name / description and two read-only lines — inputs / outputs):
@@ -55,8 +55,8 @@ The type declared on a port is the single source of truth for **wire validation,
 ## Inner graph (what the tool does)
 A tool executes its **inner subgraph** (child nodes attached under this node):
 
-1. Build the inner subgraph — in the shell form (super node + tool variant), expand / enter the inner canvas and arrange it like a super node; a tool **inserted from the library** already carries its inner graph, expand it to inspect or adjust.
-2. Outer input ports (including control in) automatically become value sources for inner nodes — wire them the same way as a super node's outer/inner bridging.
+1. Build the inner subgraph — in the shell form (node layer + tool variant), expand / enter the inner canvas and arrange it like a node layer; a tool **inserted from the library** already carries its inner graph, expand it to inspect or adjust.
+2. Outer input ports (including control in) automatically become value sources for inner nodes — wire them the same way as a node layer's outer/inner bridging.
 3. Wire inner outputs back to the outer output ports (inner converge); when the tool runs, each value is written back to its output param **normalised to that port's declared type** — an image port that receives a path string is completed into an image value, a text port that receives an image keeps its path as text (the node summary mentions it once, nothing is lost). The badge / colour of the outer output port and of the matching inner converge port follow the same rule.
 
 ## Running

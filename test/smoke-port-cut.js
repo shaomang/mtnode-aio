@@ -85,7 +85,7 @@ ok(
   "右键入口挂在 document 捕获阶段（端子自己的 contextmenu 一律走到这一处）",
 );
 
-/* 右键绝不起拖线：四处端子级 mousedown（输入 / 输出 / 数组槽 / 空槽 + 超级节点桥）都要判键 */
+/* 右键绝不起拖线：四处端子级 mousedown（输入 / 输出 / 数组槽 / 空槽 + 节点层桥）都要判键 */
 const guards = (CANVAS + APP).match(/if \(ev\.button === 2\)[^\n]*/g) || [];
 ok(
   guards.length >= 4,
@@ -247,11 +247,11 @@ function portEl(cls, dataset, cx, cy) {
   const t3 = box.api.portCutTargetOfEl(
     portEl("port out super-port super-inner-bridge", { node: "s", fromIndex: "1" }),
   );
-  eqStr(t3 && t3.side + ":" + t3.idx, "bridge:1", "超级节点内侧桥端子：side=bridge（先于 .out 判）");
+  eqStr(t3 && t3.side + ":" + t3.idx, "bridge:1", "节点层内侧桥端子：side=bridge（先于 .out 判）");
   const t4 = box.api.portCutTargetOfEl(
     portEl("port in super-port super-inner-sink", { node: "s", idx: "0" }),
   );
-  eqStr(t4 && t4.side + ":" + t4.idx, "sink:0", "超级节点内侧汇端子：side=sink（先于 .in 判）");
+  eqStr(t4 && t4.side + ":" + t4.idx, "sink:0", "节点层内侧汇端子：side=sink（先于 .in 判）");
   eqStr(box.api.portCutTargetOfEl(portEl("port in", { node: "nope", idx: "0" })), null, "节点不存在 → null");
   eqStr(box.api.portCutTargetOfEl(null), null, "空元素 → null");
 }
@@ -355,7 +355,7 @@ function portEl(cls, dataset, cx, cy) {
   eqStr(box.log.history, 0, "没线 → 不记撤销");
 }
 
-/* ── 2.10 超级节点内侧桥 / 汇：各切各的，关系线不在内 ── */
+/* ── 2.10 节点层内侧桥 / 汇：各切各的，关系线不在内 ── */
 {
   const nodes = [
     { id: "s", kind: "super" },

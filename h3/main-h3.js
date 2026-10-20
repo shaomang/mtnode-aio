@@ -7453,6 +7453,9 @@ function shutdownH3UiOnly() {
 
 module.exports = {
   registerH3Ipc,
+  /* MCP 自用回环（mtnode_generate kind:video）：与画布节点同一条生成链、同一把全局音视频锁 */
+  generateVideo,
+  cancelGenerate,
   shutdownH3UiOnly,
   statusForUi,
   /* 显存释放钩子：主进程 local-model-vram.js 收进统一编排表（画布节点运行前后 + 顶栏按钮） */

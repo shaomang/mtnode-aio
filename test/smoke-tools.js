@@ -26,7 +26,7 @@
  *        声明优先于实际值 / saveMediaKind 选型与 .png·.yaml / connectError 图像·文本
  *        放行与拒绝文案逐字 / 工具·函数入参端子类型不匹配点名 / 旧画布出参无 kind 口径不变）
  *   [7]  入口分工：顶栏＝「工具库」（程序图标 · 打开后只有已保存的包）；
- *        建节点＝画布右键「工具」一级菜单（旧顶栏一级菜单词条与函数全清）
+ *        建节点＝画布右键「其他节点」二级菜单（旧顶栏一级菜单词条与函数全清）
  * 真实执行 canvasCreateMenuGroups 的菜单结构回归见 test/smoke-media-gen-menu.js [1b]。
  */
 const fs = require("fs");
@@ -915,7 +915,7 @@ function wfWith(nodes, wires) { S.wf = { id: 'w6', nodes: nodes, wires: wires ||
     EQ(`fnToolPortKind(T1, "in", 3)`, null, "入参越界 → null（交回既有规则）");
     EQ(`fnToolPortKind(T1, "out", 9)`, null, "出参越界 → null");
     EQ(`fnToolPortKind(IMG, "out", 0)`, null, "普通节点不参与端子声明（回落节点 kind 判定）");
-    EQ(`fnToolPortKind({ kind: "super", title: "普通超级" }, "out", 0)`, null, "普通超级节点同样 null（不误吞声明层）");
+    EQ(`fnToolPortKind({ kind: "super", title: "普通节点层" }, "out", 0)`, null, "普通节点层同样 null（不误吞声明层）");
     EQ(`fnToolPortKind(F1, "in", 1)`, "image", "函数节点与工具节点同一判定（a · image）");
 
     /* ── ④ 声明优先于实际值 ── */
@@ -1062,10 +1062,10 @@ function wfWith(nodes, wires) { S.wf = { id: 'w6', nodes: nodes, wires: wires ||
     ok(TOOLDEV.indexOf("复核该节点的连线") >= 0, "契约边界：动参数表必须提醒复核连线（参数即端子）");
   }
 
-  /* ═══════════ [7] 入口分工：顶栏「工具库」＋右键「工具」一级菜单 ═══════════
+  /* ═══════════ [7] 入口分工：顶栏「工具库」＋右键「其他节点」二级菜单 ═══════════
    * 需求：顶栏那一格叫「工具库」、用普通工具箱线性图标（不再是程序自己的位图图标），
-   * 打开后只有已保存的工具 / 函数包；工具节点与函数节点的创建回到画布右键菜单，收在名为「工具」的一级菜单下。 */
-  console.log("\n[7] 顶栏＝工具库（工具箱线性图标 · 只有已保存的包）· 建节点＝右键「工具」一级菜单");
+   * 打开后只有已保存的工具 / 函数包；工具节点与函数节点的创建回到画布右键菜单，收在「其他节点」二级菜单里。 */
+  console.log("\n[7] 顶栏＝工具库（工具箱线性图标 · 只有已保存的包）· 建节点＝右键「其他节点」二级菜单");
   {
     const HTML = read("renderer/index.html");
     const BOOT = read("renderer/app-boot.js");
@@ -1114,7 +1114,7 @@ function wfWith(nodes, wires) { S.wf = { id: 'w6', nodes: nodes, wires: wires ||
         TOOLS.indexOf("renderToolsLibList") >= 0,
       "工具库对话框仍在：顶部保存 + 已保存条目清单（打开后只有已保存的工具 / 函数包）",
     );
-    /* 建节点入口：右键菜单里的「工具」一级子菜单（真实执行在 smoke-media-gen-menu [1b]） */
+    /* 建节点入口：右键菜单「其他节点」二级菜单里的工具 / 函数（真实执行在 smoke-media-gen-menu [1b]） */
     const MENU_SRC = between(
       APP,
       "function canvasCreateMenuGroups(pt) {",
@@ -1122,22 +1122,25 @@ function wfWith(nodes, wires) { S.wf = { id: 'w6', nodes: nodes, wires: wires ||
       "app.js canvasCreateMenuGroups（右键新建节点菜单）",
     );
     ok(
-      MENU_SRC.indexOf('ctxSubmenu(\n                I18n.t("工具"),') >= 0 ||
-        /ctxSubmenu\(\s*I18n\.t\("工具"\)/.test(MENU_SRC),
-      "右键菜单里有「工具」一级子菜单（工具 / 函数节点的创建入口）",
+      MENU_SRC.indexOf('I18n.t("工具（Agent 可调用 · 入参出参端子）")') >= 0 &&
+        MENU_SRC.indexOf('I18n.t("函数（JS 计算 · 自定义入参出参）")') >= 0,
+      "右键「其他节点」二级菜单里有工具 / 函数的创建入口",
     );
     ok(
-      /allowToolMenu\s*=\s*!sfHost \|\| inFlowShell/.test(MENU_SRC) &&
-        MENU_SRC.indexOf("...(allowToolMenu") >= 0,
-      "顶层画布与流程壳都列「工具」（旧的就地分组已换成一级子菜单）",
+      !/ctxSubmenu\(\s*I18n\.t\("工具"\)/.test(MENU_SRC),
+      "「工具」一级子菜单已撤（两类节点收进「其他节点」二级菜单）",
+    );
+    ok(
+      !/allowToolMenu/.test(MENU_SRC),
+      "工具 / 函数的壳层门控已去掉（顶层画布与各壳层都列）",
     );
     ok(
       MENU_SRC.indexOf('I18n.t("工具节点（参数即端子 · Agent 可调用 / JS 计算）")') < 0,
-      "旧的「工具节点…」分组标题不再出现（菜单只留一层「工具」）",
+      "旧的「工具节点…」分组标题不再出现（菜单只留一层）",
     );
     /* 双语文案：新顶栏提示有英文，旧的顶栏一级菜单词条清干净 */
     const TIP_KEY =
-      "工具库：打开本机已保存的工具 / 函数，插入到任意画布复用（新建这两类节点：画布空白处右键 → 工具）";
+      "工具库：打开本机已保存的工具 / 函数，插入到任意画布复用（新建这两类节点：画布空白处右键 → 其他节点 → 工具）";
     const PAIRS3 = Object.create(null);
     const RE_PAIR3 = /"((?:[^"\\]|\\.)+)"\s*:\s*"((?:[^"\\]|\\.)*)"/g;
     let mm3;
@@ -1158,16 +1161,16 @@ function wfWith(nodes, wires) { S.wf = { id: 'w6', nodes: nodes, wires: wires ||
     ok(
       /"工具（Agent 可调用 · 入参出参端子）":\s*"Tool/.test(I18N3) &&
         /"函数（JS 计算 · 自定义入参出参）":\s*"Function/.test(I18N3),
-      "「工具」一级菜单两位成员的英文词条齐备",
+      "工具 / 函数两条成员的英文词条齐备",
     );
     /* 指南与文档跟着入口走 */
     const GT = read("guides/nodes/tool.md");
     const GF = read("guides/nodes/function.md");
     const GTE = read("guides/nodes/en/tool.md");
     ok(
-      GT.indexOf("右键 → **工具** → **工具（Agent 可调用 · 入参出参端子）**") >= 0 &&
-        GF.indexOf("右键 → **工具** → **函数（JS 计算 · 自定义入参出参）**") >= 0,
-      "中英指南：创建路径写成画布右键 → 工具 →（不再是「工具节点」分组）",
+      GT.indexOf("右键 → **其他节点** → **工具（Agent 可调用 · 入参出参端子）**") >= 0 &&
+        GF.indexOf("右键 → **其他节点** → **函数（JS 计算 · 自定义入参出参）**") >= 0,
+      "中英指南：创建路径写成画布右键 → 其他节点 →（不再是「工具」一级菜单）",
     );
     ok(
       GT.indexOf("按钮用的就是程序自己的图标") >= 0 &&
@@ -1177,7 +1180,7 @@ function wfWith(nodes, wires) { S.wf = { id: 'w6', nodes: nodes, wires: wires ||
       "指南：顶栏「工具库」写明「已保存的包 + 应用内置条目」（并说明用的是程序图标）",
     );
     ok(
-      GTE.indexOf("right-click empty canvas → **Tools**") >= 0 &&
+      GTE.indexOf("right-click empty canvas → **Other Nodes**") >= 0 &&
         GTE.indexOf("saved tool / function packages") >= 0 &&
         GTE.indexOf("built-in entries") >= 0,
       "英文指南同步：创建入口 + 工具库口径（已保存条目 + 内置条目）",
@@ -1191,9 +1194,9 @@ function wfWith(nodes, wires) { S.wf = { id: 'w6', nodes: nodes, wires: wires ||
       "docs/tool-library.md：顶栏入口口径已改（已保存的包 + 应用内置条目）",
     );
     ok(
-      DOC_TF.indexOf("「工具」一级菜单") >= 0 &&
+      DOC_TF.indexOf("「其他节点」二级菜单") >= 0 &&
         DOC_TF.indexOf("创建入口") >= 0,
-      "docs/tool-function-nodes.md：真源清单登记右键「工具」一级菜单为创建入口",
+      "docs/tool-function-nodes.md：真源清单登记右键「其他节点」二级菜单为创建入口",
     );
   }
 

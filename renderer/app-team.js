@@ -56,7 +56,7 @@
  *
  * perm.toolAllow 的 key 逐字对齐 renderer/app-nodes.js:9423 agentToolCatalog()：
  *   fs_read / fs_write / web / ask_user / canvas_read = allow
- *   画布改动（节点与连线 / 控制类 / 绘图 / 排版 / 超级节点）与应用操作 = ask · shell = ask
+ *   画布改动（节点与连线 / 控制类 / 绘图 / 排版 / 节点层）与应用操作 = ask · shell = ask
  *   app_delete / app_dsh_plugins / subagent / goal / jobs / vision = deny
  *   （v4 起「默认开放更多权限」：专家能自行查看与核验画布，改画布 / 动应用前逐次确认；
  *     旧默认「画布与应用一律拒绝」由 migrateExpertsV4 抬到新默认，见该函数）
@@ -125,7 +125,7 @@
     { cat: "canvas", key: "canvas_control", label: "控制类节点" },
     { cat: "canvas", key: "canvas_draw", label: "绘图" },
     { cat: "canvas", key: "canvas_layout", label: "排版与成组" },
-    { cat: "canvas", key: "canvas_super", label: "超级节点" },
+    { cat: "canvas", key: "canvas_super", label: "节点层" },
     { cat: "app", key: "app_ops", label: "应用操作" },
     { cat: "app", key: "app_delete", label: "删除画布" },
     { cat: "app", key: "app_dsh_plugins", label: "插件管理" },
@@ -136,7 +136,7 @@
 
   /* 专家默认许可（v4 起「默认开放更多权限」，见 migrateExpertsV4）：
      · 读文件 / 写文件 / 联网 / 反问 + **读取画布**放行 —— 专家开箱即可查看与核验画布；
-     · 画布改动（节点与连线 / 控制类 / 绘图 / 排版 / 超级节点）与应用操作逐次询问：
+     · 画布改动（节点与连线 / 控制类 / 绘图 / 排版 / 节点层）与应用操作逐次询问：
        专家能真的动画布，但每一次都经「工具许可询问」由用户点头（团队会话不是
        agent session，app-nodes.js 的 canvasOpNeedsConfirm 那道统一确认门不覆盖它，
        所以这里保留 ask 作为人在环上）；

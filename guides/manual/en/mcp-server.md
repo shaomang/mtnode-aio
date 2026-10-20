@@ -13,6 +13,8 @@ The top bar's “Plugins” dialog is not the way in — the entry is **Settings
 - **Self-check**: without any external client, it walks “initialize → list tools → really read the canvas once” itself; green means the whole chain works.
 - **Recent calls (audit)**: who, when, which tool, which canvas, success or failure. Logs land in `mcp-audit/` inside the data directory (rotated daily, kept 7 days). The **data directory** is `%APPDATA%\pipeline-console\pipeline-console` by default (port and token are recorded in `mcp-server.json` right there); if you changed “config data directory” in Settings, it is that one instead.
 - **Raw JSON-RPC capture**: for troubleshooting, must be switched on explicitly, keeps only the last 200 frames, memory only.
+- **Self loop** (on by default): MTNode registers itself as one of its own MCP clients (`mtnode-self`), so **agents inside the app can call its generation abilities too**. Only four tools are opened (generate / run / user tools / session); turning it off just removes that entry — the server itself keeps running.
+- **Jobs**: image / music / speech / video generation and node or whole-graph runs are **asynchronous** — a call returns a `jobId` immediately and you fetch the result separately (the page lists this run's jobs). Jobs live in memory only and are gone when MTNode closes.
 
 ## Connecting a client
 
@@ -40,6 +42,13 @@ That is exactly what “Copy config snippet” on the panel produces (both paths
 
 Tool names and parameters are **identical** to MTNode's own Agent (`mtnode_canvas_get`, `mtnode_canvas_edit`, `mtnode_app`, `mtnode_db`, `mtnode_facts`, `lt_state`, `mtnode_assets`, `mtnode_vision`), so the existing node guides and skill docs apply to third parties unchanged.
 
+Four more tools exist for “go and do it yourself”:
+
+- **`mtnode_generate`**: image / music / speech / video, using the models and local backends **already configured** in the app. Returns a **local absolute path** and files the artifact into the asset library; to also drop it on the canvas, pass the canvas plus its hash.
+- **`mtnode_run`**: run a single node, or a whole graph (it finds the “run” control node).
+- **`mtnode_tools`**: list / call the **user tool nodes** on the current canvas.
+- **`mtnode_session`**: open a session and run one task in it (title prefixed “外部调用 · ”, discarded when done by default).
+
 Beyond tools, two more MCP capability kinds are open:
 
 - **Resources**: canvas list, canvas snapshot, a single node's body, built-in skill text — a client can “browse” before it acts.
@@ -60,7 +69,7 @@ Beyond tools, two more MCP capability kinds are open:
 ## What outside clients cannot do (stated plainly)
 
 - **A long-running task cannot have its “confirm delivery” clicked for you**: MCP can read a long task's definition and run state and read/change this round's shared state, but “enable / advance / approve” stays in your hands on the strip.
-- **Media generation is not a standalone tool**: text-to-image / music / speech / video are canvas **nodes**; what a third party can do is create those nodes and wire them up — actually running them is still your click (same rule as MTNode's own Agent).
+- **Generation does not pick models for you**: `mtnode_generate` uses what the app already has configured; if nothing is configured it says so plainly instead of swapping backends or silently degrading. Image and speech cannot be cancelled (let them finish); music and video can.
 - **The generic tools of the dsh engine** (file I/O, command execution, web search) are **not** exposed to third parties: clients already have those abilities themselves and need not go through MTNode.
 - **A session's own browser control surface** (the 13 `browser_*` tools) is **not** exposed: that is your browser session and is not handed to an outside client.
 

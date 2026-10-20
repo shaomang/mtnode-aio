@@ -86,10 +86,13 @@ const S = {
   hideWires: false, /* 顶栏「隐藏线」：临时把连线压到几乎不可见（纯视觉，不落画布） */
   sidebarOpen: false,
   sideCollapsed: {}, /* 边栏分类折叠状态 */
-  sideSuperCollapsed: {}, /* 超级节点树折叠状态 */
+  sideSuperCollapsed: {}, /* 节点层树折叠状态 */
   /* 右侧全局助手 */
   assistOpen: false,
   assistLive2d: false,
+  /* 助手对话所在的会话 id（本轮需求）：空串 = 还没有当前助手会话，
+     下一次发送时才新建（清空＝解绑，旧会话留在左栏） */
+  assistSessionId: "",
   assistMessages: [],
   assistRunning: false,
   assistPending: "",
@@ -123,7 +126,7 @@ const S = {
   /* 任务节点「进入」：只显示 parentTaskId === taskFocus 的节点 */
   taskFocus: "",
   taskStack: [],
-  /* 超级节点内部：只显示 parentSuperId === superFocus 的节点 */
+  /* 节点层内部：只显示 parentSuperId === superFocus 的节点 */
   superFocus: "",
   superStack: [],
   /* 画布视图记忆（内存 · 按画布 id）：切走的画布记下「钻在哪一层 + 相机看到哪」，
@@ -142,6 +145,8 @@ const S = {
   /* 应用插件目录缓存（appPluginsCatalog 快照）：菜单项可见性 / 节点未安装警示条用。
      启动时与插件对话框增删后刷新（refreshAppPluginsCache）。 */
   plugins: [],
+  /* 目录是否真的取到过（首启 IPC 未回 / 拉取失败 → false）：false 时不许断言「未安装」 */
+  pluginsReady: false,
   /* 显存门槛挡掉的插件 id 集合（appPluginsVramState 的 hidden 名单）：
      被滤掉的那几个**不在 plugins 里**，画布入口的可见性只能靠这一份（见 appPluginHiddenByVram） */
   pluginsVramHidden: null,
@@ -159,6 +164,7 @@ let nodeClipboard = null;
    remotion：主进程目录对宿主型插件 installed 恒为 true（占位），这里用
    remotionStatus IPC 异步修正为真实状态（未安装 → 菜单隐藏 + 节点警示条）。 */
 async function refreshAppPluginsCache() {
+  const before = appPluginsInstalledSig();
   try {
     if (!window.api || !window.api.appPluginsCatalog) return;
     const cat = await window.api.appPluginsCatalog();
@@ -178,6 +184,8 @@ async function refreshAppPluginsCache() {
       }
     }
     S.plugins = list;
+    /* 拿到权威答案了：节点「未安装」警示条从这一刻起才允许出现（见 appPluginMissing） */
+    S.pluginsReady = true;
     /* 显存门槛挡掉的插件**不在目录里**（主进程已滤），所以画布入口还得单独问一次
        「哪些被滤掉了」—— appPluginsVramState 那一份是不滤的（口径见 plugins/vram-gate.js）。 */
     if (window.api.appPluginsVramState) {
@@ -191,14 +199,36 @@ async function refreshAppPluginsCache() {
       }
     }
   } catch (_) {
-    /* 目录拉取失败：保留旧缓存（首启为空 → 菜单不显示插件节点，安全） */
+    /* 目录拉取失败：保留旧缓存（首启为空 → 菜单不显示插件节点，安全）；pluginsReady 保持 false。 */
   }
+  /* 已装状态变了必须重画画布：节点体（未安装警示条）只在整幅重建里重画，
+     复用通道一个 DOM 都不拆 —— 不重画就会出现「已装仍报未安装」的残留。 */
+  if (before !== appPluginsInstalledSig()) repaintCanvasForPlugins();
+}
+/* 已装状态签名：refreshed 前后比一次就知道要不要重画 */
+function appPluginsInstalledSig() {
+  return (S.plugins || [])
+    .map((p) => (p && p.id) + ":" + (p && p.installed ? 1 : 0))
+    .sort()
+    .join("|");
+}
+/* 插件已装状态变化后重画画布（强制整幅重建：S._renderSig = null 是文档里给的失效开关）。
+   首绘还没落（app-boot 末尾）时不用管 —— 那次首绘本来就会带着新缓存画。 */
+function repaintCanvasForPlugins() {
+  if (!S._bootSeen) return;
+  S._renderSig = null;
+  if (typeof renderCanvas === "function") renderCanvas();
 }
 function appPluginInstalled(id) {
   return !!(
     S.plugins &&
     (S.plugins || []).some((p) => p && p.id === id && p.installed)
   );
+}
+/* 节点「未安装插件」警示条判据：缓存没到位（首启 IPC 未回 / 拉取失败）时**不下结论**，
+   否则已装的插件会被画成「未安装」（等缓存到了又没人重画，就一直挂着）。 */
+function appPluginMissing(id) {
+  return S.pluginsReady === true && !appPluginInstalled(id);
 }
 /* ── 显存门槛（本轮需求：显存不够的本地后端插件直接隐藏）──
    名单与门槛的唯一真源在主进程 plugins/vram-gate.js：sensenova-local 24G · minimax-music3 24G ·
@@ -415,7 +445,7 @@ const KIND_ICON_SVG = {
   /* 任务 · 规划步骤 */
   task:
     '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.4" y="2.4" width="11.2" height="11.2" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M4.6 6.1l1.5 1.5 3.4-3.5" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/><path d="M4.6 10.6h6.8M4.6 12.4h4.4" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>',
-  /* 超级节点 */
+  /* 节点层 */
   super:
     '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.2" y="2.2" width="11.6" height="11.6" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.25"/><rect x="4.2" y="4.2" width="7.6" height="7.6" rx="1" fill="none" stroke="currentColor" stroke-width="1.15" opacity=".85"/><path d="M5.6 8h4.8M8 5.6v4.8" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>',
   super_io:
@@ -586,7 +616,7 @@ function nodeKindIconCls(node) {
 function fillNodeKindIcon(el, node) {
   if (!el) return;
   let key = nodeKindIconKey(node);
-  /* 数据库超级节点 / 副本：数据库图标（金色） */
+  /* 数据库节点层 / 副本：数据库图标（金色） */
   if (node.kind === "db_replica" || (node.kind === "super" && node.db)) {
     key = "db";
     el.classList.add("db-ico");
@@ -1147,7 +1177,7 @@ const NODE_DEFAULTS = {
   super: {
     w: 280,
     h: 200,
-    title: "超级节点",
+    title: "节点层",
     note: "",
     expandW: 720,
     expandH: 480,
@@ -1165,9 +1195,9 @@ const NODE_DEFAULTS = {
     ltShellPath: "",
     ltShellName: "",
     ltShellTitle: "",
-    /* 数据库超级节点：收纳事实（信息节点 + 子文件夹文件），编译生成副本 */
+    /* 数据库节点层：收纳事实（信息节点 + 子文件夹文件），编译生成副本 */
     db: false,
-    /* db 节点展示形态：super=超节点形态；db=数据库形态（内嵌查询/调试控制台） */
+    /* db 节点展示形态：super=节点层形态；db=数据库形态（内嵌查询/调试控制台） */
     dbMode: "super",
     /* 开发节点自定义外框颜色（#rrggbb；空 = 按元素类型默认色） */
     devColor: "",
@@ -1472,7 +1502,7 @@ const NODE_DEFAULTS = {
     voice: "", /* 音色库 id（空 = 只用端子给的参考音频） */
     voiceMode: "auto", /* auto | clone | design | direction（能力；auto 按参数自动判定） */
     instruction: "", /* 指令（音色设计 / 音色导演）；留空则用端子给的指令 */
-    cfgScale: 1, /* 指令跟随强度；有 instruction 时官方建议 4 */
+    cfgScale: 4, /* 指令跟随强度；默认 4（官方建议 instruction 场景用 4） */
     seed: 42,
     ttsFormat: "wav", /* 输出格式 wav | flac | mp3（mp3 需 ffmpeg） */
     outputPath: "",
@@ -1703,8 +1733,8 @@ const NODE_DEFAULTS = {
     ranAt: 0,
     running: false,
   },
-  /* 工具节点：创建 kind 写 "tool"，落盘形态＝超级节点变体（kind:"super" + tool:true，
-     见 NODE_FORM_OF_KIND）——由此直接继承超级节点的全部子画布能力（展开壳 / 进入 /
+  /* 工具节点：创建 kind 写 "tool"，落盘形态＝节点层变体（kind:"super" + tool:true，
+     见 NODE_FORM_OF_KIND）——由此直接继承节点层的全部子画布能力（展开壳 / 进入 /
      拖入收纳 / 内外桥接），不再维护第二套形态。真正的默认值在 NODE_DEFAULTS 之后由
      超级默认值与本段字段合成。
      toolConfig = { name, description, inputs:[{name,kind}], outputs:[{name,kind}] }；
@@ -1731,7 +1761,7 @@ const NODE_DEFAULTS = {
   },
 };
 
-/* 工具节点默认值＝超级节点默认值（壳层字段一处不漏：note / expandW·expandH /
+/* 工具节点默认值＝节点层默认值（壳层字段一处不漏：note / expandW·expandH /
    superOpen / subFolder / innerPanX·innerPanY / db / dbMode / devModel…）叠加
    tool 专有字段，并钉死变体标记 tool:true。makeNode 把创建 kind "tool" 换算成
    实际落盘的 kind "super"，判定仍只认 isToolNode()。 */
@@ -1754,7 +1784,7 @@ function currentTaskFocus() {
 function currentSuperFocus() {
   return S.superFocus || "";
 }
-/* 当前聚焦的超级节点是否为「数据库」超级节点（其内部右键菜单只给「文件节点 / 表」） */
+/* 当前聚焦的节点层是否为「数据库」节点层（其内部右键菜单只给「文件节点 / 表」） */
 function currentDbSuper() {
   const sf = currentSuperFocus();
   if (!sf) return null;
@@ -1851,7 +1881,7 @@ function superChildrenOf(id) {
 function isSuperNode(n) {
   return !!(n && n.kind === "super");
 }
-/* 类超级节点 = 超级节点及其工具节点变体（super + tool:true）：数据 I/O 走同一条
+/* 类节点层 = 节点层及其工具节点变体（super + tool:true）：数据 I/O 走同一条
    「外侧输入 / 内侧汇流」通道。数据解析器里凡按 kind==="super" 区分内外通道的位置，
    一律用本判定（运行时执行引擎 app-nodes.js 的 runToolNode）。 */
 function isSuperLikeNode(n) {
@@ -1951,8 +1981,8 @@ function superExternalInWiresAll(superNode, wf) {
 /* 控制线判定的唯一入口是 wireFromIsControl：它按方向分派到 superInPortIsControl（输入侧 /
    壳内桥接，fromIndex = 壳的输入端子号）与 superOutPortIsControl（输出侧 / 壳外侧汇流），
    递归隧穿由 nodeEmitsControlOnPort 带 seen 兜环。下面这只「外侧输入数据线」只排除直接
-   控制源（isControlKind），不反问 wireFromIsControl —— 否则会与超节点隧穿互相递归。 */
-/** 外侧输入数据线（直接控制源排除；勿用 wireFromIsControl，避免与超节点隧穿互相递归） */
+   控制源（isControlKind），不反问 wireFromIsControl —— 否则会与节点层隧穿互相递归。 */
+/** 外侧输入数据线（直接控制源排除；勿用 wireFromIsControl，避免与节点层隧穿互相递归） */
 function superExternalInWires(superNode, wf) {
   wf = wf || S.wf;
   if (!superNode || !wf) return [];
@@ -2017,7 +2047,7 @@ function superInternalBridgeWires(superNode, wf) {
     (x) => !superInPortIsControl(superNode, x.fromIndex, wf),
   );
 }
-/** 来源是否为控制（含上游超级节点的控制输出） */
+/** 来源是否为控制（含上游节点层的控制输出） */
 function nodeEmitsControlOnPort(node, portIndex, wf, seen) {
   wf = wf || S.wf;
   if (!node) return false;
@@ -2105,7 +2135,7 @@ function superWireInnerLink(wire) {
     return { super: to, child: from, dir: "in" };
   return null;
 }
-/** Expanded shell on the main canvas (宿主全屏进入态自身不算壳层；其它超级节点仍可展开). */
+/** Expanded shell on the main canvas (宿主全屏进入态自身不算壳层；其它节点层仍可展开). */
 function superIsOpenShell(n) {
   return !!(
     n &&
@@ -2604,7 +2634,7 @@ function findSuperAtWorld(x, y, exceptIds, requireOpen) {
     if (skip.has(n.id)) continue;
     if (nodeParentTaskId(n) !== currentTaskFocus()) continue;
     if (requireOpen && !n.superOpen) continue;
-    /* 嵌套超级节点仅在祖先链均展开时可见可投；全屏进入态下按「祖先链走到焦点壳」判
+    /* 嵌套节点层仅在祖先链均展开时可见可投；全屏进入态下按「祖先链走到焦点壳」判
        （见 nodeVisibleInSuperFocus：焦点壳里再套一层展开壳，里面那颗子壳同样是可投落点） */
     if (!nodeVisibleInSuperFocus(n)) continue;
     const wp = nodeWorldPos(n);
@@ -2704,7 +2734,7 @@ function toggleSuperOpen(node, open) {
   /* 从壳内部退出来（转成展开态）：回到外层它自己缓存过的镜头，别停在这颗壳的内部取景上 */
   if (leftFocus) restoreLevelView(S.wf);
 }
-/** 将超级节点内部平移到内容包围盒左上对齐（少量边距） */
+/** 将节点层内部平移到内容包围盒左上对齐（少量边距） */
 function alignSuperContentTopLeft(superNode) {
   if (!superNode || superNode.kind !== "super") return;
   const PAD = 16;
@@ -2810,7 +2840,7 @@ function nodeIsNestedInOpenSuper(n) {
   const host = nodeById(sid);
   return !!(host && host.kind === "super" && host.superOpen);
 }
-/** 祖先超级节点 id 是否包含 ancestorId（含自身） */
+/** 祖先节点层 id 是否包含 ancestorId（含自身） */
 function isSuperAncestorOf(ancestorId, nodeId) {
   if (!ancestorId || !nodeId) return false;
   let sid = nodeId;
@@ -2826,7 +2856,7 @@ function isSuperAncestorOf(ancestorId, nodeId) {
 function canMoveNodeIntoSuper(host, n) {
   if (!host || host.kind !== "super" || !n) return false;
   if (host.id === n.id || isSuperIoNode(n)) return false;
-  /* 不可把节点收进自己的子孙超级节点（会成环） */
+  /* 不可把节点收进自己的子孙节点层（会成环） */
   if (n.kind === "super" && isSuperAncestorOf(n.id, host.id)) return false;
   return true;
 }
@@ -2883,7 +2913,7 @@ function superRelPrefixFor(node) {
   }
   return parts.join("/");
 }
-/** 相对路径挂到祖先超级节点 subFolder 下；绝对路径或已含前缀则不改 */
+/** 相对路径挂到祖先节点层 subFolder 下；绝对路径或已含前缀则不改 */
 function applySuperRelToPath(node, p) {
   const raw = String(p || "").trim();
   if (!raw) return "";
@@ -2894,7 +2924,7 @@ function applySuperRelToPath(node, p) {
   if (norm === prefix || norm.startsWith(prefix + "/")) return norm;
   return prefix + "/" + norm.replace(/^\/+/, "");
 }
-/** 节点落入超级节点后：把相对保存/输出/监视路径改写到 subFolder 下 */
+/** 节点落入节点层后：把相对保存/输出/监视路径改写到 subFolder 下 */
 function rewriteNodePathsForSuperContext(node) {
   if (!node || !superRelPrefixFor(node)) return;
   if (isSaveNode(node) && String(node.savePath || "").trim()) {
@@ -3066,12 +3096,12 @@ function dragLeavesOpenSuper(n, host, r) {
 }
 function promptSuperSubFolder(node) {
   if (!node || node.kind !== "super") return;
-  openOverlay(I18n.t("超级节点子文件夹"), { persistent: true });
+  openOverlay(I18n.t("节点层子文件夹"), { persistent: true });
   const body = $("#ovBody");
   const hint = document.createElement("div");
   hint.className = "settings-hint";
   hint.textContent = I18n.t(
-    "设置后，此超级节点内部节点的相对路径会落在「工作目录 / 子文件夹」下；内部已有相对路径会自动补上该前缀。",
+    "设置后，此节点层内部节点的相对路径会落在「工作目录 / 子文件夹」下；内部已有相对路径会自动补上该前缀。",
   );
   body.appendChild(hint);
   const lab = document.createElement("label");
@@ -3113,15 +3143,15 @@ function promptSuperSubFolder(node) {
   foot.appendChild(ok);
   setTimeout(() => inp.focus(), 0);
 }
-/** 超级节点描述（文件夹标题下方的小字）：点头部「描述」按钮编辑 */
+/** 节点层描述（文件夹标题下方的小字）：点头部「描述」按钮编辑 */
 function promptSuperNote(node) {
   if (!node || node.kind !== "super") return;
-  openOverlay(I18n.t("超级节点描述"), { persistent: true });
+  openOverlay(I18n.t("节点层描述"), { persistent: true });
   const body = $("#ovBody");
   const hint = document.createElement("div");
   hint.className = "settings-hint";
   hint.textContent = I18n.t(
-    "描述会以小字显示在超级节点「文件夹」标题下方；文字过多时自动截断，鼠标悬停可查看全文。留空则不显示。",
+    "描述会以小字显示在节点层「文件夹」标题下方；文字过多时自动截断，鼠标悬停可查看全文。留空则不显示。",
   );
   body.appendChild(hint);
   const lab = document.createElement("label");
@@ -3135,7 +3165,7 @@ function promptSuperNote(node) {
   ta.style.minHeight = "104px";
   ta.style.resize = "vertical";
   ta.style.fontFamily = "var(--font, inherit)";
-  ta.placeholder = I18n.t("描述此超级节点收纳的内容与用途…");
+  ta.placeholder = I18n.t("描述此节点层收纳的内容与用途…");
   ta.value = String(node.note || "");
   lab.appendChild(ta);
   body.appendChild(lab);
@@ -3419,7 +3449,7 @@ function isPinnedWire(w) {
    outputPath，命名与落盘由下游决定（resolveMediaGenExport → managed）。
    判定口径与 app-nodes.js 的 controlTargets 同源，两层：
      ① 直接数据线（含同壳内线；控制源连入的指挥线不算，关系线不参与）；
-     ② 跨超级节点壳的隧穿 —— 内侧汇流（本节点 → 所属壳，toIndex = 壳的输出端子号）
+     ② 跨节点层壳的隧穿 —— 内侧汇流（本节点 → 所属壳，toIndex = 壳的输出端子号）
         接壳外侧同号输出线 superExternalOutWiresAll；外侧入线接壳内同号桥接线
         superInternalBridgeWiresAll（壳里那颗下游若还是壳，最多再走 3 层，seen 兜环）。
    控制输出端子不算数据（nodeEmitsControlOnPort 判控）：控制线是「去执行」，不是「内容」。 */
@@ -3666,7 +3696,7 @@ function assetFreeInPortIndex(node, from, fromIndex) {
  *  一条线接住哪个端子，取的就是那一条内容 —— 绝不能拿批量条目下标当条目号。
  *  引用链路（候选闸门 / 取值下标 / 背景块标题 / 条目展开）一律问这里，
  *  不再各处各写一份 kind 白名单（素材接进处理节点却「无法被引用」的根因就是各层各判各的）。
- *  超级节点另有内外隧穿口径，不并到这一判定里。 */
+ *  节点层另有内外隧穿口径，不并到这一判定里。 */
 function isItemPortSource(n) {
   return isAssetNode(n);
 }
@@ -4718,10 +4748,10 @@ function enterTask(node, opts) {
   opts = opts || {};
   if (!node || node.kind !== "task") return;
   /* 进任务 = 换一层画布：先把「壳内焦点」放开（本次修复）。
-     两层焦点同时活着时，作用域判定里超级节点优先（nodeInCurrentScope 的 sf 分支），
+     两层焦点同时活着时，作用域判定里节点层优先（nodeInCurrentScope 的 sf 分支），
      于是「点了 ↪ 进了子任务」画面上却仍是那颗壳的内部，连取景都会跳到画面外的子节点
      （enterTask 下面的 tidyLayoutScope 会 fit 本任务的子节点）；而面包屑的「← 返回」
-     先退超级节点 —— 看着像又往里进了一层，要退回外层得点两次。
+     先退节点层 —— 看着像又往里进了一层，要退回外层得点两次。
      放开后：进去就是本任务的内部画布，「← 返回」退一层即达外层；那颗壳仍留在画布上，
      随时可再 ↪ / 双击进去（侧栏进壳那条路 focusSuperFromSidebar 照旧先摆好所属任务）。 */
   /* 先存好当前这一层的镜头（可能是壳内部），再把两个焦点切到目标任务 —— 这两次切焦点
@@ -4820,7 +4850,7 @@ function enterSuper(node, opts) {
      （过去是无条件 fitNodes(kids)，于是「进去再返回」每次都把外层视角冲掉。） */
   restoreLevelView(S.wf);
   if (opts.toast !== false)
-    toast(I18n.t("已进入超级节点：") + (node.title || I18n.t("超级节点")), "ok");
+    toast(I18n.t("已进入节点层：") + (node.title || I18n.t("节点层")), "ok");
 }
 function leaveSuper() {
   const stack = S.superStack || [];
@@ -4860,7 +4890,7 @@ function externalValueIntoSuper(superNode, index, seen) {
       (x) => Number(x.toIndex) === Number(index),
     );
     if (!w) return normFnToolPortValue(superNode, "in", i, null).value;
-    /* consumer 用本超级节点：嵌套时上游若也是超级节点，才能走其外侧输入通道 */
+    /* consumer 用本节点层：嵌套时上游若也是节点层，才能走其外侧输入通道 */
     value = valueForInput(
       nodeById(w.from),
       Number(w.fromIndex || 0),
@@ -4869,7 +4899,7 @@ function externalValueIntoSuper(superNode, index, seen) {
     );
   }
   /* 端子声明类型 ↔ 实际值对齐（唯一归一处 normPortValueByKind）：
-     工具 / 函数节点按本端子声明归一，普通超级节点无声明 → 原样（行为逐字不变）。
+     工具 / 函数节点按本端子声明归一，普通节点层无声明 → 原样（行为逐字不变）。
      注入点（Agent func call / 「测试」台）按 loose 口径：参数类型是定义里写明的，
      字符串一律视作路径；连线取数只认带图像扩展名的路径文本，不把散文臆造成图像。 */
   return normFnToolPortValue(superNode, "in", i, value, { loose: fromArgs })
@@ -4882,16 +4912,16 @@ function valueForSuperOutput(superNode, index, seen) {
   );
   let v = null;
   if (w) {
-    /* consumer 用汇入子节点，避免把超级节点自身当成 consumer 误走输出通道 */
+    /* consumer 用汇入子节点，避免把节点层自身当成 consumer 误走输出通道 */
     const ch = nodeById(w.from);
     v = valueForInput(ch, Number(w.fromIndex || 0), ch, seen);
   }
   /* 工具节点的外侧输出端子是壳内实际值的「申报口径」：下游（保存节点 / 函数入参）
-     必须拿到与该端子声明同形状的值，否则声明类型形同虚设。普通超级节点没有端子
+     必须拿到与该端子声明同形状的值，否则声明类型形同虚设。普通节点层没有端子
      声明（fnToolPortKind 返回 null）→ 原样返回，取数链路逐字不变。 */
   return normFnToolPortValue(superNode, "out", index, v).value;
 }
-/** 沿连线取值：源为超级节点 / 素材节点时用该线真正接住的输出端子号，
+/** 沿连线取值：源为节点层 / 素材节点时用该线真正接住的输出端子号，
  *  并以 consumer 区分内外通道；其余节点仍按批量条目下标（行为逐字不变） */
 function valueFromWire(w, consumer, batchIdx, seen) {
   if (!w) return null;
@@ -4905,7 +4935,7 @@ function valueFromWire(w, consumer, batchIdx, seen) {
         : batchIdx;
   return valueForInput(src, idx, consumer || null, seen);
 }
-/** 这条线在源节点上选中的端子号：超级节点取外侧端子，素材节点取内容条目端子
+/** 这条线在源节点上选中的端子号：节点层取外侧端子，素材节点取内容条目端子
  *  （两者都是「端子号 = 那一条内容」，合并节点 / 聚合模式 / 聚合保存 / 智能节点图像
  *   全靠这一个函数落到正确的条目上）；其余节点没有端子级条目概念 → undefined。 */
 function superPortIdxFromWire(src, w) {
@@ -4914,7 +4944,7 @@ function superPortIdxFromWire(src, w) {
   if (!isSuperLikeNode(src)) return undefined;
   return Number(w.fromIndex || 0);
 }
-/** 移除超级节点某一内侧端子上的连线（桥接 / 汇流） */
+/** 移除节点层某一内侧端子上的连线（桥接 / 汇流） */
 function removeSuperInnerPortWires(superNode, dir, index) {
   if (!superNode || !S.wf) return 0;
   const idx = Number(index || 0);
@@ -4988,7 +5018,7 @@ function moveNodesOutOfSuper(nodes) {
   scheduleSave(true);
   return list.length;
 }
-/** 顶栏「超节点」的二次点击对象：只选中了一颗**普通超级节点**时返回它，否则 null。
+/** 顶栏「节点层」的二次点击对象：只选中了一颗**普通节点层**时返回它，否则 null。
     只收 kind==="super" 且既不是工具节点变体（参数即端子的那种）、也不是开发节点 /
     数据库节点的那种壳 —— 后两者拆掉会连带删掉绑定会话 / 副本，不是「把内容挪出去」的语义。 */
 function plainSuperForUnwrap() {
@@ -4999,9 +5029,9 @@ function plainSuperForUnwrap() {
   if (typeof isToolNode === "function" && isToolNode(n)) return null;
   return n;
 }
-/** 顶栏「超节点」按钮点击：单选中一颗普通超级节点 = 二次点击 → 拆壳；否则框选合并。
+/** 顶栏「节点层」按钮点击：单选中一颗普通节点层 = 二次点击 → 拆壳；否则框选合并。
     为什么：合并与撤销合并是同一个动作的正反面，理应由同一个开关承担（与「组」按钮同口径：
-    选中组后再点一次解散），用户不必再去右键菜单里逐个「移出超级节点」再手删空壳。 */
+    选中组后再点一次解散），用户不必再去右键菜单里逐个「移出节点层」再手删空壳。 */
 function onWrapSuperButton() {
   const host = plainSuperForUnwrap();
   if (host) return unwrapSuperToOuter(host);
@@ -5023,12 +5053,12 @@ function outerLocalTarget(x, y, hostSuperId) {
     y: (Number(y) || 0) - a.y - o.oy - pan.y,
   };
 }
-/** 拆开一颗普通超级节点：内部内容（含内部绘制）按原本位置关系整体移到外层，再删除空壳。
+/** 拆开一颗普通节点层：内部内容（含内部绘制）按原本位置关系整体移到外层，再删除空壳。
  *  「原本位置关系」= 用户当前看到的那一份位置（nodeWorldPos 的口径：展开壳算上壳层原点与内部平移，
  *  全屏进入态本来就是舞台坐标）—— 整组按**同一个网格差值**刚性平移回外层，子节点之间的相对
  *  距离、以及绘制（框 / 文字 / 箭头）与节点的相对位置都不变。
  *  连线一律不动：内部线两端都还在，自然继续有效；跨壳边界的线由 deleteNodes 连带清理。
- *  路径（save 的 subFolder 前缀等）与既有右键「移出超级节点」同口径：原样保留，不改写。 */
+ *  路径（save 的 subFolder 前缀等）与既有右键「移出节点层」同口径：原样保留，不改写。 */
 async function unwrapSuperToOuter(host) {
   if (!host || host.kind !== "super") return null;
   const kids = (S.wf.nodes || []).filter((n) => n && n.parentSuperId === host.id);
@@ -5126,7 +5156,7 @@ async function unwrapSuperToOuter(host) {
   /* 从被拆掉的壳内部退出来：回到外层它自己缓存过的镜头 */
   if (leftFocus) restoreLevelView(S.wf);
   toast(
-    I18n.t("已拆开超节点：") +
+    I18n.t("已拆开节点层：") +
       I18n.t("移出 ") +
       moved +
       I18n.t(" 个节点") +
@@ -5135,7 +5165,7 @@ async function unwrapSuperToOuter(host) {
   );
   return host;
 }
-/** 框选合并：新建展开超级节点，外框覆盖选区（类似组框），并把选中节点收纳进去 */
+/** 框选合并：新建展开节点层，外框覆盖选区（类似组框），并把选中节点收纳进去 */
 function wrapSelectionAsSuper() {
   const raw = selNodes().filter((n) => n && !isSuperIoNode(n));
   if (!raw.length) {
@@ -5144,12 +5174,12 @@ function wrapSelectionAsSuper() {
   }
   const parents = new Set(raw.map((n) => nodeParentSuperId(n) || ""));
   if (parents.size > 1) {
-    toast(I18n.t("请选择同一层级内的节点（不能跨超级节点边界）"), "warn");
+    toast(I18n.t("请选择同一层级内的节点（不能跨节点层边界）"), "warn");
     return null;
   }
   const commonParent = [...parents][0] || "";
   const selIds = new Set(raw.map((n) => n.id));
-  /* 若同时选中了某超级节点及其内部子节点，只收纳顶层选中项 */
+  /* 若同时选中了某节点层及其内部子节点，只收纳顶层选中项 */
   const list = raw.filter((n) => {
     let sid = nodeParentSuperId(n);
     const seen = new Set();
@@ -5202,7 +5232,7 @@ function wrapSelectionAsSuper() {
     if (k === "w" || k === "h") continue;
     host[k] = JSON.parse(JSON.stringify(v));
   }
-  host.title = uniqueNodeTitle(I18n.t("超节点"));
+  host.title = uniqueNodeTitle(I18n.t("节点层"));
   host.superOpen = true;
   host.expandW = expandW;
   host.expandH = expandH;
@@ -5242,7 +5272,7 @@ function wrapSelectionAsSuper() {
   renderCanvas();
   scheduleSave(true);
   renderStatus();
-  toast(I18n.t("已合并为超节点：") + host.title, "ok");
+  toast(I18n.t("已合并为节点层：") + host.title, "ok");
   return host;
 }
 function renderTaskCrumb() {
@@ -5315,8 +5345,8 @@ function renderTaskCrumb() {
       b.type = "button";
       b.className =
         "task-crumb-item" + (i === chain.length - 1 ? " on" : "");
-      b.textContent = n.title || I18n.t("超级节点");
-      b.title = I18n.t("进入超级节点：") + (n.title || "");
+      b.textContent = n.title || I18n.t("节点层");
+      b.title = I18n.t("进入节点层：") + (n.title || "");
       b.onclick = (ev) => {
         ev.stopPropagation();
         enterSuper(n, { toast: false });
@@ -6811,7 +6841,7 @@ function hasFixedInPorts(n) {
   );
 }
 /** 某个输入端子上现在挂了几条线（关系线不占端子；控制线算挂上）。
-    超级节点只看外侧输入线 —— allWiresTo 会把内侧汇流线（to 也是宿主）一并算进来，
+    节点层只看外侧输入线 —— allWiresTo 会把内侧汇流线（to 也是宿主）一并算进来，
     外侧端子会被错判成已占用。 */
 function inPortWireCount(node, idx, wf) {
   if (!node) return 0;
@@ -6883,14 +6913,14 @@ function wireFromIsControl(w, wf) {
   /* 壳内桥接优先判：这条线的 fromIndex 是**壳的输入端子号**（内侧桥接 = 壳 → 子节点），
      不能拿去问「输出端子判据」。历史 bug：内置「Markdown 转 PDF」壳 3 入 2 出，端子 2 / 3
      的桥接线被下面的输出判据判成控制线 → wiresTo() 静默滤掉 → 内部函数恒收不到「输出路径」。
-     只对工具 / 函数壳（参数即端子的那类）走这个分支，普通超级节点仍按外侧输出口径判。 */
+     只对工具 / 函数壳（参数即端子的那类）走这个分支，普通节点层仍按外侧输出口径判。 */
   if (isFnToolNode(from) && to && nodeParentSuperId(to) === from.id) {
     return superInPortIsControl(from, w.fromIndex, wf);
   }
   /* 函数 / 工具节点：输出 0..n-1 = 各输出参数（数据），末位 = 控制输出（端子契约见下） */
   if (fnToolOutPortIsControl(from, w.fromIndex)) return true;
   if (!to) return false;
-  /* 内侧桥接（普通超级节点）：外侧同号输入若为控制，则内线亦为控制 */
+  /* 内侧桥接（普通节点层）：外侧同号输入若为控制，则内线亦为控制 */
   if (from.kind === "super" && nodeParentSuperId(to) === from.id) {
     return superInPortIsControl(from, w.fromIndex, wf);
   }
@@ -6999,8 +7029,8 @@ function isVideoWireFrom(n, fromIndex) {
 }
 
 /* ── 工具节点 / 函数节点：单一真源判定与参数模型（渲染层全量契约见 docs/tool-function-nodes.md）
-   ① 工具节点 = 超级节点变体 kind super + tool:true（沿用 db:/dev: 变体模式），因此白得
-      超级节点的整套子画布能力（展开壳 / 进入 / 拖入收纳 / 内外桥接 / 尺寸）。引擎按
+   ① 工具节点 = 节点层变体 kind super + tool:true（沿用 db:/dev: 变体模式），因此白得
+      节点层的整套子画布能力（展开壳 / 进入 / 拖入收纳 / 内外桥接 / 尺寸）。引擎按
       isToolNode() 分发（不再看 kind 字面值）；旧存档的普通 kind "tool" 在加载 / 插入时
       经 migrateToolNodeToSuperForm() 一次性原地转成该变体（见 migrateWf 与 app-tools.js）。
       两类形态统一以 toolConfig{name,description,inputs,outputs} 存储，参数增删即端子增删
@@ -7036,7 +7066,7 @@ function isFnToolNode(n) {
 }
 /* ── 端子契约（参数优先）：工具 / 函数节点的端子数与性质由 toolConfig 参数钉死，
    与画布连线无关 —— 输入 0 = 控制入、1..N = 各输入参数；输出 0..M-1 = 各输出参数、
-   M（末位）= 控制出。普通超级节点的端子随连线伸缩、控制性由连线推断（见下方
+   M（末位）= 控制出。普通节点层的端子随连线伸缩、控制性由连线推断（见下方
    superInPortIsControl / superOutPortIsControl），工具节点必须改按序号固定判定，
    否则展开子画布后内侧桥接 / 汇流端子的控制色与取数通道会随连线漂移。 */
 function fnToolInPortIsControl(node, i) {
@@ -7076,7 +7106,7 @@ function fnToolFreePortIndex(host, dir, wantCtrl) {
   return null;
 }
 /** 子画布内侧端子（桥接 / 汇流）的徽标与提示：工具节点显示参数名 —— 参数名即端子名；
- *  普通超级节点显示「输入N / 输出N」（与卡片外侧端子同一份口径，见 app-canvas.js 的
+ *  普通节点层显示「输入N / 输出N」（与卡片外侧端子同一份口径，见 app-canvas.js 的
  *  portBadgeText：桥接端子就是本壳的输入端子、汇流端子就是输出端子）。
  *  dir = "in"（外侧输入 → 内侧桥接）/ "out"（内侧汇流 → 外侧输出）。 */
 function superInnerPortInfo(host, dir, i) {
@@ -7100,7 +7130,7 @@ function superInnerPortInfo(host, dir, i) {
       ? I18n.t("内侧输入端子 ") + n
       : I18n.t("内侧输出端子 ") + n;
   /* 工具 / 函数节点的内侧端子同样是「参数即端子」：提示里带上数据类型，
-     控制端子无声明（fnToolPortKind 返回 null）→ 不标注，普通超级节点行为不变 */
+     控制端子无声明（fnToolPortKind 返回 null）→ 不标注，普通节点层行为不变 */
   const pk = fixed && !ctrl ? fnToolPortKind(host, dir, idx) : null;
   const tail =
     dir === "in"
@@ -7110,7 +7140,7 @@ function superInnerPortInfo(host, dir, i) {
     ctrl: ctrl,
     img: pk === "image",
     /* 徽标正文 = 卡片外侧端子标签同一个出口（有参数名写参数名 · 控制端子写「控制」·
-       普通超级节点的桥接 / 汇流端子写「输入N / 输出N」）；截断交给 CSS .port-badge .pb-name */
+       普通节点层的桥接 / 汇流端子写「输入N / 输出N」）；截断交给 CSS .port-badge .pb-name */
     badge: String(
       (typeof portBadgeText === "function"
         ? portBadgeText(host, dir, idx, { fnTool: fixed, ctrl: ctrl }).badge
@@ -8327,7 +8357,7 @@ function clampNodeToMinSize(n) {
  * clampNodeToMinSize 的最小尺寸兜底（minWFor / minHFor）、以及用户手拖（app.js 的 resize 分支）。
  * 新建节点仍走 sizeNodeForContent 拿「按正文长短」的初值，已存在节点一律不动。
  *
- * 只保留纯显示收尾：超级节点文件夹标题按实测宽度缩字（不改数据）。 */
+ * 只保留纯显示收尾：节点层文件夹标题按实测宽度缩字（不改数据）。 */
 function fitNodeChrome(el, n) {
   if (!el || !n) return false;
   if (n.kind === "super") fitSuperFolderCard(el);
@@ -8388,7 +8418,7 @@ function nodeKindCls(node) {
   if (node.kind === "proc_text" && node.agent) return "agent";
   /* 开发节点（super+dev）：队列行用独立 kind-dev 类（样式 + 标签） */
   if (node.kind === "super" && node.dev && !node.db) return "dev";
-  /* 工具节点是超级变体，但队列 / 端子提示里的配色沿用迁移前的 proc（不当超级节点看） */
+  /* 工具节点是超级变体，但队列 / 端子提示里的配色沿用迁移前的 proc（不当节点层看） */
   if (isToolNode(node)) return KIND_CLS.tool || "proc";
   return KIND_CLS[node.kind] || "proc";
 }
@@ -8397,7 +8427,7 @@ function nodeKindLabel(node) {
   if (typeof isPluginKind === "function" && isPluginKind(node)) return I18n.t("插件");
   if (node.kind === "proc_text" && node.agent) return I18n.t("智能");
   if (node.kind === "super" && node.dev && !node.db) return I18n.t("开发");
-  /* 工具 / 函数节点：标签说清自己，不落到 map.super「超级节点」上 */
+  /* 工具 / 函数节点：标签说清自己，不落到 map.super「节点层」上 */
   if (isToolNode(node)) return I18n.t("工具");
   if (isFunctionNode(node)) return I18n.t("函数");
   const map = {
@@ -8446,7 +8476,7 @@ function nodeKindLabel(node) {
     remotion: "Remotion 视频",
     net_recv: "接收",
     net_send: "发送",
-    super: "超级节点",
+    super: "节点层",
     super_io: "端口",
   };
   return I18n.t(map[node.kind] || "节点");
@@ -8509,7 +8539,7 @@ function nodeKindPurposeKey(node) {
     merge: "合并（多节点 → 批次）",
     agent_task: "智能任务（读文件 / 联网 / 执行命令）",
     task: "任务（规划 · 可进入分段解决）",
-    super: "超级节点（收纳 · 展开子画布）",
+    super: "节点层（收纳 · 展开子画布）",
     wait_file: "需求等待（监视文件）",
     timer: "定时触发器（计划 / Cron）",
     delayer: "延时器（等待后继续）",
@@ -11409,7 +11439,7 @@ function nodePortHeight(node) {
 }
 /* 端子 Y：在“从上至下”的接线排内分布（与插排占满高度一致）。
    opts: top 内容起点、bottom 底部留白、bandA/bandB 带上下界比例、min 最小 Y、
-   step 相邻端子间距（缺省 = PORT_STEP；超级节点内侧端子排用更宽的呼吸间距）。
+   step 相邻端子间距（缺省 = PORT_STEP；节点层内侧端子排用更宽的呼吸间距）。
    端子从靠近顶端开始、逐次向下排列；端子过多放不下时退回整段可用区内居中，避免溢出节点。 */
 function portBandY(totalH, i, count, opts) {
   const o = opts || {};
@@ -11445,7 +11475,7 @@ function superInnerPortY(stageH, i, count) {
   /* 起点必须由 top 给，不能只靠 min 兜底（与上面 inPortY / outPortY 的 min == top 同一口径）：
      bandA=0 时 portBandY 的 start = top，返回 max(min, start + i*step)。旧口径传
      top:0 + min:24 → 第 1、2、3 个端子全被算成 max(24, 0|12|24)=24，整列压在同一点上。
-     普通超级节点的端子随连线伸缩、往往就 1 个，看不出来；工具节点「参数即端子」两侧各
+     普通节点层的端子随连线伸缩、往往就 1 个，看不出来；工具节点「参数即端子」两侧各
      ≥2 个（控制 + 参数），展开壳 / 进入内部画布后内侧输入端子与内侧输出端子各自重合，
      分不清也点不中。内侧端子排挂在整面子画布的左右缘，间距放宽到 22px（= 端子命中座高
      22px，与间距首尾相接），相邻端子的命中区不再互相压盖。 */
@@ -12452,7 +12482,7 @@ async function pickExecForNode(node) {
   renderCanvas();
   toast(I18n.t("已绑定：") + r.path, "ok");
 }
-/* 在开发功能块（超级节点）内部新建执行节点：启动器与所属模块放在一起 */
+/* 在开发功能块（节点层）内部新建执行节点：启动器与所属模块放在一起 */
 function addExecNodeInsideSuper(host) {
   if (!host || host.kind !== "super") return;
   let n = null;
@@ -12555,7 +12585,7 @@ function devStatusText(s) {
       ? I18n.t("进行中")
       : I18n.t("待开发");
 }
-/* 功能块内的下层元素（排除超级节点端子等内部桥接节点） */
+/* 功能块内的下层元素（排除节点层端子等内部桥接节点） */
 function devChildrenOf(node) {
   if (!node || !S.wf) return [];
   return (S.wf.nodes || []).filter(
@@ -13676,7 +13706,7 @@ function isBatchInput(n) {
   if (inputInherited(n)) {
     const src = firstSource(n);
     if (!src) return false;
-    /* 继承自超级节点：只看其外侧输入是否批量，避免经内侧汇入再 isBatch(super) 死循环 */
+    /* 继承自节点层：只看其外侧输入是否批量，避免经内侧汇入再 isBatch(super) 死循环 */
     if (isSuperLikeNode(src)) {
       const link = inboundWire(n);
       const slot = Number((link && link.fromIndex) || 0);
@@ -13707,7 +13737,7 @@ function batchMemo(id, seen) {
   const n = nodeById(id);
   if (!n) return false;
   if (isSuperLikeNode(n)) {
-    /* 仅沿外侧输入传播；内侧汇入可能继承本超级节点，会与 isBatchInput 互相递归 */
+    /* 仅沿外侧输入传播；内侧汇入可能继承本节点层，会与 isBatchInput 互相递归 */
     for (const w of superExternalInWires(n)) {
       const src = nodeById(w.from);
       if (!src || isControlKind(src)) continue;
@@ -14253,7 +14283,7 @@ async function explodeBatchNode(root) {
 
 /* ============ @ 引用 ============ */
 
-/** 单条数据输入线可 @ 的来源：直连 + 经超级节点隧穿的上游（可嵌套） */
+/** 单条数据输入线可 @ 的来源：直连 + 经节点层隧穿的上游（可嵌套） */
 function refSourcesForWire(w, consumer) {
   const out = [];
   const seen = new Set();
@@ -14294,7 +14324,7 @@ function refSourcesForWire(w, consumer) {
   return out;
 }
 
-/** 自动附加背景时优先叶子源，避免超级节点与隧穿上游重复同一段文字 */
+/** 自动附加背景时优先叶子源，避免节点层与隧穿上游重复同一段文字 */
 function refLeafSourcesForWire(w, consumer) {
   const all = refSourcesForWire(w, consumer);
   const leaves = all.filter((n) => n && n.kind !== "super");
@@ -14333,7 +14363,7 @@ function refTextFromValue(v) {
   return null;
 }
 
-/** @ 引用 / 取值时用的端口条目索引（含超级节点隧穿）
+/** @ 引用 / 取值时用的端口条目索引（含节点层隧穿）
  *  viaWire：调用方已知是哪条线时传进来 —— 同一个素材节点可以有几条内容分别接进
  *  同一个消费者，端子号必须逐条线算，不能一律回落到「第一条匹配线」。 */
 function refInputIdxFor(node, src, batchIdx, viaWire) {
@@ -14486,7 +14516,7 @@ function valueForInput(src, idx, consumer, seen) {
   }
   if (src.kind === "input_text") {
     if (inputInherited(src)) {
-      /* 把当前节点作为 consumer 传入，超级节点才能走「外侧输入」而非「内侧输出」 */
+      /* 把当前节点作为 consumer 传入，节点层才能走「外侧输入」而非「内侧输出」 */
       const w = inboundWire(src);
       const up = valueForInput(
         w ? nodeById(w.from) : null,
@@ -15290,7 +15320,7 @@ function displayValueOf(src, consumer) {
 function inputValuesFor(node, idx) {
   return wiresTo(node.id).map((w) => {
     const src = nodeById(w.from);
-    /* 超级节点与素材节点：该线接住的端子号 = 条目号（拿批量下标去取会串到别的条目） */
+    /* 节点层与素材节点：该线接住的端子号 = 条目号（拿批量下标去取会串到别的条目） */
     const fromIdx =
       src && (isSuperLikeNode(src) || isItemPortSource(src))
         ? Number(w.fromIndex || 0)
@@ -17327,26 +17357,34 @@ function startNodeDrag(ev, node, opts) {
     fromHandle: !!(opts && opts.fromHandle),
     handleNid: node.id,
   };
-  /* 连线层不再随拖拽整体抬升：它必须待在自己的层里（主画布 z3），否则展开的超级节点会把板面
+  /* 连线层不再随拖拽整体抬升：它必须待在自己的层里（主画布 z3），否则展开的节点层会把板面
      盖住、线上的节点却浮在壳上（见 canvas.css 顶部「层级口径」）。被拖的节点自己抬到 z60。 */
 }
-/* 连线落点放大命中：在端子中心 1.5×半径（至少 6px 屏幕）内都算命中，
-   elementFromPoint 命中不到时按最近端子兜底，解决端子小、难以精准连中的问题 */
-const PORT_HIT_FACTOR = 1.5;
+/* 连线落点命中：按「端子底座」的真实可视命中区算，而不是插孔本体的小圆。
+   插孔本体只有 10px（PORT_R=5），真正让人敢瞄的是 .port::after 那块 24×22 透明底座
+   （css：以圆心为中点对称铺开，水平 ±12 / 垂直 ±11）。早先这里用 1.5×半径的小圆
+   （z=1 时半径 7.5px），底座上下沿和大半个左右侧都在圆外 —— 光标看着压在端子上，落点判定却是「没命中」，
+   于是线没连上、也没有任何提示；用户再拖一次、瞄得更准就成功了，体感就是「第一次经常连不上」。
+   getBoundingClientRect 只回插孔本体，底座尺寸只能按常量折算（随缩放一起缩放）。 */
+const PORT_PAD_HALF_W = 12;
+const PORT_PAD_HALF_H = 11;
 function portHitAt(x, y, sel) {
   let best = null;
   let bestD = Infinity;
   const z = S.cam.z > 0 ? S.cam.z : 1;
-  const tol = Math.max(6, PORT_R * PORT_HIT_FACTOR * z);
+  const tolX = Math.max(6, PORT_PAD_HALF_W * z);
+  const tolY = Math.max(6, PORT_PAD_HALF_H * z);
   for (const p of document.querySelectorAll(sel)) {
     const r = p.getBoundingClientRect();
     if (!r.width && !r.height) continue;
     const cx = r.left + r.width / 2;
     const cy = r.top + r.height / 2;
-    const dx = x - cx;
-    const dy = y - cy;
-    const d = Math.sqrt(dx * dx + dy * dy);
-    if (d <= tol && d < bestD) {
+    /* 归一化到「底座框」：两个分量都 ≤1 即落在可视命中区内，越靠圆心越优先 */
+    const dx = Math.abs(x - cx) / tolX;
+    const dy = Math.abs(y - cy) / tolY;
+    if (dx > 1 || dy > 1) continue;
+    const d = dx * dx + dy * dy;
+    if (d < bestD) {
       best = p;
       bestD = d;
     }
@@ -17363,7 +17401,7 @@ function portHitAt(x, y, sel) {
    ③ 端子号两种写法（`w.toIndex === idx` 与 `Number(w.toIndex || 0) === idx`）：旧档 / 外部
       写进来的 toIndex 是字符串或缺省时，悬停能列出这条线、右键却回「该端子没有连线」。
    所以这一下不认「事件目标是哪个 DOM」，只认「光标离哪颗端子最近」（portCutTargetAt），
-   再由 cutPortWires 一处改数据；普通端子 / 工具·函数数组端子 / 超级节点内侧桥·汇端子全部同源。
+   再由 cutPortWires 一处改数据；普通端子 / 工具·函数数组端子 / 节点层内侧桥·汇端子全部同源。
    数组参数端子的每个槽点（.fn-arr-slots 里的槽）仍按「只切那一条」由槽点自己处理 —— 见
    app-canvas.js 的 .fn-arr-slot-dot。 */
 const PORT_CUT_DONE_TEXT = {
@@ -17590,6 +17628,40 @@ function applyNodeDragVisual(d, dx, dy) {
     el.style.top = (nestedShell ? wy : n.y) + "px";
   }
 }
+/* 摘下「壳内子节点被拎到主舞台」的 .super-drag-lift（z65 + pointer-events:none），并把
+   元素挂回它该在的那一层：还在展开壳里 → 那颗壳的 .super-stage-viewport（本地坐标，随壳内
+   平移）；已经出壳 → 主舞台（世界坐标）。
+   为什么必须连挂载一起做：只摘类不换父节点，元素就留在 #stage 上却写着壳内本地坐标，而
+   nodeElement 对壳内子节点写的正是本地坐标（壳的 viewport 自己带 translate(pan)）。紧接着
+   那次重绘若走复用通道（签名没变，正常拖一颗尺寸不变的节点就是这种），
+   syncCanvasNodeDomPos 会照模型坐标补写 left/top → 这颗节点被摆到主舞台上「本地坐标」
+   那个位置，现场就是「在展开的节点层里拖动节点，节点凭空消失，动一下外层壳才回来」。
+   返回是否真的摘过（调用方据此决定要不要补一次重绘）。 */
+function releaseSuperDragLift() {
+  const lifted = [...document.querySelectorAll(".wf-node.super-drag-lift")];
+  if (!lifted.length) return false;
+  const stage = $("#stage");
+  for (const el of lifted) {
+    el.classList.remove("super-drag-lift");
+    el.style.zIndex = "";
+    const n = nodeById(el.dataset.nid || "");
+    if (!n || !stage) continue;
+    let parent = stage;
+    if (nodeIsNestedInOpenSuper(n)) {
+      const host = nodeById(nodeParentSuperId(n));
+      const hostEl = host
+        ? stage.querySelector('.wf-node[data-nid="' + host.id + '"]')
+        : null;
+      /* 宿主自己的 viewport 在文档序里必排在它内部嵌套壳的 viewport 之前 */
+      const vp = hostEl ? hostEl.querySelector(".super-stage-viewport") : null;
+      if (vp) parent = vp;
+    }
+    if (el.parentElement !== parent) parent.appendChild(el);
+    el.style.left = (Number(n.x) || 0) + "px";
+    el.style.top = (Number(n.y) || 0) + "px";
+  }
+  return true;
+}
 /* 清理悬空的拖拽状态：窗口移动/失焦等会吞掉 mouseup，导致 S.drag / boxSel 残留，
    后续随机的 mousemove/mouseup 会误处理陈旧状态（偶发 remove 类报错） */
 function cancelDrag() {
@@ -17602,6 +17674,9 @@ function cancelDrag() {
       el.classList.remove("node-dragging");
       el.style.transform = "";
     });
+  /* 同上的兜底：窗口失焦 / 切窗口会吞掉 mouseup，拎到主舞台的壳内子节点会一直戴着
+     .super-drag-lift（pointer-events:none）→ 之后点它一律穿透成壳内平移。 */
+  releaseSuperDragLift();
   S.preDragSnap = null;
   clearSuperDropHot(false);
   setCanvasPanning(false);
@@ -18177,7 +18252,7 @@ function deleteGroup(gid) {
     "ok",
   );
 }
-/* 批量删除节点：同时清理相关连线与组；超级节点递归移除全部后代与内部绘制 */
+/* 批量删除节点：同时清理相关连线与组；节点层递归移除全部后代与内部绘制 */
 async function deleteNodes(ids, quiet) {
   if (!ids || !ids.length) return;
   let expanded = new Set(ids);
@@ -18325,7 +18400,7 @@ async function deleteNodes(ids, quiet) {
     if (procs && !quiet)
       toast(I18n.t("已回收 ") + procs + I18n.t(" 个进程"), "warn");
   }
-  /* 内部绘制随超级节点一并移除 */
+  /* 内部绘制随节点层一并移除 */
   const markDel = (S.wf.marks || [])
     .filter((m) => {
       const sid = markParentSuperId(m);
@@ -18546,7 +18621,7 @@ function duplicateSelectedNodeBelow() {
       (Number(src.y) || 0) + (Number(src.h) || Number(d.h) || 96) + gap;
     const nn = makeNode(kind, x, y);
     if (!nn) continue;
-    /* 与源同一个容器（任务子图 / 超级节点内部），并钉在源正下方一格；
+    /* 与源同一个容器（任务子图 / 节点层内部），并钉在源正下方一格；
        super 内部用内部坐标系，x/y 直接沿用源的相对坐标。 */
     nn.parentSuperId = src.parentSuperId || "";
     nn.parentTaskId = src.parentTaskId || "";
@@ -18580,7 +18655,7 @@ function duplicateSelectedNodeBelow() {
   return true;
 }
 /* ============ 节点粘贴板（Ctrl+C / Ctrl+V） ============ */
-/* 扩展节点集：任意深度的任务子节点 / 超级节点内部节点一并收入（父在集合内即迭代至不再变化） */
+/* 扩展节点集：任意深度的任务子节点 / 节点层内部节点一并收入（父在集合内即迭代至不再变化） */
 function collectWithDescendants(srcs, wf) {
   wf = wf || S.wf;
   const seen = new Set();
@@ -18644,7 +18719,7 @@ function cloneNodesDeep(srcs, opts) {
     cp.attemptsDone = 0;
     /* 长任务壳不可「复制出第二个」：壳的身份 = 任务 uid + 环节路径，复制品若沿用同一份
        身份，认人（rootShellOf / stepShellOf）就会撞车、产出可能落进复制品。复制出来的一律
-       当普通超级节点用（内容照拷，壳身份摘掉）。 */
+       当普通节点层用（内容照拷，壳身份摘掉）。 */
     cp.ltShellTask = "";
     cp.ltShellPath = "";
     cp.ltShellName = "";
@@ -18914,7 +18989,7 @@ function canvasClipboardKey(ev, key, inField) {
   }
   return false;
 }
-/* 复制：把选中的节点连同其全部后代（任意深度的任务子节点 / 超级节点内部节点）与选中绘制
+/* 复制：把选中的节点连同其全部后代（任意深度的任务子节点 / 节点层内部节点）与选中绘制
    存入临时粘贴板（仅保存最近一次）。保持两端都在复制集内的连线；内部父子归属在粘贴时重建。 */
 function copyNodesToClipboard() {
   const ns = currentSelection();
@@ -18953,7 +19028,7 @@ function copyNodesToClipboard() {
    **包围盒左上角**贴到该点（吸附网格）。存屏幕坐标而不是世界坐标：中途滚轮缩放 / 中键
    平移都不必重记，换算时用的是当下的镜头。
    指针不在画布上过（纯键盘操作 / 从别的窗口切回来 / 指针停在侧栏）才退回视口中心；
-   指针落在超级节点内部时，落点由下面的「绝对坐标 → 壳内坐标」换算照旧跟手。
+   指针落在节点层内部时，落点由下面的「绝对坐标 → 壳内坐标」换算照旧跟手。
    记点：画布上的 mousemove（见 bindCanvas），拖拽中同样更新 —— 松手后的指针位置才是
    用户心里的「这里」。 */
 let canvasPointerClient = null;
@@ -19015,7 +19090,7 @@ function pasteNodesFromClipboard() {
   /* 父子归属：cloneNodesDeep 已经按新 id 重映射过一遍（父在复制集内 → 指到新 id，孤儿 → 空），
      这里**绝不能再映射一次**：此刻 cp.parentSuperId 已经是新壳 id，而 idMap 的键是旧 id，
      再查一次必然命中失败、把壳内节点（含嵌套壳、super_io 端子）全清成顶层 —— 那就是
-     「复制超级节点，壳和里面内容被摊到同一层」的 bug（旧代码在这里重复了一遍同样的三行）。
+     「复制节点层，壳和里面内容被摊到同一层」的 bug（旧代码在这里重复了一遍同样的三行）。
      这一圈只做一件事：本来就没有父级的顶层节点，落进当前任务 / 当前展开的壳。 */
   const taskFocus = currentTaskFocus();
   const superFocus = currentSuperFocus();
@@ -19023,7 +19098,7 @@ function pasteNodesFromClipboard() {
   const inSuper = !!(sfHost && sfHost.kind === "super");
   for (const cp of cps) {
     if (cp.parentTaskId || cp.parentSuperId) continue;
-    /* 无内部父级（顶层节点）：落到当前任务 / 超级节点作用域，与新建节点一致 */
+    /* 无内部父级（顶层节点）：落到当前任务 / 节点层作用域，与新建节点一致 */
     if (inSuper) {
       cp.parentSuperId = superFocus;
       cp.parentTaskId = sfHost.parentTaskId || "";
@@ -19082,7 +19157,7 @@ function pasteNodesFromClipboard() {
     cp.x = snap((cp.x || 0) + dx);
     cp.y = snap((cp.y || 0) + dy);
   }
-  /* 顶层节点粘贴进展开的超级节点：绝对坐标换算为该壳的内部坐标系 */
+  /* 顶层节点粘贴进展开的节点层：绝对坐标换算为该壳的内部坐标系 */
   if (inSuper) {
     const o = superInnerOrigin(sfHost);
     const pan = superInnerPan(sfHost);
@@ -19125,7 +19200,7 @@ function pasteNodesFromClipboard() {
     }
     mkCps.push(cp);
   }
-  /* 顶层标注粘贴进展开的超级节点：坐标换算为该壳的内部坐标系 */
+  /* 顶层标注粘贴进展开的节点层：坐标换算为该壳的内部坐标系 */
   if (inSuper) {
     const o = superInnerOrigin(sfHost);
     const pan = superInnerPan(sfHost);
@@ -19404,7 +19479,7 @@ async function clipImagesToCanvasAssets(imgs, opts) {
   return { saved, errors };
 }
 /* 用剪贴板图像创建图像输入节点：落当前视口中心（多张按网格排开，与拖入文件同一口径）、
-   落当前超级节点 / 任务作用域内（makeNode 自带），建好即全部选中。 */
+   落当前节点层 / 任务作用域内（makeNode 自带），建好即全部选中。 */
 async function createImageNodesFromClipboard(imgs) {
   const { saved, errors } = await clipImagesToCanvasAssets(imgs, { limit: 0 });
   if (!saved.length) {
@@ -19565,14 +19640,14 @@ function syncGroupBtns() {
   const bs = $("#btnWrapSuper");
   if (bs) {
     const canWrap = selNodes().some((n) => n && !isSuperIoNode(n));
-    /* 正好选中一颗普通超级节点 → 这一格翻转成「拆开」：文案、高亮、点击行为三处同步 */
+    /* 正好选中一颗普通节点层 → 这一格翻转成「拆开」：文案、高亮、点击行为三处同步 */
     const unwrap = plainSuperForUnwrap();
     bs.classList.toggle("on", !!unwrap || canWrap);
     bs.disabled = !unwrap && !canWrap;
     bs.title = unwrap
-      ? I18n.t("拆开超节点：内容原样移回外层，并删除这颗空壳")
+      ? I18n.t("拆开节点层：内容原样移回外层，并删除这颗空壳")
       : I18n.t(
-          "超节点：将选中节点合并为展开的超级节点（覆盖选区范围）；选中单个超级节点时再点一次 = 拆开它（内容原样移回外层，空壳删除）",
+          "节点层：将选中节点合并为展开的节点层（覆盖选区范围）；选中单个节点层时再点一次 = 拆开它（内容原样移回外层，空壳删除）",
         );
   }
 }
@@ -19580,7 +19655,7 @@ function syncGroupBtns() {
 /* ============ 左侧边栏（节点树状图 + 筛选） ============ */
 
 /* 左侧栏「当前画布」分类：必须覆盖全部节点类型，否则该类型的节点不出现在列表里。
- * 开发节点 = kind "super" + dev:true（含普通超级节点），单独归类便于定位。 */
+ * 开发节点 = kind "super" + dev:true（含普通节点层），单独归类便于定位。 */
 /* 分类归属判定：工具节点的规范形态是超级变体（kind 字面值 "super"），但侧栏仍归
    「工具节点」分类 ——  kinds 里带 "tool" 的那个分类就是它的归属，不吃 kind 字面值。 */
 function sideCatMatches(n, kinds) {
@@ -19599,7 +19674,7 @@ const SIDE_CATS = [
   ["控制节点", ["control", "wait_file", "timer", "delayer", "sequencer", "gate", "splitter", "counter", "mutex", "judge"]],
   ["执行节点", ["execute"]],
   ["数据库", ["db_replica"]],
-  ["超级/开发节点", ["super"]],
+  ["节点层/开发节点", ["super"]],
 ];
 const KIND_TAGS = {
   input_text: "文本",
@@ -19644,7 +19719,7 @@ const KIND_TAGS = {
   task: "任务",
   control: "控制",
   judge: "判断",
-  super: "超节点",
+  super: "节点层",
   db_replica: "数据库",
 };
 function sidebarSupersInTask() {
@@ -19672,7 +19747,7 @@ function sidebarSuperRoots(supers) {
       String(a.title || "").localeCompare(String(b.title || ""), "zh"),
     );
 }
-/** 边栏：进入超级节点画布并适配内部节点 */
+/** 边栏：进入节点层画布并适配内部节点 */
 function focusSuperFromSidebar(id) {
   const n = nodeById(id);
   if (!n || n.kind !== "super") return;
@@ -19691,7 +19766,7 @@ function focusSuperFromSidebar(id) {
   }
   if (S.sidebarOpen) renderSidebar();
 }
-/** 左侧列表右键：删除（超级节点会递归删内部） */
+/** 左侧列表右键：删除（节点层会递归删内部） */
 function bindSidebarNodeCtx(el, node) {
   if (!el || !node) return;
   el.addEventListener("contextmenu", (ev) => {
@@ -19760,13 +19835,13 @@ function renderSuperSidebarTree(tree, filter) {
   const collapsed = !!S.sideCollapsed["__super_tree__"];
   head.textContent =
     (collapsed ? "▸ " : "▾ ") +
-    I18n.t("超级节点") +
+    I18n.t("节点层") +
     "（" +
     visible.length +
     "）";
   head.title = collapsed
-    ? I18n.t("展开超级节点树")
-    : I18n.t("折叠超级节点树");
+    ? I18n.t("展开节点层树")
+    : I18n.t("折叠节点层树");
   head.onclick = () => {
     S.sideCollapsed["__super_tree__"] = !collapsed;
     renderSidebar();
@@ -19785,7 +19860,7 @@ function renderSuperSidebarTree(tree, filter) {
         (stack.has(n.id) && focusId !== n.id ? " on-path" : "");
       row.style.setProperty("--depth", String(depth));
       row.title =
-        I18n.t("进入超级节点画布并定位：") + (n.title || I18n.t("超级节点"));
+        I18n.t("进入节点层画布并定位：") + (n.title || I18n.t("节点层"));
       const twisty = document.createElement("button");
       twisty.type = "button";
       twisty.className = "side-super-twisty";
@@ -19805,7 +19880,7 @@ function renderSuperSidebarTree(tree, filter) {
       }
       const tag = document.createElement("span");
       tag.className = "side-tag";
-      tag.textContent = I18n.t("超节点");
+      tag.textContent = I18n.t("节点层");
       const t = document.createElement("span");
       t.className = "t";
       t.textContent = n.title || I18n.t("（未命名）");
@@ -19939,7 +20014,7 @@ function renderSidebar() {
       const tag = document.createElement("span");
       tag.className = "side-tag";
       let tagText = KIND_TAGS[n.kind] || n.kind;
-      /* 开发节点（kind=super + dev）标注元素类型，便于与普通超级节点区分；
+      /* 开发节点（kind=super + dev）标注元素类型，便于与普通节点层区分；
          工具节点（kind=super + tool）保持「工具」标注（形态迁移后不再靠 kind 区分）。 */
       if (n.kind === "super" && n.dev) {
         tagText =
@@ -20054,7 +20129,7 @@ function renderSidebar() {
           I18n.t("可从右键菜单添加，或返回上层");
       } else if (currentSuperFocus() && !f) {
         e.textContent =
-          I18n.t("当前超级节点内部暂无节点或绘图") +
+          I18n.t("当前节点层内部暂无节点或绘图") +
           " · " +
           I18n.t("可从右键菜单添加，或返回上层");
       } else {
@@ -20083,7 +20158,7 @@ function focusNode(id) {
   /* 「定位」= 借道换焦点、紧接着由本函数自己摆镜头，过渡画面不写层记忆 */
   if (want !== currentTaskFocus())
     setTaskFocus(want, { render: false, noViewSave: true });
-  /* 节点在超级节点内：确保目标 super 处于可见状态。
+  /* 节点在节点层内：确保目标 super 处于可见状态。
    * - 宿主是展开壳（superOpen）且非当前 focus → 直接定位（nodeWorldPos 会算世界坐标）。
    * - 宿主收起 / 处于 focus 模式 → 进入宿主 focus 视图（S.superFocus = 直接宿主），
    *   使 nodeInCurrentScope 命中、nodeWorldPos 返回本地坐标，再定位。 */
@@ -20151,14 +20226,14 @@ function focusMark(id) {
   rememberLevelView(S.wf);
 }
 
-/* 数据库超级节点处于「展开」态时，其内部空白处右键也可用数据库专属节点菜单 */
+/* 数据库节点层处于「展开」态时，其内部空白处右键也可用数据库专属节点菜单 */
 function dbCreateMenuOpenAt(pt) {
   if (!pt || currentSuperFocus()) return false;
   const host = findOpenSuperAtWorld(pt.x, pt.y, new Set());
   return !!(host && host.kind === "super" && host.db);
 }
 function canvasCreateMenuGroups(pt) {
-  /* 数据库超级节点内部：右键菜单只提供「文件节点」和「表」（钻入或展开均生效） */
+  /* 数据库节点层内部：右键菜单只提供「文件节点」和「表」（钻入或展开均生效） */
   if (currentDbSuper() || dbCreateMenuOpenAt(pt)) {
     return [
       [
@@ -20179,16 +20254,18 @@ function canvasCreateMenuGroups(pt) {
       ],
     ];
   }
-  /* 子画布内（在展开的超级 / 工具壳层里右键，或全屏进入壳层后右键）：这两类节点可以
-     继续往里加 —— 工具内部还能套工具与函数。顶层画布与子画布都列在「工具」一级菜单下
-     （这里就是工具 / 函数节点的创建入口；顶栏「工具库」只管已保存的工具包，不建节点）；
-     开发 / 数据库壳层是架构与事实容器，不列。 */
+  /* 工具 / 函数节点的创建入口在「其他节点」二级菜单里，顶层画布与子画布一视同仁
+     （不再按壳层门控：开发 / 流程壳里都能建，工具内部也还能继续套工具与函数；
+     顶栏「工具库」只管已保存的工具包，不建节点）。「插件」菜单的门控是另一条口径，
+     保持原样：开发 / 数据库壳层里不列插件节点。 */
   const sfHost = currentSuperFocus()
     ? nodeById(currentSuperFocus())
     : superHostAtWorld(pt && pt.x, pt && pt.y);
-  const inFlowShell =
-    !!sfHost && isSuperLikeNode(sfHost) && !sfHost.db && !sfHost.dev;
-  const allowToolMenu = !sfHost || inFlowShell;
+  const allowPluginMenu = !!(
+    (!sfHost || (isSuperLikeNode(sfHost) && !sfHost.db && !sfHost.dev)) &&
+    typeof pluginNodeDefs === "function" &&
+    pluginNodeDefs().length
+  );
   return [
     [
       "",
@@ -20341,39 +20418,11 @@ function canvasCreateMenuGroups(pt) {
         ),
       ],
     ],
-    /* 「工具」一级菜单＝工具节点 / 函数节点的创建入口（顶栏只剩「工具库」管理已保存的包）。
-       子画布内同样列出 → 工具内部可以继续套工具与函数。 */
-    ...(allowToolMenu
-      ? [
-          [
-            "",
-            [
-              ctxSubmenu(
-                I18n.t("工具"),
-                "tool",
-                "proc",
-                [
-                  ctxKindItem(
-                    "tool",
-                    I18n.t("工具（Agent 可调用 · 入参出参端子）"),
-                    () => addNode("tool", pt.x, pt.y),
-                  ),
-                  ctxKindItem(
-                    "function",
-                    I18n.t("函数（JS 计算 · 自定义入参出参）"),
-                    () => addNode("function", pt.x, pt.y),
-                  ),
-                ],
-              ),
-            ],
-          ],
-        ]
-      : []),
     /* 「插件」一级菜单：用户自建插件（<数据目录>/user-plugins）声明出来的画布节点。
        **只列当前可用（状态正常）的插件** —— 插件没装 / 被停用 / 不兼容时这里直接不出现，
        而不是给一个点了报错的死条目。建图安全：节点外观、端子、执行全按清单走，
        见 renderer/app-nodeplugins.js。 */
-    ...(allowToolMenu && typeof pluginNodeDefs === "function" && pluginNodeDefs().length
+    ...(allowPluginMenu
       ? [
           [
             "",
@@ -20393,19 +20442,13 @@ function canvasCreateMenuGroups(pt) {
         ]
       : []),
     [
-      I18n.t("任务节点（规划 / 控制流执行）"),
-      [
-        ctxKindItem("task", I18n.t("任务（规划 · 可进入分段解决）"), () =>
-          addNode("task", pt.x, pt.y),
-        ),
-        ctxKindItem("super", I18n.t("超级节点（收纳 · 展开子画布）"), () =>
-          addNode("super", pt.x, pt.y),
-        ),
-      ],
-    ],
-    [
       "",
       [
+        /* 节点层：容器类入口，平铺在二级菜单区之前（原「任务节点」分组已撤：
+           任务归「控制节点」，不再单独占一条分组标题）。 */
+        ctxKindItem("super", I18n.t("节点层（收纳 · 展开子画布）"), () =>
+          addNode("super", pt.x, pt.y),
+        ),
         {
           label: I18n.t("开发节点（项目架构 · 功能块）"),
           iconKey: "dev",
@@ -20483,6 +20526,9 @@ function canvasCreateMenuGroups(pt) {
           iconKey: "control",
           iconCls: "ctrl",
           submenu: [
+            ctxKindItem("task", I18n.t("任务（规划 · 可进入分段解决）"), () =>
+              addNode("task", pt.x, pt.y),
+            ),
             ctxKindItem("control", I18n.t("执行 / 清空"), () =>
               addNode("control", pt.x, pt.y),
             ),
@@ -20540,6 +20586,18 @@ function canvasCreateMenuGroups(pt) {
           iconKey: "other",
           iconCls: "other",
           submenu: [
+            /* 工具 / 函数节点：原「工具」一级菜单已撤，创建入口收进这一条二级菜单
+               （工具在前、函数在后；顶栏「工具库」只管已保存的工具包，不建节点）。 */
+            ctxKindItem(
+              "tool",
+              I18n.t("工具（Agent 可调用 · 入参出参端子）"),
+              () => addNode("tool", pt.x, pt.y),
+            ),
+            ctxKindItem(
+              "function",
+              I18n.t("函数（JS 计算 · 自定义入参出参）"),
+              () => addNode("function", pt.x, pt.y),
+            ),
             ctxKindItem(
               "net_recv",
               I18n.t("网络 · 接收（监听通道 · 异步转发文本）"),
@@ -21175,6 +21233,47 @@ function canvasPointerReleaseFocus(ev) {
   }
   return changed;
 }
+/* ── 画布滚轮：节点内容区自己滚，别缩放镜头 ──────────────────────────────────
+   展开的节点层（.super-stage）里，画布 wheel 过去一律缩放，于是文本节点的板身正文框
+   （textarea.n-text）滚不动 —— 需求「在展开的节点层里对文本节点滚轮应滚文本框」。
+   这里给出一条与 app-canvas.js · browseWheelNativeOwner 同口径的判定：从事件目标一路往上
+   找到 .wf-node 为止，谁**真能滚**（overflow 允许 + scrollHeight/scrollWidth 真超出）就归谁。
+   只有 overflow:auto 但内容装得下不算 —— 那种情形按用户口径照常缩放画布。 */
+function canvasWheelAxis(ev) {
+  const dx = Number(ev && ev.deltaX) || 0;
+  const dy = Number(ev && ev.deltaY) || 0;
+  if (!dx && !dy) return "";
+  /* 纯横向（触控板横滑 / Shift+滚轮）：看横向滚动；两轴都有时以竖向为主 */
+  if (!dy && dx) return "x";
+  return "y";
+}
+function elHasOverflowScroll(el, axis) {
+  if (!el || el.nodeType !== 1) return false;
+  let cs = null;
+  try {
+    cs = window.getComputedStyle(el);
+  } catch (_) {}
+  const ov = cs ? (axis === "x" ? cs.overflowX : cs.overflowY) : "";
+  /* 输入控件（textarea / select）与 contenteditable 自带滚动，不看 computed overflow */
+  const isField =
+    /^(TEXTAREA|INPUT|SELECT)$/.test(el.tagName || "") || !!el.isContentEditable;
+  if (!isField && (!ov || ov === "visible" || ov === "hidden" || ov === "clip"))
+    return false;
+  if (axis === "x") return el.scrollWidth > el.clientWidth + 1;
+  return el.scrollHeight > el.clientHeight + 1;
+}
+function canvasWheelContentOwner(ev) {
+  const t = ev && ev.target;
+  if (!t || typeof t.closest !== "function") return null;
+  const node = t.closest(".wf-node");
+  if (!node) return null;
+  const axis = canvasWheelAxis(ev);
+  if (!axis) return null;
+  for (let el = t; el && el !== node; el = el.parentElement) {
+    if (elHasOverflowScroll(el, axis)) return el;
+  }
+  return null;
+}
 function bindCanvas() {
   const canvas = $("#canvas");
   /* 绘制文字编辑中，点画布任何其它位置（空白 / 节点 / 组 / 手柄 / 工具条）都要先退出编辑态：
@@ -21282,7 +21381,16 @@ function bindCanvas() {
         ev.preventDefault();
         return;
       }
-      /* 节点内滚轮默认不缩放；展开超级节点内部舞台例外（与画布一致缩放镜头） */
+      /* 指针压在节点内容的滚动区上（文本 / 提示词 textarea、输出面板、节点内会话、代码块 …）：
+         滚轮归内容自己滚，画布不缩放。展开节点层（.super-stage）过去一律缩放镜头，于是文本节点
+         正文滚不动 —— 本次修的就是这一条，全屏进入态与就地展开壳共用这一个判定。
+          · Ctrl / ⌘ + 滚轮仍归画布缩放（含触控板捏合，它同样带 ctrlKey）；
+          · 内容装得下（滚不动）时不认领 —— 按需求照常缩放画布；
+          · 滚到顶 / 到底继续滚：容器自己停住，这里不 preventDefault 也不缩放（壳层 overflow:hidden，
+            余量不会转给页面）。
+         判定放在下面「.wf-node 不缩放」之前：那一支靠的是原生滚动，走到展开壳 stage 这一支就先缩放了。 */
+      if (!ev.ctrlKey && !ev.metaKey && canvasWheelContentOwner(ev)) return;
+      /* 节点内滚轮默认不缩放；展开节点层内部舞台例外（与画布一致缩放镜头） */
       if (
         ev.target.closest(".wf-node") &&
         !ev.target.closest(".super-stage")
@@ -21468,7 +21576,7 @@ function bindCanvas() {
         el.style.width = sz.w + "px";
         el.style.height = sz.h + "px";
         refreshPorts(el, n);
-        /* 拉宽 / 收窄超级节点：文件夹标题随可用宽度重新缩字 */
+        /* 拉宽 / 收窄节点层：文件夹标题随可用宽度重新缩字 */
         if (n.kind === "super") fitSuperFolderCard(el);
       }
       updateGroupFrames();
@@ -21630,7 +21738,7 @@ function bindCanvas() {
           const inNode = nodeById(fromId);
           const outNode = nodeById(outId);
           if (port.classList.contains("super-inner-bridge")) {
-            /* 落在超级节点内侧输入端子（桥）：等价于 桥 → 内部节点输入 */
+            /* 落在节点层内侧输入端子（桥）：等价于 桥 → 内部节点输入 */
             if (
               !inNode ||
               !outNode ||
@@ -21638,7 +21746,7 @@ function bindCanvas() {
               nodeParentSuperId(inNode) !== outId
             ) {
               toast(
-                I18n.t("内侧输入端子只能连接到超级节点内部的节点"),
+                I18n.t("内侧输入端子只能连接到节点层内部的节点"),
                 "warn",
               );
             } else {
@@ -21647,6 +21755,18 @@ function bindCanvas() {
           } else {
             connect(outId, fromId, fromIndex, outIdx);
           }
+        } else if (
+          movedDrag &&
+          el &&
+          el.closest &&
+          el.closest(".wf-node") &&
+          el.closest(".wf-node").dataset.nid !== fromId
+        ) {
+          /* 反向拖线落在别的节点卡片上却没落上端子：以前什么都不发生，看着像「拖了一次没反应」 */
+          toast(
+            I18n.t("线头没落在端子上：请拖到目标节点的输出端子上再松开"),
+            "warn",
+          );
         }
       } else {
         let port = el && el.closest ? el.closest(".port.in") : null;
@@ -21657,7 +21777,7 @@ function bindCanvas() {
           const fromNode = nodeById(fromId);
           if (fromBridge) {
             if (!toNode || nodeParentSuperId(toNode) !== fromId) {
-              toast(I18n.t("内侧输入端子只能连接到超级节点内部的节点"), "warn");
+              toast(I18n.t("内侧输入端子只能连接到节点层内部的节点"), "warn");
             } else {
               connect(fromId, toId, Number(port.dataset.idx), fromIndex);
             }
@@ -21667,7 +21787,7 @@ function bindCanvas() {
               toNode.kind !== "super" ||
               nodeParentSuperId(fromNode) !== toId)
           ) {
-            toast(I18n.t("内侧输出端子只能接收超级节点内部的连线"), "warn");
+            toast(I18n.t("内侧输出端子只能接收节点层内部的连线"), "warn");
           } else {
             connect(fromId, toId, Number(port.dataset.idx), fromIndex);
           }
@@ -21682,6 +21802,22 @@ function bindCanvas() {
             fromBridge,
             moved: movedDrag,
           });
+          /* 落点落在别的节点卡片上却没落上端子：以前连提示都没有，用户只看到「拖了一次没反应」，
+             再拖一次偶尔又成 —— 现在明确说一句没落上（落画布空白仍走上面的新建节点菜单，
+             落回自己身上 = 取消，不提示） */
+          if (
+            movedDrag &&
+            !fromBridge &&
+            el &&
+            el.closest &&
+            el.closest(".wf-node") &&
+            el.closest(".wf-node").dataset.nid !== fromId
+          ) {
+            toast(
+              I18n.t("线头没落在端子上：请把线拖到目标节点的输入端子上再松开"),
+              "warn",
+            );
+          }
         }
       }
     } else if (d.mode === "box") {
@@ -21731,6 +21867,7 @@ function bindCanvas() {
           el.classList.remove("node-dragging");
           el.style.transform = "";
         });
+      let liftedAny = false;
       if (wasMoved && S.preDragSnap) {
         pushHistory(S.preDragSnap);
         S.preDragSnap = null;
@@ -21745,6 +21882,12 @@ function bindCanvas() {
         nested = finalizeNodeDragNest(dragIds, curWorld, dropPt);
         if (hadNested) nested = true;
       }
+      /* 壳内子节点被拎到主舞台时戴的 .super-drag-lift（z65 + pointer-events:none）必须在这里
+         摘掉：它一旦残留，这颗节点就彻底点不动 —— 指针穿透到壳的舞台，一下变成壳内平移
+         （Bug：展开的节点层里偶尔无法选中内部节点）。
+         必须排在 finalizeNodeDragNest 之后：那时模型里的坐标才是落点后的最终坐标，
+         releaseSuperDragLift 按它挂回壳的 viewport / 主舞台（见该函数注释）。 */
+      liftedAny = releaseSuperDragLift();
       clearSuperDropHot(!!nested);
       updateGroupFrames();
       const skipToggle =
@@ -21756,9 +21899,9 @@ function bindCanvas() {
         toggleNodeGlobalRefs(nodeById(handleNid))
       ) {
         /* 点击手柄已切换全局引用并重绘 */
-      } else if (nested) {
+      } else if (nested || liftedAny) {
         renderCanvas();
-        scheduleSave(true);
+        scheduleSave(nested);
       } else {
         scheduleSave();
       }
@@ -21854,7 +21997,7 @@ function bindCanvas() {
     }
     const files = [...(ev.dataTransfer.files || [])];
     if (!files.length) return;
-    /* 数据库超级节点：拖入文件 → 复制到子文件夹（入库待编译） */
+    /* 数据库节点层：拖入文件 → 复制到子文件夹（入库待编译） */
     const dbTarget = S.wf.nodes.find(
       (n) => {
         if (n.kind !== "super" || !n.db) return false;
@@ -22461,10 +22604,12 @@ const WIRE_DROP_TARGETS = [
   { kind: "agent_task", g: "智能节点" },
   { kind: "save", g: "保存节点" },
   { kind: "save_pdf", g: "保存节点" },
-  { kind: "tool", g: "工具节点" },
-  { kind: "function", g: "工具节点" },
-  { kind: "task", g: "任务节点" },
-  { kind: "super", g: "任务节点" },
+  /* 分组口径与右键「新建节点」菜单对齐：任务归控制节点（排在控制组首位），
+     节点层 / 工具 / 函数归「其他节点」（顺序：节点层 → 工具 → 函数）。 */
+  { kind: "super", g: "其他节点" },
+  { kind: "tool", g: "其他节点" },
+  { kind: "function", g: "其他节点" },
+  { kind: "task", g: "控制节点" },
   { kind: "control", g: "控制节点", label: "执行 / 清空" },
   { kind: "judge", g: "控制节点" },
   { kind: "delayer", g: "控制节点" },
@@ -22601,7 +22746,7 @@ function wireDropLandsOnEmptyCanvas(el) {
   if (!el || typeof el.closest !== "function") return false;
   if (!el.closest("#canvas") || el.closest("#ctx")) return false;
   if (el.closest(".port")) return false;
-  /* 展开的超级节点：壳里每个子节点都是宿主 .wf-node 的后代，宿主卡片本身也在 .super-stage 之外 */
+  /* 展开的节点层：壳里每个子节点都是宿主 .wf-node 的后代，宿主卡片本身也在 .super-stage 之外 */
   if (el.closest(".super-stage-viewport .wf-node")) return false;
   if (el.closest(".wf-node") && !el.closest(".super-stage")) return false;
   return true;
@@ -23132,9 +23277,9 @@ function assignDefaultProvider(node) {
   }
 }
 
-/* 节点「创建 kind」→「存储形态」换算：工具节点的规范形态是超级节点变体
+/* 节点「创建 kind」→「存储形态」换算：工具节点的规范形态是节点层变体
    （kind:"super" + tool:true，沿用 db:/dev: 变体模式，契约见 docs/tool-function-nodes.md）。
-   右键「工具」一级菜单、拖线落点候选、工具包快照等入口一律写 "tool"，落盘在此统一换算；
+   右键「其他节点」二级菜单、拖线落点候选、工具包快照等入口一律写 "tool"，落盘在此统一换算；
    判定永远走 isToolNode()，不要再比较 kind === "tool"。 */
 const NODE_FORM_OF_KIND = { tool: "super" };
 
@@ -23166,7 +23311,7 @@ function makeNode(kind, x, y) {
     node.parentSuperId = sf;
     node.parentTaskId = sfHost.parentTaskId || "";
   } else {
-    /* superFocus 失效（指向已不存在的超级节点）时不挂幽灵父级，退回按坐标找宿主 */
+    /* superFocus 失效（指向已不存在的节点层）时不挂幽灵父级，退回按坐标找宿主 */
     const host = superHostAtWorld(x, y);
     if (host) {
       const o = superInnerOrigin(host);
@@ -23218,7 +23363,7 @@ function addNode(kind, x, y, extra) {
       ? extra.title
       : (() => {
           const raw = I18n.t(d.title);
-          /* 「超级节点」等标题已含「节点」，勿再拼成「超级节点节点」 */
+          /* 「节点层」等标题已含「节点」，勿再拼成「节点层节点」 */
           if (/节点\s*$/.test(raw) || /node\s*$/i.test(raw)) return raw;
           return raw + I18n.t("节点");
         })();
@@ -26765,7 +26910,7 @@ function repositionNodePops() {
     const el = document.getElementById(id);
     if (!el || !el.classList || !el.classList.contains("on")) continue;
     /* 宿主节点已不在画布上（删节点 / 撤销换对象 / 切画布）→ 收掉这块无主浮层。
-       只是暂时没挂载（嵌在展开的超级节点壳里、切到别的视图）→ 原地不动，等它回来。 */
+       只是暂时没挂载（嵌在展开的节点层壳里、切到别的视图）→ 原地不动，等它回来。 */
     if (el._popNode && typeof nodeById === "function" && !nodeById(el._popNode)) {
       closeNodePopById(id);
       continue;
@@ -30010,7 +30155,7 @@ async function pulseExecOutgoing(node, fromIndex, task, seen) {
     }
     const next = nodeById(w.to);
     if (!next) continue;
-    /* 控制脉冲经超级节点端子隧穿到另一侧 */
+    /* 控制脉冲经节点层端子隧穿到另一侧 */
     if (next.kind === "super" && nodeParentSuperId(node) !== next.id) {
       const ti = Number(w.toIndex || 0);
       let any = false;
@@ -30868,16 +31013,16 @@ function setForegroundWf(wf) {
 }
 /* ── 画布视图记忆（切 Tab 不弹回根画布）──
    用户眼里的「在这张画布的哪里」由三样拼成：① 任务子画布焦点（S.taskFocus + 返回栈）、
-   ② 超级节点 focus 子画布（S.superFocus + 返回栈）、③ 相机 S.cam（平移 + 缩放）。
+   ② 节点层 focus 子画布（S.superFocus + 返回栈）、③ 相机 S.cam（平移 + 缩放）。
    过去 ①② 是全局一份、切画布时被 loadWorkflow 一句 resetTaskFocus() 清空，③ 又是
    跨画布共享 —— 从壳里钻出来切去看别的画布，回来就站在根画布的陌生位置，得重新钻一遍。
    返回栈原样存一份只当「由深到浅的候选层」用：恢复时仍由 setTaskFocus / setSuperFocus
    按节点身上的 parentTaskId / parentSuperId 现算真正的祖先链，被删掉的层级一律不认。
    只存内存不落盘：相机随平移每帧都在变，写盘等于把平移手感变成磁盘 I/O。 */
 /* ── 分层视角记忆（本轮需求：画布每个层级缓存视角）──
-   一层 = 根画布 / 某颗超级节点的内部 / 某颗任务的内部。键 = 画布 id + 层路径，
+   一层 = 根画布 / 某颗节点层的内部 / 某颗任务的内部。键 = 画布 id + 层路径，
    层路径只取「最深的那个焦点节点的 id」：superFocus 优先于 taskFocus，与
-   nodeInCurrentScope() 的判定顺序逐字一致（超级节点在内部时那一屏就是壳的内部，
+   nodeInCurrentScope() 的判定顺序逐字一致（节点层在内部时那一屏就是壳的内部，
    外层任务焦点只是返回路径）。用节点 id 而非层级序号：层内节点增删不动键，
    层本身（壳 / 任务）被删掉时这条记忆再也命中不到，等价于自动作废。
    只存内存：相机在平移时每帧都变，落盘等于把拖动画布变成磁盘 I/O。 */
@@ -31545,7 +31690,7 @@ function migrateWf(wf) {
        { role, content, at }，对话记录、标题、位置与尺寸原样保留，
        旧画布不报错、会话内容不丢。系统提示词并进首条 system 消息。 */
     if (n.kind === "chat") migrateChatNodeToAgent(n);
-    /* 工具节点一次性迁移为超级节点变体（kind:"super" + tool:true）：规范形态见
+    /* 工具节点一次性迁移为节点层变体（kind:"super" + tool:true）：规范形态见
        docs/tool-function-nodes.md §0。只改形态字段并补齐超级壳层默认值，id / 标题 /
        位置尺寸 / toolConfig / parentSuperId 与内部子节点关系一律不动，连线两端仍是
        同一批 id 与端子序号，故无需改写连线。幂等：已是变体时不触发，旧画布反复加载
@@ -31648,7 +31793,7 @@ function migrateWf(wf) {
       const bm = String(n.voiceMode || "auto");
       n.voiceMode = ["auto", "clone", "design", "direction"].indexOf(bm) >= 0 ? bm : "auto";
       const bc = Number(n.cfgScale);
-      n.cfgScale = isFinite(bc) && bc > 0 ? Math.max(0.1, Math.min(10, bc)) : 1;
+      n.cfgScale = isFinite(bc) && bc > 0 ? Math.max(0.1, Math.min(10, bc)) : 4;
       const bsd = Math.floor(Number(n.seed));
       n.seed = isFinite(bsd) ? bsd : 42;
       const bf = String(n.ttsFormat || "wav").toLowerCase();
@@ -31873,10 +32018,10 @@ function migrateWf(wf) {
     for (const n of wf.nodes) {
       if (n.parentTaskId && !ids.has(n.parentTaskId)) n.parentTaskId = "";
     }
-    /* 孤儿超级节点引用自愈：父级不存在或不是超级节点时清空，
+    /* 孤儿节点层引用自愈：父级不存在或不是节点层时清空，
        避免节点挂到幽灵父级后从层级视图 / 左侧栏中消失（历史数据损坏的降级：
        节点回到顶层画布，至少可见可操作，不再整体消失）。
-       工具节点＝超级节点变体（super + tool:true）：其子节点 parentSuperId 天然合法。 */
+       工具节点＝节点层变体（super + tool:true）：其子节点 parentSuperId 天然合法。 */
     for (const n of wf.nodes) {
       const host = n.parentSuperId ? byId.get(n.parentSuperId) : null;
       if (n.parentSuperId && (!host || !isSuperLikeNode(host))) n.parentSuperId = "";
@@ -32038,7 +32183,7 @@ async function ensureWorkflow() {
      默默删掉（开机这一路也要过一遍，否则直接打开的画布会一直带着旧字段） */
   if (typeof asrPurgeLegacyTranscripts === "function" && asrPurgeLegacyTranscripts(S.wf))
     scheduleSave(true);
-  /* 原先这里补了一句 resetTaskFocus()：上面那次前台切换已经把任务 / 超级节点焦点归零
+  /* 原先这里补了一句 resetTaskFocus()：上面那次前台切换已经把任务 / 节点层焦点归零
      （视图记忆只活在本次运行内，开机一定是空袋 → 交接即「回根画布」），再来一次纯属重复。 */
   rememberWf(S.wf);
   S.config.activeWorkflowId = id;
@@ -32115,7 +32260,7 @@ async function loadWorkflow(id, opts) {
   setForegroundWf(wf); /* 用户可见的画布切换：_fgWf 与 S.wf 同步换（顺带把视图交接：
                          存走掉那张的「层 + 相机」、套回这张的 —— 见 applyWfView） */
   rememberWf(wf);
-  /* 这里过去是一句 resetTaskFocus()：把任务 focus / 超级节点 focus 一把清成根画布，
+  /* 这里过去是一句 resetTaskFocus()：把任务 focus / 节点层 focus 一把清成根画布，
      于是「在壳里干活 → 切去看别的画布 → 切回来」每次都被打回根画布重新钻壳。
      焦点归零与恢复现在统一由 setForegroundWf → applyWfView 按画布 id 处理。 */
   if (S._pendingVideoPortMigrateSave) {
@@ -32648,12 +32793,12 @@ function devPathOfIn(node, wf) {
   }
   return "";
 }
-/* 开发节点块判定（单一真源）：super + dev:true，数据库超级节点（db:true）不算。
+/* 开发节点块判定（单一真源）：super + dev:true，数据库节点层（db:true）不算。
    devProjectRootOf 与「核心文件列表」（app-devnode.js 的 devCoreFilesOf）共用此口径。 */
 function devIsDevBlock(node) {
   return !!(node && node.kind === "super" && node.dev && !node.db);
 }
-/* 顶层开发块 = 项目节点：祖先链上再没有别的开发块（父级是普通超级节点仍算顶层）。
+/* 顶层开发块 = 项目节点：祖先链上再没有别的开发块（父级是普通节点层仍算顶层）。
    走链思路与 app-devnode.js 的 devAncestorChain 一致，这里只做存在性判定；
    「核心文件列表最外层不列举」也用它，两处永不分叉。 */
 function devIsTopBlock(node, wf) {

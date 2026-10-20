@@ -3,7 +3,7 @@
 An **editable output landing point** the long-running task leaves on the canvas. It is not
 something you add by hand: the long-running task system creates it when a step produces something,
 bound to the task and the step (title looks like `Output · Draft`), and places it inside
-**that step's super-node shell** (see `super.md`: every long task gets one "Long task · <task name>"
+**that step's node-layer shell** (see `super.md`: every long task gets one "Long task · <task name>"
 shell on the main canvas, each step owns a child shell inside it, **placed when the task is created**; if the shell has been deleted the
 node falls back to the main canvas layer).
 

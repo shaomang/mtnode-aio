@@ -1,4 +1,4 @@
-/* Paseo 手机接管 · 控制台窗脚本（无框架）
+﻿/* Paseo 手机接管 · 控制台窗脚本（无框架）
  *
  * 这一窗只做四件事：把后端现状摊开给人看、出一张配对二维码、把 provider 注册进 Paseo、
  * 管住「远程连接」这个总开关。所有重活都在主进程宿主（paseo/main-paseo.js），
@@ -231,8 +231,20 @@ function renderBackend() {
   if (own && b.daemon && b.daemon.running && !b.daemon.hosted) {
     out.push(
       '<p class="tip warn">这份后端是旧方式起的（自己 detached 一个 supervisor，Windows 上会多出一只终端窗口）：' +
-        "宿主会在下次启动 / 你点一次「停止后端」再「启动后端」时把它换成<b>宿主静默托管</b>（后台跑、不再留窗口）。" +
+        "宿主会在下次启动 / 你点一次「停用后端」再「启用后端」时把它换成<b>宿主静默托管</b>（后台跑、不再留窗口）。" +
         "配对密钥与配置都不动，手机至多瞬断一次。</p>",
+    );
+  }
+  /* 本轮共识：**默认不启用** —— 启用标记是「下次开机会不会自己起这份后端」的唯一依据，
+     单独摊一行出来，免得用户看到「没在跑」以为是坏了（没启用本来就不该跑）。 */
+  if (own) {
+    out.push(
+      row(
+        "启用标记",
+        S.enabled
+          ? pill("已启用", "ok") + ' <span class="tip">下次启动 MTNode 会按它自动恢复这份后端</span>'
+          : pill("未启用", "warn") + ' <span class="tip">默认不启用：点「启用后端」才会起后端</span>',
+      ),
     );
   }
   out.push(row("数据目录", '<span class="path">' + esc(b.home || "") + "</span>"));
@@ -316,18 +328,20 @@ function renderBackend() {
     out.push(row("安装目录", '<span class="path">' + esc(b.installDir) + "</span>"));
   }
 
-  /* 启停：卡片上没有「启用」按钮（本轮共识），这两颗就是自建 daemon 的唯一出口。
-     本轮口径：启动 = 由**宿主静默托管**（`paseo daemon run`，后台跑、不留终端窗口）；
-     停止 = 优雅停（5 秒）→ 超时按进程树强杀。MTNode 退出时自建那份也会一起停（不再常驻）。 */
+  /* 启停 = 启用 / 停用（与插件卡片那颗按钮完全等价，本轮共识）：
+     启用 = 宿主静默托管起后端（`paseo daemon run`，不留终端窗口）+ 打开远程连接；
+     停用 = 优雅停（5 秒）→ 超时按进程树强杀 + 关远程连接 + 清启用标记
+     （清掉之后 MTNode 下次启动不会再自己拉起它）。MTNode 退出时自建那份会一起停。 */
   if (own) {
     out.push(
       '<div class="row">' +
-        '<button class="mini" data-act="start" ' + (busyBtn ? "disabled" : "") + ">启动后端</button>" +
-        '<button class="mini" data-act="stop" ' + (busyBtn ? "disabled" : "") + ">停止后端</button>" +
+        '<button class="mini" data-act="start" ' + (busyBtn ? "disabled" : "") + ">启用后端</button>" +
+        '<button class="mini" data-act="stop" ' + (busyBtn ? "disabled" : "") + ">停用后端</button>" +
         "</div>",
     );
     out.push(
-      '<p class="tip">启动 = 宿主静默托管（后台跑，<b>不会再冒出终端窗口</b>）；MTNode 退出时自建后端会一起停' +
+      '<p class="tip">默认<b>不启用</b>：只有点这里或插件卡片上的「启用」才会起后端，开机不会自己跑。' +
+        "启用 = 后台静默托管（<b>不会再冒出终端窗口</b>）+ 打开远程连接；MTNode 退出时自建后端会一起停" +
         "（要手机随时连着就先别关 MTNode）。意外退出宿主会自动重启，最多 3 次。</p>",
     );
   } else {
@@ -600,14 +614,15 @@ document.addEventListener("click", async (ev) => {
   }
   if (act === "start") {
     const r = await run("start", () => window.paseoApi.startDaemon());
-    toast(r && r.ok ? "后端已启动" : "启动失败", r && r.ok ? "ok" : "err");
+    toast(r && r.ok ? "后端已启用" : "启用失败", r && r.ok ? "ok" : "err");
     await load();
     return;
   }
   if (act === "stop") {
-    if (!window.confirm("停止 Paseo daemon？\n手机将立刻连不上（daemon 是常驻单例，不随 MTNode 退出）。")) return;
+    if (!window.confirm("停用 Paseo 后端？\n手机将立刻连不上；远程连接总开关会一起关掉，" +
+      "下次启动 MTNode 也不会再自动恢复（要用得再点「启用」）。")) return;
     const r = await run("stop", () => window.paseoApi.stopDaemon());
-    toast(r && r.ok ? "已停止" : "停止失败", r && r.ok ? "ok" : "err");
+    toast(r && r.ok ? "已停用" : "停用失败", r && r.ok ? "ok" : "err");
     await load();
     return;
   }

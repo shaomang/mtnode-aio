@@ -2,7 +2,7 @@
 /* 顶栏「排版」默认层级 —— 纯 Node 冒烟测试（不依赖 Electron / 不碰 %APPDATA%）
  *   node test/smoke-layout-scope.js
  *
- * 背景（本次修的 bug）：菜单里的「排版」只会排整张画布的顶层节点。用户「进入」某颗超级节点
+ * 背景（本次修的 bug）：菜单里的「排版」只会排整张画布的顶层节点。用户「进入」某颗节点层
  * 后（S.superFocus 指向那颗壳，画面里只有它的子节点）再点「排版」，排的是画面外的顶层节点，
  * 眼前这一层纹丝不动 —— 看起来就是「没用」。修后默认口径：
  *   · 停在壳里（S.superFocus = 壳）→ 排这颗壳的直接子节点（本层局部坐标 + 壳随内容撑开）；
@@ -255,7 +255,7 @@ const xy = (w, ids) => ids.map((id) => id + "=" + at(w, id).x + "," + at(w, id).
     ok(at(w, "a1").x === 16, "确认 + 「仅排版当前层级」→ 排的是壳内（a1.x=" + at(w, "a1").x + "）");
     ok(at(w, "t1").x === 999, "顶层未动");
     ok(
-      /当前超级节点层级「壳A」/.test(w.events.dialogs[0].msg),
+      /当前节点层「壳A」/.test(w.events.dialogs[0].msg),
       "确认框点明排的是哪一层（带壳标题）",
     );
   }
@@ -283,7 +283,7 @@ const xy = (w, ids) => ids.map((id) => id + "=" + at(w, id).x + "," + at(w, id).
     await w2.sandbox.oneClickAutoLayout();
     ok(
       w2.events.toasts.some((t) => /还没有可排版/.test(t)),
-      "入口给出「这颗超级节点里还没有可排版的节点」提示",
+      "入口给出「这颗节点层里还没有可排版的节点」提示",
     );
   }
 

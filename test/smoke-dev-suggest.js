@@ -889,7 +889,7 @@ const MODEL_JSON =
   sb.__sessions = [{ id: "s1", running: false }];
   ok(rn() === "", "会话已停 → 列表清空");
   ex(sb, 'S.wf.nodes.push({ id: "dbsup", kind: "super", dev: true, db: true, running: true })');
-  ok(rn() === "", "db 超级节点不计入开发运行列表");
+  ok(rn() === "", "db 节点层不计入开发运行列表");
   ex(sb, 'S.wf.nodes = S.wf.nodes.filter(function(n){ return n.id !== "dbsup"; })');
   ex(sb, 'S.wf.nodes.push({ id: "plain2", kind: "proc_text", running: true })');
   ok(rn() === "", "普通处理节点运行不计入（由 collectRunQueue 主循环处理）");
@@ -1306,7 +1306,7 @@ const MODEL_JSON =
   ok(nodes10.indexOf("devColorOf(n)") >= 0, "app-nodes 序列化 devColor");
   ok(nodes10.indexOf("patch.devColor") >= 0, "app-nodes 支持 devColor 补丁（Agent 可改颜色）");
   const appjs10 = read("renderer/app.js");
-  ok(appjs10.indexOf("devColor: \"\"") >= 0, "app.js 超级节点默认 devColor 空串");
+  ok(appjs10.indexOf("devColor: \"\"") >= 0, "app.js 节点层默认 devColor 空串");
   ok(appjs10.indexOf("S.uiDevColorNode") >= 0, "app.js 记着正在选色的功能块（色板 persistent：点外部不收，关它只走 ✕ / 完成 / 再点按钮 / Esc）");
   const cssC10 = read("renderer/css/canvas.css");
   ok(cssC10.indexOf(".n-dev-color") >= 0, "canvas.css：菜单栏颜色按钮样式");
@@ -1676,9 +1676,9 @@ const MODEL_JSON =
     (appjs11.match(/I18n\.t\("Agent 模型"\)/g) || []).length >= 2,
     "「开发」与「细化」对话框都列出 Agent 模型",
   );
-  ok(appjs11.indexOf('devModel: ""') >= 0, "app.js 超级节点默认 devModel 空串");
-  ok(appjs11.indexOf('devPreset: ""') >= 0, "app.js 超级节点默认 devPreset 空串（跟随默认）");
-  ok(appjs11.indexOf('devEffort: ""') >= 0, "app.js 超级节点默认 devEffort 空串（跟随默认）");
+  ok(appjs11.indexOf('devModel: ""') >= 0, "app.js 节点层默认 devModel 空串");
+  ok(appjs11.indexOf('devPreset: ""') >= 0, "app.js 节点层默认 devPreset 空串（跟随默认）");
+  ok(appjs11.indexOf('devEffort: ""') >= 0, "app.js 节点层默认 devEffort 空串（跟随默认）");
   ok(appjs11.indexOf("S.uiDevModelNode") >= 0, "app.js 记着正在选设定的功能块（模型弹层 persistent：点外部不收，关它只走 ✕ / 再点按钮 / Esc）");
   ok(
     appjs11.indexOf('if (ev.key === "Escape" && (S.uiDevColorNode || S.uiDevModelNode))') >= 0,
@@ -2913,9 +2913,9 @@ const MODEL_JSON =
       { id: "top", kind: "super", dev: true, devKind: "module", title: "MTNode 编排器" },
       { id: "mid", kind: "super", dev: true, devKind: "module", title: "渲染层", parentSuperId: "top" },
       { id: "leaf", kind: "super", dev: true, devKind: "file", title: "app-canvas.js", parentSuperId: "mid" },
-      { id: "wrap", kind: "super", title: "普通超级节点" },
+      { id: "wrap", kind: "super", title: "普通节点层" },
       { id: "wrapped", kind: "super", dev: true, devKind: "module", title: "被普通壳包住的顶层块", parentSuperId: "wrap" },
-      { id: "db", kind: "super", dev: true, db: true, title: "数据库超级节点" },
+      { id: "db", kind: "super", dev: true, db: true, title: "数据库节点层" },
       { id: "txt", kind: "proc_text", title: "普通节点" },
     ];
     const byId = (id) => nodes.filter((n) => n.id === id)[0] || null;
@@ -2936,20 +2936,20 @@ const MODEL_JSON =
     ok(pred("mid") === false, "开发节点内部的子块 → 不给（改走子文件夹）");
     ok(pred("leaf") === false, "更深一层的子块 → 不给（改走子文件夹）");
     ok(pred("wrapped") === true, "被普通超级壳包住的开发块仍算最外层（与 devIsTopBlock 同口径）");
-    ok(pred("wrap") === false, "普通超级节点不是开发块 → 走的还是子文件夹");
-    ok(pred("db") === false, "数据库超级节点不算开发块（子文件夹是它的入库目录，必须保留）");
-    ok(pred("txt") === false, "非超节点 → 不给");
+    ok(pred("wrap") === false, "普通节点层不是开发块 → 走的还是子文件夹");
+    ok(pred("db") === false, "数据库节点层不算开发块（子文件夹是它的入库目录，必须保留）");
+    ok(pred("txt") === false, "非节点层 → 不给");
     ok(pred(null) === false, "空节点 → 不给（不抛异常）");
   }
 
   /* ==================== [2] 右键菜单 ==================== */
-  console.log("\n[2] 右键菜单：最外层块给「设置项目文件夹…」，其余超节点仍是「设置子文件夹…」");
+  console.log("\n[2] 右键菜单：最外层块给「设置项目文件夹…」，其余节点层仍是「设置子文件夹…」");
   {
     ok(CANVAS.indexOf('I18n.t("设置项目文件夹…")') >= 0, "菜单有「设置项目文件夹…」项");
     ok(CANVAS.indexOf('I18n.t("设置子文件夹…")') >= 0, "菜单仍有「设置子文件夹…」项（子块 / 普通壳 / 数据库壳）");
     const menu = CANVAS.slice(
-      CANVAS.indexOf('I18n.t("将选中节点移入此超级节点")') - 900,
-      CANVAS.indexOf('I18n.t("将选中节点移入此超级节点")'),
+      CANVAS.indexOf('I18n.t("将选中节点移入此节点层")') - 900,
+      CANVAS.indexOf('I18n.t("将选中节点移入此节点层")'),
     );
     ok(
       menu.indexOf("devTopBlockForProjectFolder(node)") >= 0,

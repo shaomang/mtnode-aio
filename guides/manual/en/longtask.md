@@ -141,7 +141,7 @@ values and attachments dropped into the delivery folder are recognised again whe
 ## 5. Output nodes: everything produced while running is written into the canvas
 
 While the long task is running, **the information and file contents each step produces are synced into an "Output node" (产出节点) on the main canvas**
-— its title is "Output · <step name>", so a step called 起草 shows as 产出 · 起草 — it lands in **that step's super-node shell** (see 5b; the shell is already placed when the task is created), so you do not wait for the whole job to finish: you can read it on the canvas any time, and edit it directly.
+— its title is "Output · <step name>", so a step called 起草 shows as 产出 · 起草 — it lands in **that step's node-layer shell** (see 5b; the shell is already placed when the task is created), so you do not wait for the whole job to finish: you can read it on the canvas any time, and edit it directly.
 
 - **The text is directly editable**: edit it on the node body, or press **✎** in the node header to use the built-in Markdown editor
   (saving writes it back to the node). Below the node, the files that step wrote to disk are listed read-only (file name + size,
@@ -182,9 +182,9 @@ never covers your own nodes:
   re-tally that step's own time window and lay out the files it wrote this round — no need to burn an empty run just to see the artifacts.
 - Same origin as output and deliverable nodes: **created by the system, cannot be added manually or copied**, and creating one does not enter the undo stack.
 
-## 5b. Everything is collected inside the "super-node shell"
+## 5b. Everything is collected inside the "node-layer shell"
 
-A step's output should not be scattered over the canvas, so a long task gives **every task one super node on the main canvas**
+A step's output should not be scattered over the canvas, so a long task gives **every task one node layer on the main canvas**
 (named like "Long task · <task name>", with a pink-violet "Long task" badge in its header; **it is built when the task is created**), and **every step gets its own child shell
 inside it** (named after the step, also placed at creation time). Output nodes and artifact nodes both land in **their step's child shell** —
 open the shell and you see what this step produced, without cluttering the main canvas.
@@ -200,7 +200,7 @@ open the shell and you see what this step produced, without cluttering the main 
 - **Deleting it does not grow it back quietly**: if you delete the shell (or one step's child shell), the engine will not silently
   recreate it — it logs one line and shows one notice, and that round's outputs fall back to the main canvas layer. Use "Rebuild shell"
   in the strip if you want it back.
-- **Fully editable inside**: just like an ordinary super node — add your own nodes, move things, rename it (double-click the card to
+- **Fully editable inside**: just like an ordinary node layer — add your own nodes, move things, rename it (double-click the card to
   enter its inner canvas).
 - **Older canvases**: output nodes that were already laid out on the main canvas before this change are moved into their step's child
   shell when you open the canvas or press "Continue" (artifact nodes are left alone — you may have edited them).

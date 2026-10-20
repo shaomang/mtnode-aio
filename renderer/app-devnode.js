@@ -83,7 +83,7 @@ function devSuggestStamp(at) {
 
 /* ---------- 运行状态判定（自身 / 后代节点 / 绑定会话 / 建议调研） ---------- */
 /* 开发节点“运行中”的四种来源，返回：
- *   "self" —— 节点自身正在运行（整块作为超级节点被执行）
+ *   "self" —— 节点自身正在运行（整块作为节点层被执行）
  *   "desc" —— 块内任意后代节点（递归，含子开发节点）正在运行
  *   "sess" —— 绑定的开发 / 细化会话正在运行（含它名下在跑的计划并行组：
  *              那一组跑时会话自己的 st.running 故意为 false，判定走 sessionBusyForUi）
@@ -137,7 +137,7 @@ function devNodeRunningState(node, wfNodes) {
 }
 
 /* 当前画布中「运行中」的开发节点列表（自身 / 后代 / 绑定会话 / 建议调研任一运行，
- * 不含 db 超级节点）。供左下角运行队列展示（与处理节点同款行）：队列据此把
+ * 不含 db 节点层）。供左下角运行队列展示（与处理节点同款行）：队列据此把
  * desc / sess / sug 态的开发块列进「处理中」，点击定位、逐条停止（stopNode 的
  * 开发分支，sug 态只取消调研作业）与「全部终止」都能复用同一判定。
  * wfNodes 可指定工作流节点数组（默认当前画布 S.wf.nodes）；返回的是其中的开发节点（引用）。 */
@@ -2782,7 +2782,7 @@ function devFuncColorOf(node) {
 /* 创建开发节点时按功能色卡自动上色：把推断出的功能色**写入** node.devColor，
  * 之后随工作流持久化，用户仍可在色板里手选覆盖。
  * 生效条件（全部满足才上色）：
- *   · 是 dev 超级节点且不是 db 节点；
+ *   · 是 dev 节点层且不是 db 节点；
  *   · devKind = module（file / class / interface / enum 保留元素类型默认色）；
  *   · devColor 为空——调用方显式传过 devColor 时优先级最高，一律不覆盖。
  * 两个创建入口都调它：Agent 的 canvas_edit create（app-nodes.js）与右键

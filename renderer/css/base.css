@@ -12,6 +12,9 @@
   --orange2: #ffb066;
   --cyan: #38d6ff;
   --cyan2: #7ce8ff;
+  /* 蓝 = 「有新版本可用」（状态栏右下角版本号高亮）：与青（常规强调）分开一档，
+     深色 / 工业 / 亮色三套主题各配一支，见下方两个主题块。 */
+  --blue: #4d9bff;
   --green: #5fd68a;
   --red: #ff5f56;
   /* 黄 = 「落在哪儿」（grep 的目标路径、dsh.css 的 .dsh-tool-grep-path）：与青（读）/ 橙（改）/ 绿（跑）一眼分家 */
@@ -35,6 +38,7 @@ body.theme-industrial {
   --orange2: #ffb066;
   --cyan: #38d6ff;
   --cyan2: #7ce8ff;
+  --blue: #4d9bff;
   --green: #5fd68a;
   --red: #ff5f56;
   --yellow: #ffd166;
@@ -55,6 +59,7 @@ body.theme-light {
   --orange2: #b54f04;
   --cyan: #2068b8;
   --cyan2: #15508f;
+  --blue: #1a63c8;
   --green: #1a8a4a;
   --red: #cf2a1e;
   --yellow: #9a6b00;

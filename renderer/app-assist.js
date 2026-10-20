@@ -151,7 +151,7 @@ function agentCanvasTurnRelated(text, hist) {
     /* @引用（画布内容引用语法）：写 @标题 的任务一定在图里干活 */
     if (/@[^\s@]/.test(x)) return true;
     return (
-      /(画布|节点|连线|端口|端子|超级节点|开发节点|流程壳|批处理|分组|排版|工作流|提示词|智能节点|工具节点|函数节点|数据库副本|素材节点|保存节点|控制节点)/.test(x) ||
+      /(画布|节点|连线|端口|端子|节点层|开发节点|流程壳|批处理|分组|排版|工作流|提示词|智能节点|工具节点|函数节点|数据库副本|素材节点|保存节点|控制节点)/.test(x) ||
       /(workflow|canvas|\bnodes?\b|wire|port|super\s?node|layout|prompt)/i.test(x)
     );
   };
@@ -247,7 +247,7 @@ function summarizeCanvasEdit(params) {
   if (nUpdate) bits.push(I18n.t("更新 ") + nUpdate + I18n.t(" 个节点"));
   if (nConnect) bits.push(I18n.t("连接 ") + nConnect + I18n.t(" 条线"));
   if (nSuperConnect)
-    bits.push(I18n.t("跨超级节点连接 ") + nSuperConnect + I18n.t(" 对节点"));
+    bits.push(I18n.t("跨节点层连接 ") + nSuperConnect + I18n.t(" 对节点"));
   if (nDisc) bits.push(I18n.t("断开 ") + nDisc + I18n.t(" 条线"));
   if (nRemove) bits.push(I18n.t("删除 ") + nRemove + I18n.t(" 个节点"));
   if (params.group) bits.push(I18n.t("创建组"));
@@ -732,41 +732,13 @@ function persistAssistUi() {
   S.config.assistGrill = S.assistGrill !== false;
   S.config.assistPure = !!S.assistPure;
   S.config.assistW = clampAssistW(S.assistW || 320);
-  S.config.assistMessages = (S.assistMessages || []).slice(-80).map((m) => {
-    const o = {
-      role: m.role,
-      content: String(m.content || "").slice(0, 8000),
-    };
-    const at = Number(m.at || m.createdAt || m.ts) || 0;
-    if (at > 0) o.at = at;
-    if (m.reasoning) o.reasoning = String(m.reasoning).slice(0, 12000);
-    /* 「用户主动关闭会话」状态行（本次需求）：_src / _detail 必须随存档一起落盘，
-       否则重开面板会把它当成一条空的用户消息（空气泡，原始报文也没了）。 */
-    if (m._src) o._src = String(m._src);
-    if (m._detail) o._detail = String(m._detail).slice(0, 4000);
-    if (Array.isArray(m.tools) && m.tools.length) {
-      o.tools = m.tools.slice(0, 40).map((t) => ({
-        callId: t.callId,
-        turn: t.turn,
-        step: t.step,
-        name: t.name,
-        args: String(t.args || "").slice(0, 4000),
-        result: Array.isArray(t.result)
-          ? t.result.slice(0, 8).map((b) =>
-              b && typeof b === "object"
-                ? {
-                    type: b.type,
-                    text: String(b.text || "").slice(0, 4000),
-                  }
-                : b,
-            )
-          : null,
-        error: t.error || null,
-        at: t.at,
-      }));
-    }
-    return o;
-  });
+  /* 助手对话已并入会话体系（本轮需求）：正文落在 agent-sessions/<id>.json，
+     config 只留「当前指向哪一条」这个指针（清空 = 空串，下次发送才建新的一条）。
+     老字段 assistMessages / assistTokenReport 在启动时迁走并删除，这里只做兜底清理 ——
+     否则那份旧正文会被整份写回 config.json，形成第二份真源。 */
+  S.config.assistSessionId = String(S.assistSessionId || "");
+  if (S.config.assistMessages !== undefined) delete S.config.assistMessages;
+  if (S.config.assistTokenReport !== undefined) delete S.config.assistTokenReport;
   window.api.configSave(S.config).catch(() => {});
 }
 
@@ -786,6 +758,9 @@ function applyAssistWidth(w, persist) {
     S.config.assistW = S.assistW;
     window.api.configSave(S.config).catch(() => {});
   }
+  /* 拖分界线改栏宽时不发 window.resize：助手栏「模式」菜单开着就跟着重算落点，
+     否则宽度变窄后菜单会越过栏右边界（见 placeAssistModeMenu）。 */
+  if (typeof placeAssistModeMenu === "function") placeAssistModeMenu();
 }
 
 /* 分栏之间的竖分界线（.agent-side-resize / .assist-resize / .ba-resize，样式见 css 对应文件）：
@@ -1208,19 +1183,22 @@ function syncAssistPresetOptions(sel) {
    再打开时回到原档）。写回（下面这几个 apply*）只住在这一份文件里：设置面板与会话菜单
    都调它们，保证落盘 / 提示 / 侧控件同步只有一条链。 */
 
-/* 自定义触发线输入框的显示态（三处入口共用同一段口径）：选「自定义」才露出输入框。
-   两个宿主（设置面板 #assistCompactCustomSet、助手栏 #assistCompactCustom）各有自己的元素 id，
-   这里只做「按当前档位切换显隐」，不碰值（值由各自的 sync 负责回填）。 */
-function syncCompactSideControls(tier) {
+/* 自定义档那一组数字填写的显示态（三处入口共用同一段口径）：
+   **只有「压缩开着 + 档位 = 自定义」才露出**（本次共识）—— 关闭 / 省钱 / 中 / 晚都不显示这些数，
+   那些档位一律按档位默认（见 app-dsh-compact.js 的生效函数与 dsh-compact-policy.js 的归一）。
+   一组共三行：自定义触发线 + 保留原文 + 摘要上限；隐藏时输入框一并 disabled，键盘也够不到。
+   宿主元素按 id 找（助手栏 #assistCompactCustom / #assistCompactRetainRow / #assistCompactSummaryRow；
+   #assistCompactCustomSet 是设置面板时期留下的旧 id，找不到就跳过）。 */
+function syncCompactSideControls(tier, enabled) {
   /* 沙箱（smoke）里可能只给了部分 document 能力：没有 getElementById 就当作没有侧控件 */
   if (typeof document === "undefined" || !document.getElementById) return;
-  const isCustom = String(tier) === "custom";
-  ["assistCompactCustom", "assistCompactCustomSet"].forEach((id) => {
+  const on = (enabled === undefined ? true : enabled !== false) && String(tier) === "custom";
+  ["assistCompactCustom", "assistCompactCustomSet", "assistCompactRetainRow", "assistCompactSummaryRow"].forEach((id) => {
     const box = document.getElementById(id);
     if (!box) return;
-    box.hidden = !isCustom;
+    box.hidden = !on;
     const inp = box.querySelector ? box.querySelector("input") : null;
-    if (inp) inp.disabled = !isCustom;
+    if (inp) inp.disabled = !on;
   });
 }
 
@@ -1242,7 +1220,7 @@ function syncAssistCompactOptions(sel) {
   if (document.activeElement === sel) return;
   const cp = compactPolicyOf(S.config);
   sel.value = cp.enabled === false ? "off" : cp.tier;
-  syncCompactSideControls(cp.tier);
+  syncCompactSideControls(cp.tier, cp.enabled !== false);
 }
 
 /* 自定义触发线输入框的回填：只回填「当前值」，正在输入时不打断（焦点在框里就跳过，
@@ -1266,20 +1244,20 @@ function applyAssistCompactChoice(v) {
   const next = String(v || "");
   const isFixed = COMPACT_FIXED_TIERS.indexOf(next) >= 0 || next === "custom";
   const tier = isFixed ? next : cur.tier;
-  /* 切档位 = 清空两个「压缩后大小」的自定义值（本次共识）：档位本身就是一组默认体积，
-     保留用户上一档手填的数会造出「档位写着省钱、保留量还是晚档的 64K」这种错配。 */
-  const tierChanged = tier !== cur.tier;
+  /* 切档位**不清空**两个「压缩后大小」的自定义值（本次共识：非自定义档本来就不认它们，
+     一律按档位默认；留着才能在切回「自定义」时原样回填，用户不用重填一遍）。
+     写回仍用 compactPolicyOf 读出的原值，避免把配置里的旧值顺手写成 null。 */
   if (!S.config.dsh) S.config.dsh = {};
   S.config.dsh.compact = {
     enabled: next !== "off",
     tier,
     customTriggerTokens: cur.customTriggerTokens,
-    retainTokens: tierChanged ? null : cur.retainTokens,
-    summaryMaxTokens: tierChanged ? null : cur.summaryMaxTokens,
+    retainTokens: cur.retainTokens,
+    summaryMaxTokens: cur.summaryMaxTokens,
   };
   persistAssistUi();
-  /* 各处入口当场同步侧控件（自定义档的触发线输入框显隐 + 两个体积输入框的回显） */
-  syncCompactSideControls(tier);
+  /* 各处入口当场同步侧控件（自定义档那一组数字的显隐 + 两个体积输入框的回显） */
+  syncCompactSideControls(tier, next !== "off");
   syncCompactLimitInputs();
   /* 提示语**不点名哪一只界面**（这一份写回链有三个入口：助手栏下拉、会话「模型」菜单
      与设置面板），否则从会话改完会收到一句「助手栏…」的错话。 */
@@ -1311,7 +1289,7 @@ function applyAssistCompactTrigger(raw) {
     summaryMaxTokens: cur.summaryMaxTokens,
   };
   persistAssistUi();
-  syncCompactSideControls("custom");
+  syncCompactSideControls("custom", cur.enabled !== false);
   toast(I18n.t("自定义触发线已更新（下一个新会话生效）"), "ok");
   return true;
 }
@@ -1487,16 +1465,150 @@ function renderAssistPanel(opts) {
   } catch (_) {}
 }
 
+/* ══════════════ 全局助手 = 会话体系里的一等公民（本轮需求 · 拷问共识）══════════════
+   过去助手栏是一套独立历史（config.assistMessages），左栏会话列表里看不见它。
+   现在助手对话就是一条普通 agent-sessions 记录（st.assist = true）：
+
+   · **同一条会话、双向同步**：S.assistSessionId 指向当前那条助手会话，S.assistMessages
+     就是它的 messages（同一个数组引用，不是副本）—— 助手栏与会话视图读写同一份内容。
+   · **先发才建**：清空只断开指针（S.assistSessionId = ""），左栏不出现空壳；
+     用户发第一条消息时才创建会话并落库（共识 q7）。
+   · **清空＝结束这条**：旧会话保留在左栏可回看，不删除、不归档（共识 q2）。
+   · **不绑画布**：助手是跨画布的，canvasWfId 恒为空，左栏显示「全局」（共识 q4）。
+   · **模型 / 预设 / 思考强度随会话**：创建时按助手栏当时的值播种，绑定时再同步回来；
+     纯净模式 / 先拷问需求 / 范围 / 工作目录仍是全局偏好（共识 q15）。 */
+function assistBoundSession() {
+  const sid = String(S.assistSessionId || "");
+  return sid ? agentSessionById(sid) : null;
+}
+/* 助手会话的骨架：不绑画布、不走普通会话计划线（它由助手身份驱动，共识 q8）。 */
+function assistSessionRecord(o) {
+  o = o || {};
+  return {
+    id: uid("as"),
+    title: o.title || I18n.t("新会话"),
+    workspace: "",
+    canvasWfId: "",
+    preset: o.preset || S.assistPreset || AGENT_PRESET_DEFAULT,
+    provider: o.provider || S.assistProvider || "deepseek-official",
+    model: o.model || S.assistModel || "",
+    effort: o.effort || S.assistEffort || "high",
+    /* 读画布口径由助手那一档自己判（Gate B 按消息自动判定）：会话侧不再额外表态 */
+    noCanvasRead: false,
+    canvasFree: false,
+    noPlanFlow: true,
+    assist: true,
+    messages: Array.isArray(o.messages) ? o.messages : [],
+    archived: false,
+    createdAt: o.at || Date.now(),
+    updatedAt: o.at || Date.now(),
+    /* 正文就在内存里：直接标脏，让索引立刻带上它（左栏合并窗口内也要看得见） */
+    _lcLoaded: true,
+    _lcDirty: true,
+  };
+}
+/* 绑一条助手会话：指针 + 正文数组 + 模型档位（会话 → 助手栏）三级同步。
+   正文还在盘上（懒加载）时由调用方先 agentEnsureSessionBody，本函数只做引用与回显。 */
+function assistBindSession(st) {
+  if (!st || !st.id) return null;
+  if (!Array.isArray(st.messages)) st.messages = [];
+  S.assistSessionId = String(st.id);
+  S.assistMessages = st.messages;
+  if (st.preset) S.assistPreset = st.preset;
+  if (st.provider) S.assistProvider = st.provider;
+  if (st.model) S.assistModel = st.model;
+  if (st.effort) S.assistEffort = st.effort;
+  return st;
+}
+/* 解绑（清空 / 删除当前那条）：助手栏回空白态，旧会话留在左栏，什么都不删。 */
+function assistUnbindSession() {
+  S.assistSessionId = "";
+  S.assistMessages = [];
+  S.assistPending = "";
+  S.assistLiveTools = [];
+  if (S._assistTokOwner) {
+    S._assistTokOwner.tokenReport = null;
+    S._assistTokOwner._tokLive = null;
+  }
+  if (S.config) S.config.assistSessionId = "";
+}
+/* 「发送内容后才新建」的唯一入口：已经有当前助手会话就复用，没有就现建一条。 */
+function assistEnsureSessionForSend(text) {
+  const cur = assistBoundSession();
+  if (cur) {
+    if (!Array.isArray(cur.messages)) cur.messages = [];
+    S.assistMessages = cur.messages;
+    return cur;
+  }
+  const t = String(text || "").trim();
+  const st = assistSessionRecord({ title: assistSessionTitleOf(t) });
+  agentSessions().unshift(st);
+  assistBindSession(st);
+  agentMarkSessionDirty(st.id);
+  if (S.config) S.config.assistSessionId = st.id;
+  return st;
+}
+/* 助手会话的标题：取首条用户消息的短标题（与其它会话同一套规则，共识 q13），
+   拿不到就给「新会话」，之后引擎自动命名仍可覆盖。 */
+function assistSessionTitleOf(text) {
+  const t = String(text || "").trim();
+  if (!t) return I18n.t("新会话");
+  let auto = "";
+  try {
+    auto = typeof autoSessionTitleOf === "function" ? autoSessionTitleOf(t) : "";
+  } catch (_) {}
+  if (auto) return clampAutoSessionTitle(auto);
+  return t.slice(0, 20) + (t.length > 20 ? "…" : "");
+}
+/* 落盘当前助手会话（消息 / 标题 / 时间戳）：助手栏每轮起收各一次。
+   agentTouchSession 只在「真有新内容」时调用 —— 与其它会话同一口径。 */
+function assistPersistBound(opts) {
+  const st = assistBoundSession();
+  if (!st) return Promise.resolve();
+  agentMarkSessionDirty(st.id);
+  const p = opts && opts.touch ? agentTouchSession(st) : persistAgentSession();
+  return Promise.resolve(p).catch(() => {});
+}
+/* 老历史迁移（共识 q6）：config.assistMessages 一次性变成一条助手会话。
+   存档里那份最多 80 条，字段与应用内消息同构，原样搬过去。 */
+function assistMigrateLegacy(msgs) {
+  const list = Array.isArray(msgs) ? msgs : [];
+  if (!list.length) return null;
+  const norm = list
+    .filter((m) => m && typeof m === "object")
+    .map((m) => {
+      const o = {
+        role: m.role === "assistant" ? "assistant" : "user",
+        content: String(m.content || ""),
+      };
+      if (m.reasoning) o.reasoning = String(m.reasoning);
+      if (Array.isArray(m.tools) && m.tools.length) o.tools = m.tools;
+      if (m._src) o._src = String(m._src);
+      if (m._detail) o._detail = String(m._detail);
+      if (m.at) o.at = Number(m.at) || undefined;
+      return o;
+    });
+  if (!norm.length) return null;
+  const firstUser = norm.find((m) => m.role === "user" && m.content);
+  const st = assistSessionRecord({
+    title: assistSessionTitleOf(firstUser ? firstUser.content : ""),
+    messages: norm,
+    at: (norm.reduce((n, m) => Math.max(n, Number(m.at) || 0), 0) || Date.now()),
+  });
+  agentSessions().unshift(st);
+  agentMarkSessionDirty(st.id);
+  return st;
+}
+
 function clearAssistChat() {
   if (S.assistRunning) {
     toast(I18n.t("请先终止当前运行"), "warn");
     return;
   }
-  S.assistMessages = [];
-  S.assistPending = "";
-  S.assistLiveTools = [];
+  /* 清空＝结束当前这条助手会话：旧会话留在左栏可回看，下一次发送才新建（共识 q2 / q7） */
+  assistUnbindSession();
   S.assistRunActive = false;
-  /* 清空即新会话：Token 累计报告一起归零 */
+  /* 清空即新会话：Token 累计报告一起归零（台账挂在会话上，新会话自然是新的） */
   S.assistTokenReport = null;
   if (S._assistTokOwner) {
     S._assistTokOwner.tokenReport = null;
@@ -1512,6 +1624,12 @@ async function assistSend(text) {
   if (S.assistRunning) return;
   let t = String(text || "").trim();
   if (!t) return;
+  /* 同一条助手会话只允许一条运行线（共识 q10）：它正在会话视图里跑，助手栏不抢跑 */
+  const busySt = assistBoundSession();
+  if (busySt && typeof sessionIsRunning === "function" && sessionIsRunning(busySt)) {
+    toast(I18n.t("这条助手会话正在会话窗口里运行，请先在那里结束本轮"), "warn");
+    return;
+  }
   if (t.charAt(0) === "\u3001") t = "/" + t.slice(1);
   const skillWrap = await resolveSkillSlash(t);
   const sup = dshSupported();
@@ -1519,11 +1637,32 @@ async function assistSend(text) {
     toast(sup.reason, "warn");
     return;
   }
+  /* 发送才建会话（共识 q7）：没有当前助手会话就在这里现建一条，并把指针绑过去。
+     指针指向的会话正文还在盘上时先读回来（懒加载保护：别用空数组盖掉盘上那份）。 */
+  const preSt = assistBoundSession();
+  if (
+    preSt &&
+    !preSt._lcLoaded &&
+    !preSt._lcMissing &&
+    typeof agentEnsureSessionBody === "function"
+  )
+    await agentEnsureSessionBody(preSt);
+  const aidSt = assistEnsureSessionForSend(t);
+  if (!aidSt.title || aidSt.title === I18n.t("新会话"))
+    aidSt.title = assistSessionTitleOf(t);
   if (!Array.isArray(S.assistMessages)) S.assistMessages = [];
   const assistUm = { role: "user", content: t, at: Date.now() };
   S.assistMessages.push(assistUm);
-  if (S.assistMessages.length > 80)
-    S.assistMessages.splice(0, S.assistMessages.length - 80);
+  /* 不裁条数：这是会话正文（与其它会话同一口径「token 出入量全部保留」）。
+     旧实现把 config.assistMessages 截到 80 条，那是配置文件的体积保护；
+     正文搬进 agent-sessions 之后这条上限必须去掉，否则助手会话会被悄悄截断。 */
+  /* 这一轮用的模型 / 预设 / 强度回写进会话（共识 q15：它们随会话保存） */
+  if (aidSt) {
+    aidSt.preset = S.assistPreset || AGENT_PRESET_DEFAULT;
+    aidSt.provider = S.assistProvider || "deepseek-official";
+    aidSt.model = S.assistModel || "";
+    aidSt.effort = S.assistEffort || "high";
+  }
   S.assistRunning = true;
   S.assistPending = "";
   S.assistLiveTools = [];
@@ -1534,7 +1673,11 @@ async function assistSend(text) {
   if (!S.thinking) S.thinking = {};
   S.thinking.assist = [""];
   persistAssistUi();
+  /* 用户这条消息立刻进会话（左栏能看到它在跑）：与其它会话一样走合并窗口落盘 */
+  assistPersistBound({ touch: true });
   renderAssistPanel({ forceStick: true });
+  /* 左栏这一行也要立刻显示「运行中」（它由助手栏点火，见 mkRow 的 assistBusy） */
+  renderAgentSessionSidebar();
   updateRunQueuePanel();
 
   /* 与画布无关（Gate B · 助手侧）：本轮不注册画布三件套，也不取整张画布快照。
@@ -1589,7 +1732,7 @@ async function assistSend(text) {
      「每轮都要照做的行为纪律」——同一规则不再抄第二遍，省下的就是每一步都在付的固定 token。 */
   const superConnectRule = assistCanvasFree
     ? ""
-    : "  · 跨超级节点 / 跨层级接线用 mtnode_canvas_edit 的 superConnect（它自动逐层桥接，参数口径见该工具说明），不要自己建桥接线。\n";
+    : "  · 跨节点层 / 跨层级接线用 mtnode_canvas_edit 的 superConnect（它自动逐层桥接，参数口径见该工具说明），不要自己建桥接线。\n";
   const devNodeRule = assistCanvasFree
     ? ""
     :
@@ -1931,8 +2074,18 @@ async function assistSend(text) {
     S.assistPending = "";
     S.assistLiveTools = [];
     if (S.thinking) S.thinking.assist = [""];
+    /* 本轮的结果（正文 / 思考 / 工具）写回当前助手会话并落盘 —— 会话视图与左栏读的就是它 */
+    assistPersistBound({ touch: true });
     persistAssistUi();
     renderAssistPanel();
+    /* 收轮后左栏的「运行中」要收掉，标题 / 时间戳也可能变了 */
+    renderAgentSessionSidebar();
+    /* 会话视图正看着这条助手会话时，一轮结束立刻把它重绘出来（同一份 messages） */
+    try {
+      const bindSt = assistBoundSession();
+      if (bindSt && String(S.agentActiveId || "") === String(bindSt.id))
+        renderAgentSession();
+    } catch (_) {}
     updateRunQueuePanel();
     endSaveNodeHold();
   }
@@ -2019,6 +2172,8 @@ function agentSessions() {
   for (const s of S.agentSessions)
     if (s) {
       s.noPlanFlow = !!s.noPlanFlow;
+      /* 全局助手会话标记（本轮需求）：老存档没有这一位 → false = 普通会话 */
+      s.assist = !!s.assist;
       s.ltBound =
         s.ltBound && typeof s.ltBound === "object"
           ? {
@@ -2416,6 +2571,21 @@ function agentSelectSession(id) {
   if (!sid) return;
   if (agentViewOverrideOn()) agentViewOverrideSet(sid);
   else S.agentActiveId = sid;
+  /* 点开的是「助手」会话 → 右侧助手栏跟着切到这一条（共识 q18：切换入口只有侧栏，
+     不另加下拉）。正文还在盘上时先读回来再绑，别让助手栏显示上一条的内容。 */
+  const st = agentSessionById(sid);
+  if (st && st.assist) {
+    const bind = () => {
+      assistBindSession(st);
+      persistAssistUi();
+      try {
+        renderAssistPanel();
+      } catch (_) {}
+    };
+    if (!st._lcLoaded && !st._lcMissing && typeof agentEnsureSessionBody === "function")
+      agentEnsureSessionBody(st).then(bind).catch(() => {});
+    else bind();
+  }
 }
 /* 按 id 取会话：取不到就是 null —— 绝不回退到「当前活动会话」。
    计划等有明确归属（owner）的调用必须走它，否则用户一切换会话，
@@ -2560,6 +2730,13 @@ async function agentWriteAgentSessions() {
       dropped.push(String(s.id));
     }
     list.splice(60);
+    /* 被截断挤掉的正好是当前助手会话 → 指针清空（别指一条已经删掉的文件）。
+       下一轮发送会新建一条，共识 q7 的「先发才建」保持一致。 */
+    if (dropped.includes(String(S.assistSessionId || ""))) {
+      S.assistSessionId = "";
+      S.assistMessages = [];
+      if (S.config) S.config.assistSessionId = "";
+    }
   }
   /* 用户删掉的会话（待删名单）：与 60 条截断同一条 drop 通道 —— 主进程删文件 + 摘索引条目。
      名单来自 agentMarkSessionDrop，只有写盘成功才摘掉，失败留着重试。 */
@@ -2708,6 +2885,9 @@ function agentSessionMetaForDisk(s) {
     canvasFree: !!s.canvasFree,
     /* 「不走普通会话计划这条线」：长任务新建窗的引导建图会话由 app-longtask-guide.js 置位 */
     noPlanFlow: !!s.noPlanFlow,
+    /* 全局助手会话标记（本轮需求）：驱动它的正文是助手栏那一份，左栏挂「助手」徽标、
+       画布归属显示「全局」、且不进任何「绑定会话」候选。 */
+    assist: !!s.assist,
     /* 长任务环节绑定标记（app-longtask.js 的 ltBindAgentSession 写）：{wfId,runId,path} */
     ltBound:
       s.ltBound && typeof s.ltBound === "object"
@@ -3025,6 +3205,15 @@ async function deleteAgentSessionCore(id) {
      少了这一步，内存里删干净了、盘上 index.json 与 as<id>.json 还在，
      下次启动又从索引读回来 —— 就是「删了会话，重启又回来」的根因。 */
   agentMarkSessionDrop(id);
+  /* 删掉的正是当前助手会话 → 助手栏回空白态（共识 q5：不偷换到别的历史），
+     下一次发送会新建一条；旧正文已随删除一起消失，符合「删除」的语义。 */
+  if (String(S.assistSessionId || "") === String(id)) {
+    assistUnbindSession();
+    persistAssistUi();
+    try {
+      renderAssistPanel();
+    } catch (_) {}
+  }
   if (S.agentActiveId === id) S.agentActiveId = (list[0] && list[0].id) || "";
   /* 删除是用户主动操作，但被删的那条已经不在列表里：这里只把改动推下去，
      不盖任何存活会话的时间戳（谁也不该因为「别人被删了」而顶到最前）。 */
@@ -3077,10 +3266,78 @@ function closeAgentMenus() {
     if (el) el.hidden = true;
   });
 }
+/* 只收会话输入框那一族（模型 / 命令 / 工具 / 模式）：点输入框外面时由 app-boot 那条
+   mousedown 监听调用。助手栏「模式」菜单**不在这里** —— 它是一只常驻的设置浮层
+   （AGENTS.md：带设置的浮层不点外部关闭），只由「再点一次模式」「Esc」「开别的菜单互斥」
+   收起来。 */
+function closeComposerMenus() {
+  ["agentModelMenu", "agentCmdMenu", "agentToolsMenu", "agentModeMenu"].forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) el.hidden = true;
+  });
+}
 function openAgentMenu(id) {
   closeAgentMenus();
   const el = document.getElementById(id);
   if (el) el.hidden = false;
+}
+/* ── 助手栏「模式」菜单的落点（本次开发需求 · 用户报障「打开后被完全遮挡在上方」）──
+   这只菜单复用了会话侧的 .agent-menu / .agent-tools-menu：那份 CSS 的
+   `bottom: calc(100% - 8px)` 是给输入框底部菜单「向上弹」用的。挂进助手栏后，它的定位
+   基准成了整条 .assist-pane，于是整块被提到栏顶边界之外 —— 用户点「模式」什么也看不见。
+   所以每次打开按「模式」按钮现算一次落点：
+     · 左边缘对齐按钮，宽度 280–320px 且不超出助手栏（窄栏自动收窄，右边界不溢出）；
+     · 优先向下展开，以**助手栏可视区**为基准算可用高度，装不下才向上翻转（翻转也不越出栏顶）；
+     · 可用高度不够时菜单内部滚动（沿用 .agent-menu 的 overflow-y:auto）。 */
+function placeAssistModeMenu() {
+  const menu = document.getElementById("assistModeMenu");
+  const trig = document.getElementById("assistModeTrigger");
+  const pane = document.getElementById("assistPane");
+  if (!menu || !trig || !pane || menu.hidden) return;
+  const op = menu.offsetParent;
+  const base = op && op.getBoundingClientRect ? op.getBoundingClientRect() : pane.getBoundingClientRect();
+  const tr = trig.getBoundingClientRect();
+  /* 栏没显示 / 量不到（display:none 时全是 0）：保持 CSS 缺省，不写死 0px 的坏落点 */
+  if (!base.width || !tr.width) return;
+  const GAP = 6; /* 与按钮的间距 */
+  const PAD = 8; /* 与助手栏左右 / 底边的留白 */
+  const width = Math.max(180, Math.min(320, Math.round(base.width - PAD * 2)));
+  const left = Math.max(PAD, Math.min(tr.left - base.left, base.width - PAD - width));
+  menu.style.width = width + "px";
+  menu.style.left = Math.round(left) + "px";
+  /* 内容真高（scrollHeight 不受 max-height 夹取影响），上限与会话侧一致 */
+  const want = Math.min(Math.round(menu.scrollHeight || menu.offsetHeight || 0) || 440, 440);
+  const below = Math.round(base.bottom - tr.bottom - GAP - PAD);
+  const above = Math.round(tr.top - base.top - GAP - PAD);
+  const down = below >= want || below >= above;
+  menu.style.maxHeight = Math.max(120, Math.min(440, down ? below : above)) + "px";
+  if (down) {
+    menu.style.top = Math.round(tr.bottom - base.top + GAP) + "px";
+    menu.style.bottom = "auto";
+  } else {
+    menu.style.top = "auto";
+    menu.style.bottom = Math.round(base.bottom - tr.top + GAP) + "px";
+  }
+}
+/* Esc 收起 + 助手栏 / 窗口尺寸变化时跟着重算落点（只挂一次；菜单没开就直接返回）。 */
+let _assistModeWatchersOn = false;
+function bindAssistModeMenuWatchers() {
+  if (_assistModeWatchersOn) return;
+  _assistModeWatchersOn = true;
+  document.addEventListener("keydown", (ev) => {
+    if (!ev || (ev.key !== "Escape" && ev.key !== "Esc")) return;
+    const menu = document.getElementById("assistModeMenu");
+    if (menu && !menu.hidden) closeAgentMenus();
+  });
+  window.addEventListener("resize", () => placeAssistModeMenu());
+}
+function openAssistModeMenu() {
+  const el = document.getElementById("assistModeMenu");
+  if (!el) return;
+  buildAgentModeMenu("assistModeMenu", assistModeEntries, paintAssistModeChip);
+  openAgentMenu("assistModeMenu");
+  placeAssistModeMenu();
+  bindAssistModeMenuWatchers();
 }
 function agentModelName(st) {
   const dp = dshProvider();
@@ -3382,17 +3639,20 @@ function buildAgentModelMenu() {
     trow.appendChild(tinp);
     menu.appendChild(trow);
     /* 压缩后的大小（本次需求）：保留的最近原文 token / 摘要输出上限 token。
-       留空 = 跟随档位默认（占位符里就是当前档位默认值），写回走 applyAssistCompactLimit
-       （越界拒绝并提示），与助手栏那两个框同一条链、同一份 config.dsh.compact。 */
+       **只有「开着 + 自定义」档才露出**（本次共识，与助手栏那一组同口径）：其它档位一律按
+       档位默认，不给暗值。留空 = 跟随档位默认（占位符里就是当前档位默认值），写回走
+       applyAssistCompactLimit（越界拒绝并提示），与助手栏那两个框同一条链、同一份 config.dsh.compact。 */
     const sizeRows = [
       ["retain", "保留原文", COMPACT_RETAIN_MIN, COMPACT_RETAIN_MAX, "compactRetain"],
       ["summary", "摘要上限", COMPACT_SUMMARY_MIN, COMPACT_SUMMARY_MAX, "compactSummary"],
     ];
+    const sizeShown = cur.enabled !== false && cur.tier === "custom";
     for (const [kind, labelKey, min, max] of sizeRows) {
       const eff = kind === "retain" ? compactRetainEffectiveOf(S.config) : compactSummaryEffectiveOf(S.config);
       const custom = kind === "retain" ? cur.retainTokens : cur.summaryMaxTokens;
       const row = document.createElement("label");
       row.className = "agent-menu-option agent-menu-input-row";
+      row.hidden = !sizeShown;
       const lab = document.createElement("span");
       lab.className = "agent-menu-option-name";
       lab.textContent = I18n.t(labelKey);
@@ -3403,6 +3663,7 @@ function buildAgentModelMenu() {
       inp.step = "1024";
       inp.value = custom === null ? "" : String(custom);
       inp.placeholder = String(eff.tokens);
+      inp.disabled = !sizeShown;
       inp.title = I18n.t(
         kind === "retain"
           ? "（单位：token；留空 = 跟随档位默认；超过触发线时按触发线夹取）"
@@ -3459,6 +3720,7 @@ const SKILL_MENU_TAX = {
   "compose-novel-from-canvas": ["prompt", "小说写作"],
   "minimax-music-prompt": ["prompt", "音乐生成"],
   "minimax-music-lyrics": ["prompt", "音乐生成"],
+  "humanizer-zh": ["prompt", "文本生成"],
   "novel-to-video-preproduction": ["prompt", "视频生成"],
 };
 /* 各大类内二级类型的固定顺序（未列出的按出现顺序排在后面） */
@@ -4119,7 +4381,7 @@ function applyViewChrome(view) {
   if (pane) pane.style.display = view === "agent" ? "" : "none";
   if (team) team.style.display = view === "team" ? "" : "none";
   /* 视图互斥：画布 / 智能会话 / 团队各有自己的左侧栏，彼此不得出现。
-     - 画布视图：可用 #sidebar（节点/绘图/超级节点列表），会话与团队列表不可展开
+     - 画布视图：可用 #sidebar（节点/绘图/节点层列表），会话与团队列表不可展开
      - 会话视图：自带 .agent-side（会话列表），画布 #sidebar 强制收起
      - 团队视图：自带 .team-side（项目 / 专家 / 会话三段列表），画布 #sidebar 强制收起
      统一由 applySidebarVisibility() 收口 + body.view-* 类做 CSS 硬闸。 */
@@ -5925,14 +6187,70 @@ function dshSegTimeAttach(host, own, doneAt, msgAt, tok) {
   host.insertBefore(t, host.firstChild);
   return host;
 }
+/* ── 流式正文的写入口径（本次需求 · 渲染进程原生崩溃）──────────────────────────
+   现场：1.5.5 打包版 `render-process-gone / crashed / exitCode -36861`
+   （logs/crash-reports/MTNode-crash-20261019-122304.txt）；崩溃前 3 秒 dsh 网关正为
+   3 条并行 turn 合成增量帧，单步 frames 达 9359 / 10050 / 5985。
+   原写法是**每一帧把整段正文重新赋一次 textContent**：万字级正文 × 每秒 30 帧 =
+   每秒重写几 MB 字符串，并让同一个超大文本节点反复重排；多条会话并行时叠加成原生层
+   崩溃（报告里没有 JS 栈，只能按时间相关性处置）。这里改两条：
+     ① 追加写：这一帧是上一帧的续写 → 只 appendData 增量（代价 O(增量)），不重写全文；
+     ② 长文降级：单段超过 DSH_STREAM_PLAIN_MAX 就压到 4fps 并挂一行小字提示，
+        定稿（say-end）时照旧整段 renderMarkdown 一次。 */
+const DSH_STREAM_PLAIN_MAX = 64 * 1024;
+const DSH_STREAM_SLOW_GAP_MS = 250;
+
+/* 元素里那个「正文文本节点」：走慢路径 textContent 写过之后，它就是元素的第一只文本子节点 */
+function dshStreamTextNode(el, create) {
+  if (!el) return null;
+  for (let n = el.firstChild; n; n = n.nextSibling) if (n.nodeType === 3) return n;
+  if (!create) return null;
+  const node = document.createTextNode("");
+  const time = el.querySelector ? el.querySelector(".dsh-seg-time") : null;
+  if (time && time.parentNode === el) el.insertBefore(node, time.nextSibling);
+  else el.insertBefore(node, el.firstChild);
+  return node;
+}
+
+/* 长文提示：只在降级期间挂着，定稿整段重建后自然消失 */
+function dshStreamHintSet(el, on) {
+  if (!el) return;
+  const cur = el.querySelector ? el.querySelector(".dsh-stream-hint") : null;
+  if (!on) {
+    if (cur && cur.parentNode) cur.parentNode.removeChild(cur);
+    return;
+  }
+  if (cur) return;
+  const hint = document.createElement("span");
+  hint.className = "dsh-stream-hint";
+  hint.textContent = I18n.t("（长回复：正文以纯文本预览，结束后自动排版）");
+  el.appendChild(hint);
+}
+
 /* 流式正文的就地更新（#agent-stream 那一支）：段上挂着逐项时刻栏时，整块
    `textContent = 文本` 会把时刻栏一起冲掉 —— 先摘下来、写完再挂回最前，
-   「逐 token 就地更新」与「每一项左侧有时间」两条同时成立。 */
+   「逐 token 就地更新」与「每一项左侧有时间」两条同时成立。
+   本次需求：续写帧只 appendData 增量；整段重写只留给「换段 / 内容被改写 / 首次写」。 */
 function dshSegSetStreamText(el, txt) {
   if (!el) return;
+  const full = String(txt == null ? "" : txt);
+  const node = dshStreamTextNode(el, false);
+  const prev = node ? node.length : 0;
+  if (node && prev > 0 && full.length > prev) {
+    /* 快路径校验只比「已写内容的末尾 16 字」（O(1)）：对不上说明换了一段，走慢路径 */
+    const tail = 16;
+    const from = Math.max(0, prev - tail);
+    if (node.data.slice(from) === full.slice(from, prev)) {
+      node.appendData(full.slice(prev));
+      return;
+    }
+  }
   const keep = el.querySelector ? el.querySelector(".dsh-seg-time") : null;
-  el.textContent = String(txt == null ? "" : txt);
+  /* 提示条是子节点，整段重写会把它一起冲掉 —— 先留个引用，写完挂回末尾 */
+  const hint = el.querySelector ? el.querySelector(".dsh-stream-hint") : null;
+  el.textContent = full;
   if (keep) el.insertBefore(keep, el.firstChild);
+  if (hint) el.appendChild(hint);
 }
 
 /* 段数取舍：think / say / err / tool 一律不裁 —— 只夹单段字数（见 agentSegsForDisk）。
@@ -8975,6 +9293,37 @@ function agentFlushUiFrames() {
       P.flushAllFrames();
     } catch (_) {}
   }
+  /* 长文降级的尾随定时器与整表重建的限频定时器都是「排队中的一帧」，换轮 / 收尾 /
+     切会话前必须一并跑完，否则它们会拿着新状态往重建后的 DOM 上再写一次。 */
+  const st = typeof agentSessionState === "function" ? agentSessionState() : null;
+  if (st && st._streamSlowTimer) {
+    clearTimeout(st._streamSlowTimer);
+    st._streamSlowTimer = 0;
+  }
+  if (_dshRebuildTimer) {
+    clearTimeout(_dshRebuildTimer);
+    _dshRebuildTimer = 0;
+    _dshRebuildAt = Date.now();
+    try {
+      renderAgentSession();
+    } catch (_) {}
+  }
+}
+/* 整表重建的第二道闸（本次需求）：一轮任务里每个 step 收尾都会来一次 say-end，
+   3 条会话并行时就是几十次「上千条历史消息 + markdown 全量重渲」，与流式帧一起把渲染
+   主线程顶满。这里把同一拍里的多次请求合并，两次真重建之间至少隔 DSH_REBUILD_MIN_GAP_MS。
+   重建不依赖「这是第几次」，晚一点这次读到的永远是最新状态，所以延后不丢内容。 */
+const DSH_REBUILD_MIN_GAP_MS = 400;
+let _dshRebuildTimer = 0;
+let _dshRebuildAt = 0;
+function agentRebuildSoon() {
+  if (_dshRebuildTimer) return;
+  const wait = Math.max(0, DSH_REBUILD_MIN_GAP_MS - (Date.now() - _dshRebuildAt));
+  _dshRebuildTimer = setTimeout(() => {
+    _dshRebuildTimer = 0;
+    _dshRebuildAt = Date.now();
+    agentUiSoon("rebuild", () => renderAgentSession());
+  }, wait);
 }
 /* 流式正文尾段的就地刷新（原 text / err 分支里那一段，抽出来给合并器调用）。
    分段模式：尾段还是 say 且元素对得上 → 只写文本；对不上（刚切段 / 刚收口）→ 整表重建
@@ -8991,6 +9340,26 @@ function paintAgentStream(st) {
     if (!last || last.k !== "say" || last.open === false) return;
   }
   const seg = items ? agentLiveSegTail(items, el, "say") : null;
+  const txt = seg ? String(seg.text || "") : String(st._pending || "");
+  /* 长文降级（本次需求）：单段超 64KB 就不再每 33ms 给上百 KB 的文本节点做一次排版，
+     压到 4fps；最后一份增量由尾随定时器补上（定稿仍由 say-end 整段 renderMarkdown 收口）。
+     提示条只在降级期间挂着，回到普通长度当即摘掉。 */
+  if (el && txt.length > DSH_STREAM_PLAIN_MAX) {
+    dshStreamHintSet(el, true);
+    const now = Date.now();
+    if (now - (Number(el.__dshStreamPaintedAt) || 0) < DSH_STREAM_SLOW_GAP_MS) {
+      if (!st._streamSlowTimer) {
+        st._streamSlowTimer = setTimeout(() => {
+          st._streamSlowTimer = 0;
+          if (agentViewIs(st)) agentUiSoon("stream", () => paintAgentStream(st));
+        }, DSH_STREAM_SLOW_GAP_MS);
+      }
+      return;
+    }
+    el.__dshStreamPaintedAt = now;
+  } else if (el) {
+    dshStreamHintSet(el, false);
+  }
   if (seg) dshSegSetStreamText(el, String(seg.text || ""));
   else if (items || !el) renderAgentSession();
   else dshSegSetStreamText(el, st._pending);
@@ -9262,6 +9631,24 @@ function renderAgentSessionRaw(opts) {
       );
     } else if (ltNote) {
       ltNote.remove();
+    }
+    /* 全局助手会话（本轮需求）：会话视图与右侧助手栏是同一份对话，这里明说身份；
+       助手栏正在跑这条时按共识 q10 只读 —— 发送由 agentSessionSend 的护栏挡住并提示。 */
+    let asNote = composer.querySelector(".agent-assist-note");
+    if (st.assist) {
+      if (!asNote) {
+        asNote = document.createElement("div");
+        asNote.className = "agent-lt-note agent-assist-note";
+        composer.insertBefore(asNote, composer.firstChild);
+      }
+      asNote.textContent = S.assistRunning
+        ? I18n.t("全局助手会话 · 正在右侧助手栏运行（这里只读）")
+        : I18n.t("全局助手会话 · 与右侧助手栏是同一份对话");
+      asNote.title = I18n.t(
+        "这条会话不绑任何画布，由全局助手那套人设与工具档运行；在助手栏清空＝换一条新的",
+      );
+    } else if (asNote) {
+      asNote.remove();
     }
   }
   const presetSel = $("#agentPresetSel");
@@ -9555,7 +9942,7 @@ function renderAgentSessionSidebar() {
   /* 只写会话视图自己的容器 #agentSideList。
      历史遗留 bug：以前同时写入画布边栏 #sideTree，会话每次运行 / 每个工具事件
      都会重绘它 → 用户在画布上会「突然」看到左侧栏变成会话列表。
-     规则：画布边栏只放节点/绘图/超级节点；会话列表只在会话视图内。 */
+     规则：画布边栏只放节点/绘图/节点层；会话列表只在会话视图内。 */
   const targets = [];
   const t2 = host ? host.listEl : $("#agentSideList");
   if (t2)
@@ -9609,15 +9996,24 @@ function renderAgentSessionSidebar() {
     /* 「运行中」走展示口径：自己那一轮在跑 ∪ 名下有一组计划并行任务在跑。
        并行期间 st.running 故意为 false（保用户随时改口），只看 sessionIsRunning
        会让这一整段时间在会话列表里显示「空闲」（本 bug）。 */
-    const busy =
+    const busyBase =
       typeof sessionBusyForUi === "function"
         ? sessionBusyForUi(s)
         : typeof sessionIsRunning === "function"
           ? sessionIsRunning(s)
           : !!s.running;
-    /* 只有并行组在跑（会话自己那轮已让位）时，悬浮说明它为什么也在转圈 */
+    /* 助手会话由右侧助手栏点火（runKey = "assist"，不进会话自己的运行位）：
+       它跑起来时左栏这一行同样要转圈，否则用户会以为助手没在干活 */
+    const assistBusy =
+      !!s.assist &&
+      !!S.assistRunning &&
+      String(S.assistSessionId || "") === String(s.id);
+    const busy = busyBase || assistBusy;
+    /* 只有并行组在跑（会话自己那轮已让位）时，悬浮说明它为什么也在转圈；
+       助手会话那圈是助手栏点着的火，不套用「计划并行」这句解释 */
     const parOnly =
       busy &&
+      !assistBusy &&
       !(typeof sessionIsRunning === "function"
         ? sessionIsRunning(s)
         : !!(s && s.running));
@@ -9637,6 +10033,17 @@ function renderAgentSessionSidebar() {
        （app-longtask.js 的 ltBindAgentSession 写）。标题前缀「长任务 · 任务名 · 环节」
        可能被用户改名或行宽省略，所以再挂一枚小徽标 —— 扫一眼列表就能分出
        「哪条不是我自己的会话」。它说明身份，不随悬停让位（与「▣ 所属画布」不同）。 */
+    /* 全局助手会话徽标（本轮需求 · 共识 q3）：助手对话就是一条普通会话，
+       靠这枚徽标把它与「你自己起的会话」分开；说明身份、不随悬停让位。 */
+    let asEl = null;
+    if (s.assist) {
+      asEl = document.createElement("span");
+      asEl.className = "side-sess-lt";
+      asEl.textContent = I18n.t("助手");
+      asEl.title = I18n.t(
+        "右侧全局助手的会话：与助手栏是同一份对话；清空＝在这里换一条新的",
+      );
+    }
     let ltEl = null;
     if (s.ltBound) {
       ltEl = document.createElement("span");
@@ -9647,7 +10054,15 @@ function renderAgentSessionSidebar() {
       );
     }
     let wfEl = null;
-    if (canvasShown) {
+    if (s.assist) {
+      /* 助手是跨画布全局的：不写「所属画布」，改标「全局」（共识 q4） */
+      wfEl = document.createElement("span");
+      wfEl.className = "side-sess-wf";
+      wfEl.textContent = I18n.t("全局");
+      wfEl.title = I18n.t(
+        "全局助手不绑任何画布：它按消息自行判定这一轮要不要碰画布",
+      );
+    } else if (canvasShown) {
       wfEl = document.createElement("span");
       wfEl.className = "side-sess-wf";
       wfEl.textContent = "▣ " + canvasShown;
@@ -9758,6 +10173,7 @@ function renderAgentSessionSidebar() {
       : I18n.t("尚无对话");
     row.appendChild(stt);
     row.appendChild(nm);
+    if (asEl) row.appendChild(asEl);
     if (ltEl) row.appendChild(ltEl);
     if (baEl) row.appendChild(baEl);
     if (wfEl) row.appendChild(wfEl);
@@ -11129,6 +11545,28 @@ async function agentSessionSend(text, opts) {
      （离屏 / 重启后接着跑的会话，第 2 处读正文的入口；另两处是渲染与全局搜索）。
      读回来是原地合并，st 引用不变；读不到（坏档 / 手删）按空会话继续开轮。 */
   if (st && !st._lcLoaded && !st._lcMissing) await agentEnsureSessionBody(st);
+  /* ── 助手会话（st.assist）在会话视图里继续聊（本轮需求 · 拷问共识 q8 / q10）──
+     身份与工具档只有一份真源 = 助手栏那条链（assistSend）：这里把指针绑到这条会话，
+     然后整句交给它跑。绝不另造一份系统提示，否则两侧人设会分叉。
+     · 助手栏正在跑同一条 → 只读 + 提示（共识 q10），不抢跑、不重复入队。
+     · 跑完把会话视图与会话列表重绘一次（消息本就写进同一条 st.messages）。 */
+  if (st && st.assist) {
+    if (S.assistRunning) {
+      toast(
+        I18n.t("这条助手会话正在右侧助手栏运行，请先在那里结束本轮"),
+        "warn",
+      );
+      return null;
+    }
+    assistBindSession(st);
+    persistAssistUi();
+    const out = await assistSend(text);
+    try {
+      renderAgentSession();
+    } catch (_) {}
+    renderAgentSessionSidebar();
+    return out;
+  }
   /* 开轮前把排队的会话改动落盘（与「切会话 / 关窗 / 跑画布」同口径）：本轮的新消息
      之前那几笔改动先落定，重启后若崩在轮中也不会只落半截。 */
   await agentFlushSessionSave();
@@ -11478,7 +11916,7 @@ async function agentSessionSend(text, opts) {
           ? "当前「助手改画布」为批准：mtnode_canvas_edit 直接生效；危险操作 delete_workflow / install_dsh_plugin / remove_dsh_plugin / set_dsh_plugin 仍会弹窗确认。\n"
           : "mtnode_canvas_edit 与危险操作 delete_workflow / install_dsh_plugin / remove_dsh_plugin / set_dsh_plugin 会弹窗请用户确认：必须等确认结果，勿臆造成功；用户拒绝即停止本次任务。\n") +
         "相关性：先自判本轮是否与画布有关 —— 无关就别读画布（不调 mtnode_canvas_get、不取快照），直接做完这件活；有关再读现状；判不准按「有关」处理。\n" +
-        "改画布：动手前先 mtnode_canvas_get 看清现状；节点字段、端子与 alias 的口径以 mtnode_canvas_edit / canvas_get 的工具说明为唯一真源，跨超级节点接线用 superConnect；DSH 插件经 mtnode_app 的 list_dsh_plugins / install_dsh_plugin 等管理。\n" +
+        "改画布：动手前先 mtnode_canvas_get 看清现状；节点字段、端子与 alias 的口径以 mtnode_canvas_edit / canvas_get 的工具说明为唯一真源，跨节点层接线用 superConnect；DSH 插件经 mtnode_app 的 list_dsh_plugins / install_dsh_plugin 等管理。\n" +
         "要某个节点的内容时在 prompt/task 里写 @标题，不要把正文复制粘贴（三条件与语法见技能 mtnode-canvas-edit-rules）。\n" +
         "建开发节点、批次 / 文生图、连线建图、排版、数据库副本、事实库之前，先用 skill 工具加载对应技能（mtnode-canvas-edit-rules / mtnode-dev-architect / mtnode-canvas-batch-safety / mtnode-canvas-layout-ux / mtnode-media-gen-nodes / mtnode-db-facts / mtnode-ai-facts）。\n" +
         "工具回执里没有的结果不要声称已完成；回答简洁（交流语言见文末「语言口味」），不要编造不存在的节点或画布。";
@@ -11700,7 +12138,11 @@ async function agentSessionSend(text, opts) {
             const items = agentChatSegItems(st) && agentTraceItems("agent:" + st.id);
             const last = items && items.length ? items[items.length - 1] : null;
             if (last && last.k === "say" && last.open === false) {
-              agentUiSoon("segend", () => renderAgentSession());
+              /* 本次需求：这里也要过限频闸 —— 长任务每 step 一次收口，多会话并行时
+                 几十次整表重建叠在一起就是渲染主线程被顶满的另一半原因。
+                 agentRebuildSoon 合并同一拍、两次真重建至少隔 400ms，语义仍是「收口即渲染」，
+                 只是最多晚 400ms（finally 的 flush 会立刻补上最后一帧）。 */
+              agentRebuildSoon();
             }
           }
           return;

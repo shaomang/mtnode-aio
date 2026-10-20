@@ -2087,7 +2087,7 @@ async function main() {
   }
 
   /* ── [23b] 交付节点必须落在**主画布层**（用户焦点在壳里时也一样）──────────────
-     现场：长任务跑着的时候用户正待在某个任务壳 / 超级节点壳里（他就是进去看这一环的）；
+     现场：长任务跑着的时候用户正待在某个任务壳 / 节点层壳里（他就是进去看这一环的）；
      真实 makeNode 按「当前焦点」补 parentTaskId / parentSuperId，于是系统建的交付节点被塞进
      那层壳的内坐标系 —— 按主画布坐标算出来的落点在壳内等于飘到很远，画布上看不见它，
      清单进度与端子连线无从操作（「长任务没生成交付节点」的直接成因）。这里按真实 makeNode
@@ -2130,7 +2130,7 @@ async function main() {
     const dn23b = sandbox.ltDeliverNodeOf("ltx-23b", wf23b);
     ok(!!dn23b && dn23b.kind === "deliver", "真跑：交付节点建出来了");
     eqNum(String((dn23b && dn23b.parentTaskId) || ""), "", "真跑：交付节点 parentTaskId 为空 —— 落主画布层，不跟着用户的任务焦点进壳");
-    eqNum(String((dn23b && dn23b.parentSuperId) || ""), "", "真跑：parentSuperId 同样为空（不会被塞进超级节点壳的内坐标系）");
+    eqNum(String((dn23b && dn23b.parentSuperId) || ""), "", "真跑：parentSuperId 同样为空（不会被塞进节点层壳的内坐标系）");
     eqNum(String((dn23b && dn23b.ltUid) || ""), "ltx-23b", "真跑：uid 与节点身份照旧（清归属不影响认人）");
     eqNum((dn23b && dn23b.ltItems || []).length, 1, "真跑：清单照旧注入交付节点（1 件待交）");
     sandbox.S.taskFocus = "";

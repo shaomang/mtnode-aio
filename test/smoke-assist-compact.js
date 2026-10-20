@@ -305,11 +305,24 @@ window.__probe = (function () {
   }
   function sizeState() {
     var r = q("#assistCompactRetainInput"), s = q("#assistCompactSummaryInput");
+    var rr = q("#assistCompactRetainRow"), sr = q("#assistCompactSummaryRow");
+    function shown(el) {
+      /* 「真的看得见」按 computed style 判（.assist-ctrl-item 是 display:flex，
+         hidden 属性本身会被它盖掉 —— 所以这里必须量计算后的 display，不能只看 el.hidden） */
+      if (!el) return null;
+      return window.getComputedStyle(el).display !== "none";
+    }
     return {
       retainValue: r.value, retainPlaceholder: r.placeholder,
       summaryValue: s.value, summaryPlaceholder: s.placeholder,
       inCtrl: !!document.getElementById("assistCtrl").contains(r) &&
         !!document.getElementById("assistCtrl").contains(s),
+      retainRowHidden: rr ? !!rr.hidden : null,
+      summaryRowHidden: sr ? !!sr.hidden : null,
+      retainRowShown: shown(rr),
+      summaryRowShown: shown(sr),
+      retainDisabled: !!r.disabled,
+      summaryDisabled: !!s.disabled,
     };
   }
 
@@ -334,6 +347,9 @@ window.__probe = (function () {
       var note = q("#assistCompactFrugalNote");
       return {
         rowHidden: row ? !!row.hidden : null,
+        /* 真的看得见 = 计算后的 display 不是 none（.assist-ctrl-item 的 display:flex
+           会盖掉 hidden 属性，只看 hidden 会「假绿」） */
+        rowShown: row ? window.getComputedStyle(row).display !== "none" : null,
         value: tin ? tin.value : null,
         noteHidden: note ? !!note.hidden : null,
       };
@@ -458,6 +474,7 @@ async function main() {
     "选「自定义」→ tier:'custom' 且带上缺省触发线 100k（不填也有值）");
   const inState = await run("window.__probe.customState()");
   ok(inState.rowHidden === false, "选了自定义 → 输入框那一行露出");
+  ok(inState.rowShown === true, "露出是**真的看得见**（computed display ≠ none，不是只把 hidden 置 false）");
   ok(inState.value === "100000", "输入框回填当前生效值（实测：" + inState.value + "）");
   const beforeCustom = await run("window.__probe.savedCount()");
   const customOk = await run('window.__probe.customSet(250000)');
@@ -472,8 +489,8 @@ async function main() {
   const noteState = await run('window.__probe.choose("frugal")');
   ok(!!noteState, "选回省钱档正常");
   const noteOn = await run("window.__probe.customState()");
-  ok(noteOn.rowHidden === true && noteOn.noteHidden === null,
-    "省钱档：输入框收起，且不再有那一行长说明句（档位文案只留「档位名 · 上下文阈值」）");
+  ok(noteOn.rowHidden === true && noteOn.rowShown === false && noteOn.noteHidden === null,
+    "省钱档：输入框收起（computed display:none），且不再有那一行长说明句（档位文案只留「档位名 · 上下文阈值」）");
   const noteOff = await run('window.__probe.choose("mid")');
   ok(!!noteOff, "选回中档正常");
   const midState = await run("window.__probe.customState()");
@@ -481,14 +498,29 @@ async function main() {
   const toasts = await run("window.__probe.toasts()");
   ok(toasts.some((t) => /下一个新会话生效/.test(t)), "每次改都提示「下一个新会话生效」（口径与设置面板一致）");
 
-  console.log("\n[3c] 压缩后的大小：两个输入框（留空 = 跟随档位、越界拒绝、切档位清空）");
+  console.log("\n[3c] 压缩后的大小：只有「开着 + 自定义」档才露出两个输入框（留空 = 跟随档位、越界拒绝）");
   await run('window.__probe.setConfig({ enabled: true, tier: "mid" })');
   const blank = await run("window.__probe.sizeState()");
   ok(blank.inCtrl, "两个输入框都在 #assistCtrl 里（与压缩档同一条控制区）");
-  ok(blank.retainValue === "" && blank.retainPlaceholder === "32768",
-    "保留原文留空 + 占位符 = 中档默认 32,768（实测：" + blank.retainPlaceholder + "）");
-  ok(blank.summaryValue === "" && blank.summaryPlaceholder === "256000",
-    "摘要上限留空 + 占位符 = 默认 256,000（实测：" + blank.summaryPlaceholder + "）");
+  ok(blank.retainRowHidden === true && blank.summaryRowHidden === true,
+    "中档：两行都标了 hidden（本次共识：非自定义档不出现数字填写）");
+  ok(blank.retainRowShown === false && blank.summaryRowShown === false,
+    "中档：两行真的看不见（computed display:none，不是被 .assist-ctrl-item 的 flex 盖回来）");
+  ok(blank.retainDisabled === true && blank.summaryDisabled === true,
+    "中档：两个框还置了 disabled（键盘 / Tab 也够不到，不留隐形入口）");
+  ok(blank.retainPlaceholder === "32768",
+    "中档占位符仍是档位默认 32,768（自定义档回填 / 跟随档位都拿它）");
+  ok(blank.summaryPlaceholder === "256000",
+    "中档占位符 = 默认 256,000（实测：" + blank.summaryPlaceholder + "）");
+  const toCustom = await run('window.__probe.choose("custom")');
+  ok(toCustom && toCustom.tier === "custom", "选「自定义」→ 档位落到 custom");
+  const customSize = await run("window.__probe.sizeState()");
+  ok(customSize.retainRowShown === true && customSize.summaryRowShown === true,
+    "自定义档：两个输入框一起露出（与自定义触发线同一组）");
+  ok(customSize.retainDisabled === false && customSize.summaryDisabled === false,
+    "自定义档：两个框可编辑");
+  ok(customSize.retainPlaceholder === "16384",
+    "自定义档占位符 = 该档默认 16,384（实测：" + customSize.retainPlaceholder + "）");
   const sizeOk = await run('window.__probe.sizeSet("retain", 65536)');
   ok(sizeOk && sizeOk.retainTokens === 65536, "填 65,536 → 保留原文写进 config.dsh.compact");
   const sizeBad = await run('window.__probe.sizeSet("summary", 900000)');
@@ -500,12 +532,26 @@ async function main() {
   const sizeSum = await run('window.__probe.sizeSet("summary", 8192)');
   ok(sizeSum && sizeSum.summaryMaxTokens === 8192 && sizeSum.retainTokens === 65536,
     "两个量互不覆盖（改摘要上限不丢保留原文）");
-  const cleared = await run('window.__probe.choose("late")');
-  ok(cleared && cleared.retainTokens === null && cleared.summaryMaxTokens === null,
-    "切档位 → 两个自定义值清空（回到该档默认）");
-  const blankAgain = await run("window.__probe.sizeState()");
-  ok(blankAgain.retainPlaceholder === "65536" && blankAgain.retainValue === "",
-    "切到晚档后占位符 = 65,536（档位默认跟着档走）");
+  const lateAgain = await run('window.__probe.choose("late")');
+  ok(lateAgain && lateAgain.tier === "late" && lateAgain.retainTokens === 65536 && lateAgain.summaryMaxTokens === 8192,
+    "切到晚档：两个值**留着不清空**（非自定义档不认它们，留给自定义档回填）");
+  const lateState = await run("window.__probe.sizeState()");
+  ok(lateState.retainRowShown === false && lateState.summaryRowShown === false,
+    "晚档：两个输入框整行不显示（非自定义档一律按档位默认，没有暗值）");
+  ok(lateState.retainPlaceholder === "65536",
+    "晚档占位符 = 65,536（档位默认跟着档走；不显示，但回自定义时按当前档给参照）");
+  const backCustom = await run('window.__probe.choose("custom")');
+  ok(backCustom && backCustom.retainTokens === 65536 && backCustom.summaryMaxTokens === 8192,
+    "切回自定义：手里还是刚才填的那两个值");
+  const backState = await run("window.__probe.sizeState()");
+  ok(backState.retainRowShown === true && backState.retainValue === "65536" &&
+    backState.summaryValue === "8192", "切回自定义：两个框回填原值（65,536 / 8,192）");
+  const offAgain = await run('window.__probe.choose("off")');
+  ok(offAgain && offAgain.enabled === false && offAgain.tier === "custom",
+    "选「关闭」→ enabled:false 且保留原档 custom");
+  const offState = await run("window.__probe.sizeState()");
+  ok(offState.retainRowShown === false && offState.summaryRowShown === false,
+    "关闭档：即使记住的档位是自定义，两个输入框也不显示（判据 = 开着 + 自定义）");
 
   console.log("\n[4] 切语言：选项文字跟着换（英文界面不回落中文）");
   await run('window.__probe.setConfig({ enabled: true, tier: "mid" })');

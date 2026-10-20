@@ -29,6 +29,7 @@
 const fs = require("fs");
 const path = require("path");
 const vm = require("vm");
+const os = require("os");
 
 let fails = 0;
 let checks = 0;
@@ -258,6 +259,12 @@ const sandbox = {
      mediaGenQueueHolds / sweepOrphanPendingRuns / clearPendingRun 都读它。
      注意它必须挂在沙箱**顶层**（不是 S 上）：源码里是模块级 const。 */
   mediaGenWaiters: new Map(),
+  /* 角色预设的缓存表（app-nodes.js 的 let breezePresetCache）：沙箱里同样挂在顶层，
+     默认空表 = 没选预设，解析链自然落到端子 / 音色库那几条老分支。 */
+  breezePresetCache: { at: 0, presets: [], loading: null },
+  /* 预设清单的读盘替身：沙箱里没有宿主桥 → 一律空清单（= 没选预设的老口径）。
+     想要「选了角色」的用例，往这个数组里塞预设再调即可。 */
+  breezePresetsLoad: () => Promise.resolve(sandbox.breezePresetCache.presets || []),
   console,
   document: fakeDoc,
   Math,
@@ -342,7 +349,7 @@ const sandbox = {
     }
     /* 其余端口按线取数（端口 2 接音频 / 视频输入节点那一路要用真值：音频值 = 该文件的
        file:/// URL，转写值 = 该节点自己的 asrTranscripts 文本）。
-       **端子号与 app.js:14934 的 inputValuesFor 同口径**：只有超级节点 / 素材条目节点按线上的
+       **端子号与 app.js:14934 的 inputValuesFor 同口径**：只有节点层 / 素材条目节点按线上的
        fromIndex 取，其余节点用的是「这个入端口的号」（idx）—— 上一版替身把 fromIndex 硬塞给
        所有节点，替身行为与真身不同，等于替真身开绿灯。
        nodeById / valueFromInput 都走 sandbox.：这只替身是在沙箱**外面**闭包求值的，
@@ -388,7 +395,7 @@ const sandbox = {
     if (src.__pathText) return { kind: "text", text: String(src.__pathText) };
     return { kind: "text", text: String(src.text || "hi") };
   },
-  /* 真实 valueFromWire（app.js:4698）：**只有超级节点 / 素材条目节点**按线上的 fromIndex 取
+  /* 真实 valueFromWire（app.js:4698）：**只有节点层 / 素材条目节点**按线上的 fromIndex 取
      端子，其余节点拿 batchIdx 当端子号（musicGenSlotText 传 0）。
      ⚠ 上一版替身对音视频输入节点按 fromIndex 取（w.fromIndex > 0 就回转写）—— 替身比真身聪明，
      真身里「音频节点端口 1 接进 breeze 参考文稿口」其实拿回的是端口 0 的那串 file:/// URL，
@@ -567,6 +574,11 @@ const NODES_FNS = [
   "breezeModeOf",
   "breezeFormatOf",
   "breezeCfgScaleOf",
+  "breezeModeResolvedOf",
+  "breezeCfgLockedOf",
+  "breezeCfgScaleForRun",
+  "breezeRefHintOf",
+  "breezeCfgSummaryOf",
   "breezeSeedOf",
   "breezeTextSlot",
   "breezeAudioSlotPath",
@@ -578,12 +590,18 @@ const NODES_FNS = [
   "breezeSlotHasMediaSource",
   "breezeSlotHasAnySource",
   "breezeSrcTextOf",
-  "breezeTextBoxStateText",
   /* DOM 那两只：沙箱里带一个极小 document 替身，就为真跑「只读 / 可编辑 / 写回」这三件事 */
   "breezeTextBoxFor",
   "breezeTextBoxesFor",
   "breezeTextBoxCommit",
   "breezeTextBoxClear",
+  /* 角色（音色预设）：解析链上的几只纯函数 —— breezeResolveRef 的预设分支全靠它们 */
+  "breezePresetIdOf",
+  "breezePresetGroupIdOf",
+  "breezePresetFind",
+  "breezePresetPick",
+  "breezePresetLabelOf",
+  "breezePresetProblemOf",
   "breezeResolveRef",
   "breezeErrorText",
   /* 排队真源那一对 + 自愈扫把 + 头部的 ▶/■ 都切进沙箱，做行为断言。
@@ -795,7 +813,18 @@ function scene(nodes, wires) {
   has(serverSrc, "mode_conflict", "设计模式误接参考音频时给 mode_conflict");
   has(serverSrc, "instruction_required", "导演模式缺 instruction 时给 instruction_required");
   has(serverSrc, '"cfg_scale"', "管理服务接受 cfg_scale 参数");
-  has(serverSrc, "cfg_scale = 4.0 if instruction else 1.0", "cfg_scale 默认：有 instruction 时 4、否则 1");
+  has(serverSrc, "cfg_scale = 4.0 if instruction else 1.0", "cfg_scale 缺省按模式：有 instruction 用 4、克隆用 1");
+  /* 这条是踩过的坑（engine_http_500）：克隆模板 ref_clone_tata 没有负向提示词，
+     引擎对 cfg_scale≠1.0 直接 raise ValueError → 裸 500。管理服务必须自己钳制，
+     不能把界面上的 cfg 原样转发；引擎那句 500 也要译成可读的 400。 */
+  has(
+    serverSrc,
+    'if mode == "clone" and abs(float(cfg_scale) - 1.0) > 1e-6',
+    "克隆模式把 cfg_scale 钳制为 1.0（模板不支持 CFG）",
+  );
+  has(serverSrc, "克隆模式不支持 cfg_scale", "钳制时写日志（看得出值被改了）");
+  has(serverSrc, '"cfg_scale_unsupported"', "引擎那句 clone×cfg 500 译成可读的 400");
+  has(serverSrc, "does not define a negative prompt", "按引擎原话识别这条 500");
   /* 能力判定（官方语义，本机实测踩过一次坑）：**没有参考音频就是音色设计**，
      不能因为带了 instruction 就判成导演 —— 那样「音色设计」这条无参考音频的路会被误判掉。 */
   {
@@ -994,6 +1023,9 @@ function scene(nodes, wires) {
   has(nodesSrc, "appendBreezeGenSummaryBody", "app-nodes.js 提供 body 摘要");
   has(canvasSrc, 'appendBreezeGenSummaryBody(node, body, "audio")', "body 用了 breeze 专属摘要");
   has(canvasSrc, 'appPluginInstalled("breeze-tts-local")', "未装插件时节点出警示条");
+  has(canvasSrc, 'appPluginMissing("breeze-tts-local")', "警示条走缓存就绪判据（缓存没到位不下「未安装」结论）");
+  has(appSrc, "S.pluginsReady = true", "目录取到后标记缓存就绪");
+  has(appSrc, "repaintCanvasForPlugins()", "已装状态变化后强制重画画布（否则警示条残留在节点体里）");
 
   /* ═════════════ [5] 参考源优先级 / 能力 / 错误码 ═════════════ */
   console.log("\n[5] 参考源优先级（端子优先）· 能力语义 · 错误码译法");
@@ -1017,8 +1049,35 @@ function scene(nodes, wires) {
     const r = F.breezeResolveRef(n, voices);
     has(r.source, "音色设计", "两者都没有 → 认定为音色设计");
   }
-  eqNum(F.breezeCfgScaleOf({ cfgScale: 0 }), 1, "cfg_scale 非法（0）时回落到 1");
+  eqNum(F.breezeCfgScaleOf({ cfgScale: 0 }), 4, "cfg_scale 非法（0）时回落到 4");
   eqNum(F.breezeCfgScaleOf({ cfgScale: 99 }), 10, "cfg_scale 超过上限时夹到 10");
+  /* 克隆 × cfg≠1 这条坑的节点侧口径：克隆模式只下发 1.0（后端还会再钳一层，双保险） */
+  eqNum(
+    F.breezeCfgScaleForRun({ cfgScale: 3 }, { hasRef: true, instruction: "" }),
+    1,
+    "克隆模式：界面填 3 也不下发（只发 1.0）",
+  );
+  eqNum(
+    F.breezeCfgScaleForRun({ cfgScale: 3 }, { hasRef: true, instruction: "温柔一点" }),
+    3,
+    "音色导演（有指令）：cfg 3 照常下发",
+  );
+  eqNum(F.breezeCfgScaleForRun({ cfgScale: 3 }, { hasRef: false }), 3, "音色设计（无参考音频）：cfg 3 照常下发");
+  eqStr(
+    F.breezeModeResolvedOf({ voiceMode: "auto" }, { hasRef: true, instruction: "" }),
+    "clone",
+    "auto + 参考音频 + 无指令 → 克隆",
+  );
+  eqStr(
+    F.breezeModeResolvedOf({ voiceMode: "auto" }, { hasRef: true, instruction: "温柔" }),
+    "direction",
+    "auto + 参考音频 + 有指令 → 音色导演",
+  );
+  eqStr(F.breezeModeResolvedOf({ voiceMode: "auto" }, { hasRef: false }), "design", "auto + 无参考音频 → 音色设计");
+  eqStr(F.breezeModeResolvedOf({ voiceMode: "direction" }, { hasRef: true }), "direction", "显式能力档不被 auto 覆盖");
+  has(F.breezeCfgSummaryOf({ cfgScale: 3, voiceMode: "clone" }), "1", "摘要行把克隆模式的 cfg 显示成 1");
+  has(F.breezeCfgSummaryOf({ cfgScale: 3, voiceMode: "clone" }), "克隆固定", "摘要行写明「克隆固定」");
+  eqStr(F.breezeCfgSummaryOf({ cfgScale: 3, voiceMode: "direction" }), "3", "音色导演的摘要照实显示 3");
   eqNum(F.breezeSeedOf({ seed: 7 }), 7, "seed 按整数透传");
   eqNum(F.breezeSeedOf({ seed: 3.9 }), 3, "seed 取整");
   /* seed 缺省回落：breezeSeedOf 里的 `isFinite(Math.floor(Number(...)))` 保证 NaN → 42，
@@ -1133,6 +1192,11 @@ function scene(nodes, wires) {
     eqStr(b2.voice, "", "端子优先时不下发音色库 id（两套参考源不打架）");
     eqStr(b2.refText, "端子里的文稿", "参考文稿也取端子的那条");
     eqStr(b2.mode, "auto", "未指定能力档时按参数自动判定（后端判定）");
+    eqNum(
+      b2.cfgScale,
+      1,
+      "auto 落到克隆（参考音频 + 无指令）→ 界面填的 4 不下发，只发 1.0（克隆模板不支持 CFG）",
+    );
     eqStr(b2.response_format, "flac", "flac 格式透传");
   }
   /* 端口 0 没接文本 → 用节点上「输入文本」框里那份（node.srcText） */
@@ -1356,10 +1420,10 @@ function scene(nodes, wires) {
   {
     /* 两个框的真源与顺序（BREEZE_TEXT_BOXES：端口 0 → srcText，端口 2 → refText） */
     has(nodesSrc, "const BREEZE_TEXT_BOXES = [", "两个文本框有一份真源表");
-    has(nodesSrc, 'label: "输入文本（需要念的）"', "第一个框 = 输入文本（需要念的）");
-    has(nodesSrc, 'label: "参考文本（参考音频对应的文字）"', "第二个框 = 参考文本（参考音频对应的文字）");
     has(nodesSrc, 'field: "srcText"', "输入文本落在 node.srcText");
     has(nodesSrc, 'field: "refText"', "参考文本落在 node.refText");
+    has(nodesSrc, "title: \"端子为空时，这个框里的文字就是本次要合成的内容\"", "说明走 hover title（框上不再有标题行）");
+    has(nodesSrc, "tip: \"端子优先：端口 0 有输入时这里只读\"", "只读口径也走 hover title");
     has(appSrc, "srcText: \"\"", "breeze_gen 默认值里有 srcText（随节点持久化）");
     has(appSrc, "refText: \"\"", "breeze_gen 默认值里有 refText");
     /* 端子优先：有输入就只读，没输入才可编辑（同一行代码同时钉住两个框） */
@@ -1369,9 +1433,10 @@ function scene(nodes, wires) {
       "if (slotText) return { text: slotText, locked: true };",
       "判定就一条：端子有值 → 只读回显；端子空 → 节点上那份可编辑",
     );
-    has(nodesSrc, "breezeTextBoxStateText(node, spec)", "状态胶囊写明这个框现在归谁");
-    has(nodesSrc, '"（端子优先，本框只读）"', "只读时写明原因（端子优先）");
-    has(nodesSrc, "端子为空 · 可编辑", "可编辑时也有一句现况");
+    hasnt(nodesSrc, "n-reftext-state", "状态胶囊已去掉（框上只留输入框本身）");
+    hasnt(nodesSrc, "n-reftext-hdr", "标题行已去掉");
+    hasnt(nodesSrc, "n-reftext-lab", "框名标签已去掉");
+    hasnt(nodesSrc, "function breezeTextBoxStateText(", "那句状态文案的辅助函数一并摘掉");
     has(nodesSrc, "breezeTextBoxCommit(node, spec, ta.value)", "框里改字写回节点（input 事件即落库）");
     has(nodesSrc, "function breezeSrcTextOf(node)", "待合成文本的取数口 = breezeSrcTextOf");
     has(nodesSrc, "breezeTextSlot(node, 0) || breezeTextOf(node, \"srcText\").trim()", "端口 0 优先、端子为空才用框里那份");
@@ -1430,24 +1495,18 @@ function scene(nodes, wires) {
     hasnt(nodesSrc, "node.refAsrState", "转录状态机（refAsrState）已随转录一起摘掉");
     /* 样式与词条 */
     const asrCss = read("renderer/css/asr.css");
-    has(asrCss, ".n-reftext-state", "两个框有状态胶囊样式");
-    has(asrCss, ".n-reftext-state.locked", "只读态胶囊有自己的配色");
+    hasnt(asrCss, ".n-reftext-state", "状态胶囊样式已随 DOM 一起清掉");
     has(asrCss, ".n-textslots", "两个框之间的间距有样式");
     has(asrCss, ".n-reftext-ops", "操作行样式留着（清空）");
     has(asrCss, "body.theme-light .n-reftext-host-card", "亮色主题有覆盖");
-    has(i18nSrc, "输入文本（需要念的）", "i18n 有「输入文本」词条");
-    has(i18nSrc, "参考文本（参考音频对应的文字）", "i18n 有「参考文本」词条");
-    has(i18nSrc, "（端子优先，本框只读）", "i18n 有只读口径词条");
-    has(i18nSrc, "端子为空 · 可编辑", "i18n 有可编辑口径词条");
+    has(i18nSrc, "端子为空时，这个框里的文字就是本次要合成的内容", "i18n 有 hover 说明词条");
+    hasnt(i18nSrc, "端子为空 · 可编辑", "i18n 里那句旧状态文案已清掉");
+    hasnt(i18nSrc, "（端子优先，本框只读）", "i18n 里只读胶囊词条已清掉");
     hasnt(i18nSrc, "生成文稿（SenseVoice）", "i18n 里转录词条已清掉");
   }
   /* 真跑一遍 DOM 构造（带极小 document 替身）：只读 / 可编辑 / 写回 / 清空四条行为 */
   {
     const taOf = (host, i) => (host.children[i].children || []).find((c) => c.tag === "textarea");
-    const pillOf = (host, i) =>
-      ((host.children[i].children[0] || {}).children || []).find(
-        (c) => String(c.className || "").indexOf("n-reftext-state") === 0,
-      );
     const btnOf = (host, i) => {
       const inner = host.children[i].children || [];
       const ops = inner.find((c) => String(c.className || "").indexOf("n-reftext-ops") >= 0);
@@ -1462,7 +1521,8 @@ function scene(nodes, wires) {
     eqStr(taOf(b1, 0).value, "框里要念的话", "输入文本框回显 node.srcText");
     eqNum(taOf(b1, 0).readOnly ? 1 : 0, 0, "端口 0 空着 → 输入文本框可编辑");
     eqNum(taOf(b1, 1).readOnly ? 1 : 0, 0, "端口 2 空着 → 参考文本框可编辑");
-    has(pillOf(b1, 0).textContent, "可编辑", "可编辑时状态胶囊写明「端子为空 · 可编辑」");
+    has(taOf(b1, 0).title, "本次要合成的内容", "框上不再有标题行 / 状态胶囊，说明落在 hover title");
+    eqNum(b1.children[0].children.length, 2, "框里只有输入框 + 清空按钮（没有标题行与胶囊）");
     eqStr(taOf(b1, 0).id, "breezetext-nBox-srcText-card", "卡片 body 上那只是 -card 后缀（与设置窗不撞 id）");
     eqStr(taOf(b1, 1).id, "breezetext-nBox-refText-card", "参考文本框同理");
     taOf(b1, 0).value = "改过的话";
@@ -1490,8 +1550,8 @@ function scene(nodes, wires) {
     eqStr(taOf(b2, 0).value, "端子这句才算数", "只读框回显端子的那份（端子优先）");
     eqNum(taOf(b2, 1).readOnly ? 1 : 0, 1, "端口 2 有输入 → 参考文本框切只读");
     eqStr(taOf(b2, 1).value, "端子参考文本", "参考文本框同样回显端子那份");
-    has(pillOf(b2, 0).textContent, "来自端口 0", "状态胶囊写明「来自端口 0」");
-    has(pillOf(b2, 1).textContent, "来自端口 2", "状态胶囊写明「来自端口 2」");
+    has(taOf(b2, 0).title, "端口 0", "只读口径写在 hover title 上（不再有状态胶囊）");
+    has(taOf(b2, 1).title, "端口 2", "参考文本框同理");
     eqNum(btnOf(b2, 0) ? 1 : 0, 0, "只读的框上没有「清空」按钮");
     taOf(b2, 0).value = "手改只读框";
     taOf(b2, 0).fire("input");
@@ -1501,21 +1561,20 @@ function scene(nodes, wires) {
     const bSet = F.breezeTextBoxesFor(n2, {});
     eqStr(taOf(bSet, 0).id, "breezetext-nBox2-srcText-set", "设置窗那份是 -set 后缀");
     eqStr(taOf(bSet, 0).value, "端子这句才算数", "两处回显同一份真源（端子优先）");
-    /* ④ 选了音色库音色 → 多一句「留空时用音色库自带的那份参考文本」 */
+    /* ④ 老口径选了音色库音色 → 仍然只是两个框（提示行一律去掉，说明走 hover title） */
     const n3 = mk("nBox3", "breeze_gen", { voice: "播音" });
     const b3 = F.breezeTextBoxesFor(n3, { compact: true });
-    eqNum(b3.children.length, 3, "选了音色 → 两个框 + 一句音色库提示");
-    has(b3.children[2].textContent, "音色库", "提示写明留空时用音色库自带的那份");
+    eqNum(b3.children.length, 2, "选了音色 → 仍是两个框（不再挂提示行）");
 
-    /* ⑤ 端口 2 接音频节点 → 框只读；还没有转写 → 框里空着 + 一句「先去它上面转录」 */
+    /* ⑤ 端口 2 接音频节点 → 框只读；还没有转写 → 框里空着 */
     const n4 = mk("nBox4", "breeze_gen", { refText: "框里这份不算数" });
     const a4 = mk("nBox4A", "input_audio", { mediaAsset: LOCAL_AUDIO });
     scene([n4, a4], [{ id: "wd2", from: "nBox4A", to: n4.id, toIndex: 2, fromIndex: 0 }]);
     const b4 = F.breezeTextBoxesFor(n4, { compact: true });
     eqNum(taOf(b4, 1).readOnly ? 1 : 0, 1, "端口 2 接音频节点 → 参考文本框只读（不显示那条 URL）");
     eqStr(taOf(b4, 1).value, "", "还没有转写 → 框里空着（绝不回显 file:/// 路径）");
-    has(pillOf(b4, 1).textContent, "来自端口 2", "只读原因仍写明「来自端口 2」");
-    has(b4.children[2].textContent, "转录", "框下补一句：先去那只音频节点点「转录」");
+    has(taOf(b4, 1).title, "端口 2", "只读原因仍写明「端口 2」（hover title）");
+    eqNum(b4.children.length, 2, "框下不再补提示行（指路信息在节点状态行上）");
     /* ⑥ 那串路径到底从哪来（用户报的「参考文本里显示 file:///…mp3」）：音频节点**端口 0**
        这一路的值就是 file:/// 那串 URL（app.js 的 displayValueOf 口径）—— 旧代码把端子号
        写死成 0，于是它被当成「参考文稿」交到框里显示。现在：它只可能来自端口 0，且一律被
@@ -1565,7 +1624,7 @@ function scene(nodes, wires) {
       const b5 = F.breezeTextBoxesFor(n5, { compact: true });
       eqStr(taOf(b5, 1).value, "", "参考文本框里空着（绝不回显那条路径）");
       eqNum(taOf(b5, 1).readOnly ? 1 : 0, 1, "端子有输入 → 那个框仍然只读");
-      has(b5.children[b5.children.length - 1].textContent, "音频 / 视频", "框下写清「这个口给的是音频 / 视频」");
+      eqNum(b5.children.length, 2, "框下不再补提示行（指路信息在节点状态行上）");
       /* 判据本身：媒体文件路径 / 音频视频值命中，真文字不误伤 */
       eqNum(F.breezeIsMediaFilePath("E:\\out\\ref.wav") ? 1 : 0, 1, "本机音频路径判为媒体文件");
       eqNum(F.breezeIsMediaFilePath("file:///E:/out/ref.m4a") ? 1 : 0, 1, "file:/// 音频 URL 判为媒体文件");
@@ -1772,12 +1831,20 @@ function scene(nodes, wires) {
   for (const kw of ["Breeze", "non-commercial", "breeze-tts-local-install"])
     has(guideEn, kw.toLowerCase() === kw ? kw : kw, "英文指南写明「" + kw + "」");
   has(guideZh, "成对", "中文指南写明参考音频与文稿必须成对");
-  has(guideZh, "输入文本（需要念的）", "中文指南写明第一个文本框 = 输入文本（需要念的）");
-  has(guideZh, "参考文本（参考音频对应的文字）", "中文指南写明第二个文本框 = 参考文本");
+  has(guideZh, "第一个框 = 待合成的文本", "中文指南写明第一个框 = 待合成文本");
+  has(guideZh, "第二个框 = 参考文稿", "中文指南写明第二个框 = 参考文稿");
+  has(guideZh, "鼠标悬停", "中文指南写明框上没有标题行 / 状态标签，说明走悬停");
   has(guideZh, "只读", "中文指南写明端子有输入时只读");
   has(guideZh, "不做转录", "中文指南写明本节点不做转录");
-  has(guideEn, "Input text", "英文指南写明第一个文本框 = input text");
-  has(guideEn, "Reference text", "英文指南写明第二个文本框 = reference text");
+  has(guideZh, "角色（音色预设）", "中文指南有一节讲角色预设");
+  has(guideZh, "波形播放器", "中文指南写明选择角色时每组配波形播放器");
+  has(guideZh, "用这一组", "中文指南写明点「用这一组」生效");
+  has(guideZh, "指令**非空就覆写", "中文指南写明指令覆写口径");
+  has(guideEn, "First box", "英文指南写明第一个框 = text to speak");
+  has(guideEn, "Second box", "英文指南写明第二个框 = reference transcript");
+  has(guideEn, "Characters (voice presets)", "英文指南有一节讲角色预设");
+  has(guideEn, "waveform player", "英文指南写明波形播放器");
+  has(guideEn, "Use this group", "英文指南写明「用这一组」");
   has(guideEn, "does no transcription", "英文指南写明本节点不做转录");
   has(guideZh, "ffmpeg", "中文指南写明 mp3 需要 ffmpeg");
   has(guideZh, "全局音视频互斥锁", "中文指南写明持全局锁");
@@ -1810,6 +1877,11 @@ function scene(nodes, wires) {
       "音色设计",
       "音色导演",
       "自动判定",
+      "角色（音色预设）",
+      "选择角色（音色预设）",
+      "用这一组",
+      "第 {n} 组",
+      "角色预设已删除或不可用，请重选角色",
     ];
     for (const k of keys) ok(!!enDict[k], "i18n 有英文词条：" + k);
   } else {
@@ -2229,6 +2301,422 @@ function scene(nodes, wires) {
     eqStr(f4.code, "backend_http_502", "认不出的正文仍回落成 backend_http_<status>");
     eqStr(vm.runInContext('engineBusCode("cuda_unavailable")', ctx), "no_cuda", "engineBusCode 把 cuda_unavailable 改名成 no_cuda");
     eqStr(vm.runInContext('engineBusCode("engine_exited")', ctx), "engine_exited", "其它引擎码原样透传（细分保留）");
+  }
+
+  /* ═════════════ [11] 角色预设（名字 + 若干组「音频 + 样本文字 + 指令」） ═════════════ */
+  console.log("\n[11] 角色预设：宿主存储 / 旧音色迁移 / 节点解析 / 端子隐藏 / 管理台 / 按钮");
+  {
+    /* ── 宿主：存在哪、怎么增删、运行期怎么解析 ─────────────────────── */
+    has(hostSrc, "function presetsRoot()", "宿主有角色预设根目录");
+    has(hostSrc, 'join(breezeRoot(), "presets")', "预设落在数据目录 breeze-tts/presets（不落应用文件夹）");
+    has(hostSrc, 'join(presetsRoot(), "audio")', "音频副本单独一层 audio/（不指向用户原文件）");
+    has(hostSrc, 'join(presetsRoot(), "index.json")', "清单 = presets/index.json");
+    has(hostSrc, "function presetMigrateVoices()", "首次访问把旧音色库迁成单组预设");
+    has(hostSrc, 'join(vdir, name, "ref.txt")', "迁移把 ref.txt 读成样本文字");
+    has(hostSrc, "idx.migratedVoices = true", "迁移只做一次（flag 记在清单里）");
+    has(hostSrc, "function presetResolveForRun(", "运行期按 presetId / presetGroupId 解析参考源");
+    has(hostSrc, 'return { error: "preset_missing" }', "角色被删 → preset_missing");
+    has(hostSrc, 'return { error: "preset_group_missing" }', "组被删 → preset_group_missing");
+    has(hostSrc, 'if (!pub.hasAudio) return { error: "preset_audio_missing" }', "组里没音频 → preset_audio_missing");
+    has(hostSrc, 'ipcMain.handle("breeze:presetSave"', "宿主注册 breeze:presetSave");
+    has(hostSrc, 'ipcMain.handle("breeze:presetDelete"', "宿主注册 breeze:presetDelete");
+    has(hostSrc, "function presetWriteAudio(", "上传的音频由宿主复制进预设目录（不引用用户原文件）");
+    has(hostSrc, 'if (audioFile && audioFile !== w.audioFile)', "换音频格式时清掉旧副本（一组不留两份）");
+    has(hostSrc, 'for (const old of (existing && existing.groups) || [])', "删组时连音频文件一起清掉");
+    /* 新建角色选音频：默认落到当前画布的工作目录（主窗口文件对话框同一口径） */
+    has(mainSrc, "function foregroundCanvasWorkspace()", "main.js 有「当前画布工作目录」解析");
+    has(mainSrc, "getCanvasWorkspace: foregroundCanvasWorkspace,", "main.js 把工作目录解析交给 Breeze");
+    has(mainSrc, "const start = String(defaultPath || \"\").trim() || foregroundCanvasWorkspace();", "主窗口文件对话框没给 defaultPath 时优先用工作目录");
+    has(hostSrc, "getCanvasWorkspace =", "Breeze 宿主接收工作目录解析");
+    has(hostSrc, "if (canvasWs) opts.defaultPath = canvasWs;", "新建角色选参考音频默认从画布工作目录开始");
+    /* 行为：真跑 foregroundCanvasWorkspace（从 main.js 抽真函数），覆盖三种结局 */
+    {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "mtnode-ws-"));
+      const data = path.join(root, "data");
+      const ws = path.join(root, "project");
+      fs.mkdirSync(path.join(data, "save"), { recursive: true });
+      fs.mkdirSync(ws, { recursive: true });
+      const ctx = {
+        console,
+        fs,
+        join: path.join,
+        DATA: () => data,
+        wfPath: (id) => path.join(data, "save", String(id) + ".json"),
+        wfIdOk: (id) => /^[A-Za-z0-9_-]{4,120}$/.test(String(id || "")),
+        readJson: (p, d) => {
+          try {
+            return JSON.parse(fs.readFileSync(p, "utf8"));
+          } catch {
+            return d;
+          }
+        },
+      };
+      vm.createContext(ctx);
+      vm.runInContext(fnBody(mainSrc, "foregroundCanvasWorkspace"), ctx);
+      const run = () => vm.runInContext("foregroundCanvasWorkspace()", ctx);
+      fs.writeFileSync(path.join(data, "config.json"), JSON.stringify({ activeWorkflowId: "wf_1234" }));
+      fs.writeFileSync(path.join(data, "save", "wf_1234.json"), JSON.stringify({ workspace: ws }));
+      eqStr(run(), ws, "前台画布设了工作目录 → 返回该目录");
+      fs.writeFileSync(path.join(data, "save", "wf_1234.json"), JSON.stringify({ workspace: path.join(root, "gone") }));
+      eqStr(run(), "", "工作目录已被删 → 返回空串（对话框保持原行为）");
+      fs.writeFileSync(path.join(data, "save", "wf_1234.json"), JSON.stringify({}));
+      eqStr(run(), "", "画布没设工作目录 → 返回空串");
+      fs.writeFileSync(path.join(data, "config.json"), JSON.stringify({ activeWorkflowId: "../bad" }));
+      eqStr(run(), "", "非法画布 id → 返回空串（不读任意文件）");
+      try { fs.rmSync(root, { recursive: true, force: true }); } catch {}
+    }
+    /* 合成入口：预设先解析，显式参数仍然优先（= 指令覆写口径） */
+    has(hostSrc, "const presetRef = presetResolveForRun(params);", "合成入口先解析预设");
+    has(
+      hostSrc,
+      'String(params.instruction || (presetRef && presetRef.instruction) || "")',
+      "显式指令优先，空则用组里的指令",
+    );
+    has(
+      hostSrc,
+      'String(params.refAudio || params.ref_audio_path || (presetRef && presetRef.audioPath) || "")',
+      "显式参考音频优先，空则用组里的音频",
+    );
+    has(hostSrc, '(presetRef ? "direction" : "auto")', "选了预设默认走「音色导演」（音频 + 指令同给）");
+    /* 桥：插件 preload + 主窗口 preload 都要有，少一层节点就读不到清单 */
+    const psPreload = read("breeze/preload-breeze.js");
+    has(psPreload, "presetSave:", "插件 preload 桥出 presetSave");
+    has(psPreload, "presetDelete:", "插件 preload 桥出 presetDelete");
+    has(psPreload, "presetResolve:", "插件 preload 桥出 presetResolve");
+    const winPreload = read("preload.js");
+    has(winPreload, "breezePresets:", "主窗口 preload 桥出 breezePresets");
+    has(winPreload, "breezePresetSave:", "主窗口 preload 桥出 breezePresetSave");
+    has(winPreload, "breezePresetDelete:", "主窗口 preload 桥出 breezePresetDelete");
+
+    /* ── 新建角色的整条流水线：默认 LLM + 内置技能正文 → 候选池 → 基础音色 ── */
+    has(hostSrc, 'join(presetsRoot(), "candidates")', "候选小样落 presets/candidates/<角色>/");
+    has(hostSrc, "const PRESET_SKILL_DIRS = {", "内置技能正文有单一真源（音色设计 / 台词规范）");
+    has(hostSrc, '"breeze-voice-design"', "提示词走 breeze-voice-design 技能");
+    has(hostSrc, '"breeze-script-format"', "台词走 breeze-script-format 技能");
+    has(hostSrc, 'join(root, "mtnode-agent-skills", "music", slug, "SKILL.md")', "技能正文从打包内的 mtnode-agent-skills 读");
+    has(hostSrc, "function presetLlmChoices()", "跳窗读得到可选文本模型 + 默认模型");
+    has(hostSrc, "function presetLlmTarget()", "LLM 目标默认跟随默认模型");
+    has(hostSrc, "async function presetOptimizeInstruction(", "声线设定 → 一句 instruction");
+    has(hostSrc, "async function presetWriteLines(", "声线设定 → N 条互不相同的候选台词");
+    has(hostSrc, "function presetCandidateGenerate(", "候选音色由宿主合成（design 模式：只给文本 + 指令）");
+    has(hostSrc, 'backendBinary("/v1/audio/speech"', "合成仍走同一个后端入口");
+    has(hostSrc, "function presetCandidatePick(", "挑中的候选复制进 audio/ 成为一组");
+    has(hostSrc, "if (!groups.length && !src.draft)", "草稿允许 0 组（音频还没成，不塞空组）");
+    /* 草稿要露出来（左列灰色的「未完成」），否则用户找不到做到一半的角色 */
+    has(hostSrc, "presets: (idx.presets || []).map(presetPublic)", "草稿也出现在列表里（未完成条目能找回）");
+    has(hostSrc, "function presetWizardNormalize(raw)", "向导中途状态由宿主有界归一");
+    has(hostSrc, "wizard: presetWizardNormalize(p.wizard)", "预设对外带 wizard（回到上次那一步）");
+    ok(!hostSrc.includes("function presetSweepDrafts(idx)"), "宿主不再「读盘顺手扫掉草稿」（preset_missing 的根因）");
+    has(hostSrc, "seedTouched: !!c.seedTouched", "手改过的 seed / cfg 标记跟着存盘");
+    has(hostSrc, "groups.some((g) => g.hasAudio && !!String(g.refText || \"\").trim())", "角色可用 = 有音频且台词非空");
+    has(hostSrc, "let baseGroupId = String(", "基础音色用 baseGroupId 记，其余自动是备选");
+    has(hostSrc, "for (const g of groups) g.kind = g.id === baseGroupId ? \"base\" : \"alt\";", "每次写盘都重算 base / alt");
+    has(hostSrc, 'ipcMain.handle("breeze:presetLlm"', "宿主注册 breeze:presetLlm");
+    has(hostSrc, 'ipcMain.handle("breeze:presetLlmSetModel"', "宿主注册 breeze:presetLlmSetModel");
+    has(hostSrc, 'ipcMain.handle("breeze:presetOptimize"', "宿主注册 breeze:presetOptimize");
+    has(hostSrc, 'ipcMain.handle("breeze:presetLines"', "宿主注册 breeze:presetLines");
+    has(hostSrc, 'ipcMain.handle("breeze:presetCandidate"', "宿主注册 breeze:presetCandidate");
+    has(hostSrc, 'ipcMain.handle("breeze:presetCandidateDelete"', "宿主注册 breeze:presetCandidateDelete");
+    has(hostSrc, 'ipcMain.handle("breeze:presetCandidatePick"', "宿主注册 breeze:presetCandidatePick");
+    has(hostSrc, "saveConfig({ llmModel:", "跳窗里换的模型记在插件配置里（空 = 跟随默认）");
+    has(psPreload, "presetOptimize:", "插件 preload 桥出 presetOptimize");
+    has(psPreload, "presetLines:", "插件 preload 桥出 presetLines");
+    has(psPreload, "presetCandidate:", "插件 preload 桥出 presetCandidate");
+    has(psPreload, "presetCandidatePick:", "插件 preload 桥出 presetCandidatePick");
+    has(winPreload, "breezePresetOptimize:", "主窗口 preload 桥出 breezePresetOptimize");
+    has(winPreload, "breezePresetLines:", "主窗口 preload 桥出 breezePresetLines");
+    has(winPreload, "breezePresetCandidate:", "主窗口 preload 桥出 breezePresetCandidate");
+    has(winPreload, "breezePresetCandidatePick:", "主窗口 preload 桥出 breezePresetCandidatePick");
+
+    /* ── 渲染层：参考源解析 + 标签 + 不可用判定 ─────────────────────── */
+    const psPreset = {
+      id: "p1",
+      name: "阿岚",
+      ready: true,
+      groups: [
+        {
+          id: "g1",
+          index: 0,
+          name: "",
+          refText: "阿岚的样本文字。",
+          instruction: "温柔、语速偏慢",
+          hasAudio: true,
+          audioPath: "E:/data/breeze-tts/presets/audio/g1.wav",
+          audioName: "g1.wav",
+        },
+        {
+          id: "g2",
+          index: 1,
+          name: "",
+          refText: "",
+          instruction: "",
+          hasAudio: true,
+          audioPath: "E:/data/breeze-tts/presets/audio/g2.wav",
+          audioName: "g2.wav",
+        },
+        { id: "g3", index: 2, name: "", refText: "有字但没音频", instruction: "", hasAudio: false, audioPath: "" },
+      ],
+    };
+    const psList = [psPreset];
+    const psN = mk("nPreset", "breeze_gen", { presetId: "p1", presetGroupId: "g1" });
+    const psRef = F.breezeResolveRef(psN, [], psList);
+    eqStr(psRef.presetId, "p1", "解析结果带 presetId（随请求下发，宿主再解析一次）");
+    eqStr(psRef.presetGroupId, "g1", "解析结果带 presetGroupId");
+    eqStr(psRef.audioPath, "E:/data/breeze-tts/presets/audio/g1.wav", "参考音频 = 那一组的音频副本");
+    eqStr(psRef.refText, "阿岚的样本文字。", "样本文字 = 那一组存的文字");
+    eqStr(psRef.instruction, "温柔、语速偏慢", "组里的指令随解析带出（节点没填时生效）");
+    eqStr(psRef.voiceId, "", "选了角色就不再用音色库音色");
+    has(psRef.source, "阿岚", "状态行来源写角色名");
+    has(psRef.source, "组", "来源里带「第几组」（占位符由 I18n.t 填，沙箱里是原文）");
+    /* 组被删 → 退回第一组（不让节点突然哑掉） */
+    const psN2 = mk("nPreset2", "breeze_gen", { presetId: "p1", presetGroupId: "gone" });
+    eqStr(F.breezeResolveRef(psN2, [], psList).presetGroupId, "g1", "指定组没了 → 退回该角色第一组");
+    eqNum(F.breezePresetPick(psN2, psList).index, 0, "标签随之退回该角色第一组（角色：阿岚 · 第 1 组）");
+    /* 没选预设 → 老口径一字不动 */
+    const psOld = mk("nPresetOld", "breeze_gen", { voice: "播音" });
+    const psOldRef = F.breezeResolveRef(psOld, voices, psList);
+    eqStr(psOldRef.presetId, undefined, "没选预设 → 解析结果里没有 presetId");
+    eqStr(psOldRef.refText, "这是一段参考文稿。", "没选预设 → 仍然走音色库那份参考文稿");
+    eqStr(F.breezePresetLabelOf(psOld, psList), "", "没选预设 → 标签为空（摘要里不占位）");
+    /* 不可用判定：删了 / 没组 / 缺音频 / 缺文字 各一句话 */
+    has(F.breezePresetProblemOf(psN, psList), "", "正常时没有红字提示");
+    has(F.breezePresetProblemOf(mk("nPgone", "breeze_gen", { presetId: "pX" }), psList), "已删除", "角色被删 → 指路重选");
+    has(
+      F.breezePresetProblemOf(mk("nPnogroup", "breeze_gen", { presetId: "p1" }), [{ id: "p1", name: "空", groups: [] }]),
+      "还没有样本组",
+      "角色没有组 → 指路去管理台加一组",
+    );
+    has(
+      F.breezePresetProblemOf(mk("nPnoaudio", "breeze_gen", { presetId: "p1", presetGroupId: "g3" }), psList),
+      "缺少音频",
+      "那一组没音频 → 指路补音频",
+    );
+    has(
+      F.breezePresetProblemOf(mk("nPnotext", "breeze_gen", { presetId: "p1", presetGroupId: "g2" }), psList),
+      "缺少样本文字",
+      "那一组没样本文字 → 指路补文字（音频与文字必须成对）",
+    );
+
+    /* ── 真跑一次：选了角色 → 请求只送 presetId + 组，参考源不再来自端子 ── */
+    breezeStatus = { running: true, installed: true, apiUp: true, apiStatus: { voices } };
+    sandbox.breezePresetCache = { at: 0, presets: psList, loading: null };
+    genCalls = [];
+    {
+      const n = mk("nPresetRun", "breeze_gen", {
+        presetId: "p1",
+        presetGroupId: "g1",
+        voice: "播音",
+        refText: "框里这份不算数",
+        cfgScale: 2,
+        seed: 3,
+        outputPath: "E:/out/preset.wav",
+        attempts: 1,
+      });
+      const t = mk("nPresetRunT", "input_text", { text: "角色这句" });
+      scene([n, t], [{ id: "wp0", from: "nPresetRunT", to: n.id, toIndex: 0, fromIndex: 0 }]);
+      await F.playBreezeGenNode(n, true);
+      eqNum(genCalls.length, 1, "选了角色 → 照常发一次合成请求");
+      const b = genCalls[0] || {};
+      eqStr(b.presetId, "p1", "请求带 presetId（宿主据此补全参考源）");
+      eqStr(b.presetGroupId, "g1", "请求带 presetGroupId");
+      eqStr(b.refAudio, "E:/data/breeze-tts/presets/audio/g1.wav", "参考音频来自那一组（不是端子）");
+      eqStr(b.refText, "阿岚的样本文字。", "样本文字来自那一组");
+      eqStr(b.instruction, "温柔、语速偏慢", "节点没填指令 → 用组里的指令");
+      eqStr(b.voice, "", "选了角色 → 不再送音色库音色");
+      eqStr(b.mode, "direction", "选了角色 → 能力档钉成 direction（音色导演）");
+      eqNum(b.cfgScale, 2, "cfg_scale 照节点设置下发（预设不锁它）");
+      /* 指令覆写：节点 / 端口 3 有内容就压过组里的 */
+      const n2 = mk("nPresetRun2", "breeze_gen", {
+        presetId: "p1",
+        presetGroupId: "g1",
+        instruction: "节点这条指令要覆写",
+        outputPath: "E:/out/preset2.wav",
+        attempts: 1,
+      });
+      const t2 = mk("nPresetRun2T", "input_text", { text: "再来一句" });
+      scene([n2, t2], [{ id: "wp2", from: "nPresetRun2T", to: n2.id, toIndex: 0, fromIndex: 0 }]);
+      await F.playBreezeGenNode(n2, true);
+      eqStr((genCalls[1] || {}).instruction, "节点这条指令要覆写", "节点填了指令 → 覆写组里那份");
+    }
+    /* 不可用就不发请求：删了 / 缺文字 都在本地拦下，并写红字状态 */
+    {
+      genCalls = [];
+      const n = mk("nPresetGone", "breeze_gen", {
+        presetId: "pX",
+        outputPath: "E:/out/preset3.wav",
+        attempts: 1,
+      });
+      const t = mk("nPresetGoneT", "input_text", { text: "不该发出去" });
+      scene([n, t], [{ id: "wp3", from: "nPresetGoneT", to: n.id, toIndex: 0, fromIndex: 0 }]);
+      await F.playBreezeGenNode(n, true);
+      eqNum(genCalls.length, 0, "角色被删 → 本地拦停（不发请求）");
+      has(n.error, "已删除", "拦停原因写在节点状态上");
+      const n2 = mk("nPresetNoText", "breeze_gen", {
+        presetId: "p1",
+        presetGroupId: "g2",
+        outputPath: "E:/out/preset4.wav",
+        attempts: 1,
+      });
+      const t2 = mk("nPresetNoTextT", "input_text", { text: "也不该发出去" });
+      scene([n2, t2], [{ id: "wp4", from: "nPresetNoTextT", to: n2.id, toIndex: 0, fromIndex: 0 }]);
+      await F.playBreezeGenNode(n2, true);
+      eqNum(genCalls.length, 0, "组里缺样本文字 → 本地拦停（不把半套参考源发给引擎）");
+      has(n2.error, "样本文字", "拦停原因指路补样本文字");
+    }
+    sandbox.breezePresetCache = { at: 0, presets: [], loading: null };
+
+    /* ── 画布：上方菜单条的角色按钮 + 选择窗 + 选了之后隐藏端口 1/2 ── */
+    const canvasSrc = read("renderer/app-canvas.js");
+    has(canvasSrc, "n-breeze-role", "菜单条上那颗「角色」小按钮有样式钩子");
+    has(canvasSrc, "openBreezePresetDialog(node", "点它就开角色跳窗");
+    has(canvasSrc, "function openBreezePresetDialog(", "跳窗有独立实现");
+    has(canvasSrc, 'I18n.t("选择角色（音色预设）")', "按钮 title 写明用途");
+    has(canvasSrc, 'I18n.t("（点击更换角色）")', "已选时 title 写「点击更换角色」");
+    has(canvasSrc, 'roleBtn.textContent = "👤"', "角色按钮是单人标志");
+    hasnt(canvasSrc, "🎭", "角色按钮不再用双面具");
+    /* 三步向导：① 声线设定（AI 造声线 / 现成音频两个入口）→ ② 台词与候选 → ③ 确认音色 */
+    has(canvasSrc, 'T("① 声线设定")', "第一步：声线设定");
+    has(canvasSrc, 'T("② 台词与候选")', "第二步：台词与候选");
+    has(canvasSrc, 'T("③ 确认音色")', "第三步：确认音色");
+    has(canvasSrc, 'T("声线设计（AI 造声线）")', "入口一：AI 造声线");
+    has(canvasSrc, 'T("音频参考（我有现成音频）")', "入口二：直接给现成音频 + 台词");
+    has(canvasSrc, "w.step = 2;", "声线设定完自动进候选步");
+    has(canvasSrc, "if (i + 1 === 2 && !w.candidates.length) return;", "步骤条可回退（没候选时不跳空步）");
+    has(canvasSrc, 'T("＋ 新建角色")', "跳窗里能新建角色");
+    has(canvasSrc, 'T("＋ 添加备选音色")', "已建角色能继续加备选音色（同一个跳窗直接生成）");
+    has(canvasSrc, 'T("设为基础音色")', "备选音色能提成基础音色");
+    has(canvasSrc, 'T("保存修改")', "角色里的一切（名字 / 设定 / 每组台词与指令）都能改后保存");
+    has(canvasSrc, 'T("删除这一组")', "组能删");
+    has(canvasSrc, 'T("删除角色")', "角色能删");
+    has(canvasSrc, 'T("用这一组")', "每组仍能一键用到节点");
+    has(canvasSrc, 'T("用这条")', "候选里挑一条当基础音色");
+    has(canvasSrc, 'T("重抽音频")', "单条候选能重抽音频（保留其它条）");
+    has(canvasSrc, 'T("重写这条台词")', "单条候选能只让 AI 换这一句台词");
+    has(canvasSrc, "avoid: others", "重写台词时把其它条当「别撞车」清单送进去");
+    has(canvasSrc, 'T("全部开始生成")', "第二步有「全部开始生成」");
+    has(canvasSrc, "w.candidates.filter((c) => c.status !== \"done\")", "全部开始生成只跑还没生成 / 失败的那些");
+    has(canvasSrc, 'btn("🎲", "mini")', "seed / cfg 旁边有随机按钮（解除手改锁定）");
+    has(canvasSrc, "c.seedTouched = true", "手改 seed 即锁定");
+    has(canvasSrc, "if (!c.seedTouched) c.seed = rndSeed()", "没手改就每次换随机 seed");
+    has(canvasSrc, "c.seedTouched = false", "🎲 解除锁定");
+    has(canvasSrc, 'T("＋ 手写一条")', "模型不可用时能自己手写台词继续");
+    has(canvasSrc, 'T("＋ 再加一条")', "候选能追加");
+    has(canvasSrc, 'T("取消剩余")', "生成中能取消（已出的候选留着）");
+    has(canvasSrc, "api.breezePresetOptimize(", "声线设定由默认 LLM + 技能扩成提示词");
+    has(canvasSrc, "api.breezePresetLines(", "台词按声线设定现写");
+    has(canvasSrc, "api.breezePresetLlm(", "跳窗读得到可用模型与默认模型");
+    has(canvasSrc, "api.breezePresetLlmSetModel(", "模型能在跳窗里临时换（持久化到插件配置）");
+    has(canvasSrc, "api.breezePresetCandidate(", "候选音色走宿主合成");
+    has(canvasSrc, "api.breezePresetCandidatePick(", "选中候选 → 落成基础 / 备选音色");
+    has(canvasSrc, "api.breezePresetCandidateDelete(", "候选能删（不堆垃圾）");
+    has(canvasSrc, "const rndSeed = () =>", "每条候选独立 seed");
+    has(canvasSrc, "const rndCfg = () =>", "每条候选随机 cfg 3~5");
+    has(canvasSrc, "for (const n of [3, 4, 5, 6])", "候选数量 3~6 可选");
+    has(canvasSrc, "seedInp.type = \"number\"", "seed 可手改");
+    has(canvasSrc, 'cfgInp.max = "5"', "cfg 限制在 3~5（音色设计档）");
+    /* 中途存盘：草稿在磁盘上、关窗不丢、只有「丢弃草稿」才删 */
+    has(canvasSrc, "const queueWizSave = () =>", "输入停下 500ms 就静默存一次（不打扰）");
+    has(canvasSrc, "}, 500);", "静默存盘的防抖窗口是 500ms");
+    has(canvasSrc, "const wizSnapshot = () =>", "台词 / seed / cfg / 走到第几步一起存盘");
+    has(canvasSrc, 'T("草稿已保存 · {t}", { t: clockText() })', "顶部显示「草稿已保存 · HH:MM」");
+    has(canvasSrc, "const restoreWizard = (p) =>", "重开时能从磁盘草稿原地恢复");
+    has(canvasSrc, "restoreWizard(p);", "左列「未完成」条目点得进去");
+    has(canvasSrc, 'T("未完成 · {name}", { name: p.name || "" })', "未完成的草稿在左列灰色列出来");
+    has(canvasSrc, "presets.filter((x) => x.draft)", "草稿与正经角色分两组渲染");
+    has(canvasSrc, "const dropDraft = async () =>", "丢弃草稿是唯一的删除入口");
+    has(canvasSrc, "await api.breezePresetDelete(w.presetId)", "丢弃草稿连候选一起删（不在磁盘上留垃圾）");
+    has(canvasSrc, "wizard: null", "定稿 / 丢弃时把 wizard 清掉");
+    has(canvasSrc, "if (wiz && wiz.presetId && !wiz.busy) await wizSave(true)", "关窗前先静默存一次");
+    /* 备选那趟写的声线设定 / 指令不进 design，但也得存下来（否则关一次窗就丢） */
+    has(canvasSrc, "setting: w.setting || \"\",", "草稿快照带上备选那趟的声线设定");
+    has(canvasSrc, "instruction: w.instruction || \"\",", "草稿快照带上备选那趟的指令");
+    has(hostSrc, "setting: str(raw.setting, 4000),", "宿主把声线设定原样存进 wizard");
+    has(hostSrc, "instruction: str(raw.instruction, 4000),", "宿主把指令原样存进 wizard");
+    has(
+      canvasSrc,
+      "w.setting != null && w.setting !== \"\" ? String(w.setting) : (p.design && p.design.setting) || \"\"",
+      "恢复时优先用草稿里那句话（没有才回落到角色的设定）",
+    );
+    /* 静默存盘不重画（会打断光标），但「取消」这颗按钮的含义当场就变了，字得跟着换 */
+    has(canvasSrc, 'btn(hasDraft() ? T("稍后再弄") : T("取消")', "底栏「取消 / 稍后再弄」按有没有草稿决定");
+    has(canvasSrc, 'mainEl.querySelector(".breeze-wiz-keep")', "静默存盘后原地把「取消」改成「稍后再弄」");
+    has(canvasSrc, 'T("丢弃草稿"), "mini")', "第一步也给一个明面上的「丢弃草稿」");
+    has(canvasSrc, "row.onclick = () => {", "左列「未完成」整行点哪儿都能继续");
+    hasnt(canvasSrc, "let draftId =", "草稿状态不再靠内存变量（存在预设库里）");
+    has(canvasSrc, "if (r && !r.ok && r.error === \"preset_missing\")", "角色真丢了就自动重建草稿再试（不把 preset_missing 甩给用户）");
+    has(canvasSrc, "await ensureDraft(true)", "重建草稿走同一个 ensureDraft");
+    has(canvasSrc, "p.wizard.kind === \"alt\"", "备选音色没做完在角色页上给横幅（不占左列）");
+    has(canvasSrc, 'T("「{name}」有一趟备选音色还没做完（第{n}步）· 点这里接着做"', "横幅写明停在第几步（点它即继续）");
+    /* 提醒只报状态，不摆「继续 / 丢弃」；删除通道收成一颗不起眼的 ✕ */
+    has(canvasSrc, 'btn("✕", "mini breeze-wiz-x", T("删除这趟草稿', "备选横幅的删除通道是那颗 ✕");
+    has(canvasSrc, 'btn("✕", "mini breeze-wiz-x", T("删除这条未完成的草稿"))', "左列未完成条目的删除通道也是 ✕");
+    hasnt(canvasSrc, 'btn(T("继续"), "mini primary")', "未完成提醒上不再摆「继续」按钮");
+    hasnt(canvasSrc, 'btn(T("丢弃"), "mini")', "未完成提醒上不再摆「丢弃」按钮");
+    has(canvasSrc, 't.closest("#overlay .ov-close-btn")', "窗头 ✕ 也先静默存一次再放行");
+    has(canvasSrc, "const yes = await confirmDialog(", "确认用的是应用内确认窗（不是原生 window.confirm，不被窗口裁切）");
+    has(canvasSrc, "openOverlay(I18n.t(\"角色与音色\"), { persistent: true })", "跳窗是 persistent（点蒙层不关）");
+    ok(!hostSrc.includes("function presetSweepDrafts(idx)"), "宿主不再读盘顺手扫草稿（这就是 preset_missing 的根因）");
+    /* 备选音色是在已有角色上追加：草稿存盘（groups 传空）那条路不能把定稿角色的组删光 */
+    has(
+      hostSrc,
+      "const designOnly = !!(existing && existing.draft === false && src.draft === true);",
+      "定稿角色被草稿存盘只更新声线设定（不删组、不改回草稿）",
+    );
+    has(canvasSrc, "draft: true,", "备选音色那趟也走草稿存盘（宿主 designOnly 分支保住组）");
+    has(canvasSrc, 'w.kind === "alt" && pub.design', "备选音色不反写角色的声线设定 / 指令");
+    has(canvasSrc, "const usedCandIds = new Set(", "候选小样池滤掉已经收进角色的那条");
+    has(canvasSrc, "const okLine = (msg) =>", "成功提示与失败提示分开着色");
+    has(read("renderer/css/asr.css"), ".breeze-preset-form .bpf-ok", "成功提示用绿字（.bpf-ok）");
+    has(canvasSrc, "await api.breezePresetSave(", "一切改动都经宿主 presetSave");
+    has(canvasSrc, "api.fileOpenDialog(", "「音频参考」能选本机音频");
+    has(canvasSrc, "api.fileReadAudioBytes(", "选中的音频读字节交给宿主（复制入库，不引用原文件）");
+    has(canvasSrc, 'defaultPath: String(typeof wfWorkspace === "function" ? wfWorkspace() : "").trim() || undefined', "选音频默认从画布工作目录开始");
+    has(canvasSrc, 'T("保存并选用")', "音频入口存完直接用到当前节点");
+    has(canvasSrc, "wavePreviewCreate(", "每组 / 每条候选都配波形播放器");
+    has(canvasSrc, "wavePreviewSetSource(", "播放器接到该音频的本地路径");
+    has(canvasSrc, "node.presetId = ", "「用这一组」把 presetId 写回节点");
+    has(canvasSrc, "node.presetGroupId = ", "同时写回 presetGroupId");
+    has(canvasSrc, "scheduleSave(true)", "选完立即落库");
+    has(canvasSrc, 'if (node.kind === "breeze_gen" && breezePresetIdOf(node) && (i === 1 || i === 2))', "选了角色后端口 1/2 隐藏");
+    has(canvasSrc, 'p.style.display = "none"', "隐藏只改显示（端口号与接线不动）");
+    has(canvasSrc, "port-preset-hidden", "隐藏端口有样式钩子");
+    has(
+      canvasSrc,
+      "signature: (node) => breezePresetIdOf(node) + \"|\" + breezePresetGroupIdOf(node)",
+      "设置窗按角色 / 组签名重建（换角色即刷新）",
+    );
+    has(canvasSrc, "if (presetId) {", "设置窗按「有没有选角色」分两条路");
+    has(
+      canvasSrc,
+      "参考音频与样本文字都来自这一组，端口 1 / 2 不参与合成",
+      "选了角色 → 一行说明参考源来自那一组",
+    );
+    has(canvasSrc, "/* 老口径：音色库 + 能力档（选了角色就整块不出现） */", "音色库 / 能力档在选了角色后整块不出现");
+    /* 两个文本框：选了角色只剩「输入文本」那个（参考文字来自组里） */
+    eqNum(F.breezeTextBoxesFor(psN, { compact: true }).children.length, 1, "选了角色 → 只留「输入文本」框");
+    eqNum(F.breezeTextBoxesFor(psOld, { compact: true }).children.length, 2, "没选角色 → 两个框都在（老口径不变）");
+
+    /* ── 管理台：角色改到画布跳窗里建，控制台只留状态 / 日志 / 手写指令试听 ── */
+    const psHtml = read("breeze/ui/index.html");
+    const psUi = read("breeze/ui/app.js");
+    hasnt(psHtml, 'id="presetList"', "控制台不再摆角色列表（角色在画布跳窗里建）");
+    hasnt(psHtml, 'id="btnPresetNew"', "控制台不再新建角色");
+    hasnt(psHtml, 'id="presetSel"', "试听不再选角色");
+    hasnt(psHtml, 'id="groupSel"', "试听不再选第几组");
+    has(psHtml, 'id="ttsInstr"', "试听指令是手写的");
+    hasnt(psHtml, "<h2", "控制台卡片顶部的大标题已清掉");
+    hasnt(psHtml, 'id="engHint"', "顶部那句引擎说明已清掉");
+    hasnt(psHtml, 'id="fmt"', "试听不再让选格式（一律 wav）");
+    hasnt(psUi, "function renderPresets(", "控制台不再渲染角色卡片");
+    hasnt(psUi, "function renderPresetSelects(", "控制台不再维护组下拉");
+    hasnt(psUi, "api.presetSave(", "控制台不再写预设库（单一写入口 = 画布跳窗）");
+    has(psUi, 'mode: "design"', "控制台试听走「音色设计」（手写指令）");
+    has(psUi, 'response_format: "wav"', "试听一律要 wav（波形播放器只吃 wav）");
+    has(psUi, 'ref_audio_path: ""', "试听不带参考音频（纯音色设计，不碰角色）");
+
+    /* 插件中心卡片：Breeze 这张不再带那句副标题 */
+    const pluginSrc = read("renderer/app-plugins.js");
+    has(pluginSrc, 'subtitle: { zh: "", en: "" }', "插件中心 Breeze 卡片的副标题已清空");
   }
 
   console.log(

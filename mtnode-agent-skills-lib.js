@@ -11,6 +11,7 @@ const CATEGORY_TITLES = {
   plugins: "插件与后端",
   canvas: "画布工作流模板",
   music: "音乐生成（MiniMax Music）",
+  writing: "写作与润色",
 };
 
 function bundledRoot(appRoot) {

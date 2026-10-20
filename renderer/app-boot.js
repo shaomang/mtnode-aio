@@ -135,19 +135,30 @@ function ensureDefaultProviders() {
   S.config.providers = text.concat(img, rest);
 }
 
-/* 顶栏 Logo 副标题（#logoSub，本轮需求）：
-   原来这一行是「🐋 DeepSeek Harness Empowered · v1.5.4 · 右键画布添加节点 · 拖线连接节点
-   · Ctrl+拖拽框选 · 滚轮缩放画布」。本轮删掉后缀那四条操作提示、**连同版本号一起删**
-   （版本号改到状态栏右下角的 #authorLink 显示，避免同一屏出现两个版本号），
-   只留 🐋 DeepSeek Harness Empowered。
-   行高不动：元素与字号都没变，只是文字变短，顶栏第一行不会因此收紧或位移。
-   那段操作提示按要求直接删除、不搬进手册。 */
+/* 顶栏 Logo 副标题（#logoSub）：
+   这一行是「<dsh 官方 logo> DeepSeek Harness Empowered」——之前那个 🐋 只是 emoji 顶替，
+   现改为 **dsh 官方 logo**：路径原样取自 dsh 官方前端包自带的 favicon
+   （dsh/gateway/node_modules/@deepseek-ai/dsh-web-frontend/dist/favicon.svg，50×50、
+   `<title>DeepSeek Harness</title>` 的那个文件），填色用 dsh 官方品牌蓝 #4D6BFE。
+   内联 SVG、不引外部图片：打包白名单与缺图都不会把这枚 logo 弄丢（同 renderer/
+   app-whalecoin.js 里官方 logo 内联 path 的做法）。**不要改回 emoji、也不要用自绘的鱼剪影。**
+   早前这一行还带过版本号与四条操作提示，已按要求删除（版本号在状态栏右下角 #authorLink）。 */
+const DSH_LOGO_PATH =
+  "M48.8354 10.0479C48.3232 9.79199 48.1025 10.2798 47.8032 10.5278C47.7007 10.6079 47.6143 10.7119 47.5273 10.8076C46.7793 11.624 45.9048 12.1597 44.7622 12.0957C43.0923 12 41.666 12.5356 40.4058 13.8398C40.1377 12.2319 39.2476 11.272 37.8926 10.6558C37.1836 10.3359 36.4668 10.0156 35.9702 9.31982C35.6235 8.82373 35.5293 8.27197 35.356 7.72754C35.2456 7.3999 35.1353 7.06396 34.7651 7.00781C34.3633 6.94385 34.2056 7.2876 34.0479 7.57568C33.418 8.75195 33.1733 10.0479 33.1973 11.3599C33.2524 14.312 34.4736 16.6641 36.8999 18.3359C37.1758 18.5278 37.2466 18.7197 37.1597 19C36.9946 19.5757 36.7974 20.1357 36.624 20.7119C36.5137 21.0801 36.3486 21.1597 35.9624 21C34.6309 20.4321 33.481 19.5918 32.4644 18.5757C30.7393 16.8721 29.1792 14.9917 27.2334 13.52C26.7764 13.1758 26.3193 12.856 25.8467 12.5518C23.8618 10.584 26.1069 8.96777 26.627 8.77588C27.1704 8.57568 26.8159 7.8877 25.0591 7.896C23.3022 7.90381 21.6953 8.50391 19.647 9.30371C19.3477 9.42383 19.0322 9.51172 18.7095 9.58398C16.8501 9.22363 14.9199 9.14355 12.9033 9.37598C9.10596 9.80762 6.07275 11.6396 3.84326 14.7681C1.16455 18.5278 0.53418 22.7998 1.30664 27.2559C2.11768 31.9521 4.46582 35.8398 8.07373 38.8799C11.8159 42.0322 16.1255 43.5762 21.041 43.2803C24.0269 43.104 27.3516 42.6963 31.1016 39.4561C32.0469 39.936 33.0396 40.1279 34.686 40.272C35.9546 40.3921 37.1758 40.208 38.1211 40.0078C39.6021 39.688 39.4995 38.2881 38.9639 38.0322C34.623 35.9678 35.5762 36.8081 34.71 36.1279C36.9155 33.4639 40.2402 30.6958 41.54 21.728C41.6426 21.0161 41.5557 20.5679 41.54 19.9917C41.5322 19.6396 41.6108 19.5039 42.0049 19.4639C43.0923 19.3359 44.1479 19.0317 45.1167 18.4878C47.9292 16.9199 49.064 14.3438 49.3315 11.2559C49.3711 10.7837 49.3237 10.2959 48.8354 10.0479ZM24.3262 37.8398C20.1196 34.4639 18.0791 33.3521 17.2358 33.3999C16.4482 33.4482 16.5898 34.3682 16.7632 34.9678C16.9443 35.5601 17.1812 35.9683 17.5117 36.4878C17.7402 36.832 17.8979 37.3442 17.2832 37.728C15.9282 38.584 13.5728 37.4399 13.4624 37.3838C10.7207 35.7358 8.42822 33.5601 6.81348 30.584C5.25342 27.7197 4.34766 24.6479 4.19775 21.3677C4.1582 20.5757 4.38672 20.2959 5.15869 20.1519C6.17529 19.96 7.22314 19.9199 8.23926 20.0718C12.5327 20.7119 16.1885 22.6719 19.2529 25.7759C21.002 27.5439 22.3252 29.6558 23.6885 31.7202C25.1377 33.9121 26.6978 36 28.6831 37.7119C29.3843 38.312 29.9434 38.7681 30.479 39.104C28.8643 39.2881 26.1699 39.3281 24.3262 37.8398ZM26.3433 24.6001C26.3433 24.248 26.6191 23.9678 26.9658 23.9678C27.0444 23.9678 27.1152 23.9839 27.1782 24.0078C27.2651 24.04 27.3438 24.0879 27.4067 24.1602C27.5171 24.272 27.5801 24.4321 27.5801 24.6001C27.5801 24.9521 27.3042 25.2319 26.9575 25.2319C26.6108 25.2319 26.3433 24.9521 26.3433 24.6001ZM32.6064 27.8799C32.2046 28.0479 31.8027 28.1919 31.4165 28.208C30.8179 28.2397 30.1641 27.9922 29.8096 27.688C29.2583 27.2158 28.8643 26.9521 28.6987 26.1279C28.6279 25.7759 28.6675 25.2319 28.7305 24.9199C28.8721 24.248 28.7144 23.8159 28.2495 23.4238C27.8716 23.104 27.3911 23.0161 26.8633 23.0161C26.666 23.0161 26.4849 22.9277 26.3511 22.856C26.1304 22.7441 25.9492 22.4639 26.1226 22.1201C26.1777 22.0078 26.4458 21.7358 26.5088 21.688C27.2256 21.272 28.0527 21.4077 28.8169 21.7197C29.5259 22.0161 30.0615 22.5601 30.834 23.3281C31.6216 24.2559 31.7632 24.5117 32.2124 25.208C32.5669 25.752 32.8901 26.312 33.1104 26.9521C33.2446 27.3521 33.0713 27.6802 32.6064 27.8799Z";
+
 function applyLogoSub() {
   const sub = $("#logoSub");
   if (!sub) return;
   /* 不加 hover 提示：这行的可见文字就是全部信息，再挂一条同名 title 只是重复（同
-     test/smoke-hint-cleanup.js 的「提示 ≡ 标签」口径）。 */
-  sub.innerHTML = '<span class="whale-tag">🐋 DeepSeek Harness Empowered</span>';
+     test/smoke-hint-cleanup.js 的「提示 ≡ 标签」口径）。
+     尺寸与基线对齐全在 css/layout.css 的 `.logo-sub .whale-tag .dsh-mark`，这里只出图形。 */
+  sub.innerHTML =
+    '<span class="whale-tag">' +
+    '<svg class="dsh-mark" viewBox="0 0 50 50" focusable="false" aria-hidden="true">' +
+    '<path d="' +
+    DSH_LOGO_PATH +
+    '" fill="#4D6BFE"/></svg>' +
+    " DeepSeek Harness Empowered</span>";
   sub.removeAttribute("title");
 }
 
@@ -163,6 +174,8 @@ function applyAuthorVersion() {
   const ver = String(S.appVersion || "").trim();
   el.textContent = ver ? "v" + ver : "";
   el.setAttribute("aria-label", I18n.t("应用详情") + (ver ? " v" + ver : ""));
+  /* 切语言时 I18n.applyDom 会把 title 重置成「应用详情」：蓝高亮态的提示在这里补回来 */
+  paintAuthorUpdate();
 }
 
 /* 会话左栏「DeepSeek Harness」后面那枚 dsh 内核版本（本次需求）：
@@ -297,17 +310,64 @@ function paintLangBtn() {
   btn.classList.toggle("is-en", en);
 }
 
-/* ── 内置版本更新：有新版本时顶栏高光「更新」── */
+/* ── 内置版本更新：有新版本时顶栏高光「更新」+ 右下角版本号蓝色高亮 ── */
 let _updateOff = null;
 let _updateInfo = null;
 /* Microsoft Store（MSIX）版：主进程已整条禁用内部更新，这里记住后强制隐藏入口，
-   连 available 事件也不点亮按钮 —— 避免留下一个「点了没反应」的更新入口 */
+   连 available 事件也不点亮按钮 —— 避免留下一个「点了没反应」的更新入口。
+   商店包不再完全静默：主进程只读比对更新源版本号（updater.js 的 probeStoreLatestVersion），
+   「商店里可能有新版」只体现为右下角版本号蓝色高亮 + 应用详情弹窗里的提示与商店按钮。 */
 let _updateStore = false;
+/* 最近一次更新状态：顶栏按钮、右下角版本号高亮、应用详情弹窗（app-settings.js）共用这一份。
+   available 含商店版的 storeUpdateAvailable；latestVersion 是线上（更新源）版本号。 */
+let _updateState = {
+  store: false,
+  available: false,
+  readyToRestart: false,
+  downloading: false,
+  version: "",
+  latestVersion: "",
+};
+
+/* 右下角版本号高亮（本轮需求）：有新版 / 下载中 / 已下载待安装都算「有事要你做」→ 蓝色。
+   商店版的「有新版」来自 statusPayload.storeUpdateAvailable（只读比对，不下载不安装），
+   所以商店包同样会亮，只是点开看到的是「去商店更新」而不是下载按钮。 */
+function paintAuthorUpdate() {
+  const el = $("#authorLink");
+  if (!el) return;
+  const s = _updateState || {};
+  const hot = !!(s.available || s.readyToRestart || s.downloading);
+  el.classList.toggle("has-update", hot);
+  const base = I18n.t("应用详情");
+  if (!hot) {
+    el.setAttribute("title", base);
+    return;
+  }
+  const ver = s.latestVersion || s.version || "";
+  const tip = s.downloading
+    ? I18n.t("正在下载更新…") + " · " + base
+    : (ver ? I18n.t("发现新版本 v") + ver : I18n.t("发现新版本")) + " · " + base;
+  el.setAttribute("title", tip);
+  el.setAttribute("aria-label", tip);
+}
+
 function paintUpdateBtn(st) {
   const btn = $("#btnUpdate");
   const bar = $(".topbar");
   if (!btn) return;
   if (st && st.store) _updateStore = true;
+  if (st) {
+    _updateState = {
+      store: !!_updateStore,
+      available: !!(st.available || st.storeUpdateAvailable || st.readyToRestart),
+      readyToRestart: !!st.readyToRestart,
+      downloading: !!st.downloading,
+      version: st.version || (_updateInfo && _updateInfo.version) || "",
+      latestVersion:
+        st.latestVersion || st.version || (_updateInfo && _updateInfo.version) || "",
+    };
+  }
+  paintAuthorUpdate();
   if (_updateStore) {
     btn.hidden = true;
     btn.setAttribute("aria-hidden", "true");
@@ -357,10 +417,39 @@ function bindUpdateUi() {
     } catch (_) {}
     _updateOff = null;
   }
-  btn.onclick = async () => {
-    if (btn.classList.contains("busy")) return;
-    /* MSIX / 商店版：内部更新不可用，明确告知走商店更新 */
-    if (_updateStore) {
+  btn.onclick = () => {
+    runUpdateAction();
+  };
+  /* 应用详情弹窗（app-settings.js 的 openAuthorPopup）里那颗「更新到 vX」走同一份实现，
+     保证两处入口行为一字不差（同一句确认框、同一套 toast、同一份状态） */
+  window.runUpdateAction = runUpdateAction;
+  window.authorUpdateState = () => _updateState;
+  bindUpdateEvents(btn);
+}
+
+/**
+ * 顶栏「更新」按钮与应用详情弹窗里那颗按钮的**唯一实现**（用户口径：两处一致）。
+ * 走主进程 update:confirmAndStart（发现新版本确认框 → 差分下载 → 静默安装），
+ * 商店包在这里只会拿到 store_package 回执，改走「去商店更新」的明确提示。
+ */
+async function runUpdateAction() {
+  const btn = $("#btnUpdate");
+  if (btn && btn.classList.contains("busy")) return;
+  /* MSIX / 商店版：内部更新不可用，明确告知走商店更新 */
+  if (_updateStore) {
+    toast(
+      I18n.t(
+        "Microsoft Store（MSIX）版不支持应用内更新，请在 Microsoft Store 中获取更新",
+      ),
+      "ok",
+    );
+    return;
+  }
+  try {
+    const r = await window.api.updateConfirmAndStart();
+    if (r && r.store) {
+      _updateStore = true;
+      paintUpdateBtn({ store: true });
       toast(
         I18n.t(
           "Microsoft Store（MSIX）版不支持应用内更新，请在 Microsoft Store 中获取更新",
@@ -369,45 +458,37 @@ function bindUpdateUi() {
       );
       return;
     }
-    try {
-      const r = await window.api.updateConfirmAndStart();
-      if (r && r.store) {
-        _updateStore = true;
-        paintUpdateBtn({ store: true });
-        toast(
-          I18n.t(
-            "Microsoft Store（MSIX）版不支持应用内更新，请在 Microsoft Store 中获取更新",
-          ),
-          "ok",
-        );
-        return;
-      }
-      if (r && r.cancelled) return;
-      if (r && r.ok === false) {
-        toast(
-          I18n.t("更新失败：") + (r.error || I18n.t("未知错误")),
-          "err",
-        );
-        return;
-      }
-      if (r && r.downloading) {
+    if (r && r.cancelled) return;
+    if (r && r.ok === false) {
+      toast(I18n.t("更新失败：") + (r.error || I18n.t("未知错误")), "err");
+      return;
+    }
+    if (r && r.downloading) {
+      if (btn) {
         btn.classList.add("busy");
         btn.classList.remove("ready");
         const txt = btn.querySelector(".btn-update-txt");
         if (txt) txt.textContent = I18n.t("下载中");
-        toast(I18n.t("开始下载更新（差分包）…"), "ok");
-      } else if (r && r.readyToRestart) {
-        paintUpdateBtn({
-          available: true,
-          readyToRestart: true,
-          version: (_updateInfo && _updateInfo.version) || "",
-          downloading: false,
-        });
       }
-    } catch (e) {
-      toast(I18n.t("更新失败：") + ((e && e.message) || String(e)), "err");
+      _updateState.downloading = true;
+      _updateState.available = true;
+      paintAuthorUpdate();
+      toast(I18n.t("开始下载更新（差分包）…"), "ok");
+    } else if (r && r.readyToRestart) {
+      paintUpdateBtn({
+        available: true,
+        readyToRestart: true,
+        version: (_updateInfo && _updateInfo.version) || "",
+        downloading: false,
+      });
     }
-  };
+  } catch (e) {
+    toast(I18n.t("更新失败：") + ((e && e.message) || String(e)), "err");
+  }
+}
+/* 主进程更新事件 → 顶栏按钮 / 右下角版本号高亮 / 应用详情弹窗共用的状态。
+   单独成函数只为让「动作（runUpdateAction）」与「事件」两块互不缠绕。 */
+function bindUpdateEvents(btn) {
   if (window.api.onUpdateEvent) {
     _updateOff = window.api.onUpdateEvent((channel, data) => {
       if (channel === "update:available") {
@@ -419,6 +500,10 @@ function bindUpdateUi() {
           readyToRestart: false,
         });
       } else if (channel === "update:progress") {
+        /* 下载中也是「有事要你做」：右下角版本号保持蓝色（与顶栏按钮 show 同步） */
+        _updateState.downloading = true;
+        _updateState.available = true;
+        paintAuthorUpdate();
         const pct =
           data && data.percent != null ? Math.round(data.percent) : 0;
         const txt = btn.querySelector(".btn-update-txt");
@@ -446,6 +531,8 @@ function bindUpdateUi() {
         });
       } else if (channel === "update:error") {
         btn.classList.remove("busy");
+        _updateState.downloading = false;
+        paintAuthorUpdate();
         if (data && data.error)
           toast(I18n.t("更新失败：") + data.error, "err");
       } else if (channel === "update:status") {
@@ -744,6 +831,11 @@ async function init() {
     /* 「不走普通会话计划这条线」（长任务新建窗的引导建图会话）：重启后仍豁免 ——
        否则再跑一轮就会拿到「任务流程 / 交计划块」指令，交出来的就是普通会话计划了。 */
     sess.noPlanFlow = !!sess.noPlanFlow;
+    /* 全局助手会话（本轮需求 · 拷问共识）：这条会话由右侧助手栏驱动，与助手栏共用
+       同一份正文；不绑画布（画布归属显示「全局」），也不进「绑定会话」候选。
+       老存档没有这一位 → false = 普通会话。 */
+    sess.assist = !!sess.assist;
+    if (sess.assist) sess.canvasWfId = "";
     /* 长任务环节归属标记（app-longtask.js 的 ltBindAgentSession 写 {wfId,runId,path}）：
        它同样进 planFlowExemptSession 的豁免判据（app-plan.js），丢了这一位 → 重启后该
        环节会话又变回普通会话计划线。这里按落盘白名单同口径归一（缺省 null = 普通会话）。 */
@@ -824,26 +916,44 @@ async function init() {
   }
   /* 会话「计划」清单最小高度：默认即最小，把手可继续向上拖高（全局偏好，启动先夹一次） */
   S.agentPlanH = clampAgentPlanH(S.config.agentPlanH || PLAN_LIST_MIN_H);
-  S.assistMessages = Array.isArray(S.config.assistMessages)
-    ? S.config.assistMessages.map((m) => {
-        const o = {
-          role: m.role === "assistant" ? "assistant" : "user",
-          content: String(m.content || ""),
-        };
-        if (m.reasoning) o.reasoning = String(m.reasoning);
-        if (Array.isArray(m.tools) && m.tools.length) o.tools = m.tools;
-        /* 「用户主动关闭会话」状态行（本次需求）：随存档还原 _src / _detail，
-           重开面板仍是那条中性状态行 + 可展开的原始报文，而不是空气泡。 */
-        if (m._src) o._src = String(m._src);
-        if (m._detail) o._detail = String(m._detail);
-        return o;
-      })
+  /* 右侧全局助手的对话 = 一条普通会话（本轮需求 · 拷问共识）：
+     config 只留指针 assistSessionId，正文在 agent-sessions/<id>.json；
+     老配置里那份 assistMessages 一次性迁成一条助手会话（q6），迁完删键。 */
+  S.assistSessionId = String(S.config.assistSessionId || "");
+  const legacyAssistMsgs = Array.isArray(S.config.assistMessages)
+    ? S.config.assistMessages
     : [];
-  /* 全局助手的 Token 消耗累计报告（按模型 + 时间） */
-  S.assistTokenReport =
-    S.config.assistTokenReport && typeof S.config.assistTokenReport === "object"
-      ? S.config.assistTokenReport
-      : null;
+  delete S.config.assistMessages;
+  delete S.config.assistTokenReport;
+  S.assistTokenReport = null;
+  S.assistMessages = [];
+  let assistBoundSt = S.assistSessionId
+    ? typeof agentSessionById === "function"
+      ? agentSessionById(S.assistSessionId)
+      : null
+    : null;
+  let assistMigrated = false;
+  if (!assistBoundSt && legacyAssistMsgs.length && typeof assistMigrateLegacy === "function") {
+    /* 还没有指针 / 指针指向的会话已不在，但有旧历史：迁成一条可回看的助手会话 */
+    assistBoundSt = assistMigrateLegacy(legacyAssistMsgs);
+    if (assistBoundSt) {
+      S.assistSessionId = String(assistBoundSt.id);
+      assistMigrated = true;
+    }
+  }
+  if (assistBoundSt) {
+    if (!assistBoundSt._lcLoaded && typeof agentEnsureSessionBody === "function") {
+      try {
+        await agentEnsureSessionBody(assistBoundSt);
+      } catch (_) {}
+    }
+    if (typeof assistBindSession === "function") assistBindSession(assistBoundSt);
+    /* 迁移这件事必须立刻落到 config（新的指针 + 删掉旧键）：否则下次启动又迁一遍，
+       左栏会攒出一串重复的助手会话。 */
+    if (assistMigrated && typeof persistAssistUi === "function") persistAssistUi();
+  } else {
+    S.assistSessionId = "";
+  }
   try {
     const dc = await window.api.dshConfig();
     if (dc && dc.workspaceFallback) S.dshWorkspaceFallback = dc.workspaceFallback;
@@ -894,7 +1004,7 @@ async function init() {
   $("#btnSettings").onclick = openSettings;
   if ($("#btnPlugins")) $("#btnPlugins").onclick = openAppPluginsDialog;
   /* 顶栏「工具库」＝直达工具库对话框（只管理本机已保存的工具 / 函数）；
-     新建工具节点 / 函数节点的入口在画布右键菜单的「工具」一级菜单下（app.js canvasCreateMenuGroups） */
+     新建工具节点 / 函数节点的入口在画布右键菜单的「其他节点」二级菜单里（app.js canvasCreateMenuGroups） */
   if ($("#btnTools")) $("#btnTools").onclick = () => openToolsLibrary();
   /* 顶栏「素材库」＝跨画布的本机素材仓库（首次使用会先引导指定根目录）；
      左右栏对话框与全部库操作在 app-assets.js，素材节点「绑定」选择器复用同一份组件 */
@@ -940,7 +1050,7 @@ async function init() {
     };
   $("#btnGroup").onclick = toggleGroupAction;
   const btnWrapSuper = $("#btnWrapSuper");
-  /* 顶栏「超节点」：无单个超节点被选中时 = 框选合并；正好选中一颗普通超级节点时
+  /* 顶栏「节点层」：无单个节点层被选中时 = 框选合并；正好选中一颗普通节点层时
      = 二次点击 → 拆开它（内容移回外层 + 删除空壳）。分叉在 onWrapSuperButton 里。 */
   if (btnWrapSuper) btnWrapSuper.onclick = () => onWrapSuperButton();
   const btnAutoLayout = $("#btnAutoLayout");
@@ -999,6 +1109,12 @@ async function init() {
   document.addEventListener("compositionstart", (ev) => {
     const t = ev && ev.target;
     if (!t) return;
+    /* 判据与焦点守卫闸同一份（canvasStageFieldEl 一路走到根，不设层数上限：
+       深层输入框上若漏判，组合期间照样会重建画布，正在拼的那个字就丢了） */
+    if (typeof canvasStageFieldEl === "function") {
+      if (canvasStageFieldEl()) S._canvasImeComposing = true;
+      return;
+    }
     let el = t;
     for (let i = 0; i < 10 && el; i++) {
       if (el.id === "stage") {
@@ -1120,17 +1236,17 @@ async function init() {
         if (el.hidden) { buildAgentModeMenu(); openAgentMenu("agentModeMenu"); }
         else closeAgentMenus();
       };
-    /* 助手栏「模式」chip（本次需求）：与会话侧同一个构件、同一个开合函数，
-       只是行集换成 assistModeEntries（先拷问需求 + 纯净模式），chip 换成助手栏那一枚。 */
+    /* 助手栏「模式」chip（本次需求）：与会话侧同一个构件，开合走 openAssistModeMenu ——
+       它除了建菜单，还要按「模式」按钮现算落点（app-assist.js 的 placeAssistModeMenu：
+       优先向下、左对齐按钮、不超出助手栏），否则复用会话侧 CSS 的 bottom:calc(100% - 8px)
+       会把整块菜单顶到助手栏上边界之外。 */
     const amt = $("#assistModeTrigger");
     if (amt)
       amt.onclick = () => {
         const el = $("#assistModeMenu");
         if (!el) return;
-        if (el.hidden) {
-          buildAgentModeMenu("assistModeMenu", assistModeEntries, paintAssistModeChip);
-          openAgentMenu("assistModeMenu");
-        } else closeAgentMenus();
+        if (el.hidden) openAssistModeMenu();
+        else closeAgentMenus();
       };
     /* 会话「与画布无关」chip 已随本次需求移除（改为按消息自动判定，见 app-assist.js 的
        agentCanvasTurnRelated）：chip 与它上面那段 onclick 都不再存在，这里不留空绑定。 */
@@ -1156,7 +1272,9 @@ async function init() {
     const rpb = $("#agentRunPlanBtn");
     if (rpb) rpb.onclick = () => agentExecutePlan();
     document.addEventListener("mousedown", (ev) => {
-      if (!ev.target.closest(".agent-composer")) closeAgentMenus();
+      /* 只收会话输入框那一族：助手栏「模式」菜单是常驻设置浮层（不点外部关闭），
+         它的开合由 #assistModeTrigger 与 Esc 负责（见 app-assist.js openAssistModeMenu）。 */
+      if (!ev.target.closest(".agent-composer")) closeComposerMenus();
     });
     const presetSel = $("#agentPresetSel");
     if (presetSel)

@@ -474,7 +474,7 @@ function makeFakeDesktop(dir) {
     ok(/underDataDir\(/.test(src), "卸载守卫：只删数据目录里的路径（本机 Paseo 与 ~/.paseo 一律不碰）");
     const pre = read("paseo/preload-paseo.js");
     ok(/openInstall: \(\) => ipcRenderer\.invoke\("mtnodeInstall:open"/.test(pre), "控制台桥只留「打开安装窗」这条入口");
-    ok(/startDaemon:/.test(pre) && /stopDaemon:/.test(pre), "控制台桥保留启停（卡片上没有「启用」按钮，这是唯一出口）");
+    ok(/startDaemon:/.test(pre) && /stopDaemon:/.test(pre), "控制台桥保留启停（与卡片「启用 / 停用」等价，同一件事）");
     ok(!/useReuse:|waitNode:|cleanReinstall:|pickInstallDir:/.test(pre), "控制台桥不再暴露安装类动作");
     const ui = read("paseo/ui/ui.js");
     ok(/data-act="open-install"/.test(ui) && /paseoApi\.openInstall\(\)/.test(ui), "控制台有「打开安装窗」动作");
@@ -483,9 +483,10 @@ function makeFakeDesktop(dir) {
     ok(/node_too_old/.test(ui) && /node_install_failed/.test(ui), "控制台把「Node 太旧 / Node 装不上」翻成人话（错误表仍留着给安装窗回执用）");
     ok(/InstallCheck|installCheck/.test(ui), "控制台渲染安装自检结论（只读状态行）");
     ok(/real_node_missing/.test(ui), "控制台把「没有真 Node」翻成人话");
-    /* 卡片：两颗按钮（安装 / 重装 + 控制台），没有「启用」 */
+    /* 卡片：三颗按钮（安装 / 重装 + 启用 / 停用 + 控制台）—— 本轮共识：默认不启用，必须显式开 */
     const plug = read("renderer/app-plugins.js");
-    ok(/paseo: \{ key: "paseo", api: "paseoRemote", hasService: false, update: false \}/.test(plug), "卡片 spec：hasService:false（不给「启用」按钮）");
+    ok(/paseo: \{[\s\S]{0,220}hasService: true/.test(plug), "卡片 spec：hasService:true（有「启用 / 停用」按钮）");
+    ok(/startFn: "paseoRemoteStartDaemon"/.test(plug) && /stopFn: "paseoRemoteStopDaemon"/.test(plug), "卡片启停走 paseoRemote 那对既有桥");
     ok(/paseo: "paseo-remote"/.test(plug), "卡片「安装」开的是 paseo-remote 那只安装窗");
     ok(/return refreshBackendPluginCard\(root, BACKEND_PLUGIN_SPECS\.paseo\)/.test(plug), "卡片复用通用后端卡片");
     /* 插件根目录体系：安装目录 = 插件根目录 + paseo（ensureDir 写回 config.json 的 installDir） */

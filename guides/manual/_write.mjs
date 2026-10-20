@@ -296,7 +296,7 @@ diagrams["mtnode-canvas-02-ui"] = {
   caption: "参数表就是端子表：加一个参数就多一个端子",
   items: [
     bx(16, 44, 180, 48, "函数节点\nJS：input → return", PUR, FILL_U),
-    bx(16, 120, 180, 48, "工具节点\n超级节点 + 注册", GOLD, FILL_C),
+    bx(16, 120, 180, 48, "工具节点\n节点层 + 注册", GOLD, FILL_C),
     ar(196, 68, 250, 68, PUR),
     ar(196, 144, 250, 144, GOLD),
     bx(250, 44, 330, 124, "参数表 = 端子表\n输入端子 0 = 控制入，1..N 依次是各入参\n输出端子 0..M-1 是各出参，末位是控制出\n端子类型 text / image 决定能不能相接", CYAN, FILL_D),

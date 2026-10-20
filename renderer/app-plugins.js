@@ -852,10 +852,21 @@ const BACKEND_PLUGIN_SPECS = {
   llama: { key: "llama", api: "llama", hasService: true },
   breeze: { key: "breeze", api: "breeze", hasService: true },
   remotion: { key: "remotion", api: "remotion", hasService: false },
-  /* Paseo 手机接管：卡片只有「安装 / 重装 + 控制台」—— hasService:false 就是「不给启用按钮」
-     （它不是没有后端，而是启停故意留在控制台：复用模式那份后端由 Paseo Desktop 自己管）。
-     api 前缀是 paseoRemote（宿主那套 paseoRemote:* IPC）。 */
-  paseo: { key: "paseo", api: "paseoRemote", hasService: false, update: false },
+  /* Paseo 手机接管：卡片 = 安装 / 重装 + **启用 / 停用** + 控制台（本轮共识：默认不启用，
+     必须在这里显式开启才会起后端）。api 前缀是 paseoRemote（宿主那套 paseoRemote:* IPC）；
+     启停入口沿用那对既有桥（startDaemon / stopDaemon），宿主把它们与启用 / 停用做成同一件事：
+     启动 = 写启用标记 + 打开远程连接；停止 = 清标记 + 关远程连接。 */
+  paseo: {
+    key: "paseo",
+    api: "paseoRemote",
+    hasService: true,
+    update: false,
+    startFn: "paseoRemoteStartDaemon",
+    stopFn: "paseoRemoteStopDaemon",
+    /* 复用模式（用本机已装的 Paseo Desktop）不显示启用 / 停用：那份后端归桌面端自己管，
+       我们只在自己的自建后端上有启停权（与数据目录里的 config.mode 一致）。 */
+    serviceWhen: (st) => !!st && st.mode !== "reuse",
+  },
 };
 function backendSpecOf(item) {
   const k = item && (item.kind || item.handler);
@@ -948,7 +959,8 @@ async function refreshBackendPluginCard(root, spec, opts) {
     actions.appendChild(mkPluginActBtn(kind, title, onClick, btnOpts));
   };
   const stopBackend = async () => {
-    const fn = pluginApiFn(spec.api + "Stop");
+    /* spec.stopFn / startFn：个别插件（paseo）的启停桥不叫 `<api>Stop`，允许显式覆盖 */
+    const fn = pluginApiFn(spec.stopFn || spec.api + "Stop");
     _backendStarting.delete(spec.key);
     _backendStopping.add(spec.key);
     _backendLastErr.delete(spec.key);
@@ -968,7 +980,7 @@ async function refreshBackendPluginCard(root, spec, opts) {
     repaint();
   };
   const startBackend = async () => {
-    const fn = pluginApiFn(spec.api + "Start");
+    const fn = pluginApiFn(spec.startFn || spec.api + "Start");
     if (!fn) return;
     _backendLastErr.delete(spec.key);
     _backendStarting.add(spec.key);
@@ -1034,7 +1046,7 @@ async function refreshBackendPluginCard(root, spec, opts) {
   } else {
     addBtn("download", reinstallLabel || I18n.t("重装"), installBackend);
   }
-  if (st.installed && spec.hasService) {
+  if (st.installed && spec.hasService && (!spec.serviceWhen || spec.serviceWhen(st))) {
     const title = stopping
       ? I18n.t("停用中…")
       : starting
@@ -1159,10 +1171,11 @@ async function refreshSensenovaPluginCard(root) {
 }
 
 /* ---- Paseo 手机接管（应用插件 kind paseo，id paseo-remote）----
-   卡片口径（本轮需求）：与其它本地后端同一套 —— **两颗按钮 = 「安装」（未装）/「重装」（已装）+「控制台」**。
+   卡片口径（本轮需求）：与其它本地后端同一套 —— **三颗按钮 = 「安装 / 重装」+「启用 / 停用」+「控制台」**。
    安装 / 重装开的是那只**通用安装窗**（安装 / 重装 / 清干净重装 / 准备真 Node / 卸载都在窗里）；
-   「启用 / 停用」**故意不做**（Paseo 的后端要么由它自己的桌面端管、要么是常驻 daemon，
-   启停留在控制台里那两颗按钮上，卡片不重复一条容易误解的语义）。
+   「启用 / 停用」是这一轮的核心：**默认不启用**，只有点它（或安装窗装完那一次）才会起后端 ——
+   启用 = 宿主静默托管起后端 + 打开远程连接；停用 = 停后端 + 关远程连接 + 清启用标记。
+   控制台里那两颗按钮与它是同一件事（宿主把它们做成等价，没有中间态）。
    已装判据看宿主 statusForUi 的顶层 installed：**复用本机已装的 Paseo 或自建那份，任一可用就算已装**。
    卡片底部仍不留任何正文（状态在控制台里逐项显示）。 */
 async function refreshPaseoPluginCard(root) {
@@ -1992,10 +2005,7 @@ async function openAppPluginsDialog() {
             icon: "breeze-tts-local.png",
             version: "1.0.0",
             title: { zh: "Breeze TTS 2 本地 TTS", en: "Breeze TTS 2 Local TTS" },
-            subtitle: {
-              zh: I18n.t("Breeze TTS 2（实时流式 · 音色克隆 / 设计 / 导演）：参考片段音色库、OpenAI 兼容 TTS API；画布「Breeze 语音」节点。权重仅限研究与非商用。"),
-              en: "Breeze TTS 2 (streaming · clone / design / direction): reference-clip voice library, OpenAI-compatible TTS API; canvas Breeze voice node. Weights are research / non-commercial only.",
-            },
+            subtitle: { zh: "", en: "" },
             compatible: true,
             installed: true,
           },
@@ -3615,6 +3625,13 @@ async function fetchMcpServerState(opts) {
     st.info = null;
     EXT_UI.errors.server = I18n.t("MCP 服务端状态不可用（") + extErrorText(e) + I18n.t("）");
   }
+  /* 作业表（生成 / 跑图）：内存里那几张，一次调用就走完的也在这里留个尾 */
+  try {
+    const r = await window.api.mcpJobs();
+    st.jobs = (r && r.jobs) || [];
+  } catch {
+    st.jobs = [];
+  }
   await mcpServerLoadLogs(opts);
   await paseoBridgeLoad();
 }
@@ -3790,7 +3807,35 @@ function paintMcpServerPanel(info) {
   }
   extInfoField(info, I18n.t("客户端标识"), s.clientId || I18n.t("（未设置，仅用于审计归类）"));
   extInfoField(info, I18n.t("审计目录"), s.auditDir || "");
+  /* 自用回环：应用内 Agent 也能走这套接口调自己的生成能力（四项子集，受上面总开关约束）。
+     真身是引擎 MCP 清单里那一行 mtnode-self —— 关掉它只是撤掉那行，服务端照跑。 */
+  extInfoField(
+    info,
+    I18n.t("自用回环"),
+    s.selfLoop
+      ? I18n.t("开 · 引擎 MCP 清单里有 mtnode-self") +
+          (s.selfLoopActive ? I18n.t("（已挂上）") : I18n.t("（服务端未监听，暂不生效）")) +
+          I18n.t(" · 放行的工具：") +
+          (s.selfLoopTools || []).join(" / ")
+      : I18n.t("关 · 应用内 Agent 只用手上的内置工具，不经 MCP 调生成"),
+  );
   if (s.lastError) extInfoField(info, I18n.t("最近一次错误"), s.lastError);
+
+  /* 作业（生成 / 跑节点都是异步的：起作业立刻回 jobId，结果在这里看） */
+  if ((st.jobs || []).length) {
+    extInfoDetails(
+      info,
+      I18n.t("作业（本次运行内 · ") + st.jobs.length + I18n.t(" 个）"),
+      st.jobs
+        .map(
+          (j) =>
+            (j.status === "running" ? "▶ " : j.status === "ok" ? "✓ " : "✗ ") +
+            j.jobId + " · " + (j.kind || "") + " · " + (j.status === "running" ? I18n.t("进行中") : j.ms + "ms") +
+            (j.error ? " · " + j.error : ""),
+        )
+        .join("\n") + "\n" + I18n.t("（只在内存里：应用一关就清空）"),
+    );
+  }
 
   extInfoDetails(
     info,
@@ -3825,6 +3870,26 @@ function paintMcpServerPanel(info) {
       async () => mcpCopy(run ? s.url : s.statePath, I18n.t("地址")),
     ],
     [I18n.t("复制令牌"), "", async () => mcpCopy(s.token, I18n.t("令牌"))],
+    [
+      s.selfLoop ? I18n.t("关闭自用回环") : I18n.t("开启自用回环"),
+      "",
+      async () => {
+        try {
+          const r = await window.api.mcpSetSelfLoop(!s.selfLoop);
+          if (r && r.ok === false) throw new Error(r.error);
+          toast(
+            s.selfLoop
+              ? I18n.t("自用回环已关闭")
+              : I18n.t("自用回环已开启（引擎重连后生效）"),
+            "ok",
+          );
+        } catch (e) {
+          toast(I18n.t("操作失败：") + extErrorText(e), "err");
+        }
+        await fetchMcpServerState();
+        paintExtManager();
+      },
+    ],
     [
       I18n.t("复制配置片段"),
       "",

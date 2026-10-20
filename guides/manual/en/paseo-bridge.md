@@ -1,4 +1,4 @@
-# Take over sessions from your phone (Paseo)
+﻿# Take over sessions from your phone (Paseo)
 
 Install the **Paseo** app on your phone ([paseo.sh](https://paseo.sh), open source), pair it once, and from then on you can watch and take over the **agent sessions** in MTNode's left sidebar: read messages and tool calls, follow live output, send messages, steer mid-turn, stop a turn, and answer whatever stops and waits for a human — tool approvals and canvas-change confirmations arrive as cards, **model questions arrive as a plain readable message you simply reply to**.
 
@@ -14,11 +14,11 @@ Open **Plugins** in the top bar -> **Paseo phone handoff**. Install first, then 
 
 1. **Generate the pairing QR code** and scan it with the Paseo app. The pairing link is shown next to it if you would rather copy it to the phone. (Direct connections still work: on the phone use **Add host -> Direct connection** with your Tailscale IP and port `6767`.)
 2. **Register with Paseo**.
-3. Turn on the **Remote access** master switch - it is off by default and you open it yourself after pairing.
+3. Turn on the **Remote access** master switch - or, simpler, click **Enable** on the plugin card (it starts the backend and opens the master switch; **disabled by default**, nothing runs until you do).
 
 > The bridge must be launched with a **real Node** (the install window installs a managed one when needed; the console shows the exact path the app uses).
 > When it cannot connect, click **Bridge self-check**: it probes every data-directory candidate and lists the results.
-> A self-built backend is **run silently in the background by MTNode** (no terminal window pops up any more) and **Start backend / Stop backend** live in the console. It **stops together with MTNode** — keep MTNode open while you want the phone attached.
+> A self-built backend is **run silently in the background by MTNode** (no terminal window pops up any more); **Enable / Disable** live on the card and **Enable backend / Disable backend** in the console (same thing). It **stops together with MTNode** — keep MTNode open while you want the phone attached.
 
 ## 2. Using it
 
@@ -55,5 +55,6 @@ Open **Plugins** in the top bar -> **Paseo phone handoff**. Install first, then 
 - **You replied on the phone but the AI treated it as a new instruction**: same cause, an older bridge script. New builds treat a reply as the answer while a question is pending. One other case exists: if the question was already answered on the desktop (or that turn had ended), your message is forwarded as an ordinary message instead.
 - **Revoking a pairing code you already handed out**: Paseo has no "unpair" - use **Reset pairing credentials** in the console. It rotates the daemon keypair and restarts the backend, so **every paired device is invalidated** and must pair again.
 - **The phone cannot connect once MTNode is closed**: that is the current design — the self-built backend is a child process of MTNode and **stops with it** (no orphan process, and no terminal window that could be closed by accident). Keep MTNode open while you want the phone attached.
-- **The console marks the daemon as "legacy (with window)"**: you are still running a backend that opens its own terminal window. Restart MTNode (or click **Stop backend** and then **Start backend**) and it is switched to the silent mode; pairing is untouched, the phone may drop for a moment.
+- **The backend does not come back after restarting MTNode**: it is **disabled by default** — only **Enable** on the card, **Enable backend** in the console, or a finished install writes the enabled flag, and only then does the next start resume it; **Disable** clears the flag. Machines upgraded from an older build are silently marked as disabled on first start, with no popup.
+- **The console marks the daemon as "legacy (with window)"**: you are still running a backend that opens its own terminal window. Restart MTNode (or click **Disable backend** and then **Enable backend**) and it is switched to the silent mode; pairing is untouched, the phone may drop for a moment.
 - **"Paseo version too low"**: the bridge declares a minimum compatible version (shown in the console). Upgrade Paseo.

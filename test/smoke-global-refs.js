@@ -112,7 +112,7 @@ const __FAKES__ = [
   "resolvePromptCapsules",
   /* 同上：judge 的判据里把 @img: token 换成可读注记（样本里没有 token → 原样返回） */
   "promptCapsulesToText",
-  "nodeParentSuperId", // 超级节点隧穿：样本里没有壳层
+  "nodeParentSuperId", // 节点层隧穿：样本里没有壳层
   "superExternalInWires",
   "superInternalOutFeeds",
   "superInPortIsControl",

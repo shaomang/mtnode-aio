@@ -4,9 +4,9 @@
  *
  * 背景（本轮修的 bug）：「在哪一层」与「相机看到哪」过去是全局一份：
  *   ① 切画布走 renderer/app.js 的 loadWorkflow → resetTaskFocus()，把任务子画布焦点
- *      （S.taskFocus）与超级节点 focus 子画布（S.superFocus）一把清零；
+ *      （S.taskFocus）与节点层 focus 子画布（S.superFocus）一把清零；
  *   ② 相机 S.cam 跨画布共享，切过去的画布顶着上一张的平移量。
- * 于是「钻在超级节点 / 任务的子画布里干活 → 切去看别的画布 → 切回来」每次都站在
+ * 于是「钻在节点层 / 任务的子画布里干活 → 切去看别的画布 → 切回来」每次都站在
  * 根画布的陌生位置，得重新钻一遍壳。
  * 现在按画布 id 各记一份（S.wfViews，只存内存不落盘），交接点唯一 = setForegroundWf：
  * 离开谁存谁的、成为前台套用自己的；记录的层已被删掉时按返回栈由深到浅逐层退，
@@ -200,7 +200,7 @@ const dropNode = (wf, id) => {
   wf.nodes = wf.nodes.filter((x) => x.id !== id);
 };
 
-console.log("\n[1] 超级节点 focus + 相机：切走再切回来仍在原位");
+console.log("\n[1] 节点层 focus + 相机：切走再切回来仍在原位");
 {
   const A = mkWf("A");
   const B = mkWf("B");
@@ -411,8 +411,8 @@ console.log("\n[8] 往返外层：进了子任务必须回得来（本次修复�
   /* 两个「回不去」的口子一起钉住：
      (a) 主画布面包屑 .task-crumb 是定宽（min(38%,380px)）+ overflow:hidden 的一行，
          路径条目一律 flex:none —— 层级一多 / 标题一长，最后那枚「← 返回」被整颗裁掉；
-     (b) 进任务时若壳内焦点（superFocus）还活着，作用域判定里超级节点优先，于是「进了
-         子任务」画面仍是壳内部，而「← 返回」先退超级节点（看着像又往里进一层）。 */
+     (b) 进任务时若壳内焦点（superFocus）还活着，作用域判定里节点层优先，于是「进了
+         子任务」画面仍是壳内部，而「← 返回」先退节点层（看着像又往里进一层）。 */
   const crumb = fnBody(appSrc, "renderTaskCrumb");
   ok(
     /path\.className = "task-crumb-path"/.test(crumb) && /el\.appendChild\(path\)/.test(crumb),

@@ -106,6 +106,20 @@ html[lang="en"] .logo-txt {
   letter-spacing: .5px
 }
 
+/* 副标题里那枚 **dsh 官方 logo**（renderer/app-boot.js 的 applyLogoSub 写入的内联 SVG，
+   路径取自 dsh 官方前端包的 favicon.svg，填色已固定在 path 上 = 官方品牌蓝 #4D6BFE）。
+   尺寸用 em 跟着 .logo-sub 的 10px 走，负的 vertical-align 把它压到文字中线上；
+   图形四周在 50×50 里本身有留白，所以 1.35em 的盒子里视觉高度约当一行小字。 */
+.logo-sub .whale-tag .dsh-mark {
+  display: inline-block;
+  width: 1.35em;
+  height: 1.35em;
+  vertical-align: -0.3em;
+  margin-right: 2px;
+  flex: none;
+  overflow: visible
+}
+
 /* ── 「数据不落应用文件夹」警示（#logoWarn，renderer/app-boot.js 的 paintAppDirWarn）──
    只有在主进程只读体检（app:dataAudit）真的查到有数据落在应用文件夹内时才由 JS 摘掉
    hidden。**没命中（含拿不到结果 / JS 没跑起来）必须一点都不显示** —— 见下面
@@ -1479,6 +1493,44 @@ button:disabled {
   background: rgba(56, 214, 255, .1)
 }
 
+/* 有新版本（本轮需求：OSS 与 Microsoft Store 版都算）：右下角版本号转蓝 + 轻微蓝光。
+   与顶栏「更新」按钮的橙色高光分工：橙 = 可点的更新入口，蓝 = 「有新版本」这件事本身。
+   状态由 app-boot.js 的 paintAuthorUpdate() 读写，.has-update 只在
+   「有新版 / 下载中 / 已下载待安装」时挂上。 */
+.author.has-update {
+  color: var(--blue);
+  border-color: var(--blue);
+  box-shadow: 0 0 0 1px rgba(77, 155, 255, .28), 0 0 10px rgba(77, 155, 255, .45)
+}
+
+.author.has-update:hover {
+  color: #fff;
+  border-color: var(--blue);
+  background: rgba(77, 155, 255, .14)
+}
+
+/* 应用详情弹窗里、版本号下方那一块（作者栏 → 版本号 → 更新按钮 / 商店提示）：
+   OSS 版是一枚按钮（与顶栏「更新」同一份实现），商店版是一条提示 + 「打开 Microsoft Store」。 */
+.author-update {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  margin-top: 2px;
+  max-width: 420px
+}
+
+.author-update-tip {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--muted);
+  text-align: center
+}
+
+.author-update-btn {
+  min-width: 132px
+}
+
 .author-pop {
   display: flex;
   flex-direction: column;
@@ -1567,7 +1619,7 @@ button:disabled {
 }
 
 /* ===== 视图左侧栏互斥（画布 ↔ 智能会话 ↔ 团队） =====
-   画布视图只允许画布边栏（节点 / 绘图 / 超级节点），
+   画布视图只允许画布边栏（节点 / 绘图 / 节点层），
    会话视图只允许会话列表（.agent-side），团队视图只允许团队三段列表（.team-side）。
    这里做 CSS 硬闸：即使有代码误加 sidebar-open / 误显 agentPane / teamPane 也不会串场。 */
 body.view-agent .layout > .sidebar {

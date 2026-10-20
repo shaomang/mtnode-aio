@@ -197,6 +197,17 @@
   cursor: text;
 }
 
+/* 画布里的可编辑框同一条口径：.fn-canvas 上的 user-select:none 会被继承进 textarea /
+   文本 input，框内拖选与输入法取词都属原生文本行为，不该被这条规则连坐。
+   （文字标注 .mk-text 早就单独放行过一次，节点内输入框一直漏着。） */
+.fn-canvas .wf-node textarea,
+.fn-canvas .wf-node input[type="text"],
+.fn-canvas .wf-node input[type="number"],
+.fn-canvas .wf-node input[type="search"] {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
 .fn-canvas:active {
   cursor: grabbing
 }
@@ -244,7 +255,7 @@
    普通节点 z2 < 连线层 z3（静止时线压在板面上）< 展开壳 z50
    < 拖起的节点 z60 < 拖起的壳 z65。
    · 拖拽期间**不再**整体抬升连线层：早先 `.node-drag-active .fn-svg{z-index:60}` 会把全画布的线
-     提到壳层之上 —— 用户的板子被展开的超级节点挡住、它身上的线却浮在壳上面（「线浮在外面」）。
+     提到壳层之上 —— 用户的板子被展开的节点层挡住、它身上的线却浮在壳上面（「线浮在外面」）。
      现在线永远待在自己的层（主画布 z3 / 壳内 .super-wires z3），跟着节点一起被壳层遮住。
    · 被拖的节点抬到 z60（见 .wf-node.node-dragging），压过展开壳（z50）—— 拖着节点从壳上过
      不再被吞到壳下面；拖起的壳再高一档（z65，见 .super-drag-lift）。 */
@@ -311,7 +322,11 @@
 .fn-edge.temp {
   stroke: var(--cyan);
   stroke-width: 1.3;
-  stroke-dasharray: 6 4
+  stroke-dasharray: 6 4;
+  /* 拖拽中的临时线必须不挡指针：它的终点永远跟着光标，若参与命中，落点上的 elementFromPoint
+     只会返回这条 temp 线（线芯 pointer-events:stroke），端子自己 24×22 的底座命中区就全被盖住，
+     只剩下「圆心附近几像素」才算命中 —— 看着压在端子上却连不上（见 app.js portHitAt 注释） */
+  pointer-events: none
 }
 
 .fn-edge.ctrl {
@@ -506,7 +521,7 @@
 }
 
 /* ===== 顶栏「隐藏线」toggle：临时把连线压到 95% 透明 =====
-   只动视觉，不写画布数据、不进撤销栈；超级节点壳层内的连线在各自的
+   只动视觉，不写画布数据、不进撤销栈；节点层壳层内的连线在各自的
    .super-wires svg 里，同样是 #canvas 的后代，所以一并生效。
    正在拖拽的临时连线（.temp）保持可见，否则新连接看不见落点；
    选中节点后与它相关的线（.linked）与选中的线（.sel）自动亮起，
@@ -828,9 +843,9 @@
     0 1px 0 rgba(255, 255, 255, .04);
 }
 
-/* 工具节点＝超级节点变体（kind "super" + tool:true）：收起态只是「参数即端子」的叶子
+/* 工具节点＝节点层变体（kind "super" + tool:true）：收起态只是「参数即端子」的叶子
    卡片（body 由 buildFnToolBodyMain 渲染，不是文件夹卡），外观与处理 / 函数节点同族；
-   展开成壳层（.super-open）后回到超级节点的文件夹底色。
+   展开成壳层（.super-open）后回到节点层的文件夹底色。
    刻意只改 border-color / background：拖放高亮、选中环、壳层阴影继续由 .super 系列规则负责。 */
 .wf-node.tool-node:not(.super-open) {
   border-color: #ff8f2e66;
@@ -1032,7 +1047,7 @@
   opacity: .9;
 }
 
-/* 超级节点 / 开发节点：body 封装为「包体」面板 —— 只保留渐变 + 阴影，不再嵌套文件夹轮廓
+/* 节点层 / 开发节点：body 封装为「包体」面板 —— 只保留渐变 + 阴影，不再嵌套文件夹轮廓
    （描述改由头部「描述」按钮编辑；仅折叠态的 body 加此类，不影响数据库控制台 / 展开态舞台） */
 .wf-node.super > .n-body.super-folder-body {
   padding: 14px 20px 12px;
@@ -1189,7 +1204,7 @@ body.theme-light .n-chip.n-chip-lt {
   border-color: rgba(198, 74, 148, .45);
 }
 
-/* ===== 数据库超级节点 / 数据库副本 ===== */
+/* ===== 数据库节点层 / 数据库副本 ===== */
 .n-chip.n-chip-db {
   color: #f0c14d;
   border-color: rgba(240, 193, 77, .45);
@@ -2407,7 +2422,7 @@ body.theme-light .n-chip.n-chip-lt {
   color: var(--cyan2)
 }
 
-/* 双击副本盒 = 进入源数据库超级节点的子画布：光标 + hover 轻微高亮 */
+/* 双击副本盒 = 进入源数据库节点层的子画布：光标 + hover 轻微高亮 */
 .n-db-replica {
   flex: 1;
   min-height: 0;
@@ -2587,7 +2602,7 @@ body.theme-light .n-chip.n-chip-lt {
 }
 
 /* 壳内层级：连线 svg z3 < 节点视口 z4。
-   视口是整个子画布的节点层，必须压在壳内连线之上 —— 否则「壳里再展开一层壳」时，内层壳
+   视口是整个子画布的节点所在层，必须压在壳内连线之上 —— 否则「壳里再展开一层壳」时，内层壳
    属于视口（当时 z2），会被外层壳的线（z3）盖出线来，正是「节点被挡住、线却浮在外面」。
    根画布同理：线 z3 永远低于展开壳 z50，只有普通卡片在它下面。 */
 .super-stage-viewport {
@@ -3006,7 +3021,7 @@ body.theme-light .n-chip.n-chip-lt {
   margin-left: 8px
 }
 
-/* 超级节点内侧端子：桥端子（.out）在子画布左缘、汇端子（.in）在右缘 → 按所在一侧出字 */
+/* 节点层内侧端子：桥端子（.out）在子画布左缘、汇端子（.in）在右缘 → 按所在一侧出字 */
 .port.out.super-inner-bridge>.port-badge {
   right: 100%;
   left: auto;
@@ -3335,7 +3350,7 @@ body.theme-light .n-chip.n-chip-lt {
    （index.html 里 #taskCrumb 已是 #canvas 的直接子节点，.fn-canvas 是 position:relative）。
    以前它和画布标签共用一行、被压到 min(38%,380px)，层级一多就窄成一团；现在紧贴上边框，
    宽度改成跟着画布走（max-width = 画布宽 - 两侧留白），路径按内容自然铺开、太长才省略。
-   层级 80：压过画布内的超节点端子层 `.super-focus-port-layer`（z-index 70），进壳时不会被
+   层级 80：压过画布内的节点层端子层 `.super-focus-port-layer`（z-index 70），进壳时不会被
    端子盖住；半透明深色底 + 细描边保证节点拖到它下面时文字仍看得清。
    交互：容器 pointer-events:none —— 条身空白处鼠标穿透到画布（拖拽 / 框选不受影响），
    只有路径条目与「← 返回」自己 pointer-events:auto 接点击。
@@ -5691,7 +5706,7 @@ body.theme-light .n-chip.n-chip-lt {
   box-shadow: none;
 }
 
-/* 展开的超级节点：板内是子画布，卡片接线排让位于子画布左右端子排 */
+/* 展开的节点层：板内是子画布，卡片接线排让位于子画布左右端子排 */
 .wf-node.super.super-open::before,
 .wf-node.super.super-open::after {
   display: none
@@ -5782,7 +5797,7 @@ body.theme-light .n-chip.n-chip-lt {
   border-radius: 10px 4px 4px 10px
 }
 
-/* 超级节点内侧端子：桥端子（.out）在子画布左缘、汇端子（.in）在右缘，圆心同样落在
+/* 节点层内侧端子：桥端子（.out）在子画布左缘、汇端子（.in）在右缘，圆心同样落在
    20px 端子排正中（left/right 5px + PORT_R）；底座以圆心对称铺开正好盖满这条排，
    板外那 2px 被子画布 overflow:hidden 裁掉，也不会压到子画布里的节点内容 */
 .port.out.super-inner-bridge::after {
@@ -6288,7 +6303,7 @@ body.theme-light .n-chip.n-chip-lt {
    全部规则走 .wf-node.browse 前缀，编辑态样式零改动。
    · body 由 app-nodeview.js 填成只读视图 .n-view（纯文本 / Markdown / YAML / 批次条目 / 裸图）。
    · 内边距收紧但左右仍留 20px（= 接线排宽），躲开 .wf-node::before/::after 的接线排，不能真贴到 0。
-   · body 变纯文本后 .wf-node 的 mousedown 放行名单不再命中：点击文字 = 拖节点（与超级节点
+   · body 变纯文本后 .wf-node 的 mousedown 放行名单不再命中：点击文字 = 拖节点（与节点层
      折叠卡同一语义，属预期）；纵向滚动交给 .n-view 自身——canvas 的 wheel 对 .wf-node 内
      直接 return（不缩放、不 preventDefault），原生滚动可用，无需改 JS。 */
 .wf-node.browse>.n-body {

@@ -269,7 +269,7 @@ async function main() {
 
   const tl = await bridge.call("tools/list", {});
   const tools = (tl.result && tl.result.tools) || [];
-  step("tools/list 出 8 个工具", tools.length === 8, tools.map((t) => t.name).join(", "));
+  step("tools/list 出 13 个工具", tools.length === 13, tools.map((t) => t.name).join(", "));
   const withSchema = tools.filter((t) => t.inputSchema && t.inputSchema.type === "object");
   step("每个工具都带 object 型 inputSchema", withSchema.length === tools.length, withSchema.length + "/" + tools.length);
   const named = tools.map((t) => t.name);
@@ -366,7 +366,7 @@ async function main() {
   );
   step("过期 baseHash 被拒（乐观并发）", !stale.ok, stale.text.replace(/\s+/g, " ").slice(0, 200));
 
-  /* 建图落点：干净环境的首启画布是一整套「超级节点壳」（节点都在壳里，壳内外的连线
+  /* 建图落点：干净环境的首启画布是一整套「节点层壳」（节点都在壳里，壳内外的连线
      按既有口径被拒）。先算一下这些壳占掉的区域，把 E2E 的节点放到壳区之下的一片空地，
      这样「建节点 → 连线 → 回读」才是真实可用的往返，而不是撞在壳边界上。 */
   const boxRead = callResult(await bridge.call("tools/call", { name: "mtnode_canvas_get", arguments: { detail: "standard" } }));

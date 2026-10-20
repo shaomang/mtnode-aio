@@ -1,7 +1,7 @@
 ---
 name: paseo-remote-install
 title: Paseo 手机接管插件安装与修复
-description: 把「Paseo 手机接管」插件的后端装好或修好。安装走插件卡片上那颗「安装 / 重装」开的**通用安装窗**（`plugins/main-install.js` 那只窗，步骤表真源 `paseo/steps.json`）：第一步探测本机已装的 Paseo（桌面端自带 resources\bin\paseo.cmd，或 PATH 里的 paseo）并优先复用（不装第二份），没有才在**插件根目录下的 paseo 子目录** npm 装 @getpaseo/cli 并起独立 daemon（独立 home、避开 6767 冲突；**由宿主静默托管**：`paseo daemon run`，不再用官方 `daemon start`，因为后者在 Windows 上会留一只可被误关的终端窗口）；随后注册 provider、试算配对码，收尾只提示去控制台开远程开关。控制台只做只读状态 + 打开安装窗 + 启停。含自我修复指引（RELAY_DISABLED / CLI 找不到 / daemon 起不来 / provider 没生效 / 手机连不上）。
+description: 把「Paseo 手机接管」插件的后端装好或修好。安装走插件卡片上那颗「安装 / 重装」开的**通用安装窗**（`plugins/main-install.js` 那只窗，步骤表真源 `paseo/steps.json`）：第一步探测本机已装的 Paseo（桌面端自带 resources\bin\paseo.cmd，或 PATH 里的 paseo）并优先复用（不装第二份），没有才在**插件根目录下的 paseo 子目录** npm 装 @getpaseo/cli 并起独立 daemon（独立 home、避开 6767 冲突；**由宿主静默托管**：`paseo daemon run`，不再用官方 `daemon start`，因为后者在 Windows 上会留一只可被误关的终端窗口）；随后注册 provider、试算配对码，收尾把这份后端置为「已启用」（**默认不启用**，只在卡片「启用」/ 控制台「启用后端」/ 装完那一次才起）。控制台只做只读状态 + 打开安装窗 + 启用 / 停用。含自我修复指引（RELAY_DISABLED / CLI 找不到 / daemon 起不来 / provider 没生效 / 手机连不上）。
 ---
 
 # Paseo 手机接管 — 安装 / 修复
@@ -25,7 +25,9 @@ description: 把「Paseo 手机接管」插件的后端装好或修好。安装�
 4. **provider 已注册**：`<home>\config.json` 的 `agents.providers.mtnode` 存在，且形如
    `{ "extends": "acp", "label": "MTNode 会话", "command": ["<真 Node>", "<…>\paseo\acp-bridge.mjs"], "env": { "MTNODE_DATA_DIR": "<MTNode 数据目录>" } }`；
 5. **能出配对码**：`"<CLI>" daemon pair --json` 回 `{relayEnabled:true, url:"https://app.paseo.sh/#offer=…", qr:"…", connectionUri:"relay://…"}`；
-6. **MTNode 侧开关打开**：插件的「远程连接」总开关默认关，配对完要由用户打开（关着时会话族一律拒绝）。
+6. **显式启用**：插件**默认不启用**（不点就一个进程都不起）。配对完在插件卡片点「启用」
+   （= 起后端 + 打开「远程连接」总开关），或在控制台点「启用后端」——两处同一件事；
+   总开关关着时会话族一律拒绝。
 
 ## 前置
 
@@ -46,9 +48,11 @@ description: 把「Paseo 手机接管」插件的后端装好或修好。安装�
 
 真源：`paseo/main-paseo.js`（宿主 / 安装会话）+ `paseo/steps.json`（步骤表）+ `paseo/bridge-info.js`（片段真源）。
 
-**入口分工（本轮口径）**：卡片两颗按钮 = 「安装」（未装）/「重装」（已装）+「控制台」。安装 / 重装开那只**通用安装窗**
+**入口分工（本轮口径）**：卡片三颗按钮 = 「安装」（未装）/「重装」（已装）+「启用 / 停用」+「控制台」。安装 / 重装开那只**通用安装窗**
 （`plugins/main-install.js`），窗里那颗「开始安装 / 重试」调宿主 `paseoRemote:install`，宿主再跑 `installBackend()`；
-控制台**不再装任何东西**（那一整块已搬走），它只显示只读状态 + 「打开安装窗」+「启动后端 / 停止后端」。
+控制台**不再装任何东西**（那一整块已搬走），它只显示只读状态 + 「打开安装窗」+「启用后端 / 停用后端」。
+**默认不启用**：只有卡片「启用」、控制台「启用后端」、安装窗装完那一次会起后端（= 写启用标记 + 打开远程连接），
+开机只按启用标记恢复；「停用」则停后端 + 关远程连接 + 清标记（复用模式的启停不碰 Paseo Desktop 那份）。
 窗里那个复选框「仍要自建一份（忽略本机已装的 Paseo）」透传 `{forceOwn:true}`。
 
 **安装会话（`installBackend`）按 `paseo/steps.json` 的 8 步走，状态由宿主自己上报**（本插件是纯 JS 驱动，
@@ -74,7 +78,8 @@ description: 把「Paseo 手机接管」插件的后端装好或修好。安装�
    实例就先优雅停掉再以 `paseo daemon run` 托管（存量迁移，配对密钥不动），否则直接托管起来；
    已在跑且是宿主托管的那份就标 ok，6767~6787 全占 → `paseo.daemon.no_port`。
 7. **配对冒烟**（`pair`）：relay 关着 → 标「跳过」并提示去控制台开 relay；开着才 `daemon pair --json` 只读试算一次。
-8. **收尾**（`done`）：**不自动开远程接管总开关**（默认关是安全口径），只提示一句。
+8. **收尾**（`done`）：把状态置为**已启用**（`enabled:true` + 远程接管总开关打开），之后开机按已启用恢复；
+   不想它跑就在卡片 / 控制台点「停用」。
 
 失败一律停在失败步（步骤标 `fail`、`code` + `params` 走 `steps.json` 的 `messages` 表渲染中英文文案），
 `finishPluginInstall({ok:false})` 如实回报，**不再自动转 Agent 兜底**；窗里可点「交给 mtnode 会话修复」（按本 skill 走）。

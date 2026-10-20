@@ -111,13 +111,13 @@ console.log("\n[1] 顶层开发块的 devPath = 画布项目根（单一真源�
   ok(ambOf(sb) === false, "只有一个根 → 不标歧义");
   const sb2 = makeSandbox(nestedNodes(), { canvasWorkspace: CANVAS_DIR });
   ok(rootOf(sb2) === PROJ, "画布统一目录存在时，项目根仍取顶层 devPath");
-  /* 顶层块被包在普通超级节点里，仍算顶层功能块（父级非 dev 不降级） */
+  /* 顶层块被包在普通节点层里，仍算顶层功能块（父级非 dev 不降级） */
   const sb3 = makeSandbox([
-    { id: "wrap", kind: "super", title: "普通超级节点" },
+    { id: "wrap", kind: "super", title: "普通节点层" },
     { id: "top", kind: "super", dev: true, parentSuperId: "wrap", devPath: PROJ },
     { id: "kid", kind: "super", dev: true, parentSuperId: "top", title: "子块" },
   ]);
-  ok(rootOf(sb3) === PROJ, "开发块套在普通超级节点里仍算顶层块（项目根照常生效）");
+  ok(rootOf(sb3) === PROJ, "开发块套在普通节点层里仍算顶层块（项目根照常生效）");
 }
 
 /* ==================== [2] 子块就近继承 ==================== */
@@ -177,8 +177,8 @@ console.log("\n[4] 无开发节点 / 没设根：退回画布统一目录，再�
 {
   const plain = [
     { id: "p1", kind: "proc_text", title: "普通节点" },
-    { id: "sup", kind: "super", title: "普通超级节点", devPath: "E:/not-a-dev-block" },
-    { id: "db", kind: "super", dev: true, db: true, title: "数据库超级节点", devPath: "E:/db-root" },
+    { id: "sup", kind: "super", title: "普通节点层", devPath: "E:/not-a-dev-block" },
+    { id: "db", kind: "super", dev: true, db: true, title: "数据库节点层", devPath: "E:/db-root" },
   ];
   const sb = makeSandbox(plain);
   ok(rootOf(sb) === "", "画布上没有开发块 → 没有项目根");
@@ -191,9 +191,9 @@ console.log("\n[4] 无开发节点 / 没设根：退回画布统一目录，再�
   ok(ex(sb, "assistResolveWorkspace()") === CANVAS_DIR, "助手无项目根 → 退画布统一目录");
   ok(json(sb, "assistWorkspaceInfo()").source === "canvas", "来源标 canvas");
   ok(ex(sb, "agentRunWorkspace({})") === DEFAULT_DIR, "会话无项目根 → 退应用默认目录");
-  /* 只有 db 超级节点 / 只有普通超级节点：都不算开发块 */
+  /* 只有 db 节点层 / 只有普通节点层：都不算开发块 */
   const sb2 = makeSandbox([{ id: "db", kind: "super", dev: true, db: true, devPath: PROJ }]);
-  ok(rootOf(sb2) === "", "db:true 的超级节点不算功能块（不冒领项目根）");
+  ok(rootOf(sb2) === "", "db:true 的节点层不算功能块（不冒领项目根）");
   /* 有开发块但一个根都没设 */
   const sb3 = makeSandbox([
     { id: "t", kind: "super", dev: true, title: "没设根的功能块" },

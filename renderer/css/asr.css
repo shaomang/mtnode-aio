@@ -80,9 +80,8 @@
    这两格是**同一套 DOM**（renderer/app-nodes.js 的 breezeTextBoxesFor，.n-reftext-* 是它的
    框体样式；类名沿用最初那版「参考文稿区块」的历史名，别按字面理解），卡片 body 与节点设置
    跳窗共用一份实现，真源只有节点上的 srcText / refText 两个字段。
-   两个框同一条规则：端子有输入 → 只读回显（.n-reftext-state.locked，青色）；端子为空 →
-   可编辑。视觉沿用上面 .n-asr-* 的形态（虚线分隔 + 状态胶囊 + 文本区），只换青色系，
-   免得同一张画布上两种区块长得一样、分不清哪块是哪块的。 */
+   两个框同一条规则：端子有输入 → 只读回显（[readonly] 弱化）；端子为空 → 可编辑。
+   界面上只留输入框本身（标题 / 状态胶囊 / 提示行都去掉了，口径写在 hover title 上）。 */
 /* host 只是两个框的容器（卡片 body 与设置窗各一份），外观全在内层 .n-reftext 上 */
 .n-reftext-host {
   display: block;
@@ -111,29 +110,6 @@
 .n-reftext-host-set .n-reftext {
   margin-top: 2px;
 }
-.n-reftext-hdr {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 11px;
-  opacity: 0.9;
-}
-.n-reftext-lab {
-  font-weight: 600;
-}
-/* 状态胶囊：端子有输入（只读）走青色；端子为空（可编辑）走中性灰 */
-.n-reftext-state {
-  padding: 1px 6px;
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.08);
-  opacity: 0.85;
-  font-size: 10px;
-}
-.n-reftext-state.locked {
-  background: rgba(94, 214, 223, 0.16);
-  color: #5ed6df;
-  opacity: 1;
-}
 .n-reftext .n-reftext-text {
   min-height: 54px;
   font-size: 12px;
@@ -161,6 +137,403 @@
 }
 .n-reftext-ops .mini {
   flex: none;
+}
+
+/* ---- breeze_gen「角色」：设置里的角色行 + 选择角色跳窗 ---- */
+.n-preset-warn {
+  color: #ff7b72;
+  font-size: 11px;
+  line-height: 1.5;
+}
+.nsf-ctl.breeze-role-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.breeze-role-row .breeze-role-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 左右两栏：左角色、右样本组；窄窗纵向堆叠 */
+.breeze-preset-dlg {
+  display: flex;
+  gap: 12px;
+  min-height: 320px;
+  align-items: stretch;
+}
+.breeze-preset-list {
+  flex: 0 0 168px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 56vh;
+  overflow: auto;
+  border-right: 1px solid rgba(255, 255, 255, 0.1);
+  padding-right: 10px;
+}
+.breeze-preset-item {
+  text-align: left;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: rgba(255, 255, 255, 0.04);
+  color: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.breeze-preset-item:hover {
+  background: rgba(255, 255, 255, 0.09);
+}
+.breeze-preset-item.on {
+  border-color: #5ed6df;
+  background: rgba(94, 214, 223, 0.14);
+}
+.breeze-preset-item .bp-sub {
+  display: block;
+  font-size: 10px;
+  opacity: 0.65;
+}
+/* 未完成的草稿：灰色虚线，和正经角色区分开；它是 div（整行可点、右边一颗 ✕ 删除） */
+.breeze-preset-item.draft {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border-style: dashed;
+  border-color: rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.02);
+  color: rgba(255, 255, 255, 0.62);
+  cursor: default;
+  white-space: normal;
+}
+.breeze-preset-item.draft > span:first-child {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.breeze-preset-item.draft .bp-sub {
+  flex-basis: 100%;
+  order: 3;
+}
+.breeze-preset-item.draft.on {
+  border-color: rgba(94, 214, 223, 0.5);
+  color: rgba(255, 255, 255, 0.8);
+}
+.breeze-preset-groups {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 56vh;
+  overflow: auto;
+}
+.breeze-group-card {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: rgba(255, 255, 255, 0.03);
+}
+.breeze-group-card.on {
+  border-color: #5ed6df;
+}
+.breeze-group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.breeze-group-head .bg-ok {
+  font-weight: 400;
+  font-size: 10px;
+  opacity: 0.7;
+}
+.breeze-group-wave {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.breeze-group-wave audio,
+.breeze-group-wave .n-wave {
+  flex: 1;
+  min-width: 0;
+}
+.breeze-group-text {
+  font-size: 11px;
+  line-height: 1.5;
+  opacity: 0.85;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 4.5em;
+  overflow: auto;
+}
+.breeze-group-instr {
+  font-size: 11px;
+  line-height: 1.5;
+  opacity: 0.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 3em;
+  overflow: auto;
+}
+.breeze-group-ops {
+  display: flex;
+  gap: 6px;
+}
+.breeze-preset-empty {
+  font-size: 12px;
+  opacity: 0.72;
+  line-height: 1.7;
+}
+/* 就地新建角色（画布上不再跑插件控制台）：名字 / 音频 / 样本文字 / 指令 */
+.breeze-preset-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  padding: 10px;
+  background: rgba(255, 255, 255, 0.03);
+  font-size: 12px;
+}
+.breeze-preset-form-title {
+  font-weight: 600;
+  opacity: 0.9;
+}
+.breeze-preset-form .bpf-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.breeze-preset-form .bpf-row.col {
+  align-items: flex-start;
+}
+.breeze-preset-form .bpf-label {
+  flex: 0 0 64px;
+  font-size: 11px;
+  opacity: 0.75;
+}
+.breeze-preset-form .bpf-row.col .bpf-label {
+  padding-top: 5px;
+}
+.breeze-preset-form input[type="text"],
+.breeze-preset-form textarea {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  color: inherit;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 6px;
+  padding: 4px 7px;
+  resize: vertical;
+}
+.breeze-preset-form .bpf-file {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  opacity: 0.8;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.breeze-preset-form .bpf-err {
+  color: #ff7b72;
+  font-size: 11px;
+  line-height: 1.6;
+}
+/* 成功提示走绿字：与「保存失败」区分开 */
+.breeze-preset-form .bpf-ok {
+  color: #7ee787;
+  font-size: 11px;
+  line-height: 1.6;
+}
+.breeze-preset-form .bpf-ops {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+/* 提示词两档（简洁 / 详细）：当成一组单选看，选中的那颗按钮自带 primary 高亮 */
+.breeze-preset-form .breeze-tier-row {
+  gap: 6px;
+  margin-left: 4px;
+}
+.breeze-preset-form .breeze-tier-row .bp-sub {
+  color: #8b949e;
+  font-size: 11px;
+  white-space: nowrap;
+}
+/* 长标签（台词 / 组名 / 声线设定）一律竖排：标签一行、控件一行，窄窗也不挤 */
+.breeze-preset-form .bpf-row.col {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 3px;
+}
+.breeze-preset-form .bpf-row.col .bpf-label {
+  flex: none;
+  padding-top: 0;
+}
+/* 基础音色卡片：左侧描边压一层，跟备选区分开 */
+.breeze-group-card.base {
+  border-left: 3px solid #5ed6df;
+}
+.breeze-group-card .bpf-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.breeze-group-card .bpf-label {
+  flex: 0 0 64px;
+  font-size: 11px;
+  opacity: 0.75;
+}
+.breeze-group-card input[type="text"],
+.breeze-group-card input[type="number"],
+.breeze-group-card textarea {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  color: inherit;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 6px;
+  padding: 4px 7px;
+  resize: vertical;
+}
+.breeze-group-card .bpf-row.col {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 3px;
+}
+.breeze-group-card .bpf-row.col .bpf-label {
+  flex: none;
+}
+/* 向导：①②③ 步骤条 + 两个入口（AI 造声线 / 现成音频） */
+.breeze-wiz-steps {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.breeze-wiz-step {
+  font-size: 11px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.04);
+  opacity: 0.7;
+  cursor: pointer;
+}
+.breeze-wiz-step.done {
+  opacity: 0.9;
+  border-color: rgba(94, 214, 223, 0.45);
+}
+.breeze-wiz-step.on {
+  opacity: 1;
+  font-weight: 600;
+  border-color: #5ed6df;
+  background: rgba(94, 214, 223, 0.16);
+}
+.breeze-wiz-tabs {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+/* 中途存盘的痕迹（草稿已保存 · HH:MM）/ 角色页上「那趟备选还没做完」的横幅 */
+.breeze-wiz-saved {
+  font-size: 11px;
+  opacity: 0.6;
+  margin-top: -2px;
+}
+.breeze-wiz-saved:empty {
+  display: none;
+}
+.breeze-wiz-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  padding: 6px 9px;
+  border-radius: 7px;
+  border: 1px dashed rgba(94, 214, 223, 0.45);
+  background: rgba(94, 214, 223, 0.1);
+  cursor: pointer;
+}
+.breeze-wiz-banner > span:first-child {
+  flex: 1;
+  min-width: 0;
+}
+/* 未完成提醒只报状态、不摆「继续 / 丢弃」：删除通道收成一颗不起眼的 ✕ */
+.breeze-wiz-x {
+  flex: none;
+  padding: 0 6px;
+  line-height: 18px;
+  opacity: 0.55;
+}
+.breeze-wiz-x:hover {
+  opacity: 1;
+}
+/* 第二步顶栏：条数 / 已生成几条 + 全部开始生成 + 取消剩余 */
+.breeze-wiz-genbar {
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  padding-bottom: 6px;
+}
+/* 候选卡：台词 / seed / cfg / 试听 / 重抽 / 用这条 */
+.breeze-cand-card {
+  border: 1px dashed rgba(255, 255, 255, 0.18);
+  border-radius: 8px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: rgba(0, 0, 0, 0.16);
+}
+.breeze-cand-card .bp-sub {
+  font-size: 10px;
+  font-weight: 400;
+  opacity: 0.7;
+}
+.breeze-cand-card textarea,
+.breeze-cand-card input[type="number"] {
+  font: inherit;
+  color: inherit;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 6px;
+  padding: 4px 7px;
+  resize: vertical;
+}
+.breeze-cand-card textarea {
+  min-width: 0;
+}
+.breeze-cand-card .bpf-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.breeze-cand-card .bpf-label {
+  font-size: 11px;
+  opacity: 0.7;
 }
 
 /* ---- 「语音模型」窗：状态行 / 下载源 / 下载进度 ---- */
@@ -208,13 +581,6 @@ body.theme-light .n-asr {
 }
 body.theme-light .n-reftext-host-card {
   border-top-color: rgba(0, 0, 0, 0.14);
-}
-body.theme-light .n-reftext-state {
-  background: rgba(0, 0, 0, 0.06);
-}
-body.theme-light .n-reftext-state.locked {
-  background: rgba(20, 140, 150, 0.14);
-  color: #0e7c85;
 }
 body.theme-light .asr-set-row > select {
   background: #fff;

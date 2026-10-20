@@ -3,7 +3,8 @@
  * Breeze TTS 2 控制台（无框架原生 JS）。
  * 同一份界面跑在两个宿主里：
  *   · MTNode 主进程开的控制台窗 —— breeze:xxx 全套能力
- *   · 托盘进程开的控制台窗   —— 只有状态 / 日志 / 音色浏览 / 试听（写类动作按能力探测降级）
+ *   · 托盘进程开的控制台窗   —— 只有状态 / 日志 / 手写指令试听（写类动作按能力探测降级）
+ * 角色（音色预设）的创建与编辑在画布节点里（👤 角色 → 三步向导），这里刻意不碰预设库。
  * 所以每个动作前都要先看 window.breezeApi 上有没有那个方法，不要假定存在。
  */
 (() => {
@@ -12,8 +13,6 @@
   const has = (k) => typeof api[k] === "function";
 
   let status = null;
-  let refPick = null; // {path,name,data}
-
   /* ── 状态文案与错误码译法（与 breeze-pack 的错误码一一对应） ───────── */
   const ERR_TEXT = {
     text_required: "待合成文本为空",
@@ -43,6 +42,9 @@
     engine_spawn_failed: "引擎进程没能启动（详情见「引擎日志」）",
     no_api_key: "管理服务 API Key 缺失：请先在插件里「启用」一次",
     voice_not_found: "音色不存在（可能已被删除）",
+    preset_missing: "角色预设不存在（可能已被删除）：请在画布节点里重新选一个角色",
+    preset_group_missing: "这个角色里没有可用的样本组：请在管理台补一组（音频 + 样本文字）",
+    preset_audio_missing: "角色样本缺音频：请在管理台给这一组选一段参考音频",
     voice_audio_required: "音色缺少参考音频",
     voice_id_required: "音色名不能为空",
     voice_exists: "同名音色已存在",
@@ -163,89 +165,6 @@
     $("logPath").textContent = st.consolePath || "";
 
     if (has("setFastAll")) $("fastAll").checked = !!st.fastAll;
-
-    /* 音色下拉与列表 */
-    const vs = (st.apiStatus && st.apiStatus.voices) || [];
-    renderVoices(vs);
-    const sel = $("voiceSel");
-    const keep = sel.value;
-    sel.innerHTML = '<option value="">（不用音色库）</option>';
-    for (const v of vs) {
-      const o = document.createElement("option");
-      o.value = v.id;
-      o.textContent = v.id + (v.ready ? "" : "（缺" + (!v.hasAudio ? "音频" : "文稿") + "）");
-      sel.appendChild(o);
-    }
-    if (keep && vs.some((v) => v.id === keep)) sel.value = keep;
-  }
-
-  function renderVoices(vs) {
-    const host = $("voiceList");
-    host.innerHTML = "";
-    if (!vs.length) {
-      const d = document.createElement("div");
-      d.className = "empty";
-      d.textContent = "还没有音色。音色 = 一段干净的参考音频 + 它的准确文稿。";
-      host.appendChild(d);
-      return;
-    }
-    for (const v of vs) {
-      const row = document.createElement("div");
-      row.className = "item";
-      const name = document.createElement("span");
-      name.className = "name";
-      name.textContent = v.id;
-      const sub = document.createElement("span");
-      sub.className = "sub";
-      sub.title = v.text || "";
-      sub.textContent = (v.ready ? "" : "⚠ ") + (v.text || "（无文稿）");
-      row.appendChild(name);
-      row.appendChild(sub);
-
-      const play = document.createElement("button");
-      play.className = "mini";
-      play.textContent = "试听";
-      play.onclick = () => playVoice(v.id);
-      row.appendChild(play);
-
-      const use = document.createElement("button");
-      use.className = "mini";
-      use.textContent = "选用";
-      use.onclick = () => {
-        $("voiceSel").value = v.id;
-        $("newVoiceId").value = v.id;
-        $("newVoiceText").value = v.text || "";
-        toast("已选用音色：" + v.id, "ok");
-      };
-      row.appendChild(use);
-
-      if (has("voiceDelete")) {
-        const del = document.createElement("button");
-        del.className = "mini danger";
-        del.textContent = "删除";
-        del.onclick = async () => {
-          if (!confirm("删除音色「" + v.id + "」？（只删参考片段，不影响已生成的音频）")) return;
-          const r = await api.voiceDelete(v.id);
-          if (!r || !r.ok) toast(t((r && (r.error || r.raw)) || "voice_not_found"), "err");
-          refresh();
-        };
-        row.appendChild(del);
-      }
-      host.appendChild(row);
-    }
-  }
-
-  async function playVoice(id) {
-    if (!has("voiceAudio")) return;
-    const r = await api.voiceAudio(id);
-    if (!r || !r.ok || !r.base64) {
-      toast("读不到参考音频：" + t((r && (r.error || r.raw)) || ""), "err");
-      return;
-    }
-    const a = $("refAudio");
-    a.classList.remove("hide");
-    a.src = "data:" + (r.mime || "audio/wav") + ";base64," + r.base64;
-    a.play().catch(() => {});
   }
 
   /* ── 刷新 ─────────────────────────────────────────────────────────── */
@@ -325,55 +244,22 @@
     if (failed) toast("清空日志文件失败（已清显示）：" + failed, "warn");
   };
 
-  /* ── 音色库写入 ───────────────────────────────────────────────────── */
-  $("btnPickRef").onclick = async () => {
-    if (!has("pickRefAudio")) return toast("托盘窗口里不能选文件：请在 MTNode 的控制台操作", "warn");
-    const r = await api.pickRefAudio();
-    if (!r || r.cancelled) return;
-    if (!r.ok) return toast("读取失败：" + t((r && r.error) || ""), "err");
-    refPick = { path: r.path, name: r.name, data: r.data };
-    $("refAudioName").textContent = r.name + "（" + Math.round((r.data.length || 0) / 1024) + " KB）";
-    if (!$("newVoiceId").value.trim()) $("newVoiceId").value = String(r.name).replace(/\.[^.]+$/, "");
-  };
-  $("btnVoiceAdd").onclick = async () => {
-    if (!has("voiceAdd")) return toast("托盘窗口里不能保存音色：请在 MTNode 的控制台操作", "warn");
-    const id = $("newVoiceId").value.trim();
-    const text = $("newVoiceText").value.trim();
-    if (!id) return toast("请填音色名", "warn");
-    if (!refPick) return toast("请选择参考音频文件", "warn");
-    if (!text) return toast("请填参考文稿：它必须与参考音频逐字一致", "warn");
-    const r = await api.voiceAdd({ voiceId: id, refText: text, file: { name: refPick.name, data: refPick.data } });
-    if (!r || !r.ok) return toast("保存失败：" + t((r && (r.raw || r.error || r.json)) || ""), "err");
-    toast("已保存音色：" + id, "ok");
-    refPick = null;
-    $("refAudioName").textContent = "未选择文件";
-    $("newVoiceText").value = "";
-    refresh();
-  };
-  $("btnVoicePreview").onclick = async () => {
-    if (refPick && refPick.path) {
-      /* 本地文件：直接用 file:// 播（预览的是参考片段本身） */
-      const a = $("refAudio");
-      a.classList.remove("hide");
-      a.src = "file:///" + String(refPick.path).replace(/\\/g, "/");
-      a.play().catch(() => toast("本地预览失败，可直接用系统播放器打开该文件", "warn"));
-      return;
-    }
-    const id = $("newVoiceId").value.trim() || $("voiceSel").value;
-    if (!id) return toast("先选一个音色，或选一个参考音频文件", "warn");
-    playVoice(id);
-  };
-
   /* ── 试听合成 ─────────────────────────────────────────────────────── */
+  /* 控制台只做「音色设计」临时试听：手写指令 → 一段音频，不写进角色库。
+     真正建角色 / 挑候选 / 加备选音色都在画布节点的三步向导里，那边才有预设库与候选池。 */
   $("btnSynth").onclick = async () => {
     const text = $("ttsText").value.trim();
     if (!text) return toast("请填待合成文本", "warn");
+    const instruction = $("ttsInstr").value.trim();
+    if (!instruction) return toast("请填指令：音色设计靠它描述音色（性别年龄 / 音色质感 / 语速 / 情绪 / 用途）", "warn");
     const payload = {
       text,
-      voice: $("voiceSel").value,
-      mode: $("mode").value,
-      instruction: $("ttsInstr").value.trim(),
-      cfg_scale: Number($("cfgScale").value) || 1,
+      voice: "",
+      ref_audio_path: "",
+      ref_text: "",
+      mode: "design",
+      instruction,
+      cfg_scale: Number($("cfgScale").value) || 4,
       seed: Number($("seed").value) || 0,
       response_format: "wav",
     };

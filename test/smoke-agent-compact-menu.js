@@ -449,6 +449,30 @@ async function main() {
     sbMid.buildAgentModelMenu();
     const midRow = byClass(sbMid.__menu, "agent-menu-option").filter((o) => hasClass(o, "agent-menu-input-row"))[0];
     eq(midRow && midRow.hidden, true, "中档时那一行收起（只有选了自定义才露出）");
+    /* 本次共识：保留原文 / 摘要上限也只在「开着 + 自定义」档露出（与触发线同一组） */
+    const inputRowsOf = (sbx) =>
+      byClass(sbx.__menu, "agent-menu-option").filter((o) => hasClass(o, "agent-menu-input-row"));
+    const midRows = inputRowsOf(sbMid);
+    eq(midRows.length, 3, "中档：自定义那一组三行都在 DOM 里（触发线 + 保留原文 + 摘要上限，顺序固定）");
+    eq(midRows.slice(1).map(optName).join(","), "保留原文,摘要上限", "后两行的标签 = 保留原文 / 摘要上限");
+    ok(midRows.slice(1).every((r) => r.hidden === true),
+      "中档：保留原文 / 摘要上限两行都收起（非自定义档不出现数字填写）");
+    ok(midRows.slice(1).every((r) => {
+      const i = r.children.filter((c) => c.tagName === "INPUT")[0];
+      return !!i && i.disabled === true;
+    }), "中档：两个框还置了 disabled（收起后不留键盘入口）");
+    const customRows = inputRowsOf(sb);
+    ok(customRows.length === 3 && customRows.slice(1).every((r) => r.hidden === false),
+      "自定义档：保留原文 / 摘要上限两行一起露出（与触发线同一组）");
+    ok(customRows.slice(1).every((r) => {
+      const i = r.children.filter((c) => c.tagName === "INPUT")[0];
+      return !!i && i.disabled === false;
+    }), "自定义档：两个框可编辑");
+    const offSb = mkSandbox({ dsh: { compact: { enabled: false, tier: "custom" } } });
+    offSb.__menu.dataset.pane = "compact";
+    offSb.buildAgentModelMenu();
+    ok(inputRowsOf(offSb).every((r) => r.hidden === true),
+      "关闭档（即使记住的档位是自定义）：整组数字都不露出（判据 = 开着 + 自定义）");
   }
 
   console.log("\n[4] 会话 chip 的 tooltip 也说到了这一格（切语言不掉字）");

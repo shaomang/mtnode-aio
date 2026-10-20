@@ -2,7 +2,7 @@
 
 Write a short piece of **pure JS** on the canvas and compute outputs from inputs — a lightweight compute node. Params are ports, so it wires, cascades, batches and saves like any node.
 
-Create: right-click empty canvas → **Tools** → **Function (JS compute · custom input/output params)**.
+Create: right-click empty canvas → **Other Nodes** → **Function (JS compute · custom input/output params)**.
 
 ## Settings
 Click **Settings** in the node header to open the settings window (every parameter is edited there; the card itself keeps just two read-only lines — inputs / outputs):

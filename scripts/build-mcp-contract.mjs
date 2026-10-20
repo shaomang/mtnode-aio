@@ -30,8 +30,9 @@ export const ROOT = path.resolve(HERE, '..')
 const GATEWAY = path.join(ROOT, 'dsh', 'gateway')
 
 /** 参与导出的插件（顺序 = 契约里的展示顺序）；不在这张表里的插件一律不导出。
- *  gui-plugin.mjs 是唯一的「主进程执行」族（其余五份都由渲染层执行）：它给外部 MCP
- *  客户端提供 GUI 点击 / 截图能力（实现在根目录 mcp-gui-agent.js），参数表仍写在这里。 */
+ *  后两份是 MTNode **自己调自己**的那一族（自用回环）：gui-plugin.mjs 给外部客户端提供
+ *  GUI 点击 / 截图（实现在根目录 mcp-gui-agent.js），mcp-extra-plugin.mjs 提供媒体生成 /
+ *  跑节点 / 用户工具 / 会话，实现在 mcp-media-agent.js 与 renderer/mcp-extra.js。 */
 export const MCP_PLUGIN_FILES = [
   'canvas-plugin.mjs',
   'db-plugin.mjs',
@@ -39,6 +40,7 @@ export const MCP_PLUGIN_FILES = [
   'longtask-plugin.mjs',
   'assets-plugin.mjs',
   'gui-plugin.mjs',
+  'mcp-extra-plugin.mjs',
 ]
 
 /** 每个工具归到哪一族（渲染层按族分派 op；见 renderer/mcp-bridge.js 的 MCP_TOOL_OPS）。
@@ -54,6 +56,13 @@ export const TOOL_FAMILY = {
   lt_state: 'lt',
   mtnode_assets: 'asset',
   mtnode_gui: 'gui',
+  /* 自用回环四件（mtnode_generate / mtnode_run / mtnode_tools / mtnode_session）：
+     gen 与 session 由主进程执行（mcp-media-agent.js / 会话帧），run 与 tool 由渲染层执行
+     （renderer/mcp-extra.js）。它们**不进 cordis.yml** —— 网关不加载这份插件。 */
+  mtnode_generate: 'gen',
+  mtnode_run: 'run',
+  mtnode_tools: 'tool',
+  mtnode_session: 'session',
 }
 
 /* ── 从插件源码里抽 defineTool 规格（真跑 register，不解析对象字面量）──────────── */

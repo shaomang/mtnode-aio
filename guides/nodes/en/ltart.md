@@ -3,7 +3,7 @@
 An **artifact drop point** the long-running task leaves on the canvas: one node per artifact.
 You cannot add it by hand — only an enabled long-running task creates it, when **each step finishes
 and the engine takes stock of what that run produced**, placing the **key files you should read or
-keep** (title looks like `Artifact · Text · pilot.md`) inside **that step's super-node shell** (the
+keep** (title looks like `Artifact · Text · pilot.md`) inside **that step's node-layer shell** (the
 same layer as the output node; if the shell has been deleted it falls back to the main canvas layer).
 
 ## What it is for
@@ -62,5 +62,5 @@ After collection there is one more **pick** (the canvas only carries the key fil
 Correct — like the output and deliverable nodes, it is created only by the long-running task system:
 the right-click menu, copy / paste, templates and agent graph building neither create nor copy this
 type (it is in the `LT.LOCKED` list). To start using it, expand the thin bar above the canvas, create
-and enable a long-running task, and it will appear inside that step's super-node shell once a step
+and enable a long-running task, and it will appear inside that step's node-layer shell once a step
 produces artifacts.

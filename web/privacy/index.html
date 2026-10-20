@@ -161,7 +161,7 @@ footer a.author:hover{color:#fff;border-color:var(--cyan)}
     <tr><td>工作流与素材</td><td>画布 JSON（<code>save/&lt;id&gt;.json</code>：节点提示词、输入文本、参数、@引用）与拖入图片的原文件副本（<code>assets/&lt;工作流id&gt;/</code>）。</td></tr>
     <tr><td>快照与回收站</td><td>定时快照 <code>save-backups/</code>（每 5 分钟一次、仅在源文件变化时复制，每条工作流保留最近 72 份，约 6 小时）；删除画布时整体搬入 <code>trash/</code>。</td></tr>
     <tr><td>配置与 API Key</td><td><code>config.json</code> 保存服务商列表、<b class="hl">API Key（明文存在本机文件里）</b>、创意工坊登录令牌、在线源列表、语言与主题等；每次改动服务商配置前会先写一份历史副本到 <code>config-backups/</code>（最近 30 份）。<b class="hl">API Key 只保存在这台电脑上</b>，仅随请求发往你为它配置的那家服务商，绝不上传到 <code>mt-agent.com</code>。</td></tr>
-    <tr><td>事实库</td><td>数据库超级节点的记录（SQLite + FTS5），来自你在画布建表与录入的事实条目及其引用的本机文件路径。</td></tr>
+    <tr><td>事实库</td><td>数据库节点层的记录（SQLite + FTS5），来自你在画布建表与录入的事实条目及其引用的本机文件路径。</td></tr>
     <tr><td>Agent 会话</td><td><code>dsh-home/sessions/</code>（对话正文与工具调用结果的 JSONL）、<code>dsh-home/attachments/</code>（带图会话的图像附件）。其中可能包含 Agent 读到的本机文件内容片段。旧版本的「会话轮次回滚」会在改写文件前把原内容副本写进本机 <code>rollback/</code>：<b class="hl">该功能已移除</b>，新版不再采集，历史副本可在设置 ·「存储占用与清理」里永久删除。</td></tr>
     <tr><td>引擎设置</td><td><code>dsh-home/settings.yaml</code>：服务商路由名、<code>baseURL</code>、思考档、权限预设等；密钥<b class="hl">只写环境变量名</b>（如 <code>MTNODE_KEY_1</code>），运行时经进程环境变量注入，不写密钥值。</td></tr>
     <tr><td>匿名标识文件</td><td><code>dsh-home/.anonymous-user-id</code>：首次模型请求前由本机生成的随机 UUID v4（一行裸值）。它不含姓名、邮箱或任何硬件信息，<b class="hl">不由服务器下发</b>，本项目也无法用它关联到自然人。唯一用途见第 4 节。</td></tr>

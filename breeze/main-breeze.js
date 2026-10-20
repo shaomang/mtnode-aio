@@ -15,7 +15,12 @@ const fs = require("fs");
 const http = require("http");
 const crypto = require("crypto");
 const { spawn, execFile } = require("child_process");
-const { resolveDshRunAuth } = require("../dsh/mtnode-llm-creds.js");
+const {
+  resolveDshRunAuth,
+  deepseekProvider,
+  mtnodePiProviders,
+  apiKeyOf,
+} = require("../dsh/mtnode-llm-creds.js");
 const uiBridge = require("./ui-bridge.js");
 /* 插件报错总线：失败出口统一上报主窗口（跨窗可见 + 一键自我修复），见 plugin-error-repair.js */
 const pluginErrors = require("../plugin-error-repair.js");
@@ -48,6 +53,9 @@ let getDsh = null;
 /** 画布资产目录解析（main.js 传入的 assetDirFor(wfId)）：调用方没给输出路径时产物直接落这里，
  *  与 proc_image / sensenova 同一去处（%APPDATA%\pipeline-console\assets\<wfId>） */
 let assetDirFor = null;
+/** 当前画布的工作目录解析（main.js 传入的 foregroundCanvasWorkspace）：
+ *  选参考音频这类「跟画布一起走」的对话框默认落在这里 */
+let getCanvasWorkspace = null;
 let consoleWin = null;
 const LOG_PANEL_WIDTH = 440;
 let consoleLogWin = null;
@@ -151,7 +159,9 @@ function logPanelEntry() {
 
 function readJson(p, fb) {
   try {
-    return JSON.parse(fs.readFileSync(p, "utf8"));
+    /* 版本库外的文件可能被人用记事本 / PowerShell 存成带 BOM 的 UTF-8：JSON.parse 会当场抛，
+       那会让整个预设库看起来是空的（比报警更糟）。先剥 BOM。 */
+    return JSON.parse(fs.readFileSync(p, "utf8").replace(/^\uFEFF/, ""));
   } catch {
     return fb;
   }
@@ -1885,6 +1895,15 @@ function generateBreezeFile(params) {
   const text = String(params.text || "").trim();
   const fmt = String(params.response_format || params.format || "wav").toLowerCase();
   if (!text) return Promise.resolve({ ok: false, error: "text_required" });
+  /* 角色预设：节点 / 助手只送 presetId + presetGroupId，参考音频路径、样本文字、指令
+     全部由宿主补全（管理台改了预设，已连好的节点立刻跟着变）。
+     显式传进来的 refAudio / refText / instruction 仍然优先 —— 那就是「指令覆写」的口径。 */
+  const presetRef = presetResolveForRun(params);
+  if (presetRef && presetRef.error) return Promise.resolve({ ok: false, error: presetRef.error });
+  const refAudio = String(params.refAudio || params.ref_audio_path || (presetRef && presetRef.audioPath) || "");
+  const refText = String(params.refText || params.ref_text || (presetRef && presetRef.refText) || "");
+  const instruction = String(params.instruction || (presetRef && presetRef.instruction) || "");
+  const voice = String(params.voice || "");
   /* 调用方（画布节点 / 助手 / 外部脚本）没给输出路径 → 宿主兜底落应用托管目录：
      有 workflowId 落画布资产目录 assetDirFor(wfId)，否则落数据目录的 asset-tmp；
      一律不写应用文件夹。显式传了 outputPath 的调用方走原路，一行不动。 */
@@ -1902,11 +1921,12 @@ function generateBreezeFile(params) {
     const body = JSON.stringify({
       model: String(params.model || "breeze-tts-2"),
       input: text,
-      voice: String(params.voice || ""),
-      ref_text: String(params.refText || params.ref_text || ""),
-      ref_audio_path: String(params.refAudio || params.ref_audio_path || ""),
-      instruction: String(params.instruction || ""),
-      mode: String(params.mode || "auto"),
+      voice,
+      ref_text: refText,
+      ref_audio_path: refAudio,
+      instruction,
+      /* 选了角色预设 = 参考音频 + 指令同给，口径是「音色导演」；没选预设才按节点的 auto 推导 */
+      mode: String(params.mode || (presetRef ? "direction" : "auto")),
       cfg_scale: params.cfgScale != null ? Number(params.cfgScale) : undefined,
       seed: params.seed != null ? Number(params.seed) : undefined,
       speed: params.speed != null ? Number(params.speed) : 1,
@@ -2190,6 +2210,15 @@ async function pickRefAudio() {
     properties: ["openFile"],
     filters: [{ name: "Audio", extensions: ["wav", "flac", "mp3", "m4a", "aac", "ogg", "opus"] }],
   };
+  /* 新建角色时默认从当前画布的工作目录开始翻（与主窗口 file:openDialog 同一口径）；
+     没设工作目录 / 目录不在了就不传，保持系统对话框原行为。 */
+  let canvasWs = "";
+  try {
+    canvasWs = getCanvasWorkspace ? String(getCanvasWorkspace() || "").trim() : "";
+  } catch {
+    canvasWs = "";
+  }
+  if (canvasWs) opts.defaultPath = canvasWs;
   let r = null;
   try {
     const parent = dialogParent();
@@ -2210,6 +2239,995 @@ async function pickRefAudio() {
   }
 }
 
+/* ═════════ 角色预设（角色名 + 至少一组：音频样本 + 样本文字 + 指令） ═════════
+   存 %APPDATA%\pipeline-console\breeze-tts\presets\：
+     index.json                    预设清单（组里只记音频文件相对名）
+     audio/<groupId><ext>          音频副本（不指向用户原文件，移动/删除原文件不会让预设失效）
+   口径：预设**取代**旧的「音色库」——Python 后端的 voices/ 不再由节点直接选，
+   首次打开管理台时把已有音色迁成单组预设（原目录不删，可回退）。 */
+const PRESET_AUDIO_EXTS = [".wav", ".flac", ".mp3", ".m4a", ".aac", ".ogg", ".opus", ".aiff", ".aif"];
+function presetsRoot() {
+  return mk(join(breezeRoot(), "presets"));
+}
+function presetsAudioDir() {
+  return mk(join(presetsRoot(), "audio"));
+}
+function presetsIndexPath() {
+  return join(presetsRoot(), "index.json");
+}
+function presetUid(prefix) {
+  return String(prefix || "p") + "_" + crypto.randomBytes(6).toString("hex");
+}
+function presetNameText(raw) {
+  return String(raw == null ? "" : raw).replace(/\s+/g, " ").trim().slice(0, 60);
+}
+function presetNumOrNull(v) {
+  if (v == null || v === "") return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+/* 候选音色（试听小样）落 presets/candidates/<presetId>/<cid>.wav：
+   还没成为「某一组」的中间产物也留在磁盘上，关窗重开还能继续挑。 */
+function presetsCandidatesDir() {
+  return mk(join(presetsRoot(), "candidates"));
+}
+function candidateAudioPath(c) {
+  const f = String((c && c.audioFile) || "");
+  return f ? join(presetsCandidatesDir(), f) : "";
+}
+function presetCandidatePublic(c) {
+  const p = candidateAudioPath(c);
+  const has = !!(p && fs.existsSync(p));
+  return {
+    id: String(c.id || ""),
+    line: String(c.line || ""),
+    instruction: String(c.instruction || ""),
+    seed: presetNumOrNull(c.seed),
+    cfg: presetNumOrNull(c.cfg),
+    durationSec: Number(c.durationSec) || 0,
+    createdAt: Number(c.createdAt) || 0,
+    hasAudio: has,
+    audioPath: has ? p : "",
+    audioName: String(c.audioName || ""),
+  };
+}
+/** 预设清单（version 2）：
+ *   角色的结构 = 1 个基础音色组 + N 个备选音色组（kind=base / alt，各带场景标签）+ 候选池。
+ *   老数据（没有 baseGroupId）自动把「首个有音频的组」当基础音色，其余当备选 —— 只读时就归一，
+ *   下一次写盘即固化。 */
+function readPresetsIndex() {
+  const j = readJson(presetsIndexPath(), null);
+  const out = {
+    version: 2,
+    migratedVoices: !!(j && j.migratedVoices),
+    presets: [],
+  };
+  const arr = j && Array.isArray(j.presets) ? j.presets : [];
+  for (const p of arr) {
+    if (!p || !p.id) continue;
+    const groups = [];
+    for (const g of Array.isArray(p.groups) ? p.groups : []) {
+      if (!g || !g.id) continue;
+      groups.push({
+        id: String(g.id),
+        name: presetNameText(g.name),
+        scene: presetNameText(g.scene),
+        kind: g.kind === "alt" ? "alt" : "base",
+        source: g.source === "audio" ? "audio" : g.source === "design" ? "design" : "",
+        refText: String(g.refText || ""),
+        instruction: String(g.instruction || ""),
+        audioFile: String(g.audioFile || ""),
+        audioName: String(g.audioName || ""),
+        seed: presetNumOrNull(g.seed),
+        cfg: presetNumOrNull(g.cfg),
+        candidateId: String(g.candidateId || ""),
+        createdAt: Number(g.createdAt) || 0,
+      });
+    }
+    let baseGroupId = String(p.baseGroupId || "");
+    if (!groups.some((g) => g.id === baseGroupId)) {
+      const firstAudio = groups.find((g) => g.audioFile);
+      baseGroupId = String((firstAudio || groups[0] || {}).id || "");
+    }
+    for (const g of groups) g.kind = g.id === baseGroupId ? "base" : "alt";
+    const design = p.design && typeof p.design === "object" ? p.design : {};
+    const candidates = [];
+    for (const c of Array.isArray(p.candidates) ? p.candidates : []) {
+      if (!c || !c.id) continue;
+      candidates.push({
+        id: String(c.id),
+        line: String(c.line || ""),
+        instruction: String(c.instruction || ""),
+        seed: presetNumOrNull(c.seed),
+        cfg: presetNumOrNull(c.cfg),
+        audioFile: String(c.audioFile || ""),
+        audioName: String(c.audioName || ""),
+        durationSec: Number(c.durationSec) || 0,
+        createdAt: Number(c.createdAt) || 0,
+      });
+    }
+    out.presets.push({
+      id: String(p.id),
+      name: presetNameText(p.name) || String(p.id),
+      draft: !!p.draft,
+      createdAt: Number(p.createdAt) || 0,
+      baseGroupId,
+      design: {
+        setting: String(design.setting || ""),
+        instruction: String(design.instruction || ""),
+        scene: String(design.scene || ""),
+        language: String(design.language || ""),
+        model: String(design.model || ""),
+      },
+      groups,
+      candidates,
+      /* 向导现场（走到第几步 / 台词与 seed）：读盘必须原样带着，否则每次写盘都会把它抹掉 */
+      wizard: p.wizard && typeof p.wizard === "object" ? p.wizard : undefined,
+    });
+  }
+  return out;
+}
+function writePresetsIndex(idx) {
+  writeJson(presetsIndexPath(), Object.assign({ version: 2 }, idx, { version: 2 }));
+  return idx;
+}
+function presetGroupAudioPath(g) {
+  const f = String((g && g.audioFile) || "");
+  return f ? join(presetsAudioDir(), f) : "";
+}
+/** 对外形状（画布跳窗 / 控制台共用）：group.index 从 0 起，「第 N 组」由调用方按 index+1 显示；
+ *  kind=base 是基础音色（没有组名的老数据就靠它区分），alt 是备选音色（按场景 / 情绪分类）。 */
+function presetPublicGroup(g, i) {
+  const p = presetGroupAudioPath(g);
+  const has = !!(p && fs.existsSync(p));
+  return {
+    id: g.id,
+    index: i,
+    name: g.name || "",
+    scene: String(g.scene || ""),
+    kind: g.kind === "alt" ? "alt" : "base",
+    source: String(g.source || ""),
+    refText: String(g.refText || ""),
+    instruction: String(g.instruction || ""),
+    hasAudio: has,
+    audioPath: has ? p : "",
+    audioName: String(g.audioName || ""),
+    seed: presetNumOrNull(g.seed),
+    cfg: presetNumOrNull(g.cfg),
+    candidateId: String(g.candidateId || ""),
+  };
+}
+/* 向导中途存盘（wizard）：角色名 / 声线设定之外，把「走到第几步、候选台词、seed / cfg、每条状态」
+   一起留在预设上 —— 关窗、切画布、崩了都能原地接着做。宿主只做有界归一，不解释业务；
+   字段与渲染层一一对应（step / entry / count / lines[] / at）。 */
+const PRESET_WIZ_STEPS = [1, 2, 3];
+const PRESET_WIZ_STATUS = ["idle", "queued", "running", "done", "error"];
+function presetWizardNormalize(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const str = (v, max) => String(v == null ? "" : v).slice(0, max);
+  const num = (v) => (v == null || v === "" ? null : Number.isFinite(Number(v)) ? Number(v) : null);
+  const lines = [];
+  for (const c of Array.isArray(raw.lines) ? raw.lines.slice(0, 8) : []) {
+    if (!c || typeof c !== "object") continue;
+    /* running 是进程内状态：存盘时没跑完的回来一律当 idle，由用户再点一次 */
+    const st = PRESET_WIZ_STATUS.indexOf(String(c.status || "")) >= 0 ? String(c.status) : "idle";
+    lines.push({
+      id: str(c.id, 40) || "w" + lines.length,
+      line: str(c.line, 4000),
+      seed: num(c.seed),
+      cfg: num(c.cfg),
+      status: st === "running" || st === "queued" ? "idle" : st,
+      error: str(c.error, 300),
+      candidateId: str(c.candidateId, 40),
+      seedTouched: !!c.seedTouched,
+      cfgTouched: !!c.cfgTouched,
+      durationSec: Number(c.durationSec) || 0,
+    });
+  }
+  return {
+    kind: raw.kind === "alt" ? "alt" : "create",
+    step: PRESET_WIZ_STEPS.indexOf(Math.round(Number(raw.step))) >= 0 ? Math.round(Number(raw.step)) : 1,
+    entry: raw.entry === "audio" ? "audio" : "design",
+    count: Math.max(1, Math.min(8, Math.round(Number(raw.count) || 3))),
+    /* 备选那趟写的声线设定 / 指令不落 design（design 是角色自己的），只存这里：
+       不带着就等于用户关一次窗就把刚写的一句话丢了 */
+    setting: str(raw.setting, 4000),
+    instruction: str(raw.instruction, 4000),
+    scene: str(raw.scene, 200),
+    groupName: str(raw.groupName, 60),
+    language: str(raw.language, 8),
+    /* 音频参考入口的现场：重开草稿时台词框 / 已选音频还能原样回填 */
+    refText: str(raw.refText, 4000),
+    audioPath: str(raw.audioPath, 1000),
+    audioName: str(raw.audioName, 300),
+    lines,
+    at: Number(raw.at) || 0,
+  };
+}
+function presetPublic(p) {
+  const groups = (p.groups || []).map((g, i) => presetPublicGroup(g, i));
+  const candidates = (p.candidates || []).map(presetCandidatePublic);
+  return {
+    id: p.id,
+    name: p.name,
+    draft: !!p.draft,
+    createdAt: Number(p.createdAt) || 0,
+    baseGroupId: String(p.baseGroupId || ""),
+    design: {
+      setting: String((p.design && p.design.setting) || ""),
+      instruction: String((p.design && p.design.instruction) || ""),
+      scene: String((p.design && p.design.scene) || ""),
+      language: String((p.design && p.design.language) || ""),
+      model: String((p.design && p.design.model) || ""),
+    },
+    groups,
+    candidates,
+    wizard: presetWizardNormalize(p.wizard),
+    ready: groups.some((g) => g.hasAudio && !!String(g.refText || "").trim()),
+  };
+}
+/** 未定稿的草稿也要露出来（列表里灰色「未完成」条目），否则用户找不到自己做到一半的角色。
+    草稿只在用户点「丢弃草稿」时删 —— 旧版那只「读盘顺手扫掉放了一天的草稿」已删：
+    它把 createdAt（数字时间戳）当 ISO 字符串 Date.parse，恒 NaN → 任何零组草稿下次读盘即被删，
+    这正是「抽台词 / 合成候选」报 preset_missing 的根因。 */
+function presetsPayload() {
+  const idx = readPresetsIndex();
+  return {
+    ok: true,
+    dir: presetsRoot(),
+    presets: (idx.presets || []).map(presetPublic),
+  };
+}
+function presetById(idx, id) {
+  const key = String(id || "");
+  return (idx.presets || []).find((p) => p.id === key) || null;
+}
+/** 新预设名：重名自动补 #2 / #3（同名片单里分不清谁是谁） */
+function presetUniqueName(idx, raw, exceptId) {
+  const base = presetNameText(raw) || "角色";
+  let name = base;
+  let n = 1;
+  while ((idx.presets || []).some((p) => p.id !== exceptId && p.name === name)) {
+    n += 1;
+    name = base + " #" + n;
+  }
+  return name;
+}
+function presetAudioExt(name, mime) {
+  const e = String(path.extname(String(name || "")) || "").toLowerCase();
+  if (PRESET_AUDIO_EXTS.indexOf(e) >= 0) return e;
+  const m = String(mime || "").toLowerCase();
+  if (m.indexOf("flac") >= 0) return ".flac";
+  if (m.indexOf("mpeg") >= 0 || m.indexOf("mp3") >= 0) return ".mp3";
+  if (m.indexOf("mp4") >= 0 || m.indexOf("m4a") >= 0) return ".m4a";
+  if (m.indexOf("ogg") >= 0) return ".ogg";
+  return ".wav";
+}
+function presetWriteAudio(groupId, audio) {
+  const buf = Buffer.isBuffer(audio && audio.data)
+    ? audio.data
+    : Buffer.from((audio && audio.data) || []);
+  if (!buf.length) return null;
+  const ext = presetAudioExt(audio && audio.name, audio && audio.mime);
+  const file = String(groupId) + ext;
+  const dest = join(presetsAudioDir(), file);
+  mk(path.dirname(dest));
+  fs.writeFileSync(dest, buf);
+  return { audioFile: file, audioName: String((audio && audio.name) || file) };
+}
+/** 读目录里第一条音频（音色迁移用：旧库是 ref.wav，实际可能被换成别的扩展名） */
+function presetFindAudioInDir(dir) {
+  let names = [];
+  try {
+    names = fs.readdirSync(dir);
+  } catch {
+    return "";
+  }
+  const k = names.find((n) => PRESET_AUDIO_EXTS.indexOf(path.extname(n).toLowerCase()) >= 0);
+  return k ? join(dir, k) : "";
+}
+/** 旧「音色库」→ 单组预设的迁移：只做一次（index.json 记 migratedVoices）。
+ *  安装目录里没有 voices/ 也**不**标记完成 —— 用户可能还没装 / 换过安装目录。 */
+function presetMigrateVoices() {
+  const idx = readPresetsIndex();
+  if (idx.migratedVoices) return idx;
+  const cfg = loadConfig();
+  const installDir = String(cfg.installDir || "").trim();
+  if (!installDir) return idx;
+  const vdir = join(installDir, "voices");
+  let dirs = [];
+  try {
+    dirs = fs
+      .readdirSync(vdir, { withFileTypes: true })
+      .filter((d) => d.isDirectory())
+      .map((d) => d.name);
+  } catch {
+    dirs = [];
+  }
+  if (!dirs.length) {
+    idx.migratedVoices = true;
+    writePresetsIndex(idx);
+    return idx;
+  }
+  let added = 0;
+  for (const name of dirs) {
+    if ((idx.presets || []).some((p) => p.name === presetNameText(name))) continue;
+    const src = presetFindAudioInDir(join(vdir, name));
+    if (!src) continue;
+    let refText = "";
+    try {
+      refText = fs.readFileSync(join(vdir, name, "ref.txt"), "utf8").trim();
+    } catch {
+      refText = "";
+    }
+    const gid = presetUid("g");
+    let copied = null;
+    try {
+      copied = presetWriteAudio(gid, { name: path.basename(src), data: fs.readFileSync(src) });
+    } catch (e) {
+      appendConsole("[preset] 迁移音色 " + name + " 失败: " + String((e && e.message) || e));
+    }
+    if (!copied) continue;
+    idx.presets.push({
+      id: presetUid("p"),
+      name: presetUniqueName(idx, name, ""),
+      draft: false,
+      createdAt: Date.now(),
+      baseGroupId: gid,
+      design: { setting: "", instruction: "", scene: "", language: "", model: "" },
+      groups: [
+        {
+          id: gid,
+          name: "",
+          scene: "",
+          kind: "base",
+          source: "audio",
+          refText,
+          instruction: "",
+          audioFile: copied.audioFile,
+          audioName: copied.audioName,
+          seed: null,
+          cfg: null,
+          candidateId: "",
+          createdAt: Date.now(),
+        },
+      ],
+      candidates: [],
+    });
+    added += 1;
+  }
+  idx.migratedVoices = true;
+  writePresetsIndex(idx);
+  if (added) appendConsole("[preset] 已把 " + added + " 个旧音色迁成角色预设（旧 voices/ 目录保留）");
+  return idx;
+}
+/** 预设运行期解析：节点只送 presetId + groupId，参考音频 / 文稿 / 指令由宿主补全。
+ *  显式传入的 refAudio / refText / instruction 优先（指令覆写口径）。 */
+function presetResolveForRun(params) {
+  const pid = String((params && params.presetId) || "").trim();
+  const gid = String((params && params.presetGroupId) || "").trim();
+  if (!pid && !gid) return null;
+  const idx = presetMigrateVoices();
+  const preset = presetById(idx, pid);
+  if (!preset) return { error: "preset_missing" };
+  const groups = preset.groups || [];
+  let group = gid ? groups.find((g) => g.id === gid) : null;
+  if (!group) group = groups[0];
+  if (!group) return { error: "preset_group_missing" };
+  const pub = presetPublicGroup(group, groups.indexOf(group));
+  if (!pub.hasAudio) return { error: "preset_audio_missing" };
+  return {
+    presetId: preset.id,
+    presetName: preset.name,
+    groupId: group.id,
+    groupIndex: pub.index,
+    audioPath: pub.audioPath,
+    refText: String(group.refText || ""),
+    instruction: String(group.instruction || ""),
+  };
+}
+/** 预设存盘：一次收下整张预设（名称 + 全部组），组里的音频可以是
+ *   {data:Buffer|Uint8Array, name, mime}（新上传，落盘换新文件）或已有 audioFile 名（原样保留）。
+ *   v2 额外收：design（声线设定 + 优化后的指令）、baseGroupId、draft、组的 kind / scene / seed / cfg。 */
+function presetSave(payload) {
+  const idx = readPresetsIndex();
+  const src = payload && typeof payload === "object" ? payload : {};
+  const wantId = String(src.id || "").trim();
+  const existing = wantId ? presetById(idx, wantId) : null;
+  const name = presetUniqueName(idx, src.name, existing ? existing.id : "");
+  /* 「草稿存盘」只带 design、groups 传空数组 —— 那套口径只属于新建角色。
+     已经定稿的角色（draft:false）被这样存一次，基础音色 / 备选音色连同音频会被当场删光，
+     所以这种调用对真角色只更新声线设定，组与 draft 位原样保留。 */
+  const designOnly = !!(existing && existing.draft === false && src.draft === true);
+  const groupsIn = designOnly
+    ? (existing.groups || []).slice()
+    : Array.isArray(src.groups)
+      ? src.groups
+      : [];
+  const seen = new Set();
+  const groups = [];
+  for (const raw of groupsIn) {
+    if (!raw || typeof raw !== "object") continue;
+    let gid = String(raw.id || "").trim();
+    if (!gid || seen.has(gid)) gid = presetUid("g");
+    seen.add(gid);
+    const prev = existing ? (existing.groups || []).find((g) => g.id === gid) : null;
+    let audioFile = String(raw.audioFile || (prev && prev.audioFile) || "");
+    let audioName = String(raw.audioName || (prev && prev.audioName) || "");
+    if (raw.audio && raw.audio.data != null) {
+      const w = presetWriteAudio(gid, raw.audio);
+      if (w) {
+        /* 换过扩展名时旧文件要清掉，避免同一组留两份音频 */
+        if (audioFile && audioFile !== w.audioFile) {
+          try {
+            fs.unlinkSync(join(presetsAudioDir(), audioFile));
+          } catch {}
+        }
+        audioFile = w.audioFile;
+        audioName = w.audioName;
+      }
+    }
+    groups.push({
+      id: gid,
+      name: presetNameText(raw.name),
+      scene: presetNameText(raw.scene),
+      kind: raw.kind === "alt" ? "alt" : "base",
+      source: raw.source === "audio" ? "audio" : raw.source === "design" ? "design" : "",
+      refText: String(raw.refText || ""),
+      instruction: String(raw.instruction || ""),
+      audioFile,
+      audioName,
+      seed: presetNumOrNull(raw.seed != null ? raw.seed : prev && prev.seed),
+      cfg: presetNumOrNull(raw.cfg != null ? raw.cfg : prev && prev.cfg),
+      candidateId: String(raw.candidateId || ""),
+      createdAt: Number(raw.createdAt || (prev && prev.createdAt)) || Date.now(),
+    });
+  }
+  /* 删组时顺手清掉它的音频文件（不占磁盘） */
+  for (const old of (existing && existing.groups) || []) {
+    if (seen.has(old.id)) continue;
+    const p = presetGroupAudioPath(old);
+    if (p) {
+      try {
+        fs.unlinkSync(p);
+      } catch {}
+    }
+  }
+  /* 草稿（新建角色走到「生成候选」那一步）允许 0 组：音频还没成，硬塞一只空组只会显示「⚠ 缺音频」；
+     定稿时一定已经有候选转成的真组，所以非草稿照旧兜一只空组。 */
+  if (!groups.length && !src.draft) {
+    groups.push({
+      id: presetUid("g"),
+      name: "",
+      scene: "",
+      kind: "base",
+      source: "",
+      refText: "",
+      instruction: "",
+      audioFile: "",
+      audioName: "",
+      seed: null,
+      cfg: null,
+      candidateId: "",
+      createdAt: Date.now(),
+    });
+  }
+  /* 基础音色：调用方指定 > 原来那只 > 第一组（永远有且只有一只 base） */
+  let baseGroupId = String(src.baseGroupId || (existing && existing.baseGroupId) || "");
+  if (!groups.length) baseGroupId = "";
+  else if (!groups.some((g) => g.id === baseGroupId)) baseGroupId = groups[0].id;
+  for (const g of groups) g.kind = g.id === baseGroupId ? "base" : "alt";
+
+  const designIn = src.design && typeof src.design === "object" ? src.design : null;
+  const design = {
+    setting: String((designIn && designIn.setting) || (existing && existing.design && existing.design.setting) || ""),
+    instruction: String(
+      (designIn && designIn.instruction) || (existing && existing.design && existing.design.instruction) || "",
+    ),
+    scene: String((designIn && designIn.scene) || (existing && existing.design && existing.design.scene) || ""),
+    language: String((designIn && designIn.language) || (existing && existing.design && existing.design.language) || ""),
+    model: String((designIn && designIn.model) || (existing && existing.design && existing.design.model) || ""),
+  };
+
+  let saved = null;
+  if (existing) {
+    existing.name = name;
+    existing.groups = groups;
+    existing.baseGroupId = baseGroupId;
+    existing.design = design;
+    if (src.draft != null && !designOnly) existing.draft = !!src.draft;
+    saved = existing;
+  } else {
+    saved = {
+      id: presetUid("p"),
+      name,
+      draft: !!src.draft,
+      createdAt: Date.now(),
+      baseGroupId,
+      design,
+      groups,
+      candidates: [],
+    };
+    idx.presets.push(saved);
+  }
+  /* 向导中途存盘：undefined = 保持原样（定稿那一下不该被顺手抹掉），null = 明确清掉
+     （丢弃草稿 / 放弃那趟备选）。定稿成功后渲染层会显式送 null。 */
+  if (src.wizard !== undefined) {
+    const wiz = presetWizardNormalize(src.wizard);
+    if (wiz) saved.wizard = Object.assign({}, wiz, { at: wiz.at || Date.now() });
+    else delete saved.wizard;
+  }
+  writePresetsIndex(idx);
+  return { ok: true, preset: presetPublic(saved), presets: idx.presets.map(presetPublic) };
+}
+/** 删除预设：连同它的音频副本、候选池一起删（节点侧由调用方判「预设已删除」并提示重选）。
+ *  新建角色被丢弃时也走这里，所以草稿不会有残留。 */
+function presetDelete(id) {
+  const idx = readPresetsIndex();
+  const preset = presetById(idx, id);
+  if (!preset) return { ok: false, error: "preset_missing" };
+  for (const g of preset.groups || []) {
+    const p = presetGroupAudioPath(g);
+    if (p) {
+      try {
+        fs.unlinkSync(p);
+      } catch {}
+    }
+  }
+  try {
+    fs.rmSync(join(presetsCandidatesDir(), String(preset.id)), { recursive: true, force: true });
+  } catch {}
+  idx.presets = idx.presets.filter((p) => p.id !== preset.id);
+  writePresetsIndex(idx);
+  return { ok: true, presets: idx.presets.map(presetPublic) };
+}
+/* ═════════ 声线设计助手：默认文本模型 + 内置技能，生成指令与候选台词 ═════════
+   口径（与用户共识一致）：
+     · 用户只给「角色名 + 声线设定」，指令由 LLM 按 breeze-voice-design 技能扩写；
+     · 台词按 breeze-script-format 技能写（中文 ≈ 40~70 字 / 英文 25~45 词 ≈ 8~15 秒），
+       每条候选一条不同台词，语言跟随声线设定；
+     · 提示词单一真源是 mtnode-agent-skills/music/ 下那两份 SKILL.md —— 这里**只读正文**当系统
+       提示词，不改技能本身；
+     · 模型走 MTNode 已配置的文本服务商（dsh/mtnode-llm-creds.js 的解析口径），与渲染层
+       「默认模型」同一个来源；跳窗里临时换的模型存在插件 config 的 llmModel 上，空 = 跟随默认。 */
+const PRESET_SKILL_DIRS = { voice: "breeze-voice-design", script: "breeze-script-format" };
+const presetSkillCache = {};
+/** 内置技能正文（找不到就回空串：调用方退化成「只用自己那句系统提示」）。 */
+function presetSkillText(which) {
+  const slug = PRESET_SKILL_DIRS[which] || "";
+  if (!slug) return "";
+  if (presetSkillCache[slug] != null) return presetSkillCache[slug];
+  const roots = [appRoot, process.resourcesPath ? join(process.resourcesPath, "app") : ""].filter(Boolean);
+  let text = "";
+  for (const root of roots) {
+    const p = join(root, "mtnode-agent-skills", "music", slug, "SKILL.md");
+    try {
+      if (fs.existsSync(p)) {
+        text = fs.readFileSync(p, "utf8");
+        break;
+      }
+    } catch {}
+  }
+  presetSkillCache[slug] = text;
+  return text;
+}
+function presetModelIds(p) {
+  return (Array.isArray(p && p.models) ? p.models : [])
+    .map((m) => (typeof m === "string" ? m : m && m.id))
+    .filter(Boolean)
+    .map(String);
+}
+/** 可选文本模型（跳窗顶部的下拉）：DeepSeek 官方在前，其余 OpenAI 兼容服务商依次排后。 */
+function presetLlmChoices() {
+  const dataDir = getDataDir ? getDataDir() : "";
+  const auth = resolveDshRunAuth(dataDir);
+  const seen = new Set();
+  const models = [];
+  const push = (id, provider, providerName) => {
+    const key = String(id || "").trim();
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    models.push({ id: key, provider, providerName });
+  };
+  let ds = null;
+  try {
+    ds = deepseekProvider(dataDir);
+  } catch {}
+  if (ds) for (const m of presetModelIds(ds)) push(m, "deepseek-official", ds.name || "DeepSeek 官方");
+  let pi = [];
+  try {
+    pi = mtnodePiProviders(dataDir);
+  } catch {}
+  for (const p of pi) for (const m of presetModelIds(p)) push(m, "mtnode_" + p.route, p.name || p.route);
+  const cfg = loadConfig();
+  return {
+    ok: !!auth.ok,
+    error: auth.ok ? "" : String(auth.error || "no_llm_provider"),
+    models,
+    defaultModel: auth.ok ? String(auth.model || "") : "",
+    selected: String(cfg.llmModel || ""),
+  };
+}
+/** 真正要打哪条通道：选了模型就按「哪家服务商有这个模型」定位，找不到就沿用默认路由只换模型名。 */
+function presetLlmTarget() {
+  const dataDir = getDataDir ? getDataDir() : "";
+  const auth = resolveDshRunAuth(dataDir);
+  if (!auth.ok) return { ok: false, error: String(auth.error || "no_llm_provider") };
+  const want = String(loadConfig().llmModel || "").trim();
+  if (!want) return { ok: true, provider: auth.provider, apiKey: auth.apiKey, baseUrl: auth.baseUrl, model: auth.model };
+  let ds = null;
+  try {
+    ds = deepseekProvider(dataDir);
+  } catch {}
+  if (ds && presetModelIds(ds).indexOf(want) >= 0) {
+    return { ok: true, provider: "deepseek-official", apiKey: apiKeyOf(ds), baseUrl: ds.baseUrl, model: want };
+  }
+  let pi = [];
+  try {
+    pi = mtnodePiProviders(dataDir);
+  } catch {}
+  const hit = pi.find((p) => presetModelIds(p).indexOf(want) >= 0);
+  if (hit) return { ok: true, provider: "mtnode_" + hit.route, apiKey: hit.apiKey, baseUrl: hit.baseUrl, model: want };
+  return { ok: true, provider: auth.provider, apiKey: auth.apiKey, baseUrl: auth.baseUrl, model: want };
+}
+/** baseUrl → OpenAI 兼容的 POST <...>/chat/completions（与 main.js 的 modelsEndpointsOf 同口径）。 */
+function presetChatUrl(baseUrl) {
+  const clean = String(baseUrl || "").trim().replace(/\/+$/, "");
+  if (!/^https?:\/\//i.test(clean)) return "";
+  if (/\/chat\/completions$/i.test(clean)) return clean;
+  const strip = clean.replace(/\/(completions|models|embeddings)$/i, "").replace(/\/+$/, "");
+  if (/\/v\d+$/i.test(strip)) return strip + "/chat/completions";
+  return strip + "/v1/chat/completions";
+}
+/** 一次对话（非流式）：返回 {ok, text, model} / {ok:false, error, message}。绝不抛。 */
+async function presetChat(messages, opts) {
+  const target = presetLlmTarget();
+  if (!target.ok) return { ok: false, error: "llm_unavailable", message: String(target.error || "") };
+  const url = presetChatUrl(target.baseUrl);
+  if (!url) return { ok: false, error: "llm_no_base_url", message: String(target.baseUrl || "") };
+  const maxTokens = Math.max(256, Math.min(2048, Number((opts && opts.maxTokens) || 900)));
+  const ctl = typeof AbortController === "function" ? new AbortController() : null;
+  const timer = ctl ? setTimeout(() => ctl.abort(), 120000) : null;
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: "Bearer " + target.apiKey },
+      body: JSON.stringify({
+        model: target.model,
+        messages,
+        temperature: 0.7,
+        max_tokens: maxTokens,
+        stream: false,
+      }),
+      signal: ctl ? ctl.signal : undefined,
+    });
+    const raw = await res.text();
+    let json = null;
+    try {
+      json = JSON.parse(raw);
+    } catch {}
+    if (!res.ok) {
+      const msg = String((json && json.error && (json.error.message || json.error)) || raw || "").slice(0, 400);
+      return { ok: false, error: "llm_http_" + res.status, message: msg };
+    }
+    const choice = json && Array.isArray(json.choices) ? json.choices[0] : null;
+    const content = choice && choice.message ? choice.message.content : choice && choice.text;
+    const text = (Array.isArray(content) ? content.map((c) => (c && c.text) || "").join("") : String(content || ""))
+      .replace(/^\s*```[a-z]*\s*/i, "")
+      .replace(/```\s*$/, "")
+      .trim();
+    if (!text) return { ok: false, error: "llm_empty", message: "模型返回空内容" };
+    return { ok: true, text, model: target.model };
+  } catch (e) {
+    const aborted = e && (e.name === "AbortError" || /abort/i.test(String(e.message || "")));
+    return {
+      ok: false,
+      error: aborted ? "llm_timeout" : "llm_failed",
+      message: String((e && e.message) || e).slice(0, 300),
+    };
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+function presetLooksChinese(s) {
+  return /[\u4e00-\u9fff]/.test(String(s || ""));
+}
+function presetRandomSeed() {
+  return crypto.randomInt(1, 2147483646);
+}
+function presetRandomCfg() {
+  /* design 模式官方建议 4；用户要「随机 3~5」，保留一位小数好复现 */
+  return Math.round((3 + Math.random() * 2) * 10) / 10;
+}
+/** 把模型回的多行台词收成数组（容忍编号 / 项目符号 / 引号 / 空行）。 */
+function presetParseLines(text, count) {
+  const out = [];
+  for (const line of String(text || "").split(/\r?\n/)) {
+    let s = line.trim();
+    if (!s) continue;
+    s = s
+      .replace(/^\s*(?:[-*•·]|\d+[.、)．]|[（(]\d+[）)])\s*/, "")
+      .replace(/^["“'「『]+/, "")
+      .replace(/["”'」』]+$/, "")
+      .trim();
+    if (!s) continue;
+    if (/^台词|^输出|^要求|^说明/.test(s)) continue;
+    out.push(s);
+    if (out.length >= count) break;
+  }
+  return out;
+}
+/** 第一步：声线设定 → 一句可用的 instruction（走 breeze-voice-design 技能正文）。
+ *  scene 非空 = 给「备选音色」用：同一角色，按场景 / 情绪重新调一版。
+ *  tier = "detail" 时出**详细档**：四段分行（声线类型 / 音色关键词 / 共鸣位置 / 参考质感），
+ *  结构与上限写在技能正文的「详细档」小节；缺省 / "brief" = 现状那一句散文，绝不改形态。 */
+async function presetOptimizeInstruction(payload) {
+  const src = payload && typeof payload === "object" ? payload : {};
+  const name = presetNameText(src.name) || "角色";
+  const setting = String(src.setting || "").trim();
+  const scene = String(src.scene || "").trim();
+  const detail = String(src.tier || "") === "detail";
+  if (!setting) return { ok: false, error: "setting_required" };
+  const skill = presetSkillText("voice");
+  const sysBrief = [
+    skill || "",
+    "你现在是 MTNode 里的声线设计助手：只输出**一段**可直接放进 Breeze TTS 2 instruction 字段的中文或英文自然语言提示词，不要标题、不要解释、不要 JSON、不要引号。",
+    "提示词必须覆盖：性别年龄 / 音色质感 / 语速节奏 / 情绪性格 / 场景用途；语言跟随用户给的声线设定（中文设定写中文，英文设定写英文）。",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+  const sysDetail = [
+    skill || "",
+    "你现在是 MTNode 里的声线设计助手，这次走**详细档**：输出四段分行、段首带标题的音色描述，可直接放进 Breeze TTS 2 的 instruction 字段。",
+    "格式（硬口径）：恰好四段，每段一行或两行，行首写标题加冒号，段与段之间空一行；不要开场白、不要解释、不要 JSON、不要引号、不要代码围栏。中文设定用这四个标题：声线类型 / 音色关键词 / 共鸣位置 / 参考质感；英文设定改用 Voice type / Tone keywords / Resonance / Reference texture，内容也用英文。",
+    "各段写什么：\n" +
+      "· 声线类型：声部与年龄感 + 音色明暗冷暖 + 质地 + 语速，并写出必要的排除项（例如「非萝莉尖细型，非御姐低沉型」）。\n" +
+      "· 音色关键词：4~6 个词，用顿号并列（英文用逗号），只写形容词 / 名词短语，不加解释。\n" +
+      "· 共鸣位置：以哪一路共鸣为主、哪一路偏少、哪一路偶尔点缀，并点出这样听起来的后果（显得年轻 / 不沉稳 / 激动时往上飘这类）。\n" +
+      "· 参考质感：一到两句通感比喻（从日常场景取材）+ 气息 / 鼻音 / 摩擦感等细节。",
+    "长度：四段合计约 120~300 个汉字（英文约 60~150 词），宁短勿堆；四段之间不许互相矛盾，也不要堆互斥词。",
+    scene ? "这次要主导的场景 / 情绪必须落进「参考质感」那一段，不新增第五段，并保持与基础音色是同一个人。" : "",
+    "语言跟随用户给的声线设定：中文设定写中文，英文设定写英文。",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+  const user = [
+    "角色名：" + name,
+    "声线设定：" + setting,
+    scene ? "这次要主导的场景 / 情绪（必须体现在提示词里，并保持与基础音色同一个人）：" + scene : "",
+    detail ? "按详细档四段输出，只回这四段正文。" : "只回一段提示词正文。",
+  ]
+    .filter(Boolean)
+    .join("\n");
+  const r = await presetChat(
+    [
+      { role: "system", content: detail ? sysDetail : sysBrief },
+      { role: "user", content: user },
+    ],
+    { maxTokens: detail ? 900 : 700 },
+  );
+  if (!r.ok) return r;
+  const raw = String(r.text || "")
+    .replace(/^\s*```[a-z]*\s*/i, "")
+    .replace(/```\s*$/, "")
+    .trim();
+  if (detail) {
+    /* 详细档保留分行与段间空行，只清理项目符号与包裹引号 */
+    const instruction = raw
+      .split(/\r?\n/)
+      .map((line) =>
+        line
+          .replace(/^\s*(?:[-*•·]|\d+[.、)．])\s*/, "")
+          .replace(/^["“'「『]+|["”'」』]+$/g, "")
+          .trim(),
+      )
+      .join("\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim()
+      .slice(0, 1200);
+    return { ok: true, instruction, tier: "detail", model: r.model || "" };
+  }
+  const instruction = raw
+    .replace(/\s*\n+\s*/g, " ")
+    .replace(/^["“'「『]+|["”'」』]+$/g, "")
+    .trim()
+    .slice(0, 1200);
+  return { ok: true, instruction, tier: "brief", model: r.model || "" };
+}
+/** 第二步：按声线设定写 N 条互不相同的候选台词（走 breeze-script-format 技能正文）。 */
+async function presetWriteLines(payload) {
+  const src = payload && typeof payload === "object" ? payload : {};
+  const name = presetNameText(src.name) || "角色";
+  const setting = String(src.setting || "").trim();
+  const instruction = String(src.instruction || "").trim();
+  const scene = String(src.scene || "").trim();
+  const count = Math.max(1, Math.min(8, Math.round(Number(src.count) || 3)));
+  const sample = String(src.sample || "").trim();
+  /* 只重写一条时，把其余几条当「别撞车」清单送进去（否则模型爱写回同一句） */
+  const avoid = (Array.isArray(src.avoid) ? src.avoid : [])
+    .map((s) => String(s || "").trim())
+    .filter(Boolean)
+    .slice(0, 8);
+  const zh = presetLooksChinese(setting || instruction || sample || name);
+  const skill = presetSkillText("script");
+  const sys = [
+    skill || "",
+    "你只输出台词本身：一行一条，不要编号、不要引号、不要解释、不要舞台说明。",
+    zh
+      ? "每条台词按中文口播写，长度约 40~70 个汉字（≈8~15 秒）；标点齐全，适合直接朗读。"
+      : "每条台词写英文口播，长度约 25~45 个词（≈8~15 秒）；标点齐全，适合直接朗读。",
+    zh
+      ? "允许用官方内联发声事件：方括号 [笑] [叹气] [咳嗽] [清嗓子]。"
+      : "允许用官方内联发声事件：圆括号 (laugh) (sigh) (cough) (clears throat)。",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+  const user = [
+    "角色：" + name,
+    "声线设定：" + (setting || "（未填，按指令推断）"),
+    instruction ? "音色指令：" + instruction : "",
+    scene ? "这批台词的情绪 / 场景：" + scene : "",
+    sample ? "参考语气（可改写、不要雷同）：" + sample : "",
+    avoid.length ? "已被采用的其它台词（不要与这些重复或近似）：\n" + avoid.join("\n") : "",
+    "写 " + count + " 条互不相同的台词，每条自成一段、可直接念。",
+  ]
+    .filter(Boolean)
+    .join("\n");
+  const r = await presetChat(
+    [
+      { role: "system", content: sys },
+      { role: "user", content: user },
+    ],
+    { maxTokens: 1200 },
+  );
+  if (!r.ok) return r;
+  const lines = presetParseLines(r.text, count);
+  if (!lines.length) return { ok: false, error: "llm_empty", message: "模型没有给出可用的台词" };
+  return { ok: true, lines, language: zh ? "zh" : "en", model: r.model || "" };
+}
+/** 候选音色合成（音色设计模式：只给文本 + 指令 + seed + cfg，不需要参考音频）。
+ *  结果落 presets/candidates/<presetId>/<cid>.wav，并写进该角色的候选池。 */
+async function presetCandidateGenerate(payload) {
+  const src = payload && typeof payload === "object" ? payload : {};
+  const idx = readPresetsIndex();
+  const preset = presetById(idx, src.presetId);
+  if (!preset) return { ok: false, error: "preset_missing" };
+  const text = String(src.line || "").trim();
+  if (!text) return { ok: false, error: "text_required" };
+  const instruction = String(
+    src.instruction || (preset.groups.find((g) => g.id === preset.baseGroupId) || {}).instruction || preset.design.instruction || "",
+  ).trim();
+  if (!instruction) return { ok: false, error: "instruction_required" };
+  const cfg = Math.max(3, Math.min(5, Number(src.cfg) || presetRandomCfg()));
+  const seed = Number.isFinite(Number(src.seed)) && Number(src.seed) > 0 ? Math.round(Number(src.seed)) : presetRandomSeed();
+  const wav = await backendBinary("/v1/audio/speech", "POST", {
+    text,
+    instruction,
+    mode: "design",
+    cfg_scale: cfg,
+    seed,
+    response_format: "wav",
+  });
+  if (!wav || !wav.ok) {
+    const fail = backendFailure(wav);
+    reportErr(engineBusCode(fail.code), "Breeze 候选音色生成失败：" + fail.message, {
+      phase: "synth",
+      console: String(((consoleTail(16 * 1024) || {}).text) || "").slice(-3000),
+    });
+    return { ok: false, error: fail.code, message: fail.message };
+  }
+  const cid = presetUid("c");
+  const dir = mk(join(presetsCandidatesDir(), preset.id));
+  const file = cid + ".wav";
+  try {
+    fs.writeFileSync(join(dir, file), Buffer.from(String(wav.base64 || ""), "base64"));
+  } catch (e) {
+    return { ok: false, error: "preset_write_failed", message: String((e && e.message) || e) };
+  }
+  const cand = {
+    id: cid,
+    line: text,
+    instruction,
+    seed,
+    cfg,
+    audioFile: preset.id + "/" + file,
+    audioName: (presetNameText(preset.name) || "candidate") + "-" + cid + ".wav",
+    durationSec: Number(wav.durationSec) || 0,
+    createdAt: Date.now(),
+  };
+  preset.candidates = (preset.candidates || []).filter((c) => c.id !== cid);
+  /* 重抽：被替换掉的那条候选连音频一起清掉，候选池里不留孤儿（向导里 candidateId 会跟着换新） */
+  const replaceId = String(src.replaceCandidateId || "").trim();
+  if (replaceId && replaceId !== cid) {
+    const old = preset.candidates.find((c) => c.id === replaceId);
+    if (old) {
+      const op = candidateAudioPath(old);
+      if (op) {
+        try {
+          fs.unlinkSync(op);
+        } catch {}
+      }
+      preset.candidates = preset.candidates.filter((c) => c.id !== replaceId);
+    }
+  }
+  preset.candidates.push(cand);
+  writePresetsIndex(idx);
+  return { ok: true, candidate: presetCandidatePublic(cand), preset: presetPublic(preset) };
+}
+/** 删一条候选（连音频文件）。 */
+function presetCandidateDelete(payload) {
+  const src = payload && typeof payload === "object" ? payload : {};
+  const idx = readPresetsIndex();
+  const preset = presetById(idx, src.presetId);
+  if (!preset) return { ok: false, error: "preset_missing" };
+  const cid = String(src.candidateId || "");
+  const cand = (preset.candidates || []).find((c) => c.id === cid);
+  if (!cand) return { ok: false, error: "candidate_missing" };
+  const p = candidateAudioPath(cand);
+  if (p) {
+    try {
+      fs.unlinkSync(p);
+    } catch {}
+  }
+  preset.candidates = preset.candidates.filter((c) => c.id !== cid);
+  writePresetsIndex(idx);
+  return { ok: true, preset: presetPublic(preset) };
+}
+/** 选中一条候选 → 成为该角色的「基础音色」或一个「备选音色」组：
+ *  把候选音频复制进 presets/audio/，组的参考文字就是那条台词、指令沿用合成它时那一版。 */
+function presetCandidatePick(payload) {
+  const src = payload && typeof payload === "object" ? payload : {};
+  const idx = readPresetsIndex();
+  const preset = presetById(idx, src.presetId);
+  if (!preset) return { ok: false, error: "preset_missing" };
+  const cand = (preset.candidates || []).find((c) => c.id === String(src.candidateId || ""));
+  if (!cand) return { ok: false, error: "candidate_missing" };
+  const srcPath = candidateAudioPath(cand);
+  if (!srcPath || !fs.existsSync(srcPath)) return { ok: false, error: "candidate_audio_missing" };
+  const mergeId = String(src.groupId || "").trim();
+  const gid = mergeId || presetUid("g");
+  let audio = null;
+  try {
+    audio = presetWriteAudio(gid, { name: path.basename(srcPath), data: fs.readFileSync(srcPath) });
+  } catch (e) {
+    return { ok: false, error: "preset_write_failed", message: String((e && e.message) || e) };
+  }
+  if (!audio) return { ok: false, error: "preset_write_failed" };
+  const prev = (preset.groups || []).find((g) => g.id === gid) || null;
+  const group = {
+    id: gid,
+    name: presetNameText(src.name || (prev && prev.name) || ""),
+    scene: presetNameText(src.scene || (prev && prev.scene) || ""),
+    kind: "base",
+    source: "design",
+    refText: String(cand.line || ""),
+    instruction: String(cand.instruction || ""),
+    audioFile: audio.audioFile,
+    audioName: audio.audioName,
+    seed: cand.seed,
+    cfg: cand.cfg,
+    candidateId: cand.id,
+    createdAt: Number((prev && prev.createdAt) || Date.now()),
+  };
+  if (prev) {
+    if (prev.audioFile && prev.audioFile !== group.audioFile) {
+      try {
+        fs.unlinkSync(join(presetsAudioDir(), prev.audioFile));
+      } catch {}
+    }
+    preset.groups = preset.groups.map((g) => (g.id === gid ? group : g));
+  } else {
+    preset.groups = preset.groups || [];
+    preset.groups.push(group);
+  }
+  if (src.asBase || !preset.baseGroupId || !preset.groups.some((g) => g.id === preset.baseGroupId)) {
+    preset.baseGroupId = gid;
+  }
+  for (const g of preset.groups) g.kind = g.id === preset.baseGroupId ? "base" : "alt";
+  writePresetsIndex(idx);
+  return { ok: true, preset: presetPublic(preset), groupId: gid };
+}
+
 function registerBreezeIpc(opts) {
   getDataDir = opts.getDataDir;
   getMainWin = opts.getMainWin;
@@ -2217,6 +3235,9 @@ function registerBreezeIpc(opts) {
   getDsh = opts.getDsh || null;
   /* 画布资产目录（托管兜底落点）：main.js 传入 assetDirFor(wfId) */
   assetDirFor = typeof opts.assetDirFor === "function" ? opts.assetDirFor : null;
+  /* 文件对话框的默认目录来源：当前画布工作目录（同上，由 main.js 提供） */
+  getCanvasWorkspace =
+    typeof opts.getCanvasWorkspace === "function" ? opts.getCanvasWorkspace : null;
 
   /* 报错总线：注册宿主（安装目录 / 日志尾部 / 自我修复 / 重启四个能力入口）。 */
   pluginErrors.registerPluginHost({
@@ -2334,6 +3355,31 @@ function registerBreezeIpc(opts) {
     backendBinary("/api/voices/audio?voiceId=" + encodeURIComponent(String(voiceId || "")), "GET", null),
   );
   ipcMain.handle("breeze:pickRefAudio", async () => pickRefAudio());
+  /* 角色预设：清单带 audioPath（画布 / 管理台都用本地文件直接播，不走 base64） */
+  ipcMain.handle("breeze:presets", async () => {
+    presetMigrateVoices();
+    return presetsPayload();
+  });
+  ipcMain.handle("breeze:presetSave", async (e, p) => presetSave(p || {}));
+  ipcMain.handle("breeze:presetDelete", async (e, id) => presetDelete(id));
+  /* 创建角色 / 备选音色的三步流程（画布跳窗用）：
+     llmChoices → 可选模型清单；llmSetModel → 记住选择（空 = 跟随默认）；
+     optimize → 声线设定 → instruction；lines → 写 N 条候选台词；
+     candidate → 合成一条候选（design 模式，seed + cfg）；candidateDelete / candidatePick。 */
+  ipcMain.handle("breeze:presetLlm", async () => presetLlmChoices());
+  ipcMain.handle("breeze:presetLlmSetModel", async (e, model) => {
+    saveConfig({ llmModel: String(model || "").trim() });
+    return { ok: true, selected: String(model || "").trim(), llm: presetLlmChoices() };
+  });
+  ipcMain.handle("breeze:presetOptimize", async (e, p) => presetOptimizeInstruction(p || {}));
+  ipcMain.handle("breeze:presetLines", async (e, p) => presetWriteLines(p || {}));
+  ipcMain.handle("breeze:presetCandidate", async (e, p) => presetCandidateGenerate(p || {}));
+  ipcMain.handle("breeze:presetCandidateDelete", async (e, p) => presetCandidateDelete(p || {}));
+  ipcMain.handle("breeze:presetCandidatePick", async (e, p) => presetCandidatePick(p || {}));
+  ipcMain.handle("breeze:presetResolve", async (e, p) => {
+    const r = presetResolveForRun(p || {});
+    return r && r.error ? { ok: false, error: r.error } : { ok: true, ref: r };
+  });
   ipcMain.handle("breeze:setFastAll", async (e, on) => {
     saveConfig({ fastAll: !!on });
     return { ok: true, fastAll: !!on };
@@ -2344,6 +3390,9 @@ function registerBreezeIpc(opts) {
 
 module.exports = {
   registerBreezeIpc,
+  /* MCP 自用回环（mtnode_generate kind:speech）复用画布节点那条出口，不另造一套合成实现：
+     同一个后端地址、同一份预设解析、同一套托管目录规则（见根目录 mcp-media-agent.js）。 */
+  generateBreezeFile,
   shutdownBreezeUiOnly,
   onBreezeDshEvent,
   PLUGIN_ID,

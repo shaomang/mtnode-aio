@@ -49,13 +49,26 @@ contextBridge.exposeInMainWorld("breezeApi", {
   openLogPanel: () => ipcRenderer.invoke("breeze:openLogPanel"),
   closeLogPanel: () => ipcRenderer.invoke("breeze:closeLogPanel"),
   apiFetch: (opts) => ipcRenderer.invoke("breeze:apiFetch", opts || {}),
-  /* 音色库（参考片段 + 文稿） */
+  /* 音色库（参考片段 + 文稿）—— Python 后端的老接口，仍保留给迁移与排障 */
   voices: () => ipcRenderer.invoke("breeze:voices"),
   voiceAdd: (o) => ipcRenderer.invoke("breeze:voiceAdd", o || {}),
   voiceDelete: (id) => ipcRenderer.invoke("breeze:voiceDelete", id),
   voiceRename: (o) => ipcRenderer.invoke("breeze:voiceRename", o || {}),
   voiceAudio: (id) => ipcRenderer.invoke("breeze:voiceAudio", id),
   pickRefAudio: () => ipcRenderer.invoke("breeze:pickRefAudio"),
+  /* 角色预设（角色名 + 至少一组：音频 + 样本文字 + 指令）：存宿主数据目录，节点与管理台共用 */
+  presets: () => ipcRenderer.invoke("breeze:presets"),
+  presetSave: (p) => ipcRenderer.invoke("breeze:presetSave", p || {}),
+  presetDelete: (id) => ipcRenderer.invoke("breeze:presetDelete", id),
+  presetResolve: (o) => ipcRenderer.invoke("breeze:presetResolve", o || {}),
+  /* 创建角色 / 备选音色的三步流程（画布跳窗经主窗口的 preload 调用，这里是同一条通道的插件侧出口） */
+  presetLlm: () => ipcRenderer.invoke("breeze:presetLlm"),
+  presetLlmSetModel: (m) => ipcRenderer.invoke("breeze:presetLlmSetModel", m || ""),
+  presetOptimize: (o) => ipcRenderer.invoke("breeze:presetOptimize", o || {}),
+  presetLines: (o) => ipcRenderer.invoke("breeze:presetLines", o || {}),
+  presetCandidate: (o) => ipcRenderer.invoke("breeze:presetCandidate", o || {}),
+  presetCandidateDelete: (o) => ipcRenderer.invoke("breeze:presetCandidateDelete", o || {}),
+  presetCandidatePick: (o) => ipcRenderer.invoke("breeze:presetCandidatePick", o || {}),
   setFastAll: (on) => ipcRenderer.invoke("breeze:setFastAll", !!on),
   filePathFor: (file) => {
     try {

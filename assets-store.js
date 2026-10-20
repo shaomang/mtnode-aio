@@ -501,6 +501,46 @@ function createAssetDir(root, catRel, displayName, desc) {
   return { dir: dir, rel: toRel(dir, root), meta: meta };
 }
 
+/* MCP 自用回环 / 其它「程序产出」的归档口：把本机文件收进素材库。
+   与界面上「拖入 / 添加内容」走同一套内核（createAssetDir + addItemEntry），
+   不另写复制与标记逻辑：新建一个素材夹，把 paths 逐个作为内容条目塞进去。
+   arg = { paths:[绝对路径], name?, category?, desc? }
+   → { ok, asset:{id,rel,displayName,itemCount}, added:[...], skipped:[...] } */
+function importPathsIntoLibrary(arg) {
+  const a = arg && typeof arg === "object" ? arg : {};
+  const list = (Array.isArray(a.paths) ? a.paths : [a.path || a.path])
+    .map((p) => String(p || "").trim())
+    .filter(Boolean);
+  if (!list.length) return { ok: false, error: t("没有要归档的文件") };
+  const root = ensureRoot();
+  const catRel = safeName(a.category || "MCP 产物", "MCP");
+  const first = list[0];
+  const name = String(a.name || "").trim() || path.basename(first, path.extname(first));
+  const made = createAssetDir(root, catRel, name, String(a.desc || ""));
+  const found = { dir: made.dir, rel: made.rel, meta: made.meta };
+  const added = [];
+  const skipped = [];
+  for (const p of list) {
+    const abs = path.resolve(p);
+    const type = typeOfExt(abs);
+    if (!type || !fs.existsSync(abs) || !fs.statSync(abs).isFile()) {
+      skipped.push(p);
+      continue;
+    }
+    try {
+      added.push(addItemEntry(root, found, { type: type, srcPath: abs }));
+    } catch (err) {
+      skipped.push(p + "（" + ((err && err.message) || err) + "）");
+    }
+  }
+  return {
+    ok: true,
+    asset: assetSummary(root, found.dir, found.rel, found.meta),
+    added: added,
+    skipped: skipped,
+  };
+}
+
 /* 往素材里塞一个内容条目：text 走 content，媒体走 srcPath 或 base64（一律复制入库） */
 function addItemEntry(root, found, arg) {
   const meta = found.meta;
@@ -1127,4 +1167,4 @@ function collectFiles(dir, relPrefix, limit, out) {
   }
 }
 
-module.exports = { registerAssetsIpc };
+module.exports = { registerAssetsIpc, importPathsIntoLibrary };

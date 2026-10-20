@@ -581,7 +581,7 @@ main();
   has(I18N_SRC, '"环节壳": "Step shell"', "i18n 有「环节壳」词条");
   has(I18N_SRC, '"需要生成内容": "Needs generated content"', "i18n 有「需要生成内容」词条");
   has(I18N_SRC, '"生成类型": "Generation types"', "i18n 有「生成类型」词条");
-  has(I18N_SRC, "Created this task's super node on the canvas", "英文词条成对（切英文不回中文）");
+  has(I18N_SRC, "Created this task's node layer on the canvas", "英文词条成对（切英文不回中文）");
   has(LTUI, 'ltT("需要生成内容")', "条带检查器有「需要生成内容」勾选（用户可改）");
   has(LTUI, 'ltT("生成类型")', "条带检查器有「生成类型」多选");
   has(LTV, "out.needsGen = !(c.needsGen === false", "ltNormCfg 归一 needsGen（缺省勾上，显式 false 才是关）");
@@ -589,15 +589,15 @@ main();
   has(LTV, "只清掉壳上的任务绑定字段", "删任务时只清绑定、保留壳与内容");
   has(LTUI, 'ltT("重建壳")', "壳被删后条带「⋯ 更多」里才出现「重建壳」入口（显式恢复，不是静默重长）");
   has(LTUI, "if (needShell)", "重建入口只在墓碑落在本轮 run 上时出现");
-  has(MANUAL, "超级节点", "应用内手册写明超级节点壳口径");
+  has(MANUAL, "节点层", "应用内手册写明节点层壳口径");
   has(MANUAL, "一律不运行", "手册写明生成工作流只建不跑");
-  has(MANUAL_EN, "super-node shell", "英文手册同步（AGENTS：手册中英成对）");
-  has(read("guides/nodes/ltout.md"), "超级节点子壳", "产出节点指南写明落点在环节子壳");
-  has(read("guides/nodes/en/ltout.md"), "super-node shell", "产出节点指南英文成对");
-  has(read("guides/nodes/ltart.md"), "超级节点子壳", "产物节点指南写明落点在环节子壳");
-  has(read("guides/nodes/en/ltart.md"), "super-node shell", "产物节点指南英文成对");
-  has(read("guides/nodes/super.md"), "长任务壳", "超节点指南列入「长任务壳」这一特殊形态");
-  has(read("guides/nodes/en/super.md"), "Long-task shell", "超节点指南英文成对");
+  has(MANUAL_EN, "node-layer shell", "英文手册同步（AGENTS：手册中英成对）");
+  has(read("guides/nodes/ltout.md"), "节点层子壳", "产出节点指南写明落点在环节子壳");
+  has(read("guides/nodes/en/ltout.md"), "node-layer shell", "产出节点指南英文成对");
+  has(read("guides/nodes/ltart.md"), "节点层子壳", "产物节点指南写明落点在环节子壳");
+  has(read("guides/nodes/en/ltart.md"), "node-layer shell", "产物节点指南英文成对");
+  has(read("guides/nodes/super.md"), "长任务壳", "节点层指南列入「长任务壳」这一特殊形态");
+  has(read("guides/nodes/en/super.md"), "Long-task shell", "节点层指南英文成对");
 
   /* ═══════════════ [2][3] 真跑（vm） ═══════════════ */
   function buildSandbox() {
@@ -1024,7 +1024,7 @@ main();
       ok(run.shellGone === true, "在本 run 上记了墓碑（判据：建过壳 shellMade，此刻却找不到）");
       const out2 = S.wf.nodes.find((n) => n.kind === "ltout");
       ok(!!out2 && !String(out2.parentSuperId || ""), "这一轮的产出回落主画布层（有地方看结果，不断链）");
-      const warns = toasts.filter((t) => String(t[0]).indexOf("超级节点壳已被删除") >= 0).length;
+      const warns = toasts.filter((t) => String(t[0]).indexOf("节点层壳已被删除") >= 0).length;
       eqNum(warns, 1, "只提示一次（不每轮刷屏）");
       eqNum(S.wf.nodes.length >= before, true, "回落路径照旧建节点");
     }

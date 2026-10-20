@@ -152,7 +152,7 @@ async function main() {
 
   const tools = await rpc(url, token, 'tools/list', {}, sid)
   const names = ((tools.body.result && tools.body.result.tools) || []).map((t) => t.name)
-  step('tools/list', names.length === 8, names.join(', '))
+  step('tools/list', names.length === 13, names.join(', '))
 
   const res = await rpc(url, token, 'resources/list', {}, sid)
   const r = res.body.result || {}

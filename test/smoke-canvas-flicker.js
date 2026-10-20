@@ -89,7 +89,7 @@ console.log("== [1] 节点尺寸不再被自动更新 ==");
   );
   ok(
     !!fit && fit.includes("fitSuperFolderCard"),
-    "只留纯显示收尾：超级节点文件夹标题按实测缩字",
+    "只留纯显示收尾：节点层文件夹标题按实测缩字",
   );
   /* 只认「当标识符用」的残留：先去掉注释（注释里提到这个字段名不算代码），再看属性访问 */
   const stripComments = (srcText) =>
@@ -298,7 +298,7 @@ console.log("== [5b] 拖拽 / 连线 / 展开壳的层级（节点压住壳、�
   );
   ok(
     zInnerVp > zInnerSvg,
-    "壳内节点层高于壳内连线层（" + zInnerVp + " > " + zInnerSvg + "）：壳里再展开一层壳不会被外层线压住",
+    "壳内节点所在层高于壳内连线层（" + zInnerVp + " > " + zInnerSvg + "）：壳里再展开一层壳不会被外层线压住",
   );
   ok(
     !!jsApp.match(/super-drag-lift"\);\s*\n\s*el\.style\.zIndex = "65"/),

@@ -1,5 +1,5 @@
 "use strict";
-/* ============ 数据库超级节点（事实收纳 → 编译副本 → 工具查询） ============ */
+/* ============ 数据库节点层（事实收纳 → 编译副本 → 工具查询） ============ */
 
 /* 确定性哈希（FNV-1a 32bit）：文件内容指纹，供索引去重与变更比对 */
 function dbHash(s) {
@@ -223,7 +223,7 @@ function renderDbConsoleBody(node, body) {
   body.appendChild(meta);
   /* 折叠态双击进入子画布（数据库形态）：控制台内嵌大量交互控件，
      故只绑顶部 meta 标题行这类非交互区，并显式跳过 input/textarea/select/button/.port，
-     避免与文本选词、按钮点击冲突。复用超级节点折叠卡同一个 enterSuper（本节点即 kind==="super"），
+     避免与文本选词、按钮点击冲突。复用节点层折叠卡同一个 enterSuper（本节点即 kind==="super"），
      不造第二套 focus 逻辑。 */
   meta.addEventListener("dblclick", (ev) => {
     if (ev.target && ev.target.closest) {
@@ -478,7 +478,7 @@ function dbHumanSize(b) {
   if (n < 1024 * 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + " MB";
   return (n / 1024 / 1024 / 1024).toFixed(2) + " GB";
 }
-/* 向上找所属「数据库」超级节点（支持嵌套，取最近一层 db:true） */
+/* 向上找所属「数据库」节点层（支持嵌套，取最近一层 db:true） */
 function dbSuperOfTable(node) {
   let cur = node;
   const seen = new Set();
@@ -1059,7 +1059,7 @@ function dbNodesForInWf(node, wf) {
   return out;
 }
 
-/* 所有已编译的数据库超级节点（供 !@ 引用解析） */
+/* 所有已编译的数据库节点层（供 !@ 引用解析） */
 function compiledDbSupers(wf) {
   return ((wf && wf.nodes) || []).filter(
     (n) =>

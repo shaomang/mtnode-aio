@@ -367,7 +367,16 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     ok(I.ownDaemonHosted(OWN_HOME) === false, "pid 锁指向别人（旧实例）→ ownDaemonHosted() 判 false，ensureOwnDaemon 会先停后静默起");
     const src2 = read("paseo/main-paseo.js");
     ok(/stopForeignOwnDaemon\(/.test(src2) && /waitDaemonGone\(/.test(src2), "迁移路径：先停旧实例（CLI stop → 等它真消失 → 没停掉才按进程树强杀）");
-    ok(/migrateOwnDaemonToSilent/.test(src2) && /setTimeout\(\(\) => \{\s*migrateOwnDaemonToSilent\(\)/.test(src2), "宿主注册时会在后台跑一次开机静默接管（不拦启动）");
+    /* 本轮共识（默认不启用）：开机那一段只按启用标记恢复，未启用时一个进程都不 spawn */
+    ok(
+      /bootResumeDaemon/.test(src2) && /setTimeout\(\(\) => \{\s*bootResumeDaemon\(\)/.test(src2),
+      "宿主注册时只跑 bootResumeDaemon（按启用标记恢复，不拦启动）",
+    );
+    ok(
+      /function bootResumeDaemon\(\)[\s\S]{0,2400}if \(!isEnabled\(\)\)/.test(src2),
+      "bootResumeDaemon 先判启用标记：未启用直接返回（不再「只要 mode=own 就自己起」）",
+    );
+    ok(!/migrateOwnDaemonToSilent/.test(src2), "旧的「开机静默接管」入口已下线（它就是「没开也会跑」的根源）");
   }
 
   /* ═════════ [4] 真迁移：跑着一份「旧方式」起的 daemon，ensureOwnDaemon 必须把它换成静默托管 ═════════

@@ -1094,8 +1094,12 @@ function tokReportEnsure(owner) {
   }
   return r;
 }
-/* 全局助手没有会话对象，就给它一个伪会话宿主；台账持久化在 config.assistTokenReport */
+/* 全局助手已经并入会话体系（本轮需求）：台账挂在「当前助手会话」自己身上，
+   清空 / 新会话自然归零；只有还没绑定会话（空白态）时才退回那份伪宿主。 */
 function assistTokOwner() {
+  const bound =
+    typeof assistBoundSession === "function" ? assistBoundSession() : null;
+  if (bound) return bound;
   if (!S._assistTokOwner)
     S._assistTokOwner = {
       id: "assist",

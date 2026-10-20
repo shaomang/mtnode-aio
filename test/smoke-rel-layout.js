@@ -155,6 +155,11 @@ const LAYOUT_FNS = [
   "layoutSplitColumn",
   "layoutBuildColumns",
   "layoutAlignColumnsInRows",
+  "LAYOUT_GROUP_PAD",
+  "LAYOUT_GROUP_LABEL_H",
+  "LAYOUT_PROXY_MAP",
+  "layoutPackGroupBlocks",
+  "layoutUnpackGroupBlocks",
   "layoutPlaceLayer",
   "layoutFlowComponent",
   "layoutFlowEx",
@@ -1090,8 +1095,8 @@ const badDir = hardPairs.filter((p) => {
 });
 ok(badDir.length === 0, "每条硬边都满足「上游在左或在上」（违反 " + badDir.length + " 条）");
 
-/* ============ [2b] 展开超级节点（绘制尺寸 > 存储尺寸）参与排版不重叠 ============ */
-console.log("\n[2b] 展开超级节点 / 障碍物按绘制尺寸参与排版");
+/* ============ [2b] 展开节点层（绘制尺寸 > 存储尺寸）参与排版不重叠 ============ */
+console.log("\n[2b] 展开节点层 / 障碍物按绘制尺寸参与排版");
 {
   const openSuper = (id, x, y, expandW, expandH) => ({
     id,
@@ -1124,7 +1129,7 @@ console.log("\n[2b] 展开超级节点 / 障碍物按绘制尺寸参与排版");
       }
     return n;
   };
-  /* 1) 障碍物 = 展开超级节点：layoutOrigin / shiftToClear 按绘制尺寸避开壳层 */
+  /* 1) 障碍物 = 展开节点层：layoutOrigin / shiftToClear 按绘制尺寸避开壳层 */
   const obs = [openSuper("obsS", 40, 40, 900, 600)];
   const n1 = { id: "oa", kind: "input_text", x: 0, y: 0, w: 240, h: 160 };
   const n2 = { id: "ob", kind: "proc_text", x: 0, y: 0, w: 240, h: 160 };
@@ -1139,8 +1144,8 @@ console.log("\n[2b] 展开超级节点 / 障碍物按绘制尺寸参与排版");
     "layoutOrigin 按障碍物绘制宽度定位（origin.x=" + ori.x + " ≥ 940）",
   );
   const ovObs = overlapOf([n1, n2].concat(obs));
-  ok(ovObs === 0, "新布局不压住展开超级节点的可见壳层（重叠 " + ovObs + " 对）");
-  /* 2) 两个孤立展开超级节点连续装箱：nodesBBox 用绘制尺寸，后壳不撞前壳 */
+  ok(ovObs === 0, "新布局不压住展开节点层的可见壳层（重叠 " + ovObs + " 对）");
+  /* 2) 两个孤立展开节点层连续装箱：nodesBBox 用绘制尺寸，后壳不撞前壳 */
   const s1 = openSuper("sA", 0, 0, 900, 600);
   const s2 = openSuper("sB", 0, 0, 700, 400);
   S.wf.nodes = [s1, s2];
@@ -1153,11 +1158,11 @@ console.log("\n[2b] 展开超级节点 / 障碍物按绘制尺寸参与排版");
       d2.x + d2.w <= d1.x ||
       d1.y + d1.h <= d2.y ||
       d2.y + d2.h <= d1.y,
-    "两个孤立展开超级节点装箱后互不重叠（sA=[" + d1.x + "," + (d1.x + d1.w) + "]×[" + d1.y + "," + (d1.y + d1.h) + "]，sB 起点 x=" + d2.x + "）",
+    "两个孤立展开节点层装箱后互不重叠（sA=[" + d1.x + "," + (d1.x + d1.w) + "]×[" + d1.y + "," + (d1.y + d1.h) + "]，sB 起点 x=" + d2.x + "）",
   );
   ok(
     S.wf.nodes.every((n) => Number.isFinite(n.x) && Number.isFinite(n.y)),
-    "展开超级节点排版后坐标仍为有限数",
+    "展开节点层排版后坐标仍为有限数",
   );
 }
 
@@ -1787,6 +1792,334 @@ console.log("\n[9] 绘制按 1 格重算（分区框 / 文字标注）");
   const empty = freeSpotForNode(cand, { x: 48, y: 48 }, []);
   ok(empty.x === 48 && empty.y === 48, "空画布落点 = 原点（48/48）");
   S.wf.nodes = keep;
+}
+
+/* ============ [10] 成组之后间距以「组外框」计量（本轮修复的回归） ============
+   需求：组在排版里是一个不可拆的块，块与块 / 块与无组节点之间的缝按**组外框边缘**
+   算，恒 1 格；组框 = 成员包围盒 ± GROUP_PAD（含组内绘制标注），框上方还有标题标签带。
+   修复前：引擎只看节点尺寸，两组节点隔 1 格时外框反被压掉（24 - 2×18 = -12）。 */
+console.log("\n[10] 组块：间距按组外框计量");
+{
+  const ctx10 = {
+    S: { wf: { nodes: [], wires: [], groups: [], marks: [] }, config: { snap: 8 } },
+    grid: () => 8,
+    snap: (v) => Math.round(v / 8) * 8,
+    nodeById: (id) => (ctx10.S.wf.nodes || []).find((n) => n.id === id) || null,
+    markById: (id) => (ctx10.S.wf.marks || []).find((m) => m.id === id) || null,
+    nodeDrawSize: (n) => ({ w: (n && n.w) || 288, h: (n && n.h) || 192 }),
+    isExecStart: (n) => !!(n && n.ctrlRole === "start"),
+    isExecEnd: (n) => !!(n && n.ctrlRole && n.ctrlRole !== "start"),
+    isInputKind: (k) => k === "input_text" || k === "input_image",
+    isSaveNode: (n) => !!(n && String(n.kind).indexOf("save") >= 0),
+    isSuperIoNode: (n) => !!(n && n.superIo),
+    isBatch: () => false,
+    nodeParentTaskId: (n) => (n && n.parentTaskId) || "",
+    nodeParentSuperId: (n) => (n && n.parentSuperId) || "",
+    currentTaskFocus: () => "",
+    console,
+    Math,
+    Set,
+    Map,
+    Infinity,
+    JSON,
+    Array,
+    Object,
+    String,
+    Number,
+    RegExp,
+    Error,
+  };
+  vm.createContext(ctx10);
+  vm.runInContext(
+    extract(appSrc + "\n" + nodesSrc + "\n" + canvasSrc, [
+      "snap",
+      "layoutGap",
+      "layoutSnapSized",
+      "layoutSnapSize",
+      "layoutNodeSize",
+      "snapNodeSizesForLayout",
+      "rectsOverlap",
+      "layoutEdgeSets",
+      "assignLayoutLayers",
+      "sortLayerByKey",
+      "resolveLayerOverlaps",
+      "alignLayerToParents",
+      "orderLayersByBarycenter",
+      "layoutVerticalKey",
+      "layoutSortColumn",
+      "layoutNodePriority",
+      "layoutColumnWidth",
+      "layoutColumnHeight",
+      "layoutRowMaxW",
+      "layoutSplitColumn",
+      "layoutBuildColumns",
+      "layoutAlignColumnsInRows",
+      "LAYOUT_GROUP_PAD",
+      "LAYOUT_GROUP_LABEL_H",
+      "LAYOUT_PROXY_MAP",
+      "layoutPackGroupBlocks",
+      "layoutUnpackGroupBlocks",
+      "layoutPlaceLayer",
+      "layoutFlowComponent",
+      "nodesBBox",
+      "LAYOUT_RATIO_R",
+      "LAYOUT_ASPECT_TARGET",
+      "LAYOUT_FLOW_MAX_W",
+      "LAYOUT_MAX_STACK_H",
+      "LAYOUT_MIN_W",
+      "LAYOUT_MIN_H",
+      "layoutRatioOk",
+      "findLayoutComponents",
+      "shiftToClear",
+      "layoutFlowEx",
+      "LAYOUT_OVERLAP_PAD",
+      "LAYOUT_OVERLAP_MAX_PASS",
+      "layoutOverlapPad",
+      "resolvePlacedOverlaps",
+      "markBounds",
+      "nodeCenter",
+      "nodesInsideMarkBounds",
+      "nearestNodeId",
+    ]),
+    ctx10,
+    { filename: "group-block-layout-extract.js" },
+  );
+  const PAD = 16;
+  const LABEL = 20;
+  /** 组外框（与 app.js 的 groupBounds + updateGroupFrames 同口径：成员 ± pad） */
+  const frameOf = (g) => {
+    let minX = Infinity,
+      minY = Infinity,
+      maxX = -Infinity,
+      maxY = -Infinity;
+    for (const id of g.nodeIds || []) {
+      const n = ctx10.S.wf.nodes.find((x) => x.id === id);
+      if (!n) continue;
+      const s = ctx10.layoutNodeSize(n);
+      minX = Math.min(minX, n.x);
+      minY = Math.min(minY, n.y);
+      maxX = Math.max(maxX, n.x + s.w);
+      maxY = Math.max(maxY, n.y + s.h);
+    }
+    for (const id of g.markIds || []) {
+      const b = ctx10.markBounds(ctx10.markById(id));
+      if (!b) continue;
+      minX = Math.min(minX, b.x);
+      minY = Math.min(minY, b.y);
+      maxX = Math.max(maxX, b.x + b.w);
+      maxY = Math.max(maxY, b.y + b.h);
+    }
+    return { x: minX - PAD, y: minY - PAD - LABEL, w: maxX - minX + PAD * 2, h: maxY - minY + PAD * 2 + LABEL };
+  };
+  const frameGap = (a, b) => {
+    const hGap = Math.max(a.x, b.x) - Math.min(a.x + a.w, b.x + b.w);
+    const vGap = Math.max(a.y, b.y) - Math.min(a.y + a.h, b.y + b.h);
+    const xOv = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x);
+    const yOv = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
+    if (xOv > 0) return { axis: "v", gap: vGap };
+    if (yOv > 0) return { axis: "h", gap: hGap };
+    return { axis: "none", gap: null };
+  };
+
+  /* —— 用例 A：两组（各 2 节点）+ 组内文字标注 + 组间连线 —— */
+  const nodesA = [
+    { id: "g1a", kind: "proc_text", x: 96, y: 96, w: 288, h: 192 },
+    { id: "g1b", kind: "proc_text", x: 96, y: 300, w: 288, h: 192 },
+    { id: "g2a", kind: "proc_text", x: 500, y: 96, w: 288, h: 192 },
+    { id: "g2b", kind: "proc_text", x: 500, y: 300, w: 288, h: 192 },
+  ];
+  const groupsA = [
+    { id: "G1", title: "甲", nodeIds: ["g1a", "g1b"], markIds: [] },
+    { id: "G2", title: "乙", nodeIds: ["g2a", "g2b"], markIds: ["t2"] },
+  ];
+  /* 标注故意伸出节点右侧：它也必须算进组外框（否则另一个组会压上来） */
+  const marksA = [{ id: "t2", kind: "text", x: 860, y: 96, w: 120, h: 40, text: "说明" }];
+  ctx10.S.wf.nodes = JSON.parse(JSON.stringify(nodesA));
+  ctx10.S.wf.wires = [{ from: "g1b", to: "g2a" }];
+  ctx10.S.wf.groups = groupsA;
+  ctx10.S.wf.marks = marksA;
+  const relBefore = {
+    dx: nodesA[1].x - nodesA[0].x,
+    dy: nodesA[1].y - nodesA[0].y,
+    dx2: nodesA[3].x - nodesA[2].x,
+    dy2: nodesA[3].y - nodesA[2].y,
+  };
+  ctx10.layoutFlowEx(ctx10.S.wf.nodes, ctx10.S.wf.wires, { x: 16, y: 16 }, [], {});
+  const f1 = frameOf(groupsA[0]);
+  const f2 = frameOf(groupsA[1]);
+  const gapA = frameGap(f1, f2);
+  ok(gapA.gap != null, "A：两组外框在同一个方向相邻（axis=" + gapA.axis + "）");
+  ok(gapA.gap >= G - 0.001, "A：两组外框不重叠、缝 ≥ 1 格（实测 " + gapA.gap + "）");
+  ok(gapA.gap === G, "A：两组外框边缘之间恰好 1 格（实测 " + gapA.gap + "，期望 " + G + "）");
+  ok(
+    Math.abs(f2.x + f2.w - (ctx10.S.wf.marks[0].x + ctx10.S.wf.marks[0].w + PAD)) < 0.001,
+    "A：组内文字标注被算进组外框（右缘 = 标注右缘 + pad）",
+  );
+  const na = ctx10.S.wf.nodes;
+  ok(
+    na[1].x - na[0].x === relBefore.dx && na[1].y - na[0].y === relBefore.dy &&
+      na[3].x - na[2].x === relBefore.dx2 && na[3].y - na[2].y === relBefore.dy2,
+    "A：组内成员相对位置原样保留（整块刚性平移）",
+  );
+  /* 节点本身（不含组框）也不重叠 */
+  ok(overlapPairs(na).length === 0, "A：节点之间仍互不重叠");
+
+  /* —— 反证：同一份节点若不让引擎认组（= 修复前的行为），组框会互相重叠 ——
+     这条保证上面的断言真的能抓住那个 bug，而不是碰巧通过。 */
+  ctx10.S.wf.nodes = JSON.parse(JSON.stringify(nodesA));
+  ctx10.S.wf.wires = [{ from: "g1b", to: "g2a" }];
+  ctx10.S.wf.groups = [];
+  ctx10.S.wf.marks = JSON.parse(JSON.stringify(marksA));
+  ctx10.layoutFlowEx(ctx10.S.wf.nodes, ctx10.S.wf.wires, { x: 16, y: 16 }, [], {});
+  const f0a = frameOf(groupsA[0]);
+  const f0b = frameOf(groupsA[1]);
+  ok(
+    f0a.x < f0b.x + f0b.w - 0.001 &&
+      f0b.x < f0a.x + f0a.w - 0.001 &&
+      f0a.y < f0b.y + f0b.h - 0.001 &&
+      f0b.y < f0a.y + f0a.h - 0.001,
+    "反证：不认组（修复前行为）时两组外框确实重叠 —— 本用例抓得住这个 bug",
+  );
+
+  /* —— 用例 B：单成员组 + 无组节点，也要按组外框算 —— */
+  ctx10.S.wf.nodes = [
+    { id: "s1", kind: "proc_text", x: 200, y: 200, w: 288, h: 192 },
+    { id: "p1", kind: "proc_text", x: 800, y: 200, w: 288, h: 192 },
+  ];
+  ctx10.S.wf.wires = [{ from: "s1", to: "p1" }];
+  ctx10.S.wf.groups = [{ id: "G3", title: "单个", nodeIds: ["s1"], markIds: [] }];
+  ctx10.S.wf.marks = [];
+  ctx10.layoutFlowEx(ctx10.S.wf.nodes, ctx10.S.wf.wires, { x: 16, y: 16 }, [], {});
+  const fB = frameOf(ctx10.S.wf.groups[0]);
+  const pB = ctx10.S.wf.nodes.find((n) => n.id === "p1");
+  const szP = ctx10.layoutNodeSize(pB);
+  const gapB = Math.max(fB.x, pB.x) - Math.min(fB.x + fB.w, pB.x + szP.w);
+  ok(gapB === G, "B：单成员组外框 ↔ 无组节点边缘恰好 1 格（实测 " + gapB + "）");
+
+  /* —— 用例 C：三个互不相连的组，装箱后外框也不许重叠 —— */
+  ctx10.S.wf.nodes = [
+    { id: "c1", kind: "proc_text", x: 96, y: 96, w: 288, h: 192 },
+    { id: "c2", kind: "proc_text", x: 96, y: 320, w: 288, h: 192 },
+    { id: "c3", kind: "proc_text", x: 700, y: 96, w: 288, h: 192 },
+    { id: "c4", kind: "proc_text", x: 700, y: 320, w: 288, h: 192 },
+    { id: "c5", kind: "proc_text", x: 1300, y: 96, w: 288, h: 192 },
+    { id: "c6", kind: "proc_text", x: 1300, y: 320, w: 288, h: 192 },
+  ];
+  ctx10.S.wf.wires = [];
+  ctx10.S.wf.groups = [
+    { id: "GC1", title: "一", nodeIds: ["c1", "c2"], markIds: [] },
+    { id: "GC2", title: "二", nodeIds: ["c3", "c4"], markIds: [] },
+    { id: "GC3", title: "三", nodeIds: ["c5", "c6"], markIds: [] },
+  ];
+  ctx10.S.wf.marks = [];
+  ctx10.layoutFlowEx(ctx10.S.wf.nodes, ctx10.S.wf.wires, { x: 16, y: 16 }, [], {});
+  const framesC = ctx10.S.wf.groups.map(frameOf);
+  let overlapC = 0;
+  let tightC = 0;
+  for (let i = 0; i < framesC.length; i++)
+    for (let j = i + 1; j < framesC.length; j++) {
+      const a = framesC[i],
+        b = framesC[j];
+      const ov =
+        a.x < b.x + b.w - 0.001 && b.x < a.x + a.w - 0.001 &&
+        a.y < b.y + b.h - 0.001 && b.y < a.y + a.h - 0.001;
+      if (ov) overlapC++;
+      const gg = frameGap(a, b);
+      if (gg.gap != null && gg.gap < G - 0.001) tightC++;
+    }
+  ok(overlapC === 0, "C：三个组的外框互不重叠（重叠 " + overlapC + " 对）");
+  ok(tightC === 0, "C：组外框之间没有比 1 格更近的缝（违例 " + tightC + "）");
+
+  /* —— 用例 D：组的标题标签带 ——
+     同一列里「无组节点」压在「组块」上方时，组框上方要为标题标签多留一段，
+     所以竖直方向的外框缝 = 1 格 + 标签带（不会让标签压住上面的节点）。 */
+  ctx10.S.wf.nodes = [
+    { id: "d1", kind: "proc_text", x: 96, y: 96, w: 288, h: 192 },
+    { id: "d2", kind: "proc_text", x: 700, y: 96, w: 288, h: 192 },
+    { id: "d3", kind: "proc_text", x: 700, y: 600, w: 288, h: 192 },
+  ];
+  ctx10.S.wf.wires = [
+    { from: "d1", to: "d2" },
+    { from: "d1", to: "d3" },
+  ];
+  ctx10.S.wf.groups = [{ id: "GD", title: "下组", nodeIds: ["d3"], markIds: [] }];
+  ctx10.S.wf.marks = [];
+  ctx10.layoutFlowEx(ctx10.S.wf.nodes, ctx10.S.wf.wires, { x: 16, y: 16 }, [], {});
+  const nD2 = ctx10.S.wf.nodes.find((n) => n.id === "d2");
+  const szD2 = ctx10.layoutNodeSize(nD2);
+  const fD = frameOf(ctx10.S.wf.groups[0]);
+  /* frameOf 给的是「块」矩形（含标题标签带）；视觉上的组框在它下方 LABEL 处 */
+  const vGapD = fD.y + LABEL - (nD2.y + szD2.h);
+  ok(
+    vGapD === G + LABEL,
+    "D：组框上方留出标签带（竖直缝 = 1 格 + " + LABEL + "，实测 " + vGapD + "）",
+  );
+  ok(vGapD >= G, "D：标签带没有吃掉「缝 ≥ 1 格」");
+}
+
+console.log("\n[11] 复用快速通道：坐标补写（组框跳位 / 框内内容留在原地的回归）");
+{
+  /* 渲染签名刻意不含节点 x/y（见 canvasRenderSig 注释），写 left/top 只在整幅重建与拖拽里做。
+     于是「只改坐标不改尺寸」的一拍（一键排版第二次以后、agent layout:true）走复用通道时，
+     组框按新坐标重算、节点 DOM 留在旧位置 —— 现场就是「组框偏移，内容偏离框体，拖一下才复原」。
+     本用例守两件事：① 复用通道里先 syncCanvasNodeDomPos 再 updateGroupFrames；
+     ② 该函数按模型坐标写 left/top，并跳过拖拽中的元素（拖拽自己写世界坐标）。 */
+  const doc = new Map();
+  const ctx11 = {
+    document: {
+      querySelector: (sel) => {
+        const m = /^\.wf-node\[data-nid="(.+)"\]$/.exec(String(sel));
+        return m ? doc.get(m[1]) || null : null;
+      },
+    },
+    console,
+    Math,
+    String,
+    Number,
+    Object,
+    Array,
+  };
+  const mkEl = (cls) => {
+    const set = new Set(String(cls || "").split(/\s+/).filter(Boolean));
+    return {
+      style: {},
+      classList: { contains: (c) => set.has(c) },
+      cls: set,
+    };
+  };
+  vm.createContext(ctx11);
+  vm.runInContext(
+    extract(canvasSrc, ["syncCanvasNodeDomPos"]),
+    ctx11,
+    { filename: "sync-node-dom-pos-extract.js" },
+  );
+  const e1 = mkEl("");
+  const e2 = mkEl("wf-node node-dragging");
+  const e3 = mkEl("wf-node super-drag-lift");
+  doc.set("a", e1);
+  doc.set("b", e2);
+  doc.set("c", e3);
+  const parts = {
+    visNodes: [
+      { id: "a", x: 128, y: 64 },
+      { id: "b", x: 480, y: 64 },
+      { id: "c", x: 832, y: 64 },
+      { id: "gone", x: 1200, y: 64 },
+    ],
+  };
+  ctx11.syncCanvasNodeDomPos(parts);
+  ok(e1.style.left === "128px" && e1.style.top === "64px", "① 普通节点按模型坐标补写 left/top");
+  ok(e2.style.left === undefined, "② 拖拽中的节点（node-dragging）不覆盖坐标");
+  ok(e3.style.left === undefined, "③ 被拎到 stage 的壳内子节点（super-drag-lift）不覆盖坐标");
+
+  const reuseAt = canvasSrc.indexOf("if (canvasReuseReady(parts, sig)) {");
+  ok(reuseAt >= 0, "④ 找得到复用快速通道分支");
+  const branch = reuseAt < 0 ? "" : canvasSrc.slice(reuseAt, reuseAt + 1200);
+  const syncAt = branch.indexOf("syncCanvasNodeDomPos(parts)");
+  const frameAt = branch.indexOf("updateGroupFrames()");
+  ok(syncAt >= 0, "⑤ 复用分支里调用了 syncCanvasNodeDomPos");
+  ok(frameAt >= 0, "⑥ 复用分支里仍然更新组框");
+  ok(syncAt >= 0 && frameAt >= 0 && syncAt < frameAt, "⑦ 顺序：先补写节点坐标，再撑组框");
 }
 
 console.log("\n———— " + (checks - fails) + "/" + checks + " 通过 ————");

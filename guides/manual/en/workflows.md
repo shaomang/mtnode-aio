@@ -32,7 +32,7 @@ Chains ①②③④ are simple single-chain examples generated entirely by MTNod
 
 With more than one canvas open, switching tabs in the tab bar keeps **where you were** on each canvas and restores it when you come back — no more landing on the root canvas and hunting for that spot again:
 
-- What is remembered is "which layer you had drilled into (a super-node shell / a task subgraph) + where the camera was"; coming back puts you on that very screen.
+- What is remembered is "which layer you had drilled into (a node-layer shell / a task subgraph) + where the camera was"; coming back puts you on that very screen.
 - What is remembered is **position, not content**: switching tabs writes neither the canvas JSON nor the config (the camera changes every frame — writing it to disk would turn interaction into disk I/O), so after restarting the app you start from the root canvas.
 - Restoring never re-centres or re-layouts the nodes; if that layer is gone (node deleted / shell collapsed) it falls back to the last layer that is still alive.
 - The "canvas" button on the breadcrumb is still the explicit way back to the root canvas, so you can always come out.

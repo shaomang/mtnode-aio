@@ -468,7 +468,7 @@ function ltPersistWf(wf) {
 /* ── 本轮 run 的「所属画布」（本轮需求：长任务不许把内容生成到错误的画布）─────────
    长任务一启用 / 一恢复就把「属于哪张画布」钉在 run.wfId 上（ltRunNew(task, wf.id)）。
    用户在任务跑着的时候切去别的画布干活是常态：此后**所有碰画布与工作目录的动作都不许
-   再看 S.wf** —— 那正是「长任务把交付节点 / 产出 / 产物 / 超级节点壳，甚至交付目录与
+   再看 S.wf** —— 那正是「长任务把交付节点 / 产出 / 产物 / 节点层壳，甚至交付目录与
    产物文件生成到用户此刻正看着的那张图 / 那个项目里」的直接成因（旧口径把「当前画布」
    当成了「任务所属画布」）。解析口径与 app.js 的 canvasWfByIdLoaded 同源：前台 → 内存袋；
    已删 / 墓碑一律不给，也**绝不退回前台画布** —— 宁可这一笔不写，也不写错地方。 */
@@ -543,7 +543,7 @@ function ltNewSystemNode(wf, kind, x, y, extra) {
   props.__ltSystem = true;
   /* 交付 / 产出节点一律先落在**主画布层**（parentTaskId / parentSuperId 清空）。
      makeNode 默认按「用户此刻的焦点」补这两个归属（currentTaskFocus / currentSuperFocus）：
-     任务跑着的时候用户**正待在某个任务壳 / 超级节点壳里**是常态（他就是进去看这一环的），
+     任务跑着的时候用户**正待在某个任务壳 / 节点层壳里**是常态（他就是进去看这一环的），
      于是一颗带 parent 的交付节点被塞进那层壳的**内坐标系**里 —— 按主画布坐标算出来的落点
      在壳内等于飘到很远的地方，画布上「看不见这颗交付节点」（「长任务没生成交付节点」的
      直接成因），清单进度与端子连线也就无从操作。系统建的节点身份 / 落点本来都在主画布层，
@@ -633,7 +633,7 @@ function ltTaskReveal(wf, task) {
 /* ── 创建期预建总入口（本轮需求：创建即显示 —— 落点一次建好，一律只建不跑）──────────
    两条预建（各由自己的模块负责，缺料静默降级）：
      ① 壳 / 子壳 / 生成工作流（app-longtask-shell.js 的 LTSHELL.ensureForTask）：把任务图里
-        每条定义路径的超级节点壳与「生成工作流」摆好，控制 ▶ 直连各生成节点；
+        每条定义路径的节点层壳与「生成工作流」摆好，控制 ▶ 直连各生成节点；
      ② 交付节点（本文件的 ltDeliverLandingCreate）：human+deliver 环节的交付节点 + 交付目录。
    **只建不跑**：不创建 run、不置 running、不动 enabled（仍 false，开跑只由用户点
    「▶ 启用并绑定」）——「不代跑、不烧额度」的纪律一个字都没松。
@@ -666,8 +666,8 @@ function ltLandingCreate(wf, task) {
   if (info.shells)
     parts.push(
       info.shells === 1
-        ? ltT("已在画布上把这条长任务的落点建好（壳 / 生成工作流 / 交付节点）：生成一律不跑 · 超级节点壳 1 颗")
-        : ltT("已在画布上把这条长任务的落点建好（壳 / 生成工作流 / 交付节点）：生成一律不跑 · 超级节点壳 ") +
+        ? ltT("已在画布上把这条长任务的落点建好（壳 / 生成工作流 / 交付节点）：生成一律不跑 · 节点层壳 1 颗")
+        : ltT("已在画布上把这条长任务的落点建好（壳 / 生成工作流 / 交付节点）：生成一律不跑 · 节点层壳 ") +
             info.shells +
             ltT(" 颗"),
     );
@@ -2634,7 +2634,7 @@ function ltOutputTitleOf(run, path) {
 }
 /* 产出 / 产物的落点委派（唯一入口 → app-longtask-shell.js）：
    壳模块缺席时静默跳过（产出照旧落主画布层，绝不因此断链）。
-   **调用前把「本 run 所属画布」交给壳模块**（LTSHELL.bindWf）：壳按它建 / 找超级节点、
+   **调用前把「本 run 所属画布」交给壳模块**（LTSHELL.bindWf）：壳按它建 / 找节点层、
    按它决定重绘与落盘 —— 用户切去别的画布时，壳不许建到那张图上（本轮需求）。 */
 function ltShellBind(run, fn) {
   const sh = typeof window !== "undefined" ? window.LTSHELL : null;
@@ -2681,7 +2681,7 @@ async function ltShellMigrateOutputs(wf) {
     if (typeof sh.bindWf === "function") sh.bindWf(null);
   }
 }
-/* 建产出节点：优先落进**本环节的超级节点子壳**（长任务壳 · app-longtask-shell.js），
+/* 建产出节点：优先落进**本环节的节点层子壳**（长任务壳 · app-longtask-shell.js），
    壳不可用时回落主画布层视口右侧一带（不压住用户正在编辑的左侧输入 / 提示词区）。
    两处都读节点上的 ltShellTask / ltShellPath（归属只看这两个字段，另两个是显示用的名字）。
    建与找都只在本 run 所属画布上做（解析不到就这一笔不写，绝不落到前台那张）。 */
@@ -5067,7 +5067,7 @@ async function ltDeleteTask(wf, uid) {
       if (window.api && window.api.ltRunDelete) await window.api.ltRunDelete(wf.id, runId);
     } catch (_) {}
   }
-  /* ③.5 超级节点壳（本轮需求）：**保留壳与壳内节点**（那是用户的资产与产出），
+  /* ③.5 节点层壳（本轮需求）：**保留壳与壳内节点**（那是用户的资产与产出），
      只清掉壳上的任务绑定字段 —— 清完以后这条任务的产出不再进壳（任务都没了）。
      认人靠壳上的 ltShellTask（app-longtask-shell.js 的直接字段，不猜从属关系）。 */
   if (typeof S !== "undefined" && S && S.wf === wf) {

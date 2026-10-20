@@ -36,7 +36,7 @@ const { createDesktopCapture } = require("./desktop-capture.js");
 const zlib = require("zlib");
 const http = require("http");
 const https = require("https");
-const { pathToFileURL } = require("url");
+const { pathToFileURL, fileURLToPath } = require("url");
 /* gifenc 延迟加载：模块缺失时仅影响 GIF 生成，不会导致启动崩溃 */
 let _gifenc = null;
 function gifenc() {
@@ -265,7 +265,68 @@ function dsh() {
    随应用启动即开监听（127.0.0.1 随机端口 + Bearer token，共识口径），面板里可关。
    执行不在这里：本进程只做协议与服务端，工具调用推给渲染层同一条执行路径
    （mcp:event → renderer/mcp-bridge.js → 既有宿主处理函数 → mcp:interact 回执）。 */
+/* 自用回环：把自家 MCP 服务端挂进引擎的 MCP 客户端清单（只挂 generate / run / tools / session
+   四项），让应用内 Agent 走**与第三方客户端完全相同**的入口 —— 同一套鉴权、审计、作业语义，
+   不另开一条只有 agent 能走的后门。开关与端口由 mcp-server.js 决定（它调下面这个函数）。 */
+const SELF_LOOP_NAME = "mtnode-self";
+async function applySelfLoop(cfg) {
+  const want = !!(cfg && cfg.enabled && cfg.url);
+  const url = want ? String(cfg.url) : "";
+  let rows = [];
+  try {
+    const list = await dsh().mcpList();
+    rows = Array.isArray(list) ? list : (list && list.list) || [];
+  } catch (e) {
+    /* 引擎没起来 / 数据目录不可用：不该影响 MCP 服务端本身，记一行就够 */
+    return { ok: false, error: (e && e.message) || String(e) };
+  }
+  const cur = rows.find((r) => r && r.serverName === SELF_LOOP_NAME) || null;
+  try {
+    if (!want) {
+      /* 关了就把那条撤掉：留着只会让 agent 每次调用都连不上（端口已变 / 服务端已停） */
+      if (cur) await dsh().mcpRemove(SELF_LOOP_NAME);
+      return { ok: true, enabled: false };
+    }
+    if (cur) {
+      /* 端口每次启动都变：url 不一致就重写那一行（remove + add，引擎自己会重连） */
+      if (String(cur.url || "") === url && cur.disabled !== true) return { ok: true, enabled: true };
+      await dsh().mcpRemove(SELF_LOOP_NAME);
+    }
+    await dsh().mcpAdd({
+      serverName: SELF_LOOP_NAME,
+      transport: "http",
+      url,
+      args: "",
+    });
+    return { ok: true, enabled: true };
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e) };
+  }
+}
+
 let mcpHost = null;
+/* 媒体生成执行体（MCP 的 mtnode_generate 用）：单例，四路后端按需 require ——
+   没装/没启用的后端不该在启动时就把它那套依赖拉起来。 */
+let mediaAgentInst = null;
+function mediaAgent() {
+  if (!mediaAgentInst) {
+    mediaAgentInst = require("./mcp-media-agent.js").createMediaAgent({
+      image: (p) => fnImageCall(p),
+      speech: (p) => require("./breeze/main-breeze.js").generateBreezeFile(p),
+      music: (p) => require("./music3/main-music3.js").generateMusic(p),
+      video: (p) => require("./h3/main-h3.js").generateVideo(p),
+      cancelMusic: (id) => require("./music3/main-music3.js").cancelGenerate(id),
+      cancelVideo: (id) => require("./h3/main-h3.js").cancelGenerate(id),
+      archive: (a) => require("./assets-store.js").importPathsIntoLibrary(a),
+      log: (line) => {
+        try {
+          dshLog(line);
+        } catch {}
+      },
+    });
+  }
+  return mediaAgentInst;
+}
 function mcp() {
   if (!mcpHost) {
     mcpHost = createMcpHost({
@@ -294,6 +355,11 @@ function mcp() {
       /* GUI 族（mtnode_gui）不走渲染层：只有主进程拿得到 BrowserWindow 与 webContents，
          能往任意窗口注入脚本、能 capturePage 拍照（见 mcp-gui-agent.js）。 */
       gui: (action, params) => require("./mcp-gui-agent.js").run(action, params),
+      /* 媒体生成执行体（mtnode_generate）：四个后端都在主进程，且共用同一把音视频互斥锁
+         （media-gen-global-lock.js）—— 自用回环与画布节点排的是同一队。 */
+      media: mediaAgent(),
+      /* 自用回环（见 applySelfLoop）：自己调自己走的是同一套 MCP 契约 */
+      selfLoop: (cfg) => applySelfLoop(cfg),
     });
   }
   return mcpHost;
@@ -611,6 +677,35 @@ function backupConfigFile(configPath) {
 }
 const wfIdOk = (id) => /^[A-Za-z0-9_-]{4,120}$/.test(String(id || ""));
 const wfPath = (id) => join(DATA(), "save", String(id) + ".json");
+/* 当前画布的工作目录（前台画布口径）：
+   真源 = config.json 的 activeWorkflowId（切画布时渲染层写回）+ save/<id>.json 的 workspace。
+   文件对话框没显式给 defaultPath 时用它当默认落点（Breeze 选参考音频、选本机素材等都走这里）；
+   没设工作目录 / 目录已被删 → 返回空串，让系统对话框保持原来的默认行为。 */
+function foregroundCanvasWorkspace() {
+  try {
+    const cfgFile = join(DATA(), "config.json");
+    /* 走 config 常驻缓存（命中即零 I/O）；cache 不可用 / 坏档时退回 readJson 旧口径 */
+    let cfg = null;
+    try {
+      const cached = readConfigCached(cfgFile);
+      cfg = (cached && cached.obj) || null;
+    } catch {}
+    if (!cfg) cfg = readJson(cfgFile, null);
+    const id = String((cfg && cfg.activeWorkflowId) || "");
+    if (!wfIdOk(id)) return "";
+    const wf = readJson(wfPath(id), null);
+    const ws = String((wf && wf.workspace) || "").trim();
+    if (!ws) return "";
+    try {
+      if (!fs.statSync(ws).isDirectory()) return "";
+    } catch {
+      return "";
+    }
+    return ws;
+  } catch {
+    return "";
+  }
+}
 /* 只算路径不建目录：删除 / 校验一类的只读路径必须无副作用（assetDir 会 mkdir） */
 const assetDirPath = (wfId) => join(DATA(), "assets", String(wfId));
 const assetDir = (wfId) => mk(assetDirPath(wfId));
@@ -1400,7 +1495,7 @@ ipcMain.handle("workflow:backupOpen", () => {
   }
 });
 
-/* ---------------- IPC：数据库超级节点（SQLite/FTS5 事实库） ---------------- */
+/* ---------------- IPC：数据库节点层（SQLite/FTS5 事实库） ---------------- */
 const dbStore = require("./db-store");
 
 function dbStoreOpenFor(dir) {
@@ -3091,7 +3186,7 @@ ipcMain.handle("file:saveText", async (e, { name, content }) => {
     return { ok: false, error: String((err && err.message) || err) };
   }
 });
-ipcMain.handle("file:openDialog", async (e, { title, filters, multi, directory }) => {
+ipcMain.handle("file:openDialog", async (e, { title, filters, multi, directory, defaultPath }) => {
   /* 文件夹选择器允许用户当场新建文件夹（Windows / Linux 的系统对话框本来就有「新建文件夹」，
      createDirectory 是 macOS 上等价的那个开关 —— 显式传上，三平台口径一致）。 */
   const props = directory
@@ -3101,16 +3196,84 @@ ipcMain.handle("file:openDialog", async (e, { title, filters, multi, directory }
     : multi
       ? ["openFile", "multiSelections"]
       : ["openFile"];
+  /* 默认落点：调用方显式给的 defaultPath 优先，否则用当前画布的工作目录
+     （选参考音频 / 素材这类「跟画布一起走」的文件，默认就该从项目目录开始翻）。 */
+  const start = String(defaultPath || "").trim() || foregroundCanvasWorkspace();
   const r = await dialog.showOpenDialog(win(), {
     title: title || (directory ? I18n.t("选择文件夹") : I18n.t("选择文件")),
     properties: props,
     filters: filters || [{ name: I18n.t("全部文件"), extensions: ["*"] }],
+    ...(start ? { defaultPath: start } : {}),
   });
   return r.canceled
     ? { path: null, paths: [] }
     : { path: r.filePaths[0] || null, paths: r.filePaths };
 });
-ipcMain.handle("shell:showItem", (e, p) => shell.showItemInFolder(p));
+/* 「位置 / 在文件夹中显示」的唯一出口：Markdown 阅读器、YAML 阅读器、文件预览、
+   开发节点核心文件列表、素材库、左栏文件树全都打到这里。
+   原来是 shell.showItemInFolder(p) 一行裸转发：路径带引号 / 空白 / 正斜杠，或目标已被
+   删除时，Windows 不报错、直接把资源管理器开在「此电脑」—— 用户看到的就是「没跳到目标
+   文件夹，只打开了文件管理器」。这里先规范化再校验：目标在就照旧选中；目标没了就退一步
+   打开它所在的父目录（静默，不弹提示），实在连父目录都没有才回 ok:false。 */
+function normalizeRevealPath(p) {
+  let s = String(p == null ? "" : p).trim();
+  if (!s) return "";
+  /* 从命令行 / 属性框 / 聊天里复制来的路径常带成对引号 */
+  while (s.length >= 2) {
+    const a = s[0];
+    const b = s[s.length - 1];
+    if ((a === '"' && b === '"') || (a === "'" && b === "'")) s = s.slice(1, -1).trim();
+    else break;
+  }
+  if (!s) return "";
+  /* 媒体节点 / 音频视频输入给的是 file:/// 这条 URL（不是路径）：
+     shell 接口认不得，会直接把资源管理器开在默认目录 —— 先解回本机路径 */
+  if (/^file:\/\//i.test(s)) {
+    try {
+      s = fileURLToPath(s);
+    } catch (_) {
+      try {
+        s = decodeURIComponent(s.replace(/^file:\/*/i, "/")).replace(/^\/([A-Za-z]:)/, "$1");
+      } catch (_) {}
+    }
+  }
+  /* ~ / ~/xxx 是用户主目录简写 */
+  if (s === "~" || /^~[\\/]/.test(s)) {
+    try {
+      s = path.join(app.getPath("home"), s.replace(/^~[\\/]?/, ""));
+    } catch (_) {}
+  }
+  /* Windows 的 shell 接口只认反斜杠；正斜杠会让它静默落到默认目录 */
+  if (process.platform === "win32") s = s.replace(/\//g, "\\");
+  return s;
+}
+ipcMain.handle("shell:showItem", async (e, p) => {
+  const target = normalizeRevealPath(p);
+  if (!target) return { ok: false, error: "empty path" };
+  let st = null;
+  try {
+    st = fs.statSync(target);
+  } catch (_) {
+    st = null;
+  }
+  if (st) {
+    /* 文件 → 在资源管理器里选中它；目录 → 在父目录里选中该文件夹（沿用既有语义） */
+    shell.showItemInFolder(target);
+    return { ok: true, path: target, opened: "select" };
+  }
+  /* 目标不在（改名 / 删除 / 盘符不在）：退到父目录，总好过落到「此电脑」 */
+  const parent = path.dirname(target);
+  if (parent && parent !== target) {
+    try {
+      if (fs.statSync(parent).isDirectory()) {
+        const err = await shell.openPath(parent);
+        if (err) return { ok: false, error: err, path: parent };
+        return { ok: true, path: parent, opened: "parent" };
+      }
+    } catch (_) {}
+  }
+  return { ok: false, error: "not found", path: target };
+});
 ipcMain.handle("shell:openPath", async (e, p) => {
   try {
     const dir = String(p || "").trim();
@@ -8514,6 +8677,18 @@ ipcMain.handle("mcp:selfTest", () =>
 /* 渲染层执行回执（mcp-bridge.js 跑完一帧后回传） */
 ipcMain.handle("mcp:interact", (event, params) => mcp().settle(params || {}));
 
+/* 自用回环开关（设置 → 扩展能力 → 服务端）。写盘 + 立刻重注册那条客户端，不用重启引擎。 */
+ipcMain.handle("mcp:setSelfLoop", (event, { on } = {}) => {
+  try {
+    return mcp().setSelfLoop(on);
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e) };
+  }
+});
+
+/* 作业列表（面板上那份只读的「正在跑 / 刚跑完」）：内存表，重启即清零。 */
+ipcMain.handle("mcp:jobs", () => ({ ok: true, jobs: mcp().listJobs() }));
+
 /* 会话实时流：渲染层把在跑那一轮的 dsh 事件复制一份（带 sessionId 归属）推上来，
    转给观察者（SSE）。**单向 send、不 handle** —— 每次事件同步回执等于给热路径加一次往返。
    没有任何观察者时这一条秒回，不做多余的活（见 session-bridge.js 的 emitEvent）。 */
@@ -9236,6 +9411,8 @@ app.whenReady().then(() => {
     getDsh: () => dsh(),
     /* 同上：Breeze 语音节点的托管兜底落点 */
     assetDirFor: (wfId) => assetDir(wfId),
+    /* 选参考音频等文件对话框默认落到当前画布的工作目录 */
+    getCanvasWorkspace: foregroundCanvasWorkspace,
   });
   registerRemotionIpc({
     getDataDir: DATA,

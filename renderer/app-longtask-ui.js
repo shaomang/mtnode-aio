@@ -1660,7 +1660,7 @@ function ltMoreBtn(wf, task) {
   try {
     b.setAttribute("data-lt-menu", "lt-more");
   } catch (_) {}
-  /* 「重建壳」只在真需要时出现：这一轮的超级节点壳被你删过（墓碑落在 run 上），
+  /* 「重建壳」只在真需要时出现：这一轮的节点层壳被你删过（墓碑落在 run 上），
      引擎按「删了不偷偷重长」的口径停手了 —— 这里给用户一次显式恢复的入口。 */
   const runNow = (() => {
     try {
@@ -1707,7 +1707,7 @@ function ltMoreBtn(wf, task) {
   if (needShell) {
     menu.splice(menu.length - 2, 0, {
       label: ltT("重建壳"),
-      title: ltT("超级节点壳被删过：点这里重建父壳（后续产出照常落进对应环节子壳）"),
+      title: ltT("节点层壳被删过：点这里重建父壳（后续产出照常落进对应环节子壳）"),
       on: () => {
         const sh = window.LTSHELL;
         if (!sh || typeof sh.rebuild !== "function" || !sh.rebuild(runNow)) {
@@ -3911,7 +3911,7 @@ function ltNodeInspector(box, wf, task, run, path) {
     ltScrollBind(tail, "col:lt-tail");
     box.appendChild(tail);
   }
-  /* ── 产出与生成（本轮需求）：这一环节的产出 / 产物落进它自己的超级节点子壳，
+  /* ── 产出与生成（本轮需求）：这一环节的产出 / 产物落进它自己的节点层子壳，
      涉及内容生成时在子壳里**预置好生成工作流但一律不运行**（由用户点 ▶ 执行）。
      所以这里只问两件事：要不要生成内容、用哪几种生成。
      判据与本模块的落位全在 app-longtask-shell.js（ltNormCfg 白名单里有这两个键）。 */
@@ -3926,7 +3926,7 @@ function ltNodeInspector(box, wf, task, run, path) {
       box,
       ltT("需要生成内容"),
       genCb,
-      ltT("勾选后本环节跑到时，会在它的超级节点子壳里预置生成节点与控制节点；一律不自动运行，由你点 ▶ 执行"),
+      ltT("勾选后本环节跑到时，会在它的节点层子壳里预置生成节点与控制节点；一律不自动运行，由你点 ▶ 执行"),
     );
     const GC = ltCtl();
     const genOpts = [
@@ -3960,7 +3960,7 @@ function ltNodeInspector(box, wf, task, run, path) {
       ltEl(
         "div",
         "lt-fh",
-        ltT("本环节的产出 / 产物会落进它的超级节点子壳（没有则自动建）；生成节点只建不跑。"),
+        ltT("本环节的产出 / 产物会落进它的节点层子壳（没有则自动建）；生成节点只建不跑。"),
       ),
     );
   }

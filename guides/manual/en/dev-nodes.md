@@ -8,7 +8,7 @@
 
 ## Dev node overview
 
-A dev node = splitting a “software project” into feature blocks (super nodes) on the canvas, one block per module / file / class.
+A dev node = splitting a “software project” into feature blocks (node layers) on the canvas, one block per module / file / class.
 
 A dev node shows that module's design notes; click the buttons on the card to have the Agent investigate, develop or refine it.
 
@@ -30,7 +30,7 @@ In the canvas's left sidebar you can switch to 文件 (Files); once switched you
 
 ### What it is
 
-A dev node is a super node carrying the Develop mark: it looks like an ordinary super node, and inside it says “what this module does, how it is implemented, which files it involves”.
+A dev node is a node layer carrying the Develop mark: it looks like an ordinary node layer, and inside it says “what this module does, how it is implemented, which files it involves”.
 
 ### Why use it
 
@@ -83,7 +83,7 @@ Questions such as module trade-offs and technology choices are put to you by the
 ## Configuration quick reference
 
 - **项目根目录 (Project root directory)**: the absolute path of the project root. The outermost block fills it in once and child blocks inherit the nearest one; the project root is the agent's workspace root.
-- **所属上层 (Parent)**: which layer this block hangs on, decided by the super node it sits in.
+- **所属上层 (Parent)**: which layer this block hangs on, decided by the node layer it sits in.
 - **元素类型 (Element type)**: module / file / class / interface / enum — this decides the nature of the block.
 - **模型提供商 + 模型 (Model provider + model)**: which provider this block's sessions run on, and which model (Suggest / Develop / Refine all use it). The first cell of the 🧠 dialog is the model provider; once picked, the next cell, model, lists only that provider's models, and switching provider moves the model along with it.
 - **预设档 (Preset)**: 极简模式 (Minimal) / 标准模式 (Standard) / 思维精简 (Lean Thinking) / PTC 模式 (PTC) / 创造模式 (Creative) — this decides the persona and the tool surface. A preset no longer rewrites the thinking level; when none of the three is set, **default = 极简 (Minimal)**, the same default the UI shows.

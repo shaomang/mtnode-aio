@@ -1,8 +1,8 @@
-/* renderer/app-longtask-shell.js —— 长周期任务「超级节点壳 + 生成工作流预置」（自包含新模块，挂 window.LTSHELL）
+/* renderer/app-longtask-shell.js —— 长周期任务「节点层壳 + 生成工作流预置」（自包含新模块，挂 window.LTSHELL）
  *
- * 需求（本轮）：执行长任务时，每个环节的产出应当建立在**对应画布的一颗超级节点里**
- * （没有则建立），这颗超级节点与长任务绑定；涉及内容生成（图像 / 视频 / 音乐 / TTS）时，
- * 在该环节的超级节点内**建好生成工作流**，并要求**用户自己来执行生成**（生成可能产生高额费用）。
+ * 需求（本轮）：执行长任务时，每个环节的产出应当建立在**对应画布的一颗节点层里**
+ * （没有则建立），这颗节点层与长任务绑定；涉及内容生成（图像 / 视频 / 音乐 / TTS）时，
+ * 在该环节的节点层内**建好生成工作流**，并要求**用户自己来执行生成**（生成可能产生高额费用）。
  *
  * 结构（一环节一颗子壳，父壳一颗 / 一条长任务）：
  *   父壳  kind "super" · ltShellTask = 任务 uid ── 主画布层，壳名 = 「长任务 · <任务名>」
@@ -178,7 +178,7 @@ function ltsMarkPathMade(run, path) {
 function ltsPathEverMade(run, path) {
   return Object.prototype.hasOwnProperty.call(ltsShellPaths(run), String(path || ""));
 }
-/* ── 壳归属口径：一律按**定义路径**（本轮 bug：长任务偶尔生成大量空的超级节点）──────
+/* ── 壳归属口径：一律按**定义路径**（本轮 bug：长任务偶尔生成大量空的节点层）──────
  * 病根：逐项（map）环节的内部节点跑起来时路径带实例号（`shots@1/s_shot`，见 app-longtask.js
  * 的 ltPathKey / ltChildPrefix），而壳是「一条路径一颗」按 ltsShellPath 认人的 —— 于是一份
  * 12 项的清单就在画布上建出 12 颗彼此独立、且永远只有一颗有内容的环节子壳；清单 100 项就是
@@ -309,7 +309,7 @@ function ltsRootCreate(run, taskName) {
   node.expandH = 900;
   ltsPushNode(node);
   ltsMarkPathMade(run, "");
-  if (typeof ltLog === "function") ltLog(run, ltsT("已在画布上建立本任务的超级节点：") + node.title, "");
+  if (typeof ltLog === "function") ltLog(run, ltsT("已在画布上建立本任务的节点层：") + node.title, "");
   return node;
 }
 function ltsStepCreate(run, path) {
@@ -623,11 +623,11 @@ function ltsMarkGone(run) {
 function ltsWarnGone(run) {
   try {
     if (typeof ltLog === "function")
-      ltLog(run, ltsT("超级节点壳已被删除：不再自动重建（点提示里的「重建」可恢复）"), "warn");
+      ltLog(run, ltsT("节点层壳已被删除：不再自动重建（点提示里的「重建」可恢复）"), "warn");
   } catch (_) {}
   if (run && run.shellWarned) return;
   if (run) run.shellWarned = true;
-  ltsNotify(ltsT("长任务的超级节点壳已被删除：产出暂留在主画布层。需要壳的话在条带里点「重建壳」"), "warn");
+  ltsNotify(ltsT("长任务的节点层壳已被删除：产出暂留在主画布层。需要壳的话在条带里点「重建壳」"), "warn");
 }
 /* 用户点了「重建」：清墓碑 → 下一次产出照常建壳（不是静默重长，是用户点的） */
 function ltsRebuild(run) {
@@ -642,7 +642,7 @@ function ltsRebuild(run) {
   if (!r) return false;
   ltsRender();
   ltsSave();
-  ltsNotify(ltsT("已重建超级节点壳：后续产出会落进对应环节子壳"), "ok");
+  ltsNotify(ltsT("已重建节点层壳：后续产出会落进对应环节子壳"), "ok");
   return true;
 }
 
@@ -777,8 +777,8 @@ async function ltsMigrateOutputs(wf) {
       ltLog(
         run,
         n.kind === "ltart"
-          ? ltsT("已把主画布层上的产物收进对应环节的超级节点")
-          : ltsT("已把产出节点收进对应环节的超级节点"),
+          ? ltsT("已把主画布层上的产物收进对应环节的节点层")
+          : ltsT("已把产出节点收进对应环节的节点层"),
         "",
       );
   }

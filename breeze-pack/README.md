@@ -116,7 +116,7 @@ curl -X POST -H "Authorization: Bearer $BREEZE_API_KEY" -F "voiceId=播音" -F "
 | `ref_audio` / `ref_audio_path` | 参考音频（multipart 文件或本机绝对路径） |
 | `ref_text` | 参考音频的**准确文稿**。与参考音频必须成对出现 |
 | `instruction` | 自然语言指令（音色设计 / 音色导演）。语言要与正文一致 |
-| `cfg_scale` | 指令跟随强度；默认 1，**有 instruction 时官方建议 4** |
+| `cfg_scale` | 指令跟随强度；默认 4（官方建议 instruction 场景用 4） |
 | `seed` | 采样种子（默认 42），同种子可复现 |
 | `speed` | 语速 0.25–4.0（默认 1，本地按重采样实现） |
 | `response_format` | `wav`（默认）/ `flac` / `mp3`。引擎吐的是 24kHz s16le PCM，容器由本服务封装 |

@@ -392,7 +392,7 @@ function asrUpstreamMediaNodes(node) {
     if (!w || w.rel) continue;
     const src = asrNodeById(w.from);
     if (!src) continue;
-    /* 超级节点壳 / 素材节点这类中转：src 不是音频节点就按「这个源的叶子」再摊一层 */
+    /* 节点层壳 / 素材节点这类中转：src 不是音频节点就按「这个源的叶子」再摊一层 */
     if (isAsrMediaNode(src)) {
       push(src);
       continue;

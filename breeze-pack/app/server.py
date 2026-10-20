@@ -531,6 +531,14 @@ def prepare_request(params: dict, *, tmp_dir: Path) -> dict:
         cfg_scale = 4.0 if instruction else 1.0
     if cfg_scale <= 0:
         raise _err("bad_cfg_scale", "cfg_scale 必须大于 0")
+    # 克隆模板 ref_clone_tata 没有负向提示词，引擎只接受 cfg_scale=1.0（否则 ValueError → HTTP 500）。
+    # 客户端（如画布节点）会把界面上的 cfg 原样传进来，这里按引擎约束钳制，避免「克隆 + cfg>1」必炸。
+    if mode == "clone" and abs(float(cfg_scale) - 1.0) > 1e-6:
+        config.log(
+            f"[speech] 克隆模式不支持 cfg_scale={cfg_scale}，已钳制为 1.0"
+            "（要调 CFG 请填「音色导演指令」走 ref_edit_tata）"
+        )
+        cfg_scale = 1.0
     if speed is not None and (speed < 0.25 or speed > 4.0):
         raise _err("bad_speed", "speed 需在 0.25 ~ 4.0 之间")
 
@@ -636,6 +644,12 @@ def call_engine(req: dict, *, busy_retry_s: float = ENGINE_BUSY_RETRY_S) -> tupl
                 raise _err("busy_engine", "引擎正忙（同一时刻只跑一个合成请求），请稍后重试", 409)
             if e.code == 400:
                 raise _err("engine_rejected", f"引擎拒绝了这次请求：{detail or '（无详情）'}")
+            if e.code == 500 and "does not define a negative prompt" in detail:
+                raise _err(
+                    "cfg_scale_unsupported",
+                    "克隆模式（有参考音频、无「音色导演指令」）不支持 cfg_scale≠1.0："
+                    "请把 cfg_scale 设为 1，或填一条指令改用音色导演（只有那个模板支持 CFG）",
+                )
             if e.code == 503:
                 raise _err("engine_loading", "引擎还在加载权重（首次启动约需数十秒到数分钟），请稍后重试", 503)
             raise _err("engine_http_" + str(e.code), f"引擎返回 HTTP {e.code}：{detail}")

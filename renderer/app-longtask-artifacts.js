@@ -4,7 +4,7 @@
  * **逐个摆出来**并排好版 —— 用户不用去翻条带或文件夹，画布上直接看到这次跑出了什么；
  * 中间件与调试件不占画布（口径见下面 ②，本轮需求）。摆上来的东西各有形态：图片出缩略图、
  * 文本可读摘要、其它类型给路径 + 打开入口。
- * 落点（本轮改动）：**本环节的超级节点子壳内**（长任务壳 · app-longtask-shell.js
+ * 落点（本轮改动）：**本环节的节点层子壳内**（长任务壳 · app-longtask-shell.js
  * 的 artifactsParentOf 决定 parentSuperId 与子壳内坐标）；壳不可用 / 壳模块缺席时
  * 回落主画布层（旧行为），产出回流绝不因此断链。
  *
@@ -184,7 +184,7 @@ function ltArtTitleOf(file, type) {
 }
 /* 直接建节点（不走 addNode）：不弹「已添加节点」toast、不进撤销栈、不改当前选中；
    产出节点 / 交付节点同属系统建，这里只是把同一口径用在产物上。
-   落点（本轮改动）：优先落进**本环节的超级节点子壳**（app-longtask-shell.js 的
+   落点（本轮改动）：优先落进**本环节的节点层子壳**（app-longtask-shell.js 的
    artifactsParentOf），壳不可用 / 模块缺席时回落主画布层（旧行为）。 */
 function ltArtCreateNode(run, path, art, pos, wfIn) {
   if (typeof makeNode !== "function") return null;
@@ -222,7 +222,7 @@ function ltArtCreateNode(run, path, art, pos, wfIn) {
 function ltArtRects(wfIn) {
   const wf = wfIn || (typeof S !== "undefined" ? S.wf : null);
   if (!wf) return [];
-  /* 只算**主画布层**节点：超级节点壳内的子节点用的是壳内坐标系，混进来当世界坐标算会得出
+  /* 只算**主画布层**节点：节点层壳内的子节点用的是壳内坐标系，混进来当世界坐标算会得出
      假冲突（把回落主画布层的产物推到很远的地方）。 */
   return ltArtArr(wf.nodes)
     .filter((n) => !String((n && n.parentSuperId) || "").trim())

@@ -225,7 +225,7 @@ function valueForInput(src, idx) {
   var v = PORT_VALUES[src.id + ':' + Number(idx || 0)];
   return v === undefined ? null : v;
 }
-/* 与 app.js superPortIdxFromWire 同一口径：类超级节点外侧端子号 = 连线 fromIndex */
+/* 与 app.js superPortIdxFromWire 同一口径：类节点层外侧端子号 = 连线 fromIndex */
 function superPortIdxFromWire(src, w) {
   if (!src || !w) return undefined;
   if (src.kind !== 'super' && src.kind !== 'input_file') return undefined;
@@ -338,8 +338,8 @@ console.log("\n[1] list 位：归一（输入侧保留 / 输出侧清掉）与�
   P(`!fnToolPortIsList(N1, "in", 99)`, "入参端子越界 → false（不误吞）");
   P(`!fnToolPortIsList(N1, "out", 0)`, "输出方向恒 false（即便条目上残留过 list）");
   P(
-    `!fnToolPortIsList({ kind: 'super', title: '普通超级', inputs: [{ name: 'a', list: true }] }, "in", 1)`,
-    "普通超级节点不参与（不是这两类节点 → false）",
+    `!fnToolPortIsList({ kind: 'super', title: '普通节点层', inputs: [{ name: 'a', list: true }] }, "in", 1)`,
+    "普通节点层不参与（不是这两类节点 → false）",
   );
   P(`!fnToolPortIsList(null, "in", 1)`, "空节点不炸");
   E(`TL = { kind: 'super', tool: true, title: '工具', toolConfig: { name: '工具', description: '', inputs: [{ name: '参考图', kind: 'image', list: true }], outputs: [{ name: '出', kind: 'text', list: true }] } };
@@ -433,7 +433,7 @@ console.log("\n[3] connectError：数组端子放行多条数据线 · 普通端
   EQ(
     `connectError('b1', 'a1', 1, 0)`,
     "「提示词」是文本参数，不接受图像来源：请在该函数节点的「设置」里把「提示词」改成图像参数，或改接来源节点的文本输出端子",
-    "函数节点走自己的分支（错误文案点名「该函数节点」，不是超级节点 / 工具节点口径）",
+    "函数节点走自己的分支（错误文案点名「该函数节点」，不是节点层 / 工具节点口径）",
   );
   PW(`W('t1x','a1',1,0)`);
   EQ(`connectError('b1', 'a1', 1, 0)`, "该输入端子已被占用", "普通端子占用检查仍先行（数组语义不会把已占端子让给第三条线）");

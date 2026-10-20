@@ -2938,7 +2938,7 @@ function musicGenSlotText(node, slot) {
   const w = wiresTo(node.id).find((x) => Number(x.toIndex) === Number(slot));
   if (!w) return "";
   const src = nodeById(w.from);
-  /* 端子号：app.js 的 valueFromWire 只对超级节点 / 素材条目节点认线上的 fromIndex，其余节点
+  /* 端子号：app.js 的 valueFromWire 只对节点层 / 素材条目节点认线上的 fromIndex，其余节点
      拿 batchIdx 当端子号（这里传的就是 batchIdx）—— 直接传 0 会把「音频 / 视频输入节点
      端口 1（转写输出）」读成端口 0，拿回那串 file:/// URL 而不是转写文字，这正是用户报的
      「参考文本里显示路径、不显示参考文字」的根因（breezeTextSlot 因此在箱里回显路径）。
@@ -3315,19 +3315,27 @@ function breezeModeLabel(mode) {
   if (m === "direction") return I18n.t("音色导演");
   return I18n.t("自动判定");
 }
-/* body 上的只读摘要：能力 · 音色 · cfg · 种子 · 格式 */
+/* body 上的只读摘要：角色（或能力 · 音色）· cfg · 种子 · 格式 */
 function appendBreezeGenSummaryBody(node, body, media) {
-  const slots = [
-    { label: I18n.t("能力"), value: breezeModeLabel(breezeModeOf(node)) },
-    {
-      id: "breezevoice-" + node.id,
-      label: I18n.t("音色"),
-      value: String(node.voice || "").trim() || I18n.t("（只用端子）"),
-    },
-    { label: "cfg", value: String(breezeCfgScaleOf(node)) },
-    { id: "mgseed-" + node.id, label: I18n.t("种子"), value: String(breezeSeedOf(node)) },
-    { label: I18n.t("格式"), value: breezeFormatOf(node) },
-  ];
+  const presetId = breezePresetIdOf(node);
+  const slots = presetId
+    ? [
+        { id: "breezevoice-" + node.id, label: I18n.t("角色"), value: breezePresetLabelOf(node) },
+        { label: "cfg", value: breezeCfgSummaryOf(node) },
+        { id: "mgseed-" + node.id, label: I18n.t("种子"), value: String(breezeSeedOf(node)) },
+        { label: I18n.t("格式"), value: breezeFormatOf(node) },
+      ]
+    : [
+        { label: I18n.t("能力"), value: breezeModeLabel(breezeModeOf(node)) },
+        {
+          id: "breezevoice-" + node.id,
+          label: I18n.t("音色"),
+          value: String(node.voice || "").trim() || I18n.t("（只用端子）"),
+        },
+        { label: "cfg", value: breezeCfgSummaryOf(node) },
+        { id: "mgseed-" + node.id, label: I18n.t("种子"), value: String(breezeSeedOf(node)) },
+        { label: I18n.t("格式"), value: breezeFormatOf(node) },
+      ];
   appendNodeSettingsSummary(node, body, { slots, cls: "mg-sum" });
   appendNodeSettingsSummary(node, body, {
     slots: [
@@ -3346,16 +3354,39 @@ function appendBreezeGenSummaryBody(node, body, media) {
     cls: "mg-sum mg-sum-path",
     actions: mediaGenPathActionButtons(node, media),
   });
+  /* 选了角色但已经不可用（管理台删了 / 组没了 / 缺音频）：卡片上直接给红字，别等运行时才报 */
+  if (presetId) {
+    const warn = document.createElement("div");
+    warn.className = "n-empty n-preset-warn";
+    const paint = () => {
+      const p = breezePresetProblemOf(node);
+      warn.textContent = p ? "⚠ " + p : "";
+      warn.title = p || "";
+      warn.style.color = p ? "var(--danger, #e5534b)" : "";
+      warn.style.display = p ? "" : "none";
+    };
+    paint();
+    body.appendChild(warn);
+    /* 预设清单是异步读宿主的：读到后只改这一行字，不重画整张卡 */
+    if (!breezePresetCache.at) breezePresetsLoad().then(paint);
+  }
   /* 两个文本框（输入文本 / 参考文本）：卡片 body 上直接编辑，与设置窗共用 breezeTextBoxesFor；
      端子有输入时自动切只读回显（端子优先），端子为空才归用户改 —— 本节点不做转录。 */
   appendBreezeTextBoxesBody(node, body);
 }
 /* 同一批字段的一行文本版（登记表单的 summary 用；与上面的片段口径一一对应） */
 function breezeGenParamSummaryText(node) {
+  const presetId = breezePresetIdOf(node);
+  const head = presetId
+    ? I18n.t("角色 ") + breezePresetLabelOf(node)
+    : I18n.t("能力 ") +
+      breezeModeLabel(breezeModeOf(node)) +
+      " · " +
+      I18n.t("音色 ") +
+      (String(node.voice || "").trim() || I18n.t("（只用端子）"));
   return [
-    I18n.t("能力 ") + breezeModeLabel(breezeModeOf(node)),
-    I18n.t("音色 ") + (String(node.voice || "").trim() || I18n.t("（只用端子）")),
-    "cfg " + breezeCfgScaleOf(node),
+    head,
+    "cfg " + breezeCfgSummaryOf(node),
     I18n.t("种子 ") + breezeSeedOf(node),
     breezeFormatOf(node),
     I18n.t("输出 ") +
@@ -5279,7 +5310,45 @@ function breezeFormatOf(node) {
 }
 function breezeCfgScaleOf(node) {
   const v = Number(node && node.cfgScale);
-  return isFinite(v) && v > 0 ? Math.max(0.1, Math.min(10, v)) : 1;
+  return isFinite(v) && v > 0 ? Math.max(0.1, Math.min(10, v)) : 4;
+}
+/* 引擎模板的能力差异（这条是踩过的坑）：有参考音频且没有导演指令时走 ref_clone_tata，
+   那个模板没有负向提示词，引擎对 cfg_scale≠1.0 直接 raise ValueError → 裸 HTTP 500。
+   所以「克隆」这条路的 CFG 恒为 1.0：判定只写在这一处，运行期与摘要共用（与后端
+   prepare_request 里的钳制同口径，后端再兜一层）。 */
+function breezeModeResolvedOf(node, opts) {
+  const m = breezeModeOf(node);
+  if (m !== "auto") return m;
+  const o = opts || {};
+  if (!o.hasRef) return "design";
+  return String(o.instruction || "").trim() ? "direction" : "clone";
+}
+function breezeCfgLockedOf(node, opts) {
+  return breezeModeResolvedOf(node, opts) === "clone";
+}
+/* 真正下发给引擎的 cfg：克隆模式强制 1.0，其余照字段值 */
+function breezeCfgScaleForRun(node, opts) {
+  return breezeCfgLockedOf(node, opts) ? 1 : breezeCfgScaleOf(node);
+}
+/* 摘要口径的「有没有参考音频 / 有没有指令」（端子优先，与运行期 breezeResolveRef 同源；
+   取不到环境就当没有 —— 摘要只用来提示，绝不影响下发值）。 */
+function breezeRefHintOf(node) {
+  let hasRef = !!String((node && node.voice) || "").trim();
+  let instruction = String((node && node.instruction) || "").trim();
+  try {
+    if (!hasRef) hasRef = !!(breezeAudioSlotPath(node, 1) || breezeAudioSlotPath(node, 2));
+  } catch (_) {}
+  try {
+    const slotInstr = breezeTextSlot(node, 3);
+    if (slotInstr) instruction = slotInstr;
+  } catch (_) {}
+  return { hasRef, instruction };
+}
+/* 摘要行上的 cfg：克隆模式显示「1（克隆固定）」，让用户看得见自己填的值没被下发 */
+function breezeCfgSummaryOf(node) {
+  const locked =
+    breezeCfgLockedOf(node, breezeRefHintOf(node)) || !!(node && node.cfgClamped);
+  return (locked ? "1" : String(breezeCfgScaleOf(node))) + (locked ? I18n.t("（克隆固定）") : "");
 }
 function breezeSeedOf(node) {
   const v = Math.floor(Number(node && node.seed));
@@ -5463,7 +5532,6 @@ const BREEZE_TEXT_BOXES = [
   {
     slot: 0,
     field: "srcText",
-    label: "输入文本（需要念的）",
     placeholder: "（端口 0 有文本时这里只读回显；没有就写要念的文字）",
     title: "端子为空时，这个框里的文字就是本次要合成的内容",
     tip: "端子优先：端口 0 有输入时这里只读",
@@ -5471,7 +5539,6 @@ const BREEZE_TEXT_BOXES = [
   {
     slot: 2,
     field: "refText",
-    label: "参考文本（参考音频对应的文字）",
     placeholder: "（端口 2 有文本时这里只读回显；没有就写参考音频对应的文字）",
     title: "本次要用的参考文本：留空时若选了音色库音色，就用音色库自带的那份",
     tip: "端子优先：端口 2 有输入时这里只读",
@@ -5534,29 +5601,13 @@ function breezeTextBoxClear(node, spec) {
     if (typeof renderCanvas === "function") renderCanvas();
   } catch (_) {}
 }
-/** 状态胶囊一句话：端子优先那条写清「来自端口 N」，可编辑那条写「可编辑」 */
-function breezeTextBoxStateText(node, spec) {
-  const st = breezeTextBoxState(node, spec);
-  if (st.locked) return I18n.t("来自端口 ") + spec.slot + I18n.t("（端子优先，本框只读）");
-  return I18n.t("端子为空 · 可编辑");
-}/** 单个文本框（卡片 body 与设置跳窗共用；opts.compact = 卡片 body 的紧凑形态） */
+/** 单个文本框（卡片 body 与设置跳窗共用；opts.compact = 卡片 body 的紧凑形态）
+ *  界面上只留输入框本身（标题 / 端口状态胶囊 / 各种提示行都去掉了，说明走 hover title） */
 function breezeTextBoxFor(node, spec, opts) {
   const o = opts || {};
   const st = breezeTextBoxState(node, spec);
   const box = document.createElement("div");
   box.className = "n-reftext" + (o.compact ? " n-reftext-card" : "");
-  const hdr = document.createElement("div");
-  hdr.className = "n-reftext-hdr";
-  const lab = document.createElement("span");
-  lab.className = "n-reftext-lab";
-  lab.textContent = I18n.t(spec.label);
-  hdr.appendChild(lab);
-  const pill = document.createElement("span");
-  pill.className = "n-reftext-state" + (st.locked ? " locked" : "");
-  pill.textContent = breezeTextBoxStateText(node, spec);
-  hdr.appendChild(pill);
-  box.appendChild(hdr);
-
   const ta = document.createElement("textarea");
   ta.className = "n-text n-reftext-text";
   ta.spellcheck = false;
@@ -5589,38 +5640,17 @@ function breezeTextBoxFor(node, spec, opts) {
   }
   return box;
 }
-/** 两个文本框（顺序 = 输入文本、参考文本；卡片 body 与设置窗共用这一份） */
+/** 两个文本框（顺序 = 输入文本、参考文本；卡片 body 与设置窗共用这一份）。
+ *  选了角色预设时只留「输入文本」：参考音频 / 样本文字都来自那一组，端口 1/2 不参与。 */
 function breezeTextBoxesFor(node, opts) {
   const o = opts || {};
   const host = document.createElement("div");
   host.className =
     "n-reftext-host n-textslots" + (o.compact ? " n-reftext-host-card" : " n-reftext-host-set");
-  for (const spec of BREEZE_TEXT_BOXES) host.appendChild(breezeTextBoxFor(node, spec, o));
-  /* 参考文稿口接的是音频 / 视频输入节点、而它还没转写 → 框里必然是空的（音频 URL 不当文字），
-     这时写清下一步：在那只音频节点上点「转录」，它的转写输出接进本口就成了参考文本。 */
-  if (breezeSlotHasMediaSource(node, 2) && !breezeTextSlot(node, 2)) {
-    const hint = document.createElement("div");
-    hint.className = "n-reftext-hint";
-    hint.textContent = I18n.t(
-      "参考文稿口接的是音频 / 视频节点：先在它上面点「转录」，把它的转写输出接到本口就是参考文本（本节点不做转录）",
-    );
-    host.appendChild(hint);
-  } else if (breezeSlotHasAnySource(node, 2) && !breezeTextSlot(node, 2)) {
-    /* 端口 2 接的**不是文字**（生成节点 / 保存节点给的音频路径等）：框只读且空着，路径绝不当
-       参考文本显示。说清「那一路音频会当参考音频用，参考文本得另外给」，别让人对着空框发呆。 */
-    const hint = document.createElement("div");
-    hint.className = "n-reftext-hint";
-    hint.textContent = I18n.t(
-      "这个口上给的是音频 / 视频（不是文字，这里不会显示那串路径）：它会当本节点的参考音频用；参考文本请在框里填，或把音频节点的「转写输出」接到本口",
-    );
-    host.appendChild(hint);
-  }
-  /* 选了音色库音色：参考文本留空时合成用音色库自带的那份（这里填的优先） */
-  if (String((node && node.voice) || "").trim()) {
-    const hint = document.createElement("div");
-    hint.className = "n-reftext-hint";
-    hint.textContent = I18n.t("选了音色库音色：这个框留空时，合成用音色库自带的那份参考文本");
-    host.appendChild(hint);
+  const hasPreset = !!breezePresetIdOf(node);
+  for (const spec of BREEZE_TEXT_BOXES) {
+    if (hasPreset && spec.slot === 2) continue;
+    host.appendChild(breezeTextBoxFor(node, spec, o));
   }
   return host;
 }
@@ -5631,10 +5661,102 @@ function appendBreezeTextBoxesBody(node, body) {
     body.appendChild(breezeTextBoxesFor(node, { compact: true }));
   } catch (_) {}
 }
-/* 参考源解析：端子优先，端子空了才用音色库。返回 {audioPath, refText, voiceId, source}
-   参考音频两个来源（都是「端子」）：端口 1 明确就是参考音频；端口 2 接的是音频 / 视频输入
-   节点时也算（那时音频来自该节点，文字走它端口 1 的转写）—— 两边都给了就取端口 1。 */
-function breezeResolveRef(node, voices) {
+/* ── 角色预设（角色名 + 若干组「音频样本 + 样本文字 + 指令」） ────────────────
+   真源在宿主（breeze/main-breeze.js 的 presets/，管理台维护），渲染层只读缓存。
+   选了角色后：端口 1 / 2 在合成时**不参与**（界面上也隐藏），参考音频与样本文字来自那一组，
+   指令 = 端口 3 / 节点指令（非空则覆写）否则组里的指令。没选角色 = 老口径（端子 / 音色库）。 */
+const BREEZE_PRESET_CACHE_MS = 3000;
+let breezePresetCache = { at: 0, presets: [], loading: null };
+/** 读预设清单（带 3 秒缓存；画布上多节点同时刷摘要不会把磁盘读穿）。
+ *  宿主没装插件 / 桥不可用时返回空数组，绝不抛。 */
+function breezePresetsLoad(force) {
+  const now = Date.now();
+  if (!force && now - breezePresetCache.at < BREEZE_PRESET_CACHE_MS) {
+    return Promise.resolve(breezePresetCache.presets);
+  }
+  if (breezePresetCache.loading) return breezePresetCache.loading;
+  const api = typeof window !== "undefined" ? window.api : null;
+  if (!api || typeof api.breezePresets !== "function") return Promise.resolve([]);
+  const p = Promise.resolve()
+    .then(() => api.breezePresets())
+    .then((r) => {
+      const list = r && r.ok && Array.isArray(r.presets) ? r.presets : [];
+      breezePresetCache = { at: Date.now(), presets: list, loading: null };
+      return list;
+    })
+    .catch(() => {
+      breezePresetCache = { at: Date.now(), presets: breezePresetCache.presets || [], loading: null };
+      return breezePresetCache.presets || [];
+    });
+  breezePresetCache.loading = p;
+  return p;
+}
+/** 节点上选的角色 / 组（字段名 node.presetId · node.presetGroupId，随节点持久化） */
+function breezePresetIdOf(node) {
+  return String((node && node.presetId) || "").trim();
+}
+function breezePresetGroupIdOf(node) {
+  return String((node && node.presetGroupId) || "").trim();
+}
+function breezePresetFind(presets, id) {
+  const key = String(id || "");
+  return (presets || []).find((p) => p && p.id === key) || null;
+}
+/** 选了的那一组：指定组优先，组没了退回该角色第一组；返回 { preset, group, index } 或 null */
+function breezePresetPick(node, presets) {
+  const pid = breezePresetIdOf(node);
+  if (!pid) return null;
+  const preset = breezePresetFind(presets, pid);
+  if (!preset) return null;
+  const groups = Array.isArray(preset.groups) ? preset.groups : [];
+  const gid = breezePresetGroupIdOf(node);
+  let idx = gid ? groups.findIndex((g) => g && g.id === gid) : -1;
+  if (idx < 0) idx = 0;
+  if (!groups.length) return { preset, group: null, index: 0 };
+  return { preset, group: groups[idx], index: idx };
+}
+/** 摘要 / 状态行上的一行字：角色：旁白 · 第2组；没选 = 空串 */
+function breezePresetLabelOf(node, presets) {
+  const pid = breezePresetIdOf(node);
+  if (!pid) return "";
+  const hit = breezePresetPick(node, presets || breezePresetCache.presets);
+  if (!hit) return I18n.t("角色预设已删除（请重选）");
+  return (
+    I18n.t("角色：") +
+    hit.preset.name +
+    (hit.group ? " · " + I18n.t("第 {n} 组", { n: hit.index + 1 }) : "")
+  );
+}
+/** 选了角色但已经不可用（删了 / 组没了 / 缺音频）：返回一句红字提示，正常返回空串 */
+function breezePresetProblemOf(node, presets) {
+  const pid = breezePresetIdOf(node);
+  if (!pid) return "";
+  const list = presets || breezePresetCache.presets;
+  const preset = breezePresetFind(list, pid);
+  if (!preset) return I18n.t("角色预设已删除或不可用，请重选角色");
+  const hit = breezePresetPick(node, list);
+  if (!hit || !hit.group) return I18n.t("这个角色还没有样本组：请到管理台给它加一组（音频 + 样本文字）");
+  if (!hit.group.hasAudio) return I18n.t("角色这一组缺少音频：请到管理台补上参考音频");
+  if (!String(hit.group.refText || "").trim())
+    return I18n.t("角色这一组缺少样本文字：请到管理台补上（音频与文字必须成对）");
+  return "";
+}
+/* 参考源解析：选了角色 → 用那一组；否则端子优先，端子空了才用音色库（老工作流兼容）。
+   返回 {audioPath, refText, voiceId, source, instruction?, presetId?} */
+function breezeResolveRef(node, voices, presets) {
+  const hit = breezePresetPick(node, presets || breezePresetCache.presets);
+  if (hit) {
+    /* 选了角色：端口 1 / 2 一律不参与（界面上已隐藏），免得两套参考源打架 */
+    return {
+      audioPath: String((hit.group && hit.group.audioPath) || ""),
+      refText: String((hit.group && hit.group.refText) || ""),
+      voiceId: "",
+      instruction: String((hit.group && hit.group.instruction) || ""),
+      presetId: hit.preset.id,
+      presetGroupId: hit.group ? hit.group.id : "",
+      source: breezePresetLabelOf(node, presets || breezePresetCache.presets),
+    };
+  }
   const slot1Audio = breezeAudioSlotPath(node, 1);
   const slot2Audio = breezeAudioSlotPath(node, 2);
   const audioPath = slot1Audio || slot2Audio;
@@ -5713,6 +5835,9 @@ function breezeErrorText(raw) {
     cuda_unavailable: T("torch 看不到 CUDA（Breeze TTS 2 需要 NVIDIA GPU，eager 约 7.7GB 显存）"),
     voice_not_found: T("Breeze TTS 2 音色不存在（请在控制台音色库里重新选择）"),
     voice_audio_required: T("该音色缺少参考音频（请在控制台音色库里补上）"),
+    preset_missing: T("角色预设已删除或不可用（请在节点上方「角色」里重新选一个）"),
+    preset_group_missing: T("这个角色没有可用的样本组（请到管理台加一组：音频 + 样本文字）"),
+    preset_audio_missing: T("角色这一组缺少音频（请到管理台补上参考音频）"),
     backend_down: T("Breeze TTS 2 后端未能在规定时间内就绪（可打开插件控制台查看启动日志）"),
     write_failed: T("音频写盘失败（请检查输出路径是否可写）"),
   };
@@ -5814,7 +5939,8 @@ async function playBreezeGenNode(node, quiet) {
     return;
   }
   const nRolls = attemptCount(node);
-  const mode = breezeModeOf(node);
+  /* 能力档：选了角色 = 音色导演（参考音频 + 指令同时给）；没选角色才用节点上的能力档 */
+  const modeCfg = breezeModeOf(node);
   const fmt = breezeFormatOf(node);
   const instructionSlot = breezeTextSlot(node, 3);
 
@@ -5875,10 +6001,29 @@ async function playBreezeGenNode(node, quiet) {
     }
 
     const voices = (ready.st && ready.st.apiStatus && ready.st.apiStatus.voices) || [];
-    const ref = breezeResolveRef(node, voices);
-    /* 指令：端子优先，否则用节点设置里的 instruction（与参考源同一套口径） */
-    const instruction = instructionSlot || String(node.instruction || "").trim();
-    const cfgScale = breezeCfgScaleOf(node);
+    /* 角色预设：清单读失败也照常跑（退回端子模式），但选了角色却读不到就得拦住 —— 不能默默换声 */
+    const presets = await breezePresetsLoad(true);
+    const presetProblem = breezePresetProblemOf(node, presets);
+    if (presetProblem) {
+      node.error = presetProblem;
+      node.breezeStatus = presetProblem;
+      if (!quiet) toast(presetProblem, "err");
+      return;
+    }
+    const ref = breezeResolveRef(node, voices, presets);
+    /* 指令：端口 3 > 节点设置里的 instruction > 角色那一组的指令（空 = 忽略，用组里的） */
+    const instruction =
+      instructionSlot || String(node.instruction || "").trim() || String(ref.instruction || "").trim();
+    const mode = ref.presetId ? "direction" : modeCfg;
+    /* 克隆（有参考音频、无导演指令）的引擎模板 ref_clone_tata 没有负向提示词，引擎对
+       cfg_scale≠1.0 会直接 500 —— 这一路只下发 1.0，界面填的值不下发（后端还会再钳一层）。 */
+    const cfgLocked = ref.presetId
+      ? false
+      : breezeCfgLockedOf(node, { hasRef: !!ref.audioPath, instruction });
+    const cfgScale = ref.presetId
+      ? breezeCfgScaleOf(node)
+      : breezeCfgScaleForRun(node, { hasRef: !!ref.audioPath, instruction });
+    node.cfgClamped = cfgLocked && cfgScale !== breezeCfgScaleOf(node);
     /* 参考音频与参考文本必须成对（官方接口要求）。本节点**不做转录**：端口 2 没给文字、
        节点「参考文本」框里也没填，就在这里拦下，并指路（框里填，或去音频节点点「转录」、
        把它的转写输出接到端口 2）—— 不再自动转写。 */
@@ -5929,6 +6074,9 @@ async function playBreezeGenNode(node, quiet) {
         refText: ref.refText,
         instruction,
         mode,
+        /* 宿主也会据此再解析一次（管理台刚改过预设时以宿主那份为准） */
+        presetId: ref.presetId || "",
+        presetGroupId: ref.presetGroupId || "",
         cfgScale,
         seed: breezeSeedOf(node),
         response_format: fmt,
@@ -7902,7 +8050,7 @@ async function playNodeBody(node, quiet, opts) {
   }
   /* 函数节点 / 工具节点：自身的运行时执行引擎（JS 执行 / 内部图运行），
      复用本文件其余执行器（runAttempt / apiCall* / 上游补跑 / 持久化）。
-     工具节点判定用 isToolNode()（规范形态＝超级节点变体 super + tool:true），
+     工具节点判定用 isToolNode()（规范形态＝节点层变体 super + tool:true），
      必须排在普通 super 之前，否则会被当成无引擎的壳节点。 */
   if (node.kind === "function") {
     return runFunctionNode(node, quiet, opts);
@@ -8228,7 +8376,7 @@ async function playNodeBody(node, quiet, opts) {
  * 函数节点（kind "function"）：渲染层 JS 执行器（契约在 renderer/js-exec.js —— new
  *                  Function 宽松执行，语言能力全开、无白名单；运行于渲染层，preload 未
  *                  暴露 Node，拿不到文件 / 网络），入参对象 → 返回对象。
- * 工具节点（super + tool:true 变体，判定 isToolNode）：本身就是超级节点容器
+ * 工具节点（super + tool:true 变体，判定 isToolNode）：本身就是节点层容器
  *                  （数据 I/O 通道与 super 一致，见 app.js isSuperLikeNode），
  *                  ▶ / 控制触发后运行其内部图：
  *                  输入端子（外部数据线 → 本节点）自动绑定为内侧输入节点的取值来源，
@@ -8264,7 +8412,7 @@ function functionCodeOf(node) {
    取值语义一字不改（保留现有优先级），只把「空值 + 为什么 + 到底断在哪一环」如实记到
    消费节点的 node._inputNotes（运行态脏字段，不进存档）与 console，由卡片渲染成一行提示。
    注意：工具节点内部子图节点的直接来源是**工具节点壳**，而用户看到的是壳外面那个文本节点，
-   所以提示必须沿壳上溯（wireSourceMediaType 那套「超级节点穿透」的同一条口径），
+   所以提示必须沿壳上溯（wireSourceMediaType 那套「节点层穿透」的同一条口径），
    否则用户照着提示找不到该改哪个节点。
    另一条纪律：这份归因**不绑在运行上** —— computeWireInputNotes 只读、可随时调用，
    建卡片时就算（画布一变即重算），所以没点 ▶ 也能在卡片上看到「这个入参当前取不到值」，
@@ -8306,7 +8454,7 @@ function fnInputSrcKindLabel(src) {
   }
 }
 
-/** 沿「壳」上溯到实际给值的那一环：来源是工具 / 超级节点时，值其实是它外侧输入线上游给的
+/** 沿「壳」上溯到实际给值的那一环：来源是工具 / 节点层时，值其实是它外侧输入线上游给的
     （app.js valueForInput 的 isSuperLikeNode 分支）。没有外侧输入线 → 返回 null（说明壳自身
     就没有供值来源）；不是壳 → 原样返回。带环保护，最多穿 8 层。 */
 function fnInputProviderNode(src) {
@@ -8364,7 +8512,7 @@ function fnInputBlankReason(node, port, pname, src, v) {
   });
 }
 
-/* 沿入线取某个端子的值（类超级节点端口按 fromIndex 对齐） */
+/* 沿入线取某个端子的值（类节点层端口按 fromIndex 对齐） */
 function computePortValue(w, consumer) {
   const src = nodeById(w.from);
   if (!src || isControlKind(src)) return null;
@@ -9238,7 +9386,7 @@ async function testFunctionNode(node, args) {
   };
 }
 
-/* ── 工具节点：运行内部图（类超级节点容器，父级 = 本节点） ── */
+/* ── 工具节点：运行内部图（类节点层容器，父级 = 本节点） ── */
 async function runToolNode(node, quiet, opts) {
   return runComputeExecNode(node, quiet, opts, async (n, q) => {
     const inner = superChildrenOf(n.id);
@@ -9507,7 +9655,7 @@ async function savePdfToDest(node, destBase, text) {
     error: (r && r.error) || "",
   };
 }
-/** 本节点配置的保存路径（相对路径按工作目录 / 超节点子目录展开）；没配且是 PDF 生成时，
+/** 本节点配置的保存路径（相对路径按工作目录 / 节点层子目录展开）；没配且是 PDF 生成时，
     默认名 = 输入节点的标题（pdfDefaultNameOf，见 app-canvas.js）——「接上就能出 PDF」，
     文件名与输入节点同名，不必先手动起名。 */
 function saveDestBaseAbs(node) {
@@ -9764,7 +9912,7 @@ async function saveMediaFileOnce(node, quiet, media) {
   return true;
 }
 
-/* 全局助手 / 智能会话改画布期间：自动保存先不落盘，避免半成品与移入超节点后路径重复写。
+/* 全局助手 / 智能会话改画布期间：自动保存先不落盘，避免半成品与移入节点层后路径重复写。
    注意：仅约束「自动保存」；用户手动 ▶ 执行保存节点不受影响，直接保存输入内容。 */
 function beginSaveNodeHold() {
   S._saveNodeHold = (S._saveNodeHold || 0) + 1;
@@ -9784,7 +9932,7 @@ function flushDeferredSaveNodes() {
   if (!S._deferAutoSaveAfterAgent) return;
   S._deferAutoSaveAfterAgent = false;
   try {
-    /* forceWired：助手刚搭完图，连着的保存节点应落盘一次（路径已含超节点子文件夹） */
+    /* forceWired：助手刚搭完图，连着的保存节点应落盘一次（路径已含节点层子文件夹） */
     autoSaveSaves(true);
   } catch (_) {
     /* ignore */
@@ -9912,7 +10060,7 @@ async function autoSaveSaves(forceWired, skipIds) {
   if (changed) renderCanvas();
 }
 
-/* 控制节点两端的已连接节点（指挥线双向：连出或连入都算；经超级节点端子隧穿） */
+/* 控制节点两端的已连接节点（指挥线双向：连出或连入都算；经节点层端子隧穿） */
 function controlTargets(node) {
   const out = [];
   const seen = new Set();
@@ -9928,7 +10076,7 @@ function controlTargets(node) {
       add(n);
       return;
     }
-    /* via: { dir:'in'|'out', index } — 进入超节点的方向与端子号 */
+    /* via: { dir:'in'|'out', index } — 进入节点层的方向与端子号 */
     const idx = Number((via && via.index) || 0);
     if (via && via.dir === "in") {
       for (const bw of superInternalBridgeWiresAll(n)) {
@@ -10924,6 +11072,12 @@ function refreshNodeEl(id) {
   const old = document.querySelector('.wf-node[data-nid="' + id + '"]');
   const n = nodeById(id);
   if (!old || !n) return;
+  /* 这颗节点的输入框正握着焦点（用户在打字 / 输入法组合中）：replaceWith 会把正在打的
+     框连光标一起换掉，等于「打一个字就被踢出输入框」。记账，等失焦后补一次。 */
+  if (typeof canvasFieldIn === "function" && canvasFieldIn(old)) {
+    if (typeof deferNodeRefresh === "function") deferNodeRefresh(id);
+    return;
+  }
   const el = nodeElement(n);
   old.replaceWith(el);
   /* 尺寸只认数据与用户手拖：这里只重排端子（fitNodeChrome 已不再改 n.w / n.h） */
@@ -10942,10 +11096,10 @@ function refreshDerived() {
 /* ============ 连线 ============ */
 
 /*
- * 超级节点「外框端子」与「内框端子」等价，只作内外衔接隧道：
+ * 节点层「外框端子」与「内框端子」等价，只作内外衔接隧道：
  *   外侧输入 i  ≡ 内侧桥接输出 i（外部 → 内部）
  *   内侧汇流输入 j ≡ 外侧输出 j（内部 → 外部）
- * 回路检测必须按穿透后的逻辑边，不能把超级节点宿主当成普通图顶点，
+ * 回路检测必须按穿透后的逻辑边，不能把节点层宿主当成普通图顶点，
  * 否则「外→超→内」与「内→超→外」会被误判成回路。
  */
 function logicalDataEdgesFromWire(w, wf) {
@@ -11040,7 +11194,7 @@ function wouldCycle(fromId, toId, toIndex, fromIndex) {
     fromIndex: fromIndex || 0,
     toIndex: toIndex == null ? 0 : toIndex,
   });
-  /* 超级节点仅单侧挂线时，尚无穿透逻辑边，不构成回路 */
+  /* 节点层仅单侧挂线时，尚无穿透逻辑边，不构成回路 */
   if (!proposed.length) return false;
   const adj = buildLogicalWireAdj((S.wf && S.wf.wires) || []);
   for (const e of proposed) {
@@ -11117,7 +11271,7 @@ function fnToolFreePortForMedia(host, want) {
 
 /* 这条数据线在「参数端子」眼里的类型：图像线 → image，其余（文本 / 音视频文件路径）→ text。
    媒体类型仍取单一真源 wireSourceMediaType（端子声明优先，其次节点 kind 与该端子实际值），
-   所以连普通超级节点真正汇出来的图像也能对上图像端子，不必只认图像类 kind。 */
+   所以连普通节点层真正汇出来的图像也能对上图像端子，不必只认图像类 kind。 */
 function wireParamKind(from, fi) {
   return wireSourceMediaType(from, fi) === "image" ? "image" : "text";
 }
@@ -11269,7 +11423,7 @@ function connectError(fromId, toId, toIndex, fromIndex) {
   const fromSuper = nodeParentSuperId(from);
   const toSuper = nodeParentSuperId(to);
   if (fromSuper !== toSuper) {
-    return I18n.t("超级节点内外不能直接连线，请经内侧端子桥接");
+    return I18n.t("节点层内外不能直接连线，请经内侧端子桥接");
   }
   if (!hasOutput(from)) return I18n.t("该节点没有输出端子");
   const fi = Number(fromIndex || 0);
@@ -11536,7 +11690,7 @@ function connectError(fromId, toId, toIndex, fromIndex) {
   }
   
 
-  /* 超级节点：外侧输入与内侧汇流共用 to=host，占用检测只看外侧输入（含控制线） */
+  /* 节点层：外侧输入与内侧汇流共用 to=host，占用检测只看外侧输入（含控制线） */
   if (to.kind === "super") {
     const toolFixed = isToolNode(to);
     let ti = toIndex == null ? 0 : Number(toIndex);
@@ -11545,7 +11699,7 @@ function connectError(fromId, toId, toIndex, fromIndex) {
     /* 工具节点（super + tool:true）：端子以参数为准 → 端口 0 只收控制线，
        1..N 是参数端子、只收数据线（控制信号不占参数端子，否则取数通道被堵死）。
        未指定端子（拖线自动落点 / 跨级连接 / agent connect）→ 先按参数挑一个空闲端子：
-       超级节点那套「顺延已挂线条数」会把内侧汇流也算进去，参数端子会被错占或越界。 */
+       节点层那套「顺延已挂线条数」会把内侧汇流也算进去，参数端子会被错占或越界。 */
     if (toolFixed && toIndex == null) {
       /* 未指定端子 → 与 addWire 的落点同一套规则（优先同类型的空闲参数端子） */
       const free = fnToolInPortIndex(to, from, fi, null, fromCtrl);
@@ -11879,7 +12033,7 @@ function addWire(fromId, toId, toIndex, opts) {
     }
   }
   /* 工具 / 函数节点：端子数由参数钉死（输入 0=控制 · 1..N=参数；输出 0..M-1=参数 · 末位=控制），
-     不能像超级节点那样「按已挂线条数」顺延 → 未指定端子时走 fnToolInPortIndex 这一套落点
+     不能像节点层那样「按已挂线条数」顺延 → 未指定端子时走 fnToolInPortIndex 这一套落点
      （与 connectError 校验的端子必须是同一个）：类型匹配且空闲的普通端子优先，
      挑不到落到类型匹配的数组端子（函数节点上同号已挂线也照挂），再挑不到才是任意空闲端子。
      from 若是本节点的内部子节点，这条线是「内侧汇流」→ 找的是输出端子。 */
@@ -11966,7 +12120,7 @@ function relConnectError(fromId, toId) {
     to = nodeById(toId);
   if (!from || !to) return I18n.t("节点不存在");
   if (fromId === toId) return I18n.t("不能把关系线连到自身");
-  /* 允许同一层级互连，或父超级节点 ↔ 直属子元素（包含关系） */
+  /* 允许同一层级互连，或父节点层 ↔ 直属子元素（包含关系） */
   const fs = nodeParentSuperId(from),
     ts = nodeParentSuperId(to);
   if (fs !== ts && fs !== toId && ts !== fromId) {
@@ -12015,14 +12169,14 @@ function connect(fromId, toId, toIndex, fromIndex) {
 }
 
 /* ────────────────────────────────────────────────────────────
-   跨超级节点连接（agent 内置工具）
-   让不同层级 / 不同超级节点内的任意两个节点互相连通：
-   从源节点向上逐层「汇入」各自超级节点的外部输出端子，
-   再向目标节点逐层「桥接」各自超级节点的外部输入端子，
-   顶层超级节点之间直接相连，最终 from → to 贯通。
+   跨节点层连接（agent 内置工具）
+   让不同层级 / 不同节点层内的任意两个节点互相连通：
+   从源节点向上逐层「汇入」各自节点层的外部输出端子，
+   再向目标节点逐层「桥接」各自节点层的外部输入端子，
+   顶层节点层之间直接相连，最终 from → to 贯通。
    ──────────────────────────────────────────────────────────── */
 function superAncestorChainOf(n) {
-  /* 自内向外收集 n 的所有超级节点祖先（含最近的），不含 n 自身 */
+  /* 自内向外收集 n 的所有节点层祖先（含最近的），不含 n 自身 */
   const chain = [];
   let cur = n && nodeById(n.parentSuperId);
   const seen = new Set();
@@ -12041,7 +12195,7 @@ function wireExistsBetween(fromId, toId) {
   );
 }
 
-/** 把一个内部节点「汇入」它的直属超级节点：node → super（占用 super 的外部输出端子） */
+/** 把一个内部节点「汇入」它的直属节点层：node → super（占用 super 的外部输出端子） */
 function superFeedUp(node, superNode, warnings) {
   if (!node || !superNode || !nodeById(node.id) || !nodeById(superNode.id)) return;
   if (wireExistsBetween(node.id, superNode.id)) return; /* 已连则跳过 */
@@ -12068,7 +12222,7 @@ function superFeedUp(node, superNode, warnings) {
   addWire(node.id, superNode.id, ti, { fromIndex: 0 });
 }
 
-/** 把超级节点的外部输入「桥接」到内部子节点：super → node（占用 super 的外部输入端子） */
+/** 把节点层的外部输入「桥接」到内部子节点：super → node（占用 super 的外部输入端子） */
 function superBridgeDown(superNode, node, warnings) {
   if (!superNode || !node || !nodeById(superNode.id) || !nodeById(node.id)) return;
   if (wireExistsBetween(superNode.id, node.id)) return; /* 已连则跳过 */
@@ -12095,7 +12249,7 @@ function superBridgeDown(superNode, node, warnings) {
   addWire(superNode.id, node.id, null, { fromIndex: fi });
 }
 
-/** 上层超级节点 → 下层超级节点（顶层连接，或层间贯穿） */
+/** 上层节点层 → 下层节点层（顶层连接，或层间贯穿） */
 function superLinkOuter(superFrom, superTo, warnings) {
   if (!superFrom || !superTo || superFrom.id === superTo.id) return;
   if (nodeById(superFrom.id) && nodeById(superTo.id)) {
@@ -12107,7 +12261,7 @@ function superLinkOuter(superFrom, superTo, warnings) {
       if (ti == null) {
         if (warnings)
           warnings.push(
-            I18n.t("超级节点连接失败：") +
+            I18n.t("节点层连接失败：") +
               (superTo.title || superTo.id) +
               " " +
               I18n.t("没有空闲的输入参数端子（请在工具设置里增加入参）"),
@@ -12117,14 +12271,14 @@ function superLinkOuter(superFrom, superTo, warnings) {
     }
     const err = connectError(superFrom.id, superTo.id, ti, 0);
     if (err) {
-      if (warnings) warnings.push(I18n.t("超级节点连接失败：") + (superFrom.title || superFrom.id) + " → " + (superTo.title || superTo.id) + "：" + err);
+      if (warnings) warnings.push(I18n.t("节点层连接失败：") + (superFrom.title || superFrom.id) + " → " + (superTo.title || superTo.id) + "：" + err);
       return;
     }
     addWire(superFrom.id, superTo.id, ti, { fromIndex: 0 });
   }
 }
 
-/** 单对跨超级节点连接 from → to；返回实际建立的连线条数 */
+/** 单对跨节点层连接 from → to；返回实际建立的连线条数 */
 function applySuperConnectOne(fromNode, toNode, warnings) {
   if (!fromNode || !toNode) return 0;
   if (fromNode.id === toNode.id) {
@@ -12197,7 +12351,7 @@ function snapTextField(raw) {
    detail   = 节点字段档位：minimal（缺省。每节点仅 标题/描述(note)/类别(kind)，且重型块只留
               nodes）| standard（+全部配置字段与正文长度，不含正文，+ 建图参考表）| full（全部）
    ids      = 只返回这些节点（按 id 或唯一标题匹配），wires 随之收窄
-   scope    = 只读某一颗超级 / 开发节点内部（id / 唯一标题；"global" = 整图；缺省 = 跟着用户当前所在的壳）
+   scope    = 只读某一颗节点层 / 开发节点内部（id / 唯一标题；"global" = 整图；缺省 = 跟着用户当前所在的壳）
    scopeDepth = direct（只给直接子节点 · 默认）| all（给整棵子树）
    bodies   = 是否返回正文全文（text/prompt/task/goal）；缺省：full 时为 true，其余为 false
    bodyLimit= 正文按 N 字符截断（0=不限）；*Len 始终为真实长度
@@ -12251,7 +12405,7 @@ function normalizeSnapshotOpts(opts) {
 }
 
 /* ==================== 局部画布（scope）：只读 / 只改一颗壳内部 ====================
-   需求：查看与编辑工具要能「只钻进某一颗超级 / 开发节点」（而不是每次灌整张图），
+   需求：查看与编辑工具要能「只钻进某一颗节点层 / 开发节点」（而不是每次灌整张图），
    省时间与 token。两条入口：
      · 显式 —— scope:"标题或 id" + scopeDepth:"direct"|"all"；
      · 屏幕 —— 缺省跟着用户当前停留的那一层（用户点进壳里时可见集本就是那一层，快照不再
@@ -12790,7 +12944,7 @@ function canvasSnapshot(opts) {
   const o = normalizeSnapshotOpts(opts);
   const wf = S.wf || { id: "", name: "", nodes: [], wires: [], groups: [], marks: [] };
   const allNodes = wf.nodes || [];
-  /* 局部画布（scope）：只返回某颗超级 / 开发节点里的内容；scopeInfo 恒保留，
+  /* 局部画布（scope）：只返回某颗节点层 / 开发节点里的内容；scopeInfo 恒保留，
      模型永远知道自己看到的是整图还是某一颗壳内部。 */
   const sc = snapshotScopeOf(o);
   const inScope = sc.host ? scopedNodeIdSet(sc.host, sc.depth) : null;
@@ -14400,8 +14554,8 @@ function agentToolCatalog() {
         },
         {
           key: "canvas_super",
-          label: I18n.t("超级节点"),
-          hint: I18n.t("创建超级节点、将节点收纳进子画布（改画布确认门已覆盖）"),
+          label: I18n.t("节点层"),
+          hint: I18n.t("创建节点层、将节点收纳进子画布（改画布确认门已覆盖）"),
         },
       ],
     },
@@ -14502,7 +14656,7 @@ function defaultToolAllow() {
   for (const cat of agentToolCatalog()) {
     for (const it of cat.items) allow[it.key] = "allow";
   }
-  /* 超级节点改动由「助手改画布」统一确认门覆盖，不再默认二次询问 */
+  /* 节点层改动由「助手改画布」统一确认门覆盖，不再默认二次询问 */
   return allow;
 }
 
@@ -14758,7 +14912,7 @@ function normalizeCanvasCreateKind(kind) {
 }
 
 function canvasKindToolKey(kind) {
-  /* 工具节点的规范形态是超级节点变体（super + tool:true），创建它等同于建一个超级壳 */
+  /* 工具节点的规范形态是节点层变体（super + tool:true），创建它等同于建一个超级壳 */
   if (kind === "super" || kind === "super_io" || kind === "tool")
     return "canvas_super";
   return isControlKind({ kind: kind }) ? "canvas_control" : "canvas_nodes";
@@ -14918,7 +15072,7 @@ function agentToolPolicySystemNote(opts) {
       s += I18n.t("当前预设允许全部已列出的工具类别（与产品默认能力一致）。");
     if (assistAuto && !noCanvasRead)
       s += I18n.t(
-        "助手改画布已批准：mtnode_canvas_edit / 超级节点等画布修改直接生效，无需再等确认。",
+        "助手改画布已批准：mtnode_canvas_edit / 节点层等画布修改直接生效，无需再等确认。",
       );
     return s;
   }
@@ -14936,7 +15090,7 @@ function agentToolPolicySystemNote(opts) {
       I18n.t("（调用前会请用户确认）。");
   if (assistAuto)
     s += I18n.t(
-      "助手改画布已批准：mtnode_canvas_edit / 超级节点等画布修改直接生效，无需再等确认。",
+      "助手改画布已批准：mtnode_canvas_edit / 节点层等画布修改直接生效，无需再等确认。",
     );
   if (denied.length)
     s += I18n.t(
@@ -15308,7 +15462,7 @@ function openApprovalsPanel() {
   meta3.appendChild(labAssist);
   const small3 = document.createElement("small");
   small3.textContent = I18n.t(
-    "批准=不弹窗（含超级节点）；询问=每次确认一次（不再二次问超级节点）",
+    "批准=不弹窗（含节点层）；询问=每次确认一次（不再二次问节点层）",
   );
   meta3.appendChild(small3);
   row3.appendChild(meta3);
@@ -16109,7 +16263,7 @@ function layoutOrigin(obstacles) {
   let maxX = -Infinity;
   let minY = Infinity;
   for (const n of obstacles) {
-    /* 用绘制尺寸（展开超级节点 = expandW/H），否则新布局会叠到可见壳层上 */
+    /* 用绘制尺寸（展开节点层 = expandW/H），否则新布局会叠到可见壳层上 */
     const sz = layoutNodeSize(n);
     maxX = Math.max(maxX, n.x + sz.w);
     minY = Math.min(minY, n.y);
@@ -16152,7 +16306,7 @@ function shiftToClear(placed, obstacles) {
 }
 
 /* 排版收尾的兜底防重叠（2026-02 口径：缝 ≥ 1 格 + 坐标对齐网格）：
-   - 用「绘制尺寸」（layoutNodeSize）判断，展开超级节点按 expandW/H 参与碰撞；
+   - 用「绘制尺寸」（layoutNodeSize）判断，展开节点层按 expandW/H 参与碰撞；
    - 残余重叠（绘制尺寸 ≠ 存储尺寸、跨组件装箱误差、障碍物误判、尺寸漂移等）
      一律按「更省位移的轴、优先向下」推到**缝 ≥ 1 格**的位置，并落在网格上；
    - 正常情况下上一段放置已经做到「缝恰好 1 格」，这里极少触发，纯兜底。 */
@@ -16341,6 +16495,12 @@ function layoutNodePriority(n) {
 
 /* 分层从左到右排版：连通分量 + barycenter 减交叉 + 父子垂直对齐 */
 function layoutNodeSize(n) {
+  /* 组块代理：尺寸就是组外框（已含 pad 与标题标签带），不再按节点口径量 */
+  if (n && n.__layoutBlockSize)
+    return {
+      w: Math.max(40, Number(n.__layoutBlockSize.w) || 0),
+      h: Math.max(40, Number(n.__layoutBlockSize.h) || 0),
+    };
   const sz = nodeDrawSize(n);
   /* 尺寸一律吸网格（就近取整）：间距要精确 = 1 格，尺寸就必须是网格倍数，
      否则「1 格」不可能同时对所有相邻对成立（见 layoutGap / 2026-02 需求）。 */
@@ -16872,7 +17032,8 @@ function layoutPlaceLayer(nodes, wires, origin, opts) {
     const rowH = Math.max(40, ...slice.map((c) => c.h));
     /* 列内纵序：邻居中心均值定序（无邻居位置可参时「可编辑 / 控制节点靠上」） */
     const centerOf = (id) => {
-      const n = nodeById(id);
+      /* 组块代理不在 nodeById 里：查排版期间的代理表（见 layoutPackGroupBlocks） */
+      const n = nodeById(id) || LAYOUT_PROXY_MAP.get(id) || null;
       if (!n || n.x == null) return null;
       return n.y + layoutNodeSize(n).h / 2;
     };
@@ -16903,6 +17064,135 @@ function layoutPlaceLayer(nodes, wires, origin, opts) {
     rowY += rowH + g;
   }
   return nodesBBox(nodes);
+}
+
+/* ============ 组块：成组之后间距以「组外框」计量（2026-02 需求） ============
+   背景：引擎原先只按节点尺寸留 1 格缝，而组外框 = 成员包围盒 ± GROUP_PAD（app.js）
+   + 2px 边框，于是两组节点虽隔 1 格，外框反而重叠（1 格 24px < 两侧各 18px）。
+
+   口径（本轮共识）：
+     · 一个组在排版里是**一个不可拆的块**，块的外缘 = 组外框（含组内绘制标注），
+       块与块之间、块与无组节点之间的缝恒为 1 格 —— 计量对象换成了外框边缘；
+     · 组标题标签在框外上方，块在框上方多留 LAYOUT_GROUP_LABEL_H，行与行之间
+       不会让下一组的标签压住上一组的外框；
+     · 组内成员的相对位置**原样保留**（整块刚性平移），组内连线不参与组间排序；
+     · 组间连线照旧参与分层（上游组在左或上），所以连线方向不变。
+   实现：排版前把「组」替换成代理元素（尺寸 = 外框），排完按代理位置把成员平移
+   回去 —— 分层 / 列打包 / 装箱 / 兜底全都复用同一套代码，不另开一条排版路径。 */
+const LAYOUT_GROUP_PAD = 16; /* 与 app.js 的 GROUP_PAD 同值：组框在成员外圈各让 16px */
+const LAYOUT_GROUP_LABEL_H = 20; /* 组标题标签在框外上方占的高度（top:-11px + 行高 16 + 边框） */
+/* 排版期间的组块代理表（id → 代理）：layoutPlaceLayer 的 centerOf 要拿中心线做对齐 */
+const LAYOUT_PROXY_MAP = new Map();
+
+/** 本次参与排版的节点按「组」打包成块。
+ *  返回 { items, wires, blocks, byNode }：
+ *   items = 参与排版的元素（无组节点原样，有组节点换成组块代理，同组只出现一次）；
+ *   wires = 重写过的连线（组内连线被吃掉，组间连线记在代理之间）；
+ *   blocks = [{ proxy, group, members:[{n,dx,dy}], frame }]。 */
+function layoutPackGroupBlocks(nodes, wires) {
+  const list = (nodes || []).filter(Boolean);
+  const groups =
+    typeof S !== "undefined" && S.wf && Array.isArray(S.wf.groups) ? S.wf.groups : [];
+  const blocks = [];
+  const byNode = new Map();
+  if (!groups.length || !list.length)
+    return { items: list, wires: wires || [], blocks: blocks, byNode: byNode };
+  const inSet = new Set(list.map((n) => n.id));
+  for (const g of groups) {
+    if (!g) continue;
+    if (typeof ensureGroupArrays === "function") ensureGroupArrays(g);
+    if (typeof groupVisibleInScope === "function" && !groupVisibleInScope(g)) continue;
+    const ids = (g.nodeIds || []).slice();
+    /* 组内成员必须**整组**都在本次排版范围里：有半截在界外时按普通节点排，
+       否则会把一个组拆到两处（外框立刻重叠 —— 正是本修正要避免的）。 */
+    if (!ids.length || !ids.every((id) => inSet.has(id))) continue;
+    let minX = Infinity,
+      minY = Infinity,
+      maxX = -Infinity,
+      maxY = -Infinity;
+    const members = [];
+    for (const id of ids) {
+      const n = list.find((x) => x.id === id);
+      if (!n) continue;
+      const sz = layoutNodeSize(n);
+      minX = Math.min(minX, n.x);
+      minY = Math.min(minY, n.y);
+      maxX = Math.max(maxX, n.x + sz.w);
+      maxY = Math.max(maxY, n.y + sz.h);
+      members.push({ n: n, dx: 0, dy: 0 });
+    }
+    /* 组内绘制标注也计入外框（与 app.js 的 groupBounds 同口径），
+       否则带标注的组会算出偏小的块，标注还是会被邻组压住。 */
+    for (const mid of g.markIds || []) {
+      const m = typeof markById === "function" ? markById(mid) : null;
+      if (!m) continue;
+      if (typeof markInCurrentScope === "function" && !markInCurrentScope(m)) continue;
+      const b = typeof markBounds === "function" ? markBounds(m) : null;
+      if (!b) continue;
+      minX = Math.min(minX, b.x);
+      minY = Math.min(minY, b.y);
+      maxX = Math.max(maxX, b.x + b.w);
+      maxY = Math.max(maxY, b.y + b.h);
+    }
+    if (!members.length || !isFinite(minX)) continue;
+    const frame = {
+      x: minX - LAYOUT_GROUP_PAD,
+      y: minY - LAYOUT_GROUP_PAD - LAYOUT_GROUP_LABEL_H,
+      w: Math.max(40, maxX - minX + LAYOUT_GROUP_PAD * 2),
+      h: Math.max(40, maxY - minY + LAYOUT_GROUP_PAD * 2 + LAYOUT_GROUP_LABEL_H),
+    };
+    const proxy = {
+      id: "__group__" + g.id,
+      kind: "__group__",
+      title: g.title || "",
+      x: frame.x,
+      y: frame.y,
+      __layoutBlockSize: { w: frame.w, h: frame.h },
+    };
+    const block = { proxy: proxy, group: g, members: members, frame: frame };
+    proxy.__block = block;
+    blocks.push(block);
+    for (const m of members) {
+      /* 成员相对「成员包围盒左上角」的偏移：整块平移后原样加回去 */
+      m.dx = m.n.x - minX;
+      m.dy = m.n.y - minY;
+      byNode.set(m.n.id, block);
+    }
+  }
+  if (!blocks.length)
+    return { items: list, wires: wires || [], blocks: blocks, byNode: byNode };
+  const seen = new Set();
+  const items = [];
+  for (const n of list) {
+    const it = byNode.has(n.id) ? byNode.get(n.id).proxy : n;
+    if (seen.has(it.id)) continue;
+    seen.add(it.id);
+    items.push(it);
+  }
+  const mapId = (id) => (byNode.has(id) ? byNode.get(id).proxy.id : id);
+  const wlist = [];
+  for (const w of wires || []) {
+    if (!w) continue;
+    const from = mapId(w.from);
+    const to = mapId(w.to);
+    if (from === to) continue; /* 组内连线：组是一个块，组内不重排 */
+    wlist.push(Object.assign({}, w, { from: from, to: to }));
+  }
+  return { items: items, wires: wlist, blocks: blocks, byNode: byNode };
+}
+
+/** 排完之后把组块代理的落点写回成员：整块刚性平移，成员相对位置一分不改。
+ *  块左上角 = 成员包围盒左上角 − pad（水平）/ − pad − 标签高（垂直），
+ *  所以成员的新坐标 = 块左上角 + 同样的偏移量。 */
+function layoutUnpackGroupBlocks(blocks) {
+  for (const b of blocks || []) {
+    const mx = b.proxy.x + LAYOUT_GROUP_PAD;
+    const my = b.proxy.y + LAYOUT_GROUP_PAD + LAYOUT_GROUP_LABEL_H;
+    for (const m of b.members) {
+      m.n.x = mx + m.dx;
+      m.n.y = my + m.dy;
+    }
+  }
 }
 
 /* 两条「节点中心连线」是否交叉 —— 交叉度量用（不做精确几何，够用且便宜） */
@@ -17044,12 +17334,19 @@ function layoutFlowEx(nodes, wires, origin, obstacles, opts) {
      一律不再参与计算（否则「精确 1 格」立刻破功）——只保留 preferAnchor 行为开关。 */
   const g = layoutGap();
   snapNodeSizesForLayout(nodes);
-  const components = findLayoutComponents(nodes, wires);
+  /* 组块：成组之后间距按组外框计量（见 layoutPackGroupBlocks）——
+     一个组在排版里是一个不可拆的块，块与块 / 块与无组节点之间仍恒 1 格。 */
+  const packing = layoutPackGroupBlocks(nodes, wires);
+  const items = packing.items;
+  const itemWires = packing.wires;
+  LAYOUT_PROXY_MAP.clear();
+  for (const b of packing.blocks) LAYOUT_PROXY_MAP.set(b.proxy.id, b.proxy);
+  const components = findLayoutComponents(items, itemWires);
   components.sort((a, b) => b.nodes.length - a.nodes.length);
 
   /* agent 显式给的坐标当起始锚点（AI 排版路径：整体尽量少位移） */
   const anchorOf = new Map();
-  if (opts.preferAnchor) for (const n of nodes) anchorOf.set(n.id, { x: n.x, y: n.y });
+  if (opts.preferAnchor) for (const n of items) anchorOf.set(n.id, { x: n.x, y: n.y });
 
   /* 组件内部先在 0/0 起算，再整块平移到装箱位 —— 两组之间的缝也是 1 格 */
   const laid = [];
@@ -17107,13 +17404,13 @@ function layoutFlowEx(nodes, wires, origin, obstacles, opts) {
   /* ── 收尾 ①：避障 ─────────────────────────────────────────────────────
      障碍物（本次不参与排版的既有节点）只影响整块位移，块内相对位置不动，
      所以「缝恰好 1 格」在平移下保持成立。 */
-  let sh = shiftToClear(nodes, obstacles || []);
+  let sh = shiftToClear(items, obstacles || []);
   /* 锚点优先：用户 / agent 给过 x/y 时，整体位移取「更省位移」的那一侧 */
   if (opts.preferAnchor && anchorOf.size) {
     let sx = 0,
       sy = 0,
       k = 0;
-    for (const n of nodes) {
+    for (const n of items) {
       const a = anchorOf.get(n.id);
       if (!a) continue;
       sx += n.x - a.x;
@@ -17135,9 +17432,12 @@ function layoutFlowEx(nodes, wires, origin, obstacles, opts) {
   }
 
   /* ── 收尾 ②：兜底防重叠（缝 ≥ 1 格 + 坐标对齐网格，见 resolvePlacedOverlaps） */
-  resolvePlacedOverlaps(nodes, obstacles || []);
+  resolvePlacedOverlaps(items, obstacles || []);
 
-  const bb = nodesBBox(nodes);
+  const bb = nodesBBox(items);
+  /* 组块排完 → 成员按块落点整块平移回去；代理表随即作废 */
+  layoutUnpackGroupBlocks(packing.blocks);
+  LAYOUT_PROXY_MAP.clear();
   const outW = bb ? bb.maxX - bb.minX : 0;
   const outH = bb ? bb.maxY - bb.minY : 0;
   /* 宽高比不再是硬约束：如实回报实际形状，交给调用方决定要不要提示 */
@@ -17160,7 +17460,7 @@ function nodesBBox(nodes) {
     maxX = -Infinity,
     maxY = -Infinity;
   for (const n of nodes || []) {
-    /* 用绘制尺寸：展开超级节点按 expandW/H 参与包围盒，组件装箱才不会互相压住 */
+    /* 用绘制尺寸：展开节点层按 expandW/H 参与包围盒，组件装箱才不会互相压住 */
     const sz = layoutNodeSize(n);
     minX = Math.min(minX, n.x);
     minY = Math.min(minY, n.y);
@@ -17461,7 +17761,7 @@ function rebindMarksAfterLayout(bindings) {
  * - 列内：面向用户可编辑/操作的节点靠上
  * - 图像节点尺寸便于观察
  * - 绘制框体/文字/箭头按排版前绑定的节点重新包住或定位
- * - opts.includeSuperInner：同时排版各超级节点内部（各自独立局部坐标）
+ * - opts.includeSuperInner：同时排版各节点层内部（各自独立局部坐标）
  */
 function tidyLayoutWorkflow(opts) {
   opts = opts || {};
@@ -17469,7 +17769,7 @@ function tidyLayoutWorkflow(opts) {
     if (opts.notify !== false) toast(I18n.t("当前没有打开的画布"), "warn");
     return { ok: false, error: I18n.t("当前没有打开的画布") };
   }
-  /* 默认层级 = 用户当前所在层级：停在某颗超级节点里就整理这颗壳内部（本层），
+  /* 默认层级 = 用户当前所在层级：停在某颗节点层里就整理这颗壳内部（本层），
      不再越级去排整张画布；只有显式 scope:"global" 才排整图（顶层 + 可选各壳内部）。 */
   const levelHost = opts.scope === "global" ? null : currentTidyLevelHost();
   if (levelHost) return tidyLayoutCurrentSuperLevel(levelHost, opts);
@@ -17508,9 +17808,11 @@ function tidyLayoutWorkflow(opts) {
       const dx0 = snap(64 - neu.minX);
       const dy0 = snap(64 - neu.minY);
       if (dx0 || dy0) {
+        /* 整块刚性平移（dx0/dy0 已是网格倍数）：逐个再 snap 会把组内成员的相对位置
+           改掉（组块成员相对组框恒偏 pad），组与组之间的外框缝就会被吃掉。 */
         for (const n of topNodes) {
-          n.x = snap(n.x + dx0);
-          n.y = snap(n.y + dy0);
+          n.x += dx0;
+          n.y += dy0;
         }
       }
     }
@@ -17563,7 +17865,7 @@ function tidyLayoutWorkflow(opts) {
   if (opts.notify !== false) {
     toast(
       innerCount
-        ? I18n.t("已整理排版（含超级节点内部）")
+        ? I18n.t("已整理排版（含节点层内部）")
         : I18n.t("已整理排版"),
       "ok",
     );
@@ -17577,7 +17879,7 @@ function tidyLayoutWorkflow(opts) {
   };
 }
 
-/** 排版默认层级：停在某颗超级节点里 → 这颗壳（本层）；否则根层级（null） */
+/** 排版默认层级：停在某颗节点层里 → 这颗壳（本层）；否则根层级（null） */
 function currentTidyLevelHost() {
   const sf =
     typeof currentSuperFocus === "function" ? currentSuperFocus() : S.superFocus || "";
@@ -17586,19 +17888,19 @@ function currentTidyLevelHost() {
   return host && host.kind === "super" ? host : null;
 }
 
-/** 整理「当前超级节点层级」：只排这颗壳的直接子节点（局部坐标，壳随内容撑开），可撤销。
+/** 整理「当前节点层」：只排这颗壳的直接子节点（局部坐标，壳随内容撑开），可撤销。
     顶层入口的默认行为就是这个 —— 用户停在壳里点「排版」时，排的是他正看着的这一层。 */
 function tidyLayoutCurrentSuperLevel(host, opts) {
   opts = opts || {};
   const kids = superChildrenOf(host.id).filter((c) => !isSuperIoNode(c));
   if (!kids.length) {
     if (opts.notify !== false)
-      toast(I18n.t("这颗超级节点里还没有可排版的节点"), "warn");
+      toast(I18n.t("这颗节点层里还没有可排版的节点"), "warn");
     return {
       ok: false,
       scope: "super",
       superId: host.id,
-      error: I18n.t("这颗超级节点里还没有可排版的节点"),
+      error: I18n.t("这颗节点层里还没有可排版的节点"),
     };
   }
   if (opts.history !== false && !S._skipCanvasHistory) pushHistory();
@@ -17608,7 +17910,7 @@ function tidyLayoutCurrentSuperLevel(host, opts) {
   fitNodes(kids);
   scheduleSave(true);
   if (opts.notify !== false)
-    toast(I18n.t("已整理排版（当前超级节点层级）"), "ok");
+    toast(I18n.t("已整理排版（当前节点层）"), "ok");
   return {
     ok: true,
     scope: "super",
@@ -17619,7 +17921,7 @@ function tidyLayoutCurrentSuperLevel(host, opts) {
   };
 }
 
-/** 单个超级节点内部子图排版（关系线感知 + 壳层按内容撑开）；返回排版的孩子数 */
+/** 单个节点层内部子图排版（关系线感知 + 壳层按内容撑开）；返回排版的孩子数 */
 function tidyOneSuperInner(s) {
   const kids = superChildrenOf(s.id).filter((c) => !isSuperIoNode(c));
   if (!kids.length) {
@@ -17643,9 +17945,11 @@ function tidyOneSuperInner(s) {
     const dx = snap(16 - bb.minX);
     const dy = snap(16 - bb.minY);
     if (dx || dy) {
+      /* 刚性平移（不用逐个 snap）：组块成员的坐标相对组框恒偏 pad，
+         逐个取整会改掉组内相对位置、也会吃掉组与组之间的外框缝。 */
       for (const n of kids) {
-        n.x = snap(n.x + dx);
-        n.y = snap(n.y + dy);
+        n.x += dx;
+        n.y += dy;
       }
     }
   }
@@ -17698,7 +18002,7 @@ function tidyDevArchitecture(host) {
   );
 }
 
-/** 对每个超级节点内部子图独立排版，并重置内部平移到左上 */
+/** 对每个节点层内部子图独立排版，并重置内部平移到左上 */
 function tidyAllSuperInners(opts) {
   opts = opts || {};
   if (!S.wf) return { ok: false, nodes: 0 };
@@ -17716,7 +18020,7 @@ function tidyAllSuperInners(opts) {
   return { ok: true, nodes: total };
 }
 
-/* 顶栏一键排版：默认整理「当前所在层级」——停在某颗超级节点里就整理这一层（这颗壳内部），
+/* 顶栏一键排版：默认整理「当前所在层级」——停在某颗节点层里就整理这一层（这颗壳内部），
    根层级则整理顶层节点；确认框里可改选「排版整个画布」（可撤销）。 */
 async function oneClickAutoLayout(opts) {
   opts = opts || {};
@@ -17734,14 +18038,14 @@ async function oneClickAutoLayout(opts) {
       /* 停在壳里：默认排当前这一层，别越级去排整张画布 */
       const kids = superChildrenOf(levelHost.id).filter((c) => !isSuperIoNode(c));
       if (!kids.length) {
-        toast(I18n.t("这颗超级节点里还没有可排版的节点"), "warn");
+        toast(I18n.t("这颗节点层里还没有可排版的节点"), "warn");
         return;
       }
       if (
         !(await confirmDialog(
           I18n.t(
-            "确定进行一键排版？\n\n将按连线与关系线整理当前超级节点层级「{title}」内部的节点位置（可撤销）。",
-            { title: levelHost.title || I18n.t("超级节点") },
+            "确定进行一键排版？\n\n将按连线与关系线整理当前节点层「{title}」内部的节点位置（可撤销）。",
+            { title: levelHost.title || I18n.t("节点层") },
           ),
           { title: I18n.t("一键排版"), okText: I18n.t("开始排版") },
         ))
@@ -17749,7 +18053,7 @@ async function oneClickAutoLayout(opts) {
         return;
       const whole = await confirmDialog(
         I18n.t(
-          "排版范围：默认只整理当前这一层（这颗超级节点内部）；也可改为排版整个画布（顶层节点，连各壳内部一起整理）。",
+          "排版范围：默认只整理当前这一层（这颗节点层内部）；也可改为排版整个画布（顶层节点，连各壳内部一起整理）。",
         ),
         {
           title: I18n.t("一键排版"),
@@ -17780,7 +18084,7 @@ async function oneClickAutoLayout(opts) {
       if (hasInner && opts.includeSuperInner == null) {
         includeInner = await confirmDialog(
           I18n.t(
-            "是否同时排版超级节点内部？\n\n「同时排版内部」会整理各超级节点内的子节点；「仅排版画布」只调整顶层节点。",
+            "是否同时排版节点层内部？\n\n「同时排版内部」会整理各节点层内的子节点；「仅排版画布」只调整顶层节点。",
           ),
           {
             title: I18n.t("一键排版"),
@@ -19150,7 +19454,7 @@ async function applyCanvasEdit(params, ctx) {
     : [];
   /* 数量上限已移除：整笔调用完整执行。此前 40/80 的截断会造成「部分创建」——
      大调用（架构图、批量建图）的 connect / createMarks / group 引用被截掉的
-     alias 全部落空，曾导致超级节点 / 开发节点架构图建成半成品（孤儿节点）。
+     alias 全部落空，曾导致节点层 / 开发节点架构图建成半成品（孤儿节点）。
      null.push 崩溃根因已修，大调用现在可安全完整执行。 */
   /* 排版闸：只有本笔显式写了 layout:true 才排。2026-02 需求「不要自动改变」——
      编辑只落内容与连线，不再因为建图 / 连线 / 改标注 / 删除 / 改尺寸就顺手重排，
@@ -19159,7 +19463,7 @@ async function applyCanvasEdit(params, ctx) {
   const doLayout = wantsLayout;
 
   /* ── 局部画布（scope）：写入侧的越界闸 ──────────────────────────────
-     需求：编辑工具要能「只改某一颗超级 / 开发节点内部」。传了 scope 就把这次调用
+     需求：编辑工具要能「只改某一颗节点层 / 开发节点内部」。传了 scope 就把这次调用
      钉在那颗壳的子树里：界外节点一律不碰（跳过 + warnings 逐条说明），
      新节点缺 parentSuperId 时默认落进这颗壳，免得建完飘在根画布上。
      两种口径（与只读侧 scopedNodeIdSet 同一真源）：
@@ -19174,7 +19478,7 @@ async function applyCanvasEdit(params, ctx) {
       : null;
   if (editScopeHost && editScopeHost.bad) {
     warnings.push(
-      I18n.t("无效的 scope（要给超级 / 开发节点的 id 或唯一标题）：") +
+      I18n.t("无效的 scope（要给节点层 / 开发节点的 id 或唯一标题）：") +
         editScopeHost.token,
     );
   }
@@ -19333,7 +19637,7 @@ async function applyCanvasEdit(params, ctx) {
       warnings.push(I18n.t("无效的父任务：") + raw);
   }
 
-  /* 收纳进超级节点：与 parentTaskId 一样，须在整批 create 入 aliasMap 后再解析 alias/title */
+  /* 收纳进节点层：与 parentTaskId 一样，须在整批 create 入 aliasMap 后再解析 alias/title */
   const applyParentSuper = (node, raw, warningsArr) => {
     if (!node) return;
     /* 局部画布（scope）：界外节点不收纳 —— 收纳会把界外节点拖进这颗壳，等于改到界外 */
@@ -19363,7 +19667,7 @@ async function applyCanvasEdit(params, ctx) {
       node.parentTaskId = p.parentTaskId || node.parentTaskId || "";
       rewriteNodePathsForSuperContext(node);
     } else if (token && warningsArr) {
-      warningsArr.push(I18n.t("无效的超级节点：") + token);
+      warningsArr.push(I18n.t("无效的节点层：") + token);
     }
   };
   for (const spec of creates) {
@@ -19518,7 +19822,7 @@ async function applyCanvasEdit(params, ctx) {
     connected.push({ from: a.id, to: b.id, fromTitle: a.title, toTitle: b.title });
   }
 
-  /* 跨超级节点连接：任意层级 / 任意超级节点内的两个节点自动贯通。
+  /* 跨节点层连接：任意层级 / 任意节点层内的两个节点自动贯通。
      局部画布（scope）：界外的对先剔掉再交给它，避免"顺手"连到壳外面去。 */
   const superPairs = Array.isArray(params.superConnect) ? params.superConnect : [];
   if (superPairs.length) {
@@ -19712,7 +20016,7 @@ async function applyCanvasEdit(params, ctx) {
       m.parentSuperId = p.id;
       m.parentTaskId = p.parentTaskId || m.parentTaskId || "";
     } else if (token && warningsArr) {
-      warningsArr.push(I18n.t("无效的超级节点：") + token);
+      warningsArr.push(I18n.t("无效的节点层：") + token);
     }
   };
   for (const raw of createMarks) {
@@ -19879,7 +20183,7 @@ async function applyCanvasEdit(params, ctx) {
     }
   }
 
-  /* 孤儿防护：本笔编辑产生的节点 / 绘制不允许挂在画布上不存在的超级节点下
+  /* 孤儿防护：本笔编辑产生的节点 / 绘制不允许挂在画布上不存在的节点层下
      （历史 bug：整棵开发节点架构图挂到幽灵父级后，最外层功能块从此消失，
       内部块仍在，但左侧栏与层级视图全部错乱） */
   {
@@ -19901,7 +20205,7 @@ async function applyCanvasEdit(params, ctx) {
     }
     if (orphanNodes) {
       warnings.push(
-        I18n.t("已清理 ") + orphanNodes + I18n.t(" 个指向不存在超级节点的引用"),
+        I18n.t("已清理 ") + orphanNodes + I18n.t(" 个指向不存在节点层的引用"),
       );
     }
   }

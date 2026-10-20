@@ -12,7 +12,7 @@
 
 const COMMON = [
   "你是通过 MCP 连到本机 MTNode 桌面端的客户端。可用工具（名字与参数以 tools/list 为准）：",
-  "- mtnode_canvas_get / mtnode_canvas_edit：读 / 改画布（节点、连线、绘制、分组、超级节点）",
+  "- mtnode_canvas_get / mtnode_canvas_edit：读 / 改画布（节点、连线、绘制、分组、节点层）",
   "- mtnode_app：应用级动作（状态、画布列表、改名、选中、撤销重做、导出 PNG、插件管理、长任务图存取）",
   "- mtnode_db / mtnode_facts：数据库副本查询 / 每画布一份的 AI 事实库",
   "- lt_state：长任务本轮共享状态（读写本轮声明的键）",

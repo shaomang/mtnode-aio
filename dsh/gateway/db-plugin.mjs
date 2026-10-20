@@ -1,7 +1,7 @@
 // MTNode database tool (runs INSIDE the dsh runtime process).
 //
 // Registers mtnode_db so an agent wired to a 数据库副本 (database replica)
-// can query the deterministic fact index of its database super node:
+// can query the deterministic fact index of its database node layer:
 //   - list: schema + record titles (ids, kinds, files)
 //   - query: deterministic keyword/field search over the index (top-k + snippets)
 //   - get: full record by id

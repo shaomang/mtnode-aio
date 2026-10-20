@@ -98,6 +98,13 @@
   color: var(--muted)
 }
 
+/* 上面那条 display:flex 会盖掉浏览器默认的 [hidden]{display:none}（同 .btn-account[hidden]
+   的口径）：自定义档那一组数字（触发线 / 保留原文 / 摘要上限）靠 hidden 收起，不压回去就
+   会「收起」成常显。 */
+.assist-ctrl-item[hidden] {
+  display: none;
+}
+
 .assist-ctrl-item select {
   background: var(--code);
   color: var(--ink);
@@ -183,6 +190,22 @@
   color: rgb(86, 134, 254);
   border-color: rgba(86, 134, 254, .34);
   background: rgba(86, 134, 254, .08);
+}
+
+/* 助手栏「模式」菜单（本次开发需求 · 用户报障「点开被完全遮在上方」）：
+   通用 .agent-menu 的 bottom: calc(100% - 8px) 是给会话输入框底部菜单「向上弹」用的，
+   挂进助手栏后基准变成整条 .assist-pane，整块被顶到栏顶边界之外、什么都看不见。
+   落点交给 app-assist.js 的 placeAssistModeMenu 按「模式」按钮现算（左对齐按钮、
+   优先向下、栏内装不下才向上翻转、宽度 280–320 且不超出栏宽）。
+   这一段是**不用 JS 也成立**的缺省：top/bottom 都 auto = 静态位置，即紧跟
+   #assistModeCtrl 那一行之下，至少在本行下方可见、不出栏。 */
+#assistModeMenu {
+  left: 10px;
+  right: auto;
+  top: auto;
+  bottom: auto;
+  width: min(320px, calc(100% - 20px));
+  max-width: none;
 }
 
 .assist-ws-line input {

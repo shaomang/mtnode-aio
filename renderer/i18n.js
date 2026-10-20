@@ -12,6 +12,9 @@
 
      本文件结构：EN 的键 = 中文原文（zh 界面直接回显键本身，不报错也不缺字），值 = 英文译文。 */
   var EN = {
+    /* ── 长文流式预览（renderer/app-assist.js：单段正文 > 64KB 时的降级提示）── */
+    "（长回复：正文以纯文本预览，结束后自动排版）":
+      "(Long reply: shown as plain text while streaming, formatted when it finishes)",
     /* ── 语音输入（renderer/app-voice.js：本轮起是**全局**入口）──
        上一段是历史词条（旧的输入框话筒时代留下的，仍在用：模型准备态与报错文案），
        下面那段「全局语音输入」才是状态栏那枚话筒的三态 / 浮窗 / 设置小节文案。 */
@@ -652,10 +655,10 @@
       "Long-running task created: the strip is already expanded on the canvas it belongs to (switch there to see the graph); hit ▶ Enable & bind to start it.",
     /* 创建期预建画布落点（本轮需求）：壳 / 生成工作流 / 交付节点一次摆好、一律不跑。
        toast 按「到底建了什么」分段，量词跟着有值的那几类走（单复数各一条）。 */
-    "已在画布上把这条长任务的落点建好（壳 / 生成工作流 / 交付节点）：生成一律不跑 · 超级节点壳 1 颗":
-      "Landing points for this long-running task are on the canvas (shells / generation workflows / delivery nodes): nothing is run · 1 super-node shell",
-    "已在画布上把这条长任务的落点建好（壳 / 生成工作流 / 交付节点）：生成一律不跑 · 超级节点壳 ":
-      "Landing points for this long-running task are on the canvas (shells / generation workflows / delivery nodes): nothing is run · super-node shells: ",
+    "已在画布上把这条长任务的落点建好（壳 / 生成工作流 / 交付节点）：生成一律不跑 · 节点层壳 1 颗":
+      "Landing points for this long-running task are on the canvas (shells / generation workflows / delivery nodes): nothing is run · 1 node-layer shell",
+    "已在画布上把这条长任务的落点建好（壳 / 生成工作流 / 交付节点）：生成一律不跑 · 节点层壳 ":
+      "Landing points for this long-running task are on the canvas (shells / generation workflows / delivery nodes): nothing is run · node-layer shells: ",
     "生成工作流节点 1 个": "1 generation-workflow node",
     "生成工作流节点 ": "generation-workflow nodes: ",
     "交付节点 1 颗": "1 delivery node",
@@ -1012,7 +1015,7 @@
     "圆桌 ": "Roundtable ",
     "圆桌讨论": "Roundtable discussion",
     "在左侧选择一位专家开始对话。": "Pick an expert on the left to start chatting.",
-    "实时预览 · 系统提示词（角色层）": "Live preview · system prompt (role layer)",
+    "实时预览 · 系统提示词（角色设置）": "Live preview · system prompt (role settings)",
     "审批档": "Approval preset",
     "少数意见（原文保留）": "Minority opinions (kept verbatim)",
     "岗位": "Title",
@@ -2029,20 +2032,20 @@
     "无": "Off",
     "中": "Medium",
     "组": "Group",
-    "超节点：将选中节点合并为展开的超级节点（覆盖选区范围）":
-      "Super: wrap selection into an expanded super node (fits selection bounds)",
-    "超节点：将选中节点合并为展开的超级节点（覆盖选区范围）；选中单个超级节点时再点一次 = 拆开它（内容原样移回外层，空壳删除）":
-      "Super: wrap selection into an expanded super node (fits selection bounds); with a single super node selected, click again to unwrap it (contents move back out as they are, the empty shell is deleted)",
-    "拆开超节点：内容原样移回外层，并删除这颗空壳":
-      "Unwrap super node: contents move back out as they are, and the empty shell is deleted",
-    "已拆开超节点：": "Super node unwrapped: ",
+    "节点层：将选中节点合并为展开的节点层（覆盖选区范围）":
+      "Super: wrap selection into an expanded node layer (fits selection bounds)",
+    "节点层：将选中节点合并为展开的节点层（覆盖选区范围）；选中单个节点层时再点一次 = 拆开它（内容原样移回外层，空壳删除）":
+      "Super: wrap selection into an expanded node layer (fits selection bounds); with a single node layer selected, click again to unwrap it (contents move back out as they are, the empty shell is deleted)",
+    "拆开节点层：内容原样移回外层，并删除这颗空壳":
+      "Unwrap node layer: contents move back out as they are, and the empty shell is deleted",
+    "已拆开节点层：": "Node layer unwrapped: ",
     "移出 ": "Moved out ",
     " 项内部绘制": " inner drawing(s)",
     "清理 ": "cleaned up ",
     "请先框选 / 选中要合并的节点": "Select nodes to wrap first",
-    "请选择同一层级内的节点（不能跨超级节点边界）":
-      "Select nodes at the same level (not across super-node boundaries)",
-    "已合并为超节点：": "Wrapped into super node: ",
+    "请选择同一层级内的节点（不能跨节点层边界）":
+      "Select nodes at the same level (not across node-layer boundaries)",
+    "已合并为节点层：": "Wrapped into node layer: ",
     " 步": " step",
     " 图": " Img",
     " 字": " chars",
@@ -2696,8 +2699,8 @@
     "不能连接同一节点": "Cannot connect a node to itself",
     "跨级汇入失败：": "Cross-level feed-in failed: ",
     "跨级桥接失败：": "Cross-level bridge failed: ",
-    "超级节点连接失败：": "Super-node link failed: ",
-    "跨超级节点连接 ": "Cross-super-node connect ",
+    "节点层连接失败：": "Node-layer link failed: ",
+    "跨节点层连接 ": "Cross-node-layer connect ",
     " 对节点": " node pair(s)",
     "正在压缩上文…": "Compacting context…",
     "只读 · 拆分": "Read-only · Split",
@@ -2967,6 +2970,21 @@
     "把这段合并进客户端的 MCP 配置：桥脚本会自己从数据目录读端口与令牌，不用手填地址。": "Merge this into the client's MCP config: the bridge script reads the port and token from the data folder itself, so the address never has to be typed.",
     "复制地址": "Copy address",
     "复制令牌": "Copy token",
+    /* 自用回环（应用内 Agent 也经 MCP 调自己的生成能力）与作业列表 */
+    "自用回环": "Self loop",
+    "开 · 引擎 MCP 清单里有 mtnode-self": "On · the engine's MCP list has mtnode-self",
+    "（已挂上）": " (registered)",
+    "（服务端未监听，暂不生效）": " (server not listening; inactive)",
+    " · 放行的工具：": " · allowed tools: ",
+    "关 · 应用内 Agent 只用手上的内置工具，不经 MCP 调生成": "Off · in-app agents use only their built-in tools, no MCP generation",
+    "作业（本次运行内 · ": "Jobs (this run · ",
+    " 个）": ")",
+    "（只在内存里：应用一关就清空）": "(memory only: cleared when the app closes)",
+    "关闭自用回环": "Disable self loop",
+    "开启自用回环": "Enable self loop",
+    "自用回环已关闭": "Self loop disabled",
+    "自用回环已开启（引擎重连后生效）": "Self loop enabled (takes effect when the engine reconnects)",
+    "进行中": "running",
     "复制配置片段": "Copy config snippet",
     "重置令牌": "Reset token",
     "重置 MCP 令牌": "Reset MCP token",
@@ -4154,6 +4172,20 @@
     "将删除该画布及其全部本地数据文件（含节点图像资产）。此操作不可恢复。": "This will delete the canvas and all of its local data files (including node image assets). This cannot be undone.",
     "清空本节点输出与会话（历史 / 工具日志一并重置）": "Clear this node's output and session (history / tool logs reset)",
     "助手会话已清空": "Assistant chat cleared",
+    "右侧全局助手的会话：与助手栏是同一份对话；清空＝在这里换一条新的":
+      "A session of the right-hand global assistant: same conversation as the assistant panel; clearing starts a new one there",
+    "全局助手不绑任何画布：它按消息自行判定这一轮要不要碰画布":
+      "The global assistant is not bound to any canvas: it decides per message whether the canvas is involved",
+    "这条助手会话正在会话窗口里运行，请先在那里结束本轮":
+      "This assistant session is running in the session view — finish that turn there first",
+    "这条助手会话正在右侧助手栏运行，请先在那里结束本轮":
+      "This assistant session is running in the assistant panel — finish that turn there first",
+    "全局助手会话 · 正在右侧助手栏运行（这里只读）":
+      "Global assistant session · running in the assistant panel (read-only here)",
+    "全局助手会话 · 与右侧助手栏是同一份对话":
+      "Global assistant session · same conversation as the assistant panel",
+    "这条会话不绑任何画布，由全局助手那套人设与工具档运行；在助手栏清空＝换一条新的":
+      "This session is not bound to any canvas and runs with the global assistant's persona and tool profile; clearing in the assistant panel starts a new one",
     "留空 = 当前画布 / 应用默认目录…": "Leave empty = current canvas / app default directory…",
     "排队等待中…": "Queued…",
     "拖动边框中部调整助手栏宽度": "Drag the mid-border to resize the assistant",
@@ -4199,6 +4231,7 @@
     "▢ 框体": "▢ Box",
     "Ｔ 文本": "Ｔ Text",
     "绘制": "Draw",
+    "其他节点": "Other nodes",
     "其他节点（网络 · 批次拆分 / 合并）": "Other Nodes (network · batch split / merge)",
     "网络 · 接收（监听通道 · 异步转发文本）": "Network · Receive (listen on channel · forward text async)",
     "网络 · 发送（推送到通道 · TCP / UDP）": "Network · Send (push to channel · TCP / UDP)",
@@ -4289,7 +4322,7 @@
     "安装失败：": "Install failed: "
   });
   /* ── Breeze（breeze_gen）的两个文本框：renderer/app-nodes.js 的 breezeTextBoxesFor
-     （BREEZE_TEXT_BOXES 的 label / placeholder / title / tip 都在那儿）与设置窗那一格
+     （BREEZE_TEXT_BOXES 的 placeholder / title / tip 都在那儿，界面上只留输入框本身）与设置窗那一格
      （renderer/app-canvas.js）。口径：端子有输入 → 只读回显；端子为空 → 可编辑。
      **本节点不做转录**：参考文本由用户填或从端口 2 接进来，所以这里没有 SenseVoice 词条。 */
   Object.assign(EN, {
@@ -4307,9 +4340,6 @@
       "Ports win: this box is read-only while port 0 has input",
     "端子优先：端口 2 有输入时这里只读":
       "Ports win: this box is read-only while port 2 has input",
-    "来自端口 ": "From port ",
-    "（端子优先，本框只读）": " (ports win; this box is read-only)",
-    "端子为空 · 可编辑": "Port empty · editable",
     "清掉这个框里的文字（端子有输入时这一格本来就不归你改）":
       "Clear the text in this box (with a port wired, this box is not yours to edit anyway)",
     "选了音色库音色：这个框留空时，合成用音色库自带的那份参考文本":
@@ -4699,6 +4729,13 @@
     "当前版本不支持手动更新": "This build does not support manual updates",
     "Microsoft Store（MSIX）版不支持应用内更新，请在 Microsoft Store 中获取更新":
       "The Microsoft Store (MSIX) build does not support in-app updates — get updates from the Microsoft Store",
+    /* 商店版「有新版本」的提示（应用详情弹窗、右下角版本号蓝色高亮的同一处）：
+       OSS 版一般先发，商店包要等审核，所以必须把「最多延后 3 天」说清楚。 */
+    "这是 Microsoft Store 版：请在 Microsoft Store 中更新。因为商店审核，新版本上架最多可能延后 3 天。":
+      "This is the Microsoft Store build: please update from the Microsoft Store. Because of store review, the new version may reach the store up to 3 days later.",
+    "打开 Microsoft Store": "Open Microsoft Store",
+    "没能打开 Microsoft Store，请从开始菜单打开":
+      "Could not open the Microsoft Store — open it from the Start menu instead",
     "发现新版本，点击下载并安装": "New version available — click to download & install",
     "发现新版本，点击下载更新": "New version available — click to download",
     "立即重启安装": "Restart & install now",
@@ -4710,19 +4747,19 @@
     "一键排版": "Auto layout",
     "同时排版内部": "Include insides",
     "仅排版画布": "Canvas only",
-    "是否同时排版超级节点内部？\n\n「同时排版内部」会整理各超级节点内的子节点；「仅排版画布」只调整顶层节点。":
-      "Also layout inside super nodes?\n\n“Include insides” tidies children inside each super node; “Canvas only” adjusts top-level nodes only.",
+    "是否同时排版节点层内部？\n\n「同时排版内部」会整理各节点层内的子节点；「仅排版画布」只调整顶层节点。":
+      "Also layout inside node layers?\n\n“Include insides” tidies children inside each node layer; “Canvas only” adjusts top-level nodes only.",
     "确定进行一键排版？\n\n将按连线与关系线整理节点位置（可撤销）。":
       "Run auto layout?\n\nNodes will be arranged by wires and relation lines (undoable).",
-    "确定进行一键排版？\n\n将按连线与关系线整理当前超级节点层级「{title}」内部的节点位置（可撤销）。":
-      "Run auto layout?\n\nNodes inside the current super-node level “{title}” will be arranged by wires and relation lines (undoable).",
-    "排版范围：默认只整理当前这一层（这颗超级节点内部）；也可改为排版整个画布（顶层节点，连各壳内部一起整理）。":
-      "Layout scope: by default only this level (inside this super node); you may switch to the whole canvas (top-level nodes, including every shell's inside).",
+    "确定进行一键排版？\n\n将按连线与关系线整理当前节点层「{title}」内部的节点位置（可撤销）。":
+      "Run auto layout?\n\nNodes inside the current node-layer level “{title}” will be arranged by wires and relation lines (undoable).",
+    "排版范围：默认只整理当前这一层（这颗节点层内部）；也可改为排版整个画布（顶层节点，连各壳内部一起整理）。":
+      "Layout scope: by default only this level (inside this node layer); you may switch to the whole canvas (top-level nodes, including every shell's inside).",
     "排版整个画布": "Layout whole canvas",
     "仅排版当前层级": "Current level only",
-    "已整理排版（当前超级节点层级）": "Layout tidied (current super-node level)",
-    "这颗超级节点里还没有可排版的节点":
-      "No nodes to layout inside this super node yet",
+    "已整理排版（当前节点层）": "Layout tidied (current node-layer level)",
+    "这颗节点层里还没有可排版的节点":
+      "No nodes to layout inside this node layer yet",
     "开始排版": "Start layout",
     "请选择排版方式：": "Choose a layout mode:",
     "简单排版": "Simple layout",
@@ -5425,9 +5462,9 @@
       "⚠ Batch N² guard: node “{title}” prompt lists many batch titles while still in per-item batch — describe only the current item, or use Split / Aggregate.",
     "▦ 排版": "▦ Layout",
     "一键排版：交由全局助手执行整洁排版（可撤销）":
-      "Auto layout by wire flow; optionally include super insides (undoable)",
-    "一键排版：按连线关系整理节点位置；停在超级节点里时默认整理当前这一层；可选同时排版超级节点内部（可撤销）":
-      "Auto layout by wire flow; inside a super node it tidies the current level by default; optionally include super insides (undoable)",
+      "Auto layout by wire flow; optionally include node layer insides (undoable)",
+    "一键排版：按连线关系整理节点位置；停在节点层里时默认整理当前这一层；可选同时排版节点层内部（可撤销）":
+      "Auto layout by wire flow; inside a node layer it tidies the current level by default; optionally include node layer insides (undoable)",
     "一键排版：交由全局助手执行紧凑排版（可撤销）":
       "Auto layout by wire flow (undoable)",
     "确定进行一键排版？\n\n将由全局助手基于 AI 分析并调整画布节点位置，可能需要等待一段时间，请耐心等候。操作可撤销。":
@@ -5436,7 +5473,7 @@
       "Batch split done. Run auto layout?\n\nNodes will be rearranged by wire flow.",
     "画布上没有节点": "No nodes on the canvas",
     "已整理排版": "Layout tidied",
-    "已整理排版（含超级节点内部）": "Layout tidied (including super insides)",
+    "已整理排版（含节点层内部）": "Layout tidied (including node layer insides)",
     "排版提示：「{label}」这层排成了长条（宽 {w} × 高 {h}）。节点之间已按 1 个网格间距排开、互不重叠；想更方正可再增删节点或手动微调。":
       "Layout note: level “{label}” came out as a long strip ({w} × {h}). Nodes are spaced exactly one grid apart with no overlap — add/remove nodes or nudge them for a squarer shape.",
     "已紧凑排版": "Compact layout applied",
@@ -5831,7 +5868,7 @@
     "工作范围=本会话所属画布：不得读取或操作其他画布内容。":
       "Work scope = the canvas this session belongs to: do not read or modify other canvases.",
     /* ── 局部画布（scope）：只看 / 只改某一颗超级 · 开发节点内部 ── */
-    "无效的 scope（要给超级 / 开发节点的 id 或唯一标题）：":
+    "无效的 scope（要给节点层 / 开发节点的 id 或唯一标题）：":
       "Invalid scope (pass a super / dev node id or unique title): ",
     "scope 界外已跳过：": "Skipped (outside scope): ",
     "（本次只改 ": " (this call only touches ",
@@ -6040,11 +6077,10 @@
     "更新运行时": "Update runtime",
     "任务节点": "Task Node",
     "任务": "Task",
-    "任务节点（规划 / 控制流执行）": "Task Node (plan / run control flow)",
-    "超级节点": "Super node",
-    "超级节点（收纳 · 展开子画布）": "Super node (pack · expand sub-canvas)",
-    "说明：此超级节点收纳的内容与用途…":
-      "Describe what this super node packs and why…",
+    "节点层": "Node layer",
+    "节点层（收纳 · 展开子画布）": "Node layer (pack · expand sub-canvas)",
+    "说明：此节点层收纳的内容与用途…":
+      "Describe what this node layer packs and why…",
     "展开": "Expand",
     "收起": "Collapse",
     "进入内部画布": "Enter inner canvas",
@@ -6053,12 +6089,12 @@
     "将节点拖入此处": "Drag nodes here",
     "拖入节点以收纳；拖出以移出":
       "Drag nodes in to pack; drag out to unpack",
-    "超级节点子文件夹": "Super node subfolder",
-    "超级节点描述": "Super node description",
-    "编辑超级节点描述": "Edit super node description",
+    "节点层子文件夹": "Node layer subfolder",
+    "节点层描述": "Node layer description",
+    "编辑节点层描述": "Edit node layer description",
     "描述内容": "Description",
-    "描述此超级节点收纳的内容与用途…": "Describe what this super node packs…",
-    "描述会以小字显示在超级节点「文件夹」标题下方；文字过多时自动截断，鼠标悬停可查看全文。留空则不显示。":
+    "描述此节点层收纳的内容与用途…": "Describe what this node layer packs…",
+    "描述会以小字显示在节点层「文件夹」标题下方；文字过多时自动截断，鼠标悬停可查看全文。留空则不显示。":
       "The description shows as small text under the folder title; long text is truncated and revealed on hover. Leave empty to hide.",
     "填写描述：以小字显示在文件夹标题下方":
       "Add a description: shown as small text under the folder title",
@@ -6067,10 +6103,10 @@
     "描述已更新": "Description updated",
     "已清除描述": "Description cleared",
     "收纳的节点数 · 子文件夹": "Packed node count · subfolder",
-    "设置后，此超级节点内部节点的默认相对路径会落在「工作目录 / 子文件夹」下。已有路径不会自动改写。":
+    "设置后，此节点层内部节点的默认相对路径会落在「工作目录 / 子文件夹」下。已有路径不会自动改写。":
       "After setting, default relative paths for inner nodes go under workspace/subfolder. Existing paths are not rewritten.",
-    "设置后，此超级节点内部节点的相对路径会落在「工作目录 / 子文件夹」下；内部已有相对路径会自动补上该前缀。":
-      "Once set, relative paths inside this super resolve under workspace / subfolder; existing relative paths get that prefix automatically.",
+    "设置后，此节点层内部节点的相对路径会落在「工作目录 / 子文件夹」下；内部已有相对路径会自动补上该前缀。":
+      "Once set, relative paths inside this node layer resolve under workspace / subfolder; existing relative paths get that prefix automatically.",
     "子文件夹（相对工作目录）": "Subfolder (relative to workspace)",
     "子文件夹已设为：": "Subfolder set to: ",
     "已清除子文件夹": "Subfolder cleared",
@@ -6085,15 +6121,15 @@
       "Middle-drag or drag empty area to pan the inner canvas",
     "（拖到内部节点）": " (drag to inner nodes)",
     "（从内部节点拖入）": " (drag from inner nodes)",
-    "已展开超级节点：": "Expanded super node: ",
-    "已进入超级节点：": "Entered super node: ",
-    "进入超级节点：": "Enter super node: ",
-    "进入超级节点：在完整画布中编辑内部节点":
-      "Enter super node: edit its children on the full canvas",
-    "展开超级节点：": "Expand super node: ",
+    "已展开节点层：": "Expanded node layer: ",
+    "已进入节点层：": "Entered node layer: ",
+    "进入节点层：": "Enter node layer: ",
+    "进入节点层：在完整画布中编辑内部节点":
+      "Enter node layer: edit its children on the full canvas",
+    "展开节点层：": "Expand node layer: ",
     "展开 / 进入内部画布": "Expand / enter inner canvas",
-    "将选中节点移入此超级节点": "Move selection into this super node",
-    "移出超级节点": "Move out of super node",
+    "将选中节点移入此节点层": "Move selection into this node layer",
+    "移出节点层": "Move out of node layer",
     "已移入 ": "Moved in ",
     "已移出 ": "Moved out ",
     " 节点": " nodes",
@@ -6106,8 +6142,8 @@
       "Wire inner nodes here → external output",
     "外部输入经此端口 → 内部节点":
       "External input passes here → inner nodes",
-    "创建超级节点、将节点收纳进子画布（建议审批）":
-      "Create super nodes / pack nodes into a sub-canvas (approve recommended)",
+    "创建节点层、将节点收纳进子画布（建议审批）":
+      "Create node layers / pack nodes into a sub-canvas (approve recommended)",
     "☑ 任务（规划步骤 · 可进入分段解决）": "☑ Task (plan steps · enter to solve in parts)",
     "任务目标 / 本步要解决什么": "Goal / what this step should solve",
     "暂无步骤 · 先拆解再执行或进入内部实现": "No steps yet · split first, then run or enter to implement",
@@ -6138,17 +6174,17 @@
     "暂无节点或绘图": "No nodes or drawings yet",
     "没有匹配「{q}」的节点或绘图": "No nodes or drawings matching \"{q}\"",
     "筛选节点或绘图…": "Filter nodes or drawings…",
-    "筛选节点、绘图或超级节点…": "Filter nodes, drawings, or super nodes…",
+    "筛选节点、绘图或节点层…": "Filter nodes, drawings, or node layers…",
     "节点与绘图列表边栏": "Node and drawing list sidebar",
     "当前画布": "Current canvas",
     "展开当前画布列表": "Expand current canvas list",
     "折叠当前画布列表": "Collapse current canvas list",
-    "展开超级节点树": "Expand super node tree",
-    "折叠超级节点树": "Collapse super node tree",
-    "进入超级节点画布并定位：": "Enter super canvas and locate: ",
+    "展开节点层树": "Expand node layer tree",
+    "折叠节点层树": "Collapse node layer tree",
+    "进入节点层画布并定位：": "Enter node layer canvas and locate: ",
     "内部节点数：": "Inner nodes: ",
-    "当前超级节点内部暂无节点或绘图": "No nodes or drawings inside this super node yet",
-    "超节点": "Super",
+    "当前节点层内部暂无节点或绘图": "No nodes or drawings inside this node layer yet",
+    "节点层": "Super",
     "可从右键菜单添加，或返回上层": "Add via right-click, or go back up",
     "任务状态": "Task status",
     "待办": "Pending",
@@ -6464,8 +6500,8 @@
     "音色设计": "Voice design",
     "音色导演": "Voice direction",
     "指令 instruction": "Instruction",
-    "cfg_scale（默认 1；有 instruction 时官方建议 4）":
-      "cfg_scale (default 1; the official guidance is 4 when an instruction is set)",
+    "cfg_scale（默认 4，官方建议 instruction 场景用 4）":
+      "cfg_scale (default 4; the official guidance is 4 when an instruction is set)",
     "seed": "Seed",
     "Breeze 语音生成中…": "Generating Breeze speech…",
     "Breeze 语音已生成：": "Breeze speech saved: ",
@@ -6529,8 +6565,9 @@
     "自然语言指令；有 instruction 时官方建议 cfg_scale 用 4":
       "A natural-language instruction; with an instruction the official guidance is cfg_scale 4",
     "采样": "Sampling",
-    "指令跟随强度：默认 1；有 instruction 时官方建议 4":
-      "How strongly the instruction is followed: default 1; the official guidance is 4 when an instruction is set",
+    "指令跟随强度：默认 4（官方建议 instruction 场景用 4）；「音色克隆」（有参考音频、无导演指令）恒为 1.0 —— 引擎的克隆模板不支持 CFG，要调请填一条导演指令":
+      "How strongly the instruction is followed: default 4 (the official guidance is 4 when an instruction is set); voice clone (reference audio and no direction instruction) is fixed at 1.0 — the engine's clone template does not support CFG, so add a direction instruction to tune it",
+    "（克隆固定）": " (fixed in clone mode)",
     "采样种子（默认 42）：同种子同参考片段可复现同一段语音":
       "Sampling seed (default 42): the same seed and reference clip reproduce the same speech",
     "参考音频端子需要音频来源（音频节点 / 语音生成 / 音乐生成）":
@@ -6558,6 +6595,62 @@
     "该音色缺少参考音频（请在控制台音色库里补上）":
       "This voice has no reference clip (add one in the console voice library)",
     "（请打开插件控制台查看日志）": " (open the plugin console for logs)",
+
+    /* breeze_gen 角色预设（音色预设）：节点上方「角色」按钮 / 选择跳窗 / 设置里的角色行 */
+    /* 提示词两档（渲染层 app-canvas.js 的 promptTierRow）：档位只影响 AI 写提示词的详略 */
+    "提示词档位": "Prompt detail",
+    "简洁（一句）": "Concise (one line)",
+    "详细（四段）": "Detailed (four parts)",
+    "一句话说完：性别年龄 + 音色 + 语速 + 情绪 + 场景（Breeze 官方推荐形态）":
+      "One sentence with age and gender, timbre, pace, mood and use case (the Breeze-recommended shape)",
+    "四段分行：声线类型 / 音色关键词 / 共鸣位置 / 参考质感（信息更密，文本更长）":
+      "Four labelled parts: voice type / tone keywords / resonance / reference texture (denser and longer)",
+    "角色": "Character",
+    "角色（音色预设）": "Character (voice preset)",
+    "角色 / 指令 / cfg_scale / 种子 / 输出格式 / 输出路径":
+      "Character / instruction / cfg_scale / seed / format / output path",
+    "角色：": "Character: ",
+    "角色 ": "Character ",
+    "第 {n} 组": "Set {n}",
+    "{n} 组": "{n} sets",
+    "选择角色…": "Choose character…",
+    "选择角色": "Choose character",
+    "选择角色（音色预设）": "Choose a character (voice preset)",
+    "（点击更换角色）": " (click to change)",
+    "（未选：走端子 / 音色库）": "(none: ports / voice library)",
+    "挑一个角色，再挑它的第几组样本（音频 + 样本文字 + 指令）":
+      "Pick a character, then one of its sample sets (audio + sample text + instruction)",
+    "不用角色预设：回到端子 / 音色库模式（端口 1 / 2 重新参与）":
+      "Drop the character preset and go back to ports / voice library (ports 1 / 2 apply again)",
+    "已选角色：参考音频与样本文字都来自这一组，端口 1 / 2 不参与合成；下方指令留空就用这一组自带的指令":
+      "Character selected: the reference audio and sample text come from this set and ports 1 / 2 are ignored; leave the instruction below empty to use the set's own instruction",
+    "左边挑一个角色": "Pick a character on the left",
+    "还没有角色预设。到插件控制台「角色预设」里新建：角色名 + 至少一组（音频样本 + 样本文字 + 指令）。":
+      "No character presets yet. Create one in the plugin console under Character presets: a name plus at least one set (audio sample + sample text + instruction).",
+    "（没有角色预设）": "(no character presets)",
+    "这个角色还没有样本组（至少要一组：音频 + 样本文字）。":
+      "This character has no sample sets yet (at least one is required: audio + sample text).",
+    "⚠ 缺音频": "⚠ no audio",
+    "（没有样本文字）": "(no sample text)",
+    "指令：": "Instruction: ",
+    "用这一组": "Use this set",
+    "角色预设已删除（请重选）": "Character preset deleted (pick one again)",
+    "角色预设已删除或不可用，请重选角色":
+      "This character preset was deleted or is unavailable — pick a character again",
+    "角色预设已删除或不可用（请在节点上方「角色」里重新选一个）":
+      "Character preset deleted or unavailable (pick one again via the Character button on the node)",
+    "这个角色还没有样本组：请到管理台给它加一组（音频 + 样本文字）":
+      "This character has no sample set yet — add one in the console (audio + sample text)",
+    "这个角色没有可用的样本组（请到管理台加一组：音频 + 样本文字）":
+      "This character has no usable sample set (add one in the console: audio + sample text)",
+    "角色这一组缺少音频：请到管理台补上参考音频":
+      "This set has no audio — add a reference clip in the console",
+    "角色这一组缺少音频（请到管理台补上参考音频）":
+      "This set has no audio (add a reference clip in the console)",
+    "角色这一组缺少样本文字：请到管理台补上（音频与文字必须成对）":
+      "This set has no sample text — add it in the console (audio and text must come as a pair)",
+    "参考音频端子（端口 2 的音频）": "Reference-audio port (audio from port 2)",
+    "音色（音色库）": "Voice (voice library)",
     "无法连接 Breeze TTS 2 后端（后端可能已退出，请重新执行本节点）":
       "Cannot reach the Breeze TTS 2 backend (it may have exited — run this node again)",
     "补装要件": "Install missing parts",
@@ -6801,11 +6894,11 @@
     "已取消视频生成": "Video generation cancelled",
     "若仍要创建节点，edit 必须传 layout:false，且禁止 group。":
       "If you still create nodes, edit must pass layout:false and must not use group.",
-    "禁止创建或收纳超级节点（canvas_super）。":
-      "Creating or packing super nodes is forbidden (canvas_super).",
-    "创建/收纳超级节点需用户审批（canvas_super）。":
-      "Creating or packing super nodes requires user approval (canvas_super).",
-    "无效的超级节点：": "Invalid super node: ",
+    "禁止创建或收纳节点层（canvas_super）。":
+      "Creating or packing node layers is forbidden (canvas_super).",
+    "创建/收纳节点层需用户审批（canvas_super）。":
+      "Creating or packing node layers requires user approval (canvas_super).",
+    "无效的节点层：": "Invalid node layer: ",
     "超级": "Super",
     "超级权限 · 外部路径策略": "Super permission · outside-path policy",
     "已开启超级权限：Agent 可访问本机任意位置（用于辅助编程等高级任务）。首次请选择访问工作区以外路径时的策略：":
@@ -6937,14 +7030,14 @@
     "重新编译": "Recompile",
     "新画布": "new canvas",
     "技能不存在": "Skill not found",
-    /* ===== 数据库超级节点（事实收纳 → 副本 → mtnode_db） ===== */
+    /* ===== 数据库节点层（事实收纳 → 副本 → mtnode_db） ===== */
     "数据库": "Database",
     "数据库副本": "Database replica",
     "数据库（事实收纳 · 编译副本供智能节点查询）":
       "Database (fact storage · compile replica for agent queries)",
     "网络节点": "Network Node",
     "执行节点": "Execute Node",
-    "超级/开发节点": "Super / Dev Nodes",
+    "节点层/开发节点": "Node layer / Dev Nodes",
     /* ===== 开发节点（功能块 · 项目架构 · 绑定开发会话） ===== */
     "开发": "Dev",
     "开发节点": "Dev node",
@@ -7431,8 +7524,8 @@
     "已清除项目文件夹": "Project folder cleared",
     "项目文件夹：": "Project folder: ",
     /* ===== 开发节点：运行中徽标 / 呼吸灯边框 ===== */
-    "本功能块正在运行（作为超级节点被执行）":
-      "This module is running (executed as a super node)",
+    "本功能块正在运行（作为节点层被执行）":
+      "This module is running (executed as a node layer)",
     "功能块内有节点正在运行（含子开发节点）":
       "A node inside this module is running (including nested dev nodes)",
     "绑定的开发 / 细化会话正在运行":
@@ -7637,8 +7730,8 @@
     /* ===== 数据库节点（SQLite/FTS5 · 增量 · 调试控制台） ===== */
     "切换数据库形态：内嵌查询 / calc / 检查更新等调试工具":
       "Switch to database console: query / calc / dirty-check debugging tools",
-    "当前：数据库形态（查询 / 调试控制台）· 点击切回超级节点形态":
-      "Database console mode (query / debug) · click to return to super-node form",
+    "当前：数据库形态（查询 / 调试控制台）· 点击切回节点层形态":
+      "Database console mode (query / debug) · click to return to node-layer form",
     "编译数据库（仅手动触发 · 增量）：索引子文件夹文件与内部信息节点，并生成/刷新数据库副本节点":
       "Compile database (manual only · incremental): index subfolder files and inner info nodes, then create/refresh the replica node",
     "未设置工作目录或子文件夹：文件记录无法入库（仅内部信息节点可编译）":
@@ -8341,8 +8434,8 @@
       "A library entry named \"{name}\" already exists — overwrite it?",
     "函数节点包（JS 计算 · 单节点）":
       "Function node package (JS compute · single node)",
-    "工具节点包（超级节点变体 · 带内部子图）":
-      "Tool node package (super-node variant · with its inner graph)",
+    "工具节点包（节点层变体 · 带内部子图）":
+      "Tool node package (node-layer variant · with its inner graph)",
     "单节点（JS 计算）": "single node (JS compute)",
     "已插入函数：": "Inserted function: ",
     "新函数名：": "New function name:",
@@ -8365,10 +8458,10 @@
      这里补齐运行期真正用到的其余词条）。 */
   Object.assign(EN, {
     /* 顶栏「工具库」按钮与工具库对话框（app-tools.js · app-boot.js btnTools 接线）
-       —— 只管本机已保存的工具包 / 函数包；两类节点的创建入口在画布右键菜单「工具」下 */
-    "工具库：打开本机已保存的工具 / 函数，插入到任意画布复用（新建这两类节点：画布空白处右键 → 工具）":
-      "Tool library: open the tool / function packages saved on this machine and insert them into any canvas (to create these two node types: right-click the canvas → Tools)",
-    /* 新建节点菜单（app.js canvasCreateMenuGroups · 「工具」一级菜单） */
+       —— 只管本机已保存的工具包 / 函数包；两类节点的创建入口在画布右键菜单「其他节点」下 */
+    "工具库：打开本机已保存的工具 / 函数，插入到任意画布复用（新建这两类节点：画布空白处右键 → 其他节点 → 工具）":
+      "Tool library: open the tool / function packages saved on this machine and insert them into any canvas (to create these two node types: right-click the canvas → Other Nodes → Tool)",
+    /* 新建节点菜单（app.js canvasCreateMenuGroups · 「其他节点」二级菜单） */
     "工具（Agent 可调用 · 入参出参端子）":
       "Tool (agent-callable · input/output param ports)",
     "函数（JS 计算 · 自定义入参出参）":
@@ -11034,7 +11127,7 @@
         "）": ")",
         "关闭": "Close",
         "取消": "Cancel",
-        /* ── 长周期任务的超级节点壳与生成工作流预置（renderer/app-longtask-shell.js +
+        /* ── 长周期任务的节点层壳与生成工作流预置（renderer/app-longtask-shell.js +
               app-canvas.js 的壳头部徽标）──
            口径：一环节一颗子壳、产出 / 产物落子壳、生成工作流「建好但一律不跑」、
            壳被删不再静默重建。 */
@@ -11057,27 +11150,27 @@
         "视频生成": "Video generation",
         "音乐生成": "Music generation",
         "语音合成": "Speech synthesis",
-        "已在画布上建立本任务的超级节点：": "Created this task's super node on the canvas: ",
-        "已把产出节点收进对应环节的超级节点":
-          "Moved the output node into its step's super node",
-        "超级节点壳已被删除：不再自动重建（点提示里的「重建」可恢复）":
-          "The super-node shell was deleted: it will not be recreated automatically (use \"Rebuild shell\" to restore it)",
-        "长任务的超级节点壳已被删除：产出暂留在主画布层。需要壳的话在条带里点「重建壳」":
-          "The long task's super-node shell was deleted: outputs stay on the main canvas for now. Use \"Rebuild shell\" in the strip if you want it back",
-        "已重建超级节点壳：后续产出会落进对应环节子壳":
-          "Rebuilt the super-node shell: later outputs will land in their step shells",
+        "已在画布上建立本任务的节点层：": "Created this task's node layer on the canvas: ",
+        "已把产出节点收进对应环节的节点层":
+          "Moved the output node into its step's node layer",
+        "节点层壳已被删除：不再自动重建（点提示里的「重建」可恢复）":
+          "The node-layer shell was deleted: it will not be recreated automatically (use \"Rebuild shell\" to restore it)",
+        "长任务的节点层壳已被删除：产出暂留在主画布层。需要壳的话在条带里点「重建壳」":
+          "The long task's node-layer shell was deleted: outputs stay on the main canvas for now. Use \"Rebuild shell\" in the strip if you want it back",
+        "已重建节点层壳：后续产出会落进对应环节子壳":
+          "Rebuilt the node-layer shell: later outputs will land in their step shells",
         "重建壳": "Rebuild shell",
         "触发": "Trigger",
         "重建": "Rebuild",
-        "超级节点壳被删过：点这里重建父壳（后续产出照常落进对应环节子壳）":
-          "The super-node shell was deleted: rebuild the parent shell here (later outputs still land in their step shells)",
+        "节点层壳被删过：点这里重建父壳（后续产出照常落进对应环节子壳）":
+          "The node-layer shell was deleted: rebuild the parent shell here (later outputs still land in their step shells)",
         "重建壳失败：长任务壳模块未就绪":
           "Failed to rebuild the shell: the long-task shell module is not ready",
         /* 环节配置（条带检查器）：这一环节要不要生成内容 + 用哪几种生成 */
         "需要生成内容": "Needs generated content",
         "需要生成内容（生成工作流）": "Needs generated content (generation workflow)",
-        "勾选后本环节跑到时，会在它的超级节点子壳里预置生成节点与控制节点；一律不自动运行，由你点 ▶ 执行":
-          "When checked, this step's super-node shell gets generation and control nodes preset; nothing runs automatically — you press ▶",
+        "勾选后本环节跑到时，会在它的节点层子壳里预置生成节点与控制节点；一律不自动运行，由你点 ▶ 执行":
+          "When checked, this step's node-layer shell gets generation and control nodes preset; nothing runs automatically — you press ▶",
         "生成类型": "Generation types",
         "要预置哪几种生成节点（平行摆在同一颗子壳里，各自带提示词与参数）":
           "Which generation nodes to preset (placed side by side in the same step shell, each with its own prompt and settings)",

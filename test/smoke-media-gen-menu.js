@@ -15,7 +15,7 @@
  *
  * 覆盖：
  *   [1] 一级子菜单成员（跑真实 canvasCreateMenuGroups；选一项看它到底建出哪一类节点）
- *   [1b] 「工具」一级菜单＝工具 / 函数节点的创建入口（顶栏只留「工具库」；开发 / 数据库壳层不列）
+ *   [1b] 「其他节点」二级菜单＝工具 / 函数节点的创建入口（顶栏只留「工具库」；任何壳层都列）
  *   [2] 类型名与用途文案改名 · 旧文案与旧 i18n 词条无残留 · 新词条中英齐备 · 节点指南齐备
  *   [5] 音频 / 视频输入节点：各 1 个数据输出端子，值里带 file:/// URL
  *   [6] file:// URL ⇄ 本机绝对路径 归一（逐例）
@@ -567,40 +567,59 @@ const txt = mk("txt", "input_text", { text: "把这段念出来" });
     "图像节点仍不单独出现在画布右键「输入节点」分组里（走文件节点自动转换）",
   );
 
-  /* ===================== [1b] 一级菜单「工具」＝工具 / 函数节点的创建入口 =====================
-   * 顶栏不再有创建入口（那一格改叫「工具库」，只管理已保存的工具包）；两类节点的
-   * 新建回到画布右键菜单，收在一个名为「工具」的一级子菜单下。 */
-  console.log("\n[1b] 画布右键 · 「工具」一级菜单（工具 / 函数节点的创建入口）");
+  /* ===================== [1b] 「其他节点」二级菜单＝工具 / 函数节点的创建入口 =====================
+   * 顶栏只有「工具库」（管理已保存的包）；两类节点的新建入口收在画布右键菜单的
+   * 「其他节点」二级菜单里（原「工具」一级菜单已撤），任何壳层都列。 */
+  console.log("\n[1b] 画布右键 · 「其他节点」二级菜单（工具 / 函数节点的创建入口）");
+  const OTHER_LABEL = "其他节点（网络 · 批次拆分 / 合并）";
   const allMenuItems = () => [].concat(...menuGroups().map((g) => g[1] || []));
   {
-    const tSub = subOf(allMenuItems(), "工具");
-    ok(!!tSub, "顶层画布右键菜单里有「工具」一级菜单（不必再从顶栏建节点）");
+    ok(
+      !allMenuItems().some((it) => it.label === "工具" && Array.isArray(it.submenu)),
+      "「工具」一级菜单已撤（工具 / 函数不再单独占一条一级子菜单）",
+    );
+    const oSub = subOf(allMenuItems(), OTHER_LABEL);
+    ok(!!oSub, "顶层画布右键菜单里有「其他节点」二级菜单");
     eqArr(
-      labelsOf(tSub.submenu),
+      labelsOf(oSub.submenu).slice(0, 2),
       ["工具（Agent 可调用 · 入参出参端子）", "函数（JS 计算 · 自定义入参出参）"],
-      "「工具」二级成员：工具节点在前、函数节点在后",
+      "「其他节点」前两位：工具节点在前、函数节点在后",
     );
     eqArr(
-      kindsBuiltBy(tSub.submenu),
+      kindsBuiltBy(oSub.submenu).slice(0, 2),
       ["tool", "function"],
-      "点二级成员 → 真实建出 tool / function（形态换算在 makeNode，菜单只交 kind）",
+      "点这两条 → 真实建出 tool / function（形态换算在 makeNode，菜单只交 kind）",
     );
     ok(
       !allMenuItems().some((it) => !Array.isArray(it.submenu) && /^(工具|函数)（/.test(it.label)),
-      "两类节点不再平铺在一级（全收进「工具」子菜单）",
+      "两类节点不再平铺在一级（全收进「其他节点」二级菜单）",
     );
-    /* 壳层口径：流程壳（普通超级 / 工具壳）里继续列 → 工具内部可套工具与函数；
-       开发 / 数据库壳是架构与事实容器，不列。 */
+    /* 任务：搬进「控制节点」子菜单首位；原「任务节点」分组标题连同节点层那条分组一起撤掉 */
+    const cSub = subOf(allMenuItems(), "控制节点");
+    ok(!!cSub, "「控制节点」二级菜单在");
+    eqStr(labelsOf(cSub.submenu)[0], "任务（规划 · 可进入分段解决）", "「控制节点」首位是任务节点");
+    ok(
+      !menuGroups().some((g) => g[0] === "任务节点（规划 / 控制流执行）"),
+      "原「任务节点（规划 / 控制流执行）」分组标题已移除",
+    );
+    ok(
+      allMenuItems().some((it) => it.label === "节点层（收纳 · 展开子画布）" && !Array.isArray(it.submenu)),
+      "节点层升为顶级平铺条目（不再收在任务节点分组里）",
+    );
+    /* 壳层口径：门控已去掉 —— 流程壳 / 工具壳 / 开发壳都列工具与函数；
+       数据库壳仍是专属菜单（只有文件节点与表）。 */
     const withHost = (host) => {
       sandbox.superHostAtWorld = () => host;
-      const r = !!subOf(allMenuItems(), "工具");
+      const s = subOf(allMenuItems(), OTHER_LABEL);
+      const r = !!s && s.submenu.some((it) => /^工具（/.test(it.label));
       sandbox.superHostAtWorld = () => null;
       return r;
     };
-    ok(withHost({ id: "sh", kind: "super", title: "sh" }), "展开的流程壳内右键仍列「工具」");
-    ok(withHost({ id: "sh", kind: "super", tool: true, title: "sh" }), "工具壳内右键仍列「工具」（工具里能继续套工具 / 函数）");
-    ok(!withHost({ id: "sh", kind: "super", db: true, title: "sh" }), "数据库壳层内不列「工具」");
-    ok(!withHost({ id: "sh", kind: "super", dev: true, title: "sh" }), "开发壳层内不列「工具」");
+    ok(withHost({ id: "sh", kind: "super", title: "sh" }), "展开的流程壳内右键仍列工具 / 函数");
+    ok(withHost({ id: "sh", kind: "super", tool: true, title: "sh" }), "工具壳内右键仍列工具 / 函数（工具里能继续套工具）");
+    ok(withHost({ id: "sh", kind: "super", dev: true, title: "sh" }), "开发壳层内也列工具 / 函数（壳层门控已去掉）");
+    /* 数据库壳层走的是另一条专属菜单（currentDbSuper / dbCreateMenuOpenAt 早退，只有文件节点与表），
+       这里不重复断言它。 */
   }
 
   /* ===================== [2] 改名口径与旧文案残留 ===================== */
@@ -1140,7 +1159,7 @@ const txt = mk("txt", "input_text", { text: "把这段念出来" });
   eqNum(F.inPortIsControl(spP, 0), true, "视频超分：端口 0 是控制入");
   eqNum(F.inPortIsControl(spV, 0), true, "H3：端口 0 是控制入");
   eqNum(F.inPortIsControl(spD, 0), false, "动态端子节点：端口 0 是提示词入口，不是控制端子");
-  eqNum(F.inPortIsControl(supT, 0), false, "普通超级节点未接线时端口 0 不是纯控制");
+  eqNum(F.inPortIsControl(supT, 0), false, "普通节点层未接线时端口 0 不是纯控制");
   ok(
     F.inPortKindOf(spD, 0) == null,
     "动态端子节点：端口 0 不是控制端子（提示词 / 文本入口）",
@@ -1327,6 +1346,10 @@ const txt = mk("txt", "input_text", { text: "把这段念出来" });
       "breezeModeLabel",
       "breezeFormatOf",
       "breezeCfgScaleOf",
+      "breezeModeResolvedOf",
+      "breezeCfgLockedOf",
+      "breezeCfgScaleForRun",
+      "breezeRefHintOf",
       "breezeSeedOf",
       "breezeErrorText",
       "ensureBreezeBackendReady",

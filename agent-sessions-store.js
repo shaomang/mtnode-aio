@@ -89,6 +89,7 @@ const META_KEYS = [
   "noCanvasRead",
   "canvasFree",
   "noPlanFlow",
+  "assist",
   "ltBound",
   "archived",
   "createdAt",

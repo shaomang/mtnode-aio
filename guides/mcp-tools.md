@@ -4,12 +4,13 @@
   由 `node scripts/build-mcp-contract.mjs` 生成，**禁止手改**。
 - **校验表**：[`../mcp-tool-schemas.js`](../mcp-tool-schemas.js) —— 工具名 → 输入 schema，主进程在
   `tools/call` 之前用它做必填与类型校验（同一个生成器写出）。
-- 接入指南与协议细节：[`mcp-server.md`](mcp-server.md)；用户手册：`guides/manual/mcp-server.md`。
+- 接入指南与协议细节：[`mcp-server.md`](mcp-server.md)（**唯一权威**：工具用法、作业语义、自用回环）；
+  用户手册：`guides/manual/mcp-server.md`。
 
 ## 为什么是「生成」而不是「手写一份」
 
 项目硬规矩是**提示词单一真源**：画布 / 数据库节点的参数机制只写在
-`dsh/gateway/{canvas,db,ai-facts,longtask,assets}-plugin.mjs` 的工具定义里。
+`dsh/gateway/*-plugin.mjs` 的工具定义里。
 所以 MCP 侧**不抄第二份**参数表 —— 生成器把插件模块的 `import` 剥掉、用桩替掉
 `defineTool`，真实调用它的 `apply(ctx)`，于是每个 `defineTool({...})` 的
 `name` / `description` / `parameters` 原样被抓下来；`parameters` 再交给**官方
@@ -35,11 +36,13 @@ node scripts/build-mcp-contract.mjs --check  # 只比对，不一致退码 1（�
 | `dsh/gateway/ai-facts-plugin.mjs`（`mtnode_facts`） | 同上 |
 | `dsh/gateway/longtask-plugin.mjs`（`lt_state`） | 同上 |
 | `dsh/gateway/assets-plugin.mjs`（`mtnode_assets`） | 同上 |
-| `dsh/gateway/gui-plugin.mjs`（`mtnode_gui`，唯一主进程执行族） | 同上 |
+| `dsh/gateway/gui-plugin.mjs`（`mtnode_gui`，主进程执行） | 同上 |
+| `dsh/gateway/mcp-extra-plugin.mjs`（`mtnode_generate` / `mtnode_run` / `mtnode_tools` / `mtnode_session`，回环四件） | 同上 |
 | 生成器内的 `MCP_RESOURCES` / `MCP_PROMPTS`（MCP 侧自有，无插件真源） | `resources[]` / `prompts[]` |
 
 **不在导出范围**的插件（有意的边界，见 `guides/mcp-server.md` §5）：
-`browser-plugin.mjs`（会话自己的浏览器，13 个工具）、`tools-plugin.mjs`（用户工具节点，参数由画布决定）、
+`browser-plugin.mjs`（会话自己的浏览器，13 个工具）、`tools-plugin.mjs`（用户工具节点参数由画布决定，
+改由 `mtnode_tools` 在运行时列/调）、
 `bridge-plugin.mjs` / `speech-plugin.mjs` / `longtask` 的记忆类动作等（宿主内部通道）。
 
 ## 契约里的字段
@@ -55,7 +58,13 @@ prompts[]    { name, title, description, arguments, builder(内部字段) }
 `family` 与 `renderer/mcp-bridge.js`、`mcp-server.js` 的 `TOOL_OPS` 表三方对齐；
 `test/smoke-mcp-server.js` 会钉住「契约里的每个工具都有接线」。
 
-例外只有一个：`family:"gui"`（`mtnode_gui`）在 `TOOL_OPS` 里标了 `local:true`，
-**由主进程执行**（`mcp-gui-agent.js`）而不是推给渲染层 —— 只有主进程拿得到 `BrowserWindow`
-与 `webContents`。所以渲染层桥里那支 `case "gui"` 只负责给「旧版服务端推错帧」回一句可读报错；
-冒烟测试对这支单独钉（`LOCAL_TOOLS`）。
+例外是「不经画布族处理函数」的那几支：
+
+- `family:"gui"`（`mtnode_gui`）：`TOOL_OPS` 标 `local:true`，**主进程**执行（`mcp-gui-agent.js`）——
+  只有主进程拿得到 `BrowserWindow` 与 `webContents`。
+- `family:"gen"`（`mtnode_generate`）：主进程执行（`mcp-media-agent.js`），四个生成后端都在主进程，
+  且共用那把全局音视频互斥锁。
+- `family:"run" | "tool" | "session"`：推渲染层的 `renderer/mcp-extra.js`（`window.MTNodeMcpExtra`），
+  在那里复用 `playNode` / `playControlNode` / `executeAgentToolCall` / `agentSessionSend`。
+
+`test/smoke-mcp-server.js` 对这几支单独钉（`LOCAL_TOOLS` + 回环 op 分派）。

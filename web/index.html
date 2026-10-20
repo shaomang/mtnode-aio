@@ -15,7 +15,7 @@
 <title>MTNode AI编排器 · 下载</title>
 <meta name="description" content="MTNode AI编排器 v1.1 — 把复杂 AI 工作收束于一张可视化画布的桌面应用：节点体系 + 内置 DeepSeek Harness Agent 引擎。永久免费、MIT 开源。Windows 安装包与源码下载。">
 <meta property="og:title" content="MTNode AI编排器 v1.1">
-<meta property="og:description" content="文本 / 图像 / 音视频生成、任务控制流、超级节点、开发节点、数据库节点，加上会办事的 Agent：智能会话、视觉模型、插件 / 技能 / MCP、AI 直接搭建工作流。永久免费开源。">
+<meta property="og:description" content="文本 / 图像 / 音视频生成、任务控制流、节点层、开发节点、数据库节点，加上会办事的 Agent：智能会话、视觉模型、插件 / 技能 / MCP、AI 直接搭建工作流。永久免费开源。">
 <meta property="og:image" content="screenshot.png">
 <meta name="theme-color" content="#161b25">
 <style>
@@ -207,7 +207,7 @@ html[lang="en"] h2{letter-spacing:1px}
       <span class="pill" data-i18n="pill.dsh">内置 DeepSeek Harness</span>
     </div>
     <h1>MTNode <b>AI</b> <span data-i18n="hero.title">编排器</span></h1>
-    <p class="lead" data-i18n="hero.lead">把复杂的 AI 工作收束到一张可视化画布：文本 / 图像 / 音视频输入、大模型处理、图像生成、音乐 / 语音 / 视频生成、批量生产、任务规划、对话与智能办事，并用超级节点收纳复杂子图。节点照旧好用，同时自带 Agent 引擎——可读文件、联网搜索、执行命令、调用子代理，完成后交付结果。</p>
+    <p class="lead" data-i18n="hero.lead">把复杂的 AI 工作收束到一张可视化画布：文本 / 图像 / 音视频输入、大模型处理、图像生成、音乐 / 语音 / 视频生成、批量生产、任务规划、对话与智能办事，并用节点层收纳复杂子图。节点照旧好用，同时自带 Agent 引擎——可读文件、联网搜索、执行命令、调用子代理，完成后交付结果。</p>
     <div class="hero-cta">
       <a class="dl-btn" id="ctaSetup" href="downloads/MTNodeAIO-Setup-1.2.9.exe" download data-i18n="cta.setup">下载 Windows 安装包</a>
       <a class="dl-btn ghost" href="#whatsnew" data-i18n="cta.new">查看新能力</a>
@@ -236,11 +236,11 @@ html[lang="en"] h2{letter-spacing:1px}
   </div>
 
   <img class="app-shot" src="screenshot.png" alt="MTNode AI编排器 界面截图" width="1920" height="1080">
-  <p class="shot-cap" data-i18n="shot.cap">工作流画布：节点编排 · @ 引用 · 批量 / 聚合 · 超级节点 · 自动递归执行。另有全屏「智能会话」与右侧全局助手。</p>
+  <p class="shot-cap" data-i18n="shot.cap">工作流画布：节点编排 · @ 引用 · 批量 / 聚合 · 节点层 · 自动递归执行。另有全屏「智能会话」与右侧全局助手。</p>
 
   <!-- 1.1 大版本 -->
   <section id="whatsnew">
-    <p class="muted" data-i18n="new.p">v1.0 是可视化画布工具。v1.1 植入 DeepSeek Harness（dsh）后，模型能在你指定的工作目录里真正执行任务；1.1.28 又补齐超级节点、开发节点、数据库节点、音视频生成、网络与执行节点等节点体系。过程可追溯、权限可审批、扩展可安装。</p>
+    <p class="muted" data-i18n="new.p">v1.0 是可视化画布工具。v1.1 植入 DeepSeek Harness（dsh）后，模型能在你指定的工作目录里真正执行任务；1.1.28 又补齐节点层、开发节点、数据库节点、音视频生成、网络与执行节点等节点体系。过程可追溯、权限可审批、扩展可安装。</p>
 
     <div class="grid">
       <div class="card">
@@ -256,7 +256,7 @@ html[lang="en"] h2{letter-spacing:1px}
         <p data-i18n="c.assist">右侧助手能看全局状态、切换画布、居中节点，也可直接创建 / 连线 / 排版节点；改图与删除工作流会弹窗确认，搭好的管道可继续编辑、一键重跑。</p>
       </div>
       <div class="card">
-        <h3><span class="ico">🧩</span><span data-i18n="c.super.h">超级节点</span></h3>
+        <h3><span class="ico">🧩</span><span data-i18n="c.super.h">节点层</span></h3>
         <p data-i18n="c.super">把相关节点收纳为子图：展开壳层即可编辑，↪ 进入完整内部画布，支持嵌套、边端子数据隧穿与子文件夹相对路径；边栏树状列表一键进入。</p>
       </div>
       <div class="card">
@@ -306,12 +306,12 @@ html[lang="en"] h2{letter-spacing:1px}
   <section id="features">
     <h2 data-i18n="feat.h">功能特性</h2>
     <ul>
-      <li data-i18n="feat.1" data-i18n-html="1"><b class="hl">输入节点</b>：文本就地编辑、实时保存；图像点击选择或直接拖入。连线后自动继承输入内容，识别 YAML 自动转为批量节点；数据库超级节点内部另有文件节点与表节点。</li>
+      <li data-i18n="feat.1" data-i18n-html="1"><b class="hl">输入节点</b>：文本就地编辑、实时保存；图像点击选择或直接拖入。连线后自动继承输入内容，识别 YAML 自动转为批量节点；数据库节点层内部另有文件节点与表节点。</li>
       <li data-i18n="feat.2" data-i18n-html="1"><b class="hl">处理节点</b>：文本 LLM 与图像生成；提示词内 @ 引用已连接节点，@Tag 引用标签分组；带参考图自动走图生图。可预览完整请求、多次尝试、思考强度。</li>
       <li data-i18n="feat.3" data-i18n-html="1"><b class="hl">智能任务 / 智能模式</b>：独立「智能任务」节点，或在文本处理上开 🐋 智能、对话节点开「智能助手」；支持 @ 引用、批量 / 聚合、一键扩展为会话并双向同步。</li>
       <li data-i18n="feat.4" data-i18n-html="1"><b class="hl">保存节点</b>：输出保存为 .yaml 或图像，支持自动保存；批量链按 {文件名}_{输入节点标题} 命名。媒体生成节点自带输出路径，无需再挂保存。</li>
       <li data-i18n="feat.5" data-i18n-html="1"><b class="hl">批量 / 拆分 / 合并</b>：批量按条目并行运行（每条目一次）或聚合合并为一次；拆分节点实时抽取批次单项，合并节点把多输入汇成批次。</li>
-      <li data-i18n="feat.6" data-i18n-html="1"><b class="hl">超级节点</b>：收纳相关节点为子图，展开壳层或 ↪ 进入完整内部画布，可嵌套；边端子隧穿数据，子文件夹约束内部相对路径。</li>
+      <li data-i18n="feat.6" data-i18n-html="1"><b class="hl">节点层</b>：收纳相关节点为子图，展开壳层或 ↪ 进入完整内部画布，可嵌套；边端子隧穿数据，子文件夹约束内部相对路径。</li>
       <li data-i18n="feat.7" data-i18n-html="1"><b class="hl">任务节点与控制流</b>：任务内部为「起点 → 工作 / 子任务 / 判断 → 成功 / 失败终点」，另有需求等待、定时触发器、延时器、序列器、闸门、分发、计数、互斥、判断。</li>
       <li data-i18n="feat.8" data-i18n-html="1"><b class="hl">开发节点</b>：软件项目架构画布（模块 → 文件 → 类 / 接口 / 枚举），绑定项目根目录；「建议 / 开发 / 细化」三按钮由 AI 推进，细化按深度逐层下钻。</li>
       <li data-i18n="feat.9" data-i18n-html="1"><b class="hl">数据库节点</b>：事实收纳 → ⚙ 编译出数据库副本；智能节点接入后一切事实走 mtnode_db，断言带 [记录id · 标题]，查不到即答「数据库中没有该信息」。</li>
@@ -332,7 +332,7 @@ html[lang="en"] h2{letter-spacing:1px}
       <li data-i18n="guide.2" data-i18n-html="1"><b class="hl">配置服务商</b>：设置 · API/配置 → 从目录选择文本服务商并填 API Key。文本服务商用于 LLM / 智能能力，图像服务商用于生图。</li>
       <li data-i18n="guide.3" data-i18n-html="1"><b class="hl">编排节点</b>：画布空白处右键添加节点，拖线连接，提示词里 @ 引用上游，点 ▶ 自动递归执行。</li>
       <li data-i18n="guide.4" data-i18n-html="1"><b class="hl">批量与保存</b>：开启批量逐条生产或聚合合并，YAML / 图像自动命名落盘；也可放一个智能任务节点，直接描述要办的事（读文件 / 联网 / 写结果）。</li>
-      <li data-i18n="guide.5" data-i18n-html="1"><b class="hl">进阶</b>：任务节点做控制流规划，超级节点收纳子图，开发节点搭软件项目架构，数据库节点做有据可查的查询；顶栏「文档」随时查阅手册。</li>
+      <li data-i18n="guide.5" data-i18n-html="1"><b class="hl">进阶</b>：任务节点做控制流规划，节点层收纳子图，开发节点搭软件项目架构，数据库节点做有据可查的查询；顶栏「文档」随时查阅手册。</li>
     </ol>
   </section>
 
@@ -363,7 +363,7 @@ html[lang="en"] h2{letter-spacing:1px}
       </details>
       <details>
         <summary data-i18n="faq.5.q">为什么菜单里没有数据库节点？</summary>
-        <p data-i18n="faq.5.a">数据库节点属测试版本能力：在「设置 · 测试版本」开启后才出现。开启后新建数据库超级节点，收纳事实（文件批量导入 + 表节点建表）并点头部 ⚙ 编译，即可生成可供智能节点查询的数据库副本。</p>
+        <p data-i18n="faq.5.a">数据库节点属测试版本能力：在「设置 · 测试版本」开启后才出现。开启后新建数据库节点层，收纳事实（文件批量导入 + 表节点建表）并点头部 ⚙ 编译，即可生成可供智能节点查询的数据库副本。</p>
       </details>
     </div>
   </section>
@@ -400,7 +400,7 @@ html[lang="en"] h2{letter-spacing:1px}
       "nav.dl": "下载", "nav.new": "新能力", "nav.feat": "功能", "nav.guide": "使用", "nav.oss": "开源",
       "pill.ver": "v1.1 大版本", "pill.free": "永久免费 · MIT", "pill.win": "Windows 10 / 11 x64", "pill.dsh": "内置 DeepSeek Harness",
       "hero.title": "编排器",
-      "hero.lead": "把复杂的 AI 工作收束到一张可视化画布：文本 / 图像 / 音视频输入、大模型处理、图像生成、音乐 / 语音 / 视频生成、批量生产、任务规划、对话与智能办事，并用超级节点收纳复杂子图。节点照旧好用，同时自带 Agent 引擎——可读文件、联网搜索、执行命令、调用子代理，完成后交付结果。",
+      "hero.lead": "把复杂的 AI 工作收束到一张可视化画布：文本 / 图像 / 音视频输入、大模型处理、图像生成、音乐 / 语音 / 视频生成、批量生产、任务规划、对话与智能办事，并用节点层收纳复杂子图。节点照旧好用，同时自带 Agent 引擎——可读文件、联网搜索、执行命令、调用子代理，完成后交付结果。",
       "cta.setup": "下载 Windows 安装包", "cta.new": "查看新能力",
       "dl.h": "下载应用与源码",
       "dl.sub": "Windows 10 / 11 x64 · NSIS 一键安装 · MIT License · 离线可用。安装包内置 Node 运行时与 dsh 引擎，无需另行安装。文件由阿里云 OSS 分发。",
@@ -411,9 +411,9 @@ html[lang="en"] h2{letter-spacing:1px}
       "dl.src.desc": "完整源码（Electron 主进程 + 渲染层 + dsh 网关），含构建脚本与图标，可自行打包。当前版本 v" + VER + " · MIT License。",
       "dl.src.btn": "下载源码包",
       "dl.note": "安装后首次使用：打开「设置 · API/配置」，填写文本 / 图像服务商 API Key（可从服务商目录选择 → 填 Key → 自动载入模型）。智能能力永久启用，任意带 Key 的 OpenAI 兼容文本服务商即可；右上角「文档」可随时查阅应用内手册。",
-      "shot.cap": "工作流画布：节点编排 · @ 引用 · 批量 / 聚合 · 超级节点 · 自动递归执行。另有全屏「智能会话」与右侧全局助手。",
+      "shot.cap": "工作流画布：节点编排 · @ 引用 · 批量 / 聚合 · 节点层 · 自动递归执行。另有全屏「智能会话」与右侧全局助手。",
       "new.h": "v1.1 大版本：从生成到办事",
-      "new.p": "v1.0 是可视化画布工具。v1.1 植入 DeepSeek Harness（dsh）后，模型能在你指定的工作目录里真正执行任务；1.1.28 又补齐超级节点、开发节点、数据库节点、音视频生成、网络与执行节点等节点体系。过程可追溯、权限可审批、扩展可安装。",
+      "new.p": "v1.0 是可视化画布工具。v1.1 植入 DeepSeek Harness（dsh）后，模型能在你指定的工作目录里真正执行任务；1.1.28 又补齐节点层、开发节点、数据库节点、音视频生成、网络与执行节点等节点体系。过程可追溯、权限可审批、扩展可安装。",
       "new.to.k": "v1.1 · Agent",
       "new.to": "提示词变成任务：读文件、写文件、联网、跑命令、提问确认、调用子代理，做完再交结果。节点与会话双向同步。",
       "c.engine.h": "智能引擎（dsh）",
@@ -422,7 +422,7 @@ html[lang="en"] h2{letter-spacing:1px}
       "c.session": "顶栏「编排 / 会话」双视图。多会话按工作目录分组，支持分支、归档、删除；斜杠命令、流式思考与工具轨迹，运行中可随时终止。",
       "c.assist.h": "全局助手 · AI 搭工作流",
       "c.assist": "右侧助手能看全局状态、切换画布、居中节点，也可直接创建 / 连线 / 排版节点；改图与删除工作流会弹窗确认，搭好的管道可继续编辑、一键重跑。",
-      "c.super.h": "超级节点",
+      "c.super.h": "节点层",
       "c.super": "把相关节点收纳为子图：展开壳层即可编辑，↪ 进入完整内部画布，支持嵌套、边端子数据隧穿与子文件夹相对路径；边栏树状列表一键进入。",
       "c.dev.h": "开发节点",
       "c.dev": "把软件项目架构画在一张画布上：模块 → 文件 → 类 / 接口 / 枚举，关系线表达依赖。绑定项目根目录后，「建议 / 开发 / 细化」三个按钮由 AI 只读调研、给出方案或按深度逐层展开子节点。",
@@ -445,12 +445,12 @@ html[lang="en"] h2{letter-spacing:1px}
       "c.trace.h": "过程可追溯",
       "c.trace": "思考块、工具 chip（参数 / 结果可展开）、轮数与 token / 缓存命中 / tok/s；提问卡片与权限审批实时弹出，全部日志与操作可查。",
       "feat.h": "功能特性",
-      "feat.1": "<b class=\"hl\">输入节点</b>：文本就地编辑、实时保存；图像点击选择或直接拖入。连线后自动继承输入内容，识别 YAML 自动转为批量节点；数据库超级节点内部另有文件节点与表节点。",
+      "feat.1": "<b class=\"hl\">输入节点</b>：文本就地编辑、实时保存；图像点击选择或直接拖入。连线后自动继承输入内容，识别 YAML 自动转为批量节点；数据库节点层内部另有文件节点与表节点。",
       "feat.2": "<b class=\"hl\">处理节点</b>：文本 LLM 与图像生成；提示词内 @ 引用已连接节点，@Tag 引用标签分组；带参考图自动走图生图。可预览完整请求、多次尝试、思考强度。",
       "feat.3": "<b class=\"hl\">智能任务 / 智能模式</b>：独立「智能任务」节点，或在文本处理上开 🐋 智能、对话节点开「智能助手」；支持 @ 引用、批量 / 聚合、一键扩展为会话并双向同步。",
       "feat.4": "<b class=\"hl\">保存节点</b>：输出保存为 .yaml 或图像，支持自动保存；批量链按 {文件名}_{输入节点标题} 命名。媒体生成节点自带输出路径，无需再挂保存。",
       "feat.5": "<b class=\"hl\">批量 / 拆分 / 合并</b>：批量按条目并行运行（每条目一次）或聚合合并为一次；拆分节点实时抽取批次单项，合并节点把多输入汇成批次。",
-      "feat.6": "<b class=\"hl\">超级节点</b>：收纳相关节点为子图，展开壳层或 ↪ 进入完整内部画布，可嵌套；边端子隧穿数据，子文件夹约束内部相对路径。",
+      "feat.6": "<b class=\"hl\">节点层</b>：收纳相关节点为子图，展开壳层或 ↪ 进入完整内部画布，可嵌套；边端子隧穿数据，子文件夹约束内部相对路径。",
       "feat.7": "<b class=\"hl\">任务节点与控制流</b>：任务内部为「起点 → 工作 / 子任务 / 判断 → 成功 / 失败终点」，另有需求等待、定时触发器、延时器、序列器、闸门、分发、计数、互斥、判断。",
       "feat.8": "<b class=\"hl\">开发节点</b>：软件项目架构画布（模块 → 文件 → 类 / 接口 / 枚举），绑定项目根目录；「建议 / 开发 / 细化」三按钮由 AI 推进，细化按深度逐层下钻。",
       "feat.9": "<b class=\"hl\">数据库节点</b>：事实收纳 → ⚙ 编译出数据库副本；智能节点接入后一切事实走 mtnode_db，断言带 [记录id · 标题]，查不到即答「数据库中没有该信息」。",
@@ -466,7 +466,7 @@ html[lang="en"] h2{letter-spacing:1px}
       "guide.2": "<b class=\"hl\">配置服务商</b>：设置 · API/配置 → 从目录选择文本服务商并填 API Key。文本服务商用于 LLM / 智能能力，图像服务商用于生图。",
       "guide.3": "<b class=\"hl\">编排节点</b>：画布空白处右键添加节点，拖线连接，提示词里 @ 引用上游，点 ▶ 自动递归执行。",
       "guide.4": "<b class=\"hl\">批量与保存</b>：开启批量逐条生产或聚合合并，YAML / 图像自动命名落盘；也可放一个智能任务节点，直接描述要办的事（读文件 / 联网 / 写结果）。",
-      "guide.5": "<b class=\"hl\">进阶</b>：任务节点做控制流规划，超级节点收纳子图，开发节点搭软件项目架构，数据库节点做有据可查的查询；顶栏「文档」随时查阅手册。",
+      "guide.5": "<b class=\"hl\">进阶</b>：任务节点做控制流规划，节点层收纳子图，开发节点搭软件项目架构，数据库节点做有据可查的查询；顶栏「文档」随时查阅手册。",
       "oss.h": "永久免费开源",
       "oss.p": "MTNode 永久免费，无订阅、无账号墙。源码以 MIT License 发布，随版本提供源码包，可自由使用、修改、分发。工作流可导出为 .mtnodes 整体开源分享。",
       "oss.lic": "Copyright (c) 2026 M.S · MIT License",
@@ -480,7 +480,7 @@ html[lang="en"] h2{letter-spacing:1px}
       "faq.4.q": "Agent 会改我的文件吗？安全吗？",
       "faq.4.a": "会，这正是智能模式的能力。请指定正确的工作目录。默认「无人值守」允许工作区内读写；可改为逐项审批或只读。运行过程全程可见，可随时终止。",
       "faq.5.q": "为什么菜单里没有数据库节点？",
-      "faq.5.a": "数据库节点属测试版本能力：在「设置 · 测试版本」开启后才出现。开启后新建数据库超级节点，收纳事实（文件批量导入 + 表节点建表）并点头部 ⚙ 编译，即可生成可供智能节点查询的数据库副本。",
+      "faq.5.a": "数据库节点属测试版本能力：在「设置 · 测试版本」开启后才出现。开启后新建数据库节点层，收纳事实（文件批量导入 + 表节点建表）并点头部 ⚙ 编译，即可生成可供智能节点查询的数据库副本。",
       "priv.h": "数据与隐私",
       "priv.p": "所有工作流数据保存在本机（%APPDATA%\\pipeline-console\\pipeline-console\\save\\），不默认上传任何服务器；仅在你主动运行节点时，将提示词与输入内容发送至你配置的服务商 API。使用「创意工坊」上传时，会将你选择的 .mtnodes 模板与预览图发至工坊服务器（mt-agent.com）。"
     },
@@ -488,7 +488,7 @@ html[lang="en"] h2{letter-spacing:1px}
       "nav.dl": "Download", "nav.new": "What's new", "nav.feat": "Features", "nav.guide": "Guide", "nav.oss": "Open source",
       "pill.ver": "v1.1 major", "pill.free": "Free forever · MIT", "pill.win": "Windows 10 / 11 x64", "pill.dsh": "DeepSeek Harness inside",
       "hero.title": "Orchestrator",
-      "hero.lead": "Gather complex AI work onto one visual canvas — text / image / audio-video input, LLM and image processing, music / voice / video generation, batch production, task planning, chat, and agents that get things done — with super nodes to pack complex subgraphs. Nodes work as before, now with a built-in agent engine that reads files, searches the web, runs commands and calls sub-agents, then hands back results.",
+      "hero.lead": "Gather complex AI work onto one visual canvas — text / image / audio-video input, LLM and image processing, music / voice / video generation, batch production, task planning, chat, and agents that get things done — with node layers to pack complex subgraphs. Nodes work as before, now with a built-in agent engine that reads files, searches the web, runs commands and calls sub-agents, then hands back results.",
       "cta.setup": "Download Windows installer", "cta.new": "See what's new",
       "dl.h": "Download app & source",
       "dl.sub": "Windows 10 / 11 x64 · NSIS one-click install · MIT License · works offline. The installer bundles the Node runtime and dsh engine — nothing else to install. Files are served from Aliyun OSS.",
@@ -499,9 +499,9 @@ html[lang="en"] h2{letter-spacing:1px}
       "dl.src.desc": "Full source (Electron main + renderer + dsh gateway), including build scripts and icons, so you can pack it yourself. Current v" + VER + " · MIT License.",
       "dl.src.btn": "Download source",
       "dl.note": "First launch: open Settings · API/Config and fill in text / image provider API keys (pick from the catalog → paste the key → models load automatically). Agent capability is always on for any OpenAI-compatible text provider with a key; the in-app manual is under Document in the top bar.",
-      "shot.cap": "Workflow canvas: node graph · @ refs · batch / aggregate · super nodes · auto recursive run. Plus a full-screen Agent session and a right-side global assistant.",
+      "shot.cap": "Workflow canvas: node graph · @ refs · batch / aggregate · node layers · auto recursive run. Plus a full-screen Agent session and a right-side global assistant.",
       "new.h": "v1.1: from generate to get things done",
-      "new.p": "v1.0 was a visual canvas. With DeepSeek Harness (dsh) in v1.1 the model can actually execute tasks in a workspace you choose; 1.1.28 adds super nodes, dev nodes, database nodes, media generation and network / execute nodes. Traces are visible, permissions can require approval, and extensions are installable.",
+      "new.p": "v1.0 was a visual canvas. With DeepSeek Harness (dsh) in v1.1 the model can actually execute tasks in a workspace you choose; 1.1.28 adds node layers, dev nodes, database nodes, media generation and network / execute nodes. Traces are visible, permissions can require approval, and extensions are installable.",
       "new.from.k": "v1.0 · Generate",
       "new.from": "You feed a prompt and inputs; you get text or an image back. The chain stops at the API call.",
       "new.to.k": "v1.1 · Agent",
@@ -512,7 +512,7 @@ html[lang="en"] h2{letter-spacing:1px}
       "c.session": "Toolbar switches Workflow / Session. Multiple sessions grouped by workspace, with fork, archive and delete; slash commands, streaming thoughts and tool traces, stoppable mid-run.",
       "c.assist.h": "Global assistant · AI builds workflows",
       "c.assist": "The right-side assistant sees app state, can switch canvases, focus nodes, and create / wire / lay out nodes itself. Graph edits and workflow deletion ask for confirmation; the pipeline it builds stays editable and re-runnable.",
-      "c.super.h": "Super nodes",
+      "c.super.h": "Node layers",
       "c.super": "Pack related nodes into one subgraph: expand the shell to edit, ↪ to open the full inner canvas, nest freely, tunnel data through boundary ports and keep inner relative paths in a sub-folder. The sidebar tree jumps you in.",
       "c.dev.h": "Dev nodes",
       "c.dev": "Draw a software project's architecture on the canvas: module → file → class / interface / enum, with relationship wires for dependencies. Bind the project root and use the Suggest / Develop / Refine buttons — AI surveys the code read-only, proposes next steps, or expands children by depth.",
@@ -535,12 +535,12 @@ html[lang="en"] h2{letter-spacing:1px}
       "c.trace.h": "Everything is inspectable",
       "c.trace": "Thought blocks, tool chips (expand args / results), turns and tokens / cache hit / tok/s. Ask-user and approval cards pop in real time; every log stays inspectable.",
       "feat.h": "Features",
-      "feat.1": "<b class=\"hl\">Input nodes</b>: edit text in place (auto-saved); click or drop images. Wiring inherits content; YAML becomes a batch. Database super nodes also hold file nodes (bulk import) and table nodes (agent builds the table).",
+      "feat.1": "<b class=\"hl\">Input nodes</b>: edit text in place (auto-saved); click or drop images. Wiring inherits content; YAML becomes a batch. Database node layers also hold file nodes (bulk import) and table nodes (agent builds the table).",
       "feat.2": "<b class=\"hl\">Process nodes</b>: text LLM and image generation; type @ in the prompt to cite connected nodes (@Tag for a label group); reference images use img2img. Preview the full request, multi-attempt, thinking effort.",
       "feat.3": "<b class=\"hl\">Agent task / agent mode</b>: a dedicated Agent Task node, or 🐋 Agent on text-process and Agent assistant on chat. Tasks support @ refs, batch / aggregate, and one-click expand to a synced session.",
       "feat.4": "<b class=\"hl\">Save nodes</b>: write .yaml or images, with auto-save. Batch chains name files {filename}_{input node title}. Media generation nodes write to their own output path — no save node needed.",
       "feat.5": "<b class=\"hl\">Batch / Split / Merge</b>: run all items in parallel (one run per item), or aggregate once. Split extracts one batch item; Merge gathers inputs into a batch.",
-      "feat.6": "<b class=\"hl\">Super nodes</b>: pack a subgraph, expand the shell or press ↪ to open the full inner canvas, nest as deep as you like; boundary ports tunnel data and a sub-folder scopes inner relative paths.",
+      "feat.6": "<b class=\"hl\">Node layers</b>: pack a subgraph, expand the shell or press ↪ to open the full inner canvas, nest as deep as you like; boundary ports tunnel data and a sub-folder scopes inner relative paths.",
       "feat.7": "<b class=\"hl\">Task node & control flow</b>: a task runs start → work / subtask / judge → success or failure end, plus wait-for-requirement, timer, delay, sequencer, gate, splitter, counter, mutex and judge nodes.",
       "feat.8": "<b class=\"hl\">Dev nodes</b>: a software-architecture canvas (module → file → class / interface / enum) bound to a project root; the Suggest / Develop / Refine buttons drive AI, and Refine drills down by depth.",
       "feat.9": "<b class=\"hl\">Database nodes</b>: collect facts → ⚙ compile a database replica; agent nodes wired to it answer only from mtnode_db, citing [record id · title], and say “the database does not contain that information” when it is absent.",
@@ -556,7 +556,7 @@ html[lang="en"] h2{letter-spacing:1px}
       "guide.2": "<b class=\"hl\">Providers</b>: Settings · API/Config → pick a text provider from the catalog and paste the key. Text providers drive LLM / agent; image providers drive generation.",
       "guide.3": "<b class=\"hl\">Orchestrate</b>: right-click the empty canvas to add nodes, drag wires, @-cite upstream in prompts, click ▶ to recurse and run.",
       "guide.4": "<b class=\"hl\">Batch & save</b>: turn on batch or aggregate; YAML / images land with auto names. Or drop an Agent Task node and describe the job (read files / search / write results).",
-      "guide.5": "<b class=\"hl\">Go further</b>: task nodes plan control flow, super nodes pack subgraphs, dev nodes map a software project, database nodes answer from stored facts; the Document entry in the top bar opens the manual any time.",
+      "guide.5": "<b class=\"hl\">Go further</b>: task nodes plan control flow, node layers pack subgraphs, dev nodes map a software project, database nodes answer from stored facts; the Document entry in the top bar opens the manual any time.",
       "oss.h": "Free and open source, forever",
       "oss.p": "MTNode is free forever — no subscription, no account wall. Source is released under the MIT License, with a source zip for each version. Use, modify, and redistribute freely. Workflows can be exported as .mtnodes and shared openly.",
       "oss.lic": "Copyright (c) 2026 M.S · MIT License",
@@ -570,7 +570,7 @@ html[lang="en"] h2{letter-spacing:1px}
       "faq.4.q": "Will the agent change my files? Is that safe?",
       "faq.4.a": "Yes — that is the point of agent mode. Set the working directory carefully. Default Unattended allows read/write inside the workspace; switch to approve-each or read-only. The run is fully visible and can be stopped.",
       "faq.5.q": "Why is there no Database node in the menu?",
-      "faq.5.a": "Database nodes are a test-feature capability: enable Test features in Settings and they appear. Then create a database super node, collect facts (bulk file import + table nodes) and press ⚙ in its header to compile the replica that agent nodes can query.",
+      "faq.5.a": "Database nodes are a test-feature capability: enable Test features in Settings and they appear. Then create a database node layer, collect facts (bulk file import + table nodes) and press ⚙ in its header to compile the replica that agent nodes can query.",
       "priv.h": "Data & privacy",
       "priv.p": "All workflow data is stored locally (%APPDATA%\\pipeline-console\\pipeline-console\\save\\) and is not uploaded to our servers by default. Only when you actively run a node are the prompt and inputs sent to the provider API you configured. If you upload to the Creative Workshop, the .mtnodes template and preview image you choose are sent to the workshop server (mt-agent.com)."
     }

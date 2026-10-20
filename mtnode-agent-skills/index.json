@@ -1,6 +1,6 @@
 {
   "format": "mtnode-agent-skills-index-v1",
-  "updatedAt": "2026-10-18T02:43:23.421Z",
+  "updatedAt": "2026-10-20T03:06:50.407Z",
   "libraryRoot": "mtnode-agent-skills",
   "usage": "MTNode 内置 Agent 技能库。默认只注入本索引；任务匹配时再读取完整 SKILL.md（skill 工具或 read）。",
   "categories": [
@@ -99,7 +99,7 @@
           "id": "mcp-server",
           "name": "mtnode-mcp-server",
           "title": "MTNode MCP 服务端（第三方接进来操作）",
-          "description": "从 MTNode 外面（Claude Code / Cursor / 自研 Agent）经 MCP 操作本机 MTNode 的完整规范：服务端在哪、8 个工具各自怎么用、必须先读图拿 contentHash 再改、resources/prompts 三类能力、权限与审计口径、以及做不到的事（长任务人工环节 / 媒体生成仍要人在界面上点）。Use when connecting an external MCP client to MTNode, debugging third-party calls, or writing code that drives MTNode over MCP.",
+          "description": "从 MTNode 外面（Claude Code / Cursor / 自研 Agent）经 MCP 操作本机 MTNode 的完整规范：服务端在哪、13 个工具各自怎么用（含媒体生成 / 跑节点 / 用户工具 / 会话四条异步作业）、必须先读图拿 contentHash 再改、resources/prompts 三类能力、权限与审计口径、自用回环（应用内 Agent 也走同一套入口）、以及做不到的事。Use when connecting an external MCP client to MTNode, debugging third-party calls, generating media or running nodes over MCP, or writing code that drives MTNode over MCP.",
           "path": "mtnode/mcp-server/SKILL.md",
           "version": ""
         },
@@ -134,6 +134,24 @@
       "title": "音乐生成（MiniMax Music）",
       "skills": [
         {
+          "id": "breeze-script-format",
+          "name": "breeze-script-format",
+          "title": "Breeze 台词规范",
+          "description": "【内置·随应用发版，不需从工坊安装】把用户给的台词规范成 Breeze TTS 2 能正确念出来的正文：语气走 instruction（默认单次全局，情绪转折或超长才分段），发声事件用官方内联写法（中文 [笑]/[叹气]/[咳嗽]/[清嗓子]，英文 (laugh)/(sigh)/(cough)/(clears throat)），并做口播安全化（标点断句、数字单位、符号 emoji、舞台指示转合法事件）。交付「台词 / 语气 instruction / 分段说明」三个小节。用于 MTNode「Breeze 语音生成」节点（breeze_gen）端口 0 与端口 3。",
+          "path": "music/breeze-script-format/SKILL.md",
+          "version": "",
+          "menu": "user"
+        },
+        {
+          "id": "breeze-voice-design",
+          "name": "breeze-voice-design",
+          "title": "Breeze 音色设计",
+          "description": "【内置·随应用发版，不需从工坊安装】把用户一句话的需求扩成 Breeze TTS 2 的音色提示词（instruction），两档：默认「简洁」= 按性别年龄 / 音色质感 / 语速节奏 / 情绪性格 / 场景用途五个槽位拼成一句自然语言；「详细」= 固定四段分行（声线类型 / 音色关键词 / 共鸣位置 / 参考质感）。语言跟随台词或用户输入，配 cfg_scale=4 与 seed=42。交付时只给提示词正文。用于 MTNode「Breeze 语音生成」节点（breeze_gen）端口 3 的指令，或 breezeblue.ai API 的 instruction 字段。",
+          "path": "music/breeze-voice-design/SKILL.md",
+          "version": "",
+          "menu": "user"
+        },
+        {
           "id": "minimax-music-lyrics",
           "name": "minimax-music-lyrics",
           "title": "MiniMax Music 歌词",
@@ -164,6 +182,21 @@
           "description": "MTNode 应用插件（catalog 窗口插件 / builtin / 本地后端插件）的开发规范：插件类型与边界、后端插件三层结构（主进程宿主 · 预加载桥 · 控制台 UI）、主进程与渲染层接线点、build.json 打包白名单、画布节点与 i18n / 指南 / 冒烟交付清单、报错总线与自我修复、数据目录纪律，含最小骨架与常见坑。新建或改造 MTNode 插件（顶栏「插件」对话框里那个东西）时按需加载。",
           "path": "plugins/plugin-dev/SKILL.md",
           "version": ""
+        }
+      ]
+    },
+    {
+      "id": "writing",
+      "title": "写作与润色",
+      "skills": [
+        {
+          "id": "humanizer-zh",
+          "name": "humanizer-zh",
+          "title": "去 AI 味与写作润色",
+          "description": "润色中文文稿：删空话与套路，保留事实与作者声音",
+          "path": "writing/humanizer-zh/SKILL.md",
+          "version": "",
+          "menu": "user"
         }
       ]
     }

@@ -11,9 +11,14 @@
  *
  * 例外：Microsoft Store（MSIX）版禁用应用内自更新 —— 包安装目录（Program Files\WindowsApps\）
  * 只读，electron-updater 下载 NSIS 包再静默安装必然失败；且商店政策禁止应用自行分发可执行更新。
- * 该情形由 isStorePackage() 把整条链挡在门外：不加载 electron-updater、不设更新源、不起后台定时检查、
+ * 该情形由 isStorePackage() 把整条链挡在门外：不加载 electron-updater、不设更新源、不起自更新定时检查、
  * 四个 IPC 入口（status / check / download / install / confirmAndStart）一律短路返回 store_package，
  * statusPayload 报 supported:false + store:true；渲染层据 store 隐藏顶栏更新入口并提示走商店更新。
+ *
+ * 商店包唯一保留的能力是「只读版本探测」（probeStoreLatestVersion）：
+ * 用同一更新源 latest.yml 的版本号与当前版本比较，只告诉用户「商店里可能有新版」，
+ * 不下载、不安装、不发 update:available（见 statusPayload 的 latestVersion / storeUpdateAvailable）。
+ * 因为商店包要等审核，线上（OSS）版本通常比商店早几天，提示文案必须写明「可能延后最多 3 天」。
  */
 const { app, ipcMain, dialog } = require("electron");
 const path = require("path");
@@ -36,6 +41,16 @@ let forceSameVersion = false;
 let promptRestartAfterDownload = false;
 /** 正在展示「请重启」对话框，避免重复弹 */
 let restartPromptOpen = false;
+
+/* ── 商店包（MSIX）只读版本探测的运行态 ─────────────────────────────────────
+   商店包不能自更新，但用户仍需要知道「商店里可能有新版」：只读更新源 latest.yml
+   里的版本号与当前版本比大小，不下载、不安装、不发 update:available。
+   失败一律静默（离线 / 源站挂了都不该打扰用户），下一轮 6 小时再试。 */
+let storeLatest = ""; /* 更新源上的最新版本号（探测成功过才有值） */
+let storeProbing = false;
+let storeProbeError = "";
+/** 探测实现可被冒烟测试替换（生产永远是 fetchText），避免测试真的联网 */
+let storeProbeFetch = null;
 
 function send(channel, data) {
   try {
@@ -92,8 +107,129 @@ function canCheckUpdates() {
   return true;
 }
 
+/* ── 版本号比较（只看主/次/补丁三段数字，够用且不引 semver 依赖）────────────── */
+function versionParts(v) {
+  const m = String(v || "")
+    .trim()
+    .replace(/^v/i, "")
+    .match(/^(\d+)(?:\.(\d+))?(?:\.(\d+))?/);
+  if (!m) return null;
+  return [Number(m[1]) || 0, Number(m[2]) || 0, Number(m[3]) || 0];
+}
+
+/** latest 比 current 新 → true；任一版本号解析不出来一律 false（宁可不提示也不误报） */
+function isNewerVersion(latest, current) {
+  const a = versionParts(latest);
+  const b = versionParts(current);
+  if (!a || !b) return false;
+  for (let i = 0; i < 3; i++) {
+    if (a[i] > b[i]) return true;
+    if (a[i] < b[i]) return false;
+  }
+  return false;
+}
+
+/** 从 electron-updater 的 latest.yml 里取版本号（`version: 1.5.4`）；取不到回空串 */
+function parseLatestYmlVersion(text) {
+  const m = String(text || "").match(/^\s*version\s*:\s*['"]?v?([0-9][0-9A-Za-z.\-+]*)['"]?\s*$/m);
+  return m ? String(m[1]).trim() : "";
+}
+
+/** 极简 GET 文本（带超时与体积上限）：商店包探测不引入任何新依赖 */
+function fetchText(url) {
+  return new Promise((resolve, reject) => {
+    let mod = null;
+    try {
+      mod = /^https:/i.test(url) ? require("https") : require("http");
+    } catch (e) {
+      reject(e);
+      return;
+    }
+    const req = mod.get(url, { timeout: 8000 }, (res) => {
+      if (res.statusCode !== 200) {
+        res.resume();
+        reject(new Error("HTTP " + res.statusCode));
+        return;
+      }
+      let buf = "";
+      res.setEncoding("utf8");
+      res.on("data", (d) => {
+        buf += d;
+        /* latest.yml 只有几行，超过上限只可能是拿错了东西 —— 直接掐掉 */
+        if (buf.length > 256 * 1024) req.destroy(new Error("feed too large"));
+      });
+      res.on("end", () => resolve(buf));
+    });
+    req.on("timeout", () => req.destroy(new Error("timeout")));
+    req.on("error", reject);
+  });
+}
+
+/**
+ * 商店包：只读探测更新源上的最新版本号。
+ * 不加载 electron-updater、不设 feed、不下载不安装 —— 只为了「右下角版本号要不要蓝色高亮」
+ * 与弹窗里那句「商店里可能有新版」。探测成功会补发一次 update:status 让渲染层重画。
+ * 失败静默（只记 storeProbeError），由 6 小时后台定时器下一轮再试。
+ */
+async function probeStoreLatestVersion() {
+  if (!isStorePackage()) return storeLatest;
+  if (storeProbing) return storeLatest;
+  storeProbing = true;
+  try {
+    const base = String(UPDATE_FEED || "").replace(/\/+$/, "");
+    const txt = await (storeProbeFetch || fetchText)(base + "/latest.yml");
+    const v = parseLatestYmlVersion(txt);
+    if (v) {
+      storeLatest = v;
+      storeProbeError = "";
+      send("update:status", statusPayload());
+    } else {
+      storeProbeError = "no_version_in_feed";
+    }
+  } catch (e) {
+    storeProbeError = String((e && e.message) || e);
+  } finally {
+    storeProbing = false;
+  }
+  return storeLatest;
+}
+
+/**
+ * 打开 Microsoft Store 里的 MTNode 页面（商店包专用；协议白名单留在主进程，
+ * 渲染层只发一个无参命令，不能借它打开任意 URL）。
+ * 深链失败（商店被禁用 / 精简系统）退回商店首页，两者都失败才回 ok:false。
+ * PFN 与 scripts/msix/msix.config.json 的 identityName + publisher 哈希一致
+ * （ms2308.MTNodeAI_rs9nxh8g698pc）；改了包身份要同步这里。
+ */
+const STORE_PFN = "ms2308.MTNodeAI_rs9nxh8g698pc";
+async function openStorePage() {
+  let shell = null;
+  try {
+    shell = require("electron").shell;
+  } catch (_) {}
+  if (!shell || typeof shell.openExternal !== "function") {
+    return { ok: false, error: "shell unavailable" };
+  }
+  const targets = [
+    "ms-windows-store://pdp/?PFN=" + STORE_PFN,
+    "ms-windows-store://home",
+  ];
+  let lastError = "";
+  for (const url of targets) {
+    try {
+      await shell.openExternal(url);
+      return { ok: true, url };
+    } catch (e) {
+      lastError = String((e && e.message) || e);
+    }
+  }
+  return { ok: false, error: lastError || "store open failed" };
+}
+
 function statusPayload() {
   const store = isStorePackage();
+  const cur = app.getVersion();
+  const storeNewer = store && isNewerVersion(storeLatest, cur);
   return {
     ok: true,
     /* MSIX / 商店包：内部更新在设计上不启用，渲染层据此隐藏入口并提示走商店 */
@@ -102,13 +238,16 @@ function statusPayload() {
     supported: !store && canCheckUpdates() && !!autoUpdater,
     available: !!(latestInfo && latestInfo.version),
     version: (latestInfo && latestInfo.version) || "",
+    /* 商店包：只读探测到的线上最新版本（含「比本机新」的判定）；非商店包留空 */
+    latestVersion: store ? storeLatest : (latestInfo && latestInfo.version) || "",
+    storeUpdateAvailable: storeNewer,
     releaseDate: (latestInfo && latestInfo.releaseDate) || "",
     releaseNotes: (latestInfo && latestInfo.releaseNotes) || "",
     downloading,
     downloaded,
     readyToRestart: !!(downloaded && latestInfo),
     error: lastError || "",
-    currentVersion: app.getVersion(),
+    currentVersion: cur,
   };
 }
 
@@ -416,6 +555,11 @@ function registerUpdateIpc(getWin) {
     mainWinRef = typeof getWin === "function" ? getWin() : getWin;
     return reinstallSameVersion();
   });
+  /* 商店包「打开 Microsoft Store」：无参命令，深链与协议白名单都在主进程里（见 openStorePage） */
+  ipcMain.handle("update:openStore", async () => {
+    mainWinRef = typeof getWin === "function" ? getWin() : getWin;
+    return openStorePage();
+  });
   ipcMain.handle("update:download", async () => {
     mainWinRef = typeof getWin === "function" ? getWin() : getWin;
     return downloadUpdate();
@@ -491,6 +635,10 @@ function __testResetState() {
   forceSameVersion = false;
   promptRestartAfterDownload = false;
   restartPromptOpen = false;
+  /* 商店包只读探测的运行态也要复位，否则同一进程里多个场景会互相污染 */
+  storeLatest = "";
+  storeProbing = false;
+  storeProbeError = "";
 }
 
 function I18nSafe(s) {
@@ -504,8 +652,17 @@ function I18nSafe(s) {
 
 function startBackgroundCheck(getWin) {
   mainWinRef = typeof getWin === "function" ? getWin() : getWin;
-  /* Store（MSIX）版：不装更新源、不起后台定时检查（内部更新整条链不启用） */
-  if (isStorePackage()) return;
+  /* Store（MSIX）版：不装更新源、不起自更新检查；但保留「只读版本探测」的同一节奏，
+     否则商店包永远不知道商店里有没有新版，右下角也就不会蓝色高亮。 */
+  if (isStorePackage()) {
+    setTimeout(() => {
+      probeStoreLatestVersion().catch(() => {});
+    }, 8000);
+    setInterval(() => {
+      probeStoreLatestVersion().catch(() => {});
+    }, 6 * 3600 * 1000).unref?.();
+    return;
+  }
   if (!app.isPackaged && process.env.MTNODE_FORCE_UPDATE !== "1") return;
   setupAutoUpdater();
   if (!autoUpdater) return;
@@ -526,6 +683,16 @@ module.exports = {
   UPDATE_FEED,
   /* 同版本号重装（设置最底部的手动更新入口）：供冒烟测试直接驱动同一条链 */
   reinstallSameVersion,
+  /* 商店包只读版本探测（不下载不安装）与其纯函数件：供冒烟测试直接驱动同一份实现 */
+  probeStoreLatestVersion,
+  isNewerVersion,
+  parseLatestYmlVersion,
+  openStorePage,
+  STORE_PFN,
+  /* 冒烟测试替换探测用的 HTTP 实现（传 null 恢复真实实现）；生产从不调用 */
+  __setStoreProbeFetch(fn) {
+    storeProbeFetch = typeof fn === "function" ? fn : null;
+  },
   /* 重置运行态：仅供冒烟测试在同一进程里跑多场景（生产不调用） */
   __testResetState,
 };

@@ -2391,9 +2391,16 @@ function teSaveToNode(opts) {
     const v = teCurrent();
     if (!v) return false;
     const text = String(v.text || "");
+    /* 这一笔是否真的换了正文：浏览态正文的重建只在换了的时候做（见下面 teRefreshBoardBrowse） */
+    const changed = String(node.text || "") !== text;
     node.text = text;
     teTrackNodeText(node);
     teRenderBodyTextarea();
+    /* AI 修订（skipCommit 那条路径）不走 tePushToNode，这里必须自己补一次节点浏览态重建：
+       卡片形态一直是 browse 时 applyNodeForm 会早退、body 不会重建，正文就停在上一版
+       （用户报的「批注→AI 修订出新版，画布节点仍是第一版」）。手工打字那条路径
+       tePushToNode 已经重建过，重复调用是幂等的（只改 DOM，不写数据）。 */
+    if (changed) teRefreshBoardBrowse(node);
     try {
       if (typeof clearDownstream === "function" && (o.clearDown || o.immediate))
         clearDownstream(node.id);

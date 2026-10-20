@@ -281,22 +281,26 @@ const KNOWN_TARGETS = Object.freeze(
 const DEFAULT_POLICY = Object.freeze({ enabled: true, tier: DEFAULT_TIER, officialModels: OFFICIAL_MODELS_FALLBACK });
 
 /** 把任意外来值归一成一份合法 policy（非法值一律回落默认，绝不抛）。
- *  `early` 是已下线的早档（省钱档顶替了它）：老配置里存着的旧值一律归一到「中」。 */
+ *  `early` 是已下线的早档（省钱档顶替了它）：老配置里存着的旧值一律归一到「中」。
+ *  「压缩后的大小」两个可调量**只有自定义档才认**（本次共识）：其它档位一律按档位默认，
+ *  否则会出现「界面不显示这两个数、压缩却在用旧值」的暗值。配置里的旧值不在这里删，
+ *  切回自定义档时照旧回填。 */
 function normalizeCompactPolicy(raw) {
   const r = raw && typeof raw === "object" ? raw : {};
   const tier = TIERS.indexOf(String(r.tier)) >= 0 ? String(r.tier) : DEFAULT_TIER;
   const customTriggerTokens = normalizeCustomTrigger(r.customTriggerTokens);
+  const customTier = tier === "custom";
   return {
     enabled: r.enabled !== false,
     tier,
     customTriggerTokens,
-    /* 压缩后大小的两个可调量：null = 跟随档位默认（老配置读出来就是 null，行为不变） */
-    retainTokens: normalizeLimitTokens(r.retainTokens, RETAIN_TOKENS_MIN, RETAIN_TOKENS_MAX),
-    summaryMaxTokens: normalizeLimitTokens(
-      r.summaryMaxTokens,
-      SUMMARY_MAX_TOKENS_MIN,
-      SUMMARY_MAX_TOKENS_MAX,
-    ),
+    /* 压缩后大小的两个可调量：null = 跟随档位默认（非自定义档恒为 null） */
+    retainTokens: customTier
+      ? normalizeLimitTokens(r.retainTokens, RETAIN_TOKENS_MIN, RETAIN_TOKENS_MAX)
+      : null,
+    summaryMaxTokens: customTier
+      ? normalizeLimitTokens(r.summaryMaxTokens, SUMMARY_MAX_TOKENS_MIN, SUMMARY_MAX_TOKENS_MAX)
+      : null,
     officialModels: normalizeOfficialModels(r.officialModels),
     selfTargets: normalizeSelfTargets(r.selfTargets),
   };

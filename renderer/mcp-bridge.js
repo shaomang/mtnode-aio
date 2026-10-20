@@ -71,12 +71,13 @@
 
   /** 带超时的等待：既有的 canvasConfirm* 回执只认 window.api.dshInteract 的 kind，
    *  所以 MCP 帧的收口走 handleCanvasEvent 里的 mcpFrameSettle（见 app-nodes.js）。 */
-  function withTimeout(promise, what) {
+  function withTimeout(promise, what, ms) {
+    const limit = Number(ms) > 0 ? Number(ms) : MCP_CALL_TIMEOUT_MS;
     let timer = null;
     const guard = new Promise((_, reject) => {
       timer = setTimeout(
-        () => reject(new Error(what + "：渲染层处理超时（" + Math.round(MCP_CALL_TIMEOUT_MS / 1000) + "s）")),
-        MCP_CALL_TIMEOUT_MS,
+        () => reject(new Error(what + "：渲染层处理超时（" + Math.round(limit / 1000) + "s）")),
+        limit,
       );
     });
     return Promise.race([promise, guard]).finally(() => clearTimeout(timer));
@@ -348,6 +349,31 @@
             };
           case "canvasList":
             return mcpCanvasList(frame);
+          case "run":
+          case "tool":
+          case "sessionTask":
+          case "mediaNode": {
+            /* 自用回环三件（跑节点 / 用户工具 / 会话）+ 生成后的「建一个画布节点」：
+               执行体在 renderer/mcp-extra.js（与画布那颗 ▶、agent 调工具、新会话发送同源）。 */
+            const ex = window.MTNodeMcpExtra;
+            const fn =
+              frame.op === "run"
+                ? ex && ex.run
+                : frame.op === "tool"
+                  ? ex && ex.tools
+                  : frame.op === "mediaNode"
+                    ? ex && ex.mediaNode
+                    : ex && ex.sessionTask;
+            if (typeof fn !== "function") {
+              const err = "自用回环渲染层未加载（renderer/mcp-extra.js）";
+              reply(frame.id, { ok: false, error: err }, err);
+              return;
+            }
+            const out = await fn(Object.assign({}, frame.params || {}));
+            if (out && out.ok === false) reply(frame.id, out, out.message || out.error);
+            else reply(frame.id, out);
+            return;
+          }
           case "skillList":
             return mcpSkillList(frame);
           case "skillBody":
@@ -363,7 +389,7 @@
     };
     if (!isWrite) {
       try {
-        await withTimeout(body(), "MCP 调用");
+        await withTimeout(body(), "MCP 调用", frame.timeoutMs);
       } catch (e) {
         reply(frame.id, { ok: false, error: (e && e.message) || String(e) }, (e && e.message) || String(e));
       } finally {
@@ -373,8 +399,8 @@
     }
     const prev = writeChains.get(sessionKey) || Promise.resolve();
     const next = prev.then(
-      () => withTimeout(body(), "MCP 写调用"),
-      () => withTimeout(body(), "MCP 写调用"),
+      () => withTimeout(body(), "MCP 写调用", frame.timeoutMs),
+      () => withTimeout(body(), "MCP 写调用", frame.timeoutMs),
     );
     writeChains.set(
       sessionKey,

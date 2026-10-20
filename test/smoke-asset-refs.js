@@ -9,9 +9,9 @@
  *   ② @ 候选菜单里根本不出现（refCandidates 同一条闸门）；
  *   ③ 聚合模式 / Tag 引用 拿不到内容（allTextItems / allImageItems 没有 asset 分支）；
  *   ④ 素材的「端子号 = 内容条目号」被当成批量下标（refInputIdxFor / wireSourceIndex /
- *      inputValuesFor 只对超级节点取 fromIndex）→ 永远读到第 1 条内容；
+ *      inputValuesFor 只对节点层取 fromIndex）→ 永远读到第 1 条内容；
  *   ⑤ 背景块标题给的是节点标题，看不出喂进来的是哪一条内容（itemTitleOf 无 asset 分支）。
- * 本测试只把「与素材无关的下游」（运行结果 / 批次 / 超级节点隧穿）换成替身，
+ * 本测试只把「与素材无关的下游」（运行结果 / 批次 / 节点层隧穿）换成替身，
  * 素材判定、取数、引用切词、候选闸门、背景拼装全部走 renderer/app.js 的真实源码切片。
  *
  * 覆盖：

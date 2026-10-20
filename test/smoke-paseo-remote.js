@@ -90,17 +90,17 @@ console.log("[1] 插件五层接线");
   ok(/item\.kind === "paseo" \|\| item\.handler === "paseo"/.test(ui), "openAppPluginsDialog 里挂了 paseo 分支");
   ok(/refreshPaseoPluginCard\(card\)/.test(ui), "分支里真的调它重画卡片");
   ok(/paseoRemoteOnConsoleChanged/.test(ui), "卡片订阅控制台开/关事件");
-  /* 本轮口径：卡片走**通用后端卡片**（与其它 6 个本地后端同一套）——
-     按钮 = 「安装 / 重装」（download）+ 「控制台」（console），**没有**「启用/停用」（hasService:false）；
+  /* 本轮共识：卡片走通用后端卡片，且**有**「启用 / 停用」（默认不启用，必须显式开）。
      图标一律取自 PLUGIN_ACT_SVG 既有 kind，不自创。 */
   ok(
     /return refreshBackendPluginCard\(root, BACKEND_PLUGIN_SPECS\.paseo\)/.test(ui),
     "卡片复用通用后端卡片（refreshBackendPluginCard + BACKEND_PLUGIN_SPECS.paseo）",
   );
   ok(
-    /paseo: \{ key: "paseo", api: "paseoRemote", hasService: false, update: false \}/.test(ui),
-    "paseo spec：api=paseoRemote / hasService:false（卡片不给「启用」按钮）/ 无 update",
+    /paseo: \{[\s\S]{0,220}hasService: true/.test(ui),
+    "paseo spec：api=paseoRemote / hasService:true（卡片有「启用 / 停用」）/ 无 update",
   );
+  ok(/startFn: "paseoRemoteStartDaemon"/.test(ui) && /stopFn: "paseoRemoteStopDaemon"/.test(ui), "卡片启停走 paseoRemote 那对桥（不叫 api+Start/Stop）");
   ok(/paseo: "paseo-remote"/.test(ui), "BACKEND_INSTALL_IDS 把 paseo 映射到安装窗 id paseo-remote");
   /* 本轮 bug 现场：安装结束的广播会把每张卡片按 kind 重画一次，而重画分派表里漏了 paseo
      → paseo 卡片落进窗口插件兜底分支，按钮从「安装 / 控制台」变成「下载安装 / 运行」。 */
@@ -126,7 +126,8 @@ console.log("[2] 宿主契约（paseo/main-paseo.js）");
     ok(/skillName: INSTALL_SKILL/.test(reg[1]), "宿主带 skillName（修复会话据此加载安装技能）");
     ok(/tailConsole:/.test(reg[1]) && /getInstallDir:/.test(reg[1]), "宿主给了日志尾部与现场目录");
   }
-  ok(/defaultConfig\(\)[\s\S]{0,400}remoteEnabled: false/.test(host), "远程连接总开关**默认关**");
+  ok(/defaultConfig\(\)[\s\S]{0,900}remoteEnabled: false/.test(host), "远程连接总开关**默认关**");
+  ok(/defaultConfig\(\)[\s\S]{0,900}enabled: false/.test(host), "启用标记**默认关**（未显式开启就不起后端）");
   /* ── 本轮需求：状态查询的「慢的半边」加会话内缓存 ──────────────────────────
      现场：打开插件窗时卡片要先等 paseoRemote:getStatus 回来才画按钮，而这条状态过去每次
      都会真跑一遍 CLI 版本探测 + 真 Node 解析（已装的机器上几秒）。口径是**只缓存这两样**，

@@ -79,7 +79,7 @@ function addMark(kind, x, y) {
     parentSuperId = sf;
     parentTaskId = sfHost.parentTaskId || "";
   } else {
-    /* superFocus 失效（指向已不存在的超级节点）时不挂幽灵父级，退回按坐标找宿主 */
+    /* superFocus 失效（指向已不存在的节点层）时不挂幽灵父级，退回按坐标找宿主 */
     const host =
       findOpenSuperAtWorld(x, y) || findSuperAtWorld(x, y, new Set(), false);
     if (host) {
@@ -195,7 +195,7 @@ function makeMarkFromSpec(spec, warnings) {
   m.fontSize = Number.isFinite(fs)
     ? Math.max(10, Math.min(48, Math.round(fs)))
     : d.fontSize;
-  /* 与 makeNode / addMark 一致：全屏进入超级节点时标注应落在内侧 */
+  /* 与 makeNode / addMark 一致：全屏进入节点层时标注应落在内侧 */
   m.parentSuperId = "";
   const sf = currentSuperFocus();
   if (sf) {
@@ -377,12 +377,33 @@ function flushDeferredMarkCanvas() {
  * 按节点头部按钮（✕ 删节点 / ▶ 跑节点）不算编辑中，删节点 / 新建 / 撤销这类结构变化
  * 一刻都不推迟 —— 否则删掉的节点会一直留在画面上，看起来就是「节点删不掉」。 */
 function canvasStageFieldEl() {
+  /* 一路走到根，不设层数上限：节点形态一变（批次的 .n-bentries、提示词的 .n-prompt-wrap、
+     超级壳里的子节点）输入框就会埋得更深，早先的「最多上溯 10 层」会在深层输入框上
+     静默失效 —— 闸门以为没人在打字，照样拆 DOM，于是「有时候丢焦点、有时候不丢」。 */
   let el = document.activeElement;
-  for (let i = 0; i < 10 && el; i++) {
+  for (let i = 0; i < 200 && el; i++) {
     if (el.id === "stage") return el;
     el = el.parentElement || el.parentNode || null;
   }
   return null;
+}
+/* 某个节点元素里是不是正握着焦点（那颗节点的输入框在打字 / 输入法组合中）。
+   节点级重建（refreshNodeEl / 形态切换）用它判「这一拍不能拆 DOM」。 */
+function canvasFieldIn(hostEl) {
+  const ae = document.activeElement;
+  if (!hostEl || !ae || ae === document.body) return false;
+  if (!isCanvasFieldEl(ae)) return false;
+  return hostEl === ae || (hostEl.contains && hostEl.contains(ae));
+}
+/* 节点 scoped 字段表：快照与回填必须用同一份（含 .n-bentries 里的标题 / 正文、
+   .n-prompt-wrap 里的提示词框这类嵌在两层容器里的控件） */
+function canvasNodeFieldList(hostEl) {
+  if (!hostEl || !hostEl.querySelectorAll) return null;
+  try {
+    return hostEl.querySelectorAll("input, textarea, select");
+  } catch (_) {
+    return null;
+  }
 }
 function isCanvasFieldEl(el) {
   if (!el || el === document.body) return false;
@@ -423,22 +444,33 @@ function snapshotCanvasFieldFocus() {
   const el = document.activeElement;
   if (!isCanvasFieldEl(el) || !canvasStageFieldEl()) return null;
   const host =
-    el.closest && el.closest(".wf-node")
-      ? el.closest(".wf-node")
-      : el.closest && el.closest(".super-shell")
-        ? el.closest(".super-shell")
-        : null;
-  const own =
-    el.parentElement &&
-    el.parentElement.classList &&
-    el.parentElement.classList.contains("n-body")
-      ? el.parentElement
-      : null;
+    (el.closest && el.closest(".wf-node")) ||
+    (el.closest && el.closest(".super-shell")) ||
+    null;
+  /* 字段序号按**整颗节点**数：批次的标题 / 正文、提示词框都嵌在两层容器里，
+     早先只认 .n-body 的直接子元素，那些框一律算成 0 号 —— 回填就落到节点里第一个框上。 */
+  const list = canvasNodeFieldList(host);
+  let field = -1;
+  if (list) {
+    for (let i = 0; i < list.length; i++) {
+      if (list[i] === el) {
+        field = i;
+        break;
+      }
+    }
+  }
   return {
     nodeId: host && host.dataset ? String(host.dataset.nid || "") : "",
-    field: canvasFieldIndex(own, el),
+    field,
+    /* 控件指纹：形状变了之后同序号可能换成别的框，用它校正 */
+    sig: canvasFieldSig(el),
     range: canvasFieldRange(el),
   };
+}
+/* 控件指纹（标签 + class）：回填时用来确认「序号那个框还是同一种框」 */
+function canvasFieldSig(el) {
+  if (!el) return "";
+  return String(el.tagName || "").toUpperCase() + "|" + String(el.className || "");
 }
 /* 舞台内「真在打字」的控件才算编辑中：节点头部那排按钮（✕ / ▶ / ⚙ / ? …）与舞台本身拿到
    焦点都不算 —— 它们不是输入框，按它们（删节点 / 跑节点 / 开设置）必须当场生效。
@@ -488,8 +520,12 @@ function canvasMountSetIdle(parts) {
     return true;
   };
   return (
-    same(".wf-node", "nid", parts.tops.concat(parts.openSupers)) &&
-    same(".wf-mark", "mid", parts.markList) &&
+    same(
+      ".wf-node",
+      "nid",
+      parts.tops.concat(parts.openSupers, parts.shellKids || []),
+    ) &&
+    same(".wf-mark", "mid", parts.markList.concat(parts.shellMarks || [])) &&
     same(".wf-group", "gid", parts.groups)
   );
 }
@@ -503,19 +539,20 @@ function canvasFocusAnchorEl(snap) {
       nodeEl = null;
     }
   }
-  /* nodeElement 的结构是 .wf-node > .n-body（见 nodeBodyEl / rebuildNodeBody）：
-     这里与它们同一口径，不另造一套查找。 */
-  const body =
-    (nodeEl && nodeBodyEl(nodeEl)) ||
-    (nodeEl && nodeEl.querySelector ? nodeEl.querySelector(".n-body") : null);
-  if (!body || snap.field < 0) return null;
-  let list = null;
-  try {
-    list = body.querySelectorAll("input, textarea, select");
-  } catch (_) {
-    return null;
+  if (!nodeEl || snap.field < 0) return null;
+  /* 与 snapshotCanvasFieldFocus 同口径：按整颗节点的字段表取回同一个框
+     （批次的标题 / 正文、提示词框都在嵌套容器里，用 .n-body 直接子元素取不到） */
+  const list = canvasNodeFieldList(nodeEl);
+  if (!list) return null;
+  const at = list[snap.field] || null;
+  if (at && (!snap.sig || canvasFieldSig(at) === snap.sig)) return at;
+  /* 序号对不上同一种框（形态变了 / 条目增减）：按指纹找第一个同种框兜底，
+     找不到就返回 null —— 宁可不抢焦点，也不把光标塞进别的输入框。 */
+  if (snap.sig) {
+    for (let i = 0; i < list.length; i++)
+      if (canvasFieldSig(list[i]) === snap.sig) return list[i];
   }
-  return list && list[snap.field] ? list[snap.field] : null;
+  return null;
 }
 /* 重建后原位恢复焦点 / 光标 / 选区；锚点没了（节点被删 / 字段没了 / 形状换了）
    就什么也不做 —— 那种情况本来就该是一次正常失焦，不抢焦点。 */
@@ -542,11 +579,15 @@ function restoreCanvasFieldFocus(snap) {
    _resumeCanvasFocus 同时是「这一拍必须画」的放行旗：补拍时置真，跳过守卫闸并触发
    重建后的焦点原位恢复；渲染 tail 里复位。 */
 function flushDeferredCanvasFocus() {
-  if (!S._deferCanvasForFieldEdit || S._renderingCanvas) return;
+  if (S._renderingCanvas || S._rebuildingNodeBody) return;
   if (canvasStageFieldEl() || S._canvasImeComposing) return;
   /* Markdown 编辑面还握着焦点 = 用户正在编辑框里打字（保存路径推迟的那一拍）：
      继续记账，等他真的离开编辑面（focusout → app-boot.js 的补拍）再画。 */
   if (markdownEditSurfaceFocused()) return;
+  /* 节点级推迟账（局部刷新 / 形态切换）先补：它们只重建那一颗节点的 body，
+     比整幅重绘便宜，也不影响后面那一拍的判断。 */
+  flushDeferredNodeRebuilds();
+  if (!S._deferCanvasForFieldEdit) return;
   /* 清账 + 放行：补这一拍，并让重建后的焦点原位恢复接管 */
   S._deferCanvasForFieldEdit = false;
   S._resumeCanvasFocus = true;
@@ -554,6 +595,40 @@ function flushDeferredCanvasFocus() {
     renderCanvas();
   } finally {
     S._resumeCanvasFocus = false;
+  }
+}
+/* 节点级重建的「编辑中不拆」账本：refreshNodeEl / 形态切换在用户正打字时先记账，
+   等焦点真的离开（focusout / 组合结束，走 flushDeferredCanvasFocus）再补做。 */
+function deferNodeRefresh(id) {
+  if (!id) return;
+  if (!S._deferNodeRefresh) S._deferNodeRefresh = new Set();
+  S._deferNodeRefresh.add(String(id));
+}
+function deferNodeForm(id) {
+  if (!id) return;
+  if (!S._deferNodeForm) S._deferNodeForm = new Set();
+  S._deferNodeForm.add(String(id));
+}
+function flushDeferredNodeRebuilds() {
+  const forms = S._deferNodeForm ? [...S._deferNodeForm] : [];
+  const refs = S._deferNodeRefresh ? [...S._deferNodeRefresh] : [];
+  S._deferNodeForm = null;
+  S._deferNodeRefresh = null;
+  for (const id of forms) {
+    const n = nodeById(id);
+    const el = document.querySelector('.wf-node[data-nid="' + id + '"]');
+    /* 节点已删 / 已重建过形态 → 这里再判一次，别把旧形态又刷回去 */
+    if (el && n) {
+      try {
+        applyNodeForm(el, n);
+      } catch (_) {}
+    }
+  }
+  for (const id of refs) {
+    if (!nodeById(id)) continue;
+    try {
+      refreshNodeEl(id);
+    } catch (_) {}
   }
 }
 function detachStageChild(el) {
@@ -953,6 +1028,9 @@ function assetBrowseOutMask(n) {
 }
 function canvasRenderParts() {
   const visNodes = visibleWfNodes();
+  const allOpenShells = visNodes.filter(
+    (n) => n.kind === "super" && superIsOpenShell(n),
+  );
   const nodes = [];
   for (const n of visNodes) {
     if (nodeIsNestedInOpenSuper(n)) continue;
@@ -962,13 +1040,37 @@ function canvasRenderParts() {
      顺序变了就照旧整幅重建，绝不靠重排 DOM 去复用（重排会打乱堆叠语义）。 */
   const tops = nodes.filter((n) => !superIsOpenShell(n));
   const openSupers = nodes.filter((n) => superIsOpenShell(n));
-  const markList = visibleMarks().filter(
+  const marks = visibleMarks();
+  const markList = marks.filter(
     (m) =>
       !(markParentSuperId(m) &&
         nodeIsNestedInOpenSuper({ parentSuperId: markParentSuperId(m) })),
   );
+  /* 展开壳 viewport 里真正挂上的子节点 / 标注（fillSuperShellViewport 挂的那批）：
+     DOM 里它们同样是 .wf-node / .wf-mark，必须一起进「这一拍挂了什么」的结构账
+     （签名 / 复用判定 / 焦点守卫闸都按这份账比）。漏掉它们时 stage 里的实际元素数
+     永远比账本多，于是「只要有展开壳」→ 复用通道永远判不齐、守卫闸永远判不是同一批
+     → 每一拍都整幅重建：正在打字的正文框被拆掉再重聚焦，中日文输入法的组合被反复
+     打断（英文不走输入法所以照打），输入框闪、CPU 飙；而重建前的 blur 又触发
+     「失焦即落盘」→ 落盘 → 自动保存节点 → 再重绘，滚成自持循环。
+     按 allOpenShells 取（含套在展开壳里的那颗展开壳）：否则壳里的壳的子节点照样漏账。 */
+  const shellKids = [];
+  const shellMarks = [];
+  for (const s of allOpenShells) {
+    for (const c of superChildrenOf(s.id)) if (!isSuperIoNode(c)) shellKids.push(c);
+    for (const m of marks) if (markParentSuperId(m) === s.id) shellMarks.push(m);
+  }
   const groups = (S.wf.groups || []).filter((g) => groupVisibleInScope(g));
-  return { visNodes, tops, openSupers, markList, groups };
+  return {
+    visNodes,
+    tops,
+    openSupers,
+    openShells: allOpenShells,
+    markList,
+    shellKids,
+    shellMarks,
+    groups,
+  };
 }
 function canvasRenderSig(parts) {
   const p = parts || canvasRenderParts();
@@ -976,6 +1078,15 @@ function canvasRenderSig(parts) {
   for (const n of p.tops) out.push(canvasNodeSig(n));
   out.push("|open|");
   for (const n of p.openSupers) out.push(canvasNodeSig(n));
+  /* 壳内子节点按「哪颗壳 + 壳内顺序」进签名：形态（选中 / 浏览 / 运行中 / 尺寸）变了
+     要重建（复用通道只重刷端子与连线，不替壳内子节点换形态）；从一颗壳拖进另一颗壳
+     （父壳变了、DOM 该挂到另一颗壳的 viewport 里）也必须重建。 */
+  out.push("|kids|");
+  for (const s of p.openShells || []) {
+    out.push("@" + s.id);
+    for (const c of superChildrenOf(s.id))
+      if (!isSuperIoNode(c)) out.push(canvasNodeSig(c));
+  }
   out.push("|marks|");
   for (const m of p.markList) {
     const b = markBounds(m);
@@ -988,6 +1099,8 @@ function canvasRenderSig(parts) {
       ].join(":"),
     );
   }
+  out.push("|shellmarks|");
+  for (const m of p.shellMarks || []) out.push(String(m.id));
   out.push("|groups|");
   for (const g of p.groups)
     out.push([g.id, Boolean(g.collapsed)].join(":"));
@@ -1008,9 +1121,12 @@ function canvasReuseReady(parts, sig) {
     }
   };
   return (
-    cnt(".wf-node") === parts.tops.length + parts.openSupers.length &&
+    cnt(".wf-node") ===
+      parts.tops.length +
+        parts.openSupers.length +
+        (parts.shellKids || []).length &&
     cnt(".wf-group") === parts.groups.length &&
-    cnt(".wf-mark") === parts.markList.length
+    cnt(".wf-mark") === parts.markList.length + (parts.shellMarks || []).length
   );
 }
 /* 舞台 / 连线画布的外框尺寸（整幅重建与复用快速通道共用同一份算式） */
@@ -1052,6 +1168,29 @@ function applyStageExtent(parts) {
   if (svg) {
     svg.setAttribute("width", extX);
     svg.setAttribute("height", extY);
+  }
+}
+
+/* 复用快速通道里的「坐标补写」：节点 x/y **不进渲染签名**（见 canvasRenderSig 的注释），
+   写 DOM 的 left/top 只在 nodeElement（整幅重建）与拖拽逻辑里做。于是「只改坐标、不改尺寸」
+   的一拍会落进复用通道：模型里的坐标已经变了，节点 DOM 还停在旧位置，而组框是
+   updateGroupFrames 按**新**坐标重算的 —— 画面表现正是「组框跳过去、框里的内容留在原地，
+   拖一下才复原」（2026-02 需求：一键排版 / agent layout:true 第二次以后就会命中，
+   因为尺寸已经被上一轮吸成网格倍数，签名不再变化）。
+   所以复用这一拍必须按当前模型把坐标补写一遍：节点、组内成员、壳内子节点都走这份口径。
+   拖拽中的元素跳过 —— 它们由拖拽逻辑自己写坐标（嵌套壳被拎到 stage 时用的是世界坐标）。 */
+function syncCanvasNodeDomPos(parts) {
+  for (const n of (parts && parts.visNodes) || []) {
+    if (!n || n.x == null || n.y == null) continue;
+    const el = document.querySelector('.wf-node[data-nid="' + n.id + '"]');
+    if (!el) continue;
+    if (
+      el.classList.contains("node-dragging") ||
+      el.classList.contains("super-drag-lift")
+    )
+      continue;
+    el.style.left = n.x + "px";
+    el.style.top = n.y + "px";
   }
 }
 
@@ -1130,6 +1269,9 @@ function renderCanvas() {
     if (canvasReuseReady(parts, sig)) {
       applyStageExtent(parts);
       applyTransform();
+      /* 先把模型坐标写回 DOM，再按同一份坐标撑组框：否则「只改坐标」的一拍会出现
+         组框跳位、框内节点留在原处（见 syncCanvasNodeDomPos 注释） */
+      syncCanvasNodeDomPos(parts);
       updateGroupFrames();
       for (const n of parts.openSupers) {
         const nel = stage.querySelector('.wf-node[data-nid="' + n.id + '"]');
@@ -1156,6 +1298,10 @@ function renderCanvas() {
         ae.blur();
       } catch (_) {}
     }
+    /* 整幅重建马上要把所有节点元素换一遍：节点级的推迟账（局部刷新 / 形态切换）
+       被这一拍完全覆盖，先清掉，免得补做时又去动刚建好的 DOM。 */
+    S._deferNodeRefresh = null;
+    S._deferNodeForm = null;
     stage.querySelectorAll(".wf-node").forEach(detachStageChild);
     stage.querySelectorAll(".wf-group").forEach(detachStageChild);
     stage.querySelectorAll(".wf-mark").forEach(detachStageChild);
@@ -1184,7 +1330,7 @@ function renderCanvas() {
     S._renderSig = sig;
     applyTransform();
     updateGroupFrames();
-    /* 展开超级节点：DOM 就绪后再按实测原点校正内侧端子 */
+    /* 展开节点层：DOM 就绪后再按实测原点校正内侧端子 */
     for (const n of openSupers) {
       const nel = stage.querySelector('.wf-node[data-nid="' + n.id + '"]');
       if (nel) refreshPorts(nel, n);
@@ -1269,7 +1415,7 @@ function updateWires(touchIds) {
       ? touchIds
       : null;
   /* 关系线（UML 风格 · 直线 · 不参与数据流）在下方统一绘制：
-     必须晚于超级节点壳层内部连线刷新（同一个 .super-wires SVG，早画会被当成残留清掉） */
+     必须晚于节点层壳层内部连线刷新（同一个 .super-wires SVG，早画会被当成残留清掉） */
   for (const w of S.wf.wires) {
     if (w.rel) continue;
     if (filter && !filter.has(w.from) && !filter.has(w.to)) continue;
@@ -1379,7 +1525,7 @@ function updateWires(touchIds) {
    那道线本来只为「把端子接口的落位区圈出来」而渲染：一侧一颗端子都没有时，它只是一道
    白多出来的竖线，把正文挤在中间（见 canvas.css 的 .no-in-ports / .no-out-ports）。
    端子数会随连 / 断线与增量端子变化，所以和端子位置同在 refreshPorts 里刷新，而不是
-   只在建元素时盖一次章。展开的超级节点板内是子画布、外侧两排本就由 .super-open 关掉，
+   只在建元素时盖一次章。展开的节点层板内是子画布、外侧两排本就由 .super-open 关掉，
    这里不再插手（其内侧端子数恒 ≥1，见 superDynamicPortCount）。 */
 function syncPortSideClasses(el, node) {
   if (!el || !el.classList || !node) return;
@@ -1558,7 +1704,7 @@ function effortButtonEl(node) {
   return effortBtn;
 }
 
-/* ===== 超级节点「文件夹」卡片：标题单行自适应缩字 ===== */
+/* ===== 节点层「文件夹」卡片：标题单行自适应缩字 ===== */
 const SUPER_TITLE_MAX = 20;
 const SUPER_TITLE_MIN = 9;
 /**
@@ -2040,7 +2186,7 @@ function registerNodeSettingsForm(key, def) {
 }
 
 /* 表单归属键：kind + 变体 —— 工具壳与函数各一站（两者参数表语义相同但表单不同），
-   save 认 save_text / save_image 旧别名；开发 / 数据库 / 普通超级节点不接管
+   save 认 save_text / save_image 旧别名；开发 / 数据库 / 普通节点层不接管
    （devPath / devModel / Tag / 子文件夹本来就是跳窗，别再叠一个入口）。 */
 function nodeSettingsFormKey(node) {
   if (!node || !node.kind) return "";
@@ -4945,126 +5091,2147 @@ function breezeTextBoxPlaceholder(msg) {
   return d;
 }
 
-/* ── breeze_gen：能力 / 音色 / 指令 / cfg_scale / 种子 / 输出格式 / 输出路径 / 抽卡 ──
-   参考源优先级（用户已确认）：端子的参考音频 / 参考文本优先，端子空了才用这里的音色；
+/* 设置窗里的「角色」一行：当前角色 + 选择角色… / 清除。
+   角色与样本组都存在节点字段上（presetId / presetGroupId），随节点持久化。 */
+function breezePresetRow(node, onChange) {
+  const box = document.createElement("span");
+  box.className = "nsf-ctl breeze-role-row";
+  const name = document.createElement("span");
+  name.className = "n-text breeze-role-name";
+  name.textContent = breezePresetLabelOf(node) || I18n.t("（未选：走端子 / 音色库）");
+  const pick = document.createElement("button");
+  pick.type = "button";
+  pick.className = "mini";
+  pick.textContent = I18n.t("选择角色…");
+  pick.title = I18n.t("挑一个角色，再挑它的第几组样本（音频 + 样本文字 + 指令）");
+  pick.onclick = (ev) => {
+    ev.stopPropagation();
+    openBreezePresetDialog(node, onChange);
+  };
+  box.appendChild(name);
+  box.appendChild(pick);
+  if (breezePresetIdOf(node)) {
+    const clr = document.createElement("button");
+    clr.type = "button";
+    clr.className = "mini";
+    clr.textContent = I18n.t("清除");
+    clr.title = I18n.t("不用角色预设：回到端子 / 音色库模式（端口 1 / 2 重新参与）");
+    clr.onclick = (ev) => {
+      ev.stopPropagation();
+      node.presetId = "";
+      node.presetGroupId = "";
+      try {
+        scheduleSave(true);
+      } catch (_) {}
+      if (onChange) onChange();
+    };
+    box.appendChild(clr);
+  }
+  return box;
+}
+
+/* 角色（音色预设）跳窗 —— 左列角色，右侧「浏览 / 三步向导」。
+   三步：① 声线设定（「声线设计」AI 造声线 / 「音频参考」用现成音频）→ ② 候选挑选 → ③ 基础音色确认，
+   每步都能回头改。角色的结构 = 1 个基础音色 + N 个备选音色（按场景 / 情绪分类）。
+   数据全在宿主（%APPDATA%/pipeline-console/breeze-tts/presets/：index.json + audio/ + candidates/），
+   音频一律复制入库 —— 所以角色能跨画布复用，移动 / 删除用户原文件也不影响。 */
+function openBreezePresetDialog(node, onDone) {
+  if (!node) return;
+  openOverlay(I18n.t("角色与音色"), { persistent: true });
+  overlayKind = "breezePreset";
+  const box = document.querySelector("#overlay .overlay-box");
+  if (box) box.classList.add("wide");
+  const host = document.getElementById("ovBody");
+  if (!host) return;
+  host.innerHTML = "";
+  const wrap = document.createElement("div");
+  wrap.className = "breeze-preset-dlg";
+  const listEl = document.createElement("div");
+  listEl.className = "breeze-preset-list";
+  const mainEl = document.createElement("div");
+  mainEl.className = "breeze-preset-groups";
+  wrap.appendChild(listEl);
+  wrap.appendChild(mainEl);
+  host.appendChild(wrap);
+
+  const api = window.api || {};
+  const T = (s, o) => I18n.t(s, o);
+  const el = (tag, cls, text) => {
+    const n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text != null) n.textContent = text;
+    return n;
+  };
+  const btn = (text, cls, title) => {
+    const b = el("button", cls || "mini", text);
+    b.type = "button";
+    if (title) b.title = title;
+    return b;
+  };
+  const lineRow = (label, cls) => {
+    const r = el("div", cls || "bpf-row");
+    if (label) r.appendChild(el("span", "bpf-label", label));
+    return r;
+  };
+  const areaOf = (value, rows, placeholder) => {
+    const a = document.createElement("textarea");
+    a.rows = rows || 2;
+    a.value = String(value || "");
+    if (placeholder) a.placeholder = placeholder;
+    return a;
+  };
+  const inputOf = (value, placeholder) => {
+    const i = document.createElement("input");
+    i.type = "text";
+    i.value = String(value || "");
+    if (placeholder) i.placeholder = placeholder;
+    return i;
+  };
+  const rndSeed = () => 1 + Math.floor(Math.random() * 2147483000);
+  /* design 模式官方建议 cfg=4；这里按「随机 3~5」抽一位小数，方便复现 */
+  const rndCfg = () => Math.round((3 + Math.random() * 2) * 10) / 10;
+  /* ── 提示词两档（用户口径：一档照当前，一档更详细）──────────────────
+     简洁 = 现状那一句（Breeze 官方散文形态）；详细 = 四段分行（声线类型 / 音色关键词 /
+     共鸣位置 / 参考质感），写法真源在 mtnode-agent-skills/music/breeze-voice-design/SKILL.md。
+     默认简洁；档位只挂在这趟跳窗的对象上（obj.tier），不落盘、不进草稿。 */
+  const PROMPT_TIERS = [
+    {
+      id: "brief",
+      label: "简洁（一句）",
+      title: "一句话说完：性别年龄 + 音色 + 语速 + 情绪 + 场景（Breeze 官方推荐形态）",
+    },
+    {
+      id: "detail",
+      label: "详细（四段）",
+      title: "四段分行：声线类型 / 音色关键词 / 共鸣位置 / 参考质感（信息更密，文本更长）",
+    },
+  ];
+  const promptTierOf = (obj) => (obj && obj.tier === "detail" ? "detail" : "brief");
+  const promptTierRow = (obj, onChange) => {
+    const row = el("div", "bpf-ops breeze-tier-row");
+    row.appendChild(el("span", "bp-sub", T("提示词档位")));
+    for (const t of PROMPT_TIERS) {
+      const on = promptTierOf(obj) === t.id;
+      const b = btn(T(t.label), "mini" + (on ? " primary" : ""), T(t.title));
+      b.setAttribute("aria-pressed", on ? "true" : "false");
+      b.onclick = (ev) => {
+        ev.stopPropagation();
+        if (obj.tier === t.id) return;
+        obj.tier = t.id;
+        if (typeof onChange === "function") onChange();
+        paint();
+      };
+      row.appendChild(b);
+    }
+    return row;
+  };
+  const fmtSec = (s) => (Number(s) > 0 ? I18n.t("{s} 秒", { s: Number(s).toFixed(1) }) : "");
+  const errLine = (msg) => {
+    const d = el("div", "bpf-err", String(msg || ""));
+    return d;
+  };
+  /* 成功提示（已保存 / 已添加备选音色…）用绿字，不能跟「保存失败」同一个红字口径 */
+  const okLine = (msg) => {
+    const d = el("div", "bpf-ok", String(msg || ""));
+    return d;
+  };
+
+  let presets = [];
+  let curId = breezePresetIdOf(node);
+  let view = "browse"; /* browse | wizard */
+  let wiz = null;
+  let errText = "";
+  let okText = "";
+  /* 草稿不靠内存变量记：它就在预设库里（draft:true + wizard 字段），关窗 / 重开都在 */
+  let llmInfo = { ok: true, error: "", models: [], defaultModel: "", selected: "" };
+  let sys = { checked: false, installed: false, apiUp: false, running: false, installing: false };
+  let waveSeq = 0;
+  let editBuf = null;
+
+  const byId = (id) => presets.find((p) => p && p.id === String(id || "")) || null;
+  const baseNameOf = (p) => String(p || "").replace(/[\\/]+$/, "").split(/[\\/]/).pop() || "";
+  const groupTitle = (g, i) =>
+    (g.kind === "base" ? T("基础音色") : T("备选音色 {n}", { n: i })) + (g.name ? " · " + g.name : "");
+
+  const apply = (preset, group) => {
+    node.presetId = preset.id;
+    node.presetGroupId = group ? group.id : "";
+    /* 换角色后参考源换成预设：老的音色字段留着无害（不选角色时才会用），但端口 1/2 不再参与 */
+    try {
+      scheduleSave(true);
+    } catch (_) {}
+    try {
+      renderCanvas();
+    } catch (_) {}
+    closeOverlay();
+    if (typeof onDone === "function") onDone();
+  };
+
+  /* 公开组 → 保存载荷：不带 audio 就不会覆盖原文件（宿主按 id 保留），
+     要换音频只在「音频参考」那一步显式传 data。 */
+  const saveGroupsOf = (preset, edits) =>
+    (preset.groups || []).map((g) => {
+      const e = (edits && edits[g.id]) || {};
+      return {
+        id: g.id,
+        name: e.name != null ? e.name : g.name,
+        scene: e.scene != null ? e.scene : g.scene,
+        kind: g.kind,
+        source: g.source,
+        refText: e.refText != null ? e.refText : g.refText,
+        instruction: e.instruction != null ? e.instruction : g.instruction,
+        seed: g.seed,
+        cfg: g.cfg,
+        candidateId: g.candidateId,
+      };
+    });
+
+  const refreshPresets = async () => {
+    try {
+      const list = await breezePresetsLoad(true);
+      presets = Array.isArray(list) ? list : [];
+    } catch (_) {
+      presets = [];
+    }
+    /* 默认选一个正经角色：草稿（未完成）不该被当成选中项 */
+    if (!presets.some((p) => p && p.id === curId && !p.draft)) {
+      const first = presets.find((p) => p && !p.draft);
+      curId = first ? first.id : "";
+    }
+  };
+
+  const loadLlm = async () => {
+    if (typeof api.breezePresetLlm !== "function") return;
+    let r = null;
+    try {
+      r = await api.breezePresetLlm();
+    } catch (_) {
+      r = null;
+    }
+    if (!r) return;
+    llmInfo = r;
+    if (wrap.isConnected) paint();
+  };
+
+  const loadSys = async () => {
+    if (typeof api.breezeStatus !== "function") return;
+    let r = null;
+    try {
+      r = await api.breezeStatus();
+    } catch (_) {
+      r = null;
+    }
+    if (r) {
+      sys = {
+        checked: true,
+        installed: !!r.installed,
+        apiUp: !!r.apiUp,
+        running: !!r.running,
+        installing: !!r.installing,
+      };
+    }
+    if (wrap.isConnected) paint();
+  };
+
+  /* 引擎没起时给一行原因 + 一个「去启用」：生成按钮同时置灰，纯文字编辑不受限 */
+  const readyHint = (container) => {
+    if (!sys.checked || sys.apiUp) return false;
+    const r = el("div", "bpf-err");
+    r.textContent = sys.installing
+      ? T("插件正在安装 / 后端正在启动，这一步先等一下。")
+      : sys.installed
+        ? T("本地后端未运行：先「启用」它，才能合成候选音频。文字与提示词仍可继续编辑。")
+        : T("还没安装 Breeze 本地后端：装好并启用后才能合成音频。");
+    const start = btn(T("去启用"), "mini primary");
+    start.onclick = async (ev) => {
+      ev.stopPropagation();
+      try {
+        await api.breezeStart();
+      } catch (_) {}
+      loadSys();
+    };
+    r.appendChild(document.createTextNode(" "));
+    r.appendChild(start);
+    container.appendChild(r);
+    return true;
+  };
+
+  /* ── 浏览：看 / 改一个已存角色 ───────────────────────────────────────── */
+  const paintBrowse = () => {
+    mainEl.textContent = "";
+    const p = byId(curId);
+    if (!p) {
+      const d = el("div", "breeze-preset-empty");
+      d.textContent = presets.length
+        ? T("左边挑一个角色")
+        : T("还没有角色预设。点下面「＋ 新建角色」：给个角色名 + 一句声线设定，AI 会帮你把提示词和候选台词都写好。");
+      mainEl.appendChild(d);
+      return;
+    }
+    if (!editBuf || editBuf.id !== p.id) {
+      /* 老预设（v1）没有 design：拿基础音色的指令兜底，保证「一切内容都能改」而不是空白框 */
+      const baseG = (p.groups || []).find((g) => g.id === p.baseGroupId) || (p.groups || [])[0] || null;
+      editBuf = {
+        id: p.id,
+        name: p.name,
+        setting: p.design.setting || "",
+        instruction: p.design.instruction || ((baseG && baseG.instruction) || ""),
+        groups: {},
+        tier: "brief",
+      };
+    }
+    const buf = editBuf;
+    const form = el("div", "breeze-preset-form");
+
+    /* 这角色上还挂着一趟没做完的备选音色：只留一行提醒（不额外占左列一行）。
+       提醒本身点一下就回到上次那一步；不摆「继续 / 丢弃」两颗按钮，
+       删除只留右边那颗 ✕（删除通道还在，只是不抢眼）。 */
+    if (p.wizard && p.wizard.kind === "alt") {
+      const banner = el("div", "breeze-wiz-banner");
+      banner.appendChild(
+        el(
+          "span",
+          "",
+          T("「{name}」有一趟备选音色还没做完（第{n}步）· 点这里接着做", {
+            name: p.name || "",
+            n: p.wizard.step || 1,
+          }),
+        ),
+      );
+      banner.title = T("点这里回到上次那一步");
+      banner.onclick = () => {
+        if (wiz && wiz.busy) return;
+        restoreWizard(p);
+      };
+      const x = btn("✕", "mini breeze-wiz-x", T("删除这趟草稿（已合成的小样一起删，角色本身不动）"));
+      x.onclick = async (ev) => {
+        ev.stopPropagation();
+        const yes = await confirmDialog(T("删除这趟没做完的备选音色？已经合成的小样会删掉，角色本身不动。"));
+        if (!yes) return;
+        await api.breezePresetSave({
+          id: p.id,
+          name: p.name,
+          baseGroupId: p.baseGroupId,
+          design: p.design,
+          groups: saveGroupsOf(p),
+          wizard: null,
+        });
+        await refreshPresets();
+        editBuf = null;
+        okText = T("已放弃这趟备选音色");
+        paint();
+      };
+      banner.appendChild(x);
+      form.appendChild(banner);
+    }
+
+    form.appendChild(el("div", "breeze-preset-form-title", T("角色名与声线设定")));
+    const nameRow = lineRow(T("角色名"));
+    const nameInp = inputOf(buf.name, T("例如：旁白 / 温柔女声 / 少年"));
+    nameInp.oninput = () => {
+      buf.name = nameInp.value;
+    };
+    nameRow.appendChild(nameInp);
+    form.appendChild(nameRow);
+
+    const setRow = lineRow(T("声线设定"), "bpf-row col");
+    const setTa = areaOf(buf.setting, 2, T("一句话描述这个声音：年龄 / 质感 / 语速 / 性格 / 用途"));
+    setTa.oninput = () => {
+      buf.setting = setTa.value;
+    };
+    setRow.appendChild(setTa);
+    form.appendChild(setRow);
+
+    const insRow = lineRow(T("指令（提示词）"), "bpf-row col");
+    const insTa = areaOf(buf.instruction, 3, T("送给 Breeze 的音色提示词：改了它，之后所有合成都按它来"));
+    insTa.oninput = () => {
+      buf.instruction = insTa.value;
+    };
+    insRow.appendChild(insTa);
+    form.appendChild(insRow);
+
+    const optRow = el("div", "bpf-ops");
+    const optBtn = btn(T("用 AI 重新优化提示词"), "mini");
+    optBtn.onclick = async (ev) => {
+      ev.stopPropagation();
+      if (!String(buf.setting || "").trim()) {
+        errText = T("先写一句声线设定，再让 AI 优化");
+        paint();
+        return;
+      }
+      optBtn.disabled = true;
+      optBtn.textContent = T("优化中…");
+      const r = await api.breezePresetOptimize({
+        name: buf.name,
+        setting: buf.setting,
+        scene: p.design.scene || "",
+        tier: promptTierOf(buf),
+      });
+      if (r && r.ok && r.instruction) {
+        buf.instruction = r.instruction;
+        errText = "";
+      } else {
+        errText = T("优化失败") + "：" + String((r && (r.message || r.error)) || "");
+      }
+      paint();
+    };
+    optRow.appendChild(optBtn);
+    optRow.appendChild(promptTierRow(buf));
+    form.appendChild(optRow);
+
+    if (errText) form.appendChild(errLine(errText));
+    else if (okText) form.appendChild(okLine(okText));
+
+    /* 各组：基础音色在前，备选按顺序排（草稿还没有组，这一段整块跳过） */
+    const groups = (p.groups || []).slice().sort((a, b) => (a.kind === "base" ? -1 : b.kind === "base" ? 1 : a.index - b.index));
+    let altN = 0;
+    for (const g of groups) {
+      const ord = g.kind === "base" ? 0 : ++altN;
+      if (!buf.groups[g.id]) {
+        buf.groups[g.id] = { name: g.name || "", scene: g.scene || "", refText: g.refText || "", instruction: g.instruction || "" };
+      }
+      const gb = buf.groups[g.id];
+      const card = el("div", "breeze-group-card" + (g.kind === "base" ? " base" : ""));
+      const head = el("div", "breeze-group-head");
+      head.appendChild(el("span", "", groupTitle(g, ord)));
+      const st = el("span", "bg-ok", g.hasAudio ? "" : T("⚠ 缺音频"));
+      head.appendChild(st);
+      card.appendChild(head);
+
+      if (g.hasAudio && g.audioPath) {
+        const wave = el("div", "breeze-group-wave");
+        const player = wavePreviewCreate("breezepreset-" + p.id + "-" + g.id + "-" + waveSeq++);
+        wavePreviewSetSource(player, g.audioPath);
+        wave.appendChild(player);
+        card.appendChild(wave);
+      }
+
+      const gNameRow = lineRow(T("组名"), "bpf-row col");
+      const gName = inputOf(gb.name, T("例如：温柔 / 生气 / 旁白"));
+      gName.oninput = () => {
+        gb.name = gName.value;
+      };
+      gNameRow.appendChild(gName);
+      card.appendChild(gNameRow);
+      const gSceneRow = lineRow(T("场景 / 情绪（可空）"), "bpf-row col");
+      const gScene = inputOf(gb.scene, T("例如：吵架 / 深夜电台 / 旁白"));
+      gScene.oninput = () => {
+        gb.scene = gScene.value;
+      };
+      gSceneRow.appendChild(gScene);
+      card.appendChild(gSceneRow);
+
+      const tRow = lineRow(T("台词（= 这组的参考文字，必须与音频逐字一致）"), "bpf-row col");
+      const tTa = areaOf(gb.refText, 3);
+      tTa.oninput = () => {
+        gb.refText = tTa.value;
+      };
+      tRow.appendChild(tTa);
+      card.appendChild(tRow);
+
+      const iRow = lineRow(T("指令"), "bpf-row col");
+      const iTa = areaOf(gb.instruction, 2, T("这一组（这个场景 / 情绪）的语气、语速、情绪"));
+      iTa.oninput = () => {
+        gb.instruction = iTa.value;
+      };
+      iRow.appendChild(iTa);
+      card.appendChild(iRow);
+
+      const ops = el("div", "breeze-group-ops");
+      const use = btn(T("用这一组"), "mini primary");
+      use.onclick = (ev) => {
+        ev.stopPropagation();
+        apply(p, g);
+      };
+      ops.appendChild(use);
+      if (g.kind !== "base") {
+        const mkBase = btn(T("设为基础音色"), "mini");
+        mkBase.title = T("节点默认用基础音色；改完记得「保存修改」");
+        mkBase.onclick = (ev) => {
+          ev.stopPropagation();
+          p.baseGroupId = g.id;
+          for (const x of p.groups || []) x.kind = x.id === g.id ? "base" : "alt";
+          okText = T("已把这一组设为基础音色，点「保存修改」生效");
+          paint();
+        };
+        ops.appendChild(mkBase);
+      }
+      const del = btn(T("删除这一组"), "mini danger");
+      del.onclick = async (ev) => {
+        ev.stopPropagation();
+        if ((p.groups || []).length <= 1) {
+          errText = T("至少要留一组（基础音色）");
+          paint();
+          return;
+        }
+        if (!(await confirmDialog(T("删除这一组？它的音频副本会一起删掉。")))) return;
+        const keep = saveGroupsOf(p, buf.groups).filter((x) => x.id !== g.id);
+        const r = await api.breezePresetSave({
+          id: p.id,
+          name: buf.name,
+          baseGroupId: p.baseGroupId === g.id ? (keep[0] && keep[0].id) || "" : p.baseGroupId,
+          design: { setting: buf.setting, instruction: buf.instruction, scene: p.design.scene, language: p.design.language, model: p.design.model },
+          groups: keep,
+        });
+        if (r && r.ok) {
+          errText = "";
+          okText = "";
+          await refreshPresets();
+          editBuf = null;
+          paint();
+        } else {
+          errText = T("删除失败") + "：" + String((r && (r.message || r.error)) || "");
+          paint();
+        }
+      };
+      ops.appendChild(del);
+      card.appendChild(ops);
+      form.appendChild(card);
+    }
+
+    /* 候选小样池：还没收进角色的才留在这儿（收成组以后 group.candidateId 指回它，
+       再列出来会出现「已经有这一组了还能再收一次」的重复入口） */
+    const usedCandIds = new Set((p.groups || []).map((g) => String((g && g.candidateId) || "")).filter(Boolean));
+    const cands = (p.candidates || []).filter((c) => !usedCandIds.has(String((c && c.id) || "")));
+    if (cands.length) {
+      form.appendChild(el("div", "breeze-preset-form-title", T("候选小样（还没收进角色）")));
+      for (const c of cands) {
+        const card = el("div", "breeze-cand-card");
+        const head = el("div", "breeze-group-head");
+        head.appendChild(el("span", "", T("候选 · {s}", { s: fmtSec(c.durationSec) || T("未合成") })));
+        head.appendChild(el("span", "bp-sub", "seed " + (c.seed == null ? "-" : c.seed) + " · cfg " + (c.cfg == null ? "-" : c.cfg)));
+        card.appendChild(head);
+        if (c.hasAudio && c.audioPath) {
+          const wave = el("div", "breeze-group-wave");
+          const player = wavePreviewCreate("breezecand-" + p.id + "-" + c.id + "-" + waveSeq++);
+          wavePreviewSetSource(player, c.audioPath);
+          wave.appendChild(player);
+          card.appendChild(wave);
+        }
+        const txt = el("div", "breeze-group-text", c.line);
+        card.appendChild(txt);
+        const ops = el("div", "breeze-group-ops");
+        const adopt = btn(T("收为备选音色"), "mini");
+        adopt.onclick = async (ev) => {
+          ev.stopPropagation();
+          const r = await api.breezePresetCandidatePick({ presetId: p.id, candidateId: c.id, name: "", scene: "" });
+          if (r && r.ok) {
+            errText = "";
+            okText = T("已收为备选音色（可以在下面那组里改名 / 写场景）");
+            await refreshPresets();
+            editBuf = null;
+            paint();
+          } else {
+            errText = T("采纳失败") + "：" + String((r && (r.message || r.error)) || "");
+            paint();
+          }
+        };
+        ops.appendChild(adopt);
+        const rm = btn(T("删除"), "mini danger");
+        rm.onclick = async (ev) => {
+          ev.stopPropagation();
+          const r = await api.breezePresetCandidateDelete({ presetId: p.id, candidateId: c.id });
+          if (r && r.ok) {
+            await refreshPresets();
+            editBuf = null;
+            paint();
+          }
+        };
+        ops.appendChild(rm);
+        card.appendChild(ops);
+        form.appendChild(card);
+      }
+    }
+
+    const ops = el("div", "bpf-ops");
+    const save = btn(T("保存修改"), "mini primary");
+    save.onclick = async (ev) => {
+      ev.stopPropagation();
+      save.disabled = true;
+      const r = await api.breezePresetSave({
+        id: p.id,
+        name: buf.name,
+        baseGroupId: p.baseGroupId,
+        design: { setting: buf.setting, instruction: buf.instruction, scene: p.design.scene, language: p.design.language, model: p.design.model },
+        groups: saveGroupsOf(p, buf.groups),
+      });
+      if (r && r.ok) {
+        errText = "";
+        okText = T("已保存");
+        await refreshPresets();
+        editBuf = null;
+      } else {
+        okText = "";
+        errText = T("保存失败") + "：" + String((r && (r.message || r.error)) || "");
+      }
+      paint();
+    };
+    ops.appendChild(save);
+    /* 草稿还没有基础音色，加备选 / 删角色都不该在这儿（丢弃走上面那条横幅） */
+    if (!p.draft) {
+      const addAlt = btn(T("＋ 添加备选音色"), "mini");
+      addAlt.title = T("给这个角色再加一个场景 / 情绪用的备选音色（同样可以 AI 造声线或直接用音频）");
+      addAlt.onclick = async (ev) => {
+        ev.stopPropagation();
+        /* 已经有一趟没做完就先问一句，别把它无声覆盖掉 */
+        if (p.wizard && p.wizard.kind === "alt") {
+          const yes = await confirmDialog(
+            T("这个角色已经有一趟没做完的备选音色，要从头开始新的吗？（原来那趟会被替换）"),
+          );
+          if (!yes) return;
+        }
+        wizStart("alt");
+      };
+      ops.appendChild(addAlt);
+      const delRole = btn(T("删除角色"), "mini danger");
+      delRole.onclick = async (ev) => {
+        ev.stopPropagation();
+        if (!(await confirmDialog(T("删除角色「{name}」？它的全部音频副本与候选都会删掉。", { name: p.name })))) return;
+        const r = await api.breezePresetDelete(p.id);
+        if (r && r.ok) {
+          errText = "";
+          okText = "";
+          await refreshPresets();
+          editBuf = null;
+          if (breezePresetIdOf(node) === p.id) {
+            node.presetId = "";
+            node.presetGroupId = "";
+            try {
+              scheduleSave(true);
+              renderCanvas();
+            } catch (_) {}
+          }
+          paint();
+        }
+      };
+      ops.appendChild(delRole);
+    }
+    form.appendChild(ops);
+
+    mainEl.appendChild(form);
+  };
+
+  /* ── 向导：① 声线设定 → ② 台词 / 候选合成 → ③ 确认 ─────────────────
+     中途内容随时存盘（存进预设的 wizard 字段 + candidates/ 小样），关窗 / 切画布 / 崩了都能
+     从左边那条灰色「未完成」回到上次那一步；只有用户点「丢弃草稿」才真的删。 */
+  let wizKeySeq = 0;
+  let saveTimer = 0;
+  let savedAt = 0;
+  const nowKey = () => "w" + ++wizKeySeq;
+  const hasDraft = () => !!(wiz && wiz.presetId);
+  const newCand = (line) => ({
+    key: nowKey(),
+    id: "",
+    line: String(line || ""),
+    seed: rndSeed(),
+    cfg: rndCfg(),
+    status: "idle",
+    error: "",
+    audioPath: "",
+    durationSec: 0,
+    seedTouched: false,
+    cfgTouched: false,
+  });
+  const clockText = () => {
+    const d = new Date(savedAt || Date.now());
+    return String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
+  };
+  const savedLabel = () => (hasDraft() && savedAt ? T("草稿已保存 · {t}", { t: clockText() }) : "");
+
+  /* 送宿主的向导快照：只有这几项会被持久化（宿主再做一次有界归一） */
+  const wizSnapshot = () => {
+    const w = wiz;
+    if (!w) return null;
+    return {
+      kind: w.kind,
+      step: w.step,
+      entry: w.entry === "audio" ? "audio" : "design",
+      count: w.count,
+      /* 声线设定 / 指令：新建那趟在 design 里已经有一份，备选那趟只能存这儿
+         （design 是角色自己的，不能被一趟备选覆盖） */
+      setting: w.setting || "",
+      instruction: w.instruction || "",
+      scene: w.scene,
+      groupName: w.groupName,
+      language: w.language,
+      refText: w.refText,
+      audioPath: w.audioPath,
+      audioName: w.audioName,
+      lines: w.candidates.map((c, i) => ({
+        id: c.key || "w" + i,
+        line: c.line,
+        seed: c.seed,
+        cfg: c.cfg,
+        status: c.status,
+        error: c.error,
+        candidateId: c.id || "",
+        seedTouched: !!c.seedTouched,
+        cfgTouched: !!c.cfgTouched,
+        durationSec: Number(c.durationSec) || 0,
+      })),
+      at: Date.now(),
+    };
+  };
+
+  const ensureDraft = async (force) => {
+    const w = wiz;
+    if (!w) return "";
+    if (w.presetId && !force) return w.presetId;
+    if (force) w.presetId = "";
+    const r = await api.breezePresetSave({
+      name: w.roleName || T("角色"),
+      draft: true,
+      design: {
+        setting: w.setting,
+        instruction: w.instruction,
+        scene: w.scene,
+        language: w.language,
+        model: llmInfo.selected || "",
+      },
+      groups: [],
+      wizard: wizSnapshot(),
+    });
+    if (!r || !r.ok || !r.preset || !r.preset.id) {
+      w.err = T("建角色失败") + "：" + String((r && (r.message || r.error)) || "");
+      return "";
+    }
+    w.presetId = r.preset.id;
+    savedAt = Date.now();
+    const at = presets.findIndex((p) => p && p.id === r.preset.id);
+    if (at >= 0) presets[at] = r.preset;
+    else presets.unshift(r.preset);
+    return w.presetId;
+  };
+
+  /* 写盘：静默模式只更新时间那一行，不重建表单（否则光标会被打断） */
+  const wizSave = async (silent) => {
+    const w = wiz;
+    if (!w || !w.presetId) return false;
+    const target = w.kind === "alt" ? byId(w.presetId) : null;
+    /* 备选那趟必须挂在真角色上：找不到就宁可报错，也不能另起一个空草稿 */
+    if (w.kind === "alt" && !target) {
+      if (!silent) {
+        w.err = T("这个角色已经不在了（可能被删掉了）");
+        paint();
+      }
+      return false;
+    }
+    const r = await api.breezePresetSave({
+      id: w.presetId,
+      name: w.roleName || (target && target.name) || T("角色"),
+      /* 备选那趟也送 draft:true：宿主认「已定稿角色 + draft:true」为只更新设定，
+         组与 draft 位原样保留，所以不会把这角色的基础音色冲掉 */
+      draft: true,
+      design:
+        target && target.design
+          ? target.design
+          : {
+              setting: w.setting,
+              instruction: w.instruction,
+              scene: w.scene,
+              language: w.language,
+              model: llmInfo.selected || "",
+            },
+      groups: [],
+      wizard: wizSnapshot(),
+    });
+    if (!r || !r.ok) {
+      if (!silent) {
+        w.err = T("自动保存失败") + "：" + String((r && (r.message || r.error)) || "");
+        paint();
+      }
+      return false;
+    }
+    w.presetId = r.preset.id;
+    savedAt = Date.now();
+    /* 内存里的清单跟着换（左列名字 / 草稿条目不靠下次读盘才刷新） */
+    const at = presets.findIndex((p) => p && p.id === r.preset.id);
+    if (at >= 0) presets[at] = r.preset;
+    else presets.unshift(r.preset);
+    if (!wrap.isConnected) return true;
+    if (silent) {
+      const n = mainEl.querySelector(".breeze-wiz-saved");
+      if (n) n.textContent = savedLabel();
+      /* 静默保存不重画（会打断正在打字的光标），但「取消」这颗按钮的含义已经变了：
+         现在关掉是「留着草稿」，得当场把字换过来，否则用户以为点它什么都没留下 */
+      const c = mainEl.querySelector(".breeze-wiz-keep");
+      if (c && c.textContent === T("取消")) {
+        c.textContent = T("稍后再弄");
+        c.title = T("关掉窗口也不丢：左边会留一条「未完成」，随时接着做");
+      }
+    } else {
+      paint();
+    }
+    return true;
+  };
+  const queueWizSave = () => {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(async () => {
+      if (!wiz) return;
+      if (!wiz.presetId && !(await ensureDraft())) return;
+      await wizSave(true);
+    }, 500);
+  };
+
+  const wizStart = (kind) => {
+    const p = kind === "alt" ? byId(curId) : null;
+    wiz = {
+      kind,
+      presetId: p ? p.id : "",
+      roleName: p ? p.name : "",
+      entry: "design",
+      step: 1,
+      setting: p ? p.design.setting || "" : "",
+      instruction: p ? p.design.instruction || "" : "",
+      language: p ? p.design.language || "" : "",
+      tier: "brief",
+      scene: "",
+      groupName: "",
+      count: 3,
+      candidates: [],
+      selected: "",
+      busy: false,
+      canceled: false,
+      err: "",
+      audio: null,
+      audioName: "",
+      audioPath: "",
+      refText: "",
+    };
+    savedAt = p && p.wizard ? Number(p.wizard.at) || 0 : 0;
+    view = "wizard";
+    errText = "";
+    okText = "";
+    paint();
+    if (!llmInfo.models.length) loadLlm();
+    if (!sys.checked) loadSys();
+  };
+
+  /* 从磁盘草稿原地恢复：台词 / seed / cfg / 手改标记 / 已经合成的小样全都回来 */
+  const restoreWizard = (p) => {
+    const w = (p && p.wizard) || {};
+    const cands = (p && p.candidates) || [];
+    wiz = {
+      kind: w.kind === "alt" ? "alt" : "create",
+      presetId: p.id,
+      roleName: p.name || "",
+      entry: w.entry === "audio" ? "audio" : "design",
+      step: w.step || 1,
+      setting: w.setting != null && w.setting !== "" ? String(w.setting) : (p.design && p.design.setting) || "",
+      instruction:
+        w.instruction != null && w.instruction !== "" ? String(w.instruction) : (p.design && p.design.instruction) || "",
+      language: (p.design && p.design.language) || "",
+      tier: "brief",
+      scene: w.scene || "",
+      groupName: w.groupName || "",
+      count: w.count || 3,
+      candidates: (Array.isArray(w.lines) ? w.lines : []).map((ln, i) => {
+        const c = ln && ln.candidateId ? cands.find((x) => x && x.id === ln.candidateId) : null;
+        const done = !!(c && c.hasAudio);
+        return {
+          key: (ln && ln.id) || "w" + i,
+          id: (c && c.id) || "",
+          line: (ln && ln.line) || "",
+          seed: ln && ln.seed != null ? ln.seed : rndSeed(),
+          cfg: ln && ln.cfg != null ? ln.cfg : rndCfg(),
+          status: done ? "done" : ln && ln.status === "error" ? "error" : "idle",
+          error: done ? "" : (ln && ln.error) || "",
+          audioPath: done ? c.audioPath : "",
+          durationSec: done ? c.durationSec : 0,
+          seedTouched: !!(ln && ln.seedTouched),
+          cfgTouched: !!(ln && ln.cfgTouched),
+        };
+      }),
+      selected: "",
+      busy: false,
+      canceled: false,
+      err: "",
+      audio: null,
+      audioName: w.audioName || "",
+      audioPath: w.audioPath || "",
+      refText: w.refText || "",
+    };
+    savedAt = Number(w.at) || 0;
+    if (!wiz.candidates.length) wiz.step = 1;
+    else if (wiz.step >= 3) wiz.step = 2; /* 回来重新挑一条（音频路径由候选池对回来） */
+    view = "wizard";
+    curId = p.id;
+    errText = "";
+    okText = "";
+    paint();
+    if (!llmInfo.models.length) loadLlm();
+    if (!sys.checked) loadSys();
+  };
+
+  const wizCancel = () => {
+    const w = wiz;
+    if (w && w.busy) {
+      w.canceled = true;
+      w.err = T("已取消：已经出来的候选保留着。");
+      paint();
+      return;
+    }
+    clearTimeout(saveTimer);
+    view = "browse";
+    wiz = null;
+    errText = "";
+    okText = "";
+    paint();
+  };
+
+  /* 丢弃草稿是唯一的删除入口：新建的角色连角色一起删，备选那趟只清向导、角色不动 */
+  const dropDraft = async () => {
+    const w = wiz;
+    if (!w) return;
+    clearTimeout(saveTimer);
+    if (!w.presetId) {
+      view = "browse";
+      wiz = null;
+      paint();
+      return;
+    }
+    const p = byId(w.presetId);
+    const alt = w.kind === "alt";
+    const yes = await confirmDialog(
+      alt
+        ? T("放弃这趟备选音色？已经合成的小样会删掉，角色本身不动。")
+        : T("丢弃「{name}」的草稿？已经写的台词与合成的小样都会删掉。", {
+            name: w.roleName || (p && p.name) || "",
+          }),
+    );
+    if (!yes) return;
+    if (alt && p) {
+      await api.breezePresetSave({
+        id: p.id,
+        name: p.name,
+        baseGroupId: p.baseGroupId,
+        design: p.design,
+        groups: saveGroupsOf(p),
+        wizard: null,
+      });
+      await refreshPresets();
+      editBuf = null;
+      curId = p.id;
+      wiz = null;
+      view = "browse";
+      okText = T("已放弃这趟备选音色");
+      paint();
+      return;
+    }
+    await api.breezePresetDelete(w.presetId);
+    await refreshPresets();
+    editBuf = null;
+    wiz = null;
+    view = "browse";
+    curId = (presets.find((x) => !x.draft) || presets[0] || {}).id || "";
+    okText = T("已丢弃草稿");
+    paint();
+  };
+
+  /* 合成一条候选：seed / cfg 手改过就沿用（锁定），没动过就每次换随机 */
+  const synthOne = async (c) => {
+    const w = wiz;
+    if (!w) return false;
+    if (!String(c.line || "").trim()) {
+      c.status = "error";
+      c.error = T("台词是空的：先写一句再合成");
+      return false;
+    }
+    if (!String(w.instruction || "").trim()) {
+      c.status = "error";
+      c.error = T("缺音色指令：回第①步写一句（或点「AI 优化提示词」）");
+      return false;
+    }
+    if (!c.seedTouched) c.seed = rndSeed();
+    if (!c.cfgTouched) c.cfg = rndCfg();
+    const prevCid = c.id || "";
+    c.status = "running";
+    c.error = "";
+    paint();
+    const ask = async () => {
+      try {
+        return await api.breezePresetCandidate({
+          presetId: w.presetId,
+          line: c.line,
+          instruction: w.instruction,
+          seed: c.seed,
+          cfg: c.cfg,
+          replaceCandidateId: prevCid,
+        });
+      } catch (e) {
+        return { ok: false, message: String((e && e.message) || e) };
+      }
+    };
+    let r = await ask();
+    /* 角色确实没了（换过数据目录 / 被别处删掉）→ 自动重建草稿再试一次，不该把 preset_missing 甩给用户 */
+    if (r && !r.ok && r.error === "preset_missing") {
+      const pid = await ensureDraft(true);
+      if (pid) r = await ask();
+    }
+    if (!r || !r.ok) {
+      c.status = "error";
+      c.error = String((r && (r.message || r.error)) || "");
+    } else {
+      c.status = "done";
+      c.id = r.candidate.id;
+      c.audioPath = r.candidate.audioPath;
+      c.durationSec = r.candidate.durationSec;
+      c.seed = r.candidate.seed != null ? r.candidate.seed : c.seed;
+      c.cfg = r.candidate.cfg != null ? r.candidate.cfg : c.cfg;
+      c.error = "";
+      c.stale = false;
+    }
+    queueWizSave();
+    if (wrap.isConnected) paint();
+    return c.status === "done";
+  };
+
+  /* 第一拍：只出 N 条台词（可逐条改），合成留给第二步的「全部开始生成」 */
+  const genLines = async () => {
+    const w = wiz;
+    if (!w || w.busy) return;
+    if (!String(w.setting || "").trim() && !String(w.instruction || "").trim()) {
+      w.err = T("先写一句声线设定（或者直接写指令）");
+      paint();
+      return;
+    }
+    w.busy = true;
+    w.err = "";
+    w.canceled = false;
+    paint();
+    if (!String(w.instruction || "").trim()) {
+      const r = await api.breezePresetOptimize({
+        name: w.roleName,
+        setting: w.setting,
+        scene: w.scene,
+        tier: promptTierOf(w),
+      });
+      if (r && r.ok && r.instruction) w.instruction = r.instruction;
+      else w.err = T("提示词优化失败（可以手写指令继续）") + "：" + String((r && (r.message || r.error)) || "");
+    }
+    if (!String(w.instruction || "").trim()) {
+      w.busy = false;
+      paint();
+      return;
+    }
+    if (!(await ensureDraft())) {
+      w.busy = false;
+      paint();
+      return;
+    }
+    await wizSave(true);
+    const lr = await api.breezePresetLines({
+      name: w.roleName,
+      setting: w.setting,
+      instruction: w.instruction,
+      scene: w.scene,
+      count: w.count,
+      avoid: w.candidates.map((c) => c.line).filter(Boolean),
+    });
+    if (!lr || !lr.ok) {
+      /* 模型不可用也不挡路：进第二步自己写一条台词照样能合成 */
+      w.err =
+        T("台词生成失败（可以自己写台词继续）") + "：" + String((lr && (lr.message || lr.error)) || "");
+      w.step = 2;
+      if (!w.candidates.length) w.candidates.push(newCand(""));
+      w.busy = false;
+      queueWizSave();
+      paint();
+      return;
+    }
+    w.language = lr.language || w.language;
+    w.candidates = (lr.lines || []).map((ln) => newCand(String(ln || "")));
+    w.step = 2;
+    w.busy = false;
+    await wizSave(true);
+    paint();
+  };
+
+  /* 第二拍：全部开始生成 —— 只跑「还没生成 / 失败」的，串行逐条出波形，可随时取消剩余 */
+  const genAll = async () => {
+    const w = wiz;
+    if (!w || w.busy) return;
+    const todo = w.candidates.filter((c) => c.status !== "done");
+    if (!todo.length) {
+      w.err = "";
+      okText = T("全部候选都已经生成过了");
+      paint();
+      return;
+    }
+    if (!String(w.instruction || "").trim()) {
+      w.err = T("缺音色指令：先回第①步写好");
+      paint();
+      return;
+    }
+    w.busy = true;
+    w.canceled = false;
+    w.err = "";
+    okText = "";
+    paint();
+    for (const c of todo) {
+      if (w.canceled) break;
+      await synthOne(c);
+    }
+    w.busy = false;
+    if (w.canceled) w.err = T("已取消剩余：已经出来的候选保留着。");
+    queueWizSave();
+    paint();
+  };
+
+  /* 只重写这一条台词（其余不动）；已经有音频的顺手按新台词再合成一次 */
+  const regenLine = async (c) => {
+    const w = wiz;
+    if (!w || w.busy) return;
+    const others = w.candidates.filter((x) => x !== c).map((x) => x.line).filter(Boolean);
+    w.busy = true;
+    w.err = "";
+    paint();
+    const lr = await api.breezePresetLines({
+      name: w.roleName,
+      setting: w.setting,
+      instruction: w.instruction,
+      scene: w.scene,
+      count: 1,
+      avoid: others,
+      sample: c.line,
+    });
+    if (lr && lr.ok && lr.lines && lr.lines.length) {
+      c.line = String(lr.lines[0] || "");
+      if (c.id && sys.apiUp) {
+        await synthOne(c);
+      } else {
+        c.status = "idle";
+        c.audioPath = "";
+      }
+    } else {
+      w.err = T("重写台词失败") + "：" + String((lr && (lr.message || lr.error)) || "");
+    }
+    w.busy = false;
+    queueWizSave();
+    paint();
+  };
+
+  const addOneCandidate = async () => {
+    const w = wiz;
+    if (!w || w.busy) return;
+    w.busy = true;
+    paint();
+    const lr = await api.breezePresetLines({
+      name: w.roleName,
+      setting: w.setting,
+      instruction: w.instruction,
+      scene: w.scene,
+      count: 1,
+      sample: (w.candidates[w.candidates.length - 1] || {}).line || "",
+      avoid: w.candidates.map((c) => c.line).filter(Boolean),
+    });
+    if (lr && lr.ok && lr.lines && lr.lines.length) {
+      w.candidates.push(newCand(String(lr.lines[0] || "")));
+    } else {
+      w.err = T("再加一条失败（可以直接手写一条）") + "：" + String((lr && (lr.message || lr.error)) || "");
+    }
+    w.busy = false;
+    queueWizSave();
+    paint();
+  };
+  /* 手写一条：模型不可用 / 想要自己的台词时的出口 */
+  const addManualCandidate = () => {
+    const w = wiz;
+    if (!w || w.candidates.length >= 8) return;
+    w.candidates.push(newCand(""));
+    queueWizSave();
+    paint();
+  };
+
+  const finalize = async (asBase) => {
+    const w = wiz;
+    if (!w) return;
+    const c = w.candidates.find((x) => x.id && x.id === w.selected);
+    if (!c) {
+      w.err = T("先挑一条候选（点「用这条」）");
+      paint();
+      return;
+    }
+    w.busy = true;
+    w.err = "";
+    paint();
+    const pr = await api.breezePresetCandidatePick({
+      presetId: w.presetId,
+      candidateId: c.id,
+      asBase: !!asBase,
+      name: w.groupName,
+      scene: w.scene,
+    });
+    if (!pr || !pr.ok) {
+      w.err = T("保存失败") + "：" + String((pr && (pr.message || pr.error)) || "");
+      w.busy = false;
+      paint();
+      return;
+    }
+    const pub = pr.preset;
+    const sr = await api.breezePresetSave({
+      id: pub.id,
+      name: w.roleName || pub.name,
+      draft: false,
+      baseGroupId: asBase ? pr.groupId : pub.baseGroupId,
+      /* 备选音色只往角色里加一组：角色的「声线设定 / 指令」是基础音色那一版的，
+         这一趟的设定只属于这一组，不能反写回去把角色主设定改掉 */
+      design:
+        w.kind === "alt" && pub.design
+          ? pub.design
+          : {
+              setting: w.setting,
+              instruction: w.instruction,
+              scene: w.scene,
+              language: w.language,
+              model: llmInfo.selected || "",
+            },
+      groups: saveGroupsOf(pub),
+      /* 定稿：向导状态收掉，左列那条「未完成」跟着消失 */
+      wizard: null,
+    });
+    if (!sr || !sr.ok) {
+      w.err = T("保存失败") + "：" + String((sr && (sr.message || sr.error)) || "");
+      w.busy = false;
+      paint();
+      return;
+    }
+    const saved = sr.preset;
+    await refreshPresets();
+    const fresh = byId(saved.id) || saved;
+    view = "browse";
+    wiz = null;
+    editBuf = null;
+    curId = fresh.id;
+    if (asBase) {
+      const g = (fresh.groups || []).find((x) => x.id === pr.groupId) || (fresh.groups || [])[0] || null;
+      apply(fresh, g);
+    } else {
+      okText = T("已添加备选音色");
+      paint();
+    }
+  };
+
+  const saveAudioEntry = async () => {
+    const w = wiz;
+    if (!w) return;
+    const refText = String(w.refText || "").trim();
+    if (!String(w.roleName || "").trim() && w.kind === "create") {
+      w.err = T("请填角色名");
+      paint();
+      return;
+    }
+    /* 恢复草稿后音频字节不在内存里（只留了路径）：按路径重新读一次，用户换过的文件也照这个走 */
+    if (!w.audio && w.audioPath && typeof api.fileReadAudioBytes === "function") {
+      try {
+        const got = await api.fileReadAudioBytes(w.audioPath);
+        if (got && got.ok && got.bytes) {
+          w.audio = got.bytes;
+          w.audioName = got.name || w.audioName || baseNameOf(w.audioPath);
+        }
+      } catch (_) {}
+    }
+    if (!w.audio) {
+      w.err = T("请先选一段参考音频");
+      paint();
+      return;
+    }
+    if (!refText) {
+      w.err = T("请填台词：这段音频里说的那句话（必须逐字一致），否则克隆不出来");
+      paint();
+      return;
+    }
+    w.busy = true;
+    w.err = "";
+    paint();
+    const target = w.kind === "alt" ? byId(w.presetId) : null;
+    const groupIn = {
+      id: "",
+      name: w.groupName,
+      scene: w.scene,
+      kind: "base",
+      source: "audio",
+      refText,
+      instruction: w.instruction,
+      audio: { name: w.audioName, data: w.audio },
+    };
+    const payload = target
+      ? {
+          id: target.id,
+          name: target.name,
+          baseGroupId: target.baseGroupId,
+          design: target.design,
+          groups: saveGroupsOf(target).concat([groupIn]),
+          wizard: null,
+        }
+      : {
+          /* 有草稿就把它转正（否则会多出一条「未完成」孤魂） */
+          id: w.presetId || undefined,
+          name: w.roleName,
+          draft: false,
+          design: {
+            setting: w.setting,
+            instruction: w.instruction,
+            scene: w.scene,
+            language: w.language,
+            model: llmInfo.selected || "",
+          },
+          groups: [groupIn],
+          wizard: null,
+        };
+    const r = await api.breezePresetSave(payload);
+    if (!r || !r.ok) {
+      w.err = T("保存失败") + "：" + String((r && (r.message || r.error)) || "");
+      w.busy = false;
+      paint();
+      return;
+    }
+    const saved = r.preset;
+    await refreshPresets();
+    view = "browse";
+    wiz = null;
+    editBuf = null;
+    curId = saved.id;
+    const fresh = byId(saved.id) || saved;
+    if (target) {
+      okText = T("已添加备选音色");
+      paint();
+    } else {
+      const g =
+        (fresh.groups || []).find((x) => String(x.refText || "") === refText) || (fresh.groups || [])[0] || null;
+      apply(fresh, g);
+    }
+  };
+
+  const paintWizard = () => {
+    mainEl.textContent = "";
+    const w = wiz;
+    if (!w) return;
+    const form = el("div", "breeze-preset-form");
+    const title = el("div", "breeze-preset-form-title");
+    title.textContent =
+      w.kind === "alt"
+        ? T("给「{name}」添加备选音色", { name: w.roleName || (byId(w.presetId) || {}).name || "" })
+        : T("新建角色");
+    form.appendChild(title);
+    /* 中途存盘的痕迹：先摆一行空的占位，存完由 wizSave 就地填字（空的时候 CSS 收掉，不占高度） */
+    form.appendChild(el("div", "breeze-wiz-saved", savedLabel()));
+
+    /* 步骤条 */
+    const steps = el("div", "breeze-wiz-steps");
+    [T("① 声线设定"), T("② 台词与候选"), T("③ 确认音色")].forEach((label, i) => {
+      const s = el("span", "breeze-wiz-step" + (w.step === i + 1 ? " on" : i + 1 < w.step ? " done" : ""), label);
+      s.onclick = () => {
+        if (w.busy) return;
+        if (i + 1 === 2 && !w.candidates.length) return;
+        if (i + 1 === 3 && !w.candidates.some((c) => c.id)) return;
+        w.step = i + 1;
+        queueWizSave();
+        paint();
+      };
+      steps.appendChild(s);
+    });
+    form.appendChild(steps);
+    if (w.err) form.appendChild(errLine(w.err));
+
+    if (w.step === 1) {
+      /* 两个入口：AI 造声线 / 现成音频 */
+      const tabs = el("div", "breeze-wiz-tabs");
+      [
+        ["design", T("声线设计（AI 造声线）")],
+        ["audio", T("音频参考（我有现成音频）")],
+      ].forEach(([k, label]) => {
+        const b = btn(label, "mini" + (w.entry === k ? " primary" : ""));
+        b.onclick = (ev) => {
+          ev.stopPropagation();
+          w.entry = k;
+          w.err = "";
+          paint();
+        };
+        tabs.appendChild(b);
+      });
+      form.appendChild(tabs);
+
+      if (w.kind === "create") {
+        const nameRow = lineRow(T("角色名"));
+        const nameInp = inputOf(w.roleName, T("例如：旁白 / 温柔女声 / 少年"));
+        nameInp.oninput = () => {
+          w.roleName = nameInp.value;
+          queueWizSave();
+        };
+        nameRow.appendChild(nameInp);
+        form.appendChild(nameRow);
+      }
+
+      const settingRow = lineRow(T("声线设定（只需一句话）"), "bpf-row col");
+      const settingTa = areaOf(w.setting, 2, T("例如：三十岁出头的女声，音色偏暖，语速慢，适合深夜电台"));
+      settingTa.oninput = () => {
+        w.setting = settingTa.value;
+        queueWizSave();
+      };
+      settingRow.appendChild(settingTa);
+      form.appendChild(settingRow);
+
+      if (w.kind === "alt") {
+        const sceneRow = lineRow(T("场景 / 情绪（备选音色靠它区分）"));
+        const sceneInp = inputOf(w.scene, T("例如：生气质问 / 温柔安慰 / 少年感的旁白"));
+        sceneInp.oninput = () => {
+          w.scene = sceneInp.value;
+          queueWizSave();
+        };
+        sceneRow.appendChild(sceneInp);
+        form.appendChild(sceneRow);
+      }
+
+      if (w.entry === "design") {
+        const modelRow = lineRow(T("写提示词用的模型"));
+        const sel = document.createElement("select");
+        const none = document.createElement("option");
+        none.value = "";
+        none.textContent = llmInfo.defaultModel
+          ? T("跟随默认（{m}）", { m: llmInfo.defaultModel })
+          : T("跟随默认");
+
+        sel.appendChild(none);
+        for (const m of llmInfo.models || []) {
+          const o = document.createElement("option");
+          o.value = m.id;
+          o.textContent = m.id + (m.providerName ? " · " + m.providerName : "");
+          sel.appendChild(o);
+        }
+        sel.value = llmInfo.selected || "";
+        if (sel.value !== (llmInfo.selected || "")) sel.value = "";
+        sel.onchange = async () => {
+          const r = await api.breezePresetLlmSetModel(sel.value);
+          if (r && r.llm) llmInfo = r.llm;
+          paint();
+        };
+        modelRow.appendChild(sel);
+        form.appendChild(modelRow);
+        if (!llmInfo.ok && llmInfo.error) form.appendChild(errLine(llmInfo.error));
+
+        const optRow = el("div", "bpf-ops");
+        const optBtn = btn(T("AI 优化提示词"), "mini");
+        optBtn.onclick = async (ev) => {
+          ev.stopPropagation();
+          if (!String(w.setting || "").trim()) {
+            w.err = T("先写一句声线设定");
+            paint();
+            return;
+          }
+          optBtn.disabled = true;
+          optBtn.textContent = T("优化中…");
+          const r = await api.breezePresetOptimize({
+            name: w.roleName,
+            setting: w.setting,
+            scene: w.scene,
+            tier: promptTierOf(w),
+          });
+          if (r && r.ok && r.instruction) {
+            w.instruction = r.instruction;
+            w.err = "";
+            if (r.model) w.modelUsed = r.model;
+          } else {
+            w.err = T("提示词优化失败") + "：" + String((r && (r.message || r.error)) || "");
+          }
+          paint();
+        };
+        optRow.appendChild(optBtn);
+        /* 两档紧贴着优化按钮：默认简洁，换档后再点一次就出详细版 */
+        optRow.appendChild(promptTierRow(w));
+        const countSel = document.createElement("select");
+        for (const n of [3, 4, 5, 6]) {
+          const o = document.createElement("option");
+          o.value = String(n);
+          o.textContent = T("{n} 个候选", { n });
+          countSel.appendChild(o);
+        }
+        countSel.value = String(w.count);
+        countSel.onchange = () => {
+          w.count = Number(countSel.value) || 3;
+        };
+        optRow.appendChild(countSel);
+        form.appendChild(optRow);
+
+        const insRow = lineRow(T("指令（提示词 · 可直接改）"), "bpf-row col");
+        const insTa = areaOf(w.instruction, 4, T("AI 会按声线设定写好这一句；也可以自己改。留空 = 生成时自动优化"));
+        insTa.oninput = () => {
+          w.instruction = insTa.value;
+          queueWizSave();
+        };
+        insRow.appendChild(insTa);
+        form.appendChild(insRow);
+
+        readyHint(form);
+
+        const ops = el("div", "bpf-ops");
+        const go = btn(T("生成 {n} 条台词 →", { n: w.count }), "mini primary");
+        go.disabled = !!(sys.checked && !sys.apiUp);
+        go.title = go.disabled
+          ? T("本地后端没运行：先启用再生成")
+          : T("第一拍只出台词（可逐条改）；合成音频到第二步点「全部开始生成」");
+        go.onclick = async (ev) => {
+          ev.stopPropagation();
+          await genLines();
+        };
+        ops.appendChild(go);
+        const cancel = btn(hasDraft() ? T("稍后再弄") : T("取消"), "mini breeze-wiz-keep");
+        cancel.title = hasDraft() ? T("关掉窗口也不丢：左边会留一条「未完成」，随时接着做") : "";
+        cancel.onclick = (ev) => {
+          ev.stopPropagation();
+          wizCancel();
+        };
+        /* 草稿已经落盘了，就在这一步也给一个明面上的删除口 */
+        if (hasDraft()) {
+          const drop = btn(T("丢弃草稿"), "mini");
+          drop.title = T("只有点这里才会真的删掉草稿与小样");
+          drop.onclick = async (ev) => {
+            ev.stopPropagation();
+            await dropDraft();
+          };
+          ops.appendChild(drop);
+        }
+        ops.appendChild(cancel);
+        form.appendChild(ops);
+      } else {
+        const audioRow = lineRow(T("参考音频"));
+        const pick = btn(w.audioName ? T("换一段…") : T("选择音频…"), "mini");
+        pick.title = T("本机音频：宿主会把它复制进预设库，之后移动 / 删除原文件也不影响角色");
+        const fname = el("span", "bpf-file", w.audioName || T("还没有音频（必填）"));
+        pick.onclick = async (ev) => {
+          ev.stopPropagation();
+          if (typeof api.fileOpenDialog !== "function" || typeof api.fileReadAudioBytes !== "function") {
+            w.err = T("当前环境不能选本机文件：请在 MTNode 主窗口里操作");
+            paint();
+            return;
+          }
+          const r = await api.fileOpenDialog({
+            title: T("选择参考音频"),
+            defaultPath: String(typeof wfWorkspace === "function" ? wfWorkspace() : "").trim() || undefined,
+            filters: [
+              {
+                name: T("音频"),
+                extensions: ["wav", "flac", "mp3", "m4a", "aac", "ogg", "opus", "aiff", "aif"],
+              },
+            ],
+          });
+          const p = r && r.path;
+          if (!p) return;
+          const rd = await api.fileReadAudioBytes(p);
+          if (!rd || !rd.ok || !rd.bytes) {
+            w.err = T("读音频失败") + "：" + String((rd && (rd.error || rd.message)) || "");
+            paint();
+            return;
+          }
+          w.audio = rd.bytes;
+          w.audioName = baseNameOf(p);
+          w.audioPath = p;
+          w.err = "";
+          paint();
+        };
+        audioRow.appendChild(pick);
+        audioRow.appendChild(fname);
+        form.appendChild(audioRow);
+
+        if (w.audioPath) {
+          const waveRow = el("div", "bpf-row");
+          const player = wavePreviewCreate("breezenew-" + waveSeq++);
+          wavePreviewSetSource(player, w.audioPath);
+          waveRow.appendChild(player);
+          form.appendChild(waveRow);
+        }
+
+        const refRow = lineRow(T("台词（这段音频里说的那句话，逐字一致）"), "bpf-row col");
+        const refTa = areaOf(w.refText, 3, T("与音频逐字一致（含重复与语气词）—— 它同时是这组的参考文字"));
+        refTa.oninput = () => {
+          w.refText = refTa.value;
+        };
+        refRow.appendChild(refTa);
+        form.appendChild(refRow);
+
+        const gRow = lineRow(T("组名（可空）"), "bpf-row col");
+        const gName = inputOf(w.groupName, T("例如：温柔 / 旁白"));
+        gName.oninput = () => {
+          w.groupName = gName.value;
+        };
+        gRow.appendChild(gName);
+        form.appendChild(gRow);
+
+        const insRow = lineRow(T("指令（可空：留空就是纯克隆）"), "bpf-row col");
+        const insTa = areaOf(w.instruction, 2, T("这一组的语气、语速、情绪；留空 = 只用参考音频克隆"));
+        insTa.oninput = () => {
+          w.instruction = insTa.value;
+        };
+        insRow.appendChild(insTa);
+        form.appendChild(insRow);
+
+        const optRow = el("div", "bpf-ops");
+        const optBtn = btn(T("AI 帮我写指令"), "mini");
+        optBtn.title = T("按角色名 + 声线设定写一句音色提示词（留空也可保存，只是少了语气控制）");
+        optBtn.onclick = async (ev) => {
+          ev.stopPropagation();
+          optBtn.disabled = true;
+          const r = await api.breezePresetOptimize({
+            name: w.roleName,
+            setting: w.setting || w.refText,
+            scene: w.scene,
+            tier: promptTierOf(w),
+          });
+          if (r && r.ok && r.instruction) {
+            w.instruction = r.instruction;
+            w.err = "";
+          } else {
+            w.err = T("提示词优化失败") + "：" + String((r && (r.message || r.error)) || "");
+          }
+          paint();
+        };
+        optRow.appendChild(optBtn);
+        optRow.appendChild(promptTierRow(w));
+        form.appendChild(optRow);
+
+        const ops = el("div", "bpf-ops");
+        const saveBtn = btn(w.kind === "alt" ? T("保存为备选音色") : T("保存并选用"), "mini primary");
+        saveBtn.onclick = async (ev) => {
+          ev.stopPropagation();
+          await saveAudioEntry();
+        };
+        ops.appendChild(saveBtn);
+        const cancel = btn(T("取消"), "mini");
+        cancel.onclick = (ev) => {
+          ev.stopPropagation();
+          wizCancel();
+        };
+        ops.appendChild(cancel);
+        form.appendChild(ops);
+      }
+    }
+
+    if (w.step === 2) {
+      const doneN = w.candidates.filter((c) => c.status === "done").length;
+      const headRow = el("div", "bpf-row breeze-wiz-genbar");
+      headRow.appendChild(
+        el("span", "bp-sub", T("台词 {n} 条 · 已生成 {d} 条", { n: w.candidates.length, d: doneN })),
+      );
+      const runAll = btn(w.busy ? T("生成中…") : T("全部开始生成"), "mini primary");
+      runAll.disabled = !!w.busy || doneN === w.candidates.length;
+      runAll.title = T("只跑还没生成的 / 失败的这些，逐条串行合成，每出一条就能试听");
+      runAll.onclick = async (ev) => {
+        ev.stopPropagation();
+        await genAll();
+      };
+      headRow.appendChild(runAll);
+      if (w.busy) {
+        const stop = btn(T("取消剩余"), "mini");
+        stop.onclick = (ev) => {
+          ev.stopPropagation();
+          wizCancel();
+        };
+        headRow.appendChild(stop);
+      }
+      form.appendChild(headRow);
+
+      w.candidates.forEach((c, i) => {
+        const card = el("div", "breeze-cand-card");
+        const head = el("div", "breeze-group-head");
+        const left = el("span");
+        left.textContent = T("候选 {n}", { n: i + 1 });
+        head.appendChild(left);
+        head.appendChild(
+          el(
+            "span",
+            "bp-sub",
+            c.status === "running"
+              ? T("合成中…")
+              : c.status === "error"
+                ? T("失败：{m}", { m: c.error || "" })
+                : /* 拿不到时长（后端没回 x-breeze-duration）也要说清楚「已经出结果了」，
+                     否则卡片明明能播、标题却还挂着「等合成」 */
+                  (c.status === "done" ? fmtSec(c.durationSec) || T("已生成") : T("等生成")),
+          ),
+        );
+        card.appendChild(head);
+
+        const ta = areaOf(c.line, 3);
+        ta.oninput = () => {
+          c.line = ta.value;
+          /* 台词改了，已经合成那版就只对应旧台词：标一下别让人误用 */
+          c.stale = c.status === "done";
+          queueWizSave();
+        };
+        card.appendChild(ta);
+        if (c.stale) card.appendChild(el("div", "bp-sub", T("台词改过了：点「重抽音频」才会按新台词重新合成")));
+
+        const numRow = el("div", "bpf-row");
+        numRow.appendChild(el("span", "bpf-label", "seed"));
+        const seedInp = document.createElement("input");
+        seedInp.type = "number";
+        seedInp.value = String(c.seed);
+        seedInp.style.width = "120px";
+        seedInp.oninput = () => {
+          c.seed = Number(seedInp.value) || 1;
+          c.seedTouched = true;
+          queueWizSave();
+        };
+        numRow.appendChild(seedInp);
+        numRow.appendChild(el("span", "bpf-label", "cfg"));
+        const cfgInp = document.createElement("input");
+        cfgInp.type = "number";
+        cfgInp.step = "0.1";
+        cfgInp.min = "3";
+        cfgInp.max = "5";
+        cfgInp.value = String(c.cfg);
+        cfgInp.style.width = "90px";
+        cfgInp.oninput = () => {
+          c.cfg = Math.max(3, Math.min(5, Number(cfgInp.value) || 4));
+          c.cfgTouched = true;
+          queueWizSave();
+        };
+        numRow.appendChild(cfgInp);
+        const dice = btn("🎲", "mini");
+        dice.title = T("随机换 seed 与 cfg（3~5），并解除手改锁定");
+        dice.disabled = !!w.busy;
+        dice.onclick = (ev) => {
+          ev.stopPropagation();
+          c.seed = rndSeed();
+          c.cfg = rndCfg();
+          c.seedTouched = false;
+          c.cfgTouched = false;
+          queueWizSave();
+          paint();
+        };
+        numRow.appendChild(dice);
+        if (c.seedTouched || c.cfgTouched) numRow.appendChild(el("span", "bp-sub", T("已锁定")));
+        card.appendChild(numRow);
+
+        if (c.status === "done" && c.audioPath) {
+          const wave = el("div", "breeze-group-wave");
+          const player = wavePreviewCreate("breezecandnew-" + i + "-" + waveSeq++);
+          wavePreviewSetSource(player, c.audioPath);
+          wave.appendChild(player);
+          card.appendChild(wave);
+        }
+
+        const ops = el("div", "breeze-group-ops");
+        const redo = btn(c.status === "done" ? T("重抽音频") : T("生成这条"), "mini");
+        redo.disabled = !!w.busy;
+        redo.title = T("用同一句台词重抽：seed / cfg 手改过就沿用，没动过就换随机");
+        redo.onclick = async (ev) => {
+          ev.stopPropagation();
+          if (w.busy) return;
+          w.busy = true;
+          paint();
+          await synthOne(c);
+          w.busy = false;
+          paint();
+        };
+        ops.appendChild(redo);
+        const rewrite = btn(T("重写这条台词"), "mini");
+        rewrite.disabled = !!w.busy;
+        rewrite.title = T("只让 AI 换这一条（避开其它候选的台词），然后按新台词重合成");
+        rewrite.onclick = async (ev) => {
+          ev.stopPropagation();
+          if (w.busy) return;
+          await regenLine(c);
+        };
+        ops.appendChild(rewrite);
+        const pickIt = btn(w.selected === c.id ? T("已选中") : T("用这条"), "mini" + (w.selected === c.id ? " primary" : ""));
+        pickIt.disabled = c.status !== "done";
+        pickIt.onclick = (ev) => {
+          ev.stopPropagation();
+          w.selected = c.id;
+          w.step = 3;
+          queueWizSave();
+          paint();
+        };
+        ops.appendChild(pickIt);
+        card.appendChild(ops);
+        form.appendChild(card);
+      });
+
+      const ops = el("div", "bpf-ops");
+      const more = btn(T("＋ 再加一条"), "mini");
+      more.disabled = !!w.busy || w.candidates.length >= 8;
+      more.onclick = async (ev) => {
+        ev.stopPropagation();
+        await addOneCandidate();
+      };
+      ops.appendChild(more);
+      const manual = btn(T("＋ 手写一条"), "mini");
+      manual.disabled = w.candidates.length >= 8;
+      manual.title = T("自己写台词，然后按「生成这条」合成");
+      manual.onclick = (ev) => {
+        ev.stopPropagation();
+        addManualCandidate();
+      };
+      ops.appendChild(manual);
+      const back = btn(T("上一步：改声线设定"), "mini");
+      back.disabled = !!w.busy;
+      back.onclick = (ev) => {
+        ev.stopPropagation();
+        w.step = 1;
+        queueWizSave();
+        paint();
+      };
+      ops.appendChild(back);
+      const cancel = btn(w.busy ? T("取消剩余") : T("稍后再弄"), "mini");
+      cancel.title = w.busy ? "" : T("关掉也不丢：左边会留一条「未完成」");
+      cancel.onclick = (ev) => {
+        ev.stopPropagation();
+        wizCancel();
+      };
+      ops.appendChild(cancel);
+      form.appendChild(ops);
+    }
+
+    if (w.step === 3) {
+      const c = w.candidates.find((x) => x.id === w.selected);
+      if (!c) {
+        w.step = 2;
+        paint();
+        return;
+      }
+      if (c.audioPath) {
+        const wave = el("div", "breeze-group-wave");
+        const player = wavePreviewCreate("breezepick-" + waveSeq++);
+        wavePreviewSetSource(player, c.audioPath);
+        wave.appendChild(player);
+        form.appendChild(wave);
+      }
+      const gRow = lineRow(T("组名"), "bpf-row col");
+      const gName = inputOf(w.groupName, T("例如：温柔 / 生气 / 旁白"));
+      gName.oninput = () => {
+        w.groupName = gName.value;
+        queueWizSave();
+      };
+      gRow.appendChild(gName);
+      form.appendChild(gRow);
+      if (w.kind === "alt") {
+        const sceneRow = lineRow(T("场景 / 情绪（可空）"), "bpf-row col");
+        const sceneInp = inputOf(w.scene, T("例如：吵架 / 深夜电台 / 旁白"));
+        sceneInp.oninput = () => {
+          w.scene = sceneInp.value;
+          queueWizSave();
+        };
+        sceneRow.appendChild(sceneInp);
+        form.appendChild(sceneRow);
+      }
+
+      const tRow = lineRow(T("台词（这组的参考文字，由音频决定）"), "bpf-row col");
+      const tTa = areaOf(c.line, 3);
+      tTa.readOnly = true;
+      tRow.appendChild(tTa);
+      form.appendChild(tRow);
+
+      const iRow = lineRow(T("指令（之后所有合成按它来）"), "bpf-row col");
+      const iTa = areaOf(w.instruction, 3);
+      iTa.oninput = () => {
+        w.instruction = iTa.value;
+        queueWizSave();
+      };
+      iRow.appendChild(iTa);
+      form.appendChild(iRow);
+
+      const ops = el("div", "bpf-ops");
+      const saveBtn = btn(w.kind === "alt" ? T("保存为备选音色") : T("保存并用到这个节点"), "mini primary");
+      saveBtn.disabled = !!w.busy;
+      saveBtn.onclick = async (ev) => {
+        ev.stopPropagation();
+        if (w.kind === "alt") await finalize(false);
+        else await finalize(true);
+      };
+      ops.appendChild(saveBtn);
+      const back = btn(T("上一步：重挑"), "mini");
+      back.onclick = (ev) => {
+        ev.stopPropagation();
+        w.step = 2;
+        queueWizSave();
+        paint();
+      };
+      ops.appendChild(back);
+      const drop = btn(T("丢弃草稿"), "mini");
+      drop.title = T("只有点这里才会真的删掉草稿与小样");
+      drop.onclick = async (ev) => {
+        ev.stopPropagation();
+        await dropDraft();
+      };
+      ops.appendChild(drop);
+      const cancel = btn(T("稍后再弄"), "mini");
+      cancel.title = T("关掉也不丢：左边会留一条「未完成」");
+      cancel.onclick = (ev) => {
+        ev.stopPropagation();
+        wizCancel();
+      };
+      ops.appendChild(cancel);
+      form.appendChild(ops);
+    }
+
+    mainEl.appendChild(form);
+  };
+
+  /* ── 左列 + 底部按钮 ───────────────────────────────────────────────── */
+  const paint = () => {
+    listEl.textContent = "";
+    if (!presets.length) {
+      const d = el("div", "breeze-preset-empty", T("（还没有角色）"));
+      listEl.appendChild(d);
+    }
+    /* 未完成的草稿排在最前面（灰色「未完成」）：只用一行字提醒，点这行就回到上次那一步；
+       删除通道是右边那颗 ✕（不摆「继续 / 丢弃」按钮）。 */
+    for (const p of presets.filter((x) => x.draft)) {
+      const row = el("div", "breeze-preset-item draft" + (view === "wizard" && wiz && wiz.presetId === p.id ? " on" : ""));
+      row.appendChild(el("span", "", T("未完成 · {name}", { name: p.name || "" })));
+      const st = (p.wizard && p.wizard.step) || 1;
+      const sub = el("span", "bp-sub", T("停在 第{n}步 · {t}", { n: st, t: p.wizard && p.wizard.at ? new Date(p.wizard.at).toLocaleString() : "" }));
+      row.appendChild(sub);
+      /* 整行点哪儿都回到上次那一步 */
+      row.onclick = () => {
+        if (wiz && wiz.busy) return;
+        restoreWizard(p);
+      };
+      row.title = T("点这里回到上次那一步");
+      const x = btn("✕", "mini breeze-wiz-x", T("删除这条未完成的草稿"));
+      x.onclick = async (ev) => {
+        ev.stopPropagation();
+        if (wiz && wiz.busy) return;
+        const yes = await confirmDialog(
+          T("删除「{name}」这条未完成的草稿？已经写的台词与合成的小样都会删掉。", { name: p.name || "" }),
+        );
+        if (!yes) return;
+        await api.breezePresetDelete(p.id);
+        if (wiz && wiz.presetId === p.id) {
+          wiz = null;
+          view = "browse";
+        }
+        await refreshPresets();
+        if (!curId || !byId(curId)) curId = (presets.find((x) => !x.draft) || presets[0] || {}).id || "";
+        editBuf = null;
+        paint();
+      };
+      row.appendChild(x);
+      listEl.appendChild(row);
+    }
+    for (const p of presets.filter((x) => !x.draft)) {
+      const b = el("button", "breeze-preset-item" + (view === "browse" && p.id === curId ? " on" : ""));
+      b.type = "button";
+      b.appendChild(el("span", "", p.name));
+      const groups = p.groups || [];
+      const alts = groups.filter((g) => g.kind !== "base").length;
+      b.appendChild(el("span", "bp-sub", T("基础 + {n} 备选", { n: alts })));
+      b.onclick = () => {
+        if (wiz && wiz.busy) return;
+        /* 切角色也不丢向导：草稿已经存好了，回来从「未完成」接着做 */
+        clearTimeout(saveTimer);
+        curId = p.id;
+        view = "browse";
+        wiz = null;
+        editBuf = null;
+        errText = "";
+        okText = "";
+        paint();
+      };
+      listEl.appendChild(b);
+    }
+    if (view === "wizard") paintWizard();
+    else paintBrowse();
+  };
+
+  /* 收窗（✕ / Esc / 底栏关闭）只关窗：草稿早就存好，左列会留一条「未完成」。
+     真正删除只有两条路：向导底栏的「丢弃草稿」，或左列那条草稿右边的 ✕。 */
+  const maybeClose = async () => {
+    clearTimeout(saveTimer);
+    if (wiz && wiz.presetId && !wiz.busy) await wizSave(true);
+    closeOverlay();
+  };
+
+  const foot = document.getElementById("ovFoot");
+  if (foot) {
+    foot.innerHTML = "";
+    const add = btn(T("＋ 新建角色"), "mini primary");
+    add.title = T("给个角色名 + 一句声线设定：AI 写好提示词和候选台词，合成候选后挑一条当基础音色");
+    add.onclick = (ev) => {
+      ev.stopPropagation();
+      wizStart("create");
+    };
+    foot.appendChild(add);
+    const done = btn(T("关闭"), "mini");
+    done.title = T("关掉不会丢草稿：左边会留一条「未完成」，随时接着做");
+    done.onclick = (ev) => {
+      ev.stopPropagation();
+      maybeClose();
+    };
+    foot.appendChild(done);
+  }
+
+  /* 窗头那颗 ✕ 是通用宿主画的：先静默存一次再放行，别把刚敲的字丢掉 */
+  const onKey = (e) => {
+    if (!wrap.isConnected) {
+      document.removeEventListener("keydown", onKey, true);
+      document.removeEventListener("click", onX, true);
+      return;
+    }
+    if (e.key === "Escape" && wiz && wiz.presetId) {
+      /* 只截一次：存盘是异步的，但关窗照走（存的是快照） */
+      clearTimeout(saveTimer);
+      wizSave(true);
+    }
+  };
+  const onX = (e) => {
+    if (!wrap.isConnected) {
+      document.removeEventListener("keydown", onKey, true);
+      document.removeEventListener("click", onX, true);
+      return;
+    }
+    const t = e.target;
+    if (!t || !t.closest || !t.closest("#overlay .ov-close-btn")) return;
+    clearTimeout(saveTimer);
+    if (wiz && wiz.presetId) wizSave(true);
+  };
+  document.addEventListener("keydown", onKey, true);
+  document.addEventListener("click", onX, true);
+
+  paint();
+  loadLlm();
+  loadSys();
+  refreshPresets().then(() => {
+    if (wrap.isConnected) paint();
+  });
+}
+
+/* ── breeze_gen：角色（音色预设）/ 指令 / cfg_scale / 种子 / 输出格式 / 输出路径 / 抽卡 ──
+   参考源优先级：选了角色 → 用那一组的「音频 + 样本文字 + 指令」（端口 1/2 不参与）；
+   没选角色 → 端子优先，端子空了才用音色库（老口径，老工作流照旧跑）。
    本次实际用了哪个源写在节点状态行上（见 app-nodes.js 的 breezeResolveRef）。 */
 registerNodeSettingsForm("breeze_gen", {
-  gearTitle: () => I18n.t("能力 / 音色 / 指令 / cfg_scale / 种子 / 输出格式 / 输出路径"),
+  gearTitle: () => I18n.t("角色 / 指令 / cfg_scale / 种子 / 输出格式 / 输出路径"),
   /* 调用期取：breezeGenParamSummaryText 在 app-nodes.js（本文件之后加载），顶层直接写
      标识符会让本文件的装载期在这里中断 —— 见文件开头 NODE_BROWSE_KINDS 处注释 */
   summary: (node) => breezeGenParamSummaryText(node),
+  /* 选 / 换 / 清除角色后表单结构会变（音色 + 能力两行整块消失）→ 靠签名触发重建 */
+  signature: (node) => breezePresetIdOf(node) + "|" + breezePresetGroupIdOf(node),
   build: (ctx) => {
     const node = ctx.node;
-    ctx.section(I18n.t("参考源（端子优先）"));
-    /* 音色：后端就绪时给下拉（列表随状态刷新），没就绪 / 没装插件时退回手填 */
-    const voiceBox = document.createElement("span");
-    voiceBox.className = "nsf-ctl";
-    const voiceSel = document.createElement("select");
-    voiceSel.id = nodeSettingsCtlId("breezevoice", node.id);
-    const voiceInp = document.createElement("input");
-    voiceInp.type = "text";
-    voiceInp.id = nodeSettingsCtlId("breezevoiceinp", node.id);
-    voiceInp.placeholder = I18n.t("音色名（后端未就绪时可手填）");
-    voiceInp.value = String(node.voice || "");
-    voiceSel.style.display = "none";
-    voiceInp.style.display = "none";
-    const paintVoice = (vs) => {
-      if (!voiceSel.isConnected) return;
-      voiceSel.textContent = "";
-      const none = document.createElement("option");
-      none.value = "";
-      none.textContent = I18n.t("（不用音色库：只用端子的参考音频）");
-      voiceSel.appendChild(none);
-      if (vs && vs.length) {
-        const cur = String(node.voice || "").trim();
-        let found = !cur;
-        for (const v of vs) {
-          const o = document.createElement("option");
-          o.value = v.id;
-          o.textContent = v.name + (v.ready ? "" : I18n.t("（缺音频或文稿）"));
-          if (cur && cur === v.id) {
-            o.selected = true;
-            found = true;
-          }
-          voiceSel.appendChild(o);
-        }
-        if (cur && !found) {
-          const o = document.createElement("option");
-          o.value = cur;
-          o.textContent = cur;
-          o.selected = true;
-          voiceSel.appendChild(o);
-        }
-        voiceSel.style.display = "";
-        voiceInp.style.display = "none";
-      } else {
-        voiceSel.style.display = "";
-        voiceInp.style.display = "";
-      }
-    };
-    const commitVoice = (v) => {
-      node.voice = String(v || "").trim();
-      syncNodeSettingsValue(node, "breezevoice", node.voice || I18n.t("（只用端子）"));
-      ctx.commit({ history: true });
-    };
-    voiceSel.addEventListener("change", () => {
-      voiceInp.value = voiceSel.value;
-      commitVoice(voiceSel.value);
-    });
-    voiceInp.addEventListener("change", () => {
-      commitVoice(voiceInp.value);
-    });
-    const voiceRef = document.createElement("button");
-    voiceRef.className = "mini";
-    voiceRef.textContent = "↻";
-    voiceRef.title = I18n.t("刷新音色列表");
-    const loadVoices = async () => {
-      if (!window.api || !window.api.breezeStatus) return paintVoice([]);
-      try {
-        const st = await window.api.breezeStatus();
-        const vs = (st && st.apiStatus && st.apiStatus.voices) || [];
-        paintVoice(vs);
-      } catch (_) {
-        paintVoice([]);
-      }
-    };
-    voiceRef.onclick = (ev) => {
-      ev.stopPropagation();
-      loadVoices();
-    };
-    voiceBox.appendChild(voiceSel);
-    voiceBox.appendChild(voiceInp);
-    voiceBox.appendChild(voiceRef);
-    ctx.field(I18n.t("音色"), null, { span: true }).appendChild(voiceBox);
-    paintVoice([]);
-    loadVoices();
-    ctx.hint(
-      I18n.t("端口 1 / 2 接了参考音频与文稿时以端子为准；端子为空才用这里的音色（音色库 = 参考音频 + 逐字文稿）"),
+    const presetId = breezePresetIdOf(node);
+    ctx.section(I18n.t("角色（音色预设）"));
+    ctx.append(
+      breezePresetRow(node, () => {
+        ctx.commit({ history: true, rerender: true, rebuild: true });
+      }),
     );
-    nsSelect(
-      ctx,
-      I18n.t("能力"),
-      [
-        ["auto", I18n.t("自动判定")],
-        ["clone", I18n.t("音色克隆")],
-        ["design", I18n.t("音色设计")],
-        ["direction", I18n.t("音色导演")],
-      ],
-      breezeModeOf(node),
-      (v) => {
-        node.voiceMode = v;
-        syncNodeSettingsValue(node, "breezemode", breezeModeLabel(v));
-      },
-      {
-        id: nodeSettingsCtlId("breezemode", node.id),
-        title: I18n.t(
-          "官方语义：有参考音频且无 instruction = 音色克隆；有 instruction = 音色导演；无参考音频 = 音色设计",
+    if (presetId) {
+      ctx.hint(
+        I18n.t(
+          "已选角色：参考音频与样本文字都来自这一组，端口 1 / 2 不参与合成；下方指令留空就用这一组自带的指令",
         ),
-        commit: { history: true },
-      },
-    );
+      );
+    } else {
+      /* 老口径：音色库 + 能力档（选了角色就整块不出现） */
+      /* 音色：后端就绪时给下拉（列表随状态刷新），没就绪 / 没装插件时退回手填 */
+      const voiceBox = document.createElement("span");
+      voiceBox.className = "nsf-ctl";
+      const voiceSel = document.createElement("select");
+      voiceSel.id = nodeSettingsCtlId("breezevoice", node.id);
+      const voiceInp = document.createElement("input");
+      voiceInp.type = "text";
+      voiceInp.id = nodeSettingsCtlId("breezevoiceinp", node.id);
+      voiceInp.placeholder = I18n.t("音色名（后端未就绪时可手填）");
+      voiceInp.value = String(node.voice || "");
+      voiceSel.style.display = "none";
+      voiceInp.style.display = "none";
+      const paintVoice = (vs) => {
+        if (!voiceSel.isConnected) return;
+        voiceSel.textContent = "";
+        const none = document.createElement("option");
+        none.value = "";
+        none.textContent = I18n.t("（不用音色库：只用端子的参考音频）");
+        voiceSel.appendChild(none);
+        if (vs && vs.length) {
+          const cur = String(node.voice || "").trim();
+          let found = !cur;
+          for (const v of vs) {
+            const o = document.createElement("option");
+            o.value = v.id;
+            o.textContent = v.name + (v.ready ? "" : I18n.t("（缺音频或文稿）"));
+            if (cur && cur === v.id) {
+              o.selected = true;
+              found = true;
+            }
+            voiceSel.appendChild(o);
+          }
+          if (cur && !found) {
+            const o = document.createElement("option");
+            o.value = cur;
+            o.textContent = cur;
+            o.selected = true;
+            voiceSel.appendChild(o);
+          }
+          voiceSel.style.display = "";
+          voiceInp.style.display = "none";
+        } else {
+          voiceSel.style.display = "";
+          voiceInp.style.display = "";
+        }
+      };
+      const commitVoice = (v) => {
+        node.voice = String(v || "").trim();
+        syncNodeSettingsValue(node, "breezevoice", node.voice || I18n.t("（只用端子）"));
+        ctx.commit({ history: true });
+      };
+      voiceSel.addEventListener("change", () => {
+        voiceInp.value = voiceSel.value;
+        commitVoice(voiceSel.value);
+      });
+      voiceInp.addEventListener("change", () => {
+        commitVoice(voiceInp.value);
+      });
+      const voiceRef = document.createElement("button");
+      voiceRef.className = "mini";
+      voiceRef.textContent = "↻";
+      voiceRef.title = I18n.t("刷新音色列表");
+      const loadVoices = async () => {
+        if (!window.api || !window.api.breezeStatus) return paintVoice([]);
+        try {
+          const st = await window.api.breezeStatus();
+          const vs = (st && st.apiStatus && st.apiStatus.voices) || [];
+          paintVoice(vs);
+        } catch (_) {
+          paintVoice([]);
+        }
+      };
+      voiceRef.onclick = (ev) => {
+        ev.stopPropagation();
+        loadVoices();
+      };
+      voiceBox.appendChild(voiceSel);
+      voiceBox.appendChild(voiceInp);
+      voiceBox.appendChild(voiceRef);
+      ctx.field(I18n.t("音色（音色库）"), null, { span: true }).appendChild(voiceBox);
+      paintVoice([]);
+      loadVoices();
+      nsSelect(
+        ctx,
+        I18n.t("能力"),
+        [
+          ["auto", I18n.t("自动判定")],
+          ["clone", I18n.t("音色克隆")],
+          ["design", I18n.t("音色设计")],
+          ["direction", I18n.t("音色导演")],
+        ],
+        breezeModeOf(node),
+        (v) => {
+          node.voiceMode = v;
+          syncNodeSettingsValue(node, "breezemode", breezeModeLabel(v));
+        },
+        {
+          id: nodeSettingsCtlId("breezemode", node.id),
+          title: I18n.t(
+            "官方语义：有参考音频且无 instruction = 音色克隆；有 instruction = 音色导演；无参考音频 = 音色设计",
+          ),
+          commit: { history: true },
+        },
+      );
+    }
     /* 两个文本框（输入文本 / 参考文本）：与卡片 body 上那一组同源（app-nodes.js 的
-       breezeTextBoxesFor，调用期取；端子 0 / 2 有输入时自动切只读回显）。本节点不做转录。 */
+       breezeTextBoxesFor，调用期取；端子 0 / 2 有输入时自动切只读回显；选了角色时只留输入文本）。 */
     {
       const lab = document.createElement("label");
       lab.className = "n-field nsf-span nsf-reftext";
@@ -5110,11 +7277,13 @@ registerNodeSettingsForm("breeze_gen", {
         min: 0.1,
         max: 10,
         step: 0.5,
-        fallback: 1,
-        title: I18n.t("指令跟随强度：默认 1；有 instruction 时官方建议 4"),
+        fallback: 4,
+        title: I18n.t(
+          "指令跟随强度：默认 4（官方建议 instruction 场景用 4）；「音色克隆」（有参考音频、无导演指令）恒为 1.0 —— 引擎的克隆模板不支持 CFG，要调请填一条导演指令",
+        ),
       },
       (v) => {
-        node.cfgScale = Math.max(0.1, Math.min(10, v || 1));
+        node.cfgScale = Math.max(0.1, Math.min(10, v || 4));
       },
     );
     nsNumber(
@@ -5514,6 +7683,25 @@ function portBadgeInIsCtrlPort(node, idx) {
     default:
       return false;
   }
+}
+
+/* 展开的节点层里「指针实际压在哪个子节点上」：按矩形判，不依赖 DOM 命中 ——
+   子节点可能正戴着 .super-drag-lift（pointer-events:none，拖拽中 / 残留），此时
+   closest(".wf-node") 只能拿到宿主壳，事件就会落到壳的舞台被当成空白平移。
+   只认壳内的直接子节点（含展开的子壳），端子节点不参与。 */
+function superChildAtPoint(host, stage, x, y) {
+  if (!host || !stage || typeof superChildrenOf !== "function") return null;
+  let hit = null;
+  for (const c of superChildrenOf(host.id)) {
+    if (!c || (typeof isSuperIoNode === "function" && isSuperIoNode(c))) continue;
+    const el = stage.querySelector('.wf-node[data-nid="' + c.id + '"]');
+    if (!el) continue;
+    const r = el.getBoundingClientRect();
+    if (!r.width && !r.height) continue;
+    /* 重叠时取数组里靠后的那颗：壳内子节点同 z-index，DOM 顺序靠后 = 盖在上面 */
+    if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) hit = c;
+  }
+  return hit;
 }
 
 function nodeElement(node) {
@@ -5998,7 +8186,7 @@ function nodeElement(node) {
     head.appendChild(chip);
     /* 最外层开发块：头部这一格是「项目文件夹」（devPath），且**不显示子文件夹** ——
        devPath 只在顶层块设、子块就近继承；子文件夹的含义是「工作目录 / 子文件夹」，
-       摆在最外层块上只会被当成项目根。子开发块 / 普通超节点 / 数据库超节点照旧。 */
+       摆在最外层块上只会被当成项目根。子开发块 / 普通节点层 / 数据库节点层照旧。 */
     const topDev = devTopBlockForProjectFolder(node);
     const projRoot =
       topDev && typeof devPathOf === "function"
@@ -6035,7 +8223,7 @@ function nodeElement(node) {
       else promptSuperSubFolder(node);
     };
     head.appendChild(folder);
-    /* 「描述」小按钮：超级节点 body 已封装为文件夹外观，描述改由此处编辑。
+    /* 「描述」小按钮：节点层 body 已封装为文件夹外观，描述改由此处编辑。
        工具节点例外：它的描述是 toolConfig.description（「设置」面板编辑 · 同时是 Agent
        调用契约），收起态也不渲染文件夹卡 → 再挂一个 note 编辑钮只会多出一份没处显示的说明。 */
     if (!isToolNode(node)) {
@@ -6052,7 +8240,7 @@ function nodeElement(node) {
       noteBtn.title = supNoteTip
         ? I18n.t("当前描述：") + supNoteTip + "\n" + I18n.t("点击编辑")
         : I18n.t("填写描述：以小字显示在文件夹标题下方");
-      noteBtn.setAttribute("aria-label", I18n.t("编辑超级节点描述"));
+      noteBtn.setAttribute("aria-label", I18n.t("编辑节点层描述"));
       noteBtn.onclick = (ev) => {
         ev.stopPropagation();
         promptSuperNote(node);
@@ -6062,7 +8250,7 @@ function nodeElement(node) {
     const enter = document.createElement("button");
     enter.className = "n-play";
     enter.textContent = "↪";
-    enter.title = I18n.t("进入超级节点：在完整画布中编辑内部节点");
+    enter.title = I18n.t("进入节点层：在完整画布中编辑内部节点");
     enter.onclick = (ev) => {
       ev.stopPropagation();
       enterSuper(node);
@@ -6098,7 +8286,7 @@ function nodeElement(node) {
         : I18n.t("长周期任务的产出壳");
       head.appendChild(ltChip);
     }
-    /* 数据库超级节点：形态切换 + 编译按钮 + 记录数徽标 */
+    /* 数据库节点层：形态切换 + 编译按钮 + 记录数徽标 */
     if (node.db) {
       const idx = node.dbIndex;
       const recs = idx && Array.isArray(idx.records) ? idx.records.length : 0;
@@ -6108,7 +8296,7 @@ function nodeElement(node) {
       modeBtn.textContent = node.dbMode === "db" ? "▦" : "▤";
       modeBtn.title =
         node.dbMode === "db"
-          ? I18n.t("当前：数据库形态（查询 / 调试控制台）· 点击切回超级节点形态")
+          ? I18n.t("当前：数据库形态（查询 / 调试控制台）· 点击切回节点层形态")
           : I18n.t("切换数据库形态：内嵌查询 / calc / 检查更新等调试工具");
       modeBtn.setAttribute("aria-label", modeBtn.title);
       modeBtn.onclick = (ev) => {
@@ -6167,7 +8355,7 @@ function nodeElement(node) {
         runChip.appendChild(document.createTextNode(I18n.t("运行中")));
         runChip.title =
           devRun === "self"
-            ? I18n.t("本功能块正在运行（作为超级节点被执行）")
+            ? I18n.t("本功能块正在运行（作为节点层被执行）")
             : devRun === "desc"
               ? I18n.t("功能块内有节点正在运行（含子开发节点）")
               : I18n.t("绑定的开发 / 细化会话正在运行");
@@ -6473,6 +8661,25 @@ function nodeElement(node) {
     chip.textContent = I18n.t("语音");
     chip.title = I18n.t("Breeze 语音 · Breeze TTS 2 本机后端 · 文本转语音");
     head.appendChild(chip);
+    /* 角色（音色预设）：小按钮 → 角色 / 第几组 选择跳窗（带波形试听）。选了就换声，没选走端子。 */
+    const roleBtn = document.createElement("button");
+    roleBtn.className = "n-play n-breeze-role";
+    const roleLabel = breezePresetLabelOf(node);
+    /* 单人标志（不是双面具）：这个键挑的是「一个人的声音」，不是一场戏 */
+    roleBtn.textContent = "👤";
+    roleBtn.title = roleLabel
+      ? roleLabel + I18n.t("（点击更换角色）")
+      : I18n.t("选择角色（音色预设）");
+    if (breezePresetIdOf(node)) roleBtn.classList.add("on");
+    roleBtn.onclick = (ev) => {
+      ev.stopPropagation();
+      openBreezePresetDialog(node, () => {
+        try {
+          renderCanvas();
+        } catch (_) {}
+      });
+    };
+    head.appendChild(roleBtn);
     appendBackendProbeBtn(head, node);
     appendMediaConsoleBtn(head, node);
     appendMediaPlayBtns(head, node, "调用 Breeze TTS 2 后端合成语音");
@@ -6775,7 +8982,7 @@ function nodeElement(node) {
   /* 工具构建入口（body）：处理节点有吃不下的入线文件 / 已有构建记录时，在正文末尾补
      一块入口卡（🔧 按钮 + 状态徽标 + 摘要）；普通节点零影响。 */
   appendToolBuildBody(node, body);
-  /* buildBody 可能因 OUTPUT 加宽 node.w，同步到 DOM（超级节点展开态用 expandW/H） */
+  /* buildBody 可能因 OUTPUT 加宽 node.w，同步到 DOM（节点层展开态用 expandW/H） */
   {
     const sz =
       node.kind === "super" ? superDisplaySize(node) : { w: node.w, h: node.h };
@@ -6784,7 +8991,7 @@ function nodeElement(node) {
   }
   el.appendChild(body);
 
-  /* 展开超级节点：不创建外侧端子，只保留舞台内侧桥接/汇流端子 */
+  /* 展开节点层：不创建外侧端子，只保留舞台内侧桥接/汇流端子 */
   if (!superIsOpenShell(node)) {
   const ic = inputCount(node);
   /* 端子数为 0 的那一侧不画接线排分割线：建元素时先按当前端子数盖章，
@@ -6835,6 +9042,12 @@ function nodeElement(node) {
             : "");
     p.dataset.node = node.id;
     p.dataset.idx = String(i);
+    /* 选了角色预设：端口 1 / 2（参考音频 / 参考文稿）不参与合成 —— 只隐藏视觉，
+       端子号与已连线原样保留（合成时由 breezeResolveRef 的预设分支忽略）。 */
+    if (node.kind === "breeze_gen" && breezePresetIdOf(node) && (i === 1 || i === 2)) {
+      p.classList.add("port-preset-hidden");
+      p.style.display = "none";
+    }
     const linkedIn = portLinkedNodes(node, "in", i);
     /* 数组（批量）入参端子：徽标带「当前挂几条线」（如 参考图 ×3），tooltip 说清 JS 里拿到数组 */
     const fnInParam =
@@ -7284,7 +9497,17 @@ function nodeElement(node) {
     ev.stopPropagation();
     /* 阻止原生框选：拖动节点体时不产生文字选区（输入框 / 文字标注等可编辑处已在上方放行） */
     ev.preventDefault();
-    startNodeDrag(ev, node);
+    /* 点选会把节点换成编辑态、并把光标送进主输入框（startNodeDrag → applyFocusFormAfterRender）。
+       可编辑元素不能在「被 preventDefault 掉的鼠标事件里」被创建并聚焦：那一刻 Chromium
+       还没把这一次点击当成「鼠标激活的文本输入目标」，中日文输入法（TSF 文本存储 / 候选窗
+       取词）就挂不上来 —— 框里能打英文（不过输入法），却打不进中日文。所以只在这一拍打个
+       标记，真正的聚焦推到这次事件走完之后（见 app.js · applyFocusFormAfterRender）。 */
+    S._inNodeMouseDown = true;
+    try {
+      startNodeDrag(ev, node);
+    } finally {
+      S._inNodeMouseDown = false;
+    }
   });
   el.addEventListener("contextmenu", (ev) => {
     if (
@@ -7297,7 +9520,7 @@ function nodeElement(node) {
       ev.target.closest(".chat-list")
     )
       return;
-    /* 嵌在展开超级节点内：右键不弹出节点菜单（仅端子可移除连线） */
+    /* 嵌在展开节点层内：右键不弹出节点菜单（仅端子可移除连线） */
     if (nodeIsNestedInOpenSuper(node)) {
       if (ev.target.closest(".port")) return;
       ev.preventDefault();
@@ -7444,7 +9667,7 @@ function nodeElement(node) {
                 "folder",
               ),
             ]),
-        ctxAction(I18n.t("将选中节点移入此超级节点"), () => {
+        ctxAction(I18n.t("将选中节点移入此节点层"), () => {
           const sel = [...(S.selSet || [])]
             .map((id) => nodeById(id))
             .filter((n) => canMoveNodeIntoSuper(node, n));
@@ -7457,7 +9680,7 @@ function nodeElement(node) {
           renderCanvas();
           scheduleSave(true);
         }, "pack"),
-        ctxAction(I18n.t("移出超级节点"), () => {
+        ctxAction(I18n.t("移出节点层"), () => {
           const sel = [...(S.selSet || [])]
             .map((id) => nodeById(id))
             .filter((n) => n && nodeParentSuperId(n) === node.id);
@@ -7936,7 +10159,7 @@ function raWheelPixels(ev, ref) {
      · 与建 DOM 的时序无关，形态切换 / body 重建都不会失效；
      · 覆盖整个节点（含头部空白 / 状态行 / 内边距），
        指针落在节点任何非交互位置滚一下都能继续浏览正文；
-     · 按钮 / 输入框 / 端子 / 缩放把手 / 超级节点展开舞台 / 图片灯箱一律不接管。
+     · 按钮 / 输入框 / 端子 / 缩放把手 / 节点层展开舞台 / 图片灯箱一律不接管。
    捕获阶段先于画布自己的 wheel（#canvas 冒泡）执行，本层决定要不要吞掉事件。 */
 let browseWheelRouterOn = false;
 function bindNodeBrowseWheel(_body) {
@@ -7985,6 +10208,9 @@ function nodeBodyEl(el) {
 /* 只重建该节点的 .n-body：保留头部、端子、.n-resize 等外层元素，并同步板身尺寸 */
 function rebuildNodeBody(node, bodyEl) {
   const el = bodyEl.closest ? bodyEl.closest(".wf-node") : null;
+  /* 拆 body 会把正在打字的框连光标一起换掉：先按「节点 id + 字段」记下来，
+     建完照原样还回去（形状真变了才走到这里，属于必要重建 —— 但不必丢光标）。 */
+  const snap = snapshotCanvasFieldFocus();
   const ae = document.activeElement;
   if (
     ae &&
@@ -7996,23 +10222,43 @@ function rebuildNodeBody(node, bodyEl) {
       ae.blur();
     } catch (_) {}
   }
-  while (bodyEl.firstChild) bodyEl.removeChild(bodyEl.firstChild);
-  buildBody(node, bodyEl);
-  if (!el) return;
-  const sz =
-    node.kind === "super" ? superDisplaySize(node) : { w: node.w, h: node.h };
-  el.style.width = sz.w + "px";
-  el.style.height = sz.h + "px";
-  refreshPorts(el, node);
+  /* blur 会同步触发 focusout → 补拍路径；补拍里若再重建本节点会与这里的拆建打起来 */
+  S._rebuildingNodeBody = true;
+  try {
+    while (bodyEl.firstChild) bodyEl.removeChild(bodyEl.firstChild);
+    buildBody(node, bodyEl);
+    if (!el) return;
+    const sz =
+      node.kind === "super" ? superDisplaySize(node) : { w: node.w, h: node.h };
+    el.style.width = sz.w + "px";
+    el.style.height = sz.h + "px";
+    refreshPorts(el, node);
+  } finally {
+    S._rebuildingNodeBody = false;
+  }
+  /* 同一颗节点、同一个框：把焦点、光标与选区原位恢复（换成别的形态 / 字段没了就不抢） */
+  if (snap && snap.nodeId && el && String(el.dataset.nid || "") === snap.nodeId) {
+    restoreCanvasFieldFocus(snap);
+  }
 }
 
 /* 刷新单个节点元素的浏览 / 编辑形态；形态真的变了才重建 body（不打断正在进行的输入） */
 function applyNodeForm(el, node) {
   if (!el || !node) return;
   const browse = nodeBrowseMode(node);
-  el.classList.toggle("browse", browse);
   const form = browse ? "browse" : "edit";
-  if (el.dataset.nodeForm === form) return;
+  if (el.dataset.nodeForm === form) {
+    el.classList.toggle("browse", browse);
+    return;
+  }
+  /* 这颗节点的输入框正握着焦点（用户在打字 / 输入法组合中）→ 这一拍先不换形态：
+     换形态 = 拆掉 .n-body，正在打的字与光标一起没。记账，等失焦后补
+     （deferNodeForm → flushDeferredNodeRebuilds）。 */
+  if (canvasFieldIn(el)) {
+    deferNodeForm(el.dataset.nid);
+    return;
+  }
+  el.classList.toggle("browse", browse);
   el.dataset.nodeForm = form;
   const body = nodeBodyEl(el);
   if (body) rebuildNodeBody(node, body);
@@ -8068,23 +10314,47 @@ function nodeMainInputEl(el) {
   );
 }
 
-/* renderCanvas 收尾：兑现 markFormFocusAfterRender 许下的聚焦 */
+/* renderCanvas 收尾：兑现 markFormFocusAfterRender 许下的聚焦。
+   注意「点选节点」这条路径是在节点 mousedown 里调进来的（S._inNodeMouseDown）：那里
+   preventDefault 掉了原生焦点转移，此时同步 focus 出来的文本框不算「鼠标激活」，中日文
+   输入法挂不上去（能打英文、打不了中日文）。所以鼠标事件里只记 id，等这一拍走完再聚焦，
+   光标照样落进框里，输入法也能正常接上。 */
 function applyFocusFormAfterRender() {
   const id = S._focusFormAfterRender;
   if (!id) return;
   S._focusFormAfterRender = null;
-  const node = nodeById(id);
-  if (!node || nodeBrowseMode(node)) return;
-  const inp = nodeMainInputEl(
-    document.querySelector('.wf-node[data-nid="' + id + '"]'),
-  );
-  if (!inp) return;
-  try {
-    inp.focus({ preventScroll: true });
-    const end = String(inp.value || "").length;
-    if (typeof inp.setSelectionRange === "function")
-      inp.setSelectionRange(end, end);
-  } catch (_) {}
+  const focusNow = (nid) => {
+    const node = nodeById(nid);
+    if (!node || nodeBrowseMode(node)) return;
+    const inp = nodeMainInputEl(
+      document.querySelector('.wf-node[data-nid="' + nid + '"]'),
+    );
+    if (!inp) return;
+    /* 这一拍里用户已经点到别的输入框上了：不抢焦点（抢过来会把刚点的那处打断） */
+    const ae = document.activeElement;
+    if (
+      ae &&
+      ae !== inp &&
+      ae !== document.body &&
+      typeof ae.closest === "function" &&
+      ae.closest(".wf-node") &&
+      (ae.tagName === "TEXTAREA" ||
+        ae.tagName === "INPUT" ||
+        ae.isContentEditable)
+    )
+      return;
+    try {
+      inp.focus({ preventScroll: true });
+      const end = String(inp.value || "").length;
+      if (typeof inp.setSelectionRange === "function")
+        inp.setSelectionRange(end, end);
+    } catch (_) {}
+  };
+  if (S._inNodeMouseDown) {
+    setTimeout(() => focusNow(id), 0);
+    return;
+  }
+  focusNow(id);
 }
 
 /* ============ 浏览态 body 渲染器（NODE_BROWSE_BODY 登记表） ============
@@ -10243,7 +12513,7 @@ function buildFnToolBodyMain(node, body, isTool) {
   }
   /* 参数设置面板不再挂进 body：整块搬进「设置」跳窗（NODE_SETTINGS_FORMS 的
      function / tool 登记），卡片上只留上面的只读摘要行 + 头部「设置」入口。 */
-  /* 收起态工具卡＝叶子外观，拿不到超级节点折叠卡那份 card.ondblclick，
+  /* 收起态工具卡＝叶子外观，拿不到节点层折叠卡那份 card.ondblclick，
      「双击进入子画布」这条既有交互在工具节点上整条缺失（只能去点头部 ↪）。
      这里按同一口径补上：双击板身空白 / 摘要文字即 enterSuper 进入内部画布。
      交互控件（按钮 · 输入框 · 代码编辑器 · 端子）内的双击一律不算——那是要选词与改值。 */
@@ -12768,7 +15038,7 @@ function buildBody(node, body) {
         box.appendChild(more);
       }
     }
-    /* 副本自身无子画布：双击 = 进入源数据库超级节点的子画布（复用同一个 enterSuper）；
+    /* 副本自身无子画布：双击 = 进入源数据库节点层的子画布（复用同一个 enterSuper）；
        源已删除（orphan 文案）时不进入、静默返回，不额外报错。 */
     box.ondblclick = (ev) => {
       ev.preventDefault();
@@ -12826,7 +15096,7 @@ function buildBody(node, body) {
           : "");
       meta.title = I18n.t("收纳的节点数 · 子文件夹");
       card.appendChild(meta);
-      /* 双击折叠卡 = 直接进入该超级节点的子画布（等价头部 ↪「进入」）；
+      /* 双击折叠卡 = 直接进入该节点层的子画布（等价头部 ↪「进入」）；
          描述编辑仍走头部「描述」按钮 / 右键菜单。只绑卡片容器，不绑整个 body，
          避免抢掉开发节点动作按钮组（建议/开发/细化）与建议摘要的文字选择。 */
       card.ondblclick = (ev) => {
@@ -12835,7 +15105,7 @@ function buildBody(node, body) {
         enterSuper(node);
       };
       body.appendChild(card);
-      /* 数据库超级节点：编译状态摘要 */
+      /* 数据库节点层：编译状态摘要 */
       if (node.db) {
         const info = document.createElement("div");
         info.className = "n-db-info";
@@ -13092,6 +15362,20 @@ function buildBody(node, body) {
         const hitNode = ev.target.closest(".wf-node");
         if (hitNode && hitNode.dataset.nid !== node.id) return;
         if (ev.button !== 0 && ev.button !== 1) return;
+        /* 命中兜底（Bug：展开的节点层里偶尔点不中内部节点，一下变成壳内平移）。
+           不能只信 ev.target.closest(".wf-node")：被拖起的子节点会临时提到主舞台
+           （.super-drag-lift，pointer-events:none），那份标记一旦残留（拖拽结束 / 窗口失焦
+           吞掉 mouseup），它的 DOM 就不再吃指针 —— 指针"穿透"到壳的舞台，于是这一下被判成
+           空白，启动 superpan，节点既选不中也点不动。所以按「指针落在谁的矩形里」再判一次：
+           命中子节点就把这一下交给它（选中 / 拖动），绝不平移。 */
+        const under = superChildAtPoint(node, stage, ev.clientX, ev.clientY);
+        if (under) {
+          ev.stopPropagation();
+          ev.preventDefault();
+          if (ev.button === 0 && typeof startNodeDrag === "function")
+            startNodeDrag(ev, under);
+          return;
+        }
         ev.stopPropagation();
         ev.preventDefault();
         S.preDragSnap = snapshotState();
@@ -13357,7 +15641,11 @@ function buildBody(node, body) {
   } else if (node.kind === "yue_gen") {
     /* YuE2 音乐节点：未安装警示条（插件 id = yue2-local）+ 显存门槛挡掉的说明
        （低显存机器上插件目录不列它，节点入口也不会出现；老画布上留着的老节点看这一条） */
-    if (typeof appPluginInstalled === "function" && !appPluginInstalled("yue2-local")) {
+    if (
+      typeof appPluginMissing === "function"
+        ? appPluginMissing("yue2-local")
+        : !appPluginInstalled("yue2-local")
+    ) {
       const warn = document.createElement("div");
       warn.className = "n-empty n-plugin-warn";
       warn.textContent = I18n.t(
@@ -13405,7 +15693,11 @@ function buildBody(node, body) {
     /* SenseNova 本地图像生成：未装警示 + 可编辑提示词（支持 @ 引用）+ 参数摘要 +
        后端状态面板 + 图像预览 + 状态行。点图 = 灯箱（bindImagePreview），
        与云端文生图 / 保存图像同一交互，不另起一套。 */
-    if (typeof appPluginInstalled === "function" && !appPluginInstalled("sensenova-local")) {
+    if (
+      typeof appPluginMissing === "function"
+        ? appPluginMissing("sensenova-local")
+        : !appPluginInstalled("sensenova-local")
+    ) {
       const warn = document.createElement("div");
       warn.className = "n-empty n-plugin-warn";
       warn.textContent = I18n.t(
@@ -13487,22 +15779,19 @@ function buildBody(node, body) {
     }
   } else if (node.kind === "breeze_gen") {
     /* 未安装警示条（Breeze TTS 2 插件 id = breeze-tts-local；安装后 S.plugins 缓存刷新自动消失） */
-    if (!appPluginInstalled("breeze-tts-local")) {
+    if (
+      typeof appPluginMissing === "function"
+        ? appPluginMissing("breeze-tts-local")
+        : !appPluginInstalled("breeze-tts-local")
+    ) {
       const warn = document.createElement("div");
       warn.className = "n-empty n-plugin-warn";
       warn.textContent = I18n.t("⚠ Breeze TTS 2 插件未安装：请在「插件 · Breeze TTS 2 本地 TTS」中安装后使用本节点");
       warn.title = I18n.t("插件 · Breeze TTS 2 本地 TTS：设置安装目录 → 安装（需下载 torch / 引擎 / 权重，磁盘留 ≥20GB）");
       body.appendChild(warn);
     }
-    /* 参考源口径一句话；两个文本框（输入文本 / 参考文本）由 appendBreezeGenSummaryBody
-       末尾的 appendBreezeTextBoxesBody 挂上（端子有输入时只读回显、端子为空时可编辑） */
-    const refHint = document.createElement("div");
-    refHint.className = "n-empty";
-    refHint.textContent = I18n.t(
-      "参考音频走端口 1（端口 2 接音频 / 视频输入节点时也算参考音频）；端口为空时用设置里的音色",
-    );
-    body.appendChild(refHint);
-    /* 音色 / 能力 / 指令 / cfg_scale / seed / 输出格式 / 输出路径 → ⚙ 跳窗；body 留摘要行 */
+    /* 音色 / 能力 / 指令 / cfg_scale / seed / 输出格式 / 输出路径 → ⚙ 跳窗；body 留摘要行
+       （两个文本框由 appendBreezeGenSummaryBody 末尾挂上：选了角色时只留「输入文本」） */
     appendBreezeGenSummaryBody(node, body, "audio");
     /* 后端面板（◎ 探测 / 状态 / 进度） */
     appendMediaBackendPanel(body, node);
@@ -13659,7 +15948,11 @@ function buildBody(node, body) {
     body.appendChild(st);
   } else if (node.kind === "remotion") {
     /* 未安装插件警示条（安装后 S.plugins 缓存刷新，重渲染自动消失） */
-    if (!appPluginInstalled("remotion")) {
+    if (
+      typeof appPluginMissing === "function"
+        ? appPluginMissing("remotion")
+        : !appPluginInstalled("remotion")
+    ) {
       const warn = document.createElement("div");
       warn.className = "n-empty n-plugin-warn";
       warn.textContent = I18n.t("⚠ Remotion 插件未安装：请在「插件」中安装后使用本节点");

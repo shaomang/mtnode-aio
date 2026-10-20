@@ -317,7 +317,7 @@ ok(Ai.target(tool) === true, "工具节点 = AI 调用可承载节点");
 ok(Ai.target(fn) === true, "函数节点 = AI 调用可承载节点");
 ok(Ai.target(dev) === true, "开发节点 = AI 调用可承载节点");
 ok(Ai.target(plain) === false, "普通 proc_text 不是 AI 调用承载节点");
-ok(Ai.target(dbSuper) === false, "数据库超级节点不是 AI 调用承载节点");
+ok(Ai.target(dbSuper) === false, "数据库节点层不是 AI 调用承载节点");
 
 Ai.ensureState(fn);
 ok(fn.aiModel === "" && fn.aiProvider === "" && fn.aiPreset === "" && fn.aiEffort === "",

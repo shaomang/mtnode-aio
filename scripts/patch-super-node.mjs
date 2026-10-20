@@ -1,5 +1,5 @@
 /**
- * Patch super-node into renderer/app.js (CRLF-safe)
+ * Patch node-layer into renderer/app.js (CRLF-safe)
  */
 import fs from "fs";
 
@@ -68,7 +68,7 @@ once(
     "  super: {",
     "    w: 280,",
     "    h: 200,",
-    "    title: \"超级节点\",",
+    "    title: \"节点层\",",
     "    note: \"\",",
     "    expandW: 720,",
     "    expandH: 480,",
@@ -196,7 +196,7 @@ once(
     "  /* 任务节点「进入」：只显示 parentTaskId === taskFocus 的节点 */",
     "  taskFocus: \"\",",
     "  taskStack: [],",
-    "  /* 超级节点内部：只显示 parentSuperId === superFocus 的节点 */",
+    "  /* 节点层内部：只显示 parentSuperId === superFocus 的节点 */",
     "  superFocus: \"\",",
     "  superStack: [],",
   ]),

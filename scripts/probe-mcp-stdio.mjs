@@ -49,7 +49,14 @@ fs.writeFileSync(
 console.log('临时数据目录 ' + tmp + ' · 服务端 ' + st.url)
 
 const child = spawn(process.execPath, [path.join(ROOT, 'mcp-stdio.js')], {
-  env: Object.assign({}, process.env, { MTNODE_DATA_DIR: tmp, MTNODE_MCP_CLIENT: 'bridge-test' }),
+  env: Object.assign({}, process.env, {
+    MTNODE_DATA_DIR: tmp,
+    MTNODE_MCP_CLIENT: 'bridge-test',
+    /* 钉死到这一只临时服务端：服务端停掉之后，桥不能再「发现」到本机另一只正在跑的
+       MTNode，否则这一步测的就不是「连不上时给不给明确报错」了。 */
+    MTNODE_MCP_URL: st.url,
+    MTNODE_MCP_TOKEN: st.token,
+  }),
   stdio: ['pipe', 'pipe', 'pipe'],
 })
 let out = ''
@@ -80,7 +87,7 @@ send({ jsonrpc: '2.0', method: 'notifications/initialized', params: {} })
 send({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} })
 await waitFor(() => lines().some((l) => l.id === 2))
 const tools = lines().find((l) => l.id === 2)
-step('stdio tools/list', ((tools.result && tools.result.tools) || []).length === 8)
+step('stdio tools/list', ((tools.result && tools.result.tools) || []).length === 13)
 
 send({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'mtnode_canvas_get', arguments: { detail: 'minimal' } } })
 await waitFor(() => lines().some((l) => l.id === 3))
@@ -91,12 +98,14 @@ send({ jsonrpc: '2.0', id: 4, method: 'resources/read', params: { uri: 'mtnode:/
 await waitFor(() => lines().some((l) => l.id === 4))
 step('stdio resources/read', !!lines().find((l) => l.id === 4).result)
 
-/* 服务端停掉后：桥必须给明确错误（而不是静默卡住） */
+/* 服务端停掉后：桥必须给明确错误（而不是静默卡住）。
+   停掉时会把落盘端口清成 0，所以桥这一侧可能是「转发失败」也可能是「找不到运行信息」——
+   两种都算明确错误。 */
 await host.stop()
 send({ jsonrpc: '2.0', id: 5, method: 'tools/list', params: {} })
 await waitFor(() => lines().some((l) => l.id === 5))
 const dead = lines().find((l) => l.id === 5)
-step('服务端关闭后给出明确错误', !!(dead.error && /失败|转发/.test(dead.error.message)), dead.error && dead.error.message)
+step('服务端关闭后给出明确错误', !!(dead.error && /失败|转发|找不到|没在跑|未启用/.test(dead.error.message)), dead.error && dead.error.message)
 
 child.stdin.end()
 await new Promise((r) => child.on('exit', r))

@@ -123,15 +123,32 @@ has(HTML, 'id="assistModeMenu"', "助手栏有模式菜单宿主");
 no(HTML, 'id="assistGrillTag"', "助手栏那枚「拷问需求」小字已撤掉（本次需求）");
 no(ASSIST, "function assistGrillTagPaint(", "它的画法也一并删了（不留死代码）");
 no(CSS_ASSIST, ".assist-grill-tag", "助手栏那枚小字的样式已删（不留死样式）");
+/* 建菜单这一步从 app-boot 挪进了 app-assist.js 的 openAssistModeMenu（本次需求：
+   打开时还要按「模式」按钮现算落点，见 placeAssistModeMenu），行集与 chip 画法不变。 */
 has(
-  BOOT,
+  ASSIST,
   'buildAgentModeMenu("assistModeMenu", assistModeEntries, paintAssistModeChip);',
-  "app-boot 打开助手栏菜单时传的是助手行集与它的 chip 画法",
+  "助手栏菜单建的是助手行集与它的 chip 画法（openAssistModeMenu）",
 );
+has(BOOT, "openAssistModeMenu();", "app-boot 打开助手栏菜单走 openAssistModeMenu（带落点计算）");
 has(
   ASSIST,
   '"agentModeMenu",\n    "assistModeMenu",',
   "两只菜单互斥收起（不许同时叠在输入区上）",
+);
+/* 本次开发需求：助手栏「模式」菜单落点。通用 .agent-menu 的 bottom: calc(100% - 8px)
+   是给会话输入框底部菜单向上弹用的，挂进助手栏会把整块顶到栏顶之外（用户报障）。
+   钉住三件事：① 有专门的落点函数且按「按钮下方 → 装不下才向上」判；
+   ② 宽度夹在 280–320 且不超出助手栏；③ CSS 缺省不再继承那条 bottom。 */
+has(ASSIST, "function placeAssistModeMenu()", "助手栏模式菜单有落点函数");
+has(ASSIST, "const down = below >= want || below >= above;", "落点：优先向下，栏内装不下才向上翻转");
+has(ASSIST, "Math.min(320, Math.round(base.width - PAD * 2))", "落点：宽度上限 320 且不超出助手栏");
+has(ASSIST, "window.addEventListener(\"resize\", () => placeAssistModeMenu());", "助手栏尺寸变化后跟着重算落点");
+has(CSS_ASSIST, "#assistModeMenu {", "助手栏模式菜单有自己的定位缺省（不再只吃 .agent-menu）");
+no(
+  CSS_ASSIST.split("#assistModeMenu {")[1].split("}")[0],
+  "bottom: calc(100% - 8px)",
+  "助手栏模式菜单的缺省里没有「向上弹到栏外」那条 bottom",
 );
 
 /* ── [5] 助手栏纯净模式与会话窗口完全一致 ─────────────────────────────────── */

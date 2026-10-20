@@ -623,7 +623,7 @@ console.log("\n[7] 运行接线：runKey / 人设 / 模型 / 权限");
           { key: "canvas_control", label: "控制类节点", hint: "control" },
           { key: "canvas_draw", label: "绘图", hint: "marks" },
           { key: "canvas_layout", label: "排版与成组", hint: "layout" },
-          { key: "canvas_super", label: "超级节点", hint: "super" },
+          { key: "canvas_super", label: "节点层", hint: "super" },
         ],
       },
       {

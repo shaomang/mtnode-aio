@@ -1,7 +1,7 @@
 ﻿"use strict";
 /* 节点「浏览态（未选中）× 只读文本视图」回归冒烟测试 —— 纯 Node，不依赖 Electron
  *   node test/smoke-node-browse-view.js
- * 要保住的行为：文本 / 图像相关节点**只有被选中时才是可编辑形态**；未选中时像超级节点那样
+ * 要保住的行为：文本 / 图像相关节点**只有被选中时才是可编辑形态**；未选中时像节点层那样
  * 直接显示内容（Markdown / YAML 正确渲染、图像铺满），除节点头部那排小按钮以外没有任何交互。
  * 覆盖：
  *   [1] 形态判定骨架：kind 集合、判定口径、save 旧别名归一、buildBody 入口分流与失败回落
@@ -504,7 +504,7 @@ console.log("\n[4] 选中三路径形态同步");
   const rebuild = funcBody(jsCanvas, "function rebuildNodeBody(node, bodyEl)");
   ok(!!rebuild && rebuild.includes("buildBody(node, bodyEl)") && rebuild.includes("refreshPorts(el, node)"), "rebuildNodeBody 只重建 .n-body 并同步端子（保留头部 / .n-resize）");
   const bodyOf = funcBody(jsCanvas, "function nodeBodyEl(el)");
-  ok(!!bodyOf && bodyOf.includes('":scope > .n-body"'), "只取本节点直属 body（不误伤超级节点内的子节点）");
+  ok(!!bodyOf && bodyOf.includes('":scope > .n-body"'), "只取本节点直属 body（不误伤节点层内的子节点）");
   const nEl = jsCanvas.indexOf("el.className = \"wf-node \" + kindCls");
   /* 断言窗口按「nodeElement 头部 → 开发节点区块之前」切，不按固定字符数掐：
      音频 / 视频输入的 .in-media 那段注释插在中间，把浏览态标记推过了原来的 400 字窗口，
@@ -1320,7 +1320,7 @@ console.log(
       },
       pruneInvalidSuperBoundaryWires: () => 0,
       wireKeepsSuperBoundary: () => true,
-      /* 右键「移入此超级节点」链路用到的落盘 / 路径改写：本测试只关心归属与坐标 */
+      /* 右键「移入此节点层」链路用到的落盘 / 路径改写：本测试只关心归属与坐标 */
       pushHistory: () => {},
       scheduleSave: () => {},
       rewriteNodePathsForSuperContext: () => {},
@@ -1671,7 +1671,7 @@ console.log(
       ]);
       const curWorld = drag(api, nodes, ["IO"], { x: 500, y: 0 });
       const changed = api.finalizeNodeDragNest(["IO"], curWorld);
-      ok(changed === false && parentOf(nodes, "IO") === "-", "超级节点内部端子（super_io）永不参与归属改写");
+      ok(changed === false && parentOf(nodes, "IO") === "-", "节点层内部端子（super_io）永不参与归属改写");
     }
     {
       const { sb, api, nodes } = makeSandbox([
@@ -1689,7 +1689,7 @@ console.log(
     }
   }
 
-  /* ════════════ [5] 子画布（全屏进入超级节点）里再往子壳里套 ═════════════ */
+  /* ════════════ [5] 子画布（全屏进入节点层）里再往子壳里套 ═════════════ */
   function mkFocusScene(extra) {
     /* 场景：OUTER（在根画布）里有一颗子壳 INNER（展开）与若干节点；用户「进入」OUTER
        后在子画布上操作 —— 这一屏的直接子壳 INNER 是合法落点宿主。
@@ -1729,7 +1729,7 @@ console.log(
         expandH: 700,
         parentSuperId: "OUTER",
       }),
-      /* DEEP 的显示尺寸有下限（超节点展开后至少 320x220），所以它落在 INNER 的左上角，
+      /* DEEP 的显示尺寸有下限（节点层展开后至少 320x220），所以它落在 INNER 的左上角，
          右侧留出大片 INNER 空白 —— 那才是「拖到最近的一层壳」的落点 */
       mkSuper("DEEP", {
         x: 20,
@@ -1827,7 +1827,7 @@ console.log(
         "界外（其它层级）节点即使选中也不改写归属",
       );
     }
-    /* ⑤-f 右键「移入此超级节点」（moveNodesIntoSuper）在子画布里也落在子壳内部 */
+    /* ⑤-f 右键「移入此节点层」（moveNodesIntoSuper）在子画布里也落在子壳内部 */
     {
       const { sb, api, nodes } = mkFocusScene();
       sb.S.superFocus = "OUTER";

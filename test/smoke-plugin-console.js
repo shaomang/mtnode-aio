@@ -256,8 +256,8 @@ const TAIL_BRIDGE = {
     usedKinds.length > 0 && usedKinds.every((k) => svgTable.indexOf(k + ":") >= 0),
     "共用卡片用到的图标全在 PLUGIN_ACT_SVG 里（" + usedKinds.join("/") + "）",
   );
-  has(backendCard, 'pluginApiFn(spec.api + "Start")', "主按钮调 <api>Start（静默后台拉起后端）");
-  has(backendCard, 'pluginApiFn(spec.api + "Stop")', "主按钮调 <api>Stop（停止 = 停后端）");
+  has(backendCard, 'spec.startFn || spec.api + "Start"', "主按钮调 <api>Start（静默后台拉起后端；个别插件可用 startFn 覆盖）");
+  has(backendCard, 'spec.stopFn || spec.api + "Stop"', "主按钮调 <api>Stop（停止 = 停后端；个别插件可用 stopFn 覆盖）");
   has(backendCard, 'pluginApiFn(spec.api + "Open")', "次按钮调 <api>Open（控制台 = 显式开窗）");
   has(backendCard, 'I18n.t("启用")', "启用那一颗按钮文案「启用」");
   has(backendCard, 'I18n.t("停用")', "已启用时同一颗按钮显示「停用」");
@@ -269,7 +269,7 @@ const TAIL_BRIDGE = {
   /* 本轮需求：三颗按钮的建法 —— 安装常驻、启用只在已安装时建、控制台常驻 */
   has(backendCard, 'if (!st.installed) {', "安装常驻：未装 = 主按钮「安装」");
   has(backendCard, 'addBtn("download", reinstallLabel || I18n.t("重装"), installBackend);', "已装时那颗按钮变「重装」（仍是安装窗入口）");
-  has(backendCard, 'if (st.installed && spec.hasService) {', "「启用」只在已安装（且有常驻后端）时出现 —— 未安装时整颗不建");
+  has(backendCard, 'if (st.installed && spec.hasService && (!spec.serviceWhen || spec.serviceWhen(st))) {', "「启用」只在已安装（且有常驻后端、且插件没否决）时出现 —— 未安装时整颗不建");
   has(backendCard, 'addBtn("power", title, running ? stopBackend : startBackend, {', "启停是同一颗按钮：未启用点它 = 启用，运行中点它 = 停用");
   has(backendCard, "disabled: starting || stopping", "启停过程中那颗按钮置灰（免得连点出第二次启停）");
   has(backendCard, "_backendStarting", "启动中状态按插件记账（跨重绘保留）");

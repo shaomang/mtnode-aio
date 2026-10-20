@@ -1,4 +1,4 @@
-# Super node
+# Node layer
 
 ![diagram](img/super.svg)
 
@@ -9,10 +9,10 @@ Pack related nodes into a subgraph. **Expand** to edit in a shell, or **↪ Ente
 - **Inner bridge (left) / sink (right)**: expanded shell or full-canvas left/right edges after Enter
 
 ## Common actions
-- Toolbar **Wrap super**: merge selection; with a **single super node selected, click again to unwrap it** (contents move back out as they are, the empty shell is deleted)
+- Toolbar **Wrap super**: merge selection; with a **single node layer selected, click again to unwrap it** (contents move back out as they are, the empty shell is deleted)
 - Header: subfolder, Enter, expand / collapse
 - Drag in / out to pack / unpack
-- Sidebar **Super node** tree: jump in and fit
+- Sidebar **Node layer** tree: jump in and fit
 
 ## Three special modes
 
@@ -22,4 +22,4 @@ Pack related nodes into a subgraph. **Expand** to edit in a shell, or **↪ Ente
 | **Database node** | Enable “Beta” in Settings, then add from the context menu | Fact storage: inner “File node / Table”; header **⚙ Compile** produces a “Database replica”; agent nodes query with `mtnode_db` |
 | **Long-task shell** | Nothing to create by hand: the long-running task **places the parent shell and each step's child shell at creation time** (built, never run; a step you add to the graph later is built when it produces output) | Output collection: one “Long task · <task name>” parent shell per task, one child shell per step inside it; output / artifact nodes land in their step's child shell (a read-only badge marks the header; a deleted shell is never silently rebuilt — restore it with “Rebuild shell” in the strip's “⋯ More”) |
 
-See the manual [Super nodes](#super-nodes), [Dev nodes](#dev-nodes), [Database nodes](#database-nodes).
+See the manual [Node layers](#node-layers), [Dev nodes](#dev-nodes), [Database nodes](#database-nodes).

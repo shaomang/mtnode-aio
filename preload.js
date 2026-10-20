@@ -31,6 +31,8 @@ contextBridge.exposeInMainWorld('api', {
   updateConfirmAndStart: () => ipcRenderer.invoke('update:confirmAndStart'),
   /* 设置最底部「手动更新」：同版本号也照装一次（极小更新 / 测试用；安装链与正常更新一致） */
   updateReinstallSame: () => ipcRenderer.invoke('update:reinstallSame'),
+  /* 商店包「打开 Microsoft Store」：无参命令，深链与协议白名单都在主进程（updater.js 的 openStorePage） */
+  updateOpenStore: () => ipcRenderer.invoke('update:openStore'),
   onUpdateEvent: (cb) => {
     const chans = [
       'update:available',
@@ -681,6 +683,20 @@ contextBridge.exposeInMainWorld('api', {
   breezeRemovePluginMeta: () => ipcRenderer.invoke('breeze:removePluginMeta'),
   breezeApiFetch: (opts) => ipcRenderer.invoke('breeze:apiFetch', opts || {}),
   breezeGenerate: (opts) => ipcRenderer.invoke('breeze:generate', opts || {}),
+  /* 角色预设（角色名 + 多组「音频 + 样本文字 + 指令」）：画布节点选角色 / 试听样本都走这里 */
+  breezePresets: () => ipcRenderer.invoke('breeze:presets'),
+  breezePresetSave: (p) => ipcRenderer.invoke('breeze:presetSave', p || {}),
+  breezePresetDelete: (id) => ipcRenderer.invoke('breeze:presetDelete', id),
+  breezePresetResolve: (o) => ipcRenderer.invoke('breeze:presetResolve', o || {}),
+  /* 创建角色 / 备选音色的三步流程（画布跳窗）：提示词优化 · 台词 · 候选音色合成与挑选。
+     提示词与台词由主进程直连默认文本模型（内置技能当系统提示词），不经过 Agent 会话。 */
+  breezePresetLlm: () => ipcRenderer.invoke('breeze:presetLlm'),
+  breezePresetLlmSetModel: (m) => ipcRenderer.invoke('breeze:presetLlmSetModel', m || ''),
+  breezePresetOptimize: (o) => ipcRenderer.invoke('breeze:presetOptimize', o || {}),
+  breezePresetLines: (o) => ipcRenderer.invoke('breeze:presetLines', o || {}),
+  breezePresetCandidate: (o) => ipcRenderer.invoke('breeze:presetCandidate', o || {}),
+  breezePresetCandidateDelete: (o) => ipcRenderer.invoke('breeze:presetCandidateDelete', o || {}),
+  breezePresetCandidatePick: (o) => ipcRenderer.invoke('breeze:presetCandidatePick', o || {}),
   /* 插件界面内嵌 console 用：日志尾部 + 后端求助通知（不再自动弹控制台窗） */
   breezeConsoleTail: (n) => ipcRenderer.invoke('breeze:consoleTail', n),
   /* 清空日志：真删内容（宿主 truncate 日志文件），不是只清界面显示 */
@@ -958,6 +974,10 @@ contextBridge.exposeInMainWorld('api', {
   mcpAudit: (limit) => ipcRenderer.invoke('mcp:audit', { limit }),
   mcpCapture: (limit) => ipcRenderer.invoke('mcp:capture', { limit }),
   mcpSelfTest: () => ipcRenderer.invoke('mcp:selfTest'),
+  /* 自用回环：把自家服务端挂进引擎的 MCP 客户端清单（generate / run / tools / session 四项），
+     应用内 Agent 因此也能调自己的生成能力。作业：生成与跑节点的异步列表（内存表）。 */
+  mcpSetSelfLoop: (on) => ipcRenderer.invoke('mcp:setSelfLoop', { on }),
+  mcpJobs: () => ipcRenderer.invoke('mcp:jobs'),
   /* 「Paseo 桥」面板（扩展能力管理 → 服务端 页里那一块）：桥脚本落点 / 真 Node / 数据目录 /
      provider 配置片段，以及 --check 自检（真 spawn 一次，读数据目录并探活本机服务端）。
      真源 = paseo/bridge-info.js（桥自己的 --config / --check 读的是同一份）。 */

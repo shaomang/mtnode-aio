@@ -122,7 +122,7 @@ let MERGED_FAILED = false;
     scheduleSave: () => {},
     pushHistory: () => {},
     uid: (p) => String(p || "w") + "_" + ++uidN,
-    /* 递归 / 超级节点 / 工具函数节点的真源不抽进来：它们不参与「保存节点取数 / 落点」判定 */
+    /* 递归 / 节点层 / 工具函数节点的真源不抽进来：它们不参与「保存节点取数 / 落点」判定 */
     isSuperLikeNode: () => false,
     nodeParentSuperId: () => "",
     inputCount: () => 1,

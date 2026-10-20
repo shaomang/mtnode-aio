@@ -44,13 +44,13 @@ body.theme-light .wf-node.super {
 }
 
 /* 工具节点（super + tool:true 变体）收起态：与处理节点同族的叶子卡片外观；
-   展开成壳层后回到上面的超级节点底色（暗色主题同一口径，见 canvas.css）。 */
+   展开成壳层后回到上面的节点层底色（暗色主题同一口径，见 canvas.css）。 */
 body.theme-light .wf-node.tool-node:not(.super-open) {
   border-color: #e8b884;
   background: linear-gradient(180deg, #fdf2e4, #fef9f0);
 }
 
-/* 超级节点 / 开发节点「包体」面板：浅色版（仅渐变 + 阴影） */
+/* 节点层 / 开发节点「包体」面板：浅色版（仅渐变 + 阴影） */
 body.theme-light .super-folder-body {
   background:
     linear-gradient(180deg, rgba(255, 255, 255, .75) 0%, rgba(255, 255, 255, .2) 42%, rgba(120, 140, 180, .1) 100%),
@@ -358,7 +358,7 @@ body.theme-light .wf-node.tts .n-drag-handle {
   border-color: var(--bd2);
 }
 
-/* ── 展开超级节点内的小画布端子排：内凹黑线降为浅灰凹线 ── */
+/* ── 展开节点层内的小画布端子排：内凹黑线降为浅灰凹线 ── */
 body.theme-light .super-stage::before {
   box-shadow: inset -1px 0 0 rgba(0, 0, 0, .12), inset -2px 0 0 rgba(0, 0, 0, .06), inset -3px 0 0 rgba(255, 255, 255, .6)
 }

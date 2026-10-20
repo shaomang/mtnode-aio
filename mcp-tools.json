@@ -62,7 +62,7 @@
     },
     {
       "name": "mtnode_app",
-      "description": "CRITICAL — These canvas tools are ONLY for the global assistant (✦) and the agent-session view. When the run is a canvas AGENT NODE (kind agent_task, or proc_text with agent:true), the host REJECTS mtnode_canvas_get / mtnode_canvas_edit / mtnode_app. Do not call them from a node; read and write workspace files instead.\n\nControl the MTNode desktop app beyond node graph edits (workflow status, rename, select nodes, undo/redo, delete with confirmation, DSH plugin install).\n\nAvailable actions:\n- status / list_workflows: inspect app + workflow catalog. When the run is locked to its own canvas（会话所属画布：agent_task nodes, agent session, assistant \"current\" scope）, the catalog contains ONLY that canvas — other workflows are omitted.\n- rename_workflow: rename the canvas this run belongs to (or a specified workflow) — other canvases are rejected when locked\n- create_longtask: store a long-running-task state-machine graph (DAG) into the canvas this run belongs to; the graph and its landing points (super-node shells / generation workflows / deliverable nodes) are placed on the canvas at creation time — nothing runs — and the task stays disabled (the user enables it from the strip to start it). When to use: once a requirements-grilling session has reached consensus — load the mtnode-grill-me skill and follow its graph contract for what goes into graph (the contract is the single source of truth; do not invent fields); pass name = task name, graph = the graph. Rejected with the validation errors if the graph does not pass, so fix and call again.\n- get_longtask: read one existing long-running task in full — its identity (uid / name / ver / enabled), the whole graph definition, and the LIVE run state (run status, per-node status by path, who is blocked, who is being waited on). Pass uid (omit = the canvas's active task). Always call this before update_longtask: the state graph the user wants changed is only knowable from here.\n- update_longtask: replace the graph definition of an EXISTING long-running task in place (same task, same uid; ver +1). When to use: the user asks to change / fix a task chain that already exists — pass uid plus the complete revised graph (not a diff; the graph replaces the old one). The task keeps its name / enabled / run; if a run is in progress it keeps running on the old snapshot (the receipt says so) and the user must re-enable to apply the new graph. Rejected with the validation errors if the graph does not pass, so fix and call again. Creating a brand-new task is create_longtask instead.\n- select_nodes: select nodes by id/title (optional; empty clears selection). Selection highlight only — it acts on the canvas on screen, so it is rejected when this run's own canvas is in the background.\n- undo / redo: undo or redo the last canvas edit — same foreground-only rule (the undo stack belongs to the canvas you see).\n- export_canvas_png: take a high-resolution PNG \"photo\" of the whole canvas this run belongs to — every node, wire and mark, tiled and stitched exactly like the app's footer camera button (生成高清总览图). Read-only: nothing on the canvas changes. Like select_nodes it acts on the canvas on screen, so it is rejected when this run's own canvas is in the background (switch to it first); the host briefly reveals the canvas and restores the view afterwards, so the user sees a short pan. Pass path to choose an absolute .png destination; omit it and the PNG is written into that canvas's asset folder. The receipt returns the file path — hand it to mtnode_vision when you actually need to READ the picture (OCR / layout / verifying what was built), or give it to the user as a deliverable.\n- list_dsh_plugins: list DSH agent plugins (id, package name, enabled/disabled, core/user). Does not restart the engine.\n\nNeeds user confirmation (UI will prompt; may be rejected):\n- delete_workflow: permanently delete a workflow and its local assets (other canvases rejected when locked)\n- install_dsh_plugin: install a DSH plugin (npm package name, GitHub URL, local path, or .tgz). Pass pkg. Engine restarts after install. Packages are stored under the app config data directory (survive app updates).\n- remove_dsh_plugin: remove a user-installed DSH plugin. Pass pkg (package name). Bundled suites can only be unmounted via set_dsh_plugin.\n- set_dsh_plugin: mount or unmount a non-core plugin. Pass pkg and enabled (boolean); optional id when multiple rows share a name.\n\nFor creating/editing/wiring/removing NODES or canvas drawings (marks) on the canvas this run belongs to（会话所属画布，不是用户此刻看到的这张）, use mtnode_canvas_edit instead (confirmed when called from the global assistant or the agent-session view; rejection stops the agent session).",
+      "description": "CRITICAL — These canvas tools are ONLY for the global assistant (✦) and the agent-session view. When the run is a canvas AGENT NODE (kind agent_task, or proc_text with agent:true), the host REJECTS mtnode_canvas_get / mtnode_canvas_edit / mtnode_app. Do not call them from a node; read and write workspace files instead.\n\nControl the MTNode desktop app beyond node graph edits (workflow status, rename, select nodes, undo/redo, delete with confirmation, DSH plugin install).\n\nAvailable actions:\n- status / list_workflows: inspect app + workflow catalog. When the run is locked to its own canvas（会话所属画布：agent_task nodes, agent session, assistant \"current\" scope）, the catalog contains ONLY that canvas — other workflows are omitted.\n- rename_workflow: rename the canvas this run belongs to (or a specified workflow) — other canvases are rejected when locked\n- create_longtask: store a long-running-task state-machine graph (DAG) into the canvas this run belongs to; the graph and its landing points (node-layer shells / generation workflows / deliverable nodes) are placed on the canvas at creation time — nothing runs — and the task stays disabled (the user enables it from the strip to start it). When to use: once a requirements-grilling session has reached consensus — load the mtnode-grill-me skill and follow its graph contract for what goes into graph (the contract is the single source of truth; do not invent fields); pass name = task name, graph = the graph. Rejected with the validation errors if the graph does not pass, so fix and call again.\n- get_longtask: read one existing long-running task in full — its identity (uid / name / ver / enabled), the whole graph definition, and the LIVE run state (run status, per-node status by path, who is blocked, who is being waited on). Pass uid (omit = the canvas's active task). Always call this before update_longtask: the state graph the user wants changed is only knowable from here.\n- update_longtask: replace the graph definition of an EXISTING long-running task in place (same task, same uid; ver +1). When to use: the user asks to change / fix a task chain that already exists — pass uid plus the complete revised graph (not a diff; the graph replaces the old one). The task keeps its name / enabled / run; if a run is in progress it keeps running on the old snapshot (the receipt says so) and the user must re-enable to apply the new graph. Rejected with the validation errors if the graph does not pass, so fix and call again. Creating a brand-new task is create_longtask instead.\n- select_nodes: select nodes by id/title (optional; empty clears selection). Selection highlight only — it acts on the canvas on screen, so it is rejected when this run's own canvas is in the background.\n- undo / redo: undo or redo the last canvas edit — same foreground-only rule (the undo stack belongs to the canvas you see).\n- export_canvas_png: take a high-resolution PNG \"photo\" of the whole canvas this run belongs to — every node, wire and mark, tiled and stitched exactly like the app's footer camera button (生成高清总览图). Read-only: nothing on the canvas changes. Like select_nodes it acts on the canvas on screen, so it is rejected when this run's own canvas is in the background (switch to it first); the host briefly reveals the canvas and restores the view afterwards, so the user sees a short pan. Pass path to choose an absolute .png destination; omit it and the PNG is written into that canvas's asset folder. The receipt returns the file path — hand it to mtnode_vision when you actually need to READ the picture (OCR / layout / verifying what was built), or give it to the user as a deliverable.\n- list_dsh_plugins: list DSH agent plugins (id, package name, enabled/disabled, core/user). Does not restart the engine.\n\nNeeds user confirmation (UI will prompt; may be rejected):\n- delete_workflow: permanently delete a workflow and its local assets (other canvases rejected when locked)\n- install_dsh_plugin: install a DSH plugin (npm package name, GitHub URL, local path, or .tgz). Pass pkg. Engine restarts after install. Packages are stored under the app config data directory (survive app updates).\n- remove_dsh_plugin: remove a user-installed DSH plugin. Pass pkg (package name). Bundled suites can only be unmounted via set_dsh_plugin.\n- set_dsh_plugin: mount or unmount a non-core plugin. Pass pkg and enabled (boolean); optional id when multiple rows share a name.\n\nFor creating/editing/wiring/removing NODES or canvas drawings (marks) on the canvas this run belongs to（会话所属画布，不是用户此刻看到的这张）, use mtnode_canvas_edit instead (confirmed when called from the global assistant or the agent-session view; rejection stops the agent session).",
       "family": "canvas",
       "source": "dsh/gateway/canvas-plugin.mjs",
       "inputSchema": {
@@ -1462,6 +1462,279 @@
         "required": [
           "action"
         ]
+      }
+    },
+    {
+      "name": "mtnode_generate",
+      "description": "Generate media with MTNode itself (image / music / speech / video) — the same backends the canvas nodes use, with the same global audio-video mutex.\n- 结果异步：run 立刻回 jobId（wait:true 则等到完成再回）。产物是**本机绝对路径**，并已进 MTNode 素材库。\n- 只有显式给 canvas + baseHash 才会额外在画布上建一个节点（createNode 默认 false）。\n- action:\"status\" 查作业（jobId）；action:\"list\" 列本次运行的全部作业；action:\"cancel\" 取消（音乐 / 视频有真取消口，图像 / 语音只能等它跑完）。\n- 作业只活在这次进程里：MTNode 重启后未完成的作业回「作业已丢失」。",
+      "family": "gen",
+      "source": "dsh/gateway/mcp-extra-plugin.mjs",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "description": "run（默认）= 起一个作业；status = 查作业；list = 列作业；cancel = 取消。",
+            "enum": [
+              "run",
+              "status",
+              "list",
+              "cancel"
+            ]
+          },
+          "kind": {
+            "type": "string",
+            "description": "run：生成哪一类。image = 文生图 / 图生图；speech = 语音（Breeze）；music = 音乐（MiniMax Music 3）；video = 视频（H3）。",
+            "enum": [
+              "image",
+              "music",
+              "speech",
+              "video"
+            ]
+          },
+          "prompt": {
+            "type": "string",
+            "description": "image / music / video 的提示词（music 用它写曲风与演唱）。"
+          },
+          "lyrics": {
+            "type": "string",
+            "description": "music：歌词正文（带结构标签，如 [Verse] / [Chorus]）。"
+          },
+          "text": {
+            "type": "string",
+            "description": "speech：要念的台词正文（可用 [笑] 这类发声事件）。"
+          },
+          "voice": {
+            "type": "string",
+            "description": "speech：音色（音色库 id 或名称；留空 = 用预设 / 参考音频）。"
+          },
+          "presetId": {
+            "type": "string",
+            "description": "speech：预设音色 id。"
+          },
+          "instruction": {
+            "type": "string",
+            "description": "speech：语气 / 表演指令（一句话风格描述）。"
+          },
+          "refAudio": {
+            "type": "string",
+            "description": "speech：参考音频的**本机绝对路径**（音色克隆）。"
+          },
+          "refText": {
+            "type": "string",
+            "description": "speech：参考音频对应的文本。"
+          },
+          "model": {
+            "type": "string",
+            "description": "image：图像模型 id（留空 = 用本机已配的默认图像后端）。"
+          },
+          "size": {
+            "type": "string",
+            "description": "image：尺寸，如 \"1024x1024\"（留空 = 后端默认）。"
+          },
+          "refImage": {
+            "type": "string",
+            "description": "image：参考图的本机绝对路径（图生图）。"
+          },
+          "duration": {
+            "type": "number",
+            "description": "video：时长秒（4-15）；music：目标时长秒。"
+          },
+          "outputRes": {
+            "type": "string",
+            "description": "video：输出分辨率档位。",
+            "enum": [
+              "auto",
+              "480p",
+              "720p",
+              "1080p"
+            ]
+          },
+          "seed": {
+            "type": "number",
+            "description": "可复现随机种子（image / music / video）。"
+          },
+          "outputPath": {
+            "type": "string",
+            "description": "自定义产物路径（本机绝对路径）；留空 = 落 MTNode 托管目录。"
+          },
+          "canvas": {
+            "type": "string",
+            "description": "画布 id 或名称：给了才可能建节点，并决定产物落哪张画布的资产目录。"
+          },
+          "baseHash": {
+            "type": "string",
+            "description": "createNode:true 时必填：先 canvas_get 拿到的 contentHash（版本校验）。"
+          },
+          "createNode": {
+            "type": "boolean",
+            "description": "在画布上额外建一个节点（需 canvas + baseHash；默认 false）。"
+          },
+          "jobId": {
+            "type": "string",
+            "description": "status / cancel：作业 id。"
+          },
+          "wait": {
+            "type": "boolean",
+            "description": "run：true = 等到作业结束再回（最长 15 分钟）；默认 false 立刻回 jobId。"
+          }
+        }
+      }
+    },
+    {
+      "name": "mtnode_run",
+      "description": "Run a node or a whole graph inside MTNode, asynchronously.\n- action:\"node\"：跑**一个**节点（媒体节点 / 智能任务 / 处理节点），必须给 canvas + baseHash（写前版本校验，与 canvas_edit 同一口径）。\n- action:\"graph\"：从控制节点起跑一整张图（等价于点那颗控制节点的 ▶），**不要** baseHash。\n- 立刻回 jobId；action:\"status\" 查进度与结果（节点输出 / 错误 / 产物绝对路径）。\n- 长任务（视频 / 音乐）会排队等全局音视频锁；作业只活在这次进程里。",
+      "family": "run",
+      "source": "dsh/gateway/mcp-extra-plugin.mjs",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "description": "node（默认）= 跑一个节点；graph = 从控制节点起跑整图；status = 查作业；list = 列作业。",
+            "enum": [
+              "node",
+              "graph",
+              "status",
+              "list"
+            ]
+          },
+          "nodeId": {
+            "type": "string",
+            "description": "node：节点 id（与 nodeTitle 二选一）。"
+          },
+          "nodeTitle": {
+            "type": "string",
+            "description": "node：节点标题（须唯一）。"
+          },
+          "canvas": {
+            "type": "string",
+            "description": "画布 id 或名称（node 必填；graph 留空 = 当前画布）。"
+          },
+          "baseHash": {
+            "type": "string",
+            "description": "node 必填：canvas_get 拿到的 contentHash。graph 不要给。"
+          },
+          "controlNodeId": {
+            "type": "string",
+            "description": "graph：指定从哪颗控制节点起跑（留空 = 画布上第一颗 ctrlAction=run 的控制节点）。"
+          },
+          "jobId": {
+            "type": "string",
+            "description": "status：作业 id。"
+          },
+          "wait": {
+            "type": "boolean",
+            "description": "node / graph：true = 等到跑完再回（最长 15 分钟）；默认 false 立刻回 jobId。"
+          }
+        }
+      }
+    },
+    {
+      "name": "mtnode_tools",
+      "description": "Use the tools the user built in MTNode (tool nodes on the canvas + tool-library entries marked always-on).\n- action:\"list\"：列可调用的用户工具（名称 / 说明 / 入参表）。\n- action:\"call\"：按名称调用一次，args 用入参名（也认 arg1..argN），回各输出端子的值。\n- 默认全部放行（与内置工具同级）；关掉「自用回环」总开关后，这一族与其它三项一起消失。",
+      "family": "tool",
+      "source": "dsh/gateway/mcp-extra-plugin.mjs",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "description": "list = 列用户工具；call = 调一个。",
+            "enum": [
+              "list",
+              "call"
+            ]
+          },
+          "name": {
+            "type": "string",
+            "description": "call：工具名（action:\"list\" 回的名字，或它的 key）。"
+          },
+          "args": {
+            "type": "object",
+            "description": "call：入参对象，键 = 工具的入参名（也认 arg1..argN）；图像参数给本机绝对路径。",
+            "additionalProperties": true
+          },
+          "canvas": {
+            "type": "string",
+            "description": "在哪张画布上找工具节点（留空 = 当前画布）。"
+          },
+          "detail": {
+            "type": "string",
+            "description": "list：brief（默认，名称与说明）/ full（带完整入参表）。",
+            "enum": [
+              "brief",
+              "full"
+            ]
+          }
+        },
+        "required": [
+          "action"
+        ]
+      }
+    },
+    {
+      "name": "mtnode_session",
+      "description": "Talk to an MTNode agent session (create / send / read / close) without touching the sessions the user is using.\n- action:\"create\"：新建一条会话（左栏可见，标题标「外部调用」），默认**用完即弃**；给 keep:true 才保留。\n- action:\"send\"：发一条消息并（默认 wait:true）等到这一轮结束，回助手最后一段回复；用完即弃的会话在这一轮后自动删除。\n- action:\"read\"：读这条会话最近的消息；action:\"close\"：立刻删掉（keep 的会话不删，回一句说明）。\n- 不读、不改用户自己的会话。",
+      "family": "session",
+      "source": "dsh/gateway/mcp-extra-plugin.mjs",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "description": "create（默认）= 新建；send = 发一条并等回复；read = 读最近消息；close = 删除。",
+            "enum": [
+              "create",
+              "send",
+              "read",
+              "close"
+            ]
+          },
+          "sessionId": {
+            "type": "string",
+            "description": "send / read / close：会话 id（as…）。send 留空 = 新建一条再发。"
+          },
+          "text": {
+            "type": "string",
+            "description": "send：消息正文。"
+          },
+          "title": {
+            "type": "string",
+            "description": "create / send：会话标题（留空 = 「外部调用 · 首句」）。"
+          },
+          "provider": {
+            "type": "string",
+            "description": "create / send：供应商（route 或名称；留空 = 默认）。"
+          },
+          "model": {
+            "type": "string",
+            "description": "create / send：模型 id（留空 = 默认）。"
+          },
+          "effort": {
+            "type": "string",
+            "description": "create / send：思考档（留空 = high）。",
+            "enum": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          },
+          "keep": {
+            "type": "boolean",
+            "description": "create / send：true = 这条会话留在左栏（默认用完即弃）。"
+          },
+          "wait": {
+            "type": "boolean",
+            "description": "send：true（默认）= 等到这一轮结束并回助手回复。"
+          },
+          "limit": {
+            "type": "number",
+            "description": "read：最多回多少条消息（默认 20，上限 200）。"
+          }
+        }
       }
     }
   ],

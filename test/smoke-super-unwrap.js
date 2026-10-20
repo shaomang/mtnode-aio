@@ -1,14 +1,14 @@
 "use strict";
-/* 顶栏「超节点」二次点击 = 拆开普通超级节点 —— 冒烟测试
+/* 顶栏「节点层」二次点击 = 拆开普通节点层 —— 冒烟测试
  * （纯 Node：app.js 的真实源码切片进 vm 真跑，不启动 Electron、不碰 %APPDATA%）
  *   node test/smoke-super-unwrap.js
  *
- * 需求：选中单个普通超级节点时，再点一次顶栏「超节点」按钮，应把
+ * 需求：选中单个普通节点层时，再点一次顶栏「节点层」按钮，应把
  *   ① 壳内全部内容（节点 + 壳内绘制）按**原本位置关系**移回外层，
- *   ② 再删除这颗已空的超级节点。
+ *   ② 再删除这颗已空的节点层。
  *
  * 覆盖：
- *   [1] 入口分叉：只选中一颗普通超级节点 → 拆壳；其余情况仍走「框选合并」
+ *   [1] 入口分叉：只选中一颗普通节点层 → 拆壳；其余情况仍走「框选合并」
  *   [2] 位置换算：根层拆壳后内容停在原处、相对关系不变、连线保留
  *   [3] 嵌套展开壳内 / 全屏进入态：拆前拆后「看得见的位置」一致
  *   [4] 空壳照样删；开发 / 数据库 / 工具节点壳与多选不接管
@@ -178,7 +178,7 @@ const N = (state, id) => state.wf.nodes.filter((n) => n.id === id)[0];
 
 (async function main() {
   /* ==================== [1] 入口分叉 ==================== */
-  console.log("\n[1] 入口分叉：只选中一颗普通超级节点 → 拆壳；否则仍走框选合并");
+  console.log("\n[1] 入口分叉：只选中一颗普通节点层 → 拆壳；否则仍走框选合并");
   {
     const state = {
       wf: { nodes: [{ id: "h", kind: "super" }], marks: [], wires: [] },
@@ -186,7 +186,7 @@ const N = (state, id) => state.wf.nodes.filter((n) => n.id === id)[0];
       superFocus: "",
     };
     const t = mkCtx(state);
-    ok(t.plainSuperForUnwrap() === N(state, "h"), "单选中普通超节点 → 认得它");
+    ok(t.plainSuperForUnwrap() === N(state, "h"), "单选中普通节点层 → 认得它");
     ok(typeof t.onWrapSuperButton === "function", "onWrapSuperButton 可就地调用");
     ok(
       BOOT.indexOf("onWrapSuperButton()") >= 0 &&
@@ -194,8 +194,8 @@ const N = (state, id) => state.wf.nodes.filter((n) => n.id === id)[0];
       "app-boot.js：#btnWrapSuper 点击走 onWrapSuperButton（不再直接框选合并）",
     );
     ok(
-      APP.indexOf('I18n.t("拆开超节点：内容原样移回外层，并删除这颗空壳")') >= 0,
-      "syncGroupBtns：单选中超节点时按钮提示切到「拆开超节点」",
+      APP.indexOf('I18n.t("拆开节点层：内容原样移回外层，并删除这颗空壳")') >= 0,
+      "syncGroupBtns：单选中节点层时按钮提示切到「拆开节点层」",
     );
     ok(
       APP.indexOf("const unwrap = plainSuperForUnwrap();") >= 0 &&
@@ -255,7 +255,7 @@ const N = (state, id) => state.wf.nodes.filter((n) => n.id === id)[0];
       "parentTaskId 随外层（根层为空）",
     );
     ok(state.wf.wires.length === 1 && state.wf.wires[0].from === "c1", "两端都在壳内的连线原样保留");
-    ok(t.__hostRef.toasts.length === 1 && /拆开超节点/.test(t.__hostRef.toasts[0]), "收尾有明确提示");
+    ok(t.__hostRef.toasts.length === 1 && /拆开节点层/.test(t.__hostRef.toasts[0]), "收尾有明确提示");
     ok(t.__hostRef.history === 1, "拆壳前记一次历史（可撤销）");
   }
 
@@ -390,23 +390,23 @@ const N = (state, id) => state.wf.nodes.filter((n) => n.id === id)[0];
   {
     const I18n = require("../renderer/i18n.js");
     const keys = [
-      "拆开超节点：内容原样移回外层，并删除这颗空壳",
-      "已拆开超节点：",
+      "拆开节点层：内容原样移回外层，并删除这颗空壳",
+      "已拆开节点层：",
       "移出 ",
       " 项内部绘制",
       "清理 ",
-      "超节点：将选中节点合并为展开的超级节点（覆盖选区范围）；选中单个超级节点时再点一次 = 拆开它（内容原样移回外层，空壳删除）",
+      "节点层：将选中节点合并为展开的节点层（覆盖选区范围）；选中单个节点层时再点一次 = 拆开它（内容原样移回外层，空壳删除）",
     ];
     I18n.setLocale("en");
     const missing = keys.filter((k) => I18n.t(k) === k);
     ok(missing.length === 0, "新增词条中英齐备，缺：" + (missing.join(" / ") || "无"));
     ok(
-      !/data-i18n-title="超节点：将选中节点合并为展开的超级节点/.test(HTML) &&
-        !/data-i18n-title="超节点[^"]*拆开/.test(HTML),
-      "index.html：#btnWrapSuper 不再挂「合并 / 拆开」长 tooltip（可见文字「超节点」已说明自身）",
+      !/data-i18n-title="节点层：将选中节点合并为展开的节点层/.test(HTML) &&
+        !/data-i18n-title="节点层[^"]*拆开/.test(HTML),
+      "index.html：#btnWrapSuper 不再挂「合并 / 拆开」长 tooltip（可见文字「节点层」已说明自身）",
     );
     ok(
-      !/data-i18n-title="超节点：将选中节点合并为展开的超级节点（覆盖选区范围）"/.test(HTML),
+      !/data-i18n-title="节点层：将选中节点合并为展开的节点层（覆盖选区范围）"/.test(HTML),
       "旧的「只讲合并」tooltip 已替换（无残留）",
     );
   }

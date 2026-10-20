@@ -5,9 +5,9 @@
 ## Glossary
 
 - **Node**: the main building block of the canvas (input / process / save / control…).
-- **Super node**: packs a set of nodes into a "folder", and inner nodes can be connected through boundary ports.
+- **Node layer**: packs a set of nodes into a "folder", and inner nodes can be connected through boundary ports.
 - **Agent node**: a session-style node that reads and writes files itself and works through several steps.
-- **Dev node**: a super node carrying a dev marker, usually standing for one feature module of a software project.
+- **Dev node**: a node layer carrying a dev marker, usually standing for one feature module of a software project.
 - **Port**: a node's interface.
 - **Batch item**: batch input where one run handles exactly one item; "Aggregate mode" means all content goes into one run.
 - **Wait for file**: releases downstream only once a certain file exists.

@@ -56,9 +56,10 @@ const EXCLUDED_TOOLS = Object.freeze([
 
 /** 工具 → 执行接线表。参数原样透传；除 canvas_* 的 canvas / baseHash 两个
  *  MCP 侧路由参数外，不增删任何字段（插件参数表仍是唯一真源）。
- *  local:true = 这一族**不在渲染层执行**，由主进程自己干（目前只有 gui：只有主进程
- *  拿得到 BrowserWindow 与 webContents，能往任意窗口注入脚本、能 capturePage 截图）。
- *  执行器由 main.js 注入（o.gui），见 mcp-gui-agent.js。 */
+ *  local:true = 这一族**不在渲染层执行**，由主进程自己干：
+ *  gui —— 只有主进程拿得到 BrowserWindow 与 webContents，能往任意窗口注入脚本、能 capturePage 截图；
+ *  gen —— 媒体生成内核全在主进程，且共用画布那把全局音视频互斥锁。
+ *  执行器由 main.js 注入（gui → mcp-gui-agent.js，gen → mcp-media-agent.js）。 */
 const TOOL_OPS = {
   mtnode_canvas_get: { op: "get", family: "canvas", write: false },
   mtnode_canvas_edit: { op: "edit", family: "canvas", write: true },
@@ -69,7 +70,24 @@ const TOOL_OPS = {
   lt_state: { op: "lt", family: "lt", write: true },
   mtnode_assets: { op: "asset", family: "asset", write: false },
   mtnode_gui: { op: "gui", family: "gui", local: true, write: true },
+  /* 自用回环四件（见 guides/mcp-server.md「自用回环」）：
+     · generate 由主进程直接干（媒体生成内核都在主进程），异步作业；
+     · run / tools / sessionTask 在渲染层执行（节点运行器 / 用户工具 / 会话都在那边），
+       run 也是异步作业 —— 跑一整张图可能几十分钟，不能让客户端挂在一次请求上。
+     write:true 只影响审计与读写标注；作业类**不进写队列**（作业本身要跑几分钟，
+     占着队列会把其它客户端的画布写全堵死）。 */
+  mtnode_generate: { op: "gen", family: "gen", write: true, local: true, job: true },
+  mtnode_run: { op: "run", family: "run", write: true, job: true },
+  mtnode_tools: { op: "tool", family: "tool", write: false },
+  mtnode_session: { op: "sessionTask", family: "sessionTask", write: true },
 };
+
+/** 作业等待上限：与 TOOL_TIMEOUT_MS 同值（一次工具调用最多挂 15 分钟）。 */
+const JOB_WAIT_MS = TOOL_TIMEOUT_MS;
+/** 作业自己的硬上限：跑整图 / 长视频可以超过 15 分钟，回执通道按这个等（6 小时）。 */
+const JOB_HARD_MS = 6 * 60 * 60 * 1000;
+/** 内存里最多留多少个作业（再多就把最老的挤掉）。 */
+const JOBS_MAX = 50;
 
 /** MCP 侧路由参数：从 args 里摘出来，不下发给渲染层的插件处理函数。 */
 const ROUTE_KEYS = { canvas: true, baseHash: true };
@@ -171,6 +189,11 @@ function createMcpHost(o) {
   const packaged = !!o.packaged;
   const sendToRenderer = o.sendToRenderer;
   const guiRun = typeof o.gui === "function" ? o.gui : null;
+  /**
+   * 媒体生成执行器（可选，main.js 注入 mcp-media-agent.js 的实例）：
+   *   { run(kind, params, {jobId}), cancel(jobId) }。没注入时 mtnode_generate 明确报错。
+   */
+  const media = o.media && typeof o.media.run === "function" ? o.media : null;
   /** 会话桥（session-bridge.js）：会话族的读路径 + SSE 事件分发都交给它 */
   const sessionBridge = o.sessionBridge || null;
   /**
@@ -182,6 +205,20 @@ function createMcpHost(o) {
    */
   const sessionGate = typeof o.sessionGate === "function" ? o.sessionGate : null;
   const log = typeof o.log === "function" ? o.log : () => {};
+  /**
+   * 自用回环（可选）：把本服务端挂进 MTNode 自己的 MCP 客户端列表，让应用内的 Agent
+   * 也能经 MCP 调图像 / 音乐 / 语音 / 视频、跑节点、用它自己的工具节点。
+   * 形态 = main.js 的 dshMcpAdd / dshMcpSetEnabled；这里只负责「什么时候该开、什么时候该关」。
+   * 不注入 = 不提供这一能力（独立冒烟与测试环境不受影响）。
+   */
+  const applySelfLoop =
+    typeof o.selfLoop === "function"
+      ? o.selfLoop
+      : null;
+  /* 自用回环只挂这四项：媒体生成 / 跑节点 / 用户工具 / 会话。
+     画布读写、GUI、数据库这些还是让 agent 走内置工具（同进程、能带确认卡），不绕远路。 */
+  const SELF_LOOP_TOOLS = ["mtnode_generate", "mtnode_run", "mtnode_tools", "mtnode_session"];
+  const SELF_LOOP_NAME = "mtnode-self";
   const statePath = path.join(dataDir, "mcp-server.json");
   const auditDir = path.join(dataDir, "mcp-audit");
 
@@ -213,6 +250,8 @@ function createMcpHost(o) {
       /* 监听端口：必须**落盘**。stdio 桥（mcp-stdio.js）唯一的发现来源就是这个文件里的
          port + token —— 只放在运行时内存里，外部客户端永远读不到，桥只能报「没开 MTNode」。 */
       port: 0,
+      /* 自用回环：默认开 —— 让应用内的 Agent 也能用这套接口（关掉只是不再注册那条客户端） */
+      selfLoop: true,
     };
   }
 
@@ -322,11 +361,14 @@ function createMcpHost(o) {
 
   function callRenderer(op, params, meta) {
     const id = meta.sessionId + ":" + randHex(10);
+    /* 单次调用的回执等待：默认 15 分钟；作业（跑整图）按作业口径放宽（JOB_HARD_MS），
+       否则一张图跑 20 分钟时主进程会先判定超时，结果就永远回不去了。 */
+    const waitMs = Number(meta.timeoutMs) > 0 ? Number(meta.timeoutMs) : TOOL_TIMEOUT_MS;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         pending.delete(id);
-        reject(new Error("渲染层未回执（超时 " + Math.round(TOOL_TIMEOUT_MS / 1000) + "s）：" + op));
-      }, TOOL_TIMEOUT_MS);
+        reject(new Error("渲染层未回执（超时 " + Math.round(waitMs / 1000) + "s）：" + op));
+      }, waitMs);
       if (timer && typeof timer.unref === "function") timer.unref();
       pending.set(id, { resolve, reject, timer, meta });
       try {
@@ -337,6 +379,7 @@ function createMcpHost(o) {
           op,
           params: params || {},
           write: !!meta.write,
+          timeoutMs: waitMs,
         });
       } catch (e) {
         clearTimeout(timer);
@@ -418,6 +461,216 @@ function createMcpHost(o) {
     return {
       description: spec.description,
       messages: [{ role: "user", content: { type: "text", text } }],
+    };
+  }
+
+  /* ── 作业（异步跑）────────────────────────────────────────────────────── */
+
+  /**
+   * 内存作业表：jobId → { id, kind, tool, status, startedAt, endedAt, result, error }。
+   * **只在进程内存里**（不落盘）：生成/跑图都跑在这个进程内，进程没了它也早没了 ——
+   * 落盘反而会造出「重启后还查得到一个其实不存在的结果」这种谎。重启后查旧 id
+   * 一律走 jobMissing()，明确回「作业已丢失，重跑一次」。
+   */
+  const jobs = new Map();
+
+  function jobPrune() {
+    while (jobs.size > JOBS_MAX) {
+      const first = jobs.keys().next();
+      if (first.done) break;
+      jobs.delete(first.value);
+    }
+  }
+
+  function jobState(rec) {
+    const out = {
+      ok: rec.status !== "failed",
+      jobId: rec.id,
+      kind: rec.kind,
+      tool: rec.tool,
+      status: rec.status,
+      startedAt: new Date(rec.startedAt).toISOString(),
+      ms: (rec.endedAt || Date.now()) - rec.startedAt,
+    };
+    if (rec.status === "running") {
+      out.hint = '还在跑：稍后用 action:"status" 带同一个 jobId 再查（不会阻塞）。';
+    }
+    if (rec.status === "failed") out.error = rec.error;
+    if (rec.status !== "running" && rec.result !== undefined) out.result = rec.result;
+    if (rec.note) out.note = rec.note;
+    return out;
+  }
+
+  function jobMissing(id) {
+    return {
+      ok: false,
+      error: "JOB_GONE",
+      jobId: id,
+      message: "作业不在了：作业表只活在 MTNode 这次运行的内存里（重启即丢），请重新发起一次。",
+    };
+  }
+
+  /** 起一个作业：立刻返回 rec，真正的工作在后台跑（永不 reject，失败记进 rec）。 */
+  function jobStart(kind, tool, runner) {
+    const id = "job-" + randHex(8);
+    const rec = {
+      id,
+      kind: String(kind || ""),
+      tool: String(tool || ""),
+      status: "running",
+      startedAt: Date.now(),
+      endedAt: 0,
+      result: undefined,
+      error: "",
+      note: "",
+    };
+    jobs.set(id, rec);
+    jobPrune();
+    rec.done = (async () => {
+      try {
+        const r = await runner(id);
+        rec.result = r === undefined ? null : r;
+        const failed = !!(r && typeof r === "object" && r.ok === false);
+        rec.status = failed ? "failed" : "ok";
+        if (failed) rec.error = String(r.error || r.message || "failed");
+      } catch (e) {
+        rec.status = "failed";
+        rec.error = (e && e.message) || String(e);
+      } finally {
+        rec.endedAt = Date.now();
+        log("[mcp] job " + id + " " + rec.status + " " + (rec.endedAt - rec.startedAt) + "ms" + (rec.error ? " " + oneLine(rec.error, 120) : ""));
+      }
+      return rec;
+    })();
+    return rec;
+  }
+
+  function jobWait(rec) {
+    return Promise.race([
+      rec.done,
+      new Promise((_, rej) => {
+        const t = setTimeout(
+          () =>
+            rej(
+              mcpFail(
+                -32603,
+                "作业超时（" + Math.round(JOB_WAIT_MS / 1000) + "s）未完成：jobId=" + rec.id + "（稍后用 status 再查）",
+              ),
+            ),
+          JOB_WAIT_MS,
+        );
+        if (t && typeof t.unref === "function") t.unref();
+      }),
+    ]);
+  }
+
+  /**
+   * 作业类工具的统一入口（mtnode_generate / mtnode_run）。
+   * action: status / cancel / list，其余 = 起一个作业。
+   */
+  async function jobCall(op, name, params, meta) {
+    const action = String(params.action || (op.family === "run" ? "node" : "run")).trim();
+    if (action === "status" || action === "wait") {
+      const id = String(params.jobId || "").trim();
+      if (!id) return { ok: false, error: "NO_JOB_ID", message: 'status 需要 jobId（发起时回的那个）' };
+      const rec = jobs.get(id);
+      if (!rec) return jobMissing(id);
+      if (rec.status === "running" && params.wait === true) await jobWait(rec);
+      return jobState(rec);
+    }
+    if (action === "list") {
+      const list = [...jobs.values()].reverse().map((r) => ({
+        jobId: r.id,
+        kind: r.kind,
+        tool: r.tool,
+        status: r.status,
+        ms: (r.endedAt || Date.now()) - r.startedAt,
+      }));
+      return { ok: true, count: list.length, jobs: list };
+    }
+    if (action === "cancel") {
+      const id = String(params.jobId || "").trim();
+      if (!id) return { ok: false, error: "NO_JOB_ID", message: "cancel 需要 jobId" };
+      const rec = jobs.get(id);
+      if (!rec) return jobMissing(id);
+      if (rec.status !== "running") return Object.assign({ cancelled: false }, jobState(rec));
+      let r = null;
+      if (op.family === "gen" && media && typeof media.cancel === "function") {
+        r = media.cancel(id);
+      } else if (op.family === "run") {
+        r = { ok: false, error: "cancel_unsupported", message: "跑节点没有取消口：到界面按 ■ 停，或让它跑完。" };
+      }
+      return Object.assign(
+        { jobId: id, kind: rec.kind, status: rec.status },
+        r && typeof r === "object" ? r : {},
+      );
+    }
+
+    /* 起作业：媒体生成走主进程执行器；跑节点走渲染层（与本轮画布同一条执行链） */
+    if (op.family === "gen") {
+      if (!media) throw mcpFail(-32603, "媒体生成执行器不可用（主进程没有注入 mcp-media-agent）");
+      const kind = String(params.kind || "").trim();
+      if (!kind) throw mcpFail(-32602, "mtnode_generate 需要 kind（image / music / speech / video）");
+      const rec = jobStart(kind, name, async (jobId) => {
+        const out = await media.run(kind, params, { jobId });
+        if (!out || !out.ok) return out;
+        /* 产物默认只回路径 + 进素材库；要「顺手摆到画布上」必须显式 createNode:true，
+           且给全 canvas + baseHash（baseHash 是那次读图拿到的，防把节点摆到已改过的图上）。 */
+        if (params.createNode !== true) return out;
+        const target = String(params.canvas || "").trim();
+        const wantHash = String(params.baseHash || "").trim();
+        if (!target || !wantHash) {
+          out.warnings = (out.warnings || []).concat([
+            "createNode 需要同时给 canvas 与 baseHash（先 canvas_get 拿哈希），本次没有建节点。",
+          ]);
+          return out;
+        }
+        try {
+          const made = await callRenderer(
+            "mediaNode",
+            { canvas: target, baseHash: wantHash, kind, path: out.path, title: params.title || "" },
+            Object.assign({}, meta, { write: false }),
+          );
+          if (made && made.ok) {
+            out.node = { nodeId: made.nodeId, title: made.title, kind: made.kind };
+            if (Array.isArray(made.warnings) && made.warnings.length)
+              out.warnings = (out.warnings || []).concat(made.warnings.slice(0, 4));
+          } else {
+            out.warnings = (out.warnings || []).concat([
+              "节点没建成：" + String((made && (made.message || made.error)) || "未知原因"),
+            ]);
+          }
+        } catch (e) {
+          out.warnings = (out.warnings || []).concat(["节点没建成：" + ((e && e.message) || e)]);
+        }
+        return out;
+      });
+      if (params.wait === true) {
+        await jobWait(rec);
+        return jobState(rec);
+      }
+      return {
+        ok: true,
+        jobId: rec.id,
+        kind,
+        status: "running",
+        hint: '已开始：用 action:"status" + 同一个 jobId 取结果（产物是本机绝对路径）。',
+      };
+    }
+
+    /* family run：action 就是 node / graph；canvas / baseHash 已由路由层塞进 params */
+    const runMeta = Object.assign({}, meta, { write: false, timeoutMs: JOB_HARD_MS });
+    const rec = jobStart(action, name, () => callRenderer(op.op, params, runMeta));
+    if (params.wait === true) {
+      await jobWait(rec);
+      return jobState(rec);
+    }
+    return {
+      ok: true,
+      jobId: rec.id,
+      kind: action,
+      status: "running",
+      hint: '已开始：用 action:"status" + 同一个 jobId 取节点输出（跑整图可能要很久）。',
     };
   }
 
@@ -503,6 +756,19 @@ function createMcpHost(o) {
         if (target) params.canvas = target;
         if (op.write && baseHash) params.baseHash = baseHash;
       }
+      /* 作业类（生成 / 跑图）：直接起作业，不进写队列 —— 一次生成要几分钟，
+         占着写队列等于让别的客户端这几分钟里一笔画布写都做不了。 */
+      if (op.job) {
+        if (target) params.canvas = target;
+        if (baseHash) params.baseHash = baseHash;
+        return jobCall(op, name, params, meta);
+      }
+      /* 用户工具族：list 只读，call 才写（按 action 逐次判，别让查询排在写队尾） */
+      if (op.family === "tool") {
+        if (target) params.canvas = target;
+        return callRenderer(op.op, params, meta);
+      }
+      if (op.family === "sessionTask") return callRenderer(op.op, params, meta);
       /* 主进程自执行的族（gui）：执行器是 main.js 注入的 mcp-gui-agent.js。
          这里不做 canvas / baseHash 那套路由 —— GUI 动作的作用域是「哪只窗 + 哪个元素」。 */
       if (op.local) {
@@ -535,9 +801,10 @@ function createMcpHost(o) {
 
     calls++;
     try {
-      /* 写操作串行化：画布真源在渲染层，一次只放一笔写进去（读并发，不排队） */
       let result;
-      if (op.write) {
+      /* 写操作串行化：画布真源在渲染层，一次只放一笔写进去（读并发，不排队）。
+         作业类（job）例外：它只是「起一个作业」，本身毫秒级返回。 */
+      if (op.write && !op.job) {
         const key = ctx.sessionId || "default";
         const prev = writeQueues.get(key) || Promise.resolve();
         const next = prev.then(run, run);
@@ -803,6 +1070,7 @@ function createMcpHost(o) {
     "写画布前必须先 mtnode_canvas_get 读一遍，并把回执里的 contentHash 原样作为调用参数 baseHash 传回来；哈希对不上说明期间有人改过这张图，调用会被拒绝（重新读一次再改）。",
     "完整操作规范（建图 / 连线 / 批次的硬规则）在资源 mtnode://skill/mtnode-canvas-edit-rules；按需读，不要凭记忆建图。",
     "长任务：可用 lt_state 读写本轮共享状态，但「启动 / 推进运行」由应用侧的人在界面上操作，MCP 不做（见 guides/mcp-server.md）。",
+    "要它自己去干活：mtnode_generate（图像 / 音乐 / 语音 / 视频）、mtnode_run（跑单个节点或整张图）、mtnode_tools（列 / 调当前画布的用户工具节点）、mtnode_session（新开一条会话跑任务）。前两个是异步作业：调用立刻回 jobId，结果用 {action:\"status\",jobId} 取（或 wait:true 就地等，上限 15 分钟）；作业只在内存里，应用重启后旧 id 一律 JOB_GONE。",
     "调用全部写进本机审计日志（数据目录 mcp-audit/），应用「扩展能力管理 → MCP 服务端」里可查看与吊销令牌。",
   ].join("\n");
 
@@ -933,8 +1201,18 @@ function createMcpHost(o) {
   function authorized(req) {
     const h = String(req.headers["authorization"] || "");
     const m = /^Bearer\s+(.+)$/i.exec(h);
-    if (!m) return false;
-    return tokenEquals(m[1]);
+    if (m && tokenEquals(m[1])) return true;
+    /* 令牌也可以放在 query 里（?token=…）：① SSE 那条 GET 一直这么用；
+       ② 自用回环 —— dsh 的 HTTP MCP 客户端只吃 url，塞不了自定义请求头，
+       服务端又只绑 127.0.0.1，于是「每次启动新令牌 + 本机回环」这一档够用。 */
+    try {
+      const u = new URL(String(req.url || "/"), "http://127.0.0.1");
+      const q = u.searchParams.get("token");
+      if (q && tokenEquals(q)) return true;
+    } catch {
+      /* URL 畸形：就当没带令牌 */
+    }
+    return false;
   }
 
   function sendJson(res, code, obj, extraHeaders) {
@@ -1134,6 +1412,14 @@ function createMcpHost(o) {
       sessionTools: SESSION_TOOLS.length,
       sessionStreams: sseClients.size,
       sessionBridge: sessionBridge ? sessionBridge.stats() : null,
+      /* 作业（mtnode_generate / mtnode_run）：只数内存里那几张，重启即清零 */
+      jobs: jobs.size,
+      jobsRunning: [...jobs.values()].filter((r) => r.status === "running").length,
+      media: !!media,
+      /* 自用回环：应用内 Agent 也能调这套接口（四项子集），受上面的总开关约束 */
+      selfLoop: !!(state && state.selfLoop !== false),
+      selfLoopActive: !!(applySelfLoop && state && state.enabled && state.selfLoop !== false && server),
+      selfLoopTools: SELF_LOOP_TOOLS.slice(),
       lastError,
     };
   }
@@ -1191,6 +1477,7 @@ function createMcpHost(o) {
         saveState();
         startedAt = Date.now();
         log("[mcp] 服务端已监听 http://127.0.0.1:" + port + "/mcp（token 见 " + statePath + "）");
+        syncSelfLoop();
         resolve(status());
       });
     });
@@ -1214,6 +1501,8 @@ function createMcpHost(o) {
       state.port = 0;
       saveState();
     }
+    /* 服务端停了，自用那条客户端也得撤：留着它只会让 agent 每次调用都连不上。 */
+    syncSelfLoop();
     if (!s) return Promise.resolve(status());
     return new Promise((resolve) => {
       try {
@@ -1234,6 +1523,39 @@ function createMcpHost(o) {
 
   function loadStateIfNeeded() {
     if (!state) loadState();
+  }
+
+  /**
+   * 把「现在该不该有那条自用客户端」通知给主进程（main.js 去写 dsh 的 MCP 列表）。
+   * 触发点只有三个：服务端起来了 / 停了 / 用户在面板上开了关了 —— 不做轮询。
+   */
+  function syncSelfLoop() {
+    if (!applySelfLoop) return;
+    const on = !!(state && state.enabled && state.selfLoop !== false && server);
+    try {
+      applySelfLoop(
+        on
+          ? {
+              enabled: true,
+              serverName: SELF_LOOP_NAME,
+              url: "http://127.0.0.1:" + port + "/mcp?token=" + encodeURIComponent((state && state.token) || ""),
+              tools: SELF_LOOP_TOOLS.slice(),
+            }
+          : { enabled: false, serverName: SELF_LOOP_NAME },
+      );
+    } catch (e) {
+      lastError = "自用回环注册失败：" + ((e && e.message) || e);
+      log("[mcp] " + lastError);
+    }
+  }
+
+  /** 面板开关：自用回环（写盘 + 立刻生效，不用重启引擎） */
+  function setSelfLoop(on) {
+    loadStateIfNeeded();
+    state.selfLoop = !!on;
+    saveState();
+    syncSelfLoop();
+    return { ok: true, selfLoop: !!state.selfLoop, running: !!server };
   }
 
   function resetToken() {
@@ -1320,10 +1642,22 @@ function createMcpHost(o) {
     stop,
     status,
     setEnabled,
+    setSelfLoop,
     resetToken,
     setClientId,
     setCapture,
     readAudit,
+    /** 面板「作业」列表（设置 → 扩展能力 → 服务端）：只读，不带结果正文。 */
+    listJobs: () =>
+      [...jobs.values()].reverse().map((r) => ({
+        jobId: r.id,
+        kind: r.kind,
+        tool: r.tool,
+        status: r.status,
+        startedAt: new Date(r.startedAt).toISOString(),
+        ms: (r.endedAt || Date.now()) - r.startedAt,
+        error: r.error,
+      })),
     readCapture: (limit) => capture.slice(-Math.max(1, Math.min(200, limit || 100))),
     settle,
     /** 渲染层推上来的会话事件（IPC mcp:stream）→ 观察者（SSE）。

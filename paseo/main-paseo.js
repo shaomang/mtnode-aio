@@ -1,4 +1,4 @@
-"use strict";
+﻿"use strict";
 /**
  * Paseo 手机接管 · 主进程宿主（应用插件 kind = paseo，id = paseo-remote）
  *
@@ -27,7 +27,7 @@
  *     标题 `Paseo Daemon`）—— 用户一不小心关掉它，后端就跟着死。现在改成宿主自己持有
  *     `paseo daemon run --home <自建 home>`（windowsHide + stdio pipe，**零新增可见控制台窗口**）：
  *     输出逐行进控制台日志；意外退出由宿主重启（最多 3 次）；**MTNode 退出即停**（进程随宿主走），
- *     控制台「停止后端」仍是显式出口；宿主首次需要它时会把旧的「带窗口」实例静默换掉。
+ *     控制台「停用后端」仍是显式出口；宿主首次需要它时会把旧的「带窗口」实例静默换掉。
  *     原版 Paseo Desktop（复用模式）不归我们管：它那份由它自己启停。
  *   · 复用模式的 daemon 不随 MTNode 退出（那是桌面端自己的进程）：宿主退出只关控制台窗。
  *   · 用户数据只落 %APPDATA%\pipeline-console\app-plugins\paseo-remote（config / 日志 / 自建后端）。
@@ -210,7 +210,11 @@ function defaultConfig() {
     installDir: "",
     /** 自建后端的 daemon home（与用户 ~/.paseo 隔离，避免抢 6767 端口与配对身份） */
     ownHome: "",
-    /** 远程连接总开关：默认关（配对完由用户打开） */
+    /** 是否已启用：**唯一**决定「起不起后端」的开关，默认关。
+     *  来历：过去只要 mode=own 就会开机静默起一份 daemon（用户没开过也跑，崩了还往主窗口报错）；
+     *  现在只有用户点「启用」（或安装窗装完那一次）才会写 true —— 见 setEnabled / bootResumeDaemon。 */
+    enabled: false,
+    /** 远程连接总开关：默认关（配对完由用户打开；启用时随启用一起打开） */
     remoteEnabled: false,
     /** 上一次配对二维码生成时间（UI 提示「刚生成 / 可能已过期」用，不做自动失效） */
     lastPairAt: 0,
@@ -1144,6 +1148,10 @@ async function statusForUi() {
       paseoMinVersion: bridgeInfo.PASEO_MIN_VERSION,
       relayEndpoint: RELAY_ENDPOINT,
     },
+    /* 启用状态 = 「后端起不起」的唯一开关（卡片按钮按它 + running 一起判）；
+       mode = 卡片据此决定要不要显示「启用 / 停用」（复用模式那份后端归 Paseo Desktop 管） */
+    mode: backend.mode,
+    enabled: isEnabled(),
     remote: {
       enabled: isRemoteEnabled(),
       watchers: Number(bridgeStats.watchers || 0),
@@ -1365,6 +1373,30 @@ function setRemoteEnabled(on) {
   const next = saveConfig({ remoteEnabled: !!on });
   appendConsole("[remote] 远程连接总开关 → " + (next.remoteEnabled ? "开" : "关"));
   return { ok: true, remoteEnabled: next.remoteEnabled };
+}
+/** 「已启用」标记的读取：**唯一**后端起不起的判据（默认关，见 defaultConfig 的 enabled） */
+function isEnabled() {
+  try {
+    return !!loadConfig().enabled;
+  } catch {
+    return false;
+  }
+}
+/**
+ * 写启用标记。口径（本轮共识）：**启用 = 起后端 + 打开远程连接**；**停用 = 关远程连接 + 停 daemon**。
+ * 只改标记、不碰进程 —— 起停由调用方（startDaemon / stopDaemon）负责，避免重入。
+ */
+function setEnabled(on) {
+  const want = !!on;
+  if (!want) {
+    /* 停用连带关总开关并收掉挂着的观察者（否则「已停用」的手机还能继续读会话） */
+    try {
+      disconnectAllRemote();
+    } catch {}
+  }
+  const next = saveConfig({ enabled: want, remoteEnabled: want });
+  appendConsole("[enable] 启用状态 → " + (next.enabled ? "已启用（远程连接随之打开）" : "未启用（远程连接随之关闭）"));
+  return next;
 }
 /** 断开所有远程设备 = 关总开关 + 收掉现在挂着的 SSE 观察者（配对凭据不动，那要「重置配对凭据」） */
 function disconnectAllRemote() {
@@ -1849,6 +1881,9 @@ async function installBackend(opts) {
   }
 
   /* ── ⑧ 收尾 ───────────────────────────────────────────────────────────── */
+  /* 装完这一次就把状态置为「已启用」（本轮共识）：写启用标记 + 打开远程连接总开关，
+     之后开机按「已启用」恢复这份后端；想彻底关掉在插件卡片上点「停用」。 */
+  setEnabled(true);
   const finalCfg = loadConfig();
   const remoteOn = isRemoteEnabled();
   emitStep({ id: "done", status: "run" });
@@ -1856,8 +1891,8 @@ async function installBackend(opts) {
     id: "done",
     status: "ok",
     message: remoteOn
-      ? "远程接管总开关是开着的（去控制台扫码即可接管）。"
-      : "远程接管总开关仍关着（不自动替你打开对外接管）：去控制台打开它，手机才能接管会话。",
+      ? "后端已启用（远程接管总开关同时打开）：去控制台扫码即可接管。"
+      : "后端已启用，但远程接管总开关还是关着的：去控制台打开它，手机才能接管会话。",
   });
   broadcast("paseoRemote:progress", { phase: "install", message: "安装完成" });
   appendConsole("[install] 收尾：mode=" + finalCfg.mode + " dir=" + (finalCfg.installDir || "") + " remote=" + (remoteOn ? "on" : "off"));
@@ -1965,7 +2000,7 @@ function switchToReuse() {
  *   · `windowsHide: true` + `stdio: pipe`：实测**零新增可见控制台窗口**（对照组：`daemon start` 一次新增 2 只）；
  *   · `daemon run` 与 `daemon start` 同一份 supervisor 实现（只是前台），因此 listen / provider / 配对
  *     这些语义一条都没变；输出我们接过来逐行写进控制台日志（原来那份只在 daemon.log 里）；
- *   · 它是 MTNode 的子进程 → **MTNode 退出即停**（控制台「停止后端」也照旧能停，走同一段优雅停止）；
+ *   · 它是 MTNode 的子进程 → **MTNode 退出即停**（控制台「停用后端」也照旧能停，走同一段优雅停止）；
  *   · 意外退出由宿主重启，最多 RESTART_MAX 次（官方 managed supervisor 的崩溃重启由此补齐）。
  * 原版 Paseo Desktop（复用模式）一概不碰：它那份由它自己启停。
  */
@@ -2111,10 +2146,12 @@ function scheduleOwnRestart() {
     if (!r || r.ok) return;
     appendConsole("[daemon] 自动重启没成功：" + String(r.detail || r.error || ""));
     if (ownDaemon.restarts >= RESTART_MAX) {
-      reportErr("daemon_exited", "Paseo 自建后端重启失败（已达上限 " + RESTART_MAX + " 次）：" + String(r.detail || r.error || ""), {
+      /* 报错卡只给人话 + 指路：日志尾巴留在控制台（过去把 daemon 的 JSON 日志糊进 message，
+         用户看到的就是一串 relay / level 字段，既看不懂也不知道该点哪） */
+      reportErr("daemon_exited", "Paseo 后端反复启动失败，已停止自动重启。点「打开控制台」可以看日志、确认后手动再启动一次。", {
         phase: "daemon",
       });
-      appendConsole("[daemon] 重启失败已达上限 " + RESTART_MAX + " 次 —— 停止自动重启，请到控制台点「启动后端」再试。");
+      appendConsole("[daemon] 重启失败已达上限 " + RESTART_MAX + " 次 —— 停止自动重启，请到控制台点「启用后端」再试。");
       return;
     }
     ownDaemon.restarts += 1;
@@ -2162,7 +2199,7 @@ async function startOwnDaemonSilently(opts) {
   ownDaemon.home = String(o.home || paseoHomeOf(cfg));
   ownDaemon.logs = [];
   ownDaemon.startedAt = Date.now();
-  /* 手动「启动后端」= 用户重新要它跑 → 清掉 stopping；自动重启那条路（o.restart）不清，
+  /* 手动「启用后端」= 用户重新要它跑 → 清掉 stopping；自动重启那条路（o.restart）不清，
      否则一次手动停掉之后，重启计时器就能把它又拉起来（stopping 闸门会被自己拆掉）。 */
   if (!o.restart) ownDaemon.stopping = false;
   appendConsole(
@@ -2207,12 +2244,13 @@ async function startOwnDaemonSilently(opts) {
     appendConsole("[daemon] 意外退出（code=" + code + (signal ? " signal=" + signal : "") + "，跑了 " + Math.round(ranMs / 1000) + "s）");
     if (tail) appendConsole("[daemon] 退出前最后几行：" + String(tail).replace(/\n/g, " ⏎ ").slice(-400));
     if (ownDaemon.restarts >= RESTART_MAX) {
+      /* 人话 + 指路；日志尾巴已经在上一行写进控制台了，不再往报错卡的 message 里糊 */
       reportErr(
         "daemon_exited",
-        "Paseo 自建后端意外退出，且重启已达上限（" + RESTART_MAX + " 次）：" + String(tail || "").slice(-200),
+        "Paseo 后端意外停止，自动重启已达上限（" + RESTART_MAX + " 次），已停止重启。点「打开控制台」可看日志，确认后手动再启动一次。",
         { phase: "daemon" },
       );
-      appendConsole("[daemon] 重启已达上限 " + RESTART_MAX + " 次 —— 停止自动重启，请到控制台点「启动后端」再试。");
+      appendConsole("[daemon] 重启已达上限 " + RESTART_MAX + " 次 —— 停止自动重启，请到控制台点「启用后端」再试。");
       return;
     }
     ownDaemon.restarts += 1;
@@ -2270,7 +2308,7 @@ async function stopForeignOwnDaemon(reason) {
   const listen = String((lock && lock.listen) || "");
   if (!listen && !pid) return { ok: true, none: true };
   appendConsole("[daemon] " + (reason || "换成静默方式") + "：先停掉旧的" + (pid ? "（pid=" + pid + "）" : "") + (listen ? " listen=" + listen : ""));
-  /* 与「停止后端」同一条正路：官方 CLI 停（它知道 pid 锁与生命周期 RPC） */
+  /* 与「停用后端」同一条正路：官方 CLI 停（它知道 pid 锁与生命周期 RPC） */
   const r = await spawnPaseoCli(loadConfig(), withHome(["daemon", "stop"], loadConfig()), { timeoutMs: 30000 });
   appendConsole("[daemon] daemon stop → code=" + r.code);
   const gone = await waitDaemonGone(home, listen, 8000);
@@ -2391,26 +2429,64 @@ async function ensureOwnDaemon(opts) {
   /* `hosted: true` = 起来这份是宿主静默托管的（调用方据此判断「要不要再走迁移」） */
   return Object.assign({}, r, { hosted: !!r.ok, migrated });
 }
-/** 只在插件注册时跑一次的存量迁移（旧「带窗口」实例 → 静默托管）；失败只记日志，绝不拦启动 */
-async function migrateOwnDaemonToSilent() {
+/**
+ * 开机口径（本轮共识：**默认不启用**）。
+ *   · 只有 config.enabled === true 才恢复后端（= 用户上次亲手启用过的那份）；
+ *   · 老配置（从来没写过 enabled 字段）→ 一次性静默迁移成「未启用」，并把还在跑的那份停掉
+ *     —— 旧版本只要 mode=own 就会自己起，升级后必须先安静下来（只记控制台日志，不弹提示）；
+ *   · 未启用时**完全不 spawn**，连「开机静默接管」都不做（过去那一段就是用户没开也会跑的根源）。
+ */
+async function bootResumeDaemon() {
   try {
+    const raw = exists(configPath()) ? readJson(configPath(), {}) || {} : null;
+    if (raw && !Object.prototype.hasOwnProperty.call(raw, "enabled")) {
+      /* 只补 enabled:false，**不动** remoteEnabled：老用户若自己开过远程总开关，
+         升级不该替他把那个开关也关掉（这里只负责「不再自己起后端」）。 */
+      saveConfig({ enabled: false });
+      appendConsole("[boot] 迁移：存量配置没有启用记录 → 视为未启用（默认不启动后端）");
+    }
+    if (!isEnabled()) {
+      let stopped = false;
+      if (ownDaemon.child || ownDaemon.restartTimer) {
+        await stopOwnDaemon({ quiet: true });
+        stopped = true;
+      }
+      const { home, lock } = ownDaemonLock();
+      if (home && lock && (Number(lock.pid) || 0) > 0) {
+        appendConsole("[boot] 未启用：停掉上一轮留下的自建后端（静默，不弹提示）");
+        await stopForeignOwnDaemon("默认不启用");
+        stopped = true;
+      }
+      if (stopped) appendConsole("[boot] 已按「未启用」处理：后端不再自行启动（要用请在插件卡片点「启用」）");
+      return { ok: true, skipped: "not_enabled", stopped };
+    }
     const cfg = loadConfig();
+    /* 复用模式那份后端由 Paseo Desktop 自己管，这里不起 */
     if (cfg.mode !== "own") return { ok: true, skipped: "not_own_mode" };
     if (!ownCliPath(cfg) && !resolveCli(cfg, { ownOnly: true }).cli) return { ok: true, skipped: "no_cli" };
     const r = await ensureOwnDaemon({});
-    if (!r.ok) appendConsole("[daemon] 开机静默接管没成功：" + String(r.detail || r.error || ""));
+    if (!r.ok) appendConsole("[daemon] 开机恢复（已启用）没成功：" + String(r.detail || r.error || ""));
     return r;
   } catch (e) {
-    appendConsole("[daemon] 开机静默接管异常：" + String((e && e.message) || e));
+    appendConsole("[boot] 开机恢复异常：" + String((e && e.message) || e));
     return { ok: false, error: String((e && e.message) || e) };
   }
 }
 
-/** 起后端（自建模式；复用模式由 Paseo Desktop 自己管，按钮不显示） */
+/**
+ * 起后端 = **启用**（本轮共识：控制台这里的启停与卡片上的启用 / 停用完全等价）。
+ * 成功后写启用标记：enabled=true 且远程连接随之打开 —— 这样下次启动（bootResumeDaemon）才会恢复它。
+ */
 async function startDaemon() {
   const cfg = loadConfig();
   const cli = resolveCli(cfg);
   if (!cli.cli) return { ok: false, error: "cli_missing" };
+  /* 复用模式：那份后端归 Paseo Desktop 自己管，我们不 spawn —— 启用 = 只把「允许远程接管」打开 */
+  if (cfg.mode !== "own") {
+    setEnabled(true);
+    appendConsole("[enable] 复用模式：后端由 Paseo Desktop 托管，这里只打开远程连接");
+    return { ok: true, listen: "", reused: true, enabled: true };
+  }
   busy = "start";
   const home = paseoHomeOf(cfg);
   /* 自建模式一律走「宿主持有 + 静默」这条路（存量旧实例在这里被换掉） */
@@ -2425,7 +2501,10 @@ async function startDaemon() {
       r = await ensureOwnDaemon({ home });
       busy = "";
       appendConsole("[daemon] 换端口后 → " + (r.ok ? "listen=" + String(r.listen || listen.listen || "") : "仍失败"));
-      if (r.ok) return { ok: true, listen: String(r.listen || listen.listen || ""), retriedPort: true };
+      if (r.ok) {
+        setEnabled(true);
+        return { ok: true, listen: String(r.listen || listen.listen || ""), retriedPort: true, enabled: true };
+      }
       reportErr("daemon_start_failed", "Paseo daemon 启动失败（换端口重试仍失败）：" + String(r.detail || "").slice(-300), { phase: "start" });
       return { ok: false, error: "daemon_start_failed", detail: String(r.detail || "").slice(-400) };
     }
@@ -2435,10 +2514,13 @@ async function startDaemon() {
     reportErr("daemon_start_failed", "Paseo daemon 启动失败：" + String(r.detail || r.error || "").slice(-300), { phase: "start" });
     return { ok: false, error: "daemon_start_failed", detail: String(r.detail || r.error || "").slice(-400) };
   }
-  return { ok: true, listen: String(r.listen || "") };
+  setEnabled(true);
+  return { ok: true, listen: String(r.listen || ""), enabled: true };
 }
 /**
- * 停后端。两条路：
+ * 停后端 = **停用**（与卡片那颗「停用」等价）：停 daemon + 关远程连接 + 清启用标记
+ * （清掉之后 MTNode 下次启动不会再自己拉起它，要用得再点一次「启用」）。
+ * 两条路：
  *   · 宿主持有中（本轮默认）→ 优雅停（SIGTERM，5 秒）→ 仍不死就按进程树强杀；
  *   · 不是我们持有的那份（复用模式、或旧方式留下的）→ 交回官方 CLI `daemon stop`，行为与过去一致。
  */
@@ -2446,18 +2528,33 @@ async function stopDaemon() {
   const cfg = loadConfig();
   const home = paseoHomeOf(cfg);
   const cli = resolveCli(cfg);
-  if (!ownDaemon.child && !cli.cli) return { ok: false, error: "cli_missing" };
+  /* 没有 CLI、也没有我们持有的进程：进程那头无事可做，但「停用」这个意图仍要落地
+     （否则「已启用」标记会一直挂着，下次启动又自己起一份） */
+  if (!ownDaemon.child && !cli.cli) {
+    setEnabled(false);
+    appendConsole("[daemon] 停用：没有可停的 CLI / 进程，只把启用标记清掉");
+    return { ok: true, hosted: false, enabled: false, noProcess: true };
+  }
   busy = "stop";
+  /* 复用模式：绝不替 Paseo Desktop 停它自己的 daemon（那会直接把用户桌面端弄断），只清标记 + 关远程 */
+  if (cfg.mode !== "own") {
+    busy = "";
+    setEnabled(false);
+    appendConsole("[enable] 复用模式：只关远程连接与启用标记，Paseo Desktop 那份后端不动");
+    return { ok: true, hosted: false, reused: true, enabled: false };
+  }
   if (ownDaemon.child) {
     const r = await stopOwnDaemon({});
     busy = "";
-    return { ok: !!r.ok, hosted: true, forced: !!r.forced };
+    setEnabled(false);
+    return { ok: !!r.ok, hosted: true, forced: !!r.forced, enabled: false };
   }
   const r = await spawnPaseoCli(cfg, withHome(["daemon", "stop"], cfg), { timeoutMs: 30000 });
   const gone = await waitDaemonGone(home, String((daemonLock(home) || {}).listen || ""), 5000);
   busy = "";
   appendConsole("[daemon] stop（外部实例）→ code=" + r.code + (gone ? "，已停" : "，仍在跑"));
-  return { ok: r.ok || gone, hosted: false };
+  setEnabled(false);
+  return { ok: r.ok || gone, hosted: false, enabled: false };
 }
 
 /* ------------------------------------------------------------------ */
@@ -2623,11 +2720,11 @@ function registerPaseoRemoteIpc(opts) {
   migrateLegacyData();
   appendConsole("[boot] 宿主注册（mode=" + loadConfig().mode + "）");
 
-  /* 开机静默接管（本轮共识）：自建模式上一轮多半留下了一份**旧方式起的** daemon（它自己 detached，
-     在 Windows 上带着一只可见终端窗口）。这里在后台把它换成宿主静默托管 —— 停在后台、不拦启动，
-     失败只记一行日志（用户到控制台点「启动后端」仍是同一条路）。复用模式直接跳过（那份不归我们管）。 */
+  /* 开机恢复（本轮共识：**默认不启用**）：只有 config.enabled === true 才会恢复后端；
+     未启用时这一轮完全不 spawn（老配置会在这里一次性迁移成未启用并停掉还在跑的那份）。
+     停在后台、不拦启动，失败只记一行日志（用户到控制台 / 卡片点「启用」仍是同一条路）。 */
   setTimeout(() => {
-    migrateOwnDaemonToSilent().catch((e) => appendConsole("[daemon] 开机静默接管异常：" + String((e && e.message) || e)));
+    bootResumeDaemon().catch((e) => appendConsole("[boot] 开机恢复异常：" + String((e && e.message) || e)));
   }, 1500);
 
   /* 安装窗登记（本轮共识：安装这件事只走那只窗 —— 卡片「安装 / 重装」与控制台里的「打开安装窗」
@@ -2772,6 +2869,7 @@ module.exports = {
   shutdownPaseoRemoteUiOnly,
   statusForUi,
   isRemoteEnabled,
+  isEnabled,
   sessionGate,
   setRemoteEnabled,
   disconnectAllRemote,
@@ -2831,8 +2929,11 @@ module.exports = {
     ensureOwnDaemon,
     startOwnDaemonSilently,
     stopOwnDaemon,
+    /* 本轮新增：「默认不启用」这套（启用标记 / 开机恢复；启停与启用等价） */
+    isEnabled,
+    setEnabled,
+    bootResumeDaemon,
     stopForeignOwnDaemon,
-    migrateOwnDaemonToSilent,
     ownDaemonHosted,
     processParentMap,
     ownDaemonState: () => ownDaemon,

@@ -1,5 +1,5 @@
 /**
- * Super-node UX: in-place canvas, drag in/out, subFolder
+ * Node-layer UX: in-place canvas, drag in/out, subFolder
  */
 import fs from "fs";
 
@@ -204,12 +204,12 @@ once(
     "}",
     "function promptSuperSubFolder(node) {",
     "  if (!node || node.kind !== \"super\") return;",
-    "  openOverlay(I18n.t(\"超级节点子文件夹\"));",
+    "  openOverlay(I18n.t(\"节点层子文件夹\"));",
     "  const body = $(\"#ovBody\");",
     "  const hint = document.createElement(\"div\");",
     "  hint.className = \"settings-hint\";",
     "  hint.textContent = I18n.t(",
-    "    \"设置后，此超级节点内部节点的默认相对路径会落在「工作目录 / 子文件夹」下。已有路径不会自动改写。\",",
+    "    \"设置后，此节点层内部节点的默认相对路径会落在「工作目录 / 子文件夹」下。已有路径不会自动改写。\",",
     "  );",
     "  body.appendChild(hint);",
     "  const lab = document.createElement(\"label\");",
@@ -520,7 +520,7 @@ once(
     "    const note = document.createElement(\"textarea\");",
     "    note.className = \"n-text super-note\";",
     "    note.spellcheck = false;",
-    "    note.placeholder = I18n.t(\"说明：此超级节点收纳的内容与用途…\");",
+    "    note.placeholder = I18n.t(\"说明：此节点层收纳的内容与用途…\");",
     "    note.value = node.note || \"\";",
     "    note.addEventListener(\"input\", () => {",
     "      node.note = note.value;",
@@ -637,7 +637,7 @@ once(
     "      const note = document.createElement(\"textarea\");",
     "      note.className = \"n-text super-note\";",
     "      note.spellcheck = false;",
-    "      note.placeholder = I18n.t(\"说明：此超级节点收纳的内容与用途…\");",
+    "      note.placeholder = I18n.t(\"说明：此节点层收纳的内容与用途…\");",
     "      note.value = node.note || \"\";",
     "      note.addEventListener(\"input\", () => {",
     "        node.note = note.value;",

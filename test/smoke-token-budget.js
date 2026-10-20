@@ -267,7 +267,7 @@ const MAIN = (async () => {
     ["输入端子 0 = 控制入", "tool / function「参数即端子」的数法"],
     ["整体替换", "传 inputs / outputs = 换端子表，会连带改连线"],
     ["parentTaskId", "task 计划与实现的归属"],
-    ["superConnect", "跨超级节点连线的唯一入口"],
+    ["superConnect", "跨节点层连线的唯一入口"],
     ["wait_file", "智能节点文件交接（不接 save、不作数据输入）"],
     ["batchMode", "批次语义（防 N² 的判据）"],
     ["mtnode-dev-architect", "长规范指向技能，不在工具描述里抄"],
@@ -1439,8 +1439,8 @@ const MAIN = (async () => {
     has(ASSIST_SRC2, "if (document.activeElement === sel) return;", "正在选的时候不回写（下拉不会自己关掉）");
     has(ASSIST_SRC2, 'sel.value = cp.enabled === false ? "off" : cp.tier;', "回显 = enabled:false → 关闭，否则显示档位");
     has(ASSIST_SRC2, "function applyAssistCompactTrigger(raw)", "自定义触发线的写回入口独立成函数（越界拒绝并提示）");
-    has(ASSIST_SRC2, "function syncCompactSideControls(tier)",
-      "自定义输入框的显隐由一个函数统管（三处入口同口径）");
+    has(ASSIST_SRC2, "function syncCompactSideControls(tier, enabled)",
+      "自定义档那一组数字的显隐由一个函数统管（档位 + 开关两个判据，三处入口同口径）");
     has(ASSIST_SRC2, "function syncCompactCustomInput(input)", "自定义输入框的回填独立成函数（正在输入时不打断）");
     has(ASSIST_SRC2, "customTriggerTokens: cur.customTriggerTokens,",
       "写回时保留自定义触发线（切档位不丢用户填过的数）");
@@ -1482,9 +1482,18 @@ const MAIN = (async () => {
         "const COMPACT_CUSTOM_MIN = 100000, COMPACT_CUSTOM_MAX = 500000;\n" +
           "const COMPACT_RETAIN_MIN = 4096, COMPACT_RETAIN_MAX = 131072;\n" +
           "const COMPACT_SUMMARY_MIN = 4096, COMPACT_SUMMARY_MAX = 256000;\n" +
+          "const COMPACT_TIER_SIZE_DEFAULTS = {\n" +
+          "  frugal: { retainTokens: 16384, summaryMaxTokens: 256000 },\n" +
+          "  mid: { retainTokens: 32768, summaryMaxTokens: 256000 },\n" +
+          "  late: { retainTokens: 65536, summaryMaxTokens: 256000 },\n" +
+          "  custom: { retainTokens: 16384, summaryMaxTokens: 256000 },\n" +
+          "};\n" +
           grabFunction(SHARED_SRC, "compactLimitOf", "renderer/app-dsh-compact.js") +
           grabFunction(SHARED_SRC, "compactPolicyOf", "renderer/app-dsh-compact.js") +
-          "\nthis.p = compactPolicyOf;",
+          grabFunction(SHARED_SRC, "compactTierSizeDefault", "renderer/app-dsh-compact.js") +
+          grabFunction(SHARED_SRC, "compactRetainEffectiveOf", "renderer/app-dsh-compact.js") +
+          grabFunction(SHARED_SRC, "compactSummaryEffectiveOf", "renderer/app-dsh-compact.js") +
+          "\nthis.p = compactPolicyOf; this.r = compactRetainEffectiveOf; this.s = compactSummaryEffectiveOf;",
         sandbox,
       );
       const p = sandbox.p;
@@ -1503,6 +1512,15 @@ const MAIN = (async () => {
         "越界的自定义触发线回落 100k（界面不显示脏值）");
       ok(eq(p({ dsh: { compact: { tier: "early" } } }).tier, "mid"),
         "已下线的早档旧值在界面侧也归一到「中」（与策略模块同口径）");
+      /* 生效值只在自定义档认覆盖值（本次共识）：中档残留 65,536 不生效，界面 / 手动压缩都按 32,768 */
+      ok(eq(sandbox.r({ dsh: { compact: { tier: "mid", retainTokens: 65536 } } }), { tokens: 32768, custom: false }),
+        "中档：残留的保留原文档值不生效，生效值 = 档位默认 32,768");
+      ok(eq(sandbox.s({ dsh: { compact: { tier: "mid", summaryMaxTokens: 8192 } } }), { tokens: 256000, custom: false }),
+        "中档：残留的摘要上限档值同样不生效（= 256,000）");
+      ok(eq(sandbox.r({ dsh: { compact: { tier: "custom", retainTokens: 65536 } } }), { tokens: 65536, custom: true }),
+        "自定义档：保留原文用用户填的 65,536");
+      ok(eq(sandbox.s({ dsh: { compact: { tier: "custom", summaryMaxTokens: 8192 } } }), { tokens: 8192, custom: true }),
+        "自定义档：摘要上限用用户填的 8,192");
       /* 设置面板：上下文压缩整组已按要求从设置移除（档位只在会话侧两处） */
       const settingsSrc = readN("renderer/app-settings.js");
       ok(settingsSrc.indexOf("assistCompactCustomSet") < 0 &&
@@ -1543,6 +1561,8 @@ const MAIN = (async () => {
     const IDX2 = readN("renderer/index.html");
     const BOOT2 = readN("renderer/app-boot.js");
     const I18N4 = readN("renderer/i18n.js");
+    const IDX_CSS2 = readN("renderer/css/assist.css");
+    const DSH_CSS2 = readN("renderer/css/dsh.css");
     has(POLICY2, "const RETAIN_TOKENS_MIN = 4096", "保留原文下界 4K（再低就把最近原文压没了）");
     has(POLICY2, "const RETAIN_TOKENS_MAX = 131072", "保留原文上界 128K");
     has(POLICY2, "const SUMMARY_MAX_TOKENS_MIN = 4096", "摘要上限下界 4K");
@@ -1556,10 +1576,10 @@ const MAIN = (async () => {
     has(POLICY2, "const officialThreshold = Math.floor(", "官方主力路由的保留量也夹到触发线之下（省钱档 100K）");
 
     const pol3 = require(path.join(__dirname, "..", "dsh-compact-policy.js"));
-    ok(eq(pol3.normalizeCompactPolicy({ retainTokens: 100, summaryMaxTokens: 900000 }),
+    ok(eq(pol3.normalizeCompactPolicy({ tier: "custom", retainTokens: 100, summaryMaxTokens: 900000 }),
       {
         enabled: true,
-        tier: "mid",
+        tier: "custom",
         customTriggerTokens: 100000,
         retainTokens: null,
         summaryMaxTokens: null,
@@ -1567,10 +1587,14 @@ const MAIN = (async () => {
         selfTargets: [],
       }),
       "越界 / 脏值一律归一成 null（= 跟随档位默认，老配置行为一字不变）");
-    const normSized = pol3.normalizeCompactPolicy({ retainTokens: 16384, summaryMaxTokens: 8192 });
-    ok(eq(normSized.retainTokens, 16384) && eq(normSized.summaryMaxTokens, 8192), "合法值原样读出");
+    const normSized = pol3.normalizeCompactPolicy({ tier: "custom", retainTokens: 16384, summaryMaxTokens: 8192 });
+    ok(eq(normSized.retainTokens, 16384) && eq(normSized.summaryMaxTokens, 8192),
+      "自定义档：合法值原样读出");
+    const normMidSized = pol3.normalizeCompactPolicy({ tier: "mid", retainTokens: 65536, summaryMaxTokens: 8192 });
+    ok(eq(normMidSized.retainTokens, null) && eq(normMidSized.summaryMaxTokens, null),
+      "非自定义档：配置里残留的两个值一律不认（= 按档位默认，消除「界面看不见、压缩却在用」的暗值）");
     const cfgSized = pol3.compactPolicyFromConfig({
-      dsh: { compact: { tier: "mid", retainTokens: 65536, summaryMaxTokens: 8192 } },
+      dsh: { compact: { tier: "custom", retainTokens: 65536, summaryMaxTokens: 8192 } },
       providers: [
         { type: "text_openai", baseUrl: "https://api.other.com/v1", route: "myroute", models: ["gpt-x"] },
       ],
@@ -1584,10 +1608,15 @@ const MAIN = (async () => {
     ok(selfSized.length === 1 && selfSized[0].model === "gpt-x" &&
       selfSized[0].retainTokens === 19046 && selfSized[0].maxTokens === 8192,
       "自配路由也盖：保留量夹到消息预算的 20%（95,232 × 0.2 = 19,046），摘要上限取 8,192");
-    const huge = pol3.compactConfigOf(pol3.normalizeCompactPolicy({ tier: "frugal", retainTokens: 131072 }))
+    const huge = pol3.compactConfigOf(pol3.normalizeCompactPolicy({ tier: "custom", retainTokens: 131072 }))
       .modelPolicies.filter((p) => p.provider === "deepseek-official");
     ok(huge.every((p) => p.retainTokens < 100128),
-      "省钱档触发线只有 100,128 → 填 128K 的保留量被夹到触发线之下（否则插件加载期就报非法）");
+      "自定义档填 128K 的保留量被夹到触发线之下（否则插件加载期就报非法）");
+    const frugalSized = pol3.compactConfigOf(
+      pol3.normalizeCompactPolicy({ tier: "frugal", retainTokens: 131072, summaryMaxTokens: 8192 }),
+    ).modelPolicies.filter((p) => p.provider === "deepseek-official");
+    ok(frugalSized.every((p) => p.retainTokens === 16384 && p.maxTokens === 256000),
+      "非自定义档（省钱）写进组合的是该档默认 16,384 / 256,000 —— 配置里残留的旧值不生效");
     const appliedSized = pol3.compactStateInCordis(
       pol3.applyCompactPolicy(read("dsh/gateway/cordis.yml"), cfgSized).text,
     );
@@ -1603,8 +1632,19 @@ const MAIN = (async () => {
     has(SHARED2, "const COMPACT_CHARS_PER_TOKEN = 2", "手动链 1 token ≈ 2 字符的换算只有一处");
 
     has(ASSIST3, "function applyAssistCompactLimit(kind, raw)", "写回入口 = applyAssistCompactLimit（越界拒绝并提示）");
-    has(ASSIST3, "retainTokens: tierChanged ? null : cur.retainTokens,",
-      "切档位 = 清空两个自定义体积值（回到该档默认）");
+    has(ASSIST3, "retainTokens: cur.retainTokens,",
+      "切档位不再清空两个体积值（非自定义档本就不认它们，留着给自定义档回填）");
+    has(SHARED2, 'cp.tier === "custom" && cp.retainTokens !== null',
+      "界面生效值只在自定义档认覆盖值（非自定义档一律按档位默认）");
+    has(SHARED2, 'cp.tier === "custom" && cp.summaryMaxTokens !== null',
+      "摘要上限同一条判据（自定义档才认覆盖值）");
+    has(ASSIST3, "function syncCompactSideControls(tier, enabled)",
+      "助手栏那一组数字的显隐判据 = 档位 + 开关（关闭档也不露出）");
+    has(ASSIST3, "row.hidden = !sizeShown;", "会话 ⚙ 菜单里两个体积行同样按判据收起");
+    has(IDX_CSS2, ".assist-ctrl-item[hidden]",
+      "助手栏 .assist-ctrl-item 的 display:flex 被 [hidden] 压回（否则 hidden 收不起来）");
+    has(DSH_CSS2, ".agent-menu-input-row[hidden]",
+      "会话 ⚙ 菜单 .agent-menu-option 的 display:flex 同样被 [hidden] 压回");
     has(ASSIST3, "const keepChars = Math.max(0, Number(info && info.keepChars) || 0);",
       "手动压缩也保留最近原文尾（keepChars）");
     has(ASSIST3, "if (!m || m._fold || m._compact) continue;",
@@ -1612,6 +1652,8 @@ const MAIN = (async () => {
     has(ASSIST3, "if (!count) return 0;", "一条都折不动时不加空摘要（返回 0，调用方提示）");
     has(IDX2, 'id="assistCompactRetainInput"', "助手栏有保留原文输入框");
     has(IDX2, 'id="assistCompactSummaryInput"', "助手栏有摘要上限输入框");
+    ok(/id="assistCompactRetainRow"[^>]*hidden/.test(IDX2) && /id="assistCompactSummaryRow"[^>]*hidden/.test(IDX2),
+      "两个数字框默认 hidden（只有选了自定义档才由 syncCompactSideControls 放开）");
     has(BOOT2, 'applyAssistCompactLimit("retain", compactRetainInput.value)', "app-boot 接线：保留原文");
     has(BOOT2, 'applyAssistCompactLimit("summary", compactSummaryInput.value)', "app-boot 接线：摘要上限");
     has(ASSIST3, '["retain", "保留原文", COMPACT_RETAIN_MIN, COMPACT_RETAIN_MAX, "compactRetain"]',

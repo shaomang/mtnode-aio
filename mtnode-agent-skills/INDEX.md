@@ -31,7 +31,7 @@
   - 文件：`mtnode/dev-architect/SKILL.md`
 - **mtnode-grill-me** — 拷问我：需求拷问：把任务映射成决策树，按轮问完整个「前沿」（前置已定的全部问题）；每轮必须用 ask_user_question 工具跳出 MTNode 询问窗（一次带上整个前沿，禁止把问题当聊天正文罗列），每题选项把推荐项放第一位标「（推荐）」；环境事实自己查绝不问用户；直到前沿为空且用户在询问窗里确认达成共识才动手。共识若含审批 / 交付 / 驳回回跳 / 并行 / 子图，产出的是长周期任务图（DAG）JSON。Use when the user says 拷问我 / grill me / 先问清再动手 / 需求不明确, or a dev-node 开发 run turns on 先拷问需求.
   - 文件：`mtnode/grill-me/SKILL.md`
-- **mtnode-mcp-server** — MTNode MCP 服务端（第三方接进来操作）：从 MTNode 外面（Claude Code / Cursor / 自研 Agent）经 MCP 操作本机 MTNode 的完整规范：服务端在哪、8 个工具各自怎么用、必须先读图拿 contentHash 再改、resources/prompts 三类能力、权限与审计口径、以及做不到的事（长任务人工环节 / 媒体生成仍要人在界面上点）。Use when connecting an external MCP client to MTNode, debugging third-party calls, or writing code that drives MTNode over MCP.
+- **mtnode-mcp-server** — MTNode MCP 服务端（第三方接进来操作）：从 MTNode 外面（Claude Code / Cursor / 自研 Agent）经 MCP 操作本机 MTNode 的完整规范：服务端在哪、13 个工具各自怎么用（含媒体生成 / 跑节点 / 用户工具 / 会话四条异步作业）、必须先读图拿 contentHash 再改、resources/prompts 三类能力、权限与审计口径、自用回环（应用内 Agent 也走同一套入口）、以及做不到的事。Use when connecting an external MCP client to MTNode, debugging third-party calls, generating media or running nodes over MCP, or writing code that drives MTNode over MCP.
   - 文件：`mtnode/mcp-server/SKILL.md`
 - **mtnode-media-gen-nodes** — 音乐/语音/视频生成节点：MTNode music_gen / yue_gen / breeze_gen / video_gen 节点：MiniMax Music 3、YuE2、Breeze TTS 2 语音、H3 后端、输出路径 outputPath、抽卡次数、种子 +1、全局仅 1 个音视频任务互斥、媒体输入端子走 file:/// URL。Use when wiring music_gen, yue_gen, breeze_gen, video_gen, media output paths, gacha rolls, or VRAM-related concurrency errors.
   - 文件：`mtnode/media-gen-nodes/SKILL.md`
@@ -42,6 +42,10 @@
 
 ## 音乐生成（MiniMax Music）
 
+- **breeze-script-format** — Breeze 台词规范：【内置·随应用发版，不需从工坊安装】把用户给的台词规范成 Breeze TTS 2 能正确念出来的正文：语气走 instruction（默认单次全局，情绪转折或超长才分段），发声事件用官方内联写法（中文 [笑]/[叹气]/[咳嗽]/[清嗓子]，英文 (laugh)/(sigh)/(cough)/(clears throat)），并做口播安全化（标点断句、数字单位、符号 emoji、舞台指示转合法事件）。交付「台词 / 语气 instruction / 分段说明」三个小节。用于 MTNode「Breeze 语音生成」节点（breeze_gen）端口 0 与端口 3。
+  - 文件：`music/breeze-script-format/SKILL.md`
+- **breeze-voice-design** — Breeze 音色设计：【内置·随应用发版，不需从工坊安装】把用户一句话的需求扩成 Breeze TTS 2 的音色提示词（instruction），两档：默认「简洁」= 按性别年龄 / 音色质感 / 语速节奏 / 情绪性格 / 场景用途五个槽位拼成一句自然语言；「详细」= 固定四段分行（声线类型 / 音色关键词 / 共鸣位置 / 参考质感）。语言跟随台词或用户输入，配 cfg_scale=4 与 seed=42。交付时只给提示词正文。用于 MTNode「Breeze 语音生成」节点（breeze_gen）端口 3 的指令，或 breezeblue.ai API 的 instruction 字段。
+  - 文件：`music/breeze-voice-design/SKILL.md`
 - **minimax-music-lyrics** — MiniMax Music 歌词：【内置·随应用发版，不需从工坊安装】按 MiniMax Music 官方规范写可演唱的歌词正文：结构标签独占一行（Intro / Verse / Pre-Chorus / Chorus / Bridge / Hook / Solo / Outro）、为唱而写的行长、副歌钩子与主歌对比、括号只用于要发声的衬词，不把舞台指示写进会唱出来的正文。MTNode「Minimax Music 3 / YuE2」节点的歌词端口用它，曲风与人声表演交给 minimax-music-prompt。
   - 文件：`music/minimax-music-lyrics/SKILL.md`
 - **minimax-music-prompt** — MiniMax Music 提示词：【内置·随应用发版，不需从工坊安装】把一句话想法写成 MiniMax Music 的风格提示词：一段英文散文，六句按 Style+Mood → Tempo/Groove → Instruments → Vocals → Structure → Production 排（写句子、不写逗号标签、不含唱词）。控制曲风、人声、乐器、段落对比与制作；含官方六步、最小改动迭代表与校验清单。MTNode「Minimax Music 3 / YuE2」节点的提示词端口用它。
@@ -51,3 +55,8 @@
 
 - **mtnode-plugin-dev** — MTNode 插件开发规范：MTNode 应用插件（catalog 窗口插件 / builtin / 本地后端插件）的开发规范：插件类型与边界、后端插件三层结构（主进程宿主 · 预加载桥 · 控制台 UI）、主进程与渲染层接线点、build.json 打包白名单、画布节点与 i18n / 指南 / 冒烟交付清单、报错总线与自我修复、数据目录纪律，含最小骨架与常见坑。新建或改造 MTNode 插件（顶栏「插件」对话框里那个东西）时按需加载。
   - 文件：`plugins/plugin-dev/SKILL.md`
+
+## 写作与润色
+
+- **humanizer-zh** — 去 AI 味与写作润色：润色中文文稿：删空话与套路，保留事实与作者声音
+  - 文件：`writing/humanizer-zh/SKILL.md`

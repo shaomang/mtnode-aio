@@ -48,8 +48,13 @@ const TOOL_NAMES = [
   "lt_state",
   "mtnode_assets",
   "mtnode_gui",
+  /* 自用回环四件（dsh/gateway/mcp-extra-plugin.mjs）：媒体生成 / 跑节点 / 用户工具 / 会话 */
+  "mtnode_generate",
+  "mtnode_run",
+  "mtnode_tools",
+  "mtnode_session",
 ];
-/** 六份参数表真源：五份由渲染层执行 + mtnode_gui（主进程执行，见 mcp-gui-agent.js）。 */
+/** 七份参数表真源：五份由渲染层执行 + mtnode_gui（主进程执行）+ mcp-extra 四件（回环）。 */
 const PLUGIN_FILES = [
   "canvas-plugin.mjs",
   "db-plugin.mjs",
@@ -57,6 +62,7 @@ const PLUGIN_FILES = [
   "longtask-plugin.mjs",
   "assets-plugin.mjs",
   "gui-plugin.mjs",
+  "mcp-extra-plugin.mjs",
 ];
 /** gui 族的执行器在主进程（只有它拿得到 BrowserWindow / webContents）。 */
 const LOCAL_TOOLS = ["mtnode_gui"];
@@ -123,6 +129,23 @@ console.log("[2] 接线：契约 family ↔ TOOL_OPS ↔ 渲染层 op 分派");
   for (const op of ["get", "edit", "app", "vision", "db", "facts", "asset", "lt", "canvasList", "skillList", "skillBody"]) {
     ok(new RegExp('case "' + op + '"').test(bridge), "渲染层认得 op：" + op);
   }
+  /* 自用回环四件：帧分派 + 执行体加载（renderer/mcp-extra.js）+ 生成后建节点 */
+  for (const op of ["run", "tool", "sessionTask", "mediaNode"]) {
+    ok(new RegExp('case "' + op + '"').test(bridge), "渲染层认得回环 op：" + op);
+  }
+  ok(/window\.MTNodeMcpExtra/.test(bridge), "回环帧转给 window.MTNodeMcpExtra（renderer/mcp-extra.js）");
+  const extra = read("renderer/mcp-extra.js");
+  for (const fn of ["run", "tools", "sessionTask", "mediaNode"]) {
+    ok(new RegExp(fn + ":\\s*" + fn).test(extra), "mcp-extra 导出 " + fn);
+  }
+  ok(/playControlNode\(/.test(extra) && /playNode\(/.test(extra), "跑节点复用 playNode / playControlNode");
+  ok(/executeAgentToolCall\(/.test(extra), "用户工具复用 executeAgentToolCall");
+  ok(/agentSessionSend\(/.test(extra) && /deleteAgentSessionCore\(/.test(extra), "会话复用 agentSessionSend（用完即弃）");
+  ok(/<script src="mcp-extra\.js"><\/script>/.test(read("renderer/index.html")), "index.html 加载 mcp-extra.js");
+  ok(/BASE_HASH_REQUIRED/.test(extra), "回环写操作同样要 baseHash（单节点跑 / 建节点）");
+  ok(/mcp-media-agent\.js/.test(read("build.json")), "mcp-media-agent.js 在 build.json 白名单里");
+  ok(/media: mediaAgent\(\)/.test(read("main.js")), "main.js 把媒体执行体注入 MCP 服务端");
+  ok(/selfLoop: \(cfg\) => applySelfLoop\(cfg\)/.test(read("main.js")), "main.js 注入自用回环注册器");
   ok(/handleCanvasEvent\(/.test(bridge), "画布族复用 handleCanvasEvent（不另写执行器）");
   ok(/handleDbToolEvent\(/.test(bridge), "数据库族复用 handleDbToolEvent");
   ok(/handleAiFactsToolEvent\(/.test(bridge), "事实库族复用 handleAiFactsToolEvent");
@@ -381,7 +404,7 @@ console.log("[4] 服务端本体：起停 / 回环 / 令牌落点");
     /* ── [10] 并发与版本闸 ────────────────────────────────────────────── */
     console.log("[10] 写排队与版本闸");
     const srv = read("mcp-server.js");
-    ok(/writeQueues/.test(srv) && /if \(op\.write\)/.test(srv), "服务端按会话给写操作排队");
+    ok(/writeQueues/.test(srv) && /if \(op\.write && !op\.job\)/.test(srv), "服务端按会话给写操作排队（作业类例外）");
     ok(/串行化/.test(srv), "排队意图写在注释里（可复核口径）");
     ok(/baseHash/.test(srv) && /ROUTE_KEYS/.test(srv), "baseHash 是 MCP 侧路由参数（不下发插件处理函数）");
     ok(/baseHash/.test(read("renderer/mcp-bridge.js")) && /版本不一致/.test(read("renderer/mcp-bridge.js")), "渲染层在写之前比内容哈希");

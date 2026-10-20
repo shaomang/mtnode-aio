@@ -444,6 +444,7 @@ let MERGED_FAILED = false;
   let dialogs = 0;
   const events = [];
   const handlers = {};
+  const shellOpened = []; // 商店版「打开 Microsoft Store」实际下发的深链
 
   const fakeElectron = {
     app: {
@@ -457,6 +458,13 @@ let MERGED_FAILED = false;
       showMessageBox: async () => {
         dialogs++;
         return { response: 1 };
+      },
+    },
+    /* 商店深链：pdp 深链默认失败（场景可置 FAKE.pdpOk 放行），用来验「退回商店首页」 */
+    shell: {
+      openExternal: async (url) => {
+        shellOpened.push(url);
+        if (/[?&]PFN=/i.test(url) && !(FAKE && FAKE.pdpOk)) throw new Error("no store app");
       },
     },
   };
@@ -606,8 +614,8 @@ let MERGED_FAILED = false;
         global.setTimeout = t0;
         global.setInterval = i0;
       }
-      ok(timers === 0, "startBackgroundCheck 在商店包下不注册任何 setTimeout/setInterval");
-      ok(updaterLoaded === false, "商店包下不 require electron-updater（连更新源都没设）");
+      ok(timers === 2, "startBackgroundCheck 在商店包下只注册「只读版本探测」的两个定时器（启动后一次 + 每 6 小时）");
+      ok(updaterLoaded === false, "商店包下不 require electron-updater（不设更新源、不走自更新链）");
     }
 
     /* ── [6] 渲染层：隐藏入口 + 明示走商店 ─────────────────────────────── */
@@ -639,6 +647,83 @@ let MERGED_FAILED = false;
       ok(inBuild, "updater.js 仍在 build.json files 白名单内（打包后不会 Cannot find module）");
     }
 
+    /* ── [8] 商店包：只读版本探测（本轮需求）───────────────────────────── */
+    console.log("[8] 商店包只读版本探测：latest.yml 版本号 → latestVersion / storeUpdateAvailable");
+    {
+      const settingsSrc = fs.readFileSync(path.join(ROOT, "renderer", "app-settings.js"), "utf8");
+      const cssSrc = fs.readFileSync(path.join(ROOT, "renderer", "css", "layout.css"), "utf8");
+      const baseCssSrc = fs.readFileSync(path.join(ROOT, "renderer", "css", "base.css"), "utf8");
+      const preloadSrc = fs.readFileSync(path.join(ROOT, "preload.js"), "utf8");
+      const u = loadUpdater({ exe: STORE_EXE });
+      u.registerUpdateIpc(() => fakeWin);
+      u.__testResetState();
+
+      /* 纯函数件：版本比较与 latest.yml 解析 */
+      ok(u.isNewerVersion("1.1.29", "1.1.28") === true, "isNewerVersion：线上更高 → true");
+      ok(u.isNewerVersion("1.1.28", "1.1.28") === false, "isNewerVersion：同版本 → false");
+      ok(u.isNewerVersion("1.1.27", "1.1.28") === false, "isNewerVersion：线上更旧 → false");
+      ok(u.isNewerVersion("", "1.1.28") === false, "isNewerVersion：拿不到版本号绝不误报");
+      ok(u.parseLatestYmlVersion("version: 1.1.29\nfiles:\n  - url: x.exe\n") === "1.1.29", "latest.yml 解析出版本号");
+      /* 线上有新版本：只读一次 latest.yml，置 latestVersion 与 storeUpdateAvailable */
+      let probedUrl = "";
+      u.__setStoreProbeFetch(async (url) => {
+        probedUrl = url;
+        return "version: 1.1.29\npath: MTNodeAIO-Setup-1.1.29.exe\n";
+      });
+      await u.probeStoreLatestVersion();
+      const st = u.statusPayload();
+      ok(/\/latest\.yml$/.test(probedUrl), "探测只读更新源的 latest.yml（" + probedUrl + "）");
+      ok(st.store === true && st.latestVersion === "1.1.29", "statusPayload.latestVersion = 线上版本号");
+      ok(st.storeUpdateAvailable === true, "storeUpdateAvailable = true（渲染层据此给右下角版本号蓝色高亮）");
+      ok(st.supported === false && st.available === false, "available / supported 仍为 false（商店包不出下载 / 安装链路）");
+      ok(updaterLoaded === false, "探测不 require electron-updater");
+      ok(dialogs === 0, "探测没有弹任何对话框（不下载 / 不安装）");
+      ok(events.some((e) => e.ch === "update:status"), "探测成功后补发 update:status（渲染层立即重画）");
+
+      /* 线上与当前同版本 / 探测失败：一律不高亮、不发 update:error */
+      u.__testResetState();
+      u.__setStoreProbeFetch(async () => "version: 1.1.28\n");
+      await u.probeStoreLatestVersion();
+      ok(u.statusPayload().storeUpdateAvailable === false, "线上与当前同版本 → 不高亮");
+      u.__testResetState();
+      const errBefore = events.filter((e) => e.ch === "update:error").length;
+      u.__setStoreProbeFetch(async () => { throw new Error("offline"); });
+      await u.probeStoreLatestVersion();
+      ok(u.statusPayload().storeUpdateAvailable === false, "探测失败 → 不高亮（静默）");
+      ok(
+        events.filter((e) => e.ch === "update:error").length === errBefore,
+        "探测失败不发 update:error（不弹「更新失败」）",
+      );
+      u.__setStoreProbeFetch(null);
+
+      /* 「打开 Microsoft Store」：pdp 深链失败退回商店首页，都失败才 ok:false */
+      shellOpened.length = 0;
+      FAKE = { exe: STORE_EXE, pdpOk: false };
+      const fallback = await handlers["update:openStore"]();
+      ok(fallback && fallback.ok === true, "pdp 深链失败时退回商店首页仍算成功");
+      ok(shellOpened.some((x) => /^ms-windows-store:\/\/pdp\/\?PFN=ms2308\.MTNodeAI_rs9nxh8g698pc$/.test(x)), "先试商店页深链（PFN 与 msix.config.json 一致）");
+      ok(shellOpened.some((x) => x === "ms-windows-store://home"), "失败后退回商店首页");
+      shellOpened.length = 0;
+      FAKE = { exe: STORE_EXE, pdpOk: true };
+      const direct = await handlers["update:openStore"]();
+      ok(direct && direct.ok === true && /PFN=/.test(direct.url || ""), "商店页可打开时直接进 MTNode 商店页");
+
+      /* 渲染层接线：右下角蓝色高亮 + 应用详情弹窗里的两支（按钮 / 商店提示） */
+      ok(/function paintAuthorUpdate\(\)/.test(bootSrc) && /classList\.toggle\("has-update"/.test(bootSrc), "app-boot.js 有 paintAuthorUpdate（右下角版本号高亮）");
+      ok(/st\.storeUpdateAvailable/.test(bootSrc), "高亮读 statusPayload.storeUpdateAvailable（商店版也亮）");
+      ok(/window\.runUpdateAction = runUpdateAction;/.test(bootSrc), "顶栏按钮的同一份实现挂到 window.runUpdateAction");
+      ok(/window\.authorUpdateState = \(\) => _updateState;/.test(bootSrc), "更新状态对外只读暴露（弹窗与高亮同一份）");
+      ok(/function authorUpdateBlockOf\(upd\)/.test(settingsSrc), "app-settings.js 有版本号下方的更新区");
+      ok(settingsSrc.includes("updateOpenStore") && settingsSrc.includes("打开 Microsoft Store"), "商店版给「打开 Microsoft Store」（走主进程 update:openStore）");
+      ok(settingsSrc.includes("因为商店审核，新版本上架最多可能延后 3 天"), "商店版明示「审核可能延后最多 3 天」");
+      ok(settingsSrc.includes("window.runUpdateAction"), "OSS 版按钮走与顶栏同一份 runUpdateAction");
+      ok(/\.author\.has-update \{/.test(cssSrc), "layout.css 有 .author.has-update 蓝色高亮");
+      ok(/--blue: #/.test(baseCssSrc), "base.css 三套主题都有 --blue");
+      ok(/updateOpenStore: \(\) => ipcRenderer\.invoke\('update:openStore'\)/.test(preloadSrc), "preload 暴露 updateOpenStore");
+      const cssUsesBlue = /\.author\.has-update \{[\s\S]{0,120}?var\(--blue\)/.test(cssSrc);
+      ok(cssUsesBlue, "高亮用的是 --blue（文字与边框转蓝）");
+    }
+
     console.log("\n" + (fails === 0 ? "全部通过" : "失败 " + fails + " 项") + "（" + checks + " 项断言）");
   })();
 
@@ -649,6 +734,10 @@ let MERGED_FAILED = false;
   if (fails) console.log("  ── 已并入块 smoke-update-msix.js：" + fails + " / " + checks + " 项失败");
 })();
 
-/* 收尾：正文与并入块任一失败都算这只红；退出码只在全部跑完之后才定 */
-if (MERGED_FAILED) console.log("\n✗ 本文件有失败项（含已并入块）\n");
-process.exit(MERGED_FAILED ? 1 : 0);
+/* 收尾：正文与并入块任一失败都算这只红；退出码只在全部跑完之后才定。
+   ⚠ 两个并入块都是 async IIFE（里面有 await 链），同步 `process.exit` 会在它们跑起来之前
+   就把进程掐掉 —— 那会让所有异步断言静默不执行、文件却回 0。挪到下一个 tick 再退出。 */
+setTimeout(() => {
+  if (MERGED_FAILED) console.log("\n✗ 本文件有失败项（含已并入块）\n");
+  process.exit(MERGED_FAILED ? 1 : 0);
+}, 0);

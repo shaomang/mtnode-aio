@@ -2,8 +2,8 @@
 /* ============ 顶栏「工具库」：跨画布保存 / 插入 / 管理 ============
  * 「工具库」按钮＝打开本对话框：只列本机已保存的工具包 / 函数包（保存 / 插入 / 改名 /
  * 删除 / 随时可调用开关）。工具节点与函数节点的**创建**入口不在这里，和普通节点一样在
- * 画布右键菜单的「工具」一级菜单下（app.js · canvasCreateMenuGroups）。
- * 工具节点（规范形态＝超级节点变体 super + tool:true，判定唯一真源 isToolNode()；
+ * 画布右键菜单的「其他节点」二级菜单下（app.js · canvasCreateMenuGroups）。
+ * 工具节点（规范形态＝节点层变体 super + tool:true，判定唯一真源 isToolNode()；
  * 旧存档 / 旧工具包里的普通 kind "tool" 在加载与插入时经 migrateToolNodeToSuperForm()
  * 一次性原地转成该变体）可保存为「完整工具包」：工具定义（名称 / 描述 / 入出参数）+
  * 内部图 JSON 快照（graph = { rootId, nodes, wires }），经主进程 tools-store.js 落盘
@@ -275,7 +275,7 @@ async function insertToolToCanvas(pkg) {
 /* ── 顶栏「工具库」按钮 ─────────────────────────────────────────────
  * 顶栏入口只做一件事：打开工具库对话框（本机已保存的工具 / 函数清单 + 保存 / 插入 /
  * 改名 / 删除）。「新建工具节点 / 新建函数节点」不在这里 —— 它们和普通节点一样，
- * 从画布空白处右键菜单的「工具」一级菜单创建（app.js · canvasCreateMenuGroups）。
+ * 从画布空白处右键菜单的「其他节点」二级菜单创建（app.js · canvasCreateMenuGroups）。
  * ─────────────────────────────────────────────────────────────────── */
 
 /* ── 工具库对话框 ── */
@@ -424,7 +424,7 @@ function toolsLibRow(tool, host) {
     (isFn ? "#c792ea" : "var(--orange2)");
   badge.title = isFn
     ? I18n.t("函数节点包（JS 计算 · 单节点）")
-    : I18n.t("工具节点包（超级节点变体 · 带内部子图）");
+    : I18n.t("工具节点包（节点层变体 · 带内部子图）");
   const nmTxt = document.createElement("span");
   nmTxt.textContent = tool.name || (isFn ? I18n.t("（未命名函数）") : I18n.t("（未命名工具）"));
   nmTxt.style.cssText =

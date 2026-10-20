@@ -177,9 +177,9 @@
       <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.4" y="3.2" width="7.2" height="5.6" rx="1" fill="none" stroke="currentColor" stroke-width="1.25" stroke-dasharray="2 1.4"/><rect x="6.4" y="7" width="7.2" height="5.6" rx="1" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>
       <span class="btn-ico-txt" data-i18n="组">组</span>
     </button>
-    <button id="btnWrapSuper" class="corner mini btn-ico" aria-label="超节点">
+    <button id="btnWrapSuper" class="corner mini btn-ico" aria-label="节点层">
       <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.2" y="2.2" width="11.6" height="11.6" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.25"/><rect x="4.2" y="4.2" width="7.6" height="7.6" rx="1" fill="none" stroke="currentColor" stroke-width="1.15" opacity=".85"/><path d="M5.6 8h4.8M8 5.6v4.8" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
-      <span class="btn-ico-txt" data-i18n="超节点">超节点</span>
+      <span class="btn-ico-txt" data-i18n="节点层">节点层</span>
     </button>
     <button id="btnAutoLayout" class="corner mini btn-ico" aria-label="排版">
       <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.4" y="2.4" width="4.4" height="4.4" rx=".8" fill="none" stroke="currentColor" stroke-width="1.25"/><rect x="9.2" y="2.4" width="4.4" height="4.4" rx=".8" fill="none" stroke="currentColor" stroke-width="1.25"/><rect x="2.4" y="9.2" width="4.4" height="4.4" rx=".8" fill="none" stroke="currentColor" stroke-width="1.25"/><rect x="9.2" y="9.2" width="4.4" height="4.4" rx=".8" fill="none" stroke="currentColor" stroke-width="1.25"/></svg>
@@ -254,7 +254,7 @@
       <button type="button" class="side-tab" id="sideTabFiles" role="tab" data-i18n="文件">文件</button>
     </div>
     <div class="sidebar-search">
-      <input id="sideFilter" type="text" data-i18n-placeholder="筛选节点、绘图或超级节点…" placeholder="筛选节点、绘图或超级节点…">
+      <input id="sideFilter" type="text" data-i18n-placeholder="筛选节点、绘图或节点层…" placeholder="筛选节点、绘图或节点层…">
     </div>
     <div class="sidebar-tree" id="sideTree"></div>
     <div class="side-files" id="sideFiles">
@@ -283,7 +283,7 @@
         <!-- 画布面包屑（#taskCrumb）：本轮需求把它从上面那一行 tabs 工具条（.fn-toolbar）
              搬进画布，挂成画布内容区左上角的悬浮层（.task-crumb，绝对定位 + 半透明底）。
              搬走的理由：它和画布标签挤在同一行，被压到 min(38%,380px)，层级一多就窄成一团。
-             内容与显隐逻辑不变，仍由 app.js 的 renderTaskCrumb 画（只在进入任务 / 超级节点
+             内容与显隐逻辑不变，仍由 app.js 的 renderTaskCrumb 画（只在进入任务 / 节点层
              时才出现）；容器本身 pointer-events:none，只有条目与「← 返回」能点，画布拖拽不受影响。 -->
         <div id="taskCrumb" class="task-crumb" hidden></div>
         <div id="stage" class="fn-stage">
@@ -542,19 +542,20 @@
       <label class="assist-ctrl-item"><span data-i18n="上下文压缩">上下文压缩</span>
         <select id="assistCompactSel" data-i18n-title="上下文压缩时机：接近上限时把较早的对话收成摘要，保留最近一段原文；「关闭」= 不自动压缩（仍保留额度报满时的自动恢复）" title="上下文压缩时机：接近上限时把较早的对话收成摘要，保留最近一段原文；「关闭」= 不自动压缩（仍保留额度报满时的自动恢复）"></select>
       </label>
-      <!-- 自定义档的触发线（本次需求）：只选了「自定义」档才露出（app-assist.js 的
-           syncCompactSideControls 切换显隐，值由 syncCompactCustomInput 回填）。
+      <!-- 自定义档的触发线（本次需求）：只选了「开着 + 自定义」才露出（app-assist.js 的
+           syncCompactSideControls 切换 hidden + disabled，值由 syncCompactCustomInput 回填）。
            单位 token，界内 100k – 500k，越界由 applyAssistCompactTrigger 拒绝并提示。 -->
       <label class="assist-ctrl-item" id="assistCompactCustom" hidden><span data-i18n="自定义触发线">自定义触发线</span>
         <input id="assistCompactCustomInput" type="number" min="100000" max="500000" step="1000" data-i18n-title="（单位：token，可填 100k – 500k；只对大窗口路由生效）" title="（单位：token，可填 100k – 500k；只对大窗口路由生效）">
       </label>
       <!-- 压缩后的大小（本次需求）：保留的最近原文 / 摘要输出上限（单位 token）。留空 = 跟随
            档位默认（占位符由 app-assist.js 的 syncCompactLimitInputs 写成当前档位默认值），
-           越界由 applyAssistCompactLimit 拒绝并提示。 -->
-      <label class="assist-ctrl-item"><span data-i18n="保留原文">保留原文</span>
+           越界由 applyAssistCompactLimit 拒绝并提示。**与自定义触发线同一组**：只有「开着 +
+           自定义」档才露出（app-assist.js 的 syncCompactSideControls 统管 hidden + disabled）。 -->
+      <label class="assist-ctrl-item" id="assistCompactRetainRow" hidden><span data-i18n="保留原文">保留原文</span>
         <input id="assistCompactRetainInput" type="number" min="4096" max="131072" step="1024" data-i18n-title="（单位：token；留空 = 跟随档位默认；超过触发线时按触发线夹取）" title="（单位：token；留空 = 跟随档位默认；超过触发线时按触发线夹取）">
       </label>
-      <label class="assist-ctrl-item"><span data-i18n="摘要上限">摘要上限</span>
+      <label class="assist-ctrl-item" id="assistCompactSummaryRow" hidden><span data-i18n="摘要上限">摘要上限</span>
         <input id="assistCompactSummaryInput" type="number" min="4096" max="256000" step="1024" data-i18n-title="（单位：token；留空 = 跟随档位默认；摘要真被截断时压缩会报错）" title="（单位：token；留空 = 跟随档位默认；摘要真被截断时压缩会报错）">
       </label>
     </div>
@@ -951,8 +952,8 @@
      故必须排在 app-longtask.js 之后；app-longtask.js 的 ltOutputPublish 按全局判空调用它，
      模块缺席时静默跳过（产出回流不因此断链）。 -->
 <script src="app-longtask-artifacts.js"></script>
-<!-- 长任务的「超级节点壳 + 生成工作流预置」（自包含新模块，挂 window.LTSHELL）：
-     每个环节的产出 / 产物落进它自己的超级节点子壳（父壳一颗 / 一条任务，懒建 · 删了不偷偷重长），
+<!-- 长任务的「节点层壳 + 生成工作流预置」（自包含新模块，挂 window.LTSHELL）：
+     每个环节的产出 / 产物落进它自己的节点层子壳（父壳一颗 / 一条任务，懒建 · 删了不偷偷重长），
      涉及内容生成时在子壳里预置生成节点 + 控制节点，一律不自动运行（由用户点 ▶ 执行）。
      必须排在 app-longtask.js 与 app-longtask-artifacts.js 之后（用到它们的登记层与 makeNode /
      superChildrenOf），两份模块都按全局判空调用它，模块缺席时产出回落主画布层。 -->
@@ -1073,6 +1074,12 @@
      处理函数（调用期按 typeof 取），所以必须排在它们之后。真正「哪个 MCP 连接能做什么」
      由主进程 mcp-server.js 决定（见 docs/mcp-server.md）。 -->
 <script src="mcp-bridge.js"></script>
+<!-- MCP 自用回环的渲染层执行体（renderer/mcp-extra.js）：跑节点 / 跑整图 / 用户工具节点 /
+      外部会话 / 生成后建节点。挂在 window.MTNodeMcpExtra，帧由 mcp-bridge.js 的 run / tool /
+      sessionTask / mediaNode 四支转来；落地复用 playNode / playControlNode /
+      executeAgentToolCall / agentSessionSend / makeNode —— 与用户在界面上点同一条路。
+      排在 mcp-bridge.js 之后（它是调用方）、既有执行器之后（调用期按 typeof 取）。 -->
+<script src="mcp-extra.js"></script>
 <!-- 会话桥（Paseo 远程接管 MTNode 会话的渲染层那一半）：renderer/app-session-bridge.js。
      ① 帧执行：sessionCreate / sessionSend / sessionSteer / sessionStop / sessionApproval /
         sessionModels —— 落地一律复用既有函数（agentSessionSend / agentSteerNow /

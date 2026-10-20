@@ -547,6 +547,11 @@ vm.runInContext(
     fnBody(NODES, "breezeModeOf"),
     fnBody(NODES, "breezeFormatOf"),
     fnBody(NODES, "breezeCfgScaleOf"),
+    fnBody(NODES, "breezeModeResolvedOf"),
+    fnBody(NODES, "breezeCfgLockedOf"),
+    fnBody(NODES, "breezeCfgScaleForRun"),
+    fnBody(NODES, "breezeRefHintOf"),
+    fnBody(NODES, "breezeCfgSummaryOf"),
     fnBody(NODES, "breezeSeedOf"),
     fnBody(NODES, "breezeModeLabel"),
     fnBody(NODES, "breezeGenParamSummaryText"),
@@ -850,7 +855,7 @@ console.log("\n[5] 跳窗真跑：开窗 → 逐控件触发 → 关窗（假 DO
   EQ(EV('nodeSettingsFormKey({kind:"super",tool:true})'), "tool", "super + tool:true → tool 表单（不是 super）");
   EQ(EV('nodeSettingsFormKey({kind:"super",db:true})'), "", "数据库壳不接管（既有对话框本来就是跳窗）");
   EQ(EV('nodeSettingsFormKey({kind:"super",dev:true})'), "", "开发壳不接管");
-  EQ(EV('nodeSettingsFormKey({kind:"super"})'), "", "普通超级不接管");
+  EQ(EV('nodeSettingsFormKey({kind:"super"})'), "", "普通节点层不接管");
   EQ(EV('nodeSettingsFormKey({kind:"function"})'), "function", "函数节点 → function 表单");
   EQ(EV('nodeSettingsFormKey({kind:"save_text"})'), "save", "旧别名 save_text 归一到 save");
   EQ(EV('nodeSettingsFormKey({kind:"save_image"})'), "save", "旧别名 save_image 归一到 save");
@@ -1042,7 +1047,7 @@ console.log("\n[6] i18n：跳窗中文串中英双向齐（真模块逐条验）
     return set;
   };
   /* 设置面的构成要素（body 状态行 / 动作按钮的文案不算：它们不是「设置」） */
-  const OTHER_FILE_HELPERS = ["nsMediaGenParamFields", "nsMediaGenPathField", "nsNetFields", "netSettingsSummary", "mediaGenParamSummaryText", "mediaGenSeedSlotText", "appendMediaGenSummaryBody", "appendVideoGenWorkflowControls", "buildFnToolSettings", "fnToolIoSummaryLine", "nsPathModeHint", "nodeSettingsGearButton", "nsSensenovaGenParamFields", "sensenovaGenParamSummaryText", "breezeModeOf", "breezeFormatOf", "breezeCfgScaleOf", "breezeSeedOf", "breezeModeLabel", "breezeGenParamSummaryText", "appendBreezeGenSummaryBody"];
+  const OTHER_FILE_HELPERS = ["nsMediaGenParamFields", "nsMediaGenPathField", "nsNetFields", "netSettingsSummary", "mediaGenParamSummaryText", "mediaGenSeedSlotText", "appendMediaGenSummaryBody", "appendVideoGenWorkflowControls", "buildFnToolSettings", "fnToolIoSummaryLine", "nsPathModeHint", "nodeSettingsGearButton", "nsSensenovaGenParamFields", "sensenovaGenParamSummaryText", "breezeModeOf", "breezeFormatOf", "breezeCfgScaleOf", "breezeModeResolvedOf", "breezeCfgLockedOf", "breezeCfgScaleForRun", "breezeRefHintOf", "breezeCfgSummaryOf", "breezeSeedOf", "breezeModeLabel", "breezeGenParamSummaryText", "appendBreezeGenSummaryBody"];
   const slices = { 跳窗整块: SETTINGS_REGION };
   OTHER_FILE_HELPERS.forEach((h) => { slices[h] = fnBody(CANVAS, h) || fnBody(NODES, h); });
   let keys = new Set();
@@ -2319,7 +2324,7 @@ console.log("\n" + (fails ? "FAILED " + fails + " / " + checks + " checks" : "AL
       input_image: { w: 220, h: 170, title: "图像", imageAsset: "" },
       input_any: { w: 240, h: 130, title: "文件" },
       tool: { w: 320, h: 220, title: "工具", tool: true },
-      super: { w: 320, h: 220, title: "超节点" },
+      super: { w: 320, h: 220, title: "节点层" },
     };
     const toasts = [];
     const S = {
@@ -2810,8 +2815,8 @@ console.log("\n" + (fails ? "FAILED " + fails + " / " + checks + " checks" : "AL
   ok(el.className.split(/\s+/).filter((c) => c === "no-out-ports").length === 1, "重复盖章幂等（类不重复）");
   ok(sync(mkEl("x"), null) === undefined && sync(null, {}) === undefined, "无元素 / 无节点时空跑不抛错");
 
-  /* ==================== [3] 展开的超级节点不插手 ==================== */
-  console.log("\n[3] 展开的超级节点（板内是子画布）外侧两排仍交给 .super-open");
+  /* ==================== [3] 展开的节点层不插手 ==================== */
+  console.log("\n[3] 展开的节点层（板内是子画布）外侧两排仍交给 .super-open");
   el = mkEl("wf-node super super-open");
   set(0, 0, true);
   sync(el, { id: "s1", kind: "super", superOpen: true });

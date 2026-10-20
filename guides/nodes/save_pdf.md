@@ -48,7 +48,7 @@
 - 与这个节点的差别：工具形态回的是**文件路径 + 字节数**两个出参（Agent 拿得到「写哪儿了」和多大），节点形态回的是单一**落盘地址**（见上面「端子」）；工具形态还**没有版面下拉**（固定 A4 · 标准页边距 · 中号字 · 带页码）—— 要横向 / A3 / 大字号，用本节点。
 - 两者共用 `pdf-write.js` 的同一份排版内核（隐藏打印窗 + `printToPDF`，公式同源）：`mtnode.writePdf`
   → 主进程 `fnPdfWrite` → `writeTextPdf`，与「PDF生成」节点的 `pdf:writeText` 是同一条路。
-- 也把它插到画布上当普通工具节点用（右键 → 工具 → 工具库），同样点 ▶ 即可跑。
+- 也把它插到画布上当普通工具节点用（右键 → 其他节点 → 工具，或顶栏「工具库」→ 插入），同样点 ▶ 即可跑。
 
 ## 实现口径
 排版本体在主进程 `pdf-write.js`（隐藏窗口 + `printToPDF`），页面模板 `renderer/pdf-print.html` + `renderer/css/pdf-print.css`，公式复用 `renderer/math-render.js`（与审阅 / 预览同源）；渲染层执行口径在 `renderer/app-nodes.js` 的 `savePdfOnce`。数据不落应用目录。Agent 侧的内置工具形态见 `docs/tool-library.md` §4b（条目三）。

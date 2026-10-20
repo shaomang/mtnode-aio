@@ -5033,6 +5033,62 @@ function openHelp() {
 
 /* 作者弹窗：居中小窗口。作者名 @ms2308 本身是 B 站主页链接，下方是「MTNode 主页」
    入口，末尾一行版本号 —— 两处都只显示文字、不显示网址（本轮需求）。 */
+/* 应用详情弹窗里的「版本更新」区（本轮需求）：版本号下方那一块。
+   · OSS（NSIS）版：有新版时给一枚按钮，点击走与顶栏同一份 window.runUpdateAction
+     （同一句确认框、同一套 toast、同一份状态），绝不另写一条下载链；
+   · Microsoft Store 版：内部更新按商店政策不可用，给提示条 + 「打开 Microsoft Store」
+     （深链在主进程 updater.js 的 openStorePage，渲染层只发无参命令）。
+   状态来自 app-boot.js 的 window.authorUpdateState()（与右下角蓝色高亮同一份）。 */
+function authorUpdateBlockOf(upd) {
+  const box = document.createElement("div");
+  box.className = "author-update";
+  if (upd.store) {
+    const tip = document.createElement("div");
+    tip.className = "author-update-tip";
+    tip.textContent = I18n.t(
+      "这是 Microsoft Store 版：请在 Microsoft Store 中更新。因为商店审核，新版本上架最多可能延后 3 天。",
+    );
+    box.appendChild(tip);
+    const go = document.createElement("button");
+    go.type = "button";
+    go.className = "mini primary";
+    go.textContent = I18n.t("打开 Microsoft Store");
+    go.onclick = async () => {
+      try {
+        if (!window.api || typeof window.api.updateOpenStore !== "function")
+          throw new Error("no bridge");
+        const r = await window.api.updateOpenStore();
+        if (!r || r.ok === false) throw new Error((r && r.error) || "open failed");
+      } catch (e) {
+        toast(I18n.t("没能打开 Microsoft Store，请从开始菜单打开"), "err");
+      }
+    };
+    box.appendChild(go);
+    return box;
+  }
+  const ver = String(upd.latestVersion || upd.version || "");
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "mini primary author-update-btn";
+  if (upd.downloading) {
+    btn.textContent = I18n.t("下载中");
+    btn.disabled = true;
+  } else if (upd.readyToRestart) {
+    btn.textContent = I18n.t("安装更新");
+  } else {
+    /* 文案带上版本号，行为与顶栏「更新」完全一致 */
+    btn.textContent = ver ? I18n.t("更新到 v") + ver : I18n.t("更新");
+  }
+  btn.title = ver
+    ? I18n.t("发现新版本 v") + ver + I18n.t("，点击下载更新")
+    : I18n.t("发现新版本，点击下载更新");
+  btn.onclick = () => {
+    if (typeof window.runUpdateAction === "function") window.runUpdateAction();
+  };
+  box.appendChild(btn);
+  return box;
+}
+
 function openAuthorPopup() {
   openOverlay("");
   /* 尺寸 / 顶边色只走 .overlay-box.author-box 这个类：以前这里内联 cssText 改的是
@@ -5070,6 +5126,14 @@ function openAuthorPopup() {
   ver.className = "author-ver";
   ver.textContent = "v" + S.appVersion;
   pop.appendChild(ver);
+  /* 版本号下方：有新版本才出现这一块（OSS 给按钮 / 商店版给提示与商店按钮） */
+  const upd =
+    typeof window.authorUpdateState === "function"
+      ? window.authorUpdateState()
+      : null;
+  if (upd && (upd.available || upd.readyToRestart || upd.downloading)) {
+    pop.appendChild(authorUpdateBlockOf(upd));
+  }
   body.appendChild(pop);
   const foot = $("#ovFoot");
   const ok = document.createElement("button");

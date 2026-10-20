@@ -35,7 +35,7 @@ const PROMPT_SECTION_ORDER = [
   "persona_host", // 宿主人设 / 调用方自带提示（节点链 = opts.systemPrompt）
   "scope", // 工作范围（仅当前画布 / 全局）与可用地面工具清单
   "canvas_rules", // 改画布工具口径（mtnode_canvas_edit 确认策略等）
-  "superconnect_rules", // 跨超级节点连接 superConnect 契约
+  "superconnect_rules", // 跨节点层连接 superConnect 契约
   "devnode_rules", // 开发节点两段式规范 + 功能色卡 + devFiles 契约
   "vision_media_rules", // 识图子代理 / 图像参考 / 媒体节点 / 文件交接 / 防 N²（助手长文）
   "layout_rules", // @引用、排版分区与「可操作区靠上」、一键排版规则（助手长文）

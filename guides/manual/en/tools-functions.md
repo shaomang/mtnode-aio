@@ -46,7 +46,7 @@ This feature lacks test coverage, so use it with care.
 
 ### What a tool node is
 
-Tool node = a super node + a wrapper node around several function nodes and other nodes. Once registered, agent nodes and sessions can call it directly.
+Tool node = a node layer + a wrapper node around several function nodes and other nodes. Once registered, agent nodes and sessions can call it directly.
 
 ### Key parameters
 

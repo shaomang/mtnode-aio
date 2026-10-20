@@ -2709,6 +2709,9 @@ registerPluginSelfcheck({
 
 module.exports = {
   registerMusic3Ipc,
+  /* MCP 自用回环（mtnode_generate kind:music）：与画布节点同一条生成链、同一把全局音视频锁 */
+  generateMusic,
+  cancelGenerate,
   shutdownMusic3UiOnly,
   /* 显存释放钩子：主进程 local-model-vram.js 收进统一编排表（画布节点运行前后 + 顶栏按钮） */
   vramHooks,

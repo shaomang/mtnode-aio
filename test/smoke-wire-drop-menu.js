@@ -10,7 +10,7 @@
  *   [2] 文本来源 → 文本与图像目标都在列
  *   [3] 控制来源 → 任务节点等「仅接受控制」的目标出现，全局节点被挡掉
  *   [4] 多输出端子：judge 的失败端子 → 连线保留 fromIndex=1
- *   [5] 落点与源节点不同层级（超级节点内外）→ 菜单整体不出现
+ *   [5] 落点与源节点不同层级（节点层内外）→ 菜单整体不出现
  *   [6] 弹出门槛：未拖动 / 桥接端子 / 落在节点身上 / 落在画布外 → 一律不弹
  *   [7] 选中菜单项 → 在落点建节点 + 用 fromId / toId / fromIndex 连线
  *   [8] 候选表自洽：kind 都在 NODE_DEFAULTS 里、分组与标签都有 i18n 词条
@@ -473,7 +473,7 @@ fixture();
 /* 「画布空白处」判定：展开壳内的空白也算空白，命中卡片 / 端子 / 画布外都不算 */
 ok(F.wireDropLandsOnEmptyCanvas(fakeEl(["#canvas"])), "顶层画布空白 → 可以弹");
 ok(F.wireDropLandsOnEmptyCanvas(fakeEl(["#canvas", ".wf-node", ".super-stage"])),
-  "展开的超级节点壳内空白 → 可以弹（宿主卡片是祖先，不该误判成命中节点）");
+  "展开的节点层壳内空白 → 可以弹（宿主卡片是祖先，不该误判成命中节点）");
 ok(!F.wireDropLandsOnEmptyCanvas(fakeEl(["#canvas", ".wf-node", ".super-stage", ".super-stage-viewport .wf-node"])),
   "壳内的子节点卡片 → 不弹（视为瞄着那个节点）");
 ok(!F.wireDropLandsOnEmptyCanvas(fakeEl(["#canvas", ".wf-node"])), "普通节点卡片 → 不弹");

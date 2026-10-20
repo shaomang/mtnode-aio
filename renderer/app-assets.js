@@ -1558,11 +1558,11 @@ function assetSpawnCandidate() {
 
 /* ── 落点层级：素材是「外来内容」，插进来就该待在当前画布这一层 ──
    背景：新节点的父级由 app.js · makeNode 决定 —— ① currentSuperFocus() 有效（全屏进了
-   某个超级节点内部）时无条件挂进该壳；② 否则 superHostAtWorld(落点) 命中展开的壳就吸附。
+   某个节点层内部）时无条件挂进该壳；② 否则 superHostAtWorld(落点) 命中展开的壳就吸附。
    而候选落点只避开浮层、完全不避开壳，于是根画布上「落点正好压着某个展开的壳」时，
-   素材节点就被吞进壳里（用户看到的是「插到画布却跑进超级节点」）。
+   素材节点就被吞进壳里（用户看到的是「插到画布却跑进节点层」）。
    口径（已与用户确认）：
-   · 全屏在某个超级节点内部插入 → 跟随视图语境，留在该壳内（坐标口径与 makeNode 一致）；
+   · 全屏在某个节点层内部插入 → 跟随视图语境，留在该壳内（坐标口径与 makeNode 一致）；
    · 根画布插入 → 一律顶层：落点被壳压住就沿壳的外接矩形四边挪到壳外最近的空白处；
      壳外确实没地方时仍放壳外，并把镜头平移到刚好看得见它（不重新居中，免得又藏到框下）。 */
 /** 舞台坐标下的可见画布矩形（扣掉 ASSET_SPAWN_EDGE 的边距） */
@@ -1705,7 +1705,7 @@ function assetInsertToCanvas(a) {
     return null;
   }
   const p = assetSpawnPoint();
-  /* 父级显式交代清楚：全屏在某个超级节点内部时跟随视图语境（交给 makeNode 挂到该壳），
+  /* 父级显式交代清楚：全屏在某个节点层内部时跟随视图语境（交给 makeNode 挂到该壳），
      否则钉在顶层 —— 不让落点吸附把外来素材吞进某个展开的壳里。 */
   const sf = typeof currentSuperFocus === "function" ? currentSuperFocus() : "";
   const extra = { title: a.displayName || a.folder || I18n.t("素材") };

@@ -6,7 +6,7 @@ MTNode AI编排器 — Electron 桌面端 AI 工作流编排器。用户数据�
 - **渲染层（无框架 SVG）**：`renderer/`，`app.js` 为画布主体，**脚本加载顺序 = 模块分层**（新版能力按 `renderer/index.html` 顺序放，样式进 `renderer/css/`）。
 - **Agent 网关**：`dsh/`。`dsh/gateway/gateway.mjs` 是**全仓唯一 import dsh 之处**，由 `dsh-node.js` 选定的**真 Node（≥22.19）**拉起 —— dsh 拒绝 Electron 自带 Node，**别把 `process.execPath` 写回网关 spawn**；改前先读 `dsh/DESIGN.md`。
 - **本地后端**：`music3/`、`h3/`、`llama/`、`pet/`，同名 `*-pack/` 为随包脚手架（extraResources）。
-- **云端与内容**：`store-saas/`、`ext-repo/`、`forum/`、`web/`；插件宿主 `plugins/`；技能 `skills/`、`mtnode-agent-skills/<类目>/`；文档 `docs/`、手册 `guides/manual/`、节点指南 `guides/nodes/`（新增节点类型必补）；更新日志 `changelog/`（格式见 `changelog/README.md`）；测试 `test/`、`smoke.js`、`dsh/smoke-*.mjs`；构建发布 `scripts/`、`build.json`、`updater.js`、`version.js`。
+- **云端与内容**：`store-saas/`、`ext-repo/`、`forum/`、`web/`；插件宿主 `plugins/`；技能 `skills/`、`mtnode-agent-skills/<类目>/`（类目 `mtnode` / `app` / `plugins` / `canvas` / `music` / `writing`，新类目要在 `mtnode-agent-skills-lib.js` 的 `CATEGORY_TITLES` 补标题；front matter 写 `menu: user` 的内置技能随包进入用户技能清单与「/」菜单，不写则只进内置索引）；文档 `docs/`、手册 `guides/manual/`、节点指南 `guides/nodes/`（新增节点类型必补）；更新日志 `changelog/`（格式见 `changelog/README.md`）；测试 `test/`、`smoke.js`、`dsh/smoke-*.mjs`；构建发布 `scripts/`、`build.json`、`updater.js`、`version.js`。
 - **一次发版**：`npm run release`（NSIS 与 MSIX 同版本），只出 Store 包用 `npm run release:store`。
 ## 不要修改
 - 构建产物与依赖：`node_modules/`、`dist/`、`dist_check/`、`.dsh-probe/`、`dsh/gateway/node_modules/`、`dsh/gateway/pnpm-lock.yaml`。

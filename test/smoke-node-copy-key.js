@@ -700,7 +700,7 @@ if (API) {
     );
   }
 
-  console.log("── [6] 复制超级节点：粘贴后壳内节点仍归新壳（不得被摊到同一层）");
+  console.log("── [6] 复制节点层：粘贴后壳内节点仍归新壳（不得被摊到同一层）");
   {
     /* 本轮 bug：`cloneNodesDeep` 已把壳内节点的 parentSuperId 重映射成新壳 id，
        `pasteNodesFromClipboard` 又拿新 id 去查 idMap（键是旧 id）→ 命中失败清成 ""，
@@ -803,7 +803,7 @@ if (API) {
 
     if (C2) {
       const deep = (v) => JSON.parse(JSON.stringify(v));
-      /* 源画布：一颗超级节点（展开 + 内部平移）+ 4 个直接子节点（含 super_io 端子 / 嵌套壳 / 图像）
+      /* 源画布：一颗节点层（展开 + 内部平移）+ 4 个直接子节点（含 super_io 端子 / 嵌套壳 / 图像）
          + 嵌套壳里 1 个子节点 + 1 个壳外节点（跨集连线不该被复制） */
       const shellSrc = {
         id: "s1", kind: "super", title: "壳A", x: 400, y: 300, w: 400, h: 300,
@@ -879,7 +879,7 @@ if (API) {
       );
       ok(
         String(newShell.ltShellTask || "") === "" && String(newShell.ltShellPath || "") === "",
-        "长任务壳身份摘除（副本当普通超级节点用）",
+        "长任务壳身份摘除（副本当普通节点层用）",
       );
 
       /* ⑤ 标题唯一化 + 图像路径固化 */

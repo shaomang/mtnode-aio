@@ -85,17 +85,20 @@ function compactTierSizeDefault(tier) {
   return COMPACT_TIER_SIZE_DEFAULTS[String(tier)] || COMPACT_TIER_SIZE_DEFAULTS.mid;
 }
 
-/** 保留原文的生效值：{ tokens, custom }，custom=false 表示跟随档位 */
+/** 保留原文的生效值：{ tokens, custom }，custom=false 表示跟随档位。
+ *  两个覆盖值**只在「自定义」档生效**（本次共识：非自定义档一律按档位默认 ——
+ *  界面上那两个数字框也只在自定义档露出，不能出现「界面看不见、压缩却在用」的暗值）。
+ *  配置里的旧值不删：切回自定义档时仍会原样回填。 */
 function compactRetainEffectiveOf(cfg) {
   const cp = compactPolicyOf(cfg);
-  if (cp.retainTokens !== null) return { tokens: cp.retainTokens, custom: true };
+  if (cp.tier === "custom" && cp.retainTokens !== null) return { tokens: cp.retainTokens, custom: true };
   return { tokens: compactTierSizeDefault(cp.tier).retainTokens, custom: false };
 }
 
-/** 摘要上限的生效值：{ tokens, custom } */
+/** 摘要上限的生效值：{ tokens, custom }（判据与保留原文同一条：只有自定义档认覆盖值） */
 function compactSummaryEffectiveOf(cfg) {
   const cp = compactPolicyOf(cfg);
-  if (cp.summaryMaxTokens !== null) return { tokens: cp.summaryMaxTokens, custom: true };
+  if (cp.tier === "custom" && cp.summaryMaxTokens !== null) return { tokens: cp.summaryMaxTokens, custom: true };
   return { tokens: compactTierSizeDefault(cp.tier).summaryMaxTokens, custom: false };
 }
 
