@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<!--
+  MTNode 官网 · 设计样张（长周期任务 · 环节②「设计样张」产物）
+  ─────────────────────────────────────────────────────────────
+  形态：单文件、内联 CSS/JS、系统字体、零外部请求（无 CDN / 无远程字体 / 无外链图片 / favicon 走 data:）
+  真源：site-src/PRODUCT.md（产品事实）· DESIGN.md（视觉规范）· design-tokens.md（令牌实测）· content-facts.md（逐句出处）
+  评审记录、逐句出处表与待确认点：site-src/preview/notes.md
+  注意：下载链接按任务书口径写相对路径 downloads/<file>，需把本文件放到站点根（即 web/index.html 的位置）才可点通；
+        从 site-src/preview/ 直接双击打开时链接会指向 site-src/preview/downloads/（不存在）。详见 notes.md 待确认 ⑥。
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MTNode AI编排器 · 复杂 AI 工作流，一张画布装下</title>
+<meta name="description" content="MTNode AI编排器：把文本、图像、音视频生成与代码开发收束到一张可视化画布的 Windows 桌面应用。当前版本 v1.3.3。">
+<link rel="icon" href="data:,">
+<script>
+/* 在解析 body 之前定档，避免「先亮后隐」的闪一下：
+   js         —— 允许首屏母题的入场动画（纯 CSS，随加载自动跑）
+   can-reveal —— 仅当 IntersectionObserver 可用且用户未要求减少动态时，才把滚动揭示的元素先隐起来 */
+(function(){var d=document.documentElement;d.classList.add('js');
+var r=window.matchMedia&&window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+if(!r&&'IntersectionObserver' in window)d.classList.add('can-reveal');})();
+</script>
+<style>
+/* ── 令牌：逐字取自 site-src/design-tokens.md §1（base.css:1-22 实测 · 默认主题） ─────────────
+   语义色（青=读 / 橙=改 / 绿=跑 / 黄=落在哪儿 / 红=失败）三套主题完全同值，是品牌恒量；
+   中性色是可换皮部分——切 body.theme-industrial 只需替换下面这一段的 7 个值（见 notes.md「待确认 ①」）。 */
+:root{
+  --orange:#ff8f2e; --orange2:#ffb066;
+  --cyan:#38d6ff;   --cyan2:#7ce8ff;
+  --green:#5fd68a;  --red:#ff5f56;  --yellow:#ffd166;
+  --bg:#151517; --bg2:#1b1b1c; --panel:#1b1b1c; --panel2:#232324;
+  --bd:#2a2a2d; --bd2:#3a3a3e;
+  --ink:#ebedf2; --muted:#818590; --code:#1b1b1c;
+  --dl-top:#221a12; --dl-deep:#171310;          /* 下载区暖色面（全站唯一） */
+  --btn-face:#3a2a18; --btn-face-deep:#241a0f;  /* 主按钮暖色渐变（只在按钮上） */
+  --grid:rgba(58,58,62,.45);                    /* = --bd2 #3a3a3e @45%，仅画布点阵 */
+  --sans:'Segoe UI','PingFang SC','Microsoft YaHei',system-ui,sans-serif;
+  --mono:'Cascadia Code','Consolas','JetBrains Mono',monospace;
+  --r-sm:3px; --r-md:5px; --r-lg:6px; --r-pill:999px;
+  --sp-3xs:8px; --sp-2xs:10px; --sp-xs:12px; --sp-sm:14px; --sp-md:16px; --sp-lg:22px; --sp-xl:28px; --sp-2xl:44px;
+  --ease:cubic-bezier(.16,1,.3,1);
+}
+*{box-sizing:border-box}
+html{color-scheme:dark;scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font:400 14px/1.8 var(--sans);-webkit-font-smoothing:antialiased;
+  scrollbar-color:var(--bd2) var(--bg)}          /* 浏览器自带表面也归色板管 */
+::selection{background:rgba(56,214,255,.28);color:var(--ink)}   /* = --cyan @28%，与 --grid 同为色板的透明度变体 */
+:focus-visible{outline:2px solid var(--orange2);outline-offset:2px;border-radius:var(--r-sm)}
+a{color:var(--cyan);text-underline-offset:3px}
+.sr-only{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
+
+/* ── 顶栏 ─────────────────────────────────────────────────────────── */
+.topbar{position:sticky;top:0;z-index:10;display:flex;align-items:center;gap:var(--sp-md);justify-content:space-between;
+  padding:10px 20px;background:linear-gradient(180deg,var(--panel2),var(--panel));border-bottom:3px solid var(--bd)}
+.brand{font-size:15px;font-weight:800;letter-spacing:2px;color:var(--orange);text-decoration:none}
+/* 品牌块只有一行：不挂把标题换个说法重念一遍的眉标（DESIGN.md Navigation 与 craft floor） */
+.nav{display:flex;gap:18px;font-size:14px}
+.nav a{color:var(--muted);text-decoration:none;transition:color .18s var(--ease)}
+.nav a:hover{color:var(--cyan)}
+.ver-tag{font:400 11px/1.4 var(--mono);letter-spacing:.5px;color:var(--muted)}
+
+/* ── 版面：单列纵向流 · 容器 860px（DESIGN.md Layout） ─────────────── */
+.wrap{max-width:860px;margin:0 auto;padding:0 20px}
+section[id]{scroll-margin-top:72px}
+.sec{padding:8px 0 6px}
+h1{margin:0;font-size:30px;font-weight:800;line-height:1.3;letter-spacing:4px}
+html[lang="en"] h1{letter-spacing:1px}
+h2{margin:var(--sp-xl) 0 var(--sp-xs);font-size:17px;font-weight:600;line-height:1.5;letter-spacing:3px}
+h2::before{content:"";display:inline-block;width:9px;height:9px;margin-right:9px;vertical-align:1px;background:var(--orange)}
+html[lang="en"] h2{letter-spacing:1px}
+.lead{margin:var(--sp-md) 0 0;max-width:760px;font-size:15px;line-height:1.8}
+.hero{padding:36px 0 10px}
+.hl{font-weight:700;color:var(--orange2)}
+.pills{display:flex;flex-wrap:wrap;gap:var(--sp-2xs);margin:0 0 var(--sp-lg)}
+.pill{padding:2px 9px;border:1px solid var(--bd2);border-radius:var(--r-sm);background:var(--bg);
+  font:400 11px/1.4 var(--mono);letter-spacing:.5px;color:var(--cyan2)}
+.pill.accent{border-color:var(--orange);color:var(--orange2)}
+
+/* ── 按钮：主按钮只有一个动作，三个落点同一视觉重量 ───────────────── */
+.cta{display:flex;flex-wrap:wrap;gap:var(--sp-xs);margin:var(--sp-lg) 0 0}
+.btn{display:inline-block;padding:9px 20px;border-radius:var(--r-sm);font-size:13px;font-weight:700;letter-spacing:2px;
+  text-decoration:none;transition:color .18s var(--ease),border-color .18s var(--ease)}
+.btn-primary{padding:10px 22px;font-size:14px;border:2px solid var(--orange);color:var(--orange2);
+  background:linear-gradient(180deg,var(--btn-face),var(--btn-face-deep))}
+.btn-primary:hover{color:#fff;border-color:var(--orange2)}
+.btn-ghost{font-weight:600;border:1px solid var(--bd2);color:var(--ink);background:var(--panel)}
+.btn-ghost:hover{color:var(--cyan2);border-color:var(--cyan)}
+
+/* ── 视觉母题：CSS 自绘节点卡 + 端口圆点 + 连线 ──────────────────────
+   坐标系：画布 660×300（SVG viewBox 与节点 --x/--y/--w/--h 用同一组数字）。
+   ⚠️ 改节点位置时，必须同步改 HTML 里该节点的 --x/--y 与 SVG 里对应 path 的端点（见 notes.md「维护口径」）。 */
+.graph{position:relative;margin:var(--sp-xl) 0 0;border:1px solid var(--bd);border-radius:var(--r-md);
+  background-color:var(--bg);
+  background-image:radial-gradient(circle at 1px 1px,var(--grid) 1px,transparent 0);background-size:16px 16px}
+.wires{position:absolute;inset:0;width:100%;height:100%;display:none;pointer-events:none}
+.wire{fill:none;stroke-width:2;stroke-linecap:round;vector-effect:non-scaling-stroke;
+  stroke-dasharray:100;stroke-dashoffset:0}
+.w1,.w2{stroke:var(--cyan)}   /* 青 = 读：上游数据被读走 */
+.w3{stroke:var(--yellow)}     /* 黄 = 落在哪儿：这一条指向落盘位置 */
+.node{position:relative;display:flex;flex-direction:column;justify-content:center;gap:3px;
+  padding:10px 13px;border:1px solid var(--bd);border-radius:var(--r-md);background:var(--panel);
+  transition:border-color .18s var(--ease)}
+.node:hover{border-color:var(--bd2)}
+.node-title{display:flex;align-items:center;gap:6px;font-size:14px;font-weight:700;letter-spacing:1px}
+.node-sub{font-size:11px;line-height:1.4;color:var(--muted)}
+.node-sub.mono{font-family:var(--mono);letter-spacing:.5px;color:var(--cyan2)}
+.led{width:6px;height:6px;border-radius:var(--r-pill);background:var(--green)}   /* 绿=跑：纯色状态点，不加光晕/投影（The Flat-By-Default Rule） */
+.port{position:absolute;top:50%;width:8px;height:8px;margin-top:-4px;border-radius:var(--r-pill);
+  background:var(--bg);border:2px solid var(--muted)}
+.port.in{left:-5px} .port.out{right:-5px}
+.port.read{border-color:var(--cyan)}    /* 读 */
+.port.write{border-color:var(--orange)} /* 改 */
+.port.target{border-color:var(--yellow)}/* 落在哪儿 */
+
+/* ── 四步上手 ─────────────────────────────────────────────────────── */
+.steps{list-style:none;counter-reset:step;margin:0;padding:0;display:grid;gap:var(--sp-xs)}
+.steps li{counter-increment:step;position:relative;padding:var(--sp-sm) var(--sp-md) var(--sp-sm) 48px;
+  border:1px solid var(--bd);border-radius:var(--r-md);background:var(--panel)}
+.steps li::before{content:counter(step);position:absolute;left:14px;top:14px;width:24px;height:24px;
+  display:flex;align-items:center;justify-content:center;border:1px solid var(--orange);border-radius:var(--r-sm);
+  font:400 12px/1 var(--mono);color:var(--orange2)}
+.steps h3{margin:0 0 3px;font-size:14px;font-weight:700;letter-spacing:2px}
+.steps p{margin:0;font-size:14px;line-height:1.8;color:var(--muted)}
+
+/* ── 能力矩阵：硬事实列用「正文 + code 芯片」，不把中文散文塞进等宽字体 ──── */
+.matrix{width:100%;border-collapse:collapse;font-size:14px}
+.matrix th,.matrix td{padding:var(--sp-xs) var(--sp-sm);text-align:left;vertical-align:top;border-top:1px solid var(--bd)}
+.matrix thead th{font:400 11px/1.4 var(--mono);letter-spacing:.5px;color:var(--muted);
+  border-top:0;border-bottom:1px solid var(--bd2)}
+.matrix tbody th{font-size:14px;font-weight:700;letter-spacing:1px}
+.matrix tbody td:last-child{color:var(--muted);overflow-wrap:anywhere}
+.matrix tbody tr{transition:background-color .18s var(--ease)}
+.matrix tbody tr:hover{background:var(--panel)}
+code{font:400 11px/1.5 var(--mono);letter-spacing:.5px;color:var(--cyan2);background:var(--code);
+  border:1px solid var(--bd);border-radius:var(--r-sm);padding:1px 5px}
+
+/* ── 下载区：全站唯一暖色面 + 唯一 1.5px 橙边（无投影，二选一） ──────── */
+.dl-zone{margin:var(--sp-xl) 0 0;padding:22px 24px;border:1.5px solid var(--orange);border-radius:var(--r-lg);
+  background:linear-gradient(180deg,var(--dl-top),var(--dl-deep))}
+.dl-zone h2{margin:0 0 var(--sp-xs);color:var(--orange2)}
+.dl-zone h2::before{content:none}   /* 橙框里再放橙方块是重复强调 */
+.dl-sub{margin:0;font-size:14px;color:var(--ink);opacity:.8}   /* 暖面上用墨色降透明，不引灰色 */
+.dl-row{display:flex;flex-wrap:wrap;gap:var(--sp-md);margin-top:var(--sp-md)}
+.dl-item{flex:1 1 320px;padding:16px 18px;border:1px solid var(--bd);border-radius:var(--r-md);background:var(--bg)}
+.dl-item h3{margin:0 0 6px;font-size:14px;font-weight:700;letter-spacing:2px}
+.dl-item p{margin:0 0 var(--sp-xs);font-size:14px;line-height:1.8;color:var(--ink);opacity:.8}
+.meta{display:block;margin-top:var(--sp-2xs);font:400 11px/1.4 var(--mono);letter-spacing:.5px;color:var(--muted)}
+
+/* ── 页脚 ─────────────────────────────────────────────────────────── */
+.foot{margin-top:var(--sp-2xl);padding:16px 20px;background:var(--panel2);border-top:3px solid var(--bd)}
+.foot-in{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:var(--sp-xs)}
+.foot-meta{font:400 11.5px/1.6 var(--mono);letter-spacing:.5px;color:var(--muted)}
+.sig{padding:2px 9px;border:1px solid var(--bd2);border-radius:var(--r-sm);
+  font:400 11.5px/1.4 var(--mono);letter-spacing:.5px;color:var(--cyan2);text-decoration:none}
+.sig:hover{border-color:var(--cyan);color:var(--cyan)}
+
+/* ── 动效：一次有编排的入场（连线生长 + 节点解像），滚动揭示只做舒展 ──
+   两条纪律：① 默认态就是完成态 —— 动画不可用、JS 不可用、IO 不回调，页面都完整可见；
+             ② 首屏母题不依赖 IntersectionObserver，纯 CSS 动画随加载跑一次。 */
+.js .graph .wire{animation:draw 1s var(--ease) both}
+.js .graph .w2{animation-delay:.18s}
+.js .graph .w3{animation-delay:.36s}
+.js .graph .node{animation:resolve .9s var(--ease) both}
+.js .graph .n2{animation-delay:.1s}
+.js .graph .n3{animation-delay:.38s}
+.js .graph .n4{animation-delay:.52s}
+@keyframes draw{from{stroke-dashoffset:100}to{stroke-dashoffset:0}}
+@keyframes resolve{from{opacity:0;filter:blur(6px)}to{opacity:1;filter:blur(0)}}
+/* 滚动揭示：仅在 can-reveal 时先隐；脚本侧带 2.5s 保险阀，任何环境下一定会亮 */
+.js.can-reveal .reveal{opacity:0;transform:translateY(var(--ty,10px))}
+.js.can-reveal .reveal.in{opacity:1;transform:none;
+  transition:opacity .55s var(--ease),transform .55s var(--ease);transition-delay:var(--d,0ms)}
+/* 收官：动画跑完就撤掉 animation/transition，把「完成态」变回普通样式。
+   真实浏览器里看不到差别（撤掉时动画已停在终帧），而动画时间轴被冻结的环境（无头截图、虚拟时间）
+   也不会停在 opacity:0 的首帧——页面照样是完整的一页。 */
+.js.graph-done .graph .wire,.js.graph-done .graph .node{animation:none}
+.js.can-reveal.reveal-done .reveal{opacity:1;transform:none;transition:none}
+
+/* ── 响应式：唯一断点 760px ───────────────────────────────────────── */
+@media (min-width:761px){
+  .graph{aspect-ratio:660/300}     /* 与 viewBox 同比，百分比坐标与 SVG 严格对齐 */
+  .wires{display:block}
+  .node{position:absolute;left:calc(var(--x)/660*100%);top:calc(var(--y)/300*100%);
+    width:calc(var(--w)/660*100%);height:calc(var(--h)/300*100%)}
+}
+@media (max-width:760px){
+  h1{font-size:24px;letter-spacing:2px}
+  .nav{display:none}              /* 不做汉堡菜单 */
+  .graph{display:flex;flex-direction:column;gap:var(--sp-2xs);padding:var(--sp-xs)}
+  .dl-zone{padding:16px}
+  .matrix,.matrix thead,.matrix tbody,.matrix tr,.matrix th,.matrix td{display:block;width:auto}
+  .matrix thead{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+  .matrix tr{padding:var(--sp-xs) 0;border-top:1px solid var(--bd)}
+  .matrix th,.matrix td{padding:0;border:0}
+  .matrix tbody th{margin-bottom:4px}
+  .matrix td:last-child{margin-top:6px}
+  .matrix tr:hover{background:transparent}
+}
+@media (prefers-reduced-motion:reduce){
+  html{scroll-behavior:auto}
+  .js.can-reveal .reveal{opacity:1;transform:none;transition:none}
+  .js .graph .wire{animation:none}
+  .js .graph .node{animation:none}
+  .btn,.nav a,.node,.matrix tbody tr{transition:none}
+}
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <a class="brand" href="#top">MTNode</a>
+  <nav class="nav" aria-label="页面导航">
+    <a href="#steps">四步上手</a>
+    <a href="#matrix">能力矩阵</a>
+    <a href="#download">下载</a>
+  </nav>
+  <span class="ver-tag">v1.3.3</span>
+</header>
+
+<main class="wrap" id="top">
+
+  <!-- ① 首屏 -->
+  <section class="hero">
+    <div class="pills">
+      <span class="pill accent">v1.3.3</span>
+      <span class="pill">Windows 10 / 11 x64</span>
+      <span class="pill">内置 Agent 引擎</span>
+    </div>
+    <h1>复杂 AI 工作流，一张画布装下</h1>
+    <p class="lead">文本、图像、音乐、语音、视频生成与代码开发，用节点与连线串在同一张画布上；存下来就能<b class="hl">一键重跑</b>，事情长的时候，它停在审批或交付的地方等你。</p>
+    <div class="cta">
+      <a class="btn btn-primary" href="downloads/MTNodeAIO-Setup-1.3.3.exe" download>下载 Windows 安装包</a>
+      <a class="btn btn-ghost" href="#steps">四步上手</a>
+    </div>
+
+    <!-- 视觉母题：CSS 自绘节点卡 + 端口圆点 + SVG 连线（入场时连线生长一次） -->
+    <div class="graph" role="img"
+         aria-label="画布示意：文本输入与图像输入连到文本处理节点，处理结果连到保存节点，落盘为 YAML 文件。">
+      <svg class="wires" viewBox="0 0 660 300" preserveAspectRatio="none" aria-hidden="true" focusable="false">
+        <path class="wire w1" d="M174,57 C215,57 210,120 251,120" pathLength="100"/>
+        <path class="wire w2" d="M174,183 C215,183 210,120 251,120" pathLength="100"/>
+        <path class="wire w3" d="M409,120 L486,120" pathLength="100"/>
+      </svg>
+
+      <div class="node n1" style="--x:16;--y:26;--w:158;--h:62" aria-hidden="true">
+        <span class="port out read"></span>
+        <span class="node-title">文本输入</span>
+        <span class="node-sub">就地编辑</span>
+      </div>
+      <div class="node n2" style="--x:16;--y:152;--w:158;--h:62" aria-hidden="true">
+        <span class="port out read"></span>
+        <span class="node-title">图像输入</span>
+        <span class="node-sub">点击选择或拖入</span>
+      </div>
+      <div class="node n3" style="--x:251;--y:89;--w:158;--h:62" aria-hidden="true">
+        <span class="port in write"></span>
+        <span class="port out write"></span>
+        <span class="node-title"><span class="led"></span>文本处理</span>
+        <span class="node-sub mono">@文本输入</span>
+      </div>
+      <div class="node n4" style="--x:486;--y:89;--w:158;--h:62" aria-hidden="true">
+        <span class="port in target"></span>
+        <span class="node-title">保存</span>
+        <span class="node-sub mono">*.yaml</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ② 四步工作流 -->
+  <section class="sec" id="steps">
+    <h2 class="reveal">四步上手</h2>
+    <ol class="steps">
+      <li class="reveal" style="--d:0ms">
+        <h3>装</h3>
+        <p>下载 <code>MTNodeAIO-Setup-1.3.3.exe</code>（138,039,479 字节），Windows 10 / 11 x64 一键安装。</p>
+      </li>
+      <li class="reveal" style="--d:60ms">
+        <h3>接</h3>
+        <p>接上 AI：每个节点可以各自指定模型、预设档、思考强度与工具许可。</p>
+      </li>
+      <li class="reveal" style="--d:120ms">
+        <h3>串</h3>
+        <p>串成一条链：上游节点的结果交给下游；一族节点收进超级节点（<code>kind: "super"</code>）当成一块用。</p>
+      </li>
+      <li class="reveal" style="--d:180ms">
+        <h3>停</h3>
+        <p>该停的地方停下：长周期任务画成一张状态机图，审批与交付两类环节停下等你，驳回要写理由并退回指定环节重做。</p>
+      </li>
+    </ol>
+  </section>
+
+  <!-- ③ 能力矩阵 -->
+  <section class="sec" id="matrix">
+    <h2 class="reveal">能力矩阵</h2>
+    <table class="matrix reveal" style="--ty:0px">
+      <caption class="sr-only">MTNode 的五项能力与各自对应的硬事实</caption>
+      <thead>
+        <tr><th scope="col">能力</th><th scope="col">它做什么</th><th scope="col">硬事实</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <th scope="row">内置 Agent 引擎</th>
+          <td>一次 AI 协作就是一个会话：有状态、可开关，能读写文件、也能上网搜索。</td>
+          <td><code>agent_task</code> 按任务描述读文件、联网、执行命令，结果回填输出。</td>
+        </tr>
+        <tr>
+          <th scope="row">长周期任务 · 人在环</th>
+          <td>把整件事画成一张状态机图，由应用替你按图推进，该停的地方停下等你。</td>
+          <td>状态机 10 种 kind：<code>start</code> / <code>end_ok</code> / <code>end_fail</code> / <code>agent</code> / <code>human</code> / <code>join</code> / <code>fork</code> / <code>map</code> / <code>sub</code> / <code>output</code></td>
+        </tr>
+        <tr>
+          <th scope="row">开发节点</th>
+          <td>把软件项目拆成画布上的一颗颗功能块，逐块让 AI 建目录、写文件、跑验证。</td>
+          <td><code>kind: "super"</code> + <code>dev: true</code>；核心文件字段 <code>devFiles</code> 上限 10 条。</td>
+        </tr>
+        <tr>
+          <th scope="row">音视频生成节点</th>
+          <td>本机后端驱动的音乐、语音、视频生成，成片写进节点自带的输出路径，不需要再挂保存节点。</td>
+          <td>八个 kind：<code>music_gen</code> / <code>yue_gen</code> / <code>tts_gen</code> / <code>video_gen</code> / <code>video_upscale</code> / <code>video_interp</code> / <code>remotion</code> / <code>sensenova_gen</code>；音视频任务全局互斥，同一时刻只跑 1 个。</td>
+        </tr>
+        <tr>
+          <th scope="row">其他节点能力</th>
+          <td>超级节点把一组节点打包成子图；工具与函数节点把画布变成 Agent 能调用的工具；批量逐条跑，创意工坊里拿模板与技能。</td>
+          <td>超级节点 <code>kind: "super"</code>；工具配置 <code>toolConfig</code>；函数 <code>fnName</code> + <code>jscode</code>；批量 <code>batchMode</code>。</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- ④ 下载区（首屏动作的落地点：全站唯一暖色面） -->
+  <section class="dl-zone" id="download">
+    <h2>下载</h2>
+    <p class="dl-sub">Windows 10 / 11 x64 · NSIS 一键安装 · 当前版本 1.3.3 · 文件由阿里云 OSS 分发。</p>
+    <div class="dl-row">
+      <div class="dl-item reveal" style="--d:0ms">
+        <h3>安装包</h3>
+        <p>Windows x64 一键安装（NSIS），含桌面快捷方式与开始菜单。</p>
+        <a class="btn btn-primary" href="downloads/MTNodeAIO-Setup-1.3.3.exe" download>下载安装包</a>
+        <span class="meta">MTNodeAIO-Setup-1.3.3.exe</span>
+      </div>
+      <div class="dl-item reveal" style="--d:80ms">
+        <h3>应用源码包</h3>
+        <p>完整源码（Electron 主进程 + 渲染层 + 网关），含构建脚本与图标，可自行打包。</p>
+        <a class="btn btn-ghost" href="downloads/MTNodeAIO-src-1.3.3.zip" download>下载源码包</a>
+        <span class="meta">MTNodeAIO-src-1.3.3.zip · 不含 node_modules</span>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap foot-in">
+    <!-- 署名口径未定稿（footer ms2308 vs LICENSE M.S），样张不写署名，见 notes.md「待确认 ③」 -->
+    <span class="foot-meta">MTNode AI编排器 · v1.3.3 · Windows 10 / 11 x64</span>
+    <a class="sig" href="#download">下载</a>
+  </div>
+</footer>
+
+<script>
+(function(){
+  var root = document.documentElement;
+
+  /* 首屏母题：入场动画的总时长 1.42s（最后一个节点 .52s 延迟 + .9s），1.8s 后撤掉 animation */
+  setTimeout(function(){ root.classList.add('graph-done'); }, 1800);
+
+  if (!root.classList.contains('can-reveal')) return;  /* 减少动态 / 无 IO：保持完成态，不做揭示 */
+  var items = [].slice.call(document.querySelectorAll('.reveal'));
+  if (!items.length) return;
+
+  var io = new IntersectionObserver(function(entries){
+    entries.forEach(function(e){
+      if (e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); }
+    });
+  }, { rootMargin: '0px 0px -8% 0px', threshold: 0.12 });
+  items.forEach(function(el){ io.observe(el); });
+
+  /* 保险阀：若 IO 未回调（无头截图、虚拟时间等环境），2.5s 后一律给完成态，绝不留白页 */
+  setTimeout(function(){
+    items.forEach(function(el){ el.classList.add('in'); });
+    root.classList.add('reveal-done');
+    io.disconnect();
+  }, 2500);
+})();
+</script>
+</body>
+</html>

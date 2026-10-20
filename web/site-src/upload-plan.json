@@ -1,0 +1,88 @@
+{
+  "generatedAt": "2026-09-19T23:20:00+08:00",
+  "scope": "本轮改动复核（run rmu8ix6d7bupkpr 第 0 轮）",
+  "bucket": "mtnode-download",
+  "region": "oss-cn-beijing",
+  "publicBase": "https://www.mt-agent.com/mtnode/",
+  "pathMapping": "/mtnode/<key> => oss://<key>（http://mt-agent.com/mtnode/ 301 跳 https://www.mt-agent.com/mtnode/）",
+  "uploadCommand": "node site-src/publish.mjs upload <localFile> <ossKey>",
+  "uploadOrder": [
+    "1. assets/tutorial/ch01..ch11.png（先传图）",
+    "2. tutorial.html（新页面，依赖上面的图）",
+    "3. index.html（首页最后切，避免用户先落到缺图的教程页）"
+  ],
+  "summary": {
+    "requiredUploadCount": 13,
+    "requiredUploadBytes": 1978886,
+    "optionalUploadCount": 1,
+    "optionalUploadBytes": 3133127,
+    "allCount": 14,
+    "allBytes": 5112013,
+    "alreadyOnlineNoUpload": 3
+  },
+  "uploads": [
+    { "local": "E:\\dev\\tools\\pipeline-console\\web\\index.html", "key": "index.html", "bytes": 56967, "sha256": "A6F3DA191528DAFF8A43CE3E5B7C4B9183C58F1465B12DC5DAED566D9A2D53E0", "contentType": "text/html; charset=utf-8", "cacheControl": "no-cache, max-age=0", "publicUrl": "https://www.mt-agent.com/mtnode/index.html", "mustFlag": "--allow-root-index", "required": true, "ossStateBefore": "存在 · 57571 字节 · Last-Modified Sat, 19 Sep 2026 11:12:09 GMT（1.4.1 发布版，尚无绿色「使用方法」按钮、hero 区仍有按钮）", "note": "覆盖站点根首页；publish.mjs 硬防线要求显式加 --allow-root-index" },
+    { "local": "E:\\dev\\tools\\pipeline-console\\web\\tutorial.html", "key": "tutorial.html", "bytes": 67310, "sha256": "A01856383B5D3701579A05FAEA7DF131E8A19C26143F8A0429983535BA89212E", "contentType": "text/html; charset=utf-8", "cacheControl": "no-cache, max-age=0", "publicUrl": "https://www.mt-agent.com/mtnode/tutorial.html", "required": true, "ossStateBefore": "不存在（全新对象）", "note": "教程页本体；引用 11 张 assets/tutorial/chNN.png" },
+    { "local": "E:\\dev\\tools\\pipeline-console\\web\\assets\\tutorial\\ch01.png", "key": "assets/tutorial/ch01.png", "bytes": 140930, "sha256": "5AA5F1037CD6E1DA7E9F01FB2C051A21E06D72418AA826B986F6549D48E1F3CB", "contentType": "image/png", "publicUrl": "https://www.mt-agent.com/mtnode/assets/tutorial/ch01.png", "required": true, "ossStateBefore": "不存在（全新对象）", "chapter": "1. 准备工作" },
+    { "local": "E:\\dev\\tools\\pipeline-console\\web\\assets\\tutorial\\ch02.png", "key": "assets/tutorial/ch02.png", "bytes": 169312, "sha256": "1D821546D00F53975DFF3A2C582A0C0567333FB0364CEDE361CF2F4FB58611CC", "contentType": "image/png", "publicUrl": "https://www.mt-agent.com/mtnode/assets/tutorial/ch02.png", "required": true, "ossStateBefore": "不存在（全新对象）", "chapter": "2. 内容生成" },
+    { "local": "E:\\dev\\tools\\pipeline-console\\web\\assets\\tutorial\\ch03.png", "key": "assets/tutorial/ch03.png", "bytes": 166669, "sha256": "584175BC4FBD6088430C2267C5887440C6AEBB51469D88626F57CE38A5FDF5F4", "contentType": "image/png", "publicUrl": "https://www.mt-agent.com/mtnode/assets/tutorial/ch03.png", "required": true, "ossStateBefore": "不存在（全新对象）", "chapter": "3. 全局助手与工作流" },
+    { "local": "E:\\dev\\tools\\pipeline-console\\web\\assets\\tutorial\\ch04.png", "key": "assets/tutorial/ch04.png", "bytes": 167545, "sha256": "5921A693AF7A9469917B0FF7694816A5EFB0E1500E9F9C7629E5FC983095F840", "contentType": "image/png", "publicUrl": "https://www.mt-agent.com/mtnode/assets/tutorial/ch04.png", "required": true, "ossStateBefore": "不存在（全新对象）", "chapter": "4. 开发节点" },
+    { "local": "E:\\dev\\tools\\pipeline-console\\web\\assets\\tutorial\\ch05.png", "key": "assets/tutorial/ch05.png", "bytes": 174578, "sha256": "D13FF0562D93C0739F4D68FF98916EFB775BB9CB404B130C37ED9B13C06F7DB8", "contentType": "image/png", "publicUrl": "https://www.mt-agent.com/mtnode/assets/tutorial/ch05.png", "required": true, "ossStateBefore": "不存在（全新对象）", "chapter": "5. 会话" },
+    { "local": "E:\\dev\\tools\\pipeline-console\\web\\assets\\tutorial\\ch06.png", "key": "assets/tutorial/ch06.png", "bytes": 167439, "sha256": "437D394C0C59A97B05D3164F6FEA764EDC8A2E949710310304CE9E325B48377A", "contentType": "image/png", "publicUrl": "https://www.mt-agent.com/mtnode/assets/tutorial/ch06.png", "required": true, "ossStateBefore": "不存在（全新对象）", "chapter": "6. 长任务" },
+    { "local": "E:\\dev\\tools\\pipeline-console\\web\\assets\\tutorial\\ch07.png", "key": "assets/tutorial/ch07.png", "bytes": 196424, "sha256": "3153EF346E16A354695EA0152AD4017CB47B1173E8E6EA840F451C5B5C05E017", "contentType": "image/png", "publicUrl": "https://www.mt-agent.com/mtnode/assets/tutorial/ch07.png", "required": true, "ossStateBefore": "不存在（全新对象）", "chapter": "7. 工具 / 函数节点" },
+    { "local": "E:\\dev\\tools\\pipeline-console\\web\\assets\\tutorial\\ch08.png", "key": "assets/tutorial/ch08.png", "bytes": 176089, "sha256": "11873B5890F6943ED85DBA43AB62DAFFDD8CA84D5A579B4909AB07A92B7EF59D", "contentType": "image/png", "publicUrl": "https://www.mt-agent.com/mtnode/assets/tutorial/ch08.png", "required": true, "ossStateBefore": "不存在（全新对象）", "chapter": "8. 素材库" },
+    { "local": "E:\\dev\\tools\\pipeline-console\\web\\assets\\tutorial\\ch09.png", "key": "assets/tutorial/ch09.png", "bytes": 160060, "sha256": "CF25E1F28B2919EAB0450BEF8D0300A4EAC45420E5BCEF7A48B1E5EF66E2A3E8", "contentType": "image/png", "publicUrl": "https://www.mt-agent.com/mtnode/assets/tutorial/ch09.png", "required": true, "ossStateBefore": "不存在（全新对象）", "chapter": "9. 专家团" },
+    { "local": "E:\\dev\\tools\\pipeline-console\\web\\assets\\tutorial\\ch10.png", "key": "assets/tutorial/ch10.png", "bytes": 192826, "sha256": "BD9EABF7763168A62111034E36CA88E20CAC93289E4557F1D4058C98AC995CA3", "contentType": "image/png", "publicUrl": "https://www.mt-agent.com/mtnode/assets/tutorial/ch10.png", "required": true, "ossStateBefore": "不存在（全新对象）", "chapter": "10. 社区（工坊 / 讨论区）" },
+    { "local": "E:\\dev\\tools\\pipeline-console\\web\\assets\\tutorial\\ch11.png", "key": "assets/tutorial/ch11.png", "bytes": 142737, "sha256": "D8339970CAC51ED421791EA7896A41455DD29F29463BA7B2735CB618952A36AE", "contentType": "image/png", "publicUrl": "https://www.mt-agent.com/mtnode/assets/tutorial/ch11.png", "required": true, "ossStateBefore": "不存在（全新对象）", "chapter": "11. 其他（操作技巧与常见问题）" },
+    { "local": "E:\\dev\\tools\\pipeline-console\\web\\assets\\tutorial\\canvas-overview.png", "key": "assets/tutorial/canvas-overview.png", "bytes": 3133127, "sha256": "AA3FC479B897BF54AFAF35A68E3820BB9EC82FED11C49B9CA78ADB0C528FD0C2", "contentType": "image/png", "publicUrl": "https://www.mt-agent.com/mtnode/assets/tutorial/canvas-overview.png", "required": false, "ossStateBefore": "不存在（全新对象）", "note": "待拍板：index.html 与 tutorial.html 全文 0 次引用（grep 0 匹配），3.13 MB。若为分享 / OG 图或后续教程页要用，请确认后再传；否则可不传以免白占 bucket。" }
+  ],
+  "alreadyOnlineNoUpload": [
+    { "key": "downloads/MTNodeAIO-Setup-1.4.1.exe", "localBytes": 126164581, "ossBytes": 126164581, "ossLastModified": "Sat, 19 Sep 2026 11:12:17 GMT", "note": "index.html 的安装包下载目标，线上已存在且字节数与本地一致 → 无需重传" },
+    { "key": "downloads/MTNodeAIO-src-1.4.1.zip", "localBytes": 9495336, "ossBytes": 9495336, "ossLastModified": "Sat, 19 Sep 2026 11:12:17 GMT", "note": "index.html 的源码包下载目标，线上已存在且字节数与本地一致 → 无需重传" },
+    { "key": "screenshot.png", "localBytes": 1882462, "ossBytes": 1882462, "ossLastModified": "Sat, 19 Sep 2026 11:12:09 GMT", "note": "index.html 引用的界面截图，线上已有同尺寸对象（本轮未改，未逐字节校验 MD5）→ 无需重传" }
+  ],
+  "notReferencedNotNeeded": [
+    { "local": "web/assets/favicon.ico", "reason": "两页均无 rel=\"icon\" / favicon 引用（自包含页），无需上线" },
+    { "local": "web/assets/icon.png", "reason": "两页均未引用，无需上线" },
+    { "local": "web/index.html.template", "reason": "构建模板，非站点产物" },
+    { "local": "web/site-src/**", "reason": "设计 / 预览 / 发布脚本与留档，不进站点" },
+    { "local": "web/downloads/*（1.3.3 及更早）", "reason": "历史版本，保留兼容旧链接，本轮无改动" }
+  ],
+  "verification": {
+    "index.html": {
+      "heroButtonsRemoved": true,
+      "heroButtonEvidence": "当前 hero（206-215 行）仅 pills + h1 + lead，无 <div class=\"hero-cta\">、无任何 a.dl-btn；对照旧版 site-src/preview/index.html:316-320 存在 hero-cta + 「下载 Windows 安装包」按钮",
+      "heroMetaLineRemoved": true,
+      "heroMetaEvidence": "「Windows 10 / 11 x64 · NSIS 一键安装 · …」整行小字已删；对照 preview/index.html:458 与 index.html.template:92 仍存在该行；当前页 grep「离线可用」0 匹配，NSIS 只剩安装包卡片描述一行（223 行）",
+      "greenGuideButton": { "present": true, "line": 238, "href": "tutorial.html", "position": "dl-zone(218-235 行) 与 app-shot(240 行) 之间", "style": ".guide-btn: display:block;width:100%; 绿色边框/文字 var(--green)、15px 粗体、字距 6px（CSS 90-95 行）" },
+      "topNavGuide": { "text": "使用方法", "href": "tutorial.html", "line": 188, "i18n": "nav.guide（中「使用方法」/ 英「How to use」均已有词条）" },
+      "versionConsistency": "verTag/VER = 1.4.1，下载链接 downloads/MTNodeAIO-Setup-1.4.1.exe 与 MTNodeAIO-src-1.4.1.zip 均为 1.4.1 且线上已存在（此前 1.4.0/1.3.3 版本错位问题本轮已修复）",
+      "headlessRenderCheck": "无头 Edge 1280 宽抓图 + 识图独立核对：顶栏含「使用方法」；hero 区无按钮；无上述整行小字；橙框下载区与界面截图之间确有整行绿色「使用方法」按钮；下载按钮为「下载安装包 / 下载源码包」"
+    },
+    "tutorial.html": {
+      "tocCollapsible": true,
+      "tocEvidence": "aside.tut-nav > #tutFilter(搜索框) + #tutTree；脚本用 <details class=\"tut-ch\"> 逐章生成、d.open = (i<1) 只展开第一章（784-805 行）",
+      "keywordFilter": true,
+      "keywordFilterEvidence": "#tutFilter input 事件按章节标题 + 小节标题过滤，无匹配时显示 #tutEmpty「无匹配项」（808-829 行）",
+      "chapters": 11,
+      "chapterIds": ["ch1", "ch2", "ch3", "ch4", "ch5", "ch6", "ch7", "ch8", "ch9", "ch10", "ch11"],
+      "chapterTitles": ["1. 准备工作", "2. 内容生成", "3. 全局助手与工作流", "4. 开发节点", "5. 会话", "6. 长任务", "7. 工具 / 函数节点", "8. 素材库", "9. 专家团", "10. 社区（工坊 / 讨论区）", "11. 其他（操作技巧与常见问题）"],
+      "anchorArticle": "每章 section.chapter 带 id + h2[id=chN-h]，小节 h3[id=chN-M]，目录链接 a.href = '#' + h3.id，共 11 章锚点长文",
+      "oneImagePerChapter": true,
+      "imageList": ["assets/tutorial/ch01.png", "…", "assets/tutorial/ch11.png"],
+      "imageCount": 11,
+      "videoHiddenWhenUnset": true,
+      "videoEvidence": "TUTORIAL_VIDEO = { bvid: \"\", embedUrl: \"\", title: … }（758-762 行）；initVideo 里 url 为空时 box.hidden = true 直接隐藏（772 行）；HTML 上 #tutVideo 亦带 hidden 属性（154 行）。填 BV 号即显示",
+      "headlessRenderCheck": "无头 Edge 抓图 + 识图核对：左右两栏（左目录栏含搜索框 + 可展开章节列表，第一章默认展开；右侧第 1 章带配图），正文顶部无 B 站视频窗"
+    },
+    "assets": { "dir": "web/assets/tutorial/", "files": "ch01–ch11.png + canvas-overview.png，共 12 个文件，全部存在；总 4987736 字节" }
+  },
+  "warnings": [
+    { "level": "notice", "title": "上传顺序", "detail": "tutorial.html 引用的 11 张图先传，再传 tutorial.html，最后覆盖 index.html；否则会出现「页面已上线、图 404」的时间窗。" },
+    { "level": "decision", "title": "canvas-overview.png 是否上传待拍板", "detail": "3.13 MB，两页 0 引用。若它本是教程页配图但漏了 <img>，需先补引用再传；若作分享/OG 图请给出口径。" },
+    { "level": "observation", "title": "index.html 里 <section id=\"guide\">（使用流程 5 步）成为孤立区块", "detail": "顶栏「使用方法」已改指 tutorial.html，页脚也没有再链 #guide（grep href=\"#guide\" 0 匹配），该区块目前只能靠滚动看到。若是有意保留则无需处理。" },
+    { "level": "observation", "title": "死 CSS 残留", "detail": "index.html 114-115 行 a.dl-btn.ghost 规则随 hero 按钮删除后已无元素使用（无害，可顺手清）。" },
+    { "level": "observation", "title": "tutorial.html 非零外链页", "detail": "含 6 条外部链接（DeepSeek / 阿里云百炼 / 智谱 / Moonshot / apiyi 及 B 站空间），与自包含的 index.html 不同；教程内容需要，属预期。" },
+    { "level": "notice", "title": "覆盖首页需 --allow-root-index", "detail": "publish.mjs 硬防线：ossKey 为 index.html 时必须显式加该标志，否则拒绝执行。" }
+  ]
+}
