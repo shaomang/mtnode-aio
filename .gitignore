@@ -5,6 +5,7 @@ dist_check*/
 out/
 docs/
 release/
+test/
 *.blockmap
 *.nsis.7z
 
