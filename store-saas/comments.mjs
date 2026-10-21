@@ -6,7 +6,7 @@
  *   · 记录存 `db.comments`（结构见契约第五节），本模块不碰 HTTP、不碰钱包；
  *   · 软删除（`deleted:true` + `deletedAt` + `deletedBy` 留档）：记录永远在库里，
  *     只是不出现在列表、不计分、不计入评论数 —— 平均星 / 评论数一律**实时重算**；
- *   · 评分只属于**条目评论**（template / skill / app）：论坛话题 / 论坛回复的评论不参与评分
+ *   · 评分只属于**条目评论**（template / workflow / skill / app）：论坛话题 / 论坛回复的评论不参与评分
  *     （传了 `rating` 也忽略，见契约第二节「评分归属」）。
  *
  * ── 本模块定的两个口径（报告里也会写明，客户端与后台都按它对齐） ────────────
@@ -18,16 +18,17 @@
  *      论坛详情页里「评论」页签挂在话题下、逐条回复下面都能评论，被评论的是**话题**这份内容，
  *      所以「对象作者可删自己名下的评论」归话题作者。判定顺序：
  *      先 `db.forumReplies` 找回复 → 拿它的 `topicId` → `db.forumTopics` 找话题 → 话题的 `userId`。
- *      其它类型：`template` / `skill` / `app` 记录上的 `userId`；`forum_topic` 是话题的 `userId`。
+ *      其它类型：`template` / `workflow` / `skill` / `app` 记录上的 `userId`；`forum_topic` 是话题的 `userId`。
  */
 import crypto from "node:crypto";
 
 /** 可评论的对象类型（对外 targetKind 枚举唯一出口）。 */
-export const COMMENT_TARGET_KINDS = Object.freeze(["template", "skill", "app", "forum_topic", "forum_reply"]);
+export const COMMENT_TARGET_KINDS = Object.freeze(["template", "workflow", "skill", "app", "forum_topic", "forum_reply"]);
 /** 只有这三类**条目评论**能打分（论坛话题 / 回复不参与评分）。 */
-export const RATING_TARGET_KINDS = Object.freeze(["template", "skill", "app"]);
+export const RATING_TARGET_KINDS = Object.freeze(["template", "workflow", "skill", "app"]);
 export const COMMENT_TARGET_LABELS = Object.freeze({
   template: "模板",
+  workflow: "工作流",
   skill: "技能",
   app: "应用",
   forum_topic: "论坛话题",
@@ -205,6 +206,7 @@ export function createComments(deps) {
     if (!KINDS.has(kind) || !id) return err("COMMENT_INVALID_TARGET", "评论对象类型或 ID 无效");
     let rec = null;
     if (kind === "template") rec = (db.templates || []).find((x) => x && x.id === id) || null;
+    else if (kind === "workflow") rec = (db.workflows || []).find((x) => x && x.id === id) || null;
     else if (kind === "skill") rec = (db.skills || []).find((x) => x && x.id === id) || null;
     else if (kind === "app") {
       const list = (db.apps || []).filter((x) => x && x.id === id);

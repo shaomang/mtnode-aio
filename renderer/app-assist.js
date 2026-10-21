@@ -427,7 +427,11 @@ function assistDisplayWorkspace() {
    st.workspace 手填优先 > 所属画布项目根 > 应用默认目录，不再各处自写 || 兜底。
    「所属画布」= 会话自己那张图（canvasWfId），不是用户此刻看到的图：会话跑着的时候用户
    切去别的画布干活，工作目录不能跟着漂。所属画布还没加载进内存时（重启后直接聊老会话）
-   退回前台画布口径解析，开轮解析到画布对象后下一轮即归位。 */
+   退回前台画布口径解析，开轮解析到画布对象后下一轮即归位。
+   **助手会话是唯一例外**（bug 修复 · 与助手栏同一口径）：它按设计不绑画布（canvasWfId 恒空，
+   见 assistSessionRecord），若只走「手填 > 项目根 > 默认」三档，同一条会话在助手栏落在
+   画布工作目录、在会话视图却落进应用默认目录。所以给助手会话补「画布工作目录」这一档
+   （项目根仍优先，与助手栏 assistWorkspaceInfo 完全同序）；普通会话保持原三档，不跟着变。 */
 function sessionCanvasWf(st) {
   const id = st && st.canvasWfId;
   if (!id || typeof canvasWfByIdLoaded !== "function") return null;
@@ -445,6 +449,13 @@ function agentWorkspaceInfo(st) {
   if (manual) return { path: manual, source: "manual", root: null };
   const root = canvasProjectRoot(sessionCanvasWf(st));
   if (root.path) return { path: root.path, source: "project", root };
+  /* 助手会话（st.assist）：不绑画布，落到「当前前台画布的工作目录」—— 助手栏那条链
+     assistWorkspaceInfo 本来就认这一档，缺了它同一句话在两边会落进两个目录。
+     只是派生，不回写 st.workspace（回写会变成陈旧路径，切画布不再跟随）。 */
+  if (st && st.assist) {
+    const cw = canvasWorkspaceDir();
+    if (cw) return { path: cw, source: "canvas", root };
+  }
   const fb = String(S.dshWorkspaceFallback || "").trim();
   if (fb) return { path: fb, source: "default", root };
   return { path: "", source: "", root };
@@ -1048,11 +1059,11 @@ function fillAssistModelControls() {
   };
   const fillModels = (prov) => {
     const items = modelsFor(prov);
-    /* 回显「设置 · 默认模型」里的那一只（本次需求 · 单一真源）：助手栏不再有自己的一份；
-       存的模型不在该家清单里（老配置 / 刚换过服务商）就回落到该家第一只。 */
-    let cur = dshDefaultModelValue();
-    if (!cur || !items.some((x) => x.id === cur))
-      cur = (items[0] && items[0].id) || "";
+    /* 回显这条助手会话自己的模型（共识 q7 · 会话字段是唯一真源）：会话还没有模型时才
+       回落到「设置 · 默认模型」；存的模型不在该家清单里（老配置 / 刚换过服务商）
+       就回落到该家第一只。 */
+    let cur = assistOpt("model");
+    if (!cur || !items.some((x) => x.id === cur)) cur = dshDefaultModelValue();
     modelSel.innerHTML = "";
     if (!items.length) {
       addOpt(modelSel, "", I18n.t("（无可用模型）"));
@@ -1067,8 +1078,8 @@ function fillAssistModelControls() {
   };
   const mtnode = mtnodePiProviders();
   const dp = dshProvider();
-  let curProv = dshDefaultProviderRoute() || "deepseek-official";
-  provSel.innerHTML = "";
+  let curProv = assistOpt("provider");
+  if (!curProv) curProv = dshDefaultProviderRoute() || "deepseek-official";
   /* 官方路由对应的 DeepSeek 服务商被停用时，这条整体不列（与节点设置 / 会话菜单同口径） */
   const dsOk =
     typeof deepseekRouteSelectable === "function"
@@ -1081,22 +1092,29 @@ function fillAssistModelControls() {
     curProv = preferredAgentProviderRoute();
   }
   provSel.value = curProv;
+  provSel.value = curProv;
   S.assistProvider = curProv;
   fillModels(curProv);
   provSel.onchange = () => {
-    /* 改选服务商 = 改「设置 · 默认模型」的提供商（唯一真源），模型跟着清空走该家第一只 */
-    S.config.dsh.provider = String(provSel.value || "");
+    /* 改服务商 = 先改**这条会话**（共识 q7 唯一真源），同时同步“设置 · 默认模型”的
+       提供商（其它入口仍以它为新建会话的播种值）；模型清空后回落到该家第一只 */
+    const pv = String(provSel.value || "");
+    assistOptSet("provider", pv);
+    assistOptSet("model", "");
+    S.config.dsh.provider = pv;
     S.config.dsh.model = "";
-    S.assistProvider = S.config.dsh.provider;
-    S.assistModel = "";
-    fillModels(provSel.value);
+    fillModels(pv);
     persistAssistUi();
   };
   modelSel.onchange = () => {
-    S.config.dsh.model = String(modelSel.value || "");
-    if (!String(S.config.dsh.provider || "").trim())
-      S.config.dsh.provider = String(provSel.value || "");
-    S.assistModel = S.config.dsh.model;
+    const mv = String(modelSel.value || "");
+    assistOptSet("model", mv);
+    S.config.dsh.model = mv;
+    if (!String(S.config.dsh.provider || "").trim()) {
+      const pv2 = String(provSel.value || "");
+      S.config.dsh.provider = pv2;
+      assistOptSet("provider", pv2);
+    }
     persistAssistUi();
   };
 }
@@ -1360,9 +1378,14 @@ function renderAssistPanel(opts) {
   if (!list) return;
   const stickCap = captureConvStick(list, opts && opts.forceStick);
   list.innerHTML = "";
-  const msgs = S.assistMessages || [];
+  const bst = assistBoundSession();
+  /* 正文 / 运行态 / 运行键全部取自同一条会话（本轮需求 · 单一根源）：助手栏看到的
+     内容与左栏、会话视图是同一份，渲染口径也同一套（下方折组 + 200 条窗口）。 */
+  const msgs = assistMsgs();
+  const rk = assistRunKeyOf(bst);
+  const liveRun = bst ? sessionIsRunning(bst) : !!S.assistRunning;
   const scopeCurrent = assistScopeIsCurrent();
-  if (!msgs.length && !S.assistRunning) {
+  if (!msgs.length && !liveRun) {
     const empty = document.createElement("div");
     empty.className = "assist-empty";
     empty.textContent = scopeCurrent
@@ -1374,10 +1397,70 @@ function renderAssistPanel(opts) {
         );
     list.appendChild(empty);
   }
-  /* 消息逐条渲染（用户消息下方的「↶ 回滚」入口已随会话轮次回滚功能一并移除） */
-  for (let i = 0; i < msgs.length; i++) {
+  /* 消息逐条渲染（用户消息下方的「↶ 回滚」入口已随会话轮次回滚功能一并移除）。
+     与会话视图完全同构（共识 q3）：可见窗口 = 最近 AGENT_MAX_VISIBLE_ITEMS 条（含分段），
+     最前端一行「显示更早内容」按 st._visItems 展开；手动压缩留下的折组用同一份
+     st.foldOpen 收起 / 展开。窗宽不同，内容与交互一致。 */
+  const slice = bst
+    ? agentEntrySlice(bst)
+    : { start: 0, skip: 0, msgs, total: msgs.length, shown: msgs.length, vis: msgs.length };
+  const hiddenEntries = Math.max(0, (slice.total || 0) - (slice.shown || 0));
+  if (bst && hiddenEntries > 0) {
+    const loadRow = document.createElement("div");
+    loadRow.className = "agent-load-earlier";
+    const btn = document.createElement("button");
+    btn.textContent = I18n.t("显示更早内容（已折叠 {n} 条）", { n: hiddenEntries });
+    btn.title = I18n.t("每个会话最多同时渲染 200 条，点击展开更早的 200 条");
+    btn.addEventListener("click", () => {
+      bst._visItems = slice.vis + AGENT_LOAD_MORE_ITEMS;
+      renderAssistPanel();
+    });
+    loadRow.appendChild(btn);
+    list.appendChild(loadRow);
+  }
+  const foldSeen = Object.create(null);
+  const foldCollapsed = Object.create(null);
+  let foldBox = null;
+  const renderMsgs = bst ? slice.msgs : msgs;
+  const start = bst ? slice.start : 0;
+  for (let i = start; i < renderMsgs.length; i++) {
+    const m = renderMsgs[i];
+    const gid = bst && m && m._fold ? String(m._fold) : "";
+    if (!gid) foldBox = null;
+    if (gid) {
+      if (!foldSeen[gid]) {
+        foldSeen[gid] = 1;
+        const rec = compactRecOf(bst, gid);
+        const open = !!(bst.foldOpen && bst.foldOpen[gid]);
+        try {
+          list.appendChild(
+            agentFoldRowEl(
+              bst,
+              gid,
+              (rec && rec.count) || agentFoldCountOf(slice.msgs, gid),
+              rec && rec.at,
+              open,
+            ),
+          );
+        } catch (_) {}
+        foldBox = null;
+        if (!open) {
+          foldCollapsed[gid] = 1;
+          continue;
+        }
+        foldBox = document.createElement("div");
+        foldBox.className = "agent-fold-body";
+        list.appendChild(foldBox);
+      } else if (foldCollapsed[gid]) {
+        continue;
+      }
+    }
     try {
-      list.appendChild(dshMsgBlock(msgs[i], "assist", i));
+      (foldBox || list).appendChild(
+        dshMsgBlock(m, (bst && bst.id) || "assist", i, {
+          segFrom: i === start ? slice.skip : 0,
+        }),
+      );
     } catch (e) {
       /* 单条消息坏数据不拖垮整表：跳过并留痕，避免列表停在旧消息处、新消息永远不出现 */
       try {
@@ -1385,7 +1468,7 @@ function renderAssistPanel(opts) {
       } catch (_) {}
     }
   }
-  if (S.assistRunning) {
+  if (liveRun) {
     const row = document.createElement("div");
     row.className = "dsh-msg dsh-ai";
     const head = document.createElement("div");
@@ -1398,21 +1481,31 @@ function renderAssistPanel(opts) {
     const think = document.createElement("div");
     think.className = "dsh-think-live";
     think.id = "assist-think";
+    /* 思考 / 正文都按**这条会话的运行键**取（与左侧会话视图同一个 trace 源），
+       所以两边流式显示的字一字不差。 */
     think.textContent = traceThinkDisplay(
-      "assist",
-      (S.thinking && S.thinking.assist && S.thinking.assist[0]) || "",
+      rk,
+      (S.thinking && S.thinking[rk] && S.thinking[rk][0]) ||
+        (bst ? agentThinkText(bst, null) : "") ||
+        "",
     );
     row.appendChild(think);
     const tools = document.createElement("div");
     tools.className = "dsh-tools";
     tools.id = "assist-tools";
-    for (const t of S.assistLiveTools || [])
-      tools.appendChild(dshToolDetailsEl(t, true, "assist"));
+    const liveTools =
+      (bst && Array.isArray(bst._liveTools) && bst._liveTools) ||
+      S.assistLiveTools ||
+      [];
+    for (const t of liveTools) tools.appendChild(dshToolDetailsEl(t, true, rk));
     row.appendChild(tools);
     const body = document.createElement("div");
     body.className = "dsh-msg-body dsh-stream";
     body.id = "assist-stream";
-    body.textContent = traceSayDisplay("assist", S.assistPending);
+    body.textContent = traceSayDisplay(
+      rk,
+      (bst && bst._pending) || S.assistPending || "",
+    );
     row.appendChild(body);
     list.appendChild(row);
   }
@@ -1426,7 +1519,7 @@ function renderAssistPanel(opts) {
   scheduleHistoryCollapse(list, reapplyStick);
   const sendBtn = $("#assistSend");
   if (sendBtn) {
-    if (S.assistRunning) {
+    if (liveRun) {
       sendBtn.textContent = I18n.t("■ 终止");
       sendBtn.classList.add("danger");
     } else {
@@ -1437,13 +1530,13 @@ function renderAssistPanel(opts) {
   const presetSel = $("#assistPresetSel");
   syncAssistPresetOptions(presetSel);
   if (presetSel && document.activeElement !== presetSel)
-    presetSel.value = S.assistPreset || AGENT_PRESET_DEFAULT;
+    presetSel.value = assistOpt("preset");
   const effortSel = $("#assistEffortSel");
   if (effortSel && document.activeElement !== effortSel) {
     /* 白名单回显：词汇表内档位原样保留（不重置已存档位），未露出 UI 的档位仅显示回落档 */
-    const cur = normalizeAgentEffort(S.assistEffort);
+    const cur = normalizeAgentEffort(assistOpt("effort"));
     effortSel.value = AGENT_EFFORT_UI_ORDER.includes(cur) ? cur : "high";
-    if (S.assistEffort !== cur) S.assistEffort = cur;
+    if (S.assistEffort !== cur) assistOptSet("effort", cur);
   }
   /* 「上下文压缩」档位（本次需求 · 紧接在思考强度下一行）：清单按语言重建 + 回显生效值；
      自定义档的触发线输入框显隐 / 回填也在这里一并同步 */
@@ -1519,6 +1612,59 @@ function assistBindSession(st) {
   if (st.model) S.assistModel = st.model;
   if (st.effort) S.assistEffort = st.effort;
   return st;
+}
+/* 助手会话正文的**唯一取法**（本轮需求 · 全局助手 = 会话的第二视图）：
+   永远以「当前绑定的那条助手会话」为准，顺手把 S.assistMessages 指回同一个数组。
+   为什么必须这样：agentEnsureSessionBody 的 `Object.assign(st, got)` 会把 st.messages
+   整个换成盘上那份新数组 —— 旧引用一旦残留在 S.assistMessages 上，助手栏此后 push 的
+   每一条都进不了会话（左栏 / 会话视图 / 落盘都看不见），正是用户报的
+   「全局助手的内容在会话里没有，只有标题和用户输入」。 */
+function assistMsgs() {
+  const st = assistBoundSession();
+  if (st) {
+    if (!Array.isArray(st.messages)) st.messages = [];
+    S.assistMessages = st.messages;
+    return st.messages;
+  }
+  if (!Array.isArray(S.assistMessages)) S.assistMessages = [];
+  return S.assistMessages;
+}
+/* 助手这一轮真正使用的运行键（本轮需求 · 单一根源）：就是那条助手会话的运行链
+   "agent:<会话id>" —— 与所有其它会话同一条链。全局助手不再有自己的 "assist" 运行根：
+   轨迹 / 浏览器动态归属 / token 台账 / 运行队列 / 停止按钮 / 会话视图的流式正文
+   全部按这一个 key 归集，两边看到的必然是同一份。 */
+function assistRunKeyOf(st) {
+  const sid = st && st.id ? String(st.id) : String(S.assistSessionId || "");
+  return sid ? "agent:" + sid : "assist";
+}
+/* 助手这一轮的档位（共识 q7：**会话字段是唯一真源**）：
+   预设 / 服务商 / 模型 / 思考强度都跟着那条助手会话走 —— 助手栏的下拉就是改会话字段；
+   S.assist* 只剩「还没有会话时新建一条」的播种值（以及老配置的兜底），不再是第二份真源。 */
+const ASSIST_OPT_FALLBACK = {
+  preset: () => S.assistPreset || AGENT_PRESET_DEFAULT,
+  provider: () => S.assistProvider || "deepseek-official",
+  model: () => S.assistModel || "",
+  effort: () => S.assistEffort || "high",
+};
+function assistOpt(key) {
+  const st = assistBoundSession();
+  if (st) {
+    const v = st[key];
+    if (v !== undefined && v !== null && String(v).trim() !== "") return v;
+  }
+  const f = ASSIST_OPT_FALLBACK[key];
+  return f ? f() : "";
+}
+function assistOptSet(key, val) {
+  const st = assistBoundSession();
+  if (st) {
+    st[key] = val;
+    agentMarkSessionDirty(st.id);
+  }
+  if (key === "preset") S.assistPreset = val;
+  else if (key === "provider") S.assistProvider = val;
+  else if (key === "model") S.assistModel = val;
+  else if (key === "effort") S.assistEffort = val;
 }
 /* 解绑（清空 / 删除当前那条）：助手栏回空白态，旧会话留在左栏，什么都不删。 */
 function assistUnbindSession() {
@@ -1624,11 +1770,12 @@ async function assistSend(text) {
   if (S.assistRunning) return;
   let t = String(text || "").trim();
   if (!t) return;
-  /* 同一条助手会话只允许一条运行线（共识 q10）：它正在会话视图里跑，助手栏不抢跑 */
+  /* 同一条助手会话只允许一条运行线（共识 q10）：它已经在跑，助手栏这句话就进同一条
+     发送队列（与其它会话同一口径），等这一轮结束按序发出，不抢跑、也不丢。 */
   const busySt = assistBoundSession();
   if (busySt && typeof sessionIsRunning === "function" && sessionIsRunning(busySt)) {
-    toast(I18n.t("这条助手会话正在会话窗口里运行，请先在那里结束本轮"), "warn");
-    return;
+    await agentEnqueueMessage(busySt, t, { sessionId: busySt.id });
+    return null;
   }
   if (t.charAt(0) === "\u3001") t = "/" + t.slice(1);
   const skillWrap = await resolveSkillSlash(t);
@@ -1650,28 +1797,37 @@ async function assistSend(text) {
   const aidSt = assistEnsureSessionForSend(t);
   if (!aidSt.title || aidSt.title === I18n.t("新会话"))
     aidSt.title = assistSessionTitleOf(t);
-  if (!Array.isArray(S.assistMessages)) S.assistMessages = [];
+  /* 正文一律取自会话（见 assistMsgs）：这一轮的每一条都直接落到这条会话上 */
+  const msgs = assistMsgs();
+  const rk = assistRunKeyOf(aidSt);
   const assistUm = { role: "user", content: t, at: Date.now() };
-  S.assistMessages.push(assistUm);
+  msgs.push(assistUm);
   /* 不裁条数：这是会话正文（与其它会话同一口径「token 出入量全部保留」）。
      旧实现把 config.assistMessages 截到 80 条，那是配置文件的体积保护；
      正文搬进 agent-sessions 之后这条上限必须去掉，否则助手会话会被悄悄截断。 */
-  /* 这一轮用的模型 / 预设 / 强度回写进会话（共识 q15：它们随会话保存） */
-  if (aidSt) {
-    aidSt.preset = S.assistPreset || AGENT_PRESET_DEFAULT;
-    aidSt.provider = S.assistProvider || "deepseek-official";
-    aidSt.model = S.assistModel || "";
-    aidSt.effort = S.assistEffort || "high";
-  }
+  /* 这一轮的档位不再从助手栏镜像回写会话（共识 q7：**会话字段是唯一真源**）：
+     下拉改的就是会话字段（assistOptSet），这里一个字都不覆盖 —— 否则镜像里那份旧值
+     会把用户刚在会话菜单里选的模型盖回去。 */
   S.assistRunning = true;
   S.assistPending = "";
   S.assistLiveTools = [];
+  /* 会话侧的流式字段一起清（会话视图读的是这两个 + 会话自己的 live 盒） */
+  if (aidSt) {
+    aidSt._pending = "";
+    aidSt._liveTools = [];
+    aidSt._liveBox = null;
+  }
   S.assistRunActive = true;
+  /* 运行态也写在会话上（本轮需求 · 单一根源）：st.running 是「这条会话在跑」的唯一真源，
+     sessionIsRunning / 左栏「运行中」徽标 / 会话视图的流式正文 / 运行队列 / 全部终止
+     读到的是同一位。S.assistRunning 退化成助手栏自己的界面镜像（下方 finally 一起落）。 */
+  if (aidSt) aidSt.running = true;
+  agentLiveWatchBegin(aidSt);
   beginSaveNodeHold();
   S.assistRunWorkspace =
     assistResolveWorkspace() || S.dshWorkspaceFallback || "";
   if (!S.thinking) S.thinking = {};
-  S.thinking.assist = [""];
+  S.thinking[rk] = [""];
   persistAssistUi();
   /* 用户这条消息立刻进会话（左栏能看到它在跑）：与其它会话一样走合并窗口落盘 */
   assistPersistBound({ touch: true });
@@ -1679,6 +1835,14 @@ async function assistSend(text) {
   /* 左栏这一行也要立刻显示「运行中」（它由助手栏点火，见 mkRow 的 assistBusy） */
   renderAgentSessionSidebar();
   updateRunQueuePanel();
+  /* 会话视图正看着这条助手会话时立刻重建：用户刚发的这一条与「运行中」的流式行都得跟着出现。
+     两端读的是同一条 messages、同一条 runKey 轨迹（本轮需求 · 单一根源），所以这里是
+     纯重绘，不另造数据；漏了它，会话视图会停在上一轮的画面上（两边内容对不上的直接原因）。 */
+  if (aidSt && typeof agentViewIs === "function" && agentViewIs(aidSt)) {
+    try {
+      renderAgentSession();
+    } catch (_) {}
+  }
 
   /* 与画布无关（Gate B · 助手侧）：本轮不注册画布三件套，也不取整张画布快照。
      **本次开发需求：不再由用户按按钮声明，改为按这条消息自动判定**（按钮已移除）——
@@ -1699,7 +1863,7 @@ async function assistSend(text) {
     await assistAppSnapshot({ canvasFree: assistCanvasFree }),
   );
   /* 历史存档里曾被回滚的轮次消息不进上下文（activeSessionMessages 无标记时不复制数组） */
-  const assistHist = activeSessionMessages(S.assistMessages);
+  const assistHist = activeSessionMessages(msgs);
   const hist = assistHist
     /* 界面痕迹（_src："user-closed" 的「用户主动关闭会话」状态行等）不进模型上下文：
        它没有正文，混进去只会变成一条空的「用户：」 */
@@ -1834,10 +1998,10 @@ async function assistSend(text) {
           join: "",
           sig: dshRunSigOf({
             workspace: S.assistRunWorkspace || S.dshWorkspaceFallback || "",
-            model: S.assistModel || "",
-            provider: S.assistProvider || "deepseek-official",
-            preset: S.assistPreset || AGENT_PRESET_DEFAULT,
-            effort: S.assistEffort || "high",
+            model: assistOpt("model") || "",
+            provider: assistOpt("provider"),
+            preset: assistOpt("preset"),
+            effort: assistOpt("effort"),
             pure: assistPure,
             lean: typeof dshLeanToolsOn === "function" ? dshLeanToolsOn() : false,
             noCanvas: assistCanvasFree,
@@ -1862,12 +2026,12 @@ async function assistSend(text) {
   let assistHitMaxTokens = false;
   try {
     const final = await dshRunTask(input, {
-      runKey: "assist",
+      runKey: rk,
       workspace: S.assistRunWorkspace || S.dshWorkspaceFallback || "",
-      preset: S.assistPreset || AGENT_PRESET_DEFAULT,
-      provider: S.assistProvider || "deepseek-official",
-      model: S.assistModel || undefined,
-      effort: S.assistEffort || "high",
+      preset: assistOpt("preset"),
+      provider: assistOpt("provider"),
+      model: assistOpt("model") || undefined,
+      effort: assistOpt("effort"),
       systemPrompt,
       /* 纯净模式（助手栏「模式」菜单里那一枚 · 本次需求）：与会话窗口同一条链 ——
          systemPrompt 置空 + pure 标记下发网关（网关强制空预设文本、引擎按 MTNODE_PURE 移除人设）。 */
@@ -1899,9 +2063,14 @@ async function assistSend(text) {
         if (type === "retry") {
           /* resumed=true：整轮内容（正文 / 工具 / 用量 / 思考）一律保留，这里一行都不动 */
           if (data && data.resumed) return;
-          if (S.thinking) S.thinking.assist = [""];
+          if (S.thinking) S.thinking[rk] = [""];
           S.assistPending = "";
           S.assistLiveTools = [];
+          if (aidSt) {
+            aidSt._pending = "";
+            aidSt._liveTools = [];
+            aidSt._liveBox = null;
+          }
           const el = document.getElementById("assist-stream");
           if (el) el.textContent = "";
           /* 思考槽就地清一次：renderAssistPanel 会按清空后的缓冲重建这一行 */
@@ -1911,47 +2080,57 @@ async function assistSend(text) {
           return;
         }
         if (type === "reasoning" && data && data.text) {
-          pushThinking("assist", 0, data.text);
-          const el = document.getElementById("assist-think");
-          if (el)
-            el.textContent = traceThinkDisplay(
-              "assist",
-              (S.thinking && S.thinking.assist && S.thinking.assist[0]) || "",
-            );
+          pushThinking(rk, 0, data.text);
+          assistLiveTick(aidSt, rk);
         } else if (type === "tool" && data && data.name) {
-          /* 工具调用只进 assistLiveTools（与运行轨迹的 tool 段），不污染思考文本 */
+          /* 工具调用只进 liveTools（与运行轨迹的 tool 段），不污染思考文本 */
+          const lt = {
+            callId: data.callId,
+            turn: data.turn,
+            step: data.step,
+            name: data.name,
+            args: data.args || "",
+            result: null,
+            error: null,
+            at: Date.now(),
+          };
           S.assistLiveTools = S.assistLiveTools || [];
           if (!S.assistLiveTools.some((x) => x.callId === data.callId))
-            S.assistLiveTools.push({
-              callId: data.callId,
-              turn: data.turn,
-              step: data.step,
-              name: data.name,
-              args: data.args || "",
-              result: null,
-              error: null,
-              at: Date.now(),
-            });
+            S.assistLiveTools.push(lt);
+          /* 会话侧读的是会话自己的 _liveTools（与普通会话同一个字段）：两边同一份 */
+          if (aidSt) {
+            if (!Array.isArray(aidSt._liveTools)) aidSt._liveTools = [];
+            if (!aidSt._liveTools.some((x) => x.callId === data.callId))
+              aidSt._liveTools.push(lt);
+          }
           renderAssistPanel();
+          assistLiveTick(aidSt, rk, true);
         } else if (type === "tool-result" && data && data.callId) {
           S.assistLiveTools = S.assistLiveTools || [];
           const tool = S.assistLiveTools.find((x) => x.callId === data.callId);
           if (tool) {
             tool.result = Array.isArray(data.content) ? data.content : [];
             tool.error = data.error || null;
+            const lt2 =
+              aidSt && Array.isArray(aidSt._liveTools)
+                ? aidSt._liveTools.find((x) => x.callId === data.callId)
+                : null;
+            if (lt2) {
+              lt2.result = tool.result;
+              lt2.error = tool.error;
+            }
             renderAssistPanel();
+            assistLiveTick(aidSt, rk, true);
           }
         } else if (type === "text" && data && data.text) {
           S.assistPending = (S.assistPending || "") + data.text;
-          const el = document.getElementById("assist-stream");
-          if (el) el.textContent = traceSayDisplay("assist", S.assistPending);
-          scrollElToBottomIfStuck($("#assistList"));
+          if (aidSt) aidSt._pending = (aidSt._pending || "") + data.text;
+          assistLiveTick(aidSt, rk);
         } else if (type === "error" && data && data.message) {
           if (S.assistStopRequested || isCancelishError(data.message)) return;
           S.assistPending = (S.assistPending || "") + "\n⚠ " + data.message;
-          const el = document.getElementById("assist-stream");
-          if (el) el.textContent = traceSayDisplay("assist", S.assistPending);
-          scrollElToBottomIfStuck($("#assistList"));
+          if (aidSt) aidSt._pending = (aidSt._pending || "") + "\n⚠ " + data.message;
+          assistLiveTick(aidSt, rk);
         }
       },
     });
@@ -1961,21 +2140,21 @@ async function assistSend(text) {
       const stopped = stripStreamErrors(S.assistPending);
       const autoStop =
         typeof dshRunAutoStoppedSinceStart === "function" &&
-        dshRunAutoStoppedSinceStart("assist");
+        dshRunAutoStoppedSinceStart(rk);
       if (autoStop) {
-        S.assistMessages.push({
+        msgs.push({
           role: "assistant",
           content: stopped || I18n.t("（已终止）"),
           at: Date.now(),
         });
       } else {
         if (String(stopped || "").trim())
-          S.assistMessages.push({
+          msgs.push({
             role: "assistant",
             content: stopped,
             at: Date.now(),
           });
-        S.assistMessages.push({
+        msgs.push({
           role: "user",
           content: "",
           at: Date.now(),
@@ -2007,14 +2186,14 @@ async function assistSend(text) {
       /* 思考与输出分家：reasoning = 按步分段的纯思考（不含「🔧」），
          segments = 本轮轨迹段快照，重绘后仍能还原「思考 / 正文 / 工具」步序 */
       const rsn = traceThinkDisplay(
-        "assist",
-        (S.thinking && S.thinking.assist && S.thinking.assist[0]) || "",
+        rk,
+        (S.thinking && S.thinking[rk] && S.thinking[rk][0]) || "",
       );
       if (String(rsn).trim()) msg.reasoning = rsn;
-      attachTraceSegments(msg, "assist");
+      attachTraceSegments(msg, rk);
       if (Array.isArray(S.assistLiveTools) && S.assistLiveTools.length)
         msg.tools = S.assistLiveTools.slice();
-      S.assistMessages.push(msg);
+      msgs.push(msg);
     }
   } catch (e) {
     const msg = (e && e.message) || String(e);
@@ -2026,8 +2205,8 @@ async function assistSend(text) {
       /* 用户主动关闭（本次需求）：助手这一轮同样只落中性状态行，不弹红 toast */
       const body = stripStreamErrors(S.assistPending);
       if (body.trim())
-        S.assistMessages.push({ role: "assistant", content: body, at: Date.now() });
-      S.assistMessages.push({
+        msgs.push({ role: "assistant", content: body, at: Date.now() });
+      msgs.push({
         role: "user",
         content: "",
         at: Date.now(),
@@ -2040,17 +2219,17 @@ async function assistSend(text) {
          取代原来的（已终止），已写出的正文照旧保留。看门狗自动终止不算用户操作。 */
       const autoStop =
         typeof dshRunAutoStoppedSinceStart === "function" &&
-        dshRunAutoStoppedSinceStart("assist");
+        dshRunAutoStoppedSinceStart(rk);
       if (autoStop) {
-        S.assistMessages.push({
+        msgs.push({
           role: "assistant",
           content: body || I18n.t("（已终止）"),
           at: Date.now(),
         });
       } else {
         if (body.trim())
-          S.assistMessages.push({ role: "assistant", content: body, at: Date.now() });
-        S.assistMessages.push({
+          msgs.push({ role: "assistant", content: body, at: Date.now() });
+        msgs.push({
           role: "user",
           content: "",
           at: Date.now(),
@@ -2059,7 +2238,7 @@ async function assistSend(text) {
         });
       }
     } else {
-      S.assistMessages.push({
+      msgs.push({
         role: "assistant",
         content: I18n.t("助手失败：") + msg,
         at: Date.now(),
@@ -2073,7 +2252,16 @@ async function assistSend(text) {
     S.assistRunWorkspace = null;
     S.assistPending = "";
     S.assistLiveTools = [];
-    if (S.thinking) S.thinking.assist = [""];
+    if (aidSt) {
+      aidSt._pending = "";
+      aidSt._liveTools = [];
+      aidSt._liveBox = null;
+    }
+    if (S.thinking) S.thinking[rk] = [""];
+    /* 会话上的「运行中」一起收（st.running 是唯一真源：左栏徽标 / 会话视图的运行位 /
+       运行队列 / 全部终止读的都是它） */
+    if (aidSt) aidSt.running = false;
+    agentLiveWatchEnd(aidSt);
     /* 本轮的结果（正文 / 思考 / 工具）写回当前助手会话并落盘 —— 会话视图与左栏读的就是它 */
     assistPersistBound({ touch: true });
     persistAssistUi();
@@ -2088,14 +2276,81 @@ async function assistSend(text) {
     } catch (_) {}
     updateRunQueuePanel();
     endSaveNodeHold();
+    /* 这一轮收尾后按序发出排队中的下一条（与其它会话同一条队列、同一套排水口）：
+       队列是那条会话自己的，切视图 / 切会话都不影响它。 */
+    if (aidSt) agentDrainQueue(aidSt);
   }
 }
 
+/* 助手这一轮每来一块（思考 / 正文 / 工具 / 报错）就把两边一起刷一次（本轮需求 · 单一根源）：
+   · 助手栏：只就地改 live 行的那几个元素（正文 / 思考），不整表重建；
+   · 会话视图若正看着这条会话：走会话自己那一套重绘（agentUiSoon 合并帧 + paintAgentStream /
+     agentLiveRepaint），与在会话里直接跑一轮的显示完全同一条路。
+   两边都按**同一个运行键**取轨迹，所以字面完全一致。 */
+function assistLiveTick(st, rk, toolsChanged) {
+  const list = document.getElementById("assistList");
+  if (list) {
+    const body = document.getElementById("assist-stream");
+    if (body)
+      body.textContent = traceSayDisplay(
+        rk,
+        (st && st._pending) || S.assistPending || "",
+      );
+    const th = document.getElementById("assist-think");
+    if (th)
+      th.textContent = traceThinkDisplay(
+        rk,
+        (S.thinking && S.thinking[rk] && S.thinking[rk][0]) || "",
+      );
+    scrollElToBottomIfStuck(list);
+  }
+  if (!st || typeof agentViewIs !== "function") return;
+  if (!agentViewIs(st)) return;
+  if (toolsChanged) agentUiSoon("tools", () => agentLiveRepaint(st));
+  else
+    agentUiSoon("stream", () => {
+      paintAgentStream(st);
+      if (typeof updateAgentLiveThink === "function") updateAgentLiveThink(st);
+    });
+}
+
+/* 助手栏发送的唯一入口（本轮需求 · 单一根源）：与会话视图里打一句话走**同一条链**
+   （agentSessionSend）—— 忙就进同一条发送队列、空闲才开轮，两侧的行为不可能再分叉。
+   「发送才建会话」的旧口径保留在这里：还没有当前助手会话就先建一条再交给它。 */
+async function assistPanelSend(text) {
+  const t = String(text || "").trim();
+  if (!t) return null;
+  if (S.assistRunning) return null; /* 运行中由界面按钮走 assistStop，不在这里抢跑 */
+  const preSt = assistBoundSession();
+  if (
+    preSt &&
+    !preSt._lcLoaded &&
+    !preSt._lcMissing &&
+    typeof agentEnsureSessionBody === "function"
+  )
+    await agentEnsureSessionBody(preSt);
+  const st = assistEnsureSessionForSend(t);
+  if (!st) return null;
+  if (!st.title || st.title === I18n.t("新会话"))
+    st.title = assistSessionTitleOf(t);
+  agentMarkSessionDirty(st.id);
+  return agentSessionSend(text, { sessionId: st.id });
+}
+
 function assistStop() {
-  if (!S.assistRunning) return;
+  /* 停止的唯一口径 = 这条助手会话在跑（本轮需求 · 单一根源）：不管这一轮是从助手栏
+     还是从会话视图发起的，按的都是同一个运行键 —— 面板上的「■ 终止」在会话视图发起
+     的那一轮里同样有效（否则 S.assistRunning 为假就什么都不做，用户点了没反应）。 */
+  const st = assistBoundSession();
+  const running =
+    !!S.assistRunning ||
+    (st && typeof sessionIsRunning === "function" && sessionIsRunning(st));
+  if (!running) return;
   S.assistStopRequested = true;
   S.assistRunActive = false;
-  dshCancelActive("assist");
+  /* 取消的是**会话的运行链**（本轮需求 · 单一根源）：与在会话视图里点停止是同一条命令，
+     所以运行队列里也只有那一行、点哪儿都一样。 */
+  dshCancelActive(assistRunKeyOf(st));
   updateRunQueuePanel();
 }
 
@@ -2955,8 +3210,74 @@ function agentSessionMetaForDisk(s) {
     devContract: s._devContract || "",
   };
 }
+/* ── 轮中增量落盘（共识 q12 / q16：所有会话统一，会话运行链自己的落盘策略）──────────
+   过去正文 / 思考只在这一轮**结束时**才进 messages 并写盘，一崩 / 一刷窗 / 一强制重启，
+   整轮回复全没了 —— 盘上只剩轮首落的那条用户消息，界面上就是「会话里只有标题和用户输入」
+   （用户报的正是这个现场：磁盘上那条会话只有一条 174 字的用户消息，时间戳停在轮首）。
+   现在这一轮还在跑的时候，每 2 秒把轨迹里**已经到达**的思考 / 正文 / 工具段作为一条
+   「进行中」的助手消息一起写进会话文件：崩溃后它就在盘上，重启即见，绝不回退成空白。
+   · 它不读也不写 st.messages（内存里的会话正文一条都不提前动）：只在序列化的那一刻
+     追加一条，所以历史计算 / 计划线 / token 归集看到的东西与改造前完全一样；
+   · 只在 running 时存在，轮末 agentLiveWatchEnd 一收就没了（正常收轮永远只落一份完整结果）。 */
+const AGENT_LIVE_SAVE_MS = 2000;
+function agentLiveWatchBegin(st) {
+  if (!st || !st.id) return;
+  agentLiveWatchEnd(st);
+  st._liveSaveTimer = setInterval(() => {
+    if (!st.running) {
+      agentLiveWatchEnd(st);
+      return;
+    }
+    try {
+      if (!agentLivePartialMsg(st)) return; /* 还没有任何产出：不必写盘 */
+      agentMarkSessionDirty(st.id);
+    } catch (_) {}
+  }, AGENT_LIVE_SAVE_MS);
+}
+function agentLiveWatchEnd(st) {
+  if (st && st._liveSaveTimer) {
+    clearInterval(st._liveSaveTimer);
+    st._liveSaveTimer = null;
+  }
+}
+/* 这一轮「到此刻为止」的正文快照（从轨迹取，不碰 messages）：
+   没有产出就返回 null（不落空壳）。段快照一并带上，轨迹 / 改动两栏重启后也读得出来。 */
+function agentLivePartialMsg(st) {
+  if (!st || !st.id || !st.running) return null;
+  let segs = [];
+  try {
+    segs = traceSegmentsOf("agent:" + st.id) || [];
+  } catch (_) {
+    return null;
+  }
+  const sayParts = [];
+  const thinkParts = [];
+  for (const s of segs) {
+    if (!s) continue;
+    if (s.k === "say") sayParts.push(String(s.text || ""));
+    else if (s.k === "think") thinkParts.push(String(s.text || ""));
+  }
+  const say = sayParts.join("");
+  const think = thinkParts.join("\n");
+  if (!String(say).trim() && !String(think).trim()) return null;
+  const m = { role: "assistant", content: say, at: Date.now(), _partial: true };
+  if (String(think).trim()) m.reasoning = think;
+  try {
+    const snap = agentSegsForDisk(segs);
+    if (snap && snap.length) m.segments = snap;
+  } catch (_) {}
+  return m;
+}
 /* 会话正文 = 落盘白名单里「除索引元数据以外」的那一份（与原 config.agentSessions 逐字同构） */
 function agentSessionBodyForDisk(s) {
+  /* 轮中增量（见 agentLivePartialMsg）：这一轮还在跑就把已到达的那半段一起写下去。
+     只在这一刻追加进**序列化结果**，内存里的 s.messages 一字不动。 */
+  let partial = null;
+  try {
+    partial = agentLivePartialMsg(s);
+  } catch (_) {
+    partial = null;
+  }
   return Object.assign({}, agentSessionMetaForDisk(s), {
     /* 整对象落盘（含 reasoning / tools / segments / usageSteps），**条数不裁**
        （本次需求：一条都不裁，见本文件上方「会话消息不做条数裁剪」的口径说明）。
@@ -2965,18 +3286,20 @@ function agentSessionBodyForDisk(s) {
        那一轮的每步 token 也跟着没了 —— 现在整道去掉。
        segments 仍限单段字数（只夹长，段一条不丢，见 agentSegsForDisk）——
        段一丢，工具 chip 就会从消息尾部压住最终回复。 */
-    messages: (s.messages || []).map((m) => {
-      if (!m || !Array.isArray(m.segments) || !m.segments.length) return m;
-      try {
-        const segs = agentSegsForDisk(m.segments);
-        const c = Object.assign({}, m);
-        if (segs && segs.length) c.segments = segs;
-        else delete c.segments;
-        return c;
-      } catch (_) {
-        return m;
-      }
-    }),
+    messages: (s.messages || [])
+      .map((m) => {
+        if (!m || !Array.isArray(m.segments) || !m.segments.length) return m;
+        try {
+          const segs = agentSegsForDisk(m.segments);
+          const c = Object.assign({}, m);
+          if (segs && segs.length) c.segments = segs;
+          else delete c.segments;
+          return c;
+        } catch (_) {
+          return m;
+        }
+      })
+      .concat(partial ? [partial] : []),
     _lcLoaded: undefined,
     _lcDirty: undefined,
   });
@@ -11007,7 +11330,7 @@ async function agentDrainQueue(st) {
           break;
         }
         const item = st.outbox.shift();
-        await agentTouchSession();
+        await agentTouchSession(st);
         if (agentViewIs(st)) renderAgentQueueBar(st);
         /* 出队发送：队列少一条、这条会话即将接下一轮运行 → 左下角同步一次 */
         updateRunQueuePanel();
@@ -11548,14 +11871,13 @@ async function agentSessionSend(text, opts) {
   /* ── 助手会话（st.assist）在会话视图里继续聊（本轮需求 · 拷问共识 q8 / q10）──
      身份与工具档只有一份真源 = 助手栏那条链（assistSend）：这里把指针绑到这条会话，
      然后整句交给它跑。绝不另造一份系统提示，否则两侧人设会分叉。
-     · 助手栏正在跑同一条 → 只读 + 提示（共识 q10），不抢跑、不重复入队。
-     · 跑完把会话视图与会话列表重绘一次（消息本就写进同一条 st.messages）。 */
+     **这是助手会话唯一的发送入口**（本轮需求 · 单一根源）：助手栏的发送也走这里
+     （见 assistPanelSend），所以两条视图的「忙 / 排队 / 开跑」判定只有一份代码 ——
+     跑着就进同一条发送队列（与其它会话完全一致），空闲才真正开轮。 */
   if (st && st.assist) {
-    if (S.assistRunning) {
-      toast(
-        I18n.t("这条助手会话正在右侧助手栏运行，请先在那里结束本轮"),
-        "warn",
-      );
+    const at = String(text || "").trim();
+    if (sessionIsRunning(st)) {
+      if (at) await agentEnqueueMessage(st, at, Object.assign({}, opts, { sessionId: st.id }));
       return null;
     }
     assistBindSession(st);
@@ -11755,6 +12077,9 @@ async function agentSessionSend(text, opts) {
   /* 新的一轮开始：显示窗口回到默认最近 200 条，更早的可从最前端重新「显示更早内容」 */
   st._visItems = undefined;
   st.running = true;
+  /* 轮中增量落盘（共识 q12/q16）：这一轮还在跑时每 2 秒把已到达的思考 / 正文 / 工具
+     写一次盘（见 agentLivePartialMsg），崩溃 / 刷窗只丢当前那一段。收轮时在 finally 里收。 */
+  agentLiveWatchBegin(st);
   /* 新一轮开跑 = 上一轮的暂停态作废（不管是点「继续」起的这一轮，还是用户直接发新话）。
      _liveSid 每轮重新捕获：插话 / 暂停都按它点名网关在途表里的那一轮。 */
   st.paused = false;
@@ -12369,6 +12694,8 @@ async function agentSessionSend(text, opts) {
     st._pausePending = false;
     st.running = false;
     st._cancelled = false;
+    /* 轮中增量落盘的定时器随之收掉（正本结果在上面已 push 进 messages，下一次落盘就是完整那份） */
+    agentLiveWatchEnd(st);
     st._liveTools = [];
     /* 本轮收尾：live 段的 DOM 缓存一并放开（段已随消息进历史，缓存留着只是占用）。 */
     st._liveBox = null;

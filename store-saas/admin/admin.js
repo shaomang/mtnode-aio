@@ -1928,11 +1928,12 @@
    *   · 模板 / 技能服务端本来就没有多版本链与「下架」位，界面上也不给这两类摆空按钮。
    * ========================================================================== */
 
-  const C_SUBS = ["app", "template", "skill", "audit"];
+  const C_SUBS = ["app", "template", "workflow", "skill", "audit"];
   const C_PAGE_SIZE = 20;
   /* kind 文案：forum_topic 只会出现在留痕表里（讨论区话题：管理员标记已解决），
-     内容管理三个子页签只拉 app / template / skill，多这一项不影响它们。 */
-  const KIND_TEXT = { app: "应用", template: "模板", skill: "技能", forum_topic: "论坛话题" };
+     内容管理子页签只拉 app / template / workflow / skill，多这一项不影响它们。
+     文案跟客户端「创意工坊」对齐：模板 → 画布。 */
+  const KIND_TEXT = { app: "应用", template: "画布", workflow: "工作流", skill: "技能", forum_topic: "论坛话题" };
   const C_ACT_TEXT = {
     publish: "上架",
     unpublish: "下架",

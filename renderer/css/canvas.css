@@ -1139,6 +1139,70 @@
   cursor: help;
 }
 
+/* ── 节点层封面（renderer/app-node-cover.js）：图铺满整个 body ──
+   background-image 由 JS 内联写入（dataURL），这里只定铺法：
+   cover = 铺满、不拉伸，只要有一边到 100% 即可，超出部分居中裁切。 */
+.wf-node.super > .n-body.super-folder-body.has-cover {
+  background-color: #141a23;
+  background-size: cover;
+  background-position: center center;
+  background-repeat: no-repeat;
+}
+
+/* 标题 / 描述 / 计数所在的下半部叠一层暗色渐变 + 文字阴影：
+   任何封面（哪怕整片白）都能读清字。::before 压在卡片最底层，文字是 z1。 */
+.n-body.super-folder-body.has-cover > .super-folder::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 2px;
+  background: linear-gradient(180deg,
+      rgba(8, 11, 16, 0) 0%,
+      rgba(8, 11, 16, .2) 40%,
+      rgba(8, 11, 16, .82) 100%);
+  pointer-events: none;
+  z-index: 0;
+}
+
+.n-body.super-folder-body.has-cover .super-folder-title {
+  color: #fff;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, .9);
+}
+
+.n-body.super-folder-body.has-cover .super-folder-desc {
+  color: rgba(255, 255, 255, .9);
+  text-shadow: 0 1px 4px rgba(0, 0, 0, .85);
+}
+
+.n-body.super-folder-body.has-cover .super-folder-meta {
+  color: rgba(255, 255, 255, .75);
+  opacity: 1;
+}
+
+/* 头部「封面」小按钮（只有设过封面的壳才点亮） */
+.n-super-cover-btn {
+  flex: none;
+  height: 22px;
+  padding: 0 6px;
+  border-radius: 3px;
+  border: 1px solid var(--bd2);
+  background: rgba(255, 255, 255, .04);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 20px;
+  cursor: pointer;
+}
+
+.n-super-cover-btn:hover {
+  border-color: var(--cyan);
+  color: var(--cyan2)
+}
+
+.n-super-cover-btn.on {
+  border-color: rgba(95, 214, 138, .55);
+  color: #8dffb5
+}
+
 /* 头部「描述」小按钮 */
 .n-super-note-btn {
   flex: none;
@@ -2584,6 +2648,18 @@ body.theme-light .n-chip.n-chip-lt {
 
 .super-stage:active {
   cursor: grabbing
+}
+
+/* 展开舞台的封面底图：z0（网格与节点视口 z4 都在它上面），
+   不透明度由 node.bgOpacity 内联给定（默认 20%）—— 底图不该抢节点。 */
+.super-stage-cover {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background-size: cover;
+  background-position: center center;
+  background-repeat: no-repeat;
+  pointer-events: none;
 }
 
 .super-wires {

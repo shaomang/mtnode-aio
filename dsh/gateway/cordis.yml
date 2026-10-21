@@ -598,3 +598,10 @@
 
 
 # ── user plugins (managed from MTNode settings) ──
+
+- id: user-mcp-mvhhife2
+  name: '@deepseek-ai/dsh-mcp-client'
+  config:
+    serverName: 'mtnode-self'
+    transport: 'http'
+    url: 'http://127.0.0.1:52983/mcp?token=56e52ef19f0abe7c6e8b6911ecaac855207f429ae009eae0'

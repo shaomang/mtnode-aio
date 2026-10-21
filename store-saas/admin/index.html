@@ -157,7 +157,8 @@
       <div class="toolbar">
         <select id="fTipKind">
           <option value="">全部对象类型</option>
-          <option value="template">模板</option>
+          <option value="template">画布</option>
+          <option value="workflow">工作流</option>
           <option value="skill">技能</option>
           <option value="app">应用</option>
           <option value="forum_topic">论坛话题</option>
@@ -266,12 +267,13 @@
         <div class="table-wrap"><table id="tblRelayAudit"></table></div>
       </div>
     </section>
-    <!-- 内容管理：应用 / 模板 / 技能 / 改动留痕 四个**页内**二级页签（二级页签用 data-csub，
+    <!-- 内容管理：应用 / 画布 / 工作流 / 技能 / 改动留痕 五个**页内**二级页签（二级页签用 data-csub，
          与「中转服务」那套 data-sub 分开，互不干扰）。管理员可操作任何作者的内容。 -->
     <section id="view-content" class="view hidden">
       <nav class="subtabs" id="contentSubtabs">
         <button class="subtab active" data-csub="app">应用</button>
-        <button class="subtab" data-csub="template">模板</button>
+        <button class="subtab" data-csub="template">画布</button>
+        <button class="subtab" data-csub="workflow">工作流</button>
         <button class="subtab" data-csub="skill">技能</button>
         <button class="subtab" data-csub="audit">改动留痕</button>
       </nav>
@@ -299,19 +301,32 @@
         <div class="pager" id="pgApps"></div>
       </div>
 
-      <!-- ② 模板：单文件 .mtnodes + 预览图（服务端没有多版本链、也没有「下架」位） -->
+      <!-- ② 画布：单文件 .mtnodes + 预览图（服务端没有多版本链、也没有「下架」位）。
+           文案口径跟客户端「创意工坊」一致：原来的「模板」在工坊里就叫「画布」。 -->
       <div id="cview-template" class="csubview hidden">
         <div class="toolbar">
           <input id="fTplAuthor" type="search" placeholder="作者账号 / uid（可留空）">
-          <input id="fTplQ" type="search" placeholder="模板 id / 标题 / 简介 / 标签">
+          <input id="fTplQ" type="search" placeholder="画布 id / 标题 / 简介 / 标签">
           <button id="btnTplSearch" class="btn">查询</button>
         </div>
-        <div class="hint">模板与技能一样是单份文件 + 预览图：管理台给编辑元信息、下载文件与预览图、删除（删除需二次确认并留痕）。</div>
+        <div class="hint">画布与技能一样是单份文件 + 预览图：管理台给编辑元信息、下载文件与预览图、删除（删除需二次确认并留痕）。</div>
         <div class="table-wrap"><table id="tblTpls"></table></div>
         <div class="pager" id="pgTpls"></div>
       </div>
 
-      <!-- ③ 技能：单包 + 预览图；官方标记只有管理员能改 -->
+      <!-- ③ 工作流：封装后的节点层，同样单文件 .mtnodes + 预览图；多一列端口数（对外入出端点） -->
+      <div id="cview-workflow" class="csubview hidden">
+        <div class="toolbar">
+          <input id="fWfAuthor" type="search" placeholder="作者账号 / uid（可留空）">
+          <input id="fWfQ" type="search" placeholder="工作流 id / 标题 / 简介 / 标签">
+          <button id="btnWfSearch" class="btn">查询</button>
+        </div>
+        <div class="hint">工作流 = 封装好的节点层，和画布同样是单份文件 + 预览图；管理台给编辑元信息、下载文件与预览图、删除（删除需二次确认并留痕）。</div>
+        <div class="table-wrap"><table id="tblWfs"></table></div>
+        <div class="pager" id="pgWfs"></div>
+      </div>
+
+      <!-- ④ 技能：单包 + 预览图；官方标记只有管理员能改 -->
       <div id="cview-skill" class="csubview hidden">
         <div class="toolbar">
           <select id="fSkillStatus" title="官方标记">
@@ -328,7 +343,7 @@
         <div class="pager" id="pgSkills"></div>
       </div>
 
-      <!-- ④ 改动留痕：谁 / 何时 / 对哪条做了什么（最近 200 条） -->
+      <!-- ⑤ 改动留痕：谁 / 何时 / 对哪条做了什么（最近 200 条） -->
       <div id="cview-audit" class="csubview hidden">
         <div class="toolbar">
           <span class="hint" id="cAuditMeta" style="margin:0"></span>

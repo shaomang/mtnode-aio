@@ -8900,6 +8900,19 @@
       "Category deleted (moved to the system recycle bin): ",
     "在资源管理器中打开": "Open in file manager",
     "打不开该目录": "Cannot open that folder",
+    /* 左树拖动重排：同级上下挪 / 整段分类搬进别的分类 / 顺序清单与撤销 */
+    "移入其它分类…": "Move into another category…",
+    "把「{name}」移入分类": "Move “{name}” into category",
+    "整个素材库的根目录（把分类 / 素材拖到这一行＝移到根目录）":
+      "The library root (drop a category / asset on this row to move it to the root)",
+    "已调整顺序（Ctrl+Z 可撤销）": "Order changed (Ctrl+Z to undo)",
+    "已移动（Ctrl+Z 可撤销）": "Moved (Ctrl+Z to undo)",
+    "已移动 {n} 项（Ctrl+Z 可撤销）": "Moved {n} item(s) (Ctrl+Z to undo)",
+    "调整顺序失败：": "Failed to change the order: ",
+    "已撤销上一次重排": "Last reorder undone",
+    "撤销失败：": "Undo failed: ",
+    "无法回滚：目标已存在或原目录已改过，已保持现状。":
+      "Cannot roll back: the target already exists or the original folder changed — nothing was restored.",
     /* 右栏 · 素材卡片 */
     "当前位置：": "Current location: ",
     "素材": "Asset",

@@ -252,6 +252,9 @@ function emptyDb() {
     sessions: [],
     identities: [],
     templates: [],
+    // 创意工坊第四类内容：工作流（一颗「节点层」的封装，口径与模板完全对等；
+    // 文件同样落 FILE_DIR/<id>.mtnodes，id 前缀 w_）
+    workflows: [],
     skills: [],
     // 应用市场：用户自建 / 云端分发的小应用（zip 落 DATA_DIR/apps）
     apps: [],
@@ -298,6 +301,7 @@ function loadDb() {
     if (!Array.isArray(d.sessions)) d.sessions = [];
     if (!Array.isArray(d.identities)) d.identities = [];
     if (!Array.isArray(d.templates)) d.templates = [];
+    if (!Array.isArray(d.workflows)) d.workflows = [];
     if (!Array.isArray(d.skills)) d.skills = [];
     if (!Array.isArray(d.apps)) d.apps = [];
     if (!Array.isArray(d.appDeclarations)) d.appDeclarations = [];
@@ -638,6 +642,60 @@ function publicTemplate(t, viewer, en) {
   }, "template", t.id, en);
 }
 
+/** 工作流（第四类内容）的公开投影：**与 publicTemplate 完全对等**，只多 version / ports。
+ *  点赞与模板共用 db.likes，靠 `workflowId` 区分（模板记 templateId，互不干扰）。 */
+function publicWorkflow(t, viewer, en) {
+  const viewerId = viewer && viewer.id;
+  const owner = db.users.find((u) => u.id === t.userId);
+  const ports = t.ports && typeof t.ports === "object" ? t.ports : {};
+  return withEnrich({
+    id: t.id,
+    title: t.title,
+    description: t.description || "",
+    version: t.version || "1.0.0",
+    tags: t.tags || [],
+    ports: {
+      ins: Array.isArray(ports.ins) ? ports.ins : [],
+      outs: Array.isArray(ports.outs) ? ports.outs : [],
+    },
+    downloads: t.downloads || 0,
+    likes: t.likes || 0,
+    bytes: t.bytes || 0,
+    hasPreview: !!t.hasPreview,
+    createdAt: t.createdAt,
+    updatedAt: t.updatedAt,
+    owner: owner
+      ? { id: owner.id, username: owner.username, nickname: owner.nickname }
+      : { id: t.userId, username: "", nickname: "" },
+    liked: viewerId ? db.likes.some((l) => l.userId === viewerId && l.workflowId === t.id) : false,
+    mine: !!(viewerId && viewerId === t.userId),
+    canDelete: !!(viewerId && (viewerId === t.userId || isAdmin(viewer))),
+  }, "workflow", t.id, en);
+}
+
+/** 工作流端口表的浅校验：只要「对象 / ins、outs 是数组 / 每项是对象」，
+ *  归一成 `{ins:[{name,kind}],outs:[{name,kind}]}` 后原样存（缺省空表）。
+ *  出错抛 Error（路由按 400 回），文案不带英文术语。 */
+function normalizeWorkflowPorts(input) {
+  if (input == null) return { ins: [], outs: [] };
+  if (typeof input !== "object" || Array.isArray(input)) throw new Error("端口格式无效");
+  const out = { ins: [], outs: [] };
+  for (const key of ["ins", "outs"]) {
+    const arr = input[key];
+    if (arr == null) continue;
+    if (!Array.isArray(arr)) throw new Error("端口格式无效");
+    if (arr.length > 200) throw new Error("端口数量过多");
+    out[key] = arr.map((p) => {
+      if (!p || typeof p !== "object" || Array.isArray(p)) throw new Error("端口格式无效");
+      return {
+        name: String(p.name == null ? "" : p.name).slice(0, 64),
+        kind: String(p.kind == null ? "" : p.kind).slice(0, 32),
+      };
+    });
+  }
+  return out;
+}
+
 function publicSkill(s, viewer, en) {
   const viewerId = viewer && viewer.id;
   const owner = db.users.find((u) => u.id === s.userId);
@@ -668,7 +726,8 @@ function publicSkill(s, viewer, en) {
 }
 
 function tagCounts(kind) {
-  const list = kind === "skills" ? db.skills : db.templates;
+  const list =
+    kind === "skills" ? db.skills : kind === "workflows" ? db.workflows || [] : db.templates;
   const map = new Map();
   for (const t of list) {
     for (const tag of t.tags || []) {
@@ -1611,6 +1670,10 @@ async function resolveWechatOwner({ userId, unionid, openid, nickname }) {
     try {
       for (const t of db.templates || []) {
         if (t.userId === owner.id) t.userId = me.id;
+      }
+      // 工作流与模板同口径：临时账号的作品跟着改挂到正式账号，避免变成无主条目
+      for (const w of db.workflows || []) {
+        if (w.userId === owner.id) w.userId = me.id;
       }
       await accountStore.deleteSessionsByUser(owner.id);
       db.sessions = (db.sessions || []).filter((s) => s.userId !== owner.id);
@@ -5698,7 +5761,7 @@ async function sysinfoSnapshot() {
 }
 
 /* ==========================================================================
- * 管理台 · 内容管理（管理员对 应用 / 模板 / 技能 的操作）
+ * 管理台 · 内容管理（管理员对 应用 / 模板 / 工作流 / 技能 的操作）
  *   · 管理台的票是 adm_（不是客户端 Bearer），走不到 /api/apps|templates|skills 的 owner 判定，
  *     所以单开一组 /api/admin/content/*：管理员可操作**任何作者**的内容（对齐 isAdmin 的既有口径）。
  *   · 编辑只到元信息：应用 = 标题/简介/标签/图标；模板 = 标题/简介/标签；技能 = 标题/简介/标签/版本号/官方标记。
@@ -5708,7 +5771,7 @@ async function sysinfoSnapshot() {
  * ========================================================================== */
 
 const CONTENT_AUDIT_MAX = 200;
-const CONTENT_KINDS = ["app", "template", "skill"];
+const CONTENT_KINDS = ["app", "template", "workflow", "skill"];
 
 function contentAuditList() {
   if (!Array.isArray(db.contentAudit)) db.contentAudit = [];
@@ -5738,6 +5801,10 @@ function adminContentFind(kind, id, ownerId) {
   if (kind === "template") {
     const t = db.templates.find((x) => x.id === want);
     return t ? { row: t, ownerId: t.userId } : null;
+  }
+  if (kind === "workflow") {
+    const w = (db.workflows || []).find((x) => x.id === want);
+    return w ? { row: w, ownerId: w.userId } : null;
   }
   if (kind === "skill") {
     const s = db.skills.find((x) => x.id === want);
@@ -5794,6 +5861,32 @@ function adminTemplateRow(t) {
   };
 }
 
+/** 管理台的工作流行：与 adminTemplateRow 同口径，多 version / ports 端口数。 */
+function adminWorkflowRow(t) {
+  const owner = db.users.find((u) => u.id === t.userId);
+  const ports = t.ports && typeof t.ports === "object" ? t.ports : {};
+  const ins = Array.isArray(ports.ins) ? ports.ins : [];
+  const outs = Array.isArray(ports.outs) ? ports.outs : [];
+  return {
+    kind: "workflow",
+    id: t.id,
+    ownerId: t.userId,
+    ownerName: owner ? String(owner.username || owner.id) : String(t.userId || ""),
+    title: t.title || t.id,
+    desc: t.description || "",
+    tags: Array.isArray(t.tags) ? t.tags : [],
+    version: t.version || "1.0.0",
+    inCount: ins.length,
+    outCount: outs.length,
+    bytes: Number(t.bytes) || 0,
+    downloads: Number(t.downloads) || 0,
+    likes: Number(t.likes) || 0,
+    hasPreview: !!t.hasPreview,
+    createdAt: Number(t.createdAt) || 0,
+    updatedAt: Number(t.updatedAt) || 0,
+  };
+}
+
 function adminSkillRow(s) {
   const owner = db.users.find((u) => u.id === s.userId);
   const files = Array.isArray(s.files) ? s.files : [];
@@ -5819,6 +5912,14 @@ function adminSkillRow(s) {
   };
 }
 
+/** 一条记录 → 管理台行（按时长分派；缺省仍按技能，与原来的三元表达式同一口径）。 */
+function adminRowOf(kind, row) {
+  if (kind === "app") return adminAppRow(row);
+  if (kind === "template") return adminTemplateRow(row);
+  if (kind === "workflow") return adminWorkflowRow(row);
+  return adminSkillRow(row);
+}
+
 /** 一处匹配：关键词打 id / 标题 / 简介 / 标签 / skillName / 作者账号。 */
 function adminContentHit(row, q) {
   if (!q) return true;
@@ -5833,6 +5934,7 @@ function adminContentCounts() {
   return {
     app: apps.length,
     template: (db.templates || []).length,
+    workflow: (db.workflows || []).length,
     skill: (db.skills || []).length,
     skillOfficial: (db.skills || []).filter((s) => s && s.official).length,
   };
@@ -5889,6 +5991,7 @@ async function handle(req, res) {
       ok: true,
       service: "mtnode-store",
       templates: db.templates.length,
+      workflows: (db.workflows || []).length,
       skills: db.skills.length,
       apps: (db.apps || []).length,
       // 应用多版本开关（读部署排查用）：关 = 旧口径 <id>.zip 一版一份。
@@ -6582,7 +6685,9 @@ async function handle(req, res) {
     const kind = String(url.searchParams.get("kind") || "templates").toLowerCase();
     return send(res, 200, {
       ok: true,
-      tags: tagCounts(kind === "skills" ? "skills" : "templates"),
+      tags: tagCounts(
+        kind === "skills" ? "skills" : kind === "workflows" || kind === "workflow" ? "workflows" : "templates",
+      ),
     });
   }
 
@@ -6814,6 +6919,276 @@ async function handle(req, res) {
     }
     await saveDb();
     return send(res, 200, { ok: true, item: publicTemplate(t, user) });
+  }
+
+  /* ==========================================================================
+   * 创意工坊 · 工作流（第四类内容，服务端口径与模板完全对等）
+   *   · 文件同样落 FILE_DIR/<id>.mtnodes，预览图 / 标签 / 下载量 / 点赞 / 打赏 / 评论评分 / 热榜
+   *     全部复用模板那套 helper（decodeMtNodes / decodePreview / writePreview / previewPath /
+   *     clearPreviews / enrichOf / plans.batchSummaryOf / tagCounts …）；
+   *   · 只多两个字段：version（≤20 字符，缺省 1.0.0）与 ports（节点端口表，浅校验后原样存）；
+   *   · 点赞记录与模板共用 db.likes，靠 workflowId 区分（模板记 templateId，两不相干）。
+   *   · 模板那几条路由一个字节都没动。
+   * ====================================================================== */
+
+  if (method === "GET" && p === "/api/me/workflows") {
+    if (!user) return send(res, 401, { ok: false, error: "未登录" });
+    const mine = (db.workflows || [])
+      .filter((t) => t.userId === user.id)
+      .sort((a, b) => b.updatedAt - a.updatedAt);
+    const en = enrichOf("workflow", mine.map((t) => t.id));
+    const items = mine.map((t) => publicWorkflow(t, user, en(t.id)));
+    return send(res, 200, { ok: true, items, user: publicUser(user) });
+  }
+
+  if (method === "GET" && p === "/api/workflows") {
+    const q = String(url.searchParams.get("q") || "").trim().toLowerCase();
+    const tag = normalizeTag(url.searchParams.get("tag") || "");
+    const sort = String(url.searchParams.get("sort") || "new");
+    const page = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10) || 1);
+    const pageSize = Math.min(50, Math.max(1, parseInt(url.searchParams.get("pageSize") || "20", 10) || 20));
+    let list = (db.workflows || []).slice();
+    if (tag) list = list.filter((t) => (t.tags || []).includes(tag));
+    if (q) {
+      list = list.filter((t) => {
+        const owner = db.users.find((u) => u.id === t.userId);
+        const blob = [
+          t.title,
+          t.description,
+          t.version,
+          (t.tags || []).join(" "),
+          owner && owner.nickname,
+          owner && owner.username,
+        ]
+          .join(" ")
+          .toLowerCase();
+        return blob.includes(q);
+      });
+    }
+    if (sort === "downloads") list.sort((a, b) => (b.downloads || 0) - (a.downloads || 0) || b.createdAt - a.createdAt);
+    else if (sort === "likes") list.sort((a, b) => (b.likes || 0) - (a.likes || 0) || b.createdAt - a.createdAt);
+    /* 打赏热度（与模板同一口径）：累计打赏额 → 次数 → 时间；按 kind=workflow 统计，
+       一次批量算整张打赏表（不在比较函数里逐项查库）。 */
+    else if (sort === "tips") {
+      const tm = plans.batchSummaryOf("workflow", list.map((t) => t.id));
+      const cellOf = (id) => tm.get(String(id || "")) || { count: 0, totalYuan: 0 };
+      list.sort((a, b) => {
+        const x = cellOf(a.id);
+        const y = cellOf(b.id);
+        return y.totalYuan - x.totalYuan || y.count - x.count || b.createdAt - a.createdAt;
+      });
+    } else list.sort((a, b) => b.createdAt - a.createdAt);
+    const total = list.length;
+    const pageItems = list.slice((page - 1) * pageSize, page * pageSize);
+    const en = enrichOf("workflow", pageItems.map((t) => t.id));
+    const items = pageItems.map((t) => publicWorkflow(t, user, en(t.id)));
+    return send(res, 200, { ok: true, items, total, page, pageSize, tags: tagCounts("workflows") });
+  }
+
+  const wOne = /^\/api\/workflows\/([^/]+)$/.exec(p);
+  const wFile = /^\/api\/workflows\/([^/]+)\/file$/.exec(p);
+  const wPrev = /^\/api\/workflows\/([^/]+)\/preview$/.exec(p);
+  const wLike = /^\/api\/workflows\/([^/]+)\/like$/.exec(p);
+
+  if (wFile && method === "GET") {
+    const t = (db.workflows || []).find((x) => x.id === wFile[1]);
+    if (!t) return send(res, 404, { ok: false, error: "工作流不存在" });
+    const fp = path.join(FILE_DIR, t.id + ".mtnodes");
+    if (!fs.existsSync(fp)) return send(res, 404, { ok: false, error: "文件缺失" });
+    t.downloads = (t.downloads || 0) + 1;
+    const owner = db.users.find((u) => u.id === t.userId);
+    if (owner) await applyUserPatch(owner.id, { downloadsReceived: (owner.downloadsReceived || 0) + 1 });
+    await saveDb();
+    const buf = fs.readFileSync(fp);
+    if (url.searchParams.get("format") === "raw") {
+      return sendBin(res, 200, buf, "application/octet-stream");
+    }
+    return send(res, 200, {
+      ok: true,
+      id: t.id,
+      title: t.title,
+      bytes: buf.length,
+      base64: buf.toString("base64"),
+    });
+  }
+
+  if (wPrev && method === "GET") {
+    const t = (db.workflows || []).find((x) => x.id === wPrev[1]);
+    if (!t || !t.hasPreview) return send(res, 404, { ok: false, error: "无预览图" });
+    const size = String(url.searchParams.get("size") || "thumb").toLowerCase();
+    const fp = previewPath(t.id, size === "full" || size === "large" ? "full" : "thumb");
+    if (!fp) return send(res, 404, { ok: false, error: "无预览图" });
+    const headers = {
+      "Cache-Control": size === "full" || size === "large" ? "public, max-age=3600" : "public, max-age=86400",
+    };
+    return sendBin(res, 200, fs.readFileSync(fp), previewMime(fp), headers);
+  }
+
+  if (wOne && method === "GET") {
+    const t = (db.workflows || []).find((x) => x.id === wOne[1]);
+    if (!t) return send(res, 404, { ok: false, error: "工作流不存在" });
+    return send(res, 200, { ok: true, item: publicWorkflow(t, user) });
+  }
+
+  if (method === "POST" && p === "/api/workflows") {
+    if (!user) return send(res, 401, { ok: false, error: "上传需要登录" });
+    const b = await jsonBody();
+    requireFields(b, ["title", "fileBase64"]);
+    const title = String(b.title).trim().slice(0, 80);
+    const description = String(b.description || "").trim().slice(0, 2000);
+    const version = String(b.version == null ? "" : b.version).trim().slice(0, 20) || "1.0.0";
+    const tags = parseTags(b.tags);
+    let ports;
+    try {
+      ports = normalizeWorkflowPorts(b.ports);
+    } catch (e) {
+      return send(res, 400, { ok: false, error: (e && e.message) || "端口格式无效" });
+    }
+    let buf;
+    try {
+      buf = decodeMtNodes(b.fileBase64);
+    } catch {
+      return send(res, 400, { ok: false, error: "不是有效的 .mtnodes 工作流文件" });
+    }
+    if (buf.length > MAX_TEMPLATE) {
+      return send(res, 413, { ok: false, error: "工作流文件不能超过 10MB" });
+    }
+    let prev = null;
+    let thumb = null;
+    try {
+      prev = decodePreview(b.previewBase64);
+    } catch {
+      return send(res, 400, { ok: false, error: "预览图无效" });
+    }
+    try {
+      thumb = decodePreview(b.previewThumbBase64);
+    } catch {
+      return send(res, 400, { ok: false, error: "缩略图无效" });
+    }
+    const id = uid("w_");
+    fs.writeFileSync(path.join(FILE_DIR, id + ".mtnodes"), buf);
+    if (prev) writePreview(id, prev, thumb);
+    const t = {
+      id,
+      userId: user.id,
+      title,
+      description,
+      version,
+      tags,
+      ports,
+      downloads: 0,
+      likes: 0,
+      bytes: buf.length,
+      hasPreview: !!prev,
+      createdAt: now(),
+      updatedAt: now(),
+    };
+    db.workflows.push(t);
+    await saveDb();
+    return send(res, 200, { ok: true, item: publicWorkflow(t, user) });
+  }
+
+  if (wOne && method === "PATCH") {
+    if (!user) return send(res, 401, { ok: false, error: "未登录" });
+    const t = (db.workflows || []).find((x) => x.id === wOne[1]);
+    if (!t) return send(res, 404, { ok: false, error: "工作流不存在" });
+    if (t.userId !== user.id) return send(res, 403, { ok: false, error: "只能编辑自己的工作流" });
+    const b = await jsonBody();
+    if (b.title != null) {
+      const title = String(b.title).trim().slice(0, 80);
+      if (!title) return send(res, 400, { ok: false, error: "标题不能为空" });
+      t.title = title;
+    }
+    if (b.description != null) t.description = String(b.description).trim().slice(0, 2000);
+    if (b.tags != null) t.tags = parseTags(b.tags);
+    if (b.version != null) {
+      t.version = String(b.version).trim().slice(0, 20) || "1.0.0";
+    }
+    if (b.ports != null) {
+      try {
+        t.ports = normalizeWorkflowPorts(b.ports);
+      } catch (e) {
+        return send(res, 400, { ok: false, error: (e && e.message) || "端口格式无效" });
+      }
+    }
+    if (b.fileBase64) {
+      let buf;
+      try {
+        buf = decodeMtNodes(b.fileBase64);
+      } catch {
+        return send(res, 400, { ok: false, error: "不是有效的 .mtnodes 工作流文件" });
+      }
+      if (buf.length > MAX_TEMPLATE) {
+        return send(res, 413, { ok: false, error: "工作流文件不能超过 10MB" });
+      }
+      fs.writeFileSync(path.join(FILE_DIR, t.id + ".mtnodes"), buf);
+      t.bytes = buf.length;
+    }
+    if (b.previewBase64 === "") {
+      clearPreviews(t.id);
+      t.hasPreview = false;
+    } else if (b.previewBase64) {
+      let prev;
+      let thumb = null;
+      try {
+        prev = decodePreview(b.previewBase64);
+      } catch {
+        return send(res, 400, { ok: false, error: "预览图无效" });
+      }
+      try {
+        thumb = decodePreview(b.previewThumbBase64);
+      } catch {
+        return send(res, 400, { ok: false, error: "缩略图无效" });
+      }
+      if (prev) {
+        writePreview(t.id, prev, thumb);
+        t.hasPreview = true;
+      }
+    }
+    t.updatedAt = now();
+    await saveDb();
+    return send(res, 200, { ok: true, item: publicWorkflow(t, user) });
+  }
+
+  if (wOne && method === "DELETE") {
+    if (!user) return send(res, 401, { ok: false, error: "未登录" });
+    const list = db.workflows || [];
+    const idx = list.findIndex((x) => x.id === wOne[1]);
+    if (idx < 0) return send(res, 404, { ok: false, error: "工作流不存在" });
+    const t = list[idx];
+    if (t.userId !== user.id && !isAdmin(user)) {
+      return send(res, 403, { ok: false, error: "只能删除自己的工作流" });
+    }
+    const owner = db.users.find((u) => u.id === t.userId) || user;
+    await applyUserPatch(owner.id, {
+      downloadsReceived: Math.max(0, (owner.downloadsReceived || 0) - (t.downloads || 0)),
+      likesReceived: Math.max(0, (owner.likesReceived || 0) - (t.likes || 0)),
+    });
+    db.likes = db.likes.filter((l) => l.workflowId !== t.id);
+    list.splice(idx, 1);
+    try { fs.unlinkSync(path.join(FILE_DIR, t.id + ".mtnodes")); } catch {}
+    clearPreviews(t.id);
+    await saveDb();
+    return send(res, 200, { ok: true });
+  }
+
+  if (wLike && method === "POST") {
+    if (!user) return send(res, 401, { ok: false, error: "点赞需要登录" });
+    const t = (db.workflows || []).find((x) => x.id === wLike[1]);
+    if (!t) return send(res, 404, { ok: false, error: "工作流不存在" });
+    const hit = db.likes.find((l) => l.userId === user.id && l.workflowId === t.id);
+    const owner = db.users.find((u) => u.id === t.userId);
+    if (hit) {
+      db.likes = db.likes.filter((l) => !(l.userId === user.id && l.workflowId === t.id));
+      t.likes = Math.max(0, (t.likes || 0) - 1);
+      if (owner) await applyUserPatch(owner.id, { likesReceived: Math.max(0, (owner.likesReceived || 0) - 1) });
+    } else {
+      db.likes.push({ userId: user.id, workflowId: t.id, at: now() });
+      t.likes = (t.likes || 0) + 1;
+      if (owner) await applyUserPatch(owner.id, { likesReceived: (owner.likesReceived || 0) + 1 });
+    }
+    await saveDb();
+    return send(res, 200, { ok: true, item: publicWorkflow(t, user) });
   }
 
   if (method === "GET" && p === "/api/me/skills") {
@@ -9484,7 +9859,7 @@ async function handle(req, res) {
     return send(res, 200, await sysinfoSnapshot());
   }
 
-  /* ---------- 管理台 · 内容管理（应用 / 模板 / 技能） ---------- */
+  /* ---------- 管理台 · 内容管理（应用 / 模板 / 工作流 / 技能） ---------- */
 
   /** 列表取数的公共解释：类型 + 关键词 + 状态 + 作者 + 分页；counts 恒为全量（页签角标用）。 */
   function adminContentQuery(kind) {
@@ -9494,6 +9869,7 @@ async function handle(req, res) {
     let rows = [];
     if (kind === "app") rows = (db.apps || []).map(adminAppRow);
     else if (kind === "template") rows = (db.templates || []).map(adminTemplateRow);
+    else if (kind === "workflow") rows = (db.workflows || []).map(adminWorkflowRow);
     else rows = (db.skills || []).map(adminSkillRow);
     rows = rows.filter((r) => adminContentHit(r, q));
     if (author) {
@@ -9632,6 +10008,19 @@ async function handle(req, res) {
         "Cache-Control": "no-store",
       });
     }
+    if (kind === "workflow") {
+      const w = (db.workflows || []).find((x) => x.id === id);
+      if (!w) return send(res, 404, { ok: false, error: "工作流不存在" });
+      const fp = path.join(FILE_DIR, w.id + ".mtnodes");
+      if (!fs.existsSync(fp)) return send(res, 404, { ok: false, error: "文件缺失" });
+      const buf = fs.readFileSync(fp);
+      const name = w.id + ".mtnodes";
+      if (!raw) return send(res, 200, { ok: true, kind: kind, id: w.id, bytes: buf.length, name: name });
+      return sendBin(res, 200, buf, "application/octet-stream", {
+        "Content-Disposition": 'attachment; filename="' + name + '"',
+        "Cache-Control": "no-store",
+      });
+    }
     if (kind === "skill") {
       const s = (db.skills || []).find((x) => x.id === id);
       if (!s) return send(res, 404, { ok: false, error: "技能不存在" });
@@ -9677,6 +10066,9 @@ async function handle(req, res) {
     if (kind === "template") {
       const t = (db.templates || []).find((x) => x.id === id);
       has = !!(t && t.hasPreview);
+    } else if (kind === "workflow") {
+      const w = (db.workflows || []).find((x) => x.id === id);
+      has = !!(w && w.hasPreview);
     } else if (kind === "skill") {
       const s = (db.skills || []).find((x) => x.id === id);
       has = !!(s && s.hasPreview);
@@ -9716,7 +10108,7 @@ async function handle(req, res) {
       });
     }
     const row = found.row;
-    const before = kind === "app" ? adminAppRow(row) : kind === "template" ? adminTemplateRow(row) : adminSkillRow(row);
+    const before = adminRowOf(kind, row);
     const changed = [];
     if (b.title !== undefined) {
       const title = String(b.title == null ? "" : b.title).trim().slice(0, 80);
@@ -9764,7 +10156,7 @@ async function handle(req, res) {
     }
     if (!changed.length) return send(res, 400, { ok: false, error: "没有要改的字段" });
     row.updatedAt = now();
-    const after = kind === "app" ? adminAppRow(row) : kind === "template" ? adminTemplateRow(row) : adminSkillRow(row);
+    const after = adminRowOf(kind, row);
     await contentAuditPush(a.user, "update", kind, after, "改了" + changed.join(" / "));
     if (kind === "app") publishStaticApps("管理台更新应用 " + row.id);
     return send(res, 200, { ok: true, item: after, before: before, changed: changed, counts: adminContentCounts() });
@@ -9829,6 +10221,24 @@ async function handle(req, res) {
       clearPreviews(t.id);
       await contentAuditPush(a.user, "delete", "template", row, "删模板与其文件");
       return send(res, 200, { ok: true, kind: kind, id: t.id, counts: adminContentCounts() });
+    }
+    if (kind === "workflow") {
+      const w = found.row;
+      const row = adminWorkflowRow(w);
+      const idx = (db.workflows || []).findIndex((x) => x.id === w.id);
+      const owner = db.users.find((u) => u.id === w.userId);
+      if (owner) {
+        await applyUserPatch(owner.id, {
+          downloadsReceived: Math.max(0, (owner.downloadsReceived || 0) - (w.downloads || 0)),
+          likesReceived: Math.max(0, (owner.likesReceived || 0) - (w.likes || 0)),
+        });
+      }
+      db.likes = db.likes.filter((l) => l.workflowId !== w.id);
+      if (idx >= 0) db.workflows.splice(idx, 1);
+      try { fs.unlinkSync(path.join(FILE_DIR, w.id + ".mtnodes")); } catch {}
+      clearPreviews(w.id);
+      await contentAuditPush(a.user, "delete", "workflow", row, "删工作流与其文件");
+      return send(res, 200, { ok: true, kind: kind, id: w.id, counts: adminContentCounts() });
     }
     const s = found.row;
     const srow = adminSkillRow(s);

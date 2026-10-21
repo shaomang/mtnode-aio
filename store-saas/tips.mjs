@@ -67,10 +67,11 @@ export const TIP_SPLIT_MAX_AUTHORS = 20;
 export const TIP_SPLIT_INVALID = "TIP_SPLIT_INVALID";
 
 /** 可打赏的对象类型（对外 targetKind 枚举唯一出口）。 */
-export const TIP_TARGET_KINDS = Object.freeze(["template", "skill", "app", "forum_topic", "forum_reply"]);
+export const TIP_TARGET_KINDS = Object.freeze(["template", "workflow", "skill", "app", "forum_topic", "forum_reply"]);
 /** 对象类型中文名（管理台 / 客户端提示共用；服务端只在这里定义一次）。 */
 export const TIP_TARGET_LABELS = Object.freeze({
   template: "模板",
+  workflow: "工作流",
   skill: "技能",
   app: "应用",
   forum_topic: "论坛话题",
@@ -201,6 +202,7 @@ export function createTips(deps) {
     }
     let rec = null;
     if (kind === "template") rec = (db.templates || []).find((x) => x && x.id === id) || null;
+    else if (kind === "workflow") rec = (db.workflows || []).find((x) => x && x.id === id) || null;
     else if (kind === "skill") rec = (db.skills || []).find((x) => x && x.id === id) || null;
     else if (kind === "app") rec = (db.apps || []).find((x) => x && x.id === id) || null;
     else if (kind === "forum_topic") rec = (db.forumTopics || []).find((x) => x && x.id === id) || null;

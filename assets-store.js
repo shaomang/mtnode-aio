@@ -46,6 +46,12 @@ const { readJson, writeJson } = require("./config-providers.js");
 
 const SCHEMA = 1;
 const MARKER = ".mtnode-asset.json";
+/* 界面顺序清单（库根下、与各素材夹的 MARKER 同级）：只记「用户拖出来的先后」，
+   绝不改任何文件夹名 —— 分类与素材的身份仍是磁盘路径 / 标记文件里的 id。
+   结构：{ schema:1, updatedAt, cats:{ "<父 rel>": ["<子分类名>",…] },
+          assets:{ "<分类 rel>": ["<素材 id>",…] } }
+   清单里没有的（新目录 / 外部新建）由渲染层追加到同级末尾，对不上的静默忽略。 */
+const ORDER_FILE = ".mtnode-library-order.json";
 const ITEMS_DIR = "items";
 const VERSIONS_DIR = ".versions";
 const TRASH_DIR = ".trash";
@@ -480,6 +486,54 @@ function scanLibrary(root) {
   return { tree: tree, categories: categories, assets: assets };
 }
 
+/* ---------------- 界面顺序清单（拖动重排的落盘口） ---------------- */
+
+function orderPath(root) {
+  return path.join(root, ORDER_FILE);
+}
+
+/* 净化：只收「字符串 → 字符串数组」，去重、限长、限条数；别的结构一律丢掉。
+   清单是界面偏好，损坏也不该把素材库卡住 —— 读不到 / 解析失败一律当空清单。 */
+function normLibraryOrder(raw) {
+  const out = { cats: {}, assets: {} };
+  const src = raw && typeof raw === "object" ? raw : {};
+  const put = (dst, obj) => {
+    if (!obj || typeof obj !== "object") return;
+    for (const k of Object.keys(obj)) {
+      if (typeof k !== "string" || k.length > 1024) continue;
+      const arr = Array.isArray(obj[k]) ? obj[k] : null;
+      if (!arr) continue;
+      const seen = new Set();
+      const list = [];
+      for (const v of arr) {
+        if (typeof v !== "string" || !v || v.length > 255) continue;
+        if (seen.has(v)) continue;
+        seen.add(v);
+        list.push(v);
+        if (list.length >= 2000) break;
+      }
+      dst[k] = list;
+    }
+  };
+  put(out.cats, src.cats);
+  put(out.assets, src.assets);
+  return out;
+}
+
+function readLibraryOrder(root) {
+  try {
+    return normLibraryOrder(readJson(orderPath(root), null));
+  } catch {
+    return { cats: {}, assets: {} };
+  }
+}
+
+function writeLibraryOrder(root, order) {
+  const o = normLibraryOrder(order);
+  writeJson(orderPath(root), { schema: SCHEMA, updatedAt: Date.now(), cats: o.cats, assets: o.assets });
+  return o;
+}
+
 /* 新建素材夹 + 标记文件（folder 名与 displayName 同源，重名自动加后缀） */
 function createAssetDir(root, catRel, displayName, desc) {
   const parent = relToAbs(root, catRel || "");
@@ -638,7 +692,14 @@ function registerAssetsIpc(opts) {
       writeJson(configPath(), Object.assign({}, cfg, { assetRoot: abs }));
       const changed = !!prev && path.resolve(prev) !== abs;
       const s = scanLibrary(abs);
-      return { ok: true, path: abs, previous: prev || "", changed: changed, scan: s };
+      return {
+        ok: true,
+        path: abs,
+        previous: prev || "",
+        changed: changed,
+        scan: s,
+        order: readLibraryOrder(abs),
+      };
     } catch (err) {
       return fail(err);
     }
@@ -648,7 +709,24 @@ function registerAssetsIpc(opts) {
     try {
       const { root, configured } = rootPath();
       if (!configured) return { ok: false, needRoot: true, error: t("尚未指定素材库根目录") };
-      return { ok: true, root: root, configured: true, scan: scanLibrary(root) };
+      return {
+        ok: true,
+        root: root,
+        configured: true,
+        scan: scanLibrary(root),
+        order: readLibraryOrder(root),
+      };
+    } catch (err) {
+      return fail(err);
+    }
+  });
+
+  /* 界面顺序清单：渲染层算好整份结构后整份写回（拖动重排 / 撤销都走这一条） */
+  ipcMain.handle("assets:setOrder", (e, arg) => {
+    try {
+      const root = ensureRoot();
+      const order = writeLibraryOrder(root, arg);
+      return { ok: true, order: order };
     } catch (err) {
       return fail(err);
     }
@@ -688,7 +766,15 @@ function registerAssetsIpc(opts) {
         toCat !== null ? toCat : rel.indexOf("/") < 0 ? "" : rel.slice(0, rel.lastIndexOf("/")),
       );
       fs.mkdirSync(parentAbs, { recursive: true });
-      const dest = path.join(parentAbs, uniqueName(parentAbs, base, ""));
+      /* strict ＝ 挪回去必须原位（撤销回滚用）：目标已存在就报错，绝不自动加后缀。
+         拖动重排的常规移动不带 strict —— 同名自动加后缀是既有口径。 */
+      const strict = !!(arg && arg.strict);
+      /* 目标就是它自己（同级重排 / 撤销回到同一位置）不算「已存在」，否则会把原地回滚误判成撞车 */
+      const same = path.resolve(path.join(parentAbs, base)) === path.resolve(abs);
+      if (strict && !same && fs.existsSync(path.join(parentAbs, base))) {
+        return { ok: false, code: "exists", error: t("目标已存在") };
+      }
+      const dest = path.join(parentAbs, strict ? base : uniqueName(parentAbs, base, ""));
       if (path.resolve(dest) === path.resolve(abs)) return { ok: true, rel: rel, name: base };
       fs.renameSync(abs, dest);
       const newRel = toRel(dest, root);

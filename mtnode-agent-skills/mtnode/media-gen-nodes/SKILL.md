@@ -18,6 +18,16 @@ description: MTNode music_gen / yue_gen / breeze_gen / video_gen 节点：MiniMa
 > `tts_gen`（SoVITS 语音）已随 GPT-SoVITS 本地插件整块移除：画布上不再有这个 kind，
 > 老画布里的 `tts_gen` 节点不渲染、也不报错（重建/改用 `breeze_gen`）。
 
+## 用 canvas_edit 建这类节点（MCP / 外部客户端）
+
+- 这四个 kind 都在 `canvas_edit` 的 `create.kind` 枚举里。界面里 **kind 建好即不可改**，
+  枚举少一个（`breeze_gen` / `yue_gen` 曾漏过）就只能把节点删了重建 —— 别靠 update 改 kind
+- `yue_gen` 可直写：`style`（风格提示词）/ `lyrics` / `abc` / `cot`（`full` | `melody` | `off`）
+- `breeze_gen` 可直写：`voice`（历史别名，= `breezeVoice`）/ `breezeMode`（`auto` | `clone` | `design` | `direction`）/
+  `breezeInstruction` / `breezeCfgScale`（0.1–10，克隆那条路恒 1.0）/ `breezeSeed` / `breezeFormat`（`wav` | `flac` | `mp3`）
+- `breeze_gen` 的两个正文文本框（待合成文本 / 参考文稿）**没有**对应参数：正文只走端子 0 / 2 连线
+  （运行时也是「端子有输入就以端子为准」）
+
 ## 媒体端子口径（URL）
 
 - 输入节点（`input_audio` / `input_video`）各有 **1 个数据输出端子**，值是该本机文件的 **`file:///` URL**

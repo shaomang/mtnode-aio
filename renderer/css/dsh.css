@@ -621,6 +621,86 @@
   white-space: nowrap;
 }
 
+/* ── 工坊「工作流」类别：卡片与上传页的端子清单 ──
+   工作流的可复用性全写在外侧端子上，卡片先摊「入 n / 出 n + 端子名」，
+   看标题和封面判断不出能不能直接用。 */
+.tpl-port-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  margin-top: 2px;
+  font-size: 9px;
+  color: var(--muted);
+  min-width: 0;
+}
+
+.tpl-port-side {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.tpl-port-side b {
+  flex: none;
+  font-family: var(--mono);
+  font-weight: 700;
+  color: var(--cyan2);
+}
+
+.tpl-port-side.out b {
+  color: #8dffb5;
+}
+
+.tpl-port-chip {
+  flex: none;
+  max-width: 6.5em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 1px 4px;
+  border: 1px solid var(--bd2);
+  border-radius: 3px;
+  background: rgba(255, 255, 255, .03);
+}
+
+.tpl-port-more {
+  flex: none;
+  font-family: var(--mono);
+  opacity: .7;
+}
+
+/* 上传页：载入后摊出整份端子表（一行一侧，缺哪侧一眼看到） */
+.tpl-port-list {
+  margin-top: 6px;
+  padding: 6px 8px;
+  border: 1px solid var(--bd);
+  border-radius: 4px;
+  background: var(--code);
+  font-size: 10.5px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+
+.tpl-port-list:empty {
+  display: none;
+}
+
+.tpl-port-line {
+  font-family: var(--mono);
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tpl-port-note {
+  margin-top: 3px;
+  font-size: 10px;
+  color: var(--muted);
+}
+
 .tpl-card-tags {
   display: flex;
   flex-wrap: nowrap;

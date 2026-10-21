@@ -1665,6 +1665,99 @@ button.pk-badge.pk-btn:hover {
   padding: 8px 10px 0
 }
 
+/* ===== 节点层「封面」面板（renderer/app-node-cover.js）=====
+   给一颗节点层（super）指定一张图作为 body 封面：折叠态不透明铺满包体，
+   展开态作为舞台底图（默认 20% 不透明度，每颗壳单独调）。
+   persistent 面板，与 bg-rm-pop 同一套外壳口径，只走窗内 ✕ / 再点开关收起。 */
+.cover-pop {
+  display: none;
+  position: fixed;
+  z-index: 1500;
+  width: 300px;
+  background: linear-gradient(180deg, var(--panel2), var(--panel));
+  border: 2px solid var(--bd2);
+  border-radius: 4px;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, .55);
+  padding: 0 0 10px;
+}
+
+.cover-pop.on {
+  display: block
+}
+
+.cover-pop-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--bd);
+}
+
+.cover-pop-head b {
+  flex: 1;
+  font-size: 12px;
+  color: var(--cyan2);
+  letter-spacing: .5px
+}
+
+/* 预览：棋盘格底，透明 PNG 一眼看得出哪里是透明的 */
+.cover-pop-thumb {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 96px;
+  margin: 8px 10px 0;
+  border: 1px solid var(--bd2);
+  border-radius: 3px;
+  background-color: #10151c;
+  background-image:
+    linear-gradient(45deg, rgba(255, 255, 255, .06) 25%, transparent 25%, transparent 75%, rgba(255, 255, 255, .06) 75%),
+    linear-gradient(45deg, rgba(255, 255, 255, .06) 25%, transparent 25%, transparent 75%, rgba(255, 255, 255, .06) 75%);
+  background-size: 12px 12px;
+  background-position: 0 0, 6px 6px;
+  overflow: hidden;
+}
+
+.cover-pop-thumb span {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.cover-pop-thumb img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  display: block;
+}
+
+.cover-pop-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  padding: 8px 10px 0;
+}
+
+.cover-pop-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.cover-pop-field input[type="range"] {
+  width: 100%;
+  accent-color: var(--cyan);
+}
+
+.cover-pop-hint {
+  margin: 6px 10px 0;
+  font-size: 10.5px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
 /* ===== 图像生成 · 画幅锁定 Toggle（与首参考图保持一致长宽比）=====
    关 = 虚线画幅里嵌一块实色小图（「参考图装进更大的目标画幅」）；
    开 = 外框转绿色实线并加辉光，一眼看出这台节点会先补边、出图后再裁回。
@@ -4498,6 +4591,43 @@ textarea.asset-form-input {
 .asset-lib-assetrow.on .asset-lib-catchip {
   color: var(--cyan2);
   border-color: var(--cyan);
+}
+
+/* ===== 左树拖动重排：多选块 / 拖动源 / 落点（插入线 · 移入高亮） ===== */
+/* 多选：选中但右栏没在看它 —— 比 .on（当前项）淡一档，一眼分开「选了」和「在看」 */
+.asset-lib-catrow.sel,
+.asset-lib-assetrow.sel {
+  background: rgba(56, 214, 255, .07);
+  box-shadow: inset 0 0 0 1px rgba(56, 214, 255, .35);
+}
+
+.asset-lib-catrow.on.sel,
+.asset-lib-assetrow.on.sel {
+  background: rgba(56, 214, 255, .16);
+}
+
+/* 拖动中的源行：整批一起变淡（落点才是视觉重点） */
+.asset-lib-catrow.asset-tree-dragging,
+.asset-lib-assetrow.asset-tree-dragging {
+  opacity: .45;
+}
+
+/* 落点三态：before / after ＝ 在行的上 / 下沿画一条插入线；into ＝ 整行描边＝移进这个分类 */
+.asset-lib-catrow.asset-tree-drop-before,
+.asset-lib-assetrow.asset-tree-drop-before {
+  box-shadow: inset 0 2px 0 var(--cyan);
+}
+
+.asset-lib-catrow.asset-tree-drop-after,
+.asset-lib-assetrow.asset-tree-drop-after {
+  box-shadow: inset 0 -2px 0 var(--cyan);
+}
+
+.asset-lib-catrow.asset-tree-drop-into,
+.asset-lib-assetrow.asset-tree-drop-into {
+  background: rgba(56, 214, 255, .2);
+  box-shadow: inset 0 0 0 2px var(--cyan);
+  border-radius: 3px;
 }
 
 /* ===== 素材详情：头部（左标题 + 副标题 · 右动作行） ===== */

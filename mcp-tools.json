@@ -175,6 +175,8 @@
                     "proc_text",
                     "proc_image",
                     "music_gen",
+                    "yue_gen",
+                    "breeze_gen",
                     "video_gen",
                     "video_upscale",
                     "video_interp",
@@ -669,11 +671,67 @@
                 },
                 "outputPath": {
                   "type": "string",
-                  "description": "video_gen / music_gen / breeze_gen 输出路径（.mp4 / .wav / .flac / .mp3）。sensenova_gen 没有这个字段：结果自动落应用资产目录，从输出端口 0 交出去，不要写路径。"
+                  "description": "video_gen / music_gen / yue_gen / breeze_gen / remotion 输出路径（.mp4 / .wav / .flac / .mp3）。sensenova_gen 没有这个字段：结果自动落应用资产目录，从输出端口 0 交出去，不要写路径。"
                 },
                 "voice": {
                   "type": "string",
-                  "description": "breeze_gen 音色（音色库 id，留空 = 用端子给的参考音频，勿编造）。"
+                  "description": "breeze_gen 音色（音色库 id，留空 = 用端子给的参考音频，勿编造）；与 breezeVoice 同义，两个都收。"
+                },
+                "breezeVoice": {
+                  "type": "string",
+                  "description": "breeze_gen 音色库 id（= voice；留空 = 只用端子给的参考音频）。"
+                },
+                "breezeMode": {
+                  "type": "string",
+                  "description": "breeze_gen 能力：auto 按参数自动判定（默认）· clone 克隆（须有参考音频）· design 音色设计 · direction 音色导演（指令）。",
+                  "enum": [
+                    "auto",
+                    "clone",
+                    "design",
+                    "direction"
+                  ]
+                },
+                "breezeInstruction": {
+                  "type": "string",
+                  "description": "breeze_gen 指令：音色设计 / 音色导演的性格与语气描述；留空则用端子 3 给的指令。"
+                },
+                "breezeCfgScale": {
+                  "type": "number",
+                  "description": "breeze_gen 指令跟随强度 0.1–10（默认 4）；克隆这条路恒为 1.0（后端限制），传别的值不生效。"
+                },
+                "breezeSeed": {
+                  "type": "number",
+                  "description": "breeze_gen 随机种子（默认 42）。"
+                },
+                "breezeFormat": {
+                  "type": "string",
+                  "description": "breeze_gen 输出格式（默认 wav；mp3 需 ffmpeg）。改了格式，已配的 outputPath 扩展名会跟着走。",
+                  "enum": [
+                    "wav",
+                    "flac",
+                    "mp3"
+                  ]
+                },
+                "cot": {
+                  "type": "string",
+                  "description": "yue_gen 思维链档位：full（默认）· melody（旋律引导）· off（关思维链）。",
+                  "enum": [
+                    "full",
+                    "melody",
+                    "off"
+                  ]
+                },
+                "style": {
+                  "type": "string",
+                  "description": "yue_gen 风格提示词（也是端口 0 的文本；端子有输入时以端子为准）。"
+                },
+                "lyrics": {
+                  "type": "string",
+                  "description": "yue_gen 歌词正文（也是端口 1 的文本；端子有输入时以端子为准）。"
+                },
+                "abc": {
+                  "type": "string",
+                  "description": "yue_gen 可编辑 ABC 谱面（可选；也是端口 2 的文本）。"
                 },
                 "videoMode": {
                   "type": "string",
@@ -874,6 +932,10 @@
                 "fromIndex": {
                   "type": "number",
                   "description": "源的输出端子序号（默认 0）；judge 0 = YES、1 = NO；tool / function 按参数表数端子。"
+                },
+                "toIndex": {
+                  "type": "number",
+                  "description": "目标的输入端子序号（0 起始；省略 = 按类型自动选槽）。媒体节点必须显式给：breeze_gen 0=待合成文本 · 1=参考音频 · 2=参考文稿 · 3=指令 · 4=控制输入；video_gen fl2va 0=控制 · 1=提示词 · 2=首帧 · 3=末帧；save 0/1 按入线类型。"
                 },
                 "rel": {
                   "type": "boolean",

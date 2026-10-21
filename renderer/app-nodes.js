@@ -11440,13 +11440,22 @@ function connectError(fromId, toId, toIndex, fromIndex) {
     return I18n.t("全局节点仅接受文本或图像来源");
   if (fromId === toId || wouldCycle(fromId, toId, toIndex, fromIndex))
     return I18n.t("不能连接成回路");
+  /* 重复连线：同一来源的**同一颗输出端子** → **同一颗输入端子** 才算重复。
+     旧写法只比 from / fromIndex，把「同一张图分接首帧与末帧」（端口 2 / 3，来源同一个）
+     也判成「这两节点已连接」—— 视频节点的首末帧因此接不上同一个图像节点，
+     H3 动态静图那种「一张图首尾相接」的接法直接做不出来。固定端子节点（video_gen /
+     music_gen / yue_gen / breeze_gen…）本来就有逐端子的占用判定，来源相同但端子不同
+     是合法接法；同一颗端子仍是重复（占用判定也照旧会报）。未指定端子（拖到节点身上 /
+     agent connect）保持旧口径：不看端子就判重复，重复调用不会静默多接一条线。 */
+  const dupSlot = toIndex == null ? null : Number(toIndex);
   if (
     S.wf.wires.some(
       (w) =>
         !w.rel &&
         w.from === fromId &&
         w.to === toId &&
-        Number(w.fromIndex || 0) === fi,
+        Number(w.fromIndex || 0) === fi &&
+        (dupSlot == null || Number(w.toIndex || 0) === dupSlot),
     )
   )
     return I18n.t("这两节点已连接");
@@ -18669,7 +18678,10 @@ function applyNodePatch(node, patch, warnings) {
   }
   /* breeze_gen：音色 / 能力 / 指令 / cfg_scale / seed / 输出格式（Breeze TTS 2 语音节点） */
   if (node.kind === "breeze_gen") {
-    if (patch.breezeVoice != null) node.voice = String(patch.breezeVoice).trim();
+    /* 音色：breezeVoice 是正式字段名，voice 是历史别名（canvas_edit 参数表两个都收，
+       breezeVoice 优先）。两个名字必须写同一个字段，否则「传了不生效」的坑会再回来。 */
+    const bVoice = patch.breezeVoice != null ? patch.breezeVoice : patch.voice;
+    if (bVoice != null) node.voice = String(bVoice).trim();
     if (patch.breezeMode != null) {
       const v = String(patch.breezeMode).trim();
       if (["auto", "clone", "design", "direction"].indexOf(v) >= 0) node.voiceMode = v;
@@ -19807,18 +19819,26 @@ async function applyCanvasEdit(params, ctx) {
       connected.push({ from: a.id, to: b.id, fromTitle: a.title, toTitle: b.title, rel: true });
       continue;
     }
-    const err = connectError(a.id, b.id, null, pair.fromIndex || 0);
+    /* 显式端子（toIndex）：不传 = null = 沿用原来的「自动选槽」。媒体节点
+       （breeze_gen 的 0/1/2/3 与端口 4 控制、video_gen 的控制口在 0）靠它才能落对槽位。 */
+    const wantIndex =
+      pair && pair.toIndex != null && pair.toIndex !== "" ? Number(pair.toIndex) : null;
+    if (wantIndex != null && (!Number.isInteger(wantIndex) || wantIndex < 0)) {
+      warnings.push(a.title + " → " + b.title + "：toIndex 非法（需 0 起始整数）");
+      continue;
+    }
+    const err = connectError(a.id, b.id, wantIndex, pair.fromIndex || 0);
     if (err) {
       /* 端口 / 接法预检：把候选端子清单与正确接法一并回给模型，
          省掉「报错 → 再读图 → 再改」的往返。 */
-      const adv = connectPortAdvice(a.id, b.id, null, pair.fromIndex || 0, err);
+      const adv = connectPortAdvice(a.id, b.id, wantIndex, pair.fromIndex || 0, err);
       warnings.push(
         a.title + " → " + b.title + "：" + err +
           (adv && adv.suggestion ? " · " + adv.suggestion : ""),
       );
       continue;
     }
-    addWire(a.id, b.id, null, { fromIndex: pair.fromIndex || 0 });
+    addWire(a.id, b.id, wantIndex, { fromIndex: pair.fromIndex || 0 });
     connected.push({ from: a.id, to: b.id, fromTitle: a.title, toTitle: b.title });
   }
 

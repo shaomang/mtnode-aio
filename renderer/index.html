@@ -226,6 +226,10 @@
       <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6.1 6.2V4.7c0-.7.5-1.2 1.2-1.2h1.4c.7 0 1.2.5 1.2 1.2v1.5" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/><path d="M2.5 6.2h11c.8 0 1.4.6 1.4 1.4v5.1c0 .8-.6 1.4-1.4 1.4h-11c-.8 0-1.4-.6-1.4-1.4V7.6c0-.8.6-1.4 1.4-1.4z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/><path d="M1.1 9.1h13.8" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M6.7 8.2h2.6v1.9H6.7z" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round"/></svg>
       <span class="btn-ico-txt" data-i18n="工具库">工具库</span>
     </button>
+    <button type="button" id="btnWorkflows" class="corner mini btn-ico btn-workflows" aria-label="工作流库">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.4" y="2.6" width="11.2" height="7.4" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.25"/><rect x="4.6" y="4.8" width="2.6" height="2.2" rx=".5" fill="none" stroke="currentColor" stroke-width="1.1"/><rect x="8.8" y="4.8" width="2.6" height="2.2" rx=".5" fill="none" stroke="currentColor" stroke-width="1.1"/><path d="M5.9 7v1.4h4.2V7" fill="none" stroke="currentColor" stroke-width="1.05" stroke-linecap="round"/><path d="M4.4 12.2h7.2" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+      <span class="btn-ico-txt" data-i18n="工作流库">工作流库</span>
+    </button>
     <button type="button" id="btnAssets" class="corner mini btn-ico btn-assets" data-shortcut="L" aria-label="素材库">
       <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.4l5.4 2.8L8 8 2.6 5.2 8 2.4z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/><path d="M2.6 8.2L8 11l5.4-2.8" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/><path d="M2.6 11L8 13.8 13.4 11" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" opacity=".8"/></svg>
       <span class="btn-ico-txt" data-i18n="素材库">素材库</span>
@@ -799,6 +803,14 @@
      hideNodeHelpTip）。放在 app-canvas.js 之后：头部按钮在 renderCanvas 里按调用期取它；
      开关读 S.config.showNodeHelp（默认打开，设置里可隐藏）。 -->
 <script src="app-nodehelp.js"></script>
+<!-- 节点层封面（renderer/app-node-cover.js + css/canvas.css 的 .has-cover / .super-stage-cover
+     / .n-super-cover-btn，面板样式在 css/components.css 的 .cover-pop）：
+     给一颗节点层指定一张图当 body 封面 —— 折叠态铺满整个包体（background-size: cover，
+     铺满不拉伸、短边居中裁切），展开态作为舞台底图（默认 20% 不透明度，每壳单独可调）。
+     自包含：对外只暴露 coverHeadButton / applyNodeCoverToBody / applyNodeCoverToStage /
+     openCoverPop / clearNodeCover；app-canvas.js 与右键菜单都在**调用期**按 typeof 取。
+     必须排在 app-canvas.js 之后：头部按钮与 body 装饰都是在 renderCanvas 里现取的。 -->
+<script src="app-node-cover.js"></script>
 <script src="js-exec.js"></script>
 <script src="app-nodes.js"></script>
 <!-- 用户自建插件带来的画布节点（renderer/app-nodeplugins.js）：插件目录里的 mtnode-plugin.json
@@ -809,6 +821,12 @@
      所以那些真源必须已经就位。 -->
 <script src="app-nodeplugins.js"></script>
 <script src="app-store.js"></script>
+<!-- 工作流库（renderer/app-workflows.js · 顶栏「工作流库」+ 节点层右键「保存到工作流库 /
+     分享到工坊」）：工作流 = 一颗节点层连同它的整棵子树，没有新节点类型，也没有新执行语义。
+     本机库存 <数据目录>/workflows/<id>.json（主进程 workflow-store.js），插入＝克隆整棵子树
+     到当前画布；分享＝剥掉本机路径/跨画布依赖后打包成 .mtnodes 交 app-store.js 的上传页
+     （openWorkflowUpload 在调用期按 typeof 探测，所以与它的加载顺序无关）。 -->
+<script src="app-workflows.js"></script>
 <!-- 打赏（自包含：window.MtTips + css/tips.css）：工坊条目 / 应用条目 / 论坛话题与回复
      四处共用的打赏按钮、档位窗与「打赏名单」窗。金额口径与限额**全部由服务端下发**
      （GET /api/tips/config），渲染层不做算术决策；金币图标与换算取 window.MtCoin。

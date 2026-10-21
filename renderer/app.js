@@ -9142,38 +9142,21 @@ function collectRunQueueAll() {
     }
   };
   dropSessOnlyDevRows();
-  /* ④ 全局助手：全应用同时只有一个，合成一条（无宿主节点，点击 = 打开助手侧栏） */
-  const assistOn = !!(S.assistRunning || S.assistRunActive);
-  const assist = assistOn
-    ? addItem({
-        key: "assist",
-        type: "assist",
-        id: "assist",
-        title: I18n.t("全局助手执行中"),
-        kindCls: "assist",
-        kindLabel: I18n.t("助手"),
-        stateText: "",
-        sub: (S.wf && (S.wf.name || S.wf.id)) || "",
-        state: "run",
-        wfId: (S.wf && S.wf.id) || "",
-        wfName: (S.wf && (S.wf.name || S.wf.id)) || "",
-        node: null,
-        sess: null,
-      })
-    : null;
-  /* 展示顺序：助手 → 会话 → 开发块 → 处理节点 → 后端生成 → 已暂停 → 等待中
+  /* ④ 全局助手不再单独成行（本轮需求 · 单一根源）：它就是一条 assist 会话，
+     st.running 落在 ③ 的扫描里，直接按「会话」计 —— 运行队列里没有「助手」这一行，
+     一键终止也只按会话打，不做第二套口径。下面保留一个空占位给历史调用点（恒为 null）。 */
+  const assist = null;
+  /* 展示顺序：会话 → 开发块 → 处理节点 → 后端生成 → 已暂停 → 等待中
      （暂停排在等待之前：它是「用户可以立刻动手」的那一批，不该沉底） */
   const rank = (it) =>
     (it.state === "wait" ? 90 : it.state === "paused" ? 80 : 0) +
-    (it.type === "assist"
-      ? 0
-      : it.type === "session"
-        ? 1
-        : it.type === "dev"
-          ? 2
-          : it.type === "node"
-            ? 3
-            : 4);
+    (it.type === "session"
+      ? 1
+      : it.type === "dev"
+        ? 2
+        : it.type === "node"
+          ? 3
+          : 4);
   items.sort((a, b) => rank(a) - rank(b));
   const counts = {
     node: 0,
@@ -9204,7 +9187,6 @@ function runQueueSubOf(it) {
 }
 function runQueueJumpHint(it) {
   if (!it) return "";
-  if (it.type === "assist") return I18n.t("点击打开全局助手");
   if (it.type === "session") return I18n.t("点击打开该会话");
   if (it.type !== "node" && it.type !== "dev" && it.type !== "media") return "";
   /* 开发块的「建议 / 问询」只读调研在跑：点行 = 打开对应的进度窗口（见 jumpRunQueueItem） */
@@ -9229,7 +9211,6 @@ function runQueueStopHint(it) {
     if (it.planParBusy) return I18n.t("停止该会话与并行任务组");
     return I18n.t("停止该会话");
   }
-  if (it.type === "assist") return I18n.t("停止全局助手");
   return I18n.t("停止运行");
 }
 /* 已暂停行的行内键 = 继续（不是终止）：沿用那条会话的上下文从中断处接着写 */
@@ -9306,7 +9287,6 @@ function updateRunQueuePanel() {
   const countOf = (type) =>
     runItems.reduce((m, it) => m + (it.type === type ? 1 : 0), 0);
   const nPaused = pausedItems.length;
-  const nAssist = countOf("assist");
   /* 会话行里「并行任务」单独计数：它代表的是计划并行组，不是一条普通对话轮次 */
   const nPar = runItems.reduce(
     (m, it) => m + (it.type === "session" && it.planPar ? 1 : 0),
@@ -9331,7 +9311,6 @@ function updateRunQueuePanel() {
      （原来的 dshRunAllDoneCheck「队列空 + 3 秒确认窗 + ×1.5 音量」整档已删除。） */
   /* 汇总文案（条状按钮 title 与面板 rq-count 同一份，口径不分叉） */
   const summary = [];
-  if (nAssist) summary.push(I18n.t("助手执行中"));
   if (nNode) summary.push(nNode + I18n.t(" 处理中"));
   if (nSess) summary.push(nSess + I18n.t(" 会话"));
   if (nPar) summary.push(nPar + I18n.t(" 并行任务"));
@@ -9468,7 +9447,6 @@ function updateRunQueuePanel() {
     runItems
       .filter((it) => it.type === type)
       .concat(pausedItems.filter((it) => it.type === type));
-  addSec(I18n.t("全局助手"), pick("assist"));
   addSec(I18n.t("智能会话"), pick("session"));
   addSec(
     I18n.t("处理中"),
@@ -9561,12 +9539,6 @@ try {
    运行中的内存对象，不打断任务）再 focusNode。旧版直接 toast「节点不在当前画布」。 */
 async function jumpRunQueueItem(it) {
   if (!it) return;
-  if (it.type === "assist") {
-    try {
-      setAssistOpen(true);
-    } catch (_) {}
-    return;
-  }
   if (it.type === "session") {
     const st =
       it.sess ||
@@ -9699,15 +9671,6 @@ function stopSessionRuns(st, clearRunning) {
    并在跑的是计划并行组时逐个取消那一组的 runKey（stopSessionRuns）。 */
 async function stopRunQueueItem(it) {
   if (!it) return;
-  if (it.type === "assist") {
-    try {
-      assistStop();
-    } catch (_) {
-      S.assistRunActive = false;
-    }
-    updateRunQueuePanel();
-    return;
-  }
   if (it.type === "session") {
     const st =
       it.sess ||
@@ -26871,6 +26834,8 @@ function closeNodePopById(id) {
      按调用期取函数；脚本没接上时这里静默跳过，不影响别的面板） */
   else if (id === "imgOutPop" && typeof window.closeImgOutPop === "function")
     window.closeImgOutPop();
+  /* 节点层「封面」面板（renderer/app-node-cover.js，晚于本文件加载） */
+  else if (id === "coverPop" && typeof closeCoverPop === "function") closeCoverPop();
 }
 /* keep = "bgRm" | "ratioLock" | "devModel" | "aiCall" | "imgBackend" | "devColor" | "imgOut" | ""（全收） */
 function closeNodePopsExcept(keep) {
@@ -26884,6 +26849,8 @@ function closeNodePopsExcept(keep) {
     ["imgBackend", "imgBackendPop", null],
     ["devColor", "devColorPop", closeDevColorPicker],
     ["imgOut", "imgOutPop", null],
+    /* 节点层「封面」面板（renderer/app-node-cover.js，晚于本文件加载） */
+    ["cover", "coverPop", null],
   ];
   for (const [name, id, fn] of pairs) {
     if (name === keep) continue;
@@ -26906,6 +26873,7 @@ function repositionNodePops() {
     "imgBackendPop",
     "devColorPop",
     "imgOutPop",
+    "coverPop",
   ]) {
     const el = document.getElementById(id);
     if (!el || !el.classList || !el.classList.contains("on")) continue;
@@ -30248,7 +30216,9 @@ function askAssistDecomposeTask(node) {
       ? "任务目标：" + goal
       : "请根据标题理解目标；必要时先更新该节点的 goal。",
   ].join("\n");
-  assistSend("/generate-task " + arg);
+  /* 走助手栏的唯一发送入口（本轮需求 · 单一根源）：与会话视图发送同一条链 */
+  if (typeof assistPanelSend === "function") assistPanelSend("/generate-task " + arg);
+  else assistSend("/generate-task " + arg);
 }
 
 async function playTaskNode(node, quiet, opts) {

@@ -1026,6 +1026,16 @@ contextBridge.exposeInMainWorld('api', {
   /* 工具运行环境（只读）：数据目录与用户输出目录（Agent 描述里的 {{outDir}} 展开用） */
   toolsEnv: () => ipcRenderer.invoke('tools:env'),
 
+  /* ── 工作流库：一颗「节点层」的封装快照（workflow-store.js 落盘
+     <数据目录>/workflows/*.json）。工坊的 .mtnodes 包装也走这里。 ── */
+  workflowsList: () => ipcRenderer.invoke('workflows:list'),
+  workflowsGet: (id) => ipcRenderer.invoke('workflows:get', id),
+  workflowsSave: (pkg) => ipcRenderer.invoke('workflows:save', pkg),
+  workflowsDelete: (id) => ipcRenderer.invoke('workflows:delete', id),
+  workflowsPatch: (id, patch) => ipcRenderer.invoke('workflows:patch', { id, patch }),
+  workflowsExportBase64: (id, graph) => ipcRenderer.invoke('workflows:exportBase64', id, graph || null),
+  workflowsImportBase64: (arg) => ipcRenderer.invoke('workflows:importBase64', arg),
+
   /* ── 长周期任务系统（longtask-store.js）：run checkpoint / 长期记忆 / 交付目录 ──
      图定义不进这里（随工作流 JSON 自动保存）；这里只存「跑起来才会变的东西」。 */
   ltRunSave: (wfId, run) => ipcRenderer.invoke('lt:runSave', { wfId, run }),
@@ -1293,8 +1303,10 @@ contextBridge.exposeInMainWorld('api', {
   assetsGetRoot: () => ipcRenderer.invoke('assets:getRoot'),
   assetsSetRoot: (p) => ipcRenderer.invoke('assets:setRoot', p),
   assetsScan: () => ipcRenderer.invoke('assets:scan'),
+  assetsSetOrder: (order) => ipcRenderer.invoke('assets:setOrder', order),
   assetsMkdir: (parentRel, name) => ipcRenderer.invoke('assets:mkdir', { parentRel, name }),
-  assetsRename: (rel, name, toCatRel) => ipcRenderer.invoke('assets:rename', { rel, name, toCatRel }),
+  assetsRename: (rel, name, toCatRel, strict) =>
+    ipcRenderer.invoke('assets:rename', { rel, name, toCatRel, strict: !!strict }),
   assetsRemove: (rel) => ipcRenderer.invoke('assets:remove', { rel }),
   assetsCreate: (arg) => ipcRenderer.invoke('assets:create', arg),
   assetsSaveMeta: (arg) => ipcRenderer.invoke('assets:saveMeta', arg),

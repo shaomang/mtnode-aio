@@ -4,7 +4,7 @@ const TPL_PREV_CACHE = new Map();
 /* 商店用户区对统一账户的订阅句柄（每次开商店重新订阅，避免叠加）。 */
 let tplAuthUnsub = null;
 const TPL_ST = {
-  kind: "templates", /* templates | skills */
+  kind: "templates", /* templates（画布）| workflows（工作流）| skills */
   tab: "browse",
   view: "grid", /* grid | list，默认网格 */
   q: "",
@@ -25,6 +25,10 @@ const TPL_ST = {
   previewBase64: "",
   previewThumbBase64: "",
   previewHint: "",
+  /* 工作流专用：端子清单来自封装本身（外侧桥接／汇流线现算），发布时随包带上，
+     卡片与详情用它画「入 n / 出 n」；nodeCount 只是展示用的规模数字。 */
+  workflowPorts: null,
+  workflowNodeCount: 0,
   authMode: "login",
   _localSkills: null,
 };
@@ -32,8 +36,55 @@ const TPL_ST = {
 function tplIsSkill() {
   return TPL_ST.kind === "skills";
 }
+/* 「工作流」与画布（模板）共用同一套浏览 / 详情 / 上传骨架：区别只在服务端路径、
+   端子上限校验、以及下载落到本机工作流库（**不**开新画布）。 */
+function tplIsWorkflow() {
+  return TPL_ST.kind === "workflows";
+}
 function tplApiBase() {
-  return tplIsSkill() ? "/api/skills" : "/api/templates";
+  if (tplIsSkill()) return "/api/skills";
+  return tplIsWorkflow() ? "/api/workflows" : "/api/templates";
+}
+/* 界面上的类别名（服务端 kind 仍是 template：这里只改文案，零迁移） */
+function tplKindName() {
+  if (tplIsSkill()) return I18n.t("技能");
+  return tplIsWorkflow() ? I18n.t("工作流") : I18n.t("画布");
+}
+function tplKindTagParam() {
+  return tplIsSkill() ? "skills" : tplIsWorkflow() ? "workflows" : "templates";
+}
+/* 卡片 / 详情里的端子徽标行（工作流专用）：入 n · 出 n + 前几个端子名 */
+function tplPortChipsEl(item) {
+  const ports = (item && item.ports) || null;
+  if (!ports || (!Array.isArray(ports.ins) && !Array.isArray(ports.outs))) return null;
+  const ins = Array.isArray(ports.ins) ? ports.ins : [];
+  const outs = Array.isArray(ports.outs) ? ports.outs : [];
+  const row = document.createElement("div");
+  row.className = "tpl-port-chips";
+  const mkSide = (list, dir) => {
+    const g = document.createElement("span");
+    g.className = "tpl-port-side " + dir;
+    const lab = document.createElement("b");
+    lab.textContent = (dir === "in" ? I18n.t("入 ") : I18n.t("出 ")) + list.length;
+    g.appendChild(lab);
+    list.slice(0, 4).forEach((p) => {
+      const c = document.createElement("span");
+      c.className = "tpl-port-chip";
+      c.textContent = String((p && p.name) || "");
+      c.title = c.textContent + (p && p.kind ? "（" + p.kind + "）" : "");
+      g.appendChild(c);
+    });
+    if (list.length > 4) {
+      const more = document.createElement("span");
+      more.className = "tpl-port-more";
+      more.textContent = "+" + (list.length - 4);
+      g.appendChild(more);
+    }
+    return g;
+  };
+  row.appendChild(mkSide(ins, "in"));
+  row.appendChild(mkSide(outs, "out"));
+  return row;
 }
 
 /* 统一账户：登录态唯一来源 = window.MTNodeAuth（token 由主进程 safeStorage 保管，
@@ -169,6 +220,8 @@ function tplResetDraft() {
   TPL_ST.previewBase64 = "";
   TPL_ST.previewThumbBase64 = "";
   TPL_ST.previewHint = "";
+  TPL_ST.workflowPorts = null;
+  TPL_ST.workflowNodeCount = 0;
   TPL_ST._clearPreview = false;
   TPL_ST._extrasTouched = false;
 }
@@ -516,7 +569,11 @@ function openTplItemDetail(item) {
   if (!item || !item.id) return;
   const body = openTplSubOverlay(item.title || I18n.t("（未命名）"));
   const isSkill = !!(item.skillName || item.files);
-  const target = { kind: isSkill ? "skill" : "template", id: item.id };
+  /* 评论 / 评分 / 打赏的 targetKind：工作流在服务端是独立的一类（评论池分开） */
+  const target = {
+    kind: isSkill ? "skill" : tplIsWorkflow() ? "workflow" : "template",
+    id: item.id,
+  };
   const tabs = detailTabsEl([I18n.t("条目"), I18n.t("评论")], (i) => {
     if (i === 1) detailMountComments();
   });
@@ -528,6 +585,15 @@ function openTplItemDetail(item) {
   if (item.description) rows.push([I18n.t("简介"), item.description]);
   if (item.skillName) rows.push(["Skill", item.skillName]);
   if (item.version) rows.push([I18n.t("版本"), "v" + item.version]);
+  /* 工作流：外侧端子清单（入 / 出各占一行，名字直给）——别人看详情就是为了判断能不能接上 */
+  if (tplIsWorkflow() && item.ports) {
+    const ins = Array.isArray(item.ports.ins) ? item.ports.ins : [];
+    const outs = Array.isArray(item.ports.outs) ? item.ports.outs : [];
+    const names = (list) =>
+      list.length ? list.map((p) => String((p && p.name) || "")).join(" · ") : I18n.t("无");
+    rows.push([I18n.t("输入端子"), String(ins.length) + " · " + names(ins)]);
+    rows.push([I18n.t("输出端子"), String(outs.length) + " · " + names(outs)]);
+  }
   rows.push([I18n.t("作者"), (item.owner && (item.owner.nickname || item.owner.username)) || I18n.t("未知")]);
   rows.push([I18n.t("下载"), String(item.downloads || 0)]);
   rows.push([I18n.t("获赞"), String(item.likes || 0)]);
@@ -717,7 +783,7 @@ async function tplFetchFileCached(item) {
       await window.api.storeCacheDelete(id);
     } catch (_) {}
   }
-  const r = await tplApi("GET", "/api/templates/" + encodeURIComponent(id) + "/file");
+  const r = await tplApi("GET", tplApiBase() + "/" + encodeURIComponent(id) + "/file");
   if (!r || !r.ok || !r.data || !r.data.base64) {
     throw new Error(tplErr(r));
   }
@@ -1030,6 +1096,32 @@ if (typeof window !== "undefined") {
   };
 }
 
+/* 「分享到工坊」的入口（renderer/app-workflows.js 调用）：把本机工作流库那一条
+   已经打包好的 .mtnodes 连同端子清单塞进上传箱，直接落在「工作流 → 上传」页。
+   不重新打包、不重新剥离 —— 那一份在分享前就已经剥干净了。 */
+function openWorkflowUpload(payload) {
+  const p = payload || {};
+  TPL_ST.kind = "workflows";
+  TPL_ST.tab = "upload";
+  TPL_ST.page = 1;
+  TPL_ST.tag = "";
+  tplResetDraft();
+  TPL_ST.title = String(p.title || "");
+  TPL_ST.description = String(p.description || "");
+  TPL_ST.version = String(p.version || "1.0");
+  TPL_ST.fileBase64 = String(p.fileBase64 || "");
+  TPL_ST.fileHint = TPL_ST.fileBase64
+    ? I18n.t("已从本机工作流库载入，可直接发布")
+    : "";
+  const pp = p.ports || { ins: [], outs: [] };
+  TPL_ST.workflowPorts = {
+    ins: Array.isArray(pp.ins) ? pp.ins : [],
+    outs: Array.isArray(pp.outs) ? pp.outs : [],
+  };
+  TPL_ST.workflowNodeCount = Number(pp.nodeCount) || 0;
+  return openTemplateStore();
+}
+
 async function openTemplateStore() {
   openOverlay(I18n.t("创意工坊"));
   overlayPersistent = true;
@@ -1047,23 +1139,24 @@ async function openTemplateStore() {
 
   const kindRow = document.createElement("div");
   kindRow.className = "tpl-top tpl-kind-row";
-  const kindTpl = mkMiniBtn(I18n.t("模板"), () => {
-    if (TPL_ST.kind === "templates") return;
-    TPL_ST.kind = "templates";
+  /* 三类内容的同一排入口：画布（原「模板」·服务端 kind 仍是 template）/ 工作流 / Skill。
+     「工作流」与服务端的第三类内容同名，卡片与详情都按端子清单展示。 */
+  const setKind = (k) => {
+    if (TPL_ST.kind === k) return;
+    TPL_ST.kind = k;
     TPL_ST.page = 1;
     TPL_ST.tag = "";
     tplResetDraft();
     paint();
-  });
-  const kindSkill = mkMiniBtn("Skill", () => {
-    if (TPL_ST.kind === "skills") return;
-    TPL_ST.kind = "skills";
-    TPL_ST.page = 1;
-    TPL_ST.tag = "";
-    tplResetDraft();
-    paint();
-  });
+  };
+  const kindTpl = mkMiniBtn(I18n.t("画布"), () => setKind("templates"));
+  kindTpl.title = I18n.t("整张画布（导入时打开为新画布）");
+  const kindWf = mkMiniBtn(I18n.t("工作流"), () => setKind("workflows"));
+  kindWf.title = I18n.t("封装好的一颗节点层（下载进本机工作流库，插进当前画布用）");
+  const kindSkill = mkMiniBtn("Skill", () => setKind("skills"));
+  kindSkill.title = I18n.t("Agent 技能（下载进本机技能清单）");
   kindRow.appendChild(kindTpl);
+  kindRow.appendChild(kindWf);
   kindRow.appendChild(kindSkill);
   body.appendChild(kindRow);
 
@@ -1122,7 +1215,8 @@ async function openTemplateStore() {
   }
 
   function markTabs() {
-    kindTpl.classList.toggle("on", !tplIsSkill());
+    kindTpl.classList.toggle("on", !tplIsSkill() && !tplIsWorkflow());
+    kindWf.classList.toggle("on", tplIsWorkflow());
     kindSkill.classList.toggle("on", tplIsSkill());
     tabBrowse.classList.toggle("on", TPL_ST.tab === "browse");
     tabUpload.classList.toggle("on", TPL_ST.tab === "upload");
@@ -1280,6 +1374,36 @@ async function openTemplateStore() {
       paint();
       return;
     }
+    /* ── 工作流：只收进本机工作流库，不插当前画布、不弹新画布、不自动打开库 ──
+       用户点「工作流库 → 插入」才是把它放进画布的那一刻。 */
+    if (tplIsWorkflow()) {
+      let pack;
+      try {
+        pack = await tplFetchFileCached(item);
+      } catch (e) {
+        toast(I18n.t("下载失败：") + ((e && e.message) || String(e)), "err");
+        return;
+      }
+      const imp = await window.api.workflowsImportBase64({
+        base64: pack.base64,
+        name: item.title || "",
+        description: item.description || "",
+        version: item.version || "1.0",
+        storeId: item.id,
+        title: item.title || "",
+      });
+      if (!imp || !imp.ok) {
+        toast(I18n.t("下载失败：") + ((imp && imp.error) || I18n.t("未知错误")), "err");
+        return;
+      }
+      toast(
+        I18n.t("已存入本机工作流库：") +
+          (imp.name || item.title || "") +
+          I18n.t("（用「工作流库」插入到当前画布）"),
+        "ok",
+      );
+      return;
+    }
     if (!(await confirmDialog(I18n.t("导入将打开为新画布，当前画布会保留。确定下载？"), { title: I18n.t("下载模板") }))) return;
     let pack;
     try {
@@ -1365,7 +1489,7 @@ async function openTemplateStore() {
     );
     const ph = document.createElement("div");
     ph.className = "tpl-lightbox-ph";
-    ph.textContent = I18n.t("加载模板中…");
+    ph.textContent = tplIsWorkflow() ? I18n.t("加载工作流中…") : I18n.t("加载模板中…");
     body.appendChild(ph);
     let pack;
     try {
@@ -1457,6 +1581,13 @@ async function openTemplateStore() {
       d.textContent = item.description;
       d.title = item.description;
       body.appendChild(d);
+    }
+
+    /* 工作流卡片：先把外侧端子摊出来（入 n / 出 n + 端子名）。它是「能不能直接用」的
+       第一判断依据 —— 一张只看封面的卡片对这个类别没有信息量。 */
+    if (tplIsWorkflow()) {
+      const pc = tplPortChipsEl(item);
+      if (pc) body.appendChild(pc);
     }
 
     const meta = document.createElement("div");
@@ -1560,7 +1691,12 @@ async function openTemplateStore() {
       }
     } else {
       row.appendChild(
-        mkIconBtn("⬇", I18n.t("下载"), () => downloadTpl(item), { primary: true }),
+        mkIconBtn(
+          "⬇",
+          tplIsWorkflow() ? I18n.t("下载到本机工作流库") : I18n.t("下载"),
+          () => downloadTpl(item),
+          { primary: true },
+        ),
       );
     }
     row.appendChild(
@@ -1598,7 +1734,7 @@ async function openTemplateStore() {
           TPL_ST.title = item.title || "";
           TPL_ST.description = item.description || "";
           TPL_ST.tags = (item.tags || []).slice();
-          TPL_ST.version = item.version || "1.0.0";
+          TPL_ST.version = item.version || (tplIsWorkflow() ? "1.0" : "1.0.0");
           TPL_ST.official = !!item.official;
           TPL_ST.skillName = item.skillName || "";
           TPL_ST.skillText = "";
@@ -1609,6 +1745,21 @@ async function openTemplateStore() {
           TPL_ST.previewThumbBase64 = "";
           TPL_ST.previewHint = "";
           TPL_ST._clearPreview = false;
+          if (tplIsWorkflow()) {
+            /* 编辑工作流：端子清单先按已发布那份回填（不重新选文件时原样带回去，
+               免得 PATCH 把别人正在用的端子表抹成空）。 */
+            const pp = item.ports || {};
+            const norm = (l) =>
+              (Array.isArray(l) ? l : []).map((p) => ({
+                name: String((p && p.name) || ""),
+                kind: String((p && p.kind) || "text"),
+              }));
+            TPL_ST.workflowPorts = { ins: norm(pp.ins), outs: norm(pp.outs) };
+            TPL_ST.workflowNodeCount = 0;
+            TPL_ST.fileHint = I18n.t(
+              "编辑时可重新从本机工作流库载入；不载入则沿用已发布的包与端子清单",
+            );
+          }
           if (tplIsSkill()) {
             TPL_ST.fileHint = I18n.t("正在加载工坊正文…");
             tplApi(
@@ -1660,7 +1811,11 @@ async function openTemplateStore() {
           }
           if (!tplIsSkill()) await tplInvalidateTplCache(item.id);
           toast(
-            tplIsSkill() ? I18n.t("已删除技能") : I18n.t("已删除模板"),
+            tplIsSkill()
+              ? I18n.t("已删除技能")
+              : tplIsWorkflow()
+                ? I18n.t("已删除工作流")
+                : I18n.t("已删除画布"),
             "ok",
           );
           await refreshMe();
@@ -1794,7 +1949,9 @@ async function openTemplateStore() {
     q.type = "text";
     q.placeholder = tplIsSkill()
       ? I18n.t("搜索技能、标签或 skillName…")
-      : I18n.t("搜索模板或标签…");
+      : tplIsWorkflow()
+        ? I18n.t("搜索工作流、标签…")
+        : I18n.t("搜索画布或标签…");
     q.value = TPL_ST.q;
     const go = () => {
       TPL_ST.q = q.value.trim();
@@ -1838,7 +1995,7 @@ async function openTemplateStore() {
     head.className = "tpl-grid-head";
     const headLab = document.createElement("span");
     headLab.textContent =
-      I18n.t("共 ") + total + (tplIsSkill() ? I18n.t(" 个技能") : I18n.t(" 个模板"));
+      I18n.t("共 ") + total + I18n.t(" 个") + tplKindName();
     head.appendChild(headLab);
     appendTplViewToggle(head);
     pane.appendChild(head);
@@ -1846,12 +2003,8 @@ async function openTemplateStore() {
       pane.appendChild(
         hintEl(
           TPL_ST.q || TPL_ST.tag
-            ? tplIsSkill()
-              ? I18n.t("没有匹配的技能")
-              : I18n.t("没有匹配的模板")
-            : tplIsSkill()
-              ? I18n.t("暂无技能")
-              : I18n.t("暂无模板"),
+            ? I18n.t("没有匹配的") + tplKindName()
+            : I18n.t("暂无") + tplKindName(),
         ),
       );
       return;
@@ -1881,7 +2034,11 @@ async function openTemplateStore() {
     const title = document.createElement("input");
     title.type = "text";
     title.maxLength = 80;
-    title.placeholder = tplIsSkill() ? I18n.t("技能标题…") : I18n.t("模板标题…");
+    title.placeholder = tplIsSkill()
+      ? I18n.t("技能标题…")
+      : tplIsWorkflow()
+        ? I18n.t("工作流标题…")
+        : I18n.t("画布标题…");
     title.value = TPL_ST.title;
     title.oninput = () => {
       TPL_ST.title = title.value;
@@ -1889,27 +2046,29 @@ async function openTemplateStore() {
     titleLab.appendChild(title);
     form.appendChild(titleLab);
 
-    if (tplIsSkill()) {
+    /* 版本号：技能与工作流都带（工作流是「能复用的封装」，版本是它的身份证）；
+       画布（模板）沿用旧口径不填版本。 */
+    if (tplIsSkill() || tplIsWorkflow()) {
       const verLab = document.createElement("label");
       verLab.textContent = I18n.t("版本");
       const ver = document.createElement("input");
       ver.type = "text";
       ver.maxLength = 32;
-      ver.placeholder = "1.0.0";
+      ver.placeholder = tplIsSkill() ? "1.0.0" : "1.0";
       ver.dataset.tplSkillVer = "1";
-      ver.value = TPL_ST.version || "1.0.0";
+      ver.value = TPL_ST.version || (tplIsSkill() ? "1.0.0" : "1.0");
       ver.oninput = () => {
         TPL_ST.version = ver.value;
       };
       verLab.appendChild(ver);
       form.appendChild(verLab);
-      if (TPL_ST.skillName) {
+      if (tplIsSkill() && TPL_ST.skillName) {
         form.appendChild(
           hintEl(I18n.t("技能名（不可改）：") + TPL_ST.skillName),
         );
       }
       const auth = tplAuth();
-      if (auth && auth.isAdmin) {
+      if (tplIsSkill() && auth && auth.isAdmin) {
         const offRow = document.createElement("label");
         offRow.className = "tpl-check";
         const cb = document.createElement("input");
@@ -1931,7 +2090,9 @@ async function openTemplateStore() {
     desc.maxLength = 2000;
     desc.placeholder = tplIsSkill()
       ? I18n.t("介绍这个技能能做什么…")
-      : I18n.t("介绍这个模板能做什么…");
+      : tplIsWorkflow()
+        ? I18n.t("介绍这个工作流替你做完哪一段（输入什么、输出什么）…")
+        : I18n.t("介绍这个画布能做什么…");
     desc.value = TPL_ST.description;
     desc.oninput = () => {
       TPL_ST.description = desc.value;
@@ -1980,7 +2141,7 @@ async function openTemplateStore() {
     exist.className = "tpl-tags";
     tagLab.appendChild(exist);
     form.appendChild(tagLab);
-    tplApi("GET", "/api/tags?kind=" + (tplIsSkill() ? "skills" : "templates")).then((tr) => {
+    tplApi("GET", "/api/tags?kind=" + tplKindTagParam()).then((tr) => {
       if (!tr || !tr.ok || !tr.data) return;
       exist.innerHTML = "";
       (tr.data.tags || []).forEach((tg) => {
@@ -2305,6 +2466,148 @@ async function openTemplateStore() {
       fileLab.appendChild(bodyLab);
       fileLab.appendChild(bodyTa);
       form.appendChild(fileLab);
+    } else if (tplIsWorkflow()) {
+      /* ── 工作流上传：只能从本机工作流库来 ──
+         工作流＝一颗封装好的节点层，本机库里就是一份快照；这里再按分享口径剥一次
+         （库里的条目允许带本机路径，上传出去的包里不许）。 */
+      fileLab.textContent = ".mtnodes（" + I18n.t("最大 10MB") + "）";
+      fileLab.appendChild(
+        hintEl(
+          I18n.t(
+            "工作流只能从本机工作流库发布（画布右键「分享到工坊」走的也是这条路）。上传那一刻会剥掉本机路径、工作目录、跨画布 @引用与全局广播。",
+          ),
+        ),
+      );
+      const fileHint = hintEl(TPL_ST.fileHint || I18n.t("尚未载入工作流"));
+      const portBox = document.createElement("div");
+      portBox.className = "tpl-port-list";
+      const syncPortBox = () => {
+        portBox.innerHTML = "";
+        const ports = TPL_ST.workflowPorts;
+        if (!ports) return;
+        const ins = ports.ins || [];
+        const outs = ports.outs || [];
+        const mkLine = (list, dir) => {
+          const d = document.createElement("div");
+          d.className = "tpl-port-line";
+          d.textContent =
+            (dir === "in" ? I18n.t("入 ") : I18n.t("出 ")) +
+            list.length +
+            " · " +
+            (list.length
+              ? list.map((p) => String(p.name || "")).join(" / ")
+              : I18n.t("（缺）"));
+          return d;
+        };
+        portBox.appendChild(mkLine(ins, "in"));
+        portBox.appendChild(mkLine(outs, "out"));
+        const note = document.createElement("div");
+        note.className = "tpl-port-note";
+        note.textContent =
+          ins.length && outs.length
+            ? I18n.t("端子清单随包带上，工坊列表与详情按它展示")
+            : I18n.t(
+                "分享要求外侧至少 1 个输入 + 1 个输出：先在画布上把内部节点接到壳上",
+              );
+        portBox.appendChild(note);
+      };
+      syncPortBox();
+
+      const wfSel = document.createElement("select");
+      wfSel.style.cssText = "min-width:200px;flex:1";
+      const opt0 = document.createElement("option");
+      opt0.value = "";
+      opt0.textContent = I18n.t("（选择本机工作流）");
+      wfSel.appendChild(opt0);
+
+      const loadWf = async (id, opts) => {
+        const g = await window.api.workflowsGet(id);
+        if (!g || !g.ok || !g.workflow) {
+          toast(I18n.t("读取工作流失败：") + ((g && g.error) || ""), "err");
+          return;
+        }
+        const wf = g.workflow;
+        const graph =
+          typeof workflowStripForShare === "function"
+            ? workflowStripForShare(wf.graph)
+            : wf.graph;
+        const pack = await window.api.workflowsExportBase64(id, graph);
+        if (!pack || !pack.ok || !pack.base64) {
+          toast(I18n.t("打包失败：") + ((pack && pack.error) || ""), "err");
+          return;
+        }
+        if (tplTooLarge(pack.bytes || 0)) return;
+        TPL_ST.fileBase64 = pack.base64;
+        const ports =
+          typeof workflowPortsFromGraph === "function"
+            ? workflowPortsFromGraph(wf.graph)
+            : null;
+        TPL_ST.workflowPorts = ports
+          ? {
+              ins: ports.ins.map((p) => ({ name: p.name, kind: p.kind })),
+              outs: ports.outs.map((p) => ({ name: p.name, kind: p.kind })),
+            }
+          : null;
+        TPL_ST.workflowNodeCount = ports ? ports.nodeCount : 0;
+        TPL_ST.version = String(wf.version || TPL_ST.version || "1.0");
+        const verEl = form.querySelector('input[data-tpl-skill-ver="1"]');
+        if (verEl) verEl.value = TPL_ST.version;
+        if (!opts || opts.fillMeta !== false) {
+          if (wf.name) {
+            TPL_ST.title = String(wf.name);
+            title.value = TPL_ST.title;
+          }
+          if (wf.description) {
+            TPL_ST.description = String(wf.description);
+            desc.value = TPL_ST.description;
+          }
+        }
+        TPL_ST.fileHint =
+          I18n.t("已载入工作流：") +
+          (wf.name || "") +
+          " · " +
+          fmtBytes(pack.bytes || 0) +
+          (ports ? " · " + ports.nodeCount + I18n.t(" 内部节点") : "");
+        fileHint.textContent = TPL_ST.fileHint;
+        syncPortBox();
+      };
+      const fillWfSel = async () => {
+        try {
+          const r = await window.api.workflowsList();
+          const list = (r && r.ok && r.workflows) || [];
+          for (const w of list) {
+            const o = document.createElement("option");
+            o.value = w.id;
+            o.textContent = String(w.name || w.id);
+            wfSel.appendChild(o);
+          }
+          if (!list.length) {
+            const o = document.createElement("option");
+            o.value = "";
+            o.textContent = I18n.t("本机工作流库还是空的");
+            o.disabled = true;
+            wfSel.appendChild(o);
+          }
+        } catch (_) {}
+      };
+      const fileRow = document.createElement("div");
+      fileRow.className = "dsh-btn-row";
+      fileRow.appendChild(wfSel);
+      fileRow.appendChild(
+        mkMiniBtn(I18n.t("载入到上传箱"), () => {
+          const id = wfSel.value;
+          if (!id) {
+            toast(I18n.t("请先选择一个本机工作流"), "warn");
+            return;
+          }
+          loadWf(id);
+        }),
+      );
+      fileLab.appendChild(fileRow);
+      fileLab.appendChild(fileHint);
+      fileLab.appendChild(portBox);
+      form.appendChild(fileLab);
+      fillWfSel();
     } else {
     fileLab.textContent = ".mtnodes（" + I18n.t("最大 10MB") + "）";
     const fileHint = hintEl(
@@ -2383,7 +2686,9 @@ async function openTemplateStore() {
           ? I18n.t("保存修改")
           : tplIsSkill()
             ? I18n.t("发布技能")
-            : I18n.t("发布模板"),
+            : tplIsWorkflow()
+              ? I18n.t("发布工作流")
+              : I18n.t("发布画布"),
         async () => {
           const titleV = (TPL_ST.title || "").trim();
           if (!titleV) {
@@ -2397,10 +2702,25 @@ async function openTemplateStore() {
             toast(
               tplIsSkill()
                 ? I18n.t("请先选择、粘贴或编写 SKILL.md")
-                : I18n.t("请先选择或粘贴模板文件"),
+                : tplIsWorkflow()
+                  ? I18n.t("请先从本机工作流库载入一个工作流")
+                  : I18n.t("请先选择或粘贴画布文件"),
               "err",
             );
             return;
+          }
+          /* 工作流发布硬校验：外侧至少 1 进 1 出（端子清单随包带上，缺了别人用不了） */
+          if (tplIsWorkflow()) {
+            const pp = TPL_ST.workflowPorts || {};
+            if (!(pp.ins || []).length || !(pp.outs || []).length) {
+              toast(
+                I18n.t(
+                  "无法发布：这颗节点层外侧至少要有 1 个输入和 1 个输出（内部节点用桥接线 / 汇流线接到壳上）",
+                ),
+                "err",
+              );
+              return;
+            }
           }
           if (tplIsSkill() && TPL_ST.skillText) {
             TPL_ST.fileBase64 = skillTextToBase64(TPL_ST.skillText);
@@ -2459,8 +2779,21 @@ async function openTemplateStore() {
               }));
             }
           }
+          if (tplIsWorkflow()) {
+            payload.version = (TPL_ST.version || "1.0").trim() || "1.0";
+            const pp = TPL_ST.workflowPorts || { ins: [], outs: [] };
+            const norm = (l) =>
+              (Array.isArray(l) ? l : []).map((p) => ({
+                name: String((p && p.name) || ""),
+                kind: String((p && p.kind) || "text"),
+              }));
+            /* 没换文件、也没载入过端子 → 不写 ports（PATCH 缺省即保留服务端那份） */
+            if (pp.ins || pp.outs) payload.ports = { ins: norm(pp.ins), outs: norm(pp.outs) };
+          }
           if (TPL_ST.fileBase64) {
-            if (tplIsSkill()) {
+            if (tplIsSkill() || tplIsWorkflow()) {
+              /* 工作流的剥离在上传前就做完了（workflowStripForShare + 主进程打包），
+                 这里不再过画布那套 stripStoreMtNodesBase64。 */
               payload.fileBase64 = TPL_ST.fileBase64;
             } else {
               try {
@@ -2563,7 +2896,7 @@ async function openTemplateStore() {
     }
     if (tplIsSkill()) await ensureLocalSkillsForStore();
     pane.appendChild(hintEl(I18n.t("工坊加载中…")));
-    const r = await tplApi("GET", tplIsSkill() ? "/api/me/skills" : "/api/me/templates");
+    const r = await tplApi("GET", tplIsSkill() ? "/api/me/skills" : tplIsWorkflow() ? "/api/me/workflows" : "/api/me/templates");
     pane.innerHTML = "";
     if (!r || !r.ok || !r.data) {
       pane.appendChild(hintEl(I18n.t("加载失败：") + tplErr(r)));
@@ -2594,14 +2927,13 @@ async function openTemplateStore() {
       " · " +
       I18n.t("共 ") +
       total +
-      (tplIsSkill() ? I18n.t(" 个技能") : I18n.t(" 个模板"));
+      I18n.t(" 个") +
+      tplKindName();
     head.appendChild(headLab);
     appendTplViewToggle(head);
     pane.appendChild(head);
     if (!total) {
-      pane.appendChild(
-        hintEl(tplIsSkill() ? I18n.t("暂无技能") : I18n.t("暂无模板")),
-      );
+      pane.appendChild(hintEl(I18n.t("暂无") + tplKindName()));
       return;
     }
     appendTplItems(pane, items, true);

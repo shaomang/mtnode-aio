@@ -104,6 +104,8 @@ const { patchProviders } = require("./config-providers.js");
 /* 文本 → PDF 落盘内核（隐藏窗口 + printToPDF，公式排版与画布预览同源，见 pdf-write.js） */
 const pdfWrite = require("./pdf-write.js");
 const { registerToolsIpc } = require("./tools-store.js");
+/* 工作流库（跨画布复用「一颗节点层」= 封装好的工作流，见 workflow-store.js） */
+const { registerWorkflowsIpc } = require("./workflow-store.js");
 const { registerAssetsIpc } = require("./assets-store.js");
 /* 存储占用与清理（设置 · 存储占用与清理）：统计各类冗余占用 + 按类清理，判据是
    「文件还被不被 MTNode 用着」（见 storage-clean.js） */
@@ -9485,6 +9487,8 @@ app.whenReady().then(() => {
     getBackendPorts: () => vramRelease.vramPorts(),
   });
   registerToolsIpc({ getDataDir: DATA, t: (s) => I18n.t(s) });
+  /* 工作流库：一条 = 一颗节点层的完整快照（内部节点 / 连线 / 外侧端子 / 封面） */
+  registerWorkflowsIpc({ getDataDir: DATA, t: (s) => I18n.t(s) });
   /* 存储占用与清理（设置里的「存储占用与清理」小节）：分类统计 + 按类清理 */
   registerStorageIpc({ getDataDir: DATA, t: (s) => I18n.t(s) });
   /* 分类统计跑在 storage-scan-worker.js 线程里，统计标签要跟着界面语言走 */

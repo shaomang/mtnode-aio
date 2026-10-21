@@ -39,6 +39,8 @@
   - 文件：`mtnode/self-check/SKILL.md`
 - **mtnode-verify-in-app** — 真机自验（改 MTNode 时怎么验）：开发 MTNode 自身功能（插件 / 应用 / 窗口交互 / 渲染层 UI）时的自验纪律：起一只独立数据目录的开发态实例，经 tools/mtnode-gui.mjs 用 MCP 驱动真实窗口（outline / click / type / set / screenshot），截图读像素确认，留下可复核证据；做不到就如实写「未验证 + 原因」，不许拿 smoke 当「功能真的能用」。Use when developing MTNode itself (plugin install / console UI / app window / renderer CSS / dialog behaviour) and you must prove the change really works in the running desktop app, not only in node smoke 
   - 文件：`mtnode/verify-in-app/SKILL.md`
+- **mtnode-workflow-design** — 工作流设计：把用户口述的一段流程直接搭成画布上的「节点层」（kind super）：外侧输入 / 输出端子自洽、无状态依赖、入口 → 处理 → 保存可一键重跑，超过约 12 颗内部节点就拆多层。Use when 用户说「做一个工作流 / 把这段流程封装成节点层 / 设计一个可复用的工作流」或要求把一串节点收进一颗壳里。
+  - 文件：`mtnode/workflow-design/SKILL.md`
 
 ## 音乐生成（MiniMax Music）
 
@@ -55,6 +57,11 @@
 
 - **mtnode-plugin-dev** — MTNode 插件开发规范：MTNode 应用插件（catalog 窗口插件 / builtin / 本地后端插件）的开发规范：插件类型与边界、后端插件三层结构（主进程宿主 · 预加载桥 · 控制台 UI）、主进程与渲染层接线点、build.json 打包白名单、画布节点与 i18n / 指南 / 冒烟交付清单、报错总线与自我修复、数据目录纪律，含最小骨架与常见坑。新建或改造 MTNode 插件（顶栏「插件」对话框里那个东西）时按需加载。
   - 文件：`plugins/plugin-dev/SKILL.md`
+
+## 视频生成（MiniMax H3）
+
+- **h3-dynamic-still-prompt** — H3 动态静图（首尾帧）：【内置·随应用发版，不需从工坊安装】把一张静图变成可无缝循环的微动背景（动态壁纸）：先识图列出「哪些元素该动、怎么动」，把底图归一化到目标分辨率，再在画布上搭好「底图 → 中文 H3 提示词 → Minimax H3（fl2va 首尾同帧）→ mp4」的完整工作流（端口 0–3 接线、时长 / 比例 / 抽卡 / 输出路径），并按官方三字段写中文提示词（两段声音 N/A、124 帧 ≈5.17s），最后用 PSNR 自检接缝。用户说「把这张图做成动态壁纸 / 循环背景 / 让画面动起来但别变样」时用。
+  - 文件：`video/h3-dynamic-still-prompt/SKILL.md`
 
 ## 写作与润色
 

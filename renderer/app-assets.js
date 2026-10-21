@@ -39,6 +39,11 @@ const ASSET_LIB = {
   selAssetId: "", // 当前选中的素材 id（"" ＝ 未选素材，右栏回落分类卡片）
   expanded: {}, // 左树已展开的分类 rel（对象当集合用；不引 Set，免得混进快照）
   dragFrom: -1, // 右栏详情条目行的拖动源行号（与设置框的 ASSET_SET.dragFrom 各管一摊）
+  order: { cats: {}, assets: {} }, // 左树 / 卡片 / 选择器共用的界面顺序（拖动重排的事实源）
+  msel: [], // 多选：["cat:<rel>" | "asset:<id>"]，只允许同父级 + 同类型并存
+  mselAnchor: "", // 多选的起点（Shift 连选用）
+  treeDrag: null, // 左树拖动中：{ kind:"cat"|"asset", items:[key…], parentRel }
+  orderUndo: null, // 重排撤销栈（只有一步）：{ order:重排前的顺序快照, moves:[…磁盘移动…] }
   onPick: null, // pick 模式回调：选中一个素材
   busy: false, // 一次只跑一个写盘动作，避免连点错位
   scanned: false, // 本次会话是否成功扫过（失联判定的前提，没扫过不下结论）
@@ -277,9 +282,60 @@ function assetApplyScan(r) {
   ASSET_LIB.root = String((r && r.root) || ASSET_LIB.root || "");
   ASSET_LIB.scan =
     (r && r.scan) || { tree: [], categories: [], assets: [] };
+  /* 顺序清单跟着扫描一起来；没带（旧返回 / 换根空态）就当空清单，回落默认序 */
+  ASSET_LIB.order = assetNormOrder(r && r.order);
   ASSET_LIB.scanned = true;
   ASSET_LIB.noRoot = !(r && r.configured);
   assetLibAbsPathIndex(ASSET_LIB.scan);
+}
+
+/* 顺序清单净化（与主进程 normLibraryOrder 同一口径，防手改 / 半截写入把界面画崩） */
+function assetNormOrder(raw) {
+  const out = { cats: {}, assets: {} };
+  const src = raw && typeof raw === "object" ? raw : {};
+  const put = (dst, obj) => {
+    if (!obj || typeof obj !== "object") return;
+    for (const k of Object.keys(obj)) {
+      if (typeof k !== "string" || k.length > 1024) continue;
+      const arr = Array.isArray(obj[k]) ? obj[k] : null;
+      if (!arr) continue;
+      const seen = new Set();
+      const list = [];
+      for (const v of arr) {
+        if (typeof v !== "string" || !v || v.length > 255 || seen.has(v)) continue;
+        seen.add(v);
+        list.push(v);
+      }
+      dst[k] = list;
+    }
+  };
+  put(out.cats, src.cats);
+  put(out.assets, src.assets);
+  return out;
+}
+
+/** 顺序快照（撤销 / 出错回退用：深拷一份，之后就地改 ASSET_LIB.order） */
+function assetOrderSnapshot() {
+  const o = ASSET_LIB.order || { cats: {}, assets: {} };
+  return {
+    cats: JSON.parse(JSON.stringify(o.cats || {})),
+    assets: JSON.parse(JSON.stringify(o.assets || {})),
+  };
+}
+
+/* 顺序整份写回主进程（清单只记界面先后，不动任何文件夹） */
+async function assetOrderSave(order) {
+  const o = assetNormOrder(order || ASSET_LIB.order);
+  ASSET_LIB.order = o;
+  const api = window.api || {};
+  if (typeof api.assetsSetOrder !== "function") return { ok: false };
+  try {
+    const r = await api.assetsSetOrder(o);
+    if (r && r.ok && r.order) ASSET_LIB.order = assetNormOrder(r.order);
+    return r || { ok: false };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
 }
 
 /* ════════════ 节点绑定 ↔ 素材库：失联判定与自动跟随 ════════════
@@ -646,6 +702,11 @@ function closeAssetLib() {
   ASSET_LIB.open = false;
   ASSET_LIB.mode = "manage";
   ASSET_LIB.onPick = null;
+  /* 重排撤销栈只在库框这一次会话里有效：关框即清（不给「关掉再开还能撤上一轮」的错觉） */
+  ASSET_LIB.orderUndo = null;
+  ASSET_LIB.treeDrag = null;
+  ASSET_LIB.msel = [];
+  ASSET_LIB.mselAnchor = "";
 }
 
 /* 顶栏「素材库」入口：首次引导指定根目录 → 扫描 → 开框 */
@@ -698,17 +759,64 @@ function assetCatExists(rel) {
 }
 
 /* 展示名：分类 rel 路径 → 「A / B」（左侧菜单与卡片副标题共用） */
+function assetParentOfRel(rel) {
+  const r = String(rel || "");
+  const i = r.lastIndexOf("/");
+  return i < 0 ? "" : r.slice(0, i);
+}
+
+function assetBaseName(rel) {
+  const r = String(rel || "");
+  const i = r.lastIndexOf("/");
+  return i < 0 ? r : r.slice(i + 1);
+}
+
 function assetCatLabel(rel) {
   const r = String(rel || "");
   return r ? r.split("/").join(" / ") : I18n.t("根目录");
 }
 
-/* 某分类下的直接素材（按 scan 已排好的更新时间序） */
+/* 某分类下的直接素材，按界面顺序清单排（清单里没有的追加到末尾，再按更新时间倒序）。
+   拖动重排 / 撤销 / 外部新建都走这一份，左树与右栏卡片才会是同一个先后。 */
 function assetsInCat(rel) {
   const r = String(rel || "");
-  return (ASSET_LIB.scan.assets || []).filter(
+  const list = (ASSET_LIB.scan.assets || []).filter(
     (a) => String(a.catRel || "") === r,
   );
+  const ord = ((ASSET_LIB.order && ASSET_LIB.order.assets) || {})[r] || [];
+  const idx = new Map(ord.map((id, i) => [String(id), i]));
+  const at = (a) => (idx.has(String(a.id)) ? idx.get(String(a.id)) : 1e9);
+  return list.sort(
+    (a, b) =>
+      at(a) - at(b) ||
+      (Number(b.updatedAt || b.createdAt) || 0) - (Number(a.updatedAt || a.createdAt) || 0),
+  );
+}
+
+/* 分类按父级分组并按界面顺序排好（同一个父级一份表）。
+   返回 Map<父 rel, 子分类[]>：父级内部按清单排，清单里没有的追加到末尾再按名字排。 */
+function assetCatGroups(order) {
+  const ord = order || ASSET_LIB.order || { cats: {}, assets: {} };
+  const byParent = new Map();
+  for (const c of ASSET_LIB.scan.categories || []) {
+    const rel = String(c.rel || "");
+    const p = assetParentOfRel(rel);
+    if (!byParent.has(p)) byParent.set(p, []);
+    byParent.get(p).push(c);
+  }
+  for (const [p, list] of byParent) {
+    const names = ((ord.cats || {})[p] || []).map(String);
+    const idx = new Map(names.map((n, i) => [n, i]));
+    const at = (c) => (idx.has(String(c.name)) ? idx.get(String(c.name)) : 1e9);
+    list.sort((a, b) => {
+      const d = at(a) - at(b);
+      if (d) return d;
+      const x = String(a.name || "").toLowerCase();
+      const y = String(b.name || "").toLowerCase();
+      return x < y ? -1 : x > y ? 1 : 0;
+    });
+  }
+  return byParent;
 }
 
 /* ── 绘制 ─────────────────────────────────────────────────────────── */
@@ -758,104 +866,350 @@ function paintAssetLib() {
 }
 
 /* 左树：分类行（可展开 ▸/▾）＋ 展开后挂在它下面的素材行（一体树）。
-   分类层级仍按 rel 逐段排序后扁平列出（与原有口径一致，不依赖后端返回序）；
-   展开态记在 ASSET_LIB.expanded。点分类＝选中该分类（右栏卡片），点素材＝选中它（右栏内容详情）。 */
+   先后顺序＝界面顺序清单（ASSET_LIB.order）：分类按「父级 → 子名列表」、素材按「分类 → id 列表」，
+   清单里没有的追加到末尾（分类按名字、素材按更新时间）—— 用户没拖过的库与以前一模一样。
+   拖动：行的上下半格＝插到前后（画插入线），分类行中间＝移进该分类；
+   「全部素材（根目录）」整行＝移到根目录；多选（Ctrl 加选 / Shift 连选）整批一起走。
+   点分类＝选中该分类（右栏卡片），点素材＝选中它（右栏详情，多选时右栏跟最后点的那一项）。 */
+const ASSET_TREE_MIME = "application/x-mtnode-asset-tree";
+
+/* 左树的行模型（显示顺序）：根行 + 分类行 + 展开分类下的素材行 */
+function assetTreeRows() {
+  const rows = [];
+  const groups = assetCatGroups();
+  const isOpen = (rel) => !!ASSET_LIB.expanded[String(rel || "")];
+  const pushAssets = (catRel, depth) => {
+    for (const a of assetsInCat(catRel)) {
+      rows.push({
+        kind: "asset",
+        key: String(a.id || ""),
+        parentRel: String(catRel || ""),
+        asset: a,
+        depth: depth,
+      });
+    }
+  };
+  const rootCount = (ASSET_LIB.scan.assets || []).filter(
+    (a) => !String(a.catRel || ""),
+  ).length;
+  rows.push({
+    kind: "cat",
+    key: "",
+    parentRel: "",
+    root: true,
+    depth: 0,
+    name: I18n.t("全部素材（根目录）"),
+    count: rootCount,
+  });
+  if (isOpen("")) pushAssets("", 1);
+  const walk = (parent, depth) => {
+    for (const c of groups.get(parent) || []) {
+      const rel = String(c.rel || "");
+      rows.push({
+        kind: "cat",
+        key: rel,
+        parentRel: parent,
+        depth: depth,
+        name: c.name,
+        count: Number(c.assetCount) || 0,
+      });
+      if (!isOpen(rel)) continue;
+      pushAssets(rel, depth + 1);
+      walk(rel, depth + 1);
+    }
+  };
+  walk("", 0);
+  return rows;
+}
+
+function assetMsKey(kind, key) {
+  return String(kind) + ":" + String(key == null ? "" : key);
+}
+
+function assetMsSplit(k) {
+  const s = String(k || "");
+  const i = s.indexOf(":");
+  return i < 0 ? ["", ""] : [s.slice(0, i), s.slice(i + 1)];
+}
+
+function assetMsHas(row) {
+  if (row.root) return false;
+  return (ASSET_LIB.msel || []).indexOf(assetMsKey(row.kind, row.key)) >= 0;
+}
+
+/* 多选的「同父级 + 同类型」判定：分类看父 rel，素材看所属分类 */
+function assetMsScopeOk(kind, parentRel) {
+  return (ASSET_LIB.msel || []).every((k) => {
+    const [kd, ky] = assetMsSplit(k);
+    if (kd !== kind) return false;
+    if (kind === "cat") return assetParentOfRel(ky) === String(parentRel || "");
+    const a = assetSummaryById(ky);
+    return !!a && String(a.catRel || "") === String(parentRel || "");
+  });
+}
+
+/** 已选中的同父级同类型 key（按显示序）——拖动只搬这一批 */
+function assetMsItems(kind, parentRel) {
+  const out = [];
+  for (const k of ASSET_LIB.msel || []) {
+    const [kd, ky] = assetMsSplit(k);
+    if (kd !== kind) continue;
+    if (kind === "cat") {
+      if (assetParentOfRel(ky) !== String(parentRel || "")) continue;
+    } else {
+      const a = assetSummaryById(ky);
+      if (!a || String(a.catRel || "") !== String(parentRel || "")) continue;
+    }
+    out.push(ky);
+  }
+  const rank = new Map(assetTreeRows().map((r, i) => [assetMsKey(r.kind, r.key), i]));
+  out.sort(
+    (a, b) =>
+      Number(rank.get(assetMsKey(kind, a)) || 0) - Number(rank.get(assetMsKey(kind, b)) || 0),
+  );
+  return out;
+}
+
+/** 右栏跟着「最后点的那一项」走 */
+function assetTreeFocus(row) {
+  if (row.kind === "cat") {
+    ASSET_LIB.selCat = String(row.key || "");
+    ASSET_LIB.selAssetId = "";
+    ASSET_LIB.expanded[String(row.key || "")] = true;
+  } else {
+    ASSET_LIB.selAssetId = String(row.key || "");
+    ASSET_LIB.selCat = String(row.parentRel || "");
+  }
+}
+
+/* Ctrl 加选 / Shift 连选：范围只在同一个父级（连选时）或同一组里成立 */
+function assetTreeSelect(row, ev) {
+  const key = assetMsKey(row.kind, row.key);
+  const anchor = String(ASSET_LIB.mselAnchor || "");
+  if (ev && ev.shiftKey && anchor) {
+    const [akind, akey] = assetMsSplit(anchor);
+    const rows = assetTreeRows().filter((r) => r.kind === row.kind && !r.root);
+    const aRow = rows.find((r) => String(r.key) === akey);
+    const bRow = rows.find((r) => String(r.key) === String(row.key));
+    if (akind === row.kind && aRow && bRow && aRow.parentRel === bRow.parentRel) {
+      const i = rows.indexOf(aRow);
+      const j = rows.indexOf(bRow);
+      ASSET_LIB.msel = rows
+        .slice(Math.min(i, j), Math.max(i, j) + 1)
+        .map((r) => assetMsKey(r.kind, r.key));
+      assetTreeFocus(row);
+      return;
+    }
+  }
+  if (!assetMsScopeOk(row.kind, row.parentRel)) ASSET_LIB.msel = [key];
+  else if ((ASSET_LIB.msel || []).indexOf(key) >= 0)
+    ASSET_LIB.msel = ASSET_LIB.msel.filter((k) => k !== key);
+  else ASSET_LIB.msel = (ASSET_LIB.msel || []).concat([key]);
+  ASSET_LIB.mselAnchor = key;
+  assetTreeFocus(row);
+}
+
+/* 落点区域：上 28% / 下 28% ＝ 前后插入，中间 ＝ 移进该分类（分类行才分三段） */
+function assetTreeDropZone(el, ev, dragKind, row) {
+  if (!dragKind || !row) return "";
+  const rect = el.getBoundingClientRect();
+  const h = Math.max(1, rect.height);
+  const y = Number(ev.clientY) - rect.top;
+  if (row.root) return "into"; // 「全部素材（根目录）」整行都是「移到根目录」
+  if (dragKind === "cat") {
+    if (row.kind !== "cat") return ""; // 分类不能落进素材行
+    if (y < h * 0.28) return "before";
+    if (y > h * 0.72) return "after";
+    return "into";
+  }
+  if (dragKind === "asset") {
+    if (row.kind === "asset") return y < h / 2 ? "before" : "after";
+    return "into"; // 拖到分类行上＝放进该分类（素材不存在「分类与分类之间」的位置）
+  }
+  return "";
+}
+
+function assetTreeDropPaint(el, zone) {
+  const host = document.getElementById("assetLibTree");
+  if (host) {
+    const hot = host.querySelectorAll(
+      ".asset-tree-drop-before,.asset-tree-drop-after,.asset-tree-drop-into",
+    );
+    for (const x of hot)
+      x.classList.remove(
+        "asset-tree-drop-before",
+        "asset-tree-drop-after",
+        "asset-tree-drop-into",
+      );
+  }
+  if (zone && el) el.classList.add("asset-tree-drop-" + zone);
+}
+
+function assetWireTreeDrag(el, row) {
+  if (ASSET_LIB.mode === "pick") return; // 选择器里的左树只读
+  if (row.root) return; // 根行是落点，不是拖动源
+  el.draggable = true;
+  el.addEventListener("dragstart", (ev) => {
+    if (ASSET_LIB.busy) {
+      ev.preventDefault();
+      return;
+    }
+    let items = assetMsItems(row.kind, row.parentRel);
+    if (items.indexOf(String(row.key)) < 0) {
+      /* 拖的是没选中的行：以它为唯一选中项（不重画，免得把拖动源节点换掉） */
+      items = [String(row.key)];
+      ASSET_LIB.msel = [assetMsKey(row.kind, row.key)];
+      ASSET_LIB.mselAnchor = ASSET_LIB.msel[0];
+    }
+    ASSET_LIB.treeDrag = { kind: row.kind, items: items, parentRel: row.parentRel };
+    el.classList.add("asset-tree-dragging");
+    if (ev.dataTransfer) {
+      ev.dataTransfer.effectAllowed = "move";
+      try {
+        ev.dataTransfer.setData(ASSET_TREE_MIME, row.kind);
+      } catch (_) {}
+      try {
+        ev.dataTransfer.setData("text/plain", "");
+      } catch (_) {}
+    }
+  });
+  el.addEventListener("dragend", () => {
+    ASSET_LIB.treeDrag = null;
+    el.classList.remove("asset-tree-dragging");
+    assetTreeDropPaint(null, "");
+  });
+}
+
+function assetWireTreeDrop(el, row) {
+  if (ASSET_LIB.mode === "pick") return;
+  el.addEventListener("dragover", (ev) => {
+    const d = ASSET_LIB.treeDrag;
+    if (!d || ASSET_LIB.busy) return;
+    const zone = assetTreeDropZone(el, ev, d.kind, row);
+    if (!zone) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    if (ev.dataTransfer) ev.dataTransfer.dropEffect = "move";
+    assetTreeDropPaint(el, zone);
+  });
+  el.addEventListener("dragleave", (ev) => {
+    if (ev.relatedTarget && el.contains && el.contains(ev.relatedTarget)) return;
+    el.classList.remove(
+      "asset-tree-drop-before",
+      "asset-tree-drop-after",
+      "asset-tree-drop-into",
+    );
+  });
+  el.addEventListener("drop", (ev) => {
+    const d = ASSET_LIB.treeDrag;
+    if (!d || ASSET_LIB.busy) return;
+    const zone = assetTreeDropZone(el, ev, d.kind, row);
+    assetTreeDropPaint(null, "");
+    if (!zone) return; // 不放：交给别的落点（外部文件那条路本来就不认这种拖动）
+    ev.preventDefault();
+    ev.stopPropagation();
+    ASSET_LIB.treeDrag = null;
+    assetTreeApplyDrop({
+      kind: d.kind,
+      items: d.items.slice(),
+      srcParent: d.parentRel,
+      target: { kind: row.kind, key: row.key, parentRel: row.parentRel, root: !!row.root },
+      zone: zone,
+    });
+  });
+}
+
 function paintAssetTree(host) {
   host.innerHTML = "";
-  const cats = (ASSET_LIB.scan.categories || []).slice();
-  /* 深路径在前排序后按 rel 逐段比较 → 同级相邻、层级稳定（不依赖后端返回序） */
-  cats.sort((a, b) => {
-    const pa = String(a.rel || "").split("/");
-    const pb = String(b.rel || "").split("/");
-    const n = Math.max(pa.length, pb.length);
-    for (let i = 0; i < n; i++) {
-      const x = pa[i] == null ? "" : String(pa[i]).toLowerCase();
-      const y = pb[i] == null ? "" : String(pb[i]).toLowerCase();
-      if (x !== y) return x < y ? -1 : 1;
-    }
-    return 0;
-  });
+  const rows = assetTreeRows();
   const isOpen = (rel) => !!ASSET_LIB.expanded[String(rel || "")];
-  /* 素材行（挂在展开的分类下面）：点它＝右栏看这份素材的内容 */
-  const assetRowOf = (a, depth) => {
-    const on = String(ASSET_LIB.selAssetId || "") === String(a.id || "");
-    const row = assetEl("div", "asset-lib-assetrow" + (on ? " on" : ""));
-    row.style.paddingLeft = 8 + depth * 14 + "px";
-    row.appendChild(
-      assetEl("span", "asset-lib-assetname", a.displayName || a.folder || ""),
-    );
+  const rowEl = (row) => {
+    const sel = assetMsHas(row);
+    if (row.kind === "cat") {
+      const on =
+        String(ASSET_LIB.selCat || "") === String(row.key || "") && !ASSET_LIB.selAssetId;
+      const cat = assetEl("div", "asset-lib-catrow" + (on ? " on" : "") + (sel ? " sel" : ""));
+      cat.style.paddingLeft = 8 + row.depth * 14 + "px";
+      /* ▸/▾ 只管展开 / 收起，不冒泡到「选中这个分类」 */
+      const open = isOpen(row.key);
+      const caret = assetEl("span", "asset-lib-caret", open ? "▾" : "▸");
+      caret.title = open ? I18n.t("收起分类") : I18n.t("展开分类");
+      caret.onclick = (ev) => {
+        ev.stopPropagation();
+        if (open) delete ASSET_LIB.expanded[String(row.key || "")];
+        else ASSET_LIB.expanded[String(row.key || "")] = true;
+        paintAssetLib();
+      };
+      cat.appendChild(caret);
+      cat.appendChild(assetEl("span", "asset-lib-catname", row.name));
+      cat.appendChild(assetEl("span", "asset-lib-catchip", String(row.count)));
+      cat.title = row.root
+        ? I18n.t("整个素材库的根目录（把分类 / 素材拖到这一行＝移到根目录）")
+        : assetCatLabel(row.key);
+      cat.onclick = (ev) => {
+        if (ASSET_LIB.mode === "pick" || !(ev.ctrlKey || ev.metaKey || ev.shiftKey) || row.root) {
+          ASSET_LIB.msel = [];
+          ASSET_LIB.mselAnchor = row.root ? "" : assetMsKey("cat", row.key);
+          ASSET_LIB.selCat = String(row.key || "");
+          ASSET_LIB.selAssetId = "";
+          ASSET_LIB.expanded[String(row.key || "")] = true; // 点分类顺手展开，直接看见里面的素材
+          paintAssetLib();
+          return;
+        }
+        assetTreeSelect(row, ev);
+        paintAssetLib();
+      };
+      cat.oncontextmenu = (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        /* 根行也留菜单：「在此新建子文件夹 / 在资源管理器中打开」照样有用（改名 / 删除 /
+           上下移 / 移入其它分类 对根行本身没有意义，assetCatMenu 已按 atRoot 藏掉） */
+        assetCatMenu(ev.clientX, ev.clientY, String(row.key || ""), row.name);
+      };
+      /* 外部文件拖到分类行＝在这个分类下新建素材（不是追加到某个已有素材） */
+      assetWireFileDrop(cat, { holder: ASSET_LIB, catRel: String(row.key || "") });
+      assetWireTreeDrag(cat, row);
+      assetWireTreeDrop(cat, row);
+      return cat;
+    }
+    const a = row.asset;
+    const on = String(ASSET_LIB.selAssetId || "") === String(row.key || "");
+    const ar = assetEl("div", "asset-lib-assetrow" + (on ? " on" : "") + (sel ? " sel" : ""));
+    ar.style.paddingLeft = 8 + row.depth * 14 + "px";
+    ar.appendChild(assetEl("span", "asset-lib-assetname", a.displayName || a.folder || ""));
     /* 类型徽标：文本 / 图像 / 音频 / 视频 / 混合 —— 左树里先看这个再点进去 */
-    row.appendChild(assetKindChip(a));
-    row.appendChild(
-      assetEl("span", "asset-lib-catchip", String(Number(a.itemCount) || 0)),
-    );
-    row.title =
+    ar.appendChild(assetKindChip(a));
+    ar.appendChild(assetEl("span", "asset-lib-catchip", String(Number(a.itemCount) || 0)));
+    ar.title =
       assetItemsSummary(a) +
       "\n" +
       I18n.t("文件夹：") +
       (a.rel || "") +
       "\n" +
       I18n.t("点击查看内容（可编辑 / 更换）");
-    row.onclick = () => {
+    ar.onclick = (ev) => {
       /* 选择器里点素材＝直接绑定（与卡片上「绑定这个素材」同一结果） */
       if (ASSET_LIB.mode === "pick") return assetPickAndBind(a);
-      ASSET_LIB.selAssetId = String(a.id || "");
+      if (ev.ctrlKey || ev.metaKey || ev.shiftKey) {
+        assetTreeSelect(row, ev);
+        paintAssetLib();
+        return;
+      }
+      ASSET_LIB.msel = [];
+      ASSET_LIB.mselAnchor = assetMsKey("asset", row.key);
+      ASSET_LIB.selAssetId = String(row.key || "");
       ASSET_LIB.selCat = String(a.catRel || "");
       ASSET_LIB.expanded[String(a.catRel || "")] = true;
       paintAssetLib();
     };
     /* 外部文件拖到素材行＝追加成这份素材的内容条目（拖放落点反馈见 assetWireFileDrop） */
-    assetWireFileDrop(row, { holder: ASSET_LIB, target: () => a });
-    return row;
+    assetWireFileDrop(ar, { holder: ASSET_LIB, target: () => a });
+    assetWireTreeDrag(ar, row);
+    assetWireTreeDrop(ar, row);
+    return ar;
   };
-  const rowOf = (rel, name, depth, count) => {
-    const on =
-      String(ASSET_LIB.selCat || "") === String(rel || "") && !ASSET_LIB.selAssetId;
-    const row = assetEl("div", "asset-lib-catrow" + (on ? " on" : ""));
-    row.style.paddingLeft = 8 + depth * 14 + "px";
-    /* ▸/▾ 只管展开 / 收起，不冒泡到「选中这个分类」 */
-    const caret = assetEl("span", "asset-lib-caret", isOpen(rel) ? "▾" : "▸");
-    caret.title = isOpen(rel) ? I18n.t("收起分类") : I18n.t("展开分类");
-    caret.onclick = (ev) => {
-      ev.stopPropagation();
-      if (isOpen(rel)) delete ASSET_LIB.expanded[String(rel || "")];
-      else ASSET_LIB.expanded[String(rel || "")] = true;
-      paintAssetLib();
-    };
-    row.appendChild(caret);
-    row.appendChild(assetEl("span", "asset-lib-catname", name));
-    row.appendChild(assetEl("span", "asset-lib-catchip", String(count)));
-    row.title = assetCatLabel(rel);
-    row.onclick = () => {
-      ASSET_LIB.selCat = rel;
-      ASSET_LIB.selAssetId = "";
-      ASSET_LIB.expanded[String(rel || "")] = true; // 点分类顺手展开，直接看见里面的素材
-      paintAssetLib();
-    };
-    row.oncontextmenu = (ev) => {
-      ev.preventDefault();
-      ev.stopPropagation();
-      assetCatMenu(ev.clientX, ev.clientY, rel, name);
-    };
-    /* 外部文件拖到分类行＝在这个分类下新建素材（不是追加到某个已有素材） */
-    assetWireFileDrop(row, { holder: ASSET_LIB, catRel: rel });
-    return row;
-  };
-  /* 一个分类块 = 分类行 ＋（展开时）它下面的素材行 */
-  const block = (rel, name, depth, count) => {
-    host.appendChild(rowOf(rel, name, depth, count));
-    if (!isOpen(rel)) return;
-    for (const a of assetsInCat(rel)) host.appendChild(assetRowOf(a, depth + 1));
-  };
-  const rootCount = (ASSET_LIB.scan.assets || []).filter(
-    (a) => !String(a.catRel || ""),
-  ).length;
-  block("", I18n.t("全部素材（根目录）"), 0, rootCount);
-  for (const c of cats) {
-    const depth = String(c.rel || "").split("/").length - 1;
-    block(c.rel, c.name, depth, Number(c.assetCount) || 0);
-  }
-  if (!cats.length) {
+  for (const row of rows) host.appendChild(rowEl(row));
+  if (!(ASSET_LIB.scan.categories || []).length) {
     const tip = assetEl(
       "div",
       "asset-lib-treepi",
@@ -864,6 +1218,288 @@ function paintAssetTree(host) {
     host.appendChild(tip);
   }
 }
+
+/* ── 顺序写盘：拖动 / 菜单上移下移 / 撤销共用这一份 ─────────────────── */
+
+/* 取某一级当前的显示序并「固化」进清单（第一次拖动就把整级顺序定下来，
+   免得半份清单让新目录插到用户没预期的位置） */
+function assetOrderCatsOf(parentRel) {
+  const p = String(parentRel || "");
+  const names = (assetCatGroups().get(p) || []).map((c) => String(c.name));
+  ASSET_LIB.order = ASSET_LIB.order || { cats: {}, assets: {} };
+  ASSET_LIB.order.cats = ASSET_LIB.order.cats || {};
+  ASSET_LIB.order.cats[p] = names;
+  return ASSET_LIB.order.cats[p];
+}
+
+function assetOrderAssetsOf(catRel) {
+  const c = String(catRel || "");
+  const ids = assetsInCat(c).map((a) => String(a.id || ""));
+  ASSET_LIB.order = ASSET_LIB.order || { cats: {}, assets: {} };
+  ASSET_LIB.order.assets = ASSET_LIB.order.assets || {};
+  ASSET_LIB.order.assets[c] = ids;
+  return ASSET_LIB.order.assets[c];
+}
+
+/* rel 换前缀：目录挪走后，清单里以 rel 当键的部分（分类的父级 / 素材的所属分类）跟着改 */
+function assetRelMap(moves) {
+  return (rel) => {
+    const r = String(rel || "");
+    for (const m of moves || []) {
+      if (!m.fromRel || !m.toRel) continue;
+      if (r === m.fromRel) return m.toRel;
+      if (r.startsWith(m.fromRel + "/")) return m.toRel + r.slice(m.fromRel.length);
+    }
+    return r;
+  };
+}
+
+function assetOrderReKey(order, moves) {
+  if (!order || !moves || !moves.length) return order;
+  const map = assetRelMap(moves);
+  const cats = {};
+  for (const k of Object.keys(order.cats || {})) cats[map(k)] = (order.cats[k] || []).slice();
+  const assets = {};
+  for (const k of Object.keys(order.assets || {})) assets[map(k)] = (order.assets[k] || []).slice();
+  order.cats = cats;
+  order.assets = assets;
+  return order;
+}
+
+/* 移动后选中态跟着走（分类 rel 换了，素材按 id 不变） */
+function assetTreeFollow(moves) {
+  if (!moves || !moves.length) return;
+  const map = assetRelMap(moves);
+  ASSET_LIB.selCat = map(ASSET_LIB.selCat);
+  ASSET_LIB.msel = (ASSET_LIB.msel || []).map((k) => {
+    const [kd, ky] = assetMsSplit(k);
+    return kd === "cat" ? assetMsKey("cat", map(ky)) : k;
+  });
+  const [ak, av] = assetMsSplit(ASSET_LIB.mselAnchor || "");
+  if (ak === "cat") ASSET_LIB.mselAnchor = assetMsKey("cat", map(av));
+}
+
+/* 一次拖动（含整批）＝一次落盘、一步撤销：
+   先把源 / 目标两级清单按当前显示序补齐，再挪磁盘目录，最后整份写回清单。 */
+async function assetTreeApplyDrop(p) {
+  if (!p || !Array.isArray(p.items) || !p.items.length || ASSET_LIB.busy) return false;
+  if (!p.zone || ASSET_LIB.mode === "pick") return false;
+  const before = assetOrderSnapshot();
+  const moves = [];
+  const failed = [];
+  const cats = p.kind === "cat";
+  const srcParent = String(p.srcParent || "");
+  /* 目标父级：into ＝ 目标分类本身；before/after ＝ 目标所在的那一级 */
+  const destParent =
+    p.zone === "into" ? String((p.target && p.target.key) || "") : String((p.target && p.target.parentRel) || "");
+  /* 素材拖到「自己本来就属于的那个分类」＝什么都没变：不写盘、不占一步撤销 */
+  if (!cats && p.zone === "into" && destParent === srcParent) return false;
+  if (cats) {
+    for (const r of p.items) {
+      if (destParent === String(r) || String(destParent).startsWith(String(r) + "/")) return false; // 不能拖进自己的子孙
+    }
+    if (p.zone !== "into" && p.items.indexOf(String((p.target && p.target.key) || "")) >= 0) return false;
+  }
+  const say = (msg, kind) => {
+    if (!p.silent) toast(msg, kind);
+  };
+  ASSET_LIB.busy = true;
+  try {
+    /* 源 / 目标同级清单（同一级只补一份） */
+    const srcList = cats ? assetOrderCatsOf(srcParent) : assetOrderAssetsOf(srcParent);
+    const destList =
+      srcParent === destParent
+        ? srcList.slice()
+        : cats
+          ? assetOrderCatsOf(destParent)
+          : assetOrderAssetsOf(destParent);
+    const removeVals = p.items.map((k) => (cats ? assetBaseName(k) : String(k)));
+    const rest = destList.filter((v) => removeVals.indexOf(v) < 0);
+    let at = rest.length;
+    if (p.zone !== "into") {
+      const tv = cats ? assetBaseName(String((p.target && p.target.key) || "")) : String((p.target && p.target.key) || "");
+      const i = rest.indexOf(tv);
+      if (i >= 0) at = p.zone === "before" ? i : i + 1;
+    }
+    /* 挪磁盘（同名自动加后缀是既有口径：整批不会因为一个重名整批失败） */
+    const newVals = [];
+    for (const k of p.items) {
+      if (cats) {
+        const rel = String(k || "");
+        const nm = assetBaseName(rel);
+        const r = await window.api.assetsRename(rel, nm, destParent);
+        if (!r || !r.ok) {
+          failed.push(nm + "：" + ((r && r.error) || ""));
+          continue;
+        }
+        const toRel = String(r.rel || "");
+        /* 同级重排时目录其实没挪（rel 不变）：只进顺序清单，不进「要挪回去」的清单 */
+        if (toRel !== rel)
+          moves.push({ fromRel: rel, toRel: toRel, fromParent: srcParent, fromName: nm });
+        newVals.push(String(r.name || assetBaseName(toRel)));
+      } else {
+        const a = assetSummaryById(k);
+        if (!a) {
+          failed.push(String(k));
+          continue;
+        }
+        const nm = String(a.folder || a.displayName || "");
+        const r = await window.api.assetsRename(a.rel, nm, destParent);
+        if (!r || !r.ok) {
+          failed.push((a.displayName || nm) + "：" + ((r && r.error) || ""));
+          continue;
+        }
+        if (String(r.rel || "") !== String(a.rel || ""))
+          moves.push({
+            fromRel: String(a.rel || ""),
+            toRel: String(r.rel || ""),
+            fromParent: srcParent,
+            fromName: nm,
+            assetId: String(a.id || ""),
+          });
+        newVals.push(String(a.id || ""));
+      }
+    }
+    if (!newVals.length) {
+      ASSET_LIB.order = before;
+      paintAssetLib();
+      say(I18n.t("移动失败：") + (failed[0] || ""), "err");
+      return false;
+    }
+    assetOrderReKey(ASSET_LIB.order, moves);
+    const keys = cats ? ASSET_LIB.order.cats : ASSET_LIB.order.assets;
+    const dst = (keys[destParent] || destList).filter((v) => removeVals.indexOf(v) < 0);
+    dst.splice(Math.max(0, Math.min(at, dst.length)), 0, ...newVals);
+    keys[destParent] = dst;
+    if (srcParent !== destParent) {
+      const src = keys[srcParent] || srcList;
+      keys[srcParent] = src.filter((v) => removeVals.indexOf(v) < 0);
+    }
+    await assetOrderSave(ASSET_LIB.order);
+    await assetRescan(); // 拿真实的 rel / 名称 / 计数
+    assetTreeFollow(moves);
+    ASSET_LIB.orderUndo = { order: before, moves: moves };
+    paintAssetLib();
+    if (failed.length) say(I18n.t("移动失败：") + failed[0], "err");
+    else {
+      const n = newVals.length;
+      say(
+        n > 1
+          ? I18n.t("已移动 {n} 项（Ctrl+Z 可撤销）", { n: n })
+          : p.zone === "into"
+            ? I18n.t("已移动（Ctrl+Z 可撤销）")
+            : I18n.t("已调整顺序（Ctrl+Z 可撤销）"),
+        "ok",
+      );
+    }
+    return true;
+  } catch (e) {
+    ASSET_LIB.order = before;
+    paintAssetLib();
+    say(I18n.t("移动失败：") + String((e && e.message) || e), "err");
+    return false;
+  } finally {
+    ASSET_LIB.busy = false;
+  }
+}
+
+/* 右键「上移 / 下移」：同父级的纯顺序调整（不挪磁盘，只改清单） */
+async function assetNudgeOrder(kind, key, delta) {
+  if (ASSET_LIB.busy || ASSET_LIB.mode === "pick") return;
+  const d = Number(delta) < 0 ? -1 : 1;
+  const before = assetOrderSnapshot();
+  let list = null;
+  let slot = "";
+  if (kind === "cat") {
+    const parent = assetParentOfRel(key);
+    list = assetOrderCatsOf(parent);
+    slot = assetBaseName(key);
+  } else {
+    const a = assetSummaryById(key);
+    if (!a) return;
+    list = assetOrderAssetsOf(String(a.catRel || ""));
+    slot = String(a.id || "");
+  }
+  const i = list.indexOf(slot);
+  const j = i + d;
+  if (i < 0 || j < 0 || j >= list.length) return;
+  list.splice(j, 0, list.splice(i, 1)[0]);
+  ASSET_LIB.busy = true;
+  try {
+    const r = await assetOrderSave(ASSET_LIB.order);
+    if (r && r.ok && !r.error) {
+      ASSET_LIB.orderUndo = { order: before, moves: [] };
+      toast(I18n.t("已调整顺序（Ctrl+Z 可撤销）"), "ok");
+    } else {
+      ASSET_LIB.order = before;
+      toast(I18n.t("调整顺序失败：") + ((r && r.error) || ""), "err");
+    }
+  } finally {
+    ASSET_LIB.busy = false;
+    paintAssetLib();
+  }
+}
+
+/* 撤销上一次重排（含整批）：顺序回原样，层级移动把目录也挪回去（严格不顺延改名）。
+   回滚撞车（目标已存在 / 原目录没了）→ 明说「无法回滚」，保持现状，不自动改名、不静默跳过。 */
+async function assetUndoTreeOrder() {
+  const u = ASSET_LIB.orderUndo;
+  if (!u || ASSET_LIB.busy) return false;
+  ASSET_LIB.busy = true;
+  ASSET_LIB.orderUndo = null; // 只撤一步
+  try {
+    const failed = [];
+    for (const m of (u.moves || []).slice().reverse()) {
+      if (!m.toRel) continue;
+      const r = await window.api.assetsRename(m.toRel, m.fromName, m.fromParent, true);
+      if (!r || !r.ok) failed.push((m.fromName || m.toRel) + "：" + ((r && r.error) || ""));
+    }
+    if (failed.length) {
+      await assetRescan();
+      paintAssetLib();
+      toast(I18n.t("无法回滚：目标已存在或原目录已改过，已保持现状。") + failed[0], "err");
+      return false;
+    }
+    ASSET_LIB.order = assetNormOrder(u.order);
+    await assetOrderSave(ASSET_LIB.order);
+    await assetRescan();
+    ASSET_LIB.msel = [];
+    ASSET_LIB.mselAnchor = "";
+    paintAssetLib();
+    toast(I18n.t("已撤销上一次重排"), "ok");
+    return true;
+  } catch (e) {
+    toast(I18n.t("撤销失败：") + String((e && e.message) || e), "err");
+    return false;
+  } finally {
+    ASSET_LIB.busy = false;
+  }
+}
+
+/* 库框开着时 Ctrl+Z 只撤「重排」：栈空就什么都不做 ——
+   绝不回落到画布撤销（用户看到的是素材库，不能撤销背后画布上的东西）。 */
+let _assetUndoKeyWired = false;
+function assetWireUndoKey() {
+  if (_assetUndoKeyWired) return;
+  _assetUndoKeyWired = true;
+  window.addEventListener(
+    "keydown",
+    (ev) => {
+      if (!ASSET_LIB.open) return;
+      if (!(ev.ctrlKey || ev.metaKey) || ev.altKey || ev.shiftKey) return;
+      if (String(ev.key || "").toLowerCase() !== "z") return;
+      const t = ev.target;
+      const tag = String((t && t.tagName) || "").toLowerCase();
+      if (tag === "input" || tag === "textarea" || tag === "select") return;
+      if (t && t.isContentEditable) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (ASSET_LIB.orderUndo) assetUndoTreeOrder();
+    },
+    true,
+  );
+}
+assetWireUndoKey();
 
 /* pick 模式（素材节点「绑定」选择器）：选中一个素材即回调并收框 */
 function assetPickAndBind(a) {
@@ -1136,7 +1772,25 @@ function paintAssetFoot(host) {
 /* ── 左侧分类动作 ─────────────────────────────────────────────────── */
 function assetCatMenu(x, y, rel, name) {
   const atRoot = !rel;
+  /* 上移 / 下移看同级有没有前一条 / 后一条：到头就置灰（顺序清单里同级＝同一个父级） */
+  const sibs = assetTreeRows().filter(
+    (r) => r.kind === "cat" && !r.root && r.parentRel === assetParentOfRel(rel),
+  );
+  const at = sibs.findIndex((r) => String(r.key) === String(rel));
   assetMenu(x, y, [
+    {
+      label: I18n.t("上移"),
+      disabled: at <= 0,
+      run: () => assetNudgeOrder("cat", rel, -1),
+    },
+    {
+      label: I18n.t("下移"),
+      disabled: at < 0 || at >= sibs.length - 1,
+      run: () => assetNudgeOrder("cat", rel, 1),
+    },
+    atRoot
+      ? null
+      : { label: I18n.t("移入其它分类…"), run: () => assetMoveCategory(rel, name) },
     {
       label: I18n.t("在此新建子文件夹"),
       run: () => assetMakeCategory(rel),
@@ -1156,6 +1810,45 @@ function assetCatMenu(x, y, rel, name) {
       run: () => assetOpenPath(rel),
     },
   ]);
+}
+
+/* 「移入其它分类」（分类版）：整段搬到另一个分类下（或搬回根目录），子分类与素材跟着走 */
+async function assetMoveCategory(rel, name) {
+  const here = String(rel || "");
+  if (!here || ASSET_LIB.mode === "pick") return; // 选择器里的左树只读
+  const opts = [{ value: "", label: I18n.t("根目录") }].concat(
+    (ASSET_LIB.scan.categories || [])
+      .filter((c) => {
+        const t = String(c.rel || "");
+        return t !== here && !t.startsWith(here + "/"); // 不能搬进自己或自己的子孙
+      })
+      .map((c) => ({ value: String(c.rel || ""), label: assetCatLabel(c.rel) })),
+  );
+  const v = await assetFormDialog({
+    title: I18n.t("把「{name}」移入分类", { name: name || assetBaseName(here) }),
+    okText: I18n.t("移动"),
+    fields: [{ key: "cat", label: I18n.t("目标分类"), options: opts, value: "" }],
+  });
+  if (!v) return;
+  const to = String(v.cat || "");
+  if (to === assetParentOfRel(here)) return;
+  const moved = await assetTreeApplyDrop({
+    kind: "cat",
+    items: [here],
+    srcParent: assetParentOfRel(here),
+    target: { kind: "cat", key: to, parentRel: to, root: !to },
+    zone: "into",
+    silent: true,
+  });
+  if (!moved) return;
+  /* 新位置：目标分类下同名子夹；万一撞名被自动加了后缀，就退回停在目标分类上 */
+  const guess = to ? to + "/" + assetBaseName(here) : assetBaseName(here);
+  ASSET_LIB.selCat = assetCatExists(guess) ? guess : to;
+  ASSET_LIB.selAssetId = "";
+  ASSET_LIB.msel = [];
+  ASSET_LIB.expanded[to] = true;
+  paintAssetLib();
+  toast(I18n.t("已移动到：") + assetCatLabel(to), "ok");
 }
 
 async function assetMakeCategory(parentRel) {
@@ -1422,23 +2115,21 @@ async function assetMoveAsset(a) {
   if (!v) return;
   const to = String(v.cat || "");
   if (to === String(a.catRel || "")) return;
-  ASSET_LIB.busy = true;
-  try {
-    const r = await window.api.assetsRename(a.rel, a.folder || a.displayName, to);
-    if (!r || !r.ok) {
-      toast(I18n.t("移动失败：") + ((r && r.error) || ""), "err");
-      return;
-    }
-    await assetRescan();
-    ASSET_LIB.selCat = to;
-    paintAssetLib();
-    toast(
-      I18n.t("已移动到：") + assetCatLabel(to),
-      "ok",
-    );
-  } finally {
-    ASSET_LIB.busy = false;
-  }
+  /* 与拖动共用同一条落盘路径：顺序清单跟着挪，Ctrl+Z 一样能撤回来 */
+  const moved = await assetTreeApplyDrop({
+    kind: "asset",
+    items: [String(a.id || "")],
+    srcParent: String(a.catRel || ""),
+    target: { kind: "cat", key: to, parentRel: to, root: !to },
+    zone: "into",
+    silent: true,
+  });
+  if (!moved) return;
+  ASSET_LIB.selCat = to;
+  ASSET_LIB.selAssetId = String(a.id || "");
+  ASSET_LIB.expanded[to] = true;
+  paintAssetLib();
+  toast(I18n.t("已移动到：") + assetCatLabel(to), "ok");
 }
 
 /* ── 插入到画布：创建绑定该素材的「素材」节点（kind "asset" · T3 注册） ── */
@@ -3005,7 +3696,10 @@ function assetDropHasFiles(ev) {
 /* 内部拖拽？（行重排 / 侧栏文件拖入画布）—— 外部文件落点必须先让开 */
 function assetDropIsInternal(ev, holder) {
   if (holder && Number(holder.dragFrom) >= 0) return true;
-  return assetDropTypes(ev).indexOf(ASSET_DROP_INTERNAL) >= 0;
+  const types = assetDropTypes(ev);
+  if (types.indexOf(ASSET_DROP_INTERNAL) >= 0) return true;
+  /* 左树自己的重排拖动也一律算内部：绝不能顺手当成「外部文件拖入」 */
+  return types.indexOf(ASSET_TREE_MIME) >= 0;
 }
 /* 从 DataTransfer 里取本机绝对路径（去重；缺桥 = 空数组） */
 function assetDropPathsOf(ev) {

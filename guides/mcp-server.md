@@ -101,7 +101,7 @@ curl -s http://127.0.0.1:<port>/mcp \
 | 工具 | family / 渲染层 op | 写 | 说明 |
 | --- | --- | --- | --- |
 | `mtnode_canvas_get` | canvas / `get` | 否 | 节点索引 → 配置 → 正文，`contentHash` 也在这里 |
-| `mtnode_canvas_edit` | canvas / `edit` | 是 | 建 / 连 / 改 / 删 / 分组 / 绘制 |
+| `mtnode_canvas_edit` | canvas / `edit` | 是 | 建 / 连 / 改 / 删 / 分组 / 绘制（`create.kind` 覆盖界面可建的全部节点类型，含 `yue_gen` / `breeze_gen` 这类媒体节点；kind 建好即不可改） |
 | `mtnode_app` | canvas / `app` | 部分 | 应用级动作（含长任务图存取、插件管理） |
 | `mtnode_vision` | canvas / `vision` | 否 | 识图子代理 |
 | `mtnode_db` | db / `db` | 部分 | 数据库副本 |

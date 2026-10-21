@@ -1006,6 +1006,9 @@ async function init() {
   /* 顶栏「工具库」＝直达工具库对话框（只管理本机已保存的工具 / 函数）；
      新建工具节点 / 函数节点的入口在画布右键菜单的「其他节点」二级菜单里（app.js canvasCreateMenuGroups） */
   if ($("#btnTools")) $("#btnTools").onclick = () => openToolsLibrary();
+  /* 顶栏「工作流库」＝一颗节点层（封装好的工作流）的跨画布库（renderer/app-workflows.js）：
+     插入当前画布 / 改名 / 删除 / 分享到工坊。节点层自己的头部菜单与右键里也有保存入口。 */
+  if ($("#btnWorkflows")) $("#btnWorkflows").onclick = () => openWorkflowLibrary();
   /* 顶栏「素材库」＝跨画布的本机素材仓库（首次使用会先引导指定根目录）；
      左右栏对话框与全部库操作在 app-assets.js，素材节点「绑定」选择器复用同一份组件 */
   if ($("#btnAssets")) $("#btnAssets").onclick = () => openAssetsLibrary();
@@ -1410,16 +1413,21 @@ async function init() {
     const presetSel = $("#assistPresetSel");
     if (presetSel)
       presetSel.onchange = () => {
-        S.assistPreset = presetSel.value;
+        /* 预设以**会话字段**为唯一真源（共识 q7）：助手栏的下拉就是改当前那条助手会话；
+           还没会话时 assistOptSet 只更新播种镜像，新建时按它下发。 */
+        if (typeof assistOptSet === "function")
+          assistOptSet("preset", presetSel.value);
+        else S.assistPreset = presetSel.value;
         persistAssistUi();
       };
     const effortSel = $("#assistEffortSel");
     if (effortSel)
       effortSel.onchange = () => {
-        /* 思考强度 = 设置 · 默认模型那一格（本次需求 · 单一真源）：助手栏改选即写设置，
-           新会话也按它播种；S.assistEffort 只是运行期镜像（长任务等旧入口仍读它）。 */
-        S.config.dsh.effort = normalizeAgentEffort(effortSel.value);
-        S.assistEffort = S.config.dsh.effort;
+        /* 思考强度同样跟会话走（共识 q7），同时写「设置 · 默认模型」那一格作新建播种值。 */
+        const ef = normalizeAgentEffort(effortSel.value);
+        if (typeof assistOptSet === "function") assistOptSet("effort", ef);
+        else S.assistEffort = ef;
+        S.config.dsh.effort = ef;
         persistAssistUi();
       };
     /* 助手栏「上下文压缩」档位（本次需求 · 思考强度下一行）：与「设置 · 智能能力」同一份值，
@@ -1509,14 +1517,23 @@ async function init() {
       };
     const aInp = $("#assistInput");
     const doAssistSend = () => {
-      if (S.assistRunning) {
+      /* 运行态只认会话（共识 q2/q4）：这一轮无论从助手栏还是会话视图发起，
+         按钮在这两种情况下都必须是「■ 终止」，否则点了会当发送处理。 */
+      const bst =
+        typeof assistBoundSession === "function" ? assistBoundSession() : null;
+      const running =
+        !!S.assistRunning ||
+        (bst && typeof sessionIsRunning === "function" && sessionIsRunning(bst));
+      if (running) {
         assistStop();
         return;
       }
       const t = aInp ? aInp.value : "";
       if (!String(t).trim()) return;
       if (aInp) aInp.value = "";
-      assistSend(t);
+      /* 助手栏的发送走会话那条链（本轮需求 · 单一根源，见 assistPanelSend） */
+      if (typeof assistPanelSend === "function") assistPanelSend(t);
+      else assistSend(t);
     };
     if (aInp) {
       aInp.addEventListener("input", () => slashTick(aInp, "assist"));

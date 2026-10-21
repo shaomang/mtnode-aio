@@ -8247,6 +8247,9 @@ function nodeElement(node) {
       };
       head.appendChild(noteBtn);
     }
+    /* 「封面」小按钮：给这颗节点层指定一张图作为 body 封面（renderer/app-node-cover.js）。
+       所有节点层形态都可设（普通 / 开发 / 数据库 / 工具），折叠态不透明、展开态半透明。 */
+    if (typeof coverHeadButton === "function") head.appendChild(coverHeadButton(node));
     const enter = document.createElement("button");
     enter.className = "n-play";
     enter.textContent = "↪";
@@ -9757,6 +9760,45 @@ function nodeElement(node) {
           })),
         },
       );
+    }
+    /* 所有节点层：工作流（本机库 / 工坊分享）与封面。
+       「工作流」= 这颗壳连同它的整棵子树 —— 与「节点层」是同一个东西，不新增节点类型
+       （renderer/app-workflows.js）。 */
+    if (node.kind === "super") {
+      items.unshift(
+        ctxAction(
+          I18n.t("保存到工作流库（把这颗节点层封装起来复用）"),
+          () => saveWorkflowFromNode(node),
+          "super",
+          { iconCls: "dev" },
+        ),
+        ctxAction(
+          I18n.t("分享到工坊（封装成工作流条目）"),
+          () => shareWorkflowToWorkshop(node),
+          "store",
+          { iconCls: "dev" },
+        ),
+        ctxAction(
+          typeof coverImageOf === "function" && coverImageOf(node)
+            ? I18n.t("更换封面…")
+            : I18n.t("设置封面…"),
+          () => openCoverPop(node),
+          "image",
+          { iconCls: "exec" },
+        ),
+      );
+      if (typeof coverImageOf === "function" && coverImageOf(node)) {
+        items.splice(
+          3,
+          0,
+          ctxAction(
+            I18n.t("清除封面"),
+            () => clearNodeCover(node),
+            "image",
+            { iconCls: "exec" },
+          ),
+        );
+      }
     }
     /* 执行节点：执行 / 绑定文件 / 图标 / 颜色 */
     if (node.kind === "execute") {
@@ -15104,6 +15146,9 @@ function buildBody(node, body) {
         ev.stopPropagation();
         enterSuper(node);
       };
+      /* 封面（若设了）：铺满整个包体、不拉伸（background-size: cover），
+         下半部叠暗色渐变保证标题 / 描述可读（样式在 css/canvas.css 的 .has-cover） */
+      if (typeof applyNodeCoverToBody === "function") applyNodeCoverToBody(node, body);
       body.appendChild(card);
       /* 数据库节点层：编译状态摘要 */
       if (node.db) {
@@ -15267,6 +15312,9 @@ function buildBody(node, body) {
     } else {
       const stage = document.createElement("div");
       stage.className = "super-stage";
+      /* 封面底图（若设了）：作为 stage 最底层（z0），节点视口 z4 在它上面；
+         不透明度 = node.bgOpacity（默认 20%），滑杆在头部「封面」面板里 */
+      if (typeof applyNodeCoverToStage === "function") applyNodeCoverToStage(node, stage);
       const g = grid();
       const pan = superInnerPan(node);
       stage.style.setProperty("--super-grid-size", g + "px");
