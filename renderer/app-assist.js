@@ -461,11 +461,12 @@ function agentWorkspaceInfo(st) {
   }
   const manual = String((st && st.workspace) || "").trim();
   if (manual) return { path: manual, source: "manual", root: null };
-  const root = canvasProjectRoot(sessionCanvasWf(st));
+  /* 普通会话：项目根只按所属画布解析（canvasProjectRootOfSession 里已封住「退回前台」）。
+     助手会话：它没有所属画布，设计上按前台画布（项目根 > 画布工作目录），与助手栏同序。 */
+  const root = canvasProjectRootOfSession(st);
   if (root.path) return { path: root.path, source: "project", root };
   /* 助手会话（st.assist）：不绑画布，落到「当前前台画布的工作目录」—— 助手栏那条链
-     assistWorkspaceInfo 本来就认这一档，缺了它同一句话在两边会落进两个目录。
-     只是派生，不回写 st.workspace（回写会变成陈旧路径，切画布不再跟随）。 */
+     assistWorkspaceInfo 本来就认这一档，缺了它同一句话在两边会落进两个目录。 */
   if (st && st.assist) {
     const cw = canvasWorkspaceDir();
     if (cw) return { path: cw, source: "canvas", root };
@@ -479,6 +480,26 @@ function agentRunWorkspace(st) {
   return String(agentWorkspaceInfo(st).path || "").trim();
 }
 
+/* ── 会话工作目录「创建即冻结」（本次需求 · 用户已确认口径）──────────────────
+   问题：会话的工作目录过去按「手填 > 所属画布项目根 > 默认目录」**每轮现算**，用户切去
+   别的画布干活，这条会话的目录就跟着漂到那张图上 —— Agent 于是把文件写进了不该写的项目。
+   口径：目录在会话**建立那一刻**解析一次，写进会话自己的 workspace 字段（它在会话存档
+   白名单里，重启不丢），此后画布怎么切、画布的 devPath 怎么改都不动它；唯一能改的入口
+   是用户手动输入 / 选目录（agentSetSessionWorkspace）。
+   · 已经有目录（调用方显式给的 / 应用开发页写的）→ 一个字不动；
+   · 助手会话不冻结（设计上跟随当前前台画布，见 agentWorkspaceInfo）；
+   · 解析不出具体目录时锁应用默认目录；连默认目录都没有就留空，不编造路径。 */
+function agentFreezeSessionWorkspace(st) {
+  if (!st) return "";
+  if (st.assist) return String(st.workspace || "");
+  const cur = String(st.workspace || "").trim();
+  if (cur) return cur;
+  const p = String(agentWorkspaceInfo(st).path || "").trim() ||
+    String(S.dshWorkspaceFallback || "").trim();
+  if (p) st.workspace = p;
+  return String(st.workspace || "");
+}
+
 /* 展示口径的生效工作区：与 agentRunWorkspace 同一真源（看得见文件会落在哪） */
 function sessionWorkspaceShown(st) {
   return agentRunWorkspace(st);
@@ -490,8 +511,12 @@ function sessionWorkspaceTooltipLine(st) {
   return (
     I18n.t("\n工作目录: ") +
     (info.path || I18n.t("（默认）")) +
+    (st && st._wsInvalid ? I18n.t("（已失效）") : "") +
     "\n" +
     workspaceInfoNote(info) +
+    (st && st._wsInvalid
+      ? "\n" + I18n.t("这条会话锁定的工作目录已不存在（被删或项目搬家）：会话字段不改，本轮起改用应用默认目录；要换目录请在输入区的工作目录里自己选。")
+      : "") +
     sessionCanvasTooltipLine(st)
   );
 }
@@ -2877,6 +2902,8 @@ function agentSetSessionWorkspace(st, v, opts) {
   const val = String(v == null ? "" : v).trim();
   if (String(st.workspace || "").trim() === val) return Promise.resolve(false);
   st.workspace = val;
+  /* 用户手动换目录 = 旧的那份失效标记作废（下一次体检再重新判） */
+  st._wsInvalid = false;
   S._wsFixed.set(id, val);
   agentMarkSessionDirty(id);
   const run = async () => {
@@ -3457,12 +3484,15 @@ function agentFlushSessionSaveQuiet() {
   return persistAgentSession().catch(() => {});
 }
 function newAgentSession() {
-  const cur = agentSessionState();
+  /* 老行为保留：没有活动会话时，这里顺手把默认会话补出来（agentSessionState 的副作用） */
+  agentSessionState();
   const list = agentSessions();
   const st = {
     id: uid("as"),
     title: I18n.t("新会话"),
-    workspace: cur.workspace || "",
+    /* 工作目录不继承「当前会话」那一份（它可能在别的画布上）：下面
+       agentFreezeSessionWorkspace 按**此刻所属画布**解析一次并冻结，此后不再变。 */
+    workspace: "",
     /* 手动「新会话」= 用户此刻正在看的这张图 */
     canvasWfId: currentVisibleWfId(),
     /* 预设 / 提供商 / 模型 / 思考强度 = 「设置 · 默认模型」那几格（本次共识）：
@@ -3515,7 +3545,11 @@ function agentContractSession(opts) {
   /* 「允许读画布」本次会话放开（Gate A 关掉）；「与画布无关」档（Gate B）不适用于契约会话 */
   st.noCanvasRead = opts.allowCanvas === false;
   st.canvasFree = false;
+  /* 工作目录冻结：按**这张会话所属的画布**重解析一次（newAgentSession 刚按前台算过，
+     显式传了别的 canvasWfId 时那份不算数）；调用方给了目录就用它的。 */
+  st.workspace = "";
   if (opts.workspace != null) agentSetSessionWorkspace(st, opts.workspace);
+  else agentFreezeSessionWorkspace(st);
   if (opts.provider) st.provider = String(opts.provider);
   if (opts.model != null) st.model = String(opts.model || "");
   if (opts.effort) st.effort = String(opts.effort);
@@ -10624,6 +10658,18 @@ function renderAgentSessionSidebar() {
         );
       }
     } catch (_) {}
+    /* 工作目录失效标记（本次需求 · 用户已确认的提示口）：会话的工作目录「创建即锁定」，
+       目录被删 / 项目搬家后**不替它改字段**，只在这一行挂一枚警示标；该轮运行退到应用
+       默认目录。扫一眼列表就知道这条会话现在是「目录不在」的状态。 */
+    let wsBadEl = null;
+    if (s._wsInvalid) {
+      wsBadEl = document.createElement("span");
+      wsBadEl.className = "side-sess-wf";
+      wsBadEl.textContent = I18n.t("⚠ 目录失效");
+      wsBadEl.title = I18n.t(
+        "这条会话锁定的工作目录已不存在（被删或项目搬家）：会话字段不改，本轮起改用应用默认目录。要换目录请在输入区的工作目录里自己选",
+      );
+    }
     btns.appendChild(rn);
     btns.appendChild(fk);
     btns.appendChild(ar);
@@ -10643,6 +10689,7 @@ function renderAgentSessionSidebar() {
     if (asEl) row.appendChild(asEl);
     if (ltEl) row.appendChild(ltEl);
     if (baEl) row.appendChild(baEl);
+    if (wsBadEl) row.appendChild(wsBadEl);
     if (wfEl) row.appendChild(wfEl);
     row.appendChild(tm);
     row.appendChild(btns);

@@ -6,6 +6,7 @@ out/
 docs/
 release/
 test/
+tmp/
 *.blockmap
 *.nsis.7z
 

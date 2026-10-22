@@ -1165,12 +1165,18 @@ function devSuggestRecordSessionOf(node) {
     sess = list.find((s) => s && s.title === wantTitle) || null;
   }
   if (!sess) {
+    /* 所属画布先定下来再解析目录（节点可能在后台画布上）；目录在建立这一刻冻结 */
+    const ownerWf = typeof ownerWfOfNode === "function" ? ownerWfOfNode(node) : null;
     sess = {
       id: uid("as"),
       title: devSuggestRecordTitleOf(node),
       workspace:
-        devPathOf(node) ||
-        (typeof dshWorkspaceOf === "function" ? dshWorkspaceOf(node) : ""),
+        (typeof devPathOfIn === "function" ? devPathOfIn(node, ownerWf) : devPathOf(node)) ||
+        (typeof dshWorkspaceOfWf === "function"
+          ? dshWorkspaceOfWf(node, ownerWf)
+          : typeof dshWorkspaceOf === "function"
+            ? dshWorkspaceOf(node)
+            : ""),
       /* 建议记录会话：所属画布 = 该功能块所在画布 */
       canvasWfId: canvasWfIdForNode(node),
       preset: AGENT_PRESET_DEFAULT,

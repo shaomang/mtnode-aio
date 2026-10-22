@@ -2988,6 +2988,18 @@ async function dshResolveRunBoundWf(opts) {
     if (sess && cur && cur.id) {
       try {
         sess.canvasWfId = String(cur.id);
+        /* 补绑的同时把当时的工作目录也冻结（本次需求 · 用户已确认的严格冻结口径）：
+           老会话第一次开轮就地补绑画布，目录一并定下来；此后切画布不再变。
+           目录已经有值（手填 / 冻结过）→ 一个字不动。 */
+        if (
+          !sess.assist &&
+          !String(sess.workspace || "").trim() &&
+          typeof agentWorkspaceInfo === "function" &&
+          typeof agentSetSessionWorkspace === "function"
+        ) {
+          const frozen = String(agentWorkspaceInfo(sess).path || "").trim();
+          if (frozen) await agentSetSessionWorkspace(sess, frozen);
+        }
         if (typeof persistAgentSession === "function")
           Promise.resolve(persistAgentSession()).catch(() => {});
       } catch (_) {}
@@ -3263,12 +3275,19 @@ function dshRunOnce(input, opts) {
     .then(async () => {
       boundWf = await dshResolveRunBoundWf(opts);
       let ws = String(opts.workspace || wsOfRun(opts.node) || "").trim();
+      /* 会话工作目录「创建即冻结」（本次需求 · 用户已确认）：目录只在会话建立那一刻定下，
+         之后只有用户手动点选能改。所以这里**不替它归位 / 清空**（画布 / 节点自己的无效
+         路径照旧清理），只把会话打上失效标记，本轮退到应用默认目录。 */
+      const sessRun =
+        typeof agentSessionOfRun === "function" ? agentSessionOfRun(opts) : null;
       if (ws && typeof pathIsExistingDir === "function") {
         if (!(await pathIsExistingDir(ws))) {
           await wipeMatchingWorkspaces(ws);
-          ws = String(wsOfRun(opts.node) || "").trim();
-          if (ws && !(await pathIsExistingDir(ws))) ws = "";
-          toast(I18n.t("工作目录无效，已改用默认目录"), "warn");
+          if (sessRun) sessRun._wsInvalid = true;
+          ws = String(S.dshWorkspaceFallback || "").trim();
+        } else if (sessRun && sessRun._wsInvalid) {
+          /* 目录回来了（用户把项目搬回来 / 重新挂载）：警示标自动撤掉 */
+          sessRun._wsInvalid = false;
         }
       }
       return ws || S.dshWorkspaceFallback || "";

@@ -32756,10 +32756,17 @@ function ensureAgentSessionForNode(node) {
   const list = agentSessions();
   let sess = list.find((s) => s.id === node.agentSessionId);
   if (!sess) {
+    /* 所属画布先定下来再解析工作目录：节点可能在后台画布上，按前台画布算会落错项目；
+       目录在建立这一刻冻结（此后切画布不再变）。 */
+    const ownerWf = typeof ownerWfOfNode === "function" ? ownerWfOfNode(node) : null;
     sess = {
       id: uid("as"),
       title: node.title || I18n.t("智能任务"),
-      workspace: node.workspace || dshWorkspaceOf(node),
+      workspace:
+        node.workspace ||
+        (typeof dshWorkspaceOfWf === "function"
+          ? dshWorkspaceOfWf(node, ownerWf)
+          : dshWorkspaceOf(node)),
       /* 节点绑定会话：所属画布 = 该节点所在的画布 */
       canvasWfId: canvasWfIdForNode(node),
       preset: node.preset || AGENT_PRESET_DEFAULT,
@@ -32771,6 +32778,8 @@ function ensureAgentSessionForNode(node) {
       updatedAt: Date.now(),
     };
     node.agentSessionId = sess.id;
+    if (!String(sess.workspace || "").trim() && typeof agentFreezeSessionWorkspace === "function")
+      agentFreezeSessionWorkspace(sess);
     list.unshift(sess);
   } else {
     /* 节点参数优先:展开时把节点上的预设/供应商/模型/强度/标题同步到会话 */
@@ -33078,10 +33087,18 @@ function createDevSessionForNode(node, mode, req, extra) {
   const st =
     typeof devAgentSettingsOf === "function" ? devAgentSettingsOf(node) : null;
   const list = agentSessions();
+  /* 所属画布 = 该功能块**所在**的画布（不一定是用户此刻看到的那张）：工作目录也按它解析，
+     并在建立这一刻冻结（agentFreezeSessionWorkspace）—— 切画布不再让会话目录跟着漂。 */
+  const ownerWf =
+    typeof ownerWfOfNode === "function" ? ownerWfOfNode(node) : null;
   const sess = {
     id: uid("as"),
     title: devSessionTitleOf(node, mode),
-    workspace: devPathOf(node) || dshWorkspaceOf(node),
+    workspace:
+      devPathOfIn(node, ownerWf) ||
+      (typeof dshWorkspaceOfWf === "function"
+        ? dshWorkspaceOfWf(node, ownerWf)
+        : dshWorkspaceOf(node)),
     /* 开发 / 细化绑定会话：所属画布 = 该功能块所在画布（不是开轮时用户看到的画布） */
     canvasWfId: canvasWfIdForNode(node),
     /* 所属应用：该功能块（或它所在画布）属于某个「应用」时带上（renderer/app-app-flow.js
@@ -33129,6 +33146,10 @@ function createDevSessionForNode(node, mode, req, extra) {
      任务书整份在 _devContract 里随系统提示注入，不占消息位）：
      不再整份沿用上一份没跑完的计划，也不注入「沿用旧计划」指令 ——
      跨会话沿用正是「新会话开始时就突然执行旧计划」的直接来源，已取消。 */
+  /* 工作目录创建即冻结：上面已显式解析过（devPath / 该画布目录），解析不出时按默认目录
+     锁一次，绝不留空让运行期再按「当前画布」现算。 */
+  if (!String(sess.workspace || "").trim() && typeof agentFreezeSessionWorkspace === "function")
+    agentFreezeSessionWorkspace(sess);
   list.unshift(sess);
   node.agentSessionId = sess.id;
   if (!Array.isArray(node.devSessionIds)) node.devSessionIds = [];
@@ -33376,7 +33397,11 @@ async function startDevAskSession(node, question) {
   sess = {
     id: uid("as"),
     title: devSessionTitleOf(node, "ask"),
-    workspace: devPathOf(node) || dshWorkspaceOf(node),
+    workspace:
+      devPathOfIn(node, typeof ownerWfOfNode === "function" ? ownerWfOfNode(node) : null) ||
+      (typeof dshWorkspaceOfWf === "function"
+        ? dshWorkspaceOfWf(node, typeof ownerWfOfNode === "function" ? ownerWfOfNode(node) : null)
+        : dshWorkspaceOf(node)),
     /* 问询会话同样归属该功能块所在画布 */
     canvasWfId: canvasWfIdForNode(node),
     /* 与「开发 / 细化」同口径带上所属应用（开发页按 appId 过滤会话） */
@@ -33394,6 +33419,8 @@ async function startDevAskSession(node, question) {
   sess._devContract = contract;
   /* 首条消息只放用户的问题；_src:"dev-node" 让它走契约发送分支（标题不被首轮文本覆盖） */
   sess.messages.push({ role: "user", content: q, _src: "dev-node", _nid: node.id });
+  if (!String(sess.workspace || "").trim() && typeof agentFreezeSessionWorkspace === "function")
+    agentFreezeSessionWorkspace(sess);
   list.unshift(sess);
   node.devAskSessionId = sess.id;
   S.agentActiveId = sess.id;
@@ -34047,13 +34074,10 @@ async function wipeMatchingWorkspaces(badPath) {
     if (S.config) S.config.assistWorkspace = "";
     changed = true;
   }
-  for (const sess of agentSessions()) {
-    if (!sess || String(sess.workspace || "").trim() !== bad) continue;
-    /* 会话侧走统一入口（标脏 + session:patch 改会话文件本体）：直接改内存那份的话，
-       既没读回正文、也没标脏的会话会被落盘层整条跳过，旧路径一直留在盘上。 */
-    await agentSetSessionWorkspace(sess, "");
-    changed = true;
-  }
+  /* 会话的工作目录「创建即冻结」（本次需求 · 用户已确认）：画布 / 节点的无效路径照旧清理，
+     但**绝不改写 / 清空会话字段** —— 那个目录只由用户手动点选来改。失效状态由启动体检
+     （sanitizeInvalidWorkspaces）打标记、会话行挂警示标，运行期退到应用默认目录。 */
+
   if (changed) {
     scheduleSave(true);
     try {
@@ -34156,22 +34180,18 @@ async function sanitizeInvalidWorkspaces(opts) {
   for (const sess of agentSessions()) {
     if (!sess || typeof sess.workspace !== "string") continue;
     const cur = String(sess.workspace || "").trim();
-    if (!cur) continue;
-    const label = I18n.t("智能会话") + " · " + (sess.title || sess.id || "");
-    /* 先看能不能归位（本次需求 · 用户已确认）：会话记着某个应用的开发目录，而应用开发根
-       换过位置（真机现场：E:\mtnode\apps\test → E:\mtnode\apps\dev）—— 这类旧路径不改写成
-       「当前应用目录」，而是清空走兜底链，用户下次还得自己重选。判据见 wsHealDirFor。 */
-    const heal = await wsHealDirFor(sess);
-    if (heal) {
-      await agentSetSessionWorkspace(sess, heal);
-      note("info", label + "\n  " + cur + "  →  " + heal);
+    if (!cur) {
+      sess._wsInvalid = false;
       continue;
     }
-    await wipe(label, () => sess.workspace, (v) => {
-      /* 会话的 workspace 只能经统一入口改：它同时要把会话文件本体改掉，否则旧值
-         下次启动又被读回来（弹窗反复的真根因）。 */
-      return agentSetSessionWorkspace(sess, v);
-    });
+    const label = I18n.t("智能会话") + " · " + (sess.title || sess.id || "");
+    /* 严格冻结（本次需求 · 用户已确认）：会话的工作目录在建立那一刻定下，之后只有用户
+       手动点选才能改。所以体检**不再归位、不再清空会话字段**（那都是替用户改路径），
+       只做两件事：给会话打失效标记（会话行挂警示标）、把这一条落进主进程日志。
+       运行期遇到失效目录会退到应用默认目录，见 app-db.js dshRunTask 的无效目录分支。 */
+    const alive = await pathIsExistingDir(cur);
+    sess._wsInvalid = !alive;
+    if (!alive) note("warn", label + "\n  " + cur);
   }
   if (!cleared.length) return 0;
   scheduleSave(true);
