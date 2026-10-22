@@ -1479,6 +1479,9 @@ function createToolBuildSessionForNode(node, req, filePath, route) {
     archived: false,
     updatedAt: Date.now(),
   };
+  /* 工作目录创建即冻结（本次需求）：解析不出具体目录时锁默认目录，运行期不再按当前画布现算 */
+  if (!String(sess.workspace || "").trim() && typeof agentFreezeSessionWorkspace === "function")
+    agentFreezeSessionWorkspace(sess);
   /* 契约：工具开发契约（toolDevContractText）打底 + 本文件实测要求（现状 / 边界 / 实测）。
      与 createToolDevSessionForNode 同一姿势：首条消息**只有用户关键输入**（这里通常为空），
      整份任务书走 _devContract 在每轮随系统提示注入，不占用户消息位。 */

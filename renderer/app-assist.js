@@ -3029,6 +3029,8 @@ function agentSessionState() {
       _lcLoaded: true,
       _lcDirty: true,
     };
+    /* 工作目录在建立这一刻冻结（本次需求 · 严格冻结口径）：此后切画布不再变 */
+    agentFreezeSessionWorkspace(st);
     list.unshift(st);
     S.agentActiveId = st.id;
   }

@@ -1959,6 +1959,9 @@ function createFnDevSessionForNode(node, req) {
     archived: false,
     updatedAt: Date.now(),
   };
+  /* 工作目录创建即冻结（本次需求）：解析不出具体目录时锁默认目录，运行期不再按当前画布现算 */
+  if (!String(sess.workspace || "").trim() && typeof agentFreezeSessionWorkspace === "function")
+    agentFreezeSessionWorkspace(sess);
   /* 任务书整份写进会话契约（发送时注入系统提示，见 agentSessionSend 的 _devContract
      分支）：不占用户消息位，会话里只显示用户填写的关键输入 */
   sess._devContract = fnDevContractText(node, reqText);
@@ -2247,6 +2250,9 @@ function createToolDevSessionForNode(node, req) {
     archived: false,
     updatedAt: Date.now(),
   };
+  /* 工作目录创建即冻结（本次需求）：解析不出具体目录时锁默认目录，运行期不再按当前画布现算 */
+  if (!String(sess.workspace || "").trim() && typeof agentFreezeSessionWorkspace === "function")
+    agentFreezeSessionWorkspace(sess);
   sess._devContract = toolDevContractText(node, reqText);
   sess.messages.unshift({
     role: "user",

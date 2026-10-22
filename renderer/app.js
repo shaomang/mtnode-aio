@@ -21065,6 +21065,9 @@ function createWfBuildSession(agent) {
     archived: false,
     updatedAt: Date.now(),
   };
+  /* 工作目录创建即冻结（本次需求）：解析不出具体目录时锁默认目录，运行期不再按当前画布现算 */
+  if (!String(sess.workspace || "").trim() && typeof agentFreezeSessionWorkspace === "function")
+    agentFreezeSessionWorkspace(sess);
   sess.messages.unshift({
     role: "user",
     content: wfBuildContractText(),
@@ -34207,7 +34210,10 @@ async function sanitizeInvalidWorkspaces(opts) {
   return cleared.length;
 }
 
-/* 失效的会话工作目录「该改写成哪里」（本次需求 · 用户已确认的口径）：
+/* 失效的会话工作目录「该改写成哪里」（上一轮需求的口径，**现已不再调用**）：
+   本次需求把会话工作目录改成「创建即冻结」（用户已确认的严格冻结口径）——体检不再归位、
+   不再清空会话字段，只打失效标记 + 落日志（见 sanitizeInvalidWorkspaces 的会话分支）。
+   这段判据保留但不接线：若将来要恢复「自动归位」，从这里接回去即可。
    · 会话必须属于某个应用（appId），且该应用在当前**项目根**下真有一份（拿不到就回空，
      绝不猜目录）；
    · 现有路径必须落在「应用根家族」之下 —— 当前两套根（下载根 / 项目根）以及它们的

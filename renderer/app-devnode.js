@@ -1187,6 +1187,8 @@ function devSuggestRecordSessionOf(node) {
       archived: false,
       updatedAt: Date.now(),
     };
+    if (!String(sess.workspace || "").trim() && typeof agentFreezeSessionWorkspace === "function")
+      agentFreezeSessionWorkspace(sess);
     list.unshift(sess);
   }
   if (node.devSuggestSessionId !== sess.id) node.devSuggestSessionId = sess.id;
