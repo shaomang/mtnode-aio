@@ -197,7 +197,7 @@ function assistCanvasTurnRelated(text) {
 /* ── 「先拷问需求（grill-me）」：会话窗口 + 右侧助手栏的模式开关（本次开发需求）──
    口径（用户拷问四轮已确认）：
      · 会话级缺省开（st.grill：没写过 = 开，点关之后这条会话记住，随会话落盘）；
-       助手栏另存一个全局位（S.assistPure 同族的 S.assistGrill，随配置落盘，缺省开）。
+       助手栏那枚写的是**同一条助手会话的 st.grill**（本轮需求 · 会话为主体，全局键已删）。
      · 契约**按轮注入**：每轮由模型自己判「这轮像不像需求 / 开发 / 要改东西」——
        像才带契约；拿不准就不拷问、直接干活。判据写进契约，与「本轮是不是开工」
        同一处判断，不会再出现两套判据互相打脸。
@@ -424,10 +424,10 @@ function assistDisplayWorkspace() {
 }
 
 /* 会话运行 / 上文压缩的生效工作区（唯一真源）：
-   st.workspace 手填优先 > 所属画布项目根 > 应用默认目录，不再各处自写 || 兜底。
+   st.workspace 手填（或**创建时冻结**下来的目录）优先 > 所属画布项目根 > 应用默认目录，
+   不再各处自写 || 兜底。
    「所属画布」= 会话自己那张图（canvasWfId），不是用户此刻看到的图：会话跑着的时候用户
-   切去别的画布干活，工作目录不能跟着漂。所属画布还没加载进内存时（重启后直接聊老会话）
-   退回前台画布口径解析，开轮解析到画布对象后下一轮即归位。
+   切去别的画布干活，工作目录不能跟着漂。
    **助手会话是唯一例外**（bug 修复 · 与助手栏同一口径）：它按设计不绑画布（canvasWfId 恒空，
    见 assistSessionRecord），若只走「手填 > 项目根 > 默认」三档，同一条会话在助手栏落在
    画布工作目录、在会话视图却落进应用默认目录。所以给助手会话补「画布工作目录」这一档
@@ -436,6 +436,20 @@ function sessionCanvasWf(st) {
   const id = st && st.canvasWfId;
   if (!id || typeof canvasWfByIdLoaded !== "function") return null;
   return canvasWfByIdLoaded(id);
+}
+/* 空的项目根（会话没绑画布 / 所属画布不在内存时用它，**不回退到前台画布**） */
+function emptyProjectRoot() {
+  return { path: "", roots: [], ambiguous: false, hasDevNodes: false };
+}
+/* 会话的项目根：只按它**自己所属的画布**解析。
+   · 助手会话（st.assist）是设计例外，按当前前台画布（与助手栏 assistWorkspaceInfo 同序）；
+   · 普通会话：所属画布不在内存时（重启后直接聊老会话、那张图还没加载）返回空根，
+     **绝不退回前台画布** —— 那正是「切画布会话目录跟着变、Agent 改错项目」的根因；
+     上层随后落应用默认目录，与「创建时冻结」同口径。 */
+function canvasProjectRootOfSession(st) {
+  if (!st || st.assist) return canvasProjectRoot();
+  const wf = sessionCanvasWf(st);
+  return wf ? canvasProjectRoot(wf) : emptyProjectRoot();
 }
 
 function agentWorkspaceInfo(st) {
@@ -737,11 +751,11 @@ function persistAssistUi() {
     S.assistScope === "global" ? "global" : "current";
   /* 与画布无关（Gate B · 助手侧）：全局偏好，与 assistScope 同级落盘 */
   S.config.assistCanvasFree = !!S.assistCanvasFree;
-  /* 助手栏「模式」菜单的两枚开关（本次需求）：助手没有会话档案，偏好只能落在全局
-     配置上（与会话级 st.grill / st.pure 各存各的）。两者都**缺省开 / 关**：
-     assistGrill 缺省开（没写过 = true），assistPure 缺省关。 */
-  S.config.assistGrill = S.assistGrill !== false;
-  S.config.assistPure = !!S.assistPure;
+  /* 助手栏「模式」菜单的两枚开关（本轮需求 · 会话为主体）：真源已经挪到会话字段
+     st.pure / st.grill（与普通会话同一套），config 里不再留全局键 ——
+     老配置上的这两个键读回来也不再用，这里顺手删掉，免得又被当成第二份真源。 */
+  if (S.config.assistGrill !== undefined) delete S.config.assistGrill;
+  if (S.config.assistPure !== undefined) delete S.config.assistPure;
   S.config.assistW = clampAssistW(S.assistW || 320);
   /* 助手对话已并入会话体系（本轮需求）：正文落在 agent-sessions/<id>.json，
      config 只留「当前指向哪一条」这个指针（清空 = 空串，下次发送才建新的一条）。
@@ -1568,8 +1582,10 @@ function renderAssistPanel(opts) {
      用户发第一条消息时才创建会话并落库（共识 q7）。
    · **清空＝结束这条**：旧会话保留在左栏可回看，不删除、不归档（共识 q2）。
    · **不绑画布**：助手是跨画布的，canvasWfId 恒为空，左栏显示「全局」（共识 q4）。
-   · **模型 / 预设 / 思考强度随会话**：创建时按助手栏当时的值播种，绑定时再同步回来；
-     纯净模式 / 先拷问需求 / 范围 / 工作目录仍是全局偏好（共识 q15）。 */
+   · **模型 / 预设 / 思考强度 / 纯净模式 / 先拷问需求全随会话**（st.preset / provider /
+     model / effort / pure / grill）：创建时按助手栏当时的值播种，绑定时同步回显；
+     只剩「范围」与「工作目录」两枚是全局偏好（助手跨画布，这两档不跟某一条会话绑定，
+     范围在会话视图里以只读 chip 回显）。 */
 function assistBoundSession() {
   const sid = String(S.assistSessionId || "");
   return sid ? agentSessionById(sid) : null;
@@ -1637,6 +1653,38 @@ function assistRunKeyOf(st) {
   const sid = st && st.id ? String(st.id) : String(S.assistSessionId || "");
   return sid ? "agent:" + sid : "assist";
 }
+/* ── 助手会话的两枚会话级开关（本轮需求 · 会话为主体）──────────────────────────
+   「纯净模式」与「先拷问需求」过去是助手栏自己的全局偏好（S.assistPure /
+   S.assistGrill，随 config 落盘），与会话视图里的 st.pure / st.grill 是两份真源。
+   现在只留会话字段：助手栏那两枚写的就是当前助手会话的 st.pure / st.grill ——
+   与普通会话完全同一套字段、同一份落盘（agentSessionMetaForDisk 已含这两键）。
+   还没有助手会话（空白态）时退回**本次运行内存**里的播种值：不落盘、不建空会话，
+   重启回缺省（pure = 关，grill = 开，与老全局键的缺省一致）。 */
+S.assistSeedPure = S.assistSeedPure === true;
+S.assistSeedGrill = S.assistSeedGrill !== false;
+function agentAssistSwitchOn(key, st) {
+  const s = st || assistBoundSession();
+  if (key === "grill") return s ? s.grill !== false : S.assistSeedGrill !== false;
+  return s ? !!s.pure : !!S.assistSeedPure;
+}
+function agentAssistSwitchSet(key, on) {
+  const st = assistBoundSession();
+  if (st) {
+    if (key === "grill") st.grill = !!on;
+    else st.pure = !!on;
+    if (typeof agentMarkSessionDirty === "function") agentMarkSessionDirty(st.id);
+    else if (typeof agentTouchSession === "function") agentTouchSession();
+  } else if (key === "grill") {
+    S.assistSeedGrill = !!on;
+  } else {
+    S.assistSeedPure = !!on;
+  }
+  renderAssistPanel();
+  /* 会话视图正看着这条会话时同步重绘（同一份字段，两边不能各说各的） */
+  try {
+    if (st && typeof agentViewIs === "function" && agentViewIs(st)) renderAgentSession();
+  } catch (_) {}
+}
 /* 助手这一轮的档位（共识 q7：**会话字段是唯一真源**）：
    预设 / 服务商 / 模型 / 思考强度都跟着那条助手会话走 —— 助手栏的下拉就是改会话字段；
    S.assist* 只剩「还没有会话时新建一条」的播种值（以及老配置的兜底），不再是第二份真源。 */
@@ -1666,16 +1714,14 @@ function assistOptSet(key, val) {
   else if (key === "model") S.assistModel = val;
   else if (key === "effort") S.assistEffort = val;
 }
-/* 解绑（清空 / 删除当前那条）：助手栏回空白态，旧会话留在左栏，什么都不删。 */
+/* 解绑（清空 / 删除当前那条）：助手栏回空白态，旧会话留在左栏，什么都不删。
+   台账只挂会话（本轮需求 · 删掉伪宿主）：解绑没有任何账要清 —— 旧会话自己那份
+   tokenReport 原样留在它的存档里，回左栏点开还能看。 */
 function assistUnbindSession() {
   S.assistSessionId = "";
   S.assistMessages = [];
   S.assistPending = "";
   S.assistLiveTools = [];
-  if (S._assistTokOwner) {
-    S._assistTokOwner.tokenReport = null;
-    S._assistTokOwner._tokLive = null;
-  }
   if (S.config) S.config.assistSessionId = "";
 }
 /* 「发送内容后才新建」的唯一入口：已经有当前助手会话就复用，没有就现建一条。 */
@@ -1751,22 +1797,26 @@ function clearAssistChat() {
     toast(I18n.t("请先终止当前运行"), "warn");
     return;
   }
-  /* 清空＝结束当前这条助手会话：旧会话留在左栏可回看，下一次发送才新建（共识 q2 / q7） */
+  /* 清空＝结束当前这条助手会话：旧会话留在左栏可回看，下一次发送才新建（共识 q2 / q7）。
+     台账只挂会话（本轮需求）：这里没有第二份累计要清，空白态就是没有数字。 */
   assistUnbindSession();
   S.assistRunActive = false;
-  /* 清空即新会话：Token 累计报告一起归零（台账挂在会话上，新会话自然是新的） */
-  S.assistTokenReport = null;
-  if (S._assistTokOwner) {
-    S._assistTokOwner.tokenReport = null;
-    S._assistTokOwner._tokLive = null;
-  }
   if (S.thinking) delete S.thinking.assist;
   persistAssistUi();
   renderAssistPanel({ forceStick: true });
+  /* 面板尾部那枚 Token 报告是绑在会话上的：解绑后一并撤下，不留上一轮的账面 */
+  try {
+    const pane = document.getElementById("assistPane");
+    if (pane && pane.querySelectorAll) {
+      const stale = pane.querySelectorAll(".tok-badge");
+      for (let i = 0; i < stale.length; i++) stale[i].remove();
+    }
+  } catch (_) {}
   toast(I18n.t("助手会话已清空"), "ok");
 }
 
-async function assistSend(text) {
+async function assistSend(text, opts) {
+  opts = opts && typeof opts === "object" ? opts : {};
   if (S.assistRunning) return;
   let t = String(text || "").trim();
   if (!t) return;
@@ -1850,14 +1900,13 @@ async function assistSend(text) {
      所以助手默认行为与改造前完全一致，只有明确指向画布 / 节点图之外的消息才省这一档。
      判据在这里定一次，往下（快照 / 分节 / 隐藏名单 / 签名 / 运行参数）全用同一个值。 */
   const assistCanvasFree = !assistCanvasTurnRelated(t);
-  /* 助手栏「纯净模式」（本次需求 · 与助手栏「模式」菜单新增的那一枚同源）：
-     与会话窗口完全一致 —— system prompt 整段置空 + 工具侧 pure 位下发网关
-     （见 app-db.js 的 pureOn，最终走网关空预设文本 + MTNODE_PURE）。
-     读的是全局偏好 S.assistPure（随配置落盘，见 persistAssistUi）。 */
-  const assistPure = !!S.assistPure;
-  /* 「先拷问需求」助手栏这一枚的开关态（真源 = 全局偏好 S.assistGrill，缺省开）：
-     契约按轮贴在人设尾部，是否真拷问由模型自判（见下方 personaHostFull）。 */
-  const assistGrill = S.assistGrill !== false;
+  /* 助手栏「纯净模式」与「先拷问需求」（本轮需求 · 会话为主体）：
+     与会话窗口完全一致 —— 真源是当前助手会话的 st.pure / st.grill（空白态才是
+     本次运行的播种值，见 agentAssistSwitchOn）。纯净 = system prompt 整段置空 +
+     工具侧 pure 位下发网关（见 app-db.js 的 pureOn）；拷问契约按轮贴在人设尾部，
+     是否真拷问由模型自判（见下方 personaHostFull）。 */
+  const assistPure = agentAssistSwitchOn("pure", aidSt);
+  const assistGrill = agentAssistSwitchOn("grill", aidSt);
   /* 不缩进序列化：这份快照每轮原样重发，缩进（null, 2）纯属白送的空格 token */
   const stateJson = JSON.stringify(
     await assistAppSnapshot({ canvasFree: assistCanvasFree }),
@@ -2023,10 +2072,32 @@ async function assistSend(text) {
           appStateBlock,
         ].join("") +
         assistGrillContract;
+  /* ── 这一轮的开轮参数与会话视图完全同构（本轮需求 · 会话为主体）───────────────
+     过去这些只存在于 agentSessionSend 里，助手栏这一轮一个都没传，于是：
+       · round 缺 → 轨迹的 tr.round = 0 → tokUsageStepNote 直接返回 false，
+         每步 token 明细整份不收（轨迹只能按时刻猜归步 = 用户报的「每步 token 缺失 / 错位」），
+         段快照也没有轮号（轨迹只好全塞进「全部」）；
+       · tokTitle 缺 → 逐轮明细表里这一轮没有标题；
+       · images / resumeSession / planMode 缺 → 正文里的内嵌图不真的给模型看、
+         暂停后点「继续」变成整轮重发、输入框里敲过 /plan 也不生效。
+     补齐后，助手会话与普通会话在轨迹 / 台账 / 续跑 / 计划这几条线上是同一套行为。 */
+  const planMode = !!(aidSt && aidSt.planNext);
+  if (planMode && typeof PLAN_MODE_USER_DIRECTIVE === "string")
+    input = PLAN_MODE_USER_DIRECTIVE + input;
+  const resumeRound = !!String((opts && opts.resumeSession) || "").trim();
+  /* 续跑轮不重发上下文里已有的图（与 agentSessionSend 同一条判据） */
+  const roundImages =
+    resumeRound || typeof dshRunImages !== "function" ? [] : dshRunImages(t);
   let assistHitMaxTokens = false;
   try {
     const final = await dshRunTask(input, {
       runKey: rk,
+      /* 会话轮号：第 N 轮 = 这条会话里用户第几次发送（与轨迹轮头、每步 token 明细同一把键） */
+      round: agentRoundOfRun(aidSt),
+      tokTitle: (opts && opts.tokTitle) || undefined,
+      images: roundImages.length ? roundImages : undefined,
+      resumeSession: resumeRound ? String(opts.resumeSession) : undefined,
+      planMode,
       workspace: S.assistRunWorkspace || S.dshWorkspaceFallback || "",
       preset: assistOpt("preset"),
       provider: assistOpt("provider"),
@@ -2126,6 +2197,38 @@ async function assistSend(text) {
           S.assistPending = (S.assistPending || "") + data.text;
           if (aidSt) aidSt._pending = (aidSt._pending || "") + data.text;
           assistLiveTick(aidSt, rk);
+        } else if (type === "usage" && data) {
+          /* 运行中实时 token 消耗（与会话视图同一个字段与口径）。
+             **每步 token 的明细必须在这里采集**（本轮需求 · 会话为主体）：助手栏这一轮
+             过去整段没有 usage 分支 → st._usageSteps 永远是空的 → 收尾时 m.usageSteps
+             不落盘 → 轨迹里每步 token 全缺（只能按时刻猜归步，猜不准的那几步就是
+             「未记到」）。tokUsageStepNote 自带 (轮号, 步号)，与轨迹轮头同一把键；
+             它没接手（拿不到轮号）时才回落内存时间线，两种口径互斥、绝不重复计。 */
+          const u = (aidSt._usageLive = aidSt._usageLive || {
+            inputTokens: 0,
+            outputTokens: 0,
+            cacheReadTokens: 0,
+            reasoningTokens: 0,
+          });
+          u.inputTokens += Number(data.inputTokens) || 0;
+          u.outputTokens += Number(data.outputTokens) || 0;
+          u.cacheReadTokens += Number(data.cacheReadTokens) || 0;
+          u.reasoningTokens += Number(data.reasoningTokens) || 0;
+          try {
+            if (
+              typeof tokUsageStepNote !== "function" ||
+              !tokUsageStepNote(aidSt, rk, data)
+            ) {
+              if (
+                window.MTNodeTrajectory &&
+                typeof window.MTNodeTrajectory.noteUsage === "function"
+              )
+                window.MTNodeTrajectory.noteUsage(aidSt, data);
+            }
+          } catch (_) {}
+          try {
+            renderSessionFooterStat();
+          } catch (_) {}
         } else if (type === "error" && data && data.message) {
           if (S.assistStopRequested || isCancelishError(data.message)) return;
           S.assistPending = (S.assistPending || "") + "\n⚠ " + data.message;
@@ -2191,6 +2294,17 @@ async function assistSend(text) {
       );
       if (String(rsn).trim()) msg.reasoning = rsn;
       attachTraceSegments(msg, rk);
+      /* 每步 token 明细随这一轮的消息落盘（与会话视图同一条 tail 逻辑）：键 = (轮号, 步号)，
+         轨迹渲染按键取数 —— 切会话 / 重启后老轮次照样有 token，不再只显示最新那一轮。 */
+      try {
+        const steps =
+          typeof tokUsageStepsTake === "function" ? tokUsageStepsTake(aidSt, rk) : null;
+        if (steps)
+          msg.usageSteps =
+            typeof dshUsageStepsStampRound === "function"
+              ? dshUsageStepsStampRound(steps, msg.segments)
+              : steps;
+      } catch (_) {}
       if (Array.isArray(S.assistLiveTools) && S.assistLiveTools.length)
         msg.tools = S.assistLiveTools.slice();
       msgs.push(msg);
@@ -3729,6 +3843,10 @@ function renderAgentComposer() {
   }
   /* 会话级开关（先拷问需求 / 纯净模式 / 自动续跑）已收进「模式」菜单：chip 只留入口 +
      摘要，逐项开关态由 paintAgentModeChip 统一回显（见下方 buildAgentModeMenu）。*/
+  /* 助手会话的范围回显（本轮需求 · 会话为主体）：只在助手会话上出现，纯只读。 */
+  try {
+    renderAgentScopeChip(st);
+  } catch (_) {}
   paintCompactChips();
   /* 「与画布无关」chip 已随本次需求移除（改为按消息自动判定）：这里不再回显它。
      判据真源 = agentCanvasTurnRelated，下发点见 agentSessionSend 的 turnCanvasFree。 */
@@ -3738,6 +3856,40 @@ function renderAgentComposer() {
   paintAgentToolsChip();
   paintAgentModeChip();
 }
+/* ── 会话视图头部的只读「范围」chip（本轮需求 · 会话为主体）─────────────────────
+   范围（仅当前画布 / 全局）仍是**全局偏好**：真源 = S.assistScope，唯一的修改入口是
+   右侧助手栏那颗「范围」下拉（助手没有节点，这一档只决定助手能看到几张画布）。
+   可是它原来在会话视图里完全看不见 —— 用户会以为这一轮的范围跟着会话走。所以这里给
+   一枚**只读**回显：只说这一轮按哪一档跑，不给改（绝不造第二个写入点）。
+   只对助手会话出现：普通会话的「范围」是由它自己的 canvasWfId 决定的，无需再标。 */
+function renderAgentScopeChip(st) {
+  const host =
+    document.querySelector("#agentPane .agent-composer-chips") ||
+    document.querySelector(".agent-composer-chips");
+  if (!host) return;
+  let el = document.getElementById("agentScopeChip");
+  if (!(st && st.assist)) {
+    if (el) el.remove();
+    return;
+  }
+  if (!el) {
+    el = document.createElement("span");
+    el.id = "agentScopeChip";
+    el.className = "agent-chip agent-chip-scope";
+    const anchor =
+      document.getElementById("agentWsTrigger") ||
+      document.getElementById("agentModelTrigger");
+    if (anchor && anchor.parentElement === host) host.insertBefore(el, anchor);
+    else host.insertBefore(el, host.firstChild);
+  }
+  const current =
+    typeof assistScopeIsCurrent === "function" ? assistScopeIsCurrent() : true;
+  const text = current ? I18n.t("范围：仅当前画布") : I18n.t("范围：全局");
+  if (el.textContent !== text) el.textContent = text;
+  const tip = I18n.t("只读回显：范围是全局偏好，在右侧助手栏的「范围」下拉里改");
+  if (el.title !== tip) el.title = tip;
+}
+
 /* 会话侧「模型提供商」那一格 / 那一页的唯一真源。
    清单 = app-agent.js 的 agentRouteGroupsNow()（DeepSeek 官方 + 已配置的其它文本服务商），
    与开发节点 · AI 调用弹层 · 助手栏「供应商」下拉同一批服务商，不另拼一份名单。 */
@@ -4321,6 +4473,16 @@ function paintAgentToolsChip() {
    · 纯净模式 = st.pure（会话态，persistAgentSession 落盘，app-db.js 按它做整档闸）；
    · 自动续跑 = window.LongRun.autoOn(sid)（app-longrun.js 的会话级开关，缺省关）。
    状态回显（唯一真源）：chip 摘要看着两个开关算，菜单行「开 / 关」按同一份判据画。 */
+/* 会话视图里改的这两枚（纯净 / 先拷问）也是**助手栏那两枚**的同一份字段：
+   改的若正是当前助手会话，助手面板的「模式」chip 得当场跟着回显（否则两边各说各的）。 */
+function agentModeSyncAssist(st) {
+  try {
+    if (typeof assistBoundSession !== "function") return;
+    const bound = assistBoundSession();
+    if (!bound || !st || bound !== st) return;
+    if (typeof renderAssistPanel === "function") renderAssistPanel();
+  } catch (_) {}
+}
 function agentModeEntryOf(key) {
   const st = agentSessionState();
   /* 「先拷问需求（grill-me）」（本次需求 · 会话窗口模式菜单新增的一枚）：
@@ -4343,6 +4505,7 @@ function agentModeEntryOf(key) {
   agentTouchSession();
         renderAgentComposer();
         if (typeof renderAgentSession === "function") renderAgentSession();
+        agentModeSyncAssist(st);
       },
     };
   }
@@ -4361,6 +4524,7 @@ function agentModeEntryOf(key) {
   agentTouchSession();
         renderAgentComposer();
         if (typeof updateRunQueuePanel === "function") updateRunQueuePanel();
+        agentModeSyncAssist(st);
       },
     };
   }
@@ -4406,52 +4570,44 @@ function agentModeEntryOf(key) {
       },
     };
   }
-  /* 助手栏的两枚开关（本次需求：助手栏也加一枚「模式」菜单，与会话侧共用同一套构件）：
-     真源是全局偏好 S.assistGrill / S.assistPure（随配置落盘，见 persistAssistUi），
-     与「助手侧·与画布无关」同族 —— 助手没有会话档案，偏好只能落在全局配置上。 */
+  /* 助手栏的两枚开关（本轮需求 · 会话为主体）：真源与普通会话**完全同一套字段** ——
+     st.grill / st.pure；助手栏这一份只是把它渲染在助手面板里（点一下就写会话字段）。
+     还没有会话时写的是本次运行的播种值（agentAssistSwitchSet），不落盘、不建空会话。 */
   if (key === "assistGrill") {
-    const on = S.assistGrill !== false;
+    const on = agentAssistSwitchOn("grill");
     return {
       key: "assistGrill",
       label: "先拷问需求",
       hint:
-        "开启 = 助手栏每轮先自判「像不像需求」，像就先加载内置技能 mtnode-grill-me 问清整个前沿，经你确认无歧义后才动手；默认开启",
+        "开启 = 这条助手会话每轮先自判「像不像需求」，像就先加载内置技能 mtnode-grill-me 问清整个前沿，经你确认无歧义后才动手；默认开启",
       title: on
         ? "先拷问需求：开启中，点击关闭（关闭后助手直接干活，不再逐轮拷问）"
         : "先拷问需求：已关闭，点击开启（像需求 / 开发的那几轮先问清再动手）",
       on,
       onPick() {
-        S.assistGrill = !(S.assistGrill !== false);
-        persistAssistUi();
-        renderAssistPanel();
+        agentAssistSwitchSet("grill", !agentAssistSwitchOn("grill"));
       },
       toggle() {
-        S.assistGrill = !(S.assistGrill !== false);
-        persistAssistUi();
-        renderAssistPanel();
+        agentAssistSwitchSet("grill", !agentAssistSwitchOn("grill"));
       },
     };
   }
   if (key === "assistPure") {
-    const on = !!S.assistPure;
+    const on = agentAssistSwitchOn("pure");
     return {
       key: "assistPure",
       label: "纯净模式",
       hint:
-        "纯净模式：移除全部 system prompt 与运行时上下文，仅保留联网搜索；助手这条不再读写文件 / 改画布，省 token",
+        "纯净模式：移除全部 system prompt 与运行时上下文，仅保留联网搜索；这条助手会话不再读写文件 / 改画布，省 token",
       title: on
-        ? "纯净模式：开启中，点击关闭（助手栏这条不再读写文件 / 改画布）"
-        : "纯净模式：移除全部 system prompt 与运行时上下文，仅保留联网搜索；助手这条不再读写文件 / 改画布，省 token",
+        ? "纯净模式：开启中，点击关闭（这条助手会话不再读写文件 / 改画布）"
+        : "纯净模式：移除全部 system prompt 与运行时上下文，仅保留联网搜索；这条助手会话不再读写文件 / 改画布，省 token",
       on,
       onPick() {
-        S.assistPure = !S.assistPure;
-        persistAssistUi();
-        renderAssistPanel();
+        agentAssistSwitchSet("pure", !agentAssistSwitchOn("pure"));
       },
       toggle() {
-        S.assistPure = !S.assistPure;
-        persistAssistUi();
-        renderAssistPanel();
+        agentAssistSwitchSet("pure", !agentAssistSwitchOn("pure"));
       },
     };
   }
@@ -4484,8 +4640,9 @@ function agentModeEntries() {
     agentModeEntryOf("think"),
   ];
 }
-/* 助手栏「模式」菜单的行（本次需求）：与会话侧**同一套构件、同一份词条**，
-   只是开关的真源换成全局偏好（见 agentModeEntryOf 的 assistGrill / assistPure 两支）。 */
+/* 助手栏「模式」菜单的行（本轮需求 · 会话为主体）：与会话侧**同一套构件、同一份字段**
+    —— 只是渲染在助手面板里（见 agentModeEntryOf 的 assistGrill / assistPure 两支，
+    空白态写的才是本次运行的播种值）。 */
 function assistModeEntries() {
   return [agentModeEntryOf("assistGrill"), agentModeEntryOf("assistPure")];
 }
@@ -9955,24 +10112,11 @@ function renderAgentSessionRaw(opts) {
     } else if (ltNote) {
       ltNote.remove();
     }
-    /* 全局助手会话（本轮需求）：会话视图与右侧助手栏是同一份对话，这里明说身份；
-       助手栏正在跑这条时按共识 q10 只读 —— 发送由 agentSessionSend 的护栏挡住并提示。 */
-    let asNote = composer.querySelector(".agent-assist-note");
-    if (st.assist) {
-      if (!asNote) {
-        asNote = document.createElement("div");
-        asNote.className = "agent-lt-note agent-assist-note";
-        composer.insertBefore(asNote, composer.firstChild);
-      }
-      asNote.textContent = S.assistRunning
-        ? I18n.t("全局助手会话 · 正在右侧助手栏运行（这里只读）")
-        : I18n.t("全局助手会话 · 与右侧助手栏是同一份对话");
-      asNote.title = I18n.t(
-        "这条会话不绑任何画布，由全局助手那套人设与工具档运行；在助手栏清空＝换一条新的",
-      );
-    } else if (asNote) {
-      asNote.remove();
-    }
+    /* 助手会话（本轮需求 · 会话为主体）：不再往输入框上方摆任何身份 / 运行态说明 ——
+       它与会话列表里任何一条会话长得一样（唯一标识是左栏那枚「助手」徽标），
+       运行中能不能发由发送按钮自己表达（忙 = 排队 / 终止），不另写「只读」这类话。 */
+    const staleNote = composer.querySelector(".agent-assist-note");
+    if (staleNote) staleNote.remove();
   }
   const presetSel = $("#agentPresetSel");
   if (presetSel) presetSel.value = st.preset || AGENT_PRESET_DEFAULT;
@@ -11882,7 +12026,7 @@ async function agentSessionSend(text, opts) {
     }
     assistBindSession(st);
     persistAssistUi();
-    const out = await assistSend(text);
+    const out = await assistSend(text, opts);
     try {
       renderAgentSession();
     } catch (_) {}

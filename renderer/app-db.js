@@ -2745,6 +2745,25 @@ async function dshRunAskSwitchModel(opts, errText) {
 
 function dshRunTask(input, opts) {
   opts = opts || {};
+  /* 中间产物（工作流随包带来的）：起跑前先铺回节点工作目录，并把清单写进输入，
+     让 agent 优先复用上一次的产出（实现见 renderer/app-workflows.js
+     wfArtifactsSeedWorkspace）。只做一次（_artifactsSeeded 防递归）。 */
+  if (
+    !opts._artifactsSeeded &&
+    opts.node &&
+    typeof wfArtifactsSeedWorkspace === "function" &&
+    typeof wfArtifactsNeedSeed === "function" &&
+    wfArtifactsNeedSeed(opts.node)
+  ) {
+    return Promise.resolve(wfArtifactsSeedWorkspace(opts.node))
+      .catch(() => "")
+      .then((seed) =>
+        dshRunTask(
+          seed ? String(input == null ? "" : input) + "\n\n" + seed : input,
+          Object.assign({}, opts, { _artifactsSeeded: 1 }),
+        ),
+      );
+  }
   const runKey = dshRunKeyOf(opts);
   /* 本轮 Token 台账的「会话轮次」归属键与标题（additive，只影响轮次明细，不动合计口径）：
      tokRoundKey 缺省 = runKey（agent:<会话id> / 节点 id / assist / default）；

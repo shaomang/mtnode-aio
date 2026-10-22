@@ -29,16 +29,22 @@
     .wrap { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; height: 100%; padding: 12px; gap: 10px; overflow-y: auto; overflow-x: hidden; }
     h1 { font-size: 15px; margin: 0; font-weight: 600; }
     /* 右上角常驻按钮条：Console 面板开关 + 一键打开 ComfyUI 编辑界面。
-       用 sticky 贴在主列滚动容器顶部：fixed 会盖住标题与提示条，sticky 自己占一行、滚到哪儿都在。 */
+       用 sticky 贴在主列滚动容器顶部：fixed 会盖住标题与提示条，sticky 自己占一行、滚到哪儿都在。
+       一律不留负边距 —— 负下边距会把下面那片文字（标题行）拉到按钮条底下，看起来就是「顶端栏遮挡文字」。 */
     .topbtns {
       position: sticky; top: 0; z-index: 30;
       display: flex; justify-content: flex-end; align-items: center; gap: 6px;
-      margin: -12px -12px -10px; padding: 10px 12px 12px;
+      margin: 0; padding: 4px 0 8px;
       background: var(--bg);
     }
     .topbtns button { padding: 4px 9px; font-size: 12px; border-radius: 7px; background: #1c2230; }
     .topbtns button.on { background: #243552; border-color: #3a5f9a; color: #dbe9ff; }
     .topbtns .pane-title { margin-right: auto; align-self: center; }
+    /* ComfyUI 后端地址跟着标题行：不放按钮条里，窄窗时不会被两个按钮挤掉、也不会被按钮条盖住 */
+    #comfyHint {
+      margin-left: 6px; font-size: 12px; font-weight: 400; color: var(--muted);
+      white-space: nowrap;
+    }
     /* 左侧 Console 面板：只做一件事 —— 显示 console 内容 */
     .console-pane {
       flex: 0 0 auto; width: 360px; height: 100%; padding: 10px; gap: 8px;
@@ -87,6 +93,18 @@
     .bar.gpu > i { background: linear-gradient(90deg, #2f9e6b, #3ecf8e); }
     .bar.util > i { background: linear-gradient(90deg, #b8860b, #f0b429); }
     .meta { color: var(--muted); font-size: 12px; }
+    /* Sage 必须项横幅：缺包 = 不出片（不是「可选加速」），所以做成常驻红条而不是一行灰字。
+       豁免（环境变量 / config 里显式声明）时降级成黄色告警，仍常驻 —— 绝不静默。 */
+    .sage-banner {
+      display: flex; align-items: flex-start; gap: 10px;
+      border: 1px solid var(--danger); background: #2a1416; color: #ffd9d9;
+      border-radius: 8px; padding: 9px 11px; font-size: 12px; line-height: 1.5;
+    }
+    .sage-banner[hidden] { display: none; }
+    .sage-banner.exempt { border-color: var(--warn); background: #2a2412; color: #ffe9b8; }
+    .sage-banner .sb-main { flex: 1 1 auto; min-width: 0; }
+    .sage-banner .sb-title { font-weight: 600; margin-bottom: 3px; }
+    .sage-banner button { flex: 0 0 auto; }
     #console {
       flex: 1 1 auto; min-height: 0; overflow: auto; white-space: pre-wrap;
       font: 11px/1.4 ui-monospace, Consolas, monospace;
@@ -156,6 +174,8 @@
       border-bottom: 1px solid #6b5418; color: #f0d27a; font-size: 12px; line-height: 1.45;
     }
     .wf-editor .ed-note[hidden] { display: none !important; }
+    /* 模板还在后台注入时的中性提示（不是失败，别用警告黄） */
+    .wf-editor .ed-note.loading { background: #141926; border-bottom-color: var(--border); color: var(--muted); }
     .wf-editor iframe { flex: 1 1 auto; width: 100%; min-height: 0; border: 0; background: #0b0e13; }
   </style>
 </head>
@@ -174,16 +194,24 @@
   </aside>
 
   <div class="wrap">
-    <!-- 右上角常驻按钮条：Console 面板开关 + 一键打开 ComfyUI 编辑界面（sticky 吸顶，滚到哪儿都在） -->
+    <!-- 常驻按钮条：Console 面板开关 + 一键打开 ComfyUI 编辑界面（sticky 吸顶，滚到哪儿都在）。
+         ComfyUI 后端地址不在这里 —— 它跟着下面的标题行走（#comfyHint），不再当按钮条里的第二段文字。 -->
     <div class="topbtns">
-      <span class="pane-title" id="comfyHint" title="ComfyUI 后端地址">:8188</span>
       <button id="btnConsolePane" type="button" title="在窗口左侧展开 / 收起 Console 面板（窗口往左变宽，主界面一格不动）">Console<span class="cbadge" id="cbadge" hidden>0</span></button>
       <button id="btnOpenComfy" type="button" title="用浏览器打开 ComfyUI 工作流编辑界面（后端没跑时会先问你是否启动）">ComfyUI 编辑界面</button>
     </div>
 
     <div>
-      <h1>Minimax H3 <span class="badge test">插件测试中</span> <span class="badge off" id="svcBadge">服务关闭</span></h1>
+      <h1>Minimax H3 <span class="badge test">插件测试中</span> <span class="badge off" id="svcBadge">服务关闭</span><span class="pane-title" id="comfyHint" title="ComfyUI 后端地址">:8188</span></h1>
       <div class="sub">本地 24G 视频方案（ComfyUI 后端）</div>
+    </div>
+
+    <div class="sage-banner" id="sageBanner" hidden>
+      <div class="sb-main">
+        <div class="sb-title" id="sageBannerTitle">Sage 加速未就绪（必须项）</div>
+        <div id="sageBannerText"></div>
+      </div>
+      <button id="btnSageFix" type="button">立即补装 Sage</button>
     </div>
 
     <div class="card">
@@ -191,7 +219,7 @@
            「自我修复」兜底）都不在这只窗里：安装统一走独立安装窗（plugins/main-install.js），
            本窗只留运行期功能（启停 / 卸载 / 服务 / GPU / 工作流库 / Console）。 -->
       <div class="row">
-        <button id="btnSage" title="自检注意力加速包（triton-windows + 与本 venv 配套的 sageattention 预编译 wheel）：未装就一键补装。缺包不影响出片，只是慢约 1.5-2×">Sage 加速</button>
+        <button id="btnSage" title="Sage 加速是必须项（triton-windows + 与本 venv 配套的 sageattention 预编译 wheel）：未就绪就一键补装，装完自动复检">Sage 加速</button>
         <button id="btnStart" title="调试用；正常请从画布节点执行">手动启动</button>
         <button id="btnStop" title="调试用">手动停止</button>
         <button class="danger" id="btnForceKill" title="卡死时用：杀后端释放显存">强制释放显存</button>

@@ -3319,6 +3319,25 @@ button.mini.btn-sq.tpl-ico {
   color: rgb(86, 134, 254)
 }
 
+/* 助手会话的「范围」回显 chip（本轮需求 · 会话为主体）：只读，不抢宽度、不带 hover 反馈
+   （它不是按钮 —— 改了也没用，改的入口只在右侧助手栏那颗「范围」下拉）。 */
+.agent-chip.agent-chip-scope {
+  flex: 0 0 auto;
+  max-width: none;
+  height: 22px;
+  padding: 0 7px;
+  border-color: var(--bd2);
+  background: transparent;
+  color: var(--muted);
+  font-size: 10.5px;
+  cursor: default;
+  user-select: none;
+}
+
+.agent-chip.agent-chip-scope:hover {
+  background: transparent
+}
+
 /* 规划模式相关：可隐藏的 chip（.agent-chip 的 display:flex 会盖掉 [hidden]） */
 .agent-chip[hidden] {
   display: none

@@ -119,7 +119,7 @@
   const stClass = (s) => (s === "paid" ? "st-paid" : s === "pending" ? "st-pending" : ["refunded", "partial_refunded", "paid_mismatch", "expired", "closed"].includes(s) ? "st-bad" : "st-muted");
   const LEDGER_TEXT = { recharge: "充值入账", refund: "退款", adjust: "人工调账", mismatch: "金额不符", relay: "中转扣费", tip_out: "打赏转出", tip_in: "打赏转入", tip_revoke_out: "撤销扣回", tip_revoke_in: "撤销退回" };
   /** 打赏对象类型（服务端 /api/admin/tips 回的 targetKind 是英文枚举，界面显示中文）。 */
-  const TIP_KIND_TEXT = { template: "模板", skill: "技能", app: "应用", forum_topic: "论坛话题", forum_reply: "论坛回复" };
+  const TIP_KIND_TEXT = { template: "画布", workflow: "工作流", skill: "技能", app: "应用", forum_topic: "论坛话题", forum_reply: "论坛回复" };
 
   let toastTimer = 0;
   function toast(msg, kind) {
@@ -1095,6 +1095,13 @@
          这里把「当前到底开没开」直接写清楚，省得再去服务器上翻 env。 */
       ["充值闸门", (OV.config && OV.config.rechargeClosed) ? "已全局关闭（MTNODE_RECHARGE_CLOSED）" : "对所有注册账号开放"],
       ["充值区间", money(OV.config && OV.config.minYuan) + " – " + money(OV.config && OV.config.maxYuan)],
+      /* 内容库存：服务端 /api/admin/overview 的 content 字段（与内容管理页签角标同一份口径）。
+         画布 = 原「模板」，工作流 = 封装节点层，两者都单独计数。 */
+      ["内容库存", (function () {
+        const c = OV.content || {};
+        return "应用 " + (c.app || 0) + " · 画布 " + (c.template || 0) + " · 工作流 " + (c.workflow || 0) +
+          " · 技能 " + (c.skill || 0) + "（官方 " + (c.skillOfficial || 0) + "）";
+      })()],
     ];
     const hp = $("ovHealth");
     hp.textContent = "";
@@ -1921,11 +1928,11 @@
   if ($("btnSiRefresh")) $("btnSiRefresh").addEventListener("click", () => loadSysinfo());
 
   /* ==========================================================================
-   * 内容管理（应用 / 模板 / 技能 / 改动留痕）
+   * 内容管理（应用 / 画布 / 工作流 / 技能 / 改动留痕）
    *   · 管理员的票是 adm_，走 /api/admin/content/*：可操作**任何作者**的内容；
    *   · 编辑只到元信息（应用另可换图标）；文件正文与 zip 不在管理台换，应用的版本号也不手改；
    *   · 删除类操作先弹二次确认（写清删哪条、影响多少文件），服务端逐条写 contentAudit 留痕；
-   *   · 模板 / 技能服务端本来就没有多版本链与「下架」位，界面上也不给这两类摆空按钮。
+   *   · 画布 / 工作流 / 技能服务端本来就没有多版本链与「下架」位，界面上也不给这几类摆空按钮。
    * ========================================================================== */
 
   const C_SUBS = ["app", "template", "workflow", "skill", "audit"];
@@ -1945,8 +1952,8 @@
     reopen: "改回 Bug",
   };
   let cSub = "app";
-  const cPages = { app: 1, template: 1, skill: 1 };
-  const cSeq = { app: 0, template: 0, skill: 0 };
+  const cPages = { app: 1, template: 1, workflow: 1, skill: 1 };
+  const cSeq = { app: 0, template: 0, workflow: 0, skill: 0 };
 
   const cSubtabEls = () => Array.prototype.slice.call(document.querySelectorAll("#contentSubtabs .subtab"));
 
@@ -1971,7 +1978,8 @@
     for (const b of cSubtabEls()) {
       const k = b.dataset.csub;
       if (k === "app") b.textContent = "应用（" + (counts.app || 0) + "）";
-      else if (k === "template") b.textContent = "模板（" + (counts.template || 0) + "）";
+      else if (k === "template") b.textContent = "画布（" + (counts.template || 0) + "）";
+      else if (k === "workflow") b.textContent = "工作流（" + (counts.workflow || 0) + "）";
       else if (k === "skill") b.textContent = "技能（" + (counts.skill || 0) + "）";
     }
   }
@@ -2011,12 +2019,20 @@
     ];
   }
 
-  function tplColumns() {
-    return [
-      { title: "模板 id", get: (r) => r.id },
+  /* 画布 / 工作流在服务端是同一套结构（单文件 .mtnodes + 预览图、无多版本链、无「下架」位），
+     列也共用一份；工作流多两列：版本号与对外端口数（封装节点层的入/出端点）。 */
+  function nodeFileColumns(kind) {
+    const cols = [
+      { title: KIND_TEXT[kind] + " id", get: (r) => r.id },
       { title: "标题", get: (r) => r.title },
       { title: "作者", get: (r) => r.ownerName },
       { title: "标签", get: (r) => (r.tags || []).join(" / ") || "—" },
+    ];
+    if (kind === "workflow") {
+      cols.push({ title: "版本", get: (r) => "v" + (r.version || "—") });
+      cols.push({ title: "端口（入 → 出）", get: (r) => (r.inCount || 0) + " → " + (r.outCount || 0) });
+    }
+    cols.push(
       { title: "大小", get: (r) => sizeText(r.bytes) },
       { title: "下载 / 赞", get: (r) => r.downloads + " / " + r.likes },
       { title: "预览图", get: (r) => (r.hasPreview ? "有" : "无") },
@@ -2031,8 +2047,12 @@
             ["删除", "btn-danger", () => contentDelete(r)],
           ]),
       },
-    ];
+    );
+    return cols;
   }
+
+  const tplColumns = () => nodeFileColumns("template");
+  const wfColumns = () => nodeFileColumns("workflow");
 
   function skillColumns() {
     return [
@@ -2069,6 +2089,9 @@
     } else if (kind === "template") {
       p.set("q", $("fTplQ").value.trim());
       p.set("author", $("fTplAuthor").value.trim());
+    } else if (kind === "workflow") {
+      p.set("q", $("fWfQ").value.trim());
+      p.set("author", $("fWfAuthor").value.trim());
     } else if (kind === "skill") {
       p.set("q", $("fSkillQ").value.trim());
       p.set("author", $("fSkillAuthor").value.trim());
@@ -2090,8 +2113,11 @@
         renderTable($("tblApps"), appColumns(), r.items, "没有匹配的应用");
         renderPager($("pgApps"), r.total, r.page, r.pageSize, (p) => loadContent("app", p));
       } else if (k === "template") {
-        renderTable($("tblTpls"), tplColumns(), r.items, "没有匹配的模板");
+        renderTable($("tblTpls"), tplColumns(), r.items, "没有匹配的画布");
         renderPager($("pgTpls"), r.total, r.page, r.pageSize, (p) => loadContent("template", p));
+      } else if (k === "workflow") {
+        renderTable($("tblWfs"), wfColumns(), r.items, "没有匹配的工作流");
+        renderPager($("pgWfs"), r.total, r.page, r.pageSize, (p) => loadContent("workflow", p));
       } else {
         renderTable($("tblSkills"), skillColumns(), r.items, "没有匹配的技能");
         renderPager($("pgSkills"), r.total, r.page, r.pageSize, (p) => loadContent("skill", p));
@@ -2187,7 +2213,7 @@
       row.kind === "app"
         ? "应用分支「" + row.title + "」（id " + row.id + " · 作者 " + row.ownerName + "），含 " + row.versionCount + " 个版本的 zip" + (row.hasIcon ? " 与图标" : "") + (row.branchCount > 1 ? "；同 id 下还有 " + (row.branchCount - 1) + " 条别的作者分支（不动它们）" : "")
         : KIND_TEXT[row.kind] + "「" + row.title + "」（id " + row.id + " · 作者 " + row.ownerName + "），含" +
-          (row.kind === "template" ? "模板文件与预览图" : row.fileCount + " 个文件与预览图");
+          (row.kind === "template" || row.kind === "workflow" ? KIND_TEXT[row.kind] + "文件与预览图" : row.fileCount + " 个文件与预览图");
     openDialog(
       "删除" + KIND_TEXT[row.kind],
       [
@@ -2289,7 +2315,7 @@
       (version ? "&version=" + encodeURIComponent(version) : "") + (file ? "&file=" + encodeURIComponent(file) : "") + "&format=raw";
     const name =
       row.kind === "app" ? row.id + (version ? "-v" + version : "") + ".zip"
-        : row.kind === "template" ? row.id + ".mtnodes"
+        : row.kind === "template" || row.kind === "workflow" ? row.id + ".mtnodes"
           : (file || "SKILL.md").split("/").pop();
     fetch(API + "/api/admin/content/download?" + q, { headers: { Authorization: "Bearer " + TOKEN } })
       .then((res) => {
@@ -2359,6 +2385,13 @@
   });
   $("fTplQ").addEventListener("keydown", (e) => {
     if (e.key === "Enter") loadContent("template", 1);
+  });
+  $("btnWfSearch").addEventListener("click", () => loadContent("workflow", 1));
+  $("fWfAuthor").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") loadContent("workflow", 1);
+  });
+  $("fWfQ").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") loadContent("workflow", 1);
   });
   $("btnSkillSearch").addEventListener("click", () => loadContent("skill", 1));
   $("fSkillStatus").addEventListener("change", () => loadContent("skill", 1));

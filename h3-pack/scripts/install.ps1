@@ -13,7 +13,7 @@
 #                                (-SourceOnly only makes sure the ComfyUI sources are there)
 #   scripts/download_models.ps1  MiniMax H3 weights from ModelScope (falls back to hf-mirror)
 #
-# Step ids match steps.json in the same directory: disk / comfy / venv / nodes / weights / smoke
+# Step ids match steps.json in the same directory: disk / comfy / venv / sage / nodes / weights / smoke
 # Step protocol lives in scripts/step.ps1. The script is re-runnable (the sub-scripts are
 # idempotent / resumable themselves).
 #
@@ -100,7 +100,7 @@ $ComfyMain = Join-Path $ComfyRoot "main.py"
 # The pip failure path is the one users hit most: when all four indexes are exhausted the pip
 # output in the step log tail says "No matching distribution found for <package>" -- that line
 # is what names the missing package, and the step message carries it as the `tail` param.
-$StepOrder = @("disk", "comfy", "venv", "nodes", "weights", "smoke")
+$StepOrder = @("disk", "comfy", "venv", "sage", "nodes", "weights", "smoke")
 
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 Write-Host "[h3-install] install dir: $InstallDir"
@@ -312,7 +312,65 @@ try {
   exit 1
 }
 
-# -- 4. custom nodes ----------------------------------------------------------
+# -- 4. Sage Attention (MANDATORY) --------------------------------------------
+# Sage used to be an on-demand "speed button" in the plugin window. It is now a hard
+# requirement of the H3 backend: the host refuses to start ComfyUI and refuses to generate
+# without it. So the installer owns it, right after the venv (torch / CUDA major are only
+# known then, and the prebuilt sageattention wheel must match them) and BEFORE the weights
+# (a ~40GB download must not happen on a machine that cannot run anyway).
+#
+# MT_H3_SAGE_EXEMPT=1 (set by the host when the user has explicitly declared the exemption)
+# turns a failure here into a warning: the machine keeps installing, the host keeps warning.
+Step-Begin "sage" "" 48
+$sageExempt = ("$env:MT_H3_SAGE_EXEMPT" -match '^(?i)\s*(1|true|yes|on)\s*$')
+try {
+  $sagePy = Join-Path $PSScriptRoot "sage_install.py"
+  if (-not (Test-Path -LiteralPath $sagePy)) { throw "scripts\sage_install.py is missing (incomplete pack: update the plugin resources)" }
+  # pip / python write to stderr all the time: run it with ErrorActionPreference=Continue so
+  # the real error text lands in the step log instead of becoming a terminating error.
+  $prevEapSage = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  try {
+    $sageOut = @(& $VenvPy $sagePy 2>&1)
+    $sageCode = $LASTEXITCODE
+  } finally { $ErrorActionPreference = $prevEapSage }
+  foreach ($l in $sageOut) { Add-SubTail ([string]$l); Write-Host ([string]$l) }
+  $sageHits = @(@($script:SubTail) | Where-Object { "$_" -match 'SAGE-(ARCH|WHEEL|TRITON|PIP|PROBE|VERIFY|SMOKE|UNEXPECTED)=' } | Select-Object -Last 2)
+  $sageTail = (@($sageHits) -join " / ").Trim()
+  if (-not $sageTail) { $sageTail = Get-ErrorTail }
+  if ($sageCode -ne 0) {
+    if ($sageExempt) {
+      Step-Ok "sage" 52 "exempt (MT_H3_SAGE_EXEMPT): $sageTail"
+    } else {
+      Step-Fail "sage" (New-FailCode "h3.sage.install_failed" @{ tail = $sageTail } "Sage Attention could not be installed: $sageTail")
+      Skip-AfterStep "sage"
+      exit 1
+    }
+  } else {
+    $sageChk = Invoke-VenvProbe "import triton, sageattention;print('sage_ok')"
+    if ($sageChk.Last -ne "sage_ok") {
+      if ($sageExempt) {
+        Step-Ok "sage" 52 "exempt (MT_H3_SAGE_EXEMPT): import check failed - $($sageChk.Text)"
+      } else {
+        Step-Fail "sage" (New-FailCode "h3.sage.verify_failed" @{ tail = $sageChk.Text } "Sage Attention import check failed after install")
+        Skip-AfterStep "sage"
+        exit 1
+      }
+    } else {
+      Step-Ok "sage" 52
+    }
+  }
+} catch {
+  if ($sageExempt) {
+    Step-Ok "sage" 52 "exempt (MT_H3_SAGE_EXEMPT): $($_.Exception.Message)"
+  } else {
+    Step-Fail "sage" (New-FailCode "h3.sage.prep_failed" @{ tail = "$($_.Exception.Message) / $(Get-ErrorTail)" } "Sage Attention install failed: $($_.Exception.Message)")
+    Skip-AfterStep "sage"
+    exit 1
+  }
+}
+
+# -- 5. custom nodes ----------------------------------------------------------
 Step-Begin "nodes" "" 30
 try {
   $nodes = Join-Path $ComfyRoot "custom_nodes"
@@ -328,7 +386,7 @@ try {
   exit 1
 }
 
-# -- 5. weights ---------------------------------------------------------------
+# -- 6. weights ---------------------------------------------------------------
 Step-Begin "weights" "" 58
 try {
   Invoke-SubScript (Join-Path $PSScriptRoot "download_models.ps1") "MiniMax H3 weights download"
@@ -339,7 +397,7 @@ try {
   exit 1
 }
 
-# -- 6. wrap-up ---------------------------------------------------------------
+# -- 7. wrap-up ---------------------------------------------------------------
 Step-Begin "smoke" "" 92
 try {
   $missing = @()
@@ -350,6 +408,20 @@ try {
     (Join-Path $ComfyRoot "models\text_encoders"),
     (Join-Path $ComfyRoot "models\vae")
   )) { if (-not (Test-Path $p)) { $missing += $p } }
+  # Sage is a requirement of the runtime, so the wrap-up re-checks the pair (the sage step
+  # already verified it once; this catches a venv that got rebuilt in between, and keeps the
+  # install-ok marker honest). An exempted machine only warns.
+  if (-not $sageExempt) {
+    $sageFinal = Invoke-VenvProbe "import triton, sageattention;print('sage_ok')"
+    if ($sageFinal.Last -ne "sage_ok") {
+      Step-Fail "smoke" (New-FailCode "h3.sage.wrapup_failed" @{ tail = $sageFinal.Text } "Sage Attention missing at wrap-up (triton + sageattention must be a pair)")
+      Skip-AfterStep "smoke"
+      exit 1
+    }
+  } else {
+    Write-Host "[h3-install] sage: exempt (MT_H3_SAGE_EXEMPT), wrap-up check skipped"
+  }
+  if ($missing.Count) { throw ("missing: " + ($missing -join " / ")) }
   if ($missing.Count) { throw ("missing: " + ($missing -join " / ")) }
   New-Item -ItemType File -Force -Path (Join-Path $InstallDir ".install-ok") | Out-Null
   Step-Ok "smoke" 100

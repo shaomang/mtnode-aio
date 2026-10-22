@@ -30,7 +30,6 @@
     "ext:build": "node ext-repo/build.mjs",
     "ext:sync": "node ext-repo/build.mjs && python ext-repo/upload.py",
     "store:deploy": "python store-saas/upload.py",
-    "deploy:privacy": "python scripts/upload-privacy.py --upload-only && python scripts/upload-privacy.py --patch-only",
     "deploy:ssl": "python scripts/deploy-ssl.py",
     "store:seed-skills": "node store-saas/seed-skills.mjs",
     "store:release-skills": "node tools/release-skills.mjs",

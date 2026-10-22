@@ -64,6 +64,9 @@ let logPanelSyncHandler = null;
 let pendingNotice = null;
 let installing = false;
 let installCancel = false;
+/** 正在合成的在途数（generateBreezeFile 进出各一次）：显存释放编排器据此判断忙不忙，
+ *  绝不在别人合成到一半时把引擎 / 后端拆掉（见本文件末尾 vramHooks） */
+let activeSynthesis = 0;
 let gpuTimer = null;
 let uiSignalTimer = null;
 let consoleWatchTimer = null;
@@ -690,6 +693,28 @@ async function probeApi(port) {
   } catch {
     return false;
   }
+}
+
+/* isRunning 必须同步回布尔值，而探活是异步的：留一份 3s 内有效的缓存，调用时刻顺手刷新
+   （GET /api/health 只读，不触发权重加载）。缓存还没热起来时只认 backendRunning()（宿主自己的
+   进程记录），绝不因为「没来得及探」就把「在跑」当成「没跑」。 */
+let apiAliveCache = false;
+let apiAliveAt = 0;
+let apiAliveProbing = false;
+function apiAliveSync() {
+  const now = Date.now();
+  if (apiAliveProbing || now - apiAliveAt < 3000) return apiAliveCache;
+  apiAliveAt = now;
+  apiAliveProbing = true;
+  probeApi(Number(loadConfig().port) || DEFAULT_PORT)
+    .then((up) => {
+      apiAliveCache = !!up;
+    })
+    .catch(() => {})
+    .then(() => {
+      apiAliveProbing = false;
+    });
+  return apiAliveCache;
 }
 
 async function fetchApiStatus() {
@@ -1889,8 +1914,16 @@ async function backendMultipart(pathname, fields, file) {
 /**
  * 画布「Breeze 语音」节点：合成音频并写盘。
  * 走后端 OpenAI 兼容 /v1/audio/speech，音频字节由主进程直接写盘、回传绝对路径（渲染层不碰二进制）。
+ * 外层只做一件事：记「正在合成」的在途计数 —— 显存释放编排器（local-model-vram.js）据此判断忙不忙。
  */
 function generateBreezeFile(params) {
+  activeSynthesis += 1;
+  return synthesizeBreezeFile(params).finally(() => {
+    activeSynthesis = Math.max(0, activeSynthesis - 1);
+  });
+}
+
+function synthesizeBreezeFile(params) {
   params = params || {};
   const text = String(params.text || "").trim();
   const fmt = String(params.response_format || params.format || "wav").toLowerCase();
@@ -3388,8 +3421,43 @@ function registerBreezeIpc(opts) {
   ipcMain.handle("breeze:removePluginMeta", async () => removePluginMetaOnly());
 }
 
+/**
+ * 显存释放钩子（给主进程 local-model-vram.js 的统一编排用，见该文件头部口径）：
+ *   · isRunning = 宿主自己的进程记录 + 一次 /api/health 探活（缓存 3s）；
+ *   · isBusy = 正在合成（有在途的 /v1/audio/speech）—— 忙时编排器只会等，绝不打断；
+ *   · soft = 只停引擎（POST /api/engine/stop：7.7GB 权重与 torch 缓存还给系统），
+ *     管理服务宿主保留；引擎是合成时 ensure_engine() 拉起的，下次合成自己会重新加载；
+ *   · hard = 杀管理服务 / 引擎两处端口监听者的进程树 + stopBackend（软释放没生效时由编排器升级）。
+ */
+function vramHooks() {
+  return {
+    host: "breeze",
+    port: Number(loadConfig().port) || DEFAULT_PORT,
+    isRunning: () => backendRunning() || apiAliveSync(),
+    isLoaded: () => backendRunning() || apiAliveSync(),
+    isBusy: () => activeSynthesis > 0,
+    soft: async (reason) => {
+      appendConsole("[vram] 卸载 Breeze 引擎释放显存（" + String(reason || "release") + "）—— 管理服务保留，下次合成会自动重新加载引擎");
+      const r = await engineControl("stop");
+      return { ok: !!(r && r.ok), mode: "engine_stop" };
+    },
+    hard: async (reason) => {
+      appendConsole("[vram] 结束 Breeze 管理服务与引擎进程树（" + String(reason || "release") + "）");
+      const cfg = loadConfig();
+      const orphan = await killPortListener(Number(cfg.port) || DEFAULT_PORT);
+      if (orphan) appendConsole("[vram] killed manager port listener pid=" + orphan);
+      const orphanEngine = await killPortListener(Number(cfg.enginePort) || DEFAULT_ENGINE_PORT);
+      if (orphanEngine) appendConsole("[vram] killed engine port listener pid=" + orphanEngine);
+      const r = await stopBackend();
+      return { ok: !!(r && r.ok), stopped: !!(r && r.stopped), mode: "kill_pid_tree" };
+    },
+  };
+}
+
 module.exports = {
   registerBreezeIpc,
+  /* 显存释放钩子：主进程 local-model-vram.js 收进统一编排表（画布节点运行前后 + 顶栏按钮） */
+  vramHooks,
   /* MCP 自用回环（mtnode_generate kind:speech）复用画布节点那条出口，不另造一套合成实现：
      同一个后端地址、同一份预设解析、同一套托管目录规则（见根目录 mcp-media-agent.js）。 */
   generateBreezeFile,

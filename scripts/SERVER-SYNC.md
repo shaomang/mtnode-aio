@@ -70,10 +70,10 @@ python scripts/server-sync.py --quiet                :: 控制台只打摘要，
 3. 再退 `MTNODE_SSH_HOST` + `MTNODE_SSH_USER` + `MTNODE_SSH_PASSWORD`（或 `MTNODE_SSH_KEY`）。
 
 旧机器路径 `E:\dev\mt-ai-router\.vscode\sftp.json` 在本机已不存在，**不再作为兼容候选**，
-以下文件已硬替换（共 9 处）：
+以下文件已硬替换（共 8 处）：
 
 `scripts/deploy-ssl.py`、`scripts/patch-wechat-redirect.py`、`scripts/upload-h3.py`、
-`scripts/upload-music3.py`、`scripts/upload-plugins.py`、`scripts/upload-privacy.py`、
+`scripts/upload-music3.py`、`scripts/upload-plugins.py`、
 `store-saas/upload.py`、`ext-repo/upload.py`、`store-saas/_diag_unionid_readonly.py`。
 
 Node 侧（`ext-repo/build.mjs`）用 `MTNODE_SFTP_JSON` + `MTNODE_SSH_KEY_FILE`：

@@ -571,6 +571,8 @@ contextBridge.exposeInMainWorld('api', {
   h3Install: (opts) => ipcRenderer.invoke('h3:install', opts || {}),
   h3CancelInstall: () => ipcRenderer.invoke('h3:cancelInstall'),
   h3Start: () => ipcRenderer.invoke('h3:start'),
+  /* Sage 加速必须项：错误报告窗里的「立即补装 Sage」快修走这条路（补装 + 复检） */
+  h3InstallSage: () => ipcRenderer.invoke('h3:installSage'),
   h3Stop: () => ipcRenderer.invoke('h3:stop'),
   h3UninstallPreview: () => ipcRenderer.invoke('h3:uninstallPreview'),
   h3Uninstall: (opts) => ipcRenderer.invoke('h3:uninstall', opts || {}),
@@ -1035,6 +1037,13 @@ contextBridge.exposeInMainWorld('api', {
   workflowsPatch: (id, patch) => ipcRenderer.invoke('workflows:patch', { id, patch }),
   workflowsExportBase64: (id, graph) => ipcRenderer.invoke('workflows:exportBase64', id, graph || null),
   workflowsImportBase64: (arg) => ipcRenderer.invoke('workflows:importBase64', arg),
+  /* 中间产物（需要 Agent 跑才产出的中间文件，随工作流包一起走）：
+     rules = 全局白名单 / 体积上限；materialize = 把库条目里的产物铺到当前画布；
+     artifactWrite = 重生成后把新文件写进画布产物目录（不覆盖库条目那份）。 */
+  workflowsArtifactRules: (patch) => ipcRenderer.invoke('workflows:artifactRules', patch || null),
+  workflowsArtifactsPreview: (graph) => ipcRenderer.invoke('workflows:artifactsPreview', graph),
+  workflowsArtifactsMaterialize: (arg) => ipcRenderer.invoke('workflows:artifactsMaterialize', arg),
+  workflowsArtifactWrite: (arg) => ipcRenderer.invoke('workflows:artifactWrite', arg),
 
   /* ── 长周期任务系统（longtask-store.js）：run checkpoint / 长期记忆 / 交付目录 ──
      图定义不进这里（随工作流 JSON 自动保存）；这里只存「跑起来才会变的东西」。 */

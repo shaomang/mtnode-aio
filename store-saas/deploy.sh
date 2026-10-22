@@ -177,6 +177,10 @@ fi
 # 自检一律走 www 的 https 真实 URL：nginx 里有 `if ($host = mt-agent.com) { return 301 https://www.mt-agent.com$request_uri; }`，
 # 用 -H 'Host: mt-agent.com' 打 http://127.0.0.1 会让**每一行**都变 301（踩过：管理台明明已上线却误报 WRONG-PAGE）。
 BASE="https://www.mt-agent.com"
+# 应用静态目录基址单独一个变量：**绝不能**重新赋值 BASE —— 全局 BASE 是站点根，
+# 后面的管理台 / 支付 / 中转站自检仍靠它拼 URL（早先写成 BASE=…/mtnode/apps 覆盖过全局，
+# 那些自检就全打到 /mtnode/apps/mtnode/... 错地址）；catalog 的 zipUrl / icon 相对这个目录。
+APPS_BASE="$BASE/mtnode/apps"
 code() { curl -sS -o /tmp/deploy-chk.out -w '%{http_code}' "$1" || echo "curl-fail"; }
 echo "local: $(curl -sS http://127.0.0.1:8787/api/health)"
 echo "proxy: $(curl -sS $BASE/mtnode/store-api/api/health)"
@@ -193,21 +197,21 @@ for f in "$SRC"/apps/*/*.zip; do
 done
 if [ -n "$_ver_zip" ]; then
   _ver_rel="${_ver_zip#"$SRC"/apps/}"
-  echo "apps-version: $(code $BASE/mtnode/apps/$_ver_rel)  ($_ver_rel)"
+  echo "apps-version: $(code "$APPS_BASE/$_ver_rel")  ($_ver_rel)"
 else
   echo "apps-version: （本次上传里没有多版本包 <id>/<version>.zip，跳过）"
 fi
 # 应用目录深度自检：只看状态码会漏掉「120 字节空目录 + 包 404」这类无声事故
 # （线上目录被部署链刷空过、包里一个应用都没有 —— 客户端表现为「应用库未连入云端」）。
 # 这里把条数、包 / 图标可达性直接判死，并顺带做一份「本地静态目录 vs 接口」的一致性对照。
-CAT_BODY=$(curl -sS "$BASE/mtnode/apps/catalog.json")
+CAT_BODY=$(curl -sS "$APPS_BASE/catalog.json")
 CAT_APPS=$(printf '%s' "$CAT_BODY" | python3 -c 'import json,sys
 try:
     d=json.load(sys.stdin)
     print(len(d.get("apps") or []))
 except Exception:
     print("bad-json")')
-echo "apps-catalog: $(code $BASE/mtnode/apps/catalog.json) · 条数=$CAT_APPS"
+echo "apps-catalog: $(code $APPS_BASE/catalog.json) · 条数=$CAT_APPS"
 if [ "$CAT_APPS" = "bad-json" ]; then
   echo "apps-static: BAD（线上 catalog.json 不是合法 JSON → 客户端整库读不到）"
 elif [ "$CAT_APPS" = "0" ]; then
@@ -224,7 +228,6 @@ for e in (d.get("apps") or []):
             n+=1
 print("apps-catalog-versions: {0} 项 versions[].zipUrl（多版本口径；0 项 = 全部老单版记录）".format(n))' 2>/dev/null || echo "apps-catalog-versions: （目录解析失败，见上行 apps-static）"
   printf '%s' "$CAT_BODY" | python3 -c 'import json,sys
-BASE="https://www.mt-agent.com/mtnode/apps"
 d=json.load(sys.stdin)
 bad=[]
 for e in (d.get("apps") or []):
@@ -233,7 +236,7 @@ for e in (d.get("apps") or []):
             print(rel)
 ' | sort -u | while read -r _rel; do
     [ -n "$_rel" ] || continue
-    _rc=$(code "$BASE/$_rel")
+    _rc=$(code "$APPS_BASE/$_rel")
     case "$_rc" in
       200) echo "apps-file: 200 ok  $_rel" ;;
       *) echo "apps-file: BAD（$_rc）$_rel ← 目录里声明了但静态目录里拿不到，客户端会装不上 / 图标破图" ;;

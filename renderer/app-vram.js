@@ -2,7 +2,7 @@
 /* ═══════════════════════════════════════════════════════════════════════════
    本地模型显存释放（renderer/app-vram.js）—— 顶栏入口 + 画布节点运行前后钩子。
 
-   为什么需要它：h3 / music3 / yue / sensenova / llama 各有自己的后端进程，都独占
+   为什么需要它：h3 / music3 / yue / sensenova / llama / breeze 各有自己的后端进程，都独占
    同一张卡。历史坑：上一个后端没把显存还回去，下一个后端加载时卡死或 OOM
    （minimax H3 连续运行偶发卡死就是这一类 —— 上一单的模型与残留还挂在卡上）。
 
@@ -23,6 +23,7 @@ const VRAM_NODE_BACKEND = {
   music_gen: "music3",
   yue_gen: "yue",
   sensenova_gen: "sensenova",
+  breeze_gen: "breeze",
 };
 /* llama（本地大模型）没有画布生成节点：它由会话 / 插件卡片自己用，只在顶栏按钮里释放 */
 

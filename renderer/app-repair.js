@@ -646,6 +646,38 @@ function openPluginRepairDialog(raw) {
   if (blocked) pluginRepairHint(body, I18n.t(blocked));
 
   const canRepair = !blocked && !info.started && !pluginRepairAutoSpent(info);
+  /* Sage 加速是 H3 的必须项：缺它时不必开一条 Agent 会话，点一下就地补装 + 复检。
+     只在错误码是 sage_* 且宿主暴露了那条 IPC 时出现（别的插件不受影响）。 */
+  if (
+    /^sage_/i.test(String(info.code || "")) &&
+    window.api &&
+    typeof window.api.h3InstallSage === "function"
+  ) {
+    pluginRepairBtn(
+      foot,
+      "立即补装 Sage",
+      async () => {
+        const r = await window.api.h3InstallSage();
+        if (r && r.ok) {
+          toast(I18n.t("Sage 加速已就绪（sageattention + triton 复检通过），可以重试了"), "ok");
+          pluginRepairReport(info, "quickfix", "ok");
+        } else {
+          toast(
+            I18n.t("补装 Sage 失败：") + ((r && (r.message || r.error)) || I18n.t("未知错误")),
+            "err",
+          );
+          pluginRepairReport(info, "quickfix", "fail:" + ((r && (r.error || r.message)) || ""));
+        }
+        return r;
+      },
+      {
+        cls: "primary",
+        title: I18n.t(
+          "在该 venv 里补装 triton-windows + 与本机 Python / torch / CUDA 匹配的 sageattention 预编译 wheel，装完立刻复检（已就绪时只复核，不重装）",
+        ),
+      },
+    );
+  }
   pluginRepairBtn(
     foot,
     "🤖 自动修复",

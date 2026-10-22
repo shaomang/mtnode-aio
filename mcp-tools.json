@@ -8,7 +8,7 @@
   "tools": [
     {
       "name": "mtnode_canvas_get",
-      "description": "CRITICAL — These canvas tools are ONLY for the global assistant (✦) and the agent-session view. When the run is a canvas AGENT NODE (kind agent_task, or proc_text with agent:true), the host REJECTS mtnode_canvas_get / mtnode_canvas_edit / mtnode_app. Do not call them from a node; read and write workspace files instead.\n\nRead the canvas this run belongs to: workflow identity + the nodes in the current task / super scope, plus marks / wires / groups / trees / app references when asked. Always read before editing.\nDEFAULTS TO THE CHEAPEST FORM — detail \"minimal\": one index line per node (only title / note / kind 标题 / 描述 / 类别) + workflow identity and scopeInfo; no config fields, no bodies, no wire / mark / group / tree block. Ask for more only when needed:\n- \"standard\": + all per-kind config fields (provider / model / size / savePath / waitPath / timer / net / control / dev*, db_table rows, input_file files, task steps, 素材节点的绑定与条目清单), body *lengths* (no body text) and the build references (markColors, devFuncColors 功能色卡, cam / view) — 不含 kinds / imageSizes / defaultImageSize；要这三张静态表显式传 sections:[\"refs\"]。\n- \"full\": everything incl. body text (text, prompt, task, goal, jscode, 素材条目正文), rows, files, steps — ask explicitly, best with ids:[...] so only those nodes come back heavy.\n- Narrow with ids / scope + scopeDepth / bodies / bodyLimit, or sections = whitelist of heavy blocks (nodes, marks, wires, groups, and the trees / tagCatalog / workflows / selection). 只查连线用 sections:[\"nodes\",\"wires\"]（minimal 档也认）。素材节点（kind asset）也回读：assetItems = 绑定与条目清单 items:[{index, id, title, type}]（条目即端子：第 i 入 ↔ 第 i 出，端子名 = 条目标题）；text/body 档每条再带 text（文本正文）或 path / url（本机文件）。\n- ports (standard / full): fixed-port nodes (proc_image / sensenova_gen / video_gen / remotion / judge / tool·function / super / asset) carry ports:[{dir,index,name,kind,connectedTo}] — read before connecting, not after a connect error.\n- portRule (standard / full): nodes whose input ports GROW WITH WIRES (proc_text / proc_image / sensenova_gen / input_* …) carry portRule {note,input,output,now,hint} instead: ports only lists the slots that exist right now (an unconnected node shows port 0 = prompt only), and port 1+ accepts text AND image references (connect reference images to port 1+, never port 0). Never infer \"this node has no image-reference port\" from a short ports list, and never test-wire just to read the warnings.\nscopeInfo is always returned（这次读的是整图还是某一颗壳内部）; every result carries a sizeHint with its cost.\n\nWhen the run is locked to its own canvas（会话所属画布）, workflows lists ONLY that canvas. 建图 / 连线 / 排版的完整硬规则（task 端点、super 边界端子、tool/function 参数即端子、@引用三条件、save 与 wait_file、批次与文生图）只写在技能 mtnode-canvas-edit-rules（按需加载），此处不重复。",
+      "description": "CRITICAL — These canvas tools are ONLY for the global assistant (✦) and the agent-session view. When the run is a canvas AGENT NODE (kind agent_task, or proc_text with agent:true), the host REJECTS mtnode_canvas_get / mtnode_canvas_edit / mtnode_app. Do not call them from a node; read and write workspace files instead.\n\nRead the canvas this run belongs to: workflow identity + the nodes in the current task / super scope, plus marks / wires / groups / trees / app references when asked. Always read before editing.\nDEFAULTS TO THE CHEAPEST FORM — detail \"minimal\": one index line per node (only title / note / kind 标题 / 描述 / 类别) + workflow identity and scopeInfo; no config fields, no bodies, no wire / mark / group / tree block. Ask for more only when needed:\n- \"standard\": + all per-kind config fields (provider / model / size / savePath / waitPath / timer / net / control / dev*, db_table rows, input_file files, task steps, 素材节点的绑定与条目清单), body *lengths* (no body text) and the build references (markColors, devFuncColors 功能色卡, cam / view) — 不含 kinds / imageSizes / defaultImageSize；要这三张静态表显式传 sections:[\"refs\"]。\n- \"full\": everything incl. body text (text, prompt, task, goal, jscode, 素材条目正文), rows, files, steps — ask explicitly, best with ids:[...] so only those nodes come back heavy.\n- Narrow with ids / scope + scopeDepth / bodies / bodyLimit, or sections = whitelist of heavy blocks (nodes, marks, wires, groups, and the trees / tagCatalog / workflows / selection). 只查连线用 sections:[\"nodes\",\"wires\"]（minimal 档也认）。素材节点（kind asset）也回读：assetItems = 绑定与条目清单 items:[{index, id, title, type}]（条目即端子：第 i 入 ↔ 第 i 出，端子名 = 条目标题）；text/body 档每条再带 text（文本正文）或 path / url（本机文件）。\n- ports (standard / full): fixed-port nodes (proc_image / sensenova_gen / video_gen / remotion / judge / tool·function / super / asset) carry ports:[{dir,index,name,kind,connectedTo}] — read before connecting, not after a connect error.\n- portRule (standard / full): nodes whose input ports GROW WITH WIRES (proc_text / proc_image / sensenova_gen / remotion / input_* …) carry portRule {note,input,output,now,hint} instead: ports only lists the slots that exist right now (an unconnected node shows one port), and further slots appear as you connect — remotion is the one node whose data AND control lines share the same ports (never assume port 0 = control for remotion), and its description lives in the node text (not in a port). Never infer \"this node has only one port\" from a short ports list, and never test-wire just to read the warnings.\nscopeInfo is always returned（这次读的是整图还是某一颗壳内部）; every result carries a sizeHint with its cost.\n\nWhen the run is locked to its own canvas（会话所属画布）, workflows lists ONLY that canvas. 建图 / 连线 / 排版的完整硬规则（task 端点、super 边界端子、tool/function 参数即端子、@引用三条件、save 与 wait_file、批次与文生图）只写在技能 mtnode-canvas-edit-rules（按需加载），此处不重复。",
       "family": "canvas",
       "source": "dsh/gateway/canvas-plugin.mjs",
       "inputSchema": {
@@ -216,14 +216,14 @@
                 },
                 "tags": {
                   "type": "array",
-                  "description": "节点标签，供 @标签名 引用。",
+                  "description": "供 @标签名 引用。",
                   "items": {
                     "type": "string"
                   }
                 },
                 "text": {
                   "type": "string",
-                  "description": "input_text 正文。"
+                  "description": "input_text 正文；remotion 的视频描述也在这个字段（可空 · 可写 @标题 / @标签名）。"
                 },
                 "prompt": {
                   "type": "string",
@@ -231,7 +231,7 @@
                 },
                 "sensenovaPrompt": {
                   "type": "string",
-                  "description": "sensenova_gen 提示词别名（与 prompt 同义，两个都收）。"
+                  "description": "sensenova_gen 提示词别名（同 prompt）。"
                 },
                 "task": {
                   "type": "string",
@@ -239,7 +239,7 @@
                 },
                 "goal": {
                   "type": "string",
-                  "description": "task：本步要达成什么。"
+                  "description": "task：本步目标。"
                 },
                 "steps": {
                   "type": "array",
@@ -250,19 +250,19 @@
                 },
                 "parentTaskId": {
                   "type": "string",
-                  "description": "放进某 task 内部（id / alias / 标题）；父 task 要先在同一次调用里建。"
+                  "description": "放进某 task 内部；父 task 先建。"
                 },
                 "parentSuperId": {
                   "type": "string",
-                  "description": "放进某 super 内部（id / alias / 标题）；需 canvas_super。"
+                  "description": "放进某 super 内部（需 canvas_super）。"
                 },
                 "scope": {
                   "type": "string",
-                  "description": "局部画布：本次调用只在这一颗超级 · 开发节点内部（id 或唯一标题；\"global\" = 整图）。界外节点跳过 + warnings。"
+                  "description": "局部画布：本次只在这一颗壳内（id 或唯一标题；\"global\" = 整图）。"
                 },
                 "scopeDepth": {
                   "type": "string",
-                  "description": "\"direct\" = 那颗壳 + 直接子节点（默认）· \"all\" = 整棵子树。",
+                  "description": "\"direct\" = 壳 + 直接子节点（默认）· \"all\" = 整棵子树。",
                   "enum": [
                     "direct",
                     "all"
@@ -282,14 +282,14 @@
                 },
                 "subFolder": {
                   "type": "string",
-                  "description": "super 下相对工作目录的子目录（内部节点相对路径默认落这里）。"
+                  "description": "super 下相对工作目录的子目录。"
                 },
                 "superOpen": {
                   "type": "boolean"
                 },
                 "db": {
                   "type": "boolean",
-                  "description": "super 标为数据库节点（事实存 subFolder + 内部信息节点，编译后出 db_replica）。"
+                  "description": "super 标为数据库节点（编译后出 db_replica）。"
                 },
                 "dbMode": {
                   "type": "string",
@@ -305,7 +305,7 @@
                 },
                 "devPath": {
                   "type": "string",
-                  "description": "dev：项目根绝对路径（顶层块设，子块就近继承）。"
+                  "description": "dev：项目根绝对路径（子块就近继承）。"
                 },
                 "devStatus": {
                   "type": "string",
@@ -328,19 +328,19 @@
                 },
                 "devColor": {
                   "type": "string",
-                  "description": "dev：外框色 #rrggbb；只用于改正功能色卡的自动上色，勿自创色值。"
+                  "description": "dev：外框色 #rrggbb（勿自创色值）。"
                 },
                 "devModel": {
                   "type": "string",
-                  "description": "dev：本块 Agent 模型 id（建议 / 开发 / 细化都用它）；子块未自选则就近继承。"
+                  "description": "dev：本块 Agent 模型 id（子块继承）。"
                 },
                 "devProvider": {
                   "type": "string",
-                  "description": "dev：devModel 的路由（可省，按模型推断）。"
+                  "description": "dev：devModel 的路由（可省）。"
                 },
                 "devPreset": {
                   "type": "string",
-                  "description": "dev：预设档 = AGENT_PRESETS id（minimal / standard / lean / code / cordis）。"
+                  "description": "dev：预设档 id（如 standard / code）。"
                 },
                 "devEffort": {
                   "type": "string",
@@ -356,29 +356,29 @@
                 },
                 "devFiles": {
                   "type": "array",
-                  "description": "dev：核心文件（≤10 条 · 相对 devPath）；最外层项目块不要传。",
+                  "description": "dev：核心文件（≤10 条 · 相对 devPath）。",
                   "items": {
                     "type": "string"
                   }
                 },
                 "execPath": {
                   "type": "string",
-                  "description": "execute：绑定文件绝对路径（.exe / .bat / .cmd / .lnk）；无数据端子。"
+                  "description": "execute：绑定文件绝对路径（.exe / .bat / .cmd / .lnk）。"
                 },
                 "execIcon": {
                   "type": "string",
-                  "description": "execute：图标 auto / rocket / gear / terminal / play / bolt / wrench / folder / file / power。"
+                  "description": "图标：auto / rocket / gear / terminal / …"
                 },
                 "execColor": {
                   "type": "string"
                 },
                 "savePath": {
                   "type": "string",
-                  "description": "save 落盘路径；扩展名按输入类型强制 .yaml / .png / .wav / .mp4。"
+                  "description": "save 落盘路径；扩展名按输入类型强制。"
                 },
                 "waitPath": {
                   "type": "string",
-                  "description": "wait_file：监视到该文件存在才放行下游。"
+                  "description": "wait_file：该文件存在才放行下游。"
                 },
                 "waitIntervalSec": {
                   "type": "number",
@@ -386,7 +386,7 @@
                 },
                 "timerMode": {
                   "type": "string",
-                  "description": "timer：once → timerAt · interval → timerEverySec · cron → timerCron。",
+                  "description": "timer：once / interval / cron。",
                   "enum": [
                     "once",
                     "interval",
@@ -411,11 +411,11 @@
                 },
                 "imagePath": {
                   "type": "string",
-                  "description": "input_image：本机图片绝对路径（应用复制进画布资产）。"
+                  "description": "input_image：本机图片绝对路径。"
                 },
                 "imagePaths": {
                   "type": "array",
-                  "description": "input_image：多张图片路径（即批量项）。",
+                  "description": "input_image：多张图片（即批量项）。",
                   "items": {
                     "type": "string"
                   }
@@ -446,7 +446,7 @@
                           },
                           "kind": {
                             "type": "string",
-                            "description": "端子类型（缺省 text；image 值 = 本机路径）：决定能否相接、着色与下游选型（图像输出 → 保存 .png）。",
+                            "description": "端子类型（缺省 text；image = 本机路径）。",
                             "enum": [
                               "text",
                               "image"
@@ -454,7 +454,7 @@
                           },
                           "list": {
                             "type": "boolean",
-                            "description": "数组端子：可重复连多条线，运行时值 = 按连线顺序的数组；未标 list 的端子连多条线只留一个值。"
+                            "description": "数组端子：可重复连多条线，运行时值为数组。"
                           }
                         }
                       }
@@ -472,7 +472,7 @@
                           },
                           "kind": {
                             "type": "string",
-                            "description": "端子类型（缺省 text；image 值 = 本机路径）：决定能否相接、着色与下游选型（图像输出 → 保存 .png）。",
+                            "description": "端子类型（缺省 text；image = 本机路径）。",
                             "enum": [
                               "text",
                               "image"
@@ -480,7 +480,7 @@
                           },
                           "list": {
                             "type": "boolean",
-                            "description": "数组端子：可重复连多条线，运行时值 = 按连线顺序的数组；未标 list 的端子连多条线只留一个值。"
+                            "description": "数组端子：可重复连多条线，运行时值为数组。"
                           }
                         }
                       }
@@ -497,11 +497,11 @@
                 },
                 "jscode": {
                   "type": "string",
-                  "description": "函数节点 JS：input = { 参数名: 值 }（图像 = { kind:\"image\", path }），return { 输出参数名: 值 }。"
+                  "description": "函数节点 JS：input = 参数对象，return 输出对象。"
                 },
                 "inputs": {
                   "type": "array",
-                  "description": "函数节点输入端子表（工具节点用 toolConfig.inputs）；改表即改端子。",
+                  "description": "函数节点输入端子表（改表即改端子）。",
                   "items": {
                     "type": "object",
                     "additionalProperties": false,
@@ -512,7 +512,7 @@
                       },
                       "kind": {
                         "type": "string",
-                        "description": "端子类型（缺省 text；image 值 = 本机路径）：决定能否相接、着色与下游选型（图像输出 → 保存 .png）。",
+                        "description": "端子类型（缺省 text；image = 本机路径）。",
                         "enum": [
                           "text",
                           "image"
@@ -520,14 +520,14 @@
                       },
                       "list": {
                         "type": "boolean",
-                        "description": "数组端子：可重复连多条线，运行时值 = 按连线顺序的数组；未标 list 的端子连多条线只留一个值。"
+                        "description": "数组端子：可重复连多条线，运行时值为数组。"
                       }
                     }
                   }
                 },
                 "outputs": {
                   "type": "array",
-                  "description": "函数节点输出端子表（工具节点用 toolConfig.outputs）；末位控制出不在表内。",
+                  "description": "函数节点输出端子表（末位控制出不在表内）。",
                   "items": {
                     "type": "object",
                     "additionalProperties": false,
@@ -538,7 +538,7 @@
                       },
                       "kind": {
                         "type": "string",
-                        "description": "端子类型（缺省 text；image 值 = 本机路径）：决定能否相接、着色与下游选型（图像输出 → 保存 .png）。",
+                        "description": "端子类型（缺省 text；image = 本机路径）。",
                         "enum": [
                           "text",
                           "image"
@@ -546,7 +546,7 @@
                       },
                       "list": {
                         "type": "boolean",
-                        "description": "数组端子：可重复连多条线，运行时值 = 按连线顺序的数组；未标 list 的端子连多条线只留一个值。"
+                        "description": "数组端子：可重复连多条线，运行时值为数组。"
                       }
                     }
                   }
@@ -557,11 +557,11 @@
                 },
                 "bgRmOn": {
                   "type": "boolean",
-                  "description": "proc_image 透明背景（抠图出带 Alpha 的 PNG）：内部先出纯黑基准、再以它为参考图复刻纯白并逐像素差分出 Alpha；约 2 倍 Token，仅支持把基准图当参考图下发的服务商才会抠图。false / 省略 = 正常单张出图。"
+                  "description": "proc_image 透明背景（Alpha PNG）；约 2 倍 Token。"
                 },
                 "globalRefs": {
                   "type": "boolean",
-                  "description": "允许 @引用全局广播（还要在 prompt/task 写明 @标题）。"
+                  "description": "允许 @引用全局广播（还要在 prompt/task 写明）。"
                 },
                 "auto": {
                   "type": "boolean",
@@ -581,7 +581,7 @@
                 },
                 "providerId": {
                   "type": "string",
-                  "description": "proc_text / proc_image：API 服务商 id 或名称。"
+                  "description": "proc_text / proc_image：服务商 id 或名称。"
                 },
                 "provider": {
                   "type": "string",
@@ -593,19 +593,19 @@
                 },
                 "size": {
                   "type": "string",
-                  "description": "proc_image 尺寸：合法值（imageSizes）用 canvas_get sections:[\"refs\"] 取，缺省 2048x1360。"
+                  "description": "proc_image 尺寸；合法值见 canvas_get sections:[\"refs\"]。"
                 },
                 "ratioBucket": {
                   "type": "string",
-                  "description": "sensenova_gen 分辨率桶名（官方 11 个训练桶，如 \"1:1\" / \"16:9\"）；width / height 随桶固定，不能自由填。"
+                  "description": "sensenova_gen 分辨率桶（如 \"1:1\" / \"16:9\"）。"
                 },
                 "numSteps": {
                   "type": "number",
-                  "description": "sensenova_gen 采样步数（默认 30）；省显存降它。"
+                  "description": "sensenova_gen 采样步数（默认 30）。"
                 },
                 "vramMode": {
                   "type": "string",
-                  "description": "sensenova_gen 显存档位：full（≥48G）· fast（24G 卡档）· balanced / low（逐级卸载到内存）；24G 卡用 fast。",
+                  "description": "sensenova_gen 显存档位；24G 卡用 fast。",
                   "enum": [
                     "full",
                     "fast",
@@ -624,15 +624,15 @@
                 },
                 "think": {
                   "type": "boolean",
-                  "description": "sensenova_gen think 模式（先出思考文本再出图，默认 false）。"
+                  "description": "sensenova_gen think 模式（默认 false）。"
                 },
                 "imgCfgScale": {
                   "type": "number",
-                  "description": "sensenova_gen 参考图条件强度：1.0 = 关闭（默认），仅图像编辑模式生效。"
+                  "description": "sensenova_gen 参考图条件强度（1.0 = 关闭）。"
                 },
                 "imgQuality": {
                   "type": "string",
-                  "description": "proc_image 的 quality 直传参数：low/medium/high/xhigh/max；空 = 不传（服务商按 auto）；旧版 DALL·E 的 standard / hd 不要传。",
+                  "description": "proc_image quality 直传；空 = 不传。",
                   "enum": [
                     "",
                     "auto",
@@ -645,7 +645,7 @@
                 },
                 "imgBackground": {
                   "type": "string",
-                  "description": "proc_image 的 background 直传参数：transparent 直出带 Alpha 的 PNG（自动补「背景透明」提示词并禁用差分抠图 bgRmOn）；opaque；空 = 不传。",
+                  "description": "proc_image background；transparent 直出 Alpha PNG。",
                   "enum": [
                     "",
                     "auto",
@@ -655,11 +655,19 @@
                 },
                 "maskOn": {
                   "type": "boolean",
-                  "description": "proc_image 蒙版局部重绘（透明区 = 重绘，只对第 1 张 image 生效）：maskPath 须由用户在节点头部蒙版编辑器涂抹（Agent 不能代画）；需图像输入 + OpenAI 兼容图像服务商；与 ratioLockOn 同时开以蒙版为准；带蒙版时请求的 size 钉成首张参考图的像素尺寸，节点自己选的 size 这一轮不生效。"
+                  "description": "proc_image 蒙版重绘（透明区 = 重绘）；画法见技能。"
                 },
                 "remotionSize": {
                   "type": "string",
                   "description": "remotion 分辨率（宽x高）。"
+                },
+                "tsx": {
+                  "type": "string",
+                  "description": "remotion 直出合成代码（Composition.tsx 全文，必须导出 Main）：给了就跳过「描述 → 文本模型写代码」，原样渲染；传空串回到 LLM 生成。"
+                },
+                "backgroundColor": {
+                  "type": "string",
+                  "description": "remotion 内置台词卡版面的左侧底色（#rrggbb）。"
                 },
                 "fps": {
                   "type": "number",
@@ -671,19 +679,19 @@
                 },
                 "outputPath": {
                   "type": "string",
-                  "description": "video_gen / music_gen / yue_gen / breeze_gen / remotion 输出路径（.mp4 / .wav / .flac / .mp3）。sensenova_gen 没有这个字段：结果自动落应用资产目录，从输出端口 0 交出去，不要写路径。"
+                  "description": "输出路径（.mp4 / .wav / .flac / .mp3）；sensenova_gen 无此字段。"
                 },
                 "voice": {
                   "type": "string",
-                  "description": "breeze_gen 音色（音色库 id，留空 = 用端子给的参考音频，勿编造）；与 breezeVoice 同义，两个都收。"
+                  "description": "breeze_gen 音色 id；留空 = 用端子参考音频。"
                 },
                 "breezeVoice": {
                   "type": "string",
-                  "description": "breeze_gen 音色库 id（= voice；留空 = 只用端子给的参考音频）。"
+                  "description": "同 voice（两个都收）。"
                 },
                 "breezeMode": {
                   "type": "string",
-                  "description": "breeze_gen 能力：auto 按参数自动判定（默认）· clone 克隆（须有参考音频）· design 音色设计 · direction 音色导演（指令）。",
+                  "description": "breeze_gen 能力：auto / clone / design / direction。",
                   "enum": [
                     "auto",
                     "clone",
@@ -693,11 +701,11 @@
                 },
                 "breezeInstruction": {
                   "type": "string",
-                  "description": "breeze_gen 指令：音色设计 / 音色导演的性格与语气描述；留空则用端子 3 给的指令。"
+                  "description": "breeze_gen 指令（性格与语气）。"
                 },
                 "breezeCfgScale": {
                   "type": "number",
-                  "description": "breeze_gen 指令跟随强度 0.1–10（默认 4）；克隆这条路恒为 1.0（后端限制），传别的值不生效。"
+                  "description": "breeze_gen 指令跟随强度 0.1–10（默认 4）。"
                 },
                 "breezeSeed": {
                   "type": "number",
@@ -705,7 +713,7 @@
                 },
                 "breezeFormat": {
                   "type": "string",
-                  "description": "breeze_gen 输出格式（默认 wav；mp3 需 ffmpeg）。改了格式，已配的 outputPath 扩展名会跟着走。",
+                  "description": "breeze_gen 输出格式（默认 wav）。",
                   "enum": [
                     "wav",
                     "flac",
@@ -714,7 +722,7 @@
                 },
                 "cot": {
                   "type": "string",
-                  "description": "yue_gen 思维链档位：full（默认）· melody（旋律引导）· off（关思维链）。",
+                  "description": "yue_gen 思维链档位：full（默认）· melody · off。",
                   "enum": [
                     "full",
                     "melody",
@@ -723,19 +731,19 @@
                 },
                 "style": {
                   "type": "string",
-                  "description": "yue_gen 风格提示词（也是端口 0 的文本；端子有输入时以端子为准）。"
+                  "description": "yue_gen 风格提示词（端口 0）。"
                 },
                 "lyrics": {
                   "type": "string",
-                  "description": "yue_gen 歌词正文（也是端口 1 的文本；端子有输入时以端子为准）。"
+                  "description": "yue_gen 歌词正文（端口 1）。"
                 },
                 "abc": {
                   "type": "string",
-                  "description": "yue_gen 可编辑 ABC 谱面（可选；也是端口 2 的文本）。"
+                  "description": "yue_gen ABC 谱面（可选，端口 2）。"
                 },
                 "videoMode": {
                   "type": "string",
-                  "description": "video_gen：fl2va 首末帧（默认）/ r2v 多参考。输入端子（**控制输入恒为端口 0 = 第一个端子**，数据端口从 1 起且与「端子号 / 数据槽号」同号）：fl2va = 控制（0）· 提示词（1）· 首帧（2）· 末帧（3）；r2v = 控制（0）· 提示词（1）· 参考图 I1–I9（2–10）· 参考视频 V1–V3（11–13）· 参考音频 A1–A3（14–16）；自建工作流 = 控制（0）· 文本（1）· 素材（2+）。connect 的 toIndex / fromIndex 用 0 起始端口下标，等于上面括号里的号。",
+                  "description": "video_gen：fl2va 首末帧（默认）/ r2v 多参考；端口号与素材槽位见技能 mtnode-canvas-edit-rules。",
                   "enum": [
                     "r2v",
                     "fl2va"
@@ -756,7 +764,7 @@
                 },
                 "postEnabled": {
                   "type": "boolean",
-                  "description": "video_gen 超分补帧后处理（24G 建议关）。"
+                  "description": "video_gen 超分补帧后处理。"
                 },
                 "postInterp": {
                   "type": "boolean",
@@ -764,7 +772,7 @@
                 },
                 "workflowId": {
                   "type": "string",
-                  "description": "video_gen 自建 ComfyUI 工作流库 id（H3 窗口导入，勿编造）；非空时端子按该工作流参数重排。"
+                  "description": "video_gen 自建 ComfyUI 工作流库 id（勿编造）。"
                 },
                 "ctrlAction": {
                   "type": "string",
@@ -832,7 +840,7 @@
                 },
                 "netChannel": {
                   "type": "number",
-                  "description": "net_recv / net_send：通道号 0–65535。"
+                  "description": "通道号 0–65535。"
                 },
                 "netProto": {
                   "type": "string",
@@ -843,15 +851,15 @@
                 },
                 "netHost": {
                   "type": "string",
-                  "description": "net_recv / net_send：地址。"
+                  "description": "地址。"
                 },
                 "netPort": {
                   "type": "number",
-                  "description": "net_recv / net_send：端口（0 = 全局设置）。"
+                  "description": "端口（0 = 全局设置）。"
                 },
                 "netAutoListen": {
                   "type": "boolean",
-                  "description": "net_recv：启动即监听。"
+                  "description": "启动即监听。"
                 },
                 "dbNodeId": {
                   "type": "string",
@@ -935,7 +943,7 @@
                 },
                 "toIndex": {
                   "type": "number",
-                  "description": "目标的输入端子序号（0 起始；省略 = 按类型自动选槽）。媒体节点必须显式给：breeze_gen 0=待合成文本 · 1=参考音频 · 2=参考文稿 · 3=指令 · 4=控制输入；video_gen fl2va 0=控制 · 1=提示词 · 2=首帧 · 3=末帧；save 0/1 按入线类型。"
+                  "description": "目标的输入端子序号（0 起始；省略 = 按类型自动选槽）。媒体节点必须显式给：breeze_gen 0=待合成文本 · 1=参考音频 · 2=参考文稿 · 3=指令 · 4=控制输入；video_gen fl2va 0=控制 · 1=提示词 · 2=首帧 · 3=末帧；remotion 无差别端子（0、1、2… 连一条多一个，数据线与控制线共用、先占先得，描述写在节点 text 里不占端子；视频 / 图片 → 主素材、音频 → 语音、文本 → 台词）；save 0/1 按入线类型。"
                 },
                 "rel": {
                   "type": "boolean",

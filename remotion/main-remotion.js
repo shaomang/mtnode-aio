@@ -4,9 +4,11 @@
  * - 数据目录 %APPDATA%/pipeline-console/remotion：config.json / installed.json / console.log / ui/
  * - install：选目录 → 复制 remotion-pack → npm install（remotion:progress 进度事件）
  * - status：安装目录 / runtimeReady（node_modules/remotion 存在）/ remotion 版本 / 渲染中
- * - render：写 src/Composition.tsx + src/index.tsx + render.json → spawn `node render.mjs`
+ * - render：在画布工作目录 .mtnode/remotion/<节点 id>/ 写 Composition.tsx + index.tsx +
+ *   render.json → spawn `node <安装目录>\render.mjs <render.json 绝对路径>`
  *   （Composition 优先用渲染层下发的 LLM 动效代码 params.tsx，无则回退内置标题卡模板）
- *   并解析其 JSON Lines 进度 → remotion:progress 事件 → 完成返回 { ok, outputPath }
+ *   路径全部由本进程算成绝对路径注入（安装目录只当依赖源），并解析其 JSON Lines 进度
+ *   → remotion:progress 事件 → 完成返回 { ok, outputPath, projectDir }
  * - cancel：kill 渲染子进程
  * - removePluginMeta：仅移除数据目录入口（ui 等），保留安装目录
  * - 渲染前取 media-gen-global-lock 全局互斥（与 H3 / Music3 全局唯一音视频任务）
@@ -21,6 +23,7 @@ const {
 } = require("electron");
 const path = require("path");
 const fs = require("fs");
+const { fileURLToPath } = require("url");
 const { spawn, spawnSync, execFile } = require("child_process");
 const https = require("https");
 /* 国内镜像源单一真源（pip / torch / 权重 / npm / git / chrome-for-testing）：见根目录 cn-mirrors.js */
@@ -50,9 +53,55 @@ const PLUGIN_ID = "remotion";
 /** 配套的安装 / 修复 skill 名（真源在仓库根 skills/<name>/SKILL.md，随包内置）。
  *  安装窗的「交给 mtnode 会话修复」与报错弹窗的修复会话都按它加载提示词。 */
 const INSTALL_SKILL = "remotion-local-install";
-/** 宿主生成的入口文件名与 render.json 里的相对路径（必须 .tsx：模板含 JSX） */
+/** 宿主生成的入口文件名（必须 .tsx：模板含 JSX）。工程落在画布工作目录里，与 Composition.tsx 同级。 */
 const ENTRY_BASENAME = "index.tsx";
-const ENTRY_POINT = "src/" + ENTRY_BASENAME;
+/* 渲染工程在画布工作目录里的固定子目录：<工作目录>/.mtnode/remotion/<节点 id>/
+   为什么不再写安装目录：安装目录属于插件现场（升级 / 重装会被覆盖），用户代码写在里面既进不了
+   工作流包，也会逼着人去改插件/应用文件再重启。工程与成片都留在工作目录 = 随项目走。 */
+const PROJECT_DIR_PARTS = [".mtnode", "remotion"];
+
+/** 工程目录里长期复用的三个文件（宿主每次渲染只从这里找，不删不挪）：
+ *  Composition.tsx = 渲染前写出的入口；index.tsx = 注册入口；
+ *  render.json = 每次渲染的完整参数（相对路径按工作目录解析，跟着项目走）。 */
+const PROJECT_ENTRY_FILE = "Composition.tsx";
+const PROJECT_INDEX_FILE = "index.tsx";
+
+/**
+ * <工作目录>/.mtnode/remotion/<节点 id>/ 里有没有用户放好的「项目工程」：
+ * 同时存在 index.tsx + render.json 才算（Composition.tsx 可选，不给就由宿主按参数生成）。
+ * 有就整套交给 render.mjs 原样打包渲染 —— 不覆盖用户文件、不写字、成片落在项目目录里。
+ */
+function projectKitOf(projectDir) {
+  const dir = String(projectDir || "").trim();
+  if (!dir) return null;
+  const entry = join(dir, PROJECT_INDEX_FILE);
+  const cfgFile = join(dir, "render.json");
+  try {
+    if (!fs.existsSync(entry) || !fs.existsSync(cfgFile)) return null;
+    const raw = fs.readFileSync(cfgFile, "utf8").replace(/^\uFEFF/, "");
+    const cfg = JSON.parse(raw);
+    if (!cfg || typeof cfg !== "object") return null;
+    /* render.mjs 认的相对路径一律按安装目录解析，这里改写成相对工程目录 */
+    const rebase = (p) => {
+      const s = String(p || "").trim();
+      if (!s) return s;
+      return path.isAbsolute(s) ? s : join(dir, s);
+    };
+    cfg.entryPoint = rebase(cfg.entryPoint || PROJECT_INDEX_FILE);
+    if (cfg.outputLocation) cfg.outputLocation = rebase(cfg.outputLocation);
+    cfg.projectDir = dir;
+    return { dir, entry, cfgFile, cfg };
+  } catch (e) {
+    appendConsole("[render] project kit unreadable: " + ((e && e.message) || e));
+    return null;
+  }
+}
+
+/* 装配标记：宿主生成的 render-<时间戳>.mp4 若与「装配前的 render.json」一样新，
+   说明它来自装配前那次渲染（画布无改动时不会重新渲染），一律不让它冒充本轮产物。 */
+const SEAL_FILE = ".mtnode-assembled.json";
+/* 旧版现场：这些文件以前写在安装目录里（现在只提示位置，不自动删） */
+const LEGACY_SITE_FILES = ["src/Composition.tsx", "src/index.tsx", "render.json"];
 /** remotion-pack 脚手架体积提示（npm 依赖 + 渲染器，远小于模型后端） */
 const DISK_HINT_GB = 8;
 /** 渲染最长等待（默认 30 分钟） */
@@ -109,6 +158,91 @@ function uiEntry() {
   const packed = join(remotionRoot(), "ui", "index.html");
   if (fs.existsSync(packed)) return packed;
   return join(__dirname, "ui", "index.html");
+}
+
+/* ------------------------------------------------------------------ */
+/* 路径边界：MTNode 自己的目录 vs 用户可以写的目录                       */
+/* ------------------------------------------------------------------ */
+
+/** child 是否落在 parent 之内（含相等）。任一侧为空 / 非法 → false。 */
+function isInsideDir(child, parent) {
+  const c = String(child || "").trim();
+  const p = String(parent || "").trim();
+  if (!c || !p) return false;
+  try {
+    const rel = path.relative(path.resolve(p), path.resolve(c));
+    return rel === "" || (!!rel && !rel.startsWith("..") && !path.isAbsolute(rel));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * MTNode 自己的目录清单（应用安装目录 / 随包资源目录 / 本仓库根）：
+ * 用户代码、渲染工程、成片一律不许落在这里 —— 它们属于「装应用时就有、升级会覆盖」的现场，
+ * 改它们既进不了工作流包，也只能靠重启应用生效。
+ */
+function appOwnedDirs() {
+  const out = [];
+  const push = (p) => {
+    const s = String(p || "").trim();
+    if (s && !out.some((x) => x.toLowerCase() === s.toLowerCase())) out.push(s);
+  };
+  try {
+    if (app && typeof app.getAppPath === "function") push(app.getAppPath());
+  } catch {}
+  try {
+    if (process.resourcesPath) push(process.resourcesPath);
+  } catch {}
+  push(appRoot);
+  push(bundledPackRoot());
+  return out;
+}
+
+/** 该目录是否落在 MTNode 自己的目录里；命中就返回那个目录（用于报错指认），否则返回空串。 */
+function appOwnedAncestor(dir) {
+  const d = String(dir || "").trim();
+  if (!d) return "";
+  for (const root of appOwnedDirs()) {
+    if (isInsideDir(d, root)) return root;
+  }
+  return "";
+}
+
+/**
+ * 渲染工程目录：<画布工作目录>/.mtnode/remotion/<节点 id>/
+ * 工作目录为空 → 空串（调用方据此直接报错「先设画布工作目录」，绝不退回安装目录）。
+ */
+function projectDirFor(workspace, nodeId) {
+  const ws = String(workspace || "").trim();
+  if (!ws) return "";
+  let base = "";
+  try {
+    base = path.resolve(ws);
+  } catch {
+    return "";
+  }
+  const safe = String(nodeId || "node").replace(/[^\w.\-]/g, "_") || "node";
+  return join(base, ...PROJECT_DIR_PARTS, safe);
+}
+
+/** 旧版现场提示（只读检查，绝不删）：让用户知道旧文件还在安装目录里，可自行清掉。 */
+function legacySiteHint(installDir) {
+  const dir = String(installDir || "").trim();
+  if (!dir) return "";
+  const found = LEGACY_SITE_FILES.filter((rel) => {
+    try {
+      return fs.existsSync(join(dir, rel));
+    } catch {
+      return false;
+    }
+  });
+  if (!found.length) return "";
+  return (
+    "[render] 安装目录里还有旧版留下的文件（未自动删除）：" +
+    found.map((rel) => join(dir, rel)).join(" / ") +
+    " —— 新版不再读写它们，可自行删除"
+  );
 }
 
 function readJson(p, fb) {
@@ -319,6 +453,9 @@ function isSafeInstallDir(dir) {
       return { ok: false, error: "refuse_system" };
     }
   }
+  /* MTNode 自己的目录（应用安装目录 / 随包资源 / 本仓库根）也不许当安装目录：
+     装在那儿等于把依赖写进会被升级覆盖的现场，还要求重启才生效。 */
+  if (appOwnedAncestor(norm)) return { ok: false, error: "refuse_app_dir" };
   return { ok: true, path: norm };
 }
 
@@ -555,7 +692,7 @@ async function environmentCheck(opts) {
     label: "随包脚手架",
     ok: !!fs.existsSync(pack),
     detail: pack + (fs.existsSync(pack) ? "" : "（不存在）"),
-    fix: "随包脚手架缺失 = 应用安装包不完整（打包白名单漏项）：请重新安装 / 更新 MTNode 后再试。",
+    fix: "随包脚手架缺失 = 这个应用安装包不完整：重新安装 / 更新 MTNode 后再试（不需要你改任何文件）。",
   });
   const stepsJson = join(pack, "steps.json");
   push({
@@ -564,16 +701,14 @@ async function environmentCheck(opts) {
     required: false,
     ok: fs.existsSync(stepsJson),
     detail: stepsJson + (fs.existsSync(stepsJson) ? "" : "（缺：安装窗左侧列不出步骤名）"),
-    fix: "打包白名单漏项（build.json 的 remotion-pack 段）。开发态确认仓库里 remotion-pack/steps.json 存在。",
+    fix: "步骤表缺失同样属于安装包不完整：重新安装 / 更新 MTNode 即可（不需要你改任何文件）。",
   });
   push({
     key: "install_script",
     label: "安装脚本 scripts\\install.ps1",
     ok: fs.existsSync(packScriptPath),
     detail: packScriptPath + (fs.existsSync(packScriptPath) ? "" : "（不存在：安装链根本没有脚本可跑）"),
-    fix:
-      "这是「安装失败且没有日志」的典型根因：build.json 的 remotion-pack 段必须放行 scripts/**，" +
-      "否则装箱后的随包脚手架里没有安装脚本，宿主复制完就 spawn 失败，安装窗一条步骤行都不会有。",
+    fix: "随包脚手架里缺少安装脚本 = 这个应用安装包不完整：重新安装 / 更新 MTNode 后再试（不需要你改任何文件）。",
   });
   push({
     key: "install_script_here",
@@ -623,11 +758,15 @@ function humanizeInstallFailure(raw) {
   const table = [
     [
       /pack_missing/i,
-      "随包脚手架 remotion-pack 不存在：应用安装包不完整（打包白名单漏项），请重新安装 / 更新 MTNode 后再试。",
+      "随包脚手架 remotion-pack 不存在：这个应用安装包不完整，请重新安装 / 更新 MTNode 后再试（不需要你改任何文件）。",
     ],
     [
       /script_missing|install_script_missing/i,
-      "随包脚手架里没有 scripts\\install.ps1：打包白名单漏了 scripts/**（这就是「安装失败且没有日志」的根因）。装箱后的包必须重新构建；开发态请确认仓库里 remotion-pack\\scripts\\install.ps1 存在。",
+      "随包脚手架里缺少安装脚本：同样属于应用安装包不完整，请重新安装 / 更新 MTNode 后再试（不需要你改任何文件）。",
+    ],
+    [
+      /refuse_app_dir/i,
+      "安装目录落在了 MTNode 应用目录里：换一个普通用户目录（如 D:\\mtnode\\remotion）后重试 —— 用户代码与渲染工程都在画布工作目录里，不在应用目录。",
     ],
     [
       /empty_dir|bad_dir/i,
@@ -1702,6 +1841,263 @@ export const Main: React.FC = () => {
 /** 自定义合成的依赖白名单：安装目录只装了 react / remotion，其它包打包必失败 */
 const CUSTOM_IMPORT_ALLOWED = /^(?:react|remotion)(?:\/|$)/;
 
+/* ── 内置「角色动态 + 台词卡」合成（portrait-dialogue） ─────────────────────────
+   节点侧以前只能把描述交给文本模型现场写 TSX：模型自由发挥，左侧动态素材 / 台词 / 音轨
+   根本进不了代码（实测模型会把「描述」当成介绍某个色值，写出色卡海报）。
+   现在三条口径按优先级取：
+     ① 描述里写了 {{hero}} / {{narration}} / {{voice}} / {{bg}} 占位 → 一定走内置模板；
+     ② 描述里有「台词卡 / 左…右…」或给了媒体输入 → 走内置模板（版面固定，素材按输入注入）；
+     ③ 其余仍交给 LLM 生成自定义 TSX（老行为不变）。
+   输入口径（端子无差别：0、1、2… 都算输入，控制线在渲染层已滤掉）：图片优先当 hero
+   （主素材），没有图片时第一个视频 / 动画当 hero、其余视频忽略；音频输入进 voice；
+   文本（最长的一条）进 narration。 */
+const BUILTIN_COMPOSITION_FILE = "portrait-dialogue.tsx";
+const PORTRAIT_HINT_RE = /台词卡|金边|对话屏|左[^。\n]{0,12}右[^。\n]{0,12}(框|卡|台词)|台词框/;
+const DATA_URL_RE = /^data:[a-z]+\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=\s]+$/i;
+
+const VIDEO_EXT_RE = /\.(mp4|webm|mov|m4v)$/i;
+const IMAGE_EXT_RE = /\.(png|jpe?g|webp|gif|avif)$/i;
+const AUDIO_EXT_RE = /\.(mp3|wav|flac|m4a|aac|ogg|opus)$/i;
+
+const MIME_OF_EXT = {
+  ".mp4": "video/mp4",
+  ".webm": "video/webm",
+  ".mov": "video/quicktime",
+  ".m4v": "video/mp4",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".webp": "image/webp",
+  ".gif": "image/gif",
+  ".avif": "image/avif",
+  ".mp3": "audio/mpeg",
+  ".wav": "audio/wav",
+  ".flac": "audio/flac",
+  ".m4a": "audio/mp4",
+  ".aac": "audio/aac",
+  ".ogg": "audio/ogg",
+  ".opus": "audio/ogg",
+};
+
+/** 一条输入是不是「干净」的媒体地址（data URL / 本机路径 / http） */
+function isMediaSrcString(v) {
+  const s = String(v || "").trim();
+  if (!s) return false;
+  if (DATA_URL_RE.test(s)) return true;
+  if (s.indexOf("\n") >= 0) return false;
+  if (/^https?:\/\//i.test(s))
+    return /\.(mp4|webm|mov|m4v|png|jpe?g|webp|mp3|wav|flac|m4a)(\?|$)/i.test(s);
+  return VIDEO_EXT_RE.test(s) || IMAGE_EXT_RE.test(s) || AUDIO_EXT_RE.test(s);
+}
+
+function mediaKindOfSrc(v) {
+  const s = String(v || "").trim();
+  /* file:// 原生视频块（html5-video / video_gen 产物）与普通本机路径同样按扩展名判定 */
+  const bare = s.replace(/^file:\/\/\/?/i, "");
+  const m = s.match(/^data:([a-z]+)\//i);
+  if (m) return m[1].toLowerCase();
+  if (VIDEO_EXT_RE.test(bare) || VIDEO_EXT_RE.test(s)) return "video";
+  if (IMAGE_EXT_RE.test(bare) || IMAGE_EXT_RE.test(s)) return "image";
+  if (AUDIO_EXT_RE.test(bare) || AUDIO_EXT_RE.test(s)) return "audio";
+  return "";
+}
+
+/** file:// URL → 本机路径；不是 file:// 就原样返回 */
+function localPathOfSrc(v) {
+  const s = String(v || "").trim();
+  if (!/^file:\/\//i.test(s)) return s;
+  try {
+    return fileURLToPath(s);
+  } catch {
+    return s.replace(/^file:\/\/\/?/i, "");
+  }
+}
+
+/**
+ * 本机路径 → data URL（打包后的渲染页取不到 file:// 路径；data: 内联是应用里同一套做法）。
+ * 超过上限或读不到时返回空串，由调用方回退原路径。
+ */
+function dataUrlOfLocal(pathStr, maxMb) {
+  const p = String(pathStr || "").trim();
+  if (!p || !fs.existsSync(p)) return "";
+  try {
+    const st = fs.statSync(p);
+    const cap = Math.max(1, Number(maxMb) || 32) * 1024 * 1024;
+    if (!st.isFile() || st.size > cap) return "";
+    const mime = MIME_OF_EXT[path.extname(p).toLowerCase()] || "application/octet-stream";
+    return "data:" + mime + ";base64," + fs.readFileSync(p).toString("base64");
+  } catch {
+    return "";
+  }
+}
+
+/** 媒体输入取「可用地址」：data URL 原样；本机媒体文件必须内联成 data URL。
+ *  渲染内核（Remotion headless Chrome）禁止加载 file:// 本地资源（实测报
+ *  "Not allowed to load local resource"），所以内联失败时**不能**回退成本机路径，
+ *  否则左侧会静默变成黑屏；这里返回空串，由调用方给出可行动的报错。 */
+function resolveMediaSrc(pathStr, type) {
+  const s = String(pathStr || "").trim();
+  if (!s) return "";
+  if (/^data:/i.test(s) || /^https?:\/\//i.test(s)) return s;
+  const capMb = type === "video" ? 32 : type === "audio" ? 16 : 12;
+  return dataUrlOfLocal(s, capMb);
+}
+
+/** 从节点的输入里挑出 hero / voice / narration（端子无差别：index 0、1、2… 都算输入，
+ *  控制线不进这份清单 —— 渲染层已按来源类型把控制线滤掉） */
+function pickPortraitInputs(inputs) {
+  const list = (Array.isArray(inputs) ? inputs : [])
+    .map((x) => ({index: Number((x && x.index) || 0), text: String((x && x.text) || "").trim()}))
+    .filter((x) => x.index >= 0 && x.text);
+  list.sort((a, b) => a.index - b.index);
+
+  let hero = "";
+  let voice = "";
+  const texts = [];
+  for (const it of list) {
+    if (isMediaSrcString(it.text)) {
+      const kind = mediaKindOfSrc(it.text);
+      if (kind === "audio") {
+        if (!voice) voice = it.text;
+        continue;
+      }
+      if (!hero) hero = it.text;
+      continue;
+    }
+    texts.push(it.text);
+  }
+  /* 主素材优先取视频：H3 动态层是「角色动起来」的本体；画布上没接视频时才退回图片
+     （左角色右台词卡的成片接的是动态层 + 配音 + 台词，此时的图片只是参考，不该顶替） */
+  const firstVid = list.find(
+    (x) => isMediaSrcString(x.text) && mediaKindOfSrc(x.text) === "video",
+  );
+  const firstImg = list.find(
+    (x) => isMediaSrcString(x.text) && mediaKindOfSrc(x.text) === "image",
+  );
+  if (firstVid) hero = firstVid.text;
+  else if (firstImg) hero = firstImg.text;
+  /* 底图：接了视频时，第一张图就是「全屏背景」（视频只是叠在上面的动态层）。
+     识别口径与媒体判定一致（本机绝对路径 / file:// / data: / http），
+     不再复用 isMediaSrcString —— 后者只认 data: / http 与少数扩展名，
+     画布传下来的本机路径会被漏掉，结果「全屏背景」永远传不进模板。 */
+  const isRef = (v) =>
+    !!v &&
+    (/^(data:|https?:\/\/|file:\/\/)/i.test(v) || /^[a-zA-Z]:[\\/]/.test(v) || mediaKindOfSrc(v));
+  const refImage = list.find((x) => isRef(x.text) && mediaKindOfSrc(x.text) === "image");
+  const poster = firstVid && refImage ? refImage.text : "";
+  /* 台词：先剔掉「版面参数」（CARD_RECT 等结构化行）、「台词节拍表」与「叙述性建议」
+     （台词参考 / 音色描述这类给配音节点的指导文本，不是角色要说的话），
+     再按长度降序取最长的一条。
+     此前只按长度取最长，节拍表（或参考建议）比台词正文长，结果被当成台词渲染进卡里。 */
+  const isParamText = (s) => /CARD_RECT\s*\{/i.test(s);
+  const isBeatTable = (s) => /序号\s*\|/.test(s) && /台词原文/.test(s);
+  const isAdviceText = (s) =>
+    /^\s*(台词参考|台词要求|参考台词|音色|语气|指导|说明)\s*[:：]/.test(s);
+  const spoken = texts.filter((s) => !isParamText(s) && !isBeatTable(s) && !isAdviceText(s));
+  spoken.sort((a, b) => b.length - a.length);
+  const narration = spoken.length ? spoken[0] : "";
+  return {hero, voice, narration, poster, texts};
+}
+
+/** 从已接线的文本里抠出 `CARD_RECT {"l":…,"t":…,"r":…,"b":…}`（画布「卡框定位」节点的产出）。
+ *  返回归一后的四元组或 null；四个数都必须在 0–1 且 l<r、t<b。 */
+function cardRectFromInputs(texts) {
+  for (const text of Array.isArray(texts) ? texts : []) {
+    const m = String(text || "").match(/CARD_RECT\s*(\{[^}]*\})/i);
+    if (!m) continue;
+    try {
+      const o = JSON.parse(m[1]);
+      const l = Number(o.l);
+      const t = Number(o.t);
+      const r = Number(o.r);
+      const b = Number(o.b);
+      const ok = [l, t, r, b].every((v) => Number.isFinite(v) && v >= 0 && v <= 1);
+      if (ok && r - l >= 0.1 && b - t >= 0.1) return {l, t, r, b};
+    } catch {
+      /* 不是合法 JSON 就跳过，继续找下一条 */
+    }
+  }
+  return null;
+}
+
+/** 视频的帧数 / 帧率（用于「按帧驱动」的安全循环）。探不出就返回 null，调用方退回老做法。 */
+function probeVideoTiming(filePath) {
+  const s = String(filePath || "").trim();
+  if (!s || !/^[a-zA-Z]:[\\/]/.test(s) || !fs.existsSync(s)) return null;
+  try {
+    const out = spawnSync(
+      "ffprobe",
+      ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=nb_frames,avg_frame_rate", "-of", "json", s],
+      {encoding: "utf8", timeout: 15000, windowsHide: true},
+    );
+    if (!out || out.status !== 0 || !out.stdout) return null;
+    const st = (JSON.parse(out.stdout).streams || [])[0] || {};
+    const frames = Number(st.nb_frames) || 0;
+    const [num, den] = String(st.avg_frame_rate || "").split("/").map(Number);
+    const fps = den ? num / den : 0;
+    if (!(frames > 1) || !(fps > 0)) return null;
+    return {frames, fps: Math.round(fps)};
+  } catch {
+    return null;
+  }
+}
+
+/** 逐字打字节拍：从已接线的文本输入里找「台词节拍表」，解析成每句起帧。
+ *  认两种形态（与渲染侧 remotionBeatStarts 同口径）：
+ *    ① 表格行 `序号 | 台词原文 | 起(s) | 止(s) | 时长(s)`（台词节拍节点 proc_text 的输出）
+ *    ② 时间码行 `0.0s  台词原文`
+ *  取所有文本输入里 parsed 出 ≥2 句的那一条（台词正文本身解析不出，不会误认）。 */
+function beatStartsFromInputs(texts, fps) {
+  const f = Math.max(1, Number(fps) || 30);
+  let best = [];
+  for (const text of Array.isArray(texts) ? texts : []) {
+    const starts = [];
+    for (const row of String(text || "").split(/\r?\n/)) {
+      const line = row.trim();
+      if (!line) continue;
+      let sec = NaN;
+      if (line.includes("|")) {
+        const cells = line.split("|").map((s) => s.trim());
+        if (cells.length >= 4) sec = parseFloat(cells[cells.length - 3]);
+      } else {
+        const m = line.match(/^(\d+(?:\.\d+)?)\s*s\b/i);
+        if (m) sec = parseFloat(m[1]);
+      }
+      if (isFinite(sec) && sec >= 0) starts.push(Math.round(sec * f));
+    }
+    if (starts.length > best.length) best = starts;
+  }
+  return best.length >= 2 ? best : [];
+}
+
+/** 读随包/安装目录里的内置模板（找不到时返回空串 → 调用方回退老行为） */
+function readBuiltinComposition(installDir) {
+  const cands = [
+    join(bundledPackRoot() || "", BUILTIN_COMPOSITION_FILE),
+    join(installDir || "", BUILTIN_COMPOSITION_FILE),
+    join(installDir || "", "src", BUILTIN_COMPOSITION_FILE),
+    join(__dirname, "..", "remotion-pack", BUILTIN_COMPOSITION_FILE),
+  ];
+  for (const p of cands) {
+    try {
+      if (p && fs.existsSync(p)) {
+        const src = fs.readFileSync(p, "utf8").trim();
+        if (src && /export\s+const\s+Main\b/.test(src)) return src;
+      }
+    } catch {}
+  }
+  return "";
+}
+
+/** 描述里是否明确要求走内置「角色动态 + 台词卡」版面 */
+function wantsBuiltinDialogue(params) {
+  const desc = String((params && params.description) || params.prompt || "");
+  if (/\{\{\s*(hero|narration|voice|bg)\s*\}\}/i.test(desc)) return true;
+  if (PORTRAIT_HINT_RE.test(desc)) return true;
+  const picked = pickPortraitInputs(params && params.inputs);
+  return !!(picked.hero || picked.narration || picked.voice);
+}
+
 /** 文件内是否声明过该标识名（default 导出别名前的防误判） */
 function declaredHere(src, name) {
   const re = new RegExp(
@@ -1752,16 +2148,21 @@ function normalizeCustomComposition(raw) {
   if (fence) src = String(fence[1]).trim();
   if (!src) return { source: "", error: "" };
 
-  /* 依赖白名单：静态 import / require() / 动态 import() 全扫（相对路径放行） */
+  /* 依赖白名单：静态 import / require() / 动态 import() 全扫（相对路径放行）
+     只扫代码本体：注释里写「只 import react / remotion」这类说明很常见，
+     直接全局匹配会把注释文字当成模块名（曾把中文注释后的一个字母判成坏依赖）。 */
+  const codeOnly = src
+    .replace(/\/\*[\s\S]*?\*\//g, " ") /* 块注释 */
+    .replace(/(^|[^:\\])\/\/[^\n]*/g, "$1"); /* 行注释（不误伤 http:// 与字符串里的 //） */
   const specs = [];
   const push = (s) => {
     if (s && specs.indexOf(s) < 0) specs.push(s);
   };
   let m;
   const reStatic = /(?:^|[\s;{}])import\s[^'"`]*?['"]([^'"]+)['"]/g;
-  while ((m = reStatic.exec(src))) push(m[1]);
+  while ((m = reStatic.exec(codeOnly))) push(m[1]);
   const reCall = /(?:require|import)\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
-  while ((m = reCall.exec(src))) push(m[1]);
+  while ((m = reCall.exec(codeOnly))) push(m[1]);
   const bad = specs.filter(
     (s) => s[0] !== "." && s[0] !== "/" && !CUSTOM_IMPORT_ALLOWED.test(s),
   );
@@ -1823,27 +2224,102 @@ registerRoot(RemotionRoot);
 `;
 }
 
+/** 解析媒体时长（语音决定成片总长）：优先 ffprobe；没有就用 Remotion 自带的
+ *  @remotion/media-utils getAudioDuration（在渲染子进程里与 Chrome 无关），
+ *  都拿不到返回 0（调用方回退调用方给的时长）。 */
+function probeMediaDuration(file) {
+  const p = String(file || "").trim();
+  if (!p || !fs.existsSync(p)) return Promise.resolve(0);
+  const secs = (s) => {
+    const m = String(s || "").match(/(\d+):(\d+):(\d+(?:\.\d+)?)/);
+    if (!m) return 0;
+    return Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]);
+  };
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (v) => {
+      if (!done) {
+        done = true;
+        resolve(Number(v) || 0);
+      }
+    };
+    try {
+      const ch = spawn("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", p], {
+        windowsHide: true,
+      });
+      let out = "";
+      ch.stdout.on("data", (d) => (out += d.toString()));
+      ch.on("error", () => finish(0));
+      ch.on("close", () => finish(Number(String(out).trim()) || 0));
+      setTimeout(() => finish(0), 15000);
+    } catch {
+      finish(0);
+    }
+  });
+}
+
+/** 用 Remotion 的 getAudioDuration 兜底（ffprobe 缺失时）：在安装目录里跑一段 node -e */
+function probeDurationViaRemotion(installDir, file) {
+  const p = String(file || "").trim();
+  if (!p || !fs.existsSync(p)) return Promise.resolve(0);
+  const code =
+    'const {getAudioDuration}=require("@remotion/media-utils");getAudioDuration(process.argv[1]).then(d=>{console.log(d);process.exit(0)}).catch(()=>process.exit(1));';
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (v) => {
+      if (!done) {
+        done = true;
+        resolve(Number(v) || 0);
+      }
+    };
+    try {
+      const ch = spawn("node", ["-e", code, p], { cwd: installDir || process.cwd(), windowsHide: true });
+      let out = "";
+      ch.stdout.on("data", (d) => (out += d.toString()));
+      ch.on("error", () => finish(0));
+      ch.on("close", () => finish(Number(String(out).trim()) || 0));
+      setTimeout(() => finish(0), 30000);
+    } catch {
+      finish(0);
+    }
+  });
+}
+
 /**
- * 写 src/Composition.tsx + src/index.tsx 模板（每次渲染前重写，参数即最新）。
+ * 写工程目录里的 Composition.tsx + index.tsx（每次渲染前重写，参数即最新）。
+ * 目录 = 画布工作目录下的 .mtnode/remotion/<节点 id>（见 projectDirFor），不再是插件安装目录：
+ * 安装目录只当依赖源（node_modules / render.mjs / 内置模板），用户代码一个字都不往里写。
  * Composition 优先采用渲染层下发的 LLM 动效代码（params.tsx / params.prompt），
  * 只有它为空时才回退内置标题卡模板（结构化参数 title / subtitle / bgColor / images / audioPath）。
  * 入口后缀必须是 .tsx：模板含 JSX（<Composition>），esbuild 只在 .tsx/.jsx 中解析 JSX，
  * 写成 .ts 会在打包阶段报 `Expected ">" but found "id"`。
  * @returns {{ custom: boolean, error: string }} error 非空 = 自定义合成不合规（不静默回退，直接失败）
  */
-function writeRenderSources(installDir, params) {
-  const srcDir = mk(join(installDir, "src"));
-  const custom = normalizeCustomComposition(
-    String(params.tsx || "").trim() || String(params.prompt || "").trim(),
-  );
-  if (custom.error) return { custom: false, error: custom.error };
-  const usingCustom = !!custom.source;
+function writeRenderSources(projectDir, installDir, params) {
+  const srcDir = mk(String(projectDir || ""));
+  /* 口径 ①②：描述要台词卡版面 / 写了 {{hero}} 占位 / 已给媒体或台词输入 → 内置模板 */
+  /* 显式直出合成代码（params.tsx）优先：贴了代码就不再走内置台词卡模板 ——
+     否则「接了台词 / 媒体」的画布永远进不了自定义合成，用户贴的代码等于被丢弃。 */
+  const explicitTsx = String(params.tsx || "").trim();
+  const builtinSrc =
+    !explicitTsx && wantsBuiltinDialogue(params) ? readBuiltinComposition(installDir) : "";
+  let usingBuiltin = false;
+  let custom = { source: "", error: "" };
+  if (process.env.MTNODE_TEMPLATE_TRACE) appendConsole("[trace] writeRenderSources builtin=" + (wantsBuiltinDialogue(params) ? "yes" : "no") + " tsxLen=" + String(params.tsx || "").length + " inputs=" + ((params.inputs || []).length));
+  if (!builtinSrc) {
+    custom = normalizeCustomComposition(
+      String(params.tsx || "").trim() || String(params.prompt || "").trim(),
+    );
+    if (custom.error) return { custom: false, error: custom.error };
+  }
+  usingBuiltin = !!builtinSrc;
+  const usingCustom = !usingBuiltin && !!custom.source;
   fs.writeFileSync(
     join(srcDir, "Composition.tsx"),
-    usingCustom ? custom.source : buildCompositionSource(params),
+    usingBuiltin ? builtinSrc : usingCustom ? custom.source : buildCompositionSource(params),
     "utf8",
   );
-  fs.writeFileSync(join(srcDir, ENTRY_BASENAME), buildIndexSource(params), "utf8");
+  fs.writeFileSync(join(srcDir, ENTRY_BASENAME), buildIndexSource(params, { custom: usingCustom }), "utf8");
   /* 清理历史版本写错后缀的入口，避免旧 render.json 继续引用它 */
   try {
     fs.rmSync(join(srcDir, "index.ts"), { force: true });
@@ -1851,24 +2327,48 @@ function writeRenderSources(installDir, params) {
   appendConsole(
     "[render] templates written → " +
       srcDir +
-      (usingCustom
-        ? " (composition=custom tsx " + custom.source.length + " chars)"
-        : " (composition=builtin template)"),
+      (usingBuiltin
+        ? " (composition=builtin dialogue template)"
+        : usingCustom
+          ? " (composition=custom tsx " + custom.source.length + " chars)"
+          : " (composition=builtin template)"),
   );
-  return { custom: usingCustom, error: "" };
+  return { custom: usingCustom, builtin: usingBuiltin, error: "" };
 }
 
-/** 输出路径：显式 outputPath > outputDir+filename（自动去重）> 安装目录 out/ 默认名 */
-function resolveOutputPath(installDir, params) {
+/** 输出路径：显式 outputPath > outputDir+filename（自动去重）> 工程目录下 render-<时间戳>.mp4
+ *  最后这一档就是正常渲染的落点（工程目录 = 画布工作目录里的 .mtnode/remotion/<节点 id>），
+ *  每次渲染唯一化：重跑不覆盖上一版成片。 */
+function resolveOutputPath(projectDir, params) {
   const ext = ".mp4";
   if (String(params.outputPath || "").trim()) {
     return path.resolve(String(params.outputPath).trim());
   }
-  const dir = String(params.outputDir || "").trim()
-    ? path.resolve(String(params.outputDir).trim())
-    : join(installDir, "out");
-  const preferred = String(params.filename || "").trim() || "render" + ext;
-  return uniqueFileInDir(dir, preferred, ext).path;
+  /* 项目工程口径：工程里有 render.json 且写了 outputLocation，成片就落在它指定的位置
+     （相对路径按工作目录解析）——「产物跟着项目走」，不散落在 .mtnode 里。 */
+  const kit = projectKitOf(projectDir);
+  if (kit && String(kit.cfg.outputLocation || "").trim()) {
+    const target = path.resolve(kit.cfg.outputLocation);
+    try {
+      mk(path.dirname(target));
+    } catch {}
+    return target;
+  }
+  if (String(params.outputDir || "").trim()) {
+    const dir = path.resolve(String(params.outputDir).trim());
+    const preferred = String(params.filename || "").trim() || "render" + ext;
+    return uniqueFileInDir(dir, preferred, ext).path;
+  }
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, "0");
+  const stamp =
+    d.getFullYear() +
+    pad(d.getMonth() + 1) +
+    pad(d.getDate()) +
+    pad(d.getHours()) +
+    pad(d.getMinutes()) +
+    pad(d.getSeconds());
+  return uniqueFileInDir(String(projectDir || ""), "render-" + stamp + ext, ext).path;
 }
 
 /**
@@ -1904,20 +2404,39 @@ function parseRenderProgressLine(line, cur) {
 
 /**
  * spawn `node render.mjs`（remotion-pack 内的渲染脚本，契约见 remotion-pack/render.mjs）：
- * - 渲染前按契约写 render.json（脚本只读它，不再使用环境变量）：
- *   entryPoint（宿主生成的 src/index.tsx 入口）/ composition / fps / width / height /
- *   durationInFrames / inputProps{title,subtitle,bgColor,audioPath?} / codec:h264 /
- *   outputLocation=resolveOutputPath 结果（绝对路径）
+ * - 宿主把**所有路径算成绝对路径**写进 render.json（脚本自己不再按「当前目录」猜）：
+ *   entryPoint（工程目录里的 index.tsx）/ projectDir / nodeModulesDir（安装目录的 node_modules，
+ *   依赖解析靠它注入）/ composition / fps / width / height / durationInFrames /
+ *   inputProps{title,subtitle,bgColor,audioPath?} / codec:h264 /
+ *   outputLocation=resolveOutputPath 结果（绝对路径，在工程目录里）
+ * - render.json 本身写在工程目录（画布工作目录内），脚本按 argv 收到它的绝对路径
  * - stdout 逐行 JSON Lines：{"type":"progress","progress":0..1}（渲染进度）、
  *   {"type":"done","outputLocation":"..."}（完成路径）、{"type":"error","message":"..."}（失败）
  * - 退出码 0 = 成功；非 0 = 失败（优先带脚本 error message，尾部日志兜底）
  */
-async function runRender(installDir, params, nodeId) {
+async function runRender(installDir, projectDir, params, nodeId) {
   const script = join(installDir, "render.mjs");
   if (!fs.existsSync(script)) {
     throw new Error("render_script_missing: " + script + "（remotion-pack 缺少 render.mjs）");
   }
-  const outPath = resolveOutputPath(installDir, params);
+  /* ── 项目工程口径（优先）──────────────────────────────────────────────
+     工程目录里放好了 index.tsx + render.json（+ 可选 Composition.tsx）时，
+     宿主**不写任何工程文件**，直接把这份 render.json（已完成相对路径重定向）交给 render.mjs。
+     合成代码、参数、成片位置全由项目自己决定 —— 换题 / 复用只换项目文件夹。 */
+  const kit = projectKitOf(projectDir);
+  if (kit) {
+    const entryPoint = String(kit.cfg.entryPoint || "");
+    if (!fs.existsSync(entryPoint)) {
+      throw new Error("entry_missing: " + entryPoint + "（项目工程的 render.json 指向的入口不存在）");
+    }
+    appendConsole("[render] project kit → " + kit.cfgFile + " (entry " + entryPoint + ")");
+    return runRenderWithConfig(installDir, projectDir, params, nodeId, kit.cfg, kit.cfgFile);
+  }
+  const entryPoint = join(projectDir, ENTRY_BASENAME);
+  if (!fs.existsSync(entryPoint)) {
+    throw new Error("entry_missing: " + entryPoint + "（宿主没写出入口文件）");
+  }
+  const outPath = resolveOutputPath(projectDir, params);
   /* 渲染要用的浏览器：先从国内镜像预置（Remotion 自己的下载直链硬编码在 Google 存储上，
      国内常常不通），失败回退本机 Edge / Chrome 并把路径交给 render.mjs。 */
   const browserInfo = await ensureRenderBrowser(installDir);
@@ -1927,11 +2446,13 @@ async function runRender(installDir, params, nodeId) {
     throw new Error(browserInfo.hint || "browser_missing");
   }
   return new Promise((resolve, reject) => {
-    /* ---- 按 remotion-pack/render.mjs 契约写 render.json（render.mjs 默认读 ./render.json） ---- */
+    /* ---- 按 remotion-pack/render.mjs 契约写 render.json（工程目录里那份，argv 传绝对路径） ---- */
     const fps = Number(params.fps) || 30;
     const duration = Math.max(1, Math.round(Number(params.durationSeconds) || 5));
     const renderJson = {
-      entryPoint: ENTRY_POINT /* 宿主生成的 index 入口（writeRenderSources 写入 src/index.tsx） */,
+      entryPoint /* 宿主生成的入口（绝对路径） */,
+      projectDir /* 工程目录：脚本据此解析相对资源，也写进日志便于排查 */,
+      nodeModulesDir: join(installDir, "node_modules") /* 依赖源：react / remotion 只在安装目录里 */,
       composition: String(params.compositionId || "Main"),
       fps,
       width: Number(params.width) || 1280,
@@ -1950,9 +2471,42 @@ async function runRender(installDir, params, nodeId) {
     if (String(params.audioPath || "").trim()) {
       renderJson.inputProps.audioPath = String(params.audioPath).trim();
     }
-    writeJson(join(installDir, "render.json"), renderJson);
+    /* 内置台词卡模板：把媒体输入 / 台词正文按 props 注入（老模板忽略多余 props，零回归）；
+       具体挑选规则见 portraitProps()，失败则明确报错而不是交出无声 / 黑屏的成片。 */
+    if (wantsBuiltinDialogue(params)) {
+      const picked = pickPortraitInputs(params.inputs);
+      const needHero = picked.hero && !resolveMediaSrc(picked.hero, "video");
+      const audioRaw = picked.voice || String(params.audioPath || "").trim();
+      const needVoice = audioRaw && !resolveMediaSrc(audioRaw, "audio");
+      if (needHero) {
+        return reject(
+          new Error(
+            "media_inline_failed_hero: 左侧素材无法内联（文件不存在，或超过 32MB）：" +
+              String(picked.hero).slice(0, 160) +
+              "\n请在画布上把该输入换成本机可读的视频 / 图片（小于 32MB），或先把长视频压短。",
+          ),
+        );
+      }
+      if (needVoice) {
+        return reject(
+          new Error(
+            "media_inline_failed_voice: 语音无法内联（文件不存在，或超过 16MB）：" +
+              String(audioRaw).slice(0, 160) +
+              "\n请重新跑配音节点生成语音，或换一条更短（小于 16MB）的音频。",
+          ),
+        );
+      }
+    }
+    renderJson.inputProps =
+      wantsBuiltinDialogue(params)
+        ? { ...renderJson.inputProps, ...portraitProps(params, fps) }
+        : renderJson.inputProps;
+    const renderJsonPath = join(projectDir, "render.json");
+    writeJson(renderJsonPath, renderJson);
     appendConsole(
-      "[render] render.json written (composition=" +
+      "[render] render.json written → " +
+        renderJsonPath +
+        " (composition=" +
         renderJson.composition +
         " entry=" +
         renderJson.entryPoint +
@@ -1960,9 +2514,17 @@ async function runRender(installDir, params, nodeId) {
         outPath +
         ")",
     );
-    const child = spawn("node", ["render.mjs"], {
-      cwd: installDir,
+    const child = spawn("node", [script, renderJsonPath], {
+      /* cwd 用工程目录：子进程即便有相对路径（脚本自己写的日志 / 缓存）也落不到安装目录里。
+         render.mjs 拿的是绝对路径（脚本 + render.json），依赖解析由 render.json 的 nodeModulesDir
+         显式注入（NODE_PATH 只是兜底，给 node -e / 二次 require 用）。 */
+      cwd: projectDir,
       windowsHide: true,
+      env: Object.assign({}, process.env, {
+        NODE_PATH: join(installDir, "node_modules"),
+        MTNODE_REMOTION_INSTALL_DIR: installDir,
+        MTNODE_REMOTION_PROJECT_DIR: projectDir,
+      }),
     });
     renderProc = { nodeId, child, abort: false, pct: 0, outputPath: "" };
     const cur = { pct: 0, outputPath: "", error: "" };
@@ -2021,6 +2583,293 @@ async function runRender(installDir, params, nodeId) {
   });
 }
 
+/** 内置台词卡模板要的全部 props（同一份口径给两条路径用：宿主生成 render.json、项目工程 render.json 刷新）：
+ *  hero（动态层）/ narration（台词正文）/ voice（配音）/ poster（全屏底图）/ cardRect（金框内沿）/
+ *  lineStarts（跟语音对齐的打字节拍）/ heroLoopFrames+heroSrcFps（按帧闭合循环）。
+ *  hero / voice 是大于阈值的大文件 → 保持本机路径，由下面的桥接换成地址；
+ *  poster / voice 小、走 data URL 内联（渲染页拿得到，也不依赖任何临时服务）。 */
+function portraitProps(params, fps) {
+  params = params || {};
+  const picked = pickPortraitInputs(params.inputs);
+  const f = Math.max(1, Number(fps) || 30);
+  const audioRaw = picked.voice || String(params.audioPath || "").trim();
+  const heroLocal = picked.hero ? localPathOfSrc(picked.hero) : "";
+  const hero = picked.hero ? resolveMediaSrc(picked.hero, "video") : "";
+  const voiceSrc = audioRaw ? resolveMediaSrc(audioRaw, "audio") : "";
+  const descText = String(params.description || params.prompt || "").trim();
+  const narration = picked.narration || (/[\u4e00-\u9fa5]/.test(descText) ? descText : "");
+  const props = {
+    hero,
+    heroLocal,
+    narration,
+    voice: voiceSrc || (audioRaw ? localPathOfSrc(audioRaw) : ""),
+    voiceLocal: audioRaw ? localPathOfSrc(audioRaw) : "",
+  };
+  /* 逐字打字节拍：取「台词节拍表」的每句起帧，让台词跟语音同步吐出（解析不出则由模板整片均分） */
+  const beats = beatStartsFromInputs(picked.texts, f);
+  if (beats.length) props.lineStarts = beats;
+  /* 全屏底图（新版式）：接了视频时第一张图就是背景底图 → 模板据此「铺满全屏 + 金框内叠字」，
+     不再把素材裁成 52% 一栏（旧版式会把左侧角色挤出画面）。 */
+  if (picked.poster) {
+    const posterSrc = resolveMediaSrc(picked.poster, "image");
+    if (posterSrc) props.poster = posterSrc;
+  }
+  /* 卡框内沿：由画布「卡框定位」节点量出（CARD_RECT 一行文本）；没有则由模板退回老两栏版式 */
+  const cardRect = cardRectFromInputs(picked.texts);
+  if (cardRect) props.cardRect = cardRect;
+  /* 循环：探出源视频帧数与帧率 → 模板按帧驱动时间轴（段尾精确回到首帧，不跳、不漂移） */
+  const vTiming = picked.hero ? probeVideoTiming(localPathOfSrc(picked.hero)) : null;
+  if (vTiming) {
+    props.heroLoopFrames = vTiming.frames;
+    props.heroSrcFps = vTiming.fps;
+    props.heroSpeed = 1;
+  }
+  if (String(params.backgroundColor || "").trim())
+    props.bg = String(params.backgroundColor).trim();
+  appendConsole(
+    "[render] builtin dialogue inputs: hero=" +
+      (hero ? (hero.length > 64 ? hero.slice(0, 60) + "…(len " + hero.length + ")" : hero) : "-") +
+      " poster=" +
+      (props.poster ? "yes" : "-") +
+      " cardRect=" +
+      (cardRect ? JSON.stringify(cardRect) : "-") +
+      " loopFrames=" +
+      (vTiming ? vTiming.frames + "@" + vTiming.fps + "fps" : "-") +
+      " voice=" +
+      (voiceSrc ? voiceSrc.slice(0, 24) + "…(len " + voiceSrc.length + ")" : audioRaw ? "local" : "-") +
+      " narration=" +
+      (narration ? narration.length + " 字" : "-"),
+  );
+  return props;
+}
+
+/** 项目工程口径的渲染：不写任何工程文件，直接用工程自己的 render.json。
+ *  只有一件事由宿主补：内置台词卡模板的 props（台词 / 底图 / 卡框 / 节拍 / 循环帧数）
+ *  以画布当前值为准 —— 工程里写的是上次播放时的值，画布改了台词或重跑了配音就必须跟上。
+ *  大文件（数据 URL / 本机路径）由 bridge pack 换成 127.0.0.1 地址，随渲染结束即停。 */
+async function runRenderWithConfig(installDir, projectDir, params, nodeId, cfgIn, cfgPath) {
+  const script = join(installDir, "render.mjs");
+  const browserInfo = await ensureRenderBrowser(installDir);
+  if (!browserInfo.ok) {
+    appendConsole("[render] browser missing: " + (browserInfo.hint || ""));
+    reportErr("browser_missing", browserInfo.hint || "渲染浏览器缺失", renderReportCtx(params, nodeId));
+    throw new Error(browserInfo.hint || "browser_missing");
+  }
+  const cfg = JSON.parse(JSON.stringify(cfgIn || {}));  cfg.projectDir = projectDir;
+  cfg.nodeModulesDir = join(installDir, "node_modules");
+  cfg.entryPoint = localPathOfSrc(cfg.entryPoint) || join(projectDir, PROJECT_INDEX_FILE);
+  if (!cfg.composition) cfg.composition = "Main";
+  if (browserInfo.browserExecutable && !cfg.browserExecutable) {
+    cfg.browserExecutable = browserInfo.browserExecutable;
+  }
+  let bridge = null;
+  try {
+    if (wantsBuiltinDialogue(params)) {
+      const fresh = portraitProps(params, Number(cfg.fps) || 30);
+      const both = { ...(cfg.inputProps || {}), ...fresh };
+      bridge = await startRenderBridge(both);
+      cfg.inputProps = bridge.props;
+      cfg.bridgeIdleMs = bridge.idleMs;
+      appendConsole("[render] builtin props refreshed from canvas → " + bridge.addr);
+    }
+  } catch (e) {
+    if (bridge) bridge.close();
+    throw e;
+  }
+  /* 宿主把参数写回工程里的 render.json（就地更新、不挪位置），成片落在它指定的 outputLocation */
+  try {
+    writeJson(cfgPath, cfg);
+  } catch (e) {
+    appendConsole("[render] render.json refresh failed: " + String((e && e.message) || e));
+  }
+  return new Promise((resolve, reject) => {
+    const child = spawn("node", [script, cfgPath], {
+      cwd: projectDir,
+      windowsHide: true,
+      env: Object.assign({}, process.env, {
+        NODE_PATH: join(installDir, "node_modules"),
+        MTNODE_REMOTION_INSTALL_DIR: installDir,
+        MTNODE_REMOTION_PROJECT_DIR: projectDir,
+      }),
+    });
+    renderProc = { nodeId, child, abort: false, pct: 0, outputPath: "" };
+    const cur = { pct: 0, outputPath: "", error: "" };
+    let out = "";
+    const done = (fn, v) => {
+      if (bridge) {
+        try {
+          bridge.close();
+        } catch {}
+        bridge = null;
+      }
+      fn(v);
+    };
+    const onData = (d, isErr) => {
+      const s = d.toString();
+      out += s;
+      for (const rawLine of s.split(/\r?\n/)) {
+        const line = rawLine.trim();
+        if (!line) continue;
+        appendConsole((isErr ? "[err] " : "") + line);
+        parseRenderProgressLine(line, cur);
+        if (cur.pct != null && isFinite(cur.pct)) {
+          renderProc.pct = cur.pct;
+          emitProgress({
+            phase: "render",
+            nodeId,
+            message: "渲染 " + Math.round(cur.pct) + "%",
+            pct: Math.max(1, Math.min(95, Math.round(cur.pct * 0.95))),
+          });
+        }
+        if (cur.outputPath) renderProc.outputPath = cur.outputPath;
+      }
+    };
+    child.stdout.on("data", (d) => onData(d, false));
+    child.stderr.on("data", (d) => onData(d, true));
+    child.on("error", (e) => {
+      renderProc = null;
+      done(reject, new Error("render_spawn: " + String((e && e.message) || e)));
+    });
+    child.on("close", (code) => {
+      const proc = renderProc;
+      renderProc = null;
+      if (proc && proc.abort) return done(reject, new Error("cancelled"));
+      if (code !== 0) {
+        return done(
+          reject,
+          new Error("render_exit_" + code + (cur.error ? ": " + cur.error : ": " + out.slice(-1200))),
+        );
+      }
+      const realOut = localPathOfSrc(cur.outputPath || cfg.outputLocation || "");
+      if (!realOut || !fs.existsSync(realOut)) {
+        return done(reject, new Error("output_missing: " + realOut));
+      }
+      done(resolve, { outputPath: realOut });
+    });
+    const timer = setTimeout(() => {
+      appendConsole("[render] timeout after " + RENDER_MAX_MS + "ms — killing");
+      try {
+        if (renderProc && renderProc.child) renderProc.child.kill();
+      } catch {}
+    }, RENDER_MAX_MS);
+    if (timer.unref) timer.unref();
+  });
+}
+
+/**
+ * 渲染桥（一次性、随渲染结束即停）：把 props 里的大文件换成 http://127.0.0.1:<随机端口>/<id>.<ext>。
+ * 之所以要它：Remotion 渲染内核禁止 file://（"Not allowed to load local resource"），
+ * 而调色 / 抠像这类非媒体输入（底图）又过不了 data URL 的体积上限。
+ * 只监听回环；渲染子进程空闲 MTNODE_REMOTION_BRIDGE_IDLE_MS（默认 6 分钟）且无人取文件就自行关闭。
+ */
+function startRenderBridge(props) {
+  return new Promise((resolve, reject) => {
+    const { createServer } = require("http");
+    const files = new Map();
+    const walk = (v, key) => {
+      if (typeof v === "string") {
+        const p = localPathOfSrc(v);
+        if (!p || !/^[a-zA-Z]:[\\/]/.test(p) || !fs.existsSync(p)) return;
+        try {
+          if (!fs.statSync(p).isFile()) return;
+        } catch {
+          return;
+        }
+        const ext = (path.extname(p) || ".bin").toLowerCase();
+        const id = key.replace(/[^\w-]/g, "") + "-" + files.size + ext;
+        files.set("/" + id, p);
+        return "PLACEHOLDER";
+      }
+      return undefined;
+    };
+    const replaceAll = (obj) => {
+      for (const k of Object.keys(obj)) {
+        const v = obj[k];
+        if (typeof v === "string" && walk(v, k)) obj[k] = "PENDING:" + k;
+        else if (v && typeof v === "object" && !Array.isArray(v)) replaceAll(v);
+      }
+    };
+    const work = JSON.parse(JSON.stringify(props || {}));
+    replaceAll(work);
+    const idleMs = Math.max(60000, Number(process.env.MTNODE_REMOTION_BRIDGE_IDLE_MS) || 6 * 60 * 1000);
+    let lastHit = Date.now();
+    const server = createServer((req, res) => {
+      const clean = String(req.url || "").split("?")[0];
+      lastHit = Date.now();
+      if (clean === "/__ping") {
+        res.writeHead(200, { "content-type": "text/plain", "cache-control": "no-store" });
+        return res.end("mtnode-render-bridge");
+      }
+      const file = files.get(clean);
+      if (!file) {
+        res.writeHead(404, { "content-type": "text/plain" });
+        return res.end("not found");
+      }
+      const mime = MIME_OF_EXT[path.extname(file).toLowerCase()] || "application/octet-stream";
+      try {
+        const stat = fs.statSync(file);
+        const total = stat.size;
+        const range = String(req.headers.range || "");
+        if (range) {
+          const m = range.match(/bytes=(\d*)-(\d*)/);
+          const start = m && m[1] ? Number(m[1]) : 0;
+          const end = m && m[2] ? Math.min(Number(m[2]), total - 1) : total - 1;
+          res.writeHead(206, {
+            "content-type": mime,
+            "accept-ranges": "bytes",
+            "content-range": "bytes " + start + "-" + end + "/" + total,
+            "content-length": end - start + 1,
+            "cache-control": "no-store",
+          });
+          if (req.method === "HEAD") return res.end();
+          return fs.createReadStream(file, { start, end }).pipe(res);
+        }
+        res.writeHead(200, {
+          "content-type": mime,
+          "content-length": total,
+          "accept-ranges": "bytes",
+          "cache-control": "no-store",
+        });
+        if (req.method === "HEAD") return res.end();
+        return fs.createReadStream(file).pipe(res);
+      } catch (e) {
+        res.writeHead(500, { "content-type": "text/plain" });
+        return res.end(String((e && e.message) || e));
+      }
+    });
+    const close = () => {
+      try {
+        server.close();
+      } catch {}
+    };
+    const idleTimer = setInterval(() => {
+      if (Date.now() - lastHit > idleMs) {
+        appendConsole("[render] bridge idle → closing");
+        close();
+        clearInterval(idleTimer);
+      }
+    }, 5000);
+    if (idleTimer.unref) idleTimer.unref();
+    server.on("error", (e) => reject(new Error("bridge_listen: " + String((e && e.message) || e))));
+    server.listen(0, "127.0.0.1", () => {
+      const addr = "http://127.0.0.1:" + server.address().port;
+      const urlOf = new Map();
+      for (const [route, file] of files) urlOf.set(file, addr + route);
+      const fix = (obj) => {
+        for (const k of Object.keys(obj)) {
+          const v = obj[k];
+          if (typeof v === "string" && v.startsWith("PENDING:")) {
+            const file = localPathOfSrc(props[k]);
+            obj[k] = urlOf.get(file) || v;
+          } else if (v && typeof v === "object" && !Array.isArray(v)) fix(v);
+        }
+      };
+      fix(work);
+      resolve({ props: work, addr, idleMs, close });
+    });
+  });
+}
+
 function killPidTree(pid) {
   return new Promise((resolve) => {
     if (!pid) return resolve();
@@ -2037,7 +2886,11 @@ function killPidTree(pid) {
 
 /**
  * 渲染任务：渲染前取 media-gen-global-lock 全局互斥（与 H3 / Music3 全局唯一音视频任务）。
- * 完成返回 { ok, path, bytes, message }。
+ * 工程目录（参数 / 代码 / render.json / 成片）落在画布工作目录：
+ *   - params.projectDir 显式给出（自检等宿主内部调用）→ 用它；
+ *   - 否则按 params.workspace（渲染层下发的画布工作目录）算 .mtnode/remotion/<节点 id>；
+ *   - 两者都没有 → 直接失败，提示先设画布工作目录（绝不退回安装目录写用户代码）。
+ * 完成返回 { ok, path, bytes, message, projectDir }。
  */
 async function renderVideo(params) {
   params = params || {};
@@ -2054,9 +2907,45 @@ async function renderVideo(params) {
     reportErr("not_installed", "Remotion 后端尚未安装（安装目录不存在）", renderReportCtx(params, nodeId));
     return { ok: false, error: "not_installed" };
   }
+  /* 护栏：安装目录落在 MTNode 自己的目录里（应用安装目录 / 随包资源 / 本仓库根）就拒绝渲染 ——
+     那条路只会把用户代码写进会被升级覆盖、且必须重启才生效的现场。 */
+  const ownedBy = appOwnedAncestor(installDir);
+  if (ownedBy) {
+    const msg =
+      "Remotion 安装目录落在 MTNode 应用目录里，不能用来渲染：" +
+      installDir +
+      "\n请到插件卡片点「选择安装目录」，换一个普通用户目录（如 D:\\mtnode\\remotion）后重试。" +
+      "（应用目录：" + ownedBy + "）";
+    appendConsole("[render] install_dir_inside_app: " + installDir + " ⊂ " + ownedBy);
+    reportErr("install_dir_inside_app", msg, renderReportCtx(params, nodeId));
+    return { ok: false, error: "install_dir_inside_app", message: msg };
+  }
   if (!runtimeReadyAt(installDir)) {
     reportErr("not_ready", "Remotion 依赖未就绪：node_modules/remotion 缺失，请在插件卡片点「下载安装」重跑 npm install", renderReportCtx(params, nodeId));
     return { ok: false, error: "not_ready" };
+  }
+
+  /* 工程目录：所有用户代码与产物都住这儿（画布工作目录内），安装目录只当依赖源 */
+  const explicitProjectDir = String(params.projectDir || "").trim();
+  const projectDir = explicitProjectDir
+    ? path.resolve(explicitProjectDir)
+    : projectDirFor(params.workspace, nodeId);
+  if (!projectDir) {
+    const msg =
+      "这个 Remotion 节点没有可用的画布工作目录：先在顶栏「工作目录」选一个文件夹再跑。" +
+      "\n渲染工程与成片都会落在 <工作目录>/.mtnode/remotion/<节点> 里，不再写插件目录。";
+    appendConsole("[render] no_workspace");
+    reportErr("no_workspace", msg, renderReportCtx(params, nodeId));
+    return { ok: false, error: "no_workspace", message: msg };
+  }
+  try {
+    mk(projectDir);
+  } catch (e) {
+    const msg =
+      "画布工作目录写不进去：" + projectDir + "（" + String((e && e.message) || e) + "）" +
+      "\n请确认该目录存在且当前用户可写。";
+    reportErr("workspace_not_writable", msg, renderReportCtx(params, nodeId));
+    return { ok: false, error: "workspace_not_writable", message: msg };
   }
 
   const acq = tryAcquireLock({ nodeId, workflowId: params.workflowId || "", kind: "video_gen" });
@@ -2071,13 +2960,15 @@ async function renderVideo(params) {
 
   let written = null;
   try {
-    appendConsole("[job] render start node=" + nodeId);
+    appendConsole("[job] render start node=" + nodeId + " projectDir=" + projectDir);
+    const legacy = legacySiteHint(installDir);
+    if (legacy) appendConsole(legacy);
     emitProgress({ phase: "render", nodeId, message: "准备渲染源文件…", pct: 2 });
-    written = writeRenderSources(installDir, params);
+    written = writeRenderSources(projectDir, installDir, params);
     if (written.error) throw new Error(written.error);
 
     emitProgress({ phase: "render", nodeId, message: "spawn node render.mjs…", pct: 4 });
-    const r = await runRender(installDir, params, nodeId);
+    const r = await runRender(installDir, projectDir, params, nodeId);
 
     const outPath = r.outputPath;
     let sz = 0;
@@ -2089,7 +2980,14 @@ async function renderVideo(params) {
     clearLock();
     emitProgress({ phase: "render", nodeId, message: "完成", pct: 100, done: true });
     appendConsole("[job] ok path=" + outPath + " bytes=" + sz);
-    return { ok: true, path: outPath, outputPath: outPath, bytes: sz, message: "Saved: " + outPath };
+    return {
+      ok: true,
+      path: outPath,
+      outputPath: outPath,
+      bytes: sz,
+      projectDir,
+      message: "Saved: " + outPath,
+    };
   } catch (e) {
     const raw = String((e && e.message) || e);
     /* 渲染子进程的原始错误（如 interpolate inputRange 校验失败）翻译成可定位的中文指引 */
@@ -2293,9 +3191,11 @@ async function selfcheckMotion(ctx) {
       fps: 1,
       durationSeconds: 1,
       title: "selftest",
-      /* 输出路径交给 host 侧解析：显式 outputPath > outputDir+filename（自动去重）> 安装目录 out/
-         （见 resolveOutputPath）；这里只给 outputDir，文件名由它去重生成，重复自检不会互相覆盖 */
+      /* 输出路径交给 host 侧解析：显式 outputPath > outputDir+filename（自动去重）> 工程目录
+         （见 resolveOutputPath）；这里只给 outputDir，文件名由它去重生成，重复自检不会互相覆盖。
+         工程目录显式给到自检产物目录下：自检不绑画布，也不许把工程写进应用 / 插件目录。 */
       outputDir: artifactDir,
+      projectDir: join(artifactDir, "remotion-project-" + Date.now()),
     });
   } catch (e) {
     r = { ok: false, error: String((e && e.message) || e) };

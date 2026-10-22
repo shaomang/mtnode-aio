@@ -106,6 +106,271 @@ function workflowPortsFromGraph(graph) {
   };
 }
 
+/* ── 中间产物（需要 Agent 跑才产出的中间文件）────────────────────────────
+ * 共识口径（见 workflow-store.js 顶部注释）：
+ *   · 随工作流包一起走：保存到库里时收集，分享时进 .mtnodes 尾部文件段；
+ *   · 插入 / 导入后落到 assets/<画布 id>/artifacts/…，节点字段里记绝对路径；
+ *   · 运行时「描述指纹一致 → 直接复用，不重调 LLM；不一致 → 自动带旧文件重生成」。
+ * 本段只放渲染层这一侧的口径函数（主进程的收集 / 打包 / 落盘在 workflow-store.js）。 */
+
+/* 描述指纹：FNV-1a 32 位，必须与 workflow-store.js 的 descHashOfText 逐位一致 */
+function wfArtifactDescHash(text) {
+  const s = String(text == null ? "" : text).replace(/\s+/g, " ").trim();
+  if (!s) return "";
+  let bytes;
+  try {
+    bytes = new TextEncoder().encode(s);
+  } catch (_) {
+    bytes = [];
+    for (let i = 0; i < s.length; i++) bytes.push(s.charCodeAt(i) & 0xff);
+  }
+  let h = 0x811c9dc5;
+  for (const b of bytes) {
+    h ^= b;
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h.toString(16).padStart(8, "0");
+}
+
+/* 节点「描述文本」：各 kind 取自己那个字段（与主进程 nodeDescText 同一口径） */
+function nodeDescriptionText(node) {
+  if (!node || typeof node !== "object") return "";
+  const cand = [node.text, node.task, node.prompt, node.goal, node.description];
+  for (const c of cand) {
+    const s = String(c == null ? "" : c).trim();
+    if (s) return s;
+  }
+  return "";
+}
+
+/* 节点声明的中间产物（可能是空数组 / 老画布没有这个字段） */
+function wfArtifactsOf(node) {
+  const list = node && Array.isArray(node.artifacts) ? node.artifacts : [];
+  return list.filter((a) => a && typeof a === "object" && a.name);
+}
+
+/* 某个角色的产物（remotion 用 role "tsx"；其余节点用 "artifact"） */
+function wfArtifactOf(node, role) {
+  const want = String(role || "artifact");
+  return wfArtifactsOf(node).find((a) => String(a.role || "artifact") === want) || null;
+}
+
+/* 命中的产物是否还配得上当前描述：只比描述指纹（用户口径：只看描述文本） */
+function wfArtifactMatches(node, art) {
+  if (!art) return false;
+  const cur = wfArtifactDescHash(nodeDescriptionText(node));
+  return !!cur && String(art.descHash || "") === cur;
+}
+
+/* 读产物正文（文本类；读不到返回 ""） */
+async function wfArtifactReadText(art) {
+  const p = String((art && art.path) || "").trim();
+  if (!p || typeof window.api.fileReadText !== "function") return "";
+  try {
+    const txt = await window.api.fileReadText(p);
+    return typeof txt === "string" ? txt : "";
+  } catch (_) {
+    return "";
+  }
+}
+
+/* 重生成后把新文件写进当前画布的产物目录（不覆盖工作流库条目里那份） */
+async function wfArtifactWrite(node, name, content) {
+  const api = window.api || {};
+  const canvasId = String((S.wf && S.wf.id) || "");
+  if (!api.workflowsArtifactWrite || !canvasId || !node) return null;
+  try {
+    const r = await api.workflowsArtifactWrite({
+      canvasId,
+      nodeId: String(node.id || ""),
+      name: String(name || "artifact.txt"),
+      content: String(content == null ? "" : content),
+    });
+    return r && r.ok ? r : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+/* 把一次写盘结果记成节点的产物声明（重生成后调用） */
+function wfArtifactRemember(node, written, role) {
+  if (!node || !written || !written.path) return;
+  const list = wfArtifactsOf(node).slice();
+  const name = String(written.name || "artifact.txt");
+  const next = {
+    name,
+    role: String(role || "artifact"),
+    path: String(written.path),
+    bytes: Number(written.bytes) || 0,
+    sha1: String(written.sha1 || ""),
+    descHash: wfArtifactDescHash(nodeDescriptionText(node)),
+    source: "regenerated",
+    at: Date.now(),
+  };
+  const idx = list.findIndex((a) => a.name === name && String(a.role || "artifact") === next.role);
+  if (idx >= 0) list[idx] = next;
+  else list.push(next);
+  node.artifacts = list;
+}
+
+/* 从工坊拿到的包带有代码产物时，首次运行前告知一次（用户口径：必须弹窗确认）。
+   只问一次：把产物指纹记在节点上，之后同一份产物不再打断。 */
+async function wfArtifactAckIfNeeded(node) {
+  const list = wfArtifactsOf(node);
+  if (!list.length) return true;
+  const fromWorkshop = list.some((a) => String(a.origin || "") === "workshop" || String(a.source || "") === "workshop");
+  if (!fromWorkshop) return true;
+  const sig = list.map((a) => a.name + ":" + (a.sha1 || "")).join("|");
+  if (String(node.artifactsAck || "") === sig) return true;
+  const ok = await confirmDialog(
+    I18n.t(
+      "这颗节点带了从工坊下载的中间产物（{names}）。运行时会把它当作合成代码直接使用 —— 只在你信任这份工作流来源时继续。",
+      { names: list.map((a) => a.name).join("、").slice(0, 200) },
+    ),
+    {
+      title: I18n.t("包含从工坊带来的代码产物"),
+      okText: I18n.t("继续运行"),
+      cancelText: I18n.t("取消"),
+    },
+  );
+  if (!ok) return false;
+  node.artifactsAck = sig;
+  if (typeof scheduleSave === "function") scheduleSave();
+  return true;
+}
+
+/* 智能节点运行前：把包内产物铺回节点工作目录（不覆盖已有文件，冲突就另存），
+   返回写进任务提示的那段说明（没有产物 / 没有目录时回空串）。 */
+async function wfArtifactsSeedWorkspace(node) {
+  const list = wfArtifactsOf(node);
+  if (!list.length) return "";
+  let ws = "";
+  try {
+    ws = String(
+      (typeof dshWsOf === "function" ? dshWsOf(node) : "") ||
+        (node && (node.workspace || node.agentWorkspace)) ||
+        "",
+    ).trim();
+  } catch (_) {
+    ws = "";
+  }
+  if (!ws) return "";
+  try {
+    const isDir = typeof window.api.fileIsDir === "function" ? await window.api.fileIsDir(ws) : false;
+    if (!isDir) return "";
+  } catch (_) {
+    return "";
+  }
+  const landed = [];
+  for (const a of list) {
+    const src = String(a.path || "").trim();
+    if (!src) continue;
+    const base = String(a.name || "artifact")
+      .split(/[\\/]+/)
+      .pop();
+    if (!base) continue;
+    const dest = String(ws).replace(/[\\/]+$/, "") + "/" + base;
+    try {
+      const exists = await window.api.fileExists(dest);
+      /* 工作目录里已经有同名文件：不覆盖（那是用户 / 上一轮的产出），直接把它列进
+         提示里让 agent 复用 —— 不另造 .artifact 副本，免得一轮一轮堆文件。 */
+      if (exists) {
+        landed.push(dest);
+        continue;
+      }
+      const r = await window.api.fileCopy(src, dest);
+      if (r && r.ok === false) continue;
+      landed.push(dest);
+    } catch (_) {}
+  }
+  if (!landed.length) return "";
+  return (
+    I18n.t("【已有的中间产物】下面这些文件是这颗工作流随包带来的中间产物（上一次的产出），优先复用它们，不要在没必要时重写：") +
+    "\n" +
+    landed.map((p) => "- " + p).join("\n")
+  );
+}
+
+/* 一次运行是否值得走「铺回工作目录」这条路（避免每轮都白跑文件系统） */
+function wfArtifactsNeedSeed(node) {
+  return !!(node && wfArtifactsOf(node).length);
+}
+
+/* ── 节点设置面板里的「中间产物」区块 ───────────────────────────────────
+ * 列出随工作流带过来的中间文件（文件名 / 大小 / 来源）+ 两个动作：
+ *   · 重新生成：清掉描述指纹 → 下次运行按「描述不一致」自动带旧文件重生成；
+ *   · 剔除：不再复用这份产物（画布上的副本文件不删）。 */
+function nsArtifactFields(ctx, node) {
+  if (!ctx || !node) return;
+  const list = wfArtifactsOf(node);
+  ctx.section(I18n.t("中间产物"));
+  if (!list.length) {
+    ctx.hint(
+      I18n.t(
+        "这颗节点还没有随包带来的中间产物。保存到工作流库时会按「中间产物规则」从它的工作目录收集（remotion 的合成代码直接从节点字段带走）。",
+      ),
+    );
+    return;
+  }
+  for (const a of list) {
+    const row = document.createElement("label");
+    row.className = "n-field nsf-span";
+    const cap = document.createElement("span");
+    cap.textContent = String(a.name || "artifact");
+    const box = document.createElement("span");
+    box.className = "nsf-ctl";
+    box.style.cssText = "display:flex;gap:6px;align-items:center;flex-wrap:wrap";
+    const meta = document.createElement("span");
+    meta.style.cssText = "font-size:11px;color:var(--muted)";
+    const kb = Number(a.bytes) > 0 ? Math.max(1, Math.round(Number(a.bytes) / 1024)) + " KB" : "";
+    const role = String(a.role || "artifact");
+    meta.textContent =
+      kb +
+      (role === "tsx" ? " · " + I18n.t("合成代码") : "") +
+      (wfArtifactMatches(node, a) ? " · " + I18n.t("与当前描述一致") : " · " + I18n.t("与当前描述不一致"));
+    const regen = document.createElement("button");
+    regen.type = "button";
+    regen.className = "mini";
+    regen.textContent = I18n.t("重新生成");
+    regen.title = I18n.t("下次运行按新描述以这份文件为参考重新生成（不覆盖工作流库里那份）");
+    regen.onclick = () => {
+      const at = wfArtifactsOf(node).findIndex((x) => x.name === a.name && x.role === a.role);
+      if (at >= 0) {
+        const cp = Object.assign({}, node.artifacts[at]);
+        cp.descHash = "";
+        node.artifacts[at] = cp;
+      }
+      if (typeof scheduleSave === "function") scheduleSave();
+      ctx.commit();
+      toast(I18n.t("下次运行会按新描述重新生成这份产物"), "ok");
+    };
+    const drop = document.createElement("button");
+    drop.type = "button";
+    drop.className = "mini";
+    drop.textContent = I18n.t("剔除");
+    drop.title = I18n.t("不再复用这份产物（画布上的副本文件保留）");
+    drop.onclick = () => {
+      node.artifacts = wfArtifactsOf(node).filter(
+        (x) => !(x.name === a.name && String(x.role || "artifact") === role),
+      );
+      if (typeof scheduleSave === "function") scheduleSave();
+      ctx.commit();
+    };
+    box.append(meta);
+    /* 「重新生成」只对合成代码（role=tsx）有意义：智能节点本来就是每轮跑 agent，
+       产物由它自己按需重写，没有「重新生成这份文件」这回事。 */
+    if (role === "tsx") box.append(regen);
+    box.append(drop);
+    row.append(cap, box);
+    ctx.root.appendChild(row);
+  }
+  ctx.hint(
+    I18n.t(
+      "描述指纹一致时运行直接复用这份产物、不再调用模型；描述改过则自动带着它重生成，新文件写进当前画布的产物目录。",
+    ),
+  );
+}
+
 /* 节点 → 工作流快照（只收这颗壳与它的后代，连线两端都在集合里） */
 function workflowGraphFromNode(node) {
   if (!node || node.kind !== "super") return null;
@@ -194,18 +459,58 @@ async function saveWorkflowFromNode(node, opts) {
     description: String(node.note || "").trim(),
     version: String(opts.version || "1.0"),
     cover: typeof node.bgImage === "string" ? node.bgImage : "",
+    /* 当前画布 id：主进程会把中间产物同时铺一份到画布产物目录，
+       下面据此把绝对路径回写到节点上（画布这份与包内那份内容一致）。 */
+    canvasId: String((S.wf && S.wf.id) || ""),
     graph: graph,
   });
   if (!res || !res.ok) {
     toast(I18n.t("保存失败：") + ((res && res.error) || ""), "err");
     return null;
   }
+  /* 中间产物：把包内那份的落点写回节点（同一颗节点层里的节点 id 与快照一致） */
+  const canvasArts = Array.isArray(res.canvasArtifacts) ? res.canvasArtifacts : [];
+  if (canvasArts.length) {
+    const byNode = new Map();
+    for (const a of canvasArts) {
+      if (!a || !a.nodeId) continue;
+      if (!byNode.has(a.nodeId)) byNode.set(a.nodeId, []);
+      byNode.get(a.nodeId).push({
+        name: String(a.name || ""),
+        role: String(a.role || "artifact"),
+        path: String(a.path || ""),
+        bytes: Number(a.bytes) || 0,
+        sha1: String(a.sha1 || ""),
+        descHash: String(a.descHash || ""),
+        source: "workflow",
+      });
+    }
+    const srcs =
+      typeof collectWithDescendants === "function" ? collectWithDescendants([node]) : [];
+    for (const n of srcs) {
+      const list = byNode.get(String(n.id));
+      if (list && list.length) n.artifacts = list;
+    }
+    if (typeof scheduleSave === "function") scheduleSave();
+  }
+  const stored = Array.isArray(res.artifacts) ? res.artifacts : [];
+  const warns = Array.isArray(res.warnings) ? res.warnings : [];
   const warn =
     ports.ins.length && ports.outs.length
       ? ""
       : I18n.t("（提示：这颗壳没有完整的外侧端子，别人插入后得先接内部图）");
-  toast(I18n.t("已保存到工作流库：") + name + warn, "ok");
-  return { id: res.id, name: name, ports: ports };
+  const artTxt = stored.length
+    ? I18n.t("（含 ") + stored.length + I18n.t(" 个中间产物）")
+    : "";
+  toast(I18n.t("已保存到工作流库：") + name + artTxt + warn, "ok");
+  if (warns.length)
+    toast(
+      I18n.t("有 ") +
+        warns.length +
+        I18n.t(" 个文件因超出体积上限没有收进包内（可在「中间产物规则」里放宽）"),
+      "warn",
+    );
+  return { id: res.id, name: name, ports: ports, artifacts: stored };
 }
 
 /* ── 插入：本机库条目 → 当前画布 ───────────────────────────────────────
@@ -247,6 +552,24 @@ async function insertWorkflowToCanvas(entry) {
   }
   const wireCps = cloneWiresForSet(Array.isArray(g.wires) ? g.wires : [], idMap);
   const innerSids = copiedSuperIdsOf(cps);
+
+  /* 中间产物：把库条目里那份铺到当前画布的产物目录，并写回克隆出来的节点
+     （相对路径一律改写成新画布下的绝对路径；清单里的原节点 id 经 idMap 换键） */
+  const wfId = String((pkg && pkg.id) || "");
+  const canvasId = String((S.wf && S.wf.id) || "");
+  if (wfId && canvasId && typeof api.workflowsArtifactsMaterialize === "function") {
+    try {
+      const r = await api.workflowsArtifactsMaterialize({ workflowId: wfId, canvasId: canvasId });
+      if (r && r.ok && r.byNode) {
+        const byNew = new Map(cps.map((n) => [String(n.id), n]));
+        for (const [oldId, list] of Object.entries(r.byNode)) {
+          const nid = idMap.get(oldId) || "";
+          const target = byNew.get(String(nid));
+          if (target && Array.isArray(list) && list.length) target.artifacts = list;
+        }
+      }
+    } catch (_) {}
+  }
 
   /* 落点：当前视图中心（与粘贴落点同一套相机换算），并按网格对齐 */
   const c = workflowViewCenterWf();
@@ -400,6 +723,22 @@ function workflowStripForShare(graph) {
       for (const k of ["presets", "testInputs"]) delete cp.toolConfig[k];
     }
     if (Array.isArray(cp.marks)) delete cp.marks;
+    /* 中间产物：包里带的是文件本体（见主进程 packWorkflow 的文件段），节点上只留
+       清单（名字 / 角色 / 指纹），本机绝对路径一律不带出去（别人插入时按包重映射）。 */
+    if (Array.isArray(cp.artifacts)) {
+      cp.artifacts = cp.artifacts
+        .filter((a) => a && typeof a === "object" && a.name)
+        .map((a) => ({
+          name: String(a.name || ""),
+          role: String(a.role || "artifact"),
+          bytes: Number(a.bytes) || 0,
+          sha1: String(a.sha1 || ""),
+          descHash: String(a.descHash || ""),
+          origin: String(a.origin || ""),
+        }));
+      if (!cp.artifacts.length) delete cp.artifacts;
+    }
+    delete cp.artifactsAck;
     return cp;
   });
   const wires = (Array.isArray(src.wires) ? src.wires : []).map((w) => {
@@ -475,7 +814,105 @@ async function shareWorkflowToWorkshop(target) {
   return false;
 }
 
-/* ── 顶栏「工作流库」对话框：本机清单 + 从当前画布保存 ─────────────────── */
+/* ── 中间产物规则（全局一份：扩展名白名单 + 体积上限）────────────────────
+ * 保存工作流时按这份规则从节点工作目录里收集中间文件；分享时按同一份清洗 /
+ * 限流（主进程 workflow-store.js 的 readArtifactRules）。 */
+async function openWorkflowArtifactRules() {
+  const api = window.api || {};
+  if (typeof api.workflowsArtifactRules !== "function") {
+    toast(I18n.t("工作流库不可用（本机存储接口未就绪）"), "err");
+    return;
+  }
+  let rules = {};
+  try {
+    const r = await api.workflowsArtifactRules();
+    rules = (r && r.rules) || {};
+  } catch (_) {}
+  openOverlay(I18n.t("中间产物规则"));
+  overlayPersistent = true;
+  const body = document.getElementById("ovBody");
+  if (!body) return;
+  body.innerHTML = "";
+  const wrap = document.createElement("div");
+  wrap.style.cssText = "display:flex;flex-direction:column;gap:12px;line-height:1.7";
+
+  const hint = document.createElement("div");
+  hint.style.cssText = "color:var(--muted);font-size:12px";
+  hint.textContent = I18n.t(
+    "需要 Agent 跑才能产出的中间文件（如 remotion 的 Composition.tsx）会按这里的白名单随工作流一起打包。扩展名用逗号分隔，可写 .tsx 或 tsx。",
+  );
+
+  const extLbl = document.createElement("div");
+  extLbl.textContent = I18n.t("收集的扩展名：");
+  const extInput = document.createElement("textarea");
+  extInput.style.cssText =
+    "width:100%;min-height:88px;resize:vertical;font-family:var(--mono,monospace);font-size:12px";
+  extInput.value = (Array.isArray(rules.ext) ? rules.ext : []).join(", ");
+
+  const sizeRow = document.createElement("div");
+  sizeRow.style.cssText = "display:flex;gap:12px;flex-wrap:wrap;align-items:center";
+  const mkSize = (label, val) => {
+    const box = document.createElement("label");
+    box.style.cssText = "display:flex;gap:6px;align-items:center";
+    const sp = document.createElement("span");
+    sp.textContent = label;
+    const inp = document.createElement("input");
+    inp.type = "number";
+    inp.min = "1";
+    inp.style.cssText = "width:88px";
+    inp.value = String(Math.max(1, Math.round((Number(val) || 0) / 1024 / 1024)));
+    box.append(sp, inp);
+    const unit = document.createElement("span");
+    unit.textContent = "MB";
+    box.appendChild(unit);
+    return { box, inp };
+  };
+  const totalBox = mkSize(I18n.t("总量上限"), rules.maxTotalBytes);
+  const fileBox = mkSize(I18n.t("单文件上限"), rules.maxFileBytes);
+  sizeRow.append(totalBox.box, fileBox.box);
+
+  const btnRow = document.createElement("div");
+  btnRow.style.cssText = "display:flex;gap:8px;justify-content:flex-end";
+  const resetBtn = document.createElement("button");
+  resetBtn.type = "button";
+  resetBtn.className = "mini";
+  resetBtn.textContent = I18n.t("恢复默认");
+  resetBtn.onclick = () => {
+    const def = (rules.defaults && rules.defaults.ext) || [];
+    extInput.value = def.join(", ");
+    totalBox.inp.value = "64";
+    fileBox.inp.value = "8";
+  };
+  const saveBtn = document.createElement("button");
+  saveBtn.type = "button";
+  saveBtn.className = "mini primary";
+  saveBtn.textContent = I18n.t("保存规则");
+  saveBtn.onclick = async () => {
+    const ext = String(extInput.value || "")
+      .split(/[,，\s]+/)
+      .map((s) => s.trim().replace(/^\./, "").toLowerCase())
+      .filter(Boolean);
+    if (!ext.length) {
+      toast(I18n.t("扩展名不能全空（否则收集不到任何中间产物）"), "warn");
+      return;
+    }
+    const r = await api.workflowsArtifactRules({
+      ext: ext,
+      maxTotalBytes: Math.max(1, Number(totalBox.inp.value) || 64) * 1024 * 1024,
+      maxFileBytes: Math.max(1, Number(fileBox.inp.value) || 8) * 1024 * 1024,
+    });
+    if (r && r.ok) {
+      toast(I18n.t("中间产物规则已保存"), "ok");
+      closeOverlay();
+    } else toast(I18n.t("保存失败：") + ((r && r.error) || ""), "err");
+  };
+  btnRow.append(resetBtn, saveBtn);
+
+  wrap.append(hint, extLbl, extInput, sizeRow, btnRow);
+  body.appendChild(wrap);
+}
+
+/* 顶栏「工作流库」对话框：本机清单 + 从当前画布保存 ─────────────────── */
 function openWorkflowLibrary() {
   if (!workflowApiOk()) {
     toast(I18n.t("工作流库不可用（本机存储接口未就绪）"), "err");
@@ -504,7 +941,15 @@ function openWorkflowLibrary() {
   saveBtn.type = "button";
   saveBtn.className = "mini primary";
   saveBtn.textContent = I18n.t("保存到工作流库");
-  saveRow.append(saveLbl, sel, saveBtn);
+  const rulesBtn = document.createElement("button");
+  rulesBtn.type = "button";
+  rulesBtn.className = "mini";
+  rulesBtn.textContent = I18n.t("中间产物规则…");
+  rulesBtn.title = I18n.t(
+    "配置哪些扩展名的中间文件随工作流一起打包（全局一份：扩展名白名单 + 体积上限）",
+  );
+  rulesBtn.onclick = () => openWorkflowArtifactRules();
+  saveRow.append(saveLbl, sel, saveBtn, rulesBtn);
 
   const listHost = document.createElement("div");
   listHost.id = "wfLibList";
@@ -663,6 +1108,15 @@ function workflowLibRow(w, host) {
     I18n.t(" 节点 / ") +
     (w.wireCount || 0) +
     I18n.t(" 连线") +
+    (w.artifactCount
+      ? " · " +
+        w.artifactCount +
+        I18n.t(" 个中间产物（") +
+        (Number(w.artifactBytes) > 0
+          ? Math.max(1, Math.round(Number(w.artifactBytes) / 1024)) + " KB"
+          : "0 KB") +
+        "）"
+      : "") +
     (w.origin && w.origin.kind === "workshop"
       ? " · " + I18n.t("来自工坊") + (w.origin.title ? "：" + w.origin.title : "")
       : "");

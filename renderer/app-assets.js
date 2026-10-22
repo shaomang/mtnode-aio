@@ -2415,6 +2415,121 @@ function assetInsertToCanvas(a) {
   return node;
 }
 
+/* ── 单条内容 → 画布上的独立节点（文本 / 图像） ──────────────────────────
+   与上面的「插入到画布」是两条不同的路：那里建的是**绑定整份素材**的素材节点（内容仍住在
+   素材库里）；这里把**一条内容**复制出来，内容内联进独立节点 —— 文本写进 node.text、图像经
+   copyImageFromPath 复制进当前画布的资产目录 —— 与素材库彻底脱钩：库里删掉条目 / 换根目录
+   都不影响这个节点（与拖外部文件进画布同一口径）。源库只读，复制是单向的。
+   音频 / 视频暂无对应的独立节点形态，入口置灰（见 assetSetRow）。 */
+const ASSET_ITEM_COPY_KIND = { text: "input_text", image: "input_image" };
+
+/** 条目类型 → 可复制成的节点 kind（空 = 这个类型不支持） */
+function assetItemCopyKindOf(type) {
+  return ASSET_ITEM_COPY_KIND[String(type || "")] || "";
+}
+
+/** 行内按钮 / 右键菜单共用的说明（悬停提示，也是置灰时讲清为什么不能点） */
+function assetItemCopyHint(kind) {
+  if (kind === "input_text")
+    return I18n.t("把这一条正文复制成画布上的独立文本节点（内容内联，与素材库脱钩）");
+  if (kind === "input_image")
+    return I18n.t("把这一条图像复制成画布上的独立图像节点（图片复制进画布资产，与素材库脱钩）");
+  return I18n.t("只支持文本 / 图像：音频、视频条目暂时不能复制为节点");
+}
+
+/** 复制一条内容为独立节点：a ＝ 所在素材（不传 = 设置框那份），r ＝ assetSetRow 的行 */
+async function assetItemCopyToCanvas(a, r) {
+  const kind = assetItemCopyKindOf(r && r.type);
+  if (!r || !r.id || !kind) {
+    toast(assetItemCopyHint(""), "warn");
+    return null;
+  }
+  if (!S.wf || !Array.isArray(S.wf.nodes)) {
+    toast(I18n.t("请先打开一个画布"), "warn");
+    return null;
+  }
+  if (
+    typeof makeNode !== "function" ||
+    typeof uniqueNodeTitle !== "function" ||
+    typeof NODE_DEFAULTS === "undefined" ||
+    !NODE_DEFAULTS[kind]
+  ) {
+    toast(I18n.t("画布节点尚未就绪，无法复制"), "warn");
+    return null;
+  }
+  const aid = assetEditAssetId(a);
+  if (!aid) return null;
+  /* 库为真源：直读一次（不吃条目视图缓存，也不受「正在输入但还没提交」的正文影响） */
+  const rd = await window.api.assetsItemRead(aid, r.id).catch(() => null);
+  if (!rd || !rd.ok) {
+    toast(
+      I18n.t("这条内容在素材库里已经取不到了：") +
+        ((rd && rd.error) || I18n.t("读取失败")),
+      "err",
+    );
+    return null;
+  }
+  const title = String(r.title || rd.title || "").trim() || I18n.t("内容");
+  let copied = null;
+  /* 图像要复制成画布自己的资产：先把磁盘 IO 做完（失败就什么都不建，不留半个节点） */
+  if (kind === "input_image") {
+    if (!rd.absPath) {
+      toast(I18n.t("这条内容还没有实体文件，无法复制为图像节点"), "warn");
+      return null;
+    }
+    try {
+      /* 资产文件名沿用源文件主名（中文标题会被净化成一串下划线，观感很差）；
+         源文件没有可用主名时才退回条目标题 */
+      const stem = typeof imageStem === "function" ? imageStem(rd.absPath) : "";
+      copied = await copyImageFromPath(rd.absPath, stem || title);
+    } catch (e) {
+      toast(I18n.t("复制失败：") + ((e && e.message) || e), "err");
+      return null;
+    }
+  }
+  const p = assetSpawnPoint();
+  /* 连着复制好几条时落点可能重合（都被浮层 / 壳挤到同一块空白处）：已被节点占着就斜向
+     阶梯错开，别把两个节点叠成一块（口径与「插入到画布」的连点错开一致） */
+  if (typeof snap === "function") {
+    for (
+      let i = 0;
+      i < 8 &&
+      S.wf.nodes.some(
+        (n) => Math.abs(Number(n.x) - p.x) < 8 && Math.abs(Number(n.y) - p.y) < 8,
+      );
+      i++
+    ) {
+      p.x = snap(p.x + 30);
+      p.y = snap(p.y + 26);
+    }
+  }
+  /* 父级口径与「插入到画布」逐字一致：全屏在节点层内部时跟随视图语境，否则钉在顶层 */
+  const sf = typeof currentSuperFocus === "function" ? currentSuperFocus() : "";
+  const node = makeNode(kind, p.x, p.y);
+  if (!node) {
+    toast(I18n.t("复制失败：无法创建画布节点"), "err");
+    return null;
+  }
+  node.title = uniqueNodeTitle(title);
+  if (kind === "input_text") node.text = String(rd.text || "");
+  else {
+    node.imageAsset = copied.path;
+    node.sourceName = copied.sourceName;
+  }
+  if (!sf) node.parentSuperId = "";
+  pushHistory();
+  S.wf.nodes.push(node);
+  S.sel = node.id;
+  S.selWire = null;
+  renderCanvas();
+  scheduleSave(true);
+  renderStatus();
+  /* 落点被浮层 / 壳挤到可见区外时把镜头跟过去（本来就在可见区里则一步都不动） */
+  assetSpawnReveal(node);
+  toast(I18n.t("已复制为独立节点：") + node.title, "ok");
+  return node;
+}
+
 /* ════════════ 素材节点侧：绑定 / 上传 / 失联重绑 / 设置入口 ════════════
    节点上只有 assetId + 相对路径 + 端子快照，内容实体永远在素材夹里：
    · 绑定 ＝ 在素材库左右栏（同一份渲染 · pick 模式）里挑一个素材；
@@ -4537,6 +4652,29 @@ function assetSetRow(r, i, n, ctx) {
   ctx = ctx || { asset: null, holder: ASSET_SET, repaint: () => paintAssetSettings() };
   const row = assetEl("div", "asset-set-row");
   row.dataset.i = String(i);
+  /* 「复制为节点」的能力与说明本次渲染只算一次：行内按钮与行右键菜单共用（同一份口径） */
+  const copyKind = assetItemCopyKindOf(r.type);
+  const copyHint = copyKind
+    ? assetItemCopyHint(copyKind)
+    : I18n.t("只支持文本 / 图像：音频、视频条目暂时不能复制为节点");
+  row.oncontextmenu = (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    assetMenu(ev.clientX, ev.clientY, [
+      {
+        label: I18n.t("复制为节点"),
+        disabled: !copyKind,
+        title: copyHint,
+        run: () => assetItemCopyToCanvas(ctx.asset, r),
+      },
+      r.absPath
+        ? {
+            label: I18n.t("在资源管理器中显示"),
+            run: () => window.api.shellShowItem(r.absPath),
+          }
+        : null,
+    ]);
+  };
   /* ⠿ 把手：只从把手拖起（标题输入框里的选字不会被误判成整行拖拽） */
   row.appendChild(
     assetWireRowDrag(
@@ -4657,6 +4795,16 @@ function assetSetRow(r, i, n, ctx) {
       assetItemReplaceFile(assetEditAssetId(ctx.asset), r.id, r.title, "text");
     row.appendChild(up);
   }
+  /* 「复制为节点」：把这一条内容复制成画布上的独立节点（只读库，与素材库脱钩）。
+     音频 / 视频暂无对应节点形态 → 按钮置灰并说明原因（不藏起来：用户看得见能力边界）。 */
+  const cp = assetBtn(I18n.t("复制为节点"), null, copyHint);
+  cp.classList.add("asset-row-copy");
+  cp.disabled = !copyKind;
+  cp.onclick = () => {
+    if (!copyKind) return;
+    assetItemCopyToCanvas(ctx.asset, r);
+  };
+  row.appendChild(cp);
   const rm = assetBtn("✕", "danger", I18n.t("删除这条内容（端子一并消失 · 实体文件进回收站）"));
   rm.onclick = () => assetSetRemoveItem(r, ctx.asset);
   row.appendChild(rm);

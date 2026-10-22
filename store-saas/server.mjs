@@ -9389,6 +9389,8 @@ async function handle(req, res) {
       sessionExpiresAt: a.session.expiresAt,
       // stats 里附打赏汇总（count 未撤销笔数 / totalYuan 未撤销总额），管理台概览卡片直接用
       stats: Object.assign(wallet.stats(), { tips: plans.adminStats() }),
+      // 内容库存（应用 / 画布 / 工作流 / 技能）：概览与内容管理页签角标共用这一份口径
+      content: adminContentCounts(),
       alipay: alipayStatus(),
       wechat: { configured: wechatConfigured(), ownerMapEntries: WECHAT_OWNER_MAP.size },
       config: {

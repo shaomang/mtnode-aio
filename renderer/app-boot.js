@@ -924,8 +924,12 @@ async function init() {
     ? S.config.assistMessages
     : [];
   delete S.config.assistMessages;
+  /* 老配置里的助手台账键 + 那两枚全局开关（本轮需求 · 会话为主体）：
+     台账只挂会话（st.tokenReport），纯净模式 / 先拷问只认会话字段（st.pure / st.grill）。
+     这两类键读回来一律删掉，免得又被当成第二份真源。 */
   delete S.config.assistTokenReport;
-  S.assistTokenReport = null;
+  delete S.config.assistGrill;
+  delete S.config.assistPure;
   S.assistMessages = [];
   let assistBoundSt = S.assistSessionId
     ? typeof agentSessionById === "function"

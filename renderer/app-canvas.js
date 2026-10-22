@@ -3282,12 +3282,14 @@ registerNodeSettingsForm("proc_image", {
 });
 
 registerNodeSettingsForm("agent_task", {
-  gearTitle: () => I18n.t("预设 / 供应商 / 模型 / 思考强度 / 工作目录"),
+  gearTitle: () => I18n.t("预设 / 供应商 / 模型 / 思考强度 / 工作目录 / 中间产物"),
   summary: nsAgentSummary,
   build: (ctx) => {
     nsAgentFields(ctx, ctx.node);
     /* 工作目录（本轮从节点内那行 .agent-ws-row 搬来这里）：节点里只剩上下栏 */
     nsAgentWorkspaceField(ctx, ctx.node);
+    /* 随工作流带过来的中间产物（复用 / 重生成 / 剔除） */
+    if (typeof nsArtifactFields === "function") nsArtifactFields(ctx, ctx.node);
   },
 });
 
@@ -3311,6 +3313,29 @@ registerNodeSettingsForm("remotion", {
     const node = ctx.node;
     nsProviderModelFields(ctx, node);
     nsTemperatureField(ctx, node);
+    /* 描述：与节点板身那颗正文框同一字段（node.text），这里给大窗编辑入口。
+       留空 = 按已接线的素材 / 台词走内置台词卡版面。 */
+    ctx.section(I18n.t("描述"));
+    {
+      const ta = document.createElement("textarea");
+      ta.className = "n-text";
+      ta.spellcheck = false;
+      ta.rows = 4;
+      ta.style.minHeight = "88px";
+      ta.style.resize = "vertical";
+      ta.placeholder = I18n.t("视频内容描述（可空 · 支持 @节点标题 引用已接线输入）");
+      ta.value = String(node.text || "");
+      ta.addEventListener("input", () => {
+        node.text = ta.value;
+        ctx.commit();
+      });
+      ctx.field(I18n.t("描述（可空 · @ 引用已接线输入）"), ta);
+      ctx.hint(
+        I18n.t(
+          "输入端子无差别：视频 / 图片接进来就是主素材，音频是语音，文本是台词；描述留空时直接按接线走内置台词卡版面。",
+        ),
+      );
+    }
     ctx.section(I18n.t("渲染"));
     const meta = () =>
       syncNodeSettingsValue(node, "mgmeta", remotionMetaText(node));
@@ -3356,6 +3381,8 @@ registerNodeSettingsForm("remotion", {
         meta();
       },
     );
+    /* 随工作流带过来的中间产物（典型就是 Composition.tsx：复用 / 重生成 / 剔除） */
+    if (typeof nsArtifactFields === "function") nsArtifactFields(ctx, node);
   },
 });
 
@@ -3596,7 +3623,7 @@ registerNodeSettingsForm("video_gen", {
       );
     ctx.section(I18n.t("24G 优化（默认开，可关）"));
     addOpt("optEasyCache", I18n.t("EasyCache"), I18n.t("原生步跳过缓存 · 约 1.4–2×"));
-    addOpt("optSageAttn", I18n.t("Sage Attention"), I18n.t("需 triton-windows + sageattention；缺包自动跳过（H3 插件窗可一键补装）"));
+    addOpt("optSageAttn", I18n.t("Sage Attention"), I18n.t("Sage 必须项：需 triton-windows + sageattention 成对安装；未就绪则拒绝启动后端与出片（关闭 = 本节点豁免）"));
     addOpt("optLowVramAttn", I18n.t("Low VRAM Attention"), I18n.t("按 head 分块降峰值显存"));
     addOpt("optChunkFfn", I18n.t("Chunk FeedForward"), I18n.t("FFN 分块降峰值显存"));
     addOpt("optVramBarrier", I18n.t("VAE 前卸模型"), I18n.t("采样后 unload，避免双 VAE 解码 OOM"));
@@ -7518,7 +7545,9 @@ function portBadgeText(node, dir, idx, opt) {
         return { badge: I18n.t("参考音频") + meta.label, title: meta.label, zh: true };
       }
       case "remotion":
-        return { badge: i === 0 ? I18n.t("控制") : I18n.t("描述"), title: "", zh: true };
+        /* 无差别端子：不再有「描述」口，也不预设角色名 —— 统一「输入 N」，
+           控制线口由上面的 ctrlPort 判成「控制」（按连线反推，不看端口号）。 */
+        return { badge: fb, title: "", zh: true };
       case "net_send":
         return { badge: i === 0 ? I18n.t("信息") : I18n.t("控制"), title: "", zh: true };
       default:
@@ -7679,7 +7708,11 @@ function portBadgeInIsCtrlPort(node, idx) {
     case "video_interp":
       return i === 0;
     case "remotion":
-      return i === 0;
+      /* 无差别端子：控制语义按「这颗口上挂的是什么线」反推（真源 app.js remotionPortIsControl），
+         空口 / 数据线口一律按数据口上色。 */
+      return typeof remotionPortIsControl === "function"
+        ? remotionPortIsControl(node, i)
+        : false;
     default:
       return false;
   }
@@ -9177,10 +9210,10 @@ function nodeElement(node) {
       else if (i === 1) inTitle = I18n.t("源视频（待处理的视频）");
       else inTitle = I18n.t("可选素材 ") + (i - 1);
     } else if (node.kind === "remotion") {
-      inTitle =
-        i === 0
-          ? I18n.t("控制输入（触发生成）")
-          : I18n.t("描述文本（视频内容描述）");
+      /* 无差别端子：不预设角色（描述已改成节点内字段），控制口按连线反推 */
+      inTitle = inPortIsControl(node, i)
+        ? I18n.t("控制输入（触发渲染）")
+        : I18n.t("输入（视频 / 图片 → 主素材 · 音频 → 语音 · 文本 → 台词）");
     }
     p.title = linkedIn.length ? inTitle : inTitle;
     p.style.top = inPortY(node, i, ic) - PORT_R + "px";
@@ -16006,6 +16039,52 @@ function buildBody(node, body) {
       warn.textContent = I18n.t("⚠ Remotion 插件未安装：请在「插件」中安装后使用本节点");
       warn.title = I18n.t("插件 · Remotion 动效视频：设置安装目录 → 安装（npm install）");
       body.appendChild(warn);
+    }
+    /* 描述已经搬进节点（与文本处理节点同一套正文框：@ 引用 / 技能呼出 / 镜像高亮）：
+       以前描述只能靠上游文本节点接进端口 1，端子被占就写不了描述；现在它是节点自己的
+       字段（node.text），可空 —— 空描述 + 已接线素材 / 台词照样能跑内置台词卡版面。 */
+    {
+      const row = document.createElement("div");
+      row.className = "n-proc-row";
+      /* 描述框固定占高（约 4 行）：节点体是 flex 列，meta / 状态 / 预览都在抢高度，
+         不给它固定高就会被压成一条细缝（实测只剩 11px，等于没有描述框）。 */
+      row.style.flex = "0 0 auto";
+      row.style.height = "104px";
+      const col = document.createElement("div");
+      col.className = "n-proc-left";
+      const f = document.createElement("label");
+      f.className = "n-field n-prompt";
+      const hdr = document.createElement("div");
+      hdr.className = "n-prompt-hdr";
+      const lab = document.createElement("span");
+      lab.className = "n-prompt-lab";
+      lab.textContent = I18n.t("描述（可空 · @ 引用已接线输入）");
+      hdr.appendChild(lab);
+      f.appendChild(hdr);
+      const ta = document.createElement("textarea");
+      ta.className = "n-text";
+      ta.spellcheck = false;
+      ta.placeholder = I18n.t(
+        "例如：左侧角色动效 + 右侧金边台词卡，台词按语速逐句出现… 输入 @ 引用已接线节点（空描述 = 按已接线的素材 / 台词走内置版面）",
+      );
+      ta.value = String(node.text || "");
+      const persist = (v) => {
+        node.text = v;
+        scheduleSave();
+      };
+      ta.addEventListener("keydown", (ev) => {
+        if (refKey(ta, ev, node)) return;
+      });
+      ta.addEventListener("click", () => {
+        if (S.refMenu) refTick(ta, node);
+      });
+      ta.addEventListener("blur", () =>
+        setTimeout(() => closeRefMenu(), 150),
+      );
+      mountPromptTextarea(f, ta, node, persist);
+      col.appendChild(f);
+      row.appendChild(col);
+      body.appendChild(row);
     }
     /* 分辨率 / fps / 时长 → ⚙ 跳窗；这一行 meta 就是设置摘要本身，id 沿用 mgmeta-
        （老代码按这个 id 就地改写文本，syncNodeSettingsValue 认它） */

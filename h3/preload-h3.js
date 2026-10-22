@@ -76,6 +76,12 @@ const api = {
     ipcRenderer.on("h3:wfEditorViewChanged", handler);
     return () => ipcRenderer.removeListener("h3:wfEditorViewChanged", handler);
   },
+  /* 「ComfyUI 编辑界面」后台启动作业状态（running / url / error）：启动中与失败都能看见 */
+  onComfyOpen: (cb) => {
+    const handler = (_e, data) => cb && cb(data);
+    ipcRenderer.on("h3:comfyOpenChanged", handler);
+    return () => ipcRenderer.removeListener("h3:comfyOpenChanged", handler);
+  },
   close: () => {
     try {
       window.close();

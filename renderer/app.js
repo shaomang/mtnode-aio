@@ -1261,6 +1261,7 @@ const NODE_DEFAULTS = {
     inputH: 64,
     workspace: "",
     batchMode: "batch",
+    artifacts: [], /* 随工作流包带过来的中间产物（见 app-workflows.js 的 wfArtifactsOf） */
     effort: "high",
     /* 智能节点默认走默认预设：跑起来时 app-db.js 会把「默认档」换成内部 node 档
        （办事不改图），所以这里存的是界面档，不是网关档。 */
@@ -1633,12 +1634,15 @@ const NODE_DEFAULTS = {
     running: false,
   },
   /* Remotion 视频（应用插件 remotion · React 动效合成 → 本地渲染 mp4）：
-     描述文本 → LLM 生成 Composition.tsx → 主进程 remotion/main-remotion.js 渲染。
-     端口0=控制输入（固定）· 端口1=描述文本输入。 */
+     描述写在节点里（text）→ LLM 生成 Composition.tsx → 主进程 remotion/main-remotion.js 渲染。
+     输入端子无差别（0、1、2… 连一条长一条，数据线与控制线共用，见 inputCount / remotionPortIsControl）；
+     remotionPortsV2 = 已经是新端子口径，读档迁移（migrateWf）不再动它。 */
   remotion: {
     w: 400,
-    h: 320,
+    h: 460,
     title: "Remotion 视频",
+    text: "", /* 描述（可空：空描述时按已接线的素材 / 台词走内置台词卡版面） */
+    remotionPortsV2: 1,
     duration: 5,
     fps: 30,
     size: "1280x720", /* 输出分辨率 宽x高（16:9） */
@@ -1652,7 +1656,10 @@ const NODE_DEFAULTS = {
     boundSaveId: "",
     remotionStatus: "",
     remotionPct: 0,
-    tsx: "", /* 最近一次 LLM 生成的 Composition.tsx（展示用，宿主当前按结构化参数渲染模板） */
+    tsx: "", /* 最近一次 LLM 生成的 Composition.tsx（展示用） */
+    tsxTsx: "", /* 直出合成代码：非空时跳过 LLM，原样作为 src/Composition.tsx */
+    artifacts: [], /* 随工作流包带过来的中间产物（典型是 Composition.tsx） */
+    bgColor: "", /* 内置台词卡版面的左侧底色（空 = 模板默认深夜蓝） */
     output: null,
     error: null,
     ranAt: 0,
@@ -6782,8 +6789,25 @@ function inPortIsControl(node, idx) {
   if (node.kind === "breeze_gen") return i === 4; /* 端口4=控制输入 */
   if (node.kind === "video_gen") return i === videoGenControlPort(node);
   if (isVideoPostKind(node)) return i === 0;
-  if (node.kind === "remotion") return i === 0;
+  if (node.kind === "remotion") return remotionPortIsControl(node, i);
   /* 其余节点（含 proc_text / proc_image / 素材 / 全局 …）：端子不声明控制语义 */
+  return false;
+}
+
+/* Remotion 的「无差别端子」：数据线与控制线共用同一批口，端子 0、1、2… 都可能是控制口。
+   所以它的控制语义**不能按节点固定**，只能按「这颗口上现在挂的是什么线」判定 ——
+   来源是控制节点（control / task 等）就是控制口，否则是数据口。空口恒按数据口算
+   （控制线要落空口时先到先占，见 app-nodes.js connectError / dataNodeControlInPort）。
+   这是全仓唯一按连线反推控制语义的节点，所以判定与配色 / 接线校验 / 落点共用这一处。 */
+function remotionPortIsControl(node, idx) {
+  if (!node || !S.wf) return false;
+  const i = Number(idx);
+  if (!isFinite(i) || i < 0) return false;
+  for (const w of S.wf.wires || []) {
+    if (!w || w.rel || w.to !== node.id) continue;
+    if (Number(w.toIndex || 0) !== i) continue;
+    if (wireFromIsControl(w)) return true;
+  }
   return false;
 }
 const IN_PORT_DATA_KINDS = {
@@ -6792,7 +6816,8 @@ const IN_PORT_DATA_KINDS = {
   yue_gen: ["text", "text", "text", "control"],
   /* Breeze 语音：0=待合成文本 · 1=参考音频（音频文件 URL）· 2=参考文稿 · 3=指令 · 4=控制输入 */
   breeze_gen: ["text", "audio", "text", "text", "control"],
-  remotion: ["control", "text"],
+  /* Remotion：无差别端子 —— 端口类型由连线决定（数据 / 控制都可能落任意口），
+     不在这张固定表里声明（见 inPortKindOf 的 remotion 分支与 remotionPortIsControl） */
 };
 /* 输入端子声明的类型：控制端子回 "control"；工具 / 函数节点的数据端子回参数声明的
    text | image；固定端子节点回上表；**没有端子级声明的节点回 null**
@@ -6812,6 +6837,8 @@ function inPortKindOf(node, idx) {
   /* H3 的控制口由 videoGenControlPort 给（v5 起恒为端口 0），必须先按节点 kind 收窄，
      否则任何节点的 0 号端子都会被判成控制端子（普通数据节点的提示词口就此报废）。 */
   if (node.kind === "video_gen") return i === videoGenControlPort(node) ? "control" : null;
+  /* Remotion：控制语义按连线反推（无差别端子），空口 / 数据线口一律「任意」 */
+  if (node.kind === "remotion") return remotionPortIsControl(node, i) ? "control" : null;
   const table = IN_PORT_DATA_KINDS[node.kind];
   if (table) return i < table.length ? table[i] : null;
   if (isVideoPostKind(node)) return i === 0 ? "control" : null;
@@ -6831,7 +6858,8 @@ function hasFixedInPorts(n) {
       n.kind === "breeze_gen" ||
       n.kind === "video_gen" ||
       isVideoPostKind(n) ||
-      n.kind === "remotion" ||
+      /* Remotion 已改成无差别动态端子（与 proc_text 同族）：断线可以重排端子号，
+         控制语义按连线反推而不是按节点固定 —— 故不在此表 */
       n.kind === "task" ||
       n.kind === "super" ||
       n.kind === "net_send" ||
@@ -7979,7 +8007,17 @@ function inputCount(node) {
   if (node.kind === "breeze_gen") return 5;
   if (node.kind === "video_gen") return videoGenInputCount(node); /* 端口0=控制输入（固定）· 端口1+=数据槽 */
   if (isVideoPostKind(node)) return videoPostInputCount(node); /* 端口0=控制 · 端口1=源视频 · 端口2+=可选素材 */
-  if (node.kind === "remotion") return 2; /* 端口0=控制输入（固定）· 端口1=描述文本输入 */
+  /* Remotion 视频：**无差别动态端子**（与 proc_text 同一套增量口径）——
+     端口 0、1、2… 连一条长一条，数据线与控制线共用同一批端子（先到先占，见
+     remotionPortIsControl）；描述已搬进节点（node.text），不再占端子。
+     端子数 = max(已挂线数 + 1, 最高已占端口 + 2)：恒留一颗空槽，最高那颗口不会
+     「有线却没画出来」。取值见 app-nodes.js remotionInputList。 */
+  if (node.kind === "remotion") {
+    const ws = allWiresTo(node.id);
+    let maxIdx = -1;
+    for (const w of ws) maxIdx = Math.max(maxIdx, Number(w.toIndex) || 0);
+    return Math.max(1, ws.length + 1, maxIdx + 2);
+  }
   if (node.kind === "net_recv") return 0; /* 接收是异步源，无数据输入 */
   if (node.kind === "net_send") return 2; /* 端口0=信息输入(数据) · 端口1=控制输入 */
   return Math.max(1, allWiresTo(node.id).length + 1);
@@ -31666,6 +31704,56 @@ function migrateWf(wf) {
        同一批 id 与端子序号，故无需改写连线。幂等：已是变体时不触发，旧画布反复加载
        逐字不变（新形态不会再被本分支命中）。 */
     if (n.kind === "tool") migrateToolNodeToSuperForm(n);
+    /* Remotion 端子一次性迁移（描述端子 → 节点描述 + 无差别动态端子）：
+       旧口径是「端口 0 = 控制输入 · 端口 1 = 描述文本 · 端口 2+ = 数据槽」，
+       新口径是「0、1、2… 无差别，描述写在节点里（node.text）」。读档时改一次：
+         · 端口 1 上那条**文本来源**的线 = 旧描述线 → 写成 node.text = "@上游标题"
+           （活引用，上游改描述节点跟着变；节点里已有描述则保留现描述）；
+         · 该线删掉，其余入线 toIndex 左移 1（0、1、2… 保持连续）；
+         · 迁移完打 remotionPortsV2 标记，老画布反复加载逐字不变（幂等）。
+       判定按来源 kind：媒体来源（input_video / input_audio / 图像 / 生成族）本来
+       就不是描述线，端口 1 上的媒体线按普通数据槽一起左移。 */
+    if (n.kind === "remotion" && !n.remotionPortsV2) {
+      /* 旧描述线只可能是「纯文本来源」（描述就是一段文字）；媒体来源
+         （音视频输入 / 图像 / 生成族）在旧口径下也是数据槽，不算描述线。
+         注意：这里**不能**用 nodeById —— 读档时 S.wf 还是上一张画布，必须在本 wf 里找。 */
+      const wfNode = (id) => (wf.nodes || []).find((x) => x && x.id === id) || null;
+      const plainTextSrc = (src) =>
+        !!src &&
+        (src.kind === "input_text" ||
+          src.kind === "proc_text" ||
+          src.kind === "agent_task" ||
+          src.kind === "merge" ||
+          src.kind === "split" ||
+          src.kind === "super" ||
+          src.kind === "function" ||
+          isToolNode(src) ||
+          (typeof saveNodeOutputsText === "function" && saveNodeOutputsText(src)));
+      const descWire =
+        wf.wires.filter(
+          (w) =>
+            w &&
+            !w.rel &&
+            w.to === n.id &&
+            Number(w.toIndex || 0) === 1 &&
+            plainTextSrc(wfNode(w.from)),
+        )[0] || null;
+      if (descWire) {
+        if (!String(n.text || "").trim()) {
+          const src = wfNode(descWire.from);
+          const title = src && src.title ? String(src.title).trim() : "";
+          n.text = title ? "@" + title : "";
+        }
+        wf.wires = wf.wires.filter((w) => w !== descWire);
+      }
+      /* 描述端子没了：其余入线一律左移 1（0、1、2… 连续），端口号即「第几条输入」 */
+      for (const w of wf.wires) {
+        if (!w || w.rel || w.to !== n.id) continue;
+        const i = Number(w.toIndex || 0);
+        if (i >= 1) w.toIndex = i - 1;
+      }
+      n.remotionPortsV2 = 1;
+    }
     if (n.kind === "input_text" || n.kind === "input_image") {
       if (n.batch == null) n.batch = false;
       if (!Array.isArray(n.entries)) n.entries = [];

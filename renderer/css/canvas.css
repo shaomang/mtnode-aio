@@ -4298,7 +4298,12 @@ body.theme-light .n-chip.n-chip-lt {
   padding: 8px 22px;
   overflow: hidden;
   position: relative;
-  z-index: 1
+  z-index: 1;
+  /* 底部两角必须跟着外框收圆：外框 .wf-node 是 5px 圆角，而它的 overflow-clip-margin:44px
+     把裁剪区放出去了 44px，子元素根本不会被外框弧线裁到 —— body 直角就会从底部两角扎出
+     圆角边界。4px = 外框 5px − 1px 边框，弧线与外框同心（与 .super-folder-body 同值）。
+     .n-body 自带 overflow:hidden，加了圆角后内部底板自己就裁进弧线里了。 */
+  border-radius: 0 0 4px 4px;
 }
 
 .wf-node.music .n-body,
@@ -5754,6 +5759,9 @@ body.theme-light .n-chip.n-chip-lt {
 
 .wf-node::before {
   left: 0;
+  /* 接线排一路铺到节点底部（top:28px → bottom:0），同样要在外侧下角跟着外框收圆，
+     否则这条 20px 宽的板内竖条会从外框左下角的弧线里方角扎出（4px = 5px − 1px 边框）。 */
+  border-radius: 0 0 0 4px;
   /* 凹陷分割线（凹槽）：1px 深色刻线 + 过渡 + 外沿受光 + 内陷柔影 */
   box-shadow:
     inset -1px 0 0 rgba(0, 0, 0, .55),
@@ -5765,6 +5773,8 @@ body.theme-light .n-chip.n-chip-lt {
 
 .wf-node::after {
   right: 0;
+  /* 右接线排同理会从外框右下角的弧线里方角扎出，收圆口径与左侧镜像一致。 */
+  border-radius: 0 0 4px 0;
   box-shadow:
     inset 1px 0 0 rgba(0, 0, 0, .55),
     inset 2px 0 0 rgba(0, 0, 0, .30),

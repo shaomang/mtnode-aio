@@ -372,7 +372,7 @@ const mk = (p) => {
   return p;
 };
 
-/** 取某本地后端宿主登记的显存释放钩子（h3 / music3 / yue / sensenova / llama）。
+/** 取某本地后端宿主登记的显存释放钩子（h3 / music3 / yue / sensenova / llama / breeze）。
  *  宿主只 export 一个 vramHooks()，模块加载失败或没接这一钩子时返回 {} ——
  *  那个后端就不参与释放，绝不影响其余的（也不影响启动）。 */
 function vramHooksOf(host) {
@@ -9460,6 +9460,7 @@ app.whenReady().then(() => {
     Object.assign({ id: "yue", label: "YuE2（音乐）", host: "yue", subdir: "yue" }, vramHooksOf("yue")),
     Object.assign({ id: "sensenova", label: "SenseNova（本机出图）", host: "sensenova", subdir: "sensenova" }, vramHooksOf("sensenova")),
     Object.assign({ id: "llama", label: "llama.cpp（本地大模型）", host: "llama", subdir: "llama" }, vramHooksOf("llama")),
+    Object.assign({ id: "breeze", label: "Breeze TTS 2（语音）", host: "breeze", subdir: "breeze-tts" }, vramHooksOf("breeze")),
   ]) {
     if (typeof def.isRunning !== "function") continue; /* 宿主没接这一钩子 = 不参与释放，不影响其余后端 */
     vramRelease.vramRegister(def);

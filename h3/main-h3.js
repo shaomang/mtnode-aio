@@ -55,7 +55,18 @@ const PLUGIN_ID = "minimax-h3";
 const H3_FEED = process.env.MTNODE_H3_URL || "http://mt-agent.com/mtnode/h3";
 const DEFAULT_PORT = 8188;
 const DISK_HINT_GB = 70;
-const GENERATE_MAX_MS = 60 * 60 * 1000;
+/* 任务上限 / 无进度看门狗（用户口径：显存不够时 ComfyUI 不报错、只一直没进度，
+   以前要死等满 1 小时；现在「多久没有进度」就当场判失败，并指向显存嫌疑）。
+   · 生成 / 自建工作流：无进度 10 分钟中止，总上限 30 分钟。
+   · 独立后处理（超分 / 补帧）：逐帧过 GPU、进度事件稀疏，阈值放宽到 20 / 60 分钟。
+   看门狗判据只认「采样 progress / 执行节点切换」这类真进度事件；
+   轮询 history 本身不算进度（否则显存卡死时也会一直有「心跳」，治不了这个问题）。 */
+const GENERATE_STALL_MS = 10 * 60 * 1000;
+const GENERATE_MAX_MS = 30 * 60 * 1000;
+const POST_STALL_MS = 20 * 60 * 1000;
+const POST_MAX_MS = 60 * 60 * 1000;
+/* 显存门槛（用户口径，写死、不新增任何设置项）：生成 / 自建要 20G 空闲，后处理 12G。 */
+const vramPre = require("./vram-preflight.js");
 
 /* 管理窗 Console 停靠面板：宽 360（与 h3/ui/index.html 的 .console-pane 成对）。
    窗口原本 420 宽，撑开后 780；收回去时主列必须回到原位，所以最小宽度钉 420。 */
@@ -442,6 +453,20 @@ function posNumOrNull(v) {
 function gb1(v) {
   const n = Number(v);
   return Number.isFinite(n) ? Math.round(n * 10) / 10 : null;
+}
+
+/** 显存预检回执 → 控制台一行：放行 / 用户强行 / 读不到 三种都要写清楚，别让人以为没查。 */
+function vramSummaryText(pre) {
+  const p = pre || {};
+  const j = p.judge || {};
+  if (j.skipped) return "显存读数不可用（" + j.skipped + "），本次不拦截";
+  if (p.forced) {
+    return (
+      "用户选择「仍然执行」，已跳过显存拦截" +
+      (j.card ? " · " + j.card + " 空闲 " + j.freeGb + "G / 需 " + j.minFreeGb + "G" : "")
+    );
+  }
+  return (j.card || "GPU") + " 空闲 " + j.freeGb + "G ≥ " + j.minFreeGb + "G";
 }
 
 /* ComfyUI 的 /system_stats 里 system.ram_free / ram_total 是字节；
@@ -2007,8 +2032,9 @@ function sleepAbortable(ms) {
   });
 }
 
-/** ComfyUI WS 真实进度（采样步 / 当前节点）；不可用则返回 null。 */
-function openComfyProgressWs(port, clientId, nodeId) {
+/** ComfyUI WS 真实进度（采样步 / 当前节点）；不可用则返回 null。
+ *  onTick：每来一条消息就回调一次（看门狗用它记「最近一次真进度」的时间）。 */
+function openComfyProgressWs(port, clientId, nodeId, onTick) {
   const WS = typeof WebSocket !== "undefined" ? WebSocket : null;
   if (!WS) {
     appendConsole("[progress] WebSocket unavailable — history poll only");
@@ -2016,6 +2042,12 @@ function openComfyProgressWs(port, clientId, nodeId) {
   }
   let ws = null;
   let lastPct = 15;
+  const tick = (what) => {
+    if (typeof onTick !== "function") return;
+    try {
+      onTick(what);
+    } catch {}
+  };
   try {
     ws = new WS(`ws://127.0.0.1:${Number(port)}/ws?clientId=${encodeURIComponent(clientId)}`);
   } catch (e) {
@@ -2030,6 +2062,8 @@ function openComfyProgressWs(port, clientId, nodeId) {
       return;
     }
     if (!msg || !msg.type) return;
+    /* 排队 / 执行 / 采样 / 进度 —— 任何一条都算「后端还活着且在动」（看门狗心跳） */
+    tick(msg.type);
     if (msg.type === "progress" && msg.data) {
       const v = Number(msg.data.value) || 0;
       const max = Math.max(1, Number(msg.data.max) || 1);
@@ -2274,6 +2308,7 @@ async function statusForUi() {
   const catVer = catalogCachedPluginVersion();
   const latestVersion = verMax(feedVer, catVer) || feedVer || catVer || "";
   const updateAvailable = !!(feedVer && verGt(feedVer, version));
+  const stateSage = readSageProbe(cfg.installDir);
   return {
     ok: true,
     id: PLUGIN_ID,
@@ -2286,12 +2321,18 @@ async function statusForUi() {
     diskHintGb: DISK_HINT_GB,
     installDir: cfg.installDir || "",
     project: sig,
-    /* Sage 加速自检结果（读缓存；过期只后台补探，不堵状态刷新）：管理窗据此提示点「Sage 加速」 */
-    sage: readSageProbe(cfg.installDir),
+    /* Sage 加速自检结果（读缓存；过期只后台补探，不堵状态刷新）—— 它是**必须项**，
+       管理窗据此出红色横幅 / 高亮「Sage 加速」按钮；sageExempt 是用户显式声明放弃的出口 */
+    sage: stateSage,
+    sageExempt: sageExemptState(cfg.installDir, stateSage),
+    sageRequired: !(stateSage && stateSage.ok),
     installed: !!(installedMeta && installedMeta.ok) || sig.ready,
     installing,
     running: backendRunning() || comfyUp,
     comfyUp,
+    /* 「ComfyUI 编辑界面」后台启动作业：管理窗据此常驻显示「正在启动后端…」/ 上次失败原因 */
+    comfyStarting: !!comfyOpenJob.running,
+    comfyStartError: comfyOpenJob.error || "",
     consoleOpen: !!(consoleWin && !consoleWin.isDestroyed()),
     port,
     comfyUrl: comfyUiUrl(port),
@@ -2430,7 +2471,14 @@ async function installProject(opts) {
     const out = await runPs(script, ["-InstallDir", installDir, "-DiskHintGb", String(DISK_HINT_GB)], {
       cwd: installDir,
       /* 统一国内源（PIP_* 三件套压掉机器级 pip.ini 的不可达 extra-index）：见 ../cn-mirrors.js */
-      env: mirrors.installEnv(),
+      env: Object.assign(
+        mirrors.installEnv(),
+        /* Sage 是必须项：用户已显式豁免时把这条声明传给安装脚本，让 install.ps1 的 sage
+           步骤在装不上时按「已豁免」放行，而不是把整次安装判失败（唯一出口，见 sageExemptState） */
+        sageEnvExemptOn() || sageExemptState(installDir, readSageProbe(installDir)).active
+          ? { MT_H3_SAGE_EXEMPT: "1" }
+          : {},
+      ),
       onPct: (pct) =>
         emitProgress({
           phase: "install",
@@ -2581,16 +2629,18 @@ async function agentInstallByAgent(opts) {
     `7) ComfyUI\\custom_nodes 清单必须含 ${REQUIRED_CUSTOM_NODE_DIRS.join(" + ")}` +
       `（前者供分块上采样，后者供 RIFE 补帧）；${OPTIONAL_CUSTOM_NODE_DIRS.join(" + ")} 标注为备用（推荐链已移除 TeaCache，只保留 EasyCache 步缓存），没装不算失败。`,
     `8) 冒烟：venv python 下 import comfy_kitchen 与 torch.cuda 可用（即第 3 条那条命令），不要为此启动 ComfyUI 服务。`,
-    `9) 注意力加速（「安装」流程要覆盖这一项）：给 venv 补装 triton-windows + 与本 venv 配套的 sageattention 预编译 wheel —— ` +
-      `口径见 skill「可选依赖」一节（PyPI 上只有老的 sageattention 1.0.6，2.x 走 woct0rdho/SageAttention 的 release wheel，` +
-      `文件名里的 cuNNN / torchX 必须对上本机 CUDA 大版本与 torch 版本）。装完用 venv python 跑 import triton + import sageattention 自检。`,
+    `9) 注意力加速（**必须项**，「安装」流程必须覆盖这一项）：给 venv 补装 triton-windows + 与本 venv 配套的 sageattention 预编译 wheel —— ` +
+      `口径见 skill「必须依赖：Sage Attention」一节（PyPI 上只有老的 sageattention 1.0.6，2.x 走 woct0rdho/SageAttention 的 release wheel，` +
+      `文件名里的 cuNNN / torchX 必须对上本机 CUDA 大版本与 torch 版本）。装完用 venv python 自检：import triton + import sageattention 成对，` +
+      `再真跑一次 sageattn 小 kernel。缺失 / 不可用就是交付缺项（宿主会拒绝启动后端、拒绝出片）；只有显卡不在内核白名单这类客观不可用，` +
+      `才允许按「已豁免」交付并在结论里写明原因。`,
     `10) 收尾前自己先跑一次健康检查并在回复里带上退出码：在 INSTALL_DIR 下执行 ${venvPyRel} -m app ` +
       `（它打印 venv / 模型 / postModels / cuda 的 JSON 报告），退出码 0 才算完成。` +
       `插件收尾还会再跑一次同样的检查，缺项迟早被判失败，别为了交差先写 ok=true。`,
   ].join("\n");
   const disciplines =
     `纪律（四条，一律遵守）：不要启动 ComfyUI；不要删除用户 output/；模型已齐则勿重下（只补缺的）；` +
-    `Sage 加速（第 9 条）装不上不算失败——跳过即可，画布生成会自动退回非 Sage 链（只是慢 1.5-2×），已探测到可用则勿重复装。\n`;
+    `Sage 加速（第 9 条）是必须项：装不上 / 自检不过就是交付失败，不要用「跳过即可」了事；已探测到可用则勿重复装。\n`;
   const handoff =
     `成功后：创建空文件 ${marker}，写入 ${resultMarker}（首行 ok=true，可附 reason= 摘要），回复 install_ok=1 与 cuda_python=<path> torch_file=<path> health_exit=0。\n` +
     `失败则 ${resultMarker} 写 ok=false 与 reason=<上面哪一条没交付 + 具体报错>`;
@@ -3125,6 +3175,26 @@ async function startBackend() {
   if (!sig.venv) {
     reportErr("no_venv", "H3 后端缺少 Python 环境（ComfyUI\\venv）", { phase: "start" });
     return { ok: false, error: "no_venv" };
+  }
+
+  /* Sage 加速是必须项：启动前只做 import 快探测（10 分钟缓存，几秒内），不跑 kernel
+     （kernel 试跑放在生成前那一档）。未就绪且未豁免 → 拒绝启动，**包括**「外部已在跑的
+     后端」那条复用路径：带不带 Sage 是这套环境的属性，与谁把 ComfyUI 拉起来无关。 */
+  const startSage = await ensureSageProbe(installDir);
+  const startExempt = sageExemptState(installDir, startSage);
+  if (!startSage || !startSage.ok) {
+    const why = (startSage && startSage.why) || "probe_failed";
+    if (!startExempt.active) {
+      const msg =
+        "Sage 加速未就绪（必须项）：后端不会在没有 Sage 的情况下启动。" +
+        why + "。" + sageMissingHint(startSage) + "。" + sageExemptSnippet(installDir, startSage);
+      appendConsole("[start] " + msg);
+      reportErr("sage_required", msg, { phase: "start" });
+      return { ok: false, error: "sage_required", message: msg, sage: startSage };
+    }
+    appendConsole(
+      "[start] sage 未就绪但已豁免（" + startExempt.reason + "）：" + why + " —— 继续启动，按无 Sage 出片",
+    );
   }
 
   const port = Number(cfg.port) || DEFAULT_PORT;
@@ -4031,6 +4101,23 @@ async function postProcessVideo(params) {
     const port = Number(ready.port) || Number(cfg.port) || DEFAULT_PORT;
     const comfy = comfyDir(cfg.installDir);
 
+    /* 显存预检（后处理门槛 12G，见 vram-preflight.js 头部口径）：显存不够时 ComfyUI 不报错、
+       只会一直没进度。forceVram = 用户已明确点过「仍然执行」（只对本次这一跑生效）。 */
+    const postVram = await vramPre.gate({ kind: "post", force: req.forceVram === true });
+    if (!postVram.ok) {
+      clearLock();
+      appendConsole("[post] reject: 显存不足 —— " + postVram.message);
+      emitProgress({ phase: "post", nodeId, message: postVram.message, error: true, pct: 0 });
+      reportErr("vram_insufficient", postVram.message, {
+        phase: "post",
+        nodeId,
+        workflowId: String(req.canvasWorkflowId || ""),
+        nodeKind: "video_upscale/video_interp",
+      });
+      return { ok: false, error: "vram_insufficient", message: postVram.message, gpu: postVram.judge };
+    }
+    appendConsole("[post] vram ok " + vramSummaryText(postVram));
+
     activeGenerate = { nodeId, abort: false, promptId: "", req: null };
     /* 系统内存水位（只为把「跑满的是内存、不是显存」变成控制台里的实测数字） */
     memWatch = startRamWatch();
@@ -4922,6 +5009,7 @@ let _sageProbeDir = "";
 
 function invalidateSageProbe() {
   _sageProbe = null;
+  _sageSmoke = null;
 }
 /** 缓存必须绑定安装目录：换目录 = 换 venv，旧目录「已装齐」的结论对新目录一律不成立。 */
 function sageProbeFresh(dir) {
@@ -4971,7 +5059,40 @@ function readSageProbe(installDir) {
   return _sageProbe ? _sageProbe.value : { probed: false, ok: false, why: "checking" };
 }
 
-/** 缺包时给用户的口径：既说清后果（自动跳过 Sage，不是报错），也给出点哪儿能修好。
+/* ── kernel 试跑（生成前那一档，必须项）─────────────────────────────────
+ * 「正确启动」不能只证明 import 成功：缺本机架构的 .pyd 时是**调用期**才炸，而工作流里挂了
+ * PathchSageAttentionKJ 之后再炸，ComfyUI 会直接把 /prompt 打到 validation failed，白跑一轮。
+ * 所以生成前真跑一次 sageattn 小张量并校验 finite。结果按 venv + 版本三件套缓存 10 分钟
+ * （与 import 探测同一个 TTL），不会每次出片都多花几秒。 */
+let _sageSmoke = null;
+const SAGE_SMOKE_TTL_MS = 10 * 60 * 1000;
+async function ensureSageKernelSmoke(installDir, probe) {
+  const py = comfyVenvPython(installDir);
+  if (!py) return { ok: false, why: "no_venv" };
+  const key = [String((probe && probe.sage) || ""), String((probe && probe.triton) || ""), String((probe && probe.sm) || "")].join("|");
+  if (
+    _sageSmoke &&
+    _sageSmoke.dir === String(installDir || "") &&
+    _sageSmoke.key === key &&
+    Date.now() - _sageSmoke.at < SAGE_SMOKE_TTL_MS
+  ) {
+    return _sageSmoke;
+  }
+  const r = await runVenvPy(py, SAGE_SMOKE_PY);
+  const j = parseSageProbe(r.out, r.code);
+  _sageSmoke = {
+    dir: String(installDir || ""),
+    key,
+    ok: !!j.ok,
+    why: String(j.why || ""),
+    at: Date.now(),
+  };
+  if (!_sageSmoke.ok) appendConsole("[sage] kernel smoke failed: " + (_sageSmoke.why || "unknown"));
+  else appendConsole("[sage] kernel smoke ok @ " + ((probe && probe.sm) || "?"));
+  return _sageSmoke;
+}
+
+/** 缺包时给用户的口径：Sage 是必须项 —— 说清后果（后端不启动 / 不出片）与点哪儿能修好。
  *  why 由探测脚本按 torch / triton / sage / arch 逐项拼出来 —— 报准那一项，用户才知道补什么。 */
 function sageMissingHint(probe) {
   const why = probe && probe.why ? String(probe.why) : "";
@@ -4994,29 +5115,119 @@ function sageMissingHint(probe) {
   );
 }
 
-/** 缺 sageattention 时强制 disabled，避免 PathchSageAttentionKJ 必炸。 */
-async function resolveSageModeForGenerate(requested, installDir, optSageAttn) {
-  if (optSageAttn === false) return "disabled";
-  const mode =
-    String(requested == null || requested === "" ? "auto" : requested).trim() || "auto";
-  if (isSageDisabledMode(mode)) return "disabled";
+/* ── 豁免（唯一出口）─────────────────────────────────────────────────────
+ * 口径（需求确认）：Sage 加速是 H3 的**必须项** —— 安装装不上就判安装失败、后端未就绪就
+ * 拒绝启动、生成未就绪就阻断。撞上客观不可用（GPU 架构不在支持列表 / 本机 torch+CUDA 组合
+ * 没发轮子 / 非 N 卡 / 离线）时，唯一出口是用户**显式**声明放弃：
+ *   · 配置项 sageExempt { venv, sm }：写进 H3 的 config.json；
+ *   · 环境变量 MT_H3_SAGE_EXEMPT=1：临时（本次运行）生效，安装脚本 install.ps1 同样认它。
+ * 生效范围绑定环境：venv 路径不同 → 失效（换目录重装即重新变严）；记录的 sm 与实测不同 →
+ * 失效（换显卡）。不放界面按钮：这是一条「我知道后果」的声明，不是顺手一点的开关。
+ * 另：画布节点显式关掉 Sage（optSageAttn=false / sageMode=disabled）也按「已豁免」处理，
+ * 但每条都留 warning，绝不静默。 */
+function sageEnvExemptOn() {
+  return /^(1|true|yes|on)$/i.test(String(process.env.MT_H3_SAGE_EXEMPT || "").trim());
+}
+/** 读配置里的豁免记录，并核对它与当前 venv 是否还是同一套环境：{ active, source, reason } */
+function sageExemptState(installDir, probe) {
+  if (sageEnvExemptOn()) return { active: true, source: "env", reason: "环境变量 MT_H3_SAGE_EXEMPT" };
+  const cfg = loadConfig();
+  const rec = cfg && cfg.sageExempt;
+  if (!rec) return { active: false, source: "", reason: "" };
+  if (rec === true) return { active: true, source: "config", reason: "配置项 sageExempt" };
+  if (typeof rec !== "object") return { active: false, source: "", reason: "配置项 sageExempt 格式不对" };
+  const wantVenv = String(rec.venv || "").trim();
+  const curVenv = String(comfyVenvPython(installDir) || "");
+  if (wantVenv && curVenv && path.resolve(wantVenv) !== path.resolve(curVenv)) {
+    return { active: false, source: "", reason: "豁免绑定的 venv 已不是当前 venv（换环境自动失效）" };
+  }
+  const wantSm = String(rec.sm || "").trim().toLowerCase();
+  const curSm = String((probe && probe.sm) || "").trim().toLowerCase();
+  if (wantSm && curSm && wantSm !== curSm) {
+    return { active: false, source: "", reason: "豁免绑定的是 " + wantSm + "，本机现在是 " + curSm + "（换卡自动失效）" };
+  }
+  return { active: true, source: "config", reason: "配置项 sageExempt" };
+}
+/** 错误正文里贴给用户的豁免片段：照抄进 config.json 就能声明放弃（含当前 venv / sm 事实）。 */
+function sageExemptSnippet(installDir, probe) {
+  const venv = String(comfyVenvPython(installDir) || join(String(installDir || ""), "ComfyUI", "venv", "Scripts", "python.exe"));
+  const sm = String((probe && probe.sm) || "").trim();
+  return (
+    "若本机确实不支持 Sage（老卡 / 非 N 卡 / 该 torch 组合没发轮子），可显式豁免：" +
+    "在 " + configPath() + " 顶层加 \"sageExempt\": {\"venv\": " + JSON.stringify(venv) +
+    (sm ? ", \"sm\": " + JSON.stringify(sm) : "") +
+    "}，或设环境变量 MT_H3_SAGE_EXEMPT=1（临时，本次运行有效）。"
+  );
+}
+
+/** 生成前的 Sage 闸门（必须项）。返回 { ok, mode, code, message, exempted, warn }：
+ *  · 画布显式关闭 = 用户已知后果的放弃 → 视为已豁免，放行但带 warn；
+ *  · import 未就绪 / kernel 试跑失败且未豁免 → ok:false（调用方当场报错，不提交给 ComfyUI）。 */
+async function resolveSageGateForGenerate(requested, installDir, optSageAttn) {
+  const mode = String(requested == null || requested === "" ? "auto" : requested).trim() || "auto";
+  if (optSageAttn === false || isSageDisabledMode(mode)) {
+    return {
+      ok: true,
+      mode: "disabled",
+      exempted: true,
+      warn:
+        "画布节点已关闭 Sage 加速（optSageAttn=false / sageMode=disabled）：按「已豁免」处理，" +
+        "本次不带 PathchSageAttentionKJ，出片会慢约 1.5-2×",
+    };
+  }
   const py = comfyVenvPython(installDir);
   if (!py) {
-    appendConsole("[generate] no venv → sageMode=disabled");
-    return "disabled";
+    return {
+      ok: false,
+      mode: "disabled",
+      code: "sage_required",
+      message: "Sage 加速未就绪（必须项）：ComfyUI 的 venv 不存在。先点「安装」把后端装好（安装流程会把 Sage 一起装上）。",
+    };
   }
   const probe = await ensureSageProbe(installDir);
+  const exempt = sageExemptState(installDir, probe);
   if (!probe || !probe.ok) {
-    appendConsole(
-      "[generate] sageattention missing → sageMode=disabled (was " +
-        mode +
-        ")。" +
-        sageMissingHint(probe) +
-        "，装好可提速约 1.5-2×",
-    );
-    return "disabled";
+    const why = (probe && probe.why) || "probe_failed";
+    if (!exempt.active) {
+      return {
+        ok: false,
+        mode: "disabled",
+        code: "sage_required",
+        message:
+          "Sage 加速未就绪（必须项，缺它不出片）：" + why + "。" +
+          sageMissingHint(probe) + "。" + sageExemptSnippet(installDir, probe),
+      };
+    }
+    return {
+      ok: true,
+      mode,
+      exempted: true,
+      warn:
+        "Sage 加速未就绪但已豁免（" + exempt.reason + "）：本机按无 Sage 出片，慢约 1.5-2×。" +
+        sageMissingHint(probe),
+    };
   }
-  return mode === "disabled" ? "auto" : mode;
+  const smoke = await ensureSageKernelSmoke(installDir, probe);
+  if (!smoke.ok) {
+    const why = "kernel 试跑失败：" + (smoke.why || "unknown");
+    if (!exempt.active) {
+      return {
+        ok: false,
+        mode: "disabled",
+        code: "sage_kernel_failed",
+        message:
+          "Sage 加速不可用（必须项）：" + why + "（能 import 不等于能算，多为缺本机架构的 .pyd）。" +
+          "在 H3 插件窗点「Sage 加速」可重装/修复。" + sageExemptSnippet(installDir, probe),
+      };
+    }
+    return {
+      ok: true,
+      mode,
+      exempted: true,
+      warn: "Sage 加速不可用但已豁免（" + exempt.reason + "）：" + why + "，本机按无 Sage 出片",
+    };
+  }
+  return { ok: true, mode };
 }
 
 function runVenvPip(py, args, opts) {
@@ -5097,12 +5308,19 @@ async function installSageAttention(opts) {
     invalidateSageProbe();
     const before = await ensureSageProbe(installDir);
     if (before && before.ok && !opts.force) {
-      return {
-        ok: true,
-        already: true,
-        sage: before,
-        message: "Sage 加速已就绪（sageattention " + before.sage + " · triton " + before.triton + " · " + (before.sm || "?") + "），无需补装。",
-      };
+      /* 「能 import」不等于「能算」：kernel 试跑挂了就得换轮子重装 —— 否则
+         sage_kernel_failed 那张错误卡上的「立即补装」会什么都不做、直接回执已就绪。 */
+      const pre = await ensureSageKernelSmoke(installDir, before);
+      if (pre.ok) {
+        return {
+          ok: true,
+          already: true,
+          sage: before,
+          kernelOk: true,
+          message: "Sage 加速已就绪（sageattention " + before.sage + " · triton " + before.triton + " · " + (before.sm || "?") + "），无需补装。",
+        };
+      }
+      appendConsole("[sage] import 正常但 kernel 试跑失败（" + (pre.why || "unknown") + "）→ 重装匹配的 wheel");
     }
     bump();
     const want = {
@@ -5607,12 +5825,44 @@ async function submitAndWaitComfy(port, clientId, promptGraph, nodeId, stage, op
 
   const collect = !!options.collect;
   const preferredNodeId = String(options.preferredNodeId || "");
-  const wsWatch = openComfyProgressWs(port, clientId, nodeId);
-  const deadline = Date.now() + GENERATE_MAX_MS;
+  /* 无进度看门狗（见文件头 GENERATE_STALL_MS 注释）：只有「后端真在动」的事件才算进度，
+     轮询 history 本身不算 —— 显存卡死时轮询照常返回，靠它计时等于没治。 */
+  const isPost = stage === "post";
+  const maxMs = isPost ? POST_MAX_MS : GENERATE_MAX_MS;
+  const stallMs = isPost ? POST_STALL_MS : GENERATE_STALL_MS;
+  const lastEv = { at: Date.now(), what: "submit" };
+  const noteProgress = (what) => {
+    lastEv.at = Date.now();
+    lastEv.what = String(what || "event");
+  };
+  const wsWatch = openComfyProgressWs(port, clientId, nodeId, noteProgress);
+  /* WS 不可用时没有任何「真进度」信号（ComfyUI 的 /history/<id> 在完成前是空的）——
+     这时关掉无进度看门狗，只保留总上限，绝不把健康的长任务误杀。 */
+  const stallEnabled = !!wsWatch;
+  if (!stallEnabled) {
+    appendConsole("[watchdog] 进度 WS 不可用 → 本次只按总上限 " + Math.round(maxMs / 60000) + " 分钟收口，不判「无进度」");
+  }
+  const deadline = Date.now() + maxMs;
   let videoMeta = null;
   let collected = null;
   try {
     while (Date.now() < deadline) {
+      if (stallEnabled && Date.now() - lastEv.at > stallMs) {
+        let card = null;
+        try {
+          const j = vramPre.judge((await vramPre.readVram()).cards, isPost ? vramPre.POST_MIN_FREE_GB : vramPre.GEN_MIN_FREE_GB);
+          card = j && !j.skipped ? j : null;
+        } catch {}
+        const err = new Error("no_progress_timeout");
+        err.stall = true;
+        err.detail =
+          (label + "已经 " + Math.round(stallMs / 60000) + " 分钟没有任何进度（最后一个事件：" + lastEv.what + "），已中止。") +
+          "最常见的原因是显存不够：ComfyUI 不会报错，只会一直不出进度。" +
+          (card ? "\n当前显存：" + card.card + " 已用 " + card.usedGb + "G / 共 " + card.totalGb + "G，只剩 " + card.freeGb + "G 空闲。" : "") +
+          "\n请关掉其它占显存的程序后重跑（本次没有改动你的任何设置参数）。" +
+          "\n若后端其实在排队等别的任务，控制台里能看到最近日志。";
+        throw err;
+      }
       if (activeGenerate && activeGenerate.abort) {
         try {
           await interruptComfy(port, promptId);
@@ -5671,6 +5921,7 @@ async function submitAndWaitComfy(port, clientId, promptGraph, nodeId, stage, op
           if (m && m[0] === "progress" && m[1]) {
             const v = Number(m[1].value) || 0;
             const max = Math.max(1, Number(m[1].max) || 1);
+            noteProgress("history progress " + v + "/" + max);
             const pct = Math.min(92, 15 + Math.floor((v / max) * 75));
             emitProgress({
               phase: progPhase,
@@ -5687,7 +5938,12 @@ async function submitAndWaitComfy(port, clientId, promptGraph, nodeId, stage, op
   } finally {
     if (wsWatch) wsWatch.close();
   }
-  if (!videoMeta) throw new Error("generate_timeout");
+  if (!videoMeta) {
+    const err = new Error("generate_timeout");
+    err.detail =
+      label + "超过总上限 " + Math.round(maxMs / 60000) + " 分钟仍未出结果，已中止。请检查显存 / 后端控制台日志后重跑。";
+    throw err;
+  }
   return collect ? { videoMeta, collected } : videoMeta;
 }
 
@@ -5832,6 +6088,23 @@ async function generateVideo(params) {
     const cfg = loadConfig();
     const port = Number(ready.port) || Number(cfg.port) || DEFAULT_PORT;
 
+    /* 显存预检（提交前，生成 / 自建 20G 空闲）：不够就当场拒绝，不提交给 ComfyUI 去卡一小时。
+       forceVram = 用户已在节点确认窗里点过「仍然执行」，只对本次这一跑生效。 */
+    const genVram = await vramPre.gate({ kind: "gen", force: params.forceVram === true });
+    if (!genVram.ok) {
+      clearLock();
+      appendConsole("[job] reject: 显存不足 —— " + genVram.message);
+      emitProgress({ phase: "generate", nodeId, message: genVram.message, error: true, pct: 0 });
+      reportErr("vram_insufficient", genVram.message, {
+        phase: "generate",
+        nodeId,
+        workflowId: String(params.canvasWorkflowId || ""),
+        nodeKind: "video_gen",
+      });
+      return { ok: false, error: "vram_insufficient", message: genVram.message, gpu: genVram.judge };
+    }
+    appendConsole("[job] vram ok " + vramSummaryText(genVram));
+
     activeGenerate = { nodeId, abort: false, promptId: "", req: null };
     emitProgress({ phase: "generate", nodeId, message: "准备工作流…", pct: 5 });
 
@@ -5845,6 +6118,29 @@ async function generateVideo(params) {
     }
 
     const sig = projectSignals(installDir);
+
+    /* Sage 必须项：生成前过闸。画布显式关闭 = 已豁免（仍留 warning）；import 未就绪 / kernel
+       试跑失败且未豁免 → 当场报错，不把一个必炸的工作流提交给 ComfyUI。 */
+    const optSageAttn = params.optSageAttn !== false;
+    const sageGate = await resolveSageGateForGenerate(params.sageMode, installDir, optSageAttn);
+    if (!sageGate.ok) {
+      clearLock();
+      appendConsole("[job] reject: " + sageGate.message);
+      emitProgress({ phase: "generate", nodeId, message: sageGate.message, error: true, pct: 0 });
+      reportErr(sageGate.code || "sage_required", sageGate.message, {
+        phase: "generate",
+        nodeId,
+        workflowId: String(params.canvasWorkflowId || ""),
+        nodeKind: "video_gen",
+      });
+      return { ok: false, error: sageGate.code || "sage_required", message: sageGate.message };
+    }
+    if (sageGate.warn) {
+      appendConsole("[generate] " + sageGate.warn);
+      emitProgress({ phase: "generate", nodeId, message: sageGate.warn, pct: 4 });
+    }
+    const sageMode = sageGate.mode;
+
     const ratio = params.ratio || "16:9";
     let wh = RATIOS[ratio] || RATIOS["16:9"];
     /* 输出分辨率档位：480p / 720p / 1080p（按比例缩放，短边对齐目标） */
@@ -5919,9 +6215,6 @@ async function generateVideo(params) {
     }
 
     if (activeGenerate && activeGenerate.abort) throw new Error("cancelled");
-
-    const optSageAttn = params.optSageAttn !== false;
-    const sageMode = await resolveSageModeForGenerate(params.sageMode, installDir, optSageAttn);
 
     const wfParams = {
       mode,
@@ -6725,30 +7018,73 @@ function comfyUiUrl(port) {
   return `http://127.0.0.1:${Number(port) || DEFAULT_PORT}/`;
 }
 
+/** 「ComfyUI 编辑界面」的后台启动作业（见 openComfyUiInBrowser）：
+ *  running=true 表示正有一轮后端启动在跑；error 是上一轮失败原因（空串 = 没有错误）。 */
+let comfyOpenJob = { running: false, url: "", startedAt: 0, error: "" };
+
+/** 推一次启动作业状态给管理窗（窗口没开就只留状态，界面下次 refresh 从 statusForUi 读）。 */
+function pushComfyOpen(patch) {
+  comfyOpenJob = Object.assign({}, comfyOpenJob, patch || {});
+  if (!(consoleWin && !consoleWin.isDestroyed())) return;
+  try {
+    consoleWin.webContents.send("h3:comfyOpenChanged", Object.assign({}, comfyOpenJob));
+  } catch {}
+}
+
 /** 一键在浏览器打开 ComfyUI 编辑界面。
  *  默认只探活不启动（用户可能只是想看一眼图）；opts.start = true 才拉起后端再打开。
- *  startBackend 自身已等 HTTP 就绪，所以这里不再补轮询。 */
+ *  注意：start 分支**不再同步等后端就绪** —— 后端冷启动要几分钟（加载模型），以前点击后
+ *  按钮就干等在那儿、用户体感是「点了很久才进得去」。现在点击立刻返回 starting=true，
+ *  后端在后台起，就绪后自己把浏览器打开，并把每一步推进管理窗（失败也推，能重试）。 */
 async function openComfyUiInBrowser(opts) {
   const o = opts && typeof opts === "object" ? opts : {};
   const cfg = loadConfig();
   const port = Number(cfg.port) || DEFAULT_PORT;
   let p = port;
   if (o.start) {
-    const r = await startBackend();
-    if (!r || !r.ok) {
-      const err = String((r && (r.error || r.message)) || "backend_start_failed");
-      appendConsole("[comfy-ui] start failed: " + err);
-      return { ok: false, error: "start_failed", message: err, url: comfyUiUrl(port) };
+    const url0 = comfyUiUrl(port);
+    /* 已经有一轮在跑：不重复起进程，也不重复打开（连点 / 两个入口同时点都走这里） */
+    if (comfyOpenJob.running) {
+      return { ok: true, starting: true, reuse: true, url: comfyOpenJob.url || url0 };
     }
-    p = Number(r.port) || port;
-  } else if (!(await probeComfy(port))) {
+    pushComfyOpen({ running: true, url: url0, startedAt: Date.now(), error: "" });
+    appendConsole("[comfy-ui] 收到打开请求：后台启动后端，就绪后自动打开 " + url0);
+    (async () => {
+      try {
+        const r = await startBackend();
+        if (!r || !r.ok) {
+          const err = String((r && (r.error || r.message)) || "backend_start_failed");
+          appendConsole("[comfy-ui] 后台启动后端失败：" + err);
+          pushComfyOpen({ running: false, error: err });
+          return;
+        }
+        const realPort = Number(r.port) || port;
+        const url = comfyUiUrl(realPort);
+        try {
+          await shell.openExternal(url);
+          appendConsole("[comfy-ui] opened " + url + "（后台启动完成）");
+          pushComfyOpen({ running: false, url, error: "" });
+        } catch (e) {
+          const err = String((e && e.message) || e);
+          appendConsole("[comfy-ui] openExternal failed: " + err);
+          pushComfyOpen({ running: false, url, error: err });
+        }
+      } catch (e) {
+        const err = String((e && e.message) || e);
+        appendConsole("[comfy-ui] 后台启动异常：" + err);
+        pushComfyOpen({ running: false, error: err });
+      }
+    })();
+    return { ok: true, starting: true, url: url0 };
+  }
+  if (!(await probeComfy(port))) {
     return { ok: false, error: "backend_not_running", url: comfyUiUrl(port) };
   }
   const url = comfyUiUrl(p);
   try {
     await shell.openExternal(url);
     appendConsole("[comfy-ui] opened " + url);
-    return { ok: true, url, started: !!o.start };
+    return { ok: true, url, started: false };
   } catch (e) {
     const err = String((e && e.message) || e);
     appendConsole("[comfy-ui] openExternal failed: " + err);
@@ -6766,7 +7102,7 @@ const WF_EDITOR_MIN_H = 760;
 let wfEditorSnapshot = null;
 /* 编辑器视图状态：真源只在宿主。渲染层那块 persistent 浮层（内嵌 iframe）只是这份状态的容器，
    只能由用户点浮层上的「✕ / 关闭」显式关掉 —— 一律不做「点外部即关」。 */
-let wfEditorView = { open: false, url: "", id: "", title: "", file: "", loaded: false, error: "", hint: "" };
+let wfEditorView = { open: false, url: "", id: "", title: "", file: "", loading: false, loaded: false, error: "", hint: "" };
 
 /** ComfyUI 的用户工作流目录（<ComfyUI>/user/default/workflows）；没装 / 没设目录返回 ""。
  *  先看后端 pid 记的 installDir（可能是复用的外部实例），再回落到配置里的安装目录。 */
@@ -6844,7 +7180,7 @@ function enterWfEditorView(url, info) {
   }
   setWfEditorView(
     Object.assign(
-      { open: true, url: String(url || ""), loaded: false, error: "", hint: "" },
+      { open: true, url: String(url || ""), loading: false, loaded: false, error: "", hint: "" },
       info || {},
     ),
   );
@@ -6861,6 +7197,7 @@ function exitWfEditorView() {
     id: "",
     title: "",
     file: "",
+    loading: false,
     loaded: false,
     error: "",
     hint: "",
@@ -6984,31 +7321,47 @@ async function openWorkflowInComfyEditor(opts) {
   const enter = enterWfEditorView(editorUrl, { id: rec.id, title: rec.title || "", file: file });
   if (!enter.ok) return { ok: false, error: enter.error, url: editorUrl };
 
-  /* 3) 驱动内嵌前端载入这一条模板；打不开就退回「自己在工作流列表里选这个文件」 */
-  const inj = await runInComfyFrame(p, comfyLoadScript(ui.text, 90000), { timeoutMs: 20000 });
-  const loaded = !!(inj && inj.ok);
-  const hint = loaded
-    ? ""
-    : "ComfyUI 编辑器已打开，但这条模板没能自动载入。请在 ComfyUI 里点 Workflow › Open" +
-      (file ? "，选「" + file + "」" : "（工作流目录里对应的同名文件）") +
-      "。编辑结果不会写回插件库，收回库里的唯一入口仍是「导入 JSON」。";
-  setWfEditorView({
-    loaded,
-    hint,
-    error: loaded ? "" : String((inj && (inj.message || inj.error)) || ""),
-  });
-  appendConsole(
-    "[wf-editor] " + rec.title + " → " + editorUrl + (loaded ? " loaded✓" : " load✗ " + hint)
-  );
+  /* 3) 模板注入改成后台进行：浮层已经显示出来了，载入结果就绪后再推状态。
+        以前这里是 await runInComfyFrame(...)（最长阻塞 20s 才 resolve），用户体感就是
+        「点了很久才进得去」，而且按钮一直处于等待态。 */
+  setWfEditorView({ loading: true, loaded: false, hint: "", error: "" });
+  const injectId = rec.id;
+  runInComfyFrame(p, comfyLoadScript(ui.text, 90000), { timeoutMs: 20000 })
+    .then((inj) => {
+      /* 期间用户可能已经换了另一条模板 / 关掉浮层：过期结果一律丢掉，别把旧状态盖回去 */
+      if (!wfEditorView.open || String(wfEditorView.id || "") !== injectId) return;
+      const loaded = !!(inj && inj.ok);
+      const hint = loaded
+        ? ""
+        : "ComfyUI 编辑器已打开，但这条模板没能自动载入。请在 ComfyUI 里点 Workflow › Open" +
+          (file ? "，选「" + file + "」" : "（工作流目录里对应的同名文件）") +
+          "。编辑结果不会写回插件库，收回库里的唯一入口仍是「导入 JSON」。";
+      setWfEditorView({
+        loading: false,
+        loaded,
+        hint,
+        error: loaded ? "" : String((inj && (inj.message || inj.error)) || ""),
+      });
+      appendConsole(
+        "[wf-editor] " + rec.title + " → " + editorUrl + (loaded ? " loaded✓" : " load✗ " + hint)
+      );
+    })
+    .catch((e) => {
+      if (!wfEditorView.open || String(wfEditorView.id || "") !== injectId) return;
+      const msg = String((e && e.message) || e);
+      setWfEditorView({ loading: false, loaded: false, hint: "", error: msg });
+      appendConsole("[wf-editor] 模板注入异常：" + msg);
+    });
   return {
     ok: true,
     url: editorUrl,
     id: rec.id,
     title: rec.title || "",
     file,
-    loaded,
-    hint,
-    error: loaded ? "" : String((inj && (inj.error || inj.message)) || "load_failed"),
+    loading: true,
+    loaded: false,
+    hint: "",
+    error: "",
   };
 }
 
@@ -7070,7 +7423,7 @@ function openConsoleWindow() {
     consolePaneApplied = 0;
     /* 窗口没了 = 编辑器视图随之消失；边界快照与状态一起清掉，下次开窗不会还挂着旧快照 */
     wfEditorSnapshot = null;
-    wfEditorView = { open: false, url: "", id: "", title: "", file: "", loaded: false, error: "", hint: "" };
+    wfEditorView = { open: false, url: "", id: "", title: "", file: "", loading: false, loaded: false, error: "", hint: "" };
     notifyConsoleChanged(false);
   });
   startGpuPolling();

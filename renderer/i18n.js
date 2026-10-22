@@ -4176,16 +4176,10 @@
       "A session of the right-hand global assistant: same conversation as the assistant panel; clearing starts a new one there",
     "全局助手不绑任何画布：它按消息自行判定这一轮要不要碰画布":
       "The global assistant is not bound to any canvas: it decides per message whether the canvas is involved",
-    "这条助手会话正在会话窗口里运行，请先在那里结束本轮":
-      "This assistant session is running in the session view — finish that turn there first",
-    "这条助手会话正在右侧助手栏运行，请先在那里结束本轮":
-      "This assistant session is running in the assistant panel — finish that turn there first",
-    "全局助手会话 · 正在右侧助手栏运行（这里只读）":
-      "Global assistant session · running in the assistant panel (read-only here)",
-    "全局助手会话 · 与右侧助手栏是同一份对话":
-      "Global assistant session · same conversation as the assistant panel",
-    "这条会话不绑任何画布，由全局助手那套人设与工具档运行；在助手栏清空＝换一条新的":
-      "This session is not bound to any canvas and runs with the global assistant's persona and tool profile; clearing in the assistant panel starts a new one",
+    "范围：仅当前画布": "Scope: current canvas",
+    "范围：全局": "Scope: global",
+    "只读回显：范围是全局偏好，在右侧助手栏的「范围」下拉里改":
+      "Read-only: scope is a global preference — change it in the assistant panel's Scope dropdown",
     "留空 = 当前画布 / 应用默认目录…": "Leave empty = current canvas / app default directory…",
     "排队等待中…": "Queued…",
     "拖动边框中部调整助手栏宽度": "Drag the mid-border to resize the assistant",
@@ -8981,6 +8975,21 @@
     "素材节点尚未就绪": "Asset nodes are not ready yet",
     "插入失败：无法创建素材节点": "Insert failed: cannot create the asset node",
     "已插入素材：": "Asset inserted: ",
+    /* 单条内容 → 独立节点（素材库条目行的「复制为节点」） */
+    "复制为节点": "Copy as node",
+    "把这一条正文复制成画布上的独立文本节点（内容内联，与素材库脱钩）":
+      "Copy this text into a standalone text node on the canvas (content inlined, detached from the asset library)",
+    "把这一条图像复制成画布上的独立图像节点（图片复制进画布资产，与素材库脱钩）":
+      "Copy this image into a standalone image node on the canvas (the picture is copied into the canvas assets, detached from the asset library)",
+    "只支持文本 / 图像：音频、视频条目暂时不能复制为节点":
+      "Only text / image items are supported for now: audio and video items cannot be copied as nodes",
+    "这条内容在素材库里已经取不到了：":
+      "This content item can no longer be read from the asset library: ",
+    "这条内容还没有实体文件，无法复制为图像节点":
+      "This content item has no file on disk yet, so it cannot be copied as an image node",
+    "画布节点尚未就绪，无法复制": "Canvas nodes are not ready yet — cannot copy",
+    "复制失败：无法创建画布节点": "Copy failed: cannot create the canvas node",
+    "已复制为独立节点：": "Copied as a standalone node: ",
     /* ── 素材节点（kind asset）：内容条目即端子 · body 内容列表 ── */
     "视频": "Video",
     "无效的输入端子": "Invalid input port",
@@ -9332,8 +9341,13 @@
     "max（2048 短边 · 还原度更高更慢）":
       "max (2048 short edge — closer to source, slower)",
     "原生步跳过缓存 · 约 1.4–2×": "Skips native steps via cache · about 1.4–2×",
-    "需 triton-windows + sageattention；缺包自动跳过（H3 插件窗可一键补装）":
-      "Needs triton-windows + sageattention; skipped automatically when missing (one-click install in the H3 plugin window)",
+    "Sage 必须项：需 triton-windows + sageattention 成对安装；未就绪则拒绝启动后端与出片（关闭 = 本节点豁免）":
+      "Sage is required: install triton-windows + sageattention as a pair; without it the backend will not start and nothing generates (off = exempt for this node)",
+    "Sage 加速已就绪（sageattention + triton 复检通过），可以重试了":
+      "Sage Attention is ready (sageattention + triton re-check passed) - you can retry now",
+    "补装 Sage 失败：": "Installing Sage failed: ",
+    "在该 venv 里补装 triton-windows + 与本机 Python / torch / CUDA 匹配的 sageattention 预编译 wheel，装完立刻复检（已就绪时只复核，不重装）":
+      "Install triton-windows plus the prebuilt sageattention wheel matching this machine (Python / torch / CUDA) into that venv, then re-check right away (when it is already ready this only re-checks, it does not reinstall)",
     "按 head 分块降峰值显存": "Chunks per head to lower peak VRAM",
     "FFN 分块降峰值显存": "Chunks the FFN to lower peak VRAM",
     "采样后 unload，避免双 VAE 解码 OOM":

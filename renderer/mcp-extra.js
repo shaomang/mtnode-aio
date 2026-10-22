@@ -38,15 +38,25 @@
 
   /* ── 节点定位 ─────────────────────────────────────────────────────────────── */
 
+  /* 动作词：`action` 是 mtnode_run 的**动作**（node / graph / status …），不是节点标识。
+     早期版本直接拿 p.nodeId 定位，主进程那边把动作字段一起下发了，于是「给了 nodeId 也
+     回 缺少 nodeId」；这里统一先剥掉动作词，两种入参都认。 */
+  const RUN_ACTIONS = new Set(["node", "graph", "status", "list", "cancel", "wait"]);
+
+  function cleanRef(v) {
+    const s = String(v || "").trim();
+    return RUN_ACTIONS.has(s.toLowerCase()) ? "" : s;
+  }
+
   function findNode(wf, id, title) {
     const nodes = (wf && Array.isArray(wf.nodes) && wf.nodes) || [];
-    const nid = String(id || "").trim();
+    const nid = cleanRef(id);
     if (nid) {
       const hit = nodes.find((n) => n && n.id === nid);
       if (hit) return { node: hit };
       return { error: "画布上没有节点 " + nid };
     }
-    const want = String(title || "").trim();
+    const want = cleanRef(title);
     if (!want) return { error: "缺少 nodeId 或 nodeTitle" };
     const same = nodes.filter((n) => n && String(n.title || "").trim() === want);
     if (!same.length) return { error: "画布上没有标题为「" + want + "」的节点" };

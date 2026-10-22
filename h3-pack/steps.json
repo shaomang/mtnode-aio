@@ -79,6 +79,29 @@
       }
     },
     {
+      "id": "sage",
+      "title": "安装 Sage 注意力加速（必须项）",
+      "hint": "Sage 加速（triton-windows + 与本 venv 配套的 sageattention 预编译 wheel）是 H3 的必须项：装不上就判这次安装失败，宿主也不会启动后端 / 不会出片。轮子按本机 Python / torch / CUDA 大版本从 woct0rdho/SageAttention release 自动挑；离线可先下好 .whl 并用环境变量 MT_H3_SAGE_WHEEL 指过去。若本机确实不支持（老卡 / 非 N 卡 / 该 torch 组合没发轮子），设 MT_H3_SAGE_EXEMPT=1 或在配置里写 sageExempt 显式豁免，本步会降级成警告放行。",
+      "messages": {
+        "h3.sage.install_failed": {
+          "zh": "Sage 注意力加速装不上：{tail}。它是 H3 的必须项（缺它宿主不启动后端、也不出片）。三种处置：① 网络不通就先在能上网的机器下好与本机 Python / torch / CUDA 匹配的 sageattention 预编译 wheel（https://github.com/woct0rdho/SageAttention/releases），设环境变量 MT_H3_SAGE_WHEEL 指向那个 .whl 后重跑本步；② 报错是 SAGE-ARCH= 开头 → 本机显卡不在 Sage 内核白名单里，只能显式豁免；③ 报错是 SAGE-WHEEL= 开头 → 本机 Python / torch / CUDA 组合还没出轮子，可先把 torch 固定到有轮子的版本重装，或显式豁免。",
+          "en": "The Sage Attention acceleration could not be installed: {tail}. It is a hard requirement of H3 (without it the host will not start the backend and will not generate). Three ways out: (1) on a blocked network, download the prebuilt sageattention wheel that matches this machine's Python / torch / CUDA from https://github.com/woct0rdho/SageAttention/releases, point MT_H3_SAGE_WHEEL at that .whl and re-run this step; (2) a SAGE-ARCH= reason means this GPU is not in the Sage kernel whitelist - only an explicit exemption helps; (3) a SAGE-WHEEL= reason means no wheel exists for this Python / torch / CUDA combo yet - pin torch to a version that has wheels and reinstall, or exempt explicitly."
+        },
+        "h3.sage.verify_failed": {
+          "zh": "Sage 加速装完自检没通过：{tail}。Windows 上 triton-windows 与 sageattention 必须成对生效（只装一个，import sageattention 一样失败）：把这条日志发给维护者，或设 MT_H3_SAGE_WHEEL 换一枚与本机 Python / torch / CUDA 完全匹配的 wheel 重跑本步。确属本机不支持时可用 MT_H3_SAGE_EXEMPT=1 / 配置项 sageExempt 显式豁免。",
+          "en": "The Sage Attention self-check after install failed: {tail}. On Windows triton-windows and sageattention only work as a pair (installing just one makes `import sageattention` fail too): hand this log to the maintainer, or set MT_H3_SAGE_WHEEL to a wheel that exactly matches this machine's Python / torch / CUDA and re-run the step. If the machine genuinely cannot run it, declare the exemption with MT_H3_SAGE_EXEMPT=1 or the sageExempt config entry."
+        },
+        "h3.sage.prep_failed": {
+          "zh": "Sage 加速这一步没跑完（脚本缺失、PowerShell 调用失败或解释器不可用）：{tail}。先确认安装目录里的 scripts\\sage_install.py 还在（包不完整就更新 / 重装插件资源），再重跑本步。",
+          "en": "The Sage Attention step did not finish (missing script, PowerShell invocation failure or an unusable interpreter): {tail}. Make sure scripts\\sage_install.py still exists in the install directory (update / reinstall the plugin resources when the pack is incomplete) and re-run this step."
+        },
+        "h3.sage.wrapup_failed": {
+          "zh": "安装收尾复检发现 Sage 加速不可用：{tail}。triton-windows 与 sageattention 必须成对，且要与本 venv 的 Python / torch / CUDA 匹配。重跑安装会把它们补上；确属本机不支持时用 MT_H3_SAGE_EXEMPT=1 / 配置项 sageExempt 显式豁免。",
+          "en": "The wrap-up re-check found Sage Attention unusable: {tail}. triton-windows and sageattention must be installed as a pair that matches this venv's Python / torch / CUDA. Re-running the install puts them back; if the machine genuinely cannot run it, declare the exemption with MT_H3_SAGE_EXEMPT=1 or the sageExempt config entry."
+        }
+      }
+    },
+    {
       "id": "nodes",
       "title": "安装 ComfyUI 依赖与自定义节点",
       "hint": "含 EasyCache / Frame-Interpolation（RIFE）/ 超分用的 UpscaleModelLoader 等；某个节点拉不下来就在这一步的日志里。",

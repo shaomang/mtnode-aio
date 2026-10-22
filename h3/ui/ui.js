@@ -128,18 +128,29 @@
     const running = !!st.running || !!st.comfyUp;
     svcBadge.textContent = running ? "服务运行中" : "服务关闭";
     svcBadge.className = "badge " + (running ? "on" : "off");
-    /* 按钮条左半边：把 ComfyUI 地址常驻亮出来（一键打开时用户知道会开到哪儿） */
+    /* 标题行：把 ComfyUI 地址常驻亮出来（一键打开时用户知道会开到哪儿）。
+       地址跟着标题行走（#comfyHint 在 h1 里），不再放在按钮条 —— 窄窗不会被两个按钮挤掉。 */
     const port = Number(st.port) || 8188;
     const url = st.comfyUrl || "http://127.0.0.1:" + port + "/";
     const hint = $("comfyHint");
     if (hint) {
-      hint.textContent = (running ? "● " : "○ ") + "ComfyUI :" + port;
-      hint.title = url + "（后端只监听本机，浏览器同机打开）";
+      if (st.comfyStarting) {
+        hint.textContent = "◐ ComfyUI 启动中… :" + port;
+        hint.title = "后端正在后台启动，就绪后自动打开浏览器（首次加载模型可能要几分钟，期间可继续用其它功能）";
+      } else {
+        hint.textContent = (running ? "● " : "○ ") + "ComfyUI :" + port;
+        hint.title =
+          url +
+          "（后端只监听本机，浏览器同机打开）" +
+          (st.comfyStartError ? " · 上次启动失败：" + st.comfyStartError : "");
+      }
     }
     if (comfyBtn) {
-      comfyBtn.title = running
-        ? "在浏览器打开 " + url
-        : "后端未运行 · 点了会先问你是否启动 " + url;
+      comfyBtn.title = st.comfyStarting
+        ? "后端正在启动，就绪后会自动打开浏览器 " + url
+        : running
+          ? "在浏览器打开 " + url
+          : "后端未运行 · 点了会先问你是否启动 " + url;
       comfyBtn.classList.toggle("on", running);
     }
 
@@ -154,31 +165,63 @@
   }
 
   /* ── Sage Attention（注意力加速）状态 ─────────────────────────────
+   * 口径：Sage 是 H3 的**必须项** —— 安装流程会把它一起装上；未就绪时宿主拒绝启动后端、
+   * 也拒绝出片。所以这里不再是「可选加速」的灰字，而是：
+   *   ① 顶部常驻红条（豁免时降级为黄条）+ 「立即补装 Sage」按钮；
+   *   ② 状态行写清缺什么、点哪儿补；
+   *   ③ 「Sage 加速」按钮高亮（未就绪时闪红）。
    * 主进程在 venv 里真探一次（triton 与 sageattention 必须成对：sageattention 的 core
-   * 在 import 期就拉 Triton kernel），结果带缓存。缺包**不是故障**——生成会自动跳过这一档
-   * 优化，只是慢约 1.5-2×；所以这里只报事实 + 给出「Sage 加速」这一键
-   * （点了先自检，确认可补才装；已就绪时原样回执，不会重复写盘）。 */
+   * 在 import 期就拉 Triton kernel），结果带缓存。 */
   function renderSage(st) {
     const info = st.sage || {};
+    const exempt = st.sageExempt || {};
     const hasVenv = !!(st.project && st.project.venv);
+    const ready = !!info.ok;
+    const waived = !ready && !!exempt.active;
     const btn = $("btnSage");
     if (btn) {
       btn.disabled = !hasVenv || !!st.installing;
-      btn.classList.toggle("on", !!info.ok);
-      btn.title = info.ok
+      btn.classList.toggle("on", ready);
+      btn.classList.toggle("danger", !ready && !waived);
+      btn.title = ready
         ? "已就绪：sageattention " + info.sage + " + triton " + info.triton + "（再点一次只复核，不重装）"
-        : "自检注意力加速包（triton-windows + sageattention 预编译 wheel）：未装就一键补装。缺包不影响出片，只是慢约 1.5-2×";
+        : waived
+          ? "已豁免（" + (exempt.reason || "显式豁免") + "）：点一下会尝试补装并复检"
+          : "Sage 加速是必须项（triton-windows + 与本 venv 配套的 sageattention 预编译 wheel）：未就绪则后端不启动、也不出片。点一下自检并补装";
+    }
+    /* 横幅：未就绪就常驻（红 = 未豁免会拦住出片与启动；黄 = 用户已显式豁免，仍告警） */
+    const ban = $("sageBanner");
+    if (ban) {
+      ban.hidden = ready || !hasVenv;
+      ban.classList.toggle("exempt", waived);
+      const t = $("sageBannerTitle");
+      const x = $("sageBannerText");
+      if (t)
+        t.textContent = waived
+          ? "Sage 加速已豁免：本机按无 Sage 出片（慢约 1.5-2×）"
+          : "Sage 加速未就绪（必须项）：后端不会启动，也不会出片";
+      if (x)
+        x.textContent = waived
+          ? "豁免来源：" + (exempt.reason || "显式声明") + "。想恢复全速就在 venv 里补装（点右侧按钮），装好即恢复强制校验。"
+          : (info.why ? "自检事实：" + info.why + "。" : "") +
+            "Windows 上要 triton-windows + 与本 venv 配套的 sageattention 预编译 wheel 成对装上；安装窗的「安装」会把 Sage 一起装，这里是就地补装 + 复检。" +
+            (st.installing ? "（当前有安装任务在跑）" : "");
+      const fix = $("btnSageFix");
+      if (fix) fix.disabled = !hasVenv || !!st.installing;
     }
     const el = $("sageInfo");
     if (!el) return;
-    if (!hasVenv) el.textContent = "Sage Attention：待后端装好后才能自检（先在插件卡片的安装窗里把它装好）";
-    else if (!info.probed) el.textContent = "Sage Attention：自检中…（在 venv 里 import 一次，几秒）";
-    else if (info.ok)
+    if (!hasVenv) el.textContent = "Sage Attention（必须项）：待后端装好后才能自检（先在插件卡片的安装窗里把它装好）";
+    else if (!info.probed) el.textContent = "Sage Attention（必须项）：自检中…（在 venv 里 import 一次，几秒）";
+    else if (ready)
       el.textContent =
-        "Sage Attention ✓ 已装：sageattention " + info.sage + " · triton " + info.triton + " · " + (info.sm || "?") + " → 注意力加速生效";
+        "Sage Attention ✓ 已就绪：sageattention " + info.sage + " · triton " + info.triton + " · " + (info.sm || "?") + " → 生成前还会真跑一次小 kernel 确认能算";
+    else if (waived)
+      el.textContent =
+        "Sage Attention 未就绪（已豁免：" + (exempt.reason || "显式声明") + "）：启动与出片放行，按无 Sage 跑，慢约 1.5-2×。";
     else
       el.textContent =
-        "Sage Attention 未就绪（" + (info.why || "缺包") + "）：生成会自动跳过这一档优化，慢约 1.5-2×。点「Sage 加速」补装。";
+        "Sage Attention 未就绪（" + (info.why || "缺包") + "）：必须项，宿主会拒绝启动后端 / 拒绝出片。点「Sage 加速」或上方红条里的「立即补装 Sage」。";
   }
 
   function syncLaunchOptsUi(st) {
@@ -299,22 +342,31 @@
      安装相关操作与显示统一收进独立安装窗（plugins/main-install.js）；
      宿主侧的 h3:pickInstallDir / h3:install / h3:selfRepair 等 IPC 原样保留。 */
 
-  $("btnSage").onclick = async () => {
+  /* 补装 Sage：红条里的「立即补装 Sage」与工具条上的「Sage 加速」走同一段逻辑，
+     装完不是「缺它只影响速度」的旧口径 —— 未就绪时宿主会拒绝启动与出片。 */
+  async function installSageNow(fromBanner) {
     if (!api.installSage) {
       logLine("当前版本不支持 Sage 自检 / 补装");
       return;
     }
-    logLine("Sage 加速：先在 venv 里自检（triton + sageattention），缺则补装…");
+    logLine("Sage 加速（必须项）：先在 venv 里自检（triton + sageattention 成对），缺则补装…");
     const r = await api.installSage({});
-    if (r && r.ok) logLine("[sage] " + ((r && r.message) || "已就绪"));
-    else
+    if (r && r.ok) {
+      logLine("[sage] " + ((r && r.message) || "已就绪"));
+      if (fromBanner && r.already) logLine("[sage] 复核通过，无需重装");
+    } else {
       logLine(
-        "[sage] 未就绪: " +
+        "[sage] 补装失败: " +
           ((r && (r.message || r.error)) || "未知错误") +
-          "（缺它只影响速度，不影响出片；也可在插件卡片的安装窗里重装后端）",
+          "（Sage 是必须项：未就绪时后端不启动、也不出片；确属本机不支持请在 config.json 写 sageExempt 或设 MT_H3_SAGE_EXEMPT=1 豁免）",
       );
+    }
     refresh();
-  };
+  }
+
+  $("btnSage").onclick = () => installSageNow(false);
+  const sageFix = $("btnSageFix");
+  if (sageFix) sageFix.onclick = () => installSageNow(true);
 
   $("btnStart").onclick = async () => {
     logLine("手动启动后端（调试）…");
@@ -404,6 +456,14 @@
     if (comfyBtn) comfyBtn.disabled = true;
     try {
       const r = await api.openComfyUI({ start: !!start });
+      /* start 分支现在**立刻**返回 starting=true：后端在后台起，就绪后宿主自己打开浏览器。
+         点击不再被后端冷启动（几分钟）挡住 —— 这里只写一行进度，别让按钮看起来没反应。 */
+      if (r && r.ok && r.starting) {
+        const u = r.url || "";
+        logLine("[comfy] 正在后台启动后端，就绪后会自动打开浏览器：" + u);
+        logLine("[comfy] 首次启动要加载模型，可能要几分钟；这期间可以继续用其它功能（进度看下面 Console）");
+        return;
+      }
       if (r && r.ok) {
         logLine("[comfy] 已打开编辑界面 " + (r.url || ""));
         return;
@@ -453,14 +513,22 @@
     wfEditorEl.hidden = false;
     if (wfEditorTitleEl) wfEditorTitleEl.textContent = "工作流编辑器 · " + (view.title || "未命名");
     if (wfEditorSrcEl) {
-      wfEditorSrcEl.textContent = url + (view.loaded ? " · 已载入这条模板" : "");
+      wfEditorSrcEl.textContent =
+        url +
+        (view.loading ? " · 正在载入这条模板…" : view.loaded ? " · 已载入这条模板" : "");
       wfEditorSrcEl.title = "编辑发生在 ComfyUI 自己的现场里，不会写回插件库；收回库的唯一入口是「导入 JSON」";
     }
-    /* 没自动灌进画布时，宿主的提示（含要在 Workflow › Open 里选的文件名）必须亮着，别让人对着空画布猜 */
-    const note = view.loaded ? "" : String(view.hint || view.error || "");
+    /* 没自动灌进画布时，宿主的提示（含要在 Workflow › Open 里选的文件名）必须亮着，别让人对着空画布猜；
+       注入还在后台跑时先亮一句「正在载入…」（不是失败提示，所以换中性配色，见 .ed-note.loading） */
+    const note = view.loading
+      ? "正在把这条模板载入编辑器…（ComfyUI 前端还在加载，通常几秒到十几秒）"
+      : view.loaded
+        ? ""
+        : String(view.hint || view.error || "");
     if (wfEditorNoteEl) {
       wfEditorNoteEl.textContent = note;
       wfEditorNoteEl.hidden = !note;
+      wfEditorNoteEl.classList.toggle("loading", !!view.loading);
     }
   }
 
@@ -474,7 +542,11 @@
     if (r && r.ok) {
       logLine(
         "[wf-editor] 打开「" + (it.title || "") + "」→ " + (r.url || "") +
-          (r.loaded ? " · 已自动载入这条模板" : " · 需在工作流列表里手动选文件"),
+          (r.loading
+            ? " · 正在把模板载入编辑器…"
+            : r.loaded
+              ? " · 已自动载入这条模板"
+              : " · 需在工作流列表里手动选文件"),
       );
       if (r.hint) logLine("[wf-editor] " + r.hint);
       /* 正常路径宿主会推状态；成功返回这里再兜一次，某条路径漏推时浮层也出得来 */
@@ -483,6 +555,7 @@
         url: r.url,
         title: r.title,
         file: r.file,
+        loading: !!r.loading,
         loaded: r.loaded,
         hint: r.hint,
         error: r.error,
@@ -499,6 +572,7 @@
       if (!confirm("ComfyUI 后端现在没在运行，" + ((r && r.url) || "") + " 打不开。\n\n现在启动后端并打开这条模板吗？\n（首次加载模型可能要几分钟，期间可继续用其它功能）"))
         return;
       logLine("[wf-editor] 启动后端并打开「" + (it.title || "") + "」…");
+      logLine("[wf-editor] 后端首次启动要加载模型，可能要几分钟；就绪后编辑器会自己出现");
       await openWfInEditor(it, true);
       return;
     }
@@ -771,6 +845,17 @@
   api.onGpu(applyGpu);
   if (api.onSage) api.onSage(() => refresh());
   if (api.onWfEditorView) api.onWfEditorView(applyWfEditorView);
+  /* 「ComfyUI 编辑界面」后台启动作业的状态推送：启动中 / 已打开 / 失败都写一行，
+     并立刻刷新标题行的地址态（4s 轮询之外不必等）。 */
+  if (api.onComfyOpen) {
+    api.onComfyOpen((s) => {
+      if (!s) return;
+      if (s.running) logLine("[comfy] 后端启动中…（就绪后自动打开浏览器）");
+      else if (s.error) logLine("[comfy] 后端启动失败：" + s.error + "（可再点一次「ComfyUI 编辑界面」重试）");
+      else if (s.url) logLine("[comfy] 后端已就绪，已在浏览器打开 " + s.url);
+      refresh();
+    });
+  }
 
   (async () => {
     /* 上次的面板状态先恢复（窗口宽度跟着宿主一起补回来），再灌历史日志 */

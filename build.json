@@ -357,7 +357,11 @@
         "scripts/**",
         "steps.json",
         "README.md",
-        ".gitignore"
+        ".gitignore",
+        /* 内置合成模板：主进程 readBuiltinComposition 优先读 <resources>/remotion-pack/
+           portrait-dialogue.tsx（打包态的第一候选）。漏带它的后果是「内置台词卡版面悄悄
+           退回脚手架里那份旧 src/Composition.tsx」—— 画布链路的版式与循环修复因此失效。 */
+        "portrait-dialogue.tsx"
       ]
     },
     {

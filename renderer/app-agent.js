@@ -1094,21 +1094,11 @@ function tokReportEnsure(owner) {
   }
   return r;
 }
-/* 全局助手已经并入会话体系（本轮需求）：台账挂在「当前助手会话」自己身上，
-   清空 / 新会话自然归零；只有还没绑定会话（空白态）时才退回那份伪宿主。 */
+/* 全局助手的 Token 台账归属（本轮需求 · 会话为主体）：只有「当前那条助手会话」这一位，
+   台账挂会话自己的 tokenReport（清空 / 换会话自然就是新的账）。空白态没有会话 →
+   返回 null = 没有可记账的对象，也就不显示任何 Token 报告（不再有伪宿主那份临时台账）。 */
 function assistTokOwner() {
-  const bound =
-    typeof assistBoundSession === "function" ? assistBoundSession() : null;
-  if (bound) return bound;
-  if (!S._assistTokOwner)
-    S._assistTokOwner = {
-      id: "assist",
-      title: I18n.t("全局助手"),
-      tokenReport: S.assistTokenReport || null,
-    };
-  if (!S._assistTokOwner.tokenReport)
-    S._assistTokOwner.tokenReport = S.assistTokenReport || null;
-  return S._assistTokOwner;
+  return typeof assistBoundSession === "function" ? assistBoundSession() : null;
 }
 /* 本轮运行归属的「会话」（只认会话，不含全局助手与裸节点运行）：
    · runKey = agent:<会话id>          → 该会话（会话自己发起的一轮）
@@ -1355,17 +1345,10 @@ function tokRoundTitleOf(text, opts) {
 }
 
 /* 台账持久化：会话走 agent-sessions/（persistAgentSession → session:save），
-   助手进 config.assistTokenReport，节点进工作流 */
+   节点进工作流。全局助手就是一条会话（台账挂在它自己身上），没有单独的分支。 */
 function tokPersist(owner) {
   if (!owner) return;
   try {
-    if (owner.id === "assist") {
-      S.assistTokenReport = owner.tokenReport;
-      if (S.config) S.config.assistTokenReport = owner.tokenReport;
-      if (window.api && window.api.configSave)
-        window.api.configSave(S.config).catch(() => {});
-      return;
-    }
     if (Array.isArray(S.agentSessions) && S.agentSessions.some((s) => s.id === owner.id)) {
       if (typeof persistAgentSession === "function") persistAgentSession();
       return;

@@ -7,9 +7,10 @@
  * 连续运行偶发卡死就属于这一类（上一单的 DiT/VAE 与残留张量还挂在卡上，第二次提交时
  * 显存不够又不敢报错，看起来就是卡住）。
  *
- * 本轮登记的五个后端（就是「本地模型」那五个，也是界面上有独立后端的那五个）：
+ * 本轮登记的六个后端（就是「本地模型」那六个，也是界面上有独立后端的那六个）：
  *   h3（ComfyUI 视频 / 超分 / 补帧）· music3 · yue（YuE2）· sensenova（本机出图）·
- *   llama（本地大模型）。tts / breeze（语音）显存占用小、本轮明确不纳入 ——
+ *   llama（本地大模型）· breeze（语音 TTS：引擎也占显存，跑 H3 这类重型模型前必须先释放它 ——
+ *   语音后端的 soft 只卸引擎、保留管理服务宿主，下次合成自己会重新加载）。
  *   以后要收进来，只需在 main.js 的登记表里多写一行，本模块一个字不用改。
  *
  * 本模块只做三件事：
@@ -334,7 +335,7 @@ async function releaseMany(ids, opts) {
 
 /**
  * 运行前：释放「除了本次要用的后端以外」的全部本地后端。
- * except：本次要用的后端 id（"h3" / "music3" / "yue" / "sensenova" / "llama"）；
+ * except：本次要用的后端 id（"h3" / "music3" / "yue" / "sensenova" / "llama" / "breeze"）；
  * jobNodeId：本次任务的节点 id（用于认出全局媒体锁是不是自己占的）。
  */
 async function releaseOthers(opts) {

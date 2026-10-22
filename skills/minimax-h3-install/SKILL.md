@@ -174,7 +174,7 @@ python main.py --listen 127.0.0.1 --port 8188
 | 优化 | 作用 | 节点 |
 |------|------|------|
 | EasyCache | 原生步跳过缓存（约 1.4–2× 采样段） | `EasyCache`（**reuse 0.08 / start 0.30 / end 0.90**，见下「EasyCache 档位口径」） |
-| Sage Attention | 注意力加速（有包用 `auto`；无包则跳过） | `PathchSageAttentionKJ` |
+| Sage Attention | 注意力加速（**必须项**：无包则后端不启动 / 不出片） | `PathchSageAttentionKJ` |
 | Low VRAM Attention | 按 head 分块降峰值显存 | `MiniMaxLowVRAMAttention` |
 | Chunk FeedForward | FFN 分块降峰值 | `MiniMaxChunkFeedForward` |
 | **VRAM Barrier** | 采样后 `unload_all_models` + empty_cache，**避免双 VAE 解码 OOM（必开）** | `VRAM_Debug` |
@@ -205,7 +205,9 @@ python main.py --listen 127.0.0.1 --port 8188
 - 生产常用：约 0.6–0.8MP（如 1056×608）；再高会撞上上面的红线被钳制
 - `<24GB`：降到 ~0.3–0.5MP、≤5s；`≥48GB`：可放宽（红线是插件侧 24G 口径，高显存机器同样会被钳到 1280 / 0.98MP）。时长越长 token 越多，越易 OOM——优先开 LowVRAM / ChunkFFN / VRAM Barrier
 
-### 可选依赖：Sage Attention（注意力加速 · 约 1.5–2× 提速）
+### 必须依赖：Sage Attention（注意力加速 · 约 1.5–2× 提速）
+
+> **口径（2026-02 起）**：Sage 不再是「可选加速」。安装链的 `sage` 步骤（`h3-pack/scripts/install.ps1` → `scripts/sage_install.py`）会把它装上，**装不上就判这次安装失败**；宿主在启动后端前、以及每次生成前都自检，**未就绪就拒绝启动 / 拒绝出片**（生成前还会真跑一次小 kernel）。唯一出口是用户显式豁免：环境变量 `MT_H3_SAGE_EXEMPT=1`（临时，安装脚本也认）或 H3 `config.json` 的 `sageExempt: {venv, sm}`（换 venv / 换卡自动失效）。修环境时**不要**再按「缺了也没关系」处理。
 
 Windows 上 **两个包必须成对**：`sageattention` 的 `core` 在 **import 期**就 `from .triton.…` 拉 Triton kernel，而 PyPI 的 `triton` 只有 Linux 轮子 —— 只装 sageattention 不装 triton-windows，`import sageattention` 一样失败。
 
@@ -228,6 +230,8 @@ Windows 上 **两个包必须成对**：`sageattention` 的 `core` 在 **import 
    & "ComfyUI\venv\Scripts\python.exe" -m pip install --no-deps --force-reinstall "<下载好的 .whl>"
    ```
 
+   > 离线 / GitHub 不通：先把 .whl 放到本机，再设 `MT_H3_SAGE_WHEEL=<绝对路径>` 重跑安装的 `sage` 步骤（`sage_install.py` 认这个变量，跳过 release API）。
+
 3. 自检（**装完必做**，MTNode 的 H3 插件按同一口径判定）：
 
    ```powershell
@@ -240,8 +244,8 @@ Windows 上 **两个包必须成对**：`sageattention` 的 `core` 在 **import 
    & "ComfyUI\venv\Scripts\python.exe" -c "import torch; from sageattention import sageattn; q=torch.randn(1,2,128,64,device='cuda',dtype=torch.float16); o=sageattn(q,q,q,tensor_layout='NHD'); torch.cuda.synchronize(); print('sage ok', bool(torch.isfinite(o.float()).all().item()))"
    ```
 
-- **装不上就跳过，不判失败**：MTNode 每次生成前自检，缺包自动不带 `PathchSageAttentionKJ`（只慢一点，不影响出片）。判错反而更糟——包在但不可用时，KJNodes 那个节点会直接把 `/prompt` 打到 `prompt_outputs_failed_validation`。
-- 画质提示：`auto` 在 sm89 走 `sageattn_qk_int8_pv_fp8_cuda(pv_accum_dtype="fp32+fp16")`。个别模型（Wan / Qwen-Image 一类）中间值会量化溢出出黑图/噪点；真遇到就把 Sage 关掉（其它优化仍然有效）。
+- **装不上就是安装失败**（`h3.sage.install_failed` / `h3.sage.verify_failed` / `h3.sage.prep_failed` / `h3.sage.wrapup_failed`，文案在 `h3-pack/steps.json`）：按 `SAGE-ARCH=` / `SAGE-WHEEL=` / `SAGE-TRITON=` / `SAGE-PIP=` / `SAGE-SMOKE=` 前缀分流处置 —— 只有 `SAGE-ARCH=`（显卡不在内核白名单）才该走豁免。判错的代价很大：工作流里挂了 `PathchSageAttentionKJ` 而包实际不可用时，KJNodes 会把 `/prompt` 打到 `prompt_outputs_failed_validation`，整次生成白跑。
+- 画质提示：`auto` 在 sm89 走 `sageattn_qk_int8_pv_fp8_cuda(pv_accum_dtype="fp32+fp16")`。个别模型（Wan / Qwen-Image 一类）中间值会量化溢出出黑图/噪点；真遇到就把**节点上的** Sage 开关关掉（= 该节点显式豁免，其它优化仍然有效），并在状态里保留那条警告。
 
 ## 冒烟与健康检查（步骤 7 必做）
 
@@ -273,12 +277,13 @@ Windows 上 **两个包必须成对**：`sageattention` 的 `core` 在 **import 
 3. 重跑安装（幂等，venv / torch 会复用，只补缺的包）；仍失败再按包名上报 —— 不要再删 `INSTALL_DIR` 重装，也不必换驱动。
 判据一句话：**先看 pip 缺哪个包，再谈 torch 与驱动。**
 
-### sageattention 缺失（最常见的「不是故障」）
+### sageattention 缺失（**现在算故障**）
 
-日志：`No module named 'sageattention'`；MTNode 插件 Console：`sageattention missing → sageMode=disabled`。
-含义：**没装加速包，生成会自动跳过 Sage 这一档优化**（EasyCache / LowVRAM / ChunkFFN / VRAM Barrier 照常，只是慢约 1.5–2×），不是报错，别为此重装环境。
-要提速按「可选依赖：Sage Attention」一节成对装 `triton-windows` + 匹配的 `sageattention` 预编译 wheel；MTNode 侧用户可在 H3 插件窗点「Sage 加速」一键补装（宿主自己挑轮子并在装完自检）。
+日志：`No module named 'sageattention'`；MTNode 插件 Console：`[start] Sage 加速未就绪（必须项）…` 或 `[job] reject: Sage 加速未就绪（必须项…）`。
+含义：**Sage 是 H3 的必须项** —— 宿主拒绝启动后端、拒绝出片（错误码 `sage_required` / `sage_kernel_failed`），安装链的 `sage` 步骤也会把安装判失败（`h3.sage.*`）。
+处置：按「必须依赖：Sage Attention」一节成对装 `triton-windows` + 匹配的 `sageattention` 预编译 wheel（或直接让人点错误报告窗里的「立即补装 Sage」）。
 判据必须同时看 triton 与 sageattention：只装其中一个，`import sageattention` 照样失败。
+只有显卡不在内核白名单（`SAGE-ARCH=`）等**客观不可用**才走显式豁免（`MT_H3_SAGE_EXEMPT=1` / `config.json` 的 `sageExempt: {venv, sm}`），豁免后仍在每次启动与生成时留告警。
 
 ### torch<cu130 卡死（最常见）
 

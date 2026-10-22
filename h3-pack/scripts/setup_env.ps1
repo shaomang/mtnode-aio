@@ -361,11 +361,11 @@ except Exception as e:
 "@
 if ($LASTEXITCODE -ne 0) { throw "CUDA / comfy_kitchen smoke failed" }
 
-# The optional Sage Attention acceleration is **deliberately not installed here**: on Windows triton-windows and
-# the prebuilt sageattention wheel must come as a pair, and the wheel must be picked to match this machine's
-# Python / torch / CUDA major versions (PyPI only carries the old sageattention 1.0.6).
-# See the skill "minimax-h3-install - optional dependencies"; on the MTNode side the H3 plugin window's
-# "Sage acceleration" button (h3/main-h3.js -> installSageAttention) installs it on demand and re-checks itself
-# right away; when the package is missing, generation skips Sage automatically.
+# Sage Attention is NOT installed here on purpose: it is a **mandatory** part of the H3 backend
+# now, and it is installed by install.ps1's own "sage" step (scripts/sage_install.py) right after
+# the venv -- because the prebuilt sageattention wheel must be picked to match this venv's Python /
+# torch / CUDA major versions (PyPI only carries the old sageattention 1.0.6), and because a
+# failure there has to fail the install (or warn when MT_H3_SAGE_EXEMPT=1 declares the exemption).
+# Do not duplicate the logic here: one installer, one verdict.
 
 Write-Host "Setup complete. Next: .\scripts\download_models.ps1"

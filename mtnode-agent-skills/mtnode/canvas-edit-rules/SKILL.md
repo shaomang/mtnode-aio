@@ -74,4 +74,12 @@ SenseNova-U1.5-8B-MoT 跑在用户本机的 Python 后端（插件 sensenova-loc
 - **全局互斥**：图像生成与音乐 / 视频生成共用一把全局锁，24G 卡上三者不能同时跑；并排跑时第二个节点报「已有媒体任务在跑」是设计行为，不是故障。
 - **耗时预期**：首次运行要加载权重（分钟级），之后常驻；不要因为没立刻出图就重复点 ▶ 或重跑同一节点。
 
+## 字段细则（工具 schema 里只留一句，细则查这里）
+
+- **video_gen 端子（videoMode）**：控制输入恒为端口 0 = 第一个端子，数据端口从 1 起且与「端子号 / 数据槽号」同号 —— `fl2va` = 控制(0) · 提示词(1) · 首帧(2) · 末帧(3)；`r2v` = 控制(0) · 提示词(1) · 参考图 I1–I9(2–10) · 参考视频 V1–V3(11–13) · 参考音频 A1–A3(14–16)；自建工作流（workflowId 非空）= 控制(0) · 文本(1) · 素材(2+)，端子按该工作流参数重排。connect 的 `toIndex` / `fromIndex` 是 0 起始下标，就等于括号里的号。
+- **proc_image 的图像参数**：`maskOn` = 蒙版局部重绘（透明区才重绘，只认第 1 张 image）；maskPath 必须由用户在节点头部蒙版编辑器里涂，Agent 不能代画；需图像输入 + OpenAI 兼容图像服务商，与 `ratioLockOn` 同时开时以蒙版为准，且请求 size 被钉成首张参考图的像素尺寸。`bgRmOn` = 差分抠图出带 Alpha 的 PNG（先出纯黑基准、再复刻纯白逐像素差分，约 2 倍 Token；只有接受「基准图当参考图」的服务商才抠得动）。`imgQuality` 直传 quality（low/medium/high/xhigh/max；空 = 服务商按 auto；旧版 DALL·E 的 standard / hd 不要传）。`imgBackground: "transparent"` 直出 Alpha PNG（自动补「背景透明」提示词并禁用 bgRmOn）。`size` 合法值用 canvas_get `sections:["refs"]` 取，缺省 2048x1360。
+- **输出路径**：`outputPath` 扩展名按媒体类型强制（.mp4 / .wav / .flac / .mp3）；sensenova_gen 没有这个字段（结果落资产目录、从输出端口 0 交出）。
+- **execute / function**：`execPath` 绑本机可执行文件（.exe / .bat / .cmd / .lnk，无数据端子）；`execIcon` 取 auto / rocket / gear / terminal / play / bolt / wrench / folder / file / power。`jscode` 里 `input = { 参数名: 值 }`（图像是 `{kind:"image", path}`），`return { 输出参数名: 值 }`；`inputs` / `outputs` 传完整数组即整体替换端子表（会连带改连线）。
+- **super 展开态 / 开发节点**：`expandW` / `expandH` 是展开态尺寸；`subFolder` 是内部节点相对路径的落点；`db` 标数据库节点（编译后出 db_replica）；开发节点字段语义见技能 mtnode-dev-architect。
+
 生成类节点的共同口径（music_gen / yue_gen / breeze_gen / video_gen 的 outputPath、抽卡 + seed、全局锁、媒体输入走 file:///）另见技能 mtnode-media-gen-nodes。
