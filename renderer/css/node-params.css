@@ -1,0 +1,281 @@
+/* ============ 节点「参数」端子 + 输入文本节点的 JSON 表单 ============
+   两个来源都在这一个文件里：
+     · renderer/app-node-params.js —— 参数端子（.np-port / .np-chip / 设置窗明细表 .np-ovr-table）
+       与 JSON 表单（.np-json-*）
+   口径：端子本体完全复用 .port.in（几何、命中、颜色、右键切断都由既有实现给），
+   这里只补「参数」自己的辨识色与徽标位置；JSON 表单只占节点 body 的可用高度，
+   自己滚，不把节点撑大。 */
+
+/* ── 参数端子：接在输入端最末位 ── */
+.wf-node > .port.in.np-port {
+  /* 与普通数据端子同尺寸，换成琥珀色：一眼看得出它喂的是「配置」不是「内容」 */
+  background: #d9a84a;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35), 0 0 6px rgba(217, 168, 74, 0.45);
+}
+.wf-node > .port.in.np-port.spare {
+  background: rgba(217, 168, 74, 0.35);
+  box-shadow: none;
+}
+.wf-node > .port.in.np-port .np-port-badge {
+  /* 徽标落在端子左侧，与既有 .port-badge 同一套位置（这里只补颜色与字重） */
+  color: #e7c579;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+/* ── 卡片标识：参数端子已接线 ── */
+.wf-node .n-chip.np-chip {
+  color: #e7c579;
+  border-color: rgba(217, 168, 74, 0.55);
+  background: rgba(217, 168, 74, 0.14);
+}
+.wf-node .n-chip.np-chip.on {
+  background: rgba(217, 168, 74, 0.3);
+  color: #ffe1a0;
+}
+.wf-node .n-chip.np-chip.bad {
+  color: #ff9d8a;
+  border-color: rgba(255, 120, 100, 0.55);
+  background: rgba(255, 120, 100, 0.14);
+}
+
+/* ── 设置窗：参数覆写明细表 ── */
+.np-ovr-table > div {
+  overflow-wrap: anywhere;
+}
+
+/* ── 设置窗：说明收纳（? 图标 · hover 才展开）+ 右侧文档按钮 ── */
+.np-q {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  font-size: 9.5px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: help;
+  color: #9fb4c9;
+  border: 1px solid rgba(159, 180, 201, 0.55);
+  opacity: 0.85;
+}
+.np-q:hover,
+.np-q:focus-visible {
+  opacity: 1;
+  color: #cfe2f4;
+  border-color: rgba(207, 226, 244, 0.8);
+  outline: none;
+}
+/* 悬停浮层：body 级 fixed，设置正文的 overflow 裁不到；字数多就折行 */
+.np-q-tip {
+  position: fixed;
+  z-index: 2600;
+  max-width: 340px;
+  padding: 7px 9px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(24, 28, 34, 0.97);
+  color: #e6edf5;
+  font-size: 11.5px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+  pointer-events: none;
+}
+body.theme-light .np-q-tip {
+  border-color: rgba(0, 0, 0, 0.14);
+  background: #fff;
+  color: #24303c;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.16);
+}
+
+/* 严格校验：标题 + ? + 勾选框同一行（旧版 .n-field 竖排会占三行） */
+.np-strict {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+}
+.np-strict > .np-strict-t {
+  color: var(--ink);
+}
+.np-strict > input[type="checkbox"] {
+  width: auto;
+  margin: 0;
+  flex: none;
+}
+.np-doc-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px 6px;
+  line-height: 1;
+  color: #9fb4c9;
+}
+.np-doc-btn:hover {
+  color: #e7c579;
+}
+
+/* ── 文档窗：全部参数的文字说明（每键一块：键 / 类型·默认·当前 / 说明） ── */
+.np-doc-list {
+  margin-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+.np-doc-row {
+  display: grid;
+  grid-template-columns: minmax(112px, auto) minmax(0, 1fr);
+  gap: 0 10px;
+  padding: 5px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+.np-doc-k {
+  grid-column: 1;
+  grid-row: 1;
+  font-family: ui-monospace, Consolas, monospace;
+  color: #e7c579;
+  overflow-wrap: anywhere;
+}
+.np-doc-m {
+  grid-column: 2;
+  grid-row: 1;
+  opacity: 0.72;
+  overflow-wrap: anywhere;
+}
+.np-doc-d {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  padding-top: 1px;
+  overflow-wrap: anywhere;
+}
+.np-doc-none {
+  padding: 8px 0;
+  opacity: 0.7;
+}
+
+/* ── 输入文本节点：JSON 表单 ── */
+.np-json-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 0;
+  flex: 1 1 auto;
+}
+.np-json-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  flex-wrap: wrap;
+}
+.np-json-bar .np-json-ro {
+  font-size: 11px;
+  opacity: 0.7;
+}
+.np-json-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  padding: 6px 8px;
+  background: rgba(0, 0, 0, 0.16);
+}
+.np-json-editor,
+.np-sub-box {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+.np-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  min-width: 0;
+}
+.np-row > .np-key {
+  flex: 0 0 auto;
+  min-width: 64px;
+  max-width: 45%;
+  color: #9fb4c9;
+  font-family: ui-monospace, Consolas, monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.np-row > .np-sub {
+  flex: 1 1 auto;
+  min-width: 0;
+  border-left: 1px dashed rgba(255, 255, 255, 0.14);
+  padding-left: 6px;
+}
+.np-row input[type="text"],
+.np-row input[type="number"],
+.np-ops input[type="text"] {
+  flex: 1 1 auto;
+  min-width: 40px;
+  font-size: 11.5px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.05);
+  color: inherit;
+}
+.np-ops {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  flex-wrap: wrap;
+  padding-top: 2px;
+}
+.np-ops .np-key-in {
+  flex: 0 0 88px;
+}
+.np-row button.mini {
+  flex: 0 0 auto;
+  padding: 0 5px;
+  font-size: 11px;
+}
+
+/* 亮色主题：端子与表单的对比度按亮底重算 */
+body.theme-light .wf-node > .port.in.np-port {
+  background: #b07b12;
+}
+body.theme-light .wf-node .n-chip.np-chip {
+  color: #8a5c00;
+  border-color: rgba(176, 123, 18, 0.55);
+  background: rgba(217, 168, 74, 0.18);
+}
+body.theme-light .np-row > .np-key {
+  color: #6b5a35;
+}
+body.theme-light .np-q {
+  color: #5b6b7a;
+  border-color: rgba(91, 107, 122, 0.5);
+}
+body.theme-light .np-doc-k {
+  color: #8a5c00;
+}
+body.theme-light .np-doc-row {
+  border-bottom-color: rgba(0, 0, 0, 0.08);
+}
+body.theme-light .np-json-scroll {
+  background: rgba(0, 0, 0, 0.03);
+  border-color: rgba(0, 0, 0, 0.1);
+}
+body.theme-light .np-row input[type="text"],
+body.theme-light .np-row input[type="number"],
+body.theme-light .np-ops input[type="text"] {
+  background: #fff;
+  border-color: rgba(0, 0, 0, 0.16);
+}

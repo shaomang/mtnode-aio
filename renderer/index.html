@@ -509,13 +509,42 @@
   </section>
   <aside class="assist-pane" id="assistPane" aria-label="全局 AI 助手">
     <div class="assist-resize" id="assistResize" data-i18n-title="拖动分界线调整助手栏宽度（整条边界都可拖）" title="拖动分界线调整助手栏宽度（整条边界都可拖）"></div>
+    <!-- 头部＝这条助手会话的身份行（本次需求 · 与原生会话一致）：
+         标题 + ▣所属画布 + 最后对话时间，右侧「…」收会话操作（改名 / 新建一条 / 在会话视图打开）。
+         原来的「清空」按钮已撤掉 —— 它就是「新建一条」，两个入口做同一件事只会让人犹豫。 -->
     <div class="assist-head">
-      <b data-i18n="全局助手">全局助手</b>
-      <span class="assist-sub" data-i18n="可见全局状态 · 危险操作需确认">可见全局状态 · 危险操作需确认</span>
-      <button type="button" id="btnAssistClear" class="mini" data-i18n="清空" data-i18n-title="清空助手对话">清空</button>
+      <div class="assist-id">
+        <span class="assist-id-title" id="assistTitle" data-i18n="全局助手">全局助手</span>
+        <span class="assist-id-wf" id="assistWf" hidden></span>
+        <span class="assist-id-when" id="assistWhen" hidden></span>
+      </div>
+      <button type="button" id="btnAssistMenu" class="mini btn-sq" data-i18n-title="会话操作：改名 / 新建一条 / 在会话视图打开" title="会话操作：改名 / 新建一条 / 在会话视图打开">…</button>
       <button type="button" id="btnAssistClose" class="mini btn-sq" data-i18n-title="关闭右侧助手栏" title="关闭右侧助手栏">✕</button>
+      <div class="agent-menu assist-sess-menu" id="assistSessMenu" hidden></div>
     </div>
+    <!-- 输入区上方那排 chip＝与原生会话输入区同一套、同一顺序（本次需求）：
+         工作区 → 模型 → 技能 → 压缩上下文 / 查看摘要 → 工具 → 模式 → 浏览器活动。
+         原来的「预设 / 供应商 / 模型 / 思考强度 / 上下文压缩」五行平铺下拉全部收进
+         「模型」chip 的菜单里（字段与写入点一字未改，只是搬了家）；「工作目录」收进
+         「工作区」chip 的菜单。栏窄时只留图标，全名走悬停提示（app-assist.js 的
+         paintAssistChips / syncAssistChipsCompact）。 -->
     <div class="assist-ctrl" id="assistCtrl">
+      <div class="assist-chips" id="assistChips">
+        <button type="button" class="assist-chip" id="assistWsChip" data-i18n-title="工作区：生效工作目录（跟随所属画布）" title="工作区：生效工作目录（跟随所属画布）"><i class="ach-icon">🗂</i><span class="ach-text" id="assistWsChipText" data-i18n="工作区">工作区</span></button>
+        <button type="button" class="assist-chip" id="assistModelChip" data-i18n-title="模型提供商 / 预设 / 模型 / 思考强度 / 上下文压缩" title="模型提供商 / 预设 / 模型 / 思考强度 / 上下文压缩"><i class="ach-icon">⚙</i><span class="ach-text" id="assistModelChipText" data-i18n="模型">模型</span></button>
+        <button type="button" class="assist-chip" id="assistCmdChip" data-i18n-title="技能：把 /技能 放进输入框" title="技能：把 /技能 放进输入框"><i class="ach-icon">✦</i><span class="ach-text" data-i18n="技能">技能</span></button>
+        <button type="button" class="assist-chip assist-chip-compact" id="assistCompactChip" data-i18n-title="压缩上下文：把较早的对话收成一段摘要（会话保留，原文折起来仍可回看）" title="压缩上下文：把较早的对话收成一段摘要（会话保留，原文折起来仍可回看）"><i class="ach-icon">◧</i><span class="ach-text" data-i18n="压缩上下文">压缩上下文</span></button>
+        <button type="button" class="assist-chip assist-chip-compact-view" id="assistCompactViewChip" hidden data-i18n-title="查看压缩摘要：看最近一次压缩产出的摘要全文" title="查看压缩摘要：看最近一次压缩产出的摘要全文"><i class="ach-icon">▤</i><span class="ach-text" data-i18n="查看摘要">查看摘要</span></button>
+        <button type="button" class="assist-chip" id="assistToolsChip" data-i18n-title="工具：逐工具 允许 / 询问 / 禁止" title="工具：逐工具 允许 / 询问 / 禁止"><i class="ach-icon">🔧</i><span class="ach-text" id="assistToolsChipText" data-i18n="工具">工具</span></button>
+        <!-- 「模式」入口沿用原 id（app-boot.js 的 openAssistModeMenu 与冒烟都认它） -->
+        <button type="button" class="assist-chip assist-chip-mode" id="assistModeTrigger" data-i18n-title="模式" title="模式"><i class="ach-icon">☰</i><span class="ach-text" data-i18n="模式">模式</span></button>
+        <button type="button" class="assist-chip" id="assistBrowserChip" data-i18n-title="浏览器活动：切到会话视图看这条助手会话开了哪些网页" title="浏览器活动：切到会话视图看这条助手会话开了哪些网页"><i class="ach-icon">🌐</i><span class="ach-text" data-i18n="浏览器活动">浏览器活动</span></button>
+      </div>
+      <div class="agent-menu agent-tools-menu" id="assistToolsMenu" hidden></div>
+      <div class="agent-menu agent-skill-menu" id="assistCmdMenu" hidden></div>
+      <!-- 「模型」chip 的菜单：面里就是原来那五行下拉（档位清单仍由 app-assist.js 现算）。
+           菜单关着时整块 display:none，行本身的计算 display 仍是 flex —— 默认 hidden 收起。 -->
+      <div class="agent-menu assist-menu" id="assistModelMenu" hidden>
       <label class="assist-ctrl-item"><span data-i18n="预设">预设</span>
         <!-- 档位清单不在此写死：由 app-assist.js 按 app.js 的 AGENT_PRESETS 真源生成
              （表序 = 菜单序，第一档即默认档），避免这里自成一份漏档的旧名单。 -->
@@ -562,34 +591,32 @@
       <label class="assist-ctrl-item" id="assistCompactSummaryRow" hidden><span data-i18n="摘要上限">摘要上限</span>
         <input id="assistCompactSummaryInput" type="number" min="4096" max="256000" step="1024" data-i18n-title="（单位：token；留空 = 跟随档位默认；摘要真被截断时压缩会报错）" title="（单位：token；留空 = 跟随档位默认；摘要真被截断时压缩会报错）">
       </label>
+      </div>
+      <!-- 「工作区」chip 的菜单：原来那一行「工作目录」原样搬进来（输入框 / 📂 打开 / 选目录
+           三个入口与它们的接线一字未改，只是从常驻一行变成点开才出现）。 -->
+      <div class="agent-menu assist-menu assist-ws-menu" id="assistWsMenu" hidden>
+        <div class="assist-ws-line">
+          <span class="assist-ws-label" data-i18n="工作目录">工作目录</span>
+          <input id="assistWsInput" type="text" data-i18n-placeholder="留空 = 当前画布 / 应用默认目录…" placeholder="留空 = 当前画布 / 应用默认目录…">
+          <button id="assistWsOpen" class="mini btn-sq" type="button" data-i18n-title="在资源管理器中打开该文件夹" title="在资源管理器中打开该文件夹">📂</button>
+          <button id="assistWsBrowse" class="mini btn-sq ws-browse" type="button" aria-label="设置项目目的地文件夹"></button>
+        </div>
+      </div>
     </div>
     <!-- 档位文案只留「档位名 · 上下文阈值」两截（界面不冗余，见 app-dsh-compact.js 的
-          ASSIST_COMPACT_OPTIONS）；省钱档原有的那一行长说明句已按本次要求撤掉。 -->
-    <!-- 助手栏「模式」菜单（本次开发需求）：与会话窗口「模式」菜单**同一套构件**
+          ASSIST_COMPACT_OPTIONS）；低档原有的那一行长说明句已按本次要求撤掉。 -->
+    <!-- 助手栏「模式」菜单：与会话窗口「模式」菜单**同一套构件**
          （app-assist.js 的 buildAgentModeMenu / agentModeEntryOf），行集 = assistModeEntries
-         （先拷问需求 + 纯净模式），真源是全局偏好 S.assistGrill / S.assistPure（随配置落盘）。
-         入口键面与「工作范围」同一行观感（.assist-ctrl-item），开着的开关由 .on 变色 +
+         （先拷问需求 + 纯净模式），真源是会话字段 st.grill / st.pure。
+         入口（#assistModeTrigger）已随本次需求挪进上面的 chip 行，开着的开关由 .on 变色 +
          tooltip 逐项「（开）/（关）」表达（见 paintAssistModeChip）。 -->
-    <div class="assist-ctrl" id="assistModeCtrl">
-      <button type="button" class="assist-chip-mode" id="assistModeTrigger" data-i18n-title="模式" title="模式"><span data-i18n="模式">模式</span></button>
-      <!-- 「拷问需求」状态小字**已按本次需求撤掉**（会话输入区那枚同族 chip 也一并撤了）：
-           这一档开关本身仍在上面这只「模式」菜单里（真源 = 全局偏好 S.assistGrill），
-           状态由菜单行与入口变色表达；头部那行小字从此只报「工作范围」（见
-           app-assist.js 的 updateAssistScopeChrome）。 -->
-    </div>
     <div class="agent-menu agent-tools-menu" id="assistModeMenu" hidden></div>
-    <div class="assist-ws-line">
+    <!-- 「工作范围」是助手独有概念（原生会话的范围由它的所属画布决定），故保留一行独立下拉；
+         右侧那枚小字只回显这一档的当前值（app-assist.js 的 updateAssistScopeChrome）。 -->
+    <div class="assist-ws-line assist-scope-line">
       <span class="assist-ws-label" data-i18n="工作范围">工作范围</span>
       <select id="assistScopeSel" class="assist-scope-sel" data-i18n-title="限制助手可访问的画布范围" title="限制助手可访问的画布范围"></select>
-      <!-- 助手侧「与画布无关」也改为自动判定（本次开发需求，与会话侧同一个判据）：
-           发消息时由 app-assist.js 读这条消息，判定与画布无关就自动不注册画布三件套、
-           也不注入整张画布快照；判不准按「有关」处理。按钮已移除。 -->
-    </div>
-    <div class="assist-ws-line">
-      <span class="assist-ws-label" data-i18n="工作目录">工作目录</span>
-      <input id="assistWsInput" type="text" data-i18n-placeholder="留空 = 当前画布 / 应用默认目录…" placeholder="留空 = 当前画布 / 应用默认目录…">
-      <button id="assistWsOpen" class="mini btn-sq" type="button" data-i18n-title="在资源管理器中打开该文件夹" title="在资源管理器中打开该文件夹">📂</button>
-      <button id="assistWsBrowse" class="mini btn-sq ws-browse" type="button" aria-label="设置项目目的地文件夹"></button>
+      <span class="assist-sub"></span>
     </div>
     <!-- 「可调用工具」一行随会话侧 chip 一并撤下（助手与会话同一口径） -->
     <div class="assist-live2d" id="assistLive2d" hidden>
@@ -598,6 +625,21 @@
           <span class="assist-live2d-mark">Live2D</span>
           <span data-i18n="预留位 · 可接入角色模型">预留位 · 可接入角色模型</span>
         </div>
+      </div>
+    </div>
+    <!-- 会话时间区间（与原生会话 #agentRound 同一口径、同一渲染函数）：整个会话首尾消息区间 -->
+    <div class="agent-round assist-round" id="assistRound" hidden><b></b><i></i></div>
+    <!-- 运行区折叠行（本次需求）：计划 / 任务清单 / 发送队列 / 暂停条在助手栏折成一行摘要
+         （「计划 x/y · 待办 n · 排队 n · 已暂停」），点开展开成原生那四块 —— 展开后就是
+         原生那几个渲染函数的产物（容器只是换了 id），交互与原生一字不差。
+         展开态记在会话自己的 assistRunOpen 位上，重启后仍然照旧。 -->
+    <div class="assist-runfold" id="assistRunFold" hidden>
+      <button type="button" class="assist-runfold-btn" id="assistRunFoldBtn"><i class="arf-arrow" id="assistRunFoldArrow">▸</i><span class="arf-text" id="assistRunFoldText"></span></button>
+      <div class="assist-runbody" id="assistRunBody" hidden>
+        <div class="agent-queue agent-paused" id="assistPaused" hidden></div>
+        <div class="agent-queue" id="assistQueue" hidden></div>
+        <div class="agent-todo agent-plan" id="assistPlan" hidden></div>
+        <div class="agent-todo" id="assistTodo" hidden></div>
       </div>
     </div>
     <div class="assist-list" id="assistList"></div>
@@ -820,6 +862,13 @@
      排在这里（app.js / app-canvas.js / app-nodes.js 之后）：注册表要往它们的真源里补键，
      所以那些真源必须已经就位。 -->
 <script src="app-nodeplugins.js"></script>
+<!-- 节点「参数」端子（renderer/app-node-params.js）：所有插件节点与「存在配置」的节点在输入端
+     最末位多一颗独立端子（端子号 = 哨兵值 PARAM_IN_INDEX），接一份 JSON 运行时覆写该节点的
+     配置（含相对路径按工作目录解析）；文本节点识别到纯 JSON 时换成 JSON 表单视图。
+     排在这里（app.js / app-canvas.js / app-nodes.js / app-nodeplugins.js 之后）：
+     它要在启动时把 NODE_SETTINGS_FORMS 里已登记的表单统一包一层「参数覆写」明细，
+     并接住之后由 app-nodeplugins.js 在运行期登记的插件节点表单。 -->
+<script src="app-node-params.js"></script>
 <script src="app-store.js"></script>
 <!-- 工作流库（renderer/app-workflows.js · 顶栏「工作流库」+ 节点层右键「保存到工作流库 /
      分享到工坊」）：工作流 = 一颗节点层连同它的整棵子树，没有新节点类型，也没有新执行语义。
@@ -920,7 +969,7 @@
 <script src="app-render-perf.js"></script>
 <!-- 上下文压缩策略的渲染层共享小单元（renderer/app-dsh-compact.js）：档位清单 /
       归一 compactPolicyOf / 档位词条 / 触发线边界。设置面板与助手栏是两个各自独立的
-      加载单元，这一小份必须共用同一份，否则会出现「面板显示中档、组合里是省钱档」。
+      加载单元，这一小份必须共用同一份，否则会出现「面板显示中档、组合里是低档」。
       主进程侧真源是根目录 dsh-compact-policy.js（用户设置 → cordis.yml 的写入点）。 -->
 <script src="app-dsh-compact.js"></script>
 <script src="app-settings.js"></script>

@@ -52,6 +52,10 @@ const PLUGIN_CFG = {
   "breeze-tts-local": "breeze-tts/config.json",
   breeze: "breeze-tts/config.json",
   remotion: "remotion/config.json",
+  /* Blender 本地插件（应用插件 kind blender）：Blender 便携包解到 <插件根目录>/blender，
+     配置落 <数据目录>/blender/config.json。见 PLUGIN_SUBDIR 的说明。 */
+  "blender-local": "blender/config.json",
+  blender: "blender/config.json",
   /* Paseo 手机接管（应用插件 kind paseo）：自建后端的安装目录与 daemon home 都归插件根目录体系，
      配置落 <数据目录>/paseo/config.json（旧的 app-plugins/paseo-remote/config.json 由宿主首启搬迁）。 */
   "paseo-remote": "paseo/config.json",
@@ -88,13 +92,16 @@ const PLUGIN_SUBDIR = {
   "breeze-tts-local": "breeze",
   breeze: "breeze",
   remotion: "remotion",
+  /* Blender 本地插件：默认装到 <插件根目录>/blender（官方便携 zip 解压目标）。 */
+  "blender-local": "blender",
+  blender: "blender",
   /* Paseo 手机接管：默认装到 <插件根目录>/paseo（自建后端的 npm --prefix 目标）。 */
   "paseo-remote": "paseo",
   paseo: "paseo",
 };
 
 /** 目录就绪的标记：任一命中就当作「这个目录真的装过东西」（推断与展示都用它）。 */
-const READY_MARKERS = [".install-ok", ".venv", "ComfyUI", "node_modules", "models", ".scaffold-ref"];
+const READY_MARKERS = [".install-ok", ".venv", "ComfyUI", "node_modules", "models", ".scaffold-ref", "blender.exe"];
 
 function readJson(p, fb) {
   try {

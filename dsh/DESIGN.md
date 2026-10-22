@@ -1,4 +1,4 @@
-﻿# MTNode × DeepSeek Harness 集成设计
+# MTNode × DeepSeek Harness 集成设计
 
 > 本文件是 dsh 集成的架构契约。修改集成代码前先读这里。
 > 面向普通用户的说明见 [README.md](README.md)。
@@ -138,7 +138,7 @@ dsh 自带压缩（`@deepseek-ai/dsh-compaction-basic` + `token-meter` + `tool-r
 |---|---|---|
 | `thresholdRatio` | `0.3` | 「中」档的有效窗口 ≈ 300k token（声明窗口 × 0.3）。dsh 的默认 0.8 在本机等价于不触发 |
 | `retainRatio` | `0.04` | 未点名路由的比例兜底：窗口越小留得越少（1M → 约 37k；128k → 约 4.6k） |
-| `modelPolicies[]` | `deepseek-official/<该路由可能跑到的每个模型 id>` → `retainTokens: 32768` | 这条路由的窗口是网关自己声明的 1M，纯比例会「留 160k 原文」，压缩几乎白压 → 必须给**绝对**保留尾部。**必须点名一族 id 而不是一个名字**：插件按 provider + model 逐字精确匹配，而这条路由跑的 id 是用户服务商清单里那一个（本机实测 `deepseek-v4-flash`）—— 只点 `deepseek-flash` 时整份 modelPolicies 静默落空（触发线退回 ≈678k，「选 100k 档却没在 100k 压」） |
+| `modelPolicies[]` | `deepseek-official/<该路由可能跑到的每个模型 id>` → `retainTokens: 32768` | 这条路由的窗口是网关自己声明的 1M，纯比例会「留 160k 原文」，压缩几乎白压 → 必须给**绝对**保留尾部。**必须点名一族 id 而不是一个名字**：插件按 provider + model 逐字精确匹配，而这条路由跑的 id 是用户服务商清单里那一个（本机实测 `deepseek-v4-flash`）—— 只点 `deepseek-flash` 时整份 modelPolicies 静默落空（触发线退回 ≈678k，「选 150k 档却没在 150k 压」） |
 | `auto` | `true` | 自动压缩；置 false 只停自动触发，provider 确认的上下文溢出恢复仍在 |
 
 - **配置值真源 = `dsh-compact-policy.js`**（与 `dsh-agent-policy.js` 同一个模式）：
@@ -149,7 +149,7 @@ dsh 自带压缩（`@deepseek-ai/dsh-compaction-basic` + `token-meter` + `tool-r
 
   | 档（tier） | 落到主力路由的触发线 | 保留尾部 | 实现 |
   |---|---|---|---|
-  | 省钱 `frugal` | 约 100k token（绝对量） | 16,384 | 走路由级 `headroomTokens: 643872`（= 1M 窗口 − 256K 预留输出 − 100K），`thresholdRatio 0.9` 只用来保证 `min()` 的第二支胜出 |
+  | 低 `frugal` | 约 150k token（绝对量） | 16,384 | 走路由级 `headroomTokens: 594000`（= 1M 窗口 − 256K 预留输出 − 150K），`thresholdRatio 0.9` 只用来保证 `min()` 的第二支胜出 |
   | 中 `mid`（默认） | 约 300k | 32,768 | `thresholdRatio 0.3` |
   | 晚 `late` | 约 450k | 65,536 | `thresholdRatio 0.45` |
   | 自定义 `custom` | 用户填 100k – 500k | 16,384 | 触发线换算成 `headroomTokens`（744,000 − 触发线），越界回落 100k |
@@ -163,8 +163,8 @@ dsh 自带压缩（`@deepseek-ai/dsh-compaction-basic` + `token-meter` + `tool-r
   落点略有差异，这是固定 headroom 方案的既定代价。
   每条 policy 还要显式写 `maxTokens: 256000`：插件有一条兜底 —— 路由 policy 只给了
   `headroomTokens` 时会把 `policy.maxTokens` 填成 `headroomTokens`（同文件 :71），
-  而 `maxTokens` 是**写摘要那一次请求**的输出上限；省钱档的 643,872 那样发出去就是向
-  模型要 64 万输出 token，所以钉成主力路由真正在用的那个 256,000。
+  而 `maxTokens` 是**写摘要那一次请求**的输出上限；低档的 594,000 那样发出去就是向
+  模型要 59 万输出 token，所以钉成主力路由真正在用的那个 256,000。
 - **点名清单从哪来**：兜底那一族 = 网关认得的官方模型 id（`gateway.mjs` 的
   `OFFICIAL_MODEL_KNOWN` + 别名组，含已下线的 `deepseek-v4-flash` 这类老 id），
   ∪ 配置里官方服务商列的模型 id —— 判据与渲染层同一句（`renderer/app-agent.js` 的
@@ -172,11 +172,11 @@ dsh 自带压缩（`@deepseek-ai/dsh-compaction-basic` + `token-meter` + `tool-r
   这些 id 在网关侧一律声明 1,000,000 窗口（`dsh-llm-deepseek` 的 `DEFAULT_CONTEXT_WINDOW`），
   固定 headroom 的算式对它们逐条成立。回归见 `test/smoke-token-budget.js` `[11]`
   （兜底表必须覆盖 `OFFICIAL_MODEL_KNOWN` 的每个 id；配置里新出现的官方 id 必须被追加点名）。
-- **小窗口路由不点名**：省钱 / 自定义两档的 `headroomTokens` 只写进官方路由；
+- **小窗口路由不点名**：低 / 自定义两档的 `headroomTokens` 只写进官方路由；
   声明窗口过小（算不出合法 headroom）的自配路由继续走 `retainRatio` 比例兜底，
   本轮不动它们（dsh 的 `auto` 是全局单个布尔，做不到只给小窗口关）。
 - **幂等**：设置缺省（开 · 中档）与出货组合逐字一致，`applyCompactPolicy` 因此
-  每次启动零字节改动；中↔省钱、关↔开往返都能逐字回到出货原文。旧值 `tier:"early"`
+  每次启动零字节改动；中↔低、关↔开往返都能逐字回到出货原文。旧值 `tier:"early"`
   （早档已下线）一律归一到「中」。
 - **不点名 `mtnode_<route>`**：自配服务商的路由名是 `mtnode_` + 用户自己填的 route
   （`gateway.mjs` 的 `routeOfProvider` / `applySettings`），模型名也是用户填的 ——

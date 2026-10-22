@@ -10,9 +10,10 @@ description: MTNode 画布建图 / 连线 / 批量的完整硬规则：kind 速�
 
 ## 调用形态
 
-在当前画布上创建 / 修改 / 连线 / 删除 / 分组 / 自动排版节点，并用 createMarks / updateMarks / removeMarks 画装饰（text / box / arrow）。先 `mtnode_canvas_get` 读图，再在一次调用里建完整子图。标题必须唯一；alias 只在本调用内有效（connect / update / refs 用它），不是画布 id。返回是**自足的改动回执**：计数 + 每个 created / updated 的 x/y/w/h 与端口占用摘要 + warnings，不必再回读画布；确要复核别的节点或取正文再用 `mtnode_canvas_get`（`ids:[...]` + `detail:"full"`）。
+调用签名、端子语义与回执格式以 `mtnode_canvas_edit` 的工具描述为准（一次调用建完一棵子图，回执自足不必回读）。本节只写它没写的硬规则。
 
-> 读图默认是 `detail:"minimal"` = 纯节点索引：每节点只有 标题 / 描述(note) / 类别(kind)，配置字段、正文与连线 / 绘制 / 分组 / 树一律不给。要看配置用 `detail:"standard"`，看正文用 `ids:[...]` + `detail:"full"`，只查连线用 `sections:["nodes","wires"]`。kinds / imageSizes / defaultImageSize 这三张静态表不再随任何快照返回，需要时 `canvas_get` 传 `sections:["refs"]`。
+- alias 只在本调用内有效（connect / update / refs 用它），不是画布 id；标题必须唯一。
+- 读图默认 `detail:"minimal"`（只有 标题 / 描述 / 类别）：看配置用 `standard`，看正文用 `ids:[...]` + `full`，只查连线用 `sections:["nodes","wires"]`；kinds / imageSizes / defaultImageSize 走 `sections:["refs"]`。
 
 ## create.kind 速查
 
@@ -21,7 +22,8 @@ create.kind 速查：输入 input_text / input_image / input_audio / input_video
 ## 硬规则（误接线主要来源）
 
 - task 自带固定 start / endSuccess / endFail（勿删）：活儿非平凡先建 task 当计划，实现用 parentTaskId 放进去，控制线必须从 start 走到成功或失败终点；judge 只有两个输出：fromIndex 0 = YES、1 = NO。
-- super 用 parentSuperId 打包（需 canvas_super）：对外只暴露边界输入/输出端子，连线要从 super 的输入端子进子节点、再由子节点连回它的输出端子；跨 super / 跨层级接通用 superConnect。
+- super 用 parentSuperId 打包（需 canvas_super）：对外只暴露边界输入/输出端子。
+- **跨节点层是硬规则（不是建议）**：一条数据线只允许落在「同一层」（两端 parentSuperId 相同）或「节点层 ↔ 它的直属子节点」这条边界上。跨层一律走逐层链：`层内节点 → 直属壳的输出端子 → … → 最外壳 → 最外壳 → … → 目标壳的输入端子 → 层内节点`，每一段只连直接父子，绝不越级；同壳两颗兄弟节点直接连，不碰边界端子。connect / superConnect 遇到跨层会自动改写成这条链（静默，不必手拼桥接线；同一对重复调用不新建线）；方案落不下来（端子满 / 回路 / 嵌套错）就整对拒绝并给 warning，绝不留半截线。**任何入口都不许留下「层内节点直连层外」的线**：落线总闸会拦，读档与每次编辑后也会静默清掉。
 - tool / function 节点：参数表就是端子表——输入端子 0 = 控制入、1..N = 按顺序的各入参；输出端子 0..M-1 = 各出参、末位 = 控制出。fromIndex / toIndex 按这份表数（目标的 toIndex 0 = 控制入）；数组端子看参数的 list 说明；传 inputs / outputs = 整体替换该表，删参数会让已连的端子改指别的参数，改完提醒用户复核连线。
 - @引用：连线源在 prompt/task 里写 @标题；引用全局广播须同时 (1) 源接进 kind "global"、(2) 消费节点 globalRefs:true、(3) prompt/task 里 @源标题——只有被明文 @ 命中的才注入；@标签名 注入带该标签的全部节点内容。为节点写 prompt/task 而要用别的节点的内容时，一律写 @标题（连线源），不要粘贴正文——粘贴的不随上游重跑更新。素材节点本身不是 @ 候选：写它的内容条目标题（＝端子名）只引那一条，且只有已连线接进本节点的端子条目可引。
 - 智能节点（agent_task、开了 agent 的 proc_text）自己会写文件：其后绝不接 save（会把会话噪声落盘），也别当数据输入连给别人——让它写文档，再用 wait_file 以控制线挡住下游（它无输入端子、不输出值，别往它连线），后续节点自己读约定路径。
@@ -38,12 +40,37 @@ create.kind 速查：输入 input_text / input_image / input_audio / input_video
 
 ## 端子怎么读（读图一次读全，别靠试连反推）
 
-`canvas_get`（standard / full 档）对**端子数固定**的节点回 `ports`（每个端子带 dir / index / name / kind / connectedTo）；对**输入端子随连线增量长出来**的节点（proc_text / proc_image / sensenova_gen / agent_task / input_text / input_image / input_file …）另回 `portRule`（note / input / output / now / hint）——proc_image 与 sensenova_gen 同时在 `ports` 名单里，所以它们的 `ports` 上还会挂一份同样的 `rule`。读法：
+`canvas_get`（standard / full）对端子数固定的节点回 `ports`；对输入端子随连线增量长出来的节点另回 `portRule`（proc_image / sensenova_gen 两者都在 `ports` 名单里，故 `ports` 上还挂一份同样的 `rule`）。
 
-- **端口 0 = 提示词 / 文本入口 · 端口 1+ = 数据槽**：连一条数据线就多一个槽，**文本与图像引用都收**；参考图（图生图 / 图像编辑）就接端口 1+，**不要接端口 0**。输出 端口 0 = 内容 · 末尾 = 控制输出。
-- `ports` / `portRule.now` 只列**当下真实存在**的端子：没连线的节点只有「端口 0」，**据此断定「这个节点没有图像参考端子」是错的**；那条「端子怎么长」的规则就在 `portRule` 里。
-- **不要用「先试连一条线、再看回执 warnings」的办法反推接法**：一次读图就读全了，试连既多一轮往返又可能真接错线。
+- **端口 0 = 提示词 / 文本入口 · 端口 1+ = 数据槽**：连一条数据线就多一个槽，文本与图像引用都收；参考图（图生图 / 图像编辑）接端口 1+，**不要接端口 0**。输出 端口 0 = 内容 · 末尾 = 控制输出。
+- `ports` / `portRule.now` 只列**当下真实存在**的端子：没连线的节点只有「端口 0」，据此断定「没有图像参考端子」是错的。
+- **不要用「先试连一条线、再看回执 warnings」反推接法**：一次读图就读全了，试连既多一轮往返又可能真接错。
 - 控制类 / 固定端口类（control / wait_file / timer / gate / judge / task / video_gen / remotion / breeze_gen / super / tool / function / 素材）端子由结构或参数钉死，按 `ports` 读即可。
+
+## 参数端子（一份 JSON 覆写节点配置）
+
+所有**插件节点**与**存在配置的节点**（= 已登记 ⚙ 设置窗，减去排除表：control / judge / gate / splitter / counter / mutex / sequencer / delayer / timer / wait_file / net_recv / net_send / input_* / asset / super / deliver / ltout / ltart / db_* / tool / function）在输入端**最末位**都有一颗独立的「参数」端子。它不占 0..N-1 的顺序端口，端子号恒为 **9001**（哨兵值）——所以既有连线号码一颗都不会被它挤动，老画布零迁移。
+
+- **它收什么**：只接文本来源（input_text / proc_text / 变量等），正文是一份 JSON **对象**。多份参数线按接线顺序**深合并**、同键后者胜；嵌套对象逐层合；数组整体替换；`null` = 该键恢复节点默认值；不支持删键。
+- **键名**：只能是该节点的配置字段正式名（camelCase：`savePath` / `outputPath` / `size` / `imgQuality` / `duration` / `temperature`…），**区分大小写，不接受 snake_case / kebab-case 变体**（写错 = 未知键）。`canvas_get`（standard / full）对该节点回 `paramKeys` —— 想知道能写哪些键就读它，不要猜；每个键的含义见节点 ⚙「参数覆写」右上的文档按钮（用户界面里的同一份说明）。
+- **只覆写配置**：结构字段（`batchMode` / `ro` / 端子表…）与内容主体（`prompt` / `text` / `task` / `jscode`）写进来按未知键忽略并警告。
+- **生效方式**：**运行时临时覆盖**，不改画布上的值、不写回节点配置；批量时每次运行各取当时那份。跑完节点卡片的「参数」标识消失。
+- **路径**：路径类键（`…Path` / `workspace` / `dir` / `root`）支持**相对路径**，按画布工作目录解析（与 save 节点同一口径）；绝对路径原样。
+- **异常**：默认宽松（没写的键沿用节点值 / 未知键忽略 / 类型不符的键回退并标黄）；要整份拒绝就在同一节点上传 `paramStrict:true`（节点 ⚙ 里那个「参数严格校验」开关，两边同源），开了就整份拒绝、该节点不运行。
+- **服务商字段也能覆写**：`providerId` / `provider` 写进参数后按本机配置解析——本机没有这个服务商时，自动按「名称唯一 → 该节点 model 归属」换成可用服务商（写回画布节点字段、可撤销），仍对不上则保留原值、警告并**跳过该节点运行**。所以别为了换个模型写死别人的服务商 id。
+
+两种给法，**优先用第一种**：
+
+1. **不接线，直接给 `params`**：在 `canvas_edit` 的 create / update 里写 `params: {…}`（键 = `paramKeys` 里的配置项）。这是「同一张图换参数」的首选做法 —— 不要为了改一个路径就复制整颗节点。`params` 也可被后续 update 覆盖（整体替换），传 `params: null` 清空。
+2. **接线**：建一颗 input_text 写 JSON，再 `connect`（来源文本节点 → 目标节点，`toIndex: 9001`）。适合参数由上游动态算出来的场合。
+
+示例（把一次保存改到相对工作目录、换模型与尺寸）：
+
+```json
+{ "savePath": "out/今日海报.png", "model": "gpt-image-2-vip", "size": "1536x1024" }
+```
+
+读回：`canvas_get` 的 `params`（该节点当前自带的参数）与 `paramKeys`（可写键）。设置窗 ⚙ 里那张「参数覆写」明细表列出 键 / 节点当前值 / 本轮生效值 / 来源；同一节右上的文档按钮打开「全部参数 + 文字说明」，出问题时先看这两处。
 
 ## 保存类节点（save / save_pdf）
 

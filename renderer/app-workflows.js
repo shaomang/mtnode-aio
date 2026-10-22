@@ -303,13 +303,13 @@ function wfArtifactsNeedSeed(node) {
 function nsArtifactFields(ctx, node) {
   if (!ctx || !node) return;
   const list = wfArtifactsOf(node);
-  ctx.section(I18n.t("中间产物"));
+  ctx.section(I18n.t("中间产物"), {
+    tip: I18n.t(
+      "保存到工作流库时会按「中间产物规则」从它的工作目录收集（remotion 的合成代码直接从节点字段带走）。\n\n描述指纹一致时运行直接复用这份产物、不再调用模型；描述改过则自动带着它重生成，新文件写进当前画布的产物目录。",
+    ),
+  });
   if (!list.length) {
-    ctx.hint(
-      I18n.t(
-        "这颗节点还没有随包带来的中间产物。保存到工作流库时会按「中间产物规则」从它的工作目录收集（remotion 的合成代码直接从节点字段带走）。",
-      ),
-    );
+    ctx.hint(I18n.t("这颗节点还没有随包带来的中间产物。"));
     return;
   }
   for (const a of list) {
@@ -364,11 +364,6 @@ function nsArtifactFields(ctx, node) {
     row.append(cap, box);
     ctx.root.appendChild(row);
   }
-  ctx.hint(
-    I18n.t(
-      "描述指纹一致时运行直接复用这份产物、不再调用模型；描述改过则自动带着它重生成，新文件写进当前画布的产物目录。",
-    ),
-  );
 }
 
 /* 节点 → 工作流快照（只收这颗壳与它的后代，连线两端都在集合里） */

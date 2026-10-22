@@ -312,6 +312,9 @@
     /* Paseo 手机接管：安装是**纯 JS** 驱动（npm + 官方 CLI，无 PowerShell 脚本），
        步骤状态由宿主上报、步骤表读它自己的 paseo/steps.json。 */
     "paseo-remote": "paseoRemoteInstall",
+    /* Blender 本地插件：宿主主导（官方 zip + sha256 / uv / addon / MCP 行 / 端到端冒烟），
+       步骤表真源 blender/steps.json。 */
+    "blender-local": "blenderInstall",
   };
   /* id → 选安装目录的桥 / 启动安装的桥（窗口插件与桌宠用它们自己的那两条） */
   function installApiOf(id) {
@@ -915,6 +918,13 @@
       }, { title: T("停掉正在跑的安装脚本（按进程树强杀）", "stop the running install script (kill the process tree)") });
       if (cancelling) btn.disabled = true;
       box.appendChild(btn);
+      /* 安装进行中**也要留着关窗的路**（用户共识）：只关窗，安装继续在后台跑，
+         想停就点「取消安装」；再打开安装窗仍能看到进度与日志。
+         这一支必须自己收尾并 return —— 下面那些（选择目录 / 权重 / 卸载）在安装中不该出现。 */
+      box.appendChild(mkBtn(T("复制日志", "Copy log"), "", copyLog));
+      box.appendChild(mkBtn(T("关闭窗口", "Close window"), "", () => api.close(id), {
+        title: T("只关掉这个窗，安装继续在后台跑（要停请点「取消安装」）", "close this window only; the install keeps running (use Cancel install to stop it)"),
+      }));
       return;
     }
     /* 失败（或被取消）后：**手动重试**是第一位 —— 重跑该插件的安装脚本，
@@ -979,7 +989,7 @@
     /* 安装态：上面那些路径都要以「复制日志 / 完成并关闭」收尾（卸载态已在上面的
        renderUninstallActions 里自己收尾并 return 了）。 */
     box.appendChild(mkBtn(T("复制日志", "Copy log"), "", copyLog));
-    box.appendChild(mkBtn(running ? T("关闭", "Close") : T("完成并关闭", "Done"), "", () => api.close(id)));
+    box.appendChild(mkBtn(T("完成并关闭", "Done"), "", () => api.close(id)));
   }
 
   /** 卸载态的动作按钮：确认 / 取消 / 重试。与安装态共用同一只窗与同一份快照。 */

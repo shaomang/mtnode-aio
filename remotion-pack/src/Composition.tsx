@@ -1,303 +1,56 @@
-/* portrait-dialogue.tsx — 内置「角色动态 + 台词卡」合成（随 remotion-pack 发版）
+/**
+ * 入口占位合成（随 remotion-pack 发版）。
  *
- * 用法（不是给用户手改的文件，而是主进程的兜底模板）：
- *   · 节点侧在描述里写了 {{hero}} / {{narration}} / {{voice}} / {{bg}} 占位、
- *     或主进程识别出「左角色 + 右侧金边台词卡」这类描述时，main-remotion.js 选中它；
- *   · render.json 的 inputProps 里带 hero / narration / voice / bg / accent，
- *     模板按 props 取值：hero = 循环视频（本机路径 / data URL / http），
- *     narration = 台词正文（换行分句），voice = 语音（本机路径 / data URL），bg = 左侧底色。
- *   · 全部样式内联、只 import react / remotion：与安装目录只装这两者的前提一致。
+ * 这不是给用户手改的成品模板：真正渲染时，宿主会在每次渲染前用
+ * remotion/main-remotion.js 的 writeRenderSources 重写工程目录 src/ 下的
+ * Composition.tsx 与 index.tsx ——
+ *   · 节点里贴了合成代码 / 工作流产物 → 用那份自定义 TSX；
+ *   · 都没有 → 用宿主生成的内置标题卡模板（buildCompositionSource）。
+ *
+ * 这个文件只负责让脚手架本身「装完就能编译」：导出一个最小的 Main，
+ * 不绑定任何具体工作流的版面，也不读取任何专属 props。
  */
-import React, {useMemo} from "react";
-import {
-  AbsoluteFill,
-  Audio,
-  Html5Video,
-  Img,
-  interpolate,
-  useCurrentFrame,
-  useVideoConfig,
-} from "remotion";
+import React from 'react';
+import {AbsoluteFill, Img, useVideoConfig} from 'remotion';
 
-type Props = {
-  hero?: string;
-  narration?: string;
-  voice?: string;
-  bg?: string;
-  accent?: string;
-  linesPerPage?: number;
+export type Props = {
+  title?: string;
+  subtitle?: string;
+  image?: string;
+  backgroundColor?: string;
 };
 
-const clamp = {extrapolateLeft: "clamp", extrapolateRight: "clamp"} as const;
-const CJK_FONT =
-  '"Noto Sans CJK SC", "Microsoft YaHei", "PingFang SC", "Source Han Sans SC", sans-serif';
-
-/** 是否视频 / 图片素材（按扩展名与 data URL 头判定） */
-const isVideoSrc = (s: string) =>
-  /^data:video\//i.test(s) || /\.(mp4|webm|mov|m4v)(\?.*)?$/i.test(s);
-const isImageSrc = (s: string) =>
-  /^data:image\//i.test(s) || /\.(png|jpe?g|webp|gif|avif)(\?.*)?$/i.test(s);
-
-/** 台词 → 句子：先按换行，再按中文句末标点，长句按逗号兜底切短 */
-function splitLines(text: string): string[] {
-  const raw = String(text || "").replace(/\r/g, "");
-  const out: string[] = [];
-  for (const para of raw.split("\n")) {
-    const p = para.trim();
-    if (!p) continue;
-    const parts = p.split(/(?<=[。！？!?；;…])/);
-    for (const s of parts) {
-      const t = s.trim();
-      if (!t) continue;
-      if (t.length <= 16) {
-        out.push(t);
-        continue;
-      }
-      /* 长句：按逗号切成不超过 16 字的小段 */
-      let buf = "";
-      for (const piece of t.split(/(?<=[，,、])/)) {
-        if ((buf + piece).length > 16 && buf) {
-          out.push(buf);
-          buf = piece;
-        } else {
-          buf += piece;
-        }
-      }
-      if (buf) out.push(buf);
-    }
-  }
-  return out.length ? out : [""];
-}
-
-function chunk<T>(arr: T[], n: number): T[][] {
-  const pages: T[][] = [];
-  for (let i = 0; i < arr.length; i += n) pages.push(arr.slice(i, i + n));
-  return pages.length ? pages : [[]];
-}
-
-export const Main: React.FC<Props> = (props) => {
-  const frame = useCurrentFrame();
-  const {width, height, durationInFrames} = useVideoConfig();
-  const hero = String(props.hero || "").trim();
-  const voice = String(props.voice || "").trim();
-  const bg = String(props.bg || "").trim() || "#0b1730";
-  const accent = String(props.accent || "").trim() || "#e8c88a";
-  const perPage = Math.max(1, Math.min(6, Number(props.linesPerPage) || 3));
-
-  const lines = useMemo(() => splitLines(String(props.narration || "")), [props.narration]);
-  const pages = useMemo(() => chunk(lines, perPage), [lines, perPage]);
-
-  /* 分页：把整条时长均分给各页；页内前 78% 吐字、后 22% 停留 */
-  const per = durationInFrames / Math.max(1, pages.length);
-  const pageIndex = Math.min(pages.length - 1, Math.floor(frame / per));
-  const page = pages[pageIndex] || [];
-  const pageStart = pageIndex * per;
-  const typedFrames = Math.max(1, per * 0.78);
-  const totalChars = page.reduce((a, s) => a + s.length, 0) || 1;
-  const shown = Math.max(
-    0,
-    Math.min(totalChars, Math.round(((frame - pageStart) / typedFrames) * totalChars)),
-  );
-  /* 每行已显示的字数 */
-  let rest = shown;
-  const shownByLine = page.map((s) => {
-    const n = Math.max(0, Math.min(s.length, rest));
-    rest -= n;
-    return n;
-  });
-  const stillTyping = shown < totalChars;
-  const typingLine = shownByLine.findIndex((n, j) => n < page[j].length);
-
-  /* 页与页交叉淡入淡出 */
-  const pageFade = interpolate(frame, [0, Math.max(1, per * 0.12)], [0, 1], clamp);
-  const cursorOn = stillTyping ? 0.25 + 0.75 * Math.abs(Math.sin(frame * 0.35)) : 0;
-
-  const cardLeft = width * 0.54;
-  const cardTop = height * 0.14;
-  const cardW = width * 0.42;
-  const cardH = height * 0.68;
-  const heroW = width * 0.52;
-  const fontSize = Math.max(18, Math.round(width * 0.024));
-
-  const corners: React.CSSProperties[] = [
-    {left: 8, top: 8, borderLeftWidth: 1, borderTopWidth: 1},
-    {right: 8, top: 8, borderRightWidth: 1, borderTopWidth: 1},
-    {left: 8, bottom: 8, borderLeftWidth: 1, borderBottomWidth: 1},
-    {right: 8, bottom: 8, borderRightWidth: 1, borderBottomWidth: 1},
-  ];
-
+export const Main: React.FC<Props> = ({title, subtitle, image, backgroundColor}) => {
+  const {width, height} = useVideoConfig();
   return (
-    <AbsoluteFill style={{backgroundColor: "#070a12", fontFamily: CJK_FONT}}>
-      {/* 左：动态素材（视频 / 图片 / 纯色） */}
+    <AbsoluteFill
+      style={{
+        backgroundColor: backgroundColor || '#0f1218',
+        alignItems: 'center',
+        justifyContent: 'center',
+      }}
+    >
+      {image ? (
+        <Img
+          src={image}
+          style={{position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover'}}
+        />
+      ) : null}
       <div
         style={{
-          position: "absolute",
-          left: 0,
-          top: 0,
-          width: heroW,
-          height: "100%",
-          overflow: "hidden",
-          backgroundColor: bg,
+          position: 'relative',
+          color: '#f2f4f8',
+          fontFamily:
+            '"Noto Sans SC","Source Han Sans SC","Microsoft YaHei","PingFang SC",sans-serif',
+          textAlign: 'center',
+          padding: Math.round(width * 0.06),
         }}
       >
-        {hero && isVideoSrc(hero) ? (
-          <Html5Video
-            src={hero}
-            muted
-            loop
-            style={{position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover"}}
-          />
-        ) : null}
-        {hero && !isVideoSrc(hero) && isImageSrc(hero) ? (
-          <Img
-            src={hero}
-            style={{position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover"}}
-          />
-        ) : null}
-        {!hero ? (
-          <div
-            style={{
-              position: "absolute",
-              inset: 0,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              color: "rgba(214,226,255,0.35)",
-              fontSize: Math.round(fontSize * 0.6),
-              letterSpacing: 4,
-            }}
-          >
-            等待动态层
-          </div>
-        ) : null}
-      </div>
-
-      {/* 右：金边台词卡 */}
-      <div
-        style={{
-          position: "absolute",
-          left: cardLeft,
-          top: cardTop,
-          width: cardW,
-          height: cardH,
-          background: "rgba(10,16,32,0.82)",
-          borderRadius: 2,
-          boxShadow: `0 0 0 1px ${accent}, inset 0 0 0 2px rgba(10,16,32,1), inset 0 0 0 3px rgba(232,200,138,0.55)`,
-          opacity: pageFade,
-        }}
-      >
-        {corners.map((c, i) => (
-          <div
-            key={"c" + i}
-            style={{
-              position: "absolute",
-              width: 28,
-              height: 28,
-              borderColor: accent,
-              borderStyle: "solid",
-              borderWidth: 0,
-              ...c,
-            }}
-          />
-        ))}
-        {/* 上下边缘中央的小菱形 */}
-        <div
-          style={{
-            position: "absolute",
-            left: "50%",
-            top: -4,
-            width: 8,
-            height: 8,
-            marginLeft: -4,
-            transform: "rotate(45deg)",
-            backgroundColor: accent,
-          }}
-        />
-        <div
-          style={{
-            position: "absolute",
-            left: "50%",
-            bottom: -4,
-            width: 8,
-            height: 8,
-            marginLeft: -4,
-            transform: "rotate(45deg)",
-            backgroundColor: accent,
-          }}
-        />
-
-        {/* 台词正文 */}
-        <div
-          style={{
-            position: "absolute",
-            inset: "56px 56px 72px",
-            display: "flex",
-            flexDirection: "column",
-            justifyContent: "center",
-            alignItems: "flex-start",
-          }}
-        >
-          {page.map((line, i) => {
-            const visible = line.slice(0, shownByLine[i]);
-            return (
-              <div
-                key={"l" + pageIndex + "-" + i}
-                style={{
-                  color: "#f6f1e6",
-                  fontSize,
-                  lineHeight: 1.55,
-                  letterSpacing: 1,
-                  textAlign: "left",
-                  whiteSpace: "pre-wrap",
-                  display: "flex",
-                  alignItems: "center",
-                  minHeight: Math.round(fontSize * 1.55),
-                }}
-              >
-                <span>{visible}</span>
-                {stillTyping && i === typingLine ? (
-                  <span
-                    style={{
-                      display: "inline-block",
-                      width: 3,
-                      height: Math.round(fontSize * 1.05),
-                      marginLeft: 6,
-                      backgroundColor: "#ffd98f",
-                      opacity: cursorOn,
-                    }}
-                  />
-                ) : null}
-              </div>
-            );
-          })}
-        </div>
-
-        {/* 页码点 */}
-        <div
-          style={{
-            position: "absolute",
-            right: 56,
-            bottom: 36,
-            display: "flex",
-            alignItems: "center",
-            gap: 8,
-          }}
-        >
-          {pages.map((_, i) => (
-            <div
-              key={"p" + i}
-              style={{
-                width: i === pageIndex ? 9 : 6,
-                height: i === pageIndex ? 9 : 6,
-                borderRadius: "50%",
-                backgroundColor: i === pageIndex ? "#ffd98f" : "#5a6478",
-              }}
-            />
-          ))}
+        <div style={{fontSize: Math.round(height * 0.07), fontWeight: 700}}>{title || ''}</div>
+        <div style={{fontSize: Math.round(height * 0.035), opacity: 0.8, marginTop: Math.round(height * 0.02)}}>
+          {subtitle || ''}
         </div>
       </div>
-
-      {voice ? <Audio src={voice} /> : null}
     </AbsoluteFill>
   );
 };

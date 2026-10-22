@@ -33,13 +33,7 @@ export const inject = ['tools']
 
 const DB_DESC = `Grounded fact lookup for the database wired into the CURRENT task — OR any database referenced by writing !@数据库标题 in your prompt/task. Use it whenever the task needs facts — names, numbers, prices, paths, terms, statuses — instead of answering from memory. Facts NEVER come from your parameters: only this tool's returned records are truth.
 
-Available actions (full CRUD over the referenced database(s)):
-- list: schema + all record titles (id | title | kind | file). Use first to see what the database knows.
-- get: full record by id (from list/query results). Returns provenance, sql, and data (the record).
-- query: search records by keywords / question; supports field filters title:xxx file:xxx kind:fact|file|meta. Returns a structured object with provenance (record ids/titles/sources), sql (the actual access statement used), and data (the matched records as a JSON array; each record also carries its database + sql).
-- write: insert or update records (增 / 改). Pass records: [ {id?, title, content, kind?, source?, file?} ]. If id is omitted it is auto-generated (inserts a NEW record); if id matches an existing record it overwrites that record (update). Agent-written rows are tagged source=agent: and survive later compiles. Returns per-database written counts.
-- delete: remove records by id (删). Pass ids: [ ... ] (record ids from provenance). Returns per-database deleted counts.
-- calc: evaluate arithmetic with numbers and + - * / % ( ) only. ALL number/date math must go through calc — never compute in your head.
+Actions (full CRUD): list / query / get / calc / write / delete — arguments are documented on each parameter. list first to see what the database knows; query returns provenance (record ids/titles/sources) + sql + data; get returns one full record by id; write/delete take a record / ids (omit id = insert a new record, matching id = update it).
 
 When the run references more than one database (via !@ or wired replicas), pass database: "<title or folder>" to scope an action to a single database; otherwise the action applies to every referenced database.
 
@@ -48,6 +42,7 @@ Discipline (enforced by the host):
 - If query/get finds nothing, say exactly "数据库中没有该信息" — do not guess, do not fill in from memory.
 - If the host rejects the call (未接入数据库), the database is unavailable: say so, and do NOT answer from memory.
 - Facts not in the database may only appear explicitly labelled as 推断, with "数据库未记载".
+- ALL number/date math must go through calc — never compute in your head.
 - Prefer query before write: confirm a record id does not already exist before writing a duplicate.`
 
 export function apply(ctx) {

@@ -832,10 +832,10 @@ async function init() {
        否则再跑一轮就会拿到「任务流程 / 交计划块」指令，交出来的就是普通会话计划了。 */
     sess.noPlanFlow = !!sess.noPlanFlow;
     /* 全局助手会话（本轮需求 · 拷问共识）：这条会话由右侧助手栏驱动，与助手栏共用
-       同一份正文；不绑画布（画布归属显示「全局」），也不进「绑定会话」候选。
+       同一份正文；它与普通会话一样带 canvasWfId（建立那一刻绑定的画布，bug 修复：
+       过去这里被强制清空，重启后又变回「未绑定」→ 跟着切图漂），也不进「绑定会话」候选。
        老存档没有这一位 → false = 普通会话。 */
     sess.assist = !!sess.assist;
-    if (sess.assist) sess.canvasWfId = "";
     /* 长任务环节归属标记（app-longtask.js 的 ltBindAgentSession 写 {wfId,runId,path}）：
        它同样进 planFlowExemptSession 的豁免判据（app-plan.js），丢了这一位 → 重启后该
        环节会话又变回普通会话计划线。这里按落盘白名单同口径归一（缺省 null = 普通会话）。 */
@@ -850,17 +850,38 @@ async function init() {
     /* 手动压缩的记录与折组展开态（本次开发需求 · 拷问共识）：与落盘白名单
        （app-assist.js 的 agentSessionMetaForDisk）同口径归一 —— 老存档没这两位 →
        空表 / 空表；坏档里的非数组、非对象值一律吃掉，别让渲染层拿着它崩。
-       compacts 每条 = {id, at, count, chars, summary}（摘要只留最近一份）；
+       compacts 每条 = {id, kind, at, count, chars, summary, usage, provider, model, tools}
+       （摘要只留最近一份；kind = manual / auto，usage = {inputTokens, outputTokens,
+       cacheReadTokens, reasoningTokens}，tools 只有自动压缩那类带 —— 精简清单
+       {name, result}，结果前 500 字、最多 20 条）；老记录没 kind 一律按 manual；
        foldOpen 的键 = 折组 id，展开才写 true（默认收起不在表里）。 */
     sess.compacts = (Array.isArray(sess.compacts) ? sess.compacts : [])
       .filter((c) => c && c.id)
-      .map((c) => ({
-        id: String(c.id),
-        at: Number(c.at) || 0,
-        count: Math.max(0, Number(c.count) || 0),
-        chars: Math.max(0, Number(c.chars) || 0),
-        summary: String(c.summary || ""),
-      }));
+      .slice(-40)
+      .map((c) => {
+        const kind = c.kind === "auto" ? "auto" : "manual";
+        return {
+          id: String(c.id),
+          kind: kind,
+          at: Number(c.at) || 0,
+          count: Math.max(0, Number(c.count) || 0),
+          chars: Math.max(0, Number(c.chars) || 0),
+          summary: String(c.summary || ""),
+          usage:
+            typeof compactUsageOfMetrics === "function"
+              ? compactUsageOfMetrics(c.usage)
+              : null,
+          provider: String(c.provider || ""),
+          model: String(c.model || ""),
+          tools:
+            kind === "auto" && Array.isArray(c.tools)
+              ? c.tools.slice(0, 20).map((t) => ({
+                  name: String((t && t.name) || ""),
+                  result: String((t && t.result) || "").slice(0, 500),
+                }))
+              : undefined,
+        };
+      });
     sess.foldOpen =
       sess.foldOpen && typeof sess.foldOpen === "object" && !Array.isArray(sess.foldOpen)
         ? sess.foldOpen
@@ -945,7 +966,40 @@ async function init() {
       assistMigrated = true;
     }
   }
-  if (assistBoundSt) {
+  /* 老数据与重启回落（本轮需求）：助手会话的 canvasWfId 上面只做了规范化，
+     **绝不因 assist 标识清空它** —— 它建立时绑的那张图就是它重启后的归属。
+     没有 canvasWfId 的老会话也不在这里补一个：保持「未绑定」显示全局，等它
+     第一次在画布上发言时由 assistEnsureSessionForSend 就地补绑。 */
+  let assistCanvasGone = false;
+  if (assistBoundSt && assistBoundSt.assist) {
+    const boundId = String(assistBoundSt.canvasWfId || "").trim();
+    if (boundId) {
+      let wfListNow = null;
+      try {
+        wfListNow =
+          window.api && typeof window.api.wfList === "function"
+            ? await window.api.wfList()
+            : null;
+      } catch (_) {
+        wfListNow = null;
+      }
+      /* 只有真拿到画布列表才下结论（列表里没有 = 那张画布已被删）：读盘失败时
+         按原归属照绑，绝不因为一次 IPC 失败就把指针清掉。 */
+      if (Array.isArray(wfListNow))
+        assistCanvasGone = !wfListNow.some((w) => w && String(w.id) === boundId);
+    }
+  }
+  if (assistBoundSt && assistCanvasGone) {
+    /* 指针指着一条**所属画布已删**的助手会话：兜底为空白态，不套用前台画布、
+       也不静默改绑到别的图（会话本身原样留在左栏可回看 / 删除；带上它继续聊
+       等于把已删画布的上下文带到别的图上）。 */
+    S.assistSessionId = "";
+    S.assistMessages = [];
+    if (S.config) S.config.assistSessionId = "";
+    try {
+      if (typeof persistAssistUi === "function") persistAssistUi();
+    } catch (_) {}
+  } else if (assistBoundSt) {
     if (!assistBoundSt._lcLoaded && typeof agentEnsureSessionBody === "function") {
       try {
         await agentEnsureSessionBody(assistBoundSt);
@@ -1412,8 +1466,9 @@ async function init() {
     if (aBtn2) aBtn2.onclick = toggleAssist;
     const aClose = $("#btnAssistClose");
     if (aClose) aClose.onclick = () => setAssistOpen(false);
-    const aClear = $("#btnAssistClear");
-    if (aClear) aClear.onclick = clearAssistChat;
+    /* 「清空」按钮已撤（本次需求）：它与「…」菜单里的「新建一条」是同一件事，
+       两个入口做同一动作只会让人犹豫。清空语义本身没变（= 换一条新会话，
+       旧会话仍留在左栏可回看），入口只剩菜单那一处。 */
     const presetSel = $("#assistPresetSel");
     if (presetSel)
       presetSel.onchange = () => {

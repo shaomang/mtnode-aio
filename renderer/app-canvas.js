@@ -1548,6 +1548,15 @@ function refreshPorts(el, node) {
   }
   if (!openShell) {
     el.querySelectorAll(":scope > .port.in").forEach((p, i) => {
+      /* 「参数」端子用哨兵端子号，位置 = 现有输入端子之后那一颗（NParam.portY 同一处计算）；
+         它不参与 0..ic-1 的顺序号，所以不能按 DOM 序去算 inPortY。 */
+      if (p.classList.contains("np-port")) {
+        p.style.top =
+          ((typeof NParam === "object" && NParam && typeof NParam.portY === "function"
+            ? NParam.portY(node)
+            : inPortY(node, ic, ic)) - PORT_R) + "px";
+        return;
+      }
       p.style.top = inPortY(node, i, ic) - PORT_R + "px";
     });
     el.querySelectorAll(":scope > .port.out").forEach((p, i) => {
@@ -2220,20 +2229,53 @@ function nodeSettingsFormVisible(node) {
   return def;
 }
 
+/* 字段标题行：文字 +（可选）「?」图标。
+   口径（本窗口径）：说明**不再平铺成灰字**，一律收进标题右侧的「?」里，鼠标移上去
+   （或键盘 focus）才出全文。图标实现走 app-node-params.js 的 settingsQ（自绘浮层，
+   不用原生 title——系统 tooltip 延迟 ~1s 且样式不可控）。 */
+function nsFieldHead(labelText, opts) {
+  const head = document.createElement("span");
+  head.className = "nsf-cap";
+  const cap = document.createElement("span");
+  cap.className = "nsf-cap-t";
+  cap.textContent = String(labelText || "");
+  head.appendChild(cap);
+  const tip = opts && (opts.tip || opts.title);
+  if (tip) head.appendChild(nsQ(String(tip)));
+  return head;
+}
+
+/* 「?」图标：优先用参数端子那份自绘浮层（settingsQ），缺席时退化成原生 title */
+function nsQ(text) {
+  if (typeof settingsQ === "function") return settingsQ(text);
+  const s = document.createElement("span");
+  s.className = "np-q";
+  s.textContent = "?";
+  s.title = String(text || "");
+  s.setAttribute("data-np-tip", String(text || ""));
+  return s;
+}
+
 /* 框架级控件 API：迁移已有面板按这份口径搬，别在表单里自拼样式 */
 function makeNodeSettingsCtx(node, root) {
   const ctx = {
     node: node,
     root: root,
-    /* 小节标题（占满整行） */
-    section(text) {
+    /* 小节标题（占满整行）；opts.tip 有则在小节名右侧挂「?」（小节级说明） */
+    section(text, opts) {
       const h = document.createElement("div");
       h.className = "settings-sec-title nsf-span";
-      h.textContent = String(text || "");
+      const cap = document.createElement("span");
+      cap.textContent = String(text || "");
+      h.appendChild(cap);
+      h.style.cssText = "display:flex;align-items:center;gap:6px";
+      const tip = opts && (opts.tip || opts.title);
+      if (tip) h.appendChild(nsQ(String(tip)));
       ctx.root.appendChild(h);
       return h;
     },
-    /* 说明文字（占满整行 · 淡灰） */
+    /* 说明文字（占满整行 · 淡灰）：只给**短句 / 状态**用；
+       解释性的长句请挂到对应字段的 { tip } 或 ctx.q()，别铺在版面上。 */
     hint(text) {
       const d = document.createElement("div");
       d.className = "settings-hint nsf-span";
@@ -2242,20 +2284,30 @@ function makeNodeSettingsCtx(node, root) {
       ctx.root.appendChild(d);
       return d;
     },
-    /* 一个字段：标题 + 控件（复用 .n-field）；opts.span = true 占满整行；opts.title 挂提示 */
+    /* 单独一枚「?」图标（给自建行 / 没有 label 的位置用） */
+    q(text) {
+      return nsQ(String(text || ""));
+    },
+    /* 给已经建好的字段（ctx.field / nsNumber / nsText / nsCheck 的返回值）补一枚
+       「?」：挂在标题行末尾，不改字段布局。 */
+    tip(fieldEl, text) {
+      if (!fieldEl || !text) return fieldEl;
+      let head = null;
+      try {
+        head = fieldEl.querySelector(".nsf-cap");
+      } catch (_) {}
+      if (!head) head = fieldEl;
+      head.appendChild(nsQ(String(text)));
+      return fieldEl;
+    },
+    /* 一个字段：标题 + 控件（复用 .n-field）；opts.span = true 占满整行；
+       opts.tip / opts.title = 标题右侧「?」的说明全文 */
     field(labelText, control, opts) {
       opts = opts || {};
       const lab = document.createElement("label");
       lab.className = "n-field" + (opts.span ? " nsf-span" : "");
-      const cap = document.createElement("span");
-      cap.textContent = String(labelText || "");
-      lab.appendChild(cap);
+      lab.appendChild(nsFieldHead(labelText, opts));
       if (control) lab.appendChild(control);
-      /* tooltip 两边都挂：老面板里是控件带 title，窗里鼠标停在标题上也要能看到 */
-      if (opts.title) {
-        lab.title = String(opts.title);
-        if (control) control.title = String(opts.title);
-      }
       ctx.root.appendChild(lab);
       return lab;
     },
@@ -2668,24 +2720,20 @@ function nsNumber(ctx, labelText, cur, opts, onChange) {
   return ctx.field(labelText, el, opts);
 }
 
-/* 勾选框：checkbox 在前的老口径；默认占半栏（一列两个） */
+/* 勾选框：一行「勾选框 + 标题 + ?」；默认占半栏（一列两个） */
 function nsCheck(ctx, labelText, checked, onChange, opts) {
   opts = opts || {};
   const lab = document.createElement("label");
-  lab.className = "n-field";
+  lab.className = "n-field nsf-check";
   const cb = document.createElement("input");
   cb.type = "checkbox";
   cb.checked = !!checked;
-  if (opts.title) {
-    cb.title = opts.title;
-    lab.title = opts.title;
-  }
   cb.addEventListener("change", () => {
     onChange(!!cb.checked);
     ctx.commit(opts.commit);
   });
   lab.appendChild(cb);
-  lab.appendChild(document.createTextNode(" " + labelText));
+  lab.appendChild(nsFieldHead(labelText, opts));
   ctx.root.appendChild(lab);
   return lab;
 }
@@ -2700,7 +2748,6 @@ function nsText(ctx, labelText, cur, opts, onChange) {
   el.type = opts.type === "datetime-local" ? "datetime-local" : "text";
   if (opts.id) el.id = String(opts.id);
   if (opts.placeholder) el.placeholder = String(opts.placeholder);
-  if (opts.title) el.title = String(opts.title);
   el.value = String(cur == null ? "" : cur);
   const norm = (v) =>
     typeof opts.normalize === "function" ? String(opts.normalize(v)) : String(v);
@@ -2717,9 +2764,7 @@ function nsText(ctx, labelText, cur, opts, onChange) {
     });
   const lab = document.createElement("label");
   lab.className = "n-field" + (opts.span ? " nsf-span" : "");
-  const cap = document.createElement("span");
-  cap.textContent = String(labelText || "");
-  lab.appendChild(cap);
+  lab.appendChild(nsFieldHead(labelText, opts));
   if (Array.isArray(opts.actions) && opts.actions.length) {
     const box = document.createElement("span");
     box.className = "nsf-ctl";
@@ -2800,24 +2845,19 @@ function nsAgentWorkspaceField(ctx, node) {
       : null;
   const lab = document.createElement("label");
   lab.className = "n-field nsf-span";
-  const cap = document.createElement("span");
-  cap.textContent = I18n.t("工作目录");
+  lab.appendChild(nsFieldHead(I18n.t("工作目录"), { tip: title }));
   const box = document.createElement("span");
   box.className = "nsf-ctl";
   box.appendChild(inp);
   if (browse) box.appendChild(browse);
   if (open) box.appendChild(open);
-  lab.appendChild(cap);
   lab.appendChild(box);
   if (wfWs) {
     inp.readOnly = true;
     inp.value = wfWs;
-    inp.title = title;
-    lab.title = title;
   } else {
     inp.value = agentTaskWsOf(node);
     inp.placeholder = I18n.t("工作目录（可留空 = 应用数据目录）…");
-    inp.title = title;
     inp.addEventListener("change", () => {
       agentTaskWsSet(node, inp.value.trim());
       ctx.commit();
@@ -3267,17 +3307,16 @@ registerNodeSettingsForm("proc_image", {
       if (typeof normalizeImgParams === "function") normalizeImgParams(node);
       ctx.commit({ rerender: true });
     });
-    ctx.field(I18n.t("背景 Background"), selB);
-    ctx.hint(
-      I18n.t(
+    ctx.field(I18n.t("背景 Background"), selB, {
+      tip: I18n.t(
         "背景选「透明」时，运行会在提示词末尾自动补上「背景必须为真透明通道」的要求，并禁用头部的差分透明算法按钮（接口已直出 Alpha，双通道抠图纯属多花 2 倍 Token）。注意编辑接口的透明是「重绘去背」，不是精确抠像。",
       ),
-    );
-    ctx.hint(
-      I18n.t(
-        "蒙版局部重绘：节点头部的蒙版小按钮，单击开 / 关（首次开启会打开蒙版编辑器），右键随时重新编辑。编辑器里用透明绿涂抹要重绘的区域，程序把它转成「透明=可编辑」的 Alpha 蒙版，与原图、提示词一起发给 gpt-image-2。",
+    });
+    ctx.field(I18n.t("蒙版局部重绘"), null, {
+      tip: I18n.t(
+        "节点头部的蒙版小按钮，单击开 / 关（首次开启会打开蒙版编辑器），右键随时重新编辑。编辑器里用透明绿涂抹要重绘的区域，程序把它转成「透明=可编辑」的 Alpha 蒙版，与原图、提示词一起发给 gpt-image-2。",
       ),
-    );
+    });
   },
 });
 
@@ -3329,12 +3368,11 @@ registerNodeSettingsForm("remotion", {
         node.text = ta.value;
         ctx.commit();
       });
-      ctx.field(I18n.t("描述（可空 · @ 引用已接线输入）"), ta);
-      ctx.hint(
-        I18n.t(
+      ctx.field(I18n.t("描述（可空 · @ 引用已接线输入）"), ta, {
+        tip: I18n.t(
           "输入端子无差别：视频 / 图片接进来就是主素材，音频是语音，文本是台词；描述留空时直接按接线走内置台词卡版面。",
         ),
-      );
+      });
     }
     ctx.section(I18n.t("渲染"));
     const meta = () =>
@@ -3570,22 +3608,20 @@ registerNodeSettingsForm("video_gen", {
         ctx,
         I18n.t("重绘幅度"),
         node.chainDenoise != null ? node.chainDenoise : 1,
-        { min: 0, max: 1, step: 0.01, fallback: 1 },
+        {
+          min: 0,
+          max: 1,
+          step: 0.01,
+          fallback: 1,
+          tip: I18n.t(
+            "重绘幅度 0.3–0.6 = 引导加重绘（推荐）：锚定构图并对引导区域重绘，重置画面状态、降低长视频劣化；填 0 = 纯引导。",
+          ),
+        },
         (v) => {
           node.chainDenoise = v;
         },
       );
-      ctx.hint(
-        I18n.t(
-          "重绘幅度 0.3–0.6 = 引导加重绘（推荐）：锚定构图并对引导区域重绘，重置画面状态、降低长视频劣化；填 0 = 纯引导。",
-        ),
-      );
       if ((node.videoMode || "fl2va") === "r2v") {
-        ctx.hint(
-          I18n.t(
-            "R2V（多参考）：衔接会占用一路参考视频（上限 3 路，连满时顶掉最后一路 V3），提示词按 <Video N> 引用这一路。",
-          ),
-        );
         nsCheck(
           ctx,
           I18n.t("自动补写续写声明"),
@@ -3595,7 +3631,7 @@ registerNodeSettingsForm("video_gen", {
           },
           {
             title: I18n.t(
-              "运行时在提示词末尾自动补一句官方口径的续写声明（Continue seamlessly from <Video N> …），告诉模型这一路参考视频就是上一段的续写起点。自己已经写过类似要求时可以关掉。",
+              "运行时在提示词末尾自动补一句官方口径的续写声明（Continue seamlessly from <Video N> …），告诉模型这一路参考视频就是上一段的续写起点。自己已经写过类似要求时可以关掉。\n\nR2V（多参考）：衔接会占用一路参考视频（上限 3 路，连满时顶掉最后一路 V3），提示词按 <Video N> 引用这一路。",
             ),
           },
         );
@@ -3829,15 +3865,10 @@ registerNodeSettingsForm("video_upscale", {
       ctx,
       I18n.t("分块 tile（像素）"),
       node.tile != null ? node.tile : 512,
-      { min: 0, max: 1024, step: 64, fallback: 512, title: I18n.t("流式超分的分块大小（像素）；显存只跟它有关，512 适合 16G 机器，0 = 后端默认 512") },
+      { min: 0, max: 1024, step: 64, fallback: 512, tip: I18n.t("流式超分的分块大小（像素）；显存只跟它有关，512 适合 16G 机器，0 = 后端默认 512。\n\n逐帧分块流式超分：常驻内存只与一个分块有关，与视频时长无关，16G 机器也能跑 15 秒级视频；4K（长边 3840）输出不再受内存限制。") },
       (v) => {
         node.tile = v;
       },
-    );
-    ctx.hint(
-      I18n.t(
-        "逐帧分块流式超分：常驻内存只与一个分块有关，与视频时长无关，16G 机器也能跑 15 秒级视频；4K（长边 3840）输出不再受内存限制。",
-      ),
     );
     ctx.section(I18n.t("输出"));
     nsNumber(
@@ -3918,12 +3949,7 @@ registerNodeSettingsForm("video_interp", {
           node.batchSize = 1;
         }
       },
-      { title: I18n.t("低精度 fp16 省显存，16G 机器也能跑 15 秒片；关闭后按更高精度跑，更快但更吃显存") },
-    );
-    ctx.hint(
-      I18n.t(
-        "逐帧流式补帧：常驻内存只与相邻两帧有关，与视频时长无关，16G 机器也能跑 15 秒级视频；4x 倍率同样不再受内存限制，只是耗时更长。",
-      ),
+      { title: I18n.t("低精度 fp16 省显存，16G 机器也能跑 15 秒片；关闭后按更高精度跑，更快但更吃显存。\n\n逐帧流式补帧：常驻内存只与相邻两帧有关，与视频时长无关，16G 机器也能跑 15 秒级视频；4x 倍率同样不再受内存限制，只是耗时更长。") },
     );
     ctx.section(I18n.t("输出"));
     nsNumber(
@@ -4140,13 +4166,12 @@ registerNodeSettingsForm("save", {
     const extHint =
       media === "text" ? "*.md" : media === "image" ? "*.png" : media === "audio" ? "*.wav" : "*.mp4";
     const hasWs = !!String(wfWorkspace() || "").trim();
-    ctx.hint(
-      saveMediaCertain(node)
-        ? I18n.t("后缀由连进来的数据类型固定为 ") + extHint + I18n.t("，写错会自动纠正。")
-        : I18n.t("还没连上输入，内容类型未定：先写文件名（可不带后缀），落盘时按输入类型补 ") +
-            extHint +
-            I18n.t("。"),
-    );
+    /* 后缀口径收进「保存路径」标题右侧的「?」（不再单独铺一行灰字） */
+    const extTip = saveMediaCertain(node)
+      ? I18n.t("后缀由连进来的数据类型固定为 ") + extHint + I18n.t("，写错会自动纠正。")
+      : I18n.t("还没连上输入，内容类型未定：先写文件名（可不带后缀），落盘时按输入类型补 ") +
+        extHint +
+        I18n.t("。");
     const hintEl = ctx.hint(nsPathModeHint(node.savePath, node));
     nsText(
       ctx,
@@ -4163,9 +4188,12 @@ registerNodeSettingsForm("save", {
           : hasWs
             ? I18n.t("相对工作目录或绝对路径（") + extHint + I18n.t("）…")
             : I18n.t("保存路径（") + extHint + I18n.t("）…"),
-        title: hasWs
-          ? I18n.t("有工作目录时可用相对路径；改顶栏工作目录后统一落盘到新目录。也可填绝对路径。后缀由输入类型固定。")
-          : I18n.t("输出文件路径（图像 .png / 音频 .wav / 视频 .mp4 / 文本 .md）"),
+        title:
+          (hasWs
+            ? I18n.t("有工作目录时可用相对路径；改顶栏工作目录后统一落盘到新目录。也可填绝对路径。后缀由输入类型固定。")
+            : I18n.t("输出文件路径（图像 .png / 音频 .wav / 视频 .mp4 / 文本 .md）")) +
+          "\n\n" +
+          extTip,
         normalize: (v) => {
           const s = String(v || "").trim();
           /* 输入类型未定 → 不补后缀（与节点卡上的「文件名」同一口径） */
@@ -4329,12 +4357,11 @@ registerNodeSettingsForm("save_pdf", {
   build: (ctx) => {
     const node = ctx.node;
     const hasWs = !!String(wfWorkspace() || "").trim();
-    ctx.hint(
-      I18n.t(
-        "接进来的文本按 Markdown 排版成 PDF：标题 / 列表 / 表格 / 代码块 / 图片都渲染，$…$ 与 $$…$$ 公式排成排版结果（与画布预览同一套公式渲染器）。",
+    ctx.section(I18n.t("PDF 生成"), {
+      tip: I18n.t(
+        "接进来的文本按 Markdown 排版成 PDF：标题 / 列表 / 表格 / 代码块 / 图片都渲染，$…$ 与 $$…$$ 公式排成排版结果（与画布预览同一套公式渲染器）。\n\nPDF 只在点节点上的 ▶（或控制节点指挥）时生成，接线与上游更新不会自动落盘。",
       ),
-    );
-    ctx.hint(I18n.t("PDF 只在点节点上的 ▶（或控制节点指挥）时生成，接线与上游更新不会自动落盘。"));
+    });
     const hintEl = ctx.hint(nsPathModeHint(node.savePath, node));
     nsText(
       ctx,
@@ -7138,19 +7165,22 @@ registerNodeSettingsForm("breeze_gen", {
   build: (ctx) => {
     const node = ctx.node;
     const presetId = breezePresetIdOf(node);
-    ctx.section(I18n.t("角色（音色预设）"));
+    const roleSec = ctx.section(I18n.t("角色（音色预设）"));
     ctx.append(
       breezePresetRow(node, () => {
         ctx.commit({ history: true, rerender: true, rebuild: true });
       }),
     );
     if (presetId) {
-      ctx.hint(
+      /* 说明收进小节标题右侧的「?」：不在小标题下再铺一行灰字 */
+      ctx.tip(
+        roleSec,
         I18n.t(
           "已选角色：参考音频与样本文字都来自这一组，端口 1 / 2 不参与合成；下方指令留空就用这一组自带的指令",
         ),
       );
-    } else {
+    }
+    if (!presetId) {
       /* 老口径：音色库 + 能力档（选了角色就整块不出现） */
       /* 音色：后端就绪时给下拉（列表随状态刷新），没就绪 / 没装插件时退回手填 */
       const voiceBox = document.createElement("span");
@@ -7964,6 +7994,12 @@ function nodeElement(node) {
     }
   }
   if (node.kind === "input_text" && !node.ro && !inputInherited(node) && !node.batch) {
+    /* 纯 JSON：给一颗「JSON」切换（表单 ⇄ 源码），与 YAML 那颗批量芯片同一套长相。
+       JSON 优先于 YAML 批量：纯 JSON 一律走表单视图，不再被 YAML 解析误判。 */
+    if (typeof NParam === "object" && NParam && typeof NParam.jsonSwitchChip === "function") {
+      const jc = NParam.jsonSwitchChip(node);
+      if (jc) head.appendChild(jc);
+    }
     /* 文件参考：右上角小图标按钮（导入文本文件内容，不占用节点空间） */
     const fr = document.createElement("button");
     fr.className = "n-play n-file-ref";
@@ -9010,6 +9046,12 @@ function nodeElement(node) {
   };
   head.appendChild(del);
   }
+  /* 「参数」端子已接线：卡片上打一枚标识（只有接了参数线才出现；
+     判定与键摘要都在 app-node-params.js 的 NParam.cardChip）。 */
+  if (typeof NParam === "object" && NParam && typeof NParam.cardChip === "function") {
+    const npc = NParam.cardChip(node);
+    if (npc) head.appendChild(npc);
+  }
   el.appendChild(head);
 
   const body = document.createElement("div");
@@ -9313,6 +9355,40 @@ function nodeElement(node) {
       startWireDrag(node.id, ev, i, { fromInput: true });
     });
     el.appendChild(p);
+  }
+  /* 「参数」端子：输入端最末位多一颗独立端子（端子号 = 哨兵值 PARAM_IN_INDEX）。
+     它不参与 0..ic-1 的顺序端口，所以既有连线号码一颗都不动；判定 / 取值 / 套用都在
+     renderer/app-node-params.js（NParam）。没有配置的节点（控制 / 输入源 / 结构壳 /
+     工具与函数…）不长这颗端子。 */
+  if (typeof NParam === "object" && NParam && typeof NParam.eligible === "function" && NParam.eligible(node)) {
+    const npWires = NParam.paramWires(node);
+    const pp = document.createElement("div");
+    pp.className = "port in np-port" + (npWires.length ? "" : " spare");
+    pp.dataset.node = node.id;
+    pp.dataset.idx = String(PARAM_IN_INDEX);
+    pp.title =
+      I18n.t("参数端子：接 JSON 覆写本节点配置（运行期生效，不改画布值；路径支持相对路径）") +
+      (npWires.length ? I18n.t(" · 已接 ") + npWires.length : "");
+    pp.style.top =
+      (typeof NParam.portY === "function" ? NParam.portY(node) : inPortY(node, ic, ic)) - PORT_R + "px";
+    pp.style.left = (PORT_OFF - PORT_R) + "px";
+    {
+      const pb = document.createElement("span");
+      pb.className = "port-badge np-port-badge";
+      setPortBadgeName(pb, I18n.t("参数"));
+      pp.appendChild(pb);
+    }
+    pp.addEventListener("mousedown", (ev) => {
+      ev.stopPropagation();
+      if (ev.button === 2) {
+        hidePortTip();
+        return;
+      }
+      ev.preventDefault();
+      hidePortTip();
+      startWireDrag(node.id, ev, PARAM_IN_INDEX, { fromInput: true });
+    });
+    el.appendChild(pp);
   }
   const oc = outputCount(node);
   for (let oi = 0; oi < oc; oi++) {
@@ -10901,6 +10977,18 @@ function browseOutTextView(text) {
 /* input_text：单条 → Markdown 预览块（失焦时正文就是渲染后的样子，见 browseMdPreviewEl）；
    批量 / YAML 条目 / 继承只读 → 紧凑条目列表（本轮不动，仍走 browseTextEl 的语言判定） */
 NODE_BROWSE_BODY.input_text = function (node, body) {
+  /* 纯 JSON 优先：浏览态也直接给 JSON 表单（只读 / 继承形态只读展示，可编辑形态可改）。
+     JSON 识别优先于下面的 YAML 批量解析 —— 单行 JSON 本来会被 parseSimpleYaml
+     误判成 1 条条目（键名是 '{"a"' 这种垃圾）。 */
+  if (typeof NParam === "object" && NParam && typeof NParam.jsonBodyFor === "function") {
+    let took = false;
+    try {
+      took = NParam.jsonBodyFor(node, body);
+    } catch (e) {
+      took = false;
+    }
+    if (took) return;
+  }
   if (node.ro) {
     const v = browseTextEl(node.text, node);
     if (!v) return false;
@@ -14149,6 +14237,18 @@ function buildBody(node, body) {
     return;
   }
   if (node.kind === "input_text") {
+    /* 纯 JSON：正文换成「JSON 表单」视图（可编辑节点可改、只读 / 继承形态只读展示）。
+       识别与表单实现都在 renderer/app-node-params.js；这里只是一处挂载点，
+       没有接管时（普通正文 / 批量条目 / 超限）原样走下面的既有分支。 */
+    if (typeof NParam === "object" && NParam && typeof NParam.jsonBodyFor === "function") {
+      let took = false;
+      try {
+        took = NParam.jsonBodyFor(node, body);
+      } catch (e) {
+        took = false;
+      }
+      if (took) return;
+    }
     if (node.ro) {
       const ta = document.createElement("textarea");
       ta.className = "n-text";

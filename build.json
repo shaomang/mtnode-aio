@@ -79,6 +79,9 @@
        漏掉本条的真实后果（2026-10-14 实发过一次）：打包后启动即
        main-uncaughtException: Cannot find module './paseo/bridge-info.js'，窗口都出不来。 */
     "paseo/**",
+    /* Blender 本地插件（kind blender）：主进程宿主 + 控制台窗（ui/）+ 预加载桥 + 步骤表。
+       漏掉本条 = 打包后 require("./blender/main-blender.js") 直接 Cannot find module，应用起不来。 */
+    "blender/**",
     "mcp-prompts.js",
     "mcp-tools.json",
     "mcp-tool-schemas.js",

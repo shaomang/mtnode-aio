@@ -2924,9 +2924,13 @@ function planLiveBlock(live, ownerId) {
   box.appendChild(body);
   return box;
 }
-function renderAgentPlanPanel(st) {
-  const el = document.getElementById("agentPlan");
+function renderAgentPlanPanel(st, root) {
+  /* root：渲染到哪一只容器。省略 = 会话视图那块 #agentPlan；助手栏传自己的容器
+     （与队列 / 清单 / 暂停同一口径：同一份渲染、只换容器，交互一字不差）。 */
+  const el = root || document.getElementById("agentPlan");
   if (!el) return;
+  /* 原生这块重绘 → 助手栏那行摘要跟着刷（同一份数据；助手栏自己渲染时 root 非空，不回环） */
+  if (!root && typeof assistAfterSessionRender === "function") assistAfterSessionRender(st);
   /* 归属不是本会话的计划（分支复制 / 历史串台留下的）→ 就地作废，
      绝不在这条会话的视图里冒出别人的清单（planDrop 后 st.plan 为空，不会递归） */
   if (st && st.plan && typeof planOwnedHere === "function" && !planOwnedHere(st)) {

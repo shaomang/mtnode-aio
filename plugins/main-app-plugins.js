@@ -25,7 +25,7 @@ const PLUGIN_FEED =
 /* 认得出的插件 kind 白名单：认不出的一律归一成 "unknown"（卡片显「请先升级主程序」、不可装）。
    已移除的 tts（GPT-SoVITS）故意不在表里 —— 云端旧目录里若还有 kind="tts" 的条目，
    它会走 unknown 那一档（看得见但装不了），而不是被当成一个已注册的后端。 */
-const KNOWN_KINDS = new Set(["builtin", "pet", "window", "music3", "yue2", "sensenova", "h3", "llama", "breeze", "remotion", "asr", "paseo"]);
+const KNOWN_KINDS = new Set(["builtin", "pet", "window", "music3", "yue2", "sensenova", "h3", "llama", "breeze", "remotion", "asr", "paseo", "blender"]);
 const ID_OK = /^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$/;
 const MAX_CATALOG = 512 * 1024;
 const MAX_ZIP = 80 * 1024 * 1024;

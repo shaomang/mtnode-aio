@@ -327,6 +327,16 @@
           /* 段自己的到达时刻（app-db.js 的 tracePush 在新起一段时写）：**每步 token 的
              时间锚点**（本轮修复）。老网关 / 老段没有它 → 0，届时退回工具记录的 at。 */
           at: Number(it.at) || 0,
+          /* 自动压缩段（任务 3/8）的元数据：轨迹行要念条数与 token，检查器也要看 —— 
+             归一化这一层不带上，它们在这张表里就全没了。 */
+          phase: it.phase == null ? "" : String(it.phase),
+          shadowedCount: Number(it.shadowedCount) || 0,
+          shadowedTokenCount: Number(it.shadowedTokenCount) || 0,
+          provider: it.provider == null ? "" : String(it.provider),
+          model: it.model == null ? "" : String(it.model),
+          usage: it.usage && typeof it.usage === "object" ? it.usage : null,
+          tools: Array.isArray(it.tools) ? it.tools : null,
+          doneAt: Number(it.doneAt) || 0,
         });
       }
       return out;
@@ -422,6 +432,15 @@
           callId,
           /* 老存档段快照不带 at（当时没落这一位）→ 0，归步退回工具记录的 at / 按序对位 */
           at: Number(sg.at) || 0,
+          /* 自动压缩段（任务 3/8）：统计与摘要正文跟着段快照落盘，读回来照原样带下去 */
+          phase: sg.phase == null ? "" : String(sg.phase),
+          shadowedCount: Number(sg.shadowedCount) || 0,
+          shadowedTokenCount: Number(sg.shadowedTokenCount) || 0,
+          provider: sg.provider == null ? "" : String(sg.provider),
+          model: sg.model == null ? "" : String(sg.model),
+          usage: sg.usage && typeof sg.usage === "object" ? sg.usage : null,
+          tools: Array.isArray(sg.tools) ? sg.tools : null,
+          doneAt: Number(sg.doneAt) || 0,
         });
       }
     }
@@ -801,6 +820,8 @@
     tool: "工具",
     err: "错误",
     ctx: "上下文",
+    /* 自动压缩（任务 3/8）：上下文压缩的过程行 */
+    compact: "压缩",
   };
   /* 记录表的行高（虚拟滚动按它算占位高度）：统一固定 —— 长内容默认折成一行，
      展开态会脱离虚拟窗口（见 renderRows）。
@@ -1130,6 +1151,16 @@
       round: s.round == null ? null : s.round,
       callId: s.callId || "",
       at: Number(s.at) || 0,
+      /* 自动压缩段（任务 3/8）：行模型要念条数 / token，检查器要读摘要 —— 
+         这一层不带下去，行里就只剩一句无统计的「压缩过」。 */
+      phase: s.phase == null ? "" : String(s.phase),
+      shadowedCount: Number(s.shadowedCount) || 0,
+      shadowedTokenCount: Number(s.shadowedTokenCount) || 0,
+      provider: s.provider == null ? "" : String(s.provider),
+      model: s.model == null ? "" : String(s.model),
+      usage: s.usage && typeof s.usage === "object" ? s.usage : null,
+      tools: Array.isArray(s.tools) ? s.tools : null,
+      doneAt: Number(s.doneAt) || 0,
       rec: null,
     };
   }
@@ -2285,6 +2316,28 @@
       d.className = "dsh-trace-ctx";
       d.textContent = seg.text || "";
       body.appendChild(d);
+    } else if (seg.k === "compact") {
+      /* 自动压缩段（任务 3/8）：一行交代这一次压缩 —— 进行中是「正在压缩上文…」，
+         完成是「N 条 · 原约 X tok」，失败是错误首行（完整正文在检查器里）。
+         行内**不写**「运行中」字样（与工具行同一口径，运行态由行首柔光表达）。 */
+      const d = document.createElement("div");
+      d.className = "dsh-trace-compact" + (seg.phase === "error" ? " err" : "");
+      const n = Math.max(0, Number(seg.shadowedCount) || 0);
+      const tokN = Math.max(0, Number(seg.shadowedTokenCount) || 0);
+      const tokTxt = tokN
+        ? (typeof dshTokShort === "function" ? dshTokShort(tokN) : String(tokN))
+        : "";
+      if (seg.phase === "error") {
+        d.textContent = T("自动压缩失败") + (seg.text ? " · " + firstLineOf(seg.text) : "");
+      } else if (seg.phase === "start" && !Number(seg.doneAt)) {
+        d.textContent = T("正在压缩上文…");
+      } else {
+        const bits = [T("上下文已自动压缩")];
+        if (n) bits.push(Tn("{n} 条消息", n));
+        if (tokTxt) bits.push(T("原约 {t} tok").split("{t}").join(tokTxt));
+        d.textContent = bits.join(" · ");
+      }
+      body.appendChild(d);
     } else if (seg.k === "err") {
       const det = document.createElement("details");
       det.className = "dsh-trace-detail err";
@@ -2746,7 +2799,12 @@
     const out = rec ? resultTextOf(rec) : seg.text;
     if (out) {
       sec(
-        rec && rec.error ? T("结果（出错）") : T("结果"),
+        rec && rec.error
+          ? T("结果（出错）")
+          : /* 自动压缩段（任务 3/8）：正文是这次压缩产出的摘要，不是工具结果 */
+            seg.k === "compact"
+            ? T("压缩摘要")
+            : T("结果"),
         codeSection(T("结果"), out, toolArgsPath(rec)),
       );
     } else if (seg.text) {

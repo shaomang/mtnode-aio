@@ -5038,6 +5038,34 @@ body.theme-light button.dsh-think-row {
   font-size: 11.5px;
 }
 
+/* 这次压缩带走的工具调用（本次需求）：清单按折组 gid 从被折消息的 m.tools 实时取，
+   只读；自己滚，不吃摘要正文的高度。 */
+.compact-pop-tools {
+  flex: 0 0 auto;
+  max-height: 34vh;
+  overflow: auto;
+  padding: 6px 10px;
+  background: rgba(0, 0, 0, .18);
+  border: 1px dashed var(--bd2);
+  border-radius: 3px;
+}
+
+.compact-pop-tools-head {
+  color: var(--muted);
+  font-size: 11.5px;
+  margin-bottom: 4px;
+}
+
+.compact-pop-tools-body {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--ink);
+}
+
 .compact-pop-body {
   flex: 1 1 auto;
   min-height: 160px;
@@ -6135,6 +6163,99 @@ button.dsh-xlate-copy:hover {
   text-overflow: ellipsis;
 }
 
+/* ── 自动压缩行（任务 3/8 · 上下文压缩的轨迹行）──────────────────────────────
+   三态共用一条轻行：进行中（.run）一枚转动的圆环 + 一道扫光；完成态（.dsh-compact-btn）
+   可点开压缩浮层；失败（.err）走语义红。字与上下文注入行同一档，不抢正文。 */
+.dsh-compact {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  position: relative;
+  overflow: hidden;
+  font-size: 10.5px;
+  color: var(--dsh-ink-dim);
+  border-radius: var(--dsh-r-sm);
+}
+
+.dsh-compact-ico {
+  display: inline-block;
+  flex: none;
+  opacity: 0.8;
+}
+
+.dsh-compact-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 进行中的扫光：一道浅色斜带从左扫到右（不吃指针事件，也不改行内文字色） */
+.dsh-compact.run::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    100deg,
+    transparent 20%,
+    var(--dsh-shimmer) 50%,
+    transparent 80%
+  );
+  transform: translateX(-100%);
+  animation: dsh-compact-sweep 1.4s linear infinite;
+}
+
+.dsh-compact.run .dsh-compact-ico {
+  animation: dsh-compact-spin 1.4s linear infinite;
+}
+
+@keyframes dsh-compact-sweep {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(100%);
+  }
+}
+
+@keyframes dsh-compact-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* 完成态：整行可点（开浮层读摘要），外观与上下文注入行同一档，只在 hover 提亮 */
+.dsh-compact-btn {
+  border: 1px solid var(--dsh-bd);
+  background: none;
+  padding: 0 6px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 10.5px;
+  text-align: left;
+  color: var(--dsh-ink-dim);
+}
+
+.dsh-compact-btn:hover {
+  color: var(--cyan2);
+  border-color: color-mix(in srgb, var(--cyan) 40%, var(--dsh-bd));
+}
+
+/* 失败：红字一行（错误文本不折叠、截断交给行内省略） */
+.dsh-compact.err {
+  color: var(--dsh-err);
+}
+
+.dsh-compact.err .dsh-compact-label {
+  flex: none;
+  border: 1px solid color-mix(in srgb, var(--dsh-err) 40%, var(--dsh-bd));
+  border-radius: var(--dsh-r-sm);
+  padding: 0 5px;
+  font-size: 9.5px;
+  letter-spacing: 0.5px;
+}
+
 /* ── 服务商目录(设置:dsh Models 页风格) ── */
 .dsh-catalog-grid {
   display: flex;
@@ -6413,7 +6534,7 @@ body.theme-light button.hist-proc-bar:hover {
   align-items: stretch;
   min-height: 0;
   min-width: 0;
-  /* 竖条（.hist-rail）的定位上下文：它贴滚动条右侧 */
+  /* 竖条（.hist-rail）的定位上下文：它落在滚动条外侧 */
   position: relative;
   /* 右侧让出竖条（.hist-rail，18px）的专用槽 —— 竖条与滚动条必须各走各的道。
      原先竖条写 right:0（= wrap 右沿）落在消息列最右 18px 上，而列表的竖直滚动条
@@ -6421,10 +6542,12 @@ body.theme-light button.hist-proc-bar:hover {
      两者重叠 8px，滚动条那一条全被竖条压住，鼠标按上去命中的是竖条 —— 用户报的
      「滚动条和会话跳转 UI 重叠、选不中滚动条」就是这个。
      留着这条右内边距后，wrap.right 与 list.right 之间恒有 ≥18px：
-     滚动条（list 右缘）与竖条槽（wrap 右缘，见 .hist-rail）互不重叠；
-     窄窗时余量不足也只是消息列被挤窄一点，不会再把滚动条盖掉。
-     内边距左右对称，消息列仍是居中定宽（max-width:820px + margin:0 auto），
-     列宽与居中位置一字未变。改这条前先跑 node test/smoke-agent-wheel-scroll.js [8]。 */
+     列铺满整行时（窄窗）竖条正好落在这一槽里，right:0 = 槽右沿；
+     宽窗时列居中留下更多空白，app-assist.js 的 histRailAlign 把 right 钉成
+     「空余 − 竖条宽」，竖条左边始终贴 list.right（滚动条外侧），不压滚动条、
+     也不飘到窗口右沿。内边距左右对称，消息列仍是居中定宽（max-width:820px +
+     margin:0 auto），列宽与居中位置一字未变。
+     改这条前先跑 node test/smoke-agent-wheel-scroll.js [8]。 */
   padding: 0 18px;
 }
 
@@ -6441,15 +6564,14 @@ body.theme-light button.hist-proc-bar:hover {
   min-height: 0;
 }
 
-/* 快捷跳转竖条（标记会话轮次）：贴滚动条右侧，不是贴整个窗口右侧。
+/* 快捷跳转竖条（标记会话轮次）：落在滚动条**外侧**，不是贴整个窗口右侧。
    消息列（.agent-list 等）是**居中定宽**的（max-width:820px + margin:0 auto），
-   窗口宽时列两侧各留一大段空 —— 原先竖条是 flex 同伴项，被排到 .hist-scroll-wrap
-   的最右端（= 窗口右沿），离滚动条隔着一整段空白。现在把它从文档流里摘出来：
-   右边界由上面的 .hist-scroll-wrap 定位 —— 壳自带 18px 右内边距（竖条专用槽），
-   wrap.right 与 list.right 之间恒有 ≥18px，所以 right:0 落点 = 竖条槽的右沿，
-   恰好贴在滚动条右侧、与滚动条 0 重叠（用户报的「竖条压住滚动条、选不中」已修）。
-   app-assist.js 的 histRailAlign 仍逐帧按实测 rect 把 right 钉到这段余量上
-   （窄窗余量 < 槽宽时退回 wrap 右沿），竖条不占列宽、消息列宽度与居中位置一字未动。
+   窗口宽时列两侧各留一大段空 —— 竖条若留在文档流里会被排到 .hist-scroll-wrap
+   的最右端（= 窗口右沿），离滚动条隔着一整段空白。现在它脱离文档流：
+   right 由 app-assist.js 的 histRailAlign 按实测写成「壳右沿 − 列右沿 − 竖条宽」，
+   左边贴住 list.right（滚动条外沿），既不压滚动条，也不悬在窗口右沿；
+   CSS 的 right:0 只是「还没测过」时的初值（列铺满整行的窄窗即正解）。
+   竖条不占列宽，消息列宽度与居中位置一字未动。
    改这条前先跑 node test/smoke-agent-wheel-scroll.js [8]。 */
 .hist-rail {
   position: absolute;

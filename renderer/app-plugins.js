@@ -852,6 +852,10 @@ const BACKEND_PLUGIN_SPECS = {
   llama: { key: "llama", api: "llama", hasService: true },
   breeze: { key: "breeze", api: "breeze", hasService: true },
   remotion: { key: "remotion", api: "remotion", hasService: false },
+  /* Blender 本地插件：卡片 = 安装 / 重装 + 启用 / 停用 + 控制台。宿主 blender/main-blender.js。
+     「启用」= 插件自己拉起那只 Blender（用户手开的实例不做启停对象）；没有常驻后端要更新，
+     已装即跳过（不自动升级），所以 update:false —— 检查更新只在控制台里做「只提示」。 */
+  blender: { key: "blender", api: "blender", hasService: true, update: false },
   /* Paseo 手机接管：卡片 = 安装 / 重装 + **启用 / 停用** + 控制台（本轮共识：默认不启用，
      必须在这里显式开启才会起后端）。api 前缀是 paseoRemote（宿主那套 paseoRemote:* IPC）；
      启停入口沿用那对既有桥（startDaemon / stopDaemon），宿主把它们与启用 / 停用做成同一件事：
@@ -898,6 +902,7 @@ const BACKEND_INSTALL_IDS = {
   remotion: "remotion",
   /* Paseo 手机接管：安装窗里的插件 id 就是它的目录 id */
   paseo: "paseo-remote",
+  blender: "blender-local",
 };
 /** 开这只插件的安装窗：**唯一入口**（卡片「安装 / 重装」与控制台窗内的「安装」都走它）。 */
 async function openPluginInstallWindow(payload) {
@@ -1180,6 +1185,15 @@ async function refreshSensenovaPluginCard(root) {
    卡片底部仍不留任何正文（状态在控制台里逐项显示）。 */
 async function refreshPaseoPluginCard(root) {
   return refreshBackendPluginCard(root, BACKEND_PLUGIN_SPECS.paseo);
+}
+
+/* ---- Blender 本地插件（应用插件 kind blender，id blender-local）----
+   卡片与其它本地后端同一套三颗按钮：安装 / 重装（开通用安装窗，步骤表 blender/steps.json）+
+   启用 / 停用（宿主拉起 / 关掉**插件自己那只** Blender，用户手开的实例不动）+ 控制台
+   （启停 / 冒烟 / 检查更新 / 日志 / 卸载都在窗里，具体口径见 blender/ui/）。
+   「已装」= 安装目录里找得到 blender.exe（宿主 statusForUi 顶层 installed）。 */
+async function refreshBlenderPluginCard(root) {
+  return refreshBackendPluginCard(root, BACKEND_PLUGIN_SPECS.blender);
 }
 
 function pluginLoc(p, key) {  const v = p && p[key];
@@ -1753,6 +1767,7 @@ function repaintPluginCard(card, item) {
     llama: refreshLlamaPluginCard,
     breeze: refreshBreezePluginCard,
     paseo: refreshPaseoPluginCard,
+    blender: refreshBlenderPluginCard,
   };
   const fn = map[k];
   if (fn) return fn(card);
@@ -2134,6 +2149,13 @@ async function openAppPluginsDialog() {
         offs.push(window.api.paseoRemoteOnConsoleChanged(() => refreshPaseoPluginCard(card)));
       }
       refreshPaseoPluginCard(card);
+    } else if (item.kind === "blender" || item.handler === "blender") {
+      /* Blender 本地插件：控制台窗开 / 关、启停 Blender、装完一次都广播 consoleChanged，
+         卡片据它重画（装完后从「安装」换成「重装 + 启用」也靠这条）。 */
+      if (window.api && window.api.onBlenderConsoleChanged) {
+        offs.push(window.api.onBlenderConsoleChanged(() => refreshBlenderPluginCard(card)));
+      }
+      refreshBlenderPluginCard(card);
     } else {
       if (window.api && window.api.onAppPluginsWindowChanged) {
         offs.push(

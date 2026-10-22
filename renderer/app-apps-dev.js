@@ -198,13 +198,12 @@ function appsDevProjectDir(appId) {
 }
 /* ── 该应用名下会话的工作区对齐（本轮需求 · 需求三）────────────────────────
  *
- * 口径（用户共识）：点左栏应用条目 / 切到该应用、打开开发页、每次开轮前，都按**同一判据**
- * 走一遍 ——
- *   · 会话没填过工作区（空）→ 写成该应用目录；
- *   · 填过、但那个目录已经不存在（迁移旧布局留下的旧路径）→ 也改写成该应用目录；
- *   · 填过且目录还在（用户自己选的地方）→ 一个字不动。
- * 写入的是会话的 workspace（「手填」语义，与「手填 > 画布项目根 > 默认」这条既有解析链一致，
- * 不新增第二种语义）；运行中的会话一律不动（开轮时锁定的工作区不能中途漂）。
+ * 口径（本次需求已改为「创建即冻结」，用户已确认）：
+ *   · 会话没有工作区（空 = 还没定过）→ 写成该应用目录（这就是「创建那一刻」的解析）；
+ *   · 填过（不管是该应用目录、用户自己选的目录，还是一个已经失效的旧路径）→ **一个字不动**；
+ *     失效只打 `_wsInvalid` 标记（会话行挂警示标），运行期退到应用默认目录。
+ * 写入的是会话的 workspace（与「手填 > 画布项目根 > 默认」这条解析链一致，不新增第二种语义）；
+ * 运行中的会话一律不动（开轮时锁定的工作区不能中途漂）。
  * 结果由 renderAgentComposer 回显成底部那颗「工作区」芯片（显示末段目录名，悬浮给全路径）。 */
 async function appsDevAlignAppWorkspace(appId) {
   const id = String(appId || DEVD.appId || "").trim();
@@ -213,32 +212,14 @@ async function appsDevAlignAppWorkspace(appId) {
   if (!dir) return 0;
   const list = typeof appSessionsOf === "function" ? appSessionsOf(id) : [];
   if (!list.length) return 0;
-  const seen = DEVD.wsSeen || (DEVD.wsSeen = new Map()); /* sid -> 已核对过的那个（存在的）目录值 */
   let changed = 0;
   for (const st of list) {
     if (!st || appsDevSessionRunning(st)) continue;
     const cur = String(st.workspace || "").trim();
-    if (cur && appsSamePath(cur, dir)) {
-      seen.set(String(st.id), cur);
-      continue;
-    }
-    if (cur) {
-      /* 非空且不是应用目录：只在「那个目录已经不在盘上」时改写。同一版核对过一次就记下来，
-         免得 1.2s 的轮询反复问主进程。 */
-      if (seen.get(String(st.id)) === cur) continue;
-      let isDir = false;
-      try {
-        isDir = !!(await window.api.fileIsDir(cur));
-      } catch (_) {
-        isDir = false;
-      }
-      seen.set(String(st.id), cur);
-      if (isDir) continue;
-    }
-    /* 对齐结果走**统一入口**（本次需求）：过去这里只改内存 + persistAgentSession，而落盘层
-       只送「脏的或正文已读回的」会话 —— 既没读回正文也没标脏的老会话会被整条跳过，对齐
-       结果根本进不了盘（下次启动读回来还是旧路径，弹窗重现）。统一入口 = 标脏 + 走
-       session:patch 直接改会话文件本体（不读正文）。 */
+    if (cur) continue; /* 冻结过 / 用户选过：一个字不动（含已失效的旧路径） */
+    /* 空 → 定成该应用目录，走**统一入口**（标脏 + session:patch 改会话文件本体）：过去这里
+       只改内存 + persistAgentSession，而落盘层只送「脏的或正文已读回的」会话 —— 既没读回
+       正文也没标脏的老会话会被整条跳过，对齐结果根本进不了盘。 */
     await agentSetSessionWorkspace(st, dir);
     changed++;
   }

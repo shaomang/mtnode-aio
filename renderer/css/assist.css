@@ -152,21 +152,11 @@
   white-space: nowrap
 }
 
-/* 助手栏「模式」入口（本次开发需求）：入口键面照 .assist-ws-line 的「工作范围」那一行的观感
-   （小字 + 细边圆角），开着的开关由 .on 变主题蓝 + tooltip 逐项回显
-   （见 app-assist.js paintAssistModeChip）。这一块是自成一行的 flex 行（不塞进 .assist-ctrl 的
-   多行网格里，免得 wrap 后把下拉推乱）。
+/* 助手栏「模式」入口（本次开发需求）：它现在就是 chip 行里的一枚 .assist-chip
+   （#assistModeTrigger，id 沿用，app-boot 与冒烟都认它），开关状态由 .on 变主题蓝 +
+   tooltip 逐项回显（见 app-assist.js paintAssistModeChip）。
    「拷问需求」那枚状态小字**已按本次需求撤掉**（会话输入区那枚同族 chip 也一并撤了）：
    它原来那套小字样式一并删除，别再给这枚标记加回样式。 */
-#assistModeCtrl {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
-  border-bottom: 1px solid var(--bd);
-}
-
 .assist-chip-mode {
   flex: none;
   height: 22px;
@@ -195,10 +185,10 @@
 /* 助手栏「模式」菜单（本次开发需求 · 用户报障「点开被完全遮在上方」）：
    通用 .agent-menu 的 bottom: calc(100% - 8px) 是给会话输入框底部菜单「向上弹」用的，
    挂进助手栏后基准变成整条 .assist-pane，整块被顶到栏顶边界之外、什么都看不见。
-   落点交给 app-assist.js 的 placeAssistModeMenu 按「模式」按钮现算（左对齐按钮、
-   优先向下、栏内装不下才向上翻转、宽度 280–320 且不超出栏宽）。
-   这一段是**不用 JS 也成立**的缺省：top/bottom 都 auto = 静态位置，即紧跟
-   #assistModeCtrl 那一行之下，至少在本行下方可见、不出栏。 */
+   落点交给 app-assist.js 的 placeAssistMenuById 按触发的那枚 chip 现算（左对齐按钮、
+   优先向下、栏内装不下才向上翻转、宽度夹进栏宽）。
+   这一段是**不用 JS 也成立**的缺省：top/bottom 都 auto = 静态位置，即紧跟 chip 行
+   之下，至少在本行下方可见、不出栏。 */
 #assistModeMenu {
   left: 10px;
   right: auto;
@@ -1365,3 +1355,294 @@
   background: rgba(192, 139, 255, .18)
 }
 
+
+/* ══════════ 会话身份行 / chip 行 / 运行区折叠行（本次需求 · 与原生会话对齐）══════════
+   这一整段的由来：助手栏过去是「无名对话」——头部只有一句固定说明 + 清空按钮，
+   控件是五行平铺下拉，计划 / 清单 / 队列 / 暂停一个都看不见。对齐口径是**单项拉齐**：
+   原生会话有的观感助手栏都有，原生会话一个像素都不动。 */
+
+/* 头部：左＝身份（标题 / ▣所属画布 / 最后对话），右＝「…」+ ✕。不换行，标题自己省略。 */
+.assist-head {
+  flex-wrap: nowrap;
+  align-items: flex-start;
+}
+
+.assist-id {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.assist-id-title {
+  color: var(--cyan2);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: .5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.assist-id-wf,
+.assist-id-when {
+  font-size: 10px;
+  color: var(--muted);
+  letter-spacing: .3px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.assist-id-wf[hidden],
+.assist-id-when[hidden] {
+  display: none;
+}
+
+/* 头部右上角「…」与 ✕ 同一档：都是方键，不抢身份行的高度 */
+.assist-head #btnAssistMenu,
+.assist-head #btnAssistClose {
+  margin-top: -1px;
+}
+
+/* 会话操作菜单：与「模式」菜单同一套 .agent-menu 构件，落点由 JS 现算（placeAssistMenu）。 */
+.assist-sess-menu {
+  width: 180px;
+}
+
+.assist-sess-menu .agent-menu-cell {
+  width: 100%;
+}
+
+/* chip 行：与原生输入区那排 chip 同序同观感。**不换行**（用户口径）：装不下时由
+   app-assist.js 给 #assistChips 加 .compact，只剩图标 + 悬停提示。 */
+.assist-chips {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: nowrap;
+  width: 100%;
+  overflow: hidden;
+}
+
+.assist-chip {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--bd2);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 10.5px;
+  line-height: 20px;
+  cursor: pointer;
+  white-space: nowrap;
+  outline: none;
+}
+
+.assist-chip:hover {
+  background: rgba(255, 255, 255, .06)
+}
+
+.assist-chip.on {
+  color: rgb(86, 134, 254);
+  border-color: rgba(86, 134, 254, .34);
+  background: rgba(86, 134, 254, .08);
+}
+
+.assist-chip:disabled {
+  opacity: .5;
+  cursor: default;
+}
+
+.assist-chip[hidden] {
+  display: none;
+}
+
+.assist-chip .ach-icon {
+  font-style: normal;
+  font-size: 11px;
+  line-height: 1;
+}
+
+/* 窄栏档：只留图标（全名在 title 里） */
+.assist-chips.compact .assist-chip .ach-text {
+  display: none;
+}
+
+.assist-chips.compact .assist-chip {
+  padding: 0 6px;
+}
+
+/* 带值的那两枚（工作区 / 模型）不能把后面几枚挤出去：值为长路径 / 长模型名时省略号收尾，
+   悬停有完整 tooltip（paintAssistChips 每次都写 title） */
+.assist-chips .assist-chip .ach-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.assist-chips #assistWsChip .ach-text {
+  max-width: 104px;
+}
+
+.assist-chips #assistModelChip .ach-text {
+  max-width: 132px;
+}
+
+/* 收进菜单的那几行：标签在左、控件在右；行本身仍是 .assist-ctrl-item（冒烟与脚本都认它） */
+.assist-menu .assist-ctrl-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 3px 6px;
+}
+
+/* 上面那条 display:flex 会盖掉 .assist-ctrl-item[hidden] 的 display:none（同族优先级）：
+   自定义档那三行数字靠 hidden 收起，收在菜单里之后也得照样压回去。 */
+.assist-menu .assist-ctrl-item[hidden] {
+  display: none;
+}
+
+.assist-menu .assist-ctrl-item select,
+.assist-menu .assist-ctrl-item input[type="number"] {
+  max-width: 150px;
+}
+
+.assist-ws-menu {
+  padding: 6px;
+}
+
+.assist-ws-menu .assist-ws-line {
+  padding: 0;
+  border-bottom: none;
+}
+
+/* 运行区折叠行：一行摘要（计划 x/y · 待办 n · 排队 n · 已暂停），点开展开成原生那四块 */
+.assist-runfold {
+  flex: none;
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--bd);
+  background: rgba(0, 0, 0, .12);
+}
+
+.assist-runfold[hidden] {
+  display: none;
+}
+
+.assist-runfold-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 2px 0;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 10.5px;
+  text-align: left;
+  cursor: pointer;
+  outline: none;
+}
+
+.assist-runfold-btn:hover {
+  color: var(--ink)
+}
+
+.arf-arrow {
+  font-style: normal;
+  opacity: .8;
+  transition: transform .12s;
+}
+
+.assist-runfold.open .arf-arrow {
+  transform: rotate(90deg);
+}
+
+.arf-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.assist-runbody {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px 0 2px;
+}
+
+.assist-runbody[hidden] {
+  display: none;
+}
+
+/* 展开后的四块用原生容器类（.agent-queue / .agent-todo / .agent-paused），只把最大高度
+   放开一点：助手栏本来就是可滚的窄栏，不必像会话区那样先夹死高度。 */
+.assist-runbody .agent-queue,
+.assist-runbody .agent-todo {
+  max-height: 260px;
+}
+
+/* 时间区间标签：与原生同一套 .agent-round 样式，只收一点左右内边距（栏窄） */
+.assist-round {
+  padding: 6px 10px 0;
+}
+
+/* 「工作范围」行右边那枚只读小字 */
+.assist-scope-line .assist-sub {
+  text-align: right;
+}
+
+/* 头部就地改名：与左栏会话改名同一只输入框（.n-title-input），只是宽度跟着身份行走 */
+.assist-id-title[hidden] {
+  display: none;
+}
+
+.assist-id-input {
+  width: 100%;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: .5px;
+  padding: 1px 4px;
+}
+
+/* 「…」菜单：三个短项，行高压到 30px（.agent-menu-cell 的 40px 是给宽菜单的） */
+.assist-sess-menu {
+  padding: 6px;
+}
+
+.assist-sess-menu .assist-sess-item {
+  height: 30px;
+  padding: 0 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  justify-content: flex-start;
+}
+
+.assist-sess-menu .assist-sess-item:disabled {
+  opacity: .45;
+  cursor: default;
+}
+
+.assist-sess-menu .assist-sess-item:disabled:hover {
+  background: transparent;
+}
+
+/* 空态：一行主语（与原生会话同一句）+ 一行本栏能力说明 */
+.assist-empty-main {
+  margin: 0;
+  color: var(--ink);
+  opacity: .8;
+}
+
+.assist-empty-note {
+  margin: 6px 0 0;
+  font-size: 10.5px;
+  line-height: 1.6;
+  opacity: .8;
+}

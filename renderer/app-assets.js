@@ -4442,6 +4442,23 @@ function assetPvBody(r, a) {
     box.appendChild(img);
     return box;
   }
+  if (r.type === "video") {
+    /* 视频与图像同口径：file:// 直连原生播放器，不预读字节、不设体积上限 */
+    const v = document.createElement("video");
+    v.className = "asset-pv-vidbig";
+    v.controls = true;
+    v.preload = "metadata";
+    v.playsInline = true;
+    v.title = abs;
+    v.src = window.api.toFileUrl(abs);
+    v.onerror = () => {
+      box.appendChild(
+        assetEl("div", "asset-pv-note", I18n.t("这段视频播不了（容器或编码不受支持）：用「打开原文件」看")),
+      );
+    };
+    box.appendChild(v);
+    return box;
+  }
   if (r.type === "audio") {
     const media =
       typeof wavePreviewCreate === "function" ? wavePreviewCreate("") : null;
@@ -5053,6 +5070,10 @@ async function assetPreviewItem(r, a) {
     assetShowPreviewBox(r.title || fileName(r.absPath), r.absPath, null);
     return;
   }
+  if (r.type === "video") {
+    assetShowPreviewBox(r.title || fileName(r.absPath), r.absPath, null, "video");
+    return;
+  }
   if (r.type !== "text") {
     window.api.shellShowItem(r.absPath);
     return;
@@ -5069,10 +5090,11 @@ async function assetPreviewItem(r, a) {
   assetShowPreviewBox(r.title || "", null, cur);
 }
 
-/* 只读预览框：图（imgPath）或文本（text）二选一。
+/* 只读预览框：图（imgPath）/ 视频（kind:"video"）/ 文本（text）三选一。
    persistent（点蒙层不关），Esc 只收这一层（capture ＋ stopPropagation，与 assetFormDialog
    同一口径，不会顺手把底下的素材库 / 设置框也关掉）。 */
-function assetShowPreviewBox(title, imgPath, text) {
+function assetShowPreviewBox(title, imgPath, text, kind) {
+  const isVideo = kind === "video";
   const old = document.getElementById("assetPreviewDlg");
   if (old) old.remove();
   const host = document.createElement("div");
@@ -5087,12 +5109,33 @@ function assetShowPreviewBox(title, imgPath, text) {
       "b",
       null,
       imgPath
-        ? I18n.t("预览图像内容 · {name}", { name: title })
+        ? I18n.t(isVideo ? "预览视频内容 · {name}" : "预览图像内容 · {name}", { name: title })
         : I18n.t("预览文本内容 · {name}", { name: title }),
     ),
   );
   const body = assetEl("div", "mt-dialog-body asset-form-body");
-  if (imgPath) {
+  if (imgPath && isVideo) {
+    const v = document.createElement("video");
+    v.controls = true;
+    v.preload = "metadata";
+    v.playsInline = true;
+    v.title = imgPath;
+    v.src = window.api.toFileUrl(imgPath);
+    v.style.display = "block";
+    v.style.maxWidth = "100%";
+    v.style.maxHeight = "60vh";
+    v.style.margin = "0 auto";
+    v.style.background = "#000";
+    v.onerror = () => {
+      const note = assetEl(
+        "div",
+        "asset-pv-note",
+        I18n.t("这段视频播不了（容器或编码不受支持，或文件读不到）：可用「打开原文件」交给外部播放器"),
+      );
+      body.insertBefore(note, v);
+    };
+    body.appendChild(v);
+  } else if (imgPath) {
     const img = document.createElement("img");
     img.alt = title;
     img.src = window.api.toFileUrl(imgPath);

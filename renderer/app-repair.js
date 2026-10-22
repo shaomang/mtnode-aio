@@ -72,6 +72,10 @@ const PLUGIN_REPAIR_SKILLS = {
      provider 没写进 Paseo），配套的 paseo-remote-install 写明了怎么读现场并逐条验回去 */
   paseo: "paseo-remote-install",
   "paseo-remote": "paseo-remote-install",
+  /* Blender 本地插件：失败多是「官方源不通 / uv 被拦 / addon 没启用 / 端口被占 / 握手失败」，
+     配套的 blender-local-install 写明了怎么读现场、逐条验回去 */
+  blender: "blender-local-install",
+  "blender-local": "blender-local-install",
 };
 
 /* 插件 id / kind → 打开它自己控制台窗的 preload 桥方法名（「打开控制台看日志」用） */
@@ -97,6 +101,9 @@ const PLUGIN_REPAIR_CONSOLE = {
   /* Paseo 手机接管：控制台里就能看出后端认没认到、relay 开没开、码出不出得来 */
   paseo: "paseoRemoteOpen",
   "paseo-remote": "paseoRemoteOpen",
+  /* Blender：控制台里能逐项看到 blender.exe / addon / uv / MCP / 端口，以及「测试连接」 */
+  blender: "blenderOpen",
+  "blender-local": "blenderOpen",
 };
 
 /* 插件 id / kind → 修完之后该调的「该服务自己的重启入口」与卡片刷新口。
@@ -188,6 +195,18 @@ const PLUGIN_REPAIR_SERVICE_BASE = {
     cards: ["paseo-remote"],
     results: [".paseo-agent-result"],
   },
+  /* Blender 本地插件：没有常驻后端要「重启」，但有「插件拉起的那只 Blender」——
+     修完调 blenderStart 重新拉起 + 冒烟才是真验证；stop 只关插件自己那只。 */
+  blender: {
+    label: "Blender 本地插件",
+    resident: true,
+    start: "blenderStart",
+    stop: "blenderStop",
+    status: "blenderStatus",
+    card: "refreshBlenderPluginCard",
+    cards: ["blender-local"],
+    results: [".blender-agent-result"],
+  },
   /* 桌宠：没有安装类 skill（走「自行判断根因」提示词分支），也没有登记的服务启停入口
      → resident:false，修完按「无常驻服务」收尾（有节点就重跑节点，没有就提示可重试）。 */
   pet: {
@@ -210,6 +229,7 @@ const PLUGIN_REPAIR_SERVICE = (function expandPluginRepairService() {
     llama: ["llama", "llama-local", "llama-cpp"],
     remotion: ["remotion", "remotion-video", "remotion-render"],
     paseo: ["paseo", "paseo-remote", "paseo-bridge"],
+    blender: ["blender", "blender-local", "blender-mcp"],
     pet: ["pet", "bongochat", "bongo-cat", "deskpet"],
   };
   const out = {};

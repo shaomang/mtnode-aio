@@ -2608,6 +2608,31 @@ body.theme-light .think-doc.md-viewer-doc {
   gap: 4px
 }
 
+/* 字段标题行：文字 + 「?」图标（说明悬停才出，不再平铺成灰字占版面） */
+.n-field .nsf-cap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.n-field .nsf-cap > .nsf-cap-t {
+  overflow-wrap: anywhere;
+}
+
+/* 勾选框一行：勾选框 + 标题 + ?（旧 .n-field 竖排会把它们拆成三行） */
+.n-field.nsf-check {
+  flex-direction: row;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.node-settings-form .n-field.nsf-check > input[type="checkbox"] {
+  margin-right: 0;
+}
+
 .node-settings-form .n-field select,
 .node-settings-form .n-field input:not([type="checkbox"]),
 .node-settings-form .n-field textarea {
@@ -4414,6 +4439,17 @@ textarea.asset-form-input {
   margin: 0 auto;
   object-fit: contain;
   background: var(--code);
+  border-radius: 3px;
+}
+
+/* 视频浮层预览：与图像同一套尺寸口径，底色换成纯黑（留黑边比透出面板底色自然） */
+.asset-pv-vidbig {
+  display: block;
+  max-width: 100%;
+  max-height: 52vh;
+  margin: 0 auto;
+  object-fit: contain;
+  background: #000;
   border-radius: 3px;
 }
 

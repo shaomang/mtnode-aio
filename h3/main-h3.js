@@ -3605,9 +3605,24 @@ function buildH3Workflow(params, uploaded, notes) {
     };
     const first = imageNodes.find((x) => x.role === "first");
     const last = imageNodes.find((x) => x.role === "last");
-    /* 有用户首帧则尊重用户首帧；否则用上一段成片的末帧充当锚定构图的首帧（分段衔接） */
-    if (first) h3Inputs.first_frame = link(first.nid, 0);
-    else if (chainAnchor) h3Inputs.first_frame = link(chainAnchor, 0);
+    /* 有用户首帧则尊重用户首帧；否则用上一段成片的末帧充当锚定构图的首帧（分段衔接）。
+     * 首帧一律先过 ImageScale 归一化到「本次画布 + 等比铺满 + 居中裁切」——与后端 last_frame 的口径
+     * 完全一致（nodes_minimax_h3.py 的 _resize(..., "center")）。原因：后端对 first_frame 曾经是硬拉伸
+     * （_resize(..., "disabled")），同一张图分别接首/末帧时，只要宽高比与输出不符，两端就是拉伸版 vs
+     * 裁切版两张不同的张量，模型只能从一张走到另一张 → 表现为镜头推近 / 构图漂移 / 收不回原位（首尾
+     * 同图也不 loop；1080×717 → 1280×704 实测首尾 PSNR 12.5dB）。这里先裁好，两端才对得上。 */
+    const firstSrc = first ? link(first.nid, 0) : chainAnchor ? link(chainAnchor, 0) : null;
+    if (firstSrc) {
+      const firstFit = String(id++);
+      nodes[firstFit] = w("ImageScale", {
+        image: firstSrc,
+        upscale_method: "lanczos",
+        width: params.width,
+        height: params.height,
+        crop: "center",
+      });
+      h3Inputs.first_frame = link(firstFit, 0);
+    }
     if (last) h3Inputs.last_frame = link(last.nid, 0);
     nodes[h3Node] = w("MiniMaxH3ImageToVideo", h3Inputs);
   }

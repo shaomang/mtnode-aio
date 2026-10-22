@@ -140,6 +140,7 @@ const GET_DESC =
   '- Narrow with ids / scope + scopeDepth / bodies / bodyLimit, or sections = whitelist of heavy blocks (nodes, marks, wires, groups, and the trees / tagCatalog / workflows / selection). 只查连线用 sections:["nodes","wires"]（minimal 档也认）。素材节点（kind asset）也回读：assetItems = 绑定与条目清单 items:[{index, id, title, type}]（条目即端子：第 i 入 ↔ 第 i 出，端子名 = 条目标题）；text/body 档每条再带 text（文本正文）或 path / url（本机文件）。\n' +
   '- ports (standard / full): fixed-port nodes (proc_image / sensenova_gen / video_gen / remotion / judge / tool·function / super / asset) carry ports:[{dir,index,name,kind,connectedTo}] — read before connecting, not after a connect error.\n' +
   '- portRule (standard / full): nodes whose input ports GROW WITH WIRES (proc_text / proc_image / sensenova_gen / remotion / input_* …) carry portRule {note,input,output,now,hint} instead: ports only lists the slots that exist right now (an unconnected node shows one port), and further slots appear as you connect — remotion is the one node whose data AND control lines share the same ports (never assume port 0 = control for remotion), and its description lives in the node text (not in a port). Never infer "this node has only one port" from a short ports list, and never test-wire just to read the warnings.\n' +
+  '- 参数（standard / full）: 有配置的节点（有 ⚙ 设置窗）末位有「参数」端子，端子号恒 9001；快照带 paramKeys / params，参数线用 toIndex:9001。\n' +
   'scopeInfo is always returned（这次读的是整图还是某一颗壳内部）; every result carries a sizeHint with its cost.\n\n' +
   'When the run is locked to its own canvas（会话所属画布）, workflows lists ONLY that canvas. 建图 / 连线 / 排版的完整硬规则（task 端点、super 边界端子、tool/function 参数即端子、@引用三条件、save 与 wait_file、批次与文生图）只写在技能 mtnode-canvas-edit-rules（按需加载），此处不重复。'
 
@@ -169,17 +170,20 @@ For creating/editing/wiring/removing NODES or canvas drawings (marks) on the can
    save 与 wait_file、批次与文生图、数据库 / 开发节点 / 排版 / scope 细则）已迁到
    按需技能 mtnode-agent-skills/mtnode/canvas-edit-rules/SKILL.md —— 工具描述每轮都随
    历史重发，长规则只有「建图 / 连线 / 批量 / 媒体」时才需要，命中再加载即可。 */
-const EDIT_DESC = NODE_LOCK + `在当前画布上创建 / 修改 / 连线 / 删除 / 分组 / 自动排版节点，并用 createMarks / updateMarks / removeMarks 画装饰（text / box / arrow）。先 mtnode_canvas_get 读图，再在一次调用里建完整子图；alias 只在本调用内有效（connect / update / refs 用它）。回执自足：计数 + 每个 created / updated 的 x/y/w/h 与端口占用 + warnings，不必回读（detail:"diff" 只要明细）；要复核别的节点或取正文再用 mtnode_canvas_get（ids:[...]）。
+const EDIT_DESC = NODE_LOCK + `在当前画布上创建 / 修改 / 连线 / 删除 / 分组 / 自动排版节点，并用 createMarks / updateMarks / removeMarks 画装饰（text / box / arrow）。先 mtnode_canvas_get 读图，再在一次调用里建完整子图；alias 只在本调用内有效（connect / update / refs 用它）。回执自足（坐标 / 端口占用 + warnings），不必回读；要复核别的节点或取正文再用 mtnode_canvas_get（ids:[...]）。
 
 create.kind 枚举见 schema（生成族含 sensenova_gen 本机图像）。端子语义：tool / function 的参数表就是端子表（输入端子 0 = 控制入、1..N 各入参；输出 0..M-1 各出参、末位控制出）；judge 只有两个输出：fromIndex 0 = YES、1 = NO；super 对外只暴露边界端子，跨壳 / 跨层级用 superConnect。
 
-端子预检：canvas_get（detail "standard" / "full"）对端子数固定的节点回 ports:[{dir,index,name,kind,connectedTo}]，接线前先看它；connect 失败时 warnings 带候选端子与接法建议；save 的路径后缀按输入类型强制。
+参数：create / update 传 params:{…} 覆写该节点配置（键 = canvas_get 的 paramKeys，运行期生效、不改画布值），paramStrict:true = 键不合法就整份拒绝、该节点不运行。
+
+端子预检：canvas_get（standard / full）回 ports:[{dir,index,name,kind,connectedTo}]，接线前先看；connect 失败的 warnings 带候选端子与接法建议。save 的路径后缀按输入类型强制。
 
 不变量（违反即接线错）：
 - 标题必须唯一。
 - 智能节点（agent_task、agent:true 的 proc_text）自己会写文件：其后不接 save、也不当数据输入；用 wait_file 控制线挡下游。
 - 图像生成节点（proc_image / sensenova_gen）每次运行只出 1 张图；sensenova_gen 走本机后端（先装插件 sensenova-local），结果落资产目录、由输出端口 0 交付，不写 outputPath。
 - batchMode "batch" 每条一次运行、每次只看该条：严禁把整批 N 条再灌进每次运行（≈N² 调用）；一次看全部用 "agg"。
+- 跨节点层只能经边界端子中转（层内 → 直属壳的输出端子 → … → 目标壳的输入端子 → 层内）：connect 遇到跨层会自动改写成这条逐层链，superConnect 同一口径；任何入口都不许留下「层内节点直连层外」的线。
 - 绝不删除或与正在运行本任务的节点重叠；改完告诉用户可编辑输入并用 control ▶ 重跑。
 
 完整硬规则见技能 mtnode-canvas-edit-rules（save 与 wait_file、批次、task 三端、@引用、数据库 / 开发 / 排版 / scope）：建图 / 连线 / 批量 / 媒体前先加载它。` + USER_NODE_HINT
@@ -369,6 +373,17 @@ const NODE_PROPS = {
   dbName: { type: 'string', description: 'db_replica：源数据库显示名。' },
   ctrlPinned: { type: 'boolean' },
   ctrlFillOnly: { type: 'boolean', description: 'control run：只填数据不触发运行。' },
+  params: {
+    type: 'object',
+    additionalProperties: true,
+    description:
+      '「参数」覆写：键 = paramKeys 的正式名（如 outputPath / size / model；区分大小写，不收 snake_case / kebab-case）。运行期生效、不改画布值；与参数端子的 JSON 深合并（端子优先）；null = 恢复默认。',
+  },
+  paramStrict: {
+    type: 'boolean',
+    description:
+      '「参数」严格校验：true = 键不合法 / 类型不符就整份拒绝、该节点不运行；缺省宽松（逐键回退并警告）。',
+  },
   x: { type: 'number' },
   y: { type: 'number' },
 }
@@ -407,7 +422,7 @@ const PAIR_SPEC = {
     from: { type: 'string', required: true, description: '源节点：id / alias / 唯一标题。' },
     to: { type: 'string', required: true, description: '目标节点：id / alias / 唯一标题。' },
     fromIndex: { type: 'number', description: '源的输出端子序号（默认 0）；judge 0 = YES、1 = NO；tool / function 按参数表数端子。' },
-    toIndex: { type: 'number', description: '目标的输入端子序号（0 起始；省略 = 按类型自动选槽）。媒体节点必须显式给：breeze_gen 0=待合成文本 · 1=参考音频 · 2=参考文稿 · 3=指令 · 4=控制输入；video_gen fl2va 0=控制 · 1=提示词 · 2=首帧 · 3=末帧；remotion 无差别端子（0、1、2… 连一条多一个，数据线与控制线共用、先占先得，描述写在节点 text 里不占端子；视频 / 图片 → 主素材、音频 → 语音、文本 → 台词）；save 0/1 按入线类型。' },
+    toIndex: { type: 'number', description: '目标的输入端子序号（0 起始；省略 = 按类型自动选槽）。媒体节点必须显式给：breeze_gen 0=待合成文本 · 1=参考音频 · 2=参考文稿 · 3=指令 · 4=控制输入；video_gen fl2va 0=控制 · 1=提示词 · 2=首帧 · 3=末帧；remotion 无差别端子（0、1、2… 连一条多一个，数据线与控制线共用、先占先得，描述写在节点 text 里不占端子；视频 / 图片 → 主素材、音频 → 语音、文本 → 台词）；save 0/1 按入线类型。**参数端子用 toIndex 9001**（来源必须是文本 JSON）。' },
     rel: { type: 'boolean', description: '关系线：UML 直线，不传数据也不参与执行（忽略 fromIndex）。' },
     relLabel: { type: 'string', description: '关系线文字（如 调用 / 依赖）。' },
     relArrow: { type: 'string', enum: ['forward', 'backward', 'both', 'none'] },
@@ -817,7 +832,7 @@ export function apply(ctx) {
       superConnect: {
         type: 'array',
         description:
-          '跨 super / 跨层级连通两个节点：[{from,to}]（字段同 connect[]）。自动逐层桥接边界端子，无需手建桥接线；需 canvas_super。',
+          '跨 super / 跨层级连通两个节点：[{from,to}]（字段同 connect[]）。按「内 → 直属壳输出端子 → … → 目标壳输入端子 → 内」逐层桥接，每段只连直接父子，绝不越级；同一对重复调用不新建线。需 canvas_super。',
         items: { type: 'object', additionalProperties: true },
       },
       remove: {

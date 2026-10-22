@@ -231,16 +231,16 @@
 #   auto: true           = 自动压缩；false 时只停自动触发，溢出恢复仍在
 # 点名 deepseek-official 这条路由上**可能跑到的每一个模型 id**（不是只点一个名字）：
 # 这条路由跑的 id 是用户服务商清单里那一个（本机实测是 deepseek-v4-flash，而它原先
-# 只点名 deepseek-flash → 整份 modelPolicies 落空 → 省钱档的绝对触发线一起落空，
-# 「选 100k 档却压不动」）。列在这里的 id 窗口都是网关自己声明的 1,000,000，比例算出来
+# 只点名 deepseek-flash → 整份 modelPolicies 落空 → 低档的绝对触发线一起落空，
+# 「选 150k 档却压不动」）。列在这里的 id 窗口都是网关自己声明的 1,000,000，比例算出来
 # 的保留量会偏大，所以要给绝对量。自配服务商的路由名是 `mtnode_<route>`（route 由用户
 # 配置决定，没有固定的模型名可点名），一律走 retainRatio 兜底：窗口越小留得越少
 # （128k 窗口 → 触发约 38k / 留约 4.6k），不会出现「留得比触发线还多」。
-# 四档的取值与算法（含「省钱」= 约 100k 绝对触发 / 「自定义」= 用户填触发线）的真源是
+# 四档的取值与算法（含「低」= 约 150k 绝对触发 / 「自定义」= 用户填触发线）的真源是
 # dsh-compact-policy.js（用户设置 → 本行的唯一写入点，由 main.js 在启动时与每次保存配置后
 # 改写）；改本段不会与设置打架 —— 设置没写过时这里就是「默认开 · 中档」的落地值，
 # 写过后由策略模块整份重写本段（点名清单 = 兜底那一族 ∪ 用户官方服务商清单里的 id）。
-# 省钱 / 自定义两档会把 headroomTokens 写进这些 route 的 policy（常量口径，见策略模块里
+# 低 / 自定义两档会把 headroomTokens 写进这些 route 的 policy（常量口径，见策略模块里
 # FRUGAL_HEADROOM_TOKENS 的算式）。
 - id: compaction-basic
   config:
@@ -599,9 +599,17 @@
 
 # ── user plugins (managed from MTNode settings) ──
 
-- id: user-mcp-mvhhife2
+- id: user-mcp-mvjspa4i
   name: '@deepseek-ai/dsh-mcp-client'
   config:
     serverName: 'mtnode-self'
     transport: 'http'
-    url: 'http://127.0.0.1:52983/mcp?token=56e52ef19f0abe7c6e8b6911ecaac855207f429ae009eae0'
+    url: 'http://127.0.0.1:54320/mcp?token=84586d0a3f94db0ccef86f2a8b34d4f34c2559aca6caaa5a'
+
+- id: user-mcp-mvk3qccq
+  name: '@deepseek-ai/dsh-mcp-client'
+  config:
+    serverName: 'blender'
+    transport: 'stdio'
+    command: 'E:\mtnode-isolated\newmachine-cancel\data\pipeline-console\blender\.uv\uvx.exe'
+    args: ['mcp-for-blender', '--host', '127.0.0.1', '--port', '9876']

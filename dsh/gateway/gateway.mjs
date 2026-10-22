@@ -319,12 +319,19 @@ function syncUserPluginsFromHome() {
   const persistedOwned = readPersistedUserRows()
   /* 旧版 cordis-user.yml 可能混入了内置 ./plugins 行：只保留用户包/MCP */
   const ownedMap = new Map()
+  /* 合并键必须带上 serverName：所有 MCP 行的包名都是 @deepseek-ai/dsh-mcp-client，
+     只按包名做键会把同装的几条 MCP 服务器合成一条（后写的那条胜出，另一条静默消失）。 */
+  const ownedKey = (r) => {
+    const block = r.block || ''
+    const m = /serverName:\s*'([^']+)'/.exec(block)
+    return (pluginNameFromBlock(block) || r.id) + (m ? '#' + m[1] : '')
+  }
   for (const r of currentOwned) {
-    const k = pluginNameFromBlock(r.block) || r.id
+    const k = ownedKey(r)
     if (k) ownedMap.set(k, r)
   }
   for (const r of persistedOwned) {
-    const k = pluginNameFromBlock(r.block) || r.id
+    const k = ownedKey(r)
     if (k) ownedMap.set(k, r)
   }
   const mergedOwned = Array.from(ownedMap.values())
@@ -1849,6 +1856,20 @@ function runtimeKey(workspace, model, maxTokens, provider, apiKey, baseUrl, prov
   return [workspace, model, maxTokens, provider, secret, baseUrl ?? '', provHash, eff].join('|')
 }
 
+/* 组合层指纹:压缩档位 / 子代理策略都写在 cordis.yml 里,而 runtime 只在冷起那一刻读一次
+   组合行(见下方 getRuntime 的 patches: [CORDIS_PATH])。复用空闲 runtime 就会一直沿用
+   旧策略 —— 用户把「上下文压缩」改成自定义档、宿主也把组合行改好了,会话却仍按低档
+   压,看起来就是「自定义没生效」。指纹(改档位时 syncCompactPolicy 才会重写这份文件,
+   字节没变不落盘)并进 runtime key:组合行一变,下一轮必然冷起一台新运行时。 */
+function cordisStampOf() {
+  try {
+    const st = statSync(CORDIS_PATH)
+    return Math.round(st.mtimeMs).toString(36) + '.' + st.size.toString(36)
+  } catch {
+    return '0'
+  }
+}
+
 /* 并发隔离:同一配置档(baseKey)的 runtime 若已被某次在途 run 占用,后来者必须另起一台
    (key##tag)。否则两次运行共用一个进程,取消任一个都会把另一个一起打断。
    空闲时仍复用同一台,顺序批处理不额外付进程启动开销。 */
@@ -1907,7 +1928,9 @@ async function getRuntime(workspace, model, maxTokens, provider, apiKey, baseUrl
        hx: = 同一件事的第三通道（按名字的隐藏名单，见 hideTools），同一档必得同一台。 */
     (envPatch ? JSON.stringify(envPatch) : '') + '|ws:' + searchKey.slice(0, 8) + '|hp:' + personaHash + '|pure:' + (pureOn ? '1' : '0') + '|tl:' + tlHash + '|lean:' + (leanOn ? '1' : '0') + '|nc:' + (noCanvasOn ? '1' : '0') + '|nb:' + (noBrowserOn ? '1' : '0') + '|hx:' + hxHash,
     effort,
-  )
+    /* cc: = 组合行指纹（见 cordisStampOf）。压缩档位只写在 cordis.yml 里、冷起时才读，
+       不进 key 就会出现「宿主已改好、会话仍沿用旧档位」—— 与 effort 同理，必须同级。 */
+  ) + '|cc:' + cordisStampOf()
   const key = pickRuntimeKey(baseKey, cancelTag)
   const existing = runtimes.get(key)
   if (existing) {
@@ -2377,6 +2400,85 @@ const toolPrepAcc = new Map()
 const TOOL_PREP_MIN_GAP_MS = 120
 const TOOL_PREP_MAX_CALLS = 64
 
+/* 压缩帧（compaction/summary）的工具清单关联表：上游只给出被遮蔽事件的 seq
+   （shadowedSeqs），渲染层无法把 seq 映射回自己的消息 —— 故在同一次运行内按
+   (会话, seq) 记下 tool/call 的工具名，tool/result 再按 callId 把结果补上去；
+   summary 时只取 shadowedSeqs 命中的那几条。条目数 / 每条文本长度都设上限
+   （最多 20 条、结果截 500 字，与落盘口径一致），避免帧大到撑爆桥。 */
+const toolSeqIndex = new Map()
+const TOOL_SEQ_INDEX_MAX = 4000
+const COMPACTION_TOOLS_MAX = 20
+const COMPACTION_TOOL_TEXT_MAX = 500
+
+function toolSeqKey(sid, seq) {
+  return String(sid == null ? '' : sid) + ':seq:' + String(seq)
+}
+
+function toolCallKey(sid, callId) {
+  return String(sid == null ? '' : sid) + ':call:' + String(callId)
+}
+
+function indexSetTool(k, v) {
+  toolSeqIndex.set(k, v)
+  while (toolSeqIndex.size > TOOL_SEQ_INDEX_MAX) {
+    const first = toolSeqIndex.keys().next()
+    if (first.done) break
+    toolSeqIndex.delete(first.value)
+  }
+}
+
+/* ContentBlock[] → 纯文本（compaction/summary 的 data.summary） */
+function contentBlocksText(blocks) {
+  if (!Array.isArray(blocks)) return ''
+  const parts = []
+  for (const b of blocks) {
+    if (!b) continue
+    if (typeof b.text === 'string' && b.text) parts.push(b.text)
+    else if (Array.isArray(b.content)) {
+      const inner = contentBlocksText(b.content)
+      if (inner) parts.push(inner)
+    }
+  }
+  return parts.join('\n').trim()
+}
+
+/* tool/result 的 ToolResultMessage → 一行结果文本（与 tool/result 分支同一口径取块），
+   失败时带上错误的可读文本。 */
+function toolResultText(d) {
+  let blocks = []
+  const m = d && d.message
+  if (m && Array.isArray(m.content) && m.content.length) {
+    const first = m.content[0]
+    if (first && first.type === 'tool-result') blocks = Array.isArray(first.content) ? first.content : []
+    else blocks = m.content
+  }
+  const parts = []
+  for (const b of blocks) {
+    if (!b) continue
+    if (typeof b.text === 'string' && b.text) parts.push(b.text)
+    else if (b.type) parts.push('[' + String(b.type) + ']')
+  }
+  const body = parts.join(' ').replace(/\s+/g, ' ').trim()
+  const err = d && d.error
+  if (err) {
+    const e = typeof err === 'string' ? err : String(err.reason || err.message || err.code || err.name || '')
+    if (e) return ('失败：' + e + (body ? ' · ' + body : '')).slice(0, COMPACTION_TOOL_TEXT_MAX)
+  }
+  return body.slice(0, COMPACTION_TOOL_TEXT_MAX)
+}
+
+/* 命中的被遮蔽调用 → summary 帧里的工具清单（名称 + 结果，最多 20 条） */
+function compactionToolsOf(sid, seqs) {
+  const tools = []
+  for (const sq of seqs) {
+    const hit = toolSeqIndex.get(toolSeqKey(sid, sq))
+    if (!hit || !hit.name) continue
+    tools.push({ name: hit.name, result: hit.result || '' })
+    if (tools.length >= COMPACTION_TOOLS_MAX) break
+  }
+  return tools
+}
+
 /* 已经收到过**原生** assistant/chunk 增量帧的 (turn,step)：该步的完整 assistant/message
    不再由 stream 合成增量（跨版本不双发）。原生 chunk 一律带 (turn,step)，这里只按它记；
    完整消息那一侧另用带内容指纹的键，就能同时容纳「同一步里多条完整消息」。 */
@@ -2658,6 +2760,15 @@ function mapNotification(n, emit, resumeCtx) {
       case 'tool/call': {
         const d = ev.data
         if (d) {
+          /* 压缩帧用：按 (会话, seq) 记下这次调用的名字，tool/result 再按 callId 补结果
+             （见 toolSeqIndex 注释）。seq 缺失时只记 callId 索引仍能补结果。 */
+          try {
+            const sid = String(n.params.sessionId == null ? '' : n.params.sessionId)
+            const callId = String(d.callId == null ? '' : d.callId)
+            const entry = { name: String(d.name ?? d.tool ?? ''), result: '' }
+            if (Number.isFinite(Number(ev.seq))) indexSetTool(toolSeqKey(sid, ev.seq), entry)
+            if (callId) indexSetTool(toolCallKey(sid, callId), entry)
+          } catch { /* 关联表只是展示辅助，任何异常都不影响会话 */ }
           /* 准备态到此结束：真实调用已就位，卡片转入「运行中」（清掉累计器） */
           try { toolPrepAcc.delete(String(d.callId == null ? '' : d.callId)) } catch {}
           /* 活动流：命令 / 工具的调用摘要（用户已确认「浏览器动作 + shell 命令 + 文件读写
@@ -2711,6 +2822,14 @@ function mapNotification(n, emit, resumeCtx) {
           content,
           error: d.error ?? null,
         })
+        /* 压缩帧用：按 callId 把结果补到对应调用上（只留一行 500 字的摘要）。
+           callId 缺失时退而按本事件自己的 seq 找（见 tool/call 的登记）。 */
+        try {
+          const sid = String(n.params.sessionId == null ? '' : n.params.sessionId)
+          const hit = (callId && toolSeqIndex.get(toolCallKey(sid, callId))) ||
+            (Number.isFinite(Number(ev.seq)) ? toolSeqIndex.get(toolSeqKey(sid, ev.seq)) : null)
+          if (hit) hit.result = toolResultText(d)
+        } catch { /* 关联表只是展示辅助，任何异常都不影响会话 */ }
         /* 活动流：这次调用的结果摘要（成功给前 300 字符，失败给错误文本） */
         try {
           const nm = String(d.name ?? d.tool ?? 'tool')
@@ -2747,6 +2866,41 @@ function mapNotification(n, emit, resumeCtx) {
           }
         }
         return
+      case 'compaction/start':
+        /* 上下文压缩：这三条事件落 default 会以 session-event 原样透传，渲染层看不懂
+           seq 语义。这里转成专用帧 compaction（phase 区分三段）；start/end 只带
+           阶段与错误文本，summary 才带摘要正文与被压缩的统计。 */
+        emit('compaction', { phase: 'start' })
+        return
+      case 'compaction/summary': {
+        const d = ev.data || {}
+        const seqs = Array.isArray(d.shadowedSeqs) ? d.shadowedSeqs : []
+        const sid = String(n.params.sessionId == null ? '' : n.params.sessionId)
+        const u = d.usage || {}
+        const num = (v) => (Number.isFinite(Number(v)) ? Math.max(0, Number(v)) : 0)
+        emit('compaction', {
+          phase: 'summary',
+          text: contentBlocksText(d.summary),
+          shadowedCount: seqs.length,
+          shadowedTokenCount: num(d.shadowedTokenCount),
+          provider: String(d.provider || ''),
+          model: String(d.model || ''),
+          usage: {
+            inputTokens: num(u.inputTokens),
+            outputTokens: num(u.outputTokens),
+            cacheReadTokens: num(u.cacheReadTokens),
+            reasoningTokens: num(u.reasoningTokens),
+          },
+          tools: compactionToolsOf(sid, seqs),
+        })
+        return
+      }
+      case 'compaction/end': {
+        const d = ev.data || {}
+        const err = d.error == null ? '' : String(d.error).slice(0, 500)
+        emit('compaction', err ? { phase: 'end', error: err } : { phase: 'end' })
+        return
+      }
       default:
         /* 全量透传其余会话事件(permission/preset、approval/* 等)。
            steer 的插话回流(再收到一条 agent/inbox/spliced)与 pause 的 aborted 收尾

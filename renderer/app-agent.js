@@ -1260,6 +1260,101 @@ function tokMergeRun(owner, metrics, opts) {
   tokBalanceRefresh(owner);
   if (typeof renderSessionFooterStat === "function") renderSessionFooterStat();
 }
+/* 上下文压缩（手动 / 自动）单独入账一条「上下文压缩」轮次（本次需求 · 任务 5/8）。
+ * 与 tokMergeRun 的关键差别：**不碰 owner._tokLive / _tokLiveRound** —— 压缩常常发生在
+ * 会话运行途中，tokMergeRun 收尾会把在途台账整份清空，踩掉正在跑那一轮的实时数字。
+ * 这里只做三件事：合计（rounds / 起止时刻 / 墙钟）、按模型桶（provider / model + usage）、
+ * roundList 一条明细（标题固定「上下文压缩」）。手动压缩传压缩轮 metrics（可带 models），
+ * 自动压缩传网关 summary 帧的 usage + provider / model。
+ * opts：{ provider, model, usage, startedAt, endedAt, wallMs, rid }；rid 给定时幂等去重。 */
+function tokAddCompactionRound(owner, metrics, opts) {
+  if (!owner) return null;
+  opts = opts || {};
+  const r = tokReportEnsure(owner);
+  if (!r) return null;
+  if (!Array.isArray(r.roundList)) r.roundList = [];
+  const src =
+    metrics && Array.isArray(metrics.models) && metrics.models.length
+      ? metrics.models
+      : (() => {
+          const usage = (opts.usage || (metrics && metrics.usage) || metrics || {});
+          const row = Object.assign({}, usage);
+          row.provider =
+            opts.provider || (metrics && metrics.provider) || row.provider || "";
+          row.model = opts.model || (metrics && metrics.model) || row.model || "";
+          return [row];
+        })();
+  /* 一次压缩没报回任何用量就不立账（避免多一条 0 tok 的空轮次） */
+  const hasTok = src.some((m) =>
+    TOK_FIELDS.some((f) => f !== "images" && tokNum(m && m[f]) > 0),
+  );
+  if (!hasTok) return null;
+  const startedAt =
+    tokNum(opts.startedAt) || tokNum(metrics && metrics.startedAt) || Date.now();
+  const endedAt =
+    tokNum(opts.endedAt) || tokNum(metrics && metrics.endedAt) || Date.now();
+  const rid = String(opts.rid || "") || "compact:" + tokOwnerId(owner) + ":" + endedAt;
+  if (Array.isArray(r.roundList) && r.roundList.some((x) => x && x.rid === rid)) return null;
+  const byModel = {};
+  let sumLlm = 0;
+  let sumTool = 0;
+  for (const m of src) {
+    const key = tokKey(m.provider, m.model);
+    const b = r.byModel[key] || (r.byModel[key] = tokBucketNew(m.provider, m.model));
+    const rb = byModel[key] || (byModel[key] = tokBucketNew(m.provider, m.model));
+    for (const f of TOK_FIELDS) {
+      b[f] = tokNum(b[f]) + tokNum(m[f]);
+      rb[f] = tokNum(rb[f]) + tokNum(m[f]);
+    }
+    for (const f of TOK_SUM_FIELDS) {
+      b[f] = tokNum(b[f]) + tokNum(m[f]);
+      rb[f] = tokNum(rb[f]) + tokNum(m[f]);
+    }
+    const ncalls = tokNum(m.calls) || 1;
+    b.calls += ncalls;
+    rb.calls += ncalls;
+    b.llmMs += tokNum(m.llmMs);
+    rb.llmMs += tokNum(m.llmMs);
+    b.toolMs += tokNum(m.toolMs);
+    rb.toolMs += tokNum(m.toolMs);
+    if (endedAt > 0) b.at = endedAt;
+    rb.at = endedAt;
+    sumLlm += tokNum(m.llmMs);
+    sumTool += tokNum(m.toolMs);
+  }
+  const wallMs = tokNum(opts.wallMs) || tokNum(metrics && metrics.wallMs) || 0;
+  const title = I18n.t("上下文压缩");
+  const rec = {
+    rid: rid,
+    runKey: String(opts.runKey || "compact"),
+    title: title,
+    titleFrom: "",
+    at: startedAt,
+    endedAt: endedAt,
+    turns: 0,
+    steps: 0,
+    subagents: 0,
+    jobs: 0,
+    wallMs: wallMs,
+    llmMs: tokNum(metrics && metrics.llmMs) || sumLlm,
+    toolMs: tokNum(metrics && metrics.toolMs) || sumTool,
+    maxCtx: 0,
+    byModel: byModel,
+  };
+  r.rounds += 1;
+  r.llmMs += rec.llmMs;
+  r.toolMs += rec.toolMs;
+  r.wallMs += wallMs;
+  if (!r.startedAt) r.startedAt = startedAt;
+  r.lastAt = Math.max(tokNum(r.lastAt), endedAt);
+  r.roundList.push(rec);
+  r.roundSeq = tokNum(r.roundSeq) + 1;
+  tokPersist(owner);
+  tokBadgeTouch(owner, true);
+  tokBalanceRefresh(owner);
+  if (typeof renderSessionFooterStat === "function") renderSessionFooterStat();
+  return rec;
+}
 /* 一轮次的逐模型数据源：metrics.models 优先，其次在途轮次桶，再次在途模型桶 */
 function tokRoundSrc(owner, metrics, runKey) {
   if (metrics && Array.isArray(metrics.models) && metrics.models.length) return metrics.models;

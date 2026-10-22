@@ -632,6 +632,10 @@ const INSTALL_API_CHANNELS = {
      宿主自己上报步骤；换目录仍走它的 pickInstallDir（没有目录时弹系统目录框）。 */
   paseoRemoteInstall: "paseoRemote:install",
   paseoRemotePickInstallDir: "paseoRemote:pickInstallDir",
+  /* Blender 本地插件（kind blender）：宿主主导安装（下载 / 校验 / 解压 / addon / MCP 行 / 冒烟），
+     步骤表真源 blender/steps.json；换目录走它自己的 pickInstallDir。 */
+  blenderInstall: "blender:install",
+  blenderPickInstallDir: "blender:pickInstallDir",
   appPluginsInstall: "appPlugins:install",
   petInstall: "pet:install",
   /* 「复制日志」的稳路：主窗口 preload 上那条写剪贴板的桥（electron clipboard，不过渲染层权限闸）。
@@ -1005,6 +1009,14 @@ const UNINSTALL_SPECS = {
   "minimax-music3": { label: "MiniMax Music 3", stop: "music3:stop", custom: { preview: "music3:uninstallPreview", run: "music3:uninstall" }, keepHint: "output/ 里的音频输出保留。" },
   "minimax-h3": { label: "MiniMax H3 视频生成", stop: "h3:stop", custom: { preview: "h3:uninstallPreview", run: "h3:uninstall" }, keepHint: "output/ 里的渲染产物保留。" },
   remotion: { label: "Remotion 动效视频" },
+  /* Blender 本地插件：按共识「卸载 = 连 Blender 安装目录一起删」，还要撤 MCP 行、删 addon、
+     留着 userpref 备份与本机 uv —— 只有它自己的卸载口知道这些，所以走 custom。 */
+  "blender-local": {
+    label: "Blender 本地插件",
+    stop: "blender:stop",
+    custom: { preview: "blender:uninstallPreview", run: "blender:uninstall" },
+    keepHint: "userpref 备份（<数据目录>/blender-backup）、本机已装的 uv、你的 .blend 工程文件一律保留。",
+  },
   /* Paseo 手机接管：它自己的卸载口更懂删什么 —— 自建 npm 依赖 + 配置 / 日志 + 自建 daemon home
      （配对密钥）；本机已装的 Paseo Desktop 与 ~/.paseo 一律不碰。所以走 custom 而不是通用删目录。 */
   "paseo-remote": {
@@ -1035,6 +1047,7 @@ const BACKEND_ID_ALIASES = {
   remotion: "remotion",
   /* Paseo 手机接管：卡片 / 报错总线报的是 kind（paseo），安装窗用的是目录 id（paseo-remote） */
   paseo: "paseo-remote",
+  blender: "blender-local",
 };
 
 /** 认得出是不是「需目录的本地后端插件」（认不出 = 窗口插件 / 未知 id）。 */

@@ -476,6 +476,28 @@
   background: var(--code);
 }
 
+/* ── 视频预览（原生播放器，与图片同一套居中容器） ── */
+.fp-vidwrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  max-width: 100%;
+  max-height: 100%;
+  padding: 10px;
+}
+
+.fp-video {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  min-width: 0;
+  background: #000;
+  border: 1px solid var(--bd2);
+  border-radius: 4px;
+  outline: none;
+}
+
 /* ── Markdown 渲染视图：版式复用应用内阅读器的 .md-viewer-doc ── */
 .fp-scroll.fp-vmd {
   display: block;

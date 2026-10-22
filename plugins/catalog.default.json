@@ -121,6 +121,23 @@
       }
     },
     {
+      "id": "blender-local",
+      "kind": "blender",
+      "handler": "blender",
+      "order": 75,
+      "version": "1.0.0",
+      "minAppVersion": "1.6.0",
+      "icon": "blender-local.png",
+      "title": {
+        "zh": "Blender 本地插件",
+        "en": "Blender Local"
+      },
+      "subtitle": {
+        "zh": "【插件测试中】让 Agent 直接操作 Blender：从官方 download.blender.org 取最新稳定版便携包（sha256 校验、断点续传）解到你选的目录，装上 mcp-for-blender addon 与 MCP 服务端，并把 MCP 写进 MTNode 的 MCP 配置——重启后 Agent 会话里就有 blender 工具。装完自动跑一次端到端冒烟（启 Blender → addon 端口 → MCP 握手）。已装即跳过、不自动升级；不碰你手开的 Blender。建议预留 ≥1.5GB 磁盘。",
+        "en": "[Testing] Let the agent drive Blender: fetch the latest stable portable build from the official download.blender.org (sha256 verified, resumable) into a folder you pick, install the mcp-for-blender addon and MCP server, and register the MCP entry in MTNode's MCP config — after a restart the agent session has blender tools. An end-to-end smoke runs at the end (launch Blender → addon port → MCP handshake). Existing installs are skipped, no auto-upgrade, and Blender you opened yourself is never touched. Reserve ≥1.5GB disk."
+      }
+    },
+    {
       "id": "paseo-remote",
       "kind": "paseo",
       "handler": "paseo",

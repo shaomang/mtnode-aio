@@ -2482,6 +2482,9 @@
       "This part is already folded into the summary: it no longer goes to the model context; click to read the original messages (the session and these records are all kept)",
     "确定压缩当前会话的上文？": "Compact the context of this session?",
     "压掉 {n} 条消息 · 原文约 {c} 字": "{n} messages compacted · about {c} characters of source text",
+    "这次压缩带走的工具调用 · {n} 次": "Tool calls taken by this compaction · {n}",
+    "按折组从被折消息里实时取，只读，不另存副本":
+      "Read live from the folded messages of this group (read-only, no stored copy)",
     "压缩上下文：把较早的对话收成一段摘要（会话保留，原文折起来仍可回看）":
       "Compact context: fold the earlier conversation into one summary (the session is kept and the original text stays readable when expanded)",
     "查看压缩摘要：看最近一次压缩产出的摘要全文":
@@ -2489,6 +2492,39 @@
     "还没有压缩记录：先点「压缩上下文」": "No compaction yet — click \"Compact context\" first",
     "复制这份摘要到剪贴板": "Copy this summary to the clipboard",
     "当前会话没有可压缩的消息": "No messages to compact in this session",
+    /* 自动压缩（任务 3/8）：轨迹 / 时间线上那条 k:'compact' 段与它的浮层 */
+    "自动压缩": "Auto compaction",
+    "自动压缩失败": "Auto compaction failed",
+    "上下文已自动压缩": "Context auto-compacted",
+    "上下文已自动压缩 · {n} 条": "Context auto-compacted · {n} messages",
+    "上下文已自动压缩 · {n} 条 · 原约 {t} tok":
+      "Context auto-compacted · {n} messages · about {t} tok originally",
+    "{n} 条消息": "{n} messages",
+    "原约 {t} tok": "about {t} tok originally",
+    "压掉 {n} 条消息": "{n} messages compacted",
+    "原文约 {t} tok": "about {t} tok of source text",
+    "点开查看这次压缩的摘要与被带走的工具调用":
+      "Open the summary of this compaction and the tool calls it took",
+    "这次自动压缩没有完成：上面是运行时给出的错误（不进 token 统计）":
+      "This auto compaction did not finish: the error above comes from the runtime (not counted in token stats)",
+    "这次压缩没有返回摘要正文": "This compaction returned no summary text",
+    "按这次压缩关联到的工具调用，只读":
+      "Tool calls associated with this compaction (read-only)",
+    /* 压缩浮层与折叠行（任务 4/8）：这次压缩自己消耗的 token、工具调用清单与其展开项 */
+    "压缩消耗 输入 {i} / 输出 {o} tok": "Compaction cost — input {i} / output {o} tok",
+    "工具调用 {n} 次": "{n} tool calls",
+    "点开看这次调用的入参 / 结果（各最多 2000 字）":
+      "Open this call's input / result (up to 2000 characters each)",
+    "入参：": "Input: ",
+    "结果：": "Result: ",
+    "（无结果）": "(no result)",
+    "（未记名）": "(unnamed)",
+    /* 压缩用量的短标签与被截断标记（任务 8/8）：词条成对出现，中文回显键本身。
+       截断标记同时用在压缩输入的工具行与浮层工具清单上（app-assist.js 的
+       agentCompactClip → AGENT_COMPACT_CLIP_MARK），所以「已截断」两档都留着。 */
+    "压缩消耗": "Compaction cost",
+    "已截断": "truncated",
+    "…（已截断）": "… (truncated)",
     "运行中不可压缩：请等待当前会话结束": "Cannot compact while running — wait for the current run to end",
     "会话视图不使用画布边栏：请在「画布」视图中查看节点列表":
       "The session view has no canvas sidebar — switch to the Canvas view to browse nodes",
@@ -3543,7 +3579,7 @@
     /* 设置 · 智能能力 · 上下文压缩（写进 cordis.yml 的 compaction-basic 行，见 dsh-compact-policy.js） */
     "上下文压缩": "Context compaction",
     /* 档位文案口径 = 「档位名 · 上下文阈值」两截，不写解释性长句（三处入口共用） */
-    "省钱 · 100k": "Frugal · 100k",
+    "低 · 150k": "Low · 150k",
     "中 · 300k": "Medium · 300k",
     "晚 · 450k": "Late · 450k",
     "自定义": "Custom",
@@ -3989,8 +4025,6 @@
     "已在独立窗口": "in its own window",
     /* 无窗口（headless）那只：会话自动拉起的默认形态（开发 / 会话过程中不弹真窗口） */
     "无窗口运行": "running windowless",
-    "这只是无窗口（后台）浏览器，画面就在这里；想要真窗口点上面那枚「用真窗口打开」（会温和重开成带窗口的）。":
-      "This browser runs windowless in the background — the picture is right here; for a real window click \"Open in a real window\" above (it reopens with a window).",
     "已在独立窗口操作；点「收回」回到右栏。": "It is in its own window — operate it there, or click \"Dock back\" to return it to the right panel.",
     "暂停画面更新（重新打开即恢复）": "Pause the picture (resume by clicking again)",
     "已收回：画面回到会话右边栏。": "Docked back: the picture is in the session's right panel again.",
@@ -5881,6 +5915,13 @@
     "跟随当前画布工作目录（只读）": "Follows this canvas working directory (read-only)",
     "运行中已锁定工作目录，切换画布也不会更改":
       "Working directory is locked for this run; switching canvases will not change it",
+    /* ── 会话工作目录「创建即冻结」（本次需求）：失效只提示、不改字段 ── */
+    "（已失效）": " (invalid)",
+    "这条会话锁定的工作目录已不存在（被删或项目搬家）：会话字段不改，本轮起改用应用默认目录；要换目录请在输入区的工作目录里自己选。":
+      "The working directory this session locked no longer exists (deleted or the project moved). The session field is left untouched and this run uses the app default directory instead; pick a new directory in the working-directory field if you want a different one.",
+    "⚠ 目录失效": "⚠ dir invalid",
+    "这条会话锁定的工作目录已不存在（被删或项目搬家）：会话字段不改，本轮起改用应用默认目录。要换目录请在输入区的工作目录里自己选":
+      "The working directory this session locked no longer exists (deleted or the project moved). The session field is left untouched and this run uses the app default directory instead; pick a new directory in the working-directory field to change it",
     /* ── 工作区真源（运行与显示同一口径）：手填 > 画布项目根 > 画布目录 / 默认 ── */
     "手填指定": "set by hand",
     "画布项目根（开发节点 devPath）": "canvas project root (dev node devPath)",
@@ -5890,14 +5931,18 @@
       "This canvas declares several project roots — using the first one. To pick another, set devPath on the top-level module block or type a working directory by hand.",
     "本画布有开发节点但尚未设置项目根：在顶层功能块设 devPath 后，工作目录会优先用它。":
       "This canvas has dev nodes but no project root yet: set devPath on the top-level module block and the working directory will prefer it.",
-    "跟随当前画布：项目根优先，其次画布工作目录":
-      "Follows this canvas: project root first, then the canvas working directory",
-    "跟随当前画布（项目根优先，只读）":
-      "Follows this canvas (project root first, read-only)",
-    "留空 = 画布项目根 / 画布工作目录…":
-      "Leave empty = canvas project root / canvas working directory…",
-    "助手可读写此目录下的文件；留空则用画布项目根 / 画布工作目录":
-      "The assistant reads/writes files in this directory; leave empty to use the canvas project root / canvas working directory",
+    "跟随所属画布":
+      "Follows the canvas this session belongs to",
+    "跟随所属画布（本画布未配目录，用应用默认目录）":
+      "Follows the canvas this session belongs to (this canvas has no directory — using the app default directory)",
+    "留空 = 跟随所属画布（项目根 / 画布工作目录）…":
+      "Leave empty = follow the canvas this session belongs to (project root / canvas working directory)…",
+    "助手可读写此目录下的文件；留空则跟随所属画布（项目根 / 画布工作目录）":
+      "The assistant reads/writes files in this directory; leave empty to follow the canvas this session belongs to (project root / canvas working directory)",
+    "这条助手会话还没有绑定画布：下一次发送时绑定当时的画布，此后固定不变":
+      "This assistant session has no canvas yet: the next message binds it to the canvas shown then, and it stays fixed after that",
+    "画布身份取本会话所属画布（不是你此刻看着的那张）；选中 / 焦点属于那张图，本轮不给。范围=全局时仍可按需传 canvas 读其他画布。":
+      "The canvas identity here is the canvas this session belongs to (not the one on your screen); selection / focus belong to that other canvas and are omitted this turn. With scope set to global you can still pass canvas to read others.",
     "生效工作目录：": "Effective working directory: ",
     "来源：本轮开轮时锁定": "Source: locked at the start of this run",
     "点击可改选其它目录（手填优先于画布项目根）":
@@ -9252,7 +9297,14 @@
     "只读预览这条正文（要看全 / 临时看一眼用，改内容走「编辑文本」）":
       "Read-only preview of this body (for a full or quick look; use “Edit text” to change it)",
     "预览图像内容 · {name}": "Preview image · {name}",
+    "预览视频内容 · {name}": "Preview video · {name}",
     "预览文本内容 · {name}": "Preview text · {name}",
+    "这段视频播不了（容器或编码不受支持，或文件读不到）：可用「在资源管理器中显示」交给外部播放器":
+      "This video cannot be played here (unsupported container/codec, or the file cannot be read) — use “Show in File Explorer” and open it in an external player",
+    "这段视频播不了（容器或编码不受支持）：用「打开原文件」看":
+      "This video cannot be played here (unsupported container/codec) — use “Open original file”",
+    "这段视频播不了（容器或编码不受支持，或文件读不到）：可用「打开原文件」交给外部播放器":
+      "This video cannot be played here (unsupported container/codec, or the file cannot be read) — use “Open original file” to hand it to an external player",
     "这条内容还没有实体文件": "This content item has no file on disk yet",
     "读取失败：": "Read failed: ",
     /* 条目行的行内预览 + 悬停浮层（renderer/app-assets.js · 素材库右栏与素材设置框共用） */
@@ -12957,6 +13009,23 @@
     "本机显存不足": "Not enough VRAM on this machine",
     "本机显存不足，未显示该插件（本机 {reading} · 需要 ≥{need}G）":
       "Hidden: not enough VRAM on this machine (machine {reading} · needs ≥{need}G)",
+
+    /* ── 节点设置：字段说明收进「?」（本轮）；参数严格校验 / 参数说明 ── */
+    "参数严格校验": "Strict parameter validation",
+    "勾选后：参数 JSON 里出现未知键 / 类型不符时整个节点不运行并报错，而不是逐键回退":
+      "When checked, an unknown key or a type mismatch in the parameter JSON rejects the whole payload and the node does not run (instead of falling back key by key).",
+    "未接线：运行时按本窗的值": "Not wired: a run uses the values in this dialog",
+    "PDF 生成": "PDF generation",
+    "这颗节点还没有随包带来的中间产物。":
+      "This node has no bundled intermediate artifacts yet.",
+    "保存到工作流库时会按「中间产物规则」从它的工作目录收集（remotion 的合成代码直接从节点字段带走）。\n\n描述指纹一致时运行直接复用这份产物、不再调用模型；描述改过则自动带着它重生成，新文件写进当前画布的产物目录。":
+      "Saving to the workflow library collects them from the node's working directory by the intermediate-artifact rules (remotion's composition code is taken straight from the node field).\n\nWhen the description fingerprint matches, a run reuses the artifact without calling the model; when the description changed it regenerates along with the node, and the new file goes into the current canvas's artifact folder.",
+    "运行时在提示词末尾自动补一句官方口径的续写声明（Continue seamlessly from <Video N> …），告诉模型这一路参考视频就是上一段的续写起点。自己已经写过类似要求时可以关掉。\n\nR2V（多参考）：衔接会占用一路参考视频（上限 3 路，连满时顶掉最后一路 V3），提示词按 <Video N> 引用这一路。":
+      "Appends an official continuation sentence (Continue seamlessly from <Video N> …) to the end of the prompt at runtime, telling the model this reference video is where the previous segment continues. Turn it off if you already wrote something similar.\n\nR2V (multi-reference): continuation takes one reference-video slot (max 3; when full it evicts the last V3 slot) and the prompt refers to it as <Video N>.",
+    "流式超分的分块大小（像素）；显存只跟它有关，512 适合 16G 机器，0 = 后端默认 512。\n\n逐帧分块流式超分：常驻内存只与一个分块有关，与视频时长无关，16G 机器也能跑 15 秒级视频；4K（长边 3840）输出不再受内存限制。":
+      "Block size for streaming upscale (pixels); VRAM depends only on it — 512 suits a 16G machine, 0 = backend default 512.\n\nFrame-by-frame block streaming upscale: resident memory depends on one block only, not on video length, so a 16G machine can handle 15-second videos; 4K (long edge 3840) output is no longer memory-bound.",
+    "低精度 fp16 省显存，16G 机器也能跑 15 秒片；关闭后按更高精度跑，更快但更吃显存。\n\n逐帧流式补帧：常驻内存只与相邻两帧有关，与视频时长无关，16G 机器也能跑 15 秒级视频；4x 倍率同样不再受内存限制，只是耗时更长。":
+      "Low-precision fp16 saves VRAM: a 16G machine can still do 15-second clips; off runs at higher precision — faster but hungrier.\n\nFrame-by-frame streaming interpolation: resident memory depends only on two adjacent frames, not on video length, so a 16G machine can handle 15-second videos; 4x is likewise no longer memory-bound, just slower.",
   });
 
   function listJoin(arr) {

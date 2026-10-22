@@ -272,6 +272,15 @@ function nodeKindHiddenByVram(kind) {
 }
 
 const HEAD = 28;
+/* 「参数」端子的端子号（哨兵值，**不是** 0..inputCount-1 里的顺序端口）：
+   参数端子固定排在输入端最末位，而 proc_text / proc_image 这类动态端子节点的
+   顺序端口会随连线增减 —— 若让它参与顺序编号，参数线会跟着别的线一起漂号。
+   用一个远大于任何真实端子数的常量当身份：既有连线一个都不动，老画布零迁移。
+   判定 / 合并 / 套用在 renderer/app-node-params.js（NParam 的唯一真源）。 */
+const PARAM_IN_INDEX = 9001;
+function isParamWire(w) {
+  return !!w && !w.rel && Number(w.toIndex) === PARAM_IN_INDEX;
+}
 const PORT_R = 5;
 /* 相邻端子间距 = 直径 + 间隙；间隙与端子半径一致（15 = 10 + 5） */
 const PORT_STEP = PORT_R * 3;
@@ -1804,6 +1813,23 @@ function nodeParentTaskId(n) {
 function nodeParentSuperId(n) {
   return (n && n.parentSuperId) || "";
 }
+/** n 是否就是 superId 这颗壳 / 嵌在它内部（含多层嵌套）：判定「外部节点」的唯一口径。
+    展开壳层允许外部连线直接落到内侧输入端子，所以必须先分清源到底在壳外还是壳内
+    （壳内子节点的输出不能倒着接回本壳的输入端子 —— 那是回路）。 */
+function nodeInsideSuper(n, superId) {
+  if (!n || !superId) return false;
+  if (n.id === superId) return true;
+  let sid = nodeParentSuperId(n);
+  const seen = new Set();
+  while (sid && !seen.has(sid)) {
+    if (sid === superId) return true;
+    seen.add(sid);
+    const host = nodeById(sid);
+    if (!host) return false;
+    sid = nodeParentSuperId(host);
+  }
+  return false;
+}
 function markParentTaskId(m) {
   return (m && m.parentTaskId) || "";
 }
@@ -2167,17 +2193,31 @@ function wireOpenSuperHost(w, from, to) {
 }
 function ensureSuperWiresSvg(stage) {
   if (!stage) return null;
-  let svg = stage.querySelector(":scope > svg.super-wires");
+  /* 连线 SVG 必须挂进 .super-stage-viewport，而不是舞台本身：
+     视口带 translate(innerPan) 且自身有 position + z-index → 它自成层叠上下文，
+     放在它外面的 svg（哪怕 z-index 更高）也只能整层压在视口**下面**，于是壳内每一根
+     接线都被子节点卡片盖住（用户报的「节点层展开时接线被压在节点下方」）。
+     挂进视口后壳内层级与主画布同构：节点卡片 z2 < 连线 z3 < 展开的内层壳 z50
+     （见 canvas.css 的 .super-stage-viewport>.wf-node / .super-wires / .super-open），
+     内层壳仍压住外层连线，旧口径不回退。
+     线的坐标仍是舞台坐标（superStageLocalOut/In 已把 pan 加进去），所以给 svg 反向
+     平移同样的 pan，把视口的平移抵消掉 —— 几何一处都不用改。 */
+  const vp = stage.querySelector(":scope > .super-stage-viewport");
+  const layer = vp || stage;
+  let svg = layer.querySelector(":scope > svg.super-wires");
   if (!svg) {
+    /* 旧版把 svg 直接挂在舞台上：留着会画出两份，先清掉再往视口里建 */
+    const stale = stage.querySelector(":scope > svg.super-wires");
+    if (stale) stale.remove();
     svg = document.createElementNS(svgNS, "svg");
     svg.classList.add("super-wires");
     svg.setAttribute("aria-hidden", "true");
-    const vp = stage.querySelector(":scope > .super-stage-viewport");
-    if (vp) stage.insertBefore(svg, vp);
-    else stage.insertBefore(svg, stage.firstChild);
+    layer.appendChild(svg);
   }
   const hostEl = stage.closest(".wf-node");
   const host = hostEl && nodeById(hostEl.dataset.nid);
+  const pan = superInnerPan(host);
+  svg.style.transform = "translate(" + -pan.x + "px," + -pan.y + "px)";
   const fallbackW = host ? Math.max(80, superDisplaySize(host).w - 20) : 80;
   const fallbackH = host ? Math.max(120, superDisplaySize(host).h - 56) : 120;
   const w = Math.max(1, stage.clientWidth || fallbackW);
@@ -3217,11 +3257,28 @@ function wireKeepsSuperBoundary(w) {
   if (to.kind === "super" && nodeParentSuperId(from) === to.id) return true;
   return nodeParentSuperId(from) === nodeParentSuperId(to);
 }
+/** 同一口径，但按「指定的画布对象」判（读档迁移时那张图还没进 S.wf）。 */
+function wireKeepsSuperBoundaryIn(wf, w) {
+  const nodes = (wf && wf.nodes) || [];
+  const from = nodes.find((n) => n && n.id === (w && w.from));
+  const to = nodes.find((n) => n && n.id === (w && w.to));
+  if (!from || !to) return false;
+  if (from.kind === "super" && nodeParentSuperId(to) === from.id) return true;
+  if (to.kind === "super" && nodeParentSuperId(from) === to.id) return true;
+  return nodeParentSuperId(from) === nodeParentSuperId(to);
+}
 function pruneInvalidSuperBoundaryWires() {
   if (!S.wf || !Array.isArray(S.wf.wires)) return 0;
   const before = S.wf.wires.length;
   S.wf.wires = S.wf.wires.filter((w) => wireKeepsSuperBoundary(w));
   return before - S.wf.wires.length;
+}
+/** 读档 / 迁移时的静默清理：历史脏线（跨层野线）不提示、不打断，直接剪掉。 */
+function pruneInvalidSuperBoundaryWiresIn(wf) {
+  if (!wf || !Array.isArray(wf.wires)) return 0;
+  const before = wf.wires.length;
+  wf.wires = wf.wires.filter((w) => w.rel || wireKeepsSuperBoundaryIn(wf, w));
+  return before - wf.wires.length;
 }
 /* 拖拽单元：把「选中集里某颗壳的后代」从独立拖拽名单里剔掉（任意深度的壳，展开 / 收起都算）。
    壳被拖动时，内部节点本来就该跟着壳走 —— 展开壳是 DOM 内嵌跟随，收起壳的坐标本来就在
@@ -4081,10 +4138,15 @@ function inferMediaFromSource(from, fromIndex) {
     if (v && v.kind === "audio") return "audio";
     if (v && v.kind === "video") return "video";
   }
-  /* 工具 / 函数节点：按真正接出来的那个端子取值；普通节点仍只看 0 号端子 */
+  /* 工具 / 函数节点与节点层（super 壳）：按真正接出来的那个端子取值 ——
+     壳的每一颗对外输出端子对应壳内一条汇入线，取 0 号端子会把「壳的第 2 个输出是图」
+     判成壳的第 1 个输出（下游图像端子因此收到文本）。普通节点仍只看 0 号端子（行为逐字不变）。 */
+  const perPort =
+    isFnToolNode(from) ||
+    (typeof isSuperLikeNode === "function" && isSuperLikeNode(from));
   const v = valueForInput(
     from,
-    isFnToolNode(from) ? Number(fromIndex || 0) : 0,
+    perPort ? Number(fromIndex || 0) : 0,
   );
   if (v && v.kind === "image") return "image";
   if (v && v.kind === "audio") return "audio";
@@ -6959,16 +7021,29 @@ function wireFromIsControl(w, wf) {
   /* 其余（多输入生成节点 / 递归隧穿）：统一走「该节点这个输出口会不会发控制」 */
   return nodeEmitsControlOnPort(from, w.fromIndex, wf, new Set());
 }
-/* 数据输入（不含控制节点连入的指挥线；关系线不参与数据流） */
+/* 数据输入（不含控制节点连入的指挥线；关系线不参与数据流）
+   「参数」端子上的线不算内容输入：它只在运行时覆写配置（见 app-node-params.js）——
+   混进 wiresTo / allWiresTo 会让「第一个来源」变成参数节点、动态端子数也跟着变，
+   所以在这里一次剔除。要读参数线用 NParam.paramWires(node)。
+   ⚠ 判定写成内联的端子号比较而不是调 isParamWire()：这两个函数常被冒烟单独切出来跑
+   （test/smoke-global-refs.js、smoke-fn-array-param.js 的 vm 沙箱里没有 isParamWire）。 */
 function wiresTo(id) {
+  const npIdx = typeof PARAM_IN_INDEX === "number" ? PARAM_IN_INDEX : 9001;
   return S.wf.wires
-    .filter((w) => w.to === id && !w.rel && !wireFromIsControl(w))
+    .filter(
+      (w) =>
+        w.to === id &&
+        !w.rel &&
+        Number(w.toIndex) !== npIdx &&
+        !wireFromIsControl(w),
+    )
     .sort((a, b) => a.toIndex - b.toIndex);
 }
-/* 全部输入连线（含控制线，用于端子占位；关系线不占端子） */
+/* 全部输入连线（含控制线，用于端子占位；关系线与参数线不占顺序端子） */
 function allWiresTo(id) {
+  const npIdx = typeof PARAM_IN_INDEX === "number" ? PARAM_IN_INDEX : 9001;
   return S.wf.wires
-    .filter((w) => w.to === id && !w.rel)
+    .filter((w) => w.to === id && !w.rel && Number(w.toIndex) !== npIdx)
     .sort((a, b) => a.toIndex - b.toIndex);
 }
 function hasOutput(n) {
@@ -11539,12 +11614,32 @@ function inPos(n, i, peer, wire) {
       y: p.y + o.oy + superSinkLocalY(n, Number(wire.toIndex || 0)),
     };
   }
+  /* 展开壳层：外侧输入端子整排隐藏（css .super-open>.port），外部来线改画到舞台里
+     那颗内侧输入端子（.super-inner-bridge）上 —— 否则线尾会停在壳的左边框、与端子错位
+     （展开态允许外部节点直接连进这颗端子，见 mouseup 的落点判定）。 */
+  if (wire && n && n.kind === "super" && !link && superIsOpenShell(n)) {
+    const src = nodeById(wire.from);
+    if (src && !nodeInsideSuper(src, n.id)) {
+      const p0 = nodeWorldPos(n);
+      const o = superInnerOrigin(n);
+      return {
+        x: p0.x + o.ox + 5 + PORT_R,
+        y: p0.y + o.oy + superBridgeLocalY(n, Number(i) || 0),
+      };
+    }
+  }
   const p = nodeWorldPos(n);
   const sz = nodeDrawSize(n);
   const hNode = Object.assign({}, n, { h: sz.h, w: sz.w });
+  /* 参数端子（哨兵端子号）：位置 = 排在现有全部输入端子之后的那一颗，
+     与 app-canvas.js 里渲染这颗端子用的是同一处计算（NParam.portY）。 */
+  const y =
+    Number(i) === PARAM_IN_INDEX && typeof NParam === "object" && NParam
+      ? NParam.portY(hNode)
+      : inPortY(hNode, i, inputCount(n));
   return {
     x: p.x + PORT_OFF + NODE_BORDER,
-    y: p.y + inPortY(hNode, i, inputCount(n)) + NODE_BORDER,
+    y: p.y + y + NODE_BORDER,
   };
 }
 function wirePathAB(ax, ay, bx, by) {
@@ -15304,15 +15399,17 @@ function displayValueOf(src, consumer) {
       return { image: r.output.path, title: src.title };
     return null;
   }
-  /* 用户插件节点：出端口的值存在 node.outputPaths（执行时写），第 i 出端口给第 i 个输出 */
-  if (typeof isPluginKind === "function" && isPluginKind(node)) {
-    const paths = node.outputPaths && typeof node.outputPaths === "object" ? node.outputPaths : {};
-    const list = (pluginNodeDef(node) || { outputs: [] }).outputs || [];
+  /* 用户插件节点：出端口的值存在 outputPaths（执行时写），第 i 出端口给第 i 个输出。
+     本函数形参名是 src（不是 node）—— 这里曾误写成 node，在严格模式下任何一路「取不到值」的
+     输入都会抛 ReferenceError（remotion / 智能节点的输入收集全走它，整颗节点随之跑不起来）。 */
+  if (typeof isPluginKind === "function" && isPluginKind(src)) {
+    const paths = src.outputPaths && typeof src.outputPaths === "object" ? src.outputPaths : {};
+    const list = (pluginNodeDef(src) || { outputs: [] }).outputs || [];
     const port = list[Math.max(0, Number(idx) || 0)];
     const raw = port ? paths[port.id] : "";
-    if (port && port.kind === "image" && raw) return { image: String(raw), title: node.title };
+    if (port && port.kind === "image" && raw) return { image: String(raw), title: src.title };
     const txt = raw == null ? "" : String(raw);
-    if (txt) return { text: txt, title: node.title };
+    if (txt) return { text: txt, title: src.title };
     return null;
   }
   return null;
@@ -17468,9 +17565,18 @@ function cutPortWires(node, side, idx) {
     rem = S.wf.wires.filter((w) => {
       if (w.rel) return false;
       if (side === "bridge") {
-        if (w.from !== node.id || Number(w.fromIndex || 0) !== i) return false;
-        const to = nodeById(w.to);
-        return !!(to && nodeParentSuperId(to) === node.id);
+        if (w.from === node.id && Number(w.fromIndex || 0) === i) {
+          const to = nodeById(w.to);
+          return !!(to && nodeParentSuperId(to) === node.id);
+        }
+        /* 展开壳层：外部节点可以直接连到这颗内侧输入端子上（to = 宿主、来源在壳外），
+           它和桥接线同属一颗端子 —— 右键切这颗端子时一起切掉。壳内子节点 → 宿主
+           是「汇流」线（内侧输出），端子号空间相同，必须按来源分清，不能误删。 */
+        if (w.to === node.id && Number(w.toIndex || 0) === i) {
+          const from = nodeById(w.from);
+          return !!(from && nodeParentSuperId(from) !== node.id);
+        }
+        return false;
       }
       if (w.to !== node.id || Number(w.toIndex || 0) !== i) return false;
       const from = nodeById(w.from);
@@ -17479,6 +17585,9 @@ function cutPortWires(node, side, idx) {
     if (!rem.length) return 0;
     pushHistory();
     removeSuperInnerPortWires(node, side, i);
+    /* removeSuperInnerPortWires 只清「宿主 → 子节点」的内侧线；展开壳层里外部连进这颗
+       输入端子的线要在这里补一刀（rem 全是本端子上的线，按引用过滤即可） */
+    S.wf.wires = S.wf.wires.filter((w) => !rem.includes(w));
     clearDownstream(node.id);
     return rem.length;
   }
@@ -17503,6 +17612,10 @@ function cutPortWires(node, side, idx) {
       for (const w of S.wf.wires) {
         if (w.rel || w.to !== node.id) continue;
         const n = Number(w.toIndex || 0);
+        /* 参数端子用哨兵端子号（PARAM_IN_INDEX），不参与顺序端口的左移补位 ——
+           否则切掉 0 号端子会把参数线挪成 9000，参数就此失效。
+           常量在文件顶部定义；冒烟会单独切出本函数跑，所以带一份同值兜底。 */
+        if (n === (typeof PARAM_IN_INDEX === "number" ? PARAM_IN_INDEX : 9001)) continue;
         if (n > i) w.toIndex = n - 1;
       }
     }
@@ -21704,10 +21817,17 @@ function bindCanvas() {
       d.mx = ev.clientX;
       d.my = ev.clientY;
       if (!d.moved && wireDragMoved(d, ev)) d.moved = true;
-      /* 反向拖线（输入端→输出端）时悬停目标为 .port.out，否则为 .port.in */
-      const selCls = d.fromInput ? ".port.out" : ".port.in";
+      /* 反向拖线（输入端→输出端）时悬停目标为 .port.out，否则为 .port.in。
+         正向拖线还接受**展开节点层的内侧输入端子**（.super-inner-bridge）：壳展开时
+         外侧端子整排隐藏（css .super-open>.port），这颗桥端子就是它露在外面的输入端子，
+         外部节点的输出线可以直接瞄它（落点判定见 mouseup 同名分支）。 */
+      const selCls = d.fromInput
+        ? ".port.out"
+        : d.superInnerBridge
+          ? ".port.in"
+          : ".port.in, .port.out.super-inner-bridge";
       document
-        .querySelectorAll(selCls + ".hover")
+        .querySelectorAll(".port.hover")
         .forEach((p) => p.classList.remove("hover"));
       const el = document.elementFromPoint(ev.clientX, ev.clientY);
       let port = el && el.closest ? el.closest(selCls) : null;
@@ -21774,16 +21894,50 @@ function bindCanvas() {
         }
       } else {
         let port = el && el.closest ? el.closest(".port.in") : null;
-        if (!port) port = portHitAt(ev.clientX, ev.clientY, ".port.in");
+        /* 展开节点层：外侧输入端子不渲染（css .super-open>.port），舞台里那颗
+           .super-inner-bridge 就是本壳的输入端子 —— 外部节点拖过来的线允许直接落在它上面，
+           落点 = 该壳对应的输入端子号（内侧桥接线再把这路数据送进子节点）。 */
+        if (!port && el && el.closest) {
+          port = el.closest(".port.out.super-inner-bridge");
+        }
+        if (!port) {
+          port = portHitAt(
+            ev.clientX,
+            ev.clientY,
+            ".port.in, .port.out.super-inner-bridge",
+          );
+        }
         if (port) {
           const toId = port.dataset.node;
           const toNode = nodeById(toId);
           const fromNode = nodeById(fromId);
           if (fromBridge) {
             if (!toNode || nodeParentSuperId(toNode) !== fromId) {
-              toast(I18n.t("内侧输入端子只能连接到节点层内部的节点"), "warn");
+              /* 没真拖动就松开（在端子本身上点一下）= 取消，不提示 */
+              if (movedDrag)
+                toast(I18n.t("内侧输入端子只能连接到节点层内部的节点"), "warn");
             } else {
               connect(fromId, toId, Number(port.dataset.idx), fromIndex);
+            }
+          } else if (port.classList.contains("super-inner-bridge")) {
+            /* 外部 → 展开壳的内侧输入端子：源必须在壳外（壳内子节点倒接回本壳输入 = 回路） */
+            if (
+              toNode &&
+              toNode.kind === "super" &&
+              superIsOpenShell(toNode) &&
+              !nodeInsideSuper(fromNode, toId)
+            ) {
+              connect(
+                fromId,
+                toId,
+                Number(port.dataset.fromIndex || 0),
+                fromIndex,
+              );
+            } else if (movedDrag) {
+              toast(
+                I18n.t("只能把外部节点的连线接到展开节点层的输入端子上"),
+                "warn",
+              );
             }
           } else if (
             port.classList.contains("super-inner-sink") &&
@@ -21817,8 +21971,18 @@ function bindCanvas() {
             el.closest(".wf-node") &&
             el.closest(".wf-node").dataset.nid !== fromId
           ) {
+            /* 落在展开节点层的壳里却不在端子上：壳的输入端子已经搬到舞台左缘（外侧那排
+               隐藏了），提示要指名道姓，否则用户会一直去瞄左边框 */
+            const dropHost = nodeById(el.closest(".wf-node").dataset.nid);
             toast(
-              I18n.t("线头没落在端子上：请把线拖到目标节点的输入端子上再松开"),
+              I18n.t(
+                dropHost &&
+                  dropHost.kind === "super" &&
+                  superIsOpenShell(dropHost) &&
+                  !nodeInsideSuper(nodeById(fromId), dropHost.id)
+                  ? "节点层已展开：请把线拖到它左侧的内侧输入端子上再松开"
+                  : "线头没落在端子上：请把线拖到目标节点的输入端子上再松开",
+              ),
               "warn",
             );
           }
@@ -31020,6 +31184,14 @@ function setForegroundWf(wf) {
      见 app-teamview.js 的 teamViewOnCanvasSwitch / teamViewBeginCanvasSwitch。 */
   if (switching && typeof teamViewOnCanvasSwitch === "function")
     teamViewOnCanvasSwitch();
+  /* 助手会话按画布隔离（bug 修复：助手栏过去只有一条会话，切画布它就跟着漂过去）：
+     前台画布一换就把助手栏重绑到**这张画布**那条助手会话；这张还没有 → 回空白态，
+     下次发送才建新的一条并绑在本画布（见 app-assist.js 的 assistRebindToCanvas）。 */
+  if (switching && typeof assistRebindToCanvas === "function") {
+    try {
+      assistRebindToCanvas();
+    } catch (_) {}
+  }
   return wf;
 }
 /* ── 画布视图记忆（切 Tab 不弹回根画布）──
@@ -31749,10 +31921,12 @@ function migrateWf(wf) {
         }
         wf.wires = wf.wires.filter((w) => w !== descWire);
       }
-      /* 描述端子没了：其余入线一律左移 1（0、1、2… 连续），端口号即「第几条输入」 */
+      /* 描述端子没了：其余入线一律左移 1（0、1、2… 连续），端口号即「第几条输入」
+         （参数端子的哨兵端子号不参与左移，见 PARAM_IN_INDEX） */
       for (const w of wf.wires) {
         if (!w || w.rel || w.to !== n.id) continue;
         const i = Number(w.toIndex || 0);
+        if (i === (typeof PARAM_IN_INDEX === "number" ? PARAM_IN_INDEX : 9001)) continue;
         if (i >= 1) w.toIndex = i - 1;
       }
       n.remotionPortsV2 = 1;
@@ -32215,7 +32389,10 @@ function migrateWf(wf) {
   wf.groups = wf.groups.filter(
     (g) => (g.nodeIds && g.nodeIds.length) || (g.markIds && g.markIds.length),
   );
-  return videoPortMigrated || shellBridgeFilled; /* true = 发生了视频端口 / 壳内桥接迁移，调用方应立即落盘 */
+  /* 跨节点层硬规则：历史脏线（层内节点直接连到层外）静默剪掉 —— 硬闸只拦新线，
+     老图上已经存在的野线必须在这里收口，否则「打开就是错的」。不提示、不打断。 */
+  const layerPruned = pruneInvalidSuperBoundaryWiresIn(wf);
+  return videoPortMigrated || shellBridgeFilled || layerPruned > 0; /* true = 发生迁移，调用方应立即落盘 */
 }
 
 async function ensureWorkflow() {

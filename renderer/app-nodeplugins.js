@@ -168,7 +168,12 @@ function registerPluginNodeSettings(def) {
         }
         if (el) {
           const lab = pluginLabelOf(p.label) || p.id;
-          ctx.field(pluginLabelOf(p.desc) ? lab + " · " + pluginLabelOf(p.desc) : lab, el);
+          /* 插件声明的字段说明收进标题右侧的「?」，不再把 desc 拼进标签文字 */
+          ctx.field(
+            lab,
+            el,
+            pluginLabelOf(p.desc) ? { tip: pluginLabelOf(p.desc) } : null,
+          );
         }
       }
       const hint = document.createElement("div");

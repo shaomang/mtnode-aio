@@ -11,6 +11,7 @@
  *   · resolveToolPath(p, baseWs)    相对路径 → 生效工作区下的绝对路径（纯词法归一）
  *   · fileviewLangOf(path)          扩展名 → 语言 id（认不出返回 ""）
  *   · fileviewIsImagePath(path)     是否图片扩展名
+ *   · fileviewIsVideoPath(path)     是否视频容器扩展名（面板里交给 <video> 直接播）
  *   · fileviewBaseName / fileviewExtOf   路径拆名（徽标正文与面板头部共用）
  *   · fileviewPathIsOpenable(p)     是否「能直接喂给 fileStat / fileReadText」的绝对路径
  *   · fileviewHighlight(code, lang) 代码 → <span class="jsl-*"> 高亮 HTML
@@ -359,7 +360,15 @@ const FV_NAME_LANG = {
   XDEFAULTS: "ini",
 };
 
-const FV_IMAGE_EXT = FV_SET(["png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "svg", "avif", "tiff", "tif"]);
+/* jfif = Windows 上很常见的 JPEG 变体（后缀不同、字节就是 jpeg），一并当图片看 */
+const FV_IMAGE_EXT = FV_SET(["png", "jpg", "jpeg", "jfif", "gif", "webp", "bmp", "ico", "svg", "avif", "tiff", "tif"]);
+
+/* 视频容器后缀。能不能解出某个编码是 Chromium 的事（mp4/webm 稳，mov/mkv 看编码），
+   这里只负责**分流**：认出来就交给 <video> 直连 file:// 流式播，不再落到文本那条 8MB 闸上 ——
+   闸只该管「要整份读进渲染层的文本」，媒体由浏览器的媒体栈自己按需取字节。 */
+const FV_VIDEO_EXT = FV_SET([
+  "mp4", "m4v", "webm", "ogv", "mov", "mkv", "avi", "wmv", "flv", "mpeg", "mpg",
+]);
 
 function fileviewLangOf(p) {
   const base = fileviewBaseName(p);
@@ -374,6 +383,11 @@ function fileviewLangOf(p) {
 function fileviewIsImagePath(p) {
   const ext = fileviewExtOf(p);
   return !!ext && FV_IMAGE_EXT.has(ext);
+}
+
+function fileviewIsVideoPath(p) {
+  const ext = fileviewExtOf(p);
+  return !!ext && FV_VIDEO_EXT.has(ext);
 }
 
 /* ============================================================
@@ -1805,6 +1819,12 @@ async function loadFilePeek() {
     renderFilePeekImage();
     return;
   }
+  if (fileviewIsVideoPath(abs)) {
+    /* 视频与图片同一条口径：不读字节、不设体积上限，交给媒体栈按需取（见 FV_VIDEO_EXT 注释）。
+       必须排在下面那道 8MB 文本闸之前 —— 否则一只 200MB 的成片会被当成「文件过大」拒掉。 */
+    renderFilePeekVideo();
+    return;
+  }
   if (FV_PEEK.size > FV_PEEK_HARD_BYTES) {
     FV_PEEK.note =
       I18n.t("文件过大（") + fvFmtBytes(FV_PEEK.size) + I18n.t("），预览上限 ") +
@@ -1995,6 +2015,50 @@ function renderFilePeekImage() {
     renderFilePeekNote();
   };
   wrap.appendChild(img);
+  scroller.appendChild(wrap);
+  renderFilePeekHead();
+  renderFilePeekNote();
+}
+
+/* 视频：内嵌原生播放器，src 直连 file://（流式按需取，不预读字节、不转码）。
+   preload 只取元数据 —— 几百 MB 的成片打开面板那一刻不该整份灌进内存；
+   解码不了的容器 / 编码由 onerror 老实说一句，而不是笼统的「文件过大」。 */
+function renderFilePeekVideo() {
+  const host = document.getElementById("filePeek");
+  FV_PEEK.view = "video";
+  const scroller = host.querySelector("#fpScroll");
+  scroller.innerHTML = "";
+  scroller.className = "fp-scroll fp-vimg";
+  const wrap = document.createElement("div");
+  wrap.className = "fp-vidwrap";
+  const v = document.createElement("video");
+  v.className = "fp-video";
+  v.controls = true;
+  v.preload = "metadata";
+  v.playsInline = true;
+  v.title = FV_PEEK.path;
+  v.src = fvPeekImgUrl(FV_PEEK.path, FV_PEEK.req);
+  v.onerror = () => {
+    FV_PEEK.note = I18n.t(
+      "这段视频播不了（容器或编码不受支持，或文件读不到）：可用「在资源管理器中显示」交给外部播放器",
+    );
+    renderFilePeekNote();
+  };
+  /* 元数据到手就补上分辨率与时长 —— 与图片头部的「宽×高」同一个位置 */
+  v.onloadedmetadata = () => {
+    if (FV_PEEK.view !== "video" || FV_PEEK.path !== v.title) return;
+    const bits = [];
+    if (v.videoWidth && v.videoHeight) bits.push(v.videoWidth + "×" + v.videoHeight);
+    const dur = Number(v.duration);
+    if (isFinite(dur) && dur > 0) {
+      const s = Math.round(dur);
+      bits.push(Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0"));
+    }
+    if (!bits.length) return;
+    FV_PEEK.dims = bits.join(" · ");
+    renderFilePeekMeta();
+  };
+  wrap.appendChild(v);
   scroller.appendChild(wrap);
   renderFilePeekHead();
   renderFilePeekNote();
@@ -2316,7 +2380,15 @@ function fileviewOwnerWorkspace(ownerId) {
     }
     if (!ws && id !== "assist" && typeof agentSessionById === "function") {
       const st = agentSessionById(id);
-      if (st && typeof agentRunWorkspace === "function") ws = String(agentRunWorkspace(st) || "");
+      /* 助手会话的基准目录只有一个真源：**所属画布**现算（app-assist.js assistWorkspaceInfo，
+         与助手栏输入框 / 每轮快照 / 运行链路同一个函数）。不走 agentRunWorkspace ——
+         那条链先认 st.workspace，而助手会话上那份往往是老版本「创建即冻结」留下的快照
+         （常常就是应用默认文件夹），认它就等于把目录冻在某一版画布上。 */
+      if (st && st.assist && typeof assistWorkspaceInfo === "function") {
+        ws = String((assistWorkspaceInfo(st) || {}).path || "");
+      } else if (st && typeof agentRunWorkspace === "function") {
+        ws = String(agentRunWorkspace(st) || "");
+      }
     }
   } catch (_) {
     ws = "";

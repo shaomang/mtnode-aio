@@ -8,7 +8,7 @@
  *     ＋「浏览…」手动选目录；默认画布工作目录；选择按画布记忆（S.wf.sideFiles）。
  *   · 树：递归懒加载（展开文件夹才读盘，一层一个 file:readDir）；显示点号隐藏文件，
  *     但 node_modules / .git 只列不自动展开。
- *   · 预览：md / 文本 / 图像行右侧「预览」字样，点击复用已有右侧面板 openFilePeek；
+ *   · 预览：md / 文本 / 图像 / 视频行右侧「预览」字样，点击复用已有右侧面板 openFilePeek；
  *     单击只选中，双击文件名 = 预览（目录 = 展开 / 收起）。Ctrl / Shift 多选。
  *   · 文件操作：右键菜单 重命名 / 复制 / 剪切 / 删除 / 在资源管理器中显示 / 复制完整路径，
  *     页头小工具条 刷新 / 粘贴。重命名是树内行内编辑（Enter 提交 / Esc 取消），
@@ -32,6 +32,10 @@ const SF_IMAGE_EXT = new Set([
 const SF_MEDIA_EXT = new Set([
   "mp3", "wav", "ogg", "flac", "m4a", "aac", "opus", "wma",
   "mp4", "mov", "webm", "mkv", "avi", "m4v", "flv",
+]);
+/* 视频：右侧文件面板现在内嵌原生播放器（不设体积上限），所以文件栏也给它「预览」入口 */
+const SF_VIDEO_EXT = new Set([
+  "mp4", "m4v", "webm", "ogv", "mov", "mkv", "avi", "wmv", "flv", "mpeg", "mpg",
 ]);
 const SF_TEXT_EXT = new Set([
   "md", "markdown", "txt", "text", "log", "json", "jsonc", "yaml", "yml", "toml",
@@ -92,9 +96,14 @@ function sfIsImagePath(p) {
   if (typeof fileviewIsImagePath === "function") return !!fileviewIsImagePath(p);
   return SF_IMAGE_EXT.has(sfExtOf(p));
 }
-/* 需求口径：md / 文本 / 图像才给「预览」字样 */
+/* 与 app-fileview.js 的 fileviewIsVideoPath 同口径：桥在就委托，缺席时用本地表 */
+function sfIsVideoPath(p) {
+  if (typeof fileviewIsVideoPath === "function") return !!fileviewIsVideoPath(p);
+  return SF_VIDEO_EXT.has(sfExtOf(p));
+}
+/* 需求口径：md / 文本 / 图像 / 视频给「预览」字样（视频由面板里的原生播放器承接） */
 function sfPreviewable(p) {
-  return sfIsImagePath(p) || sfIsTextLike(p);
+  return sfIsImagePath(p) || sfIsVideoPath(p) || sfIsTextLike(p);
 }
 /* 类型筛选格：全部 / 文本 / 图像 / 媒体 / 其他 */
 function sfTypeBucket(p) {

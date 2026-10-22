@@ -1723,6 +1723,79 @@ function tracePush(runKey, kind, txt, ev) {
     items.push(cit);
     return cit;
   }
+  if (kind === "compact") {
+    /* 自动压缩（任务 3/8）：网关的 compaction 帧按 phase 分三拍到达，同一次压缩共用
+       一个段 —— start 起行（「正在压缩上文…」），summary 就地补统计与摘要正文，
+       end 只负责收口（带 error 时另起一条失败段）。
+       本段**不参与正文拼接**（dshMsgSegsViewable 只认 say / err），压缩失败也不写进
+       会话正文：它是过程记录，不是模型的答复。 */
+    const phase = String(e.phase || "");
+    const lastCompact = () => {
+      for (let i = items.length - 1; i >= 0; i--) {
+        const x = items[i];
+        if (x && x.k === "compact") return x;
+      }
+      return null;
+    };
+    const prevC = lastCompact();
+    if (phase === "summary") {
+      /* 摘要落在 start 那个段上（没有 start 就自建一条：老网关 / 丢帧时也留得下） */
+      const it =
+        prevC && prevC.phase !== "error" && prevC.phase !== "summary"
+          ? prevC
+          : null;
+      const target =
+        it ||
+        (() => {
+          const n = { k: "compact", text: "", step, callId: "", at: atNow, phase: "start" };
+          items.push(n);
+          return n;
+        })();
+      target.phase = "summary";
+      target.text = String(e.text || "");
+      target.shadowedCount = Math.max(0, Number(e.shadowedCount) || 0);
+      target.shadowedTokenCount = Math.max(0, Number(e.shadowedTokenCount) || 0);
+      target.provider = String(e.provider || "");
+      target.model = String(e.model || "");
+      target.usage = e.usage && typeof e.usage === "object" ? e.usage : null;
+      target.tools = Array.isArray(e.tools) ? e.tools : [];
+      traceCloseSay(tr);
+      return target;
+    }
+    if (phase === "end") {
+      const err = String(e.error || "");
+      if (!err) {
+        if (prevC && prevC.phase !== "error") prevC.doneAt = atNow;
+        return prevC || null;
+      }
+      traceCloseSay(tr);
+      /* 只起了头就失败（没有摘要）：把那条「正在压缩上文…」就地改成失败行 ——
+         不留下一条永远转不动的进行中行，也不并出两条。 */
+      if (prevC && prevC.phase === "start") {
+        prevC.phase = "error";
+        prevC.text = err;
+        prevC.doneAt = atNow;
+        return prevC;
+      }
+      const n = {
+        k: "compact",
+        text: err,
+        step,
+        callId: "",
+        at: atNow,
+        phase: "error",
+        doneAt: atNow,
+      };
+      items.push(n);
+      return n;
+    }
+    /* phase = start（以及没有 phase 的兜底帧）：同一次压缩重复到达只起一行 */
+    if (prevC && prevC.phase === "start" && !prevC.doneAt) return prevC;
+    traceCloseSay(tr);
+    const it = { k: "compact", text: "", step, callId: "", at: atNow, phase: "start" };
+    items.push(it);
+    return it;
+  }
   if (kind === "tool") {
     if (callId && tr._calls[callId]) return null;
     if (callId) tr._calls[callId] = 1;
@@ -1877,6 +1950,40 @@ function traceSegmentsOf(runKey) {
       out.push({ k: "tool", step: it.step, callId: it.callId || "", round, at });
       continue;
     }
+    /* 自动压缩段（任务 3/8）：无正文的阶段（start / end）也要落盘，否则重启后
+       「这次压缩过」这件事就没了；摘要正文与统计照实际有值才写。 */
+    if (it.k === "compact") {
+      let ctext = String(it.text || "");
+      if (ctext) {
+        if (budget <= 0) ctext = "";
+        else if (ctext.length > budget) {
+          ctext = ctext.slice(0, budget);
+          budget = 0;
+        } else budget -= ctext.length;
+      }
+      const c = {
+        k: "compact",
+        step: it.step,
+        round,
+        at,
+        phase: String(it.phase || "start"),
+      };
+      if (ctext) c.text = ctext;
+      if (Number(it.shadowedCount) > 0) c.shadowedCount = Number(it.shadowedCount);
+      if (Number(it.shadowedTokenCount) > 0)
+        c.shadowedTokenCount = Number(it.shadowedTokenCount);
+      if (it.provider) c.provider = String(it.provider);
+      if (it.model) c.model = String(it.model);
+      if (it.usage && typeof it.usage === "object") c.usage = it.usage;
+      if (Array.isArray(it.tools) && it.tools.length)
+        c.tools = it.tools.slice(0, 20).map((t) => ({
+          name: String((t && t.name) || ""),
+          result: String((t && t.result) || "").slice(0, 500),
+        }));
+      if (Number(it.doneAt) > 0) c.doneAt = Number(it.doneAt);
+      out.push(c);
+      continue;
+    }
     let text = String(it.text || "");
     if (!text) continue;
     if (it.k !== "think") {
@@ -1932,6 +2039,11 @@ function traceFeedEvent(runKey, type, d) {
     /* 工具准备态（本次需求 · 对齐上游 preparing 阶段）：参数还在流进来时先占一行卡片，
        显示「正在准备内容 N KB」。同一个 callId 会被多次刷新，只更新那一项、不新起段。 */
     tracePush(runKey, "tool-prep", "", e);
+  } else if (type === "compaction") {
+    /* 自动压缩（任务 3/8）：网关把 compaction/start · summary · end 转成专用帧
+       compaction（phase 区分三段，见 dsh/gateway/gateway.mjs 的 mapNotification）。
+       它落成一条 k:'compact' 的过程段，随 m.segments 一起落盘 —— 重启后仍可回看。 */
+    tracePush(runKey, "compact", "", e);
   } else if (type === "error") {
     if (e.message) tracePush(runKey, "err", String(e.message), e);
   } else if (type === "session-event") {
@@ -2975,12 +3087,21 @@ function dshRunTask(input, opts) {
    工作区、数据库接地就整轮漂到那张图上（本轮改动全落错地方）。现在归属真源只有一个：
    会话创建时绑下的 canvasWfId（app-assist.js），按 id 解析回画布对象见 app.js
    wfOfCanvasIdForRun（前台 → 内存袋 → 读盘，画布已删直接抛明确错，绝不漂）。
-   解析不到归属的三类运行照旧跟着用户看到的画布：全局助手（范围另由 applyAssistScope
-   决定）、裸节点运行（节点本就活在前台画布上）、以及没有 canvasWfId 的老会话 ——
-   后者在本轮就地补绑一次并落盘，从下一轮起它就是稳定真源。 */
+   解析不到归属的运行才跟着用户看到的画布：裸节点运行（节点本就活在前台画布上）、
+   以及没有 canvasWfId 的老会话 —— 助手会话同样在建立那一刻绑画布（不再现取前台），
+   所以它也不随切图漂；没有 canvasWfId 的老会话在本轮就地补绑一次并落盘，
+   从下一轮起它就是稳定真源。
+    助手那一轮（runKey "assist"）的归属 = 助手栏此刻绑定的那条会话，与快照 / 提示词 /
+    输入框 / 文件面板同一个真源（app-assist.js assistBoundSession + canvasWfId）。 */
 async function dshResolveRunBoundWf(opts) {
-  const sess =
+  /* 归属会话的唯一读法：runKey agent:<id> / planpar / 节点绑定会话，之外还有**助手那一轮**
+     （runKey 恒为 "assist"，agentSessionOfRun 认不出它）—— 助手栏那一轮同样是「一条会话在跑」，
+     它的所属画布只能问 assistBoundSession()，不能按 S.wf 现取。工具 / 数据库 / 工作区 /
+     画布事件路由因此与助手栏、会话视图、文件面板落在同一张图画布上。 */
+  let sess =
     typeof agentSessionOfRun === "function" ? agentSessionOfRun(opts) : null;
+  if (!sess && String((opts && opts.runKey) || "") === "assist" && typeof assistBoundSession === "function")
+    sess = assistBoundSession();
   const id = String((opts && opts.canvasWfId) || (sess && sess.canvasWfId) || "").trim();
   const cur =
     (typeof currentVisibleWf === "function" ? currentVisibleWf() : null) || S.wf || null;
@@ -2990,7 +3111,9 @@ async function dshResolveRunBoundWf(opts) {
         sess.canvasWfId = String(cur.id);
         /* 补绑的同时把当时的工作目录也冻结（本次需求 · 用户已确认的严格冻结口径）：
            老会话第一次开轮就地补绑画布，目录一并定下来；此后切画布不再变。
-           目录已经有值（手填 / 冻结过）→ 一个字不动。 */
+           目录已经有值（手填 / 冻结过）→ 一个字不动。助手会话只补绑、**不冻结**：
+           它的目录按所属画布现算（app-assist.js assistWorkspaceInfo），落成快照就等于
+           又回到「目录冻结在某一版画布上」的老口径。 */
         if (
           !sess.assist &&
           !String(sess.workspace || "").trim() &&
@@ -3283,11 +3406,20 @@ function dshRunOnce(input, opts) {
       if (ws && typeof pathIsExistingDir === "function") {
         if (!(await pathIsExistingDir(ws))) {
           await wipeMatchingWorkspaces(ws);
-          if (sessRun) sessRun._wsInvalid = true;
+          if (sessRun) {
+            sessRun._wsInvalid = true;
+            /* 失效标记要在会话行上看得见（这是本轮唯一的提示口，不弹 toast） */
+            try {
+              if (typeof renderAgentSessionSidebar === "function") renderAgentSessionSidebar();
+            } catch (_) {}
+          }
           ws = String(S.dshWorkspaceFallback || "").trim();
         } else if (sessRun && sessRun._wsInvalid) {
           /* 目录回来了（用户把项目搬回来 / 重新挂载）：警示标自动撤掉 */
           sessRun._wsInvalid = false;
+          try {
+            if (typeof renderAgentSessionSidebar === "function") renderAgentSessionSidebar();
+          } catch (_) {}
         }
       }
       return ws || S.dshWorkspaceFallback || "";
@@ -3945,7 +4077,10 @@ function dshRunOnce(input, opts) {
           }
           /* Token 消耗实时入账（按模型），会话末尾的报告 Badge 靠它增长；
              第三参带上本轮轮次归属与标题（在途轮次，收尾时转成正式明细） */
-          if (msg.type === "usage" && tokOwner && typeof tokLiveAdd === "function") {
+          /* 压缩轮（tokCompaction）不写实时台账：它与会话运行共用同一个 owner 与 runKey，
+             混进 _tokLive 会污染正在跑那一轮的实时数字，也会在那边收尾时被重复计一遍。
+             压缩的用量在 done 帧单独立一条「上下文压缩」轮次（见下方 tokAddCompactionRound）。 */
+          if (msg.type === "usage" && tokOwner && !opts.tokCompaction && typeof tokLiveAdd === "function") {
             try {
               tokLiveAdd(tokOwner, msg.data || {}, {
                 runKey: tokRoundKey,
@@ -4028,8 +4163,21 @@ function dshRunOnce(input, opts) {
                前后对比判定（任何一件任务跑完都响一声，最后一件也是它）—— 不在这条分支上，
                这里只负责收尾记账。 */
             const data = msg.data || {};
-            /* 一轮结束：把本次用量按模型并进所属会话的累计台账（并落一条逐轮明细） */
-            if (tokOwner && typeof tokMergeRun === "function") {
+            /* 一轮结束：把本次用量按模型并进所属会话的累计台账（并落一条逐轮明细）。
+               压缩轮走专用入账（tokAddCompactionRound）：标题固定「上下文压缩」，
+               且绝不调 tokMergeRun —— 后者会清空 owner._tokLive，压缩发生在运行中时
+               会把在途那一轮的实时台账踩掉。 */
+            if (tokOwner && opts.tokCompaction && typeof tokAddCompactionRound === "function") {
+              try {
+                tokAddCompactionRound(tokOwner, data.metrics, {
+                  startedAt: t0,
+                  endedAt: Date.now(),
+                  runKey: tokRoundKey,
+                  provider: opts.provider,
+                  model: opts.model,
+                });
+              } catch {}
+            } else if (tokOwner && typeof tokMergeRun === "function") {
               try {
                 tokMergeRun(tokOwner, data.metrics, {
                   startedAt: t0,
@@ -5547,7 +5695,10 @@ function agentHistoryEntries(st, opts) {
     const key = m.role + "\u0000" + txt;
     if (seenText[key]) continue;
     seenText[key] = 1;
-    rows.push({ role: m.role, text: txt });
+    /* opts.withMsg = 把源消息一并带出（压缩正文要按消息顺序把该条的 m.tools 插进去，
+       见 app-assist.js 的 agentCompactTurnsOf）：过滤 / 去重口径仍只在这一处，
+       调用方不必自己再走一遍 _fold / _src 判据。默认不带，返回值形状不变。 */
+    rows.push(opts.withMsg ? { role: m.role, text: txt, msg: m } : { role: m.role, text: txt });
   }
   let out = rows;
   const cap = Math.max(0, Number(opts.maxChars) || 4000);

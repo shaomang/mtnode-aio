@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>Blender 本地插件</title>
+    <link rel="stylesheet" href="ui.css" />
+  </head>
+  <body>
+    <header>
+      <div class="hdrow">
+        <div class="ttl">Blender 本地插件</div>
+        <button id="btn-close" class="mini" title="关闭控制台（不卸载、不删文件）">关闭</button>
+      </div>
+      <div class="sub">
+        官方 Blender + <span class="path">mcp-for-blender</span> addon + MCP 服务端。装完要重启 MTNode，Agent 会话里才会出现
+        <span class="path">blender</span> 工具；这里只启停「插件自己拉起的那个」Blender，你手开的实例不碰。
+      </div>
+    </header>
+
+    <main>
+      <section id="sec-state">
+        <h2>状态<span class="sp"></span><button id="btn-refresh" class="mini">刷新</button></h2>
+        <div id="state-body" class="body"></div>
+        <div class="btnrow">
+          <button id="btn-toggle" class="mini primary">启动 Blender</button>
+          <button id="btn-smoke" class="mini">测试连接</button>
+          <button id="btn-update" class="mini">检查更新</button>
+          <button id="btn-install" class="mini">安装 / 重装</button>
+          <button id="btn-reveal" class="mini">打开安装目录</button>
+        </div>
+      </section>
+
+      <section id="sec-deps">
+        <h2>依赖逐项</h2>
+        <div id="deps-body" class="body"></div>
+      </section>
+
+      <section id="sec-log">
+        <h2>日志<span class="sp"></span><button id="btn-clearlog" class="mini">清空</button></h2>
+        <pre id="log"></pre>
+      </section>
+
+      <section id="sec-danger">
+        <h2>卸载</h2>
+        <div class="body">
+          <p class="tip">
+            卸载会撤掉 MCP 配置、删掉 addon <b>并删掉 Blender 安装目录</b>；userpref 备份、本机已装的 uv、你的 .blend 工程文件保留。
+          </p>
+          <div class="btnrow"><button id="btn-uninstall" class="mini danger">卸载插件…</button></div>
+        </div>
+      </section>
+    </main>
+
+    <div id="toast" class="toast" hidden></div>
+    <script src="ui.js"></script>
+  </body>
+</html>

@@ -90,6 +90,7 @@ const META_KEYS = [
   "canvasFree",
   "noPlanFlow",
   "assist",
+  "assistRunOpen",
   "ltBound",
   "archived",
   "createdAt",

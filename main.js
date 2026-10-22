@@ -87,6 +87,10 @@ const { registerRemotionIpc, shutdownRemotionUiOnly } = require("./remotion/main
    配对二维码、把 MTNode 会话注册成 Paseo 的 ACP provider，并管住「远程连接」总开关。
    sessionGate 会被 mcp() 取用（会话族闸门），故这个 require 必须早于任何 mcp() 调用。 */
 const paseoRemote = require("./paseo/main-paseo.js");
+/* Blender 本地插件（应用插件 kind blender，id blender-local）：官方下载 + sha256 校验的便携包安装、
+   mcp-for-blender addon、把 MCP 行写进 dsh-home/cordis-user.yml、装完的端到端冒烟。
+   它不托管常驻后端：只有插件自己拉起的 Blender（冒烟 / 控制台点「启动」）算它的，退出时收掉。 */
+const blenderPlugin = require("./blender/main-blender.js");
 /* 本地语音转写（官方本地 SenseVoice，跑在 dsh 运行时里）：主进程只留「转写缓存 +
    音频读盘」这条小内核，识别本身走 dsh:speech 通道（见 speech-store.js 头部口径） */
 const { registerSpeechIpc } = require("./speech-store.js");
@@ -9431,6 +9435,15 @@ app.whenReady().then(() => {
     appRoot: __dirname,
     getMcp: () => mcp(),
   });
+  /* Blender 本地插件（应用插件 kind blender）：官方便携包安装 / addon / MCP 行 / 端到端冒烟。
+     Blender 只在「插件自己拉起的那个实例」活着时由插件管（冒烟完就关）；用户手开的实例不碰。 */
+  blenderPlugin.registerBlenderIpc({
+    getDataDir: DATA,
+    getMainWin: () => mainWin,
+    appRoot: __dirname,
+    /* MCP 行必须走 dsh 自己的注册口：直接改 cordis-user.yml 会被网关持久化的用户段冲掉。 */
+    getDsh: () => dsh(),
+  });
   /* 本地语音转写（官方本地 SenseVoice）：识别在 dsh 运行时里跑，主进程这一层只有
      「转写缓存 + 音频读盘」（见 speech-store.js）；不再有需要起停的 ASR 后端进程 */
   registerSpeechIpc({ getDataDir: DATA });
@@ -9589,6 +9602,9 @@ app.on("before-quit", () => {
      而且它不再有窗口可关）；复用模式（Paseo Desktop）与外部实例一律不动。收尾是「优雅 5 秒 →
      超时强杀」，且**不拦 MTNode 退出**：这里不 await，退出流程照常往下走，事件循环等管道自然收尾。 */
   try { paseoRemote.shutdownPaseoRemoteUiOnly(); } catch {}
+  /* Blender 本地插件：它不托管常驻后端，但**插件自己拉起的 Blender**（控制台「启动」/ 冒烟中途）
+     必须跟着收掉，否则会留一只没人管的窗口；用户自己开的 Blender 不在它的 pid 记录里，动不到。 */
+  try { blenderPlugin.shutdownBlenderUiOnly(); } catch {}
   /* 本地图像生成后端（SenseNova）故意不杀：32.66GB 权重加载要几分钟，是独立于 MTNode 的单例；
      这里只关它的控制台窗。想立刻把显存还给系统 → 控制台「停止后端」/「立即释放显存」，或等空闲自停。 */
   try { shutdownSensenovaUiOnly(); } catch {}

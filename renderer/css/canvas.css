@@ -254,6 +254,9 @@
 /* 层级口径（唯一真源，改这里之前先读全段）：
    普通节点 z2 < 连线层 z3（静止时线压在板面上）< 展开壳 z50
    < 拖起的节点 z60 < 拖起的壳 z65。
+   · 壳内同理，但连线层在 .super-stage-viewport **里面**（视口是层叠上下文）：壳内节点卡片
+     z2 < .super-wires z3 < 展开的内层壳 z50。所以内层壳照样压住外层连线，而普通卡片
+     不再盖住壳内接线。
    · 拖拽期间**不再**整体抬升连线层：早先 `.node-drag-active .fn-svg{z-index:60}` 会把全画布的线
      提到壳层之上 —— 用户的板子被展开的节点层挡住、它身上的线却浮在壳上面（「线浮在外面」）。
      现在线永远待在自己的层（主画布 z3 / 壳内 .super-wires z3），跟着节点一起被壳层遮住。
@@ -2662,6 +2665,9 @@ body.theme-light .n-chip.n-chip-lt {
   pointer-events: none;
 }
 
+/* 壳内连线层：挂在 .super-stage-viewport 里（见 app.js ensureSuperWiresSvg），
+   与主画布同构地夹在节点卡片（z2）与展开的内层壳（z50）之间。
+   svg 自带反向 translate(-innerPan)，把视口的平移抵消掉，线仍按舞台坐标绘制。 */
 .super-wires {
   position: absolute;
   left: 0;
@@ -2677,10 +2683,10 @@ body.theme-light .n-chip.n-chip-lt {
   pointer-events: stroke
 }
 
-/* 壳内层级：连线 svg z3 < 节点视口 z4。
-   视口是整个子画布的节点所在层，必须压在壳内连线之上 —— 否则「壳里再展开一层壳」时，内层壳
-   属于视口（当时 z2），会被外层壳的线（z3）盖出线来，正是「节点被挡住、线却浮在外面」。
-   根画布同理：线 z3 永远低于展开壳 z50，只有普通卡片在它下面。 */
+/* 壳内层级：节点卡片 z2 < 连线 z3 < 展开的内层壳 z50（与根画布一致）。
+   为什么视口必须自成层叠上下文：它带 translate(innerPan)，天然建上下文；连线因此只能
+   挂在视口**里面**才可能压过卡片 —— 挂在外面的 svg 整层被视口压住，正是「接线被压在
+   节点下方」。内层壳属于视口且在层级里到 z50，所以外层连线不会浮到它上面。 */
 .super-stage-viewport {
   position: absolute;
   left: 0;

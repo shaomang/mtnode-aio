@@ -29,8 +29,19 @@ async function assistAppSnapshot(opts) {
       ? "mtnode_app:install_dsh_plugin|remove_dsh_plugin|set_dsh_plugin"
       : null,
   ].filter(Boolean);
-  /* 画布计数直接取自内存对象：不调 canvasSnapshotFull、不序列化任何节点 */
-  const lwf = S.wf || {};
+  /* 画布计数直接取自内存对象：不调 canvasSnapshotFull、不序列化任何节点。
+     画布身份取**本会话所属画布**（bug 修复：过去取 S.wf，于是助手会话跟着切图换图）；
+     它和用户此刻看着的那张不是同一张时，选中 / 焦点属于另一张图，对这条会话没有意义。 */
+  const bst0 = typeof assistBoundSession === "function" ? assistBoundSession() : null;
+  const bwfId = bst0 ? String(bst0.canvasWfId || "") : "";
+  const bwf =
+    bwfId && typeof sessionCanvasWf === "function" ? sessionCanvasWf(bst0) : null;
+  /* 所属画布已不在内存（被删 / 还没加载）：只留身份，绝不退回前台那张顶替它 */
+  const fgWf =
+    typeof currentVisibleWf === "function" ? currentVisibleWf() : S.wf;
+  const lwf =
+    bwf || (bwfId ? { id: bwfId, name: typeof wfNameOfId === "function" ? wfNameOfId(bwfId) : "" } : fgWf || {});
+  const sameAsForeground = !bwfId || !S.wf || String(bwfId) === String(S.wf.id);
   const base = {
     view: S.view,
     locale: I18n.getLocale(),
@@ -107,25 +118,44 @@ async function assistAppSnapshot(opts) {
   };
   /* 画布摘要：只到「有哪张图、多大」这一级 —— 节点列表一个字段都不发。
      非 canvas-free 轮额外带上选中与焦点（仍是 id 量级）；canvas-free 轮整块不给。 */
+  /* 生效工作目录与会话所属画布同一真源（assistWorkspaceInfo：手填 > 该画布项目根 >
+     该画布工作目录 > 应用默认目录）：快照里给的是这一轮真正写文件的那个目录，
+     而不是画布上那个可能为空的 workspace 字段。 */
+  const aws =
+    typeof assistWorkspaceInfo === "function" ? assistWorkspaceInfo(bst0) : null;
+  const wsPath = aws ? String(aws.path || "") : String(lwf.workspace || "");
   const canvasSummary = {
     workflow: {
       id: lwf.id,
       name: lwf.name,
       nodeCount: (lwf.nodes || []).length,
-      workspace: lwf.workspace || "",
+      workspace: wsPath,
     },
+    workspaceSource: aws ? String(aws.source || "") : "",
     nodeCount: (lwf.nodes || []).length,
     wireCount: (lwf.wires || []).length,
     groupCount: (lwf.groups || []).length,
   };
   if (canvasFree) return Object.assign(base, canvasSummary);
-  return Object.assign(base, canvasSummary, {
-    selection: sel,
-    taskFocus:
-      (typeof currentTaskFocus === "function" ? currentTaskFocus() : S.taskFocus) || "",
-    superFocus:
-      (typeof currentSuperFocus === "function" ? currentSuperFocus() : S.superFocus) || "",
-  });
+  /* 会话所属画布 ≠ 前台画布：如实说清（用户切去别的图干活时，助手仍在自己那张上），
+     选中 / 焦点不跨图给 —— 它们描述的是前台那张图，给了就是错信息。 */
+  if (!sameAsForeground)
+    canvasSummary.scopeNote = I18n.t(
+      "画布身份取本会话所属画布（不是你此刻看着的那张）；选中 / 焦点属于那张图，本轮不给。范围=全局时仍可按需传 canvas 读其他画布。",
+    );
+  return Object.assign(
+    base,
+    canvasSummary,
+    sameAsForeground
+      ? {
+          selection: sel,
+          taskFocus:
+            (typeof currentTaskFocus === "function" ? currentTaskFocus() : S.taskFocus) || "",
+          superFocus:
+            (typeof currentSuperFocus === "function" ? currentSuperFocus() : S.superFocus) || "",
+        }
+      : {},
+  );
 }
 
 /* ── 「这轮任务跟画布有关吗」的唯一判据（本次开发需求：撤掉手动的「与画布无关」按钮，
@@ -304,6 +334,19 @@ function canvasWorkspaceDir() {
   }
 }
 
+/* 指定画布的工作目录（顶栏统一目录）：按**画布对象**读自己那个 workspace 字段，
+   不再只读 S.wf —— 会话所属画布不是用户此刻看到的画布时也要拿到它自己的目录。
+   留空 = 前台画布（等价于 canvasWorkspaceDir）。 */
+function canvasWorkspaceDirOf(wf) {
+  const canvas = wf || (typeof S !== "undefined" ? S.wf : null);
+  if (!canvas) return "";
+  try {
+    return String(canvas.workspace || "").trim();
+  } catch (_) {
+    return "";
+  }
+}
+
 /* 画布的项目根。单一真源 = app.js 的 devProjectRootOf()（顶层开发块优先、
    devPath 就近继承、多根先归并共同祖先，归并不了才标歧义并取文档序第一个）；
    这里只把它整理成 { path, roots, ambiguous, hasDevNodes } 供运行与显示共用。
@@ -398,15 +441,36 @@ function workspaceInfoNote(info) {
   return bits.join(" ");
 }
 
-/* 助手（右侧栏）生效工作区：手填 > 画布项目根 > 画布目录 > 默认目录。
-   「仅当前画布」范围下手填无效（输入框本就只读），仍跟随画布：项目根优先。 */
-function assistWorkspaceInfo() {
+/* 助手（右侧栏）生效工作区（本任务口径 · 跟随所属画布，每轮现算）：
+   手填 > 所属画布项目根 > 所属画布工作目录 > 应用默认目录（仅当画布两者都为空）。
+   「所属画布」= 助手会话绑定的那张图（assistSessionRecord 写进去的 canvasWfId）；
+   还没有会话（空白态）时按前台画布算，下一次发送才建会话。切画布即换目录，不冻结。 */
+function assistWorkspaceInfo(st) {
   const manual = String(S.assistWorkspace || "").trim();
   if (manual && !assistScopeIsCurrent())
     return { path: manual, source: "manual", root: null };
-  const root = canvasProjectRoot();
+  /* 所属会话：显式传进来的那条（文件面板 / 会话视图按自己的会话算）优先，
+     其次才是助手栏此刻绑定的那一条。 */
+  const bst =
+    st && st.assist
+      ? st
+      : typeof assistBoundSession === "function"
+        ? assistBoundSession()
+        : null;
+  /* 所属画布：会话绑了哪张就按哪张（那张图没加载时不退回前台，免得目录又跟着漂）；
+    会话还没绑画布 / 还没有会话时按前台画布。
+    注意：助手会话的 st.workspace **不参与**这里的优先级 —— 那是老版本「创建即冻结」
+    留下的快照（常常就是应用默认目录），继续认它就等于没修好本 bug；手填只认输入框
+    那一份 S.assistWorkspace。 */
+  const boundId = String((bst && bst.canvasWfId) || "").trim();
+  const wf = boundId
+    ? typeof sessionCanvasWf === "function"
+      ? sessionCanvasWf(bst)
+      : null
+    : S.wf;
+  const root = canvasProjectRoot(wf);
   if (root.path) return { path: root.path, source: "project", root };
-  const cw = canvasWorkspaceDir();
+  const cw = canvasWorkspaceDirOf(wf);
   if (cw) return { path: cw, source: "canvas", root };
   const fb = String(S.dshWorkspaceFallback || "").trim();
   if (fb) return { path: fb, source: "default", root };
@@ -417,10 +481,14 @@ function assistResolveWorkspace() {
   return String(assistWorkspaceInfo().path || "").trim();
 }
 
+/* 输入框里显示的生效目录：运行中显示开轮时锁定的那份（运行链路的真源），
+   否则按**当前助手会话的所属画布**现算 —— 与会话视图 / 文件面板 / 快照同一个函数，
+   不再各写一套「|| 兜底」。 */
 function assistDisplayWorkspace() {
   if (assistRunLocked() && S.assistRunWorkspace != null)
     return String(S.assistRunWorkspace || "");
-  return assistResolveWorkspace();
+  const bst = typeof assistBoundSession === "function" ? assistBoundSession() : null;
+  return String(assistWorkspaceInfo(bst && bst.assist ? bst : null).path || "").trim();
 }
 
 /* 会话运行 / 上文压缩的生效工作区（唯一真源）：
@@ -428,10 +496,8 @@ function assistDisplayWorkspace() {
    不再各处自写 || 兜底。
    「所属画布」= 会话自己那张图（canvasWfId），不是用户此刻看到的图：会话跑着的时候用户
    切去别的画布干活，工作目录不能跟着漂。
-   **助手会话是唯一例外**（bug 修复 · 与助手栏同一口径）：它按设计不绑画布（canvasWfId 恒空，
-   见 assistSessionRecord），若只走「手填 > 项目根 > 默认」三档，同一条会话在助手栏落在
-   画布工作目录、在会话视图却落进应用默认目录。所以给助手会话补「画布工作目录」这一档
-   （项目根仍优先，与助手栏 assistWorkspaceInfo 完全同序）；普通会话保持原三档，不跟着变。 */
+   **助手会话例外**（本次需求）：助手栏目录跟随**所属画布**现算、不冻结（见 assistWorkspaceInfo），
+   会话只按自己绑定的那张图解析，切画布即换目录；还没有助手会话（空白态）时才由助手栏按前台画布算。 */
 function sessionCanvasWf(st) {
   const id = st && st.canvasWfId;
   if (!id || typeof canvasWfByIdLoaded !== "function") return null;
@@ -441,13 +507,12 @@ function sessionCanvasWf(st) {
 function emptyProjectRoot() {
   return { path: "", roots: [], ambiguous: false, hasDevNodes: false };
 }
-/* 会话的项目根：只按它**自己所属的画布**解析。
-   · 助手会话（st.assist）是设计例外，按当前前台画布（与助手栏 assistWorkspaceInfo 同序）；
-   · 普通会话：所属画布不在内存时（重启后直接聊老会话、那张图还没加载）返回空根，
-     **绝不退回前台画布** —— 那正是「切画布会话目录跟着变、Agent 改错项目」的根因；
-     上层随后落应用默认目录，与「创建时冻结」同口径。 */
+/* 会话的项目根：只按它**自己所属的画布**解析（助手会话同样如此，没有例外）。
+   所属画布不在内存时（重启后直接聊老会话、那张图还没加载）返回空根，
+   **绝不退回前台画布** —— 那正是「切画布会话目录跟着变、Agent 改错项目」的根因；
+   上层随后落应用默认目录，与「创建时冻结」同口径。 */
 function canvasProjectRootOfSession(st) {
-  if (!st || st.assist) return canvasProjectRoot();
+  if (!st) return emptyProjectRoot();
   const wf = sessionCanvasWf(st);
   return wf ? canvasProjectRoot(wf) : emptyProjectRoot();
 }
@@ -461,16 +526,10 @@ function agentWorkspaceInfo(st) {
   }
   const manual = String((st && st.workspace) || "").trim();
   if (manual) return { path: manual, source: "manual", root: null };
-  /* 普通会话：项目根只按所属画布解析（canvasProjectRootOfSession 里已封住「退回前台」）。
-     助手会话：它没有所属画布，设计上按前台画布（项目根 > 画布工作目录），与助手栏同序。 */
+  /* 普通会话与助手会话同一口径：项目根只按所属画布解析（canvasProjectRootOfSession 里
+     已封住「退回前台」）。助手会话的所属画布 = 它建立时绑定的那张图。 */
   const root = canvasProjectRootOfSession(st);
   if (root.path) return { path: root.path, source: "project", root };
-  /* 助手会话（st.assist）：不绑画布，落到「当前前台画布的工作目录」—— 助手栏那条链
-     assistWorkspaceInfo 本来就认这一档，缺了它同一句话在两边会落进两个目录。 */
-  if (st && st.assist) {
-    const cw = canvasWorkspaceDir();
-    if (cw) return { path: cw, source: "canvas", root };
-  }
   const fb = String(S.dshWorkspaceFallback || "").trim();
   if (fb) return { path: fb, source: "default", root };
   return { path: "", source: "", root };
@@ -487,13 +546,15 @@ function agentRunWorkspace(st) {
    白名单里，重启不丢），此后画布怎么切、画布的 devPath 怎么改都不动它；唯一能改的入口
    是用户手动输入 / 选目录（agentSetSessionWorkspace）。
    · 已经有目录（调用方显式给的 / 应用开发页写的）→ 一个字不动；
-   · 助手会话不冻结（设计上跟随当前前台画布，见 agentWorkspaceInfo）；
+   · **助手会话不冻结**（本次需求）：它的目录按所属画布每轮现算（assistWorkspaceInfo），
+     这样才能「跟着当前画布路径、切换画布就换」；普通会话仍然创建即冻结；
    · 解析不出具体目录时锁应用默认目录；连默认目录都没有就留空，不编造路径。 */
 function agentFreezeSessionWorkspace(st) {
   if (!st) return "";
-  if (st.assist) return String(st.workspace || "");
   const cur = String(st.workspace || "").trim();
   if (cur) return cur;
+  /* 助手会话：目录不落成快照，交给 assistWorkspaceInfo 按所属画布现算 */
+  if (st.assist) return "";
   const p = String(agentWorkspaceInfo(st).path || "").trim() ||
     String(S.dshWorkspaceFallback || "").trim();
   if (p) st.workspace = p;
@@ -738,16 +799,22 @@ function syncAssistWorkspaceChrome() {
     if (!assistWsGuard) assistWsGuard = workspaceReadOnlyGuard(ws);
     assistWsGuard.lockKeys(locked || assistScopeIsCurrent());
     assistWsGuard.hint(I18n.t("双击直选文件夹，Ctrl+V 粘贴路径"));
+    /* 占位文案随真源走（本任务口径）：所属画布配了项目根 / 画布目录 → 「跟随所属画布」；
+       画布两者都没有、真正用的是应用默认目录时，才在占位里点名默认目录这个来源 ——
+       不再让「默认目录」冒充画布目录。 */
+    const followsCanvas = live.source === "project" || live.source === "canvas";
     ws.placeholder = assistScopeIsCurrent()
-      ? I18n.t("跟随当前画布：项目根优先，其次画布工作目录")
-      : I18n.t("留空 = 画布项目根 / 画布工作目录…");
+      ? followsCanvas
+        ? I18n.t("跟随所属画布")
+        : I18n.t("跟随所属画布（本画布未配目录，用应用默认目录）")
+      : I18n.t("留空 = 跟随所属画布（项目根 / 画布工作目录）…");
     if (runLock)
       ws.title = withNote(I18n.t("运行中已锁定工作目录，切换画布也不会更改"));
     else if (assistScopeIsCurrent())
-      ws.title = withNote(I18n.t("跟随当前画布（项目根优先，只读）"));
+      ws.title = withNote(I18n.t("跟随所属画布"));
     else
       ws.title = withNote(
-        I18n.t("助手可读写此目录下的文件；留空则用画布项目根 / 画布工作目录"),
+        I18n.t("助手可读写此目录下的文件；留空则跟随所属画布（项目根 / 画布工作目录）"),
       );
   }
   if (br) {
@@ -1241,7 +1308,7 @@ function syncAssistPresetOptions(sel) {
    都调它们，保证落盘 / 提示 / 侧控件同步只有一条链。 */
 
 /* 自定义档那一组数字填写的显示态（三处入口共用同一段口径）：
-   **只有「压缩开着 + 档位 = 自定义」才露出**（本次共识）—— 关闭 / 省钱 / 中 / 晚都不显示这些数，
+   **只有「压缩开着 + 档位 = 自定义」才露出**（本次共识）—— 关闭 / 低 / 中 / 晚都不显示这些数，
    那些档位一律按档位默认（见 app-dsh-compact.js 的生效函数与 dsh-compact-policy.js 的归一）。
    一组共三行：自定义触发线 + 保留原文 + 摘要上限；隐藏时输入框一并 disabled，键盘也够不到。
    宿主元素按 id 找（助手栏 #assistCompactCustom / #assistCompactRetainRow / #assistCompactSummaryRow；
@@ -1427,13 +1494,18 @@ function renderAssistPanel(opts) {
   if (!msgs.length && !liveRun) {
     const empty = document.createElement("div");
     empty.className = "assist-empty";
-    empty.textContent = scopeCurrent
-      ? I18n.t(
-          "当前工作范围是本画布。我能查看并修改当前画布节点与配置。\n可以说「总结画布」或「搭一个 xxx 工作流」。\n改节点图前会请你确认；要参考其他画布请把工作范围改为「全局」。\n（与画布无关的任务我会自动省掉画布工具，不占 token。）",
-        )
-      : I18n.t(
-          "我能看到当前画布、节点与配置，也可参考其他画布列表。\n可以说「总结画布」或「搭一个 xxx 工作流」。\n改节点图或删除画布前会请你确认。",
-        );
+    /* 空态与原生会话同一句主语（「选择一个工作区开始…」），后面只多一行本栏能力说明：
+       两处读起来是同一套话，助手栏不再自己另写一段长文案。 */
+    const main = document.createElement("p");
+    main.className = "assist-empty-main";
+    main.textContent = I18n.t("选择一个工作区开始，直接描述你要完成的任务。");
+    const note = document.createElement("p");
+    note.className = "assist-empty-note";
+    note.textContent = scopeCurrent
+      ? I18n.t("当前工作范围是本画布：我能查看并修改这张画布的节点与配置，改图前会先请你确认。")
+      : I18n.t("工作范围是全局：我能查看所有画布，也可参考其他画布；改图或删画布前会先请你确认。");
+    empty.appendChild(main);
+    empty.appendChild(note);
     list.appendChild(empty);
   }
   /* 消息逐条渲染（用户消息下方的「↶ 回滚」入口已随会话轮次回滚功能一并移除）。
@@ -1586,6 +1658,9 @@ function renderAssistPanel(opts) {
   fillAssistScopeControl();
   updateAssistScopeChrome();
   fillAssistModelControls();
+  /* 会话身份行 / chip 行 / 运行区折叠行（本次需求）：与上面那几行同一帧刷新 ——
+     面板重绘是本栏唯一的刷新时机，不再另起观察者。 */
+  assistPaintSessionChrome(bst);
   restoreConvStick(list, stickCap);
   if (typeof requestAnimationFrame === "function") {
     /* 折叠等事后高度变化：再按锚点还原一次（贴底滚到底，未贴底保持原位） */
@@ -1606,23 +1681,109 @@ function renderAssistPanel(opts) {
    · **先发才建**：清空只断开指针（S.assistSessionId = ""），左栏不出现空壳；
      用户发第一条消息时才创建会话并落库（共识 q7）。
    · **清空＝结束这条**：旧会话保留在左栏可回看，不删除、不归档（共识 q2）。
-   · **不绑画布**：助手是跨画布的，canvasWfId 恒为空，左栏显示「全局」（共识 q4）。
+   · **按画布隔离**（bug 修复：过去助手栏只有一条会话，切画布它就跟着漂到新画布；
+     切画布就等于换会话）：每张画布各一条助手会话，建立那一刻绑当时的画布；切画布由
+     app.js 的 setForegroundWf → assistRebindToCanvas 换成该画布那条或回空白态，
+     绝不把上一条带过去；左栏显示「▣ 画布名」；只有本次修复前建的老会话在补绑前才
+     如实显示「全局」，第一次在该画布发言时就地补绑。
    · **模型 / 预设 / 思考强度 / 纯净模式 / 先拷问需求全随会话**（st.preset / provider /
      model / effort / pure / grill）：创建时按助手栏当时的值播种，绑定时同步回显；
-     只剩「范围」与「工作目录」两枚是全局偏好（助手跨画布，这两档不跟某一条会话绑定，
-     范围在会话视图里以只读 chip 回显）。 */
+     只剩「范围」是全局偏好（范围决定这条会话能不能看别的画布，在会话视图里以只读
+     chip 回显）；工作目录随会话固化（见上一条）。 */
 function assistBoundSession() {
   const sid = String(S.assistSessionId || "");
-  return sid ? agentSessionById(sid) : null;
+  if (!sid) return null;
+  const st = agentSessionById(sid);
+  if (!st) return null;
+  /* 助手会话按画布隔离（本轮需求 · 每个画布一条）：指针指向的那条若绑在**另一张**画布上，
+     就不是「当前这张图的助手会话」—— 视为空白态，绝不把它带过来继续用（切图 = 换会话）。
+     还没绑画布的老会话（canvasWfId 为空）仍如实返回（左栏显示「全局」），
+     第一次在本画布发言时由 assistEnsureSessionForSend 就地补绑。 */
+  if (st.assist) {
+    const bound = String(st.canvasWfId || "").trim();
+    const cur = typeof currentVisibleWfId === "function" ? currentVisibleWfId() : "";
+    /* 一轮正在跑时不换：流式正文 / 待发内容都挂在这条会话上，中途改绑会让面板错位；
+       跑完下一次切画布再按新画布重绑。 */
+    if (bound && cur && bound !== String(cur)) return S.assistRunning ? st : null;
+  }
+  return st;
 }
-/* 助手会话的骨架：不绑画布、不走普通会话计划线（它由助手身份驱动，共识 q8）。 */
+/* 本画布那条助手会话（同画布可能有多条：取列表里最新的一条，归档的不算）。
+   只认「已绑到本画布」的；老会话（未绑画布）不在这里被认领 —— 它们不归属任何一张图。 */
+function assistSessionOfCanvas(cid) {
+  const key = String(cid || "").trim();
+  if (!key) return null;
+  for (const s of agentSessions()) {
+    if (!s || !s.assist || s.archived) continue;
+    if (String(s.canvasWfId || "").trim() === key) return s;
+  }
+  return null;
+}
+/* 切画布后的助手栏重绑（唯一入口 = app.js 的 setForegroundWf）：
+   本画布已有助手会话 → 指过去；没有 → 回空白态（下次发送才建新的一条，
+   并像 assistSessionRecord 那样绑到这张画布）。老会话（未绑画布）正在用时不打断，
+   它会在下一次发送时就地补绑到当时的画布。返回重绑后真正生效的那条会话。 */
+function assistRebindToCanvas() {
+  if (S.assistRunning) return assistBoundSession(); /* 一轮在跑：不中途换会话 */
+  const cur = assistBoundSession();
+  if (cur) return cur;
+  const cid = typeof currentVisibleWfId === "function" ? currentVisibleWfId() : "";
+  const st = assistSessionOfCanvas(cid);
+  if (!st) {
+    /* 本画布还没有助手会话：指针与正文一起回空白态（旧会话原样留在左栏可回看） */
+    if (String(S.assistSessionId || "")) assistUnbindSession();
+    else S.assistMessages = [];
+    if (S.config) S.config.assistSessionId = "";
+    try {
+      persistAssistUi(); /* 指针（空）落盘：重启回来别又把别的画布那条接上 */
+    } catch (_) {}
+    redrawAssistAfterRebind();
+    return null;
+  }
+  const bind = () => {
+    assistBindSession(st);
+    if (S.config) S.config.assistSessionId = st.id;
+    try {
+      persistAssistUi();
+    } catch (_) {}
+    redrawAssistAfterRebind();
+  };
+  /* 正文还在盘上（懒加载）：先读回来再绑，别让助手栏显示别人的内容 */
+  if (!st._lcLoaded && !st._lcMissing && typeof agentEnsureSessionBody === "function")
+    Promise.resolve(agentEnsureSessionBody(st))
+      .then(bind)
+      .catch(() => {});
+  else bind();
+  return st;
+}
+/* 重绑后的重绘：助手栏 + 左栏 + 会话视图（会话视图正看着那条助手会话时才有意义）。 */
+function redrawAssistAfterRebind() {
+  try {
+    if (typeof renderAssistPanel === "function") renderAssistPanel();
+  } catch (_) {}
+  try {
+    if (typeof renderAgentSessionSidebar === "function") renderAgentSessionSidebar();
+  } catch (_) {}
+  try {
+    const st = assistBoundSession();
+    if (st && typeof agentViewIs === "function" && agentViewIs(st) && typeof renderAgentSession === "function")
+      renderAgentSession();
+  } catch (_) {}
+}
+/* 助手会话的骨架：与普通会话同一条记录（st.assist 只是身份位、不走普通会话计划线）。
+   所属画布在**建立这一刻**绑定（bug 修复：助手建的会话过去不绑画布、开轮时补绑到「当时
+   正看着的那张」，于是切画布就等于换画布）；工作目录**不冻结**：按这张画布现算（本次需求）。 */
 function assistSessionRecord(o) {
   o = o || {};
-  return {
+  const st = {
     id: uid("as"),
     title: o.title || I18n.t("新会话"),
     workspace: "",
-    canvasWfId: "",
+    canvasWfId: String(
+      o.canvasWfId ||
+        (typeof currentVisibleWfId === "function" ? currentVisibleWfId() : "") ||
+        "",
+    ),
     preset: o.preset || S.assistPreset || AGENT_PRESET_DEFAULT,
     provider: o.provider || S.assistProvider || "deepseek-official",
     model: o.model || S.assistModel || "",
@@ -1640,6 +1801,9 @@ function assistSessionRecord(o) {
     _lcLoaded: true,
     _lcDirty: true,
   };
+  if (typeof agentFreezeSessionWorkspace === "function")
+    agentFreezeSessionWorkspace(st);
+  return st;
 }
 /* 绑一条助手会话：指针 + 正文数组 + 模型档位（会话 → 助手栏）三级同步。
    正文还在盘上（懒加载）时由调用方先 agentEnsureSessionBody，本函数只做引用与回显。 */
@@ -1668,6 +1832,10 @@ function assistMsgs() {
     return st.messages;
   }
   if (!Array.isArray(S.assistMessages)) S.assistMessages = [];
+  /* 指针还指着一条**别的画布**的助手会话（本画布 = 空白态，见 assistBoundSession）：
+     不把那条的内容画到这张图上。就地清空、不换数组对象（别处可能正攥着它）。 */
+  if (String(S.assistSessionId || "").trim() && S.assistMessages.length)
+    S.assistMessages.length = 0;
   return S.assistMessages;
 }
 /* 助手这一轮真正使用的运行键（本轮需求 · 单一根源）：就是那条助手会话的运行链
@@ -1749,11 +1917,23 @@ function assistUnbindSession() {
   S.assistLiveTools = [];
   if (S.config) S.config.assistSessionId = "";
 }
-/* 「发送内容后才新建」的唯一入口：已经有当前助手会话就复用，没有就现建一条。 */
+/* 「发送内容后才新建」的唯一入口：本画布已经有助手会话就复用，没有就现建一条
+   （建的时候由 assistSessionRecord 绑到**当前这张画布**，切图不带走）。 */
 function assistEnsureSessionForSend(text) {
   const cur = assistBoundSession();
   if (cur) {
     if (!Array.isArray(cur.messages)) cur.messages = [];
+    /* 老助手会话（本次修复之前建的：没绑画布 / 没冻结目录）在第一次发送时就地补绑一次、
+       目录一并冻结，从这一轮起它同样固定在那张图上；已经有绑定 / 目录的一个字不动。 */
+    if (!String(cur.canvasWfId || "").trim() && typeof currentVisibleWfId === "function") {
+      cur.canvasWfId = String(currentVisibleWfId() || "");
+      agentMarkSessionDirty(cur.id); /* 补绑立刻落盘：重启后归属不丢 */
+    }
+    if (
+      !String(cur.workspace || "").trim() &&
+      typeof agentFreezeSessionWorkspace === "function"
+    )
+      agentFreezeSessionWorkspace(cur);
     S.assistMessages = cur.messages;
     return cur;
   }
@@ -1947,8 +2127,17 @@ async function assistSend(text, opts) {
     .map((m) => (m.role === "user" ? "用户：" : "助手：") + m.content)
     .join("\n\n");
   const scopeCurrent = assistScopeIsCurrent();
+  /* 这一轮真正工作的那张图 = 本会话所属画布（不是用户此刻看着的那张，bug 修复）：
+     提示词里的人设 / 工作范围都按它说，否则用户切图后模型会以为在改另一张。 */
+  const boundSess = typeof assistBoundSession === "function" ? assistBoundSession() : null;
+  const boundId = boundSess ? String(boundSess.canvasWfId || "") : "";
+  const boundWf =
+    boundId && typeof sessionCanvasWf === "function" ? sessionCanvasWf(boundSess) : null;
   const wfName =
-    (S.wf && S.wf.name) || I18n.t("未命名画布");
+    (boundWf && boundWf.name) ||
+    (boundId ? (typeof wfNameOfId === "function" ? wfNameOfId(boundId) : "") : "") ||
+    ((typeof currentVisibleWf === "function" ? currentVisibleWf() : S.wf) || {}).name ||
+    I18n.t("未命名画布");
   const assistAuto = !!(
     S.config &&
     S.config.dsh &&
@@ -1970,7 +2159,7 @@ async function assistSend(text, opts) {
      「每轮都要照做的行为纪律」——同一规则不再抄第二遍，省下的就是每一步都在付的固定 token。 */
   const superConnectRule = assistCanvasFree
     ? ""
-    : "  · 跨节点层 / 跨层级接线用 mtnode_canvas_edit 的 superConnect（它自动逐层桥接，参数口径见该工具说明），不要自己建桥接线。\n";
+    : "  · 跨节点层是硬规则：层内节点不得直连层外，只能经边界端子逐层中转（内 → 直属壳输出端子 → … → 目标壳输入端子 → 内），每段只连直接父子，同壳兄弟直接连。connect / superConnect 都按这条自动改写，别自己建桥接线；全文见技能 mtnode-canvas-edit-rules。\n";
   const devNodeRule = assistCanvasFree
     ? ""
     :
@@ -3286,6 +3475,9 @@ function agentSessionMetaForDisk(s) {
     /* 全局助手会话标记（本轮需求）：驱动它的正文是助手栏那一份，左栏挂「助手」徽标、
        画布归属显示「全局」、且不进任何「绑定会话」候选。 */
     assist: !!s.assist,
+    /* 助手栏运行区（计划 / 清单 / 队列 / 暂停）那一行的展开态：会话自己的字段，
+       与 todosCollapsed / planCollapsed 同族 —— 每条会话各记各的，重启后照旧。 */
+    assistRunOpen: !!s.assistRunOpen,
     /* 长任务环节绑定标记（app-longtask.js 的 ltBindAgentSession 写）：{wfId,runId,path} */
     ltBound:
       s.ltBound && typeof s.ltBound === "object"
@@ -3334,10 +3526,24 @@ function agentSessionMetaForDisk(s) {
        foldOpen = 各折组的展开态（键 = 折组 id，展开才写 true；默认收起不在表里）。 */
     compacts: (Array.isArray(s.compacts) ? s.compacts : []).slice(-40).map((c) => ({
       id: String((c && c.id) || ""),
+      /* 任务 4/8：来源（manual / auto）、这次压缩的 token 消耗与自动压缩的精简工具清单
+         一并落盘 —— 重启后「查看压缩摘要」与折叠行标题仍念得出来。老记录没有 kind
+         （或值不认识）一律按 manual。 */
+      kind: c && c.kind === "auto" ? "auto" : "manual",
       at: Number(c && c.at) || 0,
       count: Math.max(0, Number(c && c.count) || 0),
       chars: Math.max(0, Number(c && c.chars) || 0),
       summary: String((c && c.summary) || "").slice(0, 40000),
+      usage: compactUsageOfMetrics(c && c.usage),
+      provider: String((c && c.provider) || ""),
+      model: String((c && c.model) || ""),
+      tools:
+        c && c.kind === "auto" && Array.isArray(c.tools)
+          ? c.tools.slice(0, 20).map((t) => ({
+              name: String((t && t.name) || ""),
+              result: String((t && t.result) || "").slice(0, 500),
+            }))
+          : undefined,
     })),
     foldOpen:
       s.foldOpen && typeof s.foldOpen === "object"
@@ -3734,6 +3940,13 @@ function closeAgentMenus() {
     "agentToolsMenu",
     "agentModeMenu",
     "assistModeMenu",
+    /* 本次需求新增的助手栏浮层（身份 / 模型 / 工作区 / 技能 / 工具）与「模式」同族：
+       全栏同时只开一只，互斥收起必须把它们也带上。 */
+    "assistSessMenu",
+    "assistModelMenu",
+    "assistWsMenu",
+    "assistToolsMenu",
+    "assistCmdMenu",
   ].forEach((id) => {
     const el = document.getElementById(id);
     if (el) el.hidden = true;
@@ -3753,6 +3966,45 @@ function openAgentMenu(id) {
   closeAgentMenus();
   const el = document.getElementById(id);
   if (el) el.hidden = false;
+}
+/* ── 助手栏浮层的通用落点（本次需求：身份菜单 / 模型 / 工作区 / 工具 / 技能 与「模式」同款）──
+   与下面 placeAssistModeMenu 同一套算法，只是把「哪只菜单、按哪颗按钮」变成参数：
+     · 左边缘对齐按钮，宽度 180–320px 且不超出助手栏；
+     · 优先向下展开，以助手栏可视区为基准算可用高度，装不下才向上翻转；
+     · 量不到尺寸（栏没显示）时返回，保留 CSS 缺省，不写死 0px 的坏落点。 */
+function placeAssistMenuById(menuId, triggerId) {
+  const menu = document.getElementById(menuId);
+  const trig = document.getElementById(triggerId);
+  const pane = document.getElementById("assistPane");
+  if (!menu || !trig || !pane || menu.hidden) return;
+  const op = menu.offsetParent;
+  const base = op && op.getBoundingClientRect ? op.getBoundingClientRect() : pane.getBoundingClientRect();
+  const tr = trig.getBoundingClientRect();
+  if (!base.width || !tr.width) return;
+  const GAP = 6;
+  const PAD = 8;
+  /* 宽度：先清掉上一次写死的宽度，量这份菜单**自己的**自然宽（.agent-menu 240 /
+     技能三列 560 / 工具 320 都由 CSS 定），再夹进助手栏可用宽 —— 窄栏里最宽也就是整栏宽，
+     宽栏里技能菜单不必被压成一条。 */
+  menu.style.width = "";
+  const maxW = Math.max(180, Math.round(base.width - PAD * 2));
+  const natural = Math.round(menu.offsetWidth || 0);
+  const width = Math.max(180, Math.min(maxW, natural || 240));
+  const left = Math.max(PAD, Math.min(tr.left - base.left, base.width - PAD - width));
+  menu.style.width = width + "px";
+  menu.style.left = Math.round(left) + "px";
+  const want = Math.min(Math.round(menu.scrollHeight || menu.offsetHeight || 0) || 440, 440);
+  const below = Math.round(base.bottom - tr.bottom - GAP - PAD);
+  const above = Math.round(tr.top - base.top - GAP - PAD);
+  const down = below >= want || below >= above;
+  menu.style.maxHeight = Math.max(120, Math.min(440, down ? below : above)) + "px";
+  if (down) {
+    menu.style.top = Math.round(tr.bottom - base.top + GAP) + "px";
+    menu.style.bottom = "auto";
+  } else {
+    menu.style.top = "auto";
+    menu.style.bottom = Math.round(base.bottom - tr.top + GAP) + "px";
+  }
 }
 /* ── 助手栏「模式」菜单的落点（本次开发需求 · 用户报障「打开后被完全遮挡在上方」）──
    这只菜单复用了会话侧的 .agent-menu / .agent-tools-menu：那份 CSS 的
@@ -3811,6 +4063,438 @@ function openAssistModeMenu() {
   openAgentMenu("assistModeMenu");
   placeAssistModeMenu();
   bindAssistModeMenuWatchers();
+}
+
+/* ══════════ 助手栏：会话身份行 / chip 行 / 运行区折叠行（本次需求 · 与原生会话对齐）══════════
+   用户已确认的共识（拷问三轮）：
+   · 单向拉齐：以原生会话为准，只补助手侧缺的部分，原生会话的观感与行为一个像素都不动；
+   · 头部＝会话身份：标题 + ▣所属画布 + 最后对话时间，右侧「…」收 改名 / 新建一条 / 在会话视图打开；
+     「清空」按钮撤掉（它就是「新建一条」，两个入口做同一件事只会让人犹豫）；
+   · chip 行照原生顺序：工作区 → 模型 → 技能 → 压缩上下文（+ 查看摘要）→ 工具 → 模式 → 浏览器活动；
+     原来平铺的五格（预设 / 供应商 / 模型 / 思考强度 / 上下文压缩）收进「模型」chip 的菜单，
+     「工作目录」收进「工作区」chip 的菜单 —— 元素与接线原样保留，只是搬了家、点开才出现；
+   · 运行区：计划 / 任务清单 / 发送队列 / 暂停折成一行摘要（「计划 x/y · 待办 n · 排队 n · 已暂停」），
+     点开展开成原生那四块（同一个渲染函数、只换容器）；展开态记在会话自己的 assistRunOpen 位上；
+   · 栏窄时不换行，chip 只留图标 + 悬停提示（用户口径）。
+
+   **数据模型一概不动**：仍每张画布一条助手会话、清空＝换新、工作目录不冻结（跟随所属画布）。 */
+
+/* 本栏自己的浮层清单（互斥收起与 Esc 共用一份） */
+const ASSIST_MENU_ID_LIST = [
+  "assistSessMenu",
+  "assistModelMenu",
+  "assistWsMenu",
+  "assistToolsMenu",
+  "assistCmdMenu",
+  "assistModeMenu",
+];
+
+/* 开 / 合一只浮层：开着就收起，关着就先建再开。builder 可以是 async（技能菜单要读技能表）。
+   不监听外部点击 —— 仓内约定：带输入的浮层一律 persistent，关闭只走按钮 / ✕ / Esc / 再点一次。 */
+async function openAssistChipMenu(menuId, triggerId, builder) {
+  const el = document.getElementById(menuId);
+  if (!el) return;
+  if (!el.hidden) {
+    el.hidden = true;
+    return;
+  }
+  if (typeof builder === "function") {
+    try {
+      await builder();
+    } catch (_) {}
+  }
+  openAgentMenu(menuId);
+  placeAssistMenuById(menuId, triggerId);
+}
+
+function assistRepositionMenus() {
+  placeAssistMenuById("assistModeMenu", "assistModeTrigger");
+  placeAssistMenuById("assistModelMenu", "assistModelChip");
+  placeAssistMenuById("assistWsMenu", "assistWsChip");
+  placeAssistMenuById("assistToolsMenu", "assistToolsChip");
+  placeAssistMenuById("assistCmdMenu", "assistCmdChip");
+  placeAssistMenuById("assistSessMenu", "btnAssistMenu");
+}
+
+/* 栏窄档：八枚 chip 的中文标签加起来放不下整栏时只留图标（全名在 title 里）。
+   720px = 八枚的「图标 + 内边距 + 间距」与两条带值的文字（工作目录名 104 / 模型名 132，
+   都带省略上限）都摆得下的宽度；栏宽可拖，拖宽了自动回到带字。**永不换行**（用户口径）。 */
+function syncAssistChipsCompact() {
+  const chips = document.getElementById("assistChips");
+  const pane = document.getElementById("assistPane");
+  if (!chips || !pane) return;
+  const w = pane.clientWidth || 0;
+  chips.classList.toggle("compact", w > 0 && w < 720);
+}
+
+/* 模型 chip 的摘要：与原生那枚 ⚙ 模型 chip 同口径（纯净 · 预设 · 模型） */
+function assistModelChipLabel() {
+  const st = assistBoundSession();
+  const preset = agentPresetLabel(assistOpt("preset"));
+  let name = "";
+  try {
+    const sel = document.getElementById("assistModelSel");
+    const opt = sel && sel.selectedOptions && sel.selectedOptions[0];
+    name = opt && opt.textContent ? String(opt.textContent).trim() : "";
+  } catch (_) {}
+  if (!name) name = String(assistOpt("model") || "");
+  const pure = st && st.pure ? I18n.t("纯净") + " · " : "";
+  return pure + preset + (name ? " · " + name : "");
+}
+
+/* chip 行的状态回显（每次面板重绘都刷一遍）：工作区目录名 / 模型摘要 / 压缩态 / 是否压过 /
+   工具限制数（读的都是原生那几份同一真源，改哪边两边一起变）。 */
+function paintAssistChips() {
+  const st = assistBoundSession();
+  const wsChip = document.getElementById("assistWsChip");
+  const wsText = document.getElementById("assistWsChipText");
+  if (wsChip) {
+    const shown = assistDisplayWorkspace();
+    if (wsText) wsText.textContent = shown ? wsGroupOf(shown) : I18n.t("选择工作区");
+    const canvasShown = st ? sessionCanvasName(st) : "";
+    const tip =
+      I18n.t("生效工作目录：") +
+      (shown || I18n.t("（默认）")) +
+      "\n" +
+      workspaceInfoNote(assistWorkspaceInfo(st && st.assist ? st : null)) +
+      (canvasShown ? "\n" + I18n.t("所属画布：") + canvasShown : "") +
+      "\n" +
+      I18n.t("点击可改工作目录（手填优先于画布项目根）");
+    wsChip.title = tip;
+    wsChip.dataset.i18nTitle = tip;
+  }
+  const mChip = document.getElementById("assistModelChip");
+  const mText = document.getElementById("assistModelChipText");
+  if (mChip) {
+    const val = assistModelChipLabel();
+    if (mText) mText.textContent = val;
+    const tip = I18n.t("模型提供商 / 预设 / 模型 / 思考强度 / 上下文压缩") + "：" + val;
+    mChip.title = tip;
+    mChip.dataset.i18nTitle = tip;
+  }
+  const cChip = document.getElementById("assistCompactChip");
+  if (cChip) {
+    const busy = !!(st && st._compacting);
+    const running = !busy && !!st && sessionIsRunning(st);
+    const key = busy ? "压缩中…" : "压缩上下文";
+    const tip = busy
+      ? "正在压缩上文…"
+      : running
+        ? "运行中不可压缩：请等待当前会话结束"
+        : "压缩上下文：把较早的对话收成一段摘要（会话保留，原文折起来仍可回看）";
+    const span = cChip.querySelector(".ach-text");
+    if (span) {
+      if (span.dataset.i18n !== key) span.dataset.i18n = key;
+      span.textContent = I18n.t(key);
+    }
+    cChip.dataset.i18nTitle = tip;
+    cChip.title = I18n.t(tip);
+    cChip.disabled = busy || running;
+    cChip.classList.toggle("on", busy);
+  }
+  const vChip = document.getElementById("assistCompactViewChip");
+  if (vChip) vChip.hidden = !(st && compactLatestOf(st));
+  /* 工具 chip：与原生那枚读同一份逐工具许可（同一套 allow / ask / deny），数量口径一致。
+     这里自己算一遍而不是只等 paintAgentToolsChip() —— 那条路在会话视图还没渲染时没有宿主
+     元素就提前返回了，助手栏不能因此漏掉回显。 */
+  const tChip = document.getElementById("assistToolsChip");
+  if (tChip) {
+    let n = 0;
+    try {
+      for (const cat of agentToolCatalog())
+        for (const it of cat.items) if (agentToolMode(it.key) !== "allow") n++;
+    } catch (_) {}
+    tChip.classList.toggle("on", n > 0);
+    tChip.title = agentToolPresetStatusText();
+    tChip.dataset.i18nTitle = tChip.title;
+  }
+}
+
+/* ── 头部：会话身份行 ── */
+function assistPaintHeader(st) {
+  const tEl = document.getElementById("assistTitle");
+  const wfEl = document.getElementById("assistWf");
+  const whenEl = document.getElementById("assistWhen");
+  const title = st ? String(st.title || "").trim() : "";
+  if (tEl) tEl.textContent = title || I18n.t("全局助手");
+  const canvasShown = st ? sessionCanvasName(st) : "";
+  if (wfEl) {
+    wfEl.hidden = !canvasShown;
+    wfEl.textContent = canvasShown ? "▣ " + canvasShown : "";
+    wfEl.title = canvasShown ? I18n.t("所属画布：") + canvasShown : "";
+  }
+  if (whenEl) {
+    const lastAt = st ? sessionLastAt(st) : 0;
+    whenEl.hidden = !lastAt;
+    whenEl.textContent = lastAt ? I18n.t("最后对话：") + formatRelTime(lastAt) : "";
+    whenEl.title = lastAt ? I18n.t("最后对话：") + formatMsgStamp(lastAt) : "";
+  }
+}
+
+/* ── 运行区：一行摘要 + 展开成原生那四块 ── */
+function assistRunSummary(st) {
+  if (!st) return "";
+  const bits = [];
+  try {
+    const steps = typeof planSteps === "function" ? planSteps(st).filter((s) => s && String(s.title || "").trim()) : [];
+    if (steps.length) {
+      const done = steps.filter((s) => (typeof planStepStatus === "function" ? planStepStatus(s.status) : s.status) === "done").length;
+      bits.push(I18n.t("计划") + " " + done + "/" + steps.length);
+    }
+  } catch (_) {}
+  try {
+    const list = Array.isArray(st.todos) ? st.todos : [];
+    if (list.length) {
+      const done = list.filter((t) => t.status === "done").length;
+      bits.push(I18n.t("待办") + " " + done + "/" + list.length);
+    }
+  } catch (_) {}
+  try {
+    const n = Array.isArray(st.outbox) ? st.outbox.filter(Boolean).length : 0;
+    const steers = typeof agentPendingSteers === "function" ? agentPendingSteers(st).length : 0;
+    if (n + steers) bits.push(I18n.t("排队") + " " + (n + steers));
+  } catch (_) {}
+  /* 「已暂停」放最后：它是状态收尾，不是又一件待办（与原生暂停条排在队列之上同一个意思） */
+  if (st.paused) bits.push(I18n.t("已暂停"));
+  return bits.join(" · ");
+}
+
+/* 展开态是**会话字段**（st.assistRunOpen），不是全局偏好：每条会话各自记住，重启后照旧 */
+function assistRunOpenOf(st) {
+  return !!(st && st.assistRunOpen);
+}
+
+function toggleAssistRunFold() {
+  const st = assistBoundSession();
+  if (!st) return;
+  st.assistRunOpen = !assistRunOpenOf(st);
+  try {
+    agentMarkSessionDirty(st.id);
+    persistAgentSession().catch(() => {});
+  } catch (_) {}
+  assistPaintRunFold(st, true);
+}
+
+/* 把计划 / 清单 / 队列 / 暂停画进助手栏那四块（容器换 id，渲染函数与交互与原生完全同一份） */
+function assistRenderRunAreas(st) {
+  const paused = document.getElementById("assistPaused");
+  const queue = document.getElementById("assistQueue");
+  const plan = document.getElementById("assistPlan");
+  const todo = document.getElementById("assistTodo");
+  if (!paused || !queue || !plan || !todo) return;
+  /* 防递归：这四只渲染函数各自会在开头回叫 assistAfterSessionRender，
+     而这里正是从那条链上下来的 —— 用一枚旗标短路，避免自激。 */
+  S._assistRunPainting = true;
+  try {
+    if (typeof renderAgentPlanPanel === "function") renderAgentPlanPanel(st, plan);
+    if (typeof renderAgentTodoPanel === "function") renderAgentTodoPanel(st, todo);
+    if (typeof renderAgentQueueBar === "function") renderAgentQueueBar(st, queue, paused);
+    if (typeof renderAgentPausedBar === "function") renderAgentPausedBar(st, paused);
+  } finally {
+    S._assistRunPainting = false;
+  }
+}
+
+function assistPaintRunFold(st, forceBody) {
+  const fold = document.getElementById("assistRunFold");
+  if (!fold) return;
+  const sum = assistRunSummary(st);
+  fold.hidden = !sum;
+  if (!sum) return;
+  const text = document.getElementById("assistRunFoldText");
+  if (text) text.textContent = sum;
+  const open = assistRunOpenOf(st);
+  fold.classList.toggle("open", open);
+  const body = document.getElementById("assistRunBody");
+  if (body) body.hidden = !open;
+  if (open || forceBody) assistRenderRunAreas(st);
+}
+
+/* 原生那四块被重绘时顺手把助手栏这一份也刷掉：同一份数据，两边看到的永远是同一刻。
+   只在这条会话**正是**助手栏绑定的那条时动手，其它会话的重绘与我无关。 */
+function assistAfterSessionRender(st) {
+  try {
+    if (!st || S._assistRunPainting || !S.assistOpen) return;
+    const bst = typeof assistBoundSession === "function" ? assistBoundSession() : null;
+    if (!bst || String(bst.id) !== String(st.id)) return;
+    assistPaintRunFold(st);
+    assistPaintHeader(st);
+  } catch (_) {}
+}
+
+/* ── 「…」菜单：改名 / 新建一条 / 在会话视图打开（用户口径：不加归档、删除、分支）── */
+function buildAssistSessionMenu() {
+  const menu = document.getElementById("assistSessMenu");
+  if (!menu) return;
+  menu.innerHTML = "";
+  const st = assistBoundSession();
+  const add = (label, tip, fn) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "agent-menu-cell assist-sess-item";
+    b.textContent = label;
+    b.title = tip || label;
+    b.onclick = () => {
+      menu.hidden = true;
+      fn();
+    };
+    menu.appendChild(b);
+  };
+  add(
+    I18n.t("改名"),
+    I18n.t("改这条助手会话的标题（回车确认 · Esc 取消）"),
+    () => startAssistTitleEdit(),
+  );
+  add(
+    I18n.t("新建一条"),
+    I18n.t("结束当前这条助手会话（旧会话仍留在左栏可回看），下一条发送时新建"),
+    () => clearAssistChat(),
+  );
+  add(
+    I18n.t("在会话视图打开"),
+    I18n.t("切到会话视图看这条会话（那里有完整的计划 / 浏览器活动面板）"),
+    () => assistOpenInSessionView(),
+  );
+  if (!st) menu.querySelectorAll("button").forEach((b, i) => { if (i !== 1) b.disabled = true; });
+}
+
+/* 就地改名：头部标题换成输入框，回车确认 / Esc 取消 / 失焦确认。
+   真源与左栏那一套完全一致：用户亲口改的名 = 标题真源（titleLocked），自动命名永久让位。 */
+function startAssistTitleEdit() {
+  const st = assistBoundSession();
+  const el = document.getElementById("assistTitle");
+  if (!st || !el || document.getElementById("assistTitleInput")) return;
+  const input = document.createElement("input");
+  input.type = "text";
+  input.id = "assistTitleInput";
+  input.className = "n-title-input assist-id-input";
+  input.value = st.title || "";
+  input.spellcheck = false;
+  input.title = I18n.t("回车确认 · Esc 取消");
+  el.hidden = true;
+  el.parentElement.insertBefore(input, el.nextSibling);
+  input.focus();
+  input.select();
+  let done = false;
+  const finish = (save) => {
+    if (done) return;
+    done = true;
+    const v = input.value.trim();
+    if (save && v && v !== st.title) {
+      st.title = v;
+      st.titleLocked = true;
+      st.titleAuto = false;
+      st.updatedAt = Date.now();
+      try {
+        agentMarkSessionDirty(st.id);
+        persistAgentSession().catch(() => {});
+      } catch (_) {}
+    }
+    input.remove();
+    el.hidden = false;
+    try {
+      renderAssistPanel();
+      renderAgentSessionSidebar();
+    } catch (_) {}
+  };
+  input.addEventListener("keydown", (ev) => {
+    ev.stopPropagation();
+    if (ev.key === "Enter") {
+      ev.preventDefault();
+      finish(true);
+    } else if (ev.key === "Escape") {
+      ev.preventDefault();
+      finish(false);
+    }
+  });
+  input.addEventListener("blur", () => finish(true));
+  input.addEventListener("mousedown", (ev) => ev.stopPropagation());
+}
+
+/* 切到会话视图看这条助手会话：先选中它，再切视图（setView("agent") 按既有口径收起助手栏） */
+function assistOpenInSessionView() {
+  const st = assistBoundSession();
+  if (!st) return;
+  try {
+    if (typeof agentSelectSession === "function") agentSelectSession(st.id);
+  } catch (_) {}
+  try {
+    if (typeof setView === "function") setView("agent");
+  } catch (_) {}
+}
+
+/* 「浏览器活动」chip：助手栏是窄栏，不在里面再嵌一块面板 —— 切到会话视图看它的活动
+   （那里本来就有完整的浏览器活动栏），顺手把面板打开。 */
+function openAssistBrowserActivity() {
+  const st = assistBoundSession();
+  if (!st) return;
+  assistOpenInSessionView();
+  try {
+    const ba = window.BrowserAct;
+    if (ba && typeof ba.setSession === "function") ba.setSession(st.id);
+    if (ba && typeof ba.setOpen === "function") ba.setOpen(true);
+  } catch (_) {}
+}
+
+/* 助手栏 chrome 的总刷新入口：renderAssistPanel 每帧调一次（幂等、不用 ResizeObserver） */
+function assistPaintSessionChrome(st) {
+  try {
+    bindAssistChrome();
+  } catch (_) {}
+  try {
+    assistPaintHeader(st);
+  } catch (_) {}
+  try {
+    paintAssistChips();
+  } catch (_) {}
+  try {
+    assistPaintRunFold(st);
+  } catch (_) {}
+  try {
+    agentRoundLabelApply(st, document.getElementById("assistRound"));
+  } catch (_) {}
+  try {
+    syncAssistChipsCompact();
+  } catch (_) {}
+}
+
+let _assistChromeBound = false;
+function bindAssistChrome() {
+  if (_assistChromeBound) return;
+  _assistChromeBound = true;
+  const on = (id, fn) => {
+    const el = document.getElementById(id);
+    if (el) el.onclick = fn;
+  };
+  on("assistWsChip", () => void openAssistChipMenu("assistWsMenu", "assistWsChip"));
+  on("assistModelChip", () => void openAssistChipMenu("assistModelMenu", "assistModelChip"));
+  on("assistCmdChip", () =>
+    void openAssistChipMenu("assistCmdMenu", "assistCmdChip", () =>
+      buildAgentCmdMenu("assistCmdMenu", "assistInput"),
+    ),
+  );
+  on("assistCompactChip", () => void agentCompact(assistBoundSession() || undefined));
+  on("assistCompactViewChip", () => openCompactSummaryPop(assistBoundSession() || undefined));
+  on("assistToolsChip", () =>
+    void openAssistChipMenu("assistToolsMenu", "assistToolsChip", () =>
+      buildAgentToolsMenu("assistToolsMenu"),
+    ),
+  );
+  on("assistBrowserChip", () => openAssistBrowserActivity());
+  on("btnAssistMenu", () => void openAssistChipMenu("assistSessMenu", "btnAssistMenu", buildAssistSessionMenu));
+  on("assistRunFoldBtn", () => toggleAssistRunFold());
+  /* Esc 收起本栏全部浮层（persistent 浮层的关法之一）；尺寸变化时重算落点 + 重判窄栏档 */
+  document.addEventListener("keydown", (ev) => {
+    if (!ev || (ev.key !== "Escape" && ev.key !== "Esc")) return;
+    for (const id of ASSIST_MENU_ID_LIST) {
+      const el = document.getElementById(id);
+      if (el && !el.hidden) el.hidden = true;
+    }
+  });
+  window.addEventListener("resize", () => {
+    assistRepositionMenus();
+    syncAssistChipsCompact();
+  });
 }
 function agentModelName(st) {
   const dp = dshProvider();
@@ -4105,7 +4789,7 @@ function buildAgentModelMenu() {
       menu.appendChild(e);
     }
   } else if (pane === "compact") {
-    /* 上下文压缩五档（关闭 / 省钱 / 中 / 晚 / 自定义）：清单与助手栏那一格共用
+    /* 上下文压缩五档（关闭 / 低 / 中 / 晚 / 自定义）：清单与助手栏那一格共用
        ASSIST_COMPACT_OPTIONS（同一个真源，改一处两边一起变），当前档打 ✓，选完走
        applyAssistCompactChoice —— 与助手栏下拉、设置面板走**同一条写回链**
        （S.config.dsh.compact → 落盘 → main.js 的 syncCompactPolicy 改写组合行），
@@ -4270,8 +4954,8 @@ function skillMenuSortTypes(catId, types) {
   });
   return types;
 }
-async function buildAgentCmdMenu() {
-  const menu = document.getElementById("agentCmdMenu");
+async function buildAgentCmdMenu(menuId, inputId) {
+  const menu = document.getElementById(menuId || "agentCmdMenu");
   if (!menu) return;
   menu.innerHTML = "";
   let skills = [];
@@ -4311,7 +4995,9 @@ async function buildAgentCmdMenu() {
   menu.appendChild(col2);
   menu.appendChild(col3);
   const pickSkill = (s) => {
-    const inp = document.getElementById("agentInput");
+    /* 落进哪只输入框：助手栏那枚「技能」chip 传自己的 #assistInput（同一份技能清单、
+       同一套插入语法），会话侧不传就是原来的 #agentInput。 */
+    const inp = document.getElementById(inputId || "agentInput");
     if (inp) {
       inp.value = "/" + s.name + " ";
       inp.focus();
@@ -4403,8 +5089,10 @@ async function buildAgentCmdMenu() {
 /* ── 「工具」chip：当前预设 + 逐工具 允许 / 询问 / 禁止 ──
    与右上角「审批 → Agent 工具」读写同一份配置（agentToolMode / setAgentToolMode），
    差别只是这里就地快切，不用开大面板。 */
-function buildAgentToolsMenu() {
-  const menu = document.getElementById("agentToolsMenu");
+function buildAgentToolsMenu(menuId) {
+  /* menuId：渲染到哪只菜单。省略 = 会话侧 #agentToolsMenu；助手栏「工具」chip 传
+     #assistToolsMenu（同一份工具许可、同一套分组与开关，只换容器）。 */
+  const menu = document.getElementById(menuId || "agentToolsMenu");
   if (!menu) return;
   ensureAgentToolPresets();
   menu.innerHTML = "";
@@ -4426,7 +5114,7 @@ function buildAgentToolsMenu() {
   }
   sel.onchange = () => {
     setAgentToolPresetId(sel.value);
-    buildAgentToolsMenu();
+    buildAgentToolsMenu(menuId);
     paintAgentToolsChip();
   };
   presetRow.appendChild(sel);
@@ -4437,7 +5125,7 @@ function buildAgentToolsMenu() {
   allBtn.title = I18n.t("把当前预设里的全部工具设为「允许」");
   allBtn.onclick = () => {
     setAllAgentToolsAllow();
-    buildAgentToolsMenu();
+    buildAgentToolsMenu(menuId);
     paintAgentToolsChip();
   };
   presetRow.appendChild(allBtn);
@@ -4475,7 +5163,7 @@ function buildAgentToolsMenu() {
         b.onclick = () => {
           if (agentToolMode(it.key) === m) return;
           setAgentToolMode(it.key, m);
-          buildAgentToolsMenu();
+          buildAgentToolsMenu(menuId);
           paintAgentToolsChip();
         };
         seg.appendChild(b);
@@ -4502,6 +5190,13 @@ function paintAgentToolsChip() {
   t.title = agentToolPresetStatusText();
   const val = document.getElementById("agentToolsTriggerVal");
   if (val) val.textContent = n ? String(n) : "";
+  /* 助手栏那枚「工具」chip 读的是同一份配置（同一套允许 / 询问 / 拒绝），
+     所以两边永远一起变亮：这里顺手把它的状态也刷掉，不必等面板重绘。 */
+  const at = document.getElementById("assistToolsChip");
+  if (at) {
+    at.classList.toggle("on", n > 0);
+    at.title = agentToolPresetStatusText();
+  }
 }
 /* ── 「模式」chip 菜单：会话级开关的收纳口（与「工具」chip 同款下拉） ──
    本轮需求：原来平铺在输入区的两枚 chip（纯净模式 / 自动续跑）收进这一只菜单，
@@ -5891,13 +6586,17 @@ function histRailSignature(marks) {
     .join("|");
 }
 
-/* 竖条（.hist-rail）贴滚动条右侧：右边界 = 内容列的右外沿（列本身 + 它的滚动条）。
+/* 竖条（.hist-rail）落点 = 滚动条**外侧**那个 18px 槽里（不压滚动条、不贴窗口右沿）。
    列在 .hist-scroll-wrap 里是**居中定宽**的（.agent-list 等：max-width:820px + margin:0 auto），
    窗口宽时它离 wrap 右沿还有一大段空白 —— 竖条若只靠 CSS 的 right:0 就会飘到窗口最右，
-   与滚动条隔开整整一段空白。这里按实测 rect 把这段空余（wrap.right − list.right）
-   写成竖条的 right：滚动条就在列的最右那几像素上，所以竖条落点 = 滚动条正右侧，
-   不再悬在窗口右沿；它也不占列宽（消息列宽度与居中位置一字未变）。
-   列被挤到铺满整行（窄窗 / 节点内会话）时空余为 0，退回最右沿 —— 那也正是滚动条旁。
+   与滚动条隔开整整一段空白。这里按实测 rect 求这段空余：
+     gap = wrap.right − list.right（含壳自带的 18px 竖条槽 + 居中留下的空白）
+   竖条的**左**边要贴住 list.right（滚动条就在列的最右 10px 上，list.right 就是它的外沿），
+   所以 right = gap − 竖条宽，夹到 ≥ 0：
+     · 窄窗 / 列铺满整行（gap = 壳的 18px 内边距）→ right:0，竖条正好落在那条专用槽里；
+     · 宽窗（gap 里有居中的空白）→ 竖条仍紧贴滚动条外侧，不悬在窗口右沿。
+   **别再把 right 直接写成 gap**：那等于把 18px 槽宽算了两次，竖条会左移压住滚动条、
+   再吃掉 8px 正文边缘（用户报的「竖条跑进会话内容中间」一半就出在这里）。
    纯读数改写一处内联样式，不动任何布局。 */
 function histRailAlign(list, rail) {
   if (!list || !rail || typeof list.getBoundingClientRect !== "function") return;
@@ -5907,7 +6606,12 @@ function histRailAlign(list, rail) {
     0,
     Math.round(wrap.getBoundingClientRect().right - list.getBoundingClientRect().right),
   );
-  const px = gap + "px";
+  /* 竖条宽实测（css 的 .hist-rail width）；拿不到 rect 的场合（stub / 尚未渲染）按 18 兜底 */
+  const railW =
+    Math.round(
+      (rail.getBoundingClientRect && rail.getBoundingClientRect().width) || 0,
+    ) || 18;
+  const px = Math.max(0, gap - railW) + "px";
   if (rail.style.right !== px) rail.style.right = px;
 }
 
@@ -6054,29 +6758,77 @@ function ensureHistRail(list) {
       });
     };
     list.addEventListener("scroll", onScroll, { passive: true });
+    /* 尺寸变化 → 每帧至多重排一次：updateHistRail 会重建 / 重排 .hist-rail 里的标记（改布局），
+       在 ResizeObserver 回调里同步做 = 同帧内又产生一次未派发的尺寸通知，浏览器会抛
+       「ResizeObserver loop completed with undelivered notifications.」
+       （左栏宽 / 开发页三栏一拖就报的就是它）。推到 rAF 后做，回调返回时布局已定。 */
+    const schedule = () => {
+      list._histRailRoPending = true;
+      if (list._histRailRoRaf) return;
+      list._histRailRoRaf = requestAnimationFrame(() => {
+        list._histRailRoRaf = 0;
+        if (!list._histRailRoPending || !list.isConnected) return;
+        list._histRailRoPending = false;
+        updateHistRail(list);
+      });
+    };
+    list._histRailSchedule = schedule;
+    /* 兜底：窗口 resize 一定重算一遍。壳的尺寸变化已由 histRailObserve 的 ResizeObserver
+       覆盖，这里只是补「壳被 display:none 再显示 / 环境没有 ResizeObserver」这类漏网；
+       监听器全页只挂一个，挂在 histRailWatchWindow 的清单上（列表被换掉时自动摘除）。 */
+    histRailWatchWindow(list);
     if (typeof ResizeObserver === "function") {
       try {
-        const ro = new ResizeObserver(() => {
-          /* 每帧至多补一次：updateHistRail 会重建 / 重排 .hist-rail 里的标记（改布局），
-             在回调里同步做 = 同帧内又产生一次未派发的尺寸通知，浏览器会抛
-             「ResizeObserver loop completed with undelivered notifications.」
-             （左栏宽 / 开发页三栏一拖就报的就是它）。推到 rAF 后做，回调返回时布局已定。 */
-          list._histRailRoPending = true;
-          if (list._histRailRoRaf) return;
-          list._histRailRoRaf = requestAnimationFrame(() => {
-            list._histRailRoRaf = 0;
-            if (!list._histRailRoPending || !list.isConnected) return;
-            list._histRailRoPending = false;
-            updateHistRail(list);
-          });
-        });
-        ro.observe(list);
-        ro.observe(rail);
-        list._histRailRo = ro;
+        list._histRailRo = new ResizeObserver(schedule);
       } catch (_) {}
     }
   }
+  histRailObserve(list, wrap, rail);
   return rail;
+}
+
+/* 观察「会影响竖条落点」的三件：消息列（自身尺寸）、**壳**（窗口 / 拖栏宽带来的空余变化）、
+   竖条（宽度变化时 right 要跟着换）。只盯 list 与 rail 是不够的 —— 宽窗时消息列定宽 820，
+   窗口变宽变窄它一动不动，回调永远不触发，rail.style.right 就停在旧像素值上：
+   窗口一缩窄，竖条被推进消息列中部（用户报的「跳到会话内容中间」）。
+   壳 / 竖条被换掉（DOM 搬家、节点内会话摘条）时把旧的退订、新的补上，始终盯当前这套。 */
+function histRailObserve(list, wrap, rail) {
+  const ro = list && list._histRailRo;
+  if (!ro) return;
+  const want = [list, wrap, rail].filter(Boolean);
+  const prev = list._histRailRoEls || [];
+  for (const el of prev) {
+    if (want.indexOf(el) >= 0) continue;
+    try {
+      ro.unobserve(el);
+    } catch (_) {}
+  }
+  for (const el of want) {
+    if (prev.indexOf(el) >= 0) continue;
+    try {
+      ro.observe(el);
+    } catch (_) {}
+  }
+  list._histRailRoEls = want;
+}
+
+/* 窗口 resize 兜底：全页只挂一个监听，清单里的列表各自排一次（断开的就地摘掉）。 */
+const histRailWinLists = new Set();
+let histRailWinBound = false;
+function histRailWatchWindow(list) {
+  if (!list) return;
+  histRailWinLists.add(list);
+  if (histRailWinBound) return;
+  histRailWinBound = true;
+  window.addEventListener("resize", () => {
+    for (const el of [...histRailWinLists]) {
+      if (!el || !el.isConnected) {
+        histRailWinLists.delete(el);
+        continue;
+      }
+      if (typeof el._histRailSchedule === "function") el._histRailSchedule();
+    }
+  });
 }
 
 function updateHistRail(list) {
@@ -6799,6 +7551,19 @@ function agentSegsForDisk(segList) {
     /* 段自己的起始时刻（本次需求「时间应当在每一项」）：与轮号同理，这一层丢掉它，
        刷新后每项左侧就没有自己的时刻了（老存档没这个字段 → 不写）。 */
     if (Number(s.at) > 0) o.at = Number(s.at);
+    /* 自动压缩段（任务 3/8）：把统计 / 摘要元数据原样带进存档 —— 这一层丢掉，
+       重启后那一行就只剩「压缩过」四个字，条数与 token 全没了。 */
+    if (s.k === "compact") {
+      o.phase = String(s.phase || "start");
+      if (Number(s.shadowedCount) > 0) o.shadowedCount = Number(s.shadowedCount);
+      if (Number(s.shadowedTokenCount) > 0)
+        o.shadowedTokenCount = Number(s.shadowedTokenCount);
+      if (s.provider) o.provider = String(s.provider);
+      if (s.model) o.model = String(s.model);
+      if (s.usage && typeof s.usage === "object") o.usage = s.usage;
+      if (Array.isArray(s.tools) && s.tools.length) o.tools = s.tools;
+      if (Number(s.doneAt) > 0) o.doneAt = Number(s.doneAt);
+    }
     out.push(o);
   }
   return out.length ? out : null;
@@ -8538,9 +9303,185 @@ function dshContextRowEl(seg) {
   return d;
 }
 
+/* ── 自动压缩段（任务 3/8 · 上下文压缩的轨迹行）────────────────────────────────
+   网关把 compaction/start · summary · end 转成 compaction 帧（app-db.js 的
+   traceFeedEvent → tracePush 落成 k:'compact' 段）。这里按 phase 画三态：
+     · start   —— 一行「正在压缩上文…」（扫光态，见 css/dsh.css 的 .dsh-compact.run）；
+     · summary —— 一行「上下文已自动压缩 · N 条 · 原约 X tok」，点开压缩浮层
+                  （摘要正文 + 这次被带走的工具调用，只读）；
+     · error   —— 一行「自动压缩失败：…」，不进统计、也不写进会话正文。
+   段上的统计只在真有值时才念出来（不拿 0 冒充「压掉了 0 条」）。 */
+function dshCompactTokText(n) {
+  const v = Number(n) || 0;
+  if (!v) return "";
+  return typeof dshTokShort === "function" ? dshTokShort(v) : String(v);
+}
+function dshCompactLabelOf(seg) {
+  const n = Math.max(0, Number(seg && seg.shadowedCount) || 0);
+  const tok = dshCompactTokText(seg && seg.shadowedTokenCount);
+  if (n && tok)
+    return I18n.t("上下文已自动压缩 · {n} 条 · 原约 {t} tok", { n: n, t: tok });
+  if (n) return I18n.t("上下文已自动压缩 · {n} 条", { n: n });
+  return I18n.t("上下文已自动压缩");
+}
+/* 压缩浮层（自动压缩版）：摘要正文 + 条数 / token 统计 + 这次带走的工具调用。
+   与手动压缩的「查看压缩摘要」同一个外观（.compact-pop*），数据全部取自这一段。 */
+function openCompactSegPop(seg) {
+  if (!seg || typeof openOverlay !== "function") return;
+  const txt = String(seg.text || "");
+  openOverlay(I18n.t("压缩摘要"));
+  const box = document.getElementById("overlay");
+  const shell = box ? box.querySelector(".overlay-box") : null;
+  if (shell) shell.classList.add("compact-pop-box");
+  const body = document.getElementById("ovBody");
+  if (!body) return;
+  body.innerHTML = "";
+  const root = document.createElement("div");
+  root.className = "compact-pop";
+  const meta = document.createElement("div");
+  meta.className = "compact-pop-meta";
+  const n = Math.max(0, Number(seg.shadowedCount) || 0);
+  const tok = dshCompactTokText(seg.shadowedTokenCount);
+  const bits = [I18n.t("自动压缩")];
+  if (n) bits.push(I18n.t("压掉 {n} 条消息", { n: n }));
+  if (tok) bits.push(I18n.t("原文约 {t} tok", { t: tok }));
+  if (seg.at) bits.push(formatMsgTimeSec(seg.at));
+  meta.textContent = bits.filter(Boolean).join(" · ");
+  root.appendChild(meta);
+  const list = Array.isArray(seg.tools) ? seg.tools : [];
+  if (list.length) {
+    const sec = document.createElement("div");
+    sec.className = "compact-pop-tools";
+    sec.title = I18n.t("按这次压缩关联到的工具调用，只读");
+    const th = document.createElement("div");
+    th.className = "compact-pop-tools-head";
+    th.textContent = I18n.t("这次压缩带走的工具调用 · {n} 次", { n: list.length });
+    sec.appendChild(th);
+    const pre = document.createElement("pre");
+    pre.className = "compact-pop-tools-body";
+    pre.textContent = list
+      .map(
+        (t) =>
+          "[工具] " +
+          String((t && t.name) || I18n.t("（未记名）")) +
+          "\n" +
+          I18n.t("结果") +
+          ": " +
+          String((t && t.result) || ""),
+      )
+      .join("\n\n");
+    sec.appendChild(pre);
+    root.appendChild(sec);
+  }
+  const pane = document.createElement("div");
+  pane.className = "compact-pop-body md-viewer-doc";
+  if (txt) {
+    try {
+      pane.innerHTML =
+        typeof dshThinkMdHtml === "function" ? dshThinkMdHtml(txt) : escapeHtml(txt);
+    } catch (_) {
+      pane.textContent = txt;
+    }
+  } else {
+    pane.textContent = I18n.t("这次压缩没有返回摘要正文");
+  }
+  root.appendChild(pane);
+  body.appendChild(root);
+  const foot = document.getElementById("ovFoot");
+  if (foot) {
+    if (txt) {
+      const cp = document.createElement("button");
+      cp.type = "button";
+      cp.className = "mini";
+      cp.textContent = I18n.t("复制");
+      cp.title = I18n.t("复制这份摘要到剪贴板");
+      cp.onclick = () => {
+        const done = () => {
+          cp.textContent = I18n.t("已复制");
+          setTimeout(() => {
+            cp.textContent = I18n.t("复制");
+          }, 1200);
+        };
+        dshClipboardWrite(txt)
+          .then((r) => (r && r.ok === false ? toast(appClipboardFailureText(r), "err") : done()))
+          .catch((err) =>
+            toast(appClipboardFailureText({ error: (err && err.message) || "" }), "err"),
+          );
+      };
+      foot.appendChild(cp);
+    }
+    const close = document.createElement("button");
+    close.className = "mini primary";
+    close.textContent = I18n.t("关闭");
+    close.onclick = () => closeOverlay();
+    foot.appendChild(close);
+  }
+}
+function dshCompactRowEl(seg) {
+  if (!seg) return null;
+  const phase = String(seg.phase || "start");
+  if (phase === "error") {
+    const d = document.createElement("div");
+    d.className = "dsh-seg dsh-compact err";
+    const label = document.createElement("span");
+    label.className = "dsh-compact-label";
+    label.textContent = I18n.t("自动压缩失败");
+    const txt = document.createElement("span");
+    txt.className = "dsh-compact-text";
+    txt.textContent = String(seg.text || "");
+    d.appendChild(label);
+    d.appendChild(txt);
+    d.title = I18n.t("这次自动压缩没有完成：上面是运行时给出的错误（不进 token 统计）");
+    return d;
+  }
+  /* start 且还没收到 summary / end：扫光态；已收口的 start（没有摘要就结束了）
+     退化成一行静态的「压缩过」，不点开浮层（没有正文可看）。 */
+  if (phase === "start") {
+    const done = Number(seg.doneAt) > 0;
+    const d = document.createElement("div");
+    d.className = "dsh-seg dsh-compact" + (done ? "" : " run");
+    if (!done) {
+      const ico = document.createElement("span");
+      ico.className = "dsh-compact-ico";
+      ico.textContent = "◌";
+      d.appendChild(ico);
+    }
+    const txt = document.createElement("span");
+    txt.className = "dsh-compact-text";
+    /* 没有摘要就结束（start 收了口但 summary 没到）：不留一条转不动的「正在压缩」 */
+    txt.textContent = done
+      ? dshCompactLabelOf(seg)
+      : I18n.t("正在压缩上文…");
+    d.appendChild(txt);
+    return d;
+  }
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "dsh-seg dsh-compact dsh-compact-btn";
+  const ico = document.createElement("span");
+  ico.className = "dsh-compact-ico";
+  ico.textContent = "▣";
+  btn.appendChild(ico);
+  const txt = document.createElement("span");
+  txt.className = "dsh-compact-text";
+  txt.textContent = dshCompactLabelOf(seg);
+  btn.appendChild(txt);
+  btn.title = I18n.t("点开查看这次压缩的摘要与被带走的工具调用");
+  btn.onclick = () => openCompactSegPop(seg);
+  return btn;
+}
+
 function dshHistSegEl(seg, pool, nodeId, idx, n, showThink, msgAt, policy, tok) {
   if (!seg || !seg.k) return null;
   const pol = policy || null;
+  /* 自动压缩段：按 phase 画三态，左侧同样挂它自己的时刻（与其它段同一口径） */
+  if (seg.k === "compact") {
+    const c = dshCompactRowEl(seg);
+    /* 不挂「本步 token」：压缩自己不是一次模型调用，行内的统计取自段上的
+       shadowedTokenCount（见 dshCompactLabelOf），别拿同一步的 token 冒充它 */
+    if (c) dshSegTimeAttach(c, seg.at, 0, msgAt, 0);
+    return c;
+  }
   /* 上下文注入行：同样按段序内联，左侧也挂它自己的时刻（本次需求） */
   if (seg.k === "ctx") {
     const c = dshContextRowEl(seg);
@@ -8805,6 +9746,16 @@ function agentLiveSegsEl(row, st, live, items) {
       dshSegTimeAttach(wrap, t.at || seg.at, t.doneAt, 0, tok);
       segEls[i] = wrap;
       row.appendChild(wrap);
+    } else if (seg.k === "compact") {
+      /* 自动压缩（任务 3/8）：运行中同样按 phase 内联 —— start 是扫光行，
+         summary 转成可点开的统计行，error 是失败提示 */
+      const c = dshCompactRowEl(seg);
+      segEls[i] = c || null;
+      if (c) {
+        /* 同历史路径：不挂本步 token（统计在段自己身上） */
+        dshSegTimeAttach(c, seg.at, 0, 0, 0);
+        row.appendChild(c);
+      }
     } else if (seg.k === "ctx") {
       /* 上下文注入行：运行中也照同一份渲染（工具增删随请求头到达，往往还在跑的时候就有） */
       const c = dshContextRowEl(seg);
@@ -9253,7 +10204,12 @@ function agentFoldRowEl(st, gid, count, at, open) {
   head.appendChild(caret);
   const label = document.createElement("span");
   label.className = "agent-fold-label";
-  label.textContent = I18n.t("已压缩的历史 · {n} 条", { n: Number(count) || 0 });
+  /* 标题（任务 4/8）：条数 + 这次压缩自己消耗的 token（输入 / 输出分开，见
+     compactUsageTextOf）；老记录没有 usage 就不写这一段。 */
+  const foldTok = compactUsageTextOf(compactRecOf(st, gid));
+  label.textContent =
+    I18n.t("已压缩的历史 · {n} 条", { n: Number(count) || 0 }) +
+    (foldTok ? " · " + foldTok : "");
   head.appendChild(label);
   if (at) {
     const t = document.createElement("span");
@@ -9275,9 +10231,108 @@ function agentFoldRowEl(st, gid, count, at, open) {
   row.appendChild(head);
   return row;
 }
+/* 压缩记录的 token 消耗（任务 4/8）：手动压缩取那一轮 metrics 的输入 / 输出，
+   自动压缩取网关 summary 帧的 usage；两格都为 0 就不写这一句（不拿 0 冒充）。 */
+function compactUsageOfMetrics(m) {
+  if (!m || typeof m !== "object") return null;
+  const num = (v) => Math.max(0, Number(v) || 0);
+  const u = {
+    inputTokens: num(m.inputTokens),
+    outputTokens: num(m.outputTokens),
+    cacheReadTokens: num(m.cacheReadTokens),
+    reasoningTokens: num(m.reasoningTokens),
+  };
+  return u.inputTokens || u.outputTokens || u.cacheReadTokens || u.reasoningTokens ? u : null;
+}
+function compactUsageTextOf(rec) {
+  const u = rec && rec.usage;
+  if (!u) return "";
+  const inp = Math.max(0, Number(u.inputTokens) || 0);
+  const out = Math.max(0, Number(u.outputTokens) || 0);
+  if (!inp && !out) return "";
+  return I18n.t("压缩消耗 输入 {i} / 输出 {o} tok", {
+    i: typeof dshTokShort === "function" ? dshTokShort(inp) : String(inp),
+    o: typeof dshTokShort === "function" ? dshTokShort(out) : String(out),
+  });
+}
+/* 一条压缩记录这次带走的工具调用（任务 4/8）：
+   · 手动压缩 —— 按折组 id 从被折消息的 m.tools **实时**取（不另存副本）；
+   · 自动压缩 —— 取记录里网关给的精简清单（只有名称 + 结果首段）。
+   统一成 {name, args, result, error}，渲染侧不必再判来源。 */
+function compactToolItemsOf(st, rec) {
+  const out = [];
+  if (!rec) return out;
+  if (rec.kind === "auto") {
+    for (const t of Array.isArray(rec.tools) ? rec.tools : []) {
+      const name = String((t && t.name) || "").trim() || I18n.t("（未记名）");
+      const result = String((t && t.result) || "");
+      if (!name && !result) continue;
+      out.push({ name, args: "", result, error: "" });
+    }
+    return out;
+  }
+  const gid = String(rec.id || "");
+  if (!gid) return out;
+  for (const m of Array.isArray(st && st.messages) ? st.messages : []) {
+    if (!m || String(m._fold || "") !== gid) continue;
+    for (const t of Array.isArray(m.tools) ? m.tools : []) {
+      if (!t) continue;
+      const name = String(t.name || "").trim() || I18n.t("（未记名）");
+      const args = typeof agentCompactArgsText === "function" ? agentCompactArgsText(t) : "";
+      const err = typeof agentCompactErrorText === "function" ? agentCompactErrorText(t.error) : "";
+      const result =
+        typeof agentCompactResultText === "function" && !err ? agentCompactResultText(t) : "";
+      if (!name && !args && !result && !err) continue;
+      out.push({ name, args, result, error: err });
+    }
+  }
+  return out;
+}
+/* 结果 / 错误的第一行：清单收起时只显示这一行（过长截断，完整内容点开看） */
+function compactFirstLine(s) {
+  const txt = String(s == null ? "" : s).replace(/\s+/g, " ").trim();
+  if (!txt) return "";
+  return txt.length > 80 ? txt.slice(0, 80) + "…" : txt;
+}
+/* 工具调用清单（任务 4/8）：整块与每一条都**默认收起** —— 外层是清单标题，
+   点一条展开它的入参 / 结果，各最多 2000 字（agentCompactClip 统一截）。 */
+function compactToolsSectionEl(items) {
+  const list = Array.isArray(items) ? items : [];
+  if (!list.length) return null;
+  const sec = document.createElement("details");
+  sec.className = "compact-pop-tools";
+  const head = document.createElement("summary");
+  head.className = "compact-pop-tools-head";
+  head.textContent = I18n.t("这次压缩带走的工具调用 · {n} 次", { n: list.length });
+  sec.appendChild(head);
+  for (const it of list) {
+    const row = document.createElement("details");
+    row.className = "compact-pop-tool";
+    const sum = document.createElement("summary");
+    sum.className = "compact-pop-tools-head";
+    const first = compactFirstLine((it && (it.error || it.result)) || "");
+    sum.textContent = String((it && it.name) || "") + (first ? " · " + first : "");
+    sum.title = I18n.t("点开看这次调用的入参 / 结果（各最多 2000 字）");
+    row.appendChild(sum);
+    const pre = document.createElement("pre");
+    pre.className = "compact-pop-tools-body";
+    const clip = (v) =>
+      typeof agentCompactClip === "function"
+        ? agentCompactClip(v, AGENT_COMPACT_FIELD_MAX)
+        : String(v == null ? "" : v);
+    const lines = [];
+    if (it && it.args) lines.push(I18n.t("入参：") + clip(it.args));
+    if (it && it.error) lines.push(I18n.t("错误：") + clip(it.error));
+    else lines.push(I18n.t("结果：") + clip((it && it.result) || I18n.t("（无结果）")));
+    pre.textContent = lines.join("\n");
+    row.appendChild(pre);
+    sec.appendChild(row);
+  }
+  return sec;
+}
 /* 「查看压缩摘要」那枚 chip：最近一次压缩的摘要全文 + 元信息 + 复制（只读，不改写） */
-function openCompactSummaryPop() {
-  const st = agentSessionState();
+function openCompactSummaryPop(stOpt) {
+  const st = stOpt || agentSessionState();
   const rec = compactLatestOf(st);
   if (!rec) {
     toast(I18n.t("还没有压缩记录：先点「压缩上下文」"), "warn");
@@ -9296,16 +10351,35 @@ function openCompactSummaryPop() {
   root.className = "compact-pop";
   const meta = document.createElement("div");
   meta.className = "compact-pop-meta";
+  /* 元信息行（任务 4/8）：压掉多少条 / 原文多少字 + **这次压缩自己消耗的 token**
+     （输入 / 输出分开）+ 带走的工具调用次数 + 时刻；没有的项不占位。 */
+  const count = Number(rec.count) || 0;
+  const chars = Number(rec.chars) || 0;
+  const toolItems = compactToolItemsOf(st, rec);
   meta.textContent = [
-    I18n.t("压掉 {n} 条消息 · 原文约 {c} 字", {
-      n: Number(rec.count) || 0,
-      c: Number(rec.chars) || 0,
-    }),
+    rec.kind === "auto" ? I18n.t("自动压缩") : "",
+    count && chars
+      ? I18n.t("压掉 {n} 条消息 · 原文约 {c} 字", { n: count, c: chars })
+      : count
+        ? I18n.t("压掉 {n} 条消息", { n: count })
+        : "",
+    compactUsageTextOf(rec),
+    toolItems.length ? I18n.t("工具调用 {n} 次", { n: toolItems.length }) : "",
     rec.at ? formatMsgTimeSec(rec.at) : "",
   ]
     .filter(Boolean)
     .join(" · ");
   root.appendChild(meta);
+  /* 这次压缩带走的工具调用：整块默认收起，点一条展开入参 / 结果（各最多 2000 字）；
+     手动取被折消息的实时清单，自动取记录里的精简清单；没有就整块不出现。 */
+  const toolsSec = compactToolsSectionEl(toolItems);
+  if (toolsSec) {
+    toolsSec.title =
+      rec.kind === "auto"
+        ? I18n.t("按这次压缩关联到的工具调用，只读")
+        : I18n.t("按折组从被折消息里实时取，只读，不另存副本");
+    root.appendChild(toolsSec);
+  }
   const pane = document.createElement("div");
   pane.className = "compact-pop-body md-viewer-doc";
   try {
@@ -10557,15 +11631,7 @@ function renderAgentSessionSidebar() {
       );
     }
     let wfEl = null;
-    if (s.assist) {
-      /* 助手是跨画布全局的：不写「所属画布」，改标「全局」（共识 q4） */
-      wfEl = document.createElement("span");
-      wfEl.className = "side-sess-wf";
-      wfEl.textContent = I18n.t("全局");
-      wfEl.title = I18n.t(
-        "全局助手不绑任何画布：它按消息自行判定这一轮要不要碰画布",
-      );
-    } else if (canvasShown) {
+    if (canvasShown) {
       wfEl = document.createElement("span");
       wfEl.className = "side-sess-wf";
       wfEl.textContent = "▣ " + canvasShown;
@@ -10574,6 +11640,15 @@ function renderAgentSessionSidebar() {
         canvasShown +
         "\n" +
         I18n.t("会话只读写它所属的这张画布；你切到别的画布干活不会串图");
+    } else if (s.assist) {
+      /* 助手会话同样在建立那一刻绑画布；还没绑定（本次修复前建的老会话）才如实标「全局」，
+         下一次发送时补绑 —— 绝不在这里按前台画布现取归属。 */
+      wfEl = document.createElement("span");
+      wfEl.className = "side-sess-wf";
+      wfEl.textContent = I18n.t("全局");
+      wfEl.title = I18n.t(
+        "这条助手会话还没有绑定画布：下一次发送时绑定当时的画布，此后固定不变",
+      );
     }
     /* 运行状态指示:转圈动效 + 「运行中」(仅运行中的会话显示) */
     const stt = document.createElement("span");
@@ -10963,29 +12038,218 @@ function agentCompactApply(st, info) {
   st.compacts = prev.concat([
     {
       id: gid,
+      /* 任务 4/8：记录自带来源（manual / auto），浮层与 chip 据此取清单、排最近一次；
+         老记录没这一位时一律按 manual 处理（compactLatestOf / compactRecOf）。 */
+      kind: "manual",
       at: at,
       count: count,
       chars: Math.max(0, Number(info && info.chars) || 0),
       summary: summary,
+      /* 这次压缩自己消耗的 token（压缩那一轮 metrics 的输入 / 输出，见 agentCompactRun） */
+      usage: compactUsageOfMetrics(info && info.usage),
+      provider: String((info && info.provider) || ""),
+      model: String((info && info.model) || ""),
     },
   ]);
   st.foldOpen = Object.assign({}, st.foldOpen);
   delete st.foldOpen[gid];
   return count;
 }
-/* 最近一次压缩的记录：摘要只有最近一份 —— 最后一条带 summary 的（历史的那些压过就没了） */
+/* 最近一次压缩的记录（任务 4/8）：手动（kind:'manual' 或老记录没写 kind）与自动
+   （kind:'auto'）两种都算 —— 「查看压缩摘要」chip 覆盖两者，取**时刻最近**的那一次
+   （同样的 at 以数组里靠后的为准；摘要只有最近一份，自动压缩的摘要也进这张表）。 */
 function compactLatestOf(st) {
   const list = (st && Array.isArray(st.compacts) ? st.compacts : []).filter(
     (c) => c && c.summary && String(c.summary).trim(),
   );
-  return list.length ? list[list.length - 1] : null;
+  let best = null;
+  for (const c of list) {
+    if (!best || (Number(c.at) || 0) >= (Number(best.at) || 0)) best = c;
+  }
+  return best;
 }
-/* 某个折组的记录（标题里的条数 / 时刻）：找不到就返回 null（调用方按消息现数） */
+/* 某个折组的记录（标题里的条数 / 时刻 / token）：找不到就返回 null（调用方按消息现数）。
+   自动压缩记录（kind:'auto'）没有折组 —— 真被按 id 问到也只回手动那一类，
+   折叠行因此只认得出自己的记录（自动压缩只留浮层入口，不画折组行）。 */
 function compactRecOf(st, gid) {
+  const want = String(gid || "");
+  if (!want) return null;
   const list = st && Array.isArray(st.compacts) ? st.compacts : [];
-  for (let i = list.length - 1; i >= 0; i--)
-    if (list[i] && String(list[i].id) === String(gid)) return list[i];
+  for (let i = list.length - 1; i >= 0; i--) {
+    const c = list[i];
+    if (!c || String(c.id) !== want) continue;
+    return c.kind === "auto" ? null : c;
+  }
   return null;
+}
+/* 自动压缩的记录（任务 4/8）：网关 compaction/summary 到的那一拍把摘要 + 统计 + 这次
+   带走的精简工具清单记一条 kind:'auto'（app-assist.js 的 onEvent 调它）。它**没有折组**
+   —— 被压掉的消息是运行时的上下文，不是会话正文 —— 所以只给「查看压缩摘要」chip 用。
+   去重口径：同一条摘要 3 秒内重复到达只记一条（重连 / 重发不该记两笔账）。 */
+function agentCompactRecordAuto(st, seg) {
+  if (!st || !seg) return null;
+  const text = String(seg.text || "");
+  if (!text.trim()) return null;
+  const at = Date.now();
+  const list = Array.isArray(st.compacts) ? st.compacts.slice() : [];
+  const last = list.length ? list[list.length - 1] : null;
+  if (
+    last &&
+    last.kind === "auto" &&
+    String(last.summary || "") === text &&
+    Math.abs(at - (Number(last.at) || 0)) < 3000
+  )
+    return last;
+  const rec = {
+    id: uid("ca"),
+    kind: "auto",
+    at: at,
+    count: Math.max(0, Number(seg.shadowedCount) || 0),
+    chars: 0,
+    summary: text,
+    provider: String(seg.provider || ""),
+    model: String(seg.model || ""),
+    usage: compactUsageOfMetrics(seg.usage),
+    tools: (Array.isArray(seg.tools) ? seg.tools : []).slice(0, 20).map((t) => ({
+      name: String((t && t.name) || ""),
+      result: String((t && t.result) || "").slice(0, 500),
+    })),
+  };
+  st.compacts = list.concat([rec]).slice(-40);
+  agentMarkSessionDirty(st.id);
+  return rec;
+}
+/* ── 压缩正文的构造（本次需求）：工具调用也要进压缩输入 ─────────────────────────
+   以前只取 m.content，于是模型看这份「待压缩的对话」时一次工具调用都看不到 ——
+   干过什么、拿到了什么全丢了。现在按消息顺序构造：普通消息仍走 app-db.js 的
+   agentHistoryEntries 口径（同文去重 / _fold / _src 过滤一处不改，带 opts.withMsg
+   取回源消息），每条消息的 m.tools 紧跟在它后面拼成
+   「[工具] 名称 / 入参: … / 结果: …（或 错误: …）」，入参 / 结果各截 2000 字并标「已截断」。
+   整段与正文共用同一个 40000 字上限（超出从最早处丢，保留最近内容）。
+   下面三支都是纯函数（无副作用、不碰 DOM），浮层与单测直接复用：
+     · agentCompactToolLinesOf(t, opts)      一条工具记录 → 那段三行文字；
+     · agentCompactTurnsOf(entries, opts)    带 msg 引用的历史条目 → 逐条正文 + 它的工具行；
+     · agentCompactFoldToolLinesOf(messages, gid, opts)
+         按折组 gid 从被折消息的 m.tools **实时**取清单（只列本次被折的那批，
+         不另存副本）——「查看压缩摘要」浮层用它。 */
+const AGENT_COMPACT_MAX_CHARS = 40000;
+const AGENT_COMPACT_FIELD_MAX = 2000;
+const AGENT_COMPACT_CLIP_MARK = I18n.t("…（已截断）");
+/* 入参 / 结果单段限长：超出截前 max 字并明说被截断了（不让一段工具输出吃光整份预算） */
+function agentCompactClip(s, max) {
+  const txt = String(s == null ? "" : s);
+  const n = Math.max(0, Number(max) || AGENT_COMPACT_FIELD_MAX);
+  return txt.length > n ? txt.slice(0, n) + AGENT_COMPACT_CLIP_MARK : txt;
+}
+/* 工具入参：DSH 透传的常见形状是 JSON 串（也可能已被解析成对象 / 数组） */
+function agentCompactArgsText(t) {
+  const a = t && t.args;
+  if (a == null || a === "") return "";
+  if (typeof a === "string") return a;
+  try {
+    const j = JSON.stringify(a);
+    return typeof j === "string" ? j : "";
+  } catch (_) {
+    return String(a);
+  }
+}
+/* 工具结果：网关给的是 content 块数组（{type,text}），老记录 / 非会话运行可能是字符串 */
+function agentCompactResultText(t) {
+  const r = t && t.result;
+  if (Array.isArray(r)) {
+    const parts = [];
+    for (const b of r) {
+      if (!b) continue;
+      if (typeof b === "string") parts.push(b);
+      else if (typeof b.text === "string") parts.push(b.text);
+    }
+    return parts.join("\n\n").trim();
+  }
+  if (typeof r === "string") return r.trim();
+  if (r && typeof r === "object") {
+    try {
+      const j = JSON.stringify(r);
+      return typeof j === "string" ? j : "";
+    } catch (_) {
+      return "";
+    }
+  }
+  return "";
+}
+/* 工具错误：形状是 {name,code,message,detail,cause}（老记录可能直接是字符串） */
+function agentCompactErrorText(e) {
+  if (e == null) return "";
+  if (typeof e === "string") return e;
+  const bits = [];
+  if (e.name) bits.push(String(e.name));
+  if (e.code) bits.push(String(e.code));
+  const msg = e.message || e.detail || (e.cause && e.cause.message) || "";
+  return bits.join(" ") + (msg ? (bits.length ? "\n" : "") + String(msg) : "");
+}
+/* 一条工具调用 → 「[工具] 名称\n入参: …\n结果: …（或 错误: …）」 */
+function agentCompactToolLinesOf(t, opts) {
+  if (!t) return "";
+  const max = Math.max(0, Number(opts && opts.fieldMax) || AGENT_COMPACT_FIELD_MAX);
+  const name = String(t.name || "").trim();
+  if (!name && !t.args && !t.result && !t.error) return "";
+  const lines = ["[工具] " + (name || "（未记名）")];
+  lines.push("入参: " + agentCompactClip(agentCompactArgsText(t), max));
+  lines.push(
+    t.error
+      ? "错误: " + agentCompactClip(agentCompactErrorText(t.error), max)
+      : "结果: " + agentCompactClip(agentCompactResultText(t), max),
+  );
+  return lines.join("\n");
+}
+/* 历史条目（agentHistoryEntries + withMsg）→ 逐条正文 + 紧跟其后的工具调用；
+   整段按上限从最早处丢，保留最近内容（与 agentHistoryEntries 同一口径）。 */
+function agentCompactTurnsOf(entries, opts) {
+  const cap = Math.max(0, Number(opts && opts.maxChars) || AGENT_COMPACT_MAX_CHARS);
+  const turns = [];
+  for (const e of Array.isArray(entries) ? entries : []) {
+    if (!e) continue;
+    const txt = String(e.text == null ? "" : e.text);
+    if (!txt) continue;
+    turns.push({
+      role: e.role,
+      kind: "say",
+      text: (e.role === "user" ? "用户：" : "助手：") + txt,
+    });
+    const list = e.msg && Array.isArray(e.msg.tools) ? e.msg.tools : [];
+    for (const t of list) {
+      const line = agentCompactToolLinesOf(t, opts);
+      if (line) turns.push({ role: "tool", kind: "tool", text: line });
+    }
+  }
+  const size = (list) => list.reduce((n, r) => n + r.text.length + 2, 0);
+  let out = turns;
+  while (out.length > 1 && size(out) > cap) out = out.slice(1);
+  return out;
+}
+/* 整份压缩正文（agentCompactRun 用）：口径全部收在 agentHistoryEntries + 上面两支 */
+function agentCompactBodyOf(messages, opts) {
+  const entries = agentHistoryEntries(
+    { messages: Array.isArray(messages) ? messages : [] },
+    { maxChars: AGENT_COMPACT_MAX_CHARS, skipLast: false, withMsg: true },
+  );
+  const body = agentCompactTurnsOf(entries, opts)
+    .map((r) => r.text)
+    .join("\n\n");
+  return body.length > AGENT_COMPACT_MAX_CHARS ? body.slice(-AGENT_COMPACT_MAX_CHARS) : body;
+}
+/* 按折组 gid 取「本次被折的那批消息」的工具调用清单（实时现算，不落副本）：浮层用 */
+function agentCompactFoldToolLinesOf(messages, gid, opts) {
+  const want = String(gid || "");
+  const out = [];
+  if (!want) return out;
+  for (const m of Array.isArray(messages) ? messages : []) {
+    if (!m || String(m._fold || "") !== want) continue;
+    for (const t of Array.isArray(m.tools) ? m.tools : []) {
+      const line = agentCompactToolLinesOf(t, opts);
+      if (line) out.push(line);
+    }
+  }
+  return out;
 }
 /* 输入区那两枚「压缩」chip 的显隐与状态（每次会话渲染都刷一遍）：
    · 「压缩上下文」：压缩中显示「压缩中…」并禁用；会话运行中同样禁用（沿用现状口径，
@@ -11027,10 +12291,11 @@ async function agentCompactConfirm() {
     return false;
   }
 }
-/* 压缩入口（输入区按钮 / /compact 命令同一条链）：
-   空会话 / 运行中 / 压缩进行中均有明确提示并防重入（沿用现状口径）。 */
-async function agentCompact() {
-  const st = agentSessionState();
+/* 压缩入口（输入区按钮 / /compact 命令 / 助手栏那枚 chip 同一条链）：
+   空会话 / 运行中 / 压缩进行中均有明确提示并防重入（沿用现状口径）。
+   参数 stOpt：要压哪条会话。省略 = 会话视图当前那条；助手栏传它绑定的助手会话。 */
+async function agentCompact(stOpt) {
+  const st = stOpt || agentSessionState();
   if (!st.messages.length) {
     toast(I18n.t("当前会话没有可压缩的消息"), "warn");
     return;
@@ -11061,13 +12326,12 @@ async function agentCompact() {
 }
 async function agentCompactRun(st) {
   /* 历史存档里曾被回滚的轮次消息不参与压缩：它们已不在上下文里，摘要也不该复述它们。
-     构造口径收进 agentHistoryEntries（同文去重 + 整段限长 + 把只给用户看的界面痕迹
-     `_src:'dev-node'` / `_src:'ix-browser'`（老会话里求助卡的「已回应」记录）挡在外面）
-     —— 压缩摘要不该把界面痕迹当成用户说过的话抄进去。 */
+     正文构造收进 agentCompactBodyOf：普通消息仍走 agentHistoryEntries（同文去重 + 整段
+     限长 + 把只给用户看的界面痕迹 `_src:'dev-node'` / `_src:'ix-browser'`（老会话里求助卡
+     的「已回应」记录）挡在外面），另把每条消息 m.tools 的每次调用按顺序拼进去
+     （「[工具] 名称 / 入参 / 结果」，各段截 2000 字）—— 压缩输入不再丢掉工具调用。 */
   const rbSrc = activeSessionMessages(st.messages);
-  const hist = agentHistoryEntries({ messages: rbSrc }, { maxChars: 40000, skipLast: false })
-    .map((r) => (r.role === "user" ? "用户：" : "助手：") + r.text)
-    .join("\n\n");
+  const hist = agentCompactBodyOf(rbSrc);
   /* 压缩后的大小（本次需求，与自动压缩同一份设置：config.dsh.compact 的
      retainTokens / summaryMaxTokens）：
        · 保留原文 = 最近 N token 的消息不折叠 → 换算成字符（1 token ≈ 2 字符）；
@@ -11077,13 +12341,17 @@ async function agentCompactRun(st) {
   const retainChars = compactRetainEffectiveOf(S.config).tokens * COMPACT_CHARS_PER_TOKEN;
   const summaryChars = compactSummaryEffectiveOf(S.config).tokens * COMPACT_CHARS_PER_TOKEN;
   toast(I18n.t("正在压缩上文…"), "ok");
+  /* 这次压缩自己烧掉的 token（任务 4/8）：压缩那一轮的 done 帧带来 metrics，
+     记进本次压缩记录（浮层「压缩消耗 输入 / 输出」与折叠行标题读它）。 */
+  let compactMetrics = null;
   try {
     const summary = await dshRunTask(
       "【压缩任务】把以下对话压缩为一段简明摘要，保留任务目标、关键结论与未完成事项，" +
         "整段不超过 " +
         summaryChars +
         " 字:\n\n" +
-        hist.slice(-40000),
+        /* 整份正文（正文 + 工具调用）已按同一个 40000 字上限截过（保留最近内容） */
+        hist,
       {
         runKey: "agent:" + st.id,
         /* 与本轮运行同一真源（手填 > 画布项目根 > 默认）：压缩用的引擎目录
@@ -11093,7 +12361,15 @@ async function agentCompactRun(st) {
         provider: st.provider || "deepseek-official",
         model: st.model || undefined,
         effort: st.effort || "high",
-        onDone: (d) => recordDshMetrics(null, d.metrics),
+        onDone: (d) => {
+          recordDshMetrics(null, d.metrics);
+          compactMetrics = (d && d.metrics) || null;
+        },
+        /* 压缩轮单独入账一条「上下文压缩」轮次（任务 5/8）：tokCompaction 让 dshRunTask
+           收尾走 tokAddCompactionRound（不调 tokMergeRun，不动在途台账）；tokTitle 兜住
+           轮次标题，免得被截断的压缩提示词当成标题。 */
+        tokCompaction: true,
+        tokTitle: I18n.t("上下文压缩"),
       },
     );
     /* 折叠 + 保留会话（口径见上方「手动压缩上下文」段的 ③④，落点 = agentCompactApply）：
@@ -11105,6 +12381,9 @@ async function agentCompactRun(st) {
       summary: summary,
       chars: hist.length,
       keepChars: retainChars,
+      usage: compactMetrics,
+      provider: st.provider || "",
+      model: st.model || "",
     });
     if (!folded) {
       /* 剩下的原文都还在保留量之内（把保留原文调得很大时的正常结果）：
@@ -11469,10 +12748,14 @@ async function agentResumePaused(st) {
   });
 }
 
-/* 输入区上方的「已暂停」条（与发送队列条同风格）：说清楚停在哪、队列还剩几条、怎么接。 */
-function renderAgentPausedBar(st) {
-  const el = document.getElementById("agentPaused");
+/* 输入区上方的「已暂停」条（与发送队列条同风格）：说清楚停在哪、队列还剩几条、怎么接。
+   第二个参数是容器（助手栏复用同一份渲染：传 #assistPaused；省略 = 会话视图那条）。
+   换容器只是换了 id，判定 / 文案 / 按钮与原生一字不差。 */
+function renderAgentPausedBar(st, root) {
+  const el = root || document.getElementById("agentPaused");
   if (!el) return;
+  /* 原生这一块重绘 = 数据变了，顺手把助手栏那份摘要行也刷掉（同一份数据） */
+  if (!root) assistAfterSessionRender(st);
   const on = !!(st && st.paused);
   if (!on) {
     el.hidden = true;
@@ -11580,12 +12863,14 @@ function agentPendingSteers(st) {
   return out.slice(-3);
 }
 
-function renderAgentQueueBar(st) {
-  const el = document.getElementById("agentQueue");
+function renderAgentQueueBar(st, root, passedPausedRoot) {
+  const el = root || document.getElementById("agentQueue");
   if (!el) return;
-  /* 「已暂停」条要报队列还剩几条：队列一有增减就跟着刷一次（同一处真源，不分叉） */
+  if (!root) assistAfterSessionRender(st);
+  /* 「已暂停」条要报队列还剩几条：队列一有增减就跟着刷一次（同一处真源，不分叉）。
+     助手栏复用同一份渲染时，暂停条与队列条各自的容器由调用方一起给（pausedRoot）。 */
   try {
-    renderAgentPausedBar(st);
+    renderAgentPausedBar(st, passedPausedRoot);
   } catch (_) {}
   const list = (st && Array.isArray(st.outbox) ? st.outbox : []).filter(Boolean);
   const steers = agentPendingSteers(st);
@@ -11794,10 +13079,10 @@ function agentRoundLabel(st) {
 }
 /* 把时间区间落到会话区左上角（#agentRound：<b>起点</b><i>– 终点</i>）：
    还没有任何带时刻的消息（空会话 / 从未开跑过一轮）→ 整行 hidden 不占位。 */
-function agentRoundLabelApply(st) {
+function agentRoundLabelApply(st, root) {
   let el = null;
   try {
-    el = document.getElementById("agentRound");
+    el = root || document.getElementById("agentRound");
   } catch (_) {}
   if (!el) return;
   const r = agentRoundRange(st);
@@ -11948,9 +13233,10 @@ const TODO_MARK_CLASS = {
   unknown: "unknown",
 };
 /* 会话底部的任务清单卡：可折叠、可逐条删除、可清除 */
-function renderAgentTodoPanel(st) {
-  const el = document.getElementById("agentTodo");
+function renderAgentTodoPanel(st, root) {
+  const el = root || document.getElementById("agentTodo");
   if (!el) return;
+  if (!root) assistAfterSessionRender(st);
   const list = (st && Array.isArray(st.todos) ? st.todos : []) || [];
   if (!list.length) {
     el.hidden = true;
@@ -12645,6 +13931,28 @@ async function agentSessionSend(text, opts) {
             }
           } catch (_) {}
           if (mine) agentUiSoon("footer", () => renderSessionFooterStat());
+        } else if (type === "compaction") {
+          /* 自动压缩（任务 3/8）：段由 app-db.js 的 traceFeedEvent 落好，
+             start（扫光行）/ summary（统计行）/ end 三拍都要立刻反映在时间线上 ——
+             这里只对账运行中的这一行，不重建整表。 */
+          /* 任务 4/8：summary 那一拍另记一条 kind:'auto' 的压缩记录（摘要 + 统计 +
+             这次带走的精简工具清单），「查看压缩摘要」chip 与浮层据此覆盖自动压缩。 */
+          if (data && data.phase === "summary") {
+            try {
+              /* 自动压缩的用量也单独立一条「上下文压缩」轮次（任务 5/8）：网关 summary
+                 帧的 usage 走与手动压缩同一个入账函数；rid 钉在这条压缩记录上，
+                 重连 / 重发重复到达也只记一笔。 */
+              const crec = agentCompactRecordAuto(st, data);
+              if (crec && typeof tokAddCompactionRound === "function")
+                tokAddCompactionRound(st, null, {
+                  usage: data.usage,
+                  provider: data.provider,
+                  model: data.model,
+                  rid: "compact:" + crec.id,
+                });
+            } catch (_) {}
+          }
+          if (mine) agentUiSoon("compact", () => agentLiveRepaint(st));
         } else if (type === "say-end") {
           /* 正文块收尾（网关在块末发 say-end，见 dsh/DESIGN.md）：这一段已经定稿，
              不再是「流式尾段」。它恰好还是尾段时（= 最终答复那一块，后面没有工具 /

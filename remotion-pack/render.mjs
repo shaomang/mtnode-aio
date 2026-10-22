@@ -142,21 +142,6 @@ const main = async () => {
   fs.mkdirSync(path.dirname(outputLocation), {recursive: true});
 
   let lastBucket = -1;
-  /* 渲染桥看门：项目工程里的素材可能是宿主临时起的 127.0.0.1 地址（见 main-remotion.js 的
-     startRenderBridge），渲染开始后就没人在取了 —— 空闲满 bridgeIdleMs 就上报 bridgeIdle，
-     由宿主关掉那只一次性服务；本脚本不额外起进程，也不在中途抽走素材。 */
-  const idleMs = Math.max(60000, Number(cfg.bridgeIdleMs) || 6 * 60 * 1000);
-  let lastHit = Date.now();
-  const watch = setInterval(() => {
-    if (Date.now() - lastHit > idleMs) {
-      emit({type: 'bridgeIdle'});
-      lastHit = Date.now();
-    }
-  }, 5000);
-  if (watch.unref) watch.unref();
-  const progressTick = () => {
-    lastHit = Date.now();
-  };
   await renderMedia({
     composition,
     serveUrl,
@@ -169,7 +154,6 @@ const main = async () => {
     ...(cfg.jpegQuality ? {jpegQuality: cfg.jpegQuality} : {}),
     ...(cfg.audioCodec ? {audioCodec: cfg.audioCodec} : {}),
     onProgress: ({progress}) => {
-      progressTick();
       const bucket = Math.floor(progress * 200); // 0.5% 步进，避免刷屏
       if (bucket !== lastBucket) {
         lastBucket = bucket;
@@ -177,7 +161,6 @@ const main = async () => {
       }
     },
   });
-  clearInterval(watch);
 
   emit({
     type: 'done',

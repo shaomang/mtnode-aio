@@ -780,6 +780,9 @@ contextBridge.exposeInMainWorld('api', {
   remotionOpen: () => ipcRenderer.invoke('remotion:open'),
   remotionClose: () => ipcRenderer.invoke('remotion:close'),
   remotionGenerate: (params) => ipcRenderer.invoke('remotion:render', params || {}),
+  /* 自定义合成参数预览：按与真正渲染完全相同的口径（接线文本里的 props + 节点参数里的
+     未知键 + 参数文件）算出本次会传给合成的 props，供设置窗与 Agent 核对。 */
+  remotionResolveProps: (params) => ipcRenderer.invoke('remotion:resolveProps', params || {}),
   remotionCancel: (nodeId) => ipcRenderer.invoke('remotion:cancelRender', nodeId),
   remotionRemovePluginMeta: () => ipcRenderer.invoke('remotion:removePluginMeta'),
   /* 卡片「安装 / 重装」用：先选安装目录（系统选择框，不开插件窗），装不装得下由用户定 */
@@ -1000,6 +1003,21 @@ contextBridge.exposeInMainWorld('api', {
     const h = (_e, d) => { try { cb(d); } catch (_) {} };
     ipcRenderer.on('paseoRemote:consoleChanged', h);
     return () => ipcRenderer.removeListener('paseoRemote:consoleChanged', h);
+  },
+  /* ── Blender 本地插件（应用插件 kind blender，id blender-local）────────────────
+     宿主 = blender/main-blender.js。控制台窗自己那份桥在 blender/preload-blender.js；
+     这一组是**主窗口**要的：卡片状态 / 打开关闭控制台 / 启用停用（= 拉起或关掉插件那只 Blender）。
+     安装与卸载都走通用安装窗（mtnodeInstall*），这里不另开安装口。 */
+  blenderStatus: () => ipcRenderer.invoke('blender:getStatus'),
+  blenderOpen: () => ipcRenderer.invoke('blender:open'),
+  blenderClose: () => ipcRenderer.invoke('blender:close'),
+  blenderStart: () => ipcRenderer.invoke('blender:start'),
+  blenderStop: () => ipcRenderer.invoke('blender:stop'),
+  blenderConsoleTail: (n) => ipcRenderer.invoke('blender:consoleTail', { n }),
+  blenderOnConsoleChanged: (cb) => {
+    const h = (_e, d) => { try { cb(d); } catch (_) {} };
+    ipcRenderer.on('blender:consoleChanged', h);
+    return () => ipcRenderer.removeListener('blender:consoleChanged', h);
   },
   mcpInteract: (params) => ipcRenderer.invoke('mcp:interact', params),
   /* 会话实时流（Paseo 桥）：渲染层把**已经在跑的那一轮**的 dsh 事件复制一份推给主进程，

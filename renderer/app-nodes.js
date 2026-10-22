@@ -1604,7 +1604,16 @@ async function playNode(node, quiet, opts) {
      由控制节点 / 级联批次驱动的（batchDriven）仍然会被拦掉 */
   if (!(opts && opts.batchDriven)) S._lastStopAllAt = 0;
   try {
-    const cascadeAfter = await playNodeBody(node, quiet, opts || {});
+    /* 服务商对不上就不跑：先按 名称唯一 / 模型归属 自动换掉（并批量换同一缺失值），
+       仍对不上则保留原值、记警告并跳过本节点。 */
+    if (typeof ensureNodeProviderForRun === "function" && !ensureNodeProviderForRun(node)) return;
+    /* 「参数」端子：运行时临时覆写本节点的配置（跑完恢复，不改画布）。
+       没有参数线时 NParam.runWithParams 就是一次直通调用 —— 零开销、零行为变化。 */
+    const body = () => playNodeBody(node, quiet, opts || {});
+    const cascadeAfter =
+      typeof NParam === "object" && NParam && typeof NParam.runWithParams === "function"
+        ? await NParam.runWithParams(node, body)
+        : await body();
     /* 本节点刚产出的值若有一条线直接喂进素材节点的端子：这一刻才做同步检查
        （库里那条空着 → 自动写进去；已有内容且不同 → 只点亮 ⟳ 等用户点）。
        不放 playNodeBody 里 —— 要等本节点真的有了新输出，检查才有意义。 */
@@ -3568,12 +3577,12 @@ function nsSensenovaGenParamFields(ctx, node) {
       syncNodeSettingsValue(node, "mgbucket", sensenovaSizeSummary(node));
       ctx.commit({ rerender: true });
     },
-    { id: nodeSettingsCtlId("mgbucket", node.id) },
-  );
-  ctx.hint(
-    I18n.t(
-      "官方只有这 11 个训练分辨率桶，不是任意宽高；最小那桶也有 2048×2048（≈400 万像素），所以换小尺寸省不了显存 —— 省显存请改下面的「显存档位」或减小采样步数。",
-    ),
+    {
+      id: nodeSettingsCtlId("mgbucket", node.id),
+      tip: I18n.t(
+        "官方只有这 11 个训练分辨率桶，不是任意宽高；最小那桶也有 2048×2048（≈400 万像素），所以换小尺寸省不了显存 —— 省显存请改下面的「显存档位」或减小采样步数。",
+      ),
+    },
   );
   nsNumber(
     ctx,
@@ -3719,11 +3728,11 @@ function nsSensenovaGenParamFields(ctx, node) {
       node.vramMode = v;
       ctx.commit();
     },
-  );
-  ctx.hint(
-    I18n.t(
-      "权重 bf16 约 32.66GB，比一张 24G 卡还大，所以默认必须分层卸载（offload 到内存）。出图报显存不足时后端会自动降一档并在结果里写明；24G 卡请勿选 full。",
-    ),
+    {
+      tip: I18n.t(
+        "权重 bf16 约 32.66GB，比一张 24G 卡还大，所以默认必须分层卸载（offload 到内存）。出图报显存不足时后端会自动降一档并在结果里写明；24G 卡请勿选 full。",
+      ),
+    },
   );
   nsSelect(
     ctx,
@@ -7712,36 +7721,6 @@ function remotionResolveRefs(desc, node) {
   return { prompt, unresolved };
 }
 
-/* ── 合成代码的「项目内文件」入口 ────────────────────────────────────────
- * remotion 节点的直出合成代码（node.tsxTsx）除了贴源码，也可以只写一行路径：
- *     @compos/Composition.tsx         （相对项目根）
- *     E:\proj\compos\Composition.tsx  （绝对路径）
- * 运行时读文件内容当代码 —— 真正的源码留在项目文件夹里（改文件即生效），
- * 既不必贴进节点、也不必改插件目录 / 应用目录（那两处升级会被覆盖）。
- * 只有「整段就是一个 .tsx 路径」才算，源码里出现 @ 不受影响。 */
-function remotionCanvasRootDir() {
-  try {
-    const root = typeof devProjectRootOf === "function" ? devProjectRootOf(S.wf) : "";
-    if (root) return String(root);
-  } catch (e) {
-    /* 项目根解析失败就退回画布工作目录 */
-  }
-  return String((S.wf && S.wf.workspace) || "");
-}
-function inlineTsxAtFile(value) {
-  const v = String(value || "").trim();
-  if (!v || v.includes("\n")) return ""; /* 多行 = 源码本身 */
-  const m = v.match(/^@?(?:file:\/\/\/?)?(.+\.tsx)$/i);
-  if (!m) return "";
-  const raw = m[1].trim();
-  if (/\s/.test(raw)) return ""; /* 带空格的多半不是单个路径 */
-  const isAbs = /^[a-zA-Z]:[\\/]/.test(raw) || /^[\\/]{2}/.test(raw) || raw.startsWith("/");
-  if (isAbs) return raw;
-  const root = remotionCanvasRootDir();
-  if (!root) return "";
-  return root.replace(/[\\/]+$/, "") + "/" + raw.replace(/^\.\//, "");
-}
-
 async function playRemotionNode(node, quiet) {
   if (!window.api || !window.api.remotionGenerate) {
     toast(I18n.t("Remotion 插件未就绪（请先在插件中安装）"), "err");
@@ -7810,36 +7789,8 @@ async function playRemotionNode(node, quiet) {
   if (!wantsBuiltinPage) {
     /* 节点里贴的合成代码是最直接的一等入口：有它就按它渲染，不再找产物、也不调模型。
        （此前 node.tsxTsx 只影响「走不走内置模板」，运行时却只认产物文件，
-        于是画布上贴进来的代码会被静默忽略 —— 这是「写了不生效」的根源。）
-       也支持「项目里的文件路径」：贴一行 @相对路径 或绝对路径，运行时读文件内容当代码，
-       于是真正的源码可以留在项目文件夹里（按文件热改），不必贴进节点、更不必改插件目录。 */
-    const inlineFile = inlineTsxAtFile(inlineTsx);
-    if (inlineFile) {
-      if (typeof window.api.fileReadText !== "function") {
-        node.error = I18n.t("无法读取合成代码文件（本机文件接口不可用）：") + inlineFile;
-        node.remotionStatus = node.error;
-        renderCanvas();
-        return;
-      }
-      let doc = "";
-      try {
-        const rr = await window.api.fileReadText(inlineFile);
-        doc = String((rr && rr.content) || "").trim();
-      } catch (e) {
-        doc = "";
-      }
-      if (!doc) {
-        /* 宁可明确报错，也不悄悄退回内置模板（那会让用户以为自己的代码生效了） */
-        node.error =
-          I18n.t("合成代码文件读不到或为空：") + inlineFile + "\n" + I18n.t("请检查路径（相对路径按项目根解析）。");
-        node.remotionStatus = node.error;
-        toast(node.error, "err");
-        syncRemotionToSession(node, { desc, ok: false, error: node.error });
-        return;
-      }
-      reusedTsx = doc;
-      node.remotionStatus = I18n.t("使用项目内合成代码：") + inlineFile;
-    } else if (inlineTsx) {
+        于是画布上贴进来的代码会被静默忽略 —— 这是「写了不生效」的根源。） */
+    if (inlineTsx) {
       reusedTsx = inlineTsx;
     } else {
       tsxArt = typeof wfArtifactOf === "function" ? wfArtifactOf(node, "tsx") : null;
@@ -8004,9 +7955,7 @@ async function playRemotionNode(node, quiet) {
       return;
     }
     /* 合成代码优先级：内置版面两者都不传，由主进程按描述选模板；
-       其余情况以 tsx（= 已解析好的源码：@路径 已读成文件正文 / 直贴源码 / 复用产物）为准，
-       不能回退到 node.tsxTsx —— 那可能只是一行 "@compos/Composition.tsx"，交给主进程会报
-       custom_tsx_no_main_export（路径不是源码）。 */
+       其余情况以 tsx（= 复用 / 新生成的合成源码）为准，空时才退回节点里贴的 node.tsxTsx。 */
     const directTsx = wantsBuiltinPage
       ? ""
       : String(tsx || "").trim() || String(node.tsxTsx || "").trim();
@@ -8062,8 +8011,6 @@ async function playRemotionNode(node, quiet) {
     const path = String(r.path || r.outputPath || "");
     if (!path) throw new Error(I18n.t("渲染完成但未返回输出路径"));
     node.output = { kind: "video", path, text: path };
-    /* 工程目录记在节点上：保存工作流时中间产物（Composition.tsx）按它收集，换台机器插进来才带得走 */
-    node.remotionProjectDir = String(r.projectDir || "").trim();
     node.ranAt = Date.now();
     node.remotionPct = 100;
     node.remotionStatus = mediaGenDoneMsg(Date.now() - t0);
@@ -10298,6 +10245,19 @@ async function saveNodeOnce(node, quiet, opts) {
 
 async function saveNodeAction(node, opts) {
   opts = opts || {};
+  /* 保存节点不走 playNode（▶ / 控制流 / 级联都直接落到这里），所以「参数」端子的
+     运行期覆写要在这条入口再包一次 —— 否则保存路径这类最常用的覆写会失效。
+     没有参数线时 runWithParams 就是一次直通；_npWrapped 防重入。 */
+  if (
+    !opts._npWrapped &&
+    typeof NParam === "object" &&
+    NParam &&
+    typeof NParam.runWithParams === "function"
+  ) {
+    return NParam.runWithParams(node, () =>
+      saveNodeAction(node, Object.assign({}, opts, { _npWrapped: true })),
+    );
+  }
   /* 用户点保存节点的 ▶：先过工作目录闸门（保存本来就往那个目录写）。
      控制流 / 级联内部叫起的保存走 skipWsGate，不重复问。 */
   if (!opts.skipWsGate) {
@@ -11549,24 +11509,38 @@ function wouldCycle(fromId, toId, toIndex, fromIndex) {
 }
 
 /* ── 连线校验用的「端子级」媒体类型判定（单一真源在 app.js · wireSourceMediaType）──
-   工具 / 函数节点没有「图像类 kind」可看：整节点既算文本来源又不算图像来源，
-   一视同仁会把它的图像端子当成文本线放行进纯文本目标、又拦在图像目标外。
-   所以这两类节点一律按「真正接出来的那个端子」的声明类型判定；
-   其余节点仍按节点 kind 判定（行为逐字不变）。 */
+   只有「纯图像 kind」（图像输入 / 文生图 / SenseNova / 合并 / 拆分）按节点 kind 定案；
+   下列「整节点没有单一媒体类型」的来源按「这条线真正流出的媒体类型」判定：
+     · 工具 / 函数节点：按真正接出来的那个端子的声明类型；
+     · 素材节点：只有条目端子说得出这条线是不是图像；
+     · 保存节点：唯一输出端子给的是「本次保存的内容」，看保存节点自己的口径
+       （inferMediaFromSource / saveMediaKind）；
+     · **节点层（super 壳）的对外边界输出端子**：从壳内汇入那个端子的那条线取值判定 ——
+       旧写法只认节点 kind 白名单，壳不在名单里，于是「底图（在壳内）→ H3 首帧」由
+       agent connect 自动逐层桥接出来的最后一段（壳 → H3 首帧）恒被判成「非图像」，
+       报「图像端子需要图像来源」，这条线永远接不上；
+     · 文件路径类来源（input_any / input_file 里选的是 .png 等）：按后缀认作图像。
+   其余普通节点仍按节点 kind 判（行为逐字不变 —— 例如 proc_text 的端子实际值就算是图像，
+   也不会因此被当成图像来源）。
+   （typeof 守卫：本函数会被冒烟脚本按函数体抠进沙箱，沙箱里不一定带这些帮手） */
 function wireActsAsImage(from, fi) {
   if (!from) return false;
-  /* 素材节点：整节点没有单一媒体类型可看 —— 只有条目端子说得出这条线是不是图像。
-     保存节点同理：它的唯一输出端子给的是「本次保存的内容」，是不是图像要看保存节点
-     自己的口径（inferMediaFromSource / saveMediaKind）。图像保存的输出因此能继续
-     接进图像目标（另一个图像保存 / 图像端子），PDF 与文本保存仍按文本线走。
-     （typeof 守卫：本函数会被冒烟脚本按函数体抠进沙箱） */
+  if (isImageSource(from)) return true;
   if (
     isFnToolNode(from) ||
     isAssetNode(from) ||
     (typeof isSaveNode === "function" && isSaveNode(from))
   )
     return wireSourceMediaType(from, fi) === "image";
-  return isImageSource(from);
+  /* 节点层（super 壳）的对外边界输出端子：壳整节点没有单一媒体类型，
+     只能看「这条线接住的那颗端子」在壳内汇入的是什么（wireSourceMediaType → 壳内取值）。 */
+  if (typeof isSuperLikeNode === "function" && isSuperLikeNode(from))
+    return wireSourceMediaType(from, fi) === "image";
+  /* 文件路径类来源（泛用文件节点 / 数据库文件节点）：本机路径按后缀认图（.png / .jpg …），
+     这样用户拿一张本机图片接 H3 首帧不会被「图像端子需要图像来源」拦下。 */
+  if (String(from.kind || "") === "input_any" || String(from.kind || "") === "input_file")
+    return wireSourceMediaType(from, fi) === "image";
+  return false;
 }
 function wireActsAsText(from, fi) {
   if (!from) return false;
@@ -11754,7 +11728,12 @@ function dataNodeControlInPort(node) {
    它们的端口号是契约，改号等于改语义。 */
 function dataInPortIndexForWire(to, from, fromIndex, toIndex) {
   if (!to || toIndex == null) return toIndex;
-  if (isControlKind(from)) return toIndex; /* 控制线走自己的落点（dataNodeControlInPort） */
+  /* 「参数」端子是哨兵端子号（PARAM_IN_INDEX），不在顺序端口的自动落槽语义里：
+     显式给了就原样放行（参数线允许重号叠加，靠深合并取最后一份）。
+     常量在 app.js 定义；冒烟会单独切出本函数跑，所以这里带一份同值的兜底。 */
+  const paramIdx = typeof PARAM_IN_INDEX === "number" ? PARAM_IN_INDEX : 9001;
+  if (Number(toIndex) === paramIdx) return paramIdx;
+  if (isControlKind(from)) return toIndex; /* 控制线走自己的落点（dataNodeControlInPort) */
   const want = Number(toIndex);
   if (!isFinite(want) || want < 0) return toIndex;
   if (hasFixedInPorts(to) || isAssetNode(to) || isFnToolNode(to)) return want;
@@ -11800,7 +11779,37 @@ function connectError(fromId, toId, toIndex, fromIndex) {
   const fromSuper = nodeParentSuperId(from);
   const toSuper = nodeParentSuperId(to);
   if (fromSuper !== toSuper) {
-    return I18n.t("节点层内外不能直接连线，请经内侧端子桥接");
+    /* 跨节点层：硬规则不许直连，只能经边界端子逐层中转。文案给可执行口径
+       （两边的壳名都要点出来），别只说「不行」。 */
+    const upSide = fromSuper ? (nodeById(fromSuper) || {}).title || fromSuper : "";
+    const downSide = toSuper ? (nodeById(toSuper) || {}).title || toSuper : "";
+    return I18n.t(
+      "节点层内外不能直接连线，必须经节点层的边界端子逐层中转：内侧节点 → 直属节点层输出端子 … → 目标节点层输入端子 → 内侧节点" +
+        (upSide || downSide
+          ? "（本对应经 " +
+            (upSide ? "「" + upSide + "」输出端子" : "外侧") +
+            " → " +
+            (downSide ? "「" + downSide + "」输入端子" : "外侧") +
+            "）"
+          : ""),
+    );
+  }
+  /* 「参数」端子（哨兵端子号 PARAM_IN_INDEX）：不走下面任何一条按 kind 的槽位校验 ——
+     它只接文本（正文是一份 JSON 对象），可接多条（按顺序深合并，后者胜），
+     只对「有配置」的节点存在（判定真源 = NParam.eligible）。 */
+  if (Number(toIndex) === (typeof PARAM_IN_INDEX === "number" ? PARAM_IN_INDEX : 9001)) {
+    if (typeof NParam !== "object" || !NParam || !NParam.eligible(to))
+      return I18n.t("该节点没有参数端子");
+    if (!hasOutput(from)) return I18n.t("该节点没有输出端子");
+    const fiParam = Number(fromIndex || 0);
+    if (fiParam < 0 || fiParam >= outputCount(from)) return I18n.t("该节点没有输出端子");
+    if (isControlKind(from)) return I18n.t("参数端子只接数据线（文本 JSON），不接控制线");
+    const okText =
+      typeof wireActsAsText === "function" ? wireActsAsText(from, fiParam) : isTextSource(from);
+    if (!okText) return I18n.t("参数端子需要文本来源（正文是一份 JSON 对象）");
+    if (fromId === toId || wouldCycle(fromId, toId, toIndex, fromIndex))
+      return I18n.t("不能连接成回路");
+    return null;
   }
   if (!hasOutput(from)) return I18n.t("该节点没有输出端子");
   const fi = Number(fromIndex || 0);
@@ -12367,6 +12376,15 @@ function nextFreeMediaDataSlot(node, from, fromIndex) {
 
 function addWire(fromId, toId, toIndex, opts) {
   opts = opts || {};
+  /* ── 跨节点层硬闸（落线总闸·唯一一处）──────────────────────────
+     一条数据线只允许落在「同一层」或「节点层 ↔ 它的直属子节点」这条边界上。
+     任何入口（agent 的 connect / superConnect、手拖 connect、粘贴、装箱 / 拆箱、
+     读档迁移）都必须过这里，所以把判定钉在落线这一秒：越界的线**根本进不了**
+     S.wf.wires。需要跨层的调用方要先走逐层桥接（boundaryBridgePlan →
+     applyBoundaryBridgePlan），它产出的每一段都天然合法。 */
+  const gateFrom = nodeById(fromId);
+  const gateTo = nodeById(toId);
+  if (gateFrom && gateTo && !wireKeepsLayerRule(gateFrom, gateTo)) return false;
   const cur = allWiresTo(toId).length;
   let idx = toIndex == null ? cur : toIndex;
   const toN = nodeById(toId);
@@ -12560,8 +12578,30 @@ function addRelWire(fromId, toId, opts) {
 }
 
 function connect(fromId, toId, toIndex, fromIndex) {
+  const fromNode = nodeById(fromId);
+  const toNode = nodeById(toId);
   /* 端子归一：数据线落到越界 / 控制端子时改落最近空闲的数据端子（用户手工拖线 / API 同一口径） */
-  const ti = dataInPortIndexForWire(nodeById(toId), nodeById(fromId), fromIndex, toIndex);
+  const ti = dataInPortIndexForWire(toNode, fromNode, fromIndex, toIndex);
+  /* 跨节点层（硬规则）：不直连，自动改写成经边界端子的逐层桥接 —— 手拖与 agent 同一口径，
+     改写是静默的（线本身就说明了接法，不再弹提示打扰）。 */
+  if (fromNode && toNode && !wireKeepsLayerRule(fromNode, toNode)) {
+    const plan = boundaryBridgePlan(fromNode, toNode, fromIndex, ti);
+    if (plan.error) {
+      toast(plan.error, "warn");
+      return;
+    }
+    if (!plan.segs.some((seg) => !bridgeSegExists(seg))) return; /* 已经这样接过：幂等，静默 */
+    pushHistory();
+    const res = applyBoundaryBridgePlan(plan.segs);
+    if (res.error) {
+      toast(res.error, "warn");
+      return;
+    }
+    renderCanvas();
+    scheduleSave(true);
+    renderStatus();
+    return;
+  }
   const err = connectError(fromId, toId, ti, fromIndex);
   if (err) {
     toast(err, "warn");
@@ -12575,11 +12615,9 @@ function connect(fromId, toId, toIndex, fromIndex) {
 }
 
 /* ────────────────────────────────────────────────────────────
-   跨节点层连接（agent 内置工具）
-   让不同层级 / 不同节点层内的任意两个节点互相连通：
-   从源节点向上逐层「汇入」各自节点层的外部输出端子，
-   再向目标节点逐层「桥接」各自节点层的外部输入端子，
-   顶层节点层之间直接相连，最终 from → to 贯通。
+   跨节点层连接（手拖、agent 内置工具同一口径）
+   不同层级 / 不同节点层内的任意两颗节点：由 boundaryBridgePlan 出一份逐层对齐的
+   计划，每一段只连「直属父子」，再整份一起落线；任一段不合法就整对拒绝。
    ──────────────────────────────────────────────────────────── */
 function superAncestorChainOf(n) {
   /* 自内向外收集 n 的所有节点层祖先（含最近的），不含 n 自身 */
@@ -12594,145 +12632,216 @@ function superAncestorChainOf(n) {
   return chain;
 }
 
-/** 源→目标是否已存在任意端子上的连线（幂等保护，避免重复调用累积冗余线） */
-function wireExistsBetween(fromId, toId) {
-  return (S.wf && S.wf.wires || []).some(
-    (w) => w.from === fromId && w.to === toId,
+/* ══════════ 跨节点层：逐层边界端子桥接（硬规则的唯一实现） ══════════
+   规则：一条数据线只允许落在「同一层」（parentSuperId 相同）或「节点层 ↔ 它的
+   直属子节点」这条边界上。跨层一律自动改写成逐层对齐的链：
+     内 →（直属壳的输出端子）… →（最外壳）→（最外壳）… →（目标壳的输入端子）→ 内
+   口径：先出计划（boundaryBridgePlan）→ 逐段预检 → 一起落线；任一段不合法就
+   整对回滚，绝不留半截线（回执里的 connected 只认真正落进 S.wf.wires 的线）。 */
+
+/** 这条线是否落在合法的层边界上（同层 / 直属父子）。与 app.js 的
+    wireKeepsSuperBoundary 同一口径：那边按线对象判（清理历史脏线用），这里按节点判。 */
+function wireKeepsLayerRule(fromNode, toNode) {
+  if (!fromNode || !toNode) return false;
+  if (fromNode.kind === "super" && nodeParentSuperId(toNode) === fromNode.id) return true;
+  if (toNode.kind === "super" && nodeParentSuperId(fromNode) === toNode.id) return true;
+  return nodeParentSuperId(fromNode) === nodeParentSuperId(toNode);
+}
+
+/** 两颗节点之间「逐层对齐」的路径（含两端）：相邻两步只差一层。
+    同层时只有两个元素；两侧没有共同祖先时在顶层直接相连。 */
+function layerPathBetween(fromNode, toNode) {
+  const upFrom = [fromNode].concat(superAncestorChainOf(fromNode)); /* 内 → 外 */
+  const upTo = [toNode].concat(superAncestorChainOf(toNode));
+  const posInTo = new Map();
+  upTo.forEach((n, i) => posInTo.set(n.id, i));
+  let upIdx = -1;
+  let toIdx = -1;
+  for (let i = 0; i < upFrom.length && upIdx < 0; i++) {
+    if (posInTo.has(upFrom[i].id)) {
+      upIdx = i;
+      toIdx = posInTo.get(upFrom[i].id);
+    }
+  }
+  if (upIdx < 0) {
+    /* 两侧没有共同祖先：各自走到顶层，两条顶层节点直接相连（同层，合法） */
+    return upFrom.concat(upTo.slice().reverse());
+  }
+  const lca = upFrom[upIdx];
+  /* 公共祖先恰好是一端（「节点 ↔ 它的壳」这类直连）：路径含它本身 */
+  if (lca.id === fromNode.id) return [fromNode].concat(upTo.slice(0, toIdx).reverse());
+  if (lca.id === toNode.id) return upFrom.slice(0, upIdx + 1);
+  /* 两端都严格在公共祖先内部：**不含**壳本身 —— 走到壳的两侧直属子节点为止，
+     两个子节点之间才是同层直连（同壳兄弟节点因此不会被绕到壳端子上） */
+  return upFrom.slice(0, upIdx).concat(upTo.slice(0, toIdx).reverse());
+}
+
+/** 壳的「外侧输出端子」：内部子节点汇入的那一侧（工具节点的端子 = 参数表）。 */
+function superFreeOutPort(sup) {
+  if (!sup) return null;
+  if (isToolNode(sup)) {
+    if (typeof fnToolFreePortIndex !== "function") return null;
+    return fnToolFreePortIndex(sup, "out", false);
+  }
+  const taken = new Set();
+  for (const w of (S.wf && S.wf.wires) || []) {
+    if (w.rel || w.to !== sup.id) continue;
+    const src = nodeById(w.from);
+    if (src && nodeParentSuperId(src) === sup.id) taken.add(Number(w.toIndex) || 0);
+  }
+  let i = 0;
+  while (taken.has(i)) i++;
+  return i;
+}
+
+/** 壳的「外侧输入端子」：外部喂进来的那一侧（内部汇入线不算）。 */
+function superFreeInPort(sup) {
+  if (!sup) return null;
+  if (isToolNode(sup)) {
+    if (typeof fnToolFreePortIndex !== "function") return null;
+    return fnToolFreePortIndex(sup, "in", false);
+  }
+  const taken = new Set();
+  for (const w of (S.wf && S.wf.wires) || []) {
+    if (w.rel || w.to !== sup.id) continue;
+    const src = nodeById(w.from);
+    if (src && nodeParentSuperId(src) === sup.id) continue; /* 内→壳：走输出侧 */
+    taken.add(Number(w.toIndex) || 0);
+  }
+  let i = 0;
+  while (taken.has(i)) i++;
+  return i;
+}
+
+/** 这颗子节点是否已经汇入过该壳（返回当时占的那颗对外输出端子号，没汇过 = null）。
+    幂等靠它：同一对重复桥接时沿用原端子，不会再新开一颗、也不会累出第二条线。 */
+function superUsedOutPort(supId, childId) {
+  const w = ((S.wf && S.wf.wires) || []).find(
+    (x) => !x.rel && x.to === supId && x.from === childId,
+  );
+  return w ? Number(w.toIndex || 0) : null;
+}
+
+/** 该壳是否已经桥接到这颗直属子节点（返回当时用的那颗对外输入端子号）。 */
+function superUsedInPort(supId, childId) {
+  const w = ((S.wf && S.wf.wires) || []).find(
+    (x) => !x.rel && x.from === supId && x.to === childId,
+  );
+  return w ? Number(w.fromIndex || 0) : null;
+}
+
+/** 桥接计划：{segs:[{from,to,toIndex,fromIndex}], error}。不落线、不动画布。
+    每一段都是「同层」或「直属壳边界」——正是落线硬闸允许的两类。 */
+function boundaryBridgePlan(fromNode, toNode, fromIndex, toIndex) {
+  const fail = (msg) => ({ segs: [], error: msg || I18n.t("无法逐层桥接") });
+  if (!fromNode || !toNode) return fail(I18n.t("节点不存在"));
+  if (fromNode.id === toNode.id) return fail(I18n.t("不能连接同一节点"));
+  /* 绕回自己内部 = 回路，不是跨层 */
+  if (
+    typeof nodeInsideSuper === "function" &&
+    (nodeInsideSuper(toNode, fromNode.id) || nodeInsideSuper(fromNode, toNode.id))
+  )
+    return fail(I18n.t("不能把节点层接到它自己的内部（回路）"));
+  const path = layerPathBetween(fromNode, toNode);
+  if (!path || path.length < 2) return fail(null);
+  const segs = [];
+  let port = Number(fromIndex || 0);
+  let prevSeg = null;
+  for (let i = 0; i < path.length - 1; i++) {
+    const a = path[i];
+    const b = path[i + 1];
+    const last = i === path.length - 2;
+    let seg = null;
+    if (nodeParentSuperId(a) === b.id) {
+      /* 出壳：a 是 b 的直属子节点 → 落在 b 的对外输出端子 p 上，下一段从 p 出去 */
+      const used = superUsedOutPort(b.id, a.id);
+      const p = used != null ? used : superFreeOutPort(b);
+      if (p == null)
+        return fail(I18n.t("「") + (b.title || b.id) + I18n.t("」没有空闲的输出端子"));
+      seg = { from: a.id, to: b.id, toIndex: p, fromIndex: port };
+      port = p;
+    } else if (nodeParentSuperId(b) === a.id) {
+      /* 进壳：b 是 a 的直属子节点 → 从 a 的对外输入端子 p 进，上一段必须落在 p 上 */
+      const used = superUsedInPort(a.id, b.id);
+      const p = used != null ? used : superFreeInPort(a);
+      if (p == null)
+        return fail(I18n.t("「") + (a.title || a.id) + I18n.t("」没有空闲的输入端子"));
+      if (prevSeg) prevSeg.toIndex = p;
+      seg = { from: a.id, to: b.id, toIndex: last ? toIndex : null, fromIndex: p };
+      port = 0;
+    } else {
+      seg = { from: a.id, to: b.id, toIndex: last ? toIndex : null, fromIndex: port };
+    }
+    segs.push(seg);
+    prevSeg = seg;
+  }
+  return { segs, error: null };
+}
+
+/** 这一段（同一 from / to / 端子）是否已经存在于画布上 —— 桥接的幂等判定看端子，
+    不看「两个节点之间有没有线」：同源不同端子是合法接法（一张图分接首帧 / 末帧）。 */
+function bridgeSegExists(seg) {
+  if (!seg) return false;
+  return ((S.wf && S.wf.wires) || []).some(
+    (w) =>
+      !w.rel &&
+      w.from === seg.from &&
+      w.to === seg.to &&
+      Number(w.fromIndex || 0) === Number(seg.fromIndex || 0) &&
+      (seg.toIndex == null || Number(w.toIndex || 0) === Number(seg.toIndex)),
   );
 }
 
-/** 同一颗输出端子上是否已经有这条线。
-    跨级桥接的幂等判定**必须看端子**：同源不同端子是合法接法（一张图分接首帧 / 末帧），
-    旧写法只看 from / to，于是「已经汇上去过」把第二颗端子也一起挡掉，回执却照样报成功。 */
-function wireExistsOnPort(fromId, toId, fromIndex) {
-  const fi = Number(fromIndex || 0);
-  return (S.wf && S.wf.wires || []).some(
-    (w) => !w.rel && w.from === fromId && w.to === toId && Number(w.fromIndex || 0) === fi,
-  );
-}
-
-/** 把一个内部节点「汇入」它的直属节点层：node → super（占用 super 的外部输出端子）。
-    返回**是否真建成了一条线** —— 回执的 connected 只认这个返回值，不认「试过一层」。 */
-function superFeedUp(node, superNode, warnings, fromIndex) {
-  const fi = Number(fromIndex || 0);
-  if (!node || !superNode || !nodeById(node.id) || !nodeById(superNode.id)) return false;
-  if (wireExistsOnPort(node.id, superNode.id, fi)) return false; /* 同一端子已汇入：幂等 */
-  /* 工具节点：输出端子 = 各输出参数（末位为控制出），必须显式挑一个空闲参数端子 */
-  let ti = null;
-  if (isToolNode(superNode)) {
-    ti = fnToolFreePortIndex(superNode, "out", isControlKind(node));
-    if (ti == null) {
-      if (warnings)
-        warnings.push(
-          I18n.t("跨级汇入失败：") +
-            (superNode.title || superNode.id) +
-            " " +
-              I18n.t("没有空闲的输出参数端子（请在工具设置里增加出参）"),
-        );
-      return false;
+/** 按计划落线：逐段预检 → 一起落；任一段不合法 → 撤掉本对已落的线（整体回滚）。
+    同一端子已经连过的段按幂等跳过（重复 superConnect 不累加冗余线）。 */
+function applyBoundaryBridgePlan(segs) {
+  if (!segs || !segs.length) return { created: 0, error: I18n.t("无法逐层桥接") };
+  const wires = S.wf && S.wf.wires ? S.wf.wires : [];
+  const before = wires.length;
+  const rollback = () => {
+    if (S.wf && Array.isArray(S.wf.wires)) S.wf.wires.length = before;
+  };
+  for (const seg of segs) {
+    if (bridgeSegExists(seg)) continue;
+    const err = connectError(seg.from, seg.to, seg.toIndex, seg.fromIndex);
+    if (err) {
+      rollback();
+      return { created: 0, error: err };
+    }
+    if (addWire(seg.from, seg.to, seg.toIndex, { fromIndex: seg.fromIndex }) === false) {
+      rollback();
+      return {
+        created: 0,
+        error: I18n.t("节点层内外不能直接连线，必须经节点层的边界端子逐层中转"),
+      };
     }
   }
-  const err = connectError(node.id, superNode.id, ti, fi);
-  if (err) {
-    if (warnings) warnings.push(I18n.t("跨级汇入失败：") + (node.title || node.id) + " → " + (superNode.title || superNode.id) + "：" + err);
-    return false;
-  }
-  addWire(node.id, superNode.id, ti, { fromIndex: fi });
-  return true;
+  return { created: (S.wf.wires || []).length - before, error: null };
 }
 
-/** 把节点层的外部输入「桥接」到内部子节点：super → node（占用 super 的外部输入端子）。
-    返回是否真建成线（口径同上）。 */
-function superBridgeDown(superNode, node, warnings, fromIndex) {
-  const fi = Number(fromIndex || 0);
-  if (!superNode || !node || !nodeById(superNode.id) || !nodeById(node.id)) return false;
-  if (wireExistsOnPort(superNode.id, node.id, fi)) return false; /* 同一外侧端子已桥接：幂等 */
-  /* 工具节点：端口 0 是控制入 → 跨级下发只能桥到参数端子（1..N） */
-  let fiUse = fi;
-  if (isToolNode(superNode)) {
-    fiUse = fnToolFreePortIndex(superNode, "in", false);
-    if (fiUse == null) {
-      if (warnings)
-        warnings.push(
-          I18n.t("跨级桥接失败：") +
-            (superNode.title || superNode.id)
-          + " "
-          + I18n.t("没有空闲的输入参数端子（请在工具设置里增加入参）"),
-        );
-      return false;
-    }
-  }
-  const err = connectError(superNode.id, node.id, null, fiUse);
-  if (err) {
-    if (warnings) warnings.push(I18n.t("跨级桥接失败：") + (superNode.title || superNode.id) + " → " + (node.title || node.id) + "：" + err);
-    return false;
-  }
-  addWire(superNode.id, node.id, null, { fromIndex: fiUse });
-  return true;
-}
-
-/** 上层节点层 → 下层节点层（顶层连接，或层间贯穿）。返回是否真建成线。 */
-function superLinkOuter(superFrom, superTo, warnings, fromIndex) {
-  const fi = Number(fromIndex || 0);
-  if (!superFrom || !superTo || superFrom.id === superTo.id) return false;
-  if (!nodeById(superFrom.id) || !nodeById(superTo.id)) return false;
-  if (wireExistsOnPort(superFrom.id, superTo.id, fi)) return false; /* 同一端子已连：幂等 */
-  /* 目标是工具节点时：端口 0 是控制入，跨级连接要落在空闲的参数端子上 */
-  let ti = null;
-  if (isToolNode(superTo)) {
-    ti = fnToolFreePortIndex(superTo, "in", false);
-    if (ti == null) {
-      if (warnings)
-        warnings.push(
-          I18n.t("节点层连接失败：") +
-            (superTo.title || superTo.id) +
-            " " +
-            I18n.t("没有空闲的输入参数端子（请在工具设置里增加入参）"),
-        );
-      return false;
-    }
-  }
-  const err = connectError(superFrom.id, superTo.id, ti, fi);
-  if (err) {
-    if (warnings) warnings.push(I18n.t("节点层连接失败：") + (superFrom.title || superFrom.id) + " → " + (superTo.title || superTo.id) + "：" + err);
-    return false;
-  }
-  addWire(superFrom.id, superTo.id, ti, { fromIndex: fi });
-  return true;
-}
-
-/** 单对跨节点层连接 from → to；返回**真建成的连线条数**（不是「试过几层」）。
-    旧写法每走一层就 made++，superFeedUp / superBridgeDown 失败时只写 warning，
-    回执照样把这一对报成 connected —— 用户重读画布却一条线都没有（实测现场）。 */
-function applySuperConnectOne(fromNode, toNode, warnings, fromIndex) {
-  if (!fromNode || !toNode) return 0;
-  if (fromNode.id === toNode.id) {
-    if (warnings) warnings.push(I18n.t("不能连接同一节点"));
+/** 一对节点自动贯通：同层直连 / 跨层逐层桥接。返回真正落下的线数。
+    warnings 只写「为什么没连成」，成功不打扰（用户可见的线本身就是回执）。 */
+function bridgeNodesBetween(fromNode, toNode, fromIndex, toIndex, warnings) {
+  const plan = boundaryBridgePlan(fromNode, toNode, fromIndex, toIndex);
+  if (plan.error) {
+    if (warnings)
+      warnings.push(
+        (fromNode.title || fromNode.id) + " → " + (toNode.title || toNode.id) + "：" + plan.error,
+      );
     return 0;
   }
-  const fi = Number(fromIndex || 0);
-  const fromChain = superAncestorChainOf(fromNode); /* 源侧 super 链（自内向外） */
-  const toChain = superAncestorChainOf(toNode);     /* 目标侧 super 链（自内向外） */
-  let made = 0;
-  /* 1) 源侧逐层上传：from → 最近 super → 再上层 super … */
-  let prev = fromNode;
-  for (const sup of fromChain) {
-    if (superFeedUp(prev, sup, warnings, fi)) made++;
-    prev = sup;
-  }
-  /* 2) 目标侧逐层下发：最外层 super → … → 最近 super → to */
-  const toRev = toChain.slice().reverse();
-  let next = toNode;
-  for (const sup of toRev) {
-    if (superBridgeDown(sup, next, warnings, fi)) made++;
-    next = sup;
-  }
-  /* 3) 顶层相连：源侧最外层 super ↔ 目标侧最外层 super */
-  const topFrom = fromChain.length ? fromChain[fromChain.length - 1] : fromNode;
-  const topTo = toChain.length ? toChain[toChain.length - 1] : toNode;
-  if (topFrom.id !== topTo.id) {
-    if (superLinkOuter(topFrom, topTo, warnings, fi)) made++;
-  }
+  const res = applyBoundaryBridgePlan(plan.segs);
+  if (res.error && warnings)
+    warnings.push(
+      (fromNode.title || fromNode.id) + " → " + (toNode.title || toNode.id) + "：" + res.error,
+    );
+  return res.created;
+}
+
+/** 单对跨节点层连接 from → to；返回**真建成的连线条数**（不是「试过几层」）。 */
+function applySuperConnectOne(fromNode, toNode, warnings, fromIndex, toIndex) {
+  if (!fromNode || !toNode) return 0;
+  const made = bridgeNodesBetween(fromNode, toNode, fromIndex, toIndex, warnings);
   /* 一条线都没建立：必须说清原因，绝不静默。最常见的就是「这一对已经连过」
      （同一颗端子重复 superConnect）——那是幂等，不是失败，但也不能报 connected。 */
   if (!made && warnings) {
@@ -13728,9 +13837,25 @@ function canvasSnapshot(opts) {
       outputs: isFunctionNode(n)
         ? fnToolParamList(n, "out").map((p) => ({ name: p.name, kind: p.kind }))
         : undefined,
+      /* 「参数」端子（renderer/app-node-params.js）：params = 节点自带的参数 JSON
+         （canvas_edit 的 params 字段写入，运行时与参数线深合并，参数线优先）；
+         paramKeys = 本节点**可被参数覆写**的键（standard / full 档才回，minimal 省 token）。
+         参数端子的端子号是哨兵值 PARAM_IN_INDEX（不进 0..N-1 的顺序端口）。 */
+      params:
+        n.npParams && typeof n.npParams === "object" && Object.keys(n.npParams).length
+          ? n.npParams
+          : undefined,
+      paramKeys:
+        o.detail !== "minimal" &&
+        typeof NParam === "object" &&
+        NParam &&
+        typeof NParam.eligible === "function" &&
+        NParam.eligible(n)
+          ? NParam.schemaOf(n).map((s) => s.key)
+          : undefined,
+      paramStrict: n._npStrict ? true : undefined,
       execPath:
-        n.kind === "execute" ? String(n.execPath || "") || undefined : undefined,
-      execIcon:
+        n.kind === "execute" ? String(n.execPath || "") || undefined : undefined,      execIcon:
         n.kind === "execute" ? execIconKeyOf(n) || undefined : undefined,
       execColor:
         n.kind === "execute" ? execColorOf(n) || undefined : undefined,
@@ -18657,6 +18782,22 @@ function applyNodePatch(node, patch, warnings) {
   }
   if (patch.task != null && node.kind === "agent_task")
     node.task = String(patch.task);
+  /* 「参数」端子的另一条给法（canvas_edit 的 params 字段）：不接线，直接把一份参数 JSON
+     挂在节点上，运行时与参数线深合并（参数线优先）。校验口径与参数线完全同一份
+     （NParam.read 会统一过一遍可覆写键表），这里只做容器层面的收口。 */
+  if (patch.params !== undefined && patch.params !== null) {
+    if (typeof NParam === "object" && NParam && NParam.eligible && NParam.eligible(node)) {
+      if (typeof patch.params === "object" && !Array.isArray(patch.params)) {
+        node.npParams = Object.assign({}, patch.params);
+      } else if (warnings) {
+        warnings.push(I18n.t("params 必须是一份 JSON 对象（{键: 值}），已忽略：") + node.title);
+      }
+    } else if (warnings) {
+      warnings.push(I18n.t("该节点没有参数端子，params 已忽略：") + node.title);
+    }
+  }
+  if (patch.params === null && node.kind) delete node.npParams;
+  if (patch.paramStrict !== undefined) node._npStrict = !!patch.paramStrict;
   if (node.kind === "task") {
     if (patch.goal != null) node.goal = String(patch.goal);
     if (patch.steps != null) {
@@ -19373,6 +19514,162 @@ function resolveAgentProviderRoute(token, warnings) {
   return null;
 }
 
+/* ───── 服务商缺失 / 无法对应 → 自动替换（Agent 改节点 · 参数端子覆写 · 真跑节点 三处共用） ─────
+   顺序：① 本机 id 命中 → 不动；② 名称唯一 → 换；③ 用节点 model 反查「哪个服务商提供它」，
+   唯一才换；④ 都不中 → 保留原值 + 警告 + 该节点跳过运行。
+   同一缺失值出现在多个节点上 = 一次批量全换：写回画布节点字段，批量前压一次撤销快照。 */
+const PROVIDER_REF_KEYS = ["providerId", "provider", "devProvider"];
+
+function providerRefMode(node) {
+  if (!node) return "proc_text";
+  if (node.kind === "agent_task" || node.agent) return "agent";
+  return node.kind === "proc_image" ? "proc_image" : "proc_text";
+}
+
+function providerCandidates(kind) {
+  return typeof apiProvidersForKind === "function"
+    ? apiProvidersForKind(kind)
+    : ((S.config && S.config.providers) || []);
+}
+
+function providerRouteOf(prov) {
+  const dp = typeof dshProvider === "function" ? dshProvider() : null;
+  return dp && prov.id === dp.id ? "deepseek-official" : "mtnode_" + prov.id;
+}
+
+/** 把一条服务商引用解析成本机可用值：{ value, how } / { value:null, why }（都对不上）。 */
+function fixProviderRefValue(token, mode, model) {
+  const s = String(token || "").trim();
+  if (!s) return null;
+  const agent = mode === "agent";
+  const list = providerCandidates(agent ? "proc_text" : mode);
+  /* ① 本机就有（id 命中；智能路由另认 mtnode_<id> 与 deepseek-official） */
+  const byId = list.find(
+    (p) => p.id === s || (agent && "mtnode_" + p.id === s),
+  );
+  if (byId) return { value: agent ? providerRouteOf(byId) : byId.id, how: "id" };
+  if (agent && s === "deepseek-official") return { value: s, how: "id" };
+  /* ② 名称唯一 */
+  const byName = list.filter((p) => p.name === s);
+  if (byName.length === 1)
+    return { value: agent ? providerRouteOf(byName[0]) : byName[0].id, how: "name" };
+  if (byName.length > 1)
+    return { value: null, why: I18n.t("同名服务商不止一个") };
+  /* ③ model 反查：这个模型归谁 */
+  const m = String(model || "").trim();
+  const byModel = m
+    ? list.filter((p) => (Array.isArray(p.models) ? p.models : []).includes(m))
+    : [];
+  if (byModel.length === 1)
+    return { value: agent ? providerRouteOf(byModel[0]) : byModel[0].id, how: "model" };
+  if (byModel.length > 1)
+    return { value: null, why: I18n.t("提供该模型的服务商不止一个") };
+  return { value: null, why: I18n.t("本机没有这个服务商") };
+}
+
+/** 读节点自己的服务商引用（不含参数覆写）→ { key, token, mode } 或 null。 */
+function nodeProviderRef(node) {
+  if (!node) return null;
+  for (const k of PROVIDER_REF_KEYS) {
+    const s = String(node[k] || "").trim();
+    if (s) return { key: k, token: s, mode: k === "providerId" ? providerRefMode(node) : "agent" };
+  }
+  return null;
+}
+
+/** 把画布上引用同一缺失值的所有节点一次换掉（一次撤销复原）。返回被替换的节点数。
+    opts.exceptId：这次改的就是它（已经写好值了，不算「替换」也不该冒提示）。 */
+function replaceProviderAcrossCanvas(token, value, how, opts) {
+  const from = String(token || "").trim();
+  const to = String(value || "").trim();
+  if (!from || !to || from === to) return 0;
+  const exceptId = opts && opts.exceptId;
+  const nodes = ((S.wf && S.wf.nodes) || []).filter(
+    (n) =>
+      n &&
+      (!exceptId || n.id !== exceptId) &&
+      PROVIDER_REF_KEYS.some((k) => String(n[k] || "").trim() === from),
+  );
+  if (!nodes.length) return 0;
+  if (typeof pushHistory === "function") {
+    try {
+      pushHistory();
+    } catch (_) {
+      /* 压栈失败不影响替换本身 */
+    }
+  }
+  for (const n of nodes)
+    for (const k of PROVIDER_REF_KEYS)
+      if (String(n[k] || "").trim() === from) n[k] = to;
+  if (typeof renderCanvas === "function") {
+    try {
+      renderCanvas();
+    } catch (_) {
+      /* 重绘失败不回滚替换 */
+    }
+  }
+  if (typeof toast === "function") {
+    const why =
+      how === "name"
+        ? I18n.t("（按名称唯一匹配）")
+        : how === "model"
+          ? I18n.t("（按模型归属）")
+          : "";
+    toast(
+      I18n.t("已把 ") + nodes.length + I18n.t(" 个节点从服务商「") + from +
+        I18n.t("」换成「") + to + I18n.t("」") + why,
+      "warn",
+    );
+  }
+  return nodes.length;
+}
+
+/** Agent 改节点（mtnode_canvas_edit）用：解析不到就自动替换并批量换掉同一缺失值。
+    返回 { ok, value?, how?, why? }，ok:false 时由调用方把 why 记进 warnings。 */
+function applyProviderRefWithFix(node, key, token, mode, modelHint) {
+  const s = String(token || "").trim();
+  if (!s) return { ok: false, why: I18n.t("服务商为空") };
+  const direct =
+    mode === "agent"
+      ? resolveAgentProviderRoute(s, null)
+      : (resolveApiProviderRef(s, node.kind, null) || {}).id;
+  if (direct) {
+    node[key] = direct;
+    /* 写进来的是一条「名称 / 老 id」而不是本机 id：顺手把画布上其它同样写法的节点一并归一 */
+    if (String(direct) !== s) replaceProviderAcrossCanvas(s, direct, "name", { exceptId: node.id });
+    return { ok: true, value: direct, how: "id" };
+  }
+  const fix = fixProviderRefValue(s, mode, modelHint);
+  if (fix && fix.value) {
+    node[key] = fix.value;
+    const n = replaceProviderAcrossCanvas(s, fix.value, fix.how, { exceptId: node.id });
+    return { ok: true, value: fix.value, how: fix.how, count: n };
+  }
+  return { ok: false, why: (fix && fix.why) || I18n.t("本机没有这个服务商") };
+}
+
+/** 真跑节点前：服务商对不上就换掉（并批量换其它引用同一缺失值的节点）。
+    false = 找不到可用服务商，该节点跳过运行（保留原值，不写坏画布）。 */
+function ensureNodeProviderForRun(node) {
+  const ref = nodeProviderRef(node);
+  if (!ref) return true;
+  const fix = fixProviderRefValue(ref.token, ref.mode, node.model);
+  if (!fix) return true;
+  if (fix.value) {
+    if (fix.value !== ref.token && !replaceProviderAcrossCanvas(ref.token, fix.value, fix.how))
+      node[ref.key] = fix.value;
+    return true;
+  }
+  if (typeof toast === "function")
+    toast(
+      I18n.t("服务商「") + ref.token + I18n.t("」在本机找不到") +
+        (fix.why ? I18n.t("（") + fix.why + I18n.t("）") : "") +
+        I18n.t("：该节点已跳过运行"),
+      "err",
+    );
+  return false;
+}
+
 function agentModelsForRoute(route) {
   const catalog = S.providerCatalog || {
     deepseek: [
@@ -19419,17 +19716,26 @@ function applyNodeModelPatch(node, patch, warnings) {
   if (agentKind && (patch.provider != null || patch.model != null)) {
     let provOk = true;
     if (patch.provider != null) {
-      const route = resolveAgentProviderRoute(patch.provider, warnings);
-      if (route) {
-        node.provider = route;
+      const r = applyProviderRefWithFix(
+        node,
+        "provider",
+        patch.provider,
+        "agent",
+        patch.model != null ? patch.model : node.model,
+      );
+      if (r.ok) {
         node.vision = null;
         if (patch.model == null) {
-          const models = agentModelsForRoute(route);
+          const models = agentModelsForRoute(node.provider);
           if (models.length && !models.includes(node.model))
             node.model = models[0];
         }
       } else {
         provOk = false;
+        if (warnings)
+          warnings.push(
+            I18n.t("服务商「") + patch.provider + I18n.t("」") + r.why,
+          );
       }
     }
     if (provOk && patch.model != null) {
@@ -19445,17 +19751,26 @@ function applyNodeModelPatch(node, patch, warnings) {
     if (patch.providerId != null || patch.provider != null) {
       const token =
         patch.providerId != null ? patch.providerId : patch.provider;
-      const prov = resolveApiProviderRef(token, node.kind, warnings);
-      if (prov) {
-        node.providerId = prov.id;
+      const r = applyProviderRefWithFix(
+        node,
+        "providerId",
+        token,
+        providerRefMode(node),
+        patch.model != null ? patch.model : node.model,
+      );
+      if (r.ok) {
         if (patch.model != null) {
           const m = String(patch.model).trim();
           if (m) node.model = m;
         } else {
+          const prov =
+            providerCandidates(providerRefMode(node)).find((p) => p.id === r.value) || {};
           const models = prov.models || [];
           if (models.length && !models.includes(node.model))
             node.model = models[0];
         }
+      } else if (warnings) {
+        warnings.push(I18n.t("服务商「") + token + I18n.t("」") + r.why);
       }
     } else if (patch.model != null) {
       const m = String(patch.model).trim();
@@ -19463,8 +19778,15 @@ function applyNodeModelPatch(node, patch, warnings) {
     }
   } else if (apiKinds && node.agent && patch.providerId != null) {
     /* 智能模式下仍可改回原模式服务商（切换 agent 后用） */
-    const prov = resolveApiProviderRef(patch.providerId, node.kind, warnings);
-    if (prov) node.providerId = prov.id;
+    const r = applyProviderRefWithFix(
+      node,
+      "providerId",
+      patch.providerId,
+      providerRefMode(node),
+      node.model,
+    );
+    if (!r.ok && warnings)
+      warnings.push(I18n.t("服务商「") + patch.providerId + I18n.t("」") + r.why);
   }
 }
 
@@ -20294,6 +20616,21 @@ async function applyCanvasEdit(params, ctx) {
     const useIndex = dataInPortIndexForWire(b, a, pair.fromIndex || 0, wantIndex);
     const err = connectError(a.id, b.id, useIndex, pair.fromIndex || 0);
     if (err) {
+      /* 跨节点层是硬规则不许直连：自动改写成经边界端子的逐层桥接（同层不在此列）。
+         连成 → 记一条 viaSuper；连不成 → bridgeNodesBetween 已把原因写进 warnings。 */
+      if (!wireKeepsLayerRule(a, b)) {
+        const created = bridgeNodesBetween(a, b, pair.fromIndex || 0, useIndex, warnings);
+        if (created > 0)
+          connected.push({
+            from: a.id,
+            to: b.id,
+            fromTitle: a.title,
+            toTitle: b.title,
+            viaSuper: true,
+            wires: created,
+          });
+        continue;
+      }
       /* 端口 / 接法预检：把候选端子清单与正确接法一并回给模型，
          省掉「报错 → 再读图 → 再改」的往返。 */
       const adv = connectPortAdvice(a.id, b.id, useIndex, pair.fromIndex || 0, err);
@@ -20728,6 +21065,9 @@ async function applyCanvasEdit(params, ctx) {
   }
   if (grouped) for (const id of grouped.nodeIds || []) touchedIds.add(id);
   collectEditStaticWarnings(touchedIds, warnings);
+  /* 跨节点层硬规则的收口：改 parentSuperId / 删节点都可能留下层外的野线，
+     每次编辑结束静默剪掉（与装箱 / 拆箱同一口径，不提示）。 */
+  pruneInvalidSuperBoundaryWires();
 
   return Object.assign(
     {

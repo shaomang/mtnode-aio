@@ -72,3 +72,7 @@
    .perf-* 总览条 / 每核格子 / 明细行；显存那一块仍用 layout.css 的 .vram-*
    （同一个 vramRenderPanel 写进 .vram-slot）。亮色覆盖在文件末尾。 */
 @import url("./css/perf.css");
+/* 节点「参数」端子 + 文本节点的 JSON 表单（renderer/app-node-params.js）：
+   输入端最末位那颗 .np-port、卡片上的 .np-chip、设置窗里的覆写明细表、JSON 表单控件。
+   放最后一份：它只加自己那几个类，不与既有节点皮冲突（亮色覆盖在文件末尾）。 */
+@import url("./css/node-params.css");

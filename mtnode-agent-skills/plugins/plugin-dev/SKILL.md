@@ -95,7 +95,10 @@ MTNode 里「扩展能力」有**四种完全不同的东西**，别混为一谈
     - **后端要不要随 MTNode 退出**：单例后端（music3 / h3 / yue / sensenova）**故意不杀**，只在 before-quit 关控制台窗；新插件必须在两处注释里写明选了哪种、为什么。
 4. **preload.js 桥**：`window.api.<kind>Xxx` 白名单转发（`ipcRenderer.invoke('<kind>:…')`），事件订阅（`onXxxProgress` / `onXxxConsoleChanged` / `onXxxGpu`）返回退订函数。渲染层拿不到桥 = 卡片与节点全是「未就绪」。
 5. **渲染层卡片**：`renderer/app-plugins.js` → `refresh<Name>PluginCard(root)` + `bind<Name>Progress(card)`，并在 `openAppPluginsDialog()` 的 `kind === "<kind>" || handler === "<kind>"` 链里挂一行（顺序无所谓，但要和 `attachInstalled` / catalog 词条一致）；卡片动作按钮的图标只能取 `PLUGIN_ACT_SVG`（`play` / `stop` / `download` / `update` / `gear`）——**表里没有的 kind 必须先补图标，否则按钮渲染成没有图标的空方块**。
-   封面图标放 `plugins/icons/<id>.png`（1:1），加载顺序 `plugins/icons → renderer/plugin-icons`。
+   封面图标放 `plugins/icons/<id>.png`（1:1、≥256×256），加载顺序 `plugins/icons → renderer/plugin-icons`。图标口径是硬约束：
+   - **必须用产品官方 logo**：取官方品牌资产 / 官方仓库原件（如 `branding` 目录、官网 logo 包），**不要自绘、不要截图裁切、不要用第三方重绘版**；
+   - **尽量透明底**：优先带 alpha 的 PNG（官方 square / icon 版），不要把白底或黑底方块贴上去 —— 卡片底色随主题变，实心底会露出方框；
+   - 官方只给矢量时，按官方几何栅格化成 256×256 透明底 PNG，不描摹、不改配色、不加文字。
 
 ---
 
@@ -332,7 +335,7 @@ preload 由宿主统一注入 `plugins/preload-window.js`；窗口内可用 `app
 - [ ] 定名：`id` / `kind` / `handler` / 目录 / `*-pack` 六处一致（或差异有明确注释），`id` 满足 `^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$`
 - [ ] 主进程宿主 `main-<name>.js`：安装编排 / 起停 / 生成 / 控制台窗 / IPC / `registerPluginHost` / 每个失败出口 `reportErr`
 - [ ] 控制台 `ui/`（HTML+JS+CSS）+ `preload-<name>.js` 白名单桥
-- [ ] `plugins/catalog.default.json` 词条（含中英 `title` / `subtitle`、`order`、`version`、`minAppVersion`）+ 封面 `plugins/icons/<id>.png`
+- [ ] `plugins/catalog.default.json` 词条（含中英 `title` / `subtitle`、`order`、`version`、`minAppVersion`）+ 封面 `plugins/icons/<id>.png`（**官方 logo + 透明底 + 1:1、≥256×256**，见第五节）
 - [ ] `plugins/main-app-plugins.js` 的 `KNOWN_KINDS`（+ handler 兜底）
 - [ ] `main.js`：`require` + `register*Ipc` + `before-quit` 的 `shutdown*`
 - [ ] `preload.js`：`window.api.<kind>*` 桥 + 事件订阅（返回退订）

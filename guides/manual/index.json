@@ -185,6 +185,13 @@
             "zh": "工具节点与函数节点",
             "en": "Tool & function nodes"
           }
+        },
+        {
+          "id": "blender-local",
+          "title": {
+            "zh": "Blender 本地插件（让 Agent 操作 Blender）",
+            "en": "Blender local plugin (let the agent drive Blender)"
+          }
         }
       ]
     },

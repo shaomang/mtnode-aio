@@ -30,10 +30,11 @@
  *       保留的最近原文 token 数 / 写摘要那次请求的输出上限 token 数；见下面 RETAIN_TOKENS_* 段。
  *     selfTargets = 自配服务商（mtnode_<route>）的 provider/model 清单（从 config.providers 现算），
  *       这两个量对它们也生效，但按 128K 窗口保守夹取。
- *     tier ∈ {frugal, mid, late, custom} = 省钱 / 中 / 晚 / 自定义
- *       · 省钱（frugal）：需求「绝对 100k 触发」的落地点 —— 见下面「为什么用固定 headroom 常量」；
+ *     tier ∈ {frugal, mid, late, custom} = 低 / 中 / 晚 / 自定义（frugal 的内部 id 不变，
+ *       历史上的「省钱」档就是现在的「低」档，老配置原样可用）
+ *       · 低（frugal）：需求「绝对 150k 触发」的落地点 —— 见下面「为什么用固定 headroom 常量」；
  *       · 自定义（custom）：触发线由用户在 100k–500k 之间自填（customTriggerTokens），
- *         换算成这一档的 headroomTokens（保留尾部与省钱档一致 16K）；
+ *         换算成这一档的 headroomTokens（保留尾部与低档一致 16K）；
  *       · 旧值 "early"（早档已下线）一律归一到「中」。
  *     officialModels = 要逐条点名的官方路由模型 id（见文件头「为什么点名一族」；
  *       缺省 / 空 = 兜底那一族，绝不落成空表）。
@@ -42,9 +43,9 @@
  * 为什么用固定 headroom 常量（而不是固定 thresholdRatio）：
  *   插件的实际触发线 = min(窗口 × thresholdRatio, 窗口 − 预留输出 − headroomTokens)
  *   （真源：@deepseek-ai/dsh-compaction-basic/lib/index.js:132）。官方路由（点名的那一族，
- *   见文件末尾「为什么点名一族模型 id」）声明窗口都是 1,000,000，想让它在**绝对 100k**
- *   触发，就得让第二个分支成为约束（且刚好等于 100k）：
- *     headroomTokens = 1,000,000 − 预留输出(256,000) − 100,000 = 643,872
+ *   见文件末尾「为什么点名一族模型 id」）声明窗口都是 1,000,000，想让它在**绝对 150k**
+ *   触发，就得让第二个分支成为约束（且刚好等于 150k）：
+ *     headroomTokens = 1,000,000 − 预留输出(256,000) − 150,000 = 594,000
  *   预留输出为什么是 256,000：主力路由走 dsh 自带的 deepseek 适配器，它的
  *   DEFAULT_MAX_TOKENS = 256e3（真源 dsh-llm-deepseek/lib/index.js:21）；自配服务商走
  *   llm-pi-ai，那边是 32768（真源 dsh-llm-pi-ai/lib/index.js:929）—— 同一个常量常量口径下，
@@ -54,13 +55,13 @@
  *   本轮明确不动这些路由，见用户共识）。
  *
  * 为什么点名的是「一族模型 id」而不是一个名字（本机实测的 bug）：
- *   「绝对 100k」只能落在**逐路由**的 `modelPolicies` 上（插件按 provider + model
+ *   「绝对 150k」只能落在**逐路由**的 `modelPolicies` 上（插件按 provider + model
  *   逐字精确匹配，见 dsh-compaction-basic/lib/index.js:95），而 deepseek-official 这条
  *   路由跑的模型 id 是**用户服务商清单里那一个**，不是一个固定名字：本机实测会话头部是
  *   `provider=deepseek-official / model=deepseek-v4-flash`（配置里那家 DeepSeek 服务商
  *   只列了这一个），而本模块原先只点名 `deepseek-flash` → 整条 modelPolicies 落空 →
  *   headroomTokens 与 retainTokens 一起落空 → 触发线悄悄退回 dsh 默认
- *   min(1M × 0.9, 1M − 256K − 64K) ≈ 678K：用户在「省钱 · 100k」档位上也永远等不到
+ *   min(1M × 0.9, 1M − 256K − 64K) ≈ 678K：用户在「低 · 150k」档位上也永远等不到
  *   自动压缩（审计脚本里依旧是「压缩 0 次」）。
  *   所以点名清单 = 配置里官方服务商（baseUrl 主机名含 deepseek —— 判据与
  *   renderer/app-agent.js 的 dshProvider() 同一句）的 models，∪ 兜底的已知官方 id
@@ -81,12 +82,12 @@
 /* 四档：档位只影响「多早触发」与「留多少原文」，不接原始百分比给用户。
    ratio 的"有效窗口"口径 = 声明窗口 × ratio（主力模型声明 1,000,000）：
      中 0.30 → 约 300K    晚 0.45 → 约 450K
-   省钱 / 自定义两档不给 ratio 当触发线，改用**固定 headroomTokens 常量**把实际触发线
+   低 / 自定义两档不给 ratio 当触发线，改用**固定 headroomTokens 常量**把实际触发线
    钉在绝对值上（见文件头「为什么用固定 headroom 常量」）：
-     省钱 = 100K（headroom 643,872 = 1M − 预留输出 256K − 100K）
+     低 = 150K（headroom 594,000 = 1M − 预留输出 256K − 150K）
      自定义 = 用户填 100K–500K（换算成 headroomTokens：headroom = 744,000 − 触发线，
               744,000 = 1M − 预留输出 256K）
-   保留尾部（retainTokens，绝对值）：省钱 / 自定义 16K、中 32K、晚 64K。
+   保留尾部（retainTokens，绝对值）：低 / 自定义 16K、中 32K、晚 64K。
    未列名模型走全局 retainRatio 兜底（0.04 × 声明窗口，1M 上约 40k）。 */
 const TIERS = ["frugal", "mid", "late", "custom"];
 const DEFAULT_TIER = "mid";
@@ -95,11 +96,11 @@ const DEFAULT_TIER = "mid";
    算 100K 触发线时必须减掉（不减就会差 256k）。 */
 const MAIN_ROUTE_RESERVED_OUTPUT = 256000;
 const MAIN_ROUTE_WINDOW = 1000000;
-/* 省钱档的固定 headroom（常量口径，用户已定 643,872）：
-   thresholdTokens = min(1e6 × 0.9, 1e6 − 256,000 − 643,872) = 100,128 ≈ 100k。 */
-const FRUGAL_HEADROOM_TOKENS = 643872;
+/* 低档的固定 headroom（常量口径，用户已定 150K 触发 → 594,000）：
+   thresholdTokens = min(1e6 × 0.9, 1e6 − 256,000 − 594,000) = 150,000。 */
+const FRUGAL_HEADROOM_TOKENS = 594000;
 const FRUGAL_RETAIN_TOKENS = 16384;
-/* 自定义档：触发线取值范围（越界拒绝，用户已定）与缺省值（不填 = 与省钱档同值） */
+/* 自定义档：触发线取值范围（越界拒绝，用户已定）与缺省值（不填 = 与低档同值） */
 const CUSTOM_TRIGGER_MIN = 100000;
 const CUSTOM_TRIGGER_MAX = 500000;
 const CUSTOM_TRIGGER_DEFAULT = CUSTOM_TRIGGER_MIN;
@@ -114,7 +115,7 @@ const CUSTOM_TRIGGER_CEILING = MAIN_ROUTE_WINDOW - MAIN_ROUTE_RESERVED_OUTPUT;
  *   retainTokens     4K – 128K  ：低于 4K 会把「最近这段原文」压没，高于 128K 在小窗口
  *                                 路由上没有意义（128k 窗口的可用原文预算本来就不到它）。
  *   summaryMaxTokens 4K – 256K  ：上界 = 主力路由单次输出上限（再大也没用）。
- * 档位默认值与 TIER_SPECS 的 retainTokens 同源（省钱 / 自定义 16K、中 32K、晚 64K），
+ * 档位默认值与 TIER_SPECS 的 retainTokens 同源（低 / 自定义 16K、中 32K、晚 64K），
  * 摘要上限各档都是 256K（= 主力路由的单次输出上限，见 modelPoliciesOf 的注释）。
  */
 const RETAIN_TOKENS_MIN = 4096;
@@ -281,7 +282,7 @@ const KNOWN_TARGETS = Object.freeze(
 const DEFAULT_POLICY = Object.freeze({ enabled: true, tier: DEFAULT_TIER, officialModels: OFFICIAL_MODELS_FALLBACK });
 
 /** 把任意外来值归一成一份合法 policy（非法值一律回落默认，绝不抛）。
- *  `early` 是已下线的早档（省钱档顶替了它）：老配置里存着的旧值一律归一到「中」。
+ *  `early` 是已下线的早档（低档顶替了它）：老配置里存着的旧值一律归一到「中」。
  *  「压缩后的大小」两个可调量**只有自定义档才认**（本次共识）：其它档位一律按档位默认，
  *  否则会出现「界面不显示这两个数、压缩却在用旧值」的暗值。配置里的旧值不在这里删，
  *  切回自定义档时照旧回填。 */
@@ -332,14 +333,14 @@ function compactPolicyFromConfig(cfg) {
   return policy;
 }
 
-/** 各档的 modelPolicies 行（绝对保留尾部 + 省钱 / 自定义两档的固定 headroom + 官方路由逐条点名）。
+/** 各档的 modelPolicies 行（绝对保留尾部 + 低 / 自定义两档的固定 headroom + 官方路由逐条点名）。
  *  为什么 headroom 要点名在路由上而不是写全局：全局 headroom 是「所有路由共用」的兜底，
  *  128k 这类小窗口路由在固定 headroom 下算不出合法值（插件运行到那条路由才报错），
- *  所以省钱 / 自定义两档只把 headroom 钉在官方大窗口路由上，其余路由走原比例。
+ *  所以低 / 自定义两档只把 headroom 钉在官方大窗口路由上，其余路由走原比例。
  *  为什么每条都要显式 `maxTokens`：插件的 resolveConfig 有一条兜底 —— 路由 policy 只写了
  *  headroomTokens 时，policy.maxTokens 会被**填成 headroomTokens**（真源
  *  dsh-compaction-basic/lib/index.js:71），而 maxTokens 是**写摘要那一次请求**的输出上限
- *  （summarizeWithLlm 的 options.maxTokens）。省钱档 643,872 这样发出去就是向模型要 64 万
+ *  （summarizeWithLlm 的 options.maxTokens）。低档 594,000 这样发出去就是向模型要 59 万
  *  输出 token —— 主力路由真正在用的单次输出上限是 256,000（本机会话头部 maxTokens 实测），
  *  所以这里把它钉成同一个数：摘要请求的信封与主请求一字不差。 */
 function modelPoliciesOf(tier, policy) {
@@ -357,8 +358,8 @@ function modelPoliciesOf(tier, policy) {
   const summaryMaxTokens =
     p.summaryMaxTokens === null ? MAIN_ROUTE_RESERVED_OUTPUT : p.summaryMaxTokens;
   /* 主力路由的触发线（与插件同一条算式：min(窗口 × ratio, 窗口 − 预留输出 − headroom)），
-     用户填的保留量必须**小于**它（插件硬校验 retainTokens < thresholdTokens）：省钱档
-     触发线本来就只有 100K，填 128K 的保留量会直接把插件配置搞成非法。 */
+     用户填的保留量必须**小于**它（插件硬校验 retainTokens < thresholdTokens）：低档
+     触发线是 150K，保留量上界 128K 也要按它夹一次（自定义档触发线更低时同样生效）。 */
   const officialHeadroom =
     headroom === null ? PLUGIN_DEFAULT_HEADROOM_TOKENS : headroom;
   const officialThreshold = Math.floor(
@@ -393,7 +394,7 @@ function modelPoliciesOf(tier, policy) {
 function compactConfigOf(rawPolicy) {
   const policy = normalizeCompactPolicy(rawPolicy);
   const spec = TIER_SPECS[policy.tier] || TIER_SPECS[DEFAULT_TIER];
-  /* 省钱 / 自定义两档的触发线靠路由级 headroom 钉绝对值，全局 ratio 只用来保证
+  /* 低 / 自定义两档的触发线靠路由级 headroom 钉绝对值，全局 ratio 只用来保证
      「第二分支胜出」（ratio 0.9 × 1M = 900k > 实际压力预算）；
      中 / 晚两档仍走原比例，全局 ratio 就是它们的触发比例。 */
   return {
@@ -543,7 +544,7 @@ function compactStateInCordis(text) {
     auto: autoM ? autoM[1] === "true" : null,
     hasModelPolicies: /^[ \t]*modelPolicies:/m.test(live),
     retainTokens: Array.from(live.matchAll(/^[ \t]*retainTokens:\s*(\d+)/gm)).map((m) => Number(m[1])),
-    /* 省钱 / 自定义档的固定 headroom（中 / 晚两档不写这一键，故可能为空数组） */
+    /* 低 / 自定义档的固定 headroom（中 / 晚两档不写这一键，故可能为空数组） */
     headroomTokens: Array.from(live.matchAll(/^[ \t]*headroomTokens:\s*(\d+)/gm)).map((m) => Number(m[1])),
     /* 写摘要那一次请求的输出上限（每条 policy 都有；见 modelPoliciesOf 的注释） */
     maxTokens: Array.from(live.matchAll(/^[ \t]*maxTokens:\s*(\d+)/gm)).map((m) => Number(m[1])),

@@ -295,12 +295,26 @@
   border-radius: 0 3px 3px 0;
 }
 
+/* 自动压缩行（任务 3/8）：与上下文注入行同族的弱化段 —— 灰轨 + 极淡底，
+   一眼能看出「这里发生过一次上下文压缩」，但不与工具 / 正文抢注意力。 */
+.dsh-trace-row.t-compact {
+  color: var(--dsh-ink-dim);
+  background: rgba(255, 255, 255, .025);
+  border-left: 2px solid var(--dsh-node-ctx);
+  border-radius: 0 3px 3px 0;
+}
+
 /* 轨宽让位：2px 左轨由左内边距让回（8 − 2 = 6），带轨行的内容框与无轨行 / 分组头等宽 ——
    读数栏与正文因此仍与 .dsh-trace-group 的标题落在同一条竖线上。 */
 .dsh-trace-row.t-think,
 .dsh-trace-row.t-tool,
 .dsh-trace-row.t-err,
 .dsh-trace-row.err {
+  padding-left: 6px;
+}
+
+/* 自动压缩行（任务 3/8）：与上面那组同一条「轨宽让位」口径（2px 左轨由左内边距让回） */
+.dsh-trace-row.t-compact {
   padding-left: 6px;
 }
 
@@ -321,6 +335,16 @@
 .dsh-trace-row.t-tool.on,
 .dsh-trace-row.t-err.on,
 .dsh-trace-row.err.on {
+  background: var(--dsh-accent-soft);
+}
+
+/* 自动压缩行（任务 3/8）：与上面两组同一条交互底色口径，单列一条不挤进既有选择器表
+   （那两张表被 smoke 的逐字正则钉着） */
+.dsh-trace-row.t-compact:hover {
+  background: var(--dsh-card-bg-2);
+}
+
+.dsh-trace-row.t-compact.on {
   background: var(--dsh-accent-soft);
 }
 
@@ -1133,6 +1157,18 @@
 
 .dsh-trace-ctx {
   color: var(--dsh-ink-dim);
+}
+
+/* 自动压缩行（任务 3/8）：一行字，失败态走语义红（错误首行由 app-trajectory.js 截） */
+.dsh-trace-compact {
+  color: var(--dsh-ink-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dsh-trace-compact.err {
+  color: var(--dsh-err);
 }
 
 /* ── 检查器（上游 Trajectory 的局部检查器）：选中记录 → 右侧一栏明细 ────────

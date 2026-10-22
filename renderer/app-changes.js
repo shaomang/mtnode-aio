@@ -146,6 +146,7 @@
       if (segs) {
         for (var s = 0; s < segs.length; s++) {
           var sg = segs[s];
+          /* 只认工具段：自动压缩段（k:'compact'）与思考 / 正文段都不是文件改动 */
           if (!sg || sg.k !== "tool" || !sg.callId) continue;
           if (sg.round != null) roundByCall[String(sg.callId)] = Number(sg.round);
         }

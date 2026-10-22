@@ -19,7 +19,6 @@ remotion-pack/
 ├── src/
 │   ├── index.tsx       # 随包占位入口（仅参考；真渲染用工作目录里的工程）
 │   └── Composition.tsx# 占位画面模板
-├── portrait-dialogue.tsx # 内置「角色动态 + 台词卡」合成（宿主按描述选用）
 ├── render.mjs         # 读 render.json -> renderMedia，进度 JSON Lines 输出
 ├── install.cmd        # npm install（默认 registry.npmmirror.com，--official 切官方源）
 ├── README.md
@@ -72,5 +71,6 @@ stdout 输出 JSON Lines：
 - **合成 id**：固定为 `Main`（宿主生成的入口 `index.tsx` 里注册）。
 - **占位参数**：入口模板里的 `durationInFrames / fps / width / height` 由 `render.json` 同名字段
   在 `selectComposition` 之后就地覆盖。
-- **画面模板**：`src/Composition.tsx` 与 `portrait-dialogue.tsx` 只是随包参考；真渲染用工程目录里
-  宿主写出的 `Composition.tsx`（自定义 TSX 或内置台词卡模板）。
+- **画面模板**：`src/Composition.tsx` 只是随包占位，保证装完即可编译；真渲染一律用工程目录里
+  宿主写出的 `Composition.tsx`（节点贴的自定义 TSX / 工作流产物，否则内置标题卡模板）。
+  引擎侧不再有按描述关键词选中某个专属版面的分支。

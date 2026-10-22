@@ -1,0 +1,126 @@
+{
+  "version": 1,
+  "plugin": "blender-local",
+  "title": {
+    "zh": "Blender 本地插件",
+    "en": "Blender Local"
+  },
+  "steps": [
+    {
+      "id": "probe",
+      "title": "探测已装 / 查官方最新版",
+      "hint": "先看目标目录里有没有 blender.exe：已装就跳过下载（本插件不自动升级），但仍查一次官方最新稳定版供你判断。"
+    },
+    {
+      "id": "download",
+      "title": "下载官方 Blender（sha256 校验）",
+      "hint": "从 download.blender.org 下官方 windows-x64 便携 zip（约 405MB），断点续传，必须通过官方 .sha256 校验；校验不一致会删掉重下。",
+      "messages": {
+        "blender.sha256_unavailable": {
+          "zh": "拿不到官方 sha256 校验文件，按共识不装未校验的包。检查网络能否访问 download.blender.org，或点「交给 mtnode 会话修复」。",
+          "en": "The official sha256 file is unreachable; unverified packages are not installed. Check access to download.blender.org or hand it to a session."
+        },
+        "blender.sha256_missing": {
+          "zh": "官方 sha256 文件里没有这个 zip 的校验值（版本目录可能刚更新）。重试一次，或把这条日志交给会话。",
+          "en": "The official sha256 file has no entry for this zip. Retry, or hand this log to a session."
+        },
+        "blender.download_failed": {
+          "zh": "下载 Blender 安装包失败（只走官方源）。网络恢复后重试会从断点续传；反复失败请交给会话。",
+          "en": "Downloading Blender failed (official source only). Retrying resumes; repeated failures go to a session."
+        },
+        "blender.sha256_mismatch": {
+          "zh": "sha256 校验不一致，已删掉这次下载的包（多半是网络截断）。直接重试即可。",
+          "en": "sha256 mismatch; the downloaded zip was removed. Just retry."
+        }
+      }
+    },
+    {
+      "id": "extract",
+      "title": "解压便携包",
+      "hint": "用系统自带 tar 解压官方 zip 到安装目录（失败时回退 PowerShell Expand-Archive）。不写注册表、不要管理员。",
+      "messages": {
+        "blender.extract_failed": {
+          "zh": "解压失败：检查目标目录是否可写、磁盘是否够（约 1.2GB 解压后）。",
+          "en": "Extraction failed: check that the target folder is writable and has ~1.2GB free."
+        },
+        "blender.exe_missing": {
+          "zh": "解压后找不到 blender.exe：zip 可能被截断，删掉安装目录里的 .download 后重试。",
+          "en": "blender.exe not found after extraction: the zip may be truncated; remove .download and retry."
+        }
+      }
+    },
+    {
+      "id": "uv",
+      "title": "准备 uv / uvx",
+      "hint": "mcp-for-blender 靠 uvx 运行。先复用本机已有的 uv；没有就跑官方 install.ps1（装到 ~/.local/bin 并改用户 PATH），仍失败则回退官方 GitHub release 的 uv zip（sha256 校验）解到插件目录。",
+      "messages": {
+        "blender.uv_failed": {
+          "zh": "装 uv 失败：官方 install.ps1 与 release 回退都没成功。检查网络 / 杀软拦截 PowerShell，或交给会话按技能里的【自我修复】处理。",
+          "en": "Installing uv failed (both install.ps1 and the release fallback). Check network/AV, or hand it to a session."
+        },
+        "blender.uvx_missing": {
+          "zh": "找到了 uv 却没有 uvx.exe（安装不完整）。删掉那个 uv 目录后重试，或交给会话。",
+          "en": "uv exists but uvx.exe is missing (incomplete install). Remove that uv folder and retry."
+        }
+      }
+    },
+    {
+      "id": "addon",
+      "title": "安装并启用 Blender addon",
+      "hint": "uvx mcp-for-blender install-addon 写进用户默认 Blender 配置的 addons 目录；随后用 Blender 无头模式启用并保存 userpref（改前会备份到数据目录的 blender-backup/）。",
+      "messages": {
+        "blender.addon_install_failed": {
+          "zh": "addon 落盘失败：uvx 下载 mcp-for-blender 时出错（可能被网络或代理打断）。重试一次。",
+          "en": "Installing the addon failed: uvx could not fetch mcp-for-blender. Retry once."
+        },
+        "blender.addon_enable_failed": {
+          "zh": "addon 装上了但没能启用：Blender 无头模式加载失败（userpref 可能是旧版 / 被占用）。关掉所有 Blender 后重试，或手动在偏好设置里勾选「MCP for Blender」。",
+          "en": "The addon is installed but could not be enabled headlessly. Close Blender and retry, or enable it manually in Preferences."
+        }
+      }
+    },
+    {
+      "id": "mcp",
+      "title": "注册 MCP 服务器",
+      "hint": "把 serverName=blender 的 stdio 行写进 dsh-home/cordis-user.yml（9876 被占就在 9876–9886 里挑空闲端口）。重启 MTNode 后 Agent 会话里才会出现 blender 工具。",
+      "messages": {
+        "blender.no_free_port": {
+          "zh": "9876–9886 全被占用：先关掉占用这些端口的程序（常见是另一个 Blender 或旧 MCP 服务端），再重试。",
+          "en": "Ports 9876–9886 are all busy. Close whatever owns them (often another Blender or an old MCP server) and retry."
+        },
+        "blender.mcp_write_failed": {
+          "zh": "写 cordis-user.yml 失败：检查数据目录是否可写（杀软锁定 / 权限）。",
+          "en": "Writing cordis-user.yml failed: check that the data folder is writable."
+        }
+      }
+    },
+    {
+      "id": "smoke",
+      "title": "端到端冒烟（启 Blender → MCP 握手）",
+      "hint": "这一关过了才算装好：插件拉起 Blender、等 addon 监听端口、再用 uvx 起 MCP 服务端走 initialize + tools/list。会短暂弹一个 Blender 窗口，验完自动关掉（只关插件拉起的那个）。",
+      "messages": {
+        "blender.launch_failed": {
+          "zh": "启动 Blender 做冒烟失败：blender.exe 可能被杀软拦了。手动双击一次安装目录里的 blender.exe，能开再重试。",
+          "en": "Launching Blender for the smoke test failed. Try opening blender.exe manually, then retry."
+        },
+        "blender.socket_timeout": {
+          "zh": "Blender 起来了，但 addon 没监听端口：多半是 addon 没启用或端口被占。看上面日志里 Blender 的输出，或到控制台点「测试连接」重试。",
+          "en": "Blender started but the addon never listened: likely not enabled, or the port is taken. Check the log above, or retry from the console."
+        },
+        "blender.addon_ping_failed": {
+          "zh": "端口开了但 addon 没回 ping：多半是 addon 版本旧（重装一次 addon）或它其实没启用。到控制台点「测试连接」重试，或交给会话。",
+          "en": "The port opened but the addon did not answer ping: likely an outdated addon (reinstall it) or it is not really enabled. Retry from the console, or hand it to a session."
+        },
+        "blender.mcp_handshake_failed": {
+          "zh": "MCP 握手失败：uvx 起来了但没拿到工具列表（多半是 addon 协议版本旧 / 端口对不上）。到控制台点「测试连接」看细节，或交给会话。",
+          "en": "MCP handshake failed: uvx started but no tool list came back. Retry from the console for details, or hand it to a session."
+        }
+      }
+    },
+    {
+      "id": "done",
+      "title": "收尾",
+      "hint": "装完记得重启 MTNode：MCP 配置只在启动时读取。卸载（安装窗里的「卸载」）会一并删掉 Blender 安装目录，删前会二次确认。"
+    }
+  ]
+}
