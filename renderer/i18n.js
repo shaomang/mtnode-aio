@@ -6689,6 +6689,38 @@
     "角色这一组缺少样本文字：请到管理台补上（音频与文字必须成对）":
       "This set has no sample text — add it in the console (audio and text must come as a pair)",
     "参考音频端子（端口 2 的音频）": "Reference-audio port (audio from port 2)",
+    /* 节点 head / body 与角色窗标题栏的「角色 + 组名」下拉（含参数端子的报错文案） */
+    "组名": "Set",
+    "无（走端子 / 音色库）": "None (ports / voice library)",
+    "（角色已不可用）": "(character unavailable)",
+    "（这个角色没有样本组）": "(this character has no sample set)",
+    "（先选角色）": "(pick a character first)",
+    "（还没有角色）": "(no characters yet)",
+    "选这个节点用哪个角色的声音（不选 = 走端子 / 音色库）":
+      "Which character voices this node (none = ports / voice library)",
+    "选这个角色用哪一组样本（音频 + 样本文字 + 指令）":
+      "Which sample set of this character to use (audio + sample text + instruction)",
+    "直接选这个角色用哪一组样本（组名）：选完立刻写回节点并保存":
+      "Pick this character's sample set right here: it is written back to the node immediately",
+    "参数里的角色「": "The character in params \"",
+    "」对上了多个同名角色：": "\" matched several characters with the same name: ",
+    "；请改用角色 id 指定": "; use the character id instead",
+    "」没匹配上": "\" did not match anything",
+    "（现有：": " (available: ",
+    "（现在还没有角色预设）": " (no character presets yet)",
+    "对上了多个同名组：": " matched several sets with the same name: ",
+    "；请改用组 id 指定": "; use the set id instead",
+    "没匹配上": "did not match anything",
+    "（这个角色还没有样本组）": "(this character has no sample set yet)",
+    "参数给了组名「": "The params give set name \"",
+    "」，但节点没有选角色：组名必须挂在角色下面（请同时给 breezePreset，或在节点上先选角色）":
+      "\" but the node has no character: a set belongs to a character (pass breezePreset too, or pick a character on the node first)",
+    "参数里的角色没匹配上（现在还没有角色预设）":
+      "The character in params did not match anything (no character presets yet)",
+    "参数里的组名「": "The set name in params \"",
+    "」在角色「": "\" was not found in character \"",
+    "」里": "\": ",
+    "解析角色参数失败：": "Failed to resolve the character params: ",
     "音色（音色库）": "Voice (voice library)",
     "无法连接 Breeze TTS 2 后端（后端可能已退出，请重新执行本节点）":
       "Cannot reach the Breeze TTS 2 backend (it may have exited — run this node again)",
@@ -13015,6 +13047,11 @@
     "勾选后：参数 JSON 里出现未知键 / 类型不符时整个节点不运行并报错，而不是逐键回退":
       "When checked, an unknown key or a type mismatch in the parameter JSON rejects the whole payload and the node does not run (instead of falling back key by key).",
     "未接线：运行时按本窗的值": "Not wired: a run uses the values in this dialog",
+    "参数端子已接线": "Parameter port is wired",
+    "canvas_edit 不再接受 params：节点参数只能通过「参数」端子传入 —— 建一颗 input_text 写参数 JSON，再 connect 到该节点的 toIndex 9001。本次编辑已整笔拒绝，冲突项：":
+      "canvas_edit no longer accepts params: node parameters can only come in through the parameter port — create an input_text holding the parameter JSON and connect it to that node's toIndex 9001. This edit was rejected as a whole; conflicting entries: ",
+    "已清理节点上由 Agent 直接写入的参数（现在只认「参数」端子），这些节点回到 ⚙ 里的值：":
+      "Cleaned up parameters an agent had written straight onto nodes (only the parameter port counts now); these nodes are back on the values in their ⚙ settings: ",
     "PDF 生成": "PDF generation",
     "这颗节点还没有随包带来的中间产物。":
       "This node has no bundled intermediate artifacts yet.",

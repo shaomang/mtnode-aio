@@ -4014,6 +4014,16 @@ button.mini.btn-sq.tpl-ico {
   gap: 8px
 }
 
+/* ── 长历史「布局卸载」：**试过，没留下** ─────────────────────────────────────
+   本轮在隔离实例上真机量过 content-visibility:auto + contain-intrinsic-size:auto
+   对会话消息列的作用：把贴底滚动那次强制回流的开销从 310ms 降到 0ms 的那一次，
+   事后用受控因子实验（同样 202 条历史 × 正文 2KB/80KB × 开/关）复现不出来 ——
+   真实开销跟**这一段流式正文自己的长度**走（8KB→3.4ms，64KB→32.6ms），历史条数
+   只贡献 0.8ms（10 条 3.4ms / 200 条 4.2ms）。既然量不到收益，就不留这条规则：
+   它会带来「未量过的行先按占位高排版」的副作用（贴底与阅读锚点可能多对一次账），
+   不值得为 0 收益背这个风险。真正的解法见 app-assist.js 的 DSH_STREAM_TIERS
+   （按正文长度分档降帧）与 dshMdCached（整表重建的 markdown 缓存）。 */
+
 .agent-list .dsh-msg-head {
   display: none
 }

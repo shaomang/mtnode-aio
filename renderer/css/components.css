@@ -5162,3 +5162,34 @@ textarea.asset-form-input {
    只弹一句「无效的 API Key」（走通用 .toast 样式即可）。 */
 
 
+/* 标题栏里的附加下拉（Breeze「角色与音色」窗的组名下拉）：
+   靠右贴在 ✕ 左边（✕ 自带 margin-left:auto，这里让下拉接管这份 auto）。 */
+.overlay-head .ov-title-sel {
+  margin-left: auto;
+  flex: none;
+  max-width: 220px;
+  height: 22px;
+  padding: 0 6px;
+  font-size: 12px;
+  font-family: var(--mono);
+  color: var(--ink);
+  background: var(--code);
+  border: 1px solid var(--bd2);
+  border-radius: 3px;
+  outline: none;
+  letter-spacing: 0;
+  cursor: pointer;
+}
+
+.overlay-head .ov-title-sel:focus {
+  border-color: var(--orange)
+}
+
+.overlay-head .ov-title-sel:disabled {
+  opacity: .55;
+  cursor: default
+}
+
+.overlay-head .ov-title-sel + .ov-close-btn {
+  margin-left: 8px
+}

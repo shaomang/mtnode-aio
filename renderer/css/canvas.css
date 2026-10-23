@@ -7262,3 +7262,55 @@ body.theme-light .n-chip.n-chip-lt {
   font-size: 11px;
 }
 
+
+/* ===== Breeze 语音节点：「角色 + 组名」下拉 =====
+   需求：head 上（👤 右侧）与节点 body 里各有一份，body 那两份并排占同一行。
+   两处共用 .n-breeze-sel 的紧凑外观（与相邻 .n-play 同高 20px）；省略号靠 max-width + 浏览器默认。 */
+.n-breeze-sel {
+  flex: none;
+  height: 20px;
+  max-width: 96px;
+  min-width: 0;
+  padding: 0 4px;
+  font-size: 11px;
+  font-family: var(--mono);
+  color: var(--ink);
+  background: var(--code);
+  border: 1px solid var(--bd2);
+  border-radius: 3px;
+  outline: none;
+  cursor: pointer;
+}
+
+.n-breeze-sel:focus {
+  border-color: var(--orange)
+}
+
+.n-breeze-sel:disabled {
+  opacity: .55;
+  cursor: default
+}
+
+.n-breeze-role-sel {
+  max-width: 96px
+}
+
+.n-breeze-group-sel {
+  max-width: 88px
+}
+
+.breeze-pick-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  min-width: 0;
+}
+
+.breeze-pick-row .n-field {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.breeze-pick-row .n-field-sel {
+  width: 100%;
+}

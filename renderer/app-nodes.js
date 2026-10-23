@@ -5741,6 +5741,135 @@ function breezePresetFind(presets, id) {
   const key = String(id || "");
   return (presets || []).find((p) => p && p.id === key) || null;
 }
+/** 组的显示名：组名优先，无名字的旧组回退「第 N 组」。
+ *  角色窗的组卡 / 节点上的两个下拉 / 参数匹配都走这一份 —— 三个地方不许各拼各的。 */
+function breezePresetGroupLabel(group, index) {
+  const name = String((group && group.name) || "").trim();
+  if (name) return name;
+  const n = Number(index);
+  return I18n.t("第 {n} 组", { n: (isFinite(n) && n >= 0 ? n : 0) + 1 });
+}
+/** 「第 N 组」这种按序号的写法 → N（1 起）；认不出返回 0。
+ *  参数里的组名允许这么写（无名字的旧组没有别的名字可写），空格可有可无。 */
+function breezeGroupOrdinalOf(text) {
+  const m = String(text == null ? "" : text).trim().match(/^第\s*(\d{1,4})\s*组$/);
+  if (!m) return 0;
+  const n = Number(m[1]);
+  return isFinite(n) && n >= 1 ? n : 0;
+}
+/** 名称比较口径：忽略首尾空格与大小写（参数是人手写的，不让空格 / 大小写决定成败） */
+function breezeNameKey(s) {
+  return String(s == null ? "" : s).trim().toLowerCase();
+}
+/** 参数里的「角色名称」→ 一个角色：名称优先，再退 id；找不到 / 同名多个都算错（不许猜）。 */
+function breezeMatchPreset(presets, text) {
+  const raw = String(text == null ? "" : text).trim();
+  const list = (presets || []).filter((p) => p && !p.draft);
+  if (!raw) return { preset: null };
+  const key = breezeNameKey(raw);
+  let hit = list.filter((p) => breezeNameKey(p.name) === key);
+  if (!hit.length) hit = list.filter((p) => String(p.id || "") === raw);
+  if (hit.length === 1) return { preset: hit[0] };
+  if (hit.length > 1)
+    return {
+      error:
+        I18n.t("参数里的角色「") +
+        raw +
+        I18n.t("」对上了多个同名角色：") +
+        hit.map((p) => String(p.name || p.id) + "(" + p.id + ")").join("、") +
+        I18n.t("；请改用角色 id 指定"),
+    };
+  return {
+    error:
+      I18n.t("参数里的角色「") +
+      raw +
+      I18n.t("」没匹配上") +
+      (list.length
+        ? I18n.t("（现有：") + list.map((p) => String(p.name || p.id)).join("、") + I18n.t("）")
+        : I18n.t("（现在还没有角色预设）")),
+  };
+}
+/** 参数里的「组名」→ 角色里的某一组：组名优先，再认「第 N 组」，最后退 id。 */
+function breezeMatchGroup(groups, text) {
+  const raw = String(text == null ? "" : text).trim();
+  const list = (Array.isArray(groups) ? groups : []).filter(Boolean);
+  if (!raw) return { group: list[0] || null, index: 0 };
+  const all = list.map((g, i) => ({ g, i }));
+  const key = breezeNameKey(raw);
+  let hit = all.filter((x) => String(x.g.name || "").trim() && breezeNameKey(x.g.name) === key);
+  if (!hit.length) {
+    const ord = breezeGroupOrdinalOf(raw);
+    if (ord) hit = all.filter((x) => x.i + 1 === ord);
+  }
+  if (!hit.length) hit = all.filter((x) => String(x.g.id || "") === raw);
+  if (hit.length === 1) return { group: hit[0].g, index: hit[0].i };
+  if (hit.length > 1)
+    return {
+      error:
+        I18n.t("对上了多个同名组：") +
+        hit.map((x) => breezePresetGroupLabel(x.g, x.i) + "(" + x.g.id + ")").join("、") +
+        I18n.t("；请改用组 id 指定"),
+    };
+  return {
+    error:
+      I18n.t("没匹配上") +
+      (list.length
+        ? I18n.t("（现有：") +
+          list.map((g, i) => breezePresetGroupLabel(g, i)).join("、") +
+          I18n.t("）")
+        : I18n.t("（这个角色还没有样本组）")),
+  };
+}
+/** 参数端子里的「角色名称 + 组名」→ 这次运行该用的 presetId / presetGroupId（纯函数，冒烟直接跑）。
+ *  口径（与用户共识一致）：名称没给就用节点已选角色；组名没给就用该角色第一组；
+ *  只给组名而节点也没角色 = 报错（组名必须挂在角色下面）；对不上 = 报错，绝不默默换声。 */
+function breezeParamPickPlan(node, presets, presetText, groupText) {
+  const pText = String(presetText == null ? "" : presetText).trim();
+  const gText = String(groupText == null ? "" : groupText).trim();
+  if (!pText && !gText) return { presetId: "", presetGroupId: "" };
+  let preset = null;
+  if (pText) {
+    const m = breezeMatchPreset(presets, pText);
+    if (m.error) return { error: m.error };
+    preset = m.preset;
+  } else {
+    preset = breezePresetFind(presets, breezePresetIdOf(node));
+    if (!preset)
+      return {
+        error:
+          I18n.t("参数给了组名「") +
+          gText +
+          I18n.t("」，但节点没有选角色：组名必须挂在角色下面（请同时给 breezePreset，或在节点上先选角色）"),
+      };
+  }
+  if (!preset)
+    return { error: I18n.t("参数里的角色没匹配上（现在还没有角色预设）") };
+  const groups = Array.isArray(preset.groups) ? preset.groups : [];
+  if (!gText) {
+    const first = groups[0] || null;
+    return { presetId: preset.id, presetGroupId: first ? String(first.id || "") : "" };
+  }
+  const m = breezeMatchGroup(groups, gText);
+  if (m.error)
+    return {
+      error:
+        I18n.t("参数里的组名「") +
+        gText +
+        I18n.t("」在角色「") +
+        String(preset.name || preset.id) +
+        I18n.t("」里") +
+        m.error,
+    };
+  return { presetId: preset.id, presetGroupId: m.group ? String(m.group.id || "") : "" };
+}
+/** 上面的 plan + 读一次宿主清单（带缓存）。运行期由 app-node-params.js 调用。 */
+async function breezeParamPicks(node, presetText, groupText) {
+  const pText = String(presetText == null ? "" : presetText).trim();
+  const gText = String(groupText == null ? "" : groupText).trim();
+  if (!pText && !gText) return { presetId: "", presetGroupId: "" };
+  const presets = await breezePresetsLoad(true);
+  return breezeParamPickPlan(node, presets, pText, gText);
+}
 /** 选了的那一组：指定组优先，组没了退回该角色第一组；返回 { preset, group, index } 或 null */
 function breezePresetPick(node, presets) {
   const pid = breezePresetIdOf(node);
@@ -5763,7 +5892,7 @@ function breezePresetLabelOf(node, presets) {
   return (
     I18n.t("角色：") +
     hit.preset.name +
-    (hit.group ? " · " + I18n.t("第 {n} 组", { n: hit.index + 1 }) : "")
+    (hit.group ? " · " + breezePresetGroupLabel(hit.group, hit.index) : "")
   );
 }
 /** 选了角色但已经不可用（删了 / 组没了 / 缺音频）：返回一句红字提示，正常返回空串 */
@@ -5946,6 +6075,16 @@ async function playBreezeGenNode(node, quiet) {
   /* 「全部终止 / 单独停止」之后不得再起跑（含串行队列里排到点的任务） */
   if (mediaRunStopped(node)) {
     mediaGenMarkDropped(node, false);
+    return;
+  }
+  /* 参数端子里的角色 / 组名没对上（见 app-node-params.js 的 breezeParamPicks）：
+     状态行红字写清「哪个名字没匹配上」，这次合成直接停 —— 绝不默默换个声音出声。 */
+  const pickError = String(node._npPresetError || "");
+  if (pickError) {
+    node.error = pickError;
+    node.breezeStatus = pickError;
+    if (!quiet) toast(pickError, "err");
+    renderCanvas();
     return;
   }
 
@@ -13837,14 +13976,10 @@ function canvasSnapshot(opts) {
       outputs: isFunctionNode(n)
         ? fnToolParamList(n, "out").map((p) => ({ name: p.name, kind: p.kind }))
         : undefined,
-      /* 「参数」端子（renderer/app-node-params.js）：params = 节点自带的参数 JSON
-         （canvas_edit 的 params 字段写入，运行时与参数线深合并，参数线优先）；
-         paramKeys = 本节点**可被参数覆写**的键（standard / full 档才回，minimal 省 token）。
+      /* 「参数」端子（renderer/app-node-params.js）：paramKeys = 本节点**可被参数覆写**的键
+         （standard / full 档才回，minimal 省 token）。参数只能从端子（toIndex 9001）传入 ——
+         canvas_edit 的 params 字段已取消，节点上不存在「自带参数」这回事。
          参数端子的端子号是哨兵值 PARAM_IN_INDEX（不进 0..N-1 的顺序端口）。 */
-      params:
-        n.npParams && typeof n.npParams === "object" && Object.keys(n.npParams).length
-          ? n.npParams
-          : undefined,
       paramKeys:
         o.detail !== "minimal" &&
         typeof NParam === "object" &&
@@ -16787,6 +16922,18 @@ function handleCanvasEvent(data, runCtx) {
       finish({ ok: false, error }, error);
     }
   };
+  /* 参数只能从「参数」端子来：带 params 的编辑注定被拒（闸在 applyCanvasEdit），
+     在弹「是否允许改画布」之前就回失败 —— 不让用户白点一次确认。 */
+  if (opEarly === "edit") {
+    const reject =
+      typeof NParam === "object" && NParam && typeof NParam.editParamsRejection === "function"
+        ? NParam.editParamsRejection(data.params || {})
+        : "";
+    if (reject) {
+      finish({ ok: false, error: reject }, reject);
+      return;
+    }
+  }
   const op = data.op || "get";
   if (canvasOpNeedsConfirm(op, data.params || {})) {
     const ask =
@@ -18782,21 +18929,9 @@ function applyNodePatch(node, patch, warnings) {
   }
   if (patch.task != null && node.kind === "agent_task")
     node.task = String(patch.task);
-  /* 「参数」端子的另一条给法（canvas_edit 的 params 字段）：不接线，直接把一份参数 JSON
-     挂在节点上，运行时与参数线深合并（参数线优先）。校验口径与参数线完全同一份
-     （NParam.read 会统一过一遍可覆写键表），这里只做容器层面的收口。 */
-  if (patch.params !== undefined && patch.params !== null) {
-    if (typeof NParam === "object" && NParam && NParam.eligible && NParam.eligible(node)) {
-      if (typeof patch.params === "object" && !Array.isArray(patch.params)) {
-        node.npParams = Object.assign({}, patch.params);
-      } else if (warnings) {
-        warnings.push(I18n.t("params 必须是一份 JSON 对象（{键: 值}），已忽略：") + node.title);
-      }
-    } else if (warnings) {
-      warnings.push(I18n.t("该节点没有参数端子，params 已忽略：") + node.title);
-    }
-  }
-  if (patch.params === null && node.kind) delete node.npParams;
+  /* 节点参数**只能从「参数」端子来**：canvas_edit 的 params 字段已取消（旧版在这里
+     把一份参数挂成 node.npParams，运行时压住 ⚙ 里的值，用户就改不动自己的参数了）。
+     写入口的闸在 applyCanvasEdit：带 params 的编辑整笔拒绝。 */
   if (patch.paramStrict !== undefined) node._npStrict = !!patch.paramStrict;
   if (node.kind === "task") {
     if (patch.goal != null) node.goal = String(patch.goal);
@@ -20235,6 +20370,16 @@ async function applyCanvasEdit(params, ctx) {
   );
   const creates = Array.isArray(params.create) ? params.create : [];
   const updates = Array.isArray(params.update) ? params.update : [];
+  /* 参数只能从「参数」端子来：create / update 里带 params 就整笔拒绝（写入口的闸，
+     放在 pushHistory / 任何写操作之前 —— 见 renderer/app-node-params.js 的同名函数）。
+     不接线而把参数挂到节点上，会把用户在 ⚙ 里改的值压住，等于用户改不动参数。 */
+  {
+    const reject =
+      typeof NParam === "object" && NParam && typeof NParam.editParamsRejection === "function"
+        ? NParam.editParamsRejection(params)
+        : "";
+    if (reject) throw new Error(reject);
+  }
   const connects = Array.isArray(params.connect) ? params.connect : [];
   const disconnects = Array.isArray(params.disconnect) ? params.disconnect : [];
   const removes = Array.isArray(params.remove) ? params.remove : [];

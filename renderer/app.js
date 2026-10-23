@@ -1500,7 +1500,8 @@ const NODE_DEFAULTS = {
      · 端口4=控制输入；输出 端口0=音频内容 · 端口1=控制输出。尺寸参照 music_gen。
      参考源优先级：端子优先，端子空了才用节点设置里选的音色（后端音色库 voices/<id>）。 */
   breeze_gen: {
-    w: 380,
+    /* 420 起：head 上除了 👤 / ⚙ / ▶ / 控制台，还要并排放下「角色」「组名」两枚下拉 */
+    w: 420,
     h: 400,
     /* 一级菜单「音频生成」成员：新建节点默认标题用后端名 */
     title: "Breeze 语音节点",
@@ -10116,6 +10117,11 @@ function openOverlay(title, opts) {
   const ovBody = $("#ovBody");
   if (ovBody) ovBody.classList.remove("tpl-store-body", "g-ref-ov");
   $("#ovTitle").textContent = title;
+  /* 标题栏偶发的「附加控件」（如 Breeze 角色窗标题处那颗组名下拉）随上一只弹窗一起作废：
+     标题栏是共享宿主，不清就会被下一只窗继承。 */
+  if (box) {
+    box.querySelectorAll(".overlay-head .ov-title-extra").forEach((n) => n.remove());
+  }
   $("#ovBody").innerHTML = "";
   $("#ovFoot").innerHTML = "";
   $("#overlay").style.pointerEvents = "";
@@ -10140,6 +10146,8 @@ function closeOverlay() {
   const body = $("#ovBody");
   if (body) body.classList.remove("tpl-store-body", "g-ref-ov");
   document.querySelectorAll("#overlay > .plugin-pop").forEach((el) => el.remove());
+  /* 标题栏的附加控件（Breeze 角色窗那颗组名下拉）关窗即撤，免得残留到别的窗 */
+  document.querySelectorAll("#overlay .overlay-head .ov-title-extra").forEach((el) => el.remove());
   $("#overlay").style.display = "none";
   /* 蒙层没了 = 设置窗也没了（#overlay 全应用独一份，不能叠窗）：把节点绑定作废。
      不清的话，撤销 / 切画布链路会拿着一个早已不在屏上的窗去判断，还会误弹一次
@@ -14752,6 +14760,25 @@ function valueForInput(src, idx, consumer, seen) {
       ? { kind: "image", path: r.output.path }
       : null;
   }
+  /* 用户插件节点：出端口的值存在 src.outputPaths（执行时写），出端口号按「连到 consumer 的
+     那根数据线」的 fromIndex 取（与展示层 displayValueOf 同一口径）；没有 consumer / 没连线
+     时按 0 号口。取不到值返回 null，让调用方走各自的回退，绝不抛错。 */
+  if (typeof isPluginKind === "function" && isPluginKind(src)) {
+    const list = (pluginNodeDef(src) || { outputs: [] }).outputs || [];
+    const paths = src.outputPaths && typeof src.outputPaths === "object" ? src.outputPaths : {};
+    let portIdx = Math.max(0, Number(idx) || 0);
+    if (consumer) {
+      const link = (S.wf.wires || []).find(
+        (x) => !x.rel && !x.ctrl && x.from === src.id && x.to === consumer.id,
+      );
+      if (link) portIdx = Math.max(0, Number(link.fromIndex) || 0);
+    }
+    const port = list[portIdx];
+    const raw = port ? paths[port.id] : "";
+    if (!port || raw == null || raw === "") return null;
+    if (port.kind === "image") return { kind: "image", path: String(raw) };
+    return { kind: "text", text: String(raw) };
+  }
   /* 保存节点：唯一输出端子 = 本次保存的同一份内容（保存什么就往下游给什么）。
      取数只在这里算一份 —— 下游（proc_text / 保存 / 合并 / 智能节点 / @ 引用 / 预览）
      一律经 valueForInput 拿到，并沿新线继续走失效级联。
@@ -15399,13 +15426,22 @@ function displayValueOf(src, consumer) {
       return { image: r.output.path, title: src.title };
     return null;
   }
-  /* 用户插件节点：出端口的值存在 outputPaths（执行时写），第 i 出端口给第 i 个输出。
-     本函数形参名是 src（不是 node）—— 这里曾误写成 node，在严格模式下任何一路「取不到值」的
-     输入都会抛 ReferenceError（remotion / 智能节点的输入收集全走它，整颗节点随之跑不起来）。 */
+  /* 用户插件节点：出端口的值存在 src.outputPaths（执行时写），第 i 出端口给第 i 个输出。
+     本函数只有 (src, consumer) 两个形参 —— 这里曾误写成 node / idx（都不存在），严格模式下
+     任何一路「取不到值」的输入走到这里就抛 ReferenceError（remotion / 智能节点的输入收集
+     全走它，整颗节点随之跑不起来）。出端口号按「连到 consumer 的那根数据线」的 fromIndex 取，
+     与上面 super / asset 分支同一口径；取不到就按 0 号口，任何情况下都不抛错。 */
   if (typeof isPluginKind === "function" && isPluginKind(src)) {
     const paths = src.outputPaths && typeof src.outputPaths === "object" ? src.outputPaths : {};
     const list = (pluginNodeDef(src) || { outputs: [] }).outputs || [];
-    const port = list[Math.max(0, Number(idx) || 0)];
+    let portIdx = 0;
+    if (consumer) {
+      const link = (S.wf.wires || []).find(
+        (x) => !x.rel && !x.ctrl && x.from === src.id && x.to === consumer.id,
+      );
+      if (link) portIdx = Math.max(0, Number(link.fromIndex) || 0);
+    }
+    const port = list[portIdx];
     const raw = port ? paths[port.id] : "";
     if (port && port.kind === "image" && raw) return { image: String(raw), title: src.title };
     const txt = raw == null ? "" : String(raw);
@@ -31832,6 +31868,15 @@ function migrateWf(wf) {
       g.markIds = g.markIds.filter((id) => keptMarkIds.has(id));
     }
   }
+  /* 参数只能从「参数」端子来：旧版 canvas_edit 的 params 会把参数挂成 node.npParams，
+     运行时压住 ⚙ 里的值（用户改不动自己的参数）。老画布一次性清掉，标题攒起来
+     交给调用方提示一次；参数改由文本节点接 9001 端子重新给。幂等。 */
+  let npPurged = 0;
+  _npParamsPurgedTitles = [];
+  if (typeof NParam === "object" && NParam && typeof NParam.purgeLegacyParams === "function") {
+    _npParamsPurgedTitles = NParam.purgeLegacyParams(wf);
+    npPurged = _npParamsPurgedTitles.length;
+  }
   for (const n of wf.nodes) {
     n.title = n.title || I18n.t("未命名节点");
     delete n.runPromise; // 清理旧版本误存的运行期 Promise
@@ -32392,8 +32437,12 @@ function migrateWf(wf) {
   /* 跨节点层硬规则：历史脏线（层内节点直接连到层外）静默剪掉 —— 硬闸只拦新线，
      老图上已经存在的野线必须在这里收口，否则「打开就是错的」。不提示、不打断。 */
   const layerPruned = pruneInvalidSuperBoundaryWiresIn(wf);
-  return videoPortMigrated || shellBridgeFilled || layerPruned > 0; /* true = 发生迁移，调用方应立即落盘 */
+  return videoPortMigrated || shellBridgeFilled || layerPruned > 0 || npPurged > 0; /* true = 发生迁移，调用方应立即落盘 */
 }
+
+/* migrateWf 清掉的老画布残留参数（旧版 canvas_edit 的 params 写进 node.npParams）：
+   标题列表留给调用方在打开画布时提示一次，提示完就清空。 */
+let _npParamsPurgedTitles = [];
 
 async function ensureWorkflow() {
   /* 切画布前先收掉设置窗：skipSave —— 这张画布即将 flush / 或已不属于前台，
@@ -32473,6 +32522,16 @@ async function loadWorkflow(id, opts) {
     wf = r.data;
     wf.id = id;
     if (migrateWf(wf)) S._pendingVideoPortMigrateSave = true;
+    /* 老画布上被旧版 canvas_edit 的 params 挂住的节点参数已清掉：提示一次，
+       告诉用户这些节点现在按 ⚙ 里的值跑（要动态给参数就接参数端子）。 */
+    if (_npParamsPurgedTitles.length) {
+      toast(
+        I18n.t("已清理节点上由 Agent 直接写入的参数（现在只认「参数」端子），这些节点回到 ⚙ 里的值：") +
+          _npParamsPurgedTitles.join(I18n.t("、")),
+        "warn",
+      );
+      _npParamsPurgedTitles = [];
+    }
     /* 旧口径残渣：转写已归音频 / 视频节点所有，文字节点上的 asrTranscripts / asrState
        一律默默删掉（见 renderer/app-asr.js · asrPurgeLegacyTranscripts），删到就落盘。 */
     if (typeof asrPurgeLegacyTranscripts === "function" && asrPurgeLegacyTranscripts(wf))

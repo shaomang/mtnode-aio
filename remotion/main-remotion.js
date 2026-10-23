@@ -190,6 +190,51 @@ function customPropsOf(params) {
  *   · 每行 `键=值` → 进 props（值按 JSON 字面量解析：数字 / true / false / null；解析不了当字符串）。
  * 文本本身仍留在 texts 里（模板要读原文也不会因此丢掉）。
  */
+/**
+ * 接线里的「纯文本台词」→ narration。
+ *
+ *  为什么需要：propsFromInputs 只认 JSON 对象与 `键=值` 行，inlineMediaPropsOf 只认媒体；
+ *  于是画布上「台词 → 端口 3」这种**直接接一段纯文本**的接法会被两边都跳过 ——
+ *  渲染能跑完、动态层也在，但右侧台词卡整片空白（实测）。
+ *  这里把「没被上面两条通道认领」的文本收下：含中文、不是媒体地址、不是单行键值对，
+ *  多条就用空行拼接（合成层 pickNarrationFromTexts 会自己再筛一遍）。
+ *  显式给了 narration 的不覆盖 —— 与 inlineMediaPropsOf 同一口径。
+ */
+function narrationFromInputs(inputs, existing) {
+  const given = String((existing && existing.narration) || "").trim();
+  if (given) return "";
+  const parts = [];
+  for (const it of Array.isArray(inputs) ? inputs : []) {
+    const text = String((it && it.text) || "").trim();
+    if (!text) continue;
+    if (isMediaSrcString(text)) continue;
+    if (text[0] === "{") {
+      try {
+        const obj = JSON.parse(text);
+        if (obj && typeof obj === "object" && !Array.isArray(obj)) continue; // 已被 propsFromInputs 认领
+      } catch {
+        /* 不是 JSON，按台词处理 */
+      }
+    }
+    const rows = text.split(/\r?\n/).filter((r) => r.trim());
+    const allPairs = rows.length > 0 && rows.every((r) => /^[A-Za-z_$][\w$.]*\s*[=:]\s*/.test(r.trim()));
+    if (allPairs) continue; // 键=值 参数块，已被 propsFromInputs 认领
+    /* 节拍表（序号 | 台词 | 起(s) | 止(s) | 时长）：已被 beatStartsFromInputs 认领成 lineStarts，
+       不能再当台词拼进来 —— 整块都是表格行的直接跳过；顺手剔掉混在里面的表格行与「总时长:」行。 */
+    const tableRows = rows.filter((r) => r.includes("|") || /^总时长\s*[:：]/.test(r.trim()));
+    if (tableRows.length === rows.length) continue;
+    const prose = rows
+      .filter((r) => !r.includes("|"))
+      .filter((r) => !/^总时长\s*[:：]/.test(r.trim()))
+      .join("\n")
+      .trim();
+    if (!prose) continue;
+    if (!/[\u4e00-\u9fa5]/.test(prose)) continue; // 台词是中文口播稿
+    parts.push(prose);
+  }
+  return parts.join("\n").trim();
+}
+
 function propsFromInputs(inputs, warnings) {
   const out = {};
   for (const it of Array.isArray(inputs) ? inputs : []) {
@@ -255,7 +300,8 @@ function inlineMediaPropsOf(inputs, existing) {
     const src = resolveMediaSrc(firstAudio.text, "audio");
     if (src) out.voice = src;
   }
-  /* 底图：视频与图片同时存在时，图片单独作为 poster（两者都要，不互斥） */
+  /* 底图：视频与图片同时存在时，图片单独作为 poster（两者都要，不互斥）
+     —— 图片保持 data URL：<Img> 不走 /proxy，data URL 对它是安全的 */
   if (firstImage && !String(given.poster || "").trim()) {
     const src = resolveMediaSrc(firstImage.text, "image");
     if (src) out.poster = src;
@@ -2038,11 +2084,123 @@ function friendlyRenderError(err, usingCustom) {
   return s;
 }
 
+/** 模块说明符是否在白名单内（react / remotion 与相对路径放行） */
+function customImportAllowed(spec) {
+  const s = String(spec || "");
+  return s[0] === "." || s[0] === "/" || CUSTOM_IMPORT_ALLOWED.test(s);
+}
+
+/** 扫出源码里全部模块说明符（静态 import / require() / 动态 import()) */
+function collectImportSpecs(src) {
+  const specs = [];
+  const push = (s) => {
+    if (s && specs.indexOf(s) < 0) specs.push(s);
+  };
+  let m;
+  const reStatic = /(?:^|[\s;{}])import\s[^'"`]*?['"]([^'"]+)['"]/g;
+  while ((m = reStatic.exec(src))) push(m[1]);
+  const reCall = /(?:require|import)\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
+  while ((m = reCall.exec(src))) push(m[1]);
+  return specs;
+}
+
+/** import 子句里的本地绑定名：default / { a, b as c } / * as ns */
+function importBindingNames(clause) {
+  let s = String(clause || "").replace(/^\s*import\s+/, "").replace(/^type\s+/, "").trim();
+  const names = [];
+  const braces = s.match(/\{([\s\S]*?)\}/);
+  if (braces) {
+    for (const part of String(braces[1]).split(",")) {
+      const t = part.trim();
+      if (!t) continue;
+      const as = t.match(/\bas\s+([A-Za-z_$][\w$]*)/);
+      names.push((as ? as[1] : t.replace(/^type\s+/, "")).trim());
+    }
+    s = s.replace(/\{[\s\S]*?\}/, "");
+  }
+  const star = s.match(/\*\s*as\s+([A-Za-z_$][\w$]*)/);
+  if (star) names.push(star[1]);
+  const def = String(s.split(",")[0] || "").replace(/^type\s+/, "").trim();
+  if (/^[A-Za-z_$][\w$]*$/.test(def)) names.push(def);
+  return names.filter((n) => /^[A-Za-z_$][\w$]*$/.test(n));
+}
+
+/** 解构 / 标识符左边（require 的赋值目标）里的本地绑定名 */
+function requireBindingNames(lhs) {
+  const s = String(lhs || "").trim();
+  const names = [];
+  const braces = s.match(/\{([\s\S]*?)\}/);
+  if (braces) {
+    for (const part of String(braces[1]).split(",")) {
+      const t = part.trim();
+      if (!t) continue;
+      const colon = t.match(/^[^:]+:\s*([A-Za-z_$][\w$]*)/);
+      names.push((colon ? colon[1] : t).trim());
+    }
+  }
+  const plain = s.replace(/\{[\s\S]*?\}/, "").replace(/^,|,$/g, "").trim();
+  if (/^[A-Za-z_$][\w$]*$/.test(plain)) names.push(plain);
+  return names.filter((n) => /^[A-Za-z_$][\w$]*$/.test(n));
+}
+
+/** 这些绑定的名字在「去掉这条语句后的源码」里还有没有被引用 */
+function anyBindingUsed(restSrc, names) {
+  return (names || []).some(
+    (n) => n && new RegExp("(^|[^\\w$.])" + n.replace(/\$/g, "\\$") + "($|[^\\w$])").test(restSrc),
+  );
+}
+
+/**
+ * 剥掉「模块不在白名单、且绑定名在代码里根本没被用到」的 import / require 语句。
+ * LLM 顺手写 `import { Icon } from "lucide-react"` 这类 import 时，以前整颗节点直接
+ * custom_tsx_bad_import 失败；而那条 import 通常压根没用到 —— 删掉即可正常渲染。
+ * 反过来，**真的在用**的非法 import 不剥（剥了只会变成更难定位的「未定义标识符」），
+ * 由调用方继续按 custom_tsx_bad_import 硬失败并给指引。
+ * 返回 { source, removed }：removed 是被剥掉的模块名（调试 / 冒烟用）。
+ */
+function stripUnusedBadImports(src) {
+  let out = String(src || "");
+  const removed = [];
+  const drop = (whole, prefix, body, spec) => {
+    if (customImportAllowed(spec)) return whole;
+    const rest = out.replace(whole, "");
+    const names = importBindingNames(body);
+    /* 副作用 import（import "m";）没有绑定名：没被任何地方引用，直接算未使用 */
+    if (names.length && anyBindingUsed(rest, names)) return whole;
+    if (removed.indexOf(spec) < 0) removed.push(spec);
+    return prefix || "";
+  };
+  /* 静态 import：`import ... from "m"`（跨行也认，[^;] 保证不越过语句边界） */
+  out = out.replace(
+    /(^|\n)([ \t]*import\s+(?:type\s+)?[^;]*?from\s*['"]([^'"]+)['"]\s*;?)(?=[ \t]*(?:\r?\n|$))/g,
+    (whole, nl, stmt, spec) => drop(whole, nl, stmt, spec),
+  );
+  /* 副作用 import：`import "m";` */
+  out = out.replace(
+    /(^|\n)([ \t]*import\s*['"]([^'"]+)['"]\s*;?)(?=[ \t]*(?:\r?\n|$))/g,
+    (whole, nl, stmt, spec) => drop(whole, nl, stmt, spec),
+  );
+  /* const X = require("m") / const { a } = require("m") / const X = import("m") */
+  out = out.replace(
+    /(^|\n)([ \t]*(?:const|let|var)\s+([^=;\n]+?)=\s*(?:await\s+)?(?:require|import)\s*\(\s*['"]([^'"]+)['"]\s*\)\s*;?)(?=[ \t]*(?:\r?\n|$))/g,
+    (whole, nl, stmt, lhs, spec) => {
+      if (customImportAllowed(spec)) return whole;
+      const rest = out.replace(whole, "");
+      const names = requireBindingNames(lhs);
+      if (names.length && anyBindingUsed(rest, names)) return whole;
+      if (removed.indexOf(spec) < 0) removed.push(spec);
+      return nl || "";
+    },
+  );
+  return { source: out, removed };
+}
+
 /**
  * 规整渲染层下发的 LLM 动效代码（params.tsx / params.prompt）：
  * 返回 { source, error }；source 为空串且 error 为空 = 没有自定义合成，调用方回退内置模板。
  * 契约（见渲染层 remotionTsxPrompt）：导出名为 Main 的组件，且只从 react / remotion 导入。
- * 容错：剥 markdown 围栏；default 导出或唯一大写具名导出自动补 Main 别名。
+ * 容错：剥 markdown 围栏；没被用到的非白名单 import 整条剥掉（见 stripUnusedBadImports）；
+ *       default 导出或唯一大写具名导出自动补 Main 别名。
  * 硬失败（比渲染栈更好定位，直接回到节点 error）：
  *   custom_tsx_bad_import: <模块列表> / custom_tsx_no_main_export
  */
@@ -2053,20 +2211,21 @@ function normalizeCustomComposition(raw) {
   if (fence) src = String(fence[1]).trim();
   if (!src) return { source: "", error: "" };
 
-  /* 依赖白名单：静态 import / require() / 动态 import() 全扫（相对路径放行） */
-  const specs = [];
-  const push = (s) => {
-    if (s && specs.indexOf(s) < 0) specs.push(s);
-  };
-  let m;
-  const reStatic = /(?:^|[\s;{}])import\s[^'"`]*?['"]([^'"]+)['"]/g;
-  while ((m = reStatic.exec(src))) push(m[1]);
-  const reCall = /(?:require|import)\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
-  while ((m = reCall.exec(src))) push(m[1]);
-  const bad = specs.filter(
-    (s) => s[0] !== "." && s[0] !== "/" && !CUSTOM_IMPORT_ALLOWED.test(s),
-  );
-  if (bad.length) return { source: "", error: "custom_tsx_bad_import: " + bad.join(", ") };
+  /* 依赖白名单：静态 import / require() / 动态 import() 全扫（相对路径放行）。
+     未使用的非法 import 自动剥掉（见 stripUnusedBadImports）；仍在用的才硬失败。 */
+  const stripped = stripUnusedBadImports(src);
+  src = stripped.source;
+  const specs = collectImportSpecs(src);
+  const bad = specs.filter((s) => !customImportAllowed(s));
+  if (bad.length)
+    return {
+      source: "",
+      error:
+        "custom_tsx_bad_import: " +
+        bad.join(", ") +
+        "（这些包不在白名单：动效代码只能从 react / remotion 导入。请在代码里删掉对它们的引用、" +
+        "改用 react / remotion 自带的实现；如果只是顺手写的图标 / 工具库 import，删掉那一行即可）",
+    };
 
   /* 组件注册：入口固定以 id "Main" 引用 ./Composition 的 Main */
   if (/export\s+(?:const|let|var|function|class)\s+Main\b/.test(src)) {
@@ -2191,9 +2350,17 @@ function probeDurationViaRemotion(installDir, file) {
  * 只有它为空时才回退内置标题卡模板（结构化参数 title / subtitle / bgColor / images / audioPath）。
  * 入口后缀必须是 .tsx：模板含 JSX（<Composition>），esbuild 只在 .tsx/.jsx 中解析 JSX，
  * 写成 .ts 会在打包阶段报 `Expected ">" but found "id"`。
- * @returns {{ custom: boolean, error: string }} error 非空 = 自定义合成不合规（不静默回退，直接失败）
+ *
+ * 落点纪律（踩过的现场）：源码必须写进 runRender 交给 render.json 的**同一个** projectDir ——
+ * 第一个形参是 installDir（remotionProjectDirOf 需要它做兜底），工程目录由函数自己解析。
+ * 早先这里直接用第一个形参当 projectDir，结果模板写进安装目录 <安装>/src，
+ * 而 render.json.entryPoint 指向 <工作目录>/.mtnode/remotion/<节点>/src/index.tsx，
+ * 打包阶段报 ENOENT ... src/index.tsx（看着像「文件丢了」，其实是写错地方）。
+ * @returns {{ custom: boolean, builtin: boolean, projectDir: string, entryPoint: string, error: string }}
+ *   error 非空 = 自定义合成不合规（不静默回退，直接失败）；projectDir / entryPoint = 实际落点
  */
-function writeRenderSources(projectDir, params) {
+function writeRenderSources(installDir, params) {
+  const projectDir = remotionProjectDirOf(installDir, params);
   const srcDir = mk(join(projectDir, "src"));
   /* 专属「台词卡」内置模板已移除：这里不再按描述关键词 / 媒体输入抢道。
      合成源只有两种：显式 tsx（节点里贴的 / 工作流产物）→ 自定义合成；否则内置标题卡模板。 */
@@ -2207,7 +2374,7 @@ function writeRenderSources(projectDir, params) {
     );
     if (custom.error) return { custom: false, error: custom.error };
   }
-  usingBuiltin = !!builtinSrc;
+  const usingBuiltin = !!builtinSrc;
   const usingCustom = !usingBuiltin && !!custom.source;
   fs.writeFileSync(
     join(srcDir, "Composition.tsx"),
@@ -2228,7 +2395,13 @@ function writeRenderSources(projectDir, params) {
           ? " (composition=custom tsx " + custom.source.length + " chars)"
           : " (composition=builtin template)"),
   );
-  return { custom: usingCustom, builtin: usingBuiltin, error: "" };
+  return {
+    custom: usingCustom,
+    builtin: usingBuiltin,
+    projectDir,
+    entryPoint: join(srcDir, ENTRY_BASENAME),
+    error: "",
+  };
 }
 
 /** 输出路径：显式 outputPath > outputDir+filename（自动去重）> 安装目录 out/ 默认名 */
@@ -2311,7 +2484,7 @@ function parseRenderProgressLine(line, cur) {
  *   {"type":"done","outputLocation":"..."}（完成路径）、{"type":"error","message":"..."}（失败）
  * - 退出码 0 = 成功；非 0 = 失败（优先带脚本 error message，尾部日志兜底）
  */
-async function runRender(installDir, params, nodeId) {
+async function runRender(installDir, params, nodeId, written) {
   const script = join(installDir, "render.mjs");
   if (!fs.existsSync(script)) {
     throw new Error("render_script_missing: " + script + "（remotion-pack 缺少 render.mjs）");
@@ -2336,7 +2509,10 @@ async function runRender(installDir, params, nodeId) {
     const renderJson = {
       /* 工程目录：脚本据此解析相对资源、写日志缓存（缺省会退回安装目录，必须显式给） */
       projectDir,
-      entryPoint: join(projectDir, ENTRY_POINT) /* writeRenderSources 写进工程目录的 src/index.tsx */,
+      /* 入口取模板**实际写出**的那个文件（writeRenderSources 回传），不再靠 join 猜同一个目录：
+         猜错一回就是 ENOENT ... src/index.tsx（模板写进安装目录、入口指向工程目录那个老现场） */
+      entryPoint:
+        (written && written.entryPoint) || join(projectDir, ENTRY_POINT) /* 兜底：工程目录的 src/index.tsx */,
       composition: String(params.compositionId || "Main"),
       fps,
       width: Number(params.width) || 1280,
@@ -2366,6 +2542,25 @@ async function runRender(installDir, params, nodeId) {
       /* 接线里的媒体（视频 / 音频 / 图片）内联成 data URL 一并交出：渲染页禁止 file://，
          显式给了同名键的不覆盖（见 inlineMediaPropsOf 注释）。 */
       Object.assign(merged, inlineMediaPropsOf(params.inputs, merged));
+      /* 纯文本台词：上面两条通道都不认的文本，作为 narration 交出（见 narrationFromInputs） */
+      const narration = narrationFromInputs(params.inputs, merged);
+      if (narration && !String(merged.narration || "").trim()) merged.narration = narration;
+      /* ── 节拍表 → lineStarts ──────────────────────────────────────
+         画布上「台词节拍 · 换页节奏」接的是**纯文本表格**（序号 | 台词 | 起(s) | 止(s) | 时长），
+         propsFromInputs 不认它；而合成层只读 props.lineStarts 数组 —— 于是节拍从来没进过渲染，
+         换页只能按均分时间走（实测）。
+         beatStartsFromInputs 早就写好了却一直没人调用（死函数），这里把它接上：
+         显式给了 lineStarts 的不覆盖；表格解析不出（>=2 句）就什么都不做，退回均分。 */
+      if (!Array.isArray(merged.lineStarts) || !merged.lineStarts.length) {
+        const beats = beatStartsFromInputs(
+          (Array.isArray(params.inputs) ? params.inputs : []).map((it) => String((it && it.text) || "")),
+          renderJson.fps,
+        );
+        if (beats.length) {
+          merged.lineStarts = beats;
+          appendConsole("[render] lineStarts from beat table: [" + beats.join(",") + "]");
+        }
+      }
       Object.assign(renderJson.inputProps, merged);
       for (const w of nodeProps.warnings) appendConsole("[render] 自定义合成参数：" + w);
       const keys = Object.keys(merged);
@@ -2374,6 +2569,31 @@ async function runRender(installDir, params, nodeId) {
           (keys.length ? keys.map((k) => k + "(" + (Array.isArray(merged[k]) ? "array" : typeof merged[k]) + ")").join(", ") : "-") +
           (nodeProps.warnings.length ? " warnings=" + nodeProps.warnings.length : ""),
       );
+    }
+    /* ── 音视频走独立通道（mediaBlobs）──────────────────────────────
+       <OffthreadVideo> 会把 src 拼进 `/proxy?src=<整个 src>`：data URL 一大就 431。
+       所以视频 / 音频不放进 render.json 的 inputProps，而是单独给 mediaBlobs，
+       由 render.mjs 落成 <工程>/public/<prop>.<ext>，渲染页只拿短文件名。
+       图片（<Img> 不走 proxy）保持 data URL 原样。 */
+    if (renderModeOf(params) === "custom") {
+      const mediaBlobs = {};
+      const mediaBlobsMeta = {};
+      for (const prop of ["hero", "voice"]) {
+        const v = renderJson.inputProps[prop];
+        if (typeof v !== "string" || !/^data:/i.test(v.trim())) continue;
+        const comma = v.indexOf(",");
+        if (comma < 0) continue;
+        mediaBlobs[prop] = v.slice(comma + 1);
+        const mime = v.slice(5, comma).replace(/;base64$/i, "");
+        mediaBlobsMeta[prop] = { mime };
+        delete renderJson.inputProps[prop];
+      }
+      const blobProps = Object.keys(mediaBlobs);
+      if (blobProps.length) {
+        renderJson.mediaBlobs = mediaBlobs;
+        renderJson.mediaBlobsMeta = mediaBlobsMeta;
+        appendConsole("[render] media parked: " + blobProps.join(", "));
+      }
     }
     const renderJsonPath = join(projectDir, "render.json");
     writeJson(renderJsonPath, renderJson);
@@ -2509,7 +2729,7 @@ async function renderVideo(params) {
     if (written.error) throw new Error(written.error);
 
     emitProgress({ phase: "render", nodeId, message: "spawn node render.mjs…", pct: 4 });
-    const r = await runRender(installDir, params, nodeId);
+    const r = await runRender(installDir, params, nodeId, written);
 
     const outPath = r.outputPath;
     let sz = 0;
@@ -3030,4 +3250,6 @@ module.exports = {
   statusForUi,
   PLUGIN_ID,
   DISK_HINT_GB,
+  /* 纯函数件：供冒烟测试直接驱动同一份实现（生产路径只用内部调用，不依赖这条导出） */
+  normalizeCustomComposition,
 };

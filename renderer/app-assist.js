@@ -7463,9 +7463,10 @@ function dshSegTimeAttach(host, own, doneAt, msgAt, tok) {
    每秒重写几 MB 字符串，并让同一个超大文本节点反复重排；多条会话并行时叠加成原生层
    崩溃（报告里没有 JS 栈，只能按时间相关性处置）。这里改两条：
      ① 追加写：这一帧是上一帧的续写 → 只 appendData 增量（代价 O(增量)），不重写全文；
-     ② 长文降级：单段超过 DSH_STREAM_PLAIN_MAX 就压到 4fps 并挂一行小字提示，
-        定稿（say-end）时照旧整段 renderMarkdown 一次。 */
+     ② 长文降级：按单段长度分档降帧（见下方 DSH_STREAM_TIERS，超过 DSH_STREAM_PLAIN_MAX
+        才挂那行小字提示），定稿（say-end）时照旧整段 renderMarkdown 一次。 */
 const DSH_STREAM_PLAIN_MAX = 64 * 1024;
+/* 兜底档位常量：分档表 DSH_STREAM_TIERS 的最慢一档就是它，留个名字给测试与阅读对照 */
 const DSH_STREAM_SLOW_GAP_MS = 250;
 
 /* 元素里那个「正文文本节点」：走慢路径 textContent 写过之后，它就是元素的第一只文本子节点 */
@@ -9520,7 +9521,7 @@ function dshHistSegEl(seg, pool, nodeId, idx, n, showThink, msgAt, policy, tok) 
       "dsh-seg dsh-seg-say" + (seg.k === "err" ? " dsh-seg-err" : "");
     const md = document.createElement("div");
     md.className = "md";
-    md.innerHTML = renderMarkdown(txt);
+    md.innerHTML = dshMdCached(seg, txt);
     d.appendChild(md);
     dshSegTimeAttach(d, seg.at, 0, msgAt, tok);
     return d;
@@ -9709,7 +9710,8 @@ function agentLiveSegsEl(row, st, live, items) {
       } else {
         const md = document.createElement("div");
         md.className = "md";
-        md.innerHTML = renderMarkdown(
+        md.innerHTML = dshMdCached(
+          seg,
           seg.k === "err" ? "⚠ " + String(seg.text || "") : String(seg.text || ""),
         );
         d.appendChild(md);
@@ -10466,6 +10468,28 @@ function userClosedRowEl(m, nodeId, idx) {
   return row;
 }
 
+/* ── 历史消息的 markdown 渲染缓存（本次需求 · 会话运行期间画布卡顿 · 主因之一）────
+   事实：整表重建 202 条带代码块的消息实测 233~256 ms，而流式刷新本身只要 0~1 ms —
+   也就是说「顿一下」几乎全是重建里那一遍 renderMarkdown 解析。消息正文一旦定稿就不再
+   变化，所以按正文原文留一份 HTML 缓存：命中即零解析，重建只剩建 DOM 与贴样式。
+   缓存按「正文原文」留一份 HTML：命中即零解析，重建只剩建 DOM 与贴样式。
+   正文一变（流式尾巴还在长 / 编辑 / 重发）对不上就重算，绝不显示旧内容。
+   同一份缓存也给「分段轨迹里的正文段」用（见 dshSegEl 的 say 分支）：分段消息重建
+   时同样会把每一段重解析一遍，长的多步消息里这一笔比正文本身还大。
+   存在 WeakMap 而不是挂到消息 / 段对象上：段对象会随会话一起落盘（见 agentSegsForDisk），
+   往上面塞一份 HTML 会把会话文件撑大；WeakMap 的键是不可达即回收，不留表。 */
+const DSH_MD_CACHE = typeof WeakMap === "function" ? new WeakMap() : null;
+function dshMdCached(holder, text) {
+  const src = String(text == null ? "" : text);
+  const hit = holder && DSH_MD_CACHE ? DSH_MD_CACHE.get(holder) : null;
+  if (hit && hit.src === src) return hit.html;
+  const html = renderMarkdown(src);
+  if (holder && DSH_MD_CACHE) DSH_MD_CACHE.set(holder, { src, html });
+  return html;
+}
+function dshMdHtmlCached(m) {
+  return dshMdCached(m, (m && m.content) || "");
+}
 function dshMsgBlock(m, nodeId, idx, opts) {
   /* 「用户主动关闭会话」那一行单独画（见 userClosedRowEl）：它没有正文，走普通消息
      分支只会得到一个空气泡。 */
@@ -10636,7 +10660,7 @@ function dshMsgBlock(m, nodeId, idx, opts) {
       bindDshUserImgOpen(body);
     } else
       body.innerHTML =
-        '<div class="md">' + renderMarkdown(m.content) + "</div>";
+        '<div class="md">' + dshMdHtmlCached(m) + "</div>";
     row.appendChild(body);
   }
   /* 正文含代码块 / Markdown 结构 → 消息最下方补「复制 / 保存」动作条
@@ -10915,6 +10939,28 @@ function agentRebuildSoon() {
     agentUiSoon("rebuild", () => renderAgentSession());
   }, wait);
 }
+/* ── 流式正文的「排版预算」闸（本次需求 · 会话运行期间画布卡顿）────────────────
+ * 真机实测（隔离实例 · 真渲染层 · 202 条历史消息）：每写一次流式正文再做一次贴底
+ * （读 clientHeight / scrollHeight → 强制排版），耗时随**这一段正文自身的长度**上涨，
+ * 历史条数几乎不影响（10 条 3.4 ms / 200 条 4.2 ms，同一段 8 KB 文本）：
+ *     4 KB → 2.4 ms/帧   8 KB → 3.4 ms    16 KB → 7.9 ms
+ *    32 KB → 14.7 ms    48 KB → 22.3 ms   64 KB → 32.6 ms
+ * 按 30fps 折算 = 7% / 10% / 24% / 44% / 67% / 98% 的主线程占用 —— 一段长回答写到
+ * 后半程，光「把这行字排一遍」就能把主线程吃满，用户看到的就是持续卡顿。
+ * 这件事搬不到别的 CPU 核（排版只发生在渲染主线程），只能少排几次：按长度分档降帧，
+ * 短正文完全不受影响（≤12KB 照旧 30fps），越长越稀；丢掉的那几帧由尾随定时器补上，
+ * 定稿仍由 say-end 的 markdown 收口（那份也吃 dshMdCached 的缓存）。 */
+const DSH_STREAM_TIERS = [
+  { max: 12 * 1024, gap: 0 },      /* ≤12KB：不降级，跟 30fps 合并器走 */
+  { max: 32 * 1024, gap: 83 },     /* ≤32KB：12fps（7.9ms × 12 ≈ 9% 主线程） */
+  { max: 64 * 1024, gap: 143 },    /* ≤64KB：7fps（22ms × 7 ≈ 15%） */
+  { max: Infinity, gap: 250 },     /* 更长：4fps（33ms × 4 ≈ 13%） */
+];
+function dshStreamGapFor(len) {
+  const n = Number(len) || 0;
+  for (const t of DSH_STREAM_TIERS) if (n <= t.max) return t.gap;
+  return 250;
+}
 /* 流式正文尾段的就地刷新（原 text / err 分支里那一段，抽出来给合并器调用）。
    分段模式：尾段还是 say 且元素对得上 → 只写文本；对不上（刚切段 / 刚收口）→ 整表重建
    一次对齐 DOM；非分段（老路径 / 节点绑定运行）→ 直接写 #agent-stream。 */
@@ -10931,18 +10977,19 @@ function paintAgentStream(st) {
   }
   const seg = items ? agentLiveSegTail(items, el, "say") : null;
   const txt = seg ? String(seg.text || "") : String(st._pending || "");
-  /* 长文降级（本次需求）：单段超 64KB 就不再每 33ms 给上百 KB 的文本节点做一次排版，
-     压到 4fps；最后一份增量由尾随定时器补上（定稿仍由 say-end 整段 renderMarkdown 收口）。
-     提示条只在降级期间挂着，回到普通长度当即摘掉。 */
-  if (el && txt.length > DSH_STREAM_PLAIN_MAX) {
-    dshStreamHintSet(el, true);
+  /* 长文降级（本次需求）：按这一段正文的长度分档降帧（分档与实测依据见 DSH_STREAM_TIERS）。
+     超过 DSH_STREAM_PLAIN_MAX 时额外挂一行「正在长文降级」提示；最后一份增量由尾随定时器
+     补上（定稿仍由 say-end 整段 renderMarkdown 收口）。 */
+  const streamGap = dshStreamGapFor(txt.length);
+  if (el && streamGap > 0) {
+    dshStreamHintSet(el, txt.length > DSH_STREAM_PLAIN_MAX);
     const now = Date.now();
-    if (now - (Number(el.__dshStreamPaintedAt) || 0) < DSH_STREAM_SLOW_GAP_MS) {
+    if (now - (Number(el.__dshStreamPaintedAt) || 0) < streamGap) {
       if (!st._streamSlowTimer) {
         st._streamSlowTimer = setTimeout(() => {
           st._streamSlowTimer = 0;
           if (agentViewIs(st)) agentUiSoon("stream", () => paintAgentStream(st));
-        }, DSH_STREAM_SLOW_GAP_MS);
+        }, streamGap);
       }
       return;
     }
@@ -10953,12 +11000,19 @@ function paintAgentStream(st) {
   if (seg) dshSegSetStreamText(el, String(seg.text || ""));
   else if (items || !el) renderAgentSession();
   else dshSegSetStreamText(el, st._pending);
-  scrollElToBottomIfStuck($("#agentList"));
+  /* 贴底只在消息列**真的在屏上**时做：display:none 的会话（用户正看着画布）读
+     scrollHeight 也一样要过一遍排版账，白白占住主线程；不可见时连这一次都省掉。 */
+  const conv = $("#agentList");
+  if (conv && conv.clientHeight > 0) scrollElToBottomIfStuck(conv);
 }
 /* 工具事件的就地增量刷新：只重画「运行中那一行」里还没定稿的段（agentLiveSegsEl 的对账口径
    —— 尾段 + 最早那张未回来的工具卡），历史消息一条都不重建。
    拿不到 live 容器（非分段老路径 / 容器已随重绘被摘走）才退回整表重建：
-   宁可多花一次，也不能让工具卡停在「运行中」不动。 */
+   宁可多花一次，也不能让工具卡停在「运行中」不动。
+   **但退回也得排队**（本次需求 · 会话运行期间画布卡顿）：整表重建在 200 条消息的列表上
+   实测 114 ms，而工具事件是按「调用 → 结果」成对来的，一次会话里几十次 —— 直接同步重建
+   等于把 114 ms 的块连成一片。改走 agentRebuildSoon 的 400 ms 合并闸：早一次晚一次读到的
+   都是最新状态，两次真重建之间不会再连着砸主线程。 */
 function agentLiveRepaint(st) {
   if (!st || !agentViewIs(st)) return;
   const items = agentChatSegItems(st);
@@ -10972,7 +11026,7 @@ function agentLiveRepaint(st) {
     !list ||
     !list.contains(box)
   ) {
-    renderAgentSession();
+    agentRebuildSoon();
     return;
   }
   const live = liveNodeForSession(st);
@@ -10982,10 +11036,10 @@ function agentLiveRepaint(st) {
     try {
       console.error(e);
     } catch (_) {}
-    renderAgentSession();
+    agentRebuildSoon();
     return;
   }
-  scrollElToBottomIfStuck(list);
+  if (list.clientHeight > 0) scrollElToBottomIfStuck(list);
 }
 /* 整表重建的诊断外壳（trace 关着时是一次直通调用）：重建已经只留给「必须整份对齐」的
    时机（换轮 / 收尾 / 手动展开更早内容 / 段类型切换），不再挂在校验工具事件上。 */

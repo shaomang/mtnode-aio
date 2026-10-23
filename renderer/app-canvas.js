@@ -2330,6 +2330,9 @@ function makeNodeSettingsCtx(node, root) {
        设置项都是即时生效，所以默认只 scheduleSave，不整幅重绘。 */
     commit(opts) {
       opts = opts || {};
+      /* 参数只能从「参数」端子来：用户一旦在设置窗改过任何一项，就以用户为准 ——
+         顺手清掉旧版 Agent 写进节点的 npParams（它运行期压住这一窗的值，用户改不动）。 */
+      if (node && Object.prototype.hasOwnProperty.call(node, "npParams")) delete node.npParams;
       if (opts.history) pushHistory();
       if (opts.clearDownstream && node) clearDownstream(node.id);
       scheduleSave();
@@ -5184,6 +5187,141 @@ function breezePresetRow(node, onChange) {
   return box;
 }
 
+/* 角色 / 组名的下拉（节点 head 与 body 共用这一份选项口径）：
+   角色 = 非草稿的角色预设；组名 = 该角色的样本组（组名优先，无名字的旧组回退「第 N 组」）。
+   两处都留「无（走端子 / 音色库）」—— 没选角色的老工作流照旧靠端口 1/2 与音色库出声。
+   预设清单在宿主，异步读；首帧还没读到就先按缓存画，读完补一次重绘（缓存新鲜后不会再触发）。 */
+let breezePresetPullPending = false;
+function breezePresetChoiceList() {
+  const list = (typeof breezePresetCache === "object" && breezePresetCache && breezePresetCache.presets) || [];
+  return list.filter((p) => p && !p.draft);
+}
+function breezePresetPullOnce() {
+  if (breezePresetPullPending || breezePresetCache.at) return;
+  breezePresetPullPending = true;
+  Promise.resolve()
+    .then(() => breezePresetsLoad(true))
+    .catch(() => [])
+    .then(() => {
+      breezePresetPullPending = false;
+      try {
+        renderCanvas();
+      } catch (_) {}
+    });
+}
+function breezeChoiceGroupsOf(presetId) {
+  const p = breezePresetFind(breezePresetChoiceList(), presetId);
+  return p && Array.isArray(p.groups) ? p.groups : [];
+}
+/* 下拉里的组：选中的组优先；节点没选过（或那一组没了）就落到第一组 */
+function breezeChosenGroupId(node, groups) {
+  const gid = breezePresetGroupIdOf(node);
+  if (gid && groups.some((g) => g && g.id === gid)) return gid;
+  return groups.length ? String(groups[0].id || "") : "";
+}
+function breezePickRoleOptions(sel, node) {
+  const cur = breezePresetIdOf(node);
+  const none = document.createElement("option");
+  none.value = "";
+  none.textContent = I18n.t("无（走端子 / 音色库）");
+  sel.appendChild(none);
+  let hit = false;
+  for (const p of breezePresetChoiceList()) {
+    const o = document.createElement("option");
+    o.value = String(p.id);
+    o.textContent = String(p.name || p.id);
+    if (String(p.id) === cur) hit = true;
+    sel.appendChild(o);
+  }
+  if (cur && !hit) {
+    /* 角色被删了 / 清单还没读到：显式写出来，别让下拉假装「无」 */
+    const o = document.createElement("option");
+    o.value = cur;
+    o.textContent = I18n.t("（角色已不可用）");
+    sel.appendChild(o);
+  }
+  sel.value = cur;
+}
+function breezePickGroupOptions(sel, node) {
+  const pid = breezePresetIdOf(node);
+  const groups = breezeChoiceGroupsOf(pid);
+  sel.textContent = "";
+  if (!pid || !groups.length) {
+    const o = document.createElement("option");
+    o.value = "";
+    o.textContent = pid ? I18n.t("（这个角色没有样本组）") : I18n.t("（先选角色）");
+    sel.appendChild(o);
+    sel.disabled = true;
+    sel.value = "";
+    return;
+  }
+  sel.disabled = false;
+  groups.forEach((g, i) => {
+    const o = document.createElement("option");
+    o.value = String(g.id || "");
+    o.textContent = breezePresetGroupLabel(g, i);
+    sel.appendChild(o);
+  });
+  sel.value = breezeChosenGroupId(node, groups);
+}
+/* 选完立刻写回节点（随画布保存）；换角色 → 组跟着落到该角色第一组 */
+function breezePickCommit(node, presetId, groupId) {
+  if (!node) return;
+  node.presetId = String(presetId || "");
+  const groups = breezeChoiceGroupsOf(node.presetId);
+  const want = String(groupId || "");
+  node.presetGroupId = want && groups.some((g) => g && String(g.id) === want)
+    ? want
+    : groups.length
+      ? String(groups[0].id || "")
+      : "";
+  try {
+    scheduleSave(true);
+  } catch (_) {}
+  try {
+    renderCanvas();
+  } catch (_) {}
+}
+/** 一枚下拉（head 上紧凑、body 上带标签，样式只差一个 class） */
+function breezePickSelect(kind, node, opts) {
+  const o = opts || {};
+  const sel = document.createElement("select");
+  sel.className = o.cls != null ? o.cls : "n-breeze-sel";
+  sel.dataset.breezePick = kind;
+  if (kind === "role") {
+    sel.title = I18n.t("选这个节点用哪个角色的声音（不选 = 走端子 / 音色库）");
+    breezePickRoleOptions(sel, node);
+  } else {
+    sel.title = I18n.t("选这个角色用哪一组样本（音频 + 样本文字 + 指令）");
+    breezePickGroupOptions(sel, node);
+  }
+  sel.addEventListener("mousedown", (ev) => ev.stopPropagation());
+  sel.addEventListener("click", (ev) => ev.stopPropagation());
+  sel.addEventListener("change", (ev) => {
+    ev.stopPropagation();
+    if (kind === "role") breezePickCommit(node, sel.value, "");
+    else breezePickCommit(node, breezePresetIdOf(node), sel.value);
+    if (typeof o.onChange === "function") o.onChange();
+  });
+  return sel;
+}
+/** body 里的「角色 + 组名」一行（同一行两枚下拉，见需求） */
+function breezePickRow(node) {
+  const row = document.createElement("div");
+  row.className = "breeze-pick-row";
+  const role = document.createElement("label");
+  role.className = "n-field breeze-pick-role";
+  role.appendChild(document.createTextNode(I18n.t("角色")));
+  role.appendChild(breezePickSelect("role", node, { cls: "n-field-sel" }));
+  const group = document.createElement("label");
+  group.className = "n-field breeze-pick-group";
+  group.appendChild(document.createTextNode(I18n.t("组名")));
+  group.appendChild(breezePickSelect("group", node, { cls: "n-field-sel" }));
+  row.appendChild(role);
+  row.appendChild(group);
+  return row;
+}
+
 /* 角色（音色预设）跳窗 —— 左列角色，右侧「浏览 / 三步向导」。
    三步：① 声线设定（「声线设计」AI 造声线 / 「音频参考」用现成音频）→ ② 候选挑选 → ③ 基础音色确认，
    每步都能回头改。角色的结构 = 1 个基础音色 + N 个备选音色（按场景 / 情绪分类）。
@@ -5320,6 +5458,56 @@ function openBreezePresetDialog(node, onDone) {
     closeOverlay();
     if (typeof onDone === "function") onDone();
   };
+
+  /* ── 标题栏那颗「组名」下拉（需求：角色与音色窗里，直接在标题处选组，默认为第一个）──
+     选项 = 当前正在看的角色（curId）的样本组；节点选的正是这一组就默认它，否则第一组。
+     一选就写回节点并保存（不必关窗），与组卡「用到这个节点」同一口径。 */
+  let titleSel = null;
+  const titleGroupRefresh = () => {
+    if (!titleSel) return;
+    const p = byId(curId);
+    const groups = p && Array.isArray(p.groups) ? p.groups : [];
+    titleSel.textContent = "";
+    if (!groups.length) {
+      const o = document.createElement("option");
+      o.value = "";
+      o.textContent = p ? T("（这个角色没有样本组）") : T("（还没有角色）");
+      titleSel.appendChild(o);
+      titleSel.disabled = true;
+      return;
+    }
+    titleSel.disabled = false;
+    groups.forEach((g, i) => {
+      const o = document.createElement("option");
+      o.value = String(g.id || "");
+      o.textContent = breezePresetGroupLabel(g, i);
+      titleSel.appendChild(o);
+    });
+    titleSel.value = breezeChosenGroupId(node, groups);
+  };
+  {
+    const headHost = document.querySelector("#overlay .overlay-head");
+    if (headHost) {
+      titleSel = document.createElement("select");
+      titleSel.className = "ov-title-sel ov-title-extra";
+      titleSel.title = T("直接选这个角色用哪一组样本（组名）：选完立刻写回节点并保存");
+      titleSel.addEventListener("mousedown", (ev) => ev.stopPropagation());
+      titleSel.addEventListener("click", (ev) => ev.stopPropagation());
+      titleSel.addEventListener("change", (ev) => {
+        ev.stopPropagation();
+        if (!curId) return;
+        node.presetId = curId;
+        node.presetGroupId = String(titleSel.value || "");
+        try {
+          scheduleSave(true);
+        } catch (_) {}
+        try {
+          renderCanvas();
+        } catch (_) {}
+      });
+      headHost.insertBefore(titleSel, headHost.querySelector(".ov-close-btn") || null);
+    }
+  }
 
   /* 公开组 → 保存载荷：不带 audio 就不会覆盖原文件（宿主按 id 保留），
      要换音频只在「音频参考」那一步显式传 data。 */
@@ -7024,6 +7212,7 @@ function openBreezePresetDialog(node, onDone) {
 
   /* ── 左列 + 底部按钮 ───────────────────────────────────────────────── */
   const paint = () => {
+    titleGroupRefresh();
     listEl.textContent = "";
     if (!presets.length) {
       const d = el("div", "breeze-preset-empty", T("（还没有角色）"));
@@ -8752,6 +8941,11 @@ function nodeElement(node) {
       });
     };
     head.appendChild(roleBtn);
+    /* head 上再挂「角色 + 组名」两枚下拉：不用开窗就能换声（👤 仍是一键开完整角色窗）。
+       预设清单还没读到就先补一次，读完重绘。 */
+    breezePresetPullOnce();
+    head.appendChild(breezePickSelect("role", node, { cls: "n-breeze-sel n-breeze-role-sel" }));
+    head.appendChild(breezePickSelect("group", node, { cls: "n-breeze-sel n-breeze-group-sel" }));
     appendBackendProbeBtn(head, node);
     appendMediaConsoleBtn(head, node);
     appendMediaPlayBtns(head, node, "调用 Breeze TTS 2 后端合成语音");
@@ -15959,6 +16153,9 @@ function buildBody(node, body) {
       body.appendChild(stt);
     }
   } else if (node.kind === "breeze_gen") {
+    /* 「角色 + 组名」同一行（先定谁的声音，再写要念的文本）；下面才是摘要与文本框 */
+    breezePresetPullOnce();
+    body.appendChild(breezePickRow(node));
     /* 未安装警示条（Breeze TTS 2 插件 id = breeze-tts-local；安装后 S.plugins 缓存刷新自动消失） */
     if (
       typeof appPluginMissing === "function"

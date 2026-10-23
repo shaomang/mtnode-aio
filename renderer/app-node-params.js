@@ -25,6 +25,10 @@
  *      null = 该键恢复节点默认值；不支持删键。
  *   7. 异常：默认宽松（没写的键沿用节点值 / 未知键忽略 / 不合法键回退并标黄）；
  *      节点 ⚙ 里可开「参数严格校验」，开了就整份拒绝。
+ *   8. 参数**只能从端子来**（用户口径）：canvas_edit 的 params 字段已经取消 —— 它会把
+ *      一份参数直接挂到节点上（旧版 node.npParams），运行期压住 ⚙ 里的值，用户改不动。
+ *      Agent 要给参数就建一颗 input_text 写 JSON、connect 到 9001；带 params 的编辑
+ *      整笔拒绝（npEditParamsRejection）。老画布上的 npParams 由 npPurgeLegacyParams 清掉。
  *
  * 真源分工：本文件 = 参数端子的判定 / 合并 / 套用 / 设置窗明细 / JSON 表单；
  * app.js = 端子常量与连线几何（PARAM_IN_INDEX / isParamWire / inPos）；
@@ -229,6 +233,8 @@ const NP_EXTRA_KEYS = {
   save_pdf: ["pageSize", "margin", "fontScale"],
   remotion: ["backgroundColor"],
   video_gen: ["outputPath", "duration", "attempts", "outputRes", "postEnabled", "postInterp"],
+  /* 角色 / 组名（值是名称，运行期翻译成 presetId / presetGroupId —— 见 npRunWithParams） */
+  breeze_gen: ["breezePreset", "breezeGroup"],
 };
 
 /** canvas_get / 设置窗用的 schema 列表。 */
@@ -288,6 +294,8 @@ const NP_KEY_DOC = {
   instruction: "音色指令：性格与语气",
   voice: "音色 id；空 = 用端口 1 的参考音频",
   voiceMode: "音色能力：auto / clone / design / direction",
+  breezePreset: "角色名称（不是 id）：按名称匹配，匹配不到再按 id；对不上 = 状态行报错并停止这次合成。不给则用节点上已选的角色",
+  breezeGroup: "组名（该角色下的样本组）：组名 / 「第 N 组」/ 组 id 都认；不给 = 该角色第一组；对不上 = 报错停跑。只给组名而节点没选角色同样报错",
   cfgScale: "指令 / CFG 强度（默认 4）",
   ttsFormat: "输出格式：wav / flac / mp3",
   /* ── 图像 ── */
@@ -442,12 +450,8 @@ function npDeepMerge(base, patch) {
 function npRead(node) {
   const res = { values: {}, warnings: [], errors: [], sources: [], strict: !!(node && node._npStrict) };
   if (!node) return res;
-  /* 最底层：节点自带的参数（canvas_edit 的 params 字段写进 node.npParams）——
-     它先于参数线，参数线深合并时覆盖它（同键后者胜）。 */
-  if (npIsPlainObject(node.npParams) && Object.keys(node.npParams).length) {
-    res.values = npDeepMerge({}, node.npParams);
-    res.sources.push({ id: node.id, title: I18n.t("节点自带参数（params 字段）") });
-  }
+  /* 只认参数线（端子 9001）。旧版 canvas_edit 的 params 写进 node.npParams 的那条路
+     已经取消 —— 它就是「用户改了 ⚙ 却压不住」的根因，这里不再读它。 */
   const wires = npParamWires(node);
   for (const w of wires) {
     const src = typeof nodeById === "function" ? nodeById(w.from) : null;
@@ -620,9 +624,34 @@ function npApplyValues(node, read) {
 async function npRunWithParams(node, fn) {
   if (!node || !npEligible(node)) return fn();
   const wires = npParamWires(node);
-  const inline = npIsPlainObject(node.npParams) && Object.keys(node.npParams).length > 0;
-  if (!wires.length && !inline) return fn();
+  if (!wires.length) return fn();
   const read = npRead(node);
+  /* 上一次运行留下的「角色 / 组名没对上」标记先作废（本节点每次运行重新判定） */
+  delete node._npPresetError;
+  /* breeze_gen 的角色 / 组名：参数值是**名称**（不是 id），先翻译成 presetId / presetGroupId
+     再走通用覆写。对不上不抛异常（抛了没人接，状态行一片空白）—— 记在节点上，
+     由 playBreezeGenNode 落到状态行红字并停下这次合成。 */
+  if (node.kind === "breeze_gen" && typeof breezeParamPicks === "function") {
+    const hasPreset = Object.prototype.hasOwnProperty.call(read.values, "breezePreset");
+    const hasGroup = Object.prototype.hasOwnProperty.call(read.values, "breezeGroup");
+    if (hasPreset || hasGroup) {
+      const presetText = hasPreset ? read.values.breezePreset : "";
+      const groupText = hasGroup ? read.values.breezeGroup : "";
+      delete read.values.breezePreset;
+      delete read.values.breezeGroup;
+      let picks = null;
+      try {
+        picks = await breezeParamPicks(node, presetText, groupText);
+      } catch (e) {
+        picks = { error: I18n.t("解析角色参数失败：") + ((e && e.message) || String(e)) };
+      }
+      if (picks && picks.error) node._npPresetError = picks.error;
+      else if (picks) {
+        read.values.presetId = String(picks.presetId || "");
+        read.values.presetGroupId = String(picks.presetGroupId || "");
+      }
+    }
+  }
   if (read.errors.length && read.strict) {
     throw new Error(I18n.t("参数严格校验未通过：") + read.errors.join(I18n.t("；")));
   }
@@ -678,6 +707,8 @@ async function npRunWithParams(node, fn) {
   } finally {
     if (handle) handle.restore();
     NP_ACTIVE.delete(node.id);
+    /* 角色 / 组名的解析结论只对这一轮有效（节点本身的值已经由 handle.restore 还原） */
+    delete node._npPresetError;
     /* 卡片上的「参数覆盖中」随运行结束刷新（没有 run 时它就是静态标识） */
     if (typeof renderCanvas === "function" && typeof S !== "undefined" && S.wf) {
       try {
@@ -914,8 +945,7 @@ function npSettingsSection(ctx) {
   head.appendChild(docBtn);
 
   const wireN = npParamWires(node).length;
-  const hasInline = npIsPlainObject(node.npParams) && Object.keys(node.npParams).length > 0;
-  if (!wireN && !hasInline) {
+  if (!wireN) {
     ctx.hint(I18n.t("未接线：运行时按本窗的值"));
   } else {
     const table = npEl("div", "nsf-span np-ovr-table");
@@ -1028,15 +1058,14 @@ function npDecorateSettingsForms() {
 function npCardChip(node) {
   if (!npEligible(node)) return null;
   const wires = npParamWires(node);
-  const inline = npIsPlainObject(node.npParams) && Object.keys(node.npParams).length > 0;
-  if (!wires.length && !inline) return null;
+  if (!wires.length) return null;
   const read = npRead(node);
   const chip = document.createElement("span");
   chip.className = "n-chip np-chip" + (read.errors.length ? " bad" : "");
   chip.textContent = I18n.t("参数");
   const keys = Object.keys(read.values || {});
   chip.title =
-    (wires.length ? I18n.t("参数端子已接线") : I18n.t("节点自带参数（canvas_edit 的 params）")) +
+    I18n.t("参数端子已接线") +
     (keys.length ? " · " + keys.join("、") : I18n.t(" · 暂无可用键")) +
     (read.errors.length ? I18n.t(" · 错误：") + read.errors.join(I18n.t("；")) : "");
   if (NP_ACTIVE.has(node.id)) chip.classList.add("on");
@@ -1394,6 +1423,46 @@ function npJsonSwitchChip(node) {
   return b;
 }
 
+/* ───────────── 参数只能从端子来（写入口的闸 + 老画布清理） ───────────── */
+
+/** canvas_edit 的 create / update 里带 `params`：整笔拒绝。
+ *  返回空串 = 通过；返回错误文案 = 调用方应抛错（整笔不写）。
+ *  为什么拒绝而不是忽略：params 会把参数直接挂到节点上、运行期压住 ⚙ 里的值，
+ *  用户就改不动自己的参数了（旧版 npParams 的坑）。参数要给就建 input_text 接 9001。 */
+function npEditParamsRejection(editParams) {
+  const p = editParams || {};
+  const bad = [];
+  const scan = (list) => {
+    for (const spec of Array.isArray(list) ? list : []) {
+      if (!spec || !Object.prototype.hasOwnProperty.call(spec, "params")) continue;
+      const label =
+        String((spec && (spec.alias || spec.title || spec.id)) || "").trim() ||
+        I18n.t("（未命名）");
+      bad.push(label);
+    }
+  };
+  scan(p.create);
+  scan(p.update);
+  if (!bad.length) return "";
+  return (
+    I18n.t(
+      "canvas_edit 不再接受 params：节点参数只能通过「参数」端子传入 —— 建一颗 input_text 写参数 JSON，再 connect 到该节点的 toIndex 9001。本次编辑已整笔拒绝，冲突项：",
+    ) + bad.join(I18n.t("、"))
+  );
+}
+
+/** 老画布清理：删掉旧版 params 写进节点上的 npParams（运行时已不再读它）。
+ *  返回被清理节点的标题数组；为空 = 什么都没做（幂等）。 */
+function npPurgeLegacyParams(wf) {
+  const out = [];
+  for (const n of (wf && Array.isArray(wf.nodes) ? wf.nodes : [])) {
+    if (!n || !Object.prototype.hasOwnProperty.call(n, "npParams")) continue;
+    delete n.npParams;
+    out.push(String(n.title || n.id || ""));
+  }
+  return out.filter((t) => t !== "");
+}
+
 /* ───────────── 对外出口 ───────────── */
 
 const NParam = {
@@ -1420,6 +1489,8 @@ const NParam = {
   jsonSwitchChip: npJsonSwitchChip,
   jsonText: npJsonText,
   activeFor: (id) => NP_ACTIVE.get(id) || null,
+  editParamsRejection: npEditParamsRejection,
+  purgeLegacyParams: npPurgeLegacyParams,
 };
 try {
   window.NParam = NParam;

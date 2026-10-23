@@ -140,7 +140,7 @@ const GET_DESC =
   '- Narrow with ids / scope + scopeDepth / bodies / bodyLimit, or sections = whitelist of heavy blocks (nodes, marks, wires, groups, and the trees / tagCatalog / workflows / selection). 只查连线用 sections:["nodes","wires"]（minimal 档也认）。素材节点（kind asset）也回读：assetItems = 绑定与条目清单 items:[{index, id, title, type}]（条目即端子：第 i 入 ↔ 第 i 出，端子名 = 条目标题）；text/body 档每条再带 text（文本正文）或 path / url（本机文件）。\n' +
   '- ports (standard / full): fixed-port nodes (proc_image / sensenova_gen / video_gen / remotion / judge / tool·function / super / asset) carry ports:[{dir,index,name,kind,connectedTo}] — read before connecting, not after a connect error.\n' +
   '- portRule (standard / full): nodes whose input ports GROW WITH WIRES (proc_text / proc_image / sensenova_gen / remotion / input_* …) carry portRule {note,input,output,now,hint} instead: ports only lists the slots that exist right now (an unconnected node shows one port), and further slots appear as you connect — remotion is the one node whose data AND control lines share the same ports (never assume port 0 = control for remotion), and its description lives in the node text (not in a port). Never infer "this node has only one port" from a short ports list, and never test-wire just to read the warnings.\n' +
-  '- 参数（standard / full）: 有配置的节点（有 ⚙ 设置窗）末位有「参数」端子，端子号恒 9001；快照带 paramKeys / params，参数线用 toIndex:9001。\n' +
+  '- 参数（standard / full）: 有配置的节点（有 ⚙ 设置窗）末位有「参数」端子，端子号恒 9001；快照带 paramKeys（可覆写的键）。参数只能由一根文本节点的 JSON 经这颗端子传入（toIndex:9001），没有「直接改节点参数」的写法。\n' +
   'scopeInfo is always returned（这次读的是整图还是某一颗壳内部）; every result carries a sizeHint with its cost.\n\n' +
   'When the run is locked to its own canvas（会话所属画布）, workflows lists ONLY that canvas. 建图 / 连线 / 排版的完整硬规则（task 端点、super 边界端子、tool/function 参数即端子、@引用三条件、save 与 wait_file、批次与文生图）只写在技能 mtnode-canvas-edit-rules（按需加载），此处不重复。'
 
@@ -174,7 +174,8 @@ const EDIT_DESC = NODE_LOCK + `在当前画布上创建 / 修改 / 连线 / 删�
 
 create.kind 枚举见 schema（生成族含 sensenova_gen 本机图像）。端子语义：tool / function 的参数表就是端子表（输入端子 0 = 控制入、1..N 各入参；输出 0..M-1 各出参、末位控制出）；judge 只有两个输出：fromIndex 0 = YES、1 = NO；super 对外只暴露边界端子，跨壳 / 跨层级用 superConnect。
 
-参数：create / update 传 params:{…} 覆写该节点配置（键 = canvas_get 的 paramKeys，运行期生效、不改画布值），paramStrict:true = 键不合法就整份拒绝、该节点不运行。
+参数：节点参数**只能通过「参数」端子**给 —— 建一颗 input_text 写参数 JSON，再 connect（来源 → 目标节点，toIndex:9001）；键 = canvas_get 的 paramKeys。create / update 里带 params 会被整笔拒绝（已取消该写法：它会把参数挂到节点上、运行期压住用户在 ⚙ 里改的值）。paramStrict:true = 参数端子上的 JSON 有键不合法就整份拒绝、该节点不运行。
+breeze_gen 的角色 / 组走名称参数：breezePreset（角色名称，或角色 id）+ breezeGroup（组名 / 「第 N 组」/ 组 id；不给 = 该角色第一组）。两个值运行期临时翻译成 presetId / presetGroupId，跑完恢复、不写回节点；**对不上就报错并停止这次合成**（绝不默默换声）。
 
 端子预检：canvas_get（standard / full）回 ports:[{dir,index,name,kind,connectedTo}]，接线前先看；connect 失败的 warnings 带候选端子与接法建议。save 的路径后缀按输入类型强制。
 
@@ -373,16 +374,10 @@ const NODE_PROPS = {
   dbName: { type: 'string', description: 'db_replica：源数据库显示名。' },
   ctrlPinned: { type: 'boolean' },
   ctrlFillOnly: { type: 'boolean', description: 'control run：只填数据不触发运行。' },
-  params: {
-    type: 'object',
-    additionalProperties: true,
-    description:
-      '「参数」覆写：键 = paramKeys 的正式名（如 outputPath / size / model；区分大小写，不收 snake_case / kebab-case）。运行期生效、不改画布值；与参数端子的 JSON 深合并（端子优先）；null = 恢复默认。',
-  },
   paramStrict: {
     type: 'boolean',
     description:
-      '「参数」严格校验：true = 键不合法 / 类型不符就整份拒绝、该节点不运行；缺省宽松（逐键回退并警告）。',
+      '「参数」严格校验（与节点 ⚙ 里的开关同源）：true = 参数端子上的 JSON 有键不合法 / 类型不符就整份拒绝、该节点不运行；缺省宽松（逐键回退并警告）。节点参数本身只能通过参数端子（toIndex 9001）传入，这里没有 params 字段。',
   },
   x: { type: 'number' },
   y: { type: 'number' },

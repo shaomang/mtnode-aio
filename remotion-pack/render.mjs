@@ -37,11 +37,22 @@
  *                   也可用环境变量 MTNODE_REMOTION_BROWSER_EXECUTABLE 传同一个值。
  *   concurrency / jpegQuality / audioCodec / logLevel
  *                           透传给 renderMedia（可选）
+ *   mediaBlobs      object  宿主内联的媒体二进制（可选）：{ hero?: base64, voice?: base64, poster?: base64 }
+ *                           为什么要有它：宿主的 inlineMediaPropsOf 以前把媒体直接写成
+ *                           `data:video/mp4;base64,...` 塞进 inputProps，而 Remotion 的
+ *                           <OffthreadVideo> 会把 src 原样拼进 `/proxy?src=<编码后的整个 data URL>`，
+ *                           1.9MB 的片子就是一个 2.6MB 长的查询串 → 浏览器报
+ *                           `431 Request Header Fields Too Large`，整条渲染失败
+ *                           （<Img> 走的是另一条路，所以同一份 data URL 图片反而正常）。
+ *                           本脚本在打包前把原始字符串换成规范化的 data URL（只重编码一次），
+ *                           打包后再按本文件的规则把**压缩版**写回。
+ *   mediaBlobsMeta  object  可选：{ hero: {mime}, voice: {mime}, poster: {mime} }，缺省按 contentType 推断
  */
 import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 import {fileURLToPath} from 'node:url';
+import {dataUrlToMedia, unpackMediaBlobs, describeMedia, parkedName} from './pack/park-media.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 /* 安装目录 = 本脚本所在目录（依赖源）；工程目录由宿主注入 */
@@ -85,6 +96,42 @@ const main = async () => {
   const nodeModulesDir = resolvePath(cfg.nodeModulesDir) || path.join(installDir, 'node_modules');
   emit({type: 'paths', installDir, projectDir, nodeModulesDir, configPath});
 
+  /* ── 媒体落地（见 pack/park-media.mjs 顶部说明）────────────────────────────
+     宿主以前把音视频当 data URL 直接放进 inputProps：<OffthreadVideo> 会把它拼进
+     `/proxy?src=...`，2MB 级别的片子直接 431。这里把视频 / 音频写成
+     <projectDir>/public/<prop>.<ext>，渲染页用短文件名取（Remotion 静态根 = 工程目录）。
+     图片不动：<Img> 不走 proxy，data URL 对它是安全的。 */
+  const inputProps = {...(cfg.inputProps ?? {})};
+  const mediaReport = [];
+  const parked = {...unpackMediaBlobs(cfg)};
+  /* 兼容老宿主：data URL 仍出现在 inputProps 里时，这里就地接管并清空该键 */
+  for (const prop of ['hero', 'voice']) {
+    const value = inputProps[prop];
+    if (typeof value === 'string' && /^data:/i.test(value.trim())) {
+      const media = dataUrlToMedia(value, prop);
+      if (media) {
+        parked[prop] = media;
+        delete inputProps[prop];
+      }
+    }
+  }
+  /* 落点：**bundle 根**。Remotion 的 staticFile() 在渲染进程里生成的是
+     public/<文件名>（见 remotion/dist/cjs/static-file.js），服务根就是 bundle 目录，
+     所以媒体必须落在 <bundle>/public/ 下；工程里也留一份 public/ 便于重渲复用，
+     打包后由这里的 copy 同步过去。 */
+  const publicDir = path.join(projectDir, 'public');
+  const parkedNames = [];
+  for (const [prop, media] of Object.entries(parked)) {
+    const name = parkedName(prop, media.contentType);
+    fs.mkdirSync(publicDir, {recursive: true});
+    fs.writeFileSync(path.join(publicDir, name), media.bytes);
+    /* 合成层的 assetSrc() 对裸文件名会走 staticFile()，与落点对齐 */
+    inputProps[prop] = name;
+    parkedNames.push(name);
+    mediaReport.push(`${prop}→${name} ${describeMedia(media)}`);
+  }
+  if (mediaReport.length) emit({type: 'media', parked: mediaReport});
+
   const {selectComposition, renderMedia} = await import('@remotion/renderer');
 
   // serveUrl：宿主可预打包后写入 render.json；缺省则就地用 @remotion/bundler 打包 entryPoint。
@@ -115,10 +162,18 @@ const main = async () => {
       onProgress: (p) => emit({type: 'bundleProgress', progress: p}),
       webpackOverride,
     });
+    /* 媒体进 bundle：staticFile() 要的是 <bundle>/public/<文件名>，与工程 public/ 对齐 */
+    if (parkedNames.length) {
+      const bundlePublic = path.join(serveUrl, 'public');
+      fs.mkdirSync(bundlePublic, {recursive: true});
+      for (const name of parkedNames) {
+        fs.copyFileSync(path.join(publicDir, name), path.join(bundlePublic, name));
+      }
+      emit({type: 'media', bundled: parkedNames.map((n) => 'public/' + n)});
+    }
     emit({type: 'bundled', serveUrl});
   }
 
-  const inputProps = cfg.inputProps ?? {};
   /* 浏览器口径：优先 render.json.browserExecutable，其次环境变量；都没有 = 让 Remotion 用
      它自己的 chrome-headless-shell 缓存（宿主已尽量从国内镜像预置好，见 main-remotion.js）。 */
   const browserExecutable =
@@ -174,3 +229,4 @@ const main = async () => {
 };
 
 main().catch((err) => fail(err?.stack || err?.message || err));
+
