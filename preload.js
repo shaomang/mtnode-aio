@@ -63,6 +63,9 @@ contextBridge.exposeInMainWorld('api', {
 
   /* 会话转写（agentSessions）从 config.json 拆到 agent-sessions/ 之后的读写口：
      sessionLoad = 索引（左栏字段，绝不含正文）；sessionSave = 只写脏会话 + 刷索引；
+     正文可以送整份（item.body），也可以只送**追加段**（item.delta = 本窗口新增条目 +
+     尾部增长条目的最新内容；主进程追加到 <id>.jsonl，攒够阈值 / 切换会话 / 收尾 / 退出时
+     再压回基线）；payload.compact = 点名让主进程把这几条会话的追加段压回基线。
      sessionBody = 按需读正文（懒加载：选中会话 / 轨迹·改动 / 全局搜索 / 续跑时）；
      sessionPatch = 按 id 改白名单字段（只 workspace，不读正文）—— 工作目录体检修正旧
      路径用它：既没读回正文、也没标脏的会话会被 sessionSave 整条跳过，改动落不了盘。

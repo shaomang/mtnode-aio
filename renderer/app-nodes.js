@@ -2226,7 +2226,7 @@ function markMediaBackendDown(node, st) {
    但各宿主 status 里的 gpu 字段形状不齐：music3 / yue / h3 已是单帧，
    **sensenova 的 status.gpu 是探测形**：
      { hasNvidia, gpus:[{ name, driver, memTotalMb, memUsedMb, util }], maxVramGb }
-   节点面板读的是单帧字段，不折算就会读到 undefined → 显存条与 GPU 条都画成 0%：
+   节点面板读的是单帧字段，不折算就会读到 undefined → 显存条与 GPU 条都画成 0%（breeze 的 status.gpu 也是旧键名 utilPct / memUsedMb，同样要折算）：
    运行期「2s 探活回写 ui.info（探测形 → 0%）」与「2s GPU 推流（单帧 → 真值）」交替，
    读数就一直在闪跳。这里统一折算成单帧；取不到（null / 空 gpus）返回 null。 */
 function normalizeGpuReading(gpu) {
@@ -2240,7 +2240,9 @@ function normalizeGpuReading(gpu) {
   };
   const memUsed = num(g.memUsed != null ? g.memUsed : g.memUsedMb);
   const memTotal = num(g.memTotal != null ? g.memTotal : g.memTotalMb);
-  const util = num(g.util);
+  /* breeze 的管理服务把利用率叫 utilPct（旧键名），其余宿主用 util：
+     两种都要认，否则 breeze_gen 节点的「GPU」条永远读不到值、画成 0%。 */
+  const util = num(g.util != null ? g.util : g.utilPct != null ? g.utilPct : g.utilization);
   let memPct = num(g.memPct);
   if (memPct == null && memTotal != null && memTotal > 0 && memUsed != null)
     memPct = Math.round((memUsed / memTotal) * 1000) / 10;
@@ -8965,6 +8967,15 @@ function computePortValue(w, consumer) {
 function functionInputObject(node) {
   const input = { values: [], items: [] };
   if (!node || !S.wf) return input;
+  /* 「参数」端子（9001）：一份 JSON 原样交给代码 —— 注入 input.params（不覆写节点字段）。
+     默认值取 ⚙ 里的 paramsJson，9001 各线按接线顺序深合并覆盖；工具子图里的函数节点
+     沿 parentSuperId 就近继承父壳那份（见 app-node-params.js fnParamsForNode）。 */
+  input.params =
+    typeof NParam === "object" &&
+    NParam &&
+    typeof NParam.fnParamsForNode === "function"
+      ? NParam.fnParamsForNode(node) || {}
+      : {};
   const params = fnToolParamList(node, "in");
   /* 参数 i ↔ 外侧输入端子 i+1（端子 0 = 控制入）；写入形状两条路径共用一份 */
   const put = (i, value) => {
@@ -9764,56 +9775,6 @@ async function runFunctionNode(node, quiet, opts) {
     }
     n.ranAt = Date.now();
   });
-}
-
-/* 「测试」台专用：严格只读地跑一次函数节点 —— 测试入参经 node._agentCallArgs
-   注入点进入（见 functionInputObject），全程不写 node.output / portOutputs、
-   不级联下游、不进撤销历史、不改 running / error / ranAt（节点运行态原样保留）。
-   执行同样走主进程的独立线程（await 才拿到结果），所以试跑期间界面不卡。
-   返回 { ok, ports, count, error, fixes }，ports 与画布 ▶ 用的是同一个映射函数
-   （端子归一也在里面做）；fixes 只随返回值给出，不写进节点（_portKindFix 属运行态）。 */
-async function testFunctionNode(node, args) {
-  const fail = (msg) => ({
-    ok: false,
-    ports: { __error: msg },
-    count: 0,
-    error: msg,
-    fixes: [],
-  });
-  const engine = window.mtnodeJsExec;
-  if (!engine || typeof engine.run !== "function")
-    return fail(I18n.t("函数节点执行器未加载（js-exec.js）"));
-  const code = functionCodeOf(node);
-  if (!String(code).trim()) return fail(I18n.t("函数节点：请先填写 JS 代码"));
-  const prev = node._agentCallArgs;
-  node._agentCallArgs = Array.isArray(args) ? args : [];
-  let res = null;
-  try {
-    res = await engine.run(code, functionInputObject(node), {
-      runId: fnRunId(node, "test"),
-      /* 「测试」台同样带上「AI 调用」设定：试跑里 await mtnode.ai(...) 也能真发请求 */
-      ai: functionAiSpec(node),
-      /* 试跑里 await mtnode.image(...) 也按本节点选定的图像后端出图（产物同样落画布资产目录） */
-      img: functionImageSpec(node),
-      wfId: S.wf ? S.wf.id : "",
-      nodeId: node.id,
-    });
-  } catch (e) {
-    res = { ok: false, error: (e && e.message) || String(e) };
-  } finally {
-    if (prev === undefined) delete node._agentCallArgs;
-    else node._agentCallArgs = prev;
-  }
-  if (!res || res.ok === false)
-    return fail((res && res.error) || I18n.t("执行失败"));
-  const m = functionPortsFromReturn(node, res.value);
-  return {
-    ok: true,
-    ports: m.ports,
-    count: m.count,
-    error: "",
-    fixes: m.fixes || [],
-  };
 }
 
 /* ── 工具节点：运行内部图（类节点层容器，父级 = 本节点） ── */
@@ -11706,11 +11667,11 @@ function fnToolInPortIsArray(host, idx) {
 }
 
 /* 工具 / 函数节点：按源端子的媒体类型挑一个输入参数端子。
-   want = "image" | "text"（参数 kind 只有这两类，音视频线按文本路径处理）；
-   先挑「类型匹配且空闲」的普通端子，挑不到再落到「类型匹配」的数组端子 ——
-   数组端子可挂多条线，已挂线也算可用（只有函数节点真能按端子聚合多条线，
-   工具节点的外侧输入仍是一号一值，已挂线的数组端子不再落）。
-   两类都挑不到返回 null → 由调用方给出「去哪儿改」的类型错误，而不是静默占错端子。 */
+    want = "image" | "video" | "audio" | "text"（参数 kind 就是这四类）；
+    先挑「类型匹配且空闲」的普通端子，挑不到再落到「类型匹配」的数组端子 ——
+    数组端子可挂多条线，已挂线也算可用（只有函数节点真能按端子聚合多条线，
+    工具节点的外侧输入仍是一号一值，已挂线的数组端子不再落）。
+    两类都挑不到返回 null → 由调用方给出「去哪儿改」的类型错误，而不是静默占错端子。 */
 function fnToolFreePortForMedia(host, want) {
   const n = fnToolParamList(host, "in").length;
   const kindOf = (i) => (fnToolPortKind(host, "in", i) || "text") === want;
@@ -11727,11 +11688,11 @@ function fnToolFreePortForMedia(host, want) {
   return null;
 }
 
-/* 这条数据线在「参数端子」眼里的类型：图像线 → image，其余（文本 / 音视频文件路径）→ text。
-   媒体类型仍取单一真源 wireSourceMediaType（端子声明优先，其次节点 kind 与该端子实际值），
-   所以连普通节点层真正汇出来的图像也能对上图像端子，不必只认图像类 kind。 */
+/* 这条数据线在「参数端子」眼里的类型：直接取单一真源 wireSourceMediaType 的四种
+   （text / image / video / audio；端子声明优先，其次节点 kind 与该端子实际值），
+   所以连普通节点层真正汇出来的媒体也能对上同类型的参数端子。 */
 function wireParamKind(from, fi) {
-  return wireSourceMediaType(from, fi) === "image" ? "image" : "text";
+  return fnToolNormPortKind(wireSourceMediaType(from, fi));
 }
 
 /* 一条线在工具 / 函数节点上「实际会落到哪个输入端子」（校验与落点的唯一真源）：
@@ -11748,8 +11709,8 @@ function fnToolInPortIndex(host, from, fi, toIndex, fromCtrl) {
 }
 
 /** 工具 / 函数节点「输入参数端子」的类型匹配校验：
-    端子声明的 kind（text | image）就是这条数据线的准入类型 ——
-    图像线只能进图像端子，文本线（含音视频文件路径）只能进文本端子。
+    端子声明的 kind（text | image | video | audio）就是这条数据线的准入类型 ——
+    图像线只能进图像端子，视频线只能进视频端子，音频线只能进音频端子，文本线进文本端子。
     返回 null = 放行（控制端子 / 越界 / 无端子级声明一律交回既有规则处理）。
     错误文案点名参数与去处：改接来源节点的哪个端子，或在本节点的「设置」里改参数类型。 */
 function fnToolInPortTypeError(host, idx, from, fi) {
@@ -11762,15 +11723,23 @@ function fnToolInPortTypeError(host, idx, from, fi) {
   const where = isFunctionNode(host)
     ? I18n.t("该函数节点的「设置」")
     : I18n.t("该工具节点的「设置」");
-  return want === "image"
-    ? I18n.t("「{p}」是图像参数，只接受图像来源：请把来源节点的图像输出端子连到它，或在{n}里把「{p}」改成文本参数", {
-        p: pname,
-        n: where,
-      })
-    : I18n.t("「{p}」是文本参数，不接受图像来源：请在{n}里把「{p}」改成图像参数，或改接来源节点的文本输出端子", {
-        p: pname,
-        n: where,
-      });
+  const kindLabel = (k) =>
+    k === "image"
+      ? I18n.t("图像")
+      : k === "video"
+        ? I18n.t("视频")
+        : k === "audio"
+          ? I18n.t("音频")
+          : I18n.t("文本");
+  return I18n.t(
+    "「{p}」是{k}参数，只接受{k}来源：请把来源节点的{k}输出端子连到它，或在{n}里把「{p}」改成{t}参数",
+    {
+      p: pname,
+      k: kindLabel(want),
+      t: kindLabel(got),
+      n: where,
+    },
+  );
 }
 
 /* ── 工具构建 · 连线拦截：文件来源 → 处理节点，但该节点吃不下这个文件 ──
@@ -11839,6 +11808,11 @@ function fileWireSupportError(from, fi, to) {
    保证「校验的那颗端子 = 实际落线的那颗」。 */
 function dataNodeControlInPort(node) {
   if (!node || !S.wf) return null;
+  /* 动态端子节点（proc_text / proc_image / sensenova_gen / agent_task / input_*）：
+     专用控制端子恒存在（数据槽之后那颗），不再走下面「挑第一颗空口」的兜底 ——
+     那条兜底在空白节点上会退到端口 0 的提示词入口。多路控制线共用这颗（任一到达即触发）。 */
+  if (typeof isDynCtrlNode === "function" && isDynCtrlNode(node))
+    return typeof dynCtrlInPortIndex === "function" ? dynCtrlInPortIndex(node) : null;
   const ic = (Number(inputCount(node)) || 0) - 1;
   if (ic < 0) return null;
   const wiredIn = (i) =>
@@ -11893,6 +11867,118 @@ function dataInPortIndexForWire(to, from, fromIndex, toIndex) {
   const free = typeof firstFreeInPortIndex === "function" ? firstFreeInPortIndex(to) : null;
   if (free != null && !(ctrl != null && Number(ctrl) === Number(free))) return Number(free);
   return append;
+}
+
+/* ══════════ 占用替换：另一节点连到已占用的输入端子 → 顶掉旧线，而不是报「已被占用」══
+   口径（用户确认的共识）：
+   · 只对「一端口一线」的输入端子生效 —— 「参数」端子（种号 9001）、数组 / 批量参数端子、
+     动态端子节点的专用控制端子（本就允许多条控制线共享）保持原状，仍按原逻辑判占用；
+   · 只顶掉**同类**旧线：数据线顶数据线、控制线顶控制线；控制线 ↔ 数据线错位仍是错，
+     不替换（那是接错端子，不是被占用）；
+   · Remotion 的端子是无差别的（数据线与控制线共用同一批口、先到先占）→ 不分类型一律顶掉；
+   · toIndex 为 null（拖到节点卡片身上 / agent connect 不带端子号）不替换：没有「要换掉哪一颗」
+     的意图，仍走自动落点，槽位占满时照旧报占用；
+   · 类型校验先于替换生效（connectError 的槽位类型分支照旧）：接不进去的线不会把旧线换掉。 */
+
+/** 这颗端子上「会被顶掉」的旧线（可替换 → replaceable=true）。
+    返回值只读：不做任何修改，改画布只在 dropWiresForReplace 一处。 */
+function inPortOccupancy(to, toIndex, fromCtrl) {
+  const none = { wires: [], replaceable: false };
+  if (!to || toIndex == null) return none;
+  const idx = Number(toIndex);
+  if (!isFinite(idx) || idx < 0) return none;
+  const paramIdx = typeof PARAM_IN_INDEX === "number" ? PARAM_IN_INDEX : 9001;
+  if (idx === paramIdx) return none; /* 参数端子：允许多条（深合并），没有「占用」 */
+  const list =
+    to.kind === "super" && typeof superExternalInWiresAll === "function"
+      ? superExternalInWiresAll(to)
+      : (S.wf && S.wf.wires) || [];
+  const hit = list.filter(
+    (w) => w && !w.rel && w.to === to.id && Number(w.toIndex || 0) === idx,
+  );
+  if (!hit.length) return none;
+  /* 数组（批量）参数端子：本来就能挂多条数据线，不发「占用」也不替换 */
+  if (
+    typeof isFnToolNode === "function" &&
+    isFnToolNode(to) &&
+    typeof fnToolInPortIsArray === "function" &&
+    fnToolInPortIsArray(to, idx)
+  )
+    return none;
+  /* 动态端子节点的专用控制端子：多条控制线共享（任一到达即触发一次），不替换 */
+  if (
+    typeof isDynCtrlNode === "function" &&
+    isDynCtrlNode(to) &&
+    typeof dynCtrlInPortIndex === "function" &&
+    idx === Number(dynCtrlInPortIndex(to))
+  )
+    return none;
+  /* 无差别端子（Remotion）：控制线 / 数据线共用同一批口 → 一律顶掉 */
+  if (to.kind === "remotion") return { wires: hit, replaceable: true };
+  const same = fromCtrl
+    ? hit.filter((w) => wireFromIsControl(w))
+    : hit.filter((w) => !wireFromIsControl(w));
+  return { wires: same, replaceable: same.length > 0 };
+}
+
+/** 这颗端子接这条线时是否「已占用但可以顶掉」——connectError 各占位分支的唯一判据。 */
+function inPortReplaceable(to, toIndex, fromCtrl) {
+  return inPortOccupancy(to, toIndex, fromCtrl).replaceable;
+}
+
+/** 落线前顶掉旧线（唯一落点）。返回被顶掉的旧线摘要（供 toast / agent 回执点名）。
+    调用方必须先 pushHistory：整次替换（含多段桥接）= 一步撤销。
+    这里**不做端子号左移补位**：新线马上落到同一颗端子，端子始终是占用的，
+    补位只会把别的线挪错号（固定端子节点更是绝不许重排）。 */
+function dropWiresForReplace(to, toIndex, fromCtrl) {
+  const occ = inPortOccupancy(to, toIndex, fromCtrl);
+  if (!occ.replaceable || !occ.wires.length) return [];
+  const doomed = new Set(occ.wires);
+  const removed = occ.wires.map((w) => {
+    const src = nodeById(w.from);
+    return {
+      port: Number(w.toIndex || 0),
+      from: w.from,
+      fromTitle: (src && (src.title || src.kind)) || w.from,
+      fromIndex: Number(w.fromIndex || 0),
+      ctrl: wireFromIsControl(w),
+    };
+  });
+  S.wf.wires = (S.wf.wires || []).filter((w) => !doomed.has(w));
+  /* 数据线被换掉 → 下游缓存作废（与右键切断同一口径；控制线不动下游结果） */
+  if (removed.some((r) => !r.ctrl)) clearDownstream(to.id);
+  return removed;
+}
+
+/** 完全相同的线（同来源端子 → 同目标端子）是否已在画布上：再连一次 = 无操作。 */
+function identicalWireExists(fromId, toId, toIndex, fromIndex) {
+  if (toIndex == null) return false;
+  return ((S.wf && S.wf.wires) || []).some(
+    (w) =>
+      w &&
+      !w.rel &&
+      w.from === fromId &&
+      w.to === toId &&
+      Number(w.fromIndex || 0) === Number(fromIndex || 0) &&
+      Number(w.toIndex || 0) === Number(toIndex),
+  );
+}
+
+/** 替换提示文案（多颗端子汇总成一条：跨层桥接一次可能落好几段）。 */
+function replaceWiresToastText(list) {
+  if (!list || !list.length) return "";
+  if (list.length === 1) {
+    const r = list[0];
+    return I18n.t("已替换端口 {p} 上的原有连线（{src}）：Ctrl+Z 可撤销", {
+      p: String(r.port),
+      src: r.fromTitle || "",
+    });
+  }
+  const ports = list.map((r) => String(r.port)).join(" / ");
+  return I18n.t("已替换 {n} 颗端口上的原有连线（端口 {ports}）：Ctrl+Z 可撤销", {
+    n: String(list.length),
+    ports,
+  });
 }
 
 function connectError(fromId, toId, toIndex, fromIndex) {
@@ -11971,7 +12057,9 @@ function connectError(fromId, toId, toIndex, fromIndex) {
      H3 动态静图那种「一张图首尾相接」的接法直接做不出来。固定端子节点（video_gen /
      music_gen / yue_gen / breeze_gen…）本来就有逐端子的占用判定，来源相同但端子不同
      是合法接法；同一颗端子仍是重复（占用判定也照旧会报）。未指定端子（拖到节点身上 /
-     agent connect）保持旧口径：不看端子就判重复，重复调用不会静默多接一条线。 */
+     agent connect）保持旧口径：不看端子就判重复，重复调用不会静默多接一条线。
+     替换语义：显式端子时「拖的是同一根线」= 无操作 → 静默放行（connect / addWire 都会去重，
+     不弹任何提示）；未指定端子时保持旧口径，避免静默多接一条。 */
   const dupSlot = toIndex == null ? null : Number(toIndex);
   if (
     S.wf.wires.some(
@@ -11983,7 +12071,7 @@ function connectError(fromId, toId, toIndex, fromIndex) {
         (dupSlot == null || Number(w.toIndex || 0) === dupSlot),
     )
   )
-    return I18n.t("这两节点已连接");
+    return dupSlot == null ? I18n.t("这两节点已连接") : null;
   /* 动态端子节点：一个来源只接一次。
      端口只是「第几条线」的顺序槽，同一来源接两个槽没有语义（现场实证：DS 图同时落在
      底图节点的端口 3 与端口 4，多出来的那颗 `output` 恒空，节点运行期整条空跑）。
@@ -12004,7 +12092,11 @@ function connectError(fromId, toId, toIndex, fromIndex) {
     return I18n.t("这两节点已连接（同一来源已接在该节点的另一个数据端子上）");
   if (to.kind === "task") {
     if (!fromCtrl) return I18n.t("任务节点仅接受控制信号（不接内容连线）");
-    if (S.wf.wires.some((w) => !w.rel && w.to === toId))
+    /* 任务节点的控制输入也是一端口一线：新控制线顶掉旧的触发线（替换语义） */
+    if (
+      S.wf.wires.some((w) => !w.rel && w.to === toId) &&
+      !inPortReplaceable(to, toIndex == null ? 0 : Number(toIndex), true)
+    )
       return I18n.t("任务控制输入端子已被占用");
   }
   if (from.kind === "task") {
@@ -12018,7 +12110,8 @@ function connectError(fromId, toId, toIndex, fromIndex) {
     if (incoming.length) {
       const em = saveMediaKind(to);
       if (em === "image" || em === "audio" || em === "video") {
-        return I18n.t("图像 / 音频 / 视频保存仅接受 1 个输入");
+        /* 已定型媒体保存：同类线可以顶掉旧线（替换语义），不同类仍是错接 */
+        if (em !== media) return I18n.t("图像 / 音频 / 视频保存仅接受 1 个输入");
       } else if (media !== "text") {
         return I18n.t("该保存节点当前按文本保存，不能混接媒体");
       }
@@ -12035,7 +12128,12 @@ function connectError(fromId, toId, toIndex, fromIndex) {
     )
       return I18n.t("图像保存需要图像来源");
   } else if (!fromCtrl && to.kind === "split") {
-    if (wiresTo(toId).length) return I18n.t("拆分节点仅接受 1 个输入");
+    /* 拆分节点只有一个输入：新线顶掉旧线（替换语义），不再要求先手动断开 */
+    if (
+      wiresTo(toId).length &&
+      !inPortReplaceable(to, toIndex == null ? 0 : Number(toIndex), false)
+    )
+      return I18n.t("拆分节点仅接受 1 个输入");
   } else if (!fromCtrl && to.kind === "music_gen") {
     if (!wireActsAsText(from, fi))
       return I18n.t("音乐生成节点需要文本来源（提示词 / 歌词）");
@@ -12043,7 +12141,8 @@ function connectError(fromId, toId, toIndex, fromIndex) {
     if (slot != null && (slot < 0 || slot > 1)) return I18n.t("无效的输入端子");
     if (slot != null) {
       if (
-        S.wf.wires.some((w) => !w.rel && w.to === toId && Number(w.toIndex) === slot && !wireFromIsControl(w))
+        S.wf.wires.some((w) => !w.rel && w.to === toId && Number(w.toIndex) === slot && !wireFromIsControl(w)) &&
+        !inPortReplaceable(to, slot, false)
       )
         return I18n.t("该输入端子已被占用");
     } else if (nextFreeMediaDataSlot(to, from, fi) == null) {
@@ -12071,7 +12170,8 @@ function connectError(fromId, toId, toIndex, fromIndex) {
       if (
         S.wf.wires.some(
           (w) => !w.rel && w.to === toId && Number(w.toIndex) === slot && !wireFromIsControl(w),
-        )
+        ) &&
+        !inPortReplaceable(to, slot, false)
       )
         return I18n.t("该输入端子已被占用");
     } else if (nextFreeMediaDataSlot(to, from, fi) == null) {
@@ -12108,7 +12208,8 @@ function connectError(fromId, toId, toIndex, fromIndex) {
       if (
         S.wf.wires.some(
           (w) => !w.rel && w.to === toId && Number(w.toIndex) === slot && !wireFromIsControl(w),
-        )
+        ) &&
+        !inPortReplaceable(to, slot, false)
       )
         return I18n.t("该输入端子已被占用");
     } else if (nextFreeMediaDataSlot(to, from, fi) == null) {
@@ -12132,7 +12233,10 @@ function connectError(fromId, toId, toIndex, fromIndex) {
     if (slot != null && !videoGenIsDataPort(to, slot)) return I18n.t("无效的输入端子");
     if (slot == null) {
       if (nextFreeMediaDataSlot(to, from, fi) == null) return I18n.t("该输入端子已被占用");
-    } else if (S.wf.wires.some((w) => !w.rel && w.to === toId && Number(w.toIndex) === slot && !wireFromIsControl(w)))
+    } else if (
+      S.wf.wires.some((w) => !w.rel && w.to === toId && Number(w.toIndex) === slot && !wireFromIsControl(w)) &&
+      !inPortReplaceable(to, slot, false)
+    )
       return I18n.t("该输入端子已被占用");
     if (slot != null) {
       const meta = videoGenPortMeta(to, slot);
@@ -12175,7 +12279,9 @@ function connectError(fromId, toId, toIndex, fromIndex) {
       const slot = Number(toIndex);
       const nIn = Number(inputCount(to)) || 0;
       if (!isFinite(slot) || slot < 0 || slot >= nIn) return I18n.t("无效的输入端子");
-      if (inPortWireCount(to, slot) > 0) return I18n.t("该输入端子已被占用");
+      /* 无差别端子：已被占 → 顶掉旧线（控制线 / 数据线不分类型，与用户口径一致） */
+      if (inPortWireCount(to, slot) > 0 && !inPortReplaceable(to, slot, fromCtrl))
+        return I18n.t("该输入端子已被占用");
     }
   } else if (!fromCtrl && isVideoPostKind(to)) {
     /* 视频超分 / 补帧：端口0=控制输入（固定）· 端口1=源视频 · 端口2+=可选素材 */
@@ -12197,7 +12303,8 @@ function connectError(fromId, toId, toIndex, fromIndex) {
           w.to === toId &&
           Number(w.toIndex) === useSlot &&
           !wireFromIsControl(w),
-      )
+      ) &&
+      !(slot != null && inPortReplaceable(to, useSlot, false))
     )
       return I18n.t("该输入端子已被占用");
   } else if (fromCtrl && isVideoPostKind(to)) {
@@ -12267,7 +12374,10 @@ function connectError(fromId, toId, toIndex, fromIndex) {
       if (!fromCtrl && ti === 0)
         return I18n.t("端口 0 是控制输入端子（不接受数据连线）");
     }
-    if (superExternalInWiresAll(to).some((w) => Number(w.toIndex) === ti))
+    if (
+      superExternalInWiresAll(to).some((w) => Number(w.toIndex) === ti) &&
+      !inPortReplaceable(to, ti, fromCtrl)
+    )
       return I18n.t("该输入端子已被占用");
     /* 工具节点：参数即端子 → 端子声明的类型（text | image）决定这条数据线能不能进 */
     if (toolFixed && !fromCtrl) {
@@ -12280,9 +12390,9 @@ function connectError(fromId, toId, toIndex, fromIndex) {
      独立分支，绝不落到文末那条「按 allWiresTo().length 顺延」的通用占用判定
      （那条对固定端子节点本就失真：内侧汇流 / 数组端子同号多条线都会算错）。
      · 数组（批量）参数端子：可挂多条数据线 → 放行；
-     · 普通参数端子：仍报「该输入端子已被占用」；
-     · 控制线只走端口 0，不占参数端子，与本分支无关（行为逐字不变）。
-     类型匹配校验与工具节点共用 fnToolInPortTypeError。 */
+     · 普通参数端子：一端口一线 → 占用的旧线被顶掉（替换语义），不可替换时仍报占用；
+      · 控制线只走端口 0，不占参数端子，与本分支无关（行为逐字不变）。
+      类型匹配校验与工具节点共用 fnToolInPortTypeError。 */
   if (isFunctionNode(to)) {
     if (fromCtrl) return null;
     const nIn = fnToolParamList(to, "in").length;
@@ -12293,7 +12403,8 @@ function connectError(fromId, toId, toIndex, fromIndex) {
     if (Number(ti) < 0 || Number(ti) > nIn) return I18n.t("无效的输入端子");
     if (
       fnToolInPortOccupied(to, ti) &&
-      !fnToolInPortIsArray(to, ti)
+      !fnToolInPortIsArray(to, ti) &&
+      !inPortReplaceable(to, ti, false)
     )
       return I18n.t("该输入端子已被占用");
     const kindErr = fnToolInPortTypeError(to, ti, from, fi);
@@ -12315,7 +12426,9 @@ function connectError(fromId, toId, toIndex, fromIndex) {
       toIndex == null ? assetFreeInPortIndex(to, from, fi) : Number(toIndex);
     if (ti == null) return I18n.t("没有与这条线类型匹配的空闲内容端子");
     if (ti < 0 || ti >= items.length) return I18n.t("无效的输入端子");
-    if (assetInPortOccupied(to, ti)) return I18n.t("该内容端子已被占用");
+    /* 一个条目最多挂一条数据线；已被占 → 同类来源顶掉旧线（替换语义） */
+    if (assetInPortOccupied(to, ti) && !inPortReplaceable(to, ti, false))
+      return I18n.t("该内容端子已被占用");
     const want = items[ti].type;
     const got = wireSourceMediaType(from, fi);
     if (!assetPortAccepts(want, got))
@@ -12342,7 +12455,8 @@ function connectError(fromId, toId, toIndex, fromIndex) {
     if (!pending.length) return I18n.t("该交付节点当前没有待交付文件的端子（文件交齐后端子就消失了）");
     const ti = toIndex == null ? null : Number(toIndex);
     if (ti == null || ti < 0 || ti >= pending.length) return I18n.t("无效的输入端子");
-    if (inPortWireCount(to, ti) > 0) return I18n.t("该输入端子已被占用");
+    if (inPortWireCount(to, ti) > 0 && !inPortReplaceable(to, ti, false))
+      return I18n.t("该输入端子已被占用");
     return null;
   }
   /* 通用占用判定：**所有节点**一律逐号问这条端子上挂没挂线（inPortWireCount），
@@ -12351,13 +12465,23 @@ function connectError(fromId, toId, toIndex, fromIndex) {
      历史上普通（动态端子）节点按「toIndex < 入线总数」推断占用：端子号一旦有空洞
      （删过中间某条线 / 旧档里显式 toIndex），空洞那颗既显示空闲又报「已被占用」。
      动态节点「连一条自动多一条」由 inputCount 顺延出一颗空闲端子，行为不变。 */
+  /* 动态端子节点的专用控制端子允许多条控制线（任一到达即触发一次；要等齐请用闸门），
+     不参与下面这条「一颗端子一条线」的通用占用判定。 */
+  const dynCtrlShare =
+    fromCtrl &&
+    typeof isDynCtrlNode === "function" &&
+    isDynCtrlNode(to) &&
+    typeof dynCtrlInPortIndex === "function" &&
+    Number(toIndex) === dynCtrlInPortIndex(to);
   if (
+    !dynCtrlShare &&
     toIndex != null &&
     to.kind !== "music_gen" &&
     to.kind !== "yue_gen" &&
     to.kind !== "video_gen"
   ) {
-    if (inPortWireCount(to, toIndex) > 0) return I18n.t("该输入端子已被占用");
+    if (inPortWireCount(to, toIndex) > 0 && !inPortReplaceable(to, toIndex, fromCtrl))
+      return I18n.t("该输入端子已被占用");
   }
   /* 现有判定全部通过后，最后一道：文件来源喂不进「吃不下该文件」的处理节点。
      放在末尾 = 既有错误（回路 / 占用 / 类型）优先，原判定顺序逐字不变；
@@ -12615,6 +12739,8 @@ function addWire(fromId, toId, toIndex, opts) {
     const free = assetFreeInPortIndex(toN, fromN, fromIdx);
     if (free != null) idx = free;
   }
+  /* 完全相同的线已经在画布上 → 幂等返回（任何入口都不会落下第二条重复线） */
+  if (identicalWireExists(fromId, toId, idx, fromIdx)) return true;
   S.wf.wires.push({
     id: uid("w"),
     from: fromId,
@@ -12630,6 +12756,9 @@ function addWire(fromId, toId, toIndex, opts) {
     const it = window.LT.deliverPortItem(toN, idx);
     if (it && it.id != null) S.wf.wires[S.wf.wires.length - 1].ltItem = String(it.id);
   }
+  /* 动态端子节点：数据槽一变，专用控制端子的号就跟着变 —— 把已有的控制线挪到新号
+     （数据线一个号都不改）。控制线刚落在这颗口上时这里是无操作。 */
+  if (toN && typeof syncDynCtrlWires === "function") syncDynCtrlWires(toN);
   /* 连线落定的那一刻就叫一次「交付连线自动收下」：连到交付节点的线若上游已经产出文件，
      这一件当场算已交 —— 用户不必再去条带右栏点一次「从画布连线取」。
      （**只收线、不放行**：收齐之后仍由用户点「确认交付完成」往下走。）
@@ -12721,6 +12850,8 @@ function connect(fromId, toId, toIndex, fromIndex) {
   const toNode = nodeById(toId);
   /* 端子归一：数据线落到越界 / 控制端子时改落最近空闲的数据端子（用户手工拖线 / API 同一口径） */
   const ti = dataInPortIndexForWire(toNode, fromNode, fromIndex, toIndex);
+  /* 完全相同的线再连一次 = 无操作：静默忽略，不弹「这两节点已连接」（替换语义的配套口径） */
+  if (identicalWireExists(fromId, toId, ti, fromIndex)) return;
   /* 跨节点层（硬规则）：不直连，自动改写成经边界端子的逐层桥接 —— 手拖与 agent 同一口径，
      改写是静默的（线本身就说明了接法，不再弹提示打扰）。 */
   if (fromNode && toNode && !wireKeepsLayerRule(fromNode, toNode)) {
@@ -12739,6 +12870,8 @@ function connect(fromId, toId, toIndex, fromIndex) {
     renderCanvas();
     scheduleSave(true);
     renderStatus();
+    /* 桥接落线时也可能顶掉边界端子上的旧线：多颗端子汇总成一条提示 */
+    if (res.replaced && res.replaced.length) toast(replaceWiresToastText(res.replaced), "ok");
     return;
   }
   const err = connectError(fromId, toId, ti, fromIndex);
@@ -12747,10 +12880,13 @@ function connect(fromId, toId, toIndex, fromIndex) {
     return;
   }
   pushHistory();
+  /* 已占用的端子 → 先顶掉旧的同类线（与落线同一步撤销，不删任何节点） */
+  const replaced = dropWiresForReplace(toNode, ti, isControlKind(fromNode));
   addWire(fromId, toId, ti, { notify: true, save: false, fromIndex: fromIndex || 0 });
   renderCanvas();
   scheduleSave(true);
   renderStatus();
+  if (replaced.length) toast(replaceWiresToastText(replaced), "ok");
 }
 
 /* ────────────────────────────────────────────────────────────
@@ -12936,31 +13072,45 @@ function bridgeSegExists(seg) {
 function applyBoundaryBridgePlan(segs) {
   if (!segs || !segs.length) return { created: 0, error: I18n.t("无法逐层桥接") };
   const wires = S.wf && S.wf.wires ? S.wf.wires : [];
-  const before = wires.length;
+  /* 替换会摘掉旧线，长度差不再等于「新落了几条」→ 整份快照 + 逐段记账：
+     回滚 = 把整份线表原样恢复（含被顶掉的旧线）。 */
+  const snapshot = wires.slice();
+  const createdIds = [];
+  const replaced = [];
   const rollback = () => {
-    if (S.wf && Array.isArray(S.wf.wires)) S.wf.wires.length = before;
+    if (!S.wf || !Array.isArray(S.wf.wires)) return;
+    S.wf.wires.length = 0;
+    for (const w of snapshot) S.wf.wires.push(w);
   };
   for (const seg of segs) {
     if (bridgeSegExists(seg)) continue;
     const err = connectError(seg.from, seg.to, seg.toIndex, seg.fromIndex);
     if (err) {
       rollback();
-      return { created: 0, error: err };
+      return { created: 0, replaced: [], error: err };
     }
+    /* 已占用的边界端子 → 先顶掉旧的同类线（与手拖同一口径、同一步撤销） */
+    const toSeg = nodeById(seg.to);
+    const ctrl = isControlKind(nodeById(seg.from));
+    for (const info of dropWiresForReplace(toSeg, seg.toIndex, ctrl)) replaced.push(info);
+    const n0 = (S.wf.wires || []).length;
     if (addWire(seg.from, seg.to, seg.toIndex, { fromIndex: seg.fromIndex }) === false) {
       rollback();
       return {
         created: 0,
+        replaced: [],
         error: I18n.t("节点层内外不能直接连线，必须经节点层的边界端子逐层中转"),
       };
     }
+    for (let i = n0; i < (S.wf.wires || []).length; i++) createdIds.push(S.wf.wires[i].id);
   }
-  return { created: (S.wf.wires || []).length - before, error: null };
+  return { created: createdIds.length, replaced, error: null };
 }
 
 /** 一对节点自动贯通：同层直连 / 跨层逐层桥接。返回真正落下的线数。
-    warnings 只写「为什么没连成」，成功不打扰（用户可见的线本身就是回执）。 */
-function bridgeNodesBetween(fromNode, toNode, fromIndex, toIndex, warnings) {
+    warnings 只写「为什么没连成」，成功不打扰（用户可见的线本身就是回执）。
+    out（可选）：把本对被顶掉的旧线摘要收进 out.replaced，供 agent 回执点名。 */
+function bridgeNodesBetween(fromNode, toNode, fromIndex, toIndex, warnings, out) {
   const plan = boundaryBridgePlan(fromNode, toNode, fromIndex, toIndex);
   if (plan.error) {
     if (warnings)
@@ -12974,13 +13124,16 @@ function bridgeNodesBetween(fromNode, toNode, fromIndex, toIndex, warnings) {
     warnings.push(
       (fromNode.title || fromNode.id) + " → " + (toNode.title || toNode.id) + "：" + res.error,
     );
+  if (out && res.replaced && res.replaced.length)
+    out.replaced = (out.replaced || []).concat(res.replaced);
   return res.created;
 }
 
-/** 单对跨节点层连接 from → to；返回**真建成的连线条数**（不是「试过几层」）。 */
-function applySuperConnectOne(fromNode, toNode, warnings, fromIndex, toIndex) {
+/** 单对跨节点层连接 from → to；返回**真建成的连线条数**（不是「试过几层」）。
+    out（可选）：被顶掉的旧线摘要（agent 回执点名用）。 */
+function applySuperConnectOne(fromNode, toNode, warnings, fromIndex, toIndex, out) {
   if (!fromNode || !toNode) return 0;
-  const made = bridgeNodesBetween(fromNode, toNode, fromIndex, toIndex, warnings);
+  const made = bridgeNodesBetween(fromNode, toNode, fromIndex, toIndex, warnings, out);
   /* 一条线都没建立：必须说清原因，绝不静默。最常见的就是「这一对已经连过」
      （同一颗端子重复 superConnect）——那是幂等，不是失败，但也不能报 connected。 */
   if (!made && warnings) {
@@ -13004,18 +13157,22 @@ function applySuperConnect(pairs, ctx) {
     const b = resolveCanvasRef(pair && pair.to, aliasMap, warnings);
     if (!a || !b) continue;
     const before = (S.wf && S.wf.wires ? S.wf.wires : []).length;
-    const made = applySuperConnectOne(a, b, warnings, pair && pair.fromIndex);
+    const replacedOut = {};
+    const made = applySuperConnectOne(a, b, warnings, pair && pair.fromIndex, undefined, replacedOut);
     const created = (S.wf && S.wf.wires ? S.wf.wires : []).length - before;
     /* connected 只认**真的落进 S.wf.wires 的线数**：made 是分层结果，created 是账实核对 */
     if (created > 0 || made > 0) {
-      connected.push({
+      const entry = {
         from: a.id,
         to: b.id,
         fromTitle: a.title,
         toTitle: b.title,
         viaSuper: true,
         wires: created,
-      });
+      };
+      if (replacedOut.replaced && replacedOut.replaced.length)
+        entry.replaced = replacedOut.replaced;
+      connected.push(entry);
       madeTotal += created;
     }
   }
@@ -13431,7 +13588,7 @@ function snapshotHasFixedPorts(node) {
    列成常量（真源仍是 app.js inputCount，改那边要顺手核对这里）。 */
 const INCREMENTAL_PORT_KINDS = [
   "proc_text", "proc_image", "sensenova_gen", "agent_task",
-  "input_text", "input_image", "input_file", "input_any",
+  "input_text", "input_image", "input_audio", "input_video", "input_file", "input_any",
 ];
 /* 是不是「随连线增量」的那一类：名单内 + 端子数确实等于「已连数据线 + 1」（再核一道，
    名单漂了也不会误报）。工具 / 函数 / 素材 / super / 控制类节点各有自己的端子口径，排除。 */
@@ -13440,6 +13597,14 @@ function snapshotInputGrowsWithWires(node) {
   if (isFnToolNode(node) || isAssetNode(node)) return false;
   if (node.kind === "super" || isControlKind(node)) return false;
   if (INCREMENTAL_PORT_KINDS.indexOf(node.kind) < 0) return false;
+  /* 动态端子族（app.js DYN_CTRL_KINDS）：端子数现在含末位那颗专用控制端子，
+     按同一份真源核一道（不再按「已连线条数 + 1」数）。 */
+  if (
+    typeof isDynCtrlNode === "function" &&
+    isDynCtrlNode(node) &&
+    typeof dynCtrlInPortIndex === "function"
+  )
+    return (Number(inputCount(node)) || 0) === dynCtrlInPortIndex(node) + 1;
   let wired = 0;
   try {
     wired = allWiresTo(node.id).length;
@@ -13499,15 +13664,23 @@ function snapshotDynamicPortRule(node) {
   if (!snapshotInputGrowsWithWires(node)) return undefined;
   const nIn = Number(inputCount(node)) || 0;
   const nOut = Number(outputCount(node)) || 0;
+  /* 专用控制端子（真源 app.js dynCtrlInPortIndex）：数据槽之后单独一颗，恒存在、可接多条控制线 */
+  const ctrl =
+    typeof isDynCtrlNode === "function" && isDynCtrlNode(node) && typeof dynCtrlInPortIndex === "function"
+      ? dynCtrlInPortIndex(node)
+      : null;
   return {
     note: I18n.t(
-      "输入端子随连线增量：未连线的节点只列出端口 0；每多连一条数据线就多出一个「输入端子 N」——文本与图像引用都收（参考图连端口 1+，勿连端口 0）。",
+      "输入端子随连线增量：端口 0 = 提示词 / 内容入口，每多连一条数据线多出一个数据槽；末位另有一颗**专用控制端子**（控制线只连它，数据线永不占它，可接多条 · 任一到达即触发一次）。",
     ),
-    input: I18n.t("端口 0 = 提示词 / 文本入口 · 端口 1+ = 数据槽（连一条多一个 · 文本 / 图像引用都收）"),
+    input: I18n.t(
+      "端口 0 = 提示词 / 文本入口 · 端口 1+ = 数据槽（连一条多一个 · 文本 / 图像引用都收）· 末位 = 控制输入（现在是端口 {n}）",
+      { n: ctrl == null ? "—" : ctrl },
+    ),
     output: I18n.t("端口 0 = 内容 · 末位 = 控制输出"),
     now: { in: nIn, out: nOut },
     hint: I18n.t(
-      "ports 只列当前真实存在的端子；要接参考图直接连端口 1+ 即可，不必先试连一次看 warnings。",
+      "ports 只列当前真实存在的端子；要接参考图直接连端口 1+ 即可，不必先试连一次看 warnings。控制线（▶ control / 上游控制输出）连这颗末位控制端子即可，不传 toIndex 时也会自动落到它。",
     ),
   };
 }
@@ -15318,6 +15491,22 @@ function agentToolCatalog() {
       ],
     },
     {
+      id: "media",
+      label: I18n.t("本地媒体（语音 / 视频）"),
+      items: [
+        {
+          key: "media_asr",
+          label: I18n.t("音频转写（含字幕时间轴）"),
+          hint: I18n.t("audio_transcribe / audio_subtitle：本地 SenseVoice 转写音频 / 视频，含分段起止秒与字幕时间轴"),
+        },
+        {
+          key: "media_ffmpeg",
+          label: I18n.t("ffmpeg 处理"),
+          hint: I18n.t("ffmpeg：探测、抽音轨、抽帧、抽帧识图、任意参数转码"),
+        },
+      ],
+    },
+    {
       id: "core",
       label: I18n.t("基础能力（引擎）"),
       items: [
@@ -15596,6 +15785,10 @@ function agentDeniedToolNames(runKey) {
   if (has("canvas_read")) out.push("mtnode_canvas_get");
   /* 素材库 / 窗口截图只有一个入口工具（assets_read 拒 = 整只不注册） */
   if (has("assets_read")) out.push("mtnode_assets");
+  /* 本地媒体：转写（逐字稿 + 字幕）与 ffmpeg 各自一个入口，拒哪项摘哪个；
+     media_asr 一项同时管 audio_transcribe 与 audio_subtitle（同一台 SenseVoice） */
+  if (has("media_asr")) out.push("audio_transcribe", "audio_subtitle");
+  if (has("media_ffmpeg")) out.push("ffmpeg");
   if (has("ask_user")) out.push("ask_user_question");
   /* 子代理一旦关掉，派生与收口的整族工具都没有意义 */
   if (has("subagent"))
@@ -20084,6 +20277,14 @@ function editPortNameOf(node, dir, i, isFnT) {
     return String((it && it.title) || "").trim() || I18n.t("内容 ") + (Number(i) + 1);
   }
   if (dir === "in") {
+    /* 动态端子节点：末位那颗是专用控制端子（数据槽之后，恒存在） */
+    if (
+      typeof isDynCtrlNode === "function" &&
+      isDynCtrlNode(node) &&
+      typeof dynCtrlInPortIndex === "function" &&
+      i === dynCtrlInPortIndex(node)
+    )
+      return I18n.t("控制");
     if (k === "music_gen")
       return i === 0 ? I18n.t("提示词") : i === 1 ? I18n.t("歌词") : I18n.t("控制");
     if (k === "yue_gen")
@@ -20184,6 +20385,12 @@ function editPortKindOf(node, dir, i, isFnT) {
        接上去（真源 inPortKindOf 对 proc_image 恒回 null，实际转接不拦）。按「由连线决定」
        的 any 报，与 sensenova_gen 同口径。 */
     if (k === "proc_image") return i === 0 ? "text" : "any";
+    /* 动态端子节点（proc_text / input_* …）：数据槽由连线决定，末位那颗是专用控制端子 */
+    if (typeof isDynCtrlNode === "function" && isDynCtrlNode(node))
+      return typeof dynCtrlInPortIndex === "function" &&
+        i === dynCtrlInPortIndex(node)
+        ? "control"
+        : "any";
     return "any";
   }
   if (k === "task" || k === "judge") return "control";
@@ -20764,16 +20971,21 @@ async function applyCanvasEdit(params, ctx) {
       /* 跨节点层是硬规则不许直连：自动改写成经边界端子的逐层桥接（同层不在此列）。
          连成 → 记一条 viaSuper；连不成 → bridgeNodesBetween 已把原因写进 warnings。 */
       if (!wireKeepsLayerRule(a, b)) {
-        const created = bridgeNodesBetween(a, b, pair.fromIndex || 0, useIndex, warnings);
-        if (created > 0)
-          connected.push({
+        const bridgeOut = {};
+        const created = bridgeNodesBetween(a, b, pair.fromIndex || 0, useIndex, warnings, bridgeOut);
+        if (created > 0) {
+          const entry = {
             from: a.id,
             to: b.id,
             fromTitle: a.title,
             toTitle: b.title,
             viaSuper: true,
             wires: created,
-          });
+          };
+          if (bridgeOut.replaced && bridgeOut.replaced.length)
+            entry.replaced = bridgeOut.replaced;
+          connected.push(entry);
+        }
         continue;
       }
       /* 端口 / 接法预检：把候选端子清单与正确接法一并回给模型，
@@ -20785,8 +20997,13 @@ async function applyCanvasEdit(params, ctx) {
       );
       continue;
     }
+    /* 已占用的端子 → 先顶掉旧的同类线（替换语义）：回执里点名被换掉的上游与端子号，
+       这样 Agent 不会把「替换」误当成「新加了一条线」。 */
+    const replacedWires = dropWiresForReplace(b, useIndex, isControlKind(a));
     addWire(a.id, b.id, useIndex, { fromIndex: pair.fromIndex || 0 });
-    connected.push({ from: a.id, to: b.id, fromTitle: a.title, toTitle: b.title });
+    const entry = { from: a.id, to: b.id, fromTitle: a.title, toTitle: b.title };
+    if (replacedWires.length) entry.replaced = replacedWires;
+    connected.push(entry);
   }
 
   /* 跨节点层连接：任意层级 / 任意节点层内的两个节点自动贯通。
@@ -21287,6 +21504,8 @@ function removeWire(id) {
       if (x.to === w.to && x.toIndex > w.toIndex) x.toIndex--;
     }
   }
+  /* 动态端子节点：数据槽缩短 → 专用控制端子前移，控制线跟着归位（见 dynCtrlInPortIndex） */
+  if (toNode && typeof syncDynCtrlWires === "function") syncDynCtrlWires(toNode);
   if (!wireFromIsControl(w)) clearDownstream(w.to);
   /* 断线也要叫一次：交付节点上的端子重排 / 归属重绑之后，剩下的线里可能又有「现在才拿得到
      文件」的一件（上游刚产出）—— 自动收线不看「刚发生了什么」，只按当下的事实算。

@@ -70,9 +70,6 @@ const NP_EXCLUDE_KINDS = {
   ltart: 1,
   db_table: 1,
   db_replica: 1,
-  /* 工具 / 函数：参数表就是端子表，再加参数端子会与「参数即端子」撞车 */
-  tool: 1,
-  function: 1,
   __empty__: 1,
 };
 
@@ -164,7 +161,10 @@ function npEligible(node) {
   if (!node || !node.kind) return false;
   if (NP_EXCLUDE_KINDS[node.kind]) return false;
   if (node.ro) return false;
-  if (typeof isFnToolNode === "function" && isFnToolNode(node)) return false;
+  /* 函数 / 工具节点：也长「参数」端子，但语义不同 —— JSON 原样注入函数体 / 工具子图
+     （input.params），不套节点字段白名单。判定同样走 NParam.eligible，连线校验、
+     端子绘制、运行包装三处共用。 */
+  if (typeof isFnToolNode === "function" && isFnToolNode(node)) return true;
   if (typeof isAssetNode === "function" && isAssetNode(node)) return false;
   const key = npSettingsFormKey(node);
   if (!key || !NODE_SETTINGS_FORMS || !NODE_SETTINGS_FORMS[key]) return false;
@@ -186,6 +186,8 @@ function npTypeOfValue(v) {
 function npAllowedMap(node) {
   const out = Object.create(null);
   if (!node || !npEligible(node)) return out;
+  /* 函数 / 工具节点：参数 JSON 原样进 input.params，不覆写节点字段 → 没有「可覆写键表」 */
+  if (typeof isFnToolNode === "function" && isFnToolNode(node)) return out;
   if (typeof isPluginKind === "function" && isPluginKind(node)) {
     const def = (typeof pluginNodeDef === "function" ? pluginNodeDef(node) : null) || {};
     const modelish = !!(def.call && def.call.kind === "model");
@@ -523,6 +525,117 @@ function npRead(node) {
   return res;
 }
 
+/* ═════════════ 函数 / 工具节点的「参数」端子（9001）═════════════
+   与上面「配置覆写」是两条路，别混：
+   · 配置覆写（npRead / npApplyValues）：键 = 节点字段，跑完恢复，只给有设置窗的节点；
+   · 本段：JSON **原样**交给函数体 / 工具子图，不查节点字段白名单，不改任何节点字段。
+     - 函数节点：注入 jscode 的 input.params（无默认、无线 = {}）；
+     - 工具节点：作为本次工具子图的共享参数，内部函数节点沿 parentSuperId 就近继承
+       （自己的 9001 / 默认 JSON 优先于祖先）。
+   · 默认值：node.paramsJson（⚙ 里手写的一份 JSON，空 = 没有）；9001 连线按接线顺序
+     深合并覆盖（同键后者胜）。
+   · 校验宽松：非法 JSON / 非对象 → 记一笔警告并忽略那一份；节点 ⚙ 开了「参数严格校验」
+     （node._npStrict）则整份拒绝、本次不跑。
+   · 本轮运行期的共享参数压在 NP_FN_PARAMS 里（节点 id → 对象），跑完删除，
+     绝不写回画布。 */
+const NP_FN_PARAMS = new Map();
+
+/** JSON 文本 → 纯对象：{} / 空串 = 空对象；不合法返回 { error }。 */
+function npParseParamObject(text) {
+  const s = String(text == null ? "" : text).trim();
+  if (!s) return { value: {} };
+  let parsed = null;
+  try {
+    parsed = JSON.parse(s);
+  } catch (e) {
+    return { error: String((e && e.message) || e) };
+  }
+  if (!npIsPlainObject(parsed))
+    return { error: I18n.t("必须是 JSON 对象（{…}），数组不是一份参数表") };
+  return { value: parsed };
+}
+
+/** 节点自己那份参数：默认 JSON（⚙）+ 9001 各线深合并。sources / 诊断一并带回。 */
+function npFnOwnParams(node) {
+  const res = { values: {}, warnings: [], errors: [], sources: [] };
+  if (!node) return res;
+  const def = npParseParamObject(node.paramsJson);
+  if (def.error)
+    res.warnings.push(
+      I18n.t("默认参数 JSON 不是合法对象（已按空对象跑）：") + def.error,
+    );
+  else res.values = npDeepMerge(res.values, def.value);
+  for (const w of npParamWires(node)) {
+    const src = typeof nodeById === "function" ? nodeById(w.from) : null;
+    const label = (src && src.title) || (src && src.id) || I18n.t("上游");
+    const text = npSourceText(node, w);
+    if (!String(text || "").trim()) continue;
+    const r = npParseParamObject(text);
+    if (r.error) {
+      res.errors.push(I18n.t("参数线「") + label + I18n.t("」不是合法参数对象：") + r.error);
+      continue;
+    }
+    res.values = npDeepMerge(res.values, r.value);
+    res.sources.push({ id: src && src.id, title: label });
+  }
+  return res;
+}
+
+/** 祖先工具 / 函数节点（由近到远，不含自己）：工具子图里的函数节点按它就近继承参数。 */
+function npFnAncestors(node) {
+  const out = [];
+  if (!node || typeof nodeById !== "function") return out;
+  let cur = node;
+  for (let depth = 0; depth < 8; depth++) {
+    const pid = String((cur && cur.parentSuperId) || "");
+    if (!pid) break;
+    const p = nodeById(pid);
+    if (!p) break;
+    if (typeof isFnToolNode === "function" && isFnToolNode(p)) out.push(p);
+    cur = p;
+  }
+  return out;
+}
+
+/** 这次运行该用的参数对象（自身 + 祖先继承；自身优先）。 */
+function fnParamsForNode(node) {
+  if (!node) return {};
+  let values = {};
+  /* 远祖先 → 近祖先 → 自己（越近越权威） */
+  const chain = npFnAncestors(node).reverse();
+  for (const anc of chain) {
+    const hit = NP_FN_PARAMS.get(anc.id);
+    if (hit && npIsPlainObject(hit)) {
+      values = npDeepMerge(values, hit);
+      continue;
+    }
+    values = npDeepMerge(values, npFnOwnParams(anc).values);
+  }
+  const own = NP_FN_PARAMS.get(node.id);
+  values = npDeepMerge(values, npIsPlainObject(own) ? own : npFnOwnParams(node).values);
+  return values;
+}
+
+/** 函数 / 工具节点的「参数」端子入口：读参数 → 压进 NP_FN_PARAMS → 跑 → 清掉。
+    没有参数线、没有默认 JSON、也没有祖先时就是一次直通（零开销）。 */
+async function npFnRunWithParams(node, fn) {
+  if (!node || !(typeof isFnToolNode === "function" && isFnToolNode(node)))
+    return await fn();
+  const read = npFnOwnParams(node);
+  if (typeof toast === "function") {
+    for (const w of read.warnings) toast(w, "warn");
+    for (const e of read.errors) toast(e, "warn");
+  }
+  if (node._npStrict && read.errors.length)
+    throw new Error(I18n.t("参数严格校验未通过：") + read.errors.join(I18n.t("；")));
+  NP_FN_PARAMS.set(node.id, read.values);
+  try {
+    return await fn();
+  } finally {
+    NP_FN_PARAMS.delete(node.id);
+  }
+}
+
 /* ───────────── 路径：相对路径按画布工作目录解析 ───────────── */
 
 function npIsAbsPath(p) {
@@ -620,9 +733,13 @@ function npApplyValues(node, read) {
   };
 }
 
-/** 包住一次节点运行：先套参数 → 跑 → finally 恢复。没有参数线时零开销。 */
+/** 包住一次节点运行：先套参数 → 跑 → finally 恢复。没有参数线时零开销。
+    函数 / 工具节点走另一条路（npFnRunWithParams）：JSON 原样注入 input.params，
+    不覆写节点字段。 */
 async function npRunWithParams(node, fn) {
   if (!node || !npEligible(node)) return fn();
+  if (typeof isFnToolNode === "function" && isFnToolNode(node))
+    return npFnRunWithParams(node, fn);
   const wires = npParamWires(node);
   if (!wires.length) return fn();
   const read = npRead(node);
@@ -913,10 +1030,96 @@ function npOpenParamsDoc(node) {
   });
 }
 
+function npFnParamsSection(ctx) {
+  const node = ctx.node;
+  const read = npFnOwnParams(node);
+  const isFn = typeof isFunctionNode === "function" && isFunctionNode(node);
+  const head = ctx.section(I18n.t("参数（参数端子 9001 · 注入到 JS / 工具子图）"));
+  head.textContent = "";
+  head.style.cssText = "display:flex;align-items:center;gap:6px";
+  head.appendChild(
+    npEl("span", "", I18n.t("参数（参数端子 9001 · 注入到 JS / 工具子图）")),
+  );
+  head.appendChild(
+    npQ(
+      I18n.t(
+        "这里写一份 JSON 对象：运行时原样交给代码，不覆写任何节点字段。函数节点用 input.params 读到它；工具节点把它下发给内部子图，内部函数节点同样用 input.params 读。接在 9001「参数」端子上的 JSON 会按接线顺序深合并覆盖这份默认值（同键后者胜）。",
+      ),
+    ),
+  );
+  const ta = document.createElement("textarea");
+  ta.className = "nsf-span";
+  ta.rows = 6;
+  ta.spellcheck = false;
+  ta.style.cssText =
+    "width:100%;resize:vertical;font-family:ui-monospace,Consolas,monospace;font-size:12px";
+  ta.placeholder = I18n.t('{\n  "阈值": 0.5,\n  "说明": "空 = 没有默认参数"\n}');
+  ta.value = String(node.paramsJson || "");
+  ta.addEventListener("change", () => {
+    node.paramsJson = ta.value || "";
+    const chk = npParseParamObject(node.paramsJson);
+    ta.style.borderColor = chk.error ? "var(--red)" : "";
+    if (typeof ctx.commit === "function") ctx.commit();
+  });
+  ctx.append(ta);
+  const def = npParseParamObject(node.paramsJson);
+  if (def.error) ctx.hint("✕ " + I18n.t("默认参数 JSON 不合法（运行时会按空对象跑）：") + def.error);
+  const wireN = npParamWires(node).length;
+  if (!wireN) {
+    ctx.hint(I18n.t("9001 「参数」端子未接线：本次运行只用上面这份默认参数。"));
+  } else {
+    ctx.hint(
+      I18n.t("9001 「参数」端子已接 ") +
+        wireN +
+        I18n.t(" 条线：运行时深合并覆盖默认参数。") +
+        (read.sources.length
+          ? I18n.t("来自：") + read.sources.map((s) => s.title).join(I18n.t(" → "))
+          : ""),
+    );
+    const keys = Object.keys(read.values || {});
+    ctx.hint(
+      keys.length
+        ? I18n.t("本次生效的键：") + keys.join("、")
+        : I18n.t("（参数线里没有可用的键）"),
+    );
+  }
+  if (isFn)
+    ctx.hint(
+      I18n.t(
+        "函数体里：input.params = 这份对象（没接线也没默认值 = {}）；命名入参仍从端子 1..N 来。",
+      ),
+    );
+  else
+    ctx.hint(
+      I18n.t(
+        "内部子图的函数节点会自动继承这份参数（沿父壳就近继承）；子图里自己再接 9001 仍然优先。",
+      ),
+    );
+  for (const w of read.warnings) ctx.hint("⚠ " + w);
+  for (const e of read.errors) ctx.hint("✕ " + e);
+  const strictWrap = document.createElement("label");
+  strictWrap.className = "np-strict nsf-span";
+  strictWrap.appendChild(npEl("span", "np-strict-t", I18n.t("参数严格校验")));
+  strictWrap.appendChild(
+    npQ(I18n.t("勾选后：参数 JSON 不合法 / 不是对象时整个节点不运行并报错，而不是按空对象继续")),
+  );
+  const cb = document.createElement("input");
+  cb.type = "checkbox";
+  cb.checked = !!node._npStrict;
+  cb.addEventListener("change", () => {
+    node._npStrict = !!cb.checked;
+    if (typeof ctx.commit === "function") ctx.commit();
+  });
+  strictWrap.appendChild(cb);
+  ctx.append(strictWrap);
+}
+
 function npSettingsSection(ctx) {
   if (!ctx || !ctx.node) return;
   const node = ctx.node;
   if (!npEligible(node)) return;
+  if (typeof isFnToolNode === "function" && isFnToolNode(node))
+    return npFnParamsSection(ctx);
   const read = npRead(node);
   /* 小节标题 + 右侧文档按钮（点开 = 全部参数的文字说明） */
   const head = ctx.section(I18n.t("参数覆写（参数端子）"));
@@ -1059,14 +1262,19 @@ function npCardChip(node) {
   if (!npEligible(node)) return null;
   const wires = npParamWires(node);
   if (!wires.length) return null;
-  const read = npRead(node);
+  const isFnTool = typeof isFnToolNode === "function" && isFnToolNode(node);
+  const read = isFnTool ? npFnOwnParams(node) : npRead(node);
   const chip = document.createElement("span");
   chip.className = "n-chip np-chip" + (read.errors.length ? " bad" : "");
   chip.textContent = I18n.t("参数");
   const keys = Object.keys(read.values || {});
   chip.title =
     I18n.t("参数端子已接线") +
-    (keys.length ? " · " + keys.join("、") : I18n.t(" · 暂无可用键")) +
+    (keys.length
+      ? " · " + keys.join("、")
+      : isFnTool
+        ? I18n.t(" · 参数线里没有可用的键")
+        : I18n.t(" · 暂无可用键")) +
     (read.errors.length ? I18n.t(" · 错误：") + read.errors.join(I18n.t("；")) : "");
   if (NP_ACTIVE.has(node.id)) chip.classList.add("on");
   return chip;
@@ -1491,6 +1699,12 @@ const NParam = {
   activeFor: (id) => NP_ACTIVE.get(id) || null,
   editParamsRejection: npEditParamsRejection,
   purgeLegacyParams: npPurgeLegacyParams,
+  /* 函数 / 工具节点的「参数」端子（JSON 注入 input.params · 工具子图共享） */
+  fnOwnParams: npFnOwnParams,
+  fnParamsForNode: fnParamsForNode,
+  fnRunWithParams: npFnRunWithParams,
+  fnParseParamObject: npParseParamObject,
+  fnParamsActive: (id) => NP_FN_PARAMS.get(id) || null,
 };
 try {
   window.NParam = NParam;

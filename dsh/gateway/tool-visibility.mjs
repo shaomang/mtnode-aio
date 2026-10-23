@@ -35,6 +35,12 @@ export const HIDEABLE_TOOLS = Object.freeze([
   'mtnode_canvas_get',
   'mtnode_db',
   'mtnode_vision',
+  /* 本地媒体（media-plugin.mjs）：转写靠宿主语音服务、ffmpeg 会起子进程，
+     两项各自对应一个许可位（media_asr / media_ffmpeg），被拒就整只不注册。
+     audio_subtitle（字幕：cues + SRT/VTT）与 audio_transcribe 同属 media_asr。 */
+  'audio_transcribe',
+  'audio_subtitle',
+  'ffmpeg',
   /* 长周期任务状态工具（app-longtask.js 造的伪节点之外一律不注册）；
      lt_memory 已下线 —— 长期记忆的沉淀改走 mtnode_facts（AI 事实库）。 */
   'lt_state',

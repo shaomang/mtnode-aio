@@ -11,8 +11,8 @@ Click **Settings** in the node header to open the settings window (every paramet
 
 - **Tool name (name)**: also the call name the agent uses. The title follows the tool name by default; once you rename the title manually, the two stay independent.
 - **Description**: say clearly *what it does / when to use / watch out for* — the agent decides whether to call this tool based on it.
-- **Input param type (text / image)**: each entry is one input port and the param name is the port name; a text port carries a string, an image port carries a `{kind:"image", path}` path object.
-- **Output param type (text / image)**: each entry is one output port, and **outputs declare a type exactly like inputs** — mark an output result as "image" and it becomes an image port (its value = the picture path).
+- **Input param type (text / image / video / audio)**: each entry is one input port and the param name is the port name; a text port carries a string, while image / video / audio ports carry a `{kind, path, text}` path object (an absolute local path).
+- **Output param type (text / image / video / audio)**: each entry is one output port, and **outputs declare a type exactly like inputs** — mark an output result as "image" and it becomes an image port (its value = the picture path); likewise for video / audio.
 
 Adding/removing a param adds/removes a port; deleting a param drops its wires too; changing a type changes the port itself (it is re-coloured and downstream reads it with the new type).
 **Reordering params**: drag the ⠿ handle on a param row to insert it anywhere, or use the ▲▼ buttons at the row end to move one step — param order is port order, and wired data lines follow the param (they never drift onto another param).
@@ -42,14 +42,15 @@ Tool nodes support **Develop** too (button under the card, same mechanism as fun
 ## What the port type is for (user-visible payoff)
 The type declared on a port is the single source of truth for **wire validation, save selection and wire colouring**:
 
-- **Drag a wire from an image output port into a save node and it automatically saves as an image (the extension flips to `.png`)**; from a text output port it saves as text (`.yaml`). No need to pick "text save / image save" by hand any more.
-- Image wires may only enter image ports and text wires only text ports; a mismatch is refused with a message naming *which port is which type and where to change it* — an image is never quietly dumped into a text port (if you really feed an image into a text port, its path is taken as text and the node summary says so).
-- Image ports and image wires get their own colour, so you can see at a glance which line carries a picture.
+- **Drag a wire from an image / video / audio output port into a save node and it automatically saves as that media (the extension flips to `.png` / `.mp4` / `.wav`)**; from a text output port it saves as text. No need to pick by hand any more.
+- Each of the four kinds stays in its lane: image wires only enter image ports, video into video, audio into audio, text into text; a mismatch is refused with a message naming *which port is which type and where to change it* — media is never quietly dumped into a text port (if you really feed media into a text port, its path is taken as text and the node summary says so).
+- Image / video / audio ports and their wires get their own colours, so you can see at a glance which line carries what.
 
 ## Port layout
 - **Input**: port 0 = control in (fixed), then one port per input param.
 - **Output**: one port per output param (0..n-1), **last = control out** (fixed).
-- Every data port carries a declared type (text / image); control ports carry none and fall back to the value actually present.
+- Every data port carries a declared type (text / image / video / audio); control ports carry none and fall back to the value actually present.
+- A tool node also has a **Parameters** port (9001): it is the shared param set of its inner graph, inherited automatically by inner function nodes (their own keys win) — see “The Parameters port” in the Function node guide.
 - Ports are fixed: disconnecting does not rearrange ports or auto-add new ones; agent calls only touch data ports, never the control port.
 
 ## Inner graph (what the tool does)

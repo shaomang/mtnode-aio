@@ -2258,11 +2258,44 @@ body.theme-light .n-chip.n-chip-lt {
 
 .n-asset-cell { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
 
-.n-asset-text {
+/* 素材文本条目的正文框：高度由用户拖拽决定（见下方 .n-asset-tgrip），这里只给起步 54px。
+   选择器必须带上 .wf-node.asset-node —— 后面通用的 .n-text（flex:1 / min-height:0 / 12.5px）
+   单类选择器更靠后，光写 .n-asset-text 会被它压掉。不设 max-height：设了会把拖出来的
+   内联高度裁回去（默认仍是 54px 起步，超出在框内滚动）。 */
+.wf-node.asset-node .n-asset-text {
   flex: none;
   min-height: 54px;
-  max-height: 120px;
   font-size: 11.5px;
+}
+
+/* 正文框底部的整宽拖拽条（下拉增高 / 上拖变矮 / 双击复位，逻辑见 app-canvas.js 的
+   assetItemTextGrip）：命中区比原生右下角手柄大得多，画布缩放后也抓得住。 */
+.n-asset-tgrip {
+  flex: none;
+  position: relative;
+  height: 10px;
+  margin-top: -1px;
+  border-radius: 0 0 4px 4px;
+  background: linear-gradient(180deg, transparent, rgba(255, 255, 255, .06));
+  cursor: ns-resize;
+}
+
+.n-asset-tgrip::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 3px;
+  width: 26px;
+  height: 3px;
+  margin-left: -13px;
+  border-radius: 2px;
+  background: var(--bd2);
+  opacity: .9;
+}
+
+.n-asset-tgrip:hover::after {
+  background: var(--orange);
+  opacity: 1;
 }
 
 /* 文本条目竖排：正文框 +（有内容时的库内文件名）+ 操作排（选择 / 更换文本 · 在文件夹中显示）
@@ -6078,6 +6111,29 @@ body.theme-light .n-chip.n-chip-lt {
   box-shadow: 0 0 6px rgba(255, 143, 46, .9)
 }
 
+/* 拖线悬停「将替换」预告（判定见 app-nodes.js 的 inPortOccupancy）：
+   这颗端子上已有一条同类旧线，松手就会把它顶掉 —— 端子本身与被顶掉的旧线一起染成替换色。
+   必须排在 .port.hover 之后：同为单类选择器，靠顺序覆盖悬停描边。 */
+.port.will-replace {
+  transform: scale(1.25);
+  filter: brightness(1.2);
+  box-shadow: 0 0 10px rgba(255, 77, 77, .95)
+}
+
+.port.will-replace::before {
+  background: radial-gradient(circle at 38% 32%, #ffd2d2 0%, #ff4d4d 80%);
+  box-shadow: 0 0 6px rgba(255, 77, 77, .9)
+}
+
+.fn-edge.wire-replace {
+  stroke: #ff4d4d;
+  stroke-dasharray: 7 5
+}
+
+.fn-edge-ring.wire-replace {
+  stroke: #5c1414
+}
+
 /* ===== 端子徽标正文（参数名 / 素材条目标题 / 序号）：完整名称的显示口径 ══════════
    端子排不再有「输入 / 输出」那一对板外文字（谁进谁出，看端子上的名字就够，
    那两行字只占掉板外最值钱的空间，还会和最上面一行的端子徽标打架）。
@@ -6929,6 +6985,36 @@ body.theme-light .n-chip.n-chip-lt {
   padding: 0 8px
 }
 
+/* 已连接**文本**条目的只读正文预览：与缩略图同一位置（标题行下方）、同一块 120px 高度上限。
+   与缩略图不同的是不限死高度（短文只占它需要的那几行），长文在框内自己滚动 ——
+   节点尺寸一概不动，滚不动的那部分仍由 .n-view 承担。纯展示：不解析 Markdown、不挂按钮。 */
+.wf-node.browse .n-view-asset-pvtext {
+  width: 100%;
+  max-height: 120px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  border-radius: 4px;
+  background: var(--code);
+  padding: 6px 8px;
+  box-sizing: border-box;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--ink);
+  white-space: pre-wrap;
+  word-break: break-word;
+  user-select: none;
+  cursor: pointer;
+  scrollbar-width: thin
+}
+
+.wf-node.browse .n-view-asset-pvtext .n-view-asset-ghost {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.6;
+  text-align: center;
+  padding: 0 8px
+}
+
 .wf-node.browse .n-view-asset-name {
   flex: 1;
   min-width: 0;
@@ -7263,42 +7349,8 @@ body.theme-light .n-chip.n-chip-lt {
 }
 
 
-/* ===== Breeze 语音节点：「角色 + 组名」下拉 =====
-   需求：head 上（👤 右侧）与节点 body 里各有一份，body 那两份并排占同一行。
-   两处共用 .n-breeze-sel 的紧凑外观（与相邻 .n-play 同高 20px）；省略号靠 max-width + 浏览器默认。 */
-.n-breeze-sel {
-  flex: none;
-  height: 20px;
-  max-width: 96px;
-  min-width: 0;
-  padding: 0 4px;
-  font-size: 11px;
-  font-family: var(--mono);
-  color: var(--ink);
-  background: var(--code);
-  border: 1px solid var(--bd2);
-  border-radius: 3px;
-  outline: none;
-  cursor: pointer;
-}
-
-.n-breeze-sel:focus {
-  border-color: var(--orange)
-}
-
-.n-breeze-sel:disabled {
-  opacity: .55;
-  cursor: default
-}
-
-.n-breeze-role-sel {
-  max-width: 96px
-}
-
-.n-breeze-group-sel {
-  max-width: 88px
-}
-
+/* ===== Breeze 语音节点：「角色 + 组名」下拉（只在 body 里，同一行） =====
+   需求：head 不放角色选择（只留 👤 开角色窗），两枚下拉并排占 body 的第一行。 */
 .breeze-pick-row {
   display: flex;
   align-items: flex-end;
@@ -7313,4 +7365,31 @@ body.theme-light .n-chip.n-chip-lt {
 
 .breeze-pick-row .n-field-sel {
   width: 100%;
+}
+
+/* 下拉正下方的参考音试听条（需求：高度较窄的一条，只留播放键 + 波形）。
+   比默认 .n-wave（44px 行高 + 时间行）瘦一截：26px 行、去掉时间行，
+   总高约 30px。底部「生成结果」那条试听条保持原样，两条职责不同。 */
+.breeze-ref-row {
+  margin: 4px 0 6px;
+}
+
+.breeze-ref-wave {
+  min-height: 0;
+  gap: 0;
+  padding: 2px 4px;
+}
+
+.breeze-ref-wave .n-wave-row {
+  height: 26px;
+  min-height: 26px;
+  gap: 4px;
+}
+
+.breeze-ref-wave .n-wave-btn {
+  width: 24px;
+}
+
+.breeze-ref-wave .n-wave-meta {
+  display: none;
 }

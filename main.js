@@ -9608,6 +9608,10 @@ app.on("before-quit", () => {
   /* 本地图像生成后端（SenseNova）故意不杀：32.66GB 权重加载要几分钟，是独立于 MTNode 的单例；
      这里只关它的控制台窗。想立刻把显存还给系统 → 控制台「停止后端」/「立即释放显存」，或等空闲自停。 */
   try { shutdownSensenovaUiOnly(); } catch {}
+  /* 会话追加段（delta）：退出前整份压回基线（<id>.jsonl → <id>.json 并删追加段）。
+     幂等：没有追加段的会话一个字节都不动；压缩本身是「先原子写基线、再删追加段」，
+     崩在中间也不会重复贴（基线的 _deltaVer 兜底）。 */
+  try { sessionStore().compactAllPending("quit"); } catch {}
   if (dshAdapter) {
     try { dshAdapter.shutdown(); } catch {}
   }

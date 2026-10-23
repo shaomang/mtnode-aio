@@ -9,9 +9,9 @@ Click **Settings** in the node header to open the settings window (every paramet
 
 - **Function name (fnName)** (optional, for reference only)
 - **Description**
-- **Input param type (text / image)**: one input port each (text values are strings; image values are `{kind:"image", path}` path objects).
+- **Input param type (text / image / video / audio)**: one input port each (text values are strings; image / video / audio values are `{kind, path, text}` path objects, where `path` is an absolute local path).
 - **Array · accepts many wires** (shown on **input** param rows only): tick it and this port takes a *group* of values — see “Array input ports” below.
-- **Output param type (text / image)**: one output port each, and **outputs declare a type exactly like inputs** — mark an output result as "image" and it becomes an image port. Output ports are always **one port, one value** — there is no array output.
+- **Output param type (text / image / video / audio)**: one output port each, and **outputs declare a type exactly like inputs** — mark an output result as "image" and it becomes an image port. Output ports are always **one port, one value** — there is no array output.
 
 Param rows can be **reordered**: drag the ⠿ handle on a row to insert it anywhere, or use the ▲▼ buttons at the row end to move one step — param order is port order, and wired data lines follow the param (they never drift onto another param).
 
@@ -31,14 +31,29 @@ if (!refs.length) return "At least one reference image";
 return { list: refs.length + " images: " + refs.map((r) => r.path).join(" | ") };
 ```
 
-No wires needed to try a batch either: press **Test** and that param renders as **addable / removable rows** (one value per row, blank rows are not injected).
+Array ports can also take a batch in one go through the **Parameters** wire — see “The Parameters port” below. Function nodes have no separate test bench: press ▶ and read the results on the output ports.
+
+## The Parameters port (9001: a batch of params without extra ports)
+Besides one port per param, a function node also has a **Parameters** port (port number 9001, labelled "参数" on the canvas). It takes **a single JSON object**, delivered whole as `input.params`:
+
+- **Two sources merged**: the default JSON you write under **Parameters** in Settings, plus whatever text nodes you wire into 9001 — merged **deeply** on top of the default (objects merge level by level, arrays replace wholesale, `null` is kept). Several parameter wires apply in wiring order.
+- **Read it right in the code**: `input.params.threshold`, `const { mode } = input.params` — handy when there are many params and you do not want a port for each.
+- **Lenient or strict**: malformed JSON is normally just a warning and that source is skipped (the run still happens); tick **Strict parameter validation** in Settings and a bad source rejects the whole run, naming which source it was.
+- **Never writes to the canvas**: parameters only exist for that run and are cleared right after — nodes and wires stay untouched.
+- **Functions inside a tool node**: the tool's 9001 parameters are the shared params of its inner graph; inner function nodes inherit them automatically (their own keys win, and their own 9001 wires have the highest priority).
+
+```js
+// Settings default: {"threshold": 0.5, "mode": "fast"}
+const { threshold = 0.5, mode = "fast" } = input.params || {};
+return mode + ": " + threshold;
+```
 
 ## What the port type is for (user-visible payoff)
 The type declared on a port is the single source of truth for **wire validation, save selection and wire colouring**:
 
-- **Drag a wire from an image output port into a save node and it automatically saves as an image (the extension flips to `.png`)**; from a text output port it saves as text (`.yaml`) — no more picking "text save / image save" by hand.
-- Image wires may only enter image ports and text wires only text ports (audio/video file paths count as text); a mismatch is refused with a message naming which port is which type and where to change it.
-- Image ports and image wires get their own colour, and the output line in the node summary is labelled "(image)".
+- **Drag a wire from an image / video / audio output port into a save node and it saves as that media automatically (`.png` / `.mp4` / `.wav`)**; from a text output port it saves as text — no more picking by hand.
+- Each of the four kinds stays in its lane: image wires only enter image ports, video into video, audio into audio, text into text; a mismatch is refused with a message naming which port is which type and where to change it.
+- Image / video / audio ports and their wires get their own colours, the node summary labels outputs "(image) / (video) / (audio)", and media outputs show a read-only preview right on the card (picture / first video frame / waveform).
 
 ## Writing code
 Edit the JS directly on the node (a comment template is pre-filled). **Your code does not run in the canvas process**: each time the function node runs, the MTNode main process starts a dedicated **execution thread** for it (`fn-runtime.js`); the canvas only hands the code over and waits for the result —
@@ -49,6 +64,7 @@ Edit the JS directly on the node (a comment template is pre-filled). **Your code
 - A thrown error or a timeout only becomes that node's ✕ error — other runs on the canvas are not interrupted.
 
 **Input object** (every wired value is available three ways — use whichever suits):
+- `params`: the object injected through the **Parameters** port (9001) — see “The Parameters port” below
 - `$<port number>`: port 1 = 1st input param, port 2 = 2nd, and so on (port 0, control in, is not included)
 - source title / param name: e.g. the title of a wired-in text node
 - `values`: array in wiring order
@@ -70,6 +86,8 @@ The function body is **no longer in the renderer**, so there is no `window` / `d
 | `await mtnode.sleep(1500)` | Wait (no UI blocking, no CPU burn) |
 | `mtnode.log(...)` / `mtnode.progress(0.4, "batch 3")` | Progress output (sent to the UI as events, not to stdout) |
 | `mtnode.readText(p)` / `mtnode.writeText(p, s)` / `mtnode.fileExists(p)` | Local file reads and writes |
+| `mtnode.readFile(p, { encoding })` | Read any file: `utf8` (default) / `base64` / `buffer` (a Buffer, for multimodal input or transcoding) |
+| `mtnode.fileInfo(p)` | Probe a path: `{ path, exists, size, mtime, ext, kind }` with `kind` = `text / image / video / audio` (does not throw when missing) |
 | `mtnode.join(...)` / `mtnode.abs(p)` / `mtnode.cwd()` / `mtnode.platform` | Paths and platform |
 | `const r = await mtnode.readPdf(pathOrBytes [, opts])` | **Parse the text layer of a local PDF → Markdown** (the same kernel as "drop in a PDF"; read-only, nothing written to disk): success → `{ ok, markdown, pages, formulas, warning }`; failure → `{ ok:false, error:{ code, message } }` (e.g. `encrypted` / `not_pdf`) |
 | `await mtnode.pdfInfo(pathOrBytes)` | Lightweight probe for a parseable PDF (does not inflate content streams): `{ ok, isPdf, parseable, pages, encrypted, warning }` |
@@ -141,7 +159,7 @@ return "sum: " + (x + y) + " · product: " + (x * y);
 ```
 
 ## Code editor (highlighting / line numbers / indentation / format)
-**While the node is unselected it shows its content** — just like other nodes you see the function name, description, input / output summary, the code itself and the last result, nothing else on screen. **Click the node and the editable code block appears**, with the caret already inside the code; click empty canvas to deselect and it goes back to the read-only view. In edit mode this area is an editor built for "a few dozen lines of small function" — and it is **the same implementation and the same `node.jscode`** as the one in the **Test** dialog, so both sides stay in sync:
+**While the node is unselected it shows its content** — just like other nodes you see the function name, description, input / output summary, the code itself and the last result, nothing else on screen. **Click the node and the editable code block appears**, with the caret already inside the code; click empty canvas to deselect and it goes back to the read-only view. In edit mode this area is an editor built for "a few dozen lines of small function" — and it edits **`node.jscode`** directly:
 
 - **Syntax highlighting**: comments / strings / numbers / keywords / literals each get their own colour, call names and property names another; the contract words `input` and `values` plus port keys like `$1`, `$2` are colour-coded, so you can see at a glance which port you are reading.
 - **Line-number gutter**: one number per line, the caret's line highlighted, scrolling kept in sync with the code.
@@ -158,16 +176,14 @@ The **Develop** button under the node card (hint "use a session to change / exte
 - **Re-check the wires after a param change**: params are ports, so touching `inputs` / `outputs` changes the ports — once the port count shifts, already-connected wires may point at a different port. Whenever the session does touch the param table it explicitly reminds you to review that node's wiring on the canvas — do not skip that step.
 - If the requirement is unclear it asks before acting, and it reports in one line what changed and whether the param table was touched. It works with an empty function too: the session writes the body from the existing input / output params.
 
-## Test (not part of canvas runs)
-Click **Test** in the header to open its own dialog (separate from **Settings**): a large JS area on top, **one field per input param** in the middle (text = multiline box, image = path field + file picker, **array param = addable / removable rows, one value per row**), and the result **per output port** plus the error after you press "▶ Run test".
+## Running it and previews
+A function node has **no separate test bench**: verifying it means pressing ▶ for a real run — results land on the output ports and the card shows each port's value right away; image / video / audio outputs each get a read-only preview (picture, first video frame, waveform), so you do not have to open files one by one. For intermediate values use `mtnode.log(...)`, or `return` a temporary text output port.
 
-- Test inputs are stored on the node (they are still there next time), but this is **test-only**: it never writes the node output, never cascades downstream, never enters the undo history.
-- For an array param, blank rows are not injected and all rows blank = an empty array — exactly the shape the port has on the canvas with nothing wired to it; the footer echoes "Injecting N".
-- The test bench is the quickest way to see what a given port will actually carry; press ▶ when you want a real run.
+(Tool nodes still have their own **Test** bench: it feeds params to the inner graph without running the canvas.)
 
 ## Ports and running
 - **Input**: port 0 = control in (fixed) + one port per input param (the port marked as an **array** takes any number of data wires)
 - **Output**: one port per output param (0..n-1) + last = control out (fixed); an output port always carries a single value
-- Every data port carries a declared type (text / image); control ports carry none and fall back to the value actually present
+- Every data port carries a declared type (text / image / video / audio); control ports carry none and fall back to the value actually present
 - Press ▶: upstream nodes are auto-run first → the code executes in an isolated thread of the main process (the UI stays responsive; the node shows **Running** and enters the run queue at the bottom left) → results are dispatched to the output ports as above and downstream keeps running; a thrown error shows ✕ (also written to the error port) without stopping other runs.
 - **Stopped / timed out**: the thread of that run is terminated immediately and the external processes it started — children included — are reclaimed together, and the node reads "stopped manually" — no window or process is left behind outside a running state.

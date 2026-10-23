@@ -487,6 +487,17 @@
   padding: 10px;
 }
 
+/* 视频外面那层「只裹住画面」的定位盒：循环按钮（.mv-loop-btn，见 components.css）
+   贴在画面右上角，而不是飘到比视频更宽的预览区边缘。 */
+.fp-vidbox {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  max-width: 100%;
+  min-width: 0;
+}
+
 .fp-video {
   display: block;
   max-width: 100%;

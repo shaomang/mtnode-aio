@@ -503,6 +503,16 @@
       name: './assets-plugin.mjs'
       disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
 
+    # MTNode 本地媒体工具（audio_transcribe / ffmpeg）：Agent 需要「听音频、看视频」时直接用
+    # 本机能力 —— 转写走运行时里的官方本地 SenseVoice（与录音听写同一份权重），
+    # ffmpeg 走本机可执行文件（PATH → Remotion 安装目录 → 其它后端便携），
+    # 都不要去另装 whisper / Qwen-ASR / 在线 ASR 或自己下载 ffmpeg（工具描述与技能里写死）。
+    # 找不到 ffmpeg 时工具报错并提示去插件里安装 Remotion（应用本身不打包 ffmpeg）。
+    # 纯净模式（MTNODE_PURE）与 BongoChat 隔离态不挂：那两档没有宿主桥 / 语音服务。
+    - id: mtnode-media
+      name: './media-plugin.mjs'
+      disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
+
     # MTNode 会话自己的浏览器（browser_* 工具面）：给会话一台常驻的 Edge/Chrome
     # （独立用户数据目录＝跨会话保持登录态，窗口可见＝用户能实时看它在干什么）。
     # 进程与 CDP 驱动全在网关侧（browser-host.mjs，零新依赖：Node≥22 内置 WebSocket），

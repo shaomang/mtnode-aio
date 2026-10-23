@@ -4453,6 +4453,15 @@ textarea.asset-form-input {
   border-radius: 3px;
 }
 
+/* 视频外面那层定位盒：循环按钮（.mv-loop-btn）贴在画面右上角，不飘到浮层边缘 */
+.asset-pv-vidbox {
+  position: relative;
+  display: flex;
+  justify-content: center;
+  min-width: 0;
+  max-width: 100%;
+}
+
 .asset-pv-text-full {
   width: 100%;
   min-height: 128px;
@@ -4874,6 +4883,63 @@ textarea.asset-form-input {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* ===== 函数 / 工具节点的媒体输出预览（renderer/app-canvas.js fnToolMediaPreview）=====
+   三种端子类型各用既有组件：图像 <img> · 视频池化播放器 · 音频波形预览器。
+   这里只约束卡片 body 里的尺寸，不改组件自身样式。 */
+.n-fnmedia {
+  display: block;
+  flex: none;
+  max-width: 100%;
+  max-height: 120px;
+  object-fit: contain;
+  border-radius: 6px;
+  background: var(--code);
+}
+
+.n-wave.n-fnmedia {
+  max-height: none;
+  width: 100%;
+  background: var(--code);
+}
+
+/* ===== 视频预览的「循环播放」开关（renderer/app-mediaview.js · mediaViewLoopMount）=====
+   播放器右上角的小胶囊：预览默认循环，点一下关掉并记住（localStorage）。
+   绝对定位挂在播放器容器上（容器是 static 时由 mediaLoopHost 补 position:relative），
+   不占布局高度 —— 节点预览框再小也不会被挤扁。 */
+.mv-loop-btn {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  z-index: 5;
+  display: inline-flex;
+  align-items: center;
+  height: 17px;
+  padding: 0 6px;
+  box-sizing: border-box;
+  white-space: nowrap;
+  border: 1px solid var(--bd2);
+  border-radius: 9px;
+  background: rgba(10, 12, 16, .55);
+  color: var(--muted);
+  font: 500 10px/1 var(--sans, system-ui, sans-serif);
+  letter-spacing: .02em;
+  cursor: pointer;
+  opacity: .55;
+  user-select: none;
+  transition: opacity .12s, color .12s, border-color .12s, background .12s;
+}
+
+.mv-loop-btn:hover {
+  opacity: 1;
+}
+
+.mv-loop-btn.on {
+  opacity: .92;
+  color: var(--green);
+  border-color: var(--green);
+  background: rgba(10, 12, 16, .68);
 }
 
 /* ===== 音频波形预览器（renderer/app-audioview.js + .n-wave*）=====

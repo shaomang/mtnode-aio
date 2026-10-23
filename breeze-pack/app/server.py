@@ -78,17 +78,43 @@ def query_gpu() -> dict | None:
             timeout=6,
             **kwargs,
         )
-        line = (p.stdout or "").strip().splitlines()
-        if not line:
+        lines = [ln.strip() for ln in (p.stdout or "").splitlines() if ln.strip() and "no devices were found" not in ln.lower()]
+        if not lines:
             return None
-        parts = [s.strip() for s in line[0].split(",")]
-        if len(parts) < 4:
+
+        # 显存 / 利用率取不到（[N/A]、ERR!）时按 None 处理，绝不把 NaN 发给界面
+        def _num(s: str):
+            try:
+                return int(float(s.strip()))
+            except Exception:
+                return None
+
+        cards = []
+        for line in lines:
+            parts = [s.strip() for s in line.split(",")]
+            if len(parts) < 4:
+                continue
+            mem_used, mem_total, util = _num(parts[1]), _num(parts[2]), _num(parts[3])
+            if mem_used is None and mem_total is None and util is None:
+                continue
+            cards.append({"index": len(cards), "name": parts[0], "memUsed": mem_used, "memTotal": mem_total, "util": util})
+        if not cards:
             return None
+        # 多卡时取占用最高的一张（合成实际发生在那一张），并标出是第几号卡
+        cards.sort(key=lambda c: c["memUsed"] or 0, reverse=True)
+        g = cards[0]
+        mem_pct = round(g["memUsed"] / g["memTotal"] * 1000) / 10 if g["memTotal"] and g["memUsed"] is not None else None
         return {
-            "name": parts[0],
-            "memUsedMb": int(float(parts[1])),
-            "memTotalMb": int(float(parts[2])),
-            "utilPct": int(float(parts[3])),
+            "name": (g["name"] + " · GPU" + str(g["index"])) if len(cards) > 1 and g["name"] else g["name"],
+            # 单帧形（memUsed / memTotal / util）：与 h3 / music3 同一口径，画布节点面板直读
+            "memUsed": g["memUsed"],
+            "memTotal": g["memTotal"],
+            "util": g["util"],
+            "memPct": mem_pct,
+            # 旧键名：控制台与插件详情状态行仍读这几个，保留不删
+            "memUsedMb": g["memUsed"],
+            "memTotalMb": g["memTotal"],
+            "utilPct": g["util"],
         }
     except Exception:
         return None

@@ -12,7 +12,52 @@
 
      本文件结构：EN 的键 = 中文原文（zh 界面直接回显键本身，不报错也不缺字），值 = 英文译文。 */
   var EN = {
-    /* ── 长文流式预览（renderer/app-assist.js：单段正文 > 64KB 时的降级提示）── */
+    /* ── 视频预览的循环播放开关（renderer/app-mediaview.js）── */
+    "循环播放": "Loop",
+    "循环播放已开启（点击关闭）": "Loop is on (click to turn off)",
+    "循环播放已关闭（点击开启）": "Loop is off (click to turn on)",
+    /* ── 函数 / 工具节点：端子类型域（文本 / 图像 / 视频 / 音频）与「参数」端子
+       （9001 JSON → input.params · 工具子图共享）── */
+    "（视频）": " (video)",
+    "（音频）": " (audio)",
+    "输出参数": "Output parameter",
+    "该端子的数据类型（文本 / 图像 / 视频 / 音频）· 改类型即改端子视觉与下游取数口径":
+      "The port's data type (text / image / video / audio) — it drives both the port's look and what downstream nodes receive",
+    "「试跑」仅用于工具节点（函数节点直接 ▶ 运行看输出端子）":
+      "Test-run is only for tool nodes (run a function node with ▶ and read its output ports)",
+    "试跑不改画布：工具自身的输出与下游取值仍是上次画布 ▶ 的结果。":
+      "Test-run does not touch the canvas: the tool's own outputs and downstream values stay as the last canvas ▶ left them.",
+    "参数（参数端子 9001 · 注入到 JS / 工具子图）":
+      "Params (param port 9001 · injected into the JS / tool subgraph)",
+    "这里写一份 JSON 对象：运行时原样交给代码，不覆写任何节点字段。函数节点用 input.params 读到它；工具节点把它下发给内部子图，内部函数节点同样用 input.params 读。接在 9001「参数」端子上的 JSON 会按接线顺序深合并覆盖这份默认值（同键后者胜）。":
+      "Write one JSON object here: at run time it is handed to the code as-is and never overwrites node fields. Function nodes read it via input.params; tool nodes pass it down into their subgraph, where function nodes read it the same way. JSON wired into the 9001 params port is deep-merged over these defaults in wiring order (later wins on the same key).",
+    "{\n  \"阈值\": 0.5,\n  \"说明\": \"空 = 没有默认参数\"\n}":
+      "{\n  \"threshold\": 0.5,\n  \"note\": \"empty = no default params\"\n}",
+    "默认参数 JSON 不合法（运行时会按空对象跑）：":
+      "Default params JSON is invalid (runs as an empty object): ",
+    "9001 「参数」端子未接线：本次运行只用上面这份默认参数。":
+      "The 9001 params port is not wired: this run uses only the defaults above.",
+    "9001 「参数」端子已接 ":
+      "The 9001 params port has ",
+    " 条线：运行时深合并覆盖默认参数。":
+      " wire(s): they are deep-merged over the defaults at run time.",
+    "本次生效的键：": "Effective keys: ",
+    "（参数线里没有可用的键）": "(no usable keys on the params wires)",
+    "函数体里：input.params = 这份对象（没接线也没默认值 = {}）；命名入参仍从端子 1..N 来。":
+      "Inside the function: input.params is this object ({} when nothing is wired and no defaults); named inputs still come from ports 1..N.",
+    "内部子图的函数节点会自动继承这份参数（沿父壳就近继承）；子图里自己再接 9001 仍然优先。":
+      "Function nodes inside the subgraph inherit these params automatically (nearest parent shell wins); wiring 9001 inside the subgraph still takes priority.",
+    "勾选后：参数 JSON 不合法 / 不是对象时整个节点不运行并报错，而不是按空对象继续":
+      "When checked, invalid params JSON (or a non-object) stops the whole run with an error instead of falling back to an empty object",
+    "参数严格校验未通过：": "Strict parameter validation failed: ",
+    "默认参数 JSON 不是合法对象（已按空对象跑）：":
+      "Default params JSON is not a valid object (ran with an empty object): ",
+    "」不是合法参数对象：": "\" is not a valid params object: ",
+    "必须是 JSON 对象（{…}），数组不是一份参数表":
+      "must be a JSON object ({…}); an array is not a parameter table",
+    " · 参数线里没有可用的键": " · no usable keys on the params wires",
+    "「{p}」是{k}参数，只接受{k}来源：请把来源节点的{k}输出端子连到它，或在{n}里把「{p}」改成{t}参数":
+      "\"{p}\" is a {k} parameter and only accepts {k} sources: wire the source node's {k} output to it, or change \"{p}\" to a {t} parameter in {n}",    /* ── 长文流式预览（renderer/app-assist.js：单段正文 > 64KB 时的降级提示）── */
     "（长回复：正文以纯文本预览，结束后自动排版）":
       "(Long reply: shown as plain text while streaming, formatted when it finishes)",
     /* ── 语音输入（renderer/app-voice.js：本轮起是**全局**入口）──
@@ -2533,13 +2578,13 @@
     "输入端子 ": "Input port ",
     /* 端子数不固定节点的读图规则（app-nodes.js snapshotDynamicPortRule）：只给 ports 会让
        模型误判「没有图像参考端子」，故随标准档快照补一条「端子怎么长」的说明 */
-    "输入端子随连线增量：未连线的节点只列出端口 0；每多连一条数据线就多出一个「输入端子 N」——文本与图像引用都收（参考图连端口 1+，勿连端口 0）。":
-      "Input ports grow with wires: an unconnected node lists port 0 only; each extra data wire adds an \"Input port N\" — both text and image references are accepted (connect reference images to port 1+, never port 0).",
-    "端口 0 = 提示词 / 文本入口 · 端口 1+ = 数据槽（连一条多一个 · 文本 / 图像引用都收）":
-      "Port 0 = prompt / text inlet · ports 1+ = data slots (one per wire · text and image references both accepted)",
+    "输入端子随连线增量：端口 0 = 提示词 / 内容入口，每多连一条数据线多出一个数据槽；末位另有一颗**专用控制端子**（控制线只连它，数据线永不占它，可接多条 · 任一到达即触发一次）。":
+      "Input ports grow with wires: port 0 = prompt / content inlet, each extra data wire adds one data slot; the last port is a **dedicated control input** (control wires go there only, data wires never take it, several are allowed · any one arrival triggers a single run).",
+    "端口 0 = 提示词 / 文本入口 · 端口 1+ = 数据槽（连一条多一个 · 文本 / 图像引用都收）· 末位 = 控制输入（现在是端口 {n}）":
+      "Port 0 = prompt / text inlet · ports 1+ = data slots (one per wire · text and image references both accepted) · last port = control input (currently port {n})",
     "端口 0 = 内容 · 末位 = 控制输出": "Port 0 = content · last port = control output",
-    "ports 只列当前真实存在的端子；要接参考图直接连端口 1+ 即可，不必先试连一次看 warnings。":
-      "ports lists only the ports that currently exist; to wire a reference image just connect port 1+ — no need to make a trial wire and read the warnings.",
+    "ports 只列当前真实存在的端子；要接参考图直接连端口 1+ 即可，不必先试连一次看 warnings。控制线（▶ control / 上游控制输出）连这颗末位控制端子即可，不传 toIndex 时也会自动落到它。":
+      "ports lists only the ports that currently exist; to wire a reference image just connect port 1+ — no need to make a trial wire and read the warnings. A control wire (▶ control / an upstream control output) goes to that last control port; omitting toIndex lands it there automatically.",
     "添加服务商": "Add provider",
     "粘贴导入（一键解析）": "Paste import (auto-parse)",
     "读取剪贴板": "Read clipboard",
@@ -2820,6 +2865,10 @@
     "该输出端子没有连线": "This output port has no wire",
     "该输入端子没有连线": "This input port has no wire",
     "该输入端子已被占用": "This input port is already taken",
+    "已替换端口 {p} 上的原有连线（{src}）：Ctrl+Z 可撤销":
+      "Replaced the wire on port {p} (was {src}): Ctrl+Z to undo",
+    "已替换 {n} 颗端口上的原有连线（端口 {ports}）：Ctrl+Z 可撤销":
+      "Replaced wires on {n} ports (ports {ports}): Ctrl+Z to undo",
     "解散组（保留节点）": "Ungroup (keep nodes)",
     "没有可断开的连线：": "No wires to disconnect: ",
     "名称（显示为标签）": "Name (shown as label)",
@@ -3121,6 +3170,12 @@
     "。添加后自动生成模型列表。": ". Model list is generated automatically once added.",
     "（等待上游输出…）内容只读": "(Waiting for upstream output…) content is read-only",
     "（等待上游输出中）内容只读": "(Waiting for upstream output) content is read-only",
+    /* 函数节点来源取不到值时的三态提示（app.js fnSourceEmptyHintOf · 只对函数来源生效） */
+    "上游函数节点还没运行（点它的 ▶ 运行后再看这里）":
+      "The upstream function node has not run yet (click its ▶ and look here again)",
+    "上游函数节点这次没有输出「{p}」这个端子":
+      "The upstream function node produced no value for the \"{p}\" output port this time",
+    "上游函数节点报错：{e}": "The upstream function node failed: {e}",
     /* ── 节点浏览态 · 超长文本护栏（app-nodeview.js / app-canvas.js）──
        本轮已移除只读预览大窗与头部 👁，超长文本只降级成轻量纯文本，不再指向任何预览入口。 */
     "超大文本 · 轻量显示 · {n} 字符": "Very long text · lightweight view · {n} chars",
@@ -5097,6 +5152,16 @@
     "ask 交互": "ask interaction",
     "识图": "Vision",
     "识图子代理": "Vision subagent",
+    "本地媒体（语音 / 视频）": "Local media (speech / video)",
+    "audio_transcribe：本地 SenseVoice 转写音频 / 视频，含分段起止秒":
+      "audio_transcribe: transcribe audio / video with the local SenseVoice, with segment start / end seconds",
+    "音频转写（含字幕时间轴）": "Audio transcription (with subtitle timeline)",
+    "audio_transcribe / audio_subtitle：本地 SenseVoice 转写音频 / 视频，含分段起止秒与字幕时间轴":
+      "audio_transcribe / audio_subtitle: local SenseVoice for audio / video, with segment times and a subtitle timeline",
+    "ffmpeg 处理": "ffmpeg",
+    "ffmpeg：探测、抽音轨、抽帧、抽帧识图、任意参数转码":
+      "ffmpeg: probe, extract audio, extract frames, describe frames, or run arbitrary arguments",
+    "转写语音": "Transcribe audio",
     "默认（当前能力）": "Default (current capabilities)",
     "自定义预设": "Custom preset",
     "自定义": "Custom",
@@ -6702,6 +6767,8 @@
       "Which sample set of this character to use (audio + sample text + instruction)",
     "直接选这个角色用哪一组样本（组名）：选完立刻写回节点并保存":
       "Pick this character's sample set right here: it is written back to the node immediately",
+    "试听这一组的参考音（角色样本，不走后端、不重新合成）":
+      "Preview this set's reference audio (the character sample itself; no backend, no re-synthesis)",
     "参数里的角色「": "The character in params \"",
     "」对上了多个同名角色：": "\" matched several characters with the same name: ",
     "；请改用角色 id 指定": "; use the character id instead",
@@ -9237,6 +9304,10 @@
       "Move this item down (its port index moves with it)",
     "端子名（会显示在节点左右两端的端子上）":
       "Port label (shown on both sides of the node)",
+    "这条正文正被引用（输出端子已连出）· 点选本节点后可编辑":
+      "This text is in use (its output port is wired out) · select the node to edit it",
+    "按住上下拖动 = 调整这段正文框的高度（双击复位）":
+      "Drag up/down to resize this body box (double-click to reset)",
     "类型在建立时定下（要换类型请新建一条并删掉这条）":
       "The type is fixed at creation (to change it, add a new item and delete this one)",
     "第 {n} 个输入端子 ↔ 第 {n} 个输出端子": "Input port {n} ↔ output port {n}",

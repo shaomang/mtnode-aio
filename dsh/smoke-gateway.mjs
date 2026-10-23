@@ -55,6 +55,13 @@ if (!pluginNames.includes('./canvas-plugin.mjs')) {
   process.exit(1)
 }
 console.log('[2] canvas plugin present')
+/* 本地媒体工具（audio_transcribe / ffmpeg）：Agent 需要听音频 / 看视频时用本机能力，
+   不另装 ASR、不自己下 ffmpeg —— 这一行缺席 = 打包或 cordis.yml 又漏了它。 */
+if (!pluginNames.includes('./media-plugin.mjs')) {
+  console.log('[fail] shipped media plugin missing from pluginList')
+  process.exit(1)
+}
+console.log('[2] media plugin present')
 // 跨进程真续跑桥（cordis 组合里的本项目插件行）必须真实可加载 —— 加载失败会直接
 // 在 pluginList 缺席，宿主续跑轮就少了一条从盘上恢复会话的路（见 DESIGN.md 三态）。
 const bridgeRows = ((pl.result && pl.result.plugins) || []).filter(

@@ -34,9 +34,9 @@ It embeds a JS (Javascript) function, for running scripts and deterministic comp
 
 ### Input / output conventions
 
-- **Input**: `input = { 参数名: 值 }`; an image parameter is `{ kind: "image", path }`.
+- **Input**: `input = { params, <param name>: value }`; image / video / audio parameters are `{ kind, path }` path objects; `params` holds the JSON object injected through the **Parameters** port (9001).
 - **Output**: `return { 输出名: 值 }`, with key names matching the output port table.
-- **Port order**: input port 0 = control input, and 1..N are the parameters in order; output ports 0..M-1 are the outputs, and the last position is the control output.
+- **Port order**: input port 0 = control input, 1..N are the parameters in order, plus the **Parameters** port 9001 (a JSON object, so a batch of params needs no extra ports); output ports 0..M-1 are the outputs, and the last position is the control output.
 
 ## Tool node · node notes
 
@@ -51,7 +51,7 @@ Tool node = a node layer + a wrapper node around several function nodes and othe
 ### Key parameters
 
 - **Name / description**: the AI decides when to use it from that description. Spell out "when to use it + what goes in + what comes out".
-- **Input / output port tables**: these are its parameters and return values; the port type (text / image) decides whether a wire can connect and how downstream selection works.
+- **Input / output port tables**: these are its parameters and return values; the port type (text / image / video / audio) decides whether a wire can connect and how downstream selection works (save nodes pick the extension from it automatically).
 
 ### Where it is used
 

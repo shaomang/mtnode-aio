@@ -43,7 +43,8 @@
   const RUNTIME_HINT =
     "函数节点已改在独立线程运行，渲染层 API（window / document / window.api.*）不再可用；" +
     "起外部程序请改用 mtnode.exec / mtnode.spawn（隐藏启动、随本次运行回收），" +
-    "读写本地文件用 mtnode.readText / mtnode.writeText。";
+    "读写本地文件用 mtnode.readText / mtnode.writeText（任意二进制用 mtnode.readFile，" +
+    "只探大小 / 类型用 mtnode.fileInfo）。";
 
   function withHint(msg) {
     const s = String(msg == null ? "" : msg);

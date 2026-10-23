@@ -769,14 +769,45 @@ function queryGpu() {
       { windowsHide: true, timeout: 4000 },
       (err, stdout) => {
         if (err) return resolve(null);
-        const line = String(stdout || "").trim().split(/\r?\n/)[0] || "";
-        const parts = line.split(",").map((s) => s.trim());
-        if (parts.length < 4) return resolve(null);
+        const lines = String(stdout || "")
+          .trim()
+          .split(/\r?\n/)
+          .filter((l) => l.trim() && !/no devices were found/i.test(l));
+        if (!lines.length) return resolve(null);
+        /* 显存 / 利用率取不到（[N/A]、ERR!）时按 null 处理，绝不把 NaN 发给界面 */
+        const num = (s) => {
+          const n = Number(String(s == null ? "" : s).trim());
+          return Number.isFinite(n) ? n : null;
+        };
+        const cards = [];
+        for (const line of lines) {
+          const parts = line.split(",").map((s) => s.trim());
+          if (parts.length < 4) continue;
+          const memUsed = num(parts[1]);
+          const memTotal = num(parts[2]);
+          const util = num(parts[3]);
+          if (memUsed == null && memTotal == null && util == null) continue;
+          cards.push({ index: cards.length, name: parts[0] || "", memUsed, memTotal, util });
+        }
+        if (!cards.length) return resolve(null);
+        /* 多卡时取占用最高的一张（合成实际发生在那一张），并标出是第几号卡 */
+        cards.sort((a, b) => (b.memUsed || 0) - (a.memUsed || 0));
+        const g = cards[0];
         resolve({
-          name: parts[0],
-          memUsedMb: Number(parts[1]),
-          memTotalMb: Number(parts[2]),
-          utilPct: Number(parts[3]),
+          name: cards.length > 1 && g.name ? g.name + " · GPU" + g.index : g.name,
+          /* 单帧形（memUsed / memTotal / util）：与 h3 / music3 同一口径，画布节点面板直读。
+             过去这里只有 utilPct，节点面板读 util 读不到 → 「GPU 占用」一直显示 0%。 */
+          memUsed: g.memUsed,
+          memTotal: g.memTotal,
+          util: g.util,
+          memPct:
+            g.memTotal != null && g.memTotal > 0 && g.memUsed != null
+              ? Math.round((g.memUsed / g.memTotal) * 1000) / 10
+              : null,
+          /* 旧键名：控制台（breeze/ui/app.js）与插件详情状态行仍读这几个，保留不删 */
+          memUsedMb: g.memUsed,
+          memTotalMb: g.memTotal,
+          utilPct: g.util,
         });
       },
     );

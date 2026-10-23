@@ -94,7 +94,8 @@ function runtimeHint(text) {
   return (
     "函数节点已改在独立线程运行，渲染层 API（window / document / window.api.*）不再可用；" +
     "起外部程序请改用 mtnode.exec / mtnode.spawn（隐藏启动、随本次运行回收），" +
-    "读写本地文件用 mtnode.readText / mtnode.writeText。"
+    "读写本地文件用 mtnode.readText / mtnode.writeText（任意二进制用 mtnode.readFile，" +
+    "只探大小 / 类型用 mtnode.fileInfo）。"
   );
 }
 
@@ -437,6 +438,50 @@ function buildMtnodeBridge(deps = {}) {
       } catch {}
       fsx.writeFileSync(file, String(text == null ? "" : text), "utf8");
       return file;
+    },
+    /* ─ 任意文件读取（图像 / 视频 / 音频 参数要「真内容」时用）────────────
+       与 readText 同族，但按 opts 决定怎么读：
+         await mtnode.readFile(p)                       → utf8 字符串（同 readText）
+         await mtnode.readFile(p, { encoding: "base64" })→ base64 字符串
+         await mtnode.readFile(p, { encoding: "buffer" })→ Node Buffer（喂给 mtnode.ai 的图 / PDF 等）
+       文件不存在直接抛（调用方 try/catch 或先 fileInfo 探路）。 */
+    readFile: (p, opts) => {
+      const file = String(p == null ? "" : p);
+      if (!file) throw new Error("mtnode.readFile：缺少文件路径");
+      const o = opts && typeof opts === "object" ? opts : {};
+      const enc = String(o.encoding == null ? "utf8" : o.encoding).toLowerCase();
+      if (enc === "buffer" || enc === "raw" || enc === "binary")
+        return fsx.readFileSync(file);
+      if (enc === "base64") return fsx.readFileSync(file).toString("base64");
+      if (enc === "utf8" || enc === "utf-8" || enc === "text" || enc === "")
+        return fsx.readFileSync(file, "utf8");
+      return fsx.readFileSync(file).toString(enc);
+    },
+    /* ─ 文件探路（不读内容）：大小 / 修改时间 / 按扩展名猜的媒体类型 ─────
+       await mtnode.fileInfo(p) → { path, exists, size, mtime, ext, kind }
+       kind = "image" | "video" | "audio" | "text" | ""（判不出来就是空串）。
+       文件不存在时不抛：回 { exists:false, size:0, kind:"" }，方便先探再读。 */
+    fileInfo: (p) => {
+      const file = String(p == null ? "" : p);
+      const ext = pathx.extname(file).toLowerCase();
+      const img = [".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".svg", ".ico", ".avif", ".apng", ".tif", ".tiff"];
+      const vid = [".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v", ".flv", ".wmv", ".mpeg", ".mpg", ".ts"];
+      const aud = [".wav", ".mp3", ".flac", ".m4a", ".aac", ".ogg", ".opus", ".wma", ".aiff", ".amr"];
+      const kind = img.indexOf(ext) >= 0 ? "image" : vid.indexOf(ext) >= 0 ? "video" : aud.indexOf(ext) >= 0 ? "audio" : ext ? "text" : "";
+      let st = null;
+      try {
+        st = fsx.statSync(file);
+      } catch {
+        st = null;
+      }
+      return {
+        path: file,
+        exists: !!st,
+        size: st ? st.size : 0,
+        mtime: st ? st.mtimeMs : 0,
+        ext: ext,
+        kind: st ? kind : "",
+      };
     },
     join: (...parts) =>
       pathx.join(...parts.map((x) => String(x == null ? "" : x))),

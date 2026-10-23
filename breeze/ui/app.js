@@ -99,8 +99,21 @@
 
   /* ── 状态渲染 ─────────────────────────────────────────────────────── */
   function fmtMb(mb) {
+    if (mb == null) return "—";
     const n = Number(mb) || 0;
     return n >= 1024 ? (n / 1024).toFixed(1) + " GB" : n + " MB";
+  }
+  /* 读数可能缺项（nvidia-smi 回 [N/A] 时宿主按 null 给）：缺项写「—」，不拿 0 冒充 */
+  function fmtGpu(g) {
+    return (
+      String(g.name || "") +
+      " · " +
+      fmtMb(g.memUsedMb) +
+      " / " +
+      fmtMb(g.memTotalMb) +
+      " · " +
+      (g.utilPct != null ? g.utilPct + "%" : "—")
+    );
   }
 
   function render() {
@@ -159,9 +172,7 @@
         (eng.pid ? " · pid " + eng.pid : "")
       : "—";
     const gpu = st.gpu || (st.apiStatus && st.apiStatus.gpu);
-    $("gpuInfo").textContent = gpu
-      ? gpu.name + " · " + fmtMb(gpu.memUsedMb) + " / " + fmtMb(gpu.memTotalMb) + " · " + gpu.utilPct + "%"
-      : "（未检测到 nvidia-smi）";
+    $("gpuInfo").textContent = gpu ? fmtGpu(gpu) : "（未检测到 nvidia-smi）";
     $("logPath").textContent = st.consolePath || "";
 
     if (has("setFastAll")) $("fastAll").checked = !!st.fastAll;
@@ -332,7 +343,7 @@
     api.onGpu((d) => {
       const g = d && d.gpu;
       if (!g) return;
-      $("gpuInfo").textContent = g.name + " · " + fmtMb(g.memUsedMb) + " / " + fmtMb(g.memTotalMb) + " · " + g.utilPct + "%";
+      $("gpuInfo").textContent = fmtGpu(g);
     });
   }
   if (has("onLogPanelChanged")) {

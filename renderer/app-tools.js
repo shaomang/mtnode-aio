@@ -174,7 +174,8 @@ function applyToolPresetInputs(node, presets) {
   if (!node || !presets || typeof presets !== "object") return;
   const ins = fnToolParamList(node, "in");
   if (!ins.length) return;
-  const store = isFunctionNode(node) ? "fnTestInputs" : "toolTestInputs";
+  if (isFunctionNode(node)) return; /* 函数节点已无测试台，预设只对工具节点有意义 */
+  const store = "toolTestInputs";
   if (!Array.isArray(node[store])) node[store] = [];
   let hit = false;
   ins.forEach((p, i) => {
@@ -251,7 +252,7 @@ async function insertToolToCanvas(pkg) {
   }
   /* 内置条目的「参数预设值」（pkg.presets = { 参数名: 字符串 }）：给「测试」台预填
      一份能直接跑通的样例（如桌面前的屏幕目标），用户点开就能试跑，不必猜格式。
-     只写测试快照字段（fnTestInputs / toolTestInputs），**不参与画布运行**。 */
+     只写测试快照字段（toolTestInputs），**不参与画布运行**。 */
   applyToolPresetInputs(rootCp, pkg.presets);
   S.selSet = new Set(cps.map((c) => c.id));
   S.sel = rootCp.id;
@@ -1135,29 +1136,25 @@ async function refreshBuiltinToolCopies(wf) {
   return changed;
 }
 
-/* ═══════════ 通用「试跑」台（工具 / 函数节点头部「测试」→ 独立对话框） ═══════════
- * 两类节点共用一套：中部每个输入参数一个字段（text = 多行框 / image = 路径 + 选文件），
- * 下半逐输出端子展示结果 + 错误信息。函数节点额外有上半整块 JS 代码区（node.jscode）。
- * 测试输入按节点类型落各自的独立字段（函数 fnTestInputs / 工具 toolTestInputs，
- * 按输入参数序号存，下次打开对话框还在；永不参与画布运行）。
- * 运行只读口径：
- *   · 函数节点 → app-nodes.js testFunctionNode：入参经已有的 _agentCallArgs 注入点进入，
- *     不写 node.output / portOutputs、不级联下游、不进撤销历史、不改节点运行态；
- *   · 工具节点 → 本文件 testToolNode：同一注入点 + runToolNode(quiet, noCascade)，
- *     跑完把工具壳自身的运行态原样还原 —— 壳的输出与下游不受影响（内部子节点会真实
- *     执行，其输出会更新，可能产生真实 API 调用，对话框已注明）。
+/* ═══════════ 「试跑」台（工具节点头部「测试」→ 独立对话框） ═══════════
+ * 只有工具节点有这一层：中部每个输入参数一个字段（text = 多行框 / image·video·audio =
+ * 路径 + 选文件），下半逐输出端子展示结果 + 错误信息。
+ * 试跑输入落在 toolTestInputs（按输入参数序号存，下次打开对话框还在；永不参与画布运行）。
+ * 函数节点没有测试台：它直接 ▶ 运行，结果看输出端子 / 预览 / 下游。
+ * 运行只读口径（本文件 testToolNode）：入参经 _agentCallArgs 注入点进入 +
+ * runToolNode(quiet, noCascade)，跑完把工具壳自身的运行态原样还原 —— 壳的输出与下游
+ * 不受影响（内部子节点会真实执行，其输出会更新，可能产生真实 API 调用，对话框已注明）。
  * 画布上的 ▶ 才是参与运行的真执行。
  * ─────────────────────────────────────────────────────────────────── */
-
 /* 测试字段里的字符串 → 端子值（空串 = 未提供，注入 null 与「上游未输出」一致）。
-   形状转换同样复用端子归一真源（见 agentArgValue）：图像参数 → {kind:"image",path}，
-   文本参数 → {kind:"text",text}。 */
+   形状转换同样复用端子归一真源（见 agentArgValue）：图像 / 视频 / 音频参数 →
+   {kind,path}，文本参数 → {kind:"text",text}。 */
 function fnTestPortValue(raw, kind) {
   const s = raw == null ? "" : String(raw);
   if (!s.trim()) return null;
-  return normPortValueByKind(s, kind === "image" ? "image" : "text", {
-    loose: true,
-  }).value;
+  const k =
+    typeof fnToolNormPortKind === "function" ? fnToolNormPortKind(kind) : "text";
+  return normPortValueByKind(s, k, { loose: true }).value;
 }
 
 /* 数组（批量）参数：判定真源 app-canvas.js · fnBrowseParamIsArray（array / arr / list /
@@ -1222,7 +1219,7 @@ function fnTestValueText(v) {
    注入（与 Agent func call 同一注入点），走 runToolNode(node, quiet=true, {noCascade:true})
    跑内部图；取完结果后把工具壳自身的运行态字段原样还原（含此前不存在的字段 → 删除），
    所以测试不改画布输出、不级联下游、不进撤销历史。
-   返回与 testFunctionNode 同形状的 { ok, ports, count, error }。 */
+   返回 { ok, ports, count, error }。 */
 async function testToolNode(node, vals) {
   const fail = (msg) => ({
     ok: false,
@@ -1290,23 +1287,18 @@ async function testToolNode(node, vals) {
 }
 
 function openNodeTestDialog(node) {
-  if (!node || !isFnToolNode(node)) {
-    toast(I18n.t("「测试」仅用于工具 / 函数节点"), "warn");
+  if (!node || !isToolNode(node)) {
+    toast(I18n.t("「试跑」仅用于工具节点（函数节点直接 ▶ 运行看输出端子）"), "warn");
     return;
   }
   ensureFnToolNodeState(node);
-  const isTool = isToolNode(node);
-  /* 测试输入按类型各存一份独立字段：函数 fnTestInputs / 工具 toolTestInputs */
-  const storeKey = isTool ? "toolTestInputs" : "fnTestInputs";
+  /* 试跑输入快照：只有工具节点有这一层（函数节点已移除测试台） */
+  const storeKey = "toolTestInputs";
   if (!Array.isArray(node[storeKey])) node[storeKey] = [];
   const testVals = node[storeKey];
   const ins = fnToolParamList(node, "in");
   const outs = fnToolParamList(node, "out");
-  openOverlay(
-    (isTool
-      ? I18n.t("工具节点试跑 · ")
-      : I18n.t("函数节点测试 · ")) + (node.title || (isTool ? I18n.t("工具") : I18n.t("函数"))),
-  );
+  openOverlay(I18n.t("工具节点试跑 · ") + (node.title || I18n.t("工具")));
   const box = document.querySelector("#overlay .overlay-box");
   if (box) box.classList.add("wide");
   const body = document.getElementById("ovBody");
@@ -1335,53 +1327,13 @@ function openNodeTestDialog(node) {
   };
 
   hint(
-    isTool
-      ? I18n.t(
-          "仅测试用，不参与画布运行：测试入参只注入本次执行，工具自身的输出与下游节点保持不变（不进撤销历史）。",
-        )
-      : I18n.t(
-          "仅测试用，不参与画布运行：测试入参只注入本次执行，不写节点输出、不级联下游、不进撤销历史。",
-        ),
+    I18n.t(
+      "仅测试用，不参与画布运行：测试入参只注入本次执行，工具自身的输出与下游节点保持不变（不进撤销历史）。",
+    ),
   );
 
-  /* ── JS 代码区（仅函数节点 · 大块 · 与节点卡片同一个 createJsCodeEditor · 同源 node.jscode） ── */
-  let codeEd = null;
-  if (!isTool) {
-    section(I18n.t("JS 代码（return 的键 = 输出参数名 → 分发到各输出端子）"));
-    codeEd = createJsCodeEditor({
-      value: functionCodeOf(node),
-      rows: 18,
-      placeholder: I18n.t("// 在此编写函数体：input = { 参数名: 值 }，return { 输出参数名: 值 }"),
-      /* 输入只写内存字段，失焦 / change / 格式化才落盘（与节点卡片同口径） */
-      onChange: (v) => {
-        node.jscode = v;
-      },
-      onCommit: (v) => {
-        node.jscode = v;
-        scheduleSave();
-      },
-    });
-    codeEd.el.style.cssText = "width:100%;flex:none;min-height:240px";
-    wrap.appendChild(codeEd.el);
-    /* 工具条：就地格式化（复用编辑器自带的 format = formatJsCode 同一实现） */
-    const codeBar = document.createElement("div");
-    codeBar.style.cssText = "display:flex;gap:8px;align-items:center";
-    const fmtBtn = document.createElement("button");
-    fmtBtn.type = "button";
-    fmtBtn.className = "mini";
-    fmtBtn.textContent = I18n.t("格式化");
-    fmtBtn.onclick = () => {
-      if (!codeEd.format()) toast(I18n.t("代码已是格式化后的样子"));
-    };
-    const codeHint = document.createElement("span");
-    codeHint.style.cssText = "font-size:11.5px;opacity:.7";
-    codeHint.textContent = I18n.t(
-      "与节点卡片同一编辑器 · 改动即时写回 node.jscode",
-    );
-    codeBar.append(fmtBtn, codeHint);
-    wrap.appendChild(codeBar);
-  } else {
-    /* 工具节点没有代码区：试跑跑的是它的内部子图，先说清里面有什么 */
+  /* 试跑跑的是工具内部子图，先说清里面有什么 */
+  {
     const inner =
       typeof superChildrenOf === "function" ? superChildrenOf(node.id) : [];
     hint(
@@ -1400,7 +1352,7 @@ function openNodeTestDialog(node) {
   section(I18n.t("输入参数（端子 1..n · 端子 0 = 控制入）"));
   /* 工具节点：有「调用示例」就一键填入 —— 与 Agent 拿到的是同一份示例，
      用户点一下就能看到「填成什么样算对」（示例键 = 参数名，缺的位保持原样）。 */
-  if (isTool) {
+  {
     const ex = String(
       (node.toolConfig && node.toolConfig.example) || "",
     ).trim();
@@ -1666,9 +1618,6 @@ function openNodeTestDialog(node) {
         value: ports["$" + j],
         written: Object.prototype.hasOwnProperty.call(ports, "$" + j),
       });
-    /* 函数节点即使没设出参也有「单输出兼容」的端子 0；工具节点没有出参就是真没有 */
-    if (!outs.length && !isTool)
-      rows.push({ idx: 0, name: I18n.t("主输出（无出参）"), value: ports.$0, written: !!ports.$0 });
     if (!rows.length) {
       const n2 = document.createElement("div");
       n2.style.cssText = "font-size:11.5px;opacity:.6";
@@ -1686,21 +1635,22 @@ function openNodeTestDialog(node) {
         r.idx +
         " · " +
         r.name +
-        (r.written
-          ? ""
-          : isTool
-            ? I18n.t("（内侧无节点汇入该输出端子）")
-            : I18n.t("（return 未含该键 · 未分发）"));
+        (r.written ? "" : I18n.t("（内侧无节点汇入该输出端子）"));
       const v = document.createElement("div");
       v.style.cssText =
         "font-size:12px;font-family:var(--mono);white-space:pre-wrap;word-break:break-all;max-height:140px;overflow-y:auto";
       v.textContent = fnTestValueText(r.value);
       if (r.value && r.value.kind && r.value.kind !== "text" && r.value.path) {
-        const img = document.createElement("img");
-        img.style.cssText = "max-width:180px;max-height:120px;border-radius:6px";
-        img.src = window.api.toFileUrl(String(r.value.path));
-        v.appendChild(document.createElement("br"));
-        v.appendChild(img);
+        /* 媒体输出按类型给真预览（图像 / 视频 / 音频 · 与卡片同一套组件） */
+        const mh = document.createElement("div");
+        mh.style.cssText = "display:flex;max-height:180px;overflow:hidden";
+        if (
+          typeof fnToolMediaPreview === "function" &&
+          fnToolMediaPreview(mh, r.value.kind, String(r.value.path))
+        ) {
+          v.appendChild(document.createElement("br"));
+          v.appendChild(mh);
+        }
       }
       row.append(h, v);
       outHost.appendChild(row);
@@ -1710,15 +1660,13 @@ function openNodeTestDialog(node) {
   const runBtn = document.createElement("button");
   runBtn.type = "button";
   runBtn.className = "mini primary";
-  runBtn.textContent = I18n.t(isTool ? "▶ 试跑工具" : "▶ 运行测试");
+  runBtn.textContent = I18n.t("▶ 试跑工具");
   const opsRow = document.createElement("div");
   opsRow.style.cssText = "display:flex;gap:8px;align-items:center";
   const opsNote = document.createElement("span");
   opsNote.style.cssText = "font-size:11.5px;opacity:.7";
   opsNote.textContent = I18n.t(
-    isTool
-      ? "测试不改画布：工具自身的输出与下游取值仍是上次画布 ▶ 的结果。"
-      : "测试不改画布：节点输出与下游取值仍是上次画布 ▶ 的结果。",
+    "试跑不改画布：工具自身的输出与下游取值仍是上次画布 ▶ 的结果。",
   );
   opsRow.append(runBtn, opsNote);
   wrap.appendChild(opsRow);
@@ -1727,7 +1675,6 @@ function openNodeTestDialog(node) {
   let testing = false;
   runBtn.onclick = async () => {
     if (testing) return;
-    if (codeEd) node.jscode = codeEd.getValue();
     const vals = new Array(ins.length + 1).fill(null);
     ins.forEach((p, i) => {
       /* 数组参数 → 逐条归一后以数组注入；普通参数仍是单值（空 = null） */
@@ -1741,17 +1688,14 @@ function openNodeTestDialog(node) {
     runBtn.textContent = I18n.t("试跑中…");
     let res;
     try {
-      res = isTool
-        ? typeof testToolNode === "function"
+      res =
+        typeof testToolNode === "function"
           ? await testToolNode(node, vals)
           : {
               ok: false,
               ports: {},
               error: I18n.t("工具试跑执行器未就绪（app-tools.js）"),
-            }
-        : typeof testFunctionNode === "function"
-          ? await testFunctionNode(node, vals)
-          : { ok: false, ports: {}, error: I18n.t("测试执行器未就绪（app-nodes.js）") };
+            };
     } finally {
       testing = false;
       runBtn.disabled = false;
@@ -1775,8 +1719,7 @@ function openNodeTestDialog(node) {
   closeBtn.className = "mini";
   closeBtn.textContent = I18n.t("关闭");
   closeBtn.onclick = () => {
-    /* JS 与测试输入都已实时写回 node（不进撤销历史）；这里只落盘 + 重绘节点体 */
-    if (codeEd) node.jscode = codeEd.getValue();
+    /* 测试输入都已实时写回 node（不进撤销历史）；这里只落盘 + 重绘节点体 */
     scheduleSave();
     renderCanvas();
     closeOverlay();
@@ -1916,7 +1859,7 @@ function fnDevContractText(node, req) {
   );
   lines.push(
     I18n.t(
-      "运行环境：代码在 MTNode 主进程的独立线程里执行（可 await、可跑循环，不会卡界面），**没有 window / document / window.api.***；起外部程序用 mtnode.exec / mtnode.spawn（隐藏启动、随本次运行回收，停止即杀进程树），读写文件用 mtnode.readText / mtnode.writeText，等待用 await mtnode.sleep(ms)，日志与进度用 mtnode.log / mtnode.progress。不要写依赖渲染层 API 的代码。",
+      "运行环境：代码在 MTNode 主进程的独立线程里执行（可 await、可跑循环，不会卡界面），**没有 window / document / window.api.***；起外部程序用 mtnode.exec / mtnode.spawn（隐藏启动、随本次运行回收，停止即杀进程树），读写文件用 mtnode.readText / mtnode.writeText（任意二进制用 mtnode.readFile、只探大小/类型用 mtnode.fileInfo），等待用 await mtnode.sleep(ms)，日志与进度用 mtnode.log / mtnode.progress。不要写依赖渲染层 API 的代码。",
     ),
   );
   lines.push(

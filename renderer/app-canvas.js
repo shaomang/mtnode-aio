@@ -1010,9 +1010,10 @@ function canvasNodeSig(n) {
     n.error ? 1 : 0,
     n.expanded ? 1 : 0,
     open ? 1 : 0,
-    /* 素材节点在浏览态：某个条目「输出端子被连」会让该条由一行标题展开出缩略图，
-       body 形状随之改变 —— 所以「哪些端口有出线」必须进签名，否则接上 / 断开后
-       预览态会一直停在旧形状（真机自验复现：断开后缩略图不消失）。 */
+    /* 素材节点在浏览态：某个条目「输出端子被连」会让该条由一行标题展开出预览块
+       （图像 / 视频 = 缩略图，文本 = 正文预览），body 形状随之改变 —— 所以「哪些端口有出线」
+       必须进签名，否则接上 / 断开后预览态会一直停在旧形状
+       （真机自验复现：断开后缩略图不消失）。 */
     browse && n.kind === "asset" ? assetBrowseOutMask(n) : "",
   ].join(":");
 }
@@ -5278,15 +5279,22 @@ function breezePickCommit(node, presetId, groupId) {
   try {
     scheduleSave(true);
   } catch (_) {}
+  /* 必须就地重建这颗节点：renderCanvas 走复用快速通道（形状签名没变），不会重画下拉，
+     表现就是「选了角色，组名还是灰的『（先选角色）』」。 */
   try {
-    renderCanvas();
-  } catch (_) {}
+    if (typeof refreshNodeEl === "function") refreshNodeEl(node.id);
+    else renderCanvas();
+  } catch (_) {
+    try {
+      renderCanvas();
+    } catch (_) {}
+  }
 }
 /** 一枚下拉（head 上紧凑、body 上带标签，样式只差一个 class） */
 function breezePickSelect(kind, node, opts) {
   const o = opts || {};
   const sel = document.createElement("select");
-  sel.className = o.cls != null ? o.cls : "n-breeze-sel";
+  sel.className = o.cls != null ? o.cls : "n-field-sel";
   sel.dataset.breezePick = kind;
   if (kind === "role") {
     sel.title = I18n.t("选这个节点用哪个角色的声音（不选 = 走端子 / 音色库）");
@@ -5320,6 +5328,32 @@ function breezePickRow(node) {
   row.appendChild(role);
   row.appendChild(group);
   return row;
+}
+
+/* body 下拉下面那条「高度较窄」的参考音试听条（需求：紧贴「角色 + 组名」下方）。
+   播的是当前选中组自己的样本音频（group.audioPath，本地文件直放，不走后端、不重新合成）；
+   节点 body 底部那条管的是生成结果，两条职责分开，互不替代。
+   播放器与角色窗的组卡同源（wavePreviewCreate / wavePreviewSetSource），点 / 拖波形行为一致。
+   没选角色、该角色没有样本组、或这一组缺参考音频 → 整块不出现（不占位，节点也就不会空一截）。 */
+function breezeRefWaveEl(node) {
+  if (typeof wavePreviewCreate !== "function") return null;
+  const groups = breezeChoiceGroupsOf(breezePresetIdOf(node));
+  if (!groups.length) return null;
+  const gid = breezeChosenGroupId(node, groups);
+  const g = groups.find((x) => x && String(x.id || "") === gid) || null;
+  if (!g || g.hasAudio === false || !String(g.audioPath || "")) return null;
+  const box = document.createElement("div");
+  box.className = "breeze-ref-row";
+  const aud = wavePreviewCreate("breezeref-" + node.id);
+  if (aud && aud.classList) aud.classList.add("breeze-ref-wave");
+  try {
+    aud.title = I18n.t("试听这一组的参考音（角色样本，不走后端、不重新合成）");
+  } catch (_) {}
+  try {
+    wavePreviewSetSource(aud, g.audioPath);
+  } catch (_) {}
+  box.appendChild(aud);
+  return box;
 }
 
 /* 角色（音色预设）跳窗 —— 左列角色，右侧「浏览 / 三步向导」。
@@ -5453,6 +5487,9 @@ function openBreezePresetDialog(node, onDone) {
       scheduleSave(true);
     } catch (_) {}
     try {
+      if (typeof refreshNodeEl === "function") refreshNodeEl(node.id);
+    } catch (_) {}
+    try {
       renderCanvas();
     } catch (_) {}
     closeOverlay();
@@ -5501,8 +5538,10 @@ function openBreezePresetDialog(node, onDone) {
         try {
           scheduleSave(true);
         } catch (_) {}
+        /* 同 breezePickCommit：节点上的下拉也得跟着换（renderCanvas 走复用通道不重画下拉） */
         try {
-          renderCanvas();
+          if (typeof refreshNodeEl === "function") refreshNodeEl(node.id);
+          else renderCanvas();
         } catch (_) {}
       });
       headHost.insertBefore(titleSel, headHost.querySelector(".ov-close-btn") || null);
@@ -7679,7 +7718,11 @@ function portBadgeText(node, dir, idx, opt) {
       const p = pl[i - 1] || {};
       return {
         badge: String(p.name || "").trim() || String(i + 1),
-        title: "",
+        title:
+          I18n.t("输入参数") +
+          fnToolPortKindLabel(
+            typeof fnToolPortKind === "function" ? fnToolPortKind(node, "in", i) : "text",
+          ),
         zh: true,
       };
     }
@@ -7806,7 +7849,15 @@ function portBadgeText(node, dir, idx, opt) {
     if (i >= nOut) return { badge: I18n.t("控制"), title: "", zh: true };
     const pl = fnToolParamList(node, "out");
     const p = pl[i] || {};
-    return { badge: String(p.name || "").trim() || String(i + 1), title: "", zh: true };
+    return {
+      badge: String(p.name || "").trim() || String(i + 1),
+      title:
+        I18n.t("输出参数") +
+        fnToolPortKindLabel(
+          typeof fnToolPortKind === "function" ? fnToolPortKind(node, "out", i) : "text",
+        ),
+      zh: true,
+    };
   }
   if (typeof isSaveNode === "function" && isSaveNode(node))
     return { badge: I18n.t("保存结果"), title: "", zh: true };
@@ -7933,7 +7984,14 @@ function portBadgeInIsCtrlPort(node, idx) {
         ? remotionPortIsControl(node, i)
         : false;
     default:
-      return false;
+      /* 动态端子节点（proc_text / proc_image / sensenova_gen / agent_task / input_*）：
+         末位那颗是专用控制端子（真源 app.js isDynCtrlNode + dynCtrlInPortIndex），
+         徽标写「控制」、上色走 inPortIsControl。 */
+      return typeof isDynCtrlNode === "function" &&
+        isDynCtrlNode(node) &&
+        typeof dynCtrlInPortIndex === "function"
+        ? i === dynCtrlInPortIndex(node)
+        : false;
   }
 }
 
@@ -8941,11 +8999,8 @@ function nodeElement(node) {
       });
     };
     head.appendChild(roleBtn);
-    /* head 上再挂「角色 + 组名」两枚下拉：不用开窗就能换声（👤 仍是一键开完整角色窗）。
-       预设清单还没读到就先补一次，读完重绘。 */
-    breezePresetPullOnce();
-    head.appendChild(breezePickSelect("role", node, { cls: "n-breeze-sel n-breeze-role-sel" }));
-    head.appendChild(breezePickSelect("group", node, { cls: "n-breeze-sel n-breeze-group-sel" }));
+    /* head 只留 👤（一键开完整角色窗）；「角色 + 组名」两枚下拉只放 body 那一行，
+       按钮栏不再塞角色选择 —— 语音 chip / ◎ 探测 / 控制台 / ▶ 已经在抢地方了。 */
     appendBackendProbeBtn(head, node);
     appendMediaConsoleBtn(head, node);
     appendMediaPlayBtns(head, node, "调用 Breeze TTS 2 后端合成语音");
@@ -9009,16 +9064,14 @@ function nodeElement(node) {
         }),
       );
     }
-    /* 「测试」按钮（两类节点共用同一「试跑」台）：独立对话框手写自定义入参跑一次
-       —— 函数节点跑 JS，工具节点跑它的内部子图；与「设置」分开，只读口径：
-       不写节点自身输出、不级联下游、不进撤销历史。 */
-    {
+    /* 「试跑」按钮（仅工具节点）：独立对话框用自定义入参跑一次内部子图；
+       函数节点不再有测试台 —— 它直接 ▶ 运行，结果看输出端子 / 预览 / 下游。
+       只读口径：不写节点自身输出、不级联下游、不进撤销历史。 */
+    if (isTool) {
       const testBtn = document.createElement("button");
       testBtn.className = "n-play n-api-toggle";
       testBtn.textContent = I18n.t("测试");
-      testBtn.title = isTool
-        ? I18n.t("测试（用自定义入参试跑内部子图 · 仅测试用，不参与画布运行）")
-        : I18n.t("测试（自定义输入跑一次 JS · 仅测试用，不参与画布运行）");
+      testBtn.title = I18n.t("测试（用自定义入参试跑内部子图 · 仅测试用，不参与画布运行）");
       testBtn.onclick = (ev) => {
         ev.stopPropagation();
         openNodeTestDialog(node);
@@ -9345,9 +9398,7 @@ function nodeElement(node) {
           ? I18n.t("控制输入（触发生成 / 运行）")
           : I18n.t("输入参数 ") +
             ((pl[i - 1] && pl[i - 1].name) || i) +
-            (inKind === "image"
-              ? I18n.t("（图像）")
-              : I18n.t("（文本）")) +
+            (fnToolPortKindLabel(inKind)) +
             (fnInIsArr
               ? I18n.t(
                   " · 数组端子：JS 里拿到数组 · 当前挂 {n} 条线（可接多条）",
@@ -9605,6 +9656,8 @@ function nodeElement(node) {
     if (isFnTNode) {
       if (oi >= outDataN) outCls += " ctrl";
       else if (outKind === "image") outCls += " img";
+      else if (outKind === "audio") outCls += " aud";
+      else if (outKind === "video") outCls += " vid";
     } else if (isANode) {
       if (outKind === "image") outCls += " img";
       else if (outKind === "audio") outCls += " aud";
@@ -11226,7 +11279,14 @@ NODE_BROWSE_BODY.input_text = function (node, body) {
       );
       return;
     }
-    body.appendChild(browseEmptyViewEl(I18n.t("（等待上游输出…）内容只读")));
+    /* 来源是函数节点：指名道姓说清为什么没值（没跑 / 该端子没输出 / 上游报错），
+       其余来源保持原占位（口径见 app.js 的 fnSourceEmptyHintOf）。 */
+    body.appendChild(
+      browseEmptyViewEl(
+        (typeof fnSourceEmptyHintOf === "function" && fnSourceEmptyHintOf(node)) ||
+          I18n.t("（等待上游输出…）内容只读"),
+      ),
+    );
     return;
   }
   if (node.batch) {
@@ -11694,6 +11754,64 @@ function assetBrowseThumbEl(node, it, lost, settled) {
   box.appendChild(el);
   return box;
 }
+/** 已连接**文本**条目的只读正文预览（浏览态）。与图像 / 视频缩略图同位（标题行下方）、同高
+ *  （限高 120px，长文在框内滚动，节点尺寸不动）；纯展示 —— 不挂按钮、不写库、不解析 Markdown。
+ *  取数 / 占位替换口径与 assetBrowseThumbEl 一模一样：缓存没命中先「读取中…」，
+ *  读到后**原地换掉这一块**（画布复用通道按签名保留旧 DOM，等不到那次整幅重绘）。 */
+function assetBrowseTextEl(node, it, lost, settled) {
+  const box = document.createElement("div");
+  box.className = "n-view-asset-pvtext";
+  const ghost = (txt) => {
+    const g = document.createElement("div");
+    g.className = "n-view-asset-ghost";
+    g.textContent = txt;
+    box.appendChild(g);
+    return box;
+  };
+  if (lost) return ghost(I18n.t("素材失联"));
+  const aid = String(node.assetId || "");
+  const iid = String(it.id || "");
+  let view = null;
+  try {
+    view = typeof assetItemViewGet === "function" ? assetItemViewGet(aid, iid) : null;
+  } catch (_) {
+    view = null;
+  }
+  if (!view || view.loading) {
+    if (!settled) {
+      try {
+        const wait =
+          typeof assetItemViewLoaded === "function"
+            ? assetItemViewLoaded
+            : typeof assetItemViewLoad === "function"
+              ? assetItemViewLoad
+              : null;
+        if (wait) {
+          Promise.resolve(wait(aid, iid))
+            .catch(() => null)
+            .then(() => {
+              if (!box || !box.parentNode) return;
+              box.parentNode.replaceChild(
+                assetBrowseTextEl(node, it, false, true),
+                box,
+              );
+            });
+        }
+      } catch (_) {}
+      return ghost(I18n.t("读取中…"));
+    }
+    return ghost(I18n.t("读取失败"));
+  }
+  if (view.missing) return ghost(I18n.t("读取失败"));
+  const txt = String(view.text == null ? "" : view.text);
+  if (!txt.trim()) return ghost(I18n.t("（无内容）"));
+  /* 正文原样当纯文本铺（pre-wrap 保留换行）：不渲染 Markdown / 不认 @引用 —— 这里只是「看一眼」。 */
+  box.textContent = txt;
+  box.title = I18n.t(
+    "这条正文正被引用（输出端子已连出）· 点选本节点后可编辑",
+  );
+  return box;
+}
 NODE_BROWSE_BODY.asset = function (node, body) {
   const items = assetItems(node);
   const bound = String(node.assetId || "").trim();
@@ -11755,14 +11873,20 @@ NODE_BROWSE_BODY.asset = function (node, body) {
     kind.textContent = assetItemTypeLabel(it.type);
     hd.appendChild(kind);
     row.appendChild(hd);
-    /* 只有「图像 / 视频」且「输出端子真的有数据线接出」的条目才展开缩略图（见上方注释）：
-       文本 / 音频没有缩略图，未连接的条目保持单行，连了线的才多出一块只读预览。 */
-    const wantsThumb = it.type === "image" || it.type === "video";
+    /* 只有「文本 / 图像 / 视频」且「输出端子真的有数据线接出」的条目才展开只读预览（见上方注释）：
+       图像 / 视频给缩略图，文本给正文预览，音频没有可展开的形态；未连接的条目保持单行标题。 */
+    const wantsPreview =
+      it.type === "image" || it.type === "video" || it.type === "text";
     const connected =
-      wantsThumb &&
+      wantsPreview &&
       typeof assetOutPortOccupied === "function" &&
       assetOutPortOccupied(node, i);
-    if (connected) row.appendChild(assetBrowseThumbEl(node, it, lost));
+    if (connected)
+      row.appendChild(
+        it.type === "text"
+          ? assetBrowseTextEl(node, it, lost)
+          : assetBrowseThumbEl(node, it, lost),
+      );
     list.appendChild(row);
   }
   body.appendChild(list);
@@ -11930,6 +12054,8 @@ NODE_BROWSE_BODY.function = function (node, body) {
   body.appendChild(st);
   const sum = fnToolOutSummaryEl(node);
   if (sum) body.appendChild(sum);
+  const pv = fnToolOutPreviewEl(node);
+  if (pv) body.appendChild(pv);
 };
 
 /* ── 函数 / 工具节点 body（参数即端子 · 设置面板） ────────────────── */
@@ -11947,14 +12073,16 @@ function fnToolOutSummaryEl(node) {
   el.style.textOverflow = "ellipsis";
   el.style.fontSize = "11.5px";
   el.style.opacity = ".85";
-  /* 输出为图像端子时标明类型（以端子声明为准，其次看实际值），
+  /* 输出为媒体端子时标明类型（以实际值为主，其次看端子声明），
      避免那串路径被当成普通文本结果 */
-  const isImgOut =
-    String(o.kind || "") === "image" ||
-    fnToolPortKind(node, "out", 0) === "image";
+  const outKind =
+    String(o.kind || "") && String(o.kind || "") !== "text"
+      ? String(o.kind || "")
+      : fnToolPortKind(node, "out", 0);
+  const isMediaOut = outKind === "image" || outKind === "video" || outKind === "audio";
   el.textContent =
     "✓ " +
-    (isImgOut ? I18n.t("（图像）") : "") +
+    (isMediaOut ? fnToolPortKindLabel(outKind) : "") +
     clipStr(String(raw).replace(/\s+/g, " ").trim(), 160);
   el.title = String(raw);
   /* 引擎按端子声明类型归一值时记下的提示（如「文本端子拿到图像 → 取其路径作文本」）：
@@ -11968,6 +12096,61 @@ function fnToolOutSummaryEl(node) {
     el.style.color = "#e0a94a";
   }
   return el;
+}
+
+/* 工具 / 函数节点的媒体预览（图像 / 视频 / 音频 三种端子类型共用一处）：
+   图像 = <img> + 既有预览绑定，视频 = 池化播放器，音频 = 方角波形预览器。
+   返回真正挂进 host 的元素；类型不认识 / 路径为空返回 null（调用方据此不画）。 */
+function fnToolMediaPreview(host, kind, path) {
+  const p = String(path || "");
+  if (!host || !p) return null;
+  const k = typeof fnToolNormPortKind === "function" ? fnToolNormPortKind(kind) : "text";
+  let url = p;
+  try {
+    if (window.api && typeof window.api.toFileUrl === "function") url = window.api.toFileUrl(p);
+  } catch (_) {}
+  if (k === "image") {
+    const img = document.createElement("img");
+    img.className = "n-fnmedia";
+    img.src = url;
+    if (typeof bindImagePreview === "function") bindImagePreview(img, p, "");
+    host.appendChild(img);
+    return img;
+  }
+  if (k === "video") {
+    const v = mediaViewCreate(document.createElement("video"), { cls: "n-fnmedia", path: p });
+    v.controls = true;
+    v.preload = "metadata";
+    if (typeof mediaSetVideoSrc === "function") mediaSetVideoSrc(v, url, p);
+    else v.src = url;
+    if (typeof mediaViewAttach === "function") mediaViewAttach(v, host, p);
+    else host.appendChild(v);
+    return v;
+  }
+  if (k === "audio") {
+    const a = wavePreviewCreate("");
+    a.classList.add("n-fnmedia");
+    if (typeof wavePreviewSetSource === "function") wavePreviewSetSource(a, p, "");
+    host.appendChild(a);
+    return a;
+  }
+  return null;
+}
+
+/* 函数节点输出的媒体预览（只读）：值来自 node.output（{kind,path}）。
+   与端子声明无关 —— 只看这次运行真的产出了哪种媒体，没有就不画。 */
+function fnToolOutPreviewEl(node) {
+  if (!node || node.error || node.running) return null;
+  const o = node && node.output;
+  if (!o || typeof o !== "object") return null;
+  const kind = String(o.kind || "");
+  const path = String(o.path || "");
+  if (!path) return null;
+  if (kind !== "image" && kind !== "video" && kind !== "audio") return null;
+  const host = document.createElement("div");
+  host.style.cssText =
+    "flex:none;display:flex;max-height:130px;overflow:hidden;border-radius:6px";
+  return fnToolMediaPreview(host, kind, path) ? host : null;
 }
 
 /* 「这个入参没取到值」的提示块（工具 / 函数节点卡片各一行）：
@@ -12403,15 +12586,22 @@ function buildFnToolSettings(node, isTool) {
         for (const [v, t] of [
           ["text", I18n.t("文本")],
           ["image", I18n.t("图像")],
+          ["video", I18n.t("视频")],
+          ["audio", I18n.t("音频")],
         ]) {
           const o = document.createElement("option");
           o.value = v;
           o.textContent = t;
           ks.appendChild(o);
         }
-        ks.value = list[i].kind === "image" ? "image" : "text";
+        ks.value =
+          typeof fnToolNormPortKind === "function"
+            ? fnToolNormPortKind(list[i].kind)
+            : list[i].kind === "image"
+              ? "image"
+              : "text";
         ks.title = I18n.t(
-          "该端子的数据类型（文本 / 图像）· 改类型即改端子视觉与下游取数口径",
+          "该端子的数据类型（文本 / 图像 / 视频 / 音频）· 改类型即改端子视觉与下游取数口径",
         );
         ks.addEventListener("change", () => {
           list[i].kind = ks.value;
@@ -12787,6 +12977,10 @@ function buildFnToolBodyMain(node, body, isTool) {
   }
   const sum = fnToolOutSummaryEl(node);
   if (sum) body.appendChild(sum);
+  /* 函数节点的媒体输出预览（图像 / 视频 / 音频 · 只读）：与端子声明同域，
+     用户不必顺着路径去别处打开才知道这一跑出了什么 */
+  const outPv = fnToolOutPreviewEl(node);
+  if (outPv) body.appendChild(outPv);
   /* 工具节点的「描述自足」提醒（卡片上只留一行黄字，完整缺项与输入框在头部「设置」里）：
      描述不自足时 Agent 只凭工具自己给的信息可能调不对 —— 只提示，不阻断任何操作。 */
   if (isTool && typeof toolSelfSuffMissing === "function") {
@@ -12941,7 +13135,83 @@ function assetItemOps(node, it, view, type) {
   }
   return ops;
 }
-function assetItemTextRow(node, it, view) {
+/* ── 素材文本条目正文框的「手动高度」──────────────────────────────────────
+   需求：这段正文框可以按住底部拖拽条往下拉高（也能向上拖矮、双击复位）。
+   记法：**每条文本条目各记各的** —— 键 = 条目 id（没有 id 时退回它的序号），
+   值 = 用户拖出来的像素高度；存在节点字段 node.assetTextH 上、随画布一起落盘，
+   所以重绘 / 关掉重开都还是那个高度。
+   不设上限（用户口径）：框拉多高都行，超出节点的那部分照旧在 .n-asset-list 里滚动，
+   素材节点本身的尺寸一概不动。 */
+const ASSET_TEXT_H_MIN = 54;
+function assetTextHKey(it, idx) {
+  const id = String((it && it.id) || "").trim();
+  return id || "#" + (Number(idx) || 0);
+}
+function assetTextHGet(node, it, idx) {
+  const m = node && node.assetTextH;
+  if (!m || typeof m !== "object") return 0;
+  const h = Number(m[assetTextHKey(it, idx)]);
+  return isFinite(h) && h >= ASSET_TEXT_H_MIN ? Math.round(h) : 0;
+}
+/* px <= 0 / 低于默认高度 = 复位（把这个键删掉，节点字段空了就整条移除，别在画布数据里留空壳） */
+function assetTextHSet(node, it, idx, px) {
+  if (!node) return;
+  const k = assetTextHKey(it, idx);
+  const v = Math.round(Number(px) || 0);
+  if (!node.assetTextH || typeof node.assetTextH !== "object") node.assetTextH = {};
+  if (v >= ASSET_TEXT_H_MIN) node.assetTextH[k] = v;
+  else delete node.assetTextH[k];
+  if (!Object.keys(node.assetTextH).length) delete node.assetTextH;
+}
+/** 正文框底部的整宽拖拽条：按住下拖增高 · 上拖变矮（最低回默认）· 双击复位。
+ *  只改这一只框的内联高度（不碰节点尺寸、不写素材库）；松手才落一次画布存档。 */
+function assetItemTextGrip(node, it, idx, ta) {
+  const g = document.createElement("div");
+  g.className = "n-asset-tgrip";
+  g.title = I18n.t("按住上下拖动 = 调整这段正文框的高度（双击复位）");
+  g.addEventListener("mousedown", (ev) => {
+    if (ev.button != null && ev.button !== 0) return;
+    /* 不 preventDefault 之前先停掉冒泡：否则画布会把这下当成「拖节点」 */
+    ev.preventDefault();
+    ev.stopPropagation();
+    const y0 = Number(ev.clientY) || 0;
+    let h0 = ASSET_TEXT_H_MIN;
+    try {
+      const r = ta.getBoundingClientRect();
+      h0 = Math.max(ASSET_TEXT_H_MIN, Math.round((r && r.height) || 0));
+    } catch (_) {}
+    let h = h0;
+    let moved = false;
+    const onMove = (e2) => {
+      const dy = (Number(e2.clientY) || 0) - y0;
+      if (Math.abs(dy) > 2) moved = true;
+      h = Math.max(ASSET_TEXT_H_MIN, Math.round(h0 + dy));
+      try {
+        ta.style.height = h + "px";
+      } catch (_) {}
+    };
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove, true);
+      window.removeEventListener("mouseup", onUp, true);
+      if (!moved) return;
+      assetTextHSet(node, it, idx, h);
+      if (typeof scheduleSave === "function") scheduleSave();
+    };
+    window.addEventListener("mousemove", onMove, true);
+    window.addEventListener("mouseup", onUp, true);
+  });
+  g.addEventListener("dblclick", (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    try {
+      ta.style.height = "";
+    } catch (_) {}
+    assetTextHSet(node, it, idx, 0);
+    if (typeof scheduleSave === "function") scheduleSave();
+  });
+  return g;
+}
+function assetItemTextRow(node, it, view, idx) {
   const ta = document.createElement("textarea");
   ta.className = "n-text n-asset-text";
   ta.spellcheck = false;
@@ -12961,7 +13231,12 @@ function assetItemTextRow(node, it, view) {
   ta.addEventListener("click", (ev) => ev.stopPropagation());
   const wrap = document.createElement("div");
   wrap.className = "n-asset-textwrap";
+  /* 拖过的高度贴在框上（CSS 只给 54px 起步、不设 max-height —— 设了会把内联高度裁回去），
+     框底再挂一条整宽拖拽条：按住往下拖 = 增高，向上拖 = 变矮，双击复位。 */
+  const hSaved = assetTextHGet(node, it, idx);
+  if (hSaved) ta.style.height = hSaved + "px";
   wrap.appendChild(ta);
+  wrap.appendChild(assetItemTextGrip(node, it, idx, ta));
   const p = String(view.absPath || "").trim();
   if (p) {
     /* 有内容时把库内那份文件名标出来：与媒体条目同一眼「这条正文是哪份文件」 */
@@ -13112,7 +13387,7 @@ function assetItemRow(node, it, idx, lost) {
     miss.textContent = I18n.t("内容文件缺失（素材库里的实体文件不在了）");
     inr.appendChild(miss);
   } else if (it.type === "text") {
-    inr.appendChild(assetItemTextRow(node, it, view));
+    inr.appendChild(assetItemTextRow(node, it, view, idx));
   } else {
     inr.appendChild(assetItemMediaRow(node, it, view, it.type));
   }
@@ -14492,7 +14767,11 @@ function buildBody(node, body) {
       } else {
         const hint = document.createElement("div");
         hint.className = "n-empty";
-        hint.textContent = I18n.t("（等待上游输出…）内容只读");
+        /* 来源是函数节点时指名道姓说清为什么没值（没跑 / 该端子没输出 / 上游报错）；
+           其余来源保持原占位不变（口径见 app.js 的 fnSourceEmptyHintOf）。 */
+        hint.textContent =
+          (typeof fnSourceEmptyHintOf === "function" && fnSourceEmptyHintOf(node)) ||
+          I18n.t("（等待上游输出…）内容只读");
         body.appendChild(hint);
         /* 上游还没有值，但用户在节点里写过正文 —— 说清「你写的那段不参与取值」，
            否则用户会以为节点坏了（这正是「我明明给了路径却报缺少路径」的现场）。 */
@@ -16156,6 +16435,11 @@ function buildBody(node, body) {
     /* 「角色 + 组名」同一行（先定谁的声音，再写要念的文本）；下面才是摘要与文本框 */
     breezePresetPullOnce();
     body.appendChild(breezePickRow(node));
+    /* 下拉正下方的参考音试听条（窄，只留播放键 + 波形；没得听就整块不出现） */
+    {
+      const refWave = breezeRefWaveEl(node);
+      if (refWave) body.appendChild(refWave);
+    }
     /* 未安装警示条（Breeze TTS 2 插件 id = breeze-tts-local；安装后 S.plugins 缓存刷新自动消失） */
     if (
       typeof appPluginMissing === "function"

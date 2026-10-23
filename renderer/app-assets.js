@@ -4456,7 +4456,12 @@ function assetPvBody(r, a) {
         assetEl("div", "asset-pv-note", I18n.t("这段视频播不了（容器或编码不受支持）：用「打开原文件」看")),
       );
     };
-    box.appendChild(v);
+    /* 循环播放：与画布 / 文件面板同一份偏好、同一枚开关（renderer/app-mediaview.js） */
+    const vidbox = assetEl("div", "asset-pv-vidbox");
+    vidbox.appendChild(v);
+    if (typeof mediaViewLoopMount === "function") mediaViewLoopMount(v, vidbox);
+    else if (typeof mediaViewLoopApply === "function") mediaViewLoopApply(v);
+    box.appendChild(vidbox);
     return box;
   }
   if (r.type === "audio") {
@@ -5126,15 +5131,20 @@ function assetShowPreviewBox(title, imgPath, text, kind) {
     v.style.maxHeight = "60vh";
     v.style.margin = "0 auto";
     v.style.background = "#000";
+    const vidbox = assetEl("div", "asset-pv-vidbox");
+    vidbox.appendChild(v);
     v.onerror = () => {
       const note = assetEl(
         "div",
         "asset-pv-note",
         I18n.t("这段视频播不了（容器或编码不受支持，或文件读不到）：可用「打开原文件」交给外部播放器"),
       );
-      body.insertBefore(note, v);
+      body.insertBefore(note, vidbox);
     };
-    body.appendChild(v);
+    /* 循环播放：素材库预览与画布 / 文件面板共用同一份偏好与开关 */
+    if (typeof mediaViewLoopMount === "function") mediaViewLoopMount(v, vidbox);
+    else if (typeof mediaViewLoopApply === "function") mediaViewLoopApply(v);
+    body.appendChild(vidbox);
   } else if (imgPath) {
     const img = document.createElement("img");
     img.alt = title;

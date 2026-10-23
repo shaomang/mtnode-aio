@@ -1,6 +1,6 @@
 {
   "format": "mtnode-agent-skills-index-v1",
-  "updatedAt": "2026-10-21T05:22:31.737Z",
+  "updatedAt": "2026-10-23T05:47:03.239Z",
   "libraryRoot": "mtnode-agent-skills",
   "usage": "MTNode 内置 Agent 技能库。默认只注入本索引；任务匹配时再读取完整 SKILL.md（skill 工具或 read）。",
   "categories": [
@@ -93,6 +93,14 @@
           "title": "拷问我",
           "description": "需求拷问：把任务映射成决策树，按轮问完整个「前沿」（前置已定的全部问题）；每轮必须用 ask_user_question 工具跳出 MTNode 询问窗（一次带上整个前沿，禁止把问题当聊天正文罗列），每题选项把推荐项放第一位标「（推荐）」；环境事实自己查绝不问用户；直到前沿为空且用户在询问窗里确认达成共识才动手。共识若含审批 / 交付 / 驳回回跳 / 并行 / 子图，产出的是长周期任务图（DAG）JSON。Use when the user says 拷问我 / grill me / 先问清再动手 / 需求不明确, or a dev-node 开发 run turns on 先拷问需求.",
           "path": "mtnode/grill-me/SKILL.md",
+          "version": ""
+        },
+        {
+          "id": "local-media",
+          "name": "mtnode-local-media",
+          "title": "本地语音与视频分析",
+          "description": "MTNode 里要「听音频 / 看视频」时用本机能力：audio_transcribe 走官方本地 SenseVoice（字幕、逐字稿、会议记录），ffmpeg 工具做探测 / 抽音轨 / 抽帧 / 任意转码，describe 一次返回画面描述。不要另装 whisper / Qwen-ASR / 在线 ASR，也不要自己下载 ffmpeg。Use when the task needs speech-to-text, subtitles, audio/video probing, frame extraction, or video content analysis inside MTNode.",
+          "path": "mtnode/local-media/SKILL.md",
           "version": ""
         },
         {

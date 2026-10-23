@@ -2058,7 +2058,16 @@ function renderFilePeekVideo() {
     FV_PEEK.dims = bits.join(" · ");
     renderFilePeekMeta();
   };
-  wrap.appendChild(v);
+  /* 视频外面再套一层「刚好裹住画面」的定位盒：循环按钮贴在画面右上角，
+     而不是飘到整块预览区（比视频宽）的边上去。 */
+  const holder = document.createElement("div");
+  holder.className = "fp-vidbox";
+  holder.appendChild(v);
+  /* 循环播放：与画布预览共用一份偏好与同一枚开关（renderer/app-mediaview.js）。
+     文件面板这条播放器不走元素池（每次打开都是新元素），但偏好照样沿用上次的选择。 */
+  if (typeof mediaViewLoopMount === "function") mediaViewLoopMount(v, holder);
+  else if (typeof mediaViewLoopApply === "function") mediaViewLoopApply(v);
+  wrap.appendChild(holder);
   scroller.appendChild(wrap);
   renderFilePeekHead();
   renderFilePeekNote();

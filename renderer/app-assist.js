@@ -2876,6 +2876,8 @@ async function agentEnsureSessionBody(st) {
         agentMarkSessionDirty(String(id));
       }
       st._lcLoaded = true;
+      /* 盘上已知条数 = 刚读回来的 messages 条数：增量落盘的起点（之后只送新增 / 尾部增长） */
+      agentSessionDiskLenSet(id, Array.isArray(st.messages) ? st.messages.length : 0);
     } else {
       /* 读不到（坏档已改名留痕 / 文件不在）：标 missing，按空会话继续并留一条日志口径 */
       st._lcLoaded = true;
@@ -3273,6 +3275,103 @@ S._sessionDirty = S._sessionDirty instanceof Set ? S._sessionDirty : new Set();
    口径（用户已确认）：删 = 彻底删除（不可恢复）；写盘失败时这份名单**不丢**，
    下一次任意保存继续带上重试，同时给用户一次明确提示（绝不静默吞掉）。 */
 S._sessionDrop = S._sessionDrop instanceof Set ? S._sessionDrop : new Set();
+/* ── 会话落盘增量化（本轮需求 · 已确认计划）──────────────────────────────────
+   过去每一次落盘都把**整份会话正文**序列化 → 结构化克隆过 IPC → 主进程整份重写盘，
+   长会话时这三笔开销都随消息条数线性涨（合并窗口只是把次数降下来，单次成本没变）。
+   现在渲染层只送「本窗口新增的消息条目 + 尾部增长条目的最新内容」：
+     { id, cver, from, total, entries, tail:{index,msg} }
+   主进程把它们追加到 <id>.jsonl（见 agent-sessions-store.js 的「追加段」段注释），
+   超过阈值 / 会话收尾 / 切换会话 / 退出时再整份压回基线。这里只维护三份本地状态：
+     · _sessionDiskLen   = 盘上基线 + 追加段已知的 messages 条数（delta.from 的起点）
+     · _sessionDeltaCver = 这一会话已送达的批次号（只用于对账 / 诊断，不作为重放判据）
+     · _sessionCompact   = 待压缩的会话（随下一次保存一起下发，主进程压回基线）
+   任何一项对不上（盘上被外面换过 / 上次没落地 / 会话被压缩变短）→ 退回整份正文，
+   绝不靠猜位置把消息贴错。 */
+S._sessionDiskLen = S._sessionDiskLen instanceof Map ? S._sessionDiskLen : new Map();
+S._sessionDeltaCver = S._sessionDeltaCver instanceof Map ? S._sessionDeltaCver : new Map();
+S._sessionCompact = S._sessionCompact instanceof Set ? S._sessionCompact : new Set();
+/* 记住「盘上已知条数」（读回正文时 / 主进程回执里都会调） */
+function agentSessionDiskLenSet(id, len) {
+  const sid = String(id || "");
+  if (!sid) return;
+  const n = Number(len);
+  if (!Number.isFinite(n) || n < 0) return;
+  if (!(S._sessionDiskLen instanceof Map)) S._sessionDiskLen = new Map();
+  S._sessionDiskLen.set(sid, n);
+}
+/* 排一次「整份压缩」（会话收尾 / 切换会话 / 退出时调；随下一次保存一起下发，幂等） */
+function agentQueueSessionCompact(id) {
+  const sid = String(id || "");
+  if (!sid) return false;
+  if (!(S._sessionCompact instanceof Set)) S._sessionCompact = new Set();
+  S._sessionCompact.add(sid);
+  return true;
+}
+/* 追加段（delta）：盘上已知条数对得上才给，否则返回 null（调用方改送整份正文）。
+   条目定位：entries[0] 在正文 messages 里的下标 = from = 盘上已知条数；
+   尾部增长条目 = messages[from - 1] 的最新内容（流式那一轮每写一次就重送这一条）。 */
+function agentSessionDeltaForDisk(s) {
+  const id = String((s && s.id) || "");
+  if (!id) return null;
+  const sent = S._sessionDiskLen instanceof Map ? S._sessionDiskLen.get(id) : undefined;
+  if (!Number.isFinite(sent) || sent < 0) return null;
+  const msgs = agentSessionDiskMessages(s);
+  /* 内存比盘上还短 = 会话被压缩 / 回退过：追加段表达不了「删条目」，只能整份重发 */
+  if (msgs.length < sent) return null;
+  /* 空会话又没有任何变化：没有可追加的东西，整份写一次（只在首次落盘时发生） */
+  if (!msgs.length && !sent) return null;
+  return {
+    id: id,
+    /* 版本号：渲染层这一批次的序号（随记录落进追加段备查）；重放判据用的是主进程
+       按会话单调分配的 ver —— 两者都在回执里对得上才更新本地状态 */
+    cver: (Number(S._sessionDeltaCver instanceof Map ? S._sessionDeltaCver.get(id) : 0) || 0) + 1,
+    from: sent,
+    total: msgs.length,
+    entries: msgs.slice(sent),
+    tail: sent > 0 ? { index: sent - 1, msg: msgs[sent - 1] } : null,
+  };
+}
+/* 追加段回执的收尾：对齐「盘上已知条数」/ 批次号；needFull 的会话下一轮整份重发；
+   压缩成功的会话从待压名单里摘掉。 */
+function agentSettleSessionDelta(res) {
+  if (!res || res.ok === false) return;
+  if (!(S._sessionFullRetry instanceof Map)) S._sessionFullRetry = new Map();
+  for (const it of Array.isArray(res.appendedList) ? res.appendedList : []) {
+    if (!it || !it.id) continue;
+    const sid = String(it.id);
+    agentSessionDiskLenSet(sid, it.len);
+    const c = Number(it.cver) || 0;
+    if (c && S._sessionDeltaCver instanceof Map) {
+      S._sessionDeltaCver.set(sid, Math.max(Number(S._sessionDeltaCver.get(sid)) || 0, c));
+    }
+    /* 这一条已经贴上了 → 它的整份重发次数清零 */
+    if (S._sessionFullRetry instanceof Map) S._sessionFullRetry.delete(sid);
+  }
+  if (S._sessionCompact instanceof Set) {
+    for (const id of Array.isArray(res.compactedIds) ? res.compactedIds : []) {
+      S._sessionCompact.delete(String(id));
+    }
+  }
+  const full = (Array.isArray(res.needFull) ? res.needFull : []).map(String).filter(Boolean);
+  if (!full.length) return;
+  let again = 0;
+  for (const id of full) {
+    /* 位置对不上：忘掉本地「盘上已知条数」（下一轮走整份正文），并把这条重新排队 */
+    if (S._sessionDiskLen instanceof Map) S._sessionDiskLen.delete(id);
+    if (S._sessionDeltaCver instanceof Map) S._sessionDeltaCver.delete(id);
+    if (S._sessionDirty instanceof Set) S._sessionDirty.add(id);
+    /* 整份重发最多自动补 3 次（盘上被反复外部改写的会话也不能在这里自激成死循环）；
+       之后等下一次自然保存再试 —— 数据仍在内存里，不会丢。 */
+    const n = (Number(S._sessionFullRetry.get(id)) || 0) + 1;
+    S._sessionFullRetry.set(id, n);
+    if (n <= 3) again++;
+  }
+  if (!again) return;
+  /* 立刻补一次整份重发（不占用户操作路径；失败就等下一次自然保存） */
+  setTimeout(() => {
+    Promise.resolve(agentWriteAgentSessions()).catch(() => {});
+  }, 0);
+}
 /* 记一次「这条会话改了」：等窗口过去或有人 flush 时一起落盘。 */
 function agentMarkSessionDirty(id) {
   if (!id) return;
@@ -3291,8 +3390,12 @@ function agentMarkSessionDrop(id) {
   if (!sid) return false;
   if (!(S._sessionDrop instanceof Set)) S._sessionDrop = new Set();
   S._sessionDrop.add(sid);
-  /* 已删除的会话不必再作为「脏会话」排队（摘掉只是省一遍白算，不影响结果） */
+  /* 已删除的会话不必再作为「脏会话」排队（摘掉只是省一遍白算，不影响结果）；
+     本地增量记账与待压名单同样清掉（它已经要被删了，压缩没有意义） */
   if (S._sessionDirty instanceof Set) S._sessionDirty.delete(sid);
+  if (S._sessionDiskLen instanceof Map) S._sessionDiskLen.delete(sid);
+  if (S._sessionDeltaCver instanceof Map) S._sessionDeltaCver.delete(sid);
+  if (S._sessionCompact instanceof Set) S._sessionCompact.delete(sid);
   return true;
 }
 /* 立即把排队的会话改动写下去（调用方 await 它就等于「已经落盘」）。 */
@@ -3303,8 +3406,21 @@ function agentFlushSessionSave() {
   }
   return Promise.resolve(agentWriteAgentSessions()).catch(() => {});
 }
-/* 真正落盘：送「脏会话的完整持久化对象 + 索引元数据」，未加载的只有元数据。 */
-async function agentWriteAgentSessions() {
+/* 真正落盘：脏会话送「增量（新增条目 + 尾部增长条目）」或整份正文（对不上时兜底），
+   未加载的只有索引元数据；外加待压名单（compact）与待删名单（drop）。
+   **串行化**（追加段的前提）：两笔落盘同时在飞会撞同一个 from —— 第二笔必然被判
+   「位置对不上」而白退一次整份重发。调用点照旧直接调 agentWriteAgentSessions，
+   内部排成一条链：上一笔落了地，下一笔再按最新状态算 payload。 */
+function agentWriteAgentSessions() {
+  const prev = S._sessionSaveChain || Promise.resolve();
+  const run = prev.then(
+    () => agentWriteAgentSessionsNow(),
+    () => agentWriteAgentSessionsNow(),
+  );
+  S._sessionSaveChain = run.catch(() => {});
+  return run;
+}
+async function agentWriteAgentSessionsNow() {
   const dirty = S._sessionDirty instanceof Set ? S._sessionDirty : new Set();
   const list = agentSessions();
   /* 60 条截断（原样口径：只留最近 60 条）：被截掉的会话**文件**也从盘上删掉
@@ -3315,6 +3431,10 @@ async function agentWriteAgentSessions() {
       if (!s || !s.id) continue;
       dirty.add(String(s.id));
       dropped.push(String(s.id));
+      /* 这条马上要被删掉：本地增量记账一起清掉（否则待压名单永远压不掉一条已删会话） */
+      if (S._sessionDiskLen instanceof Map) S._sessionDiskLen.delete(String(s.id));
+      if (S._sessionDeltaCver instanceof Map) S._sessionDeltaCver.delete(String(s.id));
+      if (S._sessionCompact instanceof Set) S._sessionCompact.delete(String(s.id));
     }
     list.splice(60);
     /* 被截断挤掉的正好是当前助手会话 → 指针清空（别指一条已经删掉的文件）。
@@ -3349,13 +3469,15 @@ async function agentWriteAgentSessions() {
       if (!isDirty && !s._lcLoaded) continue;
       const meta = agentSessionMetaForDisk(s);
       if (isDirty && s._lcLoaded) {
-        /* 脏 + 正文在内存：送完整持久化对象（主进程逐字比对后才真写盘）。
-           正文一条不裁（见 agentSessionBodyForDisk 上方的口径说明）：过去这里写完盘再把
-           内存里那份裁到上限，一并删掉。 */
-        payloadSessions.push(Object.assign({}, meta, { body: agentSessionBodyForDisk(s) }));
+        /* 脏 + 正文在内存：只送**追加段**（本窗口新增条目 + 尾部增长条目的最新内容）。
+           盘上已知条数对不上（首次落盘 / 上次没落地 / 会话被压缩变短）时才退回整份正文。
+           正文一条不裁（见 agentSessionBodyForDisk 上方的口径说明）。 */
+        const delta = agentSessionDeltaForDisk(s);
+        if (delta) payloadSessions.push(Object.assign({}, meta, { delta: delta }));
+        else payloadSessions.push(Object.assign({}, meta, { body: agentSessionBodyForDisk(s) }));
       } else if (isDirty) {
         /* 脏但正文不在内存（只有索引里的元数据被改过：改名 / 归档 / 拖序…）：
-           只更新索引条目 —— 主进程见到 body 缺省就绝不碰会话文件。 */
+           只更新索引条目 —— 主进程见到 body / delta 缺省就绝不碰会话文件。 */
         payloadSessions.push(Object.assign({}, meta, { loaded: false }));
       } else {
         /* 正文在内存、这次没改过：只送元数据，让索引（含它记的签名）与原样文件对齐 */
@@ -3365,8 +3487,12 @@ async function agentWriteAgentSessions() {
     }
   });
   const activeId = String(activeAgentId() || "");
-  if (!payloadSessions.length && !dropped.length && S._agentActiveIdSynced === activeId) {
-    return; /* 没有任何改动、活动会话也没换：一次 IPC 都不发 */
+  /* 切换会话 = 上一条活动会话的追加段收尾：把它的 delta 整份压回基线（幂等，主进程做） */
+  const prevActive = String(S._agentActiveIdSynced || "");
+  if (prevActive && prevActive !== activeId) agentQueueSessionCompact(prevActive);
+  const compact = S._sessionCompact instanceof Set ? Array.from(S._sessionCompact) : [];
+  if (!payloadSessions.length && !dropped.length && !compact.length && S._agentActiveIdSynced === activeId) {
+    return; /* 没有任何改动、活动会话也没换、没有待压缩：一次 IPC 都不发 */
   }
   S._agentActiveIdSynced = activeId;
   dirty.clear();
@@ -3386,7 +3512,7 @@ async function agentWriteAgentSessions() {
         payloadBytes = 0;
       }
     }
-    const p = api({ activeId: activeId, sessions: payloadSessions, drop: dropped });
+    const p = api({ activeId: activeId, sessions: payloadSessions, drop: dropped, compact: compact });
     res = await (P && typeof P.spanAsync === "function"
       ? P.spanAsync("会话落盘·写盘", p, "payload " + Math.round(payloadBytes / 1024) + "KB")
       : p);
@@ -3395,6 +3521,8 @@ async function agentWriteAgentSessions() {
   }
   /* 待删名单的收尾只看回执：写盘成功才摘，失败留着重试（见 agentSettleSessionDrop） */
   agentSettleSessionDrop(dropped, res);
+  /* 追加段回执：对齐「盘上已知条数」/ 批次号；needFull 的会话下一轮改送整份正文 */
+  agentSettleSessionDelta(res);
   return res;
 }
 /* 落盘回执决定「待删名单」的去留（用户口径 · 已确认）：
@@ -3588,6 +3716,9 @@ function agentLiveWatchEnd(st) {
     clearInterval(st._liveSaveTimer);
     st._liveSaveTimer = null;
   }
+  /* 本轮收尾 = 这条会话的追加段落定：排一次整份压缩，随下一次保存（本轮结束必然会有）
+     把 <id>.jsonl 压回基线（幂等；主进程一次只压一条，不占用户操作路径）。 */
+  if (st && st.id) agentQueueSessionCompact(st.id);
 }
 /* 这一轮「到此刻为止」的正文快照（从轨迹取，不碰 messages）：
    没有产出就返回 null（不落空壳）。段快照一并带上，轨迹 / 改动两栏重启后也读得出来。 */
@@ -3617,41 +3748,47 @@ function agentLivePartialMsg(st) {
   } catch (_) {}
   return m;
 }
-/* 会话正文 = 落盘白名单里「除索引元数据以外」的那一份（与原 config.agentSessions 逐字同构） */
-function agentSessionBodyForDisk(s) {
-  /* 轮中增量（见 agentLivePartialMsg）：这一轮还在跑就把已到达的那半段一起写下去。
-     只在这一刻追加进**序列化结果**，内存里的 s.messages 一字不动。 */
+/* 会话正文的 messages 列表（落盘形状，整份与追加段共用同一份）：
+   整对象（含 reasoning / tools / segments / usageSteps），**条数不裁**
+   （本次需求：一条都不裁，见本文件上方「会话消息不做条数裁剪」的口径说明）。
+   轨迹与改动两栏的数据源就是每条助手消息的 m.segments / m.tools / m.usageSteps，
+   历史上两次条数闸（固定 100 条 / 按轮 1920 条）都在这里与开轮处把最老的整条消息切掉，
+   那一轮的每步 token 也跟着没了 —— 现在整道去掉。
+   segments 仍限单段字数（只夹长，段一条不丢，见 agentSegsForDisk）——
+   段一丢，工具 chip 就会从消息尾部压住最终回复。
+   轮中增量（见 agentLivePartialMsg）：这一轮还在跑就把已到达的那半段追加在**序列化结果**里，
+   内存里的 s.messages 一字不动（它就是增量的「尾部增长条目」）。 */
+function agentSessionDiskMessages(s) {
   let partial = null;
   try {
     partial = agentLivePartialMsg(s);
   } catch (_) {
     partial = null;
   }
-  return Object.assign({}, agentSessionMetaForDisk(s), {
-    /* 整对象落盘（含 reasoning / tools / segments / usageSteps），**条数不裁**
-       （本次需求：一条都不裁，见本文件上方「会话消息不做条数裁剪」的口径说明）。
-       轨迹与改动两栏的数据源就是每条助手消息的 m.segments / m.tools / m.usageSteps，
-       历史上两次条数闸（固定 100 条 / 按轮 1920 条）都在这里与开轮处把最老的整条消息切掉，
-       那一轮的每步 token 也跟着没了 —— 现在整道去掉。
-       segments 仍限单段字数（只夹长，段一条不丢，见 agentSegsForDisk）——
-       段一丢，工具 chip 就会从消息尾部压住最终回复。 */
-    messages: (s.messages || [])
-      .map((m) => {
-        if (!m || !Array.isArray(m.segments) || !m.segments.length) return m;
-        try {
-          const segs = agentSegsForDisk(m.segments);
-          const c = Object.assign({}, m);
-          if (segs && segs.length) c.segments = segs;
-          else delete c.segments;
-          return c;
-        } catch (_) {
-          return m;
-        }
-      })
-      .concat(partial ? [partial] : []),
+  const out = (s.messages || []).map((m) => {
+    if (!m || !Array.isArray(m.segments) || !m.segments.length) return m;
+    try {
+      const segs = agentSegsForDisk(m.segments);
+      const c = Object.assign({}, m);
+      if (segs && segs.length) c.segments = segs;
+      else delete c.segments;
+      return c;
+    } catch (_) {
+      return m;
+    }
+  });
+  return partial ? out.concat([partial]) : out;
+}
+/* 会话正文（整份）= 落盘白名单里「除索引元数据以外」的那一份（与原 config.agentSessions 逐字同构）。
+   整份写完 = 盘上条数就等于这份 messages 的条数 → 顺手把增量起点对齐（否则下一轮还会整份重发）。 */
+function agentSessionBodyForDisk(s) {
+  const body = Object.assign({}, agentSessionMetaForDisk(s), {
+    messages: agentSessionDiskMessages(s),
     _lcLoaded: undefined,
     _lcDirty: undefined,
   });
+  agentSessionDiskLenSet(String((s && s.id) || ""), body.messages.length);
+  return body;
 }
 /* 会话落盘入口（本文档 110+ 处调用点只用它的「会有一次落盘」语义）：
    改动进合并窗口（AGENT_SAVE_MS = 2000 ms），窗口过去或有人 flush 时一起写；新会话在 newAgentSession
@@ -5960,6 +6097,9 @@ const DSH_TOOL_TITLE_RULES = [
   [/^(subagent_fork|agent_task)$/i, "派生子智能体"],
   [/^subagent$/i, "子智能体"],
   [/^mtnode_vision$/i, "读取图片"],
+  /* 本地媒体（dsh/gateway/media-plugin.mjs）：转写走本地 SenseVoice，ffmpeg 做探测 / 抽音轨 / 抽帧 */
+  [/^audio_transcribe$/i, "转写语音"],
+  [/^ffmpeg$/i, "ffmpeg 处理"],
   /* ── 非 dsh 工具（本次需求）──────────────────────────────────────────────
      上面那些是 dsh 引擎自带的工具族；下面这批不是引擎自带的 —— MTNode 自有工具
      （画布 / 应用 / 识图 / 数据库 / 事实库 / 素材库 / 长任务状态 / 会话自己的浏览器，
@@ -6012,6 +6152,7 @@ function dshToolTitleOf(t) {
    只影响渲染：工具可见性、许可与网关行为一律不动。 */
 const DSH_CUSTOM_TOOL_RES = [
   /^mtnode_/i,
+  /^(audio_transcribe|ffmpeg)$/i,
   /^lt_/i,
   /^browser_/i,
   /^(ask_user_question|create_goal|get_goal|update_goal|todo_write|subagent_fork|list_agents|send_message|interrupt_agent|job_list|job_output|job_kill)$/i,
@@ -11049,6 +11190,210 @@ function renderAgentSession(opts) {
     return P.span("会话列表整表重建", () => renderAgentSessionRaw(opts));
   return renderAgentSessionRaw(opts);
 }
+/* ═══════════ 行级增量：可见条目的稳定 key → DOM 映射（本次需求）═══════════════
+   为什么：`list.innerHTML = ""` + 逐条重建在 200 条消息上是 100 ms 级的大块，会话运行期间
+   每来一次「必须整份对齐」的重绘就砸一次主线程。改成行级增量之后，一次重绘只做两件事：
+   新建**新增**的那些行（appendChild）与就地更新**尾部正在增长**的那一行，其余行原样复用
+   —— 连同它们已经挂上的交互状态（展开 / 折叠 / 选中）都不会被抹掉。
+   判据（必须同时成立才复用）：key 相同 + 这一行的「内容指纹」相同 + 视图档位没变。 */
+/* 内容指纹用的便宜滚动哈希（只判断「这一行要不要重画」，不做安全用途） */
+function agentRowHash(str) {
+  const s = String(str || "");
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+/* 一条消息行的指纹：正文 / 思考 / 段（文本 + 身份）/ 工具记录 / 窗口裁段起点。
+   任何一项变了就必须重画（段在流式里长高、工具卡从「运行中」转「已完成」都属于这一档）。 */
+function agentMsgRowSig(m, segFrom) {
+  if (!m) return "null";
+  const parts = [
+    String(segFrom || 0),
+    String(m.role || ""),
+    String(m._src || ""),
+    String(m._kind || ""),
+    String(m._steerState || ""),
+    String(Number(m.at) || 0),
+    String(m._fold || ""),
+    dshMsgSegsViewable(m) ? "v1" : "v0",
+    m._segNoBody ? "nb" : "",
+  ];
+  const txt = String(m.content == null ? "" : m.content);
+  parts.push(txt.length, agentRowHash(txt));
+  const rsn = String(m.reasoning || "");
+  parts.push(rsn.length, agentRowHash(rsn));
+  const segs = Array.isArray(m.segments) ? m.segments : null;
+  if (segs) {
+    parts.push("#" + segs.length);
+    for (const sg of segs) {
+      if (!sg) {
+        parts.push("-");
+        continue;
+      }
+      const t = String(sg.text || "");
+      parts.push(
+        String(sg.k || ""),
+        t.length,
+        agentRowHash(t),
+        String(sg.callId || ""),
+        String(sg.step == null ? "" : sg.step),
+      );
+    }
+  }
+  const tools = Array.isArray(m.tools) ? m.tools : null;
+  if (tools) {
+    parts.push("t" + tools.length);
+    for (const t of tools) {
+      if (!t) {
+        parts.push("-");
+        continue;
+      }
+      parts.push(
+        String(t.callId || ""),
+        String(t.step == null ? "" : t.step),
+        t.result ? "r1" : "r0",
+        t.error ? "e1" : "e0",
+        String(t.status || ""),
+      );
+    }
+  }
+  return parts.join("\u0001");
+}
+/* 视图档位指纹（显示思考 / 展开口径 / 界面语言）：档位一变，行级映射整份作废 ——
+   下一次重绘把所有行重画一遍，等价于原来的整表重建（开关一拨就立刻看得见）。 */
+function agentRowsViewSig(st) {
+  const sid = String((st && st.id) || "agent");
+  let pol = null;
+  try {
+    pol = dshPolicyOfView(dshTranscriptViewOfSessionId(sid));
+  } catch (_) {
+    pol = null;
+  }
+  return [
+    agentThinkShown(st) ? "t1" : "t0",
+    String((typeof I18n !== "undefined" && I18n && (I18n.lang || I18n.locale)) || ""),
+    pol && pol.expandProcess ? "p1" : "p0",
+  ].join("|");
+}
+/* 列表元素上的 key → 行 映射（换会话 / 换档位即作废；旧节点留给下一次对账摘掉） */
+function agentRowsMapOf(list, st) {
+  const sid = String((st && st.id) || "");
+  const view = agentRowsViewSig(st);
+  if (!list._agentRowMap || list._agentRowSid !== sid || list._agentRowView !== view) {
+    list._agentRowMap = new Map();
+    list._agentRowSid = sid;
+    list._agentRowView = view;
+  }
+  return list._agentRowMap;
+}
+/* 下一个兄弟节点：真 DOM 走 nextSibling；迷你 DOM（冒烟用的极简实现）没有这个属性，
+   退回按父节点的子列表找 —— 对账游标不能在两处口径上赌一个属性。 */
+function agentNextSiblingOf(node) {
+  if (!node) return null;
+  if (node.nextSibling !== undefined) return node.nextSibling;
+  const p = node.parentNode;
+  const kids = p && (p.childNodes || p.children);
+  if (!kids) return null;
+  const i = Array.prototype.indexOf.call(kids, node);
+  return i >= 0 ? kids[i + 1] || null : null;
+}
+/* 第一个孩子：同上（迷你 DOM 可能两样都没有，按子列表兜底） */
+function agentFirstChildOf(parent) {
+  if (!parent) return null;
+  if (parent.firstChild !== undefined) return parent.firstChild;
+  const kids = parent.childNodes || parent.children;
+  return (kids && kids[0]) || null;
+}
+/* 按序对账：命中的行原样留着（不碰它的子节点），缺的插入、顺序不对的挪位、多出来的摘掉。
+   结果与「按 entries 顺序从空列表重建一遍」完全一致，但只动变化的节点。
+   entries 项：{ key, sig, el, kids? }（kids = 折组展开时 .agent-fold-body 里的子条目）。 */
+function agentRowsCommit(list, entries) {
+  const next = new Map();
+  const walk = (parent, items) => {
+    let cur = agentFirstChildOf(parent);
+    for (const d of items) {
+      if (!d || !d.el) continue;
+      if (d.el.parentNode !== parent || d.el !== cur) parent.insertBefore(d.el, cur || null);
+      else cur = agentNextSiblingOf(cur);
+      next.set(d.key, d);
+      if (d.kids) walk(d.el, d.kids);
+    }
+    /* 剩下的都是这一帧不该有的（含换会话 / 换档位遗留的旧行） */
+    while (cur) {
+      const nx = agentNextSiblingOf(cur);
+      parent.removeChild(cur);
+      cur = nx;
+    }
+  };
+  walk(list, entries);
+  list._agentRowMap = next;
+}
+/* 运行中那一行（尾部正在增长）：行壳由调用方复用，这里只更新它自己内部的节点 ——
+   分段落交给 agentLiveSegsEl 自己的对账（只新建新增段），非分段老路径就地换思考条 /
+   重建工具区 / 写流式正文。两个方向都要能把对方那一支的残留摘干净。 */
+function agentLiveRowPaint(row, st, live, segItems) {
+  if (segItems) {
+    row.dataset.seg = "1";
+    for (const sel of [".dsh-tools", "#agent-stream", ".dsh-think-row"]) {
+      const stale = row.querySelector(sel);
+      if (stale) stale.remove();
+    }
+    const box =
+      st._liveBox && st._liveBox.nodeType === 1 ? st._liveBox : document.createElement("div");
+    st._liveBox = box;
+    box.className = "dsh-msg-body dsh-msg-segs";
+    agentLiveSegsEl(box, st, live, segItems);
+    if (box.parentNode !== row) row.appendChild(box);
+    return;
+  }
+  delete row.dataset.seg;
+  st._liveBox = null;
+  const staleSegs = row.querySelector(".dsh-msg-segs");
+  if (staleSegs) staleSegs.remove();
+  /* 思考同样只给一行可点开的摘要条（全文在弹窗里读） */
+  const tRow = dshThinkRowEl({
+    text: agentThinkText(st, live),
+    scopeId: st.id,
+    segKey: "think-live:" + (st.id || ""),
+    at: Date.now(),
+  });
+  const oldThink = row.querySelector(".dsh-think-row");
+  if (tRow && agentThinkShown(st)) {
+    if (oldThink) row.replaceChild(tRow, oldThink);
+    else row.appendChild(tRow);
+  } else if (oldThink) {
+    oldThink.remove();
+  }
+  updateAgentThinkEl(st, live);
+  let tools = row.querySelector(".dsh-tools");
+  if (!tools) {
+    tools = document.createElement("div");
+    tools.className = "dsh-tools";
+    tools.id = "agent-tools";
+    row.appendChild(tools);
+  }
+  const liveTools = live
+    ? (S.nodeTools && S.nodeTools[live.id]) || []
+    : Array.isArray(st._liveTools)
+      ? st._liveTools
+      : [];
+  tools.textContent = "";
+  for (const t of liveTools) tools.appendChild(dshToolDetailsEl(t, true, live ? live.id : st.id));
+  let body = row.querySelector("#agent-stream");
+  if (!body) {
+    body = document.createElement("div");
+    body.className = "dsh-msg-body dsh-stream";
+    body.id = "agent-stream";
+    row.appendChild(body);
+  }
+  body.textContent = live ? traceSayDisplay(live.id, live._pendingAnswer) : st._pending || "";
+  /* 顺序固定为 思考条 → 工具区 → 正文（复用行被换过位置时也拉回来） */
+  row.appendChild(tools);
+  row.appendChild(body);
+}
 function renderAgentSessionRaw(opts) {
   const st = agentSessionState();
   /* 懒加载：这条会话只有索引（正文还在 agent-sessions/ 里）→ 先读回来，等它到位再画。
@@ -11076,34 +11421,59 @@ function renderAgentSessionRaw(opts) {
   /* 本次需求：会话列表里不再有可滚的思考正文（思考只剩一行摘要条，正文在 #overlay
      的思考弹窗里），所以原来「清空前记住思考滚动位置、重建后再还原」那一步整条撤掉 ——
      再叫一次也只是拿一个永远不存在的 #agent-think-body。 */
-  list.innerHTML = "";
-  if (list) list.style.display = "";
+  /* ── 行级增量（本次需求 · 把整表重建换成只动变化的那几行）──────────────────────
+     这里原来是一句 `list.innerHTML = ""` 把 200 行全拆了重建。现在按稳定 key 复用：
+       · 每个可见条目算一个 key（消息 = 它在 st.messages 里的绝对序号；折叠条 / 折组正文
+         容器 /「显示更早内容」/ 空态 / 运行中那一行各有固定键）；
+       · 列表现有的同 key 行 + 内容指纹没变 → 原样留着（连交互状态一起）；
+       · 只有新增条目才新建元素，尾部正在增长的「运行中」那一行就地更新它内部的节点
+         （agentLiveRowPaint → 段容器自己的对账）；
+       · 顺序 / 多余节点由 agentRowsCommit 统一收口（结果与「按序重建一遍」等价）。
+     换会话、换视图档位（显示思考 / 展开口径 / 界面语言）→ 映射整份作废 = 一次整表重建。 */
+  list.style.display = "";
+  const rowMap = agentRowsMapOf(list, st);
+  const rowEntries = [];
+  const takeRow = (key, sig, build) => {
+    const prev = rowMap.get(key);
+    const el =
+      prev && prev.sig === sig && prev.el && prev.el.nodeType === 1 ? prev.el : build();
+    return { key, sig, el };
+  };
   if (!st.messages.length && !running) {
-    const hint = document.createElement("div");
-    hint.className = "agent-empty";
-    hint.textContent = I18n.t("选择一个工作区开始，直接描述你要完成的任务。");
-    list.appendChild(hint);
+    rowEntries.push(
+      takeRow("@empty", "1", () => {
+        const hint = document.createElement("div");
+        hint.className = "agent-empty";
+        hint.textContent = I18n.t("选择一个工作区开始，直接描述你要完成的任务。");
+        return hint;
+      }),
+    );
   }
   /* 最多渲染最近 AGENT_MAX_VISIBLE_ITEMS 条(消息 + 段),更早的在列表最前端手动展开 */
   const slice = agentEntrySlice(st);
   const hiddenEntries = Math.max(0, slice.total - slice.shown);
   if (hiddenEntries > 0) {
-    const loadRow = document.createElement("div");
-    loadRow.className = "agent-load-earlier";
-    const btn = document.createElement("button");
-    btn.textContent = I18n.t("显示更早内容（已折叠 {n} 条）", { n: hiddenEntries });
-    btn.title = I18n.t("每个会话最多同时渲染 200 条，点击展开更早的 200 条");
-    btn.addEventListener("click", () => {
-      const l = $("#agentList");
-      const prevScroll = l ? l.scrollTop : 0;
-      const prevH = l ? l.scrollHeight : 0;
-      st._visItems = slice.vis + AGENT_LOAD_MORE_ITEMS;
-      renderAgentSession();
-      const l2 = $("#agentList");
-      if (l2 && prevH > 0) setConvScrollTop(l2, prevScroll + (l2.scrollHeight - prevH));
-    });
-    loadRow.appendChild(btn);
-    list.appendChild(loadRow);
+    /* 条数（提示里的 n）变了才换新的按钮；复用时不重建，但点击时按当下预算取 vis */
+    rowEntries.push(
+      takeRow("@earlier", String(hiddenEntries), () => {
+        const loadRow = document.createElement("div");
+        loadRow.className = "agent-load-earlier";
+        const btn = document.createElement("button");
+        btn.textContent = I18n.t("显示更早内容（已折叠 {n} 条）", { n: hiddenEntries });
+        btn.title = I18n.t("每个会话最多同时渲染 200 条，点击展开更早的 200 条");
+        btn.addEventListener("click", () => {
+          const l = $("#agentList");
+          const prevScroll = l ? l.scrollTop : 0;
+          const prevH = l ? l.scrollHeight : 0;
+          st._visItems = agentEntrySlice(st).vis + AGENT_LOAD_MORE_ITEMS;
+          renderAgentSession();
+          const l2 = $("#agentList");
+          if (l2 && prevH > 0) setConvScrollTop(l2, prevScroll + (l2.scrollHeight - prevH));
+        });
+        loadRow.appendChild(btn);
+        return loadRow;
+      }),
+    );
   }
   /* 会话消息逐条渲染（仅限可见列表内；回滚入口已随会话轮次回滚功能一并移除）。
      手动压缩留下的折组在这里收口：组内第一条消息的位置上画那**一行折叠条**（标题里的
@@ -11111,46 +11481,56 @@ function renderAgentSessionRaw(opts) {
      按原样接在折叠条下面（同一个 .agent-fold-body 容器里，见 agentFoldRowEl）。 */
   const foldSeen = Object.create(null);
   const foldCollapsed = Object.create(null);
-  let foldBox = null;
+  let foldKids = null;
   for (let i = slice.start; i < slice.msgs.length; i++) {
     const m = slice.msgs[i];
     const gid = m && m._fold ? String(m._fold) : "";
-    if (!gid) foldBox = null;
+    if (!gid) foldKids = null;
     if (gid) {
       if (!foldSeen[gid]) {
         foldSeen[gid] = 1;
         const rec = compactRecOf(st, gid);
         const open = !!(st.foldOpen && st.foldOpen[gid]);
+        const foldCount = (rec && rec.count) || agentFoldCountOf(slice.msgs, gid);
+        const foldAt = rec && rec.at;
+        /* 折叠条自己也是一行：展开 / 收起 / 条数 / 时刻变了才重画 */
+        let foldRow = null;
         try {
-          list.appendChild(
-            agentFoldRowEl(
-              st,
-              gid,
-              (rec && rec.count) || agentFoldCountOf(slice.msgs, gid),
-              rec && rec.at,
-              open,
-            ),
+          foldRow = takeRow(
+            "fold:" + gid,
+            [open ? "1" : "0", String(foldCount), String(Number(foldAt) || 0)].join("|"),
+            () => agentFoldRowEl(st, gid, foldCount, foldAt, open),
           );
-        } catch (_) {}
-        foldBox = null;
+        } catch (_) {
+          foldRow = null;
+        }
+        if (foldRow && foldRow.el) rowEntries.push(foldRow);
+        foldKids = null;
         if (!open) {
           foldCollapsed[gid] = 1;
           continue;
         }
-        foldBox = document.createElement("div");
-        foldBox.className = "agent-fold-body";
-        list.appendChild(foldBox);
+        /* 展开的组：组内消息装在 .agent-fold-body 里（它自己也是一个可复用的行容器） */
+        const foldBox = takeRow("foldbox:" + gid, "1", () => {
+          const box = document.createElement("div");
+          box.className = "agent-fold-body";
+          return box;
+        });
+        foldBox.kids = [];
+        rowEntries.push(foldBox);
+        foldKids = foldBox.kids;
       } else if (foldCollapsed[gid]) {
         continue;
       }
     }
+    const target = foldKids || rowEntries;
+    /* 窗口起点那条消息若被裁过段：前面的段不进 DOM（它们的工具也已对账掉） */
+    const segFrom = i === slice.start ? slice.skip : 0;
     try {
-      (foldBox || list).appendChild(
-        dshMsgBlock(m, st.id || "agent", i, {
-          /* 窗口起点那条消息若被裁过段：前面的段不进 DOM（它们的工具也已对账掉） */
-          segFrom: i === slice.start ? slice.skip : 0,
-        }),
+      const entry = takeRow("m:" + i, agentMsgRowSig(m, segFrom), () =>
+        dshMsgBlock(m, st.id || "agent", i, { segFrom }),
       );
+      if (entry.el) target.push(entry);
     } catch (e) {
       /* 单条消息坏数据不拖垮整表：跳过并留痕，避免列表停在旧消息处 */
       try {
@@ -11159,64 +11539,31 @@ function renderAgentSessionRaw(opts) {
     }
   }
   if (running) {
-    const row = document.createElement("div");
-    row.className = "dsh-msg dsh-ai";
-    const head = document.createElement("div");
-    head.className = "dsh-msg-head";
-    const role = document.createElement("span");
-    role.className = "dsh-role live";
-    role.textContent = I18n.t("AI · 运行中");
-    head.appendChild(role);
-    row.appendChild(head);
     const segItems = agentChatSegItems(st);
-    if (segItems) {
-      /* 分段轨迹：思考 / 正文 / 工具 / 错误按发生顺序逐段插进容器。
-         会话主体不画竖线（竖线 + 时间轴只属于「轨迹」视图，见 app-trajectory.js） */
-      row.dataset.seg = "1";
-      /* 段容器**跨帧复用**（本次需求 · 取消 200 段封顶的配套）：整表重绘每次都会
-         `list.innerHTML = ""`，但那只是把这一段 DOM 从父节点上摘下来 —— 元素本身连同
-         已经建好的各个段还在，重新 append 回去即可，agentLiveSegsEl 只需补新增的尾段
-         （对账口径见那边）。换轮 / 换会话 / 段数变少时它自己整份重建，绝不显示旧内容。 */
-      const box =
-        st._liveBox && st._liveBox.nodeType === 1 ? st._liveBox : document.createElement("div");
-      st._liveBox = box;
-      box.className = "dsh-msg-body dsh-msg-segs";
-      agentLiveSegsEl(box, st, live, segItems);
-      row.appendChild(box);
-    } else {
-      st._liveBox = null;
-      /* 非分段（老路径）：思考同样只给一行可点开的摘要条（本次需求）
-         —— 全文改在弹窗里读，不再有下拉开合。 */
-      const tRow = dshThinkRowEl({
-        text: agentThinkText(st, live),
-        scopeId: st.id,
-        segKey: "think-live:" + (st.id || ""),
-        at: Date.now(),
-      });
-      /* 「显示思考」关掉时这一行不挂进 DOM（思考数据仍在，打开开关即重绘看回） */
-      if (tRow && agentThinkShown(st)) row.appendChild(tRow);
-      updateAgentThinkEl(st, live);
-      const tools = document.createElement("div");
-      tools.className = "dsh-tools";
-      tools.id = "agent-tools";
-      const liveTools = live
-        ? (S.nodeTools && S.nodeTools[live.id]) || []
-        : Array.isArray(st._liveTools)
-          ? st._liveTools
-          : [];
-      for (const t of liveTools)
-        tools.appendChild(dshToolDetailsEl(t, true, live ? live.id : st.id));
-      row.appendChild(tools);
-      const body = document.createElement("div");
-      body.className = "dsh-msg-body dsh-stream";
-      body.id = "agent-stream";
-      body.textContent = live
-        ? traceSayDisplay(live.id, live._pendingAnswer)
-        : st._pending || "";
-      row.appendChild(body);
+    /* 运行中那一行：外壳跨帧复用（头部 / 角色不动），内部节点交给 agentLiveRowPaint 就地更新 */
+    const entry = takeRow(
+      "@live",
+      [segItems ? "seg" : "plain", live ? String(live.id) : ""].join("|"),
+      () => {
+        const row = document.createElement("div");
+        row.className = "dsh-msg dsh-ai";
+        const head = document.createElement("div");
+        head.className = "dsh-msg-head";
+        const role = document.createElement("span");
+        role.className = "dsh-role live";
+        role.textContent = I18n.t("AI · 运行中");
+        head.appendChild(role);
+        row.appendChild(head);
+        return row;
+      },
+    );
+    if (entry.el) {
+      agentLiveRowPaint(entry.el, st, live, segItems);
+      rowEntries.push(entry);
     }
-    list.appendChild(row);
   }
+  /* 对账落盘：复用的行原样留着，只动新增 / 换了内容 / 挪了位 / 这一帧不该有的 */
+  agentRowsCommit(list, rowEntries);
   /* 会话最底部（输入框下面）：Token 消耗累计报告 Badge（点击展开，按模型分别累计） */
   if (typeof tokBadgeTailMount === "function") {
     try {

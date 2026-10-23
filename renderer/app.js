@@ -1500,7 +1500,7 @@ const NODE_DEFAULTS = {
      · 端口4=控制输入；输出 端口0=音频内容 · 端口1=控制输出。尺寸参照 music_gen。
      参考源优先级：端子优先，端子空了才用节点设置里选的音色（后端音色库 voices/<id>）。 */
   breeze_gen: {
-    /* 420 起：head 上除了 👤 / ⚙ / ▶ / 控制台，还要并排放下「角色」「组名」两枚下拉 */
+    /* 420 起：body 第一行要并排放「角色 + 组名」两枚带标签的下拉（head 只留 👤） */
     w: 420,
     h: 400,
     /* 一级菜单「音频生成」成员：新建节点默认标题用后端名 */
@@ -1720,8 +1720,10 @@ const NODE_DEFAULTS = {
     running: false,
   },
   /* 函数节点：纯 JS 计算（渲染层宽松执行 · 契约见 js-exec.js 与 docs/tool-function-nodes.md）。
-     inputs/outputs = 参数端子列表 [{name, kind}]（kind: text|image，缺省 text）；
-     jscode = 函数体：入参对象 input = { 参数名: 值 }，return 即输出。
+     inputs/outputs = 参数端子列表 [{name, kind}]（kind: text|image|video|audio，缺省 text）；
+     jscode = 函数体：入参对象 input = { 参数名: 值, params: {...} }，return 即输出。
+     paramsJson = 「参数」端子（9001）没接线时用的默认参数 JSON（文本，一行一份对象）；
+     运行时注入 input.params（9001 深合并覆盖），不改节点字段。
      端子：输入 0 = 控制入（固定）+ 各输入参数；输出 0..n-1 = 各输出参数 + 末位控制出。 */
   function: {
     w: 380,
@@ -1732,7 +1734,7 @@ const NODE_DEFAULTS = {
     jscode: "",
     inputs: [],
     outputs: [],
-    fnTestInputs: [],
+    paramsJson: "",
     /* 「AI 调用」设定：与工具 / 开发节点同一组字段（见 super 段注释）。
        函数节点自己需要借助 AI 时（jscode 里 await mtnode.ai(...)）就用这一套；
        创建时按当前默认路由 / 默认预设补种，改选后立即生效。 */
@@ -1768,8 +1770,11 @@ const NODE_DEFAULTS = {
       outputs: [],
     },
     /* 「试跑」台的输入快照（按输入参数序号存字符串：text = 文本，image = 文件路径）。
-       与函数节点的 fnTestInputs 各自独立，仅测试用 · 不参与画布运行。 */
+       仅测试用 · 不参与画布运行。 */
     toolTestInputs: [],
+    /* 「参数」端子（9001）没接线时用的默认参数 JSON（文本）：运行时作为工具子图的
+       共享参数下发给内部函数节点（input.params），不改节点字段。 */
+    paramsJson: "",
     output: null,
     batchOutputs: null,
     error: null,
@@ -3774,7 +3779,7 @@ function assetWiredPortIndexes(consumer, srcId) {
   const seen = new Set();
   for (const w of S.wf.wires) {
     if (w.rel || w.from !== srcId || w.to !== consumer.id) continue;
-    if (wireFromIsControl(w)) continue;
+    if (typeof wireFromIsControl === "function" && wireFromIsControl(w)) continue;
     const i = Number(w.fromIndex || 0);
     if (seen.has(i)) continue;
     seen.add(i);
@@ -4176,13 +4181,14 @@ function saveDataSources(node) {
 /** 来源节点「某个输出端子」流向下游的媒体类型（单一真源）。
     ⓪ 素材节点：条目类型就是该端子的声明类型（text|image|audio|video，不看实际值 ——
        库里的图像条目即使还没读出内容也仍是图像端子）；
-    ① 工具 / 函数节点：以该端子声明的数据类型为准（参数 kind ∈ text | image，声明优先于实际值，
-       控制端子无声明 → 回落 ②）；② 其余节点 / 未声明时：按节点 kind 与该端子实际值推断。
+    ① 工具 / 函数节点：以该端子声明的数据类型为准（参数 kind ∈ text | image | video | audio，
+       声明优先于实际值，控制端子无声明 → 回落 ②）；
+    ② 其余节点 / 未声明时：按节点 kind 与该端子实际值推断。
     保存节点自动选型、连线校验、连线着色、拖线建节点候选菜单都走这里。 */
 function wireSourceMediaType(node, fromIndex) {
   if (isAssetNode(node)) return assetPortKind(node, "out", fromIndex) || "text";
   const declared = fnToolPortKind(node, "out", fromIndex);
-  if (declared) return declared === "image" ? "image" : "text";
+  if (declared) return declared;
   return inferMediaFromSource(node, fromIndex);
 }
 function saveMediaKind(node) {
@@ -6833,6 +6839,77 @@ function isControlKind(n) {
 ;
 
 
+/* ── 动态端子节点（端子随已连数据线增量）的**专用控制端子** ────────────────
+   proc_text / proc_image / sensenova_gen / agent_task / input_*：输入端子 0 = 提示词 /
+   内容入口，之后每多一条数据线多一颗；控制端子固定在数据槽之后**单独一颗**，
+   数据线永远不占它、控制线也只能落它（与 music_gen / video_gen 的固定控制口同一语义，
+   区别只是号随数据槽增长 —— 数据槽一变就由 syncDynCtrlWires 把控制线重绑过去）。
+   判据与端子数、配色、接线校验、落点、快照共用这一处，不许各处自算一份：
+   inPortIsControl / inPortKindOf / inputCount（app.js）、dataNodeControlInPort /
+   connectError / addWire / removeWire（app-nodes.js）、端口徽标（app-canvas.js）。 */
+function isDynCtrlNode(node) {
+  if (!node) return false;
+  if (isControlKind(node)) return false; /* 控制类节点整排端子都收控制线，不走这套 */
+  if (isFnToolNode(node)) return false; /* 工具 / 函数：端口 0 就是控制口，参数即端子 */
+  /* 名单就地写在函数里（不单开一个常量数组）：源码切片沙箱只抽函数，
+     常量数组抽不干净，名单与判据必须同生同死。 */
+  return (
+    [
+      "proc_text",
+      "proc_image",
+      "sensenova_gen",
+      "agent_task",
+      "input_text",
+      "input_image",
+      "input_audio",
+      "input_video",
+      "input_file",
+    ].indexOf(node.kind) >= 0
+  );
+}
+/** 动态端子节点的控制端子号 = 最后一条数据线之后那颗（数据槽恒留一颗空槽 → 数据线挤不进它） */
+function dynCtrlInPortIndex(node) {
+  if (!node) return 0;
+  let maxData = -1;
+  const wires = (S.wf && S.wf.wires) || [];
+  for (const w of wires) {
+    if (!w || w.rel || w.to !== node.id) continue;
+    if (typeof wireFromIsControl === "function" && wireFromIsControl(w)) continue;
+    const i = Number(w.toIndex);
+    if (isFinite(i) && i > maxData) maxData = i;
+  }
+  return Math.max(1, maxData + 2);
+}
+/** 数据槽增减之后：把该节点的控制线一律挪回专用控制端子（只动控制线，数据线一个号都不改） */
+function syncDynCtrlWires(node) {
+  if (!node || !S.wf || !isDynCtrlNode(node)) return false;
+  const ctrl = dynCtrlInPortIndex(node);
+  let moved = false;
+  for (const w of S.wf.wires || []) {
+    if (!w || w.rel || w.to !== node.id) continue;
+    if (typeof wireFromIsControl === "function" && !wireFromIsControl(w)) continue;
+    if (Number(w.toIndex || 0) !== ctrl) {
+      w.toIndex = ctrl;
+      moved = true;
+    }
+  }
+  return moved;
+}
+/** 读档 / 批量改动后的一次性归位：所有动态端子节点各跑一次（幂等，只动控制线的端子号） */
+function syncAllDynCtrlWires(wf) {
+  wf = wf || S.wf;
+  if (!wf) return false;
+  const prev = S.wf;
+  S.wf = wf;
+  let moved = false;
+  try {
+    for (const n of wf.nodes || []) if (syncDynCtrlWires(n)) moved = true;
+  } finally {
+    S.wf = prev;
+  }
+  return moved;
+}
+
 /* ── 端子「是控制端子还是数据端子」的单一真源 ──────────────────────────────
    控制端子只能与控制端子相连（数据端子只能与数据端子相连），判定要用**同一份**
    端子归类：画布端子配色（app-canvas.js）、接线校验（app-nodes.js connectError）、
@@ -6853,7 +6930,10 @@ function inPortIsControl(node, idx) {
   if (node.kind === "video_gen") return i === videoGenControlPort(node);
   if (isVideoPostKind(node)) return i === 0;
   if (node.kind === "remotion") return remotionPortIsControl(node, i);
-  /* 其余节点（含 proc_text / proc_image / 素材 / 全局 …）：端子不声明控制语义 */
+  /* 动态端子节点：控制端子 = 数据槽之后那颗（专用，数据线永不占；见 dynCtrlInPortIndex） */
+  if (typeof isDynCtrlNode === "function" && isDynCtrlNode(node))
+    return typeof dynCtrlInPortIndex === "function" && i === dynCtrlInPortIndex(node);
+  /* 其余节点（素材 / 保存 / 全局 …）：端子不声明控制语义 */
   return false;
 }
 
@@ -6902,6 +6982,9 @@ function inPortKindOf(node, idx) {
   if (node.kind === "video_gen") return i === videoGenControlPort(node) ? "control" : null;
   /* Remotion：控制语义按连线反推（无差别端子），空口 / 数据线口一律「任意」 */
   if (node.kind === "remotion") return remotionPortIsControl(node, i) ? "control" : null;
+  /* 动态端子节点：专用控制端子声明 control，数据槽不声明类型（任意） */
+  if (typeof isDynCtrlNode === "function" && isDynCtrlNode(node))
+    return typeof dynCtrlInPortIndex === "function" && i === dynCtrlInPortIndex(node) ? "control" : null;
   const table = IN_PORT_DATA_KINDS[node.kind];
   if (table) return i < table.length ? table[i] : null;
   if (isVideoPostKind(node)) return i === 0 ? "control" : null;
@@ -6976,7 +7059,15 @@ function firstFreeInPortIndex(node, wf) {
     if (isFinite(i)) used.add(i);
   }
   let i = 0;
-  while (used.has(i) && i < 4096) i++;
+  /* 动态端子节点的专用控制端子永远不算「数据落点」：它恒没挂数据线，按「没挂线」挑会
+     挑中它，数据线就把控制通道占了（数据槽 0..ctrl-1 里恒有一颗空槽，够接） */
+  const ctrlPort =
+    typeof isDynCtrlNode === "function" &&
+    isDynCtrlNode(node) &&
+    typeof dynCtrlInPortIndex === "function"
+      ? dynCtrlInPortIndex(node)
+      : -1;
+  while ((used.has(i) || i === ctrlPort) && i < 4096) i++;
   return i;
 }
 function wireFromIsControl(w, wf) {
@@ -7394,7 +7485,7 @@ function fnToolPortKind(node, dir, idx) {
     e = list[i]; /* 输出端子末位 = 控制出 → 无类型声明 */
   }
   if (!e) return null; /* 控制端子 / 越界 */
-  return String(e.kind || "text") === "image" ? "image" : "text";
+  return fnToolNormPortKind(e.kind);
 }
 /** 端子是否「列表端子」（该端子的值是一组值，供下游逐项展开）—— 连线校验与取值的唯一真源。
     与 fnToolPortKind 完全同一数端子口径：输入 0 = 控制入、1..N = 各输入参数；
@@ -7409,49 +7500,78 @@ function fnToolPortIsList(node, dir, idx) {
   return !!(e && e.list === true);
 }
 /* 端子值 ↔ 端子声明类型的唯一归一处（只做形状转换，不吞数据）：工具 / 函数节点、
-   Agent func-call、「测试」台注入、超级壳层内外桥接全部复用这一份，不再各写一套。
-   · 声明 image，实际拿到的是路径文本（"E:\a.png" / {kind:"text",text:"E:\a.png"} /
-     {kind:"path",path}）→ 转 {kind:"image",path,text}，下游保存节点与图像端子才认它是图像；
-     opts.loose = true（注入点口径：参数类型是定义里写明的，字符串一律按路径收下）时
-     不检查扩展名，否则只认图像扩展名 —— 不把散文臆造成图像。
-   · 声明 text，实际拿到图像值 → 取其路径作文本（fix = "text"：形状降级，调用方据此
+   Agent func-call 注入、超级壳层内外桥接全部复用这一份，不再各写一套。
+   声明类型域 = text | image | video | audio（唯一清单 FN_TOOL_PORT_KINDS）。
+   · 声明 image / video / audio，实际拿到的是路径文本（"E:\a.png" /
+     {kind:"text",text:"E:\a.mp4"} / {kind:"path",path}）→ 转 {kind,path,text}，
+     下游保存节点与媒体端子才认它；opts.loose = true（注入点口径：参数类型是定义里
+     写明的，字符串一律按路径收下）时不检查扩展名，否则只认该类媒体扩展名 ——
+     不把散文臆造成媒体。
+   · 声明 text，实际拿到媒体值 → 取其路径作文本（fix = "text"：形状降级，调用方据此
      在节点摘要提示一句，路径本身不丢）。
-   · 值本身为空、端子无声明（普通节点 / 控制端子 / 旧画布）、音频 / 视频值（参数类型域
-     只有 text|image）一律原样返回：不改既有非工具节点路径，也不吞媒体数据。
-   返回 { value, fix }：fix = "" | "image"（文本→图像，补齐形状）| "text"（图像→文本，降级）。 */
-const FN_TOOL_IMG_EXT_RE = /\.(png|jpe?g|webp|gif|bmp)$/i; /* 与 js-exec mediaKindOfPath / inferMediaFromSource 同一图像扩展名口径 */
+   · 值本身为空、端子无声明（普通节点 / 控制端子 / 旧画布）一律原样返回。
+   返回 { value, fix }：fix = "" | "image" | "video" | "audio"（文本→媒体，补齐形状）
+   | "text"（媒体→文本，降级）。 */
+const FN_TOOL_IMG_EXT_RE = /\.(png|jpe?g|webp|gif|bmp|svg|ico|avif|apng|tiff?)$/i; /* 与 js-exec mediaKindOfPath / inferMediaFromSource 同一图像扩展名口径 */
+const FN_TOOL_VIDEO_EXT_RE = /\.(mp4|m4v|webm|mov|avi|mkv|wmv|flv|3gp|mpe?g|ogv)$/i;
+const FN_TOOL_AUDIO_EXT_RE = /\.(mp3|wav|ogg|oga|m4a|aac|flac|opus|amr|aiff?|weba)$/i;
+/* 参数 / 端子类型域的唯一清单（设置窗下拉、归一、连线校验都从这里取） */
+const FN_TOOL_PORT_KINDS = ["text", "image", "video", "audio"];
+function fnToolNormPortKind(k) {
+  const s = String(k == null ? "" : k).toLowerCase();
+  return FN_TOOL_PORT_KINDS.indexOf(s) >= 0 ? s : "text";
+}
+/* 端子类型的中文标签（端口 tooltip / 设置窗共用一处，避免各写一套） */
+function fnToolPortKindLabel(kind) {
+  const k = fnToolNormPortKind(kind);
+  return k === "image"
+    ? I18n.t("（图像）")
+    : k === "video"
+      ? I18n.t("（视频）")
+      : k === "audio"
+        ? I18n.t("（音频）")
+        : I18n.t("（文本）");
+}
+/* 该路径按扩展名像哪种媒体：'image' | 'video' | 'audio' | '' */function fnToolMediaKindOfPath(p) {
+  const t = String(p || "").trim();
+  if (!t) return "";
+  if (FN_TOOL_IMG_EXT_RE.test(t)) return "image";
+  if (FN_TOOL_VIDEO_EXT_RE.test(t)) return "video";
+  if (FN_TOOL_AUDIO_EXT_RE.test(t)) return "audio";
+  return "";
+}
 function normPortValueByKind(value, kind, opts) {
   const res = { value: value, fix: "" };
   const o = opts || {};
   if (value == null) return res;
-  if (kind !== "image" && kind !== "text") return res;
+  if (FN_TOOL_PORT_KINDS.indexOf(String(kind || "")) < 0) return res;
+  const k = fnToolNormPortKind(kind);
   const obj = typeof value === "object" ? value : null;
   const vk = obj ? String(obj.kind || "") : "";
-  /* 音视频不在参数类型域内：原样放行，别把媒体压成文本 */
-  if (vk === "audio" || vk === "video") return res;
   const s = obj
     ? String(obj.path != null && obj.path !== "" ? obj.path : obj.text != null ? obj.text : "")
     : String(value);
-  if (kind === "image") {
-    if (vk === "image") return res; /* 已是图像端子值 */
-    const t = s.trim();
-    if (!t) return res;
-    if (!o.loose && !FN_TOOL_IMG_EXT_RE.test(t)) return res;
-    res.value = { kind: "image", path: t, text: t };
-    res.fix = "image";
+  if (k === "text") {
+    if (!obj) {
+      /* 裸标量（数字 / 布尔 / 字符串）→ 文本端子值形状 */
+      res.value = { kind: "text", text: String(value) };
+      return res;
+    }
+    /* 媒体值 → 文本端子取路径（形状降级，记一笔提示） */
+    if (vk === "image" || vk === "video" || vk === "audio") {
+      res.value = { kind: "text", text: s };
+      res.fix = "text";
+    }
     return res;
   }
-  /* kind === "text" */
-  if (!obj) {
-    /* 裸标量（数字 / 布尔 / 字符串）→ 文本端子值形状 */
-    res.value = { kind: "text", text: String(value) };
-    return res;
-  }
-  if (vk === "image") {
-    res.value = { kind: "text", text: s };
-    res.fix = "text";
-    return res;
-  }
+  /* 媒体端子（image / video / audio） */
+  if (vk === k) return res;
+  const t = s.trim();
+  /* 拿不到路径（如素材多条目值）：原样放行，下游按自己的口径取，不硬压成路径 */
+  if (!t) return res;
+  if (!o.loose && fnToolMediaKindOfPath(t) !== k) return res;
+  res.value = { kind: k, path: t, text: t };
+  res.fix = k;
   return res;
 }
 /** 按「工具 / 函数节点某个端子的声明类型」归一值：无声明（普通节点 / 控制端子 /
@@ -7472,7 +7592,7 @@ function notePortKindFix(node, dir, idx, fix, name) {
   while (node._portKindFix.length > 4) node._portKindFix.shift();
 }
 /* 单条参数归一：确保 {name, kind[, list][, description][, optional]}，name 空补默认名，
-   kind 只认 text|image（缺省 text）。
+   kind 只认 text|image|video|audio（白名单外 / 缺省一律 text）。
    dir = "in" 时保留 list 布尔（列表入参：一条线喂一组值，供 fnToolPortIsList 判定）；
    dir = "out"（含省略）时一律清掉 list —— 列表只是输入侧的取值语义，输出方向「参数即端子」
    的端子表必须与 kind 一一对应，留着它会让输出端子被曲解成可展开的多值端子。
@@ -7483,8 +7603,8 @@ function notePortKindFix(node, dir, idx, fix, name) {
 function normFnToolEntry(e, i, dir) {
   if (e == null || typeof e !== "object") e = {};
   const name = String(e.name == null ? "" : e.name).trim();
-  let kind = String(e.kind || "text");
-  if (kind !== "image") kind = "text";
+  let kind = String(e.kind || "text").toLowerCase();
+  if (FN_TOOL_PORT_KINDS.indexOf(kind) < 0) kind = "text";
   const p = { name: name, kind: kind };
   if (dir === "in") p.list = e.list === true || e.list === "true";
   const desc = String(e.description == null ? "" : e.description).trim();
@@ -7501,10 +7621,8 @@ function ensureFnToolNodeState(node) {
     if (typeof node.fnName !== "string") node.fnName = "";
     if (typeof node.description !== "string") node.description = "";
     if (typeof node.jscode !== "string") node.jscode = "";
-    /* 「测试」台输入快照：按输入参数序号存字符串（text 参数 = 文本，image 参数 =
-       文件路径）。仅测试用 · 不参与画布运行；参数增删不清空，重新加回同名参数时
-       旧值仍在（超出参数数的尾巴只是暂存，永不参与取数）。 */
-    if (!Array.isArray(node.fnTestInputs)) node.fnTestInputs = [];
+    /* 「参数」端子（9001）没接线时的默认参数 JSON：只收字符串，空串 = 没有默认参数 */
+    if (typeof node.paramsJson !== "string") node.paramsJson = "";
     if (!Array.isArray(node.inputs)) node.inputs = [];
     if (!Array.isArray(node.outputs)) node.outputs = [];
     if (typeof ensureAiCallState === "function") ensureAiCallState(node);
@@ -7524,6 +7642,8 @@ function ensureFnToolNodeState(node) {
     /* 「试跑」台输入快照（与函数节点 fnTestInputs 同机制 · 独立字段）：
        按输入参数序号存字符串，仅测试用 · 不参与画布运行。 */
     if (!Array.isArray(node.toolTestInputs)) node.toolTestInputs = [];
+    /* 「参数」端子（9001）没接线时的默认参数 JSON：作为工具子图的共享参数下发 */
+    if (typeof node.paramsJson !== "string") node.paramsJson = "";
     if (typeof ensureAiCallState === "function") ensureAiCallState(node);
     const c =
       node.toolConfig && typeof node.toolConfig === "object"
@@ -8096,6 +8216,11 @@ function inputCount(node) {
   }
   if (node.kind === "net_recv") return 0; /* 接收是异步源，无数据输入 */
   if (node.kind === "net_send") return 2; /* 端口0=信息输入(数据) · 端口1=控制输入 */
+  /* 动态端子节点（proc_text / proc_image / sensenova_gen / agent_task / input_*）：
+     数据槽 0..N-1（0 = 提示词 / 内容入口，恒留一颗空槽）+ 末位专用控制端子。
+     控制端子恒存在（画布上恒显示一颗控制口），数据线与控制线各走各的号。 */
+  if (typeof isDynCtrlNode === "function" && isDynCtrlNode(node))
+    return (typeof dynCtrlInPortIndex === "function" ? dynCtrlInPortIndex(node) : 0) + 1;
   return Math.max(1, allWiresTo(node.id).length + 1);
 }
 
@@ -8318,7 +8443,7 @@ function videoUpscaleModelLabel(v) {
 function videoPostInputCount(node) {
   let maxIdx = 1;
   for (const w of allWiresTo(node.id)) {
-    if (wireFromIsControl(w)) continue;
+    if (typeof wireFromIsControl === "function" && wireFromIsControl(w)) continue;
     const i = Number(w.toIndex) || 0;
     if (i > maxIdx) maxIdx = i;
   }
@@ -14864,6 +14989,11 @@ function wireSourceIndex(w, fallbackIdx) {
   /* 素材节点的端子号 = 内容条目号：继承链穿过它时也要按端子号取那一条 */
   if (src && (isSuperLikeNode(src) || isItemPortSource(src)))
     return Number(w.fromIndex || 0);
+  /* 函数节点（多输出分发）：端子号 = 数据线的 fromIndex —— valueForInput 的 function 分支
+     按它读 portOutputs.$<端子号>。这里不带端口号时，中间夹一个文本节点（继承态）就会把
+     1 号及以后的端子错取成 $0：$0 没被 return 命中 → 整条链取不到值，文本节点永远停在
+     「（等待上游输出…）内容只读」（用户报的「函数节点输出文本到文本节点一直显示等待内容」）。 */
+  if (src && src.kind === "function") return Number(w.fromIndex || 0);
   return fallbackIdx == null ? 0 : fallbackIdx;
 }
 function inheritedValue(n, idx) {
@@ -15420,10 +15550,26 @@ function displayValueOf(src, consumer) {
     return assetDisplayValueOf(src);
   }
   if (src.kind === "function") {
-    const r = selResult(src);
-    if (r && r.output && r.output.kind === "text") return { text: r.output.text };
-    if (r && r.output && r.output.kind === "image" && r.output.path)
-      return { image: r.output.path, title: src.title };
+    /* 函数节点：显示必须与下游取值同一口径 —— valueForInput 的 function 分支按「连到
+       消费者的那根数据线的 fromIndex」读 portOutputs.$<端子号>，并接受 kind:"path"
+       （非媒体扩展名的路径值）。早先这里直接看 r.output（= $0）且只认 kind:"text"，
+       于是「函数节点 → 文本节点」只要接的不是 0 号端子（或返回的是路径值），节点卡就
+       永远显示「（等待上游输出…）内容只读」，而下游其实拿得到值。 */
+    let idx = 0;
+    if (consumer) {
+      const link = (S.wf.wires || []).find(
+        (x) =>
+          !x.rel && !x.ctrl && x.from === src.id && x.to === consumer.id,
+      );
+      if (link) idx = Math.max(0, Number(link.fromIndex) || 0);
+    }
+    const v = valueForInput(src, idx, consumer || null);
+    if (!v) return null;
+    if (v.kind === "image" && v.path)
+      return { image: v.path, title: src.title };
+    if (v.kind === "text" || v.kind === "path")
+      return { text: String(v.text != null ? v.text : v.path || "") };
+    if (v.path) return { text: String(v.text != null ? v.text : v.path) };
     return null;
   }
   /* 用户插件节点：出端口的值存在 src.outputPaths（执行时写），第 i 出端口给第 i 个输出。
@@ -15449,6 +15595,32 @@ function displayValueOf(src, consumer) {
     return null;
   }
   return null;
+}
+
+/* 函数节点来源「取不到值」时的指名道姓提示（返回 null = 不是这个场景，调用方用原占位）。
+   只对「来源是函数节点的文本节点（继承态）」生效，三态分开说：
+     · 上游报错  → 错误文案（比「等待」有用得多）
+     · 从没跑过  → 点 ▶ 运行（ranAt 只在成功收尾时才写）
+     · 跑过但这端子没被 return 命中 → 点名是哪个输出端子没有输出
+   判定与 valueForInput / displayValueOf 同一份取数口径：端子号取数据线的 fromIndex。
+   空字符串算「有输出但是空」—— 这里只在取不到值（v == null）时被调用，不会被空串命中。 */
+function fnSourceEmptyHintOf(node) {
+  if (!node || node.kind !== "input_text") return null;
+  if (typeof inputInherited !== "function" || !inputInherited(node)) return null;
+  const w = inboundWire(node);
+  const src = w ? nodeById(w.from) : null;
+  if (!src || src.kind !== "function") return null;
+  const r = selResult(src) || null;
+  const err = String((r && r.error) || "").trim();
+  if (err) return I18n.t("上游函数节点报错：{e}", { e: err });
+  if (!src.ranAt)
+    return I18n.t("上游函数节点还没运行（点它的 ▶ 运行后再看这里）");
+  const idx = Math.max(0, Number((w && w.fromIndex) || 0));
+  const params = typeof fnToolParamList === "function" ? fnToolParamList(src, "out") : [];
+  const name = String(((params && params[idx]) || {}).name || "").trim();
+  return I18n.t("上游函数节点这次没有输出「{p}」这个端子", {
+    p: name || I18n.t("参数 ") + (idx + 1),
+  });
 }
 
 function inputValuesFor(node, idx) {
@@ -17731,6 +17903,35 @@ function startWireDrag(fromId, ev, fromIndex, opts) {
 }
 /* 拖线位移阈值（屏幕像素）：超过它才认为用户是「向外拉」而非点端子 */
 const WIRE_DRAG_MOVED_PX = 6;
+/* ── 拖线悬停「将替换」预告 ─────────────────────────────────────────────
+   判定真源是 inPortOccupancy（app-nodes.js）：与松手时的落线 / 替换同一份口径，
+   这里只画预告（端子变替换色 + 将被顶掉的旧线一并高亮），绝不改数据。 */
+function clearWireReplacePreview() {
+  document
+    .querySelectorAll(".port.will-replace")
+    .forEach((p) => p.classList.remove("will-replace"));
+  document
+    .querySelectorAll("path.wire-replace")
+    .forEach((p) => p.classList.remove("wire-replace"));
+}
+function paintWireReplacePreview(d, port) {
+  if (!d || d.mode !== "wire" || d.fromInput || !port) return;
+  if (typeof inPortOccupancy !== "function") return;
+  if (!port.classList || !port.classList.contains("in")) return;
+  const toNode = nodeById(port.dataset.node);
+  const fromNode = nodeById(d.fromId);
+  const toIdx = port.dataset.idx == null ? null : Number(port.dataset.idx);
+  if (!toNode || !fromNode) return;
+  const occ = inPortOccupancy(toNode, toIdx, isControlKind(fromNode));
+  if (!occ.replaceable || !occ.wires.length) return;
+  port.classList.add("will-replace");
+  for (const w of occ.wires) {
+    const p = document.getElementById("wire-" + w.id);
+    if (p) p.classList.add("wire-replace");
+    const ring = document.getElementById("wire-" + w.id + "-r");
+    if (ring) ring.classList.add("wire-replace");
+  }
+}
 function wireDragMoved(d, ev) {
   return !!(
     d &&
@@ -21865,11 +22066,16 @@ function bindCanvas() {
       document
         .querySelectorAll(".port.hover")
         .forEach((p) => p.classList.remove("hover"));
+      clearWireReplacePreview();
       const el = document.elementFromPoint(ev.clientX, ev.clientY);
       let port = el && el.closest ? el.closest(selCls) : null;
       /* 命中不到时按 1.5×端子半径近邻兜底，悬停高亮更宽容 */
       if (!port) port = portHitAt(ev.clientX, ev.clientY, selCls);
-      if (port) port.classList.add("hover");
+      if (port) {
+        port.classList.add("hover");
+        /* 这颗端子已被占用且会被顶掉 → 端子与旧线一起变替换色（预告，不是落线） */
+        paintWireReplacePreview(d, port);
+      }
       updateWires();
     }
   });
@@ -21879,6 +22085,7 @@ function bindCanvas() {
     document
       .querySelectorAll(".port.in.hover, .port.out.hover")
       .forEach((p) => p.classList.remove("hover"));
+    clearWireReplacePreview();
     if (d.mode === "wire") {
       const el = document.elementFromPoint(ev.clientX, ev.clientY);
       const fromId = d.fromId;
@@ -32437,7 +32644,19 @@ function migrateWf(wf) {
   /* 跨节点层硬规则：历史脏线（层内节点直接连到层外）静默剪掉 —— 硬闸只拦新线，
      老图上已经存在的野线必须在这里收口，否则「打开就是错的」。不提示、不打断。 */
   const layerPruned = pruneInvalidSuperBoundaryWiresIn(wf);
-  return videoPortMigrated || shellBridgeFilled || layerPruned > 0 || npPurged > 0; /* true = 发生迁移，调用方应立即落盘 */
+  /* 动态端子节点（proc_text / proc_image / sensenova_gen / agent_task / input_*）的专用
+     控制端子：早先控制线会落到端口 0 的提示词入口或数据槽中间（那时它们还被当成数据口），
+     读档时一次性挪到「数据槽之后那颗」（只动控制线，数据线端子号一个都不改）。
+     幂等：已经在那颗口上的线不动，反复加载逐字不变。 */
+  const dynCtrlMoved =
+    typeof syncAllDynCtrlWires === "function" && syncAllDynCtrlWires(wf);
+  return (
+    videoPortMigrated ||
+    shellBridgeFilled ||
+    layerPruned > 0 ||
+    npPurged > 0 ||
+    dynCtrlMoved
+  ); /* true = 发生迁移，调用方应立即落盘 */
 }
 
 /* migrateWf 清掉的老画布残留参数（旧版 canvas_edit 的 params 写进 node.npParams）：

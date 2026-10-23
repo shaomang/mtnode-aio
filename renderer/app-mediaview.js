@@ -24,6 +24,9 @@
      · mediaViewAttach(el, container, [path])   → 把播放器放进容器（重绘后重新挂载）
      · mediaViewClear(el)                       → 清掉音源与池绑定（预览路径被清空时调）
      · mediaViewFullscreenFix()                 → 全屏托底（脚本加载即自动装一次）
+     · mediaViewLoopMount(el, container)        → 给预览播放器挂「循环播放」开关（默认开）
+     · mediaViewLoopApply(el, [on])             → 把循环状态兑现到元素上（不挂按钮）
+     · mediaViewLoopSet(on)                     → 改全局循环偏好并同步所有预览播放器
 
    回归见 test/smoke-media-persist.js。 */
 
@@ -71,6 +74,130 @@ function mediaViewTag(el) {
     el.dataset.mvPlay = "1";
   });
   el.addEventListener("seeked", sync);
+  /* 循环播放：默认开（预览一遍到底就是这条需求本身），按钮在 mediaViewLoopMount 里挂 */
+  if (String(el.tagName || "").toUpperCase() === "VIDEO") mediaViewLoopApply(el);
+  return el;
+}
+
+/* ── 循环播放 ──────────────────────────────────────────────────────────────
+   落点：预览播放器（画布节点 / 素材条目 / 函数输出 / 文件面板）默认循环，
+   右上角一枚小胶囊可以关掉；选择是**全局一份**并记进 localStorage —— 画布重绘、
+   换节点、重启应用都沿用上一次。状态本身挂在**元素**上（el.loop）：池化复用时
+   元素不换，循环状态就自然延续，不用谁去恢复。 */
+const MEDIA_LOOP_KEY = "mtnode.media.videoLoop";
+let mediaLoopOn = null; /* null = 还没读过偏好（首次读 localStorage） */
+const mediaLoopEls = new Set(); /* 挂过开关的元素：改偏好时一起同步 */
+
+function mediaLoopTxt(s) {
+  try {
+    return typeof I18n !== "undefined" && I18n && typeof I18n.t === "function" ? I18n.t(s) : String(s);
+  } catch (_) {
+    return String(s);
+  }
+}
+
+function mediaLoopStore() {
+  try {
+    return typeof window !== "undefined" && window.localStorage ? window.localStorage : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+/** 全局循环偏好（首次读 localStorage；读不到按默认开） */
+function mediaLoopPref() {
+  if (mediaLoopOn !== null) return mediaLoopOn;
+  mediaLoopOn = true;
+  try {
+    const st = mediaLoopStore();
+    const raw = st ? st.getItem(MEDIA_LOOP_KEY) : null;
+    if (raw === "0") mediaLoopOn = false;
+    else if (raw === "1") mediaLoopOn = true;
+  } catch (_) {}
+  return mediaLoopOn;
+}
+
+/** 让按钮反映元素当前的循环状态（文字 / 高亮 / tooltip） */
+function mediaLoopSyncBtn(el) {
+  const btn = el && el.__mvLoopBtn;
+  if (!btn || !btn.classList) return;
+  const on = !!el.loop;
+  btn.classList.toggle("on", on);
+  if (btn.setAttribute) btn.setAttribute("aria-pressed", on ? "true" : "false");
+  btn.title = mediaLoopTxt(on ? "循环播放已开启（点击关闭）" : "循环播放已关闭（点击开启）");
+}
+
+/** 把循环状态兑现到元素上（on 省略 = 用全局偏好；不碰按钮） */
+function mediaViewLoopApply(el, on) {
+  if (!el) return el;
+  const want = on === undefined ? mediaLoopPref() : !!on;
+  try {
+    el.loop = want;
+  } catch (_) {}
+  if (el.dataset) el.dataset.mvLoop = want ? "1" : "0";
+  mediaLoopSyncBtn(el);
+  return el;
+}
+
+/** 改全局循环偏好：落盘 + 同步所有预览播放器 */
+function mediaViewLoopSet(on) {
+  mediaLoopOn = !!on;
+  try {
+    const st = mediaLoopStore();
+    if (st) st.setItem(MEDIA_LOOP_KEY, mediaLoopOn ? "1" : "0");
+  } catch (_) {}
+  for (const el of [...mediaLoopEls]) {
+    if (!el || el.isConnected === false) {
+      mediaLoopEls.delete(el);
+      continue;
+    }
+    mediaViewLoopApply(el, mediaLoopOn);
+  }
+  return mediaLoopOn;
+}
+
+/** 容器若是 static 就补一层 position:relative，按钮才定位得住（已是定位容器不覆盖） */
+function mediaLoopHost(container) {
+  if (!container || !container.style) return;
+  if (container.dataset && container.dataset.mvLoopHost === "1") return;
+  let pos = "";
+  try {
+    pos = typeof getComputedStyle === "function" ? String((getComputedStyle(container) || {}).position || "") : "";
+  } catch (_) {}
+  if (!pos || pos === "static") container.style.position = "relative";
+  if (container.dataset) container.dataset.mvLoopHost = "1";
+}
+
+/** 给预览播放器挂「循环播放」开关：同一容器只有一枚，重绘不重复堆按钮 */
+function mediaViewLoopMount(el, container) {
+  if (!el || !container || typeof container.appendChild !== "function") return el;
+  const old = el.__mvLoopBtn;
+  if (!old || old.parentElement !== container) {
+    /* 换容器（重绘 / 退出全屏归位）：旧按钮跟着旧容器走，这里先摘掉免得留下孤儿 */
+    if (old && old.parentElement && typeof old.remove === "function") {
+      try {
+        old.remove();
+      } catch (_) {}
+    }
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "mv-loop-btn";
+    btn.textContent = mediaLoopTxt("循环播放");
+    btn.addEventListener("click", (ev) => {
+      if (ev && ev.stopPropagation) ev.stopPropagation();
+      if (ev && ev.preventDefault) ev.preventDefault();
+      mediaViewLoopSet(!mediaLoopPref());
+    });
+    /* 别让点按钮变成拖节点 / 选中节点 */
+    btn.addEventListener("mousedown", (ev) => {
+      if (ev && ev.stopPropagation) ev.stopPropagation();
+    });
+    el.__mvLoopBtn = btn;
+    mediaLoopHost(container);
+    container.appendChild(btn);
+  }
+  mediaLoopEls.add(el);
+  mediaViewLoopApply(el);
   return el;
 }
 
@@ -133,6 +260,7 @@ function mediaViewPrune() {
     if (el && el.__mvHold) continue;
     if (el && el.isConnected) continue;
     mediaVideoPool.delete(key);
+    mediaLoopEls.delete(el);
     try {
       el.removeAttribute("src");
       if (typeof el.load === "function") el.load();
@@ -165,6 +293,8 @@ function mediaViewAttach(el, container, path) {
     if (rec) rec.wanted = container;
     return el;
   }
+  /* 视频预览的循环开关：挂在容器上（不是元素上），重绘换容器时跟着重建 */
+  if (el.dataset && el.dataset.mvPool === "1") mediaViewLoopMount(el, container);
   if (el.parentElement === container) return el;
   try {
     container.appendChild(el);
@@ -201,6 +331,8 @@ function mediaViewClear(el) {
     const key0 = String(el.dataset.path || "") + "|" + String(el.id || "");
     const rec = mediaVideoPool.get(key0);
     if (rec && rec.el === el) mediaVideoPool.delete(key0);
+    /* 池绑定清掉了，循环开关的登记也一起摘掉（不留悬空元素） */
+    mediaLoopEls.delete(el);
   }
   try {
     el.removeAttribute("src");
@@ -256,6 +388,8 @@ function mediaRestoreFromFullscreen(el) {
   try {
     if (target) target.appendChild(el);
   } catch (_) {}
+  /* 归位后把循环开关挂回新容器（全屏期间节点重绘过时，旧容器已经没了） */
+  if (target && el.dataset && el.dataset.mvPool === "1") mediaViewLoopMount(el, target);
   try {
     box.remove();
   } catch (_) {}
