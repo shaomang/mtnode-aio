@@ -654,9 +654,14 @@ function markResumeCandidate(key, reqId, message) {
 
 /* 失败报文是否属宿主会自动重发的类别(429 / 限流 / 5xx / 网络 / 传输 / 上游)。
    网关侧只做「要不要保活这台进程」的判定,与宿主 dshRunRetryable 判据同族但更收:
-   取消 / 配置类错误宿主不会重发,保活窗口只会白占进程,一律不标。 */
+   取消 / 配置类错误宿主不会重发,保活窗口只会白占进程,一律不标。
+   末三项是「模型流里的畸形报文」(malformed response / `DeepSeek Messages stream: tool input
+   is invalid JSON` / SSE 坏帧):宿主按可重发处理(dshRunRetryable 不把它归到取消或配置类),
+   而重发的正确姿势是**接着那条会话续跑** —— 会话里已有本轮任务与此前跑完的工具结果。
+   不保活这台进程就会在 30s 等待里被 LRU 换出,续跑退化成跨进程恢复;保活后同进程命中,
+   续跑零恢复成本。 */
 const RETRYABLE_FAILURE_RE =
-  /(^|\D)429(\D|$)|rate\s*limit|too many requests|insufficient_quota|quota|(^|\D)5\d\d(\D|$)|econn|socket hang up|fetch failed|getaddrinfo|network error|request timed out|timed ?out|runtime is not running|transport closed|bad gateway|service unavailable|temporar|upstream|服务器繁忙|服务暂|稍后重试|请求过于频繁|限流|过载|上游/i
+  /(^|\D)429(\D|$)|rate\s*limit|too many requests|insufficient_quota|quota|(^|\D)5\d\d(\D|$)|econn|socket hang up|fetch failed|getaddrinfo|network error|request timed out|timed ?out|runtime is not running|transport closed|bad gateway|service unavailable|temporar|upstream|服务器繁忙|服务暂|稍后重试|请求过于频繁|限流|过载|上游|malformed|invalid json/i
 
 function isRetryableGatewayFailure(message) {
   const s = String(message || '').trim()
@@ -3556,12 +3561,20 @@ function normRunTools(tools) {
     if (!key || seenKey.has(key)) continue
     if (!toolName || !/^[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}$/.test(toolName)) continue
     if (seenName.has(toolName)) continue
+    /* 端子类型域与渲染层 FN_TOOL_PORT_KINDS 同一份：text | image | video | audio，
+       其余一律回落 text（老工具包不变）。tools-plugin 按 kind 生成参数描述。 */
     const norm = (list) =>
       Array.isArray(list)
         ? list
             .map((p) =>
               p && typeof p === 'object' && p.name != null
-                ? { name: String(p.name).slice(0, 60), kind: p.kind === 'image' ? 'image' : 'text' }
+                ? {
+                    name: String(p.name).slice(0, 60),
+                    kind:
+                      p.kind === 'image' || p.kind === 'video' || p.kind === 'audio'
+                        ? p.kind
+                        : 'text',
+                  }
                 : null,
             )
             .filter(Boolean)

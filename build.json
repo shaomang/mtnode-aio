@@ -96,6 +96,10 @@
     "storage-clean.js",
     "storage-scan-worker.js",
     "speech-store.js",
+    /* 音频 / 视频 → 字幕（内置工具「音频转字幕」）：main.js 与 fn-runtime 的
+       mtnode.subtitle 桥会 require 它，漏进白名单 = 打包后 Cannot find module
+       './media-subtitle.js'（工具一点就报「字幕后端未接线」）。 */
+    "media-subtitle.js",
     "longtask-store.js",
     "ai-facts-store.js",
     "activity-store.js",

@@ -130,6 +130,8 @@
     { cat: "app", key: "app_delete", label: "删除画布" },
     { cat: "app", key: "app_dsh_plugins", label: "插件管理" },
     { cat: "assets", key: "assets_read", label: "读素材库 / 窗口截图" },
+    { cat: "media", key: "media_asr", label: "音频转写（含字幕时间轴）" },
+    { cat: "media", key: "media_ffmpeg", label: "ffmpeg 处理" },
   ];
 
   var TOOL_MODES = ["allow", "ask", "deny"];
@@ -167,6 +169,9 @@
     /* 素材库 / 窗口截图：素材库是用户自己的目录、截图拍的是应用窗口 —— 与专家角色
        关系不大，默认拒绝（要用的专家自己在面板里放开）。 */
     assets_read: "deny",
+    /* 本地媒体：转写只读本机媒体、走本机模型，默认放行；ffmpeg 可带任意参数执行程序，与 shell 一样逐次询问。 */
+    media_asr: "allow",
+    media_ffmpeg: "ask",
   };
 
   /* 画布六类许可（与 app-nodes.js AGENT_TOOL_DENY_ALL_OF.mtnode_canvas_edit 同组）——

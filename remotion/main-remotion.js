@@ -309,6 +309,449 @@ function inlineMediaPropsOf(inputs, existing) {
   return out;
 }
 
+/* ══════════ 固化工程（多文件 file tree）+ 端子契约 ══════════════════════════
+   渲染层在「构建」成功后把整棵工程源码（keys 相对 src/）与端子契约一起固化在节点上，
+   运行时只把这份文件树交给这里写盘 → 渲染，**不再经过任何模型**。
+   这里负责三件事：文件树消毒 / 逐文件导入解析校验 / 契约 → inputProps 组装。 */
+
+/** 工程里允许的文件后缀（tsx/ts 是代码，css/json/md/txt 是资源与说明） */
+const PROJECT_FILE_EXT = /\.(tsx|ts|jsx|js|css|json|md|txt)$/i;
+/** 契约允许的端子类型（与渲染层 REMOTION_INPUT_KINDS 同一份） */
+const CONTRACT_KINDS = ["image", "audio", "video", "text", "number", "boolean", "json"];
+
+/** 工程相对路径消毒：只接受 src/ 下的相对路径（不许绝对路径 / .. / 反斜杠逃逸） */
+function projectRelPath(raw) {
+  const s = String(raw || "")
+    .replace(/\\/g, "/")
+    .trim();
+  if (!s || s[0] === "/" || /^[A-Za-z]:/.test(s)) return "";
+  if (/^data:|^https?:/i.test(s)) return "";
+  const parts = [];
+  for (const seg of s.split("/")) {
+    if (!seg || seg === ".") continue;
+    if (seg === "..") return "";
+    parts.push(seg);
+  }
+  const rel = parts.join("/");
+  if (!rel || !PROJECT_FILE_EXT.test(rel)) return "";
+  return rel;
+}
+
+/** 相对 import → 工程里的真实文件（尝试补后缀 / index.*）；解析不到返回空串 */
+function projectResolveImport(fromRel, spec, tree) {
+  const baseDir = fromRel.indexOf("/") >= 0 ? fromRel.slice(0, fromRel.lastIndexOf("/")) : "";
+  const parts = baseDir ? baseDir.split("/") : [];
+  for (const seg of String(spec || "").split("/")) {
+    if (!seg || seg === ".") continue;
+    if (seg === "..") {
+      if (!parts.length) return "";
+      parts.pop();
+      continue;
+    }
+    parts.push(seg);
+  }
+  const base = parts.join("/");
+  if (!base) return "";
+  const cands = [base];
+  for (const e of ["tsx", "ts", "jsx", "js", "css", "json"]) cands.push(base + "." + e);
+  for (const e of ["tsx", "ts", "jsx", "js"]) cands.push(base + "/index." + e);
+  for (const c of cands) if (tree[c] != null) return c;
+  return "";
+}
+
+/**
+ * 校验整棵工程：入口存在 + 逐文件导入白名单 / 相对导入可解析 + 入口导出 Main + 契约可解析。
+ * 容错口径与单文件一致：**没被用到的**非法 import 先剥掉（见 stripUnusedBadImports），
+ * 仍在用的才硬失败（错误里点名文件，方便回灌给 agent 修）。
+ * @returns {{ok:boolean, errors:string[], warnings:string[], files:object, contract:Array}}
+ */
+function validateProjectTree(rawFiles, entryRel) {
+  const entry = String(entryRel || "Composition.tsx");
+  const errors = [];
+  const warnings = [];
+  const files = {};
+  const input = rawFiles && typeof rawFiles === "object" ? rawFiles : {};
+  for (const [rawName, rawSrc] of Object.entries(input)) {
+    const rel = projectRelPath(rawName);
+    if (!rel) {
+      errors.push("工程文件名不合法：" + String(rawName));
+      continue;
+    }
+    if (typeof rawSrc !== "string") {
+      errors.push("工程文件内容不是文本：" + rel);
+      continue;
+    }
+    files[rel] = rawSrc;
+  }
+  if (!Object.keys(files).length) return { ok: false, errors: ["工程是空的（没有 src 文件）"], warnings, files, contract: [] };
+  if (files[entry] == null) errors.push("工程缺少入口 " + entry);
+  /* 逐文件：剥掉未使用的非法 import，剩下的逐个校验 */
+  const treeNames = Object.keys(files);
+  for (const rel of treeNames) {
+    if (!/\.(tsx|ts|jsx|js)$/i.test(rel)) continue;
+    let src = String(files[rel] || "");
+    const fence = src.match(/^```[a-zA-Z0-9_-]*[ \t]*\r?\n([\s\S]*?)\r?\n?```[ \t]*$/);
+    if (fence) src = String(fence[1]).trim();
+    try {
+      src = stripUnusedBadImports(src).source;
+    } catch {}
+    files[rel] = src;
+    for (const spec of collectImportSpecs(src)) {
+      if (/^https?:/i.test(spec)) {
+        errors.push(rel + " 里不允许远程 import：" + spec);
+        continue;
+      }
+      if (CUSTOM_IMPORT_ALLOWED.test(spec)) continue;
+      if (spec[0] === ".") {
+        if (!projectResolveImport(rel, spec, files))
+          errors.push(rel + " 里 import 的相对文件不存在：" + spec);
+        continue;
+      }
+      errors.push(rel + " 里不许 import「" + spec + "」：只允许 react / remotion / 工程内相对文件");
+    }
+  }
+  /* 入口必须导出 Main（验收口径与单文件一致：Main 或唯一大写具名导出自动别名） */
+  if (files[entry] != null) {
+    const norm = /export\s+(?:const|let|var|function|class)\s+Main\b/.test(files[entry])
+      ? { source: files[entry], error: "" }
+      : normalizeCustomComposition(files[entry]);
+    if (norm.error) {
+      errors.push(
+        norm.error === "custom_tsx_no_main_export"
+          ? entry + " 必须导出 Main（export const Main = ...，或 default 导出一个组件）"
+          : entry + " 不合规：" + norm.error,
+      );
+    } else files[entry] = norm.source;
+  }
+  /* 端子契约：从**任意**文件里找 `export const inputs = [...]`（入口优先），只取一份 */
+  let contract = [];
+  let contractError = "";
+  for (const rel of [entry, ...treeNames.filter((n) => n !== entry)]) {
+    const raw = files[rel];
+    if (!raw || !/\binputs\s*=/.test(raw)) continue;
+    try {
+      const parsed = parseContractLiteral(raw);
+      if (parsed.error) {
+        contractError = rel + " 的 inputs 契约解析失败：" + parsed.error;
+        break;
+      }
+      if (parsed.list.length) {
+        contract = normalizeContract(parsed.list);
+        if (parsed.warnings.length) warnings.push(...parsed.warnings.map((w) => rel + "：" + w));
+        break;
+      }
+    } catch (e) {
+      contractError = rel + " 的 inputs 契约解析失败：" + String((e && e.message) || e);
+      break;
+    }
+  }
+  if (contractError) errors.push(contractError);
+  if (!contract.length) warnings.push("没有 inputs 契约：运行时按老口径（hero / voice / narration）注入 props");
+  return { ok: errors.length === 0, errors, warnings, files, contract };
+}
+
+/** 契约字段消毒：key 必须是合法标识符、kind 在枚举里；非法项丢弃并记警告 */
+function normalizeContract(list) {
+  const out = [];
+  const seen = new Set();
+  const warnings = [];
+  for (const it of Array.isArray(list) ? list : []) {
+    if (!it || typeof it !== "object") continue;
+    const key = String(it.key || "").trim();
+    if (!/^[A-Za-z_$][\w$]*$/.test(key)) {
+      warnings.push("端子 key 不合法（需为 JS 标识符）：" + key);
+      continue;
+    }
+    if (seen.has(key)) {
+      warnings.push("端子 key 重复，已忽略后一个：" + key);
+      continue;
+    }
+    const kind = String(it.kind || "text").trim().toLowerCase();
+    if (CONTRACT_KINDS.indexOf(kind) < 0) {
+      warnings.push("端子「" + key + "」的 kind 不认识： " + kind + "（按 text 处理）");
+    }
+    seen.add(key);
+    out.push({
+      key,
+      kind: CONTRACT_KINDS.indexOf(kind) >= 0 ? kind : "text",
+      label: String(it.label || key),
+      required: !!it.required,
+      list: !!it.list,
+    });
+  }
+  return out;
+}
+
+/** JS 对象/数组字面量解析（安全：不 eval；与渲染层 remotionParseLiteral 同一套语法） */
+function parseContractLiteral(src) {
+  const text = String(src || "");
+  const at = text.search(/export\s+const\s+inputs\s*=\s*/);
+  const start = at >= 0 ? text.indexOf("[", at) : text.indexOf("[");
+  if (start < 0) return { list: [], warnings: [], error: "" };
+  let i = start;
+  const ws = () => {
+    for (;;) {
+      while (i < text.length && /\s/.test(text[i])) i++;
+      if (text[i] === "/" && text[i + 1] === "/") {
+        while (i < text.length && text[i] !== "\n") i++;
+        continue;
+      }
+      if (text[i] === "/" && text[i + 1] === "*") {
+        i += 2;
+        while (i < text.length && !(text[i] === "*" && text[i + 1] === "/")) i++;
+        i += 2;
+        continue;
+      }
+      break;
+    }
+  };
+  const str = () => {
+    const q = text[i++];
+    let out = "";
+    while (i < text.length && text[i] !== q) {
+      if (text[i] === "\\") {
+        const n = text[i + 1];
+        i += 2;
+        out += n === "n" ? "\n" : n === "t" ? "\t" : n;
+        continue;
+      }
+      out += text[i++];
+    }
+    if (text[i] === q) i++;
+    return out;
+  };
+  const value = () => {
+    ws();
+    const c = text[i];
+    if (c === "{") {
+      i++;
+      const obj = {};
+      for (;;) {
+        ws();
+        if (text[i] === "}") {
+          i++;
+          return obj;
+        }
+        if (i >= text.length) throw new Error("对象未闭合");
+        let k;
+        if (text[i] === '"' || text[i] === "'") k = str();
+        else {
+          const m = /^[A-Za-z_$][\w$]*/.exec(text.slice(i));
+          if (!m) throw new Error("对象键不合法（位置 " + i + "）");
+          k = m[0];
+          i += k.length;
+        }
+        ws();
+        if (text[i] !== ":") throw new Error("对象键后面缺少冒号");
+        i++;
+        obj[k] = value();
+        ws();
+        if (text[i] === ",") {
+          i++;
+          continue;
+        }
+        if (text[i] === "}") {
+          i++;
+          return obj;
+        }
+        throw new Error("对象里缺少逗号或右括号");
+      }
+    }
+    if (c === "[") {
+      i++;
+      const arr = [];
+      for (;;) {
+        ws();
+        if (text[i] === "]") {
+          i++;
+          return arr;
+        }
+        if (i >= text.length) throw new Error("数组未闭合");
+        arr.push(value());
+        ws();
+        if (text[i] === ",") {
+          i++;
+          continue;
+        }
+        if (text[i] === "]") {
+          i++;
+          return arr;
+        }
+        throw new Error("数组里缺少逗号或右括号");
+      }
+    }
+    if (c === '"' || c === "'") return str();
+    if (c === "`") {
+      i++;
+      let out = "";
+      while (i < text.length && text[i] !== "`") out += text[i++];
+      if (text[i] === "`") i++;
+      return out;
+    }
+    const m = /^(?:-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?|true|false|null)/.exec(text.slice(i));
+    if (!m) throw new Error("无法识别的值（位置 " + i + "）");
+    i += m[0].length;
+    if (m[0] === "true") return true;
+    if (m[0] === "false") return false;
+    if (m[0] === "null") return null;
+    return Number(m[0]);
+  };
+  const list = value();
+  return { list: Array.isArray(list) ? list : [], warnings: [], error: "" };
+}
+
+/** MIME → public/ 下的扩展名（渲染侧 parkedName 同一张表；主进程定名，render.mjs 只照写） */
+function mediaExtOfMime(mime, kind) {
+  const m = String(mime || "")
+    .split(";")[0]
+    .trim()
+    .toLowerCase();
+  const table = {
+    "video/mp4": ".mp4",
+    "video/webm": ".webm",
+    "video/quicktime": ".mov",
+    "video/x-matroska": ".mkv",
+    "video/x-msvideo": ".avi",
+    "video/mpeg": ".mpeg",
+    "audio/mpeg": ".mp3",
+    "audio/mp3": ".mp3",
+    "audio/wav": ".wav",
+    "audio/x-wav": ".wav",
+    "audio/flac": ".flac",
+    "audio/aac": ".aac",
+    "audio/ogg": ".ogg",
+    "audio/mp4": ".m4a",
+    "audio/x-m4a": ".m4a",
+  };
+  if (table[m]) return table[m];
+  if (kind === "audio") return ".mp3";
+  if (kind === "video") return ".mp4";
+  return "";
+}
+
+/** 契约 key → public/ 下的安全文件名（不带扩展名） */
+function mediaBaseName(key, index) {
+  const base = String(key || "media").replace(/[^\w.-]/g, "_") || "media";
+  return index == null || index < 0 ? base : base + "-" + (index + 1);
+}
+
+/**
+ * 契约 → inputProps 组装（固化工程的唯一 props 通道）。
+ *   · image：内联成 data URL（<Img> 不走 proxy，安全）
+ *   · audio / video：**不内联**，交给 mediaBlobs 落 public/，props 里给 staticFile 用的裸文件名
+ *   · list:true：值变成数组（媒体按接线顺序占位），标量取第一个
+ *   · number/boolean/json：按字面量解析，解析不了原样给字符串
+ * @returns {{props:object, mediaBlobs:object, mediaBlobsMeta:object, warnings:string[], audioFiles:string[]}}
+ */
+function contractPropsOf(params, contract) {
+  const out = { props: {}, mediaBlobs: {}, mediaBlobsMeta: {}, warnings: [], audioFiles: [] };
+  const inputs = Array.isArray(params && params.inputs) ? params.inputs : [];
+  const byKey = new Map();
+  const byIndex = new Map();
+  for (const it of inputs) {
+    if (!it) continue;
+    const text = String(it.text == null ? "" : it.text).trim();
+    if (!text) continue;
+    const k = String(it.key || "").trim();
+    if (k) {
+      if (!byKey.has(k)) byKey.set(k, []);
+      byKey.get(k).push(it);
+    }
+    const idx = Number(it.index);
+    if (isFinite(idx)) {
+      if (!byIndex.has(idx)) byIndex.set(idx, []);
+      byIndex.get(idx).push(it);
+    }
+  }
+  for (let ci = 0; ci < contract.length; ci++) {
+    const c = contract[ci];
+    const items = (byKey.get(c.key) || byIndex.get(ci) || [])
+      .slice()
+      .sort((a, b) => Number(a.index || 0) - Number(b.index || 0));
+    const texts = items.map((x) => String(x.text == null ? "" : x.text).trim()).filter(Boolean);
+    if (!texts.length) continue;
+    if (c.kind === "image") {
+      const imgs = [];
+      for (const t of texts) {
+        const src = resolveMediaSrc(t, "image");
+        if (src) imgs.push(src);
+      }
+      if (imgs.length) out.props[c.key] = c.list ? imgs : imgs[0];
+      continue;
+    }
+    if (c.kind === "audio" || c.kind === "video") {
+      const names = [];
+      texts.forEach((t, k) => {
+        const idx = c.list ? k : -1;
+        const src = resolveMediaSrc(t, c.kind);
+        if (!src) {
+          out.warnings.push("端子「" + c.key + "」的素材读不出来（" + mediaKindOfSrc(t) + "）：" + t.slice(0, 120));
+          return;
+        }
+        if (/^https?:\/\//i.test(src)) {
+          /* 远程地址：合成层可以直接用 URL，不必落地 */
+          names.push(src);
+          return;
+        }
+        const parsed = /^data:([^;,]+)[;,]/.exec(src);
+        const mime = parsed ? parsed[1] : c.kind === "audio" ? "audio/mpeg" : "video/mp4";
+        const comma = src.indexOf(",");
+        if (!/^data:/i.test(src) || comma < 0) {
+          out.warnings.push("端子「" + c.key + "」的素材不是 data URL（" + String(src).slice(0, 60) + "）");
+          return;
+        }
+        const name = mediaBaseName(c.key, idx) + mediaExtOfMime(mime, c.kind);
+        out.mediaBlobs[name] = src.slice(comma + 1);
+        out.mediaBlobsMeta[name] = { mime, key: c.key, index: c.list ? k : -1, name };
+        names.push(name);
+      });
+      if (!names.length) continue;
+      out.props[c.key] = c.list ? names : names[0];
+      if (c.kind === "audio") {
+        for (const it of items) {
+          const p = localMediaPathOf(String(it.text || "").trim());
+          if (p) out.audioFiles.push(p);
+        }
+      }
+      continue;
+    }
+    /* 文本与标量：第一个非空值（list 时全给） */
+    const values = texts.map((t) => {
+      if (c.kind === "number") {
+        const n = Number(t.replace(/[^\d.eE+-]/g, ""));
+        return isFinite(n) ? n : t;
+      }
+      if (c.kind === "boolean") return /^(true|1|yes|是|开)$/i.test(t);
+      if (c.kind === "json") {
+        try {
+          return JSON.parse(t);
+        } catch {
+          return t;
+        }
+      }
+      return t;
+    });
+    out.props[c.key] = c.list ? values : values[0];
+  }
+  return out;
+}
+
+/** 输入值若指向本机文件，返回绝对路径（音频时长探测用）；否则空串 */
+function localMediaPathOf(text) {
+  const s = String(text || "").trim();
+  if (!s || /^data:/i.test(s) || /^https?:\/\//i.test(s)) return "";
+  try {
+    if (/^file:\/\//i.test(s)) return require("url").fileURLToPath(s);
+  } catch {
+    return "";
+  }
+  try {
+    return fs.existsSync(s) ? path.resolve(s) : "";
+  } catch {
+    return "";
+  }
+}
+
 /**
  * 该渲染走哪种合成（决定 props 怎么给）：
  *   builtin —— 内置台词卡模板（只认 hero / narration / voice / lineStarts / bg，多给的键它不读）；
@@ -2242,6 +2685,7 @@ function normalizeCustomComposition(raw) {
     /* 无 default：唯一的大写具名导出视为组件 */
     const named = [];
     const reNamed = /export\s+(?:const|let|var|function|class)\s+([A-Z][\w$]*)/g;
+    let m;
     while ((m = reNamed.exec(src))) if (named.indexOf(m[1]) < 0) named.push(m[1]);
     if (named.length === 1) alias = named[0];
   }
@@ -2362,6 +2806,69 @@ function probeDurationViaRemotion(installDir, file) {
 function writeRenderSources(installDir, params) {
   const projectDir = remotionProjectDirOf(installDir, params);
   const srcDir = mk(join(projectDir, "src"));
+  /* ── ① 固化工程（多文件）：整棵树写进 src/，入口固定 Composition.tsx ──
+     这是「运行时完全脚本化」的落点：只要节点带 files，本函数一个模型都不碰，
+     逐文件校验通过就照写；不合规直接失败（错误里点名文件，回灌给构建 agent 修）。 */
+  const hasTree = params && params.files && typeof params.files === "object" && Object.keys(params.files).length;
+  if (hasTree) {
+    const check = validateProjectTree(params.files, "Composition.tsx");
+    if (!check.ok) {
+      return { custom: true, builtin: false, projectDir, entryPoint: "", error: check.errors.join("\n") };
+    }
+    const keep = new Set(Object.keys(check.files));
+    for (const rel of Object.keys(check.files)) {
+      const abs = join(srcDir, rel);
+      mk(path.dirname(abs));
+      fs.writeFileSync(abs, check.files[rel], "utf8");
+    }
+    /* 清掉上一版遗留、这一版已经不存在的源码（否则旧组件 / 旧相对导入会混进打包） */
+    const staleClean = (dir, relDir) => {
+      let ents = [];
+      try {
+        ents = fs.readdirSync(dir, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const ent of ents) {
+        const rel = relDir ? relDir + "/" + ent.name : ent.name;
+        if (ent.isDirectory()) {
+          if (ent.name === "node_modules") continue;
+          staleClean(join(dir, ent.name), rel);
+          continue;
+        }
+        if (rel === ENTRY_BASENAME) continue; /* 入口由下面重写 */
+        if (!PROJECT_FILE_EXT.test(ent.name)) continue;
+        if (keep.has(rel)) continue;
+        try {
+          fs.rmSync(join(dir, ent.name), { force: true });
+          appendConsole("[render] 清理旧工程文件：" + rel);
+        } catch {}
+      }
+    };
+    staleClean(srcDir, "");
+    fs.writeFileSync(join(srcDir, ENTRY_BASENAME), buildIndexSource(params), "utf8");
+    try {
+      fs.rmSync(join(srcDir, "index.ts"), { force: true });
+    } catch {}
+    appendConsole(
+      "[render] frozen project written → " +
+        srcDir +
+        " (" +
+        Object.keys(check.files).length +
+        " files, contract=" +
+        check.contract.length +
+        ")",
+    );
+    return {
+      custom: true,
+      builtin: false,
+      projectDir,
+      entryPoint: join(srcDir, ENTRY_BASENAME),
+      files: check.files,
+      contract: check.contract,
+      error: "",
+    };
+  }
   /* 专属「台词卡」内置模板已移除：这里不再按描述关键词 / 媒体输入抢道。
      合成源只有两种：显式 tsx（节点里贴的 / 工作流产物）→ 自定义合成；否则内置标题卡模板。 */
   const explicitTsx = String(params.tsx || "").trim();
@@ -2494,6 +3001,33 @@ async function runRender(installDir, params, nodeId, written) {
   const projectDir = remotionProjectDirOf(installDir, params);
   mk(projectDir);
   const outPath = resolveOutputPath(installDir, params);
+  /* ── 端子契约（固化工程）：props / 媒体落地在这一步先算完 ──────────────
+     写成「先算后渲染」是为了音频时长覆盖时长：接了音频端子且能探到实际时长时，
+     成片总长 = 音频时长（共识），否则用节点设置里的时长。 */
+  const projectContract =
+    (written && Array.isArray(written.contract) && written.contract.length
+      ? written.contract
+      : normalizeContract(params.contract)) || [];
+  const contractBuilt = projectContract.length ? contractPropsOf(params, projectContract) : null;
+  let audioDuration = 0;
+  if (contractBuilt && contractBuilt.audioFiles.length) {
+    for (const f of contractBuilt.audioFiles) {
+      let d = 0;
+      try {
+        d = await probeMediaDuration(f);
+      } catch {}
+      if (!d) {
+        try {
+          d = await probeDurationViaRemotion(installDir, f);
+        } catch {}
+      }
+      if (d > 0) {
+        audioDuration = d;
+        appendConsole("[render] audio terminal duration = " + d.toFixed(2) + "s (" + path.basename(f) + ")");
+        break;
+      }
+    }
+  }
   /* 渲染要用的浏览器：先从国内镜像预置（Remotion 自己的下载直链硬编码在 Google 存储上，
      国内常常不通），失败回退本机 Edge / Chrome 并把路径交给 render.mjs。 */
   const browserInfo = await ensureRenderBrowser(installDir);
@@ -2505,7 +3039,18 @@ async function runRender(installDir, params, nodeId, written) {
   return new Promise((resolve, reject) => {
     /* ---- 按 remotion-pack/render.mjs 契约写 render.json（render.mjs 默认读 ./render.json） ---- */
     const fps = Number(params.fps) || 30;
-    const duration = Math.max(1, Math.round(Number(params.durationSeconds) || 5));
+    const duration = Math.max(
+      1,
+      Math.round(audioDuration > 0 ? audioDuration : Number(params.durationSeconds) || 5),
+    );
+    if (audioDuration > 0 && Math.abs(Math.round(audioDuration * fps) - Math.round((Number(params.durationSeconds) || 5) * fps)) > 1) {
+      emitProgress({
+        phase: "render",
+        nodeId,
+        message: "音频时长覆盖成片时长：" + duration + "s",
+        pct: 3,
+      });
+    }
     const renderJson = {
       /* 工程目录：脚本据此解析相对资源、写日志缓存（缺省会退回安装目录，必须显式给） */
       projectDir,
@@ -2536,46 +3081,79 @@ async function runRender(installDir, params, nodeId, written) {
        专属「台词卡」模板已移除：接线文本里声明的 props、节点参数里的未知键、参数文件，
        全部只经这一条通道交给合成代码，不会被任何内置模板抢先注入或改写。 */
     if (renderModeOf(params) === "custom") {
-      const fromInputs = propsFromInputs(params.inputs, []);
       const nodeProps = customPropsOf(params);
-      const merged = Object.assign({}, fromInputs, nodeProps.props);
-      /* 接线里的媒体（视频 / 音频 / 图片）内联成 data URL 一并交出：渲染页禁止 file://，
-         显式给了同名键的不覆盖（见 inlineMediaPropsOf 注释）。 */
-      Object.assign(merged, inlineMediaPropsOf(params.inputs, merged));
-      /* 纯文本台词：上面两条通道都不认的文本，作为 narration 交出（见 narrationFromInputs） */
-      const narration = narrationFromInputs(params.inputs, merged);
-      if (narration && !String(merged.narration || "").trim()) merged.narration = narration;
-      /* ── 节拍表 → lineStarts ──────────────────────────────────────
-         画布上「台词节拍 · 换页节奏」接的是**纯文本表格**（序号 | 台词 | 起(s) | 止(s) | 时长），
-         propsFromInputs 不认它；而合成层只读 props.lineStarts 数组 —— 于是节拍从来没进过渲染，
-         换页只能按均分时间走（实测）。
-         beatStartsFromInputs 早就写好了却一直没人调用（死函数），这里把它接上：
-         显式给了 lineStarts 的不覆盖；表格解析不出（>=2 句）就什么都不做，退回均分。 */
-      if (!Array.isArray(merged.lineStarts) || !merged.lineStarts.length) {
-        const beats = beatStartsFromInputs(
-          (Array.isArray(params.inputs) ? params.inputs : []).map((it) => String((it && it.text) || "")),
-          renderJson.fps,
+      if (contractBuilt) {
+        /* 固化工程：契约是唯一 props 通道；节点参数里的显式同名键仍可覆盖（老口径） */
+        Object.assign(renderJson.inputProps, contractBuilt.props);
+        Object.assign(renderJson.inputProps, nodeProps.props);
+        const keys = Object.keys(contractBuilt.props);
+        appendConsole(
+          "[render] contract props: " +
+            (keys.length
+              ? keys
+                  .map(
+                    (k) =>
+                      k +
+                      "(" +
+                      (Array.isArray(renderJson.inputProps[k]) ? "array" : typeof renderJson.inputProps[k]) +
+                      ")",
+                  )
+                  .join(", ")
+              : "-"),
         );
-        if (beats.length) {
-          merged.lineStarts = beats;
-          appendConsole("[render] lineStarts from beat table: [" + beats.join(",") + "]");
+        /* 没接线的必填端子：日志点名（合成层要自己兜住，构建提示词里已写明） */
+        for (const c of projectContract) {
+          if (c.required && contractBuilt.props[c.key] == null)
+            appendConsole("[render] 必填端子未接线：" + c.key + "（" + c.label + "）");
         }
+        for (const w of contractBuilt.warnings) appendConsole("[render] 契约输入：" + w);
+      } else {
+        const fromInputs = propsFromInputs(params.inputs, []);
+        const merged = Object.assign({}, fromInputs, nodeProps.props);
+        /* 接线里的媒体（视频 / 音频 / 图片）内联成 data URL 一并交出：渲染页禁止 file://，
+           显式给了同名键的不覆盖（见 inlineMediaPropsOf 注释）。 */
+        Object.assign(merged, inlineMediaPropsOf(params.inputs, merged));
+        /* 纯文本台词：上面两条通道都不认的文本，作为 narration 交出（见 narrationFromInputs） */
+        const narration = narrationFromInputs(params.inputs, merged);
+        if (narration && !String(merged.narration || "").trim()) merged.narration = narration;
+        /* ── 节拍表 → lineStarts ──────────────────────────────────────
+           画布上「台词节拍 · 换页节奏」接的是**纯文本表格**（序号 | 台词 | 起(s) | 止(s) | 时长），
+           propsFromInputs 不认它；而合成层只读 props.lineStarts 数组 —— 于是节拍从来没进过渲染，
+           换页只能按均分时间走（实测）。
+           beatStartsFromInputs 早就写好了却一直没人调用（死函数），这里把它接上：
+           显式给了 lineStarts 的不覆盖；表格解析不出（>=2 句）就什么都不做，退回均分。 */
+        if (!Array.isArray(merged.lineStarts) || !merged.lineStarts.length) {
+          const beats = beatStartsFromInputs(
+            (Array.isArray(params.inputs) ? params.inputs : []).map((it) => String((it && it.text) || "")),
+            renderJson.fps,
+          );
+          if (beats.length) {
+            merged.lineStarts = beats;
+            appendConsole("[render] lineStarts from beat table: [" + beats.join(",") + "]");
+          }
+        }
+        Object.assign(renderJson.inputProps, merged);
+        for (const w of nodeProps.warnings) appendConsole("[render] 自定义合成参数：" + w);
+        const keys = Object.keys(merged);
+        appendConsole(
+          "[render] custom props: " +
+            (keys.length ? keys.map((k) => k + "(" + (Array.isArray(merged[k]) ? "array" : typeof merged[k]) + ")").join(", ") : "-") +
+            (nodeProps.warnings.length ? " warnings=" + nodeProps.warnings.length : ""),
+        );
       }
-      Object.assign(renderJson.inputProps, merged);
-      for (const w of nodeProps.warnings) appendConsole("[render] 自定义合成参数：" + w);
-      const keys = Object.keys(merged);
-      appendConsole(
-        "[render] custom props: " +
-          (keys.length ? keys.map((k) => k + "(" + (Array.isArray(merged[k]) ? "array" : typeof merged[k]) + ")").join(", ") : "-") +
-          (nodeProps.warnings.length ? " warnings=" + nodeProps.warnings.length : ""),
-      );
     }
     /* ── 音视频走独立通道（mediaBlobs）──────────────────────────────
        <OffthreadVideo> 会把 src 拼进 `/proxy?src=<整个 src>`：data URL 一大就 431。
        所以视频 / 音频不放进 render.json 的 inputProps，而是单独给 mediaBlobs，
-       由 render.mjs 落成 <工程>/public/<prop>.<ext>，渲染页只拿短文件名。
-       图片（<Img> 不走 proxy）保持 data URL 原样。 */
-    if (renderModeOf(params) === "custom") {
+       由 render.mjs 落成 <工程>/public/<文件名>，渲染页只拿短文件名。
+       图片（<Img> 不走 proxy）保持 data URL 原样。
+       固化工程这一路：文件名与 props 值都由 contractPropsOf 定好（数组项按接线顺序），
+       render.mjs 只照 meta 写盘、把 name 放回 props。 */
+    if (contractBuilt && Object.keys(contractBuilt.mediaBlobs).length) {
+      renderJson.mediaBlobs = contractBuilt.mediaBlobs;
+      renderJson.mediaBlobsMeta = contractBuilt.mediaBlobsMeta;
+      appendConsole("[render] media parked (contract): " + Object.keys(contractBuilt.mediaBlobs).join(", "));
+    } else if (renderModeOf(params) === "custom") {
       const mediaBlobs = {};
       const mediaBlobsMeta = {};
       for (const prop of ["hero", "voice"]) {
@@ -2751,6 +3329,107 @@ async function renderVideo(params) {
     emitProgress({ phase: "render", nodeId, message: err, error: true, pct: 0 });
     reportErr(err, err, renderReportCtx(params, nodeId));
     return { ok: false, error: err, message: err };
+  }
+}
+
+/* ── 短试渲染（构建验证 / 设置窗「试渲染」）─────────────────────────────
+   与 renderVideo 的区别（全部是刻意的）：
+     · **不取**全局音视频互斥锁 —— 它只烧几秒 CPU、不出交付物，不该把用户的音乐 / 视频任务排队挡住（共识）；
+     · 时长压到 ≤2 秒、产物写进 <工程>/verify/ 并在成功后删掉，不当成片留在节点输出里；
+     · 没接线的媒体端子用内置占位素材兜住（占位图 / 1 秒静音），让「工程本身能不能渲染」可判。
+   返回 { ok, error?, contract?, warnings? }。 */
+function placeholderImageDataUrl() {
+  const svg =
+    '<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720">' +
+    '<rect width="1280" height="720" fill="#1f2937"/>' +
+    '<text x="640" y="380" font-size="48" fill="#9ca3af" text-anchor="middle" font-family="sans-serif">PLACEHOLDER</text>' +
+    "</svg>";
+  return "data:image/svg+xml;base64," + Buffer.from(svg, "utf8").toString("base64");
+}
+function silentWavDataUrl(seconds) {
+  const rate = 8000;
+  const bits = 16;
+  const ch = 1;
+  const n = Math.max(1, Math.round(rate * (Number(seconds) || 1)));
+  const dataBytes = n * (bits / 8) * ch;
+  const buf = Buffer.alloc(44 + dataBytes);
+  buf.write("RIFF", 0);
+  buf.writeUInt32LE(36 + dataBytes, 4);
+  buf.write("WAVE", 8);
+  buf.write("fmt ", 12);
+  buf.writeUInt32LE(16, 16);
+  buf.writeUInt16LE(1, 20);
+  buf.writeUInt16LE(ch, 22);
+  buf.writeUInt32LE(rate, 24);
+  buf.writeUInt32LE(rate * ch * (bits / 8), 28);
+  buf.writeUInt16LE(ch * (bits / 8), 32);
+  buf.writeUInt16LE(bits, 34);
+  buf.write("data", 36);
+  buf.writeUInt32LE(dataBytes, 40);
+  return "data:audio/wav;base64," + buf.toString("base64");
+}
+
+/** 试渲染的输入：已接线的原样保留，没接线的媒体 / 文本端子补占位值 */
+function verifyPlaceholderInputs(contract, inputs) {
+  const list = Array.isArray(inputs) ? inputs.slice() : [];
+  const given = new Set(list.map((x) => String((x && x.key) || "")).filter(Boolean));
+  contract.forEach((c, i) => {
+    if (given.has(c.key)) return;
+    if (c.kind === "image") list.push({ key: c.key, index: i, text: placeholderImageDataUrl() });
+    else if (c.kind === "audio") list.push({ key: c.key, index: i, text: silentWavDataUrl(1) });
+    else if (c.kind === "text") list.push({ key: c.key, index: i, text: "示例文本 sample" });
+  });
+  return list;
+}
+
+async function verifyRender(params) {
+  const p = params || {};
+  const nodeId = String(p.nodeId || "verify");
+  const cfg = loadConfig();
+  const installDir = String(cfg.installDir || "").trim();
+  if (!installDir || !fs.existsSync(installDir)) {
+    return { ok: false, error: "not_installed", message: "Remotion 后端尚未安装（安装目录不存在）" };
+  }
+  if (!runtimeReadyAt(installDir)) {
+    return {
+      ok: false,
+      error: "not_ready",
+      message: "Remotion 依赖未就绪：node_modules/remotion 缺失，请先在插件卡片点「下载安装」",
+    };
+  }
+  const check = validateProjectTree(p.files, "Composition.tsx");
+  if (!check.ok) {
+    return { ok: false, error: "project_invalid", message: check.errors.join("\n"), errors: check.errors };
+  }
+  const projectDir = remotionProjectDirOf(installDir, p);
+  const verifyParams = Object.assign({}, p, {
+    files: check.files,
+    contract: check.contract,
+    inputs: verifyPlaceholderInputs(check.contract, p.inputs),
+    durationSeconds: Math.max(1, Math.min(2, Number(p.durationSeconds) || 2)),
+    outputPath: join(projectDir, "verify", "verify-" + Date.now() + ".mp4"),
+  });
+  try {
+    const written = writeRenderSources(installDir, verifyParams);
+    if (written.error) return { ok: false, error: "project_invalid", message: written.error };
+    appendConsole("[verify] start node=" + nodeId + " duration=" + verifyParams.durationSeconds + "s");
+    const r = await runRender(installDir, verifyParams, nodeId, written);
+    try {
+      fs.rmSync(r.outputPath, { force: true });
+    } catch {}
+    appendConsole("[verify] ok node=" + nodeId);
+    return {
+      ok: true,
+      contract: check.contract,
+      warnings: check.warnings,
+      files: Object.keys(check.files),
+      message: "试渲染通过（" + verifyParams.durationSeconds + "s）",
+    };
+  } catch (e) {
+    const raw = String((e && e.message) || e);
+    const err = friendlyRenderError(raw, true);
+    appendConsole("[verify] error: " + err);
+    return { ok: false, error: "render_failed", message: err, raw };
   }
 }
 
@@ -3182,6 +3861,8 @@ function registerRemotionIpc(opts) {
     return await installKill.cancelInstall(PLUGIN_ID);
   });
   ipcMain.handle("remotion:render", async (e, params) => renderVideo(params || {}));
+  /* 短试渲染：构建验证 / 设置窗「试渲染」。不占全局音视频锁、产物即弃，见 verifyRender。 */
+  ipcMain.handle("remotion:verify", async (e, params) => verifyRender(params || {}));
   /* 自定义合成参数预览（只读、不渲染）：按与真正渲染同一口径算「本次会传给合成的 props」，
      让画布设置窗与 Agent 能核对参数是否被通道接住。 */
   ipcMain.handle("remotion:resolveProps", async (e, params) => {
@@ -3252,4 +3933,13 @@ module.exports = {
   DISK_HINT_GB,
   /* 纯函数件：供冒烟测试直接驱动同一份实现（生产路径只用内部调用，不依赖这条导出） */
   normalizeCustomComposition,
+  /* 固化工程（多文件）+ 端子契约：文件树消毒 / 逐文件校验 / 契约解析 / props 组装 */
+  projectRelPath,
+  projectResolveImport,
+  validateProjectTree,
+  normalizeContract,
+  parseContractLiteral,
+  contractPropsOf,
+  mediaExtOfMime,
+  writeRenderSources,
 };

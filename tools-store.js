@@ -7,7 +7,7 @@
  * 完整工具包 = 工具定义（toolConfig：名称 / 描述 / 入出参数）+ 内部图 JSON 快照：
  *   {
  *     id, kind: "tool" | "function", name, description,
- *     inputs:  [{name, kind}],      // kind ∈ text | image
+ *     inputs:  [{name, kind}],      // kind ∈ text | image | video | audio
  *     outputs: [{name, kind}],
  *     always: false,                // 「会话随时可调用」开关（默认关 · 供 Agent
  *                                   // 工具调用链路 func call 消费，本模块只存不管；
@@ -30,7 +30,9 @@ const { ipcMain } = require("electron");
 const { readJson, writeJson } = require("./config-providers.js");
 
 const TOOL_ID_RE = /^[A-Za-z0-9_-]{4,80}$/;
-const PARAM_KINDS = { text: 1, image: 1 };
+/* 端子类型域与渲染层 FN_TOOL_PORT_KINDS 同一份（renderer/app.js）：text | image |
+   video | audio。白名单外的值一律回落 text —— 老工具包的行为不变。 */
+const PARAM_KINDS = { text: 1, image: 1, video: 1, audio: 1 };
 
 let getDataDir = () => "";
 let t = (s) => String(s == null ? "" : s);
@@ -51,8 +53,8 @@ function fail(err) {
 function genId() {
   return "tl" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 }
-/* 参数表归一：确保 [{name, kind[, description][, optional]}]，kind 只认 text | image
-   （缺省 text）。
+/* 参数表归一：确保 [{name, kind[, description][, optional]}]，kind 只认
+   text | image | video | audio（缺省 text）。
    description = 参数说明（入出参都存），供 Agent 侧拼「这个参数该填什么」；
    optional = 可选位（只在输入侧有意义：给模型的 required 列表据此生成），
    **未标注 = 必填**（老工具包口径不变）。 */

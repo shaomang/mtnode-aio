@@ -139,11 +139,21 @@ function npIsParamIndex(i) {
 }
 
 /* 参数端子 Y 坐标：与 ordinary 端子同一套带宽（复用 app.js 的 inPortY），
-   位置 = 排在现有全部输入端子之后的那一颗（画布渲染与连线几何共用这一处）。 */
+   位置 = 排在现有全部输入端子之后的那一颗（画布渲染与连线几何共用这一处）。
+   **必须留在卡片内**：端子多的节点（H3 的 R2V 有 16 个数据端子 + 控制口）按「最后一颗
+   再下一格」会算到卡片下沿之外；端子圆点跑到卡片外的空中，连线端点也跟着在卡片外，
+   看起来就是「线与端子分家」。上限压到底部留白内（圆心离下边框 ≥ PORT_R + 5）。 */
 function npPortY(node) {
   if (!node || typeof inPortY !== "function") return 0;
   const ic = Math.max(0, Number(inputCount(node)) || 0);
-  return inPortY(node, ic, ic);
+  const y = inPortY(node, ic, ic);
+  const h =
+    typeof nodePortHeight === "function"
+      ? Number(nodePortHeight(node)) || 0
+      : Number(node.h) || 0;
+  if (h <= 0) return y;
+  const r = typeof PORT_R === "number" ? PORT_R : 5;
+  return Math.min(y, Math.max(45, h - r - 5));
 }
 
 /* ───────────── 哪些节点有参数端子 ───────────── */

@@ -94,6 +94,11 @@ const blenderPlugin = require("./blender/main-blender.js");
 /* 本地语音转写（官方本地 SenseVoice，跑在 dsh 运行时里）：主进程只留「转写缓存 +
    音频读盘」这条小内核，识别本身走 dsh:speech 通道（见 speech-store.js 头部口径） */
 const { registerSpeechIpc } = require("./speech-store.js");
+/* 音频 / 视频 → 字幕（每条字幕的起止秒 + SRT/VTT 文本）：画布内置工具「音频转字幕」
+   经 fn-runtime 的 mtnode.subtitle 桥调到这里；识别仍走 dsh 语音通道（同一份 SenseVoice
+   权重），切句用 ffmpeg，字幕排版与 Agent 工具 audio_subtitle 共用
+   dsh/gateway/subtitle-cues.mjs。 */
+const { subtitleFromMedia } = require("./media-subtitle.js");
 /* 本地图像生成后端（SenseNova-U1.5-8B-MoT）：标准库 HTTP 服务，后端单例独立于 MTNode 生命周期 */
 const {
   registerSensenovaIpc,
@@ -3411,6 +3416,9 @@ function fnRuntimeOf() {
          也就是「PDF生成」节点经 pdf:writeText 用的同一份内核，排版 / 公式完全同源。
          只写用户显式给出的本机路径，落在应用目录内一律拒绝（数据不落应用文件夹）。 */
       pdfWrite: (params) => fnPdfWrite(params),
+      /* 函数节点的「音频 / 视频 → 字幕」后端：mtnode.subtitle(...) 走这里。
+         与 Agent 工具 audio_subtitle 同一套切句 / 排版口径，见 media-subtitle.js。 */
+      subtitle: (params) => fnSubtitle(params),
     });
   return fnRuntime;
 }
@@ -3594,6 +3602,25 @@ async function fnPdfWrite(params) {
   const arg = params && typeof params === "object" ? params : {};
   try {
     return await pdfWrite.writeTextPdf(arg);
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+}
+/* 函数节点 jscode 里 mtnode.subtitle(...) 的执行体（音频 / 视频 → 字幕时间轴）。
+   真源是 media-subtitle.js 的 subtitleFromMedia：ffmpeg 静音切句 + dsh 语音通道逐句
+   识别（同一份 SenseVoice 权重）+ 与 Agent 工具 audio_subtitle 共用的字幕排版模块。
+   workspace 用数据目录兜底（与渲染层 spWorkspaceAsync 的最后一档一致）：语音运行时
+   按它记账，同一台机器上不会另拉一份模型。
+   失败一律 { ok:false, error }（不抛），与 mtnode.ai / readPdf / writePdf 同一口径。 */
+async function fnSubtitle(params) {
+  const arg = params && typeof params === "object" ? params : {};
+  try {
+    return await subtitleFromMedia(arg, {
+      dataDir: DATA(),
+      workspace: DATA(),
+      gatewayPath: DSH_GATEWAY_PATH,
+      speech: (p) => dsh().speech(p),
+    });
   } catch (err) {
     return { ok: false, error: String((err && err.message) || err) };
   }

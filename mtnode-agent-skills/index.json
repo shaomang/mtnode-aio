@@ -1,6 +1,6 @@
 {
   "format": "mtnode-agent-skills-index-v1",
-  "updatedAt": "2026-10-23T05:47:03.239Z",
+  "updatedAt": "2026-10-23T21:58:59.607Z",
   "libraryRoot": "mtnode-agent-skills",
   "usage": "MTNode 内置 Agent 技能库。默认只注入本索引；任务匹配时再读取完整 SKILL.md（skill 工具或 read）。",
   "categories": [
@@ -99,7 +99,7 @@
           "id": "local-media",
           "name": "mtnode-local-media",
           "title": "本地语音与视频分析",
-          "description": "MTNode 里要「听音频 / 看视频」时用本机能力：audio_transcribe 走官方本地 SenseVoice（字幕、逐字稿、会议记录），ffmpeg 工具做探测 / 抽音轨 / 抽帧 / 任意转码，describe 一次返回画面描述。不要另装 whisper / Qwen-ASR / 在线 ASR，也不要自己下载 ffmpeg。Use when the task needs speech-to-text, subtitles, audio/video probing, frame extraction, or video content analysis inside MTNode.",
+          "description": "MTNode 里要「听音频 / 做字幕 / 看视频」时用本机能力：audio_subtitle 出字幕条（cues + SRT/VTT 文本），audio_transcribe 走官方本地 SenseVoice 出逐字稿，ffmpeg 工具做探测 / 抽音轨 / 抽帧 / 任意转码，describe 一次返回画面描述；用户要把转写「落在画布上」时指到工具库内置工具「音频转字幕（时间轴）」（工具壳，参数在壳内的 JSON 文本节点，同一内核的 mtnode.subtitle）。不要另装 whisper / Qwen-ASR / 在线 ASR，也不要自己下载 ffmpeg。Use when the task needs subtitles with per-line timing, speech-to-text, audio/video probing, frame extraction, o",
           "path": "mtnode/local-media/SKILL.md",
           "version": ""
         },

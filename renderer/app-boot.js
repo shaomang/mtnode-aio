@@ -1090,14 +1090,15 @@ async function init() {
   };
   $("#btnUndo").onclick = undo;
   $("#btnRedo").onclick = redo;
-  /* 顶栏「复制」（Ctrl+D）：在选中节点下方复制一个同类节点（只复制类型，不复制内容）。
+  /* 顶栏「复制」（Ctrl+D）：就地完整克隆选中节点（等同复制 + 粘贴，落点在源节点右下各一格；
+     与 Ctrl+V 同源的内容口径，但不写内部粘贴板）。
      与快捷键 Ctrl+D 同一入口 —— 键位在 renderer/app.js 的组合键分支里（app-keys.js
      只管单键，组合键一律不占）。 */
   const btnDupNode = $("#btnDupNode");
   if (btnDupNode)
     btnDupNode.onclick = () => {
-      if (typeof duplicateSelectedNodeBelow === "function")
-        duplicateSelectedNodeBelow();
+      if (typeof duplicateNodesBeside === "function")
+        duplicateNodesBeside(currentSelection());
     };
   $("#btnFit").onclick = fitCanvas;
   const btnCanvasShot = $("#btnCanvasShot");

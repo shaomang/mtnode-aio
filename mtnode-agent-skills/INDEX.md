@@ -31,7 +31,7 @@
   - 文件：`mtnode/dev-architect/SKILL.md`
 - **mtnode-grill-me** — 拷问我：需求拷问：把任务映射成决策树，按轮问完整个「前沿」（前置已定的全部问题）；每轮必须用 ask_user_question 工具跳出 MTNode 询问窗（一次带上整个前沿，禁止把问题当聊天正文罗列），每题选项把推荐项放第一位标「（推荐）」；环境事实自己查绝不问用户；直到前沿为空且用户在询问窗里确认达成共识才动手。共识若含审批 / 交付 / 驳回回跳 / 并行 / 子图，产出的是长周期任务图（DAG）JSON。Use when the user says 拷问我 / grill me / 先问清再动手 / 需求不明确, or a dev-node 开发 run turns on 先拷问需求.
   - 文件：`mtnode/grill-me/SKILL.md`
-- **mtnode-local-media** — 本地语音与视频分析：MTNode 里要「听音频 / 看视频」时用本机能力：audio_transcribe 走官方本地 SenseVoice（字幕、逐字稿、会议记录），ffmpeg 工具做探测 / 抽音轨 / 抽帧 / 任意转码，describe 一次返回画面描述。不要另装 whisper / Qwen-ASR / 在线 ASR，也不要自己下载 ffmpeg。Use when the task needs speech-to-text, subtitles, audio/video probing, frame extraction, or video content analysis inside MTNode.
+- **mtnode-local-media** — 本地语音与视频分析：MTNode 里要「听音频 / 做字幕 / 看视频」时用本机能力：audio_subtitle 出字幕条（cues + SRT/VTT 文本），audio_transcribe 走官方本地 SenseVoice 出逐字稿，ffmpeg 工具做探测 / 抽音轨 / 抽帧 / 任意转码，describe 一次返回画面描述；用户要把转写「落在画布上」时指到工具库内置工具「音频转字幕（时间轴）」（工具壳，参数在壳内的 JSON 文本节点，同一内核的 mtnode.subtitle）。不要另装 whisper / Qwen-ASR / 在线 ASR，也不要自己下载 ffmpeg。Use when the task needs subtitles with per-line timing, speech-to-text, audio/video probing, frame extraction, o
   - 文件：`mtnode/local-media/SKILL.md`
 - **mtnode-mcp-server** — MTNode MCP 服务端（第三方接进来操作）：从 MTNode 外面（Claude Code / Cursor / 自研 Agent）经 MCP 操作本机 MTNode 的完整规范：服务端在哪、13 个工具各自怎么用（含媒体生成 / 跑节点 / 用户工具 / 会话四条异步作业）、必须先读图拿 contentHash 再改、resources/prompts 三类能力、权限与审计口径、自用回环（应用内 Agent 也走同一套入口）、以及做不到的事。Use when connecting an external MCP client to MTNode, debugging third-party calls, generating media or running nodes over MCP, or writing code that drives MTNode over MCP.
   - 文件：`mtnode/mcp-server/SKILL.md`

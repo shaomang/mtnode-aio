@@ -2105,12 +2105,18 @@ function traceContextNoteOf(data) {
  *   · dshRunOnce 捕获网关报回的本轮 dsh 会话 id（session 帧，以及 done / error 上的
  *     data.sessionId），连同这一轮的配置指纹 sig 存进 S._runSession[runKey]，
  *     本轮成功结束后清掉该键；
- *   · 失败要重发时：会话在、指纹没变、而且确实攒到了部分产出 → 下一 attempt 发
+ *   · 失败要重发时：会话在、指纹没变 → 下一 attempt 发
  *     dshResumeDirective 的「从中断处接着写」指令 + resumeSession，运行时沿用原上下文
  *     （见 dsh/DESIGN.md 断点续跑契约），不再重发任务原文；已累计的正文以 seedText
  *     带进 dshRunOnce，所以返回给调用方的仍是整轮完整正文；keepTrace 让失败轮的
  *     轨迹不被抹掉，归档段仍能还原「前半 + 续写后半」；
- *   · 续不上（没抓到会话 / 指纹变了 / 一个字都还没写出来）就退回上面的整轮重发；
+ *   · 续不上（没抓到会话 / 指纹变了）就退回上面的整轮重发；
+ *   · 「一个字都还没写出来」**不算**续不上（本次修复）：模型常常先发思考 / 工具调用、
+ *     正文一个字没落就在流里报错（典型现场 `DeepSeek Messages stream: tool input is
+ *     invalid JSON`），此时会话里已经有这一轮的用户任务、以及此前跑完的工具结果 ——
+ *     整轮重发等于把中断前的全部内容（工具调用与其结果、上下文）丢掉重跑一遍，正是
+ *     用户报的「整轮会话完全重跑」。会话真没落盘时网关会回 RESUME_UNAVAILABLE，
+ *     宿主立刻退回整轮重发，不需要宿主侧先猜；
  *   · 网关点名 RESUME_UNAVAILABLE（会话不可续跑：盘上无日志、或运行时经 session/resume
  *     握手也恢复不了 —— 宿主只认这个前缀，见 dshResumeUnavailable）时立刻用原始 input
  *     整轮重发；老网关没有握手桥、原样透传运行时 id collision（见 dshResumeCollision）
@@ -2643,8 +2649,9 @@ function dshIsUserClosedError(e) {
       runtimeKey 同源成分（apiKey / baseUrl / webSearchKey / persona / tools /
       envPatch），这些漂移 = 网关会另起新 runtime —— 即便握手把旧会话恢复为 live，
       恢复出的也是旧配置的上下文，只能整轮重发（杜绝「假装续上，实则换配置冷起」）；
-   · 'no-output'  —— 会话与配置都吻合，但一个字都还没写出来（续跑没有意义）。 */
-function dshResumeBlockReason(runKey, carriedChars) {
+   「一个字都还没写出来」不在此列（本次修复）：那时会话里已有本轮的用户任务与已跑完的
+   工具结果，正是最该保留的东西（见上方重发闸注释与 dsh/DESIGN.md 断点续跑契约）。 */
+function dshResumeBlockReason(runKey) {
   const sess = dshResumableSession(runKey);
   if (!sess) {
     const had = S._runSession && S._runSession[runKey];
@@ -2652,7 +2659,7 @@ function dshResumeBlockReason(runKey, carriedChars) {
     if (had && cur && had.sig !== cur) return "sig-drift";
     return "no-session";
   }
-  return carriedChars > 0 ? null : "no-output";
+  return null;
 }
 
 /* 这一次重发算「续写」还是「整轮重发」（消费方据此决定清不清失败轮的残文）：
@@ -2669,19 +2676,17 @@ function dshResumeBlockReason(runKey, carriedChars) {
    （整轮重发），绝不在配置已变时点名续跑旧会话 —— 哪怕握手能把旧会话恢复为 live，
    恢复出的也是旧配置的上下文。
    宿主完全没接入续跑（没有会话登记）时也恒为 false，与接入前行为一字不差。
-   carriedChars = 这一轮失败前已累计的正文（dshRunTask 的 carried.length）：
-   与重发闸「优先续跑的三条件」逐条同源 —— 会话在（dshResumableSession 非 null）
-   **且确实攒到了产出**（carriedChars > 0）才算续写。旧口径漏了第二条：会话登记在、
-   一个字都没写出来时，重发闸实际走的是「整轮重发」，这里却报 resumed=true，
-   消费方据此保留了失败轮的残文与思考槽 —— 重发那一轮从零流式，旧思考就一直挂在
-   界面上（「残留旧的思考内容」的成因之一），落盘后还会被翻出来。 */
-function dshRetryResumed(opts, msg, runKey, carriedChars) {
+   与重发闸逐条同源：会话在（dshResumableSession 非 null，指纹一致）就算续写 ——
+   不再要求「已经攒到正文字数」。模型可能只发了个工具调用 / 思考就在流里报错
+   （`tool input is invalid JSON` 这类），一个字没写但会话里已有本轮任务与跑完的
+   工具结果；那次重发闸走的是真续跑，这里也必须报 resumed=true，否则消费方把同一轮
+   的正文 / 工具 / 思考全清掉，用户看到的就是「整轮完全重跑」。 */
+function dshRetryResumed(opts, msg, runKey) {
   if (dshResumeUnavailable(msg) || dshResumeCollision(msg)) return false;
   if (opts && opts.resumeSession) return true;
   return (
     typeof dshResumableSession === "function" &&
-    !!dshResumableSession(runKey) &&
-    (Number(carriedChars) || 0) > 0
+    !!dshResumableSession(runKey)
   );
 }
 
@@ -2927,7 +2932,7 @@ function dshRunTask(input, opts) {
        消费方保留一份实际已被整轮重发顶掉的思考槽 / 残文（残留旧思考的成因）。 */
     const willResume = resume
       ? true
-      : dshRetryResumed(probeOpts, msg, runKey, carriedChars);
+      : dshRetryResumed(probeOpts, msg, runKey);
     try {
       if (typeof opts.onEvent === "function")
         opts.onEvent("retry", {
@@ -3030,14 +3035,17 @@ function dshRunTask(input, opts) {
       tries++;
       const delayMs = dshRetryDelayMs(tries); /* 首错 30s，第 2 次起 60s */
       const brief = msg.length > 120 ? msg.slice(0, 120) + "…" : msg;
-      /* 优先续跑的三条件：本轮登记过会话且配置指纹没变（dshResumableSession，
+      /* 优先续跑的判据：本轮登记过会话且配置指纹没变（dshResumableSession，
          指纹含网关 runtimeKey 同源成分：apiKey / baseUrl / webSearchKey / persona /
-         tools / envPatch —— 这些漂移 = 网关另起 runtime 冷起伪续跑，
-         必须退回整轮重发）+ 确实攒到了部分产出（carried）；缺一就退回整轮重发。
+         tools / envPatch —— 这些漂移 = 网关另起 runtime 冷起伪续跑，必须退回整轮重发）。
+         **不看已经写出来多少正文**（本次修复）：模型先发工具调用 / 思考、正文一个字没落
+         就在流里报错（`tool input is invalid JSON` 等）时，会话里已有本轮任务与此前跑完
+         的工具结果，整轮重发会把中断前全部内容丢掉重跑。会话真没落盘时网关会回
+         RESUME_UNAVAILABLE，下面的快速通道立刻退回整轮重发（不占重发预算）。
          resumeBlocked 区分「为什么续不上」，配置漂移时给用户明确 toast。 */
       const sess = dshResumableSession(runKey);
-      const next = sess && carried.length > 0 ? { sid: sess.sid, err: msg } : null;
-      const resumeBlocked = dshResumeBlockReason(runKey, carried.length);
+      const next = sess ? { sid: sess.sid, err: msg } : null;
+      const resumeBlocked = dshResumeBlockReason(runKey);
       const chars = next ? carried.length : 0;
       /* 裁定与通知同源：next 是这一次实际怎么发的唯一真源（null = 整轮重发） */
       notifyRetry(next ? { resumeSession: next.sid } : baseOpts, msg, delayMs, chars, next);

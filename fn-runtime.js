@@ -542,6 +542,22 @@ function buildMtnodeBridge(deps = {}) {
        只写用户指定的本机路径：落在应用目录内一律拒绝（数据不落应用文件夹）。
        失败一律 { ok:false, error }，不抛 —— 用户代码自己决定要不要 throw。 */
     writePdf: (a, b) => call("writePdf", pdfWriteArg(a, b)),
+    /* ─ 音频 / 视频 → 字幕（主进程侧 media-subtitle.js 的 subtitleFromMedia，
+       与 dsh 里 Agent 工具 audio_subtitle 同一套切句口径、同一份字幕排版模块）──
+       函数线程里既没有 Electron、也没有 dsh 语音运行时，只能用这座桥：
+         await mtnode.subtitle({ file, language?, maxDurationSec?, maxChars?, … })
+           → { ok, cues:[{index,start,end,duration,text}], srt, vtt, cueCount, durationSeconds, … }
+       参数（都能省，别名与 audio_subtitle 一致）：
+         file              本机音频 / 视频绝对路径（file:/// URL 也认）
+         language          auto（默认）/ zh / en / yue / ja / ko
+         maxDurationSec    单条字幕最长秒数，默认 6
+         maxChars          单条字幕最大字数，默认按识别文本自动选（中文 18 / 英文 42）
+         noiseDb           静音阈值，默认 -35dB      minSilenceSec 最小静音间隔，默认 0.4s
+         breakPunctuation  断句标点集合
+       识别走本机官方 SenseVoice（首次使用要下载约 239MB 权重），切句靠 ffmpeg。
+       **不写任何文件**：要落盘把 srt / vtt 交给 save_text 节点。
+       失败一律 { ok:false, error }，不抛 —— 用户代码自己决定要不要 throw。 */
+    subtitle: (params) => call("subtitle", params || {}),
   };
   return bridge;
 }
@@ -813,6 +829,11 @@ function createFnRuntime(deps = {}) {
      即「PDF生成」节点经 pdf:writeText 用的同一份内核。 */
   const pdfWriteFn =
     typeof deps.pdfWrite === "function" ? deps.pdfWrite : null;
+  /* 可选的「音频 / 视频 → 字幕」后端（main.js 注入）：函数节点的 mtnode.subtitle(...)
+     走这里。真源是主进程 media-subtitle.js 的 subtitleFromMedia（ffmpeg 静音切句 +
+     dsh 语音通道逐句识别 + 与 Agent 工具同一份字幕排版模块）；返回值必须是
+     { ok, cues, srt, vtt, … }（实现侧已把异常收口成 { ok:false, error }）。 */
+  const subtitleFn = typeof deps.subtitle === "function" ? deps.subtitle : null;
 
   /* runId -> state */
   const runs = new Map();
@@ -1048,6 +1069,18 @@ function createFnRuntime(deps = {}) {
       return await pdfWriteFn(
         Object.assign({}, p, { outPath: outPath, text: text }),
       );
+    }
+    /* 字幕桥：mtnode.subtitle(...) 走这里。subtitleFn 由 main.js 注入
+       （media-subtitle.js 的 subtitleFromMedia：ffmpeg 切句 + dsh 语音通道逐句识别 +
+       共享字幕排版），没接线时给明确错误。 */
+    if (action === "subtitle") {
+      if (!subtitleFn)
+        return {
+          ok: false,
+          error:
+            "字幕后端未接线（主进程未注入 fnRuntime.subtitle）：mtnode.subtitle 暂不可用",
+        };
+      return await subtitleFn(p || {});
     }
     return { ok: false, error: "未知的 mtnode 桥调用：" + (action || "(空)") };
   }

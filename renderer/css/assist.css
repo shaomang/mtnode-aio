@@ -1361,7 +1361,8 @@
    控件是五行平铺下拉，计划 / 清单 / 队列 / 暂停一个都看不见。对齐口径是**单项拉齐**：
    原生会话有的观感助手栏都有，原生会话一个像素都不动。 */
 
-/* 头部：左＝身份（标题 / ▣所属画布 / 最后对话），右＝「…」+ ✕。不换行，标题自己省略。 */
+/* 头部：左＝身份（标题 / ▣所属画布 / 最后对话），右＝三颗会话操作（改名 / 新建一条 /
+   会话视图）+ ✕。不换行，标题自己省略。 */
 .assist-head {
   flex-wrap: nowrap;
   align-items: flex-start;
@@ -1400,19 +1401,33 @@
   display: none;
 }
 
-/* 头部右上角「…」与 ✕ 同一档：都是方键，不抢身份行的高度 */
-.assist-head #btnAssistMenu,
+/* 头部右上角三颗会话操作（本轮需求：从「…」浮层里平铺出来）与 ✕ 同一档：
+   都是小方键 / 小字键，不抢身份行的高度。标题先省略，按钮永不被压扁。 */
+.assist-head-acts {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.assist-head .assist-sess-btn,
 .assist-head #btnAssistClose {
   margin-top: -1px;
+  white-space: nowrap;
+  flex: none;
 }
 
-/* 会话操作菜单：与「模式」菜单同一套 .agent-menu 构件，落点由 JS 现算（placeAssistMenu）。 */
-.assist-sess-menu {
-  width: 180px;
+.assist-head .assist-sess-btn {
+  padding: 2px 7px;
+  font-size: 10.5px;
+  border-color: var(--bd2);
+  background: transparent;
+  color: var(--muted);
 }
 
-.assist-sess-menu .agent-menu-cell {
-  width: 100%;
+.assist-head .assist-sess-btn:hover:not(:disabled) {
+  border-color: var(--cyan);
+  color: var(--cyan2);
 }
 
 /* chip 行：与原生输入区那排 chip 同序同观感。**不换行**（用户口径）：装不下时由
@@ -1609,28 +1624,6 @@
   font-weight: 700;
   letter-spacing: .5px;
   padding: 1px 4px;
-}
-
-/* 「…」菜单：三个短项，行高压到 30px（.agent-menu-cell 的 40px 是给宽菜单的） */
-.assist-sess-menu {
-  padding: 6px;
-}
-
-.assist-sess-menu .assist-sess-item {
-  height: 30px;
-  padding: 0 8px;
-  border-radius: 6px;
-  font-size: 12px;
-  justify-content: flex-start;
-}
-
-.assist-sess-menu .assist-sess-item:disabled {
-  opacity: .45;
-  cursor: default;
-}
-
-.assist-sess-menu .assist-sess-item:disabled:hover {
-  background: transparent;
 }
 
 /* 空态：一行主语（与原生会话同一句）+ 一行本栏能力说明 */

@@ -155,10 +155,14 @@ function wfArtifactOf(node, role) {
   return wfArtifactsOf(node).find((a) => String(a.role || "artifact") === want) || null;
 }
 
-/* 命中的产物是否还配得上当前描述：只比描述指纹（用户口径：只看描述文本） */
-function wfArtifactMatches(node, art) {
+/* 命中的产物是否还配得上当前描述：只比描述指纹（用户口径：只看描述文本）。
+   descText 显式给了就用它算指纹 —— remotion 的指纹跟着**构建描述**走
+   （节点的「功能说明」改几个字不该让包内工程失效）。 */
+function wfArtifactMatches(node, art, descText) {
   if (!art) return false;
-  const cur = wfArtifactDescHash(nodeDescriptionText(node));
+  const cur = wfArtifactDescHash(
+    descText == null ? nodeDescriptionText(node) : String(descText),
+  );
   return !!cur && String(art.descHash || "") === cur;
 }
 
@@ -540,7 +544,10 @@ async function insertWorkflowToCanvas(entry) {
     return false;
   }
   pushHistory();
-  const { cps, idMap } = cloneNodesDeep(nodes, { keepOrphanParent: false });
+  const { cps, idMap } = cloneNodesDeep(nodes, {
+    keepOrphanParent: false,
+    uniqueTitle: true,
+  });
   if (!cps.length) {
     toast(I18n.t("工作流内容为空，无法插入"), "err");
     return false;
@@ -998,6 +1005,10 @@ function openWorkflowLibrary() {
  * 一条 512KB 的封面 × 几十行 = 一开窗就几十次 IPC，所以先进视口再取。 */
 let _wfThumbIO = null;
 const _wfThumbWatched = new Set();
+/* 元素 → 工作流 id：观察回调只拿得到 target，id 必须登记在它身上（WeakMap，元素拆了自动回收）。
+   不能只靠 dataset —— 之前就是把 id 写在**行**上、回调却从**小图**上读，取到空串，
+   于是「有封面的工作流在库里永远是一块空底」。 */
+const _wfThumbIds = new WeakMap();
 
 function workflowLoadThumb(el, id) {
   if (!el || !id) return;
@@ -1015,6 +1026,9 @@ function workflowLoadThumb(el, id) {
 
 function workflowThumbWatch(el, id) {
   if (!el || !id) return;
+  _wfThumbIds.set(el, String(id));
+  if (typeof el.dataset === "object" && el.dataset)
+    el.dataset.workflowId = String(id);
   if (typeof IntersectionObserver !== "function") {
     workflowLoadThumb(el, id);
     return;
@@ -1026,7 +1040,9 @@ function workflowThumbWatch(el, id) {
           if (!e.isIntersecting) continue;
           _wfThumbIO.unobserve(e.target);
           _wfThumbWatched.delete(e.target);
-          const wid = e.target && e.target.dataset ? e.target.dataset.workflowId : "";
+          const wid =
+            _wfThumbIds.get(e.target) ||
+            (e.target && e.target.dataset ? e.target.dataset.workflowId : "");
           if (wid) workflowLoadThumb(e.target, wid);
         }
       },

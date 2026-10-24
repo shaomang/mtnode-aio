@@ -1651,8 +1651,24 @@ const NODE_DEFAULTS = {
     w: 400,
     h: 460,
     title: "Remotion 视频",
-    text: "", /* 描述（可空：空描述时按已接线的素材 / 台词走内置台词卡版面） */
+    text: "", /* 构建提示词 / 描述（有源码时只是需求记录，运行不再读模型） */
     remotionPortsV2: 1,
+    /* ── 固化后的合成工程（构建期由 agent 产出，运行时纯脚本渲染）──────────
+       remotionFiles   { "Composition.tsx": "...", "components/X.tsx": "..." }（相对 src/）
+       remotionInputs  从源码导出的端子契约 [{ key, kind, label, list, required, ... }]
+       remotionBuiltAt 固化时间（0 = 未固化）
+       构建 Agent 三项：空 = 跟随全局默认（与开发节点 devModel/devPreset/devEffort 同口径） */
+    remotionFiles: null,
+    remotionInputs: [],
+    remotionBuiltAt: 0,
+    buildModel: "",
+    buildProvider: "",
+    buildProviderId: "",
+    buildPreset: "",
+    buildEffort: "",
+    remotionBuildError: "",
+    remotionVerifyError: "",
+    remotionBuildPct: 0,
     duration: 5,
     fps: 30,
     size: "1280x720", /* 输出分辨率 宽x高（16:9） */
@@ -2183,6 +2199,16 @@ function superIsOpenShell(n) {
     n.id !== currentSuperFocus()
   );
 }
+/** 壳的端子是否「露在外面、可以直接接」：展开壳与全屏进入态是同一种语义。
+ *  展开壳把外侧端子搬进舞台左右缘；全屏进入态把端子钉在画布可视区左右边缘
+ *  （见 mountSuperFocusPorts）。两者都必须按「恒留一颗空槽」计数 ——
+ *  否则连上第一颗端子之后壳的端子数就不再增长，第二颗永远不出现
+ *  （用户报的「全屏模式下连接第一个端子后，第二个端子未出现」）。
+ *  收起态壳（superOpen=false 且不是当前焦点壳）不在此列：它的端子只随已接线条数出现。 */
+function superPortsExposed(n) {
+  if (!n || n.kind !== "super") return false;
+  return superIsOpenShell(n) || currentSuperFocus() === n.id;
+}
 /** If this wire should be drawn inside an open super stage, return that host. */
 function wireOpenSuperHost(w, from, to) {
   from = from || (w && nodeById(w.from));
@@ -2244,9 +2270,11 @@ function superStageLocalOut(n, fromIndex, host, pan) {
 function superStageLocalIn(n, toIndex, host, pan) {
   const sz = nodeDrawSize(n);
   const hNode = Object.assign({}, n, { h: sz.h, w: sz.w });
+  /* 端子 Y 必须走 inPortWireY：参数端子（9001）在这里同样不是顺序号，
+     直接喂 inPortY 会把壳内这条线的端点甩到子画布下方十万像素外（线冲出画布）。 */
   return {
     x: (pan.x || 0) + n.x + PORT_OFF + NODE_BORDER,
-    y: (pan.y || 0) + n.y + inPortY(hNode, toIndex, inputCount(n)) + NODE_BORDER,
+    y: (pan.y || 0) + n.y + inPortWireY(hNode, toIndex, inputCount(n)) + NODE_BORDER,
   };
 }
 function superStageHeight(host) {
@@ -2444,6 +2472,26 @@ function bindWirePathInteractions(p, w) {
     ]);
   });
 }
+/* 回收壳内连线层里「数据里已经没有这条线」的 path。每条线是成对的两层：线芯
+   （path.fn-edge）＋ 暗色外圈（path.fn-edge-ring，见 ensureWireRing）。两样都必须扫 ——
+   只扫线芯会留下外圈那圈 3.5px 的暗色描边，断线后画面上就是一道残痕
+   （用户报的「移除线时会留下一个痕迹」）。present 由调用方按现存线成对灌入
+   （id 与 id + "-r"）。关系线（rsw-*）由 renderRelWiresPass 自己管理、拖动临时线
+   （swireTemp / swireTemp-r）常驻复用，都别当残留删掉。 */
+function pruneStaleSuperInnerWires(svg, present) {
+  if (!svg || !present) return;
+  const paths = svg.querySelectorAll(
+    ":scope > path.fn-edge, :scope > path.fn-edge-ring",
+  );
+  for (const p of [...paths]) {
+    if (p.id === "swireTemp" || p.id === "swireTemp-r") continue;
+    if (p.id.indexOf("rsw-") === 0) continue;
+    /* 关系线的状态类可能是「rel / rel dim / rel sel」：按类名 token 判，不按结尾判 */
+    if (/\brel\b/.test(p.getAttribute("class") || "")) continue;
+    if (!present.has(p.id)) p.remove();
+  }
+}
+
 function updateSuperInnerWires(host, touchIds) {
   if (!superIsOpenShell(host)) return;
   const el = document.querySelector('.wf-node[data-nid="' + host.id + '"]');
@@ -2501,13 +2549,7 @@ function updateSuperInnerWires(host, touchIds) {
     p.setAttribute("d", wirePathAB(a.x, a.y, b.x, b.y));
     applyWirePathClass(p, w, from);
   }
-  for (const p of [...svg.querySelectorAll(":scope > path.fn-edge")]) {
-    if (p.id === "swireTemp" || p.id === "swireTemp-r") continue;
-    /* 关系线（rsw-*）由 renderRelWiresPass 自己管理，别当残留删掉 */
-    if (p.id.indexOf("rsw-") === 0 || / rel$/.test(p.getAttribute("class") || ""))
-      continue;
-    if (!present.has(p.id)) p.remove();
-  }
+  pruneStaleSuperInnerWires(svg, present);
   let t = svg.querySelector("#swireTemp");
   if (!t) {
     ensureWireRing(svg, null, "swireTemp-r");
@@ -3668,8 +3710,60 @@ function mediaFileUrlOf(p) {
       .join("/")
   );
 }
-/** 音视频输入节点的端子值：{ kind, path（本机绝对路径）, url, text = url }；未选文件 = 未就绪 → null。 */
+/* ── 音频 / 视频输入节点的「继承输入」（与文本 / 图像输入节点同口径）──
+   接上一条数据入线之后，本节点对外给的就是**上游那份媒体**（只读继承），
+   自己原先的 mediaAsset 仍然留在节点上，拔线即恢复。
+   为什么必须有这一层：节点层里的这颗节点，入线常常来自壳（super）—— 取数时
+   必须把 consumer 传成本节点，valueForInput 才会走「外侧输入端子 → 壳内节点」
+   这条桥接方向；不传就永远拿到壳内汇入的值（空）。 */
+function mediaInputInWire(n) {
+  if (!n || (n.kind !== "input_audio" && n.kind !== "input_video")) return null;
+  const ws = (typeof wiresTo === "function" ? wiresTo(n.id) : []).filter(
+    (w) =>
+      w &&
+      !w.rel &&
+      !w.ctrl &&
+      (typeof wireFromIsControl !== "function" || !wireFromIsControl(w)),
+  );
+  return ws.length ? ws[0] : null;
+}
+/** 这颗音视频输入节点是否正在继承上游（有数据入线） */
+function mediaInputInherited(n) {
+  return !!mediaInputInWire(n);
+}
+/** 这条入线上游给的那份媒体（已按本节点类型归一）；没有入线 / 上游还没有值 → null。
+    递归深度上限只为防病态回路（正常继承链至多几层），不做任何静默兜底。 */
+let _mediaInhDepth = 0;
+function inheritedMediaValueOf(n) {
+  const w = mediaInputInWire(n);
+  if (!w || _mediaInhDepth > 8) return null;
+  const src = typeof nodeById === "function" ? nodeById(w.from) : null;
+  if (!src) return null;
+  let v = null;
+  _mediaInhDepth++;
+  try {
+    /* consumer = 本节点：壳的同一颗端子号「流向壳内」取外侧入线、「流向壳外」取壳内汇入 */
+    v = valueForInput(src, Number(w.fromIndex || 0), n);
+  } catch (_) {
+    v = null;
+  } finally {
+    _mediaInhDepth--;
+  }
+  if (!v) return null;
+  const kind = n.kind === "input_video" ? "video" : "audio";
+  let p = String((v.path || "") || "").trim();
+  const loose = String(v.url || v.text || (typeof v === "string" ? v : "") || "").trim();
+  if (!p && loose) p = /^file:\/\//i.test(loose) ? fileUrlToPath(loose) : loose;
+  if (!p) return null;
+  /* 上游给的是 file:/// URL：对外仍用同一形状（path 供后端、url 供预览 / 下游） */
+  const url = /^file:\/\//i.test(p) ? p : mediaFileUrlOf(p);
+  return { kind, path: p, url, text: url };
+}
+/** 音视频输入节点的端子值：{ kind, path（本机绝对路径）, url, text = url }；未选文件 = 未就绪 → null。
+    有入线时**一律以继承来的那份为准**（见 inheritedMediaValueOf）：上游还没产出 → 未就绪（null），
+    绝不偷偷回落到节点自己那个文件 —— 界面上它就是「继承中（只读）」。 */
 function mediaInputValueOf(node) {
+  if (mediaInputInherited(node)) return inheritedMediaValueOf(node);
   const p = String((node && node.mediaAsset) || "").trim();
   if (!p) return null;
   const kind = node.kind === "input_video" ? "video" : "audio";
@@ -3755,7 +3849,7 @@ function assetOutPortOccupied(node, idx) {
 function assetFreeInPortIndex(node, from, fromIndex) {
   if (!isAssetNode(node)) return null;
   const items = assetItems(node);
-  const want = wireSourceMediaType(from, fromIndex);
+  const want = wireSourceMediaType(from, fromIndex, node);
   for (let i = 0; i < items.length; i++) {
     if (assetInPortOccupied(node, i)) continue;
     if (assetPortAccepts(items[i].type, want)) return i;
@@ -4105,8 +4199,11 @@ function assetDisplayValueOfPort(node, portIdx) {
   return { text: String(v.text != null ? v.text : v.url || "") };
 }
 /* 来源节点这条线的媒体类型（不含端子声明的那一层，见 wireSourceMediaType）。
-   工具 / 函数节点按真正接出来的那个端子取实际值判断，其余节点仍只看 0 号端子（行为逐字不变）。 */
-function inferMediaFromSource(from, fromIndex) {
+   工具 / 函数节点按真正接出来的那个端子取实际值判断，其余节点仍只看 0 号端子（行为逐字不变）。
+   consumer = 这条线的**目标节点**（可选）：节点层的「外侧输入端子 → 壳内节点」这条桥接
+   方向必须靠它才能分清取数通道 —— 壳的同一颗端子号在「流向壳内」时取的是外侧入线的值，
+   在「流向壳外」时取的是壳内汇入的值（见 valueForInput 的 super 分支）。 */
+function inferMediaFromSource(from, fromIndex, consumer) {
   if (!from) return "text";
   if (from.kind === "music_gen" || from.kind === "yue_gen" || from.kind === "breeze_gen")
     return "audio";
@@ -4153,6 +4250,7 @@ function inferMediaFromSource(from, fromIndex) {
   const v = valueForInput(
     from,
     perPort ? Number(fromIndex || 0) : 0,
+    consumer || null,
   );
   if (v && v.kind === "image") return "image";
   if (v && v.kind === "audio") return "audio";
@@ -4184,12 +4282,15 @@ function saveDataSources(node) {
     ① 工具 / 函数节点：以该端子声明的数据类型为准（参数 kind ∈ text | image | video | audio，
        声明优先于实际值，控制端子无声明 → 回落 ②）；
     ② 其余节点 / 未声明时：按节点 kind 与该端子实际值推断。
+    consumer（可选）= 这条线的目标节点：节点层的壳没有单一媒体类型，同一颗端子号
+    「流向壳内」取的是外侧入线的值、「流向壳外」取的是壳内汇入的值，只有目标节点
+    分得清这两条通道（接线校验与落点都传它；不传 = 老口径，行为逐字不变）。
     保存节点自动选型、连线校验、连线着色、拖线建节点候选菜单都走这里。 */
-function wireSourceMediaType(node, fromIndex) {
+function wireSourceMediaType(node, fromIndex, consumer) {
   if (isAssetNode(node)) return assetPortKind(node, "out", fromIndex) || "text";
   const declared = fnToolPortKind(node, "out", fromIndex);
   if (declared) return declared;
-  return inferMediaFromSource(node, fromIndex);
+  return inferMediaFromSource(node, fromIndex, consumer);
 }
 function saveMediaKind(node) {
   if (!node) return "text";
@@ -4215,7 +4316,7 @@ function saveMediaKind(node) {
     return "text";
   }
   for (const l of links) {
-    const m = wireSourceMediaType(l.src, l.fromIndex);
+    const m = wireSourceMediaType(l.src, l.fromIndex, node);
     if (m !== "text") return m;
   }
   return "text";
@@ -4302,6 +4403,31 @@ function applySavePathExt(node) {
     node,
     preferRelativeSavePath(forcePathExt(raw, ext)),
   );
+}
+/** 媒体生成节点「对外给的那份文件」—— 与卡片预览同一口径的同步版。
+ *  为什么需要它（第三轮报障的真根因）：卡片预览（resolveMediaGenDisplayPath）在
+ *  output 为空时会回落到节点配置输出路径上那份**已存在**的文件，于是复制出来的
+ *  Breeze 节点（复制的 output 被清掉、genPaths 里留着它上一次真正生成的那份 wav）
+ *  卡片上照样能播、状态还写着「完成」，而 valueForInput 只认 output → 层内音频节点
+ *  永远「等待上游音频」，用户看到的就是「线接上了、卡片上有音频，端子却是空」。
+ *  取数顺序：本次运行结果 → 本节点上一次生成的最后一份（genPaths 末项）。
+ *  运行一开始就把 genPaths 清空（各 *Gen 运行函数的开头），所以运行期间绝不会把旧
+ *  文件当新值；从没生成过的节点（genPaths 空）仍给空 → 下游照旧按「未就绪」处理。 */
+function mediaGenProducedPath(node) {
+  if (!node) return "";
+  const out = (node.output && (node.output.path || node.output.text)) || "";
+  if (String(out).trim()) return String(out).trim();
+  const gp =
+    typeof node.genPaths === "string"
+      ? [node.genPaths]
+      : Array.isArray(node.genPaths)
+        ? node.genPaths
+        : [];
+  for (let i = gp.length - 1; i >= 0; i--) {
+    const p = String(gp[i] || "").trim();
+    if (p) return p;
+  }
+  return "";
 }
 /** Combine node.outputPath (+ optional filename) into one file path string. */
 function mediaGenOutputRaw(node) {
@@ -4641,7 +4767,8 @@ function outputCount(n) {
   /* 函数 / 工具节点：输出 0..n-1 = 各输出参数（数据），末位 = 控制输出（固定 1 控制出） */
   if (isFnToolNode(n)) return fnToolParamList(n, "out").length + 1;
   if (n.kind === "super") {
-    const open = superIsOpenShell(n);
+    /* 与 inputCount 同一份口径（展开壳 / 全屏进入态都恒留一颗空槽） */
+    const open = superPortsExposed(n);
     const ext = superExternalOutWiresAll(n);
     const intF = superInternalOutFeedsAll(n);
     const maxFrom = ext.reduce(
@@ -6946,6 +7073,9 @@ function remotionPortIsControl(node, idx) {
   if (!node || !S.wf) return false;
   const i = Number(idx);
   if (!isFinite(i) || i < 0) return false;
+  /* 固化后：契约项之后的最后一颗是**专用控制输入端子**（固定号，不按连线反推） */
+  const contract = remotionContractOf(node);
+  if (contract.length) return i === contract.length;
   for (const w of S.wf.wires || []) {
     if (!w || w.rel || w.to !== node.id) continue;
     if (Number(w.toIndex || 0) !== i) continue;
@@ -6980,8 +7110,14 @@ function inPortKindOf(node, idx) {
   /* H3 的控制口由 videoGenControlPort 给（v5 起恒为端口 0），必须先按节点 kind 收窄，
      否则任何节点的 0 号端子都会被判成控制端子（普通数据节点的提示词口就此报废）。 */
   if (node.kind === "video_gen") return i === videoGenControlPort(node) ? "control" : null;
-  /* Remotion：控制语义按连线反推（无差别端子），空口 / 数据线口一律「任意」 */
-  if (node.kind === "remotion") return remotionPortIsControl(node, i) ? "control" : null;
+  /* Remotion：固化后端子类型由契约声明（image/audio/video/text + 末位控制）；
+     未固化时控制语义按连线反推（无差别端子），空口 / 数据线口一律「任意」 */
+  if (node.kind === "remotion")
+    return remotionContractOf(node).length
+      ? remotionContractPortKind(node, i)
+      : remotionPortIsControl(node, i)
+        ? "control"
+        : null;
   /* 动态端子节点：专用控制端子声明 control，数据槽不声明类型（任意） */
   if (typeof isDynCtrlNode === "function" && isDynCtrlNode(node))
     return typeof dynCtrlInPortIndex === "function" && i === dynCtrlInPortIndex(node) ? "control" : null;
@@ -7004,8 +7140,9 @@ function hasFixedInPorts(n) {
       n.kind === "breeze_gen" ||
       n.kind === "video_gen" ||
       isVideoPostKind(n) ||
-      /* Remotion 已改成无差别动态端子（与 proc_text 同族）：断线可以重排端子号，
-         控制语义按连线反推而不是按节点固定 —— 故不在此表 */
+      /* Remotion 未固化时是无差别动态端子（与 proc_text 同族）：断线可以重排端子号，
+         控制语义按连线反推而不是按节点固定；**固化后端子由契约钉死**，断线绝不重排 */
+      (n.kind === "remotion" && remotionContractOf(n).length > 0) ||
       n.kind === "task" ||
       n.kind === "super" ||
       n.kind === "net_send" ||
@@ -7059,6 +7196,14 @@ function firstFreeInPortIndex(node, wf) {
     if (isFinite(i)) used.add(i);
   }
   let i = 0;
+  /* Remotion 固化端子：数据落点只在契约项 0..len-1 里挑（末位那颗是专用控制端子）；
+     数组端子（list:true）还能再挂，但挑「空闲」时仍优先真正的空口。 */
+  const remotionContract = node.kind === "remotion" ? remotionContractOf(node) : [];
+  if (remotionContract.length) {
+    for (let k = 0; k < remotionContract.length; k++)
+      if (!used.has(k) || remotionContract[k].list) return k;
+    return null;
+  }
   /* 动态端子节点的专用控制端子永远不算「数据落点」：它恒没挂数据线，按「没挂线」挑会
      挑中它，数据线就把控制通道占了（数据槽 0..ctrl-1 里恒有一颗空槽，够接） */
   const ctrlPort =
@@ -7331,6 +7476,13 @@ function superInnerPortInfo(host, dir, i) {
     dir === "in"
       ? I18n.t("（对应外侧输入 · 拖到内部节点 · 右键移除）")
       : I18n.t("（对应外侧输出 · 从内部节点拖入 · 右键移除）");
+  /* 悬停提示的底座：普通节点层在这里补「名字（输入3）」——徽标那边已由 portBadgeText 取到
+     同一个名字（app-canvas.js 的 superPortTitleWithName / superPortNameOf 是唯一真源）。 */
+  const baseTitle =
+    base +
+    (pname ? I18n.t(" · 参数：") + pname : "") +
+    (pk ? fnToolPortKindLabel(pk) : "") +
+    tail;
   return {
     ctrl: ctrl,
     img: pk === "image",
@@ -7342,10 +7494,9 @@ function superInnerPortInfo(host, dir, i) {
         : pname || (ctrl ? I18n.t("控制") : String(n))) || "",
     ),
     title:
-      base +
-      (pname ? I18n.t(" · 参数：") + pname : "") +
-      (pk === "image" ? I18n.t("（图像）") : pk === "text" ? I18n.t("（文本）") : "") +
-      tail,
+      typeof superPortTitleWithName === "function"
+        ? superPortTitleWithName(host, dir, idx, baseTitle)
+        : baseTitle,
   };
 }
 /* 参数表（只读视图）：dir = "in"（inputs）/ "out"（outputs）；两类都读 inputs/outputs 数组 */
@@ -7471,7 +7622,7 @@ function fnToolRemapParamWires(node, dir, n, perm) {
   return changed;
 }
 /** 端子数据类型（单一真源）：dir = "in" / "out"，idx = 端子序号（按端子契约数端子）。
-    工具 / 函数节点的数据端子返回其声明类型 "text" | "image"（条目缺 kind 按 text，与旧画布口径一致）；
+    工具 / 函数节点的数据端子返回其声明类型 "text" | "image" | "video" | "audio"（条目缺 kind 按 text，与旧画布口径一致）；
     控制端子（输入 0、输出末位）以及不是这两类节点的端子一律返回 null = 无端子级类型声明，
     调用方须回落到「按节点 kind / 该端子实际值推断」的旧口径（普通节点行为逐字不变）。 */
 function fnToolPortKind(node, dir, idx) {
@@ -8141,6 +8292,29 @@ function globalChipKindCls(n) {
   return nodeKindCls(n);
 }
 
+/* ═══════════ Remotion 固化端子契约（唯一真源）═══════════════════════════
+ * Remotion 节点固化后，端子不再「无差别增量」，而由合成源码里导出的 inputs 契约钉死：
+ *   export const inputs = [{ key:"hero", kind:"image", label:"主图", required:true }]
+ * 端子表 = 契约项（第 i 项 ↔ 第 i 号端子）+ 末尾一颗专用控制输入端子。
+ * 没固化的老节点（无契约）沿用原来的无差别动态端子，行为一字不变。
+ * 契约解析 / 校验在 app-nodes.js（remotionContractOf / remotionParseContract），
+ * 这里只读节点上已固化好的 remotionInputs，供端子数 / 类型 / 标签 / 控制口共用。 */
+function remotionContractOf(node) {
+  if (!node || node.kind !== "remotion") return [];
+  const list = Array.isArray(node.remotionInputs) ? node.remotionInputs : [];
+  return list.filter((it) => it && String(it.key || "").trim());
+}
+
+/* 契约端子 ↔ 端口类型：控制口之外，按契约 kind 判（json/number/boolean 都按文本线走） */
+function remotionContractPortKind(node, idx) {
+  const c = remotionContractOf(node);
+  const i = Math.max(0, Number(idx) || 0);
+  if (!c.length || i >= c.length) return "control";
+  const k = String(c[i].kind || "text").toLowerCase();
+  if (k === "image" || k === "audio" || k === "video") return k;
+  return "text";
+}
+
 function inputCount(node) {
   /* 用户插件节点：输入端子数 = 清单声明的入端口数（固定，不随连线增量） */
   if (typeof isPluginKind === "function" && isPluginKind(node))
@@ -8176,7 +8350,9 @@ function inputCount(node) {
   /* 函数 / 工具节点：输入 0 = 控制入（固定）+ 各输入参数（参数增删即端子增删） */
   if (isFnToolNode(node)) return fnToolParamList(node, "in").length + 1;
   if (node.kind === "super") {
-    const open = superIsOpenShell(node);
+    /* 展开壳与全屏进入态同口径（见 superPortsExposed）：端子露在外面 → 恒留一颗空槽，
+       连上第 N 颗后立刻长出下一颗 */
+    const open = superPortsExposed(node);
     const ext = superExternalInWiresAll(node);
     const bridges = superInternalBridgeWiresAll(node);
     const maxExt = ext.reduce((m, w) => Math.max(m, Number(w.toIndex) || 0), -1);
@@ -8209,6 +8385,11 @@ function inputCount(node) {
      端子数 = max(已挂线数 + 1, 最高已占端口 + 2)：恒留一颗空槽，最高那颗口不会
      「有线却没画出来」。取值见 app-nodes.js remotionInputList。 */
   if (node.kind === "remotion") {
+    /* 固化后：契约项各一颗端子 + 末尾一颗专用控制输入端子（固定，不随连线增量）。
+       未固化：无差别动态端子（与 proc_text 同一套增量口径）——端口 0、1、2… 连一条长一条，
+       数据线与控制线共用同一批端子（见 remotionPortIsControl）。 */
+    const contract = remotionContractOf(node);
+    if (contract.length) return contract.length + 1;
     const ws = allWiresTo(node.id);
     let maxIdx = -1;
     for (const w of ws) maxIdx = Math.max(maxIdx, Number(w.toIndex) || 0);
@@ -9894,6 +10075,7 @@ function stopSessionRuns(st, clearRunning) {
      已在途的 dshPause 请求不回滚 —— 它随后到的 done{paused} 也会被这轮的 cancelled 收尾压掉。 */
   st.paused = false;
   st._pausePending = false;
+  st._pauseVacated = false;
   st._roundPaused = false;
   const par = stopPlanParRuns(st); /* 先读 st.running 判定有没有轮次在飞 */
   if (clearRunning) st.running = false;
@@ -9976,6 +10158,7 @@ async function stopAllRuns() {
       if (!s) continue;
       s.paused = false;
       s._pausePending = false;
+      s._pauseVacated = false;
       s._roundPaused = false;
     }
   } catch (_) {}
@@ -11673,6 +11856,21 @@ function inPortY(node, i, ic) {
     top: 45, bottom: 5, min: 45, bandA: 0, bandB: 1,
   });
 }
+/* 连线端点用的**输入**端子 Y：唯一真源。参数端子（哨兵号 PARAM_IN_INDEX / 9001）不是
+   顺序端口号，位置必须与端子本身渲染时同一处（NParam.portY）；把它当 i 直接喂给
+   inPortY 会算出 45 + 9001×PORT_STEP ≈ 135060px —— 端点落到卡片下方极远处，线就从
+   参数节点一路向下冲出画布，而端子圆点还好好待在卡片上（「线与端子分家」）。
+   主画布（inPos）与展开壳内的子画布（superStageLocalIn，含壳内拖线临时线）都走这里。 */
+function inPortWireY(node, i, ic) {
+  if (
+    Number(i) === PARAM_IN_INDEX &&
+    typeof NParam === "object" &&
+    NParam &&
+    typeof NParam.portY === "function"
+  )
+    return NParam.portY(node);
+  return inPortY(node, i, ic == null ? inputCount(node) : ic);
+}
 function outPortY(node, i, oc) {
   const n = oc == null ? outputCount(node) : oc;
   return portBandY(nodePortHeight(node), i, n, {
@@ -11764,12 +11962,8 @@ function inPos(n, i, peer, wire) {
   const p = nodeWorldPos(n);
   const sz = nodeDrawSize(n);
   const hNode = Object.assign({}, n, { h: sz.h, w: sz.w });
-  /* 参数端子（哨兵端子号）：位置 = 排在现有全部输入端子之后的那一颗，
-     与 app-canvas.js 里渲染这颗端子用的是同一处计算（NParam.portY）。 */
-  const y =
-    Number(i) === PARAM_IN_INDEX && typeof NParam === "object" && NParam
-      ? NParam.portY(hNode)
-      : inPortY(hNode, i, inputCount(n));
+  /* 参数端子（哨兵端子号）与顺序端子的区分只在 inPortWireY 一处做（与端子渲染同源）。 */
+  const y = inPortWireY(hNode, i, inputCount(n));
   return {
     x: p.x + PORT_OFF + NODE_BORDER,
     y: p.y + y + NODE_BORDER,
@@ -14842,9 +15036,12 @@ function valueForInput(src, idx, consumer, seen) {
     src.kind === "breeze_gen"
   ) {
     const r = selResult(src);
+    /* 没有本次运行结果时回落到「上一次生成的那份」（mediaGenProducedPath）——
+       与卡片预览（能播哪个文件）同一口径，否则复制出来的节点会出现
+       「卡片上有音频、端子给空」，层内音频节点就一直等待上游。 */
     const p =
       (r && r.output && (r.output.path || r.output.text)) ||
-      (src.output && (src.output.path || src.output.text)) ||
+      mediaGenProducedPath(src) ||
       "";
     if (!p) return null;
     /* 与音视频输入节点同口径：path 供本机后端直接用，url 是对外输出地址 */
@@ -14854,7 +15051,7 @@ function valueForInput(src, idx, consumer, seen) {
     const r = selResult(src);
     const p =
       (r && r.output && (r.output.path || r.output.text)) ||
-      (src.output && (src.output.path || src.output.text)) ||
+      mediaGenProducedPath(src) ||
       "";
     if (!p) return null;
     return {
@@ -17880,6 +18077,126 @@ function bindPortWireCut() {
 }
 /* ===== PORT-CUT-END ===== */
 
+/* ===== WIRE-EDGE-PAN-BEGIN · 拖线到边缘自动平移 =====
+   现场需求：「拖动连线到边缘时，画布会向该边缘 Pan，解决画布范围以外如何连线」。
+   拖线时鼠标一停，window mousemove 就不再触发 —— 平移必须自己跑一条 rAF 循环：每帧按
+   「光标离边缘的距离」推进（越靠边越快，正压在边上满速），并重画临时线让线头仍咬住光标。
+   平移目标只有两个（用户定稿的口径）：
+   · 起点在**就地展开的壳**里（壳内子节点 / 壳的内侧端子）：光标还在壳里时**一律不平移** ——
+     展开态的内容就在壳里、没有「跑到画面外」的需求，滚壳内内容反而把要连的目标拖走，
+     连线更难；光标拖出壳外（要去连壳外节点）才落到下面那一支；
+   · 其余情况：平移主相机 S.cam（边界照旧由 applyTransform → clampCam 兜，CAM_PAN_PAD 余量）。
+     全屏进入节点层（currentSuperFocus）走的就是这一支：那层的子节点本来就摆在主画布上。
+   速度按真实时间折算（与帧率无关），光标越出画布按满速走，不无限加码。 */
+const WIRE_PAN_EDGE = 56; // 触边判定带宽（屏幕 px）
+const WIRE_PAN_MAX_SPEED = 1000; // 满速（屏幕 px / 秒）
+/** 光标在某条轴上离边缘多近：{ dir: -1|0|1, depth: 0..1 }（depth 1 = 正压在边缘或更外侧） */
+function wirePanAxis(pos, lo, hi) {
+  if (!isFinite(pos) || !isFinite(lo) || !isFinite(hi) || hi <= lo)
+    return { dir: 0, depth: 0 };
+  /* 小视口（展开壳的舞台 / 窄窗）按 1/4 收窄带宽，别让两侧判定带叠在一起 */
+  const edge = Math.min(WIRE_PAN_EDGE, Math.max(12, (hi - lo) * 0.25));
+  if (pos < lo + edge)
+    return { dir: -1, depth: Math.min(1, (lo + edge - pos) / edge) };
+  if (pos > hi - edge)
+    return { dir: 1, depth: Math.min(1, (pos - (hi - edge)) / edge) };
+  return { dir: 0, depth: 0 };
+}
+/** 拖线起点是否落在「就地展开的壳」里：是 → 返回那颗壳；否则 null（= 主画布相机）。
+    只用来判定「壳内不平移」，绝不据此平移壳的 innerPan。 */
+function wireEdgePanShell(d) {
+  if (!d || d.mode !== "wire") return null;
+  const from = nodeById(d.fromId);
+  if (!from) return null;
+  if (d.superInnerBridge && from.kind === "super")
+    return superIsOpenShell(from) ? from : null;
+  if (!nodeIsNestedInOpenSuper(from)) return null;
+  const host = nodeById(nodeParentSuperId(from));
+  return host && superIsOpenShell(host) ? host : null;
+}
+/** 壳的内平移落到 DOM（与 superpan 拖拽同一份写法）：viewport 位移 + 网格背景对齐 */
+function syncSuperInnerPanDom(host) {
+  if (!host) return;
+  const el = document.querySelector('.wf-node[data-nid="' + host.id + '"]');
+  const stage = el && el.querySelector(".super-stage");
+  const vp = stage && stage.querySelector(".super-stage-viewport");
+  const px = Number(host.innerPanX) || 0;
+  const py = Number(host.innerPanY) || 0;
+  if (vp) vp.style.transform = "translate(" + px + "px," + py + "px)";
+  if (!stage) return;
+  const gg = grid();
+  stage.style.setProperty("--super-grid-x", gridMod(px, gg) + "px");
+  stage.style.setProperty("--super-grid-y", gridMod(py, gg) + "px");
+}
+/** 当前的平移参照框：壳内没出界（或拿不到壳）→ null（不平移）；其余 → 画布矩形（主相机）。
+    「壳里」按整颗壳的屏幕矩形算（标题栏 / 舞台都算），这样拖着线划过壳的任意位置都不滚。 */
+function wireEdgePanArea(d) {
+  const host = wireEdgePanShell(d);
+  const canvas = $("#canvas");
+  if (host) {
+    const el = document.querySelector('.wf-node[data-nid="' + host.id + '"]');
+    /* 壳内拖线但拿不到壳元素：宁可不平移，也不能误推主相机（那会把整颗壳挪走） */
+    if (!el) return null;
+    if (!canvas) return null;
+    const r = el.getBoundingClientRect();
+    const inside =
+      d.mx >= r.left && d.mx <= r.right && d.my >= r.top && d.my <= r.bottom;
+    if (inside) return null;
+  }
+  if (!canvas) return null;
+  return { host: null, rect: canvas.getBoundingClientRect() };
+}
+function stopWireEdgePan() {
+  if (S._wirePanRaf) cancelAnimationFrame(S._wirePanRaf);
+  S._wirePanRaf = 0;
+  S._wirePanTs = null;
+}
+function wireEdgePanTick(ts) {
+  S._wirePanRaf = 0;
+  const d = S.drag;
+  if (!d || d.mode !== "wire") {
+    stopWireEdgePan();
+    return;
+  }
+  const area = wireEdgePanArea(d);
+  /* 时间差按真实帧间隔算（首帧 / 长时间挂起后不做一次大跳）；时间戳可能是 0，
+     所以「还没有上一帧」用 null 表示，不能靠真假值判 */
+  const dt = S._wirePanTs == null ? 0 : Math.min(50, ts - S._wirePanTs);
+  S._wirePanTs = ts;
+  if (!area || dt <= 0) {
+    S._wirePanRaf = requestAnimationFrame(wireEdgePanTick);
+    return;
+  }
+  const ax = wirePanAxis(d.mx, area.rect.left, area.rect.right);
+  const ay = wirePanAxis(d.my, area.rect.top, area.rect.bottom);
+  if (!ax.dir && !ay.dir) {
+    S._wirePanTs = null;
+    S._wirePanRaf = requestAnimationFrame(wireEdgePanTick);
+    return;
+  }
+  const sec = dt / 1000;
+  /* 方向：相机 translate 与画面内容同向，所以「往右边缘拖」= 要看右边的内容 = 相机往左推
+     （cam.x 减小），否则露出来的是反方向的内容。壳内不平移（见 wireEdgePanArea），
+     所以这里只剩主相机一支。 */
+  const dx = -ax.dir * WIRE_PAN_MAX_SPEED * ax.depth * sec;
+  const dy = -ay.dir * WIRE_PAN_MAX_SPEED * ay.depth * sec;
+  const bx = S.cam.x;
+  const by = S.cam.y;
+  S.cam.x += dx;
+  S.cam.y += dy;
+  /* applyTransform 里的 clampCam 可能把相机夹住：真的动了才重画临时线 */
+  applyTransform();
+  if (S.cam.x !== bx || S.cam.y !== by) updateWires();
+  S._wirePanRaf = requestAnimationFrame(wireEdgePanTick);
+}
+/** 拖线移动时点一下：循环已在跑就不重复起（自检 S.drag 是否还是拖线） */
+function wireEdgePanTrack() {
+  if (S._wirePanRaf) return;
+  S._wirePanTs = null;
+  S._wirePanRaf = requestAnimationFrame(wireEdgePanTick);
+}
+/* ===== WIRE-EDGE-PAN-END ===== */
+
 function startWireDrag(fromId, ev, fromIndex, opts) {
   /* 右键不可能是拖线（右键 = 切断这根端子上的连线，见 PORT-CUT 段）：兜底挡一道，
      避免某个入口漏了按键判定就「一按下右键先起一条线」。 */
@@ -18019,6 +18336,7 @@ function cancelDrag() {
   const box = document.getElementById("boxSel");
   if (box) box.remove();
   S.drag = null;
+  stopWireEdgePan();
   document
     .querySelectorAll(".wf-node.node-dragging")
     .forEach((el) => {
@@ -18802,7 +19120,7 @@ async function deleteNodes(ids, quiet) {
   return true;
 }
 /* 批量复制选中节点（含全部后代与内部内容；整体错开一格网格）。
-   保持两端都在复制集内的连线；标题保持原名（不加「副本」）；
+   保持两端都在复制集内的连线；标题原样保留（不加「副本」、也不加序号 —— 见 cloneNodesDeep）；
    相对路径的保存节点不复制保存目标（复制后需重新指定）；
    图像节点相对路径固化为绝对路径，复制品正确引用同一图像。 */
 function duplicateNodes(nodes) {
@@ -18841,6 +19159,10 @@ function duplicateNodes(nodes) {
   renderCanvas();
   scheduleSave(true);
   renderStatus();
+  /* 复制成功要给反馈：右键「复制」与 Ctrl+D / 顶栏「复制」共用这一句（本轮需求），
+     复制品再闪一下，让用户看清新出来的那颗在哪。 */
+  toast(I18n.t("已复制 ") + cps.length + I18n.t(" 个节点"), "ok");
+  flashCopiedNodes(cps.map((c) => c.id));
 }
 /* 复制绘制标注（错开一格，便于模板复用） */
 function duplicateMarks(list) {
@@ -18942,67 +19264,70 @@ function duplicateSelection() {
   duplicateMarks(marks);
   return true;
 }
-/* 顶栏「复制」/ Ctrl+D：在选中节点正下方新建一颗同类节点 —— 只复制「类型」，不复制内容。
-   复制品按该类型的默认值起（NODE_DEFAULTS + makeNode），所以正文 / 提示词 / 参数 /
-   输出 / 尝试记录 / 连线 / 子节点 / 原标题一律不带，标题回到该类型默认名并做唯一化。
-   泛用「文件节点」（input_any）上传或右键转换后 kind 已就地变成具体输入节点，
-   直接取 kind 建新节点就等于「复制更改后的类型」；工具节点落盘形态是 super + tool:true，
-   创建 kind 要还原成 "tool" 才建得出同类节点。 */
-function copyKindOfNode(n) {
-  if (!n) return "";
-  if (typeof isToolNode === "function" && isToolNode(n)) return "tool";
-  return n.kind;
+/* 复制品的「闪一下」：描边 + 外发光约 0.9 秒渐隐（样式见 canvas.css 的 .wf-node.dup-flash）。
+   节点 DOM 每次 renderCanvas 都会重建，所以类名只贴在**本次渲染之后**的元素上；
+   重绘把它丢了也不影响功能 —— 它本来只是一次性的视觉反馈。
+   只按 id 找最外层那颗；壳内节点收起时不在 DOM 里，跳过即可。 */
+function flashCopiedNodes(ids) {
+  const list = (ids || []).filter(Boolean);
+  if (!list.length) return;
+  const els = [];
+  for (const id of list) {
+    const el = document.querySelector('.wf-node[data-nid="' + id + '"]');
+    if (el) els.push(el);
+  }
+  if (!els.length) return;
+  for (const el of els) el.classList.add("dup-flash");
+  setTimeout(() => {
+    for (const el of els) el.classList.remove("dup-flash");
+  }, 900);
 }
-function duplicateSelectedNodeBelow() {
-  /* 固定起点 / 终点（ctrlPinned）不可复制：任务节点的它们由 ensureTaskScaffold 生成 */
-  const srcs = currentSelection().filter((n) => n && !isPinnedCtrl(n));
-  if (!srcs.length) {
+/* 顶栏「复制」/ Ctrl+D：就地**完整克隆** —— 等同「复制 + 粘贴」，只是落点固定在
+   源节点右下各一格（不跟鼠标指针），且**不写内部粘贴板**（用户此前 Ctrl+C 的那批节点不被
+   覆盖，随后按 Ctrl+V 粘的仍是旧内容）。
+   内容口径与 Ctrl+V 同源（cloneNodesDeep + cloneWiresForSet）：正文 / 提示词 / 参数 /
+   子节点 / 集内连线照带，运行结果字段清空，标题原样保留（不改名、不加序号）。
+   ⚠ 旧口径是「只复制类型、不复制内容」，与需求「等同于复制再粘贴」相反，别再退回。
+   ⚠ 不可复制的节点（固定起点 / 终点、交付节点）由 cloneNodesDeep 统一挡掉。 */
+function duplicateNodesBeside(nodes) {
+  const list = (nodes || []).filter(Boolean);
+  if (!list.length) {
     toast(I18n.t("请先选中节点"), "warn");
     return false;
   }
-  const gap = grid();
-  pushHistory();
-  const made = [];
-  for (const src of srcs) {
-    const kind = copyKindOfNode(src);
-    const d = NODE_DEFAULTS[kind];
-    if (!d) continue;
-    const x = Number(src.x) || 0;
-    const y =
-      (Number(src.y) || 0) + (Number(src.h) || Number(d.h) || 96) + gap;
-    const nn = makeNode(kind, x, y);
-    if (!nn) continue;
-    /* 与源同一个容器（任务子图 / 节点层内部），并钉在源正下方一格；
-       super 内部用内部坐标系，x/y 直接沿用源的相对坐标。 */
-    nn.parentSuperId = src.parentSuperId || "";
-    nn.parentTaskId = src.parentTaskId || "";
-    nn.x = snap(x);
-    nn.y = snap(y);
-    const raw = I18n.t(d.title);
-    const want =
-      /节点\s*$/.test(raw) || /node\s*$/i.test(raw) ? raw : raw + I18n.t("节点");
-    nn.title = uniqueNodeTitle(want);
-    if (typeof devAutoColorNode === "function") devAutoColorNode(nn);
-    ensureDefaultSavePath(nn);
-    S.wf.nodes.push(nn);
-    if (kind === "task") ensureTaskScaffold(nn);
-    made.push(nn);
+  const srcs = collectWithDescendants(list);
+  const { cps, idMap } = cloneNodesDeep(srcs, { keepOrphanParent: true });
+  if (!cps.length) {
+    toast(I18n.t("起点 / 终点为固定节点，无法复制"), "warn");
+    return true;
   }
-  if (!made.length) return false;
-  S.selSet = new Set(made.map((n) => n.id));
-  S.sel = made[0].id;
+  pushHistory();
+  const step = grid();
+  const innerSids = copiedSuperIdsOf(cps);
+  for (const cp of cps) {
+    /* super 内部节点使用内部坐标系：外壳偏移即可，内部坐标保持不动 */
+    if (cp.parentSuperId && innerSids.has(cp.parentSuperId)) continue;
+    cp.x = snap((cp.x || 0) + step);
+    cp.y = snap((cp.y || 0) + step);
+  }
+  const wireCps = cloneWiresForSet(S.wf.wires, idMap);
+  S.wf.nodes.push(...cps);
+  if (wireCps.length) S.wf.wires.push(...wireCps);
+  for (const cp of cps) {
+    if (cp.kind === "task") ensureTaskScaffold(cp);
+    if (isMediaGenNode(cp)) probeMediaBackend(cp, { quiet: true });
+  }
+  S.selSet = new Set(cps.map((c) => c.id));
+  S.sel = cps[0].id;
   S.selGroup = null;
   S.selWire = null;
+  S.selMark = null;
+  if (S.selMarkSet) S.selMarkSet.clear();
   renderCanvas();
   scheduleSave(true);
   renderStatus();
-  toast(I18n.t("已复制 ") + made.length + I18n.t(" 个节点"), "ok");
-  for (const nn of made) {
-    if (isMediaGenNode(nn)) {
-      ensureBackendUiState(nn).ok = null;
-      probeMediaBackend(nn, { quiet: true });
-    }
-  }
+  toast(I18n.t("已复制 ") + cps.length + I18n.t(" 个节点"), "ok");
+  flashCopiedNodes(cps.map((c) => c.id));
   return true;
 }
 /* ============ 节点粘贴板（Ctrl+C / Ctrl+V） ============ */
@@ -19042,9 +19367,14 @@ function absImagePathOf(raw) {
   if (!base) return raw;
   return joinPath(base, s.replace(/\\/g, "/"));
 }
-/* 克隆节点集：深拷贝 → 新 id → 标题唯一化（保持原名，不加「副本」）→ 运行时字段清空。
+/* 克隆节点集：深拷贝 → 新 id → **标题原样保留**（不加「副本」、也不加序号）→ 运行时字段清空。
+   标题为什么不唯一化：画布上的内部引用（@节点标题 / 标签 / 开发块与长任务按标题认人）都按
+   标题找节点，复制时改标题会让引用指向一个「看起来是它、其实不是它」的新名字；复制出来的
+   同名节点是同一份内容，按标题找仍命中原来那颗（候选按数组顺序取第一个），语义不丢。
    相对路径的保存节点不复制保存目标（复制品与源会写同一文件，需重新指定）；
    图像节点（input_image）的相对路径固化为绝对路径，复制品才能正确引用同一图像。
+   唯一例外：opts.uniqueTitle（从工具库 / 工作流库「插入」一份进来，它要求同画布不重名）才
+   走标题唯一化；复制 / 粘贴一律原样保留标题。
    第二遍把父子归属 / 媒体-保存绑定（boundSaveId / boundFromId）按新 id 重映射：
    另一端也在复制集内 → 指向新 id；否则断开（keepOrphanParent 时父归属保留原值）。 */
 function cloneNodesDeep(srcs, opts) {
@@ -19060,7 +19390,8 @@ function cloneNodesDeep(srcs, opts) {
     const nid = uid("n");
     idMap.set(src.id, nid);
     cp.id = nid;
-    cp.title = uniqueTitleInWf(S.wf, src.title);
+    /* 标题原样保留（见本函数头注释）：复制不该改动图里任何按标题建立的引用 */
+    cp.title = opts.uniqueTitle ? uniqueTitleInWf(S.wf, src.title) : src.title;
     cp.output = null;
     cp.batchOutputs = null;
     cp.error = null;
@@ -19365,9 +19696,9 @@ function copyNodesToClipboard() {
     marks: marks.map((m) => JSON.parse(JSON.stringify(m))),
   };
   toast(
-    I18n.t("已复制 ") +
-      nodeList.length +
-      I18n.t(" 个节点到粘贴板（Ctrl+V 粘贴）"),
+    nodeList.length
+      ? I18n.t("已复制 ") + nodeList.length + I18n.t(" 个节点")
+      : I18n.t("已复制绘制：") + marks.length,
     "ok",
   );
   return true;
@@ -19418,7 +19749,7 @@ function pasteNodesFromClipboard() {
     return false;
   }
   pushHistory();
-  /* 克隆节点：新 id、标题唯一化（不加「副本」）、运行时字段清空；
+  /* 克隆节点：新 id、标题原样保留（复制不改标题，避免按标题的引用指错）、运行时字段清空；
      相对路径的保存节点不复制保存目标（避免复制品与源写同一文件）；
      图像节点相对路径固化为绝对路径（复制品正确引用同一图像） */
   const { cps, idMap } = cloneNodesDeep(clipNodes);
@@ -21876,24 +22207,8 @@ function bindCanvas() {
       const pdy = (ev.clientY - d.sy) / z;
       n.innerPanX = d.ox + pdx;
       n.innerPanY = d.oy + pdy;
-      const el = document.querySelector('.wf-node[data-nid="' + n.id + '"]');
-      const stage = el && el.querySelector(".super-stage");
-      const vp = stage && stage.querySelector(".super-stage-viewport");
-      if (vp) {
-        vp.style.transform =
-          "translate(" + n.innerPanX + "px," + n.innerPanY + "px)";
-      }
-      if (stage) {
-        const gg = grid();
-        stage.style.setProperty(
-          "--super-grid-x",
-          gridMod(n.innerPanX || 0, gg) + "px",
-        );
-        stage.style.setProperty(
-          "--super-grid-y",
-          gridMod(n.innerPanY || 0, gg) + "px",
-        );
-      }
+      /* 与拖线边缘自动平移共用同一份 DOM 写法（WIRE-EDGE-PAN 段的 syncSuperInnerPanDom） */
+      syncSuperInnerPanDom(n);
       updateWires(
         d.idSet ||
           (d.idSet = new Set(
@@ -22054,6 +22369,8 @@ function bindCanvas() {
       d.mx = ev.clientX;
       d.my = ev.clientY;
       if (!d.moved && wireDragMoved(d, ev)) d.moved = true;
+      /* 拖到边缘持续平移（鼠标停着不动也要继续，见 WIRE-EDGE-PAN 段） */
+      wireEdgePanTrack();
       /* 反向拖线（输入端→输出端）时悬停目标为 .port.out，否则为 .port.in。
          正向拖线还接受**展开节点层的内侧输入端子**（.super-inner-bridge）：壳展开时
          外侧端子整排隐藏（css .super-open>.port），这颗桥端子就是它露在外面的输入端子，
@@ -22094,6 +22411,7 @@ function bindCanvas() {
       const fromInput = !!d.fromInput;
       const movedDrag = !!d.moved;
       S.drag = null;
+      stopWireEdgePan();
       updateWires();
       if (fromInput) {
         /* 反向拖线：起点是某节点的输入端子，终点落在输出端子上 → 存为 输出端 → 输入端 */
@@ -22163,11 +22481,13 @@ function bindCanvas() {
               connect(fromId, toId, Number(port.dataset.idx), fromIndex);
             }
           } else if (port.classList.contains("super-inner-bridge")) {
-            /* 外部 → 展开壳的内侧输入端子：源必须在壳外（壳内子节点倒接回本壳输入 = 回路） */
+            /* 外部 → 节点层的内侧输入端子：源必须在壳外（壳内子节点倒接回本壳输入 = 回路）。
+               展开壳与全屏进入态都算「端子露在外面」（见 superPortsExposed）——
+               全屏里钉在画布左右边缘的端子就是同一颗端子的另一种摆法。 */
             if (
               toNode &&
               toNode.kind === "super" &&
-              superIsOpenShell(toNode) &&
+              superPortsExposed(toNode) &&
               !nodeInsideSuper(fromNode, toId)
             ) {
               connect(
@@ -22178,7 +22498,7 @@ function bindCanvas() {
               );
             } else if (movedDrag) {
               toast(
-                I18n.t("只能把外部节点的连线接到展开节点层的输入端子上"),
+                I18n.t("只能把外部节点的连线接到节点层露在外面的输入端子上"),
                 "warn",
               );
             }
@@ -22214,16 +22534,19 @@ function bindCanvas() {
             el.closest(".wf-node") &&
             el.closest(".wf-node").dataset.nid !== fromId
           ) {
-            /* 落在展开节点层的壳里却不在端子上：壳的输入端子已经搬到舞台左缘（外侧那排
-               隐藏了），提示要指名道姓，否则用户会一直去瞄左边框 */
+            /* 落在节点层的壳里却不在端子上：展开壳的输入端子已经搬到舞台左缘（外侧那排
+               隐藏了），全屏进入态的端子钉在画布左右边缘 —— 提示要指名道姓，否则用户会
+               一直去瞄节点卡片的边框 */
             const dropHost = nodeById(el.closest(".wf-node").dataset.nid);
             toast(
               I18n.t(
                 dropHost &&
                   dropHost.kind === "super" &&
-                  superIsOpenShell(dropHost) &&
+                  superPortsExposed(dropHost) &&
                   !nodeInsideSuper(nodeById(fromId), dropHost.id)
-                  ? "节点层已展开：请把线拖到它左侧的内侧输入端子上再松开"
+                  ? currentSuperFocus() === dropHost.id
+                    ? "全屏进入态：请把线拖到画布左右边缘的端子上再松开"
+                    : "节点层已展开：请把线拖到它左侧的内侧输入端子上再松开"
                   : "线头没落在端子上：请把线拖到目标节点的输入端子上再松开",
               ),
               "warn",
@@ -22523,6 +22846,11 @@ function bindCanvas() {
         pt.y <= n.y + n.h,
     );
     if (mediaTarget) {
+      /* 已继承上游的节点：内容只读（与文本 / 图像输入节点同一句提示），拖文件不再改它 */
+      if (mediaInputInherited(mediaTarget)) {
+        toast(I18n.t("该节点已继承输入，内容只读"), "warn");
+        return;
+      }
       const want = mediaTarget.kind === "input_video" ? "video" : "audio";
       let picked = "";
       for (const f of files) {
@@ -22557,7 +22885,7 @@ function bindCanvas() {
       toast(I18n.t("拆分出的只读节点，不可修改"), "warn");
       return;
     }
-    if (inputInherited(target)) {
+    if (inputInherited(target) || mediaInputInherited(target)) {
       toast(I18n.t("该节点已继承输入，内容只读"), "warn");
       return;
     }
@@ -22614,6 +22942,9 @@ function bindCanvas() {
   });
   window.addEventListener("blur", () => {
     markNodeClipStale();
+    /* 拖线到边缘时窗口失焦（Alt+Tab / 点别的窗）：这里收不到 mouseup，rAF 会一直推着画布跑，
+       所以先停掉边缘平移（拖拽状态照旧，回来动一下鼠标就会重新起） */
+    stopWireEdgePan();
   });
 
   window.addEventListener("keydown", (ev) => {
@@ -22665,6 +22996,24 @@ function bindCanvas() {
     if (mod && !ev.altKey && !ev.shiftKey && (key === "c" || key === "v")) {
       if (canvasClipboardKey(ev, key, inField)) return;
     }
+    /* Ctrl+D：就地完整克隆选中节点（等同复制 + 粘贴，落点在源节点右下各一格）。
+       归属与 Ctrl+C / Ctrl+V 同一笔账（见上面 canvasClipboardKey 的注释）：点选一颗节点会把
+       焦点落进它自己的正文框，若把 Ctrl+D 放在下面那句 `if (inField) return;` 之后，就成了
+       「点了节点再按 Ctrl+D 毫无反应」。所以在这里先判：焦点在画布内的可编辑控件里、且没有
+       真文字选区 → 画布拿走；画布之外的输入区（会话 / 弹窗 / 设置…）与有文字选区时归浏览器。
+       组合键不进 app-keys.js 的单键表，故不会与「隐藏线」的 D 单键冲突。 */
+    if (mod && key === "d" && !ev.altKey && !ev.shiftKey) {
+      if (S.view !== "workflow") return;
+      if (inField) {
+        const ae = document.activeElement;
+        const inCanvasFieldHere =
+          !!ae && typeof ae.closest === "function" && !!ae.closest(".fn-canvas");
+        if (!inCanvasFieldHere || textSelectionWantsNativeCopy()) return;
+      }
+      ev.preventDefault();
+      duplicateNodesBeside(currentSelection());
+      return;
+    }
     /* 节点 / 绘制文字等输入中：不触发任何画布快捷键。
        @ 引用菜单由输入框自己的 keydown 调 refKey 处理——这里不能再调一次，
        否则一次上下键会被消费两遍（跳两格）。 */
@@ -22682,16 +23031,8 @@ function bindCanvas() {
       selectAllNodesInScope();
       return;
     }
-    /* Ctrl+C / Ctrl+V 已在上方（inField 早退之前）判定并消费，这里不再重复处理。 */
-    /* Ctrl+D：在选中节点下方复制一个同类节点（只复制类型，不复制内容）。
-       与顶栏「复制」按钮同一入口（#btnDupNode，接线在 app-boot.js）；
-       组合键不进 app-keys.js 的单键表，故不会与「隐藏线」的 D 单键冲突。 */
-    if (mod && key === "d" && !ev.altKey && !ev.shiftKey) {
-      if (S.view !== "workflow") return;
-      ev.preventDefault();
-      duplicateSelectedNodeBelow();
-      return;
-    }
+    /* Ctrl+C / Ctrl+V 已在上方（inField 早退之前）判定并消费，这里不再重复处理。
+       Ctrl+D 同理也在上面（点选节点后焦点在正文框里时仍要能复制）。 */
     if (mod && key === "z") {
       ev.preventDefault();
       if (ev.shiftKey) redo();
@@ -31238,6 +31579,11 @@ function setNodeMedia(node, absPath) {
 
 /* 节点内「选择…」按钮：文件框 → 设定路径 */
 async function pickMediaForNode(node) {
+  /* 已继承上游（有数据入线）：内容只读，换文件先断开那条线 */
+  if (mediaInputInherited(node)) {
+    toast(I18n.t("该节点已继承输入，内容只读"), "warn");
+    return;
+  }
   const kind = node.kind === "input_video" ? "video" : "audio";
   const p = await pickMediaFile(kind);
   if (!p) return;

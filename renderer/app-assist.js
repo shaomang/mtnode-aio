@@ -2028,6 +2028,13 @@ async function assistSend(text, opts) {
   /* 同一条助手会话只允许一条运行线（共识 q10）：它已经在跑，助手栏这句话就进同一条
      发送队列（与其它会话同一口径），等这一轮结束按序发出，不抢跑、也不丢。 */
   const busySt = assistBoundSession();
+  /* 助手栏发新话同样算用行动撤销暂停（与会话视图一个口径，见 agentVacatePauseForSend）：
+     否则输入区上方那条暂停提示会一直挂着，用户刚发的话也进不去本轮/队列。 */
+  if (busySt && (busySt.paused || busySt._pausePending)) {
+    try {
+      await agentVacatePauseForSend(busySt);
+    } catch (_) {}
+  }
   if (busySt && typeof sessionIsRunning === "function" && sessionIsRunning(busySt)) {
     await agentEnqueueMessage(busySt, t, { sessionId: busySt.id });
     return null;
@@ -4014,6 +4021,7 @@ async function deleteAgentSessionCore(id) {
     list[at].paused = false;
     list[at]._pausePending = false;
     list[at]._roundPaused = false;
+    list[at]._pauseVacated = false;
   } catch (_) {}
   detachSessionsFromNodes([id]);
   list.splice(at, 1);
@@ -4077,9 +4085,8 @@ function closeAgentMenus() {
     "agentToolsMenu",
     "agentModeMenu",
     "assistModeMenu",
-    /* 本次需求新增的助手栏浮层（身份 / 模型 / 工作区 / 技能 / 工具）与「模式」同族：
+    /* 本次需求新增的助手栏浮层（模型 / 工作区 / 技能 / 工具）与「模式」同族：
        全栏同时只开一只，互斥收起必须把它们也带上。 */
-    "assistSessMenu",
     "assistModelMenu",
     "assistWsMenu",
     "assistToolsMenu",
@@ -4205,7 +4212,8 @@ function openAssistModeMenu() {
 /* ══════════ 助手栏：会话身份行 / chip 行 / 运行区折叠行（本次需求 · 与原生会话对齐）══════════
    用户已确认的共识（拷问三轮）：
    · 单向拉齐：以原生会话为准，只补助手侧缺的部分，原生会话的观感与行为一个像素都不动；
-   · 头部＝会话身份：标题 + ▣所属画布 + 最后对话时间，右侧「…」收 改名 / 新建一条 / 在会话视图打开；
+   · 头部＝会话身份：标题 + ▣所属画布 + 最后对话时间，右侧三颗会话操作平铺
+     （改名 / 新建一条 / 会话视图；本轮需求撤掉了原来的「…」浮层，栏宽够摆下）；
      「清空」按钮撤掉（它就是「新建一条」，两个入口做同一件事只会让人犹豫）；
    · chip 行照原生顺序：工作区 → 模型 → 技能 → 压缩上下文（+ 查看摘要）→ 工具 → 模式 → 浏览器活动；
      原来平铺的五格（预设 / 供应商 / 模型 / 思考强度 / 上下文压缩）收进「模型」chip 的菜单，
@@ -4218,7 +4226,6 @@ function openAssistModeMenu() {
 
 /* 本栏自己的浮层清单（互斥收起与 Esc 共用一份） */
 const ASSIST_MENU_ID_LIST = [
-  "assistSessMenu",
   "assistModelMenu",
   "assistWsMenu",
   "assistToolsMenu",
@@ -4250,7 +4257,6 @@ function assistRepositionMenus() {
   placeAssistMenuById("assistWsMenu", "assistWsChip");
   placeAssistMenuById("assistToolsMenu", "assistToolsChip");
   placeAssistMenuById("assistCmdMenu", "assistCmdChip");
-  placeAssistMenuById("assistSessMenu", "btnAssistMenu");
 }
 
 /* 栏窄档：八枚 chip 的中文标签加起来放不下整栏时只留图标（全名在 title 里）。
@@ -4352,6 +4358,7 @@ function assistPaintHeader(st) {
   const tEl = document.getElementById("assistTitle");
   const wfEl = document.getElementById("assistWf");
   const whenEl = document.getElementById("assistWhen");
+  paintAssistSessionActions(st);
   const title = st ? String(st.title || "").trim() : "";
   if (tEl) tEl.textContent = title || I18n.t("全局助手");
   const canvasShown = st ? sessionCanvasName(st) : "";
@@ -4459,40 +4466,15 @@ function assistAfterSessionRender(st) {
   } catch (_) {}
 }
 
-/* ── 「…」菜单：改名 / 新建一条 / 在会话视图打开（用户口径：不加归档、删除、分支）── */
-function buildAssistSessionMenu() {
-  const menu = document.getElementById("assistSessMenu");
-  if (!menu) return;
-  menu.innerHTML = "";
-  const st = assistBoundSession();
-  const add = (label, tip, fn) => {
-    const b = document.createElement("button");
-    b.type = "button";
-    b.className = "agent-menu-cell assist-sess-item";
-    b.textContent = label;
-    b.title = tip || label;
-    b.onclick = () => {
-      menu.hidden = true;
-      fn();
-    };
-    menu.appendChild(b);
-  };
-  add(
-    I18n.t("改名"),
-    I18n.t("改这条助手会话的标题（回车确认 · Esc 取消）"),
-    () => startAssistTitleEdit(),
-  );
-  add(
-    I18n.t("新建一条"),
-    I18n.t("结束当前这条助手会话（旧会话仍留在左栏可回看），下一条发送时新建"),
-    () => clearAssistChat(),
-  );
-  add(
-    I18n.t("在会话视图打开"),
-    I18n.t("切到会话视图看这条会话（那里有完整的计划 / 浏览器活动面板）"),
-    () => assistOpenInSessionView(),
-  );
-  if (!st) menu.querySelectorAll("button").forEach((b, i) => { if (i !== 1) b.disabled = true; });
+/* ── 头部三颗会话操作：改名 / 新建一条 / 会话视图（用户口径：不加归档、删除、分支）──
+   本轮需求把它们从「…」浮层里**平铺到头部**：栏宽足够，多一次点击没必要。
+   「新建一条」不依赖已有会话（空白态也能点，等于重置成空白）；另两颗要有会话才有意义。 */
+function paintAssistSessionActions(st) {
+  const has = !!st;
+  ["btnAssistRename", "btnAssistOpenView"].forEach((id) => {
+    const b = document.getElementById(id);
+    if (b) b.disabled = !has;
+  });
 }
 
 /* 就地改名：头部标题换成输入框，回车确认 / Esc 取消 / 失焦确认。
@@ -4618,7 +4600,10 @@ function bindAssistChrome() {
     ),
   );
   on("assistBrowserChip", () => openAssistBrowserActivity());
-  on("btnAssistMenu", () => void openAssistChipMenu("assistSessMenu", "btnAssistMenu", buildAssistSessionMenu));
+  /* 会话操作三颗：平铺在头部（本轮需求：撤掉「…」浮层，按钮直接展开） */
+  on("btnAssistRename", () => startAssistTitleEdit());
+  on("btnAssistNew", () => clearAssistChat());
+  on("btnAssistOpenView", () => assistOpenInSessionView());
   on("assistRunFoldBtn", () => toggleAssistRunFold());
   /* Esc 收起本栏全部浮层（persistent 浮层的关法之一）；尺寸变化时重算落点 + 重判窄栏档 */
   document.addEventListener("keydown", (ev) => {
@@ -13093,6 +13078,9 @@ async function agentPauseNow(st) {
        它要是自己跑完了，收尾处会把 paused 撤回 false，不会留下假的暂停。 */
     st._pausePending = true;
     st.paused = true;
+    /* 再按一次 ⏸ = 用户又要停：上一句「发新话即撤销暂停」的作废位就地失效，
+       这一轮的收尾照常把暂停态写回来（见 finally 的 pauseVacated）。 */
+    st._pauseVacated = false;
     if (agentViewIs(st)) {
       paintAgentSendState();
       renderAgentPausedBar(st);
@@ -13147,6 +13135,35 @@ async function agentResumePaused(st) {
     resumeSession: sid || undefined,
     _pausedResume: true,
   });
+}
+
+/* 用户用行动撤销暂停（本次需求 · 暂停后直接发新话、暂停提示不消失）：
+   暂停只是停在这里等我，用户在输入区按下发送就是他的回答 —— 不管那一轮还在收尾
+   （这句话先进发送队列）还是已经停稳（直接开新一轮），暂停态都必须当场作废：
+     · paused / _pausePending 清掉 → 输入区上方那条暂停提示立刻下线；
+     · _pauseVacated 记一位 → 那一轮真以 done{paused:true} 收尾时不再把暂停态写回来
+       （否则收尾那一步会把提示重新画上，队列还被 holdQueue 永久压住，消息一条都发不出去）。
+   与「▶ 继续」的区别：继续是接着跑原来那件事（resumeSession，不新发话）；
+   这里是用户换了话头，走普通一轮 + 发送队列，绝不混用续跑通道。 */
+async function agentVacatePauseForSend(st) {
+  if (!st || !st.id) return false;
+  if (!st.paused && !st._pausePending) return false;
+  /* 只有这一轮还在收尾才需要按住收尾判定；已经停稳的直接开新一轮即可 */
+  st._pauseVacated = !!st.running;
+  st.paused = false;
+  st._pausePending = false;
+  /* 提示条的显隐只认 paused（见 renderAgentPausedBar）：清完立刻重画一次，
+     否则要等下一次整表重建才看得见变化。 */
+  try {
+    if (agentViewIs(st)) {
+      paintAgentSendState();
+      renderAgentQueueBar(st);
+    } else {
+      renderAgentSessionSidebar();
+    }
+    updateRunQueuePanel();
+  } catch (_) {}
+  return true;
 }
 
 /* 输入区上方的「已暂停」条（与发送队列条同风格）：说清楚停在哪、队列还剩几条、怎么接。
@@ -13805,6 +13822,22 @@ async function agentSessionSend(text, opts) {
   } else if (!t) {
     return;
   }
+  /* 用户亲口发的一轮 = 用行动撤销上一轮的暂停（见 agentVacatePauseForSend）：
+     暂停后直接在输入区发新话，输入区上方那条暂停提示必须当场下线，消息照常往下走
+     （忙就排队、空闲就开新一轮）。自动续跑 / 计划执行 / 清单同步 / 漏弹自愈 /
+     续跑通道都不是用户发话，一律不在此列 —— 它们本来也不会在暂停期间开跑。 */
+  if (
+    !opts._autoContinue &&
+    !opts._planExec &&
+    !opts._planFix &&
+    !opts._todoSync &&
+    !opts.resumeSession &&
+    (st.paused || st._pausePending)
+  ) {
+    try {
+      await agentVacatePauseForSend(st);
+    } catch (_) {}
+  }
   /* 会话正忙：新消息进「发送队列」，不打断当前任务（旧行为是直接丢弃 / 取消本轮）。
      队列在当前这一轮结束后按序自动发送；用户可随时删除单条或清空。 */
   if (sessionIsRunning(st)) {
@@ -13964,6 +13997,7 @@ async function agentSessionSend(text, opts) {
      _liveSid 每轮重新捕获：插话 / 暂停都按它点名网关在途表里的那一轮。 */
   st.paused = false;
   st._pausePending = false;
+  st._pauseVacated = false;
   st._roundPaused = false;
   st._liveSid = "";
   st._pending = "";
@@ -14590,10 +14624,15 @@ async function agentSessionSend(text, opts) {
   } finally {
     /* 暂停态在这里一次定稿：只有真的收到 done{paused:true} 才算暂停（暂停请求发出去了
        但那一轮恰好正常跑完 = 不算）。■ 终止优先于暂停：用户按停之后又点了终止，
-       就不该留下一条「可继续」的暂停态。已写出的正文在上面按现状归档，不重发、不抹字。 */
-    st.paused = !!st._roundPaused && !st._cancelled;
+       就不该留下一条「可继续」的暂停态。已写出的正文在上面按现状归档，不重发、不抹字。
+       用户在这一轮收尾前已经发了新话（_pauseVacated，见 agentVacatePauseForSend）同理：
+       他按发送就等于说不接着跑了，收尾绝不能再把暂停态写回来 —— 否则输入区上方那条
+       暂停提示会重新亮起并一直留着，队列被 holdQueue 压住，他刚发的那句话永远发不出去。 */
+    const pauseVacated = !!st._pauseVacated;
+    st.paused = !!st._roundPaused && !st._cancelled && !pauseVacated;
     st._roundPaused = false;
     st._pausePending = false;
+    st._pauseVacated = false;
     st.running = false;
     st._cancelled = false;
     /* 轮中增量落盘的定时器随之收掉（正本结果在上面已 push 进 messages，下一次落盘就是完整那份） */
@@ -14635,8 +14674,10 @@ async function agentSessionSend(text, opts) {
     }
     /* 被「全部终止」打断 → 排队消息留在队列里等用户，不再自动接管发送。
        被「⏸暂停」让位的一轮同理，而且更严格：暂停就是「停在这里等我」，
-       排水 / 自愈补发 / 计划续跑全都等用户点「继续」之后再说。 */
-    const holdQueue = outcome === "cancelled" || !!st.paused;
+       排水 / 自愈补发 / 计划续跑全都等用户点「继续」之后再说。
+       唯一例外 = 用户已经在本轮收尾前发了新话（pauseVacated）：那一句就是他要的下一步，
+       暂停已作废、队列必须照常排出去 —— 否则他会看到「暂停提示还在 + 刚发的话永远不发」。 */
+    const holdQueue = (outcome === "cancelled" && !pauseVacated) || !!st.paused;
     /* 会话收尾：清单里没跑完的条目按本轮结局定性（红叉 / 问号）。
        队列里还有下一条要发 → 先不定性，等真正空闲的那轮结束再判。
        暂停的一轮不算终账：待办原样留给「继续」之后的那一轮去收尾。 */

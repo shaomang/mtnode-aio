@@ -19,6 +19,8 @@ const {
   isCjkHeavy,
   stripFinalPeriod,
   splitAfterPunctuation,
+  splitScriptSentences,
+  alignScriptToAsr,
   normalizeNoise,
   resolveFfmpeg,
   SUBTITLE_MAX_SECONDS,
@@ -106,6 +108,33 @@ function check(name, cond, extra) {
   )
 
   check('空文本不产生 cue', buildSubtitleCues([{ start: 0, end: 2, text: '  ' }], {}).length === 0)
+
+  /* 原台词（切分模式）与保留标点：纯函数这一层 */
+  const kept = buildSubtitleCues([{ start: 0, end: 2, text: '你好。' }], { keepPunctuation: true })
+  check('keepPunctuation:true 保留句末句号', kept[0] && kept[0].text === '你好。', JSON.stringify(kept))
+  const sents = splitScriptSentences('第一句。第二句。\n第三句。', '。')
+  check(
+    '台词按标点 + 换行断句（换行是强制断句点）',
+    sents.length === 3 && sents[2] === '第三句。',
+    JSON.stringify(sents),
+  )
+  const aligned = alignScriptToAsr(
+    ['第一句。', '第二句。'],
+    [
+      { start: 0, end: 1, text: '第一句' },
+      { start: 1, end: 2, text: '第二句' },
+    ],
+  )
+  check(
+    '台词与识别段单调对齐（正文取台词、时间取语音段）',
+    aligned.pairs.length === 2 && aligned.pairs[0].text === '第一句。' && aligned.pairs[1].start === 1,
+    JSON.stringify(aligned),
+  )
+  check(
+    '没念到的台词进 unmatchedScript（跳过不报错）',
+    alignScriptToAsr(['第一句。', '没念到的一句。'], [{ start: 0, end: 1, text: '第一句' }]).unmatchedScript
+      .length === 1,
+  )
   check('默认值导出', SUBTITLE_MAX_SECONDS === 6 && SUBTITLE_MAX_CHARS_CJK === 18)
   check('静音阈值归一', normalizeNoise(-25) === '-25dB' && normalizeNoise('-35dB') === '-35dB' && normalizeNoise() === '-35dB')
 
@@ -154,6 +183,15 @@ if (ffmpegPath) {
       transcribe: async (spec) => {
         const buf = Buffer.from(spec.audio)
         seen.push({ rate: buf.readUInt32LE(24), channels: buf.readUInt16LE(22) })
+        /* 用户现场「Invalid speech WAV」的回归门：ffmpeg 切出来的 WAV 带 LIST(INFO ISFT) 块，
+           官方 validateWave 只认标准 44 字节头 —— 送进识别器前必须已归一。 */
+        check(
+          '送进识别器的是标准 44 字节头 WAV（LIST 元数据块已剥掉）',
+          buf.toString('ascii', 36, 40) === 'data' &&
+            buf.readUInt32LE(40) === buf.length - 44 &&
+            buf.readUInt32LE(4) === buf.length - 8,
+          JSON.stringify({ hdr36: buf.toString('ascii', 36, 40), len: buf.length }),
+        )
         if (emptyNext) return { text: '', audioSeconds: 4, inferenceSeconds: 0 }
         return { text: '今天天气不错。我们出去走走吧。', audioSeconds: 4, inferenceSeconds: 0.1 }
       },
@@ -209,6 +247,70 @@ if (ffmpegPath) {
       JSON.stringify(seen),
     )
     check('没有往目录里写任何文件（工具只回文本）', readdirSync(testRoot).length === before)
+
+    /* 原台词切分模式（真 ffmpeg 切句 + 假 SenseVoice）：正文必须取自台词，不吃识别错字 */
+    const script = '今天天气真不错。我们出去走走吧。\n这句没念到。'
+    const scripted = await sub.execute(
+      { file: wav, script, keepPunctuation: true },
+      { signal: new AbortController().signal, agent: { id: 'smoke' } },
+    )
+    check('切分模式生效（mode=script）', scripted && scripted.ok === true && scripted.mode === 'script', JSON.stringify(scripted).slice(0, 300))
+    check(
+      '每条 cue 的正文都是原台词里的片段（识别错字不进字幕）',
+      !!(scripted && scripted.cues && scripted.cues.length) &&
+        scripted.cues.every((c) => script.indexOf(String(c.text)) >= 0),
+      JSON.stringify(scripted && scripted.cues),
+    )
+    check(
+      'cue 标记 source=script',
+      !!(scripted && scripted.cues) && scripted.cues.every((c) => c.source === 'script'),
+      JSON.stringify(scripted && scripted.cues),
+    )
+    check(
+      '保留标点 = true 时最后一条 cue 仍带 。',
+      !!(scripted && scripted.cues && scripted.cues.length) && /。$/.test(scripted.cues[scripted.cues.length - 1].text),
+      JSON.stringify(scripted && scripted.cues),
+    )
+    check(
+      '没念到的台词进 unmatchedScript',
+      !!(scripted && Array.isArray(scripted.unmatchedScript)) && scripted.unmatchedScript.indexOf('这句没念到。') >= 0,
+      JSON.stringify(scripted && scripted.unmatchedScript),
+    )
+    check(
+      '识别原文写进 asrText（供对照）',
+      !!(scripted && typeof scripted.asrText === 'string') && scripted.asrText.indexOf('今天天气不错') >= 0,
+      JSON.stringify(scripted && scripted.asrText),
+    )
+
+    /* 自动启用：语音运行时刚被拉起时识别器还没注册（providers 为空）——工具应自己等它出现，
+       不许报「请先启用 / 确认语音输入可用」这类要用户动手的文案。 */
+    let lazyStates = 0
+    const lazyStt = {
+      snapshot: () => {
+        lazyStates++
+        if (lazyStates <= 1) return { selection: {}, providers: [] }
+        return {
+          selection: { providerId: 'sensevoice-local' },
+          providers: [{ id: 'sensevoice-local', preparation: { phase: 'ready' } }],
+        }
+      },
+      resolve: (req) => ({ provider: { id: 'sensevoice-local' }, ...req }),
+      transcribe: async () => ({ text: '自动就绪的一句。', audioSeconds: 4, inferenceSeconds: 0.1 }),
+    }
+    const autoTools = new Map()
+    apply({
+      tools: { register: (t) => autoTools.set(t.name, t) },
+      get: (n) => (n === 'speechToText' ? lazyStt : null),
+    })
+    const autoSub = autoTools.get('audio_subtitle')
+    const auto = autoSub
+      ? await autoSub.execute({ file: wav }, { signal: new AbortController().signal })
+      : { ok: false, error: 'audio_subtitle 未注册' }
+    check(
+      '识别器晚注册 → 自动等到就绪再转写（无需手动启用）',
+      auto && auto.ok === true && lazyStates >= 2,
+      JSON.stringify(auto).slice(0, 300),
+    )
 
     /* 空结果不报错：识别为空 → cues 为空 + note（假 SenseVoice 回空文本） */
     emptyNext = true

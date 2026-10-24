@@ -1015,6 +1015,9 @@ function canvasNodeSig(n) {
        必须进签名，否则接上 / 断开后预览态会一直停在旧形状
        （真机自验复现：断开后缩略图不消失）。 */
     browse && n.kind === "asset" ? assetBrowseOutMask(n) : "",
+    /* 节点层外侧端子名（「外观」面板里改的）：改名只换徽标文字、不改形状，
+       但复用快速通道不会重画徽标 —— 所以名字进签名，改完这一拍整幅重建一次。 */
+    n.kind === "super" ? superPortNamesSig(n) : "",
   ].join(":");
 }
 /** 素材条目「输出端子被连」的位图（`0110`），只给 canvasNodeSig 用 */
@@ -1199,6 +1202,13 @@ function syncCanvasNodeDomPos(parts) {
    整幅重建时它顺带把「刚被拆掉、宿主真没了」的音频 / 视频外壳回收；复用通道下没有任何
    元素被拆，这一步自然什么都不做（正在播的那只 isConnected 仍然为真，照旧继续播）。 */
 function afterCanvasRender() {
+  /* 节点层封面（renderer/app-node-cover.js，晚于本文件加载）：复用快速通道不拆 DOM，
+     这里按模型把折叠 / 展开两处封面刷一遍，改完当场看得见。 */
+  if (typeof coverRepaintAll === "function") {
+    try {
+      coverRepaintAll();
+    } catch (_) {}
+  }
   fillPreviews();
   fillImageMetas();
   if (typeof wavePreviewStopAll === "function") {
@@ -1264,6 +1274,11 @@ function renderCanvas() {
       canvasMountSetIdle(parts)
     ) {
       S._deferCanvasForFieldEdit = true;
+      /* 连线层是独立的 SVG，拆不拆节点 DOM 与它无关：这一拍为保住输入焦点推迟了，
+         但线本身必须立刻画出来 —— 否则刚放下的线要等到失焦 / 移动画布才补拍，
+         现场就是「线没接上」（焦点在文本节点输入框里时拖出端子必现）。
+         端点位置按模型坐标算（updateWires 同一口径），不依赖这次被推迟的 DOM 拆建。 */
+      updateWires();
       return;
     }
     const fieldFocus = snapshotCanvasFieldFocus();
@@ -3349,16 +3364,330 @@ function remotionMetaText(node) {
   );
 }
 
+/* 构建 Agent 的模型三项：空 = 跟随全局默认。用 nsAgentFields 那套选择器（预设 / 服务商 /
+   模型 / 思考强度与智能会话完全同一份口径），只是把写入目标搬到 build* 字段上。 */
+function nsRemotionBuildAgentFields(ctx, node) {
+  const shadow = {
+    get provider() {
+      return node.buildProvider || "";
+    },
+    set provider(v) {
+      node.buildProvider = v;
+    },
+    get providerId() {
+      return node.buildProviderId || "";
+    },
+    set providerId(v) {
+      node.buildProviderId = v;
+    },
+    get model() {
+      return node.buildModel || "";
+    },
+    set model(v) {
+      node.buildModel = v;
+    },
+    get preset() {
+      return node.buildPreset || "";
+    },
+    set preset(v) {
+      node.buildPreset = v;
+    },
+    get effort() {
+      return node.buildEffort || "";
+    },
+    set effort(v) {
+      node.buildEffort = v;
+    },
+    get vision() {
+      return node.buildVision || false;
+    },
+    set vision(v) {
+      node.buildVision = v;
+    },
+    text: node.text,
+  };
+  if (typeof nsAgentFields === "function") nsAgentFields(ctx, shadow);
+}
+
+/* 构建 / 校验 / 试渲染 三个动作按钮 + 状态行（节点卡片与设置窗共用同一套动作） */
+function nsRemotionActionRow(ctx, node) {
+  const wrap = document.createElement("div");
+  wrap.className = "ns-btn-row";
+  wrap.style.display = "flex";
+  wrap.style.gap = "8px";
+  wrap.style.flexWrap = "wrap";
+  const status = document.createElement("div");
+  status.style.marginTop = "6px";
+  status.style.fontSize = "12px";
+  status.style.opacity = "0.85";
+  status.style.whiteSpace = "pre-wrap";
+  const paint = () => {
+    const bits = [];
+    if (node.remotionStatus) bits.push(String(node.remotionStatus));
+    if (node.remotionBuildError) bits.push(I18n.t("构建报错：") + node.remotionBuildError);
+    if (node.remotionVerifyError) bits.push(I18n.t("试渲染报错：") + node.remotionVerifyError);
+    if (node.remotionBuiltAt) {
+      const d = new Date(Number(node.remotionBuiltAt));
+      bits.push(
+        I18n.t("固化于 ") +
+          d.toLocaleString() +
+          " · " +
+          Object.keys(node.remotionFiles || {}).length +
+          I18n.t(" 个文件 · ") +
+          remotionContractOf(node).length +
+          I18n.t(" 颗端子"),
+      );
+    }
+    status.textContent = bits.join("\n");
+  };
+  paint();
+  const mkBtn = (label, tip, fn, primary) => {
+    const b = document.createElement("button");
+    b.className = "btn" + (primary ? " primary" : "");
+    b.type = "button";
+    b.textContent = label;
+    if (tip) b.title = tip;
+    b.addEventListener("click", async () => {
+      b.disabled = true;
+      try {
+        await fn();
+      } finally {
+        b.disabled = false;
+        paint();
+      }
+    });
+    return b;
+  };
+  /* 构建只有一只入口：弹窗里填构建需求（+「忽略现有源码，从头重建」勾选）。
+     老的「构建 / 重新构建」两颗无弹窗直构建按钮已下线 —— 需求改成「点构建才弹窗」。 */
+  wrap.appendChild(
+    mkBtn(
+      I18n.t("构建…"),
+      I18n.t("打开构建弹窗：填这次构建的需求，Agent 写 Remotion 工程，短试渲染通过后固化成脚本"),
+      async () => {
+        if (typeof remotionOpenBuildDialog === "function")
+          await remotionOpenBuildDialog(node);
+        paint();
+      },
+      true,
+    ),
+  );
+  wrap.appendChild(
+    mkBtn(
+      I18n.t("试渲染"),
+      I18n.t("用现有源码渲染 ≤2 秒验证能不能跑通（不占音视频锁，产物即弃）"),
+      async () => {
+        const project = remotionProjectOf(node);
+        if (!project.hasSource) {
+          toast(I18n.t("还没有工程源码：先点「构建」"), "warn");
+          return;
+        }
+        const { width, height } = remotionSizeWH(node);
+        const r = await remotionRunVerify(node, {
+          files: project.files,
+          contract: project.contract,
+          description: String(node.remotionBuildNote || ""),
+          width,
+          height,
+          fps: Math.max(1, Math.min(60, Number(node.fps) || 30)),
+          duration: Math.min(2, Math.max(1, Number(node.duration) || 5)),
+        });
+        node.remotionVerifyError = r && r.ok ? "" : (r && r.message) || I18n.t("试渲染失败");
+        toast(node.remotionVerifyError || I18n.t("试渲染通过"), r && r.ok ? "ok" : "err");
+        renderCanvas();
+        scheduleSave();
+        paint();
+      },
+    ),
+  );
+  wrap.appendChild(
+    mkBtn(
+      I18n.t("校验源码"),
+      I18n.t("只做静态检查（导入白名单 / 入口 Main / 契约），不渲染"),
+      () => {
+        const project = remotionProjectOf(node);
+        if (!project.hasSource) {
+          toast(I18n.t("还没有工程源码：先点「构建」"), "warn");
+          return;
+        }
+        const check = remotionStaticCheck(project.files, "Composition.tsx");
+        if (check.ok) {
+          node.remotionBuildError = "";
+          node.remotionInputs = check.contract;
+          toast(
+            I18n.t("校验通过：") + Object.keys(project.files).length + I18n.t(" 个文件 · ") + check.contract.length + I18n.t(" 颗端子"),
+            "ok",
+          );
+        } else {
+          node.remotionBuildError = check.errors.join("\n");
+          toast(I18n.t("校验失败：") + node.remotionBuildError, "err");
+        }
+        renderCanvas();
+        scheduleSave();
+        paint();
+      },
+    ),
+  );
+  ctx.append(wrap);
+  ctx.append(status);
+}
+
+/* 源码编辑器：多文件（node.remotionFiles）+ 保存即静态校验（试渲染另点） */
+function nsRemotionSourceEditor(ctx, node) {
+  const project = remotionProjectOf(node);
+  const files = {};
+  for (const [k, v] of Object.entries(project.files || {})) files[k] = String(v == null ? "" : v);
+  const names = Object.keys(files).sort((a, b) => {
+    if (a === "Composition.tsx") return -1;
+    if (b === "Composition.tsx") return 1;
+    return a.localeCompare(b);
+  });
+  if (!names.length) {
+    const hint = document.createElement("div");
+    hint.style.fontSize = "12px";
+    hint.style.opacity = "0.75";
+    hint.textContent = I18n.t(
+      "还没有工程源码。先在上面写需求点「构建」；Agent 写完并经试渲染验证后会固化在这里，之后可手改。",
+    );
+    ctx.append(hint);
+    return;
+  }
+  let cur = names.indexOf(String(node._rmEditFile || "")) >= 0 ? String(node._rmEditFile) : names[0];
+  const sel = document.createElement("select");
+  const ta = document.createElement("textarea");
+  ta.className = "n-text";
+  ta.spellcheck = false;
+  ta.rows = 16;
+  ta.style.minHeight = "260px";
+  ta.style.fontFamily = "ui-monospace, Consolas, monospace";
+  ta.style.fontSize = "12px";
+  ta.style.resize = "vertical";
+  const newName = document.createElement("input");
+  newName.type = "text";
+  newName.placeholder = I18n.t("新文件名（相对 src/，例如 components/Title.tsx）");
+  newName.style.flex = "1";
+  const paintFile = () => {
+    for (const n of names) {
+      const o = document.createElement("option");
+      o.value = n;
+      o.textContent = n;
+      if (n === cur) o.selected = true;
+      sel.appendChild(o);
+    }
+    ta.value = files[cur] || "";
+  };
+  sel.addEventListener("change", () => {
+    cur = sel.value;
+    node._rmEditFile = cur;
+    ta.value = files[cur] || "";
+  });
+  ta.addEventListener("input", () => {
+    files[cur] = ta.value;
+  });
+  ctx.field(I18n.t("文件"), sel, {
+    tip: I18n.t("工程文件都放在 src/ 下，入口固定 Composition.tsx（必须导出 Main 与 inputs 契约）"),
+  });
+  ctx.field(I18n.t("源码"), ta, { bare: false });
+  const row = document.createElement("div");
+  row.style.display = "flex";
+  row.style.gap = "8px";
+  row.style.flexWrap = "wrap";
+  row.style.alignItems = "center";
+  const saveBtn = document.createElement("button");
+  saveBtn.className = "btn primary";
+  saveBtn.type = "button";
+  saveBtn.textContent = I18n.t("保存并校验");
+  saveBtn.title = I18n.t("写回节点并做静态检查（端子契约会按 inputs 重算；已消失的端子接线会被断开）");
+  saveBtn.addEventListener("click", () => {
+    const r = remotionApplySourceEdit(node, files);
+    if (r.ok) {
+      toast(I18n.t("已保存：") + r.contract.length + I18n.t(" 颗端子") + (r.dropped ? I18n.t("；断开 ") + r.dropped + I18n.t(" 条失效接线") : ""), "ok");
+    } else {
+      toast(I18n.t("静态检查未通过：") + r.errors.join("；"), "err");
+    }
+    renderCanvas();
+    scheduleSave();
+  });
+  row.appendChild(saveBtn);
+  row.appendChild(newName);
+  const addBtn = document.createElement("button");
+  addBtn.className = "btn";
+  addBtn.type = "button";
+  addBtn.textContent = I18n.t("新增文件");
+  addBtn.addEventListener("click", () => {
+    const rel = String(newName.value || "")
+      .trim()
+      .replace(/\\/g, "/")
+      .replace(/^src\//, "");
+    if (!rel) {
+      toast(I18n.t("请填文件名"), "warn");
+      return;
+    }
+    if (!/\.(tsx|ts|jsx|js|css|json|md|txt)$/i.test(rel)) {
+      toast(I18n.t("文件名要有后缀（.tsx / .ts / .css / .json …）"), "warn");
+      return;
+    }
+    files[rel] = files[rel] || "";
+    names.push(rel);
+    cur = rel;
+    node._rmEditFile = rel;
+    sel.innerHTML = "";
+    /* 重画选择列表（新文件立刻可选） */
+    paintFile();
+    newName.value = "";
+    ta.value = files[cur] || "";
+  });
+  row.appendChild(addBtn);
+  const delBtn = document.createElement("button");
+  delBtn.className = "btn";
+  delBtn.type = "button";
+  delBtn.textContent = I18n.t("删除该文件");
+  delBtn.addEventListener("click", () => {
+    if (cur === "Composition.tsx") {
+      toast(I18n.t("入口文件 Composition.tsx 不能删"), "warn");
+      return;
+    }
+    delete files[cur];
+    const at = names.indexOf(cur);
+    if (at >= 0) names.splice(at, 1);
+    cur = names[0] || "";
+    node._rmEditFile = cur;
+    sel.innerHTML = "";
+    paintFile();
+    ta.value = files[cur] || "";
+  });
+  row.appendChild(delBtn);
+  ctx.append(row);
+  /* 契约表：只读回显（key / 类型 / 标签 / 数组） */
+  const contract = remotionContractOf(node);
+  if (contract.length) {
+    const box = document.createElement("div");
+    box.style.fontSize = "12px";
+    box.style.lineHeight = "1.6";
+    box.style.marginTop = "4px";
+    box.textContent =
+      I18n.t("端子契约：") +
+      contract
+        .map((c, i) => i + ". " + c.key + " (" + c.kind + (c.list ? "[]" : "") + ")" + (c.label ? " " + c.label : ""))
+        .join("  ·  ");
+    ctx.append(box);
+  }
+  paintFile();
+}
+
 registerNodeSettingsForm("remotion", {
-  gearTitle: () => I18n.t("服务商 / 模型 / 温度 · 分辨率 / fps / 时长"),
-  summary: (node) => nsApiSummary(node) + " · " + remotionMetaText(node),
+  gearTitle: () => I18n.t("功能说明 / 构建 / 构建 Agent / 源码 / 渲染"),
+  summary: (node) =>
+    (remotionProjectOf(node).hasSource ? I18n.t("已固化") : I18n.t("未固化")) +
+    " · " +
+    remotionContractOf(node).length +
+    I18n.t(" 端子 · ") +
+    remotionMetaText(node),
   build: (ctx) => {
     const node = ctx.node;
-    nsProviderModelFields(ctx, node);
-    nsTemperatureField(ctx, node);
-    /* 描述：与节点板身那颗正文框同一字段（node.text），这里给大窗编辑入口。
-       留空 = 按已接线的素材 / 台词走内置台词卡版面。 */
-    ctx.section(I18n.t("描述"));
+    /* 功能说明：与节点板身那颗框同一字段（node.text）。只描述这个节点干什么，
+       构建 Agent 不读它 —— 构建需求在「构建…」弹窗里填（node.remotionBuildNote）。 */
+    ctx.section(I18n.t("功能说明（与构建无关）"));
     {
       const ta = document.createElement("textarea");
       ta.className = "n-text";
@@ -3366,21 +3695,28 @@ registerNodeSettingsForm("remotion", {
       ta.rows = 4;
       ta.style.minHeight = "88px";
       ta.style.resize = "vertical";
-      ta.placeholder = I18n.t("视频内容描述（可空 · 支持 @节点标题 引用已接线输入）");
+      ta.placeholder = I18n.t(
+        "这个节点是干什么的、什么场景复用它（只作说明，不给 Agent 读；要写构建需求请点下面的「构建…」）",
+      );
       ta.value = String(node.text || "");
       ta.addEventListener("input", () => {
         node.text = ta.value;
         ctx.commit();
       });
-      ctx.field(I18n.t("描述（可空 · @ 引用已接线输入）"), ta, {
+      ctx.field(I18n.t("功能说明"), ta, {
         tip: I18n.t(
-          "输入端子无差别：视频 / 图片接进来就是主素材，音频是语音，文本是台词；描述留空时直接按接线走内置台词卡版面。",
+          "纯说明字段：构建 Agent 与运行期都不读它。画面尺寸 / fps / 时长按下面「渲染」设置；素材由端子注入。",
         ),
       });
     }
+    ctx.section(I18n.t("构建 / 验证"));
+    nsRemotionActionRow(ctx, node);
+    ctx.section(I18n.t("构建 Agent 的模型"));
+    if (typeof nsAgentFields === "function") nsRemotionBuildAgentFields(ctx, node);
+    ctx.section(I18n.t("源码（固化工程）"));
+    nsRemotionSourceEditor(ctx, node);
     ctx.section(I18n.t("渲染"));
-    const meta = () =>
-      syncNodeSettingsValue(node, "mgmeta", remotionMetaText(node));
+    const meta = () => syncNodeSettingsValue(node, "mgmeta", remotionMetaText(node));
     nsNumber(
       ctx,
       I18n.t("时长（秒，1–60）"),
@@ -3423,6 +3759,8 @@ registerNodeSettingsForm("remotion", {
         meta();
       },
     );
+    /* 这里不再有「老路径：现场生成用的文本模型」三项：运行期一个模型都不调，
+       构建 Agent 的路由在上面「构建 Agent 的模型」里（buildProvider / buildModel …）。 */
     /* 随工作流带过来的中间产物（典型就是 Composition.tsx：复用 / 重生成 / 剔除） */
     if (typeof nsArtifactFields === "function") nsArtifactFields(ctx, node);
   },
@@ -7651,6 +7989,106 @@ function setPortBadgeName(badge, text) {
   badge.appendChild(s);
 }
 
+/* ═══════════ 节点层外侧端子命名（唯一真源）═══════════════════════════════
+ * 需求：节点层（kind "super"）的外侧端子可以自己起名字，名字要同时出现在
+ *   ① 收起态卡片外侧端子徽标 · ② 端子悬停提示 · ③ 展开舞台的内侧桥接 / 汇流端子 ·
+ *   ④ 全屏进入态钉在画布边缘的端子 · ⑤ 工作流库端口清单与 Agent 端口表。
+ * 存储：node.portNames = { in: { "<端子号>": "名字" }, out: { … } }。
+ *   · 键 = **端子号**（端子号就是端子的身份，与 app.js inputCount / outputCount 的现算口径一致）；
+ *   · 端子数仍由连线现算，删线让某个号暂时不存在时**名字保留**（重新接回同一号还在）；
+ *   · 名字留空 = 删除该名，回落「输入N / 输出N / 控制」（见 portBadgeText）；
+ *   · 最长 SUPER_PORT_NAME_MAX 字（超出截断），允许重名（端子号才是身份）。
+ * 范围：普通 / 工作流节点层与开发节点层。工具节点层的端子名由 toolConfig 的参数名决定
+ *   （见 fnToolParamList）、数据库副本节点的端口是固定的 —— 这两类不给命名。
+ * 消费出口只有两个：portBadgeText（徽标）与 superPortTitleWithName（悬停提示），
+ *   二者再被 app.js 的 superInnerPortInfo 复用，所以五处显示不会各写一套。
+ * ─────────────────────────────────────────────────────────────────── */
+const SUPER_PORT_NAME_MAX = 12;
+
+function superPortNamingAllowed(node) {
+  if (!node || node.kind !== "super") return false;
+  /* 工具节点层：参数即端子（toolConfig 的 inputs / outputs 名字就是端子名），
+     在这里再叠一层覆盖会出现两套名字；数据库副本节点：端口固定，没有命名需求。 */
+  if (node.tool || node.db) return false;
+  return true;
+}
+
+function superPortNameNormalize(raw) {
+  return String(raw == null ? "" : raw)
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, SUPER_PORT_NAME_MAX);
+}
+
+function superPortNameOf(node, dir, idx) {
+  if (!superPortNamingAllowed(node)) return "";
+  const bag =
+    node.portNames && typeof node.portNames === "object" ? node.portNames[dir] : null;
+  if (!bag || typeof bag !== "object") return "";
+  return superPortNameNormalize(bag[String(Math.max(0, Number(idx) || 0))]);
+}
+
+/* 写 / 删一个端子名。返回「值真的变了没有」——调用方据此决定入撤销栈 / 落盘 / 重绘。 */
+function superPortNameSet(node, dir, idx, raw) {
+  if (!superPortNamingAllowed(node)) return false;
+  const key = String(Math.max(0, Number(idx) || 0));
+  const name = superPortNameNormalize(raw);
+  if (superPortNameOf(node, dir, key) === name) return false;
+  if (!node.portNames || typeof node.portNames !== "object") node.portNames = {};
+  if (!node.portNames[dir] || typeof node.portNames[dir] !== "object")
+    node.portNames[dir] = {};
+  if (name) node.portNames[dir][key] = name;
+  else delete node.portNames[dir][key];
+  /* 空容器一并清掉：画布 JSON 里不留一行空壳（老画布没有这个字段也照样读得懂） */
+  for (const d of ["in", "out"]) {
+    const b = node.portNames[d];
+    if (b && typeof b === "object" && !Object.keys(b).length) delete node.portNames[d];
+  }
+  if (!Object.keys(node.portNames).length) delete node.portNames;
+  return true;
+}
+
+/* 「名字（输入3）」：悬停提示 / 工作流库 / Agent 端口表同一份写法（名字 + 端子号）。 */
+function superPortNameTagged(node, dir, idx) {
+  const nm = superPortNameOf(node, dir, idx);
+  if (!nm) return "";
+  const i = Math.max(0, Number(idx) || 0);
+  const tag = (dir === "in" ? I18n.t("输入") : I18n.t("输出")) + (i + 1);
+  return I18n.t("{name}（{tag}）", { name: nm, tag: tag });
+}
+
+/* 悬停提示：端子名在前、原来那句说明在后（没起名就原样返回）。 */
+function superPortTitleWithName(node, dir, idx, base) {
+  if (!superPortNamingAllowed(node)) return base;
+  const tagged = superPortNameTagged(node, dir, idx);
+  if (!tagged) return base;
+  return base ? tagged + " · " + base : tagged;
+}
+
+/* 当前端子数里已命名的个数（外观按钮的悬停提示用） */
+function superPortNameCount(node) {
+  if (!superPortNamingAllowed(node)) return 0;
+  let n = 0;
+  const ic = typeof inputCount === "function" ? inputCount(node) : 0;
+  for (let i = 0; i < ic; i++) if (superPortNameOf(node, "in", i)) n++;
+  const oc = typeof outputCount === "function" ? outputCount(node) : 0;
+  for (let i = 0; i < oc; i++) if (superPortNameOf(node, "out", i)) n++;
+  return n;
+}
+
+/* 端子名的渲染签名（只给 canvasNodeSig 用）：改名后签名变了才会整幅重建，徽标才跟着换。 */
+function superPortNamesSig(node) {
+  if (!node || !node.portNames || typeof node.portNames !== "object") return "";
+  const out = [];
+  for (const dir of ["in", "out"]) {
+    const bag = node.portNames[dir];
+    if (!bag || typeof bag !== "object") continue;
+    for (const k of Object.keys(bag).sort())
+      out.push(dir + k + "=" + superPortNameNormalize(bag[k]));
+  }
+  return out.join(",");
+}
+
 /* 端子标签正文：见上方注释块（画布上每一个端子都要有，按 dir 决定「输入N / 输出N」）。
  * ⚠ inPortIsControl / portBadgeIsControlOut 是**节点级**判断（控制类节点的每一颗端子都算
  *   「控制端子」，那是给 .ctrl 配色用的），而端子名是**端子级**语义（判断节点 0 号出叫
@@ -7676,6 +8114,13 @@ function portBadgeText(node, dir, idx, opt) {
     typeof o.deliver === "boolean"
       ? o.deliver
       : node.kind === "deliver" && !!(window.LT && window.LT.deliverPortItem);
+  /* 节点层：用户在「外观」面板里起的端子名优先于一切默认名（含控制口 —— 控制口没起名时
+     照旧写「控制」）。工具节点层的端子名来自参数表，不走这里（见 superPortNamingAllowed）。 */
+  if (node.kind === "super" && !fnTool && !asset) {
+    const nm = superPortNameOf(node, dir, i);
+    if (nm)
+      return { badge: nm, title: superPortNameTagged(node, dir, i), zh: true };
+  }
   /* 这一颗端子本身就是控制端子（端子级）：只有它直接写「控制」 */
   const ctrlPort =
     typeof o.ctrlIsPort === "boolean"
@@ -7806,10 +8251,25 @@ function portBadgeText(node, dir, idx, opt) {
           };
         return { badge: I18n.t("参考音频") + meta.label, title: meta.label, zh: true };
       }
-      case "remotion":
+      case "remotion": {
+        /* 固化后端子按契约来：第 i 颗 = 契约第 i 项的 label（缺 label 用 key），
+           末位那颗是控制端子；没固化时沿用「输入 N」（无差别端子）。
+           数组端子徽标加「[]」提示可多接。 */
+        const contract = typeof remotionContractOf === "function" ? remotionContractOf(node) : [];
+        if (contract.length) {
+          if (i >= contract.length) return { badge: I18n.t("控制"), title: "", zh: true };
+          const c = contract[i] || {};
+          const label = String(c.label || c.key || "").trim();
+          return {
+            badge: (label || fb) + (c.list ? " []" : ""),
+            title: String(c.key || "") + (c.required ? I18n.t("（必填）") : ""),
+            zh: true,
+          };
+        }
         /* 无差别端子：不再有「描述」口，也不预设角色名 —— 统一「输入 N」，
            控制线口由上面的 ctrlPort 判成「控制」（按连线反推，不看端口号）。 */
         return { badge: fb, title: "", zh: true };
+      }
       case "net_send":
         return { badge: i === 0 ? I18n.t("信息") : I18n.t("控制"), title: "", zh: true };
       default:
@@ -7977,12 +8437,15 @@ function portBadgeInIsCtrlPort(node, idx) {
     case "video_upscale":
     case "video_interp":
       return i === 0;
-    case "remotion":
-      /* 无差别端子：控制语义按「这颗口上挂的是什么线」反推（真源 app.js remotionPortIsControl），
-         空口 / 数据线口一律按数据口上色。 */
+    case "remotion": {
+      /* 固化后：末位契约项之后那颗才是控制端子（真源 app.js remotionPortIsControl）；
+         未固化仍按「这颗口上挂的是什么线」反推。 */
+      const contract = typeof remotionContractOf === "function" ? remotionContractOf(node) : [];
+      if (contract.length) return i === contract.length;
       return typeof remotionPortIsControl === "function"
         ? remotionPortIsControl(node, i)
         : false;
+    }
     default:
       /* 动态端子节点（proc_text / proc_image / sensenova_gen / agent_task / input_*）：
          末位那颗是专用控制端子（真源 app.js isDynCtrlNode + dynCtrlInPortIndex），
@@ -8077,6 +8540,13 @@ function nodeElement(node) {
     else el.style.removeProperty("--exec-color");
   }
   if (isControlKind(node)) el.classList.add("is-ctrl");
+  /* 「运行本层」正在跑的那一颗：绿色描边（renderer/app-super-run.js 现场加减这个类；
+     整图重画时按同一份集合补回来） */
+  if (
+    typeof superRunIsFocusNode === "function" &&
+    superRunIsFocusNode(node.id)
+  )
+    el.classList.add("super-run-focus");
   if (isAgentSuperPerm(node)) el.classList.add("agent-super");
   if (node.kind === "task") {
     const st = node.taskStatus || "pending";
@@ -8566,6 +9036,13 @@ function nodeElement(node) {
     /* 「封面」小按钮：给这颗节点层指定一张图作为 body 封面（renderer/app-node-cover.js）。
        所有节点层形态都可设（普通 / 开发 / 数据库 / 工具），折叠态不透明、展开态半透明。 */
     if (typeof coverHeadButton === "function") head.appendChild(coverHeadButton(node));
+    /* 「▶ 运行本层」：把层内可执行节点按上游→下游依次跑一遍
+       （renderer/app-super-run.js）。长任务壳不给这颗键 —— 它由状态机驱动。 */
+    if (
+      typeof superRunHeadButton === "function" &&
+      !String(node.ltShellTask || "").trim()
+    )
+      head.appendChild(superRunHeadButton(node));
     const enter = document.createElement("button");
     enter.className = "n-play";
     enter.textContent = "↪";
@@ -9502,6 +9979,8 @@ function nodeElement(node) {
         ? I18n.t("控制输入（触发渲染）")
         : I18n.t("输入（视频 / 图片 → 主素材 · 音频 → 语音 · 文本 → 台词）");
     }
+    /* 节点层：起了名就把「名字（输入3）」写在提示最前面（与徽标同一份真源） */
+    if (node.kind === "super") inTitle = superPortTitleWithName(node, "in", i, inTitle);
     p.title = linkedIn.length ? inTitle : inTitle;
     p.style.top = inPortY(node, i, ic) - PORT_R + "px";
     p.style.left = (PORT_OFF - PORT_R) + "px";
@@ -9738,6 +10217,8 @@ function nodeElement(node) {
     else if (isControlKind(node))
       outTitle = I18n.t("输出端子（连接到要控制的节点）");
     else outTitle = I18n.t("输出端子（输出本节点内容）");
+    /* 节点层：起了名就把「名字（输出3）」写在提示最前面（与徽标同一份真源） */
+    if (node.kind === "super") outTitle = superPortTitleWithName(node, "out", oi, outTitle);
     p.title = linkedOut.length ? outTitle : outTitle;
     p.style.top = outPortY(node, oi, oc) - PORT_R + "px";
     p.style.right = (PORT_OFF - PORT_R) + "px";
@@ -10005,6 +10486,17 @@ function nodeElement(node) {
     }
     if (node.kind === "super") {
       items.unshift(
+        ...(String(node.ltShellTask || "").trim() ||
+        typeof runSuperLayer !== "function"
+          ? []
+          : [
+              ctxAction(
+                I18n.t("▶ 运行本层（按上游→下游依次跑完层内可执行节点）"),
+                () => runSuperLayer(node),
+                "execute",
+                { iconCls: "exec" },
+              ),
+            ]),
         ctxAction(I18n.t("进入"), () => enterSuper(node), "expand"),
         ctxAction(
           superIsOpenShell(node) ? I18n.t("收起") : I18n.t("展开"),
@@ -12302,21 +12794,50 @@ function fnScaffoldCode(node) {
     const nm = String(raw == null ? "" : raw).trim();
     return FN_SCAFFOLD_ID_RE.test(nm) ? nm : JSON.stringify(nm || "输出 " + (i + 1));
   };
+  /* 类型真源：与端子同一份（fnToolNormPortKind），四种数据类型都认 —— 只写「图像/文本」
+     会把音频 / 视频端子（内置「音频转字幕」的两颗媒体入口）标成文本。 */
+  const kindZhOf = (k) => {
+    const v =
+      typeof fnToolNormPortKind === "function"
+        ? fnToolNormPortKind(k)
+        : k === "image"
+          ? "image"
+          : "text";
+    return v === "image"
+      ? I18n.t("图像")
+      : v === "video"
+        ? I18n.t("视频")
+        : v === "audio"
+          ? I18n.t("音频")
+          : I18n.t("文本");
+  };
+  const isMediaKind = (k) => {
+    const v =
+      typeof fnToolNormPortKind === "function" ? fnToolNormPortKind(k) : k;
+    return v === "image" || v === "video" || v === "audio";
+  };
   const label = (p, i) =>
     (p.name || "参数 " + (i + 1)) +
-    (p.kind === "image" ? "（图像" : "（文本") +
+    "（" +
+    kindZhOf(p.kind) +
     (fnBrowseParamIsArray(p) ? "数组" : "") +
     "）";
   /* 值形状注释：数组端子恒为数组（一条线一个元素 · 没挂线是 []），
      普通端子一号一值（上游未输出时 undefined）。 */
   const shapeNote = (p) => {
     const arr = fnBrowseParamIsArray(p);
-    const img = p.kind === "image";
+    const k =
+      typeof fnToolNormPortKind === "function"
+        ? fnToolNormPortKind(p.kind)
+        : p.kind === "image"
+          ? "image"
+          : "text";
+    const media = isMediaKind(k);
     if (arr)
-      return img
-        ? '：数组，逐元素 { kind:"image", path }（一条线一个元素 · 没挂线时是 []）'
+      return media
+        ? '：数组，逐元素 { kind:"' + k + '", path }（一条线一个元素 · 没挂线时是 []）'
         : "：字符串数组（一条线一个元素 · 没挂线时是 []）";
-    return (img ? '：{ kind:"image", path }' : "：字符串") + "（上游未输出时为 undefined）";
+    return (media ? '：{ kind:"' + k + '", path }' : "：字符串") + "（上游未输出时为 undefined）";
   };
   const L = [];
   L.push("// ── 函数：" + (fname || "（未命名 · 在设置里填函数名）") + " ──");
@@ -12502,13 +13023,34 @@ function buildFnToolSettings(node, isTool) {
         row.style.gap = "4px";
         row.style.alignItems = "center";
         row.style.padding = "1px 0";
-        /* 行左侧类型标记：与端子同一口径（图像端子单独一色），一眼看清这行是哪类数据 */
-        const isImgP = list[i].kind === "image";
+        /* 行左侧类型标记：与端子同一口径（图像 / 视频 / 音频各有识别色），一眼看清这行是哪类数据 */
+        const rowKind =
+          typeof fnToolNormPortKind === "function"
+            ? fnToolNormPortKind(list[i].kind)
+            : list[i].kind === "image"
+              ? "image"
+              : "text";
         const mark = document.createElement("span");
-        mark.className = "fn-p-kind" + (isImgP ? " img" : "");
+        mark.className =
+          "fn-p-kind" +
+          (rowKind === "image"
+            ? " img"
+            : rowKind === "video"
+              ? " vid"
+              : rowKind === "audio"
+                ? " aud"
+                : "");
         mark.textContent = "●";
         mark.title =
-          I18n.t("类型") + "：" + (isImgP ? I18n.t("图像") : I18n.t("文本"));
+          I18n.t("类型") +
+          "：" +
+          (rowKind === "image"
+            ? I18n.t("图像")
+            : rowKind === "video"
+              ? I18n.t("视频")
+              : rowKind === "audio"
+                ? I18n.t("音频")
+                : I18n.t("文本"));
         row.appendChild(mark);
         /* 拖动把手：整行排序（▲▼ 也可用；拖动可 insert 到任意位置）。
            只从把手拖起 —— 输入框里的选字 / 下拉里的操作不会被误判成整行拖拽。 */
@@ -15009,18 +15551,33 @@ function buildBody(node, body) {
     }
   } else if (node.kind === "input_audio" || node.kind === "input_video") {
     /* 音频 / 视频输入：选择与本机预览。mediaAsset 存原始绝对路径（音视频往往很大，
-       不复制进工作流资产）；输出端子把该文件汇成 file:/// URL 交给下游。 */
+       不复制进工作流资产）；输出端子把该文件汇成 file:/// URL 交给下游。
+       **接了入线（含节点层边界端子桥接进来的）就走继承**：内容 = 上游那份媒体、
+       只读（与文本 / 图像输入节点同口径，取数口径见 app.js 的 mediaInputValueOf）。 */
     const isVid = node.kind === "input_video";
+    const inheriting =
+      typeof mediaInputInherited === "function" && mediaInputInherited(node);
+    const inhVal =
+      inheriting && typeof inheritedMediaValueOf === "function"
+        ? inheritedMediaValueOf(node)
+        : null;
+    const inhPath = String((inhVal && inhVal.path) || "").trim();
     const wrap = document.createElement("div");
     wrap.className = "n-av";
-    wrap.title = I18n.t("点击此处可更换文件；也可直接把媒体文件拖到本节点");
+    wrap.title = inheriting
+      ? I18n.t("继承上游输入（只读）：内容取自接进来的那条线，拔线即恢复本节点自己的文件")
+      : I18n.t("点击此处可更换文件；也可直接把媒体文件拖到本节点");
     wrap.onclick = (ev) => {
       /* 播放器控件本体不触发换文件（点了也没选到空白处） */
       if (ev.target && ev.target.classList && ev.target.classList.contains("n-av-el"))
         return;
+      if (inheriting) {
+        toast(I18n.t("该节点已继承输入，内容只读"), "warn");
+        return;
+      }
       pickMediaForNode(node);
     };
-    const p = String(node.mediaAsset || "").trim();
+    const p = inheriting ? inhPath : String(node.mediaAsset || "").trim();
     if (p) {
       /* 音频：方角波形预览器（点波形任意位置试听）；视频：原生播放器（池化复用，
          重绘不断播，见 renderer/app-mediaview.js）。
@@ -15049,10 +15606,13 @@ function buildBody(node, body) {
     } else {
       const g = document.createElement("div");
       g.className = "n-av-ghost";
-      g.textContent =
-        (isVid ? I18n.t("未选择视频") : I18n.t("未选择音频")) +
-        "\n" +
-        I18n.t("点击此处选择，或直接把媒体文件拖到本节点");
+      g.textContent = inheriting
+        ? (isVid
+            ? I18n.t("等待上游视频（已继承输入）")
+            : I18n.t("等待上游音频（已继承输入）"))
+        : (isVid ? I18n.t("未选择视频") : I18n.t("未选择音频")) +
+          "\n" +
+          I18n.t("点击此处选择，或直接把媒体文件拖到本节点");
       g.style.whiteSpace = "pre-line";
       wrap.appendChild(g);
     }
@@ -15062,16 +15622,29 @@ function buildBody(node, body) {
     nameRow.className = "n-av-name" + (p ? "" : " empty");
     nameRow.textContent = p
       ? fileName(p)
-      : isVid
-        ? I18n.t("未绑定视频文件")
-        : I18n.t("未绑定音频文件");
+      : inheriting
+        ? (isVid ? I18n.t("继承：等待上游视频") : I18n.t("继承：等待上游音频"))
+        : isVid
+          ? I18n.t("未绑定视频文件")
+          : I18n.t("未绑定音频文件");
     if (p) {
-      nameRow.title = p + "\n" + I18n.t("点击在文件夹中显示");
+      nameRow.title =
+        (inheriting ? I18n.t("继承上游输入（只读）") + "\n" : "") +
+        p +
+        "\n" +
+        I18n.t("点击在文件夹中显示");
       nameRow.onclick = () => {
         if (window.api && window.api.shellShowItem) window.api.shellShowItem(p);
       };
     }
     body.appendChild(nameRow);
+    if (inheriting) {
+      /* 继承标记：让用户一眼看出这段音频不是本节点自己的（内容只读） */
+      const tag = document.createElement("div");
+      tag.className = "n-av-note";
+      tag.textContent = I18n.t("已继承上游输入（只读）");
+      body.appendChild(tag);
+    }
 
     const ops = document.createElement("div");
     ops.className = "n-img-ops n-av-ops";
@@ -15091,15 +15664,16 @@ function buildBody(node, body) {
       scheduleSave();
       renderCanvas();
     };
-    ops.appendChild(b1);
+    /* 继承态：选择 / 录制 / 清除一律不挂（内容只读，先断开那条入线）——「转录」保留 */
+    if (!inheriting) ops.appendChild(b1);
     /* 「录制」按钮（renderer/app-recaudio.js）：只有**音频**节点能现场录 —— 录完在那张节点上
        就地绑定新文件（record_{yyyymmddhhmmss}.mp3）。视频节点不给（本轮口径）。 */
-    if (!isVid && typeof recOpsButton === "function") {
+    if (!isVid && !inheriting && typeof recOpsButton === "function") {
       try {
         ops.appendChild(recOpsButton(node));
       } catch (e) {}
     }
-    ops.appendChild(b2);
+    if (!inheriting) ops.appendChild(b2);
     /* 「转录」按钮（renderer/app-asr.js）：点一下展开 / 收起源文件的转写文本区，
        还没有转写时就地转一次（本机 SenseVoice 模型，与话筒听写同一份）。 */
     if (typeof asrOpsButton === "function") {
@@ -15919,7 +16493,7 @@ function buildBody(node, body) {
       const stage = document.createElement("div");
       stage.className = "super-stage";
       /* 封面底图（若设了）：作为 stage 最底层（z0），节点视口 z4 在它上面；
-         不透明度 = node.bgOpacity（默认 20%），滑杆在头部「封面」面板里 */
+         透明度默认 10%、在封面面板里可调（见 app-node-cover.js） */
       if (typeof applyNodeCoverToStage === "function") applyNodeCoverToStage(node, stage);
       const g = grid();
       const pan = superInnerPan(node);
@@ -16621,9 +17195,9 @@ function buildBody(node, body) {
       warn.title = I18n.t("插件 · Remotion 动效视频：设置安装目录 → 安装（npm install）");
       body.appendChild(warn);
     }
-    /* 描述已经搬进节点（与文本处理节点同一套正文框：@ 引用 / 技能呼出 / 镜像高亮）：
-       以前描述只能靠上游文本节点接进端口 1，端子被占就写不了描述；现在它是节点自己的
-       字段（node.text），可空 —— 空描述 + 已接线素材 / 台词照样能跑内置台词卡版面。 */
+    /* 功能说明（node.text）：这个 remotion 节点干什么，只给人看 —— 构建 Agent 与运行期
+       都不读它（构建需求在「构建」弹窗里填，另存 node.remotionBuildNote）。
+       框身与文本处理节点同一套（镜像高亮 / 固定占高），但**不接 @ 引用**（本轮口径：两处都不支持）。 */
     {
       const row = document.createElement("div");
       row.className = "n-proc-row";
@@ -16639,30 +17213,21 @@ function buildBody(node, body) {
       hdr.className = "n-prompt-hdr";
       const lab = document.createElement("span");
       lab.className = "n-prompt-lab";
-      lab.textContent = I18n.t("描述（可空 · @ 引用已接线输入）");
+      lab.textContent = I18n.t("功能说明（只描述这个节点做什么 · 构建不读它）");
       hdr.appendChild(lab);
       f.appendChild(hdr);
       const ta = document.createElement("textarea");
       ta.className = "n-text";
       ta.spellcheck = false;
       ta.placeholder = I18n.t(
-        "例如：左侧角色动效 + 右侧金边台词卡，台词按语速逐句出现… 输入 @ 引用已接线节点（空描述 = 按已接线的素材 / 台词走内置版面）",
+        "这个节点是干什么的：给谁看、什么场景复用…（只作说明；要构建请点下方「构建」，在弹窗里写构建需求）",
       );
       ta.value = String(node.text || "");
       const persist = (v) => {
         node.text = v;
         scheduleSave();
       };
-      ta.addEventListener("keydown", (ev) => {
-        if (refKey(ta, ev, node)) return;
-      });
-      ta.addEventListener("click", () => {
-        if (S.refMenu) refTick(ta, node);
-      });
-      ta.addEventListener("blur", () =>
-        setTimeout(() => closeRefMenu(), 150),
-      );
-      mountPromptTextarea(f, ta, node, persist);
+      mountPromptTextarea(f, ta, node, persist, { refs: false });
       col.appendChild(f);
       row.appendChild(col);
       body.appendChild(row);
@@ -16673,6 +17238,47 @@ function buildBody(node, body) {
       id: "mgmeta-" + node.id,
       text: remotionMetaText(node),
     });
+    /* 固化状态 + 构建入口（节点卡片上就能开构建弹窗，不必开设置窗）：
+       点「构建」先弹窗填构建需求（弹窗里有「忽略现有源码，从头重建」，默认不勾 = 迭代）；
+       固化后 ▶ 只渲染固化的工程，一个模型都不调。 */
+    {
+      const project = remotionProjectOf(node);
+      const row = document.createElement("div");
+      row.className = "n-proc-row";
+      row.style.flex = "0 0 auto";
+      row.style.alignItems = "center";
+      row.style.gap = "8px";
+      const badge = document.createElement("span");
+      badge.className = "sv-note";
+      badge.style.flex = "1";
+      badge.textContent = project.hasSource
+        ? I18n.t("已固化：") +
+          Object.keys(project.files).length +
+          I18n.t(" 个文件 · ") +
+          project.contract.length +
+          I18n.t(" 颗端子 · 运行只走脚本渲染")
+        : I18n.t("未固化：点「构建」写出工程并固化成脚本后才能按脚本运行");
+      if (project.hasSource && node.remotionBuiltAt) {
+        try {
+          badge.title =
+            I18n.t("固化于 ") + new Date(Number(node.remotionBuiltAt)).toLocaleString();
+        } catch {}
+      }
+      row.appendChild(badge);
+      const b = document.createElement("button");
+      b.className = "btn";
+      b.type = "button";
+      b.textContent = I18n.t("构建");
+      b.title = I18n.t("打开构建弹窗，填写构建需求 → Agent 写 Remotion 工程并短试渲染验证 → 固化成脚本");
+      b.addEventListener("mousedown", (ev) => ev.stopPropagation());
+      b.addEventListener("click", async (ev) => {
+        ev.stopPropagation();
+        if (typeof remotionOpenBuildDialog === "function")
+          await remotionOpenBuildDialog(node);
+      });
+      row.appendChild(b);
+      body.appendChild(row);
+    }
     /* 输出由下游「保存」节点负责（渲染产物在主进程插件安装目录 out/） */
     const outHint = document.createElement("div");
     outHint.className = "sv-note";
@@ -16689,7 +17295,9 @@ function buildBody(node, body) {
         ? node.remotionPct > 0
           ? I18n.t("渲染中 ") + Math.round(node.remotionPct) + "%"
           : I18n.t("处理中…")
-        : I18n.t("描述文本 → LLM 动效合成 → 本地渲染 mp4"));
+        : remotionProjectOf(node).hasSource
+          ? I18n.t("已固化 → 脚本渲染 mp4")
+          : I18n.t("未固化：先点「构建」写出工程 → 之后按脚本渲染 mp4"));
     body.appendChild(st);
     const prev = document.createElement("div");
     prev.className = "sv-prev mg-prev";

@@ -44,16 +44,21 @@ function jsonResult(value) {
   return [{ type: 'text', text: String(text).slice(0, 40000) }]
 }
 
-/** 参数 kind ∈ text|image → JSON schema 属性类型（image 传本地绝对路径字符串）。
- *  参数描述优先用工具作者写的「参数说明」（description）——「描述自足」判据里
- *  「每个参数含义」的落地处；optional:true 的参数不再标 required，**未标注 = 必填**
+/** 参数 kind ∈ text | image | video | audio → JSON schema 属性类型（都是字符串：媒体参数
+ *  传本机绝对路径）。参数描述优先用工具作者写的「参数说明」（description）——「描述自足」
+ *  判据里「每个参数含义」的落地处；optional:true 的参数不再标 required，**未标注 = 必填**
  *  （与历史口径一致，老工具包行为不变）。 */
 function paramSchema(p, i) {
-  const kind = p && p.kind === 'image' ? 'image' : 'text'
+  const raw = String((p && p.kind) || 'text').toLowerCase()
+  const kind = raw === 'image' || raw === 'video' || raw === 'audio' ? raw : 'text'
   const base =
     kind === 'image'
       ? { type: 'string', description: '图片参数：本地图片文件的绝对路径（应用内资产路径或磁盘绝对路径）' }
-      : { type: 'string', description: '文本参数' }
+      : kind === 'video'
+        ? { type: 'string', description: '视频参数：本地视频文件的绝对路径（mp4 / mkv / mov 等）' }
+        : kind === 'audio'
+          ? { type: 'string', description: '音频参数：本地音频文件的绝对路径（mp3 / wav / m4a / flac 等）' }
+          : { type: 'string', description: '文本参数' }
   const own = p && typeof p.description === 'string' ? p.description.trim() : ''
   if (p && p.name) base.description = p.name + '：' + (own || base.description)
   else if (own) base.description = own

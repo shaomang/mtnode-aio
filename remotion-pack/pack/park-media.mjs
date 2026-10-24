@@ -90,7 +90,8 @@ export const dataUrlToMedia = (value, prop = 'hero') => {
 };
 
 /**
- * 解析 render.json 的 mediaBlobs：{ hero: <base64>, voice: <base64> }
+ * 解析 render.json 的 mediaBlobs：{ hero: <base64>, voice: <base64> }（老的按 prop 命名），
+ * 或 { "hero-1.mp4": <base64> }（宿主按端子契约定名的，meta 里带 key / index / name）。
  * 宿主把它与压缩后的 mediaProps 分开给（渲染页看不到，避免白占内存）。
  */
 export const unpackMediaBlobs = (cfg = {}) => {
@@ -107,8 +108,18 @@ export const unpackMediaBlobs = (cfg = {}) => {
 			continue;
 		}
 		if (!bytes.length) continue;
-		const contentType = String((meta[prop] && meta[prop].mime) || '').trim() || (prop === 'voice' ? 'audio/mpeg' : 'video/mp4');
-		out[prop] = {prop, bytes, contentType};
+		const m = meta[prop] || {};
+		const contentType =
+			String(m.mime || '').trim() || (prop === 'voice' ? 'audio/mpeg' : 'video/mp4');
+		out[prop] = {
+			prop,
+			bytes,
+			contentType,
+			/* 契约通道：宿主定好的落盘文件名 + 回填到哪个 props 键 / 数组第几项 */
+			name: String(m.name || '').trim(),
+			key: String(m.key || '').trim(),
+			index: Number.isInteger(m.index) ? m.index : -1,
+		};
 	}
 	return out;
 };

@@ -103,6 +103,7 @@ return { 要点: r.text };
 | `const r = await mtnode.screenShot({ target, screen, window, x, y, w, h })` | **拍屏幕 / 窗口成 PNG**（不只是本窗口，见下）：成功 → `{ ok, path, width, height, method }` |
 | `await mtnode.screenList()` / `await mtnode.windowList()` | 有哪些屏幕 / 哪些窗口可拍（窗口带 `hwnd` / 标题 / 是否可见） |
 | `const r = await mtnode.exec("ffmpeg", ["-i", "a.mp4", …])` | 转码 / 抽帧 / 抽音轨都走 ffmpeg（没有单独的封装，直接起进程） |
+| `const r = await mtnode.subtitle({ file, language, maxDurationSec, maxChars, noiseDb, minSilenceSec })` | **音频 / 视频 → 字幕时间轴**（本机 SenseVoice 识别 + ffmpeg 静音切句，见下）：成功 → `{ ok, cues, srt, vtt, cueCount, durationSeconds, params }` |
 | `const r = await mtnode.readPdf(路径或字节 [, opts])` | **解析本机 PDF 文本层 → Markdown**（与「拖入 PDF」同一份内核，只读、不落盘）：成功 → `{ ok, markdown, pages, formulas, warning }`；失败 → `{ ok:false, error:{ code, message } }`（如 `encrypted` / `not_pdf`） |
 | `await mtnode.pdfInfo(路径或字节)` | 轻量探一下是不是可解析 PDF（不解压内容流）：`{ ok, isPdf, parseable, pages, encrypted, warning }` |
 | `const r = await mtnode.ai("提示词" [, opts])` | 用本节点「AI 调用」选中的模型真发一次文本请求 → `{ ok, text, error, provider, model }`（不抛异常，失败看 `ok === false`） |
@@ -137,6 +138,38 @@ return { 图像: r.path };   // 输出端子声明成「图像」即自动成为
   **最小化的窗口会被明确拒绝**（会告诉你「先把它显示出来再拍」），不会给你一张黑图。
 - 截好的 PNG 落在应用数据目录的 `captures/` 下，`path` 直接给图像输出端子，或交给 `mtnode_vision` 识图。
 - 工具库里已有一条开箱即用的内置函数包 **「屏幕 / 窗口截图」**（顶栏「工具库」→ 插入），参数就是上面这几个。
+
+### 音频 / 视频转字幕（做字幕用的时间轴）
+工具库里有一条内置工具 **「音频转字幕（时间轴）」**（顶栏「工具库」→ 插入）把这段路走完了：
+它是一颗**工具壳**，展开壳能看到里面的 **「转写参数」文本节点**（那份 JSON 就是下面 `mtnode.subtitle`
+的入参，改完即生效）与一颗可改的**函数节点**（jscode 就是下面这段）；对外三个输出端子
+**字幕数据 / SRT / VTT**，要落文件就把后两个接到「保存文本」节点（工具自己不写任何文件）。
+这颗工具的外侧输入是 **音频** / **视频** / **原台词**（可选）/ **参数**（可选）四颗端子：
+接上原台词就走切分模式（正文从台词里逐字截取，对不上的进 `unmatchedScript` / `unmatchedAsr` 清单），
+「参数」端子上的 JSON 按键覆盖壳内那份设置（`language` / `maxDurationSec` / `maxChars` / `noiseDb` /
+`minSilenceSec` / `keepPunctuation`，不写就用默认），文件只认媒体端子 —— 参数 JSON 里写 `file` 不生效。
+
+```js
+const r = await mtnode.subtitle({
+  file: "E:\\clips\\talk.mp4",   // 本机音频 / 视频绝对路径（file:/// URL 也认），视频自动抽音轨
+  language: "zh",                  // auto(默认) / zh / en / yue / ja / ko
+  maxDurationSec: 6,               // 单条字幕最长秒数
+  maxChars: 18,                    // 单条最大字数；留空 = 按识别文本自动（中文 18 / 英文 42）
+  noiseDb: "-35dB",                // 静音阈值：嘈杂素材调到 -25dB
+  minSilenceSec: 0.4,              // 最小静音间隔：语速慢可调大
+  script: "原台词正文……",          // 可选：给了就走切分模式，正文从台词里截取（对不上的进 unmatchedScript）
+  keepPunctuation: false,          // 保留标点：false(默认) 只去掉句末句号；true = 标点一律原样不动
+});
+if (!r.ok) throw new Error(r.error);
+// cues: [{ index, start, end, duration, text, source? }, …] —— 直接就是字幕条（切分模式下 source="script"）
+return { 字幕数据: JSON.stringify(r.cues, null, 2), SRT: r.srt, VTT: r.vtt };
+```
+
+- 识别走**本机官方 SenseVoice**（与「录音听写」同一份权重，首次使用下载约 239MB，不另装 whisper / 在线 ASR）。
+- 切句用 **ffmpeg 静音切句**（缺 ffmpeg 时会提示去插件里装 Remotion，不会自己下载别的方案）。
+- 时间边界是**切片级近似**（静音切句的边界 + 按各条字数占比分配时间），做字幕足够；不是逐字对齐。
+- 没检测到语音时返回空 `cues` 与 `note`，不报错；参数会原样回显在 `r.params` 里，方便回查这次用了什么口径。
+- 会话里的 Agent 侧同名能力是 `audio_subtitle` 工具，两边共用同一份排版内核，口径不会各说一套。
 
 ### 迁移示例：以前用 `window.api` 起程序
 旧写法只能在渲染进程里成立，搬进独立线程后必然报 `window is not defined`（报错里会直接点名这段迁移说明）：

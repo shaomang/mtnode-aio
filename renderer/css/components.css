@@ -1666,8 +1666,8 @@ button.pk-badge.pk-btn:hover {
 }
 
 /* ===== 节点层「封面」面板（renderer/app-node-cover.js）=====
-   给一颗节点层（super）指定一张图作为 body 封面：折叠态不透明铺满包体，
-   展开态作为舞台底图（默认 20% 不透明度，每颗壳单独调）。
+   给一颗节点层（super）指定一张图作为 body 封面（铺满、不拉伸、居中裁切），
+   折叠态 / 展开态的透明度就在这块面板里用滑杆调（默认 50% / 10%）。
    persistent 面板，与 bg-rm-pop 同一套外壳口径，只走窗内 ✕ / 再点开关收起。 */
 .cover-pop {
   display: none;
@@ -1746,16 +1746,86 @@ button.pk-badge.pk-btn:hover {
   color: var(--muted);
 }
 
+/* 字段头：左边名称、右边百分比读数 */
+.cover-pop-field-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.cover-pop-field-head b {
+  font-weight: 500;
+  color: var(--cyan2);
+}
+
 .cover-pop-field input[type="range"] {
   width: 100%;
   accent-color: var(--cyan);
 }
 
-.cover-pop-hint {
-  margin: 6px 10px 0;
-  font-size: 10.5px;
-  line-height: 1.45;
+/* ── 端子名称区块（与上面两条滑杆同一条竖排节奏；端子多时只滚这一块）──
+   一行 = 定位提示「输入3 · 来自 XX」+ 名字输入框，输入在前面板里失焦 / 回车才提交。 */
+.cover-pop-ports-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 10px 0;
+  border-top: 1px solid var(--bd);
+  margin-top: 10px;
+  font-size: 11px;
   color: var(--muted);
+}
+
+.cover-pop-ports-head b {
+  font-weight: 500;
+  color: var(--cyan2);
+}
+
+.cover-pop-ports-hint {
+  font-size: 10px;
+  color: var(--muted);
+  opacity: .8;
+}
+
+.cover-pop-ports {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 200px;
+  overflow-y: auto;
+  padding: 6px 10px 0;
+}
+
+.cover-pop-port {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.cover-pop-port-tag {
+  font-size: 10px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cover-pop-port-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 3px 6px;
+  font-size: 11px;
+  color: var(--txt);
+  background: var(--panel2);
+  border: 1px solid var(--bd2);
+  border-radius: 3px;
+}
+
+.cover-pop-port-input:focus {
+  outline: none;
+  border-color: var(--cyan);
 }
 
 /* ===== 图像生成 · 画幅锁定 Toggle（与首参考图保持一致长宽比）=====

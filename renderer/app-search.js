@@ -1468,21 +1468,12 @@ async function gsGotoAsset(g) {
 
 function gsGotoTool(g) {
   if (typeof openToolsLibrary !== "function") return;
-  openToolsLibrary();
-  const name = gsStr(g.name);
-  const id = gsStr(g.toolId);
-  setTimeout(() => {
-    const host = document.getElementById("toolsLibList");
-    if (!host) return;
-    for (const row of host.children) {
-      const hit = (id && row.dataset && row.dataset.toolId === id) || (name && gsStr(row.textContent).indexOf(name) >= 0);
-      if (!hit) continue;
-      row.classList.add("gs-flash");
-      row.scrollIntoView({ block: "nearest" });
-      setTimeout(() => row.classList.remove("gs-flash"), 1800);
-      break;
-    }
-  }, 60);
+  /* 工具库清单分页（每页 20 条）：把目标交给对话框，由它翻到目标所在页再闪一下 ——
+     在这里按 DOM 顺序找行会漏掉第 2 页以后的条目。 */
+  openToolsLibrary({
+    focusId: gsStr(g.toolId),
+    focusName: gsStr(g.name),
+  });
 }
 
 async function gsGotoSkill(g) {

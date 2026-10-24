@@ -43,6 +43,33 @@ import { tmpdir } from 'node:os'
 import { dirname, extname, isAbsolute, join, resolve } from 'node:path'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { isToolHidden } from './tool-visibility.mjs'
+/* 字幕排版纯函数（断句 / 限长 / 按字数分配时间 / SRT·VTT 时间码）只写一份：
+   MTNode 主进程的内置工具「音频转字幕」（media-subtitle.js）import 的是同一个文件，
+   这样 Agent 工具 audio_subtitle 与画布工具产出的 cue 永远一致。 */
+import {
+  SUBTITLE_MAX_SECONDS,
+  SUBTITLE_MAX_CHARS_CJK,
+  SUBTITLE_MAX_CHARS_LATIN,
+  SUBTITLE_BREAK_PUNCT,
+  buildSubtitleCues,
+  formatSrt,
+  formatVtt,
+  srtTime,
+  vttTime,
+  isCjkHeavy,
+  stripFinalPeriod,
+  splitAfterPunctuation,
+  splitScriptSentences,
+  alignScriptToAsr,
+  clampNum,
+} from './subtitle-cues.mjs'
+/* 语音就绪（自动拉起 / 自动下载权重 / 自动重试）只写一份：主进程 media-subtitle.js
+   （画布工具「音频转字幕」）用的是同一个文件，两边对「什么时候算就绪」永远一致。 */
+import { ensureSpeechProvider, isSpeechNotReadyError } from './speech-ready.mjs'
+/* WAV 归一（去掉 ffmpeg 写的 LIST/INFO 块，重写成标准 44 字节头）只写一份：
+   主进程 media-subtitle.js（画布工具）用的是同一个文件。不归一就会被官方
+   validateWave() 判成「invalid speech wav」—— 见该文件头部根因说明。 */
+import { canonicalPcmWav16k } from './speech-wav.mjs'
 
 export const name = 'mtnode-media'
 export const inject = ['tools']
@@ -67,14 +94,8 @@ const FFMPEG_OUTPUT_TAIL = 4000
 
 const LANGUAGE_ENUM = ['auto', 'zh', 'en', 'yue', 'ja', 'ko']
 
-/* ── 字幕排版默认值（用户共识：6s / 中文 18 字·英文 42 字符 / -35dB / 0.4s）────── */
-const SUBTITLE_MAX_SECONDS = 6
-const SUBTITLE_MAX_CHARS_CJK = 18
-const SUBTITLE_MAX_CHARS_LATIN = 42
-const SUBTITLE_BREAK_PUNCT = '。！？!?；;…，,、'
-const CJK_RE = /[\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff\uac00-\ud7af]/
-/* 中文字幕按字断、英文字幕按词断：CJK 占比超过这条线就按中文字符口径算。 */
-const CJK_RATIO_FOR_CJK = 0.2
+/* 字幕排版默认值（6s / 中文 18 字·英文 42 字符 / 断句标点）与 clampNum 都在
+   subtitle-cues.mjs（单一真源，主进程的内置工具也用它）。 */
 
 /* ── 通用小工具 ────────────────────────────────────────────────────────────── */
 
@@ -88,18 +109,9 @@ function jsonResult(value) {
   return [{ type: 'text', text: String(text).slice(0, 40000) }]
 }
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
-
 function clip(s, n) {
   const x = String(s == null ? '' : s)
   return x.length > n ? x.slice(0, n) + '…' : x
-}
-
-/** 数值参数归一：非数字 / 越界回落到默认值（工具参数来自模型，不能直接信）。 */
-function clampNum(value, min, max, fallback) {
-  const n = Number(value)
-  if (!Number.isFinite(n)) return fallback
-  return Math.min(Math.max(n, min), max)
 }
 
 /** 静音阈值：收 -35 / '-35dB' 两种写法，规范成 silencedetect 要的 '-35dB'。 */
@@ -441,9 +453,9 @@ function checkMediaFile(file, allowLarge) {
 /* ── 语音转写（官方本地 SenseVoice，运行时内的 ctx.speechToText）───────────── */
 
 /**
- * 拿本地识别服务并等它就绪。
- * 首次使用要下权重（int8 约 239MB），这里会触发 prepare 并等它完成；
- * 下载源与进度由宿主界面负责展示（与录音听写同一份权重、同一份状态）。
+ * 拿本地识别服务并等它就绪 —— **自动**的：运行时按需拉起、权重按需下载（int8 约 239MB），
+ * 刚起运行时提供者还没注册好时也会等（不要求用户去启用任何东西）。
+ * 判定 / 重试口径在 speech-ready.mjs（与主进程 media-subtitle.js 同一份）。
  */
 async function ensureSpeechReady(ctx, deadlineMs) {
   const stt = typeof ctx.get === 'function' ? ctx.get('speechToText') : null
@@ -454,283 +466,31 @@ async function ensureSpeechReady(ctx, deadlineMs) {
     )
   }
   const snapshot = () => (typeof stt.snapshot === 'function' ? stt.snapshot() : { providers: [], selection: {} })
-  const pick = (snap) => {
-    const selection = (snap && snap.selection) || {}
-    const providers = Array.isArray(snap && snap.providers) ? snap.providers : []
-    return (
-      providers.find((p) => p && p.id === selection.providerId) ||
-      providers.find((p) => p && /sensevoice/i.test(String(p.id))) ||
-      providers[0] ||
-      null
-    )
-  }
-  let view = pick(snapshot())
-  if (!view) {
-    throw new Error(
-      '本地语音识别（SenseVoice）没有可用的识别器：语音服务未就绪。请不要另装 ASR；' +
-        '先确认本轮不是纯净模式 / 桌宠隔离态，再重试。',
-    )
-  }
-  const phase = (p) => String((p && p.preparation && p.preparation.phase) || 'unprepared')
-  let ph = phase(view)
-  if (ph === 'ready' || ph === 'standby') return { stt, providerId: String(view.id || '') }
-
-  if (ph === 'unprepared' || ph === 'failed' || ph === 'cancelled') {
-    try {
-      stt.prepare(String(view.id || ''))
-    } catch (err) {
-      /* 「已有准备任务」之类的拒绝不算失败：下面照样轮询状态。 */
-      if (!/prepare/i.test(String((err && err.message) || err))) throw err
-    }
-  }
-  const started = Date.now()
-  while (Date.now() - started < deadlineMs) {
-    await sleep(700)
-    view = pick(snapshot())
-    if (!view) continue
-    ph = phase(view)
-    if (ph === 'ready' || ph === 'standby') return { stt, providerId: String(view.id || '') }
-    if (ph === 'failed') {
-      const msg = (view.preparation && view.preparation.message) || ''
-      throw new Error('SenseVoice 模型准备失败：' + msg)
-    }
-  }
-  throw new Error('SenseVoice 模型准备超时（首次使用需下载约 239MB 权重）。请稍后重试。')
+  const r = await ensureSpeechProvider(
+    {
+      snapshot,
+      prepare: (providerId) => stt.prepare(providerId),
+    },
+    { deadlineMs },
+  )
+  return { stt, providerId: String((r && r.providerId) || '') }
 }
 
-/** 单片转写：音频必须是 16k 单声道 PCM16 WAV（官方契约），由调用方先切好。 */
+/** 单片转写：音频必须是 16k 单声道 PCM16 WAV（官方契约），由调用方先切好。
+    切片是 ffmpeg 产的，头里带 LIST/INFO（ISFT）→ 必须归一，否则官方 validateWave 直接拒。 */
 async function transcribeWav(stt, providerId, wavPath, language, signal) {
-  const bytes = new Uint8Array(readFileSync(wavPath))
+  const bytes = canonicalPcmWav16k(new Uint8Array(readFileSync(wavPath)))
   const req = { audio: bytes, language }
   if (providerId) req.providerId = providerId
   const spec = stt.resolve(req)
   return await stt.transcribe(spec, signal)
 }
 
-/* ── 字幕排版（audio_subtitle）：整句 → cue（断句 + 限长）→ SRT / VTT ───────────
-   全部是纯函数：不碰进程、不写盘，smoke 里可以直接断言（见 dsh/smoke-subtitle.mjs）。
-   时间分配口径（用户共识）：一句话被拆成多条 cue 时，按各自字数占比切时间轴。 */
-
-const round3 = (n) => Math.round(Number(n) * 1000) / 1000
-
-/** 这段文本是否按中文字幕口径算（CJK 占比超过 20%）。 */
-function isCjkHeavy(text) {
-  const chars = Array.from(String(text || '')).filter((c) => !/\s/.test(c))
-  if (!chars.length) return false
-  const cjk = chars.filter((c) => CJK_RE.test(c)).length
-  return cjk / chars.length >= CJK_RATIO_FOR_CJK
-}
-
-/** 只去掉句末句号（用户共识：问号 / 感叹号 / 句中标点全部保留）。 */
-function stripFinalPeriod(text) {
-  return String(text == null ? '' : text)
-    .replace(/[。.．]+$/u, '')
-    .trim()
-}
-
-/** 按标点在「字符之后」断开，标点留在前一段里 —— 拼回去就是原文。 */
-function splitAfterPunctuation(text, marks) {
-  const set = new Set(Array.from(String(marks || '')))
-  if (!set.size) return [String(text || '').trim()].filter(Boolean)
-  const out = []
-  let buf = ''
-  for (const ch of String(text || '')) {
-    buf += ch
-    if (set.has(ch)) {
-      out.push(buf)
-      buf = ''
-    }
-  }
-  if (buf.trim()) out.push(buf)
-  return out.map((s) => s.trim()).filter(Boolean)
-}
-
-const charWeight = (s) => Math.max(Array.from(String(s || '')).length, 1)
-
-/** 英文按词断、不拆单词（单个单词本身超长时才按字符硬切）。 */
-function splitLatinWords(text, maxChars) {
-  const words = String(text || '').split(/\s+/).filter(Boolean)
-  const out = []
-  let cur = ''
-  for (const w of words) {
-    const chars = Array.from(w)
-    if (chars.length > maxChars) {
-      if (cur) {
-        out.push(cur)
-        cur = ''
-      }
-      for (let i = 0; i < chars.length; i += maxChars) out.push(chars.slice(i, i + maxChars).join(''))
-      continue
-    }
-    const next = cur ? cur + ' ' + w : w
-    if (Array.from(next).length <= maxChars) cur = next
-    else {
-      if (cur) out.push(cur)
-      cur = w
-    }
-  }
-  if (cur) out.push(cur)
-  return out
-}
-
-/** 单段超长时的硬切（中文按字、英文按词）。 */
-function hardSplit(text, maxChars, latin) {
-  const s = String(text || '').trim()
-  if (!s) return []
-  if (Array.from(s).length <= maxChars) return [s]
-  if (latin) return splitLatinWords(s, maxChars).filter(Boolean)
-  const chars = Array.from(s)
-  const out = []
-  for (let i = 0; i < chars.length; i += maxChars) out.push(chars.slice(i, i + maxChars).join(''))
-  return out.map((x) => x.trim()).filter(Boolean)
-}
-
-/** 把已断好的片段按不超过 maxChars 打包成 cue 的文本。 */
-function packPieces(pieces, maxChars) {
-  const out = []
-  let cur = ''
-  for (const p of pieces) {
-    const next = cur ? cur + p : p
-    if (Array.from(next).length <= maxChars) cur = next
-    else {
-      if (cur) out.push(cur)
-      cur = p
-    }
-  }
-  if (cur) out.push(cur)
-  return out.filter(Boolean)
-}
-
-/** 把一段文本按字数占比切成 k 份（英文尽量切在空格上，不撕单词）。 */
-function splitTextByCount(text, k, latin) {
-  const s = String(text || '').trim()
-  const chars = Array.from(s)
-  const n = Math.min(Math.max(1, Math.floor(k)), chars.length)
-  if (n <= 1) return [s].filter(Boolean)
-  const out = []
-  let idx = 0
-  for (let i = 0; i < n; i++) {
-    const take = Math.max(1, Math.ceil((chars.length - idx) / (n - i)))
-    let piece = chars.slice(idx, idx + take).join('')
-    idx += take
-    if (latin && idx < chars.length) {
-      /* 切点落在单词中间就往回找最近的空格，把整个词留给下一段。 */
-      const sp = piece.lastIndexOf(' ')
-      if (sp > 0) {
-        idx -= Array.from(piece.slice(sp + 1)).length
-        piece = piece.slice(0, sp)
-      }
-    }
-    const t = piece.trim()
-    if (t) out.push(t)
-  }
-  return out
-}
-
-/**
- * 整句 → 字幕 cue。
- * @param {Array<{start:number,end:number,text:string}>} sentences 静音切句 + 转写结果
- * @param {{maxChars:number, latin:boolean, maxDurationSec:number, breakPunctuation:string}} opts
- * @returns {Array<{index:number,start:number,end:number,duration:number,text:string}>}
- */
-function buildSubtitleCues(sentences, opts = {}) {
-  const maxChars = clampNum(opts.maxChars, 4, 200, SUBTITLE_MAX_CHARS_CJK)
-  const maxDuration = clampNum(opts.maxDurationSec, 1, 60, SUBTITLE_MAX_SECONDS)
-  const latin = opts.latin === true
-  const marks = String(opts.breakPunctuation == null ? SUBTITLE_BREAK_PUNCT : opts.breakPunctuation)
-
-  const raw = []
-  const pushRaw = (start, end, text) => {
-    const t = String(text || '').trim()
-    if (!t) return
-    const s = round3(start)
-    const e = Math.max(round3(end), round3(s + 0.05))
-    raw.push({ start: s, end: e, text: t })
-  }
-
-  for (const seg of Array.isArray(sentences) ? sentences : []) {
-    const start = Number(seg && seg.start)
-    const end = Number(seg && seg.end)
-    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) continue
-    const text = stripFinalPeriod(seg.text)
-    if (!text) continue
-
-    /* 先按标点断成片段，再把每个超长片段硬切，最后按 maxChars 打包。 */
-    const pieces = []
-    for (const p of splitAfterPunctuation(text, marks)) {
-      if (Array.from(p).length > maxChars) pieces.push(...hardSplit(p, maxChars, latin))
-      else pieces.push(p)
-    }
-    const groups = packPieces(pieces, maxChars)
-    if (!groups.length) continue
-
-    const weights = groups.map(charWeight)
-    const totalW = weights.reduce((a, b) => a + b, 0) || 1
-    const span = end - start
-    let acc = 0
-    for (let i = 0; i < groups.length; i++) {
-      const from = i === 0 ? start : start + (span * acc) / totalW
-      acc += weights[i]
-      const to = i === groups.length - 1 ? end : start + (span * acc) / totalW
-      pushRaw(from, to, groups[i])
-    }
-  }
-
-  /* 单条超过 maxDurationSec 的再按时间拆开（文本按字数占比同步拆）。 */
-  const cues = []
-  const addCue = (c) => {
-    const t = String(c.text || '').trim()
-    if (!t) return
-    const s = round3(c.start)
-    const e = Math.max(round3(c.end), round3(s + 0.05))
-    cues.push({ index: cues.length + 1, start: s, end: e, duration: round3(e - s), text: t })
-  }
-  for (const c of raw) {
-    const span = c.end - c.start
-    if (span <= maxDuration + 1e-6) {
-      addCue(c)
-      continue
-    }
-    const parts = splitTextByCount(c.text, Math.ceil(span / maxDuration), latin)
-    const n = parts.length || 1
-    for (let i = 0; i < n; i++) {
-      const from = i === 0 ? c.start : c.start + (span * i) / n
-      const to = i === n - 1 ? c.end : c.start + (span * (i + 1)) / n
-      addCue({ start: from, end: to, text: parts[i] })
-    }
-  }
-  return cues
-}
-
-/** 秒 → SRT 时间码（00:00:01,234）。 */
-function srtTime(seconds) {
-  const ms = Math.max(0, Math.round(Number(seconds) * 1000))
-  const h = Math.floor(ms / 3600000)
-  const m = Math.floor((ms % 3600000) / 60000)
-  const s = Math.floor((ms % 60000) / 1000)
-  const milli = ms % 1000
-  const pad = (n, w = 2) => String(n).padStart(w, '0')
-  return `${pad(h)}:${pad(m)}:${pad(s)},${pad(milli, 3)}`
-}
-
-/** 秒 → VTT 时间码（00:00:01.234）。 */
-function vttTime(seconds) {
-  return srtTime(seconds).replace(',', '.')
-}
-
-function formatSrt(cues) {
-  return (Array.isArray(cues) ? cues : [])
-    .map((c, i) => `${i + 1}\n${srtTime(c.start)} --> ${srtTime(c.end)}\n${c.text}`)
-    .join('\n\n')
-}
-
-function formatVtt(cues) {
-  const body = (Array.isArray(cues) ? cues : [])
-    .map((c) => `${vttTime(c.start)} --> ${vttTime(c.end)}\n${c.text}`)
-    .join('\n\n')
-  return 'WEBVTT\n\n' + body + (body ? '\n' : '')
-}
-
+/* ── 字幕排版（audio_subtitle）───────────────────────────────────────────────
+   整句 → cue（断句 + 限长 + 按字数占比分配时间）→ SRT / VTT，全部是纯函数，
+   已抽到同目录的 subtitle-cues.mjs（单一真源）：MTNode 主进程的内置工具
+   「音频转字幕」（根目录 media-subtitle.js）import 的是同一份文件，
+   Agent 工具与画布工具产出的 cue 不会各说一套。断言见 dsh/smoke-subtitle.mjs。 */
 /* ── 宿主识图通道（describe 用）：与 canvas-plugin 同一条桥 ────────────────── */
 
 function createBridge() {
@@ -929,6 +689,10 @@ srt / vtt 两份完整文本另以两段文本回（不塞进 JSON，避免超�
 - noiseDb：静音阈值，默认 -35dB；嘈杂素材调高（如 -25），安静素材可调低。
 - minSilenceSec：最小静音间隔，默认 0.4 秒；语速慢可调大。
 - breakPunctuation：断句标点集合，默认 "。！？!?；;…，,、"；传空串 = 只按字数与时长拆。
+- script：原台词（可选）。给了就走**切分模式**：字幕正文从这段台词里逐字截取（避免识别错字），
+  时间仍来自静音切句；台词按标点与新行断句，再与识别段做单调对齐，对不上的写进
+  unmatchedScript / unmatchedAsr 两份清单（跳过不报错）。不给 = 用识别文本。
+- keepPunctuation：true = 标点一律原样不动（连句末句号也不裁）；默认 false = 去掉句末句号。
 - allowLarge：放宽 2 小时 / 1GB 上限。`
 
 const FFMPEG_DESC = `本机 ffmpeg（直接调用，参数数组直传，不经 shell）。
@@ -986,7 +750,7 @@ export function apply(ctx) {
       )
     }
 
-    const { stt, providerId } = await ensureSpeechReady(ctx, 15 * 60 * 1000)
+    let { stt, providerId } = await ensureSpeechReady(ctx, 15 * 60 * 1000)
     const plan = planSpeechSegments(
       probe.durationSeconds,
       await detectSilences(media.path, { noiseDb: a.noiseDb, minSilenceSec: a.minSilenceSec }),
@@ -1028,7 +792,19 @@ export function apply(ctx) {
         }
         let out = null
         try {
-          out = await transcribeWav(stt, providerId, wav, language, exec && exec.signal)
+          for (let attempt = 1; ; attempt++) {
+            try {
+              out = await transcribeWav(stt, providerId, wav, language, exec && exec.signal)
+              break
+            } catch (err) {
+              /* 「还没就绪」类失败（运行时刚起 / 权重刚下完还没 loaded）：自动重新就绪一次
+                 再试这一句 —— 用户不用去点任何「启用 / 下载」。只补一次，真失败照常报错。 */
+              if (attempt >= 2 || !isSpeechNotReadyError(err && err.message)) throw err
+              const again = await ensureSpeechReady(ctx, 15 * 60 * 1000)
+              stt = again.stt
+              providerId = again.providerId
+            }
+          }
         } finally {
           try {
             rmSync(wav, { force: true })
@@ -1140,6 +916,16 @@ export function apply(ctx) {
           type: 'string',
           description: `断句标点集合，默认 "${SUBTITLE_BREAK_PUNCT}"；传空串 = 不按标点断，只按字数与时长拆。`,
         },
+        script: {
+          type: 'string',
+          description:
+            '原台词（可选）：给了就走切分模式 —— 字幕正文从这段台词里逐字截取（避免识别错字），时间仍来自静音切句；' +
+            '台词按标点与新行断句后与识别段单调对齐，对不上的进 unmatchedScript / unmatchedAsr 清单（跳过不报错）。不给 = 用识别文本。',
+        },
+        keepPunctuation: {
+          type: 'boolean',
+          description: 'true = 标点一律原样不动（连句末句号也不裁）；默认 false = 只去掉句末句号。',
+        },
         allowLarge: {
           type: 'boolean',
           description: '放宽单文件上限（默认 2 小时 / 1GB，开启后不限）。长文件会更慢。',
@@ -1176,18 +962,48 @@ export function apply(ctx) {
           exec,
         )
         const { media, probe, segments, inferenceSeconds, language, ffmpegSource } = r
-        const joined = segments.map((s) => s.text).join('')
-        const latin = !isCjkHeavy(joined)
         const maxDurationSec = clampNum(a.maxDurationSec, 1, 60, SUBTITLE_MAX_SECONDS)
+        const breakPunctuation =
+          a.breakPunctuation == null ? SUBTITLE_BREAK_PUNCT : String(a.breakPunctuation)
+        const keepPunctuation = a.keepPunctuation === true
+        const scriptText = String(a.script == null ? '' : a.script).trim()
+        const mode = scriptText ? 'script' : 'asr'
+
+        /* 切分模式：台词按标点 / 换行断句 → 与识别段单调对齐，正文取台词、时间取语音段。
+           对不上的两侧都跳过（不报错），清单原样回给调用方核对。 */
+        const asrText = segments.map((s) => s.text).join('\n')
+        let sentenceInput = segments.map((s) => ({ ...s, source: 'asr' }))
+        let unmatchedScript = []
+        let unmatchedAsr = []
+        let alignedCount = 0
+        if (mode === 'script') {
+          const al = alignScriptToAsr(splitScriptSentences(scriptText, breakPunctuation), segments)
+          alignedCount = al.pairs.length
+          unmatchedScript = al.unmatchedScript
+          unmatchedAsr = al.unmatchedAsr.map((s) => ({ start: s.start, end: s.end, text: s.text }))
+          sentenceInput = al.pairs.map((p) => ({
+            start: p.start,
+            end: p.end,
+            text: p.text,
+            source: 'script',
+          }))
+        }
+
+        const joined = sentenceInput.map((s) => s.text).join('')
+        const latin = !isCjkHeavy(joined)
         const maxChars = clampNum(
           a.maxChars,
           4,
           200,
           latin ? SUBTITLE_MAX_CHARS_LATIN : SUBTITLE_MAX_CHARS_CJK,
         )
-        const breakPunctuation =
-          a.breakPunctuation == null ? SUBTITLE_BREAK_PUNCT : String(a.breakPunctuation)
-        const cues = buildSubtitleCues(segments, { maxChars, latin, maxDurationSec, breakPunctuation })
+        const cues = buildSubtitleCues(sentenceInput, {
+          maxChars,
+          latin,
+          maxDurationSec,
+          breakPunctuation,
+          keepPunctuation,
+        })
 
         return {
           ok: true,
@@ -1196,12 +1012,16 @@ export function apply(ctx) {
           file: media.path,
           durationSeconds: Math.round(probe.durationSeconds * 1000) / 1000,
           language,
+          mode,
           cueCount: cues.length,
           cues,
+          ...(mode === 'script' ? { asrText, alignedCount, unmatchedScript, unmatchedAsr } : {}),
           params: {
+            mode,
             maxDurationSec,
             maxChars,
             latin,
+            keepPunctuation,
             noiseDb: normalizeNoise(a.noiseDb),
             minSilenceSec: clampNum(a.minSilenceSec, 0.1, 3, SILENCE_MIN_SECONDS),
             breakPunctuation,
@@ -1211,7 +1031,12 @@ export function apply(ctx) {
           inferenceSeconds: Math.round(inferenceSeconds * 1000) / 1000,
           ...(cues.length
             ? {}
-            : { note: '这一段里没有识别到语音（可能是纯音乐 / 静音，或语言不受支持），cues 与字幕文本都是空的。' }),
+            : {
+                note:
+                  mode === 'script'
+                    ? '原台词与这段语音一句都没对上（台词给错了，或这段没有语音）；cues 与字幕文本都是空的，看 unmatchedScript / unmatchedAsr。'
+                    : '这一段里没有识别到语音（可能是纯音乐 / 静音，或语言不受支持），cues 与字幕文本都是空的。',
+              }),
           hint:
             '时间边界是切片级近似值（静音切句 + 按字数占比分配），不是逐字对齐。' +
             '本工具不写文件：要 .srt / .vtt 就把 srt / vtt 文本自己写进文件。',
@@ -1474,6 +1299,8 @@ export const __internals = {
   isCjkHeavy,
   stripFinalPeriod,
   splitAfterPunctuation,
+  splitScriptSentences,
+  alignScriptToAsr,
   normalizeNoise,
   guardFfmpegArgs,
   resolveFfmpeg,

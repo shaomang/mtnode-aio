@@ -12,7 +12,7 @@ description: MTNode 画布建图 / 连线 / 批量的完整硬规则：kind 速�
 
 调用签名、端子语义与回执格式以 `mtnode_canvas_edit` 的工具描述为准（一次调用建完一棵子图，回执自足不必回读）。本节只写它没写的硬规则。
 
-- alias 只在本调用内有效（connect / update / refs 用它），不是画布 id；标题必须唯一。
+- alias 只在本调用内有效（connect / update / refs 用它），不是画布 id；标题必须唯一（新建 / 改名时）。用户在界面上**复制 / 粘贴**出来的节点会原样沿用源节点标题，画布上因此可能有两个同名节点 —— 这时按标题的引用会命中源那一颗，要精确指向某一颗就用 id。
 - 读图默认 `detail:"minimal"`（只有 标题 / 描述 / 类别）：看配置用 `standard`，看正文用 `ids:[...]` + `full`，只查连线用 `sections:["nodes","wires"]`；kinds / imageSizes / defaultImageSize 走 `sections:["refs"]`。
 
 ## create.kind 速查

@@ -122,11 +122,24 @@ const main = async () => {
   const publicDir = path.join(projectDir, 'public');
   const parkedNames = [];
   for (const [prop, media] of Object.entries(parked)) {
-    const name = parkedName(prop, media.contentType);
+    /* 契约通道：宿主已在 meta.name 里定好文件名（含数组项序号），这里只照写，
+       再把文件名回填到 props[meta.key]（数组端子落到第 meta.index 项）。 */
+    const name = media.name || parkedName(prop, media.contentType);
     fs.mkdirSync(publicDir, {recursive: true});
     fs.writeFileSync(path.join(publicDir, name), media.bytes);
     /* 合成层的 assetSrc() 对裸文件名会走 staticFile()，与落点对齐 */
-    inputProps[prop] = name;
+    if (media.key) {
+      if (media.index >= 0) {
+        const cur = inputProps[media.key];
+        const arr = Array.isArray(cur) ? cur : [];
+        arr[media.index] = name;
+        inputProps[media.key] = arr;
+      } else {
+        inputProps[media.key] = name;
+      }
+    } else {
+      inputProps[prop] = name;
+    }
     parkedNames.push(name);
     mediaReport.push(`${prop}→${name} ${describeMedia(media)}`);
   }

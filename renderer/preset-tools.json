@@ -401,6 +401,262 @@
           }
         ]
       }
+    },
+        {
+      "key": "audio-subtitle",
+      "kind": "tool",
+      "name": "音频转字幕（时间轴）",
+      "description": "把一段音频或视频转成「能直接做字幕」的结构化文本：端子「音频」接音频文件、「视频」接视频文件（视频自动抽音轨，两条任接一条就够）。展开这个工具壳，里面的「转写参数」文本节点就是一份 JSON —— language（auto / zh / en / yue / ja / ko，默认 auto）、maxDurationSec（默认 6）、maxChars（默认按文本自动：中文 18 / 英文 42）、noiseDb（默认 -35dB）、minSilenceSec（默认 0.4s），不写就用默认，改完存盘即生效。输出三个文本端子：字幕数据（cues：序号 / 起止秒 / 正文）、SRT、VTT。识别走本机官方 SenseVoice（与录音听写同一份权重）：运行时按需自动拉起、权重首次使用自动下载（约 239MB，断点续传）、识别器晚注册也会自己等 —— 不需要先去哪里「启用」；切句用 ffmpeg（静音切句，缺失时提示去插件里装 Remotion）；不另装 whisper / 在线 ASR。时间边界是切片级近似（静音切句 + 按字数占比分配时间），不是逐字对齐。端子「原台词」可选接一段原台词：接上就走切分模式（正文从台词里逐字截取，避免识别错字，对不上的给 unmatchedScript / unmatchedAsr 清单）；端子「参数」可选接一份 JSON，按键覆盖壳内「转写参数」的同键（例如 {\"keepPunctuation\": true} 让标点一律原样不动）。**不写任何文件**——要落 .srt / .vtt 把对应端子接到「保存文本」节点。",
+      "always": false,
+      "limits": "文件只认「音频」/「视频」两个端子的值（参数 JSON 里写 file 不生效）：两条都没接会报「请接音频或视频端子」。识别依赖本机 SenseVoice（自动拉起语音运行时、自动下载 / 续传权重，首次约 239MB，等就绪会久一点；不需要手动启用）与 ffmpeg（缺失时提示到「插件」里安装 / 重装 Remotion）。音频里没有语音时不报错，回空 cues 与一段 note 说明；文件不存在、转写失败都会带明确错误。时间边界来自静音切句的切片边界 + 按字数占比分配，不是逐字对齐。参数 JSON 非法或不是对象时忽略那份、只在日志里提一句，不抛错（「参数」端子上的 JSON 同理）。原台词与语音一句都没对上时 cues 为空、给 note 与两份清单，不报错。不写任何文件，要落盘请把 SRT / VTT 端子接到「保存文本」节点。",
+      "example": "{\"音频\":\"D:\\\\media\\\\talk.mp3\",\"视频\":\"\"}",
+      "atLeastOne": [["音频", "视频"]],
+      "inputs": [
+        {
+          "name": "音频",
+          "kind": "audio",
+          "optional": true,
+          "description": "本机音频文件的绝对路径（mp3 / wav / m4a / flac / aac 等）；与「视频」至少接一条。"
+        },
+        {
+          "name": "视频",
+          "kind": "video",
+          "optional": true,
+          "description": "本机视频文件的绝对路径（mp4 / mkv / mov 等），内部自动抽音轨；与「音频」至少接一条。"
+        },
+        {
+          "name": "原台词",
+          "kind": "text",
+          "optional": true,
+          "description": "可选。接上就走「切分模式」：字幕正文从这段台词里逐字截取（避免识别错字），时间仍来自静音切句；台词按标点 / 换行断句后与识别段单调对齐，对不上的进 unmatchedScript / unmatchedAsr 清单（跳过不报错）。不接 = 用识别文本。"
+        },
+        {
+          "name": "参数",
+          "kind": "text",
+          "optional": true,
+          "description": "可选。一份 JSON（文本），按键覆盖同键、其余沿用壳内「转写参数」：{ \"language\": \"auto\", \"maxDurationSec\": 6, \"maxChars\": null, \"noiseDb\": \"-35dB\", \"minSilenceSec\": 0.4, \"keepPunctuation\": false }。"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "字幕数据",
+          "kind": "text",
+          "description": "结构化 cues 的 JSON 文本：{ ok, engine, cueCount, cues:[{index,start,end,duration,text}], srt, vtt, params }。"
+        },
+        {
+          "name": "SRT",
+          "kind": "text",
+          "description": "整份 SRT 文本（序号 / 时:分:秒,毫秒 --> 时:分:秒,毫秒 / 正文），可直接存成 .srt。"
+        },
+        {
+          "name": "VTT",
+          "kind": "text",
+          "description": "整份 VTT 文本（自带 WEBVTT 头与 . 毫秒时间码），可直接存成 .vtt。"
+        }
+      ],
+      "presets": {
+        "音频": "",
+        "视频": "",
+        "原台词": "",
+        "参数": ""
+      },
+      "graph": {
+        "rootId": "preset-subtitle-root",
+        "wires": [
+          {
+            "id": "preset-subtitle-w1",
+            "from": "preset-subtitle-root",
+            "to": "preset-subtitle-fn",
+            "fromIndex": 1,
+            "toIndex": 1
+          },
+          {
+            "id": "preset-subtitle-w2",
+            "from": "preset-subtitle-root",
+            "to": "preset-subtitle-fn",
+            "fromIndex": 2,
+            "toIndex": 2
+          },
+          {
+            "id": "preset-subtitle-w7",
+            "from": "preset-subtitle-root",
+            "to": "preset-subtitle-fn",
+            "fromIndex": 3,
+            "toIndex": 3
+          },
+          {
+            "id": "preset-subtitle-w8",
+            "from": "preset-subtitle-root",
+            "to": "preset-subtitle-fn",
+            "fromIndex": 4,
+            "toIndex": 4
+          },
+          {
+            "id": "preset-subtitle-w3",
+            "from": "preset-subtitle-params",
+            "to": "preset-subtitle-fn",
+            "fromIndex": 0,
+            "toIndex": 9001
+          },
+          {
+            "id": "preset-subtitle-w4",
+            "from": "preset-subtitle-fn",
+            "to": "preset-subtitle-root",
+            "fromIndex": 0,
+            "toIndex": 0
+          },
+          {
+            "id": "preset-subtitle-w5",
+            "from": "preset-subtitle-fn",
+            "to": "preset-subtitle-root",
+            "fromIndex": 1,
+            "toIndex": 1
+          },
+          {
+            "id": "preset-subtitle-w6",
+            "from": "preset-subtitle-fn",
+            "to": "preset-subtitle-root",
+            "fromIndex": 2,
+            "toIndex": 2
+          }
+        ],
+        "nodes": [
+          {
+            "id": "preset-subtitle-root",
+            "kind": "super",
+            "title": "音频转字幕（时间轴）",
+            "x": 0,
+            "y": 0,
+            "w": 340,
+            "h": 220,
+            "note": "展开壳可改内部那份参数 JSON（「转写参数」文本节点）与转写 jscode；对外端子 = 音频 / 视频 / 原台词 / 参数：接上「原台词」即切分模式（正文取台词），「参数」端子上的 JSON 按键覆盖壳内那份设置。",
+            "expandW": 1000,
+            "expandH": 660,
+            "superOpen": false,
+            "subFolder": "",
+            "innerPanX": 0,
+            "innerPanY": 0,
+            "parentTaskId": "",
+            "parentSuperId": "",
+            "db": false,
+            "dbMode": "super",
+            "tool": true,
+            "paramsJson": "{\n  \"language\": \"auto\",\n  \"maxDurationSec\": 6,\n  \"maxChars\": null,\n  \"noiseDb\": \"-35dB\",\n  \"minSilenceSec\": 0.4,\n  \"keepPunctuation\": false\n}",
+            "toolConfig": {
+              "name": "音频转字幕（时间轴）",
+              "description": "把一段音频或视频转成「能直接做字幕」的结构化文本：端子「音频」接音频文件、「视频」接视频文件（视频自动抽音轨，两条任接一条就够）。展开这个工具壳，里面的「转写参数」文本节点就是一份 JSON —— language（auto / zh / en / yue / ja / ko，默认 auto）、maxDurationSec（默认 6）、maxChars（默认按文本自动：中文 18 / 英文 42）、noiseDb（默认 -35dB）、minSilenceSec（默认 0.4s），不写就用默认，改完存盘即生效。输出三个文本端子：字幕数据（cues：序号 / 起止秒 / 正文）、SRT、VTT。识别走本机官方 SenseVoice（与录音听写同一份权重）：运行时按需自动拉起、权重首次使用自动下载（约 239MB，断点续传）、识别器晚注册也会自己等 —— 不需要先去哪里「启用」；切句用 ffmpeg（静音切句，缺失时提示去插件里装 Remotion）；不另装 whisper / 在线 ASR。时间边界是切片级近似（静音切句 + 按字数占比分配时间），不是逐字对齐。端子「原台词」可选接一段原台词：接上就走切分模式（正文从台词里逐字截取，避免识别错字，对不上的给 unmatchedScript / unmatchedAsr 清单）；端子「参数」可选接一份 JSON，按键覆盖壳内「转写参数」的同键（例如 {\"keepPunctuation\": true} 让标点一律原样不动）。**不写任何文件**——要落 .srt / .vtt 把对应端子接到「保存文本」节点。",
+              "limits": "文件只认「音频」/「视频」两个端子的值（参数 JSON 里写 file 不生效）：两条都没接会报「请接音频或视频端子」。识别依赖本机 SenseVoice（自动拉起语音运行时、自动下载 / 续传权重，首次约 239MB，等就绪会久一点；不需要手动启用）与 ffmpeg（缺失时提示到「插件」里安装 / 重装 Remotion）。音频里没有语音时不报错，回空 cues 与一段 note 说明；文件不存在、转写失败都会带明确错误。时间边界来自静音切句的切片边界 + 按字数占比分配，不是逐字对齐。参数 JSON 非法或不是对象时忽略那份、只在日志里提一句，不抛错（「参数」端子上的 JSON 同理）。原台词与语音一句都没对上时 cues 为空、给 note 与两份清单，不报错。不写任何文件，要落盘请把 SRT / VTT 端子接到「保存文本」节点。",
+              "example": "{\"音频\":\"D:\\\\media\\\\talk.mp3\",\"视频\":\"\"}",
+              "atLeastOne": [["音频", "视频"]],
+              "inputs": [
+                {
+                  "name": "音频",
+                  "kind": "audio",
+                  "optional": true,
+                  "description": "本机音频文件的绝对路径（mp3 / wav / m4a / flac / aac 等）；与「视频」至少接一条。"
+                },
+                {
+                  "name": "视频",
+                  "kind": "video",
+                  "optional": true,
+                  "description": "本机视频文件的绝对路径（mp4 / mkv / mov 等），内部自动抽音轨；与「音频」至少接一条。"
+                },
+                {
+                  "name": "原台词",
+                  "kind": "text",
+                  "optional": true,
+                  "description": "可选。接上就走「切分模式」：字幕正文从这段台词里逐字截取（避免识别错字），时间仍来自静音切句；台词按标点 / 换行断句后与识别段单调对齐，对不上的进 unmatchedScript / unmatchedAsr 清单（跳过不报错）。不接 = 用识别文本。"
+                },
+                {
+                  "name": "参数",
+                  "kind": "text",
+                  "optional": true,
+                  "description": "可选。一份 JSON（文本），按键覆盖同键、其余沿用壳内「转写参数」：{ \"language\": \"auto\", \"maxDurationSec\": 6, \"maxChars\": null, \"noiseDb\": \"-35dB\", \"minSilenceSec\": 0.4, \"keepPunctuation\": false }。"
+                }
+              ],
+              "outputs": [
+                {
+                  "name": "字幕数据",
+                  "kind": "text",
+                  "description": "结构化 cues 的 JSON 文本：{ ok, engine, cueCount, cues:[{index,start,end,duration,text}], srt, vtt, params }。"
+                },
+                {
+                  "name": "SRT",
+                  "kind": "text",
+                  "description": "整份 SRT 文本（序号 / 时:分:秒,毫秒 --> 时:分:秒,毫秒 / 正文），可直接存成 .srt。"
+                },
+                {
+                  "name": "VTT",
+                  "kind": "text",
+                  "description": "整份 VTT 文本（自带 WEBVTT 头与 . 毫秒时间码），可直接存成 .vtt。"
+                }
+              ]
+            },
+            "toolTestInputs": []
+          },
+          {
+            "id": "preset-subtitle-params",
+            "kind": "input_text",
+            "title": "转写参数",
+            "x": 40,
+            "y": 60,
+            "w": 300,
+            "h": 260,
+            "parentTaskId": "",
+            "parentSuperId": "preset-subtitle-root",
+            "text": "{\n  \"language\": \"auto\",\n  \"maxDurationSec\": 6,\n  \"maxChars\": null,\n  \"noiseDb\": \"-35dB\",\n  \"minSilenceSec\": 0.4,\n  \"keepPunctuation\": false\n}",
+            "batch": false,
+            "entries": []
+          },
+          {
+            "id": "preset-subtitle-fn",
+            "kind": "function",
+            "title": "转写 → cues / SRT / VTT",
+            "x": 400,
+            "y": 60,
+            "w": 470,
+            "h": 400,
+            "parentTaskId": "",
+            "parentSuperId": "preset-subtitle-root",
+            "fnName": "音频转字幕（时间轴）",
+            "description": "音频 / 视频 → cues + SRT + VTT（mtnode.subtitle）；设置取「转写参数」文本节点，「参数」端子上的 JSON 按键覆盖同键；「原台词」接上即切分模式",
+            "inputs": [
+              {
+                "name": "音频",
+                "kind": "audio"
+              },
+              {
+                "name": "视频",
+                "kind": "video"
+              },
+              {
+                "name": "原台词",
+                "kind": "text"
+              },
+              {
+                "name": "参数",
+                "kind": "text"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "字幕数据",
+                "kind": "text"
+              },
+              {
+                "name": "SRT",
+                "kind": "text"
+              },
+              {
+                "name": "VTT",
+                "kind": "text"
+              }
+            ],
+            "paramsJson": "{\n  \"language\": \"auto\",\n  \"maxDurationSec\": 6,\n  \"maxChars\": null,\n  \"noiseDb\": \"-35dB\",\n  \"minSilenceSec\": 0.4,\n  \"keepPunctuation\": false\n}",
+            "jscode": "// 音频 / 视频 → 字幕（每条字幕的起止秒 + SRT / VTT 文本）· 内置工具 · 可改\n// 端子：音频(1) · 视频(2) · 原台词(3) · 参数(4) · 壳内「转写参数」节点(9001 = 一份文本 JSON)\n//   音频 / 视频  本机绝对路径（file:/// URL 也认）；视频会自动抽音轨；两条接一条就够\n//   原台词        可选。接了就走「切分模式」：字幕正文从这段台词里**逐字截取**（避免识别错字），\n//                时间仍来自静音切句；台词按标点 / 换行断句后与识别段做单调对齐，\n//                对不上的进 unmatchedScript / unmatchedAsr 清单（跳过不报错，不卡整条链）。\n//   参数          可选。一份 JSON，按**键**覆盖同键（其余沿用壳内「转写参数」那份）：\n//                { \"language\": \"auto\", \"maxDurationSec\": 6, \"maxChars\": null,\n//                  \"noiseDb\": \"-35dB\", \"minSilenceSec\": 0.4, \"keepPunctuation\": false }\n//                language: auto / zh / en / yue / ja / ko；maxChars 空 = 中文 18 / 英文 42 自动\n//                keepPunctuation: true = 标点一律原样不动（连句末句号也不裁）；默认 false = 去掉句末句号\n//                文件只认「音频」/「视频」两个端子 —— 参数里的 file 不生效（日志会提一句）。\n// 时间边界来自「静音切句」的切片边界 + 按字数占比分配：切片级近似，不是逐字对齐。\n// 识别走本机官方 SenseVoice（自动拉起语音运行时、首次使用自动下载约 239MB 权重、需要时自动重试），切句用 ffmpeg。\n// 不写任何文件：要落 .srt / .vtt 就把 SRT / VTT 端子接到「保存文本」节点。\nconst text = (v) => {\n  if (v && typeof v === \"object\")\n    return String(\n      v.path != null && v.path !== \"\" ? v.path : v.text != null ? v.text : \"\",\n    ).trim();\n  return v == null ? \"\" : String(v).trim();\n};\nconst file =\n  text(input[\"音频\"]) ||\n  text(input[\"视频\"]) ||\n  text(input[\"$1\"]) ||\n  text(input[\"$2\"]);\nif (!file)\n  throw new Error(\n    \"请把音频接到「音频」端子、或把视频接到「视频」端子（也可以直接填在节点里）\",\n  );\nif (typeof mtnode.subtitle !== \"function\")\n  throw new Error(\"当前 MTNode 不支持「音频转字幕」（需要 mtnode.subtitle 桥）\");\n/* 参数：壳内「转写参数」（9001 端子）当底，接在「参数」端子上的 JSON 按键覆盖（同键后者胜）。 */\nconst base =\n  input.params && typeof input.params === \"object\" && !Array.isArray(input.params)\n    ? input.params\n    : {};\nconst extRaw = text(input[\"参数\"]);\nlet ext = null;\nif (extRaw) {\n  try {\n    ext = JSON.parse(extRaw);\n  } catch (e) {\n    mtnode.log(\"「参数」端子上的 JSON 解析失败，已忽略：\" + ((e && e.message) || e));\n  }\n}\nif (ext && (typeof ext !== \"object\" || Array.isArray(ext))) {\n  mtnode.log(\"「参数」端子上的 JSON 不是对象，已忽略\");\n  ext = null;\n}\nconst p = Object.assign({}, base, ext || {});\nif (Object.prototype.hasOwnProperty.call(p, \"file\"))\n  mtnode.log(\"参数 JSON 里的 file 已忽略：文件只认「音频」/「视频」端子\");\nconst num = (v) => {\n  const s = v == null ? \"\" : String(v).trim();\n  if (s === \"\") return undefined;\n  const n = Number(s);\n  return Number.isFinite(n) ? n : undefined;\n};\nconst bool = (v) => {\n  if (v === true) return true;\n  if (v === false || v == null) return false;\n  return /^(true|1|yes|on)$/i.test(String(v).trim());\n};\n/* 原台词：接了就走切分模式（正文取台词）；留空 = 照旧用识别文本。 */\nconst script = text(input[\"原台词\"]) || text(input[\"$3\"]);\nmtnode.log(\n  \"转字幕：\" + file + \"（\" + (text(input[\"视频\"]) ? \"视频\" : \"音频\") + \"）\" +\n    (script ? \" · 切分模式（正文取原台词）\" : \"\"),\n);\nconst r = await mtnode.subtitle({\n  file: file,\n  language: text(p.language) || \"auto\",\n  maxDurationSec: num(p.maxDurationSec),\n  maxChars: num(p.maxChars),\n  noiseDb: text(p.noiseDb) || undefined,\n  minSilenceSec: num(p.minSilenceSec),\n  breakPunctuation: p.breakPunctuation == null ? undefined : String(p.breakPunctuation),\n  script: script || undefined,\n  keepPunctuation: bool(p.keepPunctuation),\n});\nif (!r || r.ok === false) throw new Error((r && r.error) || \"字幕转写失败\");\nmtnode.log(\n  \"字幕 \" + r.cueCount + \" 条 · 时长 \" + r.durationSeconds + \"s · \" +\n    (r.mode === \"script\" ? \"切分模式（对齐 \" + (r.alignedCount || 0) + \" 句）\" : \"识别模式\") +\n    \" · \" + (r.params && r.params.latin ? \"英文口径\" : \"中文口径\"),\n);\nreturn {\n  字幕数据: JSON.stringify(\n    {\n      file: r.file,\n      durationSeconds: r.durationSeconds,\n      language: r.language,\n      mode: r.mode,\n      cueCount: r.cueCount,\n      params: r.params,\n      cues: r.cues,\n      ...(r.mode === \"script\"\n        ? {\n            alignedCount: r.alignedCount,\n            asrText: r.asrText,\n            unmatchedScript: r.unmatchedScript,\n            unmatchedAsr: r.unmatchedAsr,\n          }\n        : {}),\n    },\n    null,\n    2,\n  ),\n  SRT: r.srt,\n  VTT: r.vtt,\n};\n"
+          }
+        ]
+      }
     }
   ]
 }

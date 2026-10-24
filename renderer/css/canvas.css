@@ -1143,13 +1143,26 @@
 }
 
 /* ── 节点层封面（renderer/app-node-cover.js）：图铺满整个 body ──
-   background-image 由 JS 内联写入（dataURL），这里只定铺法：
-   cover = 铺满、不拉伸，只要有一边到 100% 即可，超出部分居中裁切。 */
+   图由 JS 写进 --node-cover-img（dataURL），铺在一块 ::before 图层上，透明度取自
+   --node-cover-opacity（默认 50%，在封面面板里可调）：
+   background-image 自身的不透明度没法单独调，直接给 body 加 opacity 会把标题 / 描述一起变淡。
+   铺法 cover = 铺满、不拉伸，只要有一边到 100% 即可，超出部分居中裁切。 */
 .wf-node.super > .n-body.super-folder-body.has-cover {
   background-color: #141a23;
+}
+
+.wf-node.super > .n-body.super-folder-body.has-cover::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background-image: var(--node-cover-img, none);
   background-size: cover;
   background-position: center center;
   background-repeat: no-repeat;
+  opacity: var(--node-cover-opacity, .5);
+  pointer-events: none;
+  z-index: 0;
 }
 
 /* 标题 / 描述 / 计数所在的下半部叠一层暗色渐变 + 文字阴影：
@@ -2687,7 +2700,7 @@ body.theme-light .n-chip.n-chip-lt {
 }
 
 /* 展开舞台的封面底图：z0（网格与节点视口 z4 都在它上面），
-   不透明度由 node.bgOpacity 内联给定（默认 20%）—— 底图不该抢节点。 */
+   不透明度由 JS 内联给定（默认 10%，封面面板可调，见 app-node-cover.js）—— 底图不该抢节点。 */
 .super-stage-cover {
   position: absolute;
   inset: 0;
@@ -3248,6 +3261,37 @@ body.theme-light .n-chip.n-chip-lt {
 .wf-node.proc-img.sel {
   border-color: #ff8ab8;
   box-shadow: 0 0 10px rgba(255, 94, 168, .45), 8px 12px 24px rgba(0, 0, 0, .45)
+}
+
+/* 复制品「闪一下」：Ctrl+D / 顶栏「复制」/ 右键「复制」落下来的新节点描边 + 外发光，
+   约 0.9 秒渐隐（app.js 的 flashCopiedNodes 贴 .dup-flash，900ms 后摘掉；节点重绘会
+   自然丢掉它，本来就只是一次性反馈）。
+   颜色取主题的 --green（成功色），与选中环的青色区分开：复制完复制品同时是选中态，
+   同一种青色会分不清哪一层是「刚刚复制」。overflow-clip-margin 与选中态同样放宽，
+   免得外发光被节点的裁切框裁掉。 */
+.wf-node.dup-flash {
+  overflow-clip-margin: 400px;
+  animation: wfDupFlash .9s ease-out 1;
+}
+
+@keyframes wfDupFlash {
+  0% {
+    outline: 2.5px solid var(--green);
+    outline-offset: 1px;
+    box-shadow:
+      0 0 0 2px color-mix(in srgb, var(--green) 55%, transparent),
+      0 0 20px color-mix(in srgb, var(--green) 75%, transparent),
+      var(--nfloat);
+  }
+
+  100% {
+    outline: 2.5px solid transparent;
+    outline-offset: 9px;
+    box-shadow:
+      0 0 0 0 transparent,
+      0 0 0 0 transparent,
+      var(--nfloat);
+  }
 }
 
 .wf-node.music.sel {
@@ -4410,6 +4454,35 @@ body.theme-light .n-chip.n-chip-lt {
 .n-play.error {
   border-color: var(--red);
   color: var(--red)
+}
+
+/* 节点层「运行本层」（renderer/app-super-run.js）：▶ 与右侧 ■ 同一排；
+   运行中按钮显示 n/N 进度，需要比那颗单字符按钮宽一点。 */
+.n-super-run-wrap {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+}
+
+.n-play.n-super-run.progress {
+  width: auto;
+  min-width: 30px;
+  padding: 0 4px;
+  font-size: 9px;
+  letter-spacing: -.2px;
+  cursor: default;
+}
+
+.n-play.n-super-run.progress:hover {
+  border-color: var(--orange);
+  background: rgba(255, 170, 60, .12);
+}
+
+/* 正在跑的那一颗节点：绿色描边（与 ▶ 同色系），跑完即摘 */
+.wf-node.super-run-focus {
+  outline: 2px solid rgba(95, 214, 138, .9);
+  outline-offset: 2px;
 }
 
 .n-play.n-backend-probe {
@@ -6048,6 +6121,17 @@ body.theme-light .n-chip.n-chip-lt {
 
 .fn-p-kind.img {
   color: #ff5ea8;
+  opacity: 1
+}
+
+/* 视频 / 音频参数行：与 .port.vid / .port.aud 同一识别色（设置面板一眼分清媒体类型） */
+.fn-p-kind.vid {
+  color: #6fe0bb;
+  opacity: 1
+}
+
+.fn-p-kind.aud {
+  color: #7ab4ff;
   opacity: 1
 }
 

@@ -59,13 +59,26 @@ function asrHasApi() {
 function isAsrMediaNode(node) {
   return !!(node && (node.kind === "input_audio" || node.kind === "input_video"));
 }
-/** 该节点当前绑定的媒体文件绝对路径（未选文件 → 空串） */
+/** 该节点当前绑定的媒体文件绝对路径（未选文件 → 空串）。
+ *  **有入线时以入线为准**（与文本 / 图像输入节点的继承同一口径，见 app.js 的
+ *  mediaInputInherited / mediaInputValueOf）：节点层里那颗音频节点接的就是壳的
+ *  边界端子，转写对象必须是继承来的那份音频，否则「层外音频进不来」这条缺陷会在
+ *  转写口原样复现。 */
 function asrMediaPathOf(node) {
   if (!isAsrMediaNode(node)) return "";
+  if (typeof mediaInputInherited === "function" && mediaInputInherited(node)) {
+    const v = typeof mediaInputValueOf === "function" ? mediaInputValueOf(node) : null;
+    const p = String((v && v.path) || "").trim();
+    if (p) return p;
+  }
   return String(node.mediaAsset || "").trim();
 }
-/** 媒体类型：audio / video（视频节点的转写同样当文本给下游） */
+/** 媒体类型：audio / video（视频节点的转写同样当文本给下游）；继承时按上游那份媒体 */
 function asrMediaKindOf(node) {
+  if (typeof mediaInputInherited === "function" && mediaInputInherited(node)) {
+    const v = typeof mediaInputValueOf === "function" ? mediaInputValueOf(node) : null;
+    if (v && (v.kind === "audio" || v.kind === "video")) return v.kind;
+  }
   return node && node.kind === "input_video" ? "video" : "audio";
 }
 /** 「音频节点」的显示名（转写块标题与提示词块标题都用它） */

@@ -787,6 +787,8 @@ contextBridge.exposeInMainWorld('api', {
      未知键 + 参数文件）算出本次会传给合成的 props，供设置窗与 Agent 核对。 */
   remotionResolveProps: (params) => ipcRenderer.invoke('remotion:resolveProps', params || {}),
   remotionCancel: (nodeId) => ipcRenderer.invoke('remotion:cancelRender', nodeId),
+  /* 短试渲染（构建验证 / 设置窗「试渲染」）：≤2 秒、不占全局音视频锁、产物即弃 */
+  remotionVerify: (params) => ipcRenderer.invoke('remotion:verify', params || {}),
   remotionRemovePluginMeta: () => ipcRenderer.invoke('remotion:removePluginMeta'),
   /* 卡片「安装 / 重装」用：先选安装目录（系统选择框，不开插件窗），装不装得下由用户定 */
   remotionPickInstallDir: () => ipcRenderer.invoke('remotion:pickInstallDir'),

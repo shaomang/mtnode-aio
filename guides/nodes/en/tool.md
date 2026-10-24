@@ -68,6 +68,8 @@ A tool executes its **inner subgraph** (child nodes attached under this node):
 The top-bar **Tool library** button (it wears the program's own icon) opens a dialog that lists the **saved tool / function packages** plus the **built-in entries** shipped with the app (built-ins wear a grey "Built-in" badge: insert / test-run freely, but rename and delete are refused) — nodes are not created there (use the right-click menu above):
 
 - **Save to library**: saves this node plus a snapshot of its inner graph as a tool package (name / description / input-output params — each with its declared type — plus the inner graph JSON).
+- **Search**: a permanent search box filters by name / description / input-output param names (case-insensitive) and shows the hit count; clearing it restores the full list.
+- **One-line entries + paging**: each tool is a single row (badge / name / summary / switch / insert / rename / delete), at most 20 rows per page with a pager at the bottom.
 - **Insert**: the package can be inserted into any canvas repeatedly (cloned with new ids; inner parent-child relations and wires are rebuilt around the new ids).
 - **Callable by sessions anytime** (off by default): when on, the agent can call this tool from a session **without a canvas copy**; tool nodes on the canvas are in the callable list anyway. Renaming / overwrite-saving keeps the same library record, so the switch carries over.
 

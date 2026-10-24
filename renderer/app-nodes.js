@@ -5522,8 +5522,12 @@ function breezeAudioSlotPath(node, slot) {
   const w = wiresTo(node.id).find((x) => Number(x.toIndex) === idx);
   const src = w ? nodeById(w.from) : null;
   if (isBreezeMediaSource(src)) {
-    /* 音频 / 视频输入节点：文件就在节点自己身上（mediaAsset），不靠端子值的形状兜底 */
-    const own = String(src.mediaAsset || "").trim();
+    /* 音频 / 视频输入节点：内容可能是它自己身上的文件（mediaAsset），也可能是接进来的入线
+       （继承输入，见 app.js 的 mediaInputValueOf / inheritedMediaValueOf）。一律走同一个取数
+       口径 —— 直接读 mediaAsset 会把「层外音频经壳的输入端子接进来」的那份悄悄换回旧文件。 */
+    const ownValue =
+      typeof mediaInputValueOf === "function" ? mediaInputValueOf(src) : null;
+    const own = String((ownValue && ownValue.path) || "").trim();
     if (own && breezeHasAudioExt(own)) return own;
   }
   /* 这条线自己声明的媒体类型就是音频（保存节点 / 生成器 / 音频输入节点都算）时，
@@ -5531,7 +5535,9 @@ function breezeAudioSlotPath(node, slot) {
      （否则「保存节点 → 参考文稿口」这种接法会把音频丢掉，运行时白跑一趟引擎）。 */
   let wireIsAudio = false;
   try {
-    wireIsAudio = !!(w && wireSourceMediaType(src, Number(w.fromIndex || 0)) === "audio");
+    wireIsAudio = !!(
+      w && wireSourceMediaType(src, Number(w.fromIndex || 0), node) === "audio"
+    );
   } catch (_) {
     wireIsAudio = false;
   }
@@ -7662,19 +7668,21 @@ async function playVideoPostNode(node, quiet) {
 }
 
 /* ── Remotion 视频节点（应用插件 remotion） ──
-   流程：描述文本（连线端子1 文本源）→ apiCall 生成 Composition.tsx（React 动效，
-   提示词模板含 Remotion API 速查与约束，仅允许 import remotion/react）→
+   两条彻底分开的路（本轮需求）：
+   · 构建（用户点「构建」→ 弹窗里填构建需求）：构建 Agent 写出多文件工程 → 静态校验 →
+     短试渲染验证 → 固化成节点里的源码树（node.remotionFiles + 端子契约）。
+   · 运行（▶ / 上游控制线）：**只走脚本渲染，一个模型都不调** —— 固化工程 / 节点里贴的
+     tsxTsx / 复用包内 Composition.tsx / 内置版面（素材与台词由端子注入）。
+   节点正文 node.text 是「功能说明」，只给人看，构建与运行都不读它；
+   构建需求另存 node.remotionBuildNote（见 remotionOpenBuildDialog / remotionBuildNoteOf）。
    window.api.remotionGenerate（主进程 remotion/main-remotion.js：写模板 → spawn
-   node render.mjs → 本地渲染 mp4，取 media-gen-global-lock 全局互斥）→ 进度/取消 → node.output=视频路径。
-   注：宿主优先采用这份 TSX 作为 src/Composition.tsx（渲染即所见，见 writeRenderSources）；
-   无它时才回退内置标题卡模板（按 title / subtitle / bgColor 结构化参数渲染）。 */
+   node render.mjs → 本地渲染 mp4，取 media-gen-global-lock 全局互斥）→ 进度/取消 → node.output=视频路径。 */
 
 /* Remotion 输出分辨率预设（宽x高，px）定义在 app.js（REMOTION_SIZES，先加载共用）。 */
 
-/* 内置台词卡版面（portrait-dialogue，随 remotion-pack 发版）的识别：
-   描述里写了 {{hero}} / {{narration}} / {{voice}} / {{bg}} 占位，或点名「台词卡 / 金边 / 左…右…框」
-   → 不进 LLM，直接交主进程用内置模板渲染（素材按已接线输入注入）。
-   只让文本模型现场写 TSX 时，它常把描述当成介绍某个色值的海报，左侧素材 / 台词 / 音轨全丢。 */
+/* 老路径遗留：内置台词卡版面的**描述关键词**判定。
+   运行期不再读任何描述（功能说明 / 构建描述都不参与出片），这个判定已不在调用链上；
+   留着只为说明内置版面当初为什么存在，别把它接回去。 */
 const REMOTION_BUILTIN_RE =
   /\{\{\s*(hero|narration|voice|bg)\s*\}\}|台词卡|金边|对话屏|台词框|左[^。\n]{0,12}右[^。\n]{0,12}(框|卡|台词)/;
 
@@ -7682,17 +7690,351 @@ function wantsBuiltinDialoguePage(desc) {
   return REMOTION_BUILTIN_RE.test(String(desc || ""));
 }
 
-/* 收集已接线的数据输入 → [{ index, text }]：端子无差别（0、1、2…），除控制线外全算输入。
-   控制线（来源是 control / task 等）不占数据槽 —— 它只负责「什么时候跑」。
-   媒体值可能是 { kind, path, url }：一律换成 path（主进程再按类型决定是否内联成 data URL）。
-   归位口径在主进程（remotion/main-remotion.js pickPortraitInputs）：视频 / 图片 → hero、
-   音频 → voice、文本 → narration。 */
+/* ═══════════ Remotion 固化工程：源码文件树 + 端子契约（唯一真源）═══════════
+ * 目标（本节点契约）：构建期由 agent 写出一棵**多文件 React 工程**并把端子契约写在
+ * 入口源码里；固化后运行时只把这棵文件树交给主进程渲染，**永不调模型**。
+ *
+ * 契约写法（入口 Composition.tsx 导出，节点解析后自动生成端子）：
+ *   export const inputs = [
+ *     { key: "hero",  kind: "image", label: "主图", required: true },
+ *     { key: "voice", kind: "audio", label: "旁白" },
+ *     { key: "lines", kind: "text",  label: "台词", list: true },
+ *     { key: "speed", kind: "number", label: "速度" },
+ *   ];
+ * kind ∈ image | audio | video | text | number | boolean | json；list:true = 一颗端子可接多路。
+ *
+ * 为什么契约放在源码里：改代码即改端子，单一真源，固化后还能静态校验
+ * （见 remotionStaticCheck），不会出现「端子表与代码各说一套」。
+ */
+
+/* 极小的 JS 字面量解析器：只吃对象 / 数组 / 字符串 / 数字 / 布尔 / null / 裸标识符，
+ * 够解析契约里的这些字面量，且**绝不 eval 模型生成的内容**（模型可能写坏东西）。
+ * 注释、尾逗号、TS 的 `as const` 都在外层先剥掉。 */
+function remotionParseLiteral(text) {
+  const s = String(text || "");
+  let i = 0;
+  const err = (m) => {
+    throw new Error(m + "（偏移 " + i + "）");
+  };
+  const ws = () => {
+    for (;;) {
+      while (i < s.length && /\s/.test(s[i])) i++;
+      if (s[i] === "/" && s[i + 1] === "/") {
+        const nl = s.indexOf("\n", i);
+        i = nl < 0 ? s.length : nl + 1;
+        continue;
+      }
+      if (s[i] === "/" && s[i + 1] === "*") {
+        const end = s.indexOf("*/", i + 2);
+        i = end < 0 ? s.length : end + 2;
+        continue;
+      }
+      return;
+    }
+  };
+  const str = () => {
+    const q = s[i++];
+    let out = "";
+    while (i < s.length) {
+      const c = s[i++];
+      if (c === q) return out;
+      if (c === "\\" && i < s.length) {
+        const n = s[i++];
+        const map = { n: "\n", t: "\t", r: "\r", b: "\b", f: "\f", v: "\v" };
+        if (n === "u") {
+          const hex = s.slice(i, i + 4);
+          if (/^[0-9a-fA-F]{4}$/.test(hex)) {
+            out += String.fromCharCode(parseInt(hex, 16));
+            i += 4;
+            continue;
+          }
+        }
+        out += map[n] != null ? map[n] : n;
+        continue;
+      }
+      out += c;
+    }
+    err("字符串没有收尾引号");
+  };
+  const ident = () => {
+    const m = /^[A-Za-z_$][\w$]*/.exec(s.slice(i));
+    if (!m) err("这里应该是一个值");
+    i += m[0].length;
+    return m[0];
+  };
+  const value = () => {
+    ws();
+    const c = s[i];
+    if (c === undefined) err("值缺失");
+    if (c === "{" || c === "[") return container();
+    if (c === '"' || c === "'" || c === "`") return str();
+    if (c === "-" || c === "+" || /[0-9.]/.test(c)) {
+      const m = /^[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?/.exec(s.slice(i));
+      if (!m) err("数字写法认不出");
+      i += m[0].length;
+      return Number(m[0]);
+    }
+    const id = ident();
+    if (id === "true") return true;
+    if (id === "false") return false;
+    if (id === "null" || id === "undefined") return null;
+    /* 裸词当字符串（TS 里 kind: image 这种没加引号的写法照样认） */
+    return id;
+  };
+  const container = () => {
+    ws();
+    const open = s[i++];
+    const close = open === "{" ? "}" : "]";
+    const out = open === "{" ? {} : [];
+    for (;;) {
+      ws();
+      if (s[i] === close) {
+        i++;
+        return out;
+      }
+      if (i >= s.length) err("容器没有收尾");
+      if (open === "{") {
+        const k =
+          s[i] === '"' || s[i] === "'" || s[i] === "`" ? str() : String(ident());
+        ws();
+        if (s[i] !== ":") err("对象键后面缺少冒号");
+        i++;
+        out[k] = value();
+      } else {
+        out.push(value());
+      }
+      ws();
+      if (s[i] === ",") {
+        i++;
+        continue;
+      }
+      if (s[i] === close) {
+        i++;
+        return out;
+      }
+      err("容器里缺少逗号或收尾");
+    }
+  };
+  const v = value();
+  ws();
+  return v;
+}
+
+/* 从源码里抠出顶层 `export const inputs = [...]` 的字面量正文（字符串 / 注释感知的括号配对） */
+function remotionContractLiteralOf(src) {
+  const text = String(src || "");
+  const m = /export\s+(?:const|let|var)\s+inputs\b[^=\n]*=/.exec(text);
+  if (!m) return "";
+  let i = text.indexOf("[", m.index + m[0].length);
+  if (i < 0) return "";
+  const start = i;
+  let depth = 0;
+  let quote = null;
+  for (; i < text.length; i++) {
+    const c = text[i];
+    if (quote) {
+      if (c === quote && text[i - 1] !== "\\") quote = null;
+      continue;
+    }
+    if (c === '"' || c === "'" || c === "`") {
+      quote = c;
+      continue;
+    }
+    if (c === "/" && text[i + 1] === "/") {
+      const nl = text.indexOf("\n", i);
+      i = nl < 0 ? text.length : nl;
+      continue;
+    }
+    if (c === "/" && text[i + 1] === "*") {
+      const end = text.indexOf("*/", i + 2);
+      i = end < 0 ? text.length : end + 1;
+      continue;
+    }
+    if (c === "[") depth++;
+    else if (c === "]") {
+      depth--;
+      if (depth === 0) return text.slice(start, i + 1);
+    }
+  }
+  /* 有 `export const inputs` 但方括号没闭合：null（调用方报「契约语法坏了」），
+     与「压根没有契约」的空串区分开 */
+  return null;
+}
+
+const REMOTION_INPUT_KINDS = ["image", "audio", "video", "text", "number", "boolean", "json"];
+
+/* 契约项归一 → { contract, warnings }
+ * 形如 [{key,kind,label,list,required,default}]；认不出的项丢掉并留警告。
+ * 两个入口共用：源码里的 `export const inputs`（remotionParseContract）与画布编辑接口
+ * 显式传入的 remotionInputs —— 同一份字段口径，别让「写进去的」和「读出来的」不一样。 */
+function remotionNormalizeContractInput(arr) {
+  const contract = [];
+  const warnings = [];
+  const seen = new Set();
+  for (const raw of Array.isArray(arr) ? arr : []) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+      warnings.push(I18n.t("契约里有一项不是对象，已忽略"));
+      continue;
+    }
+    const key = String(raw.key || "").trim();
+    if (!/^[A-Za-z_$][\w$]*$/.test(key)) {
+      warnings.push(I18n.t("契约项的 key 不合法（须是标识符）：") + (key || "(空)"));
+      continue;
+    }
+    if (seen.has(key)) {
+      warnings.push(I18n.t("契约 key 重复，只保留第一项：") + key);
+      continue;
+    }
+    seen.add(key);
+    let kind = String(raw.kind || "text").toLowerCase();
+    if (REMOTION_INPUT_KINDS.indexOf(kind) < 0) {
+      warnings.push(I18n.t("契约项「") + key + I18n.t("」的 kind 不认识，按 text 处理：") + kind);
+      kind = "text";
+    }
+    contract.push({
+      key,
+      kind,
+      label: String(raw.label || "").trim() || key,
+      list: !!raw.list,
+      required: !!raw.required,
+      ...(raw.default !== undefined ? { default: raw.default } : {}),
+    });
+  }
+  return { contract, warnings };
+}
+
+/* 解析契约 → { contract, warnings, error } */
+function remotionParseContract(src) {
+  const lit = remotionContractLiteralOf(src);
+  if (lit === null) return { contract: [], warnings: [], error: I18n.t("inputs 契约的方括号没有闭合") };
+  if (!lit) return { contract: [], warnings: [], error: "" };
+  let arr;
+  try {
+    arr = remotionParseLiteral(lit);
+  } catch (e) {
+    return {
+      contract: [],
+      warnings: [],
+      error: I18n.t("端子契约解析失败：") + ((e && e.message) || String(e)),
+    };
+  }
+  if (!Array.isArray(arr))
+    return { contract: [], warnings: [], error: I18n.t("端子契约 inputs 必须是一个数组") };
+  const norm = remotionNormalizeContractInput(arr);
+  return { contract: norm.contract, warnings: norm.warnings, error: "" };
+}
+
+/* 节点上的固化工程：{ files, contract, builtAt, hasSource }
+ * 来源优先级：remotionFiles（构建产物 / 多文件） > tsxTsx（老的直出单文件） */
+function remotionProjectOf(node) {
+  const n = node || {};
+  const files = n.remotionFiles;
+  if (files && typeof files === "object" && String(files["Composition.tsx"] || "").trim()) {
+    const contract = Array.isArray(n.remotionInputs) && n.remotionInputs.length
+      ? n.remotionInputs
+      : remotionParseContract(files["Composition.tsx"]).contract;
+    return { files, contract, builtAt: Number(n.remotionBuiltAt) || 0, hasSource: true };
+  }
+  const one = String(n.tsxTsx || "").trim();
+  if (one) {
+    return {
+      files: { "Composition.tsx": one },
+      contract: remotionParseContract(one).contract,
+      builtAt: 0,
+      hasSource: true,
+    };
+  }
+  return { files: null, contract: [], builtAt: 0, hasSource: false };
+}
+
+/* 工程文件名校验：相对 src/ 的路径，不许越界 */
+function remotionSafeFileName(name) {
+  const n = String(name || "").replace(/\\/g, "/").replace(/^\/+/, "");
+  if (!n || n.indexOf("\0") >= 0) return "";
+  const parts = n.split("/");
+  for (const p of parts) if (!p || p === "." || p === "..") return "";
+  return n;
+}
+
+/* 静态校验（保存 / 构建后立刻跑，不渲染）：
+ *   ① 入口存在且导出 Main；② 依赖只允许 react / remotion + 工程内相对文件；
+ *   ③ 相对 import 指到的文件必须在文件树里；④ 契约能解析。
+ * 返回 { ok, errors:[], warnings:[] } */
+function remotionStaticCheck(files, entryName) {
+  const errors = [];
+  const warnings = [];
+  const tree = files && typeof files === "object" ? files : {};
+  const entry = String(entryName || "Composition.tsx");
+  const names = Object.keys(tree).filter((k) => String(tree[k] || "").trim());
+  if (!names.length) errors.push(I18n.t("还没有源码：先点「构建」让 agent 生成，或在设置里粘贴代码"));
+  if (names.indexOf(entry) < 0)
+    errors.push(I18n.t("入口文件缺失：") + entry);
+  const exists = (spec, fromName) => {
+    /* 相对 import 按「当前文件所在目录 + 段」解析（支持 ../，不许越出 src/ 根） */
+    const parts = remotionSafeFileName(fromName).split("/").slice(0, -1);
+    for (const seg of String(spec || "").split("/")) {
+      if (!seg || seg === ".") continue;
+      if (seg === "..") {
+        if (!parts.length) return false;
+        parts.pop();
+        continue;
+      }
+      parts.push(seg);
+    }
+    const joined = parts.join("/");
+    if (!joined) return false;
+    if (Object.prototype.hasOwnProperty.call(tree, joined)) return true;
+    for (const ext of [".tsx", ".ts", ".jsx", ".js", ".css", ".json"]) {
+      if (Object.prototype.hasOwnProperty.call(tree, joined + ext)) return true;
+    }
+    if (Object.prototype.hasOwnProperty.call(tree, joined + "/index.tsx")) return true;
+    if (Object.prototype.hasOwnProperty.call(tree, joined + "/index.ts")) return true;
+    return false;
+  };
+  let contractFound = false;
+  for (const name of names) {
+    const src = String(tree[name] || "");
+    const bad = [];
+    for (const spec of collectImportSpecs(src)) {
+      if (spec.startsWith(".")) {
+        if (!exists(spec, name)) bad.push(spec);
+        continue;
+      }
+      if (!customImportAllowed(spec)) bad.push(spec);
+    }
+    if (bad.length)
+      errors.push(
+        name +
+          I18n.t(" 里有不允许的 import：") +
+          bad.join(", ") +
+          I18n.t("（只允许 react / remotion 与工程内的相对文件）"),
+      );
+    if (name === entry) {
+      if (!/export\s+(?:const|let|var|function|class)\s+Main\b|export\s+default\b/.test(src))
+        errors.push(I18n.t("入口没有导出 Main 组件（export const Main = ...）"));
+    }
+    if (remotionContractLiteralOf(src)) contractFound = true;
+  }
+  if (!contractFound)
+    warnings.push(I18n.t("源码里没有 export const inputs 契约：端子不会自动生成（只有控制口）"));
+  const parsed = remotionParseContract(String(tree[entry] || ""));
+  if (parsed.error) errors.push(parsed.error);
+  for (const w of parsed.warnings) warnings.push(w);
+  return { ok: errors.length === 0, errors, warnings, contract: parsed.contract };
+}
+
+/* 收集已接线的数据输入 → [{ index, key, text }]。
+ * 固化后：端子 0..N-1 = 契约项（同 key 的多条线按顺序收集，供数组端子用），末位是控制口。
+ * 未固化：端子无差别（0、1、2…），除控制线外全算输入（老行为）。
+ * 媒体值可能是 { kind, path, url }：一律换成 path（主进程再按类型决定是否内联成 data URL）。 */
 function remotionInputList(node) {
   const out = [];
+  const contract = remotionContractOf(node);
   for (const w of wiresTo(node.id)) {
     const idx = Number(w.toIndex);
     if (!(idx >= 0)) continue;
     if (typeof wireFromIsControl === "function" && wireFromIsControl(w)) continue;
+    if (contract.length && idx >= contract.length) continue; /* 控制口 */
     const src = nodeById(w.from);
     if (!src) continue;
     let text = "";
@@ -7711,7 +8053,7 @@ function remotionInputList(node) {
       else if (d && d.text != null) text = String(d.text);
     }
     text = String(text || "").trim();
-    if (text) out.push({ index: idx, text });
+    if (text) out.push({ index: idx, key: contract.length ? contract[idx].key : "", text });
   }
   return out;
 }
@@ -7763,6 +8105,581 @@ function remotionBeatStarts(inputs, fps) {
   return out;
 }
 
+/* ── 构建期：agent 写工程 → 静态校验 → 短试渲染验证 → 失败回灌自修（最多 3 轮）──
+ * 与「运行时」彻底分开：这里可以调 agent（dsh 网关，和智能会话同一条通道），
+ * 产物写进 <工作目录>/.mtnode/remotion/<节点 id>/build/src/，再读回节点字段固化。
+ * 固化后 ▶ 只渲染这棵文件树，永不调模型（见 playRemotionNode）。
+ */
+
+/* 构建目录（与渲染工程同一颗节点目录下的 build/，不污染 src/） */
+function remotionBuildDir(node, ws) {
+  const root = String(ws || "").replace(/[\\/]+$/, "");
+  const id = String((node && node.id) || "default").replace(/[^\w.-]/g, "") || "default";
+  return root + "/.mtnode/remotion/" + id + "/build";
+}
+
+/* 构建描述（构建弹窗里那段需求）与节点功能说明（node.text）是**两件事**：
+ *   · node.text         = 这个 remotion 节点干什么（给人看，构建 Agent 一个字都不读）
+ *   · remotionBuildNote = 上次构建用的需求（构建 Agent 唯一的输入，随画布保存，下次弹窗预填）
+ * 老画布上 node.text 里写的其实是构建需求：第一次打开构建弹窗时复制进构建描述，
+ * node.text 原样保留 —— 要不要改写成功能说明由用户自己决定。 */
+function remotionBuildNoteOf(node) {
+  return node ? String(node.remotionBuildNote == null ? "" : node.remotionBuildNote) : "";
+}
+
+/* 构建提示词：多文件工程 + 端子契约 + 素材约定（与主进程的注入规则同源）。
+ * 需求正文只认 opt.note（构建弹窗里填的那段），不读 node.text。 */
+function remotionBuildPrompt(node, opt) {
+  opt = opt || {};
+  const w = opt.width || 1280;
+  const h = opt.height || 720;
+  const fps = opt.fps || 30;
+  const dur = opt.duration || 5;
+  const dir = opt.buildDir || "";
+  const prev = String(opt.prevCode || "").trim();
+  const err = String(opt.error || "").trim();
+  const header = err
+    ? I18n.t("上一轮构建的合成代码没通过验证，请修好它（只改必要的文件，别推倒重写）。") +
+      "\n\n" +
+      I18n.t("验证报错：") +
+      "\n" +
+      err +
+      "\n\n"
+    : "";
+  return (
+    header +
+    I18n.t("你是 MTNode 里 Remotion 视频节点的构建器。按下面的需求，写出一份**可本地渲染**的 Remotion React 工程。") +
+    "\n\n" +
+    I18n.t("需求：") +
+    "\n" +
+    String(opt.note || "").trim() +
+    "\n\n" +
+    I18n.t("工程目录（用文件工具直接写入这里，不要写到别处）：") +
+    dir +
+    "/src/\n" +
+    I18n.t("硬约束（必须全部满足）：") +
+    "\n" +
+    "1. " +
+    I18n.t("入口是 src/Composition.tsx，必须 `export const Main`（React 组件），根容器用 <AbsoluteFill>，不要包 <Composition>。") +
+    "\n" +
+    "2. " +
+    I18n.t("可以拆成多个文件（相对 import，例如 ./components/Title），文件都放在 src/ 下；只允许 import \"react\" / \"remotion\" / 工程内相对文件，禁止任何其它 npm 包（不许 npm install）。") +
+    "\n" +
+    "3. " +
+    I18n.t("在入口里声明端子契约，宿主据此自动生成节点端子：") +
+    "\n" +
+    "   export const inputs = [\n" +
+    "     { key: \"hero\", kind: \"image\", label: \"主图\", required: true },\n" +
+    "     { key: \"voice\", kind: \"audio\", label: \"旁白\" },\n" +
+    "     { key: \"lines\", kind: \"text\", label: \"台词\", list: true },\n" +
+    "   ];\n" +
+    "   " +
+    I18n.t("kind 只能是 image / audio / video / text / number / boolean / json；list: true = 这颗端子可接多路（值变成数组）；key 就是组件的 props 键。") +
+    "\n" +
+    "4. " +
+    I18n.t("组件签名写成 `export const Main: React.FC<Props> = (props) => ...`，Props 与契约一一对应；缺省值要能兜住（没接线时也要能渲染）。") +
+    "\n" +
+    "5. " +
+    I18n.t("画面尺寸 ") +
+    w +
+    "×" +
+    h +
+    "、" +
+    fps +
+    " fps、" +
+    dur +
+    I18n.t(" 秒；用 useVideoConfig() 读 width/height/fps/durationInFrames，不要硬编码总帧数，动画按帧插值。") +
+    "\n" +
+    "6. " +
+    I18n.t("素材 props 的取值约定（宿主注入）：image 收到 data URL 字符串，直接 <Img src={v}/>；audio / video 收到 public/ 下的裸文件名，必须用 remotion 的 staticFile(v) 包一层再给 <Audio>/<OffthreadVideo>；数组端子收到字符串数组。") +
+    "\n" +
+    "7. " +
+    I18n.t("interpolate 的 inputRange 必须严格递增且不重复；循环里按 i 算帧号时用 Math.max 兜底。") +
+    "\n" +
+    "8. " +
+    I18n.t("样式用内联 style 对象；文字默认中文。") +
+    "\n" +
+    "9. " +
+    I18n.t("不要跑渲染、不要改工程目录以外的文件、不要写 package.json。") +
+    "\n\n" +
+    (prev
+      ? I18n.t("下面是当前已有的工程源码（迭代时在此基础上改）：") + "\n\n" + prev + "\n\n"
+      : "") +
+    I18n.t("完成后用一两句话说明你改了哪些文件即可，代码本身写进文件，不要贴在回复里。")
+  );
+}
+
+/* 把 build/src 下的文件读回来 → { "Composition.tsx": "..." }（相对 src/）
+ * 只收 since 之后写过的文件（避免上一轮遗留的孤儿文件混进来） */
+async function remotionReadBuildTree(buildDir, since) {
+  const root = buildDir + "/src";
+  const files = {};
+  let count = 0;
+  const walk = async (dir, rel) => {
+    let r;
+    try {
+      r = await window.api.fileReadDir(dir);
+    } catch {
+      return;
+    }
+    const entries = (r && r.entries) || [];
+    for (const ent of entries) {
+      const childRel = rel ? rel + "/" + ent.name : ent.name;
+      if (ent.isDir) {
+        if (ent.name === "node_modules" || ent.name.startsWith(".")) continue;
+        await walk(dir + "/" + ent.name, childRel);
+        continue;
+      }
+      if (!/\.(tsx|ts|jsx|js|css|json|md|txt)$/i.test(ent.name)) continue;
+      /* ent.mtime 是毫秒（file:readDir 口径）；只收本次构建开始之后写出的文件，
+         免得上一版构建遗留的文件混进这一版工程 */
+      if (since && Number(ent.mtime || 0) && Number(ent.mtime) < since - 2000) continue;
+      if (count >= 40) continue;
+      let txt = "";
+      try {
+        const t = await window.api.fileReadText(dir + "/" + ent.name);
+        txt = typeof t === "string" ? t : String((t && (t.content != null ? t.content : t.text)) || "");
+      } catch {
+        continue;
+      }
+      if (!String(txt || "").trim()) continue;
+      if (txt.length > 400000) continue;
+      files[childRel] = txt;
+      count++;
+    }
+  };
+  await walk(root, "");
+  return files;
+}
+
+/* 读节点当前工程的源码拼成一段（给 agent 迭代时参考） */
+function remotionProjectCodeText(project) {
+  const files = (project && project.files) || {};
+  return Object.keys(files)
+    .sort()
+    .map((n) => "// ── " + n + " ──\n" + String(files[n] || ""))
+    .join("\n\n");
+}
+
+/* 构建 Agent 的模型三项：空 = 跟随全局默认（dshRunOnce 自己回落到设置里的默认） */
+function remotionBuildAgentOpts(node) {
+  return {
+    provider: String(node.buildProvider || "").trim() || undefined,
+    model: String(node.buildModel || "").trim() || undefined,
+    preset: String(node.buildPreset || "").trim() || undefined,
+    effort: String(node.buildEffort || "").trim() || undefined,
+  };
+}
+
+/* 构建 / 重建（节点上「构建」按钮与设置窗按钮共用）：
+ *   轮次 ≤3：agent 写工程 → 静态校验 → 短试渲染 → 通过即固化；不通过把报错回灌再修。
+ *   3 轮仍不过：**不动现有源码**（保留上一版可用工程），只把报错写在节点上。 */
+async function remotionBuildNode(node, opts) {
+  opts = opts || {};
+  if (!node || node.running) return;
+  const ws = String(typeof wfWorkspace === "function" ? wfWorkspace() : "").trim();
+  if (!ws) {
+    const msg = I18n.t("Remotion 构建需要画布工作目录：先在顶栏「工作目录」选一个文件夹");
+    node.remotionBuildError = msg;
+    toast(msg, "warn");
+    renderCanvas();
+    return;
+  }
+  /* 构建需求只认构建描述（弹窗里填的那段 / 显式 opts.note）：节点功能说明（node.text）
+     不参与构建。空着不构建 —— 不退回功能说明、也不退回上一次的值。 */
+  const note = String(opts.note != null ? opts.note : remotionBuildNoteOf(node)).trim();
+  if (!note) {
+    const msg = I18n.t("请先点「构建」，在弹窗里填写构建需求，再开始构建");
+    node.remotionBuildError = msg;
+    toast(msg, "warn");
+    renderCanvas();
+    return;
+  }
+  node.remotionBuildNote = note;
+  if (typeof dshRunOnce !== "function") {
+    toast(I18n.t("本机 Agent 网关不可用（设置 · Agent / DSH 里检查）"), "err");
+    return;
+  }
+  const { width, height } = remotionSizeWH(node);
+  const duration = Math.max(1, Math.min(60, Number(node.duration) || 5));
+  const fps = Math.max(1, Math.min(60, Number(node.fps) || 30));
+  const buildDir = remotionBuildDir(node, ws);
+  const startedAt = Date.now();
+  const prevProject = remotionProjectOf(node);
+  const prevCode = opts.fresh ? "" : remotionProjectCodeText(prevProject);
+
+  node.remotionBuildError = "";
+  node.remotionVerifyError = "";
+  node.remotionBuildPct = 1;
+  node.remotionStatus = I18n.t("构建中：agent 正在写工程…");
+  renderCanvas();
+  /* 构建目录先建出来：agent 的写工具只负责写文件，目录不存在时可能先失败一次 */
+  try {
+    if (window.api && window.api.fileMkdir) await window.api.fileMkdir(buildDir + "/src");
+  } catch {}
+  try {
+    let lastError = "";
+    let nextFiles = null;
+    let nextContract = [];
+    let verify = null;
+    for (let round = 1; round <= 3; round++) {
+      node.remotionBuildPct = 4 + (round - 1) * 30;
+      node.remotionStatus =
+        round === 1
+          ? I18n.t("构建中：agent 正在写工程…")
+          : I18n.t("构建中：第 ") + round + I18n.t(" 轮，agent 正在按报错修复…");
+      renderCanvas();
+      const prompt = remotionBuildPrompt(node, {
+        width,
+        height,
+        fps,
+        duration,
+        buildDir,
+        note,
+        prevCode: round === 1 ? prevCode : "",
+        error: lastError,
+      });
+      const text = await dshRunOnce(prompt, {
+        node,
+        workspace: ws,
+        writeRoots: [buildDir],
+        noCanvas: true,
+        systemPrompt:
+          I18n.t("你是 Remotion 动效工程构建器，只负责在给定目录里写 React 源码文件。"),
+        ...remotionBuildAgentOpts(node),
+      });
+      void text;
+      const files = await remotionReadBuildTree(buildDir, startedAt);
+      if (!Object.keys(files).length) {
+        lastError = I18n.t("agent 没有写出任何源码文件（构建目录：") + buildDir + "/src）";
+        continue;
+      }
+      const check = remotionStaticCheck(files, "Composition.tsx");
+      if (!check.ok) {
+        lastError = check.errors.join("\n");
+        continue;
+      }
+      nextFiles = files;
+      nextContract = check.contract;
+      node.remotionBuildPct = 60 + (round - 1) * 10;
+      node.remotionStatus = I18n.t("构建中：短试渲染验证…");
+      renderCanvas();
+      verify = await remotionRunVerify(node, {
+        files,
+        contract: check.contract,
+        description: note,
+        width,
+        height,
+        fps,
+        duration: Math.min(2, duration),
+      });
+      if (verify && verify.ok) {
+        lastError = "";
+        break;
+      }
+      lastError =
+        (verify && (verify.error || verify.message)) || I18n.t("试渲染失败（没有返回原因）");
+      node.remotionVerifyError = lastError;
+    }
+    if (!nextFiles || !verify || !verify.ok) {
+      node.remotionBuildError = lastError || I18n.t("构建失败");
+      node.remotionStatus = I18n.t("构建失败：") + node.remotionBuildError;
+      toast(I18n.t("构建失败（已保留上一版源码）"), "err");
+      renderCanvas();
+      scheduleSave();
+      return;
+    }
+    /* 固化：文件树 + 契约 + 时间；老的单文件直出字段清掉，避免两套源码并存 */
+    node.remotionFiles = nextFiles;
+    node.remotionInputs = nextContract;
+    node.remotionBuiltAt = Date.now();
+    node.tsx = String(nextFiles["Composition.tsx"] || "");
+    node.tsxTsx = "";
+    node.remotionVerifyError = "";
+    const kept = remotionPruneOrphanWires(node, prevProject.contract);
+    node.remotionBuildPct = 100;
+    node.remotionStatus =
+      I18n.t("已固化：") +
+      Object.keys(nextFiles).length +
+      I18n.t(" 个文件 · ") +
+      nextContract.length +
+      I18n.t(" 颗端子") +
+      (kept
+        ? I18n.t("；已断开 ") + kept + I18n.t(" 条契约里已不存在的接线")
+        : "");
+    toast(I18n.t("构建完成并已固化，运行只走脚本渲染"), "ok");
+    renderCanvas();
+    scheduleSave();
+  } catch (e) {
+    node.remotionBuildError = (e && e.message) || String(e);
+    node.remotionStatus = I18n.t("构建失败：") + node.remotionBuildError;
+    renderCanvas();
+    scheduleSave();
+  }
+}
+
+/* 构建弹窗（本次需求的核心入口）：点「构建」才弹这一只窗，只在窗里填这次构建的需求。
+ * 节点板身那颗「功能说明」与构建无关 —— 构建 Agent 读不到它，运行期也不读它。
+ * 窗走 mtDialogForm（#mtDialog 单例宿主）：只有窗内按钮 / Esc 能关，点蒙层不关，
+ * 与 AGENTS.md「带输入或设置的浮层一律 persistent」同一条口径。
+ * 「忽略现有源码，从头重建」默认**不勾** = 在现有源码上迭代。 */
+function remotionOpenBuildDialog(node) {
+  if (!node) return Promise.resolve();
+  if (typeof mtDialogForm !== "function") {
+    toast(I18n.t("构建弹窗不可用（界面脚本未就绪）"), "err");
+    return Promise.resolve();
+  }
+  /* 首次开窗做一次无损迁移：老画布上 node.text 写的构建需求 → 构建描述（node.text 不动） */
+  if (node.remotionBuildNote == null) node.remotionBuildNote = String(node.text || "");
+  const project = remotionProjectOf(node);
+  const st = { fresh: false };
+  return mtDialogForm({
+    title: I18n.t("构建 Remotion 工程"),
+    msg: project.hasSource
+      ? I18n.t("已有固化工程：默认在它上面迭代，Agent 只改必要的文件。")
+      : I18n.t("还没有工程：Agent 会按这段构建需求写出一份可本地渲染的 Remotion 工程。"),
+    textarea: {
+      label: I18n.t("构建需求（这次要让 Agent 做出什么视频）"),
+      value: remotionBuildNoteOf(node),
+      rows: 9,
+      placeholder: I18n.t(
+        "画面、节奏、文字、素材怎么用…（只用于构建；节点的「功能说明」不会发给 Agent）",
+      ),
+      requiredMsg: I18n.t("构建需求不能为空：先写清楚要做什么，再开始构建"),
+    },
+    requireText: true,
+    custom: (host) => {
+      const lab = document.createElement("label");
+      lab.style.display = "flex";
+      lab.style.alignItems = "center";
+      lab.style.gap = "6px";
+      lab.style.marginTop = "10px";
+      lab.style.fontSize = "12px";
+      lab.style.cursor = "pointer";
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = false;
+      cb.addEventListener("change", () => {
+        st.fresh = !!cb.checked;
+      });
+      const txt = document.createElement("span");
+      txt.textContent = project.hasSource
+        ? I18n.t("忽略现有源码，从头重建（不勾 = 在现有源码上迭代）")
+        : I18n.t("忽略现有源码，从头重建（当前还没有源码，勾不勾都一样）");
+      lab.appendChild(cb);
+      lab.appendChild(txt);
+      host.appendChild(lab);
+    },
+    hint: I18n.t(
+      "构建会调用一次构建 Agent，并做静态校验 + 短试渲染验证；通过后固化成脚本，之后运行不再调模型。",
+    ),
+    actions: [
+      { id: "cancel", label: I18n.t("取消") },
+      { id: "build", label: I18n.t("开始构建"), primary: true },
+    ],
+  }).then((r) => {
+    if (!r || r.action !== "build") return;
+    const note = String(r.text || "").trim();
+    if (!note) return; /* requireText 已经拦过；这里只是兜底，绝不退回旧值 */
+    node.remotionBuildNote = note;
+    if (typeof scheduleSave === "function") scheduleSave();
+    return remotionBuildNode(node, { note, fresh: st.fresh });
+  });
+}
+
+/* 契约重建后：同 key 的接线跟着 key 挪到新端子号上；契约里已消失的 key 断开并计数
+ * （调用方在状态条里提示条数）。
+ * prevContract = 上一版契约（节点覆盖 remotionInputs **之前**取），用来把老端子号翻译成 key：
+ * 契约项的顺序可能变（加了一项 / 删了一项），只按位置搬会把线搬到别的 key 上。 */
+function remotionPruneOrphanWires(node, prevContract) {
+  const prev = Array.isArray(prevContract) ? prevContract : [];
+  const contract = remotionContractOf(node);
+  if (!S.wf || !Array.isArray(S.wf.wires)) return 0;
+  const newIndex = new Map();
+  contract.forEach((c, i) => {
+    if (c && c.key) newIndex.set(String(c.key), i);
+  });
+  let dropped = 0;
+  const kept = [];
+  for (const w of S.wf.wires) {
+    if (!w || w.rel || w.to !== node.id) {
+      kept.push(w);
+      continue;
+    }
+    const idx = Number(w.toIndex) || 0;
+    const isCtrl = typeof wireFromIsControl === "function" && wireFromIsControl(w);
+    if (idx >= prev.length) {
+      /* 老控制口（末位）= 新控制口：控制线保留并挪到新的末位号；数据线断开 */
+      if (isCtrl) {
+        w.toIndex = contract.length;
+        kept.push(w);
+      } else dropped++;
+      continue;
+    }
+    const key = prev[idx] && prev[idx].key;
+    if (isCtrl || !key || !newIndex.has(String(key))) {
+      /* 上一版没有契约（老的无差别端子）时 key 为空：位置不可信，按「已消失」处理 */
+      dropped++;
+      continue;
+    }
+    w.toIndex = newIndex.get(String(key));
+    kept.push(w);
+  }
+  if (dropped || kept.length !== (S.wf.wires || []).length) {
+    S.wf.wires = kept;
+    if (typeof renderCanvas === "function") renderCanvas();
+  }
+  return dropped;
+}
+
+/* 短试渲染（构建验证 / 设置窗「试渲染」）：不占全局音视频互斥锁（共识） */
+async function remotionRunVerify(node, p) {
+  if (!window.api || !window.api.remotionVerify) {
+    return { ok: false, error: I18n.t("Remotion 插件未就绪（请先在插件中安装）") };
+  }
+  try {
+    const r = await window.api.remotionVerify({
+      nodeId: node.id,
+      workflowId: (S.wf && S.wf.id) || "",
+      workspace: String(typeof wfWorkspace === "function" ? wfWorkspace() : "").trim(),
+      files: p.files,
+      contract: p.contract || [],
+      description: p.description || "",
+      durationSeconds: p.duration || 2,
+      fps: p.fps,
+      width: p.width,
+      height: p.height,
+    });
+    return r || { ok: false, error: I18n.t("试渲染没有返回结果") };
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e) };
+  }
+}
+
+/* import 白名单与说明符扫描：渲染层的静态校验（remotionStaticCheck）要用，必须在这里有一份。
+   为什么补这两行：applyNodePatch → applyRemotionSourcePatch → remotionApplySourceEdit →
+   remotionStaticCheck 会同步调它们，而它们此前只定义在 remotion/main-remotion.js（主进程），
+   渲染层没有 → 画布编辑接口写 remotionFiles 立刻抛
+   「collectImportSpecs is not defined」，工程源码一个字都写不进去。口径与主进程那份保持一致。 */
+const CUSTOM_IMPORT_ALLOWED = /^(?:react|remotion)(?:\/|$)/;
+
+/* 模块说明符是否在白名单内（react / remotion 与相对路径放行） */
+function customImportAllowed(spec) {
+  const s = String(spec || "");
+  return s[0] === "." || s[0] === "/" || CUSTOM_IMPORT_ALLOWED.test(s);
+}
+
+/* 扫出源码里全部模块说明符（静态 import / require() / 动态 import()） */
+function collectImportSpecs(src) {
+  const specs = [];
+  const push = (s) => {
+    if (s && specs.indexOf(s) < 0) specs.push(s);
+  };
+  let m;
+  const reStatic = /(?:^|[\s;{}])import\s[^'"`]*?['"]([^'"]+)['"]/g;
+  while ((m = reStatic.exec(src))) push(m[1]);
+  const reCall = /(?:require|import)\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
+  while ((m = reCall.exec(src))) push(m[1]);
+  return specs;
+}
+
+/* 字段级「保存即静态校验」：改完源码立即校验并重算端子（试渲染另点） */
+function remotionApplySourceEdit(node, files) {
+  /* 上一版契约要在覆盖 remotionInputs 之前取：接线按 key 翻译到新端子号 */
+  const prevContract = remotionContractOf(node);
+  const check = remotionStaticCheck(files, "Composition.tsx");
+  node.remotionFiles = files;
+  node.tsx = String(files["Composition.tsx"] || "");
+  node.tsxTsx = "";
+  if (check.ok) {
+    node.remotionInputs = check.contract;
+    node.remotionBuiltAt = Date.now();
+    node.remotionVerifyError = "";
+    node.remotionBuildError = "";
+  } else {
+    node.remotionBuildError = check.errors.join("\n");
+  }
+  const dropped = remotionPruneOrphanWires(node, prevContract);
+  return { ok: check.ok, errors: check.errors, warnings: check.warnings, contract: check.contract, dropped };
+}
+
+/* 工程文件树归一：{ "相对 src/ 的路径": 源码 }。
+   画布编辑接口（remotionFiles）与源码编辑器共用同一条路径校验；任何一项不合法就整份
+   拒绝 —— 宁可一个字都没写，也不在节点上留半棵工程。 */
+function remotionFilesNormalize(raw) {
+  if (raw == null) return { files: null, error: "" };
+  if (typeof raw !== "object" || Array.isArray(raw))
+    return {
+      files: null,
+      error: I18n.t('remotionFiles 需是 { "文件路径": "源码" } 对象（路径相对 src/）'),
+    };
+  const files = {};
+  for (const [rawName, src] of Object.entries(raw)) {
+    let name = remotionSafeFileName(rawName);
+    if (name && /^src\//i.test(name)) name = name.slice(4);
+    if (!name)
+      return {
+        files: null,
+        error: I18n.t("工程文件路径不合法（须是相对 src/ 的路径，不许 ../ 越界）：") + rawName,
+      };
+    if (typeof src !== "string")
+      return { files: null, error: I18n.t("工程文件内容必须是字符串：") + name };
+    files[name] = src;
+  }
+  return { files, error: "" };
+}
+
+/* 画布编辑接口写 Remotion 工程（Agent 侧唯一入口；applyNodePatch 的 remotion 分支调它）：
+   remotionFiles  → 与设置窗「保存并校验」同一条：静态校验通过才重算端子契约并搬线；
+   remotionInputs → 显式契约，在源码派生之后覆盖（同 key 接线跟着 key 走，消失的断线）。
+   回执全部走 warnings（与其它字段的校验回报同一形态）。 */
+function applyRemotionSourcePatch(node, patch, warnings) {
+  if (!node || node.kind !== "remotion" || !patch) return false;
+  const warn = (m) => {
+    if (warnings) warnings.push(m);
+  };
+  const who = "（" + (node.title || node.id) + "）";
+  let changed = false;
+  if (patch.remotionFiles != null) {
+    const norm = remotionFilesNormalize(patch.remotionFiles);
+    if (norm.error) warn(norm.error + who);
+    else if (!Object.keys(norm.files || {}).length)
+      warn(I18n.t("remotionFiles 是空对象，未写入工程源码") + who);
+    else {
+      const r = remotionApplySourceEdit(node, norm.files);
+      changed = true;
+      for (const w of r.warnings || []) warn(w + who);
+      if (!r.ok) {
+        for (const e of r.errors || [])
+          warn(I18n.t("工程源码静态校验未通过：") + e);
+        warn(
+          I18n.t(
+            "源码已写入，但端子契约保持上一版（修好源码后重写一次 remotionFiles，或在设置里「保存并校验」）",
+          ) + who,
+        );
+      }
+      if (r.dropped)
+        warn(I18n.t("契约里已不存在的接线已断开：{n} 条", { n: r.dropped }) + who);
+    }
+  }
+  if (patch.remotionInputs != null) {
+    if (!Array.isArray(patch.remotionInputs))
+      warn(I18n.t("remotionInputs 需是契约数组 [{key,kind,label,list,required,default}]") + who);
+    else {
+      const norm = remotionNormalizeContractInput(patch.remotionInputs);
+      const prev = remotionContractOf(node);
+      node.remotionInputs = norm.contract;
+      node.remotionBuiltAt = Date.now();
+      changed = true;
+      for (const w of norm.warnings) warn(w + who);
+      const dropped = remotionPruneOrphanWires(node, prev);
+      if (dropped)
+        warn(I18n.t("契约里已不存在的接线已断开：{n} 条", { n: dropped }) + who);
+    }
+  }
+  return changed;
+}
+
 function remotionSizeWH(node) {
   const raw = String(node && node.size || "").trim();
   const m = raw.match(/^(\d{2,5})\s*[x×]\s*(\d{2,5})$/);
@@ -7770,7 +8687,9 @@ function remotionSizeWH(node) {
   return { width: 1280, height: 720 };
 }
 
-/* LLM 生成 Composition.tsx 的提示词模板：Remotion API 速查 + 硬约束 */
+/* 老路径遗留：单文件直出（tsxTsx）时代的 LLM 提示词模板。
+ * 运行期已不再调模型（现场生成整体下线，构建改走 remotionBuildPrompt），本函数不在调用链上；
+ * 保留仅为历史对照，别接回去。 */
 function remotionTsxPrompt(desc, opt) {
   opt = opt || {};
   const w = opt.width || 1280;
@@ -7841,11 +8760,8 @@ function remotionTsxPrompt(desc, opt) {
   );
 }
 
-/* 描述里的 @引用：与文本处理节点同一套候选（refCandidates = 已接线来源 + 全局广播），
-   命中后把 @标题 换成可读指针「标题」，让提示词 / 内置模板说清这段指的是哪一路输入；
-   内容本身仍由端子进上下文（主进程按来源类型归位：视频 / 图片 → hero、音频 → voice、
-   文本 → narration）。@标签原样保留（标签下的来源已经作为输入在上下文里），
-   真正解析不到的 token 汇总提示，不静默吞掉。 */
+/* 老路径遗留：描述里的 @引用解析（构建描述与功能说明都不再支持 @ 引用）。
+ * 不在调用链上，保留仅为历史对照。 */
 function remotionResolveRefs(desc, node) {
   const text = String(desc || "");
   const cands = typeof refCandidates === "function" ? refCandidates(node) : [];
@@ -7895,93 +8811,65 @@ async function playRemotionNode(node, quiet) {
     }
   } catch (_) {}
 
-  /* 描述：节点内字段（node.text，可空）。空描述 + 已接线输入 = 直接走内置台词卡版面
-     （素材 / 语音 / 台词全由端子注入）；有描述才交给文本模型写 TSX。
-     正文里的 @节点标题 / @标签 走既有 @引用口径（remotionResolveRefs）。 */
-  const descRefs = remotionResolveRefs(String(node.text || "").trim(), node);
-  const desc = descRefs.prompt;
+  /* 运行期一个描述都不读：node.text 是**功能说明**（只给人看），构建描述只在构建时用。
+     未固化时「让文本模型现场写代码」这条路已整体下线（用户口径：只有点「构建」才调模型），
+     只剩三条零模型路径：贴了 tsxTsx 直出 / 复用包内 Composition.tsx / 内置版面
+     （素材与台词全由端子注入）。@ 引用在功能说明与构建描述里都不再支持。 */
   const remotionInputs = remotionInputList(node);
-  if (descRefs.unresolved.length)
-    toast(I18n.t("未解析的 @引用：") + I18n.listJoin(descRefs.unresolved), "warn");
-  if (!desc && !remotionInputs.length) {
-    toast(I18n.t("请填写描述，或接入视频 / 语音 / 台词"), "warn");
+  const runNote = remotionBuildNoteOf(node).trim();
+  /* 包内产物的描述指纹：优先构建描述；老画布还没有构建描述时退回 node.text（兼容存量） */
+  const artifactDesc = runNote || String(node.text || "").trim();
+
+  /* ── 固化优先（本节点的核心契约）────────────────────────────────────────
+     节点里已有合成工程（remotionFiles 多文件 / tsxTsx 单文件直出）时：
+     运行时**只渲染这棵文件树，永不调模型** —— 描述改了也不会偷偷重建，
+     要重建只能用户手动点「构建」。这就是「固化后完全脚本化、稳定」的落点。 */
+  const project = remotionProjectOf(node);
+  const frozen = project.hasSource;
+
+  /* ── 直出合成代码优先 ──
+     节点里贴了 node.tsxTsx（合成源码）时就按它渲染，不再被内置版面顶掉。 */
+  const inlineTsx = frozen ? "" : String(node.tsxTsx || "").trim();
+
+  /* ── 包内中间产物（工作流自带的合成代码）──────────────────────────────
+     与工作流包一起带过来的 Composition.tsx：构建描述指纹一致 → 直接复用，一个模型都不调
+     （同一颗工作流重跑 / 换机后表现一致）；指纹不一致就没有零模型解 —— 按「未固化」处理
+     （走内置版面 / 提示先构建），绝不偷偷现场生成。
+     fromWorkshop 的代码产物首次运行前要用户确认（wfArtifactAckIfNeeded）。 */
+  let reusedTsx = "";
+  if (!frozen && !inlineTsx) {
+    const tsxArt = typeof wfArtifactOf === "function" ? wfArtifactOf(node, "tsx") : null;
+    if (tsxArt) {
+      if (typeof wfArtifactAckIfNeeded === "function") {
+        const okAck = await wfArtifactAckIfNeeded(node);
+        if (!okAck) {
+          node.remotionStatus = I18n.t("已取消");
+          renderCanvas();
+          return;
+        }
+      }
+      const txt = await wfArtifactReadText(tsxArt);
+      if (
+        txt &&
+        typeof wfArtifactMatches === "function" &&
+        wfArtifactMatches(node, tsxArt, artifactDesc)
+      )
+        reusedTsx = txt;
+    }
+  }
+  /* 内置版面：未固化、没贴代码、也没有可复用的包内工程 —— 素材 / 语音 / 台词全由端子注入。
+     一条线都没接时没有可渲染的东西：提示先构建（运行期不再有模型兜底）。 */
+  const wantsBuiltinPage = !frozen && !inlineTsx && !reusedTsx;
+  if (wantsBuiltinPage && !remotionInputs.length) {
+    const msg = I18n.t("请先点「构建」把工程固化下来，或接入素材 / 语音 / 台词再运行");
+    node.remotionStatus = msg;
+    renderCanvas();
+    if (!quiet) toast(msg, "warn");
     return;
   }
 
-  /* ── 内置台词卡版面（portrait-dialogue）──
-     有描述时按描述判定（写了 {{hero}} / {{narration}} / {{voice}} / {{bg}} 占位，或要求
-     「左角色 + 右侧金边台词卡」）；**没有描述、只接了输入**时直接按接线走内置模板
-     （描述已经不再是必填项）。走内置模板时**不再让文本模型现场写 TSX**（实测模型会把
-     描述当成介绍某个色值的海报，素材与台词全丢），而是把描述直接交给主进程：它用随包
-     模板渲染，并把已接线的媒体 / 台词按 props 注入。 */
-  /* 直出合成代码优先：节点里贴了 node.tsxTsx（合成源码）时就按它渲染，不再被内置模板顶掉。 */
-  const inlineTsx = String(node.tsxTsx || "").trim();
-  const wantsBuiltinPage = inlineTsx ? false : desc ? wantsBuiltinDialoguePage(desc) : true;
-
-  /* ── 包内中间产物（工作流自带的合成代码）──────────────────────────────
-     与工作流包一起带过来的 Composition.tsx：
-       · 描述指纹一致 → 直接复用，不调 LLM（同一颗工作流重跑 / 换机后表现一致）；
-       · 不一致      → 以旧文件为参考，让模型针对新描述做增量改造（自动重生成），
-                        新文件写进当前画布的产物目录，**不覆盖**工作流库条目里那份。
-     fromWorkshop 的代码产物首次运行前要用户确认（wfArtifactAckIfNeeded）。 */
-  let reusedTsx = "";
-  let baseTsx = "";
-  let tsxArt = null;
-  if (!wantsBuiltinPage) {
-    /* 节点里贴的合成代码是最直接的一等入口：有它就按它渲染，不再找产物、也不调模型。
-       （此前 node.tsxTsx 只影响「走不走内置模板」，运行时却只认产物文件，
-        于是画布上贴进来的代码会被静默忽略 —— 这是「写了不生效」的根源。） */
-    if (inlineTsx) {
-      reusedTsx = inlineTsx;
-    } else {
-      tsxArt = typeof wfArtifactOf === "function" ? wfArtifactOf(node, "tsx") : null;
-      if (tsxArt) {
-        if (typeof wfArtifactAckIfNeeded === "function") {
-          const okAck = await wfArtifactAckIfNeeded(node);
-          if (!okAck) {
-            node.remotionStatus = I18n.t("已取消");
-            renderCanvas();
-            return;
-          }
-        }
-        const txt = await wfArtifactReadText(tsxArt);
-        if (txt) {
-          if (wfArtifactMatches(node, tsxArt)) reusedTsx = txt;
-          else baseTsx = txt;
-        }
-      }
-    }
-  }
-
-  /* ── 「无模型」闸门：与 proc_text / proc_image 同一判据（remotion 要文本模型）──
-     本机没有该服务商 / 模型一律不起跑、不弹模型错误窗；用户亲手点 ▶ 才给一次提示。
-     复用包内合成代码时不需要文本模型（只渲染），所以这条闸门跳过。 */
-  if (!reusedTsx) {
-    const mg = nodeModelGate(node);
-    if (!mg.ok) {
-      node.error = mg.reason;
-      node.remotionStatus = mg.reason;
-      renderCanvas();
-      if (!quiet) toast(mg.reason, "warn");
-      return;
-    }
-  }
-  /* 服务商 / 模型校验（与 proc_text 一致：text_openai 服务商 + API Key；复用时不校验） */
-  let prov = (S.config.providers || []).find((p) => p.id === node.providerId);
-  if (!reusedTsx) {
-    if (!prov) {
-      node.error = I18n.t("未配置服务商（设置 · API/配置）");
-      node.remotionStatus = node.error;
-      renderCanvas();
-      return;
-    }
-    if (!String(prov.apiKey || "").trim()) {
-      node.error = I18n.t("该服务商未填写 API Key（设置 · API/配置）");
-      node.remotionStatus = node.error;
-      renderCanvas();
-      return;
-    }
-  }
+  /* 运行期不再要文本模型：三条零模型路径（固化工程 / 直出代码 / 包内复用 / 内置版面）
+     都不调 LLM —— 「无模型」闸门与服务商校验一并取消，构建那一步才验模型。 */
 
   /* ── 画布工作目录闸门（remotion 的工程与成片都落在这里）──
      <工作目录>/.mtnode/remotion/<节点 id>/ 是宿主唯一的写作点：没有工作目录就没有合法落点，
@@ -8001,9 +8889,11 @@ async function playRemotionNode(node, quiet) {
   node.error = null;
   node._abKey = uid("ab");
   beginNodeRun(node);
-  node.remotionStatus = wantsBuiltinPage
-    ? I18n.t("内置台词卡版面 · 准备素材…")
-    : I18n.t("LLM 生成动效代码…");
+  node.remotionStatus = frozen
+    ? I18n.t("已固化：脚本渲染中…")
+    : wantsBuiltinPage
+      ? I18n.t("内置版面：准备素材…")
+      : I18n.t("复用工程源码：渲染中…");
   node.remotionPct = 2;
   renderCanvas();
 
@@ -8011,77 +8901,19 @@ async function playRemotionNode(node, quiet) {
   const duration = Math.max(1, Math.min(60, Number(node.duration) || 5));
   const fps = Math.max(1, Math.min(60, Number(node.fps) || 30));
   let tsx = "";
-  if (wantsBuiltinPage) {
-    /* 跳过 LLM：主进程按描述挑内置模板，素材与台词由下面的 inputs 注入 */
+  if (frozen) {
+    /* 固化路径：文件树直接交给主进程，一个模型都不碰 */
+    tsx = String((project.files || {})["Composition.tsx"] || "");
+    node.remotionPct = 4;
+  } else if (wantsBuiltinPage) {
+    /* 内置版面：不给 tsx，主进程按结构化参数出模板，素材与台词由下面的 inputs 注入 */
     tsx = "";
-  } else if (reusedTsx) {
-    /* 复用包内合成代码：不调 LLM，直接把这份代码交给主进程渲染 */
-    tsx = reusedTsx;
-    node.tsx = tsx;
-    node.remotionStatus = I18n.t("复用包内合成代码（描述未变），直接渲染…");
+  } else {
+    /* 节点里贴的合成代码 / 复用的包内工程：不调模型，直接把这份代码交给主进程渲染 */
+    tsx = String(reusedTsx || inlineTsx || "").trim();
+    if (tsx) node.tsx = tsx;
     node.remotionPct = 4;
     renderCanvas();
-  } else try {
-    const spec = {
-      provider: requestProviderOf(prov, requestModelOf(node, prov)),
-      kind: "text",
-      model: node.model || (prov.models || [])[0] || "",
-      temperature:
-        node.temperature == null
-          ? 0.4
-          : Math.max(0, Math.min(2, Number(node.temperature) || 0)),
-      effort: "low",
-      prompt:
-        remotionTsxPrompt(desc, { width, height, fps, duration }) +
-        (baseTsx
-          ? "\n\n" +
-            I18n.t(
-              "下面这颗工作流自带的上一版 Composition.tsx 是同一段描述此前产出的代码。请以它为参考做增量改造：保留其中仍然成立的结构与动效，只针对上面的描述调整；仍然只输出一个完整文件。",
-            ) +
-            "\n\n" +
-            baseTsx
-          : ""),
-      texts: [],
-      images: [],
-      refImage: "",
-      abKey: node._abKey || "",
-    };
-    const rr = await window.api.apiCall(spec);
-    if (node._aborted || !node.running || mediaRunStopped(node)) {
-      node.error = null;
-      node.remotionStatus = I18n.t("已取消");
-      node.remotionPct = 0;
-      renderCanvas();
-      syncRemotionToSession(node, { desc, cancelled: true });
-      return;
-    }
-    if (!rr || !rr.ok) throw new Error((rr && (rr.error || rr.message)) || I18n.t("调用失败"));
-    tsx = String(rr.text || "").trim();
-    if (!tsx) throw new Error(I18n.t("LLM 未返回动效代码"));
-    node.tsx = tsx;
-    /* 以旧文件为参考的重生成：把新代码写进当前画布的产物目录（不动库条目那份），
-       并把描述指纹记成最新 —— 下次运行就能直接复用，不再重生成。 */
-    if (baseTsx) {
-      const written = await wfArtifactWrite(
-        node,
-        (tsxArt && tsxArt.name) || "Composition.tsx",
-        tsx,
-      );
-      if (written) wfArtifactRemember(node, written, "tsx");
-    }
-    node.remotionStatus = baseTsx
-      ? I18n.t("已按新描述重生成合成代码，渲染视频…")
-      : I18n.t("渲染视频…");
-    node.remotionPct = 4;
-    renderCanvas();
-  } catch (e) {
-    node.running = false;
-    node.error = (e && e.message) || String(e);
-    node.remotionStatus = node.error;
-    renderCanvas();
-    scheduleSave();
-    syncRemotionToSession(node, { desc, ok: false, error: node.error });
-    return;
   }
 
   const seed = nextMediaGenSeed(node);
@@ -8092,32 +8924,39 @@ async function playRemotionNode(node, quiet) {
       node.remotionStatus = I18n.t("已取消");
       node.remotionPct = 0;
       renderCanvas();
-      syncRemotionToSession(node, { desc, cancelled: true });
+      syncRemotionToSession(node, { desc: runNote, cancelled: true });
       return;
     }
-    /* 合成代码优先级：内置版面两者都不传，由主进程按描述选模板；
-       其余情况以 tsx（= 复用 / 新生成的合成源码）为准，空时才退回节点里贴的 node.tsxTsx。 */
-    const directTsx = wantsBuiltinPage
+    /* 合成代码优先级：固化工程 > 节点里贴的 tsxTsx / 复用的包内工程；
+       内置版面两者都不传，由主进程按结构化参数出模板。 */
+    const directTsx = frozen
       ? ""
-      : String(tsx || "").trim() || String(node.tsxTsx || "").trim();
+      : wantsBuiltinPage
+        ? ""
+        : String(tsx || "").trim() || String(node.tsxTsx || "").trim();
     const r = await window.api.remotionGenerate({
       nodeId: node.id,
       workflowId: (S.wf && S.wf.id) || "",
       /* 画布工作目录：宿主据此把渲染工程与成片落到 <工作目录>/.mtnode/remotion/<节点 id>/
          （路径一律由应用注入，工作目录里不出现任何硬编码路径） */
       workspace: remotionWs,
-      /* 动效合成：宿主直接采用为 src/Composition.tsx（不合规则渲染失败并报 custom_tsx_*） */
+      /* 固化工程（多文件）：主进程把整棵树写进工程 src/，入口固定 Composition.tsx */
+      files: frozen ? project.files : undefined,
+      /* 端子契约：主进程据此把已接线输入组装成 props（媒体内联、数组、标量） */
+      contract: frozen ? project.contract : undefined,
+      /* 动效合成：单文件路径（老节点现场生成 / 直出代码），宿主采用为 src/Composition.tsx */
       prompt: directTsx,
       tsx: directTsx,
-      /* 描述原文（主进程据此判定台词卡版面，并在没接台词时兜底；空描述 = 只按接线走） */
-      description: desc,
-      /* 全部已接线数据输入（无差别端子，跳过控制线）：视频 / 图片 → hero，音频 → voice，文本 → narration */
+      /* 描述原文：运行期不再有描述语义（功能说明只给人看、构建描述只在构建时用），
+         固定传空串 —— 主进程按 inputs 与结构化参数出内置版面。 */
+      description: "",
+      /* 全部已接线数据输入（固化时带 key；老节点无差别端子）：视频 / 图片 → hero，音频 → voice，文本 → narration */
       inputs: remotionInputs,
       /* 打字节拍：接头里若有一路「台词节拍表」，把每句起帧交给模板（成片跟随语音朗读） */
       beatStarts: wantsBuiltinPage ? remotionBeatStarts(remotionInputs, fps) : [],
       backgroundColor: String(node.bgColor || "").trim() || undefined, // 底色（未填则主进程取默认）
-      /* 回退路径（内置模板）的结构化参数：标题取描述首行 */
-      title: desc.split(/\r?\n/)[0].slice(0, 60) || I18n.t("Remotion 视频"),
+      /* 内置版面的标题：节点标题（描述不再参与画面内容） */
+      title: String(node.title || "").trim().slice(0, 60) || I18n.t("Remotion 视频"),
       subtitle: "",
       durationSeconds: duration,
       fps,
@@ -8129,7 +8968,7 @@ async function playRemotionNode(node, quiet) {
       node.error = null;
       node.remotionStatus = I18n.t("已取消");
       node.remotionPct = 0;
-      syncRemotionToSession(node, { desc, cancelled: true });
+      syncRemotionToSession(node, { desc: runNote, cancelled: true });
       return;
     }
     if (!r || !r.ok) {
@@ -8139,14 +8978,14 @@ async function playRemotionNode(node, quiet) {
       } else if (String(err) === "cancelled") {
         node.error = null;
         node.remotionStatus = I18n.t("已取消");
-        syncRemotionToSession(node, { desc, cancelled: true });
+        syncRemotionToSession(node, { desc: runNote, cancelled: true });
         return;
       } else {
         node.error = String(err);
       }
       node.remotionStatus = node.error;
       if (!quiet) toast(node.error, "err");
-      syncRemotionToSession(node, { desc, ok: false, error: node.error });
+      syncRemotionToSession(node, { desc: runNote, ok: false, error: node.error });
       return;
     }
     const path = String(r.path || r.outputPath || "");
@@ -8157,7 +8996,7 @@ async function playRemotionNode(node, quiet) {
     node.remotionStatus = mediaGenDoneMsg(Date.now() - t0);
     if (!quiet) toast(I18n.t("视频已生成：") + path, "ok");
     syncRemotionToSession(node, {
-      desc,
+      desc: runNote,
       ok: true,
       tsx,
       path,
@@ -8170,12 +9009,12 @@ async function playRemotionNode(node, quiet) {
     if (node._aborted) {
       node.error = null;
       node.remotionStatus = I18n.t("已取消");
-      syncRemotionToSession(node, { desc, cancelled: true });
+      syncRemotionToSession(node, { desc: runNote, cancelled: true });
     } else {
       node.error = (e && e.message) || String(e);
       node.remotionStatus = node.error;
       if (!quiet) toast(node.error, "err");
-      syncRemotionToSession(node, { desc, ok: false, error: node.error });
+      syncRemotionToSession(node, { desc: runNote, ok: false, error: node.error });
     }
   } finally {
     const wasStopped = mediaRunStopped(node);
@@ -11498,6 +12337,33 @@ function refreshDerived() {
   }
 }
 
+/* 音频 / 视频输入节点的卡片内容会随入线改变（继承上游 / 拔线回落到自己的文件，
+   取数口径见 app.js 的 mediaInputValueOf）：落线、断线之后就地重建这些卡片，
+   否则界面上还停在上一态（继承标记、按钮组、显示的文件名全都对不上 ——
+   renderCanvas 走复用快路径，不保证重画 body）。
+   跨一层的情况也要管：外部线接到壳上时，壳内那颗音频节点的取值同样变了。 */
+function refreshMediaInputCards(nodeIds) {
+  const seen = new Set();
+  const push = (n) => {
+    if (!n || seen.has(n.id)) return;
+    if (n.kind !== "input_audio" && n.kind !== "input_video") return;
+    seen.add(n.id);
+    try {
+      refreshNodeEl(n.id);
+    } catch (_) {}
+  };
+  for (const id of nodeIds || []) {
+    const n = typeof nodeById === "function" ? nodeById(id) : null;
+    if (!n) continue;
+    push(n);
+    if (n.kind === "super") {
+      for (const c of (S.wf && S.wf.nodes) || []) {
+        if (c && nodeParentSuperId(c) === n.id) push(c);
+      }
+    }
+  }
+}
+
 /* ============ 连线 ============ */
 
 /*
@@ -11623,7 +12489,7 @@ function wouldCycle(fromId, toId, toIndex, fromIndex) {
    其余普通节点仍按节点 kind 判（行为逐字不变 —— 例如 proc_text 的端子实际值就算是图像，
    也不会因此被当成图像来源）。
    （typeof 守卫：本函数会被冒烟脚本按函数体抠进沙箱，沙箱里不一定带这些帮手） */
-function wireActsAsImage(from, fi) {
+function wireActsAsImage(from, fi, consumer) {
   if (!from) return false;
   if (isImageSource(from)) return true;
   if (
@@ -11631,18 +12497,18 @@ function wireActsAsImage(from, fi) {
     isAssetNode(from) ||
     (typeof isSaveNode === "function" && isSaveNode(from))
   )
-    return wireSourceMediaType(from, fi) === "image";
+    return wireSourceMediaType(from, fi, consumer) === "image";
   /* 节点层（super 壳）的对外边界输出端子：壳整节点没有单一媒体类型，
-     只能看「这条线接住的那颗端子」在壳内汇入的是什么（wireSourceMediaType → 壳内取值）。 */
+     只能看「这条线接住的那颗端子」在壳内汇入的是什么（wireSourceMediaType → 壳内取值） */
   if (typeof isSuperLikeNode === "function" && isSuperLikeNode(from))
-    return wireSourceMediaType(from, fi) === "image";
+    return wireSourceMediaType(from, fi, consumer) === "image";
   /* 文件路径类来源（泛用文件节点 / 数据库文件节点）：本机路径按后缀认图（.png / .jpg …），
      这样用户拿一张本机图片接 H3 首帧不会被「图像端子需要图像来源」拦下。 */
   if (String(from.kind || "") === "input_any" || String(from.kind || "") === "input_file")
-    return wireSourceMediaType(from, fi) === "image";
+    return wireSourceMediaType(from, fi, consumer) === "image";
   return false;
 }
-function wireActsAsText(from, fi) {
+function wireActsAsText(from, fi, consumer) {
   if (!from) return false;
   /* 数据库「文件节点」：对外给的就是那条线的「文件绝对路径」（与 input_audio /
      input_video 把本机文件当文本地址对外同口径），所以可进工具 / 函数节点的文本
@@ -11650,7 +12516,20 @@ function wireActsAsText(from, fi) {
      fileWireSupportError 在连线前按 app-toolbuild.js 的支持表判（单一真源）。 */
   if (String(from.kind || "") === "input_file") return true;
   if (isFnToolNode(from) || isAssetNode(from))
-    return wireSourceMediaType(from, fi) === "text";
+    return wireSourceMediaType(from, fi, consumer) === "text";
+  /* 保存节点：媒体类保存（图像 / 音频 / 视频）对外是**带 text 路径的对象**
+     （见 app.js saveNodeOutputValue：{kind, path, url, text}），落盘后 text 就是那条
+     本机绝对路径 —— 与 input_video / video_gen 同口径，可当媒体路径喂进下游。
+     不补这条，Remotion 固化契约里的 audio / video 端子会拒收「循环片 · 保存」这类
+     保存节点的视频输出（wireActsAsText 与 wireActsAsImage 都为 false）。 */
+  if (isSaveNode(from) && typeof saveMediaKind === "function") {
+    const k = saveMediaKind(from);
+    if (k === "image" || k === "audio" || k === "video")
+      return !!(
+        String(from.savedPath || "").trim() ||
+        (typeof lastSavedFilePath === "function" && String(lastSavedFilePath(from) || "").trim())
+      );
+  }
   return isTextSource(from);
 }
 
@@ -11690,9 +12569,10 @@ function fnToolFreePortForMedia(host, want) {
 
 /* 这条数据线在「参数端子」眼里的类型：直接取单一真源 wireSourceMediaType 的四种
    （text / image / video / audio；端子声明优先，其次节点 kind 与该端子实际值），
-   所以连普通节点层真正汇出来的媒体也能对上同类型的参数端子。 */
-function wireParamKind(from, fi) {
-  return fnToolNormPortKind(wireSourceMediaType(from, fi));
+   所以连普通节点层真正汇出来的媒体也能对上同类型的参数端子。
+   consumer = 目标节点（节点层靠它分清「流向壳内 / 流向壳外」两条取数通道）。 */
+function wireParamKind(from, fi, consumer) {
+  return fnToolNormPortKind(wireSourceMediaType(from, fi, consumer));
 }
 
 /* 一条线在工具 / 函数节点上「实际会落到哪个输入端子」（校验与落点的唯一真源）：
@@ -11704,7 +12584,7 @@ function wireParamKind(from, fi) {
 function fnToolInPortIndex(host, from, fi, toIndex, fromCtrl) {
   if (toIndex != null) return Number(toIndex);
   if (fromCtrl) return fnToolFreePortIndex(host, "in", true);
-  const byKind = fnToolFreePortForMedia(host, wireParamKind(from, fi));
+  const byKind = fnToolFreePortForMedia(host, wireParamKind(from, fi, host));
   return byKind != null ? byKind : fnToolFreePortIndex(host, "in", false);
 }
 
@@ -11716,7 +12596,7 @@ function fnToolInPortIndex(host, from, fi, toIndex, fromCtrl) {
 function fnToolInPortTypeError(host, idx, from, fi) {
   const want = fnToolPortKind(host, "in", idx);
   if (!want) return null;
-  const got = wireParamKind(from, fi);
+  const got = wireParamKind(from, fi, host);
   if (got === want) return null;
   const e = fnToolParamList(host, "in")[Number(idx) - 1];
   const pname = String((e && e.name) || "").trim() || I18n.t("参数 ") + Number(idx);
@@ -11808,6 +12688,9 @@ function fileWireSupportError(from, fi, to) {
    保证「校验的那颗端子 = 实际落线的那颗」。 */
 function dataNodeControlInPort(node) {
   if (!node || !S.wf) return null;
+  /* Remotion 固化端子：末位那颗专用控制端子（契约项之后） */
+  const remotionContract = node.kind === "remotion" ? remotionContractOf(node) : [];
+  if (remotionContract.length) return remotionContract.length;
   /* 动态端子节点（proc_text / proc_image / sensenova_gen / agent_task / input_*）：
      专用控制端子恒存在（数据槽之后那颗），不再走下面「挑第一颗空口」的兜底 ——
      那条兜底在空白节点上会退到端口 0 的提示词入口。多路控制线共用这颗（任一到达即触发）。 */
@@ -11913,8 +12796,18 @@ function inPortOccupancy(to, toIndex, fromCtrl) {
     idx === Number(dynCtrlInPortIndex(to))
   )
     return none;
-  /* 无差别端子（Remotion）：控制线 / 数据线共用同一批口 → 一律顶掉 */
-  if (to.kind === "remotion") return { wires: hit, replaceable: true };
+  /* Remotion 固化端子：控制端子恒为末位（多条控制线共享，任一到达即触发一跑）；
+     契约里 list:true 的数组端子可挂多条数据线；其余仍是一口一线、可顶掉。 */
+  if (to.kind === "remotion") {
+    const contract = remotionContractOf(to);
+    if (contract.length) {
+      if (idx === contract.length) return none;
+      const item = contract[idx];
+      if (item && item.list) return none;
+      return { wires: hit, replaceable: true };
+    }
+    return { wires: hit, replaceable: true };
+  }
   const same = fromCtrl
     ? hit.filter((w) => wireFromIsControl(w))
     : hit.filter((w) => !wireFromIsControl(w));
@@ -12030,7 +12923,7 @@ function connectError(fromId, toId, toIndex, fromIndex) {
     if (fiParam < 0 || fiParam >= outputCount(from)) return I18n.t("该节点没有输出端子");
     if (isControlKind(from)) return I18n.t("参数端子只接数据线（文本 JSON），不接控制线");
     const okText =
-      typeof wireActsAsText === "function" ? wireActsAsText(from, fiParam) : isTextSource(from);
+      typeof wireActsAsText === "function" ? wireActsAsText(from, fiParam, to) : isTextSource(from);
     if (!okText) return I18n.t("参数端子需要文本来源（正文是一份 JSON 对象）");
     if (fromId === toId || wouldCycle(fromId, toId, toIndex, fromIndex))
       return I18n.t("不能连接成回路");
@@ -12106,7 +12999,7 @@ function connectError(fromId, toId, toIndex, fromIndex) {
     const incoming = saveDataSources(to);
     /* 端口感知：工具 / 函数节点按真正接出来的那个端子判定媒体（图像端子 → 图像保存），
        其余节点仍只看 0 号端子（inferMediaFromSource 内部同口径）。 */
-    const media = wireSourceMediaType(from, fi);
+    const media = wireSourceMediaType(from, fi, to);
     if (incoming.length) {
       const em = saveMediaKind(to);
       if (em === "image" || em === "audio" || em === "video") {
@@ -12122,7 +13015,7 @@ function connectError(fromId, toId, toIndex, fromIndex) {
     }
     if (
       media === "image" &&
-      !wireActsAsImage(from, fi) &&
+      !wireActsAsImage(from, fi, to) &&
       from.kind !== "split" &&
       from.kind !== "merge"
     )
@@ -12135,7 +13028,7 @@ function connectError(fromId, toId, toIndex, fromIndex) {
     )
       return I18n.t("拆分节点仅接受 1 个输入");
   } else if (!fromCtrl && to.kind === "music_gen") {
-    if (!wireActsAsText(from, fi))
+    if (!wireActsAsText(from, fi, to))
       return I18n.t("音乐生成节点需要文本来源（提示词 / 歌词）");
     const slot = toIndex == null ? null : Number(toIndex);
     if (slot != null && (slot < 0 || slot > 1)) return I18n.t("无效的输入端子");
@@ -12162,7 +13055,7 @@ function connectError(fromId, toId, toIndex, fromIndex) {
   } else if (!fromCtrl && to.kind === "yue_gen") {
     /* YuE2：端口0=风格提示词 · 端口1=歌词 · 端口2=ABC 谱（可选），只接受文本来源；
        端口3=控制输入不进数据槽 */
-    if (!wireActsAsText(from, fi))
+    if (!wireActsAsText(from, fi, to))
       return I18n.t("YuE2 音乐节点需要文本来源（风格提示词 / 歌词 / ABC 谱）");
     const slot = toIndex == null ? null : Number(toIndex);
     if (slot != null && (slot < 0 || slot > 2)) return I18n.t("无效的输入端子");
@@ -12197,9 +13090,9 @@ function connectError(fromId, toId, toIndex, fromIndex) {
     if (srcIsAudio && isBreezeMediaSource(from)) {
       /* 音频 / 视频输入节点：端口 1 收它的音频输出，端口 2 也收（音频 + 它的转写一起用） */
     } else if (slot === 1) {
-      if (wireSourceMediaType(from, fi) !== "audio")
+      if (wireSourceMediaType(from, fi, to) !== "audio")
         return I18n.t("参考音频端子需要音频来源（音频节点 / 语音生成 / 音乐生成）");
-    } else if (!wireActsAsText(from, fi)) {
+    } else if (!wireActsAsText(from, fi, to)) {
       if (slot === 0) return I18n.t("Breeze 语音生成节点需要文本来源（待合成文本）");
       if (slot === 2) return I18n.t("参考文稿端子需要文本来源或音频 / 视频输入节点");
       return I18n.t("指令端子需要文本来源");
@@ -12242,17 +13135,17 @@ function connectError(fromId, toId, toIndex, fromIndex) {
       const meta = videoGenPortMeta(to, slot);
       if (!meta) return I18n.t("无效的输入端子");
       if (meta.kind === "text") {
-        if (!wireActsAsText(from, fi)) return I18n.t("提示词端子需要文本来源");
+        if (!wireActsAsText(from, fi, to)) return I18n.t("提示词端子需要文本来源");
       } else if (meta.kind === "image") {
-        if (!wireActsAsImage(from, fi)) return I18n.t("图像端子需要图像来源");
+        if (!wireActsAsImage(from, fi, to)) return I18n.t("图像端子需要图像来源");
       } else {
         /* video/audio: accept text path or image source carrying a file path */
-        if (!wireActsAsText(from, fi) && !wireActsAsImage(from, fi))
+        if (!wireActsAsText(from, fi, to) && !wireActsAsImage(from, fi, to))
           return I18n.t("音视频端子需要文本路径或媒体文件路径");
       }
     } else {
       /* 自动分配：无法预知槽位类型；文本/图像源都可接受（提示词槽优先文本，参考槽优先媒体路径） */
-      if (!wireActsAsText(from, fi) && !wireActsAsImage(from, fi))
+      if (!wireActsAsText(from, fi, to) && !wireActsAsImage(from, fi, to))
         return I18n.t("视频节点需要文本或图像来源");
     }
   } else if (fromCtrl && to.kind === "video_gen") {
@@ -12268,6 +13161,44 @@ function connectError(fromId, toId, toIndex, fromIndex) {
     )
       return I18n.t("控制输入端子已被数据线占用");
   } else if (to.kind === "remotion") {
+    const contract = remotionContractOf(to);
+    if (contract.length) {
+      /* 固化端子：契约项各一颗（第 i 项 ↔ 第 i 号口），末位一颗专用控制端子。
+         · 控制线只进末位控制口；数据线只进契约项口（控制口拒绝数据线）
+         · 同 key 的数组端子（list:true）允许多接；非数组口已被占 → 顶掉旧线（与老口径一致）
+         · 类型：image 口要图像来源，audio/video 口要文本路径或媒体来源，文本 / 标量口要文本来源 */
+      const nIn = contract.length + 1;
+      let slot = toIndex == null ? null : Number(toIndex);
+      if (slot == null) {
+        if (fromCtrl) slot = contract.length;
+        else {
+          const free = remotionFreeContractPort(to, from, fi);
+          if (free == null)
+            return I18n.t("没有匹配的空闲端子：契约里同类型的端子都已被占用");
+          slot = free;
+        }
+      }
+      if (!isFinite(slot) || slot < 0 || slot >= nIn) return I18n.t("无效的输入端子");
+      if (fromCtrl) {
+        if (slot !== contract.length) return I18n.t("控制线只能连到末位的控制输入端子");
+        if (inPortWireCount(to, slot) > 0) return I18n.t("控制输入端子已被占用");
+        return null;
+      }
+      if (slot === contract.length) return I18n.t("该端子是控制输入，接不了数据线");
+      if (inPortWireCount(to, slot) > 0 && !inPortReplaceable(to, slot, fromCtrl))
+        return I18n.t("该输入端子已被占用");
+      const c = contract[slot];
+      const k = String(c.kind || "text");
+      if (k === "image") {
+        if (!wireActsAsImage(from, fi, to)) return I18n.t("「") + c.label + I18n.t("」端子需要图像来源");
+      } else if (k === "audio" || k === "video") {
+        if (!wireActsAsText(from, fi, to) && !wireActsAsImage(from, fi, to))
+          return I18n.t("「") + c.label + I18n.t("」端子需要媒体文件路径或文本来源");
+      } else if (!wireActsAsText(from, fi, to) && !(from && from.imageAsset)) {
+        return I18n.t("「") + c.label + I18n.t("」端子需要文本来源");
+      }
+      return null;
+    }
     /* Remotion 无差别端子（数据线与控制线共用同一批口，先到先占）：
        · 端口 0、1、2… 连一条长一条，端口号 = 「第几条输入」，没有专用的描述端子
          （描述已搬进节点 node.text）；
@@ -12291,9 +13222,9 @@ function connectError(fromId, toId, toIndex, fromIndex) {
     const useSlot = slot != null ? slot : nextFreeVideoPostSlot(to);
     if (useSlot == null) return I18n.t("该输入端子已被占用");
     if (useSlot === 1) {
-      if (!wireActsAsText(from, fi) && !wireActsAsImage(from, fi))
+      if (!wireActsAsText(from, fi, to) && !wireActsAsImage(from, fi, to))
         return I18n.t("源视频端子需要视频文件路径或文本来源");
-    } else if (!wireActsAsText(from, fi) && !wireActsAsImage(from, fi)) {
+    } else if (!wireActsAsText(from, fi, to) && !wireActsAsImage(from, fi, to)) {
       return I18n.t("素材端子需要文本或媒体文件路径");
     }
     if (
@@ -12430,7 +13361,7 @@ function connectError(fromId, toId, toIndex, fromIndex) {
     if (assetInPortOccupied(to, ti) && !inPortReplaceable(to, ti, false))
       return I18n.t("该内容端子已被占用");
     const want = items[ti].type;
-    const got = wireSourceMediaType(from, fi);
+    const got = wireSourceMediaType(from, fi, to);
     if (!assetPortAccepts(want, got))
       return I18n.t(
         "「{t}」端子是{w}内容，只接受{w}来源（当前是 {g}）：请改接同类来源，或在素材设置里换一个端子",
@@ -12566,6 +13497,32 @@ function nextFreeVideoPostSlot(node) {
   return null;
 }
 
+/* Remotion 固化端子：按契约挑数据落点（与 connectError 校验同一份口径）。
+ *   · 优先「同类型的第一个空闲契约端子」；
+ *   · 该端子是数组端子（list:true）时允许多条线挂同一颗；
+ *   · 没有同类型空位 → null（不硬塞到别的类型口，让用户自己接对）。
+ * 未固化（无契约）返回 null，走原来的无差别动态端子落点。 */
+function remotionFreeContractPort(node, from, fromIndex) {
+  const contract = remotionContractOf(node);
+  if (!contract.length || !S.wf) return null;
+  const m =
+    typeof wireSourceMediaType === "function"
+      ? wireSourceMediaType(from, fromIndex, node)
+      : "";
+  const want = m === "image" || m === "audio" || m === "video" ? m : "text";
+  for (let i = 0; i < contract.length; i++) {
+    const c = contract[i];
+    const k = String(c.kind || "text");
+    const sameFamily = want === "text" ? k !== "image" && k !== "audio" && k !== "video" : k === want;
+    if (!sameFamily) continue;
+    const used = (S.wf.wires || []).some(
+      (w) => !w.rel && w.to === node.id && Number(w.toIndex) === i && !wireFromIsControl(w),
+    );
+    if (!used || c.list) return i;
+  }
+  return null;
+}
+
 /* 视频 / 音乐节点：找下一个空闲数据槽（跳过控制槽与已占槽）；无则 null。
    from 存在时按来源类型优先匹配：文本源 → 提示词槽；图像源 → 参考图槽。
    fromIndex：来源真正接出来的那个端子 —— 工具 / 函数节点必须按端子判定类型，
@@ -12589,23 +13546,17 @@ function nextFreeMediaDataSlot(node, from, fromIndex) {
   if (node.kind === "breeze_gen") {
     /* 端口0=待合成文本 · 1=参考音频 · 2=参考文稿 · 3=指令（四个数据槽，端口4=控制输入不占数据槽）。
        音频来源优先落参考音频槽（1），文本来源按「空闲的文本槽」依次落位。 */
-    const fromAudio = wireSourceMediaType(from, fromIndex) === "audio";
+    const fromAudio = wireSourceMediaType(from, fromIndex, node) === "audio";
     if (fromAudio) return !occupied(1) ? 1 : null;
     for (const i of [0, 2, 3]) if (!occupied(i)) return i;
     return null;
-  }
-  if (node.kind === "remotion") {
-    /* Remotion 已改成无差别动态端子：数据 / 控制线都落「第一个空闲端子」，
-       走的是 addWire 的动态端子分支与 dataNodeControlInPort，不再有专门的挑槽逻辑。 */
-    const free = firstFreeInPortIndex(node);
-    return free == null ? null : free;
   }
   if (node.kind !== "video_gen") return null;
   /* video_gen（v5）：端口 0 = 控制输入，不参与数据落点；数据端口 1..N 与**数据槽号同号**
      （1=提示词 P · 2.. 参考图 / 帧 / 视频 / 音频 / 衔接）。按槽号挑类型，
      回给连线的端口号就是同号（历史上这里 ±1 换算，是端子错位的根源）。 */
   const nSlots = videoGenDataSlotsTotal(node);
-  const fromImg = wireActsAsImage(from, fromIndex);
+  const fromImg = wireActsAsImage(from, fromIndex, node);
   const slotKind = (s) => {
     const m = videoGenSlotMeta(node, s);
     return m ? m.kind : "";
@@ -12625,7 +13576,7 @@ function nextFreeMediaDataSlot(node, from, fromIndex) {
   }
   /* 音频 / 视频源：优先落同类型的参考槽（A# / V#）——否则它算「文本路径来源」，
      会被下面那条规则挤进提示词槽，H3 的参考音频 / 参考视频端子形同虚设 */
-  const fromMedia = wireSourceMediaType(from, fromIndex);
+  const fromMedia = wireSourceMediaType(from, fromIndex, node);
   if (fromMedia === "audio" || fromMedia === "video") {
     for (let s = 2; s <= nSlots; s++) {
       if (occupied(s)) continue;
@@ -12663,6 +13614,14 @@ function addWire(fromId, toId, toIndex, opts) {
         idx = s;
         break;
       }
+    }
+  }
+  /* Remotion 固化端子：数据线按契约类型挑口，控制线落末位专用控制端子 */
+  if (toIndex == null && toN && toN.kind === "remotion" && remotionContractOf(toN).length) {
+    if (fromN && isControlKind(fromN)) idx = remotionContractOf(toN).length;
+    else {
+      const free = remotionFreeContractPort(toN, fromN, fromIdx);
+      if (free != null) idx = free;
     }
   }
   if (toIndex == null && toN && !hasFixedInPorts(toN)) {
@@ -12798,6 +13757,8 @@ function addWire(fromId, toId, toIndex, opts) {
     const filters = normalizeGlobalTagFilter(to);
     if (filters.length) stampTagsOntoGlobalWired(to, filters);
   }
+  /* 音视频输入节点的内容随入线改变（继承 / 拔线恢复）→ 就地重建这些卡片 */
+  refreshMediaInputCards([toId, fromId]);
   /* 本地语音转写（官方本地 SenseVoice）：把音频 / 视频节点接到文字处理节点 → 那个节点
      运行时先替音频节点把转好文字（renderer/app-asr.js 的 asrEnsureForRun），再取它的文字。
      连线本身不弹任何窗、也不当场转（转录按钮在音频节点上）：模型权重由 dsh 运行时自己下，
@@ -14310,7 +15271,35 @@ function canvasSnapshot(opts) {
       seed: n.kind === "remotion" ? Math.floor(Number(n.seed) || 0) : undefined,
       remotionText:
         n.kind === "remotion" ? String(n.text || "").slice(0, 500) : undefined,
+      /* 构建描述（点「构建」时弹窗里填的那段需求）：构建 Agent 唯一的输入。
+         与 remotionText（节点功能说明，只给人看）是两个字段，别混。 */
+      remotionBuildNote:
+        n.kind === "remotion"
+          ? String(n.remotionBuildNote || "").slice(0, 2000)
+          : undefined,
       remotionTsxLen: n.kind === "remotion" ? (n.tsx || "").length : undefined,
+      /* 工程源码树与端子契约（agent 可读可写：canvas_edit 的 remotionFiles / remotionInputs）。
+         契约不大，standard 档就给全（它就是当前生效的端子表）；源码树按正文档位
+         （detail:"full" / bodies:true）才回，standard 档只回文件名清单，免得一次读图把
+         整棵工程灌进上下文。源码只认节点上的 remotionFiles（老节点的 tsxTsx 单文件见 remotionTsxLen）。 */
+      remotionFileNames:
+        n.kind === "remotion" ? Object.keys(n.remotionFiles || {}) : undefined,
+      remotionFiles:
+        n.kind === "remotion" && o.wantBodies
+          ? (() => {
+              const files = n.remotionFiles;
+              if (!files || typeof files !== "object") return undefined;
+              if (!(o.bodyLimit > 0)) return files;
+              const out = {};
+              for (const [name, src] of Object.entries(files))
+                out[name] = String(src || "").slice(0, o.bodyLimit);
+              return out;
+            })()
+          : undefined,
+      remotionInputs:
+        n.kind === "remotion" ? remotionContractOf(n) : undefined,
+      remotionBuiltAt:
+        n.kind === "remotion" ? Number(n.remotionBuiltAt) || undefined : undefined,
       goal: goalSnap ? goalSnap.text : undefined,
       goalLen: goalSnap ? goalSnap.textLen : undefined,
       steps:
@@ -19629,10 +20618,15 @@ function applyNodePatch(node, patch, warnings) {
         applyMediaGenConfiguredPath(node, node.outputPath, "audio");
     }
   }
-  /* remotion：描述 / 时长 / fps / 分辨率 / 服务商 / 模型 / 直出合成代码 / 左侧底色 */
+  /* remotion：功能说明 / 构建描述 / 时长 / fps / 分辨率 / 服务商 / 模型 / 直出合成代码 /
+     左侧底色 + 工程源码树 remotionFiles / 端子契约 remotionInputs（画布编辑接口的白名单内） */
   if (node.kind === "remotion") {
+    /* text = 这个节点干什么（功能说明，构建与运行都不读它） */
     if (patch.text != null) node.text = String(patch.text);
-    /* 直出合成代码：贴了就走这份（跳过 LLM）；传空串 = 回到「描述 → LLM」老路 */
+    /* remotionBuildNote = 构建描述（点「构建」弹窗里填的那段需求；只有构建 Agent 读它） */
+    if (patch.remotionBuildNote != null)
+      node.remotionBuildNote = String(patch.remotionBuildNote);
+    /* 直出合成代码：贴了就走这份（跳过模型）；传空串 = 回到「固化工程 / 内置版面」
     if (patch.tsx != null) node.tsxTsx = String(patch.tsx);
     if (patch.backgroundColor != null) node.bgColor = String(patch.backgroundColor).trim();
     if (patch.duration != null) {
@@ -19649,6 +20643,12 @@ function applyNodePatch(node, patch, warnings) {
       node.size = String(patch.size).trim();
     if (patch.providerId != null) node.providerId = String(patch.providerId);
     if (patch.model != null) node.model = String(patch.model);
+    /* 工程源码 / 契约放最后：契约要在源码派生之后落地，两者同时给时以显式契约为准 */
+    if (patch.remotionFiles != null && patch.tsx != null && warnings)
+      warnings.push(
+        I18n.t("同时给了 tsx 与 remotionFiles，已按 remotionFiles（多文件工程）优先"),
+      );
+    applyRemotionSourcePatch(node, patch, warnings);
   }
   /* video_gen：生成模式与时长 */
   if (node.kind === "video_gen") {
@@ -20276,6 +21276,12 @@ function editPortNameOf(node, dir, i, isFnT) {
     const it = items[Number(i)];
     return String((it && it.title) || "").trim() || I18n.t("内容 ") + (Number(i) + 1);
   }
+  /* 节点层：用户在「外观」面板里给外侧端子起的名字（唯一真源 = app-canvas.js 的
+     superPortNameOf，与画布徽标同一份口径）。没起名照旧往下走各自的默认名。 */
+  if (k === "super" && typeof superPortNameOf === "function") {
+    const nm = superPortNameOf(node, dir, i);
+    if (nm) return nm;
+  }
   if (dir === "in") {
     /* 动态端子节点：末位那颗是专用控制端子（数据槽之后，恒存在） */
     if (
@@ -20373,9 +21379,21 @@ function editPortKindOf(node, dir, i, isFnT) {
     if (k === "sensenova_gen") return i === 0 ? "text" : "any";
     if (k === "video_gen") return i === videoGenControlPort(node) ? "control" : "any";
     if (isVideoPostKind(node)) return i === 0 ? "control" : i === 1 ? "video" : "any";
-    /* Remotion：无差别端子 —— 端口类型由连线决定（控制线落任意空口 = 控制口，
-       其余 = 任意数据）。这与 app.js 的 remotionPortIsControl / inPortKindOf 同源。 */
-    if (k === "remotion") return inPortIsControl(node, i) ? "control" : "any";
+    /* Remotion：**固化后**端子类型由端子契约声明（第 i 项 ↔ 第 i 号端子，
+       image/audio/video → 对应媒体类型，text/json/number/boolean → text，末位 = 控制），
+       与 app.js 的 remotionContractPortKind / inPortKindOf 同源；未固化时仍是无差别端子 ——
+       端口类型由连线决定（控制线落任意空口 = 控制口，其余 = 任意数据）。
+       （此前这里恒回 any，导致契约已固化也按「任意」报：快照端子类型与连线准入
+         都与 inPortKindOf 不一致，音频 / 视频线接不进契约端子。） */
+    if (k === "remotion") {
+      const rc = typeof remotionContractOf === "function" ? remotionContractOf(node) : [];
+      if (rc.length) {
+        if (i >= rc.length) return "control";
+        const ck = String(rc[i].kind || "text").toLowerCase();
+        return ck === "image" || ck === "audio" || ck === "video" ? ck : "text";
+      }
+      return inPortIsControl(node, i) ? "control" : "any";
+    }
     if (k === "task") return "control";
     if (isControlKind(node)) return "control";
     /* 图像节点：输入端子与 sensenova_gen 同一泛用增量规则 —— 端口 0 = 提示词（文本入口），
@@ -20412,15 +21430,24 @@ function editPortKindOf(node, dir, i, isFnT) {
 
 function editNodePortSummary(node) {
   if (!node) return undefined;
-  const strip = (p) => ({
-    i: p.index,
-    name: p.name,
-    kind: p.kind,
-    n: (p.connectedTo || []).length,
-  });
+  /* 节点层外侧端子的用户命名写成「名字（输入3）」——名字 + 端子号，模型据此把回执里的
+     端口与画布上的端子对得上（口径见 app-canvas.js 的 superPortNameTagged）。 */
+  const strip = (dir) => (p) => {
+    let name = p.name;
+    if (node.kind === "super" && typeof superPortNameTagged === "function") {
+      const tagged = superPortNameTagged(node, dir, p.index);
+      if (tagged) name = tagged;
+    }
+    return {
+      i: p.index,
+      name: name,
+      kind: p.kind,
+      n: (p.connectedTo || []).length,
+    };
+  };
   return {
-    in: nodePortList(node, "in").map(strip),
-    out: nodePortList(node, "out").map(strip),
+    in: nodePortList(node, "in").map(strip("in")),
+    out: nodePortList(node, "out").map(strip("out")),
   };
 }
 
@@ -21507,6 +22534,8 @@ function removeWire(id) {
   /* 动态端子节点：数据槽缩短 → 专用控制端子前移，控制线跟着归位（见 dynCtrlInPortIndex） */
   if (toNode && typeof syncDynCtrlWires === "function") syncDynCtrlWires(toNode);
   if (!wireFromIsControl(w)) clearDownstream(w.to);
+  /* 音视频输入节点的内容随入线改变（拔线 → 回落到自己的文件）→ 就地重建这些卡片 */
+  refreshMediaInputCards([w.to, w.from]);
   /* 断线也要叫一次：交付节点上的端子重排 / 归属重绑之后，剩下的线里可能又有「现在才拿得到
      文件」的一件（上游刚产出）—— 自动收线不看「刚发生了什么」，只按当下的事实算。
      断线本身不会把已交的件退回（那是「撤回」的事，由用户显式发起）。 */

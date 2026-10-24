@@ -2107,6 +2107,11 @@
     "复制": "Copy",
     "工坊": "Store",
     "改名": "Rename",
+    "新建一条": "New chat",
+    "会话视图": "Sessions view",
+    "改这条助手会话的标题（回车确认 · Esc 取消）": "Rename this assistant chat (Enter to confirm · Esc to cancel)",
+    "结束当前这条助手会话（旧会话仍留在左栏可回看），下一条发送时新建": "End this assistant chat (the old one stays in the left list); a new one starts on your next send",
+    "在会话视图打开：切到会话视图看这条会话（那里有完整的计划 / 浏览器活动面板）": "Open in sessions view: switch there to see this chat with its plan / browser activity panels",
     "重命名该会话(便于管理)": "Rename this session",
     "合并": "Merge",
     "回答": "Reply",
@@ -2213,7 +2218,6 @@
     "\n模型：": "\nModel: ",
     " · 第": " · Turn ",
     " 次成功": " succeeded",
-    " 个节点到粘贴板（Ctrl+V 粘贴）": " node(s) to clipboard (Ctrl+V to paste)",
     "粘贴板为空，请先 Ctrl+C 复制节点": "Clipboard is empty — press Ctrl+C on nodes first",
     " 节点）": " nodes)",
     " 切割）": " grid)",
@@ -2865,6 +2869,14 @@
     "该输出端子没有连线": "This output port has no wire",
     "该输入端子没有连线": "This input port has no wire",
     "该输入端子已被占用": "This input port is already taken",
+    "只能把外部节点的连线接到节点层露在外面的输入端子上":
+      "External wires can only land on the node layer's exposed input ports",
+    "全屏进入态：请把线拖到画布左右边缘的端子上再松开":
+      "Fullscreen node layer: drop the wire on the ports pinned to the left/right edge of the canvas",
+    "节点层已展开：请把线拖到它左侧的内侧输入端子上再松开":
+      "Node layer expanded: drop the wire on its inner input port on the left",
+    "线头没落在端子上：请把线拖到目标节点的输入端子上再松开":
+      "Wire end missed the ports: drop it on a target node's input port",
     "已替换端口 {p} 上的原有连线（{src}）：Ctrl+Z 可撤销":
       "Replaced the wire on port {p} (was {src}): Ctrl+Z to undo",
     "已替换 {n} 颗端口上的原有连线（端口 {ports}）：Ctrl+Z 可撤销":
@@ -3517,8 +3529,8 @@
     "任务描述（@ 引用输入节点 · 输入内容自动附加）": "Task description (@ to reference input nodes · input is attached automatically)",
     "如 skills 或 src；留空 = 仓库根目录": "e.g. skills or src; leave empty = repo root",
     "重做（Ctrl+Y / Ctrl+Shift+Z）": "Redo (Ctrl+Y / Ctrl+Shift+Z)",
-    "复制节点（Ctrl+D）：在选中节点下方复制一个同类节点，仅复制类型、不复制内容":
-      "Duplicate node (Ctrl+D): create a same-type node below the selected one — type only, no content",
+    "复制节点（Ctrl+D）：在选中节点右下各一格完整复制一份（内容 / 参数 / 子节点 / 连线照带）":
+      "Duplicate node (Ctrl+D): full copy one grid cell down-right of the selected node (content, params, child nodes and wires included)",
     "助手可读写此目录下的文件；留空使用应用默认数据目录": "The assistant can read/write files in this directory; leave empty to use the app default data directory",
     "Enter 发送 · Shift+Enter 换行": "Enter send · Shift+Enter newline",
     "技能 Skills（安装后智能节点可自动发现并使用）": "Skills (agent nodes can discover and use them after install)",
@@ -5687,6 +5699,22 @@
     "来自": "From",
     "连向": "To",
     "点击定位到该节点": "Click to focus this node",
+    /* ── 节点层「外观」面板：头部按钮 / 面板标题 / 端子命名（renderer/app-node-cover.js）──
+       注：应用商店那条通用的「封面 → Cover」不在这里，别拿它改这里的词。 */
+    "外观": "Appearance",
+    "节点层外观": "Node layer appearance",
+    "已设背景图": "background image set",
+    "未设背景图": "no background image",
+    "已命名 {n} 个端子": "{n} ports named",
+    "端子未命名": "no named ports",
+    "（点击设置）": " (click to set up)",
+    "端子名称": "Port names",
+    "最长 12 字 · 留空即删除": "Max 12 chars · empty removes the name",
+    "留空即用默认名": "Leave empty for the default label",
+    "给这颗端子起个名字（最长 12 字 · 留空即删除）":
+      "Name this port (max 12 chars · clearing it removes the name)",
+    "空闲": "Idle",
+    "{name}（{tag}）": "{name} ({tag})",
     "项目目录: ": "Project folder: ",
     "工作目录最外层文件夹: ": "Project folder: ",
     /* ── 顶栏「数据不落应用文件夹」红色警示（renderer/app-boot.js 的 paintAppDirWarn：
@@ -8108,6 +8136,145 @@
       "Use it to size fonts and layout elements (percentages / relative math are fine).",
   });
 
+  /* ── Remotion 固化改造：构建 / 试渲染 / 源码编辑器 / 契约报错 ── */
+  Object.assign(EN, {
+    "构建报错：": "Build error: ",
+    "试渲染报错：": "Test render error: ",
+    "固化于 ": "Frozen at ",
+    " 个文件 · ": " files · ",
+    " 颗端子": " ports",
+    "构建（Agent 写工程）": "Build (agent writes the project)",
+    "按需求让 Agent 写 Remotion 工程，短试渲染通过后固化成脚本（之后运行不再依赖模型）": "Have the agent write a Remotion project from the brief; once the short test render passes it is frozen into a script (runs no longer touch a model)",
+    "重新构建": "Rebuild",
+    "忽略现有源码，从需求重新写一版工程（旧源码在失败时保留）": "Rewrite the project from the brief, ignoring the current source (the old source is kept if it fails)",
+    "试渲染": "Test render",
+    "用现有源码渲染 ≤2 秒验证能不能跑通（不占音视频锁，产物即弃）": "Render ≤2 s with the current source to prove it runs (does not take the audio/video lock, output is discarded)",
+    "还没有工程源码：先点「构建」": "No project source yet: click Build first",
+    "试渲染失败": "Test render failed",
+    "试渲染通过": "Test render passed",
+    "校验源码": "Check source",
+    "只做静态检查（导入白名单 / 入口 Main / 契约），不渲染": "Static checks only (import whitelist / entry Main / contract), no rendering",
+    "校验通过：": "Check passed: ",
+    "校验失败：": "Check failed: ",
+    "还没有工程源码。先在上面写需求点「构建」；Agent 写完并经试渲染验证后会固化在这里，之后可手改。": "No project source yet. Write the brief above and click Build; once the agent's project passes the test render it is frozen here and you can edit it by hand.",
+    "新文件名（相对 src/，例如 components/Title.tsx）": "New file name (relative to src/, e.g. components/Title.tsx)",
+    "工程文件都放在 src/ 下，入口固定 Composition.tsx（必须导出 Main 与 inputs 契约）": "All project files live under src/; the entry is always Composition.tsx and must export Main plus the inputs contract",
+    "保存并校验": "Save & check",
+    "写回节点并做静态检查（端子契约会按 inputs 重算；已消失的端子接线会被断开）": "Write back to the node and run the static check (ports are recomputed from inputs; wires on ports that disappeared are dropped)",
+    "已保存：": "Saved: ",
+    "；断开 ": "; dropped ",
+    " 条失效接线": " dead wire(s)",
+    "静态检查未通过：": "Static check failed: ",
+    "新增文件": "Add file",
+    "请填文件名": "Please enter a file name",
+    "文件名要有后缀（.tsx / .ts / .css / .json …）": "The file name needs an extension (.tsx / .ts / .css / .json …)",
+    "删除该文件": "Delete this file",
+    "入口文件 Composition.tsx 不能删": "The entry file Composition.tsx cannot be deleted",
+    "端子契约：": "Input contract: ",
+    "已固化": "Frozen",
+    "未固化": "Not frozen",
+    " 端子 · ": " ports · ",
+    "功能说明 / 构建 / 构建 Agent / 源码 / 渲染": "Description / build / build agent / source / render",
+    "功能说明（与构建无关）": "Description (nothing to do with building)",
+    "功能说明": "Description",
+    "这个节点是干什么的、什么场景复用它（只作说明，不给 Agent 读；要写构建需求请点下面的「构建…」）": "What this node is for, in which scenes you reuse it (description only — the agent does not read it; to write a build brief use Build… below)",
+    "纯说明字段：构建 Agent 与运行期都不读它。画面尺寸 / fps / 时长按下面「渲染」设置；素材由端子注入。": "Pure description: neither the build agent nor the run reads it. Size / fps / duration follow the Render section below; media comes in through the ports.",
+    "构建…": "Build…",
+    "打开构建弹窗：填这次构建的需求，Agent 写 Remotion 工程，短试渲染通过后固化成脚本": "Open the build dialog: write this build's brief, the agent writes the Remotion project, and once the test render passes it is frozen into a script",
+    "构建 / 验证": "Build / verify",
+    "构建 Agent 的模型": "Build agent model",
+    "源码（固化工程）": "Source (frozen project)",
+    "已固化：": "Frozen: ",
+    " 颗端子 · 运行只走脚本渲染": " ports · runs are pure script renders",
+    "构建": "Build",
+    "已固化 → 脚本渲染 mp4": "Frozen → script render to mp4",
+    "构建 Remotion 工程": "Build the Remotion project",
+    "已有固化工程：默认在它上面迭代，Agent 只改必要的文件。": "A frozen project already exists: by default the agent iterates on it and only touches the files it must.",
+    "还没有工程：Agent 会按这段构建需求写出一份可本地渲染的 Remotion 工程。": "No project yet: the agent writes a locally renderable Remotion project from this brief.",
+    "构建需求（这次要让 Agent 做出什么视频）": "Build brief (what the agent should make this time)",
+    "画面、节奏、文字、素材怎么用…（只用于构建；节点的「功能说明」不会发给 Agent）": "Visuals, pacing, on-screen text, how the media is used… (build only; the node's description is not sent to the agent)",
+    "构建需求不能为空：先写清楚要做什么，再开始构建": "The build brief cannot be empty: say what to make first, then build",
+    "忽略现有源码，从头重建（不勾 = 在现有源码上迭代）": "Ignore the existing source, rebuild from scratch (unchecked = iterate on the existing source)",
+    "忽略现有源码，从头重建（当前还没有源码，勾不勾都一样）": "Ignore the existing source, rebuild from scratch (no source yet, so this changes nothing)",
+    "构建会调用一次构建 Agent，并做静态校验 + 短试渲染验证；通过后固化成脚本，之后运行不再调模型。": "Building runs the build agent once, then a static check and a short test render; once it passes the project is frozen into a script and later runs never call a model.",
+    "开始构建": "Start building",
+    "请先点「构建」，在弹窗里填写构建需求，再开始构建": "Click Build first, write the build brief in the dialog, then start building",
+    "请先点「构建」把工程固化下来，或接入素材 / 语音 / 台词再运行": "Click Build to freeze a project first, or wire media / voice / lines before running",
+    "构建弹窗不可用（界面脚本未就绪）": "The build dialog is unavailable (UI script not ready)",
+    "内置版面：准备素材…": "Built-in layout: preparing media…",
+    "复用工程源码：渲染中…": "Reusing the frozen project source: rendering…",
+    "功能说明（只描述这个节点做什么 · 构建不读它）": "Description (what this node does · not read by the build)",
+    "这个节点是干什么的：给谁看、什么场景复用…（只作说明；要构建请点下方「构建」，在弹窗里写构建需求）": "What this node is for: who watches it, in which scenes you reuse it… (description only; to build, click Build below and write the brief in the dialog)",
+    "未固化：点「构建」写出工程并固化成脚本后才能按脚本运行": "Not frozen: click Build to write the project and freeze it into a script; only then can it run",
+    "未固化：先点「构建」写出工程 → 之后按脚本渲染 mp4": "Not frozen: click Build to write the project first → afterwards it renders mp4 from the script",
+    "打开构建弹窗，填写构建需求 → Agent 写 Remotion 工程并短试渲染验证 → 固化成脚本": "Open the build dialog, write the brief → the agent writes the Remotion project and test-renders it → freeze it into a script",
+    "inputs 契约的方括号没有闭合": "The inputs contract's brackets are never closed",
+    "端子契约解析失败：": "Failed to parse the input contract: ",
+    "端子契约 inputs 必须是一个数组": "The inputs contract must be an array",
+    "契约里有一项不是对象，已忽略": "One contract entry is not an object and was ignored",
+    "契约项的 key 不合法（须是标识符）：": "Illegal contract key (must be an identifier): ",
+    "契约 key 重复，只保留第一项：": "Duplicate contract key, keeping only the first: ",
+    "契约项「": "Contract entry “",
+    "」的 kind 不认识，按 text 处理：": "” has an unknown kind; treating it as text: ",
+    "还没有源码：先点「构建」让 agent 生成，或在设置里粘贴代码": "No source yet: click Build to let the agent write one, or paste code in the settings window",
+    "入口文件缺失：": "Entry file missing: ",
+    " 里有不允许的 import：": " contains a disallowed import: ",
+    "（只允许 react / remotion 与工程内的相对文件）": " (only react / remotion and project-relative files are allowed)",
+    "入口没有导出 Main 组件（export const Main = ...）": "The entry does not export a Main component (export const Main = ...)",
+    "源码里没有 export const inputs 契约：端子不会自动生成（只有控制口）": "The source declares no `export const inputs` contract: no data ports are generated (control port only)",
+    "上一轮构建的合成代码没通过验证，请修好它（只改必要的文件，别推倒重写）。": "The previous build did not pass verification — fix it (touch only the files that need changing; do not start over).",
+    "验证报错：": "Verification error: ",
+    "你是 MTNode 里 Remotion 视频节点的构建器。按下面的需求，写出一份**可本地渲染**的 Remotion React 工程。": "You build projects for the Remotion video node in MTNode. From the brief below, write a Remotion React project that **renders locally**.",
+    "需求：": "Brief: ",
+    "工程目录（用文件工具直接写入这里，不要写到别处）：": "Project directory (write here with the file tools; nowhere else): ",
+    "硬约束（必须全部满足）：": "Hard constraints (all of them):",
+    "入口是 src/Composition.tsx，必须 `export const Main`（React 组件），根容器用 <AbsoluteFill>，不要包 <Composition>。": "The entry is src/Composition.tsx and must `export const Main` (a React component) with <AbsoluteFill> as the root container; do not wrap <Composition>.",
+    "可以拆成多个文件（相对 import，例如 ./components/Title），文件都放在 src/ 下；只允许 import \"react\" / \"remotion\" / 工程内相对文件，禁止任何其它 npm 包（不许 npm install）。": "Feel free to split it into several files (relative imports such as ./components/Title), all under src/; only import \"react\" / \"remotion\" / project-relative files — no other npm package (no npm install).",
+    "在入口里声明端子契约，宿主据此自动生成节点端子：": "Declare the input contract in the entry; the host derives the node ports from it:",
+    "kind 只能是 image / audio / video / text / number / boolean / json；list: true = 这颗端子可接多路（值变成数组）；key 就是组件的 props 键。": "kind is one of image / audio / video / text / number / boolean / json; list: true means the port accepts several wires (the value becomes an array); key is the component's prop name.",
+    "组件签名写成 `export const Main: React.FC<Props> = (props) => ...`，Props 与契约一一对应；缺省值要能兜住（没接线时也要能渲染）。": "Type the component as `export const Main: React.FC<Props> = (props) => ...` with Props matching the contract one-to-one; every prop needs a usable default so it renders with nothing wired.",
+    " 秒；用 useVideoConfig() 读 width/height/fps/durationInFrames，不要硬编码总帧数，动画按帧插值。": " seconds; read width/height/fps/durationInFrames from useVideoConfig(), never hard-code the frame count, and interpolate animations by frame.",
+    "素材 props 的取值约定（宿主注入）：image 收到 data URL 字符串，直接 <Img src={v}/>；audio / video 收到 public/ 下的裸文件名，必须用 remotion 的 staticFile(v) 包一层再给 <Audio>/<OffthreadVideo>；数组端子收到字符串数组。": "How media props arrive (injected by the host): image gets a data URL string, use it directly with <Img src={v}/>; audio / video get a bare file name inside public/ and must go through remotion's staticFile(v) before <Audio>/<OffthreadVideo>; list ports get an array of strings.",
+    "interpolate 的 inputRange 必须严格递增且不重复；循环里按 i 算帧号时用 Math.max 兜底。": "interpolate() inputRange must be strictly increasing with no duplicates; when frame numbers come from i inside a loop, floor them with Math.max.",
+    "样式用内联 style 对象；文字默认中文。": "Use inline style objects; on-screen text is Chinese by default.",
+    "不要跑渲染、不要改工程目录以外的文件、不要写 package.json。": "Do not start renders, do not touch files outside the project directory, and do not write package.json.",
+    "下面是当前已有的工程源码（迭代时在此基础上改）：": "The current project source is below (iterate on it):",
+    "完成后用一两句话说明你改了哪些文件即可，代码本身写进文件，不要贴在回复里。": "When done, just say in one or two sentences which files you changed; write the code into the files, do not paste it into the reply.",
+    "Remotion 构建需要画布工作目录：先在顶栏「工作目录」选一个文件夹": "Remotion build needs a canvas workspace: pick a folder in the top bar's Workspace first",
+    "请先在描述框里写需求（构建提示词），再点「构建」": "Write the brief in the description box first, then click Build",
+    "本机 Agent 网关不可用（设置 · Agent / DSH 里检查）": "The local agent gateway is unavailable (check Settings · Agent / DSH)",
+    "构建中：agent 正在写工程…": "Building: the agent is writing the project…",
+    "构建中：第 ": "Building: round ",
+    " 轮，agent 正在按报错修复…": " — the agent is fixing the reported errors…",
+    "你是 Remotion 动效工程构建器，只负责在给定目录里写 React 源码文件。": "You are a Remotion project builder: your only job is to write React source files into the given directory.",
+    "agent 没有写出任何源码文件（构建目录：": "The agent wrote no source files (build directory: ",
+    "构建中：短试渲染验证…": "Building: running the short verification render…",
+    "试渲染失败（没有返回原因）": "Test render failed (no reason returned)",
+    "构建失败：": "Build failed: ",
+    "构建失败（已保留上一版源码）": "Build failed (the previous working source was kept)",
+    "；已断开 ": "; dropped ",
+    " 条契约里已不存在的接线": " wire(s) on ports that no longer exist",
+    "构建完成并已固化，运行只走脚本渲染": "Build complete and frozen — runs are now pure script renders",
+    "试渲染没有返回结果": "The test render returned no result",
+    "请填写描述，或接入视频 / 语音 / 台词": "Write a description, or wire in footage / voice / dialogue",
+    "已固化：脚本渲染中…": "Frozen: script rendering…",
+    "复用包内合成代码（描述未变），直接渲染…": "Reusing the composition code bundled with the workflow (description unchanged) — rendering…",
+    "已按新描述重生成合成代码，渲染视频…": "Regenerated the composition code for the new description — rendering…",
+    " · 本次是现场生成，建议点「构建」固化成脚本（之后运行不再依赖模型）": " · this run generated the code live; click Build to freeze it into a script (later runs no longer touch a model)",
+    "生成完成：视频已输出到 ": "Done: video saved to ",
+    "生成的动效代码（TSX）：": "Generated motion code (TSX): ",
+    /* remotion 工程源码 / 端子契约从画布编辑接口写入（applyRemotionSourcePatch 的回执） */
+    "remotionFiles 需是 { \"文件路径\": \"源码\" } 对象（路径相对 src/）": "remotionFiles must be an object mapping { \"file path\": \"source\" } (paths relative to src/)",
+    "工程文件路径不合法（须是相对 src/ 的路径，不许 ../ 越界）：": "Illegal project file path (must be relative to src/, no ../ escapes): ",
+    "工程文件内容必须是字符串：": "Project file contents must be a string: ",
+    "remotionFiles 是空对象，未写入工程源码": "remotionFiles is an empty object; no project source was written",
+    "工程源码静态校验未通过：": "Project source failed the static check: ",
+    "源码已写入，但端子契约保持上一版（修好源码后重写一次 remotionFiles，或在设置里「保存并校验」）": "The source was saved, but the port contract stays on the previous version (fix the source and write remotionFiles again, or use Save & check in the settings window)",
+    "契约里已不存在的接线已断开：{n} 条": "{n} wire(s) on ports that no longer exist were dropped",
+    "remotionInputs 需是契约数组 [{key,kind,label,list,required,default}]": "remotionInputs must be a contract array [{key,kind,label,list,required,default}]",
+    "同时给了 tsx 与 remotionFiles，已按 remotionFiles（多文件工程）优先": "Both tsx and remotionFiles were given; remotionFiles (the multi-file project) wins",
+  });
+
   /* ── 交互卡片（提问 / 审批）的来源标注 + 「稍后」出口 ── */
   Object.assign(EN, {
     "来自：": "From: ",
@@ -8288,6 +8455,14 @@
       "Click here to choose, or drop a media file onto this node",
     "未绑定音频文件": "no audio file bound",
     "未绑定视频文件": "no video file bound",
+    "已继承上游输入（只读）": "inherited from upstream input (read-only)",
+    "继承上游输入（只读）": "inherited from upstream input (read-only)",
+    "等待上游音频（已继承输入）": "waiting for upstream audio (input inherited)",
+    "等待上游视频（已继承输入）": "waiting for upstream video (input inherited)",
+    "继承：等待上游音频": "inherited: waiting for upstream audio",
+    "继承：等待上游视频": "inherited: waiting for upstream video",
+    "继承上游输入（只读）：内容取自接进来的那条线，拔线即恢复本节点自己的文件":
+      "Inherited from upstream input (read-only): content comes from the connected wire; disconnect it to restore this node's own file",
     点击在文件夹中显示: "click to reveal in folder",
     "文件不存在或本机播放器无法解码该格式":
       "File is missing, or the local player cannot decode this format",
@@ -8500,6 +8675,13 @@
       "// Pure JS compute: input = { paramName: value }, return the result\n// Text params are strings · image params are { kind:\"image\", path }",
     /* ── 顶栏「工具库」工具库（app-tools.js · tools-store.js）── */
     "工具库": "Tool library",
+    /* 工具库清单：搜索框 + 分页（每页 20 条）*/
+    "搜索工具（名称 / 描述 / 参数）":
+      "Search tools (name / description / params)",
+    "按名称 / 描述 / 入出参数名过滤；过滤后仍可插入 / 改名 / 删除":
+      "Filter by name / description / input-output param names; filtered entries can still be inserted / renamed / deleted",
+    "没有匹配的工具": "No matching tools",
+    " 个工具": " tools",
     "从当前画布保存：": "Save from the current canvas:",
     "保存到工具库": "Save to library",
     "工具库不可用（本机存储接口未就绪）": "Tool library unavailable (local storage API not ready)",
@@ -9452,8 +9634,6 @@
 
     /* 摘要行：各 kind「窗里能改什么」的一句话 */
     "服务商 / 模型 / 尺寸": "Provider / model / size",
-    "服务商 / 模型 / 温度 · 分辨率 / fps / 时长":
-      "Provider / model / temperature · resolution / fps / duration",
     "预设 / 供应商 / 模型 / 思考强度": "Preset / provider / model / thinking effort",
     "预设 / 供应商 / 模型 / 思考强度 / 工作目录":
       "Preset / provider / model / thinking effort / workspace",
@@ -9751,6 +9931,20 @@
     "运行时在提示词末尾自动补一句官方口径的续写声明（Continue seamlessly from <Video N> …），告诉模型这一路参考视频就是上一段的续写起点。自己已经写过类似要求时可以关掉。":
       "At run time a continuation note in the official wording (“Continue seamlessly from <Video N> …”) is appended to the prompt, telling the model this reference video is where the previous clip continues from. Turn it off if you already wrote such a request yourself.",
     "占用参考视频": "takes reference video",
+    "节点头部的蒙版小按钮，单击开 / 关（首次开启会打开蒙版编辑器），右键随时重新编辑。编辑器里用透明绿涂抹要重绘的区域，程序把它转成「透明=可编辑」的 Alpha 蒙版，与原图、提示词一起发给 gpt-image-2。":
+      "The mask button on the node header toggles it on/off (the first turn opens the mask editor); right-click reopens the editor anytime. In the editor, paint the area to repaint in transparent green — it is turned into an alpha mask (transparent = editable) and sent to gpt-image-2 together with the source image and the prompt.",
+    "接进来的文本按 Markdown 排版成 PDF：标题 / 列表 / 表格 / 代码块 / 图片都渲染，$…$ 与 $$…$$ 公式排成排版结果（与画布预览同一套公式渲染器）。\n\nPDF 只在点节点上的 ▶（或控制节点指挥）时生成，接线与上游更新不会自动落盘。":
+      "Wired-in text is laid out as a PDF in Markdown: headings, lists, tables, code blocks and images all render, and $…$ / $$…$$ formulas are typeset (the same formula renderer as the canvas preview).\n\nThe PDF is generated only when you press ▶ on the node (or a control node triggers it); wiring and upstream updates never write it automatically.",
+    /* 补：设置面里此前漏译的常用短语（角色 / 端口标签 / 媒体段位） */
+    "角色与音色": "Role & voice",
+    "{s} 秒": "{s} s",
+    "输入参数": "Input parameters",
+    "首帧": "First frame",
+    "末帧": "Last frame",
+    "上一段": "Previous segment",
+    "信息": "Info",
+    "预设 / 供应商 / 模型 / 思考强度 / 工作目录 / 中间产物":
+      "Preset / provider / model / thinking effort / working folder / intermediates",
   });
 
   /* ── 本地语音后端后台安装（弹窗最小化到状态栏的 ovMin* 一套连同词条已随本轮需求移除） ── */
@@ -10731,16 +10925,17 @@
   /* ── 节点「?」说明按钮与说明小窗（renderer/app-nodehelp.js + app-settings.js） ──
      面向非技术用户的最简语言：每条都是「这个节点是干什么的」一句话。 */
   Object.assign(EN, {
-    "写文字的地方：在这里打字或粘贴，内容会顺着连线交给后面的节点。":
-      "Where you write text: type or paste here, and it flows along the wire to the next node.",
-    "放图片的地方：选一张本机图片或拖进来，后面的节点就能拿它当参考图。":
-      "Where you put an image: pick one from this computer or drag it in, so later nodes can use it as a reference.",
-    "放音频的地方：选一个本机音频文件，节点会给出它的文件地址，可接给做声音的节点。":
-      "Where you put audio: pick an audio file, and the node hands out its file path for nodes that make sound.",
+    "写文字的地方：在这里打字或粘贴，内容会顺着连线传给后面的节点。":
+      "Where you write text: type or paste here; the content flows along the wire to the next node.",
+    "放图片的地方：选一张本机图片或拖进来，供后面的节点当参考图。":
+      "Where you put an image: pick a local image or drag one in, and later nodes can use it as a reference.",
+    "放音频的地方：选一个本机音频文件，把它交给后面做声音的节点。":
+      "Where you put audio: pick a local audio file and hand it to a downstream node that makes sound.",
     "放视频的地方：选一个本机视频文件，节点会给出它的文件地址，可接给做视频的节点。":
       "Where you put video: pick a video file, and the node hands out its file path for nodes that make video.",
     "文件节点：一次导入多个本机文件，当成一批内容交给后面的节点。":
       "File node: import several files at once and pass them on as one batch.",
+    "让 AI 自己干活：还能读文件、上网、执行命令，把这件事做完。":       "Let the AI do the work: it can read files, browse the web and run commands until the job is done.",     "工具节点：一个能重复使用的小工具，参数就是它的接口，智能体也能调用。":       "Tool node: a reusable little tool whose parameters are its interface — agents can call it too.",     "数据库副本：这台机器上存好的真实资料放在这里，可以查、可以算。":       "Database copy: real material stored on this machine, ready to query and compute on.",     "开发节点：代表项目里的一个功能块，展开能看到里面的结构和代码文件。":       "Dev node: one feature block of a project — expand it to see its structure and code files.",
     "素材节点：把素材库里存好的内容取出来用，每条内容就是一个接口。":
       "Asset node: pull saved content out of the asset library; each entry becomes one port.",
     "数据表：读一个表格文件，或者让智能体帮你建一张表。":
@@ -10844,8 +11039,6 @@
     "可留空；填了就在正文顶部加一行居中大标题（PDF 属性里的标题也用节点标题）":
       "Leave empty for none; if filled, a centred title line is added on top (the node title is used as the PDF title property)",
     "当前版面：": "Current layout: ",
-    "接进来的文本按 Markdown 排版成 PDF：标题 / 列表 / 表格 / 代码块 / 图片都渲染，$…$ 与 $$…$$ 公式排成排版结果（与画布预览同一套公式渲染器）。":
-      "The incoming text is laid out as Markdown into a PDF: headings, lists, tables, code blocks and images are rendered, and $…$ / $$…$$ formulas are typeset (same formula renderer as the canvas preview).",
     "聚合：全部条目合并为一个 PDF（{路径}.pdf）":
       "Aggregate: all items merged into one PDF ({路径}.pdf)",
     "批量：保存为 {路径}_{输入节点标题}.pdf":
@@ -10894,6 +11087,77 @@
     "生成 PDF：把上一步的文字排成一份像样的 PDF 文件（标题、表格、列表都会排版，公式会画成真正的数学式子）。":
       "PDF export: typesets the previous step's text into a presentable PDF file (headings, tables and lists are laid out; formulas are drawn as real math).",
     "PDF 生成：": "PDF export: ",
+    /* 最简语言说明（KIND_HELP）—— 文案改写过，译文按现行文案补齐 */
+    "放视频的地方：选一个本机视频文件，把它交给后面做视频的节点。":
+      "Where you put video: pick a local video file and hand it to a downstream node that makes video.",
+    "文件节点：上传任意文件，按类型自动转成对应的输入节点。":
+      "File node: upload any file and it becomes the matching input node by type.",
+    "文件节点：一次导入多个文件，当成一批内容交给后面的节点。":
+      "File node: import several files at once and pass them on as one batch.",
+    "交付节点：长周期任务要你交东西时的落点，每个待交文件 = 一个输入端子（连入或点「⬆ 上传」即算已交），交齐还要到条带点「确认交付完成」。":
+      "Delivery node: where a long task collects what you must hand in — each required file is one input port (wiring it or clicking “⬆ Upload” counts as delivered); once all are in, press “Confirm delivery” on the strip.",
+    "产出节点：长周期任务跑出来的信息与文件写在这里，你可以直接改，后续环节用改后的内容。":
+      "Output node: information and files produced by a long task land here; you can edit them and later steps use the edited version.",
+    "产物节点：长任务把每件关键产物（图片缩略图 / 文本摘要）摆到这里，点 ⇢ 用系统程序打开、点 📁 打开所在文件夹。":
+      "Artifact node: a long task drops each key artifact here (image thumbnail / text summary); ⇢ opens it in a system app and 📁 opens its folder.",
+    "素材节点：把素材库里存好的内容取出来用，一条内容 = 一个端口。":
+      "Asset node: pulls saved library content in — one item = one port.",
+    "数据表：读一个表格文件，或让智能体帮你建一张表。":
+      "Data table: read a spreadsheet file, or let an agent build a table for you.",
+    "让 AI 处理文字：把要求写进提示词，点 ▶ 得到结果。":
+      "Let AI work on text: write what you want in the prompt and press ▶ to get the result.",
+    "让 AI 画图：把想要的画面写成提示词，点 ▶ 生成一张图。":
+      "Let AI draw: describe the picture in the prompt and press ▶ to generate one image.",
+    "本机 AI 画图：点 ▶ 用本机 SenseNova 生成图片（不联网），连一张图进去就是图像编辑。":
+      "Local AI image: press ▶ to generate with the local SenseNova (offline); wire an image in and it becomes image editing.",
+    "生成音乐：写风格提示词（可加歌词），点 ▶ 得到一段音乐。":
+      "Generate music: write a style prompt (lyrics optional) and press ▶ to get a track.",
+    "Breeze 语音：用 Breeze TTS 2 朗读文字（音色可克隆 / 设计 / 导演）；卡片上可直接填要念的文本与参考文本。":
+      "Breeze voice: read text aloud with Breeze TTS 2 (voices can be cloned, designed or directed); type the text and reference text right on the card.",
+    "动效视频：用代码模板渲染出一段 mp4。":
+      "Motion video: render an mp4 from a code template.",
+    "收网络消息：守住一个通道，收到文字就往后传。":
+      "Receive network message: hold a channel and pass incoming text downstream.",
+    "发网络消息：把文字发到这个通道的另一端。":
+      "Send network message: send text to the other end of this channel.",
+    "启动程序：点一下，就打开这个节点绑定的程序。":
+      "Launch program: one click opens the program bound to this node.",
+    "小计算器：写一小段 JS 做计算，输入进去、结果出来。":
+      "Mini calculator: run a little JS — input in, result out.",
+    "保存结果：把上一步存成文件，文字存 .md，图片 / 声音 / 视频存对应格式。":
+      "Save result: store the previous step as a file — .md for text, the matching format for image / audio / video.",
+    "生成 PDF：把上一步的文字排成一份 PDF（标题、表格、列表、公式都会排版）。":
+      "Generate PDF: lay the previous text out as a PDF (headings, tables, lists and formulas are typeset).",
+    "保存结果：把上一步的内容存成 .md 文件。":
+      "Save result: store the previous content as a .md file.",
+    "取出其中一项：从一整批内容里单独挑出一条，方便逐条处理。":
+      "Pick one item: select a single item out of a batch so you can process items one by one.",
+    "合成一批：把多个节点的结果合成一整批，供后面按批处理。":
+      "Merge into a batch: combine results from several nodes into one batch for later batch processing.",
+    "任务：把复杂的事拆成小步骤按顺序做完，成功或失败都有终点。":
+      "Task: break a complex job into ordered steps, with a success and a failure endpoint.",
+    "收纳盒：把一堆节点装进一个壳里，展开看里面，收起让画布清爽。":
+      "Container: put a bunch of nodes inside one shell — expand to look in, collapse to keep the canvas tidy.",
+    "等文件：等到指定文件出现才往下走。":
+      "Wait for file: continue only after the given file appears.",
+    "定时器：到点或每隔一段时间自动触发一次。":
+      "Timer: fire at a set time or every interval.",
+    "等一会儿：先等几秒再往下走。":
+      "Wait a bit: pause a few seconds before continuing.",
+    "凑齐才走：所有上一环都到了才放行。":
+      "Wait for all: release only when every upstream branch has arrived.",
+    "数数：每来 N 次才放行一次。":
+      "Counter: release once every N arrivals.",
+    "全局节点：把内容广播给需要它的节点，用 @ 标题 引用。":
+      "Global node: broadcast content to nodes that need it, referenced as @title.",
+    "控制按钮：点一下就跑这一串流程（起点 / 成功 / 失败三种）。":
+      "Control button: one click runs this chain (start / success / failure).",
+    "数据库副本：里面是这台机器上存好的真实资料，智能体能查。":
+      "Database copy: real material stored on this machine that an agent can query.",
+    "成功终点：流程顺利走到这里就算成功结束。":
+      "Success endpoint: reaching here means the flow finished successfully.",
+    "画布上的一个节点：把上游内容按它的规则处理后交给下游。":
+      "A node on the canvas: it processes upstream content by its own rule and passes it downstream.",
   });
 
   /* 插件报错 → 自动修复与修复后重启（renderer/app-repair.js）：报告窗 / 修复结果窗 / 收敛提示 */

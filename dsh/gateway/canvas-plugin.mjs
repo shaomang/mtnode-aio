@@ -139,7 +139,7 @@ const GET_DESC =
   '- "full": everything incl. body text (text, prompt, task, goal, jscode, 素材条目正文), rows, files, steps — ask explicitly, best with ids:[...] so only those nodes come back heavy.\n' +
   '- Narrow with ids / scope + scopeDepth / bodies / bodyLimit, or sections = whitelist of heavy blocks (nodes, marks, wires, groups, and the trees / tagCatalog / workflows / selection). 只查连线用 sections:["nodes","wires"]（minimal 档也认）。素材节点（kind asset）也回读：assetItems = 绑定与条目清单 items:[{index, id, title, type}]（条目即端子：第 i 入 ↔ 第 i 出，端子名 = 条目标题）；text/body 档每条再带 text（文本正文）或 path / url（本机文件）。\n' +
   '- ports (standard / full): fixed-port nodes (proc_image / sensenova_gen / video_gen / remotion / judge / tool·function / super / asset) carry ports:[{dir,index,name,kind,connectedTo}] — read before connecting, not after a connect error.\n' +
-  '- portRule (standard / full): nodes whose input ports GROW WITH WIRES (proc_text / proc_image / sensenova_gen / remotion / input_* …) carry portRule {note,input,output,now,hint} instead: ports only lists the slots that exist right now (an unconnected node shows one data port + one control port), and further slots appear as you connect — remotion is the one node whose data AND control lines share the same ports (never assume port 0 = control for remotion), and its description lives in the node text (not in a port). For these dynamic-port nodes (except remotion) the control input is always the LAST, dedicated control port — it sits after the data slots, data wires never take it, and several control wires may share it (any one arrival triggers a single run). Never infer "this node has only one port" from a short ports list, and never test-wire just to read the warnings.\n' +
+  '- portRule (standard / full): nodes whose input ports GROW WITH WIRES (proc_text / proc_image / sensenova_gen / remotion / input_* …) carry portRule {note,input,output,now,hint} instead: ports only lists the slots that exist right now (an unconnected node shows one data port + one control port), and further slots appear as you connect — remotion is the one node whose data AND control lines share the same ports (never assume port 0 = control for remotion), and its description (功能说明) lives in the node text (not in a port) — the build brief is remotionBuildNote, only used when the user clicks 构建. For these dynamic-port nodes (except remotion) the control input is always the LAST, dedicated control port — it sits after the data slots, data wires never take it, and several control wires may share it (any one arrival triggers a single run). Never infer "this node has only one port" from a short ports list, and never test-wire just to read the warnings.\n' +
   '- 参数（standard / full）: 有配置的节点（有 ⚙ 设置窗）末位有「参数」端子，端子号恒 9001；快照带 paramKeys（可覆写的键）。函数 / 工具节点同样有 9001，但语义不同：函数节点那份 JSON 进 input.params（不改节点字段），工具节点那份是内部图的共享参数、内部函数节点自动继承。参数只能由一根文本节点的 JSON 经这颗端子传入（toIndex:9001），没有「直接改节点参数」的写法。\n' +
   'scopeInfo is always returned（这次读的是整图还是某一颗壳内部）; every result carries a sizeHint with its cost.\n\n' +
   'When the run is locked to its own canvas（会话所属画布）, workflows lists ONLY that canvas. 建图 / 连线 / 排版的完整硬规则（task 端点、super 边界端子、tool/function 参数即端子、@引用三条件、save 与 wait_file、批次与文生图）只写在技能 mtnode-canvas-edit-rules（按需加载），此处不重复。'
@@ -259,7 +259,7 @@ const TOOL_CONFIG_SPEC = {
 const NODE_PROPS = {
   title: { type: 'string', description: '唯一显示标题；@标题 引用它。' },
   tags: { type: 'array', items: { type: 'string' }, description: '供 @标签名 引用。' },
-  text: { type: 'string', description: 'input_text 正文；remotion 的视频描述也在这个字段（可空 · 可写 @标题 / @标签名）。' },
+  text: { type: 'string', description: 'input_text 正文；remotion 的「功能说明」也在这个字段（可空 · 只描述这个节点干什么，构建 Agent 与运行期都不读它；构建需求用 remotionBuildNote）。' },
   prompt: { type: 'string', description: 'proc_text / proc_image / sensenova_gen 提示词（也是 judge 判据）；可写 @标题 / @标签名。' },
   sensenovaPrompt: { type: 'string', description: 'sensenova_gen 提示词别名（同 prompt）。' },
   task: { type: 'string', description: 'agent_task 任务描述；可写 @标题 / @标签名。' },
@@ -324,10 +324,38 @@ const NODE_PROPS = {
   imgBackground: { type: 'string', enum: ['', 'auto', 'opaque', 'transparent'], description: 'proc_image background；transparent 直出 Alpha PNG。' },
   maskOn: { type: 'boolean', description: 'proc_image 蒙版重绘（透明区 = 重绘）；画法见技能。' },
   remotionSize: { type: 'string', description: 'remotion 分辨率（宽x高）。' },
+  remotionBuildNote: {
+    type: 'string',
+    description:
+      'remotion 的构建需求（点「构建」时弹窗里填的那段）：只有它是构建 Agent 的输入，节点功能说明 text 不参与构建。空 = 还没写过构建需求。',
+  },
   tsx: {
     type: 'string',
     description:
-      'remotion 直出合成代码（Composition.tsx 全文，必须导出 Main）：给了就跳过「描述 → 文本模型写代码」，原样渲染；传空串回到 LLM 生成。',
+      'remotion 直出合成代码（Composition.tsx 全文，必须导出 Main）：给了就按它渲染，不调模型；传空串回到固化工程 / 内置版面。多文件工程用 remotionFiles（两者同时给时以 remotionFiles 为准）。',
+  },
+  remotionFiles: {
+    type: 'object',
+    additionalProperties: true,
+    description:
+      'remotion 工程源码树 { "Composition.tsx": "源码", "components/Title.tsx": "…" }（路径相对 src/，入口必须是 Composition.tsx，不许 ../ 越界）。写入时跑与源码编辑器「保存并校验」同一条静态校验：通过就重算端子契约（remotionInputs）并把同 key 接线搬到新端子；未通过时源码照样保存、端子保持上一版，原因写在回执 warnings 里。',
+  },
+  remotionInputs: {
+    type: 'array',
+    description:
+      'remotion 端子契约 [{key,kind,label,list,required,default}]（kind = image / audio / video / text / number / boolean / json）。通常由工程源码里的 export const inputs 自动派生；显式给出时以它为准重建端子，同 key 的接线跟着 key 搬迁，消失的 key 断线并写进 warnings。',
+    items: {
+      type: 'object',
+      additionalProperties: true,
+      properties: {
+        key: { type: 'string', description: '契约键 = 组件 props 键（标识符，唯一）。' },
+        kind: { type: 'string', enum: ['image', 'audio', 'video', 'text', 'number', 'boolean', 'json'] },
+        label: { type: 'string', description: '端子显示名（缺省 = key）。' },
+        list: { type: 'boolean', description: '数组端子：可接多路，值变成数组。' },
+        required: { type: 'boolean' },
+        default: { type: 'json', description: '未接线时的缺省值（任意 JSON）。' },
+      },
+    },
   },
   backgroundColor: {
     type: 'string',
@@ -417,7 +445,7 @@ const PAIR_SPEC = {
     from: { type: 'string', required: true, description: '源节点：id / alias / 唯一标题。' },
     to: { type: 'string', required: true, description: '目标节点：id / alias / 唯一标题。' },
     fromIndex: { type: 'number', description: '源的输出端子序号（默认 0）；judge 0 = YES、1 = NO；tool / function 按参数表数端子。' },
-    toIndex: { type: 'number', description: '目标的输入端子序号（0 起始；省略 = 按类型自动选槽）。媒体节点必须显式给：breeze_gen 0=待合成文本 · 1=参考音频 · 2=参考文稿 · 3=指令 · 4=控制输入；video_gen fl2va 0=控制 · 1=提示词 · 2=首帧 · 3=末帧；remotion 无差别端子（0、1、2… 连一条多一个，数据线与控制线共用、先占先得，描述写在节点 text 里不占端子；视频 / 图片 → 主素材、音频 → 语音、文本 → 台词）；save 0/1 按入线类型。动态端子节点（proc_text / proc_image / sensenova_gen / agent_task / input_*）的**控制输入 = 末位那颗专用控制端子**（数据槽之后单独一颗，数据线永不占它；号随数据槽增长，省略 toIndex 时控制线自动落到它），数据槽仍是 0=提示词 · 1+ 增量。**参数端子用 toIndex 9001**（来源必须是文本 JSON）。**端子已被占用时不会报「已被占用」而是顶掉旧线**（一端口一线的普通端子：同类线替换同类线，旧线进撤销栈，回执里该对线带 `replaced` 点名被换掉的上游与端子号）；参数端子 / 数组端子 / 动态控制端子可多线，不替换；类型不符仍是错（旧线不动）；省略 toIndex 不替换（走自动落点）。' },
+    toIndex: { type: 'number', description: '目标的输入端子序号（0 起始；省略 = 按类型自动选槽）。媒体节点必须显式给：breeze_gen 0=待合成文本 · 1=参考音频 · 2=参考文稿 · 3=指令 · 4=控制输入；video_gen fl2va 0=控制 · 1=提示词 · 2=首帧 · 3=末帧；remotion 无差别端子（0、1、2… 连一条多一个，数据线与控制线共用、先占先得，功能说明写在节点 text 里、构建需求写在 remotionBuildNote 里，都不占端子；视频 / 图片 → 主素材、音频 → 语音、文本 → 台词）；save 0/1 按入线类型。动态端子节点（proc_text / proc_image / sensenova_gen / agent_task / input_*）的**控制输入 = 末位那颗专用控制端子**（数据槽之后单独一颗，数据线永不占它；号随数据槽增长，省略 toIndex 时控制线自动落到它），数据槽仍是 0=提示词 · 1+ 增量。**参数端子用 toIndex 9001**（来源必须是文本 JSON）。**端子已被占用时不会报「已被占用」而是顶掉旧线**（一端口一线的普通端子：同类线替换同类线，旧线进撤销栈，回执里该对线带 `replaced` 点名被换掉的上游与端子号）；参数端子 / 数组端子 / 动态控制端子可多线，不替换；类型不符仍是错（旧线不动）；省略 toIndex 不替换（走自动落点）。' },
     rel: { type: 'boolean', description: '关系线：UML 直线，不传数据也不参与执行（忽略 fromIndex）。' },
     relLabel: { type: 'string', description: '关系线文字（如 调用 / 依赖）。' },
     relArrow: { type: 'string', enum: ['forward', 'backward', 'both', 'none'] },

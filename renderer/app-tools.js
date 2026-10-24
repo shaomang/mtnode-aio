@@ -38,10 +38,18 @@ function toolPackageFromNode(node) {
   const wires = (S.wf.wires || []).filter(
     (w) => ids.has(w.from) && ids.has(w.to),
   );
+  /* 端子类型原样带走（text | image | video | audio）：旧写法只放行 image，媒体端子
+     （音频 / 视频）一存进工具库就被降级成文本 —— 内置「音频转字幕」正是靠这两类端子
+     接音频 / 视频，降级后插入画布就成了文本框。 */
   const mkParams = (dir) =>
     fnToolParamList(node, dir).map((p) => ({
       name: String(p.name || ""),
-      kind: p.kind === "image" ? "image" : "text",
+      kind:
+        typeof fnToolNormPortKind === "function"
+          ? fnToolNormPortKind(p.kind)
+          : p.kind === "image"
+            ? "image"
+            : "text",
     }));
   return {
     /* builtin: 前缀是应用内置条目的 id，不是可写的库记录（非法工具 id，
@@ -208,15 +216,46 @@ async function insertToolToCanvas(pkg) {
     return false;
   }
   pushHistory();
-  const { cps, idMap } = cloneNodesDeep(nodes, { keepOrphanParent: false });
+  const { cps, idMap } = cloneNodesDeep(nodes, {
+    keepOrphanParent: false,
+    uniqueTitle: true,
+  });
   if (!cps.length) {
     toast(I18n.t("工具包为空，无法插入"), "err");
     return false;
   }
   const wireCps = cloneWiresForSet(Array.isArray(g.wires) ? g.wires : [], idMap);
   const innerSids = copiedSuperIdsOf(cps);
-  const dx = grid() * 4;
-  const dy = grid() * 4;
+  /* 落点：当前镜头视角中间（与粘贴 / 工作流插入同一套相机换算）。工具包里自带的坐标是
+     「保存时那颗节点在哪」，直接平移到别处会让用户插完找不到节点；这里把本批顶层节点的
+     包围盒中心对准视口中心，再按网格吸附。节点层 / 任务层各有一份相机，其坐标本身就以
+     该层为准（mountNodeEl 直接用 n.x / n.y），所以换算一次即可，不必再减宿主坐标。 */
+  const cvEl = document.getElementById("canvas");
+  const vw = cvEl && cvEl.clientWidth ? cvEl.clientWidth : window.innerWidth;
+  const vh = cvEl && cvEl.clientHeight ? cvEl.clientHeight : window.innerHeight;
+  const zCam = S.cam && S.cam.z > 0 ? S.cam.z : 1;
+  const cx = (vw / 2 - (S.cam ? S.cam.x : 0)) / zCam;
+  const cy = (vh / 2 - (S.cam ? S.cam.y : 0)) / zCam;
+  let minX = Infinity,
+    minY = Infinity,
+    maxX = -Infinity,
+    maxY = -Infinity;
+  for (const cp of cps) {
+    if (cp.parentSuperId && innerSids.has(cp.parentSuperId)) continue;
+    const x = Number(cp.x) || 0;
+    const y = Number(cp.y) || 0;
+    minX = Math.min(minX, x);
+    minY = Math.min(minY, y);
+    maxX = Math.max(maxX, x + (Number(cp.w) || 180));
+    maxY = Math.max(maxY, y + (Number(cp.h) || 96));
+  }
+  /* 量不到（画布为空包 / 坐标异常）时退回原来的「右下挪几格」，至少不叠在原节点上 */
+  let dx = grid() * 4;
+  let dy = grid() * 4;
+  if (Number.isFinite(minX) && Number.isFinite(cx) && Number.isFinite(cy)) {
+    dx = cx - (minX + maxX) / 2;
+    dy = cy - (minY + maxY) / 2;
+  }
   for (const cp of cps) {
     /* super 内部节点使用内部坐标系：外壳偏移即可，内部坐标保持不动 */
     if (cp.parentSuperId && innerSids.has(cp.parentSuperId)) continue;
@@ -281,11 +320,35 @@ async function insertToolToCanvas(pkg) {
 
 /* ── 工具库对话框 ── */
 
-function openToolsLibrary() {
+/* 清单浏览状态：
+ *   q    = 搜索词（名称 / 描述 / 入出参数名 / id 任一命中 · 不区分大小写）；
+ *   page = 当前页（每页 TOOLS_LIB_PAGE_SIZE 条，需求口径 20）；
+ *   tools = 本次打开时的清单缓存 —— 搜索框每敲一个字只重画本地缓存，不每次敲键就读盘；
+ *   focusId / focusName = 全库搜索（Ctrl+F）点「工具库」结果时带进来的目标，
+ *   渲染时先把它所在的页翻出来、再闪一下（分页后目标不一定落在第 1 页）。 */
+const TOOLS_LIB_PAGE_SIZE = 20;
+const TOOLS_LIB_ST = {
+  q: "",
+  page: 1,
+  focusId: "",
+  focusName: "",
+  tools: null,
+  host: null,
+  seq: 0,
+};
+
+function openToolsLibrary(opts) {
   if (!toolsApiOk()) {
     toast(I18n.t("工具库不可用（本机存储接口未就绪）"), "err");
     return;
   }
+  const o = opts && typeof opts === "object" ? opts : {};
+  TOOLS_LIB_ST.q = "";
+  TOOLS_LIB_ST.page = 1;
+  TOOLS_LIB_ST.focusId = String(o.focusId || "");
+  TOOLS_LIB_ST.focusName = String(o.focusName || "");
+  TOOLS_LIB_ST.tools = null;
+  TOOLS_LIB_ST.host = null;
   openOverlay(I18n.t("工具库"));
   const box = document.querySelector("#overlay .overlay-box");
   if (box) box.classList.add("wide");
@@ -310,12 +373,36 @@ function openToolsLibrary() {
   saveBtn.textContent = I18n.t("保存到工具库");
   saveBtn.title = I18n.t("把选中的工具 / 函数节点保存到工具库");
   saveRow.append(saveLbl, sel, saveBtn);
-  /* 中部：库内工具清单 */
+  /* 搜索行：名称 / 描述 / 入出参数名一起搜（索引在内存里，本机清单量级无需建倒排表）；
+     右侧常显命中数，「共 N 个工具」随过滤一起变。 */
+  const searchRow = document.createElement("div");
+  searchRow.style.cssText = "display:flex;align-items:center;gap:8px";
+  const search = document.createElement("input");
+  search.type = "text";
+  search.id = "toolsLibSearch";
+  search.placeholder = I18n.t("搜索工具（名称 / 描述 / 参数）");
+  search.title = I18n.t("按名称 / 描述 / 入出参数名过滤；过滤后仍可插入 / 改名 / 删除");
+  search.style.cssText = "flex:1;min-width:160px";
+  const countEl = document.createElement("span");
+  countEl.id = "toolsLibCount";
+  countEl.style.cssText =
+    "flex:none;font-size:11px;color:var(--muted);white-space:nowrap";
+  searchRow.append(search, countEl);
+  search.oninput = () => {
+    TOOLS_LIB_ST.q = String(search.value || "").trim();
+    TOOLS_LIB_ST.page = 1;
+    renderToolsLibList(listHost);
+  };
+  /* 中部：库内工具清单（单行一条 · 每页最多 20 条） */
   const listHost = document.createElement("div");
   listHost.id = "toolsLibList";
   listHost.style.cssText =
-    "display:flex;flex-direction:column;gap:6px;overflow-y:auto;min-height:140px;max-height:54vh";
-  wrap.append(saveRow, listHost);
+    "display:flex;flex-direction:column;gap:6px;overflow-y:auto;min-height:140px;max-height:56vh";
+  /* 分页条单独一颗常驻在滚动区外：放进 listHost 会被 20 行顶到最后，要滚到底才看得见 */
+  const pagerHost = document.createElement("div");
+  pagerHost.id = "toolsLibPager";
+  pagerHost.style.cssText = "display:flex;justify-content:center";
+  wrap.append(saveRow, searchRow, listHost, pagerHost);
   body.appendChild(wrap);
   const foot = document.getElementById("ovFoot");
   foot.innerHTML = "";
@@ -338,6 +425,8 @@ function openToolsLibrary() {
     if (r && r.ok) {
       toast(I18n.t("已保存到工具库：") + (r.name || ""), "ok");
       fillToolCanvasSel(sel);
+      /* 新条目要进清单：清缓存让下一次渲染重读（保持当前搜索词与页码） */
+      TOOLS_LIB_ST.tools = null;
       renderToolsLibList(listHost);
     }
   };
@@ -383,14 +472,66 @@ function fillToolCanvasSel(sel) {
   if (S.sel && nodes.some((n) => n.id === S.sel)) sel.value = S.sel;
 }
 
+/* 清单过滤（纯函数）：搜索词命中名称 / 描述 / id / 入出参数名任一即算命中。
+   单独抽出来是为了让冒烟测试直接切这段真实源码断言（不靠印象）。 */
+function toolsLibMatch(tool, q) {
+  const s = String(q == null ? "" : q).trim().toLowerCase();
+  if (!s) return true;
+  if (!tool) return false;
+  const parts = [tool.name, tool.description, tool.id];
+  for (const dir of ["inputs", "outputs"]) {
+    const arr = Array.isArray(tool[dir]) ? tool[dir] : [];
+    for (const p of arr) parts.push(p && p.name);
+  }
+  return parts.some(
+    (v) => String(v == null ? "" : v).toLowerCase().indexOf(s) >= 0,
+  );
+}
+
+/* 分页（纯函数）：页码越界夹到 [1, pages] —— 删掉最后一页的最后一条后不会停在空页。 */
+function toolsLibPageSlice(items, page, pageSize) {
+  const list = Array.isArray(items) ? items : [];
+  const size = Math.max(1, Number(pageSize) || TOOLS_LIB_PAGE_SIZE);
+  const pages = Math.max(1, Math.ceil(list.length / size));
+  const p = Math.min(Math.max(1, Number(page) || 1), pages);
+  return {
+    page: p,
+    pages,
+    total: list.length,
+    items: list.slice((p - 1) * size, p * size),
+  };
+}
+
 async function renderToolsLibList(host) {
+  if (host) TOOLS_LIB_ST.host = host;
+  host = host || TOOLS_LIB_ST.host;
+  if (!host) return;
+  /* 连打字时后一次渲染已接管：这一次的结果直接丢掉，免得先到的旧结果盖掉新的 */
+  const seq = (TOOLS_LIB_ST.seq += 1);
   host.innerHTML = "";
-  let tools = [];
-  try {
-    const r = await window.api.toolsList();
-    if (r && r.ok) tools = r.tools || [];
-  } catch (_) {}
-  if (!tools.length) {
+  const pagerHost = document.getElementById("toolsLibPager");
+  if (pagerHost) pagerHost.innerHTML = "";
+  if (!Array.isArray(TOOLS_LIB_ST.tools)) {
+    let tools = [];
+    try {
+      const r = await window.api.toolsList();
+      if (r && r.ok) tools = r.tools || [];
+    } catch (_) {}
+    TOOLS_LIB_ST.tools = tools;
+  }
+  if (seq !== TOOLS_LIB_ST.seq) return;
+  const all = TOOLS_LIB_ST.tools || [];
+  const countEl = document.getElementById("toolsLibCount");
+  const setCount = (n) => {
+    if (!countEl) return;
+    countEl.textContent = I18n.t("共 ") + n + I18n.t(" 个工具");
+    countEl.title =
+      n === all.length
+        ? ""
+        : I18n.t("共 ") + all.length + I18n.t(" 个工具");
+  };
+  if (!all.length) {
+    setCount(0);
     const empty = document.createElement("div");
     empty.style.cssText =
       "text-align:center;color:var(--muted);padding:26px 10px;font-size:12px;line-height:1.9";
@@ -400,7 +541,80 @@ async function renderToolsLibList(host) {
     host.appendChild(empty);
     return;
   }
-  for (const tool of tools) host.appendChild(toolsLibRow(tool, host));
+  const hits = all.filter((t) => toolsLibMatch(t, TOOLS_LIB_ST.q));
+  setCount(hits.length);
+  /* Ctrl+F 定位：目标可能不在第 1 页 —— 先在命中集里找到它，把页码对过去 */
+  const focusId = TOOLS_LIB_ST.focusId;
+  const focusName = TOOLS_LIB_ST.focusName;
+  TOOLS_LIB_ST.focusId = "";
+  TOOLS_LIB_ST.focusName = "";
+  let focusKey = "";
+  if (hits.length && (focusId || focusName)) {
+    const idx = hits.findIndex(
+      (t) =>
+        (focusId && String(t.id || "") === focusId) ||
+        (focusName && String(t.name || "").indexOf(focusName) >= 0),
+    );
+    if (idx >= 0) {
+      TOOLS_LIB_ST.page = Math.floor(idx / TOOLS_LIB_PAGE_SIZE) + 1;
+      focusKey = String(hits[idx].id || "");
+    }
+  }
+  if (!hits.length) {
+    const none = document.createElement("div");
+    none.style.cssText =
+      "text-align:center;color:var(--muted);padding:26px 10px;font-size:12px;line-height:1.9";
+    none.textContent = I18n.t("没有匹配的工具");
+    host.appendChild(none);
+    return;
+  }
+  const pg = toolsLibPageSlice(hits, TOOLS_LIB_ST.page, TOOLS_LIB_PAGE_SIZE);
+  TOOLS_LIB_ST.page = pg.page;
+  let focusRow = null;
+  for (const tool of pg.items) {
+    const row = toolsLibRow(tool, host);
+    host.appendChild(row);
+    if (focusKey && String(tool.id || "") === focusKey) focusRow = row;
+  }
+  if (pg.pages > 1 && pagerHost) pagerHost.appendChild(toolsLibPager(pg, host));
+  if (focusRow) {
+    focusRow.classList.add("gs-flash");
+    focusRow.scrollIntoView({ block: "nearest" });
+    setTimeout(() => focusRow.classList.remove("gs-flash"), 1800);
+  }
+}
+
+/* 分页条：上一页 / 「第 x / y 页」/ 下一页（只有一页时整条不出现）。 */
+function toolsLibPager(pg, host) {
+  const bar = document.createElement("div");
+  bar.style.cssText =
+    "display:flex;align-items:center;justify-content:center;gap:8px;padding:4px 0 2px";
+  const prev = document.createElement("button");
+  prev.type = "button";
+  prev.className = "mini";
+  prev.textContent = I18n.t("上一页");
+  prev.disabled = pg.page <= 1;
+  prev.onclick = () => {
+    if (pg.page <= 1) return;
+    TOOLS_LIB_ST.page = pg.page - 1;
+    renderToolsLibList(host);
+  };
+  const lab = document.createElement("span");
+  lab.style.cssText = "font-size:11px;color:var(--muted);white-space:nowrap";
+  lab.textContent = I18n.t("第 ") + pg.page + " / " + pg.pages + I18n.t(" 页");
+  lab.title = I18n.t("共 ") + pg.total + I18n.t(" 个工具");
+  const next = document.createElement("button");
+  next.type = "button";
+  next.className = "mini";
+  next.textContent = I18n.t("下一页");
+  next.disabled = pg.page >= pg.pages;
+  next.onclick = () => {
+    if (pg.page >= pg.pages) return;
+    TOOLS_LIB_ST.page = pg.page + 1;
+    renderToolsLibList(host);
+  };
+  bar.append(prev, lab, next);
+  return bar;
 }
 
 function toolsLibRow(tool, host) {
@@ -409,13 +623,15 @@ function toolsLibRow(tool, host) {
   const row = document.createElement("div");
   /* 全局搜索（Ctrl+F）点「工具库」结果时靠它把行滚进视野并闪一下 */
   if (tool && tool.id) row.dataset.toolId = String(tool.id);
+  /* 一条一行：徽标 / 名称 / 摘要 / 开关 / 按钮全在同一行，摘要过长省略（完整内容进 title） */
   row.style.cssText =
-    "display:flex;align-items:center;gap:10px;border:1px solid var(--bd);border-radius:6px;padding:7px 10px;background:var(--code)";
+    "display:flex;align-items:center;gap:8px;flex-wrap:nowrap;border:1px solid var(--bd);border-radius:6px;padding:6px 10px;background:var(--code)";
   const info = document.createElement("div");
-  info.style.cssText = "flex:1;min-width:0;line-height:1.6";
+  info.style.cssText =
+    "flex:1;min-width:0;display:flex;align-items:center;gap:8px;line-height:1.6";
   const nm = document.createElement("div");
   nm.style.cssText =
-    "display:flex;align-items:center;gap:6px;font-weight:700;color:var(--orange2);font-size:13px";
+    "display:flex;align-items:center;gap:6px;font-weight:700;color:var(--orange2);font-size:13px;flex:none;max-width:46%";
   const badge = document.createElement("span");
   badge.textContent = isFn ? I18n.t("函数") : I18n.t("工具");
   badge.style.cssText =
@@ -443,7 +659,8 @@ function toolsLibRow(tool, host) {
   nm.appendChild(nmTxt);
   nm.title = tool.name || "";
   const sub = document.createElement("div");
-  sub.style.cssText = "font-size:11px;color:var(--muted)";
+  sub.style.cssText =
+    "flex:1 1 auto;min-width:0;font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap";
   const inS = I18n.listJoin((tool.inputs || []).map((p) => p.name));
   const outS = I18n.listJoin((tool.outputs || []).map((p) => p.name));
   const desc = String(tool.description || "");
@@ -562,6 +779,8 @@ function toolsLibRow(tool, host) {
       const r = await window.api.toolsDelete(tool.id);
       if (r && r.ok) {
         toast(I18n.t("已删除工具：") + tool.name, "ok");
+        /* 条目没了：清缓存重读，页码越界由 toolsLibPageSlice 夹回最后一页 */
+        TOOLS_LIB_ST.tools = null;
         renderToolsLibList(host);
       } else {
         toast(I18n.t("删除失败：") + ((r && r.error) || ""), "err");
@@ -571,6 +790,8 @@ function toolsLibRow(tool, host) {
     }
   };
 
+  /* 单行布局：所有动作件都不参与压缩（压缩只发生在名称 / 摘要上） */
+  for (const el of [tg, btnInsert, btnRename, btnDel]) el.style.flex = "none";
   row.append(info, tg, btnInsert);
   /* 内置条目不给改名 / 删除：随包文件改了下次升级就没，误删还会让用户以为「工具没了」 */
   if (!tool.builtin) row.append(btnRename, btnDel);
@@ -997,7 +1218,10 @@ async function runLibToolShadowForAgent(desc, args, wf) {
   const nodes = Array.isArray(g.nodes) ? g.nodes : [];
   if (!nodes.length)
     throw new Error(I18n.t("工具包不可用或已删除：") + (desc.name || ""));
-  const { cps, idMap } = cloneNodesDeep(nodes, { keepOrphanParent: false });
+  const { cps, idMap } = cloneNodesDeep(nodes, {
+    keepOrphanParent: false,
+    uniqueTitle: true,
+  });
   if (!cps.length)
     throw new Error(I18n.t("工具包不可用（无法实例化）：") + (desc.name || ""));
   const wireCps = cloneWiresForSet(Array.isArray(g.wires) ? g.wires : [], idMap);
