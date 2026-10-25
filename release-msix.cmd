@@ -6,6 +6,9 @@ REM  MTNode AI Orchestrator - Microsoft Store (MSIX) packaging entry point
 REM
 REM  This file is only an entry point; it does NOT copy any packaging logic:
 REM    - release chain : scripts\release.mjs         (version check, publish, upload guide)
+REM                      always called with --no-push: the Store chain commits and tags
+REM                      locally but never pushes to origin (pass --no-git by hand if
+REM                      you do not even want the local commit)
 REM    - packer        : scripts\msix\make-msix.mjs  (SDK probe, build, makeappx pack, self-check)
 REM  Change behavior in those two scripts. Uploading is still manual (drag into
 REM  Partner Center; this chain never auto-uploads).
@@ -91,14 +94,14 @@ REM ---------- default: full Store release chain ----------
 :store
 if /i "%~2"=="--dry-run" goto :dryrun
 if not "%~2"=="" goto :unknown
-set "STEP=Store release chain - scripts\release.mjs --store-only"
-set "NODE_ARGS="%ROOT%scripts\release.mjs" --store-only"
+set "STEP=Store release chain - scripts\release.mjs --store-only --no-push"
+set "NODE_ARGS="%ROOT%scripts\release.mjs" --store-only --no-push"
 goto :run
 
 REM ---------- dry run: version check and step list only (its text IS the output) ----------
 :dryrun
-set "STEP=dry run - scripts\release.mjs --store-only --dry-run"
-set "NODE_ARGS="%ROOT%scripts\release.mjs" --store-only --dry-run"
+set "STEP=dry run - scripts\release.mjs --store-only --dry-run --no-push"
+set "NODE_ARGS="%ROOT%scripts\release.mjs" --store-only --dry-run --no-push"
 set "VERBOSE=1"
 goto :run
 
@@ -194,6 +197,7 @@ echo.
 echo Quiet by default: the build output goes to %TEMP%\mtnode-msix-last.log and the
 echo console only prints the step headings, the tail of that log and its path.
 echo Add -v (or set MTNODE_MSIX_VERBOSE=1) to stream everything instead.
+echo Git: this chain never pushes - release.mjs runs with --no-push ^(local commit + tag only^).
 echo.
 echo Requires Windows 10/11 SDK (makeappx.exe); fill scripts\msix\msix.config.json first.
 echo Output: a .msix in dist\msix-publish\ - drag it into the Partner Center upload box.
