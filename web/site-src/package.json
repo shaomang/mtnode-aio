@@ -1,9 +1,0 @@
-{
-  "name": "mtnode-site-src",
-  "version": "0.1.0",
-  "private": true,
-  "description": "MTNode 官网源码与设计基线（site-src）",
-  "devDependencies": {
-    "impeccable": "^4.1.0"
-  }
-}
