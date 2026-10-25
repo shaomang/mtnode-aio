@@ -60,6 +60,7 @@ contextBridge.exposeInMainWorld("breezeApi", {
   presets: () => ipcRenderer.invoke("breeze:presets"),
   presetSave: (p) => ipcRenderer.invoke("breeze:presetSave", p || {}),
   presetDelete: (id) => ipcRenderer.invoke("breeze:presetDelete", id),
+  presetReorder: (order) => ipcRenderer.invoke("breeze:presetReorder", order || []),
   presetResolve: (o) => ipcRenderer.invoke("breeze:presetResolve", o || {}),
   /* 创建角色 / 备选音色的三步流程（画布跳窗经主窗口的 preload 调用，这里是同一条通道的插件侧出口） */
   presetLlm: () => ipcRenderer.invoke("breeze:presetLlm"),

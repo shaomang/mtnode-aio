@@ -18,6 +18,7 @@ const fs = require("fs");
 const os = require("os");
 const http = require("http");
 const { spawn, execFile } = require("child_process");
+const { gpuExecFile } = require("../gpu-poll.js"); /* 显存读数统一出口：去重缓存 + 搬出主线程（见该文件头） */
 const crypto = require("crypto");
 const { resolveDshRunAuth } = require("../dsh/mtnode-llm-creds.js");
 const {
@@ -33,6 +34,7 @@ const {
   clearLock,
   releaseLock,
   busyMessage,
+  registerHostProbe,
 } = require("../media-gen-global-lock.js");
 const h3wf = require("./h3-workflows.js");
 /* 插件报错总线：失败出口统一上报主窗口（跨窗可见 + 一键自我修复），见 plugin-error-repair.js */
@@ -428,6 +430,20 @@ function probeMp4Meta(filePath) {
       } catch {}
     }
   }
+}
+
+/**
+ * 源视频真实平均帧率（容器级：帧数 / 时长）。
+ * 补帧的输出帧率必须是「源真帧率 × 倍率」，否则帧数翻倍而封装帧率没变 → 时长翻倍、播放变慢。
+ * 渲染层用 <video> + requestVideoFrameCallback 探到的 fps 只是屏幕数帧的近似值
+ * （实测把 24fps 量成 12~14），不能用来封装；这里只读 mp4 容器头，读不到返回 0 交调用方兜底。
+ */
+function containerVideoFps(filePath) {
+  const meta = probeMp4Meta(String(filePath || ""));
+  if (!meta || !(meta.frames > 0) || !(meta.duration > 0)) return 0;
+  const fps = meta.frames / meta.duration;
+  if (!Number.isFinite(fps) || fps < 1 || fps > 480) return 0;
+  return Math.round(fps * 1000) / 1000;
 }
 
 /** 系统内存：总 / 可用（GB）。取不到（null）就按「不设预算」处理，绝不误降档。 */
@@ -1421,6 +1437,20 @@ let backendProc = null;
 /** @type {{ nodeId: string, abort?: boolean, promptId?: string, req?: import('http').ClientRequest|null }|null} */
 let activeGenerate = null;
 
+/* 全局媒体锁活性探针（判定口径见 media-gen-global-lock.js 头部）：
+   内存里有没有在途任务 = 真相；后端进程已死 → 锁是死的（外置 ComfyUI 判不了，跳过）。
+   不注册这个探针，锁文件就会被当成「没人认领的残留」当场清掉。 */
+registerHostProbe("h3", {
+  isBusy: () => (activeGenerate && activeGenerate.nodeId) || "",
+  isAlive: () => {
+    try {
+      const meta = loadPidMeta();
+      if (meta && meta.external) return true;
+    } catch {}
+    return backendRunning();
+  },
+});
+
 /** dsh.run 鉴权：复用 MTNode 设置里的模型 API Key（非环境变量 / 非强制 deepseek-official）。 */
 function h3DshAuthOrError() {
   const auth = resolveDshRunAuth(getDataDir());
@@ -2228,7 +2258,7 @@ function backendRunning() {
 
 function queryGpu() {
   return new Promise((resolve) => {
-    execFile(
+    gpuExecFile(
       "nvidia-smi",
       ["--query-gpu=name,memory.used,memory.total,utilization.gpu", "--format=csv,noheader,nounits"],
       { windowsHide: true, timeout: 4000 },
@@ -2327,6 +2357,10 @@ async function statusForUi() {
     sage: stateSage,
     sageExempt: sageExemptState(cfg.installDir, stateSage),
     sageRequired: !(stateSage && stateSage.ok),
+    /* 后处理依赖体检（流式超分 / 补帧的 venv 依赖）：缺 cv2 只影响「其它用 cv2 的节点」
+       （流式脚本已用 torch 缩放兜底），缺 torch / av / numpy / kornia 才是真跑不了。
+       管理窗 / 控制台据此提示「重跑安装可补」，不必等到出片失败才发现。 */
+    postDeps: readPostDepsProbe(cfg.installDir),
     installed: !!(installedMeta && installedMeta.ok) || sig.ready,
     installing,
     running: backendRunning() || comfyUp,
@@ -2629,19 +2663,23 @@ async function agentInstallByAgent(opts) {
       `${POST_MODELS.rife} → ComfyUI\\custom_nodes\\ComfyUI-Frame-Interpolation\\ckpts\\rife\\。`,
     `7) ComfyUI\\custom_nodes 清单必须含 ${REQUIRED_CUSTOM_NODE_DIRS.join(" + ")}` +
       `（前者供分块上采样，后者供 RIFE 补帧）；${OPTIONAL_CUSTOM_NODE_DIRS.join(" + ")} 标注为备用（推荐链已移除 TeaCache，只保留 EasyCache 步缓存），没装不算失败。`,
-    `8) 冒烟：venv python 下 import comfy_kitchen 与 torch.cuda 可用（即第 3 条那条命令），不要为此启动 ComfyUI 服务。`,
-    `9) 注意力加速（**必须项**，「安装」流程必须覆盖这一项）：给 venv 补装 triton-windows + 与本 venv 配套的 sageattention 预编译 wheel —— ` +
+    `8) 后处理依赖（流式超分 / 流式补帧都跑在这个 venv 里）：torch / av / numpy / kornia 必须在，` +
+      `并补装 opencv-python-headless（建议 <5：opencv 5 会强制 numpy>=2，别为了它把能用的 venv 升大版本）。` +
+      `装不上 opencv 只警告、不判失败（两个脚本缺 cv2 会退 torch 面积缩放照样出片），但要在结论里写明；` +
+      `自检：${venvPyRel} -c "import importlib.util as u;print({m: u.find_spec(m) is not None for m in ['torch','av','numpy','kornia','cv2']})"。`,
+    `9) 冒烟：venv python 下 import comfy_kitchen 与 torch.cuda 可用（即第 3 条那条命令），不要为此启动 ComfyUI 服务。`,
+    `10) 注意力加速（**必须项**，「安装」流程必须覆盖这一项）：给 venv 补装 triton-windows + 与本 venv 配套的 sageattention 预编译 wheel —— ` +
       `口径见 skill「必须依赖：Sage Attention」一节（PyPI 上只有老的 sageattention 1.0.6，2.x 走 woct0rdho/SageAttention 的 release wheel，` +
       `文件名里的 cuNNN / torchX 必须对上本机 CUDA 大版本与 torch 版本）。装完用 venv python 自检：import triton + import sageattention 成对，` +
       `再真跑一次 sageattn 小 kernel。缺失 / 不可用就是交付缺项（宿主会拒绝启动后端、拒绝出片）；只有显卡不在内核白名单这类客观不可用，` +
       `才允许按「已豁免」交付并在结论里写明原因。`,
-    `10) 收尾前自己先跑一次健康检查并在回复里带上退出码：在 INSTALL_DIR 下执行 ${venvPyRel} -m app ` +
-      `（它打印 venv / 模型 / postModels / cuda 的 JSON 报告），退出码 0 才算完成。` +
+    `11) 收尾前自己先跑一次健康检查并在回复里带上退出码：在 INSTALL_DIR 下执行 ${venvPyRel} -m app ` +
+      `（它打印 venv / 模型 / postModels / postDeps / cuda 的 JSON 报告），退出码 0 才算完成。` +
       `插件收尾还会再跑一次同样的检查，缺项迟早被判失败，别为了交差先写 ok=true。`,
   ].join("\n");
   const disciplines =
     `纪律（四条，一律遵守）：不要启动 ComfyUI；不要删除用户 output/；模型已齐则勿重下（只补缺的）；` +
-    `Sage 加速（第 9 条）是必须项：装不上 / 自检不过就是交付失败，不要用「跳过即可」了事；已探测到可用则勿重复装。\n`;
+    `Sage 加速（第 10 条）是必须项：装不上 / 自检不过就是交付失败，不要用「跳过即可」了事；已探测到可用则勿重复装。\n`;
   const handoff =
     `成功后：创建空文件 ${marker}，写入 ${resultMarker}（首行 ok=true，可附 reason= 摘要），回复 install_ok=1 与 cuda_python=<path> torch_file=<path> health_exit=0。\n` +
     `失败则 ${resultMarker} 写 ok=false 与 reason=<上面哪一条没交付 + 具体报错>`;
@@ -4066,6 +4104,7 @@ async function postProcessVideo(params) {
     nodeId,
     workflowId: String(req.canvasWorkflowId || "").trim(),
     kind: "video_gen",
+    host: "h3",
   });
   if (!acq.ok) {
     if (acq.error === "missing_node_id") return { ok: false, error: "missing_node_id" };
@@ -4177,6 +4216,19 @@ async function postProcessVideo(params) {
           " · 依据=" +
           pick.reason,
       );
+      /* 后处理依赖体检：出片前就把「缺哪个 python 模块、怎么补」写进控制台
+         （2026-xx 现场是出片后只剩一行 No module named 'cv2' + 静默回退图链）。
+         缺 cv2 不影响流式出片 —— 脚本已用 torch 面积缩放兜底，只是其它用 cv2 的节点会缺依赖。 */
+      const postDeps = await ensurePostDepsProbe(cfg.installDir);
+      if (!postDeps.ok || postDeps.cv2Missing) {
+        const bits = [];
+        if ((postDeps.missing || []).length) bits.push("缺必装模块 " + postDeps.missing.join(", "));
+        if (postDeps.cv2Missing) {
+          bits.push("没有 cv2（流式脚本走 torch 缩放，不影响出片；其它用到 cv2 的节点会缺依赖）");
+        }
+        bits.push("重跑一次安装即可补齐（opencv-python-headless 由安装脚本补装）");
+        appendConsole("[post][deps] " + bits.join("；"));
+      }
       if (pick.engine === "graph") {
         appendConsole(
           "[post] 已回退图路径 · 原因=" +
@@ -4469,13 +4521,24 @@ async function postProcessVideo(params) {
         }
       }
       if (!outPath) {
-        /* 非 OOM 的流式失败（异常 / 非 0 退出）：按原样回退旧图链，并写明原因 */
+        /* 非 OOM 的流式失败（异常 / 非 0 退出）：按原样回退旧图链，并写明原因。
+           缺 python 模块（典型：No module named 'cv2'）要额外给出「怎么修」——回退图链能用，
+           但用户会以为流式已经生效，所以这里把缺的模块名与「重跑安装」一并写进同一条日志。 */
         opts = Object.assign({}, opts, { engine: "graph" });
-        appendConsole(
-          "[post] 流式超分未出片（" +
-            (fallbackWhy || String((lastErr && (lastErr.detail || lastErr.message)) || "unknown").slice(0, 400)) +
-            "）→ 已回退图路径",
+        const whyText = String(
+          fallbackWhy || String((lastErr && (lastErr.detail || lastErr.message)) || "unknown").slice(0, 400),
         );
+        /* 模块名可能带引号（No module named 'cv2'），用 [^A-Za-z0-9_.]* 跳过去：别在正则里写
+           引号字符类 —— 源码级冒烟（test/smoke-video-post.js 的 fnBody）用朴素括号 / 引号扫描
+           切函数体，单个引号会让它把后面整段代码当成字符串。 */
+        const missMod = /No module named[^A-Za-z0-9_.]*([A-Za-z0-9_.]+)/.exec(whyText);
+        const missHint = missMod
+          ? "；缺 python 模块 " +
+            missMod[1] +
+            "（ComfyUI venv）：重跑一次安装即可补齐" +
+            (missMod[1] === "cv2" ? "（脚本已带 torch 缩放兜底，仍报这个错说明 post 脚本还是旧版，更新插件资源后重试）" : "")
+          : "";
+        appendConsole("[post] 流式超分未出片（" + whyText.slice(0, 400) + "）→ 已回退图路径" + missHint);
         try {
           if (fs.existsSync(dst)) fs.rmSync(dst, { force: true });
         } catch {}
@@ -4495,9 +4558,16 @@ async function postProcessVideo(params) {
       const dst = exportDirEarly
         ? uniqueFileInDir(exportDirEarly, preferredEarly, ".mp4").path
         : uniqueFileInDir(join(comfy, "output", "post"), preferredEarly, ".mp4").path;
-      /* 输出帧率：与旧图链口径一致 = 源帧率 × 倍数（时长与播放速度不变，只是更顺滑）；
-       * 源帧率拿不到时省略，交脚本按「容器帧率 × 倍数」自己算。 */
-      const srcFps = Number(req.fps) || 0;
+      /* 输出帧率：一律交脚本按「容器真帧率 × 倍数」自己算（PyAV 读源文件的 average_rate）。
+       * 绝不把界面探测的 req.fps 传过去：那个值来自 <video> 屏幕数帧，实测会把 24fps 量成
+       * 12~14，按它封装等于帧数翻倍、帧率没翻倍 → 视频长度翻倍且播放变慢。 */
+      const srcContainerFps = containerVideoFps(sourcePath);
+      if (Number(req.fps) > 0 && srcContainerFps > 0 && Math.abs(Number(req.fps) - srcContainerFps) > 0.5) {
+        appendConsole(
+          "[post] 忽略界面探测帧率 " + Number(req.fps) + "（容器真值 " + srcContainerFps +
+            "）→ 输出帧率按容器帧率 × " + opts.multiplier + "x",
+        );
+      }
       const runOnce = () =>
         runStreamInterpJob({
           py: streamPy,
@@ -4514,7 +4584,7 @@ async function postProcessVideo(params) {
           clearCacheEvery: opts.clearCacheEvery,
           crf: POST_STREAM_DEFAULT_CRF,
           preset: POST_STREAM_DEFAULT_PRESET,
-          fps: srcFps > 0 ? srcFps * opts.multiplier : 0,
+          /* fps 不传：由脚本按源容器帧率 × 倍率封装（见上面的注释） */
         });
       let fallbackWhy = "";
       for (let attempt = 0; attempt < 2 && !outPath && !fallbackWhy; attempt++) {
@@ -4573,11 +4643,15 @@ async function postProcessVideo(params) {
       /* LoadVideo 只解析 ComfyUI/input 目录内的文件名：源视频先登记进 input */
       const videoPath = await uploadFileToComfy(port, sourcePath, "video");
       appendConsole("[post] source → input/" + videoPath);
+      /* 补帧的 CreateVideo 帧率同样只认容器真值（界面探测值会把 24fps 量成 12~14，
+       * 照它封装会让成片长度翻倍、变慢）；容器读不到才退回 req.fps。 */
+      const graphSrcFps =
+        kind === "interp" ? containerVideoFps(sourcePath) || Number(req.fps) || 24 : Number(req.fps) || 24;
       for (let attempt = 0; attempt < 2; attempt++) {
         const graph = buildPostWorkflow({
           kind,
           videoPath,
-          fps: Number(req.fps) || 24,
+          fps: graphSrcFps,
           bitDepth: Number(req.bitDepth) || 8,
           videoFormat: req.videoFormat || "auto",
           videoCodec: req.videoCodec || "auto",
@@ -5073,6 +5147,94 @@ function ensureSageProbe(installDir) {
 function readSageProbe(installDir) {
   if (!sageProbeFresh(installDir)) ensureSageProbe(installDir);
   return _sageProbe ? _sageProbe.value : { probed: false, ok: false, why: "checking" };
+}
+
+/* ── 后处理依赖体检（流式超分 / 补帧的 venv 依赖）──────────────────────────
+ * 现场（2026-xx）：流式超分不出片，日志只有一行
+ *   "stream_upscale_failed: ... No module named 'cv2'"
+ * 然后宿主静默回退 ComfyUI 图链。根因不是显卡也不是权重，而是**安装漏了 opencv**：
+ * ComfyUI 自带 requirements.txt 只有 numpy / av / kornia，h3-pack 的安装脚本也从没补过
+ * opencv，而流式脚本缩帧时 import cv2 → 第一帧就炸。
+ * 现在两边都堵住：脚本缺 cv2 也照跑（torch area 缩放），安装脚本显式装
+ * opencv-python-headless；这里的探针只负责**把缺哪个模块说清楚**（出片前，而不是出片后）。
+ * find_spec 不 import 模块（torch 要几秒），但结果照样缓存 10 分钟。 */
+const POST_DEPS_PROBE_PY = [
+  "import json",
+  "import importlib.util as u",
+  "o = {'cv2': '', 'av': '', 'numpy': '', 'kornia': '', 'torch': ''}",
+  "for m in list(o):",
+  "    try:",
+  "        o[m] = 'yes' if u.find_spec(m) is not None else ''",
+  "    except Exception:",
+  "        o[m] = ''",
+  "required = ['torch', 'av', 'numpy', 'kornia']",
+  "o['missing'] = [m for m in required if not o[m]]",
+  "o['cv2Missing'] = not o['cv2']",
+  "o['ok'] = not o['missing']",
+  "print(json.dumps(o))",
+].join("\n");
+const POST_DEPS_PROBE_TTL_MS = 10 * 60 * 1000;
+let _postDepsProbe = null; /* { at, dir, value } */
+let _postDepsRun = null;
+let _postDepsWarned = ""; /* dir|missing 组合只往控制台喊一次，状态每 4 秒刷一次不能刷屏 */
+function postDepsFresh(dir) {
+  return !!(
+    _postDepsProbe &&
+    _postDepsProbe.dir === String(dir || "") &&
+    Date.now() - _postDepsProbe.at < POST_DEPS_PROBE_TTL_MS
+  );
+}
+function parsePostDepsProbe(out, code) {
+  const lines = String(out || "").split(/\r?\n/);
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const L = lines[i].trim();
+    if (!L.startsWith("{")) continue;
+    try {
+      return Object.assign({ probed: true, ok: false, missing: [], cv2Missing: false, why: "" }, JSON.parse(L));
+    } catch {}
+  }
+  return {
+    probed: true,
+    ok: false,
+    missing: [],
+    cv2Missing: false,
+    why: "probe_failed(" + (code == null ? "?" : code) + "): " + String(out || "").slice(-160).replace(/\r?\n/g, " "),
+  };
+}
+async function runPostDepsProbe(installDir) {
+  const py = comfyVenvPython(installDir);
+  let value;
+  if (!py) value = { probed: true, ok: false, missing: [], cv2Missing: false, why: "no_venv" };
+  else {
+    const r = await runVenvPy(py, POST_DEPS_PROBE_PY);
+    value = parsePostDepsProbe(r.out, r.code);
+  }
+  _postDepsProbe = { at: Date.now(), dir: String(installDir || ""), value };
+  return value;
+}
+function ensurePostDepsProbe(installDir) {
+  if (postDepsFresh(installDir)) return Promise.resolve(_postDepsProbe.value);
+  if (_postDepsRun) return _postDepsRun;
+  _postDepsRun = runPostDepsProbe(installDir).finally(() => {
+    _postDepsRun = null;
+  });
+  return _postDepsRun;
+}
+function readPostDepsProbe(installDir) {
+  if (!postDepsFresh(installDir)) ensurePostDepsProbe(installDir);
+  const v = _postDepsProbe && postDepsFresh(installDir) ? _postDepsProbe.value : null;
+  const value = v || { probed: false, ok: false, missing: [], cv2Missing: false, why: "checking" };
+  /* 缺件（必装 / 可选）只在第一次探到时往控制台喊一句，别把状态刷新变成刷屏 */
+  const key = String(installDir || "") + "|" + (value.missing || []).join(",") + "|" + (value.cv2Missing ? "cv2" : "");
+  if (value.probed && (value.missing || []).length && _postDepsWarned !== key) {
+    _postDepsWarned = key;
+    appendConsole(
+      "[post][deps] ComfyUI venv 缺后处理依赖：" +
+        value.missing.join(", ") +
+        "（流式超分 / 补帧要它们）。重跑一次安装即可补齐。",
+    );
+  }
+  return value;
 }
 
 /* ── kernel 试跑（生成前那一档，必须项）─────────────────────────────────
@@ -6050,6 +6212,7 @@ async function generateVideo(params) {
     nodeId,
     workflowId: String(params.canvasWorkflowId || "").trim() || customWfId,
     kind: "video_gen",
+    host: "h3",
   });
   if (!acq.ok) {
     if (acq.error === "missing_node_id") return { ok: false, error: "missing_node_id" };

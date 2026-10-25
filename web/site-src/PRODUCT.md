@@ -38,7 +38,7 @@ web
 
 ## Product Purpose
 
-MTNode（MTNode AI 编排器 / MTNode AI Orchestrator）是一个 **Windows 桌面端 AI 工作流节点编排器**：把文本、图像、音乐、语音、视频生成与代码开发这些分散的 AI 能力，收束到**一张可视化画布**上，用节点与连线把它们串成一条能反复重跑的工作流。
+MTNode（MTNode AI工作站 / MTNode AI Orchestrator）是一个 **Windows 桌面端 AI 工作流节点编排器**：把文本、图像、音乐、语音、视频生成与代码开发这些分散的 AI 能力，收束到**一张可视化画布**上，用节点与连线把它们串成一条能反复重跑的工作流。
 
 它存在的理由：个人创作者缺的不是 AI 能力，而是**把多段能力接起来并反复执行**的地方。
 
@@ -115,13 +115,13 @@ MTNode（MTNode AI 编排器 / MTNode AI Orchestrator）是一个 **Windows 桌�
 2. **「数据不出本机」不能整体照写。** 用户允许写「本地优先」，但 `docs/privacy-data-inventory.md` 记录存在出网面：① 用户自配的 AI 服务商 API；② `mt-agent.com`（更新 / 插件目录 / 创意工坊 / 讨论区 / 桌宠 / 本地后端下载）。**因此官网只能写「工作区文件、画布、长期记忆与交付物留在本机数据目录」这一精确表述**，不得写「数据不出本机」。可用的正面证据：`docs/privacy-data-inventory.md:133`（所有 `*.html` 外链资源零匹配、CSP `connect-src 'self'`）、`crash-report.js` 无 `http` / `fetch` 且导出内容显式声明不含 API Key。
 3. **Stack 未决**：`site-src/` 目前只有 Impeccable 技能与 `node_modules`，**没有站点代码**。构建方式（沿用现行单文件内联 `index.html` / 改为模板生成 / 其他）由用户在下一环节决定。
 4. **受众只确认了主受众。** 团队采购者、二次开发者是否需要专属内容，未确认。
-5. **现行页面的既有不一致（待修，不要在官网继承）**：`verTag` 显示 `v1.3.3`（`index.html:188`）而同一页 `pill.ver` 写「v1.1 大版本」（`index.html:204`）；`meta description` 也停留在「MTNode AI编排器 v1.1」（`index.html:16`）。
+5. **现行页面的既有不一致（待修，不要在官网继承）**：`verTag` 显示 `v1.3.3`（`index.html:188`）而同一页 `pill.ver` 写「v1.1 大版本」（`index.html:204`）；`meta description` 也停留在「MTNode AI工作站 v1.1」（`index.html:16`）。
 
 ## Brand Commitments
 
 | 项 | 口径 | 依据 |
 | --- | --- | --- |
-| 中文名 | **MTNode AI编排器** | `web/index.html` `<title>`、`web/README.md` |
+| 中文名 | **MTNode AI工作站** | `web/index.html` `<title>`、`web/README.md` |
 | 英文名 | **MTNode AI Orchestrator** | `web/index.html.template:6` |
 | 简称 | MTNode | 全仓库通用 |
 | 术语统一 | **「思考强度」（英文 thinking effort）**——这是明确下达的统一口径 | `guides/manual/README.md:34` |

@@ -103,20 +103,27 @@ Write-Host "Models under: $ModelsRoot"
 #   the output is downscaled to 2x)
 # rife47.pth interpolation model -> ComfyUI-Frame-Interpolation/ckpts/rife/ (read by the RIFE VFI node;
 #   the node itself tries to auto-download from GitHub, so pre-placing it here keeps China networks from stalling)
+# Every entry carries its own ModelScope id and hf-mirror id: they do NOT share one repo path.
+# MsRepo = "" means ModelScope has no such repo/file at all (marduk191/rife returns a hard 404
+# "[E3020] file content is empty"), so that entry goes straight to the hf mirror and the install
+# log never shows a red herring error line for a download that is expected to succeed there.
 $postFiles = @(
     @{
-        Repo = "licyk/sd-upscaler-models"; Rel = "RealESRGAN/RealESRGAN_x4plus.pth";
+        MsRepo = "ai-forever/Real-ESRGAN"; MsRel = "RealESRGAN_x4.pth";
+        HfRepo = "licyk/sd-upscaler-models"; HfRel = "RealESRGAN/RealESRGAN_x4plus.pth";
         DstDir = $ModelsRoot; Out = "upscale_models\RealESRGAN_x4plus.pth"
     },
     @{
         # Official Real-ESRGAN x2plus weights (ai-forever's PyTorch port; its state_dict has the same
         # architecture as x2plus -> ComfyUI's UpscaleModelLoader identifies the architecture from the state
         # dict, so renaming it into the combo list is all it takes)
-        Repo = "ai-forever/Real-ESRGAN"; Rel = "RealESRGAN_x2.pth";
+        MsRepo = "ai-forever/Real-ESRGAN"; MsRel = "RealESRGAN_x2.pth";
+        HfRepo = "ai-forever/Real-ESRGAN"; HfRel = "RealESRGAN_x2.pth";
         DstDir = $ModelsRoot; Out = "upscale_models\RealESRGAN_x2plus.pth"; Optional = $true
     },
     @{
-        Repo = "marduk191/rife"; Rel = "rife47.pth";
+        MsRepo = ""; MsRel = "";
+        HfRepo = "marduk191/rife"; HfRel = "rife47.pth";
         DstDir = Join-Path $ComfyRoot "custom_nodes\ComfyUI-Frame-Interpolation"
         Out = "ckpts\rife\rife47.pth"
     }
@@ -133,22 +140,74 @@ foreach ($f in $postFiles) {
     Write-Host "[download post] $($f.Out) ..."
     # Download into a temporary subdirectory (modelscope/hf expand the repo-internal path), then move it to the target filename
     $tmpDir = Join-Path (Split-Path -Parent $dest) "_post_tmp_$PID"
+    Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
     $tmpEsc = $tmpDir.Replace("\", "\\")
     & $VenvPy -c @"
 import os, sys, shutil
+
 os.environ.setdefault('MODELSCOPE_CACHE', r'$modelsEsc\\_ms_cache')
-def dl():
+tmp = r'$tmpEsc'
+MIN = 1024 * 1024
+
+
+def usable(path):
     try:
-        from modelscope.hub.file_download import model_file_download
-        return model_file_download(model_id='$($f.Repo)', file_path='$($f.Rel)', local_dir=r'$tmpEsc')
-    except Exception as e1:
-        print('modelscope failed:', e1)
-        os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
-        os.environ['HF_HUB_DISABLE_XET'] = '1'
-        from huggingface_hub import hf_hub_download
-        return hf_hub_download(repo_id='$($f.Repo)', filename='$($f.Rel)', local_dir=r'$tmpEsc')
-p = dl()
+        return bool(path) and os.path.isfile(path) and os.path.getsize(path) >= MIN
+    except OSError:
+        return False
+
+
+def from_modelscope():
+    repo = '$($f.MsRepo)'
+    if not repo:
+        return None
+    from modelscope.hub.file_download import model_file_download
+    p = model_file_download(model_id=repo, file_path='$($f.MsRel)', local_dir=tmp)
+    if not usable(p):
+        raise RuntimeError('no usable file (empty / missing): %s' % p)
+    return p
+
+
+def from_hf():
+    os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
+    os.environ['HF_HUB_DISABLE_XET'] = '1'
+    from huggingface_hub import hf_hub_download
+    p = hf_hub_download(repo_id='$($f.HfRepo)', filename='$($f.HfRel)', local_dir=tmp)
+    if not usable(p):
+        raise RuntimeError('no usable file (empty / missing): %s' % p)
+    return p
+
+
+def from_url():
+    import urllib.request
+    out = os.path.join(tmp, os.path.basename('$($f.HfRel)'))
+    for base in ('https://hf-mirror.com', 'https://huggingface.co'):
+        url = base + '/$($f.HfRepo)/resolve/main/$($f.HfRel)'
+        try:
+            req = urllib.request.Request(url, headers={'User-Agent': 'mtnode-h3-install'})
+            with urllib.request.urlopen(req, timeout=90) as r, open(out, 'wb') as fo:
+                shutil.copyfileobj(r, fo, 1024 * 1024)
+            if usable(out):
+                return out
+            print('direct url too small:', base)
+        except Exception as e:
+            print('direct url failed:', base, e)
+    return None
+
+
+p = None
+for label, fn in (('modelscope', from_modelscope), ('hf-mirror', from_hf), ('direct url', from_url)):
+    try:
+        p = fn()
+    except Exception as e:
+        print(label + ' failed:', e)
+        p = None
+    if p:
+        break
+if not p:
+    print('all download sources failed')
+    sys.exit(1)
 print('saved', p)
 "@
     if ($LASTEXITCODE -ne 0) {
@@ -159,8 +218,11 @@ print('saved', p)
         }
         throw "Failed to download post $($f.Out)"
     }
-    # Move the downloaded file to its final path (the download may carry the repo-relative directory)
-    $downloaded = Get-ChildItem -LiteralPath $tmpDir -Recurse -File | Where-Object { $_.Length -gt 1MB } | Select-Object -First 1
+    # Move the downloaded file to its final path (the download may carry the repo-relative directory).
+    # Skip the downloader's own ".cache" tree: it can hold an incomplete file that is bigger than 1MB.
+    $downloaded = Get-ChildItem -LiteralPath $tmpDir -Recurse -File |
+        Where-Object { $_.Length -gt 1MB -and $_.FullName -notmatch '\\\.cache\\' } |
+        Sort-Object Length -Descending | Select-Object -First 1
     if (-not $downloaded) {
         Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
         if ($f.Optional) {

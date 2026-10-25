@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>MTNode AI编排器 · 下载</title>
-<meta name="description" content="MTNode AI编排器（MTNode AI Orchestrator）— 永久免费开源的 AI 工作流节点编排桌面应用：可视化画布、智能 Agent、工作流无损分享。Windows 安装包与源码下载。">
+<title>MTNode AI工作站 · 下载</title>
+<meta name="description" content="MTNode AI工作站（MTNode AI Orchestrator）— 永久免费开源的 AI 工作流节点编排桌面应用：可视化画布、智能 Agent、工作流无损分享。Windows 安装包与源码下载。">
 <style>
 :root{
   --bg:#0d1016; --bg2:#12161f; --panel:#161b25; --panel2:#1b2230;
@@ -80,7 +80,7 @@ footer .author:hover{color:#fff;border-color:var(--cyan)}
 <body>
 
 <header class="topbar">
-  <span class="logo-txt">MTNode AI编排器<span class="logo-sub">MTNODE AI ORCHESTRATOR · WORKFLOW</span></span>
+  <span class="logo-txt">MTNode AI工作站<span class="logo-sub">MTNODE AI ORCHESTRATOR · WORKFLOW</span></span>
   <span class="ver-tag" id="verTag">v{{VER}}</span>
 </header>
 
@@ -108,11 +108,11 @@ footer .author:hover{color:#fff;border-color:var(--cyan)}
   </div>
 
   <!-- ============ 应用截图 ============ -->
-  <img class="app-shot" src="screenshot.png" alt="MTNode AI编排器 界面截图">
+  <img class="app-shot" src="screenshot.png" alt="MTNode AI工作站 界面截图">
 
   <!-- ============ 文字说明 ============ -->
-  <h1>MTNode <b>AI</b> 编排器</h1>
-  <p>MTNode AI编排器是一套将复杂 AI 工作流收束于一张可视化画布的桌面工具。<b class="hl">文本 / 图像输入、LLM 文本处理、图像生成、批量处理、拆分合并、图转 GIF 帧动画、AI 对话</b>，皆以节点自由编排，支持 YAML 与图像保存；使用 <code>@ 引用</code> 即可自动递归执行上游，链路清晰可溯。多服务商 API 统一配置，DeepSeek 文本与 GPT Image 2 图像原生接入，兼容 OpenAI 接口，亦覆盖 Stability AI / Midjourney。工作流本地自动保存，构建现场随时恢复。<b class="hl">永久免费、开源共创</b>——软件永久免费，源码随版本开放下载（MIT License）；你的工作流可一键导出为 <code>.mtnodes</code> 包，无损分享或整体开源，社区的好点子（剧本人设框架、DeepSeek娘等创意模板）导入即用。</p>
+  <h1>MTNode <b>AI</b> 工作站</h1>
+  <p>MTNode AI工作站是一套将复杂 AI 工作流收束于一张可视化画布的桌面工具。<b class="hl">文本 / 图像输入、LLM 文本处理、图像生成、批量处理、拆分合并、图转 GIF 帧动画、AI 对话</b>，皆以节点自由编排，支持 YAML 与图像保存；使用 <code>@ 引用</code> 即可自动递归执行上游，链路清晰可溯。多服务商 API 统一配置，DeepSeek 文本与 GPT Image 2 图像原生接入，兼容 OpenAI 接口，亦覆盖 Stability AI / Midjourney。工作流本地自动保存，构建现场随时恢复。<b class="hl">永久免费、开源共创</b>——软件永久免费，源码随版本开放下载（MIT License）；你的工作流可一键导出为 <code>.mtnodes</code> 包，无损分享或整体开源，社区的好点子（剧本人设框架、DeepSeek娘等创意模板）导入即用。</p>
 
   <h2>功能特性</h2>
   <ul>
@@ -162,7 +162,7 @@ footer .author:hover{color:#fff;border-color:var(--cyan)}
 </div>
 
 <footer>
-  <span>MTNode AI编排器 v{{VER}}</span>
+  <span>MTNode AI工作站 v{{VER}}</span>
   <span class="ok" style="color:var(--green)">● OSS 下载在线</span>
   <span class="spacer"></span>
   <span class="author" onclick="location.href='https://space.bilibili.com/16411347'" title="作者主页">ms2308</span>

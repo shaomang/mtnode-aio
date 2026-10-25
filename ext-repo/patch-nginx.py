@@ -23,6 +23,9 @@ EXT = """
 
 """
 
+# needle 必须与服务器上现有 nginx 配置里的注释逐字一致（本文件不改写远端配置）：
+# 产品中文名已改为「MTNode AI工作站」，而这行注释仍是旧名「MTNode AI编排器」，
+# 所以这里保持旧名；待服务器那行注释同步改成新名后，再把 needle 一起改成新名。
 needle = "    # === MTNode AI编排器 下载页"
 if needle not in text:
     raise SystemExit("nginx needle not found: MTNode AI编排器 下载页")

@@ -315,10 +315,24 @@ const dataWriteAllow = new Set();
    协议必须在 app ready 之前登记为标准 / 安全协议 —— main.js 在本模块 require 期即完成，
    早于 whenReady。 */
 const PREVIEW_SCHEME = "mtnode-preview";
+/* 预览缩略图协议（assets-store.js 的 registerThumbProtocol）：画布图片预览走它取
+   「长边 ≤640」的图。Electron 的 registerSchemesAsPrivileged 只能整体调一次，所以
+   两条自定义协议的权限声明都集中在这一处，handler 各自注册。 */
+const THUMB_SCHEME = "mtnode-thumb";
 try {
   protocol.registerSchemesAsPrivileged([
     {
       scheme: PREVIEW_SCHEME,
+      privileges: {
+        standard: true,
+        secure: true,
+        supportFetchAPI: true,
+        corsEnabled: true,
+        stream: true,
+      },
+    },
+    {
+      scheme: THUMB_SCHEME,
       privileges: {
         standard: true,
         secure: true,

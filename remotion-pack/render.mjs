@@ -30,10 +30,11 @@
  *                   number  覆盖合成参数（可选，缺省用模板占位值）
  *   inputProps      object  传给合成的 props（可选）
  *   browserExecutable string
- *                   本机 Chromium 系浏览器路径（可选）。国内网络拿不到 Remotion 硬编码的
- *                   storage.googleapis.com 下载直链时，宿主会先尝试从 npmmirror 代下
- *                   chrome-headless-shell 预置到 node_modules/.remotion；代下也失败才落到这里，
- *                   用本机 Edge / Chrome 渲染（Remotion 会警告版本非钉版、渲染确定性略降）。
+ *                   浏览器可执行文件路径（宿主现在**几乎总是**给）：npmmirror 代下的
+ *                   chrome-headless-shell 预置在 <安装目录>/node_modules/.remotion，宿主把那份
+ *                   exe 绝对路径交过来 —— 必须给，否则 Remotion 按 process.cwd() 去
+ *                   <工程目录>/.remotion 找，找不到就重下 113MB（每换一个工程目录重下一遍）。
+ *                   代下失败时才落到本机 Edge / Chrome（Remotion 会警告版本非钉版、确定性略降）。
  *                   也可用环境变量 MTNODE_REMOTION_BROWSER_EXECUTABLE 传同一个值。
  *   concurrency / jpegQuality / audioCodec / logLevel
  *                           透传给 renderMedia（可选）

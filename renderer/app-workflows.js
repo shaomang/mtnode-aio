@@ -370,6 +370,55 @@ function nsArtifactFields(ctx, node) {
   }
 }
 
+/* 保存节点在快照里只代表「写到哪里」：配置路径 savePath 必须原样带走，
+   上一次落盘的正文 / 结果路径 / 运行态都不属于工作流 —— 它们是运行结果，
+   跟着包走只会在别人机器上指向不存在的旧文件（下游拿到半截路径直接中断）。
+   所以快照 / 分享包一律只留配置，内容一个字段都不复制。 */
+const WORKFLOW_SAVE_RUNTIME_FIELDS = [
+  "savedBody",
+  "savedPath",
+  "savedPaths",
+  "savedAt",
+  "output",
+  "batchOutputs",
+  "attemptOutputs",
+  "attemptIdx",
+  "attemptsDone",
+  "error",
+  "running",
+  "ranAt",
+  "resultText",
+  "artifacts",
+  "artifactsAck",
+  "_runTick",
+  "_runSeq",
+  "_aborted",
+  "_ghostCleared",
+  "_cache",
+  "_runState",
+];
+function workflowSaveNodeOf(n) {
+  if (!n || typeof n !== "object") return false;
+  if (typeof isSaveNode === "function") return isSaveNode(n);
+  return n.kind === "save" || n.kind === "save_text" || n.kind === "save_image" || n.kind === "save_pdf";
+}
+/* 保存节点 → 只留路径（savePath）+ 自己的配置（auto / batchMode / oop* / 版面…） */
+function workflowStripSaveNodeContent(cp) {
+  if (!workflowSaveNodeOf(cp)) return cp;
+  /* 只有「上次落盘结果」而没有配置路径的老节点（换了工作目录 / 老存档）：把那份路径
+     收成配置路径再带走 —— 路径绝不能丢，丢了跑到保存节点就中断。 */
+  if (!String(cp.savePath || "").trim()) {
+    const last = String(cp.savedPath || "").trim();
+    if (last)
+      cp.savePath =
+        typeof preferRelativeSavePath === "function"
+          ? preferRelativeSavePath(last)
+          : last;
+  }
+  for (const k of WORKFLOW_SAVE_RUNTIME_FIELDS) delete cp[k];
+  return cp;
+}
+
 /* 节点 → 工作流快照（只收这颗壳与它的后代，连线两端都在集合里） */
 function workflowGraphFromNode(node) {
   if (!node || node.kind !== "super") return null;
@@ -382,7 +431,9 @@ function workflowGraphFromNode(node) {
   );
   return {
     rootId: String(node.id),
-    nodes: srcs.map((n) => JSON.parse(JSON.stringify(n))),
+    nodes: srcs.map((n) =>
+      workflowStripSaveNodeContent(JSON.parse(JSON.stringify(n))),
+    ),
     wires: wires.map((w) => JSON.parse(JSON.stringify(w))),
   };
 }
@@ -435,11 +486,15 @@ async function saveWorkflowFromNode(node, opts) {
 
   /* 同名 → 覆盖确认 */
   let existId = "";
+  let existVersion = "";
   try {
     const r = await api.workflowsList();
     const list = (r && r.ok && r.lists) || (r && r.ok && r.workflows) || [];
     const hit = list.find((w) => String(w.name || "") === name);
-    if (hit) existId = String(hit.id || "");
+    if (hit) {
+      existId = String(hit.id || "");
+      existVersion = String(hit.version || "");
+    }
   } catch (_) {}
   if (existId) {
     const sure = await confirmDialog(
@@ -456,7 +511,8 @@ async function saveWorkflowFromNode(node, opts) {
     id: existId || "",
     name: name,
     description: String(node.note || "").trim(),
-    version: String(opts.version || "1.0"),
+    /* 覆盖同名条目时沿用它的版本号（否则每次从画布重存都掉回 1.0） */
+    version: String(opts.version || existVersion || "1.0"),
     cover: typeof node.bgImage === "string" ? node.bgImage : "",
     /* 当前画布 id：主进程会把中间产物同时铺一份到画布产物目录，
        下面据此把绝对路径回写到节点上（画布这份与包内那份内容一致）。 */
@@ -524,6 +580,35 @@ function workflowViewCenterWf() {
     y: (vh / 2 - (S.cam ? S.cam.y : 0)) / z,
   };
 }
+/* 下拉节点层到画布：**目录由用户当场填**（上传包里不带节点层目录，见
+   workflowStripForShare；本机库里的老条目也走这道确认，避免直接复用原目录）。
+   返回规范化后的子文件夹；用户取消 / 留空 → null（此时不许插入）。 */
+async function promptWorkflowLayerFolder(pkg, rootNode) {
+  const cur = normalizeSuperSubFolder(rootNode && rootNode.subFolder);
+  const named = String((pkg && pkg.name) || (rootNode && rootNode.title) || "")
+    .replace(/[\\/:*?"<>|]+/g, "-")
+    .replace(/\s+/g, " ")
+    .trim();
+  const base = cur || named || "workflow";
+  const suggested = freeSuperSubFolder(base) || base;
+  const layerName = String((rootNode && rootNode.title) || (pkg && pkg.name) || "");
+  const val = await promptDialog(
+    I18n.t(
+      "「{name}」插入到当前画布的哪个目录（相对工作目录）？内部保存 / 输出路径会一并改到该目录下。",
+      { name: layerName },
+    ),
+    suggested,
+    { title: I18n.t("节点层目录"), okText: I18n.t("插入") },
+  );
+  if (val == null) return null; /* 取消插入 */
+  const sf = normalizeSuperSubFolder(val);
+  if (!sf) {
+    toast(I18n.t("请填写节点层目录（相对工作目录，不能为空）"), "warn");
+    return null;
+  }
+  return sf;
+}
+
 async function insertWorkflowToCanvas(entry) {
   if (!S.wf || !Array.isArray(S.wf.nodes)) {
     toast(I18n.t("请先打开一个画布"), "warn");
@@ -543,10 +628,22 @@ async function insertWorkflowToCanvas(entry) {
     toast(I18n.t("工作流内容为空，无法插入"), "err");
     return false;
   }
+  const rootId0 = String(g.rootId || "");
+  const ri0 = nodes.findIndex((n) => n && String(n.id || "") === rootId0);
+  /* 目录必填：这一步用户没确认，就别往画布上落东西 */
+  const sfWanted = await promptWorkflowLayerFolder(
+    pkg,
+    nodes[ri0 >= 0 ? ri0 : 0] || nodes[0],
+  );
+  if (!sfWanted) return false;
   pushHistory();
   const { cps, idMap } = cloneNodesDeep(nodes, {
     keepOrphanParent: false,
     uniqueTitle: true,
+    /* 工作流包里的相对保存路径属于这颗节点层的 subFolder：必须原样带走，
+       否则插入后内部保存节点路径为空（运行到保存节点就中断）。插入后由
+       下面的 setSuperSubFolder 按「旧前缀 → 新目录」统一改写。 */
+    keepInnerSavePaths: true,
   });
   if (!cps.length) {
     toast(I18n.t("工作流内容为空，无法插入"), "err");
@@ -576,8 +673,6 @@ async function insertWorkflowToCanvas(entry) {
   /* 落点：当前视图中心（与粘贴落点同一套相机换算），并按网格对齐 */
   const c = workflowViewCenterWf();
   const gs = typeof grid === "function" ? grid() : 16;
-  const rootId0 = String(g.rootId || "");
-  const ri0 = nodes.findIndex((n) => n && String(n.id || "") === rootId0);
   const base = cps[ri0 >= 0 ? ri0 : 0] || cps[0];
   const bx = base && isFinite(Number(base.x)) ? Number(base.x) : 0;
   const by = base && isFinite(Number(base.y)) ? Number(base.y) : 0;
@@ -597,6 +692,15 @@ async function insertWorkflowToCanvas(entry) {
 
   S.wf.nodes.push(...cps);
   if (wireCps.length) S.wf.wires.push(...wireCps);
+  /* 目录落定：克隆进来的旧子目录（本机库里带着的那一层）按「旧前缀 → 新前缀」
+     改写到用户刚填的目录，子树里的相对保存 / 输出 / 监视路径一并重写。 */
+  if (
+    rootCp.kind === "super" &&
+    normalizeSuperSubFolder(rootCp.subFolder) !== sfWanted &&
+    typeof setSuperSubFolder === "function"
+  ) {
+    setSuperSubFolder(rootCp, sfWanted);
+  }
   for (const cp of cps) {
     if (cp.kind === "super") cp.superOpen = false;
     if (cp.kind === "task" && typeof ensureTaskScaffold === "function") {
@@ -705,8 +809,10 @@ function workflowStripForShare(graph) {
     cp.resultText = "";
     cp.taskRunState = "";
     /* 保存 / 媒体输出：改相对路径，落到对方自己的输出目录 */
-    if (cp.kind === "save" || cp.kind === "save_text" || cp.kind === "save_image" || cp.kind === "save_pdf") {
+    if (workflowSaveNodeOf(cp)) {
       cp.savePath = workflowRelOutPath(cp.savePath);
+      /* 老库里存着的落盘正文 / 结果路径同样不带出去（口径见 workflowStripSaveNodeContent） */
+      workflowStripSaveNodeContent(cp);
     }
     if (cp.outputPath) cp.outputPath = workflowRelOutPath(cp.outputPath);
     /* 其余字符串字段里混着的本机绝对路径：清空（不猜、不改成看似能用的假路径） */
@@ -743,6 +849,38 @@ function workflowStripForShare(graph) {
     delete cp.artifactsAck;
     return cp;
   });
+  /* 节点层目录（subFolder）是上传者本机的工作目录结构，**不随包上传**：对方插入时
+     自己填（insertWorkflowToCanvas 里那道必填提示）。包内相对路径里带着的那层前缀
+     一起剥掉，否则对方填的目录会叠在旧前缀前面（{新目录}/{旧目录}/fn）。 */
+  const sfById = new Map();
+  const parentById = new Map();
+  for (const n of nodesOut) {
+    sfById.set(String(n.id || ""), normalizeSuperSubFolder(n.subFolder));
+    parentById.set(String(n.id || ""), String((n && n.parentSuperId) || ""));
+  }
+  const layerPrefixOf = (n) => {
+    const parts = [];
+    const seen = new Set();
+    let pid = String((n && n.parentSuperId) || "");
+    while (pid && !seen.has(pid)) {
+      seen.add(pid);
+      const sf = sfById.get(pid);
+      if (sf === undefined) break;
+      if (sf) parts.unshift(sf);
+      pid = parentById.get(pid) || "";
+    }
+    return parts.join("/");
+  };
+  for (const n of nodesOut) {
+    const prefix = layerPrefixOf(n);
+    if (prefix) {
+      for (const k of ["savePath", "outputPath", "waitPath"]) {
+        if (typeof n[k] === "string" && n[k])
+          n[k] = rebaseSuperPath(n[k], prefix, "");
+      }
+    }
+    if (n.kind === "super") delete n.subFolder;
+  }
   const wires = (Array.isArray(src.wires) ? src.wires : []).map((w) => {
     const cp = JSON.parse(JSON.stringify(w || {}));
     delete cp.running;
@@ -753,8 +891,11 @@ function workflowStripForShare(graph) {
   return { rootId: String(src.rootId || ""), nodes: nodesOut, wires: wires };
 }
 
-/* ── 分享：本机库条目 / 画布上的节点层 → 工坊上传页 ───────────────────── */
-async function shareWorkflowToWorkshop(target) {
+/* ── 分享 / 更新：本机库条目 / 画布上的节点层 → 工坊上传页 ─────────────────
+ * opts.updateId = 已发布条目的工坊 id：走「更新」而不是「新发布」（同一份条目，
+ * 版本号在上传页可改）。不传就是首次分享。 */
+async function shareWorkflowToWorkshop(target, opts) {
+  opts = opts || {};
   const api = window.api || {};
   if (!workflowApiOk() || typeof api.workflowsExportBase64 !== "function") {
     toast(I18n.t("工作流库不可用（本机存储接口未就绪）"), "err");
@@ -762,7 +903,7 @@ async function shareWorkflowToWorkshop(target) {
   }
   let id = "";
   if (target && typeof target === "object" && target.kind === "super") {
-    const saved = await saveWorkflowFromNode(target, { version: "1.0" });
+    const saved = await saveWorkflowFromNode(target);
     if (!saved) return false;
     id = saved.id;
   } else if (typeof target === "string") {
@@ -801,9 +942,16 @@ async function shareWorkflowToWorkshop(target) {
   }
   const payload = {
     sourceId: id,
+    /* 已有工坊条目 → 上传页按「编辑 / 更新」打开（不新建一条同名条目）。
+       库条目上记着 storeId 的（发布过 / 从库按钮更新过）就不用再问一遍。 */
+    updateId: String(opts.updateId || entry.storeId || ""),
+    /* 只有库行上的「更新到工坊」才是明确的一次覆盖动作（跳过覆盖确认） */
+    directUpdate: !!opts.updateId,
     title: String(entry.name || ""),
     description: String(entry.description || ""),
-    version: String(entry.version || "1.0"),
+    version: String(opts.version || entry.version || "1.0"),
+    /* 封面一起带过去：工坊条目直接继承工作流库里那张图（上传页会压成预览图） */
+    cover: String(entry.cover || ""),
     fileBase64: pack.base64,
     ports: {
       ins: ports.ins.map((p) => ({ index: p.index, name: p.name, kind: p.kind, ctrl: !!p.ctrl })),
@@ -1107,6 +1255,19 @@ function workflowLibRow(w, host) {
   nmTxt.style.cssText =
     "min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap";
   nm.append(badge, nmTxt);
+  /* 已发布到工坊的标记：一眼看出哪条已经在工坊里，且能就地用本机这一版更新 */
+  if (w.storeId) {
+    const pub = document.createElement("span");
+    pub.textContent =
+      I18n.t("已上传到工坊") + (w.storeVersion ? " v" + w.storeVersion : "");
+    pub.title = I18n.t(
+      "这条工作流已发布到创意工坊（{title}）。用「更新到工坊」可直接用本机这一版覆盖，不必重新选择节点层。",
+      { title: w.storeTitle || w.name || "" },
+    );
+    pub.style.cssText =
+      "flex:none;font-size:10px;font-weight:700;line-height:1;padding:3px 5px;border-radius:3px;border:1px solid var(--green);color:var(--green)";
+    nm.appendChild(pub);
+  }
   nm.title = w.name || "";
   const sub = document.createElement("div");
   sub.style.cssText = "font-size:11px;color:var(--muted)";
@@ -1139,7 +1300,9 @@ function workflowLibRow(w, host) {
   btnInsert.type = "button";
   btnInsert.className = "mini primary";
   btnInsert.textContent = I18n.t("插入");
-  btnInsert.title = I18n.t("把这颗节点层插入当前画布（可重复插入；插进去就是一颗可展开的壳）");
+  btnInsert.title = I18n.t(
+    "把这颗节点层插入当前画布（插入时填这颗节点层的目录；插进去就是一颗可展开的壳）",
+  );
   btnInsert.onclick = async () => {
     const r = await window.api.workflowsGet(w.id);
     if (!r || !r.ok || !r.workflow) {
@@ -1171,9 +1334,18 @@ function workflowLibRow(w, host) {
   const btnShare = document.createElement("button");
   btnShare.type = "button";
   btnShare.className = "mini";
-  btnShare.textContent = I18n.t("分享到工坊");
-  btnShare.title = I18n.t("剥掉本机路径与依赖后上传到创意工坊（要求外侧至少 1 进 1 出）");
-  btnShare.onclick = () => shareWorkflowToWorkshop(w.id);
+  if (w.storeId) {
+    btnShare.textContent = I18n.t("更新到工坊");
+    btnShare.title = I18n.t(
+      "用本机这一版更新工坊条目（可改版本号），不用重新选择节点层；不载入新快照也能只改标题 / 版本",
+    );
+    btnShare.onclick = () =>
+      shareWorkflowToWorkshop(w.id, { updateId: w.storeId, version: w.version });
+  } else {
+    btnShare.textContent = I18n.t("分享到工坊");
+    btnShare.title = I18n.t("剥掉本机路径与依赖后上传到创意工坊（要求外侧至少 1 进 1 出）");
+    btnShare.onclick = () => shareWorkflowToWorkshop(w.id);
+  }
 
   const btnDel = document.createElement("button");
   btnDel.type = "button";

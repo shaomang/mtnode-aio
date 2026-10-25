@@ -47,6 +47,7 @@ const path = require("path");
 const fs = require("fs");
 const http = require("http");
 const { spawn, execFile } = require("child_process");
+const { gpuExecFile } = require("../gpu-poll.js"); /* 显存读数统一出口：去重缓存 + 搬出主线程（见该文件头） */
 const { resolveDshRunAuth } = require("../dsh/mtnode-llm-creds.js");
 const {
   refreshStaleLock,
@@ -54,6 +55,7 @@ const {
   clearLock,
   releaseLock,
   busyMessage,
+  registerHostProbe,
 } = require("../media-gen-global-lock.js");
 /* 插件报错总线：失败出口统一上报主窗口（跨窗可见 + 一键自我修复），见 plugin-error-repair.js */
 const pluginErrors = require("../plugin-error-repair.js");
@@ -118,6 +120,18 @@ let idleTimer = null;
 let backendProc = null;
 /** @type {{ nodeId: string, abort?: boolean, req?: import('http').ClientRequest|null }|null} */
 let activeGenerate = null;
+
+/* 全局媒体锁活性探针（口径见 media-gen-global-lock.js 头部）：内存里的在途任务才是真相 */
+registerHostProbe("sensenova", {
+  isBusy: () => (activeGenerate && activeGenerate.nodeId) || "",
+  isAlive: () => {
+    try {
+      const meta = loadPidMeta();
+      if (meta && meta.external) return true; /* 复用外置服务：进程不在我们名下，判不了就不判死 */
+    } catch {}
+    return backendRunning();
+  },
+});
 /** @type {((ev: any) => void)|null} */
 let dshEventHook = null;
 /** 最近一次依赖自检仍缺的模块（随 status 回给渲染层，供提示与一键修复） */
@@ -621,7 +635,7 @@ function projectSignals(dir) {
  */
 function queryGpu() {
   return new Promise((resolve) => {
-    execFile(
+    gpuExecFile(
       "nvidia-smi",
       ["--query-gpu=name,driver_version,memory.total,memory.used,utilization.gpu", "--format=csv,noheader,nounits"],
       { windowsHide: true, timeout: 8000 },
@@ -657,7 +671,7 @@ function queryGpu() {
 /** 单帧显存采样（控制台窗两条进度条用；没有 N 卡返回 null） */
 function sampleGpu() {
   return new Promise((resolve) => {
-    execFile(
+    gpuExecFile(
       "nvidia-smi",
       ["--query-gpu=name,memory.used,memory.total,utilization.gpu", "--format=csv,noheader,nounits"],
       { windowsHide: true, timeout: 4000 },
@@ -1983,7 +1997,7 @@ async function generateImage(params) {
   }
 
   /* 显存独占：与音乐 / 视频共用全局互斥锁（一张 24G 卡装不下两个本地大模型） */
-  const acq = tryAcquireLock({ nodeId, workflowId: String(params.workflowId || ""), kind: NODE_KIND });
+  const acq = tryAcquireLock({ nodeId, host: "sensenova", workflowId: String(params.workflowId || ""), kind: NODE_KIND });
   if (!acq.ok) {
     const msg = lockBusyMessage(acq.lock);
     appendConsole("[job] busy_media node=" + (acq.lock && acq.lock.nodeId ? acq.lock.nodeId : ""));

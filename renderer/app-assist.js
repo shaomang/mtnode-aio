@@ -2193,8 +2193,8 @@ async function assistSend(text, opts) {
      单独成节，便于将来按节 diff。skill_index / db_grounding / tool_policy /
      lang_taste 由 app-db.js 统一追加，此处不重复注入。 */
   const personaHost = assistCanvasFree
-    ? "你是 MTNode AI编排器的全局助手，位于界面右侧栏。宿主按这条消息判定**本轮与画布无关**：本轮不注册任何画布与应用工具（mtnode_canvas_get / mtnode_canvas_edit / mtnode_app 都不可用），你只读写文件、联网、执行命令，也不注入整张画布快照。\n本轮不要承诺任何画布改动，也不要臆造节点或画布现状。若这条任务其实需要动画布：**先别硬做** —— 用一句话说明「这轮按无关档跑、画布工具没在」，请用户在同一句里补上画布 / 节点（例如「改画布上的『文本节点 2』」）再发一次，下一轮就会带上画布工具。\n"
-    : "你是 MTNode AI编排器的全局助手，位于界面右侧栏。你能看到并操作应用内画布、节点、服务商与智能配置摘要。\n";
+    ? "你是 MTNode AI工作站的全局助手，位于界面右侧栏。宿主按这条消息判定**本轮与画布无关**：本轮不注册任何画布与应用工具（mtnode_canvas_get / mtnode_canvas_edit / mtnode_app 都不可用），你只读写文件、联网、执行命令，也不注入整张画布快照。\n本轮不要承诺任何画布改动，也不要臆造节点或画布现状。若这条任务其实需要动画布：**先别硬做** —— 用一句话说明「这轮按无关档跑、画布工具没在」，请用户在同一句里补上画布 / 节点（例如「改画布上的『文本节点 2』」）再发一次，下一轮就会带上画布工具。\n"
+    : "你是 MTNode AI工作站的全局助手，位于界面右侧栏。你能看到并操作应用内画布、节点、服务商与智能配置摘要。\n";
   /* 拷问契约（本次需求 · 助手栏「先拷问需求」那一枚）：贴在人设尾部（不是单开一节）——
      节序表里没有这个 id 会被排到全表末尾，离「该不该开工」的判断点太远；
      贴在人设后面才有约束力。纯净模式开着时整段 system prompt 都置空（本就不注入）。 */
@@ -2622,22 +2622,50 @@ async function assistSend(text, opts) {
    · 会话视图若正看着这条会话：走会话自己那一套重绘（agentUiSoon 合并帧 + paintAgentStream /
      agentLiveRepaint），与在会话里直接跑一轮的显示完全同一条路。
    两边都按**同一个运行键**取轨迹，所以字面完全一致。 */
-function assistLiveTick(st, rk, toolsChanged) {
+/* 助手栏正文 / 思考的整段写入限频（本次需求 · 思考不卡）：
+   栏里这两块显示的是**整段**文本（不是会话里那种一行摘要条）。真机上量过：把 87 万字的
+   思考整段赋给 textContent，赋值本身 0.2ms，但随后的排版要 **153ms**（元素高达 38 万 px）——
+   按 30fps 每帧写一次，主线程就被排版占满，表现就是「一思考就卡」。这里限到 150ms 一次，
+   尾随定时器补最后一帧（最后一个字不会漏）。会话视图那边的刷新完全不受影响。 */
+const ASSIST_TICK_PAINT_MS = 150;
+let _assistTickAt = 0;
+let _assistTickTimer = 0;
+let _assistTickPending = null;
+function assistPanelPaint(st, rk) {
   const list = document.getElementById("assistList");
-  if (list) {
-    const body = document.getElementById("assist-stream");
-    if (body)
-      body.textContent = traceSayDisplay(
-        rk,
-        (st && st._pending) || S.assistPending || "",
-      );
-    const th = document.getElementById("assist-think");
-    if (th)
-      th.textContent = traceThinkDisplay(
-        rk,
-        (S.thinking && S.thinking[rk] && S.thinking[rk][0]) || "",
-      );
-    scrollElToBottomIfStuck(list);
+  if (!list) return;
+  const body = document.getElementById("assist-stream");
+  if (body)
+    body.textContent = traceSayDisplay(
+      rk,
+      (st && st._pending) || S.assistPending || "",
+    );
+  const th = document.getElementById("assist-think");
+  if (th)
+    th.textContent = traceThinkDisplay(
+      rk,
+      (S.thinking && S.thinking[rk] && S.thinking[rk][0]) || "",
+    );
+  scrollElToBottomIfStuck(list);
+}
+function assistLiveTick(st, rk, toolsChanged) {
+  _assistTickPending = { st: st, rk: rk };
+  const runPaint = () => {
+    _assistTickTimer = 0;
+    _assistTickAt = Date.now();
+    const p = _assistTickPending;
+    _assistTickPending = null;
+    if (p) assistPanelPaint(p.st, p.rk);
+  };
+  const wait = ASSIST_TICK_PAINT_MS - (Date.now() - _assistTickAt);
+  if (wait <= 0) {
+    if (_assistTickTimer) {
+      clearTimeout(_assistTickTimer);
+      _assistTickTimer = 0;
+    }
+    runPaint();
+  } else if (!_assistTickTimer) {
+    _assistTickTimer = setTimeout(runPaint, wait);
   }
   if (!st || typeof agentViewIs !== "function") return;
   if (!agentViewIs(st)) return;
@@ -3698,12 +3726,16 @@ function agentSessionMetaForDisk(s) {
    过去正文 / 思考只在这一轮**结束时**才进 messages 并写盘，一崩 / 一刷窗 / 一强制重启，
    整轮回复全没了 —— 盘上只剩轮首落的那条用户消息，界面上就是「会话里只有标题和用户输入」
    （用户报的正是这个现场：磁盘上那条会话只有一条 174 字的用户消息，时间戳停在轮首）。
-   现在这一轮还在跑的时候，每 2 秒把轨迹里**已经到达**的思考 / 正文 / 工具段作为一条
+   现在这一轮还在跑的时候，每 5 秒把轨迹里**已经到达**的思考 / 正文 / 工具段作为一条
    「进行中」的助手消息一起写进会话文件：崩溃后它就在盘上，重启即见，绝不回退成空白。
    · 它不读也不写 st.messages（内存里的会话正文一条都不提前动）：只在序列化的那一刻
      追加一条，所以历史计算 / 计划线 / token 归集看到的东西与改造前完全一样；
    · 只在 running 时存在，轮末 agentLiveWatchEnd 一收就没了（正常收轮永远只落一份完整结果）。 */
-const AGENT_LIVE_SAVE_MS = 2000;
+/* 节拍从 2s 放宽到 5s（本次需求 · 思考期间不卡）：这枚定时器每次触发都要把轨迹段快照
+   序列化 + 过 IPC，长会话下是一笔稳定开销，而它只为「崩溃后还能看到轮中内容」兜底。
+   代价上限 = 崩溃最多丢 5s 的轮中输出；**思考段收口时会补落一次**（见 dshOnThinkClosed），
+   所以一次思考结束后它的正文已经落在盘上，不会等到下一个 5s 拍点。 */
+const AGENT_LIVE_SAVE_MS = 5000;
 function agentLiveWatchBegin(st) {
   if (!st || !st.id) return;
   agentLiveWatchEnd(st);
@@ -9843,8 +9875,14 @@ function agentLiveSegsEl(row, st, live, items) {
         d.appendChild(md);
       }
       /* 这一项自己的时刻（段 at）：**在写完正文之后再挂** —— 时刻栏是元素的第一只子节点，
-         上面的 textContent 赋值会把子节点清空一次（就地更新路径另见 dshSegSetStreamText）。 */
-      dshSegTimeAttach(d, seg.at, 0, 0, tok);
+         上面的 textContent 赋值会把子节点清空一次（就地更新路径另见 dshSegSetStreamText）。
+         **空白正文段不挂时刻**（用户口径「移除会话新一轮额外的第一个时间显示，会和第一个
+         消息的时间造成重叠」）：模型偶尔先吐一个只有空白的正文增量（"\n" 之类），它成了一段
+         零高的 .dsh-seg-say —— 时刻栏却是绝对定位挂在宿主顶上的，于是与下一个段的时刻叠成
+         重影。历史路径本来就按 !txt.trim() 直接跳过这种段；这里保留元素（流式就地更新要有
+         落点），只是不挂时刻 → 元素回到 :empty（display:none），不占位也不显示时间。 */
+      if (seg.k === "err" || String(seg.text || "").trim())
+        dshSegTimeAttach(d, seg.at, 0, 0, tok);
       segEls[i] = d;
       row.appendChild(d);
     } else if (seg.k === "tool") {
@@ -9909,6 +9947,54 @@ function agentLiveSegTail(items, el, kind) {
 }
 /* reasoning 事件的分段更新：只刷尾部正在增长的思考段的摘要字数与展开中的正文。
    非分段模式（如节点绑定运行）自动退回旧的 updateAgentThinkEl 整段写入。 */
+/* 思考弹窗正文（markdown）的实时重渲限频：每 100ms 最多一次，尾随定时器补最后一帧。
+   force=true（段已收口）立刻渲染 —— 收口那一份必须是完整的，否则最后几个字读不到。 */
+const DSH_THINK_POP_MD_MS = 100;
+let _dshThinkPopMdAt = 0;
+let _dshThinkPopMdTimer = 0;
+let _dshThinkPopMdLast = null;
+function dshThinkPopMdSet(el, txt, force) {
+  if (!el) return;
+  _dshThinkPopMdLast = { el: el, txt: String(txt || "") };
+  const now = Date.now();
+  const paint = () => {
+    const last = _dshThinkPopMdLast;
+    _dshThinkPopMdLast = null;
+    _dshThinkPopMdAt = Date.now();
+    if (!last || !last.el) return;
+    /* 弹窗可能已经关掉 / 换了段：元素离了 DOM 就不写 */
+    if (last.el.isConnected === false) return;
+    last.el.innerHTML = dshThinkMdHtml(last.txt);
+  };
+  if (force || now - _dshThinkPopMdAt >= DSH_THINK_POP_MD_MS) {
+    if (_dshThinkPopMdTimer) {
+      clearTimeout(_dshThinkPopMdTimer);
+      _dshThinkPopMdTimer = 0;
+    }
+    paint();
+    return;
+  }
+  if (_dshThinkPopMdTimer) return;
+  _dshThinkPopMdTimer = setTimeout(() => {
+    _dshThinkPopMdTimer = 0;
+    paint();
+  }, Math.max(0, DSH_THINK_POP_MD_MS - (now - _dshThinkPopMdAt)));
+}
+/* 思考段收口 → 立刻补落一次（本次需求 · 轮中快照从 2s 放宽到 5s 的配套）：
+   轨迹层（app-db.js 的 traceCloseThink）在段真的收口时回调这里。只对会话运行键生效，
+   且只在这条会话确实有轮中内容时排队 —— 用同一套增量落盘，不额外写整份。 */
+function dshOnThinkClosed(runKey) {
+  const k = String(runKey || "");
+  if (!k.startsWith("agent:")) return;
+  const id = k.slice("agent:".length);
+  if (!id) return;
+  const st = typeof agentSessionById === "function" ? agentSessionById(id) : null;
+  if (!st || !st.running) return;
+  try {
+    if (!agentLivePartialMsg(st)) return;
+    agentMarkSessionDirty(st.id);
+  } catch (_) {}
+}
 let _liveSegThinkRAF = 0;
 function updateAgentLiveThink(st) {
   if (typeof requestAnimationFrame !== "function") return;
@@ -9942,8 +10028,15 @@ function updateAgentLiveThink(st) {
       !rowBtn ||
       Number(rowBtn.dataset.segIdx) !== idx
     ) {
+      /* 新起一段思考（段序变了 / 那一行还没挂上）：**不要整表重建** ——
+         整表重建会把全部历史消息连同 markdown 重新渲一遍，长会话实测 0.5s 级，
+         而这里要的只是「把新出现的这一段挂上来」。agentLiveRepaint 走的是
+         agentLiveSegsEl 的逐段对账：只为新增段建 DOM，历史一段都不碰；
+         拿不到 live 容器时它自己也只会排一次 agentRebuildSoon（400ms 合并闸），
+         不再同步砸一次整表重建。 */
       try {
-        renderAgentSession();
+        if (typeof agentLiveRepaint === "function") agentLiveRepaint(st);
+        else renderAgentSession();
       } catch (_) {}
       return;
     }
@@ -9959,12 +10052,15 @@ function updateAgentLiveThink(st) {
     }
     dshThinkBarPaint(rowBtn.querySelector(".dsh-think-meter"), txt.length);
     /* 全文只在弹窗里读：弹窗若正开着这一段，正文跟着长（见 openDshThinkPop 的 live 分支）。
-       正文按 Markdown 渲染（本次需求），所以这里也走 dshThinkMdHtml 这同一个入口。 */
+       正文按 Markdown 渲染（本次需求），所以这里也走 dshThinkMdHtml 这同一个入口。
+       **限到 100ms 一次**（本次需求 · 思考期间不卡）：思考是逐 token 到达的，30fps 合并后
+       仍有每秒 30 次「整段思考文本重渲 markdown」——长思考时这比摘要条那点开销大一个量级。
+       段一收口（open=false）立刻补一次完整渲染，最后几个字不会漏。 */
     const popMd = document.querySelector(
       '.dsh-think-pop [data-think-pop="src"] .dsh-think-pop-md',
     );
     if (popMd && _dshThinkPop && String(_dshThinkPop.segKey) === "segthink:" + (st.id || "") + ":" + idx)
-      popMd.innerHTML = dshThinkMdHtml(txt);
+      dshThinkPopMdSet(popMd, txt, seg.open !== true);
   });
 }
 

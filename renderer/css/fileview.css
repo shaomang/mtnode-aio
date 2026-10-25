@@ -509,6 +509,25 @@
   outline: none;
 }
 
+/* ── 音频预览（复用画布那台方角波形播放器 .n-wave，见 renderer/app-audioview.js） ── */
+.fp-scroll.fp-vaudio {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg2);
+}
+
+.fp-audiowrap {
+  width: min(100%, 640px);
+  padding: 12px;
+  box-sizing: border-box;
+}
+
+/* 波形模块缺席时的退路：原生播放器撑满同一块容器 */
+.fp-audio {
+  width: 100%;
+}
+
 /* ── Markdown 渲染视图：版式复用应用内阅读器的 .md-viewer-doc ── */
 .fp-scroll.fp-vmd {
   display: block;

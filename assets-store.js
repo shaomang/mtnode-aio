@@ -41,7 +41,7 @@
 
 const fs = require("fs");
 const path = require("path");
-const { ipcMain, shell } = require("electron");
+const { ipcMain, shell, protocol, nativeImage } = require("electron");
 const { readJson, writeJson } = require("./config-providers.js");
 
 const SCHEMA = 1;
@@ -1253,4 +1253,118 @@ function collectFiles(dir, relPrefix, limit, out) {
   }
 }
 
-module.exports = { registerAssetsIpc, importPathsIntoLibrary };
+/* ── 预览缩略图协议（mtnode-thumb://）─────────────────────────────────────
+   为什么要它：画布上每个图片预览（节点 body、素材条目、输出预览）都是把**原图**
+   直接丢进 <img>。解码后的位图由 Chromium 的 GPU 进程按源分辨率建纹理，而这类纹理
+   **只有渲染进程销毁才归还**（同一台机实测：MTNode 的 GPU 进程 3151MB → 重载后
+   265MB，整卡 4.4G → 1.5G；最小化只掉二十来兆）。预览位实际只有一两百像素，
+   按原图建纹理纯属浪费，所以在「读」这一层就把长边压到 ≤ edge（默认 640），
+   纹理大小与源图分辨率脱钩。
+   URL：mtnode-thumb://img/<encodeURIComponent(绝对路径)>?e=640&t=<防缓存串>
+   读不到 / 解不出 / 本来就比 edge 小 → 原样吐回原文件字节（预览绝不因此变空白）。
+   不在磁盘留缓存文件：进程内按「路径 + mtime + 字节数 + edge」记少量 PNG（LRU 80），
+   重启即清（数据不落应用目录）。 */
+const THUMB_SCHEME = "mtnode-thumb";
+const THUMB_DEFAULT_EDGE = 640;
+const THUMB_CACHE_MAX = 80;
+const thumbCache = new Map(); /* key -> { buf, mime } */
+
+const THUMB_MIME = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".webp": "image/webp",
+  ".gif": "image/gif",
+  ".bmp": "image/bmp",
+  ".avif": "image/avif",
+  ".svg": "image/svg+xml",
+};
+
+function thumbMimeOf(file) {
+  return THUMB_MIME[path.extname(String(file || "")).toLowerCase()] || "application/octet-stream";
+}
+
+/** 取一份「可进 <img> 的预览字节」；拿不到返回 null */
+function thumbEntryFor(rawPath, edge) {
+  const p = String(rawPath || "");
+  if (!p) return null;
+  let st = null;
+  try {
+    st = fs.statSync(p);
+  } catch {
+    return null;
+  }
+  if (!st.isFile()) return null;
+  const maxEdge = Math.max(64, Math.min(2048, Math.round(Number(edge) || THUMB_DEFAULT_EDGE)));
+  const key = p + "|" + maxEdge + "|" + Math.round(st.mtimeMs) + "|" + st.size;
+  const hit = thumbCache.get(key);
+  if (hit) {
+    /* 命中挪到队尾（LRU） */
+    thumbCache.delete(key);
+    thumbCache.set(key, hit);
+    return hit;
+  }
+  let out = null;
+  try {
+    const img = nativeImage.createFromPath(p);
+    if (img && !img.isEmpty()) {
+      const size = img.getSize() || {};
+      const w0 = Number(size.width) || 0;
+      const h0 = Number(size.height) || 0;
+      const big = Math.max(w0, h0);
+      if (big > maxEdge) {
+        const r = maxEdge / big;
+        const small = img.resize({
+          width: Math.max(1, Math.round(w0 * r)),
+          height: Math.max(1, Math.round(h0 * r)),
+          quality: "good",
+        });
+        const png = small.toPNG();
+        if (png && png.length) out = { buf: png, mime: "image/png" };
+      }
+    }
+  } catch {
+    out = null;
+  }
+  if (!out) {
+    /* 解不出（不支持的格式 / 空文件 / 本来就小）→ 原样给原文件，预览照常显示 */
+    try {
+      out = { buf: fs.readFileSync(p), mime: thumbMimeOf(p) };
+    } catch {
+      return null;
+    }
+  }
+  thumbCache.set(key, out);
+  while (thumbCache.size > THUMB_CACHE_MAX) thumbCache.delete(thumbCache.keys().next().value);
+  return out;
+}
+
+let thumbProtocolReady = false;
+
+/** 注册 mtnode-thumb://（app ready 之后调；协议权限声明见 apps-store.js 的
+ *  registerSchemesAsPrivileged —— Electron 那个 API 只能整体调一次，方案清单集中在那儿） */
+function registerThumbProtocol() {
+  if (thumbProtocolReady) return;
+  thumbProtocolReady = true;
+  protocol.handle(THUMB_SCHEME, async (req) => {
+    try {
+      const u = new URL(String((req && req.url) || ""));
+      /* 路径整体塞在 pathname 里（encodeURIComponent 过），standard 协议不会再改它 */
+      const p = decodeURIComponent(String(u.pathname || "")).replace(/^\/+/, "");
+      const edge = Number(u.searchParams.get("e") || THUMB_DEFAULT_EDGE);
+      const hit = thumbEntryFor(p, edge);
+      if (hit) {
+        return new Response(hit.buf, {
+          status: 200,
+          headers: { "content-type": hit.mime, "cache-control": "no-store" },
+        });
+      }
+    } catch {}
+    return new Response("", {
+      status: 404,
+      headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" },
+    });
+  });
+}
+
+module.exports = { registerAssetsIpc, importPathsIntoLibrary, registerThumbProtocol };

@@ -142,6 +142,11 @@ contextBridge.exposeInMainWorld('api', {
   fileCopy: (src, dest) => ipcRenderer.invoke('file:copy', { src, dest }),
   fileMove: (src, dest) => ipcRenderer.invoke('file:move', { src, dest }),
   fileTrash: (p) => ipcRenderer.invoke('file:trash', p),
+  /* 系统剪贴板 ↔ 文件列表（Windows CF_HDROP）：文件页与资源管理器双向复制 / 剪切 / 粘贴。
+     读回 { ok, effect:'copy'|'cut', paths:[{path,name,isDir,size}] }，写 { paths, mode }。
+     实现在 main.js，读写都走 PowerShell（Electron clipboard 拿不到完整文件列表）。 */
+  fsClipReadFiles: () => ipcRenderer.invoke('fsclip:readFiles'),
+  fsClipWriteFiles: (paths, mode) => ipcRenderer.invoke('fsclip:writeFiles', { paths, mode }),
   dbCompile: (dir, records) => ipcRenderer.invoke('db:compile', { dir, records }),
   dbList: (dir) => ipcRenderer.invoke('db:list', { dir }),
   dbQuery: (dir, q, limit) => ipcRenderer.invoke('db:query', { dir, q, limit }),
@@ -692,6 +697,8 @@ contextBridge.exposeInMainWorld('api', {
   breezePresets: () => ipcRenderer.invoke('breeze:presets'),
   breezePresetSave: (p) => ipcRenderer.invoke('breeze:presetSave', p || {}),
   breezePresetDelete: (id) => ipcRenderer.invoke('breeze:presetDelete', id),
+  /* 角色左列拖动排序：order = 角色 id 数组，宿主按它重写 index.json 顺序 */
+  breezePresetReorder: (order) => ipcRenderer.invoke('breeze:presetReorder', order || []),
   breezePresetResolve: (o) => ipcRenderer.invoke('breeze:presetResolve', o || {}),
   /* 创建角色 / 备选音色的三步流程（画布跳窗）：提示词优化 · 台词 · 候选音色合成与挑选。
      提示词与台词由主进程直连默认文本模型（内置技能当系统提示词），不经过 Agent 会话。 */

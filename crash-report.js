@@ -200,7 +200,7 @@ async function promptAfterCrash(reportPath, summary) {
         : '')
     const r = await dialog.showMessageBox(win || undefined, {
       type: 'error',
-      title: t('MTNode AI编排器 发生错误'),
+      title: t('MTNode AI工作站 发生错误'),
       message: t('应用内部出现错误。可将诊断日志提交给开发者以便排查。'),
       detail,
       buttons: [

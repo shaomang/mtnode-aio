@@ -12,6 +12,7 @@
  *   · fileviewLangOf(path)          扩展名 → 语言 id（认不出返回 ""）
  *   · fileviewIsImagePath(path)     是否图片扩展名
  *   · fileviewIsVideoPath(path)     是否视频容器扩展名（面板里交给 <video> 直接播）
+ *   · fileviewIsAudioPath(path)     是否音频扩展名（面板里复用画布的波形播放器）
  *   · fileviewBaseName / fileviewExtOf   路径拆名（徽标正文与面板头部共用）
  *   · fileviewPathIsOpenable(p)     是否「能直接喂给 fileStat / fileReadText」的绝对路径
  *   · fileviewHighlight(code, lang) 代码 → <span class="jsl-*"> 高亮 HTML
@@ -370,6 +371,14 @@ const FV_VIDEO_EXT = FV_SET([
   "mp4", "m4v", "webm", "ogv", "mov", "mkv", "avi", "wmv", "flv", "mpeg", "mpg",
 ]);
 
+/* 音频后缀：与画布音频节点同一族（wav / mp3 / flac / m4a / aac / ogg / opus / wma…）。
+   认出就走波形播放器（renderer/app-audioview.js 那套），不落文本那条 8MB 闸；
+   具体编码能不能解是浏览器媒体栈与 AudioContext 的事。 */
+const FV_AUDIO_EXT = FV_SET([
+  "mp3", "wav", "wave", "flac", "m4a", "aac", "ogg", "oga", "opus", "wma",
+  "aif", "aiff", "amr", "weba", "mid", "midi", "caf", "ape", "mka",
+]);
+
 function fileviewLangOf(p) {
   const base = fileviewBaseName(p);
   if (!base) return "";
@@ -388,6 +397,11 @@ function fileviewIsImagePath(p) {
 function fileviewIsVideoPath(p) {
   const ext = fileviewExtOf(p);
   return !!ext && FV_VIDEO_EXT.has(ext);
+}
+
+function fileviewIsAudioPath(p) {
+  const ext = fileviewExtOf(p);
+  return !!ext && FV_AUDIO_EXT.has(ext);
 }
 
 /* ============================================================
@@ -1308,6 +1322,7 @@ function closeFilePeek() {
 function closeFilePeekNow() {
   const host = document.getElementById("filePeek");
   if (!host) return;
+  filePeekStopAudio();
   host.classList.remove("on");
   FV_PEEK.open = false;
 }
@@ -1777,6 +1792,7 @@ async function loadFilePeek() {
   renderFilePeekHead();
   const scroller = host.querySelector("#fpScroll");
   scroller.className = "fp-scroll";
+  filePeekStopAudio();
   scroller.innerHTML =
     '<div class="fp-loading">' + I18n.t("读取中…") + "</div>";
   const api = window.api || {};
@@ -1823,6 +1839,12 @@ async function loadFilePeek() {
     /* 视频与图片同一条口径：不读字节、不设体积上限，交给媒体栈按需取（见 FV_VIDEO_EXT 注释）。
        必须排在下面那道 8MB 文本闸之前 —— 否则一只 200MB 的成片会被当成「文件过大」拒掉。 */
     renderFilePeekVideo();
+    return;
+  }
+  if (fileviewIsAudioPath(abs)) {
+    /* 音频同理：不走文本闸，复用画布那台方角波形播放器（点波形任意位置试听）。
+       排序同视频 —— 大体积录音不该被当成「文件过大」拒掉。 */
+    renderFilePeekAudio();
     return;
   }
   if (FV_PEEK.size > FV_PEEK_HARD_BYTES) {
@@ -2071,6 +2093,53 @@ function renderFilePeekVideo() {
   scroller.appendChild(wrap);
   renderFilePeekHead();
   renderFilePeekNote();
+}
+
+/* 音频：复用画布那台方角波形播放器（renderer/app-audioview.js 的 wavePreviewCreate /
+   wavePreviewSetSource），点波形任意位置即可从该处试听，不再退回原生圆角播放条。
+   波形模块不在时（例如只切片加载本文件的测试）退回原生 <audio controls>，不白屏。 */
+function renderFilePeekAudio() {
+  const host = document.getElementById("filePeek");
+  FV_PEEK.view = "audio";
+  const scroller = host.querySelector("#fpScroll");
+  scroller.innerHTML = "";
+  scroller.className = "fp-scroll fp-vaudio";
+  const wrap = document.createElement("div");
+  wrap.className = "fp-audiowrap";
+  let el = null;
+  if (typeof wavePreviewCreate === "function") {
+    el = wavePreviewCreate();
+    wrap.appendChild(el);
+    if (typeof wavePreviewSetSource === "function") {
+      /* bust 用 mtime：同一个路径被重新生成后，波形与播放源都跟着换新（缓存键本就带 mtime） */
+      wavePreviewSetSource(el, FV_PEEK.path, FV_PEEK.mtime ? String(FV_PEEK.mtime) : "");
+    }
+  } else {
+    const a = document.createElement("audio");
+    a.className = "fp-audio";
+    a.controls = true;
+    try {
+      a.src = window.api && window.api.toFileUrl ? window.api.toFileUrl(FV_PEEK.path) : FV_PEEK.path;
+    } catch (_) {}
+    wrap.appendChild(a);
+    el = a;
+  }
+  if (el) el.title = FV_PEEK.path;
+  scroller.appendChild(wrap);
+  renderFilePeekHead();
+  renderFilePeekNote();
+}
+
+/* 面板离开音频（换文件 / 收起）：先把这台波形播放器停下。
+   播放引擎是全局的、外壳只是借用，光把 DOM 摘掉不会停声（见 app-audioview.js）。 */
+function filePeekStopAudio() {
+  const host = document.getElementById("filePeek");
+  const el = host && host.querySelector ? host.querySelector("#fpScroll .n-wave") : null;
+  if (el && typeof waveStopPlayback === "function") {
+    try {
+      waveStopPlayback(el);
+    } catch (_) {}
+  }
 }
 
 /* 空态（不存在 / 太大 / 二进制 / 空文件）：原因直接写进卡片，提示条不重复一遍 */

@@ -26,6 +26,8 @@ const fs = require("fs");
 const path = require("path");
 const net = require("net");
 const { execFile } = require("child_process");
+/* 显存读数统一出口（去重缓存 + 工作线程）：见 gpu-poll.js 文件头，nvidia-smi 一律不在这里起 */
+const gpuPoll = require("./gpu-poll.js");
 
 /* 子进程硬上限：探针卡住不许拖住面板（超时 = 这一项量不到，其余项照常出） */
 const CMD_TIMEOUT_MS = 8000;
@@ -180,11 +182,13 @@ function parseSmiLine(line) {
 
 /** 全部 NVIDIA 卡（多卡时面板逐张列）；nvidia-smi 不在 / 无 N 卡 → available:false */
 async function readGpu() {
-  const out = await runCmd(
-    "nvidia-smi",
+  /* 也走统一出口（gpu-poll.js）：面板开着时这一项每 1.5s 一次，落在主线程上就是
+     周期性 20-30ms 的出帧抖动 —— 与六个宿主是同一个病根，只是档位更密。 */
+  const got = await gpuPoll.query(
     ["--query-gpu=" + SMI_FIELDS.join(","), "--format=csv,noheader,nounits"],
-    6000,
+    { timeout: 6000 },
   );
+  const out = got && got.err ? null : got && got.out;
   if (out == null) {
     return {
       available: false,

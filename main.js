@@ -70,7 +70,11 @@ const { registerMusic3Ipc, shutdownMusic3UiOnly } = require("./music3/main-music
 /* 本地音乐生成后端（YuE2）：与 Music3 同族，后端单例独立于 MTNode 生命周期 */
 const { registerYueIpc, shutdownYueUiOnly } = require("./yue/main-yue.js");
 const { registerH3Ipc, shutdownH3UiOnly } = require("./h3/main-h3.js");
-const { refreshStaleLock: refreshMediaGenLock } = require("./media-gen-global-lock.js");
+const {
+  refreshStaleLock: refreshMediaGenLock,
+  loadLock: loadMediaGenLock,
+  clearLock: clearMediaGenLock,
+} = require("./media-gen-global-lock.js");
 /* 插件报错总线：各本地后端宿主的失败统一上报；init 推弹窗 + 会话修复，resetDebounce 供修复回执清窗（见 plugin-error-repair.js） */
 const { initPluginErrorBus, resetDebounce } = require("./plugin-error-repair.js");
 /* 插件**安装窗**编排：8 个后端宿主 + 窗口插件 + 桌宠的安装链统一在这只窗里逐步骤显示；
@@ -115,7 +119,7 @@ const pdfWrite = require("./pdf-write.js");
 const { registerToolsIpc } = require("./tools-store.js");
 /* 工作流库（跨画布复用「一颗节点层」= 封装好的工作流，见 workflow-store.js） */
 const { registerWorkflowsIpc } = require("./workflow-store.js");
-const { registerAssetsIpc } = require("./assets-store.js");
+const { registerAssetsIpc, registerThumbProtocol } = require("./assets-store.js");
 /* 存储占用与清理（设置 · 存储占用与清理）：统计各类冗余占用 + 按类清理，判据是
    「文件还被不被 MTNode 用着」（见 storage-clean.js） */
 const { registerStorageIpc, setScanLocale } = require("./storage-clean.js");
@@ -152,6 +156,10 @@ const activityStore = require("./activity-store.js");
 const wechatPc = require("./wechat-pc.js");
 /* 剪贴板里「被复制的图片文件」列表解析（CF_HDROP / FileNameW 的纯函数口径，见该文件顶部） */
 const clipImages = require("./clipboard-images.js");
+/* 系统剪贴板 ↔ 文件列表（Windows CF_HDROP）读写：文件页与资源管理器双向复制/剪切/粘贴。
+   Electron 自带的 clipboard API 拿不到完整文件列表（只给第一项）、也写不出真正的
+   CF_HDROP，所以读写都走 PowerShell + System.Windows.Forms，见该文件顶部口径。 */
+const fsClipboard = require("./fs-clipboard.js");
 /* 主进程侧只剩「完成音心跳」（sound:watch / sound:tick，见下面 setSoundWatch）：
    声音仍由渲染层 WebAudio 发出；主进程提醒音通道（sound-alert.js / sound:alert）早已移除，
    长任务音效与随包 all-done.wav 也一并下线（见 renderer/app-db.js）。 */
@@ -430,7 +438,7 @@ const DATA = () => RESOLVED_DATA_DIR;
 function applyMainLocale(l) {
   I18n.setLocale(l === "en" ? "en" : "zh");
   if (mainWin && !mainWin.isDestroyed()) {
-    mainWin.setTitle(I18n.t("MTNode AI编排器 · MTNode AI Orchestrator"));
+    mainWin.setTitle(I18n.t("MTNode AI工作站 · MTNode AI Orchestrator"));
   }
 }
 function localeFromDisk() {
@@ -3169,6 +3177,79 @@ ipcMain.handle("file:trash", async (e, p) => {
     return { ok: true };
   } catch (err) {
     return { ok: false, error: (err && err.message) || String(err) };
+  }
+});
+/* ── 系统剪贴板 ↔ 文件列表：左侧「文件」页与 Windows 资源管理器互通 ──
+   读：PowerShell 枚举 FileDrop 的全部条目 + Preferred DropEffect（2 = 剪切 → 粘贴按移动）；
+       失败时退回 Electron 的 FileNameW（只拿得到第一项，兜住单文件场景）。
+   写：PowerShell 构造 DataObject(FileDropList + Preferred DropEffect)。
+   与 clipboard:readImages（画布粘贴图片）刻意分开：那条只认图片、只服务画布。 */
+ipcMain.handle("fsclip:readFiles", async () => {
+  const out = { ok: true, effect: "copy", paths: [], error: "" };
+  let r = null;
+  try {
+    r = await fsClipboard.fsClipRead();
+  } catch (err) {
+    r = { ok: false, error: String((err && err.message) || err) };
+  }
+  out.error = (r && r.error) || "";
+  let list = r && r.ok && Array.isArray(r.paths) ? r.paths : [];
+  if (r && r.ok) out.effect = r.effect === "cut" ? "cut" : "copy";
+  if (!list.length) {
+    /* 退回 Electron：CF_HDROP 在 Chromium 里只映射成 FileNameW 的第一项 */
+    try {
+      const buf = clipboard.readBuffer("FileNameW");
+      if (buf && buf.length) list = fsClipboard.fsClipParseList(buf.toString("ucs2"));
+    } catch (_) {}
+    if (!list.length) {
+      try {
+        list = fsClipboard.fsClipParseList(String(clipboard.read("text/uri-list") || ""));
+      } catch (_) {}
+    }
+    out.effect = "copy";
+  }
+  for (const p of list) {
+    try {
+      const st = fs.statSync(p);
+      out.paths.push({
+        path: p,
+        name: path.basename(p),
+        isDir: st.isDirectory(),
+        size: st.size,
+      });
+    } catch (_) {
+      /* 已被移走 / 已删除的条目直接跳过：宁可少粘一项，也不把过期路径交出去 */
+    }
+  }
+  if (!out.paths.length) out.effect = "copy";
+  return out;
+});
+ipcMain.handle("fsclip:writeFiles", async (e, opts) => {
+  try {
+    const o = opts && typeof opts === "object" ? opts : {};
+    const raw = Array.isArray(o.paths) ? o.paths : [];
+    const list = [];
+    let skipped = 0;
+    for (const p of raw) {
+      const abs = sfNeedPath(p);
+      if (!abs) continue;
+      try {
+        fs.statSync(abs);
+        list.push(abs);
+      } catch (_) {
+        /* 已经不存在的路径不往剪贴板里放：粘过去也只会立刻失败 */
+        skipped++;
+      }
+    }
+    if (!list.length) return { ok: false, count: 0, skipped, error: I18n.t("未选择") };
+    const mode = o.mode === "cut" ? "cut" : "copy";
+    const r = await fsClipboard.fsClipWrite(list, mode);
+    if (!r || r.ok === false) {
+      return { ok: false, count: 0, skipped, error: (r && r.error) || "" };
+    }
+    return { ok: true, count: r.count, mode: r.mode, skipped };
+  } catch (err) {
+    return { ok: false, count: 0, error: String((err && err.message) || err) };
   }
 });
 ipcMain.handle(
@@ -9215,6 +9296,25 @@ app.commandLine.appendSwitch("disable-features", "CalculateNativeWinOcclusion");
 app.whenReady().then(() => {
   /* 隐藏原生窗口菜单栏（File/Edit/View/Window/Help），按键快捷方式由渲染层自行处理 */
   Menu.setApplicationMenu(null);
+  /* 全局音视频锁：上一个进程留下的残留锁文件，会让节点白白报「已有任务进行中」。
+     启动时清一次，但只清「写下这把锁的进程已经不在了」的那种（另一个还没退干净的实例
+     可能真的在跑任务，那种锁交给取锁时的活性判定，不在这里硬清）。
+     判定口径见 media-gen-global-lock.js 头部。 */
+  try {
+    const staleLock = loadMediaGenLock();
+    let ownerAlive = false;
+    if (staleLock && staleLock.pid) {
+      try {
+        process.kill(Number(staleLock.pid), 0);
+        ownerAlive = true;
+      } catch (e) {
+        ownerAlive = !!(e && e.code === "EPERM"); /* EPERM = 进程在，只是没权限发信号 */
+      }
+    }
+    if (!staleLock || !staleLock.pid || !ownerAlive) clearMediaGenLock();
+  } catch (e) {
+    errLog("[media-lock] 启动清理残留锁失败：" + String((e && e.message) || e));
+  }
   migrateLegacyWorkflows();
   migrateLegacyStoreAuth();
   /* 会话转写（agentSessions）从 config.json 拆到 agent-sessions/：首次进入时迁移
@@ -9261,7 +9361,7 @@ app.whenReady().then(() => {
     height: 940,
     minWidth: 1000,
     minHeight: 640,
-    title: I18n.t("MTNode AI编排器 · MTNode AI Orchestrator"),
+    title: I18n.t("MTNode AI工作站 · MTNode AI Orchestrator"),
     icon: join(__dirname, "build", "icon.png"),
     backgroundColor: "#0d1016",
     webPreferences: {
@@ -9536,6 +9636,14 @@ app.whenReady().then(() => {
   setScanLocale(() => I18n.getLocale());
   /* 素材库：独立于画布的文本/图像/音频/视频内容仓库（用户指定根目录，见 assets-store.js） */
   registerAssetsIpc({ getDataDir: DATA, t: (s) => I18n.t(s) });
+  /* 预览缩略图协议（mtnode-thumb://）：画布图片预览按「显示尺寸」取图，别按原图建
+     GPU 纹理 —— 那些纹理只有渲染进程销毁才归还（见 assets-store.js 该函数头部口径）。
+     协议权限声明在 apps-store.js 的 registerSchemesAsPrivileged（那个 API 只能调一次）。 */
+  try {
+    registerThumbProtocol();
+  } catch (e) {
+    errLog("[thumb] 缩略图协议注册失败：" + String((e && e.message) || e));
+  }
   /* 长周期任务系统：run checkpoint / 交付目录 / 长期记忆库（见 longtask-store.js） */
   registerLongtaskIpc({ getDataDir: DATA, t: (s) => I18n.t(s) });
   /* AI 事实库：固定文件读写 / 落盘守卫 / 旧长期记忆一次性迁移（见 ai-facts-store.js）。

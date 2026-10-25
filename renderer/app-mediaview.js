@@ -47,8 +47,24 @@ function mediaPoolSweep() {
       continue; /* 正在全屏占位里：不能回收 */
     }
     mediaVideoPool.delete(key);
+    /* 真回收（本轮修的就是这里）：以前只删 Map 条目，元素照样连着 DOM 或飘在内存里，
+       解码器与已解出的帧纹理（VIDEO 帧是 GPU 进程里的纹理）一份也不还 ——
+       注释写着「解绑并清 src」，代码却没做。宿主已换掉的（不在文档里）在这里放手；
+       还挂在文档里的那只留着（下一轮重绘会用新元素替掉它，此刻清 src 会让预览闪空）。 */
+    if (el && !el.isConnected) mediaPoolRelease(el);
     over--;
   }
+}
+
+/** 真正放手一只池化播放器：摘音源 + 触发一次 load 让解码器退出（口径同 mediaViewPrune） */
+function mediaPoolRelease(el) {
+  if (!el) return;
+  try {
+    el.removeAttribute("src");
+    if (typeof el.load === "function") el.load();
+    if (el.remove) el.remove();
+  } catch (_) {}
+  mediaLoopEls.delete(el);
 }
 
 /** 给 <video> 打上池化标记（幂等） */
@@ -260,12 +276,7 @@ function mediaViewPrune() {
     if (el && el.__mvHold) continue;
     if (el && el.isConnected) continue;
     mediaVideoPool.delete(key);
-    mediaLoopEls.delete(el);
-    try {
-      el.removeAttribute("src");
-      if (typeof el.load === "function") el.load();
-      if (el.remove) el.remove();
-    } catch (_) {}
+    mediaPoolRelease(el);
   }
 }
 

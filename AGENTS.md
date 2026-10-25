@@ -1,5 +1,5 @@
 # AGENTS.md
-MTNode AI编排器 — Electron 桌面端 AI 工作流编排器。用户数据只写 `%APPDATA%\pipeline-console` 或用户选定项目文件夹，**任何数据都不允许保存在应用文件夹**（`app.getAppPath()` / exe 同目录）。本文件是开发 / 细化 / 建议会话共享的核心共识：新文件按「目录约定」放置，「不要修改」清单内路径一律不改。版本以根目录 `version` 文件为唯一真源。Agent 工作区 = 项目根目录。
+MTNode AI工作站 — Electron 桌面端 AI 工作流编排器。用户数据只写 `%APPDATA%\pipeline-console` 或用户选定项目文件夹，**任何数据都不允许保存在应用文件夹**（`app.getAppPath()` / exe 同目录）。本文件是开发 / 细化 / 建议会话共享的核心共识：新文件按「目录约定」放置，「不要修改」清单内路径一律不改。版本以根目录 `version` 文件为唯一真源。Agent 工作区 = 项目根目录。
 ## 目录约定
 - **主进程**：`main.js`、`preload.js`（contextBridge 白名单桥）、`main-exec-launch.js`；持久化 `db-store.js`、`assets-store.js`、`tools-store.js`、`config-providers.js`、`media-gen-global-lock.js`。
 - **打包白名单（必读）**：`build.json` 的 `files` 是**显式白名单**；根目录新增的主进程模块只要被 `require` 就必须写进 `files`，否则解包后 `Cannot find module './xxx.js'`。

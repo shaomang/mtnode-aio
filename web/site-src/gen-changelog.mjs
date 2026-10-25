@@ -249,8 +249,8 @@ function build() {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>更新日志 · MTNode AI编排器</title>
-<meta name="description" content="MTNode AI编排器版本更新日志：从 v1.0 到 v${esc(latest.version)}，逐版说明新增、改进与修复。">
+<title>更新日志 · MTNode AI工作站</title>
+<meta name="description" content="MTNode AI工作站版本更新日志：从 v1.0 到 v${esc(latest.version)}，逐版说明新增、改进与修复。">
 <meta name="theme-color" content="#161b25">
 <style>
 :root{
@@ -388,7 +388,7 @@ button,input{font-family:var(--sans)}
 
 <header class="topbar">
   <a class="logo" href="index.html" title="返回下载页">
-    <span class="logo-txt">MTNode AI编排器</span>
+    <span class="logo-txt">MTNode AI工作站</span>
     <span class="logo-sub">更 新 日 志</span>
   </a>
   <nav class="top-nav">

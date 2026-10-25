@@ -193,6 +193,11 @@ function roleOf(n, name) {
   return "artifact";
 }
 
+/* 保存节点（save / save_text / save_image / save_pdf）只携带**配置路径**：
+   它写出来的文件已经在用户磁盘上，工作流包不复制它的内容 —— 复制过去只会变成
+   一堆指向旧机器的中间产物，插入后还会被当成「已有的中间产物」铺回工作目录。 */
+const SAVE_KINDS = new Set(["save", "save_text", "save_image", "save_pdf"]);
+
 /* 收集一颗节点层里所有节点的中间产物（只读，不写盘）。
  * 返回 { items:[{nodeId,nodeTitle,role,name,bytes,sha1,descHash,data}], warnings, totalBytes }
  * 超过单文件 / 总量上限的一律跳过并记 warning（不阻断保存，用户可在规则里放宽）。 */
@@ -206,6 +211,19 @@ function collectArtifacts(graph) {
   const warnings = [];
   let total = 0;
   let count = 0;
+  /* 保存节点的落盘目标（能精确对上的绝对路径）：那是产物，不是中间产物，绝不收进包 */
+  const saveTargets = new Set();
+  for (const n of nodes) {
+    if (!n || typeof n !== "object" || !SAVE_KINDS.has(String(n.kind || ""))) continue;
+    const cands = [n.savePath, n.savedPath].concat(
+      Array.isArray(n.savedPaths) ? n.savedPaths : [],
+    );
+    for (const c of cands) {
+      const p = String(c || "").trim();
+      if (!p || !path.isAbsolute(p)) continue;
+      saveTargets.add(path.resolve(p).toLowerCase());
+    }
+  }
 
   const push = (it) => {
     if (count >= ARTIFACT_MAX_FILES) {
@@ -227,6 +245,8 @@ function collectArtifacts(graph) {
 
   for (const n of nodes) {
     if (!n || typeof n !== "object" || !n.id) continue;
+    /* 保存节点：只带路径，不把落盘内容收进包里（口径见上面 SAVE_KINDS） */
+    if (SAVE_KINDS.has(String(n.kind || ""))) continue;
     const nodeId = String(n.id);
     const nodeTitle = String(n.title || "");
     const descHash = descHashOf(n);
@@ -252,6 +272,8 @@ function collectArtifacts(graph) {
         if (!ent.isFile()) continue;
         if (!extSet.has(extOf(ent.name))) continue;
         if (seenAbs.has(abs)) continue;
+        /* 保存节点的落盘目标：内容已经在用户磁盘上，不进包 */
+        if (saveTargets.has(path.resolve(abs).toLowerCase())) continue;
         let data = null;
         try {
           const st = fs.statSync(abs);
@@ -447,6 +469,18 @@ function normGraph(raw) {
   return { rootId: String(root.id), nodes: keptNodes, wires: keptWires, extra: 0 };
 }
 
+/* 库条目的封面：老条目（从工坊下载时没把封面一起存下来的那些）root 节点层上
+   仍带着 bgImage —— 按同一口径回填，缩略图不必让用户重下一遍。 */
+function coverOf(j) {
+  const c = typeof j.cover === "string" ? j.cover.trim() : "";
+  if (c) return c;
+  const g = j.graph && typeof j.graph === "object" ? j.graph : {};
+  const nodes = Array.isArray(g.nodes) ? g.nodes : [];
+  const root = nodes.find((n) => n && String(n.id) === String(g.rootId || "")) || null;
+  const bg = root && typeof root.bgImage === "string" ? root.bgImage.trim() : "";
+  return /^data:image\//i.test(bg) ? bg : "";
+}
+
 /* 轻量清单条目（列表不回 graph / cover：封面是最大 512KB 的 dataURL） */
 function listEntry(j) {
   const g = j.graph && typeof j.graph === "object" ? j.graph : {};
@@ -458,12 +492,17 @@ function listEntry(j) {
     name: String(j.name || ""),
     description: String(j.description || ""),
     version: String(j.version || "1.0"),
-    hasCover: !!j.cover,
+    hasCover: !!coverOf(j),
     nodeCount: nodes.length,
     wireCount: Array.isArray(g.wires) ? g.wires.length : 0,
     artifactCount: arts.length,
     artifactBytes: arts.reduce((s, a) => s + (Number(a && a.bytes) || 0), 0),
     origin: j.origin && typeof j.origin === "object" ? j.origin : null,
+    /* 已发布到工坊的条目：库里的这条就是「作者手里的源」。
+       storeId 非空 = 有工坊条目可更新（列表据此打标 + 给「更新到工坊」）。 */
+    storeId: String(j.storeId || ""),
+    storeTitle: String(j.storeTitle || ""),
+    storeVersion: String(j.storeVersion || ""),
     createdAt: Number(j.createdAt) || 0,
     updatedAt: Number(j.updatedAt) || 0,
     rootTitle: root ? String(root.title || "") : "",
@@ -518,9 +557,17 @@ function readWorkflow(id) {
  * 按 key = "@artifact/<i>" 对齐）。 */
 function packWorkflow(graph, name, artifactBlobs, opts) {
   const scrub = !!(opts && opts.scrub);
+  /* 节点层目录（subFolder）是作者本机的工作目录结构，不随分享包出去：
+     渲染层剥一次（连带前缀一起剥），这里再硬保一次 —— 谁直接调导出也不带目录。 */
+  const nodes = (Array.isArray(graph.nodes) ? graph.nodes : []).map((n) => {
+    if (!scrub || !n || n.kind !== "super" || n.subFolder == null) return n;
+    const cp = Object.assign({}, n);
+    delete cp.subFolder;
+    return cp;
+  });
   const wf = {
     name: String(name || ""),
-    nodes: graph.nodes,
+    nodes: nodes,
     wires: graph.wires,
     marks: [],
     groups: [],
@@ -634,7 +681,11 @@ function registerWorkflowsIpc(opts) {
     if (!WF_ID_RE.test(String(id || ""))) return badArg(t("非法工作流 id"));
     try {
       const j = readWorkflow(String(id));
-      return j ? { ok: true, workflow: j } : { ok: false, error: t("工作流不存在") };
+      if (!j) return { ok: false, error: t("工作流不存在") };
+      /* 封面回填（老条目 / 没存 cover 的条目）：渲染层缩略图读的就是这一份 */
+      const c = coverOf(j);
+      if (c !== j.cover) j.cover = c;
+      return { ok: true, workflow: j };
     } catch (err) {
       return fail(err);
     }
@@ -726,6 +777,10 @@ function registerWorkflowsIpc(opts) {
                 title: String(pkg.origin.title || ""),
               }
             : { kind: "canvas", storeId: "", title: "" },
+        /* 工坊发布标记：不随「从画布重新保存」丢失（否则更新入口会凭空消失） */
+        storeId: typeof pkg.storeId === "string" ? pkg.storeId : "",
+        storeTitle: typeof pkg.storeTitle === "string" ? pkg.storeTitle : "",
+        storeVersion: typeof pkg.storeVersion === "string" ? pkg.storeVersion : "",
         createdAt: now,
         updatedAt: now,
       };
@@ -734,6 +789,11 @@ function registerWorkflowsIpc(opts) {
         /* 未显式给封面时保留原封面（改名 / 覆盖保存不该丢封面） */
         if (typeof pkg.cover !== "string") next.cover = String(prev.cover || "");
         if (!pkg.origin && prev.origin) next.origin = prev.origin;
+        if (typeof pkg.storeId !== "string") next.storeId = String(prev.storeId || "");
+        if (typeof pkg.storeTitle !== "string")
+          next.storeTitle = String(prev.storeTitle || "");
+        if (typeof pkg.storeVersion !== "string")
+          next.storeVersion = String(prev.storeVersion || "");
       }
       writeJson(wfPath(id), next);
       return {
@@ -780,6 +840,12 @@ function registerWorkflowsIpc(opts) {
       if (typeof patch.version === "string")
         j.version = patch.version.trim().slice(0, 20) || "1.0";
       if (typeof patch.cover === "string") j.cover = patch.cover;
+      /* 工坊发布标记（发布成功 / 更新成功时由渲染层写回） */
+      if (typeof patch.storeId === "string") j.storeId = patch.storeId.trim().slice(0, 80);
+      if (typeof patch.storeTitle === "string")
+        j.storeTitle = patch.storeTitle.trim().slice(0, 200);
+      if (typeof patch.storeVersion === "string")
+        j.storeVersion = patch.storeVersion.trim().slice(0, 20);
       j.updatedAt = Date.now();
       writeJson(wfPath(String(id)), j);
       return { ok: true };
@@ -929,7 +995,11 @@ function registerWorkflowsIpc(opts) {
       if (!g) return badArg(t("工作流包里没有节点层"));
       if (g.extra) return badArg(t("工作流包里除了节点层还有别的节点，无法收录"));
       const now = Date.now();
-      const id = genId();
+      /* replaceId：工坊里「更新」——覆盖本机同一条目，不再往库里落第二条 */
+      const replaceId = String((arg && arg.replaceId) || "");
+      const prev =
+        replaceId && WF_ID_RE.test(replaceId) ? readWorkflow(replaceId) : null;
+      const id = prev ? replaceId : genId();
       const name =
         String((arg && arg.name) || manifest.workflowName || "").trim() ||
         t("未命名工作流");
@@ -971,12 +1041,25 @@ function registerWorkflowsIpc(opts) {
         if (list && list.length) cp.artifacts = list;
         return cp;
       });
+      /* 封面：工坊条目自己的预览图来自上传者的库封面（＝节点层 bgImage），
+         而下载时渲染层不会再把那张图传回来 —— 缺省就从包内根节点层上取，
+         否则「入库后缩略图是空底，插到画布上却又有封面」。 */
+      const rootNode =
+        g.nodes.find((n) => n && String(n.id) === String(g.rootId || "")) || null;
+      const bgCover =
+        rootNode && typeof rootNode.bgImage === "string" ? rootNode.bgImage.trim() : "";
+      const argCover = typeof (arg && arg.cover) === "string" ? arg.cover.trim() : "";
+      const cover = argCover
+        ? argCover
+        : /^data:image\//i.test(bgCover)
+          ? bgCover
+          : "";
       const next = {
         id: id,
         name: name,
         description: String((arg && arg.description) || ""),
         version: String((arg && arg.version) || "1.0").slice(0, 20),
-        cover: typeof (arg && arg.cover) === "string" ? arg.cover : "",
+        cover: cover,
         graph: { rootId: g.rootId, nodes: nodes, wires: g.wires },
         artifacts: stored.map((s) => ({
           nodeId: s.nodeId,
@@ -993,7 +1076,7 @@ function registerWorkflowsIpc(opts) {
           storeId: String((arg && arg.storeId) || ""),
           title: String((arg && arg.title) || ""),
         },
-        createdAt: now,
+        createdAt: prev ? Number(prev.createdAt) || now : now,
         updatedAt: now,
       };
       writeJson(wfPath(id), next);

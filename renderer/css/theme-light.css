@@ -265,6 +265,46 @@ body.theme-light .wf-node.super.dev-el.dev-running-sug.sel {
   outline-offset: 2px;
 }
 
+/* 「运行本层」呼吸灯（canvas.css 的 .super-run-live / .super-run-focus）：
+   浅底上高饱和霓虹绿会发灰，换一套偏深的绿 + 自带一组 keyframes
+   （动画里的颜色是写死的，不能只改 outline-color 就生效）。 */
+body.theme-light .wf-node.super-run-focus {
+  outline-color: rgba(47, 158, 99, .85);
+  animation-name: superRunFocusBreatheLight;
+}
+
+body.theme-light .wf-node.super.super-run-live {
+  outline-color: rgba(47, 158, 99, .5);
+  animation-name: superRunShellBreatheLight;
+}
+
+@keyframes superRunFocusBreatheLight {
+  0%, 100% { outline-color: rgba(47, 158, 99, .32); }
+  50% { outline-color: rgba(47, 158, 99, 1); }
+}
+
+@keyframes superRunShellBreatheLight {
+  0%, 100% {
+    outline-color: rgba(47, 158, 99, .26);
+    outline-offset: 3px;
+  }
+  50% {
+    outline-color: rgba(47, 158, 99, 1);
+    outline-offset: 5px;
+  }
+}
+
+/* 选中 + 运行中：浅色主题的 .sel 描边同样会压掉环宽，按同权重的选择器拿回来 */
+body.theme-light .wf-node.super.super-run-live.sel {
+  outline-width: 2.5px;
+  outline-offset: 3px;
+}
+
+body.theme-light .wf-node.super-run-focus:not(.global):not(.agent-super).sel {
+  outline-width: 2px;
+  outline-offset: 2px;
+}
+
 body.theme-light .wf-node.agent-super {
   background:
     linear-gradient(180deg, #eef1fd, #f6f9fe) padding-box,

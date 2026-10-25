@@ -1,5 +1,5 @@
 ---
-name: MTNode AI编排器
+name: MTNode AI工作站
 description: 把复杂 AI 工作收束于一张可视化画布的 Windows 桌面应用——官网视觉系统
 colors:
   primary: "#ff8f2e"
@@ -107,7 +107,7 @@ components:
     padding: "16px 18px"
 ---
 
-# Design System: MTNode AI编排器
+# Design System: MTNode AI工作站
 
 ## Overview
 

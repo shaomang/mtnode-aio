@@ -1,6 +1,6 @@
 {
   "appId": "com.mtnode.pipeline-console",
-  "productName": "MTNode AI编排器",
+  "productName": "MTNode AI工作站",
   "directories": {
     "output": "dist"
   },
@@ -51,6 +51,12 @@
        main.js require 它，漏进白名单 = 打包后 Cannot find module './perf-probe.js'
        （面板只剩显存区块，资源检测整块失效）。 */
     "perf-probe.js",
+    /* 显存读数统一出口（六个插件宿主的 nvidia-smi 轮询去重 + 搬到工作线程）：宿主用
+       require("../gpu-poll.js") 取它，worker 由它按需拉起；两个文件漏进白名单就是
+       打包后 Cannot find module '../gpu-poll.js' —— 宿主的显存读数整块没了，
+       而且会退回「每次轮询都在主线程起子进程」的老路（每 2 秒一次 50-70ms 卡顿）。 */
+    "gpu-poll.js",
+    "gpu-poll-worker.js",
     /* 本地后端解释器口径（pythonw 不弹控制台）：llama / breeze / music3 / yue / sensenova / h3
        六个插件宿主都 require 它，漏进白名单就是打包后 Cannot find module '../backend-python.js'。 */
     "backend-python.js",
@@ -59,6 +65,10 @@
        Cannot find module '../cn-mirrors.js' —— 安装链会退回官方源。 */
     "cn-mirrors.js",
     "clipboard-images.js",
+    /* 系统剪贴板 ↔ 文件列表（Windows CF_HDROP）：main.js require 它，文件页与资源管理器
+       双向复制 / 剪切 / 粘贴全靠它；漏进白名单 = 打包后 Cannot find module
+       './fs-clipboard.js'，复制 / 粘贴直接报错。 */
+    "fs-clipboard.js",
     "plugin-error-repair.js",
     "mtnode-agent-skills-lib.js",
     /* MCP 服务端（第三方客户端接进来操作 MTNode）：主进程服务端 + 生成的契约与校验表 +
@@ -362,6 +372,12 @@
            宿主复制完脚手架就 spawn 失败，安装窗一条步骤行、一条日志都没有
            （用户看到的就是「安装失败且没有日志」）。step.ps1 是它的步骤协议库。 */
         "scripts/**",
+        /* 渲染脚本的随脚本目录（pack/park-media.mjs）：render.mjs 用静态 import 引它
+           （媒体落地：data URL → <projectDir>/public/<prop>.<ext>）。漏掉 pack/** 的后果是
+           真实事故：装箱后的脚手架没有这一层，宿主复制到安装目录后 `node render.mjs`
+           直接 ERR_MODULE_NOT_FOUND: Cannot find module '<installDir>/pack/park-media.mjs'
+           —— 自检的最低档渲染整块失败。 */
+        "pack/**",
         "steps.json",
         "README.md",
         ".gitignore",
@@ -418,7 +434,7 @@
     "allowToChangeInstallationDirectory": true,
     "createDesktopShortcut": true,
     "createStartMenuShortcut": true,
-    "shortcutName": "MTNode AI编排器",
+    "shortcutName": "MTNode AI工作站",
     "include": "installer.nsh",
     "runAfterFinish": true,
     "artifactName": "MTNodeAIO-Setup-${version}.${ext}",

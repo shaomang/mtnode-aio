@@ -8,11 +8,21 @@
  *     ＋「浏览…」手动选目录；默认画布工作目录；选择按画布记忆（S.wf.sideFiles）。
  *   · 树：递归懒加载（展开文件夹才读盘，一层一个 file:readDir）；显示点号隐藏文件，
  *     但 node_modules / .git 只列不自动展开。
- *   · 预览：md / 文本 / 图像 / 视频行右侧「预览」字样，点击复用已有右侧面板 openFilePeek；
+ *   · 预览：md / 文本 / 图像 / 视频 / 音频行右侧「预览」字样，点击复用已有右侧面板 openFilePeek
+ *     （音频由面板里的波形播放器承接）；
  *     单击只选中，双击文件名 = 预览（目录 = 展开 / 收起）。Ctrl / Shift 多选。
  *   · 文件操作：右键菜单 重命名 / 复制 / 剪切 / 删除 / 在资源管理器中显示 / 复制完整路径，
- *     页头小工具条 刷新 / 粘贴。重命名是树内行内编辑（Enter 提交 / Esc 取消），
- *     粘贴落到当前选中文件夹（无选中 = 工作目录根），重名自动加 (2)。
+ *     页头小工具条 刷新 / 粘贴，键盘 Ctrl+C / Ctrl+X / Ctrl+V（焦点在本页时生效）。
+ *     重命名是树内行内编辑（Enter 提交 / Esc 取消），粘贴落到当前选中文件夹
+ *     （无选中 = 工作目录根），重名自动加 (2)。
+ *   · 与 Windows 资源管理器双向互通（同一份系统剪贴板）：
+ *       外部 → 本页：资源管理器复制 / 剪切后在这里粘贴；从资源管理器把文件 / 文件夹
+ *                    拖进树 = 一律复制（文件夹递归）。
+ *       本页 → 外部：这里复制 / 剪切后，在资源管理器里 Ctrl+V 能粘出文件 / 文件夹。
+ *     读写走主进程 fsclip:readFiles / fsclip:writeFiles（真正的 CF_HDROP，见 fs-clipboard.js）。
+ *     剪切标记（Preferred DropEffect = 2）识别得到就按移动处理；系统剪贴板里没有文件项时
+ *     才回退到本模块的内部剪贴板记录 SF.clip。
+ *   · 批量：超过 100 项弹非模态进度框（带「中断」），中断后已完成的保留不回滚。
  *   · 删除：确认后走系统回收站（file:trash），回收站不可用时主进程报错 → 提示并中止。
  *   · 拖到画布：内部拖拽（application/x-mtnode-files）→ 先弹窗确认，再由 app.js 的
  *     createNodesFromDroppedFiles 按类型建节点（图像 / 文本 / 音视频 / 其余 → 文件块）；
@@ -36,6 +46,11 @@ const SF_MEDIA_EXT = new Set([
 /* 视频：右侧文件面板现在内嵌原生播放器（不设体积上限），所以文件栏也给它「预览」入口 */
 const SF_VIDEO_EXT = new Set([
   "mp4", "m4v", "webm", "ogv", "mov", "mkv", "avi", "wmv", "flv", "mpeg", "mpg",
+]);
+/* 音频：右侧文件面板复用画布的方角波形播放器（点波形试听），文件栏同样给「预览」入口 */
+const SF_AUDIO_EXT = new Set([
+  "mp3", "wav", "wave", "flac", "m4a", "aac", "ogg", "oga", "opus", "wma",
+  "aif", "aiff", "amr", "weba", "mid", "midi", "caf", "ape", "mka",
 ]);
 const SF_TEXT_EXT = new Set([
   "md", "markdown", "txt", "text", "log", "json", "jsonc", "yaml", "yml", "toml",
@@ -101,9 +116,15 @@ function sfIsVideoPath(p) {
   if (typeof fileviewIsVideoPath === "function") return !!fileviewIsVideoPath(p);
   return SF_VIDEO_EXT.has(sfExtOf(p));
 }
-/* 需求口径：md / 文本 / 图像 / 视频给「预览」字样（视频由面板里的原生播放器承接） */
+/* 与 app-fileview.js 的 fileviewIsAudioPath 同口径：桥在就委托，缺席时用本地表 */
+function sfIsAudioPath(p) {
+  if (typeof fileviewIsAudioPath === "function") return !!fileviewIsAudioPath(p);
+  return SF_AUDIO_EXT.has(sfExtOf(p));
+}
+/* 需求口径：md / 文本 / 图像 / 视频 / 音频给「预览」字样
+   （视频由面板里的原生播放器承接，音频由面板复用的波形播放器承接） */
 function sfPreviewable(p) {
-  return sfIsImagePath(p) || sfIsVideoPath(p) || sfIsTextLike(p);
+  return sfIsImagePath(p) || sfIsVideoPath(p) || sfIsAudioPath(p) || sfIsTextLike(p);
 }
 /* 类型筛选格：全部 / 文本 / 图像 / 媒体 / 其他 */
 function sfTypeBucket(p) {
@@ -214,7 +235,9 @@ const SF = {
   sel: new Set(),
   dirs: new Set(), /* 已知是目录的路径（粘贴落点 / 剪贴判断用） */
   anchor: "",
-  clip: null, /* {mode:"copy"|"cut", paths:[]} */
+  clip: null, /* 内部剪贴板（兜底）：{mode:"copy"|"cut", paths:[]} */
+  active: false, /* 焦点 / 最近点击是否在本页（Ctrl+C/X/V 归属判定用） */
+  busy: null, /* 批量粘贴进行中：{el, cancel, fill, meta, total} */
   query: "",
   typeFilter: "all",
   flatOrder: [],
@@ -794,23 +817,15 @@ function sfRowMenu(x, y, path, isDir) {
   });
   items.push({
     label: I18n.t("复制"),
-    run: () => {
-      SF.clip = { mode: "copy", paths };
-      sfRender();
-      toast(I18n.t("已复制 ") + paths.length + I18n.t(" 项"), "ok");
-    },
+    run: () => sfCopySel("copy"),
   });
   items.push({
     label: I18n.t("剪切"),
-    run: () => {
-      SF.clip = { mode: "cut", paths };
-      sfRender();
-      toast(I18n.t("已剪切 ") + paths.length + I18n.t(" 项"), "ok");
-    },
+    run: () => sfCopySel("cut"),
   });
   items.push({
     label: I18n.t("粘贴"),
-    disabled: !SF.clip || !SF.clip.paths.length,
+    disabled: !!SF.busy,
     run: () => sfPaste(),
   });
   items.push({ sep: true });
@@ -864,17 +879,198 @@ async function sfCommitRename(path, value) {
   toast(I18n.t("已重命名：") + name, "ok");
 }
 
-/* ── 复制 / 剪切 / 粘贴 / 删除 ── */
+/* ── 复制 / 剪切 / 粘贴（与 Windows 资源管理器双向互通） ──
+   读：主进程 fsclip:readFiles（PowerShell 读 FileDrop 全部条目 + Preferred DropEffect）；
+   写：主进程 fsclip:writeFiles（写真正的 CF_HDROP，资源管理器里能直接粘贴）。
+   SF.clip 只是兜底：系统剪贴板里没有文件项时才用它（用户中途在别处复制文字时，
+   不该让页内那条记录失效，所以两份都留着）。 */
+/* 超过这么多项才弹进度框；少量就一句 toast 收尾 */
+const SF_PROGRESS_MIN = 100;
+
 function sfPasteDir() {
   const paths = sfSelectedPaths();
   if (paths.length === 1 && SF.dirs.has(paths[0])) return paths[0];
   if (paths.length === 1) return sfDirOf(paths[0]) || SF.root;
   return SF.root;
 }
+
+/* 选中项 → 同时写进系统剪贴板（资源管理器里可直接粘贴）与内部记录 */
+async function sfCopySel(mode) {
+  const paths = sfSelectedPaths();
+  if (!paths.length) {
+    toast(I18n.t("未选择"), "warn");
+    return;
+  }
+  const m = mode === "cut" ? "cut" : "copy";
+  SF.clip = { mode: m, paths };
+  sfRender();
+  let r = null;
+  try {
+    r = await window.api.fsClipWriteFiles(paths, m);
+  } catch (err) {
+    r = { ok: false, error: String((err && err.message) || err) };
+  }
+  const done = (m === "cut" ? I18n.t("已剪切 ") : I18n.t("已复制 ")) + paths.length + I18n.t(" 项");
+  if (r && r.ok !== false) {
+    toast(done, "ok");
+    return;
+  }
+  /* 系统剪贴板写失败：页内粘贴仍可用（内部记录在），但资源管理器里粘不出来 —— 必须说清 */
+  toast(done + I18n.t("（写入系统剪贴板失败：{err}）", { err: (r && r.error) || "" }), "warn");
+}
+
+/* ── 批量进度框（非模态：不挡操作，带「中断」，完成后自动关） ── */
+function sfProgressClose() {
+  const b = SF.busy;
+  SF.busy = null;
+  if (b && b.el && b.el.parentNode) b.el.parentNode.removeChild(b.el);
+}
+function sfProgressOpen(title) {
+  sfProgressClose();
+  const el = document.createElement("div");
+  el.className = "sf-progress";
+  const t = document.createElement("div");
+  t.className = "sf-progress-title";
+  t.textContent = title;
+  const bar = document.createElement("div");
+  bar.className = "sf-progress-bar";
+  const fill = document.createElement("i");
+  bar.appendChild(fill);
+  const meta = document.createElement("div");
+  meta.className = "sf-progress-meta";
+  meta.textContent = "0 / 0";
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "sf-progress-cancel";
+  btn.textContent = I18n.t("中断");
+  btn.onclick = () => {
+    if (!SF.busy) return;
+    SF.busy.cancel = true;
+    btn.disabled = true;
+    btn.textContent = I18n.t("正在中断…");
+  };
+  el.appendChild(t);
+  el.appendChild(bar);
+  el.appendChild(meta);
+  el.appendChild(btn);
+  document.body.appendChild(el);
+  SF.busy = { el, cancel: false, fill, meta, total: 0 };
+  return SF.busy;
+}
+function sfProgressUpdate(done, total) {
+  const b = SF.busy;
+  if (!b || !b.fill) return;
+  const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+  try {
+    b.fill.style.width = pct + "%";
+    b.meta.textContent = done + " / " + total;
+  } catch (_) {}
+}
+
+/* 批量复制 / 移动。items 可以是路径字符串，也可以是 fsclip 回的 {path} 对象。
+   返回 { ok, failed[], skipped, cancelled, total }；中断时已完成的保留，不回滚。 */
+async function sfRunBatch(items, dest, opts) {
+  const list = (items || [])
+    .map((x) => (typeof x === "string" ? x : x && x.path))
+    .filter((p) => typeof p === "string" && !!p);
+  const mode = opts && opts.mode === "cut" ? "cut" : "copy";
+  const total = list.length;
+  const res = { ok: 0, failed: [], skipped: 0, cancelled: false, total };
+  if (!total) return res;
+  const listing = await sfReadDir(dest);
+  const names = new Set(listing.entries.map((e) => e.name));
+  const destKey = String(dest).toLowerCase();
+  if (total > SF_PROGRESS_MIN) {
+    sfProgressOpen(mode === "cut" ? I18n.t("移动中…") : I18n.t("粘贴中…"));
+  }
+  /* 少量不弹进度框，但同样占住「正在粘贴」这把锁：连按两次 Ctrl+V 不会两批交错跑 */
+  if (!SF.busy) SF.busy = { el: null, cancel: false, fill: null, meta: null, total: 0 };
+  SF.busy.total = total;
+  sfProgressUpdate(0, total);
+  for (const src of list) {
+    if (SF.busy && SF.busy.cancel) {
+      res.cancelled = true;
+      break;
+    }
+    /* 源就在目标目录里 = 无操作（资源管理器同款），也不在粘贴时多复制出第二份 */
+    if (sfDirOf(src).toLowerCase() === destKey) {
+      res.skipped++;
+      sfProgressUpdate(res.ok + res.failed.length + res.skipped, total);
+      continue;
+    }
+    const name = sfUniqueName(sfBaseName(src), names);
+    const target = sfJoin(dest, name);
+    const call = mode === "cut" ? window.api.fileMove : window.api.fileCopy;
+    let r = null;
+    try {
+      r = await call(src, target);
+    } catch (err) {
+      r = { ok: false, error: String((err && err.message) || err) };
+    }
+    if (r && r.ok !== false) {
+      names.add(name);
+      res.ok++;
+    } else res.failed.push(sfBaseName(src) + "：" + ((r && r.error) || ""));
+    sfProgressUpdate(res.ok + res.failed.length + res.skipped, total);
+  }
+  sfProgressClose();
+  return res;
+}
+function sfBatchToast(res, mode, verb) {
+  if (res.failed.length) {
+    toast(
+      I18n.t("粘贴失败：") +
+        res.failed.slice(0, 5).join(" · ") +
+        (res.failed.length > 5 ? " …" : "") +
+        I18n.t("（成功 {ok} / 共 {total} 项）", { ok: res.ok, total: res.total }),
+      "err",
+    );
+    return;
+  }
+  if (res.cancelled) {
+    toast(
+      I18n.t("已中断：完成 {done} / 共 {total} 项", { done: res.ok, total: res.total }),
+      "warn",
+    );
+    return;
+  }
+  if (!res.ok && !res.skipped) return;
+  const head =
+    (verb || (mode === "cut" ? I18n.t("已移动 ") : I18n.t("已粘贴 "))) + res.ok + I18n.t(" 项");
+  const tail = res.skipped ? I18n.t("（跳过 {n} 项）", { n: res.skipped }) : "";
+  toast(head + tail, "ok");
+}
+
+/* 这次粘贴该用哪份文件列表：系统剪贴板优先（与资源管理器同步），没有才回退内部记录 */
+async function sfClipItems() {
+  let sys = null;
+  try {
+    sys = await window.api.fsClipReadFiles();
+  } catch (_) {}
+  if (sys && sys.ok !== false && Array.isArray(sys.paths) && sys.paths.length) {
+    return {
+      source: "system",
+      mode: sys.effect === "cut" ? "cut" : "copy",
+      items: sys.paths.map((x) => (x && x.path) || "").filter(Boolean),
+    };
+  }
+  if (SF.clip && SF.clip.paths && SF.clip.paths.length) {
+    return {
+      source: "internal",
+      mode: SF.clip.mode === "cut" ? "cut" : "copy",
+      items: SF.clip.paths.slice(),
+    };
+  }
+  return null;
+}
+
 async function sfPaste() {
-  const clip = SF.clip;
-  if (!clip || !clip.paths.length) {
-    toast(I18n.t("剪贴板为空"), "warn");
+  if (SF.busy) {
+    toast(I18n.t("正在粘贴中，请稍候"), "warn");
+    return;
+  }
+  if (!SF.root) {
+    toast(I18n.t("尚未设置工作目录"), "warn");
     return;
   }
   const dest = sfPasteDir();
@@ -884,31 +1080,116 @@ async function sfPaste() {
     toast(I18n.t("目标文件夹不存在：") + dest, "warn");
     return;
   }
-  const names = new Set(listing.entries.map((e) => e.name));
-  let done = 0;
-  const errs = [];
-  for (const src of clip.paths) {
-    if (clip.mode === "cut" && sfDirOf(src) === dest) continue; /* 剪到自己所在目录 = 无操作 */
-    const name = sfUniqueName(sfBaseName(src), names);
-    const target = sfJoin(dest, name);
-    const call = clip.mode === "cut" ? window.api.fileMove : window.api.fileCopy;
-    const r = await call(src, target).catch((err) => ({
-      ok: false,
-      error: String((err && err.message) || err),
-    }));
-    if (r && r.ok !== false) {
-      names.add(name);
-      done++;
-    } else errs.push(sfBaseName(src) + "：" + ((r && r.error) || ""));
+  const clip = await sfClipItems();
+  if (!clip || !clip.items.length) {
+    toast(I18n.t("剪贴板为空"), "warn");
+    return;
   }
-  if (clip.mode === "cut") SF.clip = null;
+  const res = await sfRunBatch(clip.items, dest, { mode: clip.mode });
+  /* 内部记录的「剪切」用掉即失效；系统剪贴板那份不动（与资源管理器一致） */
+  if (clip.source === "internal" && clip.mode === "cut" && res.ok) SF.clip = null;
   SF.cache.clear();
   SF.sel.clear();
   await sfReadDir(dest);
   sfRender();
-  if (errs.length) toast(I18n.t("粘贴失败：") + errs.join(" · "), "err");
-  else if (done) toast(I18n.t("已粘贴 ") + done + I18n.t(" 项"), "ok");
+  sfBatchToast(res, clip.mode);
 }
+
+/* ── 从资源管理器拖文件 / 文件夹进树：一律复制（文件夹由 file:copy 递归复制） ── */
+function sfDropTargetDir(target) {
+  const row = target && target.closest ? target.closest(".sf-row") : null;
+  const p = row && row.dataset ? String(row.dataset.path || "") : "";
+  if (!p) return SF.root;
+  return SF.dirs.has(p) ? p : sfDirOf(p) || SF.root;
+}
+function sfSetDropHint(on) {
+  const box = sf$("sideFilesTree");
+  if (box) box.classList.toggle("sf-drop", !!on);
+}
+async function sfImportFromOS(paths, dest) {
+  if (SF.busy) {
+    toast(I18n.t("正在粘贴中，请稍候"), "warn");
+    return;
+  }
+  if (!dest) return;
+  const listing = await sfReadDir(dest);
+  if (!listing.exists) {
+    toast(I18n.t("目标文件夹不存在：") + dest, "warn");
+    return;
+  }
+  const res = await sfRunBatch(paths, dest, { mode: "copy" });
+  SF.cache.clear();
+  SF.sel.clear();
+  await sfReadDir(dest);
+  sfRender();
+  sfBatchToast(res, "copy", I18n.t("已复制 "));
+}
+function sfBindDrop() {
+  const box = sf$("sideFilesTree");
+  if (!box || box.__sfDropBound) return;
+  box.__sfDropBound = true;
+  /* 只认「外部文件」拖放：树内的拖拽走 application/x-mtnode-files，不在这里拦 */
+  const hasOsFiles = (dt) =>
+    !!(dt && dt.types && Array.prototype.indexOf.call(dt.types, "Files") >= 0);
+  box.addEventListener("dragover", (ev) => {
+    if (!hasOsFiles(ev.dataTransfer)) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    ev.dataTransfer.dropEffect = "copy";
+    sfSetDropHint(true);
+  });
+  box.addEventListener("dragleave", (ev) => {
+    if (!ev.relatedTarget || !box.contains(ev.relatedTarget)) sfSetDropHint(false);
+  });
+  box.addEventListener("drop", async (ev) => {
+    if (!hasOsFiles(ev.dataTransfer)) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    sfSetDropHint(false);
+    const files = ev.dataTransfer.files;
+    const paths = [];
+    for (let i = 0; i < files.length; i++) {
+      let p = "";
+      try {
+        /* Electron 39 里 File.path 已不存在，取路径必须走 webUtils 桥 */
+        p = window.api.getPathForFile ? String(window.api.getPathForFile(files[i]) || "") : "";
+      } catch (_) {}
+      if (p) paths.push(p);
+    }
+    if (!paths.length) return;
+    await sfImportFromOS(paths, sfDropTargetDir(ev.target));
+  });
+}
+
+/* ── 键盘：Ctrl+C / Ctrl+X / Ctrl+V（焦点在本页时生效，捕获阶段先于画布的节点复制） ── */
+function sfTrackActive(ev) {
+  const t = ev && ev.target;
+  SF.active = !!(t && t.closest && t.closest("#sideFiles"));
+}
+function sfKeydown(ev) {
+  if (SF.tab !== "files" || !SF.active) return;
+  if (!(ev.ctrlKey || ev.metaKey) || ev.altKey) return;
+  const key = String(ev.key || "").toLowerCase();
+  if (key !== "c" && key !== "x" && key !== "v") return;
+  const t = ev.target;
+  const tag = t && t.tagName ? String(t.tagName).toLowerCase() : "";
+  /* 搜索框 / 重命名输入框里让位给原生文字复制粘贴 */
+  if (tag === "input" || tag === "textarea" || tag === "select" || (t && t.isContentEditable)) return;
+  ev.preventDefault();
+  ev.stopPropagation();
+  if (key === "c") sfCopySel("copy");
+  else if (key === "x") sfCopySel("cut");
+  else sfPaste();
+}
+function sfBindKeys() {
+  if (typeof document === "undefined" || document.__sfKeysBound) return;
+  document.__sfKeysBound = true;
+  document.addEventListener("mousedown", sfTrackActive, true);
+  document.addEventListener("focusin", sfTrackActive, true);
+  /* 捕获阶段：画布那边的 Ctrl+C / Ctrl+V（window 冒泡监听）不会再拿走本页的复制粘贴 */
+  document.addEventListener("keydown", sfKeydown, true);
+}
+
 async function sfDelete(paths) {
   const list = (paths || []).filter(Boolean);
   if (!list.length) return;
@@ -1032,6 +1313,9 @@ function sfInit() {
   sfBuildTabs();
   sfWrapRenderSidebar();
   sfSyncRootSelect();
+  /* 系统剪贴板互通的两个入口：键盘快捷键 + 从资源管理器拖进树 */
+  sfBindKeys();
+  sfBindDrop();
 }
 sfInit();
 
@@ -1043,6 +1327,9 @@ window.MTNodeSideFiles = {
   render: sfRender,
   preview: sfPreview,
   paste: sfPaste,
+  copy: () => sfCopySel("copy"),
+  cut: () => sfCopySel("cut"),
+  importPaths: sfImportFromOS,
   dropPayload: sidebarFilesDropPayload,
   dropToCanvas: sidebarFilesDropToCanvas,
 };

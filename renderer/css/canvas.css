@@ -2769,6 +2769,41 @@ body.theme-light .n-chip.n-chip-lt {
     inset 0 1px 0 rgba(255, 255, 255, .12);
 }
 
+/* 拖到收起的节点层上：立刻开始抖，幅度由轻到重，1 秒后（计时见 app.js
+   expandSuperOnHover）展开并停止抖动；中途移开则类被摘掉，抖动立即停。
+   不加 animation-fill-mode —— 动画结束就交还 transform，免得压住拖拽用的内联位移。 */
+@keyframes superHoverShakeRamp {
+  0% {
+    transform: translate3d(0, 0, 0) rotate(0deg);
+  }
+
+  20% {
+    transform: translate3d(-1.2px, 0, 0) rotate(-.14deg);
+  }
+
+  40% {
+    transform: translate3d(1.7px, 0, 0) rotate(.2deg);
+  }
+
+  60% {
+    transform: translate3d(-2.3px, 0, 0) rotate(-.26deg);
+  }
+
+  80% {
+    transform: translate3d(2.9px, 0, 0) rotate(.32deg);
+  }
+
+  100% {
+    transform: translate3d(-3.4px, 0, 0) rotate(-.38deg);
+  }
+}
+
+.wf-node.super.super-hover-wait {
+  animation: superHoverShakeRamp 1s linear;
+  transform-origin: 50% 60%;
+  will-change: transform;
+}
+
 .super-stage .super-port {
   position: absolute;
   z-index: 6;
@@ -4479,10 +4514,136 @@ body.theme-light .n-chip.n-chip-lt {
   background: rgba(255, 170, 60, .12);
 }
 
-/* 正在跑的那一颗节点：绿色描边（与 ▶ 同色系），跑完即摘 */
+/* ---- 「运行本层」呼吸灯（renderer/app-super-run.js） ----
+   · .super-run-live  = 正在跑的这一层（壳，整批期间常亮呼吸）
+   · .super-run-focus = 这一层里当前正在跑的那一颗（逐颗切换）
+   两者都只用 outline 画：节点的 box-shadow 被类型 / 选中 / 展开态各占一套，叠不进去，
+   outline 不掺和那些层叠，任何节点上都能稳定呼吸（也绕开 overflow: clip 的裁剪）。
+   动画只驱动颜色与 offset：animation 声明优先级高于普通声明，所以选中时 .sel 的
+   青色描边会被这套绿色呼吸接管 —— 运行态优先，跑完即恢复选中色。 */
 .wf-node.super-run-focus {
   outline: 2px solid rgba(95, 214, 138, .9);
   outline-offset: 2px;
+  animation: superRunFocusBreathe 1.8s ease-in-out infinite;
+}
+
+@keyframes superRunFocusBreathe {
+  0%, 100% { outline-color: rgba(95, 214, 138, .28); }
+  50% { outline-color: rgba(95, 214, 138, .95); }
+}
+
+/* 壳：环更宽、波谷留一点底光，和层内那颗区分开 */
+.wf-node.super.super-run-live {
+  outline: 2.5px solid rgba(95, 214, 138, .5);
+  outline-offset: 3px;
+  animation: superRunShellBreathe 1.8s ease-in-out infinite;
+}
+
+@keyframes superRunShellBreathe {
+  0%, 100% {
+    outline-color: rgba(95, 214, 138, .22);
+    outline-offset: 3px;
+  }
+  50% {
+    outline-color: rgba(95, 214, 138, 1);
+    outline-offset: 5px;
+  }
+}
+
+/* 系统要求减少动效：保留常亮描边，去掉呼吸 */
+@media (prefers-reduced-motion: reduce) {
+  .wf-node.super-run-focus,
+  .wf-node.super.super-run-live,
+  .wf-node.super.super-hover-wait {
+    animation: none;
+  }
+}
+
+/* 选中 + 运行中：.sel 的描边宽度会盖掉上面这套（它用 outline 简写、权重更高），
+   这里按同样的权重把环宽拿回来 —— 颜色仍由动画驱动（呼吸优先于选中色）。 */
+.wf-node.super.super-run-live.sel {
+  outline-width: 2.5px;
+  outline-offset: 3px;
+}
+
+.wf-node.super-run-focus:not(.global):not(.agent-super).sel {
+  outline-width: 2px;
+  outline-offset: 2px;
+}
+
+/* ---- 壳卡片底部的「运行本层」状态行（renderer/app-super-run.js）----
+   运行中 / 暂停中 / 上一次收尾汇总都写在这一行只读小字里：失败原因、跳过几颗、
+   有没有渲染异常，这是唯一常驻的留痕处（本仓 ok toast 不显示，不能只靠它）。 */
+.super-run-status {
+  margin-top: 2px;
+  font-size: 10px;
+  line-height: 1.25;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.super-run-status.live {
+  color: rgba(95, 214, 138, .92);
+}
+
+.super-run-status.paused {
+  color: var(--orange);
+}
+
+/* 暂停态的「继续」键：比单字符的 ▶ 宽一点；门槛未满足时置灰但仍占位。 */
+.n-play.n-super-resume {
+  width: auto;
+  min-width: 34px;
+  padding: 0 6px;
+  font-size: 10px;
+  letter-spacing: 0;
+  border-color: var(--orange);
+  color: var(--orange);
+  background: rgba(255, 170, 60, .12);
+}
+
+.n-play.n-super-resume:hover {
+  background: rgba(255, 170, 60, .22);
+}
+
+.n-play.disabled,
+.n-play.n-super-resume.disabled {
+  opacity: .45;
+  cursor: not-allowed;
+  border-color: var(--bd2);
+  color: var(--muted);
+  background: rgba(127, 138, 156, .08);
+}
+
+/* 「继续」时弹出的下游勾选窗（openOverlay 的 body / foot） */
+.super-run-ask-msg {
+  margin: 0 0 8px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--txt2, var(--txt));
+}
+
+.super-run-ask-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 240px;
+  overflow: auto;
+}
+
+.super-run-ask-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  padding: 3px 4px;
+  border-radius: 6px;
+}
+
+.super-run-ask-row:hover {
+  background: rgba(127, 138, 156, .1);
 }
 
 .n-play.n-backend-probe {

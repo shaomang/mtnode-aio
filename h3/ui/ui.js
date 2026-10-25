@@ -160,8 +160,48 @@
 
     if (st.gpu) applyGpu(st.gpu);
     renderSage(st);
+    renderPostDeps(st);
     syncLaunchOptsUi(st);
     return st;
+  }
+
+  /* ── 后处理依赖（流式超分 / 补帧）状态 ─────────────────────────────
+   * 现场：流式超分不出片，日志只剩 "No module named 'cv2'"，然后静默回退图链 —— 用户看到的
+   * 是「出了片但流式没生效」。根因是安装漏了 opencv（ComfyUI 自带 requirements 不含它）。
+   * 现在脚本缺 cv2 也能跑（torch 面积缩放兜底），所以这一行只报事实、不拦任何操作：
+   *   · 缺 torch / av / numpy / kornia → 流式后处理真的跑不了（红字，指向重跑安装）；
+   *   · 只缺 cv2 → 流式照跑，其它用到 cv2 的节点会缺依赖（灰字，指向重跑安装）。 */
+  function renderPostDeps(st) {
+    const el = $("postDepsInfo");
+    if (!el) return;
+    const d = st.postDeps || {};
+    if (!st.project || !st.project.venv) {
+      el.textContent = "后处理依赖（流式超分 / 补帧）：待后端装好后自检";
+      el.classList.remove("danger");
+      return;
+    }
+    if (!d.probed) {
+      el.textContent = "后处理依赖（流式超分 / 补帧）：自检中…";
+      el.classList.remove("danger");
+      return;
+    }
+    const missing = Array.isArray(d.missing) ? d.missing : [];
+    if (missing.length) {
+      el.textContent =
+        "后处理依赖未就绪（缺 " +
+        missing.join(" / ") +
+        "）：流式超分 / 补帧跑不了，会退回更吃内存的图路径。重跑一次安装即可补齐。";
+      el.classList.add("danger");
+      return;
+    }
+    if (d.cv2Missing) {
+      el.textContent =
+        "后处理依赖：缺 cv2（opencv）—— 流式超分 / 补帧会用 torch 缩放照常出片，但其它用到 cv2 的节点会缺依赖；重跑一次安装即可补上。";
+      el.classList.remove("danger");
+      return;
+    }
+    el.textContent = "后处理依赖 ✓ 已就绪（torch / av / numpy / kornia / cv2）";
+    el.classList.remove("danger");
   }
 
   /* ── Sage Attention（注意力加速）状态 ─────────────────────────────

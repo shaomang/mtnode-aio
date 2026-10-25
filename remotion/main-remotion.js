@@ -44,6 +44,7 @@ const {
   clearLock,
   releaseLock,
   busyMessage,
+  registerHostProbe,
 } = require("../media-gen-global-lock.js");
 
 const PLUGIN_ID = "remotion";
@@ -74,6 +75,14 @@ let installRep = null;
 let getDsh = null;
 /** @type {{ nodeId: string, child: import('child_process').ChildProcess|null, abort?: boolean, pct?: number, outputPath?: string }|null} */
 let renderProc = null;
+/* 已取锁、正在跑渲染的节点 id（取锁到 spawn 子进程之间那段也算在跑） */
+let activeRenderNode = "";
+
+/* 全局媒体锁活性探针（口径见 media-gen-global-lock.js 头部）：内存里有没有在途渲染才是真相。
+   Remotion 渲染是子进程、没有常驻服务，所以不提供 isAlive（判不了就跳过）。 */
+registerHostProbe("remotion", {
+  isBusy: () => activeRenderNode || (renderProc && renderProc.nodeId) || "",
+});
 
 /* ------------------------------------------------------------------ */
 /* 路径 / JSON 工具                                                    */
@@ -1531,6 +1540,46 @@ function copyDirRecursive(src, dest, skipNames) {
   }
 }
 
+/**
+ * 补齐安装目录里缺失的随包脚手架文件（幂等，已存在的不覆盖）。
+ *
+ * 现场事故：老版本 build.json 的 remotion-pack 白名单漏了 `pack/**`，装箱后的脚手架里
+ * 没有 pack/park-media.mjs，宿主复制到安装目录后 `node render.mjs` 静态 import 直接
+ * `ERR_MODULE_NOT_FOUND: Cannot find module '<installDir>/pack/park-media.mjs'`，
+ * 自检的最低档渲染整块失败。新装用户由白名单修复解决；**已复制过的老安装目录**不会
+ * 自己长回这一层（重装才会覆盖），所以在渲染 / 自检前把随包脚手架里缺的文件补过去。
+ * 只补缺失项：用户目录里的 render.json / out / 自定义 src 一律不动。
+ */
+function ensurePackSupportFiles(installDir) {
+  const src = bundledPackRoot();
+  const dest = String(installDir || "").trim();
+  if (!dest || !fs.existsSync(src) || !fs.existsSync(dest)) return [];
+  const skip = new Set(["node_modules", ".git", "out", "output", "__pycache__"]);
+  const added = [];
+  const walk = (rel) => {
+    const from = rel ? join(src, rel) : src;
+    for (const ent of fs.readdirSync(from, { withFileTypes: true })) {
+      if (skip.has(ent.name)) continue;
+      const relChild = rel ? join(rel, ent.name) : ent.name;
+      if (ent.isDirectory()) {
+        walk(relChild);
+        continue;
+      }
+      const d = join(dest, relChild);
+      if (fs.existsSync(d)) continue;
+      try {
+        mk(path.dirname(d));
+        fs.copyFileSync(join(src, relChild), d);
+        added.push(relChild);
+      } catch {}
+    }
+  };
+  try {
+    walk("");
+  } catch {}
+  return added;
+}
+
 function ensureUiRuntime() {
   const srcUi = join(__dirname, "ui");
   const destUi = join(remotionRoot(), "ui");
@@ -2142,13 +2191,21 @@ function extractZip(zipPath, destDir, timeoutMs) {
  * 确保渲染要用的浏览器就位。返回 { ok, how, browserExecutable?, version?, hint? }：
  *   how = "cache"（本地已有同版本缓存）· "mirror"（刚从 npmmirror 代下预置成功）
  *       · "local-browser"（代下失败，回退本机 Edge / Chrome）· "failed"
+ *
+ * 关键：缓存或代下成功时**必须把 exe 绝对路径也返回**（browserExecutable），由宿主写进
+ * render.json。原因：@remotion/renderer 的 getDownloadsCacheDir() 是从 **process.cwd()**
+ * 往上找最近的 package.json 再拼 node_modules/.remotion；而 render.mjs 的 cwd 是渲染工程
+ * 目录（<工作目录>/.mtnode/remotion/<节点 id>，上面没有 package.json）→ 它会到
+ * <工程目录>/.remotion 找浏览器，跟我们预置的 <安装目录>/node_modules/.remotion 不是一处，
+ * 于是每换一个节点 / 工程目录就重新下载 113.3MB 的 Chrome Headless Shell。
+ * 显式给 browserExecutable 时 Remotion 走 user-defined-path，直接用它，永远不会再下载。
  */
 async function ensureRenderBrowser(installDir) {
   const paths = chromeShellPaths(installDir);
   const version = remotionChromeVersion(installDir);
   try {
     if (fs.existsSync(paths.exe) && fs.readFileSync(paths.versionFile, "utf8").trim() === version) {
-      return { ok: true, how: "cache", version };
+      return { ok: true, how: "cache", version, browserExecutable: paths.exe };
     }
   } catch {}
   const zipUrl =
@@ -2179,7 +2236,7 @@ async function ensureRenderBrowser(installDir) {
       fs.unlinkSync(zipPath);
     } catch {}
     appendConsole("[browser] 已预置到 " + paths.exe + "（Remotion 不再下载）");
-    return { ok: true, how: "mirror", version };
+    return { ok: true, how: "mirror", version, browserExecutable: paths.exe };
   } catch (e) {
     const why = String((e && e.message) || e);
     try {
@@ -2996,10 +3053,29 @@ async function runRender(installDir, params, nodeId, written) {
   if (!fs.existsSync(script)) {
     throw new Error("render_script_missing: " + script + "（remotion-pack 缺少 render.mjs）");
   }
+  /* render.mjs 静态 import './pack/park-media.mjs'：老安装目录可能没有这一层（见
+     ensurePackSupportFiles 的说明），缺了就是 ERR_MODULE_NOT_FOUND，渲染 / 自检直接失败。
+     这里先按随包脚手架补齐缺失文件，再 spawn。 */
+  const healed = ensurePackSupportFiles(installDir);
+  if (healed.length) {
+    appendConsole("[render] scaffold files restored: " + healed.join(", "));
+  }
   /* 工程目录 = 用户代码 / render.json / 成片的落点：画布工作目录（见 remotionProjectDirOf），
      插件安装目录只当依赖源与渲染脚本来源（那条路升级会覆盖，用户数据一律不许进去）。 */
   const projectDir = remotionProjectDirOf(installDir, params);
   mk(projectDir);
+  /* 老现场清场：之前的版本让 Remotion 按 cwd 在每个工程目录里各下一份 chrome-headless-shell
+     （113MB/目录，换个节点就重下一遍）。现在浏览器一律用安装目录里预置的那一份
+     （见 ensureRenderBrowser），工程目录里的这份纯属垃圾，顺手删掉腾磁盘。 */
+  try {
+    const stale = join(projectDir, ".remotion");
+    if (path.resolve(stale) !== path.resolve(installDir) && fs.existsSync(stale)) {
+      fs.rmSync(stale, { recursive: true, force: true });
+      appendConsole("[render] 已清理工程目录里的旧浏览器缓存：" + stale);
+    }
+  } catch (e) {
+    appendConsole("[render] 旧浏览器缓存清理失败（不影响渲染）：" + String((e && e.message) || e));
+  }
   const outPath = resolveOutputPath(installDir, params);
   /* ── 端子契约（固化工程）：props / 媒体落地在这一步先算完 ──────────────
      写成「先算后渲染」是为了音频时长覆盖时长：接了音频端子且能探到实际时长时，
@@ -3071,7 +3147,8 @@ async function runRender(installDir, params, nodeId, written) {
       nodeModulesDir: join(installDir, "node_modules") /* 依赖源：react / remotion 只在安装目录里 */,
       codec: "h264",
       outputLocation: outPath,
-      /* 只在回退本机浏览器时才有值（国内镜像预置成功时留空 = 用 Remotion 钉版的那份） */
+      /* 浏览器一律显式给：预置成功 → 安装目录里那份钉版 headless shell；回退时 → 本机 Edge/Chrome。
+         不给的话 Remotion 会按 cwd 去 <工程目录>/.remotion 找，找不到就重下 113MB（见 ensureRenderBrowser 注释）。 */
       ...(browserInfo.browserExecutable ? { browserExecutable: browserInfo.browserExecutable } : {}),
     };
     if (String(params.audioPath || "").trim()) {
@@ -3289,7 +3366,7 @@ async function renderVideo(params) {
     return { ok: false, error: "not_ready" };
   }
 
-  const acq = tryAcquireLock({ nodeId, workflowId: params.workflowId || "", kind: "video_gen" });
+  const acq = tryAcquireLock({ nodeId, host: "remotion", workflowId: params.workflowId || "", kind: "video_gen" });
   if (!acq.ok) {
     const lock = acq.lock;
     const msg = busyMessage(lock) || "全局音视频锁被另一个节点占着（同一时刻只允许 1 个音乐 / 视频任务）";
@@ -3298,6 +3375,7 @@ async function renderVideo(params) {
     reportErr("busy_other_node", msg, renderReportCtx(params, nodeId));
     return { ok: false, error: "busy_other_node", lock, message: msg };
   }
+  activeRenderNode = nodeId;
 
   let written = null;
   try {
@@ -3317,6 +3395,7 @@ async function renderVideo(params) {
     if (sz < 64) throw new Error("output_file_empty_or_too_small: " + outPath);
 
     clearLock();
+    activeRenderNode = "";
     emitProgress({ phase: "render", nodeId, message: "完成", pct: 100, done: true });
     appendConsole("[job] ok path=" + outPath + " bytes=" + sz);
     return { ok: true, path: outPath, outputPath: outPath, bytes: sz, message: "Saved: " + outPath };
@@ -3326,6 +3405,7 @@ async function renderVideo(params) {
     const err = friendlyRenderError(raw, !!(written && written.custom));
     appendConsole("[job] error: " + err);
     clearLock();
+    activeRenderNode = "";
     emitProgress({ phase: "render", nodeId, message: err, error: true, pct: 0 });
     reportErr(err, err, renderReportCtx(params, nodeId));
     return { ok: false, error: err, message: err };
@@ -3448,6 +3528,7 @@ function cancelRender(nodeId) {
     renderProc = null;
   }
   releaseLock(nid || undefined);
+  activeRenderNode = "";
   emitProgress({
     phase: "render",
     nodeId: nid || hitNodeId,

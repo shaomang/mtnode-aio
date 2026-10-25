@@ -25,10 +25,15 @@ const TPL_ST = {
   previewBase64: "",
   previewThumbBase64: "",
   previewHint: "",
+  /* 待继承的封面（本机工作流的 bgImage dataURL）：上传页开出来后再压成预览图，
+     见 tplPreviewFromDataUrl / paintUpload 里的 applyCover。 */
+  coverDataUrl: "",
   /* 工作流专用：端子清单来自封装本身（外侧桥接／汇流线现算），发布时随包带上，
      卡片与详情用它画「入 n / 出 n」；nodeCount 只是展示用的规模数字。 */
   workflowPorts: null,
   workflowNodeCount: 0,
+  /* 这条工坊条目对应的本机工作流库 id（发布 / 更新成功后写回库条目的 storeId 靠它） */
+  wfSourceId: "",
   authMode: "login",
   _localSkills: null,
 };
@@ -220,10 +225,59 @@ function tplResetDraft() {
   TPL_ST.previewBase64 = "";
   TPL_ST.previewThumbBase64 = "";
   TPL_ST.previewHint = "";
+  TPL_ST.coverDataUrl = "";
   TPL_ST.workflowPorts = null;
   TPL_ST.workflowNodeCount = 0;
+  TPL_ST.wfSourceId = "";
+  TPL_ST.wfDirectUpdate = false;
   TPL_ST._clearPreview = false;
   TPL_ST._extrasTouched = false;
+}
+
+/* 本机工作流的封面（节点层 bgImage）→ 工坊预览图：与主进程 store:pickPreview 同一口径
+ * （主图长边 ≤640、缩略图 ≤240，一律 JPEG 82 / 72）。封面本身是 ≤1600 边长、≤512KB 的
+ * dataURL（可能带 alpha 的 PNG），直接交给服务端会撞 500KB 的预览上限，所以上传前压一道。 */
+async function tplPreviewFromDataUrl(dataUrl) {
+  const src = String(dataUrl || "");
+  if (!/^data:image\//i.test(src)) return null;
+  const img = await new Promise((resolve) => {
+    const im = new Image();
+    im.onload = () => resolve(im);
+    im.onerror = () => resolve(null);
+    im.src = src;
+  });
+  const w0 = (img && (img.naturalWidth || img.width)) || 0;
+  const h0 = (img && (img.naturalHeight || img.height)) || 0;
+  if (!w0 || !h0) return null;
+  const draw = (maxEdge) => {
+    const scale = Math.min(1, maxEdge / Math.max(w0, h0));
+    const w = Math.max(1, Math.round(w0 * scale));
+    const h = Math.max(1, Math.round(h0 * scale));
+    const cv = document.createElement("canvas");
+    cv.width = w;
+    cv.height = h;
+    const ctx = cv.getContext("2d");
+    if (!ctx) return null;
+    /* 透明区在 JPEG 里会变黑：先铺工坊卡片的底色，看着才像封面而不是破图 */
+    ctx.fillStyle = "#10151c";
+    ctx.fillRect(0, 0, w, h);
+    ctx.drawImage(img, 0, 0, w, h);
+    return { cv, w, h };
+  };
+  const full = draw(640);
+  if (!full) return null;
+  const thumb = draw(240);
+  const cut = (u) => String(u).slice(String(u).indexOf(",") + 1);
+  const base64 = cut(full.cv.toDataURL("image/jpeg", 0.82));
+  const thumbBase64 = thumb ? cut(thumb.cv.toDataURL("image/jpeg", 0.72)) : "";
+  return {
+    base64,
+    thumbBase64,
+    bytes: Math.floor((base64.length * 3) / 4),
+    thumbBytes: thumbBase64 ? Math.floor((thumbBase64.length * 3) / 4) : 0,
+    width: full.w,
+    height: full.h,
+  };
 }
 
 function parseSkillFrontmatterClient(text) {
@@ -494,6 +548,43 @@ function ensureLocalSkillsForStore() {
       });
   }
   return TPL_LOCAL_SKILLS_P;
+}
+
+/* 本机工作流库清单：「这条工坊条目下载过没有」靠它（origin.storeId / storeId）。
+   与技能同理，卡片是同步渲染的，读之前先 await ensureLocalWorkflowsForStore()。 */
+async function refreshLocalWorkflowsForStore() {
+  try {
+    const r = await window.api.workflowsList();
+    TPL_ST._localWorkflows = (r && r.ok && r.workflows) || [];
+  } catch {
+    TPL_ST._localWorkflows = [];
+  }
+  return TPL_ST._localWorkflows || [];
+}
+function findLocalWorkflow(item) {
+  const sid = String((item && item.id) || "");
+  if (!sid) return null;
+  return (
+    (TPL_ST._localWorkflows || []).find((w) => {
+      const o = (w && w.origin) || {};
+      return String((w && w.storeId) || o.storeId || "") === sid;
+    }) || null
+  );
+}
+let TPL_LOCAL_WFS_P = null;
+function ensureLocalWorkflowsForStore() {
+  if (Array.isArray(TPL_ST._localWorkflows))
+    return Promise.resolve(TPL_ST._localWorkflows);
+  if (!TPL_LOCAL_WFS_P) {
+    TPL_LOCAL_WFS_P = Promise.resolve()
+      .then(() => refreshLocalWorkflowsForStore())
+      .catch(() => TPL_ST._localWorkflows || [])
+      .then((list) => {
+        TPL_LOCAL_WFS_P = null;
+        return list;
+      });
+  }
+  return TPL_LOCAL_WFS_P;
 }
 
 /* 商店二级浮层：大图 / 只读画布预览（盖在模板商店之上） */
@@ -1109,9 +1200,17 @@ function openWorkflowUpload(payload) {
   TPL_ST.title = String(p.title || "");
   TPL_ST.description = String(p.description || "");
   TPL_ST.version = String(p.version || "1.0");
+  TPL_ST.coverDataUrl = String(p.cover || "");
   TPL_ST.fileBase64 = String(p.fileBase64 || "");
+  /* 本机库来源 id：发布 / 更新成功后把工坊条目 id 写回这条库条目，下次就能就地更新 */
+  TPL_ST.wfSourceId = String(p.sourceId || "");
+  /* 已发布条目 → 按「编辑 / 更新」打开（PATCH 同一条，版本号可改），不新建一条 */
+  if (p.updateId) TPL_ST.editId = String(p.updateId);
+  TPL_ST.wfDirectUpdate = !!p.updateId && !!p.directUpdate;
   TPL_ST.fileHint = TPL_ST.fileBase64
-    ? I18n.t("已从本机工作流库载入，可直接发布")
+    ? p.updateId
+      ? I18n.t("已载入本机这一版；保存即覆盖工坊条目（可先改上方版本号）")
+      : I18n.t("已从本机工作流库载入，可直接发布")
     : "";
   const pp = p.ports || { ins: [], outs: [] };
   TPL_ST.workflowPorts = {
@@ -1297,6 +1396,38 @@ async function openTemplateStore() {
     host.appendChild(wrap);
   }
 
+  /* 工作流下载的可见进度提示：全局 toast 只弹 err / warn（成功回执按口径静默），
+     而工坊下载一条工作流要拉包 + 落盘，用户需要知道「正在下载」与「已下载完毕」。
+     这条提示挂在工坊窗内顶部（pane 之外），页面重绘不会带走它，也不改全局 toast 口径。 */
+  let _tplDlNoteEl = null;
+  let _tplDlNoteTimer = 0;
+  const TPL_DL_BUSY = new Set();
+  function tplDlNote(text, kind, ms) {
+    const host = document.getElementById("ovBody");
+    if (!host) return;
+    let el = _tplDlNoteEl;
+    if (!el || !el.isConnected) {
+      el = document.createElement("div");
+      _tplDlNoteEl = el;
+      host.insertBefore(el, host.firstChild);
+    }
+    const k = String(kind || "");
+    const tone = k === "err" ? "var(--red)" : k === "ok" ? "var(--green)" : "var(--cyan)";
+    el.style.cssText =
+      "flex:none;margin:0 0 8px;padding:7px 10px;border-radius:6px;font-size:12px;" +
+      "line-height:1.6;border:1px solid var(--bd2);border-left:3px solid " +
+      tone +
+      ";background:var(--code);color:var(--ink);white-space:pre-wrap";
+    el.textContent = text;
+    if (_tplDlNoteTimer) clearTimeout(_tplDlNoteTimer);
+    _tplDlNoteTimer = 0;
+    if (Number(ms) > 0)
+      _tplDlNoteTimer = setTimeout(() => {
+        if (el.isConnected) el.remove();
+        if (_tplDlNoteEl === el) _tplDlNoteEl = null;
+      }, Number(ms));
+  }
+
   async function downloadTpl(item) {
     if (tplIsSkill()) {
       const skillName = item.skillName || "";
@@ -1377,31 +1508,56 @@ async function openTemplateStore() {
     /* ── 工作流：只收进本机工作流库，不插当前画布、不弹新画布、不自动打开库 ──
        用户点「工作流库 → 插入」才是把它放进画布的那一刻。 */
     if (tplIsWorkflow()) {
-      let pack;
-      try {
-        pack = await tplFetchFileCached(item);
-      } catch (e) {
-        toast(I18n.t("下载失败：") + ((e && e.message) || String(e)), "err");
-        return;
-      }
-      const imp = await window.api.workflowsImportBase64({
-        base64: pack.base64,
-        name: item.title || "",
-        description: item.description || "",
-        version: item.version || "1.0",
-        storeId: item.id,
-        title: item.title || "",
-      });
-      if (!imp || !imp.ok) {
-        toast(I18n.t("下载失败：") + ((imp && imp.error) || I18n.t("未知错误")), "err");
-        return;
-      }
-      toast(
-        I18n.t("已存入本机工作流库：") +
-          (imp.name || item.title || "") +
-          I18n.t("（用「工作流库」插入到当前画布）"),
-        "ok",
+      const wfName = item.title || I18n.t("（未命名工作流）");
+      /* 同一条目连点两下不要下两次（会往库里落两条） */
+      if (TPL_DL_BUSY.has(String(item.id || ""))) return;
+      TPL_DL_BUSY.add(String(item.id || ""));
+      /* 本机已有这条 → 「更新」：覆盖同一条目，而不是往库里再落一条 */
+      await ensureLocalWorkflowsForStore();
+      const localWf = findLocalWorkflow(item);
+      tplDlNote(
+        (localWf ? I18n.t("正在更新工作流：") : I18n.t("正在下载工作流：")) +
+          wfName +
+          " …",
+        "busy",
       );
+      try {
+        let pack;
+        try {
+          pack = await tplFetchFileCached(item);
+        } catch (e) {
+          const msg = (e && e.message) || String(e);
+          tplDlNote(I18n.t("下载失败：") + msg, "err", 15000);
+          toast(I18n.t("下载失败：") + msg, "err");
+          return;
+        }
+        const imp = await window.api.workflowsImportBase64({
+          base64: pack.base64,
+          name: item.title || "",
+          description: item.description || "",
+          version: item.version || "1.0",
+          storeId: item.id,
+          title: item.title || "",
+          replaceId: localWf ? localWf.id : "",
+        });
+        if (!imp || !imp.ok) {
+          const msg = (imp && imp.error) || I18n.t("未知错误");
+          tplDlNote(I18n.t("下载失败：") + msg, "err", 15000);
+          toast(I18n.t("下载失败：") + msg, "err");
+          return;
+        }
+        await refreshLocalWorkflowsForStore();
+        paint();
+        tplDlNote(
+          (localWf ? I18n.t("已更新到本机工作流库：") : I18n.t("已下载到本机工作流库：")) +
+            (imp.name || wfName) +
+            I18n.t("（用「工作流库」插入到当前画布）"),
+          "ok",
+          10000,
+        );
+      } finally {
+        TPL_DL_BUSY.delete(String(item.id || ""));
+      }
       return;
     }
     if (!(await confirmDialog(I18n.t("导入将打开为新画布，当前画布会保留。确定下载？"), { title: I18n.t("下载模板") }))) return;
@@ -1426,6 +1582,8 @@ async function openTemplateStore() {
   }
 
   async function previewTplNodes(item) {
+    /* 工作流条目不再提供预览（只读画布预览已移除）：工坊里只看端子清单 + 下载 */
+    if (tplIsWorkflow()) return;
     if (tplIsSkill()) {
       const body = openTplSubOverlay(
         I18n.t("技能预览") +
@@ -1489,7 +1647,7 @@ async function openTemplateStore() {
     );
     const ph = document.createElement("div");
     ph.className = "tpl-lightbox-ph";
-    ph.textContent = tplIsWorkflow() ? I18n.t("加载工作流中…") : I18n.t("加载模板中…");
+    ph.textContent = I18n.t("加载模板中…");
     body.appendChild(ph);
     let pack;
     try {
@@ -1561,6 +1719,16 @@ async function openTemplateStore() {
     card.appendChild(thumb);
     /* 封面不再在这里同步取图：先挂骨架占位，进视口才由 tplThumbFill 的队列去取 */
     tplThumbFill(thumb, item);
+    /* 已从工坊下载过：预览图左上角打一枚对钩（工作流看本机工作流库，技能看本机已装） */
+    const localWf = tplIsWorkflow() ? findLocalWorkflow(item) : null;
+    const localSkillNow = tplIsSkill() ? findLocalSkill(item.skillName) : null;
+    if (localWf || (localSkillNow && !localSkillNow.builtin)) {
+      const ok = document.createElement("div");
+      ok.className = "tpl-thumb-ok";
+      ok.textContent = "✓";
+      ok.title = I18n.t("已下载到本机");
+      thumb.appendChild(ok);
+    }
 
     const body = document.createElement("div");
     body.className = "tpl-card-body";
@@ -1654,13 +1822,16 @@ async function openTemplateStore() {
 
     const row = document.createElement("div");
     row.className = "tpl-card-actions";
-    row.appendChild(
-      mkIconBtn(
-        tplIsSkill() ? "☰" : "◈",
-        tplIsSkill() ? I18n.t("技能预览") : I18n.t("节点预览"),
-        () => previewTplNodes(item),
-      ),
-    );
+    /* 工作流条目不出预览按钮：预览功能已从工坊移除（只看端子清单与下载） */
+    if (!tplIsWorkflow()) {
+      row.appendChild(
+        mkIconBtn(
+          tplIsSkill() ? "☰" : "◈",
+          tplIsSkill() ? I18n.t("技能预览") : I18n.t("节点预览"),
+          () => previewTplNodes(item),
+        ),
+      );
+    }
     if (tplIsSkill()) {
       const local = findLocalSkill(item.skillName);
       const installed = !!(local && !local.builtin);
@@ -1689,14 +1860,30 @@ async function openTemplateStore() {
           mkIconBtn("⬇", I18n.t("下载"), () => downloadTpl(item), { primary: true }),
         );
       }
+    } else if (tplIsWorkflow()) {
+      /* 本机已有这条 → 「更新」（覆盖同一条目）；否则才是「下载到本机工作流库」 */
+      if (localWf) {
+        row.appendChild(
+          mkIconBtn(
+            "↻",
+            I18n.t("更新（已下载到本机，覆盖同一条目）"),
+            () => downloadTpl(item),
+            { primary: true },
+          ),
+        );
+      } else {
+        row.appendChild(
+          mkIconBtn(
+            "⬇",
+            I18n.t("下载到本机工作流库"),
+            () => downloadTpl(item),
+            { primary: true },
+          ),
+        );
+      }
     } else {
       row.appendChild(
-        mkIconBtn(
-          "⬇",
-          tplIsWorkflow() ? I18n.t("下载到本机工作流库") : I18n.t("下载"),
-          () => downloadTpl(item),
-          { primary: true },
-        ),
+        mkIconBtn("⬇", I18n.t("下载"), () => downloadTpl(item), { primary: true }),
       );
     }
     row.appendChild(
@@ -1757,7 +1944,7 @@ async function openTemplateStore() {
             TPL_ST.workflowPorts = { ins: norm(pp.ins), outs: norm(pp.outs) };
             TPL_ST.workflowNodeCount = 0;
             TPL_ST.fileHint = I18n.t(
-              "编辑时可重新从本机工作流库载入；不载入则沿用已发布的包与端子清单",
+              "编辑时会自动载入对应的本机工作流，也可在这里另选一条；保存即更新工坊条目（版本号可改）",
             );
           }
           if (tplIsSkill()) {
@@ -1894,6 +2081,8 @@ async function openTemplateStore() {
     /* 卡片的「已安装 / 有更新 / 下载」由 findLocalSkill 决定（cardEl 是同步的，不能在那里等）：
        这里兜底 await 一次本机技能清单 —— 开窗时已经后台起过一次，通常这里直接命中同一个 promise。 */
     if (tplIsSkill()) await ensureLocalSkillsForStore();
+    /* 工作流同理：卡片要据此出「更新」按钮与已下载对钩 */
+    if (tplIsWorkflow()) await ensureLocalWorkflowsForStore();
     pane.appendChild(hintEl(I18n.t("工坊加载中…")));
     const pageSize = tplBrowsePageSize();
     const qs =
@@ -2203,6 +2392,29 @@ async function openTemplateStore() {
     );
     prevLab.appendChild(prevRow);
     prevLab.appendChild(prevHint);
+    /* 上传工作流时继承本机库那份封面（与标题 / 描述 / 版本同源）：整页重画 / 载入到上传箱
+       都会带着它；这里没 await，压图回来后只更新预览那一行与状态，不打断用户输入。 */
+    const applyCover = async (cover) => {
+      const cv = await tplPreviewFromDataUrl(cover);
+      if (!cv) return;
+      TPL_ST.previewBase64 = cv.base64;
+      TPL_ST.previewThumbBase64 = cv.thumbBase64;
+      TPL_ST._clearPreview = false;
+      TPL_ST.previewHint =
+        I18n.t("已继承工作流封面") +
+        " · " +
+        cv.width +
+        "×" +
+        cv.height +
+        " · " +
+        fmtBytes(cv.bytes);
+      prevHint.textContent = TPL_ST.previewHint;
+    };
+    if (TPL_ST.coverDataUrl) {
+      const pendingCover = TPL_ST.coverDataUrl;
+      TPL_ST.coverDataUrl = "";
+      applyCover(pendingCover);
+    }
     form.appendChild(prevLab);
 
     const fileLab = document.createElement("label");
@@ -2474,7 +2686,7 @@ async function openTemplateStore() {
       fileLab.appendChild(
         hintEl(
           I18n.t(
-            "工作流只能从本机工作流库发布（画布右键「分享到工坊」走的也是这条路）。上传那一刻会剥掉本机路径、工作目录、跨画布 @引用与全局广播。",
+            "工作流只能从本机工作流库发布（画布右键「分享到工坊」走的也是这条路）。上传那一刻会剥掉本机路径、工作目录、节点层目录、跨画布 @引用与全局广播。",
           ),
         ),
       );
@@ -2527,6 +2739,8 @@ async function openTemplateStore() {
           return;
         }
         const wf = g.workflow;
+        /* 记住包来自哪条本机库条目：发布 / 更新成功后把工坊条目 id 写回它 */
+        TPL_ST.wfSourceId = String(id);
         const graph =
           typeof workflowStripForShare === "function"
             ? workflowStripForShare(wf.graph)
@@ -2549,9 +2763,13 @@ async function openTemplateStore() {
             }
           : null;
         TPL_ST.workflowNodeCount = ports ? ports.nodeCount : 0;
-        TPL_ST.version = String(wf.version || TPL_ST.version || "1.0");
-        const verEl = form.querySelector('input[data-tpl-skill-ver="1"]');
-        if (verEl) verEl.value = TPL_ST.version;
+        /* keepVersion：编辑已发布条目时版本号以表单里填的为准（用户可改），
+           不被本机库条目的版本覆盖。 */
+        if (!opts || !opts.keepVersion) {
+          TPL_ST.version = String(wf.version || TPL_ST.version || "1.0");
+          const verEl = form.querySelector('input[data-tpl-skill-ver="1"]');
+          if (verEl) verEl.value = TPL_ST.version;
+        }
         if (!opts || opts.fillMeta !== false) {
           if (wf.name) {
             TPL_ST.title = String(wf.name);
@@ -2561,6 +2779,8 @@ async function openTemplateStore() {
             TPL_ST.description = String(wf.description);
             desc.value = TPL_ST.description;
           }
+          /* 封面也一起继承：工作流库里那一份就是节点层封面（bgImage） */
+          if (wf.cover) applyCover(String(wf.cover));
         }
         TPL_ST.fileHint =
           I18n.t("已载入工作流：") +
@@ -2572,9 +2792,10 @@ async function openTemplateStore() {
         syncPortBox();
       };
       const fillWfSel = async () => {
+        let list = [];
         try {
           const r = await window.api.workflowsList();
-          const list = (r && r.ok && r.workflows) || [];
+          list = (r && r.ok && r.workflows) || [];
           for (const w of list) {
             const o = document.createElement("option");
             o.value = w.id;
@@ -2589,6 +2810,7 @@ async function openTemplateStore() {
             wfSel.appendChild(o);
           }
         } catch (_) {}
+        return list;
       };
       const fileRow = document.createElement("div");
       fileRow.className = "dsh-btn-row";
@@ -2607,7 +2829,43 @@ async function openTemplateStore() {
       fileLab.appendChild(fileHint);
       fileLab.appendChild(portBox);
       form.appendChild(fileLab);
-      fillWfSel();
+      fillWfSel().then(async (list) => {
+        if (!TPL_ST.editId) return;
+        /* 编辑已发布的工作流：默认就把「这条条目对应的本机库条目」预选并载入 ——
+           不用再选一次节点层，直接改版本号保存即更新。对应关系优先用发布时写回
+           的库 id（wfSourceId，来自工作流库的「更新到工坊」），否则按 wfSourceId
+           缺失的老条目 + 同名条目兜底（同名覆盖口径）。 */
+        let sid = TPL_ST.wfSourceId;
+        const match = (list || []).find((w) => String(w.storeId || "") === String(TPL_ST.editId));
+        if (!sid && match) sid = String(match.id || "");
+        if (!sid) {
+          /* 老条目（发布时还没写回库 id）：按同名兜底，重名时不猜，留给用户手选 */
+          const sameName = (list || []).filter(
+            (w) => String(w.name || "") === String(TPL_ST.title || ""),
+          );
+          if (sameName.length === 1) sid = String(sameName[0].id || "");
+        }
+        if (!sid) return;
+        TPL_ST.wfSourceId = sid;
+        wfSel.value = sid;
+        /* 从库行「更新到工坊」进来时包已经带上了（本机这一版），不必再打一次包 */
+        if (TPL_ST.fileBase64) {
+          TPL_ST.fileHint =
+            I18n.t("已载入本机这一版，保存即更新工坊条目（版本号可改）") +
+            (TPL_ST.workflowNodeCount
+              ? " · " + TPL_ST.workflowNodeCount + I18n.t(" 内部节点")
+              : "");
+          fileHint.textContent = TPL_ST.fileHint;
+          return;
+        }
+        await loadWf(sid, { fillMeta: false, keepVersion: true });
+        TPL_ST.fileHint =
+          I18n.t("已载入本机这一版，保存即更新工坊条目（版本号可改）") +
+          (TPL_ST.workflowNodeCount
+            ? " · " + TPL_ST.workflowNodeCount + I18n.t(" 内部节点")
+            : "");
+        fileHint.textContent = TPL_ST.fileHint;
+      });
     } else {
     fileLab.textContent = ".mtnodes（" + I18n.t("最大 10MB") + "）";
     const fileHint = hintEl(
@@ -2750,12 +3008,19 @@ async function openTemplateStore() {
           if (
             TPL_ST.editId &&
             replacingFile &&
+            !(tplIsWorkflow() && TPL_ST.wfDirectUpdate) &&
             !(await confirmDialog(
               tplIsSkill()
                 ? I18n.t("确认覆盖工坊中的技能正文？修改立即生效；本机已下载副本需手动更新。")
-                : I18n.t("确认覆盖工坊中的模板画布？本地预览/下载缓存将同步更新。"),
+                : tplIsWorkflow()
+                  ? I18n.t("确认用本机这一版覆盖工坊中的工作流？版本号按上方填写更新，已下载的人需手动更新。")
+                  : I18n.t("确认覆盖工坊中的模板画布？本地预览/下载缓存将同步更新。"),
               {
-                title: tplIsSkill() ? I18n.t("覆盖技能") : I18n.t("覆盖模板"),
+                title: tplIsSkill()
+                  ? I18n.t("覆盖技能")
+                  : tplIsWorkflow()
+                    ? I18n.t("覆盖工作流")
+                    : I18n.t("覆盖模板"),
                 danger: true,
                 okText: I18n.t("覆盖"),
               },
@@ -2828,6 +3093,23 @@ async function openTemplateStore() {
           if (!r || !r.ok) {
             toast(tplErr(r), "err");
             return;
+          }
+          /* 工作流：把工坊条目 id / 标题 / 版本写回本机库条目 —— 库里那条从此带
+             「已上传到工坊」标记，并可随时用「更新到工坊」拿当前版本覆盖。 */
+          if (tplIsWorkflow()) {
+            const srcId = TPL_ST.wfSourceId;
+            const itemId = String((r.data && r.data.item && r.data.item.id) || editId || "");
+            if (srcId && itemId) {
+              try {
+                await window.api.workflowsPatch(srcId, {
+                  storeId: itemId,
+                  storeTitle: titleV,
+                  storeVersion: payload.version || "1.0",
+                  /* 本地这条就是刚发出去的那一份：版本号跟着走，库行与工坊不再对不上 */
+                  version: payload.version || "1.0",
+                });
+              } catch (_) {}
+            }
           }
           if (
             tplIsSkill() &&

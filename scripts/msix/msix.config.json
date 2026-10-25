@@ -31,11 +31,11 @@
 
   // 商店显示名（Store listing 标题）。Partner Center → 应用信息（App info）→ 名称。
   // 这里是唯一允许出现中文的展示字段，与 NSIS 快捷方式名（build.json nsis.shortcutName）保持一致。
-  "displayName": "MTNode AI编排器",
+  "displayName": "MTNode AI工作站",
 
   // 商店说明文案。Partner Center → 应用信息 → 简短说明 / 详细描述；需与实际功能一致（AI 工作流编排、本地后端）。
   // 长度遵守商店限制（简短说明一般 ≤ 500 字符），措辞需与审核材料一致以免被驳回。
-  "description": "MTNode AI编排器：可视化 AI 工作流编排桌面应用。在画布上串联文本 / 图像 / 音视频生成节点与智能体，支持数据库事实库、开发节点架构与本地后端（音乐、视频、TTS、llama.cpp），运行在本机。",
+  "description": "MTNode AI工作站：可视化 AI 工作流编排桌面应用。在画布上串联文本 / 图像 / 音视频生成节点与智能体，支持数据库事实库、开发节点架构与本地后端（音乐、视频、TTS、llama.cpp），运行在本机。",
 
   // 磁贴 / 启动画面的背景色（sRGB，十六进制或 Transparent），用于占位图与清单 <VisualElements BackgroundColor>。
   // 与 Partner Center 上传的图标 / 截图底色协调即可；无对应后台字段，取自品牌主色。

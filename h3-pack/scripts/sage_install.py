@@ -35,6 +35,7 @@ import os
 import re
 import subprocess
 import sys
+import urllib.parse
 import urllib.request
 
 SAGE_RELEASES_API = "https://api.github.com/repos/woct0rdho/SageAttention/releases?per_page=30"
@@ -197,6 +198,22 @@ def download(url, dest):
     return dest
 
 
+def wheel_filename(url, known_name=""):
+    """Local .whl file name for a download URL.
+
+    GitHub percent-encodes the '+' of the local version tag inside the asset path
+    (`...-2.2.0%2Bcu130torch2.9.1.post6-cp310-abi3-win_amd64.whl`), and pip validates
+    the *file name* it is handed: an encoded name is rejected as
+    "Invalid wheel filename (invalid version)". Always decode before saving.
+    """
+    name = urllib.parse.unquote(str(known_name or "")).strip()
+    if not name.lower().endswith(".whl"):
+        name = urllib.parse.unquote(str(url or "").split("?")[0].rstrip("/").split("/")[-1]).strip()
+    if not name.lower().endswith(".whl"):
+        name = "sageattention-win_amd64.whl"
+    return re.sub(r'[\\/:*?"<>|]', "_", name)
+
+
 def main():
     fact = probe()
     if not fact["torch"]:
@@ -243,6 +260,7 @@ def main():
         picked_path = wheel
     else:
         url = str(os.environ.get("MT_H3_SAGE_WHEEL_URL") or "").strip()
+        asset_name = ""
         if not url:
             say("looking up a matching wheel on " + SAGE_RELEASES_PAGE)
             try:
@@ -262,10 +280,10 @@ def main():
                 )
             say("picked %s" % picked["file"])
             url = picked["url"]
+            asset_name = str(picked.get("file") or "")
         tmp_dir = os.path.join(os.environ.get("TEMP") or os.environ.get("TMP") or ".", "mtnode-h3-sage")
         os.makedirs(tmp_dir, exist_ok=True)
-        name = str(url).split("?")[0].rstrip("/").split("/")[-1] or "sageattention-win_amd64.whl"
-        picked_path = download(url, os.path.join(tmp_dir, name))
+        picked_path = download(url, os.path.join(tmp_dir, wheel_filename(url, asset_name)))
 
     code, out = run_pip(["--no-deps", "--force-reinstall", picked_path])
     if code != 0:

@@ -1223,6 +1223,24 @@ function afterCanvasRender() {
   }
 }
 
+/* 全屏进入态的「画布外框」两件东西：钉在画布左右边缘的端子层（app.js 的
+   mountSuperFocusPorts）与左上角面包屑（app.js 的 renderTaskCrumb）。
+   它们过去分别写在重绘主体的中段 / 末尾 —— 这一拍被「舞台输入框还握着焦点」推迟
+   （下面的守卫闸直接 return）、或主体里任一步抛错时，这两处就整段被跳过：
+   现场正是用户报的「进了节点层，输入输出端子没了、面包屑也没了，回不到根画布」。
+   收进 finally 里统一同步一次，于是任何一次重绘（含被推迟的那一拍）之后，
+   这两件东西都与真实焦点一致。各自 try：一件出错不许连累另一件。 */
+function syncLayerChrome() {
+  try {
+    const host = nodeById(currentSuperFocus());
+    if (host && host.kind === "super") mountSuperFocusPorts(host);
+    else clearSuperFocusPorts();
+  } catch (_) {}
+  try {
+    renderTaskCrumb();
+  } catch (_) {}
+}
+
 function renderCanvas() {
   /* 绘制文字编辑中：推迟重绘，避免拆掉 contentEditable 导致失焦 */
   if (isMarkTextEditing()) {
@@ -1236,6 +1254,12 @@ function renderCanvas() {
   }
   /* 节点「设置」跳窗开着且表单结构变了（如 video_gen 换工作流来源）→ 跟着重建 */
   syncNodeSettingsDialogShape();
+  /* 焦点自愈（app.js）：这一层被删掉了就退到还活着的祖先层 / 根画布，
+     别把相机留在已经不存在的层上（那是「回不到根画布」的起点）。 */
+  if (typeof healLayerFocus === "function") healLayerFocus();
+  /* 未运行态还挂着的「全局锁被占」红字 = 上一次尝试的残影，画之前先扫掉（见 app.js 的
+     sweepStaleMediaBusyErrors：锁改为活性判定后真冲突只发生在点 ▶ 的那一拍） */
+  if (typeof sweepStaleMediaBusyErrors === "function") sweepStaleMediaBusyErrors();
   S._renderingCanvas = true;
   S._ignoreMarkBlurFlush = true;
   try {
@@ -1289,19 +1313,30 @@ function renderCanvas() {
          组框跳位、框内节点留在原处（见 syncCanvasNodeDomPos 注释） */
       syncCanvasNodeDomPos(parts);
       updateGroupFrames();
+      /* 端子数与模型对不上就先重建那一颗（本次 bug：图像节点接上输入 1 之后，
+         输入 2 不出现）。复用通道只给**已有**端子重排位置，从不补建新端子，而动态端子
+         节点（proc_image / proc_text / sensenova_gen / input_* …）的端子数正是随连线
+         增长的 —— 不在这里补一次节点级重建，新空槽要等下一次整幅重建（切选中 / 改尺寸）
+         才画得出来。只重建数量真的对不上的那颗，其它节点与焦点都不动。 */
+      stage.querySelectorAll(".wf-node").forEach((nel) => {
+        const n = nodeById(nel.dataset.nid);
+        /* 展开壳的外侧端子不渲染（内侧端子另有一套），数量天然对不上 → 跳过 */
+        if (!n || superIsOpenShell(n)) return;
+        const inDom = nel.querySelectorAll(":scope > .port.in:not(.np-port)").length;
+        const outDom = nel.querySelectorAll(":scope > .port.out").length;
+        if (inDom !== inputCount(n) || outDom !== outputCount(n)) {
+          if (typeof refreshNodeEl === "function") refreshNodeEl(n.id);
+        }
+      });
       for (const n of parts.openSupers) {
         const nel = stage.querySelector('.wf-node[data-nid="' + n.id + '"]');
         if (nel) refreshPorts(nel, n);
       }
-      const sfHost0 = nodeById(currentSuperFocus());
-      if (sfHost0 && sfHost0.kind === "super") mountSuperFocusPorts(sfHost0);
-      else clearSuperFocusPorts();
       updateWires();
       afterCanvasRender();
       for (const n of S.wf.nodes) if (n.kind === "agent_task") scrollAgentConv(n);
       syncGroupBtns();
       if (S.sidebarOpen) renderSidebar();
-      renderTaskCrumb();
       applyFocusFormAfterRender();
       return;
     }
@@ -1352,8 +1387,6 @@ function renderCanvas() {
       if (nel) refreshPorts(nel, n);
     }
     const sfHost = nodeById(currentSuperFocus());
-    if (sfHost && sfHost.kind === "super") mountSuperFocusPorts(sfHost);
-    else clearSuperFocusPorts();
     updateWires();
     /* 下一帧再校正一次端子 Y（舞台高度此时才稳定） */
     if (openSupers.length || (sfHost && sfHost.kind === "super")) {
@@ -1389,7 +1422,6 @@ function renderCanvas() {
     }
     syncGroupBtns();
     if (S.sidebarOpen) renderSidebar();
-    renderTaskCrumb();
     /* 浏览态节点刚被点选 → 表单已换成编辑态，把光标落回主输入框末尾 */
     applyFocusFormAfterRender();
     /* 本次重建前有人正在输入 → 原位恢复焦点、光标与选区（锚点没了就正常失焦）。
@@ -1407,6 +1439,9 @@ function renderCanvas() {
       if (typeof restoreLevelView === "function") restoreLevelView(S.wf);
       else if (typeof centerLayerView === "function") centerLayerView();
     }
+    /* 端子层 + 面包屑：放在 finally 里，任何一条退出路径（推迟 / 异常 / 正常）之后
+       它们都跟真实焦点一致 —— 见 syncLayerChrome 的注释。 */
+    syncLayerChrome();
     if (S._deferCanvasForMarkEdit && !isMarkTextEditing()) {
       S._deferCanvasForMarkEdit = false;
       setTimeout(() => {
@@ -5710,11 +5745,14 @@ function openBreezePresetDialog(node, onDone) {
   host.innerHTML = "";
   const wrap = document.createElement("div");
   wrap.className = "breeze-preset-dlg";
+  const leftEl = document.createElement("div");
+  leftEl.className = "breeze-preset-left";
   const listEl = document.createElement("div");
   listEl.className = "breeze-preset-list";
   const mainEl = document.createElement("div");
   mainEl.className = "breeze-preset-groups";
-  wrap.appendChild(listEl);
+  leftEl.appendChild(listEl);
+  wrap.appendChild(leftEl);
   wrap.appendChild(mainEl);
   host.appendChild(wrap);
 
@@ -5806,6 +5844,11 @@ function openBreezePresetDialog(node, onDone) {
   let wiz = null;
   let errText = "";
   let okText = "";
+  /* 左列搜索词（小写）：只过滤左列显示，不动角色数据；清空即恢复全部。
+     匹配范围 = 角色名 + 各组组名 / 场景 / 参考台词 / 指令，找「那句台词的音色」也能搜到。 */
+  let searchText = "";
+  /* 拖动排序：dragId = 正在拖的角色 id（HTML5 DnD，左列正经角色可拖，草稿固定在顶部不参与） */
+  let dragId = "";
   /* 草稿不靠内存变量记：它就在预设库里（draft:true + wizard 字段），关窗 / 重开都在 */
   let llmInfo = { ok: true, error: "", models: [], defaultModel: "", selected: "" };
   let sys = { checked: false, installed: false, apiUp: false, running: false, installing: false };
@@ -7587,17 +7630,78 @@ function openBreezePresetDialog(node, onDone) {
     mainEl.appendChild(form);
   };
 
+  /* ── 左列：顶部搜索框 + 角色列表（可拖动排序）──────────────────────── */
+  const searchEl = document.createElement("input");
+  searchEl.type = "search";
+  searchEl.className = "breeze-preset-search";
+  searchEl.placeholder = T("搜索角色…");
+  searchEl.title = T("按角色名 / 场景 / 台词 / 指令快速筛选（边打边筛）");
+  searchEl.addEventListener("mousedown", (ev) => ev.stopPropagation());
+  searchEl.addEventListener("click", (ev) => ev.stopPropagation());
+  searchEl.addEventListener("input", () => {
+    const v = String(searchEl.value || "").trim().toLowerCase();
+    if (v === searchText) return;
+    searchText = v;
+    paint();
+  });
+  leftEl.insertBefore(searchEl, listEl);
+
+  const presetMatches = (p) => {
+    if (!searchText) return true;
+    const hay = [p.name || ""];
+    for (const g of Array.isArray(p.groups) ? p.groups : []) {
+      hay.push(g.name || "", g.scene || "", g.refText || "", g.instruction || "");
+    }
+    return hay.join("\n").toLowerCase().indexOf(searchText) >= 0;
+  };
+  const clearDropMarks = () => {
+    for (const n of listEl.querySelectorAll(".drop-before, .drop-after")) {
+      n.classList.remove("drop-before", "drop-after");
+    }
+  };
+  /* 落盘排序：本地先排好立刻重画（不等 IPC），宿主再按同一份 id 顺序重写 index.json */
+  const commitOrder = async (ids) => {
+    if (typeof api.breezePresetReorder !== "function") return;
+    try {
+      const res = await api.breezePresetReorder(ids);
+      if (res && res.ok && Array.isArray(res.presets)) {
+        presets = res.presets;
+        /* 节点上的角色下拉读的是 breezePresetCache（app-nodes.js），跟着刷新一次顺序 */
+        try {
+          if (typeof breezePresetsLoad === "function") breezePresetsLoad(true);
+        } catch (_) {}
+        if (wrap.isConnected) paint();
+      }
+    } catch (_) {}
+  };
+  const movePreset = (fromId, targetId, after) => {
+    const ids = presets.map((p) => p.id);
+    const from = ids.indexOf(String(fromId || ""));
+    const target = ids.indexOf(String(targetId || ""));
+    if (from < 0 || target < 0 || from === target) return Promise.resolve();
+    ids.splice(from, 1);
+    const at = ids.indexOf(String(targetId)) + (after ? 1 : 0);
+    ids.splice(at, 0, String(fromId));
+    presets = ids.map((id) => byId(id)).filter(Boolean);
+    paint();
+    return commitOrder(ids);
+  };
+
   /* ── 左列 + 底部按钮 ───────────────────────────────────────────────── */
   const paint = () => {
     titleGroupRefresh();
     listEl.textContent = "";
-    if (!presets.length) {
+    const draftRows = presets.filter((x) => x.draft && presetMatches(x));
+    const realRows = presets.filter((x) => !x.draft && presetMatches(x));
+    if (searchText && !draftRows.length && !realRows.length) {
+      listEl.appendChild(el("div", "breeze-preset-empty", T("没有匹配「{q}」的角色", { q: searchEl.value.trim() })));
+    } else if (!presets.length) {
       const d = el("div", "breeze-preset-empty", T("（还没有角色）"));
       listEl.appendChild(d);
     }
     /* 未完成的草稿排在最前面（灰色「未完成」）：只用一行字提醒，点这行就回到上次那一步；
        删除通道是右边那颗 ✕（不摆「继续 / 丢弃」按钮）。 */
-    for (const p of presets.filter((x) => x.draft)) {
+    for (const p of draftRows) {
       const row = el("div", "breeze-preset-item draft" + (view === "wizard" && wiz && wiz.presetId === p.id ? " on" : ""));
       row.appendChild(el("span", "", T("未完成 · {name}", { name: p.name || "" })));
       const st = (p.wizard && p.wizard.step) || 1;
@@ -7630,9 +7734,11 @@ function openBreezePresetDialog(node, onDone) {
       row.appendChild(x);
       listEl.appendChild(row);
     }
-    for (const p of presets.filter((x) => !x.draft)) {
+    for (const p of realRows) {
       const b = el("button", "breeze-preset-item" + (view === "browse" && p.id === curId ? " on" : ""));
       b.type = "button";
+      b.draggable = true;
+      b.dataset.pid = p.id;
       b.appendChild(el("span", "", p.name));
       const groups = p.groups || [];
       const alts = groups.filter((g) => g.kind !== "base").length;
@@ -7649,8 +7755,64 @@ function openBreezePresetDialog(node, onDone) {
         okText = "";
         paint();
       };
+      /* 拖动排序：拖起来半透明，落到哪一行就插到它的上半 / 下半（drop-before / drop-after 画线提示） */
+      b.title = T("按住拖动可以调整角色顺序");
+      b.ondragstart = (ev) => {
+        if (wiz && wiz.busy) {
+          ev.preventDefault();
+          return;
+        }
+        dragId = p.id;
+        b.classList.add("dragging");
+        try {
+          ev.dataTransfer.effectAllowed = "move";
+          ev.dataTransfer.setData("text/plain", p.id);
+        } catch (_) {}
+      };
+      b.ondragend = () => {
+        dragId = "";
+        b.classList.remove("dragging");
+        clearDropMarks();
+      };
+      b.ondragover = (ev) => {
+        if (!dragId || dragId === p.id) return;
+        ev.preventDefault();
+        try {
+          ev.dataTransfer.dropEffect = "move";
+        } catch (_) {}
+        const r = b.getBoundingClientRect();
+        const after = ev.clientY > r.top + r.height / 2;
+        clearDropMarks();
+        b.classList.add(after ? "drop-after" : "drop-before");
+      };
+      b.ondragleave = () => b.classList.remove("drop-before", "drop-after");
+      b.ondrop = (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        const from = dragId;
+        const r = b.getBoundingClientRect();
+        const after = ev.clientY > r.top + r.height / 2;
+        dragId = "";
+        clearDropMarks();
+        if (!from || from === p.id) return;
+        movePreset(from, p.id, after);
+      };
       listEl.appendChild(b);
     }
+    /* 拖到列表空白处 = 挪到最末（草稿行不参与，drop 只认 target 就是列表本身） */
+    listEl.ondragover = (ev) => {
+      if (dragId) ev.preventDefault();
+    };
+    listEl.ondrop = (ev) => {
+      if (!dragId || ev.target !== listEl) return;
+      ev.preventDefault();
+      const last = presets.filter((x) => !x.draft).slice(-1)[0];
+      const from = dragId;
+      dragId = "";
+      clearDropMarks();
+      if (!last || last.id === from) return;
+      movePreset(from, last.id, true);
+    };
     if (view === "wizard") paintWizard();
     else paintBrowse();
   };
@@ -7924,6 +8086,15 @@ registerNodeSettingsForm("breeze_gen", {
       (v) => {
         node.seed = Math.max(0, Math.floor(v || 0));
       },
+    );
+    nsCheck(
+      ctx,
+      I18n.t("摇数（每次执行种子 +1）"),
+      node.rerollSeed !== false,
+      (v) => {
+        node.rerollSeed = v;
+      },
+      { title: I18n.t("每次执行种子 +1（默认开启）") },
     );
     ctx.section(I18n.t("输出"));
     nsNumber(
@@ -8547,6 +8718,13 @@ function nodeElement(node) {
     superRunIsFocusNode(node.id)
   )
     el.classList.add("super-run-focus");
+  /* 「运行本层」正在跑的那一层：壳上呼吸灯（app-super-run.js 现场加减，
+     整图重画时按同一份运行态补回来） */
+  if (
+    typeof superRunIsRunningShell === "function" &&
+    superRunIsRunningShell(node.id)
+  )
+    el.classList.add("super-run-live");
   if (isAgentSuperPerm(node)) el.classList.add("agent-super");
   if (node.kind === "task") {
     const st = node.taskStatus || "pending";
@@ -10119,13 +10297,19 @@ function nodeElement(node) {
     const p = document.createElement("div");
     let outCls = "port out";
     const outDataN = isFnTNode ? fnToolParamList(node, "out").length : 0;
-    /* 端子数据类型（工具 / 函数节点的数据端子 · 素材节点的条目端子才声明）：
-       图像 / 音频 / 视频各一色，文本沿用默认色 */
+    /* 端子数据类型（工具 / 函数节点的数据端子 · 素材节点的条目端子 · 保存节点的
+       「保存结果」端子才声明）：图像 / 音频 / 视频各一色，文本沿用默认色。
+       保存节点整节点没有单一媒体类型，按它自己的口径（saveMediaKind：接进来的内容 /
+       落盘路径）判 —— 缺这一支，保存的音频端子被画成文本色，下游也认不出它是音频。 */
     const outKind = isFnTNode
       ? fnToolPortKind(node, "out", oi)
       : isANode
         ? aItems[oi].type
-        : null;
+        : typeof isSaveNode === "function" &&
+            isSaveNode(node) &&
+            typeof saveMediaKind === "function"
+          ? saveMediaKind(node)
+          : null;
     /* 输出端子是不是「控制端子」：**一个判据**同时喂给端子配色（.ctrl）与端子标签，
        避免「涂成控制色、标签却写内容」这类错位（工具末位控制出走同一个问法）。 */
     const outIsCtrl =
@@ -10137,7 +10321,7 @@ function nodeElement(node) {
       else if (outKind === "image") outCls += " img";
       else if (outKind === "audio") outCls += " aud";
       else if (outKind === "video") outCls += " vid";
-    } else if (isANode) {
+    } else if (isANode || (typeof isSaveNode === "function" && isSaveNode(node))) {
       if (outKind === "image") outCls += " img";
       else if (outKind === "audio") outCls += " aud";
       else if (outKind === "video") outCls += " vid";
@@ -10843,7 +11027,7 @@ function bentryImageRow(node, e) {
   if (e.path) {
     const img = document.createElement("img");
     img.className = "bentry-thumb";
-    img.src = fileUrlWithBust(e.path, e.path);
+    img.src = thumbUrlWithBust(e.path, e.path);
     bindImagePreview(img, e.path, entryDisplayTitle(e));
     bindImgSaveAs(img);
     row.appendChild(img);
@@ -10872,7 +11056,7 @@ function readonlyBatchRows(items, list, isImage) {
     if (isImage) {
       const img = document.createElement("img");
       img.className = "bentry-thumb";
-      img.src = window.api.toFileUrl(it.path);
+      img.src = thumbUrlWithBust(it.path);
       bindImagePreview(img, it.path, entryDisplayTitle(it));
       bindImgSaveAs(img);
       row.appendChild(img);
@@ -11344,7 +11528,7 @@ function browseEntriesEl(items, node, isImage, emptyText) {
     if (isImage && path) {
       const img = document.createElement("img");
       img.className = "bentry-thumb";
-      img.src = fileUrlWithBust(path, path);
+      img.src = thumbUrlWithBust(path, path);
       img.alt = title;
       bindImagePreview(img, path, title);
       bindImgSaveAs(img);
@@ -11382,7 +11566,7 @@ function browseImageEl(path, title, sourceName) {
     return wrap;
   }
   const img = document.createElement("img");
-  img.src = fileUrlWithBust(path, path);
+  img.src = thumbUrlWithBust(path, path);
   img.alt = title || I18n.t("输入图像");
   img.onerror = () => {
     box.innerHTML = "";
@@ -12031,7 +12215,7 @@ NODE_BROWSE_BODY.agent_task = function (node, body) {
 /* save：路径显示为等宽只读文本（「浏览 / 位置 / 打开」按钮与自动保存勾选不渲染），
    预览区照旧保留（含各媒体类型的填充 id，保存后 fillPreviews 正常回填） */
 NODE_BROWSE_BODY.save = function (node, body) {
-  const media = saveMediaKind(node);
+  const media = savePreviewMedia(node);
   const pRow = document.createElement("div");
   pRow.className = "sv-path";
   pRow.style.alignItems = "flex-start";
@@ -12237,7 +12421,7 @@ function assetBrowseThumbEl(node, it, lost, settled) {
       img.alt = it.title;
       img.draggable = false;
       img.addEventListener("error", bad);
-      img.src = window.api.toFileUrl(p);
+      img.src = thumbUrlWithBust(p);
       el = img;
     }
   } catch (_) {
@@ -12604,7 +12788,7 @@ function fnToolMediaPreview(host, kind, path) {
   if (k === "image") {
     const img = document.createElement("img");
     img.className = "n-fnmedia";
-    img.src = url;
+    img.src = typeof thumbUrlWithBust === "function" ? thumbUrlWithBust(p) : url;
     if (typeof bindImagePreview === "function") bindImagePreview(img, p, "");
     host.appendChild(img);
     return img;
@@ -13798,7 +13982,7 @@ function assetItemMediaRow(node, it, view, type) {
     box.className = "n-img n-asset-img";
     if (p) {
       const img = document.createElement("img");
-      img.src = window.api.toFileUrl(p);
+      img.src = thumbUrlWithBust(p);
       bindImagePreview(img, p, it.title);
       box.appendChild(img);
       box.appendChild(makeImageMetaEl(p));
@@ -15109,7 +15293,8 @@ function buildLtartBody(node, body) {
   const url = typeof fileUrlWithBust === "function" ? fileUrlWithBust(p, bust) : window.api.toFileUrl(p);
   if (type === "image") {
     const img = document.createElement("img");
-    img.src = url;
+    /* 长周期产物是整幅预览位，给大一点的边长（1280），仍远小于原图 */
+    img.src = typeof thumbUrlWithBust === "function" ? thumbUrlWithBust(p, bust, 1280) : url;
     img.alt = name.textContent;
     img.onerror = () => {
       stage.innerHTML = "";
@@ -15298,7 +15483,7 @@ function buildBody(node, body) {
         const wrap = document.createElement("div");
         wrap.className = "n-img";
         const img = document.createElement("img");
-        img.src = window.api.toFileUrl(disp.image);
+        img.src = thumbUrlWithBust(disp.image);
         bindImagePreview(
           img,
           disp.image,
@@ -15432,7 +15617,7 @@ function buildBody(node, body) {
         const wrap = document.createElement("div");
         wrap.className = "n-img";
         const img = document.createElement("img");
-        img.src = window.api.toFileUrl(node.imageAsset);
+        img.src = thumbUrlWithBust(node.imageAsset);
         bindImagePreview(img, node.imageAsset, singleImageTitle(node));
         wrap.appendChild(img);
         wrap.appendChild(makeImageMetaEl(node.imageAsset));
@@ -15455,7 +15640,7 @@ function buildBody(node, body) {
         const wrap = document.createElement("div");
         wrap.className = "n-img";
         const img = document.createElement("img");
-        img.src = window.api.toFileUrl(disp.image);
+        img.src = thumbUrlWithBust(disp.image);
         bindImagePreview(
           img,
           disp.image,
@@ -16041,7 +16226,7 @@ function buildBody(node, body) {
         img.className = "sv-thumb";
         img.style.width = "100%";
         img.style.height = "auto";
-        img.src = window.api.toFileUrl(it.value.path);
+        img.src = thumbUrlWithBust(it.value.path);
         bindImagePreview(
           img,
           it.value.path,
@@ -16318,6 +16503,13 @@ function buildBody(node, body) {
           : "");
       meta.title = I18n.t("收纳的节点数 · 子文件夹");
       card.appendChild(meta);
+      /* 「运行本层」的状态行（renderer/app-super-run.js 的 superRunStatusLineEl）：
+         运行中 / 暂停中 / 上一次收尾汇总都写在这一行只读小字里 ——
+         失败原因、跳过了几颗、有没有渲染异常，这是唯一常驻的留痕处。 */
+      if (typeof superRunStatusLineEl === "function") {
+        const runLine = superRunStatusLineEl(node);
+        if (runLine) card.appendChild(runLine);
+      }
       /* 双击折叠卡 = 直接进入该节点层的子画布（等价头部 ↪「进入」）；
          描述编辑仍走头部「描述」按钮 / 右键菜单。只绑卡片容器，不绑整个 body，
          避免抢掉开发节点动作按钮组（建议/开发/细化）与建议摘要的文字选择。 */
@@ -17386,7 +17578,7 @@ function buildBody(node, body) {
     }
     }
   } else if (isSaveNode(node)) {
-    const media = saveMediaKind(node);
+    const media = savePreviewMedia(node);
     /* 文件名直接在卡片上改（不必开 ⚙）；路径 / 自动保存仍在 ⚙ 里，浏览 / 位置 / 打开留在摘要行右边 */
     body.appendChild(saveNameFieldRow(node));
     appendNodeSettingsSummary(node, body, {
@@ -17641,7 +17833,7 @@ function buildPluginNodeBody(node, body) {
       const wrap = document.createElement("div");
       wrap.className = "n-img";
       const img = document.createElement("img");
-      img.src = fileUrlWithBust(v, node.ranAt || 0);
+      img.src = thumbUrlWithBust(v, node.ranAt || 0);
       if (typeof bindImagePreview === "function") bindImagePreview(img, v, node.title || o.id);
       wrap.appendChild(img);
       body.appendChild(wrap);
@@ -17673,7 +17865,7 @@ function fillImageArea(node, wrap) {
   wrap.innerHTML = "";
   if (node.imageAsset) {
     const img = document.createElement("img");
-    img.src = fileUrlWithBust(node.imageAsset);
+    img.src = thumbUrlWithBust(node.imageAsset);
     img.alt = singleImageTitle(node) || I18n.t("输入图像");
     img.onerror = () => {
       wrap.innerHTML = "";
@@ -17773,6 +17965,143 @@ function fileUrlWithBust(p, bust) {
   return u + (u.indexOf("?") >= 0 ? "&" : "?") + "t=" + encodeURIComponent(String(t));
 }
 
+/* 预览位取图：走主进程的缩略图协议（assets-store.js 的 registerThumbProtocol），
+   长边压到 ≤ edge（默认 640）后再进 <img>。
+   为什么必须这样取：图解码出来的位图由 Chromium 的 GPU 进程按**源分辨率**建纹理，
+   而纹理只有渲染进程销毁才归还 —— 画布上每多一张原图预览，显存就多占一块且永不下落
+   （同机实测：重启前 GPU 进程 3151MB，重启后 265MB）。预览位本来只有一两百像素，
+   按原图建纹理是纯浪费；大图 / 灯箱 / 导出仍走原图（fileUrlWithBust / toFileUrl）。 */
+function thumbUrlWithBust(p, bust, edge) {
+  if (!p) return "";
+  const t = bust != null && bust !== "" ? bust : Date.now();
+  /* 逐段编码（不把 "/" 编成 %2F：标准协议里那个编码会被 URL 归一化当成非法路径） */
+  const segs = String(p)
+    .replace(/\\/g, "/")
+    .split("/")
+    .filter((s) => s !== "")
+    .map((s) => encodeURIComponent(s))
+    .join("/");
+  return (
+    "mtnode-thumb://img/" +
+    segs +
+    "?e=" +
+    (Number(edge) > 0 ? Math.round(Number(edge)) : 640) +
+    "&t=" +
+    encodeURIComponent(String(t))
+  );
+}
+
+/* ═══════════ 保存节点「文本」预览的三道闸（体积 / 二进制 / 截断）═══════════
+   现场 bug：删掉一颗节点层后，失去上游的「保存节点」被判成文本 ——
+   saveMediaKind 没有数据线可看，只能退回按配置路径判型（savePath 是 .md），
+   而它上一次实际落盘的是 mp4。文本预览于是把 6.4MB 的 mp4 原始字节整份贴进
+   <pre>：单次文本排版实测 24 秒（trace 里就是 inline 文本塑形
+   InlineNode::ShapeTextIncludingFirstLine），整窗看起来像卡死；这份 DOM 每次
+   启动都会重建，重启也躲不过去。
+   三道闸：① 体积（超过上限不读，也不贴）；② 二进制嗅探（不把乱码贴出来）；
+   ③ 截断（贴进 DOM 的字符数有上限，被截断会明说）。 */
+const SAVE_PREVIEW_HARD_BYTES = 4 * 1024 * 1024;
+/* 贴进 DOM 的字符上限：卡片预览只是「瞄一眼」，全文点击后用阅读器打开。
+   2 万字（≈几百行）已远超卡片可见范围，同时把单次文本排版的成本按在毫秒级。 */
+const SAVE_PREVIEW_MAX_CHARS = 20000;
+/* 文本预览缓存：key = 路径|体积|修改时间（fileReadText 是一次读整份文件，
+   重绘频繁时不能每帧都经 IPC 再读一遍）。只留少量条目。 */
+const savePreviewTextCache = new Map();
+
+/* 体积文案（humanBytes 在 app.js，先加载；独立加载本文件时用本地口径兜底） */
+function savePreviewSizeLabel(bytes) {
+  const n = Number(bytes) || 0;
+  if (typeof humanBytes === "function") return humanBytes(n);
+  return n >= 1024 * 1024
+    ? (n / (1024 * 1024)).toFixed(1) + " MB"
+    : Math.max(1, Math.round(n / 1024)) + " KB";
+}
+
+/* 实际落盘那份的后缀 → 预览媒体类型；认不出来回 ""（交给 saveMediaKind） */
+function savePreviewExtMedia(p) {
+  const s = String(p || "");
+  if (/\.(png|jpe?g|webp|gif|bmp)$/i.test(s)) return "image";
+  if (/\.(wav|flac|mp3|m4a|ogg|aac)$/i.test(s)) return "audio";
+  if (/\.(mp4|webm|mov|mkv|avi)$/i.test(s)) return "video";
+  if (/\.pdf$/i.test(s)) return "pdf";
+  return "";
+}
+
+/* 预览用的媒体类型：**盘上那一份**的后缀比「接下来要存成什么」更可信。
+   两者不一致正是本 bug 的入口 —— saveMediaKind 判成 text（配置路径 .md），
+   盘上却是 .mp4，文本预览就把二进制灌进了 DOM。
+   save_pdf 例外：它只出 PDF，预览形态固定，不按 savedPath 改判。
+   只影响预览形态（卡片 body 与 fillPreviews 同一口径）；落盘 / 判型 / 连线校验
+   仍走 saveMediaKind，一个字不动。 */
+function savePreviewMedia(node) {
+  const base = typeof saveMediaKind === "function" ? saveMediaKind(node) : "text";
+  if (!node || node.kind === "save_pdf") return base;
+  const saved =
+    node.savedPaths && node.savedPaths.length ? node.savedPaths[0] : node.savedPath;
+  return savePreviewExtMedia(saved) || base;
+}
+
+/* 像不像能看的文本：与 app.js 的 textImportLooksBinary 同一口径
+   （本文件被单独加载进沙箱时那个函数不一定在，故带一份同口径兜底）。 */
+function savePreviewLooksBinary(txt) {
+  if (typeof textImportLooksBinary === "function") return textImportLooksBinary(txt);
+  const head = String(txt == null ? "" : txt).slice(0, 8192);
+  let bad = 0;
+  for (let i = 0; i < head.length; i++) {
+    const c = head.charCodeAt(i);
+    if (c === 9 || c === 10 || c === 13) continue;
+    if (c < 32 || c === 0xfffd) bad++;
+  }
+  return bad > 8;
+}
+
+/* 读一份「文本预览」用的文件：体积超限不读、二进制不贴、正文按上限截断。
+   回 { kind: "text" | "missing" | "too-big" | "binary", text, size } */
+async function savePreviewReadText(p) {
+  const src = String(p || "");
+  if (!src) return { kind: "missing", text: "", size: 0 };
+  if (!window.api) return { kind: "missing", text: "", size: 0 };
+  let size = 0;
+  let mtime = 0;
+  try {
+    const st =
+      typeof window.api.fileStat === "function"
+        ? await window.api.fileStat(src)
+        : null;
+    if (!st || st.ok === false) return { kind: "missing", text: "", size: 0 };
+    size = Number(st.size) || 0;
+    mtime = Number(st.mtime) || 0;
+  } catch (_) {
+    return { kind: "missing", text: "", size: 0 };
+  }
+  const key = src + "|" + size + "|" + mtime;
+  const hit = savePreviewTextCache.get(key);
+  /* 命中时给一份浅拷贝：调用方拿到的是同一份缓存对象的话，谁改一下就把缓存写脏了 */
+  if (hit) return Object.assign({}, hit);
+  if (size > SAVE_PREVIEW_HARD_BYTES) {
+    return { kind: "too-big", text: "", size };
+  }
+  let rr = null;
+  try {
+    rr = await window.api.fileReadText(src);
+  } catch (_) {
+    rr = null;
+  }
+  if (!rr || !rr.exists) return { kind: "missing", text: "", size };
+  const full = String(rr.content == null ? "" : rr.content);
+  const out = savePreviewLooksBinary(full)
+    ? { kind: "binary", text: "", size }
+    : { kind: "text", text: full, size };
+  savePreviewTextCache.set(key, out);
+  while (savePreviewTextCache.size > 40) {
+    const first = savePreviewTextCache.keys().next();
+    if (first.done) break;
+    savePreviewTextCache.delete(first.value);
+  }
+  /* 交出去的一律是浅拷贝：缓存里那份不许被调用方改脏（正文是大字符串，拷贝只是引用） */
+  return Object.assign({}, out);
+}
+
 /* 保存节点预览路径：优先本次已保存记录；否则若配置路径上已有文件则直接预览 */
 async function resolveSavePreviewPaths(node) {
   if (!node) return [];
@@ -17812,7 +18141,7 @@ async function fillPreviews() {
         r.batchOutputs.forEach((x, idx) => {
           const img = document.querySelector("#outimg-" + n.id + "-" + idx);
           if (img && x.ok && x.output && x.output.path) {
-            img.src = fileUrlWithBust(
+            img.src = thumbUrlWithBust(
               x.output.path,
               (r.ranAt || n.ranAt || 0) + ":" + idx + ":" + x.output.path,
             );
@@ -17823,7 +18152,7 @@ async function fillPreviews() {
       } else if (r && r.output && r.output.kind === "image") {
         const img = document.querySelector("#out-img-" + n.id);
         if (img) {
-          img.src = fileUrlWithBust(
+          img.src = thumbUrlWithBust(
             r.output.path,
             (r.ranAt || n.ranAt || 0) + ":" + r.output.path,
           );
@@ -17836,29 +18165,70 @@ async function fillPreviews() {
         }
       }
     }
-    if (isSaveNode(n) && saveMediaKind(n) === "text") {
+    if (isSaveNode(n) && savePreviewMedia(n) === "text") {
       const pre = document.querySelector("#svpre-" + n.id);
       if (pre) {
         const paths = await resolveSavePreviewPaths(n);
         if (paths.length) {
           const parts = [];
+          /* 贴进 DOM 的字符总数有上限：一份几 MB 的正文 / 二进制足够把文本排版
+             拖到几十秒（见 savePreviewReadText 上方那段现场记录）。 */
+          let budget = SAVE_PREVIEW_MAX_CHARS;
           const cap = paths.slice(0, 8);
           for (const p of cap) {
-            const rr = await window.api.fileReadText(p);
-            if (rr.exists)
-              parts.push("──── " + fileName(p) + " ────\n" + rr.content);
-            else parts.push("──── " + fileName(p) + I18n.t(" ────\n（文件不存在）"));
+            const rr = await savePreviewReadText(p);
+            const head = "──── " + fileName(p) + " ────\n";
+            if (rr.kind === "missing") {
+              parts.push(head + I18n.t("（文件不存在）"));
+              continue;
+            }
+            if (rr.kind === "too-big") {
+              parts.push(
+                head +
+                  I18n.t("文件较大（{size}），不在卡片上预览", {
+                    size: savePreviewSizeLabel(rr.size),
+                  }),
+              );
+              continue;
+            }
+            if (rr.kind === "binary") {
+              parts.push(head + I18n.t("这看起来是个二进制文件，没有做预览"));
+              continue;
+            }
+            let body = String(rr.text || "");
+            if (body.length > budget) {
+              const shown = Math.max(0, budget);
+              body =
+                body.slice(0, shown) +
+                (shown ? "\n" : "") +
+                I18n.t("…（内容过长，只显示前 {n} 个字符）", { n: shown });
+              budget = 0;
+            } else {
+              budget -= body.length;
+            }
+            parts.push(head + body);
+            if (budget <= 0) break;
           }
           if (paths.length > 8) parts.push(I18n.t("… 共 ") + paths.length + I18n.t(" 个文件"));
-          pre.textContent = parts.join("\n\n");
+          const text = parts.join("\n\n");
+          /* 内容没变就别再写一遍：fillPreviews 每次重绘都会走到这里，重复写
+             同一个几万字的 textContent 会让文本排版白白重跑（本 bug 的另一半
+             代价就是这么来的）。 */
+          if (pre.__svText !== text) {
+            pre.textContent = text;
+            pre.__svText = text;
+          }
           pre.style.color = "";
         } else {
-          pre.textContent = I18n.t("尚未保存（指定路径后点击 ▶）");
+          if (pre.__svText !== "empty") {
+            pre.textContent = I18n.t("尚未保存（指定路径后点击 ▶）");
+            pre.__svText = "empty";
+          }
           pre.style.color = "";
         }
       }
     }
-    if (isSaveNode(n) && saveMediaKind(n) === "pdf") {
+    if (isSaveNode(n) && savePreviewMedia(n) === "pdf") {
       /* 预览态只列一行文件名：保存后文件名可能变（默认名 / 唯一化重命名），就地刷新 */
       const nm = document.querySelector("#svpdfname-" + n.id);
       if (nm) {
@@ -17867,7 +18237,7 @@ async function fillPreviews() {
         nm.classList.toggle("is-empty", !n.savedPath);
       }
     }
-    if (isSaveNode(n) && saveMediaKind(n) === "image") {
+    if (isSaveNode(n) && savePreviewMedia(n) === "image") {
       const paths = await resolveSavePreviewPaths(n);
       const bust = n.savedAt || 0;
       const thumbs = document.querySelector("#svthumbs-" + n.id);
@@ -17876,7 +18246,7 @@ async function fillPreviews() {
         thumbs.querySelectorAll("img").forEach((img) => {
           const i = Number(img.dataset.idx);
           if (paths[i]) {
-            img.src = fileUrlWithBust(paths[i], bust + ":" + i);
+            img.src = thumbUrlWithBust(paths[i], bust + ":" + i);
             img.dataset.path = paths[i];
             bindImagePreview(img, paths[i], fileName(paths[i]));
           }
@@ -17886,7 +18256,7 @@ async function fillPreviews() {
         const img = document.querySelector("#svimg-" + n.id);
         if (img) {
           if (paths.length) {
-            img.src = fileUrlWithBust(paths[0], bust);
+            img.src = thumbUrlWithBust(paths[0], bust);
             img.dataset.path = paths[0];
             img.style.display = "";
             bindImagePreview(img, paths[0], fileName(paths[0]));
@@ -17900,8 +18270,8 @@ async function fillPreviews() {
         }
       }
     }
-    if (isSaveNode(n) && (saveMediaKind(n) === "audio" || saveMediaKind(n) === "video")) {
-      const media = saveMediaKind(n);
+    if (isSaveNode(n) && (savePreviewMedia(n) === "audio" || savePreviewMedia(n) === "video")) {
+      const media = savePreviewMedia(n);
       const paths = await resolveSavePreviewPaths(n);
       const bust = n.savedAt || 0;
       const el = document.querySelector(
@@ -17913,7 +18283,7 @@ async function fillPreviews() {
           /* 视频走 mediaSetVideoSrc：同一个音源重复赋 src 会把正在播的那只打断 */
           if (media === "video")
             mediaSetVideoSrc(el, fileUrlWithBust(paths[0], bust), paths[0]);
-          else el.src = fileUrlWithBust(paths[0], bust);
+          else el.src = thumbUrlWithBust(paths[0], bust);
           el.dataset.path = paths[0];
           if (empty) empty.style.display = "none";
         } else {
@@ -17956,7 +18326,7 @@ async function fillPreviews() {
           /* 视频走 mediaSetVideoSrc：同一个音源重复赋 src 会把正在播的那只打断 */
           if (isVid) mediaSetVideoSrc(el, fileUrlWithBust(path, bust + ":" + path), path);
           else {
-            el.src = fileUrlWithBust(path, bust + ":" + path);
+            el.src = thumbUrlWithBust(path, bust + ":" + path);
             el.dataset.path = path;
           }
           /* 图像预览：点图开灯箱 + 右键另存，与文生图 / 保存图像同一套绑定 */

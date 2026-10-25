@@ -2,12 +2,16 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' file: data: http://mt-agent.com https://mt-agent.com http://www.mt-agent.com https://www.mt-agent.com; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-eval'; frame-src https://open.weixin.qq.com http://mt-agent.com https://mt-agent.com mtnode-preview:; connect-src 'self'"><!-- frame-src：微信扫码登录把开放平台 qrconnect 页内嵌在登录对话框里（app-auth.js 的 authQrFrame），
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' file: data: mtnode-thumb: http://mt-agent.com https://mt-agent.com http://www.mt-agent.com https://www.mt-agent.com; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-eval'; frame-src https://open.weixin.qq.com http://mt-agent.com https://mt-agent.com mtnode-preview:; connect-src 'self'"><!-- frame-src：微信扫码登录把开放平台 qrconnect 页内嵌在登录对话框里（app-auth.js 的 authQrFrame），
      扫码确认后该页会自己跳到服务端回调域（默认 http://mt-agent.com，见 main.js 的 MTNODE_STORE_URL），两处都要放行。
      frame-src 里的 mtnode-preview:：应用中心「开发」页中栏的实时预览 iframe（renderer/app-apps-dev.js 的
      #appsDevFrame）src 就是这个主进程登记的标准 / 安全协议（apps-store.js 的 PREVIEW_SCHEME / registerPreviewProtocol）。
      少放行它 = Chromium 在发出 frame 请求之前就拦掉这次导航（协议层根本收不到请求），
      iframe 停在 about:blank、中栏只剩白底 —— 表现就是「预览未显示默认界面」。
+     img-src 里的 mtnode-thumb: 是画布图片预览的缩略图协议（assets-store.js 的 registerThumbProtocol）：
+     预览位按「显示尺寸」取图（长边 ≤640），别让原图直接进 <img> —— 解出来的位图由 GPU 进程按源分辨率
+     建纹理，而这类纹理只有渲染进程销毁才归还（实测重启前后 3151MB → 265MB）。少放行它 = 所有节点图片预览
+     被 Chromium 在发请求之前就拦掉（控制台报 violates ... img-src），表现是画布上图片位全空白。
      img-src 里的 mt-agent.com / www.mt-agent.com：应用中心的封面与图标都是云端图，只能靠它显示
      （renderer/app-apps.js 的 appsIconUrl / appsThumbUrlOf；加载失败一律回落成首字母占位块）。
      **两个主机名都必须列**：CSP 的 host-source 是精确主机名匹配，**不含子域**（只写 `mt-agent.com`
@@ -21,7 +25,7 @@
      …/mtnode/store-api/api/apps/<id>/icon|thumb，
      两者都在放行的这两个主机之下；目录正文仍由主进程拉取并缓存，渲染层不直连网络。
      'unsafe-eval' 暂保留：函数节点的用户 JS 已改到主进程独立线程执行（fn-runtime.js，见 renderer/js-exec.js），渲染层不再 new Function —— 本指令只作兼容余量，不再承载函数节点能力 -->
-<title>MTNode AI编排器</title>
+<title>MTNode AI工作站</title>
 <link rel="stylesheet" href="style.css">
 <!-- AI 事实库（renderer/app-ai-facts.js 的查阅弹窗 + 左栏那一行）的样式：
      style.css 内部按 @import 串起 css/*.css，本文件独立成一份、用 <link> 跟在它后面
@@ -53,7 +57,7 @@
   <div class="tb-row tb-row-1">
     <div class="logo">
       <div class="logo-mark"></div>
-      <span class="logo-txt"><span data-i18n="MTNode AI编排器">MTNode AI编排器</span><span class="logo-sub" id="logoSub"></span></span>
+      <span class="logo-txt"><span data-i18n="MTNode AI工作站">MTNode AI工作站</span><span class="logo-sub" id="logoSub"></span></span>
     </div>
     <!-- 「数据不落应用文件夹」警示：紧跟在 Logo 右侧（第一行中段，自动边距居中于 Logo 与右端
          按钮之间，太窄只截断不遮挡）。**默认 hidden**：只有主进程只读体检（app:dataAudit，

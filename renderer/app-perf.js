@@ -933,6 +933,37 @@ function perfStartTimer() {
 }
 
 /**
+ * 重载渲染层 —— 「刷新图形显存」唯一有效的入口。
+ * 为什么只能重载：画布窗口的纹理记在 Chromium 的 GPU 进程名下（节点图片 / 视频帧 /
+ * 合成层 / 离屏面），**只有渲染进程销毁才会归还**：最小化实测只掉二十来兆，
+ * 关窗或重载才整块还回去（同一台机实测 MTNode 的 GPU 进程 3151MB → 265MB）。
+ * Electron 没有「清 GPU 缓存」的 API，所以这里做的是「先落盘、再重载」：
+ *   · flushNow() 把画布与会话的待写改动立刻落盘（app.js 的窗口失焦 / 关闭前同一口径）；
+ *   · 在跑的任务、会话、本地后端都在**主进程**里，重载界面不动它们。
+ */
+async function perfReloadUi(btn) {
+  const label = btn ? btn.textContent : "";
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = I18n.t("正在重载…");
+  }
+  try {
+    if (typeof flushNow === "function") flushNow();
+  } catch {}
+  /* 给 persist() 的 IPC 一拍时间：重载打断的是渲染进程，落盘请求已经发出去了 */
+  await new Promise((r) => setTimeout(r, 300));
+  try {
+    location.reload();
+  } catch (e) {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = label;
+    }
+    toast(I18n.t("重载失败：") + ((e && e.message) || e), "err");
+  }
+}
+
+/**
  * 顶栏入口：打开「性能」面板（持久浮层）。
  * 原「显存」入口就是这一格 —— 改名后显存内容仍在同一只窗里（口径由用户确认）。
  */
@@ -952,6 +983,14 @@ function openPerfPanel() {
     "</div></div>" +
     "</div>";
   foot.innerHTML = "";
+  /* 重载界面：图形显存（GPU 进程里画布窗口的纹理）只有渲染进程销毁才归还，
+     这是唯一「随时归还」的入口 —— 以前只能整个重启应用（连带停掉在跑的任务）。 */
+  const reload = document.createElement("button");
+  reload.type = "button";
+  reload.className = "btn";
+  reload.id = "perfReload";
+  reload.textContent = I18n.t("重载界面（归还图形显存）");
+  reload.onclick = () => perfReloadUi(reload);
   const refresh = document.createElement("button");
   refresh.type = "button";
   refresh.className = "btn";
@@ -965,6 +1004,7 @@ function openPerfPanel() {
   close.onclick = () => {
     if (typeof closeOverlay === "function") closeOverlay();
   };
+  foot.appendChild(reload);
   foot.appendChild(refresh);
   foot.appendChild(close);
 

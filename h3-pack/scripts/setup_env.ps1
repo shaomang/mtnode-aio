@@ -326,6 +326,24 @@ if (Test-Path $req) {
     catch { throw "pip install ComfyUI requirements failed: $($_.Exception.Message)" }
 }
 
+# Post-processing runtime deps: the streaming upscale / interpolation scripts
+# (post/stream_upscale.py, post/stream_interp.py) resize frames with OpenCV, but ComfyUI's own
+# requirements.txt ships numpy / av / kornia only -- no opencv. That gap made every stream
+# upscale die with "No module named 'cv2'" on the first resized frame, and the host silently
+# fell back to the RAM-hungry graph chain (the 2026-xx report). Install the headless build here
+# so a plain re-run of the install repairs an already-installed tree too.
+# Pinned below 5.0 on purpose: opencv 5 wheels require numpy>=2, and pulling a numpy major
+# upgrade into a working ComfyUI venv is exactly the kind of change that breaks other nodes.
+# Not fatal: both scripts fall back to a torch area resize, so a mirror that cannot serve
+# opencv must not block the whole install -- say it loudly instead.
+Write-Host "Installing post-processing deps (opencv-python-headless<5)..."
+try {
+    Install-PipWithFallback -PipArgs @("-U", "opencv-python-headless<5")
+} catch {
+    Write-Host "[h3-setup] [warn] opencv-python-headless install failed: $($_.Exception.Message)"
+    Write-Host "[h3-setup] [warn] stream upscale / interp fall back to a torch resize, so post-processing still works; other ComfyUI nodes that import cv2 will not. Re-run the install once a pip mirror serves it."
+}
+
 Ensure-CustomNode -Name "ComfyUI-MiniMaxH3-TeaCache" -Url "https://github.com/Icyoung/ComfyUI-MiniMaxH3-TeaCache.git"
 Ensure-CustomNode -Name "ComfyUI-KJNodes" -Url "https://github.com/kijai/ComfyUI-KJNodes.git"
 # 4K upscale / frame-interpolation post-processing: the RIFE VFI interpolation node (the rife model + RealESRGAN weights are fetched by download_models.ps1)
@@ -360,6 +378,50 @@ except Exception as e:
     raise SystemExit('comfy_kitchen import failed: ' + str(e))
 "@
 if ($LASTEXITCODE -ne 0) { throw "CUDA / comfy_kitchen smoke failed" }
+
+# Post-processing deps smoke: the streaming upscale / interpolation scripts run in this venv and
+# need torch / av / numpy / kornia for real. cv2 is optional there (they fall back to a torch
+# resize) but still wanted: report it loudly instead of failing the install, and let the host
+# readiness probe point at "re-run the install" when it is missing.
+# NB: keep this probe free of double quotes -- a here-string with embedded " is mangled when
+# Windows PowerShell 5.1 passes it to a native command (the python source gets truncated).
+Write-Host "Smoke: post-processing deps (torch / av / numpy / kornia / cv2)..."
+$depsProbe = @"
+import importlib.util
+must = ['torch', 'av', 'numpy', 'kornia']
+bad = []
+for m in must:
+    try:
+        ok = importlib.util.find_spec(m) is not None
+    except Exception:
+        ok = False
+    print(('  ok ' if ok else '  MISSING ') + m)
+    if not ok:
+        bad.append(m)
+try:
+    has_cv2 = importlib.util.find_spec('cv2') is not None
+except Exception:
+    has_cv2 = False
+print(('  ok cv2' if has_cv2 else '  MISSING cv2 (optional)'))
+if bad:
+    raise SystemExit('post-processing deps missing: ' + ','.join(bad))
+"@
+$prevEap = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+try {
+    $depsOut = @(& $VenvPy -c $depsProbe 2>&1)
+    $depsCode = $LASTEXITCODE
+} finally {
+    $ErrorActionPreference = $prevEap
+}
+foreach ($l in $depsOut) { Write-Host ([string]$l) }
+if ($depsCode -ne 0) {
+    throw "post-processing deps smoke failed (torch / av / numpy / kornia are required by the stream upscale / interp scripts)"
+}
+$cv2Missing = @($depsOut | Where-Object { ([string]$_) -match '^\s*MISSING cv2' }).Count -gt 0
+if ($cv2Missing) {
+    Write-Host "[h3-setup] [warn] opencv (cv2) is not importable in this venv: stream upscale / interp fall back to a torch resize (post-processing still runs), but ComfyUI nodes that import cv2 will fail. Re-run the install (or pip install opencv-python-headless) once a pip mirror serves it."
+}
 
 # Sage Attention is NOT installed here on purpose: it is a **mandatory** part of the H3 backend
 # now, and it is installed by install.ps1's own "sage" step (scripts/sage_install.py) right after

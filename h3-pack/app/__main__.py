@@ -44,8 +44,35 @@ def main() -> int:
         p = cr / Path(rel)
         report["postModels"][k] = p.is_file() and p.stat().st_size > 1_000_000
 
+    report["postDeps"] = None
     if venv_py.is_file():
         import subprocess
+
+        # 后处理依赖体检（流式超分 / 补帧要 torch / av / numpy / kornia，另加可选的 cv2）：
+        # 2026-xx 现场是 ComfyUI 自带 requirements 里没有 opencv，流式超分缩第一帧就
+        # ModuleNotFoundError: No module named 'cv2' → 整单不出片、宿主静默回退图链。
+        # find_spec 不 import 模块（torch 要几秒），所以这一步跟 cuda 探测一样便宜。
+        probe = (
+            "import json\n"
+            "import importlib.util as u\n"
+            "d = {}\n"
+            "for n in ['torch', 'av', 'numpy', 'kornia', 'cv2']:\n"
+            "    try:\n"
+            "        d[n] = u.find_spec(n) is not None\n"
+            "    except Exception:\n"
+            "        d[n] = False\n"
+            "print(json.dumps(d))\n"
+        )
+        try:
+            out = subprocess.check_output(
+                [str(venv_py), "-c", probe],
+                text=True,
+                timeout=60,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0,
+            ).strip()
+            report["postDeps"] = json.loads(out.splitlines()[-1]) if out else {"error": "empty probe output"}
+        except Exception as exc:  # noqa: BLE001
+            report["postDeps"] = {"error": str(exc)}
 
         try:
             out = subprocess.check_output(

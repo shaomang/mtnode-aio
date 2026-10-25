@@ -93,6 +93,8 @@
     .bar.gpu > i { background: linear-gradient(90deg, #2f9e6b, #3ecf8e); }
     .bar.util > i { background: linear-gradient(90deg, #b8860b, #f0b429); }
     .meta { color: var(--muted); font-size: 12px; }
+    /* 后处理依赖缺必装模块时那一行转红（缺 cv2 仍按灰字：流式照跑，只是别的节点缺依赖） */
+    .meta.danger { color: #ff9b9b; }
     /* Sage 必须项横幅：缺包 = 不出片（不是「可选加速」），所以做成常驻红条而不是一行灰字。
        豁免（环境变量 / config 里显式声明）时降级成黄色告警，仍常驻 —— 绝不静默。 */
     .sage-banner {
@@ -226,6 +228,7 @@
         <button class="danger" id="btnUninstall">卸载</button>
       </div>
       <div class="meta" id="sageInfo"></div>
+      <div class="meta" id="postDepsInfo"></div>
     </div>
 
     <div class="card">

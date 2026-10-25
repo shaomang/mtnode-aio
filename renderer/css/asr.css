@@ -165,15 +165,37 @@
   min-height: 320px;
   align-items: stretch;
 }
+.breeze-preset-left {
+  flex: 0 0 176px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border-right: 1px solid rgba(255, 255, 255, 0.1);
+  padding-right: 10px;
+}
+/* 左列顶部搜索框：快速检索角色（角色名 / 场景 / 台词 / 指令） */
+.breeze-preset-search {
+  width: 100%;
+  padding: 5px 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.05);
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+}
+.breeze-preset-search:focus {
+  outline: none;
+  border-color: #5ed6df;
+}
 .breeze-preset-list {
-  flex: 0 0 168px;
+  flex: 1 1 auto;
   display: flex;
   flex-direction: column;
   gap: 4px;
   max-height: 56vh;
   overflow: auto;
-  border-right: 1px solid rgba(255, 255, 255, 0.1);
-  padding-right: 10px;
 }
 .breeze-preset-item {
   text-align: left;
@@ -194,6 +216,16 @@
 .breeze-preset-item.on {
   border-color: #5ed6df;
   background: rgba(94, 214, 223, 0.14);
+}
+/* 拖动排序的现场：拖起来的那行变淡；落点用一条上 / 下边线提示插到哪儿 */
+.breeze-preset-item.dragging {
+  opacity: 0.45;
+}
+.breeze-preset-item.drop-before {
+  box-shadow: inset 0 2px 0 #5ed6df;
+}
+.breeze-preset-item.drop-after {
+  box-shadow: inset 0 -2px 0 #5ed6df;
 }
 .breeze-preset-item .bp-sub {
   display: block;

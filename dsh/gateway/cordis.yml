@@ -136,7 +136,7 @@
       mtnode-unattended:
         sandbox: workspace-write
         approval: ask
-    defaultPreset: workspace-write
+    defaultPreset: mtnode-unattended
 
 - id: tool-bash
   disabled: !!js process.platform === 'win32' || process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
@@ -264,6 +264,14 @@
         model: deepseek-v4-pro
         maxTokens: 256000
         retainTokens: 32768
+      - provider: mtnode_p1
+        model: deepseek-v4-flash
+        maxTokens: 32768
+        retainTokens: 19046
+      - provider: mtnode_p1
+        model: gpt-image-2.5-all
+        maxTokens: 32768
+        retainTokens: 19046
 
 # 工具呈现（PTC）：本行已被回滚，MTNode 现跑 dsh-tools 的默认 native。
 # 为什么不留在树上：实测 both 能生效（run_code 进工具负载 +2.1K 字符），但 run_code

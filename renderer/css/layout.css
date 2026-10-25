@@ -552,6 +552,17 @@ button:disabled {
   color: var(--cyan2)
 }
 
+/* 顶栏「工作流」＝工作流库（renderer/app-workflows.js 的 openWorkflowLibrary）：
+   走黄色 --yellow，与相邻的工具库紫 / 素材库青 / 工坊橙一眼分家（原先是中性色，看不出入口）。 */
+.topbar .btn-workflows {
+  color: var(--yellow)
+}
+
+.topbar .btn-workflows:hover {
+  border-color: var(--yellow);
+  color: color-mix(in srgb, var(--yellow) 68%, var(--ink))
+}
+
 /* 顶栏「性能」（renderer/app-perf.js 的 openPerfPanel；显存那一块仍走 app-vram.js）：
    暖橙红 —— 与工具库紫 / 素材库青 / 工坊橙一眼分家；尺寸 / 写法照上面几枚（14px 线性图标） */
 .topbar .btn-perf {

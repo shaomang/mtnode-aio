@@ -515,6 +515,26 @@
   letter-spacing: 0
 }
 
+/* 已从工坊下载到本机：预览图左上角的对钩标记 */
+.tpl-thumb-ok {
+  position: absolute;
+  top: 5px;
+  left: 5px;
+  z-index: 2;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  line-height: 1;
+  color: #fff;
+  background: var(--green, #2fa84f);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, .55);
+  pointer-events: none;
+}
+
 /* 封面懒加载（renderer/app-store.js 的 tplThumbFill）：
    卡片进 DOM 时只有一块纯底色骨架 —— 与「无预览」终态区分开（后者才写字）；
    真图进视口取回 base64 后才 .tpl-thumb-in 一次性淡入。 */

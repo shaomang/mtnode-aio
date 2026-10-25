@@ -1501,6 +1501,9 @@ function traceReset(runKey) {
   S.runTrace = S.runTrace || {};
   const tr = {
     items: [],
+    /* 这条轨迹的运行键（节点 id / agent:<会话 id> / assist）：段收口时回调宿主
+       （见 traceCloseThink 的 dshOnThinkClosed）要用它认领是哪一条会话的轨迹。 */
+    key: traceRunKey(runKey),
     turn: 0,
     step: 0,
     /* 会话轮号（本次需求）：第 N 轮 = 该会话里用户第几次发送，由调用方随 opts.round 传进来，
@@ -1593,8 +1596,18 @@ function traceThinkCloseIfBig(tr) {
 function traceCloseThink(tr) {
   if (!tr) return;
   const idx = tr._thinkIdx;
-  if (idx >= 0 && tr.items && tr.items[idx]) tr.items[idx].open = false;
+  const it = idx >= 0 && tr.items ? tr.items[idx] : null;
+  const wasOpen = !!(it && it.k === "think" && it.open === true);
+  if (it && tr.items) it.open = false;
   tr._thinkIdx = -1;
+  /* 一段思考真的收口了 → 通知宿主补落一次盘（会话侧把轮中快照从 2s 放到 5s，
+     靠这一下保证「一次思考写完就已经在盘上」）。回调是可选钩子：节点 / 助手等
+     没有定义它的运行照旧什么都不做。 */
+  if (wasOpen && typeof dshOnThinkClosed === "function") {
+    try {
+      dshOnThinkClosed(String(tr.key || ""));
+    } catch (_) {}
+  }
 }
 /* 收口当前开放的正文段（与 traceCloseThink 对称）：清掉段上的「仍在流式增长」标记。
    渲染层据此区分「还在逐 token 增长的尾段」与「已定稿的正文段」——定稿段一律按

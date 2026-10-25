@@ -1134,6 +1134,141 @@ function sweepOrphanPendingRuns() {
   return dropped;
 }
 
+/* ── 假的「处理中」自愈：running 为真，却没有任何运行体 / 队列持有它 ──────────────
+   症状（用户报）：上游跑完自动级联下游，下游一直显示「◉ 处理中」、左下角运行队列里也挂着，
+   实际什么都没在跑，再点 ▶ 也不动。
+   根因在执行入口：`if (node.running) { const p = S.runPromises.get(id); if (p) await p; return; }`
+   —— running 只因任何原因残留为真（上一次收尾被打断 / 外部把状态位置真 / 批次早退），
+   入口就静默 return：既不报错也不起跑，节点于是永久停在「处理中」。
+   两道闸：
+     ① 入口（playNodeBody / runComputeExecNode）遇到「running 真但没有运行体」就地清掉再照常起跑
+        （见 clearGhostRunningNode）；
+     ② 这里做兜底巡检：**连续两次**观察到同一状态才摘（避开「先置 running、紧接着登记运行体」
+        的合法瞬时窗口），摘的时候作废旧链 + 释放 playLock，让 ▶ 立刻能重跑。
+   判据 = running 真 且 下面这些「它还活着」的证据一条都没有：
+     S.runPromises（主执行器）/ S.pendingRun（等待态）/ S._scheduledRunIds（控制批次）/
+     媒体串行链 mediaGenWaiters / 后端在途 watcher / 锁恢复轮询 /
+     计算执行闸（computeExecWaiters / computeExecSlots）。
+   **S.playLocks 不算证据**：它只说明某次 playNode 还没返回，可能正 await 一个死 promise ——
+   那正是本 bug 的另一半；所以摘除时连它一起删。
+   范围（用户口径）：画布处理节点 —— 文本 / 图像 / 智能任务 / 媒体生成 / 保存 / 函数 / 工具。
+   wait_file / 定时 / 延时 / 网络接收 / 控制节点等「合法常驻运行」一律不碰。 */
+function nodeRunAliveEvidence(node) {
+  const id = node && node.id ? String(node.id) : "";
+  if (!id) return true;
+  try {
+    if (S.runPromises && S.runPromises.has(id)) return true;
+    if (S.pendingRun && S.pendingRun.has(id)) return true;
+    if (S._scheduledRunIds && S._scheduledRunIds.has(id)) return true;
+    if (typeof mediaGenWaiters !== "undefined" && mediaGenWaiters.has(id)) return true;
+    if (typeof mediaBackendRunWatchers !== "undefined" && mediaBackendRunWatchers.has(id))
+      return true;
+    if (typeof mediaGenRestoreTimers !== "undefined" && mediaGenRestoreTimers.has(id))
+      return true;
+    if (typeof computeExecWaiters !== "undefined" && computeExecWaiters.has(id)) return true;
+    if (typeof computeExecSlots !== "undefined" && computeExecSlots.has(id)) return true;
+  } catch (_) {
+    /* 取数异常（含脚本尚未初始化完）时宁可当成「还活着」，绝不误杀 */
+    return true;
+  }
+  return false;
+}
+
+/* 自愈覆盖的节点类型（用户口径的画布处理节点）；其余 kind 一律不碰 */
+function isGhostSweepKind(n) {
+  if (!n || !n.id) return false;
+  try {
+    if (isProcessPlayKind(n)) return true; /* proc_text / proc_image / agent_task */
+    if (typeof isMediaGenNode === "function" && isMediaGenNode(n)) return true;
+    if (typeof isComputeExecKind === "function" && isComputeExecKind(n)) return true;
+    if (typeof isSaveNode === "function" && isSaveNode(n)) return true;
+  } catch (_) {
+    return false;
+  }
+  return false;
+}
+
+/* 摘掉一个「假处理中」状态位。
+   用户口径：**什么都不留** —— 不写 node.error、不动输出与落盘结果，只回到「从未运行」的状态行。
+   动作（与共识一致）：作废旧执行链 → 清 running → 释放 playLock → 允许下一次 ▶ 立刻起跑。
+   为什么要复位 _aborted：判据成立时（无运行体 / 无排队位）这一批已经没有活着的执行体，
+   而媒体执行器起跑前会拿 _aborted 当「本批已作废」拦掉 —— 不复位就会出现
+   「显示摘掉了，但点 ▶ 又被判已终止」的死循环。作废靠 bumpNodeStop 递增的 _stopTick
+   （老的串行位次照样作废），不靠 _aborted 长期挂着。 */
+function clearGhostRunningNode(node, reason) {
+  if (!node || !node.id) return false;
+  const id = String(node.id);
+  try {
+    bumpNodeStop(node); /* 旧链在下一个检查点自行退出（_stopTick++ 让老的串行位次作废） */
+  } catch (_) {}
+  node.running = false;
+  node._aborted = false;
+  node._ghostCleared = true;
+  node._ghostClearedAt = Date.now();
+  if (S.playLocks) S.playLocks.delete(id);
+  if (S.pendingRun) S.pendingRun.delete(id);
+  try {
+    console.warn(
+      "[MTNode] 摘掉假性「处理中」：",
+      node.title || id,
+      "·",
+      reason || "",
+    );
+  } catch (_) {}
+  return true;
+}
+
+/* 巡检：连续两次观察到「running 真且无任何运行体证据」才摘（同一拍内的重复调用不计数）。
+   挂点 = collectRunQueue（运行队列取数），不另起定时器；内部**不重绘运行队列面板**，
+   避免 「面板取数 → 自愈 → 再刷面板」 的递归。 */
+const GHOST_SWEEP_GAP_MS = 400;
+function sweepGhostRunningNodes() {
+  if (S._ghostSweeping) return 0;
+  const seen = S._ghostSweepSeen || (S._ghostSweepSeen = new Map());
+  const now = Date.now();
+  let cleared = 0;
+  const visit = (n) => {
+    if (!n || !n.id) return;
+    const id = String(n.id);
+    if (!n.running || !isGhostSweepKind(n) || nodeRunAliveEvidence(n)) {
+      if (seen.has(id)) seen.delete(id);
+      return;
+    }
+    const prev = seen.get(id);
+    if (!prev) {
+      seen.set(id, { at: now, hits: 1 });
+      return;
+    }
+    /* 同一拍里被重复调用（面板 + 状态栏）不算新的一次观察 */
+    if (now - prev.at < GHOST_SWEEP_GAP_MS) return;
+    seen.delete(id);
+    if (clearGhostRunningNode(n, "无运行体 / 无排队位")) cleared++;
+  };
+  S._ghostSweeping = true;
+  try {
+    const seenNodes = new Set();
+    const visitAll = (w) => {
+      if (!w || !Array.isArray(w.nodes)) return;
+      for (const n of w.nodes) {
+        if (!n || seenNodes.has(n)) continue;
+        seenNodes.add(n);
+        visit(n);
+      }
+    };
+    visitAll(S.wf);
+    for (const wid of Object.keys(S.wfBag || {})) visitAll(S.wfBag[wid]);
+    /* 不在任何画布上的残留条目不必留档 */
+    if (seen.size > 400) seen.clear();
+  } finally {
+    S._ghostSweeping = false;
+  }
+  if (cleared) {
+    renderCanvas();
+    scheduleSave(true);
+  }
+  return cleared;
+}
+
 /* 当前控制/级联批次内的节点 id：由队列启动，ensure 不得再抢跑（否则易死锁 + 残留等待） */
 function isScheduledRunNode(n) {
   return !!(n && S._scheduledRunIds && S._scheduledRunIds.has(n.id));
@@ -1440,6 +1575,14 @@ async function runCascadeNode(n, seen) {
 }
 
 async function runDownstreamCascade(nodes) {
+  /* 目标里若有「running 真但没有任何运行体」的残状态（用户报的现场：下游一直显示处理中、
+     实际没跑，而级联又因为 !n.running 把它跳过，于是永远没人来收它），先就地摘掉，
+     这一批才能真的把它拉起来。判据与运行队列自愈同一份（nodeRunAliveEvidence）。 */
+  for (const n of nodes || []) {
+    if (!n || !n.id || !nodeById(n.id) || !n.running) continue;
+    if (!isGhostSweepKind(n) || nodeRunAliveEvidence(n)) continue;
+    clearGhostRunningNode(n, "级联：目标卡在假处理中");
+  }
   const list = (nodes || []).filter((n) => n && nodeById(n.id) && !n.running);
   if (!list.length) return;
   invalidateControlRunTargets(list);
@@ -2997,8 +3140,13 @@ function musicGenSlotText(node, slot) {
 function syncMediaGenSeedFromDom(node) {
   if (!node || !node.id) return;
   /* 种子输入框现在只存在于「设置」跳窗里（body 上是只读摘要，读它没有意义）；
-     窗没开 → node.seed 就是真源，不必回读。 */
-  const v = Math.floor(Number(readNodeSettingsCtl(node, "mgseed")));
+     窗没开 → node.seed 就是真源，不必回读。
+     注意：readNodeSettingsCtl 在窗没开时回空串，Number("") === 0 且 isFinite(0) 为真，
+     照旧写回 node.seed 会把种子抹成 0 —— 于是每次运行都从 0 +1 到 1，重跑永远同一颗种子
+     （用户看到的「每次重新运行结果一样」）。空串 / 读不出数字一律不覆盖 node.seed。 */
+  const raw = String(readNodeSettingsCtl(node, "mgseed") || "").trim();
+  if (!raw) return;
+  const v = Math.floor(Number(raw));
   if (isFinite(v)) node.seed = v;
 }
 /** 摇数开启时每次生成（含抽卡）种子 +1；关闭则沿用当前种子。返回本次使用的种子。 */
@@ -3363,7 +3511,7 @@ function appendBreezeGenSummaryBody(node, body, media) {
     ? [
         { id: "breezevoice-" + node.id, label: I18n.t("角色"), value: breezePresetLabelOf(node) },
         { label: "cfg", value: breezeCfgSummaryOf(node) },
-        { id: "mgseed-" + node.id, label: I18n.t("种子"), value: String(breezeSeedOf(node)) },
+        { id: "mgseed-" + node.id, label: I18n.t("种子"), value: breezeSeedSlotText(node) },
         { label: I18n.t("格式"), value: breezeFormatOf(node) },
       ]
     : [
@@ -3374,7 +3522,7 @@ function appendBreezeGenSummaryBody(node, body, media) {
           value: String(node.voice || "").trim() || I18n.t("（只用端子）"),
         },
         { label: "cfg", value: breezeCfgSummaryOf(node) },
-        { id: "mgseed-" + node.id, label: I18n.t("种子"), value: String(breezeSeedOf(node)) },
+        { id: "mgseed-" + node.id, label: I18n.t("种子"), value: breezeSeedSlotText(node) },
         { label: I18n.t("格式"), value: breezeFormatOf(node) },
       ];
   appendNodeSettingsSummary(node, body, { slots, cls: "mg-sum" });
@@ -3428,7 +3576,7 @@ function breezeGenParamSummaryText(node) {
   return [
     head,
     "cfg " + breezeCfgSummaryOf(node),
-    I18n.t("种子 ") + breezeSeedOf(node),
+    I18n.t("种子 ") + breezeSeedSlotText(node),
     breezeFormatOf(node),
     I18n.t("输出 ") +
       (mediaGenOutputRaw(node) ||
@@ -4536,6 +4684,7 @@ async function playMusicGenNode(node, quiet) {
     const lock = await fetchMediaGenLock();
     if (lock && lock.nodeId && lock.nodeId !== node.id) {
       node.error = mediaGenLockBusyMsg(lock);
+      node._busyErrAt = Date.now(); /* 见 app.js sweepStaleMediaBusyErrors：新报的别当场扫掉 */
       node.musicStatus = node.error;
       if (!quiet) toast(node.error, "warn");
       renderCanvas();
@@ -4644,6 +4793,7 @@ async function playMusicGenNode(node, quiet) {
         const err = (r && (r.message || r.error)) || I18n.t("生成失败");
         if (err === "busy_other_node" || (r && r.error === "busy_other_node")) {
           node.error = I18n.t("已有音视频生成任务进行中，已中断本节点（全局仅 1 个，禁止并行）");
+          node._busyErrAt = Date.now();
         } else if (String(err) === "cancelled") {
           node.error = null;
           node.musicStatus = I18n.t("已取消");
@@ -4760,6 +4910,7 @@ async function playYueGenNode(node, quiet) {
     const lock = await fetchMediaGenLock();
     if (lock && lock.nodeId && lock.nodeId !== node.id) {
       node.error = mediaGenLockBusyMsg(lock);
+      node._busyErrAt = Date.now(); /* 见 app.js sweepStaleMediaBusyErrors：新报的别当场扫掉 */
       node.yueStatus = node.error;
       if (!quiet) toast(node.error, "warn");
       renderCanvas();
@@ -4870,6 +5021,7 @@ async function playYueGenNode(node, quiet) {
         const err = (r && (r.message || r.error)) || I18n.t("生成失败");
         if (err === "busy_other_node" || (r && r.error === "busy_other_node")) {
           node.error = I18n.t("已有音视频生成任务进行中，已中断本节点（全局仅 1 个，禁止并行）");
+          node._busyErrAt = Date.now();
         } else if (String(err) === "cancelled") {
           node.error = null;
           node.yueStatus = I18n.t("已取消");
@@ -5101,6 +5253,7 @@ async function playSensenovaGenNode(node, quiet) {
     const lock = await fetchMediaGenLock();
     if (lock && lock.nodeId && lock.nodeId !== node.id) {
       node.error = mediaGenLockBusyMsg(lock);
+      node._busyErrAt = Date.now(); /* 见 app.js sweepStaleMediaBusyErrors：新报的别当场扫掉 */
       node.sensenovaStatus = node.error;
       if (!quiet) toast(node.error, "warn");
       renderCanvas();
@@ -5394,6 +5547,10 @@ function breezeCfgSummaryOf(node) {
 function breezeSeedOf(node) {
   const v = Math.floor(Number(node && node.seed));
   return isFinite(v) ? v : 42;
+}
+/* 摘要里的种子片段：与其它媒体节点同口径（开着摇数时标出 +1，免得看到种子在变以为没生效） */
+function breezeSeedSlotText(node) {
+  return String(breezeSeedOf(node)) + (node.rerollSeed !== false ? " +1" : "");
 }
 
 /* ── 音频 / 视频输入节点的端子判据（本文件与 app.js 的 valueForInput 同口径） ── */
@@ -6113,6 +6270,7 @@ async function playBreezeGenNode(node, quiet) {
     const lock = await fetchMediaGenLock();
     if (lock && lock.nodeId && lock.nodeId !== node.id) {
       node.error = mediaGenLockBusyMsg(lock);
+      node._busyErrAt = Date.now(); /* 见 app.js sweepStaleMediaBusyErrors：新报的别当场扫掉 */
       node.breezeStatus = node.error;
       if (!quiet) toast(node.error, "warn");
       renderCanvas();
@@ -6242,6 +6400,10 @@ async function playBreezeGenNode(node, quiet) {
         if (!quiet) toast(I18n.t("目标文件已存在，改为保存为：") + exp.filename, "ok");
       }
       if (exp.managed) managedRun = true;
+      /* 种子：与其它媒体节点同一口径 —— 摇数开启时每次合成（含抽卡）种子 +1，
+         否则固定种子可复现。缺省值仍是 42（见 breezeSeedOf）。 */
+      if (!isFinite(Math.floor(Number(node.seed)))) node.seed = breezeSeedOf(node);
+      const seed = nextMediaGenSeed(node);
       {
         const ui = ensureBackendUiState(node);
         ui.genPct = Math.max(ui.genPct || 20, 40);
@@ -6264,7 +6426,7 @@ async function playBreezeGenNode(node, quiet) {
         presetId: ref.presetId || "",
         presetGroupId: ref.presetGroupId || "",
         cfgScale,
-        seed: breezeSeedOf(node),
+        seed,
         response_format: fmt,
         /* 托管：不下发 outputPath（只走 workflowId + nodeId）→ 宿主落托管目录并回传绝对路径 */
         ...(exp.managed ? {} : { outputPath: exp.path }),
@@ -6380,6 +6542,8 @@ function beginNodeRun(node) {
   node._runTick = Number(node._stopTick) || 0;
   node._runSeq = GLOBAL_STOP_SEQ;
   node._aborted = false;
+  /* 新一轮真起跑：上一轮「假处理中」被摘除的痕迹一并作废（收尾时不再按它压状态） */
+  node._ghostCleared = false;
 }
 /* 停止本节点当前批次：_aborted 让在途运行体在下一个检查点退出，
    _stopTick 让「还没起跑」的排队项（媒体串行队列）直接作废 */
@@ -6577,7 +6741,12 @@ async function restoreMediaGenLocks() {
           updateRunQueuePanel();
           return;
         }
-        const cur = await fn();
+        /* 后端锁查询本身也可能挂住（IPC 无回执）：8s 没回就当失联，否则这个节点会
+           永远停在「处理中」，而运行队列里没有任何别的证据能戳穿它（用户报的假运行）。 */
+        const cur = await Promise.race([
+          fn(),
+          new Promise((res) => setTimeout(() => res(null), 8000)),
+        ]);
         if (!cur || !cur.lock || cur.lock.nodeId !== n.id) {
           stopMediaGenRestoreWatch(n.id);
           n.running = false;
@@ -6591,6 +6760,11 @@ async function restoreMediaGenLocks() {
         }
       } catch {
         stopMediaGenRestoreWatch(n.id);
+        /* 轮询已经没了，running 就必须跟着收：否则节点永久停在「处理中」，
+           而这时运行队列里已没有任何东西能证明它还在跑 —— 正是这一种假运行。 */
+        n.running = false;
+        renderCanvas();
+        updateRunQueuePanel();
       }
     }, 3000);
     mediaGenRestoreTimers.set(n.id, poll);
@@ -7026,6 +7200,7 @@ async function playVideoGenNode(node, quiet) {
     const lock = await fetchMediaGenLock();
     if (lock && lock.nodeId && lock.nodeId !== node.id) {
       node.error = mediaGenLockBusyMsg(lock);
+      node._busyErrAt = Date.now(); /* 见 app.js sweepStaleMediaBusyErrors：新报的别当场扫掉 */
       node.videoStatus = node.error;
       if (!quiet) toast(node.error, "warn");
       renderCanvas();
@@ -7201,6 +7376,7 @@ async function playVideoGenNode(node, quiet) {
         const err = (r && (r.message || r.error)) || I18n.t("生成失败");
         if (err === "busy_other_node" || (r && r.error === "busy_other_node")) {
           node.error = I18n.t("已有音视频生成任务进行中，已中断本节点（全局仅 1 个，禁止并行）");
+          node._busyErrAt = Date.now();
         } else if (String(err) === "cancelled") {
           node.error = null;
           node.videoStatus = I18n.t("已取消");
@@ -7500,6 +7676,7 @@ async function playVideoPostNode(node, quiet) {
     const lock = await fetchMediaGenLock();
     if (lock && lock.nodeId && lock.nodeId !== node.id) {
       node.error = mediaGenLockBusyMsg(lock);
+      node._busyErrAt = Date.now(); /* 见 app.js sweepStaleMediaBusyErrors：新报的别当场扫掉 */
       node.videoStatus = node.error;
       if (!quiet) toast(node.error, "warn");
       renderCanvas();
@@ -7597,6 +7774,7 @@ async function playVideoPostNode(node, quiet) {
         const err = (r && (r.message || r.error)) || I18n.t("处理失败");
         if (err === "busy_other_node" || (r && r.error === "busy_other_node")) {
           node.error = I18n.t("已有音视频生成任务进行中，已中断本节点（全局仅 1 个，禁止并行）");
+          node._busyErrAt = Date.now();
         } else if (String(err) === "cancelled") {
           node.error = null;
           node.videoStatus = I18n.t("已取消");
@@ -8804,6 +8982,7 @@ async function playRemotionNode(node, quiet) {
     const lock = st.lock;
     if (lock && lock.nodeId && lock.nodeId !== node.id) {
       node.error = mediaGenLockBusyMsg(lock);
+      node._busyErrAt = Date.now(); /* 见 app.js sweepStaleMediaBusyErrors：新报的别当场扫掉 */
       node.remotionStatus = node.error;
       if (!quiet) toast(node.error, "warn");
       renderCanvas();
@@ -8975,6 +9154,7 @@ async function playRemotionNode(node, quiet) {
       const err = (r && (r.message || r.error)) || I18n.t("渲染失败");
       if (String(err) === "busy_other_node" || (r && r.error === "busy_other_node")) {
         node.error = I18n.t("已有音视频生成任务进行中，已中断本节点（全局仅 1 个，禁止并行）");
+        node._busyErrAt = Date.now();
       } else if (String(err) === "cancelled") {
         node.error = null;
         node.remotionStatus = I18n.t("已取消");
@@ -9186,6 +9366,23 @@ function mediaGenQueueRun(node, fn) {
   );
   return run;
 }
+/* 运行体登记（S.runPromises）：给「拿不到别的活证据」的执行器当证明。
+   remotion 就是这样一类 —— 渲染在本地主进程完成，它既不留在 mediaGenWaiters（出队即摘）、
+   也没有后端在途 watcher / 锁恢复轮询（见 restoreMediaGenLocks 与 startMediaBackendRunWatcher
+   的 remotion 例外），于是「假处理中」巡检（sweepGhostRunningNodes 走 nodeRunAliveEvidence）
+   会把这**真在渲染**的运行当成残状态摘掉：用户看到的正是「点 ▶ 立刻显示已处理完，
+   实际还在渲染，等渲染完输出又正常」。与 proc_text / agent_task 同口径，收尾即摘。 */
+async function trackNodeRunPromise(node, fn) {
+  const runP = (async () => fn())();
+  const id = node && node.id ? String(node.id) : "";
+  if (id) S.runPromises.set(id, runP);
+  try {
+    return await runP;
+  } finally {
+    /* 只摘自己那一笔：后面又起了新一轮就别误删它 */
+    if (id && S.runPromises.get(id) === runP) S.runPromises.delete(id);
+  }
+}
 /* 是否还有媒体生成活动（在途或排队）：供「全部终止」判断与提示文案。
    O(1)：在途任务一定有 run watcher，不需要扫全图节点（大图上会白耗 CPU）。 */
 function hasAnyMediaGenActivity() {
@@ -9227,8 +9424,19 @@ function stopAllMediaGen() {
 async function playNodeBody(node, quiet, opts) {
   if (node.running) {
     const p = S.runPromises.get(node.id);
-    if (p) await p;
-    return;
+    if (p) {
+      await p;
+      return;
+    }
+    /* running 真、却没有任何运行体 / 排队位持有它（判据见 nodeRunAliveEvidence）：
+       这是残状态。旧写法在这里静默 return —— 节点于是永久停在「处理中」，
+       自动级联每一轮都「看起来在跑它」，实际一次都没起跑。
+       媒体族真在跑时由后端 watcher / 串行链 / 锁恢复轮询作证，不会被误判。
+       只对白名单处理节点就地清残：wait_file / 定时 / 网络接收 / 控制等常驻节点的
+       running 不归这里管，保持旧的「等它自己结束」语义。 */
+    if (nodeRunAliveEvidence(node)) return;
+    if (!isGhostSweepKind(node)) return;
+    clearGhostRunningNode(node, "入口：running 但无运行体");
   }
   /* 刚按过「全部终止」：由控制节点 / 级联批次驱动的再入一律拒绝起跑。
      （在途 await 可能已经把本批目标叫回来了，但它属于刚被作废的那一批）
@@ -9244,6 +9452,17 @@ async function playNodeBody(node, quiet, opts) {
     node.error = I18n.t("已手动停止");
     return;
   }
+  /* 「运行本层」暂停期间（renderer/app-super-run.js 的 superRunNodeLockedBy）：
+     这一层里还没轮到、且正被那个暂停锁住的节点，不允许由其它批次（控制节点 ▶ /
+     自动级联）顺手带走 —— 否则暂停等于没暂停，「继续」的语义也就乱了。
+     用户自己直接点这颗 ▶ 没带 batchDriven，不受这条影响。 */
+  if (
+    opts &&
+    opts.batchDriven &&
+    typeof superRunNodeLockedBy === "function" &&
+    superRunNodeLockedBy(node.id)
+  )
+    return;
   if (node.kind === "music_gen") {
     return runMediaGenSerial(node, () => playMusicGenNode(node, quiet));
   }
@@ -9266,7 +9485,11 @@ async function playNodeBody(node, quiet, opts) {
     return runMediaGenSerial(node, () => playVideoPostNode(node, quiet));
   }
   if (node.kind === "remotion") {
-    return runMediaGenSerial(node, () => playRemotionNode(node, quiet));
+    /* 渲染期间必须留下「它还在跑」的证据，否则假处理中巡检会当场摘掉 running
+       （症状：点 ▶ 立刻就显示处理完毕，实际还在渲染）—— 见 trackNodeRunPromise。 */
+    return runMediaGenSerial(node, () =>
+      trackNodeRunPromise(node, () => playRemotionNode(node, quiet)),
+    );
   }
   if (node.kind === "wait_file") {
     return playWaitFileNode(node, quiet);
@@ -9592,8 +9815,10 @@ async function playNodeBody(node, quiet, opts) {
         }
       }
     } catch (e) {
-      node.error = e.message || String(e);
-      if (!quiet) toast(I18n.t("处理失败：") + node.error, "err");
+      /* 已被「假处理中」自愈作废的那一批：用户口径什么都不留（不写错误、不弹 toast） */
+      node.error = node._ghostCleared ? null : e.message || String(e);
+      if (!quiet && !node._ghostCleared)
+        toast(I18n.t("处理失败：") + node.error, "err");
     } finally {
       node.running = false;
       clearAgentTaskSent(node);
@@ -10132,8 +10357,14 @@ async function runComputeExecNode(node, quiet, opts, body) {
   opts = opts || {};
   if (node.running) {
     const p = S.runPromises.get(node.id);
-    if (p) await p;
-    return null;
+    if (p) {
+      await p;
+      return null;
+    }
+    /* 同 playNodeBody：running 真但没有任何运行体 / 排队位 → 残状态，清掉再照常起跑 */
+    if (nodeRunAliveEvidence(node)) return null;
+    if (!isGhostSweepKind(node)) return null;
+    clearGhostRunningNode(node, "入口：running 但无运行体");
   }
   /* 先进闸（排队期间节点自身尚未 running → 面板显示「等待中」），
      排到槽位才开始这一轮运行；排队时被终止则整次作废，不起线程也不起进程 */
@@ -10217,8 +10448,10 @@ async function runComputeExecNodeGated(node, quiet, opts, body) {
       /* 被停止的收尾统一写在这里：工具外壳提前 return 时自己没写过错误，
          界面会一片空白、看不出是「被停掉」还是「没跑过」。停止链
          （app.js stopNode / stopAllRuns / 删除节点）只负责取消线程与回收进程，
-         节点状态一律由这里落定，两边不抢着写。 */
-      if (!node.error && runBatchStopped(node)) node.error = I18n.t("已手动停止");
+         节点状态一律由这里落定，两边不抢着写。
+         假性「处理中」被自愈摘掉的那一批不算用户停止（用户口径：什么都不留）。 */
+      if (!node.error && !node._ghostCleared && runBatchStopped(node))
+        node.error = I18n.t("已手动停止");
       /* 错误端子：js-exec 契约约定 error 同时写 node.error 与 portOutputs.__error */
       if (!node.portOutputs) node.portOutputs = {};
       node.portOutputs.__error = node.error || "";
@@ -11176,6 +11409,31 @@ async function saveNodeOnce(node, quiet, opts) {
     return false;
   }
   const media = saveMediaKind(node);
+  /* 落盘前把配置路径的后缀对齐到「这次真的按哪种类型落盘」。
+     接线那一刻跑过一次 applySavePathExt，但上游若是节点层 / 工具节点，出端口的类型要等
+     壳里真的汇出一份值才判得出来：那时按 text 把用户的 .md 留在配置里，等壳跑过一次、
+     值变成视频，落盘按视频走（forcePathExt → .mp4），配置路径却还是 .md —— 用户看到的
+     就是「保存节点凭空多出一个视频、卡片变成视频播放器」。
+     只比「类别」（saveMediaClassOfExt）：文本类 .md / .yaml / .txt 彼此不动（.yaml 是
+     批量 / 聚合引擎的正规后缀），类别不符才按落盘口径改写。 */
+  const rawPath = String(node.savePath || "").trim();
+  if (
+    rawPath &&
+    typeof saveMediaCertain === "function" &&
+    saveMediaCertain(node) &&
+    typeof saveMediaClassOfExt === "function" &&
+    typeof forcePathExt === "function"
+  ) {
+    const cls = saveMediaClassOfExt(rawPath);
+    if (cls && cls !== media) {
+      let next = forcePathExt(rawPath, saveExtForMedia(media));
+      if (typeof preferRelativeSavePath === "function")
+        next = preferRelativeSavePath(next);
+      if (typeof applySuperRelToPath === "function")
+        next = applySuperRelToPath(node, next);
+      node.savePath = next;
+    }
+  }
   if (media === "pdf") return savePdfOnce(node, quiet);
   if (media === "text") return saveTextOnce(node, quiet);
   if (media === "image") return saveImageOnce(node, quiet);
@@ -11801,6 +12059,12 @@ async function playControlNode(node, seen) {
     const blockedNodes = blocked.map((x) => x.n);
     runnable = runnable.filter((n) => !blockedNodes.includes(n));
     if (!runnable.length) return;
+  }
+  /* 目标里「running 真但没有任何运行体」的残状态先摘掉：否则下面会把整批拦成
+     「请先终止当前运行」，而那个节点其实什么都没在跑，用户永远点不动这一批。 */
+  for (const n of runnable) {
+    if (!n || !n.running || !isGhostSweepKind(n) || nodeRunAliveEvidence(n)) continue;
+    clearGhostRunningNode(n, "控制批次：目标卡在假处理中");
   }
   const running = runnable.filter((n) => n.running && n.kind !== "control");
   if (running.length) {
@@ -20163,12 +20427,8 @@ function applyNodePatch(node, patch, warnings) {
     if (typeof patch.expandH === "number" && isFinite(patch.expandH))
       node.expandH = Math.max(220, Math.round(patch.expandH));
     if (patch.subFolder != null) {
-      node.subFolder = normalizeSuperSubFolder(String(patch.subFolder));
-      for (const c of (S.wf.nodes || [])) {
-        if (!c || c.id === node.id) continue;
-        if (!isSuperAncestorOf(node.id, c.id)) continue;
-        rewriteNodePathsForSuperContext(c);
-      }
+      /* 唯一入口：内部相对路径按「旧前缀 → 新前缀」重写（不叠成 {新}/{旧}/fn） */
+      setSuperSubFolder(node, String(patch.subFolder));
     }
     if (typeof patch.superOpen === "boolean") node.superOpen = patch.superOpen;
     if (typeof patch.db === "boolean") {
@@ -21425,6 +21685,15 @@ function editPortKindOf(node, dir, i, isFnT) {
      （该文件的转写文字 = 文本端子） */
   if (k === "input_audio") return i === 0 ? "audio" : "text";
   if (k === "input_video") return i === 0 ? "video" : "text";
+  /* 保存节点：唯一输出端子 = 本次保存的那份内容，类型按它自己的口径判
+     （saveMediaKind → audio / image / video / text，PDF 恒 text），与 app.js 的
+     warnIfSaveMediaMismatch / inferMediaFromSource 同源。缺这一支时快照恒报 "any"，
+     下游（agent 或界面）都看不出这个端子其实是音频。 */
+  if (typeof isSaveNode === "function" && isSaveNode(node)) {
+    if (node.kind === "save_pdf") return "text";
+    const m = typeof saveMediaKind === "function" ? saveMediaKind(node) : "text";
+    return m === "image" || m === "audio" || m === "video" ? m : "text";
+  }
   return "any";
 }
 

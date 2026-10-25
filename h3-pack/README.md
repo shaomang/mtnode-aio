@@ -49,6 +49,18 @@
 - 插件还会在超分提交前按源分辨率 + 容器里的真实帧数估一次峰值：超预算先压目标长边，仍放不下就
   进超分前预缩放源帧，并在控制台 / 节点状态行写明取舍。
 
+## 后处理依赖（流式超分 / 补帧）
+
+流式超分（`post/stream_upscale.py`）与流式补帧（`post/stream_interp.py`）跑在 ComfyUI 的隔离 venv 里：
+
+- **必需**：`torch` / `av` / `numpy` / `kornia` —— 由 ComfyUI 自带 requirements 与 torch 步装好，缺了安装收尾就会报。
+- **可选**：`opencv-python-headless` —— ComfyUI 自己的 requirements **不含 opencv**，所以 `setup_env.ps1`
+  在装完 ComfyUI 依赖后显式补装它（走清华 → 阿里云 → USTC → 官方 PyPI 的既有回退链）。
+  四路源都拿不到时只打 warn、不中断安装：两个脚本缺 cv2 会退到 torch 的面积缩放，照样出片。
+- **已经装好的机器**：重跑一次 `.\scripts\setup_env.ps1`（或整个安装流程）就会补上，不用重下权重。
+- 排查：安装收尾的 smoke 与 `python -m app` 的 `postDeps` 字段会逐项报 `torch / av / numpy / kornia / cv2`
+  是否可导入；插件控制台在开始超分前也会写明缺哪个模块、怎么补。
+
 ## 国内镜像（必须）
 
 > **中国大陆网络下必须使用镜像**：HuggingFace 无法直连，Python 库须走清华/中科院镜像。

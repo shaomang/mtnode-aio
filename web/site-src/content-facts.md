@@ -9,7 +9,7 @@
 
 | 项 | 口径 | 依据 |
 | --- | --- | --- |
-| 中文名 | MTNode AI编排器 | `web/index.html` `<title>`、`web/README.md` |
+| 中文名 | MTNode AI工作站 | `web/index.html` `<title>`、`web/README.md` |
 | 英文名 | MTNode AI Orchestrator | `web/index.html.template:6` |
 | 术语统一 | **「思考强度」（thinking effort）** | `guides/manual/README.md:34` |
 | 写作纪律 | 「说明文字口径与仓库 README.md 与 guides/manual/ 手册保持一致」 | `web/index.html:9` 原文 |

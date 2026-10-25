@@ -546,7 +546,7 @@ function bindUpdateEvents(btn) {
 function applyLocale(locale, persist) {
   const loc = I18n.setLocale(locale === "en" ? "en" : "zh");
   document.documentElement.lang = loc === "en" ? "en" : "zh-CN";
-  document.title = I18n.t("MTNode AI编排器");
+  document.title = I18n.t("MTNode AI工作站");
   I18n.applyDom(document);
   paintLangBtn();
   paintApprovalsBtn();
@@ -686,7 +686,7 @@ async function init() {
   if (S.config.locale !== "en" && S.config.locale !== "zh") S.config.locale = "zh";
   I18n.setLocale(S.config.locale);
   document.documentElement.lang = S.config.locale === "en" ? "en" : "zh-CN";
-  document.title = I18n.t("MTNode AI编排器");
+  document.title = I18n.t("MTNode AI工作站");
   /* 登录态比配置先到（app-auth.js 在 DOMContentLoaded 就刷新登录态，那时 S.config
      还是 null）：中转服务（renderer/app-relay.js）那一次同步只能记一笔待补，
      配置就绪后在这里补拉一次 —— 否则「新装应用 + 重新登录充值账号」进界面后

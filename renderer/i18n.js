@@ -1838,6 +1838,10 @@
     "文件较大，已关闭语法着色只出纯文本":
       "Large file — syntax coloring off, plain text only",
     "这看起来是个二进制文件，没有做预览": "This looks like a binary file — no preview",
+    "文件较大（{size}），不在卡片上预览":
+      "File too large ({size}) — not previewed on the card",
+    "…（内容过长，只显示前 {n} 个字符）":
+      "… (content too long — showing only the first {n} characters)",
     "文件不存在或读不到（可能已被删除 / 改名）":
       "File missing or unreadable (maybe deleted / renamed)",
     "这个文件现在还不存在（工具可能还没写完，或写的是别的路径）":
@@ -3397,7 +3401,7 @@
     "DeepSeek 官方充值通道": "DeepSeek official top-up",
     "还没有 API Key？官方充值通道：": "No API key yet? Official top-up channel: ",
     "（在浏览器中打开）": " (opens in your browser)",
-    "MTNode AI编排器 发生错误": "MTNode AI Orchestrator encountered an error",
+    "MTNode AI工作站 发生错误": "MTNode AI Orchestrator encountered an error",
     "⧗ 动画（图像 → GIF 帧动画）": "⧗ Anim (image → GIF frame animation)",
     "保存输出到本地（YAML / 图像）": "Save output locally (YAML / image)",
     "导出失败：画布包含无法序列化的数据": "Export failed: canvas contains data that cannot be serialized",
@@ -3725,7 +3729,7 @@
     "参数「{p}」没取到值：来源「{s}」暂时没有输出（上游还没跑或结果为空）": "Parameter \"{p}\" got no value: the source \"{s}\" has no output yet (upstream not run, or its result is empty)",
     "参数「{p}」没取到值：来源{kl}「{s}」自己还没有内容（没有上游可等，先给它填上内容 / 选好文件）": "Parameter \"{p}\" got no value: the source {kl} \"{s}\" has no content yet (there is no upstream to wait for — give it content / pick a file first)",
     "输出文件路径（批量模式下自动生成 {文件名}_{输入节点标题} 系列文件）": "Output file path (in batch mode, generates {filename}_{input node title} series files automatically)",
-    "MTNode AI编排器 · MTNode AI Orchestrator": "MTNode AI Orchestrator",
+    "MTNode AI工作站 · MTNode AI Orchestrator": "MTNode AI Orchestrator",
     "<div class=\"dsh-plugin-empty\">插件列表不可用（": "<div class=\"dsh-plugin-empty\">Plugin list unavailable (",
     "尺寸 Size（gpt-image-2-vip · auto 或 30 档）": "Size (gpt-image-2-vip · auto or 30 presets)",
     "描述任务…（Enter 换行，Ctrl+Enter 发送；/ 开头输入命令）": "Describe the task… (Enter newline, Ctrl+Enter send; / to start a command)",
@@ -4209,7 +4213,7 @@
     "Tag 名称不能为空": "Tag name cannot be empty",
     "无匹配该 Tag 的连入节点": "No wired-in nodes match the selected tags",
     "智能任务节点": "Agent Task Node",
-    "MTNode AI编排器": "MTNode AI Orchestrator",
+    "MTNode AI工作站": "MTNode AI Orchestrator",
     "语言": "Language",
     "未加载画布": "No canvas loaded",
     "— 节点 · — 连线": "— nodes · — wires",
@@ -4457,6 +4461,10 @@
       "This port carries audio/video, not text (the path is never shown here): it is used as this node’s reference audio, so provide the reference text by filling in the box or by wiring the audio node’s “transcript output” into this port",
   });
   Object.assign(EN, {
+    "正在下载工作流：": "Downloading workflow: ",
+    "已下载到本机工作流库：": "Downloaded to the local workflow library: ",
+    "（用「工作流库」插入到当前画布）":
+      " (insert it into the current canvas via the workflow library)",
     "创意工坊": "Creative Workshop",
     "创意工坊：浏览 / 下载公开模板与 Skill，登录后可上传与管理自己的条目":
       "Creative Workshop: browse / download public templates & skills; sign in to upload and manage yours",
@@ -6240,6 +6248,11 @@
     "设置后，此节点层内部节点的相对路径会落在「工作目录 / 子文件夹」下；内部已有相对路径会自动补上该前缀。":
       "Once set, relative paths inside this node layer resolve under workspace / subfolder; existing relative paths get that prefix automatically.",
     "子文件夹（相对工作目录）": "Subfolder (relative to workspace)",
+    "复制节点层 · 修改路径": "Copied node layer · change path",
+    "复制出来的节点层带着原路径，直接运行会写回原目录、覆盖原内容。确认后内部保存 / 输出路径会一并改到新路径下。":
+      "The copied node layer still carries the original path, so running it would write into the same folder and overwrite the original. After confirming, inner save / output paths move to the new path as well.",
+    "　路径（相对工作目录）": " — path (relative to workspace)",
+    "节点层路径已更新": "Node layer path updated",
     "子文件夹已设为：": "Subfolder set to: ",
     "已清除子文件夹": "Subfolder cleared",
     "子文件夹：": "Subfolder: ",
@@ -7386,6 +7399,15 @@
     "开启 = 本次开发会话先用内置技能 mtnode-grill-me 按轮问清需求，达成共识并经你确认后才动手。":
       "On = this dev session first uses the built-in skill mtnode-grill-me to interrogate the requirements round by round, and only starts work once you confirm the shared understanding.",
     "开始开发": "Start developing",
+    /* 开发节点「快速热修」（node.devHotfix，与 devGrill 互斥）：小型 Bug / <2 故事点功能 /
+       原型探索 / 紧急热修 / 提案后补丁走最快路径。 */
+    "快速热修": "Quick hotfix",
+    "开启 = 走最快路径：只在需求确有歧义时问一句，不写文档、不做 smoke test，只做必须做的验证。适合小型 Bug、少于 2 个故事点的功能、原型探索、紧急热修或提案后的补丁。":
+      "On = fastest path: ask only when the requirement is genuinely ambiguous, write no docs, run no smoke test, and verify only what is necessary. Suited to small bug fixes, features under 2 story points, prototype exploration, urgent hotfixes or patches after a proposal.",
+    /* 开发节点任务书的【快速热修模式】段（app.js devNodeContractText）：硬闸写死在这里，
+       不另设技能。 */
+    "【快速热修模式·最快修完】该功能块已开启「快速热修」（小型 Bug 修复 / 少于 2 个故事点的功能 / 原型探索 / 紧急热修 / 提案后的补丁）：按最快路径把问题修好 —— 只在需求确有歧义时用 ask_user_question 只问卡住的那几点（不加载内置技能 mtnode-grill-me、不走整轮前沿拷问）；不写任何文档（changelog / DESIGN.md / guides / AGENTS.md 以及任何 .md 文件都不改）；不写、不跑 smoke test；只做必须做的验证（能直接说明改动正确的最小检查；拿不准就人工 Review）；收尾只一句话汇报改了什么，不列文件清单。":
+      "[Quick hotfix mode · fix it fastest] This module block has “quick hotfix” switched on (small bug fixes / features under 2 story points / prototype exploration / urgent hotfixes / patches after a proposal): fix the problem by the fastest path — only when the requirement is genuinely ambiguous, use ask_user_question for just the blocked points (do not load the built-in skill mtnode-grill-me, do not run the full-frontier interrogation); write no documentation at all (never touch changelog / DESIGN.md / guides / AGENTS.md or any .md file); write and run no smoke test; do only the verification that is necessary (the minimal check that directly proves the change is right; if unsure, rely on manual review); close with a single sentence about what changed, with no file list.",
     /* 对话框草稿：取消 / 跳出后再次打开，上次没提交的内容仍在（node.devDraft） */
     "已恢复上次未提交的内容": "Your unsent text from last time was restored",
     "清空草稿": "Clear draft",
@@ -10658,6 +10680,17 @@
     "目标文件夹不存在：": "The target folder does not exist: ",
     "粘贴失败：": "Paste failed: ",
     "已粘贴 ": "Pasted ",
+    "已移动 ": "Moved ",
+    "（写入系统剪贴板失败：{err}）": " (failed to write the system clipboard: {err})",
+    "粘贴中…": "Pasting…",
+    "移动中…": "Moving…",
+    "中断": "Cancel",
+    "正在中断…": "Cancelling…",
+    "已中断：完成 {done} / 共 {total} 项":
+      "Cancelled: {done} of {total} item(s) finished",
+    "正在粘贴中，请稍候": "A paste is already running — please wait",
+    "（成功 {ok} / 共 {total} 项）": " ({ok} of {total} item(s) succeeded)",
+    "（跳过 {n} 项）": " (skipped {n})",
     "确定删除「{name}」？它会移入系统回收站。":
       "Delete “{name}”? It will be moved to the system recycle bin.",
     "确定删除选中的 {n} 项？它们会移入系统回收站。":

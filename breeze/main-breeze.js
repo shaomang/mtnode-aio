@@ -15,6 +15,7 @@ const fs = require("fs");
 const http = require("http");
 const crypto = require("crypto");
 const { spawn, execFile } = require("child_process");
+const { gpuExecFile } = require("../gpu-poll.js"); /* 显存读数统一出口：去重缓存 + 搬出主线程（见该文件头） */
 const {
   resolveDshRunAuth,
   deepseekProvider,
@@ -763,7 +764,7 @@ function readManifest() {
 
 function queryGpu() {
   return new Promise((resolve) => {
-    execFile(
+    gpuExecFile(
       "nvidia-smi",
       ["--query-gpu=name,memory.used,memory.total,utilization.gpu", "--format=csv,noheader,nounits"],
       { windowsHide: true, timeout: 4000 },
@@ -2845,6 +2846,25 @@ function presetDelete(id) {
   writePresetsIndex(idx);
   return { ok: true, presets: idx.presets.map(presetPublic) };
 }
+/** 角色排序（左列拖动）：order = 角色 id 数组，按它在 index.json 里重排 presets。
+ *  没出现在 order 里的角色保持原有相对顺序排在最后（新角色 / 别的窗口刚建的不会被丢掉）；
+ *  未知 id 直接忽略。草稿也一起排（渲染层把草稿固定显示在最前面，排序只影响正经角色）。 */
+function presetReorder(order) {
+  const idx = readPresetsIndex();
+  const ids = (Array.isArray(order) ? order : []).map((x) => String(x || "")).filter(Boolean);
+  const rank = new Map();
+  ids.forEach((id, i) => {
+    if (!rank.has(id)) rank.set(id, i);
+  });
+  if (!rank.size) return { ok: false, error: "empty_order", presets: idx.presets.map(presetPublic) };
+  const sorted = idx.presets
+    .map((p, i) => ({ p, i, r: rank.has(String(p.id)) ? rank.get(String(p.id)) : ids.length }))
+    .sort((a, b) => a.r - b.r || a.i - b.i)
+    .map((x) => x.p);
+  idx.presets = sorted;
+  writePresetsIndex(idx);
+  return { ok: true, presets: idx.presets.map(presetPublic) };
+}
 /* ═════════ 声线设计助手：默认文本模型 + 内置技能，生成指令与候选台词 ═════════
    口径（与用户共识一致）：
      · 用户只给「角色名 + 声线设定」，指令由 LLM 按 breeze-voice-design 技能扩写；
@@ -3426,6 +3446,7 @@ function registerBreezeIpc(opts) {
   });
   ipcMain.handle("breeze:presetSave", async (e, p) => presetSave(p || {}));
   ipcMain.handle("breeze:presetDelete", async (e, id) => presetDelete(id));
+  ipcMain.handle("breeze:presetReorder", async (e, order) => presetReorder(order));
   /* 创建角色 / 备选音色的三步流程（画布跳窗用）：
      llmChoices → 可选模型清单；llmSetModel → 记住选择（空 = 跟随默认）；
      optimize → 声线设定 → instruction；lines → 写 N 条候选台词；

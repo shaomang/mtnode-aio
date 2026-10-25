@@ -2,9 +2,16 @@
 /* 账户凭据本机存储（见 docs/auth-design.md 第 7 节「客户端约束」）。
  *
  * - 只存 token 与账号摘要（PublicUser 白名单字段），不存密码、不存明文手机号。
- * - 优先用 Electron safeStorage 加密（DPAPI / Keychain / libsecret），
+ * - 默认用**本机密钥的 AES-256-GCM** 加密（密钥 = 同目录的 auth-store.key），
  *   加密后原子写入 %APPDATA%\pipeline-console\auth-store.json。
- * - safeStorage 不可用时降级为明文文件并给出告警（只在该机器可用，换机不通用）。
+ *   为什么不再优先 Electron safeStorage：它的密钥绑在 Chromium profile
+ *   （userData\Local State）上，只要有另一个 profile 的进程（独立数据目录 /
+ *   桌宠·托盘 / 旧版安装）写过或读过这一份凭据，密文就会「解不开」——
+ *   auth-store 随即被隔离，用户每次重启、每次 compile 都要重新登录。
+ *   本机密钥只依赖同目录那个 32 字节文件，谁读都是同一份，登录态因此能跨重启、
+ *   跨重新编译稳定保留（代价：换机需重登，同目录的密钥文件请勿外传）。
+ * - 旧版写下的 safeStorage 密文仍能读；读到就立刻按本机密钥重写一次（自动迁移）。
+ * - 密钥都写不出来时降级为明文文件并给出告警。
  * - 明文 token 只留在主进程内存与磁盘，**绝不回传渲染层**（不落 DOM / localStorage）。
  */
 
@@ -15,14 +22,17 @@ const crypto = require("crypto");
 const FILE_NAME = "auth-store.json";
 const SCHEMA = 1;
 const WARN_PLAIN = "safeStorage_unavailable";
-/* 兜底加密（safeStorage 写出去却读不回来时启用）：
+/* 默认加密档（见文件头）：
    机器本地随机密钥 + AES-256-GCM，密文与密钥都只在本机数据目录、权限收紧。
-   为什么需要它：safeStorage 偶尔会「写得出去、读不回来」（漫游配置 / 换了加密密钥 /
-   安全软件改过 DPAPI 上下文，现场见 error.log 里成片的 decryptString 失败）——
-   那种机器上反复重新登录永远领不到可用凭据（写下去就解不开），必须有一条**能读回来**的路。
-   代价：安全性低于系统密钥环（换机能带走），所以只在系统加密不可用时才用，并在界面提示。 */
+   为什么用它而不是系统加密：safeStorage 的密钥绑在 Chromium profile 上，
+   「写得出、读不回来」的现场（error.log 里成片的 decryptString 失败）会让每次
+   重启 / 编译都丢登录态；本机密钥只依赖同目录的 auth-store.key，任何进程都读得回。
+   代价：安全性低于系统密钥环（换机需重登，密钥文件不要外传）。 */
 const KEY_FILE_NAME = "auth-store.key";
 const WARN_FALLBACK = "safeStorage_write_unverified";
+/* 写入是否允许用系统加密（Electron safeStorage）：**默认否**（见文件头）。
+   留在代码里只作排查开关：MTNODE_AUTH_SAFESTORAGE=1 时回到旧口径。 */
+const USE_SAFESTORAGE = process.env.MTNODE_AUTH_SAFESTORAGE === "1";
 /* 同一个「读不出来」不刷屏：同种原因最多每 10 分钟记一条日志。 */
 const WARN_GAP_MS = 10 * 60 * 1000;
 /* 中转 Key（独立票）的有效期与续期提前量。**有效期真源在服务端**
@@ -122,6 +132,20 @@ function createAuthStore(opts) {
       "系统加密不可用（Electron safeStorage），账户凭据将以明文保存在 " +
         filePath() +
         "，请勿在共享电脑上登录。",
+    );
+  }
+
+  /* 本机密钥档（默认档）只记一条日志：它比明文安全，但换机需要重登。 */
+  let aesWarned = false;
+  function warnAesOnce() {
+    if (aesWarned) return;
+    aesWarned = true;
+    warn(
+      "账户凭据以本机密钥加密保存在 " +
+        filePath() +
+        "（密钥 " +
+        KEY_FILE_NAME +
+        " 同目录，换机需重新登录；密钥文件请勿外传）。",
     );
   }
 
@@ -248,11 +272,15 @@ function createAuthStore(opts) {
   }
 
   /* 编码一份**能读回来**的凭据：
-     首选系统加密（safeStorage）；写出去自检读不回来时，退回本机密钥的 AES-GCM。
+     默认用本机密钥的 AES-GCM（见文件头）；只有打开排查开关时才走系统加密。
      forceAes = 本机已经被证明「safeStorage 写了读不回来」，不再浪费一次登录去试。 */
   function encode(payload, opt) {
     const o = opt || {};
     const json = JSON.stringify(payload);
+    /* 默认只认本机密钥（见文件头）：与 Chromium profile 无关，任何进程、
+       任何一次重新编译之后都读得回同一份凭据 —— 登录态不会因 compile 丢失。
+       系统加密只保留为排查开关（MTNODE_AUTH_SAFESTORAGE=1）。 */
+    if (!USE_SAFESTORAGE) return aesEncode(json, ensureKey());
     /* 回退顺序（fallback = true）：本机密钥 → 系统加密 → 明文。 */
     if (o.fallback) {
       if (encryptionAvailable()) {
@@ -304,6 +332,33 @@ function createAuthStore(opts) {
    *  此后按「没登录」处理 —— 否则 load() 永远 null，界面就一直挂「重新登录一次即可领取」，
    *  而用户重登写下的新凭据同样读不回来（写后回读校验会拦住并换可读方案），
    *  用户看到的是一条永远出不去的死循环（本 bug 的现象）。 */
+  /* 旧版 safeStorage 密文能读出来的那个进程负责就地迁移一次：写成本机密钥版本后，
+     别的 profile / 下一次重新编译也能读回同一份登录态（否则下次换进程又解不开）。 */
+  function migrateToLocalKey(raw, data) {
+    try {
+      const rec = aesEncode(
+        JSON.stringify({
+          token: String(data.token || ""),
+          relayKey: String(data.relayKey || ""),
+          relayKeyExpiresAt: Number(data.relayKeyExpiresAt || 0) || 0,
+          user: sanitizeUser(data.user),
+          savedAt: Number(data.savedAt || (raw && raw.savedAt) || 0) || Date.now(),
+        }),
+        ensureKey(),
+      );
+      atomicWrite(filePath(), JSON.stringify(rec, null, 2), "utf8");
+      try {
+        fs.chmodSync(filePath(), 0o600);
+      } catch {}
+    } catch (err) {
+      warnThrottled(
+        "migrate_aes",
+        "旧凭据迁移到本机密钥失败（下次仍可读，但换 profile 会丢登录）：" +
+          String((err && err.message) || err),
+      );
+    }
+  }
+
   function load() {
     lastReadIssue = null;
     const raw = readRaw();
@@ -327,6 +382,8 @@ function createAuthStore(opts) {
     }
     const token = typeof data.token === "string" ? data.token : "";
     if (!token) return null;
+    /* 旧版 safeStorage 密文：这次能读就当场迁到本机密钥，此后不再依赖 Chromium profile。 */
+    if (raw && raw.enc === "safeStorage") migrateToLocalKey(raw, data);
     return {
       token,
       /* 中转 Key：**独立于登录 token** 的那张 180 天票（见 store-saas/server.mjs 的
@@ -414,7 +471,8 @@ function createAuthStore(opts) {
       return {
         ok: true,
         encryption: recOut.enc === "safeStorage" ? "safeStorage" : recOut.enc,
-        warning: recOut.enc === "safeStorage" ? "" : WARN_FALLBACK,
+        /* 本机密钥（aesgcm）是默认档，不算告警；只有真的退回明文才提示。 */
+        warning: recOut.enc === "aesgcm" || recOut.enc === "safeStorage" ? "" : WARN_FALLBACK,
         retried,
       };
     } catch (err) {
@@ -459,21 +517,21 @@ function createAuthStore(opts) {
   function state() {
     const cur = load();
     /* encryption 报**这份凭据实际用的方案**（"plain" / "safeStorage" / "aesgcm"）：
-       本机系统加密写得出读不回来时，凭据走本机密钥的 aesgcm，界面据此给出对应提示。 */
+       默认档是本机密钥的 aesgcm（见文件头），旧版 safeStorage 密文仍能读、读到时自动迁移。 */
     const encryption = cur
       ? String(cur.encryption || "")
       : encryptionAvailable()
         ? "safeStorage"
         : "plain";
-    if (encryption === "plain" || encryption === "aesgcm") warnPlainOnce();
+    if (encryption === "plain") warnPlainOnce();
+    else if (encryption === "aesgcm") warnAesOnce();
     return {
       ok: true,
       loggedIn: !!cur,
       user: cur ? cur.user : null,
       savedAt: cur ? cur.savedAt : 0,
       encryption,
-      warning:
-        encryption === "plain" ? WARN_PLAIN : encryption === "aesgcm" ? WARN_FALLBACK : "",
+      warning: encryption === "plain" ? WARN_PLAIN : "",
       /* 中转 Key（3650 天独立票）的状态：只给界面与续期判断用，**绝不含明文**。
          hasRelayKey = 本机有独立票；relayKeyExpiresAt = 到期时间戳；
          relayKeyRenewDue = 到了该续期的时候（剩余不足 RELAY_RENEW_BEFORE_MS）。 */

@@ -16,6 +16,7 @@ const path = require("path");
 const fs = require("fs");
 const http = require("http");
 const { spawn, execFile } = require("child_process");
+const { gpuExecFile } = require("../gpu-poll.js"); /* 显存读数统一出口：去重缓存 + 搬出主线程（见该文件头） */
 const { pathToFileURL } = require("url");
 const { resolveDshRunAuth } = require("../dsh/mtnode-llm-creds.js");
 const {
@@ -30,6 +31,7 @@ const {
   clearLock,
   releaseLock,
   busyMessage,
+  registerHostProbe,
 } = require("../media-gen-global-lock.js");
 /* 插件报错总线：失败出口统一上报主窗口（跨窗可见 + 一键自我修复），见 plugin-error-repair.js */
 const pluginErrors = require("../plugin-error-repair.js");
@@ -72,6 +74,18 @@ let consoleWatchPos = 0;
 let backendProc = null;
 /** @type {{ nodeId: string, abort?: boolean, eventId?: string, req?: import('http').ClientRequest|null }|null} */
 let activeGenerate = null;
+
+/* 全局媒体锁活性探针（口径见 media-gen-global-lock.js 头部）：内存里的在途任务才是真相 */
+registerHostProbe("music3", {
+  isBusy: () => (activeGenerate && activeGenerate.nodeId) || "",
+  isAlive: () => {
+    try {
+      const meta = loadPidMeta();
+      if (meta && meta.external) return true; /* 复用外置服务：进程不在我们名下，判不了就不判死 */
+    } catch {}
+    return backendRunning();
+  },
+});
 /** @type {((ev: any) => void)|null} */
 let dshEventHook = null;
 
@@ -974,7 +988,7 @@ async function statusForUi() {
 
 function queryGpu() {
   return new Promise((resolve) => {
-    execFile(
+    gpuExecFile(
       "nvidia-smi",
       [
         "--query-gpu=name,memory.used,memory.total,utilization.gpu",
@@ -2084,6 +2098,7 @@ async function generateMusic(params) {
 
   const acq = tryAcquireLock({
     nodeId,
+    host: "music3",
     workflowId: params.workflowId || "",
     kind: "music_gen",
   });

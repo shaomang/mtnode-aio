@@ -1,5 +1,5 @@
 "use strict";
-/* MTNode AI编排器 · 节点编辑器 */
+/* MTNode AI工作站 · 节点编辑器 */
 const $ = (s) => document.querySelector(s);
 const svgNS = "http://www.w3.org/2000/svg";
 /* i18n：使用 i18n.js 挂到 window 的完整 API。勿再声明身份桩，否则会盖掉 setLocale/applyDom。 */
@@ -1515,6 +1515,7 @@ const NODE_DEFAULTS = {
     instruction: "", /* 指令（音色设计 / 音色导演）；留空则用端子给的指令 */
     cfgScale: 4, /* 指令跟随强度；默认 4（官方建议 instruction 场景用 4） */
     seed: 42,
+    rerollSeed: true, /* 每次合成（含抽卡）种子 +1，避免重跑拿到一模一样的一段语音 */
     ttsFormat: "wav", /* 输出格式 wav | flac | mp3（mp3 需 ffmpeg） */
     outputPath: "",
     breezeStatus: "",
@@ -2648,10 +2649,15 @@ function clearSuperFocusPorts() {
       .forEach((el) => el.remove());
   }
 }
-/** 全屏进入态：端子钉在画布可视区左右边缘（不随舞台平移） */
+/** 全屏进入态：端子钉在画布可视区左右边缘（不随舞台平移）
+ *  整层**先建好再换下旧的**（旧层只在新区全部建成后才 clearSuperFocusPorts）：
+ *  以前一进来就先 clear，建的过程中任一处出错就留下一片空白 —— 端子与面包屑一起没了，
+ *  用户被困在这个层里回不到根画布（见 app-canvas.js 的 syncLayerChrome）。 */
 function mountSuperFocusPorts(host) {
-  clearSuperFocusPorts();
-  if (!host || host.kind !== "super" || currentSuperFocus() !== host.id) return;
+  if (!host || host.kind !== "super" || currentSuperFocus() !== host.id) {
+    clearSuperFocusPorts();
+    return;
+  }
   const canvas = $("#canvas");
   if (!canvas) return;
   const layer = document.createElement("div");
@@ -2700,7 +2706,35 @@ function mountSuperFocusPorts(host) {
     bindSuperInnerSinkPort(p, host, poi);
     layer.appendChild(p);
   }
+  /* 新层完整建好了才换下旧的（见函数头注释） */
+  clearSuperFocusPorts();
   canvas.appendChild(layer);
+}
+/** 焦点自愈：节点层被删（用户删 / 撤销 / 助手改图）之后 S.superFocus 仍指着不存在的
+ *  壳时，这一屏就停在「没有端子、没有面包屑」的死角上，用户回不到根画布。
+ *  由 app-canvas.js 的 renderCanvas 在每次重绘前调一次：由深到浅退到第一个还活着的
+ *  祖先壳（都没有 = 回根），并让这一拍收尾按新那层自己的镜头取景。
+ *  只在 S.wf 就是用户眼前那张画布时动手：后台换画布编辑期间「查不到」是暂时的。 */
+function healLayerFocus() {
+  const sf = currentSuperFocus();
+  if (!sf) return;
+  if (!S.wf || S.wf !== currentVisibleWf()) return;
+  const cur = nodeById(sf);
+  if (cur && cur.kind === "super") return;
+  const seen = new Set();
+  let next = "";
+  for (const id of [sf].concat((S.superStack || []).slice().reverse())) {
+    const k = String(id || "");
+    if (!k || seen.has(k)) continue;
+    seen.add(k);
+    const n = nodeById(k);
+    if (n && n.kind === "super") {
+      next = k;
+      break;
+    }
+  }
+  setSuperFocus(next, { render: false, noViewSave: true });
+  S._pendingLayerCenter = true;
 }
 function refreshSuperFocusPortLayout() {
   const host = nodeById(currentSuperFocus());
@@ -2753,11 +2787,62 @@ function findSuperAtWorld(x, y, exceptIds, requireOpen) {
   return best;
 }
 let _superHoverExpandBackup = null;
+/* 悬停展开要「等一拍」：光标压到收起的节点层上立刻开始抖（幅度由轻到重，见 CSS
+   .super-hover-wait），抖满 1 秒才真的展开、抖动同时停止；中途移开就摘掉抖动类、撤销计时，
+   已自动展开的收缩回去。这样拖着节点路过一堆壳时不会被瞬间弹开，选中目标也更稳。 */
+const SUPER_HOVER_EXPAND_DELAY = 1000;
+let _superHoverExpandTimer = 0;
+let _superHoverExpandPending = null; /* { id, x, y } 待展开的壳 + 最后一次命中坐标 */
+function clearSuperHoverExpandTimer() {
+  if (_superHoverExpandTimer) {
+    clearTimeout(_superHoverExpandTimer);
+    _superHoverExpandTimer = 0;
+  }
+  _superHoverExpandPending = null;
+}
+/* 撤销「悬停自动展开」：返回是否真的把某颗壳收缩了（调用方据此决定要不要重绘） */
 function restoreSuperHoverExpand() {
-  if (!_superHoverExpandBackup) return;
+  clearSuperHoverExpandTimer();
+  if (!_superHoverExpandBackup) return false;
   const n = nodeById(_superHoverExpandBackup.id);
-  if (n && !_superHoverExpandBackup.wasOpen) n.superOpen = false;
+  const wasOpen = !!_superHoverExpandBackup.wasOpen;
   _superHoverExpandBackup = null;
+  if (n && !wasOpen && n.superOpen) {
+    n.superOpen = false;
+    return true;
+  }
+  return false;
+}
+/* 悬停满 1 秒：确认指针还压在同一颗收起的壳上，才展开（抖动同时停止） */
+function expandSuperOnHover(hostId, clientX, clientY) {
+  _superHoverExpandTimer = 0;
+  _superHoverExpandPending = null;
+  const d = S.drag;
+  if (!d || d.mode !== "node" || !d.moved) return;
+  const host = nodeById(hostId);
+  if (!host || host.kind !== "super" || host.superOpen) return;
+  const pt = toStage(clientX, clientY);
+  const skip = new Set(d.ids || []);
+  const now =
+    findOpenSuperAtWorld(pt.x, pt.y, skip) ||
+    findSuperAtWorld(pt.x, pt.y, skip, false);
+  if (!now || now.id !== host.id) return;
+  restoreSuperHoverExpand();
+  _superHoverExpandBackup = { id: host.id, wasOpen: false };
+  const waitEl = document.querySelector('.wf-node[data-nid="' + host.id + '"]');
+  if (waitEl) waitEl.classList.remove("super-hover-wait");
+  host.superOpen = true;
+  renderCanvas();
+  const z = S.cam.z > 0 ? S.cam.z : 1;
+  const dx = (clientX - d.sx) / z;
+  const dy = (clientY - d.sy) / z;
+  applyNodeDragVisual(d, dx, dy);
+  /* 展开后由 .super-drop-hot 接管反馈，抖动不再重挂 */
+  const el = document.querySelector('.wf-node[data-nid="' + host.id + '"]');
+  if (el) {
+    el.classList.remove("super-hover-wait");
+    el.classList.add("super-drop-hot");
+  }
 }
 function updateSuperHoverExpand(ev, dragIds) {
   /* 子画布（全屏进入态）里同样允许悬停展开当层的子壳：命中口径已按 focus 收敛，
@@ -2769,40 +2854,78 @@ function updateSuperHoverExpand(ev, dragIds) {
   }
   const pt = toStage(ev.clientX, ev.clientY);
   const skip = new Set(dragIds || d.ids || []);
-  let host =
+  const host =
     findOpenSuperAtWorld(pt.x, pt.y, skip) ||
     findSuperAtWorld(pt.x, pt.y, skip, false);
-  if (host && !host.superOpen) {
-    if (
-      !_superHoverExpandBackup ||
-      _superHoverExpandBackup.id !== host.id
-    ) {
-      restoreSuperHoverExpand();
-      _superHoverExpandBackup = { id: host.id, wasOpen: false };
-      host.superOpen = true;
+  if (!host) {
+    /* 移开了：取消待展开的计时；已经自动展开的那颗直接收缩回去 */
+    if (restoreSuperHoverExpand()) {
       renderCanvas();
       const z = S.cam.z > 0 ? S.cam.z : 1;
-      const dx = (ev.clientX - d.sx) / z;
-      const dy = (ev.clientY - d.sy) / z;
-      applyNodeDragVisual(d, dx, dy);
+      applyNodeDragVisual(d, (ev.clientX - d.sx) / z, (ev.clientY - d.sy) / z);
     }
-    host = nodeById(host.id);
+    clearSuperDropHot();
+    return;
   }
-  clearSuperDropHot();
-  if (!host) return;
+  /* 已经自动展开的壳，指针一旦压到别的壳上就立刻收缩回去（别让上一个是非题一直开着） */
+  if (_superHoverExpandBackup && _superHoverExpandBackup.id !== host.id) {
+    if (restoreSuperHoverExpand()) {
+      renderCanvas();
+      const z = S.cam.z > 0 ? S.cam.z : 1;
+      applyNodeDragVisual(d, (ev.clientX - d.sx) / z, (ev.clientY - d.sy) / z);
+    }
+  }
+  if (!host.superOpen) {
+    /* 收起态：立刻开始抖（由轻到重），满 1 秒（且指针没挪到别的壳）才展开 */
+    const pending = _superHoverExpandPending;
+    if (!pending || pending.id !== host.id) {
+      clearSuperHoverExpandTimer();
+      clearSuperDropHotClass();
+      _superHoverExpandPending = { id: host.id, x: ev.clientX, y: ev.clientY };
+      const el0 = document.querySelector('.wf-node[data-nid="' + host.id + '"]');
+      if (el0) {
+        el0.classList.add("super-drop-hot");
+        el0.classList.add("super-hover-wait");
+      }
+      _superHoverExpandTimer = setTimeout(() => {
+        const p = _superHoverExpandPending;
+        if (p) expandSuperOnHover(p.id, p.x, p.y);
+      }, SUPER_HOVER_EXPAND_DELAY);
+    } else {
+      pending.x = ev.clientX;
+      pending.y = ev.clientY;
+      const el0 = document.querySelector('.wf-node[data-nid="' + host.id + '"]');
+      if (el0) {
+        if (!el0.classList.contains("super-drop-hot"))
+          el0.classList.add("super-drop-hot");
+        /* 抖动正在放：别再摘/挂类，否则每次 mousemove 都会从 0 重播 */
+        if (!el0.classList.contains("super-hover-wait"))
+          el0.classList.add("super-hover-wait");
+      }
+    }
+    return;
+  }
+  clearSuperHoverExpandTimer();
+  clearSuperDropHotClass();
   const el = document.querySelector('.wf-node[data-nid="' + host.id + '"]');
   if (el) el.classList.add("super-drop-hot");
   const stage = el && el.querySelector(".super-stage");
   if (stage) stage.classList.add("super-drop-hot");
 }
-function clearSuperDropHot(keepExpanded) {
+function clearSuperDropHotClass() {
   document
-    .querySelectorAll(".super-stage.super-drop-hot, .wf-node.super.super-drop-hot")
-    .forEach((el) => el.classList.remove("super-drop-hot"));
+    .querySelectorAll(
+      ".super-stage.super-drop-hot, .wf-node.super.super-drop-hot, .wf-node.super.super-hover-wait"
+    )
+    .forEach((el) => el.classList.remove("super-drop-hot", "super-hover-wait"));
+}
+function clearSuperDropHot(keepExpanded) {
+  clearSuperHoverExpandTimer();
+  clearSuperDropHotClass();
   if (keepExpanded === true) {
     _superHoverExpandBackup = null;
   } else if (keepExpanded === false) {
-    restoreSuperHoverExpand();
+    if (restoreSuperHoverExpand()) renderCanvas();
   }
 }
 function toggleSuperOpen(node, open) {
@@ -2994,7 +3117,9 @@ function normalizeSuperSubFolder(raw) {
     .replace(/\\/g, "/")
     .replace(/^\/+|\/+$/g, "");
 }
-function superRelPrefixFor(node) {
+/** 祖先节点层 subFolder 拼出的相对前缀；sfOf 可指定某个壳「此刻该用哪个 subFolder」
+    （改路径时按旧值算一遍旧前缀，再按新值算新前缀，避免新旧前缀叠成 {新}/{旧}/fn） */
+function superRelPrefixFor(node, sfOf) {
   const parts = [];
   let sid = node && node.parentSuperId;
   const seen = new Set();
@@ -3002,31 +3127,57 @@ function superRelPrefixFor(node) {
     seen.add(sid);
     const host = nodeById(sid);
     if (!host) break;
-    const sf = normalizeSuperSubFolder(host.subFolder);
+    const sf = normalizeSuperSubFolder(
+      typeof sfOf === "function" ? sfOf(host) : host.subFolder,
+    );
     if (sf) parts.unshift(sf);
     sid = host.parentSuperId;
   }
   return parts.join("/");
 }
 /** 相对路径挂到祖先节点层 subFolder 下；绝对路径或已含前缀则不改 */
-function applySuperRelToPath(node, p) {
+function applySuperRelToPath(node, p, sfOf) {
   const raw = String(p || "").trim();
   if (!raw) return "";
   if (isAbsPath(raw)) return raw;
   const norm = raw.replace(/\\/g, "/").replace(/^\.\//, "");
-  const prefix = superRelPrefixFor(node);
+  const prefix = superRelPrefixFor(node, sfOf);
   if (!prefix) return norm;
   if (norm === prefix || norm.startsWith(prefix + "/")) return norm;
   return prefix + "/" + norm.replace(/^\/+/, "");
 }
-/** 节点落入节点层后：把相对保存/输出/监视路径改写到 subFolder 下 */
-function rewriteNodePathsForSuperContext(node) {
-  if (!node || !superRelPrefixFor(node)) return;
+/** 前缀从 oldPrefix 换到 newPrefix（改节点层路径 / 复制节点层改路径都走这里）：
+    先剥掉旧前缀再挂新前缀，绝不出现 {新路径}/{旧路径}/fn；绝对路径与空值不动。 */
+function rebaseSuperPath(raw, oldPrefix, newPrefix) {
+  const s = String(raw || "").trim();
+  if (!s || isAbsPath(s)) return s;
+  const norm = s.replace(/\\/g, "/").replace(/^\.\//, "");
+  const oldP = normalizeSuperSubFolder(oldPrefix);
+  const newP = normalizeSuperSubFolder(newPrefix);
+  let rest = norm;
+  if (oldP) {
+    if (norm === oldP) rest = "";
+    else if (norm.startsWith(oldP + "/")) rest = norm.slice(oldP.length + 1);
+  }
+  if (!newP) return rest;
+  if (!rest) return newP;
+  if (rest === newP || rest.startsWith(newP + "/")) return rest;
+  return newP + "/" + rest.replace(/^\/+/, "");
+}
+/** 节点落入节点层后：把相对保存/输出/监视路径改写到 subFolder 下。
+    传了 oldPrefix（改壳的 subFolder 时）就按「旧前缀 → 新前缀」重写，
+    不会把新前缀再套到已经带旧前缀的路径上。 */
+function rewriteNodePathsForSuperContext(node, oldPrefix) {
+  if (!node) return;
+  const newPrefix = superRelPrefixFor(node);
+  const rebase = oldPrefix != null;
+  if (!newPrefix && !rebase) return;
+  const fix = (p) =>
+    rebase
+      ? rebaseSuperPath(p, oldPrefix, newPrefix)
+      : applySuperRelToPath(node, preferRelativeSavePath(p));
   if (isSaveNode(node) && String(node.savePath || "").trim()) {
-    node.savePath = applySuperRelToPath(
-      node,
-      preferRelativeSavePath(node.savePath),
-    );
+    node.savePath = fix(node.savePath);
     applySavePathExt(node);
   }
   if (
@@ -3038,17 +3189,48 @@ function rewriteNodePathsForSuperContext(node) {
       node.kind === "remotion") &&
     String(node.outputPath || "").trim()
   ) {
-    node.outputPath = applySuperRelToPath(
-      node,
-      preferRelativeSavePath(node.outputPath),
-    );
+    node.outputPath = fix(node.outputPath);
   }
   if (node.kind === "wait_file" && String(node.waitPath || "").trim()) {
-    node.waitPath = applySuperRelToPath(
-      node,
-      preferRelativeSavePath(node.waitPath),
-    );
+    node.waitPath = fix(node.waitPath);
   }
+}
+/** 批量改若干节点层的 subFolder：先按「改之前」的整条祖先链算出每个受影响节点的旧前缀，
+    再一次性写新值、按新前缀重写路径 —— 嵌套壳一起改时也不会叠成 {新}/{旧}/fn。 */
+function applySuperSubFolderChanges(changes) {
+  const items = (changes || []).filter(
+    (it) => it && it.node && it.node.kind === "super",
+  );
+  if (!items.length) return 0;
+  const prevById = new Map(
+    items.map((it) => [it.node.id, normalizeSuperSubFolder(it.prevSf)]),
+  );
+  const sfSnapshot = (h) =>
+    prevById.has(h.id)
+      ? prevById.get(h.id)
+      : normalizeSuperSubFolder(h.subFolder);
+  const targets = [];
+  for (const it of items) {
+    for (const c of (S.wf && S.wf.nodes) || []) {
+      if (!c || c.id === it.node.id) continue;
+      if (!isSuperAncestorOf(it.node.id, c.id)) continue;
+      if (targets.some((t) => t.node === c)) continue;
+      targets.push({ node: c, oldPrefix: superRelPrefixFor(c, sfSnapshot) });
+    }
+  }
+  for (const it of items)
+    it.node.subFolder = normalizeSuperSubFolder(it.nextSf);
+  for (const t of targets) rewriteNodePathsForSuperContext(t.node, t.oldPrefix);
+  return items.length;
+}
+/** 改一颗节点层的 subFolder（唯一入口）：写值 + 把整棵子树的相对路径按旧前缀换成新前缀。 */
+function setSuperSubFolder(node, nextSf) {
+  if (!node || node.kind !== "super") return false;
+  const prevSf = normalizeSuperSubFolder(node.subFolder);
+  const next = normalizeSuperSubFolder(nextSf);
+  if (prevSf === next) return false;
+  applySuperSubFolderChanges([{ node, prevSf, nextSf: next }]);
+  return true;
 }
 /** 展开壳的落点命中矩形（世界坐标）：壳内可投区 = 舞台区域（顶部文件夹标题栏不算）。
     命中判据 / 矩形包容 / 拖拽落定共用这一份口径 —— 各写一份的话，「算不算命中」与
@@ -3214,12 +3396,7 @@ function promptSuperSubFolder(node) {
   ok.textContent = I18n.t("确定");
   ok.onclick = () => {
     pushHistory();
-    node.subFolder = normalizeSuperSubFolder(inp.value);
-    for (const c of (S.wf.nodes || [])) {
-      if (!c || c.id === node.id) continue;
-      if (!isSuperAncestorOf(node.id, c.id)) continue;
-      rewriteNodePathsForSuperContext(c);
-    }
+    setSuperSubFolder(node, inp.value);
     closeOverlay();
     scheduleSave(true);
     renderCanvas();
@@ -3237,6 +3414,94 @@ function promptSuperSubFolder(node) {
   foot.appendChild(cancel);
   foot.appendChild(ok);
   setTimeout(() => inp.focus(), 0);
+}
+/** 复制时给节点层推荐一个还没被占用的子文件夹（原名被占 → 依次 -2 / -3…） */
+function freeSuperSubFolder(base, extraTaken) {
+  const b = normalizeSuperSubFolder(base);
+  if (!b) return "";
+  const taken = new Set((extraTaken || []).map((s) => String(s).toLowerCase()));
+  for (const n of (S.wf && S.wf.nodes) || []) {
+    if (!n || n.kind !== "super") continue;
+    const sf = normalizeSuperSubFolder(n.subFolder).toLowerCase();
+    if (sf) taken.add(sf);
+  }
+  if (!taken.has(b.toLowerCase())) return b;
+  for (let i = 2; i < 1000; i++) {
+    const c = b + "-" + i;
+    if (!taken.has(c.toLowerCase())) return c;
+  }
+  return b + "-copy";
+}
+/** 复制出来的节点层若带着路径（subFolder），弹窗让用户改一个新路径，
+    避免复制品直接把产出写进原来的目录、覆盖原内容。确定后按「旧前缀 → 新前缀」
+    重写该壳内部所有相对路径（保存 / 输出 / 监视）。 */
+function promptCopiedSuperPaths(cps) {
+  const hosts = (cps || []).filter(
+    (n) => n && n.kind === "super" && normalizeSuperSubFolder(n.subFolder),
+  );
+  if (!hosts.length) return;
+  openOverlay(I18n.t("复制节点层 · 修改路径"), { persistent: true });
+  const body = $("#ovBody");
+  const hint = document.createElement("div");
+  hint.className = "settings-hint";
+  hint.textContent = I18n.t(
+    "复制出来的节点层带着原路径，直接运行会写回原目录、覆盖原内容。确认后内部保存 / 输出路径会一并改到新路径下。",
+  );
+  body.appendChild(hint);
+  const rows = [];
+  const suggested = [];
+  for (const host of hosts) {
+    const lab = document.createElement("label");
+    lab.className = "n-field";
+    lab.appendChild(
+      document.createTextNode(
+        String(host.title || "") + I18n.t("　路径（相对工作目录）"),
+      ),
+    );
+    const inp = document.createElement("input");
+    inp.type = "text";
+    inp.placeholder = "assets/batch-a";
+    inp.value = freeSuperSubFolder(host.subFolder, suggested);
+    suggested.push(inp.value);
+    lab.appendChild(inp);
+    body.appendChild(lab);
+    rows.push({
+      host,
+      inp,
+      prevSf: normalizeSuperSubFolder(host.subFolder),
+    });
+  }
+  const foot = $("#ovFoot");
+  const ok = document.createElement("button");
+  ok.className = "mini primary";
+  ok.textContent = I18n.t("确定");
+  ok.onclick = () => {
+    /* 先把所有新值收集齐、再一次性改：嵌套壳同时改也不会按中间态算前缀 */
+    const changes = rows
+      .map((r) => ({ node: r.host, prevSf: r.prevSf, nextSf: r.inp.value }))
+      .filter(
+        (c) =>
+          normalizeSuperSubFolder(c.nextSf) !==
+          normalizeSuperSubFolder(c.prevSf),
+      );
+    if (changes.length) {
+      pushHistory();
+      applySuperSubFolderChanges(changes);
+      scheduleSave(true);
+      renderCanvas();
+    }
+    closeOverlay();
+    if (changes.length) toast(I18n.t("节点层路径已更新"), "ok");
+  };
+  const cancel = document.createElement("button");
+  cancel.className = "mini";
+  cancel.textContent = I18n.t("取消");
+  cancel.onclick = closeOverlay;
+  foot.appendChild(cancel);
+  foot.appendChild(ok);
+  setTimeout(() => {
+    if (rows[0]) rows[0].inp.focus();
+  }, 0);
 }
 /** 节点层描述（文件夹标题下方的小字）：点头部「描述」按钮编辑 */
 function promptSuperNote(node) {
@@ -4621,6 +4886,55 @@ function mediaGenLockBusyMsg(lock) {
   const other = lock && lock.nodeId ? nodeById(lock.nodeId) : null;
   const name = (other && other.title) || (lock && lock.nodeId) || "?";
   return I18n.t("已有音视频生成任务进行中（全局仅 1 个，禁止并行）：") + name;
+}
+/* ── 残留的「全局锁被占」红字（本次需求）──────────────────────────────────
+   全局音视频锁改成活性判定后（见 media-gen-global-lock.js 头部），真正的冲突只会发生在
+   点 ▶ 的那一拍；节点**没在跑**却还挂着这类红字，就是上一次尝试留下的残影（锁早就被清掉了）。
+   未运行态一律静默清掉，别让它继续挂在节点上误报。 */
+const MEDIA_BUSY_ERROR_TEXTS = [
+  "已有音视频生成任务进行中（全局仅 1 个，禁止并行）：",
+  "已有音视频生成任务进行中，已中断本节点（全局仅 1 个，禁止并行）",
+  "已有音视频生成任务进行中（全局仅 1 个，禁止并行），请等待完成后再试",
+];
+const MEDIA_BUSY_STATUS_FIELDS = [
+  "videoStatus",
+  "remotionStatus",
+  "sensenovaStatus",
+  "breezeStatus",
+  "musicStatus",
+  "status",
+];
+function isMediaBusyErrorText(s) {
+  const t = String(s || "");
+  if (!t) return false;
+  return MEDIA_BUSY_ERROR_TEXTS.some((k) => t.indexOf(I18n.t(k)) === 0);
+}
+function sweepStaleMediaBusyErrors() {
+  const wf = typeof S !== "undefined" ? S.wf : null;
+  if (!wf || !Array.isArray(wf.nodes)) return false;
+  const now = Date.now();
+  let hit = false;
+  for (const n of wf.nodes) {
+    if (!n || n.running) continue;
+    /* 刚报出来的（3 秒内）先留着：点 ▶ 立刻被挡时用户还得看见是谁占着 */
+    if (n._busyErrAt && now - Number(n._busyErrAt) < 3000) continue;
+    let nodeHit = false;
+    if (isMediaBusyErrorText(n.error)) {
+      n.error = null;
+      nodeHit = true;
+    }
+    for (const f of MEDIA_BUSY_STATUS_FIELDS) {
+      if (isMediaBusyErrorText(n[f])) {
+        n[f] = "";
+        nodeHit = true;
+      }
+    }
+    if (nodeHit) {
+      n._busyErrAt = 0;
+      hit = true;
+    }
+  }
+  return hit;
 }
 function mediaGenRollProgressTag(node) {
   const nRolls = attemptCount(node);
@@ -7333,7 +7647,13 @@ function isImageSource(n) {
    其余节点仍只看源节点 kind（行为逐字不变）。 */
 function isImageWireFrom(n, fromIndex) {
   if (!n) return false;
-  if (isFnToolNode(n) || isAssetNode(n))
+  /* 保存节点：整节点没有单一媒体类型，只有「保存结果」那颗端子说得清
+     （saveMediaKind 判音频 / 图像 / 视频 / 文本），与工具 / 素材同口径按端子判 */
+  if (
+    isFnToolNode(n) ||
+    isAssetNode(n) ||
+    (typeof isSaveNode === "function" && isSaveNode(n))
+  )
     return wireSourceMediaType(n, fromIndex) === "image";
   return (
     n.kind === "input_image" ||
@@ -7346,7 +7666,11 @@ function isAudioWireFrom(n, fromIndex) {
   /* 音频 / 视频输入节点：端口 1 是转写文字（文本线），不按音频上色 */
   if (n.kind === "input_audio")
     return Number(fromIndex || 0) === 0;
-  if (isFnToolNode(n) || isAssetNode(n))
+  if (
+    isFnToolNode(n) ||
+    isAssetNode(n) ||
+    (typeof isSaveNode === "function" && isSaveNode(n))
+  )
     return wireSourceMediaType(n, fromIndex) === "audio";
   return (
     n.kind === "music_gen" ||
@@ -7359,7 +7683,11 @@ function isVideoWireFrom(n, fromIndex) {
   /* 视频输入节点：端口 1 是转写文字（文本线），不按视频上色 */
   if (n.kind === "input_video")
     return Number(fromIndex || 0) === 0;
-  if (isFnToolNode(n) || isAssetNode(n))
+  if (
+    isFnToolNode(n) ||
+    isAssetNode(n) ||
+    (typeof isSaveNode === "function" && isSaveNode(n))
+  )
     return wireSourceMediaType(n, fromIndex) === "video";
   return (
     n.kind === "video_gen" ||
@@ -9069,6 +9397,14 @@ function devRunningUserInputText(node) {
 }
 
 function collectRunQueue() {
+  /* 假性「处理中」自愈：取数前先扫一遍（判据与动作见 app-nodes.js 的
+     sweepGhostRunningNodes —— running 真但没有任何运行体 / 排队位持有它，连续两次就摘）。
+     与下面「等待中」的 sweepOrphanPendingRuns 同一个挂点，不另起定时器。 */
+  if (typeof sweepGhostRunningNodes === "function") {
+    try {
+      sweepGhostRunningNodes();
+    } catch (_) {}
+  }
   const running = [];
   const waiting = [];
   const seen = new Set();
@@ -9110,7 +9446,8 @@ function collectRunQueue() {
     sweepOrphanPendingRuns();
     for (const id of S.pendingRun) {
       if (seen.has(id)) continue;
-      const n = nodeById(id);
+      /* 跨画布：用户切走画布后，「等待中」那几行不能凭空消失（节点在别的画布上） */
+      const n = runQueueLookupNode(id);
       if (n && !n.running) push(n, waiting);
     }
   }
@@ -9562,6 +9899,14 @@ function collectRunQueueAll() {
     }
   };
   dropSessOnlyDevRows();
+  /* ⑤ 「运行本层」批次（renderer/app-super-run.js）：一整层跑起来时，层内节点是串行
+     挨个跑的，节点级队列只能看到「当前那一颗」；本层自己的进度 / 暂停态单独成一行
+     （n/N · 暂停在谁身上），行内 ■ = 停止本层、暂停态的 ▶ = 继续。 */
+  if (typeof superRunQueueItems === "function") {
+    try {
+      for (const it of superRunQueueItems()) addItem(it);
+    } catch (_) {}
+  }
   /* ④ 全局助手不再单独成行（本轮需求 · 单一根源）：它就是一条 assist 会话，
      st.running 落在 ③ 的扫描里，直接按「会话」计 —— 运行队列里没有「助手」这一行，
      一键终止也只按会话打，不做第二套口径。下面保留一个空占位给历史调用点（恒为 null）。 */
@@ -9576,7 +9921,9 @@ function collectRunQueueAll() {
         ? 2
         : it.type === "node"
           ? 3
-          : 4);
+          : it.type === "layer"
+            ? 3
+            : 4);
   items.sort((a, b) => rank(a) - rank(b));
   const counts = {
     node: 0,
@@ -9608,6 +9955,7 @@ function runQueueSubOf(it) {
 function runQueueJumpHint(it) {
   if (!it) return "";
   if (it.type === "session") return I18n.t("点击打开该会话");
+  if (it.type === "layer") return I18n.t("点击定位到节点层");
   if (it.type !== "node" && it.type !== "dev" && it.type !== "media") return "";
   /* 开发块的「建议 / 问询」只读调研在跑：点行 = 打开对应的进度窗口（见 jumpRunQueueItem） */
   if (it.type === "dev") {
@@ -9625,6 +9973,7 @@ function runQueueJumpHint(it) {
 }
 function runQueueStopHint(it) {
   if (!it) return I18n.t("停止运行");
+  if (it.type === "layer") return I18n.t("停止本层运行（立即中止正在跑的节点）");
   if (it.type === "session") {
     /* 独立并行组行 / 折进会话行的并行进度：文案说清楚这一枪会打掉什么 */
     if (it.planPar) return I18n.t("停止该并行任务组");
@@ -9735,6 +10084,9 @@ function updateRunQueuePanel() {
   if (nSess) summary.push(nSess + I18n.t(" 会话"));
   if (nPar) summary.push(nPar + I18n.t(" 并行任务"));
   if (nMedia) summary.push(nMedia + I18n.t(" 后端生成中"));
+  /* 节点层「运行本层」批次：整批进度不在节点级计数里，单独报一行 */
+  const nLayer = items.reduce((m, it) => m + (it.type === "layer" ? 1 : 0), 0);
+  if (nLayer) summary.push(nLayer + I18n.t(" 节点层"));
   /* 已暂停单列一项：它既不在「处理中」也不在「等待」里，不写出来就等于看不见 */
   if (nPaused) summary.push(nPaused + I18n.t(" 已暂停"));
   if (waitItems.length) summary.push(waitItems.length + I18n.t(" 等待"));
@@ -9842,6 +10194,16 @@ function updateRunQueuePanel() {
     stop.title = paused ? runQueueResumeHint(it) : runQueueStopHint(it);
     stop.onclick = (ev) => {
       ev.stopPropagation();
+      /* 节点层行（type "layer"）：运行中 = 停止本层（不再启动剩余节点），
+         暂停态 = 继续（门槛不满足时由 superRunResumeById 自己给 warn 提示）。 */
+      if (it.type === "layer") {
+        if (paused) {
+          if (typeof superRunResumeById === "function") superRunResumeById(it.id);
+        } else if (typeof superRunStopById === "function") {
+          superRunStopById(it.id);
+        }
+        return;
+      }
       if (paused) resumeRunQueueItem(it);
       else stopRunQueueItem(it);
     };
@@ -9868,6 +10230,7 @@ function updateRunQueuePanel() {
       .filter((it) => it.type === type)
       .concat(pausedItems.filter((it) => it.type === type));
   addSec(I18n.t("智能会话"), pick("session"));
+  addSec(I18n.t("节点层"), items.filter((it) => it.type === "layer"));
   addSec(
     I18n.t("处理中"),
     runItems.filter((it) => it.type === "node" || it.type === "dev"),
@@ -10144,13 +10507,19 @@ async function stopAllRuns() {
     !assistOn &&
     !sessRunning.length &&
     !hasAnyMediaGenActivity() &&
-    !hasAnyComputeExecActivity()
+    !hasAnyComputeExecActivity() &&
+    !(typeof superRunHasActiveLayer === "function" && superRunHasActiveLayer())
   ) {
     toast(I18n.t("当前没有运行中的任务"), "warn");
     return;
   }
   /* ① 全局作废代号 */
   markGlobalStop();
+  /* ①a 节点层「运行本层」：一律退出本层（暂停中的也丢掉 —— 用户明说这些都不再要了，
+     再留一条可「继续」的暂停层等于替他保留刚被他放弃的那一轮）。 */
+  try {
+    if (typeof superRunStopAllLayers === "function") superRunStopAllLayers();
+  } catch (_) {}
   /* ①b 会话的「⏸暂停」态一并作废：按「全部终止」= 用户明说这些都不再要了，
      再留一条可「继续」的暂停行，等于替他保留刚刚被他放弃的那一轮。 */
   try {
@@ -11422,7 +11791,7 @@ function docsSystemPrompt() {
     );
   }
   return (
-    "你是 MTNode AI编排器 的内置文档答疑助手。只能根据下方「内置手册」回答。" +
+    "你是 MTNode AI工作站 的内置文档答疑助手。只能根据下方「内置手册」回答。" +
     "不要操作画布、不要调用工具、不要编造手册里没有的功能。" +
     "手册没写到就明确说不知道，并建议用户去对应章节，或右键节点打开「节点指南」。" +
     "回答时尽量指出一级/二级章节名。用用户提问的语言作答。\n\n" +
@@ -15280,6 +15649,17 @@ function allTextItems(src, consumer, portIdx) {
     const asrItems = asrTextItemsOf(src, consumer, portIdx);
     if (asrItems && asrItems.length) return asrItems;
   }
+  /* 保存节点：输出端子给的就是本次保存的那份内容 —— 文本类给正文、音频 / 视频给
+     落盘路径（与 isTextSource / refTextFromValue 同一口径），图像不在此列（走
+     allImageItems）。缺这一支时，合并 / 拆分 / 智能节点的输入收集对保存节点恒为空，
+     下游只显示「无内容」。 */
+  if (typeof isSaveNode === "function" && isSaveNode(src)) {
+    const v = valueForInput(src, 0, consumer || null);
+    if (!v || v.kind === "image") return [];
+    const t = refTextFromValue(v);
+    const text = t != null ? t : String(v.path || "");
+    return text ? [{ title: src.title, text: text }] : [];
+  }
   /* 素材节点：一条内容 = 一个条目端子。文本给正文、音频 / 视频给 file:/// URL
      （与 assetItemValueOf / refTextFromValue 对外同一口径），图像不在此列。
      缺了这一支，聚合模式与 @Tag 引用就永远看不到素材里的东西。 */
@@ -15408,6 +15788,15 @@ function allImageItems(src, consumer, portIdx) {
       (x) => Number(x.toIndex) === slot,
     );
     return feed ? allImageItems(nodeById(feed.from), src) : [];
+  }
+  /* 保存节点：图像类保存的输出端子 = 最后落盘的那张图（saveNodeOutputValue 的 image
+     分支），与 allTextItems 同一份取数口径 —— 下游图像收集（proc_image / 图像输入节点
+     继承 / 合并）因此能看到「保存结果」。 */
+  if (typeof isSaveNode === "function" && isSaveNode(src)) {
+    const v = valueForInput(src, 0, consumer || null);
+    if (v && v.kind === "image" && v.path)
+      return [{ title: src.title, path: String(v.path) }];
+    return [];
   }
   /* 素材节点：图像条目 = 该条目的本机文件（与 allTextItems 同一份端子口径） */
   if (isItemPortSource(src))
@@ -15745,6 +16134,19 @@ function displayValueOf(src, consumer) {
       }
     }
     return assetDisplayValueOf(src);
+  }
+  /* 保存节点：唯一输出端子 = 本次保存的那份内容（文本 / 图像 / 音频 / 视频都算），
+     取值口径与 valueForInput 的保存分支完全相同（saveNodeOutputValue）。缺了这一支，
+     下游（输入文本 / 输入图像节点的继承态、合并 / 智能节点的显示）明明连上了线却只显示
+     「（等待上游输出…）内容只读」—— 保存的音频 / 视频更是永远看不到。 */
+  if (typeof isSaveNode === "function" && isSaveNode(src)) {
+    const v = valueForInput(src, 0, consumer || null);
+    if (!v) return null;
+    if (v.kind === "image" && v.path)
+      return { image: String(v.path), title: src.title };
+    const t = refTextFromValue(v);
+    const text = t != null ? t : String(v.path || "");
+    return text ? { text: text } : null;
   }
   if (src.kind === "function") {
     /* 函数节点：显示必须与下游取值同一口径 —— valueForInput 的 function 分支按「连到
@@ -19033,6 +19435,10 @@ async function deleteNodes(ids, quiet) {
     }
     if (pid && nodeById(pid)) setSuperFocus(pid, { render: false });
     else resetSuperFocus();
+    /* 被删掉的正是用户此刻身在其中的那一层：光清焦点不够 —— 相机还停在已经不存在的
+       层内部，屏幕上是一片空区域、也没有面包屑，用户回不到根画布（本次需求）。
+       让紧接着的那一拍按新那层（祖先壳 / 根画布）自己缓存过的镜头重新取景。 */
+    S._pendingLayerCenter = true;
   }
   for (const n of S.wf.nodes) {
     if (!n.parentTaskId || !set.has(n.parentTaskId) || set.has(n.id)) continue;
@@ -19126,12 +19532,17 @@ async function deleteNodes(ids, quiet) {
 function duplicateNodes(nodes) {
   if (!nodes || !nodes.length) return;
   const srcs = collectWithDescendants(nodes);
-  const { cps, idMap } = cloneNodesDeep(srcs, { keepOrphanParent: true });
+  const { cps, idMap, pairs } = cloneNodesDeep(srcs, {
+    keepOrphanParent: true,
+    keepInnerSavePaths: true,
+  });
   if (!cps.length) {
     toast(I18n.t("起点 / 终点为固定节点，无法复制"), "warn");
     return;
   }
   pushHistory();
+  /* 落层：复制品一律落在当前画布层级（不跟源节点所在的层走） */
+  rebaseCopiedNodesToCurrentLayer(pairs);
   const dx = grid() * 4;
   const dy = grid() * 4;
   const innerSids = copiedSuperIdsOf(cps);
@@ -19163,6 +19574,7 @@ function duplicateNodes(nodes) {
      复制品再闪一下，让用户看清新出来的那颗在哪。 */
   toast(I18n.t("已复制 ") + cps.length + I18n.t(" 个节点"), "ok");
   flashCopiedNodes(cps.map((c) => c.id));
+  promptCopiedSuperPaths(cps);
 }
 /* 复制绘制标注（错开一格，便于模板复用） */
 function duplicateMarks(list) {
@@ -19203,9 +19615,12 @@ function duplicateSelection() {
     /* 混合选区：一次复制节点 + 绘制，并保持两者同时选中（节点含全部后代与连线） */
     pushHistory();
     const srcs = collectWithDescendants(ns);
-    const { cps: nodeCps, idMap } = cloneNodesDeep(srcs, {
+    const { cps: nodeCps, idMap, pairs: nodePairs } = cloneNodesDeep(srcs, {
       keepOrphanParent: true,
+      keepInnerSavePaths: true,
     });
+    /* 落层：复制品一律落在当前画布层级（不跟源节点所在的层走） */
+    rebaseCopiedNodesToCurrentLayer(nodePairs);
     const ndx = grid() * 4;
     const ndy = grid() * 4;
     const innerSids = copiedSuperIdsOf(nodeCps);
@@ -19255,6 +19670,7 @@ function duplicateSelection() {
         I18n.t(" 项绘制"),
       "ok",
     );
+    promptCopiedSuperPaths(nodeCps);
     return true;
   }
   if (ns.length) {
@@ -19296,12 +19712,17 @@ function duplicateNodesBeside(nodes) {
     return false;
   }
   const srcs = collectWithDescendants(list);
-  const { cps, idMap } = cloneNodesDeep(srcs, { keepOrphanParent: true });
+  const { cps, idMap, pairs } = cloneNodesDeep(srcs, {
+    keepOrphanParent: true,
+    keepInnerSavePaths: true,
+  });
   if (!cps.length) {
     toast(I18n.t("起点 / 终点为固定节点，无法复制"), "warn");
     return true;
   }
   pushHistory();
+  /* 落层：复制品一律落在当前画布层级（不跟源节点所在的层走） */
+  rebaseCopiedNodesToCurrentLayer(pairs);
   const step = grid();
   const innerSids = copiedSuperIdsOf(cps);
   for (const cp of cps) {
@@ -19328,6 +19749,7 @@ function duplicateNodesBeside(nodes) {
   renderStatus();
   toast(I18n.t("已复制 ") + cps.length + I18n.t(" 个节点"), "ok");
   flashCopiedNodes(cps.map((c) => c.id));
+  promptCopiedSuperPaths(cps);
   return true;
 }
 /* ============ 节点粘贴板（Ctrl+C / Ctrl+V） ============ */
@@ -19372,6 +19794,9 @@ function absImagePathOf(raw) {
    标题找节点，复制时改标题会让引用指向一个「看起来是它、其实不是它」的新名字；复制出来的
    同名节点是同一份内容，按标题找仍命中原来那颗（候选按数组顺序取第一个），语义不丢。
    相对路径的保存节点不复制保存目标（复制品与源会写同一文件，需重新指定）；
+   例外：opts.keepInnerSavePaths（画布内复制 / 粘贴）时，**落在被复制的节点层内部**的保存节点
+   保留相对路径 —— 那些路径本来就在壳的 subFolder 下，丢了就是「复制节点层，内部保存路径全空」
+   （本轮修的 bug）；复制后由 promptCopiedSuperPaths 按新 subFolder 重写（rebaseSuperPath）。
    图像节点（input_image）的相对路径固化为绝对路径，复制品才能正确引用同一图像。
    唯一例外：opts.uniqueTitle（从工具库 / 工作流库「插入」一份进来，它要求同画布不重名）才
    走标题唯一化；复制 / 粘贴一律原样保留标题。
@@ -19380,7 +19805,30 @@ function absImagePathOf(raw) {
 function cloneNodesDeep(srcs, opts) {
   opts = opts || {};
   const cps = [];
+  /* 源 ↔ 复制品配对：复制品该落在哪一层由调用方按「当前画布层级」定
+     （见 rebaseCopiedNodesToCurrentLayer），这里只把配对交出去 */
+  const pairs = [];
   const idMap = new Map();
+  /* 本批一起被复制的节点层：保存节点若挂在它们内部，它的相对路径属于壳（subFolder 下），
+     复制时必须原样带走 —— 见下面 save 分支与 promptCopiedSuperPaths 的「旧前缀 → 新前缀」。 */
+  const copiedSuperIds = new Set(
+    (srcs || []).filter((n) => n && n.kind === "super").map((n) => n.id),
+  );
+  const srcById = new Map((srcs || []).filter(Boolean).map((n) => [n.id, n]));
+  const insideCopiedSuper = (n) => {
+    const seen = new Set();
+    let sid = n && n.parentSuperId;
+    while (sid && !seen.has(sid)) {
+      if (copiedSuperIds.has(sid)) return true;
+      seen.add(sid);
+      const host =
+        srcById.get(sid) ||
+        (typeof nodeById === "function" ? nodeById(sid) : null);
+      if (!host) return false;
+      sid = host.parentSuperId;
+    }
+    return false;
+  };
   for (const src of srcs) {
     if (!src || isPinnedCtrl(src)) continue;
     /* 交付节点不可复制：它是状态机环节在主画布上的唯一落点，复制出第二个就对不上账了
@@ -19423,8 +19871,14 @@ function cloneNodesDeep(srcs, opts) {
       cp.savedPaths = [];
       cp.savedPath = "";
       cp.savedBody = "";
-      /* 使用相对路径的保存节点：不复制保存目标（相对路径仍指向源同一位置） */
-      if (String(cp.savePath || "").trim() && !isAbsPath(cp.savePath))
+      /* 使用相对路径的保存节点：不复制保存目标（相对路径仍指向源同一位置）；
+         例外：跟节点层一起被复制（keepInnerSavePaths 且祖先壳也在本批里）→ 路径原样带走，
+         否则「复制节点层」后内部保存节点的路径全空（本轮修的 bug） */
+      if (
+        String(cp.savePath || "").trim() &&
+        !isAbsPath(cp.savePath) &&
+        !(opts.keepInnerSavePaths && insideCopiedSuper(src))
+      )
         cp.savePath = "";
     }
     /* 图像节点：相对路径固化为绝对路径，复制品与源引用同一图像（绝对路径保持原样） */
@@ -19441,6 +19895,7 @@ function cloneNodesDeep(srcs, opts) {
       }
     }
     cps.push(cp);
+    pairs.push({ src, cp });
   }
   for (const cp of cps) {
     cp.parentTaskId =
@@ -19466,7 +19921,7 @@ function cloneNodesDeep(srcs, opts) {
           ? idMap.get(cp.boundFromId)
           : "";
   }
-  return { cps, idMap };
+  return { cps, idMap, pairs };
 }
 /* 保持连线：仅复制两端都在复制集内的连线（数据 / 控制 / 关系线），按新 id 重建 */
 function cloneWiresForSet(wires, idMap) {
@@ -19496,6 +19951,46 @@ function copiedSuperIdsOf(cps) {
   const s = new Set();
   for (const c of cps) if (c && c.kind === "super") s.add(c.id);
   return s;
+}
+/* ── 复制的落层口径（唯一真源）──────────────────────────────────────────────
+   复制品一律落在**当前的画布层级**（用户正在看的这一层）：不跟着源节点原来所在的层走。
+   不这样收口就是用户报的现象 —— 在展开的节点层里选中一颗节点按复制，复制品被塞进那颗壳的
+   内部（更内的一层）；反过来，在壳里复制外层的节点又会落到更外的一层。
+   只处理「复制集里的顶层」：父级也在复制集内的节点跟着新壳走（它们的层由新壳决定），不受影响。
+   坐标按**世界坐标**换算成目标层的本地坐标（与 moveNodesIntoSuper 同一套 superInner* 口径）。
+   返回真正换了层的节点数。pairs = cloneNodesDeep 给出的 { src, cp } 配对。 */
+function rebaseCopiedNodesToCurrentLayer(pairs) {
+  const list = (pairs || []).filter((p) => p && p.src && p.cp);
+  if (!list.length) return 0;
+  const newIds = new Set(list.map((p) => p.cp.id));
+  const sf = currentSuperFocus();
+  const holder = sf ? nodeById(sf) : null;
+  const target = holder && holder.kind === "super" ? holder : null;
+  const targetId = target ? target.id : "";
+  const targetTask = target ? target.parentTaskId || "" : currentTaskFocus();
+  const o = target ? superInnerOrigin(target) : { ox: 0, oy: 0 };
+  const pan = target ? superInnerPan(target) : { x: 0, y: 0 };
+  const anchor = target ? superInnerAnchor(target) : { x: 0, y: 0 };
+  let moved = 0;
+  for (const { src, cp } of list) {
+    /* 父级也在本次复制集里：它属于复制出来的那颗壳，层次原样跟着新壳 */
+    if (cp.parentSuperId && newIds.has(cp.parentSuperId)) continue;
+    if ((cp.parentSuperId || "") === targetId) {
+      /* 本来就在当前层：坐标不动，只把任务归属对齐 */
+      cp.parentTaskId = targetTask;
+      continue;
+    }
+    const wp = nodeWorldPos(src);
+    cp.parentSuperId = targetId;
+    cp.parentTaskId = targetTask;
+    /* 落进壳里时给下限（与粘贴 / 收纳同一口径）：换算后的本地坐标不能跑到壳的左上角外去 */
+    const lx = wp.x - anchor.x - o.ox - pan.x;
+    const ly = wp.y - anchor.y - o.oy - pan.y;
+    cp.x = target ? Math.max(8, lx) : lx;
+    cp.y = target ? Math.max(8, ly) : ly;
+    moved++;
+  }
+  return moved;
 }
 /* ── Ctrl+C / Ctrl+V 的归属判定（画布复制节点 vs 输入框里复制文字）────────────────
    本轮修的 bug：点一颗文本节点后按 Ctrl+C 复制不出节点。两个成因都是「这次按键归谁」没判据：
@@ -19752,7 +20247,7 @@ function pasteNodesFromClipboard() {
   /* 克隆节点：新 id、标题原样保留（复制不改标题，避免按标题的引用指错）、运行时字段清空；
      相对路径的保存节点不复制保存目标（避免复制品与源写同一文件）；
      图像节点相对路径固化为绝对路径（复制品正确引用同一图像） */
-  const { cps, idMap } = cloneNodesDeep(clipNodes);
+  const { cps, idMap } = cloneNodesDeep(clipNodes, { keepInnerSavePaths: true });
   /* 跨画布粘贴：复制时相对路径已固化为绝对路径，绝对引用直接保留以正确引用图像；
      仅仍为非绝对的路径（无法解析的无效引用）清空，避免指向不存在的文件 */
   if (nodeClipboard.wfId && S.wf && S.wf.id !== nodeClipboard.wfId) {
@@ -19913,6 +20408,7 @@ function pasteNodesFromClipboard() {
       (mkCps.length ? " · " + mkCps.length + I18n.t(" 项绘制") : ""),
     "ok",
   );
+  promptCopiedSuperPaths(cps);
   return true;
 }
 /* ════════ 剪贴板图像 → 画布（Ctrl+V 询问窗）════════
@@ -20160,8 +20656,32 @@ async function clipImagesToCanvasAssets(imgs, opts) {
   }
   return { saved, errors };
 }
+/* 粘贴建出来的节点归哪一层：只看**当前画布层级**（S.superFocus）——
+   在根画布粘贴就是根画布，哪怕落点刚好压在某颗节点层上面；在展开的节点层里粘贴才进那一层。
+   不能沿用 makeNode 的 superHostAtWorld 坐标回退（它按落点几何猜宿主，根层粘截图会落进脚下的壳）。
+   坐标按世界坐标换算成目标层的本地坐标（与 moveNodesIntoSuper / rebaseCopiedNodesToCurrentLayer 同口径）。 */
+function adoptPastedNodeToCurrentLayer(node, wx, wy) {
+  if (!node) return null;
+  const sf = currentSuperFocus();
+  const host = sf ? nodeById(sf) : null;
+  if (host && host.kind === "super") {
+    const o = superInnerOrigin(host);
+    const pan = superInnerPan(host);
+    const anchor = superInnerAnchor(host);
+    node.parentSuperId = host.id;
+    node.parentTaskId = host.parentTaskId || "";
+    node.x = snap(Math.max(8, wx - anchor.x - o.ox - pan.x));
+    node.y = snap(Math.max(8, wy - anchor.y - o.oy - pan.y));
+    return node;
+  }
+  node.parentSuperId = "";
+  node.parentTaskId = currentTaskFocus();
+  node.x = snap(wx);
+  node.y = snap(wy);
+  return node;
+}
 /* 用剪贴板图像创建图像输入节点：落当前视口中心（多张按网格排开，与拖入文件同一口径）、
-   落当前节点层 / 任务作用域内（makeNode 自带），建好即全部选中。 */
+   落当前画布层级（adoptPastedNodeToCurrentLayer），建好即全部选中。 */
 async function createImageNodesFromClipboard(imgs) {
   const { saved, errors } = await clipImagesToCanvasAssets(imgs, { limit: 0 });
   if (!saved.length) {
@@ -20185,6 +20705,7 @@ async function createImageNodesFromClipboard(imgs) {
     const y = startY + Math.floor(i / cols) * DROP_FILE_STEP_Y;
     const node = makeNode("input_image", x, y);
     if (!node) return;
+    adoptPastedNodeToCurrentLayer(node, x, y);
     node.imageAsset = s.path;
     node.sourceName = s.stem || imageStem(s.path) || "img";
     node.title = uniqueNodeTitle(s.title || I18n.t("剪贴板图像"));
@@ -33800,10 +34321,20 @@ function devNodeContractText(node, req, opts) {
   if (reqText) lines.push(I18n.t("本次开发需求：") + reqText);
   /* 「先拷问需求」开关（node.devGrill）：细则全在内置技能 mtnode-grill-me，
      任务书只留「去加载它 + 只问不做 + 确认卡格式在技能里」三句。 */
-  if (node && node.devGrill === true) {
+  if (node && node.devGrill === true && node.devHotfix !== true) {
     lines.push(
       I18n.t(
         "【拷问模式·本轮先问不做】该功能块已开启「先拷问需求」：先用 skill 工具加载内置技能 mtnode-grill-me 并严格照它执行（询问窗格式、multi_select、前沿口径、收尾确认卡格式都在里面）；到用户明确「确认无歧义」之前只问不做 —— 不改任何文件、不改画布、不出实施计划、不开工。",
+      ),
+    );
+  }
+  /* 「快速热修」开关（node.devHotfix，与 devGrill 互斥）：小型 Bug / <2 故事点功能 /
+     原型探索 / 紧急热修 / 提案后补丁走最快路径 —— 只问歧义点、不写文档、不跑 smoke、
+     只做必须的验证、收尾一句话。硬闸全部写死在任务书里，不另设技能。 */
+  if (node && node.devHotfix === true) {
+    lines.push(
+      I18n.t(
+        "【快速热修模式·最快修完】该功能块已开启「快速热修」（小型 Bug 修复 / 少于 2 个故事点的功能 / 原型探索 / 紧急热修 / 提案后的补丁）：按最快路径把问题修好 —— 只在需求确有歧义时用 ask_user_question 只问卡住的那几点（不加载内置技能 mtnode-grill-me、不走整轮前沿拷问）；不写任何文档（changelog / DESIGN.md / guides / AGENTS.md 以及任何 .md 文件都不改）；不写、不跑 smoke test；只做必须做的验证（能直接说明改动正确的最小检查；拿不准就人工 Review）；收尾只一句话汇报改了什么，不列文件清单。",
       ),
     );
   }
@@ -34066,14 +34597,13 @@ async function developDevNode(node) {
     }),
     /* 边写边留存：取消 / Esc / 被别的事务顶出对话框都不丢，下次打开原样回填 */
     onText: (t) => devDraftSet(node, "dev", t),
-    /* 本轮需求：删掉「开发」框底部那条提示（确认 = 新会话后台运行 … 下方「先拷问需求」……）。
-       msg 那行已说明提交后会发生什么，提示条只是复述；底部只留「先拷问需求」开关本身
+    /* 本轮需求：删掉「开发」框底部那条提示（确认 = 新会话后台运行 … 下方开关……）。
+       msg 那行已说明提交后会发生什么，提示条只是复述；底部只留选项本身
        （开关读数 / 写回逻辑未动，见下）。 */
-    /* 「先拷问需求」：开关状态真源是 node.devGrill（布尔 · 随画布落盘），不塞进
-       devDraft —— 那是文本草稿、提交后会清掉，而本开关的语义是「这个模块我就是要
-       先被问清再动手」，属于粘在功能块上的偏好。真正生效在 devNodeContractText：
-       开启时任务书里多一段【拷问模式】，要求会话先加载内置技能 mtnode-grill-me
-       按轮问需求，未经用户确认达成共识前不得改任何东西。 */
+    /* 两枚选项：真源是节点上的 node.devGrill / node.devHotfix（布尔 · 随画布落盘），
+       不塞进 devDraft —— 那是文本草稿、提交后会清掉，而这是粘在功能块上的偏好。
+       真正生效在 devNodeContractText：拷问 → 多一段【拷问模式】；热修 → 换成
+       【快速热修模式】。老画布两枚都为真时按热修渲染（与任务书的优先级一致）。 */
     custom: (c) => {
       const lab = document.createElement("label");
       lab.className = "mt-form-lab";
@@ -34081,32 +34611,74 @@ async function developDevNode(node) {
       c.appendChild(lab);
       const listEl = document.createElement("div");
       listEl.className = "mt-sug-opts";
-      const row = document.createElement("label");
-      const on = node.devGrill === true;
-      row.className = "mt-sug-opt" + (on ? " on" : "");
-      const cb = document.createElement("input");
-      cb.type = "checkbox";
-      cb.checked = on;
-      cb.onchange = () => {
-        node.devGrill = !!cb.checked;
-        row.classList.toggle("on", !!cb.checked);
-        scheduleSave();
+      /* 两枚选项语义相反，**互斥**：勾热修 → 拷问落 false 并摘勾；勾拷问 → 热修同理。
+         两枚的真源都粘在功能块上（node.devGrill / node.devHotfix，随画布落盘），
+         不塞进 devDraft —— 草稿提交后会清掉，而这是模块级偏好。 */
+      let cbGrill = null;
+      let rowGrill = null;
+      let cbHotfix = null;
+      let rowHotfix = null;
+      const addOpt = (title, desc, checked, onToggle) => {
+        const row = document.createElement("label");
+        row.className = "mt-sug-opt" + (checked ? " on" : "");
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.checked = checked;
+        cb.onchange = () => {
+          const on = !!cb.checked;
+          row.classList.toggle("on", on);
+          onToggle(on);
+          scheduleSave();
+        };
+        const txt = document.createElement("div");
+        txt.className = "mt-sug-txt";
+        const tt = document.createElement("b");
+        tt.className = "mt-sug-title";
+        tt.textContent = title;
+        txt.appendChild(tt);
+        const dd = document.createElement("div");
+        dd.className = "mt-sug-desc";
+        dd.textContent = desc;
+        txt.appendChild(dd);
+        row.appendChild(cb);
+        row.appendChild(txt);
+        listEl.appendChild(row);
+        return { row, cb };
       };
-      const txt = document.createElement("div");
-      txt.className = "mt-sug-txt";
-      const tt = document.createElement("b");
-      tt.className = "mt-sug-title";
-      tt.textContent = I18n.t("先拷问需求（grill-me）");
-      txt.appendChild(tt);
-      const dd = document.createElement("div");
-      dd.className = "mt-sug-desc";
-      dd.textContent = I18n.t(
-        "开启 = 本次开发会话先用内置技能 mtnode-grill-me 按轮问清需求，达成共识并经你确认后才动手。",
+      const off = (row, cb) => {
+        if (cb) cb.checked = false;
+        if (row) row.classList.remove("on");
+      };
+      const g = addOpt(
+        I18n.t("先拷问需求（grill-me）"),
+        I18n.t(
+          "开启 = 本次开发会话先用内置技能 mtnode-grill-me 按轮问清需求，达成共识并经你确认后才动手。",
+        ),
+        node.devGrill === true && node.devHotfix !== true,
+        (on) => {
+          node.devGrill = on;
+          if (!on || node.devHotfix !== true) return;
+          node.devHotfix = false;
+          off(rowHotfix, cbHotfix);
+        },
       );
-      txt.appendChild(dd);
-      row.appendChild(cb);
-      row.appendChild(txt);
-      listEl.appendChild(row);
+      cbGrill = g.cb;
+      rowGrill = g.row;
+      const h = addOpt(
+        I18n.t("快速热修"),
+        I18n.t(
+          "开启 = 走最快路径：只在需求确有歧义时问一句，不写文档、不做 smoke test，只做必须做的验证。适合小型 Bug、少于 2 个故事点的功能、原型探索、紧急热修或提案后的补丁。",
+        ),
+        node.devHotfix === true,
+        (on) => {
+          node.devHotfix = on;
+          if (!on || node.devGrill !== true) return;
+          node.devGrill = false;
+          off(rowGrill, cbGrill);
+        },
+      );
+      cbHotfix = h.cb;
+      rowHotfix = h.row;
       c.appendChild(listEl);
     },
     requireText: true,

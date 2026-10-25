@@ -333,8 +333,83 @@
   background: var(--bd);
 }
 
+/* ── 从资源管理器拖入：树的高亮落点提示 ── */
+.side-files-tree.sf-drop {
+  outline: 1px dashed var(--cyan2, #7fd4e8);
+  outline-offset: -3px;
+  background: rgba(127, 212, 232, .06);
+}
+
+/* ── 批量粘贴进度框（非模态：不挡操作，带「中断」，完成后自动关） ── */
+.sf-progress {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 80;
+  width: 260px;
+  padding: 10px 12px;
+  background: var(--panel);
+  border: 1px solid var(--bd2);
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .45);
+  font-size: 12px;
+  color: var(--ink);
+}
+
+.sf-progress-title {
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.sf-progress-bar {
+  height: 4px;
+  margin: 7px 0 5px;
+  background: var(--code);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.sf-progress-bar i {
+  display: block;
+  width: 0;
+  height: 100%;
+  background: var(--cyan2, #7fd4e8);
+  transition: width .12s linear;
+}
+
+.sf-progress-meta {
+  color: var(--dim, #8b98a8);
+  font-size: 11px;
+}
+
+.sf-progress-cancel {
+  margin-top: 8px;
+  padding: 3px 10px;
+  font-size: 11px;
+  font-family: inherit;
+  color: var(--ink);
+  background: transparent;
+  border: 1px solid var(--bd2);
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.sf-progress-cancel:hover:not(:disabled) {
+  border-color: #e06c75;
+  color: #e06c75;
+}
+
+.sf-progress-cancel:disabled {
+  opacity: .5;
+  cursor: default;
+}
+
 /* ── 亮色主题 ── */
 body.theme-light .sf-menu {
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .18);
+}
+
+body.theme-light .sf-progress {
   box-shadow: 0 8px 24px rgba(0, 0, 0, .18);
 }
 

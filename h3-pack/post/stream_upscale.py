@@ -16,7 +16,10 @@ stream_upscale.py —— 逐帧分块流式超分（Real-ESRGAN x4plus / x2plus�
     常驻内存只与「单个 tile + 一帧的输出画布」有关，与视频多长无关；
     音轨用 PyAV 从源文件原样直拷（不重编码）。16G 内存机器也能跑 15 秒级 x2/x4 超分。
 
-依赖只用 ComfyUI venv 里已有的 torch / av / numpy / cv2 / kornia（零新增依赖）；
+依赖只用 ComfyUI venv 里已有的 torch / av / numpy / kornia（零新增依赖）；
+cv2 是**可选**的加速项：装了就按 INTER_AREA 缩帧，没装就退 torch 的 area 缩放
+（2026-xx 现场：ComfyUI 自带 requirements.txt 只有 numpy / av / kornia，安装脚本也没补
+opencv，于是缩第一帧就 ModuleNotFoundError: No module named 'cv2'，整单不出片、宿主回退图链）；
 **绝不 import basicsr / realesrgan**（venv 里本来就没有，RRDBNet 在这里用纯 torch 复刻）。
 
 CLI：
@@ -64,11 +67,12 @@ DEFAULT_PRESET = "medium"
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# 纯 torch 版 RRDBNet（与 RealESRGAN_x4plus.pth / x2plus.pth 权重逐键对齐）
+# 纯 torch 版 RRDBNet（结构与权重逐键对齐，形状以权重为准，见 build_model / _arch_from_state）
 #   结构：conv_first → 23 × RRDB → conv_body → 残差 → up1 → (up2) → conv_hr → conv_last
 #   每个 RRDB = 3 个 ResidualDenseBlock，每个 RDB = 5 层 conv（密集连接 + 0.2 残差）
-#   x4plus 有 conv_up1 / conv_up2（scale=4），x2plus 只有 conv_up1（scale=2）——
-#   这里按 state_dict 里 conv_up2.weight 是否存在自动判档，权重文件不用改名。
+#   x4plus 有 conv_up1 / conv_up2（scale=4）；ai-forever 移植版 x2 权重多一层
+#   pixel_unshuffle(2)：conv_first 吃 12 通道、仍是 2 次上采样，净倍数 x2 —— 二者都按 state_dict
+#   自动判档，权重文件不用改名。
 # ════════════════════════════════════════════════════════════════════════════
 import torch
 import torch.nn as nn
@@ -108,7 +112,17 @@ class RRDB(nn.Module):
         return out * 0.2 + x
 
 
+def _pixel_unshuffle(x: torch.Tensor, k: int) -> torch.Tensor:
+    """space-to-depth：HxWx3 → (H/k)x(W/k)x(3k²)。ai-forever 版 x2 / x1 权重靠它把
+    「先降采样 2 倍再 4 倍上采样」拼成净 2 倍（见 build_model 的判档注释）。"""
+    return F.pixel_unshuffle(x, k)
+
+
 class RRDBNet(nn.Module):
+    """权重结构完全由权重自己决定（num_in_ch 可为 12 = pixel_unshuffle(2) 的 3×4，
+    见 ai-forever/Real-ESRGAN 的 rrdbnet_arch.py）。net.scale = 净放大倍数 =
+    2**num_up / unshuffle，宿主 / 本脚本都按它算输出尺寸。"""
+
     def __init__(
         self,
         num_in_ch: int = 3,
@@ -117,27 +131,47 @@ class RRDBNet(nn.Module):
         num_block: int = 23,
         num_grow_ch: int = 32,
         num_up: int = 2,
+        unshuffle: int = 1,
     ) -> None:
         super().__init__()
-        self.num_up = 2 if num_up >= 2 else 1
-        self.scale = 2 ** self.num_up
+        self.num_up = max(1, int(num_up))
+        self.unshuffle = max(1, int(unshuffle))
+        self.scale = max(1, (2 ** self.num_up) // self.unshuffle)
         self.conv_first = nn.Conv2d(num_in_ch, num_feat, 3, 1, 1)
-        self.body = nn.Sequential(*[RRDB(num_feat, num_grow_ch) for _ in range(num_block)])
+        self.body = nn.Sequential(*[RRDB(num_feat, num_grow_ch) for _ in range(int(num_block))])
         self.conv_body = nn.Conv2d(num_feat, num_feat, 3, 1, 1)
+        # 键名必须与权重逐字对齐（conv_up1 / conv_up2 / conv_up3），所以逐个建、不塞 ModuleList
         self.conv_up1 = nn.Conv2d(num_feat, num_feat, 3, 1, 1)
-        if self.num_up == 2:
+        if self.num_up >= 2:
             self.conv_up2 = nn.Conv2d(num_feat, num_feat, 3, 1, 1)
+        if self.num_up >= 3:
+            self.conv_up3 = nn.Conv2d(num_feat, num_feat, 3, 1, 1)
         self.conv_hr = nn.Conv2d(num_feat, num_feat, 3, 1, 1)
         self.conv_last = nn.Conv2d(num_feat, num_out_ch, 3, 1, 1)
         self.lrelu = nn.LeakyReLU(0.2, inplace=True)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        feat = self.conv_first(x)
+        k = self.unshuffle
+        h, w, ph, pw = 0, 0, 0, 0
+        if k > 1:
+            h, w = int(x.shape[-2]), int(x.shape[-1])
+            # unshuffle 要求整除：右下补齐一两个像素（replicate），出图再切回 h*scale / w*scale
+            ph, pw = (-h) % k, (-w) % k
+            if ph or pw:
+                x = F.pad(x, (0, pw, 0, ph), mode="replicate")
+        feat = self.conv_first(_pixel_unshuffle(x, k) if k > 1 else x)
         feat = feat + self.conv_body(self.body(feat))
-        feat = self.lrelu(self.conv_up1(F.interpolate(feat, scale_factor=2, mode="nearest")))
-        if self.num_up == 2:
-            feat = self.lrelu(self.conv_up2(F.interpolate(feat, scale_factor=2, mode="nearest")))
-        return self.conv_last(self.lrelu(self.conv_hr(feat)))
+        ups = [self.conv_up1]
+        if self.num_up >= 2:
+            ups.append(self.conv_up2)
+        if self.num_up >= 3:
+            ups.append(self.conv_up3)
+        for conv in ups:
+            feat = self.lrelu(conv(F.interpolate(feat, scale_factor=2, mode="nearest")))
+        out = self.conv_last(self.lrelu(self.conv_hr(feat)))
+        if k > 1 and (ph or pw):
+            out = out[..., : h * self.scale, : w * self.scale]
+        return out
 
 
 def _strip_state_dict(obj):
@@ -151,9 +185,72 @@ def _strip_state_dict(obj):
     return obj
 
 
+def _arch_from_state(state: dict) -> dict:
+    """从 state_dict 的形状反推 RRDBNet 结构（不再硬编码 3 通道 / 23 块）。
+
+    为什么必须猜：本机 upscale_models 里的 RealESRGAN_x2plus.pth 来自 ai-forever 的 PyTorch 移植，
+    它的 x2 结构是「conv_first 吃 12 通道（= 3 × pixel_unshuffle(2)）+ conv_up1/conv_up2 两次 2×」，
+    净倍数仍是 2；硬编码 num_in_ch=3 就会在 load_state_dict 处报
+    size mismatch for conv_first.weight（checkpoint 12 通道 vs 模型 3 通道）。
+    判档口径：
+      · num_up  = conv_up2 / conv_up3 是否存在（1 / 2 / 3 次 2× 上采样）
+      · unshuffle = sqrt(num_in_ch / num_out_ch)：1 → 无（3 通道直入）；2 → pixel_unshuffle(2)；
+        4 → pixel_unshuffle(4)（scale=1 的模型），其余值认不出来就报错而不是瞎跑
+      · net.scale = 2**num_up // unshuffle —— 这才是权重的真实倍数
+    """
+    w_first = state.get("conv_first.weight")
+    if w_first is None or getattr(w_first, "dim", lambda: 0)() != 4:
+        raise RuntimeError("权重里没有 conv_first.weight（不是 RRDBNet 结构）")
+    num_feat, num_in_ch = int(w_first.shape[0]), int(w_first.shape[1])
+    w_last = state.get("conv_last.weight")
+    num_out_ch = int(w_last.shape[0]) if w_last is not None else 3
+
+    blocks = set()
+    for key in state:
+        if key.startswith("body."):
+            part = key.split(".")
+            if len(part) > 1 and part[1].isdigit():
+                blocks.add(int(part[1]))
+    num_block = (max(blocks) + 1) if blocks else 23
+    w_rdb = None
+    for key in ("body.0.rdb1.conv1.weight", "body.0.rdb1.conv1.0.weight"):
+        if key in state:
+            w_rdb = state[key]
+            break
+    num_grow_ch = int(w_rdb.shape[0]) if w_rdb is not None else 32
+
+    num_up = 1
+    if "conv_up2.weight" in state:
+        num_up = 2
+    if "conv_up3.weight" in state:
+        num_up = 3
+
+    unshuffle = 1
+    if num_out_ch > 0 and num_in_ch % num_out_ch == 0:
+        factor = num_in_ch // num_out_ch
+        root = int(round(factor ** 0.5))
+        if root > 1 and root * root == factor:
+            unshuffle = root
+    if num_in_ch % num_out_ch != 0 or (unshuffle > 1 and num_in_ch != num_out_ch * unshuffle * unshuffle):
+        raise RuntimeError(
+            "认不出权重的输入通道口径（conv_first 入 %d 通道 / conv_last 出 %d 通道）："
+            "既不是 3 通道直入的 RealESRGAN，也不是 pixel_unshuffle 口径" % (num_in_ch, num_out_ch)
+        )
+    return {
+        "num_in_ch": num_in_ch,
+        "num_out_ch": num_out_ch,
+        "num_feat": num_feat,
+        "num_block": num_block,
+        "num_grow_ch": num_grow_ch,
+        "num_up": num_up,
+        "unshuffle": unshuffle,
+    }
+
+
 def build_model(model_path: str | None, device: torch.device, dtype: torch.dtype,
                 allow_random: bool = False) -> tuple[RRDBNet, int]:
-    """按权重实际键名判档（conv_up2 有无 → x4 / x2），weights_only=True 加载。返回 (net, 模型原生倍数)。"""
+    """按权重实际形状判档（通道 / 块数 / 上采样次数 / 是否 pixel_unshuffle），weights_only=True 加载。
+    返回 (net, 模型净倍数)。"""
     state = None
     if model_path:
         if not os.path.isfile(model_path):
@@ -164,10 +261,11 @@ def build_model(model_path: str | None, device: torch.device, dtype: torch.dtype
     elif not allow_random:
         raise RuntimeError("缺少 --model（可加 --allow-random-weights 仅供自检）")
 
-    num_up = 2
-    if isinstance(state, dict) and "conv_up2.weight" not in state:
-        num_up = 1
-    net = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, num_up=num_up)
+    if isinstance(state, dict):
+        arch = _arch_from_state(state)
+        net = RRDBNet(**arch)
+    else:
+        net = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, num_up=2)
     if isinstance(state, dict):
         try:
             net.load_state_dict(state, strict=True)
@@ -312,21 +410,41 @@ def out_dims_for_long_side(width: int, height: int, long_side: int) -> tuple[int
     return tw, th
 
 
-def resize_to_long_side(torch_img: torch.Tensor, long_side: int) -> np.ndarray:
-    """超分结果（float32 3xHxW）按目标长边缩回并转 uint8 HxWx3（cv2.INTER_AREA 抗锯齿）。"""
-    import cv2  # noqa: PLC0415
+def resize_uint8_area(arr: np.ndarray, width: int, height: int) -> np.ndarray:
+    """uint8 HxWx3 → (width, height)，面积平均抗锯齿。
 
+    cv2 只是可选加速项，不是依赖：venv 里没有 opencv 时（安装脚本没补上 / 老安装目录）
+    退到 torch 的 area 插值 —— 同一算法，慢一点，但**绝不再因为缺 cv2 让整单不出片**。
+    """
+    tw = max(2, int(width))
+    th = max(2, int(height))
+    if arr.shape[1] == tw and arr.shape[0] == th:
+        return arr
+    try:
+        import cv2  # noqa: PLC0415
+
+        return cv2.resize(arr, (tw, th), interpolation=cv2.INTER_AREA)
+    except Exception:
+        t = torch.from_numpy(np.ascontiguousarray(arr)).permute(2, 0, 1).unsqueeze(0)
+        t = t.to(dtype=torch.float32).div_(255.0)
+        t = F.interpolate(t, size=(th, tw), mode="area")
+        out = t[0].clamp_(0.0, 1.0).permute(1, 2, 0).numpy()
+        return np.ascontiguousarray((out * 255.0 + 0.5).astype(np.uint8))
+
+
+def resize_to_long_side(torch_img: torch.Tensor, long_side: int) -> np.ndarray:
+    """超分结果（float32 3xHxW）按目标长边缩回并转 uint8 HxWx3（面积平均抗锯齿）。"""
     arr = (torch_img.permute(1, 2, 0).numpy() * 255.0 + 0.5).astype(np.uint8)
     h, w = arr.shape[0], arr.shape[1]
     if long_side and long_side > 0:
         want = min(int(long_side), max(w, h))
         if want != max(w, h):
             tw, th = out_dims_for_long_side(w, h, want)
-            arr = cv2.resize(arr, (tw, th), interpolation=cv2.INTER_AREA)
+            arr = resize_uint8_area(arr, tw, th)
     if arr.shape[0] % 2 or arr.shape[1] % 2:
         tw = max(2, arr.shape[1] - (arr.shape[1] % 2))
         th = max(2, arr.shape[0] - (arr.shape[0] % 2))
-        arr = cv2.resize(arr, (tw, th), interpolation=cv2.INTER_AREA)
+        arr = resize_uint8_area(arr, tw, th)
     return arr
 
 

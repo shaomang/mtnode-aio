@@ -23,7 +23,9 @@ stream_interp.py —— 逐帧流式补帧（RIFE 4.x / IFNet，纯 torch）
 两族都实现），weights_only=True 直载 state_dict；**绝不 import 任何 rife / 官方包**
 （venv 里也没有），架构按 state_dict 键名判定，判不出来就退出码 2 交宿主回退图路径。
 
-依赖只用 ComfyUI venv 里已有的 torch / av / numpy / cv2 / psutil（零新增依赖）。
+依赖只用 ComfyUI venv 里已有的 torch / av / numpy / psutil（零新增依赖）；
+cv2 是可选加速项：有就按 INTER_AREA 预缩放，没有就退 torch 的 area 缩放
+（与 stream_upscale.py 同一口径，缺 cv2 不再让整单不出片）。
 
 CLI：
     python stream_interp.py --input in.mp4 --output out.mp4 --model <rife47.pth>
@@ -791,10 +793,13 @@ def even_dims(width: int, height: int) -> tuple[int, int]:
 
 
 def prescale_to_long_side(rgb: np.ndarray, long_side: int) -> np.ndarray:
-    """仅在显式给 --max-long-side 时调用：INTER_AREA 预缩放（取偶），进一步省显存。"""
+    """仅在显式给 --max-long-side 时调用：INTER_AREA 预缩放（取偶），进一步省显存。
+
+    cv2 是可选加速项（与 stream_upscale.py 同口径）：venv 里没有 opencv 时退 torch 的
+    area 插值，绝不因为缺 cv2 让整单不出片。
+    """
     if not long_side or int(long_side) <= 0:
         return rgb
-    import cv2  # noqa: PLC0415
 
     h, w = int(rgb.shape[0]), int(rgb.shape[1])
     long = max(h, w)
@@ -803,7 +808,16 @@ def prescale_to_long_side(rgb: np.ndarray, long_side: int) -> np.ndarray:
     s = float(long_side) / float(long)
     tw = max(2, int(round(w * s / 2.0)) * 2)
     th = max(2, int(round(h * s / 2.0)) * 2)
-    return cv2.resize(rgb, (tw, th), interpolation=cv2.INTER_AREA)
+    try:
+        import cv2  # noqa: PLC0415
+
+        return cv2.resize(rgb, (tw, th), interpolation=cv2.INTER_AREA)
+    except Exception:
+        t = torch.from_numpy(np.ascontiguousarray(rgb)).permute(2, 0, 1).unsqueeze(0)
+        t = t.to(dtype=torch.float32).div_(255.0)
+        t = F.interpolate(t, size=(th, tw), mode="area")
+        out = t[0].clamp_(0.0, 1.0).permute(1, 2, 0).numpy()
+        return np.ascontiguousarray((out * 255.0 + 0.5).astype(np.uint8))
 
 
 # ════════════════════════════════════════════════════════════════════════════

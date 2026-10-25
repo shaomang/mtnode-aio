@@ -17,6 +17,7 @@ const path = require("path");
 const fs = require("fs");
 const http = require("http");
 const { spawn, execFile } = require("child_process");
+const { gpuExecFile } = require("../gpu-poll.js"); /* 显存读数统一出口：去重缓存 + 搬出主线程（见该文件头） */
 const { resolveDshRunAuth } = require("../dsh/mtnode-llm-creds.js");
 /* 插件报错总线：失败出口统一上报主窗口（跨窗可见 + 一键自我修复），见 plugin-error-repair.js */
 const pluginErrors = require("../plugin-error-repair.js");
@@ -501,7 +502,7 @@ function readManifest() {
 
 function queryGpu() {
   return new Promise((resolve) => {
-    execFile(
+    gpuExecFile(
       "nvidia-smi",
       ["--query-gpu=name,memory.used,memory.total,utilization.gpu", "--format=csv,noheader,nounits"],
       { windowsHide: true, timeout: 4000 },

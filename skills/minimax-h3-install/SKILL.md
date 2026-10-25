@@ -264,8 +264,25 @@ Windows 上 **两个包必须成对**：`sageattention` 的 `core` 在 **import 
    & "ComfyUI\venv\Scripts\python.exe" -c "import soundfile, numpy, aiohttp; print('audio deps ok', soundfile.__version__)"
    ```
    缺 `soundfile` 时补装：`& "ComfyUI\venv\Scripts\python.exe" -m pip install soundfile`（`PIP_*` 由宿主注入，勿加 `--isolated`；`numpy` / `aiohttp` 已由 ComfyUI 自身 requirements 提供，不重复装）。
+5. **后处理依赖自检**（流式超分 / 流式补帧跑在这个 venv 里；不启动 ComfyUI）：
+   ```powershell
+   & "ComfyUI\venv\Scripts\python.exe" -c "import torch, av, numpy, kornia; import importlib.util as u; print('post deps ok', u.find_spec('cv2') is not None)"
+   ```
+   最后那个 True/False 是 `cv2` 有没有：**ComfyUI 自带 requirements 不含 opencv**，所以 `setup_env.ps1` 会显式装 `opencv-python-headless<5`
+   （pin `<5` 是为了不把 numpy 强行升到 2.x）。缺 `cv2` 时补装：`... -m pip install "opencv-python-headless<5"`；
+   四路源都装不上**只警告不判失败**——两个流式脚本缺 cv2 会退 torch 面积缩放，照样出片（见「已知故障摘要 · 流式超分不出片」）。
+   `torch` / `av` / `numpy` / `kornia` 缺任何一个才是真故障（流式后处理跑不了）。
 
 ## 已知故障摘要
+
+### 流式超分 / 补帧不出片：`No module named 'cv2'`（2026-xx 现场，已修）
+
+症状：超分节点显示"流式超分未出片（… No module named 'cv2'）→ 已回退图路径"，最终出了片但走的是内存吃得多的旧图链，等于流式没生效。
+真因：`post/stream_upscale.py` 与 `post/stream_interp.py` 缩帧时 `import cv2`，而 **ComfyUI 自带 requirements 只有 numpy / av / kornia，安装脚本从没装 opencv** → 第一帧就炸，宿主兜底回退。
+现在两道都堵住：
+1. 两个脚本把 cv2 当**可选加速**：没有就退 torch 的 area 缩放（同一算法），缺 cv2 不再影响出片；
+2. `setup_env.ps1` 在 ComfyUI 依赖之后显式 `pip install "opencv-python-headless<5"`，装不上只 warn；安装收尾 smoke 与 `python -m app` 的 `postDeps` 字段会逐项报 `torch / av / numpy / kornia / cv2`。
+老机器自查与修复：`python -m app` 看 `postDeps.cv2`；false 就**重跑一次安装**（幂等，不会重下权重），不要删 INSTALL_DIR。
 
 ### pip 装依赖失败：镜像没同步某个子包（2026-10 现场，已修）
 
@@ -356,7 +373,7 @@ def execute(cls, clip, vae, audio_vae, prompt, width, height, length, ref_image_
 1. **硬件探测**（见上）。GPU 非 NVIDIA / 驱动不支持 CUDA 13 → fail 并写 reason（内置脚本给的码是 `h3.gpu.none` / `h3.gpu.driver_old`，由 `install.ps1` 在 venv 步之前先跑 `scripts\base_python.ps1 -SkipGpuProbe` 得出）。
 2. 从 `SCAFFOLD_REF` 准备 `app/` / `scripts/` / `base_python.ps1` / `requirements.txt`（保留已有 ComfyUI/models/output）；或用内置脚本。
 3. 取基座 Python（见「基座 Python」：版本判据 3.11 / 3.12，没有就自己下）→ 写 `.cuda-python`（仅作 venv 基座；`-CudaPython` / `MT_H3_CUDA_PYTHON` 仍可显式覆盖）。
-4. `.\scripts\setup_env.ps1`：隔离 venv（**禁 `--system-site-packages`**）、装 **cu130** torch（torchvision/torchaudio 匹配）、ComfyUI 依赖（含 `soundfile`，见 `requirements.txt`）、KJNodes + ComfyUI-Frame-Interpolation（4K 补帧）+ ComfyUI-MiniMaxH3-TeaCache（备用）。**该脚本不部署任何随包第三方节点包，也不清空 `custom_nodes`**。
+4. `.\scripts\setup_env.ps1`：隔离 venv（**禁 `--system-site-packages`**）、装 **cu130** torch（torchvision/torchaudio 匹配）、ComfyUI 依赖（含 `soundfile`，见 `requirements.txt`）、**后处理依赖 `opencv-python-headless`（建议 `<5`，见「冒烟与健康检查」第 5 条）**、KJNodes + ComfyUI-Frame-Interpolation（4K 补帧）+ ComfyUI-MiniMaxH3-TeaCache（备用）。**该脚本不部署任何随包第三方节点包，也不清空 `custom_nodes`**。
    - 装完**必须**校验 `torch.cuda.is_available()` 为真且日志里 cuda backend 未被禁用；否则按「驱动太旧」处理。
    - pip 走 `PIP_INDEX_URL` / `PIP_EXTRA_INDEX_URL` / `PIP_TRUSTED_HOST` 覆盖本机全局配置，避开坏掉的 `pypi.ngc.nvidia.com` extra-index（否则 DNS 反复重试，下载几乎不前进）；**不要用 `--isolated`**（它忽略环境变量，机器级 extra-index 照样生效）。
    - **装了依赖要自查源**：日志里应看到 `pip index=1/4 …` 起的逐级行；报错必须点名 `No matching distribution found for <包名>`，看到「驱动与 CUDA 档位不匹配」这句时**先回去看 pip 到底缺哪个包**（见「已知故障摘要 · pip 装依赖失败」，2026-10 就踩过这个误判）。
