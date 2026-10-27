@@ -113,6 +113,18 @@ const {
   generateImage: sensenovaGenerateImage,
   cancelGenerate: sensenovaCancelGenerate,
 } = require("./sensenova/main-sensenova.js");
+/* InfiniteTalk 数字人（Wan2.1 I2V 14B）：独立 ComfyUI 后端 + 分块续写宿主，
+   见 infinitetalk/main-infinitetalk.js。与 H3 / SenseNova 同口径：后端不随 MTNode 退出。 */
+const {
+  registerInfinitetalkIpc,
+  shutdownInfinitetalkUiOnly,
+} = require("./infinitetalk/main-infinitetalk.js");
+/* SoulX-FlashHead Lite（1.3B 实时流式数字人）：官方推理仓库 + 自带 stdlib HTTP 服务，
+   见 soulxflashhead/main-soulxflashhead.js。与 H3 / InfiniteTalk 同口径：后端不随 MTNode 退出。 */
+const {
+  registerSoulxflashheadIpc,
+  shutdownSoulxflashheadUiOnly,
+} = require("./soulxflashhead/main-soulxflashhead.js");
 const { patchProviders } = require("./config-providers.js");
 /* 文本 → PDF 落盘内核（隐藏窗口 + printToPDF，公式排版与画布预览同源，见 pdf-write.js） */
 const pdfWrite = require("./pdf-write.js");
@@ -123,6 +135,9 @@ const { registerAssetsIpc, registerThumbProtocol } = require("./assets-store.js"
 /* 存储占用与清理（设置 · 存储占用与清理）：统计各类冗余占用 + 按类清理，判据是
    「文件还被不被 MTNode 用着」（见 storage-clean.js） */
 const { registerStorageIpc, setScanLocale } = require("./storage-clean.js");
+/* 工作目录临时文件（.mtnode / .mtnode-input / recordings）的占用统计与清理：
+   顶栏「工作目录占用与清理」与设置里的同名入口共用这一个面板（见 workspace-temp.js）。 */
+const { registerWorkspaceTempIpc } = require("./workspace-temp.js");
 /* 应用宿主（用户自建应用）：根目录 / 云端目录 / 安装·更新·卸载 / 导出 zip / 变更探测 /
    独立窗口（preload-app.js 的 window.appHost），见 apps-store.js */
 const {
@@ -389,7 +404,7 @@ const mk = (p) => {
   return p;
 };
 
-/** 取某本地后端宿主登记的显存释放钩子（h3 / music3 / yue / sensenova / llama / breeze）。
+/** 取某本地后端宿主登记的显存释放钩子（h3 / music3 / yue / sensenova / llama / breeze / infinitetalk）。
  *  宿主只 export 一个 vramHooks()，模块加载失败或没接这一钩子时返回 {} ——
  *  那个后端就不参与释放，绝不影响其余的（也不影响启动）。 */
 function vramHooksOf(host) {
@@ -3984,6 +3999,27 @@ function sanitizeBase(name) {
   return s || "asset";
 }
 
+/* 用户可见的默认文件名（导出画布）：与画布名保持一致，中文 / emoji / 西里尔等一律原样保留
+   —— 不能用 sanitizeBase（它按 ASCII 白名单洗，中文会被逐个换成 "_"，画布名「我的画布」
+   就变成了「____」）。这里只按 Windows / macOS / Linux 共同的文件名禁区处理：
+   路径分隔符与 *?"<>| 换成 "_"、去掉控制字符、去掉结尾的点与空格、避开 Windows 设备名，
+   超长按字符截断（不是字节，避免切坏中文）。 */
+function fileNameBase(name, fallback) {
+  const fb = fallback || "workflow";
+  let s = String(name == null ? "" : name).normalize("NFC");
+  s = s.replace(/\.mtnodes$/i, ""); /* 画布名本身带扩展名时不重复追加 */
+  s = s
+    .replace(/[\\/:*?"<>|]/g, "_")
+    .replace(/[\u0000-\u001f\u007f]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/[. ]+$/g, "");
+  if (!s) s = fb;
+  if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(s)) s += "_";
+  if (s.length > 120) s = s.slice(0, 120).replace(/[. ]+$/g, "");
+  return s || fb;
+}
+
 function packMtNodes(wf) {
   const clone = JSON.parse(JSON.stringify(wf || {}));
   const paths = collectAssetPaths(clone);
@@ -4392,9 +4428,17 @@ ipcMain.handle("mtnodes:stripWorkspaceBase64", (e, base64) => {
 ipcMain.handle("mtnodes:export", async (e, wf) => {
   try {
     const { buf } = packMtNodes(wf);
+    /* 默认文件名 = 画布名（中文原样）；放绝对路径（用户「文档」目录），
+       只给裸文件名时对话框会落到应用目录，违背「数据不落应用文件夹」。 */
+    const fileName = fileNameBase(wf && wf.name, "workflow") + ".mtnodes";
+    let defaultPath = fileName;
+    try {
+      const docs = app.getPath("documents");
+      if (docs && fs.existsSync(docs)) defaultPath = path.join(docs, fileName);
+    } catch (_) {}
     const r = await dialog.showSaveDialog(win(), {
       title: I18n.t("导出画布"),
-      defaultPath: sanitizeBase((wf && wf.name) || "workflow") + ".mtnodes",
+      defaultPath,
       filters: [{ name: I18n.t("MTNode 画布"), extensions: ["mtnodes"] }],
     });
     if (r.canceled || !r.filePath) return { ok: false, error: I18n.t("已取消") };
@@ -9584,6 +9628,24 @@ app.whenReady().then(() => {
        显式传 outputDir 的插件控制台「试生成」不受影响 */
     assetDirFor: (wfId) => assetDir(wfId),
   });
+  /* InfiniteTalk 数字人（Wan2.1 I2V 14B）：独立 ComfyUI（默认 8199）/ 安装 / 出片。
+     产物落画布资产目录（与 proc_image / H3 同一去处）；音频按 81 帧分块由宿主续写。 */
+  registerInfinitetalkIpc({
+    getDataDir: DATA,
+    getMainWin: () => mainWin,
+    appRoot: __dirname,
+    getDsh: () => dsh(),
+    assetDirFor: (wfId) => assetDir(wfId),
+    getCanvasWorkspace: foregroundCanvasWorkspace,
+  });
+  /* SoulX-FlashHead Lite（1.3B 实时流式数字人）：自装的后端服务（默认 8198）/ 安装 / 出片。
+     产物落画布资产目录；实时基准（FPS / RTF）随控制台与安装收尾回写。 */
+  registerSoulxflashheadIpc({
+    getDataDir: DATA,
+    getMainWin: () => mainWin,
+    appRoot: __dirname,
+    assetDirFor: (wfId) => assetDir(wfId),
+  });
   /* ── 本地模型显存释放（local-model-vram.js）─────────────────────────────
      把各后端宿主登记的释放回调收进**一张表**：画布本地模型节点 / 应用出图入口走
      「运行前先释放别人的、收尾再释放自己的」，顶栏那枚按钮也走同一张表。
@@ -9601,6 +9663,8 @@ app.whenReady().then(() => {
     Object.assign({ id: "sensenova", label: "SenseNova（本机出图）", host: "sensenova", subdir: "sensenova" }, vramHooksOf("sensenova")),
     Object.assign({ id: "llama", label: "llama.cpp（本地大模型）", host: "llama", subdir: "llama" }, vramHooksOf("llama")),
     Object.assign({ id: "breeze", label: "Breeze TTS 2（语音）", host: "breeze", subdir: "breeze-tts" }, vramHooksOf("breeze")),
+    Object.assign({ id: "infinitetalk", label: "InfiniteTalk 数字人（ComfyUI）", host: "infinitetalk", subdir: "infinitetalk-local" }, vramHooksOf("infinitetalk")),
+    Object.assign({ id: "soulxflashhead", label: "SoulX-FlashHead Lite（实时数字人）", host: "soulxflashhead", subdir: "soulxflashhead-local" }, vramHooksOf("soulxflashhead")),
   ]) {
     if (typeof def.isRunning !== "function") continue; /* 宿主没接这一钩子 = 不参与释放，不影响其余后端 */
     vramRelease.vramRegister(def);
@@ -9632,6 +9696,8 @@ app.whenReady().then(() => {
   registerWorkflowsIpc({ getDataDir: DATA, t: (s) => I18n.t(s) });
   /* 存储占用与清理（设置里的「存储占用与清理」小节）：分类统计 + 按类清理 */
   registerStorageIpc({ getDataDir: DATA, t: (s) => I18n.t(s) });
+  /* 工作目录临时文件：.mtnode / .mtnode-input / recordings 的占用统计与回收站清理 */
+  registerWorkspaceTempIpc({ getDataDir: DATA, t: (s) => I18n.t(s) });
   /* 分类统计跑在 storage-scan-worker.js 线程里，统计标签要跟着界面语言走 */
   setScanLocale(() => I18n.getLocale());
   /* 素材库：独立于画布的文本/图像/音频/视频内容仓库（用户指定根目录，见 assets-store.js） */
@@ -9743,6 +9809,12 @@ app.on("before-quit", () => {
   /* 本地图像生成后端（SenseNova）故意不杀：32.66GB 权重加载要几分钟，是独立于 MTNode 的单例；
      这里只关它的控制台窗。想立刻把显存还给系统 → 控制台「停止后端」/「立即释放显存」，或等空闲自停。 */
   try { shutdownSensenovaUiOnly(); } catch {}
+  /* InfiniteTalk 数字人同口径：独立 ComfyUI 是有意常驻的单例（权重加载慢），退出只关控制台窗；
+     要立刻还显存 → 控制台「停止后端」或顶栏「释放显存」。 */
+  try { shutdownInfinitetalkUiOnly(); } catch {}
+  /* SoulX-FlashHead Lite 同口径：后端是有意常驻的单例（首次加载权重约 1 分钟），退出只关控制台窗；
+     要立刻还显存 → 控制台「停止后端」或顶栏「释放显存」。 */
+  try { shutdownSoulxflashheadUiOnly(); } catch {}
   /* 会话追加段（delta）：退出前整份压回基线（<id>.jsonl → <id>.json 并删追加段）。
      幂等：没有追加段的会话一个字节都不动；压缩本身是「先原子写基线、再删追加段」，
      崩在中间也不会重复贴（基线的 _deltaVer 兜底）。 */

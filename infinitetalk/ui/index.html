@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>InfiniteTalk 数字人</title>
+    <style>
+      :root {
+        --bg: #0f1115;
+        --panel: #171a21;
+        --line: #262b36;
+        --text: #e6e8ee;
+        --muted: #8b93a3;
+        --accent: #4d9ef7;
+        --ok: #4bbd7a;
+        --err: #e05d5d;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font: 13px/1.55 "Microsoft YaHei", system-ui, sans-serif;
+      }
+      header {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 14px 18px;
+        border-bottom: 1px solid var(--line);
+        background: var(--panel);
+      }
+      header h1 { font-size: 15px; margin: 0; font-weight: 600; }
+      .badge {
+        font-size: 12px;
+        padding: 2px 8px;
+        border-radius: 999px;
+        border: 1px solid var(--line);
+        color: var(--muted);
+      }
+      .badge.ok { color: var(--ok); border-color: #26543a; }
+      .badge.err { color: var(--err); border-color: #5a2a2a; }
+      main { padding: 16px 18px 40px; display: grid; gap: 14px; }
+      section {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 12px 14px;
+      }
+      h2 { font-size: 13px; margin: 0 0 10px; font-weight: 600; color: var(--muted); }
+      .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+      label.field { display: flex; align-items: center; gap: 6px; color: var(--muted); }
+      input[type="text"], input[type="number"], select {
+        background: #0d1016;
+        color: var(--text);
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        padding: 5px 8px;
+        font: inherit;
+      }
+      input[type="text"] { min-width: 280px; }
+      button {
+        background: #202634;
+        color: var(--text);
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        padding: 5px 12px;
+        font: inherit;
+        cursor: pointer;
+      }
+      button:hover { border-color: #3a4357; }
+      button:disabled { opacity: 0.45; cursor: default; }
+      button.primary { background: #1d4d80; border-color: #2a6aa8; }
+      button.danger { background: #5a2222; border-color: #7a2e2e; }
+      .muted { color: var(--muted); }
+      #log {
+        font: 12px/1.45 Consolas, "Cascadia Mono", monospace;
+        background: #0b0e13;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 8px 10px;
+        height: 240px;
+        overflow: auto;
+        white-space: pre-wrap;
+        word-break: break-all;
+      }
+      .bar {
+        height: 6px;
+        background: #0b0e13;
+        border-radius: 999px;
+        overflow: hidden;
+        border: 1px solid var(--line);
+        margin: 8px 0;
+      }
+      .bar > i { display: block; height: 100%; width: 0; background: var(--accent); transition: width 0.2s; }
+      .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+      .drop {
+        border: 1px dashed #2f3746;
+        border-radius: 8px;
+        padding: 8px 10px;
+        color: var(--muted);
+        min-height: 34px;
+        word-break: break-all;
+      }
+      .drop.set { border-color: #2a6aa8; color: var(--text); }
+      textarea {
+        width: 100%;
+        min-height: 56px;
+        background: #0d1016;
+        color: var(--text);
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        padding: 6px 8px;
+        font: inherit;
+        resize: vertical;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>InfiniteTalk 数字人</h1>
+      <span class="badge" id="phase">…</span>
+      <span class="muted" id="ver"></span>
+      <span class="muted" id="progressText"></span>
+      <span style="flex:1"></span>
+      <button id="btnClose">关闭窗口</button>
+    </header>
+
+    <main>
+      <section>
+        <h2>安装</h2>
+        <div class="row">
+          <input type="text" id="installDir" placeholder="安装目录（建议独立盘，约 32GB）" />
+          <button id="btnPickDir">选择目录</button>
+          <button id="btnInstall" class="primary">安装 / 重装</button>
+          <button id="btnCancelInstall" class="danger">取消安装</button>
+        </div>
+        <div class="row" style="margin-top:10px">
+          <label class="field">分辨率
+            <select id="resolution">
+              <option value="480p">480p（832×480 · 推荐）</option>
+              <option value="720p">720p（1280×768 · 更慢 / 更吃显存）</option>
+            </select>
+          </label>
+          <label class="field">步数
+            <input type="number" id="steps" min="1" max="40" step="1" style="width:80px" />
+          </label>
+          <label class="field">显存档位
+            <select id="vramMode">
+              <option value="auto">自动（推荐）</option>
+              <option value="low">低显存（强制分层卸载）</option>
+            </select>
+          </label>
+        </div>
+        <div class="bar"><i id="bar"></i></div>
+        <div class="muted" id="installHint">默认开启：fp8 扩散模型 + lightx2v 4 步 + SageAttention（强制）+ 显存水位。</div>
+      </section>
+
+      <section>
+        <h2>后端</h2>
+        <div class="row">
+          <button id="btnStart">启动后端</button>
+          <button id="btnStop">停止后端</button>
+          <button id="btnHealth">健康检查</button>
+          <span class="muted" id="backendText"></span>
+        </div>
+      </section>
+
+      <section>
+        <h2>试生成（I2V / V2V）</h2>
+        <div class="grid2">
+          <div>
+            <div class="muted">人物图（I2V，端口 0）</div>
+            <div class="drop" id="dropImage" data-kind="image">把人物图拖进来</div>
+          </div>
+          <div>
+            <div class="muted">源视频（V2V，可选；填了就按视频换口型）</div>
+            <div class="drop" id="dropVideo" data-kind="video">把源视频拖进来</div>
+          </div>
+        </div>
+        <div style="margin-top:8px">
+          <div class="muted">语音（必填）</div>
+          <div class="drop" id="dropAudio" data-kind="audio">把音频拖进来</div>
+        </div>
+        <div style="margin-top:8px">
+          <div class="muted">提示词（可空）</div>
+          <textarea id="prompt" placeholder="留空用内置默认提示词"></textarea>
+        </div>
+        <div class="row" style="margin-top:8px">
+          <button id="btnGen" class="primary">开始试生成</button>
+          <button id="btnCancelGen" class="danger">取消</button>
+          <span class="muted" id="genText"></span>
+        </div>
+        <div class="muted" id="genResult" style="margin-top:6px; word-break:break-all"></div>
+      </section>
+
+      <section>
+        <h2>日志</h2>
+        <div class="row" style="margin-bottom:8px">
+          <button id="btnLogRefresh">刷新</button>
+          <button id="btnLogClear">清空</button>
+          <span class="muted" id="gpuText"></span>
+        </div>
+        <div id="log"></div>
+      </section>
+    </main>
+
+    <script src="./ui.js"></script>
+  </body>
+</html>

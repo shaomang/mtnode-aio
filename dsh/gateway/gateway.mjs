@@ -3901,6 +3901,46 @@ function writeManagedSettingsPatch(home, rows) {
   return file
 }
 
+/* ── 模型流里的畸形报文：在同一轮里续接（本次热修）────────────────────────────
+   现场：`DeepSeek Messages stream: tool input is invalid JSON` —— 模型把 tool 入参吐成
+   非合法 JSON，DeepSeek 适配器在 message_stop 处抛出 MALFORMED_RESPONSE。
+   旧行为（真机复现，见 dsh/DESIGN.md「断点续跑契约」）：这一整轮直接失败 ——
+   适配器只把这次未完成的流编号成 `assistant/attempt` 落进会话（宿主不显示），已经吐出来的
+   正文一个字都不上报，用户只看到一行 ⚠；宿主再等 30s 带「从断点续跑」指令重发，
+   而会话里根本没有这条 assistant 消息，模型只能从头再写一遍 → 用户看到的正是
+   「整轮内容丢失 / 整轮重跑」。
+   正解是**引擎层同一轮续接**：dsh-llm-retry 挂在 agent/request-error 瀑布上，命中
+   retryableCodes 就在同一个 step（同一份上下文，含此前跑完的工具结果）里重新请求，
+   本轮不失败、不等待、不丢上下文。默认码表只有 EMPTY_RESPONSE / RATE_LIMIT / SERVER /
+   TIMEOUT / TRANSPORT，畸形报文（MALFORMED_RESPONSE）与截断流（STREAM_CLOSED）不在其中 ——
+   这就是「整轮丢失」的根因，故在此为两条路由（官方 llm-deepseek 与 pi-ai 各家）
+   显式下发同一份重试策略。
+   只放这两条码：它们都发生在 assistant 消息提交**之前**（无副作用、无工具执行），
+   重采样一次即可续上；工具执行 / 权限 / 上下文超限类错误一律不进这张表。 */
+const MODEL_STREAM_RETRYABLE_CODES = Object.freeze([
+  'EMPTY_RESPONSE',
+  'RATE_LIMIT',
+  'SERVER',
+  'TIMEOUT',
+  'TRANSPORT',
+  /* 模型流里的畸形报文：tool 入参不是合法 JSON / SSE 坏帧 / 事件顺序不对 —— 整条
+     assistant 消息还没提交，重采样一次就接上了（本次热修的正主）。 */
+  'MALFORMED_RESPONSE',
+  /* 流在 message_stop 之前断掉（上游截断）：同上，未提交，重采样可续。 */
+  'STREAM_CLOSED',
+])
+/* 每次返回新对象/新数组：schema 校验只读它，但共用一份易被下游就地改写 */
+function modelStreamRetryPolicy() {
+  return {
+    mode: 'normal',
+    /* 3 次：畸形报文重采样一两次就接上了；给太多会在「模型稳定吐坏 JSON」
+       （典型：tool 入参被 max_tokens 截断）时白烧上下文。用完仍失败就交回宿主那层
+       30s/60s 重发闸（它会带续跑指令点名同一会话，前功仍在）。 */
+    maxRetries: 3,
+    retryableCodes: MODEL_STREAM_RETRYABLE_CODES.slice(),
+  }
+}
+
 function applySettings(dshHome, effort, mtnodeProviders, permissionPreset, hostPersona, officialModels) {
   const home = dshHome || process.env.DSH_HOME || ''
   const list = Array.isArray(mtnodeProviders) ? mtnodeProviders : []
@@ -3921,7 +3961,10 @@ function applySettings(dshHome, effort, mtnodeProviders, permissionPreset, hostP
   const persona = String(hostPersona || '').trim()
   /* 官方模型清单:归一后按序进指纹 —— 清单变了要重写(热重载),清单没变则一次都不重写。 */
   const om = (Array.isArray(officialModels) ? officialModels : []).filter((m) => m && OFFICIAL_MODEL_ID_RE.test(String(m.id || '')))
-  const hash = eff + '|' + perm + '|' + JSON.stringify(list) + '|hp:' + persona + '|om:' + JSON.stringify(om)
+  /* 指纹末尾的 `rp1` 是「托管补丁内容版本号」：重试策略这类常量段不进上面任何一项，
+     没有它就会出现「代码改了、盘上补丁文件还是旧的、热重载也不触发」。改这份托管
+     配置的常量段时手动进一版（rp2 / rp3 …）。 */
+  const hash = eff + '|' + perm + '|' + JSON.stringify(list) + '|hp:' + persona + '|om:' + JSON.stringify(om) + '|rp1'
   if (hash === lastSettingsHash && home === lastSettingsHome) return { envPatch, changed: false }
   try {
     const providers = {}
@@ -3933,6 +3976,9 @@ function applySettings(dshHome, effort, mtnodeProviders, permissionPreset, hostP
         apiKeyEnv: 'MTNODE_KEY_' + (i + 1),
         /* baseURL 无凭据间接层:直接写 URL(非机密),密钥仅经 env 引用 */
         baseURL: String(p.baseUrl).trim(),
+        /* 与官方路由同一份步内重试策略:畸形报文 / 截断流绝不整轮丢失(见
+           MODEL_STREAM_RETRYABLE_CODES 注释) */
+        retryPolicy: modelStreamRetryPolicy(),
       }
       /* 目录同源路由不写 api:模型级 api 以目录元数据为准(多协议目录如
          opencode-go 同时含 openai-completions 与 anthropic-messages);
@@ -3941,7 +3987,13 @@ function applySettings(dshHome, effort, mtnodeProviders, permissionPreset, hostP
       entry.models = (p.models || []).map((m) => ({ id: String(m) }))
       providers[route] = entry
     })
-    const deepseek = { reasoningEffort: eff }
+    const deepseek = {
+      reasoningEffort: eff,
+      /* 官方路由同样下发步内重试策略:模型流畸形报文（典型
+         `DeepSeek Messages stream: tool input is invalid JSON`）在同一轮里续接,
+         不整轮丢失(见 MODEL_STREAM_RETRYABLE_CODES 注释) */
+      retryPolicy: modelStreamRetryPolicy(),
+    }
     /* 官方模型清单只在非空时写 models 键(空 = 不写,适配器用自身 DEFAULT_MODELS) */
     if (om.length) {
       deepseek.models = om.map((m) => {

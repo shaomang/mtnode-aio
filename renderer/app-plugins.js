@@ -851,6 +851,12 @@ const BACKEND_PLUGIN_SPECS = {
   h3: { key: "h3", api: "h3", hasService: true, update: true },
   llama: { key: "llama", api: "llama", hasService: true },
   breeze: { key: "breeze", api: "breeze", hasService: true },
+  /* InfiniteTalk 数字人（kind infinitetalk，id infinitetalk-local）：权重只发一版，
+     装完就是这版 —— 不做「检查更新」，卡片只留 安装 / 重装 + 启用 / 停用 + 控制台。 */
+  infinitetalk: { key: "infinitetalk", api: "infinitetalk", hasService: true, update: false },
+  /* SoulX-FlashHead Lite 实时数字人（kind soulxflashhead，id soulxflashhead-local）：
+     权重只发一版，装完就是这版 —— 不做「检查更新」，只留 安装 / 重装 + 启用 / 停用 + 控制台。 */
+  soulxflashhead: { key: "soulxflashhead", api: "soulxflashhead", hasService: true, update: false },
   remotion: { key: "remotion", api: "remotion", hasService: false },
   /* Blender 本地插件：卡片 = 安装 / 重装 + 启用 / 停用 + 控制台。宿主 blender/main-blender.js。
      「启用」= 插件自己拉起那只 Blender（用户手开的实例不做启停对象）；没有常驻后端要更新，
@@ -899,6 +905,10 @@ const BACKEND_INSTALL_IDS = {
   h3: "minimax-h3",
   llama: "llama-local",
   breeze: "breeze-tts-local",
+  /* InfiniteTalk 数字人：目录 id 与卡片 kind 不同名（infinitetalk / infinitetalk-local） */
+  infinitetalk: "infinitetalk-local",
+  /* SoulX-FlashHead Lite 实时数字人：目录 id 与卡片 kind 不同名 */
+  soulxflashhead: "soulxflashhead-local",
   remotion: "remotion",
   /* Paseo 手机接管：安装窗里的插件 id 就是它的目录 id */
   paseo: "paseo-remote",
@@ -1172,6 +1182,26 @@ async function refreshBreezePluginCard(root) {
 async function refreshSensenovaPluginCard(root) {
   return refreshBackendPluginCard(root, BACKEND_PLUGIN_SPECS.sensenova, {
     installLabel: (st) => (st.installed ? I18n.t("补装权重") : I18n.t("安装（国内镜像）")),
+  });
+}
+
+/* ---- InfiniteTalk 数字人（kind infinitetalk，id infinitetalk-local；宿主 infinitetalk/main-infinitetalk.js）
+   卡片口径与其它本地后端一致：三颗按钮 = 安装 / 重装 · 启用 / 停用 · 控制台。
+   安装开的是通用安装窗（步骤表真源 infinitetalk-pack/steps.json）；「启用」静默起它自己的
+   那份 ComfyUI（与 H3 的安装目录完全隔离）。 */
+async function refreshInfinitetalkPluginCard(root) {
+  return refreshBackendPluginCard(root, BACKEND_PLUGIN_SPECS.infinitetalk, {
+    installLabel: (st) => (st.installed ? I18n.t("补装要件") : I18n.t("安装（国内镜像）")),
+  });
+}
+
+/* ---- SoulX-FlashHead Lite 实时数字人（kind soulxflashhead，id soulxflashhead-local；
+   宿主 soulxflashhead/main-soulxflashhead.js）：卡片三颗按钮 = 安装 / 重装 · 启用 / 停用 · 控制台。
+   安装开的是通用安装窗（步骤表真源 soulxflashhead-pack/steps.json）；「启用」静默起它自己的
+    那份后端服务（8198，与 InfiniteTalk 的 8199 互不干扰）。 */
+async function refreshSoulxflashheadPluginCard(root) {
+  return refreshBackendPluginCard(root, BACKEND_PLUGIN_SPECS.soulxflashhead, {
+    installLabel: (st) => (st.installed ? I18n.t("补装要件") : I18n.t("安装（国内镜像）")),
   });
 }
 
@@ -1766,6 +1796,8 @@ function repaintPluginCard(card, item) {
     remotion: refreshRemotionPluginCard,
     llama: refreshLlamaPluginCard,
     breeze: refreshBreezePluginCard,
+    infinitetalk: refreshInfinitetalkPluginCard,
+    soulxflashhead: refreshSoulxflashheadPluginCard,
     paseo: refreshPaseoPluginCard,
     blender: refreshBlenderPluginCard,
   };
@@ -2143,6 +2175,18 @@ async function openAppPluginsDialog() {
         offs.push(window.api.onBreezeNotice(() => refreshBreezePluginCard(card)));
       }
       refreshBreezePluginCard(card);
+    } else if (item.kind === "infinitetalk" || item.handler === "infinitetalk") {
+      /* InfiniteTalk 数字人：控制台开 / 关、启停后端都会广播 consoleChanged，卡片据它重画 */
+      if (window.api && window.api.onInfinitetalkConsoleChanged) {
+        offs.push(window.api.onInfinitetalkConsoleChanged(() => refreshInfinitetalkPluginCard(card)));
+      }
+      refreshInfinitetalkPluginCard(card);
+    } else if (item.kind === "soulxflashhead" || item.handler === "soulxflashhead") {
+      /* SoulX-FlashHead Lite：控制台开 / 关、启停后端都会广播 consoleChanged，卡片据它重画 */
+      if (window.api && window.api.onSoulxflashheadConsoleChanged) {
+        offs.push(window.api.onSoulxflashheadConsoleChanged(() => refreshSoulxflashheadPluginCard(card)));
+      }
+      refreshSoulxflashheadPluginCard(card);
     } else if (item.kind === "paseo" || item.handler === "paseo") {
       /* Paseo 手机接管：控制台窗开/关都会广播 consoleChanged，卡片据它重画状态行 */
       if (window.api && window.api.paseoRemoteOnConsoleChanged) {

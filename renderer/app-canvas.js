@@ -1015,6 +1015,13 @@ function canvasNodeSig(n) {
        必须进签名，否则接上 / 断开后预览态会一直停在旧形状
        （真机自验复现：断开后缩略图不消失）。 */
     browse && n.kind === "asset" ? assetBrowseOutMask(n) : "",
+    /* 标题与描述：它们不止在节点头部，节点层折叠卡的 body 就是这两件
+       （大标题 .super-folder-title + 小字描述 .super-folder-desc）。改名 / 改描述
+       只换文字、不改形状，复用快速通道一个 DOM 都不拆 —— 不收进签名就会出现
+       「头部标题已经改了（或还停在一只输入框上），body 那张文件夹卡还是旧字」。
+       收进签名后，改完这一拍整幅重建一次，body 立刻跟着更新。 */
+    String(n.title || ""),
+    String(n.note || ""),
     /* 节点层外侧端子名（「外观」面板里改的）：改名只换徽标文字、不改形状，
        但复用快速通道不会重画徽标 —— 所以名字进签名，改完这一拍整幅重建一次。 */
     n.kind === "super" ? superPortNamesSig(n) : "",
@@ -5570,6 +5577,36 @@ function breezePresetChoiceList() {
   const list = (typeof breezePresetCache === "object" && breezePresetCache && breezePresetCache.presets) || [];
   return list.filter((p) => p && !p.draft);
 }
+/* 角色清单变了（首帧读到 / 新建 / 删除 / 拖动排序）后，把台上 breeze_gen 的卡片重建一次。
+   renderCanvas 走复用快速通道（节点形状签名没变）一个 DOM 都不拆，body 里的「角色」下拉
+   会一直停在旧清单（首次打开时就是只有「无（走端子 / 音色库）」）—— 必须走节点级重建，
+   口径与 breezePickCommit 一致。台上没有 breeze_gen 卡片才退回整幅重绘。 */
+function breezeRefreshNodeCards() {
+  const nodes = ((S.wf && S.wf.nodes) || []).filter((n) => n && n.kind === "breeze_gen");
+  if (!nodes.length) return;
+  const canRefresh = typeof refreshNodeEl === "function";
+  let mountedCount = 0;
+  for (const n of nodes) {
+    let mounted = null;
+    try {
+      mounted = document.querySelector('.wf-node[data-nid="' + n.id + '"]');
+    } catch (_) {
+      mounted = null;
+    }
+    if (!mounted) continue;
+    mountedCount++;
+    try {
+      if (canRefresh) refreshNodeEl(n.id);
+      else renderCanvas();
+    } catch (_) {}
+  }
+  /* 一颗卡片都还没挂上台（首帧正在建 DOM）：补一次整幅重绘，让下拉读到新清单 */
+  if (!mountedCount && !canRefresh) {
+    try {
+      renderCanvas();
+    } catch (_) {}
+  }
+}
 function breezePresetPullOnce() {
   if (breezePresetPullPending || breezePresetCache.at) return;
   breezePresetPullPending = true;
@@ -5578,9 +5615,7 @@ function breezePresetPullOnce() {
     .catch(() => [])
     .then(() => {
       breezePresetPullPending = false;
-      try {
-        renderCanvas();
-      } catch (_) {}
+      breezeRefreshNodeCards();
     });
 }
 function breezeChoiceGroupsOf(presetId) {
@@ -5960,6 +5995,8 @@ function openBreezePresetDialog(node, onDone) {
       const first = presets.find((p) => p && !p.draft);
       curId = first ? first.id : "";
     }
+    /* 新建 / 改名 / 删除角色后，节点上的「角色」下拉立刻跟上（不再等下一次整幅重绘） */
+    breezeRefreshNodeCards();
   };
 
   const loadLlm = async () => {
@@ -6701,7 +6738,7 @@ function openBreezePresetDialog(node, onDone) {
     }
     if (!String(w.instruction || "").trim()) {
       c.status = "error";
-      c.error = T("缺音色指令：回第①步写一句（或点「AI 优化提示词」）");
+      c.error = T("缺音色提示词：在这一步上方写一句（或回第①步点「AI 优化提示词」）");
       return false;
     }
     if (!c.seedTouched) c.seed = rndSeed();
@@ -6813,7 +6850,7 @@ function openBreezePresetDialog(node, onDone) {
   const genAll = async () => {
     const w = wiz;
     if (!w || w.busy) return;
-    const todo = w.candidates.filter((c) => c.status !== "done");
+    const todo = w.candidates.filter((c) => c.status !== "done" || c.stale);
     if (!todo.length) {
       w.err = "";
       okText = T("全部候选都已经生成过了");
@@ -6821,7 +6858,7 @@ function openBreezePresetDialog(node, onDone) {
       return;
     }
     if (!String(w.instruction || "").trim()) {
-      w.err = T("缺音色指令：先回第①步写好");
+      w.err = T("缺音色提示词：在这一步上方写一句就行");
       paint();
       return;
     }
@@ -7370,13 +7407,34 @@ function openBreezePresetDialog(node, onDone) {
 
     if (w.step === 2) {
       const doneN = w.candidates.filter((c) => c.status === "done").length;
+      const todoN = w.candidates.filter((c) => c.status !== "done" || c.stale).length;
+      /* 音色提示词（instruction）就在试听这一步改：不走回头路，改完按新提示词重抽 */
+      const insRow = lineRow(T("音色提示词（指令 · 决定音色）"), "bpf-row col");
+      const insTa = areaOf(
+        w.instruction,
+        3,
+        T("AI 按声线设定写的这一句，可以自己改；改完点「全部开始生成」/「重抽音频」按新提示词重合成"),
+      );
+      const insHint = el("div", "bp-sub", T("提示词改过了：已合成的候选要重抽才会换成新音色"));
+      insHint.style.display = w.candidates.some((c) => c.stale) ? "" : "none";
+      insTa.oninput = () => {
+        w.instruction = insTa.value;
+        /* 提示词变了，已经合成那版只对应旧提示词：标 stale 并立刻提示 */
+        for (const c of w.candidates) if (c.status === "done") c.stale = true;
+        insHint.style.display = w.candidates.some((c) => c.stale) ? "" : "none";
+        queueWizSave();
+      };
+      insRow.appendChild(insTa);
+      insRow.appendChild(insHint);
+      form.appendChild(insRow);
+
       const headRow = el("div", "bpf-row breeze-wiz-genbar");
       headRow.appendChild(
         el("span", "bp-sub", T("台词 {n} 条 · 已生成 {d} 条", { n: w.candidates.length, d: doneN })),
       );
       const runAll = btn(w.busy ? T("生成中…") : T("全部开始生成"), "mini primary");
-      runAll.disabled = !!w.busy || doneN === w.candidates.length;
-      runAll.title = T("只跑还没生成的 / 失败的这些，逐条串行合成，每出一条就能试听");
+      runAll.disabled = !!w.busy || !todoN;
+      runAll.title = T("只跑还没生成的 / 失败的 / 提示词改过要重抽的，逐条串行合成，每出一条就能试听");
       runAll.onclick = async (ev) => {
         ev.stopPropagation();
         await genAll();
@@ -7421,7 +7479,7 @@ function openBreezePresetDialog(node, onDone) {
           queueWizSave();
         };
         card.appendChild(ta);
-        if (c.stale) card.appendChild(el("div", "bp-sub", T("台词改过了：点「重抽音频」才会按新台词重新合成")));
+        if (c.stale) card.appendChild(el("div", "bp-sub", T("台词或提示词改过了：点「重抽音频」才会按新的重新合成")));
 
         const numRow = el("div", "bpf-row");
         numRow.appendChild(el("span", "bpf-label", "seed"));
@@ -7506,6 +7564,25 @@ function openBreezePresetDialog(node, onDone) {
           paint();
         };
         ops.appendChild(pickIt);
+        /* 减一条：连它已经合成的小样一起删（候选池里不留孤儿文件） */
+        const del = btn(T("删掉这条"), "mini");
+        del.disabled = !!w.busy;
+        del.title = T("从这趟草稿里去掉这条台词，已经合成的小样一起删；随时可以再「＋ 手写一条」加回来");
+        del.onclick = async (ev) => {
+          ev.stopPropagation();
+          if (w.busy) return;
+          if (w.candidates.indexOf(c) < 0) return;
+          w.candidates = w.candidates.filter((x) => x !== c);
+          if (w.selected === c.id) w.selected = "";
+          if (c.id && w.presetId && typeof api.breezePresetCandidateDelete === "function") {
+            try {
+              await api.breezePresetCandidateDelete({ presetId: w.presetId, candidateId: c.id });
+            } catch (_) {}
+          }
+          queueWizSave();
+          paint();
+        };
+        ops.appendChild(del);
         card.appendChild(ops);
         form.appendChild(card);
       });
@@ -7668,7 +7745,9 @@ function openBreezePresetDialog(node, onDone) {
         presets = res.presets;
         /* 节点上的角色下拉读的是 breezePresetCache（app-nodes.js），跟着刷新一次顺序 */
         try {
-          if (typeof breezePresetsLoad === "function") breezePresetsLoad(true);
+          if (typeof breezePresetsLoad === "function") {
+            Promise.resolve(breezePresetsLoad(true)).then(() => breezeRefreshNodeCards()).catch(() => {});
+          }
         } catch (_) {}
         if (wrap.isConnected) paint();
       }
@@ -8395,6 +8474,31 @@ function portBadgeText(node, dir, idx, opt) {
           title: "",
           zh: true,
         };
+      /* SoulX-FlashHead Lite（端口口径 = app.js 的 IN_PORT_DATA_KINDS.soulxflashhead_gen）：
+         0 人物图 · 1 语音 · 2 控制输入 */
+      case "soulxflashhead_gen":
+        return {
+          badge: i === 0 ? I18n.t("人物图") : i === 1 ? I18n.t("语音") : I18n.t("控制"),
+          title: "",
+          zh: true,
+        };
+      /* InfiniteTalk 数字人（端口口径 = app.js 的 IN_PORT_DATA_KINDS.infinitetalk_gen）：
+         0 人物图 · 1 语音 · 2 源视频 · 3 提示词 · 4 控制输入 */
+      case "infinitetalk_gen":
+        return {
+          badge:
+            i === 0
+              ? I18n.t("人物图")
+              : i === 1
+                ? I18n.t("语音")
+                : i === 2
+                  ? I18n.t("源视频")
+                  : i === 3
+                    ? I18n.t("提示词")
+                    : I18n.t("控制"),
+          title: "",
+          zh: true,
+        };
       case "video_gen": {
         if (i === videoGenControlPort(node))
           return { badge: I18n.t("控制"), title: "", zh: true };
@@ -8513,6 +8617,12 @@ function portBadgeText(node, dir, idx, opt) {
     case "breeze_gen":
       /* 0 号出的是合成好的语音（与 save / 下游媒体端子同族）· 1 号是控制出 */
       return { badge: i === 0 ? I18n.t("音频") : I18n.t("控制"), title: "", zh: true };
+    case "soulxflashhead_gen":
+      /* 0 号出的是生成的数字人视频 mp4（含原音轨）· 1 号是控制出 */
+      return { badge: i === 0 ? I18n.t("视频") : I18n.t("控制"), title: "", zh: true };
+    case "infinitetalk_gen":
+      /* 0 号出的是生成的数字人视频 mp4 · 1 号是控制出 */
+      return { badge: i === 0 ? I18n.t("视频") : I18n.t("控制"), title: "", zh: true };
     default:
       break;
   }
@@ -8522,6 +8632,8 @@ function portBadgeText(node, dir, idx, opt) {
     node.kind === "music_gen" ||
     node.kind === "yue_gen" ||
     node.kind === "video_gen" ||
+    node.kind === "infinitetalk_gen" ||
+    node.kind === "soulxflashhead_gen" ||
     node.kind === "remotion" ||
     (typeof isVideoPostKind === "function" && isVideoPostKind(node))
   )
@@ -8833,11 +8945,14 @@ function nodeElement(node) {
         I18n.t("该节点已连接输入：内容只读，自动继承输入内容（符合 YAML 则转为批量）") +
         I18n.t("；本节点自己写的正文不参与取值");
       head.appendChild(chip);
+      head.appendChild(freezeInputButton(node));
       /* 符合 YAML：闪烁「YAML」按钮，点击可关闭解析（仅显示原始内容） */
       if (node.kind === "input_text") {
         const disp = displayValueOf(firstSource(node), node);
         const es =
-          disp && disp.text != null ? parseSimpleYaml(disp.text) : [];
+          disp && disp.text != null && !jsonContainerOf(disp.text)
+            ? parseSimpleYaml(disp.text)
+            : [];
         if (es.length) {
           const yb = document.createElement("button");
           yb.type = "button";
@@ -9603,16 +9718,32 @@ function nodeElement(node) {
     appendMediaConsoleBtn(head, node);
     appendMediaPlayBtns(head, node, "调用 SenseNova 本地后端生成图像");
   }
-  if (node.kind === "video_gen") {
+  if (node.kind === "video_gen" || node.kind === "infinitetalk_gen" || node.kind === "soulxflashhead_gen") {
+    const lc = node.kind === "infinitetalk_gen";
+    const sx = node.kind === "soulxflashhead_gen";
     const chip = document.createElement("span");
     chip.className = "n-chip" + (node.running ? " on" : "");
-    chip.textContent = I18n.t("视频");
-    chip.title = I18n.t("MiniMax H3 · 执行时自动启停后端");
+    chip.textContent = I18n.t(sx ? "实时数字人" : lc ? "数字人" : "视频");
+    chip.title = I18n.t(
+      sx
+        ? "SoulX-FlashHead Lite · 512×512@25fps 流式 · 执行时自动启停独立后端"
+        : lc
+          ? "InfiniteTalk · 执行时自动启停独立 ComfyUI 后端"
+          : "MiniMax H3 · 执行时自动启停后端",
+    );
     head.appendChild(chip);
     appendBackendProbeBtn(head, node);
     appendMediaConsoleBtn(head, node);
     /* 原「设置」就地展开按钮已由统一 ⚙（跳窗）取代 —— 见 NODE_SETTINGS_FORMS */
-    appendMediaPlayBtns(head, node, "调用 Minimax H3 后端生成");
+    appendMediaPlayBtns(
+      head,
+      node,
+      sx
+        ? "调用 SoulX-FlashHead Lite 后端生成（实时数字人）"
+        : lc
+          ? "调用 InfiniteTalk 数字人后端生成"
+          : "调用 Minimax H3 后端生成",
+    );
   }
   /* 视频后处理（超分 / 补帧）：与 video_gen 同一套头部动作（探活 / 控制台 / ▶ / ✕），
      但后处理独立于生成 —— 只在用户点 ▶ 或上游控制线触发时才跑。 */
@@ -10119,6 +10250,28 @@ function nodeElement(node) {
         i === 0
           ? I18n.t("提示词（要画成什么 · 可接文本节点，也可接参考图）")
           : I18n.t("输入端子 ") + (i + 1) + I18n.t("（数据槽：可接文本 / 图像）");
+    else if (node.kind === "soulxflashhead_gen")
+      /* SoulX-FlashHead Lite（端口口径 = app.js 的 IN_PORT_DATA_KINDS.soulxflashhead_gen）：
+         0 人物图 · 1 语音 · 2 控制输入 */
+      inTitle =
+        i === 0
+          ? I18n.t("人物图（要开口的形象 · 可接图像节点）")
+          : i === 1
+            ? I18n.t("语音（要驱动的说话内容 · 任意音频，自动转 16k 单声道）")
+            : I18n.t("控制输入（触发生成）");
+    else if (node.kind === "infinitetalk_gen")
+      /* InfiniteTalk 数字人（端口口径 = app.js 的 IN_PORT_DATA_KINDS.infinitetalk_gen）：
+         0 人物图 · 1 语音 · 2 源视频 · 3 提示词 · 4 控制输入 */
+      inTitle =
+        i === 0
+          ? I18n.t("人物图（I2V 参考形象 · 可接图像节点）")
+          : i === 1
+            ? I18n.t("语音（要驱动的说话内容 · 任意音频，自动转 16k 单声道）")
+            : i === 2
+              ? I18n.t("源视频（接了就走 V2V：构图跟源视频，按所选画幅缩放）")
+              : i === 3
+                ? I18n.t("提示词（可空 · 空则用设置里的提示词）")
+                : I18n.t("控制输入（触发生成）");
     else if (node.kind === "net_send")
       inTitle = i === 0 ? I18n.t("信息输入（要发送的文本）") : I18n.t("控制输入（触发发送）");
     else if (node.kind === "video_gen") {
@@ -10361,12 +10514,16 @@ function nodeElement(node) {
       outTitle = I18n.t("分发输出 ") + (oi + 1);
     else if (node.kind === "net_recv")
       outTitle = oi === 0 ? I18n.t("信息输出（收到的文本）") : I18n.t("控制输出（收到消息时触发）");
-    else if (node.kind === "music_gen" || node.kind === "yue_gen" || node.kind === "sensenova_gen" || node.kind === "video_gen" || isVideoPostKind(node) || node.kind === "remotion")
+    else if (node.kind === "music_gen" || node.kind === "yue_gen" || node.kind === "sensenova_gen" || node.kind === "video_gen" || node.kind === "infinitetalk_gen" || node.kind === "soulxflashhead_gen" || isVideoPostKind(node) || node.kind === "remotion")
       outTitle =
         oi === 0
           ? node.kind === "sensenova_gen"
             ? I18n.t("输出端子（本节点生成的图像 · 可直接连图像保存 / 预览）")
-            : I18n.t("输出端子（输出本节点内容）")
+            : node.kind === "infinitetalk_gen"
+              ? I18n.t("输出端子（生成的数字人视频 mp4 · 可直接连保存 / 预览）")
+              : node.kind === "soulxflashhead_gen"
+                ? I18n.t("输出端子（生成的数字人视频 mp4 · 512×512@25fps · 可直接连保存 / 预览）")
+                : I18n.t("输出端子（输出本节点内容）")
           : I18n.t("控制输出（生成完成后触发下游控制目标）");
     /* Breeze 语音（本轮修的命名 bug）：0 号出的是合成好的语音，1 号是控制出 */
     else if (node.kind === "breeze_gen")
@@ -11070,6 +11227,24 @@ function readonlyBatchRows(items, list, isImage) {
     }
     list.appendChild(row);
   }
+}
+
+/* 「固化」按钮（只读继承态专用）：把当前继承到的内容写进本节点并切断输入，
+   回到普通输入节点模式 —— 逻辑见 app.js 的 freezeInputNode。文本 / 图像在头部
+   只读徽标旁露出，音视频在继承提示下方露出。 */
+function freezeInputButton(node) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "n-chip-act";
+  b.textContent = I18n.t("固化");
+  b.title = I18n.t(
+    "固化当前内容：把继承到的内容写进本节点并切断输入，回到普通输入节点模式（可 Ctrl+Z 撤销）",
+  );
+  b.onclick = (ev) => {
+    ev.stopPropagation();
+    if (typeof freezeInputNode === "function") freezeInputNode(node);
+  };
+  return b;
 }
 
 /* ============ 节点浏览态（未选中 = 浏览形态）============
@@ -11929,7 +12104,10 @@ NODE_BROWSE_BODY.input_text = function (node, body) {
       return;
     }
     if (disp && disp.text != null) {
-      const es = !node.yamlOff ? parseSimpleYaml(disp.text) || [] : [];
+      const es =
+        !node.yamlOff && !jsonContainerOf(disp.text)
+          ? parseSimpleYaml(disp.text) || []
+          : [];
       if (es.length) {
         body.appendChild(
           browseEntriesEl(
@@ -15379,9 +15557,37 @@ function buildLtartBody(node, body) {
   body.appendChild(pathEl);
 }
 
+/* 已下线插件的旧节点（目前只有 longcat_avatar_gen）：插件不再随包提供，节点本身
+   也不在任何注册表里，节点体只剩「只读占位 + 删除」—— 不做迁移，不冒充还能跑。
+   ⚙ / ▶ 等入口由 registry 判定自动消失（kind 查不到），这里只补节点体文案。 */
+function buildRemovedPluginBody(node, body) {
+  body.innerHTML = "";
+  const box = document.createElement("div");
+  box.className = "n-status";
+  box.style.whiteSpace = "pre-wrap";
+  box.textContent =
+    I18n.t("插件已移除") +
+    "\n" +
+    I18n.t("「LongCat 数字人」插件已下线，这个节点不能再运行。它不会影响画布其它节点，直接删掉即可；已生成的视频仍在原处。");
+  body.appendChild(box);
+  const btn = document.createElement("button");
+  btn.className = "n-play";
+  btn.style.marginTop = "8px";
+  btn.textContent = I18n.t("删除这个节点");
+  btn.onclick = (ev) => {
+    ev.stopPropagation();
+    deleteNode(node.id);
+  };
+  body.appendChild(btn);
+}
+
 function buildBody(node, body) {
   /* 浏览态（未选中）优先走只读视图分支；handler 未接管时回落到下方编辑态渲染 */
   if (nodeBrowseMode(node) && buildBrowseBody(node, body)) return;
+  if (node.kind === "longcat_avatar_gen") {
+    buildRemovedPluginBody(node, body);
+    return;
+  }
   /* 函数节点 / 工具节点（工具＝super + tool:true 变体，判定 isToolNode）：
      参数即端子 · 收起时是叶子形态。工具壳被用户展开（进入内部子画布）时
      仍走下方 super 分支，由舞台承载内部图。 */
@@ -15461,7 +15667,10 @@ function buildBody(node, body) {
         readonlyBatchRows(disp.items, list, false);
         body.appendChild(list);
       } else if (disp && disp.text != null) {
-        const es = !node.yamlOff ? parseSimpleYaml(disp.text) : [];
+        const es =
+          !node.yamlOff && !jsonContainerOf(disp.text)
+            ? parseSimpleYaml(disp.text)
+            : [];
         if (es.length) {
           const list = document.createElement("div");
           list.className = "n-bentries";
@@ -15851,6 +16060,8 @@ function buildBody(node, body) {
     };
     /* 继承态：选择 / 录制 / 清除一律不挂（内容只读，先断开那条入线）——「转录」保留 */
     if (!inheriting) ops.appendChild(b1);
+    /* 继承态唯一的出路：把上游这份媒体固化下来并切断入线，回到普通音视频输入节点 */
+    if (inheriting) ops.appendChild(freezeInputButton(node));
     /* 「录制」按钮（renderer/app-recaudio.js）：只有**音频**节点能现场录 —— 录完在那张节点上
        就地绑定新文件（record_{yyyymmddhhmmss}.mp3）。视频节点不给（本轮口径）。 */
     if (!isVid && !inheriting && typeof recOpsButton === "function") {
@@ -17259,19 +17470,32 @@ function buildBody(node, body) {
       if (node.refSource) st.title = I18n.t("参考源：") + String(node.refSource);
       body.appendChild(st);
     }
-  } else if (node.kind === "video_gen") {
+  } else if (node.kind === "video_gen" || node.kind === "infinitetalk_gen" || node.kind === "soulxflashhead_gen") {
+    const lc = node.kind === "infinitetalk_gen";
+    const sx = node.kind === "soulxflashhead_gen";
     const meta = document.createElement("div");
     meta.className = "n-empty";
     meta.id = "mgmeta-" + node.id;
-    meta.textContent = isCustomVideoGen(node)
-      ? I18n.t("自建") + " · " + ((node.wfMeta && node.wfMeta.title) || String(node.workflowId).slice(0, 10))
-      : (node.videoMode || "fl2va").toUpperCase() +
+    meta.textContent = sx
+      ? "512×512 · 25fps · " + String(Number(node.steps) || 4) + I18n.t(" 步") + " · " + I18n.t("整段流式")
+      : lc
+      ? String(node.resolution || "480p") +
         " · " +
-        (node.ratio || "16:9") +
-        (typeof videoGenChainTag === "function" && videoGenChainTag(node)
-          ? " · " + videoGenChainTag(node)
-          : "");
-    if (isCustomVideoGen(node)) meta.title = I18n.t("自建 ComfyUI 工作流：点 ⚙ 在设置窗口里换工作流 / 改参数映射");
+        String(Number(node.steps) || 4) +
+        I18n.t(" 步") +
+        " · " +
+        I18n.t("端口 2 接源视频 = V2V")
+      : isCustomVideoGen(node)
+        ? I18n.t("自建") + " · " + ((node.wfMeta && node.wfMeta.title) || String(node.workflowId).slice(0, 10))
+        : (node.videoMode || "fl2va").toUpperCase() +
+          " · " +
+          (node.ratio || "16:9") +
+          (typeof videoGenChainTag === "function" && videoGenChainTag(node)
+            ? " · " + videoGenChainTag(node)
+            : "");
+    if (sx) meta.title = I18n.t("人物图（端口 0）+ 语音（端口 1）→ 512×512@25fps 口型同步 mp4；整段音频一次流式跑完");
+    else if (lc) meta.title = I18n.t("人物图（端口 0）+ 语音（端口 1）→ 口型同步 mp4；长音频由宿主自动分段续写");
+    else if (isCustomVideoGen(node)) meta.title = I18n.t("自建 ComfyUI 工作流：点 ⚙ 在设置窗口里换工作流 / 改参数映射");
     body.appendChild(meta);
     appendMediaGenSummaryBody(node, body, "video");
     appendMediaBackendPanel(body, node);
@@ -18300,6 +18524,8 @@ async function fillPreviews() {
       const path = await resolveMediaGenDisplayPath(n);
       const isVid =
         n.kind === "video_gen" ||
+        n.kind === "infinitetalk_gen" ||
+        n.kind === "soulxflashhead_gen" ||
         n.kind === "remotion" ||
         (typeof isVideoPostKind === "function" && isVideoPostKind(n));
       const isSnImg = n.kind === "sensenova_gen";

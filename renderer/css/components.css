@@ -3286,6 +3286,27 @@ body.theme-light .think-doc.md-viewer-doc {
   background: rgba(255, 143, 46, .12)
 }
 
+/* 「固化」芯片按钮（只读继承态 → 普通输入节点）：与 .n-chip 同型，可点、不闪 */
+.n-chip-act {
+  flex: none;
+  font-size: 9px;
+  letter-spacing: 1px;
+  padding: 0 6px;
+  line-height: 15px;
+  border: 1px solid var(--orange);
+  border-radius: 2px;
+  color: var(--orange2);
+  background: rgba(255, 143, 46, .12);
+  cursor: pointer;
+  user-select: none;
+  font-family: var(--sans);
+}
+
+.n-chip-act:hover {
+  color: #fff;
+  background: rgba(255, 143, 46, .25)
+}
+
 .n-batch-bar {
   flex: none;
   display: flex;

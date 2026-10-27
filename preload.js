@@ -158,6 +158,10 @@ contextBridge.exposeInMainWorld('api', {
   /* 存储占用与清理（设置 · 存储占用与清理）：分类统计 + 按类清理（见 storage-clean.js） */
   storageScan: (opts) => ipcRenderer.invoke('storage:scan', opts || {}),
   storageClean: (opts) => ipcRenderer.invoke('storage:clean', opts || {}),
+  /* 工作目录临时文件（.mtnode / .mtnode-input / recordings）的统计与清理：
+     只统计与回收站删除，绝不按传入路径直删（白名单在主进程 workspace-temp.js 里）。 */
+  wsTempScan: (opts) => ipcRenderer.invoke('wsTemp:scan', opts || {}),
+  wsTempClean: (opts) => ipcRenderer.invoke('wsTemp:clean', opts || {}),
   netListen: (o) => ipcRenderer.invoke('net:listen', o),
   netUnlisten: (o) => ipcRenderer.invoke('net:unlisten', o),
   netSend: (o) => ipcRenderer.invoke('net:send', o),
@@ -784,6 +788,96 @@ contextBridge.exposeInMainWorld('api', {
     };
     ipcRenderer.on('sensenova:gpu', handler);
     return () => ipcRenderer.removeListener('sensenova:gpu', handler);
+  },
+
+  /* ── InfiniteTalk 数字人（Wan2.1 I2V 14B · 独立 ComfyUI）：安装 / 启停 / 出片，
+        见 infinitetalk/main-infinitetalk.js 与控制台窗 infinitetalk/preload-infinitetalk.js ── */
+  infinitetalkStatus: () => ipcRenderer.invoke('infinitetalk:getStatus'),
+  infinitetalkHealth: (opts) => ipcRenderer.invoke('infinitetalk:health', opts || {}),
+  infinitetalkOpen: () => ipcRenderer.invoke('infinitetalk:open'),
+  infinitetalkClose: () => ipcRenderer.invoke('infinitetalk:close'),
+  infinitetalkInstall: (opts) => ipcRenderer.invoke('infinitetalk:install', opts || {}),
+  infinitetalkCancelInstall: () => ipcRenderer.invoke('infinitetalk:cancelInstall'),
+  infinitetalkStart: (opts) => ipcRenderer.invoke('infinitetalk:start', opts || {}),
+  infinitetalkStop: () => ipcRenderer.invoke('infinitetalk:stop'),
+  infinitetalkEnsureReady: (opts) => ipcRenderer.invoke('infinitetalk:ensureReady', opts || {}),
+  infinitetalkGenerate: (params) => ipcRenderer.invoke('infinitetalk:generate', params || {}),
+  infinitetalkResume: (params) => ipcRenderer.invoke('infinitetalk:resume', params || {}),
+  infinitetalkCancelGenerate: (nodeId) => ipcRenderer.invoke('infinitetalk:cancelGenerate', nodeId),
+  infinitetalkGetLock: () => ipcRenderer.invoke('infinitetalk:getLock'),
+  infinitetalkPickInstallDir: () => ipcRenderer.invoke('infinitetalk:pickInstallDir'),
+  infinitetalkSetInstallDir: (dir) => ipcRenderer.invoke('infinitetalk:setInstallDir', dir),
+  infinitetalkSetConfig: (patch) => ipcRenderer.invoke('infinitetalk:setConfig', patch || {}),
+  infinitetalkGpuProbe: () => ipcRenderer.invoke('infinitetalk:gpuProbe'),
+  infinitetalkConsoleTail: (n) => ipcRenderer.invoke('infinitetalk:consoleTail', n),
+  infinitetalkConsoleClear: () => ipcRenderer.invoke('infinitetalk:consoleClear'),
+  infinitetalkOpenPath: (p) => ipcRenderer.invoke('infinitetalk:openPath', p),
+  infinitetalkRemovePluginMeta: () => ipcRenderer.invoke('infinitetalk:removePluginMeta'),
+  onInfinitetalkProgress: (cb) => {
+    const handler = (_e, data) => {
+      try { cb(data); } catch (_) {}
+    };
+    ipcRenderer.on('infinitetalk:progress', handler);
+    return () => ipcRenderer.removeListener('infinitetalk:progress', handler);
+  },
+  onInfinitetalkConsoleChanged: (cb) => {
+    const handler = (_e, data) => {
+      try { cb(data); } catch (_) {}
+    };
+    ipcRenderer.on('infinitetalk:consoleChanged', handler);
+    return () => ipcRenderer.removeListener('infinitetalk:consoleChanged', handler);
+  },
+  onInfinitetalkGpu: (cb) => {
+    const handler = (_e, data) => {
+      try { cb(data); } catch (_) {}
+    };
+    ipcRenderer.on('infinitetalk:gpu', handler);
+    return () => ipcRenderer.removeListener('infinitetalk:gpu', handler);
+  },
+
+  /* ── SoulX-FlashHead Lite（实时数字人 · 1.3B 流式）：安装 / 启停 / 出片 / 实时基准，
+        见 soulxflashhead/main-soulxflashhead.js 与控制台窗 soulxflashhead/preload-soulxflashhead.js ── */
+  soulxflashheadStatus: () => ipcRenderer.invoke('soulxflashhead:getStatus'),
+  soulxflashheadHealth: (opts) => ipcRenderer.invoke('soulxflashhead:health', opts || {}),
+  soulxflashheadOpen: () => ipcRenderer.invoke('soulxflashhead:open'),
+  soulxflashheadClose: () => ipcRenderer.invoke('soulxflashhead:close'),
+  soulxflashheadInstall: (opts) => ipcRenderer.invoke('soulxflashhead:install', opts || {}),
+  soulxflashheadCancelInstall: () => ipcRenderer.invoke('soulxflashhead:cancelInstall'),
+  soulxflashheadStart: (opts) => ipcRenderer.invoke('soulxflashhead:start', opts || {}),
+  soulxflashheadStop: () => ipcRenderer.invoke('soulxflashhead:stop'),
+  soulxflashheadEnsureReady: (opts) => ipcRenderer.invoke('soulxflashhead:ensureReady', opts || {}),
+  soulxflashheadGenerate: (params) => ipcRenderer.invoke('soulxflashhead:generate', params || {}),
+  soulxflashheadBenchmark: (params) => ipcRenderer.invoke('soulxflashhead:benchmark', params || {}),
+  soulxflashheadCancelGenerate: (nodeId) => ipcRenderer.invoke('soulxflashhead:cancelGenerate', nodeId),
+  soulxflashheadGetLock: () => ipcRenderer.invoke('soulxflashhead:getLock'),
+  soulxflashheadPickInstallDir: () => ipcRenderer.invoke('soulxflashhead:pickInstallDir'),
+  soulxflashheadSetInstallDir: (dir) => ipcRenderer.invoke('soulxflashhead:setInstallDir', dir),
+  soulxflashheadSetConfig: (patch) => ipcRenderer.invoke('soulxflashhead:setConfig', patch || {}),
+  soulxflashheadGpuProbe: () => ipcRenderer.invoke('soulxflashhead:gpuProbe'),
+  soulxflashheadConsoleTail: (n) => ipcRenderer.invoke('soulxflashhead:consoleTail', n),
+  soulxflashheadConsoleClear: () => ipcRenderer.invoke('soulxflashhead:consoleClear'),
+  soulxflashheadOpenPath: (p) => ipcRenderer.invoke('soulxflashhead:openPath', p),
+  soulxflashheadRemovePluginMeta: () => ipcRenderer.invoke('soulxflashhead:removePluginMeta'),
+  onSoulxflashheadProgress: (cb) => {
+    const handler = (_e, data) => {
+      try { cb(data); } catch (_) {}
+    };
+    ipcRenderer.on('soulxflashhead:progress', handler);
+    return () => ipcRenderer.removeListener('soulxflashhead:progress', handler);
+  },
+  onSoulxflashheadConsoleChanged: (cb) => {
+    const handler = (_e, data) => {
+      try { cb(data); } catch (_) {}
+    };
+    ipcRenderer.on('soulxflashhead:consoleChanged', handler);
+    return () => ipcRenderer.removeListener('soulxflashhead:consoleChanged', handler);
+  },
+  onSoulxflashheadGpu: (cb) => {
+    const handler = (_e, data) => {
+      try { cb(data); } catch (_) {}
+    };
+    ipcRenderer.on('soulxflashhead:gpu', handler);
+    return () => ipcRenderer.removeListener('soulxflashhead:gpu', handler);
   },
 
   remotionStatus: () => ipcRenderer.invoke('remotion:getStatus'),  remotionInstall: (opts) => ipcRenderer.invoke('remotion:install', opts || {}),

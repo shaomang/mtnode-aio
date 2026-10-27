@@ -258,6 +258,7 @@ const NODE_KIND_PLUGIN = {
   sensenova_gen: "sensenova-local",
   yue_gen: "yue2-local",
   breeze_gen: "breeze-tts-local",
+  /* InfiniteTalk 数字人：不设显存门槛（装得下就试，跑不动由控制台日志说话） */
   remotion: "remotion",
   /* H3（本地视频生成）与 SenseNova / Music 3 同为本地后端：门槛 16G（真源在 plugins/vram-gate.js） */
   video_gen: "minimax-h3",
@@ -389,6 +390,10 @@ const KIND_CLS = {
   /* Breeze 语音生成：文本 → 语音的**唯一**本机后端，复用 .wf-node.tts 样式族（紫调） */
   breeze_gen: "tts",
   video_gen: "video",
+  /* InfiniteTalk 数字人：产物是 mp4，复用视频族配色 */
+  infinitetalk_gen: "video",
+  /* SoulX-FlashHead Lite 实时数字人：产物同为 mp4（512×512@25fps 流式） */
+  soulxflashhead_gen: "video",
   /* 视频后处理：超分 / 补帧从 H3 生成链里独立出来，复用视频族配色 */
   video_upscale: "video",
   video_interp: "video",
@@ -598,6 +603,10 @@ const KIND_ICON_SVG = {
   folder:
     '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.4 4.3h3.4l1.1 1.15h6.7c.44 0 .8.36.8.8v5.55c0 .44-.36.8-.8.8H2.4a.8.8 0 0 1-.8-.8V5.1c0-.44.36-.8.8-.8z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/></svg>',
 };
+/* InfiniteTalk 数字人：与视频生成节点同一枚图标（产物同为 mp4），不另画一套 */
+KIND_ICON_SVG.infinitetalk_gen = KIND_ICON_SVG.video_gen;
+/* SoulX-FlashHead Lite：同一枚视频图标 */
+KIND_ICON_SVG.soulxflashhead_gen = KIND_ICON_SVG.video_gen;
 
 function nodeKindIconKey(node) {
   if (!node) return "proc_text";
@@ -1525,6 +1534,46 @@ const NODE_DEFAULTS = {
     ranAt: 0,
     running: false,
   },
+  /* InfiniteTalk 数字人（Wan2.1 I2V 14B · 独立 ComfyUI 后端）：
+     端子 —— 输入 端口0=人物图（图像）· 端口1=语音（音频）· 端口2=源视频（V2V，可空）
+     · 端口3=提示词（文本，可空）· 端口4=控制输入；输出 端口0=视频 mp4 · 端口1=控制输出。
+     长音频由宿主按 81 帧分块续写（下一块接上一块末帧与末 9 帧），产物保留可断点续跑。 */
+  infinitetalk_gen: {
+    w: 400,
+    h: 380,
+    title: "InfiniteTalk 数字人节点",
+    resolution: "480p", /* 480p = 832x480（默认）· 720p = 1280x768（更慢） */
+    steps: 4, /* lightx2v 蒸馏档：4 步出片 */
+    seed: 42,
+    rerollSeed: true,
+    prompt: "", /* 兜底提示词（端口 3 为空时才用） */
+    negative: "", /* 负面提示词（空 = 用宿主默认） */
+    outputPath: "",
+    attempts: 1,
+    infinitetalkStatus: "",
+    output: null,
+    error: null,
+    ranAt: 0,
+    running: false,
+  },
+  /* SoulX-FlashHead Lite 实时数字人（1.3B 流式 · 自带 Python 服务）：
+     端子 —— 输入 端口0=人物图（图像）· 端口1=语音（音频）· 端口2=控制输入；
+     输出 端口0=视频 mp4（已封原音轨）· 端口1=控制输出。
+     输出固定 512×512 @25fps；模型自己按 33 帧窗口无限长流式续写，宿主不切块。 */
+  soulxflashhead_gen: {
+    w: 400,
+    h: 340,
+    title: "SoulX 实时数字人节点",
+    steps: 4, /* 官方 lite 蒸馏档：4 步出片 */
+    seed: 42,
+    rerollSeed: true,
+    outputPath: "",
+    soulxflashheadStatus: "",
+    output: null,
+    error: null,
+    ranAt: 0,
+    running: false,
+  },
   video_gen: {
     w: 400,
     h: 340,
@@ -2118,6 +2167,7 @@ function nodeEmitsControlOnPort(node, portIndex, wf, seen) {
     node.kind === "yue_gen" ||
     node.kind === "sensenova_gen" ||
     node.kind === "video_gen" ||
+    node.kind === "infinitetalk_gen" ||
     isVideoPostKind(node) ||
     node.kind === "remotion"
   )
@@ -3185,6 +3235,7 @@ function rewriteNodePathsForSuperContext(node, oldPrefix) {
       node.kind === "yue_gen" ||
       node.kind === "breeze_gen" ||
       node.kind === "video_gen" ||
+      node.kind === "infinitetalk_gen" ||
       isVideoPostKind(node) ||
       node.kind === "remotion") &&
     String(node.outputPath || "").trim()
@@ -4472,7 +4523,13 @@ function inferMediaFromSource(from, fromIndex, consumer) {
   if (!from) return "text";
   if (from.kind === "music_gen" || from.kind === "yue_gen" || from.kind === "breeze_gen")
     return "audio";
-  if (from.kind === "video_gen" || isVideoPostKind(from) || from.kind === "remotion")
+  if (
+    from.kind === "video_gen" ||
+    from.kind === "infinitetalk_gen" ||
+    from.kind === "soulxflashhead_gen" ||
+    isVideoPostKind(from) ||
+    from.kind === "remotion"
+  )
     return "video";
   if (from.kind === "input_image" || from.kind === "proc_image") return "image";
   /* SenseNova 本地图像生成：产物就是一张 PNG，与 proc_image 同口径 */
@@ -4566,7 +4623,14 @@ function saveMediaKind(node) {
     const g = nodeById(node.boundFromId);
     if (g && (g.kind === "music_gen" || g.kind === "yue_gen")) return "audio";
     if (g && g.kind === "sensenova_gen") return "image";
-    if (g && (g.kind === "video_gen" || isVideoPostKind(g) || g.kind === "remotion"))
+    if (
+      g &&
+      (g.kind === "video_gen" ||
+        g.kind === "infinitetalk_gen" ||
+        g.kind === "soulxflashhead_gen" ||
+        isVideoPostKind(g) ||
+        g.kind === "remotion")
+    )
       return "video";
   }
   const links = saveDataLinks(node);
@@ -4716,6 +4780,10 @@ function mediaGenExt(node) {
   }
   /* SenseNova 图像生成：产物固定 PNG（后端就是存 PNG，不是可选格式） */
   if (node && node.kind === "sensenova_gen") return ".png";
+  /* InfiniteTalk 数字人：产物固定 mp4（后端把音轨直接封进视频） */
+  if (node && node.kind === "infinitetalk_gen") return ".mp4";
+  /* SoulX-FlashHead Lite：产物同为 mp4（后端把原音轨封进视频） */
+  if (node && node.kind === "soulxflashhead_gen") return ".mp4";
   return saveExtForMedia(
     node &&
       (node.kind === "video_gen" ||
@@ -4770,6 +4838,8 @@ function requireMediaGenExport(node, quiet) {
     if (node.kind === "sensenova_gen") node.sensenovaStatus = msg;
     if (node.kind === "breeze_gen") node.breezeStatus = msg;
     if (node.kind === "video_gen") node.videoStatus = msg;
+    if (node.kind === "infinitetalk_gen") node.infinitetalkStatus = msg;
+    if (node.kind === "soulxflashhead_gen") node.soulxflashheadStatus = msg;
     if (node.kind === "remotion") node.remotionStatus = msg;
   }
   return null;
@@ -5103,6 +5173,8 @@ function outputCount(n) {
     n.kind === "yue_gen" ||
     n.kind === "sensenova_gen" ||
     n.kind === "breeze_gen" ||
+    n.kind === "infinitetalk_gen" ||
+    n.kind === "soulxflashhead_gen" ||
     n.kind === "video_gen" ||
     isVideoPostKind(n) ||
     n.kind === "remotion"
@@ -7239,6 +7311,83 @@ function syncCanvasGrid() {
   canvas.style.setProperty("--grid-dot-r", dotR + "px");
   canvas.style.setProperty("--grid-dot-end", dotEnd + "px");
 }
+/* ── 画布坐标轴（横轴 / 纵轴边缘的灰色小数字）────────────────────────────────
+   只是坐标提示：屏幕像素 → 世界坐标 = (屏幕像素 - 相机平移) / 缩放（与 toStage 同一份口径），
+   再除一格网格（grid()）换成「单位」显示 —— 一格小网格 = 1 单位，数字与像素无关。
+   横轴贴画布下缘、纵轴贴左缘。刻度间距取当前网格的 1/2/5×10ⁿ 倍（即 1/2/5×10ⁿ 单位），
+   保证相邻数字落屏至少 AXIS_MIN_GAP 像素；
+   相机平移 / 缩放每帧走 applyTransform → 这里重排一次，只改已有 number span 的位置与
+   文本，不重建节点（不碰热路径上的其它东西）。挂 #stage 外面，数字不随相机缩放。 */
+const AXIS_MIN_GAP = 72;
+const AXIS_STEP_MUL = [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000];
+function axisStepWorld() {
+  const g = grid();
+  const z = S.cam && S.cam.z > 0 && isFinite(S.cam.z) ? S.cam.z : 1;
+  for (let i = 0; i < AXIS_STEP_MUL.length; i++) {
+    const s = g * AXIS_STEP_MUL[i];
+    if (s * z >= AXIS_MIN_GAP) return s;
+  }
+  return g * 100000;
+}
+/** 把一批 {p（像素）, t（文本）} 写进某条轴的刻度容器（复用已有 span，移动不重建） */
+function paintCanvasAxis(host, items, axis) {
+  const kids = host.children;
+  for (let i = 0; i < items.length; i++) {
+    let el = kids[i];
+    if (!el) {
+      el = document.createElement("span");
+      el.className = "ca-tick";
+      host.appendChild(el);
+    }
+    el.style.display = "";
+    el.textContent = items[i].t;
+    if (axis === "x") el.style.left = items[i].p + "px";
+    else el.style.top = items[i].p + "px";
+  }
+  for (let i = items.length; i < kids.length; i++) kids[i].style.display = "none";
+}
+function syncCanvasAxis() {
+  const canvas = $("#canvas"),
+    ax = $("#canvasAxisX"),
+    ay = $("#canvasAxisY");
+  if (!canvas || !ax || !ay || !S.cam) return;
+  const w = canvas.clientWidth,
+    h = canvas.clientHeight;
+  if (!w || !h) return;
+  const z = S.cam.z > 0 && isFinite(S.cam.z) ? S.cam.z : 1;
+  const step = axisStepWorld();
+  /* 刻度文本用「单位」而不是像素：一格小网格 = 1 单位（step 恒为 grid 的整数倍，
+     所以 wx / grid 一定是整数）。相机放大缩小时数字不跟着变，只是变疏变密。 */
+  const g = grid();
+  const unit = (v) => String(Math.round(v / g));
+  const xs = [],
+    ys = [];
+  /* 屏幕 0 → 世界坐标；往上取到第一个 step 的整数倍，再逐个落到屏幕像素。
+     首尾各留 14px：数字以刻度为中心（translateX/Y(-50%)），贴边那个会被裁一半。 */
+  let wx = Math.ceil((0 - S.cam.x) / z / step - 1e-6) * step;
+  for (let i = 0; i < 200 && wx * z + S.cam.x <= w; i++, wx += step) {
+    const px = wx * z + S.cam.x;
+    if (px >= 14 && px <= w - 14) xs.push({ p: Math.round(px), t: unit(wx) });
+  }
+  let wy = Math.ceil((0 - S.cam.y) / z / step - 1e-6) * step;
+  for (let i = 0; i < 200 && wy * z + S.cam.y <= h; i++, wy += step) {
+    const py = wy * z + S.cam.y;
+    if (py >= 14 && py <= h - 14) ys.push({ p: Math.round(py), t: unit(wy) });
+  }
+  paintCanvasAxis(ax, xs, "x");
+  paintCanvasAxis(ay, ys, "y");
+}
+/** 坐标轴挂载：首次画出 + 画布尺寸变化（窗口缩放 / 左右栏拖动）后重排 */
+function bindCanvasAxis() {
+  syncCanvasAxis();
+  const canvas = $("#canvas");
+  if (!canvas || typeof ResizeObserver !== "function") return;
+  try {
+    /* 观察器挂在画布元素上（不挂全局）：窗口缩放 / 左右栏拖动改尺寸后刻度跟着重排 */
+    canvas._canvasAxisRo = new ResizeObserver(() => syncCanvasAxis());
+    canvas._canvasAxisRo.observe(canvas);
+  } catch (_) {}
+}
 function fmtTime(d) {
   const x = new Date(d);
   return (
@@ -7368,6 +7517,10 @@ function inPortIsControl(node, idx) {
   if (node.kind === "music_gen") return i === 2;
   if (node.kind === "yue_gen") return i === 3;
   if (node.kind === "breeze_gen") return i === 4; /* 端口4=控制输入 */
+  /* InfiniteTalk 数字人：0=人物图 · 1=语音 · 2=源视频 · 3=提示词 · 4=控制输入（固定 5 颗端子） */
+  if (node.kind === "infinitetalk_gen") return i === 4;
+  /* SoulX-FlashHead Lite：0=人物图 · 1=语音 · 2=控制输入（固定 3 颗端子） */
+  if (node.kind === "soulxflashhead_gen") return i === 2;
   if (node.kind === "video_gen") return i === videoGenControlPort(node);
   if (isVideoPostKind(node)) return i === 0;
   if (node.kind === "remotion") return remotionPortIsControl(node, i);
@@ -7403,6 +7556,11 @@ const IN_PORT_DATA_KINDS = {
   yue_gen: ["text", "text", "text", "control"],
   /* Breeze 语音：0=待合成文本 · 1=参考音频（音频文件 URL）· 2=参考文稿 · 3=指令 · 4=控制输入 */
   breeze_gen: ["text", "audio", "text", "text", "control"],
+  /* InfiniteTalk 数字人：0=人物图（图像路径）· 1=语音（音频文件 URL/路径）· 2=源视频（V2V）
+     · 3=提示词 · 4=控制输入 */
+  infinitetalk_gen: ["image", "audio", "video", "text", "control"],
+  /* SoulX-FlashHead Lite：0=人物图 · 1=语音 · 2=控制输入 */
+  soulxflashhead_gen: ["image", "audio", "control"],
   /* Remotion：无差别端子 —— 端口类型由连线决定（数据 / 控制都可能落任意口），
      不在这张固定表里声明（见 inPortKindOf 的 remotion 分支与 remotionPortIsControl） */
 };
@@ -7452,6 +7610,8 @@ function hasFixedInPorts(n) {
       n.kind === "music_gen" ||
       n.kind === "yue_gen" ||
       n.kind === "breeze_gen" ||
+      n.kind === "infinitetalk_gen" ||
+      n.kind === "soulxflashhead_gen" ||
       n.kind === "video_gen" ||
       isVideoPostKind(n) ||
       /* Remotion 未固化时是无差别动态端子（与 proc_text 同族）：断线可以重排端子号，
@@ -7691,6 +7851,7 @@ function isVideoWireFrom(n, fromIndex) {
     return wireSourceMediaType(n, fromIndex) === "video";
   return (
     n.kind === "video_gen" ||
+    n.kind === "infinitetalk_gen" ||
     isVideoPostKind(n) ||
     n.kind === "remotion"
   );
@@ -8705,6 +8866,10 @@ function inputCount(node) {
      不走任何固定端子分支，落到下面的通用动态端子（输出端子仍是图像 + 控制） */
   /* Breeze 语音：端口0=待合成文本 · 1=参考音频 · 2=参考文稿 · 3=指令 · 4=控制输入（固定 5 个端子） */
   if (node.kind === "breeze_gen") return 5;
+  /* InfiniteTalk 数字人：端口0=人物图 · 1=语音 · 2=源视频 · 3=提示词 · 4=控制输入（固定 5 颗，不随连线增量） */
+  if (node.kind === "infinitetalk_gen") return 5;
+  /* SoulX-FlashHead Lite：0=人物图 · 1=语音 · 2=控制输入（固定 3 颗，不随连线增量） */
+  if (node.kind === "soulxflashhead_gen") return 3;
   if (node.kind === "video_gen") return videoGenInputCount(node); /* 端口0=控制输入（固定）· 端口1+=数据槽 */
   if (isVideoPostKind(node)) return videoPostInputCount(node); /* 端口0=控制 · 端口1=源视频 · 端口2+=可选素材 */
   /* Remotion 视频：**无差别动态端子**（与 proc_text 同一套增量口径）——
@@ -9216,6 +9381,10 @@ function nodeKindLabel(node) {
     yue_gen: "YuE2",
     /* SenseNova 图像生成（本机 SenseNova-U1.5-8B-MoT 后端） */
     sensenova_gen: "SenseNova",
+    /* InfiniteTalk 数字人（本地视频生成 · Wan2.1 I2V 14B） */
+    infinitetalk_gen: "InfiniteTalk 数字人",
+    /* SoulX-FlashHead Lite 实时数字人（本机 1.3B 流式） */
+    soulxflashhead_gen: "SoulX 实时数字人",
     video_gen: "Minimax H3",
     video_upscale: "视频超分",
     video_interp: "视频补帧",
@@ -9270,6 +9439,10 @@ function nodeKindPurposeKey(node) {
     sensenova_gen:
       "SenseNova（本地图像生成 · SenseNova-U1.5-8B-MoT · 官方 11 个分辨率桶 · 需 24G 显存）",
     video_gen: "Minimax H3（视频生成 · 文本 / 图像 / 音频 / 视频）",
+    infinitetalk_gen:
+      "InfiniteTalk 数字人（本地数字人视频 · 人物图或源视频 + 语音 → 口型同步 mp4 · 长音频自动分块续写）",
+    soulxflashhead_gen:
+      "SoulX 实时数字人（本地实时数字人 · SoulX-FlashHead Lite 1.3B · 人物图 + 语音 → 512×512 @25fps 口型同步 mp4 · 整段流式续写 · 40 系卡可实时）",
     video_upscale: "视频超分（Real-ESRGAN x4 / x2 超分 · 独立后处理）",
     video_interp: "视频补帧（RIFE 补帧 · 独立后处理）",
     breeze_gen:
@@ -11999,6 +12172,21 @@ function yamlSaveBody(entries) {
   );
 }
 
+/* 整段是纯 JSON（对象 / 数组）→ 返回解析值，否则 null。
+   JSON 优先于 YAML 批量解析：JSON 正文在继承态 / 浏览态走 app-node-params.js 的
+   「JSON 表单」（npJsonBodyFor），固化时原样写回正文 —— 不交给 parseSimpleYaml 拆成
+   '{"a"' 这种假键条目（那会把一份 JSON 变成错误格式的 YAML 批量）。 */
+function jsonContainerOf(text) {
+  const t = String(text == null ? "" : text).trim();
+  if (!t || (t[0] !== "{" && t[0] !== "[")) return null;
+  try {
+    const v = JSON.parse(t);
+    return v && typeof v === "object" ? v : null;
+  } catch (_) {
+    return null;
+  }
+}
+
 /* 简单 YAML 解析（缩进感知）：
    - 顶层（基准缩进）的 key: value / key: | 块 / - key: value 列表项 → 条目
    - 更深缩进的行视为当前条目的续行内容（嵌套结构不会产生垃圾条目） */
@@ -13958,6 +14146,7 @@ function applyTransform() {
      缩放一致」是同一份判定，不用在拍图代码里另写一套 */
   syncNodeLod();
   syncCanvasGrid();
+  syncCanvasAxis();
   /* 节点上的 persistent 参数面板不会点外部收起，画布一动就得自己跟回它的按钮 */
   repositionNodePops();
   /* 全局语音输入（renderer/app-voice.js）：浮窗跟着光标，切画布（S.wf 换对象）时清掉
@@ -14451,6 +14640,106 @@ function firstSource(n) {
   return w ? nodeById(w.from) : null;
 }
 
+/* 固化只读输入（文本 / 图像 / 音视频）：把**当前继承到的内容**写进节点自身，
+   再切断所有数据入线 —— 节点回到普通的输入节点模式（内容与原继承内容一致，
+   之后可照常编辑 / 换文件），整步可 Ctrl+Z 撤销。
+   与「改用正文（断开入线）」的区别：那条回到节点自己旧的正文，这条固化的是上游此刻的值。 */
+function freezeInputNode(node) {
+  if (!node || !S.wf) return false;
+  const isAV = node.kind === "input_audio" || node.kind === "input_video";
+  const isText = node.kind === "input_text";
+  const isImage = node.kind === "input_image";
+  if (!isAV && !isText && !isImage) return false;
+  const inheriting = isAV ? mediaInputInherited(node) : inputInherited(node);
+  if (!inheriting) return false;
+  const inc = wiresTo(node.id);
+  if (!inc.length) return false;
+
+  /* 先取内容（此刻上游的值），再断开入线 —— 顺序反了就什么都取不到了 */
+  const av = isAV ? inheritedMediaValueOf(node) : null;
+  const disp = isAV ? null : displayValueOf(firstSource(node), node);
+  if ((isAV && !av) || (!isAV && !disp)) {
+    toast(I18n.t("上游还没有可固化的内容：等它出值后再试"), "warn");
+    return false;
+  }
+
+  let apply = null;
+  if (isText) {
+    if (disp.items && disp.items.length) {
+      /* 上游是批量（或合并节点）→ 固化成普通批量输入节点（每条一个条目） */
+      apply = () => {
+        node.batch = true;
+        node.entries = disp.items.map((it) => ({
+          id: uid("e"),
+          title: String(it.title || ""),
+          content: String(it.content || ""),
+        }));
+        node.text = "";
+      };
+    } else if (disp.text != null) {
+      /* 与继承态展示同一口径：**纯 JSON 优先**——整段是 JSON 对象 / 数组就原样写回正文
+         （保留原有缩进 / 换行，回来后仍是「JSON 表单」），绝不进 YAML 批量解析；
+         其余文本符合 YAML（且未关掉解析）才固化成批量条目。 */
+      const isJson = !!jsonContainerOf(disp.text);
+      const es = !isJson && !node.yamlOff ? parseSimpleYaml(disp.text) : [];
+      apply = () => {
+        if (es.length) {
+          node.batch = true;
+          node.entries = es.map((e) => ({
+            id: uid("e"),
+            title: String(e.title || ""),
+            content: String(e.content || ""),
+          }));
+          node.text = "";
+        } else {
+          node.batch = false;
+          node.entries = [];
+          node.text = disp.text;
+        }
+      };
+    }
+  } else if (isImage) {
+    if (disp.images && disp.images.length) {
+      apply = () => {
+        node.batch = true;
+        node.entries = disp.images.map((it) =>
+          makeImageBatchEntry(it.path, it.title, it.title),
+        );
+        node.imageAsset = "";
+        node.sourceName = "";
+      };
+    } else if (disp.image) {
+      apply = () => {
+        node.batch = false;
+        node.entries = [];
+        node.imageAsset = disp.image;
+        node.sourceName = imageStem(disp.image) || "img";
+      };
+    }
+  } else if (av) {
+    apply = () => setNodeMedia(node, av.path);
+  }
+  if (!apply) {
+    toast(I18n.t("上游内容与本节点类型不符，无法固化（可换成对应的输入节点）"), "warn");
+    return false;
+  }
+
+  pushHistory();
+  apply();
+  for (const w of inc) {
+    const k = S.wf.wires.indexOf(w);
+    if (k >= 0) S.wf.wires.splice(k, 1);
+  }
+  clearDownstream(node.id);
+  scheduleSave();
+  renderCanvas();
+  toast(
+    I18n.t("已固化：继承到的内容已写入本节点，输入已切断（Ctrl+Z 可撤销）"),
+    "ok",
+  );
+  return true;
+}
+
 /* 合并节点：每个输入 = 批次中的一项（含批量源的展开） */
 function mergeItems(node) {
   const out = [];
@@ -14514,9 +14803,10 @@ function isBatchInput(n) {
         !n.yamlOff &&
         v &&
         v.kind === "text" &&
+        !jsonContainerOf(v.text) &&
         parseSimpleYaml(v.text).length
       )
-        return true; // 继承文本符合 YAML → 批量（可被 yamlOff 关闭）
+        return true; // 继承文本符合 YAML → 批量（可被 yamlOff 关闭；纯 JSON 不算批量）
     }
     return isBatch(src);
   }
@@ -15316,7 +15606,7 @@ function valueForInput(src, idx, consumer, seen) {
         src,
         seen,
       );
-      if (up && up.kind === "text" && !src.yamlOff) {
+      if (up && up.kind === "text" && !src.yamlOff && !jsonContainerOf(up.text)) {
         const es = parseSimpleYaml(up.text);
         if (es.length) {
           // 继承文本符合 YAML → 按批量条目取值
@@ -15416,7 +15706,13 @@ function valueForInput(src, idx, consumer, seen) {
     /* 与音视频输入节点同口径：path 供本机后端直接用，url 是对外输出地址 */
     return { kind: "audio", path: String(p), url: mediaFileUrlOf(p), text: String(p) };
   }
-  if (src.kind === "video_gen" || isVideoPostKind(src) || src.kind === "remotion") {
+  if (
+    src.kind === "video_gen" ||
+    src.kind === "infinitetalk_gen" ||
+    src.kind === "soulxflashhead_gen" ||
+    isVideoPostKind(src) ||
+    src.kind === "remotion"
+  ) {
     const r = selResult(src);
     const p =
       (r && r.output && (r.output.path || r.output.text)) ||
@@ -15695,7 +15991,7 @@ function allTextItems(src, consumer, portIdx) {
         up && isItemPortSource(up) ? Number((w && w.fromIndex) || 0) : null,
       );
       if (inner.length > 1) return inner; // 继承批量 → 全部条目
-      if (inner.length === 1 && !src.yamlOff) {
+      if (inner.length === 1 && !src.yamlOff && !jsonContainerOf(inner[0].text)) {
         const es = parseSimpleYaml(inner[0].text); // 继承文本符合 YAML → 解析为条目
         if (es.length)
           return es.map((e) => ({ title: e.title, text: e.content }));
@@ -15940,7 +16236,7 @@ function itemTitleOf(src, idx, consumer) {
     if (inputInherited(src)) {
       const v = inheritedValue(src, 0);
       if (v && v.kind === "text") {
-        const es = parseSimpleYaml(v.text);
+        const es = jsonContainerOf(v.text) ? [] : parseSimpleYaml(v.text);
         if (es.length) {
           const e = es[Math.min(at, es.length - 1)];
           return e.title || fallback;
@@ -20659,19 +20955,25 @@ async function clipImagesToCanvasAssets(imgs, opts) {
 /* 粘贴建出来的节点归哪一层：只看**当前画布层级**（S.superFocus）——
    在根画布粘贴就是根画布，哪怕落点刚好压在某颗节点层上面；在展开的节点层里粘贴才进那一层。
    不能沿用 makeNode 的 superHostAtWorld 坐标回退（它按落点几何猜宿主，根层粘截图会落进脚下的壳）。
-   坐标按世界坐标换算成目标层的本地坐标（与 moveNodesIntoSuper / rebaseCopiedNodesToCurrentLayer 同口径）。 */
+   坐标按世界坐标换算成目标层的本地坐标（根画布原样落舞台坐标；焦点壳里子节点本身就活在舞台坐标里，只补父级归属）。
+    见 adoptPastedNodeToCurrentLayer 函数内注释，别再减锚点 / 内原点 / 内平移。 */
 function adoptPastedNodeToCurrentLayer(node, wx, wy) {
   if (!node) return null;
   const sf = currentSuperFocus();
   const host = sf ? nodeById(sf) : null;
   if (host && host.kind === "super") {
-    const o = superInnerOrigin(host);
-    const pan = superInnerPan(host);
-    const anchor = superInnerAnchor(host);
+    /* 全屏进入态（S.superFocus）里，焦点壳的子节点本来就以**舞台坐标**展示：
+       nodeIsNestedInOpenSuper 对焦点壳返回 false，它们是直接挂在 #stage 上、
+       left/top = n.x / n.y（makeNode 在焦点态也是这么写的）。
+       所以这里**不能**再减壳自身的坐标 / 内部原点 / 内平移，否则粘出来的节点会被
+       算到离视口很远的地方，且常被 8 的下限夹成同一个角落 —— 用户报的
+       「画布粘贴图像总是落在固定的地方、可能离当前镜头很远」就是这个换算。
+       世界坐标在焦点态就等于舞台坐标，直接落即可；只补父级归属。
+       （仅根画布 + 展开壳那条路才需要减锚点，见 superInnerAnchor 的注释。） */
     node.parentSuperId = host.id;
     node.parentTaskId = host.parentTaskId || "";
-    node.x = snap(Math.max(8, wx - anchor.x - o.ox - pan.x));
-    node.y = snap(Math.max(8, wy - anchor.y - o.oy - pan.y));
+    node.x = snap(wx);
+    node.y = snap(wy);
     return node;
   }
   node.parentSuperId = "";
@@ -20868,7 +21170,7 @@ function sideCatMatches(n, kinds) {
 const SIDE_CATS = [
   ["输入节点", ["input_text", "input_image", "input_audio", "input_video", "input_any", "input_file", "db_table"]],
   ["全局节点", ["global"]],
-  ["处理节点", ["proc_text", "proc_image", "sensenova_gen", "music_gen", "yue_gen", "breeze_gen", "video_gen", "video_upscale", "video_interp", "remotion"]],
+  ["处理节点", ["proc_text", "proc_image", "sensenova_gen", "music_gen", "yue_gen", "breeze_gen", "video_gen", "infinitetalk_gen", "soulxflashhead_gen", "video_upscale", "video_interp", "remotion"]],
   ["保存节点", ["save", "save_pdf"]],
   ["工具节点", ["split", "merge", "function", "tool"]],
   ["网络节点", ["net_recv", "net_send"]],
@@ -20897,6 +21199,7 @@ const KIND_TAGS = {
   yue_gen: "音乐",
   breeze_gen: "语音",
   video_gen: "视频",
+  infinitetalk_gen: "数字人",
   remotion: "视频",
   net_recv: "接收",
   net_send: "发送",
@@ -21560,6 +21863,12 @@ function canvasCreateMenuGroups(pt) {
             "video_gen",
             I18n.t("Minimax H3（视频生成 · 文本 / 图像 / 音频 / 视频）"),
             () => addNode("video_gen", pt.x, pt.y),
+          ),
+          /* InfiniteTalk 数字人：人物图 / 源视频 + 语音 → 口型同步 mp4（独立 ComfyUI 后端） */
+          ctxKindItem(
+            "infinitetalk_gen",
+            I18n.t("InfiniteTalk 数字人（人物图或源视频 + 语音 → 口型同步视频）"),
+            () => addNode("infinitetalk_gen", pt.x, pt.y),
           ),
           /* 独立后处理：超分 / 补帧不再跟着 H3 一起跑，按需单独建节点 */
           ctxKindItem(
@@ -23871,6 +24180,8 @@ const WIRE_DROP_TARGETS = [
   { kind: "yue_gen", g: "处理节点", vramKind: "yue_gen" },
   { kind: "breeze_gen", g: "处理节点" },
   { kind: "video_gen", g: "处理节点", vramKind: "video_gen" },
+  { kind: "infinitetalk_gen", g: "处理节点" },
+  { kind: "soulxflashhead_gen", g: "处理节点" },
   { kind: "video_upscale", g: "处理节点" },
   { kind: "video_interp", g: "处理节点" },
   { kind: "remotion", g: "处理节点", plugin: "remotion" },
@@ -24636,7 +24947,9 @@ function addNode(kind, x, y, extra) {
       ? extra.title
       : (() => {
           const raw = I18n.t(d.title);
-          /* 「节点层」等标题已含「节点」，勿再拼成「节点层节点」 */
+          /* 节点层自身就叫「节点层」（英文 Node layer），不拼「节点」后缀 */
+          if (kind === "super") return raw;
+          /* 已含「节点」的标题勿再拼成「XX节点节点」 */
           if (/节点\s*$/.test(raw) || /node\s*$/i.test(raw)) return raw;
           return raw + I18n.t("节点");
         })();
@@ -33708,10 +34021,33 @@ function renderWfTabs() {
     x.title = I18n.t("关闭标签（仅从标签条移除，不删除画布）");
     x.onclick = async (ev) => {
       ev.stopPropagation();
+      if (x.dataset.busy === "1") return;
+      x.dataset.busy = "1";
       const i = list.findIndex((t) => t.id === w.id);
-      if (i >= 0) list.splice(i, 1);
+      if (i < 0) {
+        x.dataset.busy = "";
+        return;
+      }
+      list.splice(i, 1);
       await window.api.configSave(S.config);
+      /* 关掉的是当前正在看的这一页 → 像浏览器一样自动切到「下一个」标签：
+         先取原位置右邻那枚，没有就取左邻那枚（浏览器关标签的同一口径）。
+         关的不是当前页：只从标签条移除，画布保持不动。 */
+      const activeId = S.wf ? String(S.wf.id) : "";
+      const wasActive = String(w.id) === activeId;
+      const next = wasActive ? list[i] || list[i - 1] || null : null;
+      if (next && String(next.id) !== activeId) {
+        try {
+          await loadWorkflow(next.id);
+        } catch (e) {
+          toast(
+            I18n.t("切换到画布失败：") + ((e && e.message) || String(e)),
+            "err",
+          );
+        }
+      }
       renderWfTabs();
+      x.dataset.busy = "";
     };
     tab.appendChild(x);
     tab.onclick = () => {
@@ -33790,6 +34126,9 @@ function renderWfWorkspace() {
   box.appendChild(inp);
   box.appendChild(openBtn);
   box.appendChild(br);
+  /* 工作目录的磁盘占用与清理（.mtnode / .mtnode-input / recordings）：
+     位置固定 —— 📂 进入文件夹之后、✦ 全局助手之前（见 app-ws-temp.js）。 */
+  if (typeof workspaceTempButton === "function") box.appendChild(workspaceTempButton());
 }
 
 function renameWorkflowDialog() {

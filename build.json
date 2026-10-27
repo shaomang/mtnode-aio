@@ -44,6 +44,10 @@
     "wechat-pc.js",
     "wechat-fastlogin.js",
     "media-gen-global-lock.js",
+    /* 工作目录临时文件占用与清理（顶栏「工作目录占用与清理」+ 设置里的同名入口）：
+       main.js require 它，漏进白名单就是打包后 Cannot find module './workspace-temp.js'
+       （面板一点就报错，统计与清理整块失效）。 */
+    "workspace-temp.js",
     /* 本地模型显存释放编排器：main.js require 它，漏进白名单 = 打包后
        Cannot find module './local-model-vram.js'（画布本地模型节点与顶栏释放按钮都会失效）。 */
     "local-model-vram.js",
@@ -129,6 +133,8 @@
     "llama/**",
     "breeze/**",
     "sensenova/**",
+    "infinitetalk/**",
+    "soulxflashhead/**",
     "remotion/**",
     "plugins/**",
     "forum/**",
@@ -407,6 +413,41 @@
            漏进白名单 = 打包后安装窗开窗时列不出步骤表。 */
         "steps.json",
         "manifest.json"
+      ]
+    },
+    {
+      "from": "infinitetalk-pack",
+      "to": "infinitetalk-pack",
+      "filter": [
+        "scripts/**",
+        "README.md",
+        "start_backend.cmd",
+        "steps.json",
+        "manifest.json",
+        "requirements.txt",
+        ".gitignore",
+        /* 静默垫片（真源 pack-shims/sitecustomize.py）：宿主起后端时把它拷进安装目录并挂 PYTHONPATH，
+           后端子树默认不弹控制台窗；漏进白名单 = 打包后没这只 shims/，静默口径失效。 */
+        "shims/**",
+        "!**/__pycache__/**"
+      ]
+    },
+    {
+      /* SoulX-FlashHead Lite 实时数字人：安装窗步骤表 + 安装脚本 + 强制 flash-attn 安装器 +
+         requirements（Windows 子集）+ 静默垫片。server.py 也在这里（安装时拷进安装目录）。 */
+      "from": "soulxflashhead-pack",
+      "to": "soulxflashhead-pack",
+      "filter": [
+        "scripts/**",
+        "README.md",
+        "start_backend.cmd",
+        "server.py",
+        "steps.json",
+        "manifest.json",
+        "requirements.txt",
+        ".gitignore",
+        "shims/**",
+        "!**/__pycache__/**"
       ]
     }
   ],

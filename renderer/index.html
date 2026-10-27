@@ -294,6 +294,14 @@
              内容与显隐逻辑不变，仍由 app.js 的 renderTaskCrumb 画（只在进入任务 / 节点层
              时才出现）；容器本身 pointer-events:none，只有条目与「← 返回」能点，画布拖拽不受影响。 -->
         <div id="taskCrumb" class="task-crumb" hidden></div>
+        <!-- 画布坐标轴（本轮需求）：横轴 / 纵轴边缘的灰色小数字，纯提示世界坐标用。
+             覆盖层挂在 #stage 外面（stage 被相机 translate+scale 变换，挂进去数字会跟着缩放）。
+             pointer-events:none，画布拖拽 / 框选 / 滚轮一概不受影响；刻度由 app.js 的
+             syncCanvasAxis 在 applyTransform 里按相机与缩放重排。 -->
+        <div id="canvasAxis" class="canvas-axis" aria-hidden="true">
+          <div id="canvasAxisX" class="ca-x"></div>
+          <div id="canvasAxisY" class="ca-y"></div>
+        </div>
         <div id="stage" class="fn-stage">
           <svg id="wfSvg" class="fn-svg">
           </svg>
@@ -842,6 +850,14 @@
      （breeze_gen 设置表单的 summary 引用了后加载的 app-nodes.js 的函数）。要取就写成
      调用期取：`summary: (node) => helperFn(node)`；同类回归见 test/smoke-canvas-boot-tdz.js。 -->
 <script src="app-canvas.js"></script>
+<!-- InfiniteTalk 数字人节点（infinitetalk_gen）：执行体 + ⚙ 设置表单。
+     放在 app-canvas.js 之后（注册节点设置表单要它先定义 registerNodeSettingsForm），
+     执行体由 app-nodes.js 的 playNodeBody 在调用期取 playInfinitetalkNode。 -->
+<script src="app-infinitetalk.js"></script>
+<!-- SoulX-FlashHead Lite 实时数字人节点（soulxflashhead_gen）：执行体 + ⚙ 设置表单。
+     同样放在 app-canvas.js / app-infinitetalk.js 之后（注册设置表单要 registerNodeSettingsForm
+     先定义），执行体由 app-nodes.js 的 playNodeBody 在调用期取 playSoulxflashheadNode。 -->
+<script src="app-soulxflashhead.js"></script>
 <!-- 图像生成 · 蒙版局部重绘编辑器（自包含：window.openMaskEditor / maskButtonEl）。
      放在 app-canvas.js 之后：节点头部按钮在 renderCanvas 里按调用期取它。 -->
 <script src="app-mask.js"></script>
@@ -987,6 +1003,11 @@
       主进程侧真源是根目录 dsh-compact-policy.js（用户设置 → cordis.yml 的写入点）。 -->
 <script src="app-dsh-compact.js"></script>
 <script src="app-settings.js"></script>
+<!-- 工作目录占用与清理（顶栏工作目录右侧那颗按钮 + 设置里「存储占用与清理」的入口 ·
+      renderer/app-ws-temp.js，样式 css/ws-temp.css，主进程 workspace-temp.js）：
+      必须在 app-boot.js 之前、由它触发的首次 renderWfWorkspace 要能按名字取到
+      workspaceTempButton()；设置里的入口按 window.openWorkspaceTempPanel 调用，故排在哪都行。 -->
+<script src="app-ws-temp.js"></script>
 <script src="app-assist.js"></script>
 <!-- 会话长时自治：自动续跑开关 + 累计状态小字 + 自检判停（renderer/app-longrun.js）。
      必须排在 app-assist.js 之后：它在调用期取 agentSessionState / agentSessionSend /

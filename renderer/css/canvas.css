@@ -251,6 +251,54 @@
   z-index: 3
 }
 
+/* ── 画布坐标轴（横轴 / 纵轴边缘的灰色小数字）────────────────────────────────
+   只做「提示坐标」用：覆盖层铺满画布，数字由 app.js 的 syncCanvasAxis 按世界坐标
+   换算到屏幕位置（相机平移 / 缩放时同步重排）。挂 #stage 外面 —— stage 带相机
+   transform，挂进去数字会跟着缩放。pointer-events:none，不挡画布任何交互。 */
+.canvas-axis {
+  position: absolute;
+  inset: 0;
+  z-index: 70;
+  pointer-events: none;
+  overflow: hidden;
+  font-family: var(--mono);
+  font-size: 10px;
+  line-height: 1;
+  /* 深色主题下压一层画布底色的描边，数字压在节点 / 连线上也读得出来 */
+  text-shadow: 0 0 3px var(--bg);
+}
+
+.canvas-axis .ca-x,
+.canvas-axis .ca-y {
+  position: absolute;
+  inset: 0
+}
+
+.canvas-axis .ca-tick {
+  position: absolute;
+  color: var(--muted);
+  opacity: .55;
+  white-space: nowrap;
+  font-size: 10px
+}
+
+/* 横轴贴画布下缘（需求：横向坐标在下方，不再占顶部）；数字以刻度为中心 */
+.canvas-axis .ca-x > .ca-tick {
+  bottom: 2px;
+  transform: translateX(-50%)
+}
+
+.canvas-axis .ca-y > .ca-tick {
+  left: 2px;
+  transform: translateY(-50%)
+}
+
+/* 导出高清总览图（#canvas.is-snapshot 分块截图）时撤掉坐标轴：它跟的是当前相机，
+   拍进来只会在拼图边缘留下一排对不上的数字。 */
+.fn-canvas.is-snapshot .canvas-axis {
+  display: none
+}
+
 /* 层级口径（唯一真源，改这里之前先读全段）：
    普通节点 z2 < 连线层 z3（静止时线压在板面上）< 展开壳 z50
    < 拖起的节点 z60 < 拖起的壳 z65。
@@ -3554,7 +3602,8 @@ body.theme-light .n-chip.n-chip-lt {
    右移后端子列整条空出来，面包屑仍留在左上角，宽度上限同步让出这 44px。 */
 .task-crumb {
   position: absolute;
-  top: 8px;
+  /* 顶部留出 18px 呼吸位（横轴坐标已挪到画布下缘，这里不再让刻度） */
+  top: 18px;
   /* 右移 44px 让出左上角那条端子带（详见上方注释）；宽度上限同步减掉这段 */
   left: 44px;
   z-index: 80;

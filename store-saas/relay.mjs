@@ -1580,7 +1580,14 @@ export function createRelay(deps) {
         return Object.assign({ key, label, from: wf }, usageAgg(src.filter((r) => (Number(r.at) || 0) >= wf)));
       }),
       models: Array.from(new Set(src.map((r) => r.model).filter(Boolean))).sort(),
-      items: hit.slice(-limit).reverse().map(usagePublic),
+      items: hit.slice(-limit).reverse().map((r) => {
+        const pub = usagePublic(r);
+        /* 管理台账号列统一「昵称 + 账号ID」：用量记录写的时候只留了用户名，
+           这里按 userId 回查当前昵称补给界面（账号已删则不给，界面回落成账号ID）。 */
+        const u = (db.users || []).find((x) => x.id === r.userId);
+        pub.nickname = (u && u.nickname) || "";
+        return pub;
+      }),
     };
   }
 
@@ -1600,7 +1607,15 @@ export function createRelay(deps) {
     yuanPrecision: () => YUAN_PRECISION,
     /* 一张图的最低门槛（元）：/api/relay/me 随快照下发给客户端做「余额够不够出图」的预判。 */
     minImageYuan: minImageYuan,
-    audit: (limit) => auditArr().slice(-Math.max(1, Math.min(500, Math.floor(Number(limit) || 100)))).reverse(),
+    audit: (limit) =>
+      auditArr()
+        .slice(-Math.max(1, Math.min(500, Math.floor(Number(limit) || 100))))
+        .reverse()
+        .map((r) => {
+          /* 管理台「管理员」列统一「昵称 + 账号ID」：记录里只有用户名，按 userId 回查当前昵称。 */
+          const u = (db.users || []).find((x) => x.id === r.userId);
+          return Object.assign({}, r, { nickname: (u && u.nickname) || "" });
+        }),
     usage: (limit) => usageList().slice(-Math.max(1, Math.min(500, Math.floor(Number(limit) || 100)))).reverse().map(usagePublic),
     /* 调用流水的筛选 + 统计（只读，见上面 usageQuery 的口径注释）。 */
     usageQuery: usageQuery,

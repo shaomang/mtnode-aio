@@ -1,0 +1,9 @@
+.venv/
+ComfyUI/
+output/
+inputs/
+jobs/
+__pycache__/
+*.pyc
+*.log
+.install-ok

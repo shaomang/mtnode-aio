@@ -107,6 +107,12 @@
     const p = (n) => String(n).padStart(2, "0");
     return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate()) + " " + p(d.getHours()) + ":" + p(d.getMinutes()) + ":" + p(d.getSeconds());
   };
+  /* 账号显示统一口径：昵称 + 账号ID（管理台不再用登录用户名展示账号）。 */
+  const whoLabel = (nickname, userId) => {
+    const nick = String(nickname || "").trim() || "未设昵称";
+    const id = String(userId || "").trim();
+    return id ? nick + "（" + id + "）" : nick;
+  };
   const ST_TEXT = {
     pending: "待支付",
     paid: "已支付",
@@ -457,7 +463,7 @@
 
     renderTable($("tblRelayUsage"), [
       { title: "时间", get: (r) => ts(r.at) },
-      { title: "账号", get: (r) => r.username || r.userId },
+      { title: "账号", get: (r) => whoLabel(r.nickname, r.userId) },
       { title: "模型", cls: "mono", get: (r) => r.model },
       { title: "类型", render: (td, r) => td.appendChild(el("span", "badge", r.kind === "image" ? "图像 ×" + (r.images || 1) : "文本")) },
       /* 三项 token 分开列（需求 2）：图像请求上游不返 usage，按张计费，这里如实给「—」。 */
@@ -563,7 +569,7 @@
 
     renderTable($("tblRelayAudit"), [
       { title: "时间", get: (r) => ts(r.at) },
-      { title: "管理员", get: (r) => r.username || r.userId },
+      { title: "管理员", get: (r) => whoLabel(r.nickname, r.userId) },
       { title: "动作", get: (r) => r.action },
       { title: "改动", cls: "wrap-cell", get: (r) => (r.changes || []).join("；") || "（无字段级差异）" },
     ], RL.audit, "还没有改动记录");
@@ -995,7 +1001,7 @@
     ME = user || null;
     $("login").classList.add("hidden");
     $("app").classList.remove("hidden");
-    $("whoName").textContent = ME ? ME.nickname || ME.username || ME.id : "";
+    $("whoName").textContent = ME ? whoLabel(ME.nickname, ME.id) : "";
     refreshSessionLabel(expiresIn);
     switchView("overview");
   }
@@ -1058,7 +1064,7 @@
     }
     if (seq !== ovSeq) return; // 已有更新的加载在进行，本次结果作废
     ME = OV.admin || ME;
-    $("whoName").textContent = ME ? ME.nickname || ME.username || ME.id : "";
+    $("whoName").textContent = ME ? whoLabel(ME.nickname, ME.id) : "";
     if (OV.sessionExpiresAt) {
       localStorage.setItem("mtnodeAdminExpire", String(OV.sessionExpiresAt));
       $("whoExpire").textContent = "会话至 " + ts(OV.sessionExpiresAt);
@@ -1086,7 +1092,7 @@
 
     const pay = OV.alipay || {};
     const rows = [
-      ["当前管理员", (ME && (ME.username || ME.id)) || "—"],
+      ["当前管理员", ME ? whoLabel(ME.nickname, ME.id) : "—"],
       ["支付宝当面付", pay.configured ? "已配置（appid " + pay.appId + (pay.sandbox ? " · 沙箱" : "") + "）" : "未配置，缺少 " + (pay.missing || []).join(" / ")],
       ["异步通知地址", pay.notifyUrl || "（未配置：只能靠轮询 / 手动补单入账）"],
       ["微信登录", OV.wechat && OV.wechat.configured ? "已配置" : "未配置（管理页无法扫码登录）"],
@@ -1143,7 +1149,7 @@
   function orderColumns(withActions) {
     const cols = [
       { title: "订单号", cls: "mono", get: (r) => r.id },
-      { title: "账号", get: (r) => (r.nickname || "") + (r.username ? " @" + r.username : "") },
+      { title: "账号", get: (r) => whoLabel(r.nickname, r.userId) },
       { title: "金额", cls: "num", get: (r) => money(r.amountYuan) },
       {
         title: "状态",
@@ -1217,7 +1223,7 @@
       const o = r.order;
       const lines = [
         ["订单号", o.id],
-        ["账号", (o.nickname || "") + " @" + (o.username || "") + "（" + o.userId + "）"],
+        ["账号", whoLabel(o.nickname, o.userId)],
         ["金额", money(o.amountYuan) + "（" + Number(o.amountYuan).toFixed(4) + " 元）"],
         ["状态", (ST_TEXT[o.status] || o.status) + (o.latePaid ? " · 过期后到账" : "")],
         ["渠道", o.channel],
@@ -1282,7 +1288,7 @@
     openDialog(
       "退款 · " + o.id,
       [
-        { kind: "note", text: "账号：" + (o.username || o.userId) + " · 订单金额 " + money(o.amountYuan) + " · 可退 " + money(remain) + " · 退款会同步扣减该账号余额（余额不足会被拒绝）。" },
+        { kind: "note", text: "账号：" + whoLabel(o.nickname, o.userId) + " · 订单金额 " + money(o.amountYuan) + " · 可退 " + money(remain) + " · 退款会同步扣减该账号余额（余额不足会被拒绝）。" },
         { name: "yuan", label: "退款金额（元）", type: "number", value: remain.toFixed(4), required: true },
         { name: "note", label: "退款原因（必填，进流水审计）", type: "textarea", placeholder: "例如：用户申请退款 / 误充值", required: true },
       ],
@@ -1332,7 +1338,6 @@
         $("tblUsers"),
         [
           { title: "账号ID", cls: "mono", get: (u) => u.id },
-          { title: "用户名", get: (u) => u.username || "—" },
           { title: "昵称", get: (u) => u.nickname || "—" },
           { title: "手机号", cls: "mono", get: (u) => u.phone || "—" },
           {
@@ -1399,7 +1404,7 @@
 
   function adjustDialog(u) {
     openDialog(
-      "人工调账 · " + (u.username || u.id),
+      "人工调账 · " + whoLabel(u.nickname, u.id),
       [
         { kind: "note", text: "当前余额 " + money(u.balanceYuan) + "。正数 = 赠送 / 补账，负数 = 扣减；扣减不得使余额为负。所有调账都会记入流水并留下操作人。" },
         { name: "yuan", label: "调账金额（元，可带负号）", type: "number", value: "0.0000", required: true },
@@ -1504,10 +1509,10 @@
     const lines = storageLines(st);
 
     // openDialog 先立起 persistent 的壳（通用 ✕ / Esc / 取消 / 保存都在），再把自定义 DOM 换进 dlgBody
-    openDialog("应用存储上限 · " + (u.username || u.id), [{ kind: "note", text: "" }], null, "保存");
+    openDialog("应用存储上限 · " + whoLabel(u.nickname, u.id), [{ kind: "note", text: "" }], null, "保存");
     const body = $("dlgBody");
     body.textContent = "";
-    body.appendChild(el("div", "hint", "账号：" + (u.username || "—") + "（" + u.id + "）· 昵称：" + (u.nickname || "—")));
+    body.appendChild(el("div", "hint", "账号：" + whoLabel(u.nickname, u.id)));
     body.appendChild(el("div", "hint", "当前生效：" + lines[0] + " · " + lines[1]));
     body.appendChild(
       el(
@@ -1602,7 +1607,7 @@
         const changed = r.changed || {};
         const next = storageLines(item.storage || {});
         const what = [changed.bytes ? "存储 " + next[0] : "", changed.apps ? "应用条数 " + next[1] : ""].filter(Boolean).join(" · ");
-        toast("上限已更新（" + (u.username || u.id) + "）：" + (what || "无变化"), "ok");
+        toast("上限已更新（" + whoLabel(u.nickname, u.id) + "）：" + (what || "无变化"), "ok");
         closeDialog();
         loadUsers(usersPage); // 重拉当前页：行内数值以服务端回执为准
       } catch (e) {
@@ -1654,7 +1659,7 @@
 
   function ledgerColumns(withUser) {
     const cols = [];
-    if (withUser !== false) cols.push({ title: "账号", get: (e) => (e.username ? e.username + "（" + e.userId + "）" : e.userId || "—") });
+    if (withUser !== false) cols.push({ title: "账号", get: (e) => whoLabel(e.nickname, e.userId) });
     cols.push(
       { title: "时间", get: (e) => ts(e.at) },
       {
@@ -1719,9 +1724,9 @@
       { title: "时间", get: (t) => ts(t.at) },
       {
         title: "打赏人",
-        get: (t) => (t.fromNickname || t.fromUsername || "—") + "（" + (t.fromUsername || t.fromUserId || "—") + " / " + (t.fromUserId || "—") + "）",
+        get: (t) => whoLabel(t.fromNickname, t.fromUserId),
       },
-      { title: "接收作者", get: (t) => (t.toNickname || t.toUsername || "—") + "（" + (t.toUsername || t.toUserId || "—") + "）" },
+      { title: "接收作者", get: (t) => whoLabel(t.toNickname, t.toUserId) },
       { title: "对象类型", render: (td, t) => td.appendChild(el("span", "badge", TIP_KIND_TEXT[t.targetKind] || t.targetKind || "—")) },
       {
         title: "对象",
@@ -2001,7 +2006,7 @@
     return [
       { title: "应用 id", get: (r) => r.id },
       { title: "标题", get: (r) => r.title },
-      { title: "作者", get: (r) => r.ownerName },
+      { title: "作者", get: (r) => whoLabel(r.ownerNickname, r.ownerId) },
       { title: "当前版本", get: (r) => "v" + (r.version || "—") + (r.versionCount > 1 ? "（共 " + r.versionCount + " 版）" : "") },
       { title: "大小", get: (r) => sizeText(r.bytes) },
       { title: "下载 / 赞", get: (r) => r.downloads + " / " + r.likes },
@@ -2025,7 +2030,7 @@
     const cols = [
       { title: KIND_TEXT[kind] + " id", get: (r) => r.id },
       { title: "标题", get: (r) => r.title },
-      { title: "作者", get: (r) => r.ownerName },
+      { title: "作者", get: (r) => whoLabel(r.ownerNickname, r.ownerId) },
       { title: "标签", get: (r) => (r.tags || []).join(" / ") || "—" },
     ];
     if (kind === "workflow") {
@@ -2058,7 +2063,7 @@
     return [
       { title: "skill name", get: (r) => r.skillName || "—" },
       { title: "标题", get: (r) => r.title },
-      { title: "作者", get: (r) => r.ownerName },
+      { title: "作者", get: (r) => whoLabel(r.ownerNickname, r.ownerId) },
       { title: "版本", get: (r) => "v" + (r.version || "—") },
       { title: "官方", render: (td, r) => td.appendChild(el("span", "badge " + (r.official ? "ok" : ""), r.official ? "官方" : "非官方")) },
       { title: "文件", get: (r) => r.fileCount + " 个 · " + sizeText(r.bytes) },
@@ -2136,7 +2141,7 @@
         $("tblContentAudit"),
         [
           { title: "时间", get: (x) => ts(x.at) },
-          { title: "管理员", get: (x) => x.username || x.userId },
+          { title: "管理员", get: (x) => whoLabel(x.nickname, x.userId) },
           { title: "动作", get: (x) => C_ACT_TEXT[x.action] || x.action },
           { title: "类型", get: (x) => KIND_TEXT[x.kind] || x.kind },
           { title: "对象", get: (x) => (x.targetTitle || x.targetId) + "（" + x.targetId + " · " + (x.targetOwnerId || "—") + "）" },
@@ -2211,8 +2216,8 @@
   function contentDelete(row) {
     const what =
       row.kind === "app"
-        ? "应用分支「" + row.title + "」（id " + row.id + " · 作者 " + row.ownerName + "），含 " + row.versionCount + " 个版本的 zip" + (row.hasIcon ? " 与图标" : "") + (row.branchCount > 1 ? "；同 id 下还有 " + (row.branchCount - 1) + " 条别的作者分支（不动它们）" : "")
-        : KIND_TEXT[row.kind] + "「" + row.title + "」（id " + row.id + " · 作者 " + row.ownerName + "），含" +
+        ? "应用分支「" + row.title + "」（id " + row.id + " · 作者 " + whoLabel(row.ownerNickname, row.ownerId) + "），含 " + row.versionCount + " 个版本的 zip" + (row.hasIcon ? " 与图标" : "") + (row.branchCount > 1 ? "；同 id 下还有 " + (row.branchCount - 1) + " 条别的作者分支（不动它们）" : "")
+        : KIND_TEXT[row.kind] + "「" + row.title + "」（id " + row.id + " · 作者 " + whoLabel(row.ownerNickname, row.ownerId) + "），含" +
           (row.kind === "template" || row.kind === "workflow" ? KIND_TEXT[row.kind] + "文件与预览图" : row.fileCount + " 个文件与预览图");
     openDialog(
       "删除" + KIND_TEXT[row.kind],
@@ -2244,7 +2249,7 @@
         el(
           "div",
           "hint",
-          "应用 " + r.id + " · 作者 " + r.ownerName + " · 当前 v" + (r.latestVersion || "—") +
+          "应用 " + r.id + " · 作者 " + whoLabel(r.ownerNickname, r.ownerId) + " · 当前 v" + (r.latestVersion || "—") +
             " · 共 " + items.length + " 个版本" + (r.versionsOn ? "" : "（服务端未启用多版本：只有当前这一版）"),
         ),
       );

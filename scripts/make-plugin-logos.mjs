@@ -409,19 +409,17 @@ async function main() {
     rows.push({ ok: true, name: SRC.llama.name, bytes: assertOut(out), src: SRC.llama.file, note: notes.join('；'), preview: writePreview(out, rgba, SRC.llama.name) });
   }
 
-  /* Paseo（SVG 源，要 electron） */
-  if (want.includes('paseo')) {
-    await localSource(SRC.paseo);
-    if (!AS_ELECTRON) {
-      const p = (() => { try { const e = require('electron'); return typeof e === 'string' && fs.existsSync(e) ? e : ''; } catch { return ''; } })();
-      if (!p) throw new Error('未找到 electron：无法栅格化 SVG（装好依赖后 npx electron scripts/make-plugin-logos.mjs）');
-      const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
-      const r = spawnSync(p, [__filename, ...argv], { stdio: 'inherit', env });
-      process.exit(r.status ?? 1);
-    }
+  /* SVG 源（paseo，要 electron） */
+  const svgKeys = want.filter((k) => SRC[k].kind === 'svg');
+  if (svgKeys.length && !AS_ELECTRON) {
+    const p = (() => { try { const e = require('electron'); return typeof e === 'string' && fs.existsSync(e) ? e : ''; } catch { return ''; } })();
+    if (!p) throw new Error('未找到 electron：无法栅格化 SVG（装好依赖后 npx electron scripts/make-plugin-logos.mjs）');
+    const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
+    const r = spawnSync(p, [__filename, ...argv], { stdio: 'inherit', env });
+    process.exit(r.status ?? 1);
   }
 
-  if (want.includes('paseo') && AS_ELECTRON) {
+  if (svgKeys.length && AS_ELECTRON) {
     const { app, BrowserWindow } = require('electron');
     await app.whenReady();
     const win = new BrowserWindow({
@@ -429,13 +427,19 @@ async function main() {
       webPreferences: { offscreen: false, contextIsolation: true, sandbox: true },
     });
     await win.loadURL('about:blank');
-    const uri = svgDataUri(fs.readFileSync(SRC.paseo.file, 'utf8'));
-    const b64 = await win.webContents.executeJavaScript(pageScript(uri, PAD_RATIO), true);
-    const rgba = Buffer.from(b64, 'base64');
-    if (rgba.length !== SIZE * SIZE * 4) throw new Error(`像素字节数 ${rgba.length} ≠ ${SIZE * SIZE * 4}`);
-    const out = path.join(OUT_DIR, SRC.paseo.name);
-    fs.writeFileSync(out, encodePNG(SIZE, SIZE, rgba));
-    rows.push({ ok: true, name: SRC.paseo.name, bytes: assertOut(out), src: SRC.paseo.file, note: 'SVG → canvas', preview: writePreview(out, rgba, SRC.paseo.name) });
+    for (const key of svgKeys) {
+      const spec = SRC[key];
+      await localSource(spec);
+      const raw = fs.readFileSync(spec.file, 'utf8');
+      const uri = svgDataUri(raw);
+      const b64 = await win.webContents.executeJavaScript(pageScript(uri, PAD_RATIO), true);
+      const rgba = Buffer.from(b64, 'base64');
+      if (rgba.length !== SIZE * SIZE * 4) throw new Error(`像素字节数 ${rgba.length} ≠ ${SIZE * SIZE * 4}`);
+      const out = path.join(OUT_DIR, spec.name);
+      fs.writeFileSync(out, encodePNG(SIZE, SIZE, rgba));
+      const note = 'SVG → canvas';
+      rows.push({ ok: true, name: spec.name, bytes: assertOut(out), src: spec.file, note, preview: writePreview(out, rgba, spec.name) });
+    }
     win.destroy();
     for (const r of rows) console.log(`  ✓ ${r.name.padEnd(22)} ${SIZE}×${SIZE}  ${String(r.bytes).padStart(6)}B  ${r.src}\n      ${r.note}${r.preview ? '\n      预览：' + r.preview : ''}`);
     app.exit(0);

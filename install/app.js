@@ -315,6 +315,17 @@
     /* Blender 本地插件：宿主主导（官方 zip + sha256 / uv / addon / MCP 行 / 端到端冒烟），
        步骤表真源 blender/steps.json。 */
     "blender-local": "blenderInstall",
+    /* InfiniteTalk 数字人（kind infinitetalk，目录 id infinitetalk-local）：宿主
+       infinitetalk/main-infinitetalk.js，步骤表真源 infinitetalk-pack/steps.json。漏了这一条会掉进
+       窗口插件那条 appPluginsInstall，点「开始安装」直接回 not_window_plugin。 */
+    "infinitetalk-local": "infinitetalkInstall",
+    /* 卡片 kind 短名也给一条：哪个入口把 kind（infinitetalk）当插件 id 递进来时，照样落到
+       它自己的安装链上，别再掉进窗口插件那条 appPluginsInstall 报 not_window_plugin。 */
+    infinitetalk: "infinitetalkInstall",
+    /* SoulX 实时数字人（kind soulxflashhead，目录 id soulxflashhead-local）：宿主
+       soulxflashhead/main-soulxflashhead.js，步骤表真源 soulxflashhead-pack/steps.json。 */
+    "soulxflashhead-local": "soulxflashheadInstall",
+    soulxflashhead: "soulxflashheadInstall",
   };
   /* id → 选安装目录的桥 / 启动安装的桥（窗口插件与桌宠用它们自己的那两条） */
   function installApiOf(id) {

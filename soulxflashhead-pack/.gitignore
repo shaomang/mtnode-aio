@@ -1,0 +1,8 @@
+SoulX-FlashHead/
+models/
+venv/
+__pycache__/
+*.pyc
+*.log
+.install-ok
+smoke-flashhead.log

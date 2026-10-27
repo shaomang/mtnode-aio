@@ -1,0 +1,92 @@
+{
+  "version": 1,
+  "plugin": "soulxflashhead-local",
+  "title": {
+    "zh": "SoulX-FlashHead Lite 实时数字人（1.3B 流式）",
+    "en": "SoulX-FlashHead Lite real-time portrait (1.3B streaming)"
+  },
+  "steps": [
+    {
+      "id": "disk",
+      "title": "检测磁盘余量",
+      "hint": "源码 + venv（torch 2.8 cu128）+ Model_Lite / VAE_LTX / wav2vec2 权重约 18GB，建议 ≥30GB；余量不足只警告。"
+    },
+    {
+      "id": "source",
+      "title": "准备 SoulX-FlashHead 源码",
+      "hint": "从官方仓库取 main 最新代码（zip，不依赖 git），带 github / ghfast / gh-proxy 三级回退。"
+    },
+    {
+      "id": "venv",
+      "title": "创建隔离 Python 环境并安装 CUDA torch 2.8.0",
+      "hint": "Python 3.11/3.12 → venv → torch 2.8.0+cu128（必须 CUDA）→ Windows 可用的推理依赖子集。torch 固定在 2.8.0 是为了匹配 flash-attn 的 Windows 预编译 wheel。"
+    },
+    {
+      "id": "flashattn",
+      "title": "安装 flash-attn（强制）",
+      "hint": "按 venv 的 torch/python 版本匹配 kingbri1 预编译 wheel，并真跑一次 flash_attn_func 内核冒烟；没有可用 wheel 时尝试源码编译。装不上就算安装失败。"
+    },
+    {
+      "id": "sage",
+      "title": "安装 SageAttention（默认优化，可降级）",
+      "hint": "triton-windows + 匹配本 venv 的 sageattention wheel。装不上只警告，不影响交付，但控制台与基准结果会如实标出。"
+    },
+    {
+      "id": "weights",
+      "title": "下载 Model_Lite / VAE_LTX / wav2vec2 权重",
+      "hint": "约 8.5GB：ModelScope 优先，其次 hf-mirror，最后 huggingface.co；断点续传，重跑接着下。"
+    },
+    {
+      "id": "files",
+      "title": "校验文件清单",
+      "hint": "源码 / venv / 4 份权重 + wav2vec2 三件套齐全，并确认 flash_attn 与 flash_head 都能 import。"
+    },
+    {
+      "id": "smoke",
+      "title": "加载权重跑 2 块实时基准",
+      "hint": "用真实权重 + 官方示例图/音频跑 2 个 24 帧分块，打印 BENCH-OK fps/rtf 与 ACCEL（torch / cuda / flash_attn / sage / GPU）。跑不通就算安装失败。"
+    }
+  ],
+  "messages": {
+    "flashhead.disk.low": {
+      "zh": "安装目录所在磁盘余量不足（建议 ≥30GB）：权重与 CUDA torch 合计约 18GB，空间不够会在下载中途失败。请换一个盘或先清理。",
+      "en": "Not enough free disk on the install drive (30GB recommended). Pick another drive or free space."
+    },
+    "flashhead.source.prep_failed": {
+      "zh": "SoulX-FlashHead 源码没准备好：zip 下载（github / ghfast / gh-proxy）都失败。确认网络或代理后重跑；也可以手动把仓库放到 <安装目录>\\SoulX-FlashHead 再重跑。",
+      "en": "Failed to fetch the SoulX-FlashHead sources. Check network/proxy, or place the repo at <installDir>\\SoulX-FlashHead and re-run."
+    },
+    "flashhead.venv.python_missing": {
+      "zh": "没找到可用的 Python 3.11/3.12。安装 python.org 版后重跑，或把 MT_FLASHHEAD_PYTHON 指向解释器。",
+      "en": "No usable Python 3.11/3.12. Install one or set MT_FLASHHEAD_PYTHON."
+    },
+    "flashhead.venv.torch_failed": {
+      "zh": "CUDA torch 2.8.0 安装失败：多半是镜像不可达。确认 nvidia-smi 正常后重跑（脚本按 SJTU → 阿里云 → 官方顺序回退）。",
+      "en": "CUDA torch 2.8.0 install failed. Verify nvidia-smi and re-run (SJTU → Aliyun → official)."
+    },
+    "flashhead.venv.requirements_failed": {
+      "zh": "推理依赖安装失败：看日志尾部。常见是 mediapipe 没有对应 Python 版本的 wheel —— 换 Python 3.11 重跑。",
+      "en": "Dependency install failed. See the tail; usually mediapipe on this Python — try Python 3.11."
+    },
+    "flashhead.venv.pip_failed": {
+      "zh": "Python 环境准备失败：看日志尾部的 pip 报错后重跑；前面的步骤会复用。",
+      "en": "Python env prep failed. See the pip tail and re-run; earlier steps are reused."
+    },
+    "flashhead.flashattn.failed": {
+      "zh": "flash-attn 没装成（这是必装项，安装不会放行）。看日志里的 FLASHATTN-* 标记：WHEEL = 没有与本 venv（torch 2.8.0 / cu128 / cp3xx）匹配的预编译包；SMOKE = 装上了但内核跑不通（多为显卡算力或 CUDA 版本不符）。修好后重跑安装即可。",
+      "en": "flash-attn is mandatory and its install failed. Read the FLASHATTN-* marker: WHEEL = no prebuilt wheel for this venv (torch 2.8.0 / cu128 / cp3xx); SMOKE = installed but the kernel run failed. Fix and re-run."
+    },
+    "flashhead.weights.failed": {
+      "zh": "权重下载失败：脚本按 ModelScope → hf-mirror → 官方 HF 顺序重试并断点续传。确认网络后重跑该步即可接着下。",
+      "en": "Weight download failed. Re-run to resume (ModelScope → hf-mirror → HF)."
+    },
+    "flashhead.files.missing": {
+      "zh": "安装目录文件清单不完整（源码 / venv / 权重 / flash_attn 缺项）：按提示补齐后重跑安装。",
+      "en": "Install layout incomplete (sources / venv / weights / flash_attn). Fix per the message and re-run."
+    },
+    "flashhead.smoke.failed": {
+      "zh": "冒烟失败：真实权重加载或 2 块流式基准跑不通。看 <安装目录>\\smoke-flashhead.log 尾部的 Python 报错（常见是显存不足或缺依赖）后重跑。",
+      "en": "Smoke failed: weights did not load or the 2-chunk streaming benchmark failed. Read the tail of <installDir>\\smoke-flashhead.log and re-run."
+    }
+  }
+}

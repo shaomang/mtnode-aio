@@ -1,0 +1,83 @@
+{
+  "version": 1,
+  "plugin": "infinitetalk-local",
+  "title": {
+    "zh": "InfiniteTalk 数字人（无限时长口型同步）",
+    "en": "InfiniteTalk Avatar (unlimited-length lip sync)"
+  },
+  "steps": [
+    {
+      "id": "disk",
+      "title": "检测磁盘余量",
+      "hint": "ComfyUI + CUDA torch + fp8 权重合计约 32GB，建议 ≥55GB；余量不足只警告，不阻断。"
+    },
+    {
+      "id": "comfy",
+      "title": "准备 ComfyUI 源码",
+      "hint": "独立安装一份 ComfyUI（不复用 H3）。优先 git clone；没有 git 时回退到 zip 下载。"
+    },
+    {
+      "id": "venv",
+      "title": "创建隔离 Python 环境并安装 CUDA torch",
+      "hint": "Python 3.11/3.12 → venv → 按驱动装 cu128/cu126 torch（SJTU / 阿里云 / 官方三级回退），再装 ComfyUI 依赖。GPU 推理必须是 CUDA 版 torch。"
+    },
+    {
+      "id": "sage",
+      "title": "安装 SageAttention（强制）",
+      "hint": "triton-windows + 与本 venv 匹配的 sageattention 预编译 wheel，并真跑一次 kernel 冒烟。这是默认优化项，装不上就算安装失败。"
+    },
+    {
+      "id": "weights",
+      "title": "下载 fp8 权重与配套文件",
+      "hint": "I2V 14B fp8 + InfiniteTalk single patch + umt5 fp8 + VAE + wav2vec2 + lightx2v 4 步 LoRA + CLIP Vision。走 hf-mirror，断点续传，重跑接着下。"
+    },
+    {
+      "id": "files",
+      "title": "校验 ComfyUI 文件清单",
+      "hint": "main.py / venv / 7 份权重必须齐全。"
+    },
+    {
+      "id": "smoke",
+      "title": "导入冒烟（ComfyUI 与 InfiniteTalk 节点）",
+      "hint": "用 venv 跑一次 ComfyUI 启动加载检查，确认原生 WanInfiniteTalkToVideo 节点已注册，通过才写 .install-ok。"
+    }
+  ],
+  "messages": {
+    "infinitetalk.disk.low": {
+      "zh": "安装目录所在磁盘余量不足（建议 ≥55GB）：fp8 权重与技术依赖体积较大，空间不够会在下载中途失败。请换一个盘或先清理。",
+      "en": "Not enough free disk on the install drive (55GB recommended). Pick another drive or free space."
+    },
+    "infinitetalk.comfy.prep_failed": {
+      "zh": "ComfyUI 源码没准备好：git clone / zip 下载都失败。确认能访问 github 或代理后重跑；也可以手动把 ComfyUI 放到 <安装目录>\\ComfyUI 再重跑。",
+      "en": "Failed to prepare ComfyUI sources. Check network / proxy, or place ComfyUI under <installDir>\\ComfyUI manually and re-run."
+    },
+    "infinitetalk.venv.python_missing": {
+      "zh": "没找到可用的 Python 3.11/3.12。安装 python.org 版或 Microsoft Store 版后重跑，或把 MT_INFINITETALK_PYTHON 指向解释器。",
+      "en": "No usable Python 3.11/3.12. Install one or set MT_INFINITETALK_PYTHON."
+    },
+    "infinitetalk.venv.torch_failed": {
+      "zh": "CUDA torch 安装失败：多半是镜像不可达或与驱动不匹配。确认 nvidia-smi 正常后重跑；脚本会按驱动选 cu128 / cu126。",
+      "en": "CUDA torch install failed. Verify nvidia-smi, then re-run."
+    },
+    "infinitetalk.venv.pip_failed": {
+      "zh": "ComfyUI 依赖安装失败：看日志尾部（常见是某个 wheel 没有对应 Python 版本的预编译包）。重跑该步或换 Python 3.11。",
+      "en": "ComfyUI requirements failed. See the tail; try Python 3.11."
+    },
+    "infinitetalk.sage.failed": {
+      "zh": "SageAttention 没装成（这是默认必开的优化项，安装不会放行）。看日志尾部的 SAGE-* 标记：TRITON = triton-windows 装不上；WHEEL = 没有与 Python/torch/CUDA 匹配的预编译包；SMOKE = 装上了但 kernel 跑不通。修好后重跑安装即可，前面的步骤会复用。",
+      "en": "SageAttention is mandatory and its install failed. Read the SAGE-* marker in the log tail: TRITON = triton-windows failed; WHEEL = no prebuilt wheel for this Python/torch/CUDA; SMOKE = installed but the kernel run failed. Fix it and re-run; earlier steps are reused."
+    },
+    "infinitetalk.weights.failed": {
+      "zh": "权重下载失败：脚本按 hf-mirror → 官方 HF 顺序重试并断点续传。确认网络后重跑该步即可接着下。",
+      "en": "Weight download failed. Re-run to resume."
+    },
+    "infinitetalk.files.missing": {
+      "zh": "安装目录文件清单不完整（ComfyUI / venv / 权重缺项）：重跑安装，或按提示手动补齐。",
+      "en": "Install layout incomplete. Re-run install."
+    },
+    "infinitetalk.smoke.failed": {
+      "zh": "冒烟失败：ComfyUI 起不来或原生 WanInfiniteTalkToVideo 节点没注册。按日志尾部的 Python 报错修依赖后重跑。",
+      "en": "Smoke test failed: ComfyUI did not boot or the native WanInfiniteTalkToVideo node is missing. Fix deps per the tail and re-run."
+    }
+  }
+}

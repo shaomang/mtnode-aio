@@ -43,6 +43,12 @@ const INSTALL_SKILL_SOURCES = {
   /* Paseo 手机接管（应用插件 paseo-remote）：后端是官方 npm 包 @getpaseo/cli，
      修的是「CLI 找不到 / relay 关着 / daemon 起不来 / provider 没生效」这类现场 */
   'paseo-remote-install': path.join(__dirname, '..', 'skills', 'paseo-remote-install', 'SKILL.md'),
+  /* InfiniteTalk 数字人（应用插件 infinitetalk-local）：修的是「ComfyUI / venv / SageAttention / Wan2.1 权重」
+     这类现场；它的安装目录与 H3 完全隔离，SKILL 里写明逐层判据 */
+  'infinitetalk-local-install': path.join(__dirname, '..', 'skills', 'infinitetalk-local-install', 'SKILL.md'),
+  /* SoulX 实时数字人（应用插件 soulxflashhead-local）：修的是「flash-attn / cu128 torch / Model_Lite 权重 /
+     真实流式基准」这类现场；硬门槛（flash-attn 装不上即失败）与实时口径都写在 SKILL 里 */
+  'soulx-flashhead-local-install': path.join(__dirname, '..', 'skills', 'soulx-flashhead-local-install', 'SKILL.md'),
   'office-local-install': path.join(__dirname, '..', 'skills', 'office-local-install', 'SKILL.md'),
 }
 const INSTALL_SKILL_NAMES = new Set(Object.keys(INSTALL_SKILL_SOURCES))

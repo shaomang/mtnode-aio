@@ -68,6 +68,10 @@ let installCancel = false;
 /** 正在合成的在途数（generateBreezeFile 进出各一次）：显存释放编排器据此判断忙不忙，
  *  绝不在别人合成到一半时把引擎 / 后端拆掉（见本文件末尾 vramHooks） */
 let activeSynthesis = 0;
+/** 连续合成时引擎的「保持常驻」窗口（毫秒）：Breeze 引擎一次重载要数十秒，连续生成不该来回卸载 /
+ *  重载 7.7GB 权重。窗口内同一后端再跑直接复用；窗口到期或别的本地后端要显存时才释放
+ *  （编排口径见 local-model-vram.js 的 releaseAfterUse / releaseOthers）。 */
+const BREEZE_KEEP_WARM_MS = 120000;
 let gpuTimer = null;
 let uiSignalTimer = null;
 let consoleWatchTimer = null;
@@ -183,7 +187,9 @@ function defaultConfig() {
     port: DEFAULT_PORT,
     enginePort: DEFAULT_ENGINE_PORT,
     wantRunning: false,
-    fastAll: false,
+    /* 官方推荐的最优配置（CUDA Graph + 预热）：后端会按显存门槛自动回退 eager，
+       低显存 / 卡被别的任务占着时不会硬开。 */
+    fastAll: true,
     /** 已有本地权重目录（对应 breeze-pack 的 BREEZE_WEIGHTS_DIR） */
     weightsDir: "",
   };
@@ -553,6 +559,17 @@ function backendFailure(r) {
     }
   }
   const raw = String(detail == null ? "" : detail).trim();
+  /* 端口没人听（管理服务没起 / 被显存释放硬杀过）：回一句能照着做的原因，
+     别把裸的 `connect ECONNREFUSED 127.0.0.1:8772` 甩到界面上（创建音色向导里就是这么显形的）。 */
+  if (/ECONNREFUSED|EHOSTUNREACH/i.test(raw)) {
+    return {
+      code: "backend_down",
+      message:
+        "Breeze 后端没在运行（127.0.0.1:" +
+        (Number(loadConfig().port) || DEFAULT_PORT) +
+        " 无响应）：请点插件卡片的「启用」，或再执行一次（会用时自动拉起）",
+    };
+  }
   const code = /^[A-Za-z0-9_.-]{1,40}$/.test(raw) ? raw : status ? "backend_http_" + status : "backend_failed";
   return { code, message: raw || "http_" + (status || "error") };
 }
@@ -972,7 +989,9 @@ async function startBackendInner() {
   if (cfg.weightsDir && fs.existsSync(String(cfg.weightsDir))) {
     env.BREEZE_WEIGHTS_DIR = String(cfg.weightsDir);
   }
-  if (cfg.fastAll) env.BREEZE_FAST_ALL = "1";
+  /* 开关必须明确下发 0/1：只发 "1" 时「关掉 fast」等于没配，引擎会走默认（开）。
+     后端拿到 1 还会按 triton / 显存（总 ≥18G、当前可用 ≥15G）自行回退 eager。 */
+  env.BREEZE_FAST_ALL = cfg.fastAll ? "1" : "0";
 
   /* silentEnv：PYTHONPATH 最前挂 <installDir>/shims ⇒ 后端与它拉起的整条子树默认不弹控制台窗
      （机制与实测见 backend-python.js / docs/plugin-console-silence.md） */
@@ -1010,6 +1029,52 @@ async function startBackendInner() {
   }
   reportErr("backend_start_timeout", "等待 Breeze TTS 2 后端就绪超时", { phase: "start" });
   return { ok: false, error: "backend_start_timeout", pid: child.pid, port };
+}
+
+/** 起后端失败的错误码 → 一句中文说明（合成 / 创建音色共用这一次翻译，别让界面只剩错误码）。 */
+const BACKEND_START_ERR_TEXT = {
+  not_installed: "Breeze TTS 2 后端尚未安装完成（缺 venv / 引擎源码 / 权重或安装标记）：请先在插件卡片里安装",
+  no_venv: "Breeze TTS 2 后端缺少 Python 虚拟环境：请重新安装",
+  stale_python: "Breeze TTS 2 的 Python 基础解释器已失效（venv 还在但基座被删）：请重新安装",
+  bad_dir: "Breeze TTS 2 安装目录不可用：请在插件里重新选择安装目录",
+  backend_exited: "Breeze TTS 2 后端进程启动后退出：请打开插件控制台看 Console 日志",
+  backend_start_timeout: "等待 Breeze TTS 2 后端就绪超时：请打开插件控制台看 Console 日志",
+  backend_down: "Breeze TTS 2 后端未能在规定时间内就绪：请打开插件控制台看 Console 日志",
+};
+function backendStartErrorText(code) {
+  const c = String(code || "");
+  return BACKEND_START_ERR_TEXT[c] || "Breeze TTS 2 后端启动失败（" + (c || "unknown") + "）：请打开插件控制台看 Console 日志";
+}
+
+/**
+ * 干活前的后端就绪保障：管理服务没在跑就按「启用」那条路自己拉起来。
+ *
+ * 为什么需要：宿主启动时**不**自动起后端（显存是用户的），画布节点靠渲染层的
+ * ensureBreezeBackendReady 在跑之前拉起；但「创建音色 / 合成候选小样」这条出口
+ * （breeze:presetCandidate）以前直接发 /v1/audio/speech，服务没起时用户看到的就是
+ * 裸的 `connect ECONNREFUSED 127.0.0.1:8772`。这里与 h3 的 ensureBackendReadyForJob 同口径：
+ * 探活 → 拉起（单飞，并发请求共享同一次启动）→ 仍不行给中文原因。
+ */
+let backendEnsureInFlight = null;
+function ensureBackendForJob() {
+  if (backendEnsureInFlight) return backendEnsureInFlight;
+  backendEnsureInFlight = (async () => {
+    const port = Number(loadConfig().port) || DEFAULT_PORT;
+    if (await probeApi(port)) return { ok: true, port, reused: true };
+    appendConsole("[job] 后端没在跑（:" + port + " 无响应）→ 自动拉起");
+    const r = await startBackend();
+    if (!r || !r.ok) {
+      const code = String((r && r.error) || "backend_start_failed");
+      return { ok: false, error: code, message: backendStartErrorText(code) };
+    }
+    const p = Number(r.port) || port;
+    /* startBackend 自己已轮询到 /api/health 就绪；这里只复核一次，防止刚好又被停掉 */
+    if (await probeApi(p)) return { ok: true, port: p, reused: !!r.reused };
+    return { ok: false, error: "backend_down", message: backendStartErrorText("backend_down") };
+  })().finally(() => {
+    backendEnsureInFlight = null;
+  });
+  return backendEnsureInFlight;
 }
 
 async function stopBackend() {
@@ -1955,7 +2020,7 @@ function generateBreezeFile(params) {
   });
 }
 
-function synthesizeBreezeFile(params) {
+async function synthesizeBreezeFile(params) {
   params = params || {};
   const text = String(params.text || "").trim();
   const fmt = String(params.response_format || params.format || "wav").toLowerCase();
@@ -1979,6 +2044,10 @@ function synthesizeBreezeFile(params) {
     outputPath = managedOutFile(m.dir, params.nodeId, "." + (fmt || "wav"), "breeze");
     managedWarn = m.warn;
   }
+  /* 管理服务没在跑（宿主重启后没启用 / 显存释放硬杀过）→ 这里自己拉起来再合成：
+     以前直接发请求，节点状态行只拿到裸的 connect ECONNREFUSED 127.0.0.1:8772。 */
+  const ready = await ensureBackendForJob();
+  if (!ready.ok) return { ok: false, error: ready.error, message: ready.message };
   return apiKeyOr().then((key) => {
     if (!key) return reportGenerateFail({ error: "no_api_key" });
     const cfg = loadConfig();
@@ -3184,6 +3253,10 @@ async function presetCandidateGenerate(payload) {
   if (!instruction) return { ok: false, error: "instruction_required" };
   const cfg = Math.max(3, Math.min(5, Number(src.cfg) || presetRandomCfg()));
   const seed = Number.isFinite(Number(src.seed)) && Number(src.seed) > 0 ? Math.round(Number(src.seed)) : presetRandomSeed();
+  /* 管理服务没在跑就别直接发请求：先按「启用」那条路拉起（失败给中文原因）。
+     否则向导里只会看到一句裸的 connect ECONNREFUSED 127.0.0.1:8772。 */
+  const ready = await ensureBackendForJob();
+  if (!ready.ok) return { ok: false, error: ready.error, message: ready.message };
   const wav = await backendBinary("/v1/audio/speech", "POST", {
     text,
     instruction,
@@ -3485,6 +3558,8 @@ function vramHooks() {
   return {
     host: "breeze",
     port: Number(loadConfig().port) || DEFAULT_PORT,
+    /* 连续合成不来回卸载 / 重载引擎：收尾释放改成延迟释放窗口（见本文件顶部 BREEZE_KEEP_WARM_MS） */
+    keepWarmMs: BREEZE_KEEP_WARM_MS,
     isRunning: () => backendRunning() || apiAliveSync(),
     isLoaded: () => backendRunning() || apiAliveSync(),
     isBusy: () => activeSynthesis > 0,

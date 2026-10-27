@@ -25,7 +25,7 @@ const PLUGIN_FEED =
 /* 认得出的插件 kind 白名单：认不出的一律归一成 "unknown"（卡片显「请先升级主程序」、不可装）。
    已移除的 tts（GPT-SoVITS）故意不在表里 —— 云端旧目录里若还有 kind="tts" 的条目，
    它会走 unknown 那一档（看得见但装不了），而不是被当成一个已注册的后端。 */
-const KNOWN_KINDS = new Set(["builtin", "pet", "window", "music3", "yue2", "sensenova", "h3", "llama", "breeze", "remotion", "asr", "paseo", "blender"]);
+const KNOWN_KINDS = new Set(["builtin", "pet", "window", "music3", "yue2", "sensenova", "h3", "llama", "breeze", "remotion", "asr", "paseo", "blender", "infinitetalk", "soulxflashhead"]);
 const ID_OK = /^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$/;
 const MAX_CATALOG = 512 * 1024;
 const MAX_ZIP = 80 * 1024 * 1024;
@@ -520,6 +520,10 @@ function normalizePlugin(raw) {
   if (!kind && raw.handler === "breeze") kind = "breeze";
   if (!kind && raw.handler === "remotion") kind = "remotion";
   if (!kind && raw.handler === "asr") kind = "asr";
+  /* InfiniteTalk 数字人（kind infinitetalk，id infinitetalk-local） */
+  if (!kind && raw.handler === "infinitetalk") kind = "infinitetalk";
+  /* SoulX-FlashHead Lite 实时数字人（kind soulxflashhead，id soulxflashhead-local） */
+  if (!kind && raw.handler === "soulxflashhead") kind = "soulxflashhead";
   /* Paseo 手机接管（kind paseo，id paseo-remote）：handler 与 kind 同名，这里只是兜底链的一员 */
   if (!kind && raw.handler === "paseo") kind = "paseo";
   const iconName = safeIconName(raw.icon) || (id + ".png");
@@ -530,7 +534,7 @@ function normalizePlugin(raw) {
   return {
     id,
     kind: known ? kind : "unknown",
-    handler: String(raw.handler || (kind === "pet" ? "pet" : kind === "music3" ? "music3" : kind === "yue2" ? "yue2" : kind === "sensenova" ? "sensenova" : kind === "h3" ? "h3" : kind === "llama" ? "llama" : kind === "breeze" ? "breeze" : kind === "remotion" ? "remotion" : kind === "asr" ? "asr" : kind === "paseo" ? "paseo" : kind === "builtin" ? id : "")).trim(),
+    handler: String(raw.handler || (kind === "pet" ? "pet" : kind === "music3" ? "music3" : kind === "yue2" ? "yue2" : kind === "sensenova" ? "sensenova" : kind === "h3" ? "h3" : kind === "llama" ? "llama" : kind === "breeze" ? "breeze" : kind === "remotion" ? "remotion" : kind === "asr" ? "asr" : kind === "paseo" ? "paseo" : kind === "infinitetalk" ? "infinitetalk" : kind === "soulxflashhead" ? "soulxflashhead" : kind === "builtin" ? id : "")).trim(),
     order: Number(raw.order) || 100,
     title: locObj(raw.title || raw.name || id),
     subtitle: locObj(raw.subtitle || raw.description || ""),
@@ -611,7 +615,7 @@ function attachInstalled(plugins) {
         installedVersion: st.version,
         updateAvailable: !!(st.installed && p.version && verGt(p.version, st.version)),
       }));
-    } else if (p.kind === "music3" || p.handler === "music3" || p.kind === "yue2" || p.handler === "yue2" || p.kind === "sensenova" || p.handler === "sensenova" || p.kind === "h3" || p.handler === "h3" || p.kind === "llama" || p.handler === "llama" || p.kind === "breeze" || p.handler === "breeze" || p.kind === "remotion" || p.handler === "remotion" || p.kind === "asr" || p.handler === "asr") {
+    } else if (p.kind === "music3" || p.handler === "music3" || p.kind === "yue2" || p.handler === "yue2" || p.kind === "sensenova" || p.handler === "sensenova" || p.kind === "h3" || p.handler === "h3" || p.kind === "llama" || p.handler === "llama" || p.kind === "breeze" || p.handler === "breeze" || p.kind === "remotion" || p.handler === "remotion" || p.kind === "asr" || p.handler === "asr" || p.kind === "infinitetalk" || p.handler === "infinitetalk" || p.kind === "soulxflashhead" || p.handler === "soulxflashhead") {
       /* 本地后端插件：**装没装以磁盘上的安装目录为准**（目录里有 .install-ok / .venv /
          模型目录或目录非空 = 装过）—— 卡片动作（安装 / 启用 / 卸载）与插件显存门槛的
          「已装就保留」判据都吃这一个字段。版本 / 可更新状态仍由各宿主 status 异步判定。 */
@@ -984,6 +988,10 @@ function installFailHint(code) {
   if (/^ECONN|^ENOTFOUND|^EAI|^EHOST|^ERR_/.test(s)) return "连接插件下载源失败（" + s + "）";
   if (/^bad_zip_url/.test(s)) return "云端目录里该插件的下载地址不合法（只允许同源 http/https）";
   if (/^not_window_plugin/.test(s)) return "云端目录里找不到这个可下载的窗口插件";
+  /* 目录里有 id、但它不是窗口插件（infinitetalk / h3 / remotion 这类本地后端）。
+     这类安装由各宿主自己的安装链接管；走到窗口插件那条链是调用方选错了桥。 */
+  if (/^backend_plugin_route/.test(s))
+    return "这是本地后端插件（" + String(s.split(":")[1] || "") + "）：安装由它自己的安装链执行，不走窗口插件下载";
   if (/^need_app_update/.test(s)) return "该插件要求的 MTNode 版本高于当前版本";
   if (/^pack_missing_entry/.test(s)) return "安装包解压后缺少入口 HTML（云端包结构不对）";
   if (/zip truncated|unsupported zip method/.test(s)) return "安装包损坏或压缩方式不受支持";
@@ -1062,7 +1070,12 @@ async function installWindowPlugin(id) {
         });
       }
     }
-    if (!spec || spec.kind !== "window") throw new Error("not_window_plugin");
+    if (!spec) throw new Error("not_window_plugin");
+    /* 目录认识这个 id，但它不是窗口插件（infinitetalk-local / minimax-h3 / remotion 这类本地后端）：
+       它们的安装是各宿主自己的安装链，窗口插件这条链只该处理 kind=window。
+       这里分开报错 —— 否则一旦哪条入口传错 id / 路由表漏项，用户看到的是
+       「云端目录里找不到这个可下载的窗口插件」，把「走错桥」误报成「云端没有这个包」。 */
+    if (spec.kind !== "window") throw new Error("backend_plugin_route:" + spec.kind);
     if (!spec.compatible) throw new Error("need_app_update");
     const zipUrl = resolveZipUrl(spec.zipUrl);
     if (!zipUrl) throw new Error("bad_zip_url");

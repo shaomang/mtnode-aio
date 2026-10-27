@@ -1,0 +1,9 @@
+# Helper deps for the InfiniteTalk install / smoke scripts.
+# ComfyUI installs its own requirements (and its own venv) under ComfyUI/.
+
+# Weight download (hf-mirror / ModelScope) with resume.
+huggingface_hub>=0.26.0
+requests>=2.31.0
+
+# Smoke check: the audio encoder path imports soundfile.
+soundfile>=0.12.1

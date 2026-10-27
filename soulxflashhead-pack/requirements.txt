@@ -1,0 +1,25 @@
+# MTNode · SoulX-FlashHead Lite backend deps (Windows, single GPU).
+# Derived from the official requirements.txt minus the Linux/CUDA-only pins:
+#   nvidia-nccl-cu12 (no Windows wheel), xformers (Linux wheels only for this torch),
+#   decord (no Windows wheel), gradio/flask (only used by the upstream demo apps).
+# torch itself is installed by scripts/install.ps1 (pinned 2.8.0+cu128).
+diffusers>=0.34.0
+transformers==4.57.3
+tokenizers>=0.20.3
+accelerate>=1.8.1
+xfuser>=0.4.3
+opencv-python>=4.12.0.88
+imageio
+imageio-ffmpeg
+easydict
+ftfy
+scikit-image
+loguru
+pyloudnorm
+librosa
+mediapipe==0.10.9
+tqdm
+einops
+safetensors
+pillow
+numpy

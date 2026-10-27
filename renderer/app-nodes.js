@@ -1797,6 +1797,10 @@ function isMediaGenNode(node) {
       node.kind === "sensenova_gen" ||
       /* Breeze 语音（Breeze TTS 2）：本机唯一的语音后端（文本转语音），探活 / 排队 / 终止同待遇 */
       node.kind === "breeze_gen" ||
+      /* InfiniteTalk 数字人（infinitetalk_gen）：本机 ComfyUI 出片，探活 / 排队 / 终止按媒体族同待遇 */
+      node.kind === "infinitetalk_gen" ||
+      /* SoulX-FlashHead Lite 实时数字人（soulxflashhead_gen）：自带 Python 服务出片，探活 / 排队 / 终止同待遇 */
+      node.kind === "soulxflashhead_gen" ||
       node.kind === "video_gen" ||
       node.kind === "remotion" ||
       /* 视频后处理（video_upscale / video_interp · 超分 / 补帧）：
@@ -2381,8 +2385,10 @@ function normalizeGpuReading(gpu) {
     const n = Number(v);
     return Number.isFinite(n) ? n : null;
   };
-  const memUsed = num(g.memUsed != null ? g.memUsed : g.memUsedMb);
-  const memTotal = num(g.memTotal != null ? g.memTotal : g.memTotalMb);
+  /* infinitetalk 的探测形把总量/已用叫 memMb / usedMb（控制台沿用它），这里一并折算，
+     否则 infinitetalk_gen 节点的显存条与 GPU 条都恒为 0%。 */
+  const memUsed = num(g.memUsed != null ? g.memUsed : g.memUsedMb != null ? g.memUsedMb : g.usedMb);
+  const memTotal = num(g.memTotal != null ? g.memTotal : g.memTotalMb != null ? g.memTotalMb : g.memMb);
   /* breeze 的管理服务把利用率叫 utilPct（旧键名），其余宿主用 util：
      两种都要认，否则 breeze_gen 节点的「GPU」条永远读不到值、画成 0%。 */
   const util = num(g.util != null ? g.util : g.utilPct != null ? g.utilPct : g.utilization);
@@ -2503,6 +2509,10 @@ async function fetchMediaBackendStatus(node) {
     return window.api.sensenovaStatus ? await window.api.sensenovaStatus() : null;
   if (node.kind === "breeze_gen")
     return window.api.breezeStatus ? await window.api.breezeStatus() : null;
+  if (node.kind === "infinitetalk_gen")
+    return window.api.infinitetalkStatus ? await window.api.infinitetalkStatus() : null;
+  if (node.kind === "soulxflashhead_gen")
+    return window.api.soulxflashheadStatus ? await window.api.soulxflashheadStatus() : null;
   return window.api.h3Status ? await window.api.h3Status() : null;
 }
 
@@ -2823,15 +2833,23 @@ function appendMediaConsoleBtn(head, node) {
   const isH3 =
     node.kind === "video_gen" ||
     (typeof isVideoPostKind === "function" && isVideoPostKind(node));
+  /* InfiniteTalk 数字人是独立插件（自己的 ComfyUI 与控制台窗），不能落进 music3 兜底 */
+  const isInfinitetalk = node.kind === "infinitetalk_gen";
+  /* SoulX-FlashHead Lite 也是独立插件（自带服务与控制台窗） */
+  const isSoulxflashhead = node.kind === "soulxflashhead_gen";
   b.title = isH3
     ? I18n.t("打开 H3 控制台日志")
-    : node.kind === "yue_gen"
-      ? I18n.t("打开 YuE2 控制台日志")
-      : node.kind === "sensenova_gen"
-        ? I18n.t("打开 SenseNova 控制台日志")
-        : node.kind === "breeze_gen"
-          ? I18n.t("打开 Breeze TTS 2 控制台")
-          : I18n.t("打开 Music 3 控制台日志");
+    : isInfinitetalk
+      ? I18n.t("打开 InfiniteTalk 数字人控制台")
+      : isSoulxflashhead
+        ? I18n.t("打开 SoulX 实时数字人控制台")
+        : node.kind === "yue_gen"
+        ? I18n.t("打开 YuE2 控制台日志")
+        : node.kind === "sensenova_gen"
+          ? I18n.t("打开 SenseNova 控制台日志")
+          : node.kind === "breeze_gen"
+            ? I18n.t("打开 Breeze TTS 2 控制台")
+            : I18n.t("打开 Music 3 控制台日志");
   b.onclick = async (ev) => {
     ev.stopPropagation();
     if (!window.api) return;
@@ -2841,21 +2859,29 @@ function appendMediaConsoleBtn(head, node) {
           ? window.api.h3Open
             ? await window.api.h3Open()
             : null
-          : node.kind === "yue_gen"
-            ? window.api.yue2Open
-              ? await window.api.yue2Open()
+          : isInfinitetalk
+            ? window.api.infinitetalkOpen
+              ? await window.api.infinitetalkOpen()
               : null
-            : node.kind === "sensenova_gen"
-              ? window.api.sensenovaOpen
-                ? await window.api.sensenovaOpen()
+            : isSoulxflashhead
+              ? window.api.soulxflashheadOpen
+                ? await window.api.soulxflashheadOpen()
                 : null
-              : node.kind === "breeze_gen"
-                ? window.api.breezeOpen
-                  ? await window.api.breezeOpen()
+              : node.kind === "yue_gen"
+              ? window.api.yue2Open
+                ? await window.api.yue2Open()
+                : null
+              : node.kind === "sensenova_gen"
+                ? window.api.sensenovaOpen
+                  ? await window.api.sensenovaOpen()
                   : null
-                : window.api.music3Open
-                  ? await window.api.music3Open()
-                  : null;
+                : node.kind === "breeze_gen"
+                  ? window.api.breezeOpen
+                    ? await window.api.breezeOpen()
+                    : null
+                  : window.api.music3Open
+                    ? await window.api.music3Open()
+                    : null;
       if (!r || !r.ok) {
         toast(
           I18n.t("打开控制台失败：") + ((r && r.error) || I18n.t("未知错误")),
@@ -4672,7 +4698,9 @@ async function playMusicGenNode(node, quiet) {
     toast(I18n.t("音乐生成插件未就绪"), "err");
     return;
   }
-  if (node.running) return;
+  /* 串行链出队后由 mediaRunPrestart 先点亮了运行态（显存预释放那段也算本次运行）：
+     那一下是本运行体的交接，不是「已经在跑」，必须放行 */
+  if (node.running && !node._prestart) return;
   /* 「全部终止 / 单独停止」之后不得再起跑（含串行队列里排到点的任务） */
   if (mediaRunStopped(node)) {
     mediaGenMarkDropped(node, false);
@@ -4898,7 +4926,9 @@ async function playYueGenNode(node, quiet) {
     toast(I18n.t("YuE2 音乐插件未就绪"), "err");
     return;
   }
-  if (node.running) return;
+  /* 串行链出队后由 mediaRunPrestart 先点亮了运行态（显存预释放那段也算本次运行）：
+     那一下是本运行体的交接，不是「已经在跑」，必须放行 */
+  if (node.running && !node._prestart) return;
   /* 「全部终止 / 单独停止」之后不得再起跑（含串行队列里排到点的任务） */
   if (mediaRunStopped(node)) {
     mediaGenMarkDropped(node, false);
@@ -5241,7 +5271,9 @@ async function playSensenovaGenNode(node, quiet) {
     toast(I18n.t("SenseNova 图像插件未就绪"), "err");
     return;
   }
-  if (node.running) return;
+  /* 串行链出队后由 mediaRunPrestart 先点亮了运行态（显存预释放那段也算本次运行）：
+     那一下是本运行体的交接，不是「已经在跑」，必须放行 */
+  if (node.running && !node._prestart) return;
   /* 「全部终止 / 单独停止」之后不得再起跑（含串行队列里排到点的任务） */
   if (mediaRunStopped(node)) {
     mediaGenMarkDropped(node, false);
@@ -6236,7 +6268,9 @@ async function playBreezeGenNode(node, quiet) {
     toast(I18n.t("Breeze 语音插件未就绪"), "err");
     return;
   }
-  if (node.running) return;
+  /* 串行链出队后由 mediaRunPrestart 先点亮了运行态（显存预释放那段也算本次运行）：
+     那一下是本运行体的交接，不是「已经在跑」，必须放行 */
+  if (node.running && !node._prestart) return;
   /* 「全部终止 / 单独停止」之后不得再起跑（含串行队列里排到点的任务） */
   if (mediaRunStopped(node)) {
     mediaGenMarkDropped(node, false);
@@ -6544,6 +6578,8 @@ function beginNodeRun(node) {
   node._aborted = false;
   /* 新一轮真起跑：上一轮「假处理中」被摘除的痕迹一并作废（收尾时不再按它压状态） */
   node._ghostCleared = false;
+  /* 串行链预点亮的交接标记到此结束（见 mediaRunPrestart）：从这里起「running 已置」就是真的在跑 */
+  node._prestart = false;
 }
 /* 停止本节点当前批次：_aborted 让在途运行体在下一个检查点退出，
    _stopTick 让「还没起跑」的排队项（媒体串行队列）直接作废 */
@@ -6668,6 +6704,10 @@ function mediaGenCancelRemote(node) {
       window.api.h3CancelGenerate(node.id);
     else if (node.kind === "remotion" && window.api.remotionCancel)
       window.api.remotionCancel(node.id);
+    else if (node.kind === "infinitetalk_gen" && window.api.infinitetalkCancelGenerate)
+      window.api.infinitetalkCancelGenerate(node.id);
+    else if (node.kind === "soulxflashhead_gen" && window.api.soulxflashheadCancelGenerate)
+      window.api.soulxflashheadCancelGenerate(node.id);
   } catch (_) {}
 }
 function findMediaGenNodeById(id) {
@@ -7189,7 +7229,8 @@ async function playVideoGenNode(node, quiet) {
     toast(I18n.t("视频生成插件未就绪"), "err");
     return;
   }
-  if (node.running) return;
+  /* 串行链出队后由 mediaRunPrestart 先点亮了运行态（显存预释放那段也算本次运行）：放行这一次交接 */
+  if (node.running && !node._prestart) return;
   /* 同音乐节点：被终止过的节点不得再起跑 */
   if (mediaRunStopped(node)) {
     mediaGenMarkDropped(node, false);
@@ -7656,7 +7697,8 @@ async function playVideoPostNode(node, quiet) {
     toast(I18n.t("视频生成插件未就绪"), "err");
     return;
   }
-  if (node.running) return;
+  /* 串行链出队后由 mediaRunPrestart 先点亮了运行态（显存预释放那段也算本次运行）：放行这一次交接 */
+  if (node.running && !node._prestart) return;
   /* 同 video_gen：被终止过的节点不得再起跑 */
   if (mediaRunStopped(node)) {
     mediaGenMarkDropped(node, false);
@@ -8961,7 +9003,8 @@ async function playRemotionNode(node, quiet) {
     toast(I18n.t("Remotion 插件未就绪（请先在插件中安装）"), "err");
     return;
   }
-  if (node.running) return;
+  /* 串行链出队后由 mediaRunPrestart 先点亮了运行态：放行这一次交接 */
+  if (node.running && !node._prestart) return;
   if (mediaRunStopped(node)) {
     mediaGenMarkDropped(node, false);
     return;
@@ -9289,37 +9332,86 @@ let _mediaGenChain = Promise.resolve();
 function vramHookSkipped(node) {
   return !node || mediaRunStopped(node);
 }
+/* 媒体串行链出队后、运行体接手前，先把节点点亮成「运行中」。
+   为什么要抢这一步：显存预释放（vramPreRunNode）实测要 1.4–5.6s（软释放 / 硬杀进程树，
+   见 vram-release.log），而 node.running 一直是 playXxxGenNode 里才置真的 —— 用户点 ▶ 之后
+   这几秒里卡片既不显示运行中、也不在等待态（排队位在出队那一刻就摘了），看着像「点了没反应」。
+   这里只借运行态的外观（running + 进度行），真正的起跑仍由 play 函数负责：
+   play 开头的「已在跑就直接返回」守卫按 _prestart 放行这一次交接，并由 beginNodeRun 清掉标记。 */
+function mediaRunPrestart(node) {
+  if (!node || !node.id || node.running) return;
+  beginNodeRun(node);
+  node.running = true;
+  node._prestart = true;
+  try {
+    const ui = ensureBackendUiState(node);
+    ui.genPct = 2;
+    ui.genMsg = I18n.t("正在释放显存，准备起跑…");
+  } catch (_) {}
+  renderCanvas();
+  try {
+    updateRunQueuePanel();
+  } catch (_) {}
+}
 function runMediaGenSerial(node, fn) {
   const hooked =
     typeof vramPreRunNode === "function" &&
     typeof vramPostRunNode === "function" &&
     !!vramBackendOfNode(node);
   if (!hooked) return mediaGenQueueRun(node, fn);
-  /* 排队期间不动手：出队那一刻（真的轮到它跑）才释放，避免给别人白放一遍 */
-  return mediaGenQueueRun(node, async () => {
-    try {
-      if (!vramHookSkipped(node)) await vramPreRunNode(node);
-    } catch {}
-    try {
-      return await fn();
-    } finally {
+  /* 整段（出队 → 显存预释放 → 运行体 → 收尾释放）都登记成这个节点的运行体：
+     后端在途 watcher 要等 play 里 ensureBackend 之后才起（冷启动时是好几秒），
+     这之前节点一条「它还活着」的证据都没有，「假处理中」巡检（sweepGhostRunningNodes）
+     就会把真在跑的媒体任务摘成「已完成 / 从未运行」—— 用户看到的正是
+     「有历史输出时点 ▶ 立刻结束，且没有产出任何新内容」。见 trackNodeRunPromise。 */
+  return trackNodeRunPromise(node, () =>
+    /* 排队期间不动手：出队那一刻（真的轮到它跑）才释放，避免给别人白放一遍 */
+    mediaGenQueueRun(node, async () => {
+      mediaRunPrestart(node);
       try {
-        if (!vramHookSkipped(node)) {
-          const post = await vramPostRunNode(node);
-          const note = post && typeof vramRunNote === "function" ? vramRunNote(post) : "";
-          if (note) {
-            /* 状态行后缀：只写事实（释放了谁、腾出多少），不覆盖原本的完成 / 报错文案 */
-            if (node.kind === "music_gen") node.musicStatus = String(node.musicStatus || "") + note;
-            else if (node.kind === "yue_gen") node.yueStatus = String(node.yueStatus || "") + note;
-            else if (node.kind === "sensenova_gen")
-              node.sensenovaStatus = String(node.sensenovaStatus || "") + note;
-            else node.videoStatus = String(node.videoStatus || "") + note;
-            renderCanvas();
-          }
-        }
+        if (!vramHookSkipped(node)) await vramPreRunNode(node);
       } catch {}
+      try {
+        return await fn();
+      } finally {
+        /* 运行体没接管（提前 return / 抛错）：把预点亮的状态收回去，绝不留一颗假 running */
+        if (node && node._prestart) {
+          node._prestart = false;
+          node.running = false;
+          try {
+            const ui = ensureBackendUiState(node);
+            ui.genPct = 0;
+            ui.genMsg = "";
+          } catch (_) {}
+          renderCanvas();
+          try {
+            updateRunQueuePanel();
+          } catch (_) {}
+        }
+        await mediaPostRunNote(node);
+      }
+    }),
+  );
+}
+/* 收尾：把本次运行释放了多少显存写回状态行后缀（只写事实，不覆盖完成 / 报错文案） */
+async function mediaPostRunNote(node) {
+  try {
+    if (!vramHookSkipped(node)) {
+      const post = await vramPostRunNode(node);
+      const note = post && typeof vramRunNote === "function" ? vramRunNote(post) : "";
+      if (note) {
+        /* 状态行后缀：只写事实（释放了谁、腾出多少），不覆盖原本的完成 / 报错文案 */
+        if (node.kind === "music_gen") node.musicStatus = String(node.musicStatus || "") + note;
+        else if (node.kind === "yue_gen") node.yueStatus = String(node.yueStatus || "") + note;
+        else if (node.kind === "sensenova_gen")
+          node.sensenovaStatus = String(node.sensenovaStatus || "") + note;
+        else if (node.kind === "breeze_gen")
+          node.breezeStatus = String(node.breezeStatus || "") + note;
+        else node.videoStatus = String(node.videoStatus || "") + note;
+        renderCanvas();
+      }
     }
-  });
+  } catch {}
 }
 function mediaGenQueueRun(node, fn) {
   const entry = {
@@ -9479,6 +9571,14 @@ async function playNodeBody(node, quiet, opts) {
   }
   if (node.kind === "video_gen") {
     return runMediaGenSerial(node, () => playVideoGenNode(node, quiet));
+  }
+  /* InfiniteTalk 数字人：进同一条媒体串行链 + 全局音视频锁（与 H3 / 音乐 / 语音互斥） */
+  if (node.kind === "infinitetalk_gen") {
+    return runMediaGenSerial(node, () => playInfinitetalkNode(node, quiet));
+  }
+  /* SoulX-FlashHead Lite：进同一条媒体串行链 + 全局音视频锁（与 H3 / 音乐 / 语音互斥） */
+  if (node.kind === "soulxflashhead_gen") {
+    return runMediaGenSerial(node, () => playSoulxflashheadNode(node, quiet));
   }
   /* 视频后处理（超分 / 补帧）：与生成共用后端与串行队列，跑起来但不内联进生成 */
   if (typeof isVideoPostKind === "function" && isVideoPostKind(node)) {
@@ -21576,6 +21676,20 @@ function editPortNameOf(node, dir, i, isFnT) {
        端口 0 = 提示词 / 文本入口，端口 1+ 是按已连线条数增量出的数据槽（无固定控制端子） */
     if (k === "sensenova_gen")
       return i === 0 ? I18n.t("提示词") : I18n.t("输入端子 ") + (i + 1);
+    /* InfiniteTalk 数字人：端口0=人物图 · 1=语音 · 2=源视频(V2V) · 3=提示词 · 4=控制输入 */
+    if (k === "infinitetalk_gen")
+      return i === 0
+        ? I18n.t("人物图")
+        : i === 1
+          ? I18n.t("语音")
+          : i === 2
+            ? I18n.t("源视频")
+            : i === 3
+              ? I18n.t("提示词")
+              : I18n.t("控制");
+    /* SoulX-FlashHead Lite：端口0=人物图 · 1=语音 · 2=控制输入 */
+    if (k === "soulxflashhead_gen")
+      return i === 0 ? I18n.t("人物图") : i === 1 ? I18n.t("语音") : I18n.t("控制");
     if (k === "video_gen")
       return i === videoGenControlPort(node) ? I18n.t("控制") : I18n.t("提示词 / 参考");
     if (isVideoPostKind(node))
@@ -21596,6 +21710,10 @@ function editPortNameOf(node, dir, i, isFnT) {
   /* SenseNova 图像：输出 0 是**图像**端子（与 proc_image 同语义），
      不能并进下面那组「内容 = 音频 / 视频路径文本」的媒体族 */
   if (k === "sensenova_gen") return i === 0 ? I18n.t("图像") : I18n.t("控制");
+  /* InfiniteTalk 数字人：输出 0 = 数字人视频 mp4 · 输出 1 = 控制 */
+  if (k === "infinitetalk_gen") return i === 0 ? I18n.t("视频") : I18n.t("控制");
+  /* SoulX-FlashHead Lite：输出 0 = 数字人视频 mp4（含原音轨）· 输出 1 = 控制 */
+  if (k === "soulxflashhead_gen") return i === 0 ? I18n.t("视频") : I18n.t("控制");
   if (
     k === "music_gen" ||
     k === "yue_gen" ||
@@ -21637,6 +21755,20 @@ function editPortKindOf(node, dir, i, isFnT) {
     /* SenseNova 图像：端口 0 = 提示词（文本）· 端口 1+ = 增量数据槽（可接文本，
        也可接图像引用 input_image / proc_image 等）→ 类型按「由连线决定」的 any 报 */
     if (k === "sensenova_gen") return i === 0 ? "text" : "any";
+    /* SoulX-FlashHead Lite：0=人物图（image）· 1=语音（audio）· 2=控制输入 */
+    if (k === "soulxflashhead_gen")
+      return i === 2 ? "control" : i === 0 ? "image" : "audio";
+    /* InfiniteTalk 数字人：0=人物图（image）· 1=语音（audio）· 2=源视频（video）· 3=提示词（text）· 4=控制 */
+    if (k === "infinitetalk_gen")
+      return i === 4
+        ? "control"
+        : i === 0
+          ? "image"
+          : i === 1
+            ? "audio"
+            : i === 2
+              ? "video"
+              : "text";
     if (k === "video_gen") return i === videoGenControlPort(node) ? "control" : "any";
     if (isVideoPostKind(node)) return i === 0 ? "control" : i === 1 ? "video" : "any";
     /* Remotion：**固化后**端子类型由端子契约声明（第 i 项 ↔ 第 i 号端子，
@@ -21677,7 +21809,7 @@ function editPortKindOf(node, dir, i, isFnT) {
     return i === 0 ? "audio" : "control";
   /* SenseNova：输出 0 = 图像（save_image / 图像预览 / @ 引用直接复用）· 输出 1 = 控制 */
   if (k === "sensenova_gen") return i === 0 ? "image" : "control";
-  if (k === "video_gen" || isVideoPostKind(node) || k === "remotion")
+  if (k === "video_gen" || isVideoPostKind(node) || k === "remotion" || k === "infinitetalk_gen" || k === "soulxflashhead_gen")
     return i === 0 ? "video" : "control";
   if (isControlKind(node)) return "control";
   if (k === "proc_image" || k === "input_image") return "image";
@@ -22903,7 +23035,24 @@ function startTitleEdit(node, titleEl) {
       }
       scheduleSave();
     }
-    renderCanvas();
+    /* 标题改了要当场看得见（含节点层折叠卡 body 里的大标题）：
+       ① 输入框还握着焦点时，renderCanvas 的焦点守卫会把整幅重建推后 —— 先交还焦点；
+       ② 复用快速通道不重挂节点 DOM（标题输入框会一直留在头部、body 还是旧字）——
+          所以按模型重建这一颗节点的元素，头部与 body 一次刷到位。 */
+    try {
+      input.blur();
+    } catch (_) {}
+    const host = document.querySelector('.wf-node[data-nid="' + node.id + '"]');
+    if (host) {
+      refreshNodeEl(node.id);
+      /* 这一颗已按模型重建好：签名跟着刷新，否则旧签名（标题还是旧的）会把下一次
+         普通重绘误判成「形状变了」，白白整幅重建一次（图片 / 视频会跟着闪一下）。 */
+      if (typeof canvasRenderSig === "function") S._renderSig = canvasRenderSig();
+      if (S.sidebarOpen && typeof renderSidebar === "function") renderSidebar();
+    } else {
+      S._renderSig = null;
+      renderCanvas();
+    }
   };
   input.addEventListener("keydown", (ev) => {
     ev.stopPropagation();

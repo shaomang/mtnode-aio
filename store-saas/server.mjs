@@ -5825,6 +5825,7 @@ function adminAppRow(a) {
     id: a.id,
     ownerId: a.userId,
     ownerName: owner ? String(owner.username || owner.id) : String(a.userId || ""),
+    ownerNickname: owner ? String(owner.nickname || "") : "",
     title: a.title || a.id,
     desc: a.description || a.desc || "",
     tags: Array.isArray(a.tags) ? a.tags : [],
@@ -5849,6 +5850,7 @@ function adminTemplateRow(t) {
     id: t.id,
     ownerId: t.userId,
     ownerName: owner ? String(owner.username || owner.id) : String(t.userId || ""),
+    ownerNickname: owner ? String(owner.nickname || "") : "",
     title: t.title || t.id,
     desc: t.description || "",
     tags: Array.isArray(t.tags) ? t.tags : [],
@@ -5872,6 +5874,7 @@ function adminWorkflowRow(t) {
     id: t.id,
     ownerId: t.userId,
     ownerName: owner ? String(owner.username || owner.id) : String(t.userId || ""),
+    ownerNickname: owner ? String(owner.nickname || "") : "",
     title: t.title || t.id,
     desc: t.description || "",
     tags: Array.isArray(t.tags) ? t.tags : [],
@@ -5895,6 +5898,7 @@ function adminSkillRow(s) {
     id: s.id,
     ownerId: s.userId,
     ownerName: owner ? String(owner.username || owner.id) : String(s.userId || ""),
+    ownerNickname: owner ? String(owner.nickname || "") : "",
     title: s.title || s.id,
     skillName: s.skillName || "",
     desc: s.description || "",
@@ -9953,6 +9957,10 @@ async function handle(req, res) {
       id: app.id,
       ownerId: app.userId,
       ownerName: appOwnerNameOf(app.userId),
+      ownerNickname: (function () {
+        const u = userById(app.userId);
+        return u ? String(u.nickname || "") : "";
+      })(),
       title: app.title || app.id,
       latestVersion: latest,
       versionsOn: appVersionsOn(),
@@ -9965,7 +9973,13 @@ async function handle(req, res) {
     const a = requireAdmin(req, res);
     if (!a) return;
     const limit = Math.min(CONTENT_AUDIT_MAX, Math.max(1, Number(url.searchParams.get("limit")) || 100));
-    return send(res, 200, { ok: true, items: contentAuditList().slice(0, limit) });
+    /* 管理台账号列统一「昵称 + 账号ID」：留痕里只存了用户名，这里按 userId 回查当前昵称
+       （旧记录同样能显示；账号已删则昵称为空，界面回落成账号ID）。 */
+    const items = contentAuditList().slice(0, limit).map((x) => {
+      const u = (db.users || []).find((y) => y.id === x.userId);
+      return Object.assign({}, x, { nickname: (u && u.nickname) || "" });
+    });
+    return send(res, 200, { ok: true, items });
   }
 
   // 下载（管理员排查用）：应用 zip / 模板 .mtnodes / 技能包内单个文件。

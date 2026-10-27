@@ -1163,6 +1163,32 @@ function openSettingsBody() {
     btnRow.appendChild(openDirBtn);
     sec.appendChild(btnRow);
 
+    /* 工作目录那一侧（.mtnode / .mtnode-input / recordings）不进上面的分类清单：
+       它统计的是**画布工作目录**而不是数据目录。按钮打开的是顶栏那颗按钮同一个
+       常驻面板（renderer/app-ws-temp.js），一套 UI、一套实现，不在这里长第二份。 */
+    const wsRow = document.createElement("div");
+    wsRow.className = "n-field";
+    wsRow.style.flexDirection = "row";
+    wsRow.style.alignItems = "center";
+    wsRow.style.gap = "8px";
+    wsRow.style.flexWrap = "wrap";
+    const wsTempBtn = document.createElement("button");
+    wsTempBtn.className = "mini";
+    wsTempBtn.textContent = I18n.t("工作目录临时文件…");
+    wsTempBtn.title = I18n.t(
+      "统计并清理当前画布工作目录里的 .mtnode / .mtnode-input / recordings（打开的是顶栏那颗按钮同一个面板）",
+    );
+    wsTempBtn.onclick = () => {
+      if (typeof window.openWorkspaceTempPanel === "function") window.openWorkspaceTempPanel();
+    };
+    wsRow.appendChild(wsTempBtn);
+    const wsTempHint = document.createElement("span");
+    wsTempHint.style.fontSize = "12px";
+    wsTempHint.style.opacity = "0.75";
+    wsTempHint.textContent = I18n.t("工作目录里的渲染工程、粘贴图与录音：与顶栏工作目录右侧那颗按钮同一个面板");
+    wsRow.appendChild(wsTempHint);
+    sec.appendChild(wsRow);
+
     const statusEl = document.createElement("div");
     statusEl.className = "n-field";
     statusEl.style.fontSize = "12px";

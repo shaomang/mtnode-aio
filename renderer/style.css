@@ -76,3 +76,7 @@
    输入端最末位那颗 .np-port、卡片上的 .np-chip、设置窗里的覆写明细表、JSON 表单控件。
    放最后一份：它只加自己那几个类，不与既有节点皮冲突（亮色覆盖在文件末尾）。 */
 @import url("./css/node-params.css");
+/* 工作目录占用与清理面板（顶栏工作目录右侧那颗按钮 + 设置里的同名入口 ·
+   renderer/app-ws-temp.js · 主进程 workspace-temp.js）：.ws-temp-* 常驻浮层。
+   放最后一份：它只加自己那几个类。 */
+@import url("./css/ws-temp.css");

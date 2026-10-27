@@ -1,0 +1,240 @@
+/* ── 工作目录占用与清理面板（renderer/app-ws-temp.js）──────────────────────
+   常驻浮层：z-index 夹在 #overlay（100）与深色确认框（2400）之间，
+   所以从设置里打开时设置窗留在下面、确认框还能盖在面板上。
+   点蒙层不关闭（persistent），出口只有 ✕ /「关闭」/ Esc。 */
+
+.ws-temp-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 2350;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(5, 8, 12, .62);
+}
+.ws-temp-mask[hidden] {
+  display: none;
+}
+
+.ws-temp-box {
+  display: flex;
+  flex-direction: column;
+  width: min(820px, 96vw);
+  max-height: 84vh;
+  background: var(--panel);
+  color: var(--ink);
+  border: 1px solid var(--bd2, var(--bd));
+  border-top: 3px solid var(--cyan);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, .5);
+}
+
+.ws-temp-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--bd);
+  flex: 0 0 auto;
+}
+.ws-temp-title {
+  font-size: 14px;
+  white-space: nowrap;
+}
+.ws-temp-ws {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 11px;
+  font-family: var(--mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+}
+.ws-temp-close {
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--bd);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  border-radius: 4px;
+  line-height: 1;
+}
+.ws-temp-close:hover {
+  color: var(--ink);
+  border-color: var(--muted);
+}
+
+.ws-temp-sum {
+  flex: 0 0 auto;
+  padding: 8px 14px;
+  font-size: 12px;
+  color: var(--muted);
+  border-bottom: 1px solid var(--bd);
+  line-height: 1.6;
+}
+.ws-temp-sum.err {
+  color: var(--red);
+}
+.ws-temp-note-line {
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.ws-temp-list {
+  flex: 1 1 auto;
+  min-height: 120px;
+  overflow: auto;
+  padding: 6px 10px 10px;
+}
+
+.ws-temp-empty {
+  padding: 24px 8px;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
+}
+.ws-temp-empty.err {
+  color: var(--red);
+}
+
+.ws-temp-group {
+  border: 1px solid var(--bd);
+  border-radius: 6px;
+  margin-top: 8px;
+  background: color-mix(in srgb, var(--panel) 82%, var(--bg));
+}
+
+.ws-temp-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  font-size: 12px;
+  border-radius: 4px;
+  min-height: 26px;
+}
+.ws-temp-row:hover {
+  background: rgba(127, 127, 127, .08);
+}
+.ws-temp-row.group-head {
+  font-weight: 600;
+  border-bottom: 1px solid var(--bd);
+  border-radius: 6px 6px 0 0;
+  background: rgba(127, 127, 127, .06);
+}
+.ws-temp-row.leaf {
+  padding-left: 12px;
+}
+.ws-temp-row.child {
+  padding-left: 34px;
+  color: var(--muted);
+}
+.ws-temp-row.child:hover {
+  color: var(--ink);
+}
+
+.ws-temp-row input[type="checkbox"] {
+  flex: 0 0 auto;
+  width: 13px;
+  height: 13px;
+  cursor: pointer;
+  accent-color: var(--cyan);
+}
+.ws-temp-row input[type="checkbox"]:disabled {
+  cursor: not-allowed;
+  opacity: .45;
+}
+
+.ws-temp-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono);
+}
+.ws-temp-row.child .ws-temp-name {
+  font-family: var(--sans);
+}
+.ws-temp-tag {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 4px;
+  border: 1px solid var(--bd);
+  border-radius: 3px;
+  font-style: normal;
+  font-size: 10px;
+  color: var(--muted);
+  font-family: var(--sans);
+  vertical-align: 1px;
+}
+.ws-temp-meta {
+  flex: 0 0 auto;
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.ws-temp-note {
+  flex: 0 1 auto;
+  max-width: 40%;
+  color: var(--muted);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ws-temp-expand {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1;
+}
+.ws-temp-expand:hover {
+  color: var(--ink);
+}
+
+.ws-temp-foot {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--bd);
+}
+.ws-temp-pick {
+  font-size: 12px;
+  color: var(--muted);
+}
+.ws-temp-gap {
+  flex: 1 1 auto;
+}
+.ws-temp-foot .mini {
+  white-space: nowrap;
+}
+.ws-temp-foot .mini.danger {
+  border-color: var(--red);
+  color: var(--red);
+}
+.ws-temp-foot .mini.danger:disabled {
+  opacity: .45;
+  cursor: not-allowed;
+}
+
+/* 顶栏那颗按钮：与 📂 / 📍 同一排、同样大小 */
+.ws-temp-open svg {
+  width: 15px;
+  height: 15px;
+  display: block;
+}

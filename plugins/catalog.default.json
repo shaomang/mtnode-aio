@@ -170,6 +170,40 @@
         "zh": "本地 Remotion（React 动效）视频生成：文本描述 → LLM 生成动效合成 → 渲染 mp4；画布「Remotion 视频」节点。移除插件不删已装项目。",
         "en": "Local Remotion (React motion) video: text → LLM-generated composition → render mp4; adds a canvas Remotion video node. Removing the plugin keeps your install."
       }
+    },
+    {
+      "id": "infinitetalk-local",
+      "kind": "infinitetalk",
+      "handler": "infinitetalk",
+      "order": 42,
+      "version": "1.0.0",
+      "minAppVersion": "1.6.1",
+      "icon": "infinitetalk-local.png",
+      "title": {
+        "zh": "InfiniteTalk 数字人",
+        "en": "InfiniteTalk Avatar"
+      },
+      "subtitle": {
+        "zh": "本地数字人视频：一张人物图（或一段源视频）+ 一段语音 → 口型同步 mp4（MeiGen-AI InfiniteTalk，Wan2.1 I2V 14B）。独立装一份 ComfyUI（默认 8199，不复用 H3），权重走 hf-mirror 断点续传；默认开启 fp8 + lightx2v 4 步蒸馏 + SageAttention + 显存水位。插件控制台可安装 / 启停 / 试生成 / 看日志，画布「InfiniteTalk 数字人」节点。长音频由宿主按 81 帧分块续写（下一块接上一块末帧与末 9 帧），分块产物保留可断点续跑；成片直接封入原音轨。需 NVIDIA 显卡（24G 推荐），建议预留 ≥55GB 磁盘。移除插件不删已装项目与产物。",
+        "en": "Local talking-avatar video: one portrait (or a source video) + one voice track → lip-synced mp4 (MeiGen-AI InfiniteTalk on Wan2.1 I2V 14B). It installs its own ComfyUI (port 8199, never reusing H3) and pulls weights from hf-mirror with resume; fp8 + lightx2v 4-step distillation + SageAttention + VRAM headroom are on by default. The console installs, starts/stops, test-generates and shows logs; adds a canvas InfiniteTalk avatar node. Long audio is chunked by the host in 81-frame blocks (each block continues from the previous last frame plus its last 9 frames); finished chunks are kept for resume, and the final mp4 muxes the original audio track. Needs an NVIDIA GPU (24GB recommended) and ≥55GB free disk. Removing the plugin keeps your install and outputs."
+      }
+    },
+    {
+      "id": "soulxflashhead-local",
+      "kind": "soulxflashhead",
+      "handler": "soulxflashhead",
+      "order": 43,
+      "version": "1.0.0",
+      "minAppVersion": "1.6.2",
+      "icon": "soulxflashhead-local.png",
+      "title": {
+        "zh": "SoulX 实时数字人",
+        "en": "SoulX Real-time Avatar"
+      },
+      "subtitle": {
+        "zh": "本地实时数字人：一张人物图 + 一段语音 → 512×512 @25fps 口型同步 mp4（SoulX-FlashHead Lite 1.3B，Model_Lite 蒸馏 4 步）。整段音频一次流式跑完、不切块；单张 40 系卡即可跑到 25fps 实时（4090 实测高于实时）。默认全开优化：torch.compile + flash-attention（装不上即安装失败）+ SageAttention + fp16 VAE 分片。独立 Python 服务（默认 8198，与 InfiniteTalk 的 8199 隔离），权重走 ModelScope → hf-mirror。插件控制台可安装 / 启停 / 试生成 / 跑实时基准 / 看日志，画布「SoulX 实时数字人」节点。需 NVIDIA 显卡（建议 ≥16G 显存），预留 ≥30GB 磁盘。移除插件不删已装项目与产物。",
+        "en": "Local real-time avatar: one portrait + one voice track → 512×512 @25fps lip-synced mp4 (SoulX-FlashHead Lite 1.3B, Model_Lite 4-step distilled). The whole track runs through in one streaming pass — no host-side chunking — and a single 40-series card reaches 25fps real time (a 4090 measures above real time). All optimizations on by default: torch.compile + flash-attention (installing without it counts as a failure) + SageAttention + fp16 sliced VAE. It runs its own Python service (port 8198, isolated from InfiniteTalk's 8199) and pulls weights from ModelScope, falling back to hf-mirror. The console installs, starts/stops, test-generates, runs a real-time benchmark and shows logs; adds a canvas SoulX real-time avatar node. Needs an NVIDIA GPU (≥16GB VRAM recommended) and ≥30GB free disk. Removing the plugin keeps your install and outputs."
+      }
     }
   ]
 }

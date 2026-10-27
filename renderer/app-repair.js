@@ -66,6 +66,12 @@ const PLUGIN_REPAIR_SKILLS = {
   breeze: "breeze-tts-local-install",
   "breeze-tts": "breeze-tts-local-install",
   "breeze-tts-local": "breeze-tts-local-install",
+  /* InfiniteTalk 数字人：安装 / 自我修复的唯一真源在 skills/infinitetalk-local-install */
+  infinitetalk: "infinitetalk-local-install",
+  "infinitetalk-local": "infinitetalk-local-install",
+  /* SoulX-FlashHead Lite 实时数字人：安装 / 自我修复的唯一真源在 skills/soulx-flashhead-local-install */
+  soulxflashhead: "soulx-flashhead-local-install",
+  "soulxflashhead-local": "soulx-flashhead-local-install",
   llama: "llama-local-install",
   "llama-local": "llama-local-install",
   /* Paseo 手机接管：它的失败多是现场问题（没装 CLI / relay 关着 / daemon 起不来 /
@@ -95,6 +101,12 @@ const PLUGIN_REPAIR_CONSOLE = {
   breeze: "breezeOpen",
   "breeze-tts": "breezeOpen",
   "breeze-tts-local": "breezeOpen",
+  /* InfiniteTalk 数字人：控制台里能看安装步骤 / ComfyUI 日志 / GPU / 试生成 */
+  infinitetalk: "infinitetalkOpen",
+  "infinitetalk-local": "infinitetalkOpen",
+  /* SoulX-FlashHead Lite：控制台里能看安装步骤 / 后端日志 / GPU / 试生成 / 实时基准 */
+  soulxflashhead: "soulxflashheadOpen",
+  "soulxflashhead-local": "soulxflashheadOpen",
   llama: "llamaOpen",
   "llama-local": "llamaOpen",
   remotion: "remotionOpen",
@@ -166,6 +178,30 @@ const PLUGIN_REPAIR_SERVICE_BASE = {
     /* 宿主写的修复结果标记：Agent 保底安装/修复的结论落在这个文件里 */
     results: [".breeze-agent-result"],
   },
+  /* InfiniteTalk 数字人：那份 ComfyUI 是本插件自己装的（与 H3 隔离），常驻单例、
+     不随 MTNode 退出 —— 修完调 infinitetalkStart 重新拉起 + /health 才算真验证。 */
+  infinitetalk: {
+    label: "InfiniteTalk 数字人",
+    resident: true,
+    start: "infinitetalkStart",
+    stop: "infinitetalkStop",
+    status: "infinitetalkStatus",
+    card: "refreshInfinitetalkPluginCard",
+    cards: ["infinitetalk-local"],
+    results: [".infinitetalk-agent-result"],
+  },
+  /* SoulX-FlashHead Lite：后端服务本插件自装（与 InfiniteTalk 隔离、端口 8198），常驻单例、
+     不随 MTNode 退出 —— 修完调 soulxflashheadStart 重新拉起 + /health 才算真验证。 */
+  soulxflashhead: {
+    label: "SoulX 实时数字人",
+    resident: true,
+    start: "soulxflashheadStart",
+    stop: "soulxflashheadStop",
+    status: "soulxflashheadStatus",
+    card: "refreshSoulxflashheadPluginCard",
+    cards: ["soulxflashhead-local"],
+    results: [".soulxflashhead-agent-result"],
+  },
   llama: {
     label: "llama.cpp",
     resident: true,
@@ -226,6 +262,8 @@ const PLUGIN_REPAIR_SERVICE = (function expandPluginRepairService() {
     yue2: ["yue2", "yue", "yue2-local", "yue_gen"],
     sensenova: ["sensenova", "sensenova-local", "sensenova-u1", "sensenova_gen"],
     breeze: ["breeze", "breeze-tts", "breeze-tts-local", "breeze_gen"],
+    infinitetalk: ["infinitetalk", "infinitetalk-local", "infinitetalk_gen"],
+    soulxflashhead: ["soulxflashhead", "soulxflashhead-local", "soulxflashhead_gen", "soulx-flashhead"],
     llama: ["llama", "llama-local", "llama-cpp"],
     remotion: ["remotion", "remotion-video", "remotion-render"],
     paseo: ["paseo", "paseo-remote", "paseo-bridge"],

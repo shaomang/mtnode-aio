@@ -220,6 +220,70 @@ def preflight() -> None:
         raise EngineError("cuda_unavailable", f"CUDA 检测失败：{exc}") from exc
 
 
+# fast 路径（CUDA Graph）的显存门槛：官方 README 标注 --fast-all 约 14.4GB，
+# 推荐 24GB 卡；低于门槛直接回退 eager，避免「开了 fast 反而 OOM 崩引擎」。
+FAST_MIN_VRAM_GIB = 18.0
+FAST_MIN_FREE_GIB = 15.0
+
+
+def _env_bool(name: str) -> bool | None:
+    """环境变量三态：未设置 → None；1/true/yes/on → True；其余非空 → False。"""
+    raw = os.environ.get(name)
+    if raw is None or not str(raw).strip():
+        return None
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _fast_fits() -> tuple[bool, str]:
+    """fast 路径能不能开：triton 是否可用（depth decoder 要 torch.compile）+ 显存门槛。"""
+    try:
+        import triton  # noqa: F401
+    except Exception as exc:  # noqa: BLE001
+        # Windows 上 triton 要装 triton-windows（install.ps1 的依赖步骤），缺了 --fast-all
+        # 会直接在 warmup 里 TritonMissing 崩启动 —— 宁可关掉 fast 也别让引擎起不来。
+        return False, f"缺少 triton（{exc}）：fast 路径需要 triton，先重装 / 修好依赖"
+    try:
+        import torch
+
+        total = torch.cuda.get_device_properties(0).total_memory / 1024**3
+        free = torch.cuda.mem_get_info()[0] / 1024**3
+    except Exception as exc:  # noqa: BLE001
+        return False, f"显存查询失败：{exc}"
+    if total < FAST_MIN_VRAM_GIB:
+        return False, f"总显存 {total:.1f}G < {FAST_MIN_VRAM_GIB:g}G"
+    if free < FAST_MIN_FREE_GIB:
+        return False, f"当前可用显存 {free:.1f}G < {FAST_MIN_FREE_GIB:g}G（其它任务占着卡）"
+    return True, f"总显存 {total:.1f}G / 当前可用 {free:.1f}G"
+
+
+def resolve_fast(explicit: bool | None = None) -> tuple[bool, str]:
+    """决定是否给引擎加 `--fast-all`（官方推荐的最优配置：CUDA Graph + 预热）。
+
+    优先级：显式参数 > 环境变量 BREEZE_FAST_ALL（宿主 fastAll 开关）> manager.json 的 fastAll
+    > 默认开。以前只读 manager.json，而宿主把开关放在插件 config.json 里、只发环境变量，
+    于是引擎 62 次启动全是 fast=False —— 这是「比预期慢很多」的主因。
+    """
+    source = "参数"
+    wanted = explicit
+    if wanted is None:
+        wanted = _env_bool("BREEZE_FAST_ALL")
+        source = "环境变量 BREEZE_FAST_ALL"
+    if wanted is None:
+        value = config.load_config().get("fastAll")
+        if isinstance(value, bool):
+            wanted, source = value, "manager.json"
+    if wanted is None:
+        wanted, source = True, "默认"
+    if not wanted:
+        return False, f"{source}=off"
+    if _env_bool("BREEZE_FAST_FORCE"):
+        return True, f"{source}=on（BREEZE_FAST_FORCE 跳过显存校验）"
+    fits, why = _fast_fits()
+    if not fits:
+        return False, f"{source}=on 但 {why}，回退 eager"
+    return True, f"{source}=on（{why}）"
+
+
 def start(*, fast_all: bool | None = None, wait_s: float = 900.0) -> dict:
     """拉起引擎并等 /health 就绪；已在跑（含上次遗留）则复用。"""
     with _lock:
@@ -235,8 +299,8 @@ def start(*, fast_all: bool | None = None, wait_s: float = 900.0) -> dict:
         preflight()
 
         if h is None:
-            cfg = config.load_config()
-            fast = cfg.get("fastAll") if fast_all is None else fast_all
+            fast, fast_reason = resolve_fast(fast_all)
+            config.log(f"[engine] fast 路径：{'开' if fast else '关'}（{fast_reason}）")
             wd = config.weights_dir()
             args = [sys.executable, "-m", config.ENGINE_MODULE, str(wd), "--host", "127.0.0.1", "--port", str(port)]
             if fast:
@@ -247,6 +311,11 @@ def start(*, fast_all: bool | None = None, wait_s: float = 900.0) -> dict:
             env["PYTHONUNBUFFERED"] = "1"
             env["PYTHONIOENCODING"] = "utf-8"
             env["PYTHONPATH"] = str(config.ENGINE_DIR) + os.pathsep + env.get("PYTHONPATH", "")
+            if os.name == "nt":
+                # torch 2.9 的 inductor 静态 CUDA launcher 在 Windows 上会抛
+                # OverflowError: Python int too large to convert to C long（fast 路径 warmup 里
+                # 编译 depth decoder 时必现）。关掉它改走 triton 自带 launcher，fast 才能起来。
+                env.setdefault("TORCHINDUCTOR_USE_STATIC_CUDA_LAUNCHER", "0")
             kwargs: dict = {"cwd": str(config.ENGINE_DIR)}
             if os.name == "nt":
                 kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -265,8 +334,16 @@ def start(*, fast_all: bool | None = None, wait_s: float = 900.0) -> dict:
                 raise EngineError("engine_spawn_failed", f"引擎进程启动失败：{exc}") from exc
             threading.Thread(target=_pump, args=(_proc.stdout, "out"), daemon=True).start()
             threading.Thread(target=_pump, args=(_proc.stderr, "err"), daemon=True).start()
-            _state.update({"startedAt": int(time.time() * 1000), "port": port, "reused": False})
-            save_pid_meta({"pid": _proc.pid, "port": port, "startedAt": _state["startedAt"], "weights": str(wd)})
+            _state.update({"startedAt": int(time.time() * 1000), "port": port, "reused": False, "fast": bool(fast)})
+            save_pid_meta(
+                {
+                    "pid": _proc.pid,
+                    "port": port,
+                    "startedAt": _state["startedAt"],
+                    "weights": str(wd),
+                    "fast": bool(fast),
+                }
+            )
             config.log(f"[engine] spawned pid={_proc.pid} weights={wd} fast={bool(fast)}")
 
         deadline = time.time() + max(30.0, float(wait_s))
@@ -341,11 +418,13 @@ def status() -> dict:
     port = engine_port()
     h = health(port, timeout=2.0)
     code = (h or {}).get("_code")
+    meta = load_pid_meta()
     return {
         "port": port,
         "up": code == 200,
         "loading": code == 503,
         "pid": pid(),
+        "fast": bool(_state.get("fast") if _state.get("fast") is not None else meta.get("fast")),
         "sampleRate": (h or {}).get("sample_rate"),
         "startedAt": _state.get("startedAt") or 0,
         "reused": bool(_state.get("reused")),

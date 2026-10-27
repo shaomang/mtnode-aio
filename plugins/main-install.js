@@ -626,6 +626,13 @@ const INSTALL_API_CHANNELS = {
   breezePickInstallDir: "breeze:pickInstallDir",
   sensenovaInstall: "sensenova:install",
   sensenovaPickInstallDir: "sensenova:pickInstallDir",
+  /* InfiniteTalk 数字人（kind infinitetalk）：步骤表真源 infinitetalk-pack/steps.json，宿主 infinitetalk/main-infinitetalk.js */
+  infinitetalkInstall: "infinitetalk:install",
+  infinitetalkPickInstallDir: "infinitetalk:pickInstallDir",
+  /* SoulX-FlashHead Lite 实时数字人（kind soulxflashhead）：步骤表真源 soulxflashhead-pack/steps.json，
+     宿主 soulxflashhead/main-soulxflashhead.js */
+  soulxflashheadInstall: "soulxflashhead:install",
+  soulxflashheadPickInstallDir: "soulxflashhead:pickInstallDir",
   remotionInstall: "remotion:install",
   remotionPickInstallDir: "remotion:pickInstallDir",
   /* Paseo 手机接管（kind paseo）：安装是纯 JS 驱动（无 PowerShell 脚本），
@@ -1005,7 +1012,19 @@ const UNINSTALL_SPECS = {
   "tts-local": { label: "GPT-SoVITS 语音合成" },
   "breeze-tts-local": { label: "Breeze TTS 2 本地 TTS", stop: "breeze:stop" },
   "sensenova-local": { label: "SenseNova 本地图像生成", stop: "sensenova:stop" },
+  /* InfiniteTalk 数字人：安装目录里有 ComfyUI / venv / 权重；卸载走通用删目录 + 先停后端 */
+  "infinitetalk-local": {
+    label: "InfiniteTalk 数字人",
+    stop: "infinitetalk:stop",
+    keepHint: "分块产物与成片（<数据目录>/infinitetalk-local/jobs、画布资产目录）保留，不删。",
+  },
   "yue2-local": { label: "YuE2 本地音乐", stop: "yue:stop" },
+  /* SoulX-FlashHead Lite 实时数字人：安装目录里有仓库 / venv / 权重；卸载走通用删目录 + 先停后端 */
+  "soulxflashhead-local": {
+    label: "SoulX 实时数字人",
+    stop: "soulxflashhead:stop",
+    keepHint: "成片与安装日志（画布资产目录、<数据目录>/soulxflashhead-local）保留，不删。",
+  },
   "minimax-music3": { label: "MiniMax Music 3", stop: "music3:stop", custom: { preview: "music3:uninstallPreview", run: "music3:uninstall" }, keepHint: "output/ 里的音频输出保留。" },
   "minimax-h3": { label: "MiniMax H3 视频生成", stop: "h3:stop", custom: { preview: "h3:uninstallPreview", run: "h3:uninstall" }, keepHint: "output/ 里的渲染产物保留。" },
   remotion: { label: "Remotion 动效视频" },
@@ -1048,6 +1067,10 @@ const BACKEND_ID_ALIASES = {
   /* Paseo 手机接管：卡片 / 报错总线报的是 kind（paseo），安装窗用的是目录 id（paseo-remote） */
   paseo: "paseo-remote",
   blender: "blender-local",
+  /* InfiniteTalk 数字人：卡片 kind（infinitetalk）→ 目录 id（infinitetalk-local） */
+  infinitetalk: "infinitetalk-local",
+  /* SoulX-FlashHead Lite 实时数字人：卡片 kind（soulxflashhead）→ 目录 id（soulxflashhead-local） */
+  soulxflashhead: "soulxflashhead-local",
 };
 
 /** 认得出是不是「需目录的本地后端插件」（认不出 = 窗口插件 / 未知 id）。 */

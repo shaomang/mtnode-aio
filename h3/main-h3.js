@@ -1595,7 +1595,14 @@ function defaultConfig() {
   };
 }
 function loadConfig() {
-  return Object.assign(defaultConfig(), readJson(configPath(), {}) || {});
+  const cfg = Object.assign(defaultConfig(), readJson(configPath(), {}) || {});
+  /* 安装目录空着就按盘上事实认回来（见 recoverInstallDir）：画布 video_gen 只读这里，
+   * 配置被清过之后用户补插件根目录 / 在安装窗选目录都不影响它，一路报 empty_dir。 */
+  if (!String(cfg.installDir || "").trim()) {
+    const back = recoverInstallDir();
+    if (back) cfg.installDir = back;
+  }
+  return cfg;
 }
 function saveConfig(partial) {
   const next = Object.assign(loadConfig(), partial || {});
@@ -1920,6 +1927,51 @@ function isSafeInstallDir(dir) {
     }
   }
   return { ok: true, path: norm };
+}
+
+/**
+ * 安装目录自愈：配置里空着时，用**盘上既有事实**把它认回来，并写回配置。
+ *
+ * 为什么需要：画布上的 video_gen 走本宿主的 loadConfig().installDir，一旦它被清空
+ * （换过数据目录 / 配置被回滚或手改 / 早前只写了 installed.json），用户即便把插件根目录
+ * 和安装窗里的目录都补齐也没用 —— 生成链照样在 isSafeInstallDir 里报一句裸的 empty_dir。
+ * 来源按可信度取两处，且**只在目录真实存在时采纳**（不复活已删掉的路径，缺装仍如实报错）：
+ *   ① installed.json 记的安装目录（installProject / 选择目录时写入）；
+ *   ② 「插件根目录 + 默认子目录名」（plugins/plugin-root.js 的唯一口径，h3 → video）。
+ * 写盘直接写 config.json，不走 saveConfig —— 否则 saveConfig → loadConfig → 这里 递归。
+ */
+function recoverInstallDir() {
+  const cands = [];
+  try {
+    const meta = readJson(installedMetaPath(), null);
+    if (meta && meta.installDir) cands.push(String(meta.installDir));
+  } catch {}
+  try {
+    const { createPluginRoot } = require("../plugins/plugin-root.js");
+    const mod = createPluginRoot({ getDataDir: () => String(getDataDir && getDataDir()) || "" });
+    const d = mod.defaultDir(PLUGIN_ID);
+    if (d) cands.push(String(d));
+  } catch {}
+  for (const raw of cands) {
+    const safe = isSafeInstallDir(raw);
+    if (!safe.ok) continue;
+    let exists = false;
+    try {
+      exists = fs.existsSync(safe.path) && fs.statSync(safe.path).isDirectory();
+    } catch {
+      exists = false;
+    }
+    if (!exists) continue;
+    try {
+      const cur = readJson(configPath(), null);
+      const next = cur && typeof cur === "object" && !Array.isArray(cur) ? cur : defaultConfig();
+      next.installDir = safe.path;
+      writeJson(configPath(), next);
+      appendConsole("[config] installDir 为空 → 按盘上事实认回 " + safe.path);
+    } catch {}
+    return safe.path;
+  }
+  return "";
 }
 
 function freeDiskGb(dir) {
@@ -3130,9 +3182,23 @@ async function recycleBackendForRam(reason) {
   return true;
 }
 
+/** 「启动后端失败」给人看的文案：环境类错误码（目录没设 / 目录不合法）翻成人话，
+ *  其余保持「启动后端失败：<码>」+ 宿主给的细节。用户看到的就这一句，别只丢码。 */
+function backendStartFailText(err, detail) {
+  const code = String(err || "");
+  const d = String(detail || "").trim();
+  const human =
+    code === "empty_dir"
+      ? "还没设置 H3 安装目录：打开「插件 · Minimax H3」点安装（或在安装窗里选一处目录）后再试"
+      : code === "refuse_root" || code === "refuse_system"
+        ? "H3 安装目录不能是盘符根 / 系统目录：请换成一个专门放插件的文件夹"
+        : "";
+  if (human) return d ? human + "\n" + d.slice(0, 1200) : human;
+  return d ? "启动后端失败：" + code + "\n" + d.slice(0, 1200) : "启动后端失败：" + code;
+}
+
 /** 任务用：确保 ComfyUI 可用 */
-async function ensureBackendReadyForJob() {
-  /* ① 先用后端自己报的内存事实看一眼：跑过多轮 4K 超分 / 补帧的服务进程 RSS 只涨不落，
+async function ensureBackendReadyForJob() {  /* ① 先用后端自己报的内存事实看一眼：跑过多轮 4K 超分 / 补帧的服务进程 RSS 只涨不落，
    *    第 N 单比第 2 单的可用内存少得多（见 POST_MEM_RAIL_* 注释）。
    *    空闲内存已经低于硬闸、又确实是「量到的水位偏低」时，先回收再干活 —— 与其在
    *    一台被自己撑小的机器上再挤一单，不如花一次重载把内存要回来。 */
@@ -3204,16 +3270,31 @@ async function ensureBackendReadyForJob() {
 async function startBackend() {
   const cfg = loadConfig();
   const safe = isSafeInstallDir(cfg.installDir);
-  if (!safe.ok) return { ok: false, error: safe.error || "bad_dir" };
+  if (!safe.ok) {
+    /* 目录没设 / 不合法：把原因说清楚（外层文案见 backendStartFailText），别只回一个码 */
+    const why =
+      safe.error === "empty_dir"
+        ? "还没设置 H3 安装目录：打开「插件 · Minimax H3」点安装（或在安装窗里选一处目录）"
+        : safe.error === "refuse_root" || safe.error === "refuse_system"
+          ? "H3 安装目录不能是盘符根 / 系统目录，请换成一个专门放插件的文件夹"
+          : "H3 安装目录不合法：" + String(safe.error || "bad_dir");
+    appendConsole("[start] " + why);
+    return { ok: false, error: safe.error || "bad_dir", message: why };
+  }
   const installDir = safe.path;
   const sig = projectSignals(installDir);
   if (!sig.scaffold) {
+    const why = "H3 后端尚未安装：安装目录里找不到 ComfyUI 脚手架（" + installDir + "），请先在插件里重跑安装";
     reportErr("not_installed", "H3 后端尚未安装：找不到 ComfyUI 脚手架", { phase: "start" });
-    return { ok: false, error: "not_installed" };
+    return { ok: false, error: "not_installed", message: why };
   }
   if (!sig.venv) {
     reportErr("no_venv", "H3 后端缺少 Python 环境（ComfyUI\\venv）", { phase: "start" });
-    return { ok: false, error: "no_venv" };
+    return {
+      ok: false,
+      error: "no_venv",
+      message: "H3 后端缺少隔离 Python 环境（" + join(installDir, "ComfyUI", "venv") + "），请在插件里重跑安装",
+    };
   }
 
   /* Sage 加速是必须项：启动前只做 import 快探测（10 分钟缓存，几秒内），不跑 kernel
@@ -4148,7 +4229,7 @@ async function postProcessVideo(params) {
       return {
         ok: false,
         error: err,
-        message: detail ? "启动后端失败：" + err + "\n" + detail.slice(0, 1200) : "启动后端失败：" + err,
+        message: backendStartFailText(err, detail),
       };
     }
 
@@ -6258,9 +6339,7 @@ async function generateVideo(params) {
       return {
         ok: false,
         error: err,
-        message: detail
-          ? "启动后端失败：" + err + "\n" + detail.slice(0, 1200)
-          : "启动后端失败：" + err,
+        message: backendStartFailText(err, detail),
       };
     }
 

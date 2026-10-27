@@ -105,6 +105,38 @@ const WEIGHTS_SPECS = {
       },
     ],
   },
+  /* InfiniteTalk 数字人：ComfyUI 的 models 目录里放 I2V fp8 / InfiniteTalk patch / umt5 / VAE /
+     wav2vec2 / lightx2v LoRA / CLIP Vision */
+  "infinitetalk-local": {
+    label: "InfiniteTalk（Wan2.1 I2V 14B fp8）权重",
+    slots: [
+      {
+        id: "models",
+        label: "权重（diffusion_models / model_patches / text_encoders / vae / audio_encoders / loras / clip_vision）",
+        rel: ["ComfyUI", "models"],
+        accepts: ["models", "ComfyUI", "infinitetalk-local"],
+        fileRe: [
+          /^.*\.safetensors$/i,
+          /^.*\.onnx$/i,
+          /^.*\.(ckpt|pth|pt|bin)$/i,
+        ],
+      },
+    ],
+  },
+  /* SoulX-FlashHead Lite 实时数字人：仓库的 models 目录里放 SoulX-FlashHead-1_3B（Model_Lite +
+     VAE_LTX）与 wav2vec2-base-960h —— 「补装权重」把用户手上那一份拷进同一个位置。 */
+  "soulxflashhead-local": {
+    label: "SoulX-FlashHead Lite（1.3B）权重",
+    slots: [
+      {
+        id: "models",
+        label: "权重（SoulX-FlashHead-1_3B / wav2vec2-base-960h）",
+        rel: ["SoulX-FlashHead", "models"],
+        accepts: ["models", "SoulX-FlashHead", "soulxflashhead-local", "SoulX-FlashHead-1_3B", "wav2vec2-base-960h"],
+        fileRe: [/^.*\.safetensors$/i, /^config\.json$/i, /^.*\.(bin|pt|pth)$/i],
+      },
+    ],
+  },
   "breeze-tts-local": {
     label: "Breeze TTS 2 权重",
     slots: [

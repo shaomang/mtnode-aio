@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>SoulX-FlashHead Lite</title>
+    <style>
+      :root {
+        --bg: #0f1115;
+        --panel: #171a21;
+        --line: #262b36;
+        --text: #e6e8ee;
+        --muted: #8b93a3;
+        --accent: #4d9ef7;
+        --ok: #4bbd7a;
+        --err: #e05d5d;
+        --warn: #e0b05d;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font: 13px/1.55 "Microsoft YaHei", system-ui, sans-serif;
+      }
+      header {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 14px 18px;
+        border-bottom: 1px solid var(--line);
+        background: var(--panel);
+      }
+      header h1 { font-size: 15px; margin: 0; font-weight: 600; }
+      .badge {
+        font-size: 12px;
+        padding: 2px 8px;
+        border-radius: 999px;
+        border: 1px solid var(--line);
+        color: var(--muted);
+      }
+      .badge.ok { color: var(--ok); border-color: #26543a; }
+      .badge.warn { color: var(--warn); border-color: #5a4a2a; }
+      .badge.err { color: var(--err); border-color: #5a2a2a; }
+      main { padding: 16px 18px 40px; display: grid; gap: 14px; }
+      section {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 12px 14px;
+      }
+      h2 { font-size: 13px; margin: 0 0 10px; font-weight: 600; color: var(--muted); }
+      .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+      label.field { display: flex; align-items: center; gap: 6px; color: var(--muted); }
+      input[type="text"], input[type="number"], select {
+        background: #0d1016;
+        color: var(--text);
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        padding: 5px 8px;
+        font: inherit;
+      }
+      input[type="text"] { min-width: 280px; }
+      button {
+        background: #202634;
+        color: var(--text);
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        padding: 5px 12px;
+        font: inherit;
+        cursor: pointer;
+      }
+      button:hover { border-color: #3a4357; }
+      button:disabled { opacity: 0.45; cursor: default; }
+      button.primary { background: #1d4d80; border-color: #2a6aa8; }
+      button.danger { background: #5a2222; border-color: #7a2e2e; }
+      .muted { color: var(--muted); }
+      #log {
+        font: 12px/1.45 Consolas, "Cascadia Mono", monospace;
+        background: #0b0e13;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 8px 10px;
+        height: 240px;
+        overflow: auto;
+        white-space: pre-wrap;
+        word-break: break-all;
+      }
+      .bar {
+        height: 6px;
+        background: #0b0e13;
+        border-radius: 999px;
+        overflow: hidden;
+        border: 1px solid var(--line);
+        margin: 8px 0;
+      }
+      .bar > i { display: block; height: 100%; width: 0; background: var(--accent); transition: width 0.2s; }
+      .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+      .drop {
+        border: 1px dashed #2f3746;
+        border-radius: 8px;
+        padding: 8px 10px;
+        color: var(--muted);
+        min-height: 34px;
+        word-break: break-all;
+      }
+      .drop.set { border-color: #2a6aa8; color: var(--text); }
+      .kpi { display: flex; gap: 18px; flex-wrap: wrap; }
+      .kpi b { font-size: 16px; color: var(--accent); font-weight: 600; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>SoulX-FlashHead Lite</h1>
+      <span class="badge" id="phase">…</span>
+      <span class="muted" id="ver"></span>
+      <span class="muted" id="progressText"></span>
+      <span style="flex:1"></span>
+      <button id="btnClose">关闭窗口</button>
+    </header>
+
+    <main>
+      <section>
+        <h2>安装</h2>
+        <div class="row">
+          <input type="text" id="installDir" placeholder="安装目录（独立盘，约 18GB）" />
+          <button id="btnPickDir">选择目录</button>
+          <button id="btnInstall" class="primary">安装 / 重装</button>
+          <button id="btnCancelInstall" class="danger">取消安装</button>
+        </div>
+        <div class="row" style="margin-top:10px">
+          <label class="field">采样步数
+            <input type="number" id="steps" min="1" max="40" step="1" style="width:70px" />
+          </label>
+          <label class="field">种子
+            <input type="number" id="seed" step="1" style="width:90px" />
+          </label>
+          <label class="field">
+            <input type="checkbox" id="compile" /> torch.compile（关掉更稳，会慢一些）
+          </label>
+        </div>
+        <div class="bar"><i id="bar"></i></div>
+        <div class="muted" id="installHint">
+          默认全开：flash-attn（必装）+ SageAttention（尽力）+ torch.compile；模型 Model_Lite（1.3B），输出固定 512×512 @25fps，长音频整段流式一次跑完。
+        </div>
+      </section>
+
+      <section>
+        <h2>后端 / 实时指标</h2>
+        <div class="row">
+          <button id="btnStart">启动后端</button>
+          <button id="btnStop">停止后端</button>
+          <button id="btnHealth">健康检查</button>
+          <span class="muted" id="backendText"></span>
+        </div>
+        <div class="kpi" style="margin-top:10px">
+          <span>上次基准：<b id="kpiFps">—</b> FPS</span>
+          <span>RTF：<b id="kpiRtf">—</b></span>
+          <span>单块耗时：<b id="kpiMs">—</b> ms</span>
+          <span class="muted" id="kpiAccel"></span>
+        </div>
+        <div class="muted" id="benchHint" style="margin-top:6px">
+          实时口径：单张 4090 单路 ≥25FPS（25fps 目标）。安装收尾会自动跑一次 3 块基准（首块含预热，按后两块算稳态），结果写在这里。
+        </div>
+      </section>
+
+      <section>
+        <h2>试生成（人物图 + 语音 → mp4）</h2>
+        <div class="grid2">
+          <div>
+            <div class="muted">人物图（端口 0）</div>
+            <div class="drop" id="dropImage" data-kind="image">把人物图拖进来</div>
+          </div>
+          <div>
+            <div class="muted">语音（端口 1）</div>
+            <div class="drop" id="dropAudio" data-kind="audio">把音频拖进来（wav / mp3 / m4a）</div>
+          </div>
+        </div>
+        <div class="row" style="margin-top:8px">
+          <button id="btnGen" class="primary">开始试生成</button>
+          <button id="btnBench">只跑基准（3 块）</button>
+          <button id="btnCancelGen" class="danger">取消</button>
+          <span class="muted" id="genText"></span>
+        </div>
+        <div class="muted" id="genResult" style="margin-top:6px; word-break:break-all"></div>
+      </section>
+
+      <section>
+        <h2>日志</h2>
+        <div class="row" style="margin-bottom:8px">
+          <button id="btnLogRefresh">刷新</button>
+          <button id="btnLogClear">清空</button>
+          <button id="btnOpenOut">打开输出目录</button>
+          <span class="muted" id="gpuText"></span>
+        </div>
+        <div id="log"></div>
+      </section>
+    </main>
+
+    <script src="./ui.js"></script>
+  </body>
+</html>

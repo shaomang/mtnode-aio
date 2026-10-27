@@ -1,0 +1,25 @@
+{
+  "id": "infinitetalk-local",
+  "name": "InfiniteTalk",
+  "version": "1.0.0",
+  "minAppVersion": "1.6.1",
+  "title": {
+    "zh": "InfiniteTalk Avatar",
+    "en": "InfiniteTalk Avatar"
+  },
+  "subtitle": {
+    "zh": "Local unlimited-length talking video: a portrait (or a source video) + one voice track -> lip-synced mp4 (InfiniteTalk on Wan2.1 I2V 14B fp8, ComfyUI native nodes).",
+    "en": "Local unlimited-length talking video: a portrait (or a source video) + one voice track -> lip-synced mp4 (InfiniteTalk on Wan2.1 I2V 14B fp8, ComfyUI native nodes)."
+  },
+  "model": "MeiGen-AI/InfiniteTalk",
+  "modelMirror": "Comfy-Org/Wan_2.1_ComfyUI_repackaged",
+  "comfyNodePack": "builtin:WanInfiniteTalkToVideo",
+  "entry": "ComfyUI",
+  "apiPort": 8199,
+  "diskHintGb": 55,
+  "minVramGb": 0,
+  "notes": {
+    "zh": "MTNode runs an isolated ComfyUI (127.0.0.1:8199) with ComfyUI's native WanInfiniteTalkToVideo node. The infinitetalk_gen canvas node takes an image (I2V) or a source video (V2V) plus audio and returns an mp4; audio longer than one 81-frame window is chunked by the host (next chunk is conditioned on the previous frames) and muxed back with the original track.",
+    "en": "MTNode runs an isolated ComfyUI (127.0.0.1:8199) with ComfyUI's native WanInfiniteTalkToVideo node. The infinitetalk_gen node takes an image (I2V) or a source video (V2V) plus audio and returns an mp4; audio longer than one 81-frame window is chunked by the host (next chunk conditioned on the previous frames) and muxed back with the original track."
+  }
+}

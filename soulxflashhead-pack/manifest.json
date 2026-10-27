@@ -1,0 +1,26 @@
+{
+  "id": "soulxflashhead-local",
+  "name": "SoulX-FlashHead Lite",
+  "version": "1.0.0",
+  "minAppVersion": "1.6.2",
+  "title": {
+    "zh": "SoulX-FlashHead Lite",
+    "en": "SoulX-FlashHead Lite"
+  },
+  "subtitle": {
+    "zh": "Local real-time portrait video: one portrait + one voice track -> lip-synced mp4 (SoulX-FlashHead 1.3B Model_Lite, 33-frame streaming, 512x512 @25fps).",
+    "en": "Local real-time portrait video: one portrait + one voice track -> lip-synced mp4 (SoulX-FlashHead 1.3B Model_Lite, 33-frame streaming, 512x512 @25fps)."
+  },
+  "model": "Soul-AILab/SoulX-FlashHead-1_3B",
+  "modelVariant": "Model_Lite",
+  "vae": "VAE_LTX",
+  "audioEncoder": "facebook/wav2vec2-base-960h",
+  "entry": "SoulX-FlashHead/mtnode_server.py",
+  "apiPort": 8198,
+  "diskHintGb": 30,
+  "minVramGb": 0,
+  "notes": {
+    "zh": "MTNode runs the official SoulX-FlashHead inference repo behind its own stdlib HTTP service (127.0.0.1:8198); the soulxflashhead_gen canvas node takes a portrait + an audio track and returns an mp4 muxed with the original audio. Model_Lite streams 24 new frames per 33-frame window, so a long audio track is generated in one pass (no host-side chunking).",
+    "en": "MTNode runs the official SoulX-FlashHead inference repo behind its own stdlib HTTP service (127.0.0.1:8198); the soulxflashhead_gen canvas node takes a portrait + an audio track and returns an mp4 muxed with the original audio. Model_Lite streams 24 new frames per 33-frame window, so a long audio track is generated in one pass (no host-side chunking)."
+  }
+}

@@ -1,7 +1,7 @@
 {
   "name": "mtnode-ai-orchestrator",
   "productName": "MTNode AI工作站",
-  "version": "1.6.0",
+  "version": "1.6.1",
   "description": "MTNode AI工作站（MTNode AI Orchestrator）— AI 工作流编排",
   "main": "main.js",
   "scripts": {

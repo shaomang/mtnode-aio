@@ -43,6 +43,12 @@ const PLUGIN_CFG = {
   yue: "yue/config.json",
   "sensenova-local": "sensenova/config.json",
   sensenova: "sensenova/config.json",
+  /* InfiniteTalk 数字人（应用插件 kind infinitetalk）：配置落 <数据目录>/infinitetalk-local/config.json */
+  "infinitetalk-local": "infinitetalk-local/config.json",
+  infinitetalk: "infinitetalk-local/config.json",
+  /* SoulX-FlashHead Lite 实时数字人（kind soulxflashhead）：配置落 <数据目录>/soulxflashhead-local/config.json */
+  "soulxflashhead-local": "soulxflashhead-local/config.json",
+  soulxflashhead: "soulxflashhead-local/config.json",
   "minimax-h3": "h3/config.json",
   h3: "h3/config.json",
   "llama-local": "llama/config.json",
@@ -85,6 +91,12 @@ const PLUGIN_SUBDIR = {
   yue: "yue2",
   "sensenova-local": "sense",
   sensenova: "sense",
+  /* InfiniteTalk 数字人：默认装到 <插件根目录>/infinitetalk-local（内含 ComfyUI / venv / models） */
+  "infinitetalk-local": "infinitetalk-local",
+  infinitetalk: "infinitetalk-local",
+  /* SoulX-FlashHead Lite：默认装到 <插件根目录>/soulxflashhead-local（内含仓库 / venv / 权重） */
+  "soulxflashhead-local": "soulxflashhead-local",
+  soulxflashhead: "soulxflashhead-local",
   "minimax-h3": "video",
   h3: "video",
   "llama-local": "vLLM",

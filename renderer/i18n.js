@@ -3723,6 +3723,11 @@
     "改用正文（断开入线）": "Use own text (disconnect the inbound wire)",
     "断开连进本节点的线：本节点回到「用自己写的正文」，下游立刻能取到它（可 Ctrl+Z 撤销）": "Disconnect the wire(s) feeding this node: it goes back to \"use its own text\" and downstream gets that value right away (Ctrl+Z to undo)",
     "已断开入线：本节点改为使用自己写的正文（Ctrl+Z 可撤销）": "Inbound wire disconnected: this node now uses its own text (Ctrl+Z to undo)",
+    "固化": "Freeze",
+    "固化当前内容：把继承到的内容写进本节点并切断输入，回到普通输入节点模式（可 Ctrl+Z 撤销）": "Freeze the current content: write the inherited content into this node, cut its input, and return to a normal input node (Ctrl+Z to undo)",
+    "已固化：继承到的内容已写入本节点，输入已切断（Ctrl+Z 可撤销）": "Frozen: the inherited content is now written into this node and its input is cut (Ctrl+Z to undo)",
+    "上游还没有可固化的内容：等它出值后再试": "Upstream has no content to freeze yet: wait until it produces a value and try again",
+    "上游内容与本节点类型不符，无法固化（可换成对应的输入节点）": "The upstream content does not match this node type and cannot be frozen (switch to the matching input node)",
     "入参没取到值（": "Input parameter(s) got no value (",
     " 个）：": "): ",
     "参数「{p}」没取到值：来源文本节点「{s}」挂着上游连线（继承态），它自己写的正文不参与取值 —— 请断开这根入线用正文，或先让上游出值": "Parameter \"{p}\" got no value: the source text node \"{s}\" has an inbound wire (inherit mode), so the text written in it does not take part in value resolution — disconnect that wire to use the text, or let the upstream produce a value first",
@@ -10223,6 +10228,85 @@
     Object.assign(EN, add);
   })();
 
+  /* 工作目录占用与清理（renderer/app-ws-temp.js + 主进程 workspace-temp.js）：
+     顶栏工作目录右侧那颗按钮与设置里的同名入口共用同一个面板。
+     新词条一律走这张增量表，避免在几百行的大字典里找位置时改错行。 */
+  (function () {
+    var wsTempLabels = {
+      /* ── 顶栏按钮 / 面板骨架 ── */
+      "工作目录占用与清理（.mtnode / .mtnode-input / recordings）":
+        "Workspace disk usage & cleanup (.mtnode / .mtnode-input / recordings)",
+      "工作目录占用与清理": "Workspace disk usage & cleanup",
+      "工作目录共 {size} · {n} 个文件": "Workspace total: {size} · {n} files",
+      "已排除：": "Excluded: ",
+      "清理一律进系统回收站，可在资源管理器还原":
+        "Everything is moved to the system Recycle Bin and can be restored in File Explorer",
+      "重新统计": "Rescan",
+      "清理选中": "Clean selected",
+      "关闭": "Close",
+      "取消": "Cancel",
+      "移入回收站": "Move to Recycle Bin",
+      "清理工作目录临时文件": "Clean workspace temp files",
+      "正在统计工作目录…": "Scanning the workspace…",
+      "统计失败": "Scan failed",
+      "当前宿主没有提供统计接口": "This host does not expose the scan API",
+      "这张画布还没有工作目录：先在顶栏「工作目录」选一个文件夹":
+        "This canvas has no workspace yet: choose a folder in 「Workspace」 on the top bar first",
+      "工作目录不存在或不是有效文件夹：请重新选择后再统计":
+        "The workspace folder is missing or not a valid folder: pick it again and rescan",
+      "这个工作目录里没有 .mtnode / .mtnode-input / recordings，也没有其它 . 开头的临时目录":
+        "No .mtnode / .mtnode-input / recordings, and no other dot-folders, in this workspace",
+      "已选 {n} 项 · {size}": "Selected {n} items · {size}",
+      "尚未勾选": "Nothing selected yet",
+      "{n} 个文件": "{n} files",
+      "全选 / 全不选这一组": "Select / clear this group",
+      "正在渲染：不能清理": "Rendering right now: cannot clean",
+      "勾选后点「清理选中」移入系统回收站":
+        "Tick items, then press 「Clean selected」 to move them to the Recycle Bin",
+      "展开 / 收起明细": "Expand / collapse details",
+      "先勾选要清理的项": "Tick what you want to clean first",
+      "将把 {n} 项（{size}）移入系统回收站。\n\n正在渲染的工程与其它程序的占用不会被删；删不掉的文件会汇总报告。要清理吗？":
+        "Move {n} items ({size}) to the system Recycle Bin?\n\nProjects that are rendering and files held by other programs are left alone; anything that cannot be deleted is reported afterwards.",
+      "清理失败：{err}": "Cleanup failed: {err}",
+      "已移入回收站：{n} 项 · {size}": "Moved to the Recycle Bin: {n} items · {size}",
+      "；{n} 项没删掉（可能正被别的程序占用）：":
+        "; {n} items could not be deleted (possibly held by another program): ",
+      /* ── 扫描结果里的类别标签与说明 ── */
+      "工程源码": "Project source",
+      "渲染配置": "Render config",
+      "素材副本": "Media copies",
+      "校验片": "Verification clip",
+      "旧浏览器缓存": "Old browser cache",
+      "成片": "Rendered video",
+      "粘贴图 / 截图": "Pasted images / screenshots",
+      "用户产物": "User output",
+      "其它隐藏目录": "Other dot-folders",
+      "其它": "Other",
+      "渲染工程": "Render project",
+      "正在渲染：这一项不会出现在待清理列表里":
+        "Rendering right now: this item is not offered for cleanup",
+      "属于其它画布，默认不勾选": "Belongs to another canvas: not ticked by default",
+      "已经没有对应节点": "No canvas node uses this folder any more",
+      "录音是用户产物，默认不勾选":
+        "Recordings are your own output, so they are not ticked by default",
+      "不是 MTNode 建的目录：只统计，默认不勾选":
+        "MTNode did not create this folder: it is measured only and not ticked by default",
+      "不在可清理范围内：已跳过": "Not in the cleanable set: skipped",
+      "成片默认不清理：清了要重新渲染才能再拿到":
+        "Rendered videos are not ticked by default: cleaning them means rendering again",
+      /* ── 设置 ·「存储占用与清理」里的入口 ── */
+      "工作目录临时文件…": "Workspace temp files…",
+      "统计并清理当前画布工作目录里的 .mtnode / .mtnode-input / recordings（打开的是顶栏那颗按钮同一个面板）":
+        "Measure and clean .mtnode / .mtnode-input / recordings in this canvas workspace (opens the same panel as the top-bar button)",
+      "工作目录里的渲染工程、粘贴图与录音：与顶栏工作目录右侧那颗按钮同一个面板":
+        "Render projects, pasted images and recordings in the workspace: same panel as the button right of the top-bar workspace",
+    };
+    var add = {};
+    for (var wk in wsTempLabels)
+      if (!Object.prototype.hasOwnProperty.call(EN, wk)) add[wk] = wsTempLabels[wk];
+    Object.assign(EN, add);
+  })();
+
   var locale = "zh";
 
   function t(key, vars) {
@@ -13431,6 +13515,90 @@
       "Block size for streaming upscale (pixels); VRAM depends only on it — 512 suits a 16G machine, 0 = backend default 512.\n\nFrame-by-frame block streaming upscale: resident memory depends on one block only, not on video length, so a 16G machine can handle 15-second videos; 4K (long edge 3840) output is no longer memory-bound.",
     "低精度 fp16 省显存，16G 机器也能跑 15 秒片；关闭后按更高精度跑，更快但更吃显存。\n\n逐帧流式补帧：常驻内存只与相邻两帧有关，与视频时长无关，16G 机器也能跑 15 秒级视频；4x 倍率同样不再受内存限制，只是耗时更长。":
       "Low-precision fp16 saves VRAM: a 16G machine can still do 15-second clips; off runs at higher precision — faster but hungrier.\n\nFrame-by-frame streaming interpolation: resident memory depends only on two adjacent frames, not on video length, so a 16G machine can handle 15-second videos; 4x is likewise no longer memory-bound, just slower.",
+
+    /* ── InfiniteTalk 数字人（infinitetalk_gen · 插件 infinitetalk-local）──
+       产物与 H3 同为 mp4，但入口是「一张人物图（或一段源视频）+ 一段语音」；
+       文案与 guides/nodes/infinitetalk_gen.md 一致。 */
+    "InfiniteTalk 数字人": "InfiniteTalk Avatar",
+    "InfiniteTalk 数字人节点": "InfiniteTalk Avatar Node",
+    "InfiniteTalk 数字人（本地数字人视频 · 人物图或源视频 + 语音 → 口型同步 mp4 · 长音频自动分块续写）":
+      "InfiniteTalk Avatar (local talking-avatar video · portrait or source video + voice → lip-synced mp4 · long audio chunked automatically)",
+    "InfiniteTalk 数字人（人物图或源视频 + 语音 → 口型同步视频）":
+      "InfiniteTalk Avatar (portrait or source video + voice → lip-synced video)",
+    "数字人": "Avatar",
+    "InfiniteTalk · 执行时自动启停独立 ComfyUI 后端":
+      "InfiniteTalk · starts and stops its own ComfyUI backend on demand",
+    "调用 InfiniteTalk 数字人后端生成": "Generate with the local InfiniteTalk avatar backend",
+    "打开 InfiniteTalk 数字人控制台": "Open the InfiniteTalk avatar console",
+    "输出端子（生成的数字人视频 mp4 · 可直接连保存 / 预览）":
+      "Output port (the generated avatar mp4 · wire it straight into save / preview)",
+    "人物图（I2V 参考形象 · 可接图像节点）":
+      "Portrait (I2V reference face · wire an image node here)",
+    "源视频（接了就走 V2V：构图跟源视频，按所选画幅缩放）":
+      "Source video (wired = V2V: composition follows the source video, scaled to the selected bucket)",
+    "人物图": "Portrait",
+    "源视频": "Source video",
+    "语音（要驱动的说话内容 · 任意音频，自动转 16k 单声道）":
+      "Voice (what the avatar should say · any audio, converted to 16k mono)",
+    "人物图（端口 0）或源视频（端口 2）+ 语音（端口 1）→ 口型同步 mp4；长音频由宿主自动分块续写":
+      "Portrait (port 0) or source video (port 2) + voice (port 1) → lip-synced mp4; long audio is chunked and continued by the host",
+    "InfiniteTalk 数字人插件未就绪": "InfiniteTalk avatar plugin is not ready",
+    "请连接人物图（端口 0）或源视频（端口 2）":
+      "Wire a portrait into port 0 or a source video into port 2",
+    "请连接语音（端口 1）": "Wire a voice track into port 1",
+    "完成 · ": "Done · ",
+    "数字人视频已生成：": "Avatar video generated: ",
+    "画幅 / 步数 / 种子 / 提示词 / 输出路径": "Bucket / steps / seed / prompt / output path",
+    "画幅": "Bucket",
+    "480p（832×480 · 默认）": "480p (832×480 · default)",
+    "720p（1280×768 · 更慢 / 更吃显存）": "720p (1280×768 · slower / more VRAM)",
+    "端口 2 接了源视频 = V2V（构图跟源视频走，按所选画幅缩放）；端口 2 空 = I2V（人物图按中心裁切适配）。":
+      "A source video on port 2 means V2V (composition follows the source, scaled to the bucket); an empty port 2 means I2V (the portrait is center-cropped to fit).",
+    "默认 4 步（lightx2v 蒸馏档）；调到 8 以上会明显变慢，收益有限":
+      "Default 4 steps (lightx2v distilled tier); 8+ is noticeably slower with little gain",
+    "每块生成时种子依次 +1": "The seed is bumped by +1 for each chunk",
+    "一个人对着镜头自然地说话": "A person speaking naturally to the camera",
+    "提示词（端口 3 为空时才用）": "Prompt (used only when port 3 is empty)",
+    "负面提示词": "Negative prompt",
+    "空 = 用宿主默认（模糊 / 变形 / 多手多指…）":
+      "Empty = host default (blurry / distorted / extra hands…)",
+    "端口 2 接源视频 = V2V": "Source video on port 2 = V2V",
+
+    /* ── SoulX-FlashHead Lite 实时数字人（soulxflashhead_gen · 插件 soulxflashhead-local）──
+       产物同为 mp4，但口径是「实时」：512×512@25fps、整段音频一次流式跑完；
+       文案与 guides/nodes/soulxflashhead_gen.md 一致。 */
+    "SoulX 实时数字人": "SoulX Real-time Avatar",
+    "SoulX 实时数字人节点": "SoulX Real-time Avatar Node",
+    "SoulX 实时数字人（本地实时数字人 · SoulX-FlashHead Lite 1.3B · 人物图 + 语音 → 512×512 @25fps 口型同步 mp4 · 整段流式续写 · 40 系卡可实时）":
+      "SoulX Real-time Avatar (local real-time avatar · SoulX-FlashHead Lite 1.3B · portrait + voice → 512×512 @25fps lip-synced mp4 · one-pass streaming · real-time on 40-series)",
+    "SoulX 实时数字人（人物图 + 语音 → 512×512 @25fps 口型同步视频）":
+      "SoulX Real-time Avatar (portrait + voice → 512×512 @25fps lip-synced video)",
+    "实时数字人": "Real-time avatar",
+    "SoulX-FlashHead Lite · 512×512@25fps 流式 · 执行时自动启停独立后端":
+      "SoulX-FlashHead Lite · 512×512@25fps streaming · starts and stops its own backend on demand",
+    "调用 SoulX-FlashHead Lite 后端生成（实时数字人）":
+      "Generate with the local SoulX-FlashHead Lite backend (real-time avatar)",
+    "打开 SoulX 实时数字人控制台": "Open the SoulX real-time avatar console",
+    "人物图（要开口的形象 · 可接图像节点）": "Portrait (the face that speaks · wire an image node here)",
+    "输出端子（生成的数字人视频 mp4 · 512×512@25fps · 可直接连保存 / 预览）":
+      "Output port (the generated avatar mp4 · 512×512@25fps · wire it straight into save / preview)",
+    "人物图（端口 0）+ 语音（端口 1）→ 512×512@25fps 口型同步 mp4；整段音频一次流式跑完":
+      "Portrait (port 0) + voice (port 1) → 512×512@25fps lip-synced mp4; the whole track runs through in one streaming pass",
+    "SoulX 实时数字人插件未就绪": "SoulX real-time avatar plugin is not ready",
+    "512×512 · 25fps · 整段流式": "512×512 · 25fps · one-pass streaming",
+    "整段流式": "one-pass streaming",
+    "步数 / 种子 / 输出路径": "Steps / seed / output path",
+    "输出固定 512×512 @25fps（官方 Model_Lite 实时口径）；长音频整段一次流式跑完，宿主不再切块。":
+      "Output is fixed at 512×512 @25fps (the official Model_Lite real-time setting); a long track runs through in one streaming pass — the host does not chunk it.",
+    "默认 4 步（官方 lite 蒸馏档）；调高会掉出实时区":
+      "Default 4 steps (the official lite distilled tier); higher values drop out of real-time",
+
+    /* ── 已下线插件节点（longcat_avatar_gen）──
+       插件不再提供，但用户画布上可能还留着旧节点：只读占位 + 删除，不提供迁移。 */
+    "插件已移除": "Plugin removed",
+    "「LongCat 数字人」插件已下线，这个节点不能再运行。它不会影响画布其它节点，直接删掉即可；已生成的视频仍在原处。":
+      "The LongCat avatar plugin has been retired, so this node can no longer run. It does not affect the rest of the canvas — just delete it; videos you already produced stay where they are.",
+    "删除这个节点": "Delete this node",
   });
 
   function listJoin(arr) {

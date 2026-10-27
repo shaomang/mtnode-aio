@@ -345,6 +345,31 @@ if (-not $torchOk2) {
 }
 Progress 79
 
+# -- 3c. triton-windows: required by the --fast-all (CUDA Graph) path ------
+# The official fast path compiles the depth decoder with torch.compile, which needs triton.
+# On Linux triton ships with torch; on Windows it is a separate wheel (triton-windows) and
+# without it the engine dies during warmup with TritonMissing. A failed install is not fatal:
+# the backend then falls back to eager (about 4-5x slower on an RTX 4090) and logs the reason.
+Say "installing triton-windows (needed by the --fast-all path)"
+$tritonVer = "3.5.1.post24"
+$tritonOk = $false
+$prevEapTr = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+try {
+  & $VENV_PY -c "import triton" 2>$null | Out-Null
+  if ($LASTEXITCODE -eq 0) { $tritonOk = $true; Say "triton is already installed" }
+  foreach ($idx in $PIP_CHAIN) {
+    if ($tritonOk) { break }
+    $rc = Invoke-Native $VENV_PY @("-m", "pip", "install", "triton-windows==$tritonVer", "--index-url", $idx, "--trusted-host", $PIP_TRUSTED)
+    if ($rc -eq 0) { $tritonOk = $true; Say "triton-windows installed from $idx"; break }
+    Say "triton-windows install failed on $idx (exit $rc), trying the next mirror"
+  }
+} finally { $ErrorActionPreference = $prevEapTr }
+if (-not $tritonOk) {
+  Say "WARNING: triton-windows could not be installed: the --fast-all path will fall back to eager (about 4-5x slower). Reinstall or run: .venv\Scripts\python.exe -m pip install triton-windows==$tritonVer"
+}
+Progress 79
+
 # -- 4. Weights -----------------------------------------------------------
 Step "preparing the Breeze TTS 2 weights" 80
 New-Item -ItemType Directory -Force -Path $CKPT_DIR | Out-Null
@@ -447,6 +472,11 @@ import torch
 print('torch', torch.__version__, 'cuda', torch.cuda.is_available(), torch.version.cuda)
 if not torch.cuda.is_available():
     print('WARN: torch cannot see CUDA -- Breeze TTS 2 needs an NVIDIA GPU (about 7.7GB of VRAM)')
+try:
+    import triton
+    print('triton', triton.__version__)
+except Exception as exc:
+    print('WARN: triton missing -- the --fast-all path will fall back to eager:', exc)
 "@
 $smokeFile = Join-Path $InstallDir "scripts\_smoke_breeze.py"
 Set-Content -LiteralPath $smokeFile -Value $smoke -Encoding UTF8

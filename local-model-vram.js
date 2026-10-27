@@ -26,12 +26,17 @@
  *     isBusy()     → 自己有没有在途任务（可选；缺省 false）
  *     soft(reason) → 轻量释放：/free、空缓存、停空闲服务（**不得**改动 wantRunning 以外的副作用）
  *     hard(reason) → 硬释放：杀进程树（宿主的 stopBackend / forceKill 口径）
+ *     keepWarmMs   → （可选）连续使用时的「保持常驻」窗口：>0 时收尾释放改为延迟释放，
+ *                    窗口内同一后端再跑就直接复用已加载的权重（不再来回卸载 / 重载）；
+ *                    别的后端起跑要显存、或窗口到期，才真正释放它。
  *   })
  *
  * 释放语义（用户口径）：
  *   · 别人的后端：直接停掉空闲进程（最干净，不留碎片）；
  *   · 自己的后端（同一模型连跑第二次）：跑完先轻量卸载（/free、空缓存、停服务），
  *     下一单起跑前再卸一次 —— 上一轮的模型与残留绝不带进下一轮；
+ *     登记了 keepWarmMs 的后端（如 Breeze 语音）例外：收尾改为**延迟释放**，窗口内连跑直接
+ *     复用已加载的引擎（7.7GB 权重不来回卸载 / 重载），窗口到期或别人要显存时才真释放；
  *   · 正在跑别的任务：等它跑完再释放（最长 RELEASE_WAIT_BUSY_MS），超时 / 顶栏手动释放时
  *     就如实报「被占用」，**绝不打断别人的任务**，也绝不把这种失败算成本次运行失败。
  *
@@ -51,6 +56,12 @@ const RELEASE_TOTAL_MS = 30000;
 const RELEASE_WAIT_BUSY_MS = 60000;
 /* 硬释放后等显存回落 / 端口放掉的观察窗口 */
 const HARD_VERIFY_MS = 4000;
+/* 「保持常驻」的下限与复查间隔（后端登记 keepWarmMs 才生效，见 releaseAfterUse） */
+const KEEP_WARM_MIN_MS = 5000;
+const KEEP_WARM_RETRY_MS = 15000;
+
+/* 常驻窗口登记表：id → { timer, until, reason }（窗口到期才真正释放；期间再跑就直接复用） */
+const warmTimers = new Map();
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -211,6 +222,8 @@ async function releaseOne(id, opts) {
   const o = opts || {};
   const def = registry.get(String(id || ""));
   if (!def) return { id: String(id || ""), label: String(id || ""), ok: false, action: "none", reason: "unregistered", ms: 0 };
+  /* 真要动手释放了：这个后端的常驻窗口作废（迟到的定时器不再重复释放一遍） */
+  cancelKeepWarm(def.id, "");
   const t0 = Date.now();
   const reason = String(o.reason || "manual");
   let running = false;
@@ -358,6 +371,11 @@ async function releaseOthers(opts) {
     );
   }
   if (!ids.length) return [];
+  /* 本次要用的后端如果正处在常驻窗口里：窗口作废、直接复用已加载的权重
+     （连续生成同一个后端不该先把引擎卸掉再重新加载一遍） */
+  if (except && cancelKeepWarm(except, "连续使用，直接复用")) {
+    await groupLog("复用 " + labelOf(except) + " 的常驻权重（连续生成不再卸载 / 重载）");
+  }
   await groupLog("运行前释放其他本地模型：" + ids.map((i) => labelOf(i)).join("、") + "（本次要用 " + (labelOf(except) || "无") + "）");
   return releaseMany(ids, {
     reason: o.reason || "pre_run",
@@ -384,6 +402,102 @@ async function releaseSelf(id, opts) {
     waitBusyMs: Number(o.waitBusyMs) >= 0 ? Number(o.waitBusyMs) : 15000,
     totalMs: Number(o.totalMs) > 0 ? Number(o.totalMs) : RELEASE_TOTAL_MS,
   });
+}
+
+/* ── 保持常驻窗口（连续使用同一后端时不反复卸载 / 载入） ─────────────────── */
+
+/** 撤掉某个后端的常驻窗口；返回 true = 本来确实在窗口里（调用方据此记日志） */
+function cancelKeepWarm(id, why) {
+  const key = String(id || "");
+  const rec = warmTimers.get(key);
+  if (!rec) return false;
+  warmTimers.delete(key);
+  try {
+    if (rec.timer) clearTimeout(rec.timer);
+  } catch {}
+  const def = registry.get(key);
+  if (def && why) vramLog(def.label + " 的常驻窗口提前结束（" + why + "）", def);
+  return true;
+}
+
+/** 排一次延迟释放（窗口到期 / 复查忙时重新排） */
+function scheduleKeepWarm(def, ms, reason) {
+  const key = def.id;
+  cancelKeepWarm(key, "");
+  const timer = setTimeout(() => {
+    void fireKeepWarm(def, reason);
+  }, ms);
+  if (timer && timer.unref) timer.unref();
+  warmTimers.set(key, { timer, until: Date.now() + ms, reason });
+  return timer;
+}
+
+/** 窗口到期：还在跑（别人的活 / 自己的下一单）就往后挪，空闲了才真释放 */
+async function fireKeepWarm(def, reason) {
+  /* 只认当前这一次登记：窗口已被取消（手动释放 / 又要跑同一后端）就直接作废 */
+  if (!warmTimers.has(def.id)) return null;
+  let busy = false;
+  try {
+    busy = !!def.isBusy();
+  } catch {}
+  if (busy) {
+    vramLog(def.label + " 常驻窗口到期但仍在跑任务：顺延 " + Math.round(KEEP_WARM_RETRY_MS / 1000) + "s 再释放", def);
+    scheduleKeepWarm(def, KEEP_WARM_RETRY_MS, reason);
+    return null;
+  }
+  warmTimers.delete(def.id);
+  return releaseMany([def.id], { reason, waitBusyMs: 0, totalMs: RELEASE_TOTAL_MS });
+}
+
+/**
+ * 收尾释放（带常驻窗口）：登记了 keepWarmMs 的后端**不立刻卸载**，改成窗口到期再释放；
+ * 窗口内同一后端再跑就直接复用已加载的权重（Breeze 引擎 7.7GB，重载一次数十秒）。
+ * 返回 ReleaseStep[]：action 为 "warm" = 只是留在显存里，没有动手卸载。
+ * 别的后端要显存时（releaseOthers / 顶栏手动释放）照样立刻释放它 —— 常驻只是「不白卸」，不是霸占。
+ */
+async function releaseAfterUse(id, opts) {
+  const o = opts || {};
+  const key = String(id || "");
+  const def = registry.get(key);
+  if (!def) return [];
+  const warmMs = Number(def.keepWarmMs) > 0 ? Math.max(KEEP_WARM_MIN_MS, Number(def.keepWarmMs)) : 0;
+  if (!warmMs) return releaseMany([key], o);
+  let running = false;
+  try {
+    running = !!def.isRunning();
+  } catch {}
+  if (!running) {
+    /* 已经不在了（用户手动停过 / 进程掉了）：没东西可常驻，走原来的口径留一条如实回执 */
+    cancelKeepWarm(key, "");
+    return releaseMany([key], o);
+  }
+  scheduleKeepWarm(def, warmMs, o.reason || "post_run");
+  vramLog(
+    def.label +
+      " 保持常驻 " +
+      Math.round(warmMs / 1000) +
+      "s：窗口内连续生成直接复用已加载的权重（不再卸载 / 重载），到期或别的后端要显存时才释放",
+    def,
+  );
+  return [
+    {
+      id: def.id,
+      label: String(def.label || def.id),
+      running: true,
+      busy: false,
+      action: "warm",
+      ok: true,
+      ms: 0,
+      reason: "keep_warm",
+      freedMb: null,
+      keepWarmMs: warmMs,
+    },
+  ];
+}
+
+/** 该后端是否正处在常驻窗口里（面板显示用） */
+function isKeepWarm(id) {
+  return warmTimers.has(String(id || ""));
 }
 
 function labelOf(id) {
@@ -426,6 +540,9 @@ async function vramSnapshot() {
       running,
       busy,
       loaded,
+      /* 正处在「保持常驻」窗口里（连续生成复用已加载的权重，窗口到期才释放） */
+      keepWarm: isKeepWarm(def.id),
+      keepWarmUntil: (warmTimers.get(def.id) || {}).until || 0,
       /* 空闲（在跑但没任务）= 可安全释放 */
       idleReleasable: running && !busy,
     });
@@ -474,7 +591,11 @@ function registerVramIpc(opts) {
     const base = { lockNodeId, jobNodeId, totalMs: RELEASE_TOTAL_MS };
     let steps = [];
     if (phase === "post_run" && ids && ids.length) {
-      steps = await releaseMany(ids, Object.assign({}, base, { reason: "post_run", waitBusyMs: 15000 }));
+      /* 收尾：登记了 keepWarmMs 的后端改成延迟释放（连续使用不反复卸载 / 载入），
+         没登记照旧立刻释放。返回是同步排程，不再让这次调用卡上几秒。 */
+      for (const id of ids) {
+        steps.push(...(await releaseAfterUse(id, Object.assign({}, base, { reason: "post_run", waitBusyMs: 15000 }))));
+      }
     } else if (ids) {
       /* 顶栏按钮（manual）**不等待**：用户点一下就该有结果，忙的后端如实回「被占用」 */
       steps = await releaseMany(
@@ -515,6 +636,9 @@ module.exports = {
   vramRelease: releaseMany,
   vramReleaseOthers: releaseOthers,
   vramReleaseSelf: releaseSelf,
+  vramReleaseAfterUse: releaseAfterUse,
+  vramKeepWarm: isKeepWarm,
+  vramCancelKeepWarm: cancelKeepWarm,
   vramRead,
   vramLog,
   planActions,

@@ -691,6 +691,137 @@ def sanitize_filename(name: str) -> str:
     return raw[:120]
 
 
+# ── 长文本：默认整段一次合成，只有引擎装不下时才兜底分段 ────────────────
+# 分段 = 每段各自独立生成一次，音色 / 语气会各走各的 —— 用户听到的就是
+# 「中间突然换了一个人」。所以**不再按字数自行切断**：整段原样发一次请求，
+# 音色才连贯。
+# 引擎确实有硬上限（fast 文本编码器 CUDA graph 的桶只到 512 token，超了直接
+# RuntimeError: no fitting bucket → 500；单次生成 1500 token ≈ 120 秒），
+# 所以只在引擎明确因长度拒绝时才退回按句子边界分段兜底（控制台写明是兜底）。
+SEGMENT_MAX_CHARS = 300  # 兜底分段时每段上限（只在引擎拒绝后才会用到）
+SEGMENT_GAP_MS = 120
+# 引擎「装不下」的报错特征：命中才分段兜底，其它错误照原样抛给调用方。
+_LENGTH_ERROR_HINTS = (
+    "no fitting bucket",
+    "bucket",
+    "too long",
+    "sequence length",
+    "max_length",
+    "max length",
+    "maximum context",
+    "input is too",
+    "token",
+)
+
+
+_SENTENCE_END = "。！？!?；;…\n"
+_SOFT_BREAK = "，,、：:—～~·"
+
+
+def _split_long_sentence(sentence: str, limit: int) -> list[str]:
+    """没有句末标点的超长句：先按逗号类软标点切，实在没有就硬切。"""
+    pieces = [p for p in re.split(r"(?<=[" + _SOFT_BREAK + r"])", sentence) if p.strip()]
+    out: list[str] = []
+    buf = ""
+    for piece in pieces:
+        while len(piece) > limit:
+            out.append(piece[:limit])
+            piece = piece[limit:]
+        if not piece:
+            continue
+        if len(buf) + len(piece) <= limit:
+            buf += piece
+        else:
+            if buf.strip():
+                out.append(buf.strip())
+            buf = piece
+    if buf.strip():
+        out.append(buf.strip())
+    return [x for x in out if x.strip()]
+
+
+def split_text_for_engine(text: str, limit: int = SEGMENT_MAX_CHARS) -> list[str]:
+    """把台词按句子边界切成每段 ≤ limit 字 —— 标点留在前一段，念出来才连贯。"""
+    raw = str(text or "").strip()
+    if not raw:
+        return []
+    if len(raw) <= limit:
+        return [raw]
+    sentences = [s for s in re.split(r"(?<=[" + _SENTENCE_END + r"])", raw) if s.strip()]
+    parts: list[str] = []
+    buf = ""
+    for sentence in sentences:
+        if len(sentence) > limit:
+            if buf.strip():
+                parts.append(buf.strip())
+                buf = ""
+            parts.extend(_split_long_sentence(sentence, limit))
+            continue
+        if len(buf) + len(sentence) <= limit:
+            buf += sentence
+        else:
+            if buf.strip():
+                parts.append(buf.strip())
+            buf = sentence
+    if buf.strip():
+        parts.append(buf.strip())
+    return [p for p in parts if p.strip()] or [raw[:limit]]
+
+
+def _is_length_error(exc: Exception) -> bool:
+    """这次失败是不是「文本太长、引擎一次装不下」——只认这种才分段兜底。"""
+    detail = getattr(exc, "detail", None)
+    if isinstance(detail, dict):
+        text = f"{detail.get('code', '')} {detail.get('message', '')}"
+    else:
+        text = str(detail or exc)
+    low = text.lower()
+    return any(h in low for h in _LENGTH_ERROR_HINTS)
+
+
+def synthesize_segments(req: dict) -> tuple:
+    """合成一条台词：**整段一次合成**（音色连贯），只有引擎因长度拒绝才分段兜底。"""
+    import numpy as np
+
+    try:
+        pcm, rate = call_engine(req)
+        return audio_mod.pcm16_to_float(pcm), rate
+    except HTTPException as exc:
+        if not _is_length_error(exc):
+            raise
+
+    segments = split_text_for_engine(req["text"], SEGMENT_MAX_CHARS)
+    if len(segments) <= 1:
+        pcm, rate = call_engine(req)
+        return audio_mod.pcm16_to_float(pcm), rate
+
+    config.log(
+        f"[speech] 引擎一次装不下 {len(req['text'])} 字 → 兜底分 {len(segments)} 段连出"
+        f"（每段 ≤{SEGMENT_MAX_CHARS} 字，段间留 {SEGMENT_GAP_MS}ms 停顿；"
+        "分段是兜底，音色可能与整段合成略有差异）"
+    )
+    merged = None
+    gap = None
+    rate = audio_mod.SAMPLE_RATE_DEFAULT
+    for idx, segment in enumerate(segments, 1):
+        sub = dict(req)
+        sub["text"] = segment
+        started = time.time()
+        pcm, seg_rate = call_engine(sub)
+        chunk = audio_mod.pcm16_to_float(pcm)
+        if merged is None:
+            rate = int(seg_rate or rate)
+            gap = np.zeros(int(rate * SEGMENT_GAP_MS / 1000.0), dtype=np.float32)
+            merged = chunk
+        else:
+            merged = np.concatenate([merged, gap, chunk])
+        config.log(
+            f"[speech] 连出第 {idx}/{len(segments)} 段：{len(segment)} 字 · "
+            f"{audio_mod.duration_s(chunk, rate):.1f}s · 用时 {time.time() - started:.1f}s"
+        )
+    return merged, rate
+
+
 def write_output(data: bytes, filename: str, fmt: str) -> Path:
     name = sanitize_filename(filename) or ("breeze-" + uuid.uuid4().hex[:10] + "." + fmt)
     p = config.OUT_DIR / name
@@ -712,8 +843,7 @@ def _speech_body(params: dict) -> Response:
     )
     # 引擎没起就先拉起（首次要载 ~7.7GB 权重）：这才叫「按需」，而不是把失败丢回给用户。
     ensure_engine_http()
-    pcm, rate = call_engine(req)
-    samples = audio_mod.pcm16_to_float(pcm)
+    samples, rate = synthesize_segments(req)
     try:
         data, mime = audio_mod.write_audio(samples, rate, req["format"])
     except audio_mod.AudioError as exc:
@@ -748,8 +878,7 @@ def _preview_body(params: dict) -> dict:
     params["response_format"] = "wav"
     req = prepare_request(params, tmp_dir=config.temp_root())
     ensure_engine_http()
-    pcm, rate = call_engine(req)
-    samples = audio_mod.pcm16_to_float(pcm)
+    samples, rate = synthesize_segments(req)
     wav = audio_mod.to_wav_bytes(samples, rate)
     return {
         "ok": True,

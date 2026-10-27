@@ -1205,6 +1205,7 @@ async function init() {
   window.addEventListener("contextmenu", hideCtx);
 
   bindCanvas();
+  bindCanvasAxis();
   bindMediaBackendListeners();
   bindNetMessageListener();
   /* 应用插件目录缓存（菜单可见性 / remotion 节点警示条）；插件对话框增删后再刷 */

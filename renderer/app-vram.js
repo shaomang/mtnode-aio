@@ -11,7 +11,9 @@
        区块就是下面这个 vramRenderPanel()（它把内容写进 .vram-slot）；
        openVramRelease() 是同一只窗的老入口（单独打开本模块时用），两条路渲染完全一致：
        现况（谁在跑 / 谁占着 / nvidia-smi 读数）+ 一键释放 + 最近释放日志；
-     · 画布节点运行前后钩子：vramPreRunNode（先释放**别人**的）/ vramPostRunNode（再释放自己）；
+     · 画布节点运行前后钩子：vramPreRunNode（先释放**别人**的）/ vramPostRunNode（再释放自己；
+       登记了 keepWarmMs 的后端（Breeze 语音）收尾改成延迟释放窗口 —— 连续生成直接复用已加载的引擎，
+       窗口到期或别的后端要显存时才真释放，不再来回卸载 / 载入 7.7GB 权重）；
      · 释放失败绝不判本次生成失败：只在按钮处 / 节点状态行给一句提示。
    ═══════════════════════════════════════════════════════════════════════════ */
 
@@ -49,6 +51,8 @@ function vramStepText(step) {
   const act = String(step.action || "");
   if (act === "none") return I18n.t("未在运行") + " · " + label;
   if (act === "busy") return label + "：" + I18n.t("正在跑别的任务，未释放");
+  /* 保持常驻（连续生成不来回卸载 / 载入）—— 没动手释放，如实说清楚 */
+  if (act === "warm") return label + "：" + I18n.t("引擎保持常驻，连续生成不重载");
   const what =
     act === "soft" ? I18n.t("卸载模型 / 停空闲服务") : I18n.t("结束后端进程");
   const freed =
@@ -174,11 +178,13 @@ async function vramPostRunNode(node) {
   }
 }
 
-/** 节点状态行后缀：只在真的释放了东西时给一句（正常运行时那一行本来就够长了） */
+/** 节点状态行后缀：只在真的释放了东西 / 引擎被保持常驻时给一句（正常运行时那一行本来就够长了） */
 function vramRunNote(receipt) {
   const steps = (receipt && receipt.steps) || [];
   const hit = steps.filter((s) => s.action === "soft" || s.action === "hard");
-  if (!hit.length) return "";
+  if (!hit.length) {
+    return steps.some((s) => s.action === "warm") ? I18n.t(" · 引擎保持常驻，连续生成不重载") : "";
+  }
   const freed = steps.reduce((n, s) => n + (Number(s.freedMb) > 0 ? Number(s.freedMb) : 0), 0);
   return I18n.t(" · 已释放显存") + (freed > 0 ? "（" + freed + "MB）" : "");
 }
@@ -189,7 +195,10 @@ let vramReleasedOff = null;
 function vramStatusLine(b) {
   if (!b) return "";
   if (!b.running) return I18n.t("未运行");
-  return b.busy ? I18n.t("在跑任务中") : I18n.t("已就绪（空闲，可安全释放）");
+  if (b.busy) return I18n.t("在跑任务中");
+  /* 常驻窗口内：连续生成直接复用已加载的权重（不来回卸载 / 载入） */
+  if (b.keepWarm) return I18n.t("已就绪（常驻中，连续生成不重载）");
+  return I18n.t("已就绪（空闲，可安全释放）");
 }
 
 async function vramRenderPanel() {
