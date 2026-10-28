@@ -14,8 +14,9 @@
 #     (flash_attn 2.8.3+cu128torch2.8.0) matches this venv.
 #   * SageAttention is the second default optimisation: attempted, and reported, but a
 #     failure only warns (flash-attn already carries the real-time path).
-#   * the smoke step loads the real weights and runs a 2-chunk streaming benchmark
-#     (printed as BENCH-OK ...), so "install finished" means the model really runs.
+#   * the smoke step loads the real weights and runs a 4-chunk streaming benchmark
+#     (printed as BENCH-OK ..., first chunk is torch.compile warm-up and is not counted),
+#     so "install finished" means the model really runs.
 #
 # HARD RULE -- PURE ASCII, NO BOM. Windows PowerShell 5.1 decodes a BOM-less .ps1 with the
 # machine ANSI code page; non-ASCII bytes break parsing on Chinese Windows. All user-facing
@@ -43,6 +44,17 @@ $env:PIP_EXTRA_INDEX_URL = ''
 # $env:PATH inside a child call would otherwise re-resolve to something odd.
 $PS_LAUNCHER = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 if (-not (Test-Path -LiteralPath $PS_LAUNCHER)) { $PS_LAUNCHER = 'powershell.exe' }
+
+# PyPI mirror chain -- Tsinghua FIRST. The aliyun file CDN is not reliable for the big wheels
+# (measured 2026-10: the 53.8MB opencv_contrib_python wheel arrived at ~85 KB/s from aliyun
+# while the same file finished in seconds from Tsinghua / files.pythonhosted.org), and pip has
+# no stall timeout, so "aliyun first" is exactly how this install appeared to hang forever.
+$PipIndexes = @(
+  'https://pypi.tuna.tsinghua.edu.cn/simple',
+  'https://mirrors.aliyun.com/pypi/simple',
+  'https://pypi.org/simple'
+)
+$PipCommon = @('--timeout', '30', '--retries', '4', '--disable-pip-version-check')
 
 . (Join-Path $PSScriptRoot 'step.ps1')
 
@@ -175,6 +187,68 @@ function Invoke-Py {
   }
 }
 
+function Get-DirBytes {
+  param([string]$Path)
+  if (-not (Test-Path -LiteralPath $Path)) { return [long]0 }
+  $sum = (Get-ChildItem -LiteralPath $Path -Recurse -File -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum
+  if (-not $sum) { return [long]0 }
+  return [long]$sum
+}
+
+# pip download under a stall watchdog.
+#
+# Why: pip's --timeout is a per-socket-read timeout, so a mirror that accepts the connection
+# and then trickles a 50MB wheel at <100 KB/s never trips it -- pip just sits there printing
+# nothing for tens of minutes. That is the reported "stuck on Downloading
+# opencv_contrib_python" symptom.
+# Here we watch the size of the download directory instead: no growth for $StallSec means the
+# mirror is useless right now -> kill pip and let the caller move to the next mirror.
+# Returns pip's exit code, or 2 when the watchdog fired.
+function Invoke-PipDownloadWatch {
+  param([string]$Py, [string[]]$PipArgs, [string]$WatchDir, [int]$StallSec = 75)
+  $prev = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  $log = Join-Path $env:TEMP ('flashhead-pip-' + [guid]::NewGuid().ToString('N') + '.log')
+  $errLog = $log + '.err'
+  try {
+    if (-not (Test-Path -LiteralPath $WatchDir)) { New-Item -ItemType Directory -Force $WatchDir | Out-Null }
+    $proc = Start-Process -FilePath $Py -ArgumentList (@('-m', 'pip') + $PipArgs) -PassThru -WindowStyle Hidden -RedirectStandardOutput $log -RedirectStandardError $errLog
+    # PowerShell 5.1 quirk: with -RedirectStandard* the returned object reports an EMPTY
+    # ExitCode unless its handle is touched first (silently turned "0" into "failed").
+    $null = $proc.Handle
+    $last = Get-DirBytes $WatchDir
+    $lastGrow = Get-Date
+    while (-not $proc.HasExited) {
+      Start-Sleep -Seconds 10
+      $now = Get-DirBytes $WatchDir
+      if ($now -gt $last) {
+        $mb = [math]::Round($now / 1MB, 1)
+        $rate = [math]::Round(($now - $last) / 1MB / 10, 2)
+        Write-Head ("wheels {0} MB (+{1} MB/s)" -f $mb, $rate)
+        $last = $now
+        $lastGrow = Get-Date
+      } elseif (((Get-Date) - $lastGrow).TotalSeconds -ge $StallSec) {
+        Write-Head ("stalled: no new bytes for ${StallSec}s, killing pip and switching mirror")
+        try { Stop-Process -Id $proc.Id -Force } catch { }
+        return 2
+      }
+    }
+    $proc.WaitForExit()
+    foreach ($f in @($log, $errLog)) {
+      if (Test-Path $f) {
+        foreach ($line in (Get-Content $f -Tail 40 -Encoding UTF8)) { if ("$line".Trim()) { Write-Head "$line" } }
+      }
+    }
+    return [int]$proc.ExitCode
+  } catch {
+    Write-Head "pip download error: $($_.Exception.Message)"
+    return 1
+  } finally {
+    foreach ($f in @($log, $errLog)) { Remove-Item $f -Force -ErrorAction SilentlyContinue }
+    $ErrorActionPreference = $prev
+  }
+}
+
 # The inference repo is fetched as a zip (no git dependency, same shape as the other packs).
 function Get-RepoZip {
   param([string]$DestZip)
@@ -288,7 +362,7 @@ try {
       & $base -m venv $VenvDir
       if (-not (Test-Path $VenvPy)) { throw 'venv_create_failed' }
     }
-    Invoke-Pip -Py $VenvPy -PipArgs @('install', '--upgrade', 'pip', '-i', 'https://mirrors.aliyun.com/pypi/simple') | Out-Null
+    Invoke-Pip -Py $VenvPy -PipArgs (@('install', '--upgrade', 'pip', '-i', $PipIndexes[0]) + $PipCommon) | Out-Null
     # torch is pinned to 2.8.0+cu128 because that is the version the Windows flash-attn
     # wheel is built against (the official README says 2.7.1, which has no Windows wheel).
     $torchOk = $false
@@ -314,7 +388,7 @@ try {
       $files = @($tw | ForEach-Object { $_.FullName })
       foreach ($vw in @(Get-ChildItem -LiteralPath $wd -Filter 'torchvision-*.whl' -ErrorAction SilentlyContinue)) { $files += $vw.FullName }
       Invoke-Pip -Py $VenvPy -PipArgs @('uninstall', '-y', 'torch', 'torchvision', 'torchaudio') | Out-Null
-      $code = Invoke-Pip -Py $VenvPy -PipArgs (@('install', '--force-reinstall') + $files + @('-i', 'https://mirrors.aliyun.com/pypi/simple'))
+      $code = Invoke-Pip -Py $VenvPy -PipArgs (@('install', '--force-reinstall') + $files + @('-i', $PipIndexes[0]) + $PipCommon)
       if ($code -ne 0) { Write-Head "local wheel install failed in $wd"; continue }
       $probe = Invoke-Py -Py $VenvPy -PyArgs @('-c', 'import torch;print(torch.__version__);print(1 if torch.cuda.is_available() else 0)')
       Write-Head "torch probe: $probe"
@@ -340,14 +414,40 @@ try {
     $reqFile = Join-Path (Split-Path -Parent $PSScriptRoot) 'requirements.txt'
     if (-not (Test-Path $reqFile)) { throw 'requirements.txt missing in pack' }
     $reqOk = $false
-    foreach ($mi in @('https://mirrors.aliyun.com/pypi/simple', 'https://pypi.org/simple')) {
+    # Two phases on purpose:
+    #   1. pull the wheels of the DIRECT requirements into <InstallDir>\wheels\pip, one mirror
+    #      at a time, each attempt under the stall watchdog (a stuck mirror costs one retry
+    #      instead of an endless silent download);
+    #   2. pip install -r with --find-links on that directory, so every big wheel (opencv,
+    #      opencv-contrib, mediapipe, transformers...) comes from local disk and only the small
+    #      transitive deps are fetched. --no-deps in phase 1 is what keeps a PyPI torch wheel
+    #      (CPU-only!) out of the wheelhouse: the venv torch must stay 2.8.0+cu128.
+    $wheelhouse = Join-Path $InstallDir 'wheels\pip'
+    $haveWheels = $false
+    foreach ($mi in $PipIndexes) {
+      Write-Head "requirements download: $mi"
+      Write-Head ("wheels {0} MB already cached in the wheelhouse" -f [math]::Round((Get-DirBytes $wheelhouse) / 1MB, 1))
+      $code = Invoke-PipDownloadWatch -Py $VenvPy -PipArgs (@('download', '--no-deps', '-r', $reqFile, '-d', $wheelhouse, '-i', $mi) + $PipCommon) -WatchDir $wheelhouse -StallSec 75
+      if ($code -eq 0) { $haveWheels = $true; break }
+      Write-Head "download from $mi gave up (exit=$code)"
+    }
+    if ($haveWheels) {
+      $stale = @(Get-ChildItem -LiteralPath $wheelhouse -Filter 'torch*.whl' -ErrorAction SilentlyContinue)
+      foreach ($w in $stale) { Write-Head "removing non-CUDA torch wheel from the wheelhouse: $($w.Name)"; Remove-Item -LiteralPath $w.FullName -Force -ErrorAction SilentlyContinue }
+      $mb = [math]::Round((Get-DirBytes $wheelhouse) / 1MB, 1)
+      Write-Head "wheelhouse ready: $mb MB in $wheelhouse"
+    }
+    foreach ($mi in $PipIndexes) {
+      if ($reqOk) { break }
       Write-Head "requirements index: $mi"
-      $code = Invoke-Pip -Py $VenvPy -PipArgs @('install', '-r', $reqFile, '-i', $mi)
+      $fl = @()
+      if ($haveWheels) { $fl = @('--find-links', $wheelhouse) }
+      $code = Invoke-Pip -Py $VenvPy -PipArgs ((@('install', '-r', $reqFile, '-i', $mi) + $fl) + $PipCommon)
       if ($code -eq 0) { $reqOk = $true; break }
       Write-Head "requirements failed on $mi"
     }
     if (-not $reqOk) { throw 'requirements_failed' }
-    Invoke-Pip -Py $VenvPy -PipArgs @('install', 'ninja', '-i', 'https://mirrors.aliyun.com/pypi/simple') | Out-Null
+    Invoke-Pip -Py $VenvPy -PipArgs (@('install', 'ninja', '-i', $PipIndexes[0]) + $PipCommon) | Out-Null
     Step-Ok 'venv' 40
   } catch {
     $tail = "$($_.Exception.Message)"

@@ -135,6 +135,7 @@
     "sensenova/**",
     "infinitetalk/**",
     "soulxflashhead/**",
+    "flux3klein/**",
     "remotion/**",
     "plugins/**",
     "forum/**",
@@ -448,6 +449,20 @@
         ".gitignore",
         "shims/**",
         "!**/__pycache__/**"
+      ]
+    },
+    {
+      /* FLUX 3 Image Klein（独立 ComfyUI，8197）：安装窗步骤表 + 安装 / 冒烟脚本 + 启动器。 */
+      "from": "flux3klein-pack",
+      "to": "flux3klein-pack",
+      "filter": [
+        "scripts/**",
+        "README.md",
+        "start_backend.cmd",
+        "steps.json",
+        "manifest.json",
+        "requirements.txt",
+        ".gitignore"
       ]
     }
   ],

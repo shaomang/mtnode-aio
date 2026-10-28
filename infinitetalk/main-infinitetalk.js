@@ -463,31 +463,66 @@ async function lastFrame(mp4, dest) {
   await runFfmpeg(["-y", "-ss", String(start), "-i", mp4, "-frames:v", "1", "-update", "1", dest]);
   return dest;
 }
+/** 数一段 mp4 里**能解码出来**的视频帧数。
+ *  不能加 `-c copy`：那只数容器里的包数，时间戳不规整的短片会出现「9 个包、只能解出 8 帧」，
+ *  ComfyUI 的 LoadVideo 按解码帧数喂 previous_frames，于是又抛
+ *  `Not enough previous frames provided.`（以前就是这么被糊过去的）。 */
+async function countVideoFrames(mp4) {
+  let out = "";
+  try {
+    out = await runFfmpeg(
+      ["-hide_banner", "-i", mp4, "-map", "0:v:0", "-f", "null", "-"],
+      120000,
+    );
+  } catch (e) {
+    out = String((e && e.message) || e);
+  }
+  let best = 0;
+  const re = /frame=\s*(\d+)/g;
+  let m;
+  while ((m = re.exec(String(out)))) best = Math.max(best, Number(m[1]) || 0);
+  return best;
+}
+
 /** 取一段 mp4 的末 N 帧（当 previous_frames 的运动上下文），转成小 mp4 供 LoadVideo 读。
- *  同样不能用 `-sseof -1` + `-frames:v N`：那取到的是「末尾前 1 秒起」的头 N 帧，
- *  续写段拿到的是上一块早 1 秒的动作，块边界会明显回跳。按真实时长定位到末 N 帧。 */
+ *  不能用 `-sseof -1` + `-frames:v N`：那取到的是「末尾前 1 秒起」的头 N 帧，动作会回跳。
+ *  也不能按「时长 - N/fps」seek 后再过 fps 滤镜凑帧数：时间戳差一档就少一帧，产出 8 帧。
+ *  select 挑完帧还必须**强制 CFR 输出**（`-r 25`）：`-fps_mode passthrough` / 默认 VFR 下
+ *  这段只有 0.32s 的片子容器里 9 个包却只能解出 8 帧（末帧时间戳落在容器时长之外，demux 丢掉），
+ *  ComfyUI 的 LoadVideo 按**解码帧数**喂 previous_frames，于是原生 WanInfiniteTalkToVideo 抛
+ *  `Not enough previous frames provided.`（要求 >= motion_frame_count 帧），整块生成失败。 */
 async function tailFrames(mp4, count, width, height, dest) {
   const n = Math.max(1, Math.round(Number(count) || it.MOTION_FRAME_COUNT));
-  const dur = await mediaDurationSec(mp4);
-  const start = Math.max(0, dur - n / it.DEFAULT_FPS - 0.001);
-  await runFfmpeg([
-    "-y",
-    "-ss",
-    String(start),
-    "-i",
-    mp4,
-    "-an",
-    "-vf",
-    `scale=${width}:${height},fps=${it.DEFAULT_FPS}`,
-    "-frames:v",
-    String(n),
-    "-c:v",
-    "libx264",
-    "-pix_fmt",
-    "yuv420p",
-    dest,
-  ]);
-  return dest;
+  const total = await countVideoFrames(mp4);
+  let startFrame = total > 0 ? Math.max(0, total - n) : 0;
+  let got = 0;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const args = [
+      "-y",
+      "-i",
+      mp4,
+      "-an",
+      "-vf",
+      `scale=${width}:${height},select=gte(n\\,${startFrame}),setpts=PTS-STARTPTS`,
+      /* 恒定 25fps 输出：帧数才算得准、ComfyUI 也才解得全 */
+      "-r",
+      String(it.DEFAULT_FPS),
+      "-frames:v",
+      String(n),
+      "-c:v",
+      "libx264",
+      "-pix_fmt",
+      "yuv420p",
+      dest,
+    ];
+    await runFfmpeg(args);
+    got = await countVideoFrames(dest);
+    if (got >= n || startFrame === 0) break;
+    startFrame = Math.max(0, startFrame - (n - got));
+  }
+  appendConsole(`[gen] previous frames ${path.basename(dest)}: ${got}/${n} (total ${total}, from #${startFrame})`);
+  /* 片上真不够 N 帧（异常短片）：宁可不给运动上下文，也别让 ComfyUI 整块报错 */
+  return got >= n ? dest : "";
 }
 
 function newestMp4(rootDir, sinceMs) {

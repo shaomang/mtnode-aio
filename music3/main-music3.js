@@ -2,7 +2,7 @@
 /**
  * Minimax Music 3（24G）插件主进程：
  * - 安装目录 / 脚手架 / dsh 安装编排
- * - Gradio 后端单例（detached，不随 MTNode 退出）
+ * - Gradio 后端单例（detached；MTNode 完全退出时由主进程统一结束，见 main.js 的 before-quit）
  * - 全局生成锁、GPU 监视、控制台窗
  */
 const {
@@ -2660,7 +2660,7 @@ function registerMusic3Ipc(opts) {
   });
 }
 
-/** Do NOT stop Gradio on app quit — intentional singleton independent of MTNode. */
+/** 退出时只关控制台窗；后端进程由主进程退出收尾统一结束（main.js 的 before-quit → vramShutdownAll）。 */
 function shutdownMusic3UiOnly() {
   try {
     if (consoleWin && !consoleWin.isDestroyed()) consoleWin.close();

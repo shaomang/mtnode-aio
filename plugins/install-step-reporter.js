@@ -71,18 +71,46 @@ function attach(opts) {
     return forcedStep;
   }
 
+  /** 每路流各留半行：一块数据正好切在一行中间时，等下一块补齐再发（否则安装窗会多出残行）。 */
+  const pending = { out: "", err: "" };
+  const PENDING_MAX = 16384;
+
+  /** 把缓冲里剩下的那半行也发出去（进程退出 / 收尾时），别把最后一行丢掉。 */
+  function flush(stream) {
+    const keys = stream ? [stream] : ["out", "err"];
+    for (const k of keys) {
+      const rest = pending[k];
+      pending[k] = "";
+      if (rest && rest.trim()) feed(rest, k);
+    }
+  }
+
   if (child) {
-    const split = (stream) => (d) => {
-      for (const line of String(d).split(/\r?\n/)) feed(line, stream);
+    const read = (stream) => (d) => {
+      /* \r\n / \n / 单个 \r 都算换行：curl / pip 的进度行只回 \r。 */
+      let buf = pending[stream] + String(d == null ? "" : d);
+      const parts = buf.split(/\r\n|\n|\r/);
+      pending[stream] = parts.pop();
+      for (const line of parts) feed(line, stream);
+      /* 防御：一行超长又不带换行（进度条刷屏）时先吐出来，别把后面的输出一直憋在缓冲里。 */
+      if (pending[stream].length > PENDING_MAX) {
+        feed(pending[stream], stream);
+        pending[stream] = "";
+      }
     };
     try {
-      if (child.stdout && child.stdout.on) child.stdout.on("data", split("out"));
-      if (child.stderr && child.stderr.on) child.stderr.on("data", split("err"));
+      if (child.stdout && child.stdout.on) child.stdout.on("data", read("out"));
+      if (child.stderr && child.stderr.on) child.stderr.on("data", read("err"));
+      /* 进程结束（close / exit）与流结束（end）都兜一下：最后一行没有换行也不会丢 */
+      if (typeof child.on === "function") child.on("close", () => flush());
+      if (child.stdout && child.stdout.on) child.stdout.on("end", () => flush("out"));
+      if (child.stderr && child.stderr.on) child.stderr.on("end", () => flush("err"));
     } catch {}
   }
 
   function finish(outcome) {
     if (closed) return;
+    flush();
     closed = true;
     const o2 = outcome || {};
     emit({

@@ -326,6 +326,12 @@
        soulxflashhead/main-soulxflashhead.js，步骤表真源 soulxflashhead-pack/steps.json。 */
     "soulxflashhead-local": "soulxflashheadInstall",
     soulxflashhead: "soulxflashheadInstall",
+    /* FLUX 3 Image Klein（kind flux3klein，目录 id flux3-klein-local）：宿主
+       flux3klein/main-flux3klein.js，步骤表真源 flux3klein-pack/steps.json。
+       漏了这两条会掉进窗口插件那条 appPluginsInstall，点「开始安装」直接回
+       backend_plugin_route:flux3klein（步骤表被换成 prepare / download、真步骤全 pending）。 */
+    "flux3-klein-local": "flux3kleinInstall",
+    flux3klein: "flux3kleinInstall",
   };
   /* id → 选安装目录的桥 / 启动安装的桥（窗口插件与桌宠用它们自己的那两条） */
   function installApiOf(id) {

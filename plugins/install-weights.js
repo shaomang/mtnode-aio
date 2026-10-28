@@ -137,6 +137,35 @@ const WEIGHTS_SPECS = {
       },
     ],
   },
+  /* FLUX 3 Image Klein：安装脚本认 ComfyUI\models 下三个子目录的官方文件名
+     （flux3-image-klein-int8-convrot / -bf16、qwen3vl_4b_int8_convrot / _bf16、flux2-vae），
+     「补装权重」把用户手上那一份搬进同样位置，重跑安装时按文件大小跳过已就位的。 */
+  "flux3-klein-local": {
+    label: "FLUX 3 Image Klein（ComfyUI）权重",
+    slots: [
+      {
+        id: "diffusion_models",
+        label: "扩散模型（INT8 / BF16 蒸馏）",
+        rel: ["ComfyUI", "models", "diffusion_models"],
+        accepts: ["diffusion_models"],
+        fileRe: [/^flux3-image-klein-.*\.safetensors$/i],
+      },
+      {
+        id: "text_encoders",
+        label: "文本编码器（qwen3vl_4b）",
+        rel: ["ComfyUI", "models", "text_encoders"],
+        accepts: ["text_encoders"],
+        fileRe: [/^qwen3vl_4b_.*\.safetensors$/i],
+      },
+      {
+        id: "vae",
+        label: "VAE（flux2-vae）",
+        rel: ["ComfyUI", "models", "vae"],
+        accepts: ["vae"],
+        fileRe: [/^flux2-vae.*\.safetensors$/i],
+      },
+    ],
+  },
   "breeze-tts-local": {
     label: "Breeze TTS 2 权重",
     slots: [

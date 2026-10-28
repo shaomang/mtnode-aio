@@ -654,6 +654,80 @@ function addItemEntry(root, found, arg) {
   return item;
 }
 
+/* ---------------- 备份（向指定位置同步一份副本） ----------------
+   备份＝把库的目录树**增量**同步到用户选的目标文件夹：内容一样的不再复制一遍
+   （先比字节数 + mtime；大小相同再比内容，超大文件只比大小 —— 与 assets:itemSame
+   同一套容忍度），只复制新增 / 改动过的文件，并顺手对齐 mtime，下次开箱即跳过。
+   目标里多出来的东西一概不删（备份不是镜像，删错了就没得还原）；.trash / .versions
+   这两类回收与历史目录不进备份。目标记在 config.json 的 assetBackupRoot，
+   下次默认从那儿开始选。 */
+const BACKUP_SKIP_DIRS = new Set([TRASH_DIR, VERSIONS_DIR]);
+const BACKUP_MTIME_TOL = 1500;
+/* 大小相同才值得整读比对；超过这个数只比大小（与 assets:itemSame 同一容忍度） */
+const BACKUP_FULL_READ = 64 * 1024 * 1024;
+
+function savedBackupRoot() {
+  const cfg = readJson(configPath(), {}) || {};
+  return typeof cfg.assetBackupRoot === "string" ? cfg.assetBackupRoot.trim() : "";
+}
+
+/** 一份文件的增量同步：同内容跳过（并把 mtime 对齐），否则整份复制 */
+async function syncBackupFile(srcAbs, dstAbs, srcSt, stat) {
+  let dstSt = null;
+  try {
+    dstSt = await fs.promises.stat(dstAbs);
+  } catch {
+    dstSt = null;
+  }
+  if (dstSt && dstSt.isFile() && dstSt.size === srcSt.size) {
+    if (Math.abs(dstSt.mtimeMs - srcSt.mtimeMs) <= BACKUP_MTIME_TOL) {
+      stat.skipped++;
+      return;
+    }
+    if (srcSt.size <= BACKUP_FULL_READ) {
+      const [a, b] = await Promise.all([
+        fs.promises.readFile(srcAbs),
+        fs.promises.readFile(dstAbs),
+      ]);
+      if (Buffer.compare(a, b) === 0) {
+        try {
+          await fs.promises.utimes(dstAbs, new Date(), srcSt.mtime);
+        } catch {}
+        stat.skipped++;
+        return;
+      }
+    }
+  }
+  await fs.promises.mkdir(path.dirname(dstAbs), { recursive: true });
+  await fs.promises.copyFile(srcAbs, dstAbs);
+  try {
+    await fs.promises.utimes(dstAbs, new Date(), srcSt.mtime);
+  } catch {}
+  stat.copied++;
+  stat.bytes += srcSt.size || 0;
+}
+
+async function syncBackupDir(srcDir, dstDir, stat) {
+  await fs.promises.mkdir(dstDir, { recursive: true });
+  const ents = await fs.promises.readdir(srcDir, { withFileTypes: true });
+  for (const ent of ents) {
+    const srcAbs = path.join(srcDir, ent.name);
+    const dstAbs = path.join(dstDir, ent.name);
+    if (ent.isDirectory()) {
+      if (BACKUP_SKIP_DIRS.has(ent.name)) continue;
+      await syncBackupDir(srcAbs, dstAbs, stat);
+    } else if (ent.isFile()) {
+      try {
+        const st = await fs.promises.stat(srcAbs);
+        if (st.isFile()) await syncBackupFile(srcAbs, dstAbs, st, stat);
+      } catch (err) {
+        /* 单个文件读不到 / 被占用：记下来接着走，不让整次备份白跑 */
+        stat.failed.push(ent.name + "（" + ((err && err.message) || err) + "）");
+      }
+    }
+  }
+}
+
 /* ---------------- IPC ---------------- */
 
 function registerAssetsIpc(opts) {
@@ -1224,6 +1298,54 @@ function registerAssetsIpc(opts) {
         items: added,
         skipped: skipped,
         asset: assetSummary(root, found.dir, found.rel, found.meta),
+      };
+    } catch (err) {
+      return fail(err);
+    }
+  });
+
+  /* 上次备份的目标（渲染层用它当选择框的默认落点） */
+  ipcMain.handle("assets:backupInfo", () => {
+    try {
+      return { ok: true, path: savedBackupRoot() };
+    } catch (err) {
+      return fail(err);
+    }
+  });
+
+  /* 备份：库 → 指定文件夹，增量同步（同内容跳过，目标里多出来的东西不删） */
+  ipcMain.handle("assets:backup", async (e, arg) => {
+    try {
+      const { root, configured } = rootPath();
+      if (!configured) return { ok: false, needRoot: true, error: t("尚未指定素材库根目录") };
+      const srcRes = path.resolve(root);
+      if (!fs.existsSync(srcRes) || !fs.statSync(srcRes).isDirectory())
+        return { ok: false, error: t("素材库根目录不存在") };
+      const raw = typeof arg === "string" ? arg : String((arg && arg.path) || "").trim();
+      if (!raw) return badArg(t("请选择备份的目标文件夹"));
+      if (!path.isAbsolute(raw)) return badArg(t("备份目标必须是绝对路径"));
+      const dest = path.resolve(raw);
+      if (dest === srcRes || dest.startsWith(srcRes + path.sep))
+        return badArg(t("备份目标不能是素材库自身或它里面的文件夹"));
+      if (fs.existsSync(dest) && !fs.statSync(dest).isDirectory())
+        return badArg(t("该路径不是文件夹"));
+      fs.mkdirSync(dest, { recursive: true });
+      const stat = { copied: 0, skipped: 0, bytes: 0, failed: [] };
+      await syncBackupDir(srcRes, dest, stat);
+      const cfg = readJson(configPath(), {}) || {};
+      writeJson(
+        configPath(),
+        Object.assign({}, cfg, { assetBackupRoot: dest, assetBackupAt: Date.now() }),
+      );
+      return {
+        ok: true,
+        source: srcRes,
+        path: dest,
+        copied: stat.copied,
+        skipped: stat.skipped,
+        bytes: stat.bytes,
+        failed: stat.failed,
+        at: Date.now(),
       };
     } catch (err) {
       return fail(err);

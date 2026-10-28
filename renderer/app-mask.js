@@ -43,13 +43,34 @@
   }
   function maskTip() {
     return t(
-      "蒙版局部重绘：已开启\n\n上传原图 + 蒙版 + 提示词，只重绘蒙版里涂抹过的区域：\n· 涂抹过（透明绿）的区域 = 交给模型重绘；\n· 没涂到的区域 = 尽量保持原图不变。\n· 出图画幅 = 首张参考图的像素尺寸（节点自己选的 size 不生效，否则服务端重排输入图会让蒙版错位）。\n\n单击 = 开 / 关 · 右键 = 打开蒙版编辑器",
+      "蒙版局部重绘：已开启\n\n上传原图 + 蒙版 + 提示词，只重绘蒙版里涂抹过的区域：\n· 涂抹过（透明绿）的区域 = 交给模型重绘；\n· 没涂到的区域 = 尽量保持原图不变。\n· 出图画幅 = 首张参考图的像素尺寸（节点自己选的 size 不生效，否则服务端重排输入图会让蒙版错位）。\n\n单击 / 右键 = 打开蒙版编辑器；右下角的「蒙版：启用 / 关闭」开关可随时停用或恢复",
     );
   }
   function maskTipOff() {
     return t(
-      "蒙版局部重绘：已关闭（单击开启）\n\n开启后可在首张参考图上涂抹要改的区域，运行时把「原图 + 蒙版 + 提示词」一起发给 gpt-image-2，只重绘涂抹过的区域；未涂抹处尽量保持不变。\n\n⚠ 需要有至少一张图像输入（首张图作为蒙版背景），且服务商为 OpenAI 兼容图像服务商。\n\n右键 = 打开蒙版编辑器",
+      "蒙版局部重绘：已关闭\n\n单击 / 右键 = 打开蒙版编辑器：在首张参考图上涂抹要改的区域，点「确定并启用」把「原图 + 蒙版 + 提示词」一起发给 gpt-image-2，只重绘涂抹过的区域；未涂抹处尽量保持不变。已画过的蒙版会在编辑器里预载，可继续改；右下角开关可重新启用或停用。\n\n⚠ 需要有至少一张图像输入（首张图作为蒙版背景），且服务商为 OpenAI 兼容图像服务商。",
     );
+  }
+  /* 蒙版是否生效：有蒙版内容才可能开启；没内容一定关闭（旧数据 maskOn 缺省视为开启） */
+  function maskEnabled(node) {
+    if (!node || !node.maskPath) return false;
+    return node.maskOn !== false;
+  }
+
+  /* 把「已启用」的高亮同步到节点头部那颗小按钮上。
+     画布走的是复用快速通道（签名不变就一个 DOM 都不拆），所以开关 / 保存之后
+     头部按钮不会自己重建 —— 必须在这里原地改 class，否则外部按钮永远停在旧状态。 */
+  function syncMaskButton(node) {
+    if (!node || (node.kind !== "proc_image" && node.kind !== "flux3klein_gen")) return;
+    const on = maskEnabled(node);
+    const btns = document.querySelectorAll(".n-mask-btn");
+    for (const b of btns) {
+      if (b.dataset.maskFor !== node.id) continue;
+      b.classList.toggle("on", on);
+      b.setAttribute("aria-checked", on ? "true" : "false");
+      b.dataset.on = on ? "1" : "0";
+      b.title = on ? maskTip() : maskTipOff();
+    }
   }
 
   /* ── 编辑器状态 ─────────────────────────────────────────────────────── */
@@ -63,12 +84,27 @@
   const UNDO_MAX = 6;
 
   function openMaskEditor(node) {
-    if (!node || node.kind !== "proc_image") return;
+    if (!node || (node.kind !== "proc_image" && node.kind !== "flux3klein_gen")) return;
     if (typeof normalizeImgParams === "function") normalizeImgParams(node);
     /* 背景图 = 本次运行实际下发的第 1 张图（@ 引用优先），与 image[0] 同源 */
     const bgPath =
       typeof maskBaseImagePath === "function" ? maskBaseImagePath(node) : "";
+    const box = ensureDlg();
+    const stage = box.querySelector(".mask-stage");
+    const emptyEl = box.querySelector(".mask-empty");
+    const view = box.querySelector(".mask-canvas");
+    box._maskNode = node;
+    ST = null;
+    box.classList.add("on");
+    syncMaskState(box, node);
+    /* 打开序号：连点两次时只让最后一次的异步加载落地，避免旧背景盖掉新背景 */
+    const seq = ++openSeq;
     if (!bgPath) {
+      /* 没有背景图也照样开窗：至少让人能在这里「关闭蒙版」——
+         否则蒙版一旦启用（或换了连接没图了）就再也关不掉。 */
+      stage.classList.add("empty-only");
+      emptyEl.style.display = "";
+      view.style.display = "none";
       toast(
         t(
           "蒙版需要有背景图：请先把一张图像输入连进本节点，或在提示词里 @ 引用图像节点（实际下发的第 1 张图会作为蒙版背景）",
@@ -77,12 +113,9 @@
       );
       return;
     }
-    const box = ensureDlg();
-    const stage = box.querySelector(".mask-stage");
-    box.querySelector(".mask-empty").style.display = "none";
-    box.classList.add("on");
-    /* 打开序号：连点两次时只让最后一次的异步加载落地，避免旧背景盖掉新背景 */
-    const seq = ++openSeq;
+    stage.classList.remove("empty-only");
+    emptyEl.style.display = "none";
+    view.style.display = "block";
 
     (async () => {
       let bg;
@@ -97,7 +130,6 @@
       const h = Math.max(1, bg.naturalHeight || bg.height);
       const maskCanvas = mkCanvas(w, h);
       const mctx = maskCanvas.getContext("2d", { willReadFrequently: true });
-      const view = box.querySelector(".mask-canvas");
       view.width = w;
       view.height = h;
       ST = {
@@ -199,6 +231,10 @@
       '<div class="mask-dlg-foot">' +
       '<button type="button" class="mini" data-act="cancel"></button>' +
       '<button type="button" class="mini mask-primary" data-act="apply"></button>' +
+      '<button type="button" class="mini mask-toggle" data-act="toggle" role="switch" aria-checked="false">' +
+      '<span class="mask-toggle-knob" aria-hidden="true"></span>' +
+      '<span class="mask-toggle-txt"></span>' +
+      "</button>" +
       "</div>";
     document.body.appendChild(box);
 
@@ -214,7 +250,7 @@
     box.querySelector('[data-l="brush"]').textContent = t("画笔尺寸");
     box.querySelector('[data-l="feather"]').textContent = t("羽化半径");
     box.querySelector('[data-l="empty"]').textContent = t(
-      "这个节点还没有可用的图像输入：请先连入一张图像（首张图会作为蒙版背景），再打开本编辑器。",
+      "这个节点还没有可用的图像输入：请先连入一张图像（首张图会作为蒙版背景），再回来涂抹。",
     );
     box.querySelector('[data-l="note"]').textContent = t(
       "怎么操作：左键涂抹 = 标记「要重绘」的区域；按住右键涂抹 = 擦除标记。画笔尺寸与羽化半径在左侧工具栏调；方形 / 圆形可按住左键拖出一块区域（按住右键拖 = 从标记里减去）。\n" +
@@ -226,6 +262,7 @@
 
     box.querySelector('[data-act="close"]').onclick = closeMaskEditor;
     box.querySelector('[data-act="cancel"]').onclick = closeMaskEditor;
+    box.querySelector('[data-act="toggle"]').onclick = () => toggleMask(box);
     box.querySelector('[data-act="apply"]').onclick = () => applyMask(box);
     box.querySelector('[data-act="undo"]').onclick = () => undoPaint();
     box.querySelector('[data-act="clear"]').onclick = () => {
@@ -276,6 +313,57 @@
     ST = null;
   }
   window.closeMaskEditor = closeMaskEditor;
+
+  /* 右下角「启用 / 关闭」开关：有蒙版内容才可切，没内容一定是关闭 */
+  function syncMaskState(box, node) {
+    if (!box) return;
+    syncMaskButton(node);
+    const has = !!(node && node.maskPath);
+    const on = maskEnabled(node);
+    const tg = box.querySelector('[data-act="toggle"]');
+    if (tg) {
+      tg.classList.toggle("on", on);
+      tg.classList.toggle("empty", !has);
+      tg.setAttribute("aria-checked", on ? "true" : "false");
+      tg.setAttribute("aria-disabled", has ? "false" : "true");
+      tg.title = has
+        ? on
+          ? t("蒙版已启用：点一下关闭（运行时不发蒙版，涂抹记录保留，可再开启恢复）")
+          : t("蒙版已关闭：点一下重新启用（运行时按已画的蒙版局部重绘）")
+        : t("还没有蒙版内容：先在图上涂抹并点「确定并启用」，之后这里才能开关");
+      const txt = tg.querySelector(".mask-toggle-txt");
+      if (txt) txt.textContent = on ? t("蒙版：启用") : t("蒙版：关闭");
+    }
+    const apply = box.querySelector('[data-act="apply"]');
+    if (apply) apply.textContent = on ? t("确定并启用（更新）") : t("确定并启用");
+    const sub = box.querySelector('[data-l="sub"]');
+    if (sub)
+      sub.textContent = on
+        ? t("当前：已启用 · 在首张参考图上涂抹要重绘的区域")
+        : t("当前：未启用 · 在首张参考图上涂抹要重绘的区域");
+  }
+
+  /* 开关：只在已有蒙版内容时生效；关闭保留 maskPath，下次可再打开 */
+  function toggleMask(box) {
+    const node = (ST && ST.node) || (box && box._maskNode) || null;
+    if (!node || !node.maskPath) {
+      toast(t("还没有蒙版内容：先在图上涂抹并点「确定并启用」"), "warn");
+      return;
+    }
+    const next = !maskEnabled(node);
+    pushHistory();
+    node.maskOn = next;
+    scheduleSave(true);
+    syncMaskButton(node);
+    renderCanvas();
+    syncMaskState(box, node);
+    toast(
+      next
+        ? t("蒙版已启用：运行时只重绘涂抹过的区域")
+        : t("蒙版已关闭：运行时不发蒙版；涂抹记录保留，可随时再开启"),
+      "ok",
+    );
+  }
 
   function syncToolbar(box) {
     if (!ST) return;
@@ -526,6 +614,7 @@
     node.maskBrush = ST.brush;
     node.maskFeather = ST.feather;
     scheduleSave(true);
+    syncMaskButton(node);
     renderCanvas();
     closeMaskEditor();
     toast(
@@ -538,7 +627,7 @@
   /* ── 节点头部小按钮 ─────────────────────────────────────────────────── */
   function maskButtonEl(node) {
     if (typeof normalizeImgParams === "function") normalizeImgParams(node);
-    const on = !!node.maskOn;
+    const on = maskEnabled(node);
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = "n-play n-mask-btn" + (on ? " on" : "");
@@ -546,6 +635,7 @@
     btn.setAttribute("aria-checked", on ? "true" : "false");
     btn.setAttribute("aria-label", t("蒙版局部重绘"));
     btn.dataset.on = on ? "1" : "0";
+    btn.dataset.maskFor = node.id;
     btn.innerHTML =
       '<svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">' +
       '<rect x="1.2" y="2.6" width="9.6" height="10.8" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.2"/>' +
@@ -555,25 +645,10 @@
     btn.title = on ? maskTip() : maskTipOff();
     btn.onclick = (ev) => {
       ev.stopPropagation();
-      if (node.maskOn) {
-        /* 关：清开关，保留 maskPath（下次单击直接复用，不用重画） */
-        pushHistory();
-        node.maskOn = false;
-        scheduleSave(true);
-        renderCanvas();
-        toast(t("蒙版局部重绘已关闭"), "ok");
-        return;
-      }
-      if (!node.maskPath) {
-        /* 首次开启：直接进编辑器画蒙版，确定后自动启用 */
-        openMaskEditor(node);
-        return;
-      }
-      pushHistory();
-      node.maskOn = true;
-      scheduleSave(true);
-      renderCanvas();
-      toast(t("蒙版局部重绘已开启：只重绘涂抹过的区域"), "ok");
+      /* 左键 / 右键同一入口：一律打开编辑器。
+         启用与关闭都在编辑器底部（「确定并启用」/「关闭蒙版」），
+         不再让左键自己「已开启就只切开关」，避免出现「打得开却关不掉」的状态。 */
+      openMaskEditor(node);
     };
     btn.oncontextmenu = (ev) => {
       ev.preventDefault();

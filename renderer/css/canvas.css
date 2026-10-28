@@ -3346,30 +3346,58 @@ body.theme-light .n-chip.n-chip-lt {
   box-shadow: 0 0 10px rgba(255, 94, 168, .45), 8px 12px 24px rgba(0, 0, 0, .45)
 }
 
-/* 复制品「闪一下」：Ctrl+D / 顶栏「复制」/ 右键「复制」落下来的新节点描边 + 外发光，
-   约 0.9 秒渐隐（app.js 的 flashCopiedNodes 贴 .dup-flash，900ms 后摘掉；节点重绘会
-   自然丢掉它，本来就只是一次性反馈）。
-   颜色取主题的 --green（成功色），与选中环的青色区分开：复制完复制品同时是选中态，
-   同一种青色会分不清哪一层是「刚刚复制」。overflow-clip-margin 与选中态同样放宽，
-   免得外发光被节点的裁切框裁掉。 */
+/* 复制品「金色呼吸灯」：Ctrl+D / 顶栏「复制」/ 右键「复制」/ Ctrl+C 落下来的新节点
+   一次性亮两下再渐隐（app.js 的 flashCopiedNodes 贴 .dup-flash，1.5s 后摘掉；节点重绘
+   会自然丢掉它，本来就只是一次性反馈）。
+   颜色取主题金 --yellow（#ffd166 系），与选中环的青色、成功色的绿都区分开 —— 复制完
+   复制品同时是选中态，同色会分不清哪一层是「刚刚复制」。
+   overflow-clip-margin 与选中态同样放宽，免得外发光被节点的裁切框裁掉。 */
 .wf-node.dup-flash {
   overflow-clip-margin: 400px;
-  animation: wfDupFlash .9s ease-out 1;
+  animation: wfDupFlash 1.5s ease-in-out 1;
 }
 
+/* 呼吸：暗 → 亮 → 暗 → 亮 → 散开消失（两拍，不循环） */
 @keyframes wfDupFlash {
   0% {
-    outline: 2.5px solid var(--green);
-    outline-offset: 1px;
+    outline: 2.5px solid color-mix(in srgb, var(--yellow) 45%, transparent);
+    outline-offset: 2px;
     box-shadow:
-      0 0 0 2px color-mix(in srgb, var(--green) 55%, transparent),
-      0 0 20px color-mix(in srgb, var(--green) 75%, transparent),
+      0 0 0 1px color-mix(in srgb, var(--yellow) 30%, transparent),
+      0 0 8px color-mix(in srgb, var(--yellow) 30%, transparent),
+      var(--nfloat);
+  }
+
+  20% {
+    outline: 2.5px solid var(--yellow);
+    outline-offset: 3px;
+    box-shadow:
+      0 0 0 2px color-mix(in srgb, var(--yellow) 60%, transparent),
+      0 0 26px color-mix(in srgb, var(--yellow) 80%, transparent),
+      var(--nfloat);
+  }
+
+  38% {
+    outline: 2.5px solid color-mix(in srgb, var(--yellow) 50%, transparent);
+    outline-offset: 2px;
+    box-shadow:
+      0 0 0 1px color-mix(in srgb, var(--yellow) 32%, transparent),
+      0 0 10px color-mix(in srgb, var(--yellow) 34%, transparent),
+      var(--nfloat);
+  }
+
+  60% {
+    outline: 2.5px solid var(--yellow);
+    outline-offset: 3px;
+    box-shadow:
+      0 0 0 2px color-mix(in srgb, var(--yellow) 60%, transparent),
+      0 0 26px color-mix(in srgb, var(--yellow) 80%, transparent),
       var(--nfloat);
   }
 
   100% {
     outline: 2.5px solid transparent;
-    outline-offset: 9px;
+    outline-offset: 10px;
     box-shadow:
       0 0 0 0 transparent,
       0 0 0 0 transparent,

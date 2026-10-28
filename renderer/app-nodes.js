@@ -978,6 +978,8 @@ function isAutoProcKind(n) {
       n.kind === "yue_gen" ||
       /* SenseNova 图像节点：与音乐 / 语音同待遇（跑完自动级联下游、按处理节点统计） */
       n.kind === "sensenova_gen" ||
+      /* FLUX 3 Image Klein：本机 ComfyUI 出图，跑完同样自动级联下游 */
+      n.kind === "flux3klein_gen" ||
       n.kind === "video_gen" ||
       (typeof isVideoPostKind === "function" && isVideoPostKind(n)) ||
       n.kind === "remotion" ||
@@ -1795,6 +1797,8 @@ function isMediaGenNode(node) {
          同一条串行链、同一套后端探活与**同一个全局媒体大锁**（一张卡同时只跑得动
          一个本地大模型）—— 探活、排队、单独 / 全部终止一律按媒体族同待遇 */
       node.kind === "sensenova_gen" ||
+      /* FLUX 3 Image Klein（flux3klein_gen）：本机 ComfyUI 出图，探活 / 排队 / 终止同待遇 */
+      node.kind === "flux3klein_gen" ||
       /* Breeze 语音（Breeze TTS 2）：本机唯一的语音后端（文本转语音），探活 / 排队 / 终止同待遇 */
       node.kind === "breeze_gen" ||
       /* InfiniteTalk 数字人（infinitetalk_gen）：本机 ComfyUI 出片，探活 / 排队 / 终止按媒体族同待遇 */
@@ -2507,6 +2511,8 @@ async function fetchMediaBackendStatus(node) {
     return window.api.yue2Status ? await window.api.yue2Status() : null;
   if (node.kind === "sensenova_gen")
     return window.api.sensenovaStatus ? await window.api.sensenovaStatus() : null;
+  if (node.kind === "flux3klein_gen")
+    return window.api.flux3kleinStatus ? await window.api.flux3kleinStatus() : null;
   if (node.kind === "breeze_gen")
     return window.api.breezeStatus ? await window.api.breezeStatus() : null;
   if (node.kind === "infinitetalk_gen")
@@ -2734,6 +2740,45 @@ function bindMediaBackendListeners() {
       }
     });
   }
+  if (window.api.onFlux3KleinProgress) {
+    window.api.onFlux3KleinProgress((data) => {
+      /* 安装进度归插件控制台窗；这里只认带 nodeId 的生成进度 */
+      if (!data || data.phase !== "generate" || !data.nodeId) return;
+      const n = nodeById(data.nodeId);
+      if (!n || n.kind !== "flux3klein_gen") return;
+      const ui = ensureBackendUiState(n);
+      if (data.cancelled || n._aborted || String(data.message || "") === "已取消") {
+        n.running = false;
+        n._aborted = false;
+        n.flux3kleinStatus = I18n.t("已取消");
+        ui.genMsg = n.flux3kleinStatus;
+        stopMediaBackendRunWatcher(n.id);
+        refreshMediaNodeUi(n, { soft: true });
+        return;
+      }
+      const pct = Number(data.pct);
+      if (Number.isFinite(pct)) ui.genPct = Math.max(2, Math.min(99, pct));
+      if (data.message) {
+        ui.genMsg = mediaGenRollProgressTag(n) + String(data.message);
+        n.flux3kleinStatus = ui.genMsg;
+      }
+      if (data.error && looksLikeBackendConnError(data.message)) markMediaBackendDown(n);
+      refreshMediaNodeUi(n, { soft: true });
+    });
+  }
+  if (window.api.onFlux3KleinGpu) {
+    window.api.onFlux3KleinGpu((gpu) => {
+      if (!gpu || !S.wf) return;
+      for (const n of S.wf.nodes || []) {
+        if (n.kind !== "flux3klein_gen") continue;
+        const ui = ensureBackendUiState(n);
+        if (ui.ok !== true && !n.running) continue;
+        ui.info = ui.info || {};
+        ui.info.gpu = gpu;
+        if (n.running || S.sel === n.id) refreshMediaNodeUi(n, { soft: true });
+      }
+    });
+  }
   if (window.api.onSensenovaGpu) {
     window.api.onSensenovaGpu((gpu) => {
       if (!gpu || !S.wf) return;
@@ -2847,6 +2892,8 @@ function appendMediaConsoleBtn(head, node) {
         ? I18n.t("打开 YuE2 控制台日志")
         : node.kind === "sensenova_gen"
           ? I18n.t("打开 SenseNova 控制台日志")
+          : node.kind === "flux3klein_gen"
+            ? I18n.t("打开 FLUX 3 Image Klein 控制台")
           : node.kind === "breeze_gen"
             ? I18n.t("打开 Breeze TTS 2 控制台")
             : I18n.t("打开 Music 3 控制台日志");
@@ -2875,6 +2922,10 @@ function appendMediaConsoleBtn(head, node) {
                 ? window.api.sensenovaOpen
                   ? await window.api.sensenovaOpen()
                   : null
+                : node.kind === "flux3klein_gen"
+                  ? window.api.flux3kleinOpen
+                    ? await window.api.flux3kleinOpen()
+                    : null
                 : node.kind === "breeze_gen"
                   ? window.api.breezeOpen
                     ? await window.api.breezeOpen()
@@ -3035,6 +3086,10 @@ function appendMediaBackendPanel(body, node) {
         info.apiUp ? "ok" : "bad",
       ),
     );
+  /* FLUX 3 Image Klein：本机 ComfyUI，权重留不留显存由后端自己管，只补一条精度铭牌 */
+  if (node.kind === "flux3klein_gen") {
+    row.appendChild(pill(node.precision === "bf16" ? "BF16" : "INT8", "muted"));
+  }
   /* SenseNova：权重是否已驻留 / 是否 mock 冒烟 / 上次实测显存峰值 —— 这三项是
      「为什么这么慢 / 是不是没真跑」的唯一现场证据，节点上就必须看得见 */
   if (node.kind === "sensenova_gen") {
@@ -6190,6 +6245,10 @@ function breezeErrorText(raw) {
     busy_engine: T("引擎正忙（同一时刻只跑一个合成请求），请稍后重试"),
     engine_loading: T("推理引擎还在加载权重（首次需数十秒到数分钟），请稍后重试"),
     engine_down: T("无法连接 Breeze TTS 2 推理引擎（请先点「加载模型」，或重新执行本节点）"),
+    engine_stream_broken: T(
+      "Breeze 引擎在合成途中中断（这段文本超出引擎一次能装下的长度，已自动改为分段重试）：若反复出现请打开插件控制台查看日志",
+    ),
+    internal_error: T("Breeze 后端内部出错（详情见插件控制台日志）"),
     engine_rejected: T("Breeze TTS 2 引擎拒绝了这次请求（详情见插件控制台日志）"),
     engine_exited: T("Breeze TTS 2 引擎启动后退出（详情见插件控制台日志）"),
     engine_start_timeout: T("Breeze TTS 2 引擎未能在规定时间内就绪（可打开插件控制台查看启动日志）"),
@@ -6684,8 +6743,9 @@ function stopAllMediaBackendRunWatchers() {
   for (const id of [...mediaBackendRunWatchers.keys()]) stopMediaBackendRunWatcher(id);
 }
 /* 真正取消主进程里的后端任务（同时释放全局音视频锁）；只终止属于本节点的在途任务。
-   语音（breeze_gen）不在此列：它是一次性 HTTP 请求（主进程无取消接口、也不持全局锁），
-   取消只走渲染层作废（_aborted / _stopTick），在途那条合成完即丢弃、不再驱动下游。 */
+   语音（breeze_gen）：走 breeze:cancelGenerate —— 断掉在途 /v1/audio/speech 连接并停引擎。
+   引擎侧没有 cancel 接口，只有停掉进程才能让生成真的停下、显存立刻还回来（以前只作废界面，
+   引擎照跑，所以表现为「停不掉 / 关不掉」）。 */
 function mediaGenCancelRemote(node) {
   if (!node || !window.api) return;
   try {
@@ -6695,6 +6755,10 @@ function mediaGenCancelRemote(node) {
       window.api.yue2CancelGenerate(node.id);
     else if (node.kind === "sensenova_gen" && window.api.sensenovaCancelGenerate)
       window.api.sensenovaCancelGenerate(node.id);
+    else if (node.kind === "flux3klein_gen" && window.api.flux3kleinCancelGenerate)
+      window.api.flux3kleinCancelGenerate(node.id);
+    else if (node.kind === "breeze_gen" && window.api.breezeCancelGenerate)
+      window.api.breezeCancelGenerate(node.id);
     else if (
       (node.kind === "video_gen" ||
         (typeof isVideoPostKind === "function" && isVideoPostKind(node))) &&
@@ -6732,6 +6796,7 @@ function mediaGenMarkDropped(node, wasRunning) {
   else if (node.kind === "yue_gen") node.yueStatus = msg;
   else if (node.kind === "breeze_gen") node.breezeStatus = msg;
   else if (node.kind === "sensenova_gen") node.sensenovaStatus = msg;
+  else if (node.kind === "flux3klein_gen") node.flux3kleinStatus = msg;
   else if (
     node.kind === "video_gen" ||
     (typeof isVideoPostKind === "function" && isVideoPostKind(node))
@@ -6768,6 +6833,7 @@ async function restoreMediaGenLocks() {
     if (n.kind === "music_gen") n.musicStatus = msg;
     else if (n.kind === "yue_gen") n.yueStatus = msg;
     else if (n.kind === "sensenova_gen") n.sensenovaStatus = msg;
+    else if (n.kind === "flux3klein_gen") n.flux3kleinStatus = msg;
     else n.videoStatus = msg;
     renderCanvas();
     stopMediaGenRestoreWatch(n.id);
@@ -6794,6 +6860,7 @@ async function restoreMediaGenLocks() {
           if (n.kind === "music_gen") n.musicStatus = done;
           else if (n.kind === "yue_gen") n.yueStatus = done;
           else if (n.kind === "sensenova_gen") n.sensenovaStatus = done;
+          else if (n.kind === "flux3klein_gen") n.flux3kleinStatus = done;
           else n.videoStatus = done;
           renderCanvas();
           updateRunQueuePanel();
@@ -9405,6 +9472,8 @@ async function mediaPostRunNote(node) {
         else if (node.kind === "yue_gen") node.yueStatus = String(node.yueStatus || "") + note;
         else if (node.kind === "sensenova_gen")
           node.sensenovaStatus = String(node.sensenovaStatus || "") + note;
+        else if (node.kind === "flux3klein_gen")
+          node.flux3kleinStatus = String(node.flux3kleinStatus || "") + note;
         else if (node.kind === "breeze_gen")
           node.breezeStatus = String(node.breezeStatus || "") + note;
         else node.videoStatus = String(node.videoStatus || "") + note;
@@ -9564,6 +9633,10 @@ async function playNodeBody(node, quiet, opts) {
   /* SenseNova 本地图像生成：与音乐 / 视频同一条串行链、同一把全局大锁 */
   if (node.kind === "sensenova_gen") {
     return runMediaGenSerial(node, () => playSensenovaGenNode(node, quiet));
+  }
+  /* FLUX 3 Image Klein：同一条串行链 + 同一把全局音视频锁 */
+  if (node.kind === "flux3klein_gen") {
+    return runMediaGenSerial(node, () => playFlux3KleinNode(node, quiet));
   }
   /* Breeze 语音（Breeze TTS 2）：进同一条媒体串行链 + 全局音视频互斥锁（引擎 eager 约 7.7GB 显存） */
   if (node.kind === "breeze_gen") {
@@ -12872,6 +12945,16 @@ function wireActsAsImage(from, fi, consumer) {
     return wireSourceMediaType(from, fi, consumer) === "image";
   return false;
 }
+/* 这条线对外就是「音频 / 视频」这种媒体（工具 / 函数节点的 audio | video 输出端子、
+   素材节点的音视频条目、节点层边界端子按壳内取值）：
+   wireActsAsText / wireActsAsImage 都不认这一类，缺了这一支，函数节点声明成「视频」
+   的输出端子就接不进视频超分 / 补帧的源视频端子（用户报的「超分节点仍然无法直接
+   链接函数节点输出的视频」）。判定一律走 wireSourceMediaType（端子声明的类型优先）。 */
+function wireActsAsMedia(from, fi, consumer) {
+  if (!from || typeof wireSourceMediaType !== "function") return false;
+  const m = wireSourceMediaType(from, fi, consumer);
+  return m === "audio" || m === "video";
+}
 function wireActsAsText(from, fi, consumer) {
   if (!from) return false;
   /* 数据库「文件节点」：对外给的就是那条线的「文件绝对路径」（与 input_audio /
@@ -13136,6 +13219,8 @@ function inPortOccupancy(to, toIndex, fromCtrl) {
   if (!isFinite(idx) || idx < 0) return none;
   const paramIdx = typeof PARAM_IN_INDEX === "number" ? PARAM_IN_INDEX : 9001;
   if (idx === paramIdx) return none; /* 参数端子：允许多条（深合并），没有「占用」 */
+  /* 数组式端子（flux3klein_gen 的参考图口）：本来就挂多条数据线 → 不算占用、不替换 */
+  if (typeof inPortAcceptsManyWires === "function" && inPortAcceptsManyWires(to, idx)) return none;
   const list =
     to.kind === "super" && typeof superExternalInWiresAll === "function"
       ? superExternalInWiresAll(to)
@@ -13556,7 +13641,16 @@ function connectError(fromId, toId, toIndex, fromIndex) {
       if (k === "image") {
         if (!wireActsAsImage(from, fi, to)) return I18n.t("「") + c.label + I18n.t("」端子需要图像来源");
       } else if (k === "audio" || k === "video") {
-        if (!wireActsAsText(from, fi, to) && !wireActsAsImage(from, fi, to))
+        /* 工具 / 函数节点声明成 audio / video 的媒体输出端子，对外就是「这条线的媒体
+           类型」（wireSourceMediaType 按端子声明取）。wireActsAsText / wireActsAsImage
+           都不认这一类，于是函数节点的视频输出接不进契约里的 video 端子（用户报的
+           「函数节点的视频输出未被 remotion 接收」）。按端子级媒体类型补同类型一支。 */
+        if (
+          !wireActsAsText(from, fi, to) &&
+          !wireActsAsImage(from, fi, to) &&
+          (typeof wireSourceMediaType !== "function" ||
+            wireSourceMediaType(from, fi, to) !== k)
+        )
           return I18n.t("「") + c.label + I18n.t("」端子需要媒体文件路径或文本来源");
       } else if (!wireActsAsText(from, fi, to) && !(from && from.imageAsset)) {
         return I18n.t("「") + c.label + I18n.t("」端子需要文本来源");
@@ -13585,10 +13679,20 @@ function connectError(fromId, toId, toIndex, fromIndex) {
       return I18n.t("无效的输入端子");
     const useSlot = slot != null ? slot : nextFreeVideoPostSlot(to);
     if (useSlot == null) return I18n.t("该输入端子已被占用");
+    /* 源视频端子同样接受「声明成音频 / 视频」的端子（工具 / 函数节点的视频输出、
+       素材节点的音视频条目）：它们既不是文本也不是图像来源，只按媒体类型这一支放行 */
     if (useSlot === 1) {
-      if (!wireActsAsText(from, fi, to) && !wireActsAsImage(from, fi, to))
+      if (
+        !wireActsAsText(from, fi, to) &&
+        !wireActsAsImage(from, fi, to) &&
+        !wireActsAsMedia(from, fi, to)
+      )
         return I18n.t("源视频端子需要视频文件路径或文本来源");
-    } else if (!wireActsAsText(from, fi, to) && !wireActsAsImage(from, fi, to)) {
+    } else if (
+      !wireActsAsText(from, fi, to) &&
+      !wireActsAsImage(from, fi, to) &&
+      !wireActsAsMedia(from, fi, to)
+    ) {
       return I18n.t("素材端子需要文本或媒体文件路径");
     }
     if (
@@ -13768,8 +13872,15 @@ function connectError(fromId, toId, toIndex, fromIndex) {
     isDynCtrlNode(to) &&
     typeof dynCtrlInPortIndex === "function" &&
     Number(toIndex) === dynCtrlInPortIndex(to);
+  /* 数组式端子（flux3klein_gen 参考图口）：同一颗端子可挂多条数据线 → 不参与占用判定 */
+  const manyWireShare =
+    !fromCtrl &&
+    toIndex != null &&
+    typeof inPortAcceptsManyWires === "function" &&
+    inPortAcceptsManyWires(to, toIndex);
   if (
     !dynCtrlShare &&
+    !manyWireShare &&
     toIndex != null &&
     to.kind !== "music_gen" &&
     to.kind !== "yue_gen" &&
@@ -13987,6 +14098,21 @@ function addWire(fromId, toId, toIndex, opts) {
       const free = remotionFreeContractPort(toN, fromN, fromIdx);
       if (free != null) idx = free;
     }
+  }
+  /* 数组式端子（flux3klein_gen 的参考图口）：图像数据线一律落到声明 image 的那颗数组端子
+     并与已有线共存 —— 不按「入线总数」顺延（第二张参考图会落到端口 2 的控制号上，
+     永远进不了参考图数组）。 */
+  if (
+    toIndex == null &&
+    toN &&
+    fromN &&
+    !isControlKind(fromN) &&
+    typeof inPortMultiWireIndexes === "function" &&
+    inPortMultiWireIndexes(toN).length &&
+    wireActsAsImage(fromN, fromIdx, toN)
+  ) {
+    const slot = inPortMultiWireIndexes(toN).find((i) => inPortKindOf(toN, i) === "image");
+    if (slot != null) idx = slot;
   }
   if (toIndex == null && toN && !hasFixedInPorts(toN)) {
     /* 动态端子节点：落点 = 第一个**空闲**端子号（与 inPortIsSpare / connectError 同一口径）。
@@ -21676,6 +21802,13 @@ function editPortNameOf(node, dir, i, isFnT) {
        端口 0 = 提示词 / 文本入口，端口 1+ 是按已连线条数增量出的数据槽（无固定控制端子） */
     if (k === "sensenova_gen")
       return i === 0 ? I18n.t("提示词") : I18n.t("输入端子 ") + (i + 1);
+    /* FLUX 3 Image Klein：0=提示词 · 1=参考图（可多接）· 2=控制输入 */
+    if (k === "flux3klein_gen")
+      return i === 0
+        ? I18n.t("提示词")
+        : i === 1
+          ? I18n.t("参考图（可多接，最多 10 张）")
+          : I18n.t("控制");
     /* InfiniteTalk 数字人：端口0=人物图 · 1=语音 · 2=源视频(V2V) · 3=提示词 · 4=控制输入 */
     if (k === "infinitetalk_gen")
       return i === 0
@@ -21755,6 +21888,9 @@ function editPortKindOf(node, dir, i, isFnT) {
     /* SenseNova 图像：端口 0 = 提示词（文本）· 端口 1+ = 增量数据槽（可接文本，
        也可接图像引用 input_image / proc_image 等）→ 类型按「由连线决定」的 any 报 */
     if (k === "sensenova_gen") return i === 0 ? "text" : "any";
+    /* FLUX 3 Image Klein：0=提示词（text）· 1=参考图（image）· 2=控制输入 */
+    if (k === "flux3klein_gen")
+      return i === 2 ? "control" : i === 1 ? "image" : "text";
     /* SoulX-FlashHead Lite：0=人物图（image）· 1=语音（audio）· 2=控制输入 */
     if (k === "soulxflashhead_gen")
       return i === 2 ? "control" : i === 0 ? "image" : "audio";
@@ -21809,6 +21945,7 @@ function editPortKindOf(node, dir, i, isFnT) {
     return i === 0 ? "audio" : "control";
   /* SenseNova：输出 0 = 图像（save_image / 图像预览 / @ 引用直接复用）· 输出 1 = 控制 */
   if (k === "sensenova_gen") return i === 0 ? "image" : "control";
+  if (k === "flux3klein_gen") return i === 0 ? "image" : "control";
   if (k === "video_gen" || isVideoPostKind(node) || k === "remotion" || k === "infinitetalk_gen" || k === "soulxflashhead_gen")
     return i === 0 ? "video" : "control";
   if (isControlKind(node)) return "control";

@@ -17,7 +17,7 @@
 | `POST /generate` | 入队一次生成（image_path / audio_path / steps / seed / output_path） |
 | `GET /job?id=` · `GET /jobs` | 查任务进度（含 fps / rtf / ms_per_chunk） |
 | `POST /cancel` | 取消当前任务 |
-| `POST /benchmark` | 跑一次 2 块真实基准（控制台「实时基准」） |
+| `POST /benchmark` | 跑一次 N 块真实基准（默认 4 块，首块含预热，取后几块中位数为稳态；控制台「实时基准」） |
 | `POST /free` · `POST /api/shutdown` | 还显存 / 关服务 |
 
 ## 权重清单（SoulX-FlashHead/models 下）
@@ -41,6 +41,17 @@
 ## 快速开始
 
 安装与启停都走 MTNode 插件卡片 / 控制台（步骤表真源 `steps.json`，脚本 `scripts/install.ps1`）。
+
+依赖安装的两条硬约束（都是踩过坑才定下来的）：
+
+- **镜像链固定「清华 → 阿里 → 官方 PyPI」**，并且先 `pip download --no-deps` 把直接依赖的轮子拉到
+  `<InstallDir>\wheels\pip\`，再 `pip install --find-links` 离线优先安装。原因：aliyun 的文件 CDN 对大轮子会
+  给出一条「连上但几乎不动」的连接（实测 opencv_contrib_python 5.0.0.93 的 53.8MB 只有 ~85KB/s），而
+  pip 的 `--timeout` 只管单次 socket 读、不管这种涓流，于是界面表现为**永久卡在 Downloading …**。
+  脚本因此自己当看门狗：下载目录 75 秒没有新字节就杀掉 pip、换下一个镜像重试。
+- **opencv 两个包一起钉死 `==4.12.0.88`**。`opencv-python>=4.12.0.88` 现在会解析到 5.0.0.93，而
+  mediapipe 0.10.9 又会无上限拉 `opencv-contrib-python`，两个 dist 同时写同一份 `cv2` 目录。
+
 手动调试时才用：
 
 ```powershell
@@ -48,7 +59,7 @@
 cd <InstallDir>\SoulX-FlashHead
 venv\Scripts\python.exe mtnode_server.py --install-dir <InstallDir> --port 8198
 
-# 只做自检 + 2 块实时基准（打印 ACCEL 与 BENCH-OK）
+# 只做自检 + 4 块实时基准（打印 ACCEL 与 BENCH-OK，含 first_ms / realtime）
 venv\Scripts\python.exe mtnode_server.py --install-dir <InstallDir> --check
 ```
 

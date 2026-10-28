@@ -159,7 +159,7 @@
           <span class="muted" id="kpiAccel"></span>
         </div>
         <div class="muted" id="benchHint" style="margin-top:6px">
-          实时口径：单张 4090 单路 ≥25FPS（25fps 目标）。安装收尾会自动跑一次 3 块基准（首块含预热，按后两块算稳态），结果写在这里。
+          实时口径：单张 4090 单路 ≥25FPS（25fps 目标）。安装收尾会自动跑一次 4 块基准（首块含预热，后 3 块取中位数），结果写在这里。
         </div>
       </section>
 
@@ -177,7 +177,7 @@
         </div>
         <div class="row" style="margin-top:8px">
           <button id="btnGen" class="primary">开始试生成</button>
-          <button id="btnBench">只跑基准（3 块）</button>
+          <button id="btnBench">只跑基准（4 块）</button>
           <button id="btnCancelGen" class="danger">取消</button>
           <span class="muted" id="genText"></span>
         </div>

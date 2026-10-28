@@ -31,6 +31,8 @@ export const inject = ['tools']
 
 const KINDS = [
   'input_text', 'input_image', 'input_audio', 'input_video', 'input_file', 'db_table', 'proc_text', 'proc_image', 'music_gen', 'yue_gen', 'breeze_gen', 'video_gen', 'video_upscale', 'video_interp', 'remotion', 'sensenova_gen',
+  /* 数字人节点（插件后端，右侧菜单「处理节点 → 视频生成」的成员）：端口见 mtnode-canvas-edit-rules */
+  'soulxflashhead_gen',
   'save', 'save_text', 'save_image', 'save_pdf', 'split', 'merge', 'global', 'wait_file', 'timer',
   'delayer', 'sequencer', 'gate', 'splitter', 'counter', 'mutex',
   'agent_task', 'task', 'super', 'db_replica',

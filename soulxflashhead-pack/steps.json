@@ -19,7 +19,7 @@
     {
       "id": "venv",
       "title": "创建隔离 Python 环境并安装 CUDA torch 2.8.0",
-      "hint": "Python 3.11/3.12 → venv → torch 2.8.0+cu128（必须 CUDA）→ Windows 可用的推理依赖子集。torch 固定在 2.8.0 是为了匹配 flash-attn 的 Windows 预编译 wheel。"
+      "hint": "Python 3.11/3.12 → venv → torch 2.8.0+cu128（必须 CUDA）→ Windows 可用的推理依赖子集。torch 固定在 2.8.0 是为了匹配 flash-attn 的 Windows 预编译 wheel。依赖走「清华 → 阿里 → 官方 PyPI」镜像链：先把直接依赖的轮子下到 <安装目录>\\wheels\\pip 再离线安装，下载目录 75 秒没有新字节就换镜像（防某个镜像涓流卡死）。"
     },
     {
       "id": "flashattn",
@@ -43,8 +43,8 @@
     },
     {
       "id": "smoke",
-      "title": "加载权重跑 2 块实时基准",
-      "hint": "用真实权重 + 官方示例图/音频跑 2 个 24 帧分块，打印 BENCH-OK fps/rtf 与 ACCEL（torch / cuda / flash_attn / sage / GPU）。跑不通就算安装失败。"
+      "title": "加载权重跑 4 块实时基准",
+      "hint": "用真实权重 + 官方示例图/音频跑 4 个分块（首块是 torch.compile 预热，不计入稳态），打印 BENCH-OK fps/rtf 与 ACCEL（torch / cuda / flash_attn / sage / GPU）。跑不通就算安装失败。"
     }
   ],
   "messages": {
@@ -65,8 +65,8 @@
       "en": "CUDA torch 2.8.0 install failed. Verify nvidia-smi and re-run (SJTU → Aliyun → official)."
     },
     "flashhead.venv.requirements_failed": {
-      "zh": "推理依赖安装失败：看日志尾部。常见是 mediapipe 没有对应 Python 版本的 wheel —— 换 Python 3.11 重跑。",
-      "en": "Dependency install failed. See the tail; usually mediapipe on this Python — try Python 3.11."
+      "zh": "推理依赖安装失败：看日志尾部。常见是 mediapipe 没有对应 Python 版本的 wheel —— 换 Python 3.11 重跑；若是某个包一直停在 Downloading，脚本已按「清华 → 阿里 → 官方」换镜像并带 75 秒停滞看门狗，重跑会复用 <安装目录>\\wheels\\pip 里已下好的轮子。",
+      "en": "Dependency install failed. See the tail; usually mediapipe on this Python — try Python 3.11. If a wheel sits on Downloading, the installer already walks Tsinghua → Aliyun → PyPI with a 75s stall watchdog, and a re-run reuses <installDir>\\wheels\\pip."
     },
     "flashhead.venv.pip_failed": {
       "zh": "Python 环境准备失败：看日志尾部的 pip 报错后重跑；前面的步骤会复用。",
@@ -85,8 +85,8 @@
       "en": "Install layout incomplete (sources / venv / weights / flash_attn). Fix per the message and re-run."
     },
     "flashhead.smoke.failed": {
-      "zh": "冒烟失败：真实权重加载或 2 块流式基准跑不通。看 <安装目录>\\smoke-flashhead.log 尾部的 Python 报错（常见是显存不足或缺依赖）后重跑。",
-      "en": "Smoke failed: weights did not load or the 2-chunk streaming benchmark failed. Read the tail of <installDir>\\smoke-flashhead.log and re-run."
+      "zh": "冒烟失败：真实权重加载或 4 块流式基准跑不通。看 <安装目录>\\smoke-flashhead.log 尾部的 Python 报错（常见是显存不足或缺依赖）后重跑。",
+      "en": "Smoke failed: weights did not load or the 4-chunk streaming benchmark failed. Read the tail of <installDir>\\smoke-flashhead.log and re-run."
     }
   }
 }

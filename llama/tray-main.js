@@ -1,6 +1,6 @@
 "use strict";
 /**
- * llama.cpp 托盘进程 — 独立 Electron 进程，不随 MTNode 退出。
+ * llama.cpp 托盘进程 — 独立 Electron 进程；MTNode 退出时由宿主收尾一并结束（见 main.js 的 before-quit）。
  * 启动：同一可执行文件加 --mtnode-llama-tray
  */
 if (!process.argv.includes("--mtnode-llama-tray")) {

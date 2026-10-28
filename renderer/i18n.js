@@ -5440,10 +5440,23 @@
     "蒙版保存失败：": "Failed to save the mask: ",
     "蒙版已保存并启用：运行时只重绘涂抹过的区域（未涂抹处尽量保持原图）":
       "Mask saved and enabled: only the painted region will be repainted (everything else stays as close to the original as possible).",
-    "蒙版局部重绘：已开启\n\n上传原图 + 蒙版 + 提示词，只重绘蒙版里涂抹过的区域：\n· 涂抹过（透明绿）的区域 = 交给模型重绘；\n· 没涂到的区域 = 尽量保持原图不变。\n· 出图画幅 = 首张参考图的像素尺寸（节点自己选的 size 不生效，否则服务端重排输入图会让蒙版错位）。\n\n单击 = 开 / 关 · 右键 = 打开蒙版编辑器":
-      "Masked inpainting: on\n\nImage + mask + prompt are sent together, and only the painted region is repainted:\n· painted (transparent green) area = handed to the model for repainting;\n· unpainted area = kept as close to the original as possible.\n· Output canvas = the first reference image's pixel size (the node's own size setting is ignored, otherwise the service would re-lay the input image and the mask would no longer line up).\n\nClick = on/off · right-click = open the mask editor",
-    "蒙版局部重绘：已关闭（单击开启）\n\n开启后可在首张参考图上涂抹要改的区域，运行时把「原图 + 蒙版 + 提示词」一起发给 gpt-image-2，只重绘涂抹过的区域；未涂抹处尽量保持不变。\n\n⚠ 需要有至少一张图像输入（首张图作为蒙版背景），且服务商为 OpenAI 兼容图像服务商。\n\n右键 = 打开蒙版编辑器":
-      "Masked inpainting: off (click to enable)\n\nOnce enabled you can paint the region to change on the first reference image; at run time image + mask + prompt are sent to gpt-image-2 and only the painted region is repainted.\n\n⚠ Requires at least one image input (the first becomes the mask background) and an OpenAI-compatible image provider.\n\nRight-click = open the mask editor",
+    "蒙版局部重绘：已开启\n\n上传原图 + 蒙版 + 提示词，只重绘蒙版里涂抹过的区域：\n· 涂抹过（透明绿）的区域 = 交给模型重绘；\n· 没涂到的区域 = 尽量保持原图不变。\n· 出图画幅 = 首张参考图的像素尺寸（节点自己选的 size 不生效，否则服务端重排输入图会让蒙版错位）。\n\n单击 / 右键 = 打开蒙版编辑器；右下角的「蒙版：启用 / 关闭」开关可随时停用或恢复":
+      "Masked inpainting: on\n\nImage + mask + prompt are sent together, and only the painted region is repainted:\n· painted (transparent green) area = handed to the model for repainting;\n· unpainted area = kept as close to the original as possible.\n· Output canvas = the first reference image's pixel size (the node's own size setting is ignored, otherwise the service would re-lay the input image and the mask would no longer line up).\n\nClick / right-click = open the mask editor; the “Mask: on / off” switch at the bottom right turns it off or back on at any time",
+    "蒙版局部重绘：已关闭\n\n单击 / 右键 = 打开蒙版编辑器：在首张参考图上涂抹要改的区域，点「确定并启用」把「原图 + 蒙版 + 提示词」一起发给 gpt-image-2，只重绘涂抹过的区域；未涂抹处尽量保持不变。已画过的蒙版会在编辑器里预载，可继续改；右下角开关可重新启用或停用。\n\n⚠ 需要有至少一张图像输入（首张图作为蒙版背景），且服务商为 OpenAI 兼容图像服务商。":
+      "Masked inpainting: off\n\nClick / right-click = open the mask editor: paint the region to change on the first reference image, then click “Apply and enable” to send image + mask + prompt to gpt-image-2 and repaint only the painted region. A previously painted mask is preloaded and can be edited further; the switch at the bottom right re-enables or disables it.\n\n⚠ Requires at least one image input (the first becomes the mask background) and an OpenAI-compatible image provider.",
+    "蒙版：启用": "Mask: on",
+    "蒙版：关闭": "Mask: off",
+    "还没有蒙版内容：先在图上涂抹并点「确定并启用」": "No mask yet: paint the region first, then click “Apply and enable”.",
+    "还没有蒙版内容：先在图上涂抹并点「确定并启用」，之后这里才能开关":
+      "No mask yet: paint the region and click “Apply and enable”; only then can this switch be used.",
+    "蒙版已启用：运行时只重绘涂抹过的区域":
+      "Mask enabled: only the painted region will be repainted.",
+    "蒙版已关闭：运行时不发蒙版；涂抹记录保留，可随时再开启":
+      "Mask off: no mask is sent at run time; the paint is kept and can be re-enabled at any time.",
+    "蒙版已启用：点一下关闭（运行时不发蒙版，涂抹记录保留，可再开启恢复）":
+      "Mask enabled: click to turn it off (no mask is sent at run time; the paint is kept and can be turned back on).",
+    "蒙版已关闭：点一下重新启用（运行时按已画的蒙版局部重绘）":
+      "Mask off: click to re-enable (the existing mask drives inpainting again).",
     "蒙版需要有背景图：请先把一张图像输入连进本节点（首张图会作为蒙版背景）":
       "A mask needs a background image: connect an image input to this node first (the first image becomes the mask background).",
     "蒙版背景读取失败：": "Failed to read the mask background: ",
@@ -9214,6 +9227,24 @@
     "更换后内容会重新扫描，失联的素材节点需手动重新绑定":
       "Changing it rescans the library; unavailable asset nodes need a manual rebind",
     "重新扫描素材库目录": "Rescan the asset-library folder",
+    /* 备份：整库增量同步副本 */
+    "备份…": "Back up…",
+    "把素材库增量同步一份副本到指定文件夹（内容没变的文件不重复复制）":
+      "Sync an incremental copy of the asset library to a chosen folder (unchanged files are not copied again)",
+    "选择素材库备份的目标文件夹": "Choose the destination folder for the asset-library backup",
+    "把素材库同步一份副本到：\n":
+      "Sync a copy of the asset library to:\n",
+    "\n\n· 内容没变的文件不会重复复制，只更新新增 / 改动过的\n· 目标文件夹里已有的其它文件不会被删除\n· 回收站与历史版本（.trash / .versions）不进备份\n\n开始备份？":
+      "\n\n· Unchanged files are not copied again — only new / modified ones are updated\n· Other files already in the destination folder are not deleted\n· The recycle folder and history versions (.trash / .versions) are not included\n\nStart the backup?",
+    "备份素材库": "Back up the asset library",
+    "开始备份": "Start backup",
+    "正在备份素材库…（文件多时可能需要一会儿）":
+      "Backing up the asset library… (a large library may take a while)",
+    "备份失败：": "Backup failed: ",
+    "已备份到：": "Backed up to: ",
+    "（新复制 {n} 个 / 跳过 {m} 个未变化）":
+      " ({n} file(s) copied / {m} unchanged skipped)",
+    "（{k} 个文件读取失败）": " ({k} file(s) unreadable)",
     /* 左栏 · 分类 */
     "分类": "Categories",
     "分类 ": "Categories: ",
@@ -10445,6 +10476,12 @@
     "请选择素材库根目录": "choose the asset library root folder",
     "素材库根目录必须是绝对路径": "the asset library root must be an absolute path",
     "该路径不是文件夹": "that path is not a folder",
+    /* 备份（assets-store.js · assets:backup） */
+    "素材库根目录不存在": "the asset library root folder does not exist",
+    "请选择备份的目标文件夹": "choose a destination folder for the backup",
+    "备份目标必须是绝对路径": "the backup destination must be an absolute path",
+    "备份目标不能是素材库自身或它里面的文件夹":
+      "the backup destination cannot be the library itself or a folder inside it",
     "请选择一个存在的文件夹": "choose a folder that exists",
     "非法路径": "illegal path",
     "路径不存在": "that path does not exist",
@@ -10757,6 +10794,7 @@
     "复制完整路径": "Copy full path",
     "已复制路径": "Path copied",
     "已复制 ": "Copied ",
+    "复制了 ": "Duplicated ",
     "已剪切 ": "Cut ",
     " 项": " item(s)",
     "重命名失败：": "Rename failed: ",

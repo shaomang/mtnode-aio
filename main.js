@@ -4,7 +4,7 @@ if (process.argv.includes("--mtnode-pet")) {
   require("./pet/standalone-main.js");
   return;
 }
-/* llama.cpp 托盘独立进程：不随 MTNode 退出 */
+/* llama.cpp 托盘独立进程：MTNode 退出时由宿主收尾一并结束（见本文件 before-quit） */
 if (process.argv.includes("--mtnode-llama-tray")) {
   require("./llama/tray-main.js");
   return;
@@ -67,7 +67,7 @@ const { registerAppPluginsIpc, shutdownAppPlugins, openWindowPlugin } = require(
    MCP / 技能，不碰源码、升级不失效；一键修复与诊断导出也在这里（见 plugins/user-plugins.js） */
 const { registerUserPluginsIpc, runStartupHealth: runUserPluginsHealth } = require("./plugins/user-plugins.js");
 const { registerMusic3Ipc, shutdownMusic3UiOnly } = require("./music3/main-music3.js");
-/* 本地音乐生成后端（YuE2）：与 Music3 同族，后端单例独立于 MTNode 生命周期 */
+/* 本地音乐生成后端（YuE2）：与 Music3 同族，退出时由 before-quit 收尾一并结束 */
 const { registerYueIpc, shutdownYueUiOnly } = require("./yue/main-yue.js");
 const { registerH3Ipc, shutdownH3UiOnly } = require("./h3/main-h3.js");
 const {
@@ -80,11 +80,13 @@ const { initPluginErrorBus, resetDebounce } = require("./plugin-error-repair.js"
 /* 插件**安装窗**编排：8 个后端宿主 + 窗口插件 + 桌宠的安装链统一在这只窗里逐步骤显示；
    各宿主把安装脚本的步骤行上报到这里，失败停在失败步并给「交给 mtnode 会话修复」（见 plugins/main-install.js） */
 const installHost = require("./plugins/main-install.js");
+/* 安装进程树的统一登记/强杀（powershell → pip / python / curl）：取消安装与**应用退出**都走它 */
+const installKillCore = require("./plugins/install-cancel.js");
 /* 插件**安装后自检**的内核（本轮需求）：各生成类宿主在 require 期登记自己的自检，
    结果落 <数据目录>/plugin-selfcheck/，主窗口插件界面据此在卡片封面左上角打勾（只给自检通过的） */
 const pluginSelfcheck = require("./plugins/plugin-selfcheck.js");
 const { registerLlamaIpc, shutdownLlamaUiOnly, isLlamaProvider, ensureModel: ensureLlamaModel } = require("./llama/main-llama.js");
-/* 本地 TTS 后端（Breeze TTS 2）：管理服务单例不随 MTNode 退出 */
+/* 本地 TTS 后端（Breeze TTS 2）：管理服务与引擎都由退出收尾一并结束 */
 const { registerBreezeIpc, shutdownBreezeUiOnly } = require("./breeze/main-breeze.js");
 const { registerRemotionIpc, shutdownRemotionUiOnly } = require("./remotion/main-remotion.js");
 /* Paseo 手机接管（应用插件 kind paseo，id paseo-remote）：检测 / 复用或安装 Paseo 后端、
@@ -103,7 +105,8 @@ const { registerSpeechIpc } = require("./speech-store.js");
    权重），切句用 ffmpeg，字幕排版与 Agent 工具 audio_subtitle 共用
    dsh/gateway/subtitle-cues.mjs。 */
 const { subtitleFromMedia } = require("./media-subtitle.js");
-/* 本地图像生成后端（SenseNova-U1.5-8B-MoT）：标准库 HTTP 服务，后端单例独立于 MTNode 生命周期 */
+/* 本地图像生成后端（SenseNova-U1.5-8B-MoT）：标准库 HTTP 服务；MTNode 完全退出时由下面的
+   before-quit 收尾一起结束（vramShutdownAll） */
 const {
   registerSensenovaIpc,
   shutdownSensenovaUiOnly,
@@ -114,17 +117,24 @@ const {
   cancelGenerate: sensenovaCancelGenerate,
 } = require("./sensenova/main-sensenova.js");
 /* InfiniteTalk 数字人（Wan2.1 I2V 14B）：独立 ComfyUI 后端 + 分块续写宿主，
-   见 infinitetalk/main-infinitetalk.js。与 H3 / SenseNova 同口径：后端不随 MTNode 退出。 */
+   见 infinitetalk/main-infinitetalk.js。与 H3 / SenseNova 同口径：退出收尾一并结束。 */
 const {
   registerInfinitetalkIpc,
   shutdownInfinitetalkUiOnly,
 } = require("./infinitetalk/main-infinitetalk.js");
 /* SoulX-FlashHead Lite（1.3B 实时流式数字人）：官方推理仓库 + 自带 stdlib HTTP 服务，
-   见 soulxflashhead/main-soulxflashhead.js。与 H3 / InfiniteTalk 同口径：后端不随 MTNode 退出。 */
+   见 soulxflashhead/main-soulxflashhead.js。与 H3 / InfiniteTalk 同口径：退出收尾一并结束。 */
 const {
   registerSoulxflashheadIpc,
   shutdownSoulxflashheadUiOnly,
 } = require("./soulxflashhead/main-soulxflashhead.js");
+/* FLUX 3 Image Klein（5.6B 蒸馏 · INT8 / BF16）：独立 ComfyUI 后端（8197），
+   见 flux3klein/main-flux3klein.js。与 H3 / SenseNova 同口径：控制台窗在 before-quit 先关，
+   后台 ComfyUI 进程由 vramShutdownAll 走宿主 hard() 一并结束（不把显存留给系统）。 */
+const {
+  registerFlux3KleinIpc,
+  shutdownFlux3KleinUiOnly,
+} = require("./flux3klein/main-flux3klein.js");
 const { patchProviders } = require("./config-providers.js");
 /* 文本 → PDF 落盘内核（隐藏窗口 + printToPDF，公式排版与画布预览同源，见 pdf-write.js） */
 const pdfWrite = require("./pdf-write.js");
@@ -9510,6 +9520,11 @@ app.whenReady().then(() => {
     getMainWin: () => mainWin,
     appRoot: __dirname,
     getAppVersion: () => app.getVersion(),
+    /* 当前登录账号（插件目录用它决定哪些插件可见：Blender 暂时只给作者账号） */
+    getAuthUser: () => {
+      const st = authStore.state();
+      return st && st.loggedIn ? st.user : null;
+    },
   });
   registerUserPluginsIpc({
     getDataDir: DATA,
@@ -9520,7 +9535,7 @@ app.whenReady().then(() => {
   /* 用户自建插件的启动体检（只读扫目录）：哪些插件没被加载、为什么，写进日志；
      有问题的插件同时上报插件报错总线（弹窗 + 会话修复）—— 见 plugins/user-plugins.js */
   try { runUserPluginsHealth(); } catch (e) { console.log("[user-plugins] health failed:", (e && e.message) || e); }
-  /* Music3 / H3 后端不随 MTNode 退出；此处只注册 IPC / 控制台窗 */
+  /* Music3 / H3 等本地后端：此处只注册 IPC / 控制台窗；后端进程由退出收尾统一结束（见 before-quit） */
   /* 报错总线先 init：宿主模块在各自 register 里 registerPluginHost，之后失败即上报主窗 */
   initPluginErrorBus({ getMainWin: () => mainWin });
   /* 安装窗编排先 init：各宿主在自己 register 里 registerInstallTarget + 把步骤行上报到这里；
@@ -9598,7 +9613,7 @@ app.whenReady().then(() => {
     getDsh: () => dsh(),
   });
   /* Paseo 手机接管（应用插件 kind paseo）：后端检测 / 自建安装 / 配对二维码 / provider 注册 /
-     远程连接总开关。daemon 是常驻单例（与 llama / music3 同口径），退出只关控制台窗。
+     远程连接总开关。宿主持有的那份 daemon 跟 MTNode 一起停（见 before-quit）；复用 Paseo Desktop 的不动。
      getMcp 注入给它三件事：读服务端状态、一键开启、以及「断开所有远程设备」时收掉会话 SSE。 */
   paseoRemote.registerPaseoRemoteIpc({
     getDataDir: DATA,
@@ -9618,7 +9633,8 @@ app.whenReady().then(() => {
   /* 本地语音转写（官方本地 SenseVoice）：识别在 dsh 运行时里跑，主进程这一层只有
      「转写缓存 + 音频读盘」（见 speech-store.js）；不再有需要起停的 ASR 后端进程 */
   registerSpeechIpc({ getDataDir: DATA });
-  /* 本地图像生成后端（SenseNova-U1.5-8B-MoT）：安装 / 启停 / 出图；后端单例不随 MTNode 退出（见 sensenova/main-sensenova.js） */
+  /* 本地图像生成后端（SenseNova-U1.5-8B-MoT）：安装 / 启停 / 出图；退出时后端由 before-quit 一并结束
+     （见 sensenova/main-sensenova.js 的 vramHooks） */
   registerSensenovaIpc({
     getDataDir: DATA,
     getMainWin: () => mainWin,
@@ -9646,6 +9662,14 @@ app.whenReady().then(() => {
     appRoot: __dirname,
     assetDirFor: (wfId) => assetDir(wfId),
   });
+  /* FLUX 3 Image Klein（5.6B 蒸馏 · INT8 / BF16）：独立 ComfyUI（默认 8197）/ 安装 / 出图。
+     产物落画布资产目录（与 proc_image / SenseNova 同一去处），抽卡与蒙版都在宿主里跑。 */
+  registerFlux3KleinIpc({
+    getDataDir: DATA,
+    getMainWin: () => mainWin,
+    appRoot: __dirname,
+    assetDirFor: (wfId) => assetDir(wfId),
+  });
   /* ── 本地模型显存释放（local-model-vram.js）─────────────────────────────
      把各后端宿主登记的释放回调收进**一张表**：画布本地模型节点 / 应用出图入口走
      「运行前先释放别人的、收尾再释放自己的」，顶栏那枚按钮也走同一张表。
@@ -9665,6 +9689,7 @@ app.whenReady().then(() => {
     Object.assign({ id: "breeze", label: "Breeze TTS 2（语音）", host: "breeze", subdir: "breeze-tts" }, vramHooksOf("breeze")),
     Object.assign({ id: "infinitetalk", label: "InfiniteTalk 数字人（ComfyUI）", host: "infinitetalk", subdir: "infinitetalk-local" }, vramHooksOf("infinitetalk")),
     Object.assign({ id: "soulxflashhead", label: "SoulX-FlashHead Lite（实时数字人）", host: "soulxflashhead", subdir: "soulxflashhead-local" }, vramHooksOf("soulxflashhead")),
+    Object.assign({ id: "flux3klein", label: "FLUX 3 Image Klein（本机出图）", host: "flux3klein", subdir: "flux3-klein-local" }, vramHooksOf("flux3klein")),
   ]) {
     if (typeof def.isRunning !== "function") continue; /* 宿主没接这一钩子 = 不参与释放，不影响其余后端 */
     vramRelease.vramRegister(def);
@@ -9782,12 +9807,38 @@ app.on("window-all-closed", () => {
 });
 
   /* 退出时关闭 dsh 网关与全部运行时子进程，避免遗留孤儿进程。
-   Music3 / H3 后端故意不杀（单例、独立于 MTNode 生命周期）。 */
-app.on("before-quit", () => {
-  /* 函数节点运行线程：先终止 worker 再扫进程树 —— 节点不在运行态就不该有线程/进程 */
-  try { if (fnRuntime) fnRuntime.shutdown().catch(() => {}); } catch {}
-  /* 宿主外部进程（函数节点运行期拉起）：退出即全部回收，不留残留进程/控制台 */
-  try { procHost.killAll().catch(() => {}); } catch {}
+   插件后端（python / ComfyUI / Gradio / 管理服务……）也跟着一起收：MTNode 完全关闭之后，
+   它们没有理由继续占显存与端口（插件卡死 / 生成不响应时尤其明显）。
+     ① 下面这段同步收尾照旧（窗口、会话、dsh、MCP……）；
+     ② 再给「停插件后台进程」一个有上限的异步窗口（每个后端 / 整体都有上限），做完才真的退出。
+   两阶段靠 quitCleanupState 拦住重入：第一趟 preventDefault，收完自己再 app.quit()。 */
+let quitCleanupState = "idle"; /* idle → running → done */
+app.on("before-quit", (ev) => {
+  if (quitCleanupState === "done") return;
+  if (quitCleanupState === "running") {
+    ev.preventDefault();
+    return;
+  }
+  quitCleanupState = "running";
+  ev.preventDefault();
+  /* 函数节点运行线程：先终止 worker 再扫进程树 —— 节点不在运行态就不该有线程/进程。
+     两步都要真的收干净（不是只点火），所以把 promise 拿在手上，和后面的插件收尾一起等。 */
+  const fnShutdown = (() => {
+    try {
+      return fnRuntime ? Promise.resolve(fnRuntime.shutdown()) : Promise.resolve();
+    } catch {
+      return Promise.resolve();
+    }
+  })().catch(() => ({}));
+  const procKilled = fnShutdown
+    .then(() => {
+      try {
+        return procHost.killAll();
+      } catch {
+        return {};
+      }
+    })
+    .catch(() => ({}));
   try { shutdownPet(); } catch {}
   try { shutdownAppPlugins(); } catch {}
   try { shutdownApps(); } catch {}
@@ -9795,26 +9846,19 @@ app.on("before-quit", () => {
   try { shutdownYueUiOnly(); } catch {}
   try { shutdownH3UiOnly(); } catch {}
   try { shutdownLlamaUiOnly(); } catch {}
-  /* 本地 TTS 后端（Breeze TTS 2）：管理服务与推理引擎是常驻单例（权重加载要几十秒到几分钟），
-     这里只关它的控制台窗；要停服务/释放显存走插件「停止」或托盘「停止服务并退出」。 */
+  /* 各插件的控制台窗这一趟先关掉（后端进程在下面的异步阶段统一停）；Breeze 的管理服务 / 引擎同口径。 */
   try { shutdownBreezeUiOnly(); } catch {}
   try { shutdownRemotionUiOnly(); } catch {}
-  /* Paseo 手机接管：**宿主持有的那份自建 daemon 要一起停**（本轮口径，它是 MTNode 的子进程，
-     而且它不再有窗口可关）；复用模式（Paseo Desktop）与外部实例一律不动。收尾是「优雅 5 秒 →
-     超时强杀」，且**不拦 MTNode 退出**：这里不 await，退出流程照常往下走，事件循环等管道自然收尾。 */
-  try { paseoRemote.shutdownPaseoRemoteUiOnly(); } catch {}
   /* Blender 本地插件：它不托管常驻后端，但**插件自己拉起的 Blender**（控制台「启动」/ 冒烟中途）
      必须跟着收掉，否则会留一只没人管的窗口；用户自己开的 Blender 不在它的 pid 记录里，动不到。 */
   try { blenderPlugin.shutdownBlenderUiOnly(); } catch {}
-  /* 本地图像生成后端（SenseNova）故意不杀：32.66GB 权重加载要几分钟，是独立于 MTNode 的单例；
-     这里只关它的控制台窗。想立刻把显存还给系统 → 控制台「停止后端」/「立即释放显存」，或等空闲自停。 */
+  /* 各本地后端（SenseNova / InfiniteTalk / SoulX / H3 / Music3 / YuE2 / llama / Breeze）的控制台窗
+     这一趟先关；它们**后台跑的 python 进程**由下面的异步阶段统一结束，不再留在机器上占显存。 */
   try { shutdownSensenovaUiOnly(); } catch {}
-  /* InfiniteTalk 数字人同口径：独立 ComfyUI 是有意常驻的单例（权重加载慢），退出只关控制台窗；
-     要立刻还显存 → 控制台「停止后端」或顶栏「释放显存」。 */
   try { shutdownInfinitetalkUiOnly(); } catch {}
-  /* SoulX-FlashHead Lite 同口径：后端是有意常驻的单例（首次加载权重约 1 分钟），退出只关控制台窗；
-     要立刻还显存 → 控制台「停止后端」或顶栏「释放显存」。 */
   try { shutdownSoulxflashheadUiOnly(); } catch {}
+  /* FLUX 3 Image Klein：控制台窗先关；后台 ComfyUI 进程由下面的 vramShutdownAll 走宿主 hard() 结束。 */
+  try { shutdownFlux3KleinUiOnly(); } catch {}
   /* 会话追加段（delta）：退出前整份压回基线（<id>.jsonl → <id>.json 并删追加段）。
      幂等：没有追加段的会话一个字节都不动；压缩本身是「先原子写基线、再删追加段」，
      崩在中间也不会重复贴（基线的 _deltaVer 兜底）。 */
@@ -9826,6 +9870,38 @@ app.on("before-quit", () => {
   if (mcpHost) {
     try { mcpHost.dispose(); } catch {}
   }
+  /* ② 插件后台进程：本地后端进程树（vramShutdownAll 逐个走宿主的 hard()）+ 还在跑的安装进程树
+     + 宿主持有的 Paseo daemon。都有上限，任何一项失败 / 超时都不拦退出，做完自己再 app.quit()。 */
+  const quitCleanup = (async () => {
+    const jobs = [];
+    /* 函数节点拉起的外部进程 / 运行线程（python 等）：上面已经点火，这里等它真的收干净 */
+    jobs.push(fnShutdown, procKilled);
+    jobs.push(
+      vramRelease
+        .vramShutdownAll({ reason: "app_quit", totalMs: 15000 })
+        .catch(() => []),
+    );
+    /* 安装到一半的插件（powershell → pip / python / curl）：跟着 MTNode 一起结束，不留孤儿继续占盘占网 */
+    try {
+      jobs.push(
+        installKillCore.killAll({ graceMs: 1500 }).catch(() => []),
+      );
+    } catch {}
+    /* Paseo 手机接管：**宿主持有的那份自建 daemon 要一起停**（它是 MTNode 的子进程，而且它没有窗口可关）；
+       复用模式（Paseo Desktop）与外部实例一律不动。这里给 6 秒上限，超时也照常退出。 */
+    try {
+      jobs.push(Promise.resolve(paseoRemote.shutdownPaseoRemoteUiOnly({ timeoutMs: 6000 })).catch(() => ({ ok: false })));
+    } catch {}
+    await Promise.all(jobs);
+  })().catch(() => {});
+  const hardStop = new Promise((resolve) => {
+    const t = setTimeout(resolve, 16000);
+    if (t && t.unref) t.unref();
+  });
+  Promise.race([quitCleanup, hardStop]).finally(() => {
+    quitCleanupState = "done";
+    app.quit();
+  });
 });
 /* will-quit 兜底：before-quit 阶段若有运行仍在起进程，这里再收一次 */
 app.on("will-quit", () => {

@@ -127,6 +127,26 @@ async function cancelInstall(id, opts) {
   return Object.assign({ id: sid, noop: false }, r);
 }
 
+/**
+ * **应用完全退出**：把所有仍在跑的安装进程树一并强杀。
+ * 为什么要有：安装（pip / torch / 权重下载）动辄十几分钟，用户这时候关掉 MTNode，
+ * 旧实现里那些 powershell / python 会留在后台继续占盘、占网、占内存（也可能正卡住）。
+ * 退出场景不需要「已取消」的快照语义，所以这里不置宿主标志，只按进程树收尸。
+ * 永不抛：返回 [{ id, ok, ... }]，失败的照样让退出继续。
+ */
+async function killAll(opts) {
+  const ids = [...active.keys()];
+  const out = [];
+  for (const id of ids) {
+    try {
+      out.push(await cancelInstall(id, opts || {}));
+    } catch (e) {
+      out.push({ id, ok: false, error: String((e && e.message) || e) });
+    }
+  }
+  return out;
+}
+
 /** 测试 / 冒烟用：把内存状态读出来（不落盘，没有别的方式窥视）。 */
 function debugState() {
   return {
@@ -141,6 +161,7 @@ module.exports = {
   activePidOf,
   killTree,
   cancelInstall,
+  killAll,
   debugState,
   /* 冒烟里用同一套同步口径核对 taskkill 的真实行为（不参与运行期逻辑） */
   _spawnSyncKill: (pid) =>

@@ -46,6 +46,7 @@ const ASSET_LIB = {
   orderUndo: null, // 重排撤销栈（只有一步）：{ order:重排前的顺序快照, moves:[…磁盘移动…] }
   onPick: null, // pick 模式回调：选中一个素材
   busy: false, // 一次只跑一个写盘动作，避免连点错位
+  backupNote: "", // 备份结果一行字（页脚常驻，toast 只留给失败）
   scanned: false, // 本次会话是否成功扫过（失联判定的前提，没扫过不下结论）
   noRoot: false, // 扫过但根目录还没指定
 };
@@ -221,6 +222,66 @@ async function assetChangeRoot() {
     return true;
   } finally {
     ASSET_LIB.busy = false;
+  }
+}
+
+/* 备份：把整个库增量同步一份副本到用户指定的文件夹。
+   口径（主进程 assets-store.js · assets:backup）：内容没变的文件只跳过不复制，
+   目标里多出来的文件一律不删，.trash / .versions 不进备份。上次目标当选择框默认落点。 */
+async function assetBackupLibrary() {
+  const api = window.api || {};
+  if (typeof api.assetsBackup !== "function" || ASSET_LIB.busy) return false;
+  let info = null;
+  try {
+    info = await api.assetsBackupInfo();
+  } catch (_) {
+    info = null;
+  }
+  const picked = await api.fileOpenDialog({
+    title: I18n.t("选择素材库备份的目标文件夹"),
+    directory: true,
+    defaultPath: (info && info.path) || ASSET_LIB.root || "",
+  });
+  const dest = (picked && picked.path) || "";
+  if (!dest) return false;
+  const sure = await confirmDialog(
+    I18n.t("把素材库同步一份副本到：\n") +
+      dest +
+      I18n.t(
+        "\n\n· 内容没变的文件不会重复复制，只更新新增 / 改动过的\n· 目标文件夹里已有的其它文件不会被删除\n· 回收站与历史版本（.trash / .versions）不进备份\n\n开始备份？",
+      ),
+    { title: I18n.t("备份素材库"), okText: I18n.t("开始备份") },
+  );
+  if (!sure) return false;
+  ASSET_LIB.busy = true;
+  ASSET_LIB.backupNote = I18n.t("正在备份素材库…（文件多时可能需要一会儿）");
+  const host = document.getElementById("assetsDlg");
+  if (host) paintAssetFoot(host.querySelector("#assetLibFoot"));
+  try {
+    const r = await api.assetsBackup(dest);
+    if (!r || !r.ok) {
+      ASSET_LIB.backupNote = "";
+      toast(I18n.t("备份失败：") + ((r && r.error) || ""), "err");
+      return false;
+    }
+    const failed = Array.isArray(r.failed) ? r.failed.length : 0;
+    ASSET_LIB.backupNote =
+      I18n.t("已备份到：") +
+      r.path +
+      I18n.t("（新复制 {n} 个 / 跳过 {m} 个未变化）", {
+        n: Number(r.copied) || 0,
+        m: Number(r.skipped) || 0,
+      }) +
+      (failed ? I18n.t("（{k} 个文件读取失败）", { k: failed }) : "");
+    return true;
+  } catch (e) {
+    ASSET_LIB.backupNote = "";
+    toast(I18n.t("备份失败：") + String((e && e.message) || e), "err");
+    return false;
+  } finally {
+    ASSET_LIB.busy = false;
+    const h = document.getElementById("assetsDlg");
+    if (h) paintAssetFoot(h.querySelector("#assetLibFoot"));
   }
 }
 
@@ -705,6 +766,7 @@ function closeAssetLib() {
   /* 重排撤销栈只在库框这一次会话里有效：关框即清（不给「关掉再开还能撤上一轮」的错觉） */
   ASSET_LIB.orderUndo = null;
   ASSET_LIB.treeDrag = null;
+  ASSET_LIB.backupNote = "";
   ASSET_LIB.msel = [];
   ASSET_LIB.mselAnchor = "";
 }
@@ -1542,7 +1604,13 @@ function paintAssetToolbar(host) {
       I18n.t("选择一个本机文件夹 → 按文件类型自动变成当前分类下的新素材（内容复制入库）"),
     );
     ub.onclick = () => assetUploadAsAsset();
-    host.append(nb, ub);
+    const bk = assetBtn(
+      I18n.t("备份…"),
+      null,
+      I18n.t("把素材库增量同步一份副本到指定文件夹（内容没变的文件不重复复制）"),
+    );
+    bk.onclick = () => assetBackupLibrary();
+    host.append(nb, ub, bk);
   }
   host.appendChild(refresh);
 }
@@ -1764,6 +1832,11 @@ function paintAssetFoot(host) {
     ),
   );
   host.appendChild(assetEl("span", "asset-lib-spacer"));
+  if (ASSET_LIB.backupNote) {
+    const note = assetEl("span", "asset-lib-fact asset-lib-backupnote", ASSET_LIB.backupNote);
+    note.title = ASSET_LIB.backupNote;
+    host.appendChild(note);
+  }
   const cancel = assetBtn(I18n.t("关闭"), null, null);
   cancel.onclick = () => closeAssetLib();
   host.appendChild(cancel);

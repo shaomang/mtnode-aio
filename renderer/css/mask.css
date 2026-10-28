@@ -182,6 +182,57 @@
   background: rgba(56, 214, 255, .14);
 }
 
+/* 底部右下角「蒙版：启用 / 关闭」开关（pill）：开启 = 绿；无蒙版内容时置灰不可点 */
+.mask-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 10px 2px 6px;
+  color: var(--muted);
+  border-color: var(--bd);
+  background: rgba(154, 160, 168, .08);
+}
+
+.mask-toggle-knob {
+  width: 26px;
+  height: 14px;
+  border-radius: 999px;
+  background: rgba(154, 160, 168, .3);
+  position: relative;
+  transition: background .16s ease;
+  flex: none;
+}
+
+.mask-toggle-knob::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform .16s ease;
+}
+
+.mask-toggle.on {
+  color: var(--green);
+  border-color: var(--green);
+  background: rgba(95, 214, 138, .14);
+}
+
+.mask-toggle.on .mask-toggle-knob {
+  background: var(--green);
+}
+
+.mask-toggle.on .mask-toggle-knob::after {
+  transform: translateX(12px);
+}
+
+.mask-toggle.empty {
+  opacity: .5;
+}
+
 /* 节点头部「蒙版局部重绘」小按钮：关闭 = 灰；开启 = 绿（与透明绿蒙版同色） */
 .n-mask-btn {
   width: 26px;

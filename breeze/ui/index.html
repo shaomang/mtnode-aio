@@ -79,8 +79,8 @@ audio{width:100%;height:32px}
     <div class="row">
       <button class="mini" id="btnEngineStart">加载模型</button>
       <button class="mini" id="btnEngineStop">卸载模型</button>
-      <label class="meta" title="官方推荐的最优配置：CUDA Graph + 预热，RTF 与首包延迟都明显低于 eager；冷启动更久、约 14.4GB 显存。默认开；显存不足或卡被其它任务占着时，后端自动回退 eager。">
-        <input type="checkbox" id="fastAll" /> fast 路径（默认开）
+      <label class="meta" title="官方推荐的最优配置：CUDA Graph + 预热，RTF 与首包延迟都明显低于 eager；冷启动更久、约 14.4GB 显存。默认关（显存容易被占满，需要时手动打开）；显存不足或卡被其它任务占着时，后端自动回退 eager。">
+        <input type="checkbox" id="fastAll" /> fast 路径（默认关）
       </label>
     </div>
     <div class="kv"><b>管理服务</b><span id="apiBase">—</span></div>

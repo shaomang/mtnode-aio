@@ -297,6 +297,31 @@ def _job_note(job, line):
         job["log"] = (job["log"] + [line])[-40:]
 
 
+def _steady_stats(chunk_ms, chunk_frames, fps_target):
+    """Steady-state streaming speed from the per-chunk records.
+
+    The first chunk also pays for the compiled-graph warm-up (a 5-7s denoise step), and the
+    second one often still eats cuDNN autotune on the VAE decode, so neither is speaker
+    throughput. Everything after chunk 1 counts, and the MEDIAN is used rather than the mean:
+    one straggler must not turn "60 FPS steady" into "24 FPS".
+    """
+    ms = [float(x) for x in (chunk_ms or [])]
+    fr = [float(x) for x in (chunk_frames or [])]
+    if len(ms) > 1:
+        ms, fr = ms[1:], fr[1:]
+    pairs = [(m, f) for m, f in zip(ms, fr) if m > 0 and f > 0]
+    if not pairs:
+        return {"fps": 0.0, "rtf": 0.0, "ms_per_chunk": 0.0}
+    fps_list = sorted((f / (m / 1000.0)) for m, f in pairs)
+    mid = len(fps_list) // 2
+    fps = fps_list[mid] if len(fps_list) % 2 else (fps_list[mid - 1] + fps_list[mid]) / 2.0
+    med_ms = sorted(m for m, _ in pairs)[len(pairs) // 2]
+    med_frames = sorted(f for _, f in pairs)[len(pairs) // 2]
+    audio_sec = (med_frames / fps_target) if fps_target else 0.0
+    rtf = ((med_ms / 1000.0) / audio_sec) if audio_sec > 0 else 0.0
+    return {"fps": round(fps, 2), "rtf": round(rtf, 3), "ms_per_chunk": round(med_ms, 1)}
+
+
 class Session:
     """One image + one audio track driven through the official streaming loop."""
 
@@ -375,13 +400,7 @@ class Session:
             if job is not None:
                 chunk_ms = list(job.get("chunk_ms") or []) + [round(dt * 1000.0, 1)]
                 chunk_frames = list(job.get("chunk_frames") or []) + [int(frames.shape[0])]
-                # chunk 1 also pays for the compiled-graph warm-up; the per-chunk numbers the
-                # user cares about ("is this real time?") are the steady ones.
-                s_ms = chunk_ms[1:] if len(chunk_ms) > 1 else chunk_ms
-                s_fr = chunk_frames[1:] if len(chunk_frames) > 1 else chunk_frames
-                s_sec = sum(s_ms) / 1000.0
-                s_fps = (sum(s_fr) / s_sec) if s_sec > 0 else 0.0
-                s_audio = (sum(s_fr) / float(self.fps)) if self.fps else 0.0
+                st = _steady_stats(chunk_ms, chunk_frames, self.fps)
                 _job_update(
                     job,
                     chunks_done=idx + 1,
@@ -391,9 +410,9 @@ class Session:
                     fps=round(frames_done / elapsed, 2),
                     rtf=round(elapsed / (frames_done / float(self.fps)), 3),
                     ms_per_chunk=round(dt * 1000.0, 1),
-                    fps_steady=round(s_fps, 2),
-                    rtf_steady=round((s_sec / s_audio) if s_audio > 0 else 0.0, 3),
-                    ms_per_chunk_steady=round(sum(s_ms) / len(s_ms), 1) if s_ms else 0.0,
+                    fps_steady=st["fps"],
+                    rtf_steady=st["rtf"],
+                    ms_per_chunk_steady=st["ms_per_chunk"],
                     chunk_ms=chunk_ms,
                     chunk_frames=chunk_frames,
                 )
@@ -568,24 +587,16 @@ def run_benchmark(req):
     # The FIRST chunk also pays for the graph warm-up (torch.compile traces on the real shapes),
     # so it is not speaker throughput: report the steady chunks as THE number, and keep the
     # first-chunk cost next to it so nobody mistakes a 10s warm-up for a 10s per-chunk runtime.
-    steady_ms = ms[1:] if len(ms) > 1 else ms
-    steady_fr = fr[1:] if len(fr) > 1 else fr
-    fps_target = float(sess.fps)
-    steady_sec = sum(steady_ms) / 1000.0
-    steady_frames = sum(steady_fr)
-    fps = (steady_frames / steady_sec) if steady_sec > 0 else 0.0
-    audio_sec = steady_frames / fps_target if fps_target else 0.0
-    rtf = (steady_sec / audio_sec) if audio_sec > 0 else 0.0
-    per_chunk_ms = (sum(steady_ms) / len(steady_ms)) if steady_ms else 0.0
+    st = _steady_stats(ms, fr, float(sess.fps))
     result = {
         "ok": True,
         "chunks": job["chunks_done"],
         "frames": job["frames"],
-        "fps": round(fps, 2),
-        "rtf": round(rtf, 3),
-        "ms_per_chunk": round(per_chunk_ms, 1),
+        "fps": st["fps"],
+        "rtf": st["rtf"],
+        "ms_per_chunk": st["ms_per_chunk"],
         "first_ms": ms[0] if ms else 0.0,
-        "realtime": bool(rtf and rtf < 1.0),
+        "realtime": bool(st["rtf"] and st["rtf"] < 1.0),
         "load_sec": round(load_sec, 1),
         "width": sess.width,
         "height": sess.height,
@@ -721,7 +732,7 @@ def check_mode():
     try:
         # 3 chunks: the first one warms the compiled graph up, the remaining two are the
         # steady-state measurement (what "real time" actually means here).
-        res = run_benchmark({"image_path": image, "audio_path": audio, "chunks": 3})
+        res = run_benchmark({"image_path": image, "audio_path": audio, "chunks": 4})
     except Exception as exc:
         print("CHECK-FAIL=" + str(exc)[:400])
         log(traceback.format_exc()[-1500:])

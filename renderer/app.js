@@ -255,6 +255,8 @@ function appPluginUsable(id) {
    这里只回答一件事：**显存门槛**有没有把它挡掉。 */
 const NODE_KIND_PLUGIN = {
   music_gen: "minimax-music3",
+  /* FLUX 3 Image Klein：独立 ComfyUI（8197）上的本机出图，见 flux3klein/main-flux3klein.js */
+  flux3klein_gen: "flux3-klein-local",
   sensenova_gen: "sensenova-local",
   yue_gen: "yue2-local",
   breeze_gen: "breeze-tts-local",
@@ -387,6 +389,7 @@ const KIND_CLS = {
   /* SenseNova 图像生成（本机 SenseNova-U1.5-8B-MoT 后端）：复用图像生成族配色，
      它的端子语义与 proc_image 一致（出图 = image 端子），下游 save_image / 预览直接复用 */
   sensenova_gen: "proc-img",
+  flux3klein_gen: "proc-img",
   /* Breeze 语音生成：文本 → 语音的**唯一**本机后端，复用 .wf-node.tts 样式族（紫调） */
   breeze_gen: "tts",
   video_gen: "video",
@@ -607,6 +610,7 @@ const KIND_ICON_SVG = {
 KIND_ICON_SVG.infinitetalk_gen = KIND_ICON_SVG.video_gen;
 /* SoulX-FlashHead Lite：同一枚视频图标 */
 KIND_ICON_SVG.soulxflashhead_gen = KIND_ICON_SVG.video_gen;
+KIND_ICON_SVG.flux3klein_gen = KIND_ICON_SVG.proc_image;
 
 function nodeKindIconKey(node) {
   if (!node) return "proc_text";
@@ -1473,6 +1477,26 @@ const NODE_DEFAULTS = {
      所以下游 save_image / 图像预览 / @ 引用一条都不用新写。
      分辨率不是自由值：官方只有 11 个训练桶（ratioBucket 记桶名，width/height 由桶决定），
      桶表真源在后端 /health（resolutions），渲染层只留一份兜底常量。 */
+  flux3klein_gen: {
+    w: 360,
+    h: 300,
+    title: "FLUX 3 Image Klein",
+    prompt: "",
+    negative: "",
+    ratioBucket: "1:1",
+    width: 1024,
+    height: 1024,
+    steps: 16,
+    cfg: 1,
+    seed: 42,
+    rerollSeed: true,
+    rolls: 1,
+    precision: "int8",
+    maskOn: false,
+    maskPath: "",
+    bgRmOn: false,
+    bgRmPairs: [],
+  },
   sensenova_gen: {
     w: 360,
     h: 300,
@@ -2166,6 +2190,7 @@ function nodeEmitsControlOnPort(node, portIndex, wf, seen) {
     node.kind === "music_gen" ||
     node.kind === "yue_gen" ||
     node.kind === "sensenova_gen" ||
+    node.kind === "flux3klein_gen" ||
     node.kind === "video_gen" ||
     node.kind === "infinitetalk_gen" ||
     isVideoPostKind(node) ||
@@ -4534,6 +4559,7 @@ function inferMediaFromSource(from, fromIndex, consumer) {
   if (from.kind === "input_image" || from.kind === "proc_image") return "image";
   /* SenseNova 本地图像生成：产物就是一张 PNG，与 proc_image 同口径 */
   if (from.kind === "sensenova_gen") return "image";
+  if (from.kind === "flux3klein_gen") return "image";
   /* 音视频输入节点：输出端子固定两个 —— 端口 0 = 音频输出 / 视频输出（输出的就是这个本机
      文件，值见 mediaInputValueOf），按文件类型判定；端口 1 = 转写输出（见 renderer/app-asr.js
      的 asrTranscriptOutValue）→ 按文本判定。 */
@@ -4623,6 +4649,7 @@ function saveMediaKind(node) {
     const g = nodeById(node.boundFromId);
     if (g && (g.kind === "music_gen" || g.kind === "yue_gen")) return "audio";
     if (g && g.kind === "sensenova_gen") return "image";
+    if (g && g.kind === "flux3klein_gen") return "image";
     if (
       g &&
       (g.kind === "video_gen" ||
@@ -4780,6 +4807,7 @@ function mediaGenExt(node) {
   }
   /* SenseNova 图像生成：产物固定 PNG（后端就是存 PNG，不是可选格式） */
   if (node && node.kind === "sensenova_gen") return ".png";
+  if (node && node.kind === "flux3klein_gen") return ".png";
   /* InfiniteTalk 数字人：产物固定 mp4（后端把音轨直接封进视频） */
   if (node && node.kind === "infinitetalk_gen") return ".mp4";
   /* SoulX-FlashHead Lite：产物同为 mp4（后端把原音轨封进视频） */
@@ -4836,6 +4864,7 @@ function requireMediaGenExport(node, quiet) {
     if (node.kind === "music_gen") node.musicStatus = msg;
     if (node.kind === "yue_gen") node.yueStatus = msg;
     if (node.kind === "sensenova_gen") node.sensenovaStatus = msg;
+  if (node.kind === "flux3klein_gen") node.flux3kleinStatus = msg;
     if (node.kind === "breeze_gen") node.breezeStatus = msg;
     if (node.kind === "video_gen") node.videoStatus = msg;
     if (node.kind === "infinitetalk_gen") node.infinitetalkStatus = msg;
@@ -5516,8 +5545,12 @@ function valueFromWire(w, consumer, batchIdx, seen) {
   if (!w) return null;
   const src = nodeById(w.from);
   if (!src) return null;
+  /* 工具 / 函数节点：输出「参数即端子」，线上 fromIndex 才是要取的那颗端子
+     （与 app.js wireSourceMediaType 的 perPort 同口径）。缺这一支时不管线接在
+     第几颗输出端子上，一律读 0 号 —— 函数节点声明成「视频」的第 2 颗输出被
+     Remotion 的视频端子接住，运行时却取回 0 号（空 / 文本），成片里没有视频。 */
   const idx =
-    isSuperLikeNode(src) || isItemPortSource(src)
+    isSuperLikeNode(src) || isItemPortSource(src) || isFnToolNode(src)
       ? Number(w.fromIndex || 0)
       : batchIdx == null
         ? 0
@@ -7521,6 +7554,8 @@ function inPortIsControl(node, idx) {
   if (node.kind === "infinitetalk_gen") return i === 4;
   /* SoulX-FlashHead Lite：0=人物图 · 1=语音 · 2=控制输入（固定 3 颗端子） */
   if (node.kind === "soulxflashhead_gen") return i === 2;
+  /* FLUX 3 Image Klein：0=提示词 · 1=参考图（可多接）· 2=控制输入（固定 3 颗端子） */
+  if (node.kind === "flux3klein_gen") return i === 2;
   if (node.kind === "video_gen") return i === videoGenControlPort(node);
   if (isVideoPostKind(node)) return i === 0;
   if (node.kind === "remotion") return remotionPortIsControl(node, i);
@@ -7561,6 +7596,8 @@ const IN_PORT_DATA_KINDS = {
   infinitetalk_gen: ["image", "audio", "video", "text", "control"],
   /* SoulX-FlashHead Lite：0=人物图 · 1=语音 · 2=控制输入 */
   soulxflashhead_gen: ["image", "audio", "control"],
+  /* FLUX 3 Image Klein：0=提示词 · 1=参考图（图像路径）· 2=控制输入 */
+  flux3klein_gen: ["text", "image", "control"],
   /* Remotion：无差别端子 —— 端口类型由连线决定（数据 / 控制都可能落任意口），
      不在这张固定表里声明（见 inPortKindOf 的 remotion 分支与 remotionPortIsControl） */
 };
@@ -7599,6 +7636,21 @@ function inPortKindOf(node, idx) {
   return null;
 }
 
+/* 一颗输入端子收多条数据线的固定端子（数组式端子）：
+   flux3klein_gen 端口 1 = 参考图 —— 多张参考图共用同一颗端子（最多 10 张），
+   渲染层按数组取（见 app-flux3klein.js 的 flux3kleinRefPaths，宿主收 refs[]）。 */
+function inPortMultiWireIndexes(node) {
+  if (!node) return [];
+  if (node.kind === "flux3klein_gen") return [1];
+  return [];
+}
+/** 这颗端子是否允许多条同类数据线共存（占用判定 / 连线校验 / 落点三处同一份口径） */
+function inPortAcceptsManyWires(node, idx) {
+  if (!node) return false;
+  const i = Number(idx);
+  return isFinite(i) && inPortMultiWireIndexes(node).indexOf(i) >= 0;
+}
+
 function hasFixedInPorts(n) {
   if (!n) return false;
   /* 用户插件节点：端子由清单声明，断线绝不重排端子号 */
@@ -7612,6 +7664,7 @@ function hasFixedInPorts(n) {
       n.kind === "breeze_gen" ||
       n.kind === "infinitetalk_gen" ||
       n.kind === "soulxflashhead_gen" ||
+      n.kind === "flux3klein_gen" ||
       n.kind === "video_gen" ||
       isVideoPostKind(n) ||
       /* Remotion 未固化时是无差别动态端子（与 proc_text 同族）：断线可以重排端子号，
@@ -7704,6 +7757,7 @@ function wireFromIsControl(w, wf) {
     (from.kind === "music_gen" ||
       from.kind === "yue_gen" ||
       from.kind === "sensenova_gen" ||
+      from.kind === "flux3klein_gen" ||
       from.kind === "video_gen" ||
       isVideoPostKind(from) ||
       from.kind === "remotion") &&
@@ -7797,6 +7851,7 @@ function isImageSource(n) {
     n.kind === "proc_image" ||
     /* SenseNova 本地图像生成：产物就是一张 PNG，端子语义与 proc_image 同一条口径 */
     n.kind === "sensenova_gen" ||
+    n.kind === "flux3klein_gen" ||
     n.kind === "merge" ||
     n.kind === "split"
   );
@@ -8398,6 +8453,7 @@ function canUseGlobalRefs(node) {
       node.kind === "proc_image" ||
       /* SenseNova 图像节点同样有可编辑提示词，@全局广播 与 proc_image 同一口径 */
       node.kind === "sensenova_gen" ||
+      node.kind === "flux3klein_gen" ||
       node.kind === "agent_task" ||
       node.kind === "judge")
   );
@@ -8870,6 +8926,8 @@ function inputCount(node) {
   if (node.kind === "infinitetalk_gen") return 5;
   /* SoulX-FlashHead Lite：0=人物图 · 1=语音 · 2=控制输入（固定 3 颗，不随连线增量） */
   if (node.kind === "soulxflashhead_gen") return 3;
+  /* FLUX 3 Image Klein：0=提示词 · 1=参考图 · 2=控制输入（固定 3 颗，不随连线增量） */
+  if (node.kind === "flux3klein_gen") return 3;
   if (node.kind === "video_gen") return videoGenInputCount(node); /* 端口0=控制输入（固定）· 端口1+=数据槽 */
   if (isVideoPostKind(node)) return videoPostInputCount(node); /* 端口0=控制 · 端口1=源视频 · 端口2+=可选素材 */
   /* Remotion 视频：**无差别动态端子**（与 proc_text 同一套增量口径）——
@@ -9155,6 +9213,7 @@ function minWFor(n) {
       return 320;
     /* SenseNova 图像生成：与音乐 / 语音节点同尺寸族（body 里有参数摘要 + 预览） */
     case "sensenova_gen":
+    case "flux3klein_gen":
       return 340;
     /* Breeze 语音：警示条 + 两行端子提示 + 摘要 + 后端面板 + 预览 + 状态行，要得比音乐节点高 */
     case "breeze_gen":
@@ -9200,6 +9259,7 @@ function minHFor(n) {
       return 220;
     /* SenseNova 图像生成：参数摘要 + 后端面板 + 图像预览，留够高度 */
     case "sensenova_gen":
+    case "flux3klein_gen":
       return 240;
     case "breeze_gen":
       return 250;
@@ -9314,7 +9374,9 @@ function selResult(n) {
    不必去改几百个调用点的 kind，也不会漏掉将来新增的调用。
    口径边界：err 一定弹（不静默失败）；warn 保留，因为它多是「下一步该点哪里」的引导
    （如「请先选中要收纳的节点」），删掉反而让人卡住。 */
-const TOAST_KINDS_SHOWN = { err: 1, warn: 1 };
+/* 只显示 err / warn 两档，外加 copy（复制节点的成功回执：右下角金色提示，需求点名要它）。
+   ok 一律不弹，别的成功提示也别往这里加。 */
+const TOAST_KINDS_SHOWN = { err: 1, warn: 1, copy: 1 };
 function toast(msg, kind) {
   if (!TOAST_KINDS_SHOWN[String(kind || "").trim().toLowerCase()]) return;
   const box = $("#toastBox");
@@ -9381,6 +9443,7 @@ function nodeKindLabel(node) {
     yue_gen: "YuE2",
     /* SenseNova 图像生成（本机 SenseNova-U1.5-8B-MoT 后端） */
     sensenova_gen: "SenseNova",
+    flux3klein_gen: "FLUX 3 Klein",
     /* InfiniteTalk 数字人（本地视频生成 · Wan2.1 I2V 14B） */
     infinitetalk_gen: "InfiniteTalk 数字人",
     /* SoulX-FlashHead Lite 实时数字人（本机 1.3B 流式） */
@@ -9438,6 +9501,8 @@ function nodeKindPurposeKey(node) {
     yue_gen: "YuE2（音乐生成 · 风格提示词 + 歌词 → 整曲 · 可编辑 ABC 谱面）",
     sensenova_gen:
       "SenseNova（本地图像生成 · SenseNova-U1.5-8B-MoT · 官方 11 个分辨率桶 · 需 24G 显存）",
+    flux3klein_gen:
+      "FLUX 3 Image Klein（本地图像生成 · 5.6B 蒸馏 · INT8 / BF16 · 提示词 / 多参考图编辑 / 蒙版重绘 / 透明背景）",
     video_gen: "Minimax H3（视频生成 · 文本 / 图像 / 音频 / 视频）",
     infinitetalk_gen:
       "InfiniteTalk 数字人（本地数字人视频 · 人物图或源视频 + 语音 → 口型同步 mp4 · 长音频自动分块续写）",
@@ -15130,6 +15195,7 @@ function clearNodeRunState(cp) {
   /* SenseNova 图像节点：状态行是纯展示字段，克隆 / 清运行时一起抹掉，
      否则复制出来的新节点会顶着一句「图像已生成：…」却其实没跑过。 */
   if (cp.kind === "sensenova_gen") cp.sensenovaStatus = "";
+  if (cp.kind === "flux3klein_gen") cp.flux3kleinStatus = "";
 }
 
 function materializeSingleFromBatchEntry(root, entry, x, y) {
@@ -15726,7 +15792,7 @@ function valueForInput(src, idx, consumer, seen) {
       text: String(p),
     };
   }
-  if (src.kind === "proc_image" || src.kind === "sensenova_gen") {
+  if (src.kind === "proc_image" || src.kind === "sensenova_gen" || src.kind === "flux3klein_gen") {
     /* SenseNova 图像节点的产物端子与 proc_image 同一条口径：{kind:"image", path}，
        下游 save_image / 图像预览 / @ 引用不用任何特判。
        （sensenova_gen 没有 batchMode，agg / batchOutputs 两支天然走不到。） */
@@ -16146,7 +16212,7 @@ function allImageItems(src, consumer, portIdx) {
     }
     return [];
   }
-  if (src.kind === "proc_image" || src.kind === "sensenova_gen") {
+  if (src.kind === "proc_image" || src.kind === "sensenova_gen" || src.kind === "flux3klein_gen") {
     const r = selResult(src);
     if (src.batchMode === "agg") {
       if (r && r.output && r.output.kind === "image")
@@ -16384,7 +16450,7 @@ function displayValueOf(src, consumer) {
       return { text: r.output.text };
     return null;
   }
-  if (src.kind === "proc_image" || src.kind === "sensenova_gen") {
+  if (src.kind === "proc_image" || src.kind === "sensenova_gen" || src.kind === "flux3klein_gen") {
     const r = selResult(src);
     if (src.batchMode === "agg") {
       if (r && r.output && r.output.kind === "image")
@@ -19868,7 +19934,7 @@ function duplicateNodes(nodes) {
   renderStatus();
   /* 复制成功要给反馈：右键「复制」与 Ctrl+D / 顶栏「复制」共用这一句（本轮需求），
      复制品再闪一下，让用户看清新出来的那颗在哪。 */
-  toast(I18n.t("已复制 ") + cps.length + I18n.t(" 个节点"), "ok");
+  toast(I18n.t("复制了 ") + cps.length + I18n.t(" 个节点"), "copy");
   flashCopiedNodes(cps.map((c) => c.id));
   promptCopiedSuperPaths(cps);
 }
@@ -19958,13 +20024,13 @@ function duplicateSelection() {
     scheduleSave(true);
     renderStatus();
     toast(
-      I18n.t("已复制 ") +
+      I18n.t("复制了 ") +
         nodeCps.length +
         I18n.t(" 个节点") +
         " · " +
         markCps.length +
         I18n.t(" 项绘制"),
-      "ok",
+      "copy",
     );
     promptCopiedSuperPaths(nodeCps);
     return true;
@@ -19977,6 +20043,8 @@ function duplicateSelection() {
   return true;
 }
 /* 复制品的「闪一下」：描边 + 外发光约 0.9 秒渐隐（样式见 canvas.css 的 .wf-node.dup-flash）。
+   两种调用场合：① 复制 / 粘贴出来的新节点；② Ctrl+C 时被复制的那批节点本身（用户要看
+   清复制走了哪些，见 copyNodesToClipboard）。
    节点 DOM 每次 renderCanvas 都会重建，所以类名只贴在**本次渲染之后**的元素上；
    重绘把它丢了也不影响功能 —— 它本来只是一次性的视觉反馈。
    只按 id 找最外层那颗；壳内节点收起时不在 DOM 里，跳过即可。 */
@@ -19989,10 +20057,23 @@ function flashCopiedNodes(ids) {
     if (el) els.push(el);
   }
   if (!els.length) return;
+  /* 同一颗节点连续两次触发（Ctrl+C 之后再 Ctrl+C、复制完再粘贴）要把动画从头播：
+     先摘掉类并强制一次回流，再贴回去 —— 类名没有变化时 CSS 动画不会重播。 */
+  for (const el of els) {
+    el.classList.remove("dup-flash");
+    if (el._dupFlashTimer) {
+      clearTimeout(el._dupFlashTimer);
+      el._dupFlashTimer = null;
+    }
+  }
+  void els[0].offsetWidth;
   for (const el of els) el.classList.add("dup-flash");
-  setTimeout(() => {
-    for (const el of els) el.classList.remove("dup-flash");
-  }, 900);
+  for (const el of els) {
+    el._dupFlashTimer = setTimeout(() => {
+      el.classList.remove("dup-flash");
+      el._dupFlashTimer = null;
+    }, 1500);
+  }
 }
 /* 顶栏「复制」/ Ctrl+D：就地**完整克隆** —— 等同「复制 + 粘贴」，只是落点固定在
    源节点右下各一格（不跟鼠标指针），且**不写内部粘贴板**（用户此前 Ctrl+C 的那批节点不被
@@ -20043,7 +20124,7 @@ function duplicateNodesBeside(nodes) {
   renderCanvas();
   scheduleSave(true);
   renderStatus();
-  toast(I18n.t("已复制 ") + cps.length + I18n.t(" 个节点"), "ok");
+  toast(I18n.t("复制了 ") + cps.length + I18n.t(" 个节点"), "copy");
   flashCopiedNodes(cps.map((c) => c.id));
   promptCopiedSuperPaths(cps);
   return true;
@@ -20264,9 +20345,6 @@ function rebaseCopiedNodesToCurrentLayer(pairs) {
   const target = holder && holder.kind === "super" ? holder : null;
   const targetId = target ? target.id : "";
   const targetTask = target ? target.parentTaskId || "" : currentTaskFocus();
-  const o = target ? superInnerOrigin(target) : { ox: 0, oy: 0 };
-  const pan = target ? superInnerPan(target) : { x: 0, y: 0 };
-  const anchor = target ? superInnerAnchor(target) : { x: 0, y: 0 };
   let moved = 0;
   for (const { src, cp } of list) {
     /* 父级也在本次复制集里：它属于复制出来的那颗壳，层次原样跟着新壳 */
@@ -20279,11 +20357,12 @@ function rebaseCopiedNodesToCurrentLayer(pairs) {
     const wp = nodeWorldPos(src);
     cp.parentSuperId = targetId;
     cp.parentTaskId = targetTask;
-    /* 落进壳里时给下限（与粘贴 / 收纳同一口径）：换算后的本地坐标不能跑到壳的左上角外去 */
-    const lx = wp.x - anchor.x - o.ox - pan.x;
-    const ly = wp.y - anchor.y - o.oy - pan.y;
-    cp.x = target ? Math.max(8, lx) : lx;
-    cp.y = target ? Math.max(8, ly) : ly;
+    /* 全屏进入态（S.superFocus）里焦点壳的子节点就以舞台坐标呈现（nodeWorldPos 对它们
+       直接返回 n.x / n.y），所以这里只补父级归属、坐标原样落 —— 再减锚点 / 内原点 / 内平移
+       会把复制品甩到壳外很远的地方（「复制了却看不到节点」）。与 adoptPastedNodeToCurrentLayer
+       同一口径。 */
+    cp.x = wp.x;
+    cp.y = wp.y;
     moved++;
   }
   return moved;
@@ -20488,10 +20567,13 @@ function copyNodesToClipboard() {
   };
   toast(
     nodeList.length
-      ? I18n.t("已复制 ") + nodeList.length + I18n.t(" 个节点")
+      ? I18n.t("复制了 ") + nodeList.length + I18n.t(" 个节点")
       : I18n.t("已复制绘制：") + marks.length,
-    "ok",
+    nodeList.length ? "copy" : "ok",
   );
+  /* Ctrl+C 的反馈落在**被复制的那些节点自己身上**（复制品还不存在）：同样的金色一次性
+     呼吸灯，用户一眼看清算走了哪几颗。 */
+  flashCopiedNodes(nodeList.map((n) => n.id));
   return true;
 }
 /* ── 粘贴落点 = 鼠标指针（本轮需求）────────────────────────────────────────────
@@ -20630,16 +20712,13 @@ function pasteNodesFromClipboard() {
     cp.x = snap((cp.x || 0) + dx);
     cp.y = snap((cp.y || 0) + dy);
   }
-  /* 顶层节点粘贴进展开的节点层：绝对坐标换算为该壳的内部坐标系 */
-  if (inSuper) {
-    const o = superInnerOrigin(sfHost);
-    const pan = superInnerPan(sfHost);
-    for (const cp of cps) {
-      if (cp.parentSuperId !== superFocus) continue;
-      cp.x = snap(Math.max(8, cp.x - sfHost.x - o.ox - pan.x));
-      cp.y = snap(Math.max(8, cp.y - sfHost.y - o.oy - pan.y));
-    }
-  }
+  /* ⚠ 不要再把「顶层节点粘贴进当前节点层」的坐标减掉壳位置 / 内部原点 / 内部平移
+     （旧代码在这里这么干过一轮，用户报的「跨画布复制节点层，确认目录后画布上什么都没有」
+     就是它）：currentSuperFocus() 非空 = **全屏进入态**，焦点壳的子节点本来就以舞台坐标
+     呈现（nodeIsNestedInOpenSuper 对焦点壳返回 false，见 nodeWorldPos）。世界坐标在焦点态
+     就等于舞台坐标，减完再把负数夹到 8 会把整层甩到舞台原点、离当前镜头很远 —— 屏幕上看
+     就是「粘贴了但什么都没出来」。口径与 adoptPastedNodeToCurrentLayer（剪贴板图像）一致：
+     直接落世界坐标，只补父级归属。 */
   S.wf.nodes.push(...cps);
   /* 保持连线：两端都在复制集内的连线按新 id 重建 */
   const wireCps = cloneWiresForSet(nodeClipboard && nodeClipboard.wires, idMap);
@@ -20673,16 +20752,7 @@ function pasteNodesFromClipboard() {
     }
     mkCps.push(cp);
   }
-  /* 顶层标注粘贴进展开的节点层：坐标换算为该壳的内部坐标系 */
-  if (inSuper) {
-    const o = superInnerOrigin(sfHost);
-    const pan = superInnerPan(sfHost);
-    for (const cp of mkCps) {
-      if (cp.parentSuperId !== superFocus) continue;
-      cp.x = snap((cp.x || 0) - sfHost.x - o.ox - pan.x);
-      cp.y = snap((cp.y || 0) - sfHost.y - o.oy - pan.y);
-    }
-  }
+  /* 标注同节点：全屏进入态里坐标就是舞台坐标，不做壳内换算（理由见上面那段注释） */
   marksOf().push(...mkCps);
   const mset = ensureSelMarkSet();
   mset.clear();
@@ -21170,7 +21240,7 @@ function sideCatMatches(n, kinds) {
 const SIDE_CATS = [
   ["输入节点", ["input_text", "input_image", "input_audio", "input_video", "input_any", "input_file", "db_table"]],
   ["全局节点", ["global"]],
-  ["处理节点", ["proc_text", "proc_image", "sensenova_gen", "music_gen", "yue_gen", "breeze_gen", "video_gen", "infinitetalk_gen", "soulxflashhead_gen", "video_upscale", "video_interp", "remotion"]],
+  ["处理节点", ["proc_text", "proc_image", "sensenova_gen", "flux3klein_gen", "music_gen", "yue_gen", "breeze_gen", "video_gen", "infinitetalk_gen", "soulxflashhead_gen", "video_upscale", "video_interp", "remotion"]],
   ["保存节点", ["save", "save_pdf"]],
   ["工具节点", ["split", "merge", "function", "tool"]],
   ["网络节点", ["net_recv", "net_send"]],
@@ -21195,6 +21265,7 @@ const KIND_TAGS = {
   proc_image: "图像生成",
   /* SenseNova 本地图像生成：与云端图像生成同标签，靠节点名区分 */
   sensenova_gen: "图像生成",
+  flux3klein_gen: "图像生成",
   music_gen: "音乐",
   yue_gen: "音乐",
   breeze_gen: "语音",
@@ -21853,6 +21924,12 @@ function canvasCreateMenuGroups(pt) {
             I18n.t("SenseNova（本地图像生成 · SenseNova-U1.5-8B-MoT）"),
             () => addNode("sensenova_gen", pt.x, pt.y),
           ),
+          /* FLUX 3 Image Klein：INT8 起 8G 显存，不做门槛隐藏 */
+          ctxKindItem(
+            "flux3klein_gen",
+            I18n.t("FLUX 3 Image Klein（本地图像生成 · INT8 / BF16）"),
+            () => addNode("flux3klein_gen", pt.x, pt.y),
+          ),
         ])),
         /* 音频 / 视频生成：各自收进一个一级子菜单，成员按后端命名
            （菜单只显示括号前的短名，括号内为说明） */
@@ -21869,6 +21946,13 @@ function canvasCreateMenuGroups(pt) {
             "infinitetalk_gen",
             I18n.t("InfiniteTalk 数字人（人物图或源视频 + 语音 → 口型同步视频）"),
             () => addNode("infinitetalk_gen", pt.x, pt.y),
+          ),
+          /* SoulX-FlashHead Lite 实时数字人：人物图 + 语音 → 512×512@25fps 口型同步 mp4
+             （自带 Python 服务，执行时自动启停；不设显存门槛，与上面的 InfiniteTalk 同口径） */
+          ctxKindItem(
+            "soulxflashhead_gen",
+            I18n.t("SoulX 实时数字人（人物图 + 语音 → 512×512 @25fps 口型同步视频）"),
+            () => addNode("soulxflashhead_gen", pt.x, pt.y),
           ),
           /* 独立后处理：超分 / 补帧不再跟着 H3 一起跑，按需单独建节点 */
           ctxKindItem(
@@ -24176,6 +24260,7 @@ const WIRE_DROP_TARGETS = [
      判定见 wireDropMenuGroups 里的 nodeKindHiddenByVram（与插件目录同源）。
      这里**不**顺手加 plugin 未装即不列：那会改掉「未装也列、建出来给警示条」的既有口径。 */
   { kind: "sensenova_gen", g: "处理节点", vramKind: "sensenova_gen" },
+  { kind: "flux3klein_gen", g: "处理节点" },
   { kind: "music_gen", g: "处理节点", vramKind: "music_gen" },
   { kind: "yue_gen", g: "处理节点", vramKind: "yue_gen" },
   { kind: "breeze_gen", g: "处理节点" },
@@ -25411,6 +25496,7 @@ async function stopNode(node) {
     node.kind === "music_gen" ||
     node.kind === "yue_gen" ||
     node.kind === "sensenova_gen" ||
+    node.kind === "flux3klein_gen" ||
     node.kind === "breeze_gen" ||
     node.kind === "video_gen" ||
     node.kind === "remotion" ||
@@ -25419,9 +25505,9 @@ async function stopNode(node) {
   ) {
     /* 单节点停止也要：关监视器 + 作废排队 + 取消主进程在途任务（释放大锁）。
        旧实现只把 running 置 false，串行队列 / 后端任务照跑，稍后节点又回到运行队列。
-       语音（breeze_gen）例外于「取消主进程任务」：它没有取消接口
-       （breeze/main-breeze.js 只走一次 HTTP：/v1/audio/speech），
-       停止=渲染层作废 + 断链，在途那条合成完即丢弃，不写节点状态、不驱动下游。 */
+       语音（breeze_gen）以前没有取消接口，只能界面作废 —— 引擎照跑、显存照占，表现为
+       「停不掉 / 关不掉」；现在 mediaGenCancelRemote 会走 breeze:cancelGenerate
+       （断连接 + 停引擎，见 breeze/main-breeze.js 的 cancelBreezeRuns）。 */
     const queuedOnly = mediaGenWaiters.has(node.id);
     if (!node.running && !queuedOnly) {
       /* 既没在跑、也不在串行链上排队 —— 但它还挂着「等待中」（幽灵 pending：
@@ -25469,7 +25555,7 @@ async function stopNode(node) {
           ? "已取消音乐生成"
           : node.kind === "yue_gen"
             ? "已取消音乐生成"
-            : node.kind === "sensenova_gen"
+            : node.kind === "sensenova_gen" || node.kind === "flux3klein_gen"
               ? "已取消图像生成"
               : node.kind === "breeze_gen"
                 ? "已取消语音合成"
@@ -27526,8 +27612,9 @@ function normalizeImgParams(node) {
     .trim()
     .toLowerCase();
   node.imgBackground = IMG_BACKGROUND_VALUES.includes(b) ? b : "";
-  if (node.maskOn == null) node.maskOn = false;
   if (typeof node.maskPath !== "string") node.maskPath = "";
+  /* 有蒙版内容时默认开启；显式关闭过（false）则保持关闭 */
+  if (node.maskOn == null) node.maskOn = !!node.maskPath;
   const br = Number(node.maskBrush);
   node.maskBrush = Number.isFinite(br)
     ? Math.max(4, Math.min(400, Math.round(br)))
@@ -27604,7 +27691,10 @@ function withImageParamsPrompt(node, prompt) {
    蒙版错位/失效）。编辑器背景、前置校验、imageSpec 三处统一走 runImagePaths。 */
 function maskBaseImagePath(node, idx) {
   try {
-    return runImagePaths(node, typeof idx === "number" ? idx : 0)[0] || "";
+    /* FLUX 3 Image Klein：参考图在端口 1（端口 0 是提示词），默认取它的第 1 张 */
+    const port =
+      typeof idx === "number" ? idx : node && node.kind === "flux3klein_gen" ? 1 : 0;
+    return runImagePaths(node, port)[0] || "";
   } catch (e) {
     return "";
   }
@@ -33448,6 +33538,7 @@ function migrateWf(wf) {
       n.kind === "music_gen" ||
       n.kind === "yue_gen" ||
       n.kind === "sensenova_gen" ||
+      n.kind === "flux3klein_gen" ||
       n.kind === "breeze_gen" ||
       n.kind === "video_gen" ||
       isVideoPostKind(n) ||
@@ -33471,6 +33562,8 @@ function migrateWf(wf) {
     /* SenseNova 图像节点：字段归一（画幅只认官方 11 个训练桶 · 显存档位 / dtype / cfgNorm
        只认枚举值 · 数值全部夹到后端认可的区间），见 sensenovaNormalizeNode */
     if (n.kind === "sensenova_gen") sensenovaNormalizeNode(n);
+    if (n.kind === "flux3klein_gen" && typeof flux3kleinNormalize === "function")
+      flux3kleinNormalize(n);
     if (n.kind === "task") {
       normalizeTaskSteps(n);
       n.running = false;
@@ -33617,7 +33710,7 @@ function migrateWf(wf) {
     n.boundSaveId = "";
     /* SenseNova 图像节点没有「节点内输出路径」（落盘由主进程托管目录决定、经输出端子交付）：
        旧画布残留的 outputPath / filename 在加载时静默丢弃，别让设置窗再冒出一个死字段 */
-    if (n.kind === "sensenova_gen") {
+    if (n.kind === "sensenova_gen" || n.kind === "flux3klein_gen") {
       delete n.outputPath;
       delete n.filename;
     }

@@ -1034,6 +1034,16 @@ button.pk-badge.pk-btn:hover {
   border-left-color: var(--green)
 }
 
+/* 复制节点的回执（toast(..., "copy")）：右下角弹一句「复制了 N 个节点」，配色跟随
+   画布上那颗金色呼吸灯（--yellow），一眼对上刚复制出来的节点。 */
+.toast.copy {
+  border-left-color: var(--yellow);
+  color: var(--yellow);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--yellow) 18%, transparent),
+    0 4px 14px rgba(0, 0, 0, .5);
+}
+
 @keyframes toastIn {
   from {
     transform: translateX(30px);
@@ -4019,6 +4029,19 @@ body.theme-light .think-doc.md-viewer-doc {
   font-size: 10.5px;
   font-family: var(--mono);
   color: var(--muted);
+}
+
+/* 备份结果（页脚常驻一行）：路径长，单行省略，hover 看全文 */
+.asset-lib-backupnote {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 64%;
+  margin-left: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
+  color: var(--ink);
 }
 
 /* 二级表单框（新建素材 · 移动到分类） */

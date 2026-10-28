@@ -2,8 +2,8 @@
 /**
  * Breeze TTS 2 本地 TTS 插件主进程：
  * - 安装目录 / 脚手架复制 / 安装编排（脚本优先，失败转 Agent 保底）
- * - Python 管理服务单例（detached，**不随 MTNode 退出** —— 与 music3 / h3 / yue / sensenova 同口径：
- *   权重加载一次要等几十秒到几分钟，随应用退出会让每次开应用都重载）
+ * - Python 管理服务（detached；MTNode 完全退出时由主进程统一结束，见 main.js 的 before-quit ——
+ *   管理服务与推理引擎都归 MTNode 管，退出后没有理由继续占显存）
  * - 推理引擎由管理服务按需拉起（宿主只管管理服务这一个进程）
  * - 托盘进程（独立，用户可自行关闭）、控制台窗、GPU 监视、报错上报
  *
@@ -68,6 +68,10 @@ let installCancel = false;
 /** 正在合成的在途数（generateBreezeFile 进出各一次）：显存释放编排器据此判断忙不忙，
  *  绝不在别人合成到一半时把引擎 / 后端拆掉（见本文件末尾 vramHooks） */
 let activeSynthesis = 0;
+/** 在途的 /v1/audio/speech 请求（取消用）：Breeze 引擎没有取消接口，客户端只能断连接 +
+ *  停引擎进程 —— 见 cancelBreezeRuns。以前这里没有取消通道，节点点 ■ 只是界面变暗，
+ *  合成照跑、显存照占，用户看到的就是「停不掉、关不掉」。 */
+const inflightSpeech = new Set();
 /** 连续合成时引擎的「保持常驻」窗口（毫秒）：Breeze 引擎一次重载要数十秒，连续生成不该来回卸载 /
  *  重载 7.7GB 权重。窗口内同一后端再跑直接复用；窗口到期或别的本地后端要显存时才释放
  *  （编排口径见 local-model-vram.js 的 releaseAfterUse / releaseOthers）。 */
@@ -187,9 +191,9 @@ function defaultConfig() {
     port: DEFAULT_PORT,
     enginePort: DEFAULT_ENGINE_PORT,
     wantRunning: false,
-    /* 官方推荐的最优配置（CUDA Graph + 预热）：后端会按显存门槛自动回退 eager，
-       低显存 / 卡被别的任务占着时不会硬开。 */
-    fastAll: true,
+    /* 默认关：fast（CUDA Graph + 预热）常把显存占满，与其它后端抢卡；
+       用户需要速度时在控制台自己打开，后端仍会按显存门槛回退 eager。 */
+    fastAll: false,
     /** 已有本地权重目录（对应 breeze-pack 的 BREEZE_WEIGHTS_DIR） */
     weightsDir: "",
   };
@@ -1855,8 +1859,8 @@ function removePluginMetaOnly() {
 }
 
 /**
- * MTNode 退出时只关控制台窗，**不动后端**：管理服务是常驻单例（引擎权重加载一次要等很久），
- * 要停服务请走插件的「停止」或托盘菜单的「停止服务并退出」（与 music3/h3/yue/sensenova 同口径）。
+ * MTNode 退出：只关控制台窗 / 撤 UI 监听；管理服务与推理引擎由主进程退出收尾统一结束
+ * （main.js 的 before-quit → vramShutdownAll，走本文件 vramHooks.hard）。
  */
 function shutdownBreezeUiOnly() {
   closeConsoleWindow();
@@ -2020,6 +2024,38 @@ function generateBreezeFile(params) {
   });
 }
 
+/**
+ * 取消在途的语音合成：断掉客户端连接 + 停引擎进程。
+ *
+ * 为什么必须停引擎：引擎侧一次合成是「不可打断」的生成循环（没有 cancel 接口），客户端断开
+ * 后它仍会算完整段。只有 taskkill 掉引擎才能让生成真的停下、显存立刻还回来 ——
+ * 也就是画布节点 ■ 该有的语义（以前只有「界面作废」，引擎照跑，所以「关不掉」）。
+ */
+async function cancelBreezeRuns(reason) {
+  const n = inflightSpeech.size;
+  for (const req of Array.from(inflightSpeech)) {
+    try {
+      req.destroy(new Error("cancelled_by_user"));
+    } catch {}
+  }
+  inflightSpeech.clear();
+  let stopped = false;
+  try {
+    const port = Number(loadConfig().port) || DEFAULT_PORT;
+    /* 后端没在跑就没什么可停的（别为「取消」去把后端拉起来） */
+    if (await probeApi(port)) {
+      const r = await engineControl("stop");
+      stopped = !!(r && r.ok);
+    }
+  } catch {}
+  if (n || stopped) {
+    appendConsole(
+      "[job] 取消在途语音合成 " + n + " 个（" + String(reason || "user") + "）· 引擎已停=" + stopped,
+    );
+  }
+  return { ok: true, cancelled: n, engineStopped: stopped };
+}
+
 async function synthesizeBreezeFile(params) {
   params = params || {};
   const text = String(params.text || "").trim();
@@ -2084,6 +2120,7 @@ async function synthesizeBreezeFile(params) {
           const chunks = [];
           res.on("data", (c) => chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c)));
           res.on("end", () => {
+            inflightSpeech.delete(req);
             const buf = Buffer.concat(chunks);
             if (res.statusCode < 200 || res.statusCode >= 300) {
               resolve(
@@ -2117,7 +2154,13 @@ async function synthesizeBreezeFile(params) {
           });
         },
       );
-      req.on("error", (err) => resolve(reportGenerateFail({ error: String(err.message || err) })));
+      /* 记在途请求：节点点 ■ / 控制台取消时靠它把客户端连接断掉（见 cancelBreezeRuns） */
+      inflightSpeech.add(req);
+      req.on("close", () => inflightSpeech.delete(req));
+      req.on("error", (err) => {
+        inflightSpeech.delete(req);
+        resolve(reportGenerateFail({ error: String(err.message || err) }));
+      });
       req.write(body);
       req.end();
     });
@@ -3543,6 +3586,10 @@ function registerBreezeIpc(opts) {
     return { ok: true, fastAll: !!on };
   });
   ipcMain.handle("breeze:generate", async (e, p) => generateBreezeFile(p || {}));
+  /* 画布节点 ■ / 控制台取消：真正把在途合成停掉并释放显存（见 cancelBreezeRuns） */
+  ipcMain.handle("breeze:cancelGenerate", async (e, nodeId) =>
+    cancelBreezeRuns(nodeId ? "node:" + String(nodeId) : "user"),
+  );
   ipcMain.handle("breeze:removePluginMeta", async () => removePluginMetaOnly());
 }
 

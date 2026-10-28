@@ -2829,9 +2829,9 @@ function registerSensenovaIpc(opts) {
 }
 
 /**
- * MTNode 退出：**只关自己的控制台窗**，后端进程故意不杀（与 music3 / h3 / yue 同一口径：
- * 32.66GB 权重加载要几分钟，是独立于 MTNode 生命周期的单例）。
- * 想立刻把显存还给系统：控制台窗点「停止后端」，或等空闲自停。
+ * MTNode 退出：只关自己的控制台窗 / 停轮询；后端进程由主进程退出收尾统一结束
+ * （main.js 的 before-quit → vramShutdownAll，走本文件 vramHooks.hard）——
+ * MTNode 完全关闭后，32.66GB 权重不该继续挂在显存里。
  */
 function shutdownSensenovaUiOnly() {
   try {

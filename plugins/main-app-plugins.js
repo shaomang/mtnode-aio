@@ -25,7 +25,12 @@ const PLUGIN_FEED =
 /* 认得出的插件 kind 白名单：认不出的一律归一成 "unknown"（卡片显「请先升级主程序」、不可装）。
    已移除的 tts（GPT-SoVITS）故意不在表里 —— 云端旧目录里若还有 kind="tts" 的条目，
    它会走 unknown 那一档（看得见但装不了），而不是被当成一个已注册的后端。 */
-const KNOWN_KINDS = new Set(["builtin", "pet", "window", "music3", "yue2", "sensenova", "h3", "llama", "breeze", "remotion", "asr", "paseo", "blender", "infinitetalk", "soulxflashhead"]);
+const KNOWN_KINDS = new Set(["builtin", "pet", "window", "music3", "yue2", "sensenova", "h3", "llama", "breeze", "remotion", "asr", "paseo", "blender", "infinitetalk", "soulxflashhead", "flux3klein"]);
+/* Blender 插件先只对作者账号开放（本轮需求：暂时收起来内测）。
+   白名单只认账号名 / 昵称，其它登录用户连条目都拿不到 —— 卡片、画布节点菜单与
+   未装警示条都吃同一份过滤后的列表，所以在这里一处过滤就够。 */
+const BLENDER_PLUGIN_IDS = new Set(["blender-local"]);
+const BLENDER_OWNER_NAMES = ["ms2308"];
 const ID_OK = /^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$/;
 const MAX_CATALOG = 512 * 1024;
 const MAX_ZIP = 80 * 1024 * 1024;
@@ -33,6 +38,7 @@ const MAX_ZIP = 80 * 1024 * 1024;
 let getDataDir = null;
 let getMainWin = null;
 let getAppVersion = null;
+let getAuthUser = null;
 let appRoot = "";
 const pluginWins = new Map();
 const wcToPluginId = new WeakMap();
@@ -524,6 +530,8 @@ function normalizePlugin(raw) {
   if (!kind && raw.handler === "infinitetalk") kind = "infinitetalk";
   /* SoulX-FlashHead Lite 实时数字人（kind soulxflashhead，id soulxflashhead-local） */
   if (!kind && raw.handler === "soulxflashhead") kind = "soulxflashhead";
+  /* FLUX 3 Image Klein 本地出图（kind flux3klein，id flux3-klein-local） */
+  if (!kind && raw.handler === "flux3klein") kind = "flux3klein";
   /* Paseo 手机接管（kind paseo，id paseo-remote）：handler 与 kind 同名，这里只是兜底链的一员 */
   if (!kind && raw.handler === "paseo") kind = "paseo";
   const iconName = safeIconName(raw.icon) || (id + ".png");
@@ -534,7 +542,7 @@ function normalizePlugin(raw) {
   return {
     id,
     kind: known ? kind : "unknown",
-    handler: String(raw.handler || (kind === "pet" ? "pet" : kind === "music3" ? "music3" : kind === "yue2" ? "yue2" : kind === "sensenova" ? "sensenova" : kind === "h3" ? "h3" : kind === "llama" ? "llama" : kind === "breeze" ? "breeze" : kind === "remotion" ? "remotion" : kind === "asr" ? "asr" : kind === "paseo" ? "paseo" : kind === "infinitetalk" ? "infinitetalk" : kind === "soulxflashhead" ? "soulxflashhead" : kind === "builtin" ? id : "")).trim(),
+    handler: String(raw.handler || (kind === "pet" ? "pet" : kind === "music3" ? "music3" : kind === "yue2" ? "yue2" : kind === "sensenova" ? "sensenova" : kind === "h3" ? "h3" : kind === "llama" ? "llama" : kind === "breeze" ? "breeze" : kind === "remotion" ? "remotion" : kind === "asr" ? "asr" : kind === "paseo" ? "paseo" : kind === "infinitetalk" ? "infinitetalk" : kind === "soulxflashhead" ? "soulxflashhead" : kind === "flux3klein" ? "flux3klein" : kind === "builtin" ? id : "")).trim(),
     order: Number(raw.order) || 100,
     title: locObj(raw.title || raw.name || id),
     subtitle: locObj(raw.subtitle || raw.description || ""),
@@ -615,7 +623,7 @@ function attachInstalled(plugins) {
         installedVersion: st.version,
         updateAvailable: !!(st.installed && p.version && verGt(p.version, st.version)),
       }));
-    } else if (p.kind === "music3" || p.handler === "music3" || p.kind === "yue2" || p.handler === "yue2" || p.kind === "sensenova" || p.handler === "sensenova" || p.kind === "h3" || p.handler === "h3" || p.kind === "llama" || p.handler === "llama" || p.kind === "breeze" || p.handler === "breeze" || p.kind === "remotion" || p.handler === "remotion" || p.kind === "asr" || p.handler === "asr" || p.kind === "infinitetalk" || p.handler === "infinitetalk" || p.kind === "soulxflashhead" || p.handler === "soulxflashhead") {
+    } else if (p.kind === "music3" || p.handler === "music3" || p.kind === "yue2" || p.handler === "yue2" || p.kind === "sensenova" || p.handler === "sensenova" || p.kind === "h3" || p.handler === "h3" || p.kind === "llama" || p.handler === "llama" || p.kind === "breeze" || p.handler === "breeze" || p.kind === "remotion" || p.handler === "remotion" || p.kind === "asr" || p.handler === "asr" || p.kind === "infinitetalk" || p.handler === "infinitetalk" || p.kind === "soulxflashhead" || p.handler === "soulxflashhead" || p.kind === "flux3klein" || p.handler === "flux3klein") {
       /* 本地后端插件：**装没装以磁盘上的安装目录为准**（目录里有 .install-ok / .venv /
          模型目录或目录非空 = 装过）—— 卡片动作（安装 / 启用 / 卸载）与插件显存门槛的
          「已装就保留」判据都吃这一个字段。版本 / 可更新状态仍由各宿主 status 异步判定。 */
@@ -842,7 +850,38 @@ async function loadCatalogSource() {
  */
 async function finalizePluginList(plugins) {
   const marked = await markVramMeta(plugins);
-  return marked.filter((p) => !(p && p.vram && p.vram.hide === true));
+  return gatePrivatePlugins(marked.filter((p) => !(p && p.vram && p.vram.hide === true)));
+}
+
+/** Blender 那条是不是当前账号的菜：没登录 / 不是白名单账号 → 隐藏 */
+function isBlenderPlugin(p) {
+  if (!p) return false;
+  return (
+    BLENDER_PLUGIN_IDS.has(String(p.id || "")) ||
+    String(p.kind || "") === "blender" ||
+    String(p.handler || "") === "blender"
+  );
+}
+
+function blenderVisible() {
+  let u = null;
+  try {
+    u = typeof getAuthUser === "function" ? getAuthUser() : null;
+  } catch {
+    u = null;
+  }
+  if (!u) return false;
+  const names = [u.username, u.nickname, u.id]
+    .map((v) => String(v || "").trim().toLowerCase())
+    .filter(Boolean);
+  return names.some((n) => BLENDER_OWNER_NAMES.includes(n));
+}
+
+/** 只对指定账号开放的插件在这里统一挡掉（当前只有 Blender） */
+function gatePrivatePlugins(plugins) {
+  const list = Array.isArray(plugins) ? plugins : [];
+  if (blenderVisible()) return list;
+  return list.filter((p) => !isBlenderPlugin(p));
 }
 
 /** 给整份列表挂显存元数据（判定炸了 = 当作「没超」，宁可多显示一个也不许凭空藏掉） */
@@ -884,7 +923,7 @@ async function loadCatalog() {
 async function buildFullPluginList() {
   const src = await loadCatalogSource();
   const marked = await markVramMeta(src.plugins);
-  return attachInstalled(marked).map((p) =>
+  return gatePrivatePlugins(attachInstalled(marked)).map((p) =>
     Object.assign({}, p, { source: src.source, remoteError: src.remoteError }),
   );
 }
@@ -1339,6 +1378,7 @@ function registerAppPluginsIpc(opts) {
   getDataDir = opts.getDataDir;
   getMainWin = opts.getMainWin;
   getAppVersion = opts.getAppVersion;
+  getAuthUser = typeof opts.getAuthUser === "function" ? opts.getAuthUser : null;
   appRoot = String((opts && opts.appRoot) || "");
   ipcMain.handle("appPlugins:catalog", () => loadCatalog());
   /* 显存门槛现状（**不滤**）：插件对话框「显示不支持的插件」开关与卡片标注吃这一份。

@@ -697,6 +697,8 @@ contextBridge.exposeInMainWorld('api', {
   breezeRemovePluginMeta: () => ipcRenderer.invoke('breeze:removePluginMeta'),
   breezeApiFetch: (opts) => ipcRenderer.invoke('breeze:apiFetch', opts || {}),
   breezeGenerate: (opts) => ipcRenderer.invoke('breeze:generate', opts || {}),
+  /* 取消在途语音合成：断连接 + 停引擎（节点 ■ 用，见 breeze/main-breeze.js 的 cancelBreezeRuns） */
+  breezeCancelGenerate: (nodeId) => ipcRenderer.invoke('breeze:cancelGenerate', nodeId || ''),
   /* 角色预设（角色名 + 多组「音频 + 样本文字 + 指令」）：画布节点选角色 / 试听样本都走这里 */
   breezePresets: () => ipcRenderer.invoke('breeze:presets'),
   breezePresetSave: (p) => ipcRenderer.invoke('breeze:presetSave', p || {}),
@@ -788,6 +790,47 @@ contextBridge.exposeInMainWorld('api', {
     };
     ipcRenderer.on('sensenova:gpu', handler);
     return () => ipcRenderer.removeListener('sensenova:gpu', handler);
+  },
+
+  /* ── FLUX 3 Image Klein（本机 ComfyUI）：安装 / 启停 / 出图，见 flux3klein/main-flux3klein.js ── */
+  flux3kleinStatus: () => ipcRenderer.invoke('flux3klein:getStatus'),
+  flux3kleinOpen: () => ipcRenderer.invoke('flux3klein:open'),
+  flux3kleinClose: () => ipcRenderer.invoke('flux3klein:close'),
+  flux3kleinInstall: (opts) => ipcRenderer.invoke('flux3klein:install', opts || {}),
+  flux3kleinCancelInstall: () => ipcRenderer.invoke('flux3klein:cancelInstall'),
+  flux3kleinStart: () => ipcRenderer.invoke('flux3klein:start'),
+  flux3kleinStop: () => ipcRenderer.invoke('flux3klein:stop'),
+  flux3kleinEnsureReady: () => ipcRenderer.invoke('flux3klein:ensureReady'),
+  flux3kleinGenerate: (params) => ipcRenderer.invoke('flux3klein:generate', params || {}),
+  flux3kleinCancelGenerate: () => ipcRenderer.invoke('flux3klein:cancelGenerate'),
+  flux3kleinGetLock: () => ipcRenderer.invoke('flux3klein:getLock'),
+  flux3kleinPickInstallDir: () => ipcRenderer.invoke('flux3klein:pickInstallDir'),
+  flux3kleinSetInstallDir: (dir) => ipcRenderer.invoke('flux3klein:setInstallDir', dir),
+  flux3kleinSetConfig: (patch) => ipcRenderer.invoke('flux3klein:setConfig', patch || {}),
+  flux3kleinGpuProbe: () => ipcRenderer.invoke('flux3klein:gpuProbe'),
+  flux3kleinConsoleTail: (n) => ipcRenderer.invoke('flux3klein:consoleTail', n),
+  flux3kleinConsoleClear: () => ipcRenderer.invoke('flux3klein:consoleClear'),
+  flux3kleinRemovePluginMeta: () => ipcRenderer.invoke('flux3klein:removePluginMeta'),
+  onFlux3KleinProgress: (cb) => {
+    const handler = (_e, data) => {
+      try { cb(data); } catch (_) {}
+    };
+    ipcRenderer.on('flux3klein:progress', handler);
+    return () => ipcRenderer.removeListener('flux3klein:progress', handler);
+  },
+  onFlux3KleinConsoleChanged: (cb) => {
+    const handler = (_e, data) => {
+      try { cb(data); } catch (_) {}
+    };
+    ipcRenderer.on('flux3klein:consoleChanged', handler);
+    return () => ipcRenderer.removeListener('flux3klein:consoleChanged', handler);
+  },
+  onFlux3KleinGpu: (cb) => {
+    const handler = (_e, data) => {
+      try { cb(data); } catch (_) {}
+    };
+    ipcRenderer.on('flux3klein:gpu', handler);
+    return () => ipcRenderer.removeListener('flux3klein:gpu', handler);
   },
 
   /* ── InfiniteTalk 数字人（Wan2.1 I2V 14B · 独立 ComfyUI）：安装 / 启停 / 出片，
@@ -1455,4 +1498,7 @@ contextBridge.exposeInMainWorld('api', {
   assetsPathKind: (p) => ipcRenderer.invoke('assets:pathKind', p),
   assetsImportDir: (arg) => ipcRenderer.invoke('assets:importDir', arg),
   assetsImportFiles: (id, paths) => ipcRenderer.invoke('assets:importFiles', { id, paths }),
+  /* 备份：把库增量同步到指定文件夹（同内容跳过；上次目标记在 config.json） */
+  assetsBackupInfo: () => ipcRenderer.invoke('assets:backupInfo'),
+  assetsBackup: (p) => ipcRenderer.invoke('assets:backup', { path: p }),
 });

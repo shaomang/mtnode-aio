@@ -11,7 +11,7 @@
  * - 输出固定 512×512 @25fps（官方 infer_params 默认），Model_Lite + VAE_LTX；
  * - 长音频**整段一次流式跑完**：模型自己按 33 帧窗口续写（每块推进 24 帧），宿主不再切块；
  * - 默认优化全开：flash-attn（安装硬闸）+ SageAttention（尽力）+ torch.compile（失败自动回退）；
- * - 实时性可验证：安装收尾跑一次 2 块基准，控制台「试生成」回写 chunk 耗时 / FPS / RTF；
+ * - 实时性可验证：安装收尾跑一次 4 块基准（首块含预热，取稳态中位数），控制台「试生成」回写 chunk 耗时 / FPS / RTF；
  * - 排队：与 H3 / 音乐 / 语音 / InfiniteTalk 共用全局媒体互斥锁。
  *
  * 数据只写 `%APPDATA%\pipeline-console\soulxflashhead-local\`，绝不写应用目录。

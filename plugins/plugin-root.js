@@ -49,6 +49,9 @@ const PLUGIN_CFG = {
   /* SoulX-FlashHead Lite 实时数字人（kind soulxflashhead）：配置落 <数据目录>/soulxflashhead-local/config.json */
   "soulxflashhead-local": "soulxflashhead-local/config.json",
   soulxflashhead: "soulxflashhead-local/config.json",
+  /* FLUX 3 Image Klein（kind flux3klein）：配置落 <数据目录>/flux3-klein-local/config.json */
+  "flux3-klein-local": "flux3-klein-local/config.json",
+  flux3klein: "flux3-klein-local/config.json",
   "minimax-h3": "h3/config.json",
   h3: "h3/config.json",
   "llama-local": "llama/config.json",
@@ -97,6 +100,9 @@ const PLUGIN_SUBDIR = {
   /* SoulX-FlashHead Lite：默认装到 <插件根目录>/soulxflashhead-local（内含仓库 / venv / 权重） */
   "soulxflashhead-local": "soulxflashhead-local",
   soulxflashhead: "soulxflashhead-local",
+  /* FLUX 3 Image Klein：默认装到 <插件根目录>/flux3-klein-local（内含 ComfyUI / venv / 权重） */
+  "flux3-klein-local": "flux3-klein-local",
+  flux3klein: "flux3-klein-local",
   "minimax-h3": "video",
   h3: "video",
   "llama-local": "vLLM",

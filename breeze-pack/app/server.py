@@ -22,11 +22,15 @@
 """
 from __future__ import annotations
 
+import http.client
 import os
 import re
 import sys
 import threading
 import time
+import traceback
+import urllib.error
+import urllib.request
 import uuid
 from pathlib import Path
 
@@ -41,6 +45,19 @@ from . import audio as audio_mod  # noqa: E402
 from . import config, engine, voices  # noqa: E402
 
 app = FastAPI(title="Breeze TTS 2 Manager", version="1.0.0")
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception(request: Request, exc: Exception) -> JSONResponse:
+    """未捕获异常一律回带 code 的 JSON（以前 FastAPI 只回纯文本 Internal Server Error：
+    画布节点上就只剩这五个字，既看不出原因、也没法按 code 自愈）。"""
+    config.log(f"[manager] 未捕获异常 {type(exc).__name__}: {exc}\n{traceback.format_exc()}")
+    return JSONResponse(
+        status_code=500,
+        content={"detail": {"code": "internal_error", "message": f"{type(exc).__name__}: {exc}"}},
+    )
+
+
 STARTED_AT = int(time.time() * 1000)
 API_KEY = config.load_api_key()
 ENGINE_BUSY_RETRY_S = float(os.environ.get("BREEZE_BUSY_RETRY_S") or 180.0)
@@ -265,6 +282,8 @@ def ensure_engine(wait_s: float | None = None) -> dict:
 # 错误码 → HTTP 状态：输入 / 环境类回 4xx（宿主据此指路），进程与超时类回 5xx（交 Agent 修）。
 ENGINE_ERR_STATUS = {
     "engine_loading": 503,
+    "engine_stopped": 503,
+    "engine_stalled": 504,
     "not_installed": 400,
     "no_weights": 400,
     "bad_python": 400,
@@ -581,11 +600,53 @@ def prepare_request(params: dict, *, tmp_dir: Path) -> dict:
     }
 
 
+_STREAM_BROKEN_MSG = (
+    "引擎在合成途中中断（HTTP 200 已返回、音频流被提前关闭）："
+    "多半是这段文本超出引擎固定批大小的 CUDA graph 桶，已自动改用分段重试"
+)
+
+
+def _is_stream_break(exc: Exception) -> bool:
+    """连接在流式正文里被提前断开（区别于「根本连不上」的 engine_down）。"""
+    if isinstance(exc, (http.client.IncompleteRead, ConnectionResetError, BrokenPipeError)):
+        return True
+    if isinstance(exc, urllib.error.URLError) and isinstance(
+        getattr(exc, "reason", None), (http.client.IncompleteRead, ConnectionResetError, BrokenPipeError)
+    ):
+        return True
+    return False
+
+
+# 引擎流式回 PCM 时，连续这么久一个字节都没出 = 已经卡住（不是「长台词在算」）。
+# 10 分钟：长台词首帧要等整段前处理 + 首块解码，留足余量；真的挂死也能自己收尾。
+STALL_S = float(os.environ.get("BREEZE_STALL_S") or 600.0)
+
+
+def engine_guard_stop() -> None:
+    try:
+        engine.stop()
+    except Exception as exc:  # noqa: BLE001
+        config.log(f"[speech] 卡死后停引擎失败：{exc}")
+
+
+def _fail_stalled() -> None:
+    """合成卡死收尾：报可自愈的错误码，并在后台停掉引擎（复位的唯一可靠办法）。"""
+    config.log(f"[speech] 引擎 {int(STALL_S)}s 没有吐任何音频 → 判定卡死，停止引擎释放显存")
+    threading.Thread(target=engine_guard_stop, name="breeze-stall-stop", daemon=True).start()
+    raise _err(
+        "engine_stalled",
+        f"引擎合成卡住（连续 {int(STALL_S)}s 没有任何音频输出）：已停止引擎并释放显存，请重试；"
+        "长台词请确认没有别的任务在抢显卡",
+        504,
+    )
+
+
 def call_engine(req: dict, *, busy_retry_s: float = ENGINE_BUSY_RETRY_S) -> tuple[bytes, int]:
     """调引擎 /v1/audio/speech，回 (PCM 字节, 采样率)。
 
     引擎是单并发的：同时两个请求，后到的会吃 409 —— 这里按空闲重试，最多等 busy_retry_s。
     """
+    import socket
     import urllib.error
     import urllib.request
 
@@ -640,18 +701,29 @@ def call_engine(req: dict, *, busy_retry_s: float = ENGINE_BUSY_RETRY_S) -> tupl
             },
         )
         try:
-            with urllib.request.urlopen(r, timeout=1800) as res:
+            # 超时是「socket 单次读写」的空闲上限：长台词一次合成要跑几分钟，
+            # 但引擎是流式回 PCM —— 只要还在出字节就不算超时；真的一个字节都不再出，
+            # 就按 engine_stalled 报错并顺手停引擎（否则请求会挂到 30 分钟超时，
+            # 节点一直显示运行中、显存一直占着，就是用户说的「卡死」）。
+            with urllib.request.urlopen(r, timeout=STALL_S) as res:
                 rate = 0
                 try:
                     rate = int(res.headers.get("X-Sample-Rate") or 0)
                 except Exception:
                     rate = 0
                 chunks: list[bytes] = []
+                last_note = time.time()
                 while True:
                     c = res.read(65536)
                     if not c:
                         break
                     chunks.append(c)
+                    # 长台词要跑几分钟：每 60s 打一行「还在出字节」，出问题时能一眼分清
+                    # 「引擎在慢慢算」和「一个字节都没出（卡死）」。
+                    if time.time() - last_note > 60:
+                        last_note = time.time()
+                        got = sum(len(x) for x in chunks)
+                        config.log(f"[speech] 引擎仍在出音频：已收 {got / 1024:.0f} KB")
                 pcm = b"".join(chunks)
                 if not pcm:
                     raise _err("empty_audio", "引擎返回空音频（可换一个参考片段或调整 cfg_scale 后重试）")
@@ -680,7 +752,20 @@ def call_engine(req: dict, *, busy_retry_s: float = ENGINE_BUSY_RETRY_S) -> tupl
                 raise _err("engine_loading", "引擎还在加载权重（首次启动约需数十秒到数分钟），请稍后重试", 503)
             raise _err("engine_http_" + str(e.code), f"引擎返回 HTTP {e.code}：{detail}")
         except urllib.error.URLError as e:
+            if isinstance(getattr(e, "reason", None), (TimeoutError, socket.timeout)):
+                _fail_stalled()
+            if _is_stream_break(e):
+                raise _err("engine_stream_broken", _STREAM_BROKEN_MSG)
             raise _err("engine_down", f"无法连接推理引擎（127.0.0.1:{port}）：{e.reason}")
+        except (TimeoutError, socket.timeout):
+            _fail_stalled()
+        except (http.client.IncompleteRead, ConnectionResetError, BrokenPipeError) as e:
+            # 引擎是流式回音频：出错时 HTTP 头（200）已经发出去了，正文才会断。
+            # urllib 这里抛的是 IncompleteRead / 连接重置，以前没接住 → manager 冒成 500，
+            # 节点上只显示 Internal Server Error。最常见的原因就是引擎固定批大小的
+            # CUDA graph 桶装不下这段文本（RuntimeError: ... has no fitting bucket）。
+            # 统一当成「文本一次装不下」交给 synthesize_segments 分段兜底重试。
+            raise _err("engine_stream_broken", f"{_STREAM_BROKEN_MSG}（{type(e).__name__}）")
 
 
 def sanitize_filename(name: str) -> str:
@@ -692,13 +777,13 @@ def sanitize_filename(name: str) -> str:
 
 
 # ── 长文本：默认整段一次合成，只有引擎装不下时才兜底分段 ────────────────
-# 分段 = 每段各自独立生成一次，音色 / 语气会各走各的 —— 用户听到的就是
-# 「中间突然换了一个人」。所以**不再按字数自行切断**：整段原样发一次请求，
+# 分段 = 每段各自独立生成一次，音色 / 语气 / 响度会各走各的 —— 用户听到的就是
+# 「播到 70~80 秒突然换了一个人」。所以**不再按字数自行切断**：整段原样发一次请求，
 # 音色才连贯。
-# 引擎确实有硬上限（fast 文本编码器 CUDA graph 的桶只到 512 token，超了直接
-# RuntimeError: no fitting bucket → 500；单次生成 1500 token ≈ 120 秒），
-# 所以只在引擎明确因长度拒绝时才退回按句子边界分段兜底（控制台写明是兜底）。
-SEGMENT_MAX_CHARS = 300  # 兜底分段时每段上限（只在引擎拒绝后才会用到）
+# 引擎那边两条实现层限制（暖机 CUDA graph 桶冻结、max_new_tokens=1500 / max_seq_len=2048）
+# 由 engine.py 在启动时放宽到 ≈900 字 / ≈190 秒，常见长台词都能一次合成完。
+# 只有引擎确实拒绝（真的超长）时才退回按句子边界分段兜底（控制台写明是兜底）。
+SEGMENT_MAX_CHARS = 700  # 兜底分段时每段上限（只在引擎拒绝后才会用到）
 SEGMENT_GAP_MS = 120
 # 引擎「装不下」的报错特征：命中才分段兜底，其它错误照原样抛给调用方。
 _LENGTH_ERROR_HINTS = (
@@ -711,6 +796,9 @@ _LENGTH_ERROR_HINTS = (
     "maximum context",
     "input is too",
     "token",
+    # 引擎流式正文中途断开：绝大多数就是上面的 CUDA graph 桶装不下（HTTP 头已是 200，
+    # 只能从连接异常看出来），同样走分段兜底重试。
+    "stream_broken",
 )
 
 

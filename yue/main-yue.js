@@ -5,7 +5,7 @@
  * 逐段对照 music3/main-music3.js 实现，口径保持一致：
  * - 安装目录 / 脚手架 / 随包与云端清单校验（manifest）
  * - dsh 安装编排（复用 resolveDshRunAuth 与 plugin-error-repair 报错总线）
- * - Gradio 后端单例（detached，不随 MTNode 退出）
+ * - Gradio 后端单例（detached；MTNode 完全退出时由主进程统一结束，见 main.js 的 before-quit）
  * - 全局音视频互斥（media-gen-global-lock.js，kind = "yue_gen"，busy 文案走「音乐」）
  * - 抽卡种子通用逻辑（seed ≤ 0 → 随机；返回本次种子与下一次建议种子）
  * - 控制台窗 / GPU 监视 / console 日志
@@ -3516,7 +3516,7 @@ function registerYueIpc(opts) {
   ipcMain.handle("yue:removePluginMeta", async () => removePluginMetaOnly());
 }
 
-/** Do NOT stop Gradio on app quit — intentional singleton independent of MTNode. */
+/** 退出时只关控制台窗；后端进程由主进程退出收尾统一结束（main.js 的 before-quit → vramShutdownAll）。 */
 function shutdownYueUiOnly() {
   try {
     if (consoleWin && !consoleWin.isDestroyed()) consoleWin.close();

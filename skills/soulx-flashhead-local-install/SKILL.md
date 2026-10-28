@@ -1,7 +1,7 @@
 ---
 name: soulx-flashhead-local-install
 title: SoulX-FlashHead Lite 实时数字人本地安装
-description: 在用户指定目录安装 SoulX-FlashHead Lite（实时数字人 · 1.3B 流式 · 自带 Python 服务）后端：探测 GPU/磁盘，下载官方推理仓库，建隔离 venv 与 cu128 torch 2.8.0，强制安装 flash-attn（失败即安装失败）并可选 SageAttention，用 ModelScope（回退 hf-mirror）下载 Model_Lite + VAE_LTX + wav2vec2，跑真实权重的 2 块流式基准（BENCH-OK / fps / rtf）当冒烟。含自我修复、实时基准与 512×512@25fps 口径。
+description: 在用户指定目录安装 SoulX-FlashHead Lite（实时数字人 · 1.3B 流式 · 自带 Python 服务）后端：探测 GPU/磁盘，下载官方推理仓库，建隔离 venv 与 cu128 torch 2.8.0，强制安装 flash-attn（失败即安装失败）并可选 SageAttention，用 ModelScope（回退 hf-mirror）下载 Model_Lite + VAE_LTX + wav2vec2，跑真实权重的 4 块流式基准（BENCH-OK / fps / rtf，首块预热不计入）当冒烟。含自我修复、实时基准与 512×512@25fps 口径。
 ---
 
 # SoulX-FlashHead Lite 实时数字人本地安装
@@ -28,6 +28,7 @@ INSTALL_DIR/
       SoulX-FlashHead-1_3B/Model_Lite/      config.json + diffusion_pytorch_model.safetensors
       SoulX-FlashHead-1_3B/VAE_LTX/         config.json + diffusion_pytorch_model.safetensors
       wav2vec2-base-960h/                   音频编码器
+  wheels/pip/                              pip 依赖轮子缓存（离线/断点续装的复用点）
   .install-ok                                全部步骤通过后由脚本写
 ```
 
@@ -62,7 +63,7 @@ INSTALL_DIR/
 
 - 输出固定 **512×512 @ 25fps**；`flash_head/configs/infer_params.yaml` 的 `frame_num: 33`、`motion_frames_latent_num: 2`、`vae_stride [8,32,32]` 决定**首块 9 帧 + 之后每块 24 帧**。
 - 整段音频**一次流式跑完**：模型内部按窗口续写，宿主不切片、不拼缝；帧直接进 ffmpeg rawvideo 管道，最后封回原音轨。
-- `--check` 的 2 块基准确认「加载 + 连续出片」都通；正式安装还会把 `fps / rtf / ms_per_chunk` 写进配置，供控制台与安装收尾展示。
+- `--check` 的 4 块基准确认「加载 + 连续出片」都通，稳态数字取后 3 块中位数；正式安装还会把 `fps / rtf / ms_per_chunk` 写进配置，供控制台与安装收尾展示。
 
 ## 已知故障与自我修复
 
@@ -70,7 +71,8 @@ INSTALL_DIR/
 | --- | --- | --- |
 | `flashhead.flashattn.failed` | `FLASHATTN-*` 带 `FAILED` / `import flash_attn` 崩 | 先确认 torch 是 **2.8.0+cu128**（轮子按这个 tag 匹配）；再查 `MT_FLASHHEAD_FLASH_ATTN_WHEEL` 指向的本地轮子；源码编译需要 MSVC + CUDA Toolkit，缺就别硬编，换本地轮子 |
 | `flashhead.venv.torch_failed` | pip 装 torch 失败 / `torch.cuda.is_available()` 为 False | 按驱动重装 cu128；`PIP_CONFIG_FILE` 已被脚本清空，别再叠个人 index |
-| `flashhead.venv.requirements_failed` | 依赖解析失败 | 确认装的是**本包** `requirements.txt`（Windows 子集，不含 `nvidia-nccl-cu12` / `xformers` / `decord`） |
+| `flashhead.venv.requirements_failed` | 依赖解析失败 | 确认装的是**本包** `requirements.txt`（Windows 子集，不含 `nvidia-nccl-cu12` / `xformers` / `decord`；opencv 两个包钉在 `==4.12.0.88`，别放开） |
+| 安装卡在 `Downloading opencv_contrib_python-…whl` 不动 | 十几分钟没有任何新行 | 镜像给了条「连上但涓流」的连接（实测 aliyun 对该 53.8MB 轮子只有 ~85KB/s，pip 的 `--timeout` 管不到）。脚本已自带看门狗：`wheels <n> MB (+x MB/s)` 是进度，75 秒无新字节就杀 pip 换下一个镜像（清华 → 阿里 → 官方）。轮子落在 `<InstallDir>\wheels\pip\`，重跑直接复用；手工排查可 `curl -o NUL -w "%{speed_download}" <轮子URL>` 量速 |
 | `flashhead.weights.failed` | 某个 safetensors 缺失 / 大小不符 | 重跑脚本走断点续传；ModelScope 超时自动回落 hf-mirror 与 huggingface.co |
 | `flashhead.smoke.failed` | 没有 `BENCH-OK` | 看 `<InstallDir>\smoke-flashhead.log`：`CHECK-FAIL=` 后面就是原因（权重 / 编译 / 显存 / ffmpeg） |
 | 起服务报 `FileNotFoundError: infer_params.yaml` | 没 `cwd` 进仓库根 | 用 `start_backend.cmd`（它先 cd 再起 `mtnode_server.py`） |

@@ -152,8 +152,8 @@ $("btnClose").onclick = () => api.close();
 
 $("btnBench").onclick = async () => {
   if (!picks.image || !picks.audio) return toast("基准需要人物图 + 语音（用官方示例也行）");
-  toast("跑 3 块基准…（首次会加载权重）");
-  const r = await api.benchmark({ imagePath: picks.image, audioPath: picks.audio, chunks: 3 });
+  toast("跑 4 块基准…（首次会加载权重）");
+  const r = await api.benchmark({ imagePath: picks.image, audioPath: picks.audio, chunks: 4 });
   if (r && r.ok) {
     showBench(r);
     toast(`基准完成：${Number(r.fps).toFixed(1)} FPS · RTF ${Number(r.rtf).toFixed(3)}`);

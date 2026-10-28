@@ -204,6 +204,23 @@
         "zh": "本地实时数字人：一张人物图 + 一段语音 → 512×512 @25fps 口型同步 mp4（SoulX-FlashHead Lite 1.3B，Model_Lite 蒸馏 4 步）。整段音频一次流式跑完、不切块；单张 40 系卡即可跑到 25fps 实时（4090 实测高于实时）。默认全开优化：torch.compile + flash-attention（装不上即安装失败）+ SageAttention + fp16 VAE 分片。独立 Python 服务（默认 8198，与 InfiniteTalk 的 8199 隔离），权重走 ModelScope → hf-mirror。插件控制台可安装 / 启停 / 试生成 / 跑实时基准 / 看日志，画布「SoulX 实时数字人」节点。需 NVIDIA 显卡（建议 ≥16G 显存），预留 ≥30GB 磁盘。移除插件不删已装项目与产物。",
         "en": "Local real-time avatar: one portrait + one voice track → 512×512 @25fps lip-synced mp4 (SoulX-FlashHead Lite 1.3B, Model_Lite 4-step distilled). The whole track runs through in one streaming pass — no host-side chunking — and a single 40-series card reaches 25fps real time (a 4090 measures above real time). All optimizations on by default: torch.compile + flash-attention (installing without it counts as a failure) + SageAttention + fp16 sliced VAE. It runs its own Python service (port 8198, isolated from InfiniteTalk's 8199) and pulls weights from ModelScope, falling back to hf-mirror. The console installs, starts/stops, test-generates, runs a real-time benchmark and shows logs; adds a canvas SoulX real-time avatar node. Needs an NVIDIA GPU (≥16GB VRAM recommended) and ≥30GB free disk. Removing the plugin keeps your install and outputs."
       }
+    },
+    {
+      "id": "flux3-klein-local",
+      "kind": "flux3klein",
+      "handler": "flux3klein",
+      "order": 44,
+      "version": "1.0.0",
+      "minAppVersion": "1.6.2",
+      "icon": "flux3-klein-local.png",
+      "title": {
+        "zh": "FLUX 3 Image Klein",
+        "en": "FLUX 3 Image Klein"
+      },
+      "subtitle": {
+        "zh": "本地 FLUX 3 Image Klein 出图（5.6B 蒸馏 · INT8 默认 / BF16 可选）：独立 ComfyUI（默认 8197）跑官方原生节点，与「图像生成」节点同口径 —— 提示词、多参考图编辑（≤10 张）、比例桶、抽卡 1–10 次 + 种子摇数、蒙版局部重绘、透明背景（双通道差分，抽卡 N 次出 2N 张）。权重走 ModelScope → hf-mirror，也可指定已下载的权重目录。需 NVIDIA 显卡（INT8 8G 起，BF16 建议 24G），预留 ≥40GB 磁盘。许可为 FLUX Kommunity License（年收入 500 万美元以下可商用）。移除插件不删已装项目与产物。",
+        "en": "Local FLUX 3 Image Klein (5.6B distilled · INT8 default / BF16 optional) on an isolated ComfyUI (port 8197) using the official native nodes, aligned with the image-generation node: prompt, multi-reference editing (≤10), ratio buckets, 1–10 rolls with seed shake, mask inpaint, and transparent background (two-pass difference matte; N rolls yield 2N images). Weights come from ModelScope then hf-mirror, or point it at an already downloaded folder. Needs an NVIDIA GPU (8GB for INT8, 24GB recommended for BF16) and ≥40GB free disk. Licensed under the FLUX Kommunity License (free commercial use under $5M revenue). Removing the plugin keeps your install and outputs."
+      }
     }
   ]
 }

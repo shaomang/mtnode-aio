@@ -8,7 +8,15 @@ transformers==4.57.3
 tokenizers>=0.20.3
 accelerate>=1.8.1
 xfuser>=0.4.3
-opencv-python>=4.12.0.88
+# opencv is PINNED, both dists, on purpose:
+#   * upstream asks for >=4.12.0.88, which today resolves to 5.0.0.93 -- its 53.8MB wheel is
+#     the single most common place this install stalls (a mirror can hand out a connection
+#     that trickles at <100 KB/s; see the stall watchdog in install.ps1);
+#   * mediapipe 0.10.9 pulls opencv-contrib-python with no upper bound, so an unpinned
+#     resolve ships opencv-python 5.x next to opencv-contrib-python 5.x / 4.x -- two dists
+#     writing the same cv2 tree. Both are pinned to the same version instead.
+opencv-python==4.12.0.88
+opencv-contrib-python==4.12.0.88
 imageio
 imageio-ffmpeg
 easydict

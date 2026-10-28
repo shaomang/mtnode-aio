@@ -1025,7 +1025,28 @@ function canvasNodeSig(n) {
     /* 节点层外侧端子名（「外观」面板里改的）：改名只换徽标文字、不改形状，
        但复用快速通道不会重画徽标 —— 所以名字进签名，改完这一拍整幅重建一次。 */
     n.kind === "super" ? superPortNamesSig(n) : "",
+    /* 节点头部那一格文件夹路径：最外层开发块 = 项目根（devPath），其余 = 子文件夹。
+       改路径（含清除）只换这一格文字与那枚按钮的高亮、标题与尺寸都不变 ——
+       不收进签名就会命中复用快速通道，头部一直显示旧路径。 */
+    n.kind === "super" ? superFolderPathSig(n) : "",
+    /* 蒙版状态：头部那颗小按钮的高亮与板身「蒙版重绘」标签都取自 maskOn / maskPath，
+       而它们不在标题 / 描述里 —— 不收进签名就会出现「编辑器里已启用，外面按钮还是灰的」。 */
+    n.kind === "proc_image"
+      ? (n.maskPath ? 1 : 0) + ":" + (n.maskOn === false ? 0 : 1)
+      : "",
   ].join(":");
+}
+/** 节点层头部显示的文件夹路径（与 nodeElement 里那一格同一口径：最外层开发块取项目根
+    devPathOf，其余取 subFolder）—— 只给 canvasNodeSig 用。 */
+function superFolderPathSig(n) {
+  if (!n) return "";
+  const topDev =
+    typeof devTopBlockForProjectFolder === "function" &&
+    devTopBlockForProjectFolder(n);
+  if (!topDev) return String(n.subFolder || "").trim();
+  return typeof devPathOf === "function"
+    ? String(devPathOf(n) || "").trim()
+    : "";
 }
 /** 素材条目「输出端子被连」的位图（`0110`），只给 canvasNodeSig 用 */
 function assetBrowseOutMask(n) {
@@ -2466,7 +2487,7 @@ function renderNodeSettingsForm() {
     const media = isSaveNode(d.node)
       ? saveMediaKind(d.node)
       : /* SenseNova 图像节点的产物是 PNG，不是音频：绝不能给它挂波形预览器 */
-        d.node.kind === "sensenova_gen"
+        d.node.kind === "sensenova_gen" || d.node.kind === "flux3klein_gen"
         ? "image"
         : "audio";
     if (isSaveNode(d.node) || isMediaGenNode(d.node)) ensureNodeSettingsWave(d.node, d.root, media);
@@ -8456,6 +8477,19 @@ function portBadgeText(node, dir, idx, opt) {
           title: i === 0 ? "" : I18n.t("（数据槽：可接文本 / 图像）"),
           zh: true,
         };
+      case "flux3klein_gen":
+        /* 固定 3 颗：0=提示词 · 1=参考图（可多接）· 2=控制输入 */
+        return {
+          badge:
+            i === 0 ? I18n.t("提示词") : i === 1 ? I18n.t("参考图") : I18n.t("控制"),
+          title:
+            i === 0
+              ? ""
+              : i === 1
+                ? I18n.t("（可接多张图像 · 最多 10 张）")
+                : I18n.t("（触发生成）"),
+          zh: true,
+        };
       /* Breeze 语音（bug 修复：它从前不在任何徽标白名单里，5 入 2 出全都没有标签）——
          端口口径 = app.js 的 IN_PORT_DATA_KINDS.breeze_gen / inPortIsControl：
          0 待合成文本 · 1 参考音频 · 2 参考文稿 · 3 指令 · 4 控制 */
@@ -8613,6 +8647,8 @@ function portBadgeText(node, dir, idx, opt) {
       return { badge: i === 0 ? I18n.t("信息") : I18n.t("控制"), title: "", zh: true };
     case "sensenova_gen":
       /* 0 号出的是图，不叫「内容」—— 与 .img 端子配色同一说法 */
+      return { badge: i === 0 ? I18n.t("图像") : I18n.t("控制"), title: "", zh: true };
+    case "flux3klein_gen":
       return { badge: i === 0 ? I18n.t("图像") : I18n.t("控制"), title: "", zh: true };
     case "breeze_gen":
       /* 0 号出的是合成好的语音（与 save / 下游媒体端子同族）· 1 号是控制出 */
@@ -9096,9 +9132,11 @@ function nodeElement(node) {
   if (
     node.kind === "proc_text" ||
     node.kind === "proc_image" ||
-    node.kind === "agent_task"
+    node.kind === "agent_task" ||
+    node.kind === "flux3klein_gen"
   ) {
-    head.append(...apiPreviewButtons(node));
+    /* FLUX 3 Image Klein 是本机后端节点，请求体由插件控制台负责，不给 ◈ 预览 */
+    if (node.kind !== "flux3klein_gen") head.append(...apiPreviewButtons(node));
     if (node.kind === "proc_image") {
       head.appendChild(bgRmButtonEl(node));
       /* 画幅锁定：菜单栏小按钮，与首参考图保持一致长宽比（补边生图 → 出图裁回） */
@@ -9108,6 +9146,10 @@ function nodeElement(node) {
       if (typeof window.maskButtonEl === "function")
         head.appendChild(window.maskButtonEl(node));
     }
+    /* FLUX 3 Image Klein：只留蒙版按钮（没有补边 / 画幅锁定这套口径），
+       蒙版底图取端口 1 的第 1 张参考图（见 app.js 的 maskBaseImagePath） */
+    if (node.kind === "flux3klein_gen" && typeof window.maskButtonEl === "function")
+      head.appendChild(window.maskButtonEl(node));
     if (node.kind === "proc_text") {
       /* 智能模式开关：提示词成为任务，agent 可读文件/联网/执行命令 */
       const ag = document.createElement("button");
@@ -9718,6 +9760,19 @@ function nodeElement(node) {
     appendMediaConsoleBtn(head, node);
     appendMediaPlayBtns(head, node, "调用 SenseNova 本地后端生成图像");
   }
+  /* FLUX 3 Image Klein：与 SenseNova 图像节点同构（状态 chip + ◎ 探活 + ▤ 控制台 + ▶/✕） */
+  if (node.kind === "flux3klein_gen") {
+    const chip = document.createElement("span");
+    chip.className = "n-chip" + (node.running ? " on" : "");
+    chip.textContent = I18n.t("图像");
+    chip.title = I18n.t(
+      "FLUX 3 Image Klein 5.6B 蒸馏（本机出图）· 端子 0=提示词 · 1=参考图（≤10）· 执行时自动启停独立 ComfyUI（8197）",
+    );
+    head.appendChild(chip);
+    appendBackendProbeBtn(head, node);
+    appendMediaConsoleBtn(head, node);
+    appendMediaPlayBtns(head, node, "调用 FLUX 3 Image Klein 本地后端生成图像");
+  }
   if (node.kind === "video_gen" || node.kind === "infinitetalk_gen" || node.kind === "soulxflashhead_gen") {
     const lc = node.kind === "infinitetalk_gen";
     const sx = node.kind === "soulxflashhead_gen";
@@ -10167,6 +10222,11 @@ function nodeElement(node) {
         : null;
     const fnInIsArr = !!(fnInParam && fnBrowseParamIsArray(fnInParam));
     const fnInWires = fnInIsArr ? fnToolInPortWireCount(node, i) : 0;
+    /* 数组式固定端子（flux3klein_gen 参考图口）：同一颗端子挂多张图 → 徽标带「×N」 */
+    const multiInWires =
+      typeof inPortAcceptsManyWires === "function" && inPortAcceptsManyWires(node, i)
+        ? inPortWireCount(node, i)
+        : 0;
     let inTitle =
       I18n.t("输入端子 ") +
       (i + 1) +
@@ -10250,6 +10310,15 @@ function nodeElement(node) {
         i === 0
           ? I18n.t("提示词（要画成什么 · 可接文本节点，也可接参考图）")
           : I18n.t("输入端子 ") + (i + 1) + I18n.t("（数据槽：可接文本 / 图像）");
+    else if (node.kind === "flux3klein_gen")
+      /* FLUX 3 Image Klein（端口口径 = app.js 的 IN_PORT_DATA_KINDS.flux3klein_gen）：
+         0 提示词 · 1 参考图（可多接，最多 10 张）· 2 控制输入 */
+      inTitle =
+        i === 0
+          ? I18n.t("提示词（要画成什么 · 可接文本节点）")
+          : i === 1
+            ? I18n.t("参考图（编辑用 · 可接多张图像，最多 10 张）")
+            : I18n.t("控制输入（触发生成）");
     else if (node.kind === "soulxflashhead_gen")
       /* SoulX-FlashHead Lite（端口口径 = app.js 的 IN_PORT_DATA_KINDS.soulxflashhead_gen）：
          0 人物图 · 1 语音 · 2 控制输入 */
@@ -10332,6 +10401,15 @@ function nodeElement(node) {
       const badge = document.createElement("span");
       badge.className = "port-badge" + (pb.zh ? " zh-label" : "");
       setPortBadgeName(badge, pb.badge);
+      /* 数组式固定端子：同一颗端子挂了多条数据线 → 徽标尾部标「×N」（当前张数） */
+      if (!fnInIsArr && multiInWires > 1) {
+        const cnt = document.createElement("span");
+        cnt.className = "port-badge-count";
+        cnt.style.cssText = "margin-left:4px;opacity:.85";
+        cnt.textContent = "×" + multiInWires;
+        cnt.title = I18n.t("参考图") + " ×" + multiInWires;
+        badge.appendChild(cnt);
+      }
       if (fnInIsArr) {
         /* 数组端子徽标：参数名 + 一条线一个槽（渐进槽位端子组，如 参考图[1][2][3]＋）。
            引擎仍按「同一个端子号收多条数据线」取数（JS 拿到数组）——这里只改视觉：
@@ -10480,7 +10558,7 @@ function nodeElement(node) {
       else if (outKind === "video") outCls += " vid";
     } else if (node.kind === "judge" || node.kind === "task")
       outCls += oi === 0 ? " yes" : " no";
-    else if (node.kind === "sensenova_gen" && oi === 0)
+    else if ((node.kind === "sensenova_gen" || node.kind === "flux3klein_gen") && oi === 0)
       /* SenseNova 图像节点的 0 号输出就是图像端子（与 inferMediaFromSource 判出的
          连线配色同源）：涂上 .img，用户一眼看得懂「这根线喂给 save_image / 预览」。
          端口1 仍走下面的控制色（nodeEmitsControlOnPort）。 */
@@ -10514,10 +10592,10 @@ function nodeElement(node) {
       outTitle = I18n.t("分发输出 ") + (oi + 1);
     else if (node.kind === "net_recv")
       outTitle = oi === 0 ? I18n.t("信息输出（收到的文本）") : I18n.t("控制输出（收到消息时触发）");
-    else if (node.kind === "music_gen" || node.kind === "yue_gen" || node.kind === "sensenova_gen" || node.kind === "video_gen" || node.kind === "infinitetalk_gen" || node.kind === "soulxflashhead_gen" || isVideoPostKind(node) || node.kind === "remotion")
+    else if (node.kind === "music_gen" || node.kind === "yue_gen" || node.kind === "sensenova_gen" || node.kind === "flux3klein_gen" || node.kind === "video_gen" || node.kind === "infinitetalk_gen" || node.kind === "soulxflashhead_gen" || isVideoPostKind(node) || node.kind === "remotion")
       outTitle =
         oi === 0
-          ? node.kind === "sensenova_gen"
+          ? node.kind === "sensenova_gen" || node.kind === "flux3klein_gen"
             ? I18n.t("输出端子（本节点生成的图像 · 可直接连图像保存 / 预览）")
             : node.kind === "infinitetalk_gen"
               ? I18n.t("输出端子（生成的数字人视频 mp4 · 可直接连保存 / 预览）")
@@ -11476,6 +11554,9 @@ function rebuildNodeBody(node, bodyEl) {
   try {
     while (bodyEl.firstChild) bodyEl.removeChild(bodyEl.firstChild);
     buildBody(node, bodyEl);
+    /* body 单独重建时预览元素是全新的一批：这里补一次回填（与整幅重绘收尾同一个入口），
+       否则「图像节点」的输出预览建出来没有 src —— 空框，点一下才能看到图（本 bug）。 */
+    if (typeof fillPreviews === "function") fillPreviews();
     if (!el) return;
     const sz =
       node.kind === "super" ? superDisplaySize(node) : { w: node.w, h: node.h };
@@ -11946,6 +12027,12 @@ function procOutPanelEl(node, r, liveDsh, opts) {
         img.id = "outimg-" + node.id + "-" + idx;
         img.alt = x.title;
         img.dataset.path = (x.output && x.output.path) || "";
+        /* 建元素即写 src（见 setThumbPreviewSrc）：输出预览不再依赖下一轮异步回填 */
+        setThumbPreviewSrc(
+          img,
+          img.dataset.path,
+          ((r && r.ranAt) || node.ranAt || 0) + ":" + idx + ":" + img.dataset.path,
+        );
         if (node.bgRmOn) img.classList.add("bg-rm-preview");
         bindImgSaveAs(img);
         bindImagePreview(img, img.dataset.path, x.title);
@@ -11983,6 +12070,12 @@ function procOutPanelEl(node, r, liveDsh, opts) {
     img.id = "out-img-" + node.id;
     img.alt = I18n.t("输出图像");
     img.dataset.path = r.output.path || "";
+    /* 建元素即写 src（见 setThumbPreviewSrc）：不再等 fillPreviews 的第二次回填 */
+    setThumbPreviewSrc(
+      img,
+      img.dataset.path,
+      (r.ranAt || node.ranAt || 0) + ":" + img.dataset.path,
+    );
     if (node.bgRmOn) img.classList.add("bg-rm-preview");
     bindImgSaveAs(img);
     bindImagePreview(img, img.dataset.path, node.title || I18n.t("输出图像"));
@@ -17408,6 +17501,89 @@ function buildBody(node, body) {
       stt.textContent = node.error || node.sensenovaStatus;
       body.appendChild(stt);
     }
+  } else if (node.kind === "flux3klein_gen") {
+    /* FLUX 3 Image Klein：与 SenseNova 图像节点同构（未装警示 + 可编辑提示词 +
+       ⚙ 摘要 + 后端面板 + 图像预览 + 状态行），产物仍落应用托管目录。 */
+    if (
+      typeof appPluginMissing === "function"
+        ? appPluginMissing("flux3-klein-local")
+        : !appPluginInstalled("flux3-klein-local")
+    ) {
+      const warn = document.createElement("div");
+      warn.className = "n-empty n-plugin-warn";
+      warn.textContent = I18n.t(
+        "⚠ FLUX 3 Image Klein 插件未安装：请在「插件 · FLUX 3 Image Klein」中安装后使用本节点",
+      );
+      warn.title = I18n.t("插件 · FLUX 3 Image Klein：设置安装目录 → 安装（权重约 11GB / INT8 约 5.8GB）");
+      body.appendChild(warn);
+    }
+    /* 提示词：端子 0 有文字线时以线为准（见 playFlux3KleinNode / flux3kleinPromptText） */
+    const f3 = document.createElement("div");
+    f3.className = "n-field n-prompt";
+    const hdr = document.createElement("div");
+    hdr.className = "n-prompt-hdr";
+    const lab = document.createElement("span");
+    lab.className = "n-prompt-lab";
+    lab.textContent = I18n.t("提示词 Prompt（@ 引用输入节点 · 不接线时用它出图）");
+    hdr.appendChild(lab);
+    f3.appendChild(hdr);
+    const ta = document.createElement("textarea");
+    ta.className = "n-text";
+    ta.spellcheck = false;
+    ta.placeholder = I18n.t(
+      "例如：把这张图的天空换成黄昏，其余保持不变… 输入 @ 引用已连接节点",
+    );
+    ta.value = String(node.prompt || "");
+    ta.addEventListener("keydown", (ev) => {
+      if (refKey(ta, ev, node)) return;
+    });
+    ta.addEventListener("click", () => {
+      if (S.refMenu) refTick(ta, node);
+    });
+    ta.addEventListener("blur", () =>
+      setTimeout(() => {
+        closeRefMenu();
+      }, 150),
+    );
+    mountPromptTextarea(f3, ta, node, (v) => {
+      node.prompt = v;
+    });
+    body.appendChild(f3);
+    appendFlux3KleinSummaryBody(node, body);
+    appendMediaBackendPanel(body, node);
+    const prev = document.createElement("div");
+    prev.className = "sv-prev mg-prev";
+    const img = document.createElement("img");
+    img.id = "snimg-" + node.id;
+    img.alt = "";
+    img.style.display = "none";
+    prev.appendChild(img);
+    const empty = document.createElement("div");
+    empty.className = "sv-empty";
+    empty.id = "snempty-" + node.id;
+    empty.textContent = I18n.t("图像不存在（生成后将显示于此）");
+    prev.appendChild(empty);
+    const nameEl = document.createElement("div");
+    nameEl.className = "n-text";
+    nameEl.id = "snname-" + node.id;
+    nameEl.style.maxHeight = "36px";
+    nameEl.style.overflow = "hidden";
+    nameEl.style.cursor = "pointer";
+    nameEl.title = I18n.t("在文件夹中显示");
+    {
+      const hint = (node.output && node.output.path) || "";
+      if (hint) nameEl.textContent = fileName(hint);
+    }
+    prev.appendChild(nameEl);
+    body.appendChild(prev);
+    if (node.flux3kleinStatus || node.error) {
+      const stt = document.createElement("div");
+      stt.className =
+        "n-status" +
+        (node.running ? " run" : node.error ? " err" : node.ranAt ? " done" : "");
+      stt.textContent = node.error || node.flux3kleinStatus;
+      body.appendChild(stt);
+    }
   } else if (node.kind === "breeze_gen") {
     /* 「角色 + 组名」同一行（先定谁的声音，再写要念的文本）；下面才是摘要与文本框 */
     breezePresetPullOnce();
@@ -18215,6 +18391,36 @@ function thumbUrlWithBust(p, bust, edge) {
   );
 }
 
+/* 预览位 <img> 的统一赋值（本次 bug 的修法）：
+   以前「图像节点」输出面板里的 <img> 建出来**不带 src**，只靠重绘收尾的
+   fillPreviews() 异步回填 —— 只要节点 body 被单独重建（rebuildNodeBody 不跑
+   fillPreviews）、或那一轮异步回填没轮到这颗节点，预览就剩一个空框
+   （.n-out img 有 border + background + flex:1，看起来就是「图像丢了」），
+   而 dataset.path 与大图预览的绑定都在，于是「点一下还能出图」。
+   现在三处口径统一在这里：
+     · 建元素时就按路径把 src 写上（不再依赖第二次异步回填）；
+     · 同一个路径 + 同一个防缓存串不重复赋值（不白白重新解码）；
+     · 缩略图协议万一取不到字节（stat / 读盘瞬时失败）→ 退回原图 file:///，
+       预览宁可多解码一次，也不能变空白。 */
+function setThumbPreviewSrc(img, path, bust, edge) {
+  if (!img || !path) return img;
+  const url = thumbUrlWithBust(path, bust, edge);
+  if (img.__thumbPath === path && img.__thumbBust === String(bust) && img.getAttribute("src") === url)
+    return img;
+  img.__thumbPath = path;
+  img.__thumbBust = String(bust);
+  img.__thumbFallback = false;
+  img.onerror = () => {
+    if (img.__thumbFallback) return;
+    img.__thumbFallback = true;
+    try {
+      img.src = fileUrlWithBust(path, bust);
+    } catch (_) {}
+  };
+  img.src = url;
+  return img;
+}
+
 /* ═══════════ 保存节点「文本」预览的三道闸（体积 / 二进制 / 截断）═══════════
    现场 bug：删掉一颗节点层后，失去上游的「保存节点」被判成文本 ——
    saveMediaKind 没有数据线可看，只能退回按配置路径判型（savePath 是 .md），
@@ -18365,7 +18571,8 @@ async function fillPreviews() {
         r.batchOutputs.forEach((x, idx) => {
           const img = document.querySelector("#outimg-" + n.id + "-" + idx);
           if (img && x.ok && x.output && x.output.path) {
-            img.src = thumbUrlWithBust(
+            setThumbPreviewSrc(
+              img,
               x.output.path,
               (r.ranAt || n.ranAt || 0) + ":" + idx + ":" + x.output.path,
             );
@@ -18376,7 +18583,8 @@ async function fillPreviews() {
       } else if (r && r.output && r.output.kind === "image") {
         const img = document.querySelector("#out-img-" + n.id);
         if (img) {
-          img.src = thumbUrlWithBust(
+          setThumbPreviewSrc(
+            img,
             r.output.path,
             (r.ranAt || n.ranAt || 0) + ":" + r.output.path,
           );
@@ -18528,7 +18736,7 @@ async function fillPreviews() {
         n.kind === "soulxflashhead_gen" ||
         n.kind === "remotion" ||
         (typeof isVideoPostKind === "function" && isVideoPostKind(n));
-      const isSnImg = n.kind === "sensenova_gen";
+      const isSnImg = n.kind === "sensenova_gen" || n.kind === "flux3klein_gen";
       const el = document.querySelector(
         (isSnImg ? "#snimg-" : isVid ? "#mgvid-" : "#mgaud-") + n.id,
       );

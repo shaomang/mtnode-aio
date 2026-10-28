@@ -3998,12 +3998,27 @@ function registerRemotionIpc(opts) {
   });
 }
 
-/** 应用退出时只关控制台窗；渲染子进程 / 安装目录一律保留（同 h3 服务常驻语义）。 */
+/** 应用退出：关控制台窗，并把**正在渲染的子进程树**（node + 无头 Chrome）一起结束 ——
+ *  MTNode 都关了，就不该留一只没人管的渲染在后台继续吃 CPU / 显存。
+ *  安装目录与已渲染产物一律保留；没在渲染时这里什么都不做。 */
 function shutdownRemotionUiOnly() {
   try {
     if (consoleWin && !consoleWin.isDestroyed()) consoleWin.close();
   } catch {}
   consoleWin = null;
+  const child = renderProc && renderProc.child;
+  const pid = Number(child && child.pid) || 0;
+  renderProc = null;
+  activeRenderNode = "";
+  if (!pid) return;
+  try {
+    if (process.platform === "win32") {
+      spawnSync("cmd.exe", ["/d", "/s", "/c", "taskkill /PID " + pid + " /T /F"], { windowsHide: true });
+    } else {
+      try { child.kill(); } catch {}
+    }
+    appendConsole("[quit] 已结束渲染进程树 pid=" + pid);
+  } catch {}
 }
 
 module.exports = {

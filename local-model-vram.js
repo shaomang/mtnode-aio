@@ -42,6 +42,10 @@
  *
  * 调用方拿到的一定是回执（数组 [ReleaseStep]），不是异常：释放失败只在调用方提示，
  * 不许把生成任务本身判失败。全程上限 RELEASE_TOTAL_MS，量不到显存读数时保守执行、如实写「量不到」。
+ *
+ * 另有一条与「释放」分开的出口：`vramShutdownAll`（应用**完全退出**时由 main.js 的 before-quit 调）。
+ * 退出不是释放 —— MTNode 都没了，插件后端就没有理由继续占显存 / 端口，所以它不看忙不忙、
+ * 不保留常驻窗口，逐个走 hard() 结束进程树，单后端与整体都有上限，绝不拖死退出。
  */
 
 const fs = require("fs");
@@ -56,6 +60,9 @@ const RELEASE_TOTAL_MS = 30000;
 const RELEASE_WAIT_BUSY_MS = 60000;
 /* 硬释放后等显存回落 / 端口放掉的观察窗口 */
 const HARD_VERIFY_MS = 4000;
+/* 退出收尾（shutdownAll）：单后端上限 / 总上限 —— 用户关掉 MTNode 就该走，不能无限等 */
+const QUIT_BACKEND_MS = 6000;
+const QUIT_TOTAL_MS = 15000;
 /* 「保持常驻」的下限与复查间隔（后端登记 keepWarmMs 才生效，见 releaseAfterUse） */
 const KEEP_WARM_MIN_MS = 5000;
 const KEEP_WARM_RETRY_MS = 15000;
@@ -404,6 +411,88 @@ async function releaseSelf(id, opts) {
   });
 }
 
+/**
+ * **应用完全退出**：把每个已登记后端都在跑的后台进程树一并结束（不看忙不忙、不留常驻窗口）。
+ *
+ * 为什么要有这一条（与上面「释放」区分开）：释放是为了给下一单腾显存，用户可以继续用 MTNode；
+ * 退出不是 —— MTNode 都没了，插件后端（python / ComfyUI / Gradio / 管理服务）就不该继续在后台
+ * 占着显存与端口。历史口径是「后端是独立于 MTNode 的单例，退出只关控制台窗」，一旦插件本身出问题
+ * （生成卡死 / 进程不响应 / 安装到一半），用户关掉 MTNode 之后显存仍被这些残留进程吃住，
+ * 只能自己去任务管理器收尸。现在改成：**关 MTNode 就一起收**（下次要用由各插件 ensureReady 自行拉起）。
+ *
+ * 口径：
+ *   · 只走宿主的 hard()（各宿主自己知道怎么杀自己的进程树 / 清 pid 台账），不调 soft（退出不需要优雅卸载）；
+ *   · 不看 isBusy：正在跑的生成本身就跟着 MTNode 一起结束，不在这里等；
+ *   · 每个后端有上限（QUIT_BACKEND_MS），整体有上限（QUIT_TOTAL_MS）：绝不让收尸拖死退出；
+ *   · 没在跑的后端当场跳过，所以正常情况下退出是毫秒级；
+ *   · 永不抛：失败只写日志 + 回执里的 ok=false，调用方照常退出。
+ */
+async function shutdownAll(opts) {
+  const o = opts || {};
+  const reason = String(o.reason || "app_quit");
+  const totalMs = Number(o.totalMs) > 0 ? Number(o.totalMs) : QUIT_TOTAL_MS;
+  const perMs = Number(o.perBackendMs) > 0 ? Number(o.perBackendMs) : QUIT_BACKEND_MS;
+  const deadline = Date.now() + totalMs;
+  const out = [];
+  for (const def of registry.values()) {
+    cancelKeepWarm(def.id, "应用退出");
+    let running = false;
+    try {
+      running = !!def.isRunning();
+    } catch {}
+    const step = {
+      id: def.id,
+      label: String(def.label || def.id),
+      running,
+      busy: false,
+      action: "none",
+      ok: true,
+      ms: 0,
+      reason: "",
+      freedMb: null,
+    };
+    if (!running) {
+      step.reason = "not_running";
+      out.push(step);
+      continue;
+    }
+    if (typeof def.hard !== "function") {
+      step.ok = false;
+      step.reason = "no_hard_hook";
+      out.push(step);
+      vramLog("退出收尾跳过 " + step.label + "：宿主没有登记 hard()", def);
+      continue;
+    }
+    if (Date.now() >= deadline) {
+      step.ok = false;
+      step.reason = "total_timeout";
+      out.push(step);
+      vramLog("退出收尾跳过 " + step.label + "：本次收尾已到总上限（" + totalMs + "ms）", def);
+      continue;
+    }
+    const budget = Math.max(1, Math.min(perMs, deadline - Date.now()));
+    const t0 = Date.now();
+    step.action = "hard";
+    vramLog("退出收尾：结束 " + step.label + " 的后台进程树（reason=" + reason + "）", def);
+    const r = await withTimeout(
+      (async () => def.hard.call(def, reason))(),
+      budget,
+      () => vramLog("退出收尾结束 " + step.label + " 超时（" + budget + "ms），按未完成继续", def),
+    );
+    step.ms = Date.now() - t0;
+    if (!r.ok) {
+      step.ok = false;
+      step.reason = String(r.error || "error");
+      vramLog("退出收尾失败 " + step.label + "：" + step.reason, def);
+    }
+    out.push(step);
+  }
+  /* 有的宿主是 spawn 出去让 taskkill 收尸（不 await），给它们一小段时间真正落地，
+     免得主进程先退、taskkill 还没跑完；这点延迟只在确实动过手时才有。 */
+  if (out.some((s) => s.action === "hard")) await sleep(600);
+  return out;
+}
+
 /* ── 保持常驻窗口（连续使用同一后端时不反复卸载 / 载入） ─────────────────── */
 
 /** 撤掉某个后端的常驻窗口；返回 true = 本来确实在窗口里（调用方据此记日志） */
@@ -629,6 +718,8 @@ module.exports = {
   RELEASE_SOFT_MS,
   RELEASE_TOTAL_MS,
   RELEASE_WAIT_BUSY_MS,
+  QUIT_BACKEND_MS,
+  QUIT_TOTAL_MS,
   vramRegister,
   vramList,
   vramPorts,
@@ -637,6 +728,8 @@ module.exports = {
   vramReleaseOthers: releaseOthers,
   vramReleaseSelf: releaseSelf,
   vramReleaseAfterUse: releaseAfterUse,
+  /* 应用完全退出：所有已登记后端的后台进程树一律结束（见 shutdownAll） */
+  vramShutdownAll: shutdownAll,
   vramKeepWarm: isKeepWarm,
   vramCancelKeepWarm: cancelKeepWarm,
   vramRead,

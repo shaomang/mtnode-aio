@@ -178,8 +178,8 @@ const PLUGIN_REPAIR_SERVICE_BASE = {
     /* 宿主写的修复结果标记：Agent 保底安装/修复的结论落在这个文件里 */
     results: [".breeze-agent-result"],
   },
-  /* InfiniteTalk 数字人：那份 ComfyUI 是本插件自己装的（与 H3 隔离），常驻单例、
-     不随 MTNode 退出 —— 修完调 infinitetalkStart 重新拉起 + /health 才算真验证。 */
+  /* InfiniteTalk 数字人：那份 ComfyUI 是本插件自己装的（与 H3 隔离），常驻单例（MTNode 完全退出时才被收掉）
+     —— 修完调 infinitetalkStart 重新拉起 + /health 才算真验证。 */
   infinitetalk: {
     label: "InfiniteTalk 数字人",
     resident: true,
@@ -190,8 +190,8 @@ const PLUGIN_REPAIR_SERVICE_BASE = {
     cards: ["infinitetalk-local"],
     results: [".infinitetalk-agent-result"],
   },
-  /* SoulX-FlashHead Lite：后端服务本插件自装（与 InfiniteTalk 隔离、端口 8198），常驻单例、
-     不随 MTNode 退出 —— 修完调 soulxflashheadStart 重新拉起 + /health 才算真验证。 */
+  /* SoulX-FlashHead Lite：后端服务本插件自装（与 InfiniteTalk 隔离、端口 8198），常驻单例
+     （MTNode 完全退出时才被收掉）—— 修完调 soulxflashheadStart 重新拉起 + /health 才算真验证。 */
   soulxflashhead: {
     label: "SoulX 实时数字人",
     resident: true,

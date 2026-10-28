@@ -840,7 +840,7 @@ function plugRootWarn(msg) {
        等重功能还在里面），但只由用户显式打开 —— 卡片按钮或托盘的「打开控制台」。
      · 后端求助信号（llama / Breeze 的 ui-signal）不再自动弹窗：卡片角标 + 状态行一句
        + 详情浮层里内嵌的 console（宿主 statusForUi 的 notice 字段）。
-     · 关掉控制台窗不影响后端（后端单例不随 MTNode 退出）；Remotion 没有常驻后端
+     · 关掉控制台窗不影响后端（后端跟 MTNode 一起走：完全退出时才停）；Remotion 没有常驻后端
        （无 start / stop IPC），所以它只有「安装 / 重装」+「控制台」，没有「启用」。
    桥的名字一一对应 preload.js：<api>Status / Start / Stop / Install / CancelInstall /
    PickInstallDir / Open / Close / ConsoleTail / UpdateRuntime。 */
@@ -857,6 +857,9 @@ const BACKEND_PLUGIN_SPECS = {
   /* SoulX-FlashHead Lite 实时数字人（kind soulxflashhead，id soulxflashhead-local）：
      权重只发一版，装完就是这版 —— 不做「检查更新」，只留 安装 / 重装 + 启用 / 停用 + 控制台。 */
   soulxflashhead: { key: "soulxflashhead", api: "soulxflashhead", hasService: true, update: false },
+  /* FLUX 3 Image Klein（kind flux3klein，id flux3-klein-local）：权重只发一版，不做
+     「检查更新」—— 卡片 = 安装 / 重装 + 启用 / 停用 + 控制台（独立 ComfyUI，8197）。 */
+  flux3klein: { key: "flux3klein", api: "flux3klein", hasService: true, update: false },
   remotion: { key: "remotion", api: "remotion", hasService: false },
   /* Blender 本地插件：卡片 = 安装 / 重装 + 启用 / 停用 + 控制台。宿主 blender/main-blender.js。
      「启用」= 插件自己拉起那只 Blender（用户手开的实例不做启停对象）；没有常驻后端要更新，
@@ -909,6 +912,8 @@ const BACKEND_INSTALL_IDS = {
   infinitetalk: "infinitetalk-local",
   /* SoulX-FlashHead Lite 实时数字人：目录 id 与卡片 kind 不同名 */
   soulxflashhead: "soulxflashhead-local",
+  /* FLUX 3 Image Klein：目录 id 与卡片 kind 不同名 */
+  flux3klein: "flux3-klein-local",
   remotion: "remotion",
   /* Paseo 手机接管：安装窗里的插件 id 就是它的目录 id */
   paseo: "paseo-remote",
@@ -1201,6 +1206,16 @@ async function refreshInfinitetalkPluginCard(root) {
     那份后端服务（8198，与 InfiniteTalk 的 8199 互不干扰）。 */
 async function refreshSoulxflashheadPluginCard(root) {
   return refreshBackendPluginCard(root, BACKEND_PLUGIN_SPECS.soulxflashhead, {
+    installLabel: (st) => (st.installed ? I18n.t("补装要件") : I18n.t("安装（国内镜像）")),
+  });
+}
+
+/* ---- FLUX 3 Image Klein（kind flux3klein，id flux3-klein-local；宿主
+   flux3klein/main-flux3klein.js）：卡片三颗按钮 = 安装 / 重装 · 启用 / 停用 · 控制台。
+   安装开的是通用安装窗（步骤表真源 flux3klein-pack/steps.json）；「启用」静默起它自己那份
+   独立 ComfyUI（8197，与 H3 / InfiniteTalk / SoulX / SenseNova 互不干扰）。 */
+async function refreshFlux3KleinPluginCard(root) {
+  return refreshBackendPluginCard(root, BACKEND_PLUGIN_SPECS.flux3klein, {
     installLabel: (st) => (st.installed ? I18n.t("补装要件") : I18n.t("安装（国内镜像）")),
   });
 }
@@ -1798,6 +1813,7 @@ function repaintPluginCard(card, item) {
     breeze: refreshBreezePluginCard,
     infinitetalk: refreshInfinitetalkPluginCard,
     soulxflashhead: refreshSoulxflashheadPluginCard,
+    flux3klein: refreshFlux3KleinPluginCard,
     paseo: refreshPaseoPluginCard,
     blender: refreshBlenderPluginCard,
   };
@@ -2187,6 +2203,12 @@ async function openAppPluginsDialog() {
         offs.push(window.api.onSoulxflashheadConsoleChanged(() => refreshSoulxflashheadPluginCard(card)));
       }
       refreshSoulxflashheadPluginCard(card);
+    } else if (item.kind === "flux3klein" || item.handler === "flux3klein") {
+      /* FLUX 3 Image Klein：控制台开 / 关、启停后端都会广播 consoleChanged，卡片据它重画 */
+      if (window.api && window.api.onFlux3KleinConsoleChanged) {
+        offs.push(window.api.onFlux3KleinConsoleChanged(() => refreshFlux3KleinPluginCard(card)));
+      }
+      refreshFlux3KleinPluginCard(card);
     } else if (item.kind === "paseo" || item.handler === "paseo") {
       /* Paseo 手机接管：控制台窗开/关都会广播 consoleChanged，卡片据它重画状态行 */
       if (window.api && window.api.paseoRemoteOnConsoleChanged) {

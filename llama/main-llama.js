@@ -2,7 +2,7 @@
 /**
  * llama.cpp 本地模型管理插件主进程：
  * - 安装目录 / 脚手架复制 / pip 安装（国内镜像）
- * - Python 管理服务单例（detached，不随 MTNode 退出）
+ * - Python 管理服务单例（detached；MTNode 完全退出时由主进程统一结束，见 main.js 的 before-quit）
  * - 托盘进程（独立，用户可自行关闭）
  * - 控制台窗、GPU 监视、MTNode API 列表同步
  */
