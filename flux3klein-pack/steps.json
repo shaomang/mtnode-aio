@@ -1,0 +1,92 @@
+{
+  "version": 1,
+  "plugin": "flux3-klein-local",
+  "title": {
+    "zh": "FLUX 3 Image Klein 本地出图",
+    "en": "FLUX 3 Image Klein Local Image"
+  },
+  "steps": [
+    {
+      "id": "disk",
+      "title": "检查磁盘空间",
+      "hint": "建议预留 ≥40GB（ComfyUI + CUDA torch + INT8/BF16 蒸馏权重）。空间不够会停在这一步。",
+      "messages": {
+        "flux3klein.disk.low_space": {
+          "zh": "磁盘剩余约 {free}GB，低于建议的 {want}GB（ComfyUI + torch + 两档权重）。清理磁盘或换一个剩余空间足够的安装目录后重跑。",
+          "en": "the disk has about {free}GB free, below the suggested {want}GB (ComfyUI + torch + both weight sets). Free some space or pick another install directory and re-run."
+        }
+      }
+    },
+    {
+      "id": "comfy",
+      "title": "准备 ComfyUI 源码",
+      "hint": "下载官方 ComfyUI（走国内镜像），解包到安装目录。",
+      "messages": {
+        "flux3klein.comfy.download_failed": {
+          "zh": "ComfyUI 源码下载失败。确认能访问 {urls} 之一，或手动把 ComfyUI 解包到「安装目录\\ComfyUI」后重跑本脚本（已存在会跳过这一步）。",
+          "en": "could not download the ComfyUI source. Make sure one of {urls} is reachable, or unpack ComfyUI into <install dir>\\ComfyUI by hand and re-run (an existing checkout is reused)."
+        },
+        "flux3klein.comfy.extract_failed": {
+          "zh": "ComfyUI 压缩包解开后没有顶层目录：包不完整。删掉临时 zip 重跑。",
+          "en": "the ComfyUI archive had no top-level folder: the download is incomplete. Delete the temp zip and re-run."
+        }
+      }
+    },
+    {
+      "id": "venv",
+      "title": "建立隔离 venv 与 CUDA torch",
+      "hint": "在 ComfyUI 目录里建 venv，装 CUDA 版 torch（cu128）与 ComfyUI 依赖。",
+      "messages": {
+        "flux3klein.venv.no_python": {
+          "zh": "没找到可用的 Python 3.11 / 3.12。装一个并把 python 放进 PATH（或装 py 启动器）后重跑。",
+          "en": "no usable Python 3.11 / 3.12 was found. Install one and put python on PATH (or install the py launcher), then re-run."
+        },
+        "flux3klein.venv.create_failed": {
+          "zh": "创建 venv 失败（{venv}）。多为 Python 安装不完整或磁盘权限问题，换一个 Python 后重跑。",
+          "en": "creating the venv failed ({venv}). Usually an incomplete Python install or a permission issue; try another Python and re-run."
+        },
+        "flux3klein.venv.torch_failed": {
+          "zh": "CUDA 版 torch 没装成。检查网络与驱动（需要 NVIDIA 驱动支持 cu128），或手动装好 torch 后重跑。",
+          "en": "CUDA torch could not be installed. Check the network and driver (cu128 needs a recent NVIDIA driver), or install torch by hand and re-run."
+        },
+        "flux3klein.venv.pip_failed": {
+          "zh": "ComfyUI 依赖安装失败（venv：{venv}）。看上面 pip 的报错尾部，修好后重跑即可（已装的包会跳过）。",
+          "en": "installing ComfyUI requirements failed (venv: {venv}). Check the pip error tail above, fix it and re-run (installed packages are reused)."
+        }
+      }
+    },
+    {
+      "id": "weights",
+      "title": "下载 FLUX 3 Image Klein 权重",
+      "hint": "INT8 蒸馏（默认）+ BF16 蒸馏 + qwen3vl_4b 文本编码器 + flux2-vae；ModelScope 优先，回退 hf-mirror。",
+      "messages": {
+        "flux3klein.weights.download_failed": {
+          "zh": "权重下载失败：{tail}。官方 HF 仓库是受限仓库（需登录令牌），脚本会依次试 ModelScope、hf-mirror 官方仓库、非受限镜像 ml-resources/flux-3-image-klein-comfy。都不行时，把已下好的文件放进安装目录对应子目录（或安装窗里选「已下载的权重目录」）后重跑。",
+          "en": "weight download failed: {tail}. The official HF repo is gated (a token is required); the script tries ModelScope, the hf-mirror copy of the official repo, then the ungated mirror ml-resources/flux-3-image-klein-comfy. If none works, place the files into the matching subfolders (or pick \"already downloaded weights\" in the install window) and re-run."
+        }
+      }
+    },
+    {
+      "id": "files",
+      "title": "校验权重与运行环境",
+      "hint": "逐个检查 ComfyUI、venv、INT8 权重、文本编码器与 VAE 是否就位。",
+      "messages": {
+        "flux3klein.files.missing": {
+          "zh": "收尾校验不通过，缺：{err}。补齐后重跑安装。",
+          "en": "final check failed, missing: {err}. Add them and re-run the installer."
+        }
+      }
+    },
+    {
+      "id": "smoke",
+      "title": "启动一次后端并校验原生节点",
+      "hint": "临时起 ComfyUI（8197），确认 /object_info 里有 ReferenceMultiLatent 节点后关闭。",
+      "messages": {
+        "flux3klein.smoke.backend_failed": {
+          "zh": "ComfyUI 起来了但没暴露 ReferenceMultiLatent（{err}）。多为 ComfyUI 版本过旧：更新 ComfyUI 源码后重跑；日志尾部：{tail}",
+          "en": "ComfyUI started but never exposed ReferenceMultiLatent ({err}). Usually an outdated ComfyUI checkout: update the source and re-run. Log tail: {tail}"
+        }
+      }
+    }
+  ]
+}

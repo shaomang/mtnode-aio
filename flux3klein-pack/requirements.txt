@@ -1,0 +1,6 @@
+# FLUX 3 Image Klein backend requirements.
+# torch / torchvision are installed by scripts/install.ps1 from the CUDA wheel index,
+# everything else comes from ComfyUI's own requirements.txt. Kept here so the pack is
+# self-describing (the installer never reads this file).
+torch
+torchvision

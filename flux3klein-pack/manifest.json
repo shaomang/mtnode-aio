@@ -1,0 +1,32 @@
+{
+  "id": "flux3-klein-local",
+  "name": "FLUX 3 Image Klein",
+  "version": "1.0.0",
+  "minAppVersion": "1.6.1",
+  "title": {
+    "zh": "FLUX 3 Image Klein",
+    "en": "FLUX 3 Image Klein"
+  },
+  "subtitle": {
+    "zh": "Local FLUX 3 Image Klein (5.6B distilled, INT8 / BF16) on an isolated ComfyUI: text-to-image, multi-reference editing, mask inpaint, transparent background. Needs an NVIDIA GPU (8GB+ VRAM for INT8).",
+    "en": "Local FLUX 3 Image Klein (5.6B distilled, INT8 / BF16) on an isolated ComfyUI: text-to-image, multi-reference editing, mask inpaint, transparent background. Needs an NVIDIA GPU (8GB+ VRAM for INT8)."
+  },
+  "model": "black-forest-labs/flux-3-image-klein-comfy",
+  "modelMirror": "ml-resources/flux-3-image-klein-comfy",
+  "entry": "ComfyUI",
+  "apiPort": 8197,
+  "diskHintGb": 40,
+  "minVramGb": 8,
+  "models": {
+    "diffusionInt8": "flux3-image-klein-int8-convrot.safetensors",
+    "diffusionBf16": "flux3-image-klein-bf16.safetensors",
+    "textEncoderInt8": "qwen3vl_4b_int8_convrot.safetensors",
+    "textEncoderBf16": "qwen3vl_4b_bf16.safetensors",
+    "vae": "flux2-vae.safetensors"
+  },
+  "license": "FLUX Kommunity License",
+  "notes": {
+    "zh": "MTNode runs an isolated ComfyUI (127.0.0.1:8197) with native nodes (UNETLoader / CLIPLoader type=flux3 / ReferenceMultiLatent / SetLatentNoiseMask). The flux3klein_gen canvas node mirrors the image-generation node: prompt, multi-reference editing, ratio buckets, gacha rolls, seed and mask inpaint; transparent background is done as a two-pass difference matte by the host. Licensed under the FLUX Kommunity License (free commercial use under 5M USD annual revenue); check the official terms before commercial use.",
+    "en": "MTNode runs an isolated ComfyUI (127.0.0.1:8197) with native nodes (UNETLoader / CLIPLoader type=flux3 / ReferenceMultiLatent / SetLatentNoiseMask). The flux3klein_gen canvas node mirrors the image-generation node: prompt, multi-reference editing, ratio buckets, gacha rolls, seed and mask inpaint; transparent background is done as a two-pass difference matte by the host. Licensed under the FLUX Kommunity License (free commercial use under $5M annual revenue); check the official terms before commercial use."
+  }
+}
