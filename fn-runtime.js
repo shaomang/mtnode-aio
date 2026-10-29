@@ -1,4 +1,4 @@
-"use strict";
+﻿"use strict";
 /* ============================================================
  * 函数节点运行时（主进程侧调度 + worker_threads 执行线程）
  * ------------------------------------------------------------
@@ -369,7 +369,7 @@ function buildMtnodeBridge(deps = {}) {
       },
     ),
     /* 本节点「图像后端」选定的模型只读摘要（调用期读，start 帧后才有值；空 = 跟随 MTNode
-       默认的 auto：云端图像服务商优先、其次是本机 SenseNova）。字段与 hostImageModels()
+       默认的 auto：云端图像服务商）。字段与 hostImageModels()
        一致，函数代码可据此判断这个后端吃不吃参考图 / 认不认参考强度。 */
     imgConfig: new Proxy(
       {},
@@ -399,13 +399,13 @@ function buildMtnodeBridge(deps = {}) {
          mtnode.image({ prompt, images, strength, size, ratio, width, height, model })。
          · images  参考图（本机绝对路径或 data:image/…;base64,…，一张或多张）→ 图生图 / 图像编辑；
                    有几张发几张（上限见 mtnode.imgConfig.maxRefImages），一张都没有就是纯文生图。
-         · strength 参考强度 0–1（0 = 参考图只作前缀条件，1 = 最强）：**只有本机 SenseNova
-                   后端认它**，云端没有这个参数、传了会在 r.warnings 里如实说明并忽略。
+         · strength 参考强度 0–1（0 = 参考图只作前缀条件，1 = 最强）：云端图像服务商没有这个参数，
+                   传了会在 r.warnings 里如实说明并忽略。
          · model   只覆盖这一次的图像后端 id（见 mtnode.imgConfig / 设置里的图像服务商）；
                    不传就用本节点「图像后端」选定的那只，再没有就跟随 MTNode 默认（auto）。
        产物**已落画布资产目录**，r.path 就是可直接交给图像输出端子 / save_image /
        mtnode_vision 的本机绝对路径。返回 { ok, path, bytes, model, via, warnings }，不抛异常
-       （失败看 ok === false 与 error / code：busy_media = 本机后端被音乐 / 视频占用，
+       （失败看 ok === false 与 error / code：busy_media = 图像后端被音乐 / 视频占用，
        no_provider = 没配图像服务商，bad_model = 该 id 不在清单里）。 */
     image: (a, b) => {
       const cfg = imgCfgOf();

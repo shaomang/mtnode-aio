@@ -3,7 +3,7 @@
    ⚠ 本段（dshProvider … dshRunMaxTokens 共 46 个全局函数）在 renderer/app.js 里
    有一份**逐字同步的第二份**，两份的唯一差别是加载次序：index.html 里 app.js 先加载、
    本文件后加载 → 运行期生效的是本文件这一份。改这里必须同步改 app.js 那一份。
-   历史上两边漂移过一次（sensenova_gen 的图像输入、isSuperLikeNode 的 tool 变体、
+   历史上两边漂移过一次（图像节点的图像输入、isSuperLikeNode 的 tool 变体、
    save_pdf 默认名三处只写在 app.js 侧 → 三个修复运行期完全没生效），修好后由
    test/smoke-workspace-project.js [7] 与 test/smoke-resume-on-retry.js [6c] 钉住「两份逐字一致」。
    行尾一律 LF（本目录其余渲染层文件都是 LF，行尾不同会让上面那条闸门恒红）。 */
@@ -512,7 +512,7 @@ function imageInputsOf(node, idx) {
     if (
       src.kind !== "input_image" &&
       src.kind !== "proc_image" &&
-      src.kind !== "sensenova_gen"
+      src.kind !== "flux3klein_gen"
     )
       return;
     seen.add(src.id);
@@ -2679,7 +2679,8 @@ function openRoundPerfDialog(owner, rec) {
 }
 
 /* 报告 Badge：折叠时一行摘要，点击展开是按模型明细表 */
-function tokBadgeEl(owner) {
+function tokBadgeEl(owner, opts) {
+  opts = opts || {};
   if (!owner) return null;
   const r = owner.tokenReport;
   const live = owner._tokLive;
@@ -2695,11 +2696,14 @@ function tokBadgeEl(owner) {
   det.title = tokBadgeTitleText(owner);
   const openKey = "tok:" + tokOwnerId(owner);
   if (S.openDshTools && S.openDshTools[openKey]) det.open = true;
-  det.addEventListener("toggle", () => {
-    S.openDshTools = S.openDshTools || {};
-    if (det.open) S.openDshTools[openKey] = true;
-    else delete S.openDshTools[openKey];
-  });
+  /* 弹窗里的那一份（opts.noPersist）：展开状态只存在于这只窗里，不回写
+     S.openDshTools —— 否则点一次弹窗，会话末尾的 Badge 就永久展开在那了 */
+  if (!opts.noPersist)
+    det.addEventListener("toggle", () => {
+      S.openDshTools = S.openDshTools || {};
+      if (det.open) S.openDshTools[openKey] = true;
+      else delete S.openDshTools[openKey];
+    });
   det.addEventListener("mousedown", (ev) => ev.stopPropagation());
   det.addEventListener("click", (ev) => {
     if (ev.target.closest("button")) ev.stopPropagation();
@@ -3116,11 +3120,9 @@ function tokBadgeTouch(owner, force) {
   owner._tokBadgeAt = now;
   const sel = '.tok-badge[data-tok-owner="' + tokOwnerId(owner) + '"]';
   const found = Array.from(document.querySelectorAll(sel));
-  if (!found.length) {
-    /* 无 Badge 时补挂：与会话 / 助手渲染同一口径（挂到输入框下面的尾部容器） */
-    tokBadgeTailMount(owner);
-    return;
-  }
+  /* 无 Badge 时补挂：与会话 / 助手渲染同一口径（挂到输入框下面的尾部容器）。
+     节点归属没有 Badge 宿主（tokBadgeHost 对它返回 null），这里只走小按钮那条路。 */
+  if (!found.length) tokBadgeTailMount(owner);
   for (const el of found) {
     const host = el.parentElement;
     const fresh = tokBadgeEl(owner);
@@ -3132,6 +3134,94 @@ function tokBadgeTouch(owner, force) {
     if (el.style && el.style.cssText) fresh.style.cssText = el.style.cssText;
     if (host) host.replaceChild(fresh, el);
   }
+  /* 智能任务节点 / 助手栏那枚小按钮：同一份台账，收尾与运行中都跟着刷新 / 补挂 */
+  tokStatButtonMount(owner);
+}
+
+/* ── 小按钮 + 报告弹窗（本次需求 · 智能任务节点 / 全局助手）────────────────────
+   过去只有会话视图末尾那枚 <details> 报告，节点里干脆不挂（见 nodeTokOwnerNoBadge）：
+   智能任务节点跑完一轮，节点里看不到这一轮花了多少 token、折多少钱。
+   这里补一枚小按钮：折叠态只写「token 合计 · 预估费用」，点开是完整的 Token 报告
+   弹窗 —— 表格 / 费用 / 峰谷口径与 tokBadgeEl 完全同一份，不另算一套账。 */
+function tokStatButtonEl(owner) {
+  if (!owner || typeof document === "undefined") return null;
+  const t = tokViewTotals(owner);
+  /* 没有账（一次模型调用都没有）= 不显示，不拿 0 冒充「这一轮没花钱」 */
+  if (!t.totalTokens && !t.rounds && !t.images) return null;
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "tok-stat-btn";
+  btn.dataset.tokOwner = tokOwnerId(owner);
+  const cost = tokCostText(owner);
+  btn.textContent = "📊 " + fmtTok(t.totalTokens) + " tok" + (cost ? " · " + cost : "");
+  btn.title = tokBadgeSummary(owner.tokenReport, t, false, owner);
+  /* 节点里点它不能拖动节点 / 不能触发行点击 */
+  btn.addEventListener("mousedown", (ev) => ev.stopPropagation());
+  btn.addEventListener("click", (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    openTokReportDialog(owner);
+  });
+  return btn;
+}
+/* 小按钮挂哪儿：节点 → 状态行下方；助手会话 → 助手栏最底部（输入行下面）。
+   已有同归属按钮就地替换（幂等），返回挂好的按钮 / null。 */
+function tokStatButtonMount(owner, host) {
+  if (!owner || typeof document === "undefined") return null;
+  const sel = '.tok-stat-btn[data-tok-owner="' + tokOwnerId(owner) + '"]';
+  const fresh = tokStatButtonEl(owner);
+  const existing = document.querySelector(sel);
+  if (existing) {
+    if (!fresh) {
+      existing.remove();
+      return null;
+    }
+    if (existing.parentElement) existing.parentElement.replaceChild(fresh, existing);
+    return fresh;
+  }
+  if (!fresh) return null;
+  if (host) {
+    host.appendChild(fresh);
+    return fresh;
+  }
+  const nid = String(owner.id || "");
+  if (owner.kind || (owner.node && owner.node.kind)) {
+    const st = document.getElementById("st-" + nid);
+    if (st && st.insertAdjacentElement) {
+      st.insertAdjacentElement("afterend", fresh);
+      return fresh;
+    }
+    const col = document.querySelector('.wf-node[data-nid="' + nid + '"] .n-proc-left');
+    if (!col) return null;
+    col.appendChild(fresh);
+    return fresh;
+  }
+  /* 助手会话（st.assist）：助手栏底部；其它会话不在这里挂（会话末尾已有报告） */
+  if (!owner.assist) return null;
+  const pane = document.getElementById("assistPane");
+  if (!pane) return null;
+  pane.appendChild(fresh);
+  return fresh;
+}
+function openTokReportDialog(owner) {
+  if (!owner) return;
+  openOverlay(I18n.t("Token 消耗 · 费用预估"), { persistent: true });
+  const body = $("#ovBody");
+  if (!body) return;
+  const badge = tokBadgeEl(owner, { noPersist: true });
+  if (badge) {
+    /* 弹窗里这份是快照：摘掉归属标记，运行中的实时刷新不会把它换成未展开的折叠态 */
+    delete badge.dataset.tokOwner;
+    badge.open = true;
+    badge.classList.add("tok-badge-dialog");
+    body.appendChild(badge);
+  }
+  const foot = $("#ovFoot");
+  const ok = document.createElement("button");
+  ok.className = "mini primary";
+  ok.textContent = I18n.t("关闭");
+  ok.onclick = () => closeOverlay();
+  foot.appendChild(ok);
 }
 
 /* 内置技能索引缓存：索引正文来自安装包内的 mtnode-agent-skills/（只有应用更新才会变），

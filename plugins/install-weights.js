@@ -10,7 +10,7 @@
  *   · 目标目录撞上同名文件 → **用源文件覆盖**（以用户手动下载的那份为准）。
  *
  * 就位判定交给各插件自己的安装脚本：它们本来就会跳过已存在的权重、只补缺的
- * （h3 有显式文件清单，sensenova / yue / music3 / breeze 看 .ok 或文件是否齐），
+ * （h3 有显式文件清单，yue / music3 / breeze 看 .ok 或文件是否齐），
  * 所以这里只保证「把文件搬到脚本期望的位置」，搬完由用户点安装窗里的「重试」继续。
  *
  * 目标目录表为什么在这里：8 个宿主各自 hardcode 了路径（ComfyUI\models、models\MiniMax-Music3 …），
@@ -85,23 +85,6 @@ const WEIGHTS_SPECS = {
         rel: ["models", "m-a-p__YuE2-Vae"],
         accepts: ["m-a-p__YuE2-Vae", "YuE2-Vae", "YuE2_Vae", "YuE2-Vae*"],
         fileRe: [/^.*vae.*\.(safetensors|bin|pt|pth)$/i],
-      },
-    ],
-  },
-  "sensenova-local": {
-    label: "SenseNova-U1.5-8B-MoT 权重",
-    slots: [
-      {
-        id: "models",
-        label: "权重（8 片 safetensors）",
-        rel: ["models"],
-        accepts: [
-          "SenseNova-U1.5-8B-MoT",
-          "SenseNova-U1.5-8B-MoT*",
-          "SenseNova_U1.5_8B_MoT",
-          "SenseNova__SenseNova-U1.5-8B-MoT",
-        ],
-        fileRe: [/^model-\d+-of-\d+\.safetensors$/i, /^config\.json$/i, /^.*\.safetensors$/i],
       },
     ],
   },

@@ -235,7 +235,7 @@ ffmpeg -hide_banner -nostats -i f0.png -i f1.png -lavfi "[0:v]scale=160:88[a];[1
 
 只在用户明确要「画面要有明显变化」时用，且提前说明**接缝有风险**。
 
-1. 用图像生成节点（`proc_image` / `sensenova_gen`，本技能不绑定）造一张尾帧：`Same camera angle, same framing, same subjects, same lighting and color grading as the input image; only <要变的元素> changes by <幅度>; everything else stays identical, no new objects, no text, no style change.`
+1. 用图像生成节点（`proc_image` / `flux3klein_gen`，本技能不绑定）造一张尾帧：`Same camera angle, same framing, same subjects, same lighting and color grading as the input image; only <要变的元素> changes by <幅度>; everything else stays identical, no new objects, no text, no style change.`
 2. 首帧 = 归一化原图接端口 2，末帧 = 新图接端口 3，提示词按普通 FL2VA 写「首帧 → 中间变化 → 落到末帧」。
 3. 回环用 **pingpong**（正放 + 倒放）在播放器 / 剪辑软件里做，画布内没有 pingpong 节点。
 

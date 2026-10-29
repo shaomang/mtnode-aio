@@ -97,7 +97,7 @@ let getMainWin = null;
 let appRoot = null;
 let getDsh = null;
 /** 画布资产目录解析（main.js 传入的 assetDirFor(wfId)）：调用方没给输出路径时产物直接落这里，
- *  与 proc_image / sensenova 同一去处（%APPDATA%\pipeline-console\assets\<wfId>） */
+ *  与 proc_image 同一去处（%APPDATA%\pipeline-console\assets\<wfId>） */
 let assetDirFor = null;
 let consoleWin = null;
 let installing = false;
@@ -164,7 +164,7 @@ function yueTempOutDir() {
   return mk(join(yueRoot(), "asset-tmp"));
 }
 /** 托管落点解析：优先画布资产目录 assetDirFor(wfId)，否则数据目录里的 asset-tmp。
- *  返回 { dir, warn }；warn 非空即回执要带的 managed_output_dir 说明（口径同 sensenova）。 */
+ *  返回 { dir, warn }；warn 非空即回执要带的 managed_output_dir 说明（口径同其它本地后端）。 */
 function resolveManagedOutDir(wfId, askedFor) {
   let dir = "";
   const wf = String(wfId || "");

@@ -462,7 +462,7 @@ if ($env:BREEZE_SKIP_FFMPEG -ne "1") {
 #   installed / CPU-only torch), while the installer chain's Agent safety net (only triggered by a
 #   non-zero script exit) never fired and the error bus never received an event either. The result was
 #   "the install finished but is unusable, and nothing self-heals".
-#   Same contract as the sibling backends: tts / llama throw, sensenova skips writing .install-ok
+#   Same contract as the sibling backends: some throw, some skip writing .install-ok
 #   when the smoke test fails and writes ok=false.
 Step "smoke check (import torch / soundfile / fastapi)" 98
 $smoke = @"

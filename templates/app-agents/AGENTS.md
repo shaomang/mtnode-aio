@@ -54,7 +54,7 @@ assets/         图标 / 图片 / 字体 / 静态 json
 | **列模型 / 选模型** | `AppHost.models()` / `modelGet()` / `modelSet(id)`（只认 MTNode 已配置的模型清单） |
 | **文字 + 图像问模型** | `AppHost.text(prompt, { images: [路径或 dataURL], model, onDelta })` |
 | 选一张本机图 | `AppHost.pickImage()`（用户取消 → `{ ok:false, code:"cancelled" }`，不是报错） |
-| **出图** | `AppHost.image(prompt, { model, images, onProgress })`（云端图像服务商或本机 SenseNova，每次一张；取消走 `AppHost.cancelImage(reqId)`） |
+| **出图** | `AppHost.image(prompt, { model, images, onProgress })`（云端图像服务商或本机图像后端，每次一张；取消走 `AppHost.cancelImage(reqId)`） |
 | 列图像后端 / 选 | `AppHost.imageModels()` / `imageModelGet()` / `imageModelSet(id)` |
 | 语音转写（可选） | `AppHost.pickAudio()` / `transcribe()` / `transcribeWav(b64)`（**只有声明了 `capabilities.textInput` 的应用才带脚手架的语音模块**；窗口底部那条宿主注入的听写条另看 `capabilities.showDictate` —— 为真即默认显示，缺省则宿主不注入，脚本可用 `apSpeechHide()` / `apSpeechReveal()` 控制） |
 | 关窗 | `AppHost.close()`；收尾挂 `AppClose.on(cb)` |

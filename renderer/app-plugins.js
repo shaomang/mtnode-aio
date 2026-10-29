@@ -847,7 +847,6 @@ function plugRootWarn(msg) {
 const BACKEND_PLUGIN_SPECS = {
   music3: { key: "music3", api: "music3", hasService: true, update: true },
   yue2: { key: "yue2", api: "yue2", hasService: true, update: true },
-  sensenova: { key: "sensenova", api: "sensenova", hasService: true },
   h3: { key: "h3", api: "h3", hasService: true, update: true },
   llama: { key: "llama", api: "llama", hasService: true },
   breeze: { key: "breeze", api: "breeze", hasService: true },
@@ -891,20 +890,19 @@ function backendSpecById(id) {
   if (!s) return null;
   const byKey = BACKEND_PLUGIN_SPECS[s];
   if (byKey) return byKey;
-  /* 目录 / 报错总线里的 id 带 -local 后缀（llama-local / sensenova-local …），与 spec 的短名对不上 */
+  /* 目录 / 报错总线里的 id 带 -local 后缀（llama-local / breeze-tts-local …），与 spec 的短名对不上 */
   const short = s.replace(/-local$/, "");
   if (BACKEND_PLUGIN_SPECS[short]) return BACKEND_PLUGIN_SPECS[short];
   const prefix = s.split("-")[0];
   return BACKEND_PLUGIN_SPECS[prefix] || null;
 }
 /* 安装窗的插件 id：与主进程 installHost 的 registry key 同源。
-   后端插件：spec.key 加 -local（llama-local / sensenova-local / breeze-tts-local /
+   后端插件：spec.key 加 -local（llama-local / breeze-tts-local /
    minimax-h3 / minimax-music3 / yue2-local / remotion）—— 由 installTargetIdOf 统一给出；
    窗口插件与桌宠：直接用它们自己的 id。 */
 const BACKEND_INSTALL_IDS = {
   music3: "minimax-music3",
   yue2: "yue2-local",
-  sensenova: "sensenova-local",
   h3: "minimax-h3",
   llama: "llama-local",
   breeze: "breeze-tts-local",
@@ -1131,7 +1129,7 @@ async function refreshBackendPluginCard(root, spec, opts) {
       { disabled: installing },
     );
   }
-  /* 卡片不再挂 hint 说明行（Breeze 的权重许可、SenseNova 的磁盘 / 权重说明、Remotion 的安装口径
+  /* 卡片不再挂 hint 说明行（Breeze 的权重许可、Remotion 的安装口径
      各占一行小字都已移除）。**本轮再进一步：卡片底部一个字的正文都不留** ——
      状态行（显存门槛 / 启动失败原因 / 后端提示）与角标整块下线，元素与样式都已删除。
      卡片上只允许「图标封面 · 已装勾角标(无字) · 标题 · 版本号 · 动作按钮」这五样。 */
@@ -1177,19 +1175,6 @@ async function refreshBreezePluginCard(root) {
    画布节点级转写仍在（本轮起归音频 / 视频节点：renderer/app-asr.js 的转录按钮与文本区），
    它走 renderer/app-speech.js 那条通道。 */
 
-/* ---- 本地图像生成（SenseNova-U1.5-8B-MoT）：插件卡片状态 + 控制台入口（sensenova/main-sensenova.js）
-   卡片口径：三颗按钮 = 安装 / 启用 / 控制台 —— 未装 / 权重没齐时「安装（国内镜像）」只是
-   开那只安装窗（脚本失败就在窗里手动重试或交会话修复，安装过程不再上卡片）；
-   「启用」只在已安装时出现（点它静默后台拉起后端，不再自动开窗）；
-   「控制台」常驻（原来的「状态与设置」并进它，避免两颗按钮开同一只窗）。
-   注：新 kind 的按钮图标一律取自 PLUGIN_ACT_SVG（download / power / update / console），
-   表里没有的 kind 会渲染成无图标的空方块（AGENTS.md 硬约定），不要自创 action kind。 */
-async function refreshSensenovaPluginCard(root) {
-  return refreshBackendPluginCard(root, BACKEND_PLUGIN_SPECS.sensenova, {
-    installLabel: (st) => (st.installed ? I18n.t("补装权重") : I18n.t("安装（国内镜像）")),
-  });
-}
-
 /* ---- InfiniteTalk 数字人（kind infinitetalk，id infinitetalk-local；宿主 infinitetalk/main-infinitetalk.js）
    卡片口径与其它本地后端一致：三颗按钮 = 安装 / 重装 · 启用 / 停用 · 控制台。
    安装开的是通用安装窗（步骤表真源 infinitetalk-pack/steps.json）；「启用」静默起它自己的
@@ -1213,7 +1198,7 @@ async function refreshSoulxflashheadPluginCard(root) {
 /* ---- FLUX 3 Image Klein（kind flux3klein，id flux3-klein-local；宿主
    flux3klein/main-flux3klein.js）：卡片三颗按钮 = 安装 / 重装 · 启用 / 停用 · 控制台。
    安装开的是通用安装窗（步骤表真源 flux3klein-pack/steps.json）；「启用」静默起它自己那份
-   独立 ComfyUI（8197，与 H3 / InfiniteTalk / SoulX / SenseNova 互不干扰）。 */
+   独立 ComfyUI（8197，与 H3 / InfiniteTalk / SoulX 互不干扰）。 */
 async function refreshFlux3KleinPluginCard(root) {
   return refreshBackendPluginCard(root, BACKEND_PLUGIN_SPECS.flux3klein, {
     installLabel: (st) => (st.installed ? I18n.t("补装要件") : I18n.t("安装（国内镜像）")),
@@ -1266,7 +1251,7 @@ function pluginCatalogHint(cat) {
 }
 
 /* ============ 插件显存门槛（本轮需求：显存不够的本地后端插件直接隐藏） ============
-   名单与门槛的唯一真源在主进程 plugins/vram-gate.js：sensenova-local 24G · minimax-music3 24G ·
+   名单与门槛的唯一真源在主进程 plugins/vram-gate.js：minimax-music3 24G ·
    yue2-local 16G · minimax-h3 16G。分工：
      · 主进程目录（appPluginsCatalog）已经把「显存不足且没装过」的插件滤掉了 —— 卡片、画布
        节点菜单、S.plugins 快照（节点未装警示条）都因此自动同步，渲染层不必各处再判一次；
@@ -1276,7 +1261,6 @@ function pluginCatalogHint(cat) {
 const PLUGIN_VRAM_KNOWN_KINDS = {
   music3: "minimax-music3",
   yue2: "yue2-local",
-  sensenova: "sensenova-local",
   /* H3（本地视频生成）：门槛 16G（真源 plugins/vram-gate.js） */
   h3: "minimax-h3",
 };
@@ -1362,7 +1346,6 @@ function pluginVramHiddenItems() {
   if (_showUnsupportedPlugins !== true) return [];
   const known = [
     ["minimax-music3", "Minimax Music 3"],
-    ["sensenova-local", "SenseNova 本地图像生成"],
     ["yue2-local", "YuE2 本地音乐"],
     ["minimax-h3", "Minimax H3"],
   ];
@@ -1806,7 +1789,6 @@ function repaintPluginCard(card, item) {
     pet: refreshPetPluginCard,
     music3: refreshMusic3PluginCard,
     yue2: refreshYuePluginCard,
-    sensenova: refreshSensenovaPluginCard,
     h3: refreshH3PluginCard,
     remotion: refreshRemotionPluginCard,
     llama: refreshLlamaPluginCard,
@@ -2153,11 +2135,6 @@ async function openAppPluginsDialog() {
         offs.push(window.api.onYueConsoleChanged(() => refreshYuePluginCard(card)));
       }
       refreshYuePluginCard(card);
-    } else if (item.kind === "sensenova" || item.handler === "sensenova") {
-      if (window.api && window.api.onSensenovaConsoleChanged) {
-        offs.push(window.api.onSensenovaConsoleChanged(() => refreshSensenovaPluginCard(card)));
-      }
-      refreshSensenovaPluginCard(card);
     } else if (item.kind === "h3" || item.handler === "h3") {
       if (window.api && window.api.onH3ConsoleChanged) {
         offs.push(window.api.onH3ConsoleChanged(() => refreshH3PluginCard(card)));

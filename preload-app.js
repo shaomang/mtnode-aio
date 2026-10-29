@@ -1,4 +1,4 @@
-"use strict";
+﻿"use strict";
 
 /* ── 应用窗口专属 preload（唯一桥 = window.appHost）────────────────────────────
  *
@@ -105,14 +105,14 @@ const appHost = {
        本机绝对路径或 data:image/...;base64,…，一张或多张，主进程读盘 / 缩放）, strength?, reqId? }
        · images 非空 = 图生图 / 图像编辑：**整组**下发（有几张发几张，上限见 hostImageModels()
          的 maxRefImages）。云端 OpenAI 兼容端点走 /images/edits，多图按顺序对应提示词里的
-         「图1 / 图2…」；本机 SenseNova 一次吃 1–4 张。
-       · strength = 参考强度，0–1 归一（0 = 参考图只作前缀条件，1 = 最强）。**只有本机
-         SenseNova 后端认它**；云端没有这个参数，传了会在 warnings 里如实说明并忽略（不假装支持）。
+         「图1 / 图2…」。
+       · strength = 参考强度，0–1 归一（0 = 参考图只作前缀条件，1 = 最强）。云端没有这个参数，
+         传了会在 warnings 里如实说明并忽略（不假装支持）。
        · 要「必须带参考图」的显式语义用 imageEdit()，它参考图为空时直接回 no_ref_image。
      cb（可选）= 进度回调，收 { type:'progress', stage, message, pct, step, totalSteps, elapsedSec }
        与 { type:'error', error, code }；不传就与旧调用完全一致（同步等待，回同一个回执）。
      与 textGenStream 共用 apps:hostStream 事件，按 reqId 分流；取消走 imageGenCancel(reqId)。
-     本机后端出图要几十秒到几分钟，且与音乐 / 视频共用一个全局互斥锁：
+     云端出图与音乐 / 视频共用一个全局互斥锁：
      忙时回 { ok:false, code:'busy_media' }（应用提示等待 / 重试即可）；用户在界面上点取消 → 
      { ok:false, code:'cancelled' }，**不是错误**。 */
   imageGen: (opts, cb) => {
@@ -167,9 +167,9 @@ const appHost = {
     }
     return ipcRenderer.invoke("apps:hostImageEdit", o);
   },
-  /* 取消本机后端的出图（云端请求不中断，只把登记撤掉；结果由调用方自己忽略） */
+  /* 取消出图（请求不中断，只把登记撤掉；结果由调用方自己忽略） */
   imageGenCancel: (reqId) => ipcRenderer.invoke("apps:hostImageCancel", { reqId: String(reqId || "") }),
-  /* 图像后端清单（云端服务商 + 本机 SenseNova）：与 hostModels 同构，
+  /* 图像后端清单（云端服务商）：与 hostModels 同构，
      每项 { id, label, providerName, local, refImages, maxRefImages, strength }；
      后三项 = 这个后端能不能吃参考图 / 最多几张 / 认不认参考强度（界面据此置灰，别让用户试错）。
      首项不在清单里，模型位用 "auto" = 跟随 MTNode 默认 */

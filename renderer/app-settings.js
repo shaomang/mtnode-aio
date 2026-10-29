@@ -1880,8 +1880,8 @@ function openSettingsBody() {
 
     /* 精简工具负载：本轮运行时干脆不注册「这次用不上」的可选工具（mtnode_app /
        mtnode_vision），每一次模型调用都少重发约 4.7K 字符的工具定义。默认关 =
-       行为与此前逐字一致。画布智能节点另有一层裁剪（宿主本来就拒收画布工具，
-       其定义一律不发），与本开关无关、始终生效。
+       行为与此前逐字一致。画布智能节点不整档裁画布工具（它要读组内节点正文、
+       按用户要求建节点 / 连线），只点名藏掉 mtnode_app，与本开关无关。
        实测口径与取舍见 docs/codex-agent-benchmark.md「本轮落地：Token 开销」。 */
     const leanRow = document.createElement("label");
     leanRow.className = "n-field";

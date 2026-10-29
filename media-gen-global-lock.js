@@ -181,9 +181,6 @@ function busyMessage(lock) {
         ? "音乐"
         : kind === "breeze_gen"
           ? "语音"
-          : /* 本地图像生成（SenseNova）也是整卡级占用，与音乐 / 视频必须互斥 */
-            kind === "sensenova_gen"
-            ? "图像"
             : "音视频";
   return (
     "已有" +

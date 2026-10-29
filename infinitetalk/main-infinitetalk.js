@@ -2,7 +2,7 @@
 /**
  * InfiniteTalk 数字人（MeiGen-AI/InfiniteTalk on Wan2.1）插件宿主。
  *
- * 形态与 h3 / sensenova 一致：**主进程宿主 + 预加载桥 + 控制台 UI**，
+ * 形态与 h3 一致：**主进程宿主 + 预加载桥 + 控制台 UI**，
  * 画布节点 `infinitetalk_gen` 经 `infinitetalk:generate` 走这里；后端是**独立安装**的一份
  * ComfyUI（`<安装目录>/ComfyUI`），图用 ComfyUI **原生** `WanInfiniteTalkToVideo` 节点。
  *

@@ -41,8 +41,6 @@ const PLUGIN_CFG = {
   "yue2-local": "yue/config.json",
   yue2: "yue/config.json",
   yue: "yue/config.json",
-  "sensenova-local": "sensenova/config.json",
-  sensenova: "sensenova/config.json",
   /* InfiniteTalk 数字人（应用插件 kind infinitetalk）：配置落 <数据目录>/infinitetalk-local/config.json */
   "infinitetalk-local": "infinitetalk-local/config.json",
   infinitetalk: "infinitetalk-local/config.json",
@@ -74,7 +72,7 @@ const PLUGIN_CFG = {
 /** 插件 id / 别名 → **默认子目录名**。有名字 = 「安装时要目录的插件」，
  *  默认安装目录 = 插件根目录 + 这个名字（本轮共识：沿用用户现有目录名）。
  *  7 个本地后端插件正好对应 main.js 注册的那 7 套宿主（music3/yue/h3/llama/
- *  breeze/sensenova/remotion）—— 加新后端时在这里补一行即可，别在别处再写一份。
+ *  breeze/remotion）—— 加新后端时在这里补一行即可，别在别处再写一份。
  *  asr 也在这里：它随 1.5.x 从插件目录移除了，但**老机器上还留着 asr/config.json + 安装目录**，
  *  而它有自己的目录与修复链（别处只把空目录当「没装」处理）；不列在这里的话
  *  ensureDir 会把它当窗口插件回空串 → 安装链又变成 empty_dir（本轮共识：不写死 7 个）。
@@ -92,8 +90,6 @@ const PLUGIN_SUBDIR = {
      yue2-local / yue2 必须指向同一个子目录，否则旧 id 这条路上会被当成「窗口插件」——
      ensureDir 回空目录、又说「不需要目录」，安装链落成 empty_dir（真事故）。 */
   yue: "yue2",
-  "sensenova-local": "sense",
-  sensenova: "sense",
   /* InfiniteTalk 数字人：默认装到 <插件根目录>/infinitetalk-local（内含 ComfyUI / venv / models） */
   "infinitetalk-local": "infinitetalk-local",
   infinitetalk: "infinitetalk-local",
@@ -490,7 +486,7 @@ function subDirNameOf(id) {
  * 规则（只用已有事实，不猜）：
  *   · id 自己就在 PLUGIN_CFG 里（如 asr）→ 配置目录名就是子目录名；
  *   · 否则认**别名**：PLUGIN_CFG 里目录名相同的别名叫什么，就用那个子目录名
- *     （如 id="sensenova" → 别名 "sensenova-local" → "sense"）；
+ *     （如 id="yue2" → 别名 "yue2-local" → "yue2"）；
  *   · 有配置位而认不出上面两样 → 用 id 本身当子目录名（云端新插件的常规形状）。
  * 认不出配置位的 id（窗口插件 / 桌宠 / 未知 id）→ 空串，交回老口径。
  */

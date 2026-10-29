@@ -156,7 +156,7 @@ const PET_MANIFEST = {
 /**
  * 登记一个可安装对象。宿主在自己 registerXxxIpc 里调用一次（幂等，后登记覆盖旧值）。
  * def: {
- *   id,                       // 与插件卡片一致（如 "llama-local" / "sensenova-local" / "remotion"）
+ *   id,                       // 与插件卡片一致（如 "llama-local" / "breeze-tts-local" / "remotion"）
  *   key?,                     // 宿主自己的短名（如 "llama"），仅用于日志
  *   name,                     // 窗标题上的中文名
  *   skill?,                   // 该插件的安装类 skill 名（失败时交给会话修复用）
@@ -624,8 +624,6 @@ const INSTALL_API_CHANNELS = {
   llamaPickInstallDir: "llama:pickInstallDir",
   breezeInstall: "breeze:install",
   breezePickInstallDir: "breeze:pickInstallDir",
-  sensenovaInstall: "sensenova:install",
-  sensenovaPickInstallDir: "sensenova:pickInstallDir",
   /* InfiniteTalk 数字人（kind infinitetalk）：步骤表真源 infinitetalk-pack/steps.json，宿主 infinitetalk/main-infinitetalk.js */
   infinitetalkInstall: "infinitetalk:install",
   infinitetalkPickInstallDir: "infinitetalk:pickInstallDir",
@@ -1016,7 +1014,6 @@ const UNINSTALL_SPECS = {
      安装目录靠 plugins/plugin-root.js 的 PLUGIN_CFG（tts/config.json）认路。 */
   "tts-local": { label: "GPT-SoVITS 语音合成" },
   "breeze-tts-local": { label: "Breeze TTS 2 本地 TTS", stop: "breeze:stop" },
-  "sensenova-local": { label: "SenseNova 本地图像生成", stop: "sensenova:stop" },
   /* InfiniteTalk 数字人：安装目录里有 ComfyUI / venv / 权重；卸载走通用删目录 + 先停后端 */
   "infinitetalk-local": {
     label: "InfiniteTalk 数字人",
@@ -1069,7 +1066,6 @@ const BACKEND_ID_ALIASES = {
   music3: "minimax-music3",
   yue: "yue2-local",
   yue2: "yue2-local",
-  sensenova: "sensenova-local",
   h3: "minimax-h3",
   llama: "llama-local",
   tts: "tts-local",

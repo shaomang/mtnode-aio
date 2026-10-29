@@ -3377,11 +3377,6 @@
     "插件（npm search 或 MTNode catalog）": "Plugins (npm search or MTNode catalog)",
     "思考 · 模型 reasoning": "Thinking · model reasoning",
     "工具调用轨迹（点击展开参数与结果）": "Tool-call trace (click to expand args and result)",
-    /* 本地图像节点（sensenova_gen）think 模式的思考弹出说明：与文本节点的「模型 reasoning」
-       不是一回事 —— 它是后端出图前先写的规划文本，随生成回执取回，且另落 .think.txt 旁文件 */
-    "上方是本次出图前模型先写的规划文本（think 模式）。它随生成结果取回、不写入存档，并另存为图旁的 .think.txt；每次「抽卡」各有一份，切换尝试方块可分别查看。":
-      "Above is the planning text the model wrote before drawing (think mode). It comes back with the generation result, is not stored in the save file, and is also written next to the image as .think.txt; each attempt has its own copy — switch the attempt tabs to read them.",
-    "思考 · 出图前的规划文本": "Thinking · planning text written before drawing",
     "技能（jsDelivr repo）": "Skills (jsDelivr repo)",
     "技能（jsDelivr 或 MTNode catalog）": "Skills (jsDelivr or MTNode catalog)",
     "MCP（jsDelivr 或 MTNode catalog）": "MCP (jsDelivr or MTNode catalog)",
@@ -3389,6 +3384,8 @@
     "请将图像文件拖到「图像输入节点」上": "Drag image files onto an \"Image Input Node\"",
     "筛选插件（按包名 / 行 id）…": "Filter plugins (by package name / row id)…",
     "思考强度（标准 / 最强）": "Thinking effort (Standard / Max)",
+    "无 = 关闭思考（不下发思考预算）；档位越高思考越久、越贵。":
+      "Off = thinking disabled (no reasoning budget sent); higher levels reason longer and cost more.",
     "未解析到条目（格式：标题: 内容）": "No entries parsed (format: title: content)",
     "文件过大（超过 500KB，实际 ": "File too large (over 500KB, actual ",
     "一次最多创建 40 个节点，已截断": "At most 40 nodes created per operation; truncated",
@@ -4421,7 +4418,6 @@
     "正在准备语音模型…": "Preparing the speech model…",
     "关闭": "Close",
     "语音状态未知": "Speech status unknown",
-    /* 插件卡片通用（SenseNova 等仍用；从前与 ASR 卡片共用同一段，ASR 摘除后留在这里） */
     "状态与设置": "Status & settings",
     "安装失败：": "Install failed: "
   });
@@ -5562,6 +5558,20 @@
     "删除该组（连同内部节点与绘制）": "Delete group (and its nodes & marks)",
     "✕ 删除组（连同内部节点与绘制）": "✕ Delete group (with nodes & marks)",
     "解散组（保留节点与绘制）": "Disband group (keep nodes & marks)",
+    "组输出端子：按住拖到智能节点的「组」输入端子，它就能拿到组内所有节点的清单":
+      "Group output: drag onto a smart node's group input and it gets the list of every node in the group",
+    "组输入端子：把画布组上的 □ 拖到这里，本节点就能拿到组内所有节点的清单（要正文时按 id 取）":
+      "Group input: drag the □ on a canvas group here and this node gets the list of every node in it (read bodies by id)",
+    "组线只能接到智能节点的「组」输入端子":
+      "A group wire only connects to a smart node's group input",
+    "组线只能接到智能节点（智能任务 / 文本智能模式）的「组」输入端子":
+      "A group wire only connects to a smart node (agent task / text in agent mode) group input",
+    "这是「组」输入端子：请从画布组框上的 □ 拖一根组线进来，普通数据线不接这里":
+      "This is a group input: drag a wire from the □ on a canvas group instead — plain data wires don't go here",
+    "已断开组线": "Group wires disconnected",
+    " · 已断开 {n} 条组线": " · {n} group wire(s) disconnected",
+    "组为空已回收 · 已断开 {n} 条组线":
+      "Empty group recycled · {n} group wire(s) disconnected",
     "组内找不到成员：": "Group member not found: ",
     "已删除组（含 {n} 个节点{marks}）":
       "Deleted group ({n} node(s){marks})",
@@ -6972,123 +6982,7 @@
       "YuE2 music node needs a text source (style prompt / lyrics / ABC score)",
     "YuE2 音乐节点控制输入端子为端口 3":
       "YuE2 music node control input is port 3",
-    /* ── SenseNova 本地图像生成（sensenova_gen · 插件 sensenova-local）──
-       输出 0 = 图像端子，与云端图像生成（proc_image）同语义，共用「图像」说法。 */
-    "SenseNova": "SenseNova",
-    "SenseNova 图像节点": "SenseNova Image Node",
-    "SenseNova（本地图像生成 · SenseNova-U1.5-8B-MoT）":
-      "SenseNova (local image generation · SenseNova-U1.5-8B-MoT)",
-    "SenseNova（本地图像生成 · SenseNova-U1.5-8B-MoT · 官方 11 个分辨率桶 · 需 24G 显存）":
-      "SenseNova (local image generation · SenseNova-U1.5-8B-MoT · 11 official resolution buckets · needs 24G VRAM)",
-    "SenseNova-U1.5-8B-MoT（本机出图）· 端子 P=提示词 · 分辨率只能取官方 11 个训练桶 · 执行时自动启停后端":
-      "SenseNova-U1.5-8B-MoT (local image generation) · port P = prompt · only the 11 official training buckets · the backend starts and stops on its own",
-    "调用 SenseNova 本地后端生成图像": "Generate an image with the local SenseNova backend",
-    "打开 SenseNova 控制台日志": "Open SenseNova console log",
-    "SenseNova 图像插件未就绪": "SenseNova image plugin is not ready",
-    "未安装 SenseNova 本地图像生成插件：在顶栏「插件」里安装后才能出图":
-      "SenseNova local image plugin not installed: install it under Plugins in the top bar before generating",
-    "⚠ SenseNova 插件未安装：请在「插件 · SenseNova 本地图像生成」中安装后使用本节点":
-      "⚠ SenseNova plugin not installed: install it under Plugins · SenseNova Local Image Generation before using this node",
-    "插件 · SenseNova 本地图像生成：设置安装目录 → 安装":
-      "Plugins · SenseNova Local Image Generation: set an install directory → Install",
-    "提示词 Prompt（@ 引用输入节点 · 不接线时用它出图）":
-      "Prompt (@-reference input nodes · used when nothing is wired in)",
-    "例如：清晨薄雾里的雪山湖泊，写实风光摄影，柔和逆光… 输入 @ 引用已连接节点":
-      "E.g. snow mountains and a lake in morning mist, realistic landscape photography, soft backlight… type @ to reference connected nodes",
-    "图像不存在（生成后将显示于此）": "No image yet (it appears here once generated)",
-    "图像已生成：": "Image saved: ",
     "已取消图像生成": "Image generation cancelled",
-    "提示词（要画成什么 · 可接文本节点，也可接参考图）":
-      "Prompt (what to draw · accepts text nodes or reference images)",
-    "（数据槽：可接文本 / 图像）": " (data slot: accepts text / image)",
-    "输出端子（本节点生成的图像 · 可直接连图像保存 / 预览）":
-      "Output port (the image this node generated · wire it straight into save-image / preview)",
-    "参考图已生效：本次按图像编辑生成（{n} 张参考图参与条件）":
-      "Reference image(s) applied: generated in image-editing mode ({n} reference image(s) conditioned the result)",
-    "参考图条件强度": "Reference image strength",
-    "图像编辑模式（连了参考图）才生效：图像 CFG 权重，1.0 = 关闭（官方默认）；调到 1.5~2.0 会更贴参考图；没有参考图时该值不下发。":
-      "Only applies in image-editing mode (a reference image is wired): image CFG weight, 1.0 = off (official default); raise to 1.5–2.0 to follow the reference image more closely; the value is not sent when there is no reference image.",
-    "分辨率桶（官方训练尺寸）": "Resolution bucket (official training size)",
-    "分辨率桶 / 步数 / CFG / 抽卡 / 种子 / 显存档位 / 精度 / think / 参考图强度":
-      "Resolution bucket / steps / CFG / rolls / seed / VRAM tier / dtype / think / reference strength",
-    "官方只有这 11 个训练分辨率桶，不是任意宽高；最小那桶也有 2048×2048（≈400 万像素），所以换小尺寸省不了显存 —— 省显存请改下面的「显存档位」或减小采样步数。":
-      "There are only 11 official training buckets, not arbitrary width×height; even the smallest is 2048×2048 (≈4M pixels), so a smaller size saves no VRAM — to save VRAM lower the VRAM tier below or reduce the step count.",
-    "步数": "Steps",
-    "CFG Scale": "CFG Scale",
-    "CFG Norm": "CFG Norm",
-    "none（默认）": "none (default)",
-    "Timestep Shift": "Timestep Shift",
-    "1–200；默认 50。试机 / 省时间可以降到 20 以内，画质会糙。":
-      "1–200; default 50. Drop it under 20 to smoke-test faster, at some quality cost.",
-    "提示词贴合度（官方默认 4.0）；越大越贴提示词、越容易过饱和。":
-      "Prompt adherence (official default 4.0); higher sticks closer to the prompt and oversaturates sooner.",
-    "噪声调度平移（官方默认 3.0）": "Timestep shift (official default 3.0)",
-    "显存与精度": "VRAM & precision",
-    "显存档位": "VRAM tier",
-    "fast（官方 24G 卡档 · 默认）": "fast (official 24G tier · default)",
-    "balanced（更省显存，更慢）": "balanced (less VRAM, slower)",
-    "low（最省显存 · 需大内存）": "low (least VRAM · needs lots of RAM)",
-    "full（不卸载 · ≥48G 显存）": "full (no offload · ≥48G VRAM)",
-    "权重 bf16 约 32.66GB，比一张 24G 卡还大，所以默认必须分层卸载（offload 到内存）。出图报显存不足时后端会自动降一档并在结果里写明；24G 卡请勿选 full。":
-      "The bf16 weights are ~32.66GB — bigger than a 24G card — so layered offloading to RAM is on by default. On an out-of-memory error the backend auto-downgrades one tier and says so in the result; do not pick full on a 24G card.",
-    "权重精度": "Weight dtype",
-    "思考模式": "Thinking mode",
-    "think（先推理再出图 · 另存 .think.txt）":
-      "think (reason first, then draw · also saved as .think.txt)",
-    "开启后模型会先输出一段推理文本，再据此生成图像；更稳但更慢。":
-      "When on, the model writes out its reasoning first and draws from it — steadier but slower.",
-    "尺寸": "Size",
-    "步数 ": "steps ",
-    "显存 ": "VRAM ",
-    "think 开": "think on",
-    "think 关": "think off",
-    "权重在位": "Weights loaded",
-    "权重未载": "Weights not loaded",
-    /* SenseNova 后端 / 环境类报错（唯一真源 = app-nodes.js 的 sensenovaGenErrorText） */
-    "SenseNova 未安装：请在「插件 · SenseNova 本地图像生成」里安装后再试":
-      "SenseNova is not installed: install it under Plugins · SenseNova Local Image Generation first",
-    "SenseNova 依赖未装好（缺 Python 环境）：请在插件控制台重跑安装":
-      "SenseNova dependencies are missing (no Python environment): re-run the install from the plugin console",
-    "本机没有可用的 NVIDIA 显卡：SenseNova 本地出图需要一张 N 卡":
-      "No usable NVIDIA GPU on this machine: local SenseNova generation needs an NVIDIA card",
-    "显存不足：请把节点「显存档位」降到 balanced / low，或减小采样步数（降分辨率省不了显存）":
-      "Out of VRAM: lower this node's VRAM tier to balanced / low, or reduce the step count (a smaller resolution saves no VRAM)",
-    "显存不够：SenseNova-U1.5-8B-MoT 需要一张 ≥24GB 显存的 NVIDIA 卡（权重 bf16 约 32.66GB，靠分层卸载跑在 24G 卡上）":
-      "Not enough VRAM: SenseNova-U1.5-8B-MoT needs an NVIDIA card with ≥24GB VRAM (the bf16 weights are ~32.66GB and run on a 24G card only thanks to layered offload)",
-    "内存不够：分层卸载要把权重放在内存，请确认物理内存满足要求后在插件里勾「强制继续」":
-      "Not enough RAM: layered offload keeps the weights in memory first — make sure physical RAM is enough, then tick Force continue in the plugin",
-    "磁盘空间不足：权重约 32.66GB，请在插件里换一个剩余空间够的安装目录":
-      "Not enough disk space: the weights are ~32.66GB — pick an install directory with room in the plugin",
-    "当前 Python 环境装的是 CPU 版 torch：请在插件控制台自修复 / 重装修 CUDA 版 torch":
-      "This Python environment has the CPU build of torch: self-repair / reinstall the CUDA build from the plugin console",
-    "SenseNova 随包脚手架缺失或不完整：请重装应用或重跑安装技能":
-      "The bundled SenseNova scaffold is missing or incomplete: reinstall the app or re-run the install skill",
-    "后端启动超时（权重约 32.66GB，首次加载要几分钟）：请稍后重试 ▶":
-      "Backend start timed out (the weights are ~32.66GB; the first load takes a few minutes): please press ▶ again shortly",
-    "后端启动失败：请打开 SenseNova 控制台日志查看具体原因":
-      "Backend failed to start: open the SenseNova console log to see why",
-    "连不上本地后端（127.0.0.1:8774）：请在插件里关闭后重新开启":
-      "Cannot reach the local backend (127.0.0.1:8774): switch it off and back on in the plugin",
-    "生成超时：采样步数过大或显存频繁换入换出，请降低步数 / 显存档位后重试":
-      "Generation timed out: too many steps or heavy VRAM swapping — lower the step count / VRAM tier and retry",
-    "后端正忙（同时只跑一张图），请等待当前任务结束":
-      "The backend is busy (only one image at a time); wait for the current job to finish",
-    "本宿主同时只跑一张图，请等待当前任务结束":
-      "This host runs one image at a time; wait for the current job to finish",
-    "提示词为空：请接入文本输入（端子 P）或在节点里填写提示词":
-      "Empty prompt: wire a text input into port P, or type a prompt on the node",
-    "模型加载失败：请在插件控制台检查权重是否完整（8 片 safetensors）":
-      "Model load failed: check in the plugin console whether the weights are complete (8 safetensors shards)",
-    "SenseNova 宿主内部错误：请看插件控制台日志（console.log）并反馈给开发者":
-      "SenseNova host internal error: check the plugin console log (console.log) and report it to the developer",
-    "图像生成失败": "Image generation failed",
-    "图像写盘失败：请检查输出路径是否可写":
-      "Could not write the image: check that the output path is writable",
-    "缺少节点标识（内部错误）：请重试点 ▶":
-      "Missing node id (internal error): press ▶ again",
-    "SenseNova 自动安装超时（权重约 32.66GB，下载要看网速）：请稍后重试 ▶":
-      "SenseNova auto-install timed out (the weights are ~32.66GB — download speed decides): please press ▶ again shortly",
-    "已取消视频生成": "Video generation cancelled",
     "若仍要创建节点，edit 必须传 layout:false，且禁止 group。":
       "If you still create nodes, edit must pass layout:false and must not use group.",
     "禁止创建或收纳节点层（canvas_super）。":
@@ -10017,9 +9911,6 @@
     "安装完成。": "Installation complete.",
   });
 
-  /* ── 插件控制台通用（SenseNova / H3 / Music3 / TTS / Llama / Remotion 的卡片都用） ──
-     本地语音转写插件已随「统一到 dsh 官方本地 SenseVoice」摘除，
-     它那一整套安装 / 便携解码器词条（含「补装 ffmpeg」）一并删除。 */
   Object.assign(EN, {
     "打开控制台": "Open console",
     "关闭控制台": "Close console",
@@ -10060,22 +9951,11 @@
     "清空日志失败：": "Could not clear the log: ",
   });
 
-  /* ── SenseNova 本地图像生成：插件卡片与控制台入口（renderer/app-plugins.js · sensenova/ui） ──
-     节点本体（sensenova_gen）的端子 / 状态 / 报错词条在任务 4 一并补，这里只登记卡片与安装提示文案。 */
   Object.assign(EN, {
     "安装中…": "Installing…",
     "补装权重": "Download weights",
     "安装（国内镜像）": "Install (CN mirrors)",
-    "开始安装：权重约 32.66GB，请留意控制台进度…":
-      "Starting install — the weights are ~32.66GB, watch the console for progress…",
-    "正在安装 SenseNova 本地图像生成后端…": "Installing the SenseNova local image backend…",
-    "SenseNova 后端安装完成，可在画布放置「SenseNova 图像生成」节点":
-      "SenseNova backend installed — add a “SenseNova image” node on the canvas",
-    "SenseNova 后端安装失败：": "SenseNova backend install failed: ",
-    "SenseNova 本地图像生成": "SenseNova Local Image Generation",
-    "SenseNova 图像生成": "SenseNova Image Generation",
   });
-
   /* ── 顶栏入口快捷键（renderer/app-keys.js）：键位真源 = index.html 的 data-shortcut ──
      快捷键本体与动作在 app-keys.js；hover 提示不再拼接「 · 快捷键 X」，该词条留作
      需要显式书写键位的调用点使用。 */
@@ -10185,9 +10065,6 @@
       "在应用窗口左下角显示作者标签：平时隐藏，鼠标移上去显示「@作者 - v版本」，点一下看应用详情（作者取 app.json 的 author，没写就用当前登录账号昵称）":
         "Shows an author tag in the app window's bottom-left corner: hidden until you hover it, then “@author - vX.Y.Z”; click it for app details (the author comes from app.json's author, falling back to the signed-in account's nickname)",
       "需要图像生成": "Needs image generation",
-      "用 MTNode 已配好的图像能力出图：云端图像服务商或本机 SenseNova（没配就用不了，界面会写清去哪配）":
-        "Draws with the image backends already configured in MTNode: a cloud image provider or the local SenseNova (without one it simply cannot draw, and the UI says where to configure it)",
-      "应用能力": "App capabilities",
       "这个应用需要什么能力：": "Which capabilities does this app need: ",
       "正在读取…": "Reading…",
       "能力没有变化": "Capabilities unchanged",
@@ -10587,8 +10464,6 @@
     "支持参考强度": "reference strength supported",
     "图像后端：继承自「": "Image backend: inherited from \"",
     "图像后端：本节点已选择：": "Image backend: chosen on this node: ",
-    "图像后端：自动（跟随 MTNode 默认：云端图像服务商优先，其次本机 SenseNova）":
-      "Image backend: auto (follows the MTNode default — cloud image provider first, then local SenseNova)",
     "生效范围：本函数节点的 jscode 里 await mtnode.image(...) 用它出图 / 图生图（产物落本画布资产目录）。":
       "Applies to: await mtnode.image(...) inside this function node's jscode generates / edits images with it (the file lands in this canvas's asset folder).",
     "图像模型与 Key 只留主进程；这里只是选一只已配置好的后端。":
@@ -10598,26 +10473,52 @@
     "本节点已选择：": "Chosen on this node: ",
     "；其下未自行选择的内部节点一并使用它。":
       "; inner nodes that have not picked their own follow it.",
-    "未选择：函数节点里的 mtnode.image(...) 跟随 MTNode 默认图像后端（云端图像服务商优先，其次本机 SenseNova）。":
-      "Unset: mtnode.image(...) in function nodes follows the MTNode default image backend (cloud image provider first, then local SenseNova).",
-    "跟随默认（自动）": "Follow default (auto)",
-    "不指定：用 MTNode 默认的图像后端（云端图像服务商优先，其次本机 SenseNova）。":
-      "Unset: use the MTNode default image backend (cloud image provider first, then local SenseNova).",
-    "暂无可用图像后端：请先在 设置 → 模型服务 里配图像服务商（或安装本机 SenseNova 插件）。":
-      "No image backend available: configure an image provider under Settings → Model services (or install the local SenseNova plugin).",
-    "刷新清单": "Reload list",
-    "重新读取图像后端清单（新装插件 / 刚配好服务商时点它）。":
+    "重新拉取图像后端列表（刚装完插件或配好服务商时用）。":
       "Reload the image-backend list (use it right after installing a plugin or configuring a provider).",
     "清除本节点「图像后端」这一格的选择，退回跟随默认（或继承上层）。":
       "Clear this node's image-backend choice and fall back to the default (or to the inherited one).",
     /* 应用通道的图像语义（apps-store.js 的 imageSpec / hostImageEdit 与 main.js 的 fnImageCall）：
        主进程也 require 本文件，两条界面语言都要有译文。 */
-    "当前图像后端不支持参考强度（strength），本次已忽略；本机 SenseNova 后端支持它":
-      "This image backend does not support reference strength (strength); it was ignored this time. The local SenseNova backend supports it",
     "图像编辑需要至少一张参考图（opts.images）":
       "Image editing needs at least one reference image (opts.images)",
-    "未配置可用的图像后端（请在「设置 · API/配置」里配图像服务商，或安装本机 SenseNova 插件）":
-      "No image backend configured (set up an image provider under Settings · API/config, or install the local SenseNova plugin)",
+    /* 图像后端：选择位与出图失败的新措辞（app-aicall.js / app-app-flow.js / apps-store.js） */
+    "图像后端：自动（跟随 MTNode 默认：云端图像服务商优先）":
+      "Image backend: auto (follows the MTNode default: cloud image provider first)",
+    "未选择：函数节点里的 mtnode.image(...) 跟随 MTNode 默认图像后端（云端图像服务商优先）。":
+      "Not selected: await mtnode.image(...) in the function node follows the MTNode default image backend (cloud image provider first).",
+    "不指定：用 MTNode 默认的图像后端（云端图像服务商优先）。":
+      "Unspecified: use MTNode's default image backend (cloud image provider first).",
+    "暂无可用图像后端：请先在 设置 → 模型服务 里配图像服务商。":
+      "No image backend available: configure an image provider in Settings → Model services first.",
+    "用 MTNode 已配好的图像能力出图：云端图像服务商（没配就用不了，界面会写清去哪配）":
+      "Generate with MTNode's configured image capability: a cloud image provider (unavailable until you configure one; the UI says where)",
+    "未配置可用的图像后端（请在「设置 · API/配置」里配图像服务商）":
+      "No image backend is configured (add an image provider in Settings · API/Config)",
+    "当前图像后端不支持参考强度（strength），本次已忽略":
+      "The current image backend does not support reference strength; it was ignored this time",
+    /* 出图 / 各生成节点共用的通用词条（换行与空格按原文，勿改） */
+    "提示词 Prompt（@ 引用输入节点 · 不接线时用它出图）": "Prompt (@-reference input nodes · used when nothing is wired in)",
+    "图像不存在（生成后将显示于此）": "No image yet (it appears here once generated)",
+    "图像已生成：": "Image saved: ",
+    "输出端子（本节点生成的图像 · 可直接连图像保存 / 预览）": "Output port (the image this node generated · wire it straight into save-image / preview)",
+    "参考图条件强度": "Reference image strength",
+    "步数": "Steps",
+    "显存档位": "VRAM tier",
+    "思考模式": "Thinking mode",
+    "尺寸": "Size",
+    "步数 ": "steps ",
+    "显存 ": "VRAM ",
+    "后端正忙（同时只跑一张图），请等待当前任务结束": "The backend is busy (only one image at a time); wait for the current job to finish",
+    "图像生成失败": "Image generation failed",
+    "已取消视频生成": "Video generation cancelled",
+    "跟随默认（自动）": "Follow default (auto)",
+    "刷新清单": "Reload list",
+    "重新读取图像后端清单（新装插件 / 刚配好服务商时点它）。": "Reload the image-backend list (use it right after installing a plugin or configuring a provider).",
+    "生成音乐：写风格提示词（可加歌词），点 ▶ 得到一段音乐。": "Generate music: write a style prompt (lyrics optional) and press ▶ to get a track.",
+    "（可接多张图像 · 最多 10 张）": "(multiple images allowed · up to 10)",
+    "FLUX 3 Image Klein（本地图像生成 · 5.6B 蒸馏 · INT8 / BF16 · 提示词 / 多参考图编辑 / 蒙版重绘 / 透明背景）":
+      "FLUX 3 Image Klein (local image generation · 5.6B distilled · INT8 / BF16 · prompt / multi-reference edit / mask repaint / transparent background)",
+    "FLUX 3 Image Klein（本地图像生成 · INT8 / BF16）": "FLUX 3 Image Klein (local image generation · INT8 / BF16)",
     "mtnode.image：函数节点的图像后端未接线（主进程未注入 fnRuntime.imageCall）":
       "mtnode.image: the function node's image backend is not wired (main.js did not inject fnRuntime.imageCall)",
   });
@@ -11263,9 +11164,7 @@
       "Let AI work on text: write what you want in the prompt and press ▶ to get the result.",
     "让 AI 画图：把想要的画面写成提示词，点 ▶ 生成一张图。":
       "Let AI draw: describe the picture in the prompt and press ▶ to generate one image.",
-    "本机 AI 画图：点 ▶ 用本机 SenseNova 生成图片（不联网），连一张图进去就是图像编辑。":
-      "Local AI image: press ▶ to generate with the local SenseNova (offline); wire an image in and it becomes image editing.",
-    "生成音乐：写风格提示词（可加歌词），点 ▶ 得到一段音乐。":
+    "生成音乐：把风格提示词写进提示词（歌词可选），点 ▶ 得到一首曲子。":
       "Generate music: write a style prompt (lyrics optional) and press ▶ to get a track.",
     "Breeze 语音：用 Breeze TTS 2 朗读文字（音色可克隆 / 设计 / 导演）；卡片上可直接填要念的文本与参考文本。":
       "Breeze voice: read text aloud with Breeze TTS 2 (voices can be cloned, designed or directed); type the text and reference text right on the card.",

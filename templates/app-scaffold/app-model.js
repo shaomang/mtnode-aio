@@ -14,7 +14,7 @@
  *   errorText() 给中文一句话，humanText() 给当前界面语言的一句话。
  *
  * 同一个按钮里还有**图像后端**（本轮新增）：下拉分「文本模型 / 图像后端」两区，
- *   · 图像后端清单走 AppHost.imageModels()（MTNode 里已配好的图像能力：云端服务商 + 本机 SenseNova）；
+ *   · 图像后端清单走 AppHost.imageModels()（MTNode 里已配好的图像能力：云端服务商 + 本机图像后端）；
  *   · 改动走 AppHost.imageModelSet(id)，同样按应用 id 持久化；
  *   · 一个图像后端都没配 / 桥没这套接口 → 那一区写清原因（去哪里配），**不静默降级**。
  * 出图用 AppHost.image(prompt, { images, onProgress })：失败码用 imageErrorText() 转人话
@@ -44,7 +44,7 @@
     textGroup: "文本模型",
     imageGroup: "图像后端",
     imageModels: "图像后端",
-    noImageModels: "MTNode 里还没有可用的图像后端：请在「设置 · 模型服务」配一个图像服务商（或把图像模型标成 image），或安装本机 SenseNova 插件。",
+    noImageModels: "MTNode 里还没有可用的图像后端：请在「设置 · 模型服务」配一个图像服务商（或把图像模型标成 image），或安装一个本机图像后端插件。",
     local: "本机",
     imagePick: "选择图像后端",
     imageBusy: "图像后端正忙",
@@ -64,7 +64,7 @@
     textGroup: "Text models",
     imageGroup: "Image backends",
     imageModels: "Image backend",
-    noImageModels: "No image backend in MTNode yet: configure an image provider (or mark the model as image) under Settings · Model services, or install the local SenseNova plugin.",
+    noImageModels: "No image backend in MTNode yet: configure an image provider (or mark the model as image) under Settings · Model services, or install a local image backend plugin.",
     local: "local",
     imagePick: "Choose an image backend",
     imageBusy: "Image backend busy",
@@ -90,7 +90,7 @@
     busy: { zh: "本机图像后端正忙（同时只跑一张图），请稍后重试", en: "The local image backend is busy (one image at a time): retry shortly" },
     busy_other_node: { zh: "本机图像后端正在为别处出图，请稍后重试", en: "The local image backend is generating for something else: retry shortly" },
     cuda_oom: { zh: "显存不足：请在插件里把本机图像后端的显存档位降到 balanced / low，或降低采样步数", en: "Out of VRAM: lower the local backend's VRAM mode to balanced / low, or reduce sampling steps" },
-    not_installed: { zh: "本机图像后端尚未安装：请在「插件 · SenseNova 本地图像生成」里安装", en: "The local image backend is not installed: install it in Plugins · SenseNova local image generation" },
+    not_installed: { zh: "本机图像后端尚未安装：请在顶栏「插件」里安装对应的后端插件", en: "The local image backend is not installed: install the matching backend plugin from Plugins in the top bar" },
     no_local_backend: { zh: "本机图像后端不可用：请确认插件已安装并启动", en: "The local image backend is unavailable: check that the plugin is installed and started" },
   };
   function isZh() {
@@ -251,7 +251,7 @@
         })(state.models[i]);
       }
       if (!state.hasVision) menu.appendChild(hintLine(L("noVision")));
-      /* 分区二：图像后端（MTNode 已配好的图像能力：云端服务商 + 本机 SenseNova） */
+      /* 分区二：图像后端（MTNode 已配好的图像能力：云端服务商 + 本机图像后端） */
       menu.appendChild(groupLine(L("imageGroup")));
       if (state.imgBusy) menu.appendChild(hintLine(L("imageBusy")));
       if (!state.imgHasAny) {

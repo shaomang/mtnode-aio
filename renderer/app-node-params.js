@@ -270,7 +270,7 @@ const NP_KEY_DOC = {
   provider: "服务商 / 智能路由（Agent 类节点用这个键）",
   model: "模型 id；空 = 用该服务商的默认模型",
   temperature: "采样温度 0–2，越高越发散",
-  effort: "思考强度：off / minimal / low / standard / high / max",
+  effort: "思考强度：off / low / medium / high / xhigh / max（off = 无 = 关闭思考）",
   preset: "Agent 预设档（standard / code / lean…）",
   think: "think 模式：先想再画",
   /* ── Agent 行为 ── */
@@ -327,16 +327,13 @@ const NP_KEY_DOC = {
   maskPath: "蒙版图路径（Alpha，透明区 = 重绘区）",
   maskBrush: "蒙版笔刷尺寸（像素）",
   maskFeather: "蒙版羽化半径（像素）",
-  /* ── SenseNova ── */
+  /* ── 本地图像（分辨率桶 / 步数 / 显存）── */
   ratioBucket: "分辨率桶（官方 11 个训练桶之一，如 1:1 / 16:9）",
   width: "输出宽（像素，由分辨率桶决定）",
   height: "输出高（像素，由分辨率桶决定）",
   numSteps: "采样步数（默认 30）",
-  cfgNorm: "CFG 归一化档（后端枚举，如 none）",
-  timestepShift: "时间步 shift（默认 3.0）",
   imgCfgScale: "参考图条件强度；1.0 = 关闭",
   vramMode: "显存档位：full / fast / balanced / low",
-  dtype: "权重精度：bfloat16 / float16 / float32",
   /* ── 视频生成（H3）── */
   videoMode: "模式：fl2va 首末帧 / r2v 多参考",
   ratio: "尺寸比例：16:9 / 9:16 / 1:1 / 4:3 / 3:4 / 21:9",

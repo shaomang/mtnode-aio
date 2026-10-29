@@ -2,7 +2,7 @@
 /**
  * SoulX-FlashHead Lite（实时数字人 · 1.3B 流式）插件宿主。
  *
- * 形态与 h3 / sensenova / infinitetalk 一致：**主进程宿主 + 预加载桥 + 控制台 UI**。
+ * 形态与 h3 / infinitetalk 一致：**主进程宿主 + 预加载桥 + 控制台 UI**。
  * 差别只在后端：FlashHead 不是 ComfyUI 工程，而是官方推理仓库（SoulX-AILab/SoulX-FlashHead）
  * 加一层 stdlib HTTP 服务（pack 的 server.py，安装时落到 <安装目录>\SoulX-FlashHead\mtnode_server.py）。
  *

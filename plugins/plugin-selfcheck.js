@@ -10,7 +10,7 @@
  *
  * 分工（照本仓既有纪律）：
  *   · 本模块 = 注册表 + 结果落盘 + 等锁队列 + 产物目录 + 事件上报，**不含任何插件专属的生成逻辑**；
- *   · 各宿主（sensenova / breeze / music3 / yue / h3 / remotion）在 require 期
+ *   · 各宿主（breeze / music3 / yue / h3 / remotion）在 require 期
  *     `registerPluginSelfcheck({ id, key, label, check })` 登记自己的 `check`；
  *   · 安装窗的编排在同级的 main-install.js（本模块不碰窗口，只回状态、只往它推事件）；
  *   · 数据一律落 `<数据目录>/plugin-selfcheck/<id>.json` 与 `<...>/<id>/`（绝不落应用目录）。

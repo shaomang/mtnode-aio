@@ -6771,6 +6771,42 @@ body.theme-light button.hist-proc-bar:hover {
   border-color: var(--orange)
 }
 
+/* ── 智能任务节点 / 助手栏：跑完一轮后的小按钮（token 统计 + 费用预估）──
+   折叠态只占一行（Σ token · ≈费用），点开是完整的 Token 报告弹窗。 */
+.tok-stat-btn {
+  flex: none;
+  align-self: flex-start;
+  margin: 2px 8px 4px;
+  padding: 1px 9px;
+  max-width: calc(100% - 16px);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 17px;
+  color: var(--muted);
+  background: var(--panel2);
+  border: 1px solid var(--bd2);
+  border-radius: 999px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis
+}
+
+.tok-stat-btn:hover,
+.tok-stat-btn:focus-visible {
+  color: var(--ink);
+  border-color: var(--bd)
+}
+
+/* 弹窗里的报告：窗本身已有留白，details 不再自带外边距，表体也不再按 42vh 封顶 */
+.tok-badge-dialog {
+  margin: 0
+}
+
+.tok-badge-dialog .tok-badge-body {
+  max-height: none
+}
+
 .tok-badge-sum {
   font-family: var(--mono);
   flex: 1 1 auto;

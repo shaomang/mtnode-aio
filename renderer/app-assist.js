@@ -1626,6 +1626,13 @@ function renderAssistPanel(opts) {
       tokBadgeTailMount(assistTokOwner(), list);
     } catch {}
   }
+  /* 完成一轮后的小按钮（token 统计 + 费用预估）：点开就是完整报告弹窗。
+     与上面那枚 Badge 同一份台账，只是助手栏窄，收成一颗按钮不占正文高度。 */
+  if (typeof tokStatButtonMount === "function" && typeof assistTokOwner === "function") {
+    try {
+      tokStatButtonMount(assistTokOwner());
+    } catch {}
+  }
   const reapplyStick = () => restoreConvStick(list, stickCap);
   scheduleHistoryCollapse(list, reapplyStick);
   const sendBtn = $("#assistSend");

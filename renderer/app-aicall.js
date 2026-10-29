@@ -616,9 +616,9 @@
 
   /* ---------------- 「图像后端」设定（函数节点出图 / 图生图） ----------------
    * 与「AI 调用」并列的第二格：文本模型与图像后端本就是两套清单（前者是服务商路由上的
-   * chat 模型，后者是云端图像服务商 + 本机 SenseNova），所以字段 / 按钮 / 弹层各自独立，
+   * chat 模型，后者是云端图像服务商），所以字段 / 按钮 / 弹层各自独立，
    * 唯一共享的是「就近继承」口径（沿 parentSuperId 往上找最近的承载节点）。
-   *   imgModel   图像后端 id（空 = 未选择，跟随 MTNode 默认的 auto：云端优先、其次本机）
+   *   imgModel   图像后端 id（空 = 未选择，跟随 MTNode 默认的 auto：云端图像服务商优先）
    * 函数节点运行（renderer/app-nodes.js 的 functionImageSpec）把生效值交给主进程，
    * jscode 里 await mtnode.image(...) 就用它出图（见 fn-runtime.js 的 image 桥）。 */
 
@@ -666,7 +666,7 @@
   }
 
   /* 生效值：{ model, label, local, refImages, maxRefImages, strength, source, inherited, auto }
-     未选过 → auto:true（走主进程的 auto：云端优先、其次本机），label 用清单里的默认后端名。 */
+     未选过 → auto:true（走主进程的 auto：云端图像服务商优先），label 用清单里的默认后端名。 */
   function imgBackendResolved(node) {
     const out = {
       model: "",
@@ -767,7 +767,7 @@
         (r.strength ? " · " + I18n.t("支持参考强度") : "");
     } else {
       scope = I18n.t(
-        "图像后端：自动（跟随 MTNode 默认：云端图像服务商优先，其次本机 SenseNova）",
+        "图像后端：自动（跟随 MTNode 默认：云端图像服务商优先）",
       );
     }
     return (
@@ -875,7 +875,7 @@
           (r.label || r.model) +
           I18n.t("；其下未自行选择的内部节点一并使用它。")
         : I18n.t(
-            "未选择：函数节点里的 mtnode.image(...) 跟随 MTNode 默认图像后端（云端图像服务商优先，其次本机 SenseNova）。",
+            "未选择：函数节点里的 mtnode.image(...) 跟随 MTNode 默认图像后端（云端图像服务商优先）。",
           );
     const list = el.querySelector(".dev-model-list");
     if (list) {
@@ -886,7 +886,7 @@
         I18n.t("跟随默认（自动）"),
         !r.model,
         () => applyImgBackendSetting(node, ""),
-        I18n.t("不指定：用 MTNode 默认的图像后端（云端图像服务商优先，其次本机 SenseNova）。"),
+        I18n.t("不指定：用 MTNode 默认的图像后端（云端图像服务商优先）。"),
       );
       for (const m of listInfo.models || []) {
         const id = String(m.id || "");
@@ -906,7 +906,7 @@
             "div",
             "dev-model-empty",
             I18n.t(
-              "暂无可用图像后端：请先在 设置 → 模型服务 里配图像服务商（或安装本机 SenseNova 插件）。",
+        "暂无可用图像后端：请先在 设置 → 模型服务 里配图像服务商。",
             ),
           ),
         );

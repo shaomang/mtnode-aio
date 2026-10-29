@@ -8,7 +8,7 @@
 #     The difference comes from pip's HTTP stack and metadata round trips, not from the mirror.
 #   * What the user sees in the install window is "stuck for tens of minutes at the CUDA torch
 #     step", which easily reads as a broken install.
-#   * On top of that: installing three plugins (yue2 / breeze / sensenova) downloads the same
+#   * On top of that: installing two plugins (yue2 / breeze) downloads the same
 #     1.8-3.5GB wheel once per plugin.
 #
 # The two functions here do:

@@ -68,7 +68,7 @@ const APP_CAPABILITIES = [
     id: "imageGen",
     label: { zh: "图像生成", en: "Image generation" },
     hint: {
-      zh: "需要生成图片：用 MTNode 已配好的图像能力（云端服务商或本机 SenseNova 后端）",
+      zh: "需要生成图片：用 MTNode 已配好的图像能力（云端图像服务商）",
       en: "The app generates images via MTNode's configured image backends",
     },
   },

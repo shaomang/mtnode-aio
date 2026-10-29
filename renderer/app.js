@@ -231,7 +231,7 @@ function appPluginMissing(id) {
   return S.pluginsReady === true && !appPluginInstalled(id);
 }
 /* ── 显存门槛（本轮需求：显存不够的本地后端插件直接隐藏）──
-   名单与门槛的唯一真源在主进程 plugins/vram-gate.js：sensenova-local 24G · minimax-music3 24G ·
+   名单与门槛的唯一真源在主进程 plugins/vram-gate.js：minimax-music3 24G ·
    yue2-local 16G · minimax-h3 16G。两路判据（都要看，因为被隐藏的插件**根本不在目录里**）：
      · ① 目录条目上的 vram.hide（已装 / 显存够的条目恒为 false）；
      · ② S.pluginsVramHidden（appPluginsVramState 的 hidden 名单 —— 被滤掉的那几个只在这里）。
@@ -257,12 +257,11 @@ const NODE_KIND_PLUGIN = {
   music_gen: "minimax-music3",
   /* FLUX 3 Image Klein：独立 ComfyUI（8197）上的本机出图，见 flux3klein/main-flux3klein.js */
   flux3klein_gen: "flux3-klein-local",
-  sensenova_gen: "sensenova-local",
   yue_gen: "yue2-local",
   breeze_gen: "breeze-tts-local",
   /* InfiniteTalk 数字人：不设显存门槛（装得下就试，跑不动由控制台日志说话） */
   remotion: "remotion",
-  /* H3（本地视频生成）与 SenseNova / Music 3 同为本地后端：门槛 16G（真源在 plugins/vram-gate.js） */
+  /* H3（本地视频生成）与 Music 3 同为本地后端：门槛 16G（真源在 plugins/vram-gate.js） */
   video_gen: "minimax-h3",
 };
 function nodeKindPluginId(kind) {
@@ -283,6 +282,29 @@ const HEAD = 28;
 const PARAM_IN_INDEX = 9001;
 function isParamWire(w) {
   return !!w && !w.rel && Number(w.toIndex) === PARAM_IN_INDEX;
+}
+/* 「组」输入端子的端子号（哨兵值，本次需求）：智能节点（agent_task / proc_text 智能模式）
+   输入端最末位那一颗空心方框端子，只吃画布组框标题栏 □ 口拖出来的组线。
+   与参数端子同一套做法 —— 用远大于真实端子数的常量当身份，既有连线一颗都不会漂号。 */
+const GROUP_IN_INDEX = 9002;
+function isGroupInPort(node, idx) {
+  if (Number(idx) !== GROUP_IN_INDEX) return false;
+  return typeof isSmartGroupPortNode === "function" && isSmartGroupPortNode(node);
+}
+/* 组线：来源不是节点而是画布里的一个组（wf.groups）。w.from 写成 "grp:<组id>"，
+   让一切按 nodeById 遍历的链路自然跳过它；真源另存在 w.grp 上。 */
+const GROUP_WIRE_PREFIX = "grp:";
+function isGroupWire(w) {
+  return !!w && !w.rel && !!String(w.grp || "").trim();
+}
+function groupWireFromId(gid) {
+  return GROUP_WIRE_PREFIX + String(gid || "");
+}
+/* 这颗节点是不是能接组线的智能节点（组输入端子只长在它们身上） */
+function isSmartGroupPortNode(node) {
+  if (!node) return false;
+  if (node.kind === "agent_task") return true;
+  return node.kind === "proc_text" && !!node.agent;
 }
 const PORT_R = 5;
 /* 相邻端子间距 = 直径 + 间隙；间隙与端子半径一致（15 = 10 + 5） */
@@ -386,9 +408,6 @@ const KIND_CLS = {
   music_gen: "music",
   /* YuE2 音乐生成（本地 YuE2 后端 · 歌词 → 整曲 · 可编辑 ABC 谱面）：复用音乐族配色 */
   yue_gen: "music",
-  /* SenseNova 图像生成（本机 SenseNova-U1.5-8B-MoT 后端）：复用图像生成族配色，
-     它的端子语义与 proc_image 一致（出图 = image 端子），下游 save_image / 预览直接复用 */
-  sensenova_gen: "proc-img",
   flux3klein_gen: "proc-img",
   /* Breeze 语音生成：文本 → 语音的**唯一**本机后端，复用 .wf-node.tts 样式族（紫调） */
   breeze_gen: "tts",
@@ -538,10 +557,6 @@ const KIND_ICON_SVG = {
   /* YuE2 音乐生成：音符 + 下方 ABC 谱线（歌词 → 整曲 · 可编辑谱面） */
   yue_gen:
     '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M9.6 9.4a1.5 1.5 0 1 1-1.3-1.48V3.6l4.2-.85v4.9a1.5 1.5 0 1 1-1.3-1.48V4.15L9.6 4.55v4.85z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M2.2 12.4h11.6" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"/><path d="M2.2 14.2h11.6" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" opacity=".7"/><path d="M5.1 9.1V13M8 9.6V12.4" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg>',
-  /* SenseNova 图像生成（本机后端）：画框 + 山形（图像）+ 底部本机芯片引脚，
-     与云端 proc_image 同族但一眼可辨 —— 引脚表示「跑在自己电脑上」 */
-  sensenova_gen:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.4" y="2.4" width="11.2" height="8.2" rx="1.1" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M3.6 9.1l2.5-2.7 1.7 1.6 1.4-1.3 1.8 2.4" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round"/><circle cx="11.5" cy="4.6" r=".95" fill="currentColor"/><path d="M5.2 12.4h5.6M4.4 10.6v1.8M11.6 10.6v1.8M6.6 12.4v1.9M9.4 12.4v1.9" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg>',
   /* Breeze 语音生成：麦克风 + 底座（音色克隆 / 设计 / 导演） */
   breeze_gen:
     '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="6.1" y="1.9" width="3.8" height="8" rx="1.9" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M3.4 7.4v.7a4.6 4.6 0 0 0 9.2 0v-.7M8 12.7v1.5M5.6 14.2h4.8" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"/><path d="M8 4.3v3.2" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" opacity=".75"/></svg>',
@@ -704,89 +719,6 @@ const IMAGE_SIZES = [
   "3840x1632",
 ];
 const DEFAULT_IMAGE_SIZE = "2048x1360";
-/* SenseNova（SenseNova-U1.5-8B-MoT）官方只有 11 个训练分辨率桶 —— 不是自由值。
-   这里只是**后端未起服时**的兜底显示表；真源是 /health 的 resolutions
-   （sensenova-pack/app/engine.py 的 SUPPORTED_RESOLUTIONS），节点设置窗优先用后端给的。
-   注意：最小那一桶也有 2048×2048 ≈ 4M 像素，所以「降分辨率」省不了显存。 */
-const SENSENOVA_RESOLUTION_BUCKETS = [
-  { ratio: "1:1", width: 2048, height: 2048 },
-  { ratio: "16:9", width: 2720, height: 1536 },
-  { ratio: "9:16", width: 1536, height: 2720 },
-  { ratio: "3:2", width: 2496, height: 1664 },
-  { ratio: "2:3", width: 1664, height: 2496 },
-  { ratio: "4:3", width: 2368, height: 1760 },
-  { ratio: "3:4", width: 1760, height: 2368 },
-  { ratio: "1:2", width: 1440, height: 2880 },
-  { ratio: "2:1", width: 2880, height: 1440 },
-  { ratio: "1:3", width: 1152, height: 3456 },
-  { ratio: "3:1", width: 3456, height: 1152 },
-];
-/* SenseNova 显存档位（后端 /health 的 vramModes 同序）：fast = 官方 24G 卡档 */
-const SENSENOVA_VRAM_MODES = ["full", "fast", "balanced", "low"];
-const SENSENOVA_DTYPES = ["bfloat16", "float16", "float32"];
-const SENSENOVA_CFG_NORMS = ["none", "global", "channel", "cfg_zero_star"];
-/** 后端 /health 给的桶表优先；没起服时回落到上面的兜底表（同一份 ratio→WxH 口径） */
-function sensenovaResolutionBuckets(st) {
-  const list = st && Array.isArray(st.resolutions) ? st.resolutions : null;
-  if (list && list.length) {
-    const out = [];
-    for (const r of list) {
-      if (!r || !r.ratio) continue;
-      const w = Number(r.width) || 0;
-      const h = Number(r.height) || 0;
-      if (w <= 0 || h <= 0) continue;
-      out.push({ ratio: String(r.ratio), width: w, height: h });
-    }
-    if (out.length) return out;
-  }
-  return SENSENOVA_RESOLUTION_BUCKETS;
-}
-/** 归一 sensenova_gen 的画幅：桶名 → 该桶的 WxH（桶名不认识时按现有 WxH 反查桶） */
-function sensenovaNormalizeNode(node, buckets) {
-  if (!node) return;
-  const list = sensenovaResolutionBuckets(
-    buckets && Array.isArray(buckets.resolutions) ? buckets : null,
-  );
-  let b = list.find((x) => x.ratio === String(node.ratioBucket || "").trim());
-  if (!b) {
-    const w = Number(node.width) || 0;
-    const h = Number(node.height) || 0;
-    b = list.find((x) => x.width === w && x.height === h) || list[0];
-  }
-  node.ratioBucket = b.ratio;
-  node.width = b.width;
-  node.height = b.height;
-  node.numSteps = Math.max(1, Math.min(200, Math.round(Number(node.numSteps) || 30)));
-  node.cfgScale = Math.max(
-    0,
-    Math.min(20, Number(node.cfgScale != null ? node.cfgScale : 4.0) || 0),
-  );
-  if (!SENSENOVA_CFG_NORMS.includes(String(node.cfgNorm || ""))) node.cfgNorm = "none";
-  node.timestepShift = Math.max(
-    0,
-    Math.min(20, Number(node.timestepShift != null ? node.timestepShift : 3.0) || 0),
-  );
-  if (!SENSENOVA_VRAM_MODES.includes(String(node.vramMode || ""))) node.vramMode = "fast";
-  if (!SENSENOVA_DTYPES.includes(String(node.dtype || ""))) node.dtype = "bfloat16";
-  node.think = !!node.think;
-  /* 参考图条件强度（图像编辑模式 · img_cfg_scale）：缺省 1.0（= 官方默认，关闭图像 CFG） */
-  node.imgCfgScale = Math.max(
-    0,
-    Math.min(20, Number(node.imgCfgScale != null ? node.imgCfgScale : 1.0) || 0),
-  );
-  node.attempts = attemptCount(node);
-  node.seed = Math.floor(Number(node.seed) || 0);
-}
-/** 一行摘要：桶名 · WxH（节点体与设置窗共用，避免两处各拼一份） */
-function sensenovaSizeSummary(node) {
-  return (
-    (node && node.ratioBucket ? String(node.ratioBucket) : "1:1") +
-    " · " +
-    (Number(node && node.width) || 0) +
-    "x" +
-    (Number(node && node.height) || 0)
-  );
-}
 /* Remotion 视频输出分辨率预设（宽x高，px）——app-canvas.js / app-nodes.js 共用 */
 const REMOTION_SIZES = [
   "1280x720",
@@ -1286,7 +1218,7 @@ const NODE_DEFAULTS = {
     artifacts: [], /* 随工作流包带过来的中间产物（见 app-workflows.js 的 wfArtifactsOf） */
     effort: "high",
     /* 智能节点默认走默认预设：跑起来时 app-db.js 会把「默认档」换成内部 node 档
-       （办事不改图），所以这里存的是界面档，不是网关档。 */
+       （办事为主，画布读取与节点 / 连线按本轮工具许可放行），所以这里存的是界面档，不是网关档。 */
     preset: AGENT_PRESET_DEFAULT,
     provider: "",
     agentSessionId: "",
@@ -1469,14 +1401,9 @@ const NODE_DEFAULTS = {
     ranAt: 0,
     running: false,
   },
-  /* SenseNova 图像生成（本地 SenseNova-U1.5-8B-MoT 后端 · 插件 sensenova-local）：
-     输入端子与「图像节点」proc_image 完全同一条泛用增量规则 —— 端口 0 = 提示词 / 文本入口，
-     之后按已连线条数增量出数据槽（可接文本节点，也可接图像引用：input_image / proc_image 等），
-     端子数不固定；输出 端口0=图像 · 端口1=控制输出。
-     输出端子语义与 proc_image 完全对齐（node.output = {kind:"image", path}），
-     所以下游 save_image / 图像预览 / @ 引用一条都不用新写。
-     分辨率不是自由值：官方只有 11 个训练桶（ratioBucket 记桶名，width/height 由桶决定），
-     桶表真源在后端 /health（resolutions），渲染层只留一份兜底常量。 */
+  /* FLUX 3 Image Klein（本机 ComfyUI 出图）：输入端子与「图像节点」proc_image 同一泛用增量规则 ——
+     端口 0 = 提示词 / 文本入口，之后按已连线条数增量出数据槽；输出 端口0=图像 · 端口1=控制输出。
+     输出端子语义与 proc_image 对齐（node.output = {kind:"image", path}）。 */
   flux3klein_gen: {
     w: 360,
     h: 300,
@@ -1496,37 +1423,6 @@ const NODE_DEFAULTS = {
     maskPath: "",
     bgRmOn: false,
     bgRmPairs: [],
-  },
-  sensenova_gen: {
-    w: 360,
-    h: 300,
-    /* 一级菜单「图像生成」成员：新建节点默认标题用后端名 */
-    title: "SenseNova 图像节点",
-    prompt: "",
-    ratioBucket: "1:1",
-    width: 2048,
-    height: 2048,
-    numSteps: 30,
-    cfgScale: 4.0,
-    cfgNorm: "none",
-    timestepShift: 3.0,
-    /* 参考图条件强度（图像编辑模式 · it2i_generate 的 img_cfg_scale）：1.0 = 图像 CFG 关闭
-       （官方默认）；连了参考图后想更贴底图可调到 1.5~2.0。无参考图时该值不下发、不生效。 */
-    imgCfgScale: 1.0,
-    seed: 0,
-    rerollSeed: true,
-    attempts: 1,
-    /* 显存档位：fast = 官方 24G 卡档（后端 OOM 时会自动降一档并回写 warnings） */
-    vramMode: "fast",
-    dtype: "bfloat16",
-    think: false,
-    /* 落盘：无 outputPath —— 本节点不要求用户填输出路径，产物由主进程落进应用托管目录
-       （%APPDATA%\\pipeline-console，与 proc_image 同一资产链）并把绝对路径从输出端子交付 */
-    sensenovaStatus: "",
-    output: null,
-    error: null,
-    ranAt: 0,
-    running: false,
   },
   /* Breeze 语音生成（Breeze TTS 2 本机后端 · 文本转语音 · 音色克隆 / 设计 / 导演）：
      端子 —— 输入 端口0=待合成文本 · 端口1=参考音频 · 端口2=参考文稿 · 端口3=指令 instruction
@@ -1833,7 +1729,7 @@ const NODE_DEFAULTS = {
     aiPreset: "",
     aiEffort: "",
     /* 「图像后端」设定（函数节点出图 / 图生图）：imgModel = 图像后端 id，空 = 跟随 MTNode 默认
-       （云端图像服务商优先，其次本机 SenseNova）。jscode 里 await mtnode.image(...) 用它出图，
+       （云端图像服务商）。jscode 里 await mtnode.image(...) 用它出图，
        产物落本画布资产目录。口径见 renderer/app-aicall.js 的 imgBackend*。 */
     imgModel: "",
     output: null,
@@ -2189,7 +2085,6 @@ function nodeEmitsControlOnPort(node, portIndex, wf, seen) {
   if (
     node.kind === "music_gen" ||
     node.kind === "yue_gen" ||
-    node.kind === "sensenova_gen" ||
     node.kind === "flux3klein_gen" ||
     node.kind === "video_gen" ||
     node.kind === "infinitetalk_gen" ||
@@ -2425,6 +2320,7 @@ function applyWirePathClass(p, w, from) {
   if (S.selWire === w.id) wcls += " sel";
   else if (linkedToSelectedNode(w)) wcls += " linked";
   if (w.rel) wcls += " rel";
+  else if (isGroupWire(w)) wcls += " grp";
   else if (wireFromIsControl(w) || isControlKind(nodeById(w.to))) wcls += " ctrl";
   else if (isImageWireFrom(from, w.fromIndex)) wcls += " img";
   else if (isAudioWireFrom(from, w.fromIndex)) wcls += " aud";
@@ -2437,6 +2333,8 @@ function applyWirePathClass(p, w, from) {
 /* 选中节点时，与其相连的连线高亮（.fn-edge.linked） */
 function linkedToSelectedNode(w) {
   if (!w) return false;
+  /* 选中组框时，从这个组拖出去的组线一起高亮（与选中节点同一视觉口径） */
+  if (S.selGroup && String(w.grp || "") === String(S.selGroup)) return true;
   const set =
     S.selSet && S.selSet.size ? S.selSet : S.sel ? new Set([S.sel]) : null;
   return !!set && (set.has(w.from) || set.has(w.to));
@@ -3659,14 +3557,18 @@ function wireKeepsSuperBoundaryIn(wf, w) {
 function pruneInvalidSuperBoundaryWires() {
   if (!S.wf || !Array.isArray(S.wf.wires)) return 0;
   const before = S.wf.wires.length;
-  S.wf.wires = S.wf.wires.filter((w) => wireKeepsSuperBoundary(w));
+  /* 组线（w.grp）的来源是组不是节点，跨层判定对它不成立 —— 一律放行（否则编辑收尾 /
+     装箱拆箱会把用户刚拖出来的组线静默剪掉）。 */
+  S.wf.wires = S.wf.wires.filter((w) => w.rel || isGroupWire(w) || wireKeepsSuperBoundary(w));
   return before - S.wf.wires.length;
 }
 /** 读档 / 迁移时的静默清理：历史脏线（跨层野线）不提示、不打断，直接剪掉。 */
 function pruneInvalidSuperBoundaryWiresIn(wf) {
   if (!wf || !Array.isArray(wf.wires)) return 0;
   const before = wf.wires.length;
-  wf.wires = wf.wires.filter((w) => w.rel || wireKeepsSuperBoundaryIn(wf, w));
+  wf.wires = wf.wires.filter(
+    (w) => w.rel || isGroupWire(w) || wireKeepsSuperBoundaryIn(wf, w),
+  );
   return before - wf.wires.length;
 }
 /* 拖拽单元：把「选中集里某颗壳的后代」从独立拖拽名单里剔掉（任意深度的壳，展开 / 收起都算）。
@@ -4557,8 +4459,6 @@ function inferMediaFromSource(from, fromIndex, consumer) {
   )
     return "video";
   if (from.kind === "input_image" || from.kind === "proc_image") return "image";
-  /* SenseNova 本地图像生成：产物就是一张 PNG，与 proc_image 同口径 */
-  if (from.kind === "sensenova_gen") return "image";
   if (from.kind === "flux3klein_gen") return "image";
   /* 音视频输入节点：输出端子固定两个 —— 端口 0 = 音频输出 / 视频输出（输出的就是这个本机
      文件，值见 mediaInputValueOf），按文件类型判定；端口 1 = 转写输出（见 renderer/app-asr.js
@@ -4648,7 +4548,6 @@ function saveMediaKind(node) {
   if (node.boundFromId) {
     const g = nodeById(node.boundFromId);
     if (g && (g.kind === "music_gen" || g.kind === "yue_gen")) return "audio";
-    if (g && g.kind === "sensenova_gen") return "image";
     if (g && g.kind === "flux3klein_gen") return "image";
     if (
       g &&
@@ -4805,8 +4704,6 @@ function mediaGenExt(node) {
     const f = String(node.ttsFormat || "").toLowerCase();
     return f === "mp3" ? ".mp3" : f === "flac" ? ".flac" : ".wav";
   }
-  /* SenseNova 图像生成：产物固定 PNG（后端就是存 PNG，不是可选格式） */
-  if (node && node.kind === "sensenova_gen") return ".png";
   if (node && node.kind === "flux3klein_gen") return ".png";
   /* InfiniteTalk 数字人：产物固定 mp4（后端把音轨直接封进视频） */
   if (node && node.kind === "infinitetalk_gen") return ".mp4";
@@ -4863,7 +4760,6 @@ function requireMediaGenExport(node, quiet) {
   if (node) {
     if (node.kind === "music_gen") node.musicStatus = msg;
     if (node.kind === "yue_gen") node.yueStatus = msg;
-    if (node.kind === "sensenova_gen") node.sensenovaStatus = msg;
   if (node.kind === "flux3klein_gen") node.flux3kleinStatus = msg;
     if (node.kind === "breeze_gen") node.breezeStatus = msg;
     if (node.kind === "video_gen") node.videoStatus = msg;
@@ -4998,7 +4894,6 @@ const MEDIA_BUSY_ERROR_TEXTS = [
 const MEDIA_BUSY_STATUS_FIELDS = [
   "videoStatus",
   "remotionStatus",
-  "sensenovaStatus",
   "breezeStatus",
   "musicStatus",
   "status",
@@ -5200,7 +5095,6 @@ function outputCount(n) {
   if (
     n.kind === "music_gen" ||
     n.kind === "yue_gen" ||
-    n.kind === "sensenova_gen" ||
     n.kind === "breeze_gen" ||
     n.kind === "infinitetalk_gen" ||
     n.kind === "soulxflashhead_gen" ||
@@ -6589,8 +6483,7 @@ function imageInputsOf(node, idx) {
     if (!src || seen.has(src.id)) return;
     if (
       src.kind !== "input_image" &&
-      src.kind !== "proc_image" &&
-      src.kind !== "sensenova_gen"
+      src.kind !== "proc_image"
     )
       return;
     seen.add(src.id);
@@ -7463,7 +7356,7 @@ function isControlKind(n) {
 
 
 /* ── 动态端子节点（端子随已连数据线增量）的**专用控制端子** ────────────────
-   proc_text / proc_image / sensenova_gen / agent_task / input_*：输入端子 0 = 提示词 /
+   proc_text / proc_image / agent_task / input_*：输入端子 0 = 提示词 /
    内容入口，之后每多一条数据线多一颗；控制端子固定在数据槽之后**单独一颗**，
    数据线永远不占它、控制线也只能落它（与 music_gen / video_gen 的固定控制口同一语义，
    区别只是号随数据槽增长 —— 数据槽一变就由 syncDynCtrlWires 把控制线重绑过去）。
@@ -7480,7 +7373,6 @@ function isDynCtrlNode(node) {
     [
       "proc_text",
       "proc_image",
-      "sensenova_gen",
       "agent_task",
       "input_text",
       "input_image",
@@ -7499,6 +7391,9 @@ function dynCtrlInPortIndex(node) {
     if (!w || w.rel || w.to !== node.id) continue;
     if (typeof wireFromIsControl === "function" && wireFromIsControl(w)) continue;
     const i = Number(w.toIndex);
+    /* 哨兵端子（参数 9001 / 组 9002）不参与数据槽编号：它们不占顺序端子，
+       算进来会把控制端子推到几千号去（端子会炸成一整排） */
+    if (isFinite(i) && i >= PARAM_IN_INDEX) continue;
     if (isFinite(i) && i > maxData) maxData = i;
   }
   return Math.max(1, maxData + 2);
@@ -7613,6 +7508,8 @@ function inPortKindOf(node, idx) {
     return p ? p.kind : null;
   }
   if (!isFinite(i) || i < 0) return null;
+  /* 组输入端子（哨兵号 9002，只长在智能节点上）：声明 "group"，只吃组线 */
+  if (i === GROUP_IN_INDEX) return isSmartGroupPortNode(node) ? "group" : null;
   if (isFnToolNode(node)) return i === 0 ? "control" : fnToolPortKind(node, "in", i);
   if (node.kind === "super") return superInPortIsControl(node, i) ? "control" : null;
   if (isControlKind(node)) return "control";
@@ -7756,7 +7653,6 @@ function wireFromIsControl(w, wf) {
   if (
     (from.kind === "music_gen" ||
       from.kind === "yue_gen" ||
-      from.kind === "sensenova_gen" ||
       from.kind === "flux3klein_gen" ||
       from.kind === "video_gen" ||
       isVideoPostKind(from) ||
@@ -7799,6 +7695,11 @@ function wiresTo(id) {
       (w) =>
         w.to === id &&
         !w.rel &&
+        /* 组线不是数据线：来源是「组」（w.from = "grp:<id>"，nodeById 取不到）。
+           留在这里会让所有「按来源节点取数」的路径拿到 null —— 统一在这里挡掉，
+           需要组线的地方（组端子占位 / 组清单）直接读 S.wf.wires。
+           直接看 w.grp 而不调 isGroupWire：这两只取线函数会被单独抽进冒烟沙箱跑。 */
+        !(w && !w.rel && w.grp) &&
         Number(w.toIndex) !== npIdx &&
         !wireFromIsControl(w),
     )
@@ -7808,7 +7709,15 @@ function wiresTo(id) {
 function allWiresTo(id) {
   const npIdx = typeof PARAM_IN_INDEX === "number" ? PARAM_IN_INDEX : 9001;
   return S.wf.wires
-    .filter((w) => w.to === id && !w.rel && Number(w.toIndex) !== npIdx)
+    .filter(
+      (w) =>
+        w.to === id &&
+        !w.rel &&
+        /* 组线同样不占顺序端子（它接的是哨兵号 9002 的组输入端子）。
+           这里直接看 w.grp 而不调 isGroupWire：这两只取线函数会被单独抽进冒烟沙箱跑。 */
+        !(w && !w.rel && w.grp) &&
+        Number(w.toIndex) !== npIdx,
+    )
     .sort((a, b) => a.toIndex - b.toIndex);
 }
 function hasOutput(n) {
@@ -7849,9 +7758,6 @@ function isImageSource(n) {
   return (
     n.kind === "input_image" ||
     n.kind === "proc_image" ||
-    /* SenseNova 本地图像生成：产物就是一张 PNG，端子语义与 proc_image 同一条口径 */
-    n.kind === "sensenova_gen" ||
-    n.kind === "flux3klein_gen" ||
     n.kind === "merge" ||
     n.kind === "split"
   );
@@ -7873,7 +7779,7 @@ function isImageWireFrom(n, fromIndex) {
   return (
     n.kind === "input_image" ||
     n.kind === "proc_image" ||
-    n.kind === "sensenova_gen"
+    n.kind === "flux3klein_gen"
   );
 }
 function isAudioWireFrom(n, fromIndex) {
@@ -8451,8 +8357,7 @@ function canUseGlobalRefs(node) {
     node &&
     (node.kind === "proc_text" ||
       node.kind === "proc_image" ||
-      /* SenseNova 图像节点同样有可编辑提示词，@全局广播 与 proc_image 同一口径 */
-      node.kind === "sensenova_gen" ||
+      /* FLUX 3 Image Klein 同样有可编辑提示词，@全局广播 与 proc_image 同一口径 */
       node.kind === "flux3klein_gen" ||
       node.kind === "agent_task" ||
       node.kind === "judge")
@@ -8917,10 +8822,6 @@ function inputCount(node) {
   if (node.kind === "music_gen") return 3; /* 端口0=提示词 · 端口1=歌词 · 端口2=控制输入 */
   /* YuE2：端口0=风格提示词 · 端口1=歌词 · 端口2=ABC 谱（可选）· 端口3=控制输入 */
   if (node.kind === "yue_gen") return 4;
-  /* SenseNova 图像生成：输入端子与「图像节点」proc_image 同一泛用增量规则 ——
-     端口 0 = 提示词 / 文本入口，之后按已连线条数增量出数据槽（文本 / 图像都可接），
-     不走任何固定端子分支，落到下面的通用动态端子（输出端子仍是图像 + 控制） */
-  /* Breeze 语音：端口0=待合成文本 · 1=参考音频 · 2=参考文稿 · 3=指令 · 4=控制输入（固定 5 个端子） */
   if (node.kind === "breeze_gen") return 5;
   /* InfiniteTalk 数字人：端口0=人物图 · 1=语音 · 2=源视频 · 3=提示词 · 4=控制输入（固定 5 颗，不随连线增量） */
   if (node.kind === "infinitetalk_gen") return 5;
@@ -8948,7 +8849,7 @@ function inputCount(node) {
   }
   if (node.kind === "net_recv") return 0; /* 接收是异步源，无数据输入 */
   if (node.kind === "net_send") return 2; /* 端口0=信息输入(数据) · 端口1=控制输入 */
-  /* 动态端子节点（proc_text / proc_image / sensenova_gen / agent_task / input_*）：
+  /* 动态端子节点（proc_text / proc_image / agent_task / input_*）：
      数据槽 0..N-1（0 = 提示词 / 内容入口，恒留一颗空槽）+ 末位专用控制端子。
      控制端子恒存在（画布上恒显示一颗控制口），数据线与控制线各走各的号。 */
   if (typeof isDynCtrlNode === "function" && isDynCtrlNode(node))
@@ -9211,8 +9112,7 @@ function minWFor(n) {
       return 320;
     case "yue_gen":
       return 320;
-    /* SenseNova 图像生成：与音乐 / 语音节点同尺寸族（body 里有参数摘要 + 预览） */
-    case "sensenova_gen":
+    /* FLUX 3 Klein 图像生成：与音乐 / 语音节点同尺寸族（body 里有参数摘要 + 预览） */
     case "flux3klein_gen":
       return 340;
     /* Breeze 语音：警示条 + 两行端子提示 + 摘要 + 后端面板 + 预览 + 状态行，要得比音乐节点高 */
@@ -9257,8 +9157,7 @@ function minHFor(n) {
       return 220;
     case "yue_gen":
       return 220;
-    /* SenseNova 图像生成：参数摘要 + 后端面板 + 图像预览，留够高度 */
-    case "sensenova_gen":
+    /* FLUX 3 Klein 图像生成：参数摘要 + 后端面板 + 图像预览，留够高度 */
     case "flux3klein_gen":
       return 240;
     case "breeze_gen":
@@ -9441,8 +9340,6 @@ function nodeKindLabel(node) {
     global: "全局",
     music_gen: "Minimax Music 3",
     yue_gen: "YuE2",
-    /* SenseNova 图像生成（本机 SenseNova-U1.5-8B-MoT 后端） */
-    sensenova_gen: "SenseNova",
     flux3klein_gen: "FLUX 3 Klein",
     /* InfiniteTalk 数字人（本地视频生成 · Wan2.1 I2V 14B） */
     infinitetalk_gen: "InfiniteTalk 数字人",
@@ -9495,12 +9392,10 @@ function nodeKindPurposeKey(node) {
     db_table: "表（读取文件 · agent 建表）",
     proc_text: "文本处理（LLM）",
     /* 节点类型名 = 图像生成（缺省标题见 NODE_DEFAULTS.proc_image）；
-       括号里只留稳定的区分字段「云端服务商」，与 SenseNova 本地节点区分 */
+       括号里只留稳定的区分字段「云端服务商」，与本地图像节点区分 */
     proc_image: "图像生成（云端服务商）",
     music_gen: "Minimax Music 3（音乐生成 · 提示词 + 歌词）",
     yue_gen: "YuE2（音乐生成 · 风格提示词 + 歌词 → 整曲 · 可编辑 ABC 谱面）",
-    sensenova_gen:
-      "SenseNova（本地图像生成 · SenseNova-U1.5-8B-MoT · 官方 11 个分辨率桶 · 需 24G 显存）",
     flux3klein_gen:
       "FLUX 3 Image Klein（本地图像生成 · 5.6B 蒸馏 · INT8 / BF16 · 提示词 / 多参考图编辑 / 蒙版重绘 / 透明背景）",
     video_gen: "Minimax H3（视频生成 · 文本 / 图像 / 音频 / 视频）",
@@ -12491,7 +12386,31 @@ function inPortWireY(node, i, ic) {
     typeof NParam.portY === "function"
   )
     return NParam.portY(node);
+  if (Number(i) === GROUP_IN_INDEX) return groupInPortY(node);
   return inPortY(node, i, ic == null ? inputCount(node) : ic);
+}
+/* 组输入端子的 Y：排在参数端子（有就排它下面一格）之后；贴着卡片底部时往上一格，
+   保证端子圆心留在卡片里（与参数端子 npPortY 同一套「不许跑出卡片」的口径）。
+   画布渲染（.grp-port）与连线几何共用这一个函数。 */
+function groupInPortY(node) {
+  if (!node) return 0;
+  const ic = Math.max(0, Number(inputCount(node)) || 0);
+  const base =
+    typeof NParam === "object" &&
+    NParam &&
+    typeof NParam.eligible === "function" &&
+    NParam.eligible(node) &&
+    typeof NParam.portY === "function"
+      ? NParam.portY(node)
+      : inPortY(node, ic, ic);
+  const h =
+    typeof nodePortHeight === "function"
+      ? Number(nodePortHeight(node)) || 0
+      : Number(node.h) || 0;
+  const maxY = h > 0 ? Math.max(45, h - PORT_R - 5) : base + PORT_STEP;
+  let y = base + PORT_STEP;
+  if (y > maxY) y = Math.max(45, base - PORT_STEP);
+  return Math.min(y, h > 0 ? maxY : y);
 }
 function outPortY(node, i, oc) {
   const n = oc == null ? outputCount(node) : oc;
@@ -12590,6 +12509,21 @@ function inPos(n, i, peer, wire) {
     x: p.x + PORT_OFF + NODE_BORDER,
     y: p.y + y + NODE_BORDER,
   };
+}
+/* 组线的起点：组框标题栏上那颗 □（.wg-grp）的中心。按 DOM 实测，缩放 / 平移 / 改名
+   都自动跟随；组框没渲染（不在当前层 / 被隐藏）时退回组框右上角，绝不让线头落到 (0,0)。 */
+function groupOutPos(g) {
+  if (!g) return { x: 0, y: 0 };
+  const btn = document.querySelector(
+    '.wf-group[data-gid="' + g.id + '"] .wg-grp',
+  );
+  if (btn) {
+    const r = btn.getBoundingClientRect();
+    if (r && r.width) return toStage(r.left + r.width / 2, r.top + r.height / 2);
+  }
+  const b = groupBounds(g);
+  if (b) return { x: b.x + b.w, y: b.y - GROUP_PAD };
+  return { x: 0, y: 0 };
 }
 function wirePathAB(ax, ay, bx, by) {
   /* 真实电线感：以两端点中点为控制点向下自然下垂（重力弧度），
@@ -15192,9 +15126,6 @@ function clearNodeRunState(cp) {
   if (cp.kind === "mutex") {
     cp.mutexStatus = "";
   }
-  /* SenseNova 图像节点：状态行是纯展示字段，克隆 / 清运行时一起抹掉，
-     否则复制出来的新节点会顶着一句「图像已生成：…」却其实没跑过。 */
-  if (cp.kind === "sensenova_gen") cp.sensenovaStatus = "";
   if (cp.kind === "flux3klein_gen") cp.flux3kleinStatus = "";
 }
 
@@ -15792,10 +15723,10 @@ function valueForInput(src, idx, consumer, seen) {
       text: String(p),
     };
   }
-  if (src.kind === "proc_image" || src.kind === "sensenova_gen" || src.kind === "flux3klein_gen") {
-    /* SenseNova 图像节点的产物端子与 proc_image 同一条口径：{kind:"image", path}，
+  if (src.kind === "proc_image" || src.kind === "flux3klein_gen") {
+    /* 图像节点的产物端子与 proc_image 同一条口径：{kind:"image", path}，
        下游 save_image / 图像预览 / @ 引用不用任何特判。
-       （sensenova_gen 没有 batchMode，agg / batchOutputs 两支天然走不到。） */
+       （本函数只处理 proc_image / FLUX 3 Klein 这两类出图节点。） */
     const r = selResult(src);
     if (src.batchMode === "agg") {
       return r && r.output && r.output.kind === "image"
@@ -16212,7 +16143,7 @@ function allImageItems(src, consumer, portIdx) {
     }
     return [];
   }
-  if (src.kind === "proc_image" || src.kind === "sensenova_gen" || src.kind === "flux3klein_gen") {
+  if (src.kind === "proc_image" || src.kind === "flux3klein_gen") {
     const r = selResult(src);
     if (src.batchMode === "agg") {
       if (r && r.output && r.output.kind === "image")
@@ -16450,7 +16381,7 @@ function displayValueOf(src, consumer) {
       return { text: r.output.text };
     return null;
   }
-  if (src.kind === "proc_image" || src.kind === "sensenova_gen" || src.kind === "flux3klein_gen") {
+  if (src.kind === "proc_image" || src.kind === "flux3klein_gen") {
     const r = selResult(src);
     if (src.batchMode === "agg") {
       if (r && r.output && r.output.kind === "image")
@@ -18970,6 +18901,8 @@ function startWireDrag(fromId, ev, fromIndex, opts) {
     mode: "wire",
     fromId,
     fromIndex: fromIndex || 0,
+    /* 组线：起点是画布组框上的 □（不是节点）—— 落点只认智能节点的组输入端子 */
+    fromGroup: String(opts.fromGroup || ""),
     sx: ev.clientX,
     sy: ev.clientY,
     mx: ev.clientX,
@@ -18996,7 +18929,7 @@ function clearWireReplacePreview() {
     .forEach((p) => p.classList.remove("wire-replace"));
 }
 function paintWireReplacePreview(d, port) {
-  if (!d || d.mode !== "wire" || d.fromInput || !port) return;
+  if (!d || d.mode !== "wire" || d.fromInput || d.fromGroup || !port) return;
   if (typeof inPortOccupancy !== "function") return;
   if (!port.classList || !port.classList.contains("in")) return;
   const toNode = nodeById(port.dataset.node);
@@ -19134,7 +19067,19 @@ function groupIsEmpty(g) {
   return !g.nodeIds.length && !g.markIds.length;
 }
 function pruneEmptyGroups() {
-  S.wf.groups = (S.wf.groups || []).filter((g) => !groupIsEmpty(g));
+  const keep = [];
+  let droppedWires = 0;
+  for (const g of S.wf.groups || []) {
+    if (!groupIsEmpty(g)) {
+      keep.push(g);
+      continue;
+    }
+    /* 组成员被删空 → 组框自动回收，从它拖出去的组线一并摘掉（不留指向空组的线） */
+    droppedWires += removeGroupWires(g.id);
+  }
+  S.wf.groups = keep;
+  if (droppedWires)
+    toast(I18n.t("组为空已回收 · 已断开 {n} 条组线", { n: droppedWires }), "warn");
 }
 /* 文字标注的 DOM 位置同步（绘制只剩 text：框体 / 箭头已移除，归类节点请用「组」） */
 function syncMarkDomPos(m) {
@@ -19227,6 +19172,24 @@ function groupElement(g) {
     startGroupTitleEdit(g, head);
   };
   el.appendChild(head);
+  /* 组输出端子（本次需求）：排在 ✕ 左边，与 ✕ 同尺寸同形态，图标是空心正方形 □。
+     按住拖出一条「组线」→ 落到智能节点的组输入端子（落点判定见 mouseup 的 fromGroup 分支）；
+     这是「组」作为唯一来源的出口 —— 组里没有成员时组框本身会被回收，自然也就没有这个口。 */
+  const grp = document.createElement("button");
+  grp.className = "wg-grp";
+  grp.dataset.gid = g.id;
+  grp.textContent = "□";
+  grp.title = I18n.t(
+    "组输出端子：按住拖到智能节点的「组」输入端子，它就能拿到组内所有节点的清单",
+  );
+  grp.addEventListener("mousedown", (ev) => {
+    ev.stopPropagation();
+    if (ev.button === 2) return;
+    ev.preventDefault();
+    startWireDrag(groupWireFromId(g.id), ev, 0, { fromGroup: g.id });
+  });
+  grp.addEventListener("click", (ev) => ev.stopPropagation());
+  el.appendChild(grp);
   const del = document.createElement("button");
   del.className = "wg-del";
   del.textContent = "✕";
@@ -19655,10 +19618,16 @@ function disbandGroup(gid) {
   pushHistory();
   S.wf.groups = S.wf.groups.filter((x) => x.id !== gid);
   if (S.selGroup === gid) S.selGroup = null;
+  /* 组不在了 → 从它拖出去的组线一并摘掉并告知（否则会留下指向空组的线） */
+  const dropped = removeGroupWires(gid);
   renderCanvas();
   scheduleSave(true);
   renderStatus();
-  toast(I18n.t("已解散组（节点与绘制保留）"), "ok");
+  toast(
+    I18n.t("已解散组（节点与绘制保留）") +
+      (dropped ? I18n.t(" · 已断开 {n} 条组线", { n: dropped }) : ""),
+    "ok",
+  );
 }
 /* 删除组：连同内部节点、绘制与相关连线一起删除 */
 function deleteGroup(gid) {
@@ -19675,13 +19644,15 @@ function deleteGroup(gid) {
   if (S.selGroup === gid) S.selGroup = null;
   if (nodeIds.length) deleteNodes(nodeIds, true);
   if (markIds.length) deleteMarks(markIds, true);
+  /* 组连同它拖出去的组线一起没了（与解散同一口径） */
+  const dropped = removeGroupWires(gid);
   renderCanvas();
   scheduleSave(true);
   toast(
     I18n.t("已删除组（含 {n} 个节点{marks}）", {
       n,
       marks: m ? I18n.t("、{m} 个绘制", { m }) : "",
-    }),
+    }) + (dropped ? I18n.t(" · 已断开 {n} 条组线", { n: dropped }) : ""),
     "ok",
   );
 }
@@ -21240,7 +21211,7 @@ function sideCatMatches(n, kinds) {
 const SIDE_CATS = [
   ["输入节点", ["input_text", "input_image", "input_audio", "input_video", "input_any", "input_file", "db_table"]],
   ["全局节点", ["global"]],
-  ["处理节点", ["proc_text", "proc_image", "sensenova_gen", "flux3klein_gen", "music_gen", "yue_gen", "breeze_gen", "video_gen", "infinitetalk_gen", "soulxflashhead_gen", "video_upscale", "video_interp", "remotion"]],
+  ["处理节点", ["proc_text", "proc_image", "flux3klein_gen", "music_gen", "yue_gen", "breeze_gen", "video_gen", "infinitetalk_gen", "soulxflashhead_gen", "video_upscale", "video_interp", "remotion"]],
   ["保存节点", ["save", "save_pdf"]],
   ["工具节点", ["split", "merge", "function", "tool"]],
   ["网络节点", ["net_recv", "net_send"]],
@@ -21263,8 +21234,6 @@ const KIND_TAGS = {
   db_table: "表",
   proc_text: "LLM",
   proc_image: "图像生成",
-  /* SenseNova 本地图像生成：与云端图像生成同标签，靠节点名区分 */
-  sensenova_gen: "图像生成",
   flux3klein_gen: "图像生成",
   music_gen: "音乐",
   yue_gen: "音乐",
@@ -21912,17 +21881,11 @@ function canvasCreateMenuGroups(pt) {
             addNode("save_pdf", pt.x, pt.y),
           ),
         ]),
-        /* 图像生成：云端图像生成（proc_image）与本地图像生成（SenseNova）收成二级菜单，
+        /* 图像生成：云端图像生成（proc_image）与本地图像生成（FLUX 3 Klein）收成二级菜单，
            与「文本生成 / 视频生成 / 音频生成」同族写法（成员按后端命名） */
         ctxSubmenu(I18n.t("图像生成"), "proc_image", "proc-img", ctxDropVramHidden([
           ctxKindItem("proc_image", I18n.t("图像生成（云端服务商）"), () =>
             addNode("proc_image", pt.x, pt.y),
-          ),
-          /* SenseNova 本地图像：显存档不够（未装 + <24G）时由 ctxDropVramHidden 收掉 */
-          ctxKindItem(
-            "sensenova_gen",
-            I18n.t("SenseNova（本地图像生成 · SenseNova-U1.5-8B-MoT）"),
-            () => addNode("sensenova_gen", pt.x, pt.y),
           ),
           /* FLUX 3 Image Klein：INT8 起 8G 显存，不做门槛隐藏 */
           ctxKindItem(
@@ -23268,6 +23231,9 @@ function bindCanvas() {
         );
       }
       updateGroupFrames();
+      /* 组框随成员绘制一起挪了位置：该绘制的组线要跟着组长（组线的来源是组框 □，
+         节点级 filter 命不中它，见 updateWires 的组线分支） */
+      updateWires(new Set([d.id]));
     } else if (d.mode === "markresize") {
       const m = markById(d.id);
       if (!m || m.kind !== "text") return;
@@ -23289,7 +23255,9 @@ function bindCanvas() {
          正向拖线还接受**展开节点层的内侧输入端子**（.super-inner-bridge）：壳展开时
          外侧端子整排隐藏（css .super-open>.port），这颗桥端子就是它露在外面的输入端子，
          外部节点的输出线可以直接瞄它（落点判定见 mouseup 同名分支）。 */
-      const selCls = d.fromInput
+      const selCls = d.fromGroup
+        ? ".port.in.grp-port"
+        : d.fromInput
         ? ".port.out"
         : d.superInnerBridge
           ? ".port.in"
@@ -23327,6 +23295,18 @@ function bindCanvas() {
       S.drag = null;
       stopWireEdgePan();
       updateWires();
+      if (d.fromGroup) {
+        /* 组线：只认智能节点那颗「组」输入端子（.port.in.grp-port）。
+           落在别处 = 取消（原位点一下不提示；真拖出去才说一句为什么连不上）。 */
+        let port = el && el.closest ? el.closest(".port.in.grp-port") : null;
+        if (!port) port = portHitAt(ev.clientX, ev.clientY, ".port.in.grp-port");
+        if (port && port.dataset.node) {
+          if (typeof connectGroup === "function") connectGroup(d.fromGroup, port.dataset.node);
+        } else if (movedDrag) {
+          toast(I18n.t("组线只能接到智能节点的「组」输入端子"), "warn");
+        }
+        return;
+      }
       if (fromInput) {
         /* 反向拖线：起点是某节点的输入端子，终点落在输出端子上 → 存为 输出端 → 输入端 */
         let port = el && el.closest ? el.closest(".port.out") : null;
@@ -24259,7 +24239,6 @@ const WIRE_DROP_TARGETS = [
   /* 本地后端节点：vramKind = 显存门槛挡掉（未装 + 显存不够）时不列出这颗落点 ——
      判定见 wireDropMenuGroups 里的 nodeKindHiddenByVram（与插件目录同源）。
      这里**不**顺手加 plugin 未装即不列：那会改掉「未装也列、建出来给警示条」的既有口径。 */
-  { kind: "sensenova_gen", g: "处理节点", vramKind: "sensenova_gen" },
   { kind: "flux3klein_gen", g: "处理节点" },
   { kind: "music_gen", g: "处理节点", vramKind: "music_gen" },
   { kind: "yue_gen", g: "处理节点", vramKind: "yue_gen" },
@@ -25495,7 +25474,6 @@ async function stopNode(node) {
   if (
     node.kind === "music_gen" ||
     node.kind === "yue_gen" ||
-    node.kind === "sensenova_gen" ||
     node.kind === "flux3klein_gen" ||
     node.kind === "breeze_gen" ||
     node.kind === "video_gen" ||
@@ -25543,7 +25521,6 @@ async function stopNode(node) {
     if (wasRunning) mediaGenCancelRemote(node);
     if (node.kind === "music_gen") node.musicStatus = I18n.t("已取消");
     else if (node.kind === "yue_gen") node.yueStatus = I18n.t("已取消");
-    else if (node.kind === "sensenova_gen") node.sensenovaStatus = I18n.t("已取消");
     else if (node.kind === "breeze_gen") node.breezeStatus = I18n.t("已取消");
     else if (node.kind === "video_gen" || isVideoPostKind(node))
       node.videoStatus = I18n.t("已取消");
@@ -25555,7 +25532,7 @@ async function stopNode(node) {
           ? "已取消音乐生成"
           : node.kind === "yue_gen"
             ? "已取消音乐生成"
-            : node.kind === "sensenova_gen" || node.kind === "flux3klein_gen"
+            : node.kind === "flux3klein_gen"
               ? "已取消图像生成"
               : node.kind === "breeze_gen"
                 ? "已取消语音合成"
@@ -30015,7 +29992,7 @@ function thinkDocEl() {
   return doc;
 }
 /* 点击思考 icon：弹窗上半 = 「思考」（文本 / 智能任务节点是模型 reasoning，按步分段，
-   不含工具行；本地图像节点 sensenova_gen 是出图前先写的规划文本 think，随生成回执取回），
+   不含工具行），
    下半 = 「输出」（工具调用轨迹，走已有 #thinkTools 区） */
 function showThinking(node) {
   const running = !!node.running;
@@ -30024,28 +30001,18 @@ function showThinking(node) {
   const bodyEl = $("#ovBody");
   const hint = document.createElement("div");
   hint.className = "settings-hint";
-  /* 本地图像节点（绘画 · sensenova_gen think 模式）：它的思考文本不是流式 reasoning，
-     而是后端出图前先写的规划文本（随生成回执取回，另存图旁 .think.txt）——弹窗里说清楚，
-     免得用户以为「思考应该是流水一样往外冒的」或者以为这段文字被存档了。 */
-  const imageThinkNode = node.kind === "sensenova_gen";
-  hint.textContent = imageThinkNode
+  hint.textContent = running
     ? I18n.t(
-        "上方是本次出图前模型先写的规划文本（think 模式）。它随生成结果取回、不写入存档，并另存为图旁的 .think.txt；每次「抽卡」各有一份，切换尝试方块可分别查看。",
+        "上方是模型思考（reasoning），按步分段流式显示；工具调用不写进思考，见下方「输出 · 工具调用轨迹」。",
       )
-    : running
-      ? I18n.t(
-          "上方是模型思考（reasoning），按步分段流式显示；工具调用不写进思考，见下方「输出 · 工具调用轨迹」。",
-        )
-      : I18n.t(
-          "上方是本轮模型的思考（reasoning，仅保留在内存中，不写入存档）；工具调用见下方「输出 · 工具调用轨迹」。",
-        );
+    : I18n.t(
+        "上方是本轮模型的思考（reasoning，仅保留在内存中，不写入存档）；工具调用见下方「输出 · 工具调用轨迹」。",
+      );
   bodyEl.appendChild(hint);
   const thinkTitle = document.createElement("div");
   thinkTitle.className = "settings-sec-title";
   thinkTitle.style.marginTop = "8px";
-  thinkTitle.textContent = imageThinkNode
-    ? I18n.t("思考 · 出图前的规划文本")
-    : I18n.t("思考 · 模型 reasoning");
+  thinkTitle.textContent = I18n.t("思考 · 模型 reasoning");
   bodyEl.appendChild(thinkTitle);
   const pre = thinkDocEl();
   pre.innerHTML = thinkMdHtml(traceThinkDisplay(node.id, thinkingTextOf(node)));
@@ -33537,7 +33504,6 @@ function migrateWf(wf) {
     if (
       n.kind === "music_gen" ||
       n.kind === "yue_gen" ||
-      n.kind === "sensenova_gen" ||
       n.kind === "flux3klein_gen" ||
       n.kind === "breeze_gen" ||
       n.kind === "video_gen" ||
@@ -33559,9 +33525,6 @@ function migrateWf(wf) {
       if (n.voice == null) n.voice = "";
       if (n.instruction == null) n.instruction = "";
     }
-    /* SenseNova 图像节点：字段归一（画幅只认官方 11 个训练桶 · 显存档位 / dtype / cfgNorm
-       只认枚举值 · 数值全部夹到后端认可的区间），见 sensenovaNormalizeNode */
-    if (n.kind === "sensenova_gen") sensenovaNormalizeNode(n);
     if (n.kind === "flux3klein_gen" && typeof flux3kleinNormalize === "function")
       flux3kleinNormalize(n);
     if (n.kind === "task") {
@@ -33708,9 +33671,9 @@ function migrateWf(wf) {
     if (/^output$/i.test(String(n.outputPath || "").trim()) && !String(n.filename || "").trim())
       n.outputPath = "";
     n.boundSaveId = "";
-    /* SenseNova 图像节点没有「节点内输出路径」（落盘由主进程托管目录决定、经输出端子交付）：
+    /* 图像节点没有「节点内输出路径」（落盘由主进程托管目录决定、经输出端子交付）：
        旧画布残留的 outputPath / filename 在加载时静默丢弃，别让设置窗再冒出一个死字段 */
-    if (n.kind === "sensenova_gen" || n.kind === "flux3klein_gen") {
+    if (n.kind === "flux3klein_gen") {
       delete n.outputPath;
       delete n.filename;
     }
@@ -33797,6 +33760,9 @@ function migrateWf(wf) {
       const byId2 = new Map(wf.nodes.map((n) => [n.id, n]));
       wf.wires = (wf.wires || []).filter((w) => {
         if (w.rel) return true; /* 关系线：仅表达关系，不受数据流规则裁剪 */
+        /* 组线（from = "grp:<组id>"）：来源是画布组而不是节点，按节点表找不到是正常的。
+           这里若按 with !to || !from 判孤儿，每次读档（切画布必读档）都会把组线全剪掉。 */
+        if (isGroupWire(w)) return true;
         const to = byId2.get(w.to);
         const from = byId2.get(w.from);
         if (!to || !from) return false;
@@ -33917,7 +33883,7 @@ function migrateWf(wf) {
   /* 跨节点层硬规则：历史脏线（层内节点直接连到层外）静默剪掉 —— 硬闸只拦新线，
      老图上已经存在的野线必须在这里收口，否则「打开就是错的」。不提示、不打断。 */
   const layerPruned = pruneInvalidSuperBoundaryWiresIn(wf);
-  /* 动态端子节点（proc_text / proc_image / sensenova_gen / agent_task / input_*）的专用
+  /* 动态端子节点（proc_text / proc_image / agent_task / input_*）的专用
      控制端子：早先控制线会落到端口 0 的提示词入口或数据槽中间（那时它们还被当成数据口），
      读档时一次性挪到「数据槽之后那颗」（只动控制线，数据线端子号一个都不改）。
      幂等：已经在那颗口上的线不动，反复加载逐字不变。 */
@@ -34027,6 +33993,13 @@ async function loadWorkflow(id, opts) {
     /* 旧口径残渣：转写已归音频 / 视频节点所有，文字节点上的 asrTranscripts / asrState
        一律默默删掉（见 renderer/app-asr.js · asrPurgeLegacyTranscripts），删到就落盘。 */
     if (typeof asrPurgeLegacyTranscripts === "function" && asrPurgeLegacyTranscripts(wf))
+      S._pendingVideoPortMigrateSave = true;
+    /* 组线自愈：指向已不存在的组（旧档 / 外部写入 / 半途落盘）的组线一律摘掉 —— 否则
+       画布上会留下一条指向空组、拖不动也删不掉的线。 */
+    if (
+      typeof pruneOrphanGroupWires === "function" &&
+      pruneOrphanGroupWires(wf)
+    )
       S._pendingVideoPortMigrateSave = true;
     /* 若袋中仍有该画布的运行中节点（极少：id 冲突），合并回写 */
     const live = S.wfBag[id];
@@ -36590,4 +36563,3 @@ function importWorkflowDialog() {
   }));
   foot.appendChild(mkMiniBtn(I18n.t("粘贴 Base64"), doImportBase64, true));
 }
-

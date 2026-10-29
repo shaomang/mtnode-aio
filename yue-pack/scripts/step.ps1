@@ -158,7 +158,7 @@ function Step-Pct {
 
 # -----------------------------------------------------------------------------
 # Step-Progress: a thin adapter for the big scripts that already print staged progress
-# in order (sensenova / yue / breeze). It does not rewrite those flows -- it only
+# in order (yue / breeze / llama). It does not rewrite those flows -- it only
 # TRANSLATES their existing progress lines into structured step lines.
 #
 # Why it exists: the install / repair logic of those scripts was tuned line by line

@@ -2185,7 +2185,7 @@ function dshRunSigOf(p) {
       p.preset || "",
       p.effort || "",
       p.pure ? 1 : 0,
-      /* 按运行裁剪可见工具集（精简工具负载 / 画布智能节点不给画布工具）：
+      /* 按运行裁剪可见工具集（精简工具负载 / 用户声明与画布无关）：
          两者都改网关 runtime key 与固定前缀的 tools 段 → 漂移 = 换 runtime 冷起，
          必须进签名，否则会把「旧可见集的会话」当同配置续跑。 */
       p.lean ? 1 : 0,
@@ -2213,7 +2213,7 @@ function dshLeanToolsOn() {
 }
 
 /* lean / noCanvas 两个整档闸各自裁掉的名字（与 dsh/gateway/canvas-plugin.mjs 里的
-   LEAN_DROP_WHEN_LEAN / NODE_LOCK_DROP_CANVAS 同值 —— 那边是真源，改那边记得改这里）。
+   LEAN_DROP_WHEN_LEAN / CANVAS_FREE_DROP 同值 —— 那边是真源，改那边记得改这里）。
    宿主侧列这份只为「别把已经被整档闸裁掉的名字再重复写进 hideTools 名单」：重复不致错
    （注册口取并集），但会让网关那句「本轮不注册的工具」与「精简工具负载」说两遍。 */
 const DSH_TOOLS_DROPPED_BY_LEAN = ["mtnode_app", "mtnode_vision"];
@@ -2230,6 +2230,27 @@ const DSH_TOOLS_DROPPED_BY_NO_READ = ["mtnode_canvas_get", "mtnode_app"];
 /* 长周期任务环节勾了「允许读取画布」（canvasReadOnly）：只放读，改图与应用两件套点名藏掉
    （整档闸不能开 —— 开了连 mtnode_canvas_get 都不注册，授权就读不到任何东西）。 */
 const DSH_TOOLS_DROPPED_BY_CANVAS_READONLY = ["mtnode_canvas_edit", "mtnode_app"];
+/* 画布智能节点（agent_task / proc_text 智能模式）：读画布与「节点与连线」本轮放行
+   （组输入注入的是节点 id 清单，模型得自己去取正文；用户明确要求时也该能建节点 / 接线），
+   但**应用两件套仍然藏掉** —— 画布改名 / 删画布 / 装插件不属于节点该干的事。 */
+const DSH_TOOLS_DROPPED_BY_NODE_AGENT = ["mtnode_app"];
+
+/* 画布智能节点的本轮工具许可（随 run 参数下发，见 setRunToolPolicy）：
+   · canvas_read / canvas_nodes 放行 —— 读画布、建节点与连线不再逐次弹审批；
+     「动现有节点之前先问用户」由提示词纪律约束，不再靠审批卡；
+   · 控制类节点 / 节点层（含改画布名）/ 绘图 / 排版与成组 = 询问；
+   · 应用操作与删除画布 = 拒绝（mtnode_app 本轮也不注册）。
+   这是节点运行的作用域策略，不写全局预设表 —— 助手 / 会话的许可口径一个字不动。 */
+const NODE_AGENT_TOOL_POLICY = {
+  canvas_read: "allow",
+  canvas_nodes: "allow",
+  canvas_control: "ask",
+  canvas_super: "ask",
+  canvas_draw: "ask",
+  canvas_layout: "ask",
+  app_ops: "deny",
+  app_delete: "deny",
+};
 
 /* 按运行要隐藏的工具名（第三个闸：随 run 参数 hideTools 下发网关 → runtime key 的
    hx: 指纹 + spawn env MTNODE_HIDE_TOOLS → 注册口不注册 / mtnode-tool-visibility 插件
@@ -2267,6 +2288,8 @@ function dshHiddenToolsFor(o) {
   if (o.noCanvasRead) for (const n of DSH_TOOLS_DROPPED_BY_NO_READ) names.push(n);
   /* 只读画布档（长任务环节勾了 canvasRead）：读图留着，改图 / 应用点名藏掉。 */
   if (o.canvasReadOnly) for (const n of DSH_TOOLS_DROPPED_BY_CANVAS_READONLY) names.push(n);
+  /* 画布智能节点：读画布 / 改画布本轮都放行，只把应用两件套点名藏掉。 */
+  if (o.nodeAgent) for (const n of DSH_TOOLS_DROPPED_BY_NODE_AGENT) names.push(n);
   const covered = {};
   if (o.lean) for (const n of DSH_TOOLS_DROPPED_BY_LEAN) covered[n] = 1;
   if (o.noCanvas) for (const n of DSH_TOOLS_DROPPED_BY_NO_CANVAS) covered[n] = 1;
@@ -3452,9 +3475,9 @@ function dshRunOnce(input, opts) {
   if (!boundWf) boundWf = currentVisibleWf() || S.wf;
   /* 长周期任务的 Agent 环节可以按环节勾「允许读取画布」（app-longtask.js 的伪节点把它带在
      _lt.canvasRead 上）。这一档不是「放开智能节点」：只放**读**，改图与应用两件套仍进
-     hideTools 点名名单；它必须绕开 nodeLock，因为 nodeLock 会连带把运行标成「画布智能节点」
-     （MTNODE_NO_CANVAS → 画布三件套一个都不注册 + 宿主对 get 也一律拒绝 + 人设明文禁止），
-     那样这个开关就是一句兑现不了的承诺。 */
+     hideTools 点名名单；它必须绕开 nodeLock，因为 nodeLock 会按「画布智能节点」的许可
+     放行读 + 节点 / 连线（含 mtnode_canvas_edit），那样这个「只允许读」的开关就成了一句
+     兑现不了的承诺。 */
   const ltCanvasRead = !!(opts.node && opts.node._lt && opts.node._lt.canvasRead);
   const nodeScoped = isCanvasScopedAgentNode(opts.node);
   const nodeLock = nodeScoped && !ltCanvasRead;
@@ -3465,16 +3488,19 @@ function dshRunOnce(input, opts) {
   const pureOn = !!opts.pure;
   /* 按运行裁剪可见工具集（下发网关 → spawn env → canvas-plugin 的 register()）：
      · leanOn = 设置「精简工具负载」：整个不注册 mtnode_app / mtnode_vision；
-     · noCanvasOn = 画布智能节点（nodeLock）**或**用户声明「与画布无关」（opts.noCanvas）：
-       宿主对 get / edit / app 帧一律用不上，那约 25,993 字符的画布工具定义干脆不发
-       （每步约省 7K token），mtnode_vision 仍保留（智能节点人设明确允许它识图）。
-       第二条来源：会话输入区「与画布无关」chip 与助手栏同名开关（Gate B），
+     · noCanvasOn = 用户声明「与画布无关」（opts.noCanvas）：这一轮本来就不碰画布，
+       那约 25,993 字符的画布工具定义干脆不发（每步约省 7K token），mtnode_vision 仍保留。
+       来源：会话输入区「与画布无关」chip 与助手栏同名开关（Gate B），
        由调用方经 opts.noCanvas 传进来（app-assist.js agentSessionSend / assistSend）。
      两者都改 runtime key 与固定前缀形状 → 一并进 runSig（见 dshRunSigOf）。 */
   const leanOn = dshLeanToolsOn() && !pureOn;
   /* 用户声明档（与 nodeLock 区分开：nodeLock 的人设与技能索引口径本轮照旧不改） */
   const canvasFreeOn = !!opts.noCanvas && !pureOn;
-  const noCanvasOn = (nodeLock || canvasFreeOn) && !pureOn;
+  /* 画布智能节点本轮**不再整档裁掉画布三件套**（本次需求）：组输入注入的是组内节点清单，
+     模型要能自己去读正文（canvas_read 放行）、也允许按用户要求建节点 / 连线（canvas_nodes
+     放行）；控制类 / 节点层 / 绘图 / 排版 = 询问（见 NODE_AGENT_TOOL_POLICY），应用两件套
+     仍由 hideTools 点名藏掉。整档闸只留给用户声明的「与画布无关」。 */
+  const noCanvasOn = canvasFreeOn && !pureOn;
   /* 读图裁剪（只点名「读画布」两件套，不裁改图）：开发绑定会话由宿主打标 noCanvasRead（真源
      app.js createDevSessionForNode：mode === "dev" 时置位、随会话落盘），经
      agentSessionSend → dshRunTask 的 baseOpts 原样透到这里。它不动上面两个整档标记，
@@ -3499,6 +3525,16 @@ function dshRunOnce(input, opts) {
      systemPrompt 分节快照也以它为主键。**提前到这里**：按运行的工具许可（hideTools 名单、
      工具许可提示词、canvas/app/vision 的 ensureAgentTool）都以它为作用域，必须先定型。 */
   const runKey = String(opts.runKey || (opts.node && opts.node.id) || "default");
+  /* 画布智能节点：本轮装一份作用域工具许可（读画布 / 节点与连线放行，控制类 / 节点层 /
+     绘图 / 排版询问，应用与删除画布拒绝）。调用方显式带了 toolPolicy / toolAllow
+     （专家运行、长任务环节）就以它为准 —— 那是更外层、更具体的授权。 */
+  if (
+    nodeLock &&
+    !pureOn &&
+    !(opts.toolPolicy || opts.toolAllow) &&
+    typeof setRunToolPolicy === "function"
+  )
+    setRunToolPolicy(runKey, NODE_AGENT_TOOL_POLICY);
   /* 第三个闸：按名字的隐藏名单（见 dshHiddenToolsFor）：按本轮 runKey 的策略生成，
      专家运行因此能整档摘掉画布 / 应用 / 识图类工具（每步约省 26K 字符）。 */
   const hideToolsOn = dshHiddenToolsFor({
@@ -3509,6 +3545,7 @@ function dshRunOnce(input, opts) {
     noCanvas: noCanvasOn,
     noCanvasRead: noReadOn,
     canvasReadOnly /* 长任务环节的 canvasRead：只读档，点名藏掉改图与应用 */,
+    nodeAgent: nodeLock && !pureOn /* 画布智能节点：只藏应用两件套（读画布 / 改画布放行） */,
     /* 长任务状态工具（lt_state）的接地判据：只有状态机里跑起来的伪节点
        （app-longtask.js 造的，带 _lt）接得住；普通会话 / 助手 / 普通智能节点不传这个字段，
        这个名字就进名单 —— 宿主对它只会回「不属于任何长任务」，白占每步重发的定义。
@@ -3535,7 +3572,8 @@ function dshRunOnce(input, opts) {
   const runPreset = (() => {
     if (pureOn) return "pure";
     const p = opts.preset || d.preset || AGENT_PRESET_DEFAULT;
-    /* 画布智能节点（nodeLock）跑内部 node 档：只办事不改图。判定 keyed 在「默认档」
+    /* 画布智能节点（nodeLock）跑内部 node 档：以办事为主，画布读取与节点 / 连线按
+       本轮工具许可放行。判定 keyed 在「默认档」
        上而不是某个档名上 —— 默认档已从 standard 换成 minimal，老画布节点存的
        "standard" 与新默认都照常落到 node 档（行为逐字不变）；用户为节点显式
        挑选的其它档（code / cordis / lean）不改写。 */
@@ -3650,8 +3688,8 @@ function dshRunOnce(input, opts) {
         {
           id: PROMPT_SECTION_IDS.tool_policy,
           /* 「本轮不注册读画布工具」那句只在 Gate A 单独生效时说：一旦走整档闸
-             （用户声明与画布无关 / 画布智能节点），连 mtnode_canvas_edit 都没注册，
-             那句「收尾用 edit 改本节点」就成了假指令 —— 此时改由人设说明整档口径。 */
+             （用户声明与画布无关），连 mtnode_canvas_edit 都没注册，那句「收尾用 edit
+             改本节点」就成了假指令 —— 此时改由人设说明整档口径。 */
           text: agentToolPolicySystemNote({
             nodeLock,
             noCanvasRead: noReadOn && !noCanvasOn,
@@ -3826,14 +3864,14 @@ function dshRunOnce(input, opts) {
   const scopeLock = nodeLock;
   if (scopeLock) {
     S._canvasNodeAgentDepth = (S._canvasNodeAgentDepth || 0) + 1;
-    /* 画布锁按**本轮**登记（不是全局）：只拦发起这一轮的那个智能节点，第三方 MCP 连接
-       与其它会话的画布操作不再被牵连（判据见 app-nodes.js canvasNodeRunLocked）。 */
-    if (typeof lockCanvasForAgentNodeRun === "function")
-      lockCanvasForAgentNodeRun(runKey);
+    /* 只记「此刻有画布智能节点在跑」这一层（restrictOtherCanvases 用它把可见范围锁在
+       本轮绑定的那张画布上）。**不再**给这一轮挂画布硬锁：本次需求起，智能节点可以用
+       canvas_read 读画布、用 canvas_nodes 建节点 / 连线（临界类别走工具许可询问），
+       硬锁会让「读画布」这条授权兑现不了（见 NODE_AGENT_TOOL_POLICY）。 */
   }
-  /* 长任务「只读画布」档也要锁本画布（别的画布看不见），但不能进 nodeLock 那档闸
-     （那档连 mtnode_canvas_get 都不注册）。单独一盏计数，供 restrictOtherCanvases 与
-     「edit / app 仍旧拒」这两处判据用。 */
+  /* 长任务「只读画布」档也要锁本画布（别的画布看不见），但不能进 nodeLock 那档
+     （那档会把人设与工具许可切成「画布智能节点」口径，与「只放读」的授权不一致）。
+     单独一盏计数，供 restrictOtherCanvases 与「edit / app 仍旧拒」这两处判据用。 */
   if (canvasReadOnly) S._ltCanvasReadDepth = (S._ltCanvasReadDepth || 0) + 1;
   if (opts.node && boundWf) {
     S.nodeWfId = S.nodeWfId || {};
@@ -3910,8 +3948,6 @@ function dshRunOnce(input, opts) {
           0,
           (S._canvasNodeAgentDepth || 1) - 1,
         );
-        if (typeof unlockCanvasForAgentNodeRun === "function")
-          unlockCanvasForAgentNodeRun(runKey);
       }
       if (canvasReadOnly)
         S._ltCanvasReadDepth = Math.max(0, (S._ltCanvasReadDepth || 1) - 1);
@@ -4000,8 +4036,8 @@ function dshRunOnce(input, opts) {
               runKey,
               sessionId: (msg.data && msg.data.sessionId) || "",
               wf: boundWf,
-              /* 画布锁按轮归属判定（见 app-nodes.js canvasNodeRunLocked）：这一轮是不是
-                 「画布智能节点」由 dshRunTask 自己说了算，画布事件路由不必再去问全局计数。 */
+              /* 画布事件路由不再按「是不是画布智能节点」拒帧：智能节点与其它轮一样
+                 走本轮工具许可（读画布 / 节点与连线放行，见 NODE_AGENT_TOOL_POLICY）。 */
               nodeLock,
             });
             return;

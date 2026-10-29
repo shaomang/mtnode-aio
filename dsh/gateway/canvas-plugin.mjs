@@ -30,7 +30,7 @@ export const name = 'mtnode-canvas'
 export const inject = ['tools']
 
 const KINDS = [
-  'input_text', 'input_image', 'input_audio', 'input_video', 'input_file', 'db_table', 'proc_text', 'proc_image', 'music_gen', 'yue_gen', 'breeze_gen', 'video_gen', 'video_upscale', 'video_interp', 'remotion', 'sensenova_gen',
+  'input_text', 'input_image', 'input_audio', 'input_video', 'input_file', 'db_table', 'proc_text', 'proc_image', 'music_gen', 'yue_gen', 'breeze_gen', 'video_gen', 'video_upscale', 'video_interp', 'remotion',
   /* 数字人节点（插件后端，右侧菜单「处理节点 → 视频生成」的成员）：端口见 mtnode-canvas-edit-rules */
   'soulxflashhead_gen',
   'save', 'save_text', 'save_image', 'save_pdf', 'split', 'merge', 'global', 'wait_file', 'timer',
@@ -79,9 +79,6 @@ const USER_NODE_HINT = (() => {
 })()
 
 
-const NODE_LOCK =
-  'CRITICAL — These canvas tools are ONLY for the global assistant (✦) and the agent-session view. When the run is a canvas AGENT NODE (kind agent_task, or proc_text with agent:true), the host REJECTS mtnode_canvas_get / mtnode_canvas_edit / mtnode_app. Do not call them from a node; read and write workspace files instead.\n\n'
-
 /* ── 按运行裁剪工具负载（gateway 在 spawn 时注入的可见集标记）──
  * 每一次模型调用都把全部工具定义重发一遍（优化前实测：固定前缀 tools ≈ 98K 字符、空会话
  * 首步 32K token，且每一步都付），所以「这次运行根本用不上的工具」就该整个不注册。
@@ -92,7 +89,7 @@ const NODE_LOCK =
 
 /** 设置里的「精简工具负载」开关 → env（gateway.handleRun 按 run 参数注入）。 */
 const LEAN_ENV = 'MTNODE_LEAN_TOOLS'
-/** 画布智能节点（nodeLock）运行 → env：宿主本来就拒收画布工具，定义纯属白发。 */
+/** 用户声明「与画布无关」的整档闸 → env（画布智能节点不进这一档：它可以用画布工具）。 */
 const NO_CANVAS_ENV = 'MTNODE_NO_CANVAS'
 
 /** env 真值口径（两个标记共用）：1 / on / true / yes，其余（缺席、空、非法）= 关。 */
@@ -114,11 +111,13 @@ function envFlagOn(key) {
    任何档位都保留。合计省约 4.7K 字符 ≈ 1.5K token/步。 */
 const LEAN_DROP_WHEN_LEAN = new Set(['mtnode_app', 'mtnode_vision'])
 
-/* 画布智能节点（agent_task / proc_text 智能模式）运行时不注册的画布工具：宿主侧
-   applyCanvasOp / handleCanvasEvent 对 get / edit / app 一律直接拒绝
-   （isCanvasNodeAgentRun），把这约 25.6K 字符（三件套实测）发过去只换来一次次撞不存在的工具。
-   mtnode_vision 保留 —— 智能节点人设明确允许它识图（agentNodeCapabilityNote）。 */
-const NODE_LOCK_DROP_CANVAS = new Set([
+/* 用户声明「与画布无关」的运行时不注册的画布工具：这一轮不读也不改画布，
+   三件套的约 25.6K 字符（实测）发过去只换来一次次撞不存在的工具。
+   mtnode_vision 保留 —— 「与画布无关」只是不碰画布，识图仍可能用到。
+   画布智能节点（agent_task / proc_text 智能模式）**不进这一档**：它可以用
+   mtnode_canvas_get 取组内节点正文、按用户要求用 mtnode_canvas_edit 建节点 / 连线，
+   只把 mtnode_app 点名叫停（见 app-db.js 的 DSH_TOOLS_DROPPED_BY_NODE_AGENT）。 */
+const CANVAS_FREE_DROP = new Set([
   'mtnode_canvas_get',
   'mtnode_canvas_edit',
   'mtnode_app',
@@ -134,19 +133,18 @@ const noCanvasToolsOn = () => envFlagOn(NO_CANVAS_ENV)
    开发节点「功能色卡」也不在描述里硬拷一份：它是 detail:"standard" 返回的 devFuncColors
    列表（真源 renderer/app-devnode.js 的 DEV_FUNC_COLORS），要建开发块时按需取。 */
 const GET_DESC =
-  NODE_LOCK +
   'Read the canvas this run belongs to: workflow identity + the nodes in the current task / super scope, plus marks / wires / groups / trees / app references when asked. Always read before editing.\n' +
   'DEFAULTS TO THE CHEAPEST FORM — detail "minimal": one index line per node (only title / note / kind 标题 / 描述 / 类别) + workflow identity and scopeInfo; no config fields, no bodies, no wire / mark / group / tree block. Ask for more only when needed:\n' +
   '- "standard": + all per-kind config fields (provider / model / size / savePath / waitPath / timer / net / control / dev*, db_table rows, input_file files, task steps, 素材节点的绑定与条目清单), body *lengths* (no body text) and the build references (markColors, devFuncColors 功能色卡, cam / view) — 不含 kinds / imageSizes / defaultImageSize；要这三张静态表显式传 sections:["refs"]。\n' +
   '- "full": everything incl. body text (text, prompt, task, goal, jscode, 素材条目正文), rows, files, steps — ask explicitly, best with ids:[...] so only those nodes come back heavy.\n' +
   '- Narrow with ids / scope + scopeDepth / bodies / bodyLimit, or sections = whitelist of heavy blocks (nodes, marks, wires, groups, and the trees / tagCatalog / workflows / selection). 只查连线用 sections:["nodes","wires"]（minimal 档也认）。素材节点（kind asset）也回读：assetItems = 绑定与条目清单 items:[{index, id, title, type}]（条目即端子：第 i 入 ↔ 第 i 出，端子名 = 条目标题）；text/body 档每条再带 text（文本正文）或 path / url（本机文件）。\n' +
-  '- ports (standard / full): fixed-port nodes (proc_image / sensenova_gen / video_gen / remotion / judge / tool·function / super / asset) carry ports:[{dir,index,name,kind,connectedTo}] — read before connecting, not after a connect error.\n' +
-  '- portRule (standard / full): nodes whose input ports GROW WITH WIRES (proc_text / proc_image / sensenova_gen / remotion / input_* …) carry portRule {note,input,output,now,hint} instead: ports only lists the slots that exist right now (an unconnected node shows one data port + one control port), and further slots appear as you connect — remotion is the one node whose data AND control lines share the same ports (never assume port 0 = control for remotion), and its description (功能说明) lives in the node text (not in a port) — the build brief is remotionBuildNote, only used when the user clicks 构建. For these dynamic-port nodes (except remotion) the control input is always the LAST, dedicated control port — it sits after the data slots, data wires never take it, and several control wires may share it (any one arrival triggers a single run). Never infer "this node has only one port" from a short ports list, and never test-wire just to read the warnings.\n' +
+  '- ports (standard / full): fixed-port nodes (proc_image / video_gen / remotion / judge / tool·function / super / asset) carry ports:[{dir,index,name,kind,connectedTo}] — read before connecting, not after a connect error.\n' +
+  '- portRule (standard / full): nodes whose input ports GROW WITH WIRES (proc_text / proc_image / remotion / input_* …) carry portRule {note,input,output,now,hint} instead: ports only lists the slots that exist right now (an unconnected node shows one data port + one control port), and further slots appear as you connect — remotion is the one node whose data AND control lines share the same ports (never assume port 0 = control for remotion), and its description (功能说明) lives in the node text (not in a port) — the build brief is remotionBuildNote, only used when the user clicks 构建. For these dynamic-port nodes (except remotion) the control input is always the LAST, dedicated control port — it sits after the data slots, data wires never take it, and several control wires may share it (any one arrival triggers a single run). Never infer "this node has only one port" from a short ports list, and never test-wire just to read the warnings.\n' +
   '- 参数（standard / full）: 有配置的节点（有 ⚙ 设置窗）末位有「参数」端子，端子号恒 9001；快照带 paramKeys（可覆写的键）。函数 / 工具节点同样有 9001，但语义不同：函数节点那份 JSON 进 input.params（不改节点字段），工具节点那份是内部图的共享参数、内部函数节点自动继承。参数只能由一根文本节点的 JSON 经这颗端子传入（toIndex:9001），没有「直接改节点参数」的写法。\n' +
   'scopeInfo is always returned（这次读的是整图还是某一颗壳内部）; every result carries a sizeHint with its cost.\n\n' +
   'When the run is locked to its own canvas（会话所属画布）, workflows lists ONLY that canvas. 建图 / 连线 / 排版的完整硬规则（task 端点、super 边界端子、tool/function 参数即端子、@引用三条件、save 与 wait_file、批次与文生图）只写在技能 mtnode-canvas-edit-rules（按需加载），此处不重复。'
 
-const APP_DESC = NODE_LOCK + `Control the MTNode desktop app beyond node graph edits (workflow status, rename, select nodes, undo/redo, delete with confirmation, DSH plugin install).
+const APP_DESC = `Control the MTNode desktop app beyond node graph edits (workflow status, rename, select nodes, undo/redo, delete with confirmation, DSH plugin install).
 
 Available actions:
 - status / list_workflows: inspect app + workflow catalog. When the run is locked to its own canvas（会话所属画布：agent_task nodes, agent session, assistant "current" scope）, the catalog contains ONLY that canvas — other workflows are omitted.
@@ -172,9 +170,9 @@ For creating/editing/wiring/removing NODES or canvas drawings (marks) on the can
    save 与 wait_file、批次与文生图、数据库 / 开发节点 / 排版 / scope 细则）已迁到
    按需技能 mtnode-agent-skills/mtnode/canvas-edit-rules/SKILL.md —— 工具描述每轮都随
    历史重发，长规则只有「建图 / 连线 / 批量 / 媒体」时才需要，命中再加载即可。 */
-const EDIT_DESC = NODE_LOCK + `在当前画布上创建 / 修改 / 连线 / 删除 / 分组 / 自动排版节点，并用 createMarks / updateMarks / removeMarks 画装饰（text / box / arrow）。先 mtnode_canvas_get 读图，再在一次调用里建完整子图；alias 只在本调用内有效（connect / update / refs 用它）。回执自足（坐标 / 端口占用 + warnings），不必回读；要复核别的节点或取正文再用 mtnode_canvas_get（ids:[...]）。
+const EDIT_DESC = `在当前画布上创建 / 修改 / 连线 / 删除 / 分组 / 自动排版节点，并用 createMarks / updateMarks / removeMarks 画装饰（text / box / arrow）。先 mtnode_canvas_get 读图，再在一次调用里建完整子图；alias 只在本调用内有效（connect / update / refs 用它）。回执自足（坐标 / 端口占用 + warnings），不必回读；要复核别的节点或取正文再用 mtnode_canvas_get（ids:[...]）。
 
-create.kind 枚举见 schema（生成族含 sensenova_gen 本机图像）。端子语义：tool / function 的参数表就是端子表（输入端子 0 = 控制入、1..N 各入参；输出 0..M-1 各出参、末位控制出）；judge 只有两个输出：fromIndex 0 = YES、1 = NO；super 对外只暴露边界端子，跨壳 / 跨层级用 superConnect。
+create.kind 枚举见 schema（生成族含 music_gen / yue_gen / breeze_gen / video_gen / remotion）。端子语义：tool / function 的参数表就是端子表（输入端子 0 = 控制入、1..N 各入参；输出 0..M-1 各出参、末位控制出）；judge 只有两个输出：fromIndex 0 = YES、1 = NO；super 对外只暴露边界端子，跨壳 / 跨层级用 superConnect。
 
 参数：节点参数**只能通过「参数」端子**给 —— 建一颗 input_text 写参数 JSON，再 connect（来源 → 目标节点，toIndex:9001）；键 = canvas_get 的 paramKeys。create / update 里带 params 会被整笔拒绝（已取消该写法：它会把参数挂到节点上、运行期压住用户在 ⚙ 里改的值）。paramStrict:true = 参数端子上的 JSON 有键不合法就整份拒绝、该节点不运行。
 breeze_gen 的角色 / 组走名称参数：breezePreset（角色名称，或角色 id）+ breezeGroup（组名 / 「第 N 组」/ 组 id；不给 = 该角色第一组）。两个值运行期临时翻译成 presetId / presetGroupId，跑完恢复、不写回节点；**对不上就报错并停止这次合成**（绝不默默换声）。
@@ -184,7 +182,7 @@ breeze_gen 的角色 / 组走名称参数：breezePreset（角色名称，或角
 不变量（违反即接线错）：
 - 标题必须唯一。
 - 智能节点（agent_task、agent:true 的 proc_text）自己会写文件：其后不接 save、也不当数据输入；用 wait_file 控制线挡下游。
-- 图像生成节点（proc_image / sensenova_gen）每次运行只出 1 张图；sensenova_gen 走本机后端（先装插件 sensenova-local），结果落资产目录、由输出端口 0 交付，不写 outputPath。
+- 图像生成节点（proc_image）每次运行只出 1 张图；结果按图像服务商的回执交付。
 - batchMode "batch" 每条一次运行、每次只看该条：严禁把整批 N 条再灌进每次运行（≈N² 调用）；一次看全部用 "agg"。
 - 跨节点层只能经边界端子中转（层内 → 直属壳的输出端子 → … → 目标壳的输入端子 → 层内）：connect 遇到跨层会自动改写成这条逐层链，superConnect 同一口径；任何入口都不许留下「层内节点直连层外」的线。
 - 绝不删除或与正在运行本任务的节点重叠；改完告诉用户可编辑输入并用 control ▶ 重跑。
@@ -262,8 +260,7 @@ const NODE_PROPS = {
   title: { type: 'string', description: '唯一显示标题；@标题 引用它。' },
   tags: { type: 'array', items: { type: 'string' }, description: '供 @标签名 引用。' },
   text: { type: 'string', description: 'input_text 正文；remotion 的「功能说明」也在这个字段（可空 · 只描述这个节点干什么，构建 Agent 与运行期都不读它；构建需求用 remotionBuildNote）。' },
-  prompt: { type: 'string', description: 'proc_text / proc_image / sensenova_gen 提示词（也是 judge 判据）；可写 @标题 / @标签名。' },
-  sensenovaPrompt: { type: 'string', description: 'sensenova_gen 提示词别名（同 prompt）。' },
+  prompt: { type: 'string', description: 'proc_text / proc_image 提示词（也是 judge 判据）；可写 @标题 / @标签名。' },
   task: { type: 'string', description: 'agent_task 任务描述；可写 @标题 / @标签名。' },
   goal: { type: 'string', description: 'task：本步目标。' },
   steps: { type: 'array', items: { type: 'string' }, description: 'task：有序子步骤标题。' },
@@ -316,12 +313,6 @@ const NODE_PROPS = {
   provider: { type: 'string', description: '智能节点路由：deepseek-official / mtnode_<id> / 服务商名。' },
   model: { type: 'string', description: '本节点模型 id（运行中的别改）。' },
   size: { type: 'string', description: 'proc_image 尺寸；合法值见 canvas_get sections:["refs"]。' },
-  ratioBucket: { type: 'string', description: 'sensenova_gen 分辨率桶（如 "1:1" / "16:9"）。' },
-  numSteps: { type: 'number', description: 'sensenova_gen 采样步数（默认 30）。' },
-  vramMode: { type: 'string', enum: ['full', 'fast', 'balanced', 'low'], description: 'sensenova_gen 显存档位；24G 卡用 fast。' },
-  dtype: { type: 'string', enum: ['bfloat16', 'float16', 'float32'], description: 'sensenova_gen 权重精度（默认 bfloat16）。' },
-  think: { type: 'boolean', description: 'sensenova_gen think 模式（默认 false）。' },
-  imgCfgScale: { type: 'number', description: 'sensenova_gen 参考图条件强度（1.0 = 关闭）。' },
   imgQuality: { type: 'string', enum: ['', 'auto', 'low', 'medium', 'high', 'xhigh', 'max'], description: 'proc_image quality 直传；空 = 不传。' },
   imgBackground: { type: 'string', enum: ['', 'auto', 'opaque', 'transparent'], description: 'proc_image background；transparent 直出 Alpha PNG。' },
   maskOn: { type: 'boolean', description: 'proc_image 蒙版重绘（透明区 = 重绘）；画法见技能。' },
@@ -365,7 +356,7 @@ const NODE_PROPS = {
   },
   fps: { type: 'number', description: 'remotion 帧率 1–60。' },
   attempts: { type: 'number', description: '抽卡次数 1–10（生成类节点）。' },
-  outputPath: { type: 'string', description: '输出路径（.mp4 / .wav / .flac / .mp3）；sensenova_gen 无此字段。' },
+  outputPath: { type: 'string', description: '输出路径（.mp4 / .wav / .flac / .mp3）。' },
   voice: { type: 'string', description: 'breeze_gen 音色 id；留空 = 用端子参考音频。' },
   breezeVoice: { type: 'string', description: '同 voice（两个都收）。' },
   breezeMode: { type: 'string', enum: ['auto', 'clone', 'design', 'direction'], description: 'breeze_gen 能力：auto / clone / design / direction。' },
@@ -447,7 +438,7 @@ const PAIR_SPEC = {
     from: { type: 'string', required: true, description: '源节点：id / alias / 唯一标题。' },
     to: { type: 'string', required: true, description: '目标节点：id / alias / 唯一标题。' },
     fromIndex: { type: 'number', description: '源的输出端子序号（默认 0）；judge 0 = YES、1 = NO；tool / function 按参数表数端子。' },
-    toIndex: { type: 'number', description: '目标的输入端子序号（0 起始；省略 = 按类型自动选槽）。媒体节点必须显式给：breeze_gen 0=待合成文本 · 1=参考音频 · 2=参考文稿 · 3=指令 · 4=控制输入；video_gen fl2va 0=控制 · 1=提示词 · 2=首帧 · 3=末帧；remotion 无差别端子（0、1、2… 连一条多一个，数据线与控制线共用、先占先得，功能说明写在节点 text 里、构建需求写在 remotionBuildNote 里，都不占端子；视频 / 图片 → 主素材、音频 → 语音、文本 → 台词）；save 0/1 按入线类型。动态端子节点（proc_text / proc_image / sensenova_gen / agent_task / input_*）的**控制输入 = 末位那颗专用控制端子**（数据槽之后单独一颗，数据线永不占它；号随数据槽增长，省略 toIndex 时控制线自动落到它），数据槽仍是 0=提示词 · 1+ 增量。**参数端子用 toIndex 9001**（来源必须是文本 JSON）。**端子已被占用时不会报「已被占用」而是顶掉旧线**（一端口一线的普通端子：同类线替换同类线，旧线进撤销栈，回执里该对线带 `replaced` 点名被换掉的上游与端子号）；参数端子 / 数组端子 / 动态控制端子可多线，不替换；类型不符仍是错（旧线不动）；省略 toIndex 不替换（走自动落点）。' },
+    toIndex: { type: 'number', description: '目标的输入端子序号（0 起始；省略 = 按类型自动选槽）。媒体节点必须显式给：breeze_gen 0=待合成文本 · 1=参考音频 · 2=参考文稿 · 3=指令 · 4=控制输入；video_gen fl2va 0=控制 · 1=提示词 · 2=首帧 · 3=末帧；remotion 无差别端子（0、1、2… 连一条多一个，数据线与控制线共用、先占先得，功能说明写在节点 text 里、构建需求写在 remotionBuildNote 里，都不占端子；视频 / 图片 → 主素材、音频 → 语音、文本 → 台词）；save 0/1 按入线类型。动态端子节点（proc_text / proc_image / agent_task / input_*）的**控制输入 = 末位那颗专用控制端子**（数据槽之后单独一颗，数据线永不占它；号随数据槽增长，省略 toIndex 时控制线自动落到它），数据槽仍是 0=提示词 · 1+ 增量。**参数端子用 toIndex 9001**（来源必须是文本 JSON）。**端子已被占用时不会报「已被占用」而是顶掉旧线**（一端口一线的普通端子：同类线替换同类线，旧线进撤销栈，回执里该对线带 `replaced` 点名被换掉的上游与端子号）；参数端子 / 数组端子 / 动态控制端子可多线，不替换；类型不符仍是错（旧线不动）；省略 toIndex 不替换（走自动落点）。' },
     rel: { type: 'boolean', description: '关系线：UML 直线，不传数据也不参与执行（忽略 fromIndex）。' },
     relLabel: { type: 'string', description: '关系线文字（如 调用 / 依赖）。' },
     relArrow: { type: 'string', enum: ['forward', 'backward', 'both', 'none'] },
@@ -626,9 +617,9 @@ export function apply(ctx) {
   /* 注册口（本文件里唯一的裁剪判定点）：三个闸都在 spawn 时定死，整台运行时一个形状。
      · env MTNODE_LEAN_TOOLS（设置里的「精简工具负载」）→ 不注册「可选能力」工具
        mtnode_app / mtnode_vision（集合见 LEAN_DROP_WHEN_LEAN）；
-     · env MTNODE_NO_CANVAS（画布智能节点 nodeLock 运行）→ 不注册画布主干
-       mtnode_canvas_get / mtnode_canvas_edit / mtnode_app（集合见 NODE_LOCK_DROP_CANVAS），
-       宿主对这三类帧本来就一律拒收；mtnode_vision 保留 —— 智能节点被允许用它识图。
+     · env MTNODE_NO_CANVAS（用户声明「与画布无关」的运行）→ 不注册画布主干
+       mtnode_canvas_get / mtnode_canvas_edit / mtnode_app（集合见 CANVAS_FREE_DROP）；
+       画布智能节点不进这一档 —— 它要读组内节点正文、按用户要求建节点 / 连线。
      · env MTNODE_HIDE_TOOLS（按运行算出的规范名单，真源 tool-visibility.mjs）→ 点名的
        工具整个不注册。走这条的是「Agent 工具许可」预设里被拒到点上的画布 / 应用 / 识图
        工具：宿主侧本来就硬拦，定义照发只换来模型一次次撞没有的工具。
@@ -641,7 +632,7 @@ export function apply(ctx) {
   const register = (tool) => {
     const toolName = tool && tool.name
     if (lean && LEAN_DROP_WHEN_LEAN.has(toolName)) return
-    if (noCanvas && NODE_LOCK_DROP_CANVAS.has(toolName)) return
+    if (noCanvas && CANVAS_FREE_DROP.has(toolName)) return
     if (hidden.has(toolName)) return
     ctx.tools.register(tool)
   }

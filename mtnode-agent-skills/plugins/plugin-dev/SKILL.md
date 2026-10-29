@@ -17,7 +17,7 @@ MTNode 里「扩展能力」有**四种完全不同的东西**，别混为一谈
 
 | 东西 | 是什么 | 契约出处 |
 | --- | --- | --- |
-| **应用插件**（本技能管的） | 顶栏「插件」对话框里的卡片：窗口插件、pet、以及带本地后端 + 控制台 + 画布节点的 music3 / yue2 / sensenova / h3 / llama / tts / remotion | `plugins/catalog.default.json`、`plugins/main-app-plugins.js`、各 `*/main-*.js` |
+| **应用插件**（本技能管的） | 顶栏「插件」对话框里的卡片：窗口插件、pet、以及带本地后端 + 控制台 + 画布节点的 music3 / yue2 / h3 / llama / tts / remotion | `plugins/catalog.default.json`、`plugins/main-app-plugins.js`、各 `*/main-*.js` |
 | DSH 插件 | Agent 网关侧插件（工具能力） | `dsh/gateway/*-plugin.mjs`、`dsh/DESIGN.md` |
 | 技能 Skills | Agent 的按需指令集 | `mtnode-agent-skills/**`、`skills/**`（安装类）、`ext-repo/skills/**`（云发版） |
 | MCP 扩展 | 外部 MCP server 接入 | `renderer/app-plugins.js` 的 `EXT_KINDS` + `#extManagerDlg` |
@@ -33,7 +33,6 @@ MTNode 里「扩展能力」有**四种完全不同的东西**，别混为一谈
 | --- | --- | --- | --- | --- | --- |
 | `minimax-music3` | music3 | `music3/main-music3.js` | `music3/ui/index.html` | `music_gen` | `music3-pack/` |
 | `yue2-local` | yue2 | **`yue/main-yue.js`** | `yue/ui/` | `yue_gen` | `yue-pack/` |
-| `sensenova-local` | sensenova | `sensenova/main-sensenova.js` | `sensenova/ui/` | `sensenova_gen` | `sensenova-pack/` |
 | `minimax-h3` | h3 | `h3/main-h3.js` | `h3/ui/` | `video_gen` | `h3-pack/` |
 | `llama-local` | llama | `llama/main-llama.js` | `llama/ui/console.html` | （做模型服务，无媒体节点） | `llama-pack/` |
 | `breeze-tts-local` | breeze | `breeze/main-breeze.js` | `breeze/ui/console.html` | `breeze_gen` | `breeze-pack/` |
@@ -92,7 +91,7 @@ MTNode 里「扩展能力」有**四种完全不同的东西**，别混为一谈
    - `plugins/main-app-plugins.js` → `KNOWN_KINDS`（把新 kind 加进去）；若 kind 与 handler 不同名，`normalizePlugin` 里的 handler 兜底链也要补一条；
    - `build.json` → `files`：`<kind 目录>/**` 与 `<pack 目录>` 的 extraResources 条目（见第八节）。
 3. **main.js 接线**：`require("./<dir>/main-<name>.js")` → 在 `app.whenReady` 段 `register<Name>Ipc({ getDataDir: DATA, getMainWin: () => mainWin, appRoot: __dirname, getDsh: () => dsh() })`，紧跟在 `initPluginErrorBus({ getMainWin: () => mainWin })` 之后；`app.on("before-quit")` 里补 `shutdown<Name>UiOnly()`。
-    - **后端要不要随 MTNode 退出**：单例后端（music3 / h3 / yue / sensenova）**故意不杀**，只在 before-quit 关控制台窗；新插件必须在两处注释里写明选了哪种、为什么。
+    - **后端要不要随 MTNode 退出**：单例后端（music3 / h3 / yue）**故意不杀**，只在 before-quit 关控制台窗；新插件必须在两处注释里写明选了哪种、为什么。
 4. **preload.js 桥**：`window.api.<kind>Xxx` 白名单转发（`ipcRenderer.invoke('<kind>:…')`），事件订阅（`onXxxProgress` / `onXxxConsoleChanged` / `onXxxGpu`）返回退订函数。渲染层拿不到桥 = 卡片与节点全是「未就绪」。
 5. **渲染层卡片**：`renderer/app-plugins.js` → `refresh<Name>PluginCard(root)` + `bind<Name>Progress(card)`，并在 `openAppPluginsDialog()` 的 `kind === "<kind>" || handler === "<kind>"` 链里挂一行（顺序无所谓，但要和 `attachInstalled` / catalog 词条一致）；卡片动作按钮的图标只能取 `PLUGIN_ACT_SVG`（`play` / `stop` / `download` / `update` / `gear`）——**表里没有的 kind 必须先补图标，否则按钮渲染成没有图标的空方块**。
    封面图标放 `plugins/icons/<id>.png`（1:1、≥256×256），加载顺序 `plugins/icons → renderer/plugin-icons`。图标口径是硬约束：
@@ -104,7 +103,7 @@ MTNode 里「扩展能力」有**四种完全不同的东西**，别混为一谈
 
 ## 六、画布节点接线
 
-- 节点类型在 `renderer/app-nodes.js` 里实现，命名用 kind 短名（`music_gen` / `yue_gen` / `breeze_gen` / `video_gen` / `remotion` / `sensenova_gen`）。
+- 节点类型在 `renderer/app-nodes.js` 里实现，命名用 kind 短名（`music_gen` / `yue_gen` / `breeze_gen` / `video_gen` / `remotion` / `flux3klein_gen`）。
 - **节点运行前先判插件就绪**：后端没装 / 没起时给明确中文指路（去顶栏「插件」装或起），不要只报「生成失败」。
 - 宿主返回的错误码要在节点状态行 + 插件卡片 + 报错报告三处口径一致（同一串 code，渲染层按串匹配文案）。
 - 关联回归：`test/smoke-media-gen-menu.js`（菜单与节点归属）、`test/smoke-tools.js`、`test/smoke-plugin-repair.js`。
@@ -176,7 +175,7 @@ reportErr(code, message, { phase: "install", nodeId: nid });
 - **转写 / 生成缓存**：明文 JSON 落插件自己的数据目录（tts 的音色库、llama 的模型清单都是范本）。
 - **AI 事实库 / 素材库 / 工具库**：走 `db-store.js`、`assets-store.js`、`tools-store.js` 的既有 IPC，**不要**为插件新开一套存储。
 - **音视频互斥**：`media-gen-global-lock.js` 的 `tryAcquireLock / refreshStaleLock / clearLock / releaseLock / busyMessage` —— 同时在跑的只有 1 个音视频任务。
-- **资产落盘**：宿主拿 `assetDirFor(wfId)` 回调（sensenova 范本）或自己在宿主内落 `<数据目录>/assets/<wfId>`。
+- **资产落盘**：宿主拿 `assetDirFor(wfId)` 回调（h3 / yue / music3 宿主的既有写法即范本）或自己在宿主内落 `<数据目录>/assets/<wfId>`。
 
 ---
 

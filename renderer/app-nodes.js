@@ -1,7 +1,5 @@
 "use strict";
-/* ============ 处理（Play / 批量） ============ */
-
-/* 正文里内嵌图像已经下发过的路径：同一次请求里不再作为连线图 / 广播图重复下发
+/* 从 paths 里剔掉已经写进正文的图像：
    （顺序与去重口径与 mergeImagePaths 一致：同一路径只留第一次出现的那条） */
 function imagesNotInBody(paths, bodyBlocks) {
   const seenBody = new Set(
@@ -104,7 +102,11 @@ function buildSpec(node, prov, idx, skillWrap) {
     quality: node.kind === "proc_image" ? node.imgQuality || "" : undefined,
     background: node.kind === "proc_image" ? node.imgBackground || "" : undefined,
     maskPath: node.kind === "proc_image" && maskActive(node) ? node.maskPath : "",
-    prompt: withImageParamsPrompt(node, assemblePrompt(refs.prompt, sources)),
+    /* 组输入（本次需求）：同 buildSpecAgg —— 组内节点清单接在正文最后
+       （typeof 守卫：这颗函数被单独抽出来跑时不用担心依赖缺失） */
+    prompt:
+      withImageParamsPrompt(node, assemblePrompt(refs.prompt, sources)) +
+      (typeof groupContextBlock === "function" ? groupContextBlock(node) : ""),
     texts: [],
     images: mergedImages,
     refImage: mergedImages[0] || "",
@@ -305,6 +307,13 @@ async function runDshOnce(node, spec, attemptT, images) {
       .map((b) => "【" + b.title + "】\n" + b.text)
       .join("\n\n");
     if (_asrTaskText) input = input + "\n\n" + _asrTaskText;
+  }
+  /* 组输入（本次需求）：接进来的组的节点清单。与上面音频块同一处 —— 会话模式下
+     spec.prompt 的【背景信息】不进 input，只在 buildSpec 里拼一次会丢；这里兜全部路径，
+     且 spec.prompt 已经含过就不再重复（普通模式 input === spec.prompt）。 */
+  if (typeof groupContextBlock === "function") {
+    const _grpBlock = groupContextBlock(node);
+    if (_grpBlock && input.indexOf(_grpBlock.trim()) < 0) input = input + _grpBlock;
   }
   const runOpts = {
     node,
@@ -621,8 +630,7 @@ function buildSpecAgg(node, prov, skillWrap) {
       useBlocks.map((b) => "### " + b.title + "\n" + b.text).join("\n\n") +
       "\n\n【内容】\n" +
       refs.prompt
-    : refs.prompt;
-  /* 下发图像序列：与蒙版底图同源（runImagePaths，@ 引用优先），images 已含各条目图 + 广播图；
+    : refs.prompt;  /* 下发图像序列：与蒙版底图同源（runImagePaths，@ 引用优先），images 已含各条目图 + 广播图；
      正文里出现过的图不再作为条目 / 广播图重复下发 */
   const mergedImages = runImagePaths(
     node,
@@ -654,7 +662,12 @@ function buildSpecAgg(node, prov, skillWrap) {
     quality: node.kind === "proc_image" ? node.imgQuality || "" : undefined,
     background: node.kind === "proc_image" ? node.imgBackground || "" : undefined,
     maskPath: node.kind === "proc_image" && maskActive(node) ? node.maskPath : "",
-    prompt: withImageParamsPrompt(node, prompt),
+    /* 组输入（本次需求）：接进来的组 → 组内节点清单，接在正文最后。
+       只给清单、不给正文（正文由模型用画布读取工具按 id 自取），也不触发组内节点。
+       typeof 守卫：这颗函数被单独抽出来跑时不用担心依赖缺失。 */
+    prompt:
+      withImageParamsPrompt(node, prompt) +
+      (typeof groupContextBlock === "function" ? groupContextBlock(node) : ""),
     texts: [],
     images: mergedImages,
     refImage: mergedImages[0] || "",
@@ -976,8 +989,6 @@ function isAutoProcKind(n) {
       n.kind === "agent_task" ||
       n.kind === "music_gen" ||
       n.kind === "yue_gen" ||
-      /* SenseNova 图像节点：与音乐 / 语音同待遇（跑完自动级联下游、按处理节点统计） */
-      n.kind === "sensenova_gen" ||
       /* FLUX 3 Image Klein：本机 ComfyUI 出图，跑完同样自动级联下游 */
       n.kind === "flux3klein_gen" ||
       n.kind === "video_gen" ||
@@ -1793,10 +1804,6 @@ function isMediaGenNode(node) {
     node &&
     (node.kind === "music_gen" ||
       node.kind === "yue_gen" ||
-      /* SenseNova 图像生成（sensenova_gen）：本机大模型出图，与音乐 / 视频共用
-         同一条串行链、同一套后端探活与**同一个全局媒体大锁**（一张卡同时只跑得动
-         一个本地大模型）—— 探活、排队、单独 / 全部终止一律按媒体族同待遇 */
-      node.kind === "sensenova_gen" ||
       /* FLUX 3 Image Klein（flux3klein_gen）：本机 ComfyUI 出图，探活 / 排队 / 终止同待遇 */
       node.kind === "flux3klein_gen" ||
       /* Breeze 语音（Breeze TTS 2）：本机唯一的语音后端（文本转语音），探活 / 排队 / 终止同待遇 */
@@ -2372,12 +2379,11 @@ function markMediaBackendDown(node, st) {
 }
 
 /* GPU 读数的形状归一（节点面板只认单帧形）。
-   push 通道（onMusic3Gpu / onYueGpu / onSensenovaGpu / onH3Gpu）一律是单帧：
+   push 通道（onMusic3Gpu / onYueGpu / onH3Gpu）一律是单帧：
      { name, memUsed, memTotal, util, memPct }
-   但各宿主 status 里的 gpu 字段形状不齐：music3 / yue / h3 已是单帧，
-   **sensenova 的 status.gpu 是探测形**：
-     { hasNvidia, gpus:[{ name, driver, memTotalMb, memUsedMb, util }], maxVramGb }
-   节点面板读的是单帧字段，不折算就会读到 undefined → 显存条与 GPU 条都画成 0%（breeze 的 status.gpu 也是旧键名 utilPct / memUsedMb，同样要折算）：
+   但各宿主 status 里的 gpu 字段形状不齐（探测形如 gpus:[{ memTotalMb, memUsedMb }]、
+   breeze 的旧键名 utilPct / memUsedMb），节点面板读的是单帧字段，不折算就会读到 undefined →
+   显存条与 GPU 条都画成 0%：
    运行期「2s 探活回写 ui.info（探测形 → 0%）」与「2s GPU 推流（单帧 → 真值）」交替，
    读数就一直在闪跳。这里统一折算成单帧；取不到（null / 空 gpus）返回 null。 */
 function normalizeGpuReading(gpu) {
@@ -2407,7 +2413,7 @@ function summarizeMediaBackendStatus(node, st) {
   const apiUp =
     node.kind === "music_gen" || node.kind === "yue_gen"
       ? !!st.gradioUp
-      : node.kind === "sensenova_gen"
+      : st.apiUp != null
         ? !!st.apiUp
         : !!st.comfyUp;
   return {
@@ -2420,20 +2426,8 @@ function summarizeMediaBackendStatus(node, st) {
     wantRunning: !!st.wantRunning,
     installDir: st.installDir || "",
     lock: st.lock || null,
-    /* 归一成单帧形（sensenova 的 status.gpu 是探测形），见 normalizeGpuReading */
+    /* 归一成单帧形（各宿主 status.gpu 形状不齐），见 normalizeGpuReading */
     gpu: normalizeGpuReading(st.gpu),
-    /* SenseNova 专属透传（其余节点用不到，字段留着也无害）：
-       resolutions = 官方 11 个分辨率桶真源（设置窗下拉就读这一份，不在渲染层抄第二份表）；
-       supported / supportedReason = 硬件门槛结论（无 N 卡 / 显存内存不足时起跑前就拦下）；
-       peakVramGiB / mock = 上一次运行的显存峰值与是否 mock 冒烟 */
-    resolutions: Array.isArray(st.resolutions) ? st.resolutions : null,
-    supported: st.supported == null ? null : !!st.supported,
-    supportedReason: st.supportedReason || "",
-    supportedMessage: st.supportedMessage || "",
-    peakVramGiB: Number(st.peakVramGiB) || 0,
-    mock: !!st.mock,
-    loaded: !!st.loaded,
-    modelReady: st.modelReady == null ? null : !!st.modelReady,
   };
 }
 
@@ -2509,8 +2503,6 @@ async function fetchMediaBackendStatus(node) {
     return window.api.music3Status ? await window.api.music3Status() : null;
   if (node.kind === "yue_gen")
     return window.api.yue2Status ? await window.api.yue2Status() : null;
-  if (node.kind === "sensenova_gen")
-    return window.api.sensenovaStatus ? await window.api.sensenovaStatus() : null;
   if (node.kind === "flux3klein_gen")
     return window.api.flux3kleinStatus ? await window.api.flux3kleinStatus() : null;
   if (node.kind === "breeze_gen")
@@ -2647,36 +2639,6 @@ function bindMediaBackendListeners() {
       refreshMediaNodeUi(n, { soft: true });
     });
   }
-  if (window.api.onSensenovaProgress) {
-    window.api.onSensenovaProgress((data) => {
-      /* 后端把安装进度与生成进度共用一条 sensenova:progress 发出来：
-         这里只认 phase='generate' 且带 nodeId 的那部分（安装进度归插件控制台窗） */
-      if (!data || data.phase !== "generate" || !data.nodeId) return;
-      const n = nodeById(data.nodeId);
-      if (!n || n.kind !== "sensenova_gen") return;
-      const ui = ensureBackendUiState(n);
-      if (data.cancelled || n._aborted || String(data.message || "") === "已取消") {
-        n.running = false;
-        n.error = null;
-        n.sensenovaStatus = I18n.t("已取消");
-        ui.genMsg = I18n.t("已取消");
-        ui.genPct = 0;
-        stopMediaBackendRunWatcher(n.id);
-        refreshMediaNodeUi(n, { soft: true });
-        return;
-      }
-      if (data.pct != null) ui.genPct = Math.max(0, Math.min(100, Number(data.pct) || 0));
-      if (data.message) {
-        /* 后端偶发把错误码原样当 message 发（启动失败那条）：能翻译成人话就翻译 */
-        ui.genMsg = mediaGenRollProgressTag(n) + sensenovaGenProgressText(data.message);
-        n.sensenovaStatus = ui.genMsg;
-      }
-      if (data.error && looksLikeBackendConnError(data.message)) {
-        markMediaBackendDown(n);
-      }
-      refreshMediaNodeUi(n, { soft: true });
-    });
-  }
   if (window.api.onH3Progress) {
     window.api.onH3Progress((data) => {
       if (!data || !data.nodeId) return;
@@ -2771,19 +2733,6 @@ function bindMediaBackendListeners() {
       if (!gpu || !S.wf) return;
       for (const n of S.wf.nodes || []) {
         if (n.kind !== "flux3klein_gen") continue;
-        const ui = ensureBackendUiState(n);
-        if (ui.ok !== true && !n.running) continue;
-        ui.info = ui.info || {};
-        ui.info.gpu = gpu;
-        if (n.running || S.sel === n.id) refreshMediaNodeUi(n, { soft: true });
-      }
-    });
-  }
-  if (window.api.onSensenovaGpu) {
-    window.api.onSensenovaGpu((gpu) => {
-      if (!gpu || !S.wf) return;
-      for (const n of S.wf.nodes || []) {
-        if (n.kind !== "sensenova_gen") continue;
         const ui = ensureBackendUiState(n);
         if (ui.ok !== true && !n.running) continue;
         ui.info = ui.info || {};
@@ -2890,9 +2839,7 @@ function appendMediaConsoleBtn(head, node) {
         ? I18n.t("打开 SoulX 实时数字人控制台")
         : node.kind === "yue_gen"
         ? I18n.t("打开 YuE2 控制台日志")
-        : node.kind === "sensenova_gen"
-          ? I18n.t("打开 SenseNova 控制台日志")
-          : node.kind === "flux3klein_gen"
+        : node.kind === "flux3klein_gen"
             ? I18n.t("打开 FLUX 3 Image Klein 控制台")
           : node.kind === "breeze_gen"
             ? I18n.t("打开 Breeze TTS 2 控制台")
@@ -2918,11 +2865,7 @@ function appendMediaConsoleBtn(head, node) {
               ? window.api.yue2Open
                 ? await window.api.yue2Open()
                 : null
-              : node.kind === "sensenova_gen"
-                ? window.api.sensenovaOpen
-                  ? await window.api.sensenovaOpen()
-                  : null
-                : node.kind === "flux3klein_gen"
+              : node.kind === "flux3klein_gen"
                   ? window.api.flux3kleinOpen
                     ? await window.api.flux3kleinOpen()
                     : null
@@ -2947,7 +2890,7 @@ function appendMediaConsoleBtn(head, node) {
 }
 
 /* ── 生成族节点头部那对键：▶（起跑）+ ■（终止）─────────────────────────────
-   本函数是这 7 个节点（music_gen / yue_gen / sensenova_gen / video_gen / 视频后处理 /
+   本函数是这 6 个节点（music_gen / yue_gen / video_gen / 视频后处理 /
    breeze_gen / remotion）头部这对键的**唯一实现**：以前每个块各抄一遍，规则
    一改就得改七处（这次就漏了一处 —— 见下）。
    本轮 bug（用户报：breeze 节点「处理完仍然显示等待中，且无法关闭」）的两半都修在这里：
@@ -3080,26 +3023,13 @@ function appendMediaBackendPanel(body, node) {
       pill(
         node.kind === "music_gen" || node.kind === "yue_gen"
           ? "Gradio"
-          : node.kind === "sensenova_gen"
-            ? "API"
-            : "Comfy",
+          : "Comfy",
         info.apiUp ? "ok" : "bad",
       ),
     );
   /* FLUX 3 Image Klein：本机 ComfyUI，权重留不留显存由后端自己管，只补一条精度铭牌 */
   if (node.kind === "flux3klein_gen") {
     row.appendChild(pill(node.precision === "bf16" ? "BF16" : "INT8", "muted"));
-  }
-  /* SenseNova：权重是否已驻留 / 是否 mock 冒烟 / 上次实测显存峰值 —— 这三项是
-     「为什么这么慢 / 是不是没真跑」的唯一现场证据，节点上就必须看得见 */
-  if (node.kind === "sensenova_gen") {
-    if (info.loaded != null)
-      row.appendChild(
-        pill(info.loaded ? I18n.t("权重在位") : I18n.t("权重未载"), info.loaded ? "ok" : "muted"),
-      );
-    if (info.mock) row.appendChild(pill("MOCK", "wait"));
-    if (Number(info.peakVramGiB) > 0)
-      row.appendChild(pill("VRAM " + Math.round(Number(info.peakVramGiB)) + "G", "muted"));
   }
   if (info.version) row.appendChild(pill("v" + info.version, "muted"));
   if (info.installing) row.appendChild(pill(I18n.t("安装中"), "wait"));
@@ -3774,300 +3704,6 @@ function appendYueGenSummaryBody(node, body) {
   });
 }
 
-/* ═══════════ SenseNova 图像节点（sensenova_gen）的设置与摘要 ═══════════
- * 抽卡 / 种子 / 摇数复用 music_gen 那一套实现（控件 id 也是 mgrolls- / mgseed-）；
- * 另加本节点特有的「分辨率桶 / 步数 / CFG / 显存档位 / 精度 / think」。
- * 落盘不摆到设置窗里：本节点不要求用户填输出路径，产物由主进程落进应用托管目录
- * （%APPDATA%\\pipeline-console，与 proc_image 同一资产链）并由输出端子（端口 0）交付。
- * 硬约束：分辨率只能取官方 11 个训练桶（不是自由值，桶表真源在后端 /health），
- * 且**降分辨率省不了显存**（最小那桶也有 2048×2048 ≈ 4M 像素），所以省显存只有
- * 降 vram_mode / 降 num_steps 两条路 —— 设置窗里就把这句话写明。 */
-function sensenovaBucketItems(st) {
-  const list = sensenovaResolutionBuckets(st);
-  return list.map((b) => [b.ratio, b.ratio + " · " + b.width + "x" + b.height]);
-}
-/** 取本节点后端状态的缓存（设置窗打开时已探测过；拿不到就用兜底桶表） */
-function sensenovaBackendInfo(node) {
-  const ui = node && typeof ensureBackendUiState === "function" ? ensureBackendUiState(node) : null;
-  return (ui && ui.info) || null;
-}
-function nsSensenovaGenParamFields(ctx, node) {
-  const info = sensenovaBackendInfo(node);
-  nsSelect(
-    ctx,
-    I18n.t("分辨率桶（官方训练尺寸）"),
-    sensenovaBucketItems(info),
-    String(node.ratioBucket || "1:1"),
-    (v) => {
-      node.ratioBucket = v;
-      const b = sensenovaResolutionBuckets(info).find((x) => x.ratio === v);
-      if (b) {
-        node.width = b.width;
-        node.height = b.height;
-      }
-      syncNodeSettingsValue(node, "mgbucket", sensenovaSizeSummary(node));
-      ctx.commit({ rerender: true });
-    },
-    {
-      id: nodeSettingsCtlId("mgbucket", node.id),
-      tip: I18n.t(
-        "官方只有这 11 个训练分辨率桶，不是任意宽高；最小那桶也有 2048×2048（≈400 万像素），所以换小尺寸省不了显存 —— 省显存请改下面的「显存档位」或减小采样步数。",
-      ),
-    },
-  );
-  nsNumber(
-    ctx,
-    I18n.t("采样步数"),
-    Number(node.numSteps) || 30,
-    {
-      id: nodeSettingsCtlId("mgsteps", node.id),
-      min: 1,
-      max: 200,
-      step: 1,
-      fallback: 30,
-      title: I18n.t("1–200；默认 50。试机 / 省时间可以降到 20 以内，画质会糙。"),
-    },
-    (v) => {
-      node.numSteps = v;
-      syncNodeSettingsValue(node, "mgsteps", String(v));
-    },
-  );
-  nsNumber(
-    ctx,
-    I18n.t("CFG Scale"),
-    Number(node.cfgScale) || 4.0,
-    {
-      id: nodeSettingsCtlId("mgcfg", node.id),
-      min: 0,
-      max: 20,
-      step: 0.1,
-      fallback: 4.0,
-      title: I18n.t("提示词贴合度（官方默认 4.0）；越大越贴提示词、越容易过饱和。"),
-    },
-    (v) => {
-      node.cfgScale = v;
-      syncNodeSettingsValue(node, "mgcfg", String(v));
-    },
-  );
-  nsSelect(
-    ctx,
-    I18n.t("CFG Norm"),
-    [
-      ["none", "none（默认）"],
-      ["global", "global"],
-      ["channel", "channel"],
-      ["cfg_zero_star", "cfg_zero_star"],
-    ],
-    SENSENOVA_CFG_NORMS.includes(String(node.cfgNorm || "")) ? node.cfgNorm : "none",
-    (v) => {
-      node.cfgNorm = v;
-      ctx.commit();
-    },
-  );
-  nsNumber(
-    ctx,
-    I18n.t("Timestep Shift"),
-    Number(node.timestepShift) || 3.0,
-    {
-      id: nodeSettingsCtlId("mgshift", node.id),
-      min: 0,
-      max: 20,
-      step: 0.1,
-      fallback: 3.0,
-      title: I18n.t("噪声调度平移（官方默认 3.0）"),
-    },
-    (v) => {
-      node.timestepShift = v;
-      syncNodeSettingsValue(node, "mgshift", String(v));
-    },
-  );
-  /* 参考图条件强度：只有连了参考图（图像编辑模式 it2i_generate）才随请求下发 */
-  nsNumber(
-    ctx,
-    I18n.t("参考图条件强度"),
-    node.imgCfgScale != null ? Number(node.imgCfgScale) : 1.0,
-    {
-      id: nodeSettingsCtlId("mgimgcfg", node.id),
-      min: 0,
-      max: 20,
-      step: 0.1,
-      fallback: 1.0,
-      title: I18n.t(
-        "图像编辑模式（连了参考图）才生效：图像 CFG 权重，1.0 = 关闭（官方默认）；调到 1.5~2.0 会更贴参考图；没有参考图时该值不下发。",
-      ),
-    },
-    (v) => {
-      node.imgCfgScale = v;
-      syncNodeSettingsValue(node, "mgimgcfg", String(v));
-    },
-  );
-  nsNumber(
-    ctx,
-    I18n.t("抽卡次数"),
-    attemptCount(node),
-    {
-      id: nodeSettingsCtlId("mgrolls", node.id),
-      min: 1,
-      max: 10,
-      step: 1,
-      fallback: 1,
-      title: I18n.t("连续生成次数（1–10）；多次时输出命名为 #1、#2 …"),
-    },
-    (v) => {
-      node.attempts = attemptCount({ attempts: v });
-      syncNodeSettingsValue(node, "mgrolls", String(node.attempts));
-    },
-  );
-  /* 种子与摇数：与 music_gen / yue_gen 同一控件 id（mgseed-），运行期回填同一口径 */
-  nsNumber(
-    ctx,
-    I18n.t("种子"),
-    node.seed != null ? node.seed : 0,
-    {
-      id: nodeSettingsCtlId("mgseed", node.id),
-      step: 1,
-      fallback: 0,
-      live: true,
-      title: I18n.t("种子"),
-    },
-    (v) => {
-      node.seed = Math.floor(v);
-      syncNodeSettingsValue(node, "mgseed", String(node.seed));
-    },
-  );
-  nsCheck(
-    ctx,
-    I18n.t("摇数（每次执行种子 +1）"),
-    node.rerollSeed !== false,
-    (v) => {
-      node.rerollSeed = v;
-    },
-    { title: I18n.t("每次执行种子 +1（默认开启）") },
-  );
-  ctx.section(I18n.t("显存与精度"));
-  nsSelect(
-    ctx,
-    I18n.t("显存档位"),
-    [
-      ["fast", "fast（官方 24G 卡档 · 默认）"],
-      ["balanced", "balanced（更省显存，更慢）"],
-      ["low", "low（最省显存 · 需大内存）"],
-      ["full", "full（不卸载 · ≥48G 显存）"],
-    ],
-    SENSENOVA_VRAM_MODES.includes(String(node.vramMode || "")) ? node.vramMode : "fast",
-    (v) => {
-      node.vramMode = v;
-      ctx.commit();
-    },
-    {
-      tip: I18n.t(
-        "权重 bf16 约 32.66GB，比一张 24G 卡还大，所以默认必须分层卸载（offload 到内存）。出图报显存不足时后端会自动降一档并在结果里写明；24G 卡请勿选 full。",
-      ),
-    },
-  );
-  nsSelect(
-    ctx,
-    I18n.t("权重精度"),
-    SENSENOVA_DTYPES.map((d) => [d, d === "bfloat16" ? d + "（默认）" : d]),
-    SENSENOVA_DTYPES.includes(String(node.dtype || "")) ? node.dtype : "bfloat16",
-    (v) => {
-      node.dtype = v;
-      ctx.commit();
-    },
-  );
-  ctx.section(I18n.t("思考模式"));
-  nsCheck(
-    ctx,
-    I18n.t("think（先推理再出图 · 另存 .think.txt）"),
-    !!node.think,
-    (v) => {
-      node.think = v;
-    },
-    { title: I18n.t("开启后模型会先输出一段推理文本，再据此生成图像；更稳但更慢。") },
-  );
-  /* 落盘：本节点不需要用户填输出路径 —— 产物由主进程落进应用托管目录
-     （%APPDATA%\\pipeline-console，与 proc_image 同一资产链），所以设置窗里没有「输出」段。 */
-}
-
-/* sensenova_gen 摘要的一行文本版（登记表单的 summary 用）
- * 参数一行摘要；产物自动落应用资产目录，没有输出路径字段 */
-function sensenovaGenParamSummaryText(node) {
-  return [
-    sensenovaSizeSummary(node),
-    I18n.t("步数 ") + (Number(node.numSteps) || 30),
-    I18n.t("CFG ") + (Number(node.cfgScale) || 4),
-    I18n.t("抽卡 ") + attemptCount(node),
-    I18n.t("种子 ") + mediaGenSeedSlotText(node),
-    I18n.t("显存 ") + (node.vramMode || "fast"),
-    node.think ? I18n.t("think 开") : I18n.t("think 关"),
-  ].join(" · ");
-}
-
-/* sensenova_gen 的 body 摘要：只留参数两行（与「图像节点」proc_image 观感一致；
-   没有输出路径字段：产物自动落应用资产目录，不占节点体） */
-function appendSensenovaGenSummaryBody(node, body) {
-  appendNodeSettingsSummary(node, body, {
-    slots: [
-      {
-        id: "mgbucket-" + node.id,
-        label: I18n.t("尺寸"),
-        value: sensenovaSizeSummary(node),
-      },
-      { label: I18n.t("步数"), value: String(Number(node.numSteps) || 30) },
-      { id: "mgrolls-" + node.id, label: I18n.t("抽卡"), value: String(attemptCount(node)) },
-      { id: "mgseed-" + node.id, label: I18n.t("种子"), value: mediaGenSeedSlotText(node) },
-    ],
-    cls: "mg-sum",
-  });
-  appendNodeSettingsSummary(node, body, {
-    slots: [
-      { label: I18n.t("显存"), value: String(node.vramMode || "fast") },
-      { label: "CFG", value: (Number(node.cfgScale) || 4) + " / " + (node.cfgNorm || "none") },
-      { label: "think", value: node.think ? "on" : "off" },
-    ],
-    cls: "mg-sum",
-  });
-}
-
-/* ── sensenova_gen 的「思考内容」（think 模式）──────────────────────────────
-   后端 think 模式下先出规划文本再出图，回执带 thinkText，同名文本另落图旁
-   `.think.txt`（见 sensenova-pack 的 engine.generate）。渲染层过去把这两个字段整个
-   丢在地上：节点跑完既看不到思考按钮，也读不到一个字 —— 本次需求「绘画中思考内容
-   未正确显示」就是这条链断了。这里接上：
-     · 文本优先用回执里的 thinkText（一次 IPC 都不多发）；
-     · 只有路径（老后端 / 只落了文件）才按需读 `.think.txt` 兜底；
-     · 结果按抽卡槽写进节点自己的思考缓冲（pushThinking → S.thinking[nodeId][roll]），
-       节点头部那颗「◉ 思考」按钮与思考弹窗（showThinking）都是现成的，接上即可显示。
-   两者都没有 = 这次没开 think（或后端没回），一个字都不写，不造空思考块。 */
-const SENSENOVA_THINK_MAX = 120000;
-async function sensenovaThinkTextOf(res) {
-  const inline = String((res && res.thinkText) || "").trim();
-  if (inline) return inline.slice(0, SENSENOVA_THINK_MAX);
-  const path = String((res && res.thinkPath) || "").trim();
-  if (!path) return "";
-  const api = (typeof window !== "undefined" && window.api) || {};
-  if (typeof api.fileReadText !== "function") return "";
-  try {
-    const rr = await api.fileReadText(path);
-    const txt = String((rr && rr.content) || "").trim();
-    return txt ? txt.slice(0, SENSENOVA_THINK_MAX) : "";
-  } catch (e) {
-    return "";
-  }
-}
-/* 把这一轮的思考文本接进节点的思考缓冲（按抽卡槽），并当场刷一次节点头部的思考按钮 */
-async function sensenovaApplyThinkText(node, res, roll) {
-  if (!node) return "";
-  const txt = await sensenovaThinkTextOf(res);
-  if (!txt) return "";
-  try {
-    if (typeof pushThinking === "function") pushThinking(node.id, roll || 0, txt);
-  } catch (e) {
-    /* 思考显示出问题绝不拖垮生成结果（图已经落盘了） */
-  }
-  return txt;
-}
-
 /* ═══════════════ H3 自建 ComfyUI 工作流（接入 video_gen 节点） ═══════════════
  * 分工真源：库读写 / UI→API 转换 / 参数扫描 / 参数校验 / 值注入全在主进程
  * h3/h3-workflows.js，渲染层只做四件事——选工作流、决定「哪些参数提升为节点端子」、
@@ -4700,7 +4336,7 @@ function appendVideoGenWfParamRow(panel, node, p, index, total) {
 function applyMediaGenConfiguredPath(node, raw, media) {
   if (!node) return "";
   /* 扩展名唯一真源 = mediaGenExt(node)：语音按所选输出格式（wav / mp3）、
-     SenseNova 图像节点固定 .png、其余音频 .wav / 视频 .mp4。
+       图像节点固定 .png、其余音频 .wav / 视频 .mp4。
      这里不再按调用方传的 media 猜第二份，否则同一节点两条链会给出不同后缀。 */
   void media;
   const ext = mediaGenExt(node);
@@ -5178,391 +4814,6 @@ async function playYueGenNode(node, quiet) {
   }
 }
 
-/* ── SenseNova 图像生成（sensenova_gen）：接入本机 SenseNova-U1.5-8B-MoT 插件 ────
-   后端 = 插件「SenseNova 本地图像生成」(sensenova-local)：主进程 sensenova/main-sensenova.js
-   拉起本地服务（127.0.0.1:8774），节点经 api.sensenovaGenerate → sensenova:generate
-   → 后端产出 PNG 并回传绝对路径（渲染层不碰二进制）。
-   与音乐 / 视频共用同一条渲染层串行链、同一套后端状态机与**同一个主进程全局媒体大锁**
-   （kind='sensenova_gen'）—— 一张 24G 卡同时只跑得动一个本地大模型，禁止并行。
-   端子：输入与「图像节点」proc_image 同一条泛用增量规则 —— 端口 0 = 提示词 / 文本入口，
-   端口 1+ 按已连线条数增量出数据槽（可接文本节点，也可接图像引用 input_image / proc_image 等）；
-   输出 0=图像 · 1=控制输出（与 proc_image 同语义）。
-   落盘：本节点**不要求用户填输出路径** —— 不向主进程下发 outputDir / filename，由宿主把
-   产物落进应用托管目录（%APPDATA%\\pipeline-console，与 proc_image 同处）并回传绝对路径；
-   参考图：连了图像（数据槽 / @ 引用 / 全局广播）就把路径随 refImages 下发，后端切到图像编辑
-   模式（it2i_generate，参考图作图像前缀条件）—— 参考图真的参与生成，不再降级丢弃。 */
-function sensenovaGenPromptText(node) {
-  /* 取值口径与 proc_image 同一条链：inputValuesFor 收全部数据线 → resolveRefs → assemblePrompt，
-     @ 引用 / Tag / !@数据库 引用与全局广播（globalRefs，明文 @ 命中才注入）在取值侧一并生效；
-     各数据槽（端口 0 = 提示词入口 · 端口 1+ = 增量数据槽）接入的文本统一收进【背景信息】块。 */
-  const ins = inputValuesFor(node, 0);
-  const wiredTexts = [];
-  for (const it of ins) {
-    const v = it && it.value;
-    if (v && v.kind === "text" && String(v.text || "").trim())
-      wiredTexts.push({ title: (it && it.title) || I18n.t("输入"), text: String(v.text) });
-  }
-  const own = String(node.prompt || "").trim();
-  /* 自填为空：取第一条接线文本当提示词（保持「接线即提示词」的旧用法），其余仍进背景块 */
-  const base = own || (wiredTexts.length ? wiredTexts[0].text : "");
-  if (!base.trim()) return "";
-  try {
-    const refs = resolveRefs(base, node, 0);
-    const rest = own ? wiredTexts : wiredTexts.slice(1);
-    const sources = (refs.textSources || []).concat(rest);
-    return assemblePrompt(refs.prompt, sources) || base;
-  } catch {
-    return base;
-  }
-}
-/* 本节点本次运行会收到的参考图（口径与 proc_image 的 runImagePaths 一致：连线图 + 未连线的
-   全局广播图，再与 @ 引用图合并）。这些路径会随 refImages 下发给后端，走图像编辑模式。 */
-function sensenovaGenRefPaths(node) {
-  const images = [];
-  for (const it of inputValuesFor(node, 0)) {
-    const v = it && it.value;
-    if (v && v.kind === "image" && v.path) images.push(v.path);
-  }
-  let refs = null;
-  try {
-    refs = resolveRefs(sensenovaGenPromptText(node), node, 0);
-  } catch {
-    refs = null;
-  }
-  try {
-    return runImagePaths(node, 0, refs, images);
-  } catch {
-    return images;
-  }
-}
-/* 参考图生效文案：节点状态行 + toast 用，让用户看到「这次参考图真的进去了」 */
-function sensenovaGenRefUsedText(n) {
-  return I18n.t("参考图已生效：本次按图像编辑生成（{n} 张参考图参与条件）").replace("{n}", String(n));
-}
-/* 后端 / 环境类错误码 → 人话（未装 / 未就绪 / 显存不足 …），未知码原样回传 */
-function sensenovaGenErrorText(code, detail) {
-  const d = detail ? "：" + String(detail).slice(0, 200) : "";
-  switch (String(code || "")) {
-    case "not_installed":
-      return I18n.t("SenseNova 未安装：请在「插件 · SenseNova 本地图像生成」里安装后再试");
-    case "no_venv":
-      return I18n.t("SenseNova 依赖未装好（缺 Python 环境）：请在插件控制台重跑安装");
-    case "no_cuda":
-      return I18n.t("本机没有可用的 NVIDIA 显卡：SenseNova 本地出图需要一张 N 卡");
-    case "cuda_oom":
-      return I18n.t(
-        "显存不足：请把节点「显存档位」降到 balanced / low，或减小采样步数（降分辨率省不了显存）",
-      );
-    case "vram_too_low":
-      return I18n.t(
-        "显存不够：SenseNova-U1.5-8B-MoT 需要一张 ≥24GB 显存的 NVIDIA 卡（权重 bf16 约 32.66GB，靠分层卸载跑在 24G 卡上）",
-      );
-    case "ram_too_low":
-      return I18n.t("内存不够：分层卸载要把权重放在内存，请确认物理内存满足要求后在插件里勾「强制继续」");
-    case "low_disk":
-      return I18n.t("磁盘空间不足：权重约 32.66GB，请在插件里换一个剩余空间够的安装目录");
-    case "torch_cpu_build":
-      return I18n.t("当前 Python 环境装的是 CPU 版 torch：请在插件控制台自修复 / 重装修 CUDA 版 torch");
-    case "pack_missing":
-    case "pack_incomplete":
-    case "script_missing":
-      return I18n.t("SenseNova 随包脚手架缺失或不完整：请重装应用或重跑安装技能");
-    case "backend_start_failed":
-      return I18n.t("后端启动失败：请打开 SenseNova 控制台日志查看具体原因");
-    case "backend_unreachable":
-      return I18n.t("连不上本地后端（127.0.0.1:8774）：请在插件里关闭后重新开启");
-    case "generate_timeout":
-      return I18n.t("生成超时：采样步数过大或显存频繁换入换出，请降低步数 / 显存档位后重试");
-    case "busy":
-      return I18n.t("后端正忙（同时只跑一张图），请等待当前任务结束");
-    case "backend_start_timeout":
-      return I18n.t("后端启动超时（权重约 32.66GB，首次加载要几分钟）：请稍后重试 ▶");
-    case "busy_media":
-      return I18n.t("已有音视频生成任务进行中（全局仅 1 个，禁止并行），请等待完成后再试");
-    case "busy_other_node":
-      return I18n.t("本宿主同时只跑一张图，请等待当前任务结束");
-    case "empty_prompt":
-      return I18n.t("提示词为空：请接入文本输入（端子 P）或在节点里填写提示词");
-    case "model_load_failed":
-      return I18n.t("模型加载失败：请在插件控制台检查权重是否完整（8 片 safetensors）" + d);
-    case "host_internal_error":
-      return I18n.t("SenseNova 宿主内部错误：请看插件控制台日志（console.log）并反馈给开发者" + d);
-    case "generate_failed":
-      return I18n.t("图像生成失败" + d);
-    case "save_failed":
-      return I18n.t("图像写盘失败：请检查输出路径是否可写" + d);
-    case "missing_node_id":
-      return I18n.t("缺少节点标识（内部错误）：请重试点 ▶");
-    case "empty_dir":
-      return I18n.t("输出目录为空：请在 ⚙ 设置里填写输出路径");
-    case "agent_install_timeout":
-      return I18n.t(
-        "SenseNova 自动安装超时（权重约 32.66GB，下载要看网速）：请稍后重试 ▶",
-      );
-    case "cancelled":
-      return I18n.t("已取消");
-    default:
-      return String(code || "sensenova_error") + (detail ? "：" + String(detail).slice(0, 200) : "");
-  }
-}
-/* 进度通道（sensenova:progress）有时把错误码原样当 message 发：认识的就翻成人话，
-   不认识的原样显示。判定表就是上面 switch 的那些 case，这里只列一遍码名。 */
-const SENSENOVA_ERROR_CODES = [
-  "not_installed", "no_venv", "no_cuda", "cuda_oom", "vram_too_low", "ram_too_low",
-  "low_disk", "torch_cpu_build", "pack_missing", "pack_incomplete", "script_missing",
-  "empty_dir", "agent_install_timeout",
-  "backend_start_timeout", "backend_start_failed", "backend_unreachable",
-  "generate_timeout", "busy", "busy_media", "busy_other_node", "empty_prompt",
-  "model_load_failed", "generate_failed", "save_failed", "missing_node_id", "cancelled",
-  "host_internal_error",
-];
-function sensenovaGenProgressText(message) {
-  const s = String(message || "").trim();
-  return SENSENOVA_ERROR_CODES.indexOf(s) >= 0 ? sensenovaGenErrorText(s) : s;
-}
-
-async function playSensenovaGenNode(node, quiet) {
-  if (!window.api || !window.api.sensenovaGenerate) {
-    toast(I18n.t("SenseNova 图像插件未就绪"), "err");
-    return;
-  }
-  /* 串行链出队后由 mediaRunPrestart 先点亮了运行态（显存预释放那段也算本次运行）：
-     那一下是本运行体的交接，不是「已经在跑」，必须放行 */
-  if (node.running && !node._prestart) return;
-  /* 「全部终止 / 单独停止」之后不得再起跑（含串行队列里排到点的任务） */
-  if (mediaRunStopped(node)) {
-    mediaGenMarkDropped(node, false);
-    return;
-  }
-
-  /* 全局互斥：本地大模型（音乐 / 视频 / 图像）全局仅允许 1 个任务 */
-  try {
-    const lock = await fetchMediaGenLock();
-    if (lock && lock.nodeId && lock.nodeId !== node.id) {
-      node.error = mediaGenLockBusyMsg(lock);
-      node._busyErrAt = Date.now(); /* 见 app.js sweepStaleMediaBusyErrors：新报的别当场扫掉 */
-      node.sensenovaStatus = node.error;
-      if (!quiet) toast(node.error, "warn");
-      renderCanvas();
-      return;
-    }
-  } catch {}
-
-  const prompt = sensenovaGenPromptText(node).trim();
-  if (!prompt) {
-    node.error = I18n.t("提示词为空：请接入文本输入（端子 P）或在节点里填写提示词");
-    node.sensenovaStatus = node.error;
-    if (!quiet) toast(node.error, "warn");
-    renderCanvas();
-    return;
-  }
-  /* 参考图：连了图 / @ 引用了图就随 refImages 下发给后端（图像编辑模式，参考图真参与条件） */
-  const refPaths = sensenovaGenRefPaths(node);
-  const refInfo = refPaths.length ? sensenovaGenRefUsedText(refPaths.length) : "";
-
-  /* 画幅只认官方 11 个训练桶：以节点存的 ratioBucket + width/height 一起下发
-     （后端认 ratio 优先，宽高做兜底与一致性校验） */
-  sensenovaNormalizeNode(node);
-
-  const nRolls = attemptCount(node);
-
-  let st = null;
-  try {
-    st = await fetchMediaBackendStatus(node);
-  } catch {
-    st = null;
-  }
-  {
-    const ui = ensureBackendUiState(node);
-    ui.ok = null;
-    ui.info = summarizeMediaBackendStatus(node, st);
-    ui.genPct = 2;
-    ui.genMsg = I18n.t("启动后端并生成…");
-    stopMediaBackendProbe(node.id);
-  }
-  /* 后端起来了就把官方分辨率桶带回节点：设置窗与 body 摘要都读这一份缓存，
-     不在渲染层另抄第二份表（真源始终是 /health） */
-  if (st && Array.isArray(st.resolutions) && st.resolutions.length) {
-    const ui = ensureBackendUiState(node);
-    ui.info = ui.info || {};
-    ui.info.resolutions = st.resolutions;
-  }
-  /* 硬件门槛不过（无 N 卡 / 显存内存不够）→ 直接给结论，不启动后端也不下载权重 */
-  if (st && st.supported === false) {
-    node.error = sensenovaGenErrorText(
-      st.supportedReason || "no_cuda",
-      st.supportedMessage || "",
-    );
-    node.sensenovaStatus = node.error;
-    if (!quiet) toast(node.error, "err");
-    renderCanvas();
-    return;
-  }
-
-  /* 上面这些 await（取全局锁 / 查后端状态）期间可能已被终止 → 不占锁、不起跑 */
-  if (mediaRunStopped(node)) {
-    mediaGenMarkDropped(node, false);
-    return;
-  }
-  node.running = true;
-  node.error = null;
-  beginNodeRun(node);
-  node.genRollDone = 0;
-  node.genPaths = [];
-  /* 本次运行重新开始：先清空本节点的思考缓冲（与 proc_text / agent_task 每次运行重置
-     思考槽同一口径），否则重跑时新一轮思考会追加在上一轮后面，看起来像「思考串了」。
-     缓冲只在内存里，清掉的是上一次运行留下的思考，不是这一轮正在看的。 */
-  if (S.thinking) S.thinking[node.id] = [];
-  /* 顺手刷一次头部那颗「◉ 思考」：上一次运行的思考已经不在了，按钮该跟着收起 */
-  if (typeof refreshThinkingUI === "function") refreshThinkingUI(node.id);
-  node.sensenovaStatus = I18n.t("启动后端并生成…");
-  startMediaBackendRunWatcher(node);
-  renderCanvas();
-
-  const t0 = Date.now();
-  let okCount = 0;
-  let lastPath = "";
-  let lastThinkPath = "";
-  const warnings = [];
-
-  try {
-    for (let roll = 1; roll <= nRolls; roll++) {
-      if (mediaRunStopped(node)) break;
-      const seed = nextMediaGenSeed(node);
-      {
-        const ui = ensureBackendUiState(node);
-        ui.genPct = Math.max(2, ui.genPct || 2);
-        ui.genMsg =
-          mediaGenRollProgressTag(node) +
-          (nRolls > 1 ? I18n.t("生成中…") : I18n.t("启动后端并生成…"));
-        node.sensenovaStatus = ui.genMsg;
-      }
-      node.genRollDone = roll - 1;
-      refreshMediaNodeUi(node, { soft: true });
-
-      /* 落盘交给主进程：不下发 outputDir / filename → 宿主把产物写进应用托管目录
-         （%APPDATA%\\pipeline-console，与 proc_image 同一资产链）并把绝对路径回传。
-         rollIndex 只用于资产命名编号，多次抽卡各自独立成图、不撞名。 */
-      const r = await window.api.sensenovaGenerate({
-        nodeId: node.id,
-        workflowId: (S.wf && S.wf.id) || "",
-        prompt,
-        ratio: node.ratioBucket || "",
-        width: node.width,
-        height: node.height,
-        numSteps: Number(node.numSteps) || 30,
-        cfgScale: node.cfgScale,
-        cfgNorm: node.cfgNorm || "none",
-        timestepShift: node.timestepShift,
-        seed,
-        vramMode: node.vramMode || "fast",
-        dtype: node.dtype || "bfloat16",
-        think: !!node.think,
-        rollIndex: roll,
-        /* 参考图（图像编辑模式）：路径由宿主核存在后随 refImages 下发；空数组 = 纯文生图 */
-        refImages: refPaths,
-        imgCfgScale: Number(node.imgCfgScale) || undefined,
-      });
-      if (node._aborted || (r && (r.error === "cancelled" || r.cancelled))) {
-        node.error = null;
-        node.sensenovaStatus = I18n.t("已取消");
-        const ui = ensureBackendUiState(node);
-        ui.genMsg = I18n.t("已取消");
-        ui.genPct = 0;
-        return;
-      }
-      if (!r || !r.ok) {
-        const errCode = String((r && r.error) || "generate_failed");
-        if (errCode === "busy_other_node" || errCode === "busy_media") {
-          node.error = sensenovaGenErrorText(errCode);
-        } else if (errCode === "cancelled") {
-          node.error = null;
-          node.sensenovaStatus = I18n.t("已取消");
-          return;
-        } else {
-          node.error = sensenovaGenErrorText(errCode, r && (r.message || r.detail));
-        }
-        node.sensenovaStatus = node.error;
-        if (looksLikeBackendConnError(errCode) || errCode === "backend_start_timeout")
-          markMediaBackendDown(node, r);
-        if (!quiet) toast(node.error, "err");
-        return;
-      }
-      okCount++;
-      lastPath = String(r.path || "");
-      if (lastPath) node.genPaths.push(lastPath);
-      /* think 模式：这一轮的思考内容接进节点头部「◉ 思考」按钮（按抽卡槽）。
-         图已落盘，思考显示失败不改变成功结论 —— 见 sensenovaApplyThinkText。 */
-      const thinkText = await sensenovaApplyThinkText(node, r, roll);
-      if (String(r.thinkPath || "").trim())
-        lastThinkPath = String(r.thinkPath).trim();
-      /* 输出端子语义与 proc_image 对齐：{kind:"image", path} → 下游 save_image / 预览直接复用。
-         思考文本与旁文件路径一并挂上（产物不丢；不写进正文，免得下游 save_text 把思考当输出） */
-      const out = { kind: "image", path: lastPath };
-      if (thinkText) out.think = thinkText;
-      if (lastThinkPath) out.thinkPath = lastThinkPath;
-      node.output = out;
-      node.ranAt = Date.now();
-      node.genRollDone = roll;
-      /* 后端 OOM 自动降档 / 非训练桶尺寸等提醒：合并进节点状态，别静默吞掉 */
-      if (Array.isArray(r.warnings)) for (const w of r.warnings) if (w) warnings.push(String(w));
-      if (Number(r.peakVramGiB) > 0) {
-        const ui = ensureBackendUiState(node);
-        ui.info = ui.info || {};
-        ui.info.peakVramGiB = Number(r.peakVramGiB);
-      }
-    }
-    if (node._aborted) {
-      node.error = null;
-      node.sensenovaStatus = I18n.t("已取消");
-      const ui = ensureBackendUiState(node);
-      ui.genMsg = I18n.t("已取消");
-      ui.genPct = 0;
-      return;
-    }
-    if (!okCount) return;
-    let doneMsg = mediaGenDoneMsg(Date.now() - t0);
-    /* 参考图生效说明排在最前：用户连了图，先确认「这次参考图真的参与了条件」 */
-    if (refInfo) warnings.unshift(refInfo);
-    if (warnings.length) doneMsg += " · " + warnings[0];
-    node.sensenovaStatus = doneMsg;
-    {
-      const ui = ensureBackendUiState(node);
-      ui.genPct = 100;
-      ui.genMsg = doneMsg;
-    }
-    if (!quiet) {
-      toast(
-        nRolls > 1
-          ? I18n.t("图像已生成：") + okCount + "/" + nRolls + I18n.t(" 次")
-          : I18n.t("图像已生成：") + lastPath,
-        "ok",
-      );
-      if (warnings.length) toast(warnings.join(" / "), "warn");
-    }
-  } catch (e) {
-    if (node._aborted) {
-      node.error = null;
-      node.sensenovaStatus = I18n.t("已取消");
-    } else {
-      node.error = (e && e.message) || String(e);
-      node.sensenovaStatus = node.error;
-      if (looksLikeBackendConnError(node.error)) markMediaBackendDown(node);
-      if (!quiet) toast(node.error, "err");
-    }
-  } finally {
-    /* 被用户终止（单独停止 / 全部终止）时不再驱动下游控制线 */
-    const wasStopped = mediaRunStopped(node);
-    node.running = false;
-    node._aborted = false;
-    stopMediaBackendRunWatcher(node.id);
-    renderCanvas();
-    scheduleSave();
-    /* 生成成功：触发控制输出端子（端口1）驱动下游控制目标 */
-    if (!wasStopped && nodeHasOutputContent(node))
-      await fireControlOutgoing(node, 1, new Set([node.id]));
-  }
-}
 
 /* ── Breeze 语音生成（breeze_gen）：接入本机 Breeze TTS 2 插件 ─────────────
    后端 = 插件「Breeze TTS 2 本地 TTS」(breeze-tts-local)：主进程 breeze/main-breeze.js 拉起
@@ -6753,8 +6004,6 @@ function mediaGenCancelRemote(node) {
       window.api.music3CancelGenerate(node.id);
     else if (node.kind === "yue_gen" && window.api.yue2CancelGenerate)
       window.api.yue2CancelGenerate(node.id);
-    else if (node.kind === "sensenova_gen" && window.api.sensenovaCancelGenerate)
-      window.api.sensenovaCancelGenerate(node.id);
     else if (node.kind === "flux3klein_gen" && window.api.flux3kleinCancelGenerate)
       window.api.flux3kleinCancelGenerate(node.id);
     else if (node.kind === "breeze_gen" && window.api.breezeCancelGenerate)
@@ -6795,7 +6044,6 @@ function mediaGenMarkDropped(node, wasRunning) {
   if (node.kind === "music_gen") node.musicStatus = msg;
   else if (node.kind === "yue_gen") node.yueStatus = msg;
   else if (node.kind === "breeze_gen") node.breezeStatus = msg;
-  else if (node.kind === "sensenova_gen") node.sensenovaStatus = msg;
   else if (node.kind === "flux3klein_gen") node.flux3kleinStatus = msg;
   else if (
     node.kind === "video_gen" ||
@@ -6822,7 +6070,7 @@ async function restoreMediaGenLocks() {
     const lock = lk && lk.lock;
     if (!lock || !lock.nodeId) return;
     const n = nodeById(lock.nodeId);
-    /* 媒体族里 music_gen / yue_gen / sensenova_gen / video_gen+后处理 / breeze_gen 会占后端大锁
+      /* 媒体族里 music_gen / yue_gen / video_gen+后处理 / breeze_gen 会占后端大锁
        （remotion 走本地渲染、不占锁）：其余一律不认领 */
     if (!n || !isMediaGenNode(n) || n.kind === "remotion")
       return;
@@ -6832,7 +6080,6 @@ async function restoreMediaGenLocks() {
     const msg = I18n.t("后端任务进行中（已从锁恢复）…");
     if (n.kind === "music_gen") n.musicStatus = msg;
     else if (n.kind === "yue_gen") n.yueStatus = msg;
-    else if (n.kind === "sensenova_gen") n.sensenovaStatus = msg;
     else if (n.kind === "flux3klein_gen") n.flux3kleinStatus = msg;
     else n.videoStatus = msg;
     renderCanvas();
@@ -6859,7 +6106,6 @@ async function restoreMediaGenLocks() {
           const done = I18n.t("任务已结束");
           if (n.kind === "music_gen") n.musicStatus = done;
           else if (n.kind === "yue_gen") n.yueStatus = done;
-          else if (n.kind === "sensenova_gen") n.sensenovaStatus = done;
           else if (n.kind === "flux3klein_gen") n.flux3kleinStatus = done;
           else n.videoStatus = done;
           renderCanvas();
@@ -9470,8 +8716,6 @@ async function mediaPostRunNote(node) {
         /* 状态行后缀：只写事实（释放了谁、腾出多少），不覆盖原本的完成 / 报错文案 */
         if (node.kind === "music_gen") node.musicStatus = String(node.musicStatus || "") + note;
         else if (node.kind === "yue_gen") node.yueStatus = String(node.yueStatus || "") + note;
-        else if (node.kind === "sensenova_gen")
-          node.sensenovaStatus = String(node.sensenovaStatus || "") + note;
         else if (node.kind === "flux3klein_gen")
           node.flux3kleinStatus = String(node.flux3kleinStatus || "") + note;
         else if (node.kind === "breeze_gen")
@@ -9629,10 +8873,6 @@ async function playNodeBody(node, quiet, opts) {
   }
   if (node.kind === "yue_gen") {
     return runMediaGenSerial(node, () => playYueGenNode(node, quiet));
-  }
-  /* SenseNova 本地图像生成：与音乐 / 视频同一条串行链、同一把全局大锁 */
-  if (node.kind === "sensenova_gen") {
-    return runMediaGenSerial(node, () => playSensenovaGenNode(node, quiet));
   }
   /* FLUX 3 Image Klein：同一条串行链 + 同一把全局音视频锁 */
   if (node.kind === "flux3klein_gen") {
@@ -10954,7 +10194,7 @@ function functionAiSpec(node) {
 
 /* 函数节点「图像后端」设定 → 主进程线程能用的形状（renderer/app-aicall.js 解析生效值）：
    { model, label, local, refImages, maxRefImages, strength }；
-   没选过 → null（主进程按 auto 走：云端图像服务商优先、其次本机 SenseNova）。
+     没选过 → null（主进程按 auto 走：云端图像服务商优先）。
    jscode 里 await mtnode.image(...) 用它出图，见 fn-runtime.js 的 image 桥。 */
 function functionImageSpec(node) {
   if (!node || typeof imgRunSpecFor !== "function") return null;
@@ -11665,7 +10905,6 @@ async function saveNodeAction(node, opts) {
         src.kind !== "agent_task" &&
         src.kind !== "music_gen" &&
         src.kind !== "yue_gen" &&
-        src.kind !== "sensenova_gen" &&
         src.kind !== "breeze_gen" &&
         src.kind !== "video_gen" &&
         /* 后处理（视频超分 / 补帧）与 Remotion 动效视频同样是「自己会出片」的上游：
@@ -11825,7 +11064,6 @@ function canControlRun(n) {
       n.kind === "judge" ||
       isSaveNode(n) ||
       n.kind === "music_gen" ||
-      n.kind === "sensenova_gen" ||
       n.kind === "breeze_gen" ||
       n.kind === "video_gen" ||
       (typeof isVideoPostKind === "function" && isVideoPostKind(n)) ||
@@ -12134,7 +11372,6 @@ async function runControlledNode(n, seen, viaIndexes, sourceId) {
     isToolNode(n) ||
     n.kind === "music_gen" ||
     n.kind === "yue_gen" ||
-    n.kind === "sensenova_gen" ||
     n.kind === "breeze_gen" ||
     n.kind === "video_gen" ||
     (typeof isVideoPostKind === "function" && isVideoPostKind(n)) ||
@@ -12912,7 +12149,7 @@ function wouldCycle(fromId, toId, toIndex, fromIndex) {
 }
 
 /* ── 连线校验用的「端子级」媒体类型判定（单一真源在 app.js · wireSourceMediaType）──
-   只有「纯图像 kind」（图像输入 / 文生图 / SenseNova / 合并 / 拆分）按节点 kind 定案；
+     只有「纯图像 kind」（图像输入 / 文生图 / 合并 / 拆分）按节点 kind 定案；
    下列「整节点没有单一媒体类型」的来源按「这条线真正流出的媒体类型」判定：
      · 工具 / 函数节点：按真正接出来的那个端子的声明类型；
      · 素材节点：只有条目端子说得出这条线是不是图像；
@@ -13138,7 +12375,7 @@ function dataNodeControlInPort(node) {
   /* Remotion 固化端子：末位那颗专用控制端子（契约项之后） */
   const remotionContract = node.kind === "remotion" ? remotionContractOf(node) : [];
   if (remotionContract.length) return remotionContract.length;
-  /* 动态端子节点（proc_text / proc_image / sensenova_gen / agent_task / input_*）：
+    /* 动态端子节点（proc_text / proc_image / agent_task / input_*）：
      专用控制端子恒存在（数据槽之后那颗），不再走下面「挑第一颗空口」的兜底 ——
      那条兜底在空白节点上会退到端口 0 的提示词入口。多路控制线共用这颗（任一到达即触发）。 */
   if (typeof isDynCtrlNode === "function" && isDynCtrlNode(node))
@@ -13327,6 +12564,12 @@ function connectError(fromId, toId, toIndex, fromIndex) {
   const from = nodeById(fromId),
     to = nodeById(toId);
   if (!from || !to) return I18n.t("节点不存在");
+  /* 组输入端子只吃组线（组线不经这里落线，见 connectGroup）：普通数据线落上去
+     会变成一条「取不到值、也画不出」的线，就地拦住并说清去哪儿连。 */
+  if (to && typeof isGroupInPort === "function" && isGroupInPort(to, toIndex))
+    return I18n.t(
+      "这是「组」输入端子：请从画布组框上的 □ 拖一根组线进来，普通数据线不接这里",
+    );
   if (from.kind === "super" && nodeParentSuperId(to) === from.id) {
     const fi = Number(fromIndex || 0);
     if (fi < 0 || fi >= Math.max(1, inputCount(from)))
@@ -13906,7 +13149,7 @@ function connectError(fromId, toId, toIndex, fromIndex) {
    典型场景：单数据端子的媒体节点（video_gen）那个端子已被占，
    点名占用者并建议「用 super 汇聚或拆节点」，而不是只回一句「已被占用」。 */
 /* 单数据端子的媒体节点：端子被占时建议「用 super 汇聚或拆节点」。
-   sensenova_gen / remotion 不在此列 —— 它们的输入端子与 proc_image 同为泛用增量
+     remotion 不在此列 —— 它的输入端子与 proc_image 同为泛用增量
    （连一条多一条），多输入本就接得下；对它们说「请用 super 汇聚」是错的指路。 */
 const SINGLE_DATA_IN_KINDS = [
   "video_gen", "music_gen", "proc_image",
@@ -14146,7 +13389,7 @@ function addWire(fromId, toId, toIndex, opts) {
          music_gen 落到端口2；yue_gen 落到端口3。
          （此前漏了后处理两支：控制线按「入线总数」顺延 → 第二根线落到端口 1 被 connectError
          判「后处理节点控制输入端子为端口 0」，▶ 永远接不上。）
-         sensenova_gen / remotion 不在此列：它们没有固定控制端子，控制线与数据线
+           remotion 不在此列：它没有固定控制端子，控制线与数据线
          一律落第一个空闲端子（见上面动态端子落点）。 */
       idx =
         toN.kind === "music_gen"
@@ -14338,6 +13581,125 @@ function connect(fromId, toId, toIndex, fromIndex) {
   scheduleSave(true);
   renderStatus();
   if (replaced.length) toast(replaceWiresToastText(replaced), "ok");
+}
+
+/* ── 组线（本次需求）──────────────────────────────────────────────
+   画布组框标题栏那颗 □ 拖出来的一条线：来源是「组」，目标是智能节点
+   （agent_task / proc_text 智能模式）的组输入端子（GROUP_IN_INDEX）。
+   组不是节点 —— w.from 记成 "grp:<组id>"，真源在 w.grp 上；因此：
+     · 它不参与上游补跑、取值、端口占用（那些链路一律走 nodeById，取不到就跳过）；
+     · 运行期的用法只有一处：把组内节点整理成一份清单塞进该轮任务上下文
+       （见 groupContextBlock）。 */
+function groupConnectError(gid, toId) {
+  const g = typeof groupById === "function" ? groupById(gid) : null;
+  const to = nodeById(toId);
+  if (!g) return I18n.t("组不存在（可能已被解散）");
+  if (!to) return I18n.t("节点不存在");
+  if (typeof isSmartGroupPortNode === "function" && !isSmartGroupPortNode(to))
+    return I18n.t("组线只能接到智能节点（智能任务 / 文本智能模式）的「组」输入端子");
+  return null;
+}
+function connectGroup(gid, toId) {
+  const err = groupConnectError(gid, toId);
+  if (err) {
+    toast(err, "warn");
+    return;
+  }
+  const key = String(gid);
+  if (
+    (S.wf.wires || []).some(
+      (w) => isGroupWire(w) && String(w.grp) === key && w.to === toId,
+    )
+  )
+    return; /* 同一个组已经接到这颗节点：幂等 */
+  pushHistory();
+  S.wf.wires.push({
+    id: uid("w"),
+    from: groupWireFromId(key),
+    to: toId,
+    toIndex: GROUP_IN_INDEX,
+    fromIndex: 0,
+    grp: key,
+  });
+  clearDownstream(toId);
+  renderCanvas();
+  scheduleSave(true);
+  renderStatus();
+}
+/* 摘掉指向某个组（或已经不存在的组）的全部组线；返回摘掉的条数 */
+function removeGroupWires(gid) {
+  const key = String(gid || "");
+  if (!S.wf || !Array.isArray(S.wf.wires)) return 0;
+  const before = S.wf.wires.length;
+  S.wf.wires = S.wf.wires.filter(
+    (w) => !(isGroupWire(w) && (!key || String(w.grp) === key)),
+  );
+  return before - S.wf.wires.length;
+}
+/* 摘掉接到某颗节点上的全部组线（右键组输入端子 = 切断这一口） */
+function removeGroupWiresFromNode(nodeId) {
+  if (!S.wf || !Array.isArray(S.wf.wires)) return 0;
+  const before = S.wf.wires.length;
+  S.wf.wires = S.wf.wires.filter(
+    (w) => !(isGroupWire(w) && w.to === nodeId),
+  );
+  return before - S.wf.wires.length;
+}
+/* 读档 / 撤销后自愈：组已经不在（被解散 / 被删）的组线一律摘掉。
+   解散 / 删除组的入口会显式调用并提示，这里兜「旧档 / 撤销后残留」。 */
+function pruneOrphanGroupWires(wfIn) {
+  /* 可传入目标画布对象：切画布时新图还没进 S.wf（此刻 S.wf 仍是上一张），
+     按 S.wf 判会看错图 —— 既修不了新图的孤儿线，还可能误剪旧图。 */
+  const wf = wfIn && Array.isArray(wfIn.wires) ? wfIn : S.wf;
+  if (!wf || !Array.isArray(wf.wires)) return 0;
+  const alive = new Set(
+    (wf.groups || []).map((g) => String((g && g.id) || "")).filter(Boolean),
+  );
+  const before = wf.wires.length;
+  wf.wires = wf.wires.filter(
+    (w) => !isGroupWire(w) || alive.has(String(w.grp)),
+  );
+  return before - wf.wires.length;
+}
+/* 这条正文 = 该智能节点接到的全部组（合并一份清单）。
+   只给「清单」不给正文：每行 标题 + 类型 + 描述(note) + 节点 id，模型要看正文
+   自己用 mtnode_canvas_get 按 id 取（智能节点运行时已放开读画布）。
+   组里含本节点自己时照列（组往往就是围着它建的），只按节点 id 去重。 */
+function groupContextBlock(node) {
+  if (!node || typeof isSmartGroupPortNode !== "function" || !isSmartGroupPortNode(node))
+    return "";
+  const wires = (S.wf && S.wf.wires ? S.wf.wires : []).filter(
+    (w) => isGroupWire(w) && w.to === node.id,
+  );
+  if (!wires.length) return "";
+  const seen = new Set();
+  const rows = [];
+  for (const w of wires) {
+    const g = typeof groupById === "function" ? groupById(w.grp) : null;
+    if (!g) continue;
+    if (typeof ensureGroupArrays === "function") ensureGroupArrays(g);
+    for (const nid of g.nodeIds || []) {
+      const n = nodeById(nid);
+      if (!n || seen.has(n.id)) continue;
+      seen.add(n.id);
+      const note = String(n.note || "").replace(/\s+/g, " ").trim();
+      rows.push(
+        "- " +
+          (n.title || I18n.t("未命名节点")) +
+          " · " +
+          nodeKindLabel(n) +
+          (note ? " · " + (note.length > 80 ? note.slice(0, 80) + "…" : note) : "") +
+          " · id:" +
+          n.id,
+      );
+    }
+  }
+  if (!rows.length) return "";
+  return (
+    I18n.t("\n\n【组输入】以下节点来自你接入的组（要正文时用 mtnode_canvas_get 按 id 取）：") +
+    "\n" +
+    rows.join("\n")
+  );
 }
 
 /* ────────────────────────────────────────────────────────────
@@ -15017,7 +14379,7 @@ function nodePortList(node, dir) {
    「几号端子、什么类型、被谁占了」，不必等 connect 报错再改 —— 运行期才发现端子冲突
    是实测里最贵的一类往返。minimal 档不带（app_state 每轮重发，必须最轻）。 */
 const SNAPSHOT_PORT_KINDS = [
-  "proc_image", "sensenova_gen", "video_gen", "video_upscale", "video_interp", "remotion", "judge", "super",
+  "proc_image", "video_gen", "video_upscale", "video_interp", "remotion", "judge", "super",
   /* 音频 / 视频输入：两个固定数据出端子（0=音频 / 视频输出＝文件 file:/// URL ·
      1=转写输出＝该文件的文字），接线前就该看得见「哪个是文件、哪个是文字」，
      所以也进定端口名单。 */
@@ -15035,10 +14397,10 @@ function snapshotHasFixedPorts(node) {
 /* 「输入端子随连线增量长出来」的节点（= app.js inputCount 落到泛用增量公式
    `Math.max(1, allWiresTo(id).length + 1)` 的那几类）：端子数是现算的，ports 报的只是
    「当下真实存在」的那几个槽。它们与 SNAPSHOT_PORT_KINDS 有交集（proc_image /
-   sensenova_gen），所以不能拿「在不在固定名单里」当判据；名单照固定端子节点那一族的写法
+     remotion），所以不能拿「在不在固定名单里」当判据；名单照固定端子节点那一族的写法
    列成常量（真源仍是 app.js inputCount，改那边要顺手核对这里）。 */
 const INCREMENTAL_PORT_KINDS = [
-  "proc_text", "proc_image", "sensenova_gen", "agent_task",
+  "proc_text", "proc_image", "agent_task",
   "input_text", "input_image", "input_audio", "input_video", "input_file", "input_any",
 ];
 /* 是不是「随连线增量」的那一类：名单内 + 端子数确实等于「已连数据线 + 1」（再核一道，
@@ -15067,7 +14429,7 @@ function snapshotInputGrowsWithWires(node) {
 function snapshotPortsOf(node) {
   if (!snapshotHasFixedPorts(node)) return undefined;
   const ports = nodePortList(node, "in").concat(nodePortList(node, "out"));
-  /* proc_image / sensenova_gen 这类节点也在这份「定端口」名单里，但它们的输入是**增量**的：
+    /* proc_image / remotion 这类节点也在这份「定端口」名单里，但它们的输入是**增量**的：
      空白节点只列得出「端口 0 = 提示词」，实测中模型据此误判「这个节点没有图像参考端子」，
      去试连一条线再看 warnings 反推接法（白花两轮往返）。给它们的 ports 挂一句「端子怎么长」，
      一次读图就读全。理由同 snapshotDynamicPortRule，两处共用一份文案真源。 */
@@ -15101,7 +14463,7 @@ function snapshotPortRuleOf(node) {
   return snapshotDynamicPortRule(node);
 }
 
-/* 端子数**不固定**的节点（proc_text / proc_image / sensenova_gen / input_* …）：
+  /* 端子数**不固定**的节点（proc_text / proc_image / input_* …）：
    它们的输入端子是按已连线条数**增量长出来**的，ports 只能报「当下这一条、这一张图
    真实存在的那几个槽」——空白节点回的就是「端口 0 = 提示词」这一条。只给 ports 会让模型
    以为「这个节点根本没有图像参考端子」（实测：模型读不到 1+ 号槽，就去试连一条线再看
@@ -15678,7 +15040,6 @@ function canvasSnapshot(opts) {
         n.kind === "video_gen" ||
         n.kind === "music_gen" ||
         n.kind === "yue_gen" ||
-        n.kind === "sensenova_gen" ||
         n.kind === "breeze_gen" ||
         n.kind === "remotion"
           ? Math.max(1, Math.min(10, Math.round(Number(n.attempts) || 1)))
@@ -15690,33 +15051,6 @@ function canvasSnapshot(opts) {
         n.kind === "breeze_gen" ||
         n.kind === "remotion"
           ? mediaGenOutputRaw(n) || n.outputPath || undefined
-          : undefined,
-      /* sensenova_gen 配置（agent 可读可改）：画幅只能取官方 11 个训练桶，
-         所以对外给的是 ratioBucket 这个名字，width/height 只是它的派生值 */
-      sensenovaPrompt:
-        n.kind === "sensenova_gen"
-          ? String(n.prompt || "").slice(0, 4000)
-          : undefined,
-      ratioBucket: n.kind === "sensenova_gen" ? n.ratioBucket || "1:1" : undefined,
-      width: n.kind === "sensenova_gen" ? Number(n.width) || 0 : undefined,
-      height: n.kind === "sensenova_gen" ? Number(n.height) || 0 : undefined,
-      numSteps: n.kind === "sensenova_gen" ? Number(n.numSteps) || 30 : undefined,
-      cfgScale: n.kind === "sensenova_gen" ? Number(n.cfgScale) || 4 : undefined,
-      cfgNorm: n.kind === "sensenova_gen" ? n.cfgNorm || "none" : undefined,
-      vramMode: n.kind === "sensenova_gen" ? n.vramMode || "fast" : undefined,
-      think: n.kind === "sensenova_gen" ? !!n.think : undefined,
-      /* 参考图条件强度（img_cfg_scale）：连了参考图（图像编辑模式）才随请求下发 */
-      imgCfgScale:
-        n.kind === "sensenova_gen"
-          ? Number(n.imgCfgScale != null ? n.imgCfgScale : 1) || 1
-          : undefined,
-      sensenovaStatus:
-        n.kind === "sensenova_gen"
-          ? String(n.sensenovaStatus || "").slice(0, 200) || undefined
-          : undefined,
-      sensenovaOutput:
-        n.kind === "sensenova_gen" && n.output && n.output.path
-          ? { kind: "image", path: String(n.output.path) }
           : undefined,
       /* yue_gen 配置（agent 可读可改） */
       cot: n.kind === "yue_gen" ? yueGenCotOf(n) : undefined,
@@ -15811,7 +15145,7 @@ function canvasSnapshot(opts) {
         const ports = snapshotPortsOf(n);
         if (ports && ports.length) node.ports = ports;
       }
-      /* 端子数**随连线增量**的节点（proc_text / proc_image / sensenova_gen / input_* …）：
+        /* 端子数**随连线增量**的节点（proc_text / proc_image / input_* …）：
          ports 只报得到「当下真实存在」的那几个槽（空白节点就只剩端口 0 = 提示词），
          实测中模型据此误判「这个节点没有图像参考端子」，去试连一条线再看 warnings 反推接法。
          这里补一条「端子怎么长」的规则 —— 它们与 ports 名单有交集，所以这一支是独立的
@@ -15899,53 +15233,14 @@ function isCanvasScopedAgentNode(n) {
   );
 }
 
-function isCanvasNodeAgentRun() {
-  return (S._canvasNodeAgentDepth || 0) > 0;
-}
-
-/* ── 画布智能节点的画布锁：**按轮归属**，不是全局 ──────────────────────────────
-   此前「有没有画布智能节点在跑」只看全局计数 S._canvasNodeAgentDepth（见 app-db.js 与
-   isCanvasNodeAgentRun），只要有一个智能任务节点在跑，屏幕上任何来源的画布帧都被拒 ——
-   包括第三方 MCP 客户端（Claude Code / 手机接管）经 renderer/mcp-bridge.js 发来的读写帧：
-   它既不是那个节点、也不属于那一轮，却一起被锁死（应用中心、外部编辑器常驻连接时尤其明显）。
-   现在把「这一轮是不是画布智能节点」按 runKey 登记（dshRunTask 起停时登记 / 注销），
-   画布闸只拦被登记的那些轮；计数那一份继续供 restrictOtherCanvases 等「全局口径」使用
-   （那些地方问的是「此刻有没有智能节点在跑」，语义没变）。 */
-function canvasNodeRunLocked(runKey) {
-  const k = String(runKey || "");
-  if (!k) return false;
-  const reg = S._canvasNodeRunLocks;
-  return !!(reg && reg[k]);
-}
-
-function lockCanvasForAgentNodeRun(runKey) {
-  const k = String(runKey || "");
-  if (!k) return;
-  S._canvasNodeRunLocks = S._canvasNodeRunLocks || {};
-  S._canvasNodeRunLocks[k] = (S._canvasNodeRunLocks[k] || 0) + 1;
-}
-
-function unlockCanvasForAgentNodeRun(runKey) {
-  const k = String(runKey || "");
-  const reg = S._canvasNodeRunLocks;
-  if (!reg || !reg[k]) return;
-  reg[k] -= 1;
-  if (reg[k] <= 0) delete reg[k];
-}
-
-function canvasDeniedForAgentNodeError() {
-  return I18n.t(
-    "智能节点不能读取或编辑画布、修改节点图或创建任务。请使用读写文件、联网、命令、技能与识图完成任务。",
-  );
-}
-
-/* 智能节点人设：保留文件/命令/联网，禁止画布与工作流工具 */
+/* 智能节点人设：保留文件/命令/联网；画布读取与节点 / 连线操作按本轮工具许可放行
+   （见 app-db.js 的 NODE_AGENT_TOOL_POLICY），不再禁止调用画布工具。 */
 function agentNodeCapabilityNote() {
   return (
     "【智能节点】你是画布上的执行节点，不是工作流搭建助手。" +
     "允许：读写与编辑工作区文件、执行命令、联网搜索与抓取网页、使用已安装技能与 MCP 工具、调用 mtnode_vision 识图、向用户提问或派生子任务（均须遵守当前审批/权限预设）。用写文件交付结果。" +
-    "禁止：调用 mtnode_canvas_get / mtnode_canvas_edit / mtnode_app；禁止创建、修改、删除节点/连线/绘制/成组；禁止创建任务图；禁止重命名或删除画布；禁止选中节点或撤销/重做。" +
-    "上述画布与应用调用会被系统直接拒绝。忽略默认人设里关于搭建画布、修改节点图、创建任务的说明。回答简洁（交流语言见文末「语言口味」）。"
+    "画布：允许调用 mtnode_canvas_get 读取本画布（组输入只给节点 id 清单，要看正文就按 ids 取）；也允许调用 mtnode_canvas_edit 按用户要求建节点 / 连线 —— 只按用户要求改，动现有节点前先问用户。控制类节点、节点层、绘图、排版与成组会按工具许可逐次询问；mtnode_app（画布改名 / 删除画布 / 装插件）本轮不注册，调用即失败。" +
+    "回答简洁（交流语言见文末「语言口味」）。"
   );
 }
 
@@ -16001,8 +15296,8 @@ function planModeSystemNote() {
    不是用户此刻看到的画布）；全局助手仅在「仅当前画布」范围时锁定。 */
 function restrictOtherCanvases() {
   if ((S._canvasNodeAgentDepth || 0) > 0) return true;
-  /* 长任务「只读画布」档：虽然没进 nodeLock 整档闸（否则连读图工具都不注册），
-     但同样只准看本轮绑定的那张画布。 */
+  /* 长任务「只读画布」档：不进 nodeLock（那档放行读 + 节点 / 连线，会盖过本档的
+     「只读」授权），但同样只准看本轮绑定的那张画布。 */
   if ((S._ltCanvasReadDepth || 0) > 0) return true;
   if (anyAgentSessionRunning()) return true;
   if (S.assistRunActive && assistScopeIsCurrent()) return true;
@@ -17454,7 +16749,7 @@ function agentToolPolicySystemNote(opts) {
     !runPolicy && !!(S.config && S.config.dsh && S.config.dsh.assistAutoApprove);
   if (nodeLock) {
     s += I18n.t(
-      "本次运行为智能节点：即使审批预设允许，也不可使用读取画布、节点与连线、控制类节点、绘图、排版与成组、应用操作、删除画布。",
+      "本次运行为智能节点：读取画布与节点 / 连线操作已放行（改现有节点前先问用户）；控制类节点、节点层、绘图、排版与成组按上面的许可逐次询问；应用操作与删除画布一律拒绝（mtnode_app 本轮不注册）。",
     );
   }
   if (noCanvasRead)
@@ -18463,12 +17758,6 @@ async function applyCanvasOp(op, params, runCtx) {
   /* 本轮运行键：按运行的工具许可（专家自带 perm.toolAllow）以它为作用域，
      缺省（老会话 / 裸节点 / 助手）无策略 → 回退全局预设，行为不变。 */
   const runKey = (runCtx && runCtx.runKey) || "";
-  if (
-    canvasNodeRunLocked(runKey) &&
-    (op === "get" || op === "edit" || op === "app")
-  ) {
-    throw new Error(canvasDeniedForAgentNodeError());
-  }
   /* 长任务「只读画布」档：get 是这一档授权的全部内容；edit / app 即便从别的路径注册出来，
      在这里也一律拒 —— 授权只是「读」，不是「改」。 */
   if ((S._ltCanvasReadDepth || 0) > 0 && (op === "edit" || op === "app")) {
@@ -18507,9 +17796,6 @@ function handleCanvasEvent(data, runCtx) {
     id: String(id),
     runKey: String(runCtx.runKey || ""),
     sessionId: String(data.sessionId || runCtx.sessionId || ""),
-    /* 这一轮的画布权限（按 runKey 归属，见 canvasNodeRunLocked）：画布智能节点那几轮
-       一律拒收画布 / 应用帧；MCP 连接与其它会话各自的轮不受牵连。 */
-    locked: canvasNodeRunLocked(runCtx.runKey),
   };
   const deadRunError = I18n.t("发起轮已结束，未执行");
   let replied = false;
@@ -18541,14 +17827,6 @@ function handleCanvasEvent(data, runCtx) {
       .catch(() => {});
   };
   const opEarly = data.op || "get";
-  if (
-    canvasNodeRunLocked(frameOwner.runKey) &&
-    (opEarly === "get" || opEarly === "edit" || opEarly === "app")
-  ) {
-    const err = canvasDeniedForAgentNodeError();
-    finish({ ok: false, error: err }, err);
-    return;
-  }
   /* 长任务「只读画布」档：get 放行（授权只有读），edit / app 直接失败，不弹确认框。 */
   if ((S._ltCanvasReadDepth || 0) > 0 && (opEarly === "edit" || opEarly === "app")) {
     const err = I18n.t("本环节只授权读取画布：不能改动画布或应用。");
@@ -19889,8 +19167,6 @@ function nodeHasVisibleImage(node) {
   }
   if (
     node.kind === "proc_image" ||
-    /* SenseNova 图像节点：产物就是一张本地 PNG → 与云端文生图同待遇（预览 / 灯箱 / 美观尺寸） */
-    node.kind === "sensenova_gen" ||
     (isSaveNode(node) && saveMediaKind(node) === "image")
   ) {
     if (node.output && node.output.path) return true;
@@ -20591,10 +19867,7 @@ function applyNodePatch(node, patch, warnings) {
   if (
     patch.prompt != null &&
     (node.kind === "proc_text" ||
-      node.kind === "proc_image" ||
-      /* sensenova_gen 的提示词字段同名，写侧一并认（读侧快照里叫 sensenovaPrompt，
-         是为了和 music/yue 那种「带节点前缀」的字段表对齐；两个名字都收） */
-      node.kind === "sensenova_gen")
+      node.kind === "proc_image")
   ) {
     node.prompt = String(patch.prompt);
     if (node.kind === "proc_image") warnIfProcImageMultiPrompt(node, warnings);
@@ -21001,7 +20274,7 @@ function applyNodePatch(node, patch, warnings) {
   /* video_gen / music_gen：输出路径 patch（remotion 输出由下游保存节点负责，不接受） */
   if (
     patch.attempts != null &&
-    (node.kind === "video_gen" || node.kind === "music_gen" || node.kind === "yue_gen" || node.kind === "sensenova_gen" || node.kind === "breeze_gen" || node.kind === "remotion" ||
+    (node.kind === "video_gen" || node.kind === "music_gen" || node.kind === "yue_gen" || node.kind === "breeze_gen" || node.kind === "remotion" ||
       (typeof isVideoPostKind === "function" && isVideoPostKind(node)))
   ) {
     const n = Math.round(Number(patch.attempts));
@@ -21009,7 +20282,7 @@ function applyNodePatch(node, patch, warnings) {
   }
   if (
     patch.outputPath != null &&
-    (node.kind === "video_gen" || node.kind === "music_gen" || node.kind === "yue_gen" || node.kind === "sensenova_gen" || node.kind === "breeze_gen" ||
+    (node.kind === "video_gen" || node.kind === "music_gen" || node.kind === "yue_gen" || node.kind === "breeze_gen" ||
       (typeof isVideoPostKind === "function" && isVideoPostKind(node)))
   ) {
     const p = String(patch.outputPath).trim();
@@ -21017,55 +20290,9 @@ function applyNodePatch(node, patch, warnings) {
       applyMediaGenConfiguredPath(
         node,
         p,
-        node.kind === "sensenova_gen"
-          ? "image"
-          : node.kind === "music_gen" || node.kind === "yue_gen"
-            ? "audio"
-            : "video",
+        (node.kind === "music_gen" || node.kind === "yue_gen") ? "audio" : "video",
       );
     }
-  }
-  /* sensenova_gen：提示词 / 官方分辨率桶 / 采样参数 / 显存档位 / think（本地图像节点）。
-     分辨率桶表真源在后端 /health，这里只认**桶名**，宽高由归一函数按桶表派生 ——
-     绝不让 agent 自由填 WxH（那不是合法训练尺寸，后端会自己挑最接近的桶，等于偷偷改参数）。 */
-  if (node.kind === "sensenova_gen") {
-    if (patch.sensenovaPrompt != null) node.prompt = String(patch.sensenovaPrompt);
-    if (patch.ratioBucket != null) node.ratioBucket = String(patch.ratioBucket).trim();
-    if (patch.numSteps != null) {
-      const v = Math.round(Number(patch.numSteps));
-      if (isFinite(v)) node.numSteps = Math.max(1, Math.min(200, v));
-    }
-    if (patch.cfgScale != null) {
-      const v = Number(patch.cfgScale);
-      if (isFinite(v)) node.cfgScale = Math.max(0, Math.min(20, v));
-    }
-    if (patch.cfgNorm != null) {
-      const v = String(patch.cfgNorm).trim();
-      if (SENSENOVA_CFG_NORMS.indexOf(v) >= 0) node.cfgNorm = v;
-    }
-    if (patch.timestepShift != null) {
-      const v = Number(patch.timestepShift);
-      if (isFinite(v)) node.timestepShift = Math.max(0, Math.min(20, v));
-    }
-    if (patch.imgCfgScale != null) {
-      const v = Number(patch.imgCfgScale);
-      if (isFinite(v)) node.imgCfgScale = Math.max(0, Math.min(20, v));
-    }
-    if (patch.vramMode != null) {
-      const v = String(patch.vramMode).trim();
-      if (SENSENOVA_VRAM_MODES.indexOf(v) >= 0) node.vramMode = v;
-    }
-    if (patch.dtype != null) {
-      const v = String(patch.dtype).trim();
-      if (SENSENOVA_DTYPES.indexOf(v) >= 0) node.dtype = v;
-    }
-    if (patch.think != null) node.think = !!patch.think;
-    if (patch.seed != null) {
-      const v = Math.floor(Number(patch.seed));
-      if (isFinite(v)) node.seed = v;
-    }
-    if (patch.rerollSeed != null) node.rerollSeed = !!patch.rerollSeed;
-    sensenovaNormalizeNode(node);
   }
   /* yue_gen：思维链档位 / 风格提示词 / 歌词 / ABC 谱（YuE2 音乐节点） */
   if (node.kind === "yue_gen") {
@@ -21798,9 +21025,6 @@ function editPortNameOf(node, dir, i, isFnT) {
             : i === 3
               ? I18n.t("指令")
               : I18n.t("控制");
-    /* SenseNova 图像：输入端子与 proc_image 同一泛用增量规则 ——
-       端口 0 = 提示词 / 文本入口，端口 1+ 是按已连线条数增量出的数据槽（无固定控制端子） */
-    if (k === "sensenova_gen")
       return i === 0 ? I18n.t("提示词") : I18n.t("输入端子 ") + (i + 1);
     /* FLUX 3 Image Klein：0=提示词 · 1=参考图（可多接）· 2=控制输入 */
     if (k === "flux3klein_gen")
@@ -21840,9 +21064,6 @@ function editPortNameOf(node, dir, i, isFnT) {
     return I18n.t("输入端子 ") + (i + 1);
   }
   if (k === "task") return i === 0 ? I18n.t("成功") : I18n.t("失败");
-  /* SenseNova 图像：输出 0 是**图像**端子（与 proc_image 同语义），
-     不能并进下面那组「内容 = 音频 / 视频路径文本」的媒体族 */
-  if (k === "sensenova_gen") return i === 0 ? I18n.t("图像") : I18n.t("控制");
   /* InfiniteTalk 数字人：输出 0 = 数字人视频 mp4 · 输出 1 = 控制 */
   if (k === "infinitetalk_gen") return i === 0 ? I18n.t("视频") : I18n.t("控制");
   /* SoulX-FlashHead Lite：输出 0 = 数字人视频 mp4（含原音轨）· 输出 1 = 控制 */
@@ -21885,9 +21106,6 @@ function editPortKindOf(node, dir, i, isFnT) {
     /* Breeze 语音：端口1=参考音频（audio 文件 URL）· 端口4=控制；其余数据口是文本 */
     if (k === "breeze_gen")
       return i === 4 ? "control" : i === 1 ? "audio" : "text";
-    /* SenseNova 图像：端口 0 = 提示词（文本）· 端口 1+ = 增量数据槽（可接文本，
-       也可接图像引用 input_image / proc_image 等）→ 类型按「由连线决定」的 any 报 */
-    if (k === "sensenova_gen") return i === 0 ? "text" : "any";
     /* FLUX 3 Image Klein：0=提示词（text）· 1=参考图（image）· 2=控制输入 */
     if (k === "flux3klein_gen")
       return i === 2 ? "control" : i === 1 ? "image" : "text";
@@ -21924,12 +21142,12 @@ function editPortKindOf(node, dir, i, isFnT) {
     }
     if (k === "task") return "control";
     if (isControlKind(node)) return "control";
-    /* 图像节点：输入端子与 sensenova_gen 同一泛用增量规则 —— 端口 0 = 提示词（文本入口），
+      /* 图像节点：输入端子与 proc_image 同一泛用增量规则 —— 端口 0 = 提示词（文本入口），
        端口 1+ 是增量数据槽：**文本节点与图像引用都收**（文本进【背景信息】、参考图进
        参考图列表，见 buildSpec）。曾经在这里报 "image"，与同一份快照的 portRule
        「文本 / 图像引用都收」自相矛盾：模型读到「1+ 号端子只收图像」就不再把文本节点
        接上去（真源 inPortKindOf 对 proc_image 恒回 null，实际转接不拦）。按「由连线决定」
-       的 any 报，与 sensenova_gen 同口径。 */
+         的 any 报。 */
     if (k === "proc_image") return i === 0 ? "text" : "any";
     /* 动态端子节点（proc_text / input_* …）：数据槽由连线决定，末位那颗是专用控制端子 */
     if (typeof isDynCtrlNode === "function" && isDynCtrlNode(node))
@@ -21943,8 +21161,6 @@ function editPortKindOf(node, dir, i, isFnT) {
   if (k === "net_recv") return i === 0 ? "text" : "control";
   if (k === "music_gen" || k === "yue_gen" || k === "breeze_gen")
     return i === 0 ? "audio" : "control";
-  /* SenseNova：输出 0 = 图像（save_image / 图像预览 / @ 引用直接复用）· 输出 1 = 控制 */
-  if (k === "sensenova_gen") return i === 0 ? "image" : "control";
   if (k === "flux3klein_gen") return i === 0 ? "image" : "control";
   if (k === "video_gen" || isVideoPostKind(node) || k === "remotion" || k === "infinitetalk_gen" || k === "soulxflashhead_gen")
     return i === 0 ? "video" : "control";
@@ -23062,6 +22278,9 @@ function removeWire(id) {
     }
     return;
   }
+  /* 组线：来源是组不是节点 —— 不占端子号、不影响下游补跑，摘掉即可
+     （连线 path 由 updateWires 统一回收） */
+  if (isGroupWire(w)) return;
   const toNode = nodeById(w.to);
   /* 固定端子（音乐 P/L、视频多路、闸门等）禁止压缩 toIndex，否则会错位 */
   if (!hasFixedInPorts(toNode)) {

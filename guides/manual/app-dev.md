@@ -158,11 +158,11 @@ my-app/
 两者都按**应用 id 持久化**，界面里各要有一个选择位（脚手架右上「模型」下拉已分「文本模型 / 图像后端」两区）。
 
 ```js
-// 出图：云端图像服务商或本机 SenseNova，后端由 MTNode 的配置决定
+// 出图：云端图像服务商或本机图像后端，后端由 MTNode 的配置决定
 var r = await AppHost.image("一只戴帽子的猫", {
   model: M.imageModel(),                    // 空串 = 跟随 MTNode 默认（云端优先，其次本机）
   images: [refPath],                        // 可选参考图（本机路径或 dataURL）→ 图生图 / 图像编辑
-  strength: 0.6,                            // 可选参考强度 0–1（只有本机 SenseNova 认；云端会如实警告并忽略）
+  strength: 0.6,                            // 可选参考强度 0–1（以本机图像后端的能力字段为准；云端会如实警告并忽略）
   onProgress: function (p) { bar(p.pct); }, // 可选：本机后端要几十秒到几分钟
 });
 if (!r.ok) show(AppModel.imageErrorText(r)); else img.src = r.dataUrl;
@@ -172,9 +172,9 @@ var e = await AppHost.imageEdit("保持主体，把背景换成雪天", { images
 ```
 
 - **图生图 / 图像编辑**：`opts.images`（数组，本机绝对路径或 `data:image/…`）有几张发几张 ——
-  云端 OpenAI 兼容端点走 `/images/edits`（多图按顺序对应提示词里的「图1 / 图2…」），本机 SenseNova 一次吃 1–4 张。
+  云端 OpenAI 兼容端点走 `/images/edits`（多图按顺序对应提示词里的「图1 / 图2…」），本机图像后端按各自的张数上限处理（看 `maxRefImages`）。
 - **参考强度 `strength`（0–1）**：0 = 参考图只作前缀条件（本机后端的官方默认），1 = 最强。
-  **只有本机 SenseNova 后端认它**；云端没有这个参数，传了会在回执 `warnings` 里如实说明并忽略（不假装支持）。
+  **只有本机图像后端认它**（以 `hostImageModels()` 的 `strength` 能力字段为准）；云端没有这个参数，传了会在回执 `warnings` 里如实说明并忽略（不假装支持）。
 - **先看能力再画界面**：`hostImageModels()` 每项带 `refImages` / `maxRefImages` / `strength` 三个字段 ——
   据此把不支持参考图的后端置灰、把张数上限写出来，别让用户点下去才知道不行。
 - 每次只出一张（与画布图像节点同一口径）；本机后端与音乐 / 视频**共用全局锁**，忙时回 `busy_media`，界面提示等待 / 重试。

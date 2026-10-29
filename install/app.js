@@ -304,7 +304,6 @@
   const BACKEND_INSTALL_API = {
     "llama-local": "llamaInstall",
     "breeze-tts-local": "breezeInstall",
-    "sensenova-local": "sensenovaInstall",
     "minimax-h3": "h3Install",
     "minimax-music3": "music3Install",
     "yue2-local": "yue2Install",
@@ -342,9 +341,9 @@
     if (key === "bongochat" || key === "pet") return { install: "petInstall", pick: "" };
     return { install: "appPluginsInstall", pick: "" };
   }
-  /* 硬件门槛的逃生阀：sensenova 的「显存 <20GB / 内存 <32GB」闸门靠 install 的 forceHardware 放行。
-     这个开关原本在 sensenova 控制台窗里，控制台去安装化后搬到本窗（能力不丢，位置归一）。 */
-  const FORCE_HW_IDS = ["sensenova-local"];
+  /* 硬件门槛的逃生阀：装带硬件闸门的插件时，勾「忽略硬件门槛」会把 forceHardware 透传给安装脚本。
+     名单目前为空；以后哪个插件要这道闸，在 FORCE_HW_IDS 里补它的目录 id 即可。 */
+  const FORCE_HW_IDS = [];
   /* Paseo 手机接管的「仍要自建一份」阀：它的后端优先**复用本机已装的 Paseo**（探测步骤自己认），
      勾了就忽略本机那份、npm 装一份自建的。这个开关原本在插件控制台里（「改用本机已装的 Paseo」），
      控制台去安装化后搬到本窗 —— 与 FORCE_HW_IDS 同一套做法。 */

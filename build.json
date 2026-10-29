@@ -61,11 +61,11 @@
        而且会退回「每次轮询都在主线程起子进程」的老路（每 2 秒一次 50-70ms 卡顿）。 */
     "gpu-poll.js",
     "gpu-poll-worker.js",
-    /* 本地后端解释器口径（pythonw 不弹控制台）：llama / breeze / music3 / yue / sensenova / h3
+    /* 本地后端解释器口径（pythonw 不弹控制台）：llama / breeze / music3 / yue / h3 五个插件宿主
        六个插件宿主都 require 它，漏进白名单就是打包后 Cannot find module '../backend-python.js'。 */
     "backend-python.js",
-    /* 国内镜像源单一真源：7 个插件宿主（breeze / llama / h3 / music3 / yue /
-       sensenova / remotion）与网关都 require 它，漏进白名单就是打包后
+    /* 国内镜像源单一真源：6 个插件宿主（breeze / llama / h3 / music3 / yue /
+       remotion）与网关都 require 它，漏进白名单就是打包后
        Cannot find module '../cn-mirrors.js' —— 安装链会退回官方源。 */
     "cn-mirrors.js",
     "clipboard-images.js",
@@ -132,7 +132,6 @@
     "h3/**",
     "llama/**",
     "breeze/**",
-    "sensenova/**",
     "infinitetalk/**",
     "soulxflashhead/**",
     "flux3klein/**",
@@ -392,28 +391,6 @@
            portrait-dialogue.tsx（打包态的第一候选）。漏带它的后果是「内置台词卡版面悄悄
            退回脚手架里那份旧 src/Composition.tsx」—— 画布链路的版式与循环修复因此失效。 */
         "portrait-dialogue.tsx"
-      ]
-    },
-    {
-      "from": "sensenova-pack",
-      "to": "sensenova-pack",
-      "filter": [
-        "app/**",
-        "scripts/**",
-        "requirements.txt",
-        "README.md",
-        "start_backend.cmd",
-        ".gitignore",
-        /* 静默垫片（真源 pack-shims/sitecustomize.py）：后端与它拉起的整条子树靠它默认不弹
-           控制台窗；漏进白名单 = 打包后装出来的目录里没有它。 */
-        "shims/**",
-        /* 开发机上跑过一次 python 就会留下 __pycache__：别打进安装包（宿主拷贝侧 copyDirRecursive
-           本来就跳过它，这里把打包侧也对齐）。 */
-        "!**/__pycache__/**",
-        /* 安装窗的开窗步骤表（与 scripts/install.ps1 的步骤 id 同源）：
-           漏进白名单 = 打包后安装窗开窗时列不出步骤表。 */
-        "steps.json",
-        "manifest.json"
       ]
     },
     {

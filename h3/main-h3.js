@@ -1420,7 +1420,7 @@ let getMainWin = null;
 let appRoot = null;
 let getDsh = null;
 /** 画布资产目录解析（main.js 传入的 assetDirFor(wfId)）：调用方没给输出路径时产物直接落这里，
- *  与 proc_image / sensenova 同一去处（%APPDATA%\pipeline-console\assets\<wfId>） */
+ *  与 proc_image 同一去处（%APPDATA%\pipeline-console\assets\<wfId>） */
 let assetDirFor = null;
 let consoleWin = null;
 let loadedUiStamp = ""; /* 管理窗当前已加载的 UI 指纹，变了就该 reload 而不是继续显示旧页面 */
@@ -1484,7 +1484,7 @@ function h3TempOutDir() {
   return mk(join(h3Root(), "asset-tmp"));
 }
 /** 托管落点解析：优先画布资产目录 assetDirFor(wfId)，否则数据目录里的 asset-tmp。
- *  返回 { dir, warn }；warn 非空即回执要带的 managed_output_dir 说明（口径同 sensenova）。
+ *  返回 { dir, warn }；warn 非空即回执要带的 managed_output_dir 说明（口径同其它本地后端）。
  *  注意：只有调用方**没给** outputDir 时才调用本函数 —— 显式传路径的分支一行不动。 */
 function resolveManagedOutDir(wfId, askedFor) {
   let dir = "";

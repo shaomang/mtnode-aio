@@ -9,7 +9,7 @@
 # started as pythonw / CREATE_NO_WINDOW + DETACHED_PROCESS) makes Windows allocate a BRAND NEW visible
 # terminal window. That is exactly how the (now removed) GPT-SoVITS training run produced "hundreds of
 # windows" (ffmpeg-python Popen per audio file, DataLoader with 5..12 workers); the remaining local
-# backends (Breeze / ComfyUI / llama / SenseNova) can still spawn such children, so the mechanism and
+# backends (Breeze / ComfyUI / llama) can still spawn such children, so the mechanism and
 # this ruler stay. test/smoke-console-silent.js reuses this very script as the
 # ruler for its "no new console window" assertion, so keep the JSON contract stable.
 #

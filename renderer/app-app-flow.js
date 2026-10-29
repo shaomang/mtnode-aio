@@ -765,7 +765,7 @@ function startCustomStyleAsk(appId, appName, mode) {
  *   showDictate  显示听写条 → 应用窗口底部显示宿主注入的听写条（勾上即默认可见，条尾可收起）
  *   showAuthor   作者标签 → 应用窗口**左下角**显示宿主注入的作者标签（平时隐藏、hover 出
  *                `@作者 - v版本`、点击看只读应用详情）
- *   imageGen     需要生成图片 → 用 MTNode 已配好的图像能力（云端服务商或本机 SenseNova）
+ *   imageGen     需要生成图片 → 用 MTNode 已配好的图像能力（云端服务商）
  * 缺省**四个都不勾**（缺省 = 宿主不注入；声明为真的应用注入进来就是生效的）。
  * 界面这边只负责「勾选 + 一句话说明」；真正的落盘、入口页重生成、语音文件补撤都在主进程
  * （apps:capabilitiesSet），渲染层不碰文件系统。
@@ -811,7 +811,7 @@ function appsCapabilityChecks(value, onChange) {
     {
       id: "imageGen",
       label: I18n.t("需要图像生成"),
-      hint: I18n.t("用 MTNode 已配好的图像能力出图：云端图像服务商或本机 SenseNova（没配就用不了，界面会写清去哪配）"),
+        hint: I18n.t("用 MTNode 已配好的图像能力出图：云端图像服务商（没配就用不了，界面会写清去哪配）"),
     },
   ];
   for (const r of rows) {

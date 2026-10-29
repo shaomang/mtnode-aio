@@ -40,7 +40,7 @@ const MODELSCOPE = "https://www.modelscope.cn";
 const HF_ENDPOINT = "https://hf-mirror.com";
 const HF_OFFICIAL = "https://huggingface.co";
 
-/* GitHub 代理回退链：前三个是 sensenova 链实测可用的，ghproxy.com 是各 pack 原有写法（保留，
+/* GitHub 代理回退链：前三个是本地后端安装链实测可用的，ghproxy.com 是各 pack 原有写法（保留，
    失败就下一个，最后才直连）。 */
 const GH_PROXIES = [
   "https://ghfast.top",

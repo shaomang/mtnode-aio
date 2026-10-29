@@ -14,7 +14,7 @@
 | --- | --- |
 | `index.html` | 入口：无框窗口骨架、拖动区、模型选择位、降级横幅位、数据文件夹一行、便签示例、文字+图像示例 |
 | `apphost.js` | **宿主桥探测与优雅降级**：同时认 `window.appHost`（应用中心窗口）与 `window.pluginApi`（插件窗口），统一成 `window.AppHost`：`getData` / `setData` / `dataDirGet` / `dataDirPick` / `dataDirOpen` / `dataDirReset` / `storageGet…` / `accountText` / `request` / `on` / `onShown` / `offAll` / `onWillClose` / `close` / `quit`，外加**模型四件**：`models()` / `modelGet()` / `modelSet(id)` / `pickImage()`、`text(prompt, {images})` 与**结构化输出** `json(opts)`（关思考 + 剥围栏 + 截断感知 + 重试一次） |
-| `app-model.js` | **模型选择位**：右上「模型」按钮 + 下拉，分「文本模型 / 图像后端」两区（文本首项 = 跟随 MTNode 默认、每项标「支持识图」；图像后端 = 云端服务商 + 本机 SenseNova）；`AppModel.errorText(res)` 把宿主的错误码翻成一句人话，`AppModel.imageErrorText(res)` 管出图那条路的码（`busy_media` / `cuda_oom`…）。两行接入，见文件尾注 |
+| `app-model.js` | **模型选择位**：右上「模型」按钮 + 下拉，分「文本模型 / 图像后端」两区（文本首项 = 跟随 MTNode 默认、每项标「支持识图」；图像后端 = 云端服务商 + 本机图像后端）；`AppModel.errorText(res)` 把宿主的错误码翻成一句人话，`AppModel.imageErrorText(res)` 管出图那条路的码（`busy_media` / `cuda_oom`…）。两行接入，见文件尾注 |
 | `model.css` | 模型选择位与示例区样式（颜色仍走 `styles/<id>.css` 的语义变量） |
 | `store.js` | **落盘脚手架**：`Store.create({host, file, debounceMs})` → `set(data)` 标脏 + 防抖自动写盘，`load()` 读回，`flush()` 立即写盘；没有宿主时退化为内存态（`store.persisted === false`） |
 | `speech.js` | **底部语音听写（按需）**：footer 里一枚话筒（本机内置语音识别，官方本地 SenseVoice），结果进结果小窗、一键复制。`Speech.mount(el)` 挂载，`Speech.create()` 拿纯接口（`wav(base64)` / `record()` / `status()` / `prepare()` / `onState()`）；桥缺席时整块禁用并写清原因。**只有该应用声明了 `capabilities.textInput` 才复制本文件**（见下「能力位」一节）。本轮：原来的「🎧 音频转文字」按钮与 `file()` 接口已摘除，这条条只做听写（本文件是**一次性录制**口径：点一下录一段再识别；宿主按 `showDictate` 注入的那条则是**两种持续模式 + 落字 + AI 增强**，口径不同、互不影响，详见下「听写条细说」） |
@@ -93,13 +93,13 @@
 
 ## 图像生成：用 MTNode 已配好的图像能力
 
-应用侧的图像后端**从 MTNode 继承**（与文本模型同一套思路）：云端图像服务商，或本机 SenseNova 后端。
+应用侧的图像后端**从 MTNode 继承**（与文本模型同一套思路）：云端图像服务商，或本机图像后端。
 服务商与 Key 留在主进程，应用只挑 id、只给提示词。
 
 ```js
 /* ① 有哪些图像后端可选（首项不是 auto —— "auto" = 跟随 MTNode 默认：云端优先，其次本机） */
 var list = await AppHost.imageModels();      // { ok, models:[{id,label,providerName,local}], selected, hasAny, hasCloud, hasLocal, busy }
-if (!list.hasAny) show('MTNode 里还没有可用的图像后端：到「设置 · 模型服务」配一个图像服务商，或装本机 SenseNova');
+if (!list.hasAny) show('MTNode 里还没有可用的图像后端：到「设置 · 模型服务」配一个图像服务商，或装一个本机图像后端');
 
 /* ② 出图（每次一张）：opts.images 可带参考图（本机路径或 dataURL）→ 后端走图生图 / 图像编辑 */
 var r = await AppHost.image('一只戴帽子的猫', {

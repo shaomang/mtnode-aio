@@ -108,7 +108,7 @@ body { display: flex; flex-direction: column; }
   font: 11px/1.5 Consolas, "Cascadia Mono", monospace; color: #cfd6e4; word-break: break-all;
 }
 .ins-unin-note { color: var(--ins-dim); font-size: 11px; white-space: pre-wrap; word-break: break-all; }
-/* 硬件门槛逃生阀（原在 sensenova 控制台窗里，控制台去安装化后搬到这里） */
+/* 硬件门槛逃生阀（安装窗里的「忽略硬件门槛」勾选框） */
 .ins-force {
   display: inline-flex; align-items: center; gap: 5px; flex: none;
   color: var(--ins-dim); font-size: 11px; white-space: nowrap; cursor: pointer;

@@ -1,7 +1,7 @@
 """MTNode · 插件后端子进程静默（唯一真源）
 
 本文件是**唯一真源**，随包分发时逐字节复制到各 Python pack 的 `shims/sitecustomize.py`
-（tts-pack / h3-pack / music3-pack / yue-pack / breeze-pack / llama-pack / sensenova-pack），
+（h3-pack / music3-pack / yue-pack / breeze-pack / llama-pack / infinitetalk-pack），
 一致性由 `test/smoke-console-silent.js` 钉住；口径与 `pack-steps/step.ps1` 的「真源 + 各包副本」同例。
 
 为什么需要它（根因，详见 docs/plugin-console-silence.md）

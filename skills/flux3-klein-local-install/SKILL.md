@@ -33,7 +33,7 @@ INSTALL_DIR/
   .install-ok                              冒烟通过后写
 ```
 
-- 端口 **8197**（与 H3 8188 / SoulX 8198 / InfiniteTalk 8199 / SenseNova 8774 隔离）。
+- 端口 **8197**（与 H3 8188 / SoulX 8198 / InfiniteTalk 8199 隔离）。
 - 安装脚本：`flux3klein-pack/scripts/install.ps1`，参数
   `-InstallDir -DiskHintGb -Force -SkipWeights -SkipSmoke -SkipBf16 -WeightsDir`。
 - 步骤与错误码文案：`flux3klein-pack/steps.json`（脚本 stdout 走 `step.ps1` 的 `mtnodeStep` 协议）。

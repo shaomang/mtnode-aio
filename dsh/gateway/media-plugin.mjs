@@ -200,7 +200,7 @@ function fromRemotion(installDir) {
 }
 
 /** 已安装的本地后端（各自 config.json 里的 installDir）里可能带便携 ffmpeg。 */
-const BACKEND_DIRS = ['remotion', 'breeze', 'h3', 'music3', 'yue', 'sensenova', 'llama']
+const BACKEND_DIRS = ['remotion', 'breeze', 'h3', 'music3', 'yue', 'llama']
 
 function fromBackends(root) {
   if (!root) return ''

@@ -3,7 +3,7 @@
    显存探测的唯一出口（gpu-poll.js · 主进程 · 零依赖）
 
    为什么要有这一只（本机实测的根因，不是猜测）：
-     · 六个宿主（h3 / music3 / yue / sensenova / breeze / llama）各自有一个
+     · 五个宿主（h3 / music3 / yue / breeze / llama）各自有一个
        `setInterval(2000)` 的显存轮询，每次都是 `execFile("nvidia-smi", …)`；
      · **`execFile` 里的 CreateProcess 是同步的、跑在主进程（= 浏览器 UI 线程）上**，
        本机 nvidia-smi 一次约 38ms，其中 ~23-27ms 占住主线程；

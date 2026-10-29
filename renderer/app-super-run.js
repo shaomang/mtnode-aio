@@ -6,7 +6,7 @@
  * 共识口径（与用户逐条确认过，改口径前先问）：
  *   · 执行范围 = 工具节点内部图那一套（app-nodes.js 的 runToolNode）：
  *       proc_text / proc_image、agent_task、媒体生成（含 video 后处理、remotion、
- *       breeze / sensenova）、函数 / 工具、保存、task、net_send / net_recv；
+ *       breeze）、函数 / 工具、保存、task、net_send / net_recv；
  *       输入 / 素材 / 拆分 / 合并只穿过，wait_file 与纯控制类、执行节点（启动外部
  *       exe）不跑。
  *   · 顺序 = 严格串行：一个跑完再下一个；顺序取连线的拓扑序，同层并列按画布
@@ -206,7 +206,7 @@ function superRunMediaStatusOf(node) {
     "musicStatus",
     "yueStatus",
     "breezeStatus",
-    "sensenovaStatus",
+    "flux3kleinStatus",
     "videoStatus",
     "remotionStatus",
   ];

@@ -408,6 +408,21 @@
   opacity: 1
 }
 
+/* 组线（画布组框的 □ → 智能节点的组输入端子）：紫色，与图像 / 音频 / 控制三类分开 */
+.fn-edge.grp {
+  stroke: #a78bfa
+}
+
+.fn-edge.grp:hover {
+  stroke: #c9b6ff
+}
+
+.fn-edge.grp.sel {
+  stroke: #a78bfa;
+  stroke-width: 2;
+  opacity: 1
+}
+
 .fn-edge.aud {
   stroke: #8ed4ff
 }
@@ -674,6 +689,33 @@
   border-color: var(--red);
   color: var(--red);
   background: #4a1f1c
+}
+
+/* 组输出端子（□）：与 ✕ 同尺寸同形态，排在它左边。可按住拖出组线（不是按钮点击，
+   所以光标用 crosshair）；hover 用组线自己那支颜色，与 ✕ 的危险色区分开。 */
+.wf-group .wg-grp {
+  position: absolute;
+  top: -11px;
+  right: 30px;
+  width: 18px;
+  height: 18px;
+  line-height: 1;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  background: var(--panel2);
+  border: 1px solid var(--muted);
+  border-radius: 3px;
+  color: var(--muted);
+  cursor: crosshair;
+}
+
+.wf-group .wg-grp:hover,
+.wf-group.sel .wg-grp {
+  border-color: #a78bfa;
+  color: #a78bfa
 }
 
 .wf-group .wg-title-input {
@@ -3232,6 +3274,12 @@ body.theme-light .n-chip.n-chip-lt {
   margin-left: 8px
 }
 
+/* 组输入端子（智能节点左排最末位）：空心方框徽标，只吃组线 */
+.port.grp-port>.port-badge {
+  border-color: #a78bfa;
+  color: #a78bfa
+}
+
 /* 节点层内侧端子：桥端子（.out）在子画布左缘、汇端子（.in）在右缘 → 按所在一侧出字 */
 .port.out.super-inner-bridge>.port-badge {
   right: 100%;
@@ -4208,6 +4256,22 @@ body.theme-light .n-chip.n-chip-lt {
 
 .n-agent-out[open] .n-agent-out-head {
   border-bottom-color: var(--bd2)
+}
+
+/* <details> 的内容包装盒（Chromium 131+ 起真实存在，display 默认 block）：
+   它才是 .n-agent-out 这个 flex 列里的第二只 flex 项 —— 漏了它，里面的 .n-out 就落在
+   一个**块级**盒子里，`.n-out{flex:1 1 auto;min-height:0}` 全部失效（不是 flex 项），
+   面板高度被内容撑到整篇正文那么高、又被 .n-agent-out 的 overflow:hidden 裁掉：
+   滚动条不出现、滚轮什么也滚不动 = 用户报的「智能任务节点输出无法用滚轮查看」。
+   这里把它接成「可收缩的 flex 列 + 自身裁切」，于是内部 .n-out 拿到确定高度、自己滚。
+   旧版 Chromium 不认这个伪元素 → 整条规则被忽略，退回「.n-out 直接是 details 的 flex 项」
+   的老布局，同样能滚。 */
+.n-agent-out::details-content {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden
 }
 
 .n-agent-out>.n-out {

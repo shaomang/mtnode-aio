@@ -171,7 +171,7 @@ function fromRemotion(installDir) {
   return "";
 }
 
-const BACKEND_DIRS = ["remotion", "breeze", "h3", "music3", "yue", "sensenova", "llama"];
+const BACKEND_DIRS = ["remotion", "breeze", "h3", "music3", "yue", "llama"];
 
 function fromBackends(root) {
   if (!root) return "";

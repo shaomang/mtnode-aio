@@ -25,7 +25,7 @@ const PLUGIN_FEED =
 /* 认得出的插件 kind 白名单：认不出的一律归一成 "unknown"（卡片显「请先升级主程序」、不可装）。
    已移除的 tts（GPT-SoVITS）故意不在表里 —— 云端旧目录里若还有 kind="tts" 的条目，
    它会走 unknown 那一档（看得见但装不了），而不是被当成一个已注册的后端。 */
-const KNOWN_KINDS = new Set(["builtin", "pet", "window", "music3", "yue2", "sensenova", "h3", "llama", "breeze", "remotion", "asr", "paseo", "blender", "infinitetalk", "soulxflashhead", "flux3klein"]);
+const KNOWN_KINDS = new Set(["builtin", "pet", "window", "music3", "yue2", "h3", "llama", "breeze", "remotion", "asr", "paseo", "blender", "infinitetalk", "soulxflashhead", "flux3klein"]);
 /* Blender 插件先只对作者账号开放（本轮需求：暂时收起来内测）。
    白名单只认账号名 / 昵称，其它登录用户连条目都拿不到 —— 卡片、画布节点菜单与
    未装警示条都吃同一份过滤后的列表，所以在这里一处过滤就够。 */
@@ -71,7 +71,7 @@ function pluginDir(id) {
    渲染层（renderer/app-plugins.js）与安装窗（plugins/main-install.js）都从这里取口径，
    谁也不许再抄一份子目录名表或自行拼路径。 */
 const { createPluginRoot, normDir, subDirNameOf } = require("./plugin-root.js");
-/* 插件显存门槛（sensenova-local / minimax-music3 / yue2-local）：读不到显存一律照常显示，
+/* 插件显存门槛（minimax-music3 / yue2-local / minimax-h3）：读不到显存一律照常显示，
    已装的照常显示 —— 口径与名单的唯一真源在 plugins/vram-gate.js 的文件头。 */
 const vramGateMod = require("./vram-gate.js");
 const perfProbe = require("../perf-probe.js");
@@ -520,7 +520,6 @@ function normalizePlugin(raw) {
   if (!kind && raw.handler === "pet") kind = "pet";
   if (!kind && raw.handler === "music3") kind = "music3";
   if (!kind && raw.handler === "yue2") kind = "yue2";
-  if (!kind && raw.handler === "sensenova") kind = "sensenova";
   if (!kind && raw.handler === "h3") kind = "h3";
   if (!kind && raw.handler === "llama") kind = "llama";
   if (!kind && raw.handler === "breeze") kind = "breeze";
@@ -542,7 +541,7 @@ function normalizePlugin(raw) {
   return {
     id,
     kind: known ? kind : "unknown",
-    handler: String(raw.handler || (kind === "pet" ? "pet" : kind === "music3" ? "music3" : kind === "yue2" ? "yue2" : kind === "sensenova" ? "sensenova" : kind === "h3" ? "h3" : kind === "llama" ? "llama" : kind === "breeze" ? "breeze" : kind === "remotion" ? "remotion" : kind === "asr" ? "asr" : kind === "paseo" ? "paseo" : kind === "infinitetalk" ? "infinitetalk" : kind === "soulxflashhead" ? "soulxflashhead" : kind === "flux3klein" ? "flux3klein" : kind === "builtin" ? id : "")).trim(),
+    handler: String(raw.handler || (kind === "pet" ? "pet" : kind === "music3" ? "music3" : kind === "yue2" ? "yue2" : kind === "h3" ? "h3" : kind === "llama" ? "llama" : kind === "breeze" ? "breeze" : kind === "remotion" ? "remotion" : kind === "asr" ? "asr" : kind === "paseo" ? "paseo" : kind === "infinitetalk" ? "infinitetalk" : kind === "soulxflashhead" ? "soulxflashhead" : kind === "flux3klein" ? "flux3klein" : kind === "builtin" ? id : "")).trim(),
     order: Number(raw.order) || 100,
     title: locObj(raw.title || raw.name || id),
     subtitle: locObj(raw.subtitle || raw.description || ""),
@@ -623,7 +622,7 @@ function attachInstalled(plugins) {
         installedVersion: st.version,
         updateAvailable: !!(st.installed && p.version && verGt(p.version, st.version)),
       }));
-    } else if (p.kind === "music3" || p.handler === "music3" || p.kind === "yue2" || p.handler === "yue2" || p.kind === "sensenova" || p.handler === "sensenova" || p.kind === "h3" || p.handler === "h3" || p.kind === "llama" || p.handler === "llama" || p.kind === "breeze" || p.handler === "breeze" || p.kind === "remotion" || p.handler === "remotion" || p.kind === "asr" || p.handler === "asr" || p.kind === "infinitetalk" || p.handler === "infinitetalk" || p.kind === "soulxflashhead" || p.handler === "soulxflashhead" || p.kind === "flux3klein" || p.handler === "flux3klein") {
+    } else if (p.kind === "music3" || p.handler === "music3" || p.kind === "yue2" || p.handler === "yue2" || p.kind === "h3" || p.handler === "h3" || p.kind === "llama" || p.handler === "llama" || p.kind === "breeze" || p.handler === "breeze" || p.kind === "remotion" || p.handler === "remotion" || p.kind === "asr" || p.handler === "asr" || p.kind === "infinitetalk" || p.handler === "infinitetalk" || p.kind === "soulxflashhead" || p.handler === "soulxflashhead" || p.kind === "flux3klein" || p.handler === "flux3klein") {
       /* 本地后端插件：**装没装以磁盘上的安装目录为准**（目录里有 .install-ok / .venv /
          模型目录或目录非空 = 装过）—— 卡片动作（安装 / 启用 / 卸载）与插件显存门槛的
          「已装就保留」判据都吃这一个字段。版本 / 可更新状态仍由各宿主 status 异步判定。 */

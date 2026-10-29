@@ -1,4 +1,4 @@
-'use strict';
+﻿'use strict';
 const { contextBridge, ipcRenderer, webUtils } = require('electron');
 const { pathToFileURL } = require('url');
 const path = require('path');
@@ -194,7 +194,7 @@ contextBridge.exposeInMainWorld('api', {
   fnRun: (o) => ipcRenderer.invoke('fn:run', o || {}),
   fnCancel: (runId) => ipcRenderer.invoke('fn:cancel', { runId }),
   fnActive: () => ipcRenderer.invoke('fn:active'),
-  /* 图像后端清单（函数节点头部「图像后端」按钮列候选）：云端图像服务商 + 本机 SenseNova，
+  /* 图像后端清单（函数节点头部「图像后端」按钮列候选）：云端图像服务商，
      每项 { id, label, providerName, local, refImages, maxRefImages, strength }。
      与应用窗口 appHost.hostImageModels 同一份清单（apps-store.js 的 imageBackendsForUi）。 */
   imageBackends: () => ipcRenderer.invoke('image:backends'),
@@ -744,53 +744,6 @@ contextBridge.exposeInMainWorld('api', {
      识别统一走 dsh 运行时的官方本地 SenseVoice（见上面的 dshSpeech / dshSpeechState /
      speechCache* 三组）：从前那套 Qwen3-ASR 的 asr:* 通道（起停 / 安装 / 控制台 / ffmpeg）
      已随插件整块移除，这里也不再暴露任何 asr* 方法。 */
-
-  /* ── 本地图像生成（SenseNova-U1.5-8B-MoT）：安装 / 启停 / 出图，见 sensenova/main-sensenova.js ── */
-  sensenovaStatus: () => ipcRenderer.invoke('sensenova:getStatus'),
-  sensenovaHealth: (opts) => ipcRenderer.invoke('sensenova:health', opts || {}),
-  sensenovaOpen: () => ipcRenderer.invoke('sensenova:open'),
-  sensenovaClose: () => ipcRenderer.invoke('sensenova:close'),
-  sensenovaInstall: (opts) => ipcRenderer.invoke('sensenova:install', opts || {}),
-  sensenovaAgentInstall: (opts) => ipcRenderer.invoke('sensenova:agentInstall', opts || {}),
-  sensenovaAgentRecoverInstall: (opts) => ipcRenderer.invoke('sensenova:agentRecoverInstall', opts || {}),
-  sensenovaSelfRepair: (opts) => ipcRenderer.invoke('sensenova:selfRepair', opts || {}),
-  sensenovaCancelInstall: () => ipcRenderer.invoke('sensenova:cancelInstall'),
-  sensenovaStart: (opts) => ipcRenderer.invoke('sensenova:start', opts || {}),
-  sensenovaStop: () => ipcRenderer.invoke('sensenova:stop'),
-  sensenovaEnsureReady: (opts) => ipcRenderer.invoke('sensenova:ensureReady', opts || {}),
-  sensenovaForceKill: (reason) => ipcRenderer.invoke('sensenova:forceKill', reason),
-  sensenovaGenerate: (params) => ipcRenderer.invoke('sensenova:generate', params || {}),
-  sensenovaCancelGenerate: (nodeId) => ipcRenderer.invoke('sensenova:cancelGenerate', nodeId),
-  sensenovaGetLock: () => ipcRenderer.invoke('sensenova:getLock'),
-  sensenovaPickInstallDir: () => ipcRenderer.invoke('sensenova:pickInstallDir'),
-  sensenovaSetInstallDir: (dir) => ipcRenderer.invoke('sensenova:setInstallDir', dir),
-  sensenovaSetConfig: (patch) => ipcRenderer.invoke('sensenova:setConfig', patch || {}),
-  sensenovaGpuProbe: () => ipcRenderer.invoke('sensenova:gpuProbe'),
-  sensenovaConsoleTail: (n) => ipcRenderer.invoke('sensenova:consoleTail', n),
-  /* 清空日志：真删内容（宿主 truncate 日志文件），不是只清界面显示 */
-  sensenovaConsoleClear: () => ipcRenderer.invoke('sensenova:consoleClear'),
-  sensenovaRemovePluginMeta: () => ipcRenderer.invoke('sensenova:removePluginMeta'),
-  onSensenovaProgress: (cb) => {
-    const handler = (_e, data) => {
-      try { cb(data); } catch (_) {}
-    };
-    ipcRenderer.on('sensenova:progress', handler);
-    return () => ipcRenderer.removeListener('sensenova:progress', handler);
-  },
-  onSensenovaConsoleChanged: (cb) => {
-    const handler = (_e, data) => {
-      try { cb(data); } catch (_) {}
-    };
-    ipcRenderer.on('sensenova:consoleChanged', handler);
-    return () => ipcRenderer.removeListener('sensenova:consoleChanged', handler);
-  },
-  onSensenovaGpu: (cb) => {
-    const handler = (_e, data) => {
-      try { cb(data); } catch (_) {}
-    };
-    ipcRenderer.on('sensenova:gpu', handler);
-    return () => ipcRenderer.removeListener('sensenova:gpu', handler);
-  },
 
   /* ── FLUX 3 Image Klein（本机 ComfyUI）：安装 / 启停 / 出图，见 flux3klein/main-flux3klein.js ── */
   flux3kleinStatus: () => ipcRenderer.invoke('flux3klein:getStatus'),

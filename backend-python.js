@@ -61,7 +61,7 @@ function silentEnv(installDir, env) {
 
 /**
  * 把 pack 的 shims/（sitecustomize 静默垫片）同步进安装目录，返回 { ok, copied }。
- * 「整包同步」的宿主（tts / breeze / llama / sensenova）本来就把它带过去了；
+ * 「整包同步」的宿主（tts / breeze / llama）本来就把它带过去了；
  * 只挑着拷（app/*.py + scripts/*）的宿主（h3 / music3 / yue）必须显式调这一句 ——
  * 漏了它，安装目录里没有 sitecustomize.py，silentEnv 挂上去也是个空目录（静默口径失效）。
  */

@@ -330,7 +330,7 @@ else use(j.data);                              // 已经解析好的对象
 | 需求 | 正解 |
 | --- | --- |
 | 应用要有 LLM / 识图能力 | `appHost.textGenStream`（多模态）+ `hostModels()` 选模型；模型与 Key 留在主进程 |
-| 应用要出图 | `appHost.imageGen(opts, cb?)`（文生图 · 每次一张，回 base64 / dataUrl；`cb` 收进度）与 **`appHost.imageEdit(opts, cb?)`**（显式图生图 / 图像编辑，参考图必填，没给回 `no_ref_image`，**不降级**成文生图）：**后端从 MTNode 继承** —— 云端图像服务商（含「图像模型挂在 text_openai 卡上」那种）或本机 SenseNova。清单 `hostImageModels()`（每项带 `refImages` / `maxRefImages` / `strength` 能力字段，界面据此置灰），选择 `hostImageSetModel(id)`，取消 `imageGenCancel(reqId)`；参考图 `opts.images`（本机路径或 dataURL，**整组**下发：云端 `/images/edits` 多图按顺序对应「图1 / 图2…」，本机 1–4 张）走图生图 / 图像编辑；`opts.strength`（0–1，0 = 只作前缀条件、1 = 最强）**只有本机 SenseNova 认**，云端传了在回执 `warnings` 里如实说明并忽略；本机后端与音乐 / 视频共用一个全局锁，忙时回 `code:"busy_media"` |
+| 应用要出图 | `appHost.imageGen(opts, cb?)`（文生图 · 每次一张，回 base64 / dataUrl；`cb` 收进度）与 **`appHost.imageEdit(opts, cb?)`**（显式图生图 / 图像编辑，参考图必填，没给回 `no_ref_image`，**不降级**成文生图）：**后端从 MTNode 继承** —— 云端图像服务商（含「图像模型挂在 text_openai 卡上」那种）或本机图像后端。清单 `hostImageModels()`（每项带 `refImages` / `maxRefImages` / `strength` 能力字段，界面据此置灰），选择 `hostImageSetModel(id)`，取消 `imageGenCancel(reqId)`；参考图 `opts.images`（本机路径或 dataURL，**整组**下发：云端 `/images/edits` 多图按顺序对应「图1 / 图2…」，本机按各后端的 `maxRefImages` 上限）走图生图 / 图像编辑；`opts.strength`（0–1，0 = 只作前缀条件、1 = 最强）**只有本机图像后端认**（看 `strength` 能力字段），云端传了在回执 `warnings` 里如实说明并忽略；本机后端与音乐 / 视频共用一个全局锁，忙时回 `code:"busy_media"` |
 | 应用要更重的本地能力（本地模型 / 语音 / 视频 / 自己的后端） | 升级为**本地后端插件**（见 `mtnode-plugin-dev`）：主进程宿主用 `dsh/mtnode-llm-creds.js` 的 `resolveDshRunAuth(getDataDir())` 复用设置里的 Key |
 | 纯提示词工具（不需要真调用模型） | 应用内拼好提示词，交给全局助手 / 画布工作流（`proc_text` / `proc_image` / 智能节点） |
 | 需要联网但创意工坊服务端还没有路由 | 先在 `store-saas/server.mjs` 补路由，应用再用 `storeRequest` 调 |

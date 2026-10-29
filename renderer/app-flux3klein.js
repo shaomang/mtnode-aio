@@ -226,7 +226,6 @@ function flux3kleinImageSize(path) {
 
 function flux3kleinStatus(node, msg) {
   node.flux3kleinStatus = msg;
-  node.sensenovaStatus = msg;
 }
 
 /** 蒙版外像素回贴：ComfyUI 的 latent 蒙版同样会往蒙版外渗一点，出图后按蒙版把外面换回底图 */
@@ -563,7 +562,7 @@ function flux3kleinParamSummary(node) {
   return bits.join(" · ");
 }
 
-/* 节点 body 里的只读摘要（两行：生成参数 / 后处理开关）——与 SenseNova 图像节点同族写法 */
+/* 节点 body 里的只读摘要（两行：生成参数 / 后处理开关）——与 proc_image 同族写法 */
 function appendFlux3KleinSummaryBody(node, body) {
   if (typeof appendNodeSettingsSummary !== "function") return;
   flux3kleinNormalize(node);

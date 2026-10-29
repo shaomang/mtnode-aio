@@ -718,16 +718,8 @@ let t = (s) => String(s == null ? "" : s);
 let authState = () => ({ ok: true, loggedIn: false, user: null, encryption: "plain", warning: "" });
 let aiCall = null;
 let aiCallStream = null;
-/* 本机图像后端（SenseNova）宿主适配器：由 main.js 注入，apps-store 不认识它的内部结构 ——
-   与语音（getDshForSpeech）同一条纪律。四项都是「能不给就不给」的可选注入。 */
-let localImageHost = null;
-let localImageGenerate = null;
-let localImageCancel = null;
-let localImageSnapshot = null;
 /* 全局音视频互斥锁快照（main.js 注入 media-gen-global-lock 的 refreshStaleLock） */
 let readMediaLock = null;
-/* 在飞的图像请求（reqId → { appId, nodeId, abort }）：取消与进度都按它定位 */
-const imageReqs = new Map();
 /* 图像缩放内核：registerAppsIpc 注入（main.js 的 shrinkImageBuffer），默认原样返回 */
 let shrinkImage = (buf, ext) => ({ buf: buf, ext: ext });
 /* 模型目录（main.js 注入 dsh().providerCatalog）：用来判某个模型是否「支持识图」 */
@@ -6249,26 +6241,22 @@ function textResult(r, model) {
     model: model,
   };
 }
-/* ---------------- appHost：图像生成（云端服务商 + 本机 SenseNova） ----------------
+/* ---------------- appHost：图像生成（云端图像服务商） ----------------
  *
  * 需求（用户共识）：应用默认就能用 MTNode 已配好的图像生成能力 ——
  *   · 云端：任何**有图像形态模型**的服务商卡（显式 image_* 类型，或 text_openai 卡上被
  *     config.modelKinds / 模型家族特征词判成 image 的那个模型，如 gpt-image-2-vip）；
- *   · 本地：本机 SenseNova 后端（sensenova-local 插件，127.0.0.1:8774，24G 卡出图），
- *     由 main.js 注入的宿主适配器调用（apps-store 不认识它的内部结构）；
- *   · 选择方式与文字模型同构：默认 auto（云端优先、其次本地），另给 hostImageModels()
+ *   · 选择方式与文字模型同构：默认 auto（用清单第一只），另给 hostImageModels()
  *     清单 + 按应用 id 持久化选择（存 apps-models.json 的 image.<appId>）；
- *   · 参数：应用只传 prompt + 尺寸语义（size），本地后端的采样步数 / 分辨率桶 / 显存档
- *     跟随节点自身配置；参考图（本机路径或 dataURL）由主进程读盘 / 缩放到长边 ≤1080；
- *   · 进度与取消：本地出图几十秒到几分钟，事件走 apps:hostStream（type:"progress"），
- *     取消走 apps:hostImageCancel；总遵守全局音视频互斥锁（忙时回 code:"busy_media"）。
+ *   · 参数：应用只传 prompt + 尺寸语义（size）；参考图（本机路径或 dataURL）由主进程
+ *     读盘 / 缩放到长边 ≤1080；
+ *   · 进度与取消：事件走 apps:hostStream（type:"progress"），取消走 apps:hostImageCancel；
+ *     总遵守全局音视频互斥锁（忙时回 code:"busy_media"）。
  *
- * 回执（云端与本地同一形状）：{ ok, base64, dataUrl, bytes, mime, model, via, size }，
- *   本地另有 { path, width, height, seed }（产物已落盘在数据目录资产区，路径可直接交给
- *   save 类动作或画布素材库）。取消回 { ok:false, code:"cancelled" }，不是错误。
+ * 回执：{ ok, base64, dataUrl, bytes, mime, model, via, size }。
+ *   取消回 { ok:false, code:"cancelled" }，不是错误。
  * ─────────────────────────────────────────────────────────────────────────── */
 
-const LOCAL_IMAGE_PROVIDER_ID = "sensenova-local";
 
 /* 云端「可用图像服务商」：按**模型形态**认（与渲染层同一判据），不再只看服务商 type */
 function usableImageProviders() {
@@ -6310,8 +6298,6 @@ function listCloudImageModels() {
   }
   return out;
 }
-/* 本机本地图像后端（SenseNova）：装了才进清单。探测函数由 main.js 注入（轻量、不拉起后端、
-   不探显存），拿不到就当一个都没装 —— 应用侧只会看到云端那一条，绝不报错。 */
 /* 云端图像后端的参考图能力（图生图 / 图像编辑）—— 按**这个后端真正会走的那条接口族**声明，
  * 应用界面据此把不行的路置灰、把上限写清楚，不让它点下去才知道不行：
  *   · OpenAI 兼容图像端点（/images/edits）：多图按顺序对应提示词里的「图1 / 图2…」，
@@ -6331,46 +6317,18 @@ function cloudImageCaps(cfg, prov, modelId) {
     return { refImages: false, maxRefImages: 0, strength: false };
   return { refImages: true, maxRefImages: MAX_MSG_IMAGES, strength: false };
 }
-/* 本机 SenseNova 后端一次能吃的参考图张数（sensenova-pack README：/generate 带 refImages 1–4 张）；
-   它也是唯一认参考强度（imgCfgScale）的后端（见 sensenova/main-sensenova.js）。 */
-const LOCAL_MAX_REF_IMAGES = 4;
-function localImageBackend() {
-  if (typeof localImageHost !== "function") return null;
-  let info = null;
-  try {
-    info = localImageHost() || null;
-  } catch {
-    info = null;
-  }
-  if (!info || info.installed !== true) return null;
-  return {
-    id: LOCAL_IMAGE_PROVIDER_ID,
-    label: String(info.label || t("本机图像生成（SenseNova）")),
-    providerName: "",
-    local: true,
-    ready: info.ready === true,
-    phase: String(info.phase || ""),
-    vramMode: String(info.vramMode || ""),
-    /* 本机能吃多张参考图，也能给参考强度（imgCfgScale）—— 与云端那套同名字段，应用侧一套判据 */
-    refImages: true,
-    maxRefImages: LOCAL_MAX_REF_IMAGES,
-    strength: true,
-  };
-}
 /* 主窗口渲染层的图像后端清单（函数节点的「图像后端」按钮用它列候选）：与应用窗口的
-   hostImageModels 同一份清单（云端图像服务商 + 本机 SenseNova），每项带参考图能力三字段。
+   hostImageModels 同一份清单（云端图像服务商），每项带参考图能力三字段。
    不含「谁选了哪只」—— 应用窗口那份按应用 id 存，函数节点那份存节点自身字段。 */
 function imageBackendsForUi() {
   const cloud = listCloudImageModels();
-  const local = localImageBackend();
-  const models = cloud.concat(local ? [local] : []);
   return {
     ok: true,
-    models: models,
-    hasAny: models.length > 0,
+    models: cloud,
+    hasAny: cloud.length > 0,
     hasCloud: cloud.length > 0,
-    hasLocal: !!local,
-    defaultModel: cloud.length ? cloud[0].id : local ? local.id : "",
+    hasLocal: false,
+    defaultModel: cloud.length ? cloud[0].id : "",
   };
 }
 function readImageSelection(appId) {
@@ -6394,19 +6352,14 @@ function writeImageSelection(appId, model) {
     console.warn("[apps-models] 写入失败：" + ((err && err.message) || err));
   }
 }
-/* 本次要用的图像后端：显式给的清单内 id > 该应用存过的选择 > auto（云端优先，其次本机）
+/* 本次要用的图像后端：显式给的清单内 id > 该应用存过的选择 > auto（清单第一只）
    越界 / 后端不存在回 { error }（错误码即契约，绝不静默换一个后端出图）。 */
 function resolveImagePick(appId, modelId) {
   const cloud = listCloudImageModels();
-  const local = localImageBackend();
-  const all = cloud.concat(local ? [{ id: local.id, label: local.label, local: true }] : []);
-  if (!all.length) return { error: "no_provider" };
+  if (!cloud.length) return { error: "no_provider" };
   const want = String(modelId == null ? "" : modelId).trim() || readImageSelection(appId);
-  if (!want || want === MODEL_AUTO) {
-    if (cloud.length) return { auto: true, ...cloud[0] };
-    return { auto: true, id: local.id, label: local.label, local: true };
-  }
-  const hit = all.find((m) => m.id === want);
+  if (!want || want === MODEL_AUTO) return { auto: true, ...cloud[0] };
+  const hit = cloud.find((m) => m.id === want);
   if (!hit) return { error: "bad_model" };
   return Object.assign({ auto: false }, hit);
 }
@@ -6414,18 +6367,17 @@ function imageModelsPayload(e, arg) {
   const own = senderAppDir(e, arg);
   if (!own) return bad(t("不是应用窗口"), "not_app");
   const cloud = listCloudImageModels();
-  const local = localImageBackend();
   const saved = readImageSelection(own.id);
-  const ids = cloud.map((m) => m.id).concat(local ? [local.id] : []);
+  const ids = cloud.map((m) => m.id);
   return {
     ok: true,
-    models: cloud.concat(local ? [local] : []),
+    models: cloud,
     selected: saved && ids.indexOf(saved) >= 0 ? saved : MODEL_AUTO,
     hasAny: ids.length > 0,
     hasCloud: cloud.length > 0,
-    hasLocal: !!local,
-    localReady: !!(local && local.ready),
-    defaultModel: cloud.length ? cloud[0].id : local ? local.id : "",
+    hasLocal: false,
+    localReady: false,
+    defaultModel: cloud.length ? cloud[0].id : "",
     /* 全局音视频互斥锁被别的任务占着时先告诉应用，别让它点了才发现忙 */
     busy: !!(readMediaLock() || {}).nodeId,
   };
@@ -6477,8 +6429,8 @@ function imageRefDataUrls(opts) {
 }
 /* 应用侧参考强度（strength）：0–1 归一，越界夹紧，空 / 非数 = 不传（null）。
  * 别名 imgStrength / refStrength / imgCfgScale 一并认（老写法与后端原生名都收），
- * 但**语义只有一种**：0 = 参考图只作前缀条件（本机后端 imgCfgScale 1.0 = 官方默认关闭图像 CFG），
- * 1 = 最强（映射到 4.0，与节点默认 cfgScale 同尺度，见 sensenova-pack engine 的说明）。 */
+ * 但**语义只有一种**：0 = 参考图只作前缀条件，1 = 最强。云端图像端点没有这个参数，
+ * 传了在 imageSpec 里如实说明并忽略。 */
 function strengthOf(opts) {
   const o = isObj(opts) ? opts : {};
   let raw = o.strength;
@@ -6489,14 +6441,6 @@ function strengthOf(opts) {
   const n = Number(raw);
   if (!Number.isFinite(n)) return null;
   return Math.max(0, Math.min(1, n));
-}
-/* strength（0–1）→ 本机后端 imgCfgScale：1.0 = 关闭图像 CFG（官方默认），1 映射到 4.0（与 cfgScale 同尺度）。
-   strengthOf 为 null 时返回 null = 不下发，后端用官方默认 1.0。 */
-function imgCfgScaleOf(opts) {
-  const s = strengthOf(opts);
-  if (s == null) return null;
-  if (s <= 0) return 1;
-  return 1 + 3 * s;
 }
 /* 本次图像请求的 spec：云端走 aiCall 内核（与画布 proc_image 同一份 buildRequestSpec，
    于是「配成 text_openai 的混合端点」也照旧按 OpenAI 兼容图像端点发）。 */
@@ -6516,7 +6460,7 @@ function imageSpec(id, pick, opts) {
   if (strengthOf(o) != null)
     warnings.push(
       "strength_unsupported: " +
-        t("当前图像后端不支持参考强度（strength），本次已忽略；本机 SenseNova 后端支持它"),
+        t("当前图像后端不支持参考强度（strength），本次已忽略"),
     );
   return {
     spec: {
@@ -6537,102 +6481,6 @@ function imageSpec(id, pick, opts) {
     },
     warnings: warnings,
   };
-}
-/* 本地（SenseNova）出图：拍一个唯一 nodeId 占全局互斥锁 → 宿主生成（产物落数据目录）
- *   → 读回字节成 base64 / dataURL。进度：生成期间轮询宿主快照（1.2s），经 emit 推给应用；
- *   取消：把请求登记成 abort，轮询里发现就走宿主的 cancel（后端在下一个采样步边界停下）。 */
-let imageReqSeq = 0;
-async function generateLocalImage(appId, pick, opts, img, emit, reqId, outDir) {
-  const o = isObj(opts) ? opts : {};
-  if (typeof localImageGenerate !== "function") return bad(t("本机图像后端不可用"), "no_local_backend");
-  const req = {
-    appId: appId,
-    nodeId: "app-" + appId,
-    abort: false,
-    cancelled: false,
-    createdAt: Date.now(),
-    emit: emit,
-  };
-  if (reqId) imageReqs.set(String(reqId), req);
-  const timer = setInterval(async () => {
-    if (req.abort && !req.cancelled) {
-      req.cancelled = true;
-      try {
-        if (typeof localImageCancel === "function") await localImageCancel(req.nodeId);
-      } catch (_) {}
-      return;
-    }
-    try {
-      const snap = typeof localImageSnapshot === "function" ? await localImageSnapshot(req.nodeId) : null;
-      if (snap && !req.abort)
-        emit("progress", {
-          stage: String(snap.stage || ""),
-          message: String(snap.message || ""),
-          pct: Number(snap.pct) || 0,
-          step: Number(snap.step) || 0,
-          totalSteps: Number(snap.totalSteps) || 0,
-          elapsedSec: Number(snap.elapsedSec) || 0,
-        });
-    } catch (_) {}
-  }, 1200);
-  if (timer.unref) timer.unref();
-  try {
-    if (req.abort) return { ok: false, code: "cancelled", error: "已取消" };
-    emit("progress", { stage: "prepare", message: t("正在启动本机图像后端…"), pct: 1 });
-    const r = await localImageGenerate({
-      /* appId 透传给适配器：本机后端把产物落这个应用自己的数据目录（apps-data/<id>/gen） */
-      appId: appId,
-      nodeId: req.nodeId,
-      prompt: String(o.prompt || "").slice(0, MAX_PROMPT),
-      /* 画幅语义：应用给 ratio（如 "16:9"）或 size（"1280x720"）都收，宿主按官方桶对齐 */
-      ratio: String(o.ratio || o.aspect || ""),
-      width: Number(o.width) || 0,
-      height: Number(o.height) || 0,
-      refImages: img.images,
-      /* 参考强度：应用侧 0–1 → 本机后端 imgCfgScale（1.0 = 关闭图像 CFG 的官方默认，1 → 4.0）。
-         不传 = 后端按官方默认出图（与旧调用完全一致）。 */
-      imgCfgScale: imgCfgScaleOf(o) == null ? undefined : imgCfgScaleOf(o),
-      /* 产物目录（只有宿主内部那条路会给：函数节点把图落画布资产目录）；
-         应用通道不给 = 该应用自己的数据目录 gen/。 */
-      outputDir: String(outDir || ""),
-      requestId: reqId ? String(reqId) : "",
-    });
-    if (req.abort || (r && (r.cancelled || r.error === "cancelled")))
-      return { ok: false, code: "cancelled", error: "已取消" };
-    if (!r || r.ok !== true)
-      return bad(String((r && (r.message || r.error)) || t("本机图像生成失败")), String((r && r.error) || "local_failed"));
-    const file = String(r.path || "");
-    let buf = null;
-    try {
-      buf = fs.readFileSync(file);
-    } catch (_) {
-      buf = null;
-    }
-    const ext = String(path.extname(file)).slice(1).toLowerCase() || "png";
-    const mime = IMG_EXT_TYPES[ext] || "image/png";
-    const b64 = buf ? buf.toString("base64") : "";
-    return Object.assign(
-      {
-        ok: true,
-        via: "local",
-        backend: LOCAL_IMAGE_PROVIDER_ID,
-        model: LOCAL_IMAGE_PROVIDER_ID,
-        mime: mime,
-        base64: b64,
-        dataUrl: b64 ? "data:" + mime + ";base64," + b64 : "",
-        bytes: buf ? buf.length : Number(r.bytes) || 0,
-        file: file,
-        size: String(r.ratio || o.size || ""),
-        warnings: Array.isArray(r.warnings) ? r.warnings.slice(0, 8) : [],
-      },
-      r,
-    );
-  } catch (err) {
-    return fail(err);
-  } finally {
-    clearInterval(timer);
-    if (reqId) imageReqs.delete(String(reqId));
-  }
 }
 /* 云端出图（每次一张）：回 base64 + dataUrl（与旧行为一致）+ 尺寸与耗时旁证 */
 async function generateCloudImage(pick, built, emit) {
@@ -6673,12 +6521,11 @@ async function hostImageStream(e, opts) {
     const pick = resolveImagePick(own.id, o.model || o.imageModel);
     if (pick.error === "no_provider")
       return bad(
-        t("未配置可用的图像后端（请在「设置 · API/配置」里配图像服务商，或安装本机 SenseNova 插件）"),
+        t("未配置可用的图像后端（请在「设置 · API/配置」里配图像服务商）"),
         "no_provider",
       );
     if (pick.error) return bad(t("该图像模型不在 MTNode 已配置的清单里"), "bad_model");
     const img = imageRefDataUrls(o);
-    if (pick.local) return await generateLocalImage(own.id, pick, o, img, emit, reqId);
     const built = imageSpec(own.id, pick, o);
     if (built.error) return bad(t("未配置可用的图像服务商（请在「设置 · API/配置」中填写）"), built.error);
     return await generateCloudImage(pick, built, emit);
@@ -6724,14 +6571,13 @@ async function hostImageGenerate(arg) {
   const pick = resolveImagePick(appId, o.model || o.imageModel);
   if (pick.error === "no_provider")
     return bad(
-      t("未配置可用的图像后端（请在「设置 · API/配置」里配图像服务商，或安装本机 SenseNova 插件）"),
+      t("未配置可用的图像后端（请在「设置 · API/配置」里配图像服务商）"),
       "no_provider",
     );
   if (pick.error) return bad(t("该图像模型不在 MTNode 已配置的清单里"), "bad_model");
   const img = imageRefDataUrls(o);
   const emit = () => {};
   try {
-    if (pick.local) return await generateLocalImage(appId, pick, o, img, emit, "", outDir);
     const built = imageSpec(appId, pick, o);
     if (built.error)
       return bad(t("未配置可用的图像服务商（请在「设置 · API/配置」中填写）"), built.error);
@@ -6740,16 +6586,11 @@ async function hostImageGenerate(arg) {
     return fail(err);
   }
 }
-/* 取消：应用侧按 reqId 请求取消（本地后端在下一个采样步边界停下；云端请求不中断，
-   只把登记撤掉，结果由调用方自己忽略）。 */
+/* 取消：应用侧按 reqId 请求取消（云端请求不中断，结果由调用方自己忽略）。 */
 function hostImageCancel(e, arg) {
   const own = senderAppDir(e, arg);
   if (!own) return bad(t("不是应用窗口"), "not_app");
-  const reqId = String((isObj(arg) && (arg.reqId || arg.id)) || "");
-  const req = reqId ? imageReqs.get(reqId) : null;
-  if (!req || req.appId !== own.id) return { ok: true, cancelled: false };
-  req.abort = true;
-  return { ok: true, cancelled: true, via: "local" };
+  return { ok: true, cancelled: false };
 }
 async function hostText(e, opts) {
   const own = senderAppDir(e);
@@ -7246,12 +7087,6 @@ function registerAppsIpc(opts) {
     /* 语音转写（appHost.asr*）：dsh 适配器与「本应用数据文件夹」两个来源都由 main.js 注入 ——
        apps-store 不认识 dsh，也不自己拼数据目录（路径只走 appDataDirOf 这一处口径）。 */
     if (typeof opts.getDsh === "function") getDshForSpeech = opts.getDsh;
-    /* 本机图像后端（SenseNova）：四项都由 main.js 注入 —— 探测（装了没 / 相位）、出图、取消、
-       进度快照。apps-store 不认识它的内部结构（与 getDsh 同一条纪律）。 */
-    if (typeof opts.localImageHost === "function") localImageHost = opts.localImageHost;
-    if (typeof opts.localImageGenerate === "function") localImageGenerate = opts.localImageGenerate;
-    if (typeof opts.localImageCancel === "function") localImageCancel = opts.localImageCancel;
-    if (typeof opts.localImageSnapshot === "function") localImageSnapshot = opts.localImageSnapshot;
     /* 全局音视频互斥锁快照（media-gen-global-lock.js 的 refreshStaleLock） */
     if (typeof opts.readMediaLock === "function") readMediaLock = opts.readMediaLock;
     if (typeof opts.locale === "function") hostLocale = opts.locale;
@@ -7998,7 +7833,6 @@ module.exports = {
   writeImageSelection,
   imageModelsPayload,
   imageBackendsForUi,
-  localImageBackend,
   hostImageModelGet,
   hostImageModelSet,
   hostImageStream,
@@ -8007,13 +7841,9 @@ module.exports = {
   hostImageCancel,
   imageRefDataUrls,
   strengthOf,
-  imgCfgScaleOf,
   cloudImageCaps,
   hostImageGenerate,
-  generateLocalImage,
   imageSpec,
-  LOCAL_MAX_REF_IMAGES,
-  LOCAL_IMAGE_PROVIDER_ID,
   /* 应用能力位（app.json 的 capabilities）：主进程三条入口真跑；能力位**不再进页面**
      （入口页生成时按 capabilities 注入的老路径已删，听写条改由宿主按声明注入） */
   appCapabilitiesGet,

@@ -105,19 +105,8 @@ const { registerSpeechIpc } = require("./speech-store.js");
    权重），切句用 ffmpeg，字幕排版与 Agent 工具 audio_subtitle 共用
    dsh/gateway/subtitle-cues.mjs。 */
 const { subtitleFromMedia } = require("./media-subtitle.js");
-/* 本地图像生成后端（SenseNova-U1.5-8B-MoT）：标准库 HTTP 服务；MTNode 完全退出时由下面的
-   before-quit 收尾一起结束（vramShutdownAll） */
-const {
-  registerSensenovaIpc,
-  shutdownSensenovaUiOnly,
-  /* 应用通道（appHost.imageGen 的本机那一路）用的三个入口：轻量现况 / 出图 / 取消。
-     与画布节点 sensenova_gen 共用同一份宿主实现（含全局音视频互斥锁与产物托管目录）。 */
-  imageHostInfo: sensenovaImageHostInfo,
-  generateImage: sensenovaGenerateImage,
-  cancelGenerate: sensenovaCancelGenerate,
-} = require("./sensenova/main-sensenova.js");
 /* InfiniteTalk 数字人（Wan2.1 I2V 14B）：独立 ComfyUI 后端 + 分块续写宿主，
-   见 infinitetalk/main-infinitetalk.js。与 H3 / SenseNova 同口径：退出收尾一并结束。 */
+   见 infinitetalk/main-infinitetalk.js。与 H3 同口径：退出收尾一并结束。 */
 const {
   registerInfinitetalkIpc,
   shutdownInfinitetalkUiOnly,
@@ -129,7 +118,7 @@ const {
   shutdownSoulxflashheadUiOnly,
 } = require("./soulxflashhead/main-soulxflashhead.js");
 /* FLUX 3 Image Klein（5.6B 蒸馏 · INT8 / BF16）：独立 ComfyUI 后端（8197），
-   见 flux3klein/main-flux3klein.js。与 H3 / SenseNova 同口径：控制台窗在 before-quit 先关，
+   见 flux3klein/main-flux3klein.js。与 H3 同口径：控制台窗在 before-quit 先关，
    后台 ComfyUI 进程由 vramShutdownAll 走宿主 hard() 一并结束（不把显存留给系统）。 */
 const {
   registerFlux3KleinIpc,
@@ -162,7 +151,7 @@ const {
 } = require("./apps-store.js");
 /* 全局音视频互斥锁（本地大模型一张卡只跑一个）：应用通道列图像后端 / 出图前先看它 */
 const mediaGenLock = require("./media-gen-global-lock.js");
-/* 本地模型显存释放编排器（h3 / music3 / yue / sensenova / llama 共用一套口径）：
+/* 本地模型显存释放编排器（h3 / music3 / yue / llama 共用一套口径）：
    运行前先释放别人的、收尾再释放自己的，治好「显存没还回去 → 下一个后端卡死」（见 local-model-vram.js） */
 const vramRelease = require("./local-model-vram.js");
 /* 系统资源探针（顶栏「性能」面板的数据真源：CPU / 内存 / GPU / 磁盘 / 网速 / 连接数 /
@@ -295,10 +284,6 @@ function dsh() {
           const { onBreezeDshEvent } = require("./breeze/main-breeze.js");
           if (typeof onBreezeDshEvent === "function") onBreezeDshEvent(ev);
         } catch {}
-        try {
-          const { onSensenovaDshEvent } = require("./sensenova/main-sensenova.js");
-          if (typeof onSensenovaDshEvent === "function") onSensenovaDshEvent(ev);
-        } catch {}
       },
     });
   }
@@ -414,7 +399,7 @@ const mk = (p) => {
   return p;
 };
 
-/** 取某本地后端宿主登记的显存释放钩子（h3 / music3 / yue / sensenova / llama / breeze / infinitetalk）。
+/** 取某本地后端宿主登记的显存释放钩子（h3 / music3 / yue / llama / breeze / infinitetalk）。
  *  宿主只 export 一个 vramHooks()，模块加载失败或没接这一钩子时返回 {} ——
  *  那个后端就不参与释放，绝不影响其余的（也不影响启动）。 */
 function vramHooksOf(host) {
@@ -3590,7 +3575,7 @@ async function fnAiCall(spec) {
    两处只属于函数节点的差别：
      ① 产物统一落**画布资产目录**（<数据目录>/assets/<wfId>，与画布出图同一处）——
         函数节点的图像输出端子 / save_image / mtnode_vision 直接吃这个绝对路径；
-     ② 本机后端的产物由后端直写该目录；云端回的是 base64，这里替它落盘（同一目录、同名规则）。
+      ② 云端回的是 base64，这里替它落盘（同一目录、同名规则）。
    失败一律 { ok:false, error, code }（不抛），与 mtnode.ai 同一口径 —— 用户代码自己决定要不要 throw。 */
 async function fnImageCall(params) {
   const p = params && typeof params === "object" ? params : {};
@@ -8366,92 +8351,6 @@ function streamTextChat(req, emit) {
    接口不支持 stream（HTTP 4xx）时回退非流式单次请求，口径与节点调用一致。
    返回里多带 finishReason / truncated：应用要能把「正文被输出上限截断」与「模型就是没给 JSON」
    分开（实测 deepseek-v4 开思考 + max_tokens 1200 时 6 次里 4 次被截断成半截 JSON）。 */
-/* ── 应用通道的本机图像后端适配（appHost.imageGen 的本地那一路）─────────────────
- * 与画布节点 sensenova_gen 共用同一份宿主实现：同一个全局互斥锁、同一份产物托管目录约定、
- * 同一套错误码。这里只做三件应用侧特有的事：
- *   ① 出图前先看全局锁：被音乐 / 视频 / 别的图像任务占着时直接回 busy_media（不透支后端）；
- *   ② 产物落**该应用自己的数据目录** gen/（应用的东西归应用，不占画布资产目录）；
- *   ③ 进度快照只回应用关心的字段（阶段 / 步数 / 百分比 / 已耗时）。
- * 拿不到应用 id（老调用）时退回默认托管目录 —— 宿主自己会说明产物落在哪。 */
-function sensenovaAppGenerate(params) {
-  const o = params && typeof params === "object" ? params : {};
-  const lock = mediaGenLock.refreshStaleLock();
-  const nodeId = String(o.nodeId || "app-image");
-  if (lock && lock.nodeId && lock.nodeId !== nodeId) {
-    return Promise.resolve({
-      ok: false,
-      error: "busy_media",
-      lock: lock,
-      message: mediaGenLock.busyMessage(lock),
-    });
-  }
-  let outputDir = String(o.outputDir || "");
-  if (!outputDir) {
-    try {
-      /* 应用数据目录：<数据目录>/apps-data/<id>/gen —— 与 preload 侧的 dataRead/Write 同一根，
-         只是产物不放 data.json（那是应用自己写的整份 JSON），另开一个子目录更干净。
-         调用方显式给了 outputDir（函数节点把图落画布资产目录）时优先用它。 */
-      const id = String(o.appId || "").trim();
-      if (id) {
-        outputDir = path.join(DATA, "apps-data", id, "gen");
-        fs.mkdirSync(outputDir, { recursive: true });
-      }
-    } catch {
-      outputDir = "";
-    }
-  }
-  return sensenovaGenerateImage({
-    nodeId: nodeId,
-    prompt: o.prompt,
-    refImages: Array.isArray(o.refImages) ? o.refImages : [],
-    /* 参考强度（应用侧 strength 0–1 已由 apps-store 映射成本机后端认的 imgCfgScale；
-       不传 = 后端按官方默认 1.0 = 关闭图像 CFG）。历史上这里漏了透传，应用侧调不到强度。 */
-    imgCfgScale: o.imgCfgScale,
-    ratio: o.ratio,
-    width: o.width,
-    height: o.height,
-    timeoutMs: o.timeoutMs,
-    outputDir: outputDir,
-  });
-}
-/* 进度快照：直接读本机后端自己的 /progress（后端单例，端口由宿主给出）。
-   为什么不用 sensenova:progress 事件：那条事件广播给所有窗口，应用窗口按 reqId 分不清是哪一次；
-   而本机后端同一时刻只跑一张图，所以按 reqId 轮询一次快照就够，也不给应用开新的事件面。
-   拿不到（后端没起 / 没这一步）回 null —— 应用只是「没有更细的进度」，不影响出图。 */
-async function sensenovaAppSnapshot() {
-  try {
-    const st = sensenovaImageHostInfo();
-    const port = Number(st && st.port) || 0;
-    if (!port) return null;
-    const body = await new Promise((resolve) => {
-      const req = http.get({ host: "127.0.0.1", port: port, path: "/progress", timeout: 2500 }, (res) => {
-        let raw = "";
-        res.setEncoding("utf8");
-        res.on("data", (c) => { raw += c; if (raw.length > 64 * 1024) req.destroy(); });
-        res.on("end", () => {
-          try {
-            resolve(JSON.parse(raw));
-          } catch {
-            resolve(null);
-          }
-        });
-      });
-      req.on("timeout", () => { req.destroy(); resolve(null); });
-      req.on("error", () => resolve(null));
-    });
-    if (!body || typeof body !== "object") return null;
-    return {
-      stage: String(body.stage || ""),
-      message: String(body.message || ""),
-      step: Number(body.step) || 0,
-      totalSteps: Number(body.totalSteps) || 0,
-      pct: Math.max(0, Math.min(99, Number(body.percent) || 0)),
-      elapsedSec: Number(body.elapsedSec) || 0,
-    };
-  } catch {
-    return null;
-  }
-}
 
 async function appsAiCallStream(spec, emit) {
   checkProvider(spec.provider);
@@ -9570,7 +9469,7 @@ app.whenReady().then(() => {
     getMainWin: () => mainWin,
     appRoot: __dirname,
     getDsh: () => dsh(),
-    /* 画布节点产物落应用资产目录（%APPDATA%\pipeline-console\assets\<wfId>，与 proc_image / sensenova 同一去处）：
+    /* 画布节点产物落应用资产目录（%APPDATA%\pipeline-console\assets\<wfId>，与 proc_image 同一去处）：
        调用方没给输出路径时由宿主兜底复进这里，显式传路径的调用方不受影响 */
     assetDirFor: (wfId) => assetDir(wfId),
   });
@@ -9633,17 +9532,6 @@ app.whenReady().then(() => {
   /* 本地语音转写（官方本地 SenseVoice）：识别在 dsh 运行时里跑，主进程这一层只有
      「转写缓存 + 音频读盘」（见 speech-store.js）；不再有需要起停的 ASR 后端进程 */
   registerSpeechIpc({ getDataDir: DATA });
-  /* 本地图像生成后端（SenseNova-U1.5-8B-MoT）：安装 / 启停 / 出图；退出时后端由 before-quit 一并结束
-     （见 sensenova/main-sensenova.js 的 vramHooks） */
-  registerSensenovaIpc({
-    getDataDir: DATA,
-    getMainWin: () => mainWin,
-    appRoot: __dirname,
-    getDsh: () => dsh(),
-    /* 画布节点出图直接落应用资产目录（%APPDATA%\pipeline-console\assets\<wfId>，与 proc_image 同一去处），
-       显式传 outputDir 的插件控制台「试生成」不受影响 */
-    assetDirFor: (wfId) => assetDir(wfId),
-  });
   /* InfiniteTalk 数字人（Wan2.1 I2V 14B）：独立 ComfyUI（默认 8199）/ 安装 / 出片。
      产物落画布资产目录（与 proc_image / H3 同一去处）；音频按 81 帧分块由宿主续写。 */
   registerInfinitetalkIpc({
@@ -9663,7 +9551,7 @@ app.whenReady().then(() => {
     assetDirFor: (wfId) => assetDir(wfId),
   });
   /* FLUX 3 Image Klein（5.6B 蒸馏 · INT8 / BF16）：独立 ComfyUI（默认 8197）/ 安装 / 出图。
-     产物落画布资产目录（与 proc_image / SenseNova 同一去处），抽卡与蒙版都在宿主里跑。 */
+     产物落画布资产目录（与 proc_image 同一去处），抽卡与蒙版都在宿主里跑。 */
   registerFlux3KleinIpc({
     getDataDir: DATA,
     getMainWin: () => mainWin,
@@ -9684,7 +9572,6 @@ app.whenReady().then(() => {
     Object.assign({ id: "h3", label: "H3（ComfyUI 视频）", host: "h3", subdir: "h3" }, vramHooksOf("h3")),
     Object.assign({ id: "music3", label: "Music3（音乐）", host: "music3", subdir: "music3" }, vramHooksOf("music3")),
     Object.assign({ id: "yue", label: "YuE2（音乐）", host: "yue", subdir: "yue" }, vramHooksOf("yue")),
-    Object.assign({ id: "sensenova", label: "SenseNova（本机出图）", host: "sensenova", subdir: "sensenova" }, vramHooksOf("sensenova")),
     Object.assign({ id: "llama", label: "llama.cpp（本地大模型）", host: "llama", subdir: "llama" }, vramHooksOf("llama")),
     Object.assign({ id: "breeze", label: "Breeze TTS 2（语音）", host: "breeze", subdir: "breeze-tts" }, vramHooksOf("breeze")),
     Object.assign({ id: "infinitetalk", label: "InfiniteTalk 数字人（ComfyUI）", host: "infinitetalk", subdir: "infinitetalk-local" }, vramHooksOf("infinitetalk")),
@@ -9765,21 +9652,6 @@ app.whenReady().then(() => {
     /* 语音转写（appHost.asr*）：识别在 dsh 运行时里跑（与状态栏那枚话筒同一条通道），
        事务侧只借 dsh 适配器，不认识它的内部结构。 */
     getDsh: () => dsh(),
-    /* 本机图像后端（appHost.imageGen 的本地那一路）：SenseNova 宿主。四项都是适配器，
-       apps-store 不认识它的内部结构 —— 与上面 getDsh 同一条纪律。
-         · localImageHost()     轻量现况（装了没 / 在跑没 / 相位）：不探 /health、不查 GPU，
-                                所以「列一次图像后端清单」不会把 32GB 权重拉起来；
-         · localImageGenerate() 真出图：默认产物落**该应用的数据目录**下的 gen/（应用自己的
-                                东西归应用，不占画布资产目录）并回绝对路径；调用方显式给
-                                outputDir（函数节点的 mtnode.image 走这条路：落本次运行的
-                                画布资产目录）时按它落；参考强度由 strength → imgCfgScale
-                                映射后透传（见 apps-store 的 imgCfgScaleOf）；
-         · localImageCancel()   在下一个采样步边界取消；
-         · localImageSnapshot() 轮询进度（阶段 / 步数 / 百分比）。 */
-    localImageHost: () => sensenovaImageHostInfo(),
-    localImageGenerate: (params) => sensenovaAppGenerate(params),
-    localImageCancel: (nodeId) => sensenovaCancelGenerate(nodeId),
-    localImageSnapshot: () => sensenovaAppSnapshot(),
     /* 全局音视频互斥锁快照（应用侧据此提示「已有图像 / 视频任务在跑」） */
     readMediaLock: () => mediaGenLock.refreshStaleLock(),
     /* 应用侧展示语言（卡片能力小标 / 能力对话框文案） */
@@ -9852,9 +9724,8 @@ app.on("before-quit", (ev) => {
   /* Blender 本地插件：它不托管常驻后端，但**插件自己拉起的 Blender**（控制台「启动」/ 冒烟中途）
      必须跟着收掉，否则会留一只没人管的窗口；用户自己开的 Blender 不在它的 pid 记录里，动不到。 */
   try { blenderPlugin.shutdownBlenderUiOnly(); } catch {}
-  /* 各本地后端（SenseNova / InfiniteTalk / SoulX / H3 / Music3 / YuE2 / llama / Breeze）的控制台窗
+  /* 各本地后端（InfiniteTalk / SoulX / H3 / Music3 / YuE2 / llama / Breeze）的控制台窗
      这一趟先关；它们**后台跑的 python 进程**由下面的异步阶段统一结束，不再留在机器上占显存。 */
-  try { shutdownSensenovaUiOnly(); } catch {}
   try { shutdownInfinitetalkUiOnly(); } catch {}
   try { shutdownSoulxflashheadUiOnly(); } catch {}
   /* FLUX 3 Image Klein：控制台窗先关；后台 ComfyUI 进程由下面的 vramShutdownAll 走宿主 hard() 结束。 */

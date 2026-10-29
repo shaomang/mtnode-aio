@@ -37,7 +37,7 @@
  * 模型能力（只有 ① 有，且模型从 MTNode 继承 —— 服务商与 API Key 永远留在主进程）：
  *   models()                 列出可用模型（首项 = 跟随默认；每项带 vision 是否支持识图）
  *   modelGet() / modelSet(id)  读 / 改本应用的模型选择（宿主按应用 id 持久化）
- *   imageModels()            列出可用**图像后端**（云端服务商 + 本机 SenseNova）
+ *   imageModels()            列出可用**图像后端**（云端服务商 + 本机图像后端）
  *   imageModelGet() / imageModelSet(id)  读 / 改图像后端选择（同样按应用 id 持久化）
  *   image(prompt, opts)      出图（每次一张）：opts.images 可带参考图 → 图生图 / 图像编辑；
  *                            opts.onProgress 收进度；cancelImage(reqId) 取消；
@@ -274,7 +274,7 @@
   }
   /* ── 图像生成（与文本模型同一套思路：模型 / 后端从 MTNode 继承，应用只挑 id）────────
      后端清单 = MTNode 里已配好的图像能力：云端服务商（含把图像模型挂在文本卡上的那种）
-     + 本机 SenseNova（装了才出现）。选择按应用 id 持久化，界面要有一个选后端的位置。 */
+     + 本机图像后端（装了才出现）。选择按应用 id 持久化，界面要有一个选后端的位置。 */
   /** 图像后端清单：{ ok, models:[{id,label,providerName,local}], selected, hasAny, hasCloud, hasLocal, busy } */
   async function imageModels() {
     if (!cap.imageModels)
@@ -661,7 +661,7 @@
     modelSet: modelSet,
     pickImage: pickImage,
     text: text,
-    /* 图像生成：清单 / 选择 / 出图 / 取消（后端从 MTNode 继承，含本机 SenseNova） */
+    /* 图像生成：清单 / 选择 / 出图 / 取消（后端从 MTNode 继承，含本机图像后端） */
     imageModels: imageModels,
     imageModelGet: imageModelGet,
     imageModelSet: imageModelSet,

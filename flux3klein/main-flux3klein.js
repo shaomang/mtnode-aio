@@ -2,7 +2,7 @@
 /**
  * FLUX 3 Image Klein 本地出图插件宿主。
  *
- * 形态与 h3 / infinitetalk / sensenova 一致：**主进程宿主 + 预加载桥 + 控制台 UI**。
+ * 形态与 h3 / infinitetalk 一致：**主进程宿主 + 预加载桥 + 控制台 UI**。
  * 后端是**独立安装**的一份 ComfyUI（`<安装目录>/ComfyUI`，默认端口 8197），图用 ComfyUI
  * **原生**节点（UNETLoader / CLIPLoader(type=flux3) / KSampler / ReferenceMultiLatent /
  * SetLatentNoiseMask）拼出来，见 flux3klein-workflows.js。

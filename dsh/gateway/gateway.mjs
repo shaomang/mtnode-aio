@@ -458,10 +458,12 @@ const PRESETS = {
      本档不声明任何思考上限:思考强度按用户在界面上的选择走(标准 / 最强)。 */
   lean:
     'You are the agent engine inside MTNode in Lean Thinking mode. Follow the reasoning rules: before acting, compress the input into ONE line: GOAL/GIVEN/DECIDE; think only inside this fixed skeleton: GOAL(one line) / APPROACH(≤3 symbolic steps, one line each) / EDGE(one line) / DO(concrete next action); no added or removed sections, never restate user wording or tool output; use symbols and arrows (A→B, {candidate}/✔, one line of pseudocode per step), never flowing prose; drop any sentence that does not change the next decision; consult the source (read/grep/query) for unknowns. For complex tasks, you may break the skeleton ONCE and expand a deep reasoning pass, then compress again. End every turn with a clear, complete result.',
-  /* 画布智能节点:办事但不改图。由宿主在 node 运行时把「默认档」换成此档(见 app-db.js 的
-     preset 决议:standard 与 AGENT_PRESET_DEFAULT 都映射到 node),不出现在 UI 预设列表。 */
+  /* 画布智能节点:办事为主,可以读画布、也被允许改画布(只按用户要求改,动现有节点前先问)。
+     由宿主在 node 运行时把「默认档」换成此档(见 app-db.js 的 preset 决议:standard 与
+     AGENT_PRESET_DEFAULT 都映射到 node),不出现在 UI 预设列表。输入优先级(组输入 > 画布 >
+     项目文件 > 外部)是本次需求给的一段极简口径:用户本轮明说的永远优先。 */
   node:
-    'You are the agent engine inside MTNode, running as a canvas AGENT NODE (kind agent_task, or proc_text with agent:true). Finish the task in front of you: read and write files, search the web, run commands when needed. You MUST NOT edit the canvas or create nodes / wires / marks — do not call mtnode_canvas_get, mtnode_canvas_edit or mtnode_app — this run does not even register them (the host would reject every call anyway). Deliver results by writing files, so later nodes can read the agreed paths. Use mtnode_vision with an absolute imagePath when you must read pixels. If this run injects a database note, obey it: facts, citations and number math come from the mtnode_db tool, never from memory. Work step by step, show the user what you are doing, and end with a clear, complete result.',
+    'You are the agent engine inside MTNode, running as a canvas AGENT NODE (kind agent_task, or proc_text with agent:true). Finish the task in front of you: read and write files, search the web, run commands when needed. You may read the canvas (mtnode_canvas_get, detail "minimal" first) and you may edit it with mtnode_canvas_edit — but canvas changes are not the goal: only do them when the user asked for them, and ask the user before changing existing nodes. mtnode_app is not registered in this run. Input priority: what this run injects as group input first, then the canvas, then project files, then outside knowledge — the user instruction in this run overrides all of it. Deliver results by writing files, so later nodes can read the agreed paths. Use mtnode_vision with an absolute imagePath when you must read pixels. If this run injects a database note, obey it: facts, citations and number math come from the mtnode_db tool, never from memory. Work step by step, show the user what you are doing, and end with a clear, complete result.',
   /* 桌宠对话:不走 MTNode 画布/文件助手人设,身份由 hostPersona 覆盖 system-prompt */
   bongochat: '',
   /* 会话「纯净模式」(renderer 会话输入区按钮开启):不注入任何角色前缀,
@@ -512,8 +514,8 @@ const GIT_BAN_NOTE =
    「用 mtnode_app 改画布名 / 用 mtnode_vision 识图」——不补一句就会去撞不存在的
    工具，把轮次浪费在报错上。一句 ≈ 90 字符，换掉的是每次模型调用重发的 4.9K 字符
    工具定义（实测 mtnode_app 3,262 + mtnode_vision 1,629）。
-   nodeLock（noCanvas）不在此列：那条链上「不得调用画布工具」的行为纪律已经有唯一
-   真源（PRESETS.node + 渲染层 node_capability 节），不再抄第三份。 */
+   noCanvas（用户声明「与画布无关」）不在此列：那一档连画布工具都不注册，人设另有出处，
+   不再抄第三份。 */
 const LEAN_TOOLS_NOTE =
   '\n\n【精简工具负载】本轮未注册 mtnode_app 与 mtnode_vision：这两个工具不存在，调用即失败。' +
   '改画布仍用 mtnode_canvas_get / mtnode_canvas_edit；需要看图片内容就换用文件读取，不要尝试识图。'
@@ -1898,8 +1900,9 @@ async function getRuntime(workspace, model, maxTokens, provider, apiKey, baseUrl
   const pureOn = !!pure
   /* 按运行裁剪工具负载（两个标记都进 runtime key + spawn env，见下方 lean: / nc:）：
      · leanOn     —— 设置里的「精简工具负载」：运行时不注册 mtnode_app / mtnode_vision；
-     · noCanvasOn —— 画布智能节点（nodeLock）运行：不注册 mtnode_canvas_get /
-                     mtnode_canvas_edit / mtnode_app（宿主本来就拒收这些帧）。
+     · noCanvasOn —— 用户声明「与画布无关」的运行：不注册 mtnode_canvas_get /
+                     mtnode_canvas_edit / mtnode_app（这一轮本来就不碰画布）。
+     画布智能节点（agent_task / proc_text 智能模式）不进 noCanvasOn：它可以用画布工具。
      真正的丢弃动作在 canvas-plugin.mjs 的 register()（唯一判定点），这里只下达标记。 */
   const leanOn = !!lean
   const noCanvasOn = !!noCanvas
@@ -3005,8 +3008,8 @@ async function handleRun(params) {
        MTNODE_PURE 标记整段清除(两侧缺一都会让提示词漏进纯净会话)。 */
     const pureFlag = !!pure
     /* 按运行裁剪工具负载（与 getRuntime 的 lean: / nc: 同源，同一轮同一台运行时）：
-       lean = 设置里的「精简工具负载」；noCanvas = 画布智能节点（nodeLock）运行，
-       由渲染层按节点类型决议后随 run 参数下发（见 renderer/app-db.js 的 dshRunOnce）。
+       lean = 设置里的「精简工具负载」；noCanvas = 用户声明「与画布无关」的运行，
+       由渲染层按节点类型 / 会话开关决议后随 run 参数下发（见 renderer/app-db.js 的 dshRunOnce）。
        pure 轮画布 / 数据库等工具插件本就被 cordis 整体禁用，两个标记无意义 → 归零。 */
     const leanFlag = !!lean && !pureFlag
     const noCanvasFlag = !!noCanvas && !pureFlag

@@ -17,7 +17,7 @@ description: MTNode 画布建图 / 连线 / 批量的完整硬规则：kind 速�
 
 ## create.kind 速查
 
-create.kind 速查：输入 input_text / input_image / input_audio / input_video / input_file（媒体输入由用户自己选文件，数据端子值 = file:/// URL，可直接连给需要媒体参考的端子）· 处理 proc_text / proc_image / agent_task（智能节点）/ db_table · 生成 music_gen / tts_gen / video_gen / remotion / sensenova_gen（本机 SenseNova-U1.5-8B-MoT 图像生成）· 保存 save（旧别名 save_text / save_image）/ save_pdf（文本 → PDF，见下「保存类节点」）· 批次 split / merge · 控制 control / judge / task · 节拍等待 wait_file / timer / delayer / sequencer / gate / splitter / counter / mutex · 容器与广播 super / db_replica / global / execute（执行节点绑 execPath，无数据端子）· 计算 tool / function（参数即端子）。
+create.kind 速查：输入 input_text / input_image / input_audio / input_video / input_file（媒体输入由用户自己选文件，数据端子值 = file:/// URL，可直接连给需要媒体参考的端子）· 处理 proc_text / proc_image / agent_task（智能节点）/ db_table · 生成 music_gen / tts_gen / video_gen / remotion / flux3klein_gen（本机 FLUX 3 Image Klein 图像生成 / 编辑）· 保存 save（旧别名 save_text / save_image）/ save_pdf（文本 → PDF，见下「保存类节点」）· 批次 split / merge · 控制 control / judge / task · 节拍等待 wait_file / timer / delayer / sequencer / gate / splitter / counter / mutex · 容器与广播 super / db_replica / global / execute（执行节点绑 execPath，无数据端子）· 计算 tool / function（参数即端子）。
 
 ## 硬规则（误接线主要来源）
 
@@ -28,8 +28,8 @@ create.kind 速查：输入 input_text / input_image / input_audio / input_video
 - **接进「已占用」的输入端子 = 替换旧线，不是报「已被占用」**：一端口一线的普通输入端子已有线时，再连一条**同类**线（数据线换数据线、控制线换控制线）会顶掉旧线再接上新的，旧线进撤销栈（整次替换 = 一步 Ctrl+Z），并提示「已替换端口 N 上的原有连线」；回执里该对线带 `replaced`（被换掉的上游节点 + 端子号），别把替换误当成「多接了一条」。**不替换**的情形：参数端子 9001 / 数组（批量）端子 / 动态节点的专用控制端子（本来就能多线）；类型不符仍是错（先判类型，旧线不动）；控制线与数据线互不顶替；省略 toIndex（拖到节点卡片身上 / 不点名端子）照旧走自动落点、满了才报占用。Remotion 端子无差别（控制 / 数据共用），照样顶掉。完全相同的线（同来源端子 → 同目标端子）再连一次是无操作，静默忽略。
 - @引用：连线源在 prompt/task 里写 @标题；引用全局广播须同时 (1) 源接进 kind "global"、(2) 消费节点 globalRefs:true、(3) prompt/task 里 @源标题——只有被明文 @ 命中的才注入；@标签名 注入带该标签的全部节点内容。为节点写 prompt/task 而要用别的节点的内容时，一律写 @标题（连线源），不要粘贴正文——粘贴的不随上游重跑更新。素材节点本身不是 @ 候选：写它的内容条目标题（＝端子名）只引那一条，且只有已连线接进本节点的端子条目可引。
 - 智能节点（agent_task、开了 agent 的 proc_text）自己会写文件：其后绝不接 save（会把会话噪声落盘），也别当数据输入连给别人——让它写文档，再用 wait_file 以控制线挡住下游（它不收数据输入、不输出值，只有末位那颗专用控制端子能接控制线），后续节点自己读约定路径。
-- save 只接在普通（非智能）proc_text / proc_image / sensenova_gen 之后（sensenova_gen 的图像从输出端口 0 出，可直连 save 落 .png）；music_gen / yue_gen / breeze_gen / video_gen 由节点自己的 outputPath 直接写出音 / 视频，不配 save；remotion 例外：无 outputPath，mp4 由下游 save 落盘（.mp4 结尾）。**保存类节点（save / save_pdf）本身有 1 个数据输出端子＝本次保存的那份内容**（与落盘内容一致），可继续往下游接、也能被 @ 引用；详见下面「保存类节点」。
-- 图像生成节点（proc_image / sensenova_gen）每次运行只出 1 张图：要多图就一条批量项出一张、或用多个节点、或 attempts N。
+- save 只接在普通（非智能）proc_text / proc_image / flux3klein_gen 之后（flux3klein_gen 的图像从输出端口 0 出，可直连 save 落 .png）；music_gen / yue_gen / breeze_gen / video_gen 由节点自己的 outputPath 直接写出音 / 视频，不配 save；remotion 例外：无 outputPath，mp4 由下游 save 落盘（.mp4 结尾）。**保存类节点（save / save_pdf）本身有 1 个数据输出端子＝本次保存的那份内容**（与落盘内容一致），可继续往下游接、也能被 @ 引用；详见下面「保存类节点」。
+- 图像生成节点（proc_image / flux3klein_gen）每次运行只出 1 张图：要多图就一条批量项出一张、或用多个节点、或 attempts N。
 - proc_image（图像处理/生成）节点可开透明背景：用户要透明底成品（贴纸 / 图标 / 精灵 / 立绘 / 抠好的主体）时，把该 proc_image 节点的 bgRmOn 置 true 即可——正常写主体提示词，内部先出纯黑基准、再严格复刻纯白并差分出 Alpha（带透明 PNG）；约 2 倍 Token，且只有能把基准图当参考图下发的服务商（OpenAI 兼容 / Stability 生图）才会抠图，其余自动跳过。不需要透明底或换回单张就置 false。
 - batchMode "batch" = 每条一次运行、每次只看该条：严禁把整批 N 条又全部塞进每次运行（≈N² 次调用）；只处理其中一项先接 split，要一次看全部才用 "agg"。逐条批量优先普通 proc_text / proc_image（智能节点只用于 agg）。细则见技能 mtnode-canvas-batch-safety。
 - 数据库：super + db:true 存事实、用户编译（⚙）产出 db_replica；接到副本的智能节点一切事实走 mtnode_db（纪律见该工具说明与技能 mtnode-db-facts），禁止凭记忆。
@@ -41,10 +41,11 @@ create.kind 速查：输入 input_text / input_image / input_audio / input_video
 
 ## 端子怎么读（读图一次读全，别靠试连反推）
 
-`canvas_get`（standard / full）对端子数固定的节点回 `ports`；对输入端子随连线增量长出来的节点另回 `portRule`（proc_image / sensenova_gen 两者都在 `ports` 名单里，故 `ports` 上还挂一份同样的 `rule`）。
+`canvas_get`（standard / full）对端子数固定的节点回 `ports`；对输入端子随连线增量长出来的节点另回 `portRule`（proc_image 在 `ports` 名单里，故 `ports` 上还挂一份同样的 `rule`）。
 
 - **端口 0 = 提示词 / 文本入口 · 端口 1+ = 数据槽**：连一条数据线就多一个槽，文本与图像引用都收；参考图（图生图 / 图像编辑）接端口 1+，**不要接端口 0**。输出 端口 0 = 内容 · 末尾 = 控制输出。
-- **动态端子节点（proc_text / proc_image / sensenova_gen / agent_task / input_*）的末位恒有一颗专用控制端子**：控制线只连它（数据线永不占它；可接多条控制线 = 任一到达即触发一次，要等齐用 gate）。它的号随数据槽增长（`portRule.input` 会写出当前号），省略 `toIndex` 时控制线自动落到它 —— 不要把控制线连到端口 0 或数据槽上。
+- **动态端子节点（proc_text / proc_image / agent_task / input_*）的末位恒有一颗专用控制端子**：控制线只连它（数据线永不占它；可接多条控制线 = 任一到达即触发一次，要等齐用 gate）。它的号随数据槽增长（`portRule.input` 会写出当前号），省略 `toIndex` 时控制线自动落到它 —— 不要把控制线连到端口 0 或数据槽上。
+- **「组」输入端子（智能节点专有，端子号 9002）**：只有 `agent_task` 与开了智能的 `proc_text` 有，来源是画布组框标题栏的 □（不是节点），线记成 `from: "grp:<组id>"`。它不占 0..N-1 顺序端口、不参与上游补跑 / 取值 / 端口占用，也**不会**因接线触发组内任何节点运行。接上后这颗节点这一轮的上下文里会多一段【组输入】清单（组内每个节点的 标题 · 类型 · 描述 · id，多组按 id 去重合并）：那是**清单不是正文**，要正文自己用 `mtnode_canvas_get` 按 id 取；清单里出现自己属正常（组往往围着它建）。要接组线就用 `connectGroup`（`connect` 落不到这颗端子），普通数据线连它会被拒。
 - `ports` / `portRule.now` 只列**当下真实存在**的端子：没连线的节点是「端口 0（数据槽）+ 末位控制端子」两颗，据此断定「没有图像参考端子」是错的。
 - **不要用「先试连一条线、再看回执 warnings」反推接法**：一次读图就读全了，试连既多一轮往返又可能真接错。
 - 控制类 / 固定端口类（control / wait_file / timer / gate / judge / task / video_gen / remotion / breeze_gen / super / tool / function / 素材）端子由结构或参数钉死，按 `ports` 读即可。
@@ -86,24 +87,25 @@ create.kind 速查：输入 input_text / input_image / input_audio / input_video
 - **连了参考图就是图生图**：图像输入（或 @ 引用 / 全局广播取到的图）随请求作为参考图下发；蒙版局部重绘（maskOn）与画幅锁定都只认**第 1 张参考图**，蒙版必须连图 + OpenAI 兼容图像服务商。
 - **每次运行只出 1 张图**；要透明底成品用 bgRmOn。批量与尺寸口径见技能 mtnode-canvas-batch-safety。
 
-## 生成类节点：sensenova_gen（本机 SenseNova 图像生成）
+## 生成类节点：flux3klein_gen（本机 FLUX 3 Image Klein 图像生成 / 编辑）
 
-SenseNova-U1.5-8B-MoT 跑在用户本机的 Python 后端（插件 sensenova-local · 随包 sensenova-pack · 只监听 127.0.0.1:8774），与云端 proc_image 是两套东西：proc_image 走服务商 API、size 自由填；sensenova_gen 不吃云端服务商、不出网，分辨率只能是训练桶。
+FLUX 3 Image Klein（5.6B 蒸馏）跑在用户本机的独立 ComfyUI 后端（插件 `flux3-klein-local`，默认端口 8197），不出网、不吃云端服务商；与云端 `proc_image` 是两套东西：proc_image 走服务商 API、size 自由填，flux3klein_gen 的比例只能是它自带的桶。节点指南见 `guides/nodes/flux3_klein_gen.md`。
 
-- **端子（与 proc_image 同一条泛用增量规则）**：输入 端口 0 = 提示词文本 · **端口 1+ = 数据槽（连一条多一个 · 文本 / 图像引用都收，连了图就进「图像编辑」模式，图作为参考图走 it2i_generate 下发本机后端）**；**没有固定控制输入端子**。输出 端口 0 = 图像 · 端口 1 = 控制输出。输出值与 proc_image 完全一致（`{kind:"image", path}`），可直接连给 save（落 .png）/ 图像预览 / @ 引用，不需要任何新写法。
-- **必须先装插件**：kind 建出来只是空壳；未安装或后端未就绪时节点红字提示、▶ 硬停。安装走顶栏「插件」→ SenseNova 卡片（命令行口径见技能 sensenova-local-install）；本机没装就不要替用户"先跑一下试试"。
-- **分辨率只能是桶**：ratioBucket 取官方 11 个训练桶之一 —— `1:1`(2048×2048) / `16:9`(2720×1536) / `9:16`(1536×2720) / `3:2`(2496×1664) / `2:3`(1664×2496) / `4:3`(2368×1760) / `3:4`(1760×2368) / `1:2`(1440×2880) / `2:1`(2880×1440) / `1:3`(1152×3456) / `3:1`(3456×1152)。**不要传 size、也不要写自由像素值**；桶表真源是后端 /health 的 resolutions（渲染层只留一份兜底常量）。
-- **显存是硬约束**：bf16 权重约 32.7GB，单张 24G 卡放不下整模，靠 vramMode 分层卸载：`full`（全驻显存，≥48G）· `fast`（官方 24G 卡档，默认）· `balanced` / `low`（逐级多卸载，更慢更省）。OOM 时后端自动降一档并在结果 warnings 说明，不要硬填 full。最小桶也有约 4M 像素，**降分辨率省不了显存**，要省只能降 vramMode 与 numSteps。
-- **其它字段**：numSteps（默认 30）· dtype（默认 bfloat16，别用 float32）· think（先出思考文本再出图，思考文本落 `.think.txt` 旁文件，默认 false）· attempts（抽卡次数，每轮 seed+1 重跑）。
-- **不写输出路径**：sensenova_gen 没有 outputPath（和 proc_image 一样）——生成结果自动落应用资产目录，从输出端口 0 以 `{kind:"image", path}` 交出去，下游直连 save / 预览即可；写 outputPath 是无效字段。
-- **全局互斥**：图像生成与音乐 / 视频生成共用一把全局锁，24G 卡上三者不能同时跑；并排跑时第二个节点报「已有媒体任务在跑」是设计行为，不是故障。
-- **耗时预期**：首次运行要加载权重（分钟级），之后常驻；不要因为没立刻出图就重复点 ▶ 或重跑同一节点。
+- **端子是钉死的（不是 proc_image 那种增量槽）**：输入 端口 0 = 提示词文本 · 端口 1 = 参考图（可多接，最多 10 张）· 端口 2 = 控制输入；输出 端口 0 = 图像（`{kind:"image", path}`，可直连 save 落 .png / 图像预览 / @ 引用）· 端口 1 = 控制输出。空白节点就列这三颗，按 `ports` 读，别拿 proc_image 的 `portRule` 套它。
+- **必须先装插件**：kind 建出来只是空壳；后端没装 / 没起时节点红字指路、▶ 硬停。安装走顶栏「插件」→ FLUX 3 Image Klein 卡片（命令行口径见技能 `flux3-klein-local-install`）；本机没装就不要替用户「先跑一下试试」。
+- **连参考图就是编辑模式**：端口 1 接 1–10 张图 → 走官方编辑路径（多参考），输出跟节点「比例」参数一致；蒙版重绘取端口 1 的第 1 张参考图，所以蒙版用法必须先连一张图。
+- **分辨率只能是桶**：`1:1`(1024²) · `16:9`(1344×768) · `3:2`(1248×832) · `4:3`(1152×896) · `2:3`(832×1248) · `3:4`(896×1152) · `9:16`(768×1344)。**不要传 size、也不要写自由像素值**；参数键值与默认值见节点指南的「参数」一节。
+- **显存按精度分档**：`INT8 蒸馏`是默认档，8G 卡可用（1:1 / 1024²）；`BF16` 细节更好、建议 24G 卡。装不下就切回 INT8 或降比例桶。
+- **抽卡 / 种子**：抽卡次数（每次执行 seed+1），抽 N 次 = N 张图；开透明背景时 = 2N 张（先黑底出基准、再把基准当参考图换纯白，两遍差分出 Alpha）。透明底适合主体清晰、背景干净的画面，复杂背景会有毛边。
+- **不写输出路径**：flux3klein_gen 没有 outputPath（和 proc_image 一样）——产物落应用资产目录，从输出端口 0 以 `{kind:"image", path}` 交出去，下游直连 save / 预览即可；写 outputPath 是无效字段。
+- **全局互斥**：图像生成与音乐 / 视频生成共用一把全局锁，同一时刻只跑 1 个；第二个节点报「已有媒体任务在跑」是设计行为，不是故障。
+- **耗时预期**：点 ▶ 会自动拉起后端（ComfyUI）并可能现加载权重（分钟级），跑完不自动关；不要因为没立刻出图就重复点 ▶ 或重跑同一节点。
 
 ## 字段细则（工具 schema 里只留一句，细则查这里）
 
 - **video_gen 端子（videoMode）**：控制输入恒为端口 0 = 第一个端子，数据端口从 1 起且与「端子号 / 数据槽号」同号 —— `fl2va` = 控制(0) · 提示词(1) · 首帧(2) · 末帧(3)；`r2v` = 控制(0) · 提示词(1) · 参考图 I1–I9(2–10) · 参考视频 V1–V3(11–13) · 参考音频 A1–A3(14–16)；自建工作流（workflowId 非空）= 控制(0) · 文本(1) · 素材(2+)，端子按该工作流参数重排。connect 的 `toIndex` / `fromIndex` 是 0 起始下标，就等于括号里的号。
 - **proc_image 的图像参数**：`maskOn` = 蒙版局部重绘（透明区才重绘，只认第 1 张 image）；maskPath 必须由用户在节点头部蒙版编辑器里涂，Agent 不能代画；需图像输入 + OpenAI 兼容图像服务商，与 `ratioLockOn` 同时开时以蒙版为准，且请求 size 被钉成首张参考图的像素尺寸。`bgRmOn` = 差分抠图出带 Alpha 的 PNG（先出纯黑基准、再复刻纯白逐像素差分，约 2 倍 Token；只有接受「基准图当参考图」的服务商才抠得动）。`imgQuality` 直传 quality（low/medium/high/xhigh/max；空 = 服务商按 auto；旧版 DALL·E 的 standard / hd 不要传）。`imgBackground: "transparent"` 直出 Alpha PNG（自动补「背景透明」提示词并禁用 bgRmOn）。`size` 合法值用 canvas_get `sections:["refs"]` 取，缺省 2048x1360。
-- **输出路径**：`outputPath` 扩展名按媒体类型强制（.mp4 / .wav / .flac / .mp3）；sensenova_gen 没有这个字段（结果落资产目录、从输出端口 0 交出）。
+- **输出路径**：`outputPath` 扩展名按媒体类型强制（.mp4 / .wav / .flac / .mp3）；flux3klein_gen / proc_image 没有这个字段（结果落资产目录、从输出端口 0 交出）。
 - **execute / function**：`execPath` 绑本机可执行文件（.exe / .bat / .cmd / .lnk，无数据端子）；`execIcon` 取 auto / rocket / gear / terminal / play / bolt / wrench / folder / file / power。`jscode` 里 `input = { 参数名: 值 }`（图像是 `{kind:"image", path}`），`return { 输出参数名: 值 }`；`inputs` / `outputs` 传完整数组即整体替换端子表（会连带改连线）。
 - **super 展开态 / 开发节点**：`expandW` / `expandH` 是展开态尺寸；`subFolder` 是内部节点相对路径的落点；`db` 标数据库节点（编译后出 db_replica）；开发节点字段语义见技能 mtnode-dev-architect。
 

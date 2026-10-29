@@ -167,11 +167,11 @@ has configured: text models via `hostModels()` / `hostSetModel(id)`, image backe
 dropdown already has a Text models / Image backends split).
 
 ```js
-// Draw: cloud image provider or the local SenseNova backend, whichever MTNode is configured for
+// Draw: cloud image provider or a local image backend, whichever MTNode is configured for
 var r = await AppHost.image("a cat wearing a hat", {
   model: M.imageModel(),                    // empty = follow the MTNode default (cloud first, then local)
   images: [refPath],                        // optional reference image (local path or dataURL) -> img2img / edit
-  strength: 0.6,                            // optional reference strength 0-1 (local SenseNova only; the cloud warns and ignores it)
+  strength: 0.6,                            // optional reference strength 0-1 (local backends only, per their capability field; the cloud warns and ignores it)
   onProgress: function (p) { bar(p.pct); }, // optional: the local backend takes tens of seconds to minutes
 });
 if (!r.ok) show(AppModel.imageErrorText(r)); else img.src = r.dataUrl;
@@ -183,9 +183,9 @@ var e = await AppHost.imageEdit("keep the subject, make the background snowy", {
 
 - **img2img / image edit**: `opts.images` (array of local absolute paths or `data:image/…`) — every image is sent.
   A cloud OpenAI-compatible endpoint uses `/images/edits` (multiple images map to "image 1 / image 2…" in the prompt);
-  the local SenseNova backend accepts 1-4.
+  each local image backend caps the count itself (see `maxRefImages`).
 - **Reference strength `strength` (0-1)**: 0 = the reference only acts as a prefix condition (the local backend's
-  official default), 1 = strongest. **Only the local SenseNova backend honours it**; the cloud has no such parameter
+  official default), 1 = strongest. **Only local image backends honour it** (check the `strength` capability field); the cloud has no such parameter
   and says so in the reply's `warnings` instead of pretending.
 - **Read the capability before drawing the UI**: each entry of `hostImageModels()` carries `refImages` /
   `maxRefImages` / `strength` — grey out backends that cannot take reference images and show the limit up front.

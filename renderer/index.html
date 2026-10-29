@@ -736,7 +736,7 @@
                                        →  window.forumApi
        pet/preload-pet.js              →  window.petApi     桌宠（含 pet-pack 同名副本）
        asr/preload-asr.js              →  window.asrApi     插件控制台（其余同口径：h3Api / music3Api /
-       h3/preload-h3.js                →  window.h3Api       yueApi / sensenovaApi / ttsApi / llamaApi /
+       h3/preload-h3.js                →  window.h3Api       yueApi / ttsApi / llamaApi /
        …（每个 <插件>/preload-<插件>.js）                      remotionApi …）
 
      每个 preload 一律白名单转发：不暴露 ipcRenderer / Node / 文件系统 / 账号 token。
