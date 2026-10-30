@@ -1,7 +1,7 @@
 ---
 name: mtnode-media-gen-nodes
 title: 音乐/语音/视频生成节点
-description: MTNode music_gen / yue_gen / breeze_gen / video_gen 节点：MiniMax Music 3、YuE2、Breeze TTS 2 语音、H3 后端、输出路径 outputPath、抽卡次数、种子 +1、全局仅 1 个音视频任务互斥、媒体输入端子走 file:/// URL。Use when wiring music_gen, yue_gen, breeze_gen, video_gen, media output paths, gacha rolls, or VRAM-related concurrency errors.
+description: music_gen / yue_gen / breeze_gen / video_gen：输出路径、抽卡、单任务互斥与媒体端子。
 ---
 
 # 音乐 / 语音 / 视频生成节点

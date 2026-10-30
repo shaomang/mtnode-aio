@@ -36,6 +36,7 @@ const GATEWAY = path.join(ROOT, 'dsh', 'gateway')
 export const MCP_PLUGIN_FILES = [
   'canvas-plugin.mjs',
   'db-plugin.mjs',
+  'manifest-plugin.mjs',
   'ai-facts-plugin.mjs',
   'longtask-plugin.mjs',
   'assets-plugin.mjs',
@@ -52,6 +53,9 @@ export const TOOL_FAMILY = {
   mtnode_app: 'canvas',
   mtnode_vision: 'canvas',
   mtnode_db: 'db',
+  /* 项目 manifest（资产登记 / 版本 / 依赖图 / 增量重建）：渲染层 app-manifest.js 执行，
+     文件本身由主进程 manifest-store.js 写 —— 与 db / facts 同一条帧链路。 */
+  mtnode_manifest: 'manifest',
   mtnode_facts: 'facts',
   lt_state: 'lt',
   mtnode_assets: 'asset',

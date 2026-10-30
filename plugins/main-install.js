@@ -636,6 +636,10 @@ const INSTALL_API_CHANNELS = {
      安装窗点「开始安装」会被这张白名单挡成 api_not_allowed。 */
   flux3kleinInstall: "flux3klein:install",
   flux3kleinPickInstallDir: "flux3klein:pickInstallDir",
+  /* Qwen Image 2.1（kind qwenimage，目录 id qwen-image-local）：步骤表真源
+     qwenimage-pack/steps.json，宿主 qwenimage/main-qwenimage.js。 */
+  qwenimageInstall: "qwenimage:install",
+  qwenimagePickInstallDir: "qwenimage:pickInstallDir",
   remotionInstall: "remotion:install",
   remotionPickInstallDir: "remotion:pickInstallDir",
   /* Paseo 手机接管（kind paseo）：安装是纯 JS 驱动（无 PowerShell 脚本），
@@ -1033,6 +1037,12 @@ const UNINSTALL_SPECS = {
     stop: "flux3klein:stop",
     keepHint: "生成结果与安装日志（画布资产目录、<数据目录>/flux3-klein-local）保留，不删。",
   },
+  /* Qwen Image 2.1：安装目录里有 ComfyUI / venv / 权重；卸载先停后端再删目录 */
+  "qwen-image-local": {
+    label: "Qwen Image 2.1",
+    stop: "qwenimage:stop",
+    keepHint: "生成结果与安装日志（画布资产目录、<数据目录>/qwen-image-local）保留，不删。",
+  },
   "minimax-music3": { label: "MiniMax Music 3", stop: "music3:stop", custom: { preview: "music3:uninstallPreview", run: "music3:uninstall" }, keepHint: "output/ 里的音频输出保留。" },
   "minimax-h3": { label: "MiniMax H3 视频生成", stop: "h3:stop", custom: { preview: "h3:uninstallPreview", run: "h3:uninstall" }, keepHint: "output/ 里的渲染产物保留。" },
   remotion: { label: "Remotion 动效视频" },
@@ -1080,6 +1090,8 @@ const BACKEND_ID_ALIASES = {
   soulxflashhead: "soulxflashhead-local",
   /* FLUX 3 Image Klein：卡片 kind（flux3klein）→ 目录 id（flux3-klein-local） */
   flux3klein: "flux3-klein-local",
+  /* Qwen Image 2.1：卡片 kind（qwenimage）→ 目录 id（qwen-image-local） */
+  qwenimage: "qwen-image-local",
 };
 
 /** 认得出是不是「需目录的本地后端插件」（认不出 = 窗口插件 / 未知 id）。 */

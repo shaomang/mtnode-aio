@@ -53,7 +53,7 @@ function defaultAgentProviderRoute() {
   return "deepseek-official";
 }
 
-/** 与全局助手一致：优先 assistProvider，再 API 模式 providerId，最后默认路由 */
+/** 与画布助手一致：优先 assistProvider，再 API 模式 providerId，最后默认路由 */
 function preferredAgentProviderRoute() {
   const routes = agentRouteOptions();
   const assist = String(
@@ -512,7 +512,8 @@ function imageInputsOf(node, idx) {
     if (
       src.kind !== "input_image" &&
       src.kind !== "proc_image" &&
-      src.kind !== "flux3klein_gen"
+      src.kind !== "flux3klein_gen" &&
+      src.kind !== "qwenimage_gen"
     )
       return;
     seen.add(src.id);
@@ -1007,7 +1008,7 @@ function dshRunMaxTokens() {
 }
 
 /* ══════════════ 会话 Token 消耗累积报告（报告 Badge）══════════════
- * 每次智能运行结束（会话 / 绑定节点 / 全局助手），把网关回传的 metrics 按
+ * 每次智能运行结束（会话 / 绑定节点 / 画布助手），把网关回传的 metrics 按
  * 「服务商 · 模型」并入所属会话的累计台账 st.tokenReport；运行中则由逐次 usage
  * 事件驱动临时台账，让 Badge 实时增长。全部数字都是累计值：
  * 输入 / 缓存读 / 缓存写 / 输出 / 推理、缓存命中率、LLM / 工具 / 墙钟时间、轮次步数。
@@ -1094,13 +1095,13 @@ function tokReportEnsure(owner) {
   }
   return r;
 }
-/* 全局助手的 Token 台账归属（本轮需求 · 会话为主体）：只有「当前那条助手会话」这一位，
+/* 画布助手的 Token 台账归属（本轮需求 · 会话为主体）：只有「当前那条助手会话」这一位，
    台账挂会话自己的 tokenReport（清空 / 换会话自然就是新的账）。空白态没有会话 →
    返回 null = 没有可记账的对象，也就不显示任何 Token 报告（不再有伪宿主那份临时台账）。 */
 function assistTokOwner() {
   return typeof assistBoundSession === "function" ? assistBoundSession() : null;
 }
-/* 本轮运行归属的「会话」（只认会话，不含全局助手与裸节点运行）：
+/* 本轮运行归属的「会话」（只认会话，不含画布助手与裸节点运行）：
    · runKey = agent:<会话id>          → 该会话（会话自己发起的一轮）
    · runKey = planpar:<归属>:<步序号> → 归属是会话时 = 该会话：计划的并行子任务不另起炉灶，
      它继承 owner 会话的一切（含「所属画布」与工作区口径）
@@ -1440,7 +1441,7 @@ function tokRoundTitleOf(text, opts) {
 }
 
 /* 台账持久化：会话走 agent-sessions/（persistAgentSession → session:save），
-   节点进工作流。全局助手就是一条会话（台账挂在它自己身上），没有单独的分支。 */
+   节点进工作流。画布助手就是一条会话（台账挂在它自己身上），没有单独的分支。 */
 function tokPersist(owner) {
   if (!owner) return;
   try {
@@ -3138,7 +3139,7 @@ function tokBadgeTouch(owner, force) {
   tokStatButtonMount(owner);
 }
 
-/* ── 小按钮 + 报告弹窗（本次需求 · 智能任务节点 / 全局助手）────────────────────
+/* ── 小按钮 + 报告弹窗（本次需求 · 智能任务节点 / 画布助手）────────────────────
    过去只有会话视图末尾那枚 <details> 报告，节点里干脆不挂（见 nodeTokOwnerNoBadge）：
    智能任务节点跑完一轮，节点里看不到这一轮花了多少 token、折多少钱。
    这里补一枚小按钮：折叠态只写「token 合计 · 预估费用」，点开是完整的 Token 报告
@@ -3164,10 +3165,33 @@ function tokStatButtonEl(owner) {
   });
   return btn;
 }
+/* Token 统计**跟随会话**（本次需求）：一个容器里只留当前这条会话的账。
+   会话被清空 / 删除 / 换成另一条时，上一份（小按钮 + 报告 Badge）必须一起撤下，
+   否则空白态还挂着上一条会话的数字。keepId 为空 = 当前没有会话 → 全清。 */
+function tokStatsPrune(scope, keepId) {
+  if (!scope || !scope.querySelectorAll) return;
+  const keep = String(keepId || "");
+  const nodes = scope.querySelectorAll(".tok-stat-btn, .tok-badge");
+  for (let i = 0; i < nodes.length; i++) {
+    const el = nodes[i];
+    const own = String((el.dataset && el.dataset.tokOwner) || "");
+    if (keep && own === keep) continue;
+    el.remove();
+  }
+}
 /* 小按钮挂哪儿：节点 → 状态行下方；助手会话 → 助手栏最底部（输入行下面）。
    已有同归属按钮就地替换（幂等），返回挂好的按钮 / null。 */
 function tokStatButtonMount(owner, host) {
-  if (!owner || typeof document === "undefined") return null;
+  if (typeof document === "undefined") return null;
+  /* 助手栏底部：按**当前绑定的助手会话**收口（不看 owner 是谁 —— 节点 / 普通会话
+     的刷新也会走到这里，不能把助手栏那枚误删）。会话清空 / 删除后这里没有归属 →
+     上一轮那份一并撤下。 */
+  const assistPaneEl = document.getElementById("assistPane");
+  if (assistPaneEl) {
+    const cur = typeof assistTokOwner === "function" ? assistTokOwner() : null;
+    tokStatsPrune(assistPaneEl, cur ? tokOwnerId(cur) : "");
+  }
+  if (!owner) return null;
   const sel = '.tok-stat-btn[data-tok-owner="' + tokOwnerId(owner) + '"]';
   const fresh = tokStatButtonEl(owner);
   const existing = document.querySelector(sel);
@@ -3186,6 +3210,9 @@ function tokStatButtonMount(owner, host) {
   }
   const nid = String(owner.id || "");
   if (owner.kind || (owner.node && owner.node.kind)) {
+    /* 节点侧同一口径：节点改绑别的会话后，旧会话那份一并撤下 */
+    const box = document.querySelector('.wf-node[data-nid="' + nid + '"]');
+    if (box) tokStatsPrune(box, tokOwnerId(owner));
     const st = document.getElementById("st-" + nid);
     if (st && st.insertAdjacentElement) {
       st.insertAdjacentElement("afterend", fresh);

@@ -207,6 +207,7 @@ function superRunMediaStatusOf(node) {
     "yueStatus",
     "breezeStatus",
     "flux3kleinStatus",
+    "qwenimageStatus",
     "videoStatus",
     "remotionStatus",
   ];

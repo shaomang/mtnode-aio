@@ -1,7 +1,7 @@
 ---
 name: mtnode-grill-me
 title: 拷问我
-description: 需求拷问：把任务映射成决策树，按轮问完整个「前沿」（前置已定的全部问题）；每轮必须用 ask_user_question 工具跳出 MTNode 询问窗（一次带上整个前沿，禁止把问题当聊天正文罗列），每题选项把推荐项放第一位标「（推荐）」；环境事实自己查绝不问用户；直到前沿为空且用户在询问窗里确认达成共识才动手。共识若含审批 / 交付 / 驳回回跳 / 并行 / 子图，产出的是长周期任务图（DAG）JSON。Use when the user says 拷问我 / grill me / 先问清再动手 / 需求不明确, or a dev-node 开发 run turns on 先拷问需求.
+description: 需求拷问：动手前用 ask_user_question 按轮问完整个决策前沿，用户确认共识再开工。
 ---
 
 # 拷问我（grill-me）

@@ -61,7 +61,7 @@
      画布走的是复用快速通道（签名不变就一个 DOM 都不拆），所以开关 / 保存之后
      头部按钮不会自己重建 —— 必须在这里原地改 class，否则外部按钮永远停在旧状态。 */
   function syncMaskButton(node) {
-    if (!node || (node.kind !== "proc_image" && node.kind !== "flux3klein_gen")) return;
+    if (!node || (node.kind !== "proc_image" && node.kind !== "flux3klein_gen" && node.kind !== "qwenimage_gen")) return;
     const on = maskEnabled(node);
     const btns = document.querySelectorAll(".n-mask-btn");
     for (const b of btns) {
@@ -84,7 +84,7 @@
   const UNDO_MAX = 6;
 
   function openMaskEditor(node) {
-    if (!node || (node.kind !== "proc_image" && node.kind !== "flux3klein_gen")) return;
+    if (!node || (node.kind !== "proc_image" && node.kind !== "flux3klein_gen" && node.kind !== "qwenimage_gen")) return;
     if (typeof normalizeImgParams === "function") normalizeImgParams(node);
     /* 背景图 = 本次运行实际下发的第 1 张图（@ 引用优先），与 image[0] 同源 */
     const bgPath =

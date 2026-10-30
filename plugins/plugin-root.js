@@ -50,6 +50,9 @@ const PLUGIN_CFG = {
   /* FLUX 3 Image Klein（kind flux3klein）：配置落 <数据目录>/flux3-klein-local/config.json */
   "flux3-klein-local": "flux3-klein-local/config.json",
   flux3klein: "flux3-klein-local/config.json",
+  /* Qwen Image 2.1（kind qwenimage）：配置落 <数据目录>/qwen-image-local/config.json */
+  "qwen-image-local": "qwen-image-local/config.json",
+  qwenimage: "qwen-image-local/config.json",
   "minimax-h3": "h3/config.json",
   h3: "h3/config.json",
   "llama-local": "llama/config.json",
@@ -99,6 +102,9 @@ const PLUGIN_SUBDIR = {
   /* FLUX 3 Image Klein：默认装到 <插件根目录>/flux3-klein-local（内含 ComfyUI / venv / 权重） */
   "flux3-klein-local": "flux3-klein-local",
   flux3klein: "flux3-klein-local",
+  /* Qwen Image 2.1：默认装到 <插件根目录>/qwen-image-local（内含 ComfyUI / venv / 权重） */
+  "qwen-image-local": "qwen-image-local",
+  qwenimage: "qwen-image-local",
   "minimax-h3": "video",
   h3: "video",
   "llama-local": "vLLM",

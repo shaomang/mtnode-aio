@@ -2,7 +2,7 @@
 name: breeze-script-format
 title: Breeze 台词规范
 menu: user
-description: 【内置·随应用发版，不需从工坊安装】把用户给的台词规范成 Breeze TTS 2 能正确念出来的正文：语气走 instruction（默认单次全局，情绪转折或超长才分段），发声事件用官方内联写法（中文 [笑]/[叹气]/[咳嗽]/[清嗓子]，英文 (laugh)/(sigh)/(cough)/(clears throat)），并做口播安全化（标点断句、数字单位、符号 emoji、舞台指示转合法事件）。交付「台词 / 语气 instruction / 分段说明」三个小节。用于 MTNode「Breeze 语音生成」节点（breeze_gen）端口 0 与端口 3。
+description: 【内置】把台词规范成 Breeze TTS 2 能念的正文：语气走 instruction、发声事件内联、口播安全化。
 ---
 
 # Breeze 台词规范

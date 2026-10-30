@@ -1,7 +1,7 @@
 ---
 name: mtnode-verify-in-app
 title: 真机自验（改 MTNode 时怎么验）
-description: 开发 MTNode 自身功能（插件 / 应用 / 窗口交互 / 渲染层 UI）时的自验纪律：起一只独立数据目录的开发态实例，经 tools/mtnode-gui.mjs 用 MCP 驱动真实窗口（outline / click / type / set / screenshot），截图读像素确认，留下可复核证据；做不到就如实写「未验证 + 原因」，不许拿 smoke 当「功能真的能用」。Use when developing MTNode itself (plugin install / console UI / app window / renderer CSS / dialog behaviour) and you must prove the change really works in the running desktop app, not only in node smoke tests.
+description: 改 MTNode 自身功能时起独立数据目录的开发态实例、用 MCP 驱动真实窗口截图自验。Use when developing MTNode itself (plugin / app window / renderer UI) and you must prove it really works. 做不到就如实写「未验证 + 原因」。
 ---
 
 # 真机自验（改 MTNode 时怎么验）

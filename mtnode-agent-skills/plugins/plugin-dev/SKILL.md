@@ -1,7 +1,7 @@
 ---
 name: mtnode-plugin-dev
 title: MTNode 插件开发规范
-description: MTNode 应用插件（catalog 窗口插件 / builtin / 本地后端插件）的开发规范：插件类型与边界、后端插件三层结构（主进程宿主 · 预加载桥 · 控制台 UI）、主进程与渲染层接线点、build.json 打包白名单、画布节点与 i18n / 指南 / 冒烟交付清单、报错总线与自我修复、数据目录纪律，含最小骨架与常见坑。新建或改造 MTNode 插件（顶栏「插件」对话框里那个东西）时按需加载。
+description: MTNode 应用插件（catalog 窗口 / builtin / 本地后端）的开发规范：三层结构、接线点、打包与交付清单。
 ---
 
 # MTNode 插件开发规范

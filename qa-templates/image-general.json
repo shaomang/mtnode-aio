@@ -1,0 +1,44 @@
+{
+  "version": 2,
+  "kind": "image",
+  "title": "图像质检 · 通用",
+  "description": "单图 / 出图产物的通用质量线：主体先对不对，再看一致性与技法。",
+  "passLine": 80,
+  "dimensions": [
+    {
+      "id": "subject",
+      "title": "主体表现",
+      "weight": 30,
+      "minScore": 60,
+      "criteria": "画面主体是否与要求一致（是谁 / 是什么 / 在做什么），主体是否清晰可辨、没有被裁切或遮挡到看不清。0 分=看不出主体，100 分=一眼即中且细节到位。"
+    },
+    {
+      "id": "composition",
+      "title": "构图",
+      "weight": 20,
+      "minScore": 50,
+      "criteria": "取景、留白、视觉重心、水平线是否成立；是否有明显的构图事故（主体贴边、头顶被切、杂乱背景抢戏）。"
+    },
+    {
+      "id": "consistency",
+      "title": "一致性",
+      "weight": 20,
+      "minScore": 55,
+      "criteria": "与「质检要求」里接的参考样例（设定图 / 样片）（角色外形、服装、场景、色调）是否一致。没有参考图时按画面内部自洽（光影方向、透视、比例）判。"
+    },
+    {
+      "id": "technique",
+      "title": "技术质量",
+      "weight": 15,
+      "minScore": 55,
+      "criteria": "清晰度、噪点、压缩痕迹、边缘是否干净；手部、五官、文字、细线等易崩部位有没有明显畸形。可用 probe / vision 工具放大局部核对。"
+    },
+    {
+      "id": "aesthetics",
+      "title": "审美",
+      "weight": 15,
+      "minScore": 50,
+      "criteria": "配色、光影、质感、风格统一度是否达到可用水准；是否像半成品或廉价素材。"
+    }
+  ]
+}

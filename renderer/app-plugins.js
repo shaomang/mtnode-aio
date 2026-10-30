@@ -859,6 +859,9 @@ const BACKEND_PLUGIN_SPECS = {
   /* FLUX 3 Image Klein（kind flux3klein，id flux3-klein-local）：权重只发一版，不做
      「检查更新」—— 卡片 = 安装 / 重装 + 启用 / 停用 + 控制台（独立 ComfyUI，8197）。 */
   flux3klein: { key: "flux3klein", api: "flux3klein", hasService: true, update: false },
+  /* Qwen Image 2.1（kind qwenimage，id qwen-image-local）：权重只发一版，不做
+     「检查更新」—— 卡片 = 安装 / 重装 + 启用 / 停用 + 控制台（独立 ComfyUI，8196）。 */
+  qwenimage: { key: "qwenimage", api: "qwenimage", hasService: true, update: false },
   remotion: { key: "remotion", api: "remotion", hasService: false },
   /* Blender 本地插件：卡片 = 安装 / 重装 + 启用 / 停用 + 控制台。宿主 blender/main-blender.js。
      「启用」= 插件自己拉起那只 Blender（用户手开的实例不做启停对象）；没有常驻后端要更新，
@@ -912,6 +915,8 @@ const BACKEND_INSTALL_IDS = {
   soulxflashhead: "soulxflashhead-local",
   /* FLUX 3 Image Klein：目录 id 与卡片 kind 不同名 */
   flux3klein: "flux3-klein-local",
+  /* Qwen Image 2.1：目录 id 与卡片 kind 不同名 */
+  qwenimage: "qwen-image-local",
   remotion: "remotion",
   /* Paseo 手机接管：安装窗里的插件 id 就是它的目录 id */
   paseo: "paseo-remote",
@@ -1201,6 +1206,16 @@ async function refreshSoulxflashheadPluginCard(root) {
    独立 ComfyUI（8197，与 H3 / InfiniteTalk / SoulX 互不干扰）。 */
 async function refreshFlux3KleinPluginCard(root) {
   return refreshBackendPluginCard(root, BACKEND_PLUGIN_SPECS.flux3klein, {
+    installLabel: (st) => (st.installed ? I18n.t("补装要件") : I18n.t("安装（国内镜像）")),
+  });
+}
+
+/* ---- Qwen Image 2.1（kind qwenimage，id qwen-image-local；宿主
+   qwenimage/main-qwenimage.js）：卡片三颗按钮 = 安装 / 重装 · 启用 / 停用 · 控制台。
+   安装开的是通用安装窗（步骤表真源 qwenimage-pack/steps.json）；「启用」静默起它自己那份
+   独立 ComfyUI（8196，与 H3 / InfiniteTalk / SoulX / FLUX 3 互不干扰）。 */
+async function refreshQwenImagePluginCard(root) {
+  return refreshBackendPluginCard(root, BACKEND_PLUGIN_SPECS.qwenimage, {
     installLabel: (st) => (st.installed ? I18n.t("补装要件") : I18n.t("安装（国内镜像）")),
   });
 }
@@ -1796,6 +1811,7 @@ function repaintPluginCard(card, item) {
     infinitetalk: refreshInfinitetalkPluginCard,
     soulxflashhead: refreshSoulxflashheadPluginCard,
     flux3klein: refreshFlux3KleinPluginCard,
+    qwenimage: refreshQwenImagePluginCard,
     paseo: refreshPaseoPluginCard,
     blender: refreshBlenderPluginCard,
   };
@@ -1893,7 +1909,7 @@ function mkPluginCardShell(item) {
   card.innerHTML =
     '<div class="plugin-tile-cover">' +
     (iconUrl
-      ? '<img alt="" width="128" height="128">'
+      ? '<img alt="" width="64" height="64">'
       : '<div class="plugin-tile-ph"></div>') +
     '<button type="button" class="plugin-tile-info" data-plugin-info aria-label="' +
     I18n.t("插件信息") +
@@ -2070,9 +2086,15 @@ async function openAppPluginsDialog() {
   const pop = document.createElement("div");
   pop.className = "plugin-pop";
   pop.setAttribute("role", "dialog");
-  const grid = document.createElement("div");
-  grid.className = "plugin-grid";
-  wrap.appendChild(grid);
+  /* 订阅回收表：必须**先于** mkPagedBlock 声明 —— 它在构造时就会同步跑一遍 mkStoreCard，
+     各后端分支里的 offs.push 若撞上 TDZ（const 未初始化）会抛 ReferenceError，被分页器的
+     建卡 try/catch 吞掉，卡片就静默少一张（表现为「原有插件几乎全丢失」）。 */
+  const offs = [];
+  /* 商店插件区：每页最多 2 行，超出翻页（本轮需求：插件页别被卡片占满版面）。
+     卡片一次建好并常驻，刷新闭包（card._repaint）始终指向真实节点，翻页只换显示的那一段。 */
+  const storePager = mkPagedBlock(list, (item) => mkStoreCard(item), { minWidth: 132, gap: 8, rows: 2 });
+  const grid = storePager.grid;
+  wrap.appendChild(storePager.el);
   /* 插件详情浮层（role=dialog）persistent：点它周围的空白不再收起 —— 见 AGENTS.md。
      本轮需求：**卡片本体不再响应任何点击**（连 Enter / Space 也不再开浮层），
      唯一的入口是封面右上角那颗 ⓘ（.plugin-tile-info，下面逐卡接线）。 */
@@ -2102,14 +2124,15 @@ async function openAppPluginsDialog() {
   };
   document.addEventListener("keydown", onEscKey, true);
 
-  const offs = [];
+  /* offs 已在商店插件区之前声明（建卡时就会 push）——这里只补第一条清理 */
   offs.push(() => {
     body.removeEventListener("scroll", onReposition);
     window.removeEventListener("resize", onReposition);
     document.removeEventListener("keydown", onEscKey, true);
     if (pop && pop.parentNode) pop.remove();
   });
-  for (const item of list) {
+  /* 一张商店插件卡（含状态刷新接线）：mkPagedBlock 对每个条目调一次，节点常驻。 */
+  function mkStoreCard(item) {
     const card = mkPluginCardShell(item);
     card._pluginItem = item;
     const openPop = () => openPluginPop(wrap, pop, card, item);
@@ -2121,7 +2144,6 @@ async function openAppPluginsDialog() {
         openPop();
       });
     }
-    grid.appendChild(card);
     card._repaint = () => repaintPluginCard(card, card._pluginItem || item);
     if (item.kind === "pet" || item.handler === "pet") {
       refreshPetPluginCard(card);
@@ -2186,6 +2208,12 @@ async function openAppPluginsDialog() {
         offs.push(window.api.onFlux3KleinConsoleChanged(() => refreshFlux3KleinPluginCard(card)));
       }
       refreshFlux3KleinPluginCard(card);
+    } else if (item.kind === "qwenimage" || item.handler === "qwenimage") {
+      /* Qwen Image 2.1：控制台开 / 关、启停后端都会广播 consoleChanged，卡片据它重画 */
+      if (window.api && window.api.onQwenImageConsoleChanged) {
+        offs.push(window.api.onQwenImageConsoleChanged(() => refreshQwenImagePluginCard(card)));
+      }
+      refreshQwenImagePluginCard(card);
     } else if (item.kind === "paseo" || item.handler === "paseo") {
       /* Paseo 手机接管：控制台窗开/关都会广播 consoleChanged，卡片据它重画状态行 */
       if (window.api && window.api.paseoRemoteOnConsoleChanged) {
@@ -2210,6 +2238,7 @@ async function openAppPluginsDialog() {
       }
       refreshWindowPluginCard(card, item);
     }
+    return card;
   }
   _petProgressOff = () => {
     offs.forEach((fn) => {
@@ -2222,7 +2251,7 @@ async function openAppPluginsDialog() {
   if (window.api && window.api.onMtnodeInstallFinished) {
     offs.push(
       window.api.onMtnodeInstallFinished(() => {
-        grid.querySelectorAll("[data-plugin-id]").forEach((el) => {
+        storePager.eachCard((el) => {
           try { if (el._repaint) el._repaint(); } catch {}
         });
         if (typeof refreshAppPluginsCache === "function") {
@@ -2230,7 +2259,7 @@ async function openAppPluginsDialog() {
         }
         /* 装完那次自检的结论可能刚到：重新拉一次勾的状态并补画（勾只给自检通过的插件） */
         void loadPluginCheckState().then(() => {
-          grid.querySelectorAll("[data-plugin-id]").forEach((el) => {
+          storePager.eachCard((el) => {
             try { paintPluginDone(el, el.getAttribute("data-plugin-id")); } catch {}
           });
         });
@@ -2242,7 +2271,7 @@ async function openAppPluginsDialog() {
     offs.push(
       window.api.onPluginSelfcheckChanged(() => {
         void loadPluginCheckState().then(() => {
-          grid.querySelectorAll("[data-plugin-id]").forEach((el) => {
+          storePager.eachCard((el) => {
             try { paintPluginDone(el, el.getAttribute("data-plugin-id")); } catch {}
           });
         });
@@ -2255,6 +2284,16 @@ async function openAppPluginsDialog() {
     empty.textContent = I18n.t("暂无插件");
     body.appendChild(empty);
   }
+  /* ── 重后端注册中心（本轮需求：自成一区，在本页插件卡片下方）──
+     与插件体系并存：插件是官方功能的入口，这里管 Agent 在任务里现场装出来的工具
+     （装完登记 → 之后任何会话 / 画布都能查到并复用）。**不预置任何登记**，
+     初版是空列表；插件里的本机后端（视频 / 音乐 / 语音 / 渲染 / 数字人 / 出图）
+     以只读镜像列在同一区块下方（br_admin list 的 plugins 字段是同一份数据）。
+     卡片、详情、登记表单都实现在 renderer/app-backend-registry.js。
+     它自带一套分页（与商店插件 / 自建插件互不影响），同样最多 2 行。 */
+  const brBlock = buildBackendRegistryBlock({});
+  body.appendChild(brBlock.el);
+  offs.push(() => { try { brBlock.dispose(); } catch {} });
   /* ── 用户自建插件（<数据目录>/user-plugins）──
      与上面的商店插件同一套卡片壳，单独一段：它们是用户自己放进目录的声明式插件，
      不随版本更新失效，坏了一键修复。段头只留位置，写法在卡片详情里看。 */
@@ -2264,10 +2303,12 @@ async function openAppPluginsDialog() {
   sep.textContent = I18n.t("自建插件") + " · " + I18n.t("目录：") + "user-plugins";
   body.appendChild(sep);
   if (_userPluginItems.length) {
-    const grid2 = document.createElement("div");
-    grid2.className = "plugin-grid";
-    body.appendChild(grid2);
-    for (const item of _userPluginItems) {
+    /* 自建插件区：**独立分页**（与商店插件 / 注册中心互不影响），同样最多 2 行 */
+    const userPager = mkPagedBlock(_userPluginItems, (item) => mkUserCard(item), { minWidth: 132, gap: 8, rows: 2 });
+    body.appendChild(userPager.el);
+    offs.push(() => { try { userPager.dispose(); } catch {} });
+  }
+  function mkUserCard(item) {
       const card = mkUserPluginCard(item);
       card._pluginItem = item;
       const openPop = () => openPluginPop(wrap, pop, card, item);
@@ -2280,7 +2321,6 @@ async function openAppPluginsDialog() {
         ev.preventDefault();
         openPop();
       });
-      grid2.appendChild(card);
       /* 卡片上的快捷动作：正常/停用 = 启停；异常 = 修复（详情面板里有全套） */
       const actions = card.querySelector("[data-plugin-actions]");
       if (actions) {
@@ -2323,7 +2363,7 @@ async function openAppPluginsDialog() {
         }
         btn("gear", I18n.t("详情 / 修复 / 节点"), openPop);
       }
-    }
+    return card;
   }
 }
 

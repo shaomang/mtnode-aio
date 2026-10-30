@@ -136,7 +136,7 @@
       mtnode-unattended:
         sandbox: workspace-write
         approval: ask
-    defaultPreset: workspace-write
+    defaultPreset: mtnode-unattended
 
 - id: tool-bash
   disabled: !!js process.platform === 'win32' || process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
@@ -462,6 +462,16 @@
     - id: mtnode-session-steer
       name: './plugins/session-steer-server.mjs'
 
+    # 单只子代理中断（session/interrupt-subagent 桥）：引擎的 subagent 工具天生异步
+    # （调用立刻回 started subagent <id>，后台跑完再发结算通知），而 SDK 自带的四枚
+    # JSON-RPC 方法里没有中断子代理的入口 —— interrupt 只挂在进程内的 ctx.subagents 上。
+    # 本行给 SDK server 装一枚可选方法：宿主在运行队列里点 ■ 时传 {parentSessionId,
+    # childSessionId}，内部以人类父级身份 ctx.subagents.interrupt(id, {kind:'user', ...})。
+    # 回 {ok:false, reason:'rejected'|'no_subagents'|'invalid_params'}，一律不抛；
+    # 老运行时没有本行 = 网关回退成「只展示不可中断」，与接入前行为一字不变。
+    - id: mtnode-subagent-control
+      name: './plugins/subagent-control-server.mjs'
+
     # MTNode 交互桥:注册提问 provider 与审批 answerer,经 localhost TCP 转发给
     # gateway(端口由宿主在 spawn 时经 MTNODE_BRIDGE_PORT 注入)。
     # BongoChat 仍需桥接审批（联网搜索放行）；仅禁用画布/提问工具。
@@ -477,6 +487,14 @@
     # （list/query/get/calc，只读、确定性检索，宿主按接入关系放行或拒绝）。
     - id: mtnode-db
       name: './db-plugin.mjs'
+      disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
+
+    # MTNode 项目 manifest 工具（mtnode_manifest）：资产登记 / asset_id@rev / 依赖图 /
+    # 增量重建计划（stale_plan）/ 引用校验。文件是 <工程根>/manifest.json，由主进程
+    # manifest-store.js 写；宿主按「显式 root > 画布工作目录」定位工程，都没有就回错误文本
+    # （会话不中断，与 db / facts 同一口径）。缺口文档 P0-2 的 G2+G3。
+    - id: mtnode-manifest
+      name: './manifest-plugin.mjs'
       disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
 
     # MTNode AI 事实库工具:任何 Agent 会话 / 专家 / 节点默认可用 mtnode_facts 索引本画布的
@@ -609,13 +627,6 @@
 
 # ── user plugins (managed from MTNode settings) ──
 
-- id: user-mcp-mvjspa4i
-  name: '@deepseek-ai/dsh-mcp-client'
-  config:
-    serverName: 'mtnode-self'
-    transport: 'http'
-    url: 'http://127.0.0.1:54320/mcp?token=84586d0a3f94db0ccef86f2a8b34d4f34c2559aca6caaa5a'
-
 - id: user-mcp-mvk3qccq
   name: '@deepseek-ai/dsh-mcp-client'
   config:
@@ -623,3 +634,10 @@
     transport: 'stdio'
     command: 'E:\mtnode-isolated\newmachine-cancel\data\pipeline-console\blender\.uv\uvx.exe'
     args: ['mcp-for-blender', '--host', '127.0.0.1', '--port', '9876']
+
+- id: user-mcp-mvv0sosn
+  name: '@deepseek-ai/dsh-mcp-client'
+  config:
+    serverName: 'mtnode-self'
+    transport: 'http'
+    url: 'http://127.0.0.1:59923/mcp?token=ff2ae0a6caa2e62b15fe4ec531ea5af246821145db130a5f'

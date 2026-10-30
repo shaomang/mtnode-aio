@@ -2536,6 +2536,45 @@ button.mini.btn-sq.tpl-ico {
   letter-spacing: .2px
 }
 
+/* 子代理运行标（本次需求 · app-subagent.js）：这条会话名下还有子代理在后台跑。
+   父那一轮 idle 后行上的「运行中」转圈会消失（引擎那一轮真的收尾了），
+   只剩这枚标能说明「它还有活在跑」。紫色 = 工具族里「子代理」那一族的色。 */
+.side-sess-sub {
+  flex: none;
+  font-size: 10px;
+  line-height: 1;
+  padding: 2px 5px;
+  border-radius: 4px;
+  color: rgb(178, 148, 255);
+  background: rgba(178, 148, 255, .1);
+  border: 1px solid rgba(178, 148, 255, .3);
+  white-space: nowrap;
+  letter-spacing: .2px
+}
+
+/* 子代理状态文字（会话工具卡 / 运行队列行 / 助手栏状态条共用一份口径）：
+   运行中紫、已完成灰绿、已失败红。走秒由 app-subagent.js 每秒就地改文本，
+   这里只管颜色 —— 三种状态都是「一句话」，不额外加图标，行宽才撑得住。 */
+.dsh-sub-state {
+  flex: none;
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: nowrap
+}
+
+.dsh-sub-state.st-running {
+  color: rgb(178, 148, 255)
+}
+
+.dsh-sub-state.st-ok {
+  color: rgb(122, 176, 138)
+}
+
+.dsh-sub-state.st-error {
+  color: rgb(232, 108, 108)
+}
+
 .side-sess-btn {
   font-size: 10px;
   padding: 1px 7px;
@@ -4010,6 +4049,32 @@ button.mini.btn-sq.tpl-ico {
 .agent-tools-toggle.on .agent-mode-track::after {
   left: 20px;
   background: #5fd68a;
+}
+
+/* 「超频模式」开关：打开时整条槽跑一道彩虹呼吸灯（渐变平移 = 流光，明暗呼吸 = 呼吸灯）。
+   只在 .boost.on 上生效，其余开关观感不变。 */
+@keyframes agent-boost-flow {
+  from { background-position: 0% 50%; }
+  to { background-position: 200% 50%; }
+}
+@keyframes agent-boost-breathe {
+  0%, 100% { box-shadow: 0 0 4px rgba(120, 220, 255, .35), 0 0 1px rgba(255, 255, 255, .5); }
+  50% { box-shadow: 0 0 12px rgba(180, 120, 255, .85), 0 0 3px rgba(255, 255, 255, .95); }
+}
+.agent-tools-toggle.boost.on .agent-mode-track {
+  background-image: linear-gradient(
+    90deg,
+    #ff4d4d, #ffb84d, #eaff4d, #4dff9e, #4dd8ff, #a44dff, #ff4d9e, #ff4d4d
+  );
+  background-size: 200% 100%;
+  animation: agent-boost-flow 2.6s linear infinite, agent-boost-breathe 2.6s ease-in-out infinite;
+}
+.agent-tools-toggle.boost.on .agent-mode-track::after {
+  background: #fff;
+  box-shadow: 0 0 6px rgba(255, 255, 255, .95);
+}
+@media (prefers-reduced-motion: reduce) {
+  .agent-tools-toggle.boost.on .agent-mode-track { animation: none; }
 }
 
 .agent-tools-status {

@@ -499,6 +499,24 @@ function createDshAdapter(opts) {
       return request('cancel', params, 30000)
     },
 
+    /* 中断一只子代理（运行队列那一行的 ■）：子代理是引擎里**异步**跑的后台子任务，
+       父那一轮常常已经收尾，所以不能走 cancel（那会关掉整台 runtime）。
+       只透传两个 id，网关按 childSessionId 找回所属 runtime 再下发给运行时侧。
+       一律 resolve：失败只是「没停下来」，由界面提示，不该炸成未处理拒绝。 */
+    interruptSubagent(params) {
+      const p = params || {}
+      const o = {}
+      for (const k of ['parentSessionId', 'childSessionId']) {
+        const v = p[k] == null ? '' : String(p[k]).trim()
+        if (v) o[k] = v
+      }
+      return request('interruptSubagent', o, 30000).catch((err) => ({
+        ok: false,
+        reason: 'error',
+        error: (err && err.message) || String(err),
+      }))
+    },
+
     /* 渲染层回答模型提问 / 审批(交互 id 由网关在事件里下发)。
        等待口径（本次需求 · 拷问共识）：**不设上限** —— 与询问卡同一条口径，回执一到就
        resolve，没到就一直等（网关侧那一问本来就是永久等待，见 gateway.mjs 的 ask()）。

@@ -50,6 +50,8 @@ const NP_EXCLUDE_KINDS = {
   mutex: 1,
   sequencer: 1,
   delayer: 1,
+  /* 弹窗：正文是给人看的 / 给人改的内容，不能由参数端子覆写 */
+  popup: 1,
   /* 时间与等待：只有时间 / 路径两三个字段，参数化收益有限 */
   timer: 1,
   wait_file: 1,
@@ -1562,8 +1564,9 @@ function npJsonBodyFor(node, body) {
     bar.appendChild(
       npBtn(I18n.t("源码"), I18n.t("切回源码视图（表单改动已写回正文）"), () => {
         NP_JSON_SRC_VIEW.add(node.id);
-        if (typeof applyNodeForm === "function") applyNodeForm(node);
-        else if (typeof renderCanvas === "function") renderCanvas();
+        /* 只改 body 内部视图 → applyNodeForm 会早退，得就地重建 body（见 refreshNodeBody） */
+        if (typeof refreshNodeBody === "function" && refreshNodeBody(node)) return;
+        if (typeof renderCanvas === "function") renderCanvas();
       }),
     );
     const arr = Array.isArray(det.value);
@@ -1632,8 +1635,9 @@ function npJsonSwitchChip(node) {
     ev.stopPropagation();
     if (NP_JSON_SRC_VIEW.has(node.id)) NP_JSON_SRC_VIEW.delete(node.id);
     else NP_JSON_SRC_VIEW.add(node.id);
-    if (typeof applyNodeForm === "function") applyNodeForm(node);
-    else if (typeof renderCanvas === "function") renderCanvas();
+    /* 同上：body 内部视图开关，走就地重建；没有元素时回落整幅重绘 */
+    if (typeof refreshNodeBody === "function" && refreshNodeBody(node)) return;
+    if (typeof renderCanvas === "function") renderCanvas();
   });
   return b;
 }

@@ -1,0 +1,44 @@
+{
+  "version": 2,
+  "kind": "video",
+  "title": "视频质检 · 影视镜头",
+  "description": "镜头级质量线：语义与连贯优先，一致性与技术其次，审美收尾。默认抽 7 帧，可按需用 frames 工具加抽。",
+  "passLine": 80,
+  "dimensions": [
+    {
+      "id": "semantic",
+      "title": "语义符合",
+      "weight": 25,
+      "minScore": 60,
+      "criteria": "画面是否传达了「要求 / 脚本」端子（没有就看镜头规格 JSON 的 goal）：主体、动作、景别、情绪是否对得上。跑题、动作缺失按程度扣分。"
+    },
+    {
+      "id": "continuity",
+      "title": "动作与连贯",
+      "weight": 20,
+      "minScore": 55,
+      "criteria": "帧与帧之间动作是否连续、有无跳变 / 闪烁 / 鬼影 / 物体凭空出现消失；运镜是否平稳。用 frames 抽相邻帧比对。"
+    },
+    {
+      "id": "consistency",
+      "title": "一致性",
+      "weight": 20,
+      "minScore": 55,
+      "criteria": "角色外形、服装、场景、光源方向在全片是否稳定，是否与「质检要求」里接的参考样例（设定图 / 样片）一致。身份漂移、换脸、服装变色属重缺陷。"
+    },
+    {
+      "id": "technique",
+      "title": "技术质量",
+      "weight": 15,
+      "minScore": 55,
+      "criteria": "分辨率、码率、黑帧、卡帧、花屏、字幕糊、手部与文字畸形。probe 给出的硬指标只作证据，结论由你判断并写进 reason。"
+    },
+    {
+      "id": "aesthetics",
+      "title": "审美",
+      "weight": 20,
+      "minScore": 50,
+      "criteria": "构图、调色、光影、质感的完成度；是否达到可交付水准，还是明显的 AI 塑料感。"
+    }
+  ]
+}

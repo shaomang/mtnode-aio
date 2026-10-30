@@ -149,6 +149,36 @@ const WEIGHTS_SPECS = {
       },
     ],
   },
+  /* Qwen Image 2.1：安装脚本认 ComfyUI\models 下三个子目录的官方文件名
+     （qwen_image_2.1_int8_convrot / _turbo_int8_convrot、qwen3vl_8b_int8_convrot、
+     qwen_image_2.1_vae_bf16），「补装权重」把手上那一份搬进同样位置，
+     重跑安装时按文件大小跳过已就位的。两个量化档共用编码器与 VAE。 */
+  "qwen-image-local": {
+    label: "Qwen Image 2.1（ComfyUI）权重",
+    slots: [
+      {
+        id: "diffusion_models",
+        label: "扩散模型（INT8 / Turbo INT8）",
+        rel: ["ComfyUI", "models", "diffusion_models"],
+        accepts: ["diffusion_models"],
+        fileRe: [/^qwen_image_2\.1_.*\.safetensors$/i],
+      },
+      {
+        id: "text_encoders",
+        label: "文本编码器（qwen3vl_8b）",
+        rel: ["ComfyUI", "models", "text_encoders"],
+        accepts: ["text_encoders"],
+        fileRe: [/^qwen3vl_8b_.*\.safetensors$/i],
+      },
+      {
+        id: "vae",
+        label: "VAE（qwen_image_2.1_vae）",
+        rel: ["ComfyUI", "models", "vae"],
+        accepts: ["vae"],
+        fileRe: [/^qwen_image_2\.1_vae.*\.safetensors$/i],
+      },
+    ],
+  },
   "breeze-tts-local": {
     label: "Breeze TTS 2 权重",
     slots: [

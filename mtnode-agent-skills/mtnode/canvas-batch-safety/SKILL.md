@@ -1,7 +1,7 @@
 ---
 name: mtnode-canvas-batch-safety
 title: 画布批量与文生图防 N²
-description: MTNode 画布 batchMode=batch 时每次运行只能处理单条输入，禁止把整批 N 条重复塞进每次运行；文生图 proc_image 每次只出 1 张。Use when designing batch workflows, proc_image, split nodes, or user reports duplicate API calls / token explosion.
+description: 画布 batchMode=batch 每次只处理单条、proc_image 每次只出 1 张（防 N² 调用）。
 ---
 
 # 画布批量与文生图安全

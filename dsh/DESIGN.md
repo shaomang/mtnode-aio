@@ -57,7 +57,8 @@ profile + 有序补丁层**：
   解析后显式传入（SDK 的 `dshManifest.version !== clientManifest.version` 会硬报错）。
 - 握手走 `await harness.start()`（高层 API，自带「只握手一次 + 失败换新客户端」）；
   旧写法 `harness.client.start()` + `harness.client.initialize(params)` 在 0.2 不可用。
-- 低层 JSON-RPC 直呼（`session/resume`、`session/steer`、`session/pause` 三枚桥方法）
+- 低层 JSON-RPC 直呼（`session/resume`、`session/steer`、`session/pause`、
+  `session/interrupt-subagent` 四枚桥方法）
   仍是 `harness.client.request(method, params, timeoutMs)`，语义未变。
 - `parsePluginRows` 兼容缩进行（`insert:` 段）——网关设置页的插件清单据此列出插入行；
   `applySandboxWorkaround` 仍按文本替换 `- id: sandbox` 段（顶层覆盖行，未缩进）。
@@ -390,6 +391,7 @@ dsh 0.2 的 `llm-deepseek` 把 `config.baseURL` / `DEEPSEEK_BASE_URL` 当 **Mess
 | `steer` | `{reqId\|cancelTag, sessionId?, text?\|contentBlocks?}` | **轮内插话**:往**正在跑的这一轮**的下一步边界投一句话(运行时侧 `agent.steer`),不重开轮、不等本轮结束。网关按在途表(`reqId → {runKey, cancelTag, sessionId}`)定位那一轮那台 runtime 的 client,同步下发 `session/steer`(10s)。送达 → `{ok:true, reqId, sessionId, steered:true, reqIds}`;没有在途这一轮 / 那台 runtime 已回收 / **老运行时没有该方法** / 下达超时 → `{ok:false, reason:'unsupported', detail}`,宿主据此回落成普通排队消息。详见「运行中插话与暂停契约」 |
 | `pause` | `{reqId\|cancelTag, sessionId?}` | **轮内暂停**:中止当前请求但**保留 live 会话与收件箱**(运行时侧 `agent.cancel({kind:'user'},{keepInbox:true})`,**不关 runtime**),之后可点名 `run.resumeSession` 从中断处接下去。回执与降级口径同 `steer`(`{ok:true, paused:true}` / `{ok:false, reason:'unsupported'}`)。成功后本轮以 `done{paused:true}` 收尾,**该轮不会有 `error` 事件**(否则宿主的失败重发闸会把一次暂停当 429 类失败连重发 5 次) |
 | `interact` | `{kind:'question'\|'approval'\|'canvas'\|'db'\|'facts'\|'abort', id, answers?\|outcome?\|result?\|error?}` | 回答提问 / 审批 / 画布工具 / 数据库工具 / AI 事实库工具结果,按交互 id 路由回对应运行时(`canvas` → `{t:'canvas-result'}`,`db` → `{t:'db-result'}`,`facts` → `{t:'facts-result'}`);`kind:'abort'` 让该次交互以失败收场(工具报错而非空答案)。id 已失效 → `{ok:true, stale:true}`(见「交互桥的归属契约」) |
+| `interruptSubagent` | `{parentSessionId, childSessionId}` | **中断一只子代理**:引擎的 `subagent` 工具**一调用就返回**(`started subagent <id>`),真正的活在后台上跑,而父会话那一轮此时往往已经 idle 收尾 —— 所以这里**不点名 runKey/reqId**(那一轮已经不在途了),网关按子代理归属表(`childSessionId → {key, parentSessionId}`,由常驻长订阅在 `subagent.started` 时登记)找到那台 runtime,下发运行时插件方法 `session/interrupt-subagent`(15s),插件再调 `subagents.interrupt(childSessionId, {kind:'user', parentSessionId})`。回执 `{ok:true}` / `{ok:false, reason:'invalid_params'\|'no_runtime'\|'unsupported'\|'error'}`。见「子代理运行提示契约」 |
 | `providerCatalog` | — | `{deepseek:[…], piai:[…]}` 服务商/模型目录(pi-ai 同源) |
 | `pluginList` / `pluginAdd` / `pluginRemove` / `pluginEnable` / `pluginDisable` | `{pkg, id?}` 等 | 读取/安装/移除/挂载/卸载 cordis.yml 插件。`pluginList` 每项含 `title`/`description`/`purpose`/`version`(来自 package.json、preset.yml、行上注释)。核心运行时行只读;非核心(用户插件、套装、可选 shipped 行)可在设置中挂载/卸载;变更后重启运行时 |
 | `mcpList` / `mcpAdd` / `mcpRemove` / `mcpSetEnabled` | `{serverName, …}` | MCP 服务器管理(cordis 用户段,变更后重启运行时) |
@@ -422,9 +424,13 @@ rejected,请求进不了宿主 UI,沙箱拒绝就只剩一句失败)、
 首条 `session.event` 改判权威 id 时再发一次,见「断点续跑契约」)、
 `done`(`{finalResponse, metrics, sessionId, resumed}`;续跑不可用时另带 `resumeUnavailable:true`；
 **被宿主暂停的这一轮另带 `paused:true`，且该轮保证不会有 `error` 事件**，否则宿主的失败重发闸会把
-一次暂停当 429 类失败连重发 5 次，见「运行中插话与暂停契约」)。
+一次暂停当 429 类失败连重发 5 次，见「运行中插话与暂停契约」)、
+`subagent`(**子代理生命周期**,`{phase:'start'|'end', parentSessionId, childSessionId, hostSessionId,
+sessionTag, at, status?, stopReason?}` —— 来自运行时的**顶层通知** `subagent.started` /
+`subagent.finished`(不是 `session.event` 里的会话事件),由 `emitGlobal` 发出的**全局帧**:
+`reqId` 恒为空串。见「子代理运行提示契约」)。
 所有事件带 `reqId`,对应一次 `run`
-(`ix-drop` 的全局撤卡帧例外:reqId 为空串)。
+(`ix-drop` 与 `subagent` 的全局帧例外:reqId 为空串)。
 
 > `turn` / `step` 取自 `assistant/chunk` 事件的 `params.event.data`(实测记录形如
 > `{type:'assistant/chunk', seq, time, data:{turn, step, chunk:{…}}}`),取不到时回落事件顶层、
@@ -508,13 +514,14 @@ rejected,请求进不了宿主 UI,沙箱拒绝就只剩一句失败)、
 | --- | --- | --- | --- |
 | 精简工具负载 | `lean` → `MTNODE_LEAN_TOOLS` | 整档(布尔):`mtnode_app` / `mtnode_vision` | `canvas-plugin.mjs` 的 `register()` |
 | 智能节点锁画布 | `noCanvas` → `MTNODE_NO_CANVAS` | 整档(布尔):画布主干三件 | 同上 |
-| 按名字裁剪 | `hideTools` → `MTNODE_HIDE_TOOLS` | 名单(数组/逗号串):数据库、预设拒项、goal/子代理/后台任务档 | MTNode 自有 → 各自插件注册口;引擎自带 → `mtnode-tool-visibility` 插件 |
+| 按名字裁剪 | `hideTools` → `MTNODE_HIDE_TOOLS` | 名单(数组/逗号串):数据库、预设拒项、goal/子代理/后台任务档、工具族按需注册(browser_* / 素材 / 音视频:本轮原话没提到就整族裁) | MTNode 自有 → 各自插件注册口;引擎自带 → `mtnode-tool-visibility` 插件 |
 
 - **名单真源**:`dsh/gateway/tool-visibility.mjs`(纯模块、零依赖,网关进程与运行时进程共用)。
   `HIDEABLE_TOOLS` 是**唯一白名单**,`normalizeHiddenTools()` 负责丢未知名 + 去重 + 字典序排序;
   不在这份名单里的字符串一律丢弃 —— 宿主传来的东西不允许原样进 env,更不允许拿它去
   `restrict()` 一个没见过的名字。新增可裁工具只改这一处(渲染层的触发条件在
-  `app-nodes.js` 的 `agentDeniedToolNames()`,两边由 `test/smoke-token-budget.js` 钉住一致)。
+  `app-nodes.js` 的 `agentDeniedToolNames()`(许可位)与 `agentHiddenToolNames()`(按本轮
+  原话的整族裁剪),两边由 `test/smoke-token-budget.js` 钉住一致)。
 - **MTNode 自有工具**(画布 / 应用 / 识图 / 数据库)注册在我们自己的插件里,最省事的做法就是
   **不注册**:`canvas-plugin.mjs` 的 `register()` 与 `db-plugin.mjs` 的入口各查一次名单。
 - **引擎自带工具**(`create_goal` / `todo_write` / `subagent` 家族 / `job_*` / `ask_user_question`)
@@ -882,6 +889,83 @@ rejected,请求进不了宿主 UI,沙箱拒绝就只剩一句失败)、
 
 `keepInbox` 是「暂停」与「终止」的唯一分界：丢了它，暂停就退化成终止（已排队消息与 steering 条目
 一并作废）。回归口径由 `test/smoke-session-steer-pause.js` 钉住（三层各自真跑 / 真抽函数跑）。
+
+## 子代理运行提示契约(运行时 ↔ gateway ↔ 宿主)
+
+> 现场：助手一边说「子代理已在后台生成画布。我会等它回报完成回执」，一边界面上、会话里
+> **没有任何东西在动** —— 用户完全看不出「有活还在跑」。三条查证过的成因，缺一条都还是黑屏：
+> ① 引擎的 `subagent` 工具**天生异步**（`dsh-tool-subagent/README.zh.md`：每次调用立刻返回
+> `started subagent <childId>`，不等待子任务结果）；② `subagent.started` / `subagent.finished`
+> 是**顶层通知方法**（`dsh-sdk-jsonrpc-server` 的 `server.notify`），而网关的 `mapNotification`
+> 只认 `session.event`，两条通知被静默丢弃（收尾台账的「子代理 N」也因此恒为 0 —— 那个分支
+> 永远走不到）；③ 更要命的是**时序**：SDK 的一次 `run` 以父会话 `session.status === 'idle'`
+> 收尾并随即关掉订阅，而模型说完「我会等它回报」这一轮就 idle 了 —— 子代理往往比父那一轮
+> **活得久**，按 reqId 收的帧注定一条都收不到。
+
+### 三层职责（谁只干什么）
+
+| 层 | 落点 | 只负责 | 明确不负责 |
+|---|---|---|---|
+| 运行时（cordis 进程内） | `dsh/gateway/plugins/subagent-control-server.mjs`（插件 id `mtnode-subagent-control`，紧邻 `mtnode-session-steer` 行，同样在 `# ── user plugins ──` 段之前） | 把**可选** JSON-RPC 方法 `session/interrupt-subagent` 原型级补到 `HarnessSdkJsonRpcServer.prototype.handleRequest` 上：参数 `{parentSessionId, childSessionId}` → `subagents.interrupt(childSessionId, {kind:'user', parentSessionId})` | 不去找「哪台进程」；不判断该不该中断；不抛错（抛错会把用户在跑的那一轮判成失败） |
+| 网关 | `dsh/gateway/gateway.mjs`：`watchSubagentLifecycle` / `emitGlobal` / `subagentOwner` / `sessionOwners` / `handleInterruptSubagent` | 每台 runtime 起一条**跨 run 的常驻长订阅**（`client.subscribe` 只认 `subagent.started` / `subagent.finished`），把帧经 `emitGlobal` 以 **reqId 空串**发给宿主；维护 `childSessionId → {key, parentSessionId}` 归属表供中断寻址 | 不缓存子任务的正文 / 结果；不改 `done` / `metrics` 语义；不自己造一条「子代理消息」塞进会话 |
+| 宿主（渲染层） | `preload.js` 的 `dshOnSubagent/dshInterruptSubagent`、`main.js` 的 `dsh:interruptSubagent`、`renderer/app-subagent.js`（唯一运行表 `window.MTNodeSubagent`）+ 四个入口 | 按 `sessionTag`(=`runKey`) 归属，每只子代理各占一行、按启动顺序编号、只显示走秒；收尾就地转态、**不新增消息**；只在本次运行期间显示（不落盘） | 不显示任务摘要、不提供跳进子会话；不干预引擎的委派策略（那是 `subagent*` 那 8 行的事） |
+
+### 为什么必须是「常驻长订阅 + 全局帧」
+
+`harness.run()` 的 promise 在父会话 idle 时结束，网关的 `subscribe` 随之注销；若把
+`subagent.finished` 挂在那条订阅上，**最典型的场景（父说完「我等回执」就收尾）永远收不到收尾帧**，
+界面就会留下一行永远在走的「运行中」。所以：
+
+1. `getRuntime` 里每建一台 runtime 就 `watchSubagentLifecycle(key, harnessPromise)` 起一条**独立**
+   订阅，与任何一次 `run` 无关，只在 runtime 回收时随之结束（`finally` 里清 `subagentWatchers`）。
+2. 帧一律经 `emitGlobal(type, data)` 发出 —— 形状与普通事件帧一致但 `reqId === ''`，
+   `preload.js` 的 `dshOnSubagent` 是**全局监听**（不过滤 reqId，也不依赖某次 run 的订阅）。
+3. `sessionTag` 由 `sessionOwners`(dsh sessionId → {host, tag})补上：`subagent` 通知里只有
+   `parentSessionId`，而渲染层按 `runKey`(`agent:<会话 id>`)归属；没登记的老会话就只带
+   `parentSessionId`，宿主按 `hostSessionId` 兜底归属。
+4. 在跑的轮次里也不再重复发同类帧（旧代码 `case 'subagent.started'` 在
+   `if (n.method !== 'session.event') return` 之后，是**死代码**）：现在那一处只用来给收尾台账的
+   `stats.subagents` 计数 —— 计数从此是真实的（以前恒为 0）。
+
+### 状态口径（宿主侧唯一的真源：`renderer/app-subagent.js`）
+
+- 一张表 `childSessionId → {owner, seq, startedAt, endedAt, status, stopReason, callId}`；
+  `seq` 按 `owner` 自增 → 「子代理 1 / 子代理 2」；重复的 `start` 帧幂等。
+- 文案：运行中 `子代理 N 运行中 · 1m32s`；收尾 `子代理 N 已完成 · 用时 1m32s` /
+  `子代理 N 已失败 · 用时 1m32s`（`stopReason` 进 hover）。**只显示时长**（用户口径：不显示
+  id、不显示任务摘要、不给跳转）。
+- 走秒：有在跑的行时开 1s ticker，只改带 `data-sub-state` 的节点文本与状态类，
+  **绝不重建结构**（会话流式期间重建会打断滚动与展开态）；没有在跑的行立刻自毁。
+- 卡片认领：工具卡按 `callId` ↔ 回执正文里的 `started subagent <id>` 挂钩；回执早于
+  `start` 帧时先记一笔待认领。**回执已到 ≠ 子代理跑完**，所以 `dshToolStateOf` 对这类调用
+  仍报 `running`，直到 `finished` 帧到达才转 `ok`。
+- 四个入口共用这张表：会话工具卡（app-assist.js 的 `dshToolDetailsEl`）、左栏会话行徽标
+  （`side-sess-sub`）、左下运行队列（`type:'subagent'`，一节「子代理」，行内 ■ = 中断）、
+  画布助手栏输入框上方的状态条（`#assistSubs`，只反映**当前显示**的那条会话）。
+- 退出路径：运行队列里那一节「子代理」的 ■ 走 `interruptSubagent`；「全部终止」在作废完
+  会话轮次之后再挨个中断后台那几只（`MTNodeSubagent.runningAll()` —— 它们比父那一轮活得久，
+  `dshCancelActive()` 碰不到），且「只有子代理在跑」不会被判成「当前没有运行中的任务」。
+  子代理行**不参与完成音判定**（`app-db.js` 的 `dshRunQueueDoneCheck`）：它与父会话那一轮
+  常常同时收尾，两边各响一声会把一次任务听成两次。
+- 中断回执的措辞是「**已请求**中断该子代理」（运行时受理 ≠ 界面已收尾）：那一行的收尾态
+  仍只由 `subagent.finished` 驱动。
+
+### 降级与边界
+
+- 老运行时没有 `session/interrupt-subagent` → 网关回 `{ok:false, reason:'unsupported'}`，
+  宿主 toast「当前引擎不支持中断子代理」，**不影响子代理继续跑**；没有 `dshOnSubagent`
+  桥（老壳）时整个模块静默不显示，四个入口都不挂，界面与接入前一致。
+- 只知道收尾帧（`start` 丢了）时补一行「已完成」但**不写「用时 …」**（不知道开始时刻就不编）。
+- 不落盘：状态只活在当前进程；重载后历史工具卡维持原样（那是一次已经发生过的调用），
+  不假装它还在跑。
+- 父那轮**收尾之后**的回执消息仍可能丢（SDK 的 run 订阅在父 idle 时已结束，见本节开头第 ③ 条）——
+  这是相邻的既有边界，本契约不修；界面上「子代理已完成」由 `subagent.finished` 驱动，不依赖那条回执。
+- **只有进程内的子代理有收尾通知**：上游 `subagent/end` 的 `info.local` 判据把跨进程派生的那只
+  排除在外（`subagent.started` 只看 `session/created` 有没有 `parentSession`，两种都发）。所以跨
+  进程的子代理在界面上会一直是「运行中」，直到那台 runtime 被回收 —— 这是上游通知面的边界，
+  宿主**不按超时假装完成**（宁可持续显示在跑，也不谎报收尾）。
+
+回归口径：`test/smoke-subagent-status.js`（运行表真跑 + 四个入口与网关/桥的源码扫描）。
 
 ## 节点升级与新增(renderer)
 

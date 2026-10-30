@@ -1,7 +1,7 @@
 ---
 name: mtnode-db-facts
 title: 数据库事实查询纪律
-description: 任务接入数据库副本节点（db_replica）时的强制事实纪律：一切事实走 mtnode_db 工具（list/query/get/calc）、断言必须带 [记录id · 标题] 引用、查不到就说「数据库中没有该信息」、数字走 calc、禁止用记忆补全。Use when the task is wired to a database replica or asks about stored facts.
+description: 接入数据库副本（db_replica）时的事实纪律：一切事实走 mtnode_db、断言带记录引用、查不到就说没有。
 ---
 
 # 数据库事实查询纪律（mtnode_db）

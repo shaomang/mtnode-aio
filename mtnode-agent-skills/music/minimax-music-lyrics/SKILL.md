@@ -2,7 +2,7 @@
 name: minimax-music-lyrics
 title: MiniMax Music 歌词
 menu: user
-description: 【内置·随应用发版，不需从工坊安装】按 MiniMax Music 官方规范写可演唱的歌词正文：结构标签独占一行（Intro / Verse / Pre-Chorus / Chorus / Bridge / Hook / Solo / Outro）、为唱而写的行长、副歌钩子与主歌对比、括号只用于要发声的衬词，不把舞台指示写进会唱出来的正文。MTNode「Minimax Music 3 / YuE2」节点的歌词端口用它，曲风与人声表演交给 minimax-music-prompt。
+description: 【内置】按官方规范写可演唱的 MiniMax Music 歌词正文（结构标签、行长、副歌钩子）。
 ---
 
 # MiniMax Music 歌词

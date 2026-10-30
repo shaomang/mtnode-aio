@@ -524,6 +524,25 @@ const LEAN_TOOLS_NOTE =
 const runtimes = new Map()
 let runtimeOrder = 0
 
+/* ── 子代理生命周期（本次需求）────────────────────────────────────────────
+   引擎的 subagent 工具天生异步：调用立刻回 `started subagent <id>`，子任务在后台跑完
+   再发一条结算通知。两个坑决定这里必须自己管一套长订阅：
+     ① 上游把 started / finished 作为**顶层通知方法**发，不包在 session.event 里，
+        mapNotification 只认 session.event，过去它们被静默丢弃 —— 宿主界面上连一行
+        「有子代理在跑」的线索都没有，收尾台账的「子代理 N」也恒为 0。
+     ② SDK 的一次 run 以父会话 session.status=idle 收尾，订阅当场 close；而子代理往往
+        比父那一轮活得久（模型说完「我会等它回报」这一轮就 idle 了）。所以只在 run 里
+        听着 = 只收得到 started，收不到 finished —— 提示会永远停在「运行中」。
+   做法：每台 runtime 起一条只匹配这两条通知的长订阅（watchSubagentLifecycle），
+   帧一律走**全局通道**（reqId 空，见 preload 的 dshOnSubagent），run 结束后照样能收到。 */
+/** runtime key -> {closed:boolean, sub:any}（见 watchSubagentLifecycle） */
+const subagentWatchers = new Map()
+/** 子代理 childSessionId -> {key, parentSessionId}：运行队列点 ■ 时按它找回那台 runtime */
+const subagentOwner = new Map()
+/** dsh 父会话 id -> {host, tag}：子代理帧据此盖回宿主自己的会话（渲染层按 tag 归属） */
+const sessionOwners = new Map()
+const SESSION_OWNERS_MAX = 200
+
 /* ── interaction bridge (mtnode-bridge / mtnode-canvas ↔ renderer) ─────── */
 /** @type {Map<string, {server: import('node:net').Server, sockets: Set<any>}>} */
 const bridgeServers = new Map()
@@ -1151,6 +1170,15 @@ function closeBridge(key) {
 
 function out(msg) {
   process.stdout.write(JSON.stringify(msg) + '\n')
+}
+
+/* 全局帧（reqId 空）：不属于任何一次 run 的事件走它 —— main.js 把 reqId 为空的帧
+   原样转发到渲染层的 dsh:event，preload 侧的全局订阅（dshOnIxDrop / dshOnSubagent）
+   只按 type 过滤、不看 reqId。子代理收尾往往落在父那一轮结束之后，只能走这条路。 */
+function emitGlobal(type, data) {
+  try {
+    out({ event: { reqId: '', type, data } })
+  } catch {}
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -1789,11 +1817,22 @@ async function attachImages(home, paths) {
   for (const p of Array.isArray(paths) ? paths : []) {
     if (!p || typeof p !== 'string') continue
     try {
-      const buf = readFileSync(p)
-      const meta = await probeImageMeta(buf)
-      if (!meta) continue
-      const mediaType = ATTACH_MIME[meta.format]
-      if (!mediaType || !(meta.width > 0) || !(meta.height > 0)) continue
+      let buf = readFileSync(p)
+      let meta = await probeImageMeta(buf)
+      let mediaType = meta ? ATTACH_MIME[meta.format] : ''
+      /* sharp 能读、但不是可直传的四种格式（bmp / avif / tiff …）：就地转成 PNG
+         再入附件库。旧行为是 continue 静默跳过 —— 消息里根本没有 image 块，
+         模型只能回一句「我看不到这张图」（与「发给只吃文本的模型」同一个用户现象）。 */
+      if (meta && !mediaType && sharpProbe) {
+        try {
+          buf = await sharpProbe(buf, { failOn: 'none' }).png().toBuffer()
+          meta = await probeImageMeta(buf)
+          mediaType = meta ? ATTACH_MIME[meta.format] : ''
+        } catch {
+          /* 转码失败按原样跳过（与改动前的降级一致） */
+        }
+      }
+      if (!meta || !mediaType || !(meta.width > 0) || !(meta.height > 0)) continue
       const sha = crypto.createHash('sha256').update(buf).digest('hex')
       const dir = path.join(root, 'objects', sha.slice(0, 2))
       mkdirSync(dir, { recursive: true })
@@ -2137,6 +2176,9 @@ async function getRuntime(workspace, model, maxTokens, provider, apiKey, baseUrl
     throw err
   })
   runtimes.set(key, entry)
+  /* 子代理生命周期长订阅：跟着这台 runtime 活，不随单次 run 结束（见 subagentWatchers
+     与 watchSubagentLifecycle 的注释 —— 收尾通知常常落在父那一轮 idle 之后）。 */
+  watchSubagentLifecycle(key, entry.harness)
 
   while (runtimes.size > MAX_RUNTIMES) {
     let oldestKey = null
@@ -2320,7 +2362,7 @@ function onBridgeFrame(key, m, socket) {
     out({ event: { reqId: claim ? claim.reqId : '', type: 'ix-drop', data: { id: m.id, reason: 'dropped' } } })
     return
   }
-  if (m.t !== 'question' && m.t !== 'approval' && m.t !== 'canvas' && m.t !== 'db' && m.t !== 'facts' && m.t !== 'tool' && m.t !== 'lt' && m.t !== 'asset' && m.t !== 'browser') return
+  if (m.t !== 'question' && m.t !== 'approval' && m.t !== 'canvas' && m.t !== 'db' && m.t !== 'facts' && m.t !== 'tool' && m.t !== 'lt' && m.t !== 'asset' && m.t !== 'manifest' && m.t !== 'browser') return
   const claim = claimOf(key)
   /* 归属校验:交互帧一律自带发起轮的 session id(question/approval 来自 bridge-plugin,
      canvas/db 来自 canvas-plugin/db-plugin、facts 来自 ai-facts-plugin(MTNode AI 事实库)、
@@ -2978,6 +3020,9 @@ async function handleRun(params) {
   /* done / session 事件对宿主报告的权威 id:默认就是本轮铸(或沿用)的 runSession,
      首条 session.event 改判后跟着改(见 rebindRunSession 分支) */
   let sessionOut = runSession
+  /* 归属表先按网关铸的 id 登记一份（续跑轮沿用的就是宿主点名的那条会话）；
+     首条 session.event 若改判，上面 onNotification 里会按权威 id 再记一次。 */
+  noteSessionOwner(runSession, hostSessionId, runTag)
   /* 续跑判定留一行日志:出问题时先看得懂「宿主点名的那个 id 到底在不在盘上」 */
   if (resumeWanted) diag(`resume reqId=${reqId || '(无)'} sid=${resumeWanted} can=${canResume ? 1 : 0}`)
   if (runTag) activeRunTags.add(runTag)
@@ -3279,6 +3324,8 @@ async function handleRun(params) {
         const sid = n && n.params ? n.params.sessionId : ''
         if (typeof sid === 'string' && sid) {
           noteRunSession(runKey, reqId, sid)
+          /* 子代理帧要盖回宿主的哪条会话：dsh 会话 id → {宿主会话, runTag} */
+          noteSessionOwner(sid, hostSessionId, runTag)
           if (!sessionBound && n.method === 'session.event') {
             sessionBound = true
             /* 权威 id 变了(运行时自行另铸 / 版本漂移)就把新 id 再报一次给宿主:
@@ -3292,6 +3339,11 @@ async function handleRun(params) {
             }
           }
         }
+        /* 子代理生命周期：帧由每台 runtime 的常驻长订阅统一发（见 watchSubagentLifecycle，
+           因为收尾通知常常落在父这一轮结束之后）。这里只做本轮台账的计数 —— 原先在
+           session.event 分支里数 subagent.started 的那一句永远走不到，所以「子代理 N」
+           一直是 0。归属记账（宿主会话 / 中断用）也在长订阅那一侧做。 */
+        if (n.method === 'subagent.started') stats.subagents++
         mapNotification(n, emit, { resumed, sid: resumeWanted, host: hostSessionId })
         if (n.method !== 'session.event' || !n.params || !n.params.event) return
         const ev = n.params.event
@@ -3371,9 +3423,6 @@ async function handleRun(params) {
             toolBucket = null
             break
           }
-          case 'subagent.started':
-            stats.subagents++
-            break
           case 'request/context':
             if (d && d.contextWindow) stats.contextWindow = Number(d.contextWindow) || 0
             /* 路由被改写(换服务商 / 换模型):之后的 usage 记到新模型名下 */
@@ -3528,6 +3577,137 @@ async function closeAllRuntimes() {
   /* 全关 = 显式重启/退出:续跑候选保活窗口一并作废(进程都没了,无从保活) */
   resumeCandidates.clear()
   await Promise.all(jobs)
+}
+
+/* ── 子代理生命周期：记归属 / 长订阅 / 中断 ─────────────────────────────── */
+
+/* 这条 dsh 会话属于宿主哪条会话（渲染层的 runKey 就是 cancelTag）。
+   子代理帧不带渲染层的会话概念，只能靠这张表盖回去。上限兜底，满了丢最旧。 */
+function noteSessionOwner(sessionId, host, tag) {
+  const sid = String(sessionId || '')
+  if (!sid) return
+  const prev = sessionOwners.get(sid)
+  const hostId = String(host || (prev && prev.host) || '')
+  const tagId = String(tag || (prev && prev.tag) || '')
+  if (prev && prev.host === hostId && prev.tag === tagId) return
+  sessionOwners.delete(sid)
+  sessionOwners.set(sid, { host: hostId, tag: tagId })
+  while (sessionOwners.size > SESSION_OWNERS_MAX) {
+    const oldest = sessionOwners.keys().next().value
+    if (oldest === undefined) break
+    sessionOwners.delete(oldest)
+  }
+}
+
+/* 一条子代理通知 → 宿主帧。两条通知的字段名由上游 dsh-sdk-jsonrpc-server 定
+   （started 只有 parent/child 两个 id；finished 另有 status / stopReason / 收尾文本）。 */
+function subagentFrameOf(n) {
+  const p = (n && n.params) || {}
+  const started = n.method === 'subagent.started'
+  const parentSessionId = String(p.parentSessionId == null ? '' : p.parentSessionId)
+  const childSessionId = String(p.childSessionId == null ? '' : p.childSessionId)
+  const owner = sessionOwners.get(parentSessionId) || { host: '', tag: '' }
+  const frame = {
+    phase: started ? 'start' : 'end',
+    parentSessionId,
+    childSessionId,
+    hostSessionId: owner.host,
+    sessionTag: owner.tag,
+    at: Date.now(),
+  }
+  if (!started) {
+    frame.status = String(p.status == null ? '' : p.status)
+    const reason = p.stopReason
+    frame.stopReason = reason == null
+      ? ''
+      : String(typeof reason === 'string' ? reason : JSON.stringify(reason)).slice(0, 300)
+  }
+  return frame
+}
+
+/* 给一台 runtime 挂一条**只收**子代理两条通知的长订阅。
+   必须在 runtime 建成时挂、且跨 run 存活（见上面 subagentWatchers 的注释）；
+   重复调用安全（同一 key 只挂一条）。runtime 关闭 → next() 抛错 → 循环退出并摘表。 */
+function watchSubagentLifecycle(key, harnessPromise) {
+  if (!key || subagentWatchers.has(key)) return
+  const rec = { closed: false, sub: null }
+  subagentWatchers.set(key, rec)
+  Promise.resolve(harnessPromise)
+    .then((h) => {
+      const client = h && h.client
+      if (rec.closed || !client || typeof client.subscribe !== 'function') return
+      let sub
+      try {
+        sub = client.subscribe(
+          (n) => !!n && (n.method === 'subagent.started' || n.method === 'subagent.finished'),
+        )
+      } catch {
+        return
+      }
+      rec.sub = sub
+      ;(async () => {
+        try {
+          for (;;) {
+            const n = await sub.next()
+            if (!n) continue
+            const data = subagentFrameOf(n)
+            /* 归属记账（中断用）：started 记下来，finished 摘掉 */
+            if (data.childSessionId) {
+              if (data.phase === 'start') {
+                subagentOwner.set(data.childSessionId, {
+                  key,
+                  parentSessionId: data.parentSessionId,
+                })
+              } else {
+                subagentOwner.delete(data.childSessionId)
+              }
+            }
+            emitGlobal('subagent', data)
+          }
+        } catch {
+          /* 运行时关闭 / 订阅被摘：正常收场，不报错 */
+        } finally {
+          if (subagentWatchers.get(key) === rec) subagentWatchers.delete(key)
+        }
+      })()
+    })
+    .catch(() => {
+      if (subagentWatchers.get(key) === rec) subagentWatchers.delete(key)
+    })
+}
+
+/* 中断单只子代理（运行队列那枚 ■ 走它）。
+   {parentSessionId, childSessionId} → 找到它所属的那台 runtime → 调运行时侧的
+   session/interrupt-subagent（见 plugins/subagent-control-server.mjs）。
+   任何失败都回 {ok:false, reason}，由宿主提示用户；**不关进程、不动会话**。 */
+async function handleInterruptSubagent(params) {
+  const p = params || {}
+  const childId = String(p.childSessionId == null ? '' : p.childSessionId).trim()
+  if (!childId) return { ok: false, reason: 'invalid_params' }
+  const own = subagentOwner.get(childId)
+  const parentId = String(
+    p.parentSessionId == null ? '' : p.parentSessionId,
+  ).trim() || String((own && own.parentSessionId) || '')
+  const key = own && own.key ? own.key : ''
+  const entry = key ? runtimes.get(key) : null
+  if (!entry) return { ok: false, reason: 'no_runtime' }
+  try {
+    const h = await entry.harness
+    const client = h && h.client
+    if (!client || typeof client.request !== 'function') return { ok: false, reason: 'no_runtime' }
+    const res = await client.request(
+      'session/interrupt-subagent',
+      { parentSessionId: parentId, childSessionId: childId },
+      15000,
+    )
+    if (res && typeof res === 'object') return res
+    return { ok: true }
+  } catch (err) {
+    const raw = String((err && err.message) || err)
+    /* 老运行时没有这枚方法 = 降级成「只展示不可中断」，不当失败抛出 */
+    if (/unknown .*method/i.test(raw)) return { ok: false, reason: 'unsupported' }
+    return { ok: false, reason: 'error', error: raw.slice(0, 200) }
+  }
 }
 
 /* 思考强度:档位与归一化的唯一真源在 ./reasoning-effort.mjs(纯函数,codex
@@ -3967,7 +4147,7 @@ function applySettings(dshHome, effort, mtnodeProviders, permissionPreset, hostP
   /* 指纹末尾的 `rp1` 是「托管补丁内容版本号」：重试策略这类常量段不进上面任何一项，
      没有它就会出现「代码改了、盘上补丁文件还是旧的、热重载也不触发」。改这份托管
      配置的常量段时手动进一版（rp2 / rp3 …）。 */
-  const hash = eff + '|' + perm + '|' + JSON.stringify(list) + '|hp:' + persona + '|om:' + JSON.stringify(om) + '|rp1'
+  const hash = eff + '|' + perm + '|' + JSON.stringify(list) + '|hp:' + persona + '|om:' + JSON.stringify(om) + '|rp3'
   if (hash === lastSettingsHash && home === lastSettingsHome) return { envPatch, changed: false }
   try {
     const providers = {}
@@ -3987,7 +4167,9 @@ function applySettings(dshHome, effort, mtnodeProviders, permissionPreset, hostP
          opencode-go 同时含 openai-completions 与 anthropic-messages);
          通用路由保留 api 声明(默认 openai-completions) */
       if (!cat) entry.api = String(p.api || 'openai-completions')
-      entry.models = (p.models || []).map((m) => ({ id: String(m) }))
+      entry.models = (p.models || []).map((m) => ({
+        id: String(typeof m === 'string' ? m : (m && m.id) || ''),
+      }))
       providers[route] = entry
     })
     const deepseek = {
@@ -4826,6 +5008,15 @@ rl.on('line', (line) => {
           reply({ ok: true, closed })
           break
         }
+        case 'interruptSubagent': {
+          /* 运行队列里点子代理那一行 ■：params = { parentSessionId?, childSessionId }
+             → 找到它所在的那台 runtime，调运行时侧的 session/interrupt-subagent
+             （见 plugins/subagent-control-server.mjs，用的是 ctx.subagents.interrupt
+             的人类父级授权口径）。只停这一只子代理 —— 不关进程、不动会话其它活。
+             失败一律回 {ok:false, reason}，由宿主提示；不抛出、不影响任何在途轮次。 */
+          reply(await handleInterruptSubagent(msg.params ?? {}))
+          break
+        }
         case 'configProbe': {
           /* 只读自检：把某台 live runtime 的**生效装配**回给宿主/冒烟（行 id + config）。
              用途：0.2 把设置真源搬到 profile 补丁层后，「宿主写了文件」不等于「运行时读到了
@@ -4989,6 +5180,21 @@ rl.on('line', (line) => {
             try {
               pending.socket.write(JSON.stringify({
                 t: 'asset-result',
+                id: p.id,
+                ok: !err,
+                result: p.result == null ? null : p.result,
+                ...(err ? { error: err } : {}),
+              }) + '\n')
+            } catch {}
+          } else if (p.kind === 'manifest') {
+            /* 项目 manifest 工具（mtnode_manifest）：宿主按「显式 root > 画布工作目录」
+               读写 <root>/manifest.json（数据层 manifest-store.js）。与 canvas / db /
+               facts 同形状：宿主失败＝ok:false + error 文本（例如工程未 init），
+               运行时工具以失败收场，会话不中断。 */
+            const err = p.error != null ? String(p.error) : ''
+            try {
+              pending.socket.write(JSON.stringify({
+                t: 'manifest-result',
                 id: p.id,
                 ok: !err,
                 result: p.result == null ? null : p.result,

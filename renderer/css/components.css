@@ -6,18 +6,18 @@
   display: none;
   background: var(--panel2);
   border: 1px solid var(--bd2);
-  border-radius: 4px;
-  padding: 3px;
-  box-shadow: 0 6px 18px rgba(0, 0, 0, .5);
+  border-radius: 6px;
+  padding: 4px;
+  box-shadow: var(--shadow-pop);
 }
 
 .fn-ctx .ctx-title {
-  font-size: 9px;
-  letter-spacing: 2px;
+  font-size: 11px;
+  letter-spacing: 1px;
   color: var(--orange);
-  padding: 3px 8px 4px;
+  padding: 4px 8px 5px;
   border-bottom: 1px dashed var(--bd);
-  margin-bottom: 1px;
+  margin-bottom: 2px;
 }
 
 .fn-ctx button {
@@ -27,30 +27,34 @@
   background: none;
   border: none;
   color: var(--ink);
-  font-size: 11.5px;
-  padding: 5px 8px;
-  border-radius: 3px;
+  font-size: 12px;
+  padding: 6px 10px;
+  border-radius: 4px;
   cursor: pointer;
-  line-height: 1.25;
+  line-height: 1.3;
+  letter-spacing: 0;
+  transition: background-color .1s, color .1s;
 }
 
 .fn-ctx button:hover,
+.fn-ctx button:focus-visible,
 .fn-ctx .ctx-fly:hover>.ctx-fly-btn,
 .fn-ctx .ctx-fly.open>.ctx-fly-btn {
   background: var(--bd);
-  color: var(--orange2)
+  color: var(--orange2);
+  outline: none
 }
 
 .fn-ctx button.ctx-danger:hover {
-  background: #4a1f1c;
-  color: #ff8f8a
+  background: color-mix(in srgb, var(--red) 22%, var(--panel2));
+  color: color-mix(in srgb, var(--red) 65%, var(--ink))
 }
 
 .fn-ctx .ctx-group {
-  font-size: 9px;
-  letter-spacing: 1.5px;
+  font-size: 11px;
+  letter-spacing: 1px;
   color: var(--muted);
-  padding: 4px 8px 1px
+  padding: 6px 10px 2px
 }
 
 .fn-ctx .ctx-fly {
@@ -80,11 +84,11 @@
   bottom: 0;
   z-index: 2;
   min-width: 200px;
-  padding: 3px;
+  padding: 4px;
   background: var(--panel2);
   border: 1px solid var(--bd2);
-  border-radius: 4px;
-  box-shadow: 0 6px 18px rgba(0, 0, 0, .5);
+  border-radius: 6px;
+  box-shadow: var(--shadow-pop);
   overflow-y: auto;
   overscroll-behavior: contain;
 }
@@ -124,6 +128,7 @@
   background: var(--panel);
   border: 1px solid var(--bd2);
   border-top: 3px solid var(--orange);
+  box-shadow: var(--shadow-pop);
   width: min(900px, 100%);
   max-height: 100%;
   display: flex;
@@ -185,10 +190,10 @@
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 10px 14px;
-  border-bottom: 2px solid var(--bd);
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--bd);
   font-size: 13px;
-  letter-spacing: 2px;
+  letter-spacing: 1px;
   color: var(--muted);
 }
 
@@ -215,15 +220,22 @@
   justify-content: center;
   background: transparent;
   border: 1px solid transparent;
-  border-radius: 3px;
+  border-radius: 4px;
   color: var(--muted);
   cursor: pointer;
+}
+
+/* 可见尺寸仍是 20×20，但命中区四周各外扩 5px（≈30×30）：✕ 太小，常点偏 */
+.overlay-head .ov-close-btn::before {
+  content: "";
+  position: absolute;
+  inset: -5px;
 }
 
 .overlay-head .ov-close-btn:hover {
   color: var(--orange2, #ff9f43);
   border-color: var(--bd2);
-  background: rgba(255, 159, 67, .10)
+  background: color-mix(in srgb, var(--orange) 10%, transparent)
 }
 
 .overlay-head .ov-close-btn[hidden] {
@@ -233,7 +245,7 @@
 .overlay-body {
   flex: 1;
   overflow-y: auto;
-  padding: 12px 14px
+  padding: 14px 16px
 }
 
 .overlay-foot {
@@ -1010,16 +1022,18 @@ button.pk-badge.pk-btn:hover {
 }
 
 .toast {
-  padding: 8px 14px;
+  padding: 9px 14px;
   font-size: 12.5px;
-  letter-spacing: .5px;
+  line-height: 1.5;
+  letter-spacing: .2px;
   max-width: 420px;
   border: 1px solid var(--bd2);
   border-left: 3px solid var(--cyan);
+  border-radius: 4px;
   background: var(--panel2);
   color: var(--ink);
-  box-shadow: 0 4px 14px rgba(0, 0, 0, .5);
-  animation: toastIn .18s ease-out;
+  box-shadow: var(--shadow-pop);
+  animation: toastIn .24s var(--ease-out);
 }
 
 .toast.warn {
@@ -1046,7 +1060,7 @@ button.pk-badge.pk-btn:hover {
 
 @keyframes toastIn {
   from {
-    transform: translateX(30px);
+    transform: translateX(16px);
     opacity: 0
   }
 }
@@ -1410,6 +1424,28 @@ button.pk-badge.pk-btn:hover {
 
 .rq-item.kind-media .rq-sub {
   color: #c08a63
+}
+
+/* 子代理行（本次需求）：与工具族里「子代理」同色（紫），一眼分出
+   「这不是一条会话在跑，而是某条会话名下的后台子任务」。 */
+.rq-item.kind-sub .rq-title {
+  color: #b294ff
+}
+
+.rq-item.kind-sub.is-run .rq-icon {
+  color: #b294ff
+}
+
+.rq-item.kind-sub .rq-sub {
+  color: #9d86c9
+}
+
+/* 子代理行的状态文字带 data-sub-state（app-subagent.js 每秒就地改写）。
+   .rq-sub 自带省略号，这里要完整显示「运行中 · 1m32s」，故放开限宽。 */
+.rq-item.kind-sub .rq-sub.dsh-sub-state {
+  max-width: none;
+  overflow: visible;
+  text-overflow: clip
 }
 
 .n-title-input {
@@ -5314,23 +5350,35 @@ textarea.asset-form-input {
   min-height: 44px;
 }
 
-/* ===== 滚动条 ===== */
+/* ===== 滚动条 =====
+   宽度保持 10px（fileview.css 的镜像层、dsh.css 的把手让位都按 10px 算过，别改）；
+   只改皮：滑块圆角 + 透明边框做出内缩，轨道透明（跟所在面板同色），不再是一条突兀的暗槽。 */
 ::-webkit-scrollbar {
   width: 10px;
   height: 10px
 }
 
-::-webkit-scrollbar-track {
-  background: var(--bg2)
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background: transparent
 }
 
 ::-webkit-scrollbar-thumb {
   background: var(--bd2);
-  border: 2px solid var(--bg2)
+  background-clip: padding-box;
+  border: 2px solid transparent;
+  border-radius: 6px;
+  min-height: 32px
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--orange)
+  background: color-mix(in srgb, var(--orange) 70%, var(--bd2));
+  background-clip: padding-box
+}
+
+::-webkit-scrollbar-thumb:active {
+  background: var(--orange);
+  background-clip: padding-box
 }
 
 /* ── 中转凭据提示（renderer/app-relay-auth.js）整块删除 ────────────────────────

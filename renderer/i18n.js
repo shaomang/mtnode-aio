@@ -12,6 +12,160 @@
 
      本文件结构：EN 的键 = 中文原文（zh 界面直接回显键本身，不报错也不缺字），值 = 英文译文。 */
   var EN = {
+    /* ── 质检节点（qa_text / qa_image / qa_video / qa_audio / qa_file ·
+       缺口文档 P0-4：按 JSON 评分标准打分 + 自动过关 / 失败上人工）── */
+    "质检": "QA",
+    "文本质检": "Text QA",
+    "图像质检": "Image QA",
+    "视频质检": "Video QA",
+    "音频质检": "Audio QA",
+    "文件质检": "File QA",
+    "文本质检（按 JSON 标准打分 · 通过 / 未过门禁）":
+      "Text QA (JSON criteria · pass / fail gate)",
+    "图像质检（按 JSON 标准打分 · 通过 / 未过门禁）":
+      "Image QA (JSON criteria · pass / fail gate)",
+    "视频质检（抽帧 + 硬指标 · 按 JSON 标准打分 · 通过 / 未过门禁）":
+      "Video QA (frames + probe metrics · JSON criteria · pass / fail gate)",
+    "音频质检（转写 + 响度 · 按 JSON 标准打分 · 通过 / 未过门禁）":
+      "Audio QA (transcript + loudness · JSON criteria · pass / fail gate)",
+    "文件质检（任意文件 · 按 JSON 标准打分 · 通过 / 未过门禁）":
+      "File QA (any file · JSON criteria · pass / fail gate)",
+    "文本质检（正文 / 文案 / 脚本）": "Text QA (body / copy / script)",
+    "图像质检（构图 / 一致性 / 瑕疵）": "Image QA (composition / consistency / defects)",
+    "视频质检（抽帧 + 硬指标）": "Video QA (frames + probe metrics)",
+    "音频质检（转写 + 响度 / 噪声）": "Audio QA (transcript + loudness / noise)",
+    "文件质检（任意文件 · 完整 / 格式 / 元数据）":
+      "File QA (any file · completeness / format / metadata)",
+    "被检内容": "Content",
+    "质检要求": "QA requirement",
+    "质检要求（文字 + 参考样例）": "QA requirement (text + samples)",
+    "报告": "Report",
+    "判定": "Verdict",
+    "未过": "Fail",
+    "（要检查的产物）": "(the artifact under review)",
+    "（验收口径：文字要求 / 脚本；也可接参考样例图 / 样片 / 基准文件，可多接）":
+      "(acceptance spec: written requirement / script; sample stills / clips / baseline files also go here, multiple wires OK)",
+    "（触发质检）": "(triggers QA)",
+    "被检对象：": "Under review: ",
+    "按 JSON 评分标准打分（每维 0–100 · 加权成总分）+ 自动过关：通过走输出 1，未过走输出 2":
+      "Scores every dimension 0–100 against the JSON criteria, weights them into one total, and gates automatically: pass leaves by output 1, fail by output 2",
+    "「判定」输出端子已取消（与通过 / 未过两条控制出重复），原来接在它上面的线已断开；需要判定结果请改接「报告」或「通过 / 未过」":
+      "The Verdict output is gone (it duplicated the pass / fail control outputs) and its wire was dropped; use the Report output or the pass / fail control outputs instead",
+    "运行质检：按评分标准取证 → 打分 → 通过 / 未过":
+      "Run QA: gather evidence against the criteria → score → pass / fail",
+    "停止质检": "Stop QA",
+    "总分 ": "total ",
+    "合格线 ": "pass line ",
+    "标准：": "Criteria: ",
+    "重试 ": "retries ",
+    "未选": "not set",
+    "未选（⚙ 里选一份 JSON 模板）": "not set (pick a JSON template in ⚙)",
+    "未选模型": "no model",
+    "低于合格线": "below pass line",
+    "（硬失败线 ": " (hard floor ",
+    "评分标准（JSON 模板 · 决定维度、权重与合格线）":
+      "Criteria (JSON template · defines dimensions, weights and pass line)",
+    "工程": "project",
+    "重新扫描模板目录": "Rescan the template folders",
+    "打开模板目录": "Open template folder",
+    "打开用户模板目录（<数据目录>/qa-templates）":
+      "Open the user template folder (<data>/qa-templates)",
+    "模板目录还没就绪：先点一次刷新":
+      "Template folders are not ready yet: hit Refresh once",
+    "正在扫描模板目录…": "Scanning template folders…",
+    "有模板读不出来：": "Some templates could not be read: ",
+    "这一个类型还没有模板：把 JSON 放进 <数据目录>/qa-templates/ 或 <工程根>/qa/templates/ 后点「刷新」":
+      "No template for this kind yet: drop a JSON file into <data>/qa-templates/ or <project>/qa/templates/ and hit Refresh",
+    "模板不合法：": "Template is invalid: ",
+    "抽帧数（1–12，默认 7）": "Frames to sample (1–12, default 7)",
+    "质检标准 / 模型": "QA criteria / model",
+    "列目录": "List folder",
+    "读文本": "Read text",
+    "搜文本": "Search text",
+    "看图": "Look at images",
+    "读媒体指标": "Probe media",
+    "抽帧": "Sample frames",
+    "PDF 转文本": "PDF to text",
+    "执行命令": "Run command",
+    "列出一层文件与子目录": "List one level of files and folders",
+    "读文本文件，支持分段": "Read a text file, paged",
+    "在目录 / 文件里搜关键字，返回命中行": "Grep a folder / file and return matching lines",
+    "直接把图片交给视觉模型细看，返回描述":
+      "Hand images to the vision model and return its description",
+    "ffprobe：时长 / 分辨率 / 帧率 / 码率 / 黑帧段":
+      "ffprobe: duration / resolution / fps / bitrate / black segments",
+    "按时间点抽帧成 PNG（上限 12 张），图片会随下一轮一起给到你":
+      "Extract PNG frames at time points (max 12); they are attached to your next turn",
+    "本机 SenseVoice 逐句转写成文字": "Transcribe speech locally with SenseVoice",
+    "把 PDF 文本层转成 Markdown": "Convert a PDF text layer to Markdown",
+    "搜索或抓取网页正文": "Search the web or fetch a page's text",
+    "在本机跑一条命令（有 180 秒上限），返回 stdout / stderr":
+      "Run one command locally (180 s cap) and return stdout / stderr",
+    "落中间产物（会覆盖同名文件）": "Write an intermediate file (overwrites same name)",
+    "（要求写在这个文件里，可用 read 工具打开：":
+      "(the requirement lives in this file; open it with the read tool: ",
+    "质检未通过 · 需人工裁决": "QA failed · needs a human call",
+    "接受（人工放行）": "Accept (manual override)",
+    "放弃（判失败）": "Give up (fail)",
+    "修复建议：": "Suggested fix: ",
+    "提示词补丁：": "Prompt delta: ",
+    "报告：": "Report: ",
+    "人工放行": "Manually accepted",
+    "已人工放行（报告已记录 override）":
+      "Accepted manually (override recorded in the report)",
+    "质检通过：": "QA passed: ",
+    "质检未通过，已放弃该对象": "QA failed — this target was given up",
+    "质检没能完成": "QA could not finish",
+    "质检报告写不进去：": "Could not write the QA report: ",
+    "读评分标准失败：": "Could not read the criteria: ",
+    "工程目录不可用：": "Project folder is unavailable: ",
+    "已手动停止": "Stopped manually",
+    "没有选质检模型：请在节点 ⚙ 设置里指定服务商与模型（要能看图就选视觉模型）":
+      "No QA model selected: pick a provider and model in the node's ⚙ settings (choose a vision model if it must see images)",
+    "服务商「{name}」在本机没有可用的文本模型：请在设置 · 模型服务里补上模型，或换一家服务商（要能看图就选视觉模型）":
+      "Provider \"{name}\" has no usable text model on this machine: add one in Settings · Model services, or switch providers (choose a vision model if it must see images)",
+    "质检节点的服务商在本机已不存在：请在节点 ⚙ 设置里重新选一家（原服务商可能被删掉了）":
+      "The QA node's provider no longer exists on this machine: pick one again in the node's ⚙ settings (the old provider may have been deleted)",
+    "服务商「{name}」还没填接口地址：请在「设置 · API/配置」里补上，再运行质检":
+      "Provider \"{name}\" has no endpoint URL yet: fill it in under Settings · API/Config, then run QA",
+    "思考强度（质检默认「无」）": "Thinking effort (QA defaults to Off)",
+    "思考": "Thinking",
+    "这家服务商没有开启视觉（vision）：图片不会随请求下发，质检只能靠工具取证 —— 请在设置 · 模型服务里为它开启视觉，或换一家能看图的模型。":
+      "This provider has vision turned off: images are not sent with the request, so QA can only gather evidence with tools. Turn on vision for it in Settings · Model services, or switch to a model that can see images.",
+    "质检执行体未加载": "QA runtime not loaded",
+    "保存为新模板": "Save as a new template",
+    "把这份 JSON 写进 <数据目录>/qa-templates/ 并选中它（供所有节点复用）":
+      "Write this JSON into <data>/qa-templates/ and select it (reusable by every node)",
+    "恢复模板": "Restore template",
+    "丢掉节点内的改动，回到模板库里的那一份":
+      "Drop the in-node edit and go back to the template library copy",
+    "人工裁决": "Human call",
+    "打开裁决卡：接受（记 override 放行）/ 放弃":
+      "Open the adjudication card: accept (record an override) / give up",
+    "JSON 还没写完 / 有语法错，跑质检前要修好":
+      "JSON is incomplete or has a syntax error — fix it before running QA",
+    "已保存为新模板：": "Saved as a new template: ",
+    "保存模板失败：": "Could not save the template: ",
+    "JSON 不合法，先修好再保存：": "Invalid JSON — fix it before saving: ",
+    "模板写入桥未就绪（preload 未加载 qaTemplateSave）":
+      "Template write bridge is not ready (preload has no qaTemplateSave)",
+    "给这份标准起个文件名（或填一个 title）":
+      "Give this criteria set a file name (or fill in a title)",
+    "节点里的评分标准不是合法 JSON：请修好 body 里的 JSON，或点「恢复模板」回到模板库那一份":
+      "The in-node criteria is not valid JSON: fix the JSON in the node body, or hit “Restore template”",
+    "节点里的评分标准不合法：": "The in-node criteria is invalid: ",
+    "节点内标准": "In-node criteria",
+    "节点内已改过": "edited in node",
+    " · 节点内已改过": " · edited in node",
+    "（节点内改过）": " (edited in node)",
+    "旧图需重连：这个节点还有线接在已经取消的端口（原入 2 参考基准 / 入 3 控制）上，那些线不生效":
+      "Old graph needs rewiring: some wires still land on removed ports (old in-2 references / in-3 control) and are ignored",
+    "质检节点只判不返工：接受 = 报告记 manualOverride 并转「通过」，不会重跑上游、也不会触发下游；要让上游重做请自己在画布上重跑生成节点。":
+      "QA only judges — it never reworks: accept records manualOverride in the report and turns the verdict into pass, without re-running upstream or triggering downstream. Re-run the generator yourself if you want a new take.",
+    "质检未通过：": "QA failed: ",
+    "这颗节点还没有质检报告：先点 ▶ 跑一次":
+      "This node has no QA report yet: hit ▶ to run it once",
+    "已人工放行，但报告写入失败：": "Accepted manually, but writing the report failed: ",
     /* ── 视频预览的循环播放开关（renderer/app-mediaview.js）── */
     "循环播放": "Loop",
     "循环播放已开启（点击关闭）": "Loop is on (click to turn off)",
@@ -270,6 +424,8 @@
     /* ── 长周期任务（app-longtask.js / app-longtask-ui.js / 交付节点）──
        条带内部的长句一律走 I18n.t("中文")，未译即原样回退（不报错、不缺字）；
        这里只覆盖会出现在画布节点、右键菜单、设置项与条带头部的那批固定文案。 */
+    "长周期任务暂时停用（正在修复中），入口与状态机已隐藏":
+      "Long-running tasks are temporarily disabled (being fixed); entries and the state machine are hidden",
     "交付": "Deliver",
     "交付节点（长周期任务 · 人工交付清单）": "Deliverable node (long-running task · human delivery checklist)",
     "交付节点由长周期任务自动创建，不能手动添加": "Deliverable nodes are created by the long-running task system and cannot be added manually",
@@ -2241,6 +2397,7 @@
     "思考": "Thinking",
     "✕ 删除": "✕ Delete",
     "保存节点": "Save Node",
+    "质检节点": "QA Node",
     "保存（按输入自判）": "Save (infer from input)",
     "绑定保存节点不能改接其他来源": "Bound save node cannot be rewired",
     "该连线已固定，无法删除": "This wire is pinned and cannot be deleted",
@@ -2545,6 +2702,8 @@
     "还没有压缩记录：先点「压缩上下文」": "No compaction yet — click \"Compact context\" first",
     "复制这份摘要到剪贴板": "Copy this summary to the clipboard",
     "当前会话没有可压缩的消息": "No messages to compact in this session",
+    "没有可压缩的内容：先在这个会话里聊几句":
+      "Nothing to compact yet — chat a little in this session first",
     /* 自动压缩（任务 3/8）：轨迹 / 时间线上那条 k:'compact' 段与它的浮层 */
     "自动压缩": "Auto compaction",
     "自动压缩失败": "Auto compaction failed",
@@ -4020,6 +4179,12 @@
     "先拷问需求：开启中 —— 这条会话里像需求 / 开发的那几轮会先用询问窗问清，经你确认无歧义后才动手": "Ask me first: ON — rounds in this session that look like requirements or development are cleared with a question dialog before any work starts",
     "先拷问需求：开启中 —— 像需求 / 开发的那几轮会先用询问窗问清再动手": "Ask me first: ON — rounds that look like requirements or development are cleared with a question dialog before any work starts",
     "模式：": "Modes: ",
+    /* 「超频模式」（会话 / 助手「模式」菜单第三枚）：思考档固定 Max + 注入极限测试提示词 */
+    "超频模式": "Overclock mode",
+    "开启 = 模型思考档固定为 Max，并注入「token 预算无上限 · 极限测试模式」提示词": "On = the thinking level is pinned to Max and a \"no token budget · extreme test mode\" prompt is injected",
+    "开启 = 思考档固定为 Max，并注入「token 预算无上限 · 极限测试模式」提示词": "On = the thinking level is pinned to Max and a \"no token budget · extreme test mode\" prompt is injected",
+    "超频模式：开启中，点击关闭（关闭后思考档回到会话自己的设置）": "Overclock mode: ON — click to turn off (the thinking level goes back to this session's own setting)",
+    "超频模式：点击开启（思考档固定 Max，并注入极限测试提示词）": "Overclock mode: click to turn on (thinking pinned to Max, extreme test prompt injected)",
     "（开）": " (on)",
     "（关）": " (off)",
     "目标已达成": "goal reached",
@@ -4246,7 +4411,7 @@
     "可询问当前画布状态，或让助手修改画布（每次修改会弹窗确认）": "Ask about the canvas, or have the assistant edit it (each edit asks for confirm)",
     "问助手…（Enter 发送，Shift+Enter 换行）": "Ask the assistant… (Enter send, Shift+Enter newline)",
     "发送": "Send",
-    "全局 AI 助手（右侧栏）": "Global AI assistant (right panel)",
+    "画布助手（右侧栏）": "Canvas assistant (right panel)",
     "用户拒绝了此次画布修改": "User rejected this canvas edit",
     "更新 ": "Updated ",
     "断开 ": "Disconnected ",
@@ -4255,14 +4420,14 @@
     "修改画布": "Edit canvas",
     "涉及：": "Involves: ",
     "确认画布修改": "Confirm canvas edit",
-    "全局助手请求修改当前画布：": "Global assistant requests canvas changes: ",
+    "画布助手请求修改当前画布：": "Canvas assistant requests canvas changes: ",
     "拒绝后本次修改不会生效；可让助手改方案后再试。": "If rejected, this edit will not apply; ask the assistant for another plan.",
     "确认修改": "Confirm edit",
     "我能看到当前画布、节点、连线与配置。\n可以说「总结画布」或「搭一个 xxx 工作流」。\n修改画布前会请你确认。": "I can see the current canvas, nodes, wires, and settings.\nTry \"summarize the canvas\" or \"build a xxx workflow\".\nCanvas edits will ask for your confirmation.",
     "思考中…": "Thinking…",
     "请先终止当前运行": "Stop the current run first",
     "助手失败：": "Assistant failed: ",
-    "全局助手失败：": "Global assistant failed: ",
+    "画布助手失败：": "Canvas assistant failed: ",
     "可见全局状态 · 危险操作需确认": "Sees app state · risky ops need confirm",
     "可查看全部画布列表；改节点图或删除画布会弹窗确认":
       "Can list all canvases; graph edits or deleting a canvas ask for confirm",
@@ -4272,17 +4437,19 @@
     "未知应用操作：": "Unknown app action: ",
     "确认操作": "Confirm action",
     "确认危险操作": "Confirm risky action",
-    "全局助手请求：": "Global assistant requests: ",
+    "画布助手请求：": "Canvas assistant requests: ",
     "应用操作：": "App action: ",
     "用户拒绝了此次操作": "User rejected this action",
     "已删除画布：": "Deleted canvas: ",
     "将删除该画布及其全部本地数据文件（含节点图像资产）。此操作不可恢复。": "This will delete the canvas and all of its local data files (including node image assets). This cannot be undone.",
     "清空本节点输出与会话（历史 / 工具日志一并重置）": "Clear this node's output and session (history / tool logs reset)",
     "助手会话已清空": "Assistant chat cleared",
-    "右侧全局助手的会话：与助手栏是同一份对话；清空＝在这里换一条新的":
-      "A session of the right-hand global assistant: same conversation as the assistant panel; clearing starts a new one there",
-    "全局助手不绑任何画布：它按消息自行判定这一轮要不要碰画布":
-      "The global assistant is not bound to any canvas: it decides per message whether the canvas is involved",
+    "清空当前画布助手的对话（旧会话只留在左栏会话历史里可回看，重启后不会再自动绑回），下一次输入时新建":
+      "Clear this canvas assistant chat (the old session stays in the left session history and is not re-attached after restart); a new one is created on your next message",
+    "右侧画布助手的会话：与助手栏是同一份对话；清空＝在这里换一条新的":
+      "A session of the right-hand canvas assistant: same conversation as the assistant panel; clearing starts a new one there",
+    "画布助手按画布隔离：每张画布各一条会话，切画布自动跟着换":
+      "The canvas assistant is scoped by canvas: one chat per canvas, switched automatically when you switch canvases",
     "范围：仅当前画布": "Scope: current canvas",
     "范围：全局": "Scope: global",
     "只读回显：范围是全局偏好，在右侧助手栏的「范围」下拉里改":
@@ -4620,12 +4787,12 @@
     "列表视图": "List view",
     "知道了": "Got it",
     "工作目录无效": "Invalid working directory",
-    "以下工作目录不存在或不是有效文件夹，已自动清空。请重新选择有效目录，以免影响全局助手、智能任务与相对路径保存。":
-      "These working directories do not exist or are not valid folders and were cleared. Choose a valid directory so the global assistant, agent tasks, and relative save paths keep working.",
+    "以下工作目录不存在或不是有效文件夹，已自动清空。请重新选择有效目录，以免影响画布助手、智能任务与相对路径保存。":
+      "These working directories do not exist or are not valid folders and were cleared. Choose a valid directory so the canvas assistant, agent tasks, and relative save paths keep working.",
     "该路径不存在或不是有效文件夹，已自动清空。请重新选择有效的工作目录。":
       "This path does not exist or is not a valid folder and was cleared. Please choose a valid working directory.",
     "画布工作目录": "Canvas working directory",
-    "全局助手工作目录": "Global assistant working directory",
+    "画布助手工作目录": "Canvas assistant working directory",
     "智能会话": "Agent session",
     /* ── 「无模型」（模型不可见不再弹提示，改成静默的派生状态）──
        判据唯一真源 = renderer/app.js 的 nodeModelGate / nodeModelStaleLabel：节点头摘要与
@@ -4743,7 +4910,7 @@
     /* 会话列表条目：并行组在跑时条目同样显示「运行中」，悬浮说明它为什么在转圈 */
     "计划并行任务运行中（不打断你继续发消息）":
       "Parallel plan tasks are running (this doesn't block you from sending a new message)",
-    "停止全局助手": "Stop global assistant",
+    "停止画布助手": "Stop canvas assistant",
     "会话已不存在": "Session no longer exists",
     "节点已不存在": "Node no longer exists",
     "排队生成": "Queued generation",
@@ -4870,18 +5037,18 @@
     "按连线关系快速整理节点位置（可撤销）":
       "Arrange nodes by wire flow (undoable)",
     "AI排版": "AI layout",
-    "由全局助手分析并调整节点与绘制（可撤销，可能需等待）":
-      "Global assistant analyzes and adjusts nodes and marks (undoable; may take a while)",
+    "由画布助手分析并调整节点与绘制（可撤销，可能需等待）":
+      "Canvas assistant analyzes and adjusts nodes and marks (undoable; may take a while)",
     "确定进行简单排版？\n\n将按连线关系整理节点位置（可撤销）。":
       "Run simple layout?\n\nNodes will be arranged by wire flow (undoable).",
-    "确定进行 AI 排版？\n\n将由全局助手读取画布并调整节点与绘制位置，可能需要等待一段时间。每次画布改动可撤销。":
-      "Run AI layout?\n\nThe global assistant will read the canvas and adjust node/mark positions; this may take a while. Each canvas edit is undoable.",
+    "确定进行 AI 排版？\n\n将由画布助手读取画布并调整节点与绘制位置，可能需要等待一段时间。每次画布改动可撤销。":
+      "Run AI layout?\n\nThe canvas assistant will read the canvas and adjust node/mark positions; this may take a while. Each canvas edit is undoable.",
     "开始 AI 排版": "Start AI layout",
     "批次拆分已完成。是否进行重新排版？\n\n可选择简单排版或 AI 排版。":
       "Batch split done. Re-layout?\n\nChoose simple or AI layout.",
     "选择排版方式": "Choose layout",
-    "一键排版：简单排版（按连线整理）或 AI 排版（全局助手分析调整，可撤销）":
-      "Layout: simple (by wires) or AI (global assistant, undoable)",
+    "一键排版：简单排版（按连线整理）或 AI 排版（画布助手分析调整，可撤销）":
+      "Layout: simple (by wires) or AI (canvas assistant, undoable)",
     "下载模板": "Download template",
     "覆盖模板": "Overwrite template",
     "覆盖": "Overwrite",
@@ -5149,6 +5316,49 @@
     "排版与成组": "Layout & groups",
     "自动排版、创建组": "Auto-layout and create groups",
     "应用": "App",
+    /* 应用节点（kind appnode · renderer/app-appnode.js）*/
+    "应用节点": "App node",
+    "应用节点（钉一个应用 · 点开全屏界面）": "App node (pin an app · open full screen)",
+    "应用节点（绑定应用 · 点开全屏应用界面）": "App node (bind an app · open its full-screen UI)",
+    "选择应用": "Pick an app",
+    "选择应用（一次性）": "Pick an app (one-time)",
+    "选一次即固定：之后点卡片进入应用界面":
+      "Chosen once and fixed: afterwards click the card to open the app",
+    "点击进入应用界面": "Click to open the app",
+    "界面已打开（右上角 ✕ 收起）": "Open (close with ✕ at top right)",
+    "界面已打开（右上角可收起或停止）": "Open (collapse or stop from the top right)",
+    "后台运行中 · 点这里回到界面": "Running in background · click to reopen",
+    "已停止 · 点卡片重新启动": "Stopped · click the card to start again",
+    "完全停止应用": "Stop app completely",
+    "结束这个应用的运行（释放内存，数据已保存）；下次点卡片重新启动":
+      "End this app's run (frees memory; data is saved); click the card to start it again",
+    "完全停止应用（结束运行，释放内存；数据已保存）":
+      "Stop the app completely (ends the run, frees memory; data is saved)",
+    "应用已停止运行（数据已保存）": "App stopped (data saved)",
+    "应用不可用": "App unavailable",
+    "应用不可用（目录已不在本机）": "App unavailable (folder is gone)",
+    "重新绑定": "Re-bind",
+    "确实要重新选择": "Yes, pick another",
+    "应用已绑定，不能更换": "This node is already bound and cannot be changed",
+    "正在读取本机应用…": "Reading local apps…",
+    "本机还没有应用：先去「应用」页新建或下载一个，再回来绑到画布上。":
+      "No apps on this machine yet: create or download one in the Apps page, then bind it here.",
+    "开发中": "in development",
+    "已绑定应用：": "Bound app: ",
+    "这张画布还没有工作目录": "This canvas has no working folder yet",
+    "这张画布还没有工作目录：先在顶栏选一个文件夹":
+      "This canvas has no working folder yet: pick one in the top bar first",
+    "这张画布还没有工作目录：应用能开，但数据与文件接口不可用":
+      "This canvas has no working folder: the app opens, but data and file APIs are unavailable",
+    "建不出应用数据目录": "Could not create the app data folder",
+    "绑定的应用在本机找不到了（卸载 / 目录被删）。":
+      "The bound app is no longer on this machine (uninstalled or its folder was deleted).",
+    "在卡片上点「重新绑定」选一个应用，就会接着用新的那个。":
+      "Click \"Re-bind\" on the card and pick an app; the node continues with the new one.",
+    "重新载入应用页": "Reload the app page",
+    "打开这个应用的数据目录": "Open this app's data folder",
+    "收起界面（应用继续在后台运行）": "Collapse (the app keeps running in background)",
+    "数据：": "Data: ",
     "应用操作": "App operations",
     "状态、列表、重命名、选中、撤销重做":
       "Status, list, rename, select, undo/redo",
@@ -5172,6 +5382,8 @@
     "向用户提问": "Ask the user",
     "ask 交互": "ask interaction",
     "识图": "Vision",
+    "识图中": "Reading the image",
+    "识图（视频）": "Reading the video frames",
     "识图子代理": "Vision subagent",
     "本地媒体（语音 / 视频）": "Local media (speech / video)",
     "audio_transcribe：本地 SenseVoice 转写音频 / 视频，含分段起止秒":
@@ -5244,12 +5456,36 @@
     "本会话拒绝": "Deny this session",
     "若智能任务报 mtnode_vision 失败 / 审批被禁用：点「始终允许」或「本会话允许」即可恢复识图。无人值守预设不会弹工具审批；需要逐项确认时请改用「工作区读写 · 逐项审批」。":
       "If mtnode_vision fails or approvals seem disabled: click Always allow or Allow this session. Unattended preset never prompts for tools; switch to Workspace write · approve each when you want prompts.",
-    "全局助手改画布": "Global assistant canvas edits",
+    "画布助手改画布": "Canvas assistant canvas edits",
     "自动批准画布修改（不弹确认）": "Auto-approve canvas edits (no confirm)",
     "画布修改确认": "Canvas edit confirmation",
+    "画布修改确认：": "Canvas edit confirmation: ",
+    "画布编辑（智能会话 / 画布助手）": "Canvas edits (agent session / canvas assistant)",
+    "每次修改都弹确认框（默认）": "Confirm every canvas edit (default)",
+    "画布编辑直接生效；删除画布 / 插件装卸等危险操作仍会确认":
+      "Canvas edits apply directly; dangerous operations (delete canvas / plugin install-remove) still confirm",
+    "画布编辑与危险操作（删除画布 / 插件装卸）全部直接生效，不再询问":
+      "Canvas edits and dangerous operations (delete canvas / plugin install-remove) all apply directly, no prompts",
+    "批准=画布编辑直接生效（危险操作仍确认）；询问=每次确认一次；全部允许=连删除画布 / 插件装卸也不问":
+      "Allow = canvas edits apply directly (dangerous operations still confirm); Ask = confirm every time; Allow all = not even delete canvas / plugin install-remove is asked",
+    "助手改画布为「全部允许」：mtnode_canvas_edit / 节点层等画布修改，以及删除画布 / 插件装卸等危险操作，都直接生效，不再弹确认。":
+      "Canvas edit confirmation is Allow all: mtnode_canvas_edit / node layers and even dangerous operations (delete canvas / plugin install-remove) apply directly without prompting.",
+    "助手改画布已批准：mtnode_canvas_edit / 节点层等画布修改直接生效，无需再等确认；删除画布 / 插件装卸等危险操作仍会弹窗确认。":
+      "Canvas edits are allowed: mtnode_canvas_edit / node layers apply directly with no extra confirmation; dangerous operations (delete canvas / plugin install-remove) still prompt.",
     "批准=不弹窗；询问=每次确认": "Allow = no prompt; Ask = confirm each time",
-    "已开启：全局助手改画布不再弹确认": "On: assistant canvas edits skip confirm",
-    "已关闭：全局助手改画布需确认": "Off: assistant canvas edits require confirm",
+    "待确认的修改 · 点击唤回": "Pending change · click to reopen",
+    "待确认的修改 ": "Pending changes: ",
+    " 笔 · 点击唤回": " · click to reopen",
+    "刚才的确认框被关掉了：点这里重新打开（拒绝 / 全部允许 / 确认修改）":
+      "The confirmation was closed: click here to reopen it (Deny / Allow all / Confirm edit)",
+    "发起该请求的运行结束后，此确认框会自动消失；关闭窗口不会丢弃这次请求，可从右下角「待确认的修改」唤回。":
+      "This confirmation disappears when the requesting run ends; closing the window does not drop the request — reopen it from “Pending changes” at the bottom-right.",
+    "本次直接生效，且后续画布修改都不再询问（可在「审批」里改回）":
+      "Applies now and stops asking for later canvas edits (switch back under Approvals)",
+    "已设为「全部允许」：后续画布修改不再询问":
+      "Set to Allow all: later canvas edits will not ask",
+    "已开启：画布助手改画布不再弹确认": "On: assistant canvas edits skip confirm",
+    "已关闭：画布助手改画布需确认": "Off: assistant canvas edits require confirm",
     "识图已被本会话拒绝；请点右上角「审批」改为允许":
       "Vision denied for this session; click Approvals (top-right) to allow",
     "「始终允许」会记住选择；「允许一次」仅本次会话有效。图片会发给已配置的视觉模型。也可随时点右上角「审批」调整。":
@@ -5572,6 +5808,15 @@
     " · 已断开 {n} 条组线": " · {n} group wire(s) disconnected",
     "组为空已回收 · 已断开 {n} 条组线":
       "Empty group recycled · {n} group wire(s) disconnected",
+    "组输出端子：按住拖到智能节点的「组」输入端子，它就能拿到本层内部所有节点的清单与结构":
+      "Group output: drag onto a smart node's group input and it gets the list and structure of every node inside this layer",
+    "节点层的组线只能接到智能节点的「组」输入端子":
+      "A layer group wire only connects to a smart node's group input",
+    "这是组输出端子：只能从它拖出组线到智能节点的「组」输入端子":
+      "This is a group output: drag a group wire from it onto a smart node's group input",
+    "节点层不存在（可能已被删除）": "The node layer is gone (maybe deleted)",
+    "该节点层里还没有节点": "This node layer has no nodes yet",
+    "节点层已没有内部节点，已自动断开 ": "The node layer has no nodes left; disconnected ",
     "组内找不到成员：": "Group member not found: ",
     "已删除组（含 {n} 个节点{marks}）":
       "Deleted group ({n} node(s){marks})",
@@ -5602,13 +5847,13 @@
     "⚠ 批量防 N²：节点「{title}」的提示词似乎枚举了整批条目，同时又是 batch 逐条运行——请改为只描述当前项，或用拆分/聚合。":
       "⚠ Batch N² guard: node “{title}” prompt lists many batch titles while still in per-item batch — describe only the current item, or use Split / Aggregate.",
     "▦ 排版": "▦ Layout",
-    "一键排版：交由全局助手执行整洁排版（可撤销）":
+    "一键排版：交由画布助手执行整洁排版（可撤销）":
       "Auto layout by wire flow; optionally include node layer insides (undoable)",
     "一键排版：按连线关系整理节点位置；停在节点层里时默认整理当前这一层；可选同时排版节点层内部（可撤销）":
       "Auto layout by wire flow; inside a node layer it tidies the current level by default; optionally include node layer insides (undoable)",
-    "一键排版：交由全局助手执行紧凑排版（可撤销）":
+    "一键排版：交由画布助手执行紧凑排版（可撤销）":
       "Auto layout by wire flow (undoable)",
-    "确定进行一键排版？\n\n将由全局助手基于 AI 分析并调整画布节点位置，可能需要等待一段时间，请耐心等候。操作可撤销。":
+    "确定进行一键排版？\n\n将由画布助手基于 AI 分析并调整画布节点位置，可能需要等待一段时间，请耐心等候。操作可撤销。":
       "Run auto layout?\n\nNodes will be arranged by wire flow (undoable).",
     "批次拆分已完成。是否进行重新排版？\n\n将按连线关系整理节点位置。":
       "Batch split done. Run auto layout?\n\nNodes will be rearranged by wire flow.",
@@ -5633,17 +5878,17 @@
       "Tidy the canvas layout via mtnode_canvas_edit (not a layout action).",
     "请对当前画布执行紧凑排版：立刻调用 mtnode_app，action 为 compact_layout。不要增删节点、不要改连线；排版完成后用一句话确认。":
       "Tidy the canvas layout via mtnode_canvas_edit (not a layout action).",
-    "全局助手正在运行，请稍候或先终止":
-      "Global assistant is running; wait or stop it first",
+    "画布助手正在运行，请稍候或先终止":
+      "Canvas assistant is running; wait or stop it first",
     "助手执行中": "Assistant running",
     "收起为左下角条状按钮": "Collapse to bottom-left bar button",
     "（点击展开 / 收起运行队列）": " (click to expand/collapse run queue)",
-    "全局助手": "Global assistant",
-    "全局助手执行中": "Global assistant running",
-    "点击打开全局助手": "Click to open global assistant",
+    "画布助手": "Canvas assistant",
+    "画布助手执行中": "Canvas assistant running",
+    "点击打开画布助手": "Click to open canvas assistant",
     "全部终止": "Stop all",
-    "一键终止队列中全部运行与等待任务（含全局助手）":
-      "Stop all running and queued tasks in one click (including the global assistant)",
+    "一键终止队列中全部运行与等待任务（含画布助手）":
+      "Stop all running and queued tasks in one click (including the canvas assistant)",
     "当前没有运行中的任务": "No tasks are running",
     "已全部终止": "All stopped",
     " 个运行": " running",
@@ -5707,6 +5952,30 @@
       "⏳ Wait for file (watch · no input · block only)",
     "控制节点（批量清空 / 执行）": "Control (batch clear / run)",
     "控制节点（清空 / 执行 / 需求等待）": "Control (clear / run / wait for file)",
+    /* 弹窗节点（kind popup）：控制流触发时弹出的可编辑文字浮层 */
+    "弹窗": "Popup",
+    "弹窗（控制流触发 · 文字内容可填写）":
+      "Popup (fired by control flow · editable text)",
+    "弹窗（触发时弹出 · 可填文字内容）":
+      "Popup (opens when triggered · editable text)",
+    "弹窗标题（留空用节点标题）": "Popup title (blank = use the node title)",
+    "填写弹窗要显示的文字内容…": "Text shown in the popup…",
+    "填写要显示的文字内容…": "Write the text to show…",
+    "等待控制脉冲 · 到达时弹窗": "Waiting for a control pulse · popup on arrival",
+    "控制脉冲到达时弹出一只窗，内容可当场填写 / 修改，确定后继续":
+      "A control pulse opens a window; edit the text in place, then confirm to continue",
+    "控制流在这里等你确认：可直接改下面的文字，点「确定」继续往下走。":
+      "The control flow waits here: edit the text below, then press OK to continue.",
+    "弹窗中 · 等待确认…": "Popup open · waiting for confirmation…",
+    "已有一只弹窗在等待确认，先处理它":
+      "Another popup is already waiting for confirmation — handle it first",
+    "弹窗已取消": "Popup canceled",
+    "弹窗已经打开：在那只窗里点确定 / 取消":
+      "The popup is already open — press OK / Cancel in that window",
+    "弹窗已确认：": "Popup confirmed: ",
+    "立即弹窗并启用输出端目标": "Open the popup now and fire the connected targets",
+    "取消弹窗": "Cancel popup",
+    "取消弹窗（控制流停在这里）": "Cancel popup (the control flow stops here)",
     "检查中：": "Checking: ",
     "等待中（第 ": "Waiting (check #",
     " 次）· 每 ": ") · every ",
@@ -5930,8 +6199,8 @@
     "API Key 验证成功（无 Token 消耗）":
       "API Key verified (no token usage)",
     "API Key 验证失败": "API Key validation failed",
-    "助手改画布（全局助手 / 智能会话）":
-      "Canvas edits (global assistant / agent session)",
+    "助手改画布（画布助手 / 智能会话）":
+      "Canvas edits (canvas assistant / agent session)",
     "已开启：助手改画布不再弹确认":
       "On: assistant canvas edits skip confirm",
     "已关闭：助手改画布需确认": "Off: assistant canvas edits need confirm",
@@ -5958,8 +6227,8 @@
       ". The original batch node will be removed. Continue?",
     "已拆分批次：": "Batch split: ",
     " · 下游 ": " · downstream ",
-    "批次拆分已完成。是否进行 AI 重新排版？\n\n将由全局助手分析并调整节点位置，可能需要等待一段时间。":
-      "Batch split done. Run AI re-layout?\n\nThe global assistant will analyze and adjust node positions; this may take a while.",
+    "批次拆分已完成。是否进行 AI 重新排版？\n\n将由画布助手分析并调整节点位置，可能需要等待一段时间。":
+      "Batch split done. Run AI re-layout?\n\nThe canvas assistant will analyze and adjust node positions; this may take a while.",
     "节点操作": "Node actions",
     /* ── 全局搜索浮层（Ctrl+F · renderer/app-search.js） ── */
     "搜索画布、会话、专家团、素材、工具、技能与文档…":
@@ -6326,7 +6595,7 @@
     "展开为同层链": "Expand as sibling chain",
     "把步骤变成同层兄弟任务并按序连线，▶ 可链式执行": "Turn steps into same-scope sibling tasks wired in order; ▶ runs the chain",
     "助手拆解": "Assist split",
-    "让全局助手根据目标自动拆成任务计划": "Ask the global assistant to split the goal into a task plan",
+    "让画布助手根据目标自动拆成任务计划": "Ask the canvas assistant to split the goal into a task plan",
     "已展开为同层任务链 ": "Expanded sibling task chain: ",
     " 步，可 ▶ 按连线顺序执行": " steps; ▶ runs them in wire order",
     "步骤已对应同层任务": "Steps already have sibling tasks",
@@ -6423,8 +6692,8 @@
     "任务控制输入端子已被占用": "Task control input is already occupied",
     "任务节点仅有成功 / 失败控制输出":
       "Task nodes only have success / fail control outputs",
-    "让全局助手根据目标自动拆成内部任务图":
-      "Ask the global assistant to split the goal into an inner task graph",
+    "让画布助手根据目标自动拆成内部任务图":
+      "Ask the canvas assistant to split the goal into an inner task graph",
     " 个任务": " tasks",
     "控制节点": "Control nodes",
     "定时触发器": "Timer",
@@ -7872,8 +8141,8 @@
     "构建工作流": "Build Workflow",
     "构建工作流（选择生成技能 · 填写要求）":
       "Build Workflow (pick a generation skill · fill in requirements)",
-    "选择要使用的工具（工作流生成类技能），并填写要求。确认后将新建一个绑定当前画布的独立会话在其中执行（不使用全局助手）。":
-      "Pick the tool (a workflow-generation skill) and describe what you need. On confirm, a new standalone session bound to this canvas will run it (the global assistant stays untouched).",
+    "选择要使用的工具（工作流生成类技能），并填写要求。确认后将新建一个绑定当前画布的独立会话在其中执行（不使用画布助手）。":
+      "Pick the tool (a workflow-generation skill) and describe what you need. On confirm, a new standalone session bound to this canvas will run it (the canvas assistant stays untouched).",
     "工具（工作流生成技能）": "Tool (workflow-generation skill)",
     "构建要求": "Requirements",
     "开始构建": "Build",
@@ -8971,6 +9240,7 @@
     "已取消该节点的排队运行": "Cancelled this node's queued run",
     "已停止并回收 ": "Stopped and reclaimed ",
     " 个进程": " process(es)",
+    " 个子代理": " subagent(s)",
     "已停止该节点的运行": "Stopped this node's run",
     "已请求停止运行…": "Stop requested…",
     "已回收 ": "Reclaimed ",
@@ -10212,6 +10482,42 @@
     var add = {};
     for (var wk in wsTempLabels)
       if (!Object.prototype.hasOwnProperty.call(EN, wk)) add[wk] = wsTempLabels[wk];
+    Object.assign(EN, add);
+  })();
+
+  /* ── 子代理运行提示（本次需求）──────────────────────────────────────
+     引擎的 subagent 工具一调用就返回，活在后台上跑；父会话那一轮常常先 idle。
+     这四个入口（会话工具卡 / 左栏会话行 / 左下运行队列 / 助手栏状态条）的文案
+     共用这一批词条，键仍是中文原文（见 I18n.t 的口径）。 */
+  (function () {
+    var subagentLabels = {
+      " 子代理": " subagents",
+      "子代理 {n}": "Subagent {n}",
+      "运行中": "running",
+      "已完成": "done",
+      "已失败": "failed",
+      "用时 ": "elapsed ",
+      "失败原因：": "Failure reason: ",
+      "结束原因：": "Stop reason: ",
+      "未提供": "not provided",
+      "子代理在后台跑：它一调用就立刻返回了，父这一轮可能已经收尾。跑完会自动转成「已完成」，不用等它。":
+        "The subagent is running in the background: the call returned immediately, so this turn may already be finished. It flips to done on its own; there is nothing to wait for.",
+      "点击打开它所在的那条会话": "Click to open the session it belongs to",
+      "所属会话": "Session",
+      "中断这只子代理（父会话那一轮已经收尾，停的只是后台子任务）":
+        "Interrupt this subagent (the parent turn is already finished; only the background task stops)",
+      "找不到这只子代理所属的会话": "The session this subagent belongs to is gone",
+      "中断失败": "Interrupt failed",
+      "已请求中断该子代理": "Interrupt requested for this subagent",
+      "当前引擎不支持中断子代理": "This engine cannot interrupt subagents",
+      "该子代理所在的会话已经不在运行": "The session that owns this subagent is no longer running",
+      "这条会话还有子代理在后台跑（父这一轮可能已经收尾）：":
+        "This session still has subagents running in the background (its own turn may already be finished):",
+      "跑完会自动转成「已完成」，不用等它；要停可在左下运行队列里点 ■":
+        "They flip to done on their own, so there is nothing to wait for; to stop one, click ■ in the run queue at the bottom left",
+    };
+    var add = {};
+    for (var k in subagentLabels) add[k] = subagentLabels[k];
     Object.assign(EN, add);
   })();
 
@@ -13536,6 +13842,15 @@
     "「LongCat 数字人」插件已下线，这个节点不能再运行。它不会影响画布其它节点，直接删掉即可；已生成的视频仍在原处。":
       "The LongCat avatar plugin has been retired, so this node can no longer run. It does not affect the rest of the canvas — just delete it; videos you already produced stay where they are.",
     "删除这个节点": "Delete this node",
+    /* ── 项目 manifest：生成节点的「资产锚定」块（app-canvas.js nsAssetGateFields
+       + app-manifest.js 的 requireAsset 闸门文案）── */
+    "资产锚定": "Asset anchoring",
+    "必须引用资产（requireAsset）": "Require asset (requireAsset)",
+    "资产引用（assetRefs · id@rev，逗号分隔）":
+      "Asset references (assetRefs · id@rev, comma separated)",
+    "资产引用校验未通过": "Asset reference check failed",
+    "开启后本节点必须先声明资产引用（形如 char_lin@3），运行前对照工程根 manifest.json 校验：引用不存在 / rev 过期 / 一条都没有（纯文本直出）都会拒跑并点名缺哪一项。工程里还没有 manifest.json 时先让 Agent 调 mtnode_manifest 的 init。":
+      "When on, this node must declare asset references (e.g. char_lin@3). Before running, they are checked against <project>/manifest.json: a missing asset, an outdated rev, or no reference at all (plain text-only output) makes the run refuse and names what is missing. If the project has no manifest.json yet, have the agent call mtnode_manifest with action init first.",
   });
 
   function listJoin(arr) {

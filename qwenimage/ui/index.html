@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: file:" />
+    <title>Qwen Image 2.1 控制台</title>
+    <link rel="stylesheet" href="ui.css" />
+  </head>
+  <body>
+    <header class="bar">
+      <div class="id">
+        <span class="dot" id="dot"></span>
+        <b>Qwen Image 2.1</b>
+        <span class="sub" id="phase">读取状态…</span>
+      </div>
+      <div class="acts">
+        <button id="btnInstall" class="primary">安装 / 重装</button>
+        <button id="btnStart">启动后端</button>
+        <button id="btnStop">停止</button>
+        <button id="btnOpenDir">打开安装目录</button>
+      </div>
+    </header>
+
+    <section class="grid">
+      <div class="card">
+        <h3>运行环境</h3>
+        <dl>
+          <dt>安装目录</dt><dd id="installDir">—</dd>
+          <dt>后端端口</dt><dd id="port">—</dd>
+          <dt>默认精度</dt><dd id="precision">—</dd>
+          <dt>显存策略</dt><dd id="vram">—</dd>
+          <dt>已装权重</dt><dd id="weights">—</dd>
+          <dt>显存</dt><dd id="gpu">—</dd>
+          <dt>当前任务</dt><dd id="busy">—</dd>
+        </dl>
+        <div class="row">
+          <button id="btnPickDir">选择安装目录…</button>
+        </div>
+        <div class="row">
+          <label>精度
+            <select id="selPrecision">
+              <option value="int8">INT8（7.3GB · 默认 · 25 步）</option>
+              <option value="turbo">Turbo INT8（7.3GB · 官方 8 步）</option>
+            </select>
+          </label>
+          <label>显存
+            <select id="selVram">
+              <option value="auto">自动（默认）</option>
+              <option value="normal">常规</option>
+              <option value="low">低显存（lowvram）</option>
+            </select>
+          </label>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>试生成</h3>
+        <label class="stack">提示词
+          <textarea id="testPrompt" rows="4">a red fox standing in fresh snow at sunrise, sharp focus, natural light</textarea>
+        </label>
+        <div class="row">
+          <label>比例
+            <select id="testRatio">
+              <option value="1:1">1:1 · 1024×1024</option>
+              <option value="16:9">16:9 · 1344×768</option>
+              <option value="3:2">3:2 · 1248×832</option>
+              <option value="4:3">4:3 · 1152×896</option>
+              <option value="2:3">2:3 · 832×1248</option>
+              <option value="3:4">3:4 · 896×1152</option>
+              <option value="9:16">9:16 · 768×1344</option>
+            </select>
+          </label>
+          <label>步数 <input id="testSteps" type="number" min="1" max="40" value="16" /></label>
+          <label>种子 <input id="testSeed" type="number" min="0" value="0" /></label>
+        </div>
+        <div class="row">
+          <button id="btnTest" class="primary">生成一张</button>
+          <button id="btnCancel">取消</button>
+        </div>
+        <div class="hint" id="testResult"></div>
+      </div>
+    </section>
+
+    <section class="logwrap">
+      <div class="logbar">
+        <b>后端日志</b>
+        <span class="hint" id="progress">—</span>
+        <span class="spacer"></span>
+        <button id="btnClear">清空</button>
+      </div>
+      <pre id="log"></pre>
+    </section>
+
+    <script src="ui.js"></script>
+  </body>
+</html>

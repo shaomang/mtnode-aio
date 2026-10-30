@@ -1,7 +1,7 @@
 ---
 name: mtnode-canvas-edit-rules
 title: 画布编辑硬规则
-description: MTNode 画布建图 / 连线 / 批量的完整硬规则：kind 速查、task 三端、super 边界端子、tool/function 参数即端子、@引用三条件、save 与 wait_file、批次与文生图、数据库 / 开发节点 / 排版 / scope 细则。Use when creating, wiring, batching or laying out canvas nodes, or when a wire/tool receipt looks wrong. 这些规则不写在 mtnode_canvas_edit 描述里，按需加载本技能。
+description: 建图 / 连线 / 批量的完整硬规则（kind、super 端子、@引用、save 与 wait_file、排版）；工具描述只留卡口。
 ---
 
 # 画布编辑硬规则
@@ -17,7 +17,13 @@ description: MTNode 画布建图 / 连线 / 批量的完整硬规则：kind 速�
 
 ## create.kind 速查
 
-create.kind 速查：输入 input_text / input_image / input_audio / input_video / input_file（媒体输入由用户自己选文件，数据端子值 = file:/// URL，可直接连给需要媒体参考的端子）· 处理 proc_text / proc_image / agent_task（智能节点）/ db_table · 生成 music_gen / tts_gen / video_gen / remotion / flux3klein_gen（本机 FLUX 3 Image Klein 图像生成 / 编辑）· 保存 save（旧别名 save_text / save_image）/ save_pdf（文本 → PDF，见下「保存类节点」）· 批次 split / merge · 控制 control / judge / task · 节拍等待 wait_file / timer / delayer / sequencer / gate / splitter / counter / mutex · 容器与广播 super / db_replica / global / execute（执行节点绑 execPath，无数据端子）· 计算 tool / function（参数即端子）。
+create.kind 速查：输入 input_text / input_image / input_audio / input_video / input_file（媒体输入由用户自己选文件，数据端子值 = file:/// URL，可直接连给需要媒体参考的端子）· 处理 proc_text / proc_image / agent_task（智能节点）/ db_table · 质检 qa_text / qa_image / qa_video / qa_audio / qa_file（按 JSON 评分标准打分 + 通过 / 未过门禁，见下）· 生成 music_gen / tts_gen / video_gen / remotion / flux3klein_gen（本机 FLUX 3 Image Klein 图像生成 / 编辑）· 保存 save（旧别名 save_text / save_image）/ save_pdf（文本 → PDF，见下「保存类节点」）· 批次 split / merge · 控制 control / judge / task · 节拍等待 wait_file / timer / delayer / sequencer / gate / splitter / counter / mutex · 容器与广播 super / db_replica / global / execute（执行节点绑 execPath，无数据端子）· 计算 tool / function（参数即端子）。
+
+质检节点 qa_text / qa_image / qa_video / qa_audio / qa_file：五类**端口完全同构**，固定 **3 进 4 出** —— 入 0 = 被检内容（按类型：text / image / video / audio / 任意）、入 1 = **质检要求**（数组端子，可多线，**一个端口同时收两类东西**：文字口径 —— 要求 / 脚本 / 规格；参考样例 —— 设定图 / 样片 / 基准文件；旧版的「参考基准」端子已并入这里，**没有入 2 参考基准、也没有入 3 控制**）、入 2 = 控制；出 0 = 质检报告 JSON、出 1 = pass|fail|blocked、出 2 = 控制·通过、出 3 = 控制·未过。接线时：被检产物 → 入 0；要它照做的要求 / 脚本 → 入 1；要对齐的设定图 / 样片 → **也接入 1**（同一条线上可以同时挂文本节点和图片节点）；控制线 → 入 2。
+
+判据不在代码里：节点在 ⚙ 里选一份 JSON 评分模板（内置 `qa-templates/*.json`，用户可放 `<数据目录>/qa-templates/` 或 `<工程根>/qa/templates/`；`kind` 要与节点类型对应），所以**别自己编维度与合格线**。节点 body 里默认把这份模板的整份 JSON 摊成**表单**（「表单 ↔ 源码」可切，和文本节点的 JSON 渲染同一套），用户可以直接改（存 `qaTemplateJson`，只影响这一颗节点）或「保存为新模板」；**入 1 接了线时 body 变只读**（口径由连线决定），要改标准就改入 1 那一端的要求文本，别去动别的节点字段。body 上只写运行结果（总分 / 判定）和这份 JSON，**不挂任何说明文字**（端口含义、参考样例释义之类都在节点指南里，别写进节点）。
+
+门禁只判不返工：pass → 出 2；fail → 置「需干涉」并出 3，**不自动重跑上游、不自动弹卡**（放行靠用户在节点 body 上点「人工裁决」，接受 = 报告记 `manualOverride` 并转通过，不重触发下游）；blocked（模型不通 / 回包解不出 / 缺维度分）只置「需干涉」，**绝不写 pass**。质检模型与入 0 的生成节点同模型即拒跑（生成者不自评，G13）。老画布上 toIndex ≥ 3 的线不再有对应端子：渲染与取值都忽略，节点 body 提示「旧图需重连」——**别替用户猜线该落在哪，也别批量重连**；要修就按上面 3 进口径重接，或问用户。
 
 ## 硬规则（误接线主要来源）
 
@@ -46,6 +52,7 @@ create.kind 速查：输入 input_text / input_image / input_audio / input_video
 - **端口 0 = 提示词 / 文本入口 · 端口 1+ = 数据槽**：连一条数据线就多一个槽，文本与图像引用都收；参考图（图生图 / 图像编辑）接端口 1+，**不要接端口 0**。输出 端口 0 = 内容 · 末尾 = 控制输出。
 - **动态端子节点（proc_text / proc_image / agent_task / input_*）的末位恒有一颗专用控制端子**：控制线只连它（数据线永不占它；可接多条控制线 = 任一到达即触发一次，要等齐用 gate）。它的号随数据槽增长（`portRule.input` 会写出当前号），省略 `toIndex` 时控制线自动落到它 —— 不要把控制线连到端口 0 或数据槽上。
 - **「组」输入端子（智能节点专有，端子号 9002）**：只有 `agent_task` 与开了智能的 `proc_text` 有，来源是画布组框标题栏的 □（不是节点），线记成 `from: "grp:<组id>"`。它不占 0..N-1 顺序端口、不参与上游补跑 / 取值 / 端口占用，也**不会**因接线触发组内任何节点运行。接上后这颗节点这一轮的上下文里会多一段【组输入】清单（组内每个节点的 标题 · 类型 · 描述 · id，多组按 id 去重合并）：那是**清单不是正文**，要正文自己用 `mtnode_canvas_get` 按 id 取；清单里出现自己属正常（组往往围着它建）。要接组线就用 `connectGroup`（`connect` 落不到这颗端子），普通数据线连它会被拒。
+- **节点层（super）的「组」输出端子（端子号 9003）**：节点层右侧输出端子排最末多出这一颗（形态同普通输出端子），拖到上面那颗组输入端子即可。它同样是一条**组线**（线记成 `from: <层id> · fromIndex: 9003 · sup: <层id>`），只吃组输入端子、不占 0..M-1 顺序输出、不参与取值与补跑、不会触发层内节点运行。注入的清单是**层内部所有节点 + 层级结构**（层自己一行，内部节点缩进，子层再缩进一级；每行 标题 · 类型 · 描述 · id），只给清单不给正文。层被删或层里节点被搬空，这条线自动断开。用 `connectLayerGroup(<层id>, <目标节点id>)` 接线。
 - `ports` / `portRule.now` 只列**当下真实存在**的端子：没连线的节点是「端口 0（数据槽）+ 末位控制端子」两颗，据此断定「没有图像参考端子」是错的。
 - **不要用「先试连一条线、再看回执 warnings」反推接法**：一次读图就读全了，试连既多一轮往返又可能真接错。
 - 控制类 / 固定端口类（control / wait_file / timer / gate / judge / task / video_gen / remotion / breeze_gen / super / tool / function / 素材）端子由结构或参数钉死，按 `ports` 读即可。
@@ -101,12 +108,41 @@ FLUX 3 Image Klein（5.6B 蒸馏）跑在用户本机的独立 ComfyUI 后端（
 - **全局互斥**：图像生成与音乐 / 视频生成共用一把全局锁，同一时刻只跑 1 个；第二个节点报「已有媒体任务在跑」是设计行为，不是故障。
 - **耗时预期**：点 ▶ 会自动拉起后端（ComfyUI）并可能现加载权重（分钟级），跑完不自动关；不要因为没立刻出图就重复点 ▶ 或重跑同一节点。
 
-## 字段细则（工具 schema 里只留一句，细则查这里）
+## 字段速查（工具 schema 只留参数名 + 类型，语义全在这里）
 
-- **video_gen 端子（videoMode）**：控制输入恒为端口 0 = 第一个端子，数据端口从 1 起且与「端子号 / 数据槽号」同号 —— `fl2va` = 控制(0) · 提示词(1) · 首帧(2) · 末帧(3)；`r2v` = 控制(0) · 提示词(1) · 参考图 I1–I9(2–10) · 参考视频 V1–V3(11–13) · 参考音频 A1–A3(14–16)；自建工作流（workflowId 非空）= 控制(0) · 文本(1) · 素材(2+)，端子按该工作流参数重排。connect 的 `toIndex` / `fromIndex` 是 0 起始下标，就等于括号里的号。
-- **proc_image 的图像参数**：`maskOn` = 蒙版局部重绘（透明区才重绘，只认第 1 张 image）；maskPath 必须由用户在节点头部蒙版编辑器里涂，Agent 不能代画；需图像输入 + OpenAI 兼容图像服务商，与 `ratioLockOn` 同时开时以蒙版为准，且请求 size 被钉成首张参考图的像素尺寸。`bgRmOn` = 差分抠图出带 Alpha 的 PNG（先出纯黑基准、再复刻纯白逐像素差分，约 2 倍 Token；只有接受「基准图当参考图」的服务商才抠得动）。`imgQuality` 直传 quality（low/medium/high/xhigh/max；空 = 服务商按 auto；旧版 DALL·E 的 standard / hd 不要传）。`imgBackground: "transparent"` 直出 Alpha PNG（自动补「背景透明」提示词并禁用 bgRmOn）。`size` 合法值用 canvas_get `sections:["refs"]` 取，缺省 2048x1360。
-- **输出路径**：`outputPath` 扩展名按媒体类型强制（.mp4 / .wav / .flac / .mp3）；flux3klein_gen / proc_image 没有这个字段（结果落资产目录、从输出端口 0 交出）。
-- **execute / function**：`execPath` 绑本机可执行文件（.exe / .bat / .cmd / .lnk，无数据端子）；`execIcon` 取 auto / rocket / gear / terminal / play / bolt / wrench / folder / file / power。`jscode` 里 `input = { 参数名: 值 }`（图像是 `{kind:"image", path}`），`return { 输出参数名: 值 }`；`inputs` / `outputs` 传完整数组即整体替换端子表（会连带改连线）。
-- **super 展开态 / 开发节点**：`expandW` / `expandH` 是展开态尺寸；`subFolder` 是内部节点相对路径的落点；`db` 标数据库节点（编译后出 db_replica）；开发节点字段语义见技能 mtnode-dev-architect。
+### 节点属性（create / update 共用同一份表；kind 建好即不可改，update 省略的键保持原样、数组整体替换）
+
+- 定位与引用：`title` 唯一标题（就是 @标题 引用的名字）· `tags` 供 @标签名 引用 · `alias` 只在本调用内有效 · `x` / `y` 只当起始锚点（改结构会自动排版）。
+- 文本与提示：`text`（input_text 正文；remotion 的「功能说明」也在这里，构建 Agent 与运行期都不读它）· `prompt`（proc_text / proc_image 提示词，也是 judge 判据）· `task` / `goal` / `steps`（agent_task 与 task 的任务描述 / 本步目标 / 有序子步骤标题）。
+- @引用：`refs` 把 @标题 / @标签名 补进本节点 prompt/task；`globalRefs:true` 才收全局广播（还须接 kind "global" 且明文 @）。
+- 层级与 scope：`parentTaskId` 放进某 task 内部（父 task 先建）· `parentSuperId` 放进某 super 内部（需 canvas_super）· `scope` 只改某颗壳内部（id / 唯一标题，"global" = 整图）+ `scopeDepth`（direct = 壳 + 直接子节点，默认；all = 整棵子树）。
+- super：`note` 卡片说明（开发节点必须【功能】+【实现】两段、≤200 字）· `expandW` / `expandH` 展开态尺寸 · `subFolder` 内部节点落点的相对子目录 · `superOpen` 展开态 · `db` 标数据库节点（编译后出 db_replica）+ `dbMode`（super = 画布式 / db = 控制台）。
+- dev（super + dev:true，完整规范见技能 mtnode-dev-architect）：`devPath` 项目根绝对路径（子块就近继承）· `devStatus` pending / wip / done · `devKind` module → file → class / interface / enum · `devColor` 外框色 #rrggbb（勿自创色值）· `devModel` / `devProvider` / `devPreset` / `devEffort`（low / medium / high / xhigh / max / ""；devProvider 是 devModel 的路由、可省，模型 / 预设 / 思考强度三项各自就近向上继承、互不牵连）· `devFiles` 核心文件（≤10 条 · 相对 devPath）。
+- execute / function：`execPath` 本机可执行文件绝对路径（.exe / .bat / .cmd / .lnk，无数据端子）· `execIcon` auto / rocket / gear / terminal / play / bolt / wrench / folder / file / power · `execColor` · `fnName` 函数名 · `description` 用途说明 · `jscode` 函数体（`input = { 参数名: 值 }`，图像是 `{kind:"image", path}`，`return { 输出参数名: 值 }`）· `inputs` / `outputs` 传完整数组即整体替换端子表（删参数会让已连的端子改指别的参数，改完提醒用户复核连线）。
+- 参数端子：见「参数端子」一节；`paramStrict:true` = 严格校验（参数端子上的 JSON 有键不合法 / 类型不符就整份拒绝、该节点不运行；缺省宽松）。`toolConfig` = 工具节点的定义 `{ name 工具名（标题默认跟随它）, description 用途, inputs / outputs 参数表 }`，参数条目 = `{ name 参数名 = 端子名, kind text | image（缺省 text）, list 数组端子 }`；参数即端子、端子数由参数钉死。
+- 输入：`imagePath` 单张本机图片绝对路径 · `imagePaths` 多张（即批量项）· `batch` 开批量项 · `batchMode` "batch" 每条一次运行（只看该条）/ "agg" 一次看全部。
+- 智能 / 服务商：`agent` proc_text 开智能模式 · `providerId` 服务商 id 或名称（proc_text / proc_image）· `provider` 智能节点路由（deepseek-official / mtnode_<id> / 服务商名）· `model` 模型 id（运行中的别改）。写死别人的服务商 id 时，本机没有会按名称 / model 归属换掉并警告，仍对不上就跳过该节点。
+- save / save_pdf：`savePath`（相对路径按画布工作目录解析；save 后缀按输入类型强制，save_pdf 固定 .pdf 且留空 = 用上游节点标题当文件名）· `auto` 上游运行即自动保存（save_pdf 没有这个开关，必须点 ▶ 或由 control 直连）。
+- wait_file：`waitPath` 该文件存在才放行下游 · `waitIntervalSec` 轮询秒 1–60。
+- timer：`timerMode` once / interval / cron · `timerAt` once 的本地时间 "YYYY-MM-DDTHH:mm" · `timerEverySec` interval 间隔 1–604800 · `timerCron` 5 段 "min hour dom mon dow" · `timerArmed` 是否上膛。
+- 节拍 / 分流：`delaySec` 延时秒 · `seqOutputs` 顺序输出数 2–8 · `seqGapSec` 输出间隔秒 · `gateInputs` AND 输入数 2–8 · `splitOutputs` 并行输出数 2–8 · `counterEvery` 每 N 次放行 2–99 · `counterCount` · `mutexInputs` 输入数 2–8 · `mutexMode` first / priority / random（哪个输入胜出）。
+- 网络：`netChannel` 通道号 0–65535 · `netProto` tcp / udp · `netHost` 地址 · `netPort` 端口（0 = 全局设置）· `netAutoListen` 启动即监听。
+- control / db_replica：`ctrlAction` 只建 run、不要建 clear · `ctrlRole` start / endSuccess / endFail（task 自带三端勿删）· `ctrlPinned` · `ctrlFillOnly` 只填数据不触发运行 · `dbNodeId` 镜像的数据库 super id · `dbName` 源数据库显示名。
+- 生成类通用：`attempts` 抽卡次数 1–10（每次执行 seed+1）· `outputPath` 输出路径（.mp4 / .wav / .flac / .mp3，扩展名按媒体类型强制）· `duration` video_gen 4–15 / remotion 1–60 · `outputRes` auto / 480p / 720p / 1080p · `postEnabled` 超分补帧 · `postInterp` RIFE 补帧 · `workflowId` 自建 ComfyUI 工作流库 id（勿编造）。
+- breeze_gen：`voice` 音色 id（留空 = 用端子参考音频）· `breezeVoice` 同义（两个都收）· `breezeMode` auto / clone / design / direction · `breezeInstruction` 性格与语气 · `breezeCfgScale` 指令跟随强度 0.1–10（默认 4）· `breezeSeed` 随机种子（默认 42）· `breezeFormat` wav / flac / mp3（默认 wav）· 角色 / 组走**名称参数** `breezePreset`（角色名称或 id）+ `breezeGroup`（组名 / 「第 N 组」/ 组 id；不给 = 该角色第一组）：运行期临时翻译成 presetId / presetGroupId，跑完恢复、不写回节点；对不上就报错并停止这次合成（绝不默默换声）。
+- yue_gen：`style` 风格提示词（端口 0）· `lyrics` 歌词正文（端口 1）· `abc` ABC 谱面（端口 2，可选）· `cot` full（默认）/ melody / off。
+- video_gen 端子（`videoMode`）：控制输入恒为端口 0 = 第一个端子，数据端口从 1 起且与「端子号 / 数据槽号」同号 —— `fl2va` = 控制(0) · 提示词(1) · 首帧(2) · 末帧(3)；`r2v` = 控制(0) · 提示词(1) · 参考图 I1–I9(2–10) · 参考视频 V1–V3(11–13) · 参考音频 A1–A3(14–16)；自建工作流（workflowId 非空）= 控制(0) · 文本(1) · 素材(2+)，端子按该工作流参数重排。connect 的 `toIndex` / `fromIndex` 是 0 起始下标，就等于括号里的号。
+- proc_image 的图像参数：`maskOn` = 蒙版局部重绘（透明区才重绘，只认第 1 张 image）；maskPath 必须由用户在节点头部蒙版编辑器里涂，Agent 不能代画；需图像输入 + OpenAI 兼容图像服务商，与 `ratioLockOn` 同时开时以蒙版为准，且请求 size 被钉成首张参考图的像素尺寸。`bgRmOn` = 差分抠图出带 Alpha 的 PNG（先出纯黑基准、再复刻纯白逐像素差分，约 2 倍 Token；只有接受「基准图当参考图」的服务商才抠得动）。`imgQuality` 直传 quality（low / medium / high / xhigh / max；空 = 服务商按 auto；旧版 DALL·E 的 standard / hd 不要传）。`imgBackground: "transparent"` 直出 Alpha PNG（自动补「背景透明」提示词并禁用 bgRmOn）。`size` 合法值用 canvas_get `sections:["refs"]` 取，缺省 2048x1360。
+- 输出路径：`outputPath` 扩展名按媒体类型强制（.mp4 / .wav / .flac / .mp3）；flux3klein_gen / proc_image 没有这个字段（结果落资产目录、从输出端口 0 交出）。music_gen / yue_gen / breeze_gen / video_gen 由节点自己的 outputPath 直接写出，不配 save；remotion 例外：无 outputPath，mp4 由下游 save 落盘。
+- remotion：`remotionSize` 分辨率（宽x高）· `fps` 帧率 1–60 · `duration` 1–60 · `text` 功能说明（构建 Agent 与运行期都不读）· `remotionBuildNote` 构建需求（唯一进构建 Agent 的输入；空 = 还没写过）· `tsx` Composition.tsx 全文（必须导出 Main；给了就按它渲染、不调模型，传空串回到固化工程 / 内置版面）· `remotionFiles` 源码树 `{ 相对 src/ 的路径: 源码 }`（入口必须是 Composition.tsx，不许 ../ 越界；写入时跑与源码编辑器「保存并校验」同一条静态校验，通过就重算端子契约并把同 key 接线搬过去，未通过则源码照样保存、端子留上一版、原因写进 warnings；与 tsx 同时给时以它为准）· `remotionInputs` 端子契约 `[{key,kind,label,list,required,default}]`（kind = image / audio / video / text / number / boolean / json；通常由源码 `export const inputs` 派生，显式给出即以它为准重建端子，同 key 的接线跟着 key 搬迁，消失的 key 断线）· `backgroundColor` 内置台词卡版面左侧底色（#rrggbb）。
+- 绘制（createMarks / marks / updateMarks）：`kind` text / box / arrow · `alias` 本调用内局部名（updateMarks / removeMarks / group 引用它）· `label` box 标题（title 同义）· `text` text 正文 · `around` box 框住哪些节点（id / alias / 标题；排版后贴合它们再加 pad）+ `pad` 留白（默认 36）· `x` / `y` / `w` / `h` · `x2` / `y2` arrow 终点 · `color` #rrggbb（取 canvas_get 的 markColors）· `fontSize` 字号 10–48 · `stroke` 线宽 1–8。updateMarks 按 id / alias / 精确正文（title）定位，其余字段沿用 createMarks[] 那份表。
+
+### 端子号（toIndex / fromIndex）速查
+
+- 通用：`fromIndex` 默认 0；judge 输出 0 = YES、1 = NO；tool / function 按参数表数端子；`super` 对外只暴露边界端子。
+- 动态端子节点（proc_text / proc_image / agent_task / input_*）：0 = 提示词 / 文本入口，1+ = 数据槽（连一条多一个），专用控制入 = 末位那颗（号随数据槽增长，数据线不占它；省略 toIndex 时控制线自动落到它）。
+- 参数端子：恒 **9001**（来源必须是文本节点里的 JSON 对象）。
+- 媒体槽位：breeze_gen 0 = 待合成文本 · 1 = 参考音频 · 2 = 参考文稿 · 3 = 指令 · 4 = 控制输入；video_gen 见上（fl2va / r2v 表）；remotion 端子无差别（连一条多一个，数据线与控制线共用、先占先得；功能说明在节点 `text`、构建需求在 `remotionBuildNote`，都不占端子；视频 / 图片 → 主素材、音频 → 语音、文本 → 台词）；save 0 / 1 按入线类型。
+- 接进已占用的普通端子 = 顶掉旧线（同类换同类，旧线进撤销栈，回执里该对线带 `replaced`）；参数端子 / 数组端子 / 动态专用控制端子可多线、不替换；类型不符仍是错（旧线不动）；省略 toIndex 走自动落点。
 
 生成类节点的共同口径（music_gen / yue_gen / breeze_gen / video_gen 的 outputPath、抽卡 + seed、全局锁、媒体输入走 file:///）另见技能 mtnode-media-gen-nodes。

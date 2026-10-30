@@ -1,6 +1,6 @@
 {
   "format": "mtnode-agent-skills-index-v1",
-  "updatedAt": "2026-10-23T21:58:59.607Z",
+  "updatedAt": "2026-10-30T14:46:21.036Z",
   "libraryRoot": "mtnode-agent-skills",
   "usage": "MTNode 内置 Agent 技能库。默认只注入本索引；任务匹配时再读取完整 SKILL.md（skill 工具或 read）。",
   "categories": [
@@ -12,7 +12,7 @@
           "id": "impeccable",
           "name": "impeccable",
           "title": "Impeccable（前端设计规范）",
-          "description": "Use when the user wants to design, redesign, shape, critique, audit, polish, clarify, distill, harden, optimize, adapt, animate, colorize, extract, or otherwise improve a frontend interface. Covers websites, landing pages, dashboards, product UI, app shells, components, forms, settings, onboarding, and empty states. Handles UX review, visual hierarchy, information architecture, cognitive load, acc",
+          "description": "前端界面设计 / 改版 / 评审：视觉层级、排版、动效、可访问性与设计系统。",
           "path": "app/impeccable/SKILL.md",
           "version": "4.4.0",
           "menu": "user"
@@ -21,7 +21,7 @@
           "id": "app-dev",
           "name": "mtnode-app-dev",
           "title": "MTNode 应用开发",
-          "description": "开发 MTNode「应用」（顶栏「应用中心」下载 / 自建后独立窗口运行，或「插件」对话框里 kind=window 的窗口类应用）：静态 HTML/JS/CSS 契约（本身不依赖 appHost 也能跑）、两套宿主桥的能力清单与调用样例（应用中心 window.appHost · 插件窗口 window.pluginApi：数据落盘、数据文件夹、账号摘要、创意工坊请求、图片选择与缓存、生命周期事件）、**开发页中栏预览里也有宿主桥**（预览里 close/quit 回 preview_no_window；应用已在独立窗口运行时预览只读、写类回 readonly_preview）、模型能力正解（文本模型与**图像后端**都从 MTNode 继承、界面上必须有选择位、文字+图像多模态输入、无模型/断网时不降级只给明确提示）、应用能力位 capabilities（textInput 带不带语音",
+          "description": "开发 MTNode「应用」（应用中心 / 插件 kind=window）：静态页契约、两套宿主桥、能力位、数据落盘与常见坑。",
           "path": "app/app-dev/SKILL.md",
           "version": ""
         },
@@ -29,9 +29,24 @@
           "id": "app-merge",
           "name": "mtnode-app-merge",
           "title": "MTNode 应用版本合并",
-          "description": "把云端「对方那一版」合进本机应用开发目录的一次合并会话怎么做：读会话契约给的两边目录与文件级差异清单 → 先 grill-me 拷问（每个 add / diff 怎么覆盖 + 我这一版要不要跟着动）→ 用户确认后才动文件 → 收尾写 .merge-done.json 声明结束。合并**不修改版本号**（每位作者各算各的）、**不自动上架**、不做任何额外改动。MTNode 应用中心点「拉取 vX 交给 Agent 合并」（或分支树那颗按钮）之后，主进程会新建一条带本技能名的合并会话。",
+          "description": "把云端「对方那一版」按用户逐项确认合进本机应用目录的合并会话流程（不改版本号、不自动上架）。",
           "path": "app/app-merge/SKILL.md",
           "version": ""
+        }
+      ]
+    },
+    {
+      "id": "image",
+      "title": "图像生成（Qwen Image）",
+      "skills": [
+        {
+          "id": "qwen-image-prompt",
+          "name": "qwen-image-prompt",
+          "title": "Qwen Image 2.1 提示词",
+          "description": "【内置】把一句话需求写成 Qwen Image 2.1 能出图的提示词（文生图 / 多图编辑 / 文字密集图 / 分镜，含官方骨架与防错约束）。",
+          "path": "image/qwen-image-prompt/SKILL.md",
+          "version": "",
+          "menu": "user"
         }
       ]
     },
@@ -43,7 +58,7 @@
           "id": "ai-facts",
           "name": "mtnode-ai-facts",
           "title": "AI 事实库",
-          "description": "每张画布一份的极简条例库（工具 mtnode_facts，动作 list/query/get/write/delete/pin）：索引项目内容时先查它；建完项目架构 / 工作流、定下约定与路径后，把关键结论（模块划分、关键文件与路径、约定及其来源、端口与数据流、命令入口、已知坑）沉淀成极简条例。先 query 再 write，冲突以现文件与数据库为准。Use when indexing project content, or recording / recalling a project's architecture or workflow key points.",
+          "description": "画布 AI 事实库（mtnode_facts）：建架构 / 工作流前先查，定下约定与路径后写回关键结论。",
           "path": "mtnode/ai-facts/SKILL.md",
           "version": ""
         },
@@ -51,7 +66,7 @@
           "id": "canvas-batch-safety",
           "name": "mtnode-canvas-batch-safety",
           "title": "画布批量与文生图防 N²",
-          "description": "MTNode 画布 batchMode=batch 时每次运行只能处理单条输入，禁止把整批 N 条重复塞进每次运行；文生图 proc_image 每次只出 1 张。Use when designing batch workflows, proc_image, split nodes, or user reports duplicate API calls / token explosion.",
+          "description": "画布 batchMode=batch 每次只处理单条、proc_image 每次只出 1 张（防 N² 调用）。",
           "path": "mtnode/canvas-batch-safety/SKILL.md",
           "version": ""
         },
@@ -59,7 +74,7 @@
           "id": "canvas-edit-rules",
           "name": "mtnode-canvas-edit-rules",
           "title": "画布编辑硬规则",
-          "description": "MTNode 画布建图 / 连线 / 批量的完整硬规则：kind 速查、task 三端、super 边界端子、tool/function 参数即端子、@引用三条件、save 与 wait_file、批次与文生图、数据库 / 开发节点 / 排版 / scope 细则。Use when creating, wiring, batching or laying out canvas nodes, or when a wire/tool receipt looks wrong. 这些规则不写在 mtnode_canvas_edit 描述里，按需加载本技能。",
+          "description": "建图 / 连线 / 批量的完整硬规则（kind、super 端子、@引用、save 与 wait_file、排版）；工具描述只留卡口。",
           "path": "mtnode/canvas-edit-rules/SKILL.md",
           "version": ""
         },
@@ -67,7 +82,7 @@
           "id": "canvas-layout-ux",
           "name": "mtnode-canvas-layout-ux",
           "title": "画布排版与可操作区",
-          "description": "MTNode 画布节点排版：可编辑/控制节点靠上（小 y），处理与保存靠下或右侧；createMarks 分区、control 一键重跑；禁止 agent 调用 layout action。Use when auto-layout, createMarks, control nodes, or improving canvas UX for the user.",
+          "description": "画布排版：控制与可编辑节点靠上、处理与保存靠下，createMarks 分区，禁止调 layout。",
           "path": "mtnode/canvas-layout-ux/SKILL.md",
           "version": ""
         },
@@ -75,7 +90,7 @@
           "id": "db-facts",
           "name": "mtnode-db-facts",
           "title": "数据库事实查询纪律",
-          "description": "任务接入数据库副本节点（db_replica）时的强制事实纪律：一切事实走 mtnode_db 工具（list/query/get/calc）、断言必须带 [记录id · 标题] 引用、查不到就说「数据库中没有该信息」、数字走 calc、禁止用记忆补全。Use when the task is wired to a database replica or asks about stored facts.",
+          "description": "接入数据库副本（db_replica）时的事实纪律：一切事实走 mtnode_db、断言带记录引用、查不到就说没有。",
           "path": "mtnode/db-facts/SKILL.md",
           "version": ""
         },
@@ -83,7 +98,7 @@
           "id": "dev-architect",
           "name": "mtnode-dev-architect",
           "title": "开发节点架构师",
-          "description": "用「开发节点」（super + dev:true 的项目功能块）在 MTNode 画布上搭建/分析软件项目架构。模式 A：扫描已有项目，生成覆盖全项目的开发节点架构图（不确定处询问用户）；模式 B：新项目先搭架构、用户明确「确认」后按画布逐块搭建项目。生成开发节点时同步在项目根产出 AGENTS.md 共识文件（目录约定 / 不要修改清单），所有建议 / 开发 / 细化会话先读并遵守，并在最外层建 agent.md 入口文件节点（应用内 Markdown 阅读器可查看 / 编辑 / 保存）。每个功能块可用 devModel / devPreset / devEffort 指定 Agent 模型、预设与思考强度（建议 / 开发 / 细化与问询会话都按这三项下达，三项各自就近向上继承、互不牵连，思考档只由设置决定 · 界面回显即实际下发），可用 devColor 自定义外框颜色，可用 devF",
+          "description": "在画布上用开发节点（super + dev）搭建 / 分析项目架构（模式 A 扫描 / 模式 B 新建，含细化与总量护栏）；只在用户要求建架构时用。",
           "path": "mtnode/dev-architect/SKILL.md",
           "version": ""
         },
@@ -91,7 +106,7 @@
           "id": "grill-me",
           "name": "mtnode-grill-me",
           "title": "拷问我",
-          "description": "需求拷问：把任务映射成决策树，按轮问完整个「前沿」（前置已定的全部问题）；每轮必须用 ask_user_question 工具跳出 MTNode 询问窗（一次带上整个前沿，禁止把问题当聊天正文罗列），每题选项把推荐项放第一位标「（推荐）」；环境事实自己查绝不问用户；直到前沿为空且用户在询问窗里确认达成共识才动手。共识若含审批 / 交付 / 驳回回跳 / 并行 / 子图，产出的是长周期任务图（DAG）JSON。Use when the user says 拷问我 / grill me / 先问清再动手 / 需求不明确, or a dev-node 开发 run turns on 先拷问需求.",
+          "description": "需求拷问：动手前用 ask_user_question 按轮问完整个决策前沿，用户确认共识再开工。",
           "path": "mtnode/grill-me/SKILL.md",
           "version": ""
         },
@@ -99,7 +114,7 @@
           "id": "local-media",
           "name": "mtnode-local-media",
           "title": "本地语音与视频分析",
-          "description": "MTNode 里要「听音频 / 做字幕 / 看视频」时用本机能力：audio_subtitle 出字幕条（cues + SRT/VTT 文本），audio_transcribe 走官方本地 SenseVoice 出逐字稿，ffmpeg 工具做探测 / 抽音轨 / 抽帧 / 任意转码，describe 一次返回画面描述；用户要把转写「落在画布上」时指到工具库内置工具「音频转字幕（时间轴）」（工具壳，参数在壳内的 JSON 文本节点，同一内核的 mtnode.subtitle）。不要另装 whisper / Qwen-ASR / 在线 ASR，也不要自己下载 ffmpeg。Use when the task needs subtitles with per-line timing, speech-to-text, audio/video probing, frame extraction, o",
+          "description": "听音频 / 做字幕 / 看视频用本机 audio_subtitle、audio_transcribe、ffmpeg，别另装 ASR。",
           "path": "mtnode/local-media/SKILL.md",
           "version": ""
         },
@@ -107,7 +122,7 @@
           "id": "mcp-server",
           "name": "mtnode-mcp-server",
           "title": "MTNode MCP 服务端（第三方接进来操作）",
-          "description": "从 MTNode 外面（Claude Code / Cursor / 自研 Agent）经 MCP 操作本机 MTNode 的完整规范：服务端在哪、13 个工具各自怎么用（含媒体生成 / 跑节点 / 用户工具 / 会话四条异步作业）、必须先读图拿 contentHash 再改、resources/prompts 三类能力、权限与审计口径、自用回环（应用内 Agent 也走同一套入口）、以及做不到的事。Use when connecting an external MCP client to MTNode, debugging third-party calls, generating media or running nodes over MCP, or writing code that drives MTNode over MCP.",
+          "description": "从 MTNode 外面经 MCP 操作本机 MTNode：14 个工具、先读图拿 contentHash、权限与审计。",
           "path": "mtnode/mcp-server/SKILL.md",
           "version": ""
         },
@@ -115,7 +130,7 @@
           "id": "media-gen-nodes",
           "name": "mtnode-media-gen-nodes",
           "title": "音乐/语音/视频生成节点",
-          "description": "MTNode music_gen / yue_gen / breeze_gen / video_gen 节点：MiniMax Music 3、YuE2、Breeze TTS 2 语音、H3 后端、输出路径 outputPath、抽卡次数、种子 +1、全局仅 1 个音视频任务互斥、媒体输入端子走 file:/// URL。Use when wiring music_gen, yue_gen, breeze_gen, video_gen, media output paths, gacha rolls, or VRAM-related concurrency errors.",
+          "description": "music_gen / yue_gen / breeze_gen / video_gen：输出路径、抽卡、单任务互斥与媒体端子。",
           "path": "mtnode/media-gen-nodes/SKILL.md",
           "version": ""
         },
@@ -123,7 +138,7 @@
           "id": "self-check",
           "name": "mtnode-self-check",
           "title": "自检与交付纪律",
-          "description": "自检与交付纪律：阶段自检 + 交付前全检、先自修再问人、硬断言带证据、清单收口。系统提示里只留四条硬闸短句，细则全在这份技能里 —— 交付任何结果之前按本清单走一遍。Use when finishing a stage, before delivering a result, or when a claim needs evidence.",
+          "description": "自检与交付纪律：阶段自检、交付前全检、先自修再问人、硬断言带证据。",
           "path": "mtnode/self-check/SKILL.md",
           "version": ""
         },
@@ -131,7 +146,7 @@
           "id": "verify-in-app",
           "name": "mtnode-verify-in-app",
           "title": "真机自验（改 MTNode 时怎么验）",
-          "description": "开发 MTNode 自身功能（插件 / 应用 / 窗口交互 / 渲染层 UI）时的自验纪律：起一只独立数据目录的开发态实例，经 tools/mtnode-gui.mjs 用 MCP 驱动真实窗口（outline / click / type / set / screenshot），截图读像素确认，留下可复核证据；做不到就如实写「未验证 + 原因」，不许拿 smoke 当「功能真的能用」。Use when developing MTNode itself (plugin install / console UI / app window / renderer CSS / dialog behaviour) and you must prove the change really works in the running desktop app, not only in node smoke ",
+          "description": "改 MTNode 自身功能时起独立数据目录的开发态实例、用 MCP 驱动真实窗口截图自验。Use when developing MTNode itself (plugin / app window / renderer UI) and you must prove it really works. 做不到就如实写「未验证 + 原因」。",
           "path": "mtnode/verify-in-app/SKILL.md",
           "version": ""
         },
@@ -139,7 +154,7 @@
           "id": "workflow-design",
           "name": "mtnode-workflow-design",
           "title": "工作流设计",
-          "description": "把用户口述的一段流程直接搭成画布上的「节点层」（kind super）：外侧输入 / 输出端子自洽、无状态依赖、入口 → 处理 → 保存可一键重跑，超过约 12 颗内部节点就拆多层。Use when 用户说「做一个工作流 / 把这段流程封装成节点层 / 设计一个可复用的工作流」或要求把一串节点收进一颗壳里。",
+          "description": "把一段流程搭成画布节点层（super）：外侧端子自洽、入口 → 处理 → 保存可一键重跑。",
           "path": "mtnode/workflow-design/SKILL.md",
           "version": ""
         }
@@ -153,7 +168,7 @@
           "id": "breeze-script-format",
           "name": "breeze-script-format",
           "title": "Breeze 台词规范",
-          "description": "【内置·随应用发版，不需从工坊安装】把用户给的台词规范成 Breeze TTS 2 能正确念出来的正文：语气走 instruction（默认单次全局，情绪转折或超长才分段），发声事件用官方内联写法（中文 [笑]/[叹气]/[咳嗽]/[清嗓子]，英文 (laugh)/(sigh)/(cough)/(clears throat)），并做口播安全化（标点断句、数字单位、符号 emoji、舞台指示转合法事件）。交付「台词 / 语气 instruction / 分段说明」三个小节。用于 MTNode「Breeze 语音生成」节点（breeze_gen）端口 0 与端口 3。",
+          "description": "【内置】把台词规范成 Breeze TTS 2 能念的正文：语气走 instruction、发声事件内联、口播安全化。",
           "path": "music/breeze-script-format/SKILL.md",
           "version": "",
           "menu": "user"
@@ -162,7 +177,7 @@
           "id": "breeze-voice-design",
           "name": "breeze-voice-design",
           "title": "Breeze 音色设计",
-          "description": "【内置·随应用发版，不需从工坊安装】把用户一句话的需求扩成 Breeze TTS 2 的音色提示词（instruction），两档：默认「简洁」= 按性别年龄 / 音色质感 / 语速节奏 / 情绪性格 / 场景用途五个槽位拼成一句自然语言；「详细」= 固定四段分行（声线类型 / 音色关键词 / 共鸣位置 / 参考质感）。语言跟随台词或用户输入，配 cfg_scale=4 与 seed=42。交付时只给提示词正文。用于 MTNode「Breeze 语音生成」节点（breeze_gen）端口 3 的指令，或 breezeblue.ai API 的 instruction 字段。",
+          "description": "【内置】把一句话需求扩成 Breeze TTS 2 音色提示词（简洁 / 详细两档）。",
           "path": "music/breeze-voice-design/SKILL.md",
           "version": "",
           "menu": "user"
@@ -171,7 +186,7 @@
           "id": "minimax-music-lyrics",
           "name": "minimax-music-lyrics",
           "title": "MiniMax Music 歌词",
-          "description": "【内置·随应用发版，不需从工坊安装】按 MiniMax Music 官方规范写可演唱的歌词正文：结构标签独占一行（Intro / Verse / Pre-Chorus / Chorus / Bridge / Hook / Solo / Outro）、为唱而写的行长、副歌钩子与主歌对比、括号只用于要发声的衬词，不把舞台指示写进会唱出来的正文。MTNode「Minimax Music 3 / YuE2」节点的歌词端口用它，曲风与人声表演交给 minimax-music-prompt。",
+          "description": "【内置】按官方规范写可演唱的 MiniMax Music 歌词正文（结构标签、行长、副歌钩子）。",
           "path": "music/minimax-music-lyrics/SKILL.md",
           "version": "",
           "menu": "user"
@@ -180,7 +195,7 @@
           "id": "minimax-music-prompt",
           "name": "minimax-music-prompt",
           "title": "MiniMax Music 提示词",
-          "description": "【内置·随应用发版，不需从工坊安装】把一句话想法写成 MiniMax Music 的风格提示词：一段英文散文，六句按 Style+Mood → Tempo/Groove → Instruments → Vocals → Structure → Production 排（写句子、不写逗号标签、不含唱词）。控制曲风、人声、乐器、段落对比与制作；含官方六步、最小改动迭代表与校验清单。MTNode「Minimax Music 3 / YuE2」节点的提示词端口用它。",
+          "description": "【内置】把一句话想法写成 MiniMax Music 风格提示词（英文六句：风格→速度→乐器→人声→结构→制作）。",
           "path": "music/minimax-music-prompt/SKILL.md",
           "version": "",
           "menu": "user"
@@ -195,7 +210,7 @@
           "id": "plugin-dev",
           "name": "mtnode-plugin-dev",
           "title": "MTNode 插件开发规范",
-          "description": "MTNode 应用插件（catalog 窗口插件 / builtin / 本地后端插件）的开发规范：插件类型与边界、后端插件三层结构（主进程宿主 · 预加载桥 · 控制台 UI）、主进程与渲染层接线点、build.json 打包白名单、画布节点与 i18n / 指南 / 冒烟交付清单、报错总线与自我修复、数据目录纪律，含最小骨架与常见坑。新建或改造 MTNode 插件（顶栏「插件」对话框里那个东西）时按需加载。",
+          "description": "MTNode 应用插件（catalog 窗口 / builtin / 本地后端）的开发规范：三层结构、接线点、打包与交付清单。",
           "path": "plugins/plugin-dev/SKILL.md",
           "version": ""
         }
@@ -209,7 +224,7 @@
           "id": "h3-dynamic-still-prompt",
           "name": "h3-dynamic-still-prompt",
           "title": "H3 动态静图（首尾帧）",
-          "description": "【内置·随应用发版，不需从工坊安装】把一张静图变成可无缝循环的微动背景（动态壁纸）：先识图列出「哪些元素该动、怎么动」，把底图归一化到目标分辨率，再在画布上搭好「底图 → 中文 H3 提示词 → Minimax H3（fl2va 首尾同帧）→ mp4」的完整工作流（端口 0–3 接线、时长 / 比例 / 抽卡 / 输出路径），并按官方三字段写中文提示词（两段声音 N/A、124 帧 ≈5.17s），最后用 PSNR 自检接缝。用户说「把这张图做成动态壁纸 / 循环背景 / 让画面动起来但别变样」时用。",
+          "description": "把一张静图做成可无缝循环的微动背景：识图、归一化、搭 H3 首尾帧工作流、写中文提示词、PSNR 验缝。",
           "path": "video/h3-dynamic-still-prompt/SKILL.md",
           "version": "",
           "menu": "user"

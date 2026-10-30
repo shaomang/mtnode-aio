@@ -389,10 +389,11 @@
       toastSafe(T("自动续跑已到安全上限（") + AUTO_CAP + T(" 轮），已停下；确需继续请再发一句。"), "warn");
       return;
     }
-    /* 跨重启的活 → 给一次「提升为长周期任务图」的建议（只建议，不自动改图） */
+    /* 跨重启的活 → 给一次「提升为长周期任务图」的建议（只建议，不自动改图）；
+       长周期任务停用期（window.LT_DISABLED）不提这条建议，免得指去一个被隐藏的入口。 */
     try {
       const long = (Date.now() - (l.startedAt || Date.now()) > SUGGEST_AFTER_MS) || l.rounds >= SUGGEST_AFTER_ROUNDS;
-      if (long && !st.suggested[sid]) {
+      if (long && !st.suggested[sid] && !window.LT_DISABLED) {
         st.suggested[sid] = 1;
         toastSafe(
           T("这活看着要跑很久：可以把它提升为「长周期任务图」，重启后也能接着跑（会话里说一句我就给你搭）。"),

@@ -431,7 +431,7 @@ function deepseekRouteSelectable(cfg) {
 /* ── 与执行路径对接的小工具 ── */
 
 /* 节点 kind → 需要的模型形态（proc_text / remotion 要文本；proc_image 要图像）。
-     本地图像节点（flux3klein_gen）不需要云端模型：出图由本机后端完成，参数里没有
+     本地图像节点（flux3klein_gen / qwenimage_gen）不需要云端模型：出图由本机后端完成，参数里没有
    服务商 / 模型 —— 绝不能算成 KIND_IMAGE，那会把它路由进图像服务商选择器并在缺服务商时报错。 */
 function modelKindForNode(node) {
   if (!node) return KIND_TEXT;

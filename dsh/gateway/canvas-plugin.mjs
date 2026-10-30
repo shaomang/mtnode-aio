@@ -31,10 +31,18 @@ export const inject = ['tools']
 
 const KINDS = [
   'input_text', 'input_image', 'input_audio', 'input_video', 'input_file', 'db_table', 'proc_text', 'proc_image', 'music_gen', 'yue_gen', 'breeze_gen', 'video_gen', 'video_upscale', 'video_interp', 'remotion',
+  /* 表单输入节点（kind input_form · renderer/app-input-form.js）：结构化 JSON 表单，1 个数据出 + 1 颗「引用」入；
+     字段结构由用户在板身 / 大面板里设计，agent 建节点并连线即可（不登记 ⚙ 设置窗）。 */
+  'input_form',
   /* 数字人节点（插件后端，右侧菜单「处理节点 → 视频生成」的成员）：端口见 mtnode-canvas-edit-rules */
   'soulxflashhead_gen',
+  /* 质检节点（五类同构 · 按 JSON 评分标准打分 · 通过 / 未过两个控制出口）：
+     端口与工具口径见 mtnode-canvas-edit-rules */
+  'qa_text', 'qa_image', 'qa_video', 'qa_audio', 'qa_file',
   'save', 'save_text', 'save_image', 'save_pdf', 'split', 'merge', 'global', 'wait_file', 'timer',
   'delayer', 'sequencer', 'gate', 'splitter', 'counter', 'mutex',
+  /* 弹窗节点：控制流触发时弹出浮层，正文可填写（建议只由用户在画布上建，agent 少用） */
+  'popup',
   'agent_task', 'task', 'super', 'db_replica',
   'control', 'judge', 'net_recv', 'net_send', 'execute',
   /* 工具节点（＝super + tool:true 变体）/ 函数节点：右键「工具」菜单的两种计算节点 */
@@ -140,7 +148,7 @@ const GET_DESC =
   '- Narrow with ids / scope + scopeDepth / bodies / bodyLimit, or sections = whitelist of heavy blocks (nodes, marks, wires, groups, and the trees / tagCatalog / workflows / selection). 只查连线用 sections:["nodes","wires"]（minimal 档也认）。素材节点（kind asset）也回读：assetItems = 绑定与条目清单 items:[{index, id, title, type}]（条目即端子：第 i 入 ↔ 第 i 出，端子名 = 条目标题）；text/body 档每条再带 text（文本正文）或 path / url（本机文件）。\n' +
   '- ports (standard / full): fixed-port nodes (proc_image / video_gen / remotion / judge / tool·function / super / asset) carry ports:[{dir,index,name,kind,connectedTo}] — read before connecting, not after a connect error.\n' +
   '- portRule (standard / full): nodes whose input ports GROW WITH WIRES (proc_text / proc_image / remotion / input_* …) carry portRule {note,input,output,now,hint} instead: ports only lists the slots that exist right now (an unconnected node shows one data port + one control port), and further slots appear as you connect — remotion is the one node whose data AND control lines share the same ports (never assume port 0 = control for remotion), and its description (功能说明) lives in the node text (not in a port) — the build brief is remotionBuildNote, only used when the user clicks 构建. For these dynamic-port nodes (except remotion) the control input is always the LAST, dedicated control port — it sits after the data slots, data wires never take it, and several control wires may share it (any one arrival triggers a single run). Never infer "this node has only one port" from a short ports list, and never test-wire just to read the warnings.\n' +
-  '- 参数（standard / full）: 有配置的节点（有 ⚙ 设置窗）末位有「参数」端子，端子号恒 9001；快照带 paramKeys（可覆写的键）。函数 / 工具节点同样有 9001，但语义不同：函数节点那份 JSON 进 input.params（不改节点字段），工具节点那份是内部图的共享参数、内部函数节点自动继承。参数只能由一根文本节点的 JSON 经这颗端子传入（toIndex:9001），没有「直接改节点参数」的写法。\n' +
+  '- 参数（standard / full）: 有配置的节点（有 ⚙ 设置窗）末位有「参数」端子，端子号恒 9001；快照带 paramKeys（可覆写的键）。函数 / 工具节点同样有 9001，但语义不同：函数节点那份 JSON 进 input.params（不改节点字段），工具节点那份是内部图的共享参数、内部函数节点自动继承。参数只能由一根文本节点的 JSON 经这颗端子传入（toIndex 9001），没有「直接改节点参数」的写法。\n' +
   'scopeInfo is always returned（这次读的是整图还是某一颗壳内部）; every result carries a sizeHint with its cost.\n\n' +
   'When the run is locked to its own canvas（会话所属画布）, workflows lists ONLY that canvas. 建图 / 连线 / 排版的完整硬规则（task 端点、super 边界端子、tool/function 参数即端子、@引用三条件、save 与 wait_file、批次与文生图）只写在技能 mtnode-canvas-edit-rules（按需加载），此处不重复。'
 
@@ -165,7 +173,7 @@ Needs user confirmation (UI will prompt; may be rejected):
 
 For creating/editing/wiring/removing NODES or canvas drawings (marks) on the canvas this run belongs to（会话所属画布，不是用户此刻看到的这张）, use mtnode_canvas_edit instead (confirmed when called from the global assistant or the agent-session view; rejection stops the agent session).`
 
-/* 工具描述只留「卡口」：kind 枚举、端子语义一句话、5 条不变量 + 一句指向技能。
+/* 工具描述只留「卡口」：kind 枚举、端子语义一句话、6 条不变量 + 一句指向技能。
    完整硬规则（task 三端、super 边界、tool/function 参数即端子、@引用三条件、
    save 与 wait_file、批次与文生图、数据库 / 开发节点 / 排版 / scope 细则）已迁到
    按需技能 mtnode-agent-skills/mtnode/canvas-edit-rules/SKILL.md —— 工具描述每轮都随
@@ -174,38 +182,35 @@ const EDIT_DESC = `在当前画布上创建 / 修改 / 连线 / 删除 / 分组 
 
 create.kind 枚举见 schema（生成族含 music_gen / yue_gen / breeze_gen / video_gen / remotion）。端子语义：tool / function 的参数表就是端子表（输入端子 0 = 控制入、1..N 各入参；输出 0..M-1 各出参、末位控制出）；judge 只有两个输出：fromIndex 0 = YES、1 = NO；super 对外只暴露边界端子，跨壳 / 跨层级用 superConnect。
 
-参数：节点参数**只能通过「参数」端子**给 —— 建一颗 input_text 写参数 JSON，再 connect（来源 → 目标节点，toIndex:9001）；键 = canvas_get 的 paramKeys。create / update 里带 params 会被整笔拒绝（已取消该写法：它会把参数挂到节点上、运行期压住用户在 ⚙ 里改的值）。paramStrict:true = 参数端子上的 JSON 有键不合法就整份拒绝、该节点不运行。
-breeze_gen 的角色 / 组走名称参数：breezePreset（角色名称，或角色 id）+ breezeGroup（组名 / 「第 N 组」/ 组 id；不给 = 该角色第一组）。两个值运行期临时翻译成 presetId / presetGroupId，跑完恢复、不写回节点；**对不上就报错并停止这次合成**（绝不默默换声）。
-
-端子预检：canvas_get（standard / full）回 ports:[{dir,index,name,kind,connectedTo}]，接线前先看；connect 失败的 warnings 带候选端子与接法建议。save 的路径后缀按输入类型强制。
+参数：节点参数**只能通过「参数」端子**给 —— 建一颗 input_text 写参数 JSON，再 connect（来源 → 目标节点，toIndex 9001）；键 = canvas_get 的 paramKeys。create / update 里带 params 会被整笔拒绝。paramStrict:true = 参数端子上的 JSON 有键不合法就整份拒绝、该节点不运行。breeze_gen 的角色 / 组走名称参数 breezePreset（角色名称，或角色 id）+ breezeGroup（组名 / 「第 N 组」/ 组 id；不给 = 该角色第一组）：运行期临时翻译，跑完恢复、不写回节点；对不上就报错并停止这次合成（绝不默默换声）。
 
 不变量（违反即接线错）：
-- 标题必须唯一。
+- 标题必须唯一。端子先看 canvas_get 的 ports / portRule 再接线，别试连反推；动态端子的专用控制入恒为末位那颗，数据线不占它。
+- @引用：连线源在 prompt/task 里写 @标题（@标签名 注入带该标签的全部节点）；全局广播须同时接 kind "global" + globalRefs:true + 明文 @。
 - 智能节点（agent_task、agent:true 的 proc_text）自己会写文件：其后不接 save、也不当数据输入；用 wait_file 控制线挡下游。
-- 图像生成节点（proc_image）每次运行只出 1 张图；结果按图像服务商的回执交付。
-- batchMode "batch" 每条一次运行、每次只看该条：严禁把整批 N 条再灌进每次运行（≈N² 调用）；一次看全部用 "agg"。
-- 跨节点层只能经边界端子中转（层内 → 直属壳的输出端子 → … → 目标壳的输入端子 → 层内）：connect 遇到跨层会自动改写成这条逐层链，superConnect 同一口径；任何入口都不许留下「层内节点直连层外」的线。
-- 绝不删除或与正在运行本任务的节点重叠；改完告诉用户可编辑输入并用 control ▶ 重跑。
+- 图像生成节点（proc_image）每次运行只出 1 张图；batchMode "batch" 每条一次运行、每次只看该条（严禁把整批 N 条再灌进每次运行），一次看全部用 "agg"。
+- 跨节点层只能经边界端子中转：connect 遇跨层自动改写成逐层链，superConnect 同一口径；任何入口都不许留下「层内节点直连层外」的线。
+- 改结构的编辑默认自动排版；绝不删除或与正在运行本任务的节点重叠；改完告诉用户可编辑输入并用 control ▶ 重跑。
 
-完整硬规则见技能 mtnode-canvas-edit-rules（save 与 wait_file、批次、task 三端、@引用、数据库 / 开发 / 排版 / scope）：建图 / 连线 / 批量 / 媒体前先加载它。` + USER_NODE_HINT
+字段只给一句：每个字段的完整语义、save 与 wait_file、task 三端、@引用、批次与文生图、数据库 / 开发节点 / 排版 / scope 细则只在技能 mtnode-canvas-edit-rules（开发节点另见 mtnode-dev-architect；建图 / 连线 / 批量 / 媒体前先加载它们）。` + USER_NODE_HINT
 
 /* 绘制（mark）字段表：createMarks 用这份表；updateMarks 与旧别名 marks 只指回它，不重复序列化。
-   around 的旧别名 nodes 仍被渲染层接受，但不再写进 schema。 */
+   各字段细则见技能 mtnode-canvas-edit-rules「字段速查」。 */
 const MARK_PROPS = {
   kind: { type: 'string', enum: ['text', 'box', 'arrow'], description: 'text 文字 · box 分区框 · arrow 箭头。' },
-  label: { type: 'string', description: 'box 上方的标题（title 同义）。' },
-  text: { type: 'string', description: 'text 标注正文。' },
-  around: { type: 'array', items: { type: 'string' }, description: '框住哪些节点（id / alias / 标题）：排版后 box 贴合它们再加 pad。' },
-  pad: { type: 'number', description: 'around 留白（默认 36）。' },
+  label: { type: 'string' },
+  text: { type: 'string' },
+  around: { type: 'array', items: { type: 'string' }, description: 'box 框住哪些节点（id / alias / 标题）。' },
+  pad: { type: 'number' },
   x: { type: 'number' },
   y: { type: 'number' },
   w: { type: 'number' },
   h: { type: 'number' },
-  x2: { type: 'number', description: 'arrow 终点 x。' },
-  y2: { type: 'number', description: 'arrow 终点 y。' },
-  color: { type: 'string', description: '#rrggbb（取 canvas_get 的 markColors）。' },
-  fontSize: { type: 'number', description: '字号 10–48。' },
-  stroke: { type: 'number', description: '线宽 1–8。' },
+  x2: { type: 'number' },
+  y2: { type: 'number' },
+  color: { type: 'string' },
+  fontSize: { type: 'number' },
+  stroke: { type: 'number' },
 }
 
 const MARK_SPEC = {
@@ -220,7 +225,7 @@ const MARK_SPEC = {
 const MARK_UPDATE_SPEC = {
   type: 'object',
   additionalProperties: true,
-  description: '改已有绘制：按 id | alias | 精确正文（title）定位，其余字段沿用 createMarks[] 那份表。',
+  description: '按 id | alias | 精确正文（title）定位，其余字段同 createMarks[]。',
   properties: {
     id: { type: 'string' },
     alias: { type: 'string' },
@@ -228,178 +233,157 @@ const MARK_UPDATE_SPEC = {
   },
 }
 
-/* 工具 / 函数节点的参数条目与工具定义（同一参数模型 [{name,kind,list}]）：
-   参数即端子；list = 数组端子，可重复连数据线，JS 侧取到数组。 */
+/* 工具 / 函数节点的参数条目与工具定义（同一参数模型 [{name,kind,list}]）：参数即端子。 */
 const PARAM_ENTRY_SPEC = {
   type: 'object',
   additionalProperties: false,
   properties: {
-    name: { type: 'string', description: '参数名 = 端子名；留空补「参数 N」。' },
-    kind: { type: 'string', enum: ['text', 'image'], description: '端子类型（缺省 text；image = 本机路径）。' },
-    list: { type: 'boolean', description: '数组端子：可重复连多条线，运行时值为数组。' },
+    name: { type: 'string' },
+    kind: { type: 'string', enum: ['text', 'image'] },
+    list: { type: 'boolean', description: '数组端子（可接多条线）。' },
   },
 }
 
 const TOOL_CONFIG_SPEC = {
   type: 'object',
   additionalProperties: false,
-  description: '工具节点（kind "tool" = super + tool:true 变体）的定义；参数即端子，端子数由参数钉死。',
+  description: '工具节点（super + tool:true）的定义。',
   properties: {
     name: { type: 'string', description: '工具名（标题默认跟随它）。' },
     description: { type: 'string', description: '用途说明。' },
-    inputs: { type: 'array', items: PARAM_ENTRY_SPEC, description: '输入端子表（传完整数组；增删参数即增删端子）。' },
-    outputs: { type: 'array', items: PARAM_ENTRY_SPEC, description: '输出端子表（传完整数组；末位控制出不在表内）。' },
+    inputs: { type: 'array', items: PARAM_ENTRY_SPEC, description: '输入端子表（传完整数组）。' },
+    outputs: { type: 'array', items: PARAM_ENTRY_SPEC, description: '输出端子表（末位控制出不在表内）。' },
   },
 }
 
-/* 节点属性表：create 与 update 共用（同一份对象引用、每个字段的描述只写一遍）。
-   旧「文本对话」节点的遗留字段 systemPrompt 已移除（该 kind 已不存在，渲染层不认）。
-   各类型的长规范在助手系统提示与内置技能里，这里只留取值 / 端子口径；
-   不言自明的数值项不再配描述（省负载）。 */
+/* 节点属性表：create 与 update 共用（同一份对象引用，每个字段的描述只写一遍）。
+   这里只留 参数名 + 类型 + 一句短说明；各 kind 的细则在技能
+   mtnode-agent-skills/mtnode/canvas-edit-rules/SKILL.md「字段速查」——
+   工具 schema 每轮都随历史重发，长说明只在真要建这类节点时才需要。 */
 const NODE_PROPS = {
-  title: { type: 'string', description: '唯一显示标题；@标题 引用它。' },
-  tags: { type: 'array', items: { type: 'string' }, description: '供 @标签名 引用。' },
-  text: { type: 'string', description: 'input_text 正文；remotion 的「功能说明」也在这个字段（可空 · 只描述这个节点干什么，构建 Agent 与运行期都不读它；构建需求用 remotionBuildNote）。' },
-  prompt: { type: 'string', description: 'proc_text / proc_image 提示词（也是 judge 判据）；可写 @标题 / @标签名。' },
-  task: { type: 'string', description: 'agent_task 任务描述；可写 @标题 / @标签名。' },
-  goal: { type: 'string', description: 'task：本步目标。' },
-  steps: { type: 'array', items: { type: 'string' }, description: 'task：有序子步骤标题。' },
-  parentTaskId: { type: 'string', description: '放进某 task 内部；父 task 先建。' },
-  parentSuperId: { type: 'string', description: '放进某 super 内部（需 canvas_super）。' },
+  title: { type: 'string', description: '唯一标题；@标题 引用它。' },
+  tags: { type: 'array', items: { type: 'string' }, description: '@标签名 引用。' },
+  text: { type: 'string', description: 'input_text 正文；remotion 功能说明也在这。' },
+  prompt: { type: 'string', description: '提示词（judge 判据）；可写 @。' },
+  task: { type: 'string', description: 'agent_task 任务描述；可写 @。' },
+  goal: { type: 'string' },
+  steps: { type: 'array', items: { type: 'string' } },
+  parentTaskId: { type: 'string' },
+  parentSuperId: { type: 'string' },
   scope: { type: 'string', description: '局部画布：本次只在这一颗壳内（id 或唯一标题；"global" = 整图）。' },
-  scopeDepth: { type: 'string', enum: ['direct', 'all'], description: '"direct" = 壳 + 直接子节点（默认）· "all" = 整棵子树。' },  note: { type: 'string', description: 'super 卡片说明（开发节点必须【功能】+【实现】两段）。' },
-  expandW: { type: 'number', description: 'super 展开态宽度。' },
-  expandH: { type: 'number', description: 'super 展开态高度。' },
-  subFolder: { type: 'string', description: 'super 下相对工作目录的子目录。' },
+  scopeDepth: { type: 'string', enum: ['direct', 'all'], description: 'direct（默认）/ all。' },
+  note: { type: 'string', description: 'super 卡片说明（开发节点必须两段：【功能】+【实现】）。' },
+  expandW: { type: 'number' },
+  expandH: { type: 'number' },
+  subFolder: { type: 'string' },
   superOpen: { type: 'boolean' },
-  db: { type: 'boolean', description: 'super 标为数据库节点（编译后出 db_replica）。' },
-  dbMode: { type: 'string', enum: ['super', 'db'], description: '数据库 super 形态：画布式 / 控制台。' },
-  dev: { type: 'boolean', description: 'super 标为开发节点（见技能 mtnode-dev-architect）。' },
-  devPath: { type: 'string', description: 'dev：项目根绝对路径（子块就近继承）。' },
+  db: { type: 'boolean' },
+  dbMode: { type: 'string', enum: ['super', 'db'] },
+  dev: { type: 'boolean' },
+  devPath: { type: 'string', description: 'dev：项目根绝对路径。' },
   devStatus: { type: 'string', enum: ['pending', 'wip', 'done'] },
-  devKind: { type: 'string', enum: ['module', 'file', 'class', 'interface', 'enum'], description: 'dev：module → file → 类图元素。' },
-  devColor: { type: 'string', description: 'dev：外框色 #rrggbb（勿自创色值）。' },
-  devModel: { type: 'string', description: 'dev：本块 Agent 模型 id（子块继承）。' },
-  devProvider: { type: 'string', description: 'dev：devModel 的路由（可省）。' },
-  devPreset: { type: 'string', description: 'dev：预设档 id（如 standard / code）。' },
-  devEffort: { type: 'string', enum: ['low', 'medium', 'high', 'xhigh', 'max', ''], description: 'dev：思考强度档。' },
-  devFiles: { type: 'array', items: { type: 'string' }, description: 'dev：核心文件（≤10 条 · 相对 devPath）。' },
-  execPath: { type: 'string', description: 'execute：绑定文件绝对路径（.exe / .bat / .cmd / .lnk）。' },
-  execIcon: { type: 'string', description: '图标：auto / rocket / gear / terminal / …' },
+  devKind: { type: 'string', enum: ['module', 'file', 'class', 'interface', 'enum'], description: 'dev：module → file → 类图。' },
+  devColor: { type: 'string', description: 'dev：外框色 #rrggbb。' },
+  devModel: { type: 'string', description: 'dev：本块 Agent 模型 id（建议 / 开发 / 细化会话按此三项下达；子块继承）。' },
+  devProvider: { type: 'string' },
+  devPreset: { type: 'string', description: 'dev：预设档。' },
+  devEffort: { type: 'string', enum: ['low', 'medium', 'high', 'xhigh', 'max', ''], description: 'dev：思考强度。' },
+  devFiles: { type: 'array', items: { type: 'string' }, description: 'dev：核心文件 ≤10 条。' },
+  execPath: { type: 'string', description: 'execute：绑定文件绝对路径。' },
+  execIcon: { type: 'string' },
   execColor: { type: 'string' },
-  savePath: { type: 'string', description: 'save 落盘路径；扩展名按输入类型强制。' },
-  waitPath: { type: 'string', description: 'wait_file：该文件存在才放行下游。' },
-  waitIntervalSec: { type: 'number', description: 'wait_file：轮询秒 1–60。' },
-  timerMode: { type: 'string', enum: ['once', 'interval', 'cron'], description: 'timer：once / interval / cron。' },
-  timerAt: { type: 'string', description: 'timer once：本地时间 "YYYY-MM-DDTHH:mm"。' },
-  timerEverySec: { type: 'number', description: 'timer interval：间隔秒 1–604800。' },
-  timerCron: { type: 'string', description: '5 段 "min hour dom mon dow"。' },
-  timerArmed: { type: 'boolean', description: 'timer：是否上膛。' },
-  imagePath: { type: 'string', description: 'input_image：本机图片绝对路径。' },
-  imagePaths: { type: 'array', items: { type: 'string' }, description: 'input_image：多张图片（即批量项）。' },
+  savePath: { type: 'string', description: 'save：落盘路径（后缀强制）。' },
+  waitPath: { type: 'string', description: 'wait_file：等这个文件出现。' },
+  waitIntervalSec: { type: 'number' },
+  timerMode: { type: 'string', enum: ['once', 'interval', 'cron'] },
+  timerAt: { type: 'string', description: 'once：本地时间 YYYY-MM-DDTHH:mm。' },
+  timerEverySec: { type: 'number' },
+  timerCron: { type: 'string', description: '5 段 cron。' },
+  timerArmed: { type: 'boolean' },
+  imagePath: { type: 'string', description: 'input_image：本机图片路径。' },
+  imagePaths: { type: 'array', items: { type: 'string' }, description: '多张图片（批量项）。' },
   toolConfig: TOOL_CONFIG_SPEC,
-  fnName: { type: 'string', description: '函数节点函数名。' },
-  description: { type: 'string', description: '函数节点用途说明。' },
-  jscode: { type: 'string', description: '函数节点 JS：input = 参数对象，return 输出对象。' },
-  inputs: { type: 'array', items: PARAM_ENTRY_SPEC, description: '函数节点输入端子表（改表即改端子）。' },
-  outputs: { type: 'array', items: PARAM_ENTRY_SPEC, description: '函数节点输出端子表（末位控制出不在表内）。' },
-  agent: { type: 'boolean', description: 'proc_text：开启智能模式。' },
-  bgRmOn: { type: 'boolean', description: 'proc_image 透明背景（Alpha PNG）；约 2 倍 Token。' },
-  globalRefs: { type: 'boolean', description: '允许 @引用全局广播（还要在 prompt/task 写明）。' },
+  fnName: { type: 'string' },
+  description: { type: 'string' },
+  jscode: { type: 'string', description: 'input = 参数对象 → return 输出对象。' },
+  inputs: { type: 'array', items: PARAM_ENTRY_SPEC, description: '输入端子表（整体替换）；list = 数组端子。' },
+  outputs: { type: 'array', items: PARAM_ENTRY_SPEC, description: '输出端子表（末位控制出不在表内）。' },
+  agent: { type: 'boolean' },
+  bgRmOn: { type: 'boolean' },
+  globalRefs: { type: 'boolean' },
   auto: { type: 'boolean', description: 'save：上游运行即自动保存。' },
-  batch: { type: 'boolean', description: 'input_*：开启批量项。' },
-  batchMode: { type: 'string', enum: ['batch', 'agg'], description: '"batch" 每条一次运行（只看该条）；"agg" 一次看全部。' },
-  providerId: { type: 'string', description: 'proc_text / proc_image：服务商 id 或名称。' },
-  provider: { type: 'string', description: '智能节点路由：deepseek-official / mtnode_<id> / 服务商名。' },
-  model: { type: 'string', description: '本节点模型 id（运行中的别改）。' },
-  size: { type: 'string', description: 'proc_image 尺寸；合法值见 canvas_get sections:["refs"]。' },
-  imgQuality: { type: 'string', enum: ['', 'auto', 'low', 'medium', 'high', 'xhigh', 'max'], description: 'proc_image quality 直传；空 = 不传。' },
-  imgBackground: { type: 'string', enum: ['', 'auto', 'opaque', 'transparent'], description: 'proc_image background；transparent 直出 Alpha PNG。' },
-  maskOn: { type: 'boolean', description: 'proc_image 蒙版重绘（透明区 = 重绘）；画法见技能。' },
-  remotionSize: { type: 'string', description: 'remotion 分辨率（宽x高）。' },
-  remotionBuildNote: {
-    type: 'string',
-    description:
-      'remotion 的构建需求（点「构建」时弹窗里填的那段）：只有它是构建 Agent 的输入，节点功能说明 text 不参与构建。空 = 还没写过构建需求。',
-  },
-  tsx: {
-    type: 'string',
-    description:
-      'remotion 直出合成代码（Composition.tsx 全文，必须导出 Main）：给了就按它渲染，不调模型；传空串回到固化工程 / 内置版面。多文件工程用 remotionFiles（两者同时给时以 remotionFiles 为准）。',
-  },
-  remotionFiles: {
-    type: 'object',
-    additionalProperties: true,
-    description:
-      'remotion 工程源码树 { "Composition.tsx": "源码", "components/Title.tsx": "…" }（路径相对 src/，入口必须是 Composition.tsx，不许 ../ 越界）。写入时跑与源码编辑器「保存并校验」同一条静态校验：通过就重算端子契约（remotionInputs）并把同 key 接线搬到新端子；未通过时源码照样保存、端子保持上一版，原因写在回执 warnings 里。',
-  },
+  batch: { type: 'boolean' },
+  batchMode: { type: 'string', enum: ['batch', 'agg'], description: 'batch 每条一次 / agg 一次看全部。' },
+  providerId: { type: 'string' },
+  provider: { type: 'string' },
+  model: { type: 'string' },
+  size: { type: 'string', description: 'proc_image 尺寸（见 refs）。' },
+  imgQuality: { type: 'string', enum: ['', 'auto', 'low', 'medium', 'high', 'xhigh', 'max'], description: 'quality；空 = 不传。' },
+  imgBackground: { type: 'string', enum: ['', 'auto', 'opaque', 'transparent'] },
+  maskOn: { type: 'boolean', description: '蒙版重绘（透明区 = 重绘）。' },
+  remotionSize: { type: 'string' },
+  remotionBuildNote: { type: 'string', description: '构建需求（只有它进构建 Agent）。' },
+  tsx: { type: 'string', description: 'Composition.tsx 全文（导出 Main）。' },
+  remotionFiles: { type: 'object', additionalProperties: true, description: '源码树；入口 Composition.tsx。' },
   remotionInputs: {
     type: 'array',
-    description:
-      'remotion 端子契约 [{key,kind,label,list,required,default}]（kind = image / audio / video / text / number / boolean / json）。通常由工程源码里的 export const inputs 自动派生；显式给出时以它为准重建端子，同 key 的接线跟着 key 搬迁，消失的 key 断线并写进 warnings。',
+    description: '端子契约（通常由源码派生）。',
     items: {
       type: 'object',
       additionalProperties: true,
       properties: {
-        key: { type: 'string', description: '契约键 = 组件 props 键（标识符，唯一）。' },
+        key: { type: 'string' },
         kind: { type: 'string', enum: ['image', 'audio', 'video', 'text', 'number', 'boolean', 'json'] },
-        label: { type: 'string', description: '端子显示名（缺省 = key）。' },
-        list: { type: 'boolean', description: '数组端子：可接多路，值变成数组。' },
+        label: { type: 'string' },
+        list: { type: 'boolean' },
         required: { type: 'boolean' },
-        default: { type: 'json', description: '未接线时的缺省值（任意 JSON）。' },
+        default: { type: 'json' },
       },
     },
   },
-  backgroundColor: {
-    type: 'string',
-    description: 'remotion 内置台词卡版面的左侧底色（#rrggbb）。',
-  },
-  fps: { type: 'number', description: 'remotion 帧率 1–60。' },
-  attempts: { type: 'number', description: '抽卡次数 1–10（生成类节点）。' },
+  backgroundColor: { type: 'string' },
+  fps: { type: 'number' },
+  attempts: { type: 'number', description: '抽卡次数 1–10。' },
   outputPath: { type: 'string', description: '输出路径（.mp4 / .wav / .flac / .mp3）。' },
-  voice: { type: 'string', description: 'breeze_gen 音色 id；留空 = 用端子参考音频。' },
-  breezeVoice: { type: 'string', description: '同 voice（两个都收）。' },
-  breezeMode: { type: 'string', enum: ['auto', 'clone', 'design', 'direction'], description: 'breeze_gen 能力：auto / clone / design / direction。' },
-  breezeInstruction: { type: 'string', description: 'breeze_gen 指令（性格与语气）。' },
-  breezeCfgScale: { type: 'number', description: 'breeze_gen 指令跟随强度 0.1–10（默认 4）。' },
-  breezeSeed: { type: 'number', description: 'breeze_gen 随机种子（默认 42）。' },
-  breezeFormat: { type: 'string', enum: ['wav', 'flac', 'mp3'], description: 'breeze_gen 输出格式（默认 wav）。' },
-  cot: { type: 'string', enum: ['full', 'melody', 'off'], description: 'yue_gen 思维链档位：full（默认）· melody · off。' },
-  style: { type: 'string', description: 'yue_gen 风格提示词（端口 0）。' },
-  lyrics: { type: 'string', description: 'yue_gen 歌词正文（端口 1）。' },
-  abc: { type: 'string', description: 'yue_gen ABC 谱面（可选，端口 2）。' },
-  videoMode: { type: 'string', enum: ['r2v', 'fl2va'], description: 'video_gen：fl2va 首末帧（默认）/ r2v 多参考；端口号与素材槽位见技能 mtnode-canvas-edit-rules。' },
-  duration: { type: 'number', description: '时长秒：video_gen 4–15，remotion 1–60。' },
+  voice: { type: 'string', description: 'breeze_gen 音色 id；空 = 用端子音频。' },
+  breezeVoice: { type: 'string' },
+  breezeMode: { type: 'string', enum: ['auto', 'clone', 'design', 'direction'] },
+  breezeInstruction: { type: 'string' },
+  breezeCfgScale: { type: 'number' },
+  breezeSeed: { type: 'number' },
+  breezeFormat: { type: 'string', enum: ['wav', 'flac', 'mp3'] },
+  cot: { type: 'string', enum: ['full', 'melody', 'off'] },
+  style: { type: 'string' },
+  lyrics: { type: 'string' },
+  abc: { type: 'string' },
+  videoMode: { type: 'string', enum: ['r2v', 'fl2va'], description: '首末帧 / 多参考；端口见技能。' },
+  duration: { type: 'number', description: '秒：video_gen 4–15 / remotion 1–60。' },
   outputRes: { type: 'string', enum: ['auto', '480p', '720p', '1080p'] },
-  postEnabled: { type: 'boolean', description: 'video_gen 超分补帧后处理。' },
-  postInterp: { type: 'boolean', description: 'video_gen RIFE 补帧开关。' },
-  workflowId: { type: 'string', description: 'video_gen 自建 ComfyUI 工作流库 id（勿编造）。' },
-  ctrlAction: { type: 'string', enum: ['run', 'clear'], description: 'control 动作：只建 run，不要建 clear。' },
-  ctrlRole: { type: 'string', enum: ['start', 'endSuccess', 'endFail'], description: 'control 角色（task 自带三端勿删）。' },
-  refs: { type: 'array', items: { type: 'string' }, description: '要补进 prompt/task 的 @标题 / @标签名。' },
-  delaySec: { type: 'number', description: 'delayer：延时秒。' },
-  seqOutputs: { type: 'number', description: 'sequencer：顺序输出数 2–8。' },
-  seqGapSec: { type: 'number', description: 'sequencer：输出间隔秒。' },
-  gateInputs: { type: 'number', description: 'gate：AND 输入数 2–8。' },
-  splitOutputs: { type: 'number', description: 'splitter：并行输出数 2–8。' },
-  counterEvery: { type: 'number', description: 'counter：每 N 次触发放行 2–99。' },
+  postEnabled: { type: 'boolean' },
+  postInterp: { type: 'boolean' },
+  workflowId: { type: 'string', description: 'ComfyUI 工作流库 id（勿编造）。' },
+  ctrlAction: { type: 'string', enum: ['run', 'clear'], description: '只建 run，不要 clear。' },
+  ctrlRole: { type: 'string', enum: ['start', 'endSuccess', 'endFail'], description: 'task 自带三端勿删。' },
+  refs: { type: 'array', items: { type: 'string' }, description: '要补进 prompt/task 的 @。' },
+  delaySec: { type: 'number' },
+  seqOutputs: { type: 'number' },
+  seqGapSec: { type: 'number' },
+  gateInputs: { type: 'number' },
+  splitOutputs: { type: 'number' },
+  counterEvery: { type: 'number' },
   counterCount: { type: 'number' },
-  mutexInputs: { type: 'number', description: 'mutex：输入数 2–8。' },
-  mutexMode: { type: 'string', enum: ['first', 'priority', 'random'], description: 'mutex：哪个输入胜出。' },
-  netChannel: { type: 'number', description: '通道号 0–65535。' },
+  mutexInputs: { type: 'number' },
+  mutexMode: { type: 'string', enum: ['first', 'priority', 'random'], description: '哪个输入胜出。' },
+  netChannel: { type: 'number' },
   netProto: { type: 'string', enum: ['tcp', 'udp'] },
-  netHost: { type: 'string', description: '地址。' },
-  netPort: { type: 'number', description: '端口（0 = 全局设置）。' },
-  netAutoListen: { type: 'boolean', description: '启动即监听。' },
-  dbNodeId: { type: 'string', description: 'db_replica：镜像的数据库 super id。' },
-  dbName: { type: 'string', description: 'db_replica：源数据库显示名。' },
+  netHost: { type: 'string' },
+  netPort: { type: 'number' },
+  netAutoListen: { type: 'boolean' },
+  dbNodeId: { type: 'string', description: '镜像的数据库 super id。' },
+  dbName: { type: 'string' },
   ctrlPinned: { type: 'boolean' },
-  ctrlFillOnly: { type: 'boolean', description: 'control run：只填数据不触发运行。' },
-  paramStrict: {
-    type: 'boolean',
-    description:
-      '「参数」严格校验（与节点 ⚙ 里的开关同源）：true = 参数端子上的 JSON 有键不合法 / 类型不符就整份拒绝、该节点不运行；缺省宽松（逐键回退并警告）。节点参数本身只能通过参数端子（toIndex 9001）传入，这里没有 params 字段。',
-  },
+  ctrlFillOnly: { type: 'boolean', description: '只填数据不触发运行。' },
+  paramStrict: { type: 'boolean', description: '不合法整份拒绝。' },
   x: { type: 'number' },
   y: { type: 'number' },
 }
@@ -438,7 +422,7 @@ const PAIR_SPEC = {
     from: { type: 'string', required: true, description: '源节点：id / alias / 唯一标题。' },
     to: { type: 'string', required: true, description: '目标节点：id / alias / 唯一标题。' },
     fromIndex: { type: 'number', description: '源的输出端子序号（默认 0）；judge 0 = YES、1 = NO；tool / function 按参数表数端子。' },
-    toIndex: { type: 'number', description: '目标的输入端子序号（0 起始；省略 = 按类型自动选槽）。媒体节点必须显式给：breeze_gen 0=待合成文本 · 1=参考音频 · 2=参考文稿 · 3=指令 · 4=控制输入；video_gen fl2va 0=控制 · 1=提示词 · 2=首帧 · 3=末帧；remotion 无差别端子（0、1、2… 连一条多一个，数据线与控制线共用、先占先得，功能说明写在节点 text 里、构建需求写在 remotionBuildNote 里，都不占端子；视频 / 图片 → 主素材、音频 → 语音、文本 → 台词）；save 0/1 按入线类型。动态端子节点（proc_text / proc_image / agent_task / input_*）的**控制输入 = 末位那颗专用控制端子**（数据槽之后单独一颗，数据线永不占它；号随数据槽增长，省略 toIndex 时控制线自动落到它），数据槽仍是 0=提示词 · 1+ 增量。**参数端子用 toIndex 9001**（来源必须是文本 JSON）。**端子已被占用时不会报「已被占用」而是顶掉旧线**（一端口一线的普通端子：同类线替换同类线，旧线进撤销栈，回执里该对线带 `replaced` 点名被换掉的上游与端子号）；参数端子 / 数组端子 / 动态控制端子可多线，不替换；类型不符仍是错（旧线不动）；省略 toIndex 不替换（走自动落点）。' },
+    toIndex: { type: 'number', description: '输入端子号（0 起始；省略 = 自动落点）。参数端子 = 9001；媒体 / 动态端子的槽位表见技能；接已占用的普通端子 = 替换旧线。' },
     rel: { type: 'boolean', description: '关系线：UML 直线，不传数据也不参与执行（忽略 fromIndex）。' },
     relLabel: { type: 'string', description: '关系线文字（如 调用 / 依赖）。' },
     relArrow: { type: 'string', enum: ['forward', 'backward', 'both', 'none'] },
@@ -622,7 +606,9 @@ export function apply(ctx) {
        画布智能节点不进这一档 —— 它要读组内节点正文、按用户要求建节点 / 连线。
      · env MTNODE_HIDE_TOOLS（按运行算出的规范名单，真源 tool-visibility.mjs）→ 点名的
        工具整个不注册。走这条的是「Agent 工具许可」预设里被拒到点上的画布 / 应用 / 识图
-       工具：宿主侧本来就硬拦，定义照发只换来模型一次次撞没有的工具。
+       工具，以及开发绑定会话（noRead 档）整份裁掉的画布三件套 —— 含 mtnode_canvas_edit，
+       这类会话按契约不读也不回写画布（名单见 app-db.js 的 DSH_TOOLS_DROPPED_BY_NO_READ，
+       它是 CANVAS_FREE_DROP 的子集，因此与上面的整档闸取并集后不会重复）。
      两个标记与这份名单都进 runtime key（gateway.mjs 的 lean: / nc: / hx:），换档即冷起
      自己的运行时，绝不会出现「同一台运行时两种可见集」互相打爆提示缓存。网关同时在预设
      文本后补一句「这些工具不存在」，模型不会去撞没有的工具（见 LEAN_TOOLS_NOTE）。 */

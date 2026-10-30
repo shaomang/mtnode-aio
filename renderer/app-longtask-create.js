@@ -284,6 +284,11 @@ function ltcAgentRow(wrap) {
 }
 
 function openLtCreateDlg(wf) {
+  /* 总开关关着（app-longtask.js 的 window.LT_DISABLED）：这条新建入口整只不出现、不开窗 */
+  if (window.LT_DISABLED) {
+    if (typeof toast === "function") toast(ltcT("长周期任务暂时停用（正在修复中），入口与状态机已隐藏"), "warn");
+    return;
+  }
   const cap = wf || (typeof S !== "undefined" ? S.wf : null);
   openOverlay(ltcT("新建长周期任务"), { persistent: true, min: true });
   const box = ltcOvBox();

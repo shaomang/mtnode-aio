@@ -1,0 +1,31 @@
+{
+  "id": "qwen-image-local",
+  "name": "Qwen Image 2.1",
+  "version": "1.0.0",
+  "minAppVersion": "1.6.1",
+  "title": {
+    "zh": "Qwen Image 2.1",
+    "en": "Qwen Image 2.1"
+  },
+  "subtitle": {
+    "zh": "本地 Qwen Image 2.1（7B DiT · INT8 / Turbo INT8 双量化）跑在独立 ComfyUI 上：文生图、多参考图编辑、蒙版局部重绘、原生透明背景。需 NVIDIA 显卡（INT8 8GB 显存起，建议 16GB+），预留 ≥40GB 磁盘。",
+    "en": "Local Qwen Image 2.1 (7B DiT · INT8 / Turbo INT8) on an isolated ComfyUI: text-to-image, multi-reference editing, mask inpaint, native transparent background. Needs an NVIDIA GPU (8GB+ VRAM for INT8, 16GB+ recommended) and ≥40GB free disk."
+  },
+  "model": "Comfy-Org/Qwen-Image-2.1",
+  "modelMirror": "Comfy-Org/Qwen-Image-2.1",
+  "entry": "ComfyUI",
+  "apiPort": 8196,
+  "diskHintGb": 40,
+  "minVramGb": 8,
+  "models": {
+    "diffusionInt8": "qwen_image_2.1_int8_convrot.safetensors",
+    "diffusionTurboInt8": "qwen_image_2.1_turbo_int8_convrot.safetensors",
+    "textEncoder": "qwen3vl_8b_int8_convrot.safetensors",
+    "vae": "qwen_image_2.1_vae_bf16.safetensors"
+  },
+  "license": "Qwen Research License",
+  "notes": {
+    "zh": "MTNode 起一份独立 ComfyUI（127.0.0.1:8196），图用官方原生节点拼（UNETLoader / CLIPLoader type=qwen_image / TextEncodeQwenImage21 / QwenImage21Cache / KSampler · SamplerCustomAdvanced / SetLatentNoiseMask）。画布节点 qwenimage_gen 与「图像生成」节点同口径：提示词、多参考图编辑、比例桶、抽卡、种子、蒙版重绘；透明背景走 Qwen 2.1 原生 RGBA（官方提示词格式，单遍直出）。两个量化档共用同一份文本编码器与 VAE。许可为 Qwen Research License，商用前请看官方条款。",
+    "en": "MTNode runs an isolated ComfyUI (127.0.0.1:8196) with the official native nodes (UNETLoader / CLIPLoader type=qwen_image / TextEncodeQwenImage21 / QwenImage21Cache / KSampler or SamplerCustomAdvanced / SetLatentNoiseMask). The qwenimage_gen canvas node mirrors the image-generation node: prompt, multi-reference editing, ratio buckets, gacha rolls, seed and mask inpaint; transparent background uses Qwen 2.1's native RGBA output (official prompt format, single pass). Both INT8 variants share one text encoder and one VAE. Licensed under the Qwen Research License; check the official terms before commercial use."
+  }
+}

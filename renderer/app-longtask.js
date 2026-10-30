@@ -29,6 +29,17 @@
  * 节点本身只显进度与「定位」，清单的主操作面是这里的卡片（单一操作面，两处不双写）。
  * ══════════════════════════════════════════════════════════════════════ */
 
+/* ── 总开关：长周期任务暂时停用 ──────────────────────────────────────
+ * 这块（状态机 + 条带 UI + 全部入口）眼下还有不少 bug，先整体隐藏并禁用：
+ *   · 前端：条带不挂载（app-longtask-ui.js 的 ltBoot / ltMount 直接返回），
+ *           新建 / 修改窗与所有入口不可达；
+ *   · 引擎：建图 / 改图 / 启用 / 继续 / 恢复一律拒绝，不会起 run，也不碰画布。
+ * 画布 JSON 里已有的 wf.longtask 与长任务壳 / 产出 / 交付节点原样保留、不删不改。
+ * 修好后把这里改回 false 即整块恢复（其它地方全部按这一个开关判）。 */
+window.LT_DISABLED = true;
+/* 停用期的统一口径（toast / 工具错误都用它，避免各处自造文案） */
+const LT_OFF_MSG = "长周期任务暂时停用（正在修复中），入口与状态机已隐藏";
+
 /* ── 常量 ─────────────────────────────────────────────────────────── */
 
 /* 图节点类型：首轮全集（共识 3） */
@@ -779,6 +790,7 @@ function ltDeliverLandingCreate(wf, task) {
    新任务 enabled:false（等用户在条带上点「启用并绑定」），active 指向它。
    wfIn 缺省取当前画布；会话路径会显式传「所属画布」，避免落到用户正看着的另一张。 */
 function ltCreateFromGraph(name, graph, wfIn) {
+  if (window.LT_DISABLED) return { ok: false, error: ltT(LT_OFF_MSG) };
   const wf = wfIn || (typeof S !== "undefined" && S.wf) || null;
   if (!wf) return { ok: false, error: ltT("当前没有打开的画布") };
   ltEnsure(wf);
@@ -835,6 +847,7 @@ function ltCreateFromGraph(name, graph, wfIn) {
  * 回执带 applied / kept / rearmed / added，让 Agent 知道「已经生效了」，不必再提醒用户
  * 重新启用；runNote 从此恒为空串（旧断言口径不变）。 */
 function ltUpdateFromGraph(wf, uid, graph, name) {
+  if (window.LT_DISABLED) return { ok: false, error: ltT(LT_OFF_MSG) };
   const box = wf || (typeof S !== "undefined" && S.wf) || null;
   if (!box) return { ok: false, error: ltT("当前没有打开的画布") };
   ltEnsure(box);
@@ -1182,6 +1195,7 @@ const LT_RUNS = new Map(); /* runId → run（内存中的活对象；同一 run
 const LT_WATCH = new Set(); /* 正在推进的 runId（防重入） */
 
 function ltRunNew(task, wfId, opts) {
+  if (window.LT_DISABLED) return null; /* 停用期绝不起 run（ltEnable / ltResume 已在入口拒绝） */
   const g = ltNormGraph(task.graph);
   g.ver = Number(task.ver) || 1;
   const run = {
@@ -4946,6 +4960,7 @@ function ltDownstreamOf(run, path) {
 /* 启用并绑定：开一个 run（此后改图由 ltApplyGraphToRun 热更新进它，用户不必重新启用；
    「重新启用」只剩「新建一个 run、从零干净重跑」这一个意思） */
 async function ltEnable(wf, taskUid, opts) {
+  if (window.LT_DISABLED) return { ok: false, error: ltT(LT_OFF_MSG) };
   if (!wf) return { ok: false, error: ltT("当前没有打开的画布") };
   ltEnsure(wf);
   const task = ltTaskOf(wf, taskUid) || ltActiveTask(wf);
@@ -5139,6 +5154,7 @@ function ltStop(wf) {
 }
 /* 继续 / 重跑：running 态在重启后一律降级为「已中断」，等用户点这里才重新拉起（共识 q21） */
 async function ltResume(wf, runId) {
+  if (window.LT_DISABLED) return null;
   if (!wf) return null;
   const id = String(runId || (ltCurrentRun(wf) && ltCurrentRun(wf).runId) || "");
   if (!id) return null;
@@ -5512,6 +5528,7 @@ async function ltDeliverReconcileDisk(node, dirIn, itemsIn, wfIn) {
 }
 /* 启动后扫描：未结束的 run 一律标「已中断」，等用户点继续（共识 q21） */
 async function ltRestore(wf) {
+  if (window.LT_DISABLED) return [];
   if (!wf) return [];
   ltEnsure(wf);
   const out = [];

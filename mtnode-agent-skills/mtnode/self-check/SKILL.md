@@ -1,7 +1,7 @@
 ---
 name: mtnode-self-check
 title: 自检与交付纪律
-description: 自检与交付纪律：阶段自检 + 交付前全检、先自修再问人、硬断言带证据、清单收口。系统提示里只留四条硬闸短句，细则全在这份技能里 —— 交付任何结果之前按本清单走一遍。Use when finishing a stage, before delivering a result, or when a claim needs evidence.
+description: 自检与交付纪律：阶段自检、交付前全检、先自修再问人、硬断言带证据。
 ---
 
 # 自检与交付纪律（mtnode-self-check）

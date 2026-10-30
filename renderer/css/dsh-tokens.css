@@ -19,7 +19,12 @@
    放置顺序：紧跟 css/dsh.css（style.css 的 @import 表），排在 assist.css 之前 ——
    令牌先就位，两个窗格的样式再取用；亮色主题分片在其后，槽位重定义照样生效。 */
 
-:root {
+/* 选择器写 :root 与 body 两处（修「亮色主题下会话顶部『对话 / 轨迹 / 改动』标签栏仍是黑条」）：
+   亮色主题是 body.theme-light 在 **body** 上重定义 --panel 等槽位；令牌若只挂 :root，
+   var(--panel) 会在根上按暗色值算死，再原样继承给 body 以下 —— 亮色槽位够不着。
+   在 body 上再声明一次，令牌就在 body 这一层按当前主题重新求值。 */
+:root,
+body {
   /* ── 层次（背景三层 + 边框两档）────────────────────────────────────────── */
   --dsh-pane-bg: var(--bg2);
   --dsh-pane-head: var(--panel);

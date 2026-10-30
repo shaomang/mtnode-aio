@@ -41,7 +41,7 @@ const LOCAL_HOSTS = new Set(["127.0.0.1", "localhost", "::1", "[::1]", "0.0.0.0"
 /* 内置画布节点 kind 的保留字：插件前缀是 `up_<id>`，若 id 去掉非法字符后与内置 kind 同名
    （如 id 写着 up_proc_text 或 input_text），就会覆盖内置节点的渲染 / 执行分支 —— 直接拒绝。 */
 const RESERVED_KINDS = new Set([
-  "input_text", "input_image", "input_audio", "input_video", "input_any", "input_file",
+  "input_text", "input_image", "input_audio", "input_video", "input_any", "input_form", "input_file",
   "asset", "db_table", "db_replica", "proc_text", "proc_image", "save", "save_pdf",
   "task", "agent_task", "control", "wait_file", "timer", "judge", "delayer", "sequencer",
   "gate", "splitter", "counter", "mutex", "global", "function", "tool", "super", "super_io",
@@ -1511,11 +1511,32 @@ function registerUserPluginsIpc(opts) {
   });
 }
 
+/** 用户自建插件声明的后端（只读快照：已扫过就用扫描结果，没扫过返回空 —— 不在读路径里造文件）。
+ *  mtnode-plugin.json 的 backend 段（healthUrl / startCommand …）也是本机「额外装出来的后端」，
+ *  注册中心（br_admin list）把它们一并列出来，Agent 查一处就知道有什么、装在哪。 */
+function backendSnapshot() {
+  if (!scanned.length) return [];
+  const out = [];
+  for (const p of scanned) {
+    if (!p || !p.backend || p.state !== "normal") continue;
+    out.push({
+      id: p.id,
+      name: (p.title && (p.title.zh || p.title.en)) || p.id,
+      kind: "user-plugin",
+      installed: true,
+      installDir: p.dir || "",
+      subtitle: (p.subtitle && (p.subtitle.zh || p.subtitle.en)) || "",
+    });
+  }
+  return out;
+}
+
 module.exports = {
   registerUserPluginsIpc,
   runStartupHealth,
   scan,
   listPublic,
+  backendSnapshot,
   activeNodeDefs,
   healthReport,
   ensureTemplate,

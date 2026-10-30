@@ -87,7 +87,7 @@ const S = {
   sidebarOpen: false,
   sideCollapsed: {}, /* 边栏分类折叠状态 */
   sideSuperCollapsed: {}, /* 节点层树折叠状态 */
-  /* 右侧全局助手 */
+  /* 右侧画布助手 */
   assistOpen: false,
   assistLive2d: false,
   /* 助手对话所在的会话 id（本轮需求）：空串 = 还没有当前助手会话，
@@ -97,7 +97,7 @@ const S = {
   assistRunning: false,
   assistPending: "",
   assistLiveTools: [],
-  assistRunActive: false, /* 全局助手运行中：画布 edit 需用户确认 */
+  assistRunActive: false, /* 画布助手运行中：画布 edit 需用户确认 */
   /* 助手预设：空串 = 跟随默认档（AGENT_PRESET_DEFAULT，本对象定义在它之前，不能直引）；
      开机读配置时（app-boot.js）才填成实际生效的那一档 */
   assistPreset: "",
@@ -105,7 +105,7 @@ const S = {
   assistModel: "",
   assistEffort: "high",
   assistWorkspace: "",
-  /* 全局助手本次运行冻结的工作目录（切画布也不改） */
+  /* 画布助手本次运行冻结的工作目录（切画布也不改） */
   assistRunWorkspace: null,
   /* current = 仅当前画布；global = 可参考/切换其他画布 */
   assistScope: "current",
@@ -257,6 +257,8 @@ const NODE_KIND_PLUGIN = {
   music_gen: "minimax-music3",
   /* FLUX 3 Image Klein：独立 ComfyUI（8197）上的本机出图，见 flux3klein/main-flux3klein.js */
   flux3klein_gen: "flux3-klein-local",
+  /* Qwen Image 2.1：独立 ComfyUI（8196）上的本机出图，见 qwenimage/main-qwenimage.js */
+  qwenimage_gen: "qwen-image-local",
   yue_gen: "yue2-local",
   breeze_gen: "breeze-tts-local",
   /* InfiniteTalk 数字人：不设显存门槛（装得下就试，跑不动由控制台日志说话） */
@@ -291,11 +293,29 @@ function isGroupInPort(node, idx) {
   if (Number(idx) !== GROUP_IN_INDEX) return false;
   return typeof isSmartGroupPortNode === "function" && isSmartGroupPortNode(node);
 }
+/* 「组」**输出**端子的端子号（哨兵值，本次需求）：节点层（kind super）右侧输出端子排的
+   最末一颗 —— 形态与普通输出端子一样，拖出来的却是组线，内容是「层内部节点 + 结构」清单。
+   同样用远处常量当身份：既有端子的顺序号一个都不动。 */
+const GROUP_OUT_INDEX = 9003;
+function isGroupOutPort(node, idx) {
+  return !!node && node.kind === "super" && Number(idx) === GROUP_OUT_INDEX;
+}
 /* 组线：来源不是节点而是画布里的一个组（wf.groups）。w.from 写成 "grp:<组id>"，
-   让一切按 nodeById 遍历的链路自然跳过它；真源另存在 w.grp 上。 */
+   让一切按 nodeById 遍历的链路自然跳过它；真源另存在 w.grp 上。
+   节点层那颗组输出端子（GROUP_OUT_INDEX）是组线的第二种来源：w.from 就是层自己的
+   id（它确实是节点），另在 w.sup 上记一份来源层，isGroupWire 一并认 —— 这样它
+   同样不参与数据流（取值 / 补跑 / 端口占用一条都不沾）。 */
 const GROUP_WIRE_PREFIX = "grp:";
 function isGroupWire(w) {
-  return !!w && !w.rel && !!String(w.grp || "").trim();
+  return (
+    !!w &&
+    !w.rel &&
+    !!(String(w.grp || "").trim() || String(w.sup || "").trim())
+  );
+}
+/* 这条组线的来源：组框（w.grp）还是节点层的组输出端子（w.sup） */
+function isSuperGroupWire(w) {
+  return !!w && !w.rel && !!String(w.sup || "").trim();
 }
 function groupWireFromId(gid) {
   return GROUP_WIRE_PREFIX + String(gid || "");
@@ -367,6 +387,8 @@ const KIND_CLS = {
      节点（见 convertAnyNodeTo）。四种输入节点一律保留，老画布照旧能读能跑能连。 */
   input_any: "in",
   input_file: "in",
+  /* 表单输入：与文本 / 图像同族（in 青色描边），本体是一份结构化 JSON（见 app-input-form.js） */
+  input_form: "in",
   /* 交付节点（长周期任务的人工「内容交付」落点）：由 app-longtask.js 创建并赋 uid，
      一切手动入口被 LT.LOCKED 挡掉（NODE_DEFAULTS 有它才能渲染，但 addNode / 复制 /
      智能体建图三处都单独拦）。外观走 .dlv 一族，配色在 css/longtask.css。 */
@@ -398,7 +420,16 @@ const KIND_CLS = {
   wait_file: "wait",
   timer: "timer",
   judge: "judge",
+  /* 质检节点（qa_text / qa_image / qa_video / qa_audio / qa_file）：
+     五种同一配色族（judge —— 它们都是「过 / 不过」的关卡），靠图标区分类型 */
+  qa_text: "judge",
+  qa_image: "judge",
+  qa_video: "judge",
+  qa_audio: "judge",
+  qa_file: "judge",
   delayer: "delayer",
+  /* 弹窗节点：与延时器同属「等一下就继续」的控制节点，复用它的青绿配色 */
+  popup: "delayer",
   sequencer: "sequencer",
   gate: "gate",
   splitter: "splitter",
@@ -409,6 +440,8 @@ const KIND_CLS = {
   /* YuE2 音乐生成（本地 YuE2 后端 · 歌词 → 整曲 · 可编辑 ABC 谱面）：复用音乐族配色 */
   yue_gen: "music",
   flux3klein_gen: "proc-img",
+  /* Qwen Image 2.1 本机出图：与 FLUX 3 Klein 同族配色（图像类） */
+  qwenimage_gen: "proc-img",
   /* Breeze 语音生成：文本 → 语音的**唯一**本机后端，复用 .wf-node.tts 样式族（紫调） */
   breeze_gen: "tts",
   video_gen: "video",
@@ -450,6 +483,9 @@ const KIND_ICON_SVG = {
   /* 输入 · 视频：胶片框 + 播放三角（选择本机文件 · 输出 URL） */
   input_video:
     '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="3.6" width="12" height="8.8" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M2 6.1h12M2 9.9h12" fill="none" stroke="currentColor" stroke-width="1" opacity=".65"/><path d="M6.9 7.1l2.6 1.9-2.6 1.9V7.1z" fill="currentColor"/></svg>',
+  /* 输入 · 表单：表单框 + 勾选行（结构化 JSON · 可拖入素材 · 图像/视频带描述与注释） */
+  input_form:
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.4" y="2.4" width="11.2" height="11.2" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M4.6 5.2h6.8" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/><path d="M4.6 8h3.4M4.6 10.8h3.4" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linecap="round"/><path d="M9.9 9.6l1.1 1.1 2.1-2.3" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/></svg>',
   /* 素材节点（素材库打包）：托盘 + 三层内容（文本 / 图像 / 媒体） */
   asset:
     '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.2 6.1L8 3l5.8 3.1L8 9.2 2.2 6.1z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/><path d="M2.2 9.1L8 12.2l5.8-3.1" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" opacity=".85"/><path d="M2.2 11.9L8 15l5.8-3.1" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" opacity=".55"/></svg>',
@@ -515,6 +551,18 @@ const KIND_ICON_SVG = {
     '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.2" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M6 6l4 4M10 6l-4 4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>',
   judge:
     '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.4l5.4 5.6L8 13.6 2.6 8z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M8 6.2v2.2M8 10.4h.01" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>',
+  /* 质检节点（五种共用「对勾徽标」语汇：主体 = 被检对象的样子，右下角永远有一枚勾，
+     一眼分清「检的是什么」而不必读标题） */
+  qa_text:
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.6 3.2h10.8M2.6 6.2h8.6M2.6 9.2h5.2" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M9.2 12.6l1.4 1.4 3-3.2" fill="none" stroke="currentColor" stroke-width="1.45" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  qa_image:
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.2" y="2.8" width="11.6" height="8.2" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.25"/><circle cx="5.4" cy="5.6" r="1" fill="currentColor"/><path d="M3.2 9.7l2.6-2.6 1.7 1.6 1.4-1.3 1.7 2.3" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linecap="round" stroke-linejoin="round"/><path d="M9.2 12.6l1.4 1.4 3-3.2" fill="none" stroke="currentColor" stroke-width="1.45" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  qa_video:
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.2" y="2.6" width="11.6" height="8.2" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M2.2 5.1h11.6M2.2 8.3h11.6" fill="none" stroke="currentColor" stroke-width="1" opacity=".6"/><path d="M6.9 5.9l2.6 1.8-2.6 1.8V5.9z" fill="currentColor"/><path d="M9.2 12.6l1.4 1.4 3-3.2" fill="none" stroke="currentColor" stroke-width="1.45" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  qa_audio:
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.4 6.1h1.9L7 3.7v8.2L4.3 9.5H2.4a.6.6 0 0 1-.6-.6V6.7a.6.6 0 0 1 .6-.6z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M9 5.9c.8.9.8 2.8 0 3.7M10.8 4.3c1.5 1.7 1.5 5.2 0 6.9" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linecap="round"/><path d="M9.4 12.8l1.3 1.3 2.8-3" fill="none" stroke="currentColor" stroke-width="1.45" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  qa_file:
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.4 2.4h5.6l2.8 2.8v6.4a1 1 0 0 1-1 1H4.4a1 1 0 0 1-1-1V2.4z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M8.8 2.6v2.5h2.5" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linejoin="round"/><path d="M5.2 7.2h4.2M5.2 9.2h2.8" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/><path d="M9.4 12.8l1.3 1.3 2.8-3" fill="none" stroke="currentColor" stroke-width="1.45" stroke-linecap="round" stroke-linejoin="round"/></svg>',
   /* 需求等待 */
   wait_file:
     '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2.8h5.2L12 5.6V13a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V2.8z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/><path d="M9.1 2.9V5.5H11.8" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><circle cx="8" cy="9.2" r="2.1" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M8 8.1v1.4l.9.5" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linecap="round"/></svg>',
@@ -524,6 +572,9 @@ const KIND_ICON_SVG = {
   /* 延时器 */
   delayer:
     '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8h4.2M8.8 8H13" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round"/><circle cx="8" cy="8" r="2.2" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M8 6.6v1.6l1.1.7" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linecap="round"/></svg>',
+  /* 弹窗节点：浮层窗 + 两行文字（控制流触发时弹出，内容可编辑） */
+  popup:
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.2" y="2.6" width="11.6" height="8.6" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M4.4 2.8v1.9h7.2V2.8" fill="none" stroke="currentColor" stroke-width="1.1" opacity=".8"/><path d="M4.6 6.2h6.8M4.6 8.3h4.4" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/><path d="M5.4 11.2l-.6 2.2 2.6-2.2" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>',
   /* 序列器 */
   sequencer:
     '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="3.2" cy="4.2" r="1.15" fill="currentColor"/><circle cx="3.2" cy="8" r="1.15" fill="currentColor"/><circle cx="3.2" cy="11.8" r="1.15" fill="currentColor"/><path d="M5.2 4.2h3.2L12 8 8.4 11.8H5.2" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M12 6.4V9.6" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>',
@@ -626,6 +677,7 @@ KIND_ICON_SVG.infinitetalk_gen = KIND_ICON_SVG.video_gen;
 /* SoulX-FlashHead Lite：同一枚视频图标 */
 KIND_ICON_SVG.soulxflashhead_gen = KIND_ICON_SVG.video_gen;
 KIND_ICON_SVG.flux3klein_gen = KIND_ICON_SVG.proc_image;
+KIND_ICON_SVG.qwenimage_gen = KIND_ICON_SVG.proc_image;
 
 function nodeKindIconKey(node) {
   if (!node) return "proc_text";
@@ -837,6 +889,14 @@ function agentEffortLabelOf(v) {
 function agentEffortDisplayLabel(st) {
   return agentEffortLabelOf((st || {}).effort);
 }
+/* 质检节点 kind 清单（真源；renderer/app-qa.js 的 QA_KINDS 从这份派生）。
+   五种端口口径完全一致，只有被检内容类型与默认模板不同。 */
+const QA_KIND_LIST = ["qa_text", "qa_image", "qa_video", "qa_audio", "qa_file"];
+function isQaKindNode(n) {
+  return !!n && QA_KIND_LIST.indexOf(n.kind) >= 0;
+}
+/* 端口 / 控制流判定要在「只加载了部分 app.js 的测试沙箱」里也安全：不是每个调用点
+   都能假定同文件顶部的函数已求值（冒烟会整块 eval NODE_DEFAULTS / 单个函数）。 */
 const NODE_DEFAULTS = {
   /* 泛用「文件节点」：画布右键唯一的输入节点入口。本体没有任何内容，body 只有一个
      「上传文件」按钮 —— 选定本机文件后按类型就地转成文本 / 图像 / 音频 / 视频输入节点
@@ -885,6 +945,34 @@ const NODE_DEFAULTS = {
     title: "视频",
     mediaAsset: "",
     sourceName: "",
+  },
+  /* 表单输入节点（kind input_form）：本体是一份设计好结构的 JSON，供人填写 / 拖入素材。
+     fields = 字段定义（类型 / 必填 / 选项 / 默认值 / 计算 / 显示规则），values = 值；
+     图像 / 视频 / 音频 / 文件字段的值是 { path, name, desc, tags[], marks[] } ——
+     desc 可点「识图补充」自动填，marks 是注释（图像矩形框 0~1 归一化 / 视频时间点与起止段）。
+     对外 1 个输出端子 = 整份 JSON 文本；@引用 给紧凑摘要 + 落盘 .json 的绝对路径
+     （见 renderer/app-input-form.js 的 summary / refText）。
+     另有固定 1 个输入端子（标题「引用」）：连进来的上游内容被复制一份进本表单后，
+     那条线立刻断开（一次性引用，见 inputCount 与 IF.absorbWire）；落线时上游还没有值
+     就先留着线，等它有值了自动复制（IF.maybeAbsorbPending / ensurePendingWatch）。
+     不登记 ⚙ 设置窗。 */
+  input_form: {
+    w: 300,
+    h: 240,
+    title: "表单",
+    formName: "表单",
+    fields: [],
+    values: {},
+    /* refs：从输入端子连入后被吸收的外部引用（结构 { fromTitle, kind, text, path, at }）——
+       吸收即复制一份进本表单，并断开那条线（上游后续变化不再影响本表单）。
+       与 values / fields 一样是 @引用 可见的内容（见 renderer/app-input-form.js 的
+       payload / summary）。 */
+    refs: [],
+    /* uiCollapsed：板身上被折起来的字段 id 列表（纯展示状态，随节点落盘一起保存） */
+    uiCollapsed: [],
+    formFile: "",
+    formMtime: 0,
+    formStamp: 0,
   },
   /* 素材节点（素材库 · 纯内容类节点）：把一堆文本 / 图像 / 音频 / 视频打包成一个可复用
      的内容源。节点本体只是「绑定」——assetId + 相对素材库根目录的 assetRel（不存绝对路径，
@@ -1032,6 +1120,11 @@ const NODE_DEFAULTS = {
     maskBrush: 60,
     maskFeather: 0,
     globalRefs: false,
+    /* 资产锚定（缺口文档 P0-2 / G3 规则 2）：requireAsset 开启后，本节点必须声明
+       assetRefs（"id@rev" 列表），运行前对照工程 manifest.json 校验；没有引用 = 纯文本
+       直出 → 直接拒跑。默认关，老画布行为不变。 */
+    requireAsset: false,
+    assetRefs: [],
     output: null,
     batchOutputs: null,
     error: null,
@@ -1258,6 +1351,47 @@ const NODE_DEFAULTS = {
     running: false,
     judgeResult: "",
   },
+  /* 质检节点（qa_text / qa_image / qa_video / qa_audio / qa_file）：
+     被检内容 + 质检要求 → 按 JSON 评分标准跑 Agent → 0–100 总分 → 通过 / 未过门禁。
+     判据全在模板里（qaTemplate 指向 qa-templates/*.json；qaTemplateJson 是节点本地的 JSON 覆盖，
+     body 里直接改的就是它），执行参数只剩视频抽帧数（参考样例不设上限）。
+     门禁与 Agent 循环在 renderer/app-qa.js，媒体活（ffprobe / 抽帧 / 落报告 / 列模板）在主进程。
+     五类共用一套字段（逐条写出来而不是调工厂：NODE_DEFAULTS 会被单测整块 eval，必须自足）。 */
+  qa_text: {
+    w: 330, h: 210, title: "文本质检", providerId: "", model: "",
+    qaTemplate: "builtin/text-general", qaTemplateJson: "", qaFrames: 7,
+    qaVerdict: "", qa: null, output: null, error: null, running: false,
+    /* 输出端子 3 出（0 报告 · 1 通过 · 2 未过）：新建节点直接带标记，读档迁移不再动它的线 */
+    qaOutV3: true,
+  },
+  qa_image: {
+    w: 330, h: 210, title: "图像质检", providerId: "", model: "",
+    qaTemplate: "builtin/image-general", qaTemplateJson: "", qaFrames: 7,
+    qaVerdict: "", qa: null, output: null, error: null, running: false,
+    /* 输出端子 3 出（0 报告 · 1 通过 · 2 未过）：新建节点直接带标记，读档迁移不再动它的线 */
+    qaOutV3: true,
+  },
+  qa_video: {
+    w: 330, h: 210, title: "视频质检", providerId: "", model: "",
+    qaTemplate: "builtin/video-shot", qaTemplateJson: "", qaFrames: 7,
+    qaVerdict: "", qa: null, output: null, error: null, running: false,
+    /* 输出端子 3 出（0 报告 · 1 通过 · 2 未过）：新建节点直接带标记，读档迁移不再动它的线 */
+    qaOutV3: true,
+  },
+  qa_audio: {
+    w: 330, h: 210, title: "音频质检", providerId: "", model: "",
+    qaTemplate: "builtin/audio-general", qaTemplateJson: "", qaFrames: 7,
+    qaVerdict: "", qa: null, output: null, error: null, running: false,
+    /* 输出端子 3 出（0 报告 · 1 通过 · 2 未过）：新建节点直接带标记，读档迁移不再动它的线 */
+    qaOutV3: true,
+  },
+  qa_file: {
+    w: 330, h: 210, title: "文件质检", providerId: "", model: "",
+    qaTemplate: "builtin/file-general", qaTemplateJson: "", qaFrames: 7,
+    qaVerdict: "", qa: null, output: null, error: null, running: false,
+    /* 输出端子 3 出（0 报告 · 1 通过 · 2 未过）：新建节点直接带标记，读档迁移不再动它的线 */
+    qaOutV3: true,
+  },
   wait_file: {
     w: 300,
     h: 200,
@@ -1299,6 +1433,39 @@ const NODE_DEFAULTS = {
     error: null,
     ranAt: 0,
     running: false,
+  },
+  /* 弹窗节点（kind popup）：控制脉冲到达 → 弹出浮层，正文可当场编辑；
+     点「确定」继续下游，取消 / ✕ / Esc = 中止这条控制流（与延时器被取消同口径）。
+     popupTitle 留空则用节点标题；popupText 就是弹窗正文（也是节点上可改的那一份）。 */
+  popup: {
+    w: 360,
+    h: 240,
+    title: "弹窗",
+    popupTitle: "",
+    popupText: "",
+    popupStatus: "",
+    output: null,
+    error: null,
+    ranAt: 0,
+    running: false,
+  },
+  /* 应用节点（kind appnode）：一颗节点钉一个应用。**纯启动器** —— 无端子、不参与运行，
+     点卡片 body 就在画布区里开全屏应用界面（iframe），关掉只是收起、应用继续后台跑。
+     appId = 绑定的应用（选一次即固定，仅「应用不可用」时可重新绑定）；appTitle / appEntry /
+     appDir 只作显示与加载；appDataDir / appDataFile 是它的数据落点
+     （<画布工作目录>/apps-data/<appId>/data.json）。界面与桥见 renderer/app-appnode.js。 */
+  appnode: {
+    w: 340,
+    h: 190,
+    title: "应用",
+    appId: "",
+    appTitle: "",
+    appEntry: "index.html",
+    appDir: "",
+    appDataDir: "",
+    appDataFile: "",
+    appMissing: false,
+    appSessionId: "",
   },
   sequencer: {
     w: 320,
@@ -1424,6 +1591,31 @@ const NODE_DEFAULTS = {
     bgRmOn: false,
     bgRmPairs: [],
   },
+  /* Qwen Image 2.1（本机 ComfyUI 出图 · INT8 / Turbo INT8 双量化）：端子与 FLUX 3 Klein
+     同口径 —— 端口 0 = 提示词 / 文本入口，端口 1 = 参考图（可多接），端口 2 = 控制输入；
+     输出 端口0=图像 · 端口1=控制输出（node.output = {kind:"image", path}）。 */
+  qwenimage_gen: {
+    w: 360,
+    h: 300,
+    title: "Qwen Image 2.1",
+    prompt: "",
+    negative: "",
+    ratioBucket: "1:1",
+    /* 画幅档：2k（默认，官方 2K 原生预设）/ 1mp（低显存）。旧画布缺这个字段时也落 2k。 */
+    resTier: "2k",
+    width: 2048,
+    height: 2048,
+    steps: 25,
+    cfg: 1,
+    seed: 42,
+    rerollSeed: true,
+    rolls: 1,
+    precision: "int8",
+    maskOn: false,
+    maskPath: "",
+    bgRmOn: false,
+    bgRmPairs: [],
+  },
   /* Breeze 语音生成（Breeze TTS 2 本机后端 · 文本转语音 · 音色克隆 / 设计 / 导演）：
      端子 —— 输入 端口0=待合成文本 · 端口1=参考音频 · 端口2=参考文稿 · 端口3=指令 instruction
      · 端口4=控制输入；输出 端口0=音频内容 · 端口1=控制输出。尺寸参照 music_gen。
@@ -1500,6 +1692,11 @@ const NODE_DEFAULTS = {
     /* 一级菜单「视频生成」成员：新建节点默认标题用后端名 */
     title: "Minimax H3 节点",
     attempts: 1,
+    /* 资产锚定（缺口文档 P0-2 / G3 规则 2）：开 requireAsset 后本节点必须先声明
+       assetRefs（"id@rev" 列表），运行前由 app-manifest.js 的 mfAssetGate 对照
+       工程 manifest.json 校验；关着 = 老行为完全不变。 */
+    requireAsset: false,
+    assetRefs: [],
     videoMode: "fl2va",
     videoPortV2: true, /* 端口布局 v2 起：端口0 不再占数据槽（旧档无此标记=旧布局，加载时迁移） */
     videoPortV3: true, /* 端口布局 v3：控制输入 = 末尾端口（r2v 16 / fl2va 3 / 自建 = 数据槽数）· 端口0+=数据槽 */
@@ -2077,6 +2274,9 @@ function nodeEmitsControlOnPort(node, portIndex, wf, seen) {
   wf = wf || S.wf;
   if (!node) return false;
   if (isControlKind(node)) return true;
+  /* 质检节点：输出 1 / 2 是控制出（通过 / 未过），0 是数据出（报告）。
+     原来的「判定」数据出与通过 / 未过两条控制出重复，已撤掉。 */
+  if (typeof isQaKindNode === "function" && isQaKindNode(node)) return Number(portIndex || 0) >= 1;
   /* 网络·接收：端口1 为控制输出（收到消息时触发控制信号） */
   if (node.kind === "net_recv") return Number(portIndex || 0) >= 1;
   /* Breeze 语音：输出 0=音频 · 1=控制 → 控制口从 1 起（端口 1 与端口 2+ 都是控制语义） */
@@ -2086,6 +2286,7 @@ function nodeEmitsControlOnPort(node, portIndex, wf, seen) {
     node.kind === "music_gen" ||
     node.kind === "yue_gen" ||
     node.kind === "flux3klein_gen" ||
+    node.kind === "qwenimage_gen" ||
     node.kind === "video_gen" ||
     node.kind === "infinitetalk_gen" ||
     isVideoPostKind(node) ||
@@ -4460,6 +4661,7 @@ function inferMediaFromSource(from, fromIndex, consumer) {
     return "video";
   if (from.kind === "input_image" || from.kind === "proc_image") return "image";
   if (from.kind === "flux3klein_gen") return "image";
+  if (from.kind === "qwenimage_gen") return "image";
   /* 音视频输入节点：输出端子固定两个 —— 端口 0 = 音频输出 / 视频输出（输出的就是这个本机
      文件，值见 mediaInputValueOf），按文件类型判定；端口 1 = 转写输出（见 renderer/app-asr.js
      的 asrTranscriptOutValue）→ 按文本判定。 */
@@ -4549,6 +4751,7 @@ function saveMediaKind(node) {
     const g = nodeById(node.boundFromId);
     if (g && (g.kind === "music_gen" || g.kind === "yue_gen")) return "audio";
     if (g && g.kind === "flux3klein_gen") return "image";
+    if (g && g.kind === "qwenimage_gen") return "image";
     if (
       g &&
       (g.kind === "video_gen" ||
@@ -4705,6 +4908,7 @@ function mediaGenExt(node) {
     return f === "mp3" ? ".mp3" : f === "flac" ? ".flac" : ".wav";
   }
   if (node && node.kind === "flux3klein_gen") return ".png";
+  if (node && node.kind === "qwenimage_gen") return ".png";
   /* InfiniteTalk 数字人：产物固定 mp4（后端把音轨直接封进视频） */
   if (node && node.kind === "infinitetalk_gen") return ".mp4";
   /* SoulX-FlashHead Lite：产物同为 mp4（后端把原音轨封进视频） */
@@ -4761,6 +4965,7 @@ function requireMediaGenExport(node, quiet) {
     if (node.kind === "music_gen") node.musicStatus = msg;
     if (node.kind === "yue_gen") node.yueStatus = msg;
   if (node.kind === "flux3klein_gen") node.flux3kleinStatus = msg;
+    if (node.kind === "qwenimage_gen") node.qwenimageStatus = msg;
     if (node.kind === "breeze_gen") node.breezeStatus = msg;
     if (node.kind === "video_gen") node.videoStatus = msg;
     if (node.kind === "infinitetalk_gen") node.infinitetalkStatus = msg;
@@ -5055,6 +5260,8 @@ function outputCount(n) {
      的形态自己留 1 个输出端子（值 = 那段本机文件路径），还没有路径时 0 个端子。 */
   if (n.kind === "input_any")
     return String(n.anyFile || "").trim() ? 1 : 0;
+  /* 表单输入：固定 1 个数据输出端子 = 整份 JSON 文本（无控制出） */
+  if (n.kind === "input_form") return 1;
   if (n.kind === "global") return 0;
   /* 产出节点：末端落点，不向下游出数据 → 无输出端子 */
   if (n.kind === "ltout") return 0;
@@ -5065,6 +5272,7 @@ function outputCount(n) {
   if (isSaveNode(n)) return 1;
   if (isExecEnd(n)) return 0;
   if (n.kind === "execute") return 0; /* 执行节点：独立工具 · 无输出 */
+  if (n.kind === "appnode") return 0; /* 应用节点：纯启动器 · 无输出 */
   /* 素材节点：输出端子 = 内容条目（第 i 出 = 第 i 个条目的内容），无控制输出端子 */
   if (n.kind === "asset") return assetItems(n).length;
   /* 音频 / 视频输入：2 个数据输出端子 —— 端口 0 = 该本机文件的 file:/// URL
@@ -5089,6 +5297,8 @@ function outputCount(n) {
     return superDynamicPortCount(maxIdx, open);
   }
   if (n.kind === "judge" || n.kind === "task") return 2;
+  /* 质检节点：0=报告 JSON · 1=控制·通过 · 2=控制·未过（门禁分流）—— 判定口已撤掉 */
+  if (typeof isQaKindNode === "function" && isQaKindNode(n)) return 3;
   if (n.kind === "net_recv") return 2; /* 端口0=信息输出(数据) · 端口1=控制输出 */
   if (n.kind === "net_send") return 0; /* 发送无输出（末端） */
   /* 音乐 / 语音 / 视频 / Remotion：端口0=内容输出(数据) · 端口1=控制输出（完成后触发下游控制目标） */
@@ -5098,6 +5308,8 @@ function outputCount(n) {
     n.kind === "breeze_gen" ||
     n.kind === "infinitetalk_gen" ||
     n.kind === "soulxflashhead_gen" ||
+    n.kind === "flux3klein_gen" ||
+    n.kind === "qwenimage_gen" ||
     n.kind === "video_gen" ||
     isVideoPostKind(n) ||
     n.kind === "remotion"
@@ -5444,7 +5656,12 @@ function valueFromWire(w, consumer, batchIdx, seen) {
      第几颗输出端子上，一律读 0 号 —— 函数节点声明成「视频」的第 2 颗输出被
      Remotion 的视频端子接住，运行时却取回 0 号（空 / 文本），成片里没有视频。 */
   const idx =
-    isSuperLikeNode(src) || isItemPortSource(src) || isFnToolNode(src)
+    isSuperLikeNode(src) ||
+    isItemPortSource(src) ||
+    isFnToolNode(src) ||
+    /* 质检节点：0 号是报告（数据出），1 / 2 是控制出 —— 一律按线的 fromIndex 取，
+       否则接在控制出上的线也会被当成 0 号口读回整份报告 JSON。 */
+    (typeof isQaKindNode === "function" && isQaKindNode(src))
       ? Number(w.fromIndex || 0)
       : batchIdx == null
         ? 0
@@ -6025,7 +6242,7 @@ function defaultAgentProviderRoute() {
   return "deepseek-official";
 }
 
-/** 与全局助手一致：优先 assistProvider，再 API 模式 providerId，最后默认路由 */
+/** 与画布助手一致：优先 assistProvider，再 API 模式 providerId，最后默认路由 */
 function preferredAgentProviderRoute() {
   const routes = agentRouteOptions();
   const assist = String(
@@ -6931,6 +7148,47 @@ function stripStreamErrors(text) {
     .trim();
 }
 
+/* 某个服务商下某个模型能不能吃图：true / false / null（判不出）。
+   三处共用这一份判据（识图弹窗候选排序、网关写 input 模态、智能节点的视觉路由）：
+     · 目录（DeepSeek 官方目录 + pi-ai 目录）里同 id 的条目标了 input:image → true；
+       标了只有 text → false。按 id 全局回查：中转 / 自定义服务商卖的就是同一批模型,
+       目录源对不上不等于模型不吃图（此前只查服务商自己的目录源，deepseek-v4-flash
+       在「MTNode 中转」上就被判成未知）；
+     · 目录查不到 → 看服务商自己的 vision 开关（手填 / 中转服务商）；
+     · 都没有 → null（未知）。 */
+function providerModelVision(p, modelId) {
+  const id = String(modelId || "").trim();
+  if (!id) return null;
+  const c = (typeof S !== "undefined" && S && S.providerCatalog) || { deepseek: [], piai: [] };
+  const hitOf = (m) => {
+    if (!m || String(m.id || "") !== id) return null;
+    if (!Array.isArray(m.input) || !m.input.length) return null;
+    return m.input.includes("image") ? true : false;
+  };
+  for (const m of c.deepseek || []) {
+    const r = hitOf(m);
+    if (r !== null) return r;
+  }
+  const src =
+    typeof catalogSourceOf === "function" ? catalogSourceOf(p) : String((p && p.source) || "");
+  if (src) {
+    const pp = (c.piai || []).find((x) => x && x.id === src);
+    for (const m of (pp && pp.models) || []) {
+      const r = hitOf(m);
+      if (r !== null) return r;
+    }
+  }
+  for (const prov of c.piai || []) {
+    for (const m of (prov && prov.models) || []) {
+      const r = hitOf(m);
+      if (r !== null) return r;
+    }
+  }
+  if (p && p.vision === true) return true;
+  if (p && p.vision === false) return false;
+  return null;
+}
+
 /* mtnode 服务商(非 DeepSeek 官方)同步给引擎:经 pi-ai 手写 profile 路由。
    停用的服务商不进这张表 = 不出现在任何模型选择器里（设置里仍可见 / 可编辑 / 可恢复）；
    models 过白 / 黑名单：白名单先收窄、黑名单再剔除，两份都留空就是原来的清单。 */
@@ -7335,6 +7593,7 @@ function isControlKind(n) {
       n.kind === "wait_file" ||
       n.kind === "timer" ||
       n.kind === "delayer" ||
+      n.kind === "popup" ||
       n.kind === "sequencer" ||
       n.kind === "gate" ||
       n.kind === "splitter" ||
@@ -7451,6 +7710,10 @@ function inPortIsControl(node, idx) {
   if (node.kind === "soulxflashhead_gen") return i === 2;
   /* FLUX 3 Image Klein：0=提示词 · 1=参考图（可多接）· 2=控制输入（固定 3 颗端子） */
   if (node.kind === "flux3klein_gen") return i === 2;
+  /* Qwen Image 2.1：0=提示词 · 1=参考图（可多接）· 2=控制输入（固定 3 颗端子） */
+  if (node.kind === "qwenimage_gen") return i === 2;
+  /* 质检节点：0=被检内容 · 1=质检要求（可多线：文字口径 + 参考样例）· 2=控制输入 */
+  if (typeof isQaKindNode === "function" && isQaKindNode(node)) return i === 2;
   if (node.kind === "video_gen") return i === videoGenControlPort(node);
   if (isVideoPostKind(node)) return i === 0;
   if (node.kind === "remotion") return remotionPortIsControl(node, i);
@@ -7493,6 +7756,15 @@ const IN_PORT_DATA_KINDS = {
   soulxflashhead_gen: ["image", "audio", "control"],
   /* FLUX 3 Image Klein：0=提示词 · 1=参考图（图像路径）· 2=控制输入 */
   flux3klein_gen: ["text", "image", "control"],
+  /* Qwen Image 2.1：0=提示词 · 1=参考图（图像路径，可多接）· 2=控制输入 */
+  qwenimage_gen: ["text", "image", "control"],
+  /* 质检节点（五种同构）：0=被检内容（按类型声明，文件质检不限）· 1=质检要求（文本 + 参考样例，
+     一条端子可多线）· 2=控制输入。控制分流走输出 1（通过）/ 2（未过），0 号输出是报告 JSON（文本）。 */
+  qa_text: ["text", "text", "control"],
+  qa_image: ["image", "text", "control"],
+  qa_video: ["video", "text", "control"],
+  qa_audio: ["audio", "text", "control"],
+  qa_file: [null, "text", "control"],
   /* Remotion：无差别端子 —— 端口类型由连线决定（数据 / 控制都可能落任意口），
      不在这张固定表里声明（见 inPortKindOf 的 remotion 分支与 remotionPortIsControl） */
 };
@@ -7539,6 +7811,9 @@ function inPortKindOf(node, idx) {
 function inPortMultiWireIndexes(node) {
   if (!node) return [];
   if (node.kind === "flux3klein_gen") return [1];
+  if (node.kind === "qwenimage_gen") return [1];
+  /* 质检节点：1 号端子收「质检要求」数组（文字口径 + 角色 / 场景设定图、样片，可以接好几条） */
+  if (typeof isQaKindNode === "function" && isQaKindNode(node)) return [1];
   return [];
 }
 /** 这颗端子是否允许多条同类数据线共存（占用判定 / 连线校验 / 落点三处同一份口径） */
@@ -7555,6 +7830,8 @@ function hasFixedInPorts(n) {
   return (
     n.kind === "deliver" ||
       n.kind === "gate" ||
+      /* 表单输入：固定 1 颗「引用」入端子 —— 断线不重排、端子号恒为 0 */
+      n.kind === "input_form" ||
       n.kind === "mutex" ||
       n.kind === "music_gen" ||
       n.kind === "yue_gen" ||
@@ -7562,6 +7839,8 @@ function hasFixedInPorts(n) {
       n.kind === "infinitetalk_gen" ||
       n.kind === "soulxflashhead_gen" ||
       n.kind === "flux3klein_gen" ||
+      n.kind === "qwenimage_gen" ||
+      (typeof isQaKindNode === "function" && isQaKindNode(n)) ||
       n.kind === "video_gen" ||
       isVideoPostKind(n) ||
       /* Remotion 未固化时是无差别动态端子（与 proc_text 同族）：断线可以重排端子号，
@@ -7654,6 +7933,7 @@ function wireFromIsControl(w, wf) {
     (from.kind === "music_gen" ||
       from.kind === "yue_gen" ||
       from.kind === "flux3klein_gen" ||
+      from.kind === "qwenimage_gen" ||
       from.kind === "video_gen" ||
       isVideoPostKind(from) ||
       from.kind === "remotion") &&
@@ -7695,11 +7975,12 @@ function wiresTo(id) {
       (w) =>
         w.to === id &&
         !w.rel &&
-        /* 组线不是数据线：来源是「组」（w.from = "grp:<id>"，nodeById 取不到）。
+        /* 组线不是数据线：来源是「组」（w.from = "grp:<id>"，nodeById 取不到），
+           或者是节点层的组输出端子（w.sup 记着来源层，第 9003 号端子）。
            留在这里会让所有「按来源节点取数」的路径拿到 null —— 统一在这里挡掉，
            需要组线的地方（组端子占位 / 组清单）直接读 S.wf.wires。
-           直接看 w.grp 而不调 isGroupWire：这两只取线函数会被单独抽进冒烟沙箱跑。 */
-        !(w && !w.rel && w.grp) &&
+           直接看 w.grp / w.sup 而不调 isGroupWire：这两只取线函数会被单独抽进冒烟沙箱跑。 */
+        !(w && !w.rel && (w.grp || w.sup)) &&
         Number(w.toIndex) !== npIdx &&
         !wireFromIsControl(w),
     )
@@ -7714,8 +7995,8 @@ function allWiresTo(id) {
         w.to === id &&
         !w.rel &&
         /* 组线同样不占顺序端子（它接的是哨兵号 9002 的组输入端子）。
-           这里直接看 w.grp 而不调 isGroupWire：这两只取线函数会被单独抽进冒烟沙箱跑。 */
-        !(w && !w.rel && w.grp) &&
+           这里直接看 w.grp / w.sup 而不调 isGroupWire：这两只取线函数会被单独抽进冒烟沙箱跑。 */
+        !(w && !w.rel && (w.grp || w.sup)) &&
         Number(w.toIndex) !== npIdx,
     )
     .sort((a, b) => a.toIndex - b.toIndex);
@@ -7726,6 +8007,9 @@ function hasOutput(n) {
 function isTextSource(n) {
   return (
     n.kind === "input_text" ||
+    /* 表单输入：对外就是一份 JSON 文本（整份结构 + 值 + 素材描述），可进文本端子 /
+       可被 @引用 / 可接下游节点的「参数」端子（9001） */
+    n.kind === "input_form" ||
     /* 泛用文件节点「仅保留路径」形态：对外给的就是那段本机文件路径（与音视频输入把本机
        文件当文本地址对外同口径），可进文本端子、可被 @ 引用 —— 下游据此触发工具。
        还没保留任何路径（只是空壳）时不算文本来源。 */
@@ -7779,7 +8063,8 @@ function isImageWireFrom(n, fromIndex) {
   return (
     n.kind === "input_image" ||
     n.kind === "proc_image" ||
-    n.kind === "flux3klein_gen"
+    n.kind === "flux3klein_gen" ||
+    n.kind === "qwenimage_gen"
   );
 }
 function isAudioWireFrom(n, fromIndex) {
@@ -8359,6 +8644,7 @@ function canUseGlobalRefs(node) {
       node.kind === "proc_image" ||
       /* FLUX 3 Image Klein 同样有可编辑提示词，@全局广播 与 proc_image 同一口径 */
       node.kind === "flux3klein_gen" ||
+      node.kind === "qwenimage_gen" ||
       node.kind === "agent_task" ||
       node.kind === "judge")
   );
@@ -8778,9 +9064,15 @@ function inputCount(node) {
     node.kind === "timer" ||
     node.kind === "db_replica" ||
     node.kind === "execute" ||
+    /* 应用节点（kind appnode）：纯启动器，无端子（点卡片开界面，不参与连线） */
+    node.kind === "appnode" ||
     isExecStart(node)
   )
     return 0;
+  /* 表单输入：固定 1 颗输入端子（标题「引用」）——连进来的上游内容会被**复制一份**进表单
+     并立刻断开连线（一次性 @引用，见 renderer/app-input-form.js 的 absorbWire）。
+     输出仍固定 1 颗（整份 JSON 文本），出入端子号互不干扰。 */
+  if (node.kind === "input_form") return 1;
   /* 素材节点：输入端子 = 内容条目（第 i 入 ↔ 第 i 出 · 一个条目最多挂一条数据线），
      没有控制端子 → 与 input_* 同族：只当内容源，不参与控制流。 */
   if (node.kind === "asset") return assetItems(node).length;
@@ -8815,6 +9107,10 @@ function inputCount(node) {
     return superDynamicPortCount(maxIdx, open);
   }
   if (node.kind === "task") return 1;
+  /* 质检节点：固定 3 颗输入端子（被检内容 / 质检要求数组 / 控制），断线不重排。
+     端口从 4 颗收到 3 颗后，「参考基准」并入「质检要求」；老图上 toIndex>=3 的线不再有对应端子，
+     渲染与取值都忽略，节点 body 里给一行「旧图需重连」。 */
+  if (typeof isQaKindNode === "function" && isQaKindNode(node)) return 3;
   if (node.kind === "gate")
     return Math.max(2, Math.min(8, Math.round(Number(node.gateInputs) || 2)));
   if (node.kind === "mutex")
@@ -8829,6 +9125,8 @@ function inputCount(node) {
   if (node.kind === "soulxflashhead_gen") return 3;
   /* FLUX 3 Image Klein：0=提示词 · 1=参考图 · 2=控制输入（固定 3 颗，不随连线增量） */
   if (node.kind === "flux3klein_gen") return 3;
+  /* Qwen Image 2.1：0=提示词 · 1=参考图 · 2=控制输入（固定 3 颗，不随连线增量） */
+  if (node.kind === "qwenimage_gen") return 3;
   if (node.kind === "video_gen") return videoGenInputCount(node); /* 端口0=控制输入（固定）· 端口1+=数据槽 */
   if (isVideoPostKind(node)) return videoPostInputCount(node); /* 端口0=控制 · 端口1=源视频 · 端口2+=可选素材 */
   /* Remotion 视频：**无差别动态端子**（与 proc_text 同一套增量口径）——
@@ -9115,6 +9413,9 @@ function minWFor(n) {
     /* FLUX 3 Klein 图像生成：与音乐 / 语音节点同尺寸族（body 里有参数摘要 + 预览） */
     case "flux3klein_gen":
       return 340;
+    /* Qwen Image 2.1 图像生成：与 FLUX 3 Klein 同尺寸族 */
+    case "qwenimage_gen":
+      return 340;
     /* Breeze 语音：警示条 + 两行端子提示 + 摘要 + 后端面板 + 预览 + 状态行，要得比音乐节点高 */
     case "breeze_gen":
       return 340;
@@ -9140,8 +9441,18 @@ function minWFor(n) {
       return 280;
     case "judge":
       return 260;
+    /* 质检节点：板身要放「总分 / 判定 + 各维分 + 标准名 + 端子说明」，给宽一点 */
+    case "qa_text":
+    case "qa_image":
+    case "qa_video":
+    case "qa_audio":
+    case "qa_file":
+      return 330;
     case "wait_file":
       return 280;
+    /* 弹窗节点：浮层里要放正文，节点上也要放得下标题 + 正文框 */
+    case "popup":
+      return 360;
     case "super":
       return 240;
     default:
@@ -9159,6 +9470,9 @@ function minHFor(n) {
       return 220;
     /* FLUX 3 Klein 图像生成：参数摘要 + 后端面板 + 图像预览，留够高度 */
     case "flux3klein_gen":
+      return 240;
+    /* Qwen Image 2.1 图像生成：参数摘要 + 后端面板 + 图像预览 */
+    case "qwenimage_gen":
       return 240;
     case "breeze_gen":
       return 250;
@@ -9196,8 +9510,16 @@ function minHFor(n) {
       return 120;
     case "wait_file":
       return 140;
+    case "popup":
+      return 200;
     case "judge":
       return 120;
+    case "qa_text":
+    case "qa_image":
+    case "qa_video":
+    case "qa_audio":
+    case "qa_file":
+      return 190;
     case "super":
       /* 文件夹外观：标签页 + 大标题 + 描述小字 + 右下计数所需最小高度 */
       return 132;
@@ -9308,6 +9630,7 @@ function nodeKindLabel(node) {
     proc_text: "文本处理",
     proc_image: "图像生成",
     agent_task: "智能任务",
+    appnode: "应用",
     save: "保存",
     save_text: "保存",
     save_image: "保存",
@@ -9315,6 +9638,7 @@ function nodeKindLabel(node) {
     wait_file: "等待",
     timer: "定时",
     delayer: "延时",
+    popup: "弹窗",
     sequencer: "序列",
     gate: "闸门",
     splitter: "分发",
@@ -9322,6 +9646,11 @@ function nodeKindLabel(node) {
     mutex: "互斥",
     control: "控制",
     judge: "判断",
+    qa_text: "文本质检",
+    qa_image: "图像质检",
+    qa_video: "视频质检",
+    qa_audio: "音频质检",
+    qa_file: "文件质检",
     execute: "执行",
     input_text: "文本",
     input_image: "图像",
@@ -9329,6 +9658,7 @@ function nodeKindLabel(node) {
     input_video: "视频",
     /* 泛用文件节点（上传入口）与数据库文件节点要在列表里区分开，故类型名不同 */
     input_any: "上传文件",
+    input_form: "表单",
     input_file: "文件",
     /* 交付节点：长周期任务的人工交付落点（系统建，出现在节点列表与搜索里，但不给创建入口） */
     deliver: "交付",
@@ -9341,6 +9671,7 @@ function nodeKindLabel(node) {
     music_gen: "Minimax Music 3",
     yue_gen: "YuE2",
     flux3klein_gen: "FLUX 3 Klein",
+    qwenimage_gen: "Qwen Image 2.1",
     /* InfiniteTalk 数字人（本地视频生成 · Wan2.1 I2V 14B） */
     infinitetalk_gen: "InfiniteTalk 数字人",
     /* SoulX-FlashHead Lite 实时数字人（本机 1.3B 流式） */
@@ -9385,6 +9716,8 @@ function nodeKindPurposeKey(node) {
     asset: "素材节点（绑定素材库 · 内容条目即端子）",
     /* 泛用文件节点：右键菜单里唯一的输入入口（上传什么文件就变成哪种节点） */
     input_any: "文件节点（上传任意文件 · 自动转为对应节点）",
+    input_form:
+      "表单节点（结构化 JSON · 字段可自定义 · 拖入图像 / 视频并写描述与注释 · 识图自动补充 · @引用 时 Agent 可见）",
     input_file: "文件节点（批量导入任意文件）",
     deliver: "交付节点（长周期任务 · 人工交付清单）",
     ltout: "产出节点（长周期任务 · 执行中产出 · 可直接编辑）",
@@ -9398,6 +9731,8 @@ function nodeKindPurposeKey(node) {
     yue_gen: "YuE2（音乐生成 · 风格提示词 + 歌词 → 整曲 · 可编辑 ABC 谱面）",
     flux3klein_gen:
       "FLUX 3 Image Klein（本地图像生成 · 5.6B 蒸馏 · INT8 / BF16 · 提示词 / 多参考图编辑 / 蒙版重绘 / 透明背景）",
+    qwenimage_gen:
+      "Qwen Image 2.1（本地图像生成 · 7B DiT · INT8 / Turbo INT8 双量化 · 提示词 / 多参考图编辑 / 蒙版重绘 / 原生透明背景）",
     video_gen: "Minimax H3（视频生成 · 文本 / 图像 / 音频 / 视频）",
     infinitetalk_gen:
       "InfiniteTalk 数字人（本地数字人视频 · 人物图或源视频 + 语音 → 口型同步 mp4 · 长音频自动分块续写）",
@@ -9411,6 +9746,7 @@ function nodeKindPurposeKey(node) {
     net_recv: "网络 · 接收（监听通道 · 异步转发收到的文本）",
     net_send: "网络 · 发送（把通道文本推送到远端）",
     execute: "执行节点（绑定可执行文件 · 一键启动）",
+    appnode: "应用节点（点开全屏应用界面 · 页面经桥读写画布 / 调 agent）",
     function: "函数节点（JS 计算 · 参数即端子）",
     save: "保存（按输入自判文本 / 图像 / 音频 / 视频）",
     save_text: "保存（按输入自判文本 / 图像 / 音频 / 视频）",
@@ -9424,12 +9760,18 @@ function nodeKindPurposeKey(node) {
     wait_file: "需求等待（监视文件）",
     timer: "定时触发器（计划 / Cron）",
     delayer: "延时器（等待后继续）",
+    popup: "弹窗（控制流触发 · 文字内容可填写）",
     sequencer: "序列器（按序多路）",
     gate: "闸门（全部到达才放行）",
     splitter: "分发（并行多路）",
     counter: "计数（每 N 次放行）",
     mutex: "互斥（多入选一）",
     judge: "判断（是 / 否）",
+    qa_text: "文本质检（按 JSON 标准打分 · 通过 / 未过门禁）",
+    qa_image: "图像质检（按 JSON 标准打分 · 通过 / 未过门禁）",
+    qa_video: "视频质检（抽帧 + 硬指标 · 按 JSON 标准打分 · 通过 / 未过门禁）",
+    qa_audio: "音频质检（转写 + 响度 · 按 JSON 标准打分 · 通过 / 未过门禁）",
+    qa_file: "文件质检（任意文件 · 按 JSON 标准打分 · 通过 / 未过门禁）",
     global: "全局节点（仅连入 · 点左上角彩虹图标引用）",
   };
   return map[node.kind] || "";
@@ -9590,10 +9932,10 @@ function collectRunQueue() {
 /* ===== 运行队列统一条目（全应用运行总览的取数层） =====
    collectRunQueue() 只回答「哪些节点在跑」，stopAllRuns 依赖它 {running,waiting}
    数组契约，一律不改。下面这层在它之上包一层：再补齐 其它画布上 running 的节点、
-   独立智能会话、全局助手、后端音/视频生成，并做「同一件事只出一行」的去重，
+   独立智能会话、画布助手、后端音/视频生成，并做「同一件事只出一行」的去重，
    交给左下角面板分组渲染（点击定位 / 逐条终止）。
    条目：{key,type,id,title,kindCls,kindLabel,stateText,sub,state,wfId,wfName,node?,sess?}
-     type  node 处理节点 · dev 开发块 · session 独立智能会话 · assist 全局助手
+     type  node 处理节点 · dev 开发块 · session 独立智能会话 · assist 画布助手
            media 只有后端在跑（画布上已无 running）的生成任务
      state run 处理中 · wait 等待中    sub 次要信息：节点 = 画布名，会话 = 工作目录分组 */
 function runQueueLookupNode(id) {
@@ -9804,6 +10146,48 @@ function collectRunQueueAll() {
     }
     mkMediaItem(n, "run");
   }
+  /* ②b 表单节点的识图补充（app-input-form.js 的在途表）：模型正在看图的那十几秒
+     以前完全看不见（用户只能盯着「识图中…」按钮），现在进队列：
+     一行节点条目（点行定位节点），行内 ■ 按它那一轮的 runKey 取消。 */
+  try {
+    const vr = typeof window !== "undefined" ? window.MTNodeVisionRuns : null;
+    const rows = vr && vr.rows ? Array.from(vr.rows.values()) : [];
+    for (const row of rows) {
+      const n = row && row.nodeId ? runQueueLookupNode(row.nodeId) : null;
+      if (!n) continue;
+      /* 同一节点已经有运行行（极少见）：只补状态文案，不重复出行 */
+      if (byNodeId.has(n.id)) {
+        const it = byNodeId.get(n.id);
+        it.stateText = runQueueJoinText(it.stateText, I18n.t("识图中"));
+        continue;
+      }
+      const w = runQueueOwnerOf(n);
+      const wfName = (w && (w.name || w.id)) || "";
+      const secs = Math.max(0, Math.round((Date.now() - Number(row.startedAt || 0)) / 1000));
+      addItem({
+        key: "vision:" + row.key,
+        type: "node",
+        id: n.id,
+        title: n.title || I18n.t("（未命名）"),
+        kindCls: nodeKindCls(n),
+        kindLabel: nodeKindLabel(n),
+        stateText:
+          (row.type === "video" ? I18n.t("识图（视频）") : I18n.t("识图")) + " · " + secs + "s",
+        sub: wfName,
+        state: "run",
+        wfId: (w && w.id) || "",
+        wfName,
+        crossWf: !!(w && S.wf && w.id !== S.wf.id),
+        node: n,
+        sess: null,
+        /* 队列行认这两位的专用标记：终止走 apiAbort(abKey)，不碰 stopNode */
+        visionRun: true,
+        visionKey: row.key,
+        abKey: row.abKey || "",
+        runKey: row.runKey || n.id,
+      });
+    }
+  } catch (_) {}
   /* ③ 独立智能会话：被「运行中的宿主智能节点」或「sess 态开发块」代表的，
      折进那一行的状态文案里（带上会话标题），不再单独出条 */
   const sessIsRun = (st) => {
@@ -10040,7 +10424,43 @@ function collectRunQueueAll() {
       for (const it of superRunQueueItems()) addItem(it);
     } catch (_) {}
   }
-  /* ④ 全局助手不再单独成行（本轮需求 · 单一根源）：它就是一条 assist 会话，
+  /* ④a 子代理（本次需求）：引擎的 subagent 工具**一调用就返回**（`started subagent <id>`），
+     真正的活在后台跑，而父会话那一轮往往当场就 idle 了 —— 会话行不再转圈、run 也结束了，
+     界面上等于「什么都看不见」。所以每只子代理在这里各占一行（子代理 1 / 子代理 2 按启动顺序）：
+     行内 ■ = 中断该子代理（session/interrupt-subagent），点行 = 打开它所在的那条会话。
+     数据来自 renderer/app-subagent.js（网关常驻长订阅喂的全局帧）。 */
+  try {
+    const api = window.MTNodeSubagent;
+    const subs = api && typeof api.runningAll === "function" ? api.runningAll() : [];
+    for (const row of subs) {
+      const sid =
+        String(row.owner || "").indexOf("agent:") === 0
+          ? String(row.owner).slice(6)
+          : "";
+      const st =
+        sid && typeof agentSessionById === "function" ? agentSessionById(sid) : null;
+      const ownerTitle = st
+        ? st.title || I18n.t("新会话")
+        : I18n.t("画布助手");
+      addItem({
+        key: "subagent:" + row.childSessionId,
+        type: "subagent",
+        id: row.childSessionId,
+        title: I18n.t("子代理 {n}", { n: row.seq || 1 }) + " · " + ownerTitle,
+        kindCls: "sub",
+        kindLabel: I18n.t("子代理"),
+        stateText: api.labelOf(row),
+        sub: ownerTitle,
+        state: "run",
+        wfId: "",
+        wfName: "",
+        node: null,
+        sess: st || null,
+        subagent: row,
+      });
+    }
+  } catch (_) {}
+  /* ④ 画布助手不再单独成行（本轮需求 · 单一根源）：它就是一条 assist 会话，
      st.running 落在 ③ 的扫描里，直接按「会话」计 —— 运行队列里没有「助手」这一行，
      一键终止也只按会话打，不做第二套口径。下面保留一个空占位给历史调用点（恒为 null）。 */
   const assist = null;
@@ -10050,7 +10470,9 @@ function collectRunQueueAll() {
     (it.state === "wait" ? 90 : it.state === "paused" ? 80 : 0) +
     (it.type === "session"
       ? 1
-      : it.type === "dev"
+      : it.type === "subagent"
+        ? 1.5
+        : it.type === "dev"
         ? 2
         : it.type === "node"
           ? 3
@@ -10081,13 +10503,20 @@ function runQueueSubOf(it) {
   if (!it) return "";
   const bits = [];
   if (it.stateText) bits.push(it.stateText);
-  if (it.sub && (it.crossWf || it.type === "session" || it.type === "media"))
+  if (
+    it.sub &&
+    (it.crossWf ||
+      it.type === "session" ||
+      it.type === "media" ||
+      it.type === "subagent")
+  )
     bits.push(it.sub);
   return bits.join(" · ");
 }
 function runQueueJumpHint(it) {
   if (!it) return "";
   if (it.type === "session") return I18n.t("点击打开该会话");
+  if (it.type === "subagent") return I18n.t("点击打开它所在的那条会话");
   if (it.type === "layer") return I18n.t("点击定位到节点层");
   if (it.type !== "node" && it.type !== "dev" && it.type !== "media") return "";
   /* 开发块的「建议 / 问询」只读调研在跑：点行 = 打开对应的进度窗口（见 jumpRunQueueItem） */
@@ -10106,6 +10535,8 @@ function runQueueJumpHint(it) {
 }
 function runQueueStopHint(it) {
   if (!it) return I18n.t("停止运行");
+  if (it.type === "subagent")
+    return I18n.t("中断这只子代理（父会话那一轮已经收尾，停的只是后台子任务）");
   if (it.type === "layer") return I18n.t("停止本层运行（立即中止正在跑的节点）");
   if (it.type === "session") {
     /* 独立并行组行 / 折进会话行的并行进度：文案说清楚这一枪会打掉什么 */
@@ -10137,8 +10568,21 @@ function runQueueTipOf(it) {
   if (it.stateText) bits.push(it.stateText);
   if (it.sub)
     bits.push(
-      (it.type === "session" ? I18n.t("工作目录") : I18n.t("画布")) + "：" + it.sub,
+      (it.type === "session"
+        ? I18n.t("工作目录")
+        : it.type === "subagent"
+          ? I18n.t("所属会话")
+          : I18n.t("画布")) +
+        "：" +
+        it.sub,
     );
+  /* 子代理行：把「它是什么、为什么父那一轮已经收尾了它还在跑」写在悬浮里 */
+  if (it.type === "subagent" && it.subagent) {
+    try {
+      const api = window.MTNodeSubagent;
+      if (api) bits.push(api.titleOf(it.subagent));
+    } catch (_) {}
+  }
   /* 并行任务行：整行说的是「哪个会话跑的并行组」，悬浮要把 owner 会话标题写明 */
   if (it.planPar && it.sess && it.sess.title)
     bits.push(I18n.t("会话") + "：" + it.sess.title);
@@ -10163,7 +10607,7 @@ function runQueueTipOf(it) {
 }
 
 /* 左下角「运行队列」= 全应用运行总览：
-   全局助手 → 智能会话 → 处理中（普通节点 + 开发块）→ 后端生成中 → 等待中。
+   画布助手 → 智能会话 → 处理中（普通节点 + 开发块）→ 后端生成中 → 等待中。
    取数一律走 collectRunQueueAll()（跨画布节点 / 独立会话 / 助手 / 后端媒体 + 去重），
    以前只有会话在跑时整条被隐藏（用户看不见也停不掉），现在会话与助手同样计入 hasQueue。 */
 function updateRunQueuePanel() {
@@ -10197,6 +10641,9 @@ function updateRunQueuePanel() {
   const nSess = countOf("session") - nPar;
   const nNode = countOf("node") + countOf("dev");
   const nMedia = countOf("media");
+  /* 子代理：单独计数 —— 它不算「会话」（父那一轮已经收尾了），
+     用户要能一眼看出「还有 N 只子代理在后台跑」 */
+  const nSub = countOf("subagent");
   const hasQueue = !!items.length;
   /* 心跳：有运行项才定时重绘面板（解决长任务期间「看着不动」），队列空即停 */
   syncRunQueueTicker(hasQueue);
@@ -10215,6 +10662,7 @@ function updateRunQueuePanel() {
   const summary = [];
   if (nNode) summary.push(nNode + I18n.t(" 处理中"));
   if (nSess) summary.push(nSess + I18n.t(" 会话"));
+  if (nSub) summary.push(nSub + I18n.t(" 子代理"));
   if (nPar) summary.push(nPar + I18n.t(" 并行任务"));
   if (nMedia) summary.push(nMedia + I18n.t(" 后端生成中"));
   /* 节点层「运行本层」批次：整批进度不在节点级计数里，单独报一行 */
@@ -10275,7 +10723,7 @@ function updateRunQueuePanel() {
   stopAll.type = "button";
   stopAll.className = "rq-stop-all mini danger";
   stopAll.textContent = I18n.t("全部终止");
-  stopAll.title = I18n.t("一键终止队列中全部运行与等待任务（含全局助手）");
+  stopAll.title = I18n.t("一键终止队列中全部运行与等待任务（含画布助手）");
   stopAll.onclick = (ev) => {
     ev.stopPropagation();
     stopAllRuns();
@@ -10308,6 +10756,12 @@ function updateRunQueuePanel() {
       const s = document.createElement("span");
       s.className = "rq-sub";
       s.textContent = sub;
+      /* 子代理行：状态文字带 data-sub-state —— app-subagent.js 每秒就地改写它，
+         面板本身 2s 才重绘一拍，走秒不能等它。 */
+      if (it.type === "subagent" && it.subagent) {
+        s.dataset.subState = String(it.subagent.childSessionId || "");
+        s.classList.add("dsh-sub-state");
+      }
       row.appendChild(s);
     }
     const kd = document.createElement("span");
@@ -10363,6 +10817,11 @@ function updateRunQueuePanel() {
       .filter((it) => it.type === type)
       .concat(pausedItems.filter((it) => it.type === type));
   addSec(I18n.t("智能会话"), pick("session"));
+  /* 子代理单独一节：它们不是会话（父那一轮多半已经收尾），只是挂在某条会话名下的后台任务 */
+  addSec(
+    I18n.t("子代理"),
+    items.filter((it) => it.type === "subagent"),
+  );
   addSec(I18n.t("节点层"), items.filter((it) => it.type === "layer"));
   addSec(
     I18n.t("处理中"),
@@ -10455,6 +10914,24 @@ try {
    运行中的内存对象，不打断任务）再 focusNode。旧版直接 toast「节点不在当前画布」。 */
 async function jumpRunQueueItem(it) {
   if (!it) return;
+  /* 子代理行：点行 = 打开它所在的那条会话（工具卡里同样能看见走秒与状态） */
+  if (it.type === "subagent") {
+    const st = it.sess;
+    if (!st) {
+      toast(I18n.t("找不到这只子代理所属的会话"), "warn");
+      updateRunQueuePanel();
+      return;
+    }
+    try {
+      if (S.view !== "agent") setView("agent");
+      S.agentActiveId = st.id;
+      await agentFlushSessionSaveQuiet();
+      renderAgentSession();
+      renderAgentSessionSidebar();
+    } catch (_) {}
+    updateRunQueuePanel();
+    return;
+  }
   if (it.type === "session") {
     const st =
       it.sess ||
@@ -10588,6 +11065,32 @@ function stopSessionRuns(st, clearRunning) {
    并在跑的是计划并行组时逐个取消那一组的 runKey（stopSessionRuns）。 */
 async function stopRunQueueItem(it) {
   if (!it) return;
+  /* 子代理行（本次需求）：■ = 中断这一只子代理。走网关的 session/interrupt-subagent，
+     只作废它自己，不动父会话（父那一轮通常已经收尾了，没什么可停的）。 */
+  if (it.type === "subagent") {
+    const api = window.MTNodeSubagent;
+    if (!api) return;
+    try {
+      const r = await api.interrupt(it.id);
+      if (r && r.ok === false) {
+        const why =
+          r.reason === "unsupported"
+            ? I18n.t("当前引擎不支持中断子代理")
+            : r.reason === "no_runtime"
+              ? I18n.t("该子代理所在的会话已经不在运行")
+              : I18n.t("中断失败") + (r.error ? "：" + r.error : "");
+        toast(why, "warn");
+      } else {
+        /* 「已请求」而不是「已中断」：中断是运行时那边受理的，界面上的收尾态仍等
+           subagent.finished 那一帧（跨进程派生的子代理没有收尾帧，见 dsh/DESIGN.md）。 */
+        toast(I18n.t("已请求中断该子代理"), "ok");
+      }
+    } catch (err) {
+      toast(I18n.t("中断失败") + "：" + ((err && err.message) || err), "warn");
+    }
+    updateRunQueuePanel();
+    return;
+  }
   if (it.type === "session") {
     const st =
       it.sess ||
@@ -10604,6 +11107,21 @@ async function stopRunQueueItem(it) {
     updateRunQueuePanel();
     return;
   }
+  /* 识图行（type node + visionRun）：只取消这一轮模型调用，不碰 stopNode
+     （节点本来就没在「运行」，走 stopNode 会把画布节点的停止标记打上去）。 */
+  if (it.visionRun) {
+    try {
+      /* 识图是一次普通的 chat/completions 请求（不走 dsh）：按 abKey 中止那一次调用 */
+      if (it.abKey && typeof window.api !== "undefined" && window.api.apiAbort)
+        window.api.apiAbort(String(it.abKey));
+    } catch (_) {}
+    try {
+      const vr = typeof window !== "undefined" ? window.MTNodeVisionRuns : null;
+      if (vr && vr.rows && it.visionKey) vr.rows.delete(it.visionKey);
+    } catch (_) {}
+    updateRunQueuePanel();
+    return;
+  }
   const n = it.node || runQueueLookupNode(it.id);
   if (!n) {
     toast(I18n.t("节点已不存在"), "warn");
@@ -10617,7 +11135,7 @@ async function stopRunQueueItem(it) {
   updateRunQueuePanel();
 }
 
-/* 一键终止：运行中 + 排队中（含隐藏的媒体排队）+ 后端生成任务 + 定时触发 + 全局助手/会话。
+/* 一键终止：运行中 + 排队中（含隐藏的媒体排队）+ 后端生成任务 + 定时触发 + 画布助手/会话。
    关键：先递增全局终止代号并给每个「有活干」的节点打停止标记，再取消主进程后端任务，
    最后关掉所有轮询；否则「结束所有节点任务」只是把 running 置 false，
    队列与后端会自己把视频 / 音乐任务重新拉起来。
@@ -10634,11 +11152,33 @@ async function stopAllRuns() {
       ? sessionBusyForUi(s)
       : !!(s && s.running),
   );
+  /* 后台子代理也算「有活」：它们比父那一轮活得久，名下的会话可能早就 idle 收尾了，
+     只看 running / sessRunning 会判成「当前没有运行中的任务」，把后台那只留在那儿跑。 */
+  let subsToStop = [];
+  const subApi0 = typeof window !== "undefined" ? window.MTNodeSubagent : null;
+  if (subApi0 && typeof subApi0.runningAll === "function") {
+    try {
+      subsToStop = subApi0.runningAll() || [];
+    } catch (_) {
+      subsToStop = [];
+    }
+  }
+  /* 识图在途（app-input-form.js 的登记表）：它不是节点的 running，但也算「有活」——
+     不列进来的话，队列里明明挂着一行识图，「全部终止」却回「当前没有运行中的任务」。 */
+  let visionRows = [];
+  try {
+    const vr = typeof window !== "undefined" ? window.MTNodeVisionRuns : null;
+    visionRows = vr && vr.rows ? Array.from(vr.rows.values()) : [];
+  } catch (_) {
+    visionRows = [];
+  }
   if (
     !running.length &&
     !waiting.length &&
     !assistOn &&
     !sessRunning.length &&
+    !subsToStop.length &&
+    !visionRows.length &&
     !hasAnyMediaGenActivity() &&
     !hasAnyComputeExecActivity() &&
     !(typeof superRunHasActiveLayer === "function" && superRunHasActiveLayer())
@@ -10677,6 +11217,20 @@ async function stopAllRuns() {
   if (needDsh) {
     try {
       dshCancelActive();
+    } catch (_) {}
+  }
+  /* ③a 识图在途：只挂着识图时 needDsh 是 false，这一枪也得打（否则模型还在看图，
+     队列行却被「全部终止」清掉了）。按各自 runKey 精确取消，再摘掉登记行。 */
+  if (visionRows.length) {
+    for (const row of visionRows) {
+      try {
+        if (row && row.abKey && typeof window.api !== "undefined" && window.api.apiAbort)
+          window.api.apiAbort(String(row.abKey));
+      } catch (_) {}
+    }
+    try {
+      const vr = typeof window !== "undefined" ? window.MTNodeVisionRuns : null;
+      if (vr && vr.rows) vr.rows.clear();
     } catch (_) {}
   }
   /* ③b 开发块的「建议 / 问询」只读调研：它们不是 dsh 任务节点，③ 的
@@ -10792,6 +11346,19 @@ async function stopAllRuns() {
     }
     nStop++;
   }
+  /* ③c 子代理：它们挂在会话名下干活，但**比父那一轮活得久**（见 dsh/DESIGN.md
+     「子代理运行提示契约」），③ 的 dshCancelActive() 只会作废会话自己的轮次，
+     碰不到后台那只 —— 不在这里挨个中断，「全部终止」之后它还在偷跑。
+     只发中断、不等收尾帧：行消失的速度取决于运行时那边（界面由 subagent.finished 转态）。 */
+  let nSubStop = 0;
+  if (subApi0 && subsToStop.length) {
+    for (const row of subsToStop) {
+      try {
+        subApi0.interrupt(row && row.childSessionId);
+        nSubStop++;
+      } catch (_) {}
+    }
+  }
   /* ⑦ 函数 / 工具节点：等主进程真的 terminate 掉线程、连进程树回收完，
      再刷新界面与报数 —— 界面变暗的那一刻起，它绑定的线程与进程就一定不在了。 */
   let nFnProc = 0;
@@ -10813,7 +11380,8 @@ async function stopAllRuns() {
   if (nTimer) bits.push(nTimer + I18n.t(" 个定时"));
   if (nDevJob) bits.push(nDevJob + I18n.t(" 个调研"));
   if (nFnProc) bits.push(I18n.t("回收 ") + nFnProc + I18n.t(" 个进程"));
-  if (assistOn) bits.push(I18n.t("全局助手"));
+  if (nSubStop) bits.push(nSubStop + I18n.t(" 个子代理"));
+  if (assistOn) bits.push(I18n.t("画布助手"));
   toast(
     I18n.t("已全部终止") + (bits.length ? "：" + bits.join(" · ") : ""),
     "warn",
@@ -10828,6 +11396,23 @@ let overlayKind = "";
    沿用 opts.min 这个既有开关名，语义只作用于 ✕ —— 弹窗最小化到状态栏已整体下线
    （本轮需求：移除 footer 最小化与所有的最小化，仅保留关闭），不再有任何停放 / 页签机制。 */
 let overlayClosable = true;
+
+/* 开着的阻塞式浮层（目前只有弹窗节点 kind popup）的关窗回调。
+   #overlay 是全应用共享的一只壳：关窗路径不止窗内按钮 —— ✕、Esc、切画布、别处开新窗
+   都会走到 closeOverlay / openOverlay。等用户确认的控制流不能因为这个永远悬着，
+   所以关窗时顺手把回调执行一次（弹窗节点据此按「取消」结算）。执行即清空，只跑一次。 */
+let overlayCloseHook = null;
+function setOverlayCloseHook(fn) {
+  overlayCloseHook = typeof fn === "function" ? fn : null;
+}
+function runOverlayCloseHook() {
+  const fn = overlayCloseHook;
+  overlayCloseHook = null;
+  if (!fn) return;
+  try {
+    fn();
+  } catch (_) {}
+}
 
 /* 结构须与 index.html 里 #overlay 的初始窗壳一致（加元素两边都要改）。
    标题栏只有一颗方钮：关闭（✕）—— ✕ 是全应用**每一只 #overlay 弹窗**的通用显式出口
@@ -10898,6 +11483,8 @@ function ovShellIds(box, on) {
    由 closeOverlay 自动撤框）。 */
 function openOverlay(title, opts) {
   opts = opts || {};
+  /* 上一只浮层被就地换掉：先让它自己的关窗回调结算（见 overlayCloseHook） */
+  runOverlayCloseHook();
   /* 「仅保留关闭」：opts.min === false 的阻塞式确认框不给通用 ✕（出口只在窗内按钮）。
      这里不再有任何停放动作 —— 开新窗就是原地换窗（见上面的模块说明）。 */
   overlayClosable = opts.min !== false;
@@ -10942,6 +11529,8 @@ function openOverlay(title, opts) {
 function closeOverlay() {
   S.thinkOpen = null;
   closeTplSubOverlay();
+  /* 窗被显式关掉（✕ / Esc / 切画布…）：先结算等确认的浮动节点，再收窗 */
+  runOverlayCloseHook();
   const box = ovShellBox();
   if (box) {
     box.classList.remove("wide");
@@ -12412,6 +13001,22 @@ function groupInPortY(node) {
   if (y > maxY) y = Math.max(45, base - PORT_STEP);
   return Math.min(y, h > 0 ? maxY : y);
 }
+/* 节点层「组」输出端子的 Y：排在**最后一颗普通输出端子之后**一格（顺序端子的位置
+   一颗都不挪），贴卡片底部时往上一格 —— 与 groupInPortY 同一套「不许跑出卡片」的口径。
+   画布渲染（.port.out.grp-out）与连线几何共用这一个函数。 */
+function groupOutPortY(node) {
+  if (!node) return 0;
+  const oc = Math.max(0, Number(outputCount(node)) || 0);
+  const base = oc > 0 ? outPortY(node, oc - 1, oc) : outPortY(node, 0, 1);
+  const h =
+    typeof nodePortHeight === "function"
+      ? Number(nodePortHeight(node)) || 0
+      : Number(node.h) || 0;
+  const maxY = h > 0 ? Math.max(45, h - PORT_R - 5) : base + PORT_STEP;
+  let y = base + PORT_STEP;
+  if (y > maxY) y = Math.max(45, base - PORT_STEP);
+  return Math.min(y, h > 0 ? maxY : y);
+}
 function outPortY(node, i, oc) {
   const n = oc == null ? outputCount(node) : oc;
   return portBandY(nodePortHeight(node), i, n, {
@@ -12451,6 +13056,18 @@ function superFocusSinkPos(host, toIndex) {
   return toStage(r.right - 10 - PORT_R, y);
 }
 function outPos(n, i, peer, wire) {
+  /* 节点层的组输出端子（哨兵号 9003）：位置由 groupOutPortY 一处算（与端子渲染同源）。
+     绝不能当普通端子号喂给 outPortY —— 会算出 45 + 9003×15 那种卡片外的坐标，
+     线就从节点下方极远处冒出来（与参数端子当年那次「线与端子分家」同一个坑）。 */
+  if (isGroupOutPort(n, i)) {
+    const p0 = nodeWorldPos(n);
+    const sz0 = nodeDrawSize(n);
+    const hN = Object.assign({}, n, { h: sz0.h, w: sz0.w });
+    return {
+      x: p0.x + sz0.w - PORT_OFF - NODE_BORDER,
+      y: p0.y + groupOutPortY(hN) + NODE_BORDER,
+    };
+  }
   const link = wire ? superWireInnerLink(wire) : null;
   if (link && link.super.id === n.id && link.dir === "out") {
     if (currentSuperFocus() === n.id) {
@@ -12524,6 +13141,25 @@ function groupOutPos(g) {
   const b = groupBounds(g);
   if (b) return { x: b.x + b.w, y: b.y - GROUP_PAD };
   return { x: 0, y: 0 };
+}
+/* 一条组线的起点：组框的 □（w.grp）或节点层那颗组输出端子（w.sup，端子号 9003）。
+   源已经不在（组被解散 / 层被删）时给 null —— 调用方据此跳过，不留悬空线头。 */
+function groupWireSourcePos(w) {
+  if (!w) return null;
+  if (isSuperGroupWire(w)) {
+    const host = nodeById(w.sup);
+    if (!host || host.kind !== "super") return null;
+    const p = nodeWorldPos(host);
+    const sz = nodeDrawSize(host);
+    const hN = Object.assign({}, host, { h: sz.h, w: sz.w });
+    return {
+      x: p.x + sz.w - PORT_OFF - NODE_BORDER,
+      y: p.y + groupOutPortY(hN) + NODE_BORDER,
+    };
+  }
+  const g = typeof groupById === "function" ? groupById(w.grp) : null;
+  if (!g) return null;
+  return groupOutPos(g);
 }
 function wirePathAB(ax, ay, bx, by) {
   /* 真实电线感：以两端点中点为控制点向下自然下垂（重力弧度），
@@ -15109,6 +15745,10 @@ function clearNodeRunState(cp) {
   if (cp.kind === "delayer") {
     cp.delayStatus = "";
   }
+  if (cp.kind === "popup") {
+    cp.popupStatus = "";
+    normalizePopupNode(cp);
+  }
   if (cp.kind === "sequencer") {
     cp.seqStatus = "";
   }
@@ -15127,6 +15767,7 @@ function clearNodeRunState(cp) {
     cp.mutexStatus = "";
   }
   if (cp.kind === "flux3klein_gen") cp.flux3kleinStatus = "";
+  if (cp.kind === "qwenimage_gen") cp.qwenimageStatus = "";
 }
 
 function materializeSingleFromBatchEntry(root, entry, x, y) {
@@ -15620,6 +16261,16 @@ function valueForInput(src, idx, consumer, seen) {
     }
     return { kind: "text", text: src.text || "" };
   }
+  /* 表单输入：唯一输出端子 = 整份 JSON 文本（结构与值都在里面，素材项带路径 / 描述 /
+     标签 / 注释）。字段还没建时也给一份结构，而不是 null —— 下游至少能拿到表单名。 */
+  if (src.kind === "input_form") {
+    if (typeof window !== "undefined" && window.IF && typeof window.IF.refText === "function")
+      return { kind: "text", text: window.IF.refText(src) };
+    return {
+      kind: "text",
+      text: JSON.stringify({ fields: src.fields || [], values: src.values || {} }, null, 2),
+    };
+  }
   if (src.kind === "input_image") {
     if (inputInherited(src)) {
       const w = inboundWire(src);
@@ -15657,6 +16308,18 @@ function valueForInput(src, idx, consumer, seen) {
   /* 素材节点：同样是静态源，只是「一个端子 = 素材库里的一条内容」——
      第 idx 出 ↔ 第 idx 条，值按条目类型给（见 assetItemValueOf）。 */
   if (src.kind === "asset") return assetItemValueOf(src, idx);
+  /* 质检节点（五种同构）：0 号端子 = 本次质检的完整报告 JSON（执行体写在 node.output.text）·
+     1 / 2 号端子是控制出（通过 / 未过），不带数据值。缺了这一支 0 号端子永远返回 null，
+     下游接上去只看到「报告没有内容」。没跑过（无 output）时回 null，
+     按「这个端子还没有值」处理，绝不编一份空报告。 */
+  if (typeof isQaKindNode === "function" && isQaKindNode(src)) {
+    const r = selResult(src);
+    const o = src.output || (r && r.output) || null;
+    const text =
+      o && o.kind === "text" ? String(o.text || "") : typeof o === "string" ? String(o) : "";
+    if (Number(idx || 0) !== 0) return null;
+    return text ? { kind: "text", text } : null;
+  }
   if (src.kind === "proc_text" || src.kind === "agent_task") {
     const r = selResult(src);
     /* 聚合模式：下游应取单次结果，勿优先旧的 batchOutputs */
@@ -15723,7 +16386,7 @@ function valueForInput(src, idx, consumer, seen) {
       text: String(p),
     };
   }
-  if (src.kind === "proc_image" || src.kind === "flux3klein_gen") {
+  if (src.kind === "proc_image" || src.kind === "flux3klein_gen" || src.kind === "qwenimage_gen") {
     /* 图像节点的产物端子与 proc_image 同一条口径：{kind:"image", path}，
        下游 save_image / 图像预览 / @ 引用不用任何特判。
        （本函数只处理 proc_image / FLUX 3 Klein 这两类出图节点。） */
@@ -15853,6 +16516,9 @@ function wireSourceIndex(w, fallbackIdx) {
      1 号及以后的端子错取成 $0：$0 没被 return 命中 → 整条链取不到值，文本节点永远停在
      「（等待上游输出…）内容只读」（用户报的「函数节点输出文本到文本节点一直显示等待内容」）。 */
   if (src && src.kind === "function") return Number(w.fromIndex || 0);
+  /* 质检节点：0 报告 · 1 通过 · 2 未过 —— 继承链穿过它时也按线的 fromIndex 取 */
+  if (src && typeof isQaKindNode === "function" && isQaKindNode(src))
+    return Number(w.fromIndex || 0);
   return fallbackIdx == null ? 0 : fallbackIdx;
 }
 function inheritedValue(n, idx) {
@@ -16003,6 +16669,16 @@ function allTextItems(src, consumer, portIdx) {
       }));
     return [{ title: src.title, text: src.text || "" }];
   }
+  /* 表单输入：@引用 / 聚合拿到的是一份**紧凑摘要**（字段: 值，素材给路径 + 描述 + 标签 +
+     注释，并附落盘 .json 的绝对路径），不是整份 JSON —— 长表单不该把上下文撑爆；
+     要全文的 Agent 直接读那个 .json（同一次编辑就写盘了）。 */
+  if (src.kind === "input_form") {
+    const text =
+      typeof window !== "undefined" && window.IF && typeof window.IF.summary === "function"
+        ? window.IF.summary(src)
+        : "";
+    return text ? [{ title: src.title, text }] : [];
+  }
   /* 数据库「文件节点」：文件正文不进文本流 —— 只有该文件在消费者节点上已工具构建
      绿灯时才输出「绝对路径 + 指定工具调用」；未绿灯 / 没有消费者 → 空 + 一次提示。 */
   if (src.kind === "input_file") {
@@ -16143,7 +16819,7 @@ function allImageItems(src, consumer, portIdx) {
     }
     return [];
   }
-  if (src.kind === "proc_image" || src.kind === "flux3klein_gen") {
+  if (src.kind === "proc_image" || src.kind === "flux3klein_gen" || src.kind === "qwenimage_gen") {
     const r = selResult(src);
     if (src.batchMode === "agg") {
       if (r && r.output && r.output.kind === "image")
@@ -16363,6 +17039,20 @@ function displayValueOf(src, consumer) {
       ? { image: src.imageAsset, title: singleImageTitle(src) }
       : null;
   }
+  /* 质检节点：显示必须与下游取值同一口径（报告 JSON / 判定文本），端口号取数据线的 fromIndex。
+     缺了这一支，下游文本节点明明连上了线也只能显示「等待上游输出…」。 */
+  if (typeof isQaKindNode === "function" && isQaKindNode(src)) {
+    let idx = 0;
+    if (consumer) {
+      const link = (S.wf.wires || []).find(
+        (x) => !x.rel && !x.ctrl && x.from === src.id && x.to === consumer.id,
+      );
+      if (link) idx = Math.max(0, Number(link.fromIndex) || 0);
+    }
+    const v = valueForInput(src, idx, consumer || null);
+    if (!v || v.kind !== "text") return null;
+    return { text: String(v.text || ""), title: src.title };
+  }
   if (src.kind === "proc_text" || src.kind === "agent_task") {
     const r = selResult(src);
     if (src.batchMode === "agg") {
@@ -16381,7 +17071,7 @@ function displayValueOf(src, consumer) {
       return { text: r.output.text };
     return null;
   }
-  if (src.kind === "proc_image" || src.kind === "flux3klein_gen") {
+  if (src.kind === "proc_image" || src.kind === "flux3klein_gen" || src.kind === "qwenimage_gen") {
     const r = selResult(src);
     if (src.batchMode === "agg") {
       if (r && r.output && r.output.kind === "image")
@@ -18930,6 +19620,8 @@ function clearWireReplacePreview() {
 }
 function paintWireReplacePreview(d, port) {
   if (!d || d.mode !== "wire" || d.fromInput || d.fromGroup || !port) return;
+  /* 节点层组输出端子拖出的也是组线：落点会被 connectLayerGroup 幂等吸收，不存在「顶掉旧线」 */
+  if (isGroupOutPort(nodeById(d.fromId), d.fromIndex)) return;
   if (typeof inPortOccupancy !== "function") return;
   if (!port.classList || !port.classList.contains("in")) return;
   const toNode = nodeById(port.dataset.node);
@@ -19845,6 +20537,18 @@ async function deleteNodes(ids, quiet) {
     g.nodeIds = g.nodeIds.filter((id) => !set.has(id));
   }
   pruneEmptyGroups();
+  /* 节点层被搬空（内部节点删光）或层本身被删：接到它那颗组输出端子上的组线自动摘掉，
+     并说一句为什么 —— 与「组被解散 / 成员删空」同一口径（本次需求第三条）。 */
+  {
+    const before = S.wf.wires.length;
+    pruneOrphanGroupWires();
+    const dropped = before - S.wf.wires.length;
+    if (dropped && !quiet)
+      toast(
+        I18n.t("节点层已没有内部节点，已自动断开 ") + dropped + I18n.t(" 条组线"),
+        "warn",
+      );
+  }
   for (const id of ids) if (S.thinking && S.thinking[id]) S.thinking[id] = [];
   if (ids.includes(S.sel)) S.sel = null;
   for (const id of ids) if (S.selSet) S.selSet.delete(id);
@@ -20276,6 +20980,22 @@ function cloneWiresForSet(wires, idMap) {
   const out = [];
   for (const w of wires || []) {
     if (!idMap.has(w.from) || !idMap.has(w.to)) continue;
+    /* 组线（w.grp）的来源是画布组框，不是节点，复制品没有对应的组，直接不带。
+       节点层的组线（w.sup）来源是壳本身：壳和目标都被复制时按新 id 重建，sup 跟着换，
+       否则会退化成一条「9003 → 9002」的普通数据线（两端端子号对不上，运行时读不到值）。 */
+    if (w.grp) continue;
+    if (w.sup) {
+      if (!idMap.has(w.sup)) continue;
+      out.push({
+        id: uid("w"),
+        from: idMap.get(w.sup),
+        fromIndex: GROUP_OUT_INDEX,
+        to: idMap.get(w.to),
+        toIndex: GROUP_IN_INDEX,
+        sup: idMap.get(w.sup),
+      });
+      continue;
+    }
     const cpw = {
       id: uid("w"),
       from: idMap.get(w.from),
@@ -21209,32 +21929,38 @@ function sideCatMatches(n, kinds) {
   return kinds.includes(n.kind);
 }
 const SIDE_CATS = [
-  ["输入节点", ["input_text", "input_image", "input_audio", "input_video", "input_any", "input_file", "db_table"]],
+  ["输入节点", ["input_text", "input_image", "input_audio", "input_video", "input_any", "input_form", "input_file", "db_table"]],
   ["全局节点", ["global"]],
-  ["处理节点", ["proc_text", "proc_image", "flux3klein_gen", "music_gen", "yue_gen", "breeze_gen", "video_gen", "infinitetalk_gen", "soulxflashhead_gen", "video_upscale", "video_interp", "remotion"]],
+  ["处理节点", ["proc_text", "proc_image", "flux3klein_gen", "qwenimage_gen", "music_gen", "yue_gen", "breeze_gen", "video_gen", "infinitetalk_gen", "soulxflashhead_gen", "video_upscale", "video_interp", "remotion"]],
+  ["质检节点", ["qa_text", "qa_image", "qa_video", "qa_audio", "qa_file"]],
   ["保存节点", ["save", "save_pdf"]],
   ["工具节点", ["split", "merge", "function", "tool"]],
   ["网络节点", ["net_recv", "net_send"]],
   ["智能节点", ["agent_task"]],
+  ["应用节点", ["appnode"]],
   ["任务节点", ["task"]],
-  ["控制节点", ["control", "wait_file", "timer", "delayer", "sequencer", "gate", "splitter", "counter", "mutex", "judge"]],
+  ["控制节点", ["control", "wait_file", "timer", "delayer", "popup", "sequencer", "gate", "splitter", "counter", "mutex", "judge"]],
   ["执行节点", ["execute"]],
   ["数据库", ["db_replica"]],
   ["节点层/开发节点", ["super"]],
 ];
 const KIND_TAGS = {
   input_text: "文本",
+  /* 应用节点（kind appnode）：把应用钉在画布上 */
+  appnode: "应用",
   input_image: "图像",
   input_audio: "音频",
   input_video: "视频",
   /* 素材节点（素材库内容打包） */
   asset: "素材",
   input_any: "上传",
+  input_form: "表单",
   input_file: "文件",
   db_table: "表",
   proc_text: "LLM",
   proc_image: "图像生成",
   flux3klein_gen: "图像生成",
+  qwenimage_gen: "图像生成",
   music_gen: "音乐",
   yue_gen: "音乐",
   breeze_gen: "语音",
@@ -21256,6 +21982,7 @@ const KIND_TAGS = {
   wait_file: "等待",
   timer: "定时",
   delayer: "延时",
+  popup: "弹窗",
   sequencer: "序列",
   gate: "闸门",
   splitter: "分发",
@@ -21265,6 +21992,11 @@ const KIND_TAGS = {
   task: "任务",
   control: "控制",
   judge: "判断",
+  qa_text: "质检",
+  qa_image: "质检",
+  qa_video: "质检",
+  qa_audio: "质检",
+  qa_file: "质检",
   super: "节点层",
   db_replica: "数据库",
 };
@@ -21842,6 +22574,13 @@ function canvasCreateMenuGroups(pt) {
           I18n.t("文件节点（上传任意文件 · 自动转为对应节点）"),
           () => addNode("input_any", pt.x, pt.y),
         ),
+        /* 表单节点：定义好结构供人填写 / 拖入素材，图像与视频可写描述与注释；
+           对外给一份 JSON，@引用 时 Agent 拿到摘要 + 落盘路径。 */
+        ctxKindItem(
+          "input_form",
+          I18n.t("表单节点（结构化 JSON · 拖入素材 · 图像/视频描述与注释）"),
+          () => addNode("input_form", pt.x, pt.y),
+        ),
       ],
     ],
     [
@@ -21892,6 +22631,12 @@ function canvasCreateMenuGroups(pt) {
             "flux3klein_gen",
             I18n.t("FLUX 3 Image Klein（本地图像生成 · INT8 / BF16）"),
             () => addNode("flux3klein_gen", pt.x, pt.y),
+          ),
+          /* Qwen Image 2.1：INT8 起 8G 显存，不做门槛隐藏 */
+          ctxKindItem(
+            "qwenimage_gen",
+            I18n.t("Qwen Image 2.1（本地图像生成 · INT8 / Turbo INT8）"),
+            () => addNode("qwenimage_gen", pt.x, pt.y),
           ),
         ])),
         /* 音频 / 视频生成：各自收进一个一级子菜单，成员按后端命名
@@ -21959,6 +22704,34 @@ function canvasCreateMenuGroups(pt) {
         ])),
       ],
     ],
+    /* 质检节点（缺口文档 P0-4 的扩展）：按被检对象分五类，五种端口同构
+       （入 0=被检内容 · 1=质检要求（文字 + 参考样例，可多线）· 2=控制；出 0=报告 · 1=通过 · 2=未过）。
+       判据不写死在代码里：每种节点在 ⚙ 里选一份 JSON 评分标准（qa-templates/*.json），
+       body 里还能直接改这份 JSON（只影响本节点）或另存为新模板。
+       五类不再各占一行：收进「质检节点」二级菜单（悬停展开），与「开发节点 / 控制节点 /
+       其他节点」同一套 ctxSubmenu 语汇 —— 一级菜单只留一条入口，成员清单在二级里选。 */
+    [
+      "",
+      [
+        ctxSubmenu(I18n.t("质检节点"), "judge", "judge", [
+          ctxKindItem("qa_text", I18n.t("文本质检（正文 / 文案 / 脚本）"), () =>
+            addNode("qa_text", pt.x, pt.y),
+          ),
+          ctxKindItem("qa_image", I18n.t("图像质检（构图 / 一致性 / 瑕疵）"), () =>
+            addNode("qa_image", pt.x, pt.y),
+          ),
+          ctxKindItem("qa_video", I18n.t("视频质检（抽帧 + 硬指标）"), () =>
+            addNode("qa_video", pt.x, pt.y),
+          ),
+          ctxKindItem("qa_audio", I18n.t("音频质检（转写 + 响度 / 噪声）"), () =>
+            addNode("qa_audio", pt.x, pt.y),
+          ),
+          ctxKindItem("qa_file", I18n.t("文件质检（任意文件 · 完整 / 格式 / 元数据）"), () =>
+            addNode("qa_file", pt.x, pt.y),
+          ),
+        ]),
+      ],
+    ],
     [
       I18n.t("保存节点（接收最终输出）"),
       [
@@ -21974,6 +22747,18 @@ function canvasCreateMenuGroups(pt) {
           "agent_task",
           I18n.t("智能任务（读文件 / 联网 / 执行命令）"),
           () => addNode("agent_task", pt.x, pt.y),
+        ),
+      ],
+    ],
+    /* 应用节点：与左侧栏「应用节点」分类同一口径，**单独占一组**。
+       不挂在「控制节点」二级菜单里 —— 那层默认收着，用户完全找不到（本轮实测反馈）。 */
+    [
+      I18n.t("应用节点（钉一个应用 · 点开全屏界面）"),
+      [
+        ctxKindItem(
+          "appnode",
+          I18n.t("应用节点（绑定应用 · 点开全屏应用界面）"),
+          () => addNode("appnode", pt.x, pt.y),
         ),
       ],
     ],
@@ -22099,6 +22884,9 @@ function canvasCreateMenuGroups(pt) {
             ),
             ctxKindItem("delayer", I18n.t("延时器（等待后继续）"), () =>
               addNode("delayer", pt.x, pt.y),
+            ),
+            ctxKindItem("popup", I18n.t("弹窗（触发时弹出 · 可填文字内容）"), () =>
+              addNode("popup", pt.x, pt.y),
             ),
             ctxKindItem("sequencer", I18n.t("序列器（按序多路）"), () =>
               addNode("sequencer", pt.x, pt.y),
@@ -22547,7 +23335,7 @@ function buildWorkflowToolPicker(host, groups, ref, state) {
   render();
 }
 
-/* ============ 构建工作流 → 新建独立绑定会话（不再借用全局助手） ============ */
+/* ============ 构建工作流 → 新建独立绑定会话（不再借用画布助手） ============ */
 
 /* 会话标题「构建 · 画布名」：同一画布的构建会话靠它认出来（标题会随会话一起落盘，重启后仍有效） */
 function wfBuildSessionTitle() {
@@ -22562,7 +23350,7 @@ function wfBuildContractText() {
   const lines = [
     I18n.t("【画布构建任务书】") + " " + name,
     I18n.t(
-      "本会话由画布右键「构建工作流」新建并绑定该画布：技能流程、构建要求与后续迭代都在这里进行，不再占用右侧全局助手。",
+      "本会话由画布右键「构建工作流」新建并绑定该画布：技能流程、构建要求与后续迭代都在这里进行，不再占用右侧画布助手。",
     ),
     I18n.t("工作范围：仅当前画布「") +
       name +
@@ -22639,7 +23427,7 @@ function createWfBuildSession(agent) {
 /**
  * 右键 · 构建工作流：选择工作流生成类技能（工具）+ 填写要求
  * → 确认后将新建一个绑定当前画布的独立 agent 会话，在其中执行（改画布仍按用户的审批设置生效）。
- * 不再投递给全局助手：一轮架构还原会把大量扫描与画布编辑上下文灌进助手会话，污染全局助手。
+ * 不再投递给画布助手：一轮架构还原会把大量扫描与画布编辑上下文灌进助手会话，污染画布助手。
  */
 async function promptBuildWorkflow(pt, retryState) {
   if (!S.wf) return;
@@ -22677,7 +23465,7 @@ async function promptBuildWorkflow(pt, retryState) {
       [I18n.t("目标画布"), S.wf.name || I18n.t("未命名画布")],
     ],
     msg: I18n.t(
-      "选择要使用的工具（工作流生成类技能），并填写要求。确认后将新建一个绑定当前画布的独立会话在其中执行（不使用全局助手）。",
+      "选择要使用的工具（工作流生成类技能），并填写要求。确认后将新建一个绑定当前画布的独立会话在其中执行（不使用画布助手）。",
     ),
     actions: [
       { id: "cancel", label: I18n.t("取消") },
@@ -22705,7 +23493,7 @@ async function promptBuildWorkflow(pt, retryState) {
     );
     return;
   }
-  /* 占用判断只看构建会话自身（不再看全局助手是否在跑） */
+  /* 占用判断只看构建会话自身（不再看画布助手是否在跑） */
   const busy = runningWfBuildSession();
   if (busy) {
     toast(
@@ -23257,7 +24045,9 @@ function bindCanvas() {
          外部节点的输出线可以直接瞄它（落点判定见 mouseup 同名分支）。 */
       const selCls = d.fromGroup
         ? ".port.in.grp-port"
-        : d.fromInput
+        : isGroupOutPort(nodeById(d.fromId), d.fromIndex)
+          ? ".port.in.grp-port"
+          : d.fromInput
         ? ".port.out"
         : d.superInnerBridge
           ? ".port.in"
@@ -23307,11 +24097,34 @@ function bindCanvas() {
         }
         return;
       }
+      if (!fromInput && isGroupOutPort(nodeById(fromId), fromIndex)) {
+        /* 节点层的组输出端子（第 9003 号）：与组框 □ 同一套落点 —— 只认智能节点的
+           「组」输入端子；落在别处 = 取消（原位点一下不提示，真拖出去才说一句）。 */
+        let port = el && el.closest ? el.closest(".port.in.grp-port") : null;
+        if (!port) port = portHitAt(ev.clientX, ev.clientY, ".port.in.grp-port");
+        if (port && port.dataset.node) {
+          if (typeof connectLayerGroup === "function")
+            connectLayerGroup(fromId, port.dataset.node);
+        } else if (movedDrag) {
+          toast(
+            I18n.t("节点层的组线只能接到智能节点的「组」输入端子"),
+            "warn",
+          );
+        }
+        return;
+      }
       if (fromInput) {
         /* 反向拖线：起点是某节点的输入端子，终点落在输出端子上 → 存为 输出端 → 输入端 */
         let port = el && el.closest ? el.closest(".port.out") : null;
         if (!port) port = portHitAt(ev.clientX, ev.clientY, ".port.out");
-        if (port) {
+        if (port && port.classList.contains("grp-out")) {
+          /* 节点层那颗组输出端子只往外出组线：反向落一条数据线到它上面不接受
+             （否则会存成 fromIndex=9003 的普通线，取值 / 画线全是空的） */
+          toast(
+            I18n.t("这是组输出端子：只能从它拖出组线到智能节点的「组」输入端子"),
+            "warn",
+          );
+        } else if (port) {
           const outId = port.dataset.node;
           const outIdx = Number(port.dataset.fromIndex || 0);
           const inNode = nodeById(fromId);
@@ -24240,6 +25053,13 @@ const WIRE_DROP_TARGETS = [
      判定见 wireDropMenuGroups 里的 nodeKindHiddenByVram（与插件目录同源）。
      这里**不**顺手加 plugin 未装即不列：那会改掉「未装也列、建出来给警示条」的既有口径。 */
   { kind: "flux3klein_gen", g: "处理节点" },
+  { kind: "qwenimage_gen", g: "处理节点" },
+  /* 质检节点：从生成节点的输出端拉线落到空白处就能直接建出来接上（被检内容口） */
+  { kind: "qa_video", g: "质检节点" },
+  { kind: "qa_image", g: "质检节点" },
+  { kind: "qa_text", g: "质检节点" },
+  { kind: "qa_audio", g: "质检节点" },
+  { kind: "qa_file", g: "质检节点" },
   { kind: "music_gen", g: "处理节点", vramKind: "music_gen" },
   { kind: "yue_gen", g: "处理节点", vramKind: "yue_gen" },
   { kind: "breeze_gen", g: "处理节点" },
@@ -24261,6 +25081,7 @@ const WIRE_DROP_TARGETS = [
   { kind: "control", g: "控制节点", label: "执行 / 清空" },
   { kind: "judge", g: "控制节点" },
   { kind: "delayer", g: "控制节点" },
+  { kind: "popup", g: "控制节点" },
   { kind: "sequencer", g: "控制节点" },
   { kind: "gate", g: "控制节点" },
   { kind: "splitter", g: "控制节点" },
@@ -25310,6 +26131,15 @@ async function stopNode(node) {
   const computeBusy = computeRunning || computeQueued;
   /* 作废本节点当前批次（在途 + 排队中的）：之后所有下游驱动一律拦掉 */
   bumpNodeStop(node);
+  /* 弹窗节点：正在等确认就把那只浮层按「取消」结掉（控制流随之停在这） */
+  if (node.kind === "popup") {
+    if (_popupDlg && _popupDlg.nodeId === node.id) _popupDlg.cancel();
+    else {
+      node.running = false;
+      renderCanvas();
+    }
+    return;
+  }
   if (node.kind === "timer") {
     if (node.timerArmed || node.running) disarmTimerNode(node, false);
     return;
@@ -25475,6 +26305,7 @@ async function stopNode(node) {
     node.kind === "music_gen" ||
     node.kind === "yue_gen" ||
     node.kind === "flux3klein_gen" ||
+    node.kind === "qwenimage_gen" ||
     node.kind === "breeze_gen" ||
     node.kind === "video_gen" ||
     node.kind === "remotion" ||
@@ -25534,6 +26365,8 @@ async function stopNode(node) {
             ? "已取消音乐生成"
             : node.kind === "flux3klein_gen"
               ? "已取消图像生成"
+              : node.kind === "qwenimage_gen"
+                ? "已取消图像生成"
               : node.kind === "breeze_gen"
                 ? "已取消语音合成"
                 : node.kind === "video_gen"
@@ -27670,7 +28503,7 @@ function maskBaseImagePath(node, idx) {
   try {
     /* FLUX 3 Image Klein：参考图在端口 1（端口 0 是提示词），默认取它的第 1 张 */
     const port =
-      typeof idx === "number" ? idx : node && node.kind === "flux3klein_gen" ? 1 : 0;
+      typeof idx === "number" ? idx : node && (node.kind === "flux3klein_gen" || node.kind === "qwenimage_gen") ? 1 : 0;
     return runImagePaths(node, port)[0] || "";
   } catch (e) {
     return "";
@@ -28526,8 +29359,11 @@ function closeNodePopById(id) {
     window.closeImgOutPop();
   /* 节点层「封面」面板（renderer/app-node-cover.js，晚于本文件加载） */
   else if (id === "coverPop" && typeof closeCoverPop === "function") closeCoverPop();
+  /* 表单节点「点卡就地编辑」浮层（renderer/app-input-form.js，晚于本文件加载） */
+  else if (id === "ifItemPop" && typeof window.closeIfItemPop === "function")
+    window.closeIfItemPop();
 }
-/* keep = "bgRm" | "ratioLock" | "devModel" | "aiCall" | "imgBackend" | "devColor" | "imgOut" | ""（全收） */
+/* keep = "bgRm" | "ratioLock" | "devModel" | "aiCall" | "imgBackend" | "devColor" | "imgOut" | "cover" | "ifItem" | ""（全收） */
 function closeNodePopsExcept(keep) {
   const pairs = [
     ["bgRm", "bgRmPop", closeBgRmPop],
@@ -28541,6 +29377,8 @@ function closeNodePopsExcept(keep) {
     ["imgOut", "imgOutPop", null],
     /* 节点层「封面」面板（renderer/app-node-cover.js，晚于本文件加载） */
     ["cover", "coverPop", null],
+    /* 表单节点条目浮层（renderer/app-input-form.js，晚于本文件加载） */
+    ["ifItem", "ifItemPop", null],
   ];
   for (const [name, id, fn] of pairs) {
     if (name === keep) continue;
@@ -28564,6 +29402,7 @@ function repositionNodePops() {
     "devColorPop",
     "imgOutPop",
     "coverPop",
+    "ifItemPop",
   ]) {
     const el = document.getElementById(id);
     if (!el || !el.classList || !el.classList.contains("on")) continue;
@@ -31019,6 +31858,149 @@ async function waitForDelayerPulse(node, task) {
   return "ok";
 }
 
+/* ═══════════ 弹窗节点（kind popup）══════════════════════════════════════
+   控制脉冲到达 → 在 #overlay 里弹一只浮层，正文可当场编辑：
+     · 确定 → 正文写回节点 popupText，控制流继续往下（点火输出端连接的目标）；
+     · 取消 / ✕ / Esc → 按「已取消」结算，这条控制流到此为止（与延时器被取消同口径）。
+   #overlay 全应用独一份，所以同一时刻只允许一只弹窗节点在等（_popupDlg）。 */
+let _popupDlg = null;
+
+function normalizePopupNode(node) {
+  if (!node || node.kind !== "popup") return;
+  if (typeof node.popupTitle !== "string") node.popupTitle = "";
+  if (typeof node.popupText !== "string") node.popupText = "";
+  if (typeof node.popupStatus !== "string") node.popupStatus = "";
+  node.ranAt = Number(node.ranAt) || 0;
+}
+
+/** 弹一次浮层并等用户结算：resolve("ok") = 确定 · resolve("abort") = 取消 / 关窗 · resolve("busy") = 已有弹窗在等 */
+function waitForPopupConfirm(node, task) {
+  normalizePopupNode(node);
+  if (_popupDlg) return Promise.resolve("busy");
+  node.error = null;
+  node.running = true;
+  node.popupStatus = I18n.t("弹窗中 · 等待确认…");
+  renderCanvas();
+  return new Promise((resolve) => {
+    let done = false;
+    /* 全局终止代号：期间点过「全部终止」就把弹窗收掉，绝不让一条已作废的控制流
+       卡在一只没人回答的窗上（与延时器 waitForDelayerPulse 同一口径）。 */
+    const stopAt = typeof GLOBAL_STOP_SEQ === "number" ? GLOBAL_STOP_SEQ : 0;
+    let watch = null;
+    const finish = (ok, text, fromHook) => {
+      if (done) return;
+      done = true;
+      if (watch) clearInterval(watch);
+      _popupDlg = null;
+      setOverlayCloseHook(null);
+      window.removeEventListener("keydown", onKey, true);
+      node.running = false;
+      node._aborted = false;
+      if (ok) {
+        if (typeof text === "string" && text !== node.popupText) {
+          node.popupText = text;
+        }
+        node.ranAt = Date.now();
+        node.popupStatus = I18n.t("已确认");
+      } else node.popupStatus = I18n.t("已取消");
+      /* fromHook：这次结算就是 closeOverlay 发起的，别再回调一次（会递归） */
+      if (!fromHook) closeOverlay();
+      renderCanvas();
+      scheduleSave(true);
+      resolve(ok ? "ok" : "abort");
+    };
+    watch = setInterval(() => {
+      if (
+        node._aborted ||
+        (task && task._aborted) ||
+        (typeof GLOBAL_STOP_SEQ === "number" && GLOBAL_STOP_SEQ !== stopAt)
+      ) {
+        finish(false);
+      }
+    }, 300);
+    /* Esc 是阻塞式浮层的显式关闭路径（点外部 / 蒙层照旧什么都不做）。
+       capture + stopPropagation：不让画布那边的 Esc（取消框选 / 清选择）跟着跑。 */
+    const onKey = (ev) => {
+      if (!ev || ev.key !== "Escape") return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      finish(false);
+    };
+    _popupDlg = { nodeId: node.id, cancel: () => finish(false) };
+    openOverlay(
+      String(node.popupTitle || "").trim() || node.title || I18n.t("弹窗"),
+      { persistent: true },
+    );
+    setOverlayCloseHook(() => finish(false, undefined, true));
+    window.addEventListener("keydown", onKey, true);
+    const body = $("#ovBody");
+    const foot = $("#ovFoot");
+    const hint = document.createElement("div");
+    hint.className = "n-empty";
+    hint.textContent = I18n.t(
+      "控制流在这里等你确认：可直接改下面的文字，点「确定」继续往下走。",
+    );
+    body.appendChild(hint);
+    const ta = document.createElement("textarea");
+    ta.className = "n-text popup-node-text";
+    ta.style.cssText =
+      "width:100%;min-height:200px;resize:vertical;box-sizing:border-box;margin-top:6px";
+    ta.value = node.popupText || "";
+    ta.placeholder = I18n.t("填写要显示的文字内容…");
+    ta.spellcheck = false;
+    body.appendChild(ta);
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.className = "mini";
+    cancel.textContent = I18n.t("取消");
+    cancel.onclick = () => finish(false);
+    const ok = document.createElement("button");
+    ok.type = "button";
+    ok.className = "mini";
+    ok.textContent = I18n.t("确定");
+    ok.onclick = () => finish(true, ta.value);
+    foot.appendChild(cancel);
+    foot.appendChild(ok);
+    try {
+      ta.focus();
+    } catch (_) {}
+  });
+}
+
+async function playPopupNode(node, quiet) {
+  if (!node || node.kind !== "popup") return;
+  if (node.running) {
+    /* 已经有一只本节点的弹窗在等：再点 ▶ 不重开（要收掉就点窗里的取消 / 节点上的 ■）。
+       没有对应浮层的 running 是残标记（切画布 / 撤销留下的），清掉后照常弹。 */
+    if (_popupDlg && _popupDlg.nodeId === node.id) {
+      if (!quiet) toast(I18n.t("弹窗已经打开：在那只窗里点确定 / 取消"), "warn");
+      return;
+    }
+    node.running = false;
+  }
+  node._aborted = false;
+  const r = await waitForPopupConfirm(node, null);
+  if (r === "busy") {
+    if (!quiet) toast(I18n.t("已有一只弹窗在等待确认，先处理它"), "warn");
+    return;
+  }
+  if (r === "abort") {
+    if (!quiet) toast(I18n.t("弹窗已取消"), "warn");
+    renderCanvas();
+    return;
+  }
+  const n = await runTimerTargets(node, !!quiet);
+  if (!quiet)
+    toast(
+      I18n.t("弹窗已确认：") +
+        (node.title || "") +
+        (n ? I18n.t(" · 已启用 ") + n + I18n.t(" 个目标") : ""),
+      "ok",
+    );
+  renderCanvas();
+  scheduleSave(true);
+}
+
 async function playDelayerNode(node, quiet) {
   if (!node || node.kind !== "delayer") return;
   if (node.running) {
@@ -31739,6 +32721,27 @@ async function pulseExecFrom(node, task, seen, toIndex) {
     );
   }
 
+  if (typeof isQaKindNode === "function" && isQaKindNode(node)) {
+    /* 质检门禁：通过 → 输出 1（控制·通过）；未过 / 需干涉 → 输出 2（控制·未过）。
+       「需干涉」也算控制流里的失败分支：超上限后已经弹过审批卡，这里不再重跑。 */
+    let vr = "blocked";
+    try {
+      if (typeof playQaNode === "function") {
+        const r = await playQaNode(node, true);
+        vr = (r && r.verdict) || node.qaVerdict || "blocked";
+      } else {
+        node.error = "质检执行体未加载（renderer/app-qa.js）";
+      }
+    } catch (e) {
+      node.error = (e && e.message) || String(e);
+      vr = "blocked";
+    }
+    if (task._aborted) return "abort";
+    if (vr === "blocked") return "blocked";
+    if (vr === "pass") return mergePulseResults(await pulseExecOutgoing(node, 1, task, seen));
+    return mergePulseResults(await pulseExecOutgoing(node, 2, task, seen));
+  }
+
   if (node.kind === "timer") {
     const r = await waitForTimerPulse(node, task);
     if (task._aborted || r === "abort") return "abort";
@@ -31749,6 +32752,13 @@ async function pulseExecFrom(node, task, seen, toIndex) {
   if (node.kind === "delayer") {
     const r = await waitForDelayerPulse(node, task);
     if (task._aborted || r === "abort") return "abort";
+    return mergePulseResults(await pulseExecOutgoing(node, 0, task, seen));
+  }
+
+  /* 弹窗节点：弹出浮层等用户确认（可改正文），确定后继续点火输出端目标 */
+  if (node.kind === "popup") {
+    const r = await waitForPopupConfirm(node, task);
+    if (task._aborted || r === "abort" || r === "busy") return "abort";
     return mergePulseResults(await pulseExecOutgoing(node, 0, task, seen));
   }
 
@@ -33357,6 +34367,49 @@ function migrateWf(wf) {
       if (!n.legacySaveMedia) n.legacySaveMedia = "image";
       n.kind = "save";
     }
+    /* 质检节点：旧版只有一颗 proc_qa（「镜头规格 + 候选媒体」五维打分），现在按被检对象
+       分成五类。proc_qa 检的就是视频 → 原地迁成 qa_video：id / 标题 / 位置尺寸原样保留，
+       只有 0 / 1 两个数据口的语义对调了（旧：0=镜头规格 · 1=候选媒体；
+       新：0=被检内容 · 1=质检要求），所以把这两颗口上的线互换。
+       旧判据字段（qaPass 合格线 / qaDims 维度开关 / qaHardFail 硬失败码）全部丢弃 ——
+       现在判据只来自 JSON 模板；补一份视频模板让老画布直接能再点 ▶。
+       注意：旧版入 2（参考基准）/ 入 3（控制）的线这里**一条也不挪**。新结构只有 3 颗输入端子
+       （0 被检内容 · 1 质检要求 · 2 控制），所以 toIndex>=3 的线不再有对应端子，取值与渲染都忽略，
+       节点 body 里提示「旧图需重连」—— 宁可让人自己重接，也不替用户猜线该落在哪。
+       幂等：迁完 kind 不再是 proc_qa，反复加载逐字不变。 */
+    if (n.kind === "proc_qa") {
+      n.kind = "qa_video";
+      delete n.qaPass;
+      delete n.qaDims;
+      delete n.qaHardFail;
+      if (!n.qaTemplate) n.qaTemplate = "builtin/video-shot";
+      if (!isFinite(Number(n.qaFrames))) n.qaFrames = 7;
+      delete n.qaAnchorMax;
+      for (const w of wf.wires) {
+        if (!w || w.rel || w.to !== n.id) continue;
+        const i = Number(w.toIndex || 0);
+        if (i === 0) w.toIndex = 1;
+        else if (i === 1) w.toIndex = 0;
+      }
+    }
+    /* 质检节点输出端子 4 出 → 3 出（0 报告 · 1 通过 · 2 未过）：
+       旧的 1 号「判定」与通过 / 未过两条控制出重复，已撤掉。读档时按**语义**左移出线：
+       旧 2（通过）→ 1、旧 3（未过）→ 2；旧 1（判定）上的线没有对应端子了，删掉并打
+       qaStaleOut，节点 body 提示「旧图需重连」—— 宁可让人自己重接，也不猜线该落在哪。
+       幂等：迁完打 qaOutV3，反复加载逐字不变（新建节点在 NODE_DEFAULTS 里就带 qaOutV3）。 */
+    if (typeof isQaKindNode === "function" && isQaKindNode(n) && !n.qaOutV3) {
+      for (let i = (wf.wires || []).length - 1; i >= 0; i--) {
+        const w = wf.wires[i];
+        if (!w || w.rel || w.from !== n.id) continue;
+        const idx = Number(w.fromIndex || 0);
+        if (idx === 1) {
+          wf.wires.splice(i, 1);
+          n.qaStaleOut = true;
+        } else if (idx === 2) w.fromIndex = 1;
+        else if (idx === 3) w.fromIndex = 2;
+      }
+      n.qaOutV3 = true;
+    }
     /* 「文本对话（chat）」节点已移除：旧画布上的对话节点原地迁移成
        智能任务节点的「会话模式」（chatMode）——两者消息结构同为
        { role, content, at }，对话记录、标题、位置与尺寸原样保留，
@@ -33505,6 +34558,7 @@ function migrateWf(wf) {
       n.kind === "music_gen" ||
       n.kind === "yue_gen" ||
       n.kind === "flux3klein_gen" ||
+      n.kind === "qwenimage_gen" ||
       n.kind === "breeze_gen" ||
       n.kind === "video_gen" ||
       isVideoPostKind(n) ||
@@ -33527,6 +34581,8 @@ function migrateWf(wf) {
     }
     if (n.kind === "flux3klein_gen" && typeof flux3kleinNormalize === "function")
       flux3kleinNormalize(n);
+    if (n.kind === "qwenimage_gen" && typeof qwenimageNormalize === "function")
+      qwenimageNormalize(n);
     if (n.kind === "task") {
       normalizeTaskSteps(n);
       n.running = false;
@@ -33622,6 +34678,11 @@ function migrateWf(wf) {
       n.output = null;
       n.running = false;
     }
+    if (n.kind === "popup") {
+      normalizePopupNode(n);
+      n.output = null;
+      n.running = false;
+    }
     if (n.kind === "sequencer") {
       normalizeSequencerNode(n);
       n.output = null;
@@ -33673,7 +34734,7 @@ function migrateWf(wf) {
     n.boundSaveId = "";
     /* 图像节点没有「节点内输出路径」（落盘由主进程托管目录决定、经输出端子交付）：
        旧画布残留的 outputPath / filename 在加载时静默丢弃，别让设置窗再冒出一个死字段 */
-    if (n.kind === "flux3klein_gen") {
+    if (n.kind === "flux3klein_gen" || n.kind === "qwenimage_gen") {
       delete n.outputPath;
       delete n.filename;
     }
@@ -34193,7 +35254,7 @@ function renderWfWorkspace() {
   box.appendChild(openBtn);
   box.appendChild(br);
   /* 工作目录的磁盘占用与清理（.mtnode / .mtnode-input / recordings）：
-     位置固定 —— 📂 进入文件夹之后、✦ 全局助手之前（见 app-ws-temp.js）。 */
+     位置固定 —— 📂 进入文件夹之后、✦ 画布助手之前（见 app-ws-temp.js）。 */
   if (typeof workspaceTempButton === "function") box.appendChild(workspaceTempButton());
 }
 
@@ -34454,6 +35515,7 @@ async function forkAgentSession(id) {
     model: src.model || "",
     effort: src.effort || "high",
     pure: !!src.pure,
+    overclock: !!src.overclock,
     /* 开发绑定会话的「不读画布」标记同样继承：分支出来的会话仍要收尾改同一个节点 */
     noCanvasRead: !!src.noCanvasRead,
     /* 「与画布无关」是用户对着这条会话声明的，分支后仍成立 → 一并继承 */
@@ -35951,7 +37013,7 @@ async function sanitizeInvalidWorkspaces(opts) {
     }
   }
   await wipe(
-    I18n.t("全局助手工作目录"),
+    I18n.t("画布助手工作目录"),
     () => S.assistWorkspace,
     (v) => {
       S.assistWorkspace = v;

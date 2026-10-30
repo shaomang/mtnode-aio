@@ -1,7 +1,7 @@
 ---
 name: mtnode-app-dev
 title: MTNode 应用开发
-description: 开发 MTNode「应用」（顶栏「应用中心」下载 / 自建后独立窗口运行，或「插件」对话框里 kind=window 的窗口类应用）：静态 HTML/JS/CSS 契约（本身不依赖 appHost 也能跑）、两套宿主桥的能力清单与调用样例（应用中心 window.appHost · 插件窗口 window.pluginApi：数据落盘、数据文件夹、账号摘要、创意工坊请求、图片选择与缓存、生命周期事件）、**开发页中栏预览里也有宿主桥**（预览里 close/quit 回 preview_no_window；应用已在独立窗口运行时预览只读、写类回 readonly_preview）、模型能力正解（文本模型与**图像后端**都从 MTNode 继承、界面上必须有选择位、文字+图像多模态输入、无模型/断网时不降级只给明确提示）、应用能力位 capabilities（textInput 带不带语音模块、showDictate 底部宿主听写条、showAuthor 左下角作者标签（平时隐藏 / hover 显示 / 点击看详情）、imageGen 出图；新建默认全开；静态声明不是权限闸）、三件基础设施（正确关闭的数据冲刷握手 / 内容落盘与自动迁移 / 数据文件夹）、应用目录结构与 app.json 字段、默认随应用生成 AGENTS.md 共识文件、常见坑（iframe 无 window.api、sandbox 与 file:// 资源路径、数据只写数据目录）。配套脚手架 templates/app-scaffold/ 与 templates/app-agents/AGENTS.md。
+description: 开发 MTNode「应用」（应用中心 / 插件 kind=window）：静态页契约、两套宿主桥、能力位、数据落盘与常见坑。
 ---
 
 # MTNode 应用开发

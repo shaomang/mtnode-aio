@@ -331,6 +331,10 @@
        backend_plugin_route:flux3klein（步骤表被换成 prepare / download、真步骤全 pending）。 */
     "flux3-klein-local": "flux3kleinInstall",
     flux3klein: "flux3kleinInstall",
+    /* Qwen Image 2.1（kind qwenimage，目录 id qwen-image-local）：宿主
+       qwenimage/main-qwenimage.js，步骤表真源 qwenimage-pack/steps.json。 */
+    "qwen-image-local": "qwenimageInstall",
+    qwenimage: "qwenimageInstall",
   };
   /* id → 选安装目录的桥 / 启动安装的桥（窗口插件与桌宠用它们自己的那两条） */
   function installApiOf(id) {

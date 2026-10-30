@@ -359,6 +359,18 @@
   padding: 2px 7px 3px
 }
 
+/* 逐项时刻（本次修复：助手栏运行中也走会话那套分段渲染）：面板只有 320px，
+   沿用会话侧的 92px 栏宽会把正文压得只剩一小条，这里收窄一档、字号同步减一号。 */
+.assist-list .dsh-seg.dsh-seg-has-time {
+  --dsh-seg-time-w: 66px;
+  padding-left: 66px;
+}
+
+.assist-list .dsh-seg.dsh-seg-has-time > .dsh-seg-time {
+  width: 58px;
+  font-size: 9px;
+}
+
 .assist-list .dsh-tools {
   max-height: none
 }
@@ -386,6 +398,67 @@
   color: var(--muted);
   letter-spacing: .3px;
   border-top: 1px dashed var(--bd);
+}
+
+/* 子代理状态条（本次需求 · app-assist.js 的 paintAssistSubagentStrip）：
+   贴在输入框正上方 —— 用户盯着输入框等助手回话时，这里能看见「后台还有一只子代理
+   在跑、跑了多久」。没有在跑的子代理时整块 hidden，不占高度。 */
+.assist-subs {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 10px;
+  border-top: 1px dashed var(--bd);
+  background: rgba(178, 148, 255, .06);
+}
+
+.assist-sub-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: rgb(178, 148, 255);
+}
+
+/* 呼吸点：让「它真的在动」这件事在余光里也成立（走秒本身也是证据，两处互相兜底） */
+.assist-sub-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: rgb(178, 148, 255);
+  animation: assistSubBreath 1.6s ease-in-out infinite
+}
+
+@keyframes assistSubBreath {
+  0%, 100% { opacity: .35 }
+  50% { opacity: 1 }
+}
+
+.assist-sub-line .dsh-sub-state {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis
+}
+
+.assist-sub-stop {
+  flex: none;
+  margin-left: auto;
+  font-size: 10px;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: 6px;
+  color: rgb(232, 108, 108);
+  background: transparent;
+  border: 1px solid rgba(232, 108, 108, .35);
+  cursor: pointer;
+}
+
+.assist-sub-stop:hover {
+  background: rgba(232, 108, 108, .14)
 }
 
 .assist-input-row {
@@ -1361,7 +1434,7 @@
    控件是五行平铺下拉，计划 / 清单 / 队列 / 暂停一个都看不见。对齐口径是**单项拉齐**：
    原生会话有的观感助手栏都有，原生会话一个像素都不动。 */
 
-/* 头部：左＝身份（标题 / ▣所属画布 / 最后对话），右＝三颗会话操作（改名 / 新建一条 /
+/* 头部：左＝身份（标题 / ▣所属画布 / 最后对话），右＝三颗会话操作（改名 / 清空 /
    会话视图）+ ✕。不换行，标题自己省略。 */
 .assist-head {
   flex-wrap: nowrap;

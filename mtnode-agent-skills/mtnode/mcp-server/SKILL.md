@@ -1,7 +1,7 @@
 ---
 name: mtnode-mcp-server
 title: MTNode MCP 服务端（第三方接进来操作）
-description: 从 MTNode 外面（Claude Code / Cursor / 自研 Agent）经 MCP 操作本机 MTNode 的完整规范：服务端在哪、13 个工具各自怎么用（含媒体生成 / 跑节点 / 用户工具 / 会话四条异步作业）、必须先读图拿 contentHash 再改、resources/prompts 三类能力、权限与审计口径、自用回环（应用内 Agent 也走同一套入口）、以及做不到的事。Use when connecting an external MCP client to MTNode, debugging third-party calls, generating media or running nodes over MCP, or writing code that drives MTNode over MCP.
+description: 从 MTNode 外面经 MCP 操作本机 MTNode：14 个工具、先读图拿 contentHash、权限与审计。
 ---
 
 # MTNode MCP 服务端
@@ -19,7 +19,7 @@ MTNode 平时是 MCP **客户端**（去连别人的服务器给自家 Agent 加
   - **HTTP**：`POST http://127.0.0.1:<port>/mcp`，头带 `Authorization: Bearer <token>`。
 - MTNode 没开着 → 桥会回「连不上 MTNode MCP 服务端，请打开 MTNode 后重试」；主窗口被关掉 → 调用会超时（执行在渲染层，窗口不在就没人执行）。
 
-## 二、工具面（13 个，与自家 Agent 同名同义）
+## 二、工具面（14 个，与自家 Agent 同名同义）
 
 | 工具 | 干什么 | 写 |
 | --- | --- | --- |
@@ -27,6 +27,7 @@ MTNode 平时是 MCP **客户端**（去连别人的服务器给自家 Agent 加
 | `mtnode_canvas_edit` | 建节点、连线、改字段、分组、绘制、删除 | 是 |
 | `mtnode_app` | 应用级：状态、画布列表、改名、选中、撤销重做、导出 PNG、长任务图存取、DSH 插件管理 | 部分 |
 | `mtnode_db` | 数据库副本查询（list / get / query / write / delete / calc） | 部分 |
+| `mtnode_manifest` | 项目 manifest：资产登记 / `asset_id@rev` / 依赖图 / `stale_plan` 增量重建 / 引用校验 | 是 |
 | `mtnode_facts` | 本画布的 AI 事实库（极简条例库） | 部分 |
 | `lt_state` | 长任务本轮共享状态 | 是（限环节内） |
 | `mtnode_assets` | 素材库：清单 / 读条目 / 窗口静帧截图 | 否 |
@@ -37,7 +38,7 @@ MTNode 平时是 MCP **客户端**（去连别人的服务器给自家 Agent 加
 | `mtnode_tools` | 列 / 调当前画布的用户工具节点（`action:"list"` / `"call"`） | 调时写 |
 | `mtnode_session` | 新开一条会话跑一轮任务：`create` / `send` / `read` / `close`，默认用完即弃 | 是 |
 
-**参数表真源**：`dsh/gateway/{canvas,db,ai-facts,longtask,assets,gui,mcp-extra}-plugin.mjs` 里的 `defineTool` 参数表 —— 不在这里抄第二份。要完整 schema：`tools/list`，或读仓里生成的 `mcp-tools.json`（`node scripts/build-mcp-contract.mjs` 重新生成）。
+**参数表真源**：`dsh/gateway/{canvas,db,manifest,ai-facts,longtask,assets,gui,mcp-extra}-plugin.mjs` 里的 `defineTool` 参数表 —— 不在这里抄第二份。要完整 schema：`tools/list`，或读仓里生成的 `mcp-tools.json`（`node scripts/build-mcp-contract.mjs` 重新生成）。
 
 **主进程执行的两族**：`mtnode_gui`（只有主进程拿得到 `BrowserWindow`，点的是页面里真实的 DOM 元素而不是屏幕坐标，所以窗口不必在前台）与 `mtnode_generate`（四个生成后端都在主进程，且共用画布那把全局音视频互斥锁）。生成 / 跑图 / 工具 / 会话都**推渲染层**的 `renderer/mcp-extra.js`，复用 `playNode` / `playControlNode` / `executeAgentToolCall` / `agentSessionSend`。
 

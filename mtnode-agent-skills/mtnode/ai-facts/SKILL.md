@@ -1,7 +1,7 @@
 ---
 name: mtnode-ai-facts
 title: AI 事实库
-description: 每张画布一份的极简条例库（工具 mtnode_facts，动作 list/query/get/write/delete/pin）：索引项目内容时先查它；建完项目架构 / 工作流、定下约定与路径后，把关键结论（模块划分、关键文件与路径、约定及其来源、端口与数据流、命令入口、已知坑）沉淀成极简条例。先 query 再 write，冲突以现文件与数据库为准。Use when indexing project content, or recording / recalling a project's architecture or workflow key points.
+description: 画布 AI 事实库（mtnode_facts）：建架构 / 工作流前先查，定下约定与路径后写回关键结论。
 ---
 
 # AI 事实库（mtnode_facts）

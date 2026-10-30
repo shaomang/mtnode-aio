@@ -80,3 +80,7 @@
    renderer/app-ws-temp.js · 主进程 workspace-temp.js）：.ws-temp-* 常驻浮层。
    放最后一份：它只加自己那几个类。 */
 @import url("./css/ws-temp.css");
+/* 表单输入节点（renderer/app-input-form.js · kind input_form）：板身 .if-board-*、
+   大面板 .if-panel / .if-card / .if-media-* / 标注浮层 .if-anno-*，动效 120~200ms 并
+    在 prefers-reduced-motion 下降级。放最后一份：只加自己那几个类（亮色直接用主题变量）。 */
+@import url("./css/input-form.css");

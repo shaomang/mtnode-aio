@@ -66,6 +66,9 @@ const TOOL_OPS = {
   mtnode_app: { op: "app", family: "canvas", write: true },
   mtnode_vision: { op: "vision", family: "canvas", write: false },
   mtnode_db: { op: "db", family: "db", write: true },
+  /* 项目 manifest（资产登记 / 版本 / 依赖图 / 增量重建）：与 db 同一条渲染层帧链路，
+     文件由主进程 manifest-store.js 写；root 缺省取目标画布的工作目录。 */
+  mtnode_manifest: { op: "manifest", family: "manifest", write: true },
   mtnode_facts: { op: "facts", family: "facts", write: true },
   lt_state: { op: "lt", family: "lt", write: true },
   mtnode_assets: { op: "asset", family: "asset", write: false },
@@ -1528,25 +1531,53 @@ function createMcpHost(o) {
   /**
    * 把「现在该不该有那条自用客户端」通知给主进程（main.js 去写 dsh 的 MCP 列表）。
    * 触发点只有三个：服务端起来了 / 停了 / 用户在面板上开了关了 —— 不做轮询。
+   *
+   * 必须**等回执**：applySelfLoop 是 async 的，失败时回 { ok:false }，直接丢掉就会
+   * 静默留下一行连不上的客户端（应用内 Agent 因此拿不到 mtnode_run / mtnode_generate，
+   * 等于没权限执行节点 —— 实测踩过：启动瞬间引擎还没起来 + 旧版本读错 mcpList 形状）。
+   * 失败就按退避重试几次，成功即停；结果写进 lastError，面板与 /meta 看得到。
    */
+  let selfLoopRetry = null;
+  let selfLoopTries = 0;
   function syncSelfLoop() {
     if (!applySelfLoop) return;
-    const on = !!(state && state.enabled && state.selfLoop !== false && server);
-    try {
-      applySelfLoop(
-        on
-          ? {
-              enabled: true,
-              serverName: SELF_LOOP_NAME,
-              url: "http://127.0.0.1:" + port + "/mcp?token=" + encodeURIComponent((state && state.token) || ""),
-              tools: SELF_LOOP_TOOLS.slice(),
-            }
-          : { enabled: false, serverName: SELF_LOOP_NAME },
-      );
-    } catch (e) {
-      lastError = "自用回环注册失败：" + ((e && e.message) || e);
-      log("[mcp] " + lastError);
+    if (selfLoopRetry) {
+      clearTimeout(selfLoopRetry);
+      selfLoopRetry = null;
     }
+    const on = !!(state && state.enabled && state.selfLoop !== false && server);
+    Promise.resolve()
+      .then(() =>
+        applySelfLoop(
+          on
+            ? {
+                enabled: true,
+                serverName: SELF_LOOP_NAME,
+                url: "http://127.0.0.1:" + port + "/mcp?token=" + encodeURIComponent((state && state.token) || ""),
+                tools: SELF_LOOP_TOOLS.slice(),
+              }
+            : { enabled: false, serverName: SELF_LOOP_NAME },
+        ),
+      )
+      .then((r) => {
+        if (r && r.ok === false) throw new Error(r.error || "注册失败");
+        selfLoopTries = 0;
+        /* 上一次失败留下的那行字已经过时：只清自己写的这一句，不碰别的错误 */
+        if (String(lastError).startsWith("自用回环注册失败：")) lastError = "";
+      })
+      .catch((e) => {
+        lastError = "自用回环注册失败：" + ((e && e.message) || e);
+        log("[mcp] " + lastError);
+        /* 引擎刚被拉起时那次调用常常还没就绪：退避后再来，最多 5 次 */
+        if (selfLoopTries < 5) {
+          selfLoopTries += 1;
+          selfLoopRetry = setTimeout(() => {
+            selfLoopRetry = null;
+            syncSelfLoop();
+          }, Math.min(30000, 2000 * selfLoopTries));
+          if (selfLoopRetry.unref) selfLoopRetry.unref();
+        }
+      });
   }
 
   /** 面板开关：自用回环（写盘 + 立刻生效，不用重启引擎） */

@@ -68,6 +68,7 @@ function mtnodePiProviders(dataDir) {
     if (!p || p.type !== "text_openai" || !key) return;
     if (isDeepseekHost(p.baseUrl)) return;
     if (!String(p.baseUrl || "").trim() || !modelIdsOf(p).length) return;
+    const models = modelIdsOf(p);
     out.push({
       route: p.id || "p" + (i + 1),
       name: p.name || p.id,
@@ -77,7 +78,7 @@ function mtnodePiProviders(dataDir) {
          中转卡的 Key 在上面的 apiKeyOf() 里已经取好（配置里那一串，或注入的解析器）。 */
       source: String(p.source || ""),
       api: p.api || "openai-completions",
-      models: modelIdsOf(p),
+      models,
     });
   });
   return out;

@@ -25,7 +25,7 @@ const PLUGIN_FEED =
 /* 认得出的插件 kind 白名单：认不出的一律归一成 "unknown"（卡片显「请先升级主程序」、不可装）。
    已移除的 tts（GPT-SoVITS）故意不在表里 —— 云端旧目录里若还有 kind="tts" 的条目，
    它会走 unknown 那一档（看得见但装不了），而不是被当成一个已注册的后端。 */
-const KNOWN_KINDS = new Set(["builtin", "pet", "window", "music3", "yue2", "h3", "llama", "breeze", "remotion", "asr", "paseo", "blender", "infinitetalk", "soulxflashhead", "flux3klein"]);
+const KNOWN_KINDS = new Set(["builtin", "pet", "window", "music3", "yue2", "h3", "llama", "breeze", "remotion", "asr", "paseo", "blender", "infinitetalk", "soulxflashhead", "flux3klein", "qwenimage"]);
 /* Blender 插件先只对作者账号开放（本轮需求：暂时收起来内测）。
    白名单只认账号名 / 昵称，其它登录用户连条目都拿不到 —— 卡片、画布节点菜单与
    未装警示条都吃同一份过滤后的列表，所以在这里一处过滤就够。 */
@@ -531,6 +531,8 @@ function normalizePlugin(raw) {
   if (!kind && raw.handler === "soulxflashhead") kind = "soulxflashhead";
   /* FLUX 3 Image Klein 本地出图（kind flux3klein，id flux3-klein-local） */
   if (!kind && raw.handler === "flux3klein") kind = "flux3klein";
+  /* Qwen Image 2.1 本地出图（kind qwenimage，id qwen-image-local） */
+  if (!kind && raw.handler === "qwenimage") kind = "qwenimage";
   /* Paseo 手机接管（kind paseo，id paseo-remote）：handler 与 kind 同名，这里只是兜底链的一员 */
   if (!kind && raw.handler === "paseo") kind = "paseo";
   const iconName = safeIconName(raw.icon) || (id + ".png");
@@ -541,7 +543,7 @@ function normalizePlugin(raw) {
   return {
     id,
     kind: known ? kind : "unknown",
-    handler: String(raw.handler || (kind === "pet" ? "pet" : kind === "music3" ? "music3" : kind === "yue2" ? "yue2" : kind === "h3" ? "h3" : kind === "llama" ? "llama" : kind === "breeze" ? "breeze" : kind === "remotion" ? "remotion" : kind === "asr" ? "asr" : kind === "paseo" ? "paseo" : kind === "infinitetalk" ? "infinitetalk" : kind === "soulxflashhead" ? "soulxflashhead" : kind === "flux3klein" ? "flux3klein" : kind === "builtin" ? id : "")).trim(),
+    handler: String(raw.handler || (kind === "pet" ? "pet" : kind === "music3" ? "music3" : kind === "yue2" ? "yue2" : kind === "h3" ? "h3" : kind === "llama" ? "llama" : kind === "breeze" ? "breeze" : kind === "remotion" ? "remotion" : kind === "asr" ? "asr" : kind === "paseo" ? "paseo" : kind === "infinitetalk" ? "infinitetalk" : kind === "soulxflashhead" ? "soulxflashhead" : kind === "flux3klein" ? "flux3klein" : kind === "qwenimage" ? "qwenimage" : kind === "builtin" ? id : "")).trim(),
     order: Number(raw.order) || 100,
     title: locObj(raw.title || raw.name || id),
     subtitle: locObj(raw.subtitle || raw.description || ""),
@@ -622,7 +624,7 @@ function attachInstalled(plugins) {
         installedVersion: st.version,
         updateAvailable: !!(st.installed && p.version && verGt(p.version, st.version)),
       }));
-    } else if (p.kind === "music3" || p.handler === "music3" || p.kind === "yue2" || p.handler === "yue2" || p.kind === "h3" || p.handler === "h3" || p.kind === "llama" || p.handler === "llama" || p.kind === "breeze" || p.handler === "breeze" || p.kind === "remotion" || p.handler === "remotion" || p.kind === "asr" || p.handler === "asr" || p.kind === "infinitetalk" || p.handler === "infinitetalk" || p.kind === "soulxflashhead" || p.handler === "soulxflashhead" || p.kind === "flux3klein" || p.handler === "flux3klein") {
+    } else if (p.kind === "music3" || p.handler === "music3" || p.kind === "yue2" || p.handler === "yue2" || p.kind === "h3" || p.handler === "h3" || p.kind === "llama" || p.handler === "llama" || p.kind === "breeze" || p.handler === "breeze" || p.kind === "remotion" || p.handler === "remotion" || p.kind === "asr" || p.handler === "asr" || p.kind === "infinitetalk" || p.handler === "infinitetalk" || p.kind === "soulxflashhead" || p.handler === "soulxflashhead" || p.kind === "flux3klein" || p.handler === "flux3klein" || p.kind === "qwenimage" || p.handler === "qwenimage") {
       /* 本地后端插件：**装没装以磁盘上的安装目录为准**（目录里有 .install-ok / .venv /
          模型目录或目录非空 = 装过）—— 卡片动作（安装 / 启用 / 卸载）与插件显存门槛的
          「已装就保留」判据都吃这一个字段。版本 / 可更新状态仍由各宿主 status 异步判定。 */
@@ -660,6 +662,74 @@ function attachInstalled(plugins) {
       retired: true,
     });
   }
+  return out;
+}
+
+/* 本地后端型插件的 kind（视频 / 音乐 / 语音 / 渲染 / 数字人 / 出图 …）：
+   它们由插件宿主管进程，注册中心只读镜像它们的安装状态与目录。 */
+const PLUGIN_BACKEND_KINDS = new Set([
+  "music3",
+  "yue2",
+  "h3",
+  "llama",
+  "breeze",
+  "remotion",
+  "asr",
+  "infinitetalk",
+  "soulxflashhead",
+  "flux3klein",
+  "qwenimage",
+  "paseo",
+  "blender",
+]);
+
+/**
+ * 插件后端现状快照（**同步只读**，不联网、不建目录）：
+ * 注册中心（br_admin list / 插件页注册中心区块）拿它把「插件里的本机后端」也一起列出来，
+ * 这样 Agent 只要查一个地方就能看到所有已装 / 未装的本机后端，不必再猜目录或看别处。
+ * 目录口径与插件界面完全一致：installDirOf（插件自己的 installDir 优先，否则插件根目录 + 子目录名）。
+ * 返回 [{ id, name, kind, installed, installDir, subtitle }]。
+ */
+function pluginBackendSnapshot() {
+  let src = [];
+  try {
+    src = loadDefaultCatalog().plugins || [];
+  } catch {
+    src = [];
+  }
+  /* 上次云端目录缓存（有就用它盖住同名条目：云端会补新版插件） */
+  try {
+    const cached = readJson(cacheCatalogPath(), null);
+    if (cached && cached.doc) {
+      const remote = parseCatalogDoc(cached.doc).plugins || [];
+      const byId = new Map(src.map((p) => [p.id, p]));
+      for (const p of remote) if (p && p.id) byId.set(p.id, p);
+      src = [...byId.values()];
+    }
+  } catch {}
+  const out = [];
+  for (const p of src) {
+    if (!p || !p.id) continue;
+    const kind = String(p.kind || "");
+    if (!PLUGIN_BACKEND_KINDS.has(kind)) continue;
+    const title = p.title && typeof p.title === "object" ? p.title.zh || p.title.en || p.id : String(p.title || p.id);
+    const subtitle = p.subtitle && typeof p.subtitle === "object" ? p.subtitle.zh || p.subtitle.en || "" : String(p.subtitle || "");
+    let dir = "";
+    try {
+      dir = installDirOf(p.id) || "";
+    } catch {
+      dir = "";
+    }
+    out.push({
+      id: p.id,
+      name: title,
+      kind,
+      installed: backendPluginInstalled(p.id),
+      installDir: dir,
+      subtitle,
+    });
+  }
+  out.sort((a, b) => a.id.localeCompare(b.id));
   return out;
 }
 
@@ -1537,6 +1607,8 @@ module.exports = {
      没设过就用「插件根目录 + 默认子目录名」—— 见 plugins/plugin-root.js */
   installDirOf,
   resolvePluginInstallDir,
+  /* 重后端注册中心的插件侧快照（同步只读，见 pluginBackendSnapshot） */
+  pluginBackendSnapshot,
   /* 冒烟用：显存门槛判定（插件列表侧的过滤与元数据） */
   loadCatalog,
   buildFullPluginList,

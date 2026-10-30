@@ -1,0 +1,44 @@
+{
+  "version": 2,
+  "kind": "file",
+  "title": "文件质检 · 通用",
+  "description": "文档 / 表格 / 工程文件的交付前检查：先确认东西齐不齐、能不能打开，再看内容。",
+  "passLine": 80,
+  "dimensions": [
+    {
+      "id": "completeness",
+      "title": "完整性",
+      "weight": 30,
+      "minScore": 60,
+      "criteria": "该有的章节 / 字段 / 页数 / 附件是否齐全，有没有截断、空表、占位符（TODO、xxx、待补）。用 read_file / pdf_markdown 实际读一遍再判。"
+    },
+    {
+      "id": "format",
+      "title": "格式规范",
+      "weight": 20,
+      "minScore": 55,
+      "criteria": "文件类型与后缀是否匹配、能否正常解析、编码是否正常、表格列头与单位是否统一、命名是否符合约定。"
+    },
+    {
+      "id": "content",
+      "title": "内容质量",
+      "weight": 30,
+      "minScore": 55,
+      "criteria": "内容是否准确、完整地回答了「要求 / 脚本」端子的诉求；有无明显错误、前后矛盾、复制粘贴残留。"
+    },
+    {
+      "id": "metadata",
+      "title": "元数据与命名",
+      "weight": 10,
+      "minScore": 40,
+      "criteria": "文件名、版本号、日期、作者、目录层级是否符合项目约定，能否被别人一眼认出来。"
+    },
+    {
+      "id": "safety",
+      "title": "安全合规",
+      "weight": 10,
+      "minScore": 50,
+      "criteria": "是否含密钥、内网地址、个人信息等不该外发的字段。命中任一项按严重程度大幅扣分。"
+    }
+  ]
+}

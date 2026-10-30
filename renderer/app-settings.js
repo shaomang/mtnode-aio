@@ -752,7 +752,7 @@ function openSettingsBody() {
     settingsSaved(0);
   };
 
-  /* 主题(2 款,默认 DSH;选完立刻换肤并由 applyTheme 写盘) */
+  /* 主题(2 款,默认 MTNode;选完立刻换肤并由 applyTheme 写盘) */
   const themeRow = document.createElement("label");
   themeRow.className = "n-field";
   themeRow.style.flexDirection = "row";
@@ -765,7 +765,9 @@ function openSettingsBody() {
     o.textContent = I18n.t(t.name);
     themeSel.appendChild(o);
   }
-  themeSel.value = (S.config && S.config.theme) || "dsh";
+  /* 存档里的主题可能已不在列表里（如暂时隐藏的亮色）：对不上就回显默认档 */
+  themeSel.value =
+    S.config && THEMES[S.config.theme] ? S.config.theme : "industrial";
   /* applyTheme 内部会自己写盘（全局共用一条路径），这里只补状态行回显，
      免得同一次换肤写出两份 config-backups 快照 */
   themeSel.addEventListener("change", () => {
@@ -4927,7 +4929,7 @@ function provCard(prov, i, onChange) {
      两个文本框都是**可选**字段：留空 = 不限制（老配置什么都不填 ⇒ 行为一字不变）。
      通配语义 * 零或多个字符、? 一个字符，其余字符按字面量；匹配对象是模型 id、大小写不敏感。
      白名单先收窄、黑名单再剔除，之后所有「给用户选模型」的地方（节点设置 / 智能会话 /
-     全局助手 / 开发节点的下拉，以及上面这份模型列表的徽标）都按过滤结果说话。 */
+     画布助手 / 开发节点的下拉，以及上面这份模型列表的徽标）都按过滤结果说话。 */
   const allowInp = document.createElement("input");
   allowInp.type = "text";
   allowInp.value = String(prov.modelAllow || "");

@@ -245,6 +245,11 @@ function lteRoundInput(text) {
 
 /* ── 弹窗 ───────────────────────────────────────────────────────── */
 function ltOpenEditDlg(wf, uid) {
+  /* 总开关关着（app-longtask.js 的 window.LT_DISABLED）：这只窗整只不开 */
+  if (window.LT_DISABLED) {
+    if (typeof toast === "function") toast(lteT("长周期任务暂时停用（正在修复中），入口与状态机已隐藏"), "warn");
+    return;
+  }
   const cap = wf || (typeof S !== "undefined" ? S.wf : null);
   if (!cap) {
     if (typeof toast === "function") toast(lteT("没有打开的画布"), "warn");

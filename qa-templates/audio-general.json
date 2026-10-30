@@ -1,0 +1,44 @@
+{
+  "version": 2,
+  "kind": "audio",
+  "title": "音频质检 · 通用",
+  "description": "语音 / 音乐 / 音效的通用质量线：先听清、再听对、最后听好不好。用 transcribe 拿逐字稿，用 probe 拿时长与码率。",
+  "passLine": 80,
+  "dimensions": [
+    {
+      "id": "clarity",
+      "title": "清晰度",
+      "weight": 25,
+      "minScore": 60,
+      "criteria": "人声 / 主音是否清楚可懂，有无糊、闷、破音、爆音、齿音刺耳。转写稿的错字率可作为旁证。"
+    },
+    {
+      "id": "content",
+      "title": "内容符合",
+      "weight": 30,
+      "minScore": 60,
+      "criteria": "念的内容是否与「要求 / 脚本」端子一致：正文、语气、断句、重音位置。漏字、改词、念错专有名词按处扣分。"
+    },
+    {
+      "id": "noise",
+      "title": "底噪与瑕疵",
+      "weight": 15,
+      "minScore": 50,
+      "criteria": "有无电流声、房间混响过重、口水音、突然的静音或爆点；首尾是否有不该有的杂音。"
+    },
+    {
+      "id": "loudness",
+      "title": "响度与动态",
+      "weight": 15,
+      "minScore": 50,
+      "criteria": "整体响度是否适合投放（对白大约 -16 ~ -14 LUFS）、有没有削波、忽大忽小。"
+    },
+    {
+      "id": "performance",
+      "title": "表现力",
+      "weight": 15,
+      "minScore": 50,
+      "criteria": "情绪、节奏、停顿是否贴合内容；是否机械念稿、全程一个调。"
+    }
+  ]
+}

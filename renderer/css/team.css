@@ -1167,10 +1167,9 @@ body.theme-light .team-draft {
   flex-direction: column;
   gap: 8px;
 }
-button.primary {
-  border-color: var(--cyan) !important;
-  color: var(--ink) !important;
-}
+/* 原先这里有一条全局 button.primary { border-color: cyan !important; color: ink !important }，
+   它不带任何作用域 —— 全应用所有主按钮都被它改成青边白字，与 layout.css 的主按钮定义
+   （橙色 = 「这是动作」）打架。已删除：专家团里的主按钮与其它地方一样走 layout.css。 */
 
 
 /* ═════════════ 群聊 / 圆桌 / 建议卡 ═════════════ */

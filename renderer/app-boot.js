@@ -618,6 +618,15 @@ function paintBootFrame() {
 
 async function init() {
   S.config = await window.api.configLoad();
+  /* 默认主题回到 industrial（显示名 MTNode）。上一版默认把 dsh 写进了存档，
+     这里做一次性迁移：没有主题 / 仍是旧默认 dsh / 已隐藏的 light 都切回 industrial，
+     迁移标记写盘后不再干预用户手选的主题。 */
+  if (S.config && !S.config.themeDefaultMt) {
+    const cur = S.config.theme;
+    if (!cur || cur === "dsh" || cur === "light") S.config.theme = "industrial";
+    S.config.themeDefaultMt = true;
+    window.api.configSave(S.config).catch(() => {});
+  }
   /* 旧版把商店 / 论坛会话存在 S.config.storeAuth 里，现已统一到主进程 auth-store
      （启动时一次性迁移，见 main.js migrateLegacyStoreAuth）；这里只清掉内存残留。 */
   if (S.config) S.config.storeAuth = null;
@@ -683,6 +692,13 @@ async function init() {
       } catch (_) {}
     });
   }
+  /* 子代理生命周期（本次需求）：接上全局通道一次就够 —— 帧不按 reqId 走，因为子代理
+     常常比父那一轮活得久（模型说完「我会等它回报」这一轮就 idle 了）。见
+     renderer/app-subagent.js 与 preload.js 的 dshOnSubagent。 */
+  try {
+    if (window.MTNodeSubagent && typeof window.MTNodeSubagent.wire === "function")
+      window.MTNodeSubagent.wire();
+  } catch (_) {}
   if (S.config.locale !== "en" && S.config.locale !== "zh") S.config.locale = "zh";
   I18n.setLocale(S.config.locale);
   document.documentElement.lang = S.config.locale === "en" ? "en" : "zh-CN";
@@ -747,6 +763,10 @@ async function init() {
          renderer/app-assist.js 的 dshPolicyOfView / dshTranscriptViewFor。 */
       transcriptView: "standard",
       visionInspectAllowed: false,
+      /* 画布修改确认档：ask（默认，每次确认）/ approve（编辑放行，危险操作仍确认）
+         / all（连危险操作也放行）。真源与读写见 app-nodes.js 的 canvasEditMode。 */
+      assistCanvasMode: "ask",
+      /* 旧布尔字段（= 画布修改确认不再弹窗），保留写入口径，读路径已统一到上一条 */
       assistAutoApprove: false,
       doneSound: true,
       /* 内置完成音（内置「叮咚」）的音量百分比，0 = 静音；只影响内置音，
@@ -817,6 +837,8 @@ async function init() {
     sess.noCanvasRead = !!sess.noCanvasRead;
     /* 「与画布无关」（Gate B）同样必须载回原值：丢了这一位 = 可见集漂移 → 换 runtime */
     sess.canvasFree = !!sess.canvasFree;
+    /* 「超频模式」：开着才固定 Max 思考档并注入极限测试提示词，丢了这一位就静默降档 */
+    sess.overclock = !!sess.overclock;
     /* 会话「显示思考」（本次需求：原四档「工作步骤展示」在会话里收回成这一枚开关，
        全局默认档仍留在 设置 · 智能能力 的 dsh.transcriptView）：
        缺省 null = 跟随全局默认档；布尔 = 用户亲口点过这一枚开关，以它为准。
@@ -831,11 +853,13 @@ async function init() {
     /* 「不走普通会话计划这条线」（长任务新建窗的引导建图会话）：重启后仍豁免 ——
        否则再跑一轮就会拿到「任务流程 / 交计划块」指令，交出来的就是普通会话计划了。 */
     sess.noPlanFlow = !!sess.noPlanFlow;
-    /* 全局助手会话（本轮需求 · 拷问共识）：这条会话由右侧助手栏驱动，与助手栏共用
+    /* 画布助手会话（本轮需求 · 拷问共识）：这条会话由右侧助手栏驱动，与助手栏共用
        同一份正文；它与普通会话一样带 canvasWfId（建立那一刻绑定的画布，bug 修复：
        过去这里被强制清空，重启后又变回「未绑定」→ 跟着切图漂），也不进「绑定会话」候选。
        老存档没有这一位 → false = 普通会话。 */
     sess.assist = !!sess.assist;
+    /* 用户已主动结束这条助手会话（清空 / 新建一条）：重启后不得再被自动绑回 */
+    sess.assistEnded = !!sess.assistEnded;
     /* 长任务环节归属标记（app-longtask.js 的 ltBindAgentSession 写 {wfId,runId,path}）：
        它同样进 planFlowExemptSession 的豁免判据（app-plan.js），丢了这一位 → 重启后该
        环节会话又变回普通会话计划线。这里按落盘白名单同口径归一（缺省 null = 普通会话）。 */
@@ -889,7 +913,7 @@ async function init() {
     return sess;
   });
   S.agentActiveId = S.config.agentActiveId || "";
-  /* 右侧全局助手：开关 / 对话历史 / 模型与预设 */
+  /* 右侧画布助手：开关 / 对话历史 / 模型与预设 */
   S.assistOpen = !!S.config.assistOpen;
   S.assistLive2d = !!S.config.assistLive2d;
   S.assistPreset = S.config.assistPreset || AGENT_PRESET_DEFAULT;
@@ -937,7 +961,7 @@ async function init() {
   }
   /* 会话「计划」清单最小高度：默认即最小，把手可继续向上拖高（全局偏好，启动先夹一次） */
   S.agentPlanH = clampAgentPlanH(S.config.agentPlanH || PLAN_LIST_MIN_H);
-  /* 右侧全局助手的对话 = 一条普通会话（本轮需求 · 拷问共识）：
+  /* 右侧画布助手的对话 = 一条普通会话（本轮需求 · 拷问共识）：
      config 只留指针 assistSessionId，正文在 agent-sessions/<id>.json；
      老配置里那份 assistMessages 一次性迁成一条助手会话（q6），迁完删键。 */
   S.assistSessionId = String(S.config.assistSessionId || "");
@@ -958,7 +982,17 @@ async function init() {
       : null
     : null;
   let assistMigrated = false;
-  if (!assistBoundSt && legacyAssistMsgs.length && typeof assistMigrateLegacy === "function") {
+  /* 旧键 assistMessages 只能迁一次：会话历史里已经有助手会话 = 当初那一次迁移早就做过了，
+     盘上这份旧正文只是「顶层浅合并删不掉」的残留（bug：清空助手后重启，启动又照它迁出
+     一条新助手会话，旧对话就「回来」了）。有历史时一律不迁，只把残留清掉。 */
+  const assistHistoryHas =
+    (Array.isArray(S.agentSessions) ? S.agentSessions : []).some((s) => s && s.assist);
+  if (
+    !assistBoundSt &&
+    !assistHistoryHas &&
+    legacyAssistMsgs.length &&
+    typeof assistMigrateLegacy === "function"
+  ) {
     /* 还没有指针 / 指针指向的会话已不在，但有旧历史：迁成一条可回看的助手会话 */
     assistBoundSt = assistMigrateLegacy(legacyAssistMsgs);
     if (assistBoundSt) {
@@ -989,10 +1023,10 @@ async function init() {
         assistCanvasGone = !wfListNow.some((w) => w && String(w.id) === boundId);
     }
   }
-  if (assistBoundSt && assistCanvasGone) {
-    /* 指针指着一条**所属画布已删**的助手会话：兜底为空白态，不套用前台画布、
-       也不静默改绑到别的图（会话本身原样留在左栏可回看 / 删除；带上它继续聊
-       等于把已删画布的上下文带到别的图上）。 */
+  if (assistBoundSt && (assistCanvasGone || assistBoundSt.assistEnded)) {
+    /* 指针指着一条**所属画布已删**、或**用户已主动结束**（清空 / 新建一条）的助手会话：
+       兜底为空白态，不套用前台画布、也不静默改绑到别的图（会话本身原样留在左栏
+       可回看 / 删除；下一次输入会新建一条）。 */
     S.assistSessionId = "";
     S.assistMessages = [];
     if (S.config) S.config.assistSessionId = "";
@@ -1011,6 +1045,13 @@ async function init() {
     if (assistMigrated && typeof persistAssistUi === "function") persistAssistUi();
   } else {
     S.assistSessionId = "";
+  }
+  /* 旧键已经从内存里删掉了，必须真落盘一次（assistMessages 迁过 / 判定为残留都算）：
+     不写回的话盘上那份还在，每次启动都要重新判一遍「这算不算旧历史」。 */
+  if (legacyAssistMsgs.length && typeof persistAssistUi === "function") {
+    try {
+      persistAssistUi();
+    } catch (_) {}
   }
   try {
     const dc = await window.api.dshConfig();
@@ -1446,7 +1487,7 @@ async function init() {
     const sendBtn = $("#agentSend");
     if (sendBtn) sendBtn.onclick = doSend;
   }
-  /* 右侧全局助手 */
+  /* 右侧画布助手 */
   {
     setAssistOpen(S.assistOpen, false);
     applyAssistWidth(S.assistW, false);
@@ -1468,9 +1509,9 @@ async function init() {
     if (aBtn2) aBtn2.onclick = toggleAssist;
     const aClose = $("#btnAssistClose");
     if (aClose) aClose.onclick = () => setAssistOpen(false);
-    /* 「清空」按钮已撤（本次需求）：它与「…」菜单里的「新建一条」是同一件事，
-       两个入口做同一动作只会让人犹豫。清空语义本身没变（= 换一条新会话，
-       旧会话仍留在左栏可回看），入口只剩菜单那一处。 */
+    /* 头部那颗按钮现在就叫「清空」（原名「新建一条」）：同一件事只有一个入口 ——
+       结束当前这条助手会话（正文立刻清空、落盘 assistEnded，重启不再自动绑回），
+       旧会话只留在左栏会话历史里可回看，下一次输入时新建。 */
     const presetSel = $("#assistPresetSel");
     if (presetSel)
       presetSel.onchange = () => {
@@ -1638,7 +1679,7 @@ async function init() {
     document.body.classList.toggle("view-workflow", bootView === "workflow");
   }
   const bootToAgentOrTeam = bootView === "agent" || bootView === "team";
-  /* 会话 / 团队视图把右侧全局助手栏收掉（与 setView 同口径；不持久化，回画布仍按用户偏好） */
+  /* 会话 / 团队视图把右侧画布助手栏收掉（与 setView 同口径；不持久化，回画布仍按用户偏好） */
   if (bootToAgentOrTeam && typeof setAssistOpen === "function")
     setAssistOpen(false, false);
   /* 启动期先把视图切过去，但**别**在这里拆建 DOM：setView 对 agent / team 会各画一遍
@@ -1648,7 +1689,7 @@ async function init() {
   if (bootToAgentOrTeam && S._bootSeen) setView(bootView);
   else if (!bootToAgentOrTeam && typeof applySidebarVisibility === "function")
     applySidebarVisibility();
-  applyTheme((S.config && S.config.theme) || "dsh");
+  applyTheme((S.config && S.config.theme) || "industrial");
   /* 首绘落点：到此为止「画布 / 视图与主题 / 服务商目录」都齐了 —— 一帧画一次，
      中间那些被记下的整屏重绘请求（bootPaintDeferred）在这里一并结清，不再画第二遍。
      闸门随后永久打开（S._bootSeen）：此后 renderAll 一律照常真画。 */

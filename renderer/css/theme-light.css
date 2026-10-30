@@ -1141,6 +1141,17 @@ body.theme-light .agent-tools-toggle.on .agent-mode-track {
 body.theme-light .agent-tools-toggle.on .agent-mode-track::after {
   background: #1a944f;
 }
+/* 浅色主题下的「超频模式」：background 简写会把渐变清掉，这里补回彩虹渐变与白滑块 */
+body.theme-light .agent-tools-toggle.boost.on .agent-mode-track {
+  background-image: linear-gradient(
+    90deg,
+    #ff4d4d, #ffb84d, #eaff4d, #4dff9e, #4dd8ff, #a44dff, #ff4d9e, #ff4d4d
+  );
+  background-size: 200% 100%;
+}
+body.theme-light .agent-tools-toggle.boost.on .agent-mode-track::after {
+  background: #fff;
+}
 
 /* ── 指令 chips ── */
 body.theme-light .agent-chip {

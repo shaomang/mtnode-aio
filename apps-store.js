@@ -548,6 +548,82 @@ const PREVIEW_BRIDGE = [
   "})();",
 ].join("\n");
 
+/* ── 应用节点（画布上的 kind appnode）────────────────────────────────────────
+ *
+ * 应用节点把某个应用钉在画布上：点节点 = 在画布区里开一只 iframe 全屏界面。
+ * 界面页同样是 mtnode-preview:// 的一路（`_host=1&_anode=1`），所以宿主桥还是
+ * PREVIEW_BRIDGE 那一座；本段**追加**在它后面（同一个 <script> 里、顺序不能反），
+ * 只做两件事：
+ *   ① 把 appHost 的**数据**改到节点自己的落点：`<画布工作目录>/apps-data/<appId>/`
+ *      （appHost.dataRead / dataWrite / storage* / dataDirGet 全部改道，走渲染层的
+ *      「节点调用」而不是应用中心那条 apps-data）；别的入口（开发页预览 / 独立窗口）
+ *      一个字节都不变。
+ *   ② 加上节点专属命名空间：canvas / agent / fs / tools / net（逐类白名单，
+ *      见 renderer/app-appnode.js 的 APPNODE_METHODS —— 这里只做薄壳，方法名保持一致）。
+ *
+ * 与父窗口（主窗口渲染层）之间用另一把键（`__mtnodeAppNode`），与预览桥的消息互不打扰。 */
+const APPNODE_K = "__mtnodeAppNode";
+const APPNODE_BRIDGE = [
+  "(function(){",
+  "if (window.__mtnodeAppNode) return;",
+  "if (window.parent === window) return;",
+  "var K='" + APPNODE_K + "';",
+  "var seq=0; var pending={}; var subs={};",
+  "var INFO={appId:'',nodeId:'',workdir:''};",
+  "function mkErr(o){ var e=new Error(String((o&&o.error)||'appnode bridge error')); e.code=String((o&&o.code)||''); return e; }",
+  "function post(m){ try{ window.parent.postMessage(m,'*'); }catch(e){} }",
+  "function call(ns,method,arg){",
+  "  return new Promise(function(res,rej){",
+  "    var id='n'+(++seq).toString(36)+Math.random().toString(36).slice(2,7);",
+  "    var timer=setTimeout(function(){ if(!pending[id]) return; delete pending[id]; rej(mkErr({code:'host_unreachable',error:'宿主没有回应（这一帧已失联或画布正在切换）'})); },60000);",
+  "    pending[id]={res:res,rej:rej,timer:timer};",
+  "    post({[K]:1,op:'node-call',id:id,ns:String(ns||''),method:String(method||''),arg:(arg===undefined?null:arg)});",
+  "  });",
+  "}",
+  "window.addEventListener('message',function(ev){",
+  "  var d=ev&&ev.data; if(!d||d[K]!==1) return;",
+  "  if(d.op==='node-ready'){ INFO.appId=String(d.appId||''); INFO.nodeId=String(d.nodeId||''); INFO.workdir=String(d.workdir||''); window.__mtnodeAppNode={appId:INFO.appId,nodeId:INFO.nodeId,workdir:INFO.workdir}; try{ window.dispatchEvent(new CustomEvent('mtnode-appnode-ready',{detail:INFO})); }catch(e){} return; }",
+  "  if(d.op==='node-result'){ var p=pending[d.id]; if(!p) return; delete pending[d.id]; if(p.timer) clearTimeout(p.timer); if(d.ok) p.res(d.result); else p.rej(mkErr(d.result||{})); return; }",
+  "  if(d.op==='node-event'){ var name=String(d.name||''); var a=subs[name]||[]; for(var i=0;i<a.length;i++){ try{ a[i](d.data); }catch(e){} } try{ window.dispatchEvent(new CustomEvent('appnode-event',{detail:{name:name,data:d.data}})); }catch(e){} return; }",
+  "});",
+  "try{ window.addEventListener('pagehide',function(){ for(var k in pending){ var p=pending[k]; if(!p) continue; if(p.timer) clearTimeout(p.timer); p.rej(mkErr({code:'host_unreachable',error:'宿主已断开'})); } pending={}; },{once:true}); }catch(e){}",
+  "function on(name,cb){ if(typeof cb!=='function') return function(){}; var n=String(name||''); (subs[n]=subs[n]||[]).push(cb); return function(){ var a=subs[n]||[]; var i=a.indexOf(cb); if(i>=0) a.splice(i,1); }; }",
+  "var host=window.appHost||(window.appHost={});",
+  "host.dataRead=function(){ return call('data','read'); };",
+  "host.dataWrite=function(data){ return call('data','write',{data:data}); };",
+  "host.dataGet=host.dataRead; host.dataSet=host.dataWrite;",
+  "host.storageGet=function(k){ return call('data','storageGet',{key:k}); };",
+  "host.storageSet=function(k,v){ return call('data','storageSet',{key:k,value:v}); };",
+  "host.storageAll=function(){ return call('data','storageAll'); };",
+  "host.storageRemove=function(k){ return call('data','storageRemove',{key:k}); };",
+  "host.dataDirGet=function(){ return call('data','dir'); };",
+  "host.dataDirOpen=function(){ return call('data','openDir'); };",
+  "host.dataDirPick=function(){ return Promise.reject(mkErr({code:'fixed_dir',error:'应用节点的数据目录固定在画布工作目录里，不支持改到别处'})); };",
+  "host.dataDirReset=host.dataDirPick;",
+  "host.canvas={ graph:function(){return call('canvas','graph');}, nodes:function(){return call('canvas','nodes');}, node:function(id){return call('canvas','node',{id:id});}, addNode:function(o){return call('canvas','addNode',o||{});}, updateNode:function(id,p){return call('canvas','updateNode',{id:id,patch:p||{}});}, removeNode:function(id){return call('canvas','removeNode',{id:id});}, connect:function(o){return call('canvas','connect',o||{});}, disconnect:function(id){return call('canvas','disconnect',{id:id});}, select:function(ids){return call('canvas','select',{ids:ids||[]});}, view:function(){return call('canvas','view');}, setView:function(v){return call('canvas','setView',v||{});}, save:function(){return call('canvas','save');}, onChange:function(cb){return on('canvas',cb);} };",
+  "host.agent={ sessions:function(){return call('agent','sessions');}, bind:function(id){return call('agent','bind',{sessionId:id});}, bound:function(){return call('agent','bound');}, send:function(text){return call('agent','send',{text:text});}, cancel:function(){return call('agent','cancel');}, onEvent:function(cb){return on('agent',cb);} };",
+  "host.fs={ root:function(){return call('fs','root');}, readText:function(rel){return call('fs','readText',{rel:rel});}, writeText:function(rel,text){return call('fs','writeText',{rel:rel,content:text});}, list:function(rel){return call('fs','list',{rel:rel});}, mkdir:function(rel){return call('fs','mkdir',{rel:rel});}, remove:function(rel){return call('fs','remove',{rel:rel});}, exists:function(rel){return call('fs','exists',{rel:rel});} };",
+  "host.tools={ list:function(){return call('tools','list');}, call:function(id,args){return call('tools','call',{id:id,args:args||{}});} };",
+  "host.net={ fetch:function(url,opts){return call('net','fetch',{url:url,opts:opts||{}});} };",
+  "try{ window.appNodeHost=host; }catch(e){}",
+  "post({[K]:1,op:'node-ping'});",
+  "})();",
+].join("\n");
+/* 把两段注入合成一个 <script>（顺序：宿主桥在前、节点桥在后 —— 节点桥要改宿主桥的对象） */
+function injectAppNodeBridge(html) {
+  const src = String(html || "");
+  const tag =
+    '<script data-mtnode-appnode-bridge="1">' +
+    PREVIEW_BRIDGE +
+    "\n" +
+    APPNODE_BRIDGE +
+    "</scr" +
+    "ipt>";
+  if (/<head[^>]*>/i.test(src)) return src.replace(/<head[^>]*>/i, (m) => m + tag);
+  if (/<html[^>]*>/i.test(src)) return src.replace(/<html[^>]*>/i, (m) => m + tag);
+  return tag + src;
+}
+
 /* 注入宿主桥小助手：**必须插在页面最前面**（在其他 <script> 之前），
    这样应用里的 window.AppHost 门面一跑就读到这座桥。 */
 function injectPreviewBridge(html) {
@@ -614,7 +690,7 @@ function previewNotFoundText(rel) {
    带 _host=1 的那条路（开发页中栏那只 iframe）**额外**在最前面注入宿主桥小助手
    （PREVIEW_BRIDGE）：预览里也就有了 window.appHost。别的入口（直接开这个 url、
    上架前的静态预览截图之类）不带这个参数 → 逐字还是老的纯静态预览。 */
-function previewFileResponse(dir, rel, req, injectHost) {
+function previewFileResponse(dir, rel, req, injectHost, injectNode) {
   const man = manifestOf(dir, path.basename(dir));
   const entry = safeEntry(man && man.entry) || SUB.index;
   const chain = [];
@@ -634,7 +710,8 @@ function previewFileResponse(dir, rel, req, injectHost) {
       let html = fs.readFileSync(abs, "utf8");
       /* 走到备用页（不是请求的那一页）= 请求的入口页缺失：顶上挂一条可读提示 */
       if (p !== rel) html = previewFallbackHtml(html, rel, p);
-      if (injectHost) html = injectPreviewBridge(html);
+      if (injectNode) html = injectAppNodeBridge(html);
+      else if (injectHost) html = injectPreviewBridge(html);
       return new Response(injectPreviewAgent(html), { headers: headers });
     }
     return new Response(fs.readFileSync(abs), { headers: headers });
@@ -670,16 +747,24 @@ function registerPreviewProtocol() {
       /* 带 _host=1 = 开发页中栏那只 iframe（见 previewWantsHost）：**开发页预览的永远是项目根
          那一份**（用户在改的就是它）—— 同 id 在下载根也有一份时，按 id 猜会预览到下载副本。 */
       const withHost = previewWantsHost(u);
+      /* 应用节点那一路（_anode=1，见 renderer/app-appnode.js）：应用可能在开发根、也可能在
+         下载根，所以**两套根都找**（previewDirOf 不带 kind 的口径），并把节点桥与宿主桥
+         一起注入（injectAppNodeBridge）。 */
+      /* _anode 里放的是应用 id（应用节点自己写的）；老形态 _anode=1 只当开关，id 退回 host */
+      const anodeRaw = String(u.searchParams.get("_anode") || "").trim();
+      const appNodeId = anodeRaw
+        ? safeAppId(anodeRaw) || safeAppId(decodeURIComponent(String(u.hostname || "")))
+        : "";
       /* URL 的 host 会被规范成小写，所以按大小写不敏感找目录 */
       const dir = previewDirOf(
-        decodeURIComponent(String(u.hostname || "")),
-        withHost ? APP_KIND_DEV : "",
+        decodeURIComponent(String(u.hostname || "")) || appNodeId,
+        appNodeId ? "" : withHost ? APP_KIND_DEV : "",
       );
       if (!dir) return plain(t("应用目录不存在"), 404);
       const rel = decodeURIComponent(String(u.pathname || "")).replace(/^\/+/, "");
       /* 一次读文件：请求的那一页不在时，按 app.json 入口页 → 默认 index.html 兜底，
          预览始终落到应用的默认界面（详细口径见 previewFileResponse） */
-      const hit = previewFileResponse(dir, rel, req, withHost);
+      const hit = previewFileResponse(dir, rel, req, withHost, appNodeId);
       if (hit) return hit;
       /* 兜底链走完都没有：导航请求回「入口页 + 一条可读提示」，资源请求照常 404 */
       const man = manifestOf(dir, path.basename(dir));
@@ -692,7 +777,8 @@ function registerPreviewProtocol() {
             rel && rel !== entry ? rel : "",
             entry,
           );
-          if (withHost) html = injectPreviewBridge(html);
+          if (appNodeId) html = injectAppNodeBridge(html);
+          else if (withHost) html = injectPreviewBridge(html);
           return new Response(injectPreviewAgent(html), {
             headers: {
               "content-type": "text/html; charset=utf-8",

@@ -1351,7 +1351,8 @@ function renderCanvas() {
         /* 展开壳的外侧端子不渲染（内侧端子另有一套），数量天然对不上 → 跳过 */
         if (!n || superIsOpenShell(n)) return;
         const inDom = nel.querySelectorAll(":scope > .port.in:not(.np-port):not(.grp-port)").length;
-        const outDom = nel.querySelectorAll(":scope > .port.out").length;
+        /* 节点层那颗组输出端子不算顺序端子（它挂在哨兵号 9003 上，outputCount 里没有它） */
+        const outDom = nel.querySelectorAll(":scope > .port.out:not(.grp-out)").length;
         if (inDom !== inputCount(n) || outDom !== outputCount(n)) {
           if (typeof refreshNodeEl === "function") refreshNodeEl(n.id);
         }
@@ -1515,9 +1516,9 @@ function updateWires(touchIds) {
           !g0 || filter.has(w.to) || members.some((id) => filter.has(id));
         if (!touched) continue;
       }
-      const g = typeof groupById === "function" ? groupById(w.grp) : null;
       const gTo = nodeById(w.to);
-      if (!g || !gTo || !nodeInCurrentScope(gTo)) continue;
+      const a0 = groupWireSourcePos(w);
+      if (!a0 || !gTo || !nodeInCurrentScope(gTo)) continue;
       const id0 = "wire-" + w.id;
       let pg = document.getElementById(id0);
       if (!pg) {
@@ -1529,10 +1530,33 @@ function updateWires(touchIds) {
       } else {
         ensureWireRing(svg, pg, id0 + "-r");
       }
-      const a0 = groupOutPos(g);
       const b0 = inPos(gTo, w.toIndex, null, null);
       pg.setAttribute("d", wirePathAB(a0.x, a0.y, b0.x, b0.y));
       applyWirePathClass(pg, w, null);
+      continue;
+    }
+    /* 节点层组输出端子拖出的组线（w.sup）：来源是节点（层自己），端子在 9003 号哨兵位。
+       几何同样单独走一支 —— 它的 Y 由 groupOutPortY 算，普通 outPos 不认这个号。 */
+    if (isSuperGroupWire(w)) {
+      if (filter && !filter.has(String(w.sup)) && !filter.has(w.to)) continue;
+      const host = nodeById(w.sup);
+      const sTo = nodeById(w.to);
+      const a1 = groupWireSourcePos(w);
+      if (!host || !a1 || !sTo || !nodeInCurrentScope(sTo)) continue;
+      const id1 = "wire-" + w.id;
+      let ps = document.getElementById(id1);
+      if (!ps) {
+        ensureWireRing(svg, null, id1 + "-r");
+        ps = document.createElementNS(svgNS, "path");
+        ps.id = id1;
+        bindWirePathInteractions(ps, w);
+        svg.appendChild(ps);
+      } else {
+        ensureWireRing(svg, ps, id1 + "-r");
+      }
+      const b1 = inPos(sTo, w.toIndex, null, null);
+      ps.setAttribute("d", wirePathAB(a1.x, a1.y, b1.x, b1.y));
+      applyWirePathClass(ps, w, null);
       continue;
     }
     /* 普通节点线：只重算与这批节点相关的线 */
@@ -1553,6 +1577,19 @@ function updateWires(touchIds) {
       if (stale) stale.remove();
       const staleRing = document.getElementById("wire-" + w.id + "-r");
       if (staleRing) staleRing.remove();
+      continue;
+    }
+    /* 质检节点端口从 4 颗收到 3 颗（参考基准并入质检要求）：老图上 toIndex>=3 的线不再有对应端子。
+       这条线不画（节点 body 会提示「旧图需重连」），但数据不删 —— 重接还是删掉由用户自己定。 */
+    if (
+      typeof isQaKindNode === "function" &&
+      isQaKindNode(to) &&
+      (Number(w.toIndex) || 0) >= inputCount(to)
+    ) {
+      const dead = document.getElementById("wire-" + w.id);
+      if (dead) dead.remove();
+      const deadRing = document.getElementById("wire-" + w.id + "-r");
+      if (deadRing) deadRing.remove();
       continue;
     }
     const id = "wire-" + w.id;
@@ -1619,8 +1656,9 @@ function updateWires(touchIds) {
       const b = toStage(S.drag.mx, S.drag.my);
       t.setAttribute("d", wirePathAB(a.x, a.y, b.x, b.y));
       let tcls = "fn-edge temp";
-      /* 反向拖线（输入端→输出端）：最终线型取决于落点输出节点，拖动中不预判类别 */
-      if (
+      /* 节点层组输出端子拖出的临时线：与组线同色（落点也只认组输入端子） */
+      if (isGroupOutPort(from, S.drag.fromIndex || 0)) tcls += " grp";
+      else if (
         !S.drag.fromInput &&
         (isControlKind(from) ||
           (focusBridge &&
@@ -1659,7 +1697,12 @@ function syncPortSideClasses(el, node) {
   if (!el || !el.classList || !node) return;
   const openShell = superIsOpenShell(node);
   el.classList.toggle("no-in-ports", !openShell && inputCount(node) === 0);
-  el.classList.toggle("no-out-ports", !openShell && outputCount(node) === 0);
+  /* 节点层永远多一颗组输出端子（哨兵号 9003）：没有顺序输出端子时也别把接线排的
+     竖刻线关掉 —— 那一侧确实有一颗端子 */
+  el.classList.toggle(
+    "no-out-ports",
+    !openShell && outputCount(node) === 0 && node.kind !== "super",
+  );
 }
 
 function refreshPorts(el, node) {
@@ -1692,8 +1735,12 @@ function refreshPorts(el, node) {
       }
       p.style.top = inPortY(node, i, ic) - PORT_R + "px";
     });
-    el.querySelectorAll(":scope > .port.out").forEach((p, i) => {
+    el.querySelectorAll(":scope > .port.out:not(.grp-out)").forEach((p, i) => {
       p.style.top = outPortY(node, i, oc) - PORT_R + "px";
+    });
+    /* 节点层的组输出端子：位置同上由 groupOutPortY 一处算（哨兵号不进顺序号） */
+    el.querySelectorAll(":scope > .port.out.grp-out").forEach((p) => {
+      p.style.top = groupOutPortY(node) - PORT_R + "px";
     });
     return;
   }
@@ -2541,7 +2588,7 @@ function renderNodeSettingsForm() {
     const media = isSaveNode(d.node)
       ? saveMediaKind(d.node)
       : /* FLUX 3 Image Klein 图像节点的产物是 PNG，不是音频：绝不能给它挂波形预览器 */
-        d.node.kind === "flux3klein_gen"
+        d.node.kind === "flux3klein_gen" || d.node.kind === "qwenimage_gen"
         ? "image"
         : "audio";
     if (isSaveNode(d.node) || isMediaGenNode(d.node)) ensureNodeSettingsWave(d.node, d.root, media);
@@ -2872,6 +2919,45 @@ function nsCheck(ctx, labelText, checked, onChange, opts) {
   lab.appendChild(nsFieldHead(labelText, opts));
   ctx.root.appendChild(lab);
   return lab;
+}
+
+/* 资产锚定（缺口文档 P0-2 / G3 规则 2）：proc_image / video_gen 共用的一小块。
+   requireAsset 开着 = 运行前必须用工程 manifest.json 校验 assetRefs（app-manifest.js 的
+   mfAssetGate），纯文本直出直接拒跑；关着 = 老行为。节点字段：requireAsset / assetRefs。 */
+function nsAssetGateFields(ctx, node) {
+  if (!node) return;
+  nsCheck(
+    ctx,
+    I18n.t("必须引用资产（requireAsset）"),
+    !!node.requireAsset,
+    (v) => {
+      node.requireAsset = !!v;
+    },
+    {
+      span: true,
+      tip: I18n.t(
+        "开启后本节点必须先声明资产引用（形如 char_lin@3），运行前对照工程根 manifest.json 校验：引用不存在 / rev 过期 / 一条都没有（纯文本直出）都会拒跑并点名缺哪一项。工程里还没有 manifest.json 时先让 Agent 调 mtnode_manifest 的 init。",
+      ),
+    },
+  );
+  nsText(
+    ctx,
+    I18n.t("资产引用（assetRefs · id@rev，逗号分隔）"),
+    (typeof mfRefsOf === "function" ? mfRefsOf(node) : Array.isArray(node.assetRefs) ? node.assetRefs : []).join(", "),
+    {
+      span: true,
+      placeholder: "char_lin@3, scene_cafe@1",
+      normalize: (v) => {
+        const list = String(v || "")
+          .split(/[,，\s]+/)
+          .map((x) => x.trim())
+          .filter(Boolean);
+        node.assetRefs = list;
+        return list.join(", ");
+      },
+    },
+    () => {},
+  );
 }
 
 /* 文本框：opts.live = 边打字边写回 node（老 body 就是这个口径，路径类字段靠它）；
@@ -3480,6 +3566,8 @@ registerNodeSettingsForm("proc_image", {
         "节点头部的蒙版小按钮，单击开 / 关（首次开启会打开蒙版编辑器），右键随时重新编辑。编辑器里用透明绿涂抹要重绘的区域，程序把它转成「透明=可编辑」的 Alpha 蒙版，与原图、提示词一起发给 gpt-image-2。",
       ),
     });
+    ctx.section(I18n.t("资产锚定"));
+    nsAssetGateFields(ctx, node);
   },
 });
 
@@ -3996,6 +4084,9 @@ registerNodeSettingsForm("video_gen", {
     ctx.section(I18n.t("生成参数"));
     nsMediaGenParamFields(ctx, node);
     nsMediaGenPathField(ctx, node, "video");
+    /* 资产锚定：内置与自建工作流都要（自建图里也可能要角色参考图） */
+    ctx.section(I18n.t("资产锚定"));
+    nsAssetGateFields(ctx, node);
     /* 自建工作流：时长 / 比例 / 采样 / 后处理全由工作流图自身决定 → 内置参数整块不出现
        （与 buildVideoGenRunParams 的下发口径一一对应） */
     if (isCustomVideoGen(node)) return;
@@ -8511,6 +8602,16 @@ function portBadgeText(node, dir, idx, opt) {
       };
     }
     switch (node.kind) {
+      /* 表单输入（端口口径 = app.js 的 inputCount）：固定 1 颗输入端子 = 「引用」。
+         连进来的上游内容被复制一份进本表单，随后那条线自动断开（一次性 @引用）。 */
+      case "input_form":
+        return {
+          badge: I18n.t("引用"),
+          title: I18n.t(
+            "（连入即复制一份进本表单并断开连线：上游后续变化不再影响本表单；上游此刻还没有值的话，线留在端子上，等它有值了自动复制）",
+          ),
+          zh: true,
+        };
       case "gate":
         /* 闸门 / 互斥的每一颗端子都是控制端子（inPortKindOf → control）：
            调用方按端子号判定后会传 ctrlIsPort，这里只是抽不到 kind 时的兜底 */
@@ -8539,6 +8640,7 @@ function portBadgeText(node, dir, idx, opt) {
           zh: true,
         };
       case "flux3klein_gen":
+      case "qwenimage_gen":
         /* 固定 3 颗：0=提示词 · 1=参考图（可多接）· 2=控制输入 */
         return {
           badge:
@@ -8549,6 +8651,28 @@ function portBadgeText(node, dir, idx, opt) {
               : i === 1
                 ? I18n.t("（可接多张图像 · 最多 10 张）")
                 : I18n.t("（触发生成）"),
+          zh: true,
+        };
+      /* 质检节点（五种同构 · 端口口径 = app.js 的 IN_PORT_DATA_KINDS.qa_*）：
+         0 被检内容 · 1 质检要求（文字口径 + 参考样例，可多接）· 2 控制输入 */
+      case "qa_text":
+      case "qa_image":
+      case "qa_video":
+      case "qa_audio":
+      case "qa_file":
+        return {
+          badge:
+            i === 0
+              ? I18n.t("被检内容")
+              : i === 1
+                ? I18n.t("质检要求")
+                : I18n.t("控制"),
+          title:
+            i === 0
+              ? I18n.t("（要检查的产物）")
+              : i === 1
+                ? I18n.t("（验收口径：文字要求 / 脚本；也可接参考样例图 / 样片 / 基准文件，可多接）")
+                : I18n.t("（触发质检）"),
           zh: true,
         };
       /* Breeze 语音（bug 修复：它从前不在任何徽标白名单里，5 入 2 出全都没有标签）——
@@ -8707,7 +8831,24 @@ function portBadgeText(node, dir, idx, opt) {
     case "net_recv":
       return { badge: i === 0 ? I18n.t("信息") : I18n.t("控制"), title: "", zh: true };
     case "flux3klein_gen":
+    case "qwenimage_gen":
       return { badge: i === 0 ? I18n.t("图像") : I18n.t("控制"), title: "", zh: true };
+    /* 质检节点：0=报告 JSON · 1=控制·通过 · 2=控制·未过（判定口已撤掉：与两条控制出重复） */
+    case "qa_text":
+    case "qa_image":
+    case "qa_video":
+    case "qa_audio":
+    case "qa_file":
+      return {
+        badge:
+          i === 0
+            ? I18n.t("报告")
+            : i === 1
+              ? I18n.t("通过")
+              : I18n.t("未过"),
+        title: "",
+        zh: true,
+      };
     case "breeze_gen":
       /* 0 号出的是合成好的语音（与 save / 下游媒体端子同族）· 1 号是控制出 */
       return { badge: i === 0 ? I18n.t("音频") : I18n.t("控制"), title: "", zh: true };
@@ -8761,6 +8902,8 @@ function portBadgeIsControlOut(node, idx) {
     );
   if (node.kind === "super" && typeof superOutPortIsControl === "function")
     return !!superOutPortIsControl(node, i);
+  /* 质检节点：输出 1 / 2 是控制出（通过 / 未过），与 app.js 的 nodeEmitsControlOnPort 同口径 */
+  if (typeof isQaKindNode === "function" && isQaKindNode(node)) return i >= 1;
   return false;
 }
 
@@ -8795,12 +8938,20 @@ function portBadgeInIsCtrlPort(node, idx) {
     case "wait_file":
     case "timer":
     case "delayer":
+    case "popup":
     case "counter":
     case "gate":
     case "mutex":
     case "judge":
     case "task":
       return true; /* 这些节点的入线口本身就是控制流（与 inPortKindOf → control 一致） */
+    /* 质检节点：控制输入在端口 2（0 被检内容 · 1 质检要求 · 2 控制） */
+    case "qa_text":
+    case "qa_image":
+    case "qa_video":
+    case "qa_audio":
+    case "qa_file":
+      return i === 2;
     case "music_gen":
       return i === 2;
     case "yue_gen":
@@ -9191,10 +9342,12 @@ function nodeElement(node) {
     node.kind === "proc_text" ||
     node.kind === "proc_image" ||
     node.kind === "agent_task" ||
-    node.kind === "flux3klein_gen"
+    node.kind === "flux3klein_gen" ||
+    node.kind === "qwenimage_gen"
   ) {
-    /* FLUX 3 Image Klein 是本机后端节点，请求体由插件控制台负责，不给 ◈ 预览 */
-    if (node.kind !== "flux3klein_gen") head.append(...apiPreviewButtons(node));
+    /* FLUX 3 Image Klein / Qwen Image 2.1 是本机后端节点，请求体由插件控制台负责，不给 ◈ 预览 */
+    if (node.kind !== "flux3klein_gen" && node.kind !== "qwenimage_gen")
+      head.append(...apiPreviewButtons(node));
     if (node.kind === "proc_image") {
       head.appendChild(bgRmButtonEl(node));
       /* 画幅锁定：菜单栏小按钮，与首参考图保持一致长宽比（补边生图 → 出图裁回） */
@@ -9207,6 +9360,9 @@ function nodeElement(node) {
     /* FLUX 3 Image Klein：只留蒙版按钮（没有补边 / 画幅锁定这套口径），
        蒙版底图取端口 1 的第 1 张参考图（见 app.js 的 maskBaseImagePath） */
     if (node.kind === "flux3klein_gen" && typeof window.maskButtonEl === "function")
+      head.appendChild(window.maskButtonEl(node));
+    /* Qwen Image 2.1：同上，蒙版底图取端口 1 的第 1 张参考图 */
+    if (node.kind === "qwenimage_gen" && typeof window.maskButtonEl === "function")
       head.appendChild(window.maskButtonEl(node));
     if (node.kind === "proc_text") {
       /* 智能模式开关：提示词成为任务，agent 可读文件/联网/执行命令 */
@@ -9314,19 +9470,23 @@ function nodeElement(node) {
         head.appendChild(ib);
       }
     }
-    /* ▶ + ■ 那一对键：与生成族同一只实现（排队中同样给 ■） */
-    appendNodePlayBtns(
-      head,
-      node,
-      node.kind === "agent_task"
-        ? "运行智能任务：模型可读文件 / 联网 / 执行命令后完成"
-        : node.kind === "proc_text"
-          ? node.agent
-            ? "运行智能任务：提示词成为任务，模型可读文件 / 联网 / 执行命令后完成"
-            : "运行：基于提示词与输入内容调用文本模型"
-          : "运行：基于提示词与输入内容生成图像",
-      { stopTitle: "停止运行（立即中止模型请求）" },
-    );
+    /* ▶ + ■ 那一对键：与生成族同一只实现（排队中同样给 ■）。
+       FLUX 3 Image Klein / Qwen Image 2.1 是本地图像后端节点，头部那一对键由它们
+       各自分支里的 appendMediaPlayBtns 给（见下），这里不能再给一次 —— 否则头上会
+       并排出现两颗 ▶（本轮 bug：qwen 图像节点的运行按钮出现两遍）。 */
+    if (node.kind !== "flux3klein_gen" && node.kind !== "qwenimage_gen")
+      appendNodePlayBtns(
+        head,
+        node,
+        node.kind === "agent_task"
+          ? "运行智能任务：模型可读文件 / 联网 / 执行命令后完成"
+          : node.kind === "proc_text"
+            ? node.agent
+              ? "运行智能任务：提示词成为任务，模型可读文件 / 联网 / 执行命令后完成"
+              : "运行：基于提示词与输入内容调用文本模型"
+            : "运行：基于提示词与输入内容生成图像",
+        { stopTitle: "停止运行（立即中止模型请求）" },
+      );
   }
   if (node.kind === "task") {
     const chip = document.createElement("span");
@@ -9667,6 +9827,35 @@ function nodeElement(node) {
       head.appendChild(stop);
     }
   }
+  if (node.kind === "popup") {
+    const chip = document.createElement("span");
+    chip.className = "n-chip" + (node.running ? " on" : "");
+    chip.textContent = I18n.t("弹窗");
+    chip.title = I18n.t("控制脉冲到达时弹出一只窗，内容可当场填写 / 修改，确定后继续");
+    head.appendChild(chip);
+    const b = document.createElement("button");
+    b.className =
+      "n-play" + (node.running ? " running" : node.error ? " error" : "");
+    b.textContent = node.running ? "…" : "▶";
+    b.title = node.running
+      ? I18n.t("取消弹窗")
+      : I18n.t("立即弹窗并启用输出端目标");
+    b.onclick = (ev) => {
+      ev.stopPropagation();
+      playPopupNode(node, false);
+    };
+    head.appendChild(b);
+    if (node.running) {
+      const stop = document.createElement("button");
+      stop.className = "n-play n-stop";
+      stop.title = I18n.t("取消弹窗（控制流停在这里）");
+      stop.onclick = (ev) => {
+        ev.stopPropagation();
+        stopNode(node);
+      };
+      head.appendChild(stop);
+    }
+  }
   if (node.kind === "sequencer") {
     const chip = document.createElement("span");
     chip.className = "n-chip" + (node.running ? " on" : "");
@@ -9814,6 +10003,19 @@ function nodeElement(node) {
     appendBackendProbeBtn(head, node);
     appendMediaConsoleBtn(head, node);
     appendMediaPlayBtns(head, node, "调用 FLUX 3 Image Klein 本地后端生成图像");
+  }
+  /* Qwen Image 2.1：本地图像节点（状态 chip + ◎ 探活 + ▤ 控制台 + ▶/✕） */
+  if (node.kind === "qwenimage_gen") {
+    const chip = document.createElement("span");
+    chip.className = "n-chip" + (node.running ? " on" : "");
+    chip.textContent = I18n.t("图像");
+    chip.title = I18n.t(
+      "Qwen Image 2.1 7B DiT（本机出图 · INT8 / Turbo INT8）· 端子 0=提示词 · 1=参考图（≤10）· 执行时自动启停独立 ComfyUI（8196）",
+    );
+    head.appendChild(chip);
+    appendBackendProbeBtn(head, node);
+    appendMediaConsoleBtn(head, node);
+    appendMediaPlayBtns(head, node, "调用 Qwen Image 2.1 本地后端生成图像");
   }
   if (node.kind === "video_gen" || node.kind === "infinitetalk_gen" || node.kind === "soulxflashhead_gen") {
     const lc = node.kind === "infinitetalk_gen";
@@ -10071,6 +10273,30 @@ function nodeElement(node) {
       playFn: () => playJudgeNode(node),
     });
   }
+  /* 质检节点（五种同构）：判定徽标 + ▶（走 app-qa.js 的执行体；门禁与审批卡都在那边） */
+  if (typeof isQaKindNode === "function" && isQaKindNode(node)) {
+    const chip = document.createElement("span");
+    const v = String(node.qaVerdict || (node.qa && node.qa.verdict) || "");
+    chip.className =
+      "n-chip" + (v === "pass" ? " on" : "") + (v === "fail" || v === "blocked" ? " fail" : "");
+    chip.textContent =
+      v === "pass"
+        ? I18n.t("通过")
+        : v === "fail"
+          ? I18n.t("未过")
+          : v === "blocked"
+            ? I18n.t("需干涉")
+            : I18n.t("质检");
+    const meta = typeof qaKindMeta === "function" ? qaKindMeta(node) : null;
+    chip.title = I18n.t(
+      "按 JSON 评分标准打分（每维 0–100 · 加权成总分）+ 自动过关：通过走输出 1，未过走输出 2",
+    ) + (meta ? "\n" + I18n.t("被检对象：") + meta.content : "");
+    head.appendChild(chip);
+    appendNodePlayBtns(head, node, "运行质检：按评分标准取证 → 打分 → 通过 / 未过", {
+      stopTitle: "停止质检",
+      playFn: () => playQaNode(node),
+    });
+  }
   /* 素材节点：头部一颗「素材」徽标（未绑定 / 失联时一眼看得出来）＋ ⚙ 设置入口。
      素材的设置对着素材库改（显示名 / 描述 / 内容条目），不是画布字段表单，
      所以刻意不走 NODE_SETTINGS_FORMS 那套跳窗框架，避免两套设置口径。 */
@@ -10158,6 +10384,17 @@ function nodeElement(node) {
     if (tbChip) head.appendChild(tbChip);
     const tbBtn = toolBuildEntryButtonEl(node);
     if (tbBtn) head.appendChild(tbBtn);
+  }
+  /* 表单节点（input_form）：折叠 / 展开 / 刷新三颗小 icon 挂在头部菜单栏 ——
+     与其他节点的小按钮同一口径，body 里不再放这三颗按钮（实现见 app-input-form.js 的 headButtons）。 */
+  if (node.kind === "input_form" && window.IF && typeof window.IF.headButtons === "function") {
+    let ifBtns = [];
+    try {
+      ifBtns = window.IF.headButtons(node) || [];
+    } catch (_) {
+      ifBtns = [];
+    }
+    for (const b of ifBtns) if (b) head.appendChild(b);
   }
   /* 节点「?」说明按钮（自包含模块 renderer/app-nodehelp.js）：
      每个节点头部固定一颗，点击弹出最简语言的说明小窗；设置里可隐藏（默认打开）。
@@ -10315,7 +10552,11 @@ function nodeElement(node) {
         (it.accept ? I18n.t(" · 要求：") + String(it.accept) : "") +
         (it.required === false ? I18n.t(" · 选填") : "") +
         I18n.t("（连入即视为已交 · 上传后该端子消失）");
-    } else if (node.kind === "gate")
+    } else if (node.kind === "input_form")
+      inTitle = I18n.t(
+        "引用输入（连入即复制一份进本表单并断开连线 · 上游后续变化不再影响本表单）",
+      );
+    else if (node.kind === "gate")
       inTitle = I18n.t("闸门输入 ") + (i + 1) + I18n.t("（需全部到达）");
     else if (node.kind === "mutex")
       inTitle = I18n.t("互斥输入 ") + (i + 1);
@@ -10347,6 +10588,15 @@ function nodeElement(node) {
                 : I18n.t("控制输入（触发生成）");
     else if (node.kind === "flux3klein_gen")
       /* FLUX 3 Image Klein（端口口径 = app.js 的 IN_PORT_DATA_KINDS.flux3klein_gen）：
+         0 提示词 · 1 参考图（可多接，最多 10 张）· 2 控制输入 */
+      inTitle =
+        i === 0
+          ? I18n.t("提示词（要画成什么 · 可接文本节点）")
+          : i === 1
+            ? I18n.t("参考图（编辑用 · 可接多张图像，最多 10 张）")
+            : I18n.t("控制输入（触发生成）");
+    else if (node.kind === "qwenimage_gen")
+      /* Qwen Image 2.1（端口口径 = app.js 的 IN_PORT_DATA_KINDS.qwenimage_gen）：
          0 提示词 · 1 参考图（可多接，最多 10 张）· 2 控制输入 */
       inTitle =
         i === 0
@@ -10639,10 +10889,10 @@ function nodeElement(node) {
       else if (outKind === "video") outCls += " vid";
     } else if (node.kind === "judge" || node.kind === "task")
       outCls += oi === 0 ? " yes" : " no";
-    else if (node.kind === "flux3klein_gen" && oi === 0)
-      /* FLUX 3 Image Klein 图像节点的 0 号输出就是图像端子（与 inferMediaFromSource 判出的
-         连线配色同源）：涂上 .img，用户一眼看得懂「这根线喂给 save_image / 预览」。
-         端口 1 仍走下面的控制色（nodeEmitsControlOnPort）。 */
+    else if ((node.kind === "flux3klein_gen" || node.kind === "qwenimage_gen") && oi === 0)
+      /* 本地图像节点（FLUX 3 Klein / Qwen Image 2.1）的 0 号输出就是图像端子（与
+         inferMediaFromSource 判出的连线配色同源）：涂上 .img，用户一眼看得懂
+         「这根线喂给 save_image / 预览」。端口 1 仍走下面的控制色。 */
       outCls += " img";
     else if (outIsCtrl) outCls += " ctrl";
     p.className = outCls;
@@ -10673,10 +10923,10 @@ function nodeElement(node) {
       outTitle = I18n.t("分发输出 ") + (oi + 1);
     else if (node.kind === "net_recv")
       outTitle = oi === 0 ? I18n.t("信息输出（收到的文本）") : I18n.t("控制输出（收到消息时触发）");
-    else if (node.kind === "music_gen" || node.kind === "yue_gen" || node.kind === "flux3klein_gen" || node.kind === "video_gen" || node.kind === "infinitetalk_gen" || node.kind === "soulxflashhead_gen" || isVideoPostKind(node) || node.kind === "remotion")
+    else if (node.kind === "music_gen" || node.kind === "yue_gen" || node.kind === "flux3klein_gen" || node.kind === "qwenimage_gen" || node.kind === "video_gen" || node.kind === "infinitetalk_gen" || node.kind === "soulxflashhead_gen" || isVideoPostKind(node) || node.kind === "remotion")
       outTitle =
         oi === 0
-          ? node.kind === "flux3klein_gen"
+          ? node.kind === "flux3klein_gen" || node.kind === "qwenimage_gen"
             ? I18n.t("输出端子（本节点生成的图像 · 可直接连图像保存 / 预览）")
             : node.kind === "infinitetalk_gen"
               ? I18n.t("输出端子（生成的数字人视频 mp4 · 可直接连保存 / 预览）")
@@ -10751,6 +11001,60 @@ function nodeElement(node) {
       startWireDrag(node.id, ev, oi);
     });
     el.appendChild(p);
+  }
+  /* 节点层的「组」输出端子（本次需求）：右侧输出端子排最末一颗，形态 = 普通输出端子
+     （同尺寸同圆点），端子号 = 哨兵值 GROUP_OUT_INDEX，位置由 groupOutPortY 算（与连线几何
+     同源）。按住拖出的是一条组线 → 落到智能节点的「组」输入端子（判据见 app.js 的
+     isGroupOutPort / app-nodes.js 的 connectLayerGroup）。它不出现在顺序端子号里，
+     所以既有连线一颗都不会漂号；展开态由外层 .super-open 统一隐藏外侧端子。 */
+  if (node.kind === "super") {
+    const sWires = S.wf.wires.filter(
+      (w) => isGroupWire(w) && String(w.sup || "") === String(node.id),
+    );
+    const gp = document.createElement("div");
+    gp.className = "port out grp-out" + (sWires.length ? "" : " spare");
+    gp.dataset.node = node.id;
+    gp.dataset.fromIndex = String(GROUP_OUT_INDEX);
+    gp.title =
+      I18n.t(
+        "组输出端子：按住拖到智能节点的「组」输入端子，它就能拿到本层内部所有节点的清单与结构",
+      ) + (sWires.length ? I18n.t(" · 已接 ") + sWires.length : "");
+    gp.style.top = groupOutPortY(node) - PORT_R + "px";
+    gp.style.right = PORT_OFF - PORT_R + "px";
+    {
+      const pb = document.createElement("span");
+      pb.className = "port-badge grp-out-badge";
+      setPortBadgeName(pb, I18n.t("组"));
+      gp.appendChild(pb);
+    }
+    gp.addEventListener("mousedown", (ev) => {
+      ev.stopPropagation();
+      /* 右键 = 切断这一口上的组线（与组输入端子右键同一口径） */
+      if (ev.button === 2) {
+        hidePortTip();
+        return;
+      }
+      ev.preventDefault();
+      hidePortTip();
+      startWireDrag(node.id, ev, GROUP_OUT_INDEX);
+    });
+    gp.addEventListener("contextmenu", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const n = S.wf.wires.filter(
+        (w) => isGroupWire(w) && String(w.sup || "") === String(node.id),
+      ).length;
+      if (!n) {
+        toast(I18n.t("该端子没有组线"), "warn");
+        return;
+      }
+      pushHistory();
+      removeGroupWires(node.id);
+      renderCanvas();
+      scheduleSave(true);
+      toast(I18n.t("已断开组线"), "ok");
+    });
+    el.appendChild(gp);
   }
   } /* !superIsOpenShell — 收起时才有外侧端子 */
 
@@ -11688,6 +11992,20 @@ function applyNodeForm(el, node) {
   el.dataset.nodeForm = form;
   const body = nodeBodyEl(el);
   if (body) rebuildNodeBody(node, body);
+}
+
+/* 单个节点的 body 就地重建：body 内部的视图状态变了、但浏览 / 编辑形态没变时用。
+   applyNodeForm 只认「形态变没变」（el.dataset.nodeForm 一样就早退），所以「表单 ↔ 源码」
+   这类 body 内部的开关拿它当刷新口等于什么都没做（点了没反应，本 bug）。
+   调用方传节点对象即可；找不到元素 / body 返回 false，调用方可回落整幅重绘。 */
+function refreshNodeBody(node) {
+  if (!node || !node.id) return false;
+  const el = document.querySelector('.wf-node[data-nid="' + node.id + '"]');
+  if (!el) return false;
+  const body = typeof nodeBodyEl === "function" ? nodeBodyEl(el) : null;
+  if (!body) return false;
+  rebuildNodeBody(node, body);
+  return true;
 }
 
 /* 不重绘而直接改选中 class 的唯一正确姿势：sel class 与浏览 / 编辑形态一起同步。
@@ -15772,10 +16090,23 @@ function buildRemovedPluginBody(node, body) {
 }
 
 function buildBody(node, body) {
+  /* 应用节点（kind appnode）：卡片 = 应用名 + 状态（点 body 进全屏应用界面），
+     界面的浮层与页面桥都在 renderer/app-appnode.js（未载入时照旧渲染空卡片）。 */
+  if (node.kind === "appnode" && typeof appNodeBuildBody === "function") {
+    appNodeBuildBody(node, body);
+    return;
+  }
   /* 浏览态（未选中）优先走只读视图分支；handler 未接管时回落到下方编辑态渲染 */
   if (nodeBrowseMode(node) && buildBrowseBody(node, body)) return;
   if (node.kind === "longcat_avatar_gen") {
     buildRemovedPluginBody(node, body);
+    return;
+  }
+  /* 质检节点（五种同构）：板身只放运行结果（总分 / 判定 / 各维分）+ 可直接改的 JSON 评分标准，
+     不写任何说明文字；操作面是 ⚙ 设置与「人工裁决」按钮（renderer/app-qa.js）。 */
+  if (typeof isQaKindNode === "function" && isQaKindNode(node)) {
+    if (typeof qaBuildBody === "function") qaBuildBody(node, body);
+    else body.appendChild(document.createTextNode(I18n.t("质检执行体未加载")));
     return;
   }
   /* 函数节点 / 工具节点（工具＝super + tool:true 变体，判定 isToolNode）：
@@ -15826,6 +16157,21 @@ function buildBody(node, body) {
      的 uploadIntoAnyNode / convertAnyNodeTo / convertAnyNodeKind）。 */
   if (node.kind === "input_any") {
     buildInputAnyBody(node, body);
+    return;
+  }
+  /* 表单输入（kind input_form）：板身只放摘要（表单名 / 未填必填 / 前几行内容 / 素材缩略），
+     双击或「展开编辑」进大面板（字段编辑 / 拖入素材 / 描述 / 标注 / 识图 / JSON）。
+     实现全部在 renderer/app-input-form.js；这里只是一处挂载点（脚本未加载时给一行提示）。 */
+  if (node.kind === "input_form") {
+    body.classList.add("if-board-wrap");
+    if (window.IF && typeof window.IF.renderBody === "function") {
+      window.IF.renderBody(node, body);
+    } else {
+      const hint = document.createElement("div");
+      hint.className = "n-empty";
+      hint.textContent = I18n.t("表单模块未加载（renderer/app-input-form.js）");
+      body.appendChild(hint);
+    }
     return;
   }
   if (node.kind === "input_text") {
@@ -16788,7 +17134,7 @@ function buildBody(node, body) {
     const dec = document.createElement("button");
     dec.className = "mini";
     dec.textContent = I18n.t("助手拆解");
-    dec.title = I18n.t("让全局助手根据目标自动拆成内部任务图");
+    dec.title = I18n.t("让画布助手根据目标自动拆成内部任务图");
     dec.onclick = () => askAssistDecomposeTask(node);
     ops.appendChild(add);
     ops.appendChild(dec);
@@ -17336,6 +17682,50 @@ function buildBody(node, body) {
       node.delayStatus ||
       I18n.t("等待控制脉冲 · 延时 ") + formatDurationLabel(node.delaySec);
     body.appendChild(st);
+  } else if (node.kind === "popup") {
+    /* 弹窗节点：标题 + 正文都在卡片上直接改（改的就是下次弹出来那份内容），
+       下面是状态行（等待 / 弹窗中 / 已确认 / 已取消）。 */
+    normalizePopupNode(node);
+    const titleInp = document.createElement("input");
+    titleInp.type = "text";
+    titleInp.className = "n-title-input popup-node-title";
+    titleInp.style.cssText =
+      "width:100%;box-sizing:border-box;margin-bottom:4px;font-size:12px";
+    titleInp.placeholder = I18n.t("弹窗标题（留空用节点标题）");
+    titleInp.value = node.popupTitle || "";
+    titleInp.oninput = () => {
+      node.popupTitle = titleInp.value;
+      scheduleSave();
+    };
+    titleInp.onblur = () => {
+      scheduleSave(true);
+    };
+    titleInp.onclick = (ev) => ev.stopPropagation();
+    body.appendChild(titleInp);
+    const ta = document.createElement("textarea");
+    ta.className = "n-text popup-node-text";
+    ta.style.cssText = "width:100%;box-sizing:border-box;flex:1;min-height:80px;resize:none";
+    ta.value = node.popupText || "";
+    ta.placeholder = I18n.t("填写弹窗要显示的文字内容…");
+    ta.spellcheck = false;
+    ta.oninput = () => {
+      node.popupText = ta.value;
+      scheduleSave();
+    };
+    ta.onblur = () => {
+      scheduleSave(true);
+    };
+    ta.onclick = (ev) => ev.stopPropagation();
+    body.appendChild(ta);
+    const st = document.createElement("div");
+    st.className =
+      "n-status" +
+      (node.running ? " run" : node.error ? " err" : node.ranAt ? " done" : "");
+    st.textContent =
+      node.error ||
+      node.popupStatus ||
+      I18n.t("等待控制脉冲 · 到达时弹窗");
+    body.appendChild(st);
   } else if (node.kind === "sequencer") {
     normalizeSequencerNode(node);
     /* 输出路数 / 步间间隔 → ⚙ 跳窗（改路数会重画端子，表单里带 rerender） */
@@ -17520,23 +17910,32 @@ function buildBody(node, body) {
       node.yueStatus ||
       I18n.t("待生成（端子 P=风格提示词 · L=歌词 · ABC=谱面可选）");
     body.appendChild(st);
-  } else if (node.kind === "flux3klein_gen") {
-    /* FLUX 3 Image Klein：未装警示 + 可编辑提示词 +
+  } else if (node.kind === "flux3klein_gen" || node.kind === "qwenimage_gen") {
+    /* 本地图像节点（FLUX 3 Image Klein / Qwen Image 2.1）：未装警示 + 可编辑提示词 +
        ⚙ 摘要 + 后端面板 + 图像预览 + 状态行），产物仍落应用托管目录。 */
+    const isQwen = node.kind === "qwenimage_gen";
+    const pluginId = isQwen ? "qwen-image-local" : "flux3-klein-local";
+    const pluginName = isQwen ? "Qwen Image 2.1" : "FLUX 3 Image Klein";
     if (
       typeof appPluginMissing === "function"
-        ? appPluginMissing("flux3-klein-local")
-        : !appPluginInstalled("flux3-klein-local")
+        ? appPluginMissing(pluginId)
+        : !appPluginInstalled(pluginId)
     ) {
       const warn = document.createElement("div");
       warn.className = "n-empty n-plugin-warn";
       warn.textContent = I18n.t(
-        "⚠ FLUX 3 Image Klein 插件未安装：请在「插件 · FLUX 3 Image Klein」中安装后使用本节点",
+        isQwen
+          ? "⚠ Qwen Image 2.1 插件未安装：请在「插件 · Qwen Image 2.1」中安装后使用本节点"
+          : "⚠ FLUX 3 Image Klein 插件未安装：请在「插件 · FLUX 3 Image Klein」中安装后使用本节点",
       );
-      warn.title = I18n.t("插件 · FLUX 3 Image Klein：设置安装目录 → 安装（权重约 11GB / INT8 约 5.8GB）");
+      warn.title = I18n.t(
+        isQwen
+          ? "插件 · Qwen Image 2.1：设置安装目录 → 安装（权重约 23GB / INT8 约 6.8GB · Turbo INT8 约 6.8GB）"
+          : "插件 · FLUX 3 Image Klein：设置安装目录 → 安装（权重约 11GB / INT8 约 5.8GB）",
+      );
       body.appendChild(warn);
     }
-    /* 提示词：端子 0 有文字线时以线为准（见 playFlux3KleinNode / flux3kleinPromptText） */
+    /* 提示词：端子 0 有文字线时以线为准（见 playFlux3KleinNode / playQwenImageNode） */
     const f3 = document.createElement("div");
     f3.className = "n-field n-prompt";
     const hdr = document.createElement("div");
@@ -17550,7 +17949,9 @@ function buildBody(node, body) {
     ta.className = "n-text";
     ta.spellcheck = false;
     ta.placeholder = I18n.t(
-      "例如：把这张图的天空换成黄昏，其余保持不变… 输入 @ 引用已连接节点",
+      isQwen
+        ? "例如：一位穿红色风衣的女人站在雨夜街头… （Qwen Image 2.1 要成句的画面描述）"
+        : "例如：把这张图的天空换成黄昏，其余保持不变… 输入 @ 引用已连接节点",
     );
     ta.value = String(node.prompt || "");
     ta.addEventListener("keydown", (ev) => {
@@ -17568,7 +17969,9 @@ function buildBody(node, body) {
       node.prompt = v;
     });
     body.appendChild(f3);
-    appendFlux3KleinSummaryBody(node, body);
+    if (isQwen) {
+      if (typeof appendQwenImageSummaryBody === "function") appendQwenImageSummaryBody(node, body);
+    } else appendFlux3KleinSummaryBody(node, body);
     appendMediaBackendPanel(body, node);
     const prev = document.createElement("div");
     prev.className = "sv-prev mg-prev";
@@ -17595,12 +17998,12 @@ function buildBody(node, body) {
     }
     prev.appendChild(nameEl);
     body.appendChild(prev);
-    if (node.flux3kleinStatus || node.error) {
+    if (node.flux3kleinStatus || node.qwenimageStatus || node.error) {
       const stt = document.createElement("div");
       stt.className =
         "n-status" +
         (node.running ? " run" : node.error ? " err" : node.ranAt ? " done" : "");
-      stt.textContent = node.error || node.flux3kleinStatus;
+      stt.textContent = node.error || (isQwen ? node.qwenimageStatus : node.flux3kleinStatus);
       body.appendChild(stt);
     }
   } else if (node.kind === "breeze_gen") {
@@ -18755,7 +19158,7 @@ async function fillPreviews() {
         n.kind === "soulxflashhead_gen" ||
         n.kind === "remotion" ||
         (typeof isVideoPostKind === "function" && isVideoPostKind(n));
-      const isSnImg = n.kind === "flux3klein_gen";
+      const isSnImg = n.kind === "flux3klein_gen" || n.kind === "qwenimage_gen";
       const el = document.querySelector(
         (isSnImg ? "#snimg-" : isVid ? "#mgvid-" : "#mgaud-") + n.id,
       );

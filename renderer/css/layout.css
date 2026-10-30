@@ -5,7 +5,8 @@
   gap: 6px;
   padding: 8px 14px;
   background: linear-gradient(180deg, var(--panel2), var(--panel));
-  border-bottom: 3px solid var(--bd);
+  border-bottom: 1px solid var(--bd2);
+  box-shadow: 0 1px 0 rgba(0, 0, 0, .25), 0 4px 12px -6px rgba(0, 0, 0, .35);
   position: relative;
   z-index: 5;
 }
@@ -26,6 +27,14 @@
   justify-content: flex-start;
   gap: 6px;
   flex-wrap: wrap
+}
+
+/* 第二排工具行间距 6px → 4px：1280 宽时整排 29 枚按钮（≈1100px）+ 28 个 6px 间距
+   恰好比可用宽多出十来 px，最右的「设置」会孤零零掉到第二行（独占一行，白白吃掉画布高度）。
+   收 2px = 省出 56px，1280 及以上稳定一行；更窄时照旧整排换行。分组靠 .sep 竖线，不靠间距。
+   写成 .tb-row-2.actions：下面的 .actions{gap:6px} 同特异度且更靠后，单写 .tb-row-2 压不住。 */
+.tb-row-2.actions {
+  gap: 4px
 }
 
 .tb-end {
@@ -223,7 +232,7 @@ html[lang="en"] .logo-txt {
   width: 1px;
   align-self: stretch;
   background: var(--bd2);
-  margin: 2px 2px
+  margin: 4px 4px
 }
 
 .ver-tag {
@@ -237,13 +246,14 @@ html[lang="en"] .logo-txt {
 button {
   background: linear-gradient(180deg, var(--panel2), var(--panel));
   border: 2px solid var(--bd2);
+  border-radius: 4px;
   color: var(--ink);
   padding: 6px 12px;
   font-size: 12.5px;
-  letter-spacing: 1px;
+  letter-spacing: .5px;
   cursor: pointer;
   position: relative;
-  transition: border-color .15s, color .15s, transform .05s;
+  transition: border-color var(--dur-fast), color var(--dur-fast), background-color var(--dur-fast), box-shadow var(--dur-fast), transform .05s;
 }
 
 button:hover {
@@ -256,13 +266,14 @@ button:active {
 }
 
 button.primary {
-  background: linear-gradient(180deg, #3a2a18, #241a0f);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--orange) 24%, var(--panel2)), color-mix(in srgb, var(--orange) 12%, var(--panel)));
   border-color: var(--orange);
   color: var(--orange2)
 }
 
 button.primary:hover {
-  color: #fff
+  color: var(--ink);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--orange) 34%, var(--panel2)), color-mix(in srgb, var(--orange) 18%, var(--panel)))
 }
 
 button.ghost {
@@ -322,6 +333,11 @@ button.mini.danger:hover {
 button:disabled {
   opacity: .45;
   cursor: not-allowed
+}
+
+/* 禁用态不响应按下：灰掉的按钮点下去不再「沉一下」，免得看起来像点上了 */
+button:disabled:active {
+  transform: none
 }
 
 .topbar .tb-view {
@@ -389,8 +405,10 @@ button:disabled {
 /* 顶栏「工具库」＝普通工具箱线性图标：走 currentColor，尺寸由上面的 .btn-ico svg 统一（14px） */
 
 .topbar .btn-ico .btn-ico-txt {
-  font-size: 9px;
-  font-weight: 700;
+  /* 9px → 10px：9px 的中文在 100% 缩放下笔画糊成一团（「隐藏线」「素材库」几乎认不出）。
+     按钮 min-width 36px 不变；三字标签宽 30px 仍在 3.6em 的上限内，超出照旧省略号。 */
+  font-size: 10px;
+  font-weight: 600;
   letter-spacing: 0;
   line-height: 1;
   font-family: var(--sans);
@@ -416,19 +434,22 @@ button:disabled {
   max-width: min(280px, 70vw);
   padding: 5px 8px;
   border: 1px solid var(--bd2);
+  border-radius: 4px;
   background: linear-gradient(180deg, var(--panel2), var(--panel));
   color: var(--ink);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 400;
   letter-spacing: 0;
-  line-height: 1.35;
+  line-height: 1.4;
   text-align: left;
   white-space: normal;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, .35);
+  box-shadow: var(--shadow-pop);
   opacity: 0;
   visibility: hidden;
   pointer-events: none;
   z-index: 40;
+  /* 仍是「即时」出现（不加延迟，口径见上），只补一段淡入，不再硬闪 */
+  transition: opacity var(--dur-fast), visibility 0s var(--dur-fast);
 }
 
 .topbar .btn-ico[data-tip]:hover::after,
@@ -437,19 +458,29 @@ button:disabled {
 .topbar .tb-view[data-tip]:focus-visible::after {
   opacity: 1;
   visibility: visible;
+  transition: opacity var(--dur-fast), visibility 0s;
 }
 
 .wf-select {
   background: var(--code);
   color: var(--ink);
   border: 2px solid var(--bd2);
+  border-radius: 4px;
   padding: 0 6px;
   font-size: 12px;
+  /* 可收缩：窗口窄时先让工作流下拉让出宽度（长名字本来就靠省略），再轮到整排换行 */
+  flex: 0 1 150px;
+  min-width: 104px;
   max-width: 150px;
   outline: none;
   cursor: pointer;
   box-sizing: border-box;
   height: 32px;
+  transition: border-color var(--dur-fast);
+}
+
+.wf-select:hover {
+  border-color: color-mix(in srgb, var(--orange) 55%, var(--bd2))
 }
 
 .wf-select:focus {
@@ -482,7 +513,7 @@ button:disabled {
 }
 
 .btn-lang-badge {
-  font-size: 8px;
+  font-size: 10px;
   font-weight: 800;
   letter-spacing: 0;
   line-height: 1;
@@ -792,8 +823,8 @@ button:disabled {
 }
 
 .btn-stack-txt {
-  font-size: 9px;
-  font-weight: 700;
+  font-size: 10px;
+  font-weight: 600;
   letter-spacing: 0;
   line-height: 1;
   font-family: var(--sans);
@@ -840,10 +871,12 @@ button:disabled {
   min-height: 180px;
 }
 
+/* 插件卡片网格（本轮需求：插件页要「最多 2 行 + 分页」并且 logo 缩小，避免占版面）。
+   卡片最小宽 132px、封面 64px：一行能摆更多，页高由分页器钉死在「2 行」。 */
 .plugin-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+  gap: 8px;
   align-content: start;
 }
 
@@ -852,10 +885,10 @@ button:disabled {
   position: relative;
   border: 1px solid var(--bd2);
   background: linear-gradient(180deg, var(--panel2), var(--panel));
-  padding: 8px;
+  padding: 6px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
   min-width: 0;
   /* 本轮需求：卡片本体不再是可点区域（看信息走封面右上角那颗 ⓘ），所以不再给手型光标；
      仍然可点的只有「自建插件」那一栏（.np-tile，见下方规则）。 */
@@ -871,24 +904,24 @@ button:disabled {
 /* 安装后自检通过 → 封面左上角一枚勾（只给通过的卡片；未测过 / 失败 / 跳过的卡片没有它） */
 .plugin-tile-done {
   position: absolute;
-  top: 4px;
-  left: 4px;
-  width: 20px;
-  height: 20px;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
   display: flex;
   align-items: center;
   justify-content: center;
   color: #4dd0c4;
   background: rgba(8, 12, 18, .82);
   border: 1px solid rgba(77, 208, 196, .55);
-  border-radius: 4px;
+  border-radius: 3px;
   pointer-events: none;
   z-index: 2;
 }
 
 .plugin-tile-done svg {
-  width: 14px;
-  height: 14px;
+  width: 11px;
+  height: 11px;
   display: block;
 }
 .plugin-tile:hover {
@@ -903,8 +936,8 @@ button:disabled {
 .plugin-tile-cover {
   /* relative：右上角那颗 ⓘ 信息角标按**封面**定位（锚在卡片上会在宽卡里飘离封面右上角） */
   position: relative;
-  width: 128px;
-  height: 128px;
+  width: 64px;
+  height: 64px;
   margin: 0 auto;
   flex: none;
   background: #0a0d12;
@@ -913,13 +946,14 @@ button:disabled {
 }
 
 /* 信息入口（本轮需求）：插件卡片本体不再响应点击，看插件信息只能点这颗 ⓘ。
-   常态半透明（不抢封面），悬停卡片 / 悬停角标 / 键盘聚焦时提亮到不透明。 */
+   常态半透明（不抢封面），悬停卡片 / 悬停角标 / 键盘聚焦时提亮到不透明。
+   封面缩到 64px 后角标也缩到 16px，免得盖住半张图。 */
 .plugin-tile-info {
   position: absolute;
-  top: 4px;
-  right: 4px;
-  width: 20px;
-  height: 20px;
+  top: 2px;
+  right: 2px;
+  width: 16px;
+  height: 16px;
   padding: 0;
   display: flex;
   align-items: center;
@@ -927,7 +961,7 @@ button:disabled {
   color: var(--cyan);
   background: rgba(8, 12, 18, .82);
   border: 1px solid rgba(120, 200, 255, .45);
-  border-radius: 4px;
+  border-radius: 3px;
   cursor: pointer;
   opacity: .55;
   transition: opacity .15s ease, border-color .15s ease;
@@ -935,8 +969,8 @@ button:disabled {
 }
 
 .plugin-tile-info svg {
-  width: 13px;
-  height: 13px;
+  width: 11px;
+  height: 11px;
   display: block;
 }
 
@@ -952,8 +986,8 @@ button:disabled {
 }
 
 .plugin-tile-cover img {
-  width: 128px;
-  height: 128px;
+  width: 64px;
+  height: 64px;
   display: block;
   object-fit: contain;
   pointer-events: none;
@@ -966,10 +1000,10 @@ button:disabled {
 }
 
 .plugin-tile-ph {
-  width: 128px;
-  height: 128px;
+  width: 64px;
+  height: 64px;
   background: repeating-conic-gradient(#151b27 0% 25%, #0a0d12 0% 50%);
-  background-size: 16px 16px;
+  background-size: 12px 12px;
 }
 
 .plugin-tile-title {
@@ -2802,4 +2836,322 @@ button.mini.btn-sq.ws-browse svg {
 .plugin-vram-bar .plugin-vram-hint {
   font-family: var(--mono);
   opacity: .85
+}
+
+/* ── 分区 + 分页（本轮需求：插件页最多 2 行，其余翻页） ───────────────
+   三个区块各用一套分页器：商店插件 / 重后端注册中心 / 自建插件，互不影响。
+   列数由渲染层按容器宽度算（卡片最小 132px + 8px 间距），每页 = 列数 × 2 行。 */
+.pg-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.pg-pager {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+  min-height: 22px;
+}
+
+.pg-pager[hidden] {
+  display: none;
+}
+
+.pg-pager button {
+  min-width: 24px;
+  height: 22px;
+  padding: 0 6px;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.pg-pager .pg-dots {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+
+.pg-pager .pg-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--bd2);
+}
+
+.pg-pager .pg-dot.on {
+  background: var(--cyan);
+}
+
+/* ── 重后端注册中心（插件页第二块，自成一区） ───────────────────────
+   与商店插件卡片同一套视觉语言，但内容不同：名称 / 类型 / 来源 / 状态 / 动作。
+   详情与登记表单走 .br-pop（persistent：点外部不关，只走 ✕ / Esc / 再点一次）。 */
+.br-sec {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--bd);
+}
+
+.br-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.br-head h4 {
+  margin: 0;
+  font-size: 13px;
+  letter-spacing: .5px;
+  color: var(--orange2);
+}
+
+.br-head .br-count {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.br-head .br-note {
+  flex: 1;
+  min-width: 160px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.br-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(196px, 1fr));
+  gap: 8px;
+}
+
+.br-card {
+  position: relative;
+  border: 1px solid var(--bd2);
+  background: linear-gradient(180deg, var(--panel2), var(--panel));
+  padding: 8px;
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  min-width: 0;
+  cursor: pointer;
+}
+
+.br-card:hover {
+  border-color: var(--cyan);
+}
+
+.br-logo {
+  width: 32px;
+  height: 32px;
+  flex: none;
+  border: 1px solid var(--bd);
+  background: #0a0d12;
+  color: var(--cyan);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.br-main {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.br-name {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--txt);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.br-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--muted);
+  flex-wrap: wrap;
+}
+
+.br-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.br-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+.br-dot.on {
+  background: #4dd0c4;
+}
+
+.br-dot.warn {
+  background: #e8b04b;
+}
+
+.br-dot.err {
+  background: #e05d5d;
+}
+
+.br-acts {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+
+.br-empty {
+  border: 1px dashed var(--bd2);
+  padding: 14px;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.7;
+}
+
+/* 注册中心区块底部的「插件后端」只读行（插件里的本机后端，启停仍在插件卡片） */
+.br-plugins {
+  margin-top: 8px;
+  font-size: 11px;
+  line-height: 1.7;
+  color: var(--muted);
+  word-break: break-word;
+}
+
+.br-pop {
+  position: fixed;
+  z-index: 9000;
+  width: min(520px, calc(100vw - 40px));
+  max-height: min(72vh, 640px);
+  overflow: auto;
+  border: 1px solid var(--bd2);
+  background: var(--panel);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, .55);
+  padding: 12px;
+  display: none;
+}
+
+.br-pop.on {
+  display: block;
+}
+
+.br-pop h3 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: var(--orange2);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.br-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-bottom: 8px;
+}
+
+.br-field > label {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.br-field input,
+.br-field select,
+.br-field textarea {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: inherit;
+  font-size: 12px;
+}
+
+.br-field textarea {
+  min-height: 64px;
+  resize: vertical;
+}
+
+.br-row {
+  display: flex;
+  gap: 8px;
+}
+
+.br-row > .br-field {
+  flex: 1;
+  min-width: 0;
+}
+
+.br-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+
+.br-kv {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.6;
+  word-break: break-all;
+}
+
+.br-log {
+  margin: 0;
+  padding: 8px;
+  max-height: 180px;
+  overflow: auto;
+  background: #070a0f;
+  border: 1px solid var(--bd);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: #9fb3c8;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.br-audit {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--muted);
+  max-height: 180px;
+  overflow: auto;
+}
+
+.br-audit li {
+  padding: 2px 0;
+  border-bottom: 1px dashed var(--bd);
+  word-break: break-all;
+}
+
+.br-err {
+  color: #e05d5d;
+  font-size: 11px;
+  margin: 4px 0;
+  word-break: break-all;
 }

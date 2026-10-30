@@ -831,6 +831,9 @@ function ltEl(tag, cls, txt) {
 
 /* ── 挂载：把条带插进 .wf-wrap 的 .fn-toolbar 之前 ───────────────── */
 function ltMount() {
+  /* 总开关关着（app-longtask.js 的 window.LT_DISABLED）：整条状态机条带不挂载，
+     画布上方那根细线与所有入口都不出现。 */
+  if (window.LT_DISABLED) return;
   const wrap = document.getElementById("wfWrap");
   if (!wrap || document.getElementById("ltStrip")) return;
   const strip = ltEl("div", "lt-strip");
@@ -876,6 +879,7 @@ function ltMount() {
 let LT_LAST_WF = "";
 let LT_LAST_WF_OBJ = null; /* 最近一次同步到的画布对象（细线落盘要用它取 id） */
 function ltStripSync() {
+  if (window.LT_DISABLED) return;
   const wf = typeof S !== "undefined" ? S.wf : null;
   const id = wf && wf.id ? String(wf.id) : "";
   if (id !== LT_LAST_WF) {
@@ -1799,6 +1803,10 @@ function ltForceAdvanceBtn(wf, run) {
 /* 头部那颗「✎ 修改任务链」的落点：弹窗模块（renderer/app-longtask-edit.js）挂的就是它。
    模块没加载（脚本分层 / 单测环境）时不静默失败，明确告诉用户去哪找。 */
 function ltOpenEditDlg(wf, uid) {
+  if (window.LT_DISABLED) {
+    toast(ltT("长周期任务暂时停用（正在修复中），入口与状态机已隐藏"), "warn");
+    return;
+  }
   if (typeof window.ltOpenEditDlg === "function") {
     try {
       window.ltOpenEditDlg(wf, uid);
@@ -1966,6 +1974,10 @@ function ltEmptyState(wf) {
    （新建对话框那一栏，见 app-longtask-create.js 的 window.ltCreateAgentCfg）：
    给了就按它把整张图的 Agent 环节选型一次填好，不给仍回落全局默认。 */
 async function ltNewTask(wf, ctx) {
+  if (window.LT_DISABLED) {
+    toast(ltT("长周期任务暂时停用（正在修复中），入口与状态机已隐藏"), "warn");
+    return null;
+  }
   ltEnsure(wf);
   const startId = "n_start";
   const endId = "n_end";
@@ -5506,6 +5518,7 @@ function buildDeliverBody(node, body) {
 
 /* ── 启动：挂载条带 + 恢复未结束的 run ───────────────────────── */
 async function ltBoot() {
+  if (window.LT_DISABLED) return; /* 停用期：不挂条带、不恢复 run、不弹检查点提示 */
   ltMount();
   const wf0 = typeof S !== "undefined" ? S.wf : null;
   /* 启动就套上**当前这张画布**自己记得的分割线（需求 1）：没记过的画布回退全局开合。 */

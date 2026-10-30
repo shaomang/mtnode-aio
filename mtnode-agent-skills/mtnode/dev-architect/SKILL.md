@@ -1,7 +1,7 @@
 ---
 name: mtnode-dev-architect
 title: 开发节点架构师
-description: 用「开发节点」（super + dev:true 的项目功能块）在 MTNode 画布上搭建/分析软件项目架构。模式 A：扫描已有项目，生成覆盖全项目的开发节点架构图（不确定处询问用户）；模式 B：新项目先搭架构、用户明确「确认」后按画布逐块搭建项目。生成开发节点时同步在项目根产出 AGENTS.md 共识文件（目录约定 / 不要修改清单），所有建议 / 开发 / 细化会话先读并遵守，并在最外层建 agent.md 入口文件节点（应用内 Markdown 阅读器可查看 / 编辑 / 保存）。每个功能块可用 devModel / devPreset / devEffort 指定 Agent 模型、预设与思考强度（建议 / 开发 / 细化与问询会话都按这三项下达，三项各自就近向上继承、互不牵连，思考档只由设置决定 · 界面回显即实际下发），可用 devColor 自定义外框颜色，可用 devFiles 记录本块核心文件列表（最多 10 条 · 相对项目根 · 建块时就填 · 最外层项目块不填）；细化按**深度**口径执行（剥洋葱指逐层下钻到底，不是一次只建一层）：默认一次把该块拆到无法再细为止（一般停在文件级），最终画布应呈现多层开发节点；先输出多层梗概树（每块标注类型 / 将用颜色 / 是否继续下钻），经用户一次确认后才自顶向下逐层 create，并有总量护栏（深度≤4、单次≤60 块，超限分域分批）；「概述」分两段：非技术功能说明 + 工程实现梗概；「建议 / 开发 / 细化」按钮均先弹对话框确认（建议 = AI 只读评估代码与进度后给 4 条方案，可多选 + 补充，同一对话框点「开发」即开工；开发 = 填写本次需求；细化 = 确认是否继续展开），确认后在新建的绑定会话中运行；细化先报多层梗概树、经用户确认才建节点，无需或无法细化时明确告知原因；元素层级 模块→（子模块，可多层）→文件→类/接口/枚举（模块按 8 类功能色卡传 devColor，文件类用类型默认色，未分类留空）；元素间关系用关系线（rel 直线、可双向箭头、可带文字，点选节点时相关线高亮）。Use ONLY when the user asks to build / analyze dev-node architecture ON the MTNode canvas (Mode A/B, or refine sub-nodes on canvas); do NOT use during bound 开发 / 细化 sessions (they are real code work driven by their own task briefs).
+description: 在画布上用开发节点（super + dev）搭建 / 分析项目架构（模式 A 扫描 / 模式 B 新建，含细化与总量护栏）；只在用户要求建架构时用。
 ---
 
 # 开发节点架构师（mtnode-dev-architect）

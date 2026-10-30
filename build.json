@@ -32,6 +32,9 @@
     "assets-store.js",
     "shots-cache.js",
     "apps-store.js",
+    /* 应用节点（画布上的 kind appnode）：main.js require 它，漏进白名单就是
+       Cannot find module './apps-node-store.js' */
+    "apps-node-store.js",
     "apps-capabilities.js",
     /* 应用分支合并（他人分支 → 我本机开发中的那一支）：apps-store.js require 它，
        漏进白名单 = 打包后 Cannot find module './app-branch-merge.js'
@@ -44,6 +47,17 @@
     "wechat-pc.js",
     "wechat-fastlogin.js",
     "media-gen-global-lock.js",
+    /* 重后端注册中心（与插件体系并存）：main.js require 宿主 → 宿主 require 数据层。
+       漏进白名单 = 打包后启动即 Cannot find module './main-backend-registry.js'（窗口都出不来）。 */
+    "main-backend-registry.js",
+    "backend-registry-store.js",
+    /* 项目 manifest（资产登记 / asset_id 版本 / 依赖图 / 增量重建）：同一条 require 链
+       main.js → main-manifest.js → manifest-store.js，漏了打包后启动即 Cannot find module。 */
+    "main-manifest.js",
+    "manifest-store.js",
+    /* 自动质检（proc_qa）：main.js require 它 —— ffprobe 硬指标、抽帧给 VLM、
+       报告落 qa/reports/。漏进白名单 = 打包后 Cannot find module './main-qa-media.js'。 */
+    "main-qa-media.js",
     /* 工作目录临时文件占用与清理（顶栏「工作目录占用与清理」+ 设置里的同名入口）：
        main.js require 它，漏进白名单就是打包后 Cannot find module './workspace-temp.js'
        （面板一点就报错，统计与清理整块失效）。 */
@@ -135,6 +149,7 @@
     "infinitetalk/**",
     "soulxflashhead/**",
     "flux3klein/**",
+    "qwenimage/**",
     "remotion/**",
     "plugins/**",
     "forum/**",
@@ -144,6 +159,9 @@
     "dsh/README.md",
     "guides/**",
     "skills/**",
+    /* 质检模板库（随包内置：文本质检 / 图像质检 / 视频质检 / 音频质检 / 文件质检）：
+       节点下拉读的是 <appPath>/qa-templates/*.json，漏进白名单 = 打包后模板下拉是空的。 */
+    "qa-templates/**",
     "templates/**",
     "package.json",
     "version",
@@ -432,6 +450,20 @@
       /* FLUX 3 Image Klein（独立 ComfyUI，8197）：安装窗步骤表 + 安装 / 冒烟脚本 + 启动器。 */
       "from": "flux3klein-pack",
       "to": "flux3klein-pack",
+      "filter": [
+        "scripts/**",
+        "README.md",
+        "start_backend.cmd",
+        "steps.json",
+        "manifest.json",
+        "requirements.txt",
+        ".gitignore"
+      ]
+    },
+    {
+      /* Qwen Image 2.1（独立 ComfyUI，8196）：安装窗步骤表 + 安装 / 冒烟脚本 + 启动器。 */
+      "from": "qwenimage-pack",
+      "to": "qwenimage-pack",
       "filter": [
         "scripts/**",
         "README.md",

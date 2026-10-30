@@ -1143,9 +1143,11 @@ function gsDocSections(cat) {
 }
 
 const GS_GUIDES = [
-  "input_text", "input_image", "input_audio", "input_video", "input_any", "input_file",
+  "input_text", "input_image", "input_audio", "input_video", "input_any", "input_form", "input_file",
   "proc_text", "proc_image", "agent_task", "db_table", "remotion",
   "music_gen", "breeze_gen", "video_gen", "save", "save_pdf", "control", "judge", "task",
+  /* 质检节点（五种各有自己的节点指南） */
+  "qa_text", "qa_image", "qa_video", "qa_audio", "qa_file",
   "wait_file", "timer", "delayer", "sequencer", "gate", "splitter", "counter",
   "mutex", "split", "merge", "super", "db_replica", "global", "execute",
   "tool", "function", "net_recv", "net_send",

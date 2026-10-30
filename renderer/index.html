@@ -285,7 +285,7 @@
         <button id="btnSidebar" class="corner mini btn-sq" data-i18n-title="节点与绘图列表边栏" title="节点与绘图列表边栏">☰</button>
         <div id="wfTabs" class="wf-tabs"></div>
         <div id="wfWsBox" class="wf-ws-box"></div>
-        <button id="btnAssist" class="corner mini btn-sq" data-i18n-title="全局 AI 助手（右侧栏）" title="全局 AI 助手（右侧栏）">✦</button>
+        <button id="btnAssist" class="corner mini btn-sq" data-i18n-title="画布助手（右侧栏）" title="画布助手（右侧栏）">✦</button>
       </div>
       <div id="canvas" class="fn-canvas">
         <!-- 画布面包屑（#taskCrumb）：本轮需求把它从上面那一行 tabs 工具条（.fn-toolbar）
@@ -519,21 +519,22 @@
       </div>
     </div>
   </section>
-  <aside class="assist-pane" id="assistPane" aria-label="全局 AI 助手">
+  <aside class="assist-pane" id="assistPane" aria-label="画布助手">
     <div class="assist-resize" id="assistResize" data-i18n-title="拖动分界线调整助手栏宽度（整条边界都可拖）" title="拖动分界线调整助手栏宽度（整条边界都可拖）"></div>
-    <!-- 头部＝这条助手会话的身份行（本次需求 · 与原生会话一致）：
-         标题 + ▣所属画布 + 最后对话时间；右侧三颗会话操作（改名 / 新建一条 / 会话视图）
-         直接平铺（本次需求：原来的「…」浮层已撤，栏宽够摆下这三颗）。
-         原来的「清空」按钮已撤掉 —— 它就是「新建一条」，两个入口做同一件事只会让人犹豫。 -->
+    <!-- 头部＝这条助手会话的身份行（与原生会话一致）：
+         标题 + ▣所属画布 + 最后对话时间；右侧三颗会话操作（改名 / 清空 / 会话视图）
+         直接平铺（原来的「…」浮层已撤，栏宽够摆下这三颗）。
+         「清空」（原名「新建一条」，功能等价）= 结束当前这条助手会话：正文立刻清空、
+         重启也不会再自动绑回，旧会话只留在左栏会话历史里可回看；下一次输入时新建一条。 -->
     <div class="assist-head">
       <div class="assist-id">
-        <span class="assist-id-title" id="assistTitle" data-i18n="全局助手">全局助手</span>
+        <span class="assist-id-title" id="assistTitle" data-i18n="画布助手">画布助手</span>
         <span class="assist-id-wf" id="assistWf" hidden></span>
         <span class="assist-id-when" id="assistWhen" hidden></span>
       </div>
       <div class="assist-head-acts" id="assistHeadActs">
         <button type="button" id="btnAssistRename" class="mini assist-sess-btn" data-i18n="改名" data-i18n-title="改这条助手会话的标题（回车确认 · Esc 取消）" title="改这条助手会话的标题（回车确认 · Esc 取消）">改名</button>
-        <button type="button" id="btnAssistNew" class="mini assist-sess-btn" data-i18n="新建一条" data-i18n-title="结束当前这条助手会话（旧会话仍留在左栏可回看），下一条发送时新建" title="结束当前这条助手会话（旧会话仍留在左栏可回看），下一条发送时新建">新建一条</button>
+        <button type="button" id="btnAssistNew" class="mini assist-sess-btn" data-i18n="清空" data-i18n-title="清空当前画布助手的对话（旧会话只留在左栏会话历史里可回看，重启后不会再自动绑回），下一次输入时新建" title="清空当前画布助手的对话（旧会话只留在左栏会话历史里可回看，重启后不会再自动绑回），下一次输入时新建">清空</button>
         <button type="button" id="btnAssistOpenView" class="mini assist-sess-btn" data-i18n="会话视图" data-i18n-title="在会话视图打开：切到会话视图看这条会话（那里有完整的计划 / 浏览器活动面板）" title="在会话视图打开：切到会话视图看这条会话（那里有完整的计划 / 浏览器活动面板）">会话视图</button>
       </div>
       <button type="button" id="btnAssistClose" class="mini btn-sq" data-i18n-title="关闭右侧助手栏" title="关闭右侧助手栏">✕</button>
@@ -659,6 +660,11 @@
       </div>
     </div>
     <div class="assist-list" id="assistList"></div>
+    <!-- 子代理状态条（本次需求）：输入框正上方，只说**当前显示的这条**助手会话名下
+         还在后台跑的子代理（子代理 1 运行中 · 1m32s，走秒由 app-subagent.js 就地改）。
+         没有在跑的子代理时整块 hidden —— 不留空壳占位。见 app-assist.js 的
+         paintAssistSubagentStrip / renderer/app-subagent.js。 -->
+    <div class="assist-subs" id="assistSubs" hidden></div>
     <div class="assist-input-row">
       <textarea id="assistInput" class="chat-input" rows="2" data-i18n-placeholder="问助手…（Enter 发送，Shift+Enter 换行；输入 / 呼出技能）" placeholder="问助手…（Enter 发送，Shift+Enter 换行；输入 / 呼出技能）"></textarea>
       <button id="assistSend" class="mini primary" data-i18n="发送">发送</button>
@@ -762,6 +768,13 @@
      必须排在最前：它是全渲染层（含 app.js / app-canvas.js / app-nodes.js）的公共出口，
      虽然彼此都在调用期取，但加载顺序写在这里 = 依赖关系写在这里。 -->
 <script src="app-clipboard.js"></script>
+<!-- 子代理运行表（renderer/app-subagent.js → window.MTNodeSubagent）：引擎的 subagent
+     工具天生异步（调用立刻回 started subagent <id>，后台跑完再发结算通知），而父那一轮
+     往往在通知到达前就 idle 收尾了 —— 网关为此挂常驻长订阅、帧走 reqId 为空的全局通道
+     （preload 的 dshOnSubagent）。本模块是渲染侧唯一的运行表，四个入口共用：会话工具卡 /
+     左栏会话行徽标 / 左下运行队列 / 画布助手栏状态条。无加载期依赖（调用期取 I18n 与
+     window.api），故排在 app.js 之前即可。 -->
+<script src="app-subagent.js"></script>
 <script src="app.js"></script>
 <!-- 模型形态识别（文本 / 图像生成）：纯函数段，设置页模型徽标、节点服务商 / 模型
      下拉、运行期兜底、导入导出解析共用同一份判定（见 renderer/app-model-kind.js）。
@@ -821,6 +834,11 @@
 <script src="app-agent.js"></script>
 <script src="app-prompt-sections.js"></script>
 <script src="app-db.js"></script>
+<!-- 项目 manifest 执行桥（renderer/app-manifest.js · 缺口文档 P0-2 / G2+G3）：
+     Agent 工具 mtnode_manifest 的帧在这里落到主进程 manifest:op；顺带给生成节点的
+     requireAsset 闸门（playNode 调用期按 typeof 取 mfAssetGate，故本文件排在
+     app-nodes.js 之前即可，顶层不引用任何后加载绑定）。 -->
+<script src="app-manifest.js"></script>
 <!-- PDF → Markdown 解析编排（renderer/pdf-markdown.js）：结构化解析（pdf:parse 文本层）→
      没有文本层则逐页识图 dshRunTask({images}) 还原 Markdown / LaTeX → 再失败给可读错误；
      一次进度窗 + 可取消。三处消费方共用 window.openPdfParse / pdfIsPdfPath /
@@ -862,6 +880,17 @@
      执行体由 app-nodes.js 的 playNodeBody 在调用期取 playFlux3KleinNode；
      设置表单在 app-flux3klein.js 末尾注册（registerNodeSettingsForm 已在 app.js 定义）。 -->
 <script src="app-flux3klein.js"></script>
+<!-- Qwen Image 2.1 本地出图节点（qwenimage_gen）：执行体 + ⚙ 设置表单。
+     执行体由 app-nodes.js 的 playNodeBody 在调用期取 playQwenImageNode；
+     设置表单在 app-qwenimage.js 末尾注册（registerNodeSettingsForm 已在 app.js 定义）。 -->
+<script src="app-qwenimage.js"></script>
+<!-- 质检节点族（qa_text / qa_image / qa_video / qa_audio / qa_file · 缺口文档 P0-4）：
+     执行体 + 门禁（未过只置需干涉并走未过出 · 人工裁决按需打开）+ ⚙ 设置表单（评分标准 JSON 模板 /
+     质检模型）+ body 里可直接改的 JSON 标准（存 qaTemplateJson，入 1 接线即只读）。
+     放在 app-canvas.js 之后（注册设置表单要 registerNodeSettingsForm
+     先定义）；执行体由 app-nodes.js 的 playNodeBody 与 app.js 的 pulseExecFrom 在调用期取
+     playQaNode，板身由 app-canvas.js 的 buildBody 调用期取 qaBuildBody。 -->
+<script src="app-qa.js"></script>
 <!-- 图像生成 · 蒙版局部重绘编辑器（自包含：window.openMaskEditor / maskButtonEl）。
      放在 app-canvas.js 之后：节点头部按钮在 renderCanvas 里按调用期取它。 -->
 <script src="app-mask.js"></script>
@@ -903,6 +932,12 @@
      它要在启动时把 NODE_SETTINGS_FORMS 里已登记的表单统一包一层「参数覆写」明细，
      并接住之后由 app-nodeplugins.js 在运行期登记的插件节点表单。 -->
 <script src="app-node-params.js"></script>
+<!-- 表单输入节点（renderer/app-input-form.js · kind input_form · window.IF）：字段结构 + 值
+     的本体是一份 JSON，供人填写 / 拖入素材；图像与视频带描述、标签与注释（矩形框 / 时间点），
+     描述可点「识图补充」自动生成。板身摘要由 app-canvas.js 挂载，双击开大面板（persistent，
+     只走 ✕ / Esc 关闭）。样式在 css/input-form.css。排在 app-node-params.js 之后：
+     运行期取 S.config / toast / copyImageFromPath / dshRunTask 等既有全局。 -->
+<script src="app-input-form.js"></script>
 <script src="app-store.js"></script>
 <!-- 工作流库（renderer/app-workflows.js · 顶栏「工作流库」+ 节点层右键「保存到工作流库 /
      分享到工坊」）：工作流 = 一颗节点层连同它的整棵子树，没有新节点类型，也没有新执行语义。
@@ -929,6 +964,13 @@
      app-comments.js 侧按需调用，接线在对方文件里，本文件不碰它们）。 -->
 <script src="app-messages.js"></script>
 <script src="app-plugins.js"></script>
+<!-- 重后端注册中心（renderer/app-backend-registry.js）：插件对话框本页的「第二块」+
+     通用分页器（mkPagedBlock：商店插件 / 注册中心 / 自建插件三块各一套，每块最多 2 行）。
+     必须排在 app-plugins.js **之后** —— 它用那里的 mkPluginActBtn / PLUGIN_ACT_SVG / I18n /
+     toast，并在调用期被 openAppPluginsDialog 取用（加载顺序只在调用期生效，故放这里最稳）。
+     数据全走 window.api.backendRegistry*（主进程 main-backend-registry.js +
+     backend-registry-store.js），渲染层不碰进程、不预置任何后端声明。 -->
+<script src="app-backend-registry.js"></script>
 <!-- 应用中心封面的「界面先出、图像一次到位」懒加载（renderer/app-apps-img.js）：
      先挂 1×1 透明占位建壳，进视口才取图，同一窗口周期的一批图一起换上（CSS 里 .apps-img-in
      做一次淡入，样见 css/apps.css）。本文件自包含、不依赖 app-apps.js，但必须排在它**之前**
@@ -1196,5 +1238,10 @@
      必须排在 app-assist.js / app-db.js / app.js 之后（调用期按 typeof 取既有全局）。 -->
 <script src="app-session-bridge.js"></script>
 <script src="app-footer-mascot.js"></script>
+<!-- 应用节点（kind appnode）：画布区里的全屏应用界面 + 页面桥（canvas / agent / fs /
+     tools / net / data 逐类白名单）。必须排在 app.js / app-canvas.js / app-assist.js 之后
+     —— 它要在载入时补 NODE_DEFAULTS / KIND_CLS / KIND_TAGS / KIND_ICON_SVG 那几张表，
+     并向 registerNodeSettingsForm 登记 ⚙ 表单。见 renderer/app-appnode.js 顶部口径。 -->
+<script src="app-appnode.js"></script>
 </body>
 </html>

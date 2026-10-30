@@ -178,6 +178,23 @@
     );
   }
 
+  function mcpHandleManifest(frame) {
+    /* 项目 manifest（mtnode_manifest）：与 db 同一条路 —— root 显式优先，否则取目标画布
+       的工作目录（铁律：主进程不猜路径，渲染层定好后传进去）。 */
+    const p = Object.assign({}, frame.params || {});
+    const ref = String(p.canvas || "").trim();
+    delete p.canvas;
+    const target = ref ? resolveWf(ref) : null;
+    const wf = target || (typeof currentVisibleWf === "function" ? currentVisibleWf() : S.wf);
+    if (typeof handleManifestToolEvent !== "function") {
+      const err = "manifest 执行桥未加载（renderer/app-manifest.js）";
+      reply(frame.id, { ok: false, error: err }, err);
+      return;
+    }
+    const replyToMcp = (result, error) => reply(frame.id, result, error);
+    return handleManifestToolEvent({ id: frame.id, action: p.action, params: p }, null, wf, replyToMcp);
+  }
+
   function mcpHandleFacts(frame) {
     const p = Object.assign({}, frame.params || {});
     const ref = String(p.canvas || "").trim();
@@ -330,6 +347,8 @@
             return await mcpHandleCanvas(frame, runKey);
           case "db":
             return mcpHandleDb(frame, runKey);
+          case "manifest":
+            return mcpHandleManifest(frame);
           case "facts":
             return mcpHandleFacts(frame);
           case "asset":

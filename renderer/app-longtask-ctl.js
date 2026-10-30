@@ -586,7 +586,7 @@
     return out;
   }
   /* 留空时真正生效的默认选型（路由 · 模型 · 预设 · 思考强度）
-     = 全局助手 / 会话的当前选择（真源 preferredAgentProviderRoute /
+     = 画布助手 / 会话的当前选择（真源 preferredAgentProviderRoute /
      preferredAgentModelForRoute + S.assistPreset / S.assistEffort） */
   function ltaDefaults(routes) {
     const list = routes || ltaRoutes();

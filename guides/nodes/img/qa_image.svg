@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 620 252" width="620" height="252">
+  <rect width="620" height="252" fill="#0d1016"/>
+  <defs>
+    <marker id="arr" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M0,0 L8,4 L0,8 z" fill="#f0c14d"/>
+    </marker>
+    <marker id="arrg" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M0,0 L8,4 L0,8 z" fill="#5fd68a"/>
+    </marker>
+    <marker id="arrr" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M0,0 L8,4 L0,8 z" fill="#ff6b6b"/>
+    </marker>
+  </defs>
+  <rect x="16" y="20" width="116" height="38" rx="6" fill="#141a24" stroke="#7f8fa6" stroke-width="1.6"/>
+  <text x="74" y="43" text-anchor="middle" fill="#e8eef6" font-size="11.5" font-family="Segoe UI,sans-serif">图片（被检内容）</text>
+  <rect x="16" y="84" width="116" height="38" rx="6" fill="#141a24" stroke="#7f8fa6" stroke-width="1.6"/>
+  <text x="74" y="107" text-anchor="middle" fill="#e8eef6" font-size="11.5" font-family="Segoe UI,sans-serif">质检要求（文字 + 样例）</text>
+  <rect x="16" y="148" width="116" height="38" rx="6" fill="#141a24" stroke="#7f8fa6" stroke-width="1.6"/>
+  <text x="74" y="171" text-anchor="middle" fill="#e8eef6" font-size="11.5" font-family="Segoe UI,sans-serif">控制（脉冲）</text>
+  <line x1="132" y1="39" x2="196" y2="80" stroke="#f0c14d" stroke-width="1.8" marker-end="url(#arr)"/>
+  <line x1="132" y1="103" x2="196" y2="103" stroke="#f0c14d" stroke-width="1.8" marker-end="url(#arr)"/>
+  <line x1="132" y1="167" x2="196" y2="126" stroke="#f0c14d" stroke-width="1.8" marker-end="url(#arr)"/>
+  <rect x="196" y="58" width="150" height="90" rx="6" fill="#181220" stroke="#c9a0ff" stroke-width="1.6"/>
+  <text x="271" y="84" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">图像质检</text>
+  <text x="271" y="102" text-anchor="middle" fill="#9aa4b2" font-size="10.5" font-family="Segoe UI,sans-serif">JSON 标准 → Agent 取证</text>
+  <text x="271" y="119" text-anchor="middle" fill="#9aa4b2" font-size="10.5" font-family="Segoe UI,sans-serif">→ 0–100 总分</text>
+  <text x="271" y="136" text-anchor="middle" fill="#9aa4b2" font-size="10.5" font-family="Segoe UI,sans-serif">→ 通过 / 未过</text>
+  <line x1="346" y1="84" x2="404" y2="48" stroke="#5fd68a" stroke-width="1.8" marker-end="url(#arrg)"/>
+  <line x1="346" y1="122" x2="404" y2="158" stroke="#ff6b6b" stroke-width="1.8" marker-end="url(#arrr)"/>
+  <rect x="404" y="24" width="130" height="40" rx="6" fill="#101610" stroke="#5fd68a" stroke-width="1.6"/>
+  <text x="469" y="48" text-anchor="middle" fill="#e8eef6" font-size="11.5" font-family="Segoe UI,sans-serif">通过 → 下游</text>
+  <rect x="404" y="140" width="130" height="40" rx="6" fill="#1a1010" stroke="#ff6b6b" stroke-width="1.6"/>
+  <text x="469" y="164" text-anchor="middle" fill="#e8eef6" font-size="11.5" font-family="Segoe UI,sans-serif">未过 → 输出 3 · 需干涉</text>
+  <text x="310" y="212" text-anchor="middle" fill="#5a6472" font-size="10" font-family="Segoe UI,sans-serif">入 0 被检内容 · 入 1 质检要求（文字要求 + 参考样例，同一条端子可多接）· 入 2 控制</text>
+  <text x="310" y="230" text-anchor="middle" fill="#5a6472" font-size="10" font-family="Segoe UI,sans-serif">qa_image · qa/reports/{id}.json · 未过走输出 3 · 人工裁决按需打开（接受 / 放弃）</text>
+</svg>

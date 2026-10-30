@@ -1,0 +1,44 @@
+{
+  "version": 2,
+  "kind": "text",
+  "title": "文本质检 · 剧本 / 口播稿",
+  "description": "给剧本、分镜文案、口播稿用的质量线：钩子、节奏、可拍性优先于文采。",
+  "passLine": 82,
+  "dimensions": [
+    {
+      "id": "hook",
+      "title": "开场钩子",
+      "weight": 20,
+      "minScore": 55,
+      "criteria": "前 3 秒 / 前两行是否给出让人继续看下去的信息或冲突。平铺直叙、以背景介绍开场按程度扣分。"
+    },
+    {
+      "id": "clarity",
+      "title": "表达清楚",
+      "weight": 25,
+      "minScore": 60,
+      "criteria": "一句话说清时间、地点、人物、动作；台词念出来不拗口；没有歧义代词。"
+    },
+    {
+      "id": "shootable",
+      "title": "可拍性",
+      "weight": 25,
+      "minScore": 60,
+      "criteria": "描述能否直接变成镜头：有可视动作、有景别或机位线索、不依赖旁白解释。抽象心理描写占比过高扣分。"
+    },
+    {
+      "id": "pacing",
+      "title": "节奏",
+      "weight": 15,
+      "minScore": 50,
+      "criteria": "信息释放的节奏是否有起伏，是否在中段塌掉；字数与目标时长是否匹配。"
+    },
+    {
+      "id": "voice",
+      "title": "口吻一致",
+      "weight": 15,
+      "minScore": 50,
+      "criteria": "全篇人称、时态、语气是否统一，是否符合目标受众；突然跳脱、口播腔与书面腔混用扣分。"
+    }
+  ]
+}

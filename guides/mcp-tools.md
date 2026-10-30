@@ -33,6 +33,7 @@ node scripts/build-mcp-contract.mjs --check  # 只比对，不一致退码 1（�
 | --- | --- |
 | `dsh/gateway/canvas-plugin.mjs`（`mtnode_canvas_get` / `mtnode_app` / `mtnode_canvas_edit` / `mtnode_vision`） | `mcp-tools.json` 的 `tools[]`（含 `inputSchema`） |
 | `dsh/gateway/db-plugin.mjs`（`mtnode_db`） | 同上 |
+| `dsh/gateway/manifest-plugin.mjs`（`mtnode_manifest`） | 同上 |
 | `dsh/gateway/ai-facts-plugin.mjs`（`mtnode_facts`） | 同上 |
 | `dsh/gateway/longtask-plugin.mjs`（`lt_state`） | 同上 |
 | `dsh/gateway/assets-plugin.mjs`（`mtnode_assets`） | 同上 |

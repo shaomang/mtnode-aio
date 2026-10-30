@@ -158,6 +158,72 @@ function Invoke-NativeHost {
   return $code
 }
 
+# ---- venv pip health / repair ------------------------------------------------
+# Measured failure (console.log of a real install): every dependency attempt across all
+# three mirrors ended in
+#   ModuleNotFoundError: No module named 'pip._vendor.rich'
+# and the install window reported "install failed: requirements_install_failed" -- a venv
+# that was fine except for pip itself, and re-running the installer could never fix it
+# because the broken pip was never rebuilt.
+# Cause: pip was upgraded in place ("python -m pip install --upgrade pip"), and that
+# upgrade writes the new pip package directory before the old metadata is dropped -- it
+# renames the previous "pip-<ver>.dist-info" to "~ip-<ver>.dist-info" and then unpacks.
+# Interrupted (window closed / host killed / antivirus lock), it leaves a truncated
+# site-packages\pip (bundled _vendor dirs half written) next to the "~ip-*.dist-info"
+# leftover, and *every* later pip call dies at import time.
+# Both helpers below probe pip without ever throwing, and the repair rebuilds pip from the
+# interpreter's own bundled wheel (ensurepip), so a half-written pip is self-healing.
+function Test-VenvPip {
+  param([string]$VenvPy)
+  if (-not (Test-Path -LiteralPath $VenvPy)) { return $false }
+  [void](Invoke-NativeHost $VenvPy @("-m", "pip", "--version"))
+  return ($script:MTNativeCode -eq 0)
+}
+
+function Repair-VenvPip {
+  param([string]$VenvPy)
+  if (-not (Test-Path -LiteralPath $VenvPy)) { return $false }
+  $venvRoot = Split-Path -Parent (Split-Path -Parent $VenvPy)
+  $sp = Join-Path $venvRoot "Lib\site-packages"
+  Write-Host "[yue2-install] pip in the venv cannot start -- rebuilding it from the bundled wheel (ensurepip)"
+  # Drop the half-written package and the "~ip-<ver>.dist-info" leftovers first: with the
+  # old metadata still present ensurepip considers pip "already installed" and does nothing.
+  if (Test-Path -LiteralPath $sp) {
+    foreach ($pat in @("pip", "~ip", "pip-*.dist-info", "~ip-*.dist-info")) {
+      Get-ChildItem -LiteralPath $sp -Filter $pat -Force -ErrorAction SilentlyContinue | ForEach-Object {
+        try { Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction Stop } catch { }
+      }
+    }
+  }
+  [void](Invoke-NativeHost $VenvPy @("-m", "ensurepip", "--upgrade", "--default-pip"))
+  if (Test-VenvPip $VenvPy) {
+    Write-Host "[yue2-install] pip rebuilt from ensurepip ok"
+    return $true
+  }
+  # ensurepip can be absent from a trimmed standalone Python: extract its bundled pip
+  # wheel straight into the venv site-packages (pip is used as "python -m pip", so the
+  # console scripts are not needed).
+  Write-Host "[yue2-install] ensurepip did not restore pip -- extracting the bundled pip wheel directly"
+  $extract = @'
+import glob, os, site, sys, zipfile, ensurepip
+bundled = os.path.join(os.path.dirname(ensurepip.__file__), "_bundled")
+wheels = sorted(glob.glob(os.path.join(bundled, "pip-*.whl")))
+if not wheels:
+    print("no bundled pip wheel next to ensurepip")
+    sys.exit(2)
+sp = site.getsitepackages()[0]
+with zipfile.ZipFile(wheels[-1]) as z:
+    z.extractall(sp)
+print("pip wheel extracted into " + sp)
+'@
+  [void](Invoke-NativeHost $VenvPy @("-c", $extract))
+  if (Test-VenvPip $VenvPy) {
+    Write-Host "[yue2-install] pip restored by extracting the bundled wheel"
+    return $true
+  }
+  return $false
+}
+
 # Read the torch version string out of the venv, never dying on it.
 # Returns "" when torch is absent / not importable -- both are "the CUDA build is not
 # in place" for every caller below (they then take the reinstall branch instead of
@@ -329,11 +395,44 @@ if (-not (Test-Path $venvPy)) {
   throw "venv_creation_failed"
 }
 
-Write-Progress-Line 16 "upgrading pip..."
-foreach ($idx in $PipIndexes) {
-  & $venvPy -m pip install --upgrade pip -i $idx --trusted-host $PipHost | Out-Host
-  if ($LASTEXITCODE -eq 0) { break }
-  Write-Host "[yue2-install] upgrading pip from $idx failed, trying the next mirror..."
+$venvRoot = Split-Path -Parent (Split-Path -Parent $venvPy)
+Write-Progress-Line 16 "checking pip in the venv..."
+if (-not (Test-VenvPip $venvPy)) {
+  if (-not (Repair-VenvPip $venvPy)) {
+    Write-Host "[yue2-install] error: pip inside the venv cannot be imported and the automatic repair failed."
+    Write-Host "[yue2-install]        delete $venvRoot and re-run the installer; the downloaded model weights are kept."
+    Write-AgentResult "false" "venv_pip_broken"
+    throw "venv_pip_broken"
+  }
+}
+# Upgrade pip only when it is genuinely old. A redundant in-place self-upgrade is exactly the
+# window that leaves a truncated pip behind (see Repair-VenvPip), and the pip bundled with
+# Python 3.11/3.12 installs every wheel this project needs.
+$pipVersion = ""
+[void](Invoke-NativeHost $venvPy @("-m", "pip", "--version"))
+$pipLine = ($script:MTNativeMsg -split "`r?`n" | Select-Object -First 1)
+if ($script:MTNativeMsg -match 'pip\s+(\d+)\.(\d+)') {
+  $pipVersion = "$($Matches[1]).$($Matches[2])"
+  $pipMajor = [int]$Matches[1]
+}
+if ($pipVersion -and $pipMajor -ge 24) {
+  Write-Host "[yue2-install] pip $pipVersion is recent enough -- skipping the self-upgrade"
+} else {
+  Write-Host "[yue2-install] upgrading pip ($pipLine)..."
+  foreach ($idx in $PipIndexes) {
+    & $venvPy -m pip install --upgrade pip -i $idx --trusted-host $PipHost | Out-Host
+    if (-not (Test-VenvPip $venvPy)) {
+      Write-Host "[yue2-install] the pip upgrade left pip unusable -- rebuilding it before continuing"
+      if (-not (Repair-VenvPip $venvPy)) {
+        Write-Host "[yue2-install] error: pip could not be rebuilt after the upgrade; delete $venvRoot and re-run."
+        Write-AgentResult "false" "venv_pip_broken"
+        throw "venv_pip_broken"
+      }
+      break
+    }
+    if ($LASTEXITCODE -eq 0) { break }
+    Write-Host "[yue2-install] upgrading pip from $idx failed, trying the next mirror..."
+  }
 }
 
 # ---------------------------------------------------------------- 3. dependencies
@@ -351,12 +450,27 @@ if (-not (Test-Path $ReqFile)) {
 # build (--no-deps + --force-reinstall from the cu directory). That is the critical gate of the chain.
 $depsOk = $false
 foreach ($idx in $PipIndexes) {
+  # pip can be left half-written by anything that interrupts a package install (window closed,
+  # antivirus lock, disk full): re-check it before every attempt so a broken pip is repaired
+  # instead of failing the same way on all three mirrors.
+  if (-not (Test-VenvPip $venvPy)) {
+    Write-Host "[yue2-install] pip stopped working before the dependency step -- repairing it"
+    if (-not (Repair-VenvPip $venvPy)) { break }
+  }
   Write-Host "[yue2-install] pip index: $idx"
   & $venvPy -m pip install -r $ReqFile gradio -i $idx --trusted-host $PipHost | Out-Host
   if ($LASTEXITCODE -eq 0) { $depsOk = $true; break }
   Write-Host "[yue2-install] installing dependencies from $idx failed, retrying on the next mirror..."
 }
 if (-not $depsOk) {
+  Write-Host "[yue2-install] error: dependencies could not be installed from any mirror."
+  if (Test-VenvPip $venvPy) {
+    Write-Host "[yue2-install]        pip in the venv starts fine, so this is a network / mirror problem."
+    Write-Host "[yue2-install]        retry later, or pass a reachable index with -TorchIndex / MTNODE_PIP_INDEX."
+  } else {
+    Write-Host "[yue2-install]        pip in the venv cannot start and could not be rebuilt from the bundled wheel."
+    Write-Host "[yue2-install]        delete $venvRoot and re-run this script; the downloaded weights are kept."
+  }
   Write-AgentResult "false" "requirements_install_failed"
   throw "requirements_install_failed"
 }

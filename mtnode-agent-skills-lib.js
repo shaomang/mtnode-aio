@@ -12,6 +12,7 @@ const CATEGORY_TITLES = {
   canvas: "画布工作流模板",
   music: "音乐生成（MiniMax Music）",
   video: "视频生成（MiniMax H3）",
+  image: "图像生成（Qwen Image）",
   writing: "写作与润色",
 };
 
@@ -195,9 +196,9 @@ function readIndexAt(root) {
   return buildIndexFromTree(root);
 }
 
-/* 索引行的「一句话」：取 description 的第一个分句（到第一个「。；;」或英文句点 + 空格截止），
-   再压到 60 字以内。瘦身口径（用户已确认）：索引只负责让模型知道「有这个技能」——
-   完整描述本来就在 skill 工具的候选清单里，不必每轮把 160 字长描述随系统提示重发。 */
+/* 「一句话」：取 description 的第一个分句（到第一个「。；;」或英文句点 + 空格截止），
+   再压到 60 字以内。compactIndexText 已改成只给「名字 + title」不再带它，
+   这里保留给需要短摘要的调用方（与冒烟的口径）。 */
 function skillIndexOneLiner(desc) {
   const s = String(desc || "").replace(/\s+/g, " ").trim();
   if (!s) return "";
@@ -214,11 +215,13 @@ function compactIndexText(index, maxChars) {
     "【MTNode 内置技能索引】仅摘要；匹配任务后再用 skill 工具（name 如下）或 read 读取完整 SKILL.md。",
     "",
   ];
+  /* 只给「名字 + 极短标签（title）」：技能描述本来就随引擎技能目录一起下发，
+     这里再抄一遍一句话（每条约 60 字）只是同一份信息在系统提示里的第二份拷贝。
+     按名 skill 调用靠 name，触发判断靠 title；完整描述 / 正文仍由 skill 工具给。 */
   for (const cat of index.categories || []) {
     lines.push("[" + (cat.title || cat.id) + "]");
     for (const sk of cat.skills || []) {
-      const one = skillIndexOneLiner(sk.description);
-      lines.push("- " + sk.name + " | " + (sk.title || sk.id) + (one ? " | " + one : ""));
+      lines.push("- " + sk.name + " | " + (sk.title || sk.id));
     }
     lines.push("");
   }

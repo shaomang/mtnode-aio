@@ -208,6 +208,13 @@
             "zh": "素材库与素材节点",
             "en": "Asset library"
           }
+        },
+        {
+          "id": "manifest",
+          "title": {
+            "zh": "项目 manifest：资产登记与增量重建",
+            "en": "Project manifest: assets & rebuild"
+          }
         }
       ]
     },

@@ -423,6 +423,15 @@
   opacity: 1
 }
 
+/* 组线高亮只提饱和、不提亮：.fn-edge.linked 的 brightness(1.75) 会把紫色洗成白色，
+   真机上就看不出这条线是组线了（阴影结构照旧保留） */
+.fn-edge.grp.linked {
+  stroke: #b9a3ff;
+  filter: saturate(1.15) drop-shadow(0 1px 0 rgba(0, 0, 0, .5))
+    drop-shadow(0 2px 2px rgba(0, 0, 0, .42))
+    drop-shadow(0 5px 9px rgba(0, 0, 0, .35))
+}
+
 .fn-edge.aud {
   stroke: #8ed4ff
 }
@@ -3280,6 +3289,28 @@ body.theme-light .n-chip.n-chip-lt {
   color: #a78bfa
 }
 
+/* 节点层的组输出端子（本次需求）：形态与普通输出端子完全一致（同尺寸同圆点、同在右排），
+   只把金属圈与徽标换成组线那支紫色 —— 一眼看出它拖出的是组线而不是数据线。
+   光标用 crosshair：它是拖线起点，不是按钮。 */
+.port.out.grp-out {
+  --rim: #a78bfa;
+  cursor: crosshair
+}
+
+.port.out.grp-out>.port-badge {
+  border-color: #a78bfa;
+  color: #a78bfa
+}
+
+/* 组输出端子不跟「备用端子」一起褪色：它没有对应参数可填，接没接线都得一眼看见
+   （.port.spare 的 opacity / saturate 会把它压成灰白，真机上几乎找不到） */
+.port.out.grp-out.spare,
+.port.out.grp-out.spare:hover {
+  opacity: .92;
+  filter: none
+}
+
+
 /* 节点层内侧端子：桥端子（.out）在子画布左缘、汇端子（.in）在右缘 → 按所在一侧出字 */
 .port.out.super-inner-bridge>.port-badge {
   right: 100%;
@@ -5020,6 +5051,30 @@ body.theme-light .n-chip.n-chip-lt {
   border-color: var(--cyan)
 }
 
+/* 节点板身里的多行文本输入框**至少 3 行**：
+   下限按框自己的行高算（lh，随 .n-text 的 12.5px/1.5 与 .in 的 1.7 自动跟着变），
+   +16px 给上下内边距（6px×2）与边框（1px×2）留余量。
+   由来：Qwen / FLUX 图像节点的提示词框与摘要行、后端面板、图像预览同在一条 flex 列里，
+   空间不够时它被一路挤到不足 1 行，字都看不全。3 行是硬下限，再挤由 .n-body 自己滚。 */
+.wf-node .n-body textarea {
+  min-height: calc(3lh + 16px);
+}
+
+/* 提示词那一列（.n-field.n-prompt > .n-prompt-wrap > textarea）不许比框更矮：
+   min-content 把上面那条 3 行下限沿 flex 链传上去（两处原先都是 min-height:0），
+   否则框会溢出包裹层、压在下面的摘要 / 预览上。 */
+.n-field.n-prompt,
+.n-field .n-prompt-wrap {
+  min-height: min-content;
+}
+
+/* 框有了硬下限后，板身装不下就自己滚（与 .music / .video / .tts 同一口径），
+   不再被 .n-body 的 overflow:hidden 把提示词框或状态行裁掉。 */
+.wf-node>.n-body:has(textarea) {
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
 /* 文本节点板身正文框（KIND_CLS.input_text = "in"）：行高比基准放宽到 1.7。
    基准 1.5 是给其它节点的短文本框（提示词 / 判据 / 任务框）用的，它们旁边的只读面
    仍是 1.5（.n-md-prev 等）；文本节点这一面要跟自己的浏览态预览同高 ——
@@ -7779,3 +7834,204 @@ body.theme-light .n-chip.n-chip-lt {
 .breeze-ref-wave .n-wave-meta {
   display: none;
 }
+
+/* ═════════ 应用节点（kind appnode）：卡片 + 画布区全屏界面 + 选应用浮层 ═════════
+   见 renderer/app-appnode.js。浮层只覆盖画布区（top/left/宽高由 JS 按 #canvas 的量算），
+   关闭只走 ✕ / Esc（持久浮层口径：点外面不关）。 */
+.wf-node.appnode {
+  border-color: #7c8cff66;
+  background: linear-gradient(180deg, #141624, #101220)
+}
+.appnode-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  height: 100%;
+  box-sizing: border-box;
+  justify-content: center;
+  cursor: pointer;
+}
+.appnode-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: #dfe4ff;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.appnode-state {
+  font-size: 11.5px;
+  color: #a9b0d8;
+}
+.appnode-state.bad { color: #ff9a9a; }
+.appnode-hint,
+.appnode-dir {
+  font-size: 11px;
+  color: #7f86ad;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.appnode-pick-btn {
+  align-self: flex-start;
+  padding: 4px 10px;
+  font-size: 12px;
+  border-radius: 4px;
+  border: 1px solid #7c8cff66;
+  background: #1d2140;
+  color: #dfe4ff;
+  cursor: pointer;
+}
+.appnode-pick-btn:hover { background: #262c52; }
+/* 卡片上的「完全停止」：与「收起」分开的一颗，危险动作用红边，但不用大面积红底 */
+.appnode-stop-btn {
+  border-color: #7a4444;
+  background: #241a1e;
+  color: #ffb9b9;
+}
+.appnode-stop-btn:hover {
+  border-color: #c85a5a;
+  background: #332027;
+  color: #ffd0d0;
+}
+
+.appnode-host {
+  position: fixed;
+  z-index: 820;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid var(--bd2);
+  border-radius: 6px;
+  overflow: hidden;
+  box-shadow: var(--shadow-pop);
+}
+.appnode-host[hidden] { display: none !important; }
+/* 工具条与画布自己的 .fn-toolbar 同一套高度 / 底色 / 分隔线，看起来是画布的一部分 */
+.appnode-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 38px;
+  min-height: 38px;
+  padding: 0 10px;
+  background: var(--panel2);
+  border-bottom: 1px solid var(--bd);
+  flex: 0 0 auto;
+}
+.appnode-bar-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+  min-width: 0;
+  max-width: 26%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.appnode-bar-sub {
+  font-size: 11px;
+  color: var(--muted);
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 34%;
+}
+.appnode-bar-spacer { flex: 1 1 auto; }
+/* 与产品里的 button.mini 同一观感：1px 边框、顶部受光渐变、悬停转橙 */
+.appnode-bar-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: 26px;
+  min-width: 28px;
+  padding: 0 8px;
+  flex: 0 0 auto;
+  border: 1px solid var(--bd2);
+  border-radius: 4px;
+  background: linear-gradient(180deg, var(--panel2), var(--panel));
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1;
+  letter-spacing: .5px;
+  cursor: pointer;
+  transition: border-color var(--dur-fast), color var(--dur-fast), background-color var(--dur-fast), transform .05s;
+}
+.appnode-bar-btn:hover { border-color: var(--orange); color: var(--orange2); }
+.appnode-bar-btn:active { transform: translateY(1px); }
+.appnode-bar-btn svg { width: 14px; height: 14px; display: block; flex: none; }
+.appnode-bar-btn-txt { white-space: nowrap; }
+.appnode-bar-stop { color: var(--red); }
+.appnode-bar-stop:hover { border-color: var(--red); color: var(--red); }
+.appnode-bar-close { padding: 0 10px; }
+.appnode-body { position: relative; flex: 1 1 auto; min-height: 0; }
+.appnode-frame { width: 100%; height: 100%; border: 0; display: block; background: #0b0d14; }
+.appnode-note {
+  position: absolute;
+  inset: 24px 24px auto 24px;
+  z-index: 2;
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: #3a2c14;
+  color: #ffe6b0;
+  font-size: 12.5px;
+  line-height: 1.7;
+}
+.appnode-note[hidden] { display: none !important; }
+
+.appnode-picker {
+  position: fixed;
+  inset: 0;
+  z-index: 900;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(4, 6, 12, .55);
+}
+.appnode-picker-box {
+  width: min(520px, 90vw);
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+  background: #12151f;
+  border: 1px solid #2a2f45;
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, .6);
+}
+.appnode-picker-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid #242838;
+}
+.appnode-picker-title { flex: 1 1 auto; font-size: 13px; font-weight: 600; color: #e6e9f5; }
+.appnode-picker-x {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  border: 1px solid #2a2f45;
+  background: #1a1e2e;
+  color: #cfd5e8;
+  cursor: pointer;
+}
+.appnode-picker-list { overflow: auto; padding: 6px; }
+.appnode-picker-row {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #dfe4ff;
+  cursor: pointer;
+}
+.appnode-picker-row:hover { background: #1d2133; }
+.appnode-picker-name { font-size: 13px; }
+.appnode-picker-sub { font-size: 11px; color: #7f86ad; }
+.appnode-picker-empty { padding: 14px; font-size: 12.5px; color: #a9b0d8; line-height: 1.7; }

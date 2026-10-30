@@ -1,4 +1,4 @@
-﻿'use strict';
+'use strict';
 const { contextBridge, ipcRenderer, webUtils } = require('electron');
 const { pathToFileURL } = require('url');
 const path = require('path');
@@ -386,6 +386,52 @@ contextBridge.exposeInMainWorld('api', {
   appPluginsPluginInstallDir: (payload) => ipcRenderer.invoke('appPlugins:pluginInstallDir', payload || {}),
   /* 详情面板「打开目录」：只服务插件安装目录这一件事（绝对路径 + 拒收盘符根） */
   appPluginsOpenPath: (dir) => ipcRenderer.invoke('appPlugins:openPath', dir),
+  /* ── 重后端注册中心（主进程 main-backend-registry.js，数据层 backend-registry-store.js）
+     与插件体系并存：插件管官方功能，这里管 Agent 在任务里现场装出来的工具（装完登记 → 之后
+     任何会话 / 画布都能查到并复用）。**不预置任何后端声明**，初版列表是空的。
+       · list()              ：全部登记 + 运行态（state / port / pid / 日志尾段）
+       · upsert({item,actor})：登记 / 更新（字段不全直接拒绝并回原因）
+       · remove({id,deleteFiles})：停服务 + 删记录；deleteFiles=true 才删磁盘（只允许删它自己记录的目录）
+       · start/stop/probe(id)：生命周期与健康
+       · call({id,args})     ：执行一次（http 没起会自动拉起；cli 直接 spawn）
+       · log/audit({id})     ：日志尾段 / 全程留痕（谁、何时、装了什么、从哪装）
+       · admin({action,...}) ：Agent 侧统一入口（list / register / start / stop / call / remove） */
+  backendRegistryList: () => ipcRenderer.invoke('backendRegistry:list'),
+  backendRegistryUpsert: (payload) => ipcRenderer.invoke('backendRegistry:upsert', payload || {}),
+  backendRegistryRemove: (payload) => ipcRenderer.invoke('backendRegistry:remove', payload || {}),
+  backendRegistryStart: (id) => ipcRenderer.invoke('backendRegistry:start', { id }),
+  backendRegistryStop: (id) => ipcRenderer.invoke('backendRegistry:stop', { id }),
+  backendRegistryProbe: (id) => ipcRenderer.invoke('backendRegistry:probe', { id }),
+  backendRegistryCall: (payload) => ipcRenderer.invoke('backendRegistry:call', payload || {}),
+  backendRegistryLog: (payload) => ipcRenderer.invoke('backendRegistry:log', payload || {}),
+  backendRegistryAudit: (payload) => ipcRenderer.invoke('backendRegistry:audit', payload || {}),
+  backendRegistryPickDir: () => ipcRenderer.invoke('backendRegistry:pickDir'),
+  backendRegistryOpenDir: (id) => ipcRenderer.invoke('backendRegistry:openDir', { id }),
+  backendRegistryAdmin: (payload) => ipcRenderer.invoke('backendRegistry:admin', payload || {}),
+  /* 项目 manifest（<工程根>/manifest.json · 缺口文档 P0-2 / G2+G3）：
+     op({root, action, params}) —— 资产登记 / 版本 / 依赖图 / stale 计划 / 校验；
+     root 由渲染层按「显式 root > 画布工作目录」定好，主进程不猜路径。 */
+  manifestOp: (payload) => ipcRenderer.invoke('manifest:op', payload || {}),
+  /* 质检节点（qa_text / qa_image / qa_video / qa_audio / qa_file）· 本机媒体活（main-qa-media.js）：
+       qaProbe({path})                     → ffprobe 硬指标 + 黑帧段数
+       qaFrames({path, times, shotId})     → 按时间点抽帧成 PNG（绝对路径数组）
+       qaFrameTimes({durationSec, count})  → 均匀时间点（默认 7 / 上限 12）
+       qaWriteReport({root, shotId, round, report}) → 落 qa/reports/{shotId}.json（+ .r{n}.json）
+       qaTemplates({root})                 → 模板库（内置 / 数据目录 / 工程 qa/templates 合并后的清单）
+       qaTemplateSave({root, name, json})  → 把节点 body 里改好的 JSON 另存为用户模板 */
+  qaProbe: (payload) => ipcRenderer.invoke('qa:probe', payload || {}),
+  qaFrames: (payload) => ipcRenderer.invoke('qa:frames', payload || {}),
+  qaFrameTimes: (payload) => ipcRenderer.invoke('qa:frametimes', payload || {}),
+  qaWriteReport: (payload) => ipcRenderer.invoke('qa:report', payload || {}),
+  qaTemplates: (payload) => ipcRenderer.invoke('qa:templates', payload || {}),
+  qaTemplateSave: (payload) => ipcRenderer.invoke('qa:template-save', payload || {}),
+  onBackendRegistryChanged: (cb) => {
+    const handler = (_e, data) => {
+      try { cb(data); } catch (_) {}
+    };
+    ipcRenderer.on('backendRegistry:changed', handler);
+    return () => ipcRenderer.removeListener('backendRegistry:changed', handler);
+  },
   /* ── 用户自建插件（声明式 · <数据目录>/user-plugins，主进程 plugins/user-plugins.js）
      这是「不碰源码加插件」那一条路：目录 + mtnode-plugin.json 即插即用。
        list(deep)   ：插件清单（deep=true 连节点定义一起回；false 只回摘要 + 节点名）
@@ -786,6 +832,48 @@ contextBridge.exposeInMainWorld('api', {
     return () => ipcRenderer.removeListener('flux3klein:gpu', handler);
   },
 
+  /* ── Qwen Image 2.1（本机 ComfyUI）：安装 / 启停 / 出图，见 qwenimage/main-qwenimage.js ── */
+  qwenimageStatus: () => ipcRenderer.invoke('qwenimage:getStatus'),
+  qwenimageOpen: () => ipcRenderer.invoke('qwenimage:open'),
+  qwenimageClose: () => ipcRenderer.invoke('qwenimage:close'),
+  qwenimageInstall: (opts) => ipcRenderer.invoke('qwenimage:install', opts || {}),
+  qwenimageCancelInstall: () => ipcRenderer.invoke('qwenimage:cancelInstall'),
+  qwenimageStart: () => ipcRenderer.invoke('qwenimage:start'),
+  qwenimageStop: () => ipcRenderer.invoke('qwenimage:stop'),
+  qwenimageEnsureReady: () => ipcRenderer.invoke('qwenimage:ensureReady'),
+  qwenimageGenerate: (params) => ipcRenderer.invoke('qwenimage:generate', params || {}),
+  qwenimageCancelGenerate: () => ipcRenderer.invoke('qwenimage:cancelGenerate'),
+  qwenimageGetLock: () => ipcRenderer.invoke('qwenimage:getLock'),
+  qwenimagePickInstallDir: () => ipcRenderer.invoke('qwenimage:pickInstallDir'),
+  qwenimageSetInstallDir: (dir) => ipcRenderer.invoke('qwenimage:setInstallDir', dir),
+  qwenimageSetConfig: (patch) => ipcRenderer.invoke('qwenimage:setConfig', patch || {}),
+  qwenimageGpuProbe: () => ipcRenderer.invoke('qwenimage:gpuProbe'),
+  qwenimageConsoleTail: (n) => ipcRenderer.invoke('qwenimage:consoleTail', n),
+  qwenimageConsoleClear: () => ipcRenderer.invoke('qwenimage:consoleClear'),
+  qwenimageRemovePluginMeta: () => ipcRenderer.invoke('qwenimage:removePluginMeta'),
+  qwenimageOpenPath: (p) => ipcRenderer.invoke('qwenimage:openPath', p),
+  onQwenImageProgress: (cb) => {
+    const handler = (_e, data) => {
+      try { cb(data); } catch (_) {}
+    };
+    ipcRenderer.on('qwenimage:progress', handler);
+    return () => ipcRenderer.removeListener('qwenimage:progress', handler);
+  },
+  onQwenImageConsoleChanged: (cb) => {
+    const handler = (_e, data) => {
+      try { cb(data); } catch (_) {}
+    };
+    ipcRenderer.on('qwenimage:consoleChanged', handler);
+    return () => ipcRenderer.removeListener('qwenimage:consoleChanged', handler);
+  },
+  onQwenImageGpu: (cb) => {
+    const handler = (_e, data) => {
+      try { cb(data); } catch (_) {}
+    };
+    ipcRenderer.on('qwenimage:gpu', handler);
+    return () => ipcRenderer.removeListener('qwenimage:gpu', handler);
+  },
+
   /* ── InfiniteTalk 数字人（Wan2.1 I2V 14B · 独立 ComfyUI）：安装 / 启停 / 出片，
         见 infinitetalk/main-infinitetalk.js 与控制台窗 infinitetalk/preload-infinitetalk.js ── */
   infinitetalkStatus: () => ipcRenderer.invoke('infinitetalk:getStatus'),
@@ -1061,6 +1149,24 @@ contextBridge.exposeInMainWorld('api', {
      （老网关 / 老运行时 / 这一轮已经结束），调用方应回落成排队消息，别当发送失败。 */
   dshSteer: (params) => ipcRenderer.invoke('dsh:steer', params),
   dshPause: (params) => ipcRenderer.invoke('dsh:pause', params),
+  /* 子代理生命周期的**全局**订阅（本次需求）：{phase:'start'|'end', parentSessionId,
+     childSessionId, hostSessionId, sessionTag, at, status?, stopReason?}。
+     为什么不走 dshRun 的回调：子代理比父那一轮活得久 —— 模型说完「我会等它回报」这一轮
+     就 idle 收尾了，而子代理跑完的通知可能几分钟后才到，那时 run 的按 reqId 订阅早退了。
+     所以网关让每台 runtime 挂一条常驻长订阅、一律发 reqId 为空的全局帧（见 gateway.mjs
+     的 watchSubagentLifecycle），这里只按 type 过滤，不看 reqId，永不退订（进程级）。 */
+  dshOnSubagent: (cb) => {
+    const onEv = (ev, msg) => {
+      if (!msg || msg.type !== 'subagent') return;
+      try { cb(msg.data || {}); } catch (e) { console.error('dshOnSubagent cb error:', e); }
+    };
+    ipcRenderer.on('dsh:event', onEv);
+    return () => ipcRenderer.removeListener('dsh:event', onEv);
+  },
+  /* 中断一只子代理（运行队列那行的 ■）：{parentSessionId?, childSessionId} →
+     {ok:true} | {ok:false, reason:'no_runtime'|'unsupported'|'rejected'|'error'}。
+     只停在这一只上：不关 runtime、不动会话其它在跑的活。 */
+  dshInterruptSubagent: (params) => ipcRenderer.invoke('dsh:interruptSubagent', params),
   dshProviderCatalog: () => ipcRenderer.invoke('dsh:providerCatalog'),
   skillList: () => ipcRenderer.invoke('skill:list'),
   skillGet: (name) => ipcRenderer.invoke('skill:get', name),
@@ -1371,6 +1477,17 @@ contextBridge.exposeInMainWorld('api', {
   appsPreviewRegister: (arg) => ipcRenderer.invoke('apps:previewRegister', arg || {}),
   appsPreviewRelease: (arg) => ipcRenderer.invoke('apps:previewRelease', arg || {}),
   appsPreviewCall: (arg) => ipcRenderer.invoke('apps:previewCall', arg || {}),
+  /* ── 应用节点（画布上的 kind appnode）──
+     节点把某个应用钉在画布上，页面是 mtnode-preview:// 的一只 iframe（没有 preload），
+     所以页面自己拿不到 api：能力经「页面桥 → 渲染层 app-appnode.js → 这里」三层回来。
+     这几条只给应用节点用（可绑清单 / 解析 / 数据根 / 工作目录内文件），见 apps-node-store.js。 */
+  appNodeList: () => ipcRenderer.invoke('appnode:list', {}),
+  appNodeResolve: (arg) => ipcRenderer.invoke('appnode:resolve', arg || {}),
+  appNodeDataRoot: (arg) => ipcRenderer.invoke('appnode:dataRoot', arg || {}),
+  appNodeDataRead: (arg) => ipcRenderer.invoke('appnode:dataRead', arg || {}),
+  appNodeDataWrite: (arg) => ipcRenderer.invoke('appnode:dataWrite', arg || {}),
+  appNodeOpenDir: (arg) => ipcRenderer.invoke('appnode:openDir', arg || {}),
+  appNodeFs: (arg) => ipcRenderer.invoke('appnode:fs', arg || {}),
   /* 预览现况（当前租约 + 是不是只读）：开发页用它把「应用已在独立窗口运行 ⇒ 预览只读」
      实时写进状态行并发给预览页（窗口开关事件到点时问一次）。 */
   appsPreviewState: () => ipcRenderer.invoke('apps:previewState'),

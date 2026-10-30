@@ -1,7 +1,7 @@
 ---
 name: mtnode-local-media
 title: 本地语音与视频分析
-description: MTNode 里要「听音频 / 做字幕 / 看视频」时用本机能力：audio_subtitle 出字幕条（cues + SRT/VTT 文本），audio_transcribe 走官方本地 SenseVoice 出逐字稿，ffmpeg 工具做探测 / 抽音轨 / 抽帧 / 任意转码，describe 一次返回画面描述；用户要把转写「落在画布上」时指到工具库内置工具「音频转字幕（时间轴）」（工具壳，参数在壳内的 JSON 文本节点，同一内核的 mtnode.subtitle）。不要另装 whisper / Qwen-ASR / 在线 ASR，也不要自己下载 ffmpeg。Use when the task needs subtitles with per-line timing, speech-to-text, audio/video probing, frame extraction, or video content analysis inside MTNode.
+description: 听音频 / 做字幕 / 看视频用本机 audio_subtitle、audio_transcribe、ffmpeg，别另装 ASR。
 ---
 
 # 本地语音与视频分析（先看这里，别另找方案）

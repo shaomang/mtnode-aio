@@ -991,7 +991,11 @@ function isAutoProcKind(n) {
       n.kind === "yue_gen" ||
       /* FLUX 3 Image Klein：本机 ComfyUI 出图，跑完同样自动级联下游 */
       n.kind === "flux3klein_gen" ||
+      /* Qwen Image 2.1：本机 ComfyUI 出图，跑完同样自动级联下游 */
+      n.kind === "qwenimage_gen" ||
       n.kind === "video_gen" ||
+      /* 质检节点：跑完（通过 / 未过）同样要自动级联下游门禁分支 */
+      (typeof isQaKindNode === "function" && isQaKindNode(n)) ||
       (typeof isVideoPostKind === "function" && isVideoPostKind(n)) ||
       n.kind === "remotion" ||
       n.kind === "wait_file" ||
@@ -1441,6 +1445,7 @@ function isProcessPlayKind(n) {
     !!n &&
     (n.kind === "proc_text" ||
       n.kind === "proc_image" ||
+      (typeof isQaKindNode === "function" && isQaKindNode(n)) ||
       n.kind === "agent_task")
   );
 }
@@ -1763,6 +1768,19 @@ async function playNode(node, quiet, opts) {
     /* 服务商对不上就不跑：先按 名称唯一 / 模型归属 自动换掉（并批量换同一缺失值），
        仍对不上则保留原值、记警告并跳过本节点。 */
     if (typeof ensureNodeProviderForRun === "function" && !ensureNodeProviderForRun(node)) return;
+    /* 资产锚定闸门（缺口文档 P0-2 / G3 规则 2）：节点显式开了 requireAsset 就必须在
+       assetRefs 里声明真实存在的 "id@rev"（对照工程 manifest.json）。纯文本直出直接拒跑，
+       点名缺哪一项。没开 / 没这个模块 = 一次直通，零行为变化。 */
+    if (typeof mfAssetGate === "function") {
+      const gate = await mfAssetGate(node);
+      if (!gate || gate.ok === false) {
+        const msg = (gate && gate.error) || I18n.t("资产引用校验未通过");
+        node.lastError = msg;
+        if (typeof renderCanvas === "function") renderCanvas();
+        toast(msg, "err");
+        return;
+      }
+    }
     /* 「参数」端子：运行时临时覆写本节点的配置（跑完恢复，不改画布）。
        没有参数线时 NParam.runWithParams 就是一次直通调用 —— 零开销、零行为变化。 */
     const body = () => playNodeBody(node, quiet, opts || {});
@@ -1806,6 +1824,8 @@ function isMediaGenNode(node) {
       node.kind === "yue_gen" ||
       /* FLUX 3 Image Klein（flux3klein_gen）：本机 ComfyUI 出图，探活 / 排队 / 终止同待遇 */
       node.kind === "flux3klein_gen" ||
+      /* Qwen Image 2.1（qwenimage_gen）：本机 ComfyUI 出图，探活 / 排队 / 终止同待遇 */
+      node.kind === "qwenimage_gen" ||
       /* Breeze 语音（Breeze TTS 2）：本机唯一的语音后端（文本转语音），探活 / 排队 / 终止同待遇 */
       node.kind === "breeze_gen" ||
       /* InfiniteTalk 数字人（infinitetalk_gen）：本机 ComfyUI 出片，探活 / 排队 / 终止按媒体族同待遇 */
@@ -2505,6 +2525,8 @@ async function fetchMediaBackendStatus(node) {
     return window.api.yue2Status ? await window.api.yue2Status() : null;
   if (node.kind === "flux3klein_gen")
     return window.api.flux3kleinStatus ? await window.api.flux3kleinStatus() : null;
+  if (node.kind === "qwenimage_gen")
+    return window.api.qwenimageStatus ? await window.api.qwenimageStatus() : null;
   if (node.kind === "breeze_gen")
     return window.api.breezeStatus ? await window.api.breezeStatus() : null;
   if (node.kind === "infinitetalk_gen")
@@ -2741,6 +2763,45 @@ function bindMediaBackendListeners() {
       }
     });
   }
+  if (window.api.onQwenImageProgress) {
+    window.api.onQwenImageProgress((data) => {
+      /* 安装进度归插件控制台窗；这里只认带 nodeId 的生成进度 */
+      if (!data || data.phase !== "generate" || !data.nodeId) return;
+      const n = nodeById(data.nodeId);
+      if (!n || n.kind !== "qwenimage_gen") return;
+      const ui = ensureBackendUiState(n);
+      if (data.cancelled || n._aborted || String(data.message || "") === "已取消") {
+        n.running = false;
+        n._aborted = false;
+        n.qwenimageStatus = I18n.t("已取消");
+        ui.genMsg = n.qwenimageStatus;
+        stopMediaBackendRunWatcher(n.id);
+        refreshMediaNodeUi(n, { soft: true });
+        return;
+      }
+      const pct = Number(data.pct);
+      if (Number.isFinite(pct)) ui.genPct = Math.max(2, Math.min(99, pct));
+      if (data.message) {
+        ui.genMsg = mediaGenRollProgressTag(n) + String(data.message);
+        n.qwenimageStatus = ui.genMsg;
+      }
+      if (data.error && looksLikeBackendConnError(data.message)) markMediaBackendDown(n);
+      refreshMediaNodeUi(n, { soft: true });
+    });
+  }
+  if (window.api.onQwenImageGpu) {
+    window.api.onQwenImageGpu((gpu) => {
+      if (!gpu || !S.wf) return;
+      for (const n of S.wf.nodes || []) {
+        if (n.kind !== "qwenimage_gen") continue;
+        const ui = ensureBackendUiState(n);
+        if (ui.ok !== true && !n.running) continue;
+        ui.info = ui.info || {};
+        ui.info.gpu = gpu;
+        if (n.running || S.sel === n.id) refreshMediaNodeUi(n, { soft: true });
+      }
+    });
+  }
   if (window.api.onH3Gpu) {
     window.api.onH3Gpu((gpu) => {
       if (!gpu || !S.wf) return;
@@ -2841,6 +2902,8 @@ function appendMediaConsoleBtn(head, node) {
         ? I18n.t("打开 YuE2 控制台日志")
         : node.kind === "flux3klein_gen"
             ? I18n.t("打开 FLUX 3 Image Klein 控制台")
+          : node.kind === "qwenimage_gen"
+            ? I18n.t("打开 Qwen Image 2.1 控制台")
           : node.kind === "breeze_gen"
             ? I18n.t("打开 Breeze TTS 2 控制台")
             : I18n.t("打开 Music 3 控制台日志");
@@ -2868,6 +2931,10 @@ function appendMediaConsoleBtn(head, node) {
               : node.kind === "flux3klein_gen"
                   ? window.api.flux3kleinOpen
                     ? await window.api.flux3kleinOpen()
+                    : null
+                : node.kind === "qwenimage_gen"
+                  ? window.api.qwenimageOpen
+                    ? await window.api.qwenimageOpen()
                     : null
                 : node.kind === "breeze_gen"
                   ? window.api.breezeOpen
@@ -3030,6 +3097,10 @@ function appendMediaBackendPanel(body, node) {
   /* FLUX 3 Image Klein：本机 ComfyUI，权重留不留显存由后端自己管，只补一条精度铭牌 */
   if (node.kind === "flux3klein_gen") {
     row.appendChild(pill(node.precision === "bf16" ? "BF16" : "INT8", "muted"));
+  }
+  /* Qwen Image 2.1：同为独立 ComfyUI，只补一条量化档铭牌（INT8 / Turbo INT8） */
+  if (node.kind === "qwenimage_gen") {
+    row.appendChild(pill(node.precision === "turbo" ? "Turbo INT8" : "INT8", "muted"));
   }
   if (info.version) row.appendChild(pill("v" + info.version, "muted"));
   if (info.installing) row.appendChild(pill(I18n.t("安装中"), "wait"));
@@ -6006,6 +6077,8 @@ function mediaGenCancelRemote(node) {
       window.api.yue2CancelGenerate(node.id);
     else if (node.kind === "flux3klein_gen" && window.api.flux3kleinCancelGenerate)
       window.api.flux3kleinCancelGenerate(node.id);
+    else if (node.kind === "qwenimage_gen" && window.api.qwenimageCancelGenerate)
+      window.api.qwenimageCancelGenerate(node.id);
     else if (node.kind === "breeze_gen" && window.api.breezeCancelGenerate)
       window.api.breezeCancelGenerate(node.id);
     else if (
@@ -6045,6 +6118,7 @@ function mediaGenMarkDropped(node, wasRunning) {
   else if (node.kind === "yue_gen") node.yueStatus = msg;
   else if (node.kind === "breeze_gen") node.breezeStatus = msg;
   else if (node.kind === "flux3klein_gen") node.flux3kleinStatus = msg;
+  else if (node.kind === "qwenimage_gen") node.qwenimageStatus = msg;
   else if (
     node.kind === "video_gen" ||
     (typeof isVideoPostKind === "function" && isVideoPostKind(node))
@@ -6081,6 +6155,7 @@ async function restoreMediaGenLocks() {
     if (n.kind === "music_gen") n.musicStatus = msg;
     else if (n.kind === "yue_gen") n.yueStatus = msg;
     else if (n.kind === "flux3klein_gen") n.flux3kleinStatus = msg;
+    else if (n.kind === "qwenimage_gen") n.qwenimageStatus = msg;
     else n.videoStatus = msg;
     renderCanvas();
     stopMediaGenRestoreWatch(n.id);
@@ -6107,6 +6182,7 @@ async function restoreMediaGenLocks() {
           if (n.kind === "music_gen") n.musicStatus = done;
           else if (n.kind === "yue_gen") n.yueStatus = done;
           else if (n.kind === "flux3klein_gen") n.flux3kleinStatus = done;
+          else if (n.kind === "qwenimage_gen") n.qwenimageStatus = done;
           else n.videoStatus = done;
           renderCanvas();
           updateRunQueuePanel();
@@ -8718,6 +8794,8 @@ async function mediaPostRunNote(node) {
         else if (node.kind === "yue_gen") node.yueStatus = String(node.yueStatus || "") + note;
         else if (node.kind === "flux3klein_gen")
           node.flux3kleinStatus = String(node.flux3kleinStatus || "") + note;
+        else if (node.kind === "qwenimage_gen")
+          node.qwenimageStatus = String(node.qwenimageStatus || "") + note;
         else if (node.kind === "breeze_gen")
           node.breezeStatus = String(node.breezeStatus || "") + note;
         else node.videoStatus = String(node.videoStatus || "") + note;
@@ -8878,6 +8956,10 @@ async function playNodeBody(node, quiet, opts) {
   if (node.kind === "flux3klein_gen") {
     return runMediaGenSerial(node, () => playFlux3KleinNode(node, quiet));
   }
+  /* Qwen Image 2.1：同一条串行链 + 同一把全局音视频锁 */
+  if (node.kind === "qwenimage_gen") {
+    return runMediaGenSerial(node, () => playQwenImageNode(node, quiet));
+  }
   /* Breeze 语音（Breeze TTS 2）：进同一条媒体串行链 + 全局音视频互斥锁（引擎 eager 约 7.7GB 显存） */
   if (node.kind === "breeze_gen") {
     return runMediaGenSerial(node, () => playBreezeGenNode(node, quiet));
@@ -8927,6 +9009,9 @@ async function playNodeBody(node, quiet, opts) {
   if (node.kind === "delayer") {
     return playDelayerNode(node, quiet);
   }
+  if (node.kind === "popup") {
+    return playPopupNode(node, quiet);
+  }
   if (node.kind === "sequencer") {
     return playSequencerNode(node, quiet);
   }
@@ -8944,6 +9029,17 @@ async function playNodeBody(node, quiet, opts) {
   }
   if (node.kind === "judge") {
     return playJudgeNode(node, quiet);
+  }
+  /* 质检节点（qa_text / qa_image / qa_video / qa_audio / qa_file）：
+     执行体在 renderer/app-qa.js（模板 → Agent 工具循环 → 0–100 判定 → 门禁 → 人工裁决）。
+     内部会重跑上游生成节点，所以不进媒体串行链（否则自己等自己的锁）。 */
+  if (typeof isQaKindNode === "function" && isQaKindNode(node)) {
+    if (typeof playQaNode !== "function") {
+      node.error = I18n.t("质检执行体未加载（renderer/app-qa.js）");
+      renderCanvas();
+      return;
+    }
+    return playQaNode(node, quiet, opts);
   }
   if (node.kind === "task") {
     return playTaskNode(node, quiet);
@@ -10788,7 +10884,7 @@ async function saveMediaFileOnce(node, quiet, media) {
   return true;
 }
 
-/* 全局助手 / 智能会话改画布期间：自动保存先不落盘，避免半成品与移入节点层后路径重复写。
+/* 画布助手 / 智能会话改画布期间：自动保存先不落盘，避免半成品与移入节点层后路径重复写。
    注意：仅约束「自动保存」；用户手动 ▶ 执行保存节点不受影响，直接保存输入内容。 */
 function beginSaveNodeHold() {
   S._saveNodeHold = (S._saveNodeHold || 0) + 1;
@@ -11055,6 +11151,7 @@ function canControlRun(n) {
       n.kind === "wait_file" ||
       n.kind === "timer" ||
       n.kind === "delayer" ||
+      n.kind === "popup" ||
       n.kind === "sequencer" ||
       n.kind === "gate" ||
       n.kind === "splitter" ||
@@ -11351,6 +11448,8 @@ async function runControlledNode(n, seen, viaIndexes, sourceId) {
   /* 控制类节点：由各自 play 语义执行（计数累加 / 闸门放行 / 互斥选口 / 延时 / 序列 / 分发 / 定时 / 判断） */
   if (n.kind === "timer") return playTimerNode(n, true);
   if (n.kind === "delayer") return playDelayerNode(n, true);
+  /* 弹窗：弹出浮层等确认（可改正文），确定后继续点火下游控制目标 */
+  if (n.kind === "popup") return playPopupNode(n, true);
   if (n.kind === "sequencer") return playSequencerNode(n, true);
   /* 闸门不是「跑一次」而是「多路 AND 到达」：控制线驱动只记到达，绝不在这儿强制放闸
      （上游只来一路就放闸 = bug；详情见 app.js pulseGateByControl） */
@@ -13492,6 +13591,20 @@ function addWire(fromId, toId, toIndex, opts) {
   }
   /* 音视频输入节点的内容随入线改变（继承 / 拔线恢复）→ 就地重建这些卡片 */
   refreshMediaInputCards([toId, fromId]);
+  /* 表单输入：线一落定就把上游**当前**内容吸收进表单，然后断开这条线（一次性 @引用，
+     见 renderer/app-input-form.js 的 absorbWire）。钩子只钉在「落线」这一秒，
+     不在 render 里反复检查；吸过一次线就没了 → 再进这里是幂等无操作。
+     撤销：落线前调用方已经 pushHistory（connect 等），这里不再记第二笔，
+     于是「写入的值 + 摘掉的线」落在同一步撤销里。 */
+  if (toN && toN.kind === "input_form" && window.IF && typeof window.IF.absorbWire === "function") {
+    const w = S.wf.wires.find(
+      (x) => x && !x.rel && x.from === fromId && x.to === toId,
+    );
+    if (w) {
+      const p = window.IF.absorbWire(toN, w, { history: false });
+      if (p && typeof p.catch === "function") p.catch(() => {});
+    }
+  }
   /* 本地语音转写（官方本地 SenseVoice）：把音频 / 视频节点接到文字处理节点 → 那个节点
      运行时先替音频节点把转好文字（renderer/app-asr.js 的 asrEnsureForRun），再取它的文字。
      连线本身不弹任何窗、也不当场转（转录按钮在音频节点上）：模型权重由 dsh 运行时自己下，
@@ -13544,8 +13657,28 @@ function connect(fromId, toId, toIndex, fromIndex) {
   const toNode = nodeById(toId);
   /* 端子归一：数据线落到越界 / 控制端子时改落最近空闲的数据端子（用户手工拖线 / API 同一口径） */
   const ti = dataInPortIndexForWire(toNode, fromNode, fromIndex, toIndex);
-  /* 完全相同的线再连一次 = 无操作：静默忽略，不弹「这两节点已连接」（替换语义的配套口径） */
-  if (identicalWireExists(fromId, toId, ti, fromIndex)) return;
+  /* 完全相同的线再连一次 = 无操作：静默忽略，不弹「这两节点已连接」（替换语义的配套口径）。
+     表单输入例外：上次连进来时上游还没值 → 线留着没吸 → 再拖一次同一根线就是「再试一次」
+     （有值就吸收并断线，还没值就再提示一次，不会把线吞掉）。 */
+  if (identicalWireExists(fromId, toId, ti, fromIndex)) {
+    if (toNode && toNode.kind === "input_form" && window.IF && typeof window.IF.absorbWire === "function") {
+      const w = S.wf.wires.find(
+        (x) =>
+          x &&
+          !x.rel &&
+          x.from === fromId &&
+          x.to === toId &&
+          Number(x.fromIndex || 0) === Number(fromIndex || 0),
+      );
+      /* 这一支没有「刚落线」的那笔撤销（线是上一次留着的）→ 让 absorbWire 自己记一笔：
+         摘线 + 写入的值落在同一步撤销里 */
+      if (w) {
+        const p = window.IF.absorbWire(toNode, w);
+        if (p && typeof p.catch === "function") p.catch(() => {});
+      }
+    }
+    return;
+  }
   /* 跨节点层（硬规则）：不直连，自动改写成经边界端子的逐层桥接 —— 手拖与 agent 同一口径，
      改写是静默的（线本身就说明了接法，不再弹提示打扰）。 */
   if (fromNode && toNode && !wireKeepsLayerRule(fromNode, toNode)) {
@@ -13626,13 +13759,76 @@ function connectGroup(gid, toId) {
   scheduleSave(true);
   renderStatus();
 }
-/* 摘掉指向某个组（或已经不存在的组）的全部组线；返回摘掉的条数 */
+/* 节点层的「组」输出端子（哨兵号 GROUP_OUT_INDEX = 9003）→ 智能节点的组输入端子。
+   与组线同一套语义、同一条注入链路：线不参与数据流，只在运行期把「层内部节点 + 结构」
+   清单塞进任务上下文。线的来源是层自己（它确实是节点），另在 w.sup 上记一份。 */
+function layerGroupConnectError(supId, toId) {
+  const host = nodeById(supId);
+  const to = nodeById(toId);
+  if (!host || host.kind !== "super") return I18n.t("节点层不存在（可能已被删除）");
+  if (!to) return I18n.t("节点不存在");
+  if (typeof isSmartGroupPortNode === "function" && !isSmartGroupPortNode(to))
+    return I18n.t("组线只能接到智能节点（智能任务 / 文本智能模式）的「组」输入端子");
+  if (!layerChildNodes(host).length) return I18n.t("该节点层里还没有节点");
+  return null;
+}
+function connectLayerGroup(supId, toId) {
+  const err = layerGroupConnectError(supId, toId);
+  if (err) {
+    toast(err, "warn");
+    return;
+  }
+  const key = String(supId);
+  if (
+    (S.wf.wires || []).some(
+      (w) => isSuperGroupWire(w) && String(w.sup) === key && w.to === toId,
+    )
+  )
+    return; /* 同一层已经接到这颗节点：幂等 */
+  pushHistory();
+  S.wf.wires.push({
+    id: uid("w"),
+    from: key,
+    fromIndex: GROUP_OUT_INDEX,
+    to: toId,
+    toIndex: GROUP_IN_INDEX,
+    sup: key,
+  });
+  clearDownstream(toId);
+  renderCanvas();
+  scheduleSave(true);
+  renderStatus();
+}
+/* 某层里**直属**的节点（不递归）：清单的层级缩进按父子关系一层层展开 */
+function layerChildNodes(host) {
+  if (!host) return [];
+  return (S.wf.nodes || []).filter(
+    (n) => n && typeof nodeParentSuperId === "function" && nodeParentSuperId(n) === host.id,
+  );
+}
+/* 某层内部（含嵌套子层）的节点总数：用来判「层已经空了」→ 摘线 */
+function layerNodeCount(host) {
+  if (!host) return 0;
+  let n = 0;
+  for (const kid of layerChildNodes(host)) {
+    n++;
+    if (kid.kind === "super") n += layerNodeCount(kid);
+  }
+  return n;
+}
+/* 摘掉指向某个组（或某个节点层 / 已经不存在的来源）的全部组线；返回摘掉的条数。
+   组与节点层共用一套线上表示（w.grp / w.sup），所以这里两个键都认 ——
+   解散组、删除节点层、切断组输出端子走的是同一个入口。 */
 function removeGroupWires(gid) {
   const key = String(gid || "");
   if (!S.wf || !Array.isArray(S.wf.wires)) return 0;
   const before = S.wf.wires.length;
   S.wf.wires = S.wf.wires.filter(
-    (w) => !(isGroupWire(w) && (!key || String(w.grp) === key)),
+    (w) =>
+      !(
+        isGroupWire(w) &&
+        (!key || String(w.grp || "") === key || String(w.sup || "") === key)
+      ),
   );
   return before - S.wf.wires.length;
 }
@@ -13645,8 +13841,8 @@ function removeGroupWiresFromNode(nodeId) {
   );
   return before - S.wf.wires.length;
 }
-/* 读档 / 撤销后自愈：组已经不在（被解散 / 被删）的组线一律摘掉。
-   解散 / 删除组的入口会显式调用并提示，这里兜「旧档 / 撤销后残留」。 */
+/* 读档 / 撤销后自愈：来源已经不在的组线一律摘掉 ——
+   组：被解散 / 被删；节点层：被删 / 已经被搬空（层里一个节点都没有 = 清单永远是空的）。 */
 function pruneOrphanGroupWires(wfIn) {
   /* 可传入目标画布对象：切画布时新图还没进 S.wf（此刻 S.wf 仍是上一张），
      按 S.wf 判会看错图 —— 既修不了新图的孤儿线，还可能误剪旧图。 */
@@ -13655,13 +13851,57 @@ function pruneOrphanGroupWires(wfIn) {
   const alive = new Set(
     (wf.groups || []).map((g) => String((g && g.id) || "")).filter(Boolean),
   );
+  const nodes = wf.nodes || [];
+  const aliveSup = new Set(
+    nodes
+      .filter(
+        (n) =>
+          n &&
+          n.kind === "super" &&
+          nodes.some((k) => k && k.parentSuperId === n.id),
+      )
+      .map((n) => String(n.id)),
+  );
   const before = wf.wires.length;
   wf.wires = wf.wires.filter(
-    (w) => !isGroupWire(w) || alive.has(String(w.grp)),
+    (w) =>
+      !isGroupWire(w) ||
+      (w.sup ? aliveSup.has(String(w.sup)) : alive.has(String(w.grp))),
   );
   return before - wf.wires.length;
 }
-/* 这条正文 = 该智能节点接到的全部组（合并一份清单）。
+/* 清单里的一行：标题 · 类型 · 描述(note) · 节点 id（缩进由调用方给） */
+function groupListRow(n, indent) {
+  const note = String((n && n.note) || "").replace(/\s+/g, " ").trim();
+  return (
+    indent +
+    "- " +
+    (n.title || I18n.t("未命名节点")) +
+    " · " +
+    nodeKindLabel(n) +
+    (note ? " · " + (note.length > 80 ? note.slice(0, 80) + "…" : note) : "") +
+    " · id:" +
+    n.id
+  );
+}
+/* 节点层来源：层自己一行，层内部节点按嵌套缩进逐层展开（这就是「结构」） */
+function pushLayerListRows(host, depth, seen, rows) {
+  if (!host || seen.has(host.id)) return;
+  seen.add(host.id);
+  rows.push(groupListRow(host, "  ".repeat(depth)));
+  pushLayerChildrenOnly(host, depth + 1, seen, rows);
+}
+/* 递归展开某一层内部的节点（不含该层自己那一行） */
+function pushLayerChildrenOnly(host, depth, seen, rows) {
+  if (!host) return;
+  for (const kid of layerChildNodes(host)) {
+    if (seen.has(kid.id)) continue;
+    seen.add(kid.id);
+    rows.push(groupListRow(kid, "  ".repeat(depth)));
+    if (kid.kind === "super") pushLayerChildrenOnly(kid, depth + 1, seen, rows);
+  }
+}
+/* 这条正文 = 该智能节点接到的全部来源（组 + 节点层，合并一份清单；层来源按嵌套缩进展开）。
    只给「清单」不给正文：每行 标题 + 类型 + 描述(note) + 节点 id，模型要看正文
    自己用 mtnode_canvas_get 按 id 取（智能节点运行时已放开读画布）。
    组里含本节点自己时照列（组往往就是围着它建的），只按节点 id 去重。 */
@@ -13675,6 +13915,12 @@ function groupContextBlock(node) {
   const seen = new Set();
   const rows = [];
   for (const w of wires) {
+    if (isSuperGroupWire(w)) {
+      const host = nodeById(w.sup);
+      if (!host || host.kind !== "super") continue;
+      pushLayerListRows(host, 0, seen, rows);
+      continue;
+    }
     const g = typeof groupById === "function" ? groupById(w.grp) : null;
     if (!g) continue;
     if (typeof ensureGroupArrays === "function") ensureGroupArrays(g);
@@ -13682,21 +13928,14 @@ function groupContextBlock(node) {
       const n = nodeById(nid);
       if (!n || seen.has(n.id)) continue;
       seen.add(n.id);
-      const note = String(n.note || "").replace(/\s+/g, " ").trim();
-      rows.push(
-        "- " +
-          (n.title || I18n.t("未命名节点")) +
-          " · " +
-          nodeKindLabel(n) +
-          (note ? " · " + (note.length > 80 ? note.slice(0, 80) + "…" : note) : "") +
-          " · id:" +
-          n.id,
-      );
+      rows.push(groupListRow(n, ""));
     }
   }
   if (!rows.length) return "";
   return (
-    I18n.t("\n\n【组输入】以下节点来自你接入的组（要正文时用 mtnode_canvas_get 按 id 取）：") +
+    I18n.t(
+      "\n\n【组输入】以下节点来自你接入的组 / 节点层（缩进表示层级结构；要正文时用 mtnode_canvas_get 按 id 取）：",
+    ) +
     "\n" +
     rows.join("\n")
   );
@@ -14380,6 +14619,9 @@ function nodePortList(node, dir) {
    是实测里最贵的一类往返。minimal 档不带（app_state 每轮重发，必须最轻）。 */
 const SNAPSHOT_PORT_KINDS = [
   "proc_image", "video_gen", "video_upscale", "video_interp", "remotion", "judge", "super",
+  /* 质检节点（五种同构）：3 进 4 出全由结构钉死，且入 1「质检要求」同时收文字口径与参考样例、
+     出 2/3 是门禁分流 —— 接线前必须一次读全。 */
+  "qa_text", "qa_image", "qa_video", "qa_audio", "qa_file",
   /* 音频 / 视频输入：两个固定数据出端子（0=音频 / 视频输出＝文件 file:/// URL ·
      1=转写输出＝该文件的文字），接线前就该看得见「哪个是文件、哪个是文字」，
      所以也进定端口名单。 */
@@ -14778,6 +15020,8 @@ function canvasSnapshot(opts) {
       timerArmed: n.kind === "timer" ? !!n.timerArmed : undefined,
       timerNextAt: n.kind === "timer" ? n.timerNextAt || undefined : undefined,
       delaySec: n.kind === "delayer" ? n.delaySec || undefined : undefined,
+      popupTitle: n.kind === "popup" ? String(n.popupTitle || "") : undefined,
+      popupText: n.kind === "popup" ? String(n.popupText || "") : undefined,
       seqOutputs: n.kind === "sequencer" ? n.seqOutputs || undefined : undefined,
       seqGapSec: n.kind === "sequencer" ? n.seqGapSec || undefined : undefined,
       gateInputs: n.kind === "gate" ? n.gateInputs || undefined : undefined,
@@ -14995,6 +15239,8 @@ function canvasSnapshot(opts) {
       netAutoListen: n.kind === "net_recv" ? n.netAutoListen !== false : undefined,
       netCount: isNetNode(n) ? n.netCount || 0 : undefined,
       delaySec: n.kind === "delayer" ? n.delaySec || 0 : undefined,
+      popupTitle: n.kind === "popup" ? String(n.popupTitle || "") : undefined,
+      popupText: n.kind === "popup" ? String(n.popupText || "") : undefined,
       seqOutputs: n.kind === "sequencer" ? n.seqOutputs || 3 : undefined,
       seqGapSec: n.kind === "sequencer" ? n.seqGapSec || 0 : undefined,
       gateInputs: n.kind === "gate" ? n.gateInputs || 2 : undefined,
@@ -15233,6 +15479,66 @@ function isCanvasScopedAgentNode(n) {
   );
 }
 
+/* ── 本机媒体后端实况（智能节点 / 会话共用）─────────────────────────────
+   为什么要有这一段：视频 / 渲染 / 音乐 / 语音后端是**插件**，由插件宿主管进程。
+   它们现在也会以只读镜像出现在重后端注册中心（br_admin 的 list 里 plugins 字段，
+   见 main-backend-registry.js 的 pluginBackends），但注册中心里的 items 仍然只放
+   Agent 现场装出来的额外后端 —— items 为空是常态，不代表这些能力缺失。
+   Agent 拿不到安装状态时只能去猜目录，于是把「注册表为空」误报成「视频后端缺失 ·
+   未装 Remotion」，明明已装也拒绝干活。真源是插件目录缓存 S.plugins（主进程
+   attachInstalled 按磁盘安装目录判 installed，见 plugins/main-app-plugins.js），
+   这里只把它翻成一句模型能读的实况；缓存未到位时明确说「未知」，绝不替用户断言未安装。 */
+const MEDIA_BACKEND_ROWS = [
+  ["minimax-h3", "视频生成 video_gen"],
+  ["remotion", "动效渲染 remotion"],
+  ["minimax-music3", "音乐生成 music_gen"],
+  ["breeze-tts-local", "语音合成 breeze_gen"],
+  ["yue2-local", "整曲生成 yue_gen"],
+];
+/* 结构化实况：null = 插件目录还没取到（未知，不是「未安装」） */
+function mediaBackendStates() {
+  if (S.pluginsReady !== true) return null;
+  return MEDIA_BACKEND_ROWS.map(([id, label]) => {
+    const hit = (S.plugins || []).find((p) => p && p.id === id);
+    const vramHidden = !!(S.pluginsVramHidden && S.pluginsVramHidden.has(id));
+    return {
+      id,
+      label,
+      listed: !!hit,
+      installed: !!(hit && hit.installed),
+      vramHidden,
+    };
+  });
+}
+function mediaBackendStatusLine() {
+  const states = mediaBackendStates();
+  if (!states) {
+    return (
+      "【本机媒体后端】插件目录本轮还没取到：**不要**据此断言「未安装 / 视频不可用」，" +
+      "需要确认时请用户打开右上角「插件」看一眼。"
+    );
+  }
+  const parts = states.map((it) => {
+    const st = it.vramHidden
+      ? "被显存门槛收起"
+      : !it.listed
+        ? "目录里没有这一条"
+        : it.installed
+          ? "已安装"
+          : "未安装";
+    return it.label + "：" + st;
+  });
+  return (
+    "【本机媒体后端】" +
+    parts.join(" · ") +
+    "。这些是**插件**后端，由插件宿主管进程；br_admin 的 list 里 plugins 字段只是它们的只读镜像" +
+    "（含装没装与安装目录），**不要**用 register 登记它们，启停 / 安装在「插件」界面。" +
+    "注册中心 items 为空只说明没有 Agent 现场登记的额外后端，**不代表视频生成 / 渲染不可用**，" +
+    "禁止据此报「视频后端缺失」或「未装 Remotion」。判断装没装只认这一行（或 br_admin list 的 plugins）；" +
+    "确属未安装时才请用户在「插件」里安装（技能 mtnode-media-gen-nodes / remotion-local-install / minimax-h3-install）。"
+  );
+}
+
 /* 智能节点人设：保留文件/命令/联网；画布读取与节点 / 连线操作按本轮工具许可放行
    （见 app-db.js 的 NODE_AGENT_TOOL_POLICY），不再禁止调用画布工具。 */
 function agentNodeCapabilityNote() {
@@ -15240,6 +15546,8 @@ function agentNodeCapabilityNote() {
     "【智能节点】你是画布上的执行节点，不是工作流搭建助手。" +
     "允许：读写与编辑工作区文件、执行命令、联网搜索与抓取网页、使用已安装技能与 MCP 工具、调用 mtnode_vision 识图、向用户提问或派生子任务（均须遵守当前审批/权限预设）。用写文件交付结果。" +
     "画布：允许调用 mtnode_canvas_get 读取本画布（组输入只给节点 id 清单，要看正文就按 ids 取）；也允许调用 mtnode_canvas_edit 按用户要求建节点 / 连线 —— 只按用户要求改，动现有节点前先问用户。控制类节点、节点层、绘图、排版与成组会按工具许可逐次询问；mtnode_app（画布改名 / 删除画布 / 装插件）本轮不注册，调用即失败。" +
+    "输入优先级：组输入最先，其次画布，再次项目文件，最后才是外部知识；用户在任务里明说的要求永远最优先。" +
+    mediaBackendStatusLine() +
     "回答简洁（交流语言见文末「语言口味」）。"
   );
 }
@@ -15293,7 +15601,7 @@ function planModeSystemNote() {
 }
 
 /* 禁止跨画布：智能任务/会话始终锁定在它「所属的那张画布」（= 本轮绑定画布，
-   不是用户此刻看到的画布）；全局助手仅在「仅当前画布」范围时锁定。 */
+   不是用户此刻看到的画布）；画布助手仅在「仅当前画布」范围时锁定。 */
 function restrictOtherCanvases() {
   if ((S._canvasNodeAgentDepth || 0) > 0) return true;
   /* 长任务「只读画布」档：不进 nodeLock（那档放行读 + 节点 / 连线，会盖过本档的
@@ -15310,7 +15618,7 @@ function assistRestrictOtherCanvases() {
 
 function applyAssistScopeToSnapshot(snap, opts) {
   if (!snap || typeof snap !== "object") return snap;
-  /* 锁定口径只看会话自身状态（全局助手「仅当前画布」/ 智能节点 / 长任务只读档），
+  /* 锁定口径只看会话自身状态（画布助手「仅当前画布」/ 智能节点 / 长任务只读档），
      绝不因为「这次读的是另一张画布」就把范围说成当前画布：MCP 连接（第三方客户端）
      可以带 canvas 参数读别的画布，那是**允许**的，不是越界。 */
   const locked = restrictOtherCanvases() || (opts && opts.restrict === true);
@@ -15932,6 +16240,9 @@ async function applyAppOp(params, runWf, runKey) {
   }
 
   if (action === "create_longtask") {
+    /* 总开关关着（app-longtask.js 的 window.LT_DISABLED）：长周期任务整块停用，
+       这三个动作一律拒绝，不让 Agent 在停用期往画布里落状态机数据。 */
+    if (window.LT_DISABLED) throw new Error(I18n.t("长周期任务暂时停用（正在修复中），入口与状态机已隐藏"));
     /* Agent（mtnode_app 的 create_longtask）按 mtnode-grill-me 的图契约产出一张
        状态机图 → 落库到本会话「所属画布」的长周期任务列表。归一 + 校验都在
        LT.createFromGraph 里；有 err 就整条拒绝并把 err 文本回给 Agent 去修。
@@ -15946,6 +16257,7 @@ async function applyAppOp(params, runWf, runKey) {
   }
 
   if (action === "get_longtask") {
+    if (window.LT_DISABLED) throw new Error(I18n.t("长周期任务暂时停用（正在修复中），入口与状态机已隐藏"));
     /* 「任务链修改」的第一步：Agent 要改图，先得看清「现在这张图 + 现在跑到哪」。
         与 create 分支读同一份数据源（wf.longtask），返回 LT.graphOf 的现况快照
         （身份 / ver / enabled / 运行态 / 整张图定义）；uid 可省 = 本画布当前任务。
@@ -15960,6 +16272,7 @@ async function applyAppOp(params, runWf, runKey) {
   }
 
   if (action === "update_longtask") {
+    if (window.LT_DISABLED) throw new Error(I18n.t("长周期任务暂时停用（正在修复中），入口与状态机已隐藏"));
     /* 「任务链修改」的落点：Agent 交回一张**完整的新图**→ 原地替换既有任务的图定义
         （同一个 uid / 名字 / enabled / activeRun 都保留，ver +1）。归一 + 校验都在
         LT.updateFromGraph 里；有 err 就整条拒绝并把 err 文本回给 Agent 去修。
@@ -16084,23 +16397,70 @@ async function applyAppOp(params, runWf, runKey) {
   throw new Error(I18n.t("未知应用操作：") + action);
 }
 
+/* ── 画布修改确认档（唯一真源）──────────────────────────────────────────────
+   ask      = 每次修改都请用户确认（缺省）
+   approve  = 画布编辑（mtnode_canvas_edit / 节点层等）直接生效，危险操作仍确认
+   all      = 连危险操作（删除画布 / 插件装卸）也不问，全部放行
+   三档写在同一处配置里；会话「工具」菜单、右上角「审批」面板、给模型的人设文案
+   都读它，不各存一份。旧配置 dsh.assistAutoApprove（布尔）按 approve 迁移。 */
+const CANVAS_EDIT_MODES = ["approve", "ask", "all"];
+
+function canvasEditMode() {
+  const d = (S.config && S.config.dsh) || {};
+  const v = d.assistCanvasMode;
+  if (CANVAS_EDIT_MODES.indexOf(v) >= 0) return v;
+  return d.assistAutoApprove ? "approve" : "ask";
+}
+
+function canvasEditModeLabel(mode) {
+  const m = mode || canvasEditMode();
+  return m === "approve"
+    ? I18n.t("批准")
+    : m === "all"
+      ? I18n.t("全部允许")
+      : I18n.t("询问");
+}
+
+function canvasEditModeHint(mode) {
+  const m = mode || canvasEditMode();
+  return m === "approve"
+    ? I18n.t("画布编辑直接生效；删除画布 / 插件装卸等危险操作仍会确认")
+    : m === "all"
+      ? I18n.t("画布编辑与危险操作（删除画布 / 插件装卸）全部直接生效，不再询问")
+      : I18n.t("每次修改都弹确认框（默认）");
+}
+
+function setCanvasEditMode(mode) {
+  if (CANVAS_EDIT_MODES.indexOf(mode) < 0) mode = "ask";
+  if (!S.config.dsh) S.config.dsh = {};
+  S.config.dsh.assistCanvasMode = mode;
+  /* 旧字段继续跟随写：任何还在读 assistAutoApprove 的路径与旧版本配置口径一致 */
+  S.config.dsh.assistAutoApprove = mode !== "ask";
+  if (window.api && window.api.configSave)
+    window.api.configSave(S.config).catch(() => {});
+  if (typeof paintApprovalsBtn === "function") paintApprovalsBtn();
+}
+
+function canvasOpIsDangerous(op, params) {
+  if (op !== "app" || !params) return false;
+  return (
+    params.action === "delete_workflow" ||
+    params.action === "install_dsh_plugin" ||
+    params.action === "remove_dsh_plugin" ||
+    params.action === "set_dsh_plugin"
+  );
+}
+
 function canvasOpNeedsConfirm(op, params) {
   /* MCP 连接（第三方客户端）按首次连接授权生效：不逐笔弹确认框。
      开关由 renderer/mcp-bridge.js 只在这一次调用期间置真（见 app.js 的 S._mcpAuthorized）。 */
   if (S._mcpAuthorized) return false;
   if (!S.assistRunActive && !anyAgentSessionRunning()) return false;
-  if (S.config && S.config.dsh && S.config.dsh.assistAutoApprove) return false;
-  if (op === "edit") return true;
-  if (op === "app" && params && params.action === "delete_workflow") return true;
-  if (
-    op === "app" &&
-    params &&
-    (params.action === "install_dsh_plugin" ||
-      params.action === "remove_dsh_plugin" ||
-      params.action === "set_dsh_plugin")
-  ) {
-    return true;
-  }
+  const mode = canvasEditMode();
+  if (mode === "all") return false;
+  /* 危险操作在任何档位都要人点头（all 除外，已在上一行放行） */
+  if (canvasOpIsDangerous(op, params)) return true;
+  if (op === "edit") return mode !== "approve";
   return false;
 }
 
@@ -16349,11 +16709,11 @@ function defaultToolAllow() {
   return allow;
 }
 
-/* 助手改画布已批准 / 用户刚确认过本次 edit 时，跳过 canvas_* 的工具许可「询问」
-   （避免 assistAutoApprove 仍被 canvas_super=ask 二次拦截，导致跑到排版/成组阶段突然失败）。 */
+/* 助手改画布已批准 / 全部允许 / 用户刚确认过本次 edit 时，跳过 canvas_* 的工具许可「询问」
+   （避免画布确认已放行，却仍被 canvas_super=ask 二次拦截，导致跑到排版/成组阶段突然失败）。 */
 function canvasToolAskBypassed(key) {
   if (!String(key || "").startsWith("canvas_")) return false;
-  if (S.config && S.config.dsh && S.config.dsh.assistAutoApprove) return true;
+  if (canvasEditMode() !== "ask") return true;
   if (S._canvasEditUserApproved) return true;
   return false;
 }
@@ -16576,6 +16936,74 @@ function agentDeniedToolNames(runKey) {
   return out;
 }
 
+/* ── 工具族按需注册（browser_* / 素材 / 音视频）：按「本轮提没提到」整族裁掉 ──
+   这三族合计约 10K+ 字符，绝大多数会话整轮都用不上，却每一步都随固定前缀重发一遍。
+   判据只看**这一轮用户原话 + 最近几轮用户消息**（会话侧传 roundHistory）：
+     · 提到了 → 整族照常注册（宁可多带一次，也不让模型撞不存在的工具）；
+     · 一句都没提 → 整族按名字进 hideTools（网关归一后进 runtime key 的 hx: 指纹，
+       换档 = 冷起一台自己的运行时，同档每一步前缀完全一致）。
+   名单真源 = dsh/gateway/tool-visibility.mjs 的 HIDEABLE_TOOLS（这里点名的每个名字都
+   必须在那份白名单里，否则会被网关静默丢弃；名单一致性由 test/smoke-token-budget.js 钉住）。 */
+const AGENT_TOOL_FAMILY_TOOLS = {
+  /* 会话自己的浏览器（整族一个判据：某个入口不在，这一族也干不成活） */
+  browser: [
+    "browser_launch",
+    "browser_snapshot",
+    "browser_navigate",
+    "browser_click",
+    "browser_type",
+    "browser_key",
+    "browser_eval",
+    "browser_wait",
+    "browser_screenshot",
+    "browser_tabs",
+    "browser_network",
+    "browser_help",
+    "browser_release",
+  ],
+  /* 素材库（读素材 + 整窗截图）只有一个入口 */
+  assets: ["mtnode_assets"],
+  /* 本地媒体：转写 / 字幕 / ffmpeg 是同一类活（听音频、做字幕、看视频、抽帧转码） */
+  media: ["audio_transcribe", "audio_subtitle", "ffmpeg"],
+};
+
+/* 每一族的「提到了」判据（中英混写，按词面命中即算提到）。
+   故意写得宽：多命中一次只是多带一份 schema，漏判一次会让模型整轮干不成活。 */
+const AGENT_TOOL_FAMILY_HINTS = {
+  browser:
+    /(浏览器|网页|网站|网址|页面|标签页|登录页|browser|web\s?page|website|\burl\b|https?:\/\/|localhost|chrome|firefox)/i,
+  assets: /(素材|素材库|资源库|缩略图|截图|asset|screenshot)/i,
+  media:
+    /(音频|视频|音轨|语音|字幕|转写|转录|逐字稿|录音|录像|抽帧|配音|播客|ffmpeg|\bmp3\b|\bmp4\b|\bwav\b|\bm4a\b|\bflac\b|\bsrt\b|\bvtt\b)/i,
+};
+
+/**
+ * 这一轮一句都没提到、因此整族不该注册的工具名（宿主侧映射本文件是唯一真源）。
+ *
+ * 只做「按族」判断：任意一条命中 = 这一族全留（不是逐工具判），这样同一档的名单稳定、
+ * 运行期可见集不会一步一个样。返回未排序的工具名，排序去重交给 dshHiddenToolsFor。
+ * @param {string} [text] 这一轮的用户原话（不是续跑指令 —— 续跑轮的原文由调用方冻结传入）
+ * @param {string[]} [hist] 最近几轮用户消息（接续轮别因为这一轮没复述关键词就掉工具）
+ * @returns {string[]}
+ */
+function agentHiddenToolNames(text, hist) {
+  const said = [];
+  const addSaid = (x) => {
+    const s = String(x == null ? "" : x).trim();
+    if (s) said.push(s);
+  };
+  addSaid(text);
+  const back = Array.isArray(hist) ? hist.slice(-4) : [];
+  for (const h of back) addSaid(h);
+  const out = [];
+  for (const family of Object.keys(AGENT_TOOL_FAMILY_TOOLS)) {
+    const hint = AGENT_TOOL_FAMILY_HINTS[family];
+    if (hint && said.some((s) => hint.test(s))) continue;
+    for (const n of AGENT_TOOL_FAMILY_TOOLS[family]) out.push(n);
+  }
+  return out;
+}
+
 async function ensureAgentTool(key, detail, runKey) {
   /* MCP 连接（第三方客户端）：授权在「首次连接」那一步已经给过，这里不再逐项问许可
      （与 canvasOpNeedsConfirm 同一开关，只在这一次调用期间为真）。 */
@@ -16745,8 +17173,20 @@ function agentToolPolicySystemNote(opts) {
     I18n.t("【Agent 工具许可】当前预设「") +
     name +
     I18n.t("」。");
-  const assistAuto =
-    !runPolicy && !!(S.config && S.config.dsh && S.config.dsh.assistAutoApprove);
+  /* 画布修改确认档：ask / approve / all（真源见 canvasEditMode）。
+     按运行有专权限（runPolicy）时不注入全局档位的说法。 */
+  const editMode = runPolicy ? "ask" : canvasEditMode();
+  const assistAuto = editMode !== "ask";
+  const assistLine =
+    editMode === "all"
+      ? I18n.t(
+          "助手改画布为「全部允许」：mtnode_canvas_edit / 节点层等画布修改，以及删除画布 / 插件装卸等危险操作，都直接生效，不再弹确认。",
+        )
+      : editMode === "approve"
+        ? I18n.t(
+            "助手改画布已批准：mtnode_canvas_edit / 节点层等画布修改直接生效，无需再等确认；删除画布 / 插件装卸等危险操作仍会弹窗确认。",
+          )
+        : "";
   if (nodeLock) {
     s += I18n.t(
       "本次运行为智能节点：读取画布与节点 / 连线操作已放行（改现有节点前先问用户）；控制类节点、节点层、绘图、排版与成组按上面的许可逐次询问；应用操作与删除画布一律拒绝（mtnode_app 本轮不注册）。",
@@ -16763,10 +17203,7 @@ function agentToolPolicySystemNote(opts) {
   if (!denied.length && !asking.length) {
     if (!nodeLock && !canvasReadOnly)
       s += I18n.t("当前预设允许全部已列出的工具类别（与产品默认能力一致）。");
-    if (assistAuto && !noCanvasRead)
-      s += I18n.t(
-        "助手改画布已批准：mtnode_canvas_edit / 节点层等画布修改直接生效，无需再等确认。",
-      );
+    if (assistLine && !noCanvasRead) s += assistLine;
     return s;
   }
   if (denied.length)
@@ -16781,10 +17218,7 @@ function agentToolPolicySystemNote(opts) {
       I18n.t("询问：") +
       askingShown.join(I18n.t("、")) +
       I18n.t("（调用前会请用户确认）。");
-  if (assistAuto)
-    s += I18n.t(
-      "助手改画布已批准：mtnode_canvas_edit / 节点层等画布修改直接生效，无需再等确认。",
-    );
+  if (assistLine) s += assistLine;
   if (denied.length)
     s += I18n.t(
       "拒绝项对应的工具不可调用；画布 / 应用 / 识图类调用会被系统直接拒绝。",
@@ -17143,7 +17577,7 @@ function openApprovalsPanel() {
   sec3.className = "ap-sec";
   const lab3 = document.createElement("label");
   lab3.className = "ap-label";
-  lab3.textContent = I18n.t("助手改画布（全局助手 / 智能会话）");
+  lab3.textContent = I18n.t("助手改画布（画布助手 / 智能会话）");
   sec3.appendChild(lab3);
   const row3 = document.createElement("div");
   row3.className = "ap-tool-row";
@@ -17155,37 +17589,42 @@ function openApprovalsPanel() {
   meta3.appendChild(labAssist);
   const small3 = document.createElement("small");
   small3.textContent = I18n.t(
-    "批准=不弹窗（含节点层）；询问=每次确认一次（不再二次问节点层）",
+    "批准=画布编辑直接生效（危险操作仍确认）；询问=每次确认一次；全部允许=连删除画布 / 插件装卸也不问",
   );
   meta3.appendChild(small3);
   row3.appendChild(meta3);
   const toggles3 = document.createElement("div");
   toggles3.className = "ap-mode-toggles";
-  const assistAuto = !!S.config.dsh.assistAutoApprove;
+  toggles3.id = "apAssistCanvasToggles";
+  const curMode3 = canvasEditMode();
   const assistModes = [
-    ["allow", I18n.t("批准"), true],
+    ["approve", I18n.t("批准"), true],
     ["ask", I18n.t("询问"), false],
+    ["all", I18n.t("全部允许"), true],
   ];
   for (const [mode, label, autoVal] of assistModes) {
     const b = document.createElement("button");
     b.type = "button";
     b.className =
       "ap-mode-btn ap-mode-" +
-      mode +
-      ((assistAuto && autoVal) || (!assistAuto && !autoVal) ? " on" : "");
+      (autoVal ? "allow" : "ask") +
+      (curMode3 === mode ? " on" : "");
     b.textContent = label;
+    b.title = canvasEditModeHint(mode);
     b.onclick = () => {
-      S.config.dsh.assistAutoApprove = !!autoVal;
-      window.api.configSave(S.config).catch(() => {});
+      setCanvasEditMode(mode);
       toggles3.querySelectorAll(".ap-mode-btn").forEach((x) => {
-        x.classList.toggle("on", x.classList.contains("ap-mode-" + mode));
+        x.classList.toggle("on", x === b);
       });
       toast(
-        autoVal
-          ? I18n.t("已开启：助手改画布不再弹确认")
-          : I18n.t("已关闭：助手改画布需确认"),
+        I18n.t("画布修改确认：") + canvasEditModeLabel(mode) + "（" + canvasEditModeHint(mode) + "）",
         "ok",
       );
+      /* 会话侧「工具」菜单同源，跟着回显 */
+      if (typeof buildAgentToolsMenu === "function") {
+        buildAgentToolsMenu();
+        buildAgentToolsMenu("assistToolsMenu");
+      }
     };
     toggles3.appendChild(b);
   }
@@ -17635,48 +18074,54 @@ function canvasConfirmPendingOf(runKey) {
   return n;
 }
 
+/* ── 关掉后还能唤回（本次需求）───────────────────────────────────────────
+   确认框可以被 ✕ / Esc / 被别的弹窗顶掉 —— 那是「先放一边」，不是作答。以前这一关
+   就再也找不回来：回执永远悬着，发起这一轮只能干等。现在关窗只把这一笔记进待办表，
+   右下角挂一枚「待确认的修改 · 点击唤回」，点它把同一个框原样打开，仍走同一条回执。
+   发起轮结束（canvasConfirmRegistry 自动撤框）时待办一并清掉，不留死链。 */
+const canvasConfirmParked = new Map();
+let canvasConfirmParkedSeq = 0;
+function canvasConfirmParkedPaint() {
+  let el = document.getElementById("canvasConfirmRecall");
+  const n = canvasConfirmParked.size;
+  if (!n) {
+    if (el) el.remove();
+    return;
+  }
+  if (!el) {
+    el = document.createElement("button");
+    el.type = "button";
+    el.id = "canvasConfirmRecall";
+    el.style.cssText =
+      "position:fixed; right:18px; bottom:18px; z-index:9000; display:inline-flex; align-items:center;" +
+      " gap:6px; padding:8px 14px; border-radius:999px; border:1px solid var(--bd);" +
+      " background:var(--panel, var(--bg)); color:var(--fg); font-size:12px; cursor:pointer;" +
+      " box-shadow:0 6px 18px rgba(0,0,0,.28)";
+    el.addEventListener("click", () => {
+      const first = canvasConfirmParked.values().next().value;
+      if (first && typeof first.open === "function") first.open();
+    });
+    document.body.appendChild(el);
+  }
+  el.textContent =
+    n > 1
+      ? I18n.t("待确认的修改 ") + n + I18n.t(" 笔 · 点击唤回")
+      : I18n.t("待确认的修改 · 点击唤回");
+  el.title = I18n.t(
+    "刚才的确认框被关掉了：点这里重新打开（拒绝 / 全部允许 / 确认修改）",
+  );
+}
+
 function confirmAssistAction(title, info, opts) {
   info = info || {};
   opts = opts || {};
   return new Promise((resolve) => {
-    openOverlay(title || I18n.t("确认操作"));
-    overlayPersistent = true;
     /* owner = 发起这一帧的那一轮：{ id: 帧 id, runKey, sessionId } */
     const owner = opts.owner || null;
     const confirmId = owner && owner.id ? String(owner.id) : "";
-    const body = $("#ovBody");
-    const foot = $("#ovFoot");
-    body.innerHTML = "";
-    const p = document.createElement("p");
-    p.style.cssText = "margin:0 0 10px; line-height:1.7; font-size:13px";
-    p.textContent = info.summary || "";
-    body.appendChild(p);
-    if (info.detail) {
-      const d = document.createElement("div");
-      d.style.cssText = "color:var(--muted); font-size:12px; margin-bottom:10px";
-      d.textContent = info.detail;
-      body.appendChild(d);
-    }
-    if (info.raw) {
-      const pre = document.createElement("pre");
-      pre.style.cssText =
-        "max-height:240px; overflow:auto; background:var(--code); border:1px solid var(--bd); padding:8px; font-size:11px; white-space:pre-wrap; word-break:break-all";
-      pre.textContent = info.raw;
-      body.appendChild(pre);
-    }
-    const note = document.createElement("div");
-    note.style.cssText = "margin-top:10px; color:var(--orange2); font-size:11.5px";
-    note.textContent = opts.rejectStopsAgent
-      ? I18n.t("拒绝后本次修改不会生效，并立即停止智能会话继续工作。")
-      : I18n.t("拒绝后本次修改不会生效；可让助手改方案后再试。");
-    body.appendChild(note);
-    if (confirmId) {
-      const hint = document.createElement("div");
-      hint.style.cssText = "margin-top:6px; color:var(--muted); font-size:11px";
-      hint.textContent = I18n.t("发起该请求的运行结束后，此确认框会自动消失。");
-      body.appendChild(hint);
-    }
-    foot.innerHTML = "";
+    /* 待办键：有帧 id 用帧 id（同一帧重复唤回只占一条），本地调用另起序号 */
+    const parkKey = confirmId || "local-" + ++canvasConfirmParkedSeq;
+    let done = false;
     /* 屏幕上这一刻显示的框是不是我：自毁路径可能晚于用户打开别的弹窗（设置、
        保存路径…），那时绝不能越界 closeOverlay 把别人正在填的表关掉。 */
     const overlayBox = () => document.querySelector("#overlay .overlay-box");
@@ -17685,11 +18130,12 @@ function confirmAssistAction(title, info, opts) {
       const b = overlayBox();
       return !!b && b.dataset.ixConfirmId === confirmId;
     };
-    let done = false;
     /* ans: true=确认 / false=拒绝 / IX_CONFIRM_DEAD=发起轮已结束，自动撤框 */
     const settle = (ans, closeDom) => {
       if (done) return;
       done = true;
+      canvasConfirmParked.delete(parkKey);
+      canvasConfirmParkedPaint();
       canvasConfirmUnregister(confirmId);
       const b = overlayBox();
       if (closeDom && overlayIsMine()) {
@@ -17698,27 +18144,90 @@ function confirmAssistAction(title, info, opts) {
       }
       resolve(ans);
     };
-    if (confirmId) {
-      const b = overlayBox();
-      if (b) b.dataset.ixConfirmId = confirmId;
-      /* 登记到发起轮：本轮收尾 / ix-drop / 用户终止时会调用 settle */
-      canvasConfirmRegister({
-        id: confirmId,
-        runKey: String((owner && owner.runKey) || ""),
-        sessionId: String((owner && owner.sessionId) || ""),
-        settle: () => settle(IX_CONFIRM_DEAD, true),
+    /* 首次弹出与「唤回」共用这一份渲染：同一笔只有一个出口，不各写一套 */
+    const paint = () => {
+      if (done) return;
+      canvasConfirmParked.delete(parkKey);
+      canvasConfirmParkedPaint();
+      openOverlay(title || I18n.t("确认操作"));
+      overlayPersistent = true;
+      const body = $("#ovBody");
+      const foot = $("#ovFoot");
+      body.innerHTML = "";
+      const p = document.createElement("p");
+      p.style.cssText = "margin:0 0 10px; line-height:1.7; font-size:13px";
+      p.textContent = info.summary || "";
+      body.appendChild(p);
+      if (info.detail) {
+        const d = document.createElement("div");
+        d.style.cssText = "color:var(--muted); font-size:12px; margin-bottom:10px";
+        d.textContent = info.detail;
+        body.appendChild(d);
+      }
+      if (info.raw) {
+        const pre = document.createElement("pre");
+        pre.style.cssText =
+          "max-height:240px; overflow:auto; background:var(--code); border:1px solid var(--bd); padding:8px; font-size:11px; white-space:pre-wrap; word-break:break-all";
+        pre.textContent = info.raw;
+        body.appendChild(pre);
+      }
+      const note = document.createElement("div");
+      note.style.cssText = "margin-top:10px; color:var(--orange2); font-size:11.5px";
+      note.textContent = opts.rejectStopsAgent
+        ? I18n.t("拒绝后本次修改不会生效，并立即停止智能会话继续工作。")
+        : I18n.t("拒绝后本次修改不会生效；可让助手改方案后再试。");
+      body.appendChild(note);
+      if (confirmId) {
+        const hint = document.createElement("div");
+        hint.style.cssText = "margin-top:6px; color:var(--muted); font-size:11px";
+        hint.textContent = I18n.t(
+          "发起该请求的运行结束后，此确认框会自动消失；关闭窗口不会丢弃这次请求，可从右下角「待确认的修改」唤回。",
+        );
+        body.appendChild(hint);
+      }
+      foot.innerHTML = "";
+      if (confirmId) {
+        const b = overlayBox();
+        if (b) b.dataset.ixConfirmId = confirmId;
+        /* 登记到发起轮：本轮收尾 / ix-drop / 用户终止时会调用 settle */
+        canvasConfirmRegister({
+          id: confirmId,
+          runKey: String((owner && owner.runKey) || ""),
+          sessionId: String((owner && owner.sessionId) || ""),
+          settle: () => settle(IX_CONFIRM_DEAD, true),
+        });
+      }
+      const cancel = document.createElement("button");
+      cancel.className = "mini";
+      cancel.textContent = I18n.t("拒绝");
+      cancel.onclick = () => settle(false, true);
+      /* 全部允许（本次需求）：本次直接放行，并把「画布修改确认」切到 all ——
+         后续修改（含危险操作）都不再询问。与右上角「审批」/「工具」菜单同一份配置。 */
+      const allowAll = document.createElement("button");
+      allowAll.className = "mini";
+      allowAll.textContent = I18n.t("全部允许");
+      allowAll.title = I18n.t("本次直接生效，且后续画布修改都不再询问（可在「审批」里改回）");
+      allowAll.onclick = () => {
+        setCanvasEditMode("all");
+        toast(I18n.t("已设为「全部允许」：后续画布修改不再询问"), "copy");
+        settle(true, true);
+      };
+      const ok = document.createElement("button");
+      ok.className = "mini primary";
+      ok.textContent = I18n.t("确认修改");
+      ok.onclick = () => settle(true, true);
+      foot.appendChild(cancel);
+      foot.appendChild(allowAll);
+      foot.appendChild(ok);
+      /* 窗被关掉（✕ / Esc / 被别的弹窗顶掉）＝先放一边：这一笔挂到「唤回」入口上，
+         回执继续等用户作答；点那枚浮标把同一个框原样打开。 */
+      setOverlayCloseHook(() => {
+        if (done) return;
+        canvasConfirmParked.set(parkKey, { open: paint });
+        canvasConfirmParkedPaint();
       });
-    }
-    const cancel = document.createElement("button");
-    cancel.className = "mini";
-    cancel.textContent = I18n.t("拒绝");
-    cancel.onclick = () => settle(false, true);
-    const ok = document.createElement("button");
-    ok.className = "mini primary";
-    ok.textContent = I18n.t("确认修改");
-    ok.onclick = () => settle(true, true);
-    foot.appendChild(cancel);
-    foot.appendChild(ok);
+    };
+    paint();
   });
 }
 
@@ -17728,7 +18237,7 @@ function confirmAssistCanvasEdit(params, owner) {
   info.summary =
     (fromSession
       ? I18n.t("智能会话请求修改当前画布：")
-      : I18n.t("全局助手请求修改当前画布：")) + info.summary;
+      : I18n.t("画布助手请求修改当前画布：")) + info.summary;
   return confirmAssistAction(I18n.t("确认画布修改"), info, {
     rejectStopsAgent: fromSession,
     owner,
@@ -17745,7 +18254,7 @@ async function confirmAssistAppOp(params, owner, runWf) {
   info.summary =
     (fromSession
       ? I18n.t("智能会话请求：")
-      : I18n.t("全局助手请求：")) + info.summary;
+      : I18n.t("画布助手请求：")) + info.summary;
   return confirmAssistAction(I18n.t("确认危险操作"), info, {
     rejectStopsAgent: fromSession,
     owner,
@@ -18162,7 +18671,7 @@ function layoutNodePriority(n) {
     return 2;
   if (n.kind === "split") return 3;
   if (n.kind === "merge" || n.kind === "global" || n.kind === "wait_file" || n.kind === "timer") return 4;
-  if (n.kind === "delayer" || n.kind === "sequencer") return 4.2;
+  if (n.kind === "delayer" || n.kind === "popup" || n.kind === "sequencer") return 4.2;
   if (
     n.kind === "gate" ||
     n.kind === "splitter" ||
@@ -19248,7 +19757,7 @@ function sizeNodeForTidy(node) {
     set(Math.min(320, Math.max(d.w, 220)), Math.min(280, Math.max(d.h, 40 + lines * 16)));
     return;
   }
-  if (isSaveKind(kind) || kind === "split" || kind === "merge" || kind === "global" || kind === "wait_file" || kind === "timer" || kind === "delayer" || kind === "sequencer" || kind === "gate" || kind === "splitter" || kind === "counter" || kind === "mutex") {
+  if (isSaveKind(kind) || kind === "split" || kind === "merge" || kind === "global" || kind === "wait_file" || kind === "timer" || kind === "delayer" || kind === "popup" || kind === "sequencer" || kind === "gate" || kind === "splitter" || kind === "counter" || kind === "mutex") {
     set(d.w, d.h);
     return;
   }
@@ -21025,9 +21534,21 @@ function editPortNameOf(node, dir, i, isFnT) {
             : i === 3
               ? I18n.t("指令")
               : I18n.t("控制");
-      return i === 0 ? I18n.t("提示词") : I18n.t("输入端子 ") + (i + 1);
+    /* 质检节点（五种同构）：入 0 被检内容 · 1 质检要求（可多线）· 2 控制 */
+    if (typeof isQaKindNode === "function" && isQaKindNode(node))
+      return (
+        [I18n.t("被检内容"), I18n.t("质检要求"), I18n.t("控制")][i] ||
+        I18n.t("输入端子 ") + (i + 1)
+      );
     /* FLUX 3 Image Klein：0=提示词 · 1=参考图（可多接）· 2=控制输入 */
     if (k === "flux3klein_gen")
+      return i === 0
+        ? I18n.t("提示词")
+        : i === 1
+          ? I18n.t("参考图（可多接，最多 10 张）")
+          : I18n.t("控制");
+    /* Qwen Image 2.1：0=提示词 · 1=参考图（可多接）· 2=控制输入 */
+    if (k === "qwenimage_gen")
       return i === 0
         ? I18n.t("提示词")
         : i === 1
@@ -21078,6 +21599,12 @@ function editPortNameOf(node, dir, i, isFnT) {
   )
     return i === 0 ? I18n.t("内容") : I18n.t("控制");
   if (k === "judge") return i === 0 ? "YES" : "NO";
+  /* 质检节点的输出：0 报告 · 1 通过 · 2 未过（输入侧在上面 dir==="in" 段） */
+  if (typeof isQaKindNode === "function" && isQaKindNode(node))
+    return (
+      [I18n.t("报告"), I18n.t("通过"), I18n.t("未过")][i] ||
+      I18n.t("输出端子 ") + (i + 1)
+    );
   if (k === "net_recv") return i === 0 ? I18n.t("信息") : I18n.t("控制");
   /* 音频 / 视频输入：输出端子固定两个 —— 0=音频输出 / 视频输出（该文件的 file:/// URL）·
      1=转写输出（该文件的转写文字，本机 SenseVoice，没有转写内容时是空文本）。
@@ -21108,6 +21635,9 @@ function editPortKindOf(node, dir, i, isFnT) {
       return i === 4 ? "control" : i === 1 ? "audio" : "text";
     /* FLUX 3 Image Klein：0=提示词（text）· 1=参考图（image）· 2=控制输入 */
     if (k === "flux3klein_gen")
+      return i === 2 ? "control" : i === 1 ? "image" : "text";
+    /* Qwen Image 2.1：0=提示词（text）· 1=参考图（image）· 2=控制输入 */
+    if (k === "qwenimage_gen")
       return i === 2 ? "control" : i === 1 ? "image" : "text";
     /* SoulX-FlashHead Lite：0=人物图（image）· 1=语音（audio）· 2=控制输入 */
     if (k === "soulxflashhead_gen")
@@ -21141,6 +21671,19 @@ function editPortKindOf(node, dir, i, isFnT) {
       return inPortIsControl(node, i) ? "control" : "any";
     }
     if (k === "task") return "control";
+    /* 质检节点（五种同构）：0 被检内容（按类型）· 1 质检要求（text，也可接参考样例）· 2 控制
+       —— 与 app.js 的 IN_PORT_DATA_KINDS / inPortIsControl 同一张表（改那边要同步这里）。 */
+    if (typeof isQaKindNode === "function" && isQaKindNode(node)) {
+      const t =
+        {
+          qa_text: ["text", "text"],
+          qa_image: ["image", "text"],
+          qa_video: ["video", "text"],
+          qa_audio: ["audio", "text"],
+          qa_file: ["any", "text"],
+        }[k] || ["any", "text"];
+      return i === 2 ? "control" : t[i] || "any";
+    }
     if (isControlKind(node)) return "control";
       /* 图像节点：输入端子与 proc_image 同一泛用增量规则 —— 端口 0 = 提示词（文本入口），
        端口 1+ 是增量数据槽：**文本节点与图像引用都收**（文本进【背景信息】、参考图进
@@ -21158,10 +21701,13 @@ function editPortKindOf(node, dir, i, isFnT) {
     return "any";
   }
   if (k === "task" || k === "judge") return "control";
+  /* 质检节点：0 报告（JSON 文本）· 1 / 2 控制（通过 / 未过）—— 判定口已撤掉 */
+  if (typeof isQaKindNode === "function" && isQaKindNode(node)) return i >= 1 ? "control" : "text";
   if (k === "net_recv") return i === 0 ? "text" : "control";
   if (k === "music_gen" || k === "yue_gen" || k === "breeze_gen")
     return i === 0 ? "audio" : "control";
   if (k === "flux3klein_gen") return i === 0 ? "image" : "control";
+  if (k === "qwenimage_gen") return i === 0 ? "image" : "control";
   if (k === "video_gen" || isVideoPostKind(node) || k === "remotion" || k === "infinitetalk_gen" || k === "soulxflashhead_gen")
     return i === 0 ? "video" : "control";
   if (isControlKind(node)) return "control";

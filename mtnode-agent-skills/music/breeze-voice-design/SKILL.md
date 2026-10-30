@@ -2,7 +2,7 @@
 name: breeze-voice-design
 title: Breeze 音色设计
 menu: user
-description: 【内置·随应用发版，不需从工坊安装】把用户一句话的需求扩成 Breeze TTS 2 的音色提示词（instruction），两档：默认「简洁」= 按性别年龄 / 音色质感 / 语速节奏 / 情绪性格 / 场景用途五个槽位拼成一句自然语言；「详细」= 固定四段分行（声线类型 / 音色关键词 / 共鸣位置 / 参考质感）。语言跟随台词或用户输入，配 cfg_scale=4 与 seed=42。交付时只给提示词正文。用于 MTNode「Breeze 语音生成」节点（breeze_gen）端口 3 的指令，或 breezeblue.ai API 的 instruction 字段。
+description: 【内置】把一句话需求扩成 Breeze TTS 2 音色提示词（简洁 / 详细两档）。
 ---
 
 # Breeze 音色设计

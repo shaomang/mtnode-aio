@@ -40,7 +40,9 @@
  * ─────────────────────────────────────────────────────────────────── */
 
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
+const { execFile } = require("child_process");
 const { ipcMain, shell, protocol, nativeImage } = require("electron");
 const { readJson, writeJson } = require("./config-providers.js");
 
@@ -1463,6 +1465,79 @@ function thumbEntryFor(rawPath, edge) {
 
 let thumbProtocolReady = false;
 
+/* 视频首帧（表单卡片墙等处的视频缩略）：同一个 mtnode-thumb:// 协议的另一支
+   URL：mtnode-thumb://video/<encodeURIComponent(绝对路径)>?e=320
+   ffmpeg 取 0.1s 一帧、长边 ≤ edge，结果进上面那张内存 LRU（重启即清）。
+   拿不到（没视频轨 / 没 ffmpeg / 文件坏了）→ null，前端退回类型图标。 */
+const VIDEO_EXT_RE = /\.(mp4|mov|mkv|webm|avi|m4v)$/i;
+let vthumbSeq = 0;
+async function videoThumbEntry(rawPath, edge) {
+  const p = String(rawPath || "");
+  if (!p || !VIDEO_EXT_RE.test(p)) return null;
+  let st = null;
+  try {
+    st = fs.statSync(p);
+  } catch {
+    return null;
+  }
+  if (!st.isFile()) return null;
+  const maxEdge = Math.max(64, Math.min(1280, Math.round(Number(edge) || 320)));
+  const key = "video|" + p + "|" + maxEdge + "|" + Math.round(st.mtimeMs) + "|" + st.size;
+  const hit = thumbCache.get(key);
+  if (hit) {
+    thumbCache.delete(key);
+    thumbCache.set(key, hit);
+    return hit;
+  }
+  let ff = null;
+  try {
+    /* 同一个主进程里的 ffmpeg 解析器（main-qa-media.js 导出），按调用期取，避免加载顺序耦合 */
+    ff = require("./main-qa-media.js").resolveFfmpeg();
+  } catch {
+    return null;
+  }
+  const out = path.join(os.tmpdir(), "mtnode-vthumb-" + process.pid + "-" + (vthumbSeq += 1) + ".png");
+  try {
+    await new Promise((resolve, reject) => {
+      execFile(
+        ff.ffmpeg,
+        [
+          "-hide_banner",
+          "-nostats",
+          "-ss",
+          "0.1",
+          "-i",
+          p,
+          "-frames:v",
+          "1",
+          "-vf",
+          "scale='min(" + maxEdge + ",iw)':-2",
+          "-y",
+          out,
+        ],
+        { timeout: 20000, windowsHide: true },
+        (err) => (err ? reject(err) : resolve()),
+      );
+    });
+  } catch {
+    return null;
+  }
+  let buf = null;
+  try {
+    buf = fs.readFileSync(out);
+  } catch {
+    buf = null;
+  }
+  try {
+    fs.unlinkSync(out);
+  } catch {}
+  if (!buf || !buf.length) return null;
+  const entry = { buf, mime: "image/png" };
+  thumbCache.set(key, entry);
+  while (thumbCache.size > THUMB_CACHE_MAX) thumbCache.delete(thumbCache.keys().next().value);
+  return entry;
+}
+
 /** 注册 mtnode-thumb://（app ready 之后调；协议权限声明见 apps-store.js 的
  *  registerSchemesAsPrivileged —— Electron 那个 API 只能整体调一次，方案清单集中在那儿） */
 function registerThumbProtocol() {
@@ -1474,7 +1549,9 @@ function registerThumbProtocol() {
       /* 路径整体塞在 pathname 里（encodeURIComponent 过），standard 协议不会再改它 */
       const p = decodeURIComponent(String(u.pathname || "")).replace(/^\/+/, "");
       const edge = Number(u.searchParams.get("e") || THUMB_DEFAULT_EDGE);
-      const hit = thumbEntryFor(p, edge);
+      /* host 区分取图方式：img = 原图缩略（nativeImage），video = ffmpeg 抽首帧 */
+      const hit =
+        String(u.host || "") === "video" ? await videoThumbEntry(p, edge) : thumbEntryFor(p, edge);
       if (hit) {
         return new Response(hit.buf, {
           status: 200,

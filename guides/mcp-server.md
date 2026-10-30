@@ -7,7 +7,7 @@
 ## 1. 这是什么
 
 MTNode 原本只做 MCP **客户端**（`dsh/gateway/mcp-resources.mjs` 连别人的服务器，给自家 Agent 加工具）。
-本模块补上另一半：MTNode 自己作为 MCP **服务端**，对外暴露 13 个工具 ——
+本模块补上另一半：MTNode 自己作为 MCP **服务端**，对外暴露 14 个工具 ——
 画布 / 应用 / 数据库 / 事实库 / 长任务 / 素材 / 识图 / 窗口操作（`mtnode_gui`），
 以及**媒体生成**（图像 / 音乐 / 语音 / 视频）、**跑节点与整图**、**用户工具节点**、**会话**。
 
@@ -60,7 +60,7 @@ handleCanvasEvent / handleDbToolEvent / handleAiFactsToolEvent / handleAssetTool
 - macOS / Linux 同上（`command` 换成实际的 MTNode 可执行文件或 `node`，路径换成实际安装位置；用应用可执行文件时同样要带 `ELECTRON_RUN_AS_NODE=1`）。
 - 桥脚本自己读数据目录里的 `mcp-server.json` 拿端口与令牌，所以**配置里不需要地址与令牌**；
   也可用环境变量显式覆盖（便携版 / 多用户）：`MTNODE_DATA_DIR`、`MTNODE_MCP_URL`、`MTNODE_MCP_TOKEN`。
-- 客户端重启一次即可看到全部 13 个工具（包含只在 MCP 这一侧提供的 `mtnode_gui` 与生成 / 跑图四件）。
+- 客户端重启一次即可看到全部 14 个工具（包含只在 MCP 这一侧提供的 `mtnode_gui` 与生成 / 跑图四件）。
 
 ### 2.2 本机 HTTP（自研客户端 / 远程工具宿主）
 
@@ -105,6 +105,7 @@ curl -s http://127.0.0.1:<port>/mcp \
 | `mtnode_app` | canvas / `app` | 部分 | 应用级动作（含长任务图存取、插件管理） |
 | `mtnode_vision` | canvas / `vision` | 否 | 识图子代理 |
 | `mtnode_db` | db / `db` | 部分 | 数据库副本 |
+| `mtnode_manifest` | manifest / `manifest` | 是 | 项目 manifest（`<工程根>/manifest.json`）：资产登记 / `asset_id@rev` / 依赖图 / `stale_plan` 增量重建计划 / 引用校验 |
 | `mtnode_facts` | facts / `facts` | 部分 | 本画布 AI 事实库 |
 | `lt_state` | lt / `lt` | 是 | 长任务本轮状态（只在环节内有归属） |
 | `mtnode_assets` | asset / `asset` | 否 | 素材库 / 窗口静帧 |
@@ -266,7 +267,7 @@ $env:MTNODE_DATA_DIR = "E:\tmp\mtnode-mcp-e2e"
 node scripts/e2e-mcp-full.mjs --data "E:\tmp\mtnode-mcp-e2e\pipeline-console" --report "E:\tmp\e2e-report.json"
 ```
 
-覆盖：端口/令牌落盘与桥自解析、`/meta` `/health` 免令牌与 401、13 个工具的 `tools/list`、
+覆盖：端口/令牌落盘与桥自解析、`/meta` `/health` 免令牌与 401、14 个工具的 `tools/list`、
 2+3 资源、3 份提示词、协议级错误面（未知方法 / 未导出工具 / 参数类型 / 枚举越界）、
 `canvas_get` 三档 detail 与 `sections`、`canvas_edit` 建连改分组绘制 + 版本闸（过期 baseHash 被拒、
 写后哈希刷新、**哈希与 detail 档位无关**）、`mtnode_app` 六种动作、`mtnode_facts` / `mtnode_db` /

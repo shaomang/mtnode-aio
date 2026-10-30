@@ -62,10 +62,19 @@ const {
   startBackgroundCheck,
 } = require("./updater.js");
 const { registerPetIpc, shutdownPet } = require("./pet/main-pet.js");
-const { registerAppPluginsIpc, shutdownAppPlugins, openWindowPlugin } = require("./plugins/main-app-plugins.js");
+const { registerAppPluginsIpc, shutdownAppPlugins, openWindowPlugin, pluginBackendSnapshot } = require("./plugins/main-app-plugins.js");
 /* 用户自建插件（声明式 · <数据目录>/user-plugins + mtnode-plugin.json）：扫目录即出画布节点 /
    MCP / 技能，不碰源码、升级不失效；一键修复与诊断导出也在这里（见 plugins/user-plugins.js） */
-const { registerUserPluginsIpc, runStartupHealth: runUserPluginsHealth } = require("./plugins/user-plugins.js");
+const { registerUserPluginsIpc, runStartupHealth: runUserPluginsHealth, backendSnapshot: userPluginBackendSnapshot } = require("./plugins/user-plugins.js");
+/* 重后端注册中心（与插件体系并存）：Agent 在任务里现场装出来的工具装完登记 → 之后任何会话 /
+   画布都能查到并复用；生命周期（进程 / 端口 / 健康 / lock.class 互斥）在这里管，
+   数据层在 backend-registry-store.js。退出时由 before-quit 统一停掉它拉起的进程。 */
+const { registerBackendRegistryIpc, shutdownBackendRegistry } = require("./main-backend-registry.js");
+/* 项目 manifest（<工程根>/manifest.json）：资产登记 / 版本 / 依赖图 / 增量重建。
+   root 由渲染层定好传进来（显式 root > 画布工作目录），主进程不猜路径。 */
+const { registerManifestIpc } = require("./main-manifest.js");
+/* 质检节点（qa_text / qa_image / qa_video / qa_audio / qa_file）：ffprobe 硬指标 / 抽帧交给 VLM / 评分模板扫描 / 报告落盘 qa/reports/（见 main-qa-media.js） */
+const { registerQaMediaIpc } = require("./main-qa-media.js");
 const { registerMusic3Ipc, shutdownMusic3UiOnly } = require("./music3/main-music3.js");
 /* 本地音乐生成后端（YuE2）：与 Music3 同族，退出时由 before-quit 收尾一并结束 */
 const { registerYueIpc, shutdownYueUiOnly } = require("./yue/main-yue.js");
@@ -124,6 +133,13 @@ const {
   registerFlux3KleinIpc,
   shutdownFlux3KleinUiOnly,
 } = require("./flux3klein/main-flux3klein.js");
+/* Qwen Image 2.1（7B DiT · INT8 / Turbo INT8）：独立 ComfyUI 后端（8196），
+   见 qwenimage/main-qwenimage.js。与 FLUX 3 Klein 同口径：控制台窗在 before-quit 先关，
+   后台 ComfyUI 进程由 vramShutdownAll 走宿主 hard() 一并结束。 */
+const {
+  registerQwenImageIpc,
+  shutdownQwenImageUiOnly,
+} = require("./qwenimage/main-qwenimage.js");
 const { patchProviders } = require("./config-providers.js");
 /* 文本 → PDF 落盘内核（隐藏窗口 + printToPDF，公式排版与画布预览同源，见 pdf-write.js） */
 const pdfWrite = require("./pdf-write.js");
@@ -149,6 +165,9 @@ const {
   hostImageGenerate,
   imageBackendsForUi,
 } = require("./apps-store.js");
+/* 应用节点（画布上的 kind appnode）：可绑清单 / 应用解析 / 数据根（落在画布工作目录的
+   apps-data 里）/ 工作目录内文件读写。见 apps-node-store.js。 */
+const { registerAppsNodeIpc } = require("./apps-node-store.js");
 /* 全局音视频互斥锁（本地大模型一张卡只跑一个）：应用通道列图像后端 / 出图前先看它 */
 const mediaGenLock = require("./media-gen-global-lock.js");
 /* 本地模型显存释放编排器（h3 / music3 / yue / llama 共用一套口径）：
@@ -304,7 +323,13 @@ async function applySelfLoop(cfg) {
   let rows = [];
   try {
     const list = await dsh().mcpList();
-    rows = Array.isArray(list) ? list : (list && list.list) || [];
+    /* 网关回的是 { servers: [...] }（gateway.mjs 的 case 'mcpList'，渲染层也按 r.servers 读）。
+       早期这里错读成 list / list.list → 永远算成「列表里没有 mtnode-self」→ 每次启动都走
+       mcpAdd → 撞「同名 MCP 服务器已存在」→ 静默失败，于是那行 url 一直停在旧端口：
+       引擎连不上，应用内 Agent 就拿不到 mtnode_run / mtnode_generate。 */
+    rows = Array.isArray(list)
+      ? list
+      : (list && Array.isArray(list.servers) && list.servers) || (list && list.list) || [];
   } catch (e) {
     /* 引擎没起来 / 数据目录不可用：不该影响 MCP 服务端本身，记一行就够 */
     return { ok: false, error: (e && e.message) || String(e) };
@@ -1082,8 +1107,16 @@ function cfgPlainObj(v) {
  * 于是 rootPathOf("dev") 回退到下载根（空目录），应用开发页预览报「该应用不在本机」。
  * 深合并只针对 apps（providers 数组另有专门保护，见下面那段），其它顶层键维持原语义。 */
 const CONFIG_DEEP_MERGE_KEYS = ["apps"];
+/* 已废弃、只该从盘上消失的顶层键：顶层浅合并是「incoming 没有 = 沿用盘上那份」，
+ * 于是渲染层启动时 delete 掉的这些键永远删不掉。旧版助手栏的正文/台账/两枚开关正好
+ * 全是这种键（真源早已挪进会话），残留会让启动把旧正文当成「老历史」再迁一条助手会话
+ * （用户现场：清空助手后重启，旧对话又回来）。它们已无任何写入方，incoming 缺席即删除。 */
+const CONFIG_DROP_KEYS = ["assistMessages", "assistTokenReport", "assistGrill", "assistPure"];
 function mergeConfigForSave(existing, incoming) {
   const next = Object.assign({}, existing, incoming);
+  for (const key of CONFIG_DROP_KEYS) {
+    if (incoming[key] === undefined) delete next[key];
+  }
   for (const key of CONFIG_DEEP_MERGE_KEYS) {
     const a = existing ? existing[key] : null;
     const b = incoming ? incoming[key] : null;
@@ -8918,6 +8951,15 @@ ipcMain.handle("dsh:pause", (event, params) =>
     .catch((e) => ({ ok: false, error: e.message || String(e) }))
 );
 
+/* 中断一只子代理（运行队列那一行的 ■）。params = { parentSessionId?, childSessionId }：
+   子代理是引擎里**异步**跑的后台子任务，父那一轮常常已经收尾，所以不能走 dsh:cancel
+   （那会关掉整台 runtime、连带打断别的活）。失败同样 resolve 成 {ok:false, reason}。 */
+ipcMain.handle("dsh:interruptSubagent", (event, params) =>
+  dsh()
+    .interruptSubagent(params)
+    .catch((e) => ({ ok: false, reason: "error", error: e.message || String(e) }))
+);
+
 ipcMain.handle("dsh:providerCatalog", () => dsh().providerCatalog());
 
 ipcMain.handle("skill:list", () => dsh().skillList());
@@ -9431,6 +9473,31 @@ app.whenReady().then(() => {
     appRoot: __dirname,
     getAppVersion: () => app.getVersion(),
   });
+  /* 重后端注册中心：与上面两块同一段注册（数据目录同样原样传 DATA，别包箭头）。
+     不预置任何后端声明 —— 列表由 Agent 登记或人手动新增；插件里的本机后端
+     （视频 / 音乐 / 语音 / 渲染 / 数字人 / 出图 + 用户自建插件声明的后端）经
+     listPluginBackends 一起进「可查询」范围，Agent 查一处即可（见 br_admin list）。 */
+  registerBackendRegistryIpc({
+    getDataDir: DATA,
+    getMainWin: () => mainWin,
+    appRoot: __dirname,
+    listPluginBackends: () => {
+      let out = [];
+      try {
+        out = pluginBackendSnapshot() || [];
+      } catch {
+        out = [];
+      }
+      try {
+        out = out.concat(userPluginBackendSnapshot() || []);
+      } catch {}
+      return out;
+    },
+  });
+  /* 项目 manifest 的 IPC（manifest:op）：纯磁盘层，无进程、无窗口依赖 */
+  registerManifestIpc();
+  /* 质检节点的 IPC：qa:probe / qa:frames / qa:frametimes / qa:report / qa:templates（ffmpeg 只在本机跑，不联网） */
+  registerQaMediaIpc();
   /* 用户自建插件的启动体检（只读扫目录）：哪些插件没被加载、为什么，写进日志；
      有问题的插件同时上报插件报错总线（弹窗 + 会话修复）—— 见 plugins/user-plugins.js */
   try { runUserPluginsHealth(); } catch (e) { console.log("[user-plugins] health failed:", (e && e.message) || e); }
@@ -9558,6 +9625,14 @@ app.whenReady().then(() => {
     appRoot: __dirname,
     assetDirFor: (wfId) => assetDir(wfId),
   });
+  /* Qwen Image 2.1（7B DiT · INT8 / Turbo INT8）：独立 ComfyUI（默认 8196）/ 安装 / 出图。
+     产物落画布资产目录（与 proc_image 同一去处），抽卡与蒙版都在宿主里跑。 */
+  registerQwenImageIpc({
+    getDataDir: DATA,
+    getMainWin: () => mainWin,
+    appRoot: __dirname,
+    assetDirFor: (wfId) => assetDir(wfId),
+  });
   /* ── 本地模型显存释放（local-model-vram.js）─────────────────────────────
      把各后端宿主登记的释放回调收进**一张表**：画布本地模型节点 / 应用出图入口走
      「运行前先释放别人的、收尾再释放自己的」，顶栏那枚按钮也走同一张表。
@@ -9577,6 +9652,7 @@ app.whenReady().then(() => {
     Object.assign({ id: "infinitetalk", label: "InfiniteTalk 数字人（ComfyUI）", host: "infinitetalk", subdir: "infinitetalk-local" }, vramHooksOf("infinitetalk")),
     Object.assign({ id: "soulxflashhead", label: "SoulX-FlashHead Lite（实时数字人）", host: "soulxflashhead", subdir: "soulxflashhead-local" }, vramHooksOf("soulxflashhead")),
     Object.assign({ id: "flux3klein", label: "FLUX 3 Image Klein（本机出图）", host: "flux3klein", subdir: "flux3-klein-local" }, vramHooksOf("flux3klein")),
+    Object.assign({ id: "qwenimage", label: "Qwen Image 2.1（本机出图）", host: "qwenimage", subdir: "qwen-image-local" }, vramHooksOf("qwenimage")),
   ]) {
     if (typeof def.isRunning !== "function") continue; /* 宿主没接这一钩子 = 不参与释放，不影响其余后端 */
     vramRelease.vramRegister(def);
@@ -9627,6 +9703,9 @@ app.whenReady().then(() => {
   /* AI 事实库：固定文件读写 / 落盘守卫 / 旧长期记忆一次性迁移（见 ai-facts-store.js）。
      必须排在上一条之后 —— 迁移要读的 <数据目录>/longtask/memory.db 由 longtask-store 定位。 */
   registerAiFactsIpc({ t: (s) => I18n.t(s) });
+  /* 应用节点（画布上的 kind appnode）：清单 / 解析 / 数据根 / 工作目录内文件。
+     数据根落在**画布工作目录**的 apps-data/<appId> 里（与应用中心窗口那份互不相干）。 */
+  registerAppsNodeIpc({ getMainWin: () => mainWin, t: (s) => I18n.t(s) });
   /* 应用宿主（用户自建应用）：根目录（config.json 的 apps.installDir，默认 <数据目录>/apps）/
      云端目录拉取与缓存 / 安装·更新（同名冲突三态）· 卸载 / 导出 zip / 变更探测 / 独立窗口。
      模型与图像生成只借这里的 apiCall / streamTextChat 内核，服务商与 Key 由 apps-store 自己
@@ -9730,6 +9809,8 @@ app.on("before-quit", (ev) => {
   try { shutdownSoulxflashheadUiOnly(); } catch {}
   /* FLUX 3 Image Klein：控制台窗先关；后台 ComfyUI 进程由下面的 vramShutdownAll 走宿主 hard() 结束。 */
   try { shutdownFlux3KleinUiOnly(); } catch {}
+  /* Qwen Image 2.1：控制台窗先关；后台 ComfyUI 进程由下面的 vramShutdownAll 走宿主 hard() 结束。 */
+  try { shutdownQwenImageUiOnly(); } catch {}
   /* 会话追加段（delta）：退出前整份压回基线（<id>.jsonl → <id>.json 并删追加段）。
      幂等：没有追加段的会话一个字节都不动；压缩本身是「先原子写基线、再删追加段」，
      崩在中间也不会重复贴（基线的 _deltaVer 兜底）。 */
@@ -9762,6 +9843,11 @@ app.on("before-quit", (ev) => {
        复用模式（Paseo Desktop）与外部实例一律不动。这里给 6 秒上限，超时也照常退出。 */
     try {
       jobs.push(Promise.resolve(paseoRemote.shutdownPaseoRemoteUiOnly({ timeoutMs: 6000 })).catch(() => ({ ok: false })));
+    } catch {}
+    /* 重后端注册中心拉起的常驻进程（Agent 在任务里装的工具）：跟着 MTNode 一起结束，
+       不给机器留占端口 / 占显存的孤儿进程。幂等，已停的条目是空操作。 */
+    try {
+      jobs.push(Promise.resolve(shutdownBackendRegistry()).catch(() => ({ stopped: 0 })));
     } catch {}
     await Promise.all(jobs);
   })().catch(() => {});

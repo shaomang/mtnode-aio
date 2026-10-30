@@ -2,7 +2,7 @@
 name: minimax-music-prompt
 title: MiniMax Music 提示词
 menu: user
-description: 【内置·随应用发版，不需从工坊安装】把一句话想法写成 MiniMax Music 的风格提示词：一段英文散文，六句按 Style+Mood → Tempo/Groove → Instruments → Vocals → Structure → Production 排（写句子、不写逗号标签、不含唱词）。控制曲风、人声、乐器、段落对比与制作；含官方六步、最小改动迭代表与校验清单。MTNode「Minimax Music 3 / YuE2」节点的提示词端口用它。
+description: 【内置】把一句话想法写成 MiniMax Music 风格提示词（英文六句：风格→速度→乐器→人声→结构→制作）。
 ---
 
 # MiniMax Music 提示词

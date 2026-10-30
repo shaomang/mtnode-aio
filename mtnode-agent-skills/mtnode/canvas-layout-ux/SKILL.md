@@ -1,7 +1,7 @@
 ---
 name: mtnode-canvas-layout-ux
 title: 画布排版与可操作区
-description: MTNode 画布节点排版：可编辑/控制节点靠上（小 y），处理与保存靠下或右侧；createMarks 分区、control 一键重跑；禁止 agent 调用 layout action。Use when auto-layout, createMarks, control nodes, or improving canvas UX for the user.
+description: 画布排版：控制与可编辑节点靠上、处理与保存靠下，createMarks 分区，禁止调 layout。
 ---
 
 # 画布排版与可操作区

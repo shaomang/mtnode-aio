@@ -1473,7 +1473,7 @@ function agentDbGroundingNote(node, wf) {
 
 /* ── 按步切段的运行轨迹（思考 / 正文 / 工具 / 错误 各归各位）──────────────
    一次 run 一条轨迹，挂在 S.runTrace[runKey]。runKey 与取消句柄同键：
-   节点 = node.id、会话 = agent:<id>、全局助手 = assist。
+   节点 = node.id、会话 = agent:<id>、画布助手 = assist。
    段模型 items: [{ k:'think'|'say'|'tool'|'err', text, step, callId }]
      · reasoning → think 段：按「够长才收口」合并 —— 同一条流的增量原样相接，跨
        step / 跨工具用换行；没写够阈值就保持开放继续吸碎片，写够了才在本流的工具 /
@@ -2222,11 +2222,18 @@ const DSH_TOOLS_DROPPED_BY_NO_CANVAS = [
   "mtnode_canvas_edit",
   "mtnode_app",
 ];
-/* 开发绑定会话（Gate A）只裁「读图」这一半：mtnode_canvas_get 的整张快照与 mtnode_app
-   的画布目录对它没有信息量（改代码读的是项目根真实文件）。本会话不读也不改画布 —— 不再
-   按收尾回写本节点的 note / devStatus / devFiles（见 app-assist.js noRead 人设与任务书）；
-   mtnode_canvas_edit 仅保留（不用于回写）。合计约 10.0K 字符/步不再重发。 */
-const DSH_TOOLS_DROPPED_BY_NO_READ = ["mtnode_canvas_get", "mtnode_app"];
+/* 开发绑定会话（Gate A）画布三件套全裁：mtnode_canvas_get 的整张快照、mtnode_app 的画布
+   目录、以及 mtnode_canvas_edit 的建图 schema 对它都没有信息量（改代码读的是项目根真实
+   文件）。本会话不读也不改画布 —— 不回写本节点的 note / devStatus / devFiles（见
+   app-assist.js noRead 人设与任务书），因此 mtnode_canvas_edit 留着只是每步重发约 19K
+   字符（schema 本身，约 7K token）。合计约 29K 字符/步不再重发。
+   这份名单是 DSH_TOOLS_DROPPED_BY_NO_CANVAS 的子集：dshHiddenToolsFor 的 covered 判据
+   会把 noCanvas 整档已裁的名字剔掉，两档同时成立时不会重复下发。 */
+const DSH_TOOLS_DROPPED_BY_NO_READ = [
+  "mtnode_canvas_get",
+  "mtnode_canvas_edit",
+  "mtnode_app",
+];
 /* 长周期任务环节勾了「允许读取画布」（canvasReadOnly）：只放读，改图与应用两件套点名藏掉
    （整档闸不能开 —— 开了连 mtnode_canvas_get 都不注册，授权就读不到任何东西）。 */
 const DSH_TOOLS_DROPPED_BY_CANVAS_READONLY = ["mtnode_canvas_edit", "mtnode_app"];
@@ -2260,10 +2267,12 @@ const NODE_AGENT_TOOL_POLICY = {
      带 o.runKey 时按**该轮**的工具许可算（「一人公司」专家自带 perm.toolAllow），
      不带就按全局预设 —— 助手 / 老会话 / 裸节点行为一字不变；
    · 本轮没接入任何数据库副本 → mtnode_db（未接入时宿主一律回「当前任务未接入数据库」）；
-   · 开发绑定会话（noCanvasRead）→ 读画布两件套：它本就不读也不改画布，开发改的是项目根
-     里的真实文件，整张画布快照对这个会话没有信息量（收尾不回写任何节点）。
+   · 开发绑定会话（noCanvasRead）→ 画布三件套：它本就不读也不改画布，开发改的是项目根
+     里的真实文件，整张画布快照与建图 schema 对这个会话都没有信息量（也不回写任何节点）。
    输出排序去重：同一档每轮逐字相同，runtime key 才稳定，同档会话共享一台运行时、
-   每一步前缀一致 —— 轮内改可见集是从第一个变化的 schema 起整段缓存失效，赔得更多。 */
+   每一步前缀一致 —— 轮内改可见集是从第一个变化的 schema 起整段缓存失效，赔得更多。
+   工具族按需注册（browser_* / 素材 / 音视频）也走这条通道：这一轮原话（+ 最近几轮用户
+   消息）一句都没提到就整族点名藏掉（判据真源 app-nodes.js agentHiddenToolNames）。 */
 function dshHiddenToolsFor(o) {
   if (!o || o.pure) return [];
   let names = [];
@@ -2281,15 +2290,33 @@ function dshHiddenToolsFor(o) {
      （app-longtask.js 造的伪节点带 _lt 标记），不是就点名藏掉 —— 宿主只会回一句
      「不属于任何长任务」，白占每步重发的工具定义。lt_memory 已下线，不再出现在这份名单里。 */
   if (!o.ltGrounded) names.push("lt_state");
-  /* 开发绑定会话（noCanvasRead）：读画布两件套点名进名单。走的是「按名字」这条通道
-     （不是 MTNODE_NO_CANVAS 整档闸，后者连 mtnode_canvas_edit 一起裁）；本会话不改画布，
-     但 mtnode_canvas_edit 仍保留，故不整档裁。若 lean / noCanvas 已经把这些名字裁掉，
+  /* 开发绑定会话（noCanvasRead）：画布三件套点名进名单（含 mtnode_canvas_edit）。走的是
+     「按名字」这条通道，而不是 MTNODE_NO_CANVAS 整档闸 —— 这一档只是不碰画布，别的画布
+     干线与大档位互不牵连。若 lean / noCanvas 已经把这些名字裁掉，
      下面 covered 判据让它不重复出现。 */
   if (o.noCanvasRead) for (const n of DSH_TOOLS_DROPPED_BY_NO_READ) names.push(n);
   /* 只读画布档（长任务环节勾了 canvasRead）：读图留着，改图 / 应用点名藏掉。 */
   if (o.canvasReadOnly) for (const n of DSH_TOOLS_DROPPED_BY_CANVAS_READONLY) names.push(n);
   /* 画布智能节点：读画布 / 改画布本轮都放行，只把应用两件套点名藏掉。 */
   if (o.nodeAgent) for (const n of DSH_TOOLS_DROPPED_BY_NODE_AGENT) names.push(n);
+  /* 工具族按需注册（browser_* / 素材 / 音视频）：这一轮原话 + 最近几轮用户消息一句都没
+     提到，就整族点名藏掉（判据真源 app-nodes.js agentHiddenToolNames）。判据只在这一处算
+     （spawn 时定档、轮内不变）：o.roundText 是这一轮用户原话（dshRunTask 冻结后随 baseOpts
+     透传，续跑 / 重发轮读到的仍是同一份原文），o.roundHistory 是最近几轮用户消息。
+     判据函数缺失（老沙箱只抠单文件）按「不裁」处理。 */
+  if (typeof agentHiddenToolNames === "function") {
+    let family = [];
+    try {
+      family = agentHiddenToolNames(o.roundText, o.roundHistory);
+    } catch (_) {
+      family = [];
+    }
+    for (const n of family) {
+      /* noBrowser 整档闸已经让 browser_* 一个都不注册：不重复点名（同一件事不说两遍） */
+      if (o.noBrowser && n.indexOf("browser_") === 0) continue;
+      names.push(n);
+    }
+  }
   const covered = {};
   if (o.lean) for (const n of DSH_TOOLS_DROPPED_BY_LEAN) covered[n] = 1;
   if (o.noCanvas) for (const n of DSH_TOOLS_DROPPED_BY_NO_CANVAS) covered[n] = 1;
@@ -2435,7 +2462,7 @@ function dshRunLongDrop(runKey) {
 }
 /* ── 任务级短促音：任何一件任务跑完就一声（本次需求，队列前后对比判定）──
    运行队列（collectRunQueueAll）就是「全应用正在跑的活」的唯一总览：智能体会话 / 画布
-   节点 / 开发块 / 全局助手 / 后端媒体生成 / 排队项 / 批处理都在里面。上拍还在的一项这一拍
+   节点 / 开发块 / 画布助手 / 后端媒体生成 / 排队项 / 批处理都在里面。上拍还在的一项这一拍
    不见了 = 它结束了 —— 只要不是被你手动停止 / 取消（节点 _aborted / 明确取消的条目），
    就发一声短促音。为什么走队列对比：这些类型各有各的收尾分支（app-nodes 的媒体链、
    批处理级联、app-db 的智能运行…），逐条埋钩子必漏；队列是全应用唯一汇总处，一处覆盖全部。
@@ -2510,6 +2537,10 @@ function dshRunQueueDoneCheck() {
       const k = String((it && it.key) || "");
       if (!k) continue;
       cur[k] = true;
+      /* 子代理行（type 'subagent'）：只在运行队列里「看得见、停得掉」，不参与完成音判定 ——
+         它通常与父会话那一轮同时收尾，两边各响一声会把一次任务听成两次；本需求也不改
+         既有的收尾听感（用户只要求「看得见」，没要求多一声）。 */
+      if (String((it && it.type) || "") === "subagent") continue;
       /* 排队 / 已暂停：不是在飞的任务，不进快照（它的键会随状态换，见 dshRunQueueRowState） */
       if (dshRunQueueRowState(it) !== "run") continue;
       if (!seen[k])
@@ -2948,6 +2979,10 @@ function dshRunTask(input, opts) {
     tokRoundKey: tokRoundKey,
     tokTitle: tokTitleInfo.title,
     tokTitleFrom: tokTitleInfo.from,
+    /* 这一轮的用户原话（起跑时冻结一次）：工具族按需注册（browser_* / 素材 / 音视频）的
+       判据只读它 —— 续跑 / 整轮重发轮的 input 已经换成续跑指令，再拿 input 当「这轮在
+       干什么」的依据，会让浏览器 / 音视频工具在续跑中途掉线，同时换掉 runtime key。 */
+    roundText: String(input == null ? "" : input),
     onEvent: (type, data) => {
       if (type === "text" && data && data.text) carried += String(data.text);
       if (userOnEvent) {
@@ -3501,11 +3536,11 @@ function dshRunOnce(input, opts) {
      放行）；控制类 / 节点层 / 绘图 / 排版 = 询问（见 NODE_AGENT_TOOL_POLICY），应用两件套
      仍由 hideTools 点名藏掉。整档闸只留给用户声明的「与画布无关」。 */
   const noCanvasOn = canvasFreeOn && !pureOn;
-  /* 读图裁剪（只点名「读画布」两件套，不裁改图）：开发绑定会话由宿主打标 noCanvasRead（真源
-     app.js createDevSessionForNode：mode === "dev" 时置位、随会话落盘），经
-     agentSessionSend → dshRunTask 的 baseOpts 原样透到这里。它不动上面两个整档标记，
-     只往 hideTools 名单里点名 mtnode_canvas_get / mtnode_app（约 10.0K 字符/步），
-     mtnode_canvas_edit 留着 —— 收尾要按契约回写本节点的 note / devStatus / devFiles。
+  /* 读图裁剪（点名画布三件套，含 mtnode_canvas_edit）：开发绑定会话由宿主打标
+     noCanvasRead（真源 app.js createDevSessionForNode：mode === "dev" 时置位、随会话
+     落盘），经 agentSessionSend → dshRunTask 的 baseOpts 原样透到这里。它不动上面两个
+     整档标记，只往 hideTools 名单里点名 mtnode_canvas_get / mtnode_canvas_edit /
+     mtnode_app（约 29K 字符/步）—— 本会话按契约不回写本节点任何字段，改图能力整份不发。
      可见集变化已经由 hideTools 进 runSig 的 hide: 与网关 hx: 指纹，不必另加签名成分。
      整档闸已生效时（canvasFreeOn）这一位无需再点名：三件套本来就不注册。 */
   const noReadOn = !!opts.noCanvasRead && !pureOn && !canvasFreeOn;
@@ -3535,6 +3570,9 @@ function dshRunOnce(input, opts) {
     typeof setRunToolPolicy === "function"
   )
     setRunToolPolicy(runKey, NODE_AGENT_TOOL_POLICY);
+  /* 浏览器工具（browser_*）的整档闸：用户已确认的口径「仅会话；纯净模式与画布节点不注册」。
+     必须在这里定下来 —— hideTools 名单要用它避开「整档已裁的名字再点名一遍」。 */
+  const noBrowserOn = (nodeLock || canvasFreeOn) && !pureOn;
   /* 第三个闸：按名字的隐藏名单（见 dshHiddenToolsFor）：按本轮 runKey 的策略生成，
      专家运行因此能整档摘掉画布 / 应用 / 识图类工具（每步约省 26K 字符）。 */
   const hideToolsOn = dshHiddenToolsFor({
@@ -3551,6 +3589,12 @@ function dshRunOnce(input, opts) {
        这个名字就进名单 —— 宿主对它只会回「不属于任何长任务」，白占每步重发的定义。
        （原 lt_memory 已下线，长期记忆沉淀改走 mtnode_facts。） */
     ltGrounded: !!(opts.node && opts.node._lt),
+    /* 工具族按需注册（browser_* / 素材 / 音视频）：判据 = 这一轮原话 + 最近几轮用户消息
+       （dshRunTask 冻结在 opts.roundText；续跑轮也不会换成续跑指令）。noBrowser 已整档
+       裁掉 browser_* 时不再重复点名。 */
+    noBrowser: noBrowserOn,
+    roundText: String(opts.roundText == null ? input == null ? "" : input : opts.roundText),
+    roundHistory: opts.roundHistory,
   });
   /* 用户工具描述子（func call 单一真源，见 app-tools.js）：本轮绑定画布（= 会话所属画布）
      上的工具节点 + 工具库中开启「随时可调用」的工具。pure 会话不下发（网关不注入运行时，
@@ -3749,7 +3793,7 @@ function dshRunOnce(input, opts) {
          · 长周期任务图里未显式授权的环节 → 由长任务侧另打同一个标记。
        网关把它注入 spawn env（MTNODE_NO_BROWSER）并写进 runtime key：可见集变了就
        换一台运行时，与 lean / noCanvas 同一判据。老网关忽略未知字段 = 照旧注册。 */
-    noBrowser: (nodeLock || canvasFreeOn) && !pureOn,
+    noBrowser: noBrowserOn,
     preset: runPreset,
     effort: runEffort,
     provider,
@@ -3808,7 +3852,7 @@ function dshRunOnce(input, opts) {
   }
   /* 网关凭 cancelTag 精确关闭「这一次运行」自己的运行时进程。
      dsh 线协议没有逐轮取消，过去只能按工作目录整批关 → 停一个会话会把同目录的
-     其它会话（含全局助手）一起打断。 */
+     其它会话（含画布助手）一起打断。 */
   runParams.cancelTag = runKey;
   S._runCancels = S._runCancels || {};
   /* 本轮轨迹开一盏：按步切段的运行轨迹与取消句柄同键，互不串台。
@@ -3843,7 +3887,7 @@ function dshRunOnce(input, opts) {
     baseUrl: runParams.baseUrl,
     _runInst: runInst,
   };
-  /* 本次运行的 Token 台账归属：会话 / 绑定节点的会话 / 全局助手 */
+  /* 本次运行的 Token 台账归属：会话 / 绑定节点的会话 / 画布助手 */
   const tokOwner =
     typeof tokOwnerForRun === "function" ? tokOwnerForRun(opts) : null;
   /* 轮次归属键（dshRunTask 算好随 opts 透传）：缺省回落 runKey，只用于逐轮明细 */
@@ -3900,7 +3944,7 @@ function dshRunOnce(input, opts) {
     const runCallArgs = Object.create(null);
     /* 看门狗：网关 / 运行时卡住（harness.run 不返回、不发 done）时保证本轮一定收尾，
        渲染层绝不永久等待 —— 否则 assistRunning / st.running 残留 true，新消息全被丢弃，
-       AI 回复永不追加，列表最底层永远停在旧会话内容（全局助手卡死 Bug 的根因）。
+       AI 回复永不追加，列表最底层永远停在旧会话内容（画布助手卡死 Bug 的根因）。
        - 终止宽限：用户点「■ 终止」后 dshCancelActive 会删掉 _runCancels 条目，
          若网关 N 秒内不响应取消 → 兜底强制 finish；
        - 静默超时：超过 DSH_RUN_IDLE_TIMEOUT_MS 无任何事件、且没有待处理提问/审批
@@ -4044,6 +4088,15 @@ function dshRunOnce(input, opts) {
           }
           if (msg.type === "db") {
             handleDbToolEvent(msg.data || {}, opts.node, boundWf);
+            return;
+          }
+          if (msg.type === "manifest") {
+            /* 项目 manifest 工具（mtnode_manifest）：宿主按「显式 root > 画布工作目录」
+               读写 <root>/manifest.json（数据层 manifest-store.js），结果经
+               dshInteract kind:'manifest' 回传。没有工作目录 / 没 init 都回错误文本
+               （工具失败但会话不中断，与 db / facts 同一口径）。见 app-manifest.js。 */
+            if (typeof handleManifestToolEvent === "function")
+              handleManifestToolEvent(msg.data || {}, opts.node, boundWf);
             return;
           }
           if (msg.type === "facts") {
@@ -4609,7 +4662,7 @@ function playDoneSoundFile(file) {
    并行运行时（多个会话 / 多个节点 / 助手同时在跑）不标来源，用户根本分不清
    是谁在等自己回答。分类口径与运行队列（collectRunQueueAll）保持一致：
      - opts.node                     画布上的智能节点（agent_task / 智能文本 / 计划节点模式）
-     - runKey === "assist"           全局助手
+     - runKey === "assist"           画布助手
      - runKey === "agent:<id>"       智能会话；带 _devContract = 开发 / 细化绑定会话
      - runKey === "devsuggest:<id>"  功能块的「建议」只读调研
      - runKey === "devask:<id>"      功能块的「问询」只读回答
@@ -4647,8 +4700,8 @@ function dshIxSrcOf(opts, runKey) {
     }
     if (key === "assist") {
       src.type = "assist";
-      src.label = I18n.t("全局助手");
-      src.hint = I18n.t("点击打开全局助手");
+      src.label = I18n.t("画布助手");
+      src.hint = I18n.t("点击打开画布助手");
       return src;
     }
     if (key.indexOf("agent:") === 0) {
@@ -6848,27 +6901,25 @@ function renderIxPanel() {
   ixFocusRestoreToDom();
 }
 
-/* ── 主题(dsh = 默认, industrial = 旧 MTNode, light = 亮色) ── */
+/* ── 主题(industrial = 默认 MTNode, dsh = DSH) ──
+   亮色（white）主题暂时隐藏：从这张表里摘掉后，设置窗不再列出它，
+   存档里若还是 light 会被下面 applyTheme 的回落改成 industrial（同时清掉 body.theme-light），
+   css/theme-light.css 原样保留，日后恢复只需把 light 这一条加回来。 */
 const THEMES = {
   dsh: {
-    name: "DSH（默认）",
+    name: "DSH",
     cyan: "#5686fe", cyan2: "#7ca2fe", orange: "#ff8f2e", orange2: "#ffb066",
     green: "#5fd68a", red: "#ff5f56",
   },
   industrial: {
-    name: "Industrial（旧）",
+    name: "MTNode",
     cyan: "#38d6ff", cyan2: "#7ce8ff", orange: "#ff8f2e", orange2: "#ffb066",
     green: "#5fd68a", red: "#ff5f56",
   },
-  light: {
-    name: "Light（亮色）",
-    cyan: "#2068b8", cyan2: "#15508f", orange: "#d9660a", orange2: "#b54f04",
-    green: "#1a8a4a", red: "#cf2a1e",
-  },
 };
 function applyTheme(name) {
-  const t = THEMES[name] || THEMES.dsh;
-  const theme = THEMES[name] ? name : "dsh";
+  const t = THEMES[name] || THEMES.industrial;
+  const theme = THEMES[name] ? name : "industrial";
   S.config.theme = theme;
   document.documentElement.dataset.theme = theme;
   document.body.classList.toggle("theme-industrial", theme === "industrial");

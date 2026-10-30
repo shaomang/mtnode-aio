@@ -925,6 +925,75 @@ function libToolDescriptor(t) {
   };
 }
 
+/* 重后端注册中心条目 → 描述子（key = br:<id>，origin = backend）。
+   主进程 main-backend-registry.js 是真源：登记时填的「工具描述 + 参数表」直接变成
+   这里下发给模型的工具形状；调用时回到主进程执行（http / cli），渲染层不碰进程。 */
+function backendToolDescriptor(it) {
+  const id = String((it && it.id) || "");
+  if (!id) return null;
+  const key = "br:" + id;
+  /* 工具名用主进程给的 toolName（br_<id>，与 Agent 侧报错里的一致），没有就本地推一个 */
+  const toolName =
+    String((it && it.toolName) || "") || "br_" + id.replace(/[^A-Za-z0-9_]+/g, "_").slice(0, 56);
+  return {
+    key: key,
+    toolName: toolName,
+    name: String((it && it.name) || "") || id,
+    description: String((it && it.desc) || ""),
+    example: "",
+    limits: "",
+    atLeastOne: [],
+    /* 登记表里的参数形状是 {name, kind, required, desc}（主进程 backend-registry-store.js），
+       与画布 / 库条目的 {name, kind, optional, description} 不同 —— 必须在这里翻，
+       直接丢给 toolParamEntry 会把参数说明丢掉、把可选参数误标成必填
+       （模型于是不会填、或以为缺参数，工具一调就报错）。 */
+    inputs: ((it && it.args) || []).map((a) => ({
+      name: String((a && a.name) || ""),
+      kind: a && a.kind === "image" ? "image" : "text",
+      ...(String((a && a.desc) || "").trim() ? { description: String(a.desc).trim() } : {}),
+      ...(a && a.required === false ? { optional: true } : {}),
+    })),
+    outputs: ((it && it.returns) || []).map(toolParamEntry),
+    origin: "backend",
+    backendId: id,
+  };
+}
+
+/* 注册中心的管理入口（固定存在，不受登记表影响）：Agent 缺工具时先把工具装到本机，
+   再用 register 动作登记；本轮就能用 call 动作调它，下一轮起它就是一个独立工具。 */
+function backendAdminDescriptor() {
+  return {
+    key: "br:__admin__",
+    toolName: "br_admin",
+    name: "重后端注册中心",
+    description:
+      "管理本机可复用的重后端工具（注册中心，与插件并存，Agent 唯一的查询入口）。动作：list 看已登记工具与运行态" +
+      "（同时回 plugins = 插件里的本机后端：视频 / 音乐 / 语音 / 渲染 / 数字人 / 出图，含装没装与安装目录）；" +
+      "register 登记一个新工具（先把工具装到本机，再登记它的启动/调用命令、工具描述与参数表）；" +
+      "start / stop 起停常驻后端；call 直接调一个已登记的工具（http 后端没起会自动拉起）；" +
+      "remove 删除登记（deleteFiles=true 才删磁盘）；log / audit 看日志与全程留痕。" +
+      "纪律：**任务里额外装的任何工具 / 后端 / 项目都要 register 登记**（写清 install.dir 与启动命令），" +
+      "装完就登记 —— 这样下一个会话、智能节点、画布助手都能查到并复用；不登记等于没装。" +
+      "登记后本轮不会出现在工具列表里（工具清单是任务开始时快照的），本轮请用 call 动作调它，下一轮起它就是独立工具。" +
+      "范围：register 只收 Agent 现场装出来的额外后端；插件里的后端（视频 minimax-h3 / 动效 remotion / 音乐 / 语音 / 数字人 / 出图）" +
+      "由插件宿主管，已随 list 的 plugins 一起列出（只读，启停与安装在「插件」界面，不要 register 它们）。" +
+      "list 里 items 为空是常态；判断本机有没有某项能力要看 items + plugins 两处，别只看注册表。",
+    example: 'register 的 item 示例：{"id":"whisperx","name":"WhisperX","kind":"http","desc":"词级时间戳对齐","args":[{"name":"audio","kind":"text","required":true}],"launch":{"cmd":["{dir}/venv/python.exe","-m","wx_server","--port","{port}"],"portRange":[17800,17899]},"install":{"dir":"E:\\\\tools\\\\whisperx"},"call":{"path":"/align"}}',
+    limits:
+      "一个后端只导出一个工具，能力走参数（action / mode）区分；同类后端按 lock.class 互斥，只允许 1 个常驻。" +
+      "plugins 是插件后端的只读镜像（含用户自建插件声明的 backend），不收 register 调用。",
+    atLeastOne: [],
+    inputs: [
+      { name: "action", kind: "text", description: "list / plugins / register / start / stop / call / remove / log / audit", optional: false },
+      { name: "id", kind: "text", description: "目标的登记 id（list / plugins 以外的动作必填）", optional: true },
+      { name: "item", kind: "text", description: "register 的登记 JSON（含 id/name/kind/desc/args 与启动或调用命令）", optional: true },
+      { name: "args", kind: "text", description: "call 时传给目标工具的参数 JSON 对象", optional: true },
+    ],
+    outputs: [{ name: "result", kind: "text" }],
+    origin: "backend-admin",
+  };
+}
+
 /* 单一真源快照：画布工具节点 + 库中 always 工具（同名去重，画布副本优先）。
    返回 { descs:[...], byKey:{key:desc} }；descs 供 runParams.tools（纯 JSON，
    不含内部图），byKey 供 tool-run 帧定位执行目标。 */
@@ -941,6 +1010,10 @@ async function agentUserToolsSnapshot(wf) {
   const nodes = (wf && Array.isArray(wf.nodes) && wf.nodes) || [];
   /* {{outDir}} 展开一次、整批共用（本机固定目录 → 描述子稳定，运行时指纹不因此抖动） */
   const env = await toolEnvInfo();
+  /* 注册中心的管理入口**先放**：网关对工具清单有条数上限（dsh/gateway 的 MAX_RUN_TOOLS），
+     放最后时画布工具一多就会被裁掉 —— 那样模型就再也查不到 / 调不到注册中心里任何东西。
+     它是固定入口（登记 / 起停 / 调用 / 插件后端查询），永远在，不受登记表影响。 */
+  push(backendAdminDescriptor());
   for (const n of nodes) {
     if (n && isToolNode(n) && !isSuperIoNode(n))
       push(toolDescExpand(canvasToolDescriptor(n), env));
@@ -954,6 +1027,12 @@ async function agentUserToolsSnapshot(wf) {
       if (t && t.always && toolEntryKind(t) !== "function")
         push(toolDescExpand(libToolDescriptor(t), env));
     }
+  } catch (_) {}
+  /* 重后端注册中心（origin:"backend"）：Agent 在任务里装出来的工具，登记完下一轮起
+     直接出现在工具清单里（br_admin 已在上面先入，额度不够时也轮不到它被裁）。 */
+  try {
+    const rb = await window.api.backendRegistryList();
+    for (const it of (rb && rb.ok && rb.items) || []) push(backendToolDescriptor(it));
   } catch (_) {}
   return { descs: descs, byKey: byKey };
 }
@@ -1269,8 +1348,23 @@ async function runLibToolShadowForAgent(desc, args, wf) {
   }
 }
 
+/* 注册中心的工具调用：执行一律在主进程（http fetch / cli spawn），渲染层只中转。
+   「未安装 / 后端未就绪」不是异常，是把结构化结果原样回去 —— 模型据此自行决定装不装。 */
+async function runBackendToolForAgent(desc, args) {
+  if (desc.origin === "backend-admin") {
+    const payload = Object.assign({}, args || {});
+    return await window.api.backendRegistryAdmin(payload);
+  }
+  const r = await window.api.backendRegistryCall({ id: desc.backendId, args: args || {} });
+  if (!r || typeof r !== "object") return { ok: false, error: "注册中心没有返回结果" };
+  return r;
+}
+
 /* 按描述子执行一次工具调用：画布节点直跑；库 always 无副本则临时物化 */
 async function executeAgentToolCall(desc, args, wf) {
+  if (desc.origin === "backend" || desc.origin === "backend-admin") {
+    return runBackendToolForAgent(desc, args);
+  }
   const wfNodes = (wf && Array.isArray(wf.nodes) && wf.nodes) || [];
   if (desc.origin === "canvas") {
     const node = wfNodes.find((n) => n && n.id === desc.nodeId && isToolNode(n));
