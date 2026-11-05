@@ -1,0 +1,558 @@
+﻿/* MOSS-TTS-Nano 内置语音（状态栏那枚 TTS 开关）—— 实现见 renderer/app-tts.js。
+   位置纪律：状态栏里**夹在「✨ AI 增强」与「📷 画布截图」之间**，
+   order 链 = 话筒 -3 · AI 增强 -2 · TTS -1 · 画布截图 0（见 css/voice.css 的两处注释）。 */
+
+.statusbar .sb-tts {
+  flex: none;
+  order: -1; /* AI 增强（-2）右侧、画布截图（0）左侧 */
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1;
+  font-family: var(--mono, ui-monospace, monospace);
+  opacity: .62;
+}
+
+.statusbar .sb-tts:hover {
+  color: var(--cyan2, #38d6ff);
+  border-color: var(--bd2);
+  background: rgba(56, 214, 255, .08);
+  opacity: 1
+}
+
+/* 已开启：青边青字（与话筒的录音态同族，但只占这一格） */
+.statusbar .sb-tts.on {
+  color: var(--cyan2, #38d6ff);
+  border-color: color-mix(in srgb, var(--cyan2, #38d6ff) 45%, transparent);
+  background: rgba(56, 214, 255, .1);
+  opacity: 1
+}
+
+/* 首次安装 / 下载中：数字百分比就是键面，琥珀色提醒「在干活，别急」 */
+.statusbar .sb-tts.is-busy {
+  color: var(--amber, #e3b341);
+  border-color: color-mix(in srgb, var(--amber, #e3b341) 45%, transparent);
+  font-size: 9px;
+  opacity: 1;
+  cursor: progress
+}
+
+.statusbar .sb-tts.is-err {
+  color: var(--red2, #ff7b72);
+  border-color: color-mix(in srgb, var(--red2, #ff7b72) 45%, transparent);
+  opacity: 1
+}
+
+/* 正在出声：轻微呼吸，避免「开了没反应」的错觉 */
+.statusbar .sb-tts.is-talking {
+  animation: ttsBreath 1.4s ease-in-out infinite
+}
+
+@keyframes ttsBreath {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(56, 214, 255, .0) }
+  50% { box-shadow: 0 0 0 3px rgba(56, 214, 255, .16) }
+}
+
+/* ── 右键菜单 ─────────────────────────────────────────────────────────── */
+.tts-menu {
+  position: fixed;
+  z-index: 9999;
+  min-width: 240px;
+  max-width: 420px;
+  max-height: 60vh;
+  overflow: auto;
+  padding: 4px;
+  background: var(--bg2, #16181d);
+  border: 1px solid var(--bd2, #2c3038);
+  border-radius: 6px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, .45);
+  font-size: 12px;
+}
+
+.tts-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--fg, #e6e6e6);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tts-menu-item:hover {
+  background: rgba(56, 214, 255, .12);
+  color: var(--cyan2, #38d6ff)
+}
+
+.tts-menu-item.disabled {
+  cursor: default;
+  color: var(--muted, #8b93a1);
+  opacity: .8
+}
+
+.tts-menu-item.disabled:hover {
+  background: transparent;
+  color: var(--muted, #8b93a1)
+}
+
+.tts-menu-sub {
+  margin-left: auto;
+  color: var(--muted, #8b93a1);
+  font-size: 11px
+}
+
+/* ── 首次启用确认窗（persistent：只走窗内按钮 / ✕ 关闭，点外部不关）─────── */
+.tts-confirm {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, .5);
+}
+
+.tts-confirm-box {
+  width: min(520px, 92vw);
+  padding: 16px 18px;
+  background: var(--bg2, #16181d);
+  border: 1px solid var(--bd2, #2c3038);
+  border-radius: 8px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, .5);
+  color: var(--fg, #e6e6e6);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.tts-confirm-title {
+  font-weight: 700;
+  margin-bottom: 8px
+}
+
+.tts-confirm-body p {
+  margin: 0 0 6px;
+  color: var(--muted2, #b9c0cc)
+}
+
+.tts-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px
+}
+
+/* ── 朗读任意内容（测试窗，persistent；实现见 app-tts.js openSpeakDialog）──
+   正文框占满窗宽，下面一行状态提示；按钮在 #ovFoot（用应用统一的 .mini） */
+.tts-speak {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.tts-speak-ta {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 96px;
+  padding: 8px 10px;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--fg, #e6e6e6);
+  background: rgba(0, 0, 0, .25);
+  border: 1px solid rgba(255, 255, 255, .14);
+  border-radius: 6px;
+  resize: vertical;
+}
+
+.tts-speak-ta:focus {
+  outline: none;
+  border-color: color-mix(in srgb, var(--cyan2, #38d6ff) 55%, transparent);
+  box-shadow: 0 0 0 2px rgba(56, 214, 255, .12)
+}
+
+.tts-speak-hint {
+  min-height: 16px;
+  color: var(--muted2, #b9c0cc);
+  font-size: 11px;
+  line-height: 1.5
+}
+
+/* ── 语音摘要气泡（自动消失；点一下复制）──────────────────────────────── */
+.tts-bubble {
+  position: fixed;
+  right: 18px;
+  bottom: 44px;
+  z-index: 9998;
+  max-width: 380px;
+  padding: 8px 10px;
+  background: var(--bg2, #16181d);
+  border: 1px solid color-mix(in srgb, var(--cyan2, #38d6ff) 40%, transparent);
+  border-radius: 8px;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, .42);
+  color: var(--fg, #e6e6e6);
+  font-size: 12px;
+  line-height: 1.5;
+  cursor: pointer;
+}
+
+.tts-bubble[hidden] {
+  display: none
+}
+
+.tts-bubble-tag {
+  display: block;
+  margin-bottom: 2px;
+  color: var(--cyan2, #38d6ff);
+  font-size: 11px;
+  opacity: .9
+}
+
+.tts-bubble-txt {
+  display: block
+}
+
+/* ── 播放时的底部临时字幕（跟着正在念的那一段走；实现见 app-tts.js）────────
+   · 位置在状态栏上方居中，不挡画布主体操作（pointer-events: none）
+   · 已念过的部分点亮、未念的部分灰着（卡拉 OK 式滚动）
+   · 单行放不下时缓慢横向滚动，念完 / 停止后 1.6s 淡出 */
+.tts-caption {
+  position: fixed;
+  left: 50%;
+  bottom: 46px;
+  transform: translateX(-50%);
+  z-index: 9997;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: min(74vw, 920px);
+  padding: 7px 14px;
+  background: rgba(10, 12, 16, .84);
+  border: 1px solid color-mix(in srgb, var(--cyan2, #38d6ff) 34%, transparent);
+  border-radius: 999px;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, .46), 0 0 0 1px rgba(0, 0, 0, .25) inset;
+  color: var(--fg, #e6e6e6);
+  font-size: 15px;
+  line-height: 1.35;
+  letter-spacing: .2px;
+  pointer-events: none;
+  animation: ttsCapIn .18s ease-out;
+}
+
+.tts-caption[hidden] {
+  display: none
+}
+
+.tts-caption-tag {
+  flex: none;
+  font-size: 12px;
+  opacity: .85
+}
+
+.tts-caption-body {
+  display: block;
+  overflow: hidden;
+  min-width: 0;
+  max-width: min(62vw, 780px);
+  white-space: nowrap
+}
+
+.tts-caption-roll {
+  display: inline-block;
+  white-space: nowrap;
+  will-change: transform
+}
+
+.tts-caption.is-rolling .tts-caption-roll {
+  animation: ttsCapRoll var(--tts-cap-ms, 6000ms) linear .2s forwards
+}
+
+.tts-cap-done {
+  color: var(--cyan2, #38d6ff);
+  text-shadow: 0 0 10px rgba(56, 214, 255, .3)
+}
+
+.tts-cap-rest {
+  color: var(--muted2, #b9c0cc);
+  opacity: .82
+}
+
+/* 字幕右侧的两枚按钮（下一条 / 停止）：字幕本体 pointer-events: none，
+   只有这一组单独打开指针事件，点在画布上照样穿透 */
+.tts-caption-acts {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  margin-left: 2px;
+  padding-left: 8px;
+  border-left: 1px solid rgba(255, 255, 255, .12);
+  pointer-events: auto;
+}
+
+.tts-cap-btn {
+  appearance: none;
+  flex: none;
+  padding: 2px 9px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--cyan2, #38d6ff) 34%, transparent);
+  background: rgba(56, 214, 255, .1);
+  color: var(--fg, #e6e6e6);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background .15s ease, border-color .15s ease, color .15s ease
+}
+
+.tts-cap-btn:hover {
+  background: rgba(56, 214, 255, .22);
+  border-color: color-mix(in srgb, var(--cyan2, #38d6ff) 60%, transparent);
+  color: #fff
+}
+
+.tts-cap-btn:active {
+  transform: translateY(1px)
+}
+
+.tts-cap-btn:focus-visible {
+  outline: 1px solid var(--cyan2, #38d6ff);
+  outline-offset: 2px
+}
+
+@keyframes ttsCapIn {
+  from { opacity: 0; transform: translate(-50%, 6px) }
+  to { opacity: 1; transform: translate(-50%, 0) }
+}
+
+/* ── 状态栏「最新语音播报」格（renderer/app-speakbar.js）─────────────────────
+   取代原来的画布统计文字（画布名 / 节点·连线 / 服务商 / 网格）。
+   常态 = 外面一圈细框（.sb-speak-line 的 1px 边框），框里是一条「新闻条」：
+   文字比框长就单向匀速循环滚动（.sb-speak-view.is-roll，走完接第二份、不倒回）；放得下就静止。
+   来了新内容（新播报 / 新答复）时细框走 60s 呼吸灯（.sb-speak.is-fresh），
+   到点自己停 —— 计时与贴类都由 app-speakbar.js 管，样式只管动。
+   点击向上展开全文浮层（.sb-speak-pop），浮层里可清空。
+   位置：占统计文字那一格（运行队列按钮右侧、spacer 左侧），不改变状态栏高度。 */
+.statusbar .sb-speak {
+  position: relative;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: min(46vw, 620px);
+}
+
+.statusbar .sb-speak-line {
+  appearance: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  min-width: 0;
+  margin: 0;
+  padding: 2px 8px;
+  background: transparent;
+  /* 细框（本需求）：常态就有一圈细边框，内容像新闻条一样在框里滚动 */
+  border: 1px solid var(--bd, rgba(255, 255, 255, .12));
+  border-radius: 10px;
+  color: var(--muted);
+  font: inherit;
+  letter-spacing: .5px;
+  text-align: left;
+  cursor: pointer;
+  transition: color .15s ease, border-color .15s ease, background .15s ease;
+}
+
+.statusbar .sb-speak-line:hover {
+  color: var(--fg, #e6e6e6);
+  border-color: var(--bd2);
+  background: rgba(56, 214, 255, .08);
+}
+
+.statusbar .sb-speak.is-open .sb-speak-line {
+  color: var(--cyan2, #38d6ff);
+  border-color: color-mix(in srgb, var(--cyan2, #38d6ff) 45%, transparent);
+  background: rgba(56, 214, 255, .1);
+}
+
+.statusbar .sb-speak-line:focus-visible {
+  outline: 1px solid var(--cyan2, #38d6ff);
+  outline-offset: 1px;
+}
+
+.statusbar .sb-speak-icon {
+  flex: none;
+  font-size: 11px;
+  line-height: 1;
+  opacity: .8;
+}
+
+.statusbar .sb-speak-view {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.statusbar .sb-speak-track {
+  display: flex;
+  width: max-content;
+  gap: var(--sb-speak-gap, 32px);
+}
+
+.statusbar .sb-speak-text {
+  flex: none;
+  display: inline-block;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+/* 内容比框长：单向匀速循环滚动（新闻条口径）。走完一份接上第二份，绝不倒着滚回去。
+   位移与时长由 app-speakbar.js 现算后写进 --sb-speak-shift / animation-duration；
+   放得下时这一条不挂 is-roll，静止不动。 */
+.statusbar .sb-speak-view.is-roll .sb-speak-track {
+  animation: sbSpeakRoll var(--sb-speak-dur, 12s) linear infinite;
+  will-change: transform;
+}
+
+/* 新内容到达后的 60s 呼吸灯：边框与柔光一起明暗起伏，到点由 JS 摘掉 is-fresh */
+.statusbar .sb-speak.is-fresh .sb-speak-line {
+  animation: sbSpeakBreathe 2s ease-in-out infinite;
+}
+
+.statusbar .sb-speak.is-empty .sb-speak-text {
+  opacity: .55;
+}
+
+/* 回落到「Agent 答复」时换一枚颜色，一眼分得清这行不是播报稿 */
+.statusbar .sb-speak.is-reply .sb-speak-text {
+  color: var(--cyan2, #38d6ff);
+  opacity: .9;
+}
+
+/* 全文浮层：向上展开（底边贴状态栏上沿），只读查看 + 清空 */
+.statusbar .sb-speak-pop {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 8px);
+  z-index: 60;
+  width: min(560px, 72vw);
+  max-height: min(42vh, 420px);
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid var(--bd2);
+  border-radius: 8px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, .45);
+  font-family: var(--ui, system-ui, sans-serif);
+  font-size: 12px;
+  letter-spacing: .3px;
+  color: var(--fg, #e6e6e6);
+  animation: sbSpeakUp .14s ease;
+}
+
+.statusbar .sb-speak-pop[hidden] {
+  display: none !important;
+}
+
+.statusbar .sb-speak-pop-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 9px;
+  border-bottom: 1px solid var(--bd);
+  color: var(--muted);
+}
+
+.statusbar .sb-speak-pop-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-weight: 600;
+  color: var(--fg, #e6e6e6);
+}
+
+.statusbar .sb-speak-pop-head .sb-speak-clear {
+  flex: none;
+}
+
+.statusbar .sb-speak-close {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.statusbar .sb-speak-close:hover {
+  color: var(--fg, #e6e6e6);
+  border-color: var(--bd2);
+}
+
+.statusbar .sb-speak-pop-body {
+  flex: 1 1 auto;
+  overflow: auto;
+  padding: 9px 11px 11px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.6;
+  color: var(--fg, #e6e6e6);
+}
+
+.statusbar .sb-speak-pop-body:empty::before {
+  content: "—";
+  color: var(--muted);
+}
+
+@keyframes sbSpeakUp {
+  from { opacity: 0; transform: translateY(6px) }
+  to { opacity: 1; transform: translateY(0) }
+}
+
+/* 新闻条横向滚动 / 新内容呼吸灯（本需求，见文件上方 .sb-speak 段） */
+@keyframes sbSpeakRoll {
+  from { transform: translateX(0) }
+  to { transform: translateX(var(--sb-speak-shift, 0)) }
+}
+
+@keyframes sbSpeakBreathe {
+  0%, 100% {
+    border-color: var(--bd, rgba(255, 255, 255, .12));
+    box-shadow: 0 0 0 0 rgba(56, 214, 255, 0);
+  }
+  50% {
+    border-color: rgba(56, 214, 255, .78);
+    box-shadow: 0 0 7px 1px rgba(56, 214, 255, .34);
+  }
+}
+
+/* 用户要求减少动效：内容不滚、细框不呼吸（文字仍可点击展开全文） */
+@media (prefers-reduced-motion: reduce) {
+  .statusbar .sb-speak-view.is-roll .sb-speak-track,
+  .statusbar .sb-speak.is-fresh .sb-speak-line {
+    animation: none;
+  }
+}
+
+@keyframes ttsCapRoll {
+  from { transform: translateX(0) }
+  to { transform: translateX(var(--tts-cap-shift, 0)) }
+}

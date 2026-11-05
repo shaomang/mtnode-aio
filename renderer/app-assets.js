@@ -116,6 +116,19 @@ function assetKindChip(a) {
   return chip;
 }
 
+/* 来源标记（应用 / MCP / 本机 Agent 建的素材）："" = 用户自己建的，不打标记。
+   缺字段即「用户所有」—— 归属判定由 assets-store.js 的 assetActorCall 做，
+   这里只负责让用户一眼看出「这份不是我自己建的」。 */
+function assetCreatorLabel(a) {
+  const by = String((a && a.createdBy) || "");
+  if (!by) return "";
+  const nm = String((a && a.createdByName) || "").trim();
+  if (by.indexOf("app:") === 0) return I18n.t("应用创建") + (nm ? " · " + nm : "");
+  if (by === "mcp") return I18n.t("MCP 创建") + (nm ? " · " + nm : "");
+  if (by === "agent") return I18n.t("Agent 创建") + (nm ? " · " + nm : "");
+  return I18n.t("外部创建") + " · " + (nm || by);
+}
+
 /* 建元素小工具（本文件所有用户数据一律走 textContent，不拼 innerHTML） */
 function assetEl(tag, cls, text) {
   const e = document.createElement(tag);
@@ -1664,6 +1677,16 @@ function assetCard(a, pick) {
   head.appendChild(assetEl("b", "asset-lib-cardname", a.displayName || a.folder));
   /* 类型徽标：卡片上先说明「这包是文本 / 图像…还是混合」 */
   head.appendChild(assetKindChip(a));
+  /* 来源标记：应用 / MCP / 本机 Agent 建的素材（用户自己建的没有这一枚） */
+  const from = assetCreatorLabel(a);
+  if (from) {
+    const chip = assetEl("span", "asset-lib-cardfrom", from);
+    chip.title =
+      I18n.t("来源：") +
+      String(a.createdBy || "") +
+      I18n.t("（只有创建它的那一方才能改 / 删这份素材；删除进回收站可还原）");
+    head.appendChild(chip);
+  }
   head.appendChild(
     assetEl("span", "asset-lib-cardcount", String(Number(a.itemCount) || 0)),
   );
@@ -1739,6 +1762,8 @@ function paintAssetDetail(host, a) {
   );
   /* 类型徽标：详情头与左树 / 卡片同一份判定（文本 / 图像 / 音频 / 视频 / 混合） */
   titleRow.appendChild(assetKindChip(a));
+  const fromWho = assetCreatorLabel(a);
+  if (fromWho) titleRow.appendChild(assetEl("span", "asset-detail-from", fromWho));
   titleWrap.appendChild(titleRow);
   titleWrap.appendChild(
     assetEl(
@@ -4171,6 +4196,10 @@ async function assetDropAppend(a, paths) {
 const ASSET_PV_ROW_TEXT_BYTES = 32 * 1024; // 行内正文摘要最多读这么多字节（大文件不顿）
 const ASSET_PV_TEXT_MAX = 200000; // 浮层里全文的展示上限（超出给截断提示）
 const ASSET_PV_HOVER_MS = 150; // 悬停多久才出场（扫过列表时不闪窗）
+/* 行内缩略的档位：40px 方框（2x 屏也不到 110px），用 app-canvas.js 的**小图档**
+   PREVIEW_EDGE_THUMB（128）。不跟设置里那三档（低 192 也远大于行内显示尺寸）——
+   档位真源仍在 app-canvas.js 的 previewEdge / PREVIEW_EDGE_THUMB，这里只取用、不另立数字。 */
+const ASSET_PV_EDGE = typeof PREVIEW_EDGE_THUMB === "number" ? PREVIEW_EDGE_THUMB : 128;
 let _assetPvSrc = null; // 正文摘要缓存的当前宿主（只在同一份列表里复用，换列表即清）
 let _assetPvIo = null; // 缩略图惰性加载的 IntersectionObserver
 let _assetPvHeads = null; // 已读到的正文摘要（absPath → 摘要文本）
@@ -4199,7 +4228,9 @@ function assetPvSrc(scope) {
   if (!_assetPvHeadBusy) _assetPvHeadBusy = new Map();
 }
 
-/* 行内小样：惰性加载（一屏之外的图不取字节，避免一开列表就解码几十张大图） */
+/* 行内小样：惰性加载（一屏之外的图不取字节，避免一开列表就解码几十张大图）。
+   **离屏观察器只有这一只**（_assetPvIo，按 scope 复用 / 换列表时断开重建），
+   档位与取图口径见 ASSET_PV_EDGE 与下面的 put()。 */
 function assetPvFrame() {
   return new Promise((resolve) => {
     const raf =
@@ -4235,7 +4266,20 @@ function assetPvThumb(scope, r) {
        表现为「小样看过一次，再回来就没了」。同一 URL 的字节由浏览器自己的
        图片缓存兜住，重设 src 不会把文件再读一遍。 */
     if (img.getAttribute("src")) return;
+    /* 取图口径与画布预览 / 素材节点浏览态同一套（app-canvas.js）：
+       档位 = 小图档 ASSET_PV_EDGE（128），离屏 = 走主进程缩略图协议按档位压好再进 <img>
+       —— 40px 的缩略按原图建 GPU 纹理是纯浪费，而这类纹理只有渲染进程销毁才归还。
+       协议取不到字节（stat / 读盘瞬时失败）时 setThumbPreviewSrc 自己退回 file:/// 原图，
+       预览宁可多解码一次也不会变空白。 */
     try {
+      if (typeof setThumbPreviewSrc === "function") {
+        setThumbPreviewSrc(img, abs, undefined, ASSET_PV_EDGE);
+        return;
+      }
+      if (typeof previewSrcFor === "function") {
+        img.src = previewSrcFor(abs, ASSET_PV_EDGE);
+        return;
+      }
       img.src = window.api.toFileUrl(abs);
     } catch (_) {}
   };
@@ -5364,11 +5408,16 @@ function assetAgentCatNames(scan) {
 }
 
 function assetAgentAssetBrief(a) {
+  const createdBy = String((a && a.createdBy) || "");
   return {
     id: String((a && a.id) || ""),
     rel: String((a && a.rel) || ""),
     displayName: String((a && a.displayName) || ""),
     desc: String((a && a.desc) || "").slice(0, 160),
+    /* 来源（空 = 用户自己建的）：外部客户端据此判断哪些能改、哪些只读 */
+    ...(createdBy
+      ? { createdBy, createdByName: String((a && a.createdByName) || "") }
+      : {}),
     itemCount: Number((a && a.itemCount) || 0),
     updatedAt: Number((a && a.updatedAt) || 0),
     items: ((a && a.items) || []).map((it, i) => ({
@@ -5659,17 +5708,29 @@ async function assetAgentShot(params) {
   let dest = outPath;
   let storedIn = "file";
   if (!dest) {
-    if (!wf || !wf.id) throw new Error(I18n.t("当前没有打开的画布"));
-    const w = await window.api.assetWriteBase64(
-      wf.id,
-      "screen-shot-" + Date.now().toString(36),
-      bytesToBase64(buf),
-      "png",
-    );
-    if (!w || w.ok === false || !w.path)
-      throw new Error((w && w.error) || I18n.t("保存失败"));
-    dest = String(w.path);
-    storedIn = "asset";
+    /* 没给 path = 临时截图（只为当下核对，不是交付物）：落到画布工作目录的
+       .mtnode-input/，与会话 / 开发会话的粘贴图同一处，由工作目录清理面板统一回收；
+       不进画布资产目录（assets 里只该有真正要复用的图，临时图堆进去会越攒越多）。
+       只有画布没有工作目录时才退回老路（资产目录），否则无处可写。 */
+    const ws = String((wf && wf.workspace) || "").trim();
+    if (ws && typeof joinPath === "function") {
+      dest = joinPath(ws, ".mtnode-input", "screenshot-" + Date.now().toString(36) + ".png");
+      const wr = await window.api.fileWriteBytes(dest, buf);
+      if (wr && wr.ok === false) throw new Error(wr.error || I18n.t("保存失败"));
+      storedIn = "workspace";
+    } else {
+      if (!wf || !wf.id) throw new Error(I18n.t("当前没有打开的画布"));
+      const w = await window.api.assetWriteBase64(
+        wf.id,
+        "screen-shot-" + Date.now().toString(36),
+        bytesToBase64(buf),
+        "png",
+      );
+      if (!w || w.ok === false || !w.path)
+        throw new Error((w && w.error) || I18n.t("保存失败"));
+      dest = String(w.path);
+      storedIn = "asset";
+    }
   } else {
     const wr = await window.api.fileWriteBytes(dest, buf);
     if (wr && wr.ok === false) throw new Error(wr.error || I18n.t("保存失败"));
@@ -5691,6 +5752,164 @@ async function assetAgentShot(params) {
   };
 }
 
+/* ── 写动作（mtnode_assets 的 create / addItem / importFile / updateText …）────
+   2026-11 用户共识：MCP 与本机 Agent 都能往素材库里写（许可项 assets_write 单独一档），
+   动作集与应用侧一致；写入的东西在 marker 里记 createdBy="mcp" / "agent"，
+   素材库界面据此显示来源标记（应用创建的只能由那个应用自己改删）。
+   实现不另写一套：全部走界面同一批 assets:* IPC，只有 createdBy 不同。 */
+const ASSET_WRITE_ACTIONS = {
+  create: 1,
+  addItem: 1,
+  importFile: 1,
+  importFiles: 1,
+  updateText: 1,
+  updateMeta: 1,
+  removeItem: 1,
+  deleteAsset: 1,
+};
+
+function assetToolActor(data) {
+  const who = String((data && data.actor) || "agent");
+  if (who === "mcp") return { createdBy: "mcp", createdByName: "MCP 客户端" };
+  return { createdBy: "agent", createdByName: "本机 Agent" };
+}
+
+async function assetAgentWrite(data, action) {
+  const p = (data && data.params) || {};
+  const who = assetToolActor(data);
+  if (action === "create") {
+    const r = await window.api.assetsCreate({
+      catRel: String(p.catRel || p.category || ""),
+      displayName: String(p.displayName || p.name || ""),
+      desc: String(p.desc || ""),
+      createdBy: who.createdBy,
+      createdByName: who.createdByName,
+    });
+    if (!r || r.ok === false) throw new Error((r && r.error) || I18n.t("新建素材失败"));
+    return { ok: true, action: action, asset: assetAgentAssetBrief(r.asset) };
+  }
+  if (action === "addItem") {
+    const id = String(p.id || "").trim();
+    if (!id) throw new Error(I18n.t("id 必填（素材 id）"));
+    const arg = {
+      id: id,
+      title: String(p.title || ""),
+      type: String(p.type || ""),
+      createdBy: who.createdBy,
+    };
+    if (typeof p.content === "string") arg.content = p.content;
+    if (p.srcPath) arg.srcPath = String(p.srcPath);
+    if (p.base64) arg.base64 = String(p.base64);
+    const r = await window.api.assetsItemAdd(arg);
+    if (!r || r.ok === false) throw new Error((r && r.error) || I18n.t("添加内容失败"));
+    return {
+      ok: true,
+      action: action,
+      item: { id: r.item && r.item.id, title: r.item && r.item.title, type: r.item && r.item.type },
+      asset: assetAgentAssetBrief(r.asset),
+    };
+  }
+  if (action === "importFile" || action === "importFiles") {
+    const paths = (Array.isArray(p.paths) ? p.paths : [p.path || p.srcPath || ""])
+      .map((x) => String(x || "").trim())
+      .filter(Boolean);
+    if (!paths.length) throw new Error(I18n.t("没有要收进素材库的文件"));
+    if (action === "importFiles") {
+      const id = String(p.id || "").trim();
+      if (!id) throw new Error(I18n.t("importFiles 需要 id（往这个素材追加内容）"));
+      const r = await window.api.assetsImportFiles(id, paths, who.createdBy);
+      if (!r || r.ok === false) throw new Error((r && r.error) || I18n.t("收进素材库失败"));
+      return {
+        ok: true,
+        action: action,
+        asset: assetAgentAssetBrief(r.asset),
+        added: (r.items || []).map((it) => ({ id: it.id, title: it.title, type: it.type })),
+        skipped: r.skipped || [],
+      };
+    }
+    const made = await window.api.assetsCreate({
+      catRel: String(p.category || p.catRel || ""),
+      displayName:
+        String(p.name || p.displayName || "").trim() ||
+        paths[0].split(/[\\/]/).pop().replace(/\.[^.]+$/, ""),
+      desc: String(p.desc || ""),
+      createdBy: who.createdBy,
+      createdByName: who.createdByName,
+    });
+    if (!made || made.ok === false) throw new Error((made && made.error) || I18n.t("新建素材失败"));
+    const wr = await window.api.assetsImportFiles(made.asset.id, paths, who.createdBy);
+    if (!wr || wr.ok === false) throw new Error((wr && wr.error) || I18n.t("收进素材库失败"));
+    return {
+      ok: true,
+      action: "importFile",
+      asset: assetAgentAssetBrief(wr.asset || made.asset),
+      added: (wr.items || []).map((it) => ({ id: it.id, title: it.title, type: it.type })),
+      skipped: wr.skipped || [],
+    };
+  }
+  if (action === "updateText") {
+    const id = String(p.id || "").trim();
+    const itemId = String(p.itemId || "").trim();
+    if (!id || !itemId) throw new Error(I18n.t("id 与 itemId 必填"));
+    const r = await window.api.assetsItemUpdateText(id, itemId, String(p.content == null ? "" : p.content), String(p.title || ""));
+    if (!r || r.ok === false) throw new Error((r && r.error) || I18n.t("写入失败"));
+    return {
+      ok: true,
+      action: action,
+      item: { id: r.item && r.item.id, title: r.item && r.item.title, bytes: r.item && r.item.bytes },
+      asset: assetAgentAssetBrief(r.asset),
+    };
+  }
+  if (action === "updateMeta") {
+    const id = String(p.id || "").trim();
+    if (!id) throw new Error(I18n.t("id 必填（素材 id）"));
+    if (typeof p.displayName === "string" || typeof p.desc === "string") {
+      const r = await window.api.assetsSaveMeta({
+        id: id,
+        displayName: typeof p.displayName === "string" ? p.displayName : undefined,
+        desc: typeof p.desc === "string" ? p.desc : undefined,
+      });
+      if (!r || r.ok === false) throw new Error((r && r.error) || I18n.t("保存失败"));
+    }
+    if (typeof p.catRel === "string") {
+      const scan = await assetAgentScan();
+      const cur = ((scan && scan.scan && scan.scan.assets) || []).find((a) => String(a.id) === id) || null;
+      if (!cur) throw new Error(I18n.t("素材不存在"));
+      const r2 = await window.api.assetsRename(
+        String(cur.rel || ""),
+        String(cur.folder || ""),
+        String(p.catRel || ""),
+      );
+      if (!r2 || r2.ok === false) throw new Error((r2 && r2.error) || I18n.t("移动到分类失败"));
+    }
+    const scan2 = await assetAgentScan();
+    const after = ((scan2 && scan2.scan && scan2.scan.assets) || []).find((a) => String(a.id) === id) || null;
+    return { ok: true, action: action, asset: after ? assetAgentAssetBrief(after) : null };
+  }
+  if (action === "removeItem") {
+    const id = String(p.id || "").trim();
+    const itemId = String(p.itemId || "").trim();
+    if (!id || !itemId) throw new Error(I18n.t("id 与 itemId 必填"));
+    const r = await window.api.assetsItemRemove(id, itemId);
+    if (!r || r.ok === false) throw new Error((r && r.error) || I18n.t("删除内容失败"));
+    return {
+      ok: true,
+      action: action,
+      removed: { id: r.removed && r.removed.id, title: r.removed && r.removed.title },
+      trash: String(r.trash || ""),
+      asset: assetAgentAssetBrief(r.asset),
+    };
+  }
+  if (action === "deleteAsset") {
+    const id = String(p.id || "").trim();
+    if (!id) throw new Error(I18n.t("id 必填（素材 id）"));
+    const r = await window.api.assetsDelete(id);
+    if (!r || r.ok === false) throw new Error((r && r.error) || I18n.t("删除素材失败"));
+    return { ok: true, action: action, id: id, trash: String(r.trash || ""), rel: String(r.rel || "") };
+  }
+  throw new Error(I18n.t("未知素材写操作：") + action);
+}
+
 /** mtnode_assets 的宿主实现（唯一入口；分发在 renderer/app-db.js）。 */
 async function handleAssetEvent(data) {
   const p = (data && data.params) || {};
@@ -5698,7 +5917,28 @@ async function handleAssetEvent(data) {
   if (action === "list") return await assetAgentList(p);
   if (action === "read") return await assetAgentRead(p);
   if (action === "screenshot") return await assetAgentShot(p);
+  if (ASSET_WRITE_ACTIONS[action]) return await assetAgentWrite(data, action);
   throw new Error(I18n.t("未知素材操作：") + action);
 }
 
 window.__mtnodeAssetOp = handleAssetEvent;
+
+/* ════════════ 应用改库 → 画布刷新（主窗口侧） ════════════
+   应用（story2video 这类窗口应用）是经主进程 app-host-bridge.js 的素材库通道直接写库的，
+   渲染层那份扫描结果（ASSET_LIB.scan）不会自己变 —— 主进程写完会广播一次 assets:changed，
+   这里收到就重扫一遍并刷新绑定了该素材的节点：应用里点「采用」之后，画布上那颗素材节点
+   当场就有新条目，用户不用去手动打开素材库。广播只说明「变了」，扫描才是真源。 */
+(function () {
+  const api = window.api;
+  if (!api || typeof api.onAssetsChanged !== "function") return;
+  api.onAssetsChanged(() => {
+    if (typeof assetsApiOk === "function" && !assetsApiOk()) return;
+    if (typeof assetLinkVerify !== "function") return;
+    assetLinkVerify(true).then(
+      () => {
+        if (typeof assetViewRerenderSoon === "function") assetViewRerenderSoon();
+      },
+      () => {},
+    );
+  });
+})();

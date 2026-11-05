@@ -25,7 +25,7 @@ const PLUGIN_FEED =
 /* 认得出的插件 kind 白名单：认不出的一律归一成 "unknown"（卡片显「请先升级主程序」、不可装）。
    已移除的 tts（GPT-SoVITS）故意不在表里 —— 云端旧目录里若还有 kind="tts" 的条目，
    它会走 unknown 那一档（看得见但装不了），而不是被当成一个已注册的后端。 */
-const KNOWN_KINDS = new Set(["builtin", "pet", "window", "music3", "yue2", "h3", "llama", "breeze", "remotion", "asr", "paseo", "blender", "infinitetalk", "soulxflashhead", "flux3klein", "qwenimage"]);
+const KNOWN_KINDS = new Set(["builtin", "pet", "window", "music3", "yue2", "h3", "mossmusic", "llama", "breeze", "remotion", "asr", "paseo", "blender", "infinitetalk", "soulxflashhead", "flux3klein", "qwenimage"]);
 /* Blender 插件先只对作者账号开放（本轮需求：暂时收起来内测）。
    白名单只认账号名 / 昵称，其它登录用户连条目都拿不到 —— 卡片、画布节点菜单与
    未装警示条都吃同一份过滤后的列表，所以在这里一处过滤就够。 */
@@ -38,6 +38,8 @@ const MAX_ZIP = 80 * 1024 * 1024;
 let getDataDir = null;
 let getMainWin = null;
 let getAppVersion = null;
+/* 重能力桥（画布 / agent / 文件 / 工具 / 联网）：main.js 注入的 app-host-bridge.js 实例 */
+let hostBridge = null;
 let getAuthUser = null;
 let appRoot = "";
 const pluginWins = new Map();
@@ -521,6 +523,7 @@ function normalizePlugin(raw) {
   if (!kind && raw.handler === "music3") kind = "music3";
   if (!kind && raw.handler === "yue2") kind = "yue2";
   if (!kind && raw.handler === "h3") kind = "h3";
+  if (!kind && raw.handler === "mossmusic") kind = "mossmusic";
   if (!kind && raw.handler === "llama") kind = "llama";
   if (!kind && raw.handler === "breeze") kind = "breeze";
   if (!kind && raw.handler === "remotion") kind = "remotion";
@@ -543,7 +546,7 @@ function normalizePlugin(raw) {
   return {
     id,
     kind: known ? kind : "unknown",
-    handler: String(raw.handler || (kind === "pet" ? "pet" : kind === "music3" ? "music3" : kind === "yue2" ? "yue2" : kind === "h3" ? "h3" : kind === "llama" ? "llama" : kind === "breeze" ? "breeze" : kind === "remotion" ? "remotion" : kind === "asr" ? "asr" : kind === "paseo" ? "paseo" : kind === "infinitetalk" ? "infinitetalk" : kind === "soulxflashhead" ? "soulxflashhead" : kind === "flux3klein" ? "flux3klein" : kind === "qwenimage" ? "qwenimage" : kind === "builtin" ? id : "")).trim(),
+    handler: String(raw.handler || (kind === "pet" ? "pet" : kind === "music3" ? "music3" : kind === "yue2" ? "yue2" : kind === "h3" ? "h3" : kind === "mossmusic" ? "mossmusic" : kind === "llama" ? "llama" : kind === "breeze" ? "breeze" : kind === "remotion" ? "remotion" : kind === "asr" ? "asr" : kind === "paseo" ? "paseo" : kind === "infinitetalk" ? "infinitetalk" : kind === "soulxflashhead" ? "soulxflashhead" : kind === "flux3klein" ? "flux3klein" : kind === "qwenimage" ? "qwenimage" : kind === "builtin" ? id : "")).trim(),
     order: Number(raw.order) || 100,
     title: locObj(raw.title || raw.name || id),
     subtitle: locObj(raw.subtitle || raw.description || ""),
@@ -624,7 +627,7 @@ function attachInstalled(plugins) {
         installedVersion: st.version,
         updateAvailable: !!(st.installed && p.version && verGt(p.version, st.version)),
       }));
-    } else if (p.kind === "music3" || p.handler === "music3" || p.kind === "yue2" || p.handler === "yue2" || p.kind === "h3" || p.handler === "h3" || p.kind === "llama" || p.handler === "llama" || p.kind === "breeze" || p.handler === "breeze" || p.kind === "remotion" || p.handler === "remotion" || p.kind === "asr" || p.handler === "asr" || p.kind === "infinitetalk" || p.handler === "infinitetalk" || p.kind === "soulxflashhead" || p.handler === "soulxflashhead" || p.kind === "flux3klein" || p.handler === "flux3klein" || p.kind === "qwenimage" || p.handler === "qwenimage") {
+    } else if (p.kind === "music3" || p.handler === "music3" || p.kind === "yue2" || p.handler === "yue2" || p.kind === "h3" || p.handler === "h3" || p.kind === "mossmusic" || p.handler === "mossmusic" || p.kind === "llama" || p.handler === "llama" || p.kind === "breeze" || p.handler === "breeze" || p.kind === "remotion" || p.handler === "remotion" || p.kind === "asr" || p.handler === "asr" || p.kind === "infinitetalk" || p.handler === "infinitetalk" || p.kind === "soulxflashhead" || p.handler === "soulxflashhead" || p.kind === "flux3klein" || p.handler === "flux3klein" || p.kind === "qwenimage" || p.handler === "qwenimage") {
       /* 本地后端插件：**装没装以磁盘上的安装目录为准**（目录里有 .install-ok / .venv /
          模型目录或目录非空 = 装过）—— 卡片动作（安装 / 启用 / 卸载）与插件显存门槛的
          「已装就保留」判据都吃这一个字段。版本 / 可更新状态仍由各宿主 status 异步判定。 */
@@ -1448,6 +1451,7 @@ function registerAppPluginsIpc(opts) {
   getMainWin = opts.getMainWin;
   getAppVersion = opts.getAppVersion;
   getAuthUser = typeof opts.getAuthUser === "function" ? opts.getAuthUser : null;
+  if (opts.hostBridge && typeof opts.hostBridge.call === "function") hostBridge = opts.hostBridge;
   appRoot = String((opts && opts.appRoot) || "");
   ipcMain.handle("appPlugins:catalog", () => loadCatalog());
   /* 显存门槛现状（**不滤**）：插件对话框「显示不支持的插件」开关与卡片标注吃这一份。
@@ -1486,6 +1490,34 @@ function registerAppPluginsIpc(opts) {
     if (!id) return { ok: false, error: "no_plugin" };
     writeJson(dataPath(id), data && typeof data === "object" ? data : {});
     return { ok: true };
+  });
+
+  /* ── 插件窗口的重能力桥（画布 / agent / 文件 / 工具 / 联网）─────────────────────
+     与 appHost 同一份中继（主进程 app-host-bridge.js → 主窗口渲染层执行）：
+     插件没有 app.json，所以没有能力位声明这一道；目标画布 = **用户当前打开的那张**
+     （插件窗口是「在画布旁边干活」的，不像应用那样有自己的绑定画布）。
+     首次调用同样弹一次授权窗，记录在 <数据目录>/apps-host.json 的 grants["plugin:<id>"]。 */
+  ipcMain.handle("appPlugins:hostBridge", async (e, arg) => {
+    const id = pluginIdOfSender(e);
+    if (!id) return { ok: false, code: "not_plugin", error: "不是插件窗口" };
+    if (!hostBridge) return { ok: false, code: "not_ready", error: "宿主桥未就绪" };
+    const a = arg && typeof arg === "object" ? arg : {};
+    const win = BrowserWindow.fromWebContents(e.sender);
+    const caller = {
+      kind: "plugin",
+      id: id,
+      name: id,
+      push: (ev) => {
+        try {
+          if (win && !win.isDestroyed()) win.webContents.send("appHost:stream", ev);
+        } catch (_) {}
+      },
+    };
+    try {
+      return await hostBridge.call(caller, String(a.ns || ""), String(a.method || ""), a.args || {});
+    } catch (err) {
+      return { ok: false, code: "failed", error: String((err && err.message) || err) };
+    }
   });
 
   /* ── 插件根目录（本轮需求：总的根目录 + 首次打开提示设置）──────────────────

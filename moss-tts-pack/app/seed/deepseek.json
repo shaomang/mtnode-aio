@@ -1,0 +1,8 @@
+{
+  "id": "builtin-deepseek",
+  "name": "Deepseek",
+  "kind": "builtin",
+  "audioFile": "deepseek.wav",
+  "note": "内置默认音色：取自本机 Breeze 的第一个角色「Deepseek」的基础音色组「日常」（参考音频随包，不依赖 Breeze 是否安装）。",
+  "refText": "今天出门的时候，路上人不多，风也刚好。我顺便去了一趟便利店，买了点日常用的东西，回来把房间简单收拾了一下，时间过得比想象中快。"
+}

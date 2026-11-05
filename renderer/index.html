@@ -50,6 +50,10 @@
      独立成一份、用 <link> 跟在 style.css 之后；画面取自用户给的像素参考表原图
      （renderer/img/footer-mascot.png），本文件只管 32×24 的排版。 -->
 <link rel="stylesheet" href="css/footer-mascot.css">
+<link rel="stylesheet" href="css/tts.css">
+<!-- 任务完成的应用内卡片（renderer/app-notify.js）：右下角浮层，兜底系统通知
+     （系统勿扰 / 开发态通知不弹时仍然看得见）。独立成一份，配色走 base.css 的变量。 -->
+<link rel="stylesheet" href="css/notify.css">
 </head>
 <body>
 
@@ -678,6 +682,11 @@
        占位在 #btnCanvasShot 左侧（CSS 用 order:-2 钉死，即使别的按钮插到前面也不移位）。
        键面内容（🎤 / ● / F1 / 下载百分比）由模块的 paint() 按状态改写，这里只给初始字。 -->
   <button type="button" id="btnVoiceGlobal" class="sb-voice" aria-label="全局语音输入（按住 F1 说话）">🎤</button>
+  <!-- 内置 TTS（MOSS-TTS-Nano）：夹在「AI 增强」与「画布截图」之间（CSS order 见 css/tts.css）。
+       左键开 / 关（首次开启会确认并下载约 500MB ONNX 权重），右键是音色菜单
+       （上传 prompt 音频 / 引用 Breeze 角色 / 试听 / 打开数据目录）。实现见 app-tts.js。 -->
+  <button type="button" id="btnTts" class="sb-tts" aria-pressed="false"
+          data-i18n-title="语音播报（MOSS-TTS-Nano）· 左键开关，右键换音色">🔇</button>
   <button type="button" id="btnCanvasShot" class="sb-cam" aria-label="生成当前画布的高清总览图">
     <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
       <path fill="currentColor" d="M9 3 7.17 5H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-3.17L15 3H9zm3 14.2A4.2 4.2 0 1 1 12 8.8a4.2 4.2 0 0 1 0 8.4zm0-1.7a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5zM4.8 7.3h1.7V6H4.8z"/>
@@ -687,10 +696,11 @@
     <span class="sb-rq-icon" aria-hidden="true">◉</span>
     <span class="sb-rq-txt" id="btnRunQueueTxt"></span>
   </button>
-  <span id="statWf">未加载画布</span>
-  <span id="statCounts">— 节点 · — 连线</span>
-  <span id="statProviders">服务商 0</span>
-  <span id="statGrid">网格 24px</span>
+  <!-- 状态栏统计文字（画布名 / 节点·连线 / 服务商 / 网格）已整块下线（本轮需求）：
+       这一格改为「最新语音播报」——单行省略，点一下向上展开全文（可清空）；
+       没有播报内容时直接显示最新一轮 Agent 答复。实现见 renderer/app-speakbar.js，
+       写入方是 app-tts.js（播报稿）与 app-assist.js（答复正文）；样式在 css/tts.css。 -->
+  <div class="sb-speak is-empty" id="sbSpeak"></div>
   <span class="spacer"></span>
   <span id="statZoom">100%</span>
   <!-- 本槽位不再显示保存状态（本轮需求：右下角「已保存 + 时间」整块下线，保存中 / 待保存 /
@@ -768,6 +778,12 @@
      必须排在最前：它是全渲染层（含 app.js / app-canvas.js / app-nodes.js）的公共出口，
      虽然彼此都在调用期取，但加载顺序写在这里 = 依赖关系写在这里。 -->
 <script src="app-clipboard.js"></script>
+<!-- 文本节点「粘贴截图 → 图像路径 / 识图 二选一」（renderer/app-paste-shot.js →
+      window.MTPasteShot）：文本节点板身正文框与 Markdown 编辑器两档共用一套询问窗与
+      插入口径（落盘 / 默认模型识图 / 绝对路径的 Markdown 语法）。
+      无加载期依赖（I18n、MTInlineImg、mtDialogForm、dshDefaultModelPick、wfWorkspace、
+      mediaFileUrlOf 全在调用期取），只要排在使用它的 app-canvas.js / app-textedit.js 之前即可。 -->
+<script src="app-paste-shot.js"></script>
 <!-- 子代理运行表（renderer/app-subagent.js → window.MTNodeSubagent）：引擎的 subagent
      工具天生异步（调用立刻回 started subagent <id>，后台跑完再发结算通知），而父那一轮
      往往在通知到达前就 idle 收尾了 —— 网关为此挂常驻长订阅、帧走 reqId 为空的全局通道
@@ -809,11 +825,14 @@
      节点重绘 / 窗口失焦 / 最小化都不会把正在播的那只摘断。
      排在 app-canvas.js 之前：节点 body 区块与预览同步都在调用期取这几个全局函数。 -->
 <script src="app-audioview.js"></script>
-<!-- 媒体预览持久化（renderer/app-mediaview.js）：视频播放器的元素池（重绘复用同一只
-     <video>，不断播、不闪）+ 全屏托底（<video> 挂在带 transform 的 .fn-stage 下时先
-     临时抬到 body 占位容器再 requestFullscreen，原生控件上的全屏键因此可用）。
-     自包含（占位容器样式内联，无需新样式表），app-canvas.js 调用期按 typeof 取
-     mediaViewCreate / mediaViewAttach / mediaViewClear / mediaSetVideoSrc。 -->
+<!-- 媒体预览持久化（renderer/app-mediaview.js）：视频预览的「首帧静图 → 点击原地起播」
+     （mediaViewPoster / mediaViewPosterSet / mediaViewPosterClear，静图走缩略图协议
+     host=video）+ 视频播放器的元素池（重绘复用同一只 <video>，不断播、不闪）+ 全屏托底
+     （<video> 挂在带 transform 的 .fn-stage 下时先临时抬到 body 占位容器再
+     requestFullscreen，原生控件上的全屏键因此可用）。
+     槽位样式在 css/components.css 的 .mv-slot（离屏释放交给 app-preview-lazy.js）。
+     自包含，app-canvas.js 调用期按 typeof 取 mediaViewCreate / mediaViewAttach /
+     mediaViewClear / mediaSetVideoSrc / mediaViewPoster*。 -->
 <script src="app-mediaview.js"></script>
 <!-- 音频节点现场录制（renderer/app-recaudio.js + css/recaudio.css）：节点操作行的
      「录制」按钮 → 居中录音面板（实时声波 + 计时）→ 停止后编码成**真 mp3**
@@ -832,6 +851,10 @@
      之前 —— 它们都要用 window.MtCoin 画「金币 + 数量」。 -->
 <script src="app-whalecoin.js"></script>
 <script src="app-agent.js"></script>
+<!-- 任务完成提醒（renderer/app-notify.js）：系统通知 + 右下角完成卡片 + 托盘运行数上报。
+     必须排在 app-db.js 之前 —— 那里是完成判定的唯一收口（dshRunQueueDoneCheck）与
+     提问/审批卡的弹出点（playIxSound 旁边），两处都按名字调本文件的入口。 -->
+<script src="app-notify.js"></script>
 <script src="app-prompt-sections.js"></script>
 <script src="app-db.js"></script>
 <!-- 项目 manifest 执行桥（renderer/app-manifest.js · 缺口文档 P0-2 / G2+G3）：
@@ -868,6 +891,15 @@
      （breeze_gen 设置表单的 summary 引用了后加载的 app-nodes.js 的函数）。要取就写成
      调用期取：`summary: (node) => helperFn(node)`；同类回归见 test/smoke-canvas-boot-tdz.js。 -->
 <script src="app-canvas.js"></script>
+<!-- 画布预览的离屏加载 / 卸载（renderer/app-preview-lazy.js）：在 #stage 上挂一只
+     IntersectionObserver（rootMargin ≈ 一屏）给节点上的预览 <img> / <video> 打点 ——
+     进入那一圈才取图源，离开就把 src 摘掉并记回地址，回来重取；正在播的视频同样按视口
+     处理（不豁免）。与 app-mediaview.js 的视频池协同：全屏占位里的、正压在视口里的宿主
+     一律不摘。**排在 app-canvas.js 之后**：它只观察 canvas 画出来的 DOM，绕开各处的
+     渲染代码（画布重绘会整体重建 DOM，还带按结构签名复用旧 DOM 的通道，所以观察器必须
+     跟着元素生命周期走）；取用 app-mediaview.js 的 mediaRememberPlayback 全在调用期，
+     没有装载期依赖，也不改动上面任何脚本的相对次序。 -->
+<script src="app-preview-lazy.js"></script>
 <!-- InfiniteTalk 数字人节点（infinitetalk_gen）：执行体 + ⚙ 设置表单。
      放在 app-canvas.js 之后（注册节点设置表单要它先定义 registerNodeSettingsForm），
      执行体由 app-nodes.js 的 playNodeBody 在调用期取 playInfinitetalkNode。 -->
@@ -1049,6 +1081,11 @@
       主进程侧真源是根目录 dsh-compact-policy.js（用户设置 → cordis.yml 的写入点）。 -->
 <script src="app-dsh-compact.js"></script>
 <script src="app-settings.js"></script>
+<!-- DeepSeek 官方 API Key 首次使用引导（renderer/app-deepseek-onboard.js）：
+     未配置 Key 时任何模型能力开跑前弹图文海报 + Key 输入窗（验证通过才写入供应商）。
+     排在 app-settings.js 之后（用它的 settingsSaveNow / repaintSettingsProvTiles），
+     在 app-db.js（dshRunTask）/ app-nodes.js（apiCallTextStream、出图）运行期按名字取用。 -->
+<script src="app-deepseek-onboard.js"></script>
 <!-- 工作目录占用与清理（顶栏工作目录右侧那颗按钮 + 设置里「存储占用与清理」的入口 ·
       renderer/app-ws-temp.js，样式 css/ws-temp.css，主进程 workspace-temp.js）：
       必须在 app-boot.js 之前、由它触发的首次 renderWfWorkspace 要能按名字取到
@@ -1216,6 +1253,16 @@
      识别走 dsh 官方本地 SenseVoice（CPU、离线、不进模型上下文）；样式在 css/voice.css。
      排在最后：调用期取 window.api / I18n / toast / S / agentRunWorkspace 这些既有全局。 -->
 <script src="app-voice.js"></script>
+<!-- 内置 TTS（renderer/app-tts.js · MOSS-TTS-Nano）：状态栏那枚 🔊（#btnTts，静态 DOM 在
+     footer.statusbar），左键开关、右键音色菜单；会话一轮结束时用默认文本模型写一条
+     语音摘要（气泡 + 播报），询问窗 / 队列完成 / 报错另有固定文案。
+     链路 renderer → preload mossTts* → moss-tts/main-moss-tts.js → moss-tts-pack/app/serve.py。
+     排在 app-voice.js 之后：调用期取 window.api / I18n / toast / apiCallTextStream 这些既有全局。 -->
+<script src="app-tts.js"></script>
+<!-- 状态栏「最新语音播报」格（renderer/app-speakbar.js）：取代原来的画布统计文字。
+     单行省略，点击向上展开全文 + 清空；播报稿由 app-tts.js 写入，没有播报时回落到
+     最新一轮 Agent 答复（app-assist.js 写入）。排在 app-tts.js / app-assist.js 之后。 -->
+<script src="app-speakbar.js"></script>
 <!-- MCP 执行桥（第三方 MCP 客户端 → 主进程 MCP 服务端 → 这里 → 既有宿主执行路径）：
      自包含（renderer/mcp-bridge.js）。挂在 window.MTNodeMcp，帧由 preload 的 mcpOnEvent
      推来；落地一律复用 app-nodes.js / app-db.js / app-longtask.js / app-assets.js 的既有
@@ -1243,5 +1290,10 @@
      —— 它要在载入时补 NODE_DEFAULTS / KIND_CLS / KIND_TAGS / KIND_ICON_SVG 那几张表，
      并向 registerNodeSettingsForm 登记 ⚙ 表单。见 renderer/app-appnode.js 顶部口径。 -->
 <script src="app-appnode.js"></script>
+<!-- 应用中心窗口 / 插件窗口的宿主桥执行端（画布读写 + agent 会话 + 文件 / 工具 / 联网）：
+     主进程 app-host-bridge.js 把调用推成 {id, op, params} 到这里，跑完用 appHostReply 回执。
+     必须排在 app-session-bridge.js（会话族）与 app-appnode.js（APPNODE_ROUTES.canvas）之后。
+     见 renderer/app-apphost-bridge.js 顶部口径。 -->
+<script src="app-apphost-bridge.js"></script>
 </body>
 </html>

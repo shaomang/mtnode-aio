@@ -4,7 +4,8 @@
  * 避免新装的人装完才发现跑不起来）。
  *
  * 口径（用户共识，改动前先回读这一节）：
- *   · 名单与门槛只在这里一份：minimax-music3 24G ·
+ *   · 名单与门槛只在这里一份：minimax-music3 24G · moss-music 12G（8B 音乐理解 Instruct 模型，
+ *     Thinking 档与全精度档都已移除，只剩 int8 16G / int4 12G，见 moss-music/main-moss-music.js 的模型 / 量化档口径）·
  *     yue2-local 16G · minimax-h3 16G（H3 由用户后续追加，门槛 16G）。
  *   · 比较的是**读数**：读得到显卡显存（nvidia-smi，多卡取最大那张）且最大显存 < 门槛 → 不达标。
  *     读不到（无 N 卡 / nvidia-smi 缺失 / 输出为空 / 数值为 null）→ **一律按「没超」处理**，
@@ -26,6 +27,8 @@ const path = require("path");
 /** 插件 id（目录 id，不是 kind）→ 最低显存（GB）。单一真源，别在别处再抄一份。 */
 const PLUGIN_VRAM_GB = {
   "minimax-music3": 24,
+  /* 8B 音乐理解 Instruct 模型：Thinking 档与全精度档都已移除，最低档 int4 需 12GB（int8 需 16GB） */
+  "moss-music": 12,
   "yue2-local": 16,
   "minimax-h3": 16,
 };

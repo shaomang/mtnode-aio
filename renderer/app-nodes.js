@@ -119,6 +119,21 @@ function buildSpec(node, prov, idx, skillWrap) {
    缺省 300000（见 main.js 的 timeoutTiersOf / attachRequestWatchdog 与 app-model-kind.js
    的 providerTimeoutSpec）——老配置没填这几个字段时行为与服务商缺省完全一致。 */
 function apiCallTextStream(spec, onReasoning, onDelta) {
+  /* 首次使用闸：官方 DeepSeek 还没配 API Key → 弹图文引导窗（app-deepseek-onboard.js）
+     并中止这次调用，既不烧 Token 也不让底层甩一条「未配置 API Key」的干错。
+     别的服务商（mtnode_xxx）不受这条闸影响，Key 由主进程 checkProvider 照常校验。 */
+  if (
+    spec &&
+    spec.provider &&
+    typeof dsEnsureModelReady === "function" &&
+    !dsEnsureModelReady(spec.provider)
+  ) {
+    return Promise.reject(
+      typeof dsMissingKeyError === "function"
+        ? dsMissingKeyError()
+        : new Error(I18n.t("未配置 API Key（请在「设置 · API/配置」中填写）")),
+    );
+  }
   const out =
     spec && typeof providerTimeoutSpec === "function"
       ? Object.assign({}, spec, providerTimeoutSpec(spec.provider || {}))
@@ -453,6 +468,11 @@ async function runOnce(node, prov, idx, itemTitle, attemptT) {
     if (!r.text) throw new Error(I18n.t("响应无文本内容"));
     return { kind: "text", text: r.text };
   }
+  /* 出图也是「模型能力」：官方 DeepSeek 没 Key 时同样先弹引导窗（同一张闸） */
+  if (typeof dsEnsureModelReady === "function" && !dsEnsureModelReady(spec.provider || prov))
+    throw typeof dsMissingKeyError === "function"
+      ? dsMissingKeyError()
+      : new Error(I18n.t("未配置 API Key（请在「设置 · API/配置」中填写）"));
   const rr = await window.api.apiCall(spec);
   if (!rr.ok) throw new Error(rr.error || I18n.t("调用失败"));
   const res = await window.api.assetWriteBase64(
@@ -754,6 +774,11 @@ async function runOnceAgg(node, prov, attemptT) {
     if (!r.text) throw new Error(I18n.t("响应无文本内容"));
     return { kind: "text", text: r.text };
   }
+  /* 聚合出图同一条首次使用闸（见 apiCallTextStream 与 runOnce） */
+  if (typeof dsEnsureModelReady === "function" && !dsEnsureModelReady(spec.provider || prov))
+    throw typeof dsMissingKeyError === "function"
+      ? dsMissingKeyError()
+      : new Error(I18n.t("未配置 API Key（请在「设置 · API/配置」中填写）"));
   const rr = await window.api.apiCall(spec);
   if (!rr.ok) throw new Error(rr.error || I18n.t("调用失败"));
   const res = await window.api.assetWriteBase64(
@@ -837,6 +862,12 @@ async function previewNode(node) {
     return;
   }
   if (!String(prov.apiKey || "").trim()) {
+    /* 官方 DeepSeek 没 Key：不再只丢一句 toast，直接弹那张图文引导窗 */
+    if (
+      typeof dsEnsureModelReady === "function" &&
+      !dsEnsureModelReady(prov)
+    )
+      return;
     toast(I18n.t("该服务商未填写 API Key（设置 · API/配置）"), "warn");
     return;
   }
@@ -989,6 +1020,8 @@ function isAutoProcKind(n) {
       n.kind === "agent_task" ||
       n.kind === "music_gen" ||
       n.kind === "yue_gen" ||
+      /* MOSS-Music 音乐理解：跑完自动级联下游（结果文本 / JSON / 产物路径） */
+      n.kind === "moss_music" ||
       /* FLUX 3 Image Klein：本机 ComfyUI 出图，跑完同样自动级联下游 */
       n.kind === "flux3klein_gen" ||
       /* Qwen Image 2.1：本机 ComfyUI 出图，跑完同样自动级联下游 */
@@ -1016,6 +1049,20 @@ async function waitFilePathReady(node) {
   return false;
 }
 
+/* 是否按「尝试槽」判产出（nodeAlreadyProcessed / nodeHasOutputContent /
+   nodeProcessedForRun / nodePlaySucceeded 共用）。
+   只有把结果真正写进 attemptOutputs 的执行器（处理 / 智能任务，见 playProcNode 的
+   nA > 1 分支）才算多次尝试。媒体生成族的「抽卡次数」也存在 node.attempts 里
+   （playVideoGenNode 等的 nRolls = attemptCount），但结果只落 node.output / genPaths，
+   从不写尝试槽 —— 按槽判就会把已跑完的视频节点**永久当成「没有输出」**：节点层
+   头部 ▶ 选「仅补充」时它又被算成待补、重新丢回队列排队（用户报的 bug），
+   上游补跑会再烧一跑，跑完也不级联下游。 */
+function usesAttemptSlots(node) {
+  if (!node || attemptCount(node) <= 1) return false;
+  if (typeof isMediaGenNode === "function" && isMediaGenNode(node)) return false;
+  return true;
+}
+
 /* 与 ensureProcessed 跳过条件一致：已有结果 / 错误则不再自动跑 */
 function nodeAlreadyProcessed(node) {
   if (!node) return true;
@@ -1023,7 +1070,7 @@ function nodeAlreadyProcessed(node) {
     /* 等待节点：文件曾就绪则视为完成（路径是否仍在由 ensureProcessed 再验） */
     return !!(node.waitReady || node.error);
   }
-  if (attemptCount(node) > 1) {
+  if (usesAttemptSlots(node)) {
     const outs = node.attemptOutputs || [];
     if (
       outs.some(
@@ -1052,7 +1099,7 @@ function nodeHasOutputContent(node) {
   if (node.kind === "wait_file") return !!node.waitReady;
   if (node.kind === "task")
     return node.taskStatus === "done" && !!(node.output && node.output.text);
-  if (attemptCount(node) > 1) {
+  if (usesAttemptSlots(node)) {
     const outs = node.attemptOutputs || [];
     return outs.some(
       (o) => o && (o.output || (o.batchOutputs && o.batchOutputs.length)),
@@ -1340,7 +1387,7 @@ function nodeProcessedForRun(node, retryErrored) {
   const hasOutput =
     node.kind === "wait_file"
       ? !!(node.waitReady || node.error)
-      : attemptCount(node) > 1
+      : usesAttemptSlots(node)
         ? (node.attemptOutputs || []).some(
             (o) => o && (o.output || (o.batchOutputs && o.batchOutputs.length)),
           )
@@ -1350,30 +1397,63 @@ function nodeProcessedForRun(node, retryErrored) {
   return false;
 }
 
+/* 上游「确实在跑、但本进程拿不到它的运行体」时，等它落定再让下游取值。
+   现场（用户报）：批量执行 H3 视频时，后处理节点（超分 / 补帧）突然报「源视频未连接」——
+   线是通的，只是那一刻上游视频还没产出（在别的批次里跑 / 排队，或运行时是从后端锁恢复的，
+   没有 S.runPromises 可等）。旧写法在这两种情形下直接放行，下游拿空值当场判死。
+   等不到（被终止 / 上游卡死）就照常放行，绝不把整批挂死 —— 提示语那边会说清原因。 */
+const UPSTREAM_SOURCE_WAIT_MS = 10 * 60 * 1000;
+async function waitUpstreamSettle(node, maxMs) {
+  if (!node || !node.id) return false;
+  const cap = Math.max(1000, Number(maxMs) || UPSTREAM_SOURCE_WAIT_MS);
+  const t0 = Date.now();
+  const seq0 = typeof GLOBAL_STOP_SEQ === "number" ? GLOBAL_STOP_SEQ : null;
+  while (node.running && Date.now() - t0 < cap) {
+    /* 期间按过「全部终止」：上游已作废，立刻放行（让下游按真实原因收场，不干等） */
+    if (seq0 != null && typeof GLOBAL_STOP_SEQ === "number" && GLOBAL_STOP_SEQ !== seq0)
+      return false;
+    if (S._lastStopAllAt && Date.now() - Number(S._lastStopAllAt) < 1500) return false;
+    await new Promise((r) => setTimeout(r, 400));
+  }
+  return !node.running;
+}
+
 /* 递归确保上游处理节点均已产生结果（未被处理过的先执行，直到所有输入都有内容）。
    多个互不依赖的上游并行补跑，避免排队。 */
 async function ensureProcessed(node, ran, retryErrored) {
   ran = ran || [];
   if (!node) return ran;
   if (!isAutoProcKind(node)) return ran;
-  /* 本批调度中的节点只等队列启动，禁止在此 playNode，避免互相 await playLocks 锁死 */
-  if (isScheduledRunNode(node)) return ran;
   /* 已有产物则立刻返回，切勿 await 仍被 playNode 握着的锁。
      典型死锁：处理节点完成后级联保存，playNode 持锁等 cascade，save 又 ensure 上游去等这把锁。 */
   if (node.kind !== "wait_file" && nodeProcessedForRun(node, retryErrored)) return ran;
   await ensureProcessedAll(procSourcesOutsideSchedule(node), ran, retryErrored);
   if (node.kind !== "wait_file" && nodeProcessedForRun(node, retryErrored)) return ran;
+  /* 本批调度中的节点只等队列启动，禁止在此 playNode，避免互相 await playLocks 锁死。
+     但它此刻**真的在跑**（另一批 / 级联已在跑它）时必须等它落定：
+     否则下游会按「源视频为空」当场起跑，报出「请连接源视频输入」（线其实是通的），
+     等上游跑完再点一次又一切正常 —— 批量执行 H3 视频时的现场。 */
+  if (isScheduledRunNode(node)) {
+    if (!node.running) return ran;
+    const sp = S.runPromises && S.runPromises.get(node.id);
+    if (sp) await sp;
+    else await waitUpstreamSettle(node);
+    return ran;
+  }
   if (S.playLocks && S.playLocks.has(node.id)) {
     if (node.kind !== "wait_file" && nodeProcessedForRun(node, retryErrored)) return ran;
     await S.playLocks.get(node.id);
     return ran;
   }
   if (node.running) {
-    const p = S.runPromises.get(node.id);
+    /* 有运行体 → 等它；没有（后端锁恢复的在途任务 / 别的批次登记后已在跑）→
+       轮询等它停，别把「还在跑」当成「已经跑完、可以取空值」。 */
+    const p = S.runPromises && S.runPromises.get(node.id);
     if (p) await p;
+    else await waitUpstreamSettle(node);
     return ran;
   }
-  if (attemptCount(node) > 1) {
+  if (usesAttemptSlots(node)) {
     const outs = node.attemptOutputs || [];
     if (
       outs.some(
@@ -1509,7 +1589,7 @@ function collectDownstreamCascade(start) {
 
 function nodePlaySucceeded(node) {
   if (!node || node._aborted) return false;
-  if (attemptCount(node) > 1) {
+  if (usesAttemptSlots(node)) {
     const outs = node.attemptOutputs || [];
     return outs.some(
       (o) =>
@@ -1822,6 +1902,8 @@ function isMediaGenNode(node) {
     node &&
     (node.kind === "music_gen" ||
       node.kind === "yue_gen" ||
+      /* MOSS-Music 音乐理解（moss_music）：本机常驻后端分析音频 / 视频，探活 / 排队 / 终止同待遇 */
+      node.kind === "moss_music" ||
       /* FLUX 3 Image Klein（flux3klein_gen）：本机 ComfyUI 出图，探活 / 排队 / 终止同待遇 */
       node.kind === "flux3klein_gen" ||
       /* Qwen Image 2.1（qwenimage_gen）：本机 ComfyUI 出图，探活 / 排队 / 终止同待遇 */
@@ -2418,13 +2500,26 @@ function normalizeGpuReading(gpu) {
   /* infinitetalk 的探测形把总量/已用叫 memMb / usedMb（控制台沿用它），这里一并折算，
      否则 infinitetalk_gen 节点的显存条与 GPU 条都恒为 0%。 */
   const memUsed = num(g.memUsed != null ? g.memUsed : g.memUsedMb != null ? g.memUsedMb : g.usedMb);
-  const memTotal = num(g.memTotal != null ? g.memTotal : g.memTotalMb != null ? g.memTotalMb : g.memMb);
+  /* Qwen Image 2.1 / FLUX 3 Klein 的宿主 nvidia-smi 探测形是 totalMb / usedMb（控制台窗直接读它）：
+     总量不认 totalMb 就 memTotal=undefined → memPct 算不出来，显存条与显存占用恒画成 0%。 */
+  const memTotal = num(
+    g.memTotal != null
+      ? g.memTotal
+      : g.memTotalMb != null
+        ? g.memTotalMb
+        : g.memMb != null
+          ? g.memMb
+          : g.totalMb,
+  );
   /* breeze 的管理服务把利用率叫 utilPct（旧键名），其余宿主用 util：
      两种都要认，否则 breeze_gen 节点的「GPU」条永远读不到值、画成 0%。 */
   const util = num(g.util != null ? g.util : g.utilPct != null ? g.utilPct : g.utilization);
   let memPct = num(g.memPct);
   if (memPct == null && memTotal != null && memTotal > 0 && memUsed != null)
     memPct = Math.round((memUsed / memTotal) * 1000) / 10;
+  /* 三项都量不到（Qwen / FLUX 的 hasNvidia:false 就是这种空壳）：返回 null，
+     面板才会写「暂无 GPU 读数」，而不是画两条 0% 的假读数。 */
+  if (memUsed == null && memTotal == null && util == null) return null;
   return { name: g.name || "", memUsed, memTotal, util, memPct };
 }
 
@@ -2433,9 +2528,11 @@ function summarizeMediaBackendStatus(node, st) {
   const apiUp =
     node.kind === "music_gen" || node.kind === "yue_gen"
       ? !!st.gradioUp
-      : st.apiUp != null
-        ? !!st.apiUp
-        : !!st.comfyUp;
+      : node.kind === "moss_music"
+        ? !!(st.ready || (st.health && st.health.ok))
+        : st.apiUp != null
+          ? !!st.apiUp
+          : !!st.comfyUp;
   return {
     version: st.version || "",
     port: st.port || 0,
@@ -2446,6 +2543,11 @@ function summarizeMediaBackendStatus(node, st) {
     wantRunning: !!st.wantRunning,
     installDir: st.installDir || "",
     lock: st.lock || null,
+    /* MOSS-Music：就绪 / 装载中 / 当前模型与量化档（面板铭牌用） */
+    ready: !!st.ready,
+    loading: !!st.loading,
+    model: st.model || "",
+    quant: st.quant || "",
     /* 归一成单帧形（各宿主 status.gpu 形状不齐），见 normalizeGpuReading */
     gpu: normalizeGpuReading(st.gpu),
   };
@@ -2523,6 +2625,8 @@ async function fetchMediaBackendStatus(node) {
     return window.api.music3Status ? await window.api.music3Status() : null;
   if (node.kind === "yue_gen")
     return window.api.yue2Status ? await window.api.yue2Status() : null;
+  if (node.kind === "moss_music")
+    return window.api.mossmusicStatus ? await window.api.mossmusicStatus() : null;
   if (node.kind === "flux3klein_gen")
     return window.api.flux3kleinStatus ? await window.api.flux3kleinStatus() : null;
   if (node.kind === "qwenimage_gen")
@@ -2904,6 +3008,8 @@ function appendMediaConsoleBtn(head, node) {
             ? I18n.t("打开 FLUX 3 Image Klein 控制台")
           : node.kind === "qwenimage_gen"
             ? I18n.t("打开 Qwen Image 2.1 控制台")
+          : node.kind === "moss_music"
+            ? I18n.t("打开 MOSS-Music 控制台")
           : node.kind === "breeze_gen"
             ? I18n.t("打开 Breeze TTS 2 控制台")
             : I18n.t("打开 Music 3 控制台日志");
@@ -2935,6 +3041,10 @@ function appendMediaConsoleBtn(head, node) {
                 : node.kind === "qwenimage_gen"
                   ? window.api.qwenimageOpen
                     ? await window.api.qwenimageOpen()
+                    : null
+                : node.kind === "moss_music"
+                  ? window.api.mossmusicOpen
+                    ? await window.api.mossmusicOpen()
                     : null
                 : node.kind === "breeze_gen"
                   ? window.api.breezeOpen
@@ -3090,7 +3200,9 @@ function appendMediaBackendPanel(body, node) {
       pill(
         node.kind === "music_gen" || node.kind === "yue_gen"
           ? "Gradio"
-          : "Comfy",
+          : node.kind === "moss_music"
+            ? "MOSS"
+            : "Comfy",
         info.apiUp ? "ok" : "bad",
       ),
     );
@@ -3101,6 +3213,11 @@ function appendMediaBackendPanel(body, node) {
   /* Qwen Image 2.1：同为独立 ComfyUI，只补一条量化档铭牌（INT8 / Turbo INT8） */
   if (node.kind === "qwenimage_gen") {
     row.appendChild(pill(node.precision === "turbo" ? "Turbo INT8" : "INT8", "muted"));
+  }
+  /* MOSS-Music：只剩量化档（int8 / int4）—— 模型固定 Instruct，不再有可选项，
+     与节点 body 里的量化档下拉同一份真源（node.quant） */
+  if (node.kind === "moss_music") {
+    row.appendChild(pill(String(node.quant || "int8").toUpperCase(), "muted"));
   }
   if (info.version) row.appendChild(pill("v" + info.version, "muted"));
   if (info.installing) row.appendChild(pill(I18n.t("安装中"), "wait"));
@@ -4453,6 +4570,420 @@ function resolveMusicOutputDir(node) {
   if (r.ok) return r.path;
   if (isAbsPath(raw)) return raw;
   return raw;
+}
+
+/* ── MOSS-Music 音乐理解（moss_music）：本机常驻后端（8790）──────────────
+   输入 0=音频/视频路径 · 1=自由提问（留空用节点预设）· 2=控制输入；
+   输出 0=结果文本 · 1=JSON 文本 · 2=md 产物路径（宿主托管目录，三件套 md/json/srt）。
+   未就绪时由宿主自动拉起服务并装载模型；失败按错误码给中文指路（与插件卡片同一套码）。 */
+const MOSS_MUSIC_TASKS = [
+  {
+    id: "full",
+    label: "完整分析",
+    prompt:
+      "请完整分析这段音乐：逐句转写歌词并标注开始时间（mm:ss），说明曲风、情绪、配器、曲式结构、调式 / 速度 / 和弦进行，并指出关键时间点。",
+  },
+  {
+    id: "describe",
+    label: "整曲描述",
+    prompt:
+      "请完整描述这段音乐：风格、情绪、乐器、人声特点、曲式结构与段落变化，并给出关键时间点。",
+  },
+  {
+    id: "lyrics",
+    label: "时间戳歌词",
+    prompt: "请逐句转写歌词，并为每一句标注开始时间（mm:ss），只输出时间戳歌词。",
+  },
+  {
+    id: "structure",
+    label: "曲式与和弦",
+    prompt:
+      "请分析这段音乐的曲式结构（前奏 / 主歌 / 副歌 / 桥段 / 尾奏）、调性、速度与和弦进行。",
+  },
+  {
+    id: "mood",
+    label: "情绪标签",
+    prompt:
+      "请给出这段音乐适合的场景与情绪标签（3~5 个，可用于检索），并简要说明每个标签的理由。",
+  },
+];
+function mossMusicTaskOf(node) {
+  const id = String((node && node.preset) || "full");
+  return MOSS_MUSIC_TASKS.find((t) => t.id === id) || MOSS_MUSIC_TASKS[0];
+}
+/** 端口 1「自由提问」接线上的文本（端子优先）。没接线、线在但上游给空 → 空串，
+    由调用方回落到框内文字 / 任务预设（用户口径：空端子不报错）。 */
+function mossMusicSlotQuestion(node) {
+  if (!node || !node.id) return "";
+  try {
+    return String(musicGenSlotText(node, 1) || "").trim();
+  } catch (_) {
+    return "";
+  }
+}
+/** 本次真正发给模型的提问 + 来源：
+    port = 端口 1 文本 · typed = 节点框内文字 · preset = 任务预设。
+    （旧实现只读 node.question，端口 1 接了文本也没人读 → 一律发预设，用户报的
+    「自由提问被预设覆盖」就是这个断点。真源只留这一处，body / 运行 / 摘要共用。） */
+function mossMusicQuestionPlan(node) {
+  const wired = mossMusicSlotQuestion(node);
+  if (wired) return { question: wired, source: "port" };
+  const typed = String((node && node.question) || "").trim();
+  if (typed) return { question: typed, source: "typed" };
+  return { question: I18n.t(mossMusicTaskOf(node).prompt), source: "preset" };
+}
+function mossMusicQuestionOf(node) {
+  return mossMusicQuestionPlan(node).question;
+}
+/** 错误码 → 中文指路（节点状态行 / toast / 插件卡片共用同一批码与同一句口径） */
+function mossMusicErrorText(code, message) {
+  const c = String(code || "");
+  const map = {
+    not_installed:
+      "MOSS-Music 尚未安装：请在「插件 · MOSS-Music」里选安装目录并安装（建议 ≥60GB 磁盘）",
+    no_venv:
+      "MOSS-Music 缺少 Python 环境：请在插件卡片点「补装要件 / 安装」补齐 venv 与依赖",
+    pack_missing: "随包脚手架缺失：请重新安装 MTNode（moss-music-pack 未找到）",
+    pack_copy_failed: "脚手架复制失败：检查安装目录权限与磁盘空间后重试安装",
+    script_missing: "安装脚本缺失：请重新安装 MTNode 后再装插件",
+    ui_missing: "控制台页面缺失：请重新安装 MTNode 后再装插件",
+    stale_python: "本机 Python 不可用：请在插件卡片重装（会重建独立 venv）",
+    low_disk: "磁盘空间不足：MOSS-Music 建议预留 ≥60GB，请清理后重试",
+    empty_dir: "没有选择安装目录：请在插件卡片点「选择目录」",
+    refuse_root: "安装目录不能是盘符根目录：请选一个子目录（如 D:\\MOSS-Music）",
+    refuse_system: "安装目录不能是系统目录：请换一个普通数据目录",
+    refuse_app_dir: "安装目录不能是 MTNode 应用目录：请换到应用文件夹之外",
+    bad_model: "模型档位不合法：只支持 instruct（thinking 档已移除），请在节点里重选",
+    bad_quant: "量化档位不合法：只能是 int8 或 int4，请在节点里重选",
+    vram_low: "显存不足：int8 需 ≥16GB、int4 需 ≥12GB —— 请在控制台或节点里切低量化档",
+    backend_spawn_failed: "后端进程起不来：请打开「控制台」看日志尾部（端口 8790）",
+    backend_exited: "后端进程已退出：请打开「控制台」看日志尾部，必要时点「启用」重启",
+    backend_start_failed: "后端启动失败：请打开「控制台」看日志尾部，或点「启用」重启",
+    backend_start_timeout: "等待后端就绪超时：请打开「控制台」看日志，或点「启用」重启",
+    load_failed: "模型装载失败：请换低量化档（int8 / int4），或打开控制台看日志",
+    load_timeout: "模型装载超时：请换低量化档（int8 / int4）后重试",
+    busy: "后端正忙：等当前任务结束再试",
+    busy_other_node:
+      "本机正在跑另一个音视频任务（全局仅 1 个）：等它结束再试，或先在那边点停止",
+    missing_node_id: "节点缺少 id：请复制一个新节点再运行",
+    audio_missing: "没有音频 / 视频路径：请把音频或视频接到端子 0（音频 / 视频）",
+    deliverable_missing: "产物缺失：后端没有写出 md / json / srt，请打开控制台看日志",
+    generate_timeout:
+      "分析超时：音频过长或显存不足 —— 请勾选「长音频」分块、切低量化档（int8 / int4），或缩短音频",
+    same_dir: "安装目录与当前目录相同：如需重装请直接点「重装」",
+    generate_failed: "分析失败：请打开「控制台」看日志尾部（端口 8790）",
+  };
+  if (map[c]) return "[" + c + "] " + I18n.t(map[c]);
+  const detail = String(message || "").trim();
+  if (detail) return "[" + (c || "generate_failed") + "] " + I18n.t("MOSS-Music 分析失败：") + detail;
+  return (
+    I18n.t("MOSS-Music 分析失败（") +
+    (c || I18n.t("未知错误")) +
+    I18n.t("）：请打开「控制台」看日志尾部")
+  );
+}
+/** 端子 0 的媒体路径：结构化音频 / 视频值、裸路径、file:/// URL 都归一成本机路径 */
+function mossMusicMediaPathOfValue(v) {
+  if (v == null) return "";
+  if (typeof v === "string") {
+    const s = v.trim();
+    if (!s) return "";
+    if (s.toLowerCase().indexOf("file://") === 0) {
+      try {
+        return String((typeof pathFromMediaUrl === "function" && pathFromMediaUrl(s)) || "");
+      } catch (_) {
+        return "";
+      }
+    }
+    return s;
+  }
+  const raw = String(v.path || "").trim();
+  if (raw) {
+    const p = mossMusicMediaPathOfValue(raw);
+    if (p) return p;
+  }
+  for (const t of [v.url, v.text]) {
+    const p = mossMusicMediaPathOfValue(t);
+    if (p) return p;
+  }
+  return "";
+}
+function mossMusicMediaPathOf(node) {
+  if (!node) return "";
+  const w = wiresTo(node.id).find((x) => Number(x.toIndex) === 0);
+  if (!w) return "";
+  const src = nodeById(w.from);
+  let v = null;
+  try {
+    v = valueFromWire(w, node, Number(w.fromIndex) || 0);
+  } catch (_) {
+    v = null;
+  }
+  if (!v && src) {
+    try {
+      v = displayValueOf(src, node);
+    } catch (_) {
+      v = null;
+    }
+  }
+  return mossMusicMediaPathOfValue(v);
+}
+function mossMusicResultTextOf(node) {
+  const o = node && node.output;
+  return o && o.kind === "text" ? String(o.text || "") : "";
+}
+/** 节点 body：预设 / 自由提问 / 长音频开关 / 模型与量化 + 后端面板 + 结果预览 + 状态行 */
+function mossMusicAppendNodeBody(node, body) {
+  if (!node || !body) return;
+  if (
+    typeof appPluginMissing === "function"
+      ? appPluginMissing("moss-music")
+      : !appPluginInstalled("moss-music")
+  ) {
+    const warn = document.createElement("div");
+    warn.className = "n-backend-hint n-plugin-warn";
+    warn.textContent = I18n.t(
+      "⚠ MOSS-Music 插件未安装：请在「插件 · MOSS-Music」中安装后使用本节点",
+    );
+    warn.title = I18n.t("插件 · MOSS-Music 本地音乐理解：设置安装目录 → 安装（建议 ≥60GB）");
+    body.appendChild(warn);
+  }
+  /* 预设 / 量化档 / 长音频都在 ⚙ 设置窗里改（body 只留一行只读摘要；模型固定 Instruct，没有可选项） */
+  if (typeof appendNodeSettingsSummary === "function") appendNodeSettingsSummary(node, body);
+  const qField = document.createElement("label");
+  qField.className = "n-field";
+  /* 端口 1 有文本 → 框只读回显那一份（端子优先，且不改写 node.question：
+     用户自己填的字要留着，拔线后还能用）。 */
+  const wiredQuestion = mossMusicSlotQuestion(node);
+  qField.textContent = wiredQuestion
+    ? I18n.t("自由提问（端口 1 有输入：这里只读回显）")
+    : I18n.t("自由提问（留空用 ⚙ 里的任务预设）");
+  const ta = document.createElement("textarea");
+  ta.className = "n-text";
+  ta.style.minHeight = "42px";
+  ta.style.maxHeight = "72px";
+  ta.placeholder = I18n.t("例如：副歌的和弦进行是什么？这段适合什么场景？");
+  ta.value = wiredQuestion || String(node.question || "");
+  ta.readOnly = !!wiredQuestion;
+  if (wiredQuestion) {
+    ta.title = I18n.t("本次提问取端口 1 的文本（预设与框内文字都不作数）；要改请改上游文本");
+  }
+  ta.addEventListener("input", () => {
+    if (ta.readOnly) return;
+    node.question = ta.value;
+    scheduleSave();
+  });
+  qField.appendChild(ta);
+  body.appendChild(qField);
+  if (typeof appendMediaBackendPanel === "function") appendMediaBackendPanel(body, node);
+  const out = mossMusicResultTextOf(node);
+  if (out) {
+    const prev = document.createElement("div");
+    prev.className = "n-text";
+    prev.style.maxHeight = "120px";
+    prev.style.overflow = "auto";
+    prev.style.whiteSpace = "pre-wrap";
+    prev.style.cursor = "auto";
+    prev.textContent = out.length > 600 ? out.slice(0, 600) + "…" : out;
+    prev.title = I18n.t("完整结果见 JSON / 产物路径端子，或打开 md 文件");
+    body.appendChild(prev);
+    /* 节点里只放前 600 字（省重排）；不写这一行，用户会以为后端把结果截断了 */
+    if (out.length > 600) {
+      const more = document.createElement("div");
+      more.className = "n-backend-hint";
+      more.textContent = I18n.t(
+        "节点内只显示前 600 字；完整结果走「结果文本 / JSON / md 路径」端口或 md 文件（未截断）",
+      );
+      body.appendChild(more);
+    }
+  }
+  const st = document.createElement("div");
+  st.className =
+    "n-status" +
+    (node.running ? " run" : node.error ? " err" : node.ranAt ? " done" : "");
+  const idleHint =
+    mossMusicQuestionPlan(node).source === "preset"
+      ? I18n.t("接入音频 / 视频 → 选任务预设 → ▶ 分析（未就绪会自动拉起后端并装载模型）")
+      : I18n.t("自由提问（预设已忽略） · 接入音频 / 视频 → ▶ 分析");
+  st.textContent = node.error || node.mossStatus || idleHint;
+  body.appendChild(st);
+}
+
+async function playMossMusicNode(node, quiet) {
+  if (!window.api || !window.api.mossmusicGenerate) {
+    toast(I18n.t("MOSS-Music 插件未就绪"), "err");
+    return;
+  }
+  /* 串行链出队后由 mediaRunPrestart 先点亮了运行态（显存预释放那段也算本次运行）：
+     那一下是本运行体的交接，不是「已经在跑」，必须放行 */
+  if (node.running && !node._prestart) return;
+  if (mediaRunStopped(node)) {
+    mediaGenMarkDropped(node, false);
+    return;
+  }
+  /* 全局互斥：音视频生成全局仅允许 1 个（MOSS 也占同一把锁） */
+  try {
+    const lock = await fetchMediaGenLock();
+    if (lock && lock.nodeId && lock.nodeId !== node.id) {
+      node.error = mediaGenLockBusyMsg(lock);
+      node._busyErrAt = Date.now();
+      node.mossStatus = node.error;
+      if (!quiet) toast(node.error, "warn");
+      renderCanvas();
+      return;
+    }
+  } catch {}
+  const audioPath = mossMusicMediaPathOf(node);
+  if (!audioPath) {
+    node.error = mossMusicErrorText("audio_missing");
+    node.mossStatus = node.error;
+    if (!quiet) toast(node.error, "warn");
+    renderCanvas();
+    return;
+  }
+  /* 提问取值顺序：端口 1 文本 > 框内文字 > 任务预设（单一真源 mossMusicQuestionPlan） */
+  const qPlan = mossMusicQuestionPlan(node);
+  const question = qPlan.question;
+  const qTag = qPlan.source === "preset" ? "" : I18n.t("自由提问（预设已忽略）") + " · ";
+  const longAudio = node.longAudio === true;
+  /* 模型只剩 Instruct：老画布节点里的 thinking 一律按 instruct 发，后端也会再归一化一次 */
+  const model = "instruct";
+  const quant = ["int8", "int4"].includes(node.quant) ? node.quant : "int8";
+
+  let st = null;
+  try {
+    st = await window.api.mossmusicStatus();
+  } catch {}
+  if (st && st.installed === false) {
+    node.error = mossMusicErrorText("not_installed");
+    node.mossStatus = node.error;
+    if (!quiet) toast(node.error, "warn");
+    renderCanvas();
+    return;
+  }
+  if (mediaRunStopped(node)) {
+    mediaGenMarkDropped(node, false);
+    return;
+  }
+  node.running = true;
+  node.error = null;
+  node.mossStatus =
+    qTag +
+    (st && st.ready
+      ? I18n.t("分析中…（长音频分块会更久）")
+      : I18n.t("正在拉起后端并装载模型（首次约 30~60 秒）…"));
+  beginNodeRun(node);
+  {
+    const ui = ensureBackendUiState(node);
+    ui.ok = st && st.ready ? true : null;
+    ui.info = summarizeMediaBackendStatus(node, st);
+    ui.genPct = 3;
+    ui.genMsg = node.mossStatus;
+    stopMediaBackendProbe(node.id);
+  }
+  startMediaBackendRunWatcher(node);
+  renderCanvas();
+  const t0 = Date.now();
+  try {
+    const r = await window.api.mossmusicGenerate({
+      nodeId: node.id,
+      workflowId: (S.wf && S.wf.id) || "",
+      audioPath,
+      question,
+      longAudio,
+      model,
+      quant,
+      maxNewTokens: [2048, 4096, 8192].includes(node.maxNewTokens) ? node.maxNewTokens : 4096,
+    });
+    if (node._aborted || (r && (r.error === "cancelled" || r.cancelled))) {
+      node.error = null;
+      node.mossStatus = I18n.t("已终止（显存已释放）");
+      const ui = ensureBackendUiState(node);
+      ui.genMsg = node.mossStatus;
+      ui.genPct = 0;
+      return;
+    }
+    if (!r || !r.ok) {
+      const code = String((r && r.error) || "generate_failed");
+      node.error = mossMusicErrorText(code, r && r.message);
+      node.mossStatus = node.error;
+      node._busyErrAt = code === "busy_other_node" || code === "busy" ? Date.now() : 0;
+      if (looksLikeBackendConnError(code) || code === "backend_exited") markMediaBackendDown(node);
+      if (!quiet) toast(node.error, "err");
+      const ui = ensureBackendUiState(node);
+      ui.genMsg = node.error;
+      ui.genPct = 0;
+      return;
+    }
+    const text = String(r.text || "");
+    const files = r.files && typeof r.files === "object" ? r.files : {};
+    const json = JSON.stringify(
+      {
+        ok: true,
+        text,
+        files,
+        cues: Array.isArray(r.cues) ? r.cues : [],
+        chunks: r.chunks == null ? null : r.chunks,
+        durationSeconds: r.durationSeconds == null ? null : r.durationSeconds,
+        model: r.model || model,
+        quant: r.quant || quant,
+        audioPath,
+        question,
+        questionSource: qPlan.source,
+        longAudio,
+        at: new Date().toISOString(),
+      },
+      null,
+      2,
+    );
+    node.output = {
+      kind: "text",
+      text,
+      json,
+      files,
+      path: String(files.md || files.json || files.srt || ""),
+      cues: Array.isArray(r.cues) ? r.cues : [],
+    };
+    node.ranAt = Date.now();
+    const doneMsg = mediaGenDoneMsg(Date.now() - t0);
+    node.mossStatus =
+      qTag +
+      doneMsg +
+      (r.autoSplit ? I18n.t(" · 已自动分块补齐") : "") +
+      (r.truncated ? I18n.t(" · ⚠ 输出可能不完整（已达上限）") : "") +
+      (files.md ? I18n.t(" · 产物：") + String(files.md) : "");
+    if (r.truncated && !quiet)
+      toast(I18n.t("输出达到 token 上限，结果可能不完整；可把「单段输出上限」调到 8192 重跑"), "warn");
+    {
+      const ui = ensureBackendUiState(node);
+      ui.genPct = 100;
+      ui.genMsg = node.mossStatus;
+      ui.ok = true;
+    }
+    if (!quiet) {
+      const head = text ? text.split("\n").filter(Boolean)[0] || "" : "";
+      toast(
+        I18n.t("音乐理解完成：") + (head.length > 60 ? head.slice(0, 60) + "…" : head || I18n.t("已生成结果")),
+        "ok",
+      );
+    }
+  } catch (e) {
+    if (node._aborted) {
+      node.error = null;
+      node.mossStatus = I18n.t("已终止（显存已释放）");
+    } else {
+      node.error = mossMusicErrorText("generate_failed", (e && e.message) || String(e));
+      node.mossStatus = node.error;
+      if (looksLikeBackendConnError(node.error)) markMediaBackendDown(node);
+      if (!quiet) toast(node.error, "err");
+    }
+  } finally {
+    node.running = false;
+    node._aborted = false;
+    stopMediaBackendRunWatcher(node.id);
+    renderCanvas();
+    scheduleSave();
+  }
 }
 
 async function playMusicGenNode(node, quiet) {
@@ -6094,6 +6625,9 @@ function mediaGenCancelRemote(node) {
       window.api.infinitetalkCancelGenerate(node.id);
     else if (node.kind === "soulxflashhead_gen" && window.api.soulxflashheadCancelGenerate)
       window.api.soulxflashheadCancelGenerate(node.id);
+    else if (node.kind === "moss_music" && window.api.mossmusicCancelGenerate)
+      /* MOSS-Music：主进程 /cancel（分块边界退出）→ 3s → taskkill → /unload，显存一定还回来 */
+      window.api.mossmusicCancelGenerate(node.id);
   } catch (_) {}
 }
 function findMediaGenNodeById(id) {
@@ -6613,6 +7147,28 @@ async function withVramConfirm(runOnce) {
   return await runOnce(true);
 }
 
+/* 视频生成 / 视频后处理报错 → 右下角红色提示（用户需求：显存不足或任何类型的报错都要弹）。
+   与其它媒体节点的差别只有一处：**不受 quiet 抑制**。quiet 是「内部驱动」的静默口径
+   （运行本层 / 控制流 / 级联），这些路径下节点本体那行内联报错用户看不到，
+   失败就只剩运行队列里悄悄少一行；而视频是最贵的一跑，失败必须看得见。
+   同一句话 6 秒内只弹一次：批量里 N 颗节点一起 OOM 时不许把右下角糊满。 */
+const videoErrorToastAt = new Map();
+function videoErrorToast(node, msg) {
+  let text = String(msg || "").replace(/\s+/g, " ").trim();
+  if (!text) return;
+  if (text.length > 420) text = text.slice(0, 420) + "…";
+  const title = node && node.title ? String(node.title).trim() : "";
+  const line = (title ? title + "：" : "") + text;
+  const now = Date.now();
+  const prev = videoErrorToastAt.get(line);
+  if (prev && now - prev < 6000) return;
+  videoErrorToastAt.set(line, now);
+  if (videoErrorToastAt.size > 60) {
+    for (const [k, t] of videoErrorToastAt) if (now - t > 6000) videoErrorToastAt.delete(k);
+  }
+  toast(line, "err");
+}
+
 async function playVideoGenNode(node, quiet) {
   if (!window.api || !window.api.h3Generate) {
     toast(I18n.t("视频生成插件未就绪"), "err");
@@ -6816,7 +7372,7 @@ async function playVideoGenNode(node, quiet) {
         }
         node.videoStatus = node.error;
         if (looksLikeBackendConnError(err)) markMediaBackendDown(node);
-        if (!quiet) toast(node.error, "err");
+        videoErrorToast(node, node.error);
         return;
       }
       okCount++;
@@ -6868,7 +7424,7 @@ async function playVideoGenNode(node, quiet) {
       node.error = (e && e.message) || String(e);
       node.videoStatus = node.error;
       if (looksLikeBackendConnError(node.error)) markMediaBackendDown(node);
-      if (!quiet) toast(node.error, "err");
+      videoErrorToast(node, node.error);
     }
   } finally {
     /* 被用户终止（单独停止 / 全部终止）时不再驱动下游控制线，
@@ -6898,8 +7454,13 @@ async function restoreVideoGenLocks() {
    抽卡次数（多次输出 #1、#2…）、输出路径解析与产物落 node.output。
    24G 安全档由宿主 resolvePostOptions 兜底，首次 OOM 宿主自动降一档重试一次。 */
 
-/* 源视频端口取值：媒体值 / 路径文本 / 上游展示值统一收敛成本机绝对路径 */
+/* 源视频端口取值：媒体值 / 路径文本 / 上游展示值统一收敛成本机绝对路径。
+   外层包 withOwningWf：跨画布跑本层 / 后台批次时 S.wf 不是节点所在的图，
+   按 S.wf 找线会一条都找不到（现场：整片报「请连接源视频输入（端子 V）」）。 */
 function videoPostSlotValue(node, slot) {
+  return withOwningWf(node, () => videoPostSlotValueIn(node, slot));
+}
+function videoPostSlotValueIn(node, slot) {
   const w = wiresTo(node.id).find(
     (x) => Number(x.toIndex) === Number(slot) && !wireFromIsControl(x),
   );
@@ -6926,6 +7487,20 @@ function videoPostSlotValue(node, slot) {
   }
   if (d && d.image) return { path: String(d.image) };
   return null;
+}
+
+/** 源视频端子上接着的那颗上游（没接线 → null）。
+ *  用途：把「真的没接线」和「接了线但上游还没产出」分成两句话 ——
+ *  后者旧写法一律报「请连接源视频输入」，用户看到的像是「视频源未连接」，
+ *  可线明明连着、重跑一次又好了（批量执行 H3 视频时的现场）。 */
+function videoPostSourceNode(node, slot) {
+  return withOwningWf(node, () => videoPostSourceNodeIn(node, slot));
+}
+function videoPostSourceNodeIn(node, slot) {
+  const w = wiresTo(node.id).find(
+    (x) => Number(x.toIndex) === Number(slot) && !wireFromIsControl(x),
+  );
+  return w ? nodeById(w.from) || null : null;
 }
 
 /* 输出路径解析：与 requireMediaGenExport 同款口径，但状态行写后处理节点的 videoStatus
@@ -7099,7 +7674,46 @@ async function playVideoPostNode(node, quiet) {
   const srcVal = videoPostSlotValue(node, 1);
   const sourcePath = String((srcVal && srcVal.path) || "").trim();
   if (!sourcePath) {
-    toast(I18n.t("请连接源视频输入（端子 V）"), "warn");
+    /* 取不到值分两种：① 端子上根本没有线；② 有线但上游这一刻还没产出
+       （批量执行 H3 视频时很常见：视频节点还在生成 / 排队，后处理已经排到了）。
+       旧写法把两者都报成「请连接源视频输入」，用户只看到「视频源未连接」，
+       实际线是通的、重跑一次又能跑 —— 现在按真实原因分别说明。 */
+    const up = videoPostSourceNode(node, 1);
+    if (!up) {
+      /* 真没接线（或源头节点已不在画布上）：只写状态行，静默（本层 / 后台批次里
+         一颗一颗弹 toast 会把屏幕刷满，用户看到的正是「大量出现」的那一片）。 */
+      const msg = I18n.t("请连接源视频输入（端子 V）");
+      node.videoStatus = msg;
+      renderCanvas();
+      if (!quiet) toast(msg, "warn");
+      return;
+    }
+    const upName = up.title || up.kind || I18n.t("上游节点");
+    const upBusy = !!(
+      up.running ||
+      (typeof isNodePending === "function" && isNodePending(up)) ||
+      (typeof mediaGenQueueHolds === "function" && mediaGenQueueHolds(up.id))
+    );
+    const upErr = String(up.error || "").trim();
+    const msg = upBusy
+      ? I18n.t(
+          "源视频还没产出：上游「{name}」正在生成 / 排队，等它跑完再执行本节点（端子是连着线的，不是未连接）",
+          { name: upName },
+        )
+      : upErr
+        ? I18n.t("源视频没有产出：上游「{name}」失败了（{why}）。先修好上游再重跑本节点", {
+            name: upName,
+            why: upErr,
+          })
+        : I18n.t(
+            "源视频还没产出：上游「{name}」还没有输出视频。先执行上游，或重新执行本节点",
+            { name: upName },
+          );
+    /* 只写媒体状态行、不写 node.error：这一颗是「还没轮到源视频」而不是执行失败，
+       写 error 会让「运行本层」把整层当成真报错终止（旧行为只是记一条空产出、继续跑）。 */
+    node.videoStatus = msg;
+    renderCanvas();
+    if (!quiet) toast(msg, "warn");
     return;
   }
 
@@ -7215,7 +7829,7 @@ async function playVideoPostNode(node, quiet) {
         }
         node.videoStatus = node.error;
         if (looksLikeBackendConnError(err)) markMediaBackendDown(node);
-        if (!quiet) toast(node.error, "err");
+        videoErrorToast(node, node.error);
         return;
       }
       okCount++;
@@ -7261,7 +7875,7 @@ async function playVideoPostNode(node, quiet) {
       node.error = (e && e.message) || String(e);
       node.videoStatus = node.error;
       if (looksLikeBackendConnError(node.error)) markMediaBackendDown(node);
-      if (!quiet) toast(node.error, "err");
+      videoErrorToast(node, node.error);
     }
   } finally {
     /* 与 video_gen 同口径：终止后不再驱动下游控制线，成功才触发控制输出端子（端口 1） */
@@ -8762,15 +9376,31 @@ function runMediaGenSerial(node, fn) {
       } catch {}
       try {
         return await fn();
+      } catch (e) {
+        /* 运行体在它自己的 try / finally **之外**抛错（起跑前的取素材 / 预检这类 await
+           最容易出）：错误必须落在节点上，不能让这一抛把收尾整段跳过。 */
+        if (node && !mediaRunStopped(node)) {
+          node.error = (e && e.message) || String(e || "") || I18n.t("执行失败");
+          try {
+            toast(node.error, "err");
+          } catch (_) {}
+        }
       } finally {
-        /* 运行体没接管（提前 return / 抛错）：把预点亮的状态收回去，绝不留一颗假 running */
-        if (node && node._prestart) {
+        /* 运行体没接管（提前 return / 半途抛错）：把预点亮的状态与残留的 running 一并收回去。
+           用户报的「执行完毕，偶尔仍显示执行中」就是这个残留：running 为真时后端在途
+           watcher 也还活着，而 nodeRunAliveEvidence 拿它当「它还活着」的证据 →
+           假运行自愈巡检永远不敢摘，节点只能一直转下去。 */
+        if (node && (node._prestart || node.running)) {
           node._prestart = false;
           node.running = false;
           try {
             const ui = ensureBackendUiState(node);
             ui.genPct = 0;
             ui.genMsg = "";
+          } catch (_) {}
+          /* watcher 是「在途」的证据，收尾必须一起停（正常收尾由运行体自己停） */
+          try {
+            stopMediaBackendRunWatcher(node.id);
           } catch (_) {}
           renderCanvas();
           try {
@@ -8904,6 +9534,23 @@ function stopAllMediaGen() {
   return cancelled;
 }
 
+/* 生成族起跑前的「输出路径」预检（本轮 bug）：缺保存路径这种**一眼就能判死**的配置错误
+   必须在这里当场拦下，绝不能先进媒体串行链 —— 一进链就会被点亮成「排队中 / 执行中」
+   （出队时 mediaRunPrestart 还会先做几秒显存预释放），随后运行体里才失败。用户看到的正是
+   「没跑却显示执行中」；而且运行队列里这一行随后消失，会被完成判定当成「跑完了」——
+   响完成音 + 弹完成提醒（app-db.js 的 dshRunQueueDoneCheck / app-notify.js）。
+   口径与运行体里那份 requireXxxExport 完全一致（托管 = 输出接保存节点 → 放行），
+   只是时机提前；remotion 没有自己的输出路径（产物由下游保存节点落盘），跳过。 */
+function mediaGenExportPrecheck(node, quiet) {
+  if (!node) return true;
+  if (node.kind === "remotion") return true;
+  /* MOSS-Music：产物目录由宿主托管（md / json / srt 三件套），节点没有自己的输出路径 */
+  if (node.kind === "moss_music") return true;
+  if (typeof isVideoPostKind === "function" && isVideoPostKind(node))
+    return !!requireVideoPostExport(node, quiet);
+  return !!requireMediaGenExport(node, quiet);
+}
+
 async function playNodeBody(node, quiet, opts) {
   if (node.running) {
     const p = S.runPromises.get(node.id);
@@ -8935,17 +9582,14 @@ async function playNodeBody(node, quiet, opts) {
     node.error = I18n.t("已手动停止");
     return;
   }
-  /* 「运行本层」暂停期间（renderer/app-super-run.js 的 superRunNodeLockedBy）：
-     这一层里还没轮到、且正被那个暂停锁住的节点，不允许由其它批次（控制节点 ▶ /
-     自动级联）顺手带走 —— 否则暂停等于没暂停，「继续」的语义也就乱了。
-     用户自己直接点这颗 ▶ 没带 batchDriven，不受这条影响。 */
-  if (
-    opts &&
-    opts.batchDriven &&
-    typeof superRunNodeLockedBy === "function" &&
-    superRunNodeLockedBy(node.id)
-  )
+  /* 生成族：输出路径先在这里判（进串行链之前），缺路径就当场报、绝不变「执行中」 */
+  if (isMediaGenNode(node) && !mediaGenExportPrecheck(node, quiet)) {
+    renderCanvas();
     return;
+  }
+  if (node.kind === "moss_music") {
+    return runMediaGenSerial(node, () => playMossMusicNode(node, quiet));
+  }
   if (node.kind === "music_gen") {
     return runMediaGenSerial(node, () => playMusicGenNode(node, quiet));
   }
@@ -9207,6 +9851,13 @@ async function playNodeBody(node, quiet, opts) {
   }
   if (!String(prov.apiKey || "").trim()) {
     clearPendingEarly();
+    /* 选中的就是官方 DeepSeek 而它没 Key → 弹图文引导窗（renderer/app-deepseek-onboard.js）。
+       这里以前只写一条节点红字就 return，请求根本发不出去，所以上层那些「调用前闸门」的
+       引导永远轮不到 —— 用户点了运行却只看到一句「未填写 API Key」，这就是「弹窗不生效」。 */
+    if (typeof dsEnsureModelReady === "function" && !dsEnsureModelReady(prov)) {
+      renderCanvas();
+      return;
+    }
     node.error = I18n.t("该服务商未填写 API Key（设置 · API/配置）");
     renderCanvas();
     return;
@@ -11161,6 +11812,7 @@ function canControlRun(n) {
       n.kind === "judge" ||
       isSaveNode(n) ||
       n.kind === "music_gen" ||
+      n.kind === "moss_music" ||
       n.kind === "breeze_gen" ||
       n.kind === "video_gen" ||
       (typeof isVideoPostKind === "function" && isVideoPostKind(n)) ||
@@ -11471,6 +12123,7 @@ async function runControlledNode(n, seen, viaIndexes, sourceId) {
     isToolNode(n) ||
     n.kind === "music_gen" ||
     n.kind === "yue_gen" ||
+    n.kind === "moss_music" ||
     n.kind === "breeze_gen" ||
     n.kind === "video_gen" ||
     (typeof isVideoPostKind === "function" && isVideoPostKind(n)) ||
@@ -12872,6 +13525,40 @@ function connectError(fromId, toId, toIndex, fromIndex) {
       )
     )
       return I18n.t("控制输入端子已被数据线占用");
+  } else if (!fromCtrl && to.kind === "moss_music") {
+    /* MOSS-Music：端口0=音频 / 视频 · 1=自由提问（文本）· 2=控制输入。
+       0 号端子收媒体来源（也容忍「路径文本」），1 号只收文本。 */
+    const slot = toIndex == null ? null : Number(toIndex);
+    if (slot != null && (slot < 0 || slot > 1)) return I18n.t("无效的输入端子");
+    if (slot === 0) {
+      const mt = wireSourceMediaType(from, fi, to);
+      if (mt !== "audio" && mt !== "video" && !wireActsAsText(from, fi, to))
+        return I18n.t("音频 / 视频端子需要音频或视频来源（音频 / 视频输入节点、生成节点）");
+    } else if (slot === 1) {
+      if (!wireActsAsText(from, fi, to)) return I18n.t("自由提问端子需要文本来源");
+    }
+    if (slot != null) {
+      if (
+        S.wf.wires.some(
+          (w) => !w.rel && w.to === toId && Number(w.toIndex) === slot && !wireFromIsControl(w),
+        ) &&
+        !inPortReplaceable(to, slot, false)
+      )
+        return I18n.t("该输入端子已被占用");
+    } else if (nextFreeMediaDataSlot(to, from, fi) == null) {
+      return I18n.t("该输入端子已被占用");
+    }
+  } else if (fromCtrl && to.kind === "moss_music") {
+    /* 控制线：仅允许连到控制输入端子（端口2）；未指定端子时自动落到控制输入 */
+    const ctrlSlot = 2;
+    const slot = toIndex == null ? ctrlSlot : Number(toIndex);
+    if (slot !== ctrlSlot) return I18n.t("MOSS-Music 节点控制输入端子为端口 2");
+    if (
+      S.wf.wires.some(
+        (w) => !w.rel && w.to === toId && Number(w.toIndex) === ctrlSlot && !wireFromIsControl(w),
+      )
+    )
+      return I18n.t("控制输入端子已被数据线占用");
   } else if (!fromCtrl && to.kind === "breeze_gen") {
     /* Breeze 语音：端口0=待合成文本 · 1=参考音频（只接受音频来源）· 2=参考文稿
        （文本，或音频 / 视频输入节点 —— 那时取它的音频与转写）· 3=指令 · 4=控制输入 */
@@ -13360,6 +14047,15 @@ function nextFreeMediaDataSlot(node, from, fromIndex) {
     for (let i = 0; i < 3; i++) if (!occupied(i)) return i;
     return null;
   }
+  if (node.kind === "moss_music") {
+    /* 端口0=音频 / 视频 · 1=自由提问（端口2=控制输入，不占数据槽）。
+       媒体线优先进 0，文本线优先进 1。 */
+    const mt = wireSourceMediaType(from, fromIndex, node);
+    const first = mt === "audio" || mt === "video" ? 0 : 1;
+    if (!occupied(first)) return first;
+    const other = first === 0 ? 1 : 0;
+    return !occupied(other) ? other : null;
+  }
   if (node.kind === "breeze_gen") {
     /* 端口0=待合成文本 · 1=参考音频 · 2=参考文稿 · 3=指令（四个数据槽，端口4=控制输入不占数据槽）。
        音频来源优先落参考音频槽（1），文本来源按「空闲的文本槽」依次落位。 */
@@ -13481,6 +14177,7 @@ function addWire(fromId, toId, toIndex, opts) {
     (toN.kind === "video_gen" ||
       toN.kind === "music_gen" ||
       toN.kind === "yue_gen" ||
+      toN.kind === "moss_music" ||
       isVideoPostKind(toN))
   ) {
     if (fromN && isControlKind(fromN)) {
@@ -13495,6 +14192,8 @@ function addWire(fromId, toId, toIndex, opts) {
           ? 2
           : toN.kind === "yue_gen"
             ? 3
+            : toN.kind === "moss_music"
+              ? 2
             : toN.kind === "video_gen"
               ? videoGenControlPort(toN)
               : 0;
@@ -16622,6 +17321,16 @@ function agentToolCatalog() {
           label: I18n.t("读素材库 / 窗口截图"),
           hint: I18n.t("列出素材库、取内容条目的本机路径、把 MTNode 窗口拍成静帧 PNG"),
         },
+        {
+          /* 写素材库（2026-11 新增）：与读分开一档 —— 勾了读不等于把删改能力一并送出。
+             动作集：新建素材、加内容条目、把本机文件收进库、改自己创建的条目正文、
+             改自己素材的显示名 / 描述 / 分类、删自己创建的素材与条目（进回收站）。
+             归属口径在 assets-store.js：用户自己的素材与条目对应用只读；
+             MCP / 本机 Agent 不受归属限制（用户共识）。 */
+          key: "assets_write",
+          label: I18n.t("写素材库"),
+          hint: I18n.t("新建素材与内容条目、把本机文件收进库、改删自己创建的东西（删除进回收站）；不勾 = 只能读"),
+        },
       ],
     },
     {
@@ -16741,11 +17450,23 @@ function agentToolItemLabel(key) {
   return key;
 }
 
-/* 素材库 / 窗口截图工具（mtnode_assets）的唯一许可键。一个许可项 = 一个工具：
-   三个动作（list / read / screenshot）共用一个键 —— 它们本就是同一件事（把素材
-   拿出来、把眼前的东西拍下来），拆开只会让用户多点几次。 */
-function assetsToolKeyOf() {
-  return "assets_read";
+/* 素材库工具（mtnode_assets）的许可键：**读与写分两档**（2026-11 用户共识）。
+   读动作（list / read / screenshot）走 assets_read；写动作（create / addItem / importFile /
+   importFiles / updateText / updateMeta / removeItem / deleteAsset）走 assets_write。
+   两个键都拒 = 整只工具不注册（见 agentDeniedToolNames）；只拒写 = 工具留着，
+   写动作在宿主分发口被拦成一条明确错误（app-db.js）。 */
+const ASSET_TOOL_WRITE_ACTIONS = {
+  create: 1,
+  addItem: 1,
+  importFile: 1,
+  importFiles: 1,
+  updateText: 1,
+  updateMeta: 1,
+  removeItem: 1,
+  deleteAsset: 1,
+};
+function assetsToolKeyOf(action) {
+  return ASSET_TOOL_WRITE_ACTIONS[String(action || "list")] ? "assets_write" : "assets_read";
 }
 
 function makeBuiltinDefaultToolPreset() {
@@ -18291,8 +19012,86 @@ async function applyCanvasOp(op, params, runCtx) {
   throw new Error(I18n.t("未知画布操作：") + op);
 }
 
-function handleCanvasEvent(data, runCtx) {
+/* 真机调试（应用开发会话的 mtnode_gui）：帧的执行转交主进程。
+   为什么不在渲染层做：GUI 动作要用 BrowserWindow / webContents 注入脚本与 capturePage
+   截图，只有主进程拿得到（根目录 mcp-gui-agent.js）。这里只做一次转发：
+   api.dshGuiRun → 主进程 → 结果经 dshInteract kind:'gui' 原路回网关（与画布 / 数据库
+   工具同一条桥）。归属（这帧属不属于正在跑的那一轮）已由网关按 sessionId 判完，
+   渲染层不重复裁决；失败一律折成这一条工具调用的失败回执，会话不中断。 */
+function handleGuiToolEvent(data, runCtx) {
   const id = data && data.id;
+  if (!id) return;
+  const action = String((data && data.action) || "");
+  const params = (data && data.params) || {};
+  let replied = false;
+  const finish = (result, error) => {
+    if (replied) return;
+    replied = true;
+    try {
+      window.api
+        .dshInteract({
+          kind: "gui",
+          id,
+          result: result == null ? undefined : result,
+          error: error || undefined,
+        })
+        .catch(() => {});
+    } catch (_) {}
+  };
+  const fn = window.api && window.api.dshGuiRun;
+  if (typeof fn !== "function") {
+    finish(null, I18n.t("宿主桥未就绪：当前版本不能执行 GUI 动作"));
+    return;
+  }
+  Promise.resolve(fn(action, params))
+    .then((r) => {
+      /* 主进程的回执对 GUI 失败用的是 {ok:false,error}（不是 reject），这里翻成
+         工具失败 —— 与 canvas / db 同一口径，模型看到的是可读错误而不是半截结果。 */
+      if (r && r.ok === false) finish(null, String(r.error || I18n.t("GUI 动作没有生效")));
+      else finish(r);
+    })
+    .catch((e) => finish(null, (e && e.message) || String(e)));
+}
+
+/* 开发调试（mtnode_dev · 「扩展能力管理 → 开发调试」总开关打开的那一轮）：与 handleGuiToolEvent
+   同一条转发路线，执行体换成根目录 dev-agent.js（起隔离实例 / CDP 驱动 / reload / restart）。
+   为什么同样只能由主进程做：起 `electron .` 需要 electron 二进制与 app.getAppPath()，
+   截图与控制台都在渲染进程里，只有主进程能 spawn 并连它的 CDP。归属已由网关按 sessionId 判完；
+   失败一律折成这一条工具调用的失败回执，会话不中断（起不来的错误里带实例输出尾巴）。 */
+function handleDevToolEvent(data, runCtx) {
+  const id = data && data.id;
+  if (!id) return;
+  const action = String((data && data.action) || "");
+  const params = (data && data.params) || {};
+  let replied = false;
+  const finish = (result, error) => {
+    if (replied) return;
+    replied = true;
+    try {
+      window.api
+        .dshInteract({
+          kind: "dev",
+          id,
+          result: result == null ? undefined : result,
+          error: error || undefined,
+        })
+        .catch(() => {});
+    } catch (_) {}
+  };
+  const fn = window.api && window.api.dshDevRun;
+  if (typeof fn !== "function") {
+    finish(null, I18n.t("宿主桥未就绪：当前版本不能执行开发调试动作"));
+    return;
+  }
+  Promise.resolve(fn(action, params))
+    .then((r) => {
+      if (r && r.ok === false) finish(null, String(r.error || I18n.t("调试动作没有生效")));
+      else finish(r);
+    })
+    .catch((e) => finish(null, (e && e.message) || String(e)));
+}
+
+function handleCanvasEvent(data, runCtx) {  const id = data && data.id;
   if (!id) return;
   runCtx = runCtx || {};
   /* 本轮绑定画布（= 发起这一帧的会话「所属画布」，见 app-db.js dshRunTask）：
@@ -20702,10 +21501,8 @@ function applyNodePatch(node, patch, warnings) {
     }
     node.tags = list;
   }
-  if (typeof patch.agent === "boolean" && node.kind === "proc_text") {
-    node.agent = patch.agent;
-    if (node.agent) syncAgentProviderRoute(node);
-  }
+  /* 「文本处理节点转智能节点」已移除：只允许把旧画布上的智能模式关掉，不接受开启 */
+  if (patch.agent === false && node.kind === "proc_text") node.agent = false;
   if (
     typeof patch.auto === "boolean" &&
     (isSaveNode(node))
@@ -21523,6 +22320,9 @@ function editPortNameOf(node, dir, i, isFnT) {
           : i === 2
             ? I18n.t("ABC 谱")
             : I18n.t("控制");
+    /* MOSS-Music：0=音频/视频路径 · 1=自由提问（留空用预设）· 2=控制输入 */
+    if (k === "moss_music")
+      return i === 0 ? I18n.t("音频 / 视频") : i === 1 ? I18n.t("自由提问") : I18n.t("控制");
     /* Breeze 语音（Breeze TTS 2）：端口0=待合成文本 · 1=参考音频 · 2=参考文稿 · 3=指令 · 4=控制输入 */
     if (k === "breeze_gen")
       return i === 0
@@ -21598,6 +22398,12 @@ function editPortNameOf(node, dir, i, isFnT) {
     k === "remotion"
   )
     return i === 0 ? I18n.t("内容") : I18n.t("控制");
+  /* MOSS-Music：0=结果文本 · 1=JSON 文本 · 2=md 产物路径 */
+  if (k === "moss_music")
+    return (
+      [I18n.t("结果文本"), I18n.t("JSON"), I18n.t("产物路径")][i] ||
+      I18n.t("输出端子 ") + (i + 1)
+    );
   if (k === "judge") return i === 0 ? "YES" : "NO";
   /* 质检节点的输出：0 报告 · 1 通过 · 2 未过（输入侧在上面 dir==="in" 段） */
   if (typeof isQaKindNode === "function" && isQaKindNode(node))
@@ -21670,6 +22476,7 @@ function editPortKindOf(node, dir, i, isFnT) {
       }
       return inPortIsControl(node, i) ? "control" : "any";
     }
+    if (k === "moss_music") return i === 2 ? "control" : i === 1 ? "text" : "any";
     if (k === "task") return "control";
     /* 质检节点（五种同构）：0 被检内容（按类型）· 1 质检要求（text，也可接参考样例）· 2 控制
        —— 与 app.js 的 IN_PORT_DATA_KINDS / inPortIsControl 同一张表（改那边要同步这里）。 */
@@ -21704,6 +22511,7 @@ function editPortKindOf(node, dir, i, isFnT) {
   /* 质检节点：0 报告（JSON 文本）· 1 / 2 控制（通过 / 未过）—— 判定口已撤掉 */
   if (typeof isQaKindNode === "function" && isQaKindNode(node)) return i >= 1 ? "control" : "text";
   if (k === "net_recv") return i === 0 ? "text" : "control";
+  if (k === "moss_music") return "text";
   if (k === "music_gen" || k === "yue_gen" || k === "breeze_gen")
     return i === 0 ? "audio" : "control";
   if (k === "flux3klein_gen") return i === 0 ? "image" : "control";

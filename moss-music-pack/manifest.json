@@ -1,0 +1,40 @@
+{
+  "id": "moss-music",
+  "name": "MOSS-Music Local",
+  "version": "1.0.0",
+  "minAppVersion": "1.6.2",
+  "title": {
+    "zh": "MOSS-Music",
+    "en": "MOSS-Music"
+  },
+  "subtitle": {
+    "zh": "Local music understanding with the OpenMOSS 8B Instruct model: timestamped lyrics transcription, genre / mood / instrumentation captions, song structure, key / tempo / chord progressions, and free-form questions about a full track. Local HTTP service (port 8790); audio longer than 5 minutes is sliced into 3-minute segments with 5s overlap and the timestamps are merged. Needs an NVIDIA GPU (INT8 from 16GB, INT4 from 12GB) and at least 60GB free disk.",
+    "en": "Local music understanding with the OpenMOSS 8B Instruct model: timestamped lyrics transcription, genre / mood / instrumentation captions, song structure, key / tempo / chord progressions, and free-form questions about a full track. Local HTTP service (port 8790); audio longer than 5 minutes is sliced into 3-minute segments with 5s overlap and the timestamps are merged. Needs an NVIDIA GPU (INT8 from 16GB, INT4 from 12GB) and at least 60GB free disk."
+  },
+  "models": [
+    {
+      "id": "instruct",
+      "title": {
+        "zh": "Instruct (instruction following, default)",
+        "en": "Instruct (instruction following, default)"
+      },
+      "repo": "OpenMOSS-Team/MOSS-Music-8B-Instruct",
+      "modelscope": "openmoss/MOSS-Music-8B-Instruct",
+      "dir": "models/MOSS-Music-8B-Instruct"
+    }
+  ],
+  "entry": "app/server.py",
+  "apiPort": 8790,
+  "diskHintGb": 60,
+  "quant": ["int8", "int4"],
+  "longAudio": {
+    "triggerSec": 300,
+    "segmentSec": 180,
+    "overlapSec": 5
+  },
+  "endpoints": ["/health", "/load", "/unload", "/cancel", "/generate"],
+  "notes": {
+    "zh": "MTNode starts/stops this local HTTP service (127.0.0.1:8790): /health probes, /load loads the model + quant tier, /unload frees VRAM, /generate returns the answer and writes md / json / srt into the caller-provided outputDir.",
+    "en": "MTNode starts/stops this local HTTP service (127.0.0.1:8790): /health probes, /load loads the model + quant tier, /unload frees VRAM, /generate returns the answer and writes md / json / srt into the caller-provided outputDir."
+  }
+}

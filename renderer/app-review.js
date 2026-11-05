@@ -272,6 +272,9 @@ function ensureReviewDlg() {
     '<div class="review-notes" id="reviewNotes"></div>' +
     "</div>" +
     '<div class="review-note-float" id="reviewNoteFloat" hidden></div>' +
+    /* 点正文里的批注高亮 → 在这里重开该条批注的内容（可改可删，见 app-textedit.js 的
+       teOpenNoteEditorById；两个批注窗共用同一套高亮引擎） */
+    '<div class="review-note-float te-anno-edit" id="reviewAnnoEdit" hidden></div>' +
     '<div class="review-resize" id="reviewResize" title="' +
     I18n.t("拖拽右下角调整大小") +
     '"></div>' +
@@ -340,6 +343,21 @@ function ensureReviewDlg() {
   });
 
   host.querySelector("#reviewReviseBtn").onclick = () => runRevision();
+  /* 被批注正文的高亮层（app-textedit.js 的 tePaintAnnotations）：正文 / 批注栏一滚、
+     窗口一变大小就得按当前位置重画，否则虚线与连线会跟文字错位。 */
+  const repaintAnno = () => {
+    if (typeof tePaintAnnotations === "function") tePaintAnnotations("rv");
+  };
+  const edPane = host.querySelector("#reviewEditor");
+  if (edPane) edPane.addEventListener("scroll", repaintAnno, { passive: true });
+  const notesPane = host.querySelector("#reviewNotes");
+  if (notesPane) notesPane.addEventListener("scroll", repaintAnno, { passive: true });
+  window.addEventListener("resize", repaintAnno);
+  if (typeof ResizeObserver === "function") {
+    try {
+      new ResizeObserver(repaintAnno).observe(box);
+    } catch (_) {}
+  }
   _reviewDlgInit = true;
   return host;
 }
@@ -369,6 +387,11 @@ function closeReviewDlg() {
   if (p && typeof p.then === "function") p.then(done, done);
   else done();
   h.classList.remove("on");
+  /* 批注高亮层与批注内容小窗一起收掉 */
+  if (typeof teAnnoLayerHide === "function") teAnnoLayerHide("rv");
+  const annoEdit = document.getElementById("reviewAnnoEdit");
+  if (annoEdit) annoEdit.hidden = true;
+  if (typeof teAnnoState === "function") teAnnoState("rv").editId = "";
   document.body.classList.remove("review-lock");
 }
 
@@ -421,6 +444,7 @@ function renderReviewView() {
     cur && _rv.editing ? "" : "hidden";
   h.querySelector("#reviewNotes").style.pointerEvents =
     cur && _rv.editing ? "" : "none";
+  if (typeof tePaintAnnotations === "function") tePaintAnnotations("rv");
 }
 
 /* 文档目标显示名（节点标题 / 事实库名）。 */
@@ -807,6 +831,9 @@ function renderEditor() {
   if (!host) return;
   /* 编辑面重渲染 = 上一个选段已作废（切档 / 切版本 / 整面刷新），按钮跟着回灰 */
   rvClearSelSnapshot();
+  /* 批注内容小窗一并收掉（它引用的那条批注可能已不在这一版） */
+  const annoEditEl = document.getElementById("reviewAnnoEdit");
+  if (annoEditEl) annoEditEl.hidden = true;
   const box = host.querySelector("#reviewEditor");
   box.innerHTML = "";
   const modeTabRich = host.querySelector('.rv-tab[data-mode="rich"]');
@@ -862,7 +889,16 @@ function renderEditor() {
         _rv._lastDirtyAt = Date.now();
         /* 批注锚点自动重锚 */
         reAnchorNotesAfterEdit();
+        if (typeof tePaintAnnotations === "function") tePaintAnnotations("rv");
       });
+      /* 被批注正文的虚线：hover 变手型、点一下重开那条批注（app-textedit.js 的共用实现） */
+      if (typeof teAnnoHover === "function") {
+        ed.addEventListener("mousemove", (ev) => teAnnoHover("rv", ev));
+        ed.addEventListener("mousedown", (ev) => teAnnoMouseDown("rv", ev));
+        ed.addEventListener("mouseleave", () => {
+          ed.style.cursor = "";
+        });
+      }
       /* Markdown 编辑手感（renderer/app-mdedit.js 的共享实现）：Tab 只插 4 个空格
          （选中多行就每行行首各插一次），Shift+Tab 不接管；粘贴优先吃剪贴板 HTML。
          必须排在 rvBindImgEditor 之前：粘图片时由插图模块先吃（它的 paste 监听先注册先跑）。 */
@@ -883,6 +919,8 @@ function renderEditor() {
     }
   }
   renderFootbarBox();
+  /* 切档 / 切版本后编辑面换了 → 批注高亮与连线按新 DOM 重画（源码档 / 回看态自己收起来） */
+  if (typeof tePaintAnnotations === "function") tePaintAnnotations("rv");
 }
 
 function readOnlyViewText() {
@@ -2402,11 +2440,15 @@ function renderNotesEl() {
     list.appendChild(noteCardEl(nt));
   }
   wrap.appendChild(list);
+  /* 卡片换了 → 正文那层虚线与连线的落点跟着重画（app-textedit.js 的共用实现） */
+  if (typeof tePaintAnnotations === "function") tePaintAnnotations("rv");
 }
 
 function noteCardEl(nt, readOnly) {
   const el = document.createElement("div");
   el.className = "rv-note" + (nt.kind === "local" ? " local" : " full") + (nt.dead ? " dead" : "");
+  /* 正文那层高亮靠它把连线拉到这张卡上（app-textedit.js 的 tePaintAnnotations） */
+  if (nt.id) el.setAttribute("data-note-id", String(nt.id));
   const head = document.createElement("div");
   head.className = "rv-note-head";
   const tag = document.createElement("span");

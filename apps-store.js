@@ -97,6 +97,7 @@ const { readJson, writeJson } = require("./config-providers.js");
 /* 应用能力清单（app.json 的 capabilities）：纯计算模块，见文件头 */
 const {
   normCapabilities,
+  effectiveCapabilities,
   capabilityOn,
   capabilitiesForUi,
   capabilityBadges,
@@ -111,6 +112,10 @@ const { createBranchMerge } = require("./app-branch-merge.js");
 /* 应用版本「完全替换」（对方那一版 → 整份接替本机的开发分支，不经过 Agent）：同样纯逻辑 +
    依赖注入，见 app-branch-replace.js 的文件头。画布层的四个动作由 main.js 注入。 */
 const { createBranchReplace } = require("./app-branch-replace.js");
+/* iframe 那两条路（开发页预览 `_host=1` / 画布应用节点 `_anode=…`）的播放通道：
+   没有 preload 就没有 appHost.media.*，应用里「试听 / 播放成片」只能报 no_host。
+   这里把宿主那条播放条 + 媒体路由补进 iframe（见 preview-media.js 的文件头）。 */
+const previewMedia = require("./preview-media.js");
 
 /* ---------------- 常量 ---------------- */
 
@@ -421,15 +426,22 @@ const PREVIEW_BRIDGE = [
   "var K='" + PREVIEW_K + "';",
   "var seq=0; var pending={}; var streams=[];",
   /* 写类能力（只读时同步拒）：与主进程 previewWriteBlock 的那一份清单同源 */
-  "var WRITE={dataWrite:1,storageSet:1,storageRemove:1,hostSetModel:1,hostImageSetModel:1,image:1,imageEdit:1,dataDirPick:1,dataDirReset:1};",
+  "var WRITE={dataWrite:1,storageSet:1,storageRemove:1,hostSetModel:1,hostImageSetModel:1,image:1,imageEdit:1,dataDirPick:1,dataDirReset:1,assetsMkdir:1,assetsCreate:1,assetsAddItem:1,assetsImportFile:1,assetsImportFiles:1,assetsUpdateText:1,assetsUpdateMeta:1,assetsRemoveItem:1,assetsDeleteAsset:1,netDownload:1};",
   "function mkErr(o){ var e=new Error(String((o&&o.error)||'preview bridge error')); e.code=String((o&&o.code)||''); if(o&&o.previewReadOnly) e.previewReadOnly=true; return e; }",
   "function post(msg){ try{ window.parent.postMessage(msg,'*'); }catch(e){} }",
   "var CALL_MS=20000; /* 中继没了（切走 / 关页 / 宿主重绘）时别让应用的 await 永远挂着 */",
+  /* 但有些方法**天生要人 / 后端花时间**：弹系统选图框（用户还在资源管理器里挑图）、语音合成、
+     长文本与出图流、转写、首次下载识别权重。它们一律套 20 秒的话，人还没挑完就先被判定「宿主没有回应」——
+     用户看到的就是「选图失败：预览宿主没有回应」，而结果其实几秒后才回来（那时 pending 已被删，直接丢弃）。
+     这一批给一条长得多的上限：只防「中继真的没了」，不催人、不催后端。 */
+  "var LONG_MS=600000;",
+  "var SLOW={pickImage:1,pickAudio:1,dataDirPick:1,transcribe:1,transcribeWav:1,asrPrepare:1,asrMic:1,textGenStream:1,imageGen:1,imageEdit:1,audioSynth:1,assetsImportFile:1,assetsImportFiles:1,assetsScan:1};",
   "function call(method,arg){",
   "  if (state.readOnly && WRITE[method]) return Promise.reject(mkErr({code:'readonly_preview',error:'该应用已在独立窗口运行，预览为只读',previewReadOnly:true}));",
   "  return new Promise(function(res,rej){",
   "    var id='c'+(++seq).toString(36)+Math.random().toString(36).slice(2,7);",
-  "    var timer=setTimeout(function(){ if(!pending[id]) return; delete pending[id]; rej(mkErr({code:'host_unreachable',error:'预览宿主没有回应（中继已断开或这一帧已失效）'})); },CALL_MS);",
+  "    var wait=SLOW[String(method||'')]?LONG_MS:CALL_MS;",
+  "    var timer=setTimeout(function(){ if(!pending[id]) return; delete pending[id]; rej(mkErr({code:'host_unreachable',error:'预览宿主没有回应（中继已断开或这一帧已失效）'})); },wait);",
   "    pending[id]={res:res,rej:rej,at:Date.now(),timer:timer};",
   "    post({[K]:1,op:'host-call',id:id,method:String(method||''),arg:(arg===undefined?null:arg)});",
   "  });",
@@ -507,6 +519,49 @@ const PREVIEW_BRIDGE = [
   "  dataRead:function(opts){ return call('dataRead',opts||{}); },",
   "  dataWrite:function(data,opts){ var o={}; for(var k in (opts||{})) o[k]=opts[k]; o.data=data; return call('dataWrite',o); },",
   "  account:function(){ return call('account'); },",
+  /* 文件只读两项（exists / 图片读成 dataURL）：与独立窗口走**同一个**宿主实现
+     （apps:previewCall → previewHostCall → app-host-bridge 的 fs.*），不另开一条读图通道。
+     有它，预览 iframe 里也能把磁盘上的图交给应用页（此前这里整类 fs 缺席，应用只能报
+     「宿主没有读图通道」）。 */
+  "  fs:{",
+  "    exists:function(rel){ return call('fsExists',{rel:rel}); },",
+  "    imageDataUrl:function(p){ return call('fsImageDataUrl',{path:p}); }",
+  "  },",
+  /* 联网取素材（2026-12）：与独立窗口同一套签名 —— search(url,opts) / download(url,rel,opts)。
+     页面 CSP 是 connect-src 'none'，请求由主进程代发；下载只落画布工作目录（宿主那边守）。 */
+  "  net:{",
+  "    search:function(url,opts){ var o=opts||{}; return call('netSearch',{url:String(url==null?'':url),headers:o.headers||{},timeoutMs:o.timeoutMs}); },",
+  "    download:function(url,rel,opts){ var o=opts||{}; return call('netDownload',{url:String(url==null?'':url),rel:String(rel==null?'':rel),headers:o.headers||{},maxBytes:o.maxBytes,timeoutMs:o.timeoutMs}); }",
+  "  },",
+  /* 素材库（app.json 要声明 capabilities.assetHost）：与独立窗口 preload-app.js 同形状。
+     预览以前整类缺席，应用侧只能报「宿主没开素材库通道：缺 assets.root / scan / …」，
+     建不了库目录也入不了册 —— 这里把七条主力方法补齐（另加 readItem / updateMeta /
+     removeItem / deleteAsset，与主进程 app-host-bridge 的白名单逐条对齐）。
+     写类调用在只读态（应用已在独立窗口运行）同步拒，见上面的 WRITE 清单。 */
+  "  assets:{",
+  "    root:function(){ return call('assetsRoot'); },",
+  "    scan:function(){ return call('assetsScan'); },",
+  "    mkdir:function(opts){ return call('assetsMkdir', typeof opts==='string'?{catRel:opts}:(opts||{})); },",
+  "    create:function(opts){ return call('assetsCreate',opts||{}); },",
+  "    addItem:function(opts){ return call('assetsAddItem',opts||{}); },",
+  "    importFile:function(opts){ return call('assetsImportFile',opts||{}); },",
+  "    importFiles:function(opts){ return call('assetsImportFiles',opts||{}); },",
+  "    readItem:function(opts){ return call('assetsReadItem',opts||{}); },",
+  "    updateText:function(opts){ return call('assetsUpdateText',opts||{}); },",
+  "    updateMeta:function(opts){ return call('assetsUpdateMeta',opts||{}); },",
+  "    removeItem:function(opts){ return call('assetsRemoveItem',opts||{}); },",
+  "    deleteAsset:function(opts){ return call('assetsDeleteAsset',opts||{}); }",
+  "  },",
+
+  /* 语音合成（Breeze TTS 2）：与独立窗口逐字段同形 —— 产物写盘回 path，outputPath 必填；
+     presets 只是角色清单， synth 才是出声口（应用据 cap.audio 判有没有通道） */
+  "  audio:{",
+  "    presets:function(){ return call('audioPresets'); },",
+  "    status:function(){ return call('audioStatus'); },",
+  "    synth:function(opts){ return call('audioSynth',opts||{}); },",
+  "    cancel:function(){ return call('audioCancel'); }",
+  "  },",
+  "  tts:function(opts){ return call('audioSynth',opts||{}); },",
   /* close / quit：预览里没有「自己的窗口」——同步回可读错误码，并请开发页在预览区浮一条提示 */
   "  close:function(){ post({[K]:1,op:'host-notice',notice:{code:'preview_no_window'}}); return Promise.reject(mkErr({code:'preview_no_window',preview:true,error:'预览里没有可关闭的独立窗口（预览是开发页中栏的一只 iframe）'})); },",
   "  quit:function(){ post({[K]:1,op:'host-notice',notice:{code:'preview_no_window'}}); return Promise.reject(mkErr({code:'preview_no_window',preview:true,error:'预览里没有可退出的独立窗口（预览是开发页中栏的一只 iframe）'})); },",
@@ -526,7 +581,7 @@ const PREVIEW_BRIDGE = [
   "  for(var k in W){ if(out[k]) out[k]=false; }",
   "  return out;",
   "}",
-  "var CAP={host:true,hostName:'preview',id:false,close:false,quit:false,data:true,dataDir:true,dataDirPick:true,dataDirOpen:true,dataDirReset:true,willClose:false,storage:true,account:true,net:false,image:true,imageModels:true,imageCancel:true,text:true,json:true,models:true,pick:true,shown:false,speech:true,speechFile:true,speechStatus:true,speechPrepare:true,speechEvents:true};",
+  "var CAP={host:true,hostName:'preview',id:false,close:false,quit:false,data:true,dataDir:true,dataDirPick:true,dataDirOpen:true,dataDirReset:true,willClose:false,storage:true,account:true,net:true,image:true,imageModels:true,imageCancel:true,text:true,json:true,models:true,pick:true,shown:false,speech:true,speechFile:true,speechStatus:true,speechPrepare:true,speechEvents:true,audio:true,audioPresets:true,audioStatus:true,audioCancel:true,tts:true,assets:true};",
   "try{ Object.defineProperty(window,'__mtnodePreviewHostCap',{configurable:true,get:function(){ return readonlycap(CAP); }}); }catch(e){}",
   "try{",
   "  window.appHost=api;",
@@ -575,7 +630,11 @@ const APPNODE_BRIDGE = [
   "function call(ns,method,arg){",
   "  return new Promise(function(res,rej){",
   "    var id='n'+(++seq).toString(36)+Math.random().toString(36).slice(2,7);",
-  "    var timer=setTimeout(function(){ if(!pending[id]) return; delete pending[id]; rej(mkErr({code:'host_unreachable',error:'宿主没有回应（这一帧已失联或画布正在切换）'})); },60000);",
+  /* canvas.runNode 会真跑一颗节点（图像生成可能几分钟），agent.send 要等整轮会话跑完
+     （出方案 / 写代码常常几分钟），60s 的通用上限会把它们误判成「宿主没回应」：
+     这两条**不挂超时**，收口靠应用自己 canvas.cancelNode(id) / agent.cancel()。 */
+  "    var ms=((String(ns)==='canvas'&&String(method)==='runNode')||(String(ns)==='agent'&&String(method)==='send'))?0:60000;",
+  "    var timer=ms?setTimeout(function(){ if(!pending[id]) return; delete pending[id]; rej(mkErr({code:'host_unreachable',error:'宿主没有回应（这一帧已失联或画布正在切换）'})); },ms):null;",
   "    pending[id]={res:res,rej:rej,timer:timer};",
   "    post({[K]:1,op:'node-call',id:id,ns:String(ns||''),method:String(method||''),arg:(arg===undefined?null:arg)});",
   "  });",
@@ -600,16 +659,21 @@ const APPNODE_BRIDGE = [
   "host.dataDirOpen=function(){ return call('data','openDir'); };",
   "host.dataDirPick=function(){ return Promise.reject(mkErr({code:'fixed_dir',error:'应用节点的数据目录固定在画布工作目录里，不支持改到别处'})); };",
   "host.dataDirReset=host.dataDirPick;",
-  "host.canvas={ graph:function(){return call('canvas','graph');}, nodes:function(){return call('canvas','nodes');}, node:function(id){return call('canvas','node',{id:id});}, addNode:function(o){return call('canvas','addNode',o||{});}, updateNode:function(id,p){return call('canvas','updateNode',{id:id,patch:p||{}});}, removeNode:function(id){return call('canvas','removeNode',{id:id});}, connect:function(o){return call('canvas','connect',o||{});}, disconnect:function(id){return call('canvas','disconnect',{id:id});}, select:function(ids){return call('canvas','select',{ids:ids||[]});}, view:function(){return call('canvas','view');}, setView:function(v){return call('canvas','setView',v||{});}, save:function(){return call('canvas','save');}, onChange:function(cb){return on('canvas',cb);} };",
-  "host.agent={ sessions:function(){return call('agent','sessions');}, bind:function(id){return call('agent','bind',{sessionId:id});}, bound:function(){return call('agent','bound');}, send:function(text){return call('agent','send',{text:text});}, cancel:function(){return call('agent','cancel');}, onEvent:function(cb){return on('agent',cb);} };",
-  "host.fs={ root:function(){return call('fs','root');}, readText:function(rel){return call('fs','readText',{rel:rel});}, writeText:function(rel,text){return call('fs','writeText',{rel:rel,content:text});}, list:function(rel){return call('fs','list',{rel:rel});}, mkdir:function(rel){return call('fs','mkdir',{rel:rel});}, remove:function(rel){return call('fs','remove',{rel:rel});}, exists:function(rel){return call('fs','exists',{rel:rel});} };",
+  "host.canvas={ graph:function(){return call('canvas','graph');}, nodes:function(){return call('canvas','nodes');}, node:function(id){return call('canvas','node',{id:id});}, form:function(id){return call('canvas','form',{id:id});}, updateForm:function(id,values){return call('canvas','updateForm',{id:id,values:values||{}});}, addNode:function(o){return call('canvas','addNode',o||{});}, updateNode:function(id,p){return call('canvas','updateNode',{id:id,patch:p||{}});}, removeNode:function(id){return call('canvas','removeNode',{id:id});}, connect:function(o){return call('canvas','connect',o||{});}, disconnect:function(id){return call('canvas','disconnect',{id:id});}, select:function(ids){return call('canvas','select',{ids:ids||[]});}, view:function(){return call('canvas','view');}, setView:function(v){return call('canvas','setView',v||{});}, save:function(){return call('canvas','save');}, runNode:function(id,o){ var a={id:id}; for(var k in (o||{})) a[k]=o[k]; return call('canvas','runNode',a); }, nodeOutput:function(id){return call('canvas','nodeOutput',{id:id});}, cancelNode:function(id){return call('canvas','cancelNode',{id:id});}, onChange:function(cb){return on('canvas',cb);} };",
+  "host.agent={ create:function(o){return call('agent','create',{title:(o&&o.title)||''});}, sessions:function(){return call('agent','sessions');}, bind:function(id){return call('agent','bind',{sessionId:id});}, bound:function(){return call('agent','bound');}, send:function(text){return call('agent','send',{text:text});}, cancel:function(){return call('agent','cancel');}, onEvent:function(cb){return on('agent',cb);} };",
+  "host.fs={ root:function(){return call('fs','root');}, readText:function(rel){return call('fs','readText',{rel:rel});}, writeText:function(rel,text){return call('fs','writeText',{rel:rel,content:text});}, list:function(rel){return call('fs','list',{rel:rel});}, mkdir:function(rel){return call('fs','mkdir',{rel:rel});}, remove:function(rel){return call('fs','remove',{rel:rel});}, exists:function(rel){return call('fs','exists',{rel:rel});}, imageDataUrl:function(p){return call('fs','imageDataUrl',{path:p});} };",
   "host.tools={ list:function(){return call('tools','list');}, call:function(id,args){return call('tools','call',{id:id,args:args||{}});} };",
-  "host.net={ fetch:function(url,opts){return call('net','fetch',{url:url,opts:opts||{}});} };",
+  /* 语音合成（Breeze TTS 2）：产物写进**这张画布**的工作目录并回绝对路径（outputPath 必填，
+     只收相对路径；越界回 outside）。presets 只是角色清单，synth 才是出声口。 */
+  "host.audio={ presets:function(){return call('audio','presets');}, status:function(){return call('audio','status');}, synth:function(opts){return call('audio','synth',opts||{});}, cancel:function(){return call('audio','cancel');} };",
+  "host.tts=host.audio.synth;",
+  "host.net={ fetch:function(url,opts){return call('net','fetch',{url:url,opts:opts||{}});}, search:function(url,opts){return call('net','search',{url:String(url==null?'':url),opts:opts||{}});}, download:function(url,rel,opts){return call('net','download',{url:String(url==null?'':url),rel:String(rel==null?'':rel),opts:opts||{}});} };",
   "try{ window.appNodeHost=host; }catch(e){}",
   "post({[K]:1,op:'node-ping'});",
   "})();",
 ].join("\n");
-/* 把两段注入合成一个 <script>（顺序：宿主桥在前、节点桥在后 —— 节点桥要改宿主桥的对象） */
+/* 把两段注入合成一个 <script>（顺序：宿主桥在前、节点桥在后 —— 节点桥要改宿主桥的对象；
+   最后是 iframe 的播放条与它的桥，见 preview-media.js） */
 function injectAppNodeBridge(html) {
   const src = String(html || "");
   const tag =
@@ -617,6 +681,8 @@ function injectAppNodeBridge(html) {
     PREVIEW_BRIDGE +
     "\n" +
     APPNODE_BRIDGE +
+    "\n" +
+    previewMedia.inlineSource() +
     "</scr" +
     "ipt>";
   if (/<head[^>]*>/i.test(src)) return src.replace(/<head[^>]*>/i, (m) => m + tag);
@@ -625,11 +691,18 @@ function injectAppNodeBridge(html) {
 }
 
 /* 注入宿主桥小助手：**必须插在页面最前面**（在其他 <script> 之前），
-   这样应用里的 window.AppHost 门面一跑就读到这座桥。 */
+   这样应用里的 window.AppHost 门面一跑就读到这座桥。
+   播放条与媒体路由同批注入（preview-media.js）：iframe 的 origin 读不了 file://，
+   播放 URL 要走 mtnode-preview:// 的媒体路由。 */
 function injectPreviewBridge(html) {
   const src = String(html || "");
   const tag =
-    '<script data-mtnode-preview-bridge="1">' + PREVIEW_BRIDGE + "</scr" + "ipt>";
+    '<script data-mtnode-preview-bridge="1">' +
+    PREVIEW_BRIDGE +
+    "\n" +
+    previewMedia.inlineSource() +
+    "</scr" +
+    "ipt>";
   if (/<head[^>]*>/i.test(src)) return src.replace(/<head[^>]*>/i, (m) => m + tag);
   if (/<html[^>]*>/i.test(src)) return src.replace(/<html[^>]*>/i, (m) => m + tag);
   return tag + src;
@@ -744,6 +817,9 @@ function registerPreviewProtocol() {
       });
     try {
       const u = new URL(String((req && req.url) || ""));
+      /* iframe 里的播放 URL（见 preview-media.js）：mtnode-preview://<appId>/__mtnode_media__/?p=<绝对路径>
+         —— 应用页的 origin 读不了 file://，媒体字节只能由主进程回（支持 Range，拖动进度才有效） */
+      if (previewMedia.isMediaRequest(req)) return await previewMedia.serveMediaRequest(req);
       /* 带 _host=1 = 开发页中栏那只 iframe（见 previewWantsHost）：**开发页预览的永远是项目根
          那一份**（用户在改的就是它）—— 同 id 在下载根也有一份时，按 id 猜会预览到下载副本。 */
       const withHost = previewWantsHost(u);
@@ -799,6 +875,9 @@ function registerPreviewProtocol() {
 
 let getDataDir = () => "";
 let getMainWin = () => null;
+/* 宿主桥（画布 / agent / 文件 / 工具 / 联网）：主进程 app-host-bridge.js 的实例，main.js 注入。
+   应用窗口的每一次重能力调用都经它（认发送方窗口 → 认能力位 → 认授权 → 中继到渲染层）。 */
+let hostBridge = null;
 let getAppVersion = () => "";
 let t = (s) => String(s == null ? "" : s);
 let authState = () => ({ ok: true, loggedIn: false, user: null, encryption: "plain", warning: "" });
@@ -1912,8 +1991,10 @@ function manifestOf(dir, id) {
     styleSet: String(j.style == null ? "" : j.style).trim() !== "",
     tags: Array.isArray(j.tags) ? j.tags.map(String) : [],
     /* 应用能力位（textInput / imageGen）：清单白名单里**必须**带上它 ——
-       漏掉的话卡片小标、「应用设置」窗里的能力位读出来永远是 false（见 apps-capabilities.js） */
-    capabilities: normCapabilities(j.capabilities),
+       漏掉的话卡片小标、「应用设置」窗里的能力位读出来永远是 false（见 apps-capabilities.js）。
+       走读口径（effectiveCapabilities）而不是纯归一：归一会把没写过的 voiceGen 补成 false，
+       于是「老应用没声明 voiceGen」这条信息当场丢掉，后面的历史兼容就再也没机会生效。 */
+    capabilities: effectiveCapabilities(j.capabilities),
     createdAt: Number(j.createdAt) || 0,
     updatedAt: Number(j.updatedAt) || 0,
   };
@@ -2110,6 +2191,7 @@ function scaffoldHtml(man) {
     "<h1>" + name.replace(/[<>&]/g, "") + "</h1>",
     "<p>这是应用入口页（index.html）的占位内容。把这里换成你的界面即可。</p>",
     "<p>宿主能力走 <code>window.appHost</code>：文本生成 <code>textGen / textGenStream</code>（默认关思考，要思考显式传 <code>thinking</code>；要 JSON 用脚手架 <code>AppHost.json()</code>）、图像生成 <code>imageGen</code>、本机存储 <code>storageGet / storageSet</code>、账号摘要 <code>account()</code>。</p>",
+    "<p>要在画布上跑图像节点（参考图 + 提示词 → 出图 → 拿产物）：<code>canvas.addNode</code> / <code>canvas.connect</code> 搭好，再 <code>canvas.runNode(id, { attempts })</code> 等到出图，用回执里的 <code>images</code> / <code>paths</code> 取本机绝对路径；<code>canvas.nodeOutput(id)</code> 读最近一次产物，<code>canvas.cancelNode(id)</code> 随时终止。需要 <code>capabilities.canvasHost</code>，首次调用宿主会让你授权一次。</p>",
     "</main>",
     "</body>",
     "</html>",
@@ -5156,6 +5238,47 @@ function previewNoWindowError() {
     preview: true,
   });
 }
+/* 预览页的「重能力」调用（audio / canvas / tools…）：与独立窗口走**同一个** app-host-bridge，
+   只换认应用的方式（主进程这边的预览租约 → app id）。push 是空转：预览没有独立的流式回推，
+   事件走开发页那条 postMessage 中继。查不到 hostBridge 时如实回 not_ready，不装成功。 */
+function previewHostCall(id, ns, method, args) {
+  if (!hostBridge || typeof hostBridge.call !== "function")
+    return bad(t("宿主桥未就绪（主进程组件没起来）"), "not_ready");
+  const sid = String(id || "");
+  const sum = appHostSummaryOf(sid);
+  const caller = { kind: "app", id: sid, name: String((sum && sum.name) || sid), push: () => {} };
+  return hostBridge.call(caller, String(ns || ""), String(method || ""), isObj(args) ? args : {});
+}
+/* 预览页的素材库调用（预览桥方法名 → app-host-bridge 的 assets.*）：与独立窗口**逐条同源**。
+   预览里此前整类缺席（应用侧报「宿主没开素材库通道：缺 assets.root / scan / mkdir / create /
+   importFiles / addItem / updateText」），补齐后应用在开发页预览里也能建库目录、入册、写文本。
+   写类先过只读闸（应用已在独立窗口运行时预览只读）。 */
+const PREVIEW_ASSET_METHODS = {
+  assetsRoot: "root",
+  assetsScan: "scan",
+  assetsMkdir: "mkdir",
+  assetsCreate: "create",
+  assetsAddItem: "addItem",
+  assetsImportFile: "importFile",
+  assetsImportFiles: "importFiles",
+  assetsReadItem: "readItem",
+  assetsUpdateText: "updateText",
+  assetsUpdateMeta: "updateMeta",
+  assetsRemoveItem: "removeItem",
+  assetsDeleteAsset: "deleteAsset",
+};
+const PREVIEW_ASSET_WRITE = {
+  assetsMkdir: 1,
+  assetsCreate: 1,
+  assetsAddItem: 1,
+  assetsImportFile: 1,
+  assetsImportFiles: 1,
+  assetsUpdateText: 1,
+  assetsUpdateMeta: 1,
+  assetsRemoveItem: 1,
+  assetsDeleteAsset: 1,
+};
+
 /* 写类调用进门前先过这一关：预览 + 独立窗口开着 = 拒（回结构化错误码 + 在预览区浮一条提示）。
    返回 null = 放行（独立窗口的调用 / 预览但不处于只读）。 */
 function previewWriteBlock(e, arg) {
@@ -5334,6 +5457,13 @@ function openAppWindow(id, kind) {
       open: true,
       reused: true,
       reloaded: reloaded,
+      title: (() => {
+        try {
+          return String(existing.getTitle() || "");
+        } catch (_) {
+          return "";
+        }
+      })(),
       dir: rdir,
       kind: existing.__mtnodeAppKind || openAppDirKindOf(sid, kind, rdir),
     };
@@ -6081,6 +6211,126 @@ function hostAuthorTag(e, arg) {
   if (!info) return { ok: false, code: "no_author_tag", error: "no_author_tag" };
   return Object.assign({ ok: true }, info);
 }
+/* ═══════════ 应用窗口 · 底部播放条的宿主侧（renderer/app-media-ui.js）═══════════
+ * 需求：应用窗口里的音频 / 视频统一走**宿主注入**的那一条播放条（播放 / 暂停 / 点波形定位 /
+ * 时间 / 音量 / 倍速 / 全屏都由宿主那一份实现），应用只调 appHost.media.*。
+ *
+ * 为什么波形要主进程算：应用窗口没有文件系统，也没有 window.api —— 它拿不到音频字节，
+ * 更没法 decodeAudioData。所以这条通道只做两件事：
+ *   · **文件事实**：在不在、多大、mtime（播放条据此判断「文件不在」并照实报；mtime 只是回给调用方的
+ *     事实，不改 URL —— 播放条每次播放都新建 <audio>/<video> 元素，不靠 URL 变体躲缓存）；
+ *   · **波形峰值**：读字节按固定桶数抽 max|sample|（0..1，最多 900 个）回给播放条去画；
+ *     只回峰值、**不回原始字节**（应用窗口拿不到任意文件内容）。
+ * 认不出编码 / 太大 / 空文件 → peaks:[] + code，播放条退化成方角进度条（与主窗口那台同口径，
+ * 不猜、不假装有波形）；文件不在 → missing（播放条照实报，不假装播过）。
+ * 播放本身仍在应用页里（renderer/app-media-ui.js 造的 <audio>/<video> + file://，受该应用自己的
+ * CSP media-src 约束）——
+ * 这条通道**不搬音频**，只给波形与文件事实。 */
+const MEDIA_WAVE_BUCKETS = 900;
+/* 上限比主窗口那台（256MB）小：这里是**主进程同步**读 + 逐采样扫描，越界就退化成进度条。
+   64MB 的 16bit 单声道 ≈ 33 分钟、48k 立体声 ≈ 5.5 分钟，覆盖应用产物绰绰有余；
+   真要更大的波形就该换异步流式解析，而不是把主进程卡住。 */
+const MEDIA_WAVE_MAX_BYTES = 64 * 1024 * 1024;
+
+/* 从 WAV 字节里抽峰值：只认 RIFF/WAVE 的 PCM 8/16/24/32 与 IEEE float32
+   （Breeze 与 ffmpeg 的产物都在内），别的编码回 null（调用方退化为进度条，不猜）。
+   分桶 = 等长帧区间，每个桶取所有声道里 |sample| 的最大值；长文件也只扫一遍。 */
+function wavPeaks(buf, buckets) {
+  if (!Buffer.isBuffer(buf) || buf.length < 44) return null;
+  if (buf.toString("ascii", 0, 4) !== "RIFF" || buf.toString("ascii", 8, 12) !== "WAVE") return null;
+  let off = 12;
+  let fmt = null;
+  let dataOff = -1;
+  let dataLen = 0;
+  while (off + 8 <= buf.length) {
+    const id = buf.toString("ascii", off, off + 4);
+    const size = buf.readUInt32LE(off + 4);
+    const body = off + 8;
+    if (id === "fmt " && size >= 16 && body + 16 <= buf.length) {
+      fmt = {
+        format: buf.readUInt16LE(body),
+        channels: buf.readUInt16LE(body + 2),
+        rate: buf.readUInt32LE(body + 4),
+        bits: buf.readUInt16LE(body + 14),
+      };
+      /* WAVE_FORMAT_EXTENSIBLE：真正的格式码在 subformat GUID 的头两字节 */
+      if (fmt.format === 0xfffe && size >= 26 && body + 26 <= buf.length) fmt.format = buf.readUInt16LE(body + 24);
+    } else if (id === "data") {
+      dataOff = body;
+      dataLen = Math.max(0, Math.min(size, buf.length - body));
+    }
+    if (dataOff >= 0 && fmt) break;
+    const next = body + size + (size % 2);
+    if (next <= off) break;
+    off = next;
+  }
+  if (!fmt || dataOff < 0) return null;
+  if (fmt.format !== 1 && fmt.format !== 3) return null;
+  const bits = fmt.bits;
+  if ([8, 16, 24, 32].indexOf(bits) < 0) return null;
+  const ch = Math.max(1, fmt.channels);
+  const frameBytes = Math.max(1, Math.round(bits / 8)) * ch;
+  const frames = Math.floor(dataLen / frameBytes);
+  if (!frames) return null;
+  const sampleBytes = Math.round(bits / 8);
+  const read = (p) => {
+    if (bits === 8) return buf.readUInt8(p) / 128 - 1;
+    if (bits === 16) return buf.readInt16LE(p) / 32768;
+    if (bits === 24) return buf.readIntLE(p, 3) / 8388608;
+    return fmt.format === 3 ? buf.readFloatLE(p) : buf.readInt32LE(p) / 2147483648;
+  };
+  const n = Math.max(32, Math.min(4096, Math.round(buckets) || MEDIA_WAVE_BUCKETS));
+  const peaks = new Array(n).fill(0);
+  const per = frames / n;
+  for (let i = 0; i < n; i++) {
+    const s = Math.floor(i * per);
+    const e = i === n - 1 ? frames : Math.max(s + 1, Math.floor((i + 1) * per));
+    let peak = 0;
+    for (let f = s; f < e; f++) {
+      const base = dataOff + f * frameBytes;
+      for (let c = 0; c < ch; c++) {
+        const p = base + c * sampleBytes;
+        if (p + sampleBytes > buf.length) break;
+        const v = Math.abs(read(p));
+        if (v > peak) peak = v;
+      }
+    }
+    peaks[i] = Math.round(Math.min(1, peak) * 1000) / 1000;
+  }
+  return { peaks, durationSec: Math.round((frames / (fmt.rate || 1)) * 1000) / 1000 };
+}
+
+/* apps:hostMediaWave({ path }) → { ok, peaks:[], durationSec, bytes, mtimeMs, path, code? }
+   与桥上其它能力同一条纪律：只认应用窗口（senderAppDir），认不出直接拒。 */
+function hostMediaWave(e, arg) {
+  const own = senderAppDir(e, arg);
+  if (!own) return bad(t("不是应用窗口"), "not_app");
+  const a = isObj(arg) ? arg : {};
+  const raw = String(a.path == null ? "" : a.path).trim();
+  if (!raw) return bad(t("缺少 path"), "no_path");
+  const abs = path.resolve(raw);
+  let st = null;
+  try {
+    st = fs.statSync(abs);
+  } catch {
+    return bad(t("文件不在了：") + abs, "missing");
+  }
+  if (!st.isFile()) return bad(t("不是一个文件：") + abs, "not_file");
+  const base = { bytes: st.size, mtimeMs: Math.round(st.mtimeMs || 0), path: abs };
+  if (st.size <= 0) return Object.assign({ ok: true, peaks: [], durationSec: 0, code: "empty" }, base);
+  if (st.size > MEDIA_WAVE_MAX_BYTES)
+    return Object.assign({ ok: true, peaks: [], durationSec: 0, code: "too_big" }, base);
+  let buf = null;
+  try {
+    buf = fs.readFileSync(abs);
+  } catch (err) {
+    return bad(t("读不到这个文件：") + ((err && err.message) || err), "read_failed");
+  }
+  const w = wavPeaks(buf, MEDIA_WAVE_BUCKETS);
+  if (!w) return Object.assign({ ok: true, peaks: [], durationSec: 0, code: "no_waveform" }, base);
+  return Object.assign({ ok: true, peaks: w.peaks, durationSec: w.durationSec, buckets: w.peaks.length }, base);
+}
+
 function hostModelGet(e, arg) {
   const own = senderAppDir(e, arg);
   if (!own) return bad(t("不是应用窗口"), "not_app");
@@ -6384,6 +6634,195 @@ function listCloudImageModels() {
   }
   return out;
 }
+/* ── 本机出图后端（插件）────────────────────────────────────────────────────
+ * 应用侧不能只看云端：MTNode 还装了本机出图插件（Qwen Image 2.1 / FLUX 3 Klein），
+ * 画布节点能用，应用窗口 / 应用节点 / 函数节点同样要用得上。
+ *   · 清单：与云端同一份形状（id / label / providerName / local:true + 参考图能力），
+ *     是否安装以插件目录快照为准（与「插件」界面同源），没装的不进清单；
+ *   · 选中后 imageGen 走**本机后端自己的 generate()**（与画布节点同一条出口），
+ *     产物读盘转 base64 / dataUrl 回给应用（应用拿不到文件系统）；
+ *   · id 用插件 id（qwen-image-local / flux3-klein-local），与注册中心 plugins 镜像同名。 */
+const LOCAL_IMAGE_BACKENDS = [
+  {
+    id: "qwen-image-local",
+    label: "Qwen Image 2.1（本机）",
+    mod: "./qwenimage/main-qwenimage.js",
+    maxRefImages: 10,
+  },
+  {
+    id: "flux3-klein-local",
+    label: "FLUX 3 Klein（本机）",
+    mod: "./flux3klein/main-flux3klein.js",
+    maxRefImages: 10,
+  },
+];
+const localImageModCache = new Map();
+/* 本机出图模块：懒加载（主进程早已 require 过，这里是同一份缓存实例） */
+function localImageModule(id) {
+  const key = String(id || "");
+  if (localImageModCache.has(key)) return localImageModCache.get(key);
+  const def = LOCAL_IMAGE_BACKENDS.find((b) => b.id === key);
+  let mod = null;
+  if (def) {
+    try {
+      mod = require(def.mod);
+    } catch (err) {
+      console.warn("[apps] 本机出图后端加载失败（" + key + "）：" + ((err && err.message) || err));
+      mod = null;
+    }
+  }
+  localImageModCache.set(key, mod);
+  return mod;
+}
+/* 已安装的插件后端（同步只读快照；失败就当没装，不让应用清单因它整页报错） */
+function installedPluginBackends() {
+  try {
+    const host = require("./plugins/main-app-plugins.js");
+    if (host && typeof host.pluginBackendSnapshot === "function") return host.pluginBackendSnapshot() || [];
+  } catch {}
+  return [];
+}
+/* 本机图像模型清单：只列**已安装**的插件后端（没装的不假装有一条后端） */
+function listLocalImageModels() {
+  const installed = installedPluginBackends();
+  const out = [];
+  for (const b of LOCAL_IMAGE_BACKENDS) {
+    const hit = installed.find((p) => p && String(p.id) === b.id);
+    if (!hit || !hit.installed) continue;
+    out.push({
+      id: b.id,
+      label: b.label,
+      providerId: "local",
+      providerName: hit.name || t("本机插件"),
+      local: true,
+      installed: true,
+      refImages: true,
+      maxRefImages: b.maxRefImages,
+      strength: true,
+    });
+  }
+  return out;
+}
+/* 应用的「全部图像模型」= 云端（设置里的优先级）在前，本机后端在后 */
+function allImageModels() {
+  return listCloudImageModels().concat(listLocalImageModels());
+}
+/* "1024x1024" / "1024*768" 都收；认不出回 0（交给后端自己的默认） */
+function sizePair(size) {
+  const m = /^\s*(\d{2,5})\s*[x×*]\s*(\d{2,5})\s*$/i.exec(String(size || ""));
+  if (!m) return { width: 0, height: 0 };
+  return { width: Number(m[1]) || 0, height: Number(m[2]) || 0 };
+}
+/* 应用给的参考图（dataURL 或本机绝对路径）→ 本机后端要的文件路径列表。
+   dataURL 落 <数据目录>/apps-data/<appId>/refs/（应用拿不到 fs，只能由宿主解码落盘）。 */
+function localRefPaths(appId, opts) {
+  const o = isObj(opts) ? opts : {};
+  const src = [].concat(
+    Array.isArray(o.images) ? o.images : [],
+    o.image == null || o.image === "" ? [] : [o.image],
+    Array.isArray(o.refImages) ? o.refImages : [],
+    o.refImage == null || o.refImage === "" ? [] : [o.refImage],
+  );
+  const out = [];
+  const warnings = [];
+  let n = 0;
+  for (const raw of src) {
+    n += 1;
+    const one = String(raw || "").trim();
+    if (!one) continue;
+    if (/^data:image\//i.test(one)) {
+      const m = /^data:image\/([a-z0-9.+-]+);base64,(.*)$/i.exec(one);
+      if (!m) {
+        warnings.push("ref_image_skipped: 参考图不是合法 dataURL");
+        continue;
+      }
+      try {
+        const ext = /^jpe?g$/i.test(m[1]) ? ".jpg" : "." + m[1].replace(/[^a-z0-9]/gi, "").slice(0, 5);
+        const dir = path.join(
+          String(getDataDir() || require("os").tmpdir()),
+          "apps-data",
+          String(appId || "app"),
+          "refs",
+        );
+        mk(dir);
+        const file = path.join(dir, "ref-" + Date.now().toString(36) + "-" + n + ext);
+        fs.writeFileSync(file, Buffer.from(m[2], "base64"));
+        out.push(file);
+      } catch (err) {
+        warnings.push("ref_image_skipped: " + ((err && err.message) || err));
+      }
+      continue;
+    }
+    if (fs.existsSync(one)) out.push(one);
+    else warnings.push("ref_image_skipped: 本机找不到这张参考图");
+  }
+  return { paths: out, warnings: warnings };
+}
+/* 本机出图：调插件后端自己的 generate()，产物读盘转 base64 / dataUrl（回执形状与云端一致） */
+async function generateLocalImage(appId, pick, opts, emit) {
+  const o = isObj(opts) ? opts : {};
+  const mod = localImageModule(pick.id);
+  if (!mod || typeof mod.generate !== "function")
+    return bad(t("本机出图后端不可用（插件未加载）"), "no_local_backend");
+  const refs = localRefPaths(appId, o);
+  const wh = sizePair(o.size);
+  const outputDir =
+    String(o.outputDir || "").trim() ||
+    path.join(String(getDataDir() || require("os").tmpdir()), "apps-data", String(appId || "app"), "gen");
+  emit("progress", { stage: "request", message: t("正在请求本机图像后端…"), pct: 1 });
+  const started = Date.now();
+  let r = null;
+  try {
+    r = await mod.generate({
+      prompt: String(o.prompt || "").slice(0, MAX_PROMPT),
+      negative: String(o.negative || ""),
+      width: wh.width || undefined,
+      height: wh.height || undefined,
+      steps: o.steps,
+      cfg: o.cfg,
+      seed: o.seed,
+      precision: o.precision || o.variant,
+      refs: refs.paths,
+      maskPath: String(o.maskPath || "") || undefined,
+      outputDir: outputDir,
+      nodeId: "app:" + String(appId || ""),
+    });
+  } catch (err) {
+    r = { ok: false, error: "generate_failed", message: String((err && err.message) || err) };
+  }
+  if (!r || r.ok !== true) {
+    const code = String((r && r.error) || "local_failed");
+    const msg = String((r && r.message) || (r && r.error) || t("本机出图失败"));
+    emit("error", { error: msg, code: code });
+    return { ok: false, error: msg, code: code };
+  }
+  const file = String(r.path || "");
+  let buf = null;
+  try {
+    buf = fs.readFileSync(file);
+  } catch (err) {
+    return bad(t("本机出图产物读不到：") + ((err && err.message) || err), "no_image");
+  }
+  if (!buf || !buf.length) return bad(t("本机出图产物是空文件"), "no_image");
+  const ext = String(path.extname(file) || ".png").toLowerCase();
+  const mime = ext === ".jpg" || ext === ".jpeg" ? "image/jpeg" : ext === ".webp" ? "image/webp" : "image/png";
+  const b64 = buf.toString("base64");
+  emit("progress", { stage: "done", message: t("出图完成"), pct: 100 });
+  return {
+    ok: true,
+    via: "local",
+    model: String(pick.id || ""),
+    providerName: String(pick.providerName || ""),
+    mime: mime,
+    base64: b64,
+    dataUrl: "data:" + mime + ";base64," + b64,
+    bytes: buf.length,
+    path: file,
+    size: String(o.size || ""),
+    elapsedSec: Math.round((Date.now() - started) / 100) / 10,
+    warnings: refs.warnings,
+  };
+}
 /* 云端图像后端的参考图能力（图生图 / 图像编辑）—— 按**这个后端真正会走的那条接口族**声明，
  * 应用界面据此把不行的路置灰、把上限写清楚，不让它点下去才知道不行：
  *   · OpenAI 兼容图像端点（/images/edits）：多图按顺序对应提示词里的「图1 / 图2…」，
@@ -6408,13 +6847,16 @@ function cloudImageCaps(cfg, prov, modelId) {
    不含「谁选了哪只」—— 应用窗口那份按应用 id 存，函数节点那份存节点自身字段。 */
 function imageBackendsForUi() {
   const cloud = listCloudImageModels();
+  const local = listLocalImageModels();
+  const models = cloud.concat(local);
   return {
     ok: true,
-    models: cloud,
-    hasAny: cloud.length > 0,
+    models: models,
+    hasAny: models.length > 0,
     hasCloud: cloud.length > 0,
-    hasLocal: false,
-    defaultModel: cloud.length ? cloud[0].id : "",
+    hasLocal: local.length > 0,
+    localReady: local.length > 0,
+    defaultModel: models.length ? models[0].id : "",
   };
 }
 function readImageSelection(appId) {
@@ -6441,11 +6883,12 @@ function writeImageSelection(appId, model) {
 /* 本次要用的图像后端：显式给的清单内 id > 该应用存过的选择 > auto（清单第一只）
    越界 / 后端不存在回 { error }（错误码即契约，绝不静默换一个后端出图）。 */
 function resolveImagePick(appId, modelId) {
-  const cloud = listCloudImageModels();
-  if (!cloud.length) return { error: "no_provider" };
+  /* 云端 + 本机插件后端同一份清单：选中哪个真正能出图就派哪一个 */
+  const all = allImageModels();
+  if (!all.length) return { error: "no_provider" };
   const want = String(modelId == null ? "" : modelId).trim() || readImageSelection(appId);
-  if (!want || want === MODEL_AUTO) return { auto: true, ...cloud[0] };
-  const hit = cloud.find((m) => m.id === want);
+  if (!want || want === MODEL_AUTO) return { auto: true, ...all[0] };
+  const hit = all.find((m) => m.id === want);
   if (!hit) return { error: "bad_model" };
   return Object.assign({ auto: false }, hit);
 }
@@ -6453,17 +6896,19 @@ function imageModelsPayload(e, arg) {
   const own = senderAppDir(e, arg);
   if (!own) return bad(t("不是应用窗口"), "not_app");
   const cloud = listCloudImageModels();
+  const local = listLocalImageModels();
+  const models = cloud.concat(local);
   const saved = readImageSelection(own.id);
-  const ids = cloud.map((m) => m.id);
+  const ids = models.map((m) => m.id);
   return {
     ok: true,
-    models: cloud,
+    models: models,
     selected: saved && ids.indexOf(saved) >= 0 ? saved : MODEL_AUTO,
     hasAny: ids.length > 0,
     hasCloud: cloud.length > 0,
-    hasLocal: false,
-    localReady: false,
-    defaultModel: cloud.length ? cloud[0].id : "",
+    hasLocal: local.length > 0,
+    localReady: local.length > 0,
+    defaultModel: models.length ? models[0].id : "",
     /* 全局音视频互斥锁被别的任务占着时先告诉应用，别让它点了才发现忙 */
     busy: !!(readMediaLock() || {}).nodeId,
   };
@@ -6568,8 +7013,11 @@ function imageSpec(id, pick, opts) {
     warnings: warnings,
   };
 }
-/* 云端出图（每次一张）：回 base64 + dataUrl（与旧行为一致）+ 尺寸与耗时旁证 */
-async function generateCloudImage(pick, built, emit) {
+/* 云端出图（每次一张）：回 base64 + dataUrl（与旧行为一致）+ 尺寸与耗时旁证。
+   给了 outputDir 就**把同一份二进制写进那个目录**并在回执里补 path —— 与
+   generateLocalImage 的 outputDir 语义逐字一致：应用窗口没有二进制写口，
+   只回 base64 等于没给文件（应用拿不到可 fs.exists 复核的产物）。 */
+async function generateCloudImage(pick, built, emit, outputDir) {
   if (typeof aiCall !== "function") return bad(t("模型调用内核不可用"), "no_kernel");
   emit("progress", { stage: "request", message: t("正在请求图像服务商…"), pct: 1 });
   const started = Date.now();
@@ -6578,6 +7026,23 @@ async function generateCloudImage(pick, built, emit) {
   const ext = String((r && r.ext) || "png");
   if (!b64) return bad(t("响应无图像数据"), "no_image");
   const mime = ext === "jpeg" || ext === "jpg" ? "image/jpeg" : ext === "webp" ? "image/webp" : "image/png";
+  const buf = Buffer.from(b64, "base64");
+  /* 落盘：写不成就**明确报错**，不静默回落到「只有 base64」（应用那边会当成功却没文件） */
+  let file = "";
+  const dir = String(outputDir || "").trim();
+  if (dir) {
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+      file = path.join(
+        dir,
+        "cloud-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8) + "." + (ext || "png"),
+      );
+      fs.writeFileSync(file, buf);
+    } catch (err) {
+      return bad(t("云端出图产物落盘失败：") + ((err && err.message) || err), "image_write_failed");
+    }
+  }
+  emit("progress", { stage: "done", message: t("出图完成"), pct: 100 });
   return {
     ok: true,
     via: "cloud",
@@ -6586,12 +7051,18 @@ async function generateCloudImage(pick, built, emit) {
     mime: mime,
     base64: b64,
     dataUrl: "data:" + mime + ";base64," + b64,
-    bytes: Buffer.from(b64, "base64").length,
+    bytes: buf.length,
+    path: file,
     size: String(built.spec.size || ""),
     elapsedSec: Math.round((Date.now() - started) / 100) / 10,
     warnings: built.warnings,
   };
 }
+/* 在飞的出图请求：reqId → { appId, local }。
+   用途只有一个：**取消必须是自己的那条** —— reqId 由应用自己生成，别的应用随手编一个就能把
+   别人的活停掉（本机后端是全局单任务，停错了就是白等一轮）。顺手也修了「空闲时取消也回
+   cancelled:true」：没在飞的请求一律 cancelled:false。 */
+const imageInflight = new Map();
 async function hostImageStream(e, opts) {
   const own = senderAppDir(e, opts);
   if (!own) return bad(t("不是应用窗口"), "not_app");
@@ -6599,9 +7070,13 @@ async function hostImageStream(e, opts) {
   if (blockedIn) return blockedIn;
   const o = isObj(opts) ? opts : {};
   const reqId = String(o.reqId || "");
+  const ownerId = String(own.id || "");
   const emit = (type, data) => {
     emitHostStreamFor(e, opts, Object.assign({ reqId: reqId, type: type }, data || {}));
   };
+  /* 登记在飞（reqId 为空就不登记：老调用方没有 reqId 也就没法取消） */
+  const inflight = reqId ? { appId: ownerId, local: false } : null;
+  if (inflight) imageInflight.set(reqId, inflight);
   try {
     if (!String(o.prompt || "").trim()) return bad(t("缺少提示词"), "no_prompt");
     const pick = resolveImagePick(own.id, o.model || o.imageModel);
@@ -6611,15 +7086,22 @@ async function hostImageStream(e, opts) {
         "no_provider",
       );
     if (pick.error) return bad(t("该图像模型不在 MTNode 已配置的清单里"), "bad_model");
+    if (inflight && pick.local) inflight.local = true;
+    /* 本机出图后端（Qwen Image / FLUX 3 Klein…）：与画布节点同一条出口，
+       产物读盘转 base64 / dataUrl 回给应用 —— 应用侧拿不到文件系统。 */
+    if (pick.local) return await generateLocalImage(own.id, pick, o, emit);
     const img = imageRefDataUrls(o);
     const built = imageSpec(own.id, pick, o);
     if (built.error) return bad(t("未配置可用的图像服务商（请在「设置 · API/配置」中填写）"), built.error);
-    return await generateCloudImage(pick, built, emit);
+    /* outputDir 与本机出图同一语义：给了就把产物写进去并回 path（应用窗口没有二进制写口） */
+    return await generateCloudImage(pick, built, emit, o.outputDir);
   } catch (err) {
     const msg = String((err && err.message) || err);
     const code = callErrCode(err);
     emit("error", { error: msg, code: code });
     return { ok: false, error: msg, code: code };
+  } finally {
+    if (inflight && imageInflight.get(reqId) === inflight) imageInflight.delete(reqId);
   }
 }
 /* 显式图生图 / 图像编辑（appHost.imageEdit）：参考图**必填**，其余与 hostImageStream 同一份实现。
@@ -6661,22 +7143,42 @@ async function hostImageGenerate(arg) {
       "no_provider",
     );
   if (pick.error) return bad(t("该图像模型不在 MTNode 已配置的清单里"), "bad_model");
+  /* 本机出图后端（函数节点与应用同一份清单）：走插件自己的 generate() */
+  if (pick.local) return await generateLocalImage(appId, pick, o, () => {});
   const img = imageRefDataUrls(o);
   const emit = () => {};
   try {
     const built = imageSpec(appId, pick, o);
     if (built.error)
       return bad(t("未配置可用的图像服务商（请在「设置 · API/配置」中填写）"), built.error);
-    return await generateCloudImage(pick, built, emit);
+    return await generateCloudImage(pick, built, emit, outDir);
   } catch (err) {
     return fail(err);
   }
 }
-/* 取消：应用侧按 reqId 请求取消（云端请求不中断，结果由调用方自己忽略）。 */
-function hostImageCancel(e, arg) {
+/* 取消：应用侧按 reqId 请求取消（云端请求不中断，结果由调用方自己忽略）。
+   ★ 只认**自己那条在飞请求**：别的应用拿同一个 reqId 撤不了别人的活（本机后端是全局单任务，
+     错停一次就白等一轮）；没有在飞的请求（reqId 不存在 / 已经跑完了）一律 cancelled:false ——
+     原来那版对空闲取消也回 true，会让应用以为「停成功了」而实际上什么都没发生。 */
+async function hostImageCancel(e, arg) {
   const own = senderAppDir(e, arg);
   if (!own) return bad(t("不是应用窗口"), "not_app");
-  return { ok: true, cancelled: false };
+  const reqId = String((isObj(arg) && arg.reqId) || "");
+  const hit = reqId ? imageInflight.get(reqId) : null;
+  if (!hit || String(hit.appId) !== String(own.id || "")) return { ok: true, cancelled: false };
+  let cancelled = false;
+  for (const b of LOCAL_IMAGE_BACKENDS) {
+    const mod = localImageModule(b.id);
+    if (mod && typeof mod.cancelGenerate === "function") {
+      try {
+        const r = await mod.cancelGenerate();
+        if (r && r.ok) cancelled = true;
+      } catch {}
+    }
+  }
+  /* 云端请求不中断（也没有 abort 口）：受理即算「取消」——回执说清楚，调用方自己忽略结果 */
+  imageInflight.delete(reqId);
+  return { ok: true, cancelled: true, local: hit.local === true, aborted: cancelled };
 }
 async function hostText(e, opts) {
   const own = senderAppDir(e);
@@ -6908,7 +7410,8 @@ function appCapabilitiesGet(arg) {
   const hit = appCapById(a.id, a.kind);
   if (hit.error) return hit.error;
   const man = manifestOf(hit.dir, hit.id) || {};
-  const caps = normCapabilities(man.capabilities);
+  /* 读口径：老应用没写 voiceGen 就沿用画布读写那一位（见 apps-capabilities.js 的 effectiveCapabilities） */
+  const caps = effectiveCapabilities(man.capabilities);
   return { ok: true, id: hit.id, capabilities: caps, list: capabilitiesForUi(caps, appLocale()) };
 }
 /* 能力位 → 声明落盘 +（按需）语音模块同步 + 存量内联听写段清理。
@@ -6921,6 +7424,18 @@ function appCapabilitiesSet(arg) {
   const prev = manifestOf(hit.dir, hit.id) || {};
   const caps = normCapabilities(a.capabilities);
   const man = writeManifest(hit.dir, { capabilities: caps }, prev);
+  /* 三个重能力位都关掉 = **撤销授权**（app-host-bridge.js 的 grants）：取消勾选就是撤回，
+     用户不必再去找第二个「撤销」按钮；只关一位时不撤（另一类能力还在合法使用）。 */
+  try {
+    if (
+      hostBridge &&
+      typeof hostBridge.revoke === "function" &&
+      caps.canvasHost !== true &&
+      caps.agentHost !== true &&
+      caps.voiceGen !== true
+    )
+      hostBridge.revoke("app", hit.id);
+  } catch (_) {}
   const out = { ok: true, id: hit.id, capabilities: caps, wroteFiles: [] };
   /* 语音模块两份文件：声明打开就补，关掉就撤（撤的是我们补的那两份，绝不碰别的文件） */
   out.wroteFiles = syncSpeechFiles(hit.dir, caps);
@@ -6930,6 +7445,28 @@ function appCapabilitiesSet(arg) {
   out.capabilities = normCapabilities(readManifest(hit.dir) ? (readManifest(hit.dir) || {}).capabilities : caps);
   out.list = capabilitiesForUi(out.capabilities, appLocale());
   return out;
+}
+/* 一个应用的清单摘要（宿主桥用它判「这个应用声明了哪些能力」+ 授权窗上写哪个名字）：
+   只认本机真实存在的那一份（dirOfApp 按磁盘判根），读不到就按「未声明」处理 ——
+   绝不用猜的清单去放行。main.js 把它注入 app-host-bridge.js 的 getApp。 */
+function appHostSummaryOf(id) {
+  const sid = safeAppId(id);
+  if (!sid) return null;
+  let dir = "";
+  try {
+    dir = dirOfApp(sid, diskKindOf(sid)) || "";
+  } catch (_) {
+    dir = "";
+  }
+  const man = dir ? readManifest(dir) : null;
+  return {
+    id: sid,
+    name: String((man && man.name) || sid),
+    dir: dir,
+    /* 读口径（与「应用设置」窗同一份）：没写 voiceGen 的老应用按画布读写继承语音合成，
+       否则存量应用一升级，appHost.audio 就整族回 not_declared（真机实测的失声现场） */
+    capabilities: effectiveCapabilities((man && man.capabilities) || {}),
+  };
 }
 /* 只做那次存量清理（打开「应用设置」窗时静默调一次）：不写声明、不碰语音文件。
    给渲染层一个入口，用户不必先去勾某一位才清掉页面里的旧内联听写条。 */
@@ -6942,8 +7479,7 @@ function appCapabilitiesCleanEntry(arg) {
   return { ok: true, id: hit.id, entry: safeEntry(man.entry) || SUB.index, removed: clean.removed };
 }
 /* 应用侧展示语言（config.json 的 locale；hostLocale 由 main.js 注入，取不到按中文） */
-function appLocale() {
-  try {
+function appLocale() {  try {
     if (typeof hostLocale === "function") return String(hostLocale() || "zh");
   } catch {}
   try {
@@ -7161,6 +7697,8 @@ function registerAppsIpc(opts) {
   try {
     if (typeof opts.getDataDir === "function") getDataDir = opts.getDataDir;
     if (typeof opts.getMainWin === "function") getMainWin = opts.getMainWin;
+    /* 宿主桥（画布 / agent / 文件 / 工具 / 联网）：main.js 建好后注入；认发送方窗口在下面那条通道里做 */
+    if (opts.hostBridge && typeof opts.hostBridge.call === "function") hostBridge = opts.hostBridge;
     if (typeof opts.getAppVersion === "function") getAppVersion = opts.getAppVersion;
     if (typeof opts.t === "function") t = opts.t;
     if (typeof opts.authState === "function") authState = opts.authState;
@@ -7615,6 +8153,9 @@ function registerAppsIpc(opts) {
   /* 作者标签那一份清单摘要（作者 / 版本 / 说明 / 标签 / 图标 / 数据目录）：
      与 apps:hostCapabilities 里的 author 同一份实现（hostAuthorTagOf），页面自己也能调。 */
   ipcMain.handle("apps:hostAuthorTag", guard((e, arg) => hostAuthorTag(e, arg)));
+  /* 底部播放条的波形数据：文件事实（在不在 / 多大 / mtime）+ 抽好的峰值（只回峰值，不回字节）。
+     应用窗口没有文件系统，这是它拿到波形的唯一一条路（见 hostMediaWave 一节）。 */
+  ipcMain.handle("apps:hostMediaWave", guard((e, arg) => hostMediaWave(e, arg)));
   ipcMain.handle("apps:hostModel", guard((e, arg) => hostModelGet(e, arg)));
   ipcMain.handle("apps:hostSetModel", guard((e, arg) => hostModelSet(e, arg)));
   /* 宿主选图（多模态输入里的「选一张本机图」）：只回路径，读盘 / 缩放留在主进程 */
@@ -7691,6 +8232,35 @@ function registerAppsIpc(opts) {
     return { ok: true, mic: true, note: "getUserMedia 在应用页里直接调用（宿主已放行 media 权限）" };
   }));
 
+  /* ── appHost 重能力桥（画布 / agent / 文件 / 工具 / 联网）────────────────────────
+     一条总入口：{ ns, method, args } → app-host-bridge.js（认发送方窗口 → 认能力位声明 →
+     认用户授权 → 中继到主窗口渲染层执行）。应用 id 只认**发送方窗口**（appIdOfSender 那张表），
+     页面自己传的 id 一律不认；认不出不是应用窗口就直接拒绝。 */
+  ipcMain.handle("apps:hostBridge", async (e, arg) => {
+    try {
+      const own = senderAppDir(e, arg);
+      if (!own) return bad(t("不是应用窗口"), "not_app");
+      if (!hostBridge) return bad(t("宿主桥未就绪（主进程组件没起来）"), "not_ready");
+      const a = isObj(arg) ? arg : {};
+      const sum = appHostSummaryOf(own.id);
+      const win = BrowserWindow.fromWebContents(e.sender);
+      const caller = {
+        kind: "app",
+        id: own.id,
+        name: String((sum && sum.name) || own.id),
+        /* agent 那一轮的流式事件回这只窗口（窗口关了就是没人收，桥那边会回 push_failed） */
+        push: (ev) => {
+          try {
+            if (win && !win.isDestroyed()) win.webContents.send("appHost:stream", ev);
+          } catch (_) {}
+        },
+      };
+      return await hostBridge.call(caller, String(a.ns || ""), String(a.method || ""), isObj(a.args) ? a.args : {});
+    } catch (err) {
+      return fail(err);
+    }
+  });
+
   /* ── 预览态宿主桥（本轮需求：预览里也连入 MTNode）─────────────────────────────
      三条通道：登记 / 撤销预览租约、以及**一条总入口** apps:previewCall 把预览页的调用
      分派到与独立窗口**逐字同一条**宿主实现上。认应用靠租约（主窗口 + token），
@@ -7707,6 +8277,16 @@ function registerAppsIpc(opts) {
     const val = a.arg == null ? {} : a.arg;
     const pvArg = Object.assign({}, isObj(val) ? val : { param: val }, { token: String(a.token || "") });
     try {
+      /* 素材库：七条主力方法 + 读条目 / 改元数据 / 删条目 / 删素材，逐条走 assets 命名空间
+         （与独立窗口同一条 app-host-bridge，所以能力声明 assetHost 与首次授权也同一套） */
+      if (PREVIEW_ASSET_METHODS[method]) {
+        if (PREVIEW_ASSET_WRITE[method]) {
+          const blocked = previewWriteBlock(e, a);
+          if (blocked) return blocked;
+        }
+        return await previewHostCall(id, "assets", PREVIEW_ASSET_METHODS[method], pvArg);
+      }
+
       switch (method) {
         case "textGenStream":
           return await hostTextStream(e, pvArg);
@@ -7762,6 +8342,32 @@ function registerAppsIpc(opts) {
           return hostDataWrite(e, pvArg);
         case "account":
           return hostAccount(e, pvArg);
+        /* 文件只读两项：与独立窗口同一条宿主实现（fs.exists / fs.imageDataUrl），
+           读图不必先有画布绑定，也不另开 base64 专用通道 */
+        case "fsExists":
+          return await previewHostCall(id, "fs", "exists", pvArg);
+        case "fsImageDataUrl":
+          return await previewHostCall(id, "fs", "imageDataUrl", pvArg);
+        /* 语音合成（Breeze TTS 2）：清单 / 现况 / 叫停照常；合成会写盘，按写类调用过只读闸 */
+        case "audioPresets":
+          return await previewHostCall(id, "audio", "presets", {});
+        case "audioStatus":
+          return await previewHostCall(id, "audio", "status", {});
+        case "audioCancel":
+          return await previewHostCall(id, "audio", "cancel", {});
+        case "audioSynth": {
+          const blocked = previewWriteBlock(e, a);
+          if (blocked) return blocked;
+          return await previewHostCall(id, "audio", "synth", pvArg);
+        }
+        /* 联网取素材：与独立窗口同一条主进程实现（net-download.js）；下载写盘，按写类过只读闸 */
+        case "netSearch":
+          return await previewHostCall(id, "net", "search", pvArg);
+        case "netDownload": {
+          const blocked = previewWriteBlock(e, a);
+          if (blocked) return blocked;
+          return await previewHostCall(id, "net", "download", pvArg);
+        }
         case "close":
         case "quit":
           emitPreviewNotice(id, "preview_no_window", previewNoWindowError().error);
@@ -7913,6 +8519,8 @@ module.exports = {
   writeModelSelection,
   /* 应用侧图像通道（冒烟直接真跑）：云端清单按模型形态认、本机后端按注入的探测函数认 */
   listCloudImageModels,
+  listLocalImageModels,
+  allImageModels,
   usableImageProviders,
   resolveImagePick,
   readImageSelection,
@@ -7933,8 +8541,9 @@ module.exports = {
   /* 应用能力位（app.json 的 capabilities）：主进程三条入口真跑；能力位**不再进页面**
      （入口页生成时按 capabilities 注入的老路径已删，听写条改由宿主按声明注入） */
   appCapabilitiesGet,
-  appCapabilitiesSet,
-  appCapabilitiesCleanEntry,
+  appCapabilitiesSet,  appCapabilitiesCleanEntry,
+  /* 宿主桥用：一个应用的清单摘要（能力位声明 / 名字 / 目录） */
+  appHostSummaryOf,
   clearLegacyDictInline,
   DICT_INLINE_MARK,
   defaultPageHtml,
@@ -7975,4 +8584,8 @@ module.exports = {
   /* 应用通道的思考档白名单（纯函数，冒烟直接真跑：默认 off、on=high、非法值拒绝） */
   normThinkingEffort,
   APP_THINKING,
+  /* 应用窗口底部播放条的波形抽取（纯函数：喂 WAV 字节 → 峰值桶；冒烟见
+     test/smoke-app-media-player.js） */
+  wavPeaks,
+  MEDIA_WAVE_BUCKETS,
 };

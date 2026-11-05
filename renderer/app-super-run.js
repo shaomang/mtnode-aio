@@ -14,29 +14,37 @@
  *   · 层内套层 = 递归摊平到底层；但**工具节点整体当一颗跑**（它自己是执行引擎，
  *       摊开会废掉参数契约与输出写回），**长任务壳整棵跳过**（由状态机驱动）。
  *       跨壳时以父层顺序为准：子壳内的节点作为连续一段跑完，再跑下一个父层节点。
- *   · 已有输出：开跑前问一次「将覆盖 N 个已有输出」。
+ *   · 开跑前必问一次「怎么跑」（superRunAskMode）：仅补充 / 全部执行 / 取消。
+ *       仅补充 = 只跑还没有输出的节点（已有输出原样保留）；全部执行 = 全跑一遍
+ *       （已有输出会被覆盖）；取消 = 什么都不跑。选择作用在递归摊平后的整份清单上，
+ *       所以本层 + 所有子层按同一个口径执行。
  *   · 层内已有节点在跑 / 排队：提示并中止整层（一个都不启动）。
- *   · **某节点失败：本层就地暂停，不再中止整层**（本次修的就是这条）：
- *       头部 ▶ 区变成「继续」+ 保留 ■「停止」，剩余节点一个都不启动；
- *       失败那颗由用户手动跑成功（有产出、无 error）后「继续」才可点（否则置灰）；
- *       点「继续」时把受影响的下游子树列出来由用户勾选「一并跳过 / 还是跑」；
- *       暂停期间本层剩余节点不由其它批次（控制节点 ▶ / 自动级联）启动。
+ *   · **某节点失败：本层直接终止**（本次需求：不再有暂停 / 继续）：
+ *       剩余节点一个都不启动，头部只留 ■，批次当场收尾并给出失败汇总；
+ *       出问题就是终止，用户修好后重新点 ▶ 再跑一遍。
+ *       **谁才配终止整层**（用户报「什么都没点，整个节点层突然全停了」后的收紧）：
+ *         · error（真报错）→ 终止本层；
+ *         · cancelled（被显式停止，且本轮真的起跑过）→ 终止本层；
+ *         · empty（跑了但没产出，如保存节点本轮无内容）→ 只记一条失败，
+ *           继续跑剩余节点，收尾小字里照样列出来；
+ *         · 本轮压根没起跑（playLock 还挂着上一轮、闸门直接 return）→ 不算失败，记跳过；
+ *         · 循环里的意外异常 → 不再静默收尾，记中断原因并提示。
  *   · **失败分档**（superRunFailureOf）：
  *       error / empty（真报错 / 没产出）→ 自动重试 1 次再判失败；
- *       cancelled（被终止 / 生成任务被取消）→ 不重试，直接进暂停。
- *   · **■ 与顶栏「全部终止」= 直接退出本层**（不进暂停、不留继续键），
+ *       cancelled（被终止 / 生成任务被取消）→ 不重试，直接终止。
+ *   · **■ 与顶栏「全部终止」= 直接退出本层**（不留继续键），
  *       并且正在跑的那一颗当场中止（走 stopNode：取消模型请求 / 后端生成，
  *       不等它自然跑完 —— 见 superRunAbortCurrent）。
  *   · 留痕：失败节点自己的状态行 + 壳卡片底部只读小字 + 左下角运行队列；
  *       本层运行期间捕获到的渲染层未捕获异常也算本层的中断原因。
- *   · 暂停态只活在内存（SUPER_RUN_STATE）：关应用即作废，重开后需重新 ▶。
+ *   · 运行态只活在内存（SUPER_RUN_STATE）：关应用即作废，重开后需重新 ▶。
  *
  * 执行本体直接复用 app-nodes.js 的 runCascadeNode（工具节点 / 自动级联同一条通路），
- * 本文件只负责「摊平 + 排序 + 批次控制 + 暂停/继续 + 界面反馈」，不另造一套节点执行器。
+ * 本文件只负责「摊平 + 排序 + 批次控制 + 界面反馈」，不另造一套节点执行器。
  * ============================================================================ */
 
 /* 运行态：shellId -> state
-   { phase:"running"|"paused", done, total, stopping, epoch, remaining:Set,
+   { done, total, stopping, epoch, remaining:Set,
      orderIds:Set, currentTitle, failed:{id,title,kind,reason,kindOf}, failures[],
      skipped:Set, retried:Set, abnormal[] } */
 const SUPER_RUN_STATE = new Map();
@@ -45,9 +53,13 @@ const SUPER_RUN_FOCUS = new Set();
 /* 最近一次收尾汇总（壳卡片底部那行只读小字，shellId -> 文本）：下次发车时清掉 */
 const SUPER_RUN_SUMMARY = new Map();
 
-/* 终止类文案：这类「失败」是被人 / 全局终止打断的，不重试，但同样进暂停等人工 */
+/* 终止类文案：这类「失败」是被人 / 全局终止打断的，不重试，直接终止本层。
+   只认明确的中文终止词：旧写法还裸匹配 cancel / abort，而连接类错误原文里全是
+   "Connection aborted." / "request canceled"（Python requests、Node ECONNRESET），
+   一次网络抖动就被判成「本层已被取消」→ 不重试、整层当场收尾，用户没点任何东西
+   却看到「本层已停止」。英文终止只认带主语的明确说法。 */
 const SUPER_RUN_STOP_TEXT =
-  /已终止|已取消|已手动停止|已请求终止|手动终止|自动终止|已停止|中止|cancel|abort/i;
+  /已终止|已取消|已手动停止|已请求终止|手动终止|自动终止|已停止|中止|stopped by user|cancell?ed by user|aborted by user/i;
 
 /* ── 本层批次 = 一张「调度表」（与 runControlRunnableQueue 同一口径）────────────
    为什么必须有它（本 bug 的根因）：等待态 S.pendingRun 只是展示用的集合，
@@ -81,22 +93,9 @@ function superRunIsFocusNode(nodeId) {
   return !!nodeId && SUPER_RUN_FOCUS.has(String(nodeId));
 }
 
-/* 这一层是否正在「运行本层」（画布上给壳加呼吸灯：.super-run-live）
-   暂停期间仍然算「本层未结束」：呼吸灯不灭，用户一眼看出它还在等着。 */
+/* 这一层是否正在「运行本层」（画布上给壳加呼吸灯：.super-run-live） */
 function superRunIsRunningShell(nodeId) {
   return !!nodeId && SUPER_RUN_STATE.has(String(nodeId));
-}
-
-/* 暂停中的本层是否锁着这颗节点（其它批次不许启动它）。
-   返回壳 id（空了就是没锁）：给 app-nodes.js 的 playNodeBody 当闸门用。 */
-function superRunNodeLockedBy(nodeId) {
-  const id = String(nodeId == null ? "" : nodeId);
-  if (!id) return "";
-  for (const [shellId, st] of SUPER_RUN_STATE) {
-    if (!st || st.phase !== "paused") continue;
-    if (st.remaining && st.remaining.has(id)) return shellId;
-  }
-  return "";
 }
 
 /* 长任务壳（super + ltShellTask）：由长周期任务状态机驱动，一键跑会跟引擎抢同一批节点 */
@@ -268,11 +267,6 @@ function superRunNodeFailed(n) {
   return !!superRunFailureOf(n);
 }
 
-/* 「继续」的门槛：失败那颗必须已经手动跑成功（有产出、无 error / 无取消状态） */
-function superRunResumeReady(node) {
-  return !!node && !superRunFailureOf(node);
-}
-
 /* 画布上某颗节点的元素（`dataset.nid` 是唯一真源；不拼选择器，避免 id 里的特殊字符） */
 function superRunNodeEl(nodeId) {
   const id = String(nodeId == null ? "" : nodeId);
@@ -292,20 +286,19 @@ function superRunPaintFocus(nodeId, on) {
   if (el) el.classList.toggle("super-run-focus", !!on);
 }
 
-/* 正在跑 / 暂停的那一层：壳上挂 / 摘 .super-run-live（呼吸灯，见 canvas.css）。
+/* 正在跑的那一层：壳上挂 / 摘 .super-run-live（呼吸灯，见 canvas.css）。
    只改现场元素；整图重画时由 app-canvas.js 按 superRunIsRunningShell 补回来。 */
 function superRunPaintShell(shell, on) {
   const el = shell ? superRunNodeEl(shell.id) : null;
   if (el) el.classList.toggle("super-run-live", !!on);
 }
 
-/* 进度只在按钮上就地更新（n/N），避免每跑一颗就整图重画。
-   暂停态那颗键已经是「继续」，不许被进度覆盖（改了文字用户就找不到继续入口）。 */
+/* 进度只在按钮上就地更新（n/N），避免每跑一颗就整图重画 */
 function superRunPaintProgress(shell) {
   const el = shell ? superRunNodeEl(shell.id) : null;
   const btn = el ? el.querySelector(".n-super-run") : null;
   const st = superRunStateOf(shell);
-  if (!btn || (st && st.phase === "paused")) return;
+  if (!btn) return;
   if (!st) {
     btn.textContent = "▶";
     btn.classList.remove("running", "progress");
@@ -325,23 +318,12 @@ function superRunProgressText(st) {
 function superRunStateText(st) {
   if (!st) return "";
   const p = superRunProgressText(st);
-  if (st.phase === "paused" && st.failed) {
-    const who = st.failed.title || st.failed.kind || "";
-    return (
-      I18n.t("已暂停 ") +
-      p +
-      " · " +
-      who +
-      I18n.t(" 失败：") +
-      (st.failed.reason || I18n.t("没有产出内容"))
-    );
-  }
   const cur = st.currentTitle ? I18n.t(" · 正在跑 ") + st.currentTitle : "";
   return I18n.t("运行本层 ") + p + cur;
 }
 
 /* 壳卡片底部那行只读小字（app-canvas.js 的折叠卡调用）：
-   运行中 / 暂停中显示本层状态，跑完显示最近一次汇总（下次发车时清掉）。 */
+   运行中显示本层状态，跑完显示最近一次汇总（下次发车时清掉）。 */
 function superRunStatusLineEl(node) {
   if (!node || !node.id) return null;
   const st = superRunStateOf(node);
@@ -349,9 +331,7 @@ function superRunStatusLineEl(node) {
   const text = st ? superRunStateText(st) : sum;
   if (!text) return null;
   const el = document.createElement("div");
-  el.className =
-    "super-run-status" +
-    (st ? (st.phase === "paused" ? " paused" : " live") : " done");
+  el.className = "super-run-status" + (st ? " live" : " done");
   el.textContent = text;
   el.title = text;
   return el;
@@ -383,7 +363,7 @@ function superRunQueueItems() {
       kindLabel: I18n.t("节点层"),
       stateText: superRunStateText(st),
       sub: wfName,
-      state: st.phase === "paused" ? "paused" : "run",
+      state: "run",
       wfId: (w && w.id) || "",
       wfName,
       /* 点行要先切回它归属的画布（jumpRunQueueItem 的 crossWf 分支） */
@@ -391,34 +371,6 @@ function superRunQueueItems() {
       node: shell,
       sess: null,
     });
-  }
-  return out;
-}
-
-/* 本层里失败那颗的下游（连通可达、且在本批执行清单里）：勾选「一并跳过」的候选 */
-function superRunDownstreamOf(st, nodeId) {
-  const out = [];
-  if (!st || !nodeId || !S || !S.wf) return out;
-  const inBatch = st.orderIds || new Set();
-  const adj = new Map();
-  for (const w of S.wf.wires || []) {
-    if (!w || w.rel || !w.from || !w.to || w.from === w.to) continue;
-    if (!adj.has(w.from)) adj.set(w.from, []);
-    adj.get(w.from).push(w.to);
-  }
-  const seen = new Set([String(nodeId)]);
-  const queue = [String(nodeId)];
-  while (queue.length) {
-    const cur = queue.shift();
-    for (const to of adj.get(cur) || []) {
-      if (seen.has(to)) continue;
-      seen.add(to);
-      queue.push(to);
-      if (inBatch.has(to) && !st.skipped.has(to)) {
-        const n = typeof nodeById === "function" ? nodeById(to) : null;
-        if (n) out.push(n);
-      }
-    }
   }
   return out;
 }
@@ -436,44 +388,21 @@ function superRunShellById(shellId) {
   }
   return null;
 }
-/* 左下角运行队列行用：停止 / 继续（与壳头部两颗键同一条通路） */
+/* 左下角运行队列行用：停止（与壳头部 ■ 同一条通路） */
 function superRunStopById(shellId) {
   const shell = superRunShellById(shellId);
   if (shell) superRunStop(shell);
 }
-function superRunResumeById(shellId) {
-  const shell = superRunShellById(shellId);
-  if (shell) superRunResume(shell);
-}
 
-/* 节点头部那颗：▶ / n/N + ■；暂停态是「继续」+ ■ */
+/* 节点头部那颗：▶ / n/N + ■（没有暂停 / 继续） */
 function superRunHeadButton(node) {
   const wrap = document.createElement("span");
   wrap.className = "n-super-run-wrap";
   const st = superRunStateOf(node);
-  const paused = !!(st && st.phase === "paused");
   const b = document.createElement("button");
   b.type = "button";
-  b.className = "n-play n-super-run" + (st && !paused ? " running progress" : "");
-  if (paused) {
-    /* 暂停态：这颗键就是「继续」；失败那颗还没跑成功时置灰（门槛见 superRunResumeReady） */
-    const failed = nodeById(st.failed && st.failed.id);
-    const ready = superRunResumeReady(failed);
-    b.classList.add("n-super-resume");
-    b.textContent = I18n.t("继续");
-    b.disabled = !ready;
-    b.classList.toggle("disabled", !ready);
-    b.title = ready
-      ? I18n.t("继续运行本层：从暂停处接着跑剩下的节点")
-      : I18n.t("还不能继续：先把「") +
-        ((st.failed && st.failed.title) || "") +
-        I18n.t("」手动跑成功（有产出、无报错）");
-    b.setAttribute("aria-label", b.title);
-    b.onclick = (ev) => {
-      ev.stopPropagation();
-      superRunResume(node);
-    };
-  } else if (st) {
+  b.className = "n-play n-super-run" + (st ? " running progress" : "");
+  if (st) {
     b.textContent = Math.min(st.done, st.total) + "/" + st.total;
     b.classList.add("progress");
     b.title =
@@ -490,7 +419,7 @@ function superRunHeadButton(node) {
   } else {
     b.textContent = "▶";
     b.title = I18n.t(
-      "运行本层：把层内所有可执行节点按上游→下游依次跑一遍（长任务壳不参与）",
+      "运行本层：先选「仅补充 / 全部执行 / 取消」，再按上游→下游依次跑层内可执行节点（含所有子层；长任务壳不参与）",
     );
     b.setAttribute("aria-label", b.title);
     b.onclick = (ev) => {
@@ -503,9 +432,7 @@ function superRunHeadButton(node) {
     const stop = document.createElement("button");
     stop.type = "button";
     stop.className = "n-play n-stop";
-    stop.title = paused
-      ? I18n.t("停止本层：放弃剩余节点（暂停态一并作废）")
-      : I18n.t("停止运行本层：立刻中止正在跑的节点，不再启动剩余节点");
+    stop.title = I18n.t("停止运行本层：立刻中止正在跑的节点，不再启动剩余节点");
     stop.setAttribute("aria-label", stop.title);
     stop.onclick = (ev) => {
       ev.stopPropagation();
@@ -568,8 +495,6 @@ function superRunStop(shell) {
     if (typeof clearPendingRun === "function") clearPendingRun(st.remaining);
     st.remaining.clear();
   }
-  /* 暂停中点 ■ = 放弃本层：把等待中的「继续」当场结清，别让批次永远挂着 */
-  superRunPauseSettle(st, "stop");
   superRunPaintProgress(shell);
   try {
     renderCanvas();
@@ -581,13 +506,13 @@ function superRunStop(shell) {
      toast 只显示 err / warn 两档（app.js 的 TOAST_KINDS_SHOWN），这里不重复打扰。 */
 }
 
-/* 「全部终止」要能命中本层：暂停中的层没有任何在跑的节点（队列里只有一条暂停行），
+/* 「全部终止」要能命中本层：本层在跑时节点级扫描未必覆盖它，
    stopAllRuns 的「没有运行中的任务」判空会直接返回，所以给它两个入口用的小判据。 */
 function superRunHasActiveLayer() {
   return SUPER_RUN_STATE.size > 0;
 }
 
-/* 顶栏「全部终止」：所有本层一律退出（丢弃暂停 / 不再启动剩余节点），返回层数 */
+/* 顶栏「全部终止」：所有本层一律退出（不再启动剩余节点），返回层数 */
 function superRunStopAllLayers() {
   let n = 0;
   for (const st of SUPER_RUN_STATE.values()) {
@@ -600,182 +525,24 @@ function superRunStopAllLayers() {
       if (typeof clearPendingRun === "function") clearPendingRun(st.remaining);
       st.remaining.clear();
     }
-    /* 暂停的层必须把「继续」等当场结清，否则批次永远挂着 */
-    superRunPauseSettle(st, "stop");
     n++;
   }
   return n;
 }
 
-/* 结清一次暂停等待：stop = 放弃本层；continue = 往下跑 */
-function superRunPauseSettle(st, outcome) {
-  if (!st) return;
-  if (st._pauseTimer) {
-    try {
-      clearInterval(st._pauseTimer);
-    } catch (_) {}
-    st._pauseTimer = null;
-  }
-  const resolve = st._resumeResolve;
-  st._resumeResolve = null;
-  if (resolve) resolve(outcome);
-}
-
-/* 进暂停：记失败、置相位、重画（头部的 ▶ 变成「继续」），然后等用户 */
-function superRunPauseAt(st, shell, node, fail) {
-  st.phase = "paused";
-  st.currentTitle = "";
-  st.failed = {
-    id: node.id,
-    title: node.title || node.kind || "",
-    kind: node.kind,
-    kindOf: fail && fail.kind,
-    reason: (fail && fail.reason) || I18n.t("没有产出内容"),
-  };
-  st.failures.push({
-    id: st.failed.id,
-    title: st.failed.title,
-    reason: st.failed.reason,
-  });
-  if (st.remaining) st.remaining.delete(node.id);
-  try {
-    renderCanvas();
-  } catch (_) {}
-  try {
-    updateRunQueuePanel();
-  } catch (_) {}
-  return new Promise((resolve) => {
-    st._resumeResolve = resolve;
-    /* 顶栏「全部终止」不从我们这条链路里走：暂停期间用一拍轮询盯住全局终止代号，
-       否则点了「全部终止」这一批会永远挂在暂停里（关不掉也跑不动）。 */
-    st._pauseTimer = setInterval(() => {
-      if (!st._resumeResolve) return;
-      if (st.stopping || GLOBAL_STOP_SEQ !== st.epoch)
-        superRunPauseSettle(st, "stop");
-    }, 300);
-  });
-}
-
-/* 「继续」入口：门槛 → （有下游就列出候选，由用户勾选）→ 放行 */
-async function superRunResume(shell) {
-  const st = superRunStateOf(shell);
-  if (!st || st.phase !== "paused" || !st.failed) return;
-  const node = typeof nodeById === "function" ? nodeById(st.failed.id) : null;
-  if (!superRunResumeReady(node)) {
-    toast(
-      I18n.t("还不能继续：先把「") +
-        (st.failed.title || "") +
-        I18n.t("」手动跑成功（有产出、无报错）"),
-      "warn",
-    );
-    return;
-  }
-  const cands = superRunDownstreamOf(st, st.failed.id);
-  let skipIds = null;
-  if (cands.length) {
-    skipIds = await superRunAskSkipDownstream(st, shell, cands);
-    if (!skipIds) return; /* 关掉选择窗 = 留在暂停，用户可以再来一次 */
-  }
-  if (skipIds) {
-    for (const id of skipIds) {
-      st.skipped.add(id);
-      /* 勾了「一并跳过」就传递到它的整棵下游子树（上游没产出，下游跑也是空输入） */
-      for (const d of superRunDownstreamOf(st, id)) {
-        st.skipped.add(d.id);
-        if (st.remaining) st.remaining.delete(d.id);
-      }
-      if (st.remaining) st.remaining.delete(id);
-    }
-  }
-  st.done = Math.min(st.done + 1, st.total);
-  st.phase = "running";
-  st.failed = null;
-  st.currentTitle = "";
-  try {
-    renderCanvas();
-  } catch (_) {}
-  try {
-    updateRunQueuePanel();
-  } catch (_) {}
-  superRunPauseSettle(st, "continue");
-}
-
-/* 暂停时点「继续」→ 列出受影响的下游，由用户勾选「一并跳过」（默认全勾）。
-   返回 Set<nodeId>（要跳过的）或 null（用户取消 → 留在暂停）。 */
-function superRunAskSkipDownstream(st, shell, cands) {
-  return new Promise((resolve) => {
-    if (typeof openOverlay !== "function" || typeof $ !== "function") {
-      resolve(new Set());
-      return;
-    }
-    openOverlay(I18n.t("继续运行本层"), { persistent: true });
-    const body = $("#ovBody");
-    const foot = $("#ovFoot");
-    let done = false;
-    const finish = (val) => {
-      if (done) return;
-      done = true;
-      try {
-        closeOverlay();
-      } catch (_) {}
-      resolve(val);
-    };
-    if (body) {
-      body.innerHTML = "";
-      const p = document.createElement("p");
-      p.className = "super-run-ask-msg";
-      p.textContent =
-        I18n.t("「") +
-        ((st.failed && st.failed.title) || "") +
-        I18n.t(
-          "」已经跑成功。下面这些是它的下游（受影响的范围）：勾上的会连同它们的下游一起跳过，没勾的照常跑。",
-        );
-      body.appendChild(p);
-      const list = document.createElement("div");
-      list.className = "super-run-ask-list";
-      for (const n of cands) {
-        const row = document.createElement("label");
-        row.className = "super-run-ask-row";
-        const cb = document.createElement("input");
-        cb.type = "checkbox";
-        cb.checked = true;
-        cb.value = String(n.id);
-        const t = document.createElement("span");
-        t.textContent = n.title || I18n.t("（未命名）");
-        row.appendChild(cb);
-        row.appendChild(t);
-        list.appendChild(row);
-      }
-      body.appendChild(list);
-    }
-    if (foot) {
-      foot.innerHTML = "";
-      const cancel = document.createElement("button");
-      cancel.type = "button";
-      cancel.className = "mini";
-      cancel.textContent = I18n.t("取消（留在暂停）");
-      cancel.onclick = () => finish(null);
-      const ok = document.createElement("button");
-      ok.type = "button";
-      ok.className = "mini primary";
-      ok.textContent = I18n.t("继续运行");
-      ok.onclick = () => {
-        const picked = new Set();
-        const boxes =
-          body && body.querySelectorAll
-            ? body.querySelectorAll('input[type="checkbox"]')
-            : [];
-        for (const cb of boxes) if (cb && cb.checked) picked.add(String(cb.value));
-        finish(picked);
-      };
-      foot.appendChild(cancel);
-      foot.appendChild(ok);
-    }
-  });
+/* 本轮是否真的起跑过（ranAt 只在执行体里被写，清输出会置 0，也算「动过」）。
+   一颗「压根没起跑」的节点——playLock 还挂着上一轮的收尾、provider / 资产 / 工作目录
+   闸门直接 return、running 被别处占着——在旧写法里会被判成「没有产出内容」，重试一次
+   仍然没跑，然后整层当场终止：用户什么都没点，却看到整个节点层突然全停了。
+   所以「没起跑」一律不算失败，只记一次跳过。 */
+function superRunRanSince(node, before) {
+  if (!node) return false;
+  return (Number(node.ranAt) || 0) !== (Number(before) || 0);
 }
 
 /* 跑一颗（含 1 次自动重试）：返回失败描述或 null */
 async function superRunRunOne(st, node, seen) {
+  const ranBefore = Number(node.ranAt) || 0;
   let fail = await superRunTryNode(node, seen);
   if (fail && fail.retryable && !st.retried.has(node.id)) {
     st.retried.add(node.id);
@@ -786,6 +553,15 @@ async function superRunRunOne(st, node, seen) {
     node.error = null;
     node._aborted = false;
     fail = await superRunTryNode(node, new Set());
+  }
+  /* 「本轮根本没起跑」不参与失败判定（见 superRunRanSince）：
+     playLock 还被上一轮占着、闸门直接 return、running 被别处占着时，节点一个字节都没跑，
+     判据全是上一次运行留下的残骸（含残留的 _aborted → 被判成「已取消」）。
+     这类只记一次跳过，绝不据此终止整层 —— 用户什么都没点，整层不该突然全停。
+     带 error 文本的一律按真失败算：执行体确实报错了。 */
+  if (fail && !String(node.error || "").trim() && !superRunRanSince(node, ranBefore)) {
+    if (st.skipped) st.skipped.add(node.id);
+    return null;
   }
   return fail;
 }
@@ -822,6 +598,102 @@ function superRunSummaryText(st) {
   );
 }
 
+/* ▶ 入口的选择窗（本次需求）：决定「怎么跑内部的节点」。
+ *   · 仅补充  = 只跑还没有输出的节点，已有输出的原样保留；
+ *   · 全部执行 = 一个不落地全跑一遍（已有输出会被覆盖）；
+ *   · 取消    = 什么都不跑。
+ * 选择作用于**本层及其所有子层**：superRunCollect 已经把嵌套层递归摊平成同一张清单，
+ * 过滤只作用在这张清单上，所以每一层（含子层里的节点）都按同一个口径决定跑不跑。
+ * 返回 "fill" / "all" / null（取消 / 关窗）。 */
+function superRunAskMode(shell, list, occupied) {
+  return new Promise((resolve) => {
+    if (typeof openOverlay !== "function" || typeof $ !== "function") {
+      resolve("all");
+      return;
+    }
+    let done = false;
+    const finish = (val) => {
+      if (done) return;
+      done = true;
+      try {
+        setOverlayCloseHook(null);
+      } catch (_) {}
+      try {
+        closeOverlay();
+      } catch (_) {}
+      resolve(val);
+    };
+    openOverlay(I18n.t("运行本层"), { persistent: true });
+    /* ✕ / Esc 也按「取消」结算：绝不让等待中的这一批永远悬着 */
+    try {
+      setOverlayCloseHook(() => finish(null));
+    } catch (_) {}
+    const body = $("#ovBody");
+    const foot = $("#ovFoot");
+    if (body) {
+      body.innerHTML = "";
+      const p = document.createElement("p");
+      p.className = "super-run-ask-msg";
+      p.textContent =
+        I18n.t("本层（含所有子层）共 ") +
+        list.length +
+        I18n.t(" 个可执行节点") +
+        (occupied.length
+          ? I18n.t("，其中 ") + occupied.length + I18n.t(" 个已有输出。")
+          : I18n.t("，目前都还没有输出。"));
+      body.appendChild(p);
+      const hintList = document.createElement("div");
+      hintList.className = "super-run-ask-list";
+      const rows = [
+        [
+          I18n.t("仅补充"),
+          I18n.t(
+            "只跑还没有输出的节点；已有输出的（含子层里的）原样保留，不重跑、不覆盖。",
+          ),
+        ],
+        [
+          I18n.t("全部执行"),
+          I18n.t("一个不落地全跑一遍：已有输出会被覆盖，跑完再告诉你结果。"),
+        ],
+        [I18n.t("取消"), I18n.t("什么都不跑，直接关掉这个窗。")],
+      ];
+      for (const [label, desc] of rows) {
+        const row = document.createElement("div");
+        row.className = "super-run-ask-row";
+        const b = document.createElement("b");
+        b.textContent = label;
+        const t = document.createElement("span");
+        t.textContent = desc;
+        row.appendChild(b);
+        row.appendChild(t);
+        hintList.appendChild(row);
+      }
+      body.appendChild(hintList);
+    }
+    if (foot) {
+      foot.innerHTML = "";
+      const cancel = document.createElement("button");
+      cancel.type = "button";
+      cancel.className = "mini";
+      cancel.textContent = I18n.t("取消");
+      cancel.onclick = () => finish(null);
+      const all = document.createElement("button");
+      all.type = "button";
+      all.className = "mini";
+      all.textContent = I18n.t("全部执行");
+      all.onclick = () => finish("all");
+      const fill = document.createElement("button");
+      fill.type = "button";
+      fill.className = "mini primary";
+      fill.textContent = I18n.t("仅补充");
+      fill.onclick = () => finish("fill");
+      foot.appendChild(cancel);
+      foot.appendChild(all);
+      foot.appendChild(fill);
+    }
+  });
+}
+
 /* 入口：跑一整层 */
 async function runSuperLayer(shell) {
   if (!shell || shell.kind !== "super") return;
@@ -849,41 +721,27 @@ async function runSuperLayer(shell) {
     );
     return;
   }
-  /* 已有输出 → 开跑前问一次（只问一次，不逐节点打断） */
+  /* 开跑前先问「怎么跑」：仅补充 / 全部执行 / 取消（只问一次，不逐节点打断）。
+     选择对整份摊平清单生效 = 对每一层（含所有子层）递归生效。 */
   const occupied = list.filter((n) => nodeHasOutputContent(n));
-  if (occupied.length) {
-    const titles = occupied.map((n) => n.title || n.kind);
-    const shown = titles.slice(0, 8);
-    const more =
-      titles.length > shown.length
-        ? I18n.t(" 等 ") + titles.length + I18n.t(" 个")
-        : "";
-    const go = await confirmDialog(
-      I18n.t("将覆盖 ") +
-        occupied.length +
-        I18n.t(" 个已有输出，继续运行本层？（") +
-        I18n.listJoin(shown) +
-        more +
-        "）",
-      {
-        title: I18n.t("运行本层"),
-        okText: I18n.t("覆盖并运行"),
-        cancelText: I18n.t("取消"),
-      },
-    );
-    if (!go) return;
+  const mode = await superRunAskMode(shell, list, occupied);
+  if (!mode) return; /* 取消：什么都不跑 */
+  const targets =
+    mode === "fill" ? list.filter((n) => !occupied.includes(n)) : list;
+  if (!targets.length) {
+    toast(I18n.t("本层节点都已有输出，没有需要补充的"), "warn");
+    return;
   }
 
   const st = {
     shellId: shell.id,
     done: 0,
-    total: list.length,
+    total: targets.length,
     stopping: false,
     epoch: GLOBAL_STOP_SEQ,
     /* 还没轮到的那批（■ 停止时一次撤下它们的等待行，见 superRunStop） */
-    remaining: new Set(list.map((n) => n.id)),
-    orderIds: new Set(list.map((n) => n.id)),
-    phase: "running",
+    remaining: new Set(targets.map((n) => n.id)),
+    orderIds: new Set(targets.map((n) => n.id)),
     currentTitle: "",
     /* 正在跑的那一颗（■ 停止要按它当场中止，见 superRunAbortCurrent） */
     currentId: "",
@@ -895,8 +753,8 @@ async function runSuperLayer(shell) {
   };
   SUPER_RUN_STATE.set(shell.id, st);
   SUPER_RUN_SUMMARY.delete(shell.id);
-  const pending = new Set(list.map((n) => n.id));
-  invalidateControlRunTargets(list);
+  const pending = new Set(targets.map((n) => n.id));
+  invalidateControlRunTargets(targets);
   /* 先登记调度表、再挂等待态：顺序反了的话，addPendingRun 内部那一次取数就会把
      整批等待态当幽灵清掉（见 superRunScheduledRegister 的说明）。 */
   const schedReg = superRunScheduledRegister(pending);
@@ -906,9 +764,9 @@ async function runSuperLayer(shell) {
   superRunPaintShell(shell, true);
   let abortedBy = "";
   try {
-    for (const n of list) {
+    for (const n of targets) {
       if (st.stopping) break;
-      /* 期间点过「全部终止」：直接退出本层（不进暂停，见文件头的共识口径） */
+      /* 期间点过「全部终止」：直接退出本层（见文件头的共识口径） */
       if (GLOBAL_STOP_SEQ !== st.epoch) {
         st.stopping = true;
         abortedBy = "stopall";
@@ -924,6 +782,9 @@ async function runSuperLayer(shell) {
          本层照样按原清单跑到尾。 */
       const live = superRunShellById(n.id);
       if (!live || live.running) {
+        /* 找不到 / 别处正跑着它：本轮不重复启动，但也不能算「已完成」——
+           记一次跳过，收尾小字才说得清这一层到底跑了几颗。 */
+        if (st.skipped) st.skipped.add(n.id);
         st.remaining.delete(n.id);
         continue;
       }
@@ -940,7 +801,7 @@ async function runSuperLayer(shell) {
       }
       st.remaining.delete(live.id);
       /* 期间点过 ■（或「全部终止」）：当场退出本层。
-         必须排在「失败 → 暂停」之前：被 ■ 打断的那一颗会以「已终止 / 已取消」收尾，
+         必须排在「失败 → 终止」之前：被 ■ 打断的那一颗会以「已终止 / 已取消」收尾，
          那是用户自己停的，不是失败 —— 旧写法会因此进暂停、弹出「继续」，
          看起来就像停止没生效。 */
       if (st.stopping) {
@@ -953,14 +814,49 @@ async function runSuperLayer(shell) {
         superRunPaintProgress(shell);
         continue;
       }
-      /* 失败 → 就地暂停：剩余节点不启动，等用户把这一颗跑成功再点「继续」 */
-      const outcome = await superRunPauseAt(st, shell, live, fail);
-      if (outcome !== "continue") {
-        st.stopping = true;
-        abortedBy = abortedBy || "stop";
-        break;
+      /* 没产出（empty，例如保存节点本轮没有可落盘的内容）不是「这一层出事故」：
+         只记一条失败、继续跑剩余节点。真报错（error）与被显式停止（cancelled）
+         才终止整层 —— 旧写法一颗空产出就把整层打掉，用户什么都没点却看到
+         「整个节点层任务全被终止」。 */
+      if (fail && fail.kind === "empty") {
+        st.failures.push({
+          id: live.id,
+          title: live.title || live.kind || "",
+          reason: fail.reason || I18n.t("没有产出内容"),
+        });
+        st.currentTitle = "";
+        superRunPaintProgress(shell);
+        continue;
       }
+      /* 失败 → 直接终止本层：剩余节点一个都不启动（不再有暂停 / 继续） */
+      st.stopping = true;
+      abortedBy = "fail";
+      st.failed = {
+        id: live.id,
+        title: live.title || live.kind || "",
+        kind: live.kind,
+        kindOf: fail && fail.kind,
+        reason: (fail && fail.reason) || I18n.t("没有产出内容"),
+      };
+      st.failures.push({
+        id: st.failed.id,
+        title: st.failed.title,
+        reason: st.failed.reason,
+      });
+      st.currentTitle = "";
+      break;
     }
+  } catch (e) {
+    /* 循环里的意外异常（渲染 / 状态写回等非节点错误，见 superRunNoteAbnormal 同一口径）：
+       旧写法直接落到 finally —— 整层静默收尾、不弹任何提示，看上去就是「整个节点层
+       任务突然全被终止」。现在记成一条中断原因，并走下面 crash 分支给出提示。 */
+    abortedBy = abortedBy || "crash";
+    st.stopping = true;
+    try {
+      st.abnormal.push(
+        (I18n.t("执行中断：") + ((e && (e.message || String(e))) || "")).slice(0, 300),
+      );
+    } catch (_) {}
   } finally {
     clearPendingRun(pending);
     superRunScheduledRestore(schedReg);
@@ -981,14 +877,30 @@ async function runSuperLayer(shell) {
     } catch (_) {}
   }
   if (st.stopping) {
-    toast(
-      I18n.t("已停止本层运行：完成 ") +
-        Math.min(st.done, st.total) +
-        "/" +
-        st.total +
-        (abortedBy === "stopall" ? I18n.t("（全部终止）") : ""),
-      "warn",
-    );
+    if (abortedBy === "fail") {
+      toast(
+        I18n.t("本层已终止：") +
+          ((st.failed && st.failed.title) || "") +
+          I18n.t(" 失败（") +
+          ((st.failed && st.failed.reason) || I18n.t("没有产出内容")) +
+          I18n.t("），剩余节点没有启动，修好后重新点 ▶"),
+        "warn",
+      );
+    } else {
+      toast(
+        I18n.t("已停止本层运行：完成 ") +
+          Math.min(st.done, st.total) +
+          "/" +
+          st.total +
+          (abortedBy === "stopall" ? I18n.t("（全部终止）") : "") +
+          (abortedBy === "crash"
+            ? I18n.t("（运行被意外中断：") +
+              ((st.abnormal && st.abnormal[0]) || "") +
+              I18n.t("，剩余节点没有启动）")
+            : ""),
+        "warn",
+      );
+    }
   }
   /* 顺利跑完不弹窗：本仓 toast 只显示 err / warn 两档（app.js 的 TOAST_KINDS_SHOWN），
      完成信号就是按钮从 n/N 回到 ▶、以及壳底部那行汇总小字。 */

@@ -308,7 +308,8 @@ const NODE_PROPS = {
   jscode: { type: 'string', description: 'input = 参数对象 → return 输出对象。' },
   inputs: { type: 'array', items: PARAM_ENTRY_SPEC, description: '输入端子表（整体替换）；list = 数组端子。' },
   outputs: { type: 'array', items: PARAM_ENTRY_SPEC, description: '输出端子表（末位控制出不在表内）。' },
-  agent: { type: 'boolean' },
+  /* 「文本处理节点转智能节点」已移除：不再暴露 agent 键（只能传 false 关闭旧节点） */
+  agent: { type: 'boolean', description: '已下线：只接受 false（关闭旧画布的文本智能模式）；true 会被忽略。' },
   bgRmOn: { type: 'boolean' },
   globalRefs: { type: 'boolean' },
   auto: { type: 'boolean', description: 'save：上游运行即自动保存。' },

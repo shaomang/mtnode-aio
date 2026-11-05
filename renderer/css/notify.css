@@ -1,0 +1,114 @@
+/* renderer/css/notify.css — 任务完成的应用内卡片（右下角浮层，兜底系统通知）
+   口径见 renderer/app-notify.js：约 8 秒自动消失，鼠标悬停暂停计时，可手动关闭；
+   点卡片 = 跳到该任务来源。运行队列在左下角（.run-queue），这里占右下角，互不遮挡。 */
+
+.notify-stack {
+  position: fixed;
+  right: 14px;
+  bottom: 34px;
+  z-index: 1160;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: min(320px, calc(100vw - 28px));
+  pointer-events: none;
+}
+
+.notify-card {
+  pointer-events: auto;
+  background: linear-gradient(180deg, rgba(27, 34, 48, .97), rgba(18, 22, 31, .98));
+  border: 1px solid var(--bd2);
+  border-left: 3px solid var(--cyan);
+  border-radius: 4px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, .5), 0 0 0 1px rgba(56, 214, 255, .07);
+  backdrop-filter: blur(6px);
+  color: var(--ink);
+  font: 12.5px/1.5 var(--sans);
+  padding: 8px 10px 9px;
+  cursor: pointer;
+  animation: notifyIn .18s var(--ease-out);
+  transition: border-color var(--dur-fast), transform var(--dur-fast);
+}
+
+.notify-card:hover,
+.notify-card:focus-visible {
+  border-color: var(--cyan);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, .55), 0 0 0 1px rgba(56, 214, 255, .22);
+}
+
+.notify-card:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+.notify-card-hd {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.notify-card-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--green);
+  box-shadow: 0 0 6px rgba(95, 214, 138, .7);
+}
+
+.notify-card-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.notify-card-x {
+  flex: 0 0 auto;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font: 12px/1 var(--sans);
+  padding: 3px 4px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.notify-card-x:hover {
+  color: var(--ink);
+  background: rgba(255, 255, 255, .08);
+}
+
+.notify-card-body {
+  margin-top: 4px;
+  color: var(--muted);
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.notify-card-out {
+  opacity: 0;
+  transform: translateY(6px);
+  transition: opacity .16s ease, transform .16s ease;
+}
+
+@keyframes notifyIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .notify-card {
+    animation: none;
+  }
+
+  .notify-card-out {
+    transition: none;
+  }
+}

@@ -97,6 +97,8 @@ const NP_DENY_KEYS = {
   remotionPct: 1, tsx: 1, tsxTsx: 1, boundSaveId: 1,
   videoPortV2: 1, videoPortV3: 1, videoPortV4: 1, videoPortV5: 1, remotionPortsV2: 1,
   wfMeta: 1, wfParamValues: 1, wfPortMap: 1, bgRmPairs: 1,
+  /* 「文本处理节点转智能节点」已移除：这条不再是可覆写配置 */
+  agent: 1,
 };
 /* lt*（长周期任务的绑定字段）与一批运行期字段按前缀排除；*Status 是节点自己写的运行态 */
 const NP_DENY_PREFIX = ["lt", "np"];
@@ -127,6 +129,8 @@ function npIsDeniedKey(k, node) {
 /* 被拒时的说明：同名键另有正确写法时直接指路，别只说「不能覆写」 */
 function npDenyHint(key, node) {
   const kind = (node && node.kind) || "";
+  if (key === "agent")
+    return I18n.t("「文本处理节点转智能节点」已移除，不能由参数开启（只保留旧节点原状）");
   if (key === "steps" && (kind === "task" || kind === "agent_task"))
     return I18n.t("是该节点的子步骤内容，不能由参数覆写（请用节点 steps 字段 / canvas_edit 的 steps）");
   return I18n.t("是结构 / 内容字段，不能由参数覆写（已忽略）");

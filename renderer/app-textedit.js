@@ -53,6 +53,9 @@ let _te = {
      按钮亮不亮只看它 —— 点按钮那一瞬选区会被夺走，不能让按钮回头去读实时选区。 */
   selSnippet: "",
   selPos: null,
+  /* 选段的 Range 快照：给「青色呼吸灯框选」用 —— 便笺一弹出来选区就被
+     便笺的 textarea 夺走，只有留住 Range 才能继续画出选中的是哪几个字。 */
+  selRange: null,
   selSync: null, // 工具栏那颗「局部批注」按钮的状态同步函数（工具栏每次重渲染都换一颗）
   pushed: "", // 本编辑器上一步写进 node.text 的正文（借此认出「节点那边被改了」）
   rendered: -1, // 编辑区 DOM 代表的是哪一版（-1 = 还没渲染，此时不序列化 DOM）
@@ -468,6 +471,7 @@ function openTextNodeEditor(node) {
   _te.saveAt = 0;
   _te.selSnippet = "";
   _te.selPos = null;
+  _te.selRange = null;
   _te.selSync = null;
   _te.pushed = String(node.text || "");
   _te.rendered = -1;
@@ -525,6 +529,11 @@ function teClose() {
   }
   const host = document.getElementById("textEditDlg");
   if (host) host.classList.remove("on");
+  /* 批注高亮层与批注内容小窗一起收掉（关窗后不再留下任何浮层） */
+  teAnnoLayerHide("te");
+  const annoEdit = teEl("textEditAnnoEdit");
+  if (annoEdit) annoEdit.hidden = true;
+  teAnnoState("te").editId = "";
   document.body.classList.remove("review-lock");
   /* 会话先清掉，板身解锁按记下来的节点 id 走（此时 teNode() 已经拿不到东西了） */
   const bodyId = String(_te.node || "");
@@ -592,6 +601,8 @@ function teEnsureHost() {
     '<div class="review-notes" id="textEditNotes"></div>' +
     "</div>" +
     '<div class="review-note-float" id="textEditNoteFloat" hidden></div>' +
+    /* 点正文里的批注高亮 → 在这里重开该条批注的内容（可改可删） */
+    '<div class="review-note-float te-anno-edit" id="textEditAnnoEdit" hidden></div>' +
     '<div class="review-resize" id="textEditResize" title="' +
     I18n.t("拖拽右下角调整大小") +
     '"></div>' +
@@ -629,6 +640,7 @@ function teEnsureHost() {
     box.style.height = h + "px";
     _te.w = w;
     _te.h = h;
+    tePaintSelFrame();
   });
   window.addEventListener("mouseup", () => {
     drag = null;
@@ -637,6 +649,34 @@ function teEnsureHost() {
   window.addEventListener("blur", () => {
     if (_te.node) teFlushPending();
   });
+  /* 局部批注的青色呼吸灯框：一层绝对定位盖在窗壳上（不填色、不吃鼠标），
+     正文滚动 / 调窗大小 / 拖右下角时都得按选段重画一遍，否则框会跟文字错位。 */
+  const edBox = host.querySelector("#textEditEditor");
+  if (edBox)
+    edBox.addEventListener(
+      "scroll",
+      () => {
+        tePaintSelFrame();
+        tePaintAnnotations("te");
+      },
+      { passive: true },
+    );
+  /* 批注栏自己也能滚：连线要跟着卡片一起挪 */
+  const notesCol = host.querySelector("#textEditNotes");
+  if (notesCol)
+    notesCol.addEventListener("scroll", () => tePaintAnnotations("te"), { passive: true });
+  window.addEventListener("resize", () => {
+    tePaintSelFrame();
+    tePaintAnnotations("te");
+  });
+  if (typeof ResizeObserver === "function") {
+    try {
+      new ResizeObserver(() => {
+        tePaintSelFrame();
+        tePaintAnnotations("te");
+      }).observe(box);
+    } catch (_) {}
+  }
   return host;
 }
 
@@ -731,6 +771,7 @@ function teRenderAll() {
   teRenderNotes();
   teRenderRevisionButton();
   teRenderFoot();
+  tePaintAnnotations("te");
 }
 
 /* 工具栏：方形图标按钮，动作全部作用于 #textEditRich（样式复用 review.css 的 .rv-tool，
@@ -835,6 +876,9 @@ function teRenderEditor() {
   const box = teEl("textEditEditor");
   if (!box) return;
   box.innerHTML = "";
+  /* 切档 / 切版本 = 换了编辑面：批注内容小窗一并收掉（它引用的那条批注可能已不在这一版） */
+  const annoEditEl = teEl("textEditAnnoEdit");
+  if (annoEditEl) annoEditEl.hidden = true;
   /* 两个编辑面的登记一并作废（旧 DOM 已经摘下来，不能再当正文来源） */
   _teRichEl = null;
   _teSrcEl = null;
@@ -876,6 +920,13 @@ function teRenderEditor() {
           MTMdEdit.bindSource(ta);
         } catch (_) {}
       }
+      /* 粘贴截图 → 询问窗二选一（图像路径 / 识图）：与文本节点板身正文框同一个模块。
+         插入后靠上面那颗 oninput 提交（teCommit / tePushToNode），不另造正文通路。 */
+      if (window.MTPasteShot && typeof window.MTPasteShot.bindEditorSource === "function") {
+        try {
+          window.MTPasteShot.bindEditorSource(ta);
+        } catch (_) {}
+      }
       /* 局部批注：源码档里划字也算选段（document 级 selectionchange 为主，这两拍补漏） */
       ta.addEventListener("mouseup", () => teMaybeShowFloatNote());
       ta.addEventListener("keyup", () => teMaybeShowFloatNote());
@@ -895,6 +946,14 @@ function teRenderEditor() {
     ed.setAttribute("role", "textbox");
     ed.setAttribute("aria-multiline", "true");
     ed.innerHTML = mdToRichHtml(text);
+    /* 正文里的 `![](绝对路径)` 渲染出来是 <img src="E:/…">：补 data-rv-src（序列化回 Markdown
+       时保留原始绝对路径）并换成 file:/// 才能显示。必须在 teBaselineRich 之前跑 ——
+       基线取的是修正后的这一份 DOM，往返序列化才与 node.text 一致、不会被误判成「用户改过」。 */
+    if (window.MTPasteShot && typeof window.MTPasteShot.fixRichImgs === "function") {
+      try {
+        window.MTPasteShot.fixRichImgs(ed);
+      } catch (_) {}
+    }
     _te.rendered = _te.verIdx;
     /* 「没动过」的基准 = 刚渲染出来的这份 DOM 自己序列化一遍的结果。
        轮询时拿它比对，就能认出「用户真的改了 DOM」还是「只是开窗渲染了一遍」
@@ -904,12 +963,19 @@ function teRenderEditor() {
        这一拍只是补漏（选区刚落定、selectionchange 还没派发的浏览器）。 */
     ed.addEventListener("mouseup", () => teMaybeShowFloatNote(ed));
     ed.addEventListener("keyup", () => teMaybeShowFloatNote(ed));
+    /* 被批注正文的虚线：hover 变手型、点一下重开那条批注（见 teAnnoHover / teAnnoMouseDown） */
+    ed.addEventListener("mousemove", (ev) => teAnnoHover("te", ev));
+    ed.addEventListener("mousedown", (ev) => teAnnoMouseDown("te", ev));
+    ed.addEventListener("mouseleave", () => {
+      ed.style.cursor = "";
+    });
     ed.addEventListener("input", () => {
       _te.richDirty = true;
       teCommit();
       teReAnchorNotesAfterEdit();
       tePushToNode();
       teRenderFoot();
+      tePaintAnnotations("te");
     });
     ed.addEventListener("keydown", (ev) => {
       if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === "s") {
@@ -921,6 +987,13 @@ function teRenderEditor() {
        Tab 只插 4 个空格（选中多行就每行行首各插一次），Shift+Tab 不接管；
        粘贴优先吃剪贴板 HTML。Tab 改完 DOM 会自己派发一次 input，
        走上面的监听（richDirty 记上、正文推下去），不会再有「按了 Tab 不记账」。 */
+    /* 粘贴截图 → 询问窗二选一：必须排在 MTMdEdit.bindRich / teBindImageEditor **之前**
+       （同一元素上「先注册先跑」，本模块用 stopImmediatePropagation 挡住它们原来的插图行为）。 */
+    if (window.MTPasteShot && typeof window.MTPasteShot.bindEditorRich === "function") {
+      try {
+        window.MTPasteShot.bindEditorRich(ed);
+      } catch (_) {}
+    }
     if (typeof MTMdEdit !== "undefined" && MTMdEdit && typeof MTMdEdit.bindRich === "function") {
       try {
         MTMdEdit.bindRich(ed);
@@ -1899,12 +1972,15 @@ function teRenderNotes() {
   }
   for (const nt of notes) list.appendChild(teNoteCardEl(nt));
   wrap.appendChild(list);
+  /* 卡片换了 → 正文那层虚线与连线的落点也跟着重画 */
+  tePaintAnnotations("te");
 }
 
 function teNoteCardEl(nt) {
   const el = document.createElement("div");
   el.className =
     "rv-note" + (nt.kind === "local" ? " local" : " full") + (nt.dead ? " dead" : "");
+  if (nt.id) el.setAttribute("data-note-id", String(nt.id));
   const head = document.createElement("div");
   head.className = "rv-note-head";
   const tag = document.createElement("span");
@@ -2022,6 +2098,7 @@ function teMaybeShowFloatNote(ed, ev) {
   if (!host || !host.classList.contains("on")) return;
   let snippet = "";
   let pos = null;
+  let range = null;
   if (_te.src) {
     const ta = _teSrcEl;
     if (
@@ -2038,22 +2115,114 @@ function teMaybeShowFloatNote(ed, ev) {
     const rich = ed || teRichEl();
     const sel = window.getSelection();
     if (rich && sel && !sel.isCollapsed && sel.rangeCount) {
-      const range = sel.getRangeAt(0);
-      if (rich.contains(range.commonAncestorContainer)) {
+      const r = sel.getRangeAt(0);
+      if (rich.contains(r.commonAncestorContainer)) {
         const t = String(sel).trim();
-        const rect = range.getBoundingClientRect();
+        const rect = r.getBoundingClientRect();
         const box = teEl("textEditBox");
         const br = box && box.getBoundingClientRect();
         if (t && rect && br && (rect.width || rect.height)) {
           snippet = t;
           pos = { x: rect.left - br.left, y: rect.bottom - br.top + 6 };
+          /* 留住 Range 克隆：便笺一弹出来选区就没了，呼吸灯框还得照着它画 */
+          range = r.cloneRange();
         }
       }
     }
   }
+  /* 便笺开着、焦点落在便笺的 textarea 上时，正文选区会被收掉 —— 这一段还算「正在批注」，
+     保住原选段与呼吸灯框，别让框在用户写批注的半路灭掉。 */
+  if (!snippet && teFloatNoteOpen() && _te.selRange) {
+    tePaintSelFrame();
+    return;
+  }
   _te.selSnippet = snippet;
   _te.selPos = pos;
+  _te.selRange = range;
   if (typeof _te.selSync === "function") _te.selSync();
+  tePaintSelFrame();
+}
+
+/* ---------- 局部批注：青色呼吸灯框选 ----------
+   选段只描外框（不填色、不吃鼠标）：一层 .te-sel-frame 盖在窗壳上，
+   里面每个 <i> 对应 Range 的一行 client rect。CSS 做不到「只描外框的呼吸灯」
+   （::selection 只能改背景 / 下划线），这里用叠层描边实现；源码档 textarea
+   拿不到逐字坐标，沿用浏览器自带的选区高亮。 */
+function teFloatNoteOpen() {
+  const f = teEl("textEditNoteFloat");
+  return !!(f && !f.hidden);
+}
+function teSelFrameEl(create) {
+  const box = teEl("textEditBox");
+  if (!box) return null;
+  let f = box.querySelector(".te-sel-frame");
+  if (!f && create) {
+    f = document.createElement("div");
+    f.className = "te-sel-frame";
+    f.setAttribute("aria-hidden", "true");
+    f.hidden = true;
+    box.appendChild(f);
+  }
+  return f;
+}
+function teHideSelFrame() {
+  const f = teSelFrameEl(false);
+  if (!f) return;
+  f.hidden = true;
+  if (f.childNodes.length) f.innerHTML = "";
+}
+function tePaintSelFrame() {
+  const host = document.getElementById("textEditDlg");
+  if (!host || !host.classList.contains("on") || _te.src) return teHideSelFrame();
+  const range = _te.selRange;
+  const rich = teRichEl();
+  const box = teEl("textEditBox");
+  const edBox = teEl("textEditEditor");
+  if (!range || !rich || !box || !edBox) return teHideSelFrame();
+  /* DOM 换过（切档 / 切版本 / 重渲染）/ 选区已不在正文里 → 框作废 */
+  if (!rich.contains(range.commonAncestorContainer)) {
+    _te.selRange = null;
+    return teHideSelFrame();
+  }
+  let rects = [];
+  try {
+    rects = Array.from(range.getClientRects());
+  } catch (_) {
+    rects = [];
+  }
+  const br = box.getBoundingClientRect();
+  const er = edBox.getBoundingClientRect();
+  const PAD = 2;
+  const boxes = [];
+  for (const r of rects) {
+    if (!r || !(r.width || r.height)) continue;
+    /* 只画落在正文编辑区可见范围内的那几行（超出的部分裁掉，别糊到工具栏 / 批注栏上） */
+    const x1 = Math.max(r.left, er.left);
+    const x2 = Math.min(r.right, er.right);
+    const y1 = Math.max(r.top, er.top);
+    const y2 = Math.min(r.bottom, er.bottom);
+    if (x2 - x1 < 1 || y2 - y1 < 1) continue;
+    boxes.push({
+      left: Math.round(x1 - br.left - PAD),
+      top: Math.round(y1 - br.top - PAD),
+      width: Math.round(x2 - x1 + PAD * 2),
+      height: Math.round(y2 - y1 + PAD * 2),
+    });
+  }
+  if (!boxes.length) return teHideSelFrame();
+  const f = teSelFrameEl(true);
+  if (!f) return;
+  /* 复用已有 <i>：滚动时只改坐标不重建节点，呼吸灯的相位才不会被一次次重启 */
+  while (f.childNodes.length < boxes.length) f.appendChild(document.createElement("i"));
+  while (f.childNodes.length > boxes.length) f.removeChild(f.lastChild);
+  boxes.forEach((b, k) => {
+    const it = f.childNodes[k];
+    it.style.left = b.left + "px";
+    it.style.top = b.top + "px";
+    it.style.width = b.width + "px";
+    it.style.height = b.height + "px";
+  });
+  f.hidden = false;
 }
 
 /* 文档级选段监听（开窗时挂、关窗时摘）：只更新按钮亮灭，不自己弹浮层 */
@@ -2065,6 +2234,8 @@ function teOnSelectionChange() {
 function teClearSelSnapshot() {
   _te.selSnippet = "";
   _te.selPos = null;
+  _te.selRange = null;
+  teHideSelFrame();
   if (typeof _te.selSync === "function") _te.selSync();
 }
 
@@ -2198,6 +2369,413 @@ function teJumpToSnippet(nt) {
     }
     toast(I18n.t("未能在正文中找到该批注片段"), "warn");
   } catch (_) {}
+}
+
+/* ---------- 被批注正文：高亮 + 连线到右侧批注卡 + 点开改批注 ----------
+ * 用户口径：被批注的那段正文要保持高亮（淡橙色虚线下划线），hover 时鼠标变交互样式，
+ * 并且与右侧那条批注卡之间有连线；点高亮处重新打开这条批注的内容，允许修改。
+ *
+ * 做法：一层 SVG 叠在窗壳（#textEditBox）上，pointer-events 整体关闭：
+ *   · 每行选段画一条虚线下划线（淡橙）；
+ *   · 从该段右端拉一条贝塞尔到右侧对应批注卡的左中（连线本身可点，命中区是描边）；
+ *   · 命中判定用「相对窗壳的坐标窄带」而不是 DOM 事件目标 —— 只有贴近虚线的窄条
+ *     才算点到批注，在被批注的文字上正常打字 / 划选一律不受影响（刻意保住这一点，
+ *     别改成整段吃鼠标）。
+ * 坐标全部相对 #textEditBox，滚动 / 改窗 / 批注增删都重画一次（见 tePaintAnnotations 的调用点）。
+ */
+/* 两个批注窗口共用这一套高亮（文本节点 ✎ 编辑器 + ✎ AI 审阅窗）：宿主元素 id 不同，
+   行为完全一致 —— 以后加第三个窗，往 TE_ANNO_SURFACES 里补一条即可。 */
+const TE_ANNO_SURFACES = {
+  te: {
+    host: "textEditDlg",
+    box: "textEditBox",
+    pane: "textEditEditor",
+    notes: "textEditNotes",
+    popup: "textEditAnnoEdit",
+  },
+  rv: {
+    host: "reviewDlg",
+    box: "reviewBox",
+    pane: "reviewEditor",
+    notes: "reviewNotes",
+    popup: "reviewAnnoEdit",
+  },
+};
+const TE_ANNO_HIT_H = 6; // 虚线上下各几 px 算「点到这条批注」
+const _teAnnoState = { te: { hits: [], editId: "" }, rv: { hits: [], editId: "" } };
+
+function teAnnoKind(kind) {
+  return kind === "rv" ? "rv" : "te";
+}
+function teAnnoCfg(kind) {
+  return TE_ANNO_SURFACES[teAnnoKind(kind)];
+}
+function teAnnoState(kind) {
+  const k = teAnnoKind(kind);
+  if (!_teAnnoState[k]) _teAnnoState[k] = { hits: [], editId: "" };
+  return _teAnnoState[k];
+}
+function teAnnoBox(kind) {
+  return document.getElementById(teAnnoCfg(kind).box);
+}
+/* 当前那条正文编辑面（富文本档才有逐字坐标；源码档 / 只读回看不画） */
+function teAnnoRichEl(kind) {
+  if (teAnnoKind(kind) === "rv") {
+    const pane = document.getElementById(teAnnoCfg("rv").pane);
+    const ed = pane && pane.querySelector(".rv-rich");
+    return ed && ed.contentEditable === "true" ? ed : null;
+  }
+  return teRichEl();
+}
+function teAnnoVersion(kind) {
+  if (teAnnoKind(kind) === "rv") return typeof _visVer === "function" ? _visVer() : null;
+  return teVisible();
+}
+function teAnnoEditing(kind) {
+  if (teAnnoKind(kind) === "rv") {
+    return !!(typeof _rv !== "undefined" && _rv && _rv.editing);
+  }
+  return !!_te.editing;
+}
+/* 批注内容改完 / 删完：脏标记 + 右侧卡片重画 + 落盘（两个窗口各自的既有通路） */
+function teAnnoAfterNoteChange(kind) {
+  if (teAnnoKind(kind) === "rv") {
+    try {
+      if (typeof _rv !== "undefined" && _rv) _rv.dirty = true;
+    } catch (_) {}
+    if (typeof renderNotesEl === "function") renderNotesEl();
+    if (typeof persistReview === "function") persistReview(false);
+    tePaintAnnotations("rv");
+    return;
+  }
+  teMarkDirty();
+  teRenderNotes();
+  tePersist(false);
+}
+
+function teAnnoLayerEl(kind, create) {
+  const k = teAnnoKind(kind);
+  const box = teAnnoBox(k);
+  if (!box) return null;
+  let layer = box.querySelector(".te-anno-layer");
+  if (!layer && create) {
+    layer = document.createElement("div");
+    layer.className = "te-anno-layer";
+    layer.innerHTML = '<svg class="te-anno-svg" aria-hidden="true"></svg>';
+    /* 连线可点：点线等于点正文里那条批注 */
+    layer.addEventListener("click", (ev) => {
+      const t = ev.target;
+      const p = t && t.closest ? t.closest(".te-anno-link") : null;
+      if (!p) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      const id = p.getAttribute("data-note");
+      if (id) teOpenNoteEditorById(k, id);
+    });
+    box.appendChild(layer);
+  }
+  return layer;
+}
+
+function teAnnoLayerHide(kind) {
+  const layer = teAnnoLayerEl(kind, false);
+  teAnnoState(kind).hits = [];
+  if (!layer) return;
+  layer.hidden = true;
+  const svg = layer.querySelector("svg");
+  if (svg) svg.innerHTML = "";
+}
+
+/* 局部批注 → 正文里的 Range（找不到原文的批注不画：它已经被标成「锚点失效」） */
+function teAnnoEntries(kind, ed) {
+  const v = teAnnoVersion(kind);
+  const notes = (v && v.notes) || [];
+  const out = [];
+  if (!ed || !notes.length) return out;
+  const walker = document.createTreeWalker(ed, NodeFilter.SHOW_TEXT);
+  const nodes = [];
+  let total = 0;
+  let n;
+  while ((n = walker.nextNode())) {
+    const len = n.textContent.length;
+    if (!len) continue;
+    nodes.push({ node: n, start: total, end: total + len });
+    total += len;
+  }
+  if (!nodes.length) return out;
+  let text = "";
+  for (const it of nodes) text += it.node.textContent;
+  const mkRange = (a, b) => {
+    let s = null;
+    let e = null;
+    for (const it of nodes) {
+      if (!s && a < it.end) s = { node: it.node, off: Math.max(0, a - it.start) };
+      if (b <= it.end) {
+        e = { node: it.node, off: Math.max(0, b - it.start) };
+        break;
+      }
+    }
+    if (!s || !e) return null;
+    try {
+      const r = document.createRange();
+      r.setStart(s.node, s.off);
+      r.setEnd(e.node, e.off);
+      return r;
+    } catch (_) {
+      return null;
+    }
+  };
+  for (const nt of notes) {
+    if (nt.kind !== "local" || !nt.snippet) continue;
+    /* 与 teJumpToSnippet 同一口径：批注片段取正文里第一处出现 */
+    const a = text.indexOf(nt.snippet);
+    if (a < 0) continue;
+    const r = mkRange(a, a + nt.snippet.length);
+    if (r) out.push({ id: String(nt.id || ""), range: r });
+  }
+  return out;
+}
+
+function tePaintAnnotations(kind) {
+  const k = teAnnoKind(kind);
+  const cfg = teAnnoCfg(k);
+  const host = document.getElementById(cfg.host);
+  const box = document.getElementById(cfg.box);
+  const edBox = document.getElementById(cfg.pane);
+  const ed = teAnnoRichEl(k);
+  /* 源码档 / 只读回看没有富文本面（teAnnoRichEl 已返回 null），这里只管宿主是否可见 */
+  if (!host || !host.classList.contains("on") || !box || !edBox || !ed) {
+    return teAnnoLayerHide(k);
+  }
+  const entries = teAnnoEntries(k, ed);
+  if (!entries.length) return teAnnoLayerHide(k);
+  const layer = teAnnoLayerEl(k, true);
+  const svg = layer && layer.querySelector("svg");
+  if (!layer || !svg) return;
+  const br = box.getBoundingClientRect();
+  const er = edBox.getBoundingClientRect();
+  const notesWrap = document.getElementById(cfg.notes);
+  const cards = new Map();
+  if (notesWrap) {
+    const list = notesWrap.querySelectorAll(".rv-note[data-note-id]");
+    for (let i = 0; i < list.length; i++) {
+      cards.set(list[i].getAttribute("data-note-id"), list[i]);
+    }
+  }
+  const hits = [];
+  const parts = [];
+  for (const en of entries) {
+    let rects = [];
+    try {
+      rects = Array.from(en.range.getClientRects());
+    } catch (_) {
+      rects = [];
+    }
+    const vis = [];
+    for (const r of rects) {
+      if (!r || !(r.width || r.height)) continue;
+      /* 只画落在正文编辑区可见范围内的那几行（滚出去的部分不糊到工具栏 / 批注栏上） */
+      const x1 = Math.max(r.left, er.left);
+      const x2 = Math.min(r.right, er.right);
+      const y1 = Math.max(r.top, er.top);
+      const y2 = Math.min(r.bottom, er.bottom);
+      if (x2 - x1 < 1 || y2 - y1 < 1) continue;
+      vis.push({ x1, x2, y1, y2 });
+    }
+    if (!vis.length) continue;
+    for (const r of vis) {
+      const l = Math.round(r.x1 - br.left);
+      const rr = Math.round(r.x2 - br.left);
+      const y = Math.round(r.y2 - br.top) - 1;
+      parts.push(
+        '<line class="te-anno-ul" x1="' +
+          l +
+          '" y1="' +
+          y +
+          '" x2="' +
+          rr +
+          '" y2="' +
+          y +
+          '"><title>' +
+          teEscH(I18n.t("点击修改这条批注")) +
+          "</title></line>",
+      );
+      hits.push({
+        id: en.id,
+        left: l,
+        right: rr,
+        top: y - TE_ANNO_HIT_H,
+        bottom: y + TE_ANNO_HIT_H,
+      });
+    }
+    /* 连线：这一段最后一行的右端 → 右侧那张批注卡的左侧 */
+    const card = cards.get(en.id);
+    if (!card) continue;
+    const cr = card.getBoundingClientRect();
+    const last = vis[vis.length - 1];
+    const x1 = Math.round(Math.min(last.x2, er.right) - br.left) + 2;
+    const y1 = Math.round((last.y1 + last.y2) / 2 - br.top);
+    const x2 = Math.round(cr.left - br.left) - 2;
+    const y2 = Math.round(cr.top - br.top + Math.min(cr.height / 2, 30));
+    const dx = Math.max(16, Math.round(Math.abs(x2 - x1) * 0.5));
+    parts.push(
+      '<path class="te-anno-link" data-note="' +
+        teEscAttr(en.id) +
+        '" d="M ' +
+        x1 +
+        " " +
+        y1 +
+        " C " +
+        (x1 + dx) +
+        " " +
+        y1 +
+        ", " +
+        (x2 - dx) +
+        " " +
+        y2 +
+        ", " +
+        x2 +
+        " " +
+        y2 +
+        '"/>',
+    );
+  }
+  svg.innerHTML = parts.join("");
+  teAnnoState(k).hits = hits;
+  layer.hidden = false;
+}
+
+/* 点到哪条批注（坐标窄带判定；点正文中段不算） */
+function teAnnoHitAt(kind, ev) {
+  const box = teAnnoBox(kind);
+  const hits = teAnnoState(kind).hits;
+  if (!box || !hits || !hits.length) return null;
+  const br = box.getBoundingClientRect();
+  const x = ev.clientX - br.left;
+  const y = ev.clientY - br.top;
+  for (const h of hits) {
+    if (x >= h.left - 2 && x <= h.right + 2 && y >= h.top && y <= h.bottom) return h;
+  }
+  return null;
+}
+
+/* hover 到虚线上 → 手型（用行内 cursor 覆盖正文的 text 光标，移开就还原） */
+function teAnnoHover(kind, ev) {
+  const ed = teAnnoRichEl(kind);
+  if (!ed) return;
+  ed.style.cursor = teAnnoHitAt(kind, ev) ? "pointer" : "";
+}
+
+/* 点虚线 → 重开这条批注的内容（mousedown 里吃掉默认行为，光标才不会先跳进正文） */
+function teAnnoMouseDown(kind, ev) {
+  const hit = teAnnoHitAt(kind, ev);
+  if (!hit) return;
+  ev.preventDefault();
+  ev.stopPropagation();
+  teOpenNoteEditorById(kind, hit.id, ev);
+}
+
+/* 批注内容编辑小窗：改正文（可删）后回写当前版 notes 并落盘 */
+function teOpenNoteEditorById(kind, id, ev) {
+  const k = teAnnoKind(kind);
+  const cfg = teAnnoCfg(k);
+  const f = document.getElementById(cfg.popup);
+  const v = teAnnoVersion(k);
+  const nt =
+    v && Array.isArray(v.notes) ? v.notes.filter((x) => String(x.id || "") === String(id))[0] : null;
+  if (!f || !nt) return;
+  const box = document.getElementById(cfg.box);
+  const br = box && box.getBoundingClientRect();
+  if (!br) return;
+  teAnnoState(k).editId = String(id);
+  const canEdit = teAnnoEditing(k);
+  f.innerHTML =
+    '<div class="te-anno-edit-head">' +
+    '<span class="rv-note-tag">' +
+    I18n.t("局部") +
+    "</span>" +
+    '<span class="te-anno-edit-hint">' +
+    teEscH(canEdit ? I18n.t("点这里修改这条批注") : I18n.t("只读回看，无法修改批注")) +
+    "</span></div>" +
+    '<textarea class="rv-note-in" rows="4" placeholder="' +
+    teEscAttr(I18n.t("输入批注内容…")) +
+    '"' +
+    (canEdit ? "" : " readonly") +
+    "></textarea>" +
+    (nt.snippet
+      ? '<div class="te-anno-edit-snip">“' + teEscH(nt.snippet) + '”</div>'
+      : "") +
+    '<div class="rv-note-btns">' +
+    (canEdit
+      ? '<button type="button" class="rv-btn" id="textEditAnnoDel">' +
+        I18n.t("删除批注") +
+        "</button>"
+      : "") +
+    '<button type="button" class="rv-btn" id="textEditAnnoCancel">✕</button>' +
+    (canEdit
+      ? '<button type="button" class="rv-btn primary" id="textEditAnnoSave">' +
+        I18n.t("保存修改") +
+        "</button>"
+      : "") +
+    "</div>";
+  const ta = f.querySelector(".rv-note-in");
+  if (ta) ta.value = String(nt.body || "");
+  const close = () => {
+    f.hidden = true;
+    teAnnoState(k).editId = "";
+  };
+  const save = () => {
+    const body = ta ? String(ta.value || "").trim() : "";
+    if (!body) {
+      toast(I18n.t("批注内容不能为空"), "warn");
+      if (ta) ta.focus();
+      return;
+    }
+    nt.body = body;
+    teAnnoAfterNoteChange(k);
+    close();
+    toast(I18n.t("批注已更新"), "ok");
+  };
+  const del = f.querySelector("#textEditAnnoDel");
+  const cancel = f.querySelector("#textEditAnnoCancel");
+  const ok = f.querySelector("#textEditAnnoSave");
+  if (ok) ok.onclick = save;
+  if (cancel) cancel.onclick = close;
+  if (del)
+    del.onclick = () => {
+      if (k === "rv") {
+        if (typeof deleteNote === "function") deleteNote(nt.id);
+        tePaintAnnotations("rv");
+      } else {
+        teDeleteNote(nt.id);
+      }
+      close();
+    };
+  if (ta)
+    ta.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        close();
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
+        e.preventDefault();
+        save();
+      }
+    });
+  /* 落点：贴着被点的那条虚线（点连线打开的则落在窗中间偏左） */
+  let x = 16;
+  let y = 56;
+  if (ev) {
+    x = ev.clientX - br.left + 8;
+    y = ev.clientY - br.top + 10;
+  } else {
+    y = 72;
+  }
+  f.hidden = false;
+  const fw = f.offsetWidth || 300;
+  const fh = f.offsetHeight || 170;
+  f.style.left = Math.max(8, Math.round(Math.min(x, br.width - fw - 10))) + "px";
+  f.style.top = Math.max(8, Math.round(Math.min(y, br.height - fh - 10))) + "px";
+  if (ta && canEdit) ta.focus();
 }
 
 /* ---------- 让 AI 依据批注逐轮修订 ---------- */

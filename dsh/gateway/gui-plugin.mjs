@@ -1,9 +1,14 @@
 // MTNode GUI tool — the *schema source* of mtnode_gui (one of the MCP server's exported tools).
 //
-// Registers mtnode_gui so an EXTERNAL MCP client (Claude Code / Cursor / a self-written
-// agent) can actually DRIVE the MTNode desktop UI instead of only editing the canvas:
-// recognise elements, click, focus + type, set form values, press keys, scroll, wait,
-// dump the visible text, and shoot a still of any MTNode window.
+// Registers mtnode_gui so a client can actually DRIVE the MTNode desktop UI instead of only
+// editing the canvas: recognise elements, click, focus + type, set form values, press keys,
+// scroll, wait, dump the visible text, and shoot a still of any MTNode window.
+//
+// Two callers: (a) an EXTERNAL MCP client (Claude Code / Cursor / a self-written agent), served
+// by mcp-server.js → mcp-gui-agent.js; (b) an **app development session inside MTNode**
+// (MTNODE_APP_DEBUG=1, see getRuntime in gateway.mjs) — that is how such a session debugs the
+// app it is writing on the real machine: open the app's own window, read it, click through it,
+// shoot stills. Every other in-app run does not register this tool.
 //
 // Why it exists: the desktop app is an Electron window — a browser-automation tool outside
 // MTNode cannot reach it, and the canvas tools only touch the node graph. Installing a local
@@ -18,12 +23,15 @@
 //   (`webContents.capturePage`). Implementation: **mcp-gui-agent.js** (root), wired in
 //   mcp-server.js as family "gui" (TOOL_OPS → { op: "gui", family: "gui", local: true }).
 //
-//   Consequence, stated plainly: `apply()` below is never called by the dsh gateway runtime —
-//   the gateway is MTNode used as an MCP *client*, and this tool is MTNode used as an MCP
-//   *server*. This file exists so the parameter table has exactly one source: the contract
-//   generator (scripts/build-mcp-contract.mjs) captures the defineTool spec from here into
-//   mcp-tools.json / mcp-tool-schemas.js, exactly like the five renderer-family plugins.
-//   That is also why the import / executor style matches those plugins.
+//   Consequence by caller: for the MCP server the gateway is MTNode used as an MCP *client*
+//   and this tool is MTNode used as an MCP *server* (mcp-server.js owns the executor). For an
+//   app development session the gateway runtime DOES load this plugin (cordis.yml row
+//   mtnode-gui, gated by MTNODE_APP_DEBUG=1): its frame travels the same localhost bridge as
+//   the canvas tools and the host relays it to the main process (renderer/app-nodes.js →
+//   dsh:gui → mcp-gui-agent.js). This file is the one source of the parameter table either
+//   way: the contract generator (scripts/build-mcp-contract.mjs) captures the defineTool spec
+//   from here into mcp-tools.json / mcp-tool-schemas.js. That is also why the import /
+//   executor style matches the other plugins.
 //
 // Boundaries (fail loudly instead of pretending):
 //   - native menus, system file-picker dialogs and tray menus are NOT in the DOM: unreachable;
@@ -38,7 +46,9 @@ import { isToolHidden } from './tool-visibility.mjs'
 export const name = 'mtnode-gui'
 export const inject = ['tools']
 
-const GUI_DESC = `Drive the MTNode desktop UI (the Electron app's windows) and shoot stills of them. Use it when the work is a *window* action rather than a canvas edit: opening the plugin dialog, pressing "开始安装" in the install window, starting a local backend, hitting its "test generate" button, reading an error dialog.
+const GUI_DESC = `Drive the MTNode desktop UI (the Electron app's windows) and shoot stills of them. Use it when the work is a *window* action rather than a canvas edit: opening a plugin's dialog or an app's own window on the real machine, pressing "开始安装" in the install window, starting a local backend, hitting its "test generate" button, reading an error dialog.
+
+App development: action:"open-app" opens (or reloads, then focuses) an MTNode app's own window — the real window the user sees, with window.appHost injected — and returns its id / title / directory. Pass app = the app id from that app's app.json (kind:"dev" / "down" picks which copy when the same id exists in both roots; omit it to use the one present on disk). Then target that window by a substring of the returned title (e.g. "我的应用 (开发目录 v1.0.0)").
 
 Windows: pass which = "main" (default, the main window) · "install" (the plugin install window) · "any" (focused window) · or any substring of a window title (e.g. "Minimax H3" — plugin console windows are titled after the plugin). Call action:"windows" first when you are unsure what is open.
 
@@ -51,6 +61,7 @@ Element targets (used by click / type / set / scroll / wait): an object with ONE
 Add includeHidden:true to allow a hidden element (rarely useful — a user could not click it either).
 
 Actions:
+- open-app: open (or reload and focus) an MTNode app's own window: app = its id, optional kind:"dev"|"down". Returns {ok, id, title, dir}. Pass a substring of the returned title as which afterwards.
 - windows: list every window (id / title / url / visible / minimized). Read-only.
 - outline: compact structure snapshot — visible interactive elements with a ref each, plus the window's visible text lines (textMax, default 80, 0 = none). This is how you learn what to click. Read-only, capped at 120 items.
 - text: visible text lines of the window (offset / limit). Read-only.
@@ -66,12 +77,14 @@ Actions:
 Discipline: every action returns {ok, window, element?: {tag,id,cls,text,label}} and, on failure, a readable error saying what was not found — read it and adjust instead of retrying blindly. After a click that changes the page, either rely on the automatic short settle or follow with action:"wait". Screenshots are written ONLY to the path you pass.`
 
 export function apply(ctx) {
-  /* 说明（为什么不在这里按运行裁剪）：本工具的可见性由 **MCP 服务端**那一侧决定 ——
-     能调它的只有连上本机 MCP 服务端的外部客户端，而 MTNode 自身的会话 / 助手 / 智能节点
-     这一轮**不注册** mtnode_gui（网关运行时不 import 本文件），所以这里没有按运行裁剪的
-     依据，名单（tool-visibility.mjs 的 HIDEABLE_TOOLS）也就不收录它。
-     调用的可见性另有出处：每一次 tools/call 都进 MCP 审计（mcp-audit/，含被拒的调用），
-     面板「最近调用」能看到「谁在什么时候点了哪个按钮」。 */
+  /* 注册口（唯一的裁剪判定点）：**只有「应用开发会话」这一档**才注册 mtnode_gui。
+     两个调用方共用这份定义 —— 外部 MCP 客户端（由 mcp-server.js 直接执行，不经这里）
+     与应用内的应用开发会话（网关运行时会 import 本文件，env MTNODE_APP_DEBUG=1，
+     见 gateway.mjs 的 getRuntime / cordis.yml 的 mtnode-gui 行）。
+     其余会话 / 助手 / 画布智能节点 / 长任务一轮都不注册：开窗、点、截图只对「正在写这个
+     应用、要在真机上验一遍」的会话有意义，工具定义（约 4.5K 字符/步）不该每步重发。
+     外部客户端每一次 tools/call 另进 MCP 审计（mcp-audit/，含被拒的调用）。 */
+  if (String(process.env.MTNODE_APP_DEBUG || '') !== '1') return
   ctx.tools.register(
     defineTool({
       name: 'mtnode_gui',
@@ -82,6 +95,7 @@ export function apply(ctx) {
           description: 'Which GUI action to run.',
           enum: [
             'windows',
+            'open-app',
             'outline',
             'text',
             'click',
@@ -94,6 +108,17 @@ export function apply(ctx) {
             'screenshot',
           ],
           required: true,
+        },
+        app: {
+          type: 'string',
+          description:
+            'open-app: the app id (from that app\'s app.json). The app window is opened (or reloaded and focused when already open) and its id / title / directory are returned — use a substring of that title as which for the following actions.',
+        },
+        kind: {
+          type: 'string',
+          description:
+            'open-app: which copy to open when the same id exists in both roots — "dev" (project root) or "down" (download root). Omit to use the copy present on disk.',
+          enum: ['dev', 'down'],
         },
         which: {
           type: 'string',
@@ -199,20 +224,26 @@ export function apply(ctx) {
         schema: { type: 'object', additionalProperties: true },
         render: (result) => [{ type: 'text', text: JSON.stringify(result, null, 2) }],
       },
-      async execute(args) {
+      async execute(args, exec) {
         const a = (args && typeof args === 'object' ? args : {}) || {}
         const action = String(a.action || '')
         if (!action) {
           throw new Error(
-            'mtnode_gui 需要 action（windows / outline / text / click / type / set / key / scroll / wait / eval / screenshot）',
+            'mtnode_gui 需要 action（windows / open-app / outline / text / click / type / set / key / scroll / wait / eval / screenshot）',
           )
+        }
+        if (action === 'open-app' && !String(a.app || '').trim()) {
+          throw new Error('open-app 需要 app（应用 id，取自该应用目录里的 app.json）')
         }
         if (action === 'screenshot' && !a.path) {
           throw new Error('screenshot 需要 path（本机绝对路径，.png / .jpg）')
         }
+        /* sessionId = 发起这次调用那条会话的 id（exec.agent.id）：网关靠它判「这帧属不属于
+           此刻在跑的这一轮」，不带的一律按越权直接 abort（与 canvas-plugin 同一口径）。 */
+        const sessionId = exec && exec.agent ? String(exec.agent.id || '') : ''
         /* Frame shape = the same host bridge the other plugins use (newline-delimited JSON
            over MTNODE_BRIDGE_PORT). The host answers {t:'gui-result', id, ok, result|error}. */
-        return await callHost({ t: 'gui', id: randomUUID(), action, params: a })
+        return await callHost({ t: 'gui', id: randomUUID(), sessionId, action, params: a })
       },
     }),
   )

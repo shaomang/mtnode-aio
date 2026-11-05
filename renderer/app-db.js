@@ -1167,7 +1167,7 @@ function handleAssetToolEvent(data, runKey, replyOverride) {
             .catch(() => {});
   const p = (data && data.params) || {};
   const action = String((data && data.action) || p.action || "list").trim();
-  const key = typeof assetsToolKeyOf === "function" ? assetsToolKeyOf() : "assets_read";
+  const key = typeof assetsToolKeyOf === "function" ? assetsToolKeyOf(action) : "assets_read";
   const mode =
     typeof agentToolMode === "function" ? agentToolMode(key, runKey) : "allow";
   if (mode === "deny") {
@@ -1185,7 +1185,7 @@ function handleAssetToolEvent(data, runKey, replyOverride) {
     });
     return;
   }
-  window.__mtnodeAssetOp({ action: action, params: p })
+  window.__mtnodeAssetOp({ action: action, params: p, actor: String((data && data.actor) || "agent") })
     .then((result) => reply(result))
     .catch((e) => reply({ ok: false, error: String((e && e.message) || e) }));
 }
@@ -2190,6 +2190,10 @@ function dshRunSigOf(p) {
          必须进签名，否则会把「旧可见集的会话」当同配置续跑。 */
       p.lean ? 1 : 0,
       p.noCanvas ? 1 : 0,
+      /* 真机调试档（应用开发会话）：网关 runtime key 的 ad: 成分 */
+      p.appDebug ? 1 : 0,
+      /* 开发调试档（mtnode_dev，扩展能力管理里的总开关）：网关 runtime key 的 dd: 成分 */
+      p.devDebug ? 1 : 0,
       /* hideTools 名单通道：网关把规范后的名单打进 runtime key 的 hx: 指纹 */
       p.hide || "",
       p.maxTokens == null ? "" : p.maxTokens,
@@ -2210,6 +2214,14 @@ function dshRunSigOf(p) {
    mtnode_vision（两者合计 ~4.9K 字符，每一步都随固定前缀重发一遍）。 */
 function dshLeanToolsOn() {
   return !!(S.config && S.config.dsh && S.config.dsh.leanToolPayload);
+}
+
+/* 「扩展能力管理 → 开发调试」总开关（默认关）。开了它，每一轮都带 devDebug=1 →
+   网关注册 mtnode_dev（自己起一只隔离调试实例 + CDP 驱动 + reload/restart 复验）。
+   与 appDebug（mtnode_gui，只给应用开发会话）是两件事：那个点用户正在用的窗口，
+   这个只碰 agent 自己 spawn 的那只，数据目录还有主进程侧的硬校验。 */
+function dshDevToolsOn() {
+  return !!(S.config && S.config.dsh && S.config.dsh.devTools);
 }
 
 /* lean / noCanvas 两个整档闸各自裁掉的名字（与 dsh/gateway/canvas-plugin.mjs 里的
@@ -2554,6 +2566,7 @@ function dshRunQueueDoneCheck() {
         };
     }
     const live = dshRunLiveOwners(items);
+    const doneRecs = [];
     for (const k of Object.keys(seen)) {
       if (cur[k]) continue;
       const rec = seen[k] || {};
@@ -2563,6 +2576,7 @@ function dshRunQueueDoneCheck() {
       if (dshRunRowStillAlive(rec, live)) continue;
       /* 被手动停止 / 取消：不算「完成」，不发这一声 */
       if (dshRunItemCancelled({ node: rec.node, stateText: rec.stateText })) continue;
+      doneRecs.push(rec);
       doneCount++;
     }
     if (!doneCount) return;
@@ -2570,8 +2584,15 @@ function dshRunQueueDoneCheck() {
        这里就是**唯一**的发声点：最后一件跑完也走这一条 —— 全部完成与单件完成
        响的是同一把音色、同一档音量，没有任何收尾专属的补响（见本段开头的说明）。 */
     const lastShort = Number(S._doneSoundAt) || 0;
-    if (lastShort && now - lastShort < DSH_DONE_SOUND_MERGE_MS) return;
-    playTaskDoneSound();
+    const merged = !!(lastShort && now - lastShort < DSH_DONE_SOUND_MERGE_MS);
+    if (!merged) playTaskDoneSound();
+    /* 本次需求：完成时还要「弹」——系统通知 + 右下角完成卡片（非前台时才弹，判定在
+       app-notify.js 里；它自己再按 500ms 合并窗合成一条「N 项任务已完成」，所以这里
+       即使在音效合并窗内也照发，两件事互不牵连）。开关也分开：上面只看「任务完成音效」，
+       这里只看 S.config.dsh.donePopup。 */
+    try {
+      if (typeof notifyTaskDone === "function") notifyTaskDone(doneRecs);
+    } catch (_) {}
   } catch (_) {}
 }
 
@@ -2929,6 +2950,25 @@ async function dshRunAskSwitchModel(opts, errText) {
 
 function dshRunTask(input, opts) {
   opts = opts || {};
+  /* 首次使用闸（renderer/app-deepseek-onboard.js）：这一轮实际要跑的路由就是
+     DeepSeek 官方（含「还没选过」的默认路由）而官方 API Key 尚未配置 →
+     先弹图文引导窗（注册 / 充值 / 拿 Key / 填进供应商），不发起任何请求、不烧 Token。
+     别家服务商（mtnode_xxx）有自己的 Key，不放这条闸。 */
+  if (typeof dsEnsureModelReady === "function") {
+    let gateRoute = String(opts.provider || "").trim();
+    if (!gateRoute && typeof dshDefaultProviderRoute === "function") {
+      try {
+        gateRoute = String(dshDefaultProviderRoute() || "");
+      } catch (_) {}
+    }
+    if (!dsEnsureModelReady(gateRoute)) {
+      return Promise.reject(
+        typeof dsMissingKeyError === "function"
+          ? dsMissingKeyError()
+          : new Error(I18n.t("未配置 API Key（请在「设置 · API/配置」中填写）")),
+      );
+    }
+  }
   /* 中间产物（工作流随包带来的）：起跑前先铺回节点工作目录，并把清单写进输入，
      让 agent 优先复用上一次的产出（实现见 renderer/app-workflows.js
      wfArtifactsSeedWorkspace）。只做一次（_artifactsSeeded 防递归）。 */
@@ -3536,6 +3576,15 @@ function dshRunOnce(input, opts) {
      放行）；控制类 / 节点层 / 绘图 / 排版 = 询问（见 NODE_AGENT_TOOL_POLICY），应用两件套
      仍由 hideTools 点名藏掉。整档闸只留给用户声明的「与画布无关」。 */
   const noCanvasOn = canvasFreeOn && !pureOn;
+  /* 真机调试档（mtnode_gui）：只有「属于某个应用」的会话（应用开发 / 版本合并）由调用方
+     打 opts.appDebug → 运行时才注册 GUI 工具，会话因此能开应用自己的窗口、点一遍、截图。
+     判据由宿主按会话的 appId 给（见 app-assist.js agentSessionSend），与画布两个整档标记
+     互不影响；pure 轮归零。可见集变化由 ad: 指纹与 runSig 的 appDebug 成分承载。 */
+  const appDebugOn = !!opts.appDebug && !pureOn;
+  /* 开发调试档（mtnode_dev）：判据是「扩展能力管理 → 开发调试」总开关（默认关，写 config.json
+     的 dsh.devTools）。开着 = 每一轮都注册调试工具，agent 因此能自己起一只隔离实例、CDP 驱动、
+     改完 reload/restart 复验；关着 = 一步都不发它的工具定义。 */
+  const devDebugOn = dshDevToolsOn() && !pureOn;
   /* 读图裁剪（点名画布三件套，含 mtnode_canvas_edit）：开发绑定会话由宿主打标
      noCanvasRead（真源 app.js createDevSessionForNode：mode === "dev" 时置位、随会话
      落盘），经 agentSessionSend → dshRunTask 的 baseOpts 原样透到这里。它不动上面两个
@@ -3693,6 +3742,12 @@ function dshRunOnce(input, opts) {
     pure: pureOn,
     lean: leanOn,
     noCanvas: noCanvasOn,
+    /* 真机调试档（应用开发会话）：换档 = 网关 ad: 指纹变 → 另一台 runtime，
+       与 lean / noCanvas 同一判据，必须进签名（否则会把没 GUI 工具的旧会话当同配置续跑）。 */
+    appDebug: appDebugOn,
+    /* 开发调试档（mtnode_dev）：与 lean / noCanvas / appDebug 同一判据 —— 换档 = 网关 dd:
+       指纹变 → 另起 runtime（否则会把「没调试工具的旧会话」当同配置续跑）。 */
+    devDebug: devDebugOn,
     /* 名单通道也进签名：隐藏名单变化 = 网关 hx: 指纹变化 → 另起 runtime，点名续跑
        旧会话等于把别的可见集的上下文灌进本轮（与 lean / noCanvas 同一判据）。 */
     hide: hideToolsOn.join(","),
@@ -3794,6 +3849,14 @@ function dshRunOnce(input, opts) {
        网关把它注入 spawn env（MTNODE_NO_BROWSER）并写进 runtime key：可见集变了就
        换一台运行时，与 lean / noCanvas 同一判据。老网关忽略未知字段 = 照旧注册。 */
     noBrowser: noBrowserOn,
+    /* 第五个整档标记：真机调试（mtnode_gui，只有「属于某个应用」的会话带这一位，
+       见上方 appDebugOn）。网关把它注入 spawn env（MTNODE_APP_DEBUG）并写进 runtime key：
+       会话因此能开应用自己的窗口、点一遍、读文字、截图；其余会话与节点不注册它。
+       老网关忽略未知字段 = 少一个工具，降级保底。 */
+    appDebug: appDebugOn,
+    /* 开发调试档（mtnode_dev）：网关把它注入 spawn env（MTNODE_DEV_DEBUG）并写进 runtime key。
+       默认关（扩展能力管理里的总开关）→ 老网关忽略未知字段 = 少一个工具，降级保底。 */
+    devDebug: devDebugOn,
     preset: runPreset,
     effort: runEffort,
     provider,
@@ -4088,6 +4151,22 @@ function dshRunOnce(input, opts) {
           }
           if (msg.type === "db") {
             handleDbToolEvent(msg.data || {}, opts.node, boundWf);
+            return;
+          }
+          if (msg.type === "gui") {
+            /* 真机调试（mtnode_gui · 应用开发会话）：GUI 动作只有主进程能执行，
+               这里转一次手（api.dshGuiRun），回执经 dshInteract kind:'gui' 回网关。
+               见 app-nodes.js 的 handleGuiToolEvent。 */
+            if (typeof handleGuiToolEvent === "function")
+              handleGuiToolEvent(msg.data || {}, { runKey });
+            return;
+          }
+          if (msg.type === "dev") {
+            /* 开发调试（mtnode_dev · 「开发调试」总开关打开的那一轮）：起实例 / CDP 动作
+               同样只有主进程能执行，这里转一次手（api.dshDevRun），回执经
+               dshInteract kind:'dev' 回网关。见 app-nodes.js 的 handleDevToolEvent。 */
+            if (typeof handleDevToolEvent === "function")
+              handleDevToolEvent(msg.data || {}, { runKey });
             return;
           }
           if (msg.type === "manifest") {
@@ -5265,6 +5344,11 @@ function ixPush(kind, data, runKey, src) {
     ixFreshCard = true;
     ixFreshPulse = !!document.getElementById("ixPanel");
     playIxSound();
+    /* 本次需求：模型停下来等你回应的这一刻，非前台时也发一条系统通知（提示音照旧响）。
+       应用内不再加浮层 —— 提问 / 审批卡本身就在界面上，重复弹只是噪声。 */
+    try {
+      if (typeof notifyWaitingForUser === "function") notifyWaitingForUser(kind, data, src);
+    } catch (_) {}
   }
   renderIxPanel();
 }
@@ -6609,6 +6693,14 @@ function renderIxPanel() {
   ixDraftSaveFromDom();
   ixFocusSaveFromDom();
   const items = (S.activeIx && S.activeIx.items) || [];
+  /* 询问窗来了新的待回应项 → 内置 TTS 报一句「有新的询问等你回应」（见 renderer/app-tts.js）。
+     只按「待回应条数变多」触发：重绘 / 收口 / 撤卡都不重复开口。 */
+  try {
+    const pendingN = items.filter((x) => !x.ended).length;
+    if (pendingN > (renderIxPanel._ttsSeenN || 0) && window.MTNodeTts && window.MTNodeTts.onAsk)
+      window.MTNodeTts.onAsk();
+    renderIxPanel._ttsSeenN = pendingN;
+  } catch (_) {}
   let box = $("#ixPanel");
   if (!items.length) {
     if (box) box.remove();

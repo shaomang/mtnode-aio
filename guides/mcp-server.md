@@ -7,8 +7,8 @@
 ## 1. 这是什么
 
 MTNode 原本只做 MCP **客户端**（`dsh/gateway/mcp-resources.mjs` 连别人的服务器，给自家 Agent 加工具）。
-本模块补上另一半：MTNode 自己作为 MCP **服务端**，对外暴露 14 个工具 ——
-画布 / 应用 / 数据库 / 事实库 / 长任务 / 素材 / 识图 / 窗口操作（`mtnode_gui`），
+本模块补上另一半：MTNode 自己作为 MCP **服务端**，对外暴露 15 个工具 ——
+画布 / 应用 / 数据库 / 事实库 / 长任务 / 素材 / 识图 / 窗口操作（`mtnode_gui`）/ 开发调试（`mtnode_dev`），
 以及**媒体生成**（图像 / 音乐 / 语音 / 视频）、**跑节点与整图**、**用户工具节点**、**会话**。
 
 **同一个服务端也给自己用**（§3.6 自用回环）：应用内的 Agent 经 MCP 调自己的生成能力，
@@ -32,7 +32,7 @@ handleCanvasEvent / handleDbToolEvent / handleAiFactsToolEvent / handleAssetTool
   ▲ 原路回执
 ```
 
-例外有两族（都不经渲染层）：`mtnode_gui`（主进程操作窗口）与
+例外有两族（都不经渲染层）：`mtnode_gui`（主进程操作窗口）与 `mtnode_dev`（主进程起调试实例 + CDP）、
 `mtnode_generate`（主进程直连四个本机生成后端）。
 
 于是「第三方调用」与「自家 Agent 调用」共用同一套准入、落盘、告警与回执口径。
@@ -60,7 +60,7 @@ handleCanvasEvent / handleDbToolEvent / handleAiFactsToolEvent / handleAssetTool
 - macOS / Linux 同上（`command` 换成实际的 MTNode 可执行文件或 `node`，路径换成实际安装位置；用应用可执行文件时同样要带 `ELECTRON_RUN_AS_NODE=1`）。
 - 桥脚本自己读数据目录里的 `mcp-server.json` 拿端口与令牌，所以**配置里不需要地址与令牌**；
   也可用环境变量显式覆盖（便携版 / 多用户）：`MTNODE_DATA_DIR`、`MTNODE_MCP_URL`、`MTNODE_MCP_TOKEN`。
-- 客户端重启一次即可看到全部 14 个工具（包含只在 MCP 这一侧提供的 `mtnode_gui` 与生成 / 跑图四件）。
+- 客户端重启一次即可看到全部 15 个工具（包含只在 MCP 这一侧提供的 `mtnode_gui` / `mtnode_dev` 与生成 / 跑图四件）。
 
 ### 2.2 本机 HTTP（自研客户端 / 远程工具宿主）
 
@@ -108,12 +108,13 @@ curl -s http://127.0.0.1:<port>/mcp \
 | `mtnode_manifest` | manifest / `manifest` | 是 | 项目 manifest（`<工程根>/manifest.json`）：资产登记 / `asset_id@rev` / 依赖图 / `stale_plan` 增量重建计划 / 引用校验 |
 | `mtnode_facts` | facts / `facts` | 部分 | 本画布 AI 事实库 |
 | `lt_state` | lt / `lt` | 是 | 长任务本轮状态（只在环节内有归属） |
-| `mtnode_assets` | asset / `asset` | 否 | 素材库 / 窗口静帧 |
+| `mtnode_assets` | asset / `asset` | 部分 | 素材库：`list` / `read` / `screenshot` 只读；`create` / `addItem` / `importFile` / `importFiles` / `updateText` / `updateMeta` / `removeItem` / `deleteAsset` 是写（另需「写素材库」许可；删除进回收站、改文本留历史版本） |
 | `mtnode_generate` | gen / **主进程执行** | 是 | 媒体生成：`kind` = `image` / `music` / `speech` / `video`；回本机绝对路径，默认顺手进素材库 |
 | `mtnode_run` | run / `run`（渲染层 `MTNodeMcpExtra.run`） | 是 | `action:"node"` 跑单个节点（要 `nodeId` + `baseHash`），`action:"graph"` 跑整图（找那颗 `control` 节点） |
 | `mtnode_tools` | tool / `tool` | 否 | `action:"list"` 列当前画布**用户工具节点**（参数即端子），`action:"call"` 真调一个 |
 | `mtnode_session` | session / `sessionTask` | 是 | `create` / `send` / `read` / `close`：新建一条带前缀的会话跑一轮任务（默认用完即弃） |
-| `mtnode_gui` | gui / **主进程执行**（不经渲染层） | 是 | 认元素 / 点 / 输入 / 按键 / 滚动 / 等待 / 读结构 / 窗口截图 |
+| `mtnode_gui` | gui / **主进程执行**（不经渲染层） | 是 | 认元素 / 点 / 输入 / 按键 / 滚动 / 等待 / 读结构 / 窗口截图（驱动**用户正在用的**那只实例） |
+| `mtnode_dev` | dev / **主进程执行**（不经渲染层） | 是 | 开发调试：自己起一只隔离实例（开发态）→ CDP 快照 / 点 / 输入 / 截图 / 控制台 / 异常 / 网络 → 改完 reload 或 restart 复验 → stop（**只碰自己起的那只**，默认数据目录硬拒） |
 
 参数表的**唯一真源**是 `dsh/gateway/*-plugin.mjs` 的 `defineTool` 参数表；`mcp-tools.json`
 由 `scripts/build-mcp-contract.mjs` 真实执行插件模块抓取并编译成 JSON Schema，
@@ -158,6 +159,29 @@ curl -s http://127.0.0.1:<port>/mcp \
 - **够不着的**（会明确报错，不会假装成功）：原生菜单、系统文件选择对话框、托盘菜单
   （它们不在 DOM 里）；最小化 / 隐藏的窗口拍不到图（先把它显示出来）。
 - **不代填凭据**：密码类输入一律由人在窗口里输入。
+
+### 3.2.2 `mtnode_dev`：主进程执行（开发调试一族）
+
+`mtnode_dev` 由主进程执行（根目录 `dev-agent.js`，参数表真源 `dsh/gateway/dev-plugin.mjs`）：
+**自己起一只隔离的 MTNode 客户端（开发态），用 CDP 连它的渲染层**。与 `mtnode_gui` 的分工：
+`mtnode_gui` 点的是**用户正在用的**那只实例；`mtnode_dev` 只碰**它自己 spawn 的那只**。
+
+```jsonc
+{ "action": "launch" }                                   // 起一只：electron . + --remote-debugging-port，数据目录 <temp>/mtnode-dev/<时间戳>
+{ "action": "snapshot" }                                 // 可见文本 + 最多 120 个可点元素与坐标
+{ "action": "click", "target": { "text": "开始安装" } }    // 真鼠标事件（不是 el.click()）
+{ "action": "console", "limit": 50 }                     // 控制台 / 日志 / 未捕获异常 / 网络：mtnode_gui 拿不到
+{ "action": "reload", "changedFiles": ["renderer/app.js"] } // 只改渲染层 → Page.reload；改了主进程 → 整只 restart（同一数据目录）
+{ "action": "stop" }                                     // CDP Browser.close → 等 → 杀进程树；数据目录留着当证据
+```
+
+- 动作：`launch` / `attach` / `status` / `stop` / `reload` / `restart` / `screenshot` / `snapshot` /
+  `click` / `type` / `key` / `scroll` / `wait` / `eval` / `console` / `exceptions` / `net`。
+- **三条硬红线（代码层校验）**：默认数据目录 `%APPDATA%\pipeline-console` 一律拒绝；只接管账本
+  （`dev-debug.json`）里登记过的那一只；同时只允许一只。只支持开发态（打包态直接拒绝）。
+- **只连渲染层**：主进程没有 `--inspect`，主进程改动只能靠 `restart` 生效，不能断点。
+- 对应用内 Agent 来说，这个工具**默认不注册**：要开「扩展能力管理 → 调试」（`config.json` 的
+  `dsh.devTools`）；MCP 这一侧的导出只受 MCP 服务端总开关约束。
 
 ### 3.3 resources
 
@@ -267,7 +291,7 @@ $env:MTNODE_DATA_DIR = "E:\tmp\mtnode-mcp-e2e"
 node scripts/e2e-mcp-full.mjs --data "E:\tmp\mtnode-mcp-e2e\pipeline-console" --report "E:\tmp\e2e-report.json"
 ```
 
-覆盖：端口/令牌落盘与桥自解析、`/meta` `/health` 免令牌与 401、14 个工具的 `tools/list`、
+覆盖：端口/令牌落盘与桥自解析、`/meta` `/health` 免令牌与 401、15 个工具的 `tools/list`、
 2+3 资源、3 份提示词、协议级错误面（未知方法 / 未导出工具 / 参数类型 / 枚举越界）、
 `canvas_get` 三档 detail 与 `sections`、`canvas_edit` 建连改分组绘制 + 版本闸（过期 baseHash 被拒、
 写后哈希刷新、**哈希与 detail 档位无关**）、`mtnode_app` 六种动作、`mtnode_facts` / `mtnode_db` /
@@ -303,6 +327,7 @@ node scripts/e2e-mcp-full.mjs --data "E:\tmp\mtnode-mcp-e2e\pipeline-console" --
 | `dsh/gateway/mcp-extra-plugin.mjs` | 回环四件的契约真源（`defineTool` 参数表） |
 | `mcp-server.js` | 主进程 MCP 服务端（HTTP / 协议分发 / 排队 / 版本闸 / 审计 / 抓包 / 自检 / 作业表 / 自用回环注册） |
 | `mcp-gui-agent.js` | `mtnode_gui` 的执行器（主进程直接操作窗口：注入脚本 + `capturePage` 截图） |
+| `dev-agent.js` | `mtnode_dev` 的执行器（主进程起隔离调试实例 + CDP：快照 / 点输入 / 截图 / 控制台 / reload·restart） |
 | `mcp-media-agent.js` | `mtnode_generate` 的执行器（图像 / 语音 / 音乐 / 视频四路，共用全局互斥锁；产物 stat + 归档素材库） |
 | `mcp-stdio.js` | stdio 桥（只转发；`--print-config` / `--check`） |
 | `mcp-prompts.js` | prompts 模板正文 |

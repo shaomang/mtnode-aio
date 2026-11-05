@@ -1,4 +1,4 @@
-# MTNode agent runtime — dsh 0.2 profile patch layer.
+﻿# MTNode agent runtime — dsh 0.2 profile patch layer.
 #
 # 形态变更（0.2）：本文件不再是「完整运行时组合」，而是叠加在内置 `sdk` profile 之上的
 # 补丁层。sdk profile 由两层 bundle 组成 —— @deepseek-ai/dsh-base（核心脊柱）+
@@ -483,6 +483,24 @@
       name: './canvas-plugin.mjs'
       disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
 
+    # MTNode GUI 工具（mtnode_gui）：**只有应用开发会话这一档注册**（网关按 run 参数 appDebug
+    # 下发 env MTNODE_APP_DEBUG=1，见 gateway.mjs 的 getRuntime / runtimeKey 的 ad: 成分）。
+    # 它的用途是真机调试应用：开应用自己的窗口、读文字、点、截图 —— GUI 动作在主进程执行
+    # （根目录 mcp-gui-agent.js），帧走同一条交互桥（gui → 渲染层 → dsh:gui → 主进程），
+    # 结果按 kind:'gui' 原路回给运行时。其余会话 / 节点一律不注册（插件 register 口自己判 env）。
+    - id: mtnode-gui
+      name: './gui-plugin.mjs'
+      disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
+
+    # MTNode 开发调试工具（mtnode_dev）：**只有「开发调试」总开关打开的那一轮注册**
+    # （网关按 run 参数 devDebug 下发 env MTNODE_DEV_DEBUG=1，见 gateway.mjs 的 getRuntime /
+    # runtimeKey 的 dd: 成分）。用途是让 agent 自己起一只隔离的调试实例、用 CDP 驱动它、
+    # 改完代码再复验（起进程与截图都在主进程，根目录 dev-agent.js；帧走 dev → 渲染层 →
+    # dsh:dev → 主进程，结果按 kind:'dev' 原路回）。默认关 = 其余会话一步都不发它的定义。
+    - id: mtnode-dev
+      name: './dev-plugin.mjs'
+      disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
+
     # MTNode 数据库工具:接入数据库副本节点的任务经 mtnode_db 查询事实
     # （list/query/get/calc，只读、确定性检索，宿主按接入关系放行或拒绝）。
     - id: mtnode-db
@@ -623,21 +641,12 @@
     # 本行以下 = 用户插件段（由 MTNode 设置写回；网关启动时把这段与
     # $DSH_HOME/cordis-user.yml 同步）。shipped 行一律写在本行**之前**，否则会被
     # syncUserPluginsFromHome 当作用户行搬到配置目录、从发行组合里消失。
+    #
+    # 标记之后是**运行期快照**：网关每次启动都按 cordis-user.yml 整份重写它（连注释一起丢），
+    # 所以要写注释写在这一段里。仓库里它必须是空的 —— 留在这儿的行会被 build 原样复制进
+    # 安装包，而它记的是某一次运行的端口 / 令牌 / 别的机器上的路径。2026-11-01 实测：这里
+    # 残留过两行（mtnode-self 指 53408、blender 指另一台机器的 uvx.exe），打包后应用里的
+    # Agent 一个 MCP 工具都没有。after-pack.cjs 现在还会再兜一道（打包时把这段剪掉）。
 
 
 # ── user plugins (managed from MTNode settings) ──
-
-- id: user-mcp-mvk3qccq
-  name: '@deepseek-ai/dsh-mcp-client'
-  config:
-    serverName: 'blender'
-    transport: 'stdio'
-    command: 'E:\mtnode-isolated\newmachine-cancel\data\pipeline-console\blender\.uv\uvx.exe'
-    args: ['mcp-for-blender', '--host', '127.0.0.1', '--port', '9876']
-
-- id: user-mcp-mvv0sosn
-  name: '@deepseek-ai/dsh-mcp-client'
-  config:
-    serverName: 'mtnode-self'
-    transport: 'http'
-    url: 'http://127.0.0.1:59923/mcp?token=ff2ae0a6caa2e62b15fe4ec531ea5af246821145db130a5f'

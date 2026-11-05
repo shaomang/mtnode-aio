@@ -41,6 +41,9 @@ const PLUGIN_CFG = {
   "yue2-local": "yue/config.json",
   yue2: "yue/config.json",
   yue: "yue/config.json",
+  /* MOSS-Music 本地音乐理解（kind mossmusic）：宿主把配置落在 <数据目录>/app-plugins/moss-music/config.json
+     （见 moss-music/main-moss-music.js 的 pluginRoot），这里必须指向同一份，安装卡片才读得到用户选的目录。 */
+  "moss-music": "app-plugins/moss-music/config.json",
   /* InfiniteTalk 数字人（应用插件 kind infinitetalk）：配置落 <数据目录>/infinitetalk-local/config.json */
   "infinitetalk-local": "infinitetalk-local/config.json",
   infinitetalk: "infinitetalk-local/config.json",
@@ -93,6 +96,9 @@ const PLUGIN_SUBDIR = {
      yue2-local / yue2 必须指向同一个子目录，否则旧 id 这条路上会被当成「窗口插件」——
      ensureDir 回空目录、又说「不需要目录」，安装链落成 empty_dir（真事故）。 */
   yue: "yue2",
+  /* MOSS-Music：默认装到 <插件根目录>/moss-music（内含 venv / 模型 / 产物目录）。
+     插件 id 与宿主常量一致，不需要短名别名。 */
+  "moss-music": "moss-music",
   /* InfiniteTalk 数字人：默认装到 <插件根目录>/infinitetalk-local（内含 ComfyUI / venv / models） */
   "infinitetalk-local": "infinitetalk-local",
   infinitetalk: "infinitetalk-local",

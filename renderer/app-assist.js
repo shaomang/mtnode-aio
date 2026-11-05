@@ -533,6 +533,11 @@ function agentWorkspaceInfo(st) {
      已封住「退回前台」）。助手会话的所属画布 = 它建立时绑定的那张图。 */
   const root = canvasProjectRootOfSession(st);
   if (root.path) return { path: root.path, source: "project", root };
+  /* 本次需求：没有开发项目根时用**所属画布自己的工作目录**（顶栏统一目录），
+     而不是直接落到应用默认目录。只按会话绑定画布取（不退回前台）。 */
+  const wf = sessionCanvasWf(st);
+  const cw = wf ? canvasWorkspaceDirOf(wf) : "";
+  if (cw) return { path: cw, source: "canvas", root };
   const fb = String(S.dshWorkspaceFallback || "").trim();
   if (fb) return { path: fb, source: "default", root };
   return { path: "", source: "", root };
@@ -2605,6 +2610,25 @@ async function assistSend(text, opts) {
       if (Array.isArray(S.assistLiveTools) && S.assistLiveTools.length)
         msg.tools = S.assistLiveTools.slice();
       msgs.push(msg);
+      /* 状态栏「最新语音播报」格（renderer/app-speakbar.js）：没有播报内容时直接显示
+         最新一轮的 Agent 答复 —— 这里落消息时先写进去；随后 TTS 若真的念了，
+         播报稿会以更晚的时间戳覆盖它。 */
+      try {
+        if (window.MTNodeSpeakBar && window.MTNodeSpeakBar.setReply)
+          window.MTNodeSpeakBar.setReply(msg.content);
+      } catch (_) {}
+      /* 一轮正常收口 → 内置 TTS 播报（见 renderer/app-tts.js）：画布助手栏这条链自己收尾，
+         所以在这里叫一次；会话视图 / 开发者节点绑定会话走的是 agentSessionSend 那条链
+         （它自己的收尾里另有一处同样的调用，见它的 st.messages.push(msg) 之后）。
+         开关没开 / 模块缺席时它自己直接返回，不产生任何副作用。 */
+      try {
+        if (window.MTNodeTts && window.MTNodeTts.onTurnEnd)
+          window.MTNodeTts.onTurnEnd(body, (spoken) => {
+            /* 本轮实际播报的那段话记在消息上：末尾「重播」按它原样再念一遍
+               （不必再跑一次摘要模型），见 app-tts.js replay / dshTtsReplayBtn */
+            if (spoken) msg._tts = String(spoken);
+          });
+      } catch (_) {}
     }
   } catch (e) {
     const msg = (e && e.message) || String(e);
@@ -4036,6 +4060,9 @@ function newAgentSession() {
     _lcLoaded: true,
     _lcDirty: true,
   };
+  /* 本次需求：新建会话就按**当前画布的工作目录**冻结一次（开发项目根 > 画布目录 >
+     应用默认目录），而不是让空 workspace 每轮现算、落到应用默认目录。 */
+  agentFreezeSessionWorkspace(st);
   list.unshift(st);
   S.agentActiveId = st.id;
   agentMarkSessionDirty(st.id);
@@ -6431,6 +6458,8 @@ const DSH_TOOL_TITLE_RULES = [
   [/^mtnode_facts$/i, "AI 事实库"],
   [/^mtnode_db$/i, "数据库查询"],
   [/^mtnode_assets$/i, "素材库"],
+  /* 真机调试（只有应用开发会话注册它）：开应用窗口、点、读文字、截图 */
+  [/^mtnode_gui$/i, "调试应用窗口"],
   [/^lt_state$/i, "长任务状态"],
   [/^browser_launch$/i, "浏览器启动"],
   [/^browser_snapshot$/i, "浏览器快照"],
@@ -10653,10 +10682,37 @@ function dshMsgActionBar(text, role) {
   return bar;
 }
 
+/* 每轮末尾的「重新播放语音播报」按钮（本次需求）：
+   自动播报一轮只念一次（短回复原样念，长回复先摘要），用户想再听一遍就点这里。
+   取的是这一轮**实际播过的**那段话（m._tts，见 app-tts.js onTurnEnd 的回调）；
+   老消息没这一位就按正文重走一遍 summarize，语音开关没开时按开关同一路径启用。 */
+function dshTtsReplayBtn(m) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "dsh-msg-tail-copy dsh-msg-tail-tts";
+  b.textContent = "🔊 " + I18n.t("重播");
+  b.title = I18n.t("重新播放这一轮的语音播报");
+  b.addEventListener("mousedown", (ev) => ev.stopPropagation());
+  b.addEventListener("click", (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    const tts = window.MTNodeTts;
+    if (!tts || typeof tts.replay !== "function") {
+      toast(I18n.t("语音播报不可用"), "err");
+      return;
+    }
+    b.classList.add("ok");
+    setTimeout(() => b.classList.remove("ok"), 1200);
+    Promise.resolve(
+      tts.replay(String(m.content == null ? "" : m.content), m._tts || ""),
+    ).catch(() => {});
+  });
+  return b;
+}
+
 /* 单条消息复制按钮：点击复制本条正文（用户消息放头部、AI 回复放尾部时间行），复制成功后短暂变 ok */
 function dshCopyBtn(m, cls) {
   const b = document.createElement("button");
-  b.type = "button";
   b.className = cls || "dsh-msg-copy";
   b.textContent = I18n.t("复制");
   b.title = I18n.t("复制本条到剪贴板");
@@ -11265,6 +11321,10 @@ function dshMsgBlock(m, nodeId, idx, opts) {
     /* 动作条已给出「复制」的消息不再挂这枚小按钮（同一条消息不出现两枚「复制」） */
     if (m.role === "assistant" && !hasActions)
       tail.appendChild(dshCopyBtn(m, "dsh-msg-tail-copy"));
+    /* 每轮末尾的「🔊 重播」：把这一轮的语音播报再念一遍（本次需求）。
+       只要这一轮有正文就挂（会话轮 · 长任务环节补写的那条 · 助手栏都算一轮）——
+       自动播报受开关约束，重播按钮本身不受（点了会先开）；空白正文不挂。 */
+    if (String(m.content || "").trim()) tail.appendChild(dshTtsReplayBtn(m));
     row.appendChild(tail);
   }
   /* 「这一轮已经结束」痕迹自带的那枚出口（app-db.js 的 ixRoundEndPaint：与无进展提示
@@ -14229,6 +14289,42 @@ function renderAgentTodoPanel(st, root) {
   el.appendChild(ul);
 }
 
+/* 开发任务书每轮随系统提示注入，但里面那句「本次开发需求」是第一轮写死的：
+   追问轮原样注入，系统提示就还在喊「本轮要做的是首轮那件事」——
+   真机现场（开发 · 工作流更新检查与等待Bug修复）：用户把音色那条要求发了两遍，
+   两轮都被答成上一轮的工作流需求（拷问问的也是旧需求）。所以追问轮把首轮那段
+   降级成「历史背景」，另在任务书末尾写死「本轮要求 = 用户最新这条消息」。
+   只换标记、不解析需求正文（正文可能跨行，后面还跟着边界段落）。 */
+const DEV_REQ_PREFIXES = [
+  "本次开发需求：",
+  "This round's requirements: ",
+  "This build's requirement: ",
+];
+function devContractForRound(contract, reqText) {
+  const src = String(contract || "");
+  const req = String(reqText || "").trim();
+  if (!src || !req) return src;
+  let out = src;
+  for (const p of DEV_REQ_PREFIXES) {
+    const i = out.indexOf(p);
+    if (i < 0) continue;
+    out =
+      out.slice(0, i) +
+      I18n.t("首轮开发需求（历史背景，可能已完成；不要重做）：") +
+      out.slice(i + p.length);
+    break;
+  }
+  return (
+    out +
+    "\n\n" +
+    I18n.t(
+      "【本轮要求（以用户最新这条消息为准；上面「首轮开发需求」只是历史背景，不要重做）】",
+    ) +
+    "\n" +
+    req
+  );
+}
+
 async function agentSessionSend(text, opts) {
   opts = opts || {};
   /* 计划执行器的单轮任务消息：不注入「任务流程」指令、不入「最近一次要求」 */
@@ -14666,6 +14762,7 @@ async function agentSessionSend(text, opts) {
         "相关性：先自判本轮是否与画布有关 —— 无关就别读画布（不调 mtnode_canvas_get、不取快照），直接做完这件活；有关再读现状；判不准按「有关」处理。\n" +
         "改画布：动手前先 mtnode_canvas_get 看清现状；节点字段、端子与 alias 的口径以 mtnode_canvas_edit / canvas_get 的工具说明为唯一真源，跨节点层接线用 superConnect；DSH 插件经 mtnode_app 的 list_dsh_plugins / install_dsh_plugin 等管理。\n" +
         "要某个节点的内容时在 prompt/task 里写 @标题，不要把正文复制粘贴（三条件与语法见技能 mtnode-canvas-edit-rules）。\n" +
+        "应用派单里给的参考图 / 上游内容，只要画布上已经有那颗节点（派单给了节点 id 或标题，或按路径能对上已有节点），就连那颗节点、prompt 里 @标题 引用它，不按路径另建「图源 + 参考图」——同一张图重复建节点就是这么来的。\n" +
         "建开发节点、批次 / 文生图、连线建图、排版、数据库副本、事实库之前，先用 skill 工具加载对应技能（mtnode-canvas-edit-rules / mtnode-dev-architect / mtnode-canvas-batch-safety / mtnode-canvas-layout-ux / mtnode-media-gen-nodes / mtnode-db-facts / mtnode-ai-facts）。\n" +
         "工具回执里没有的结果不要声称已完成；回答简洁（交流语言见文末「语言口味」），不要编造不存在的节点或画布。";
     }
@@ -14675,10 +14772,35 @@ async function agentSessionSend(text, opts) {
      纯行为纪律，只写这一处（提示词单一真源：参数机制在工具描述、操作规范在技能，
      这里只留「把活做对」的纪律）。 */
   if (!pureMode) systemPrompt += SELF_CHECK_DISCIPLINE;
+  /* 真机调试能力（mtnode_gui，仅限「属于某个应用」的会话：应用开发 / 版本合并）：这一档
+     的运行时才注册 GUI 工具，所以人设必须说明它存在、怎么用、边界在哪 —— 否则拿到工具也
+     不会用（旧行为：只能看代码，改完无法自验）。只在有 appId 时追加，其余会话一字不变。 */
+  if (!pureMode && st.appId) {
+    systemPrompt +=
+      "\n\n真机调试（本会话专属能力）：本轮注册了 GUI 工具 mtnode_gui，你可以直接操作这个应用**自己的窗口**做真机验证 —— 不是读代码猜结果。\n" +
+      "· 先 open-app（app = 本应用 id，取自它的 app.json）：开窗 / 重载并置前，回执带窗口标题与目录；之后所有动作都用 which = 那个标题的一段子串，别去动 MTNode 主窗口或用户别的窗口。\n" +
+      "· 然后用 outline 看可点元素、text 读文字、click / type / set / key / scroll 操作、eval 读页面里的值、screenshot 截图留证（path 给本机绝对路径）。\n" +
+      "· 改完代码就重开一次（open-app）再验证；每次声称「已经好了」必须有工具回执或截图支撑，读不到就如实说读不到。\n" +
+      "· 只在这个应用自己的窗口里操作：不点宿主菜单、不关用户窗口、不在别的应用界面里乱试；动作失败就把它当成失败如实报告，不要假装成功。";
+  }
   /* 开发 / 细化绑定会话：任务书是会话契约，临时写入系统提示（不占用户消息位，
      会话里只显示用户填写的关键输入；后续追问也持续携带该契约） */
-  const devContract = String(st._devContract || "").trim();
+  let devContract = String(st._devContract || "").trim();
   if (devContract && !pureMode) {
+    /* 追问轮（用户亲口发的新一轮要求）：契约里那句「本次开发需求」是第一轮的，
+       原样注入会让模型把上一轮当成这一轮的任务（真机现场见 devContractForRound）。
+       计划执行 / 续跑 / 自动续跑 / 清单同步 / 斜杠技能轮不算用户改口，保持原样。 */
+    const followUpRound =
+      !devContractMsg &&
+      !resumeRound &&
+      !planExecMsg &&
+      !planFixMsg &&
+      !todoSyncMsg &&
+      !opts._autoContinue &&
+      !skillWrap &&
+      !!t &&
+      t.charAt(0) !== "/";
+    if (followUpRound) devContract = devContractForRound(devContract, t);
     systemPrompt +=
       "\n\n【开发任务书 · 本会话模块契约（非用户消息，无需回复该段）】\n" +
       devContract +
@@ -14741,6 +14863,10 @@ async function agentSessionSend(text, opts) {
          edit / app 三件套整个不注册，约 26.0K 字符/步）。人设同步换成无画布版（见上方
          canvasPersona === "none" 分支），两侧判据同源于 turnCanvasFree（判据只算一次）。 */
       noCanvas: turnCanvasFree,
+      /* 真机调试（mtnode_gui）：这条会话「属于某个应用」（st.appId）就带上这一位 →
+         网关注入 MTNODE_APP_DEBUG，运行时才注册 GUI 工具，会话能在应用自己的窗口里
+         点一遍 / 读文字 / 截图自验。纯净模式与普通会话一律不带（只有联网搜索）。 */
+      appDebug: !!st.appId && !pureMode,
       onEvent: (type, data) => {
         /* 并行会话:仅当本会话正是当前查看的会话时才更新共享视图,避免后台会话
            重绘/滚动打扰用户正在看的其他会话 */
@@ -15012,6 +15138,23 @@ async function agentSessionSend(text, opts) {
         rk,
       );
       st.messages.push(msg);
+      /* 状态栏「最新语音播报」格：会话视图这一条链同样先落答复正文（语音没开 / 本轮没念时
+         它就是要显示的内容），播报稿随后以更晚的时间戳覆盖。见 renderer/app-speakbar.js。 */
+      try {
+        if (window.MTNodeSpeakBar && window.MTNodeSpeakBar.setReply)
+          window.MTNodeSpeakBar.setReply(msg.content);
+      } catch (_) {}
+      /* 一轮正常收口 → 内置 TTS 播报（renderer/app-tts.js）：
+         会话视图这条链路（agentSessionSend → dshRunTask）自己收尾，**不经过** assistSend，
+         所以这里必须自己叫一次 —— 漏了它就会出现「会话一轮跑完没有任何声音」，
+         而画布助手栏（走 assistSend）却有声音。开关没开 / 模块缺席时它自己直接返回。
+         实际播报的那句话记到消息上，供末尾「重播」按原文再念（见 dshTtsReplayBtn）。 */
+      try {
+        if (window.MTNodeTts && window.MTNodeTts.onTurnEnd)
+          window.MTNodeTts.onTurnEnd(String(msg.content || ""), (spoken) => {
+            if (spoken) msg._tts = String(spoken);
+          });
+      } catch (_) {}
       /* 运行中展开的思考块，落到历史消息后要保持展开 —— 否则一轮结束就「自动藏起来」
          （live 与历史用不同的展开键，重绘即缩回）。 */
       try {

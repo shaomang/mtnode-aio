@@ -430,6 +430,150 @@
   color: var(--muted);
 }
 
+/* ── DeepSeek 官方 API Key 首次使用引导窗（renderer/app-deepseek-onboard.js）──
+   persistent：点蒙层 / 点外部不关；关窗只走窗内「稍后配置」/ ✕ / Esc。
+   内容 = 一张图文海报（renderer/deepseek-guide.svg）+ 两个官方入口 + Key 输入框。
+   海报点一下就放大到视口内（同一个宿主加 .zoom，不另开窗）。 */
+.ds-key-dlg .mt-dialog-box.ds-key-box {
+  width: min(720px, 96vw);
+  max-height: min(92vh, 900px);
+  border-top-color: #4D6BFE;
+}
+
+.ds-key-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ds-key-head-note {
+  font-size: 11.5px;
+  color: var(--muted);
+  border: 1px solid var(--bd2);
+  border-radius: 999px;
+  padding: 1px 8px;
+}
+
+.ds-key-x {
+  margin-left: auto;
+  background: none;
+  border: 0;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 4px;
+}
+
+.ds-key-x:hover {
+  color: var(--fg, #e8e8e8);
+}
+
+.ds-key-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ds-key-lead {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--ink);
+}
+
+.ds-key-poster-wrap {
+  border: 1px solid var(--bd);
+  border-radius: 6px;
+  background: #f5f7fb;
+  padding: 6px;
+  cursor: zoom-in;
+  overflow: auto;
+  max-height: 42vh;
+}
+
+.ds-key-poster {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 4px;
+}
+
+.ds-key-dlg.zoom .ds-key-poster-wrap {
+  position: fixed;
+  inset: 12px;
+  z-index: 5;
+  max-height: none;
+  cursor: zoom-out;
+  background: #fff;
+}
+
+.ds-key-dlg.zoom .ds-key-poster-wrap .ds-key-poster {
+  width: auto;
+  max-width: 100%;
+  max-height: calc(100vh - 48px);
+  margin: 0 auto;
+}
+
+.ds-key-links {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ds-key-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border-top: 1px dashed var(--bd);
+  padding-top: 10px;
+}
+
+.ds-key-label {
+  font-size: 12px;
+  color: var(--muted);
+  letter-spacing: .3px;
+}
+
+.ds-key-form-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.ds-key-form-row .ds-key-input {
+  margin-top: 0;
+  flex: 1;
+  min-width: 0;
+  font-family: ui-monospace, Consolas, monospace;
+}
+
+.ds-key-status {
+  min-height: 16px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--muted);
+  word-break: break-word;
+}
+
+.ds-key-status.is-ok {
+  color: var(--teal, #35c6b2);
+}
+
+.ds-key-status.is-err {
+  color: var(--red, #ff6b6b);
+}
+
+.ds-key-status.is-busy {
+  color: var(--orange2);
+}
+
+.ds-key-note {
+  font-size: 11.5px;
+  line-height: 1.7;
+  color: var(--muted);
+}
+
 /* 提供商配置（设置最前面）：两列网格，每格只显示服务商名称（标题），
    点击该格弹出该服务商的具体配置对话框（.prov-cfg-box） */
 .prov-tiles {
@@ -702,6 +846,20 @@
 
 .prov-head .del:hover {
   color: var(--red)
+}
+
+/* 官方 DeepSeek 供应商那枚「不可删除」角标（app-settings.js provCard）：
+   代替「✕ 删除」的位置，只读、不响应点击。 */
+.prov-head .prov-locked {
+  margin-left: 6px;
+  padding: 0 6px;
+  border: 1px solid var(--bd2);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 16px;
+  white-space: nowrap;
+  cursor: default
 }
 
 .prov-grid {
@@ -1041,7 +1199,12 @@ button.pk-badge.pk-btn:hover {
 }
 
 .toast.err {
-  border-left-color: var(--red)
+  /* 报错必须是红色：只染左描边在深色面板上太容易被当成普通提示（视频显存不足这类
+     长文案尤其如此），整块底色 / 边框 / 文字一起偏红，一眼认出是失败。 */
+  border-color: color-mix(in srgb, var(--red) 55%, var(--bd2));
+  border-left-color: var(--red);
+  background: color-mix(in srgb, var(--red) 14%, var(--panel2));
+  color: color-mix(in srgb, var(--red) 78%, var(--ink));
 }
 
 .toast.ok {
@@ -1508,19 +1671,6 @@ button.pk-badge.pk-btn:hover {
 .n-batch-toggle.on {
   color: var(--cyan2);
   border-color: var(--cyan);
-  background: rgba(56, 214, 255, .16)
-}
-
-.n-file-ref {
-  color: var(--muted);
-  background: rgba(56, 214, 255, .05);
-  font-size: 11px;
-  line-height: 1
-}
-
-.n-file-ref:hover {
-  border-color: var(--cyan);
-  color: var(--cyan2);
   background: rgba(56, 214, 255, .16)
 }
 
@@ -4019,6 +4169,29 @@ body.theme-light .think-doc.md-viewer-doc {
   padding: 0 5px;
 }
 
+/* 来源标记：这份素材是某个应用 / MCP / 本机 Agent 建的（缺 = 用户自己建的） */
+.asset-lib-cardfrom,
+.asset-detail-from {
+  flex: none;
+  font-size: 10px;
+  line-height: 15px;
+  padding: 0 5px;
+  border-radius: 8px;
+  border: 1px solid rgba(90, 160, 255, .45);
+  color: #8fbfff;
+  background: rgba(90, 160, 255, .12);
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.asset-detail-from {
+  display: inline-block;
+  margin-left: 8px;
+  vertical-align: 2px;
+}
+
 .asset-lib-cardsub {
   font-size: 11px;
   line-height: 1.6;
@@ -5090,6 +5263,92 @@ textarea.asset-form-input {
   color: var(--green);
   border-color: var(--green);
   background: rgba(10, 12, 16, .68);
+}
+
+/* ===== 视频预览的「首帧静图」槽位（renderer/app-mediaview.js · mediaViewPoster）=====
+   画布节点上的视频预览一律先挂一张首帧静图（缩略图协议 host=video，解出来是小图，
+   不建视频帧纹理）；点一下才在原地换成池化播放器并自动播放。槽位占的就是原来 <video>
+   那个位置，尺寸口径按 <video> 来：宽铺满、高按 16:9 起算并限高，滚出视口回静图。 */
+.mv-slot {
+  position: relative;
+  width: 100%;
+  min-height: 28px;
+  max-height: 160px;
+  aspect-ratio: 16 / 9;
+  margin: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  overflow: hidden;
+  border-radius: 3px;
+  background: #0a0c10;
+  cursor: pointer;
+  user-select: none;
+}
+
+/* 首帧静图：整张按 contain 铺在槽位里，不吃鼠标（点击由槽位接） */
+.mv-slot > img.mv-poster {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  /* 视频首帧是写实画面：覆盖 .sv-prev img 那条像素画口径（image-rendering: pixelated） */
+  image-rendering: auto;
+  pointer-events: none;
+}
+
+/* 中间那枚 ▶：只是「可以点」的提示，不接事件 */
+.mv-slot > .mv-play {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 34px;
+  height: 34px;
+  margin: -17px 0 0 -17px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  border: 1px solid rgba(255, 255, 255, .28);
+  border-radius: 50%;
+  background: rgba(10, 12, 16, .62);
+  color: #fff;
+  font: 500 13px/1 var(--sans, system-ui, sans-serif);
+  pointer-events: none;
+  transition: opacity .12s, background .12s;
+}
+
+.mv-slot:hover > .mv-play {
+  background: rgba(10, 12, 16, .78);
+}
+
+/* 还没内容（预览路径为空）：只剩一枚半透明的 ▶ */
+.mv-slot.is-empty > .mv-play {
+  opacity: .3;
+}
+
+/* 已经换成播放器：静图与 ▶ 都让位，点击交给原生控件 */
+.mv-slot.is-playing {
+  cursor: default;
+}
+
+.mv-slot.is-playing > img.mv-poster,
+.mv-slot.is-playing > .mv-play {
+  display: none;
+}
+
+.mv-slot > video {
+  display: block;
+  width: 100%;
+  max-height: 100%;
+  background: #0a0c10;
+}
+
+/* 函数 / 工具节点的媒体预览那一格：高度口径由 .n-fnmedia 定（120px，与图像一致） */
+.mv-slot.n-fnmedia {
+  max-height: 120px;
+  border-radius: 6px;
 }
 
 /* ===== 音频波形预览器（renderer/app-audioview.js + .n-wave*）=====

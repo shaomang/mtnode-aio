@@ -1636,6 +1636,12 @@
     "暂无批注 · 添加批注后顶部会出现「让 AI 修订」":
       "No annotations yet · the “Ask AI to revise” button appears at the top once you add one",
     "删除批注": "Delete annotation",
+    "点击修改这条批注": "Click to edit this annotation",
+    "点这里修改这条批注": "Edit this annotation",
+    "只读回看，无法修改批注": "Read-only view — annotations cannot be edited",
+    "保存修改": "Save changes",
+    "批注已更新": "Annotation updated",
+    "批注内容不能为空": "Annotation content cannot be empty",
     "批注锚点文字已变更，可能已失效": "Anchor text changed — the annotation may be stale",
     "只读回看，无法定位正文": "Read-only view — the passage cannot be located",
     "未能在正文中找到该批注片段": "Could not find that annotated passage in the text",
@@ -2031,8 +2037,14 @@
     "仍然覆盖": "Overwrite anyway",
     "当前环境写不了文件": "Files cannot be written in this environment",
     /* ── 全部终止 / 媒体生成排队 ── */
+    "终止全部运行？": "Stop everything?",
+    "将立刻终止所有在跑与排队的任务（含画布助手与后端生成），且无法撤销。":
+      "This immediately stops every running and queued task (including the canvas assistant and backend generations) and cannot be undone.",
+    " 个运行中": " running",
+    " 个等待中": " waiting",
     "已终止（排队中的生成任务已取消）": "Cancelled (queued generation dropped)",
     "已终止（后端生成任务已取消）": "Cancelled (backend generation stopped)",
+    "已终止（显存已释放）": "Stopped (VRAM released)",
     "后端生成中": "Backend generating",
     " 个生成任务": " generation jobs",
     " 个定时": " timers",
@@ -3153,6 +3165,28 @@
     "令牌": "token",
     "stdio 配置": "stdio config",
     "MCP 服务端状态不可用（": "MCP server status unavailable (",
+    /* ── 开发调试（mtnode_dev；面板在「扩展能力管理 → 调试」，执行体是根目录 dev-agent.js）── */
+    "开发调试": "dev debugging",
+    "开发调试（mtnode_dev）": "dev debugging (mtnode_dev)",
+    "已开启": "on",
+    "边界": "boundaries",
+    "什么时候会生效": "when it takes effect",
+    "开启开发调试": "Turn on dev debugging",
+    "关闭开发调试": "Turn off dev debugging",
+    "开发调试已开启（下一轮生效）": "Dev debugging is on (takes effect next run)",
+    "开发调试已关闭": "Dev debugging is off",
+    "让 Agent 自己起一只隔离的 MTNode 客户端（开发态），用 CDP 连它的渲染层：截图、读控制台与未捕获异常、看网络请求、点与输入、DOM 快照；改完代码再 reload（只动渲染层）或 restart（动了主进程）复验。":
+      "Lets the agent start its own isolated MTNode client (dev build) and drive its renderer over CDP: screenshots, console and uncaught exceptions, network requests, clicking and typing, DOM snapshots; after a code change it reloads (renderer-only) or restarts (main process) and re-verifies.",
+    "同时只允许一只调试实例；只接管它自己账本里登记过的那一只；默认数据目录（%APPDATA%\\pipeline-console）一律拒绝 —— 不会碰你正在用的这只实例。只连渲染层，主进程没有 --inspect，主进程改动只能靠 restart 生效。":
+      "Only one debug instance at a time, and it only takes over the one recorded in its own ledger; the default data directory (%APPDATA%\\pipeline-console) is always refused, so the instance you are using is never touched. Renderer only: the main process has no --inspect, so main-process changes take effect through a restart.",
+    "已开启：下一轮 Agent 运行就带 mtnode_dev（工具定义也会随之多发一点）":
+      "On: the next agent run carries mtnode_dev (a bit more tool definition is sent)",
+    "已关闭：Agent 手上没有这套工具（每步少发一整段工具定义）":
+      "Off: the agent has none of these tools (one whole block of tool definition is saved per step)",
+    "设置没保存成功：": "Settings were not saved: ",
+    "开发调试：一个总开关 —— Agent 能不能自己起一只隔离的客户端、用 CDP 驱动它并复验修复。开关与边界在右侧面板。":
+      "Dev debugging: a single switch for whether the agent may start its own isolated client, drive it over CDP and re-verify a fix. The switch and its boundaries are in the panel on the right.",
+    "（这一页只有总开关 →）": "(this page is just the master switch ->)",
     /* ── Paseo 桥（手机端远程接管会话；面板在「服务端」页，桥与桥脚本见 paseo/）── */
     "Paseo 桥 · 远程接管会话（手机端）": "Paseo bridge · take over sessions from your phone",
     /* ── Paseo 手机接管（应用插件 kind paseo，id paseo-remote）：卡片 + 服务端页那一行入口 ── */
@@ -3911,7 +3945,7 @@
     "当前模型按默认可直接识图；若调用报错提示不支持图片输入（未添加多模态模型），请在「设置 → 模型服务」添加支持识图的模型（DeepSeek 官方默认的 deepseek-flash 即可识图），或为该服务商勾选「支持视觉」": "The current model is assumed to read images by default; if the call fails saying image input is unsupported (no multimodal model added), add a model that supports images in \"Settings → Model services\" (DeepSeek Official's default deepseek-flash reads images) or tick \"Supports vision\" for that provider",
     "当前模型不支持图片输入": "The current model does not support image input",
     "设置后,本画布创建的所有智能节点都固定使用该工作目录(节点内只读);留空则每个节点单独设置": "Once set, all agent nodes created on this canvas use this working directory (read-only inside the node); leave empty to set each node separately",
-    "智能模式：提示词成为任务，模型可读文件 / 联网 / 执行命令后完成（需配置文本服务商，见帮助）": "Agent mode: the prompt becomes the task; the model can read files / network / run commands, then finish (requires a text provider; see Help)",
+    "「文本处理节点转智能节点」已移除，不能由参数开启（只保留旧节点原状）": "Converting a text-processing node into an agent node has been removed; it cannot be enabled via params (existing nodes keep their state)",
     "</b> 个节点组成一个组（快捷键 G）。组标题仅用于显示；点击组框可整体移动 / 缩放 / 删除。": "</b> nodes into a group (shortcut G). The group title is display-only; click the group box to move / scale / delete it as a whole.",
     "文件方式适合含图像或体积较大的画布；Base64 适合纯文本小画布，可复制到剪贴板后粘贴到另一台客户端。": "File export is better for canvases with images or large size; Base64 is better for small text-only canvases—copy to the clipboard and paste into another client.",
     "参数（空格分隔，如 -y @modelcontextprotocol/server-filesystem）": "Args (space-separated, e.g. -y @modelcontextprotocol/server-filesystem)",
@@ -4383,9 +4417,13 @@
     "MTNode AI工作站": "MTNode AI Orchestrator",
     "语言": "Language",
     "未加载画布": "No canvas loaded",
-    "— 节点 · — 连线": "— nodes · — wires",
-    "服务商 0": "Providers 0",
-    "网格 24px": "Grid 24px",
+    "语音播报全文": "Voice broadcast",
+    "最新语音播报": "Latest voice broadcast",
+    "最新 Agent 答复": "Latest agent reply",
+    "点击展开全文": "Click to expand",
+    "还没有语音播报（会回落到最新一轮 Agent 答复）": "No voice broadcast yet (falls back to the latest agent reply)",
+    "暂无播报内容": "Nothing broadcast yet",
+    "清空这一格的内容（之后的播报 / 答复照常写入）": "Clear this cell (later broadcasts / replies still appear)",
     "设置": "Settings",
     "命令:/new 新会话 · /compact 压缩上文 · /plan 规划 · /rename 改名 · /export 导出 · /permissions 权限预设 · /help": "Commands: /new new session · /compact compact · /plan plan · /rename rename · /export export · /permissions permissions · /help",
     " · 第{turn}轮第{step}步": " · turn {turn} step {step}",
@@ -6091,6 +6129,19 @@
     "开发者工具": "Developer tools",
     "工作步骤展示": "Step display",
     "任务完成音效": "Task done sound",
+    "任务完成弹窗": "Task done popup",
+    "任务完成弹窗（应用不在前台时 → 系统通知 + 右下角完成卡片；多件同时完成合成一条「N 项任务已完成」）":
+      "Task done popup — when the app is not in the foreground, show a system notification plus a card at the bottom-right; several tasks finishing together are merged into one notice.",
+    "完成弹窗说明": "Done popup — help",
+    "{n} 项任务已完成": "{n} tasks finished",
+    "这一轮已经跑完了": "This round has finished",
+    "产物已生成": "Output ready",
+    "等待你回应": "Waiting for your reply",
+    "等待你确认": "Waiting for your confirmation",
+    "模型停在这一步，等你回答后才继续":
+      "The model is paused here until you answer",
+    "点击查看详情": "Click to see details",
+    "点击定位到该任务": "Click to jump to this task",
     "应用内部错误与崩溃会自动写入本地诊断日志（不含 API Key）。导出后可发给开发者协助排查。":
       "Internal errors and crashes are saved to local diagnostic logs (API keys excluded). Export and send them to the developer for troubleshooting.",
     "正在读取日志状态…": "Reading log status…",
@@ -9878,6 +9929,47 @@
     "目标地址 / 端口 / 通道 / 协议": "Target address / port / channel / protocol",
     "动作 / 补缺 / 固定": "Action / fill gaps / pinned",
 
+    /* MOSS-Music 音乐理解（moss_music）：预设 / 量化档 / 长音频（模型只剩 Instruct，不再有模型档选择） */
+    "任务预设 / 量化档 / 长音频": "Task preset / quantization / long audio",
+    "任务预设 / 量化档 / 长音频 / 输出上限":
+      "Task preset / quantization / long audio / output cap",
+    "单段输出上限": "Output cap per segment",
+    "撞上限会自动把这段音频对半再切后合并；调大只影响速度":
+      "Hitting the cap re-splits that stretch in half and merges it; raising it only costs speed",
+    " · 已自动分块补齐": " · auto-split to stay complete",
+    " · ⚠ 输出可能不完整（已达上限）": " · ⚠ output may be incomplete (cap reached)",
+    "节点内只显示前 600 字；完整结果走「结果文本 / JSON / md 路径」端口或 md 文件（未截断）":
+      "The node only shows the first 600 characters; the full text is on the result / JSON / md-path ports and in the md file (nothing is cut)",
+    "输出达到 token 上限，结果可能不完整；可把「单段输出上限」调到 8192 重跑":
+      "Output hit the token cap, so the answer may be incomplete; raise the per-segment output cap to 8192 and run again",
+    "任务预设": "Task preset",
+    "量化档": "Quantization",
+    "完整分析": "Full analysis",
+    "整曲描述": "Whole-track description",
+    "时间戳歌词": "Timestamped lyrics",
+    "曲式与和弦": "Form & chords",
+    "情绪标签": "Mood tags",
+    "长音频：开": "Long audio: on",
+    "长音频：关": "Long audio: off",
+    "预设决定发给模型的提问；自由提问填了就以它为准":
+      "The preset picks the question sent to the model; a free-form question overrides it",
+    "int8 ≥16GB · int4 ≥12GB（后端按此档装载；全精度档已移除）":
+      "int8 needs ≥16GB · int4 needs ≥12GB (the backend loads at this level; the full-precision tier is gone)",
+    "长音频（自动分块，30 分钟以上再开；更慢但不截断）":
+      "Long audio (auto-chunking; turn on for 30+ minutes — slower but never truncated)",
+    "长音频按静音切块后分段分析再合并，30 分钟以上再开":
+      "Long audio splits at silences, analyses each chunk and merges the results; turn it on for 30+ minutes",
+    "自由提问（留空用 ⚙ 里的任务预设）":
+      "Free-form question (leave empty to use the ⚙ task preset)",
+    "自由提问（端口 1 有输入：这里只读回显）":
+      "Free-form question (port 1 has input: read-only echo here)",
+    "本次提问取端口 1 的文本（预设与框内文字都不作数）；要改请改上游文本":
+      "This run asks the text on port 1 (the preset and this box are ignored); edit the upstream text instead",
+    "自由提问（预设已忽略）": "Free-form question (preset ignored)",
+    "自由提问（预设已忽略） · 接入音频 / 视频 → ▶ 分析":
+      "Free-form question (preset ignored) · connect audio / video → ▶ analyse",
+    "已终止音乐理解（显存已释放）": "Music understanding stopped (VRAM released)",
+
     /* 生成类窗内小节与选项（含从内联 .n-api-panel 搬进来的档位） */
     "渲染": "Render",
     "生成": "Generate",
@@ -10009,6 +10101,13 @@
       "The asset port needs text or a media file path",
     /* 视频后处理节点运行态（执行体 / 头部动作 / 状态行） */
     "请连接源视频输入（端子 V）": "Connect a source video (port V)",
+    "上游节点": "Upstream node",
+    "源视频还没产出：上游「{name}」正在生成 / 排队，等它跑完再执行本节点（端子是连着线的，不是未连接）":
+      "The source video is not out yet: upstream “{name}” is generating / queued. Run this node after it finishes (the port is wired, not disconnected).",
+    "源视频没有产出：上游「{name}」失败了（{why}）。先修好上游再重跑本节点":
+      "No source video was produced: upstream “{name}” failed ({why}). Fix the upstream, then re-run this node.",
+    "源视频还没产出：上游「{name}」还没有输出视频。先执行上游，或重新执行本节点":
+      "The source video is not out yet: upstream “{name}” has not output a video. Run the upstream first, or re-run this node.",
     "启动后端并处理…": "Starting the backend and processing…",
     "独立后处理 · 执行时自动启停 H3 后端":
       "Standalone post-process · starts/stops the H3 backend automatically",
@@ -10335,6 +10434,11 @@
       "在应用窗口左下角显示作者标签：平时隐藏，鼠标移上去显示「@作者 - v版本」，点一下看应用详情（作者取 app.json 的 author，没写就用当前登录账号昵称）":
         "Shows an author tag in the app window's bottom-left corner: hidden until you hover it, then “@author - vX.Y.Z”; click it for app details (the author comes from app.json's author, falling back to the signed-in account's nickname)",
       "需要图像生成": "Needs image generation",
+      "需要语音合成": "Needs voice synthesis",
+      "用 MTNode 已配好的图像能力出图：云端图像服务商（没配就用不了，界面会写清去哪配）":
+        "Generates images with MTNode's configured image backends (cloud image providers; unavailable until one is configured, and the UI says where to set it up)",
+      "用本机 Breeze TTS 2 合成语音（选音色角色 + 文本 → wav 落进画布工作目录）；以前这条只能跟「画布读写」一起开，现在单独一位":
+        "Synthesizes speech with the local Breeze TTS 2 backend (voice preset + text → wav written into the canvas workdir). This used to require canvas read/write; it is its own option now",
       "这个应用需要什么能力：": "Which capabilities does this app need: ",
       "正在读取…": "Reading…",
       "能力没有变化": "Capabilities unchanged",
@@ -10588,10 +10692,6 @@
     var doc = root || document;
     var skipLive = {
       ovTitle: 1,
-      statWf: 1,
-      statCounts: 1,
-      statProviders: 1,
-      statGrid: 1,
       saveState: 1,
       agentSend: 1,
       assistSend: 1,
@@ -10825,6 +10925,9 @@
     "FLUX 3 Image Klein（本地图像生成 · 5.6B 蒸馏 · INT8 / BF16 · 提示词 / 多参考图编辑 / 蒙版重绘 / 透明背景）":
       "FLUX 3 Image Klein (local image generation · 5.6B distilled · INT8 / BF16 · prompt / multi-reference edit / mask repaint / transparent background)",
     "FLUX 3 Image Klein（本地图像生成 · INT8 / BF16）": "FLUX 3 Image Klein (local image generation · INT8 / BF16)",
+    "Qwen Image 2.1（本地图像生成 · 7B DiT · INT8 / Turbo INT8 双量化 · 提示词 / 多参考图编辑 / 蒙版重绘 / 原生透明背景）":
+      "Qwen Image 2.1 (local image generation · 7B DiT · INT8 / Turbo INT8 dual-quant · prompt / multi-reference edit / mask repaint / native transparent background)",
+    "Qwen Image 2.1（本地图像生成 · INT8 / Turbo INT8）": "Qwen Image 2.1 (local image generation · INT8 / Turbo INT8)",
     "mtnode.image：函数节点的图像后端未接线（主进程未注入 fnRuntime.imageCall）":
       "mtnode.image: the function node's image backend is not wired (main.js did not inject fnRuntime.imageCall)",
   });
@@ -11147,6 +11250,23 @@
     "支付宝接口异常，请稍后重试": "Alipay API error — please try again later",
     "请先登录": "Please sign in first",
     "请求失败（HTTP {code}）": "Request failed (HTTP {code})",
+    /* 价格表（app-wallet.js 的 openPriceDialog：余额窗里「价格表」按钮打开的二级弹窗）。
+       价目按鲸圆币显示（1 币 = ¥0.02）；「模型」「关闭」已在别处登记，这里不重复。 */
+    "价格表": "Pricing",
+    "查看模型价格表": "View model pricing",
+    "模型价格表": "Model pricing",
+    "计费项": "Billed item",
+    "单价": "Price",
+    "百万 tokens": "1M tokens",
+    "张": "image",
+    "输入 · 缓存命中": "Input · cache hit",
+    "输入 · 缓存未命中": "Input · cache miss",
+    "输出 token": "Output tokens",
+    "出图（每张）": "Image generation (each)",
+    "按 MTNode 中转服务的当前价目计费（1 币 = ¥0.02）；后台改价后这里自动跟着变。":
+      "Billed at the MTNode relay's current pricing (1 W coin = ¥0.02); changes made on the server are reflected here automatically.",
+    "文本单价为标准时段；高峰时段（北京时间工作日 9:00–12:00 / 14:00–18:00）×{n}":
+      "Text prices are for standard hours; peak hours (Beijing time, weekdays 9:00–12:00 / 14:00–18:00) are ×{n}",
   });
 
   /* ── 打赏（renderer/app-tips.js）与评论（renderer/app-comments.js） ──
@@ -13632,6 +13752,20 @@
     "粘贴剪贴板图像时先询问（取消勾选 = 以后不再询问）":
       "Ask before pasting a clipboard image (uncheck = don't ask again)",
 
+    /* ── 设置 · 画布预览（预览画质三档：低 192 / 中 320 / 高 640，默认中）──
+       取值真源 = renderer/app-canvas.js 的 previewEdge()，界面在 app-settings.js。 */
+    "画布预览": "Canvas preview",
+    "预览画质": "Preview quality",
+    "低（192）": "Low (192)",
+    "中（320）": "Medium (320)",
+    "高（640）": "High (640)",
+    "画布预览说明": "About canvas preview",
+    "画布上图像 / 视频预览的清晰度，与显存占用直接相关：档位越低，预览图长边越小，显存占用越少。":
+      "How sharp image / video previews on the canvas are. Lower quality means a smaller preview edge and less VRAM used.",
+    "预览图长边像素：低 192 / 中 320 / 高 640（默认中）。画布节点、素材库与应用网格的预览都按这一档取图。":
+      "Preview edge in pixels: low 192 / medium 320 / high 640 (default medium). Canvas nodes, asset library and app grid previews all use this setting.",
+
+
     /* ── 「扩展能力管理 → 用户自建插件」面板（renderer/app-plugins.js：user-plugins 清单
        导入 / 重扫 / 试运行 / 诊断 / 修复那一套）──
        英文界面下这块曾整片回退中文：新增面板文案只写进 renderer，漏了这张表。补齐时
@@ -13793,8 +13927,9 @@
     "数字人视频已生成：": "Avatar video generated: ",
     "画幅 / 步数 / 种子 / 提示词 / 输出路径": "Bucket / steps / seed / prompt / output path",
     "画幅": "Bucket",
-    "480p（832×480 · 默认）": "480p (832×480 · default)",
-    "720p（1280×768 · 更慢 / 更吃显存）": "720p (1280×768 · slower / more VRAM)",
+    "480p（[26:15] 832×480 · 默认）": "480p ([26:15] 832×480 · default)",
+    "720p（[5:3] 1280×768 · 更慢 / 更吃显存）":
+      "720p ([5:3] 1280×768 · slower / more VRAM)",
     "端口 2 接了源视频 = V2V（构图跟源视频走，按所选画幅缩放）；端口 2 空 = I2V（人物图按中心裁切适配）。":
       "A source video on port 2 means V2V (composition follows the source, scaled to the bucket); an empty port 2 means I2V (the portrait is center-cropped to fit).",
     "默认 4 步（lightx2v 蒸馏档）；调到 8 以上会明显变慢，收益有限":
@@ -13851,6 +13986,60 @@
     "资产引用校验未通过": "Asset reference check failed",
     "开启后本节点必须先声明资产引用（形如 char_lin@3），运行前对照工程根 manifest.json 校验：引用不存在 / rev 过期 / 一条都没有（纯文本直出）都会拒跑并点名缺哪一项。工程里还没有 manifest.json 时先让 Agent 调 mtnode_manifest 的 init。":
       "When on, this node must declare asset references (e.g. char_lin@3). Before running, they are checked against <project>/manifest.json: a missing asset, an outdated rev, or no reference at all (plain text-only output) makes the run refuse and names what is missing. If the project has no manifest.json yet, have the agent call mtnode_manifest with action init first.",
+    /* ── DeepSeek 官方 API Key 首次使用引导（renderer/app-deepseek-onboard.js
+       + 设置里官方供应商那枚「不可删除」角标）── */
+    "官方 · 不可删除": "Official · cannot delete",
+    "官方 DeepSeek 供应商不允许删除；模型可以手动增删与排序（以后官方上新模型直接在「添加模型」里加）":
+      "The official DeepSeek provider cannot be deleted; models can still be added, removed and reordered (add new official models under Add model)",
+    "DeepSeek 官方 API Key": "DeepSeek official API key",
+    "首次使用引导": "first-run guide",
+    "使用模型能力前，需要先配置 DeepSeek 官方 API Key。按下面这张海报 5 步就能拿到：":
+      "Before any model capability works you need a DeepSeek official API key. The poster below shows the five steps:",
+    "海报：如何获取 DeepSeek API Key（注册 / 充值 / 创建 Key / 填进 MTNode）":
+      "Poster: how to get a DeepSeek API key (sign up / top up / create the key / paste it into MTNode)",
+    "打开 DeepSeek 开放平台（注册 / 充值）↗": "Open the DeepSeek platform (sign up / top up) ↗",
+    "API Keys 页面 ↗": "API keys page ↗",
+    "API Key（粘贴后自动验证，也可点按钮重试）": "API key (verified automatically once pasted; the button retries)",
+    "验证并保存": "Verify & save",
+    "只在验证通过后写入「设置 · 模型服务」里的 DeepSeek 供应商；验证请求只读取模型列表，不消耗 Token。":
+      "The key is written to the DeepSeek provider in Settings · Model services only after it verifies. Verification only reads the model list and costs no tokens.",
+    "稍后配置": "Set it up later",
+    "请先粘贴 API Key": "Paste the API key first",
+    "当前版本不支持在线验证，请到「设置 · 模型服务」手动填写":
+      "This build cannot verify keys online — fill it in manually under Settings · Model services",
+    "正在向 DeepSeek 官方校验这个 Key（不消耗 Token）…":
+      "Checking this key with DeepSeek official (no tokens used)…",
+    "验证失败，Key 未保存": "Verification failed — the key was not saved",
+    "验证通过，但配置里找不到 DeepSeek 供应商":
+      "Verified, but the DeepSeek provider is missing from the config",
+    "验证通过，已写入 DeepSeek 供应商": "Verified — saved to the DeepSeek provider",
+    "DeepSeek API Key 已验证并保存": "DeepSeek API key verified and saved",
+    "图文指引：注册 / 充值 / 拿 API Key": "Illustrated guide: sign up / top up / get an API key",
+    "打开图文海报引导窗（含 Key 输入与验证）":
+      "Open the illustrated guide window (with API key input and verification)",
+    "还没有配置 DeepSeek 官方 API Key：请在引导窗里填入并验证后再运行":
+      "No DeepSeek official API key yet: fill it in and verify it in the guide window, then run again",
+    /* ── 文本节点「粘贴截图 → 图像路径 / 识图 二选一」（renderer/app-paste-shot.js）── */
+    "粘贴截图": "Paste screenshot",
+    "这张截图要怎么放进正文？": "How should this screenshot go into the text?",
+    "图像路径": "Image path",
+    "识图提示词（可选 · 只对「识图」生效）":
+      "Vision prompt (optional · only applies to “Read image”)",
+    "要从图里取什么，例如：只取报错那几行 / 把这个表格转成表格 / 列出界面上所有按钮":
+      "What to take from the image, e.g. only the error lines / turn this table into a table / list every button in the UI",
+    "留空 = 有字逐字转写、没字描述画面。":
+      "Leave it empty to transcribe the text, or describe the picture when there is none.",
+    "识图（{model}）": "Read image ({model})",
+    "识图中…": "Reading the image…",
+    "粘贴截图需要先设置画布工作目录：请在弹出的窗口里选一个文件夹":
+      "Pasting a screenshot needs a canvas workspace folder first — pick one in the window that just opened",
+    "图片落盘不可用，无法识图": "Saving images is unavailable, so the image cannot be read",
+    "图片落盘失败，无法识图": "The image could not be saved, so it cannot be read",
+    "默认模型「{model}」没有可用的服务商配置：请到 设置 · 默认模型 里重选。":
+      "The default model “{model}” has no usable provider config: pick one again under Settings · Default model.",
+    "识图入口不可用": "Vision entry is unavailable",
+    "默认模型不可用": "Default model unavailable",
+    "模型没有返回任何内容": "The model returned nothing",
   });
 
   function listJoin(arr) {

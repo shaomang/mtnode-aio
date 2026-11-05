@@ -3628,8 +3628,38 @@ function vramHooks() {
   };
 }
 
+/**
+ * 应用窗口桥（app-host-bridge.js 的 `audio` 命名空间）用的四个口子：
+ * 清单 / 忙判定 / 叫停 / 合成 —— 全部**转发**本文件已有的实现，不另造一套。
+ * 为什么放在这里而不是桥里 require 一堆内部函数：桥只认这四个名字，
+ * 以后 breeze 内部怎么改（预设存储、引擎拉起、显存编排）桥一行都不用动。
+ */
+function appBridgeHooks() {
+  return {
+    /* 角色预设清单：与画布跳窗 / 管理台同一份（含 audioPath，应用按路径播，不走 base64） */
+    presets: () => {
+      presetMigrateVoices();
+      return presetsPayload();
+    },
+    /* 忙判定用**全局在途数**（画布节点 / MCP / 应用窗口共用同一台后端）：
+       应用排队进来只会撞到超时，所以桥那边按这个值直接回 busy。 */
+    status: () => ({
+      ok: true,
+      backend: "breeze",
+      running: !!(backendRunning() || apiAliveSync()),
+      busy: activeSynthesis > 0,
+    }),
+    /* 叫停：与画布节点 ■ 同一条实现（断连接 + 停引擎，显存立刻还回来）。
+       注意这是**全量**取消 —— 画布节点 / MCP 正在跑的合成也会一并停掉。 */
+    cancel: (reason) => cancelBreezeRuns(String(reason || "app")),
+    generate: generateBreezeFile,
+  };
+}
+
 module.exports = {
   registerBreezeIpc,
+  /* 应用窗口的语音通道（app-host-bridge.js 的 audio.*）：清单 / 忙判定 / 取消 / 合成 */
+  appBridgeHooks,
   /* 显存释放钩子：主进程 local-model-vram.js 收进统一编排表（画布节点运行前后 + 顶栏按钮） */
   vramHooks,
   /* MCP 自用回环（mtnode_generate kind:speech）复用画布节点那条出口，不另造一套合成实现：

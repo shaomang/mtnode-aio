@@ -161,6 +161,28 @@ exports.default = async function afterPack(context) {
   }
   walk(src, '')
 
+  /* 安装包里的 cordis.yml 只带**发行组合**（marker 之前那截）：marker 之后是运行期快照，
+     记的是某一次运行的 MCP 端口 / 令牌 / 别的机器上的 uvx 路径。用开发机的快照出厂，
+     用户装上就是一个连不上的 MCP 服务器（2026-11-01 实测：两行残留 → 应用内 Agent 的
+     会话里 0 个 MCP 工具）。网关启动时本来就按用户自己的 $DSH_HOME/cordis-user.yml
+     重写这一段，所以这里清空既不改行为，又能挡住「开发机状态被冻进安装包」。 */
+  const USER_MARKER = '# ── user plugins (managed from MTNode settings) ──'
+  try {
+    const cordis = path.join(dst, 'cordis.yml')
+    const text = fs.readFileSync(cordis, 'utf8')
+    const idx = text.indexOf(USER_MARKER)
+    if (idx >= 0) {
+      const shipped = text.slice(0, idx)
+      const stripped = shipped + USER_MARKER + '\n'
+      if (stripped !== text) {
+        fs.writeFileSync(cordis, stripped, 'utf8')
+        console.log('[after-pack] cordis.yml 用户段已清空（运行期快照不随包出厂）')
+      }
+    }
+  } catch (err) {
+    throw new Error(`[after-pack] 清空 cordis.yml 用户段失败：${err.message}`)
+  }
+
   const droppedBytes = [...dropped.values()].reduce((s, v) => s + v.bytes, 0)
 
   /* 分组报表：先按清单顺序打印「排除清单」的各组（桶 · 组标题 · 实测剪掉的包目录数与 MB

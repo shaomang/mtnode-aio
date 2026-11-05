@@ -98,6 +98,13 @@ user = 这一句 + 极短上下文（约 400 字符）；失败 / 超时 / 没�
 | 选图 / 压图 / 缓存 | — | `pickImage()` / `compressImage()` / `cacheImage(id,base64)` / `readCachedImage(id)` |
 | 模型能力（可选） | `textGenStream(opts, cb)`（**文字 + 图像多模态**；**默认关思考**，`opts.thinking` 认 `off / on(=high) / low / high / max`，非法值回 `bad_thinking`；回执带 `finishReason` / `truncated` / `reasoningChars`）。宿主注入的**听写条「AI 增强」就是它的标准用法**：`{ messages:[{role:"system",…},{role:"user",…}], thinking:"off", temperature:0.2 }` —— **不带 `model`**（跟随该应用的选择 / 宿主默认）、**不传 `maxTokens`**，失败 / 超时回落原文（见第七节坑表）· 脚手架另有 `AppHost.json(opts)`（要 JSON 就用它）· `imageGen(opts)` / `imageEdit(opts)`（出图 / 图生图，见第六节） · `hostModels()` / `hostModel()` / `hostSetModel(id)`（模型从 MTNode 继承）· `pickImage()` 系统选图。**服务商与 Key 只留主进程**，应用只能给 prompt / messages / model(清单内 id) / 温度 / 图像路径或 dataURL；**maxTokens 别随手设**（它是思考+正文共用预算，见第七节） | —（插件窗口这套没有模型桥：见第六节的正路 —— `pickImage` + 自己的后端，或升级为本地后端插件） |
 | **生命周期** | `close()`（关自己窗口）· `quit()`（连 MTNode 一起退）· **`onWillClose(cb)`**（关窗前收尾，见第三节） | `close()` · `onShown(cb)` · `onAuthChanged(cb)` |
+| **画布读写**（重能力，需声明 + 授权） | `canvas.info()` / `list()` / `pick()`（用户重选绑定画布）· `graph()` / `nodes()` / `node(id)` / `form(id)`（表单带 `byLabel`）· `updateForm(id, values)` / `addNode(opts)` / `updateNode(id, patch)` / `removeNode(id)` / `connect({from,to})` / `disconnect(id)` / `save()` · **`runNode(id, {attempts})` / `nodeOutput(id)` / `cancelNode(id)`**（执行画布节点 / 读最近一次产物 / 等同画布「终止」，见 2.1.2）· `select(ids)` / `view()` / `setView(v)`（**只对用户眼前那张画布有效**，后台回 `not_foreground`） | `pluginApi.canvas.*`（同名同形；目标 = 用户当前打开的那张，插件没有绑定画布） |
+| **Agent 会话**（重能力，需声明 + 授权） | `agent.bound()` / `sessions()` / `create(opts)` / `bind(sessionId)` / `send(text,{sessionId?})` / `cancel(sessionId)` / `onEvent(cb)`（收 `{type:"agent",sessionId,frame}`；`frame.type` = text / tool / approval / question / done / error…） | `pluginApi.agent.*` |
+| 画布工作目录文件 | `fs.root()` / `readText(rel)` / `writeText(rel, content)` / `list(rel)` / `mkdir` / `remove` / `exists`（根 = 那张画布的工作目录，越界回 `outside`，单文件 ≤ 8MB） | `pluginApi.fs.*` |
+| 本机后端工具 | `tools.list()` / `tools.call(id, args)`（「重后端」面板里已登记的工具） | `pluginApi.tools.*` |
+| **语音合成**（重能力，需声明 `canvasHost` + 授权） | `audio.synth(opts)` → `{ok, path, bytes}`（`appHost.tts(opts)` 是它的薄别名，两种写法都认）；`audio.presets()` → `{ok, dir, presets}`；`audio.status()` → `{ok, backend, running, busy}`；`audio.cancel()`。**产物写盘并回 path**（不回 base64 —— 应用没有二进制写口），`opts.outputPath` **必填**且只能落在画布工作目录内（越界 `outside`），同一后端忙时回 `busy` | —（插件窗口没有这条：合成能力用本机后端插件自己提供） |
+| **素材库**（重能力，需声明 `assetHost` + 授权） | `assets.root()` / `scan()` / `readItem({id,itemId?,index?,withDataUrl?})` / `create({catRel?,displayName,desc?})` / `addItem({id,type,title?,content?,srcPath?,base64?})` / `importFile({paths,name?,category?,desc?})` / `importFiles({id,paths})` / `updateText({id,itemId,content,title?})` / `updateMeta({id,displayName?,desc?,catRel?})` / `removeItem({id,itemId})` / `deleteAsset({id})`；`canvas.addAssetNode({id|rel,x?,y?})` 在应用画布上建一颗绑定该素材的节点。**归属硬口径：应用只能改删自己创建的素材与条目**（别人的回 `{ok:false,code:"forbidden"}`）；删除进回收站、改文本留 `.versions/` | —（插件窗口一律 `not_supported`） |
+| 联网 | `net.fetch(url)`（经宿主取 http(s)；应用页自己的 fetch 仍受 CSP / 跨域约束） | `pluginApi.net.fetch(url)` |
 
 调用前一律先探测：`typeof host.dataWrite === "function"`，缺就走降级分支。**脚手架的 `window.AppHost` 把两套桥统一成一套名字**
 （`getData`/`setData`/`dataDir*`/`storage*`/`accountText`/`request`/`on`/`onShown`/`onWillClose`/`close`/`quit`），新应用照它写即可。
@@ -128,6 +135,105 @@ const line = await H.accountText();         // "未登录" / 昵称 / "未接入
 
 **生命周期 / 事件**：窗口 `ready-to-show` 与 `did-finish-load` 后宿主会 show 并置顶（应用中心窗口还会按需发 `apps:windowChanged`）。
 事件订阅**都返回退订函数**，应用在收尾时退订（见第三节），避免重复绑定。
+
+### 2.1 画布与 agent：三条硬口径（写这几族代码前必读）
+
+1. **目标画布 = 这个应用对应的那张**，不是用户此刻打开的那张。默认是与应用同 id 的画布（新建应用时后台建好的）；
+   不存在时宿主弹窗让用户选一次并记住，`canvas.pick()` 可主动重选。目标画布没打开时宿主**后台加载**它，不动用户视图。
+2. **声明 + 一次授权**：`app.json` 的 `capabilities.canvasHost`（管 `canvas` / `fs` / `audio` / `tools` / `net`）、
+   `agentHost`（管 `agent`）与 `assetHost`（管 `assets`）要为真，否则回 `not_declared`；首次调用宿主弹一次窗，一次授权全部七类，
+   在「应用设置」里取消勾选 = 撤销。**主窗口关着时一律回 `not_ready`**（画布真源与 agent 运行态只在主窗口渲染层）。
+3. **写画布 = 走同一套写入口**（撤销栈 / 落盘 / 表单归一化同源）。前台画布的改动进用户撤销栈，后台画布**不进**
+   （`pushHistory` 在后台模式下早退）。写完用回执 `ok` 判断，别假设「一定写进去了」。
+
+```js
+/* 读写画布 + 让 agent 对着这张画布干活（脚手架已把两套桥统一成 AppHost.canvas / agent） */
+const H = window.AppHost;
+if (!H.cap.canvas) { showBanner("这个宿主没有画布能力"); return; }   // 缺能力先降级，别当异常
+
+const g = await H.canvas.graph();                       // { ok, nodes, wires, … }
+const f = await H.canvas.form(nodeId);                  // { ok, formName, fields, values, byLabel, file }
+await H.canvas.updateForm(nodeId, { 标题: "新标题" });    // 只改给出的字段，其余原样保留
+const n = await H.canvas.addNode({ kind: "input_text", x: 0, y: 0 });
+await H.canvas.connect({ from: n.id, to: nodeId });
+
+H.agent.onEvent(function (ev) { paint(ev.sessionId, ev.frame); });   // frame.type: text / tool / done / error…
+await H.agent.send("把这张画布上的标题都改成英文");                     // 没绑会话时宿主自己建一条并绑到本应用的画布
+```
+
+常见错误码：`not_declared` / `denied` / `not_ready` / `timeout` / `no_canvas` / `not_foreground` / `outside` / `no_workdir`。
+**一律如实显示**（别把 `not_foreground` 写成「成功了」——那是宿主在保护用户当前视图）。
+
+### 2.1.2 在画布上跑图像节点：建图 → 连线 → 执行 → 取产物
+
+应用不止能建节点，还能**真把它跑起来**并拿到图。三条接口：
+
+| 接口 | 回执 / 语义 |
+| --- | --- |
+| `canvas.runNode(id, { attempts })` | **等到跑完再回**：`{ ok, nodeId, title, kind, artifacts, images, paths, meta, elapsedMs }`。`attempts` 默认 **1 张**（不继承节点自己存的多次，1–10，跑完把原值还回去）；上游没跑过的自动补齐（与用户手点 ▶ 完全一致）；同节点已有运行在飞 → 等它结束直接回它那轮的产物（不重复出图、不多花一次钱）；**没有工作目录 → `code:"no_workspace"`，不弹窗**；被 `cancelNode` 停掉 → `code:"cancelled"`（已落盘的产物还在） |
+| `canvas.nodeOutput(id)` | 该节点**最近一次运行**的产物，形状同上（不含 `elapsedMs`）；从没跑过也回 `ok:true`（`artifacts` 为空、`meta.hasOutput=false`） |
+| `canvas.cancelNode(id)` | 等同画布上的「终止」：这颗节点上在跑的都停（含用户手点 ▶ 那次），回 `{ ok, wasRunning, running }` |
+
+- `artifacts` 每项：`{ kind, path, text, attempt, item?, ok?, itemError?, error? }`，`path` 一律是**本机绝对路径**（图落画布资产目录，与手点 ▶ 同一管道）；`images` 只挑图像产物。
+- `meta`：`{ model, provider, size, seed, attempts, attemptErrors:[{attempt,error}], hasOutput }` —— 抽卡「3 张只成 2 张」时，成功在 `artifacts`、失败在 `meta.attemptErrors`。
+- **任意 kind 都能跑**（含 `save` / 控制类 / `super`）：`save` 会真写盘、控制类会改画布状态，宿主如实回执、不设白名单。
+- 宿主**不给 `runNode` 挂超时**（出图可能几分钟）：长任务自己用 `Promise.race` + `cancelNode` 收口。
+- 执行完宿主自动存盘；运行态 / 进度画在画布节点上（与手动执行一致），**不回推 progress 事件**。
+
+```js
+const H = window.AppHost;
+if (!H.cap.canvas) { showBanner("这个宿主没有画布能力"); return; }
+
+/* 1) 搭一张最小出图链路：提示词 → 图像节点（参考图同理，挂 input_image） */
+const txt = await H.canvas.addNode({ kind: "input_text", x: 0, y: 0 });
+const img = await H.canvas.addNode({ kind: "proc_image", x: 320, y: 0 });
+await H.canvas.updateForm(txt.id, { 文本: "雨夜的霓虹街角，电影感" });
+await H.canvas.connect({ from: txt.id, to: img.id, toIndex: 0 });
+
+/* 2) 跑它（默认 1 张；要抽卡传 attempts） */
+const r = await H.canvas.runNode(img.id, { attempts: 2 });
+if (!r.ok) {
+  if (r.code === "no_workspace") showBanner("先在 MTNode 顶栏给画布选一个工作目录");
+  else if (r.code === "cancelled") note("已终止");
+  else showBanner(r.error);
+  return;
+}
+const paths = r.images;                       // 本机绝对路径，用之前先 fs.exists 复核
+for (const p of paths) if (!(await H.fs.exists(p)).exists) showBanner("产物不在：" + p);
+console.log(r.meta.seed, r.meta.size, r.meta.model, r.elapsedMs);
+
+/* 3) 之后想再取一次（不用重跑）/ 想中途叫停 */
+const again = await H.canvas.nodeOutput(img.id);
+await H.canvas.cancelNode(img.id);
+```
+
+### 2.1.1 语音合成：产物落盘，回 path 不回 base64
+
+应用窗口**只有文本写盘**（`fs.writeText` 收 UTF-8），wav 的二进制落不进去，所以合成走宿主通道，
+宿主写进画布工作目录再把**绝对路径**回给应用 —— 应用拿它 `fs.exists` 复核，与「产物必须验过才算完成」的纪律一致。
+
+```js
+const H = window.AppHost;
+const tts = (H.audio && H.audio.synth) || H.tts;      // 两种宿主形态都认（同一个实现）
+if (typeof tts !== "function") { note("这个宿主没有语音合成通道"); return; }
+
+const r = await tts({
+  text: "旁白正文",              // 必填
+  presetId: "p_xxx",            // 角色预设 id（清单用 H.audio.presets()）
+  instruction: "压低、放慢",      // 可选：语气 / 发声指令
+  outputPath: "story2video/voice/01.wav",   // **必填**，相对画布工作目录或绝对路径都收
+});
+if (!r.ok) {
+  // no_text / no_path / outside / busy / no_local_backend / preset_missing / no_file …
+  show(r.error);
+} else {
+  const ok = await H.fs.exists(r.path);        // 真复核一次再当成功
+  audio.src = "file:///" + r.path.replace(/\\/g, "/");
+}
+```
+
+不看能力就画按钮 = 用户点下去才知道不行：**界面先写通道事实**（`typeof tts === "function"` 有没有、`audio.status()` 的
+`running` / `busy`），缺了当场提示，别让用户试。
 
 ---
 
@@ -330,7 +436,7 @@ else use(j.data);                              // 已经解析好的对象
 | 需求 | 正解 |
 | --- | --- |
 | 应用要有 LLM / 识图能力 | `appHost.textGenStream`（多模态）+ `hostModels()` 选模型；模型与 Key 留在主进程 |
-| 应用要出图 | `appHost.imageGen(opts, cb?)`（文生图 · 每次一张，回 base64 / dataUrl；`cb` 收进度）与 **`appHost.imageEdit(opts, cb?)`**（显式图生图 / 图像编辑，参考图必填，没给回 `no_ref_image`，**不降级**成文生图）：**后端从 MTNode 继承** —— 云端图像服务商（含「图像模型挂在 text_openai 卡上」那种）或本机图像后端。清单 `hostImageModels()`（每项带 `refImages` / `maxRefImages` / `strength` 能力字段，界面据此置灰），选择 `hostImageSetModel(id)`，取消 `imageGenCancel(reqId)`；参考图 `opts.images`（本机路径或 dataURL，**整组**下发：云端 `/images/edits` 多图按顺序对应「图1 / 图2…」，本机按各后端的 `maxRefImages` 上限）走图生图 / 图像编辑；`opts.strength`（0–1，0 = 只作前缀条件、1 = 最强）**只有本机图像后端认**（看 `strength` 能力字段），云端传了在回执 `warnings` 里如实说明并忽略；本机后端与音乐 / 视频共用一个全局锁，忙时回 `code:"busy_media"` |
+| 应用要出图 | `appHost.imageGen(opts, cb?)`（文生图 · 每次一张，回 base64 / dataUrl；`cb` 收进度）与 **`appHost.imageEdit(opts, cb?)`**（显式图生图 / 图像编辑，参考图必填，没给回 `no_ref_image`，**不降级**成文生图）：**后端从 MTNode 继承** —— 云端图像服务商（含「图像模型挂在 text_openai 卡上」那种）或本机图像后端。清单 `hostImageModels()`（每项带 `refImages` / `maxRefImages` / `strength` 能力字段，界面据此置灰），选择 `hostImageSetModel(id)`，取消 `imageGenCancel(reqId)`；参考图 `opts.images`（本机路径或 dataURL，**整组**下发：云端 `/images/edits` 多图按顺序对应「图1 / 图2…」，本机按各后端的 `maxRefImages` 上限）走图生图 / 图像编辑；`opts.strength`（0–1，0 = 只作前缀条件、1 = 最强）**只有本机图像后端认**（看 `strength` 能力字段），云端传了在回执 `warnings` 里如实说明并忽略；本机后端与音乐 / 视频共用一个全局锁，忙时回 `code:"busy_media"`。**产物落盘看 `opts.outputDir`**：给了就把图写进那个目录、回执里带 `path`（本机与云端**同一语义**，云端写不进去回 `image_write_failed`）；不给就落 `<数据目录>\apps-data\<id>\gen`（云端同样回 `path`）。要做「出图 → 后续步骤用这张文件」的链路，一律给 `outputDir` 并用 `fs.exists(path)` 复核，不要拿 `base64` 假装已落盘 |
 | 应用要更重的本地能力（本地模型 / 语音 / 视频 / 自己的后端） | 升级为**本地后端插件**（见 `mtnode-plugin-dev`）：主进程宿主用 `dsh/mtnode-llm-creds.js` 的 `resolveDshRunAuth(getDataDir())` 复用设置里的 Key |
 | 纯提示词工具（不需要真调用模型） | 应用内拼好提示词，交给全局助手 / 画布工作流（`proc_text` / `proc_image` / 智能节点） |
 | 需要联网但创意工坊服务端还没有路由 | 先在 `store-saas/server.mjs` 补路由，应用再用 `storeRequest` 调 |
@@ -359,6 +465,13 @@ else use(j.data);                              // 已经解析好的对象
 | `frame:false` 却没做关闭按钮 | 用户关不掉应用（只能关主程序） | 画自己的关闭按钮 → `host.close()` |
 | `onShown` / `onAuthChanged` 不退订 | 重开窗口重复绑定、回调叠加 | 保存返回的退订函数，收尾钩子里调（脚手架挂进 `AppClose.on`） |
 | 以为窗口就是 `app.json` 里的尺寸 | 实际生效的是云端 catalog 词条（app.json 只是自描述） | 发版时同步 catalog 词条的 `entry` / `version` / `window` |
+| 以为 `canvas.*` 改的是用户眼前那张画布 | 它改的是**这个应用绑定的那张**；用户可能正看着另一张（改对了但「看不见变化」） | 用 `canvas.info()` 的 `id` / `foreground` 判断；要用户眼前那张就 `canvas.select` / `view` / `setView`（后台画布会回 `not_foreground`） |
+| 以为应用写画布一定能 Ctrl+Z 撤回 | 后台画布的写入**不进**用户撤销栈（`pushHistory` 在后台模式早退），前台画布的才进 | 别用「撤销」兜底正确性：写完 `canvas.save()` 并检查回执 |
+| 没声明 `canvasHost` / `agentHost` / `assetHost` 就调 `canvas` / `agent` / `assets` | 一律 `not_declared`（用户即便授权了也调不到） | 在「应用设置 → 应用能力」勾上那几位；新建应用默认开 |
+| 以为 `assets.*` 能改用户自己建的素材 | 归属按**条目**判：应用只能改删它自己创建的，用户那份（及用户后加进应用素材的条目）回 `forbidden` | 要改用户素材就让用户在界面上动手，或把产出建成**自己的**新素材 |
+| 以为应用建了素材画布上就会出现 | `assets.create` 只写库，不碰画布 | 需要节点就显式 `canvas.addAssetNode({ id })`，别指望自动摆 |
+| 主窗口最小化 / 关着时调 `canvas` / `agent` | 回 `not_ready`（画布真源与 agent 运行态只在主窗口渲染层） | 如实提示「请先打开 MTNode 主窗口」；把 `not_ready` 当可重试状态，不当作崩溃 |
+| 把 `denied` / `timeout` 当成功 | 用户看到「已写入」但其实什么都没发生 | 这几个码逐一处理并显示人话（`denied` = 用户拒绝授权，`timeout` = 主窗口没回执） |
 | app 目录没进打包白名单 | 打包后目录为空 | `build.json` 的 `files` 里加 `app/**`（或实际目录名）；仓库新增顶层目录必查 |
 | 回答「应用桥只支持文本、模型看不见图」 | 写出的应用白白没有识图能力（桥其实早就支持多模态） | 按第六节：`textGenStream` 的 `messages[].content` 收多模态分片，配 `hostModels()` 选视觉模型 |
 | 应用里没有选模型的位置 | 用户没配服务商时无处自救，只能改代码 | 保留脚手架的 `#modelBtn` + `app-model.js`（模型从 MTNode 继承）；无可用模型时置灰并写明去设置哪里配 |
@@ -372,6 +485,12 @@ else use(j.data);                              // 已经解析好的对象
 | 以为「预览里没有宿主、只能退回 localStorage」 | 白写一套预览专用降级分支，用户在开发页中栏看到的还是「进度暂存在浏览器本地」 | 开发页中栏的预览 iframe **有** `window.appHost`（见第四节）；按「有宿主」写，只额外处理 `close`/`quit` 的 `preview_no_window` 与只读时的 `readonly_preview` |
 | 应用自己监听 `"mtnode-dictate"` 把文字写进输入框 | 宿主听写条**默认也会往当时焦点的那个输入框里原位写**（2026-02 二轮），同一句会写两遍 | 交给宿主落字（什么都不用做）；确实要自己接管（比如写进富文本节点）就调 `apSpeechInsert(false)` 关掉宿主的自动落字，只留事件 |
 | 以为听写条只能「一直听」 | 用户要的是按住说一句就走（语音指令场景） | 按键转录态：按住 **F1** 说话、松开立刻识别；`apSpeechSetMode("ptt")` / 点话筒循环都能进这一态 |
+| 用 `tools.call("breeze-tts-local", …)` 合成语音 | 那个分支只回**预设清单**、忽略 args，还回 `ok:true` —— 应用会「以为合成成功了」，却一条音频都没有 | 合成走 `appHost.audio.synth` / `appHost.tts`（见 2.1.1），产物回 `path` 用 `fs.exists` 复核；`tools.call` 那条只用来取清单 |
+| 出图后只拿 `base64` 就当成功，或期待宿主自己落盘 | 云端后端以前只回 `base64`，应用没有二进制写口 → 永远拿不到可复核的文件 | 传 `opts.outputDir` 并检查回执 `path`；没有 `path` 就如实报错，**不拿 base64 假装落盘**（见第六节出图那行） |
+| 用 `canvas.addNode` 建了图像节点就以为图出来了 | 节点只是块板子：不调 `runNode` 永远不会出图（以前**根本没有**执行接口） | 建图 → `connect` → `canvas.runNode(id, {attempts})` 等回执，用 `images` / `paths` 取产物（见 2.1.2） |
+| 以为 `runNode` 有宿主超时会自己收口 | 它**不挂超时**（出图可能几分钟）：忘了收口就是应用界面一直转圈 | 自己要停就 `canvas.cancelNode(id)`；`code:"cancelled"` 是正常结果，不是错误 |
+| 以为 `cancelNode` 只停自己发起的那一次 | 它等同画布「终止」：用户手点 ▶ 的那次也会被停 | 这是用户共识（一个节点上一次只该有一个人在跑）；按钮文案写「终止」时讲清楚 |
+| 用 `canvas.runNode` 跑 `save` 节点却没有工作目录 | 回 `no_workspace`（宿主**不弹窗**，应用窗口里没人能替你选目录） | 先 `canvas.info()` 看 `workspace`，没有就让用户在主窗口顶栏选，或 `canvas.pick()` 换一张 |
 | 把 AI 增强当成「必过的一步」（失败就丢字） | 模型限流 / 超时 / 没配服务商时用户的话被吞掉 | 增强只做润色、**失败一律回落原始识别**（宿主听写条就是这么做的，见第二节 `textGenStream` 那行）；自己接线时也照这个口径 |
 
 ---

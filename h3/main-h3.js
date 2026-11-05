@@ -3143,6 +3143,7 @@ async function stopBackend() {
   saveConfig({ wantRunning: false });
   clearLock();
   activeGenerate = null;
+  clearWarmSlot("后端已停止");
   return { ok: true };
 }
 
@@ -4159,7 +4160,8 @@ function buildPostWorkflow(params) {
  *         videoCodec, outputDir, filename, sourceWidth, sourceHeight,
  *         upscale:{model,scale,targetLongSide,perBatch,tile,lowVram,engine,precision,overlap},
  *         interp:{multiplier,clearCacheEvery,batchSize,scaleFactor,maxLongSide,lowVram,engine,precision} }
- * 复用全局媒体互斥锁、activeGenerate 取消、ComfyUI /free；提交前后各释放一次生成模型，
+ * 复用全局媒体互斥锁、activeGenerate 取消、ComfyUI /free；提交前对齐显存（同一档后处理连续
+ * 运行直接复用已加载权重，换类型 / 换权重 / 从生成切过来才释放，见 prepareModelSlot），
  * 首次 OOM 自动降一档重试一次。超分 / 补帧都走同一套引擎选路（见 resolvePostEngine）：
  *  · 'stream'（默认）：逐帧流式（超分 h3-pack/post/stream_upscale.py 分块 / 补帧
  *    h3-pack/post/stream_interp.py 逐对，都是 venv python 子进程）——
@@ -4202,6 +4204,10 @@ async function postProcessVideo(params) {
   let ramBeforeFreeGb = null;
   let ramAfterFreeGb = null;
   let ramTotalGb = null;
+  /* 本单有没有动过显存里的权重（prepareModelSlot 会 +1）：没动过就不在收尾重复释放 */
+  const warmSeq0 = warmSlot.seq;
+  /* 这一单成没成：成功才保持常驻（连续处理不重载），失败 / 取消一律释放残留 */
+  let jobOk = false;
   try {
     appendConsole("[post] start kind=" + kind + " source=" + sourcePath);
     emitProgress({ phase: "post", nodeId, message: "正在启动后端…", pct: 2 });
@@ -4237,22 +4243,34 @@ async function postProcessVideo(params) {
     const port = Number(ready.port) || Number(cfg.port) || DEFAULT_PORT;
     const comfy = comfyDir(cfg.installDir);
 
+    /* 连续跑同一套后处理权重：先对齐显存（见 prepareModelSlot 头部）—— 同签名复用，
+       换类型 / 换权重 / 从生成切过来才先释放。必须放在显存预检**之前**：从生成切过来时
+       先把常驻的 DiT / VAE 卸掉，卡才腾得出来；连着超分 / 补帧同一档时也不会被自己常驻的
+       上一份权重拒单。 */
+    const postModelHint = String(((kind === "interp" ? req.interp : req.upscale) || {}).model || "");
+    emitProgress({ phase: "post", nodeId, message: "正在对齐显存（同一档连续后处理会直接复用）…", pct: 4 });
+    const slot = await prepareModelSlot(port, "post:" + kind + ":" + postModelHint, label);
+
     /* 显存预检（后处理门槛 12G，见 vram-preflight.js 头部口径）：显存不够时 ComfyUI 不报错、
        只会一直没进度。forceVram = 用户已明确点过「仍然执行」（只对本次这一跑生效）。 */
-    const postVram = await vramPre.gate({ kind: "post", force: req.forceVram === true });
-    if (!postVram.ok) {
-      clearLock();
-      appendConsole("[post] reject: 显存不足 —— " + postVram.message);
-      emitProgress({ phase: "post", nodeId, message: postVram.message, error: true, pct: 0 });
-      reportErr("vram_insufficient", postVram.message, {
-        phase: "post",
-        nodeId,
-        workflowId: String(req.canvasWorkflowId || ""),
-        nodeKind: "video_upscale/video_interp",
-      });
-      return { ok: false, error: "vram_insufficient", message: postVram.message, gpu: postVram.judge };
+    if (slot.reused) {
+      appendConsole("[vram] 同一套权重已在显存里 → 跳过本次显存预检（上一个同款任务已证明这张卡放得下）");
+    } else {
+      const postVram = await vramPre.gate({ kind: "post", force: req.forceVram === true });
+      if (!postVram.ok) {
+        clearLock();
+        appendConsole("[post] reject: 显存不足 —— " + postVram.message);
+        emitProgress({ phase: "post", nodeId, message: postVram.message, error: true, pct: 0 });
+        reportErr("vram_insufficient", postVram.message, {
+          phase: "post",
+          nodeId,
+          workflowId: String(req.canvasWorkflowId || ""),
+          nodeKind: "video_upscale/video_interp",
+        });
+        return { ok: false, error: "vram_insufficient", message: postVram.message, gpu: postVram.judge };
+      }
+      appendConsole("[post] vram ok " + vramSummaryText(postVram));
     }
-    appendConsole("[post] vram ok " + vramSummaryText(postVram));
 
     activeGenerate = { nodeId, abort: false, promptId: "", req: null };
     /* 系统内存水位（只为把「跑满的是内存、不是显存」变成控制台里的实测数字） */
@@ -4271,10 +4289,6 @@ async function postProcessVideo(params) {
         );
       }
     } catch {}
-
-    /* 提交前释放生成模型（H3 DiT / VAE），后处理只留超分 / 补帧模型，压低显存峰值 */
-    await comfyFreeModels(port);
-    if (activeGenerate && activeGenerate.abort) throw new Error("cancelled");
 
     const sourceWidth = Number(req.sourceWidth) || Number(req.width) || 0;
     const sourceHeight = Number(req.sourceHeight) || Number(req.height) || 0;
@@ -4515,6 +4529,9 @@ async function postProcessVideo(params) {
     appendConsole(
       "[post] " + (opts.engine === "stream" ? "流式档" : "24G 安全档") + " opts=" + JSON.stringify(opts),
     );
+
+    /* 提交前显存已在本单开头对齐过（见 prepareModelSlot）；这里只补一次取消检查 */
+    if (activeGenerate && activeGenerate.abort) throw new Error("cancelled");
 
     let outPath = "";
     let meta = null;
@@ -4840,6 +4857,7 @@ async function postProcessVideo(params) {
     );
     appendPostRamReport(memWatch, true);
     memWatch = null;
+    jobOk = true;
     return {
       ok: true,
       path: outPath,
@@ -4864,12 +4882,13 @@ async function postProcessVideo(params) {
     return { ok: false, error: err, message: err };
   } finally {
     if (memWatch) appendPostRamReport(memWatch, false);
-    /* 服务常驻：不重启后端，只释放模型显存，避免下次重新加载慢 */
+    /* 服务常驻：同一套后处理权重连跑就保持常驻（不卸载 / 不重载），换权重 / 失败才释放
+       —— 口径见 prepareModelSlot / finishModelUse 头部。 */
     try {
       const cfg = loadConfig();
       const freePort = Number(cfg.port) || DEFAULT_PORT;
-      await comfyFreeModels(freePort);
-      appendConsole("[post] vram released");
+      if (warmSlot.seq !== warmSeq0) await finishModelUse(freePort, jobOk, label);
+      appendConsole("[post] 显存处理完毕");
       /* 内存护栏：/free 只卸模型、不清 glibc arena —— 刚这一单积下的帧张量缓存未必还回系统。
        * 这里量一次「任务之后还剩多少」，与任务开始时那次比较：
        * 服务守住超过一半内存 / 本机已低于硬闸 → 把后端回收掉（后台等空闲再重启，不阻塞本次回执）。
@@ -5085,22 +5104,30 @@ const SAGE_PROBE_PY = [
   "print(json.dumps(o))",
 ].join("\n");
 
-/** 小尺寸真跑一次 kernel：能 import 不等于能算（缺对应架构的 .pyd 时是调用期才炸）。 */
+/** 小尺寸真跑一次 kernel：能 import 不等于能算（缺对应架构的 .pyd 时是调用期才炸）。
+ *  kind 区分两种失败：「launch」= 编译器进程（ptxas）自己没起来 —— 进程启动期的瞬时故障，
+ *  与 Sage 装没装好无关；「calc」= 真的算不了（缺 .pyd / 非 finite / 无 GPU）。 */
 const SAGE_SMOKE_PY = [
   "import json",
-  "r = {'ok': False, 'why': ''}",
+  "r = {'ok': False, 'why': '', 'kind': ''}",
   "try:",
   "    import torch",
   "    from sageattention import sageattn",
   "    if not torch.cuda.is_available():",
-  "        r = {'ok': False, 'why': 'no_gpu'}",
+  "        r = {'ok': False, 'why': 'no_gpu', 'kind': 'nogpu'}",
   "    else:",
   "        q = torch.randn(1, 2, 128, 64, device='cuda', dtype=torch.float16)",
   "        o = sageattn(q, q, q, tensor_layout='NHD')",
   "        torch.cuda.synchronize()",
-  "        r = {'ok': bool(torch.isfinite(o.float()).all().item()), 'why': '' if bool(torch.isfinite(o.float()).all().item()) else 'nonfinite'}",
+  "        fin = bool(torch.isfinite(o.float()).all().item())",
+  "        r = {'ok': fin, 'why': '' if fin else 'nonfinite', 'kind': '' if fin else 'calc'}",
   "except Exception as e:",
-  "    r = {'ok': False, 'why': type(e).__name__ + ': ' + str(e)[:180]}",
+  "    msg = type(e).__name__ + ': ' + str(e)[:180]",
+  "    low = msg.lower()",
+  "    kind = 'calc'",
+  "    if 'ptxas' in low and ('--version' in low or 'returned non-zero exit' in low):",
+  "        kind = 'launch'",
+  "    r = {'ok': False, 'why': msg, 'kind': kind}",
   "print(json.dumps(r))",
 ].join("\n");
 
@@ -5325,26 +5352,46 @@ function readPostDepsProbe(installDir) {
  * （与 import 探测同一个 TTL），不会每次出片都多花几秒。 */
 let _sageSmoke = null;
 const SAGE_SMOKE_TTL_MS = 10 * 60 * 1000;
+/** 编译器进程（ptxas）自己起不来 ≠ Sage 装坏了：0xC0000142 STATUS_DLL_INIT_FAILED 是进程
+ *  启动期的瞬时故障（同时起的进程太多 / 内存吃紧 / 杀软拦截），过一会儿重试多半就好，
+ *  重装 wheel 对它毫无作用。判据只认 ptxas 的 --version 调用失败，真编译错不算。 */
+function isSageCompileLaunchFailure(why) {
+  const s = String(why || "");
+  return /ptxas/i.test(s) && /--version|returned non-zero exit|0xC0000142|3221225794/i.test(s);
+}
 async function ensureSageKernelSmoke(installDir, probe) {
   const py = comfyVenvPython(installDir);
   if (!py) return { ok: false, why: "no_venv" };
   const key = [String((probe && probe.sage) || ""), String((probe && probe.triton) || ""), String((probe && probe.sm) || "")].join("|");
+  const ttl = _sageSmoke && _sageSmoke.ttl != null ? _sageSmoke.ttl : SAGE_SMOKE_TTL_MS;
   if (
     _sageSmoke &&
     _sageSmoke.dir === String(installDir || "") &&
     _sageSmoke.key === key &&
-    Date.now() - _sageSmoke.at < SAGE_SMOKE_TTL_MS
+    Date.now() - _sageSmoke.at < ttl
   ) {
     return _sageSmoke;
   }
-  const r = await runVenvPy(py, SAGE_SMOKE_PY);
-  const j = parseSageProbe(r.out, r.code);
+  /* 编译器进程起不来是瞬时的：当场重试一次，别让一次偶发把整个出片闸门关掉 */
+  let j = { probed: true, ok: false, why: "unknown" };
+  for (let i = 0; i < 2; i++) {
+    const r = await runVenvPy(py, SAGE_SMOKE_PY);
+    j = parseSageProbe(r.out, r.code);
+    if (j.ok || !isSageCompileLaunchFailure(j.why)) break;
+    if (i === 0) {
+      appendConsole("[sage] kernel 试跑：编译器进程 ptxas 没起来（" + String(j.why || "").slice(0, 120) + "），1.5 秒后重试一次…");
+      await new Promise((res) => setTimeout(res, 1500));
+    }
+  }
+  const blip = !j.ok && isSageCompileLaunchFailure(j.why);
   _sageSmoke = {
     dir: String(installDir || ""),
     key,
     ok: !!j.ok,
     why: String(j.why || ""),
     at: Date.now(),
+    /* 瞬时故障不缓存：下一次重试立刻重新验，而不是把 10 分钟的出片闸门钉在一个偶发上 */
+    ttl: blip ? 0 : SAGE_SMOKE_TTL_MS,
   };
   if (!_sageSmoke.ok) appendConsole("[sage] kernel smoke failed: " + (_sageSmoke.why || "unknown"));
   else appendConsole("[sage] kernel smoke ok @ " + ((probe && probe.sm) || "?"));
@@ -5469,6 +5516,16 @@ async function resolveSageGateForGenerate(requested, installDir, optSageAttn) {
   const smoke = await ensureSageKernelSmoke(installDir, probe);
   if (!smoke.ok) {
     const why = "kernel 试跑失败：" + (smoke.why || "unknown");
+    /* 编译器进程起不来是环境 / 资源层面的瞬时故障：不是 Sage 装坏了，重装也修不好，
+       所以给「等一会儿重试」的口径，不挂那颗没用的「立即补装」。 */
+    if (isSageCompileLaunchFailure(smoke.why)) {
+      const blipMsg =
+        "Sage 加速这次没能验过（必须项）：编译器进程 ptxas 起不来（" + String(smoke.why || "").slice(0, 160) + "）。" +
+        "这是进程启动期的瞬时故障（同时起的进程太多 / 内存吃紧 / 杀软拦截 DLL），不是 Sage 装坏了 —— " +
+        "等当前任务收尾、内存松开后直接重试即可，不用重装。已当场重试过一次仍如此时才需要看本机内存与安全软件。";
+      if (!exempt.active) return { ok: false, mode: "disabled", code: "sage_compile_transient", message: blipMsg };
+      return { ok: true, mode, exempted: true, warn: blipMsg + "（已豁免：" + exempt.reason + "，本机按无 Sage 出片）" };
+    }
     if (!exempt.active) {
       return {
         ok: false,
@@ -5579,6 +5636,20 @@ async function installSageAttention(opts) {
           message: "Sage 加速已就绪（sageattention " + before.sage + " · triton " + before.triton + " · " + (before.sm || "?") + "），无需补装。",
         };
       }
+      /* 编译器进程起不来是瞬时故障（0xC0000142）：包本身完好，重装 wheel 只会白等一次下载，
+         而且下次一样过不了 —— 直接如实回执「稍后重试」。 */
+      if (isSageCompileLaunchFailure(pre.why)) {
+        appendConsole("[sage] kernel 试跑：ptxas 起不来（" + (pre.why || "unknown") + "）→ 判定为瞬时故障，不重装");
+        return {
+          ok: false,
+          error: "sage_compile_transient",
+          kernelOk: false,
+          sage: before,
+          message:
+            "Sage 加速包本身是好的，只是编译器进程 ptxas 这次起不来（" + String(pre.why || "").slice(0, 160) + "）。" +
+            "这是瞬时故障（同时起的进程太多 / 内存吃紧 / 杀软拦截），不用重装：等当前任务收尾后直接重试。",
+        };
+      }
       appendConsole("[sage] import 正常但 kernel 试跑失败（" + (pre.why || "unknown") + "）→ 重装匹配的 wheel");
     }
     bump();
@@ -5652,9 +5723,10 @@ async function installSageAttention(opts) {
     if (!after || !after.ok) {
       throw new Error("装完自检仍不可用：" + ((after && after.why) || "probe_failed"));
     }
-    const sm = await runVenvPy(py, SAGE_SMOKE_PY);
-    const smoke = parseSageProbe(sm.out, sm.code);
-    if (!smoke.ok) appendConsole("[sage] kernel smoke warn: " + smoke.why + "（import 正常；生成时若报错请点「自我修复」）");
+    const smoke = await ensureSageKernelSmoke(installDir, after);
+    const blip = !smoke.ok && isSageCompileLaunchFailure(smoke.why);
+    if (blip) appendConsole("[sage] kernel smoke: ptxas 起不来（" + (smoke.why || "") + "）→ 包已就位，属瞬时故障，稍后重试即可");
+    else if (!smoke.ok) appendConsole("[sage] kernel smoke warn: " + smoke.why + "（import 正常；生成时若报错请点「自我修复」）");
     appendConsole(
       "[sage] ready: sageattention " + after.sage + " + triton " + after.triton + " @ " + (after.sm || "?"),
     );
@@ -5662,7 +5734,9 @@ async function installSageAttention(opts) {
       phase: "install",
       step: "done",
       stepLabel: "补装 Sage 加速",
-      message: "Sage 加速已就绪" + (smoke.ok ? "（kernel 试跑通过）" : "（kernel 试跑有警告，见 Console）"),
+      message:
+        "Sage 加速" + (blip ? "包已就位（kernel 试跑被瞬时故障挡住：编译器进程起不来，稍后直接重试）" : "已就绪") +
+        (smoke.ok ? "（kernel 试跑通过）" : blip ? "" : "（kernel 试跑有警告，见 Console）"),
       pct: 100,
     });
     return {
@@ -6215,7 +6289,127 @@ async function comfyFreeModels(port) {
   } catch (e) {
     appendConsole("[post] /free warn: " + String((e && e.message) || e));
   }
+  /* 卸载过就不再是「本轮常驻的那套权重」：下一次 prepareModelSlot 会重新释放并重新记签名 */
+  clearWarmSlot("模型已释放");
   await sleep(1500);
+}
+
+/* ── 连续运行复用已加载权重（同一模型连跑不卸载 / 不重载） ─────────────────────
+ * 用户口径：同一插件连续处理（例如连着出几条 H3 视频、连着超分几段）时，过去每单收尾都
+ * POST /free 把 DiT / VAE 卸掉、下一单再重新加载 —— 白等几分钟，还多一轮显存分配抖动，
+ * 而 ComfyUI 偶发卡死正是「上一单残留还挂在卡上」这一类。只有**换模型 / 换任务类型**才需要
+ * 先释放；同一件事连跑就直接复用显存里已加载的权重。
+ * 三条护栏（少一条就会变成「省了时间但攒显存」）：
+ *   ① 签名不同（换生成形态 R2V↔FL2VA / 换自建工作流 / 生成↔后处理 / 换后处理权重）
+ *      → 提交前照旧 POST /free 卸干净，绝不把旧的权重带进新模型；
+ *   ② 同签名连跑 → 不动手，ComfyUI 自己复用显存里的权重（最省时间）；
+ *   ③ 泄漏护栏：每单收尾量一次整卡占用，比「本轮首次常驻」涨过 H3_WARM_LEAK_MB
+ *      → 立刻释放并重建基线（残留张量 / 碎片不跨多单累积）。
+ * 空闲释放：vramHooks 登记了 keepWarmMs（H3_WARM_IDLE_MS）—— 收尾窗口内没有新任务，
+ * 主进程 local-model-vram 会调 soft() 释放；别的后端起跑要显存时也会立刻释放它。
+ */
+const H3_WARM_IDLE_MS = 10 * 60 * 1000;
+/* 连续同签名运行之间整卡占用允许的涨幅（MB）：超过就认为有残留没还，释放一次重建基线 */
+const H3_WARM_LEAK_MB = 1024;
+
+let warmSlot = { sig: "", at: 0, jobs: 0, baseUsedMb: null, seq: 0 };
+
+/** 显存里的权重已不可信（卸载 / 停后端 / 换模型）：清签名，下一单重新加载 */
+function clearWarmSlot(why) {
+  const had = !!warmSlot.sig;
+  warmSlot = { sig: "", at: 0, jobs: 0, baseUsedMb: null, seq: warmSlot.seq };
+  if (had && why) appendConsole("[vram] 已加载权重作废（" + why + "）");
+}
+
+/** 整卡已用显存（MB）；量不到返回 null（绝不因为读不到读数改变释放策略） */
+async function currentVramUsedMb() {
+  try {
+    const r = await vramPre.readVram();
+    const card = r && r.ok && Array.isArray(r.cards) ? r.cards[0] : null;
+    const used = card ? Number(card.usedMb) : NaN;
+    return Number.isFinite(used) ? used : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 提交前对齐「显存里现在装的是不是这一单要用的那套权重」：
+ *   · 同签名且还在常驻窗口内 → 直接复用（不 /free、不重载）；
+ *   · 否则先 /free 卸干净（换模型 / 首次 / 上一轮已释放），再记下新签名。
+ * 每次调用都会让 warmSlot.seq +1 —— 调用方据此判断「本单到底动没动过显存里的权重」。
+ */
+async function prepareModelSlot(port, sig, label) {
+  const want = String(sig || "");
+  const now = Date.now();
+  if (want && warmSlot.sig === want && now - warmSlot.at < H3_WARM_IDLE_MS) {
+    warmSlot.at = now;
+    warmSlot.seq += 1;
+    appendConsole(
+      "[vram] " +
+        (label || want) +
+        " 与上一单相同 → 复用已加载权重，不卸载 / 不重载（已连跑 " +
+        warmSlot.jobs +
+        " 单）",
+    );
+    return { reused: true };
+  }
+  if (warmSlot.sig && warmSlot.sig !== want) {
+    appendConsole("[vram] 任务模型已变化（" + warmSlot.sig + " → " + (want || "?") + "）→ 先释放旧权重");
+  }
+  await comfyFreeModels(port);
+  warmSlot = { sig: want, at: Date.now(), jobs: 0, baseUsedMb: null, seq: warmSlot.seq + 1 };
+  return { reused: false };
+}
+
+/**
+ * 一单收尾：成功就保持常驻（连续处理不重载），失败 / 占用异常才释放。
+ * jobOk=false（报错 / 取消）一律释放 —— 失败多半就是 OOM / 卡死，残留留在卡上只会拖累下一单。
+ */
+async function finishModelUse(port, jobOk, label) {
+  if (!jobOk) {
+    await comfyFreeModels(port);
+    return;
+  }
+  if (!warmSlot.sig) {
+    /* 本单中途释放过权重（OOM 降档重试 / 手动释放）：卡上已经没有可复用的东西，不留常驻 */
+    appendConsole("[vram] 本单中途释放过权重 → 不保持常驻");
+    return;
+  }
+  warmSlot.at = Date.now();
+  warmSlot.jobs += 1;
+  const used = await currentVramUsedMb();
+  if (used != null && warmSlot.baseUsedMb == null) warmSlot.baseUsedMb = used;
+  const grew = used != null && warmSlot.baseUsedMb != null ? used - warmSlot.baseUsedMb : null;
+  if (grew != null && grew >= H3_WARM_LEAK_MB) {
+    appendConsole(
+      "[vram] 泄漏护栏：连续 " +
+        warmSlot.jobs +
+        " 单后整卡占用从 " +
+        warmSlot.baseUsedMb +
+        "MB 涨到 " +
+        used +
+        "MB（≥" +
+        H3_WARM_LEAK_MB +
+        "MB）→ 释放一次并重建基线",
+    );
+    await comfyFreeModels(port);
+    return;
+  }
+  if (used != null && warmSlot.baseUsedMb != null && used < warmSlot.baseUsedMb) {
+    warmSlot.baseUsedMb = used; /* 占用回落（后端自己卸了点东西）：基线跟着往下走 */
+  }
+  appendConsole(
+    "[vram] " +
+      (label || warmSlot.sig) +
+      " 保持常驻（已连跑 " +
+      warmSlot.jobs +
+      " 单）：同一模型连续处理不卸载 / 不重载" +
+      (used == null ? "" : " · 整卡已用 " + used + "MB") +
+      " · " +
+      Math.round(H3_WARM_IDLE_MS / 60000) +
+      " 分钟无新任务或别的后端要显存时自动释放",
+  );
 }
 
 /** h3:generate 的路由判定 —— 「这个任务走不走自建工作流分支」的唯一真源。
@@ -6308,6 +6502,12 @@ async function generateVideo(params) {
     };
   }
 
+  /* 本单有没有动过显存里的权重（prepareModelSlot 会 +1）：没动过就不在收尾重复释放
+     （例如显存预检直接拒单，卡上还是上一单常驻的权重，别把它卸掉） */
+  const warmSeq0 = warmSlot.seq;
+  /* 这一单成没成：成功才保持常驻（连续处理不重载），失败 / 取消一律释放残留 */
+  let jobOk = false;
+
   try {
     appendConsole("[job] start → generate → verify → stop");
     emitProgress({
@@ -6346,36 +6546,59 @@ async function generateVideo(params) {
     const cfg = loadConfig();
     const port = Number(ready.port) || Number(cfg.port) || DEFAULT_PORT;
 
+    const installDir = cfg.installDir;
+    const comfy = comfyDir(installDir);
+    const sig = projectSignals(installDir);
+
+    emitProgress({ phase: "generate", nodeId, message: "正在对齐显存（同一模型连续运行会直接复用）…", pct: 4 });
+
+    /* 连续跑同一套权重：先对齐显存（见 prepareModelSlot 头部）——同签名复用、换模型先释放。
+       必须在显存预检**之前**：卡上已经躺着同一套权重时，20G 空闲门槛对本次没有意义
+       （上一个同款任务刚用它跑过），否则连跑第二单会被自己常驻的权重拒单。
+       签名里带上「会改变权重加载方式」的开关（Sage / 低显存注意力）：改了它们就当成换模型，
+       老老实实释放重载一次，别把按旧方式补丁过的权重拿来跑新设置。 */
+    const genSlotSig =
+      "gen:" +
+      (sig.hasRef2va ? "r2v" : "fl2va") +
+      ":" +
+      (params.optSageAttn !== false ? "sage" : "nosage") +
+      ":" +
+      (params.optLowVramAttn !== false ? "lowvram" : "nolowvram");
+    const slot = await prepareModelSlot(
+      port,
+      customWfId ? "wf:" + customWfId : genSlotSig,
+      customWfId ? "自建工作流" : "H3 生成（" + (sig.hasRef2va ? "R2V" : "FL2VA") + "）",
+    );
+
     /* 显存预检（提交前，生成 / 自建 20G 空闲）：不够就当场拒绝，不提交给 ComfyUI 去卡一小时。
        forceVram = 用户已在节点确认窗里点过「仍然执行」，只对本次这一跑生效。 */
-    const genVram = await vramPre.gate({ kind: "gen", force: params.forceVram === true });
-    if (!genVram.ok) {
-      clearLock();
-      appendConsole("[job] reject: 显存不足 —— " + genVram.message);
-      emitProgress({ phase: "generate", nodeId, message: genVram.message, error: true, pct: 0 });
-      reportErr("vram_insufficient", genVram.message, {
-        phase: "generate",
-        nodeId,
-        workflowId: String(params.canvasWorkflowId || ""),
-        nodeKind: "video_gen",
-      });
-      return { ok: false, error: "vram_insufficient", message: genVram.message, gpu: genVram.judge };
+    if (slot.reused) {
+      appendConsole("[vram] 同一套权重已在显存里 → 跳过本次显存预检（上一个同款任务已证明这张卡放得下）");
+    } else {
+      const genVram = await vramPre.gate({ kind: "gen", force: params.forceVram === true });
+      if (!genVram.ok) {
+        clearLock();
+        appendConsole("[job] reject: 显存不足 —— " + genVram.message);
+        emitProgress({ phase: "generate", nodeId, message: genVram.message, error: true, pct: 0 });
+        reportErr("vram_insufficient", genVram.message, {
+          phase: "generate",
+          nodeId,
+          workflowId: String(params.canvasWorkflowId || ""),
+          nodeKind: "video_gen",
+        });
+        return { ok: false, error: "vram_insufficient", message: genVram.message, gpu: genVram.judge };
+      }
+      appendConsole("[job] vram ok " + vramSummaryText(genVram));
     }
-    appendConsole("[job] vram ok " + vramSummaryText(genVram));
 
     activeGenerate = { nodeId, abort: false, promptId: "", req: null };
     emitProgress({ phase: "generate", nodeId, message: "准备工作流…", pct: 5 });
-
-    const installDir = cfg.installDir;
-    const comfy = comfyDir(installDir);
 
     /* 自建工作流：customWorkflowId（H3 库 id）非空 → 走独立执行分支 runCustomWorkflow。
      * 内置 FL2VA / R2V 生成链一字不动（超分 / 补帧已拆到 h3:postProcess，两分支都不再串跑）。 */
     if (customWfId) {
       return await runCustomWorkflow({ params, port, installDir, comfy, wfId: customWfId });
     }
-
-    const sig = projectSignals(installDir);
 
     /* Sage 必须项：生成前过闸。画布显式关闭 = 已豁免（仍留 warning）；import 未就绪 / kernel
        试跑失败且未豁免 → 当场报错，不把一个必炸的工作流提交给 ComfyUI。 */
@@ -6566,6 +6789,7 @@ async function generateVideo(params) {
     activeGenerate = null;
     emitProgress({ phase: "generate", nodeId, message: "完成", pct: 100, done: true });
     appendConsole("[job] ok path=" + outPath + " bytes=" + sz);
+    jobOk = true;
     return {
       ok: true,
       path: outPath,
@@ -6587,14 +6811,12 @@ async function generateVideo(params) {
     });
     return { ok: false, error: err, message: err };
   } finally {
-    /* 服务常驻：不重启后端；生成结束后释放全部模型显存（H3 DiT / VAE），
-     * 避免下次生成重新加载慢 + 显存碎片导致卡死。 */
-    appendConsole("[job] backend kept alive, freeing models…");
+    /* 服务常驻：同一套生成权重连跑就保持常驻（不卸载 / 不重载），
+     * 换模型或本单失败才释放 —— 口径见 prepareModelSlot / finishModelUse 头部。 */
     try {
       const cfg = loadConfig();
       const freePort = Number(cfg.port) || DEFAULT_PORT;
-      await comfyFreeModels(freePort);
-      appendConsole("[job] vram released");
+      if (warmSlot.seq !== warmSeq0) await finishModelUse(freePort, jobOk, "H3 生成");
     } catch (e) {
       appendConsole("[job] free warn: " + String((e && e.message) || e));
     }
@@ -7128,12 +7350,15 @@ async function forceKillBackend(reason) {
  *     POST /free {unload_models, free_memory}，下一单直接复用服务（加载最快）；
  *   · hard = 停后端进程树（预留：软释放后显存仍被占着时由编排器升级）。
  * 这两步都绕开 wantRunning —— 释放不等于用户按了「停止」，下次任务 ensureBackendReadyForJob 自行拉起。
+ * keepWarmMs：同一插件连续运行时收尾**不卸载**（复用已加载的 DiT / VAE，见 prepareModelSlot 头部）；
+ * 窗口到期、别的后端要显存、或顶栏手动释放时才真放 —— 不会长期霸占显存。
  */
 function vramHooks() {
   const curPort = () => Number(loadConfig().port) || DEFAULT_PORT;
   return {
     host: "h3",
     port: DEFAULT_PORT,
+    keepWarmMs: H3_WARM_IDLE_MS,
     isRunning: () => backendRunning() || comfyHostAlive(),
     isLoaded: () => backendRunning() || comfyHostAlive(),
     isBusy: () => !!activeGenerate || !!refreshStaleLock(),

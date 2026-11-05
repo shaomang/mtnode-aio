@@ -569,14 +569,40 @@ async function screenshot(params) {
 /* ------------------------------------------------------------------ */
 
 /**
+ * 开（或重载并置前）某个应用自己的窗口 —— 真机调试的第一步。
+ * 应用窗口是 openAppWindow 开的独立 BrowserWindow（preload-app.js 注入 window.appHost），
+ * 窗口管理在 apps-store.js 里；本模块只做「按 id 开窗」这一个动作的转发，
+ * 之后的读 / 点 / 截图仍走 outline / click / screenshot（which = 返回标题的一段子串）。
+ * @param {object} p { app: 应用 id（取自该应用目录的 app.json）, kind?: 'dev' | 'down' }
+ * @returns {Promise<object>} openAppWindow 的回执（{ok, id, open, reused, reloaded, dir, kind}）
+ */
+async function openApp(p) {
+  const id = String((p && (p.app || p.id)) || "").trim();
+  if (!id) throw new Error("open-app 需要 app（应用 id，取自该应用目录里的 app.json）");
+  let apps = null;
+  try {
+    apps = require("./apps-store.js");
+  } catch (e) {
+    throw new Error("应用宿主不可用（apps-store.js 装载失败）：" + ((e && e.message) || String(e)));
+  }
+  if (!apps || typeof apps.openAppWindow !== "function") {
+    throw new Error("应用宿主不可用：apps-store.js 没有导出 openAppWindow");
+  }
+  const kind = p && p.kind ? String(p.kind) : "";
+  const r = await apps.openAppWindow(id, kind);
+  return r && typeof r === "object" ? r : { ok: true, id };
+}
+
+/**
  * 跑一次 GUI 动作或拍照。
- * action: windows | outline | text | click | type | set | key | scroll | wait | eval | screenshot
+ * action: windows | open-app | outline | text | click | type | set | key | scroll | wait | eval | screenshot
  * 返回纯 JSON（可直接进 MCP 回执）。
  */
 async function run(action, params) {
   const act = String(action || "").trim();
   const p = params && typeof params === "object" ? params : {};
   if (act === "windows") return { ok: true, windows: listWindows() };
+  if (act === "open-app") return openApp(p);
   if (act === "screenshot") return screenshot(p);
   const t = pickWindow(p.which || "main");
   const w = t.win;
@@ -613,7 +639,7 @@ async function run(action, params) {
       throw new Error(
         "未知的 action：" +
           act +
-          "（可用：windows / outline / text / click / type / set / key / scroll / wait / eval / screenshot）",
+          "（可用：windows / open-app / outline / text / click / type / set / key / scroll / wait / eval / screenshot）",
       );
   }
   if (p.settleMs !== 0) await sleep(p.settleMs == null ? DEFAULT_SETTLE_MS : clamp(p.settleMs, 0, 60000));

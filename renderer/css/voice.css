@@ -7,7 +7,7 @@
 /* ── 状态栏按钮（紧挨 #btnCanvasShot 左侧）────────────────────────────── */
 .statusbar .sb-voice {
   flex: none;
-  order: -2; /* 永远排在状态栏最左，画布截图键左边 */
+  order: -3; /* 永远排在状态栏最左（AI 增强 / TTS / 画布截图都在它右边） */
   width: 22px;
   height: 22px;
   padding: 0;
@@ -133,7 +133,7 @@
    与话筒同一套皮（.sb-voice），只多两件事：order 钉在话筒后面、自己的强调色。
    关着时是一枚很淡的灰 ✨（不抢戏）；打开后紫边紫底（与语音三态的青 / 琥珀区分开）。 */
 .statusbar .sb-enh {
-  order: -1; /* 与 .sb-voice 的 -2 配对：永远紧挨在话筒右边、其它按钮左边 */
+  order: -2; /* 与 .sb-voice 的 -3 配对：紧挨在话筒右边；后面是 TTS(-1) 与画布截图(0) */
   font-family: var(--sans, system-ui, sans-serif);
   font-size: 12px;
   line-height: 1;

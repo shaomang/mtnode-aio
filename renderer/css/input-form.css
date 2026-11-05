@@ -265,13 +265,17 @@
   display: flex;
   flex-direction: column;
 }
+/* 文字卡：高度跟内容走（不再用 16:9 比例，否则一行字也撑出 ~120px 的大框）。
+   1 行只占 1 行、最多 3 行 —— .if-tile-text 已 -webkit-line-clamp:3，这里再兜一层高度上限。 */
 .if-tile-wide {
   grid-column: span 2;
-  aspect-ratio: 16 / 9;
   display: flex;
   flex-direction: column;
   gap: 2px;
   padding: 5px 6px;
+  min-height: 42px;
+  max-height: 74px;
+  align-self: start;
 }
 .if-tile-thumb {
   flex: 1 1 auto;
@@ -981,10 +985,16 @@
   width: 100%;
   box-sizing: border-box;
 }
+/* 文本类框体：高度跟着文字走 —— 1 行内容就只占 1 行，最多 3 行（再多在框内滚动）。
+   高度由内容算（field-sizing: content），所以不再给 resize 手柄，也不留 56px 固定底高；
+   12px = 上下 padding 10px + 上下边框 2px，1.5em = 一行文字高（line-height 1.5）。 */
 .if-ta {
-  resize: vertical;
+  resize: none;
   line-height: 1.5;
-  min-height: 56px;
+  field-sizing: content;
+  min-height: calc(1.5em + 12px);
+  max-height: calc(1.5em * 3 + 12px);
+  overflow-y: auto;
 }
 .if-row {
   display: flex;
@@ -1237,7 +1247,13 @@
 .if-desc {
   width: 100%;
   box-sizing: border-box;
-  resize: vertical;
+  /* 与 .if-ta 同一口径：1 行文字只占 1 行，最多 3 行 */
+  resize: none;
+  line-height: 1.5;
+  field-sizing: content;
+  min-height: calc(1.5em + 12px);
+  max-height: calc(1.5em * 3 + 12px);
+  overflow-y: auto;
 }
 .if-marks {
   display: flex;

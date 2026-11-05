@@ -18,6 +18,8 @@ const {
   shell,
   clipboard,
   Menu,
+  Tray,
+  Notification,
   nativeImage,
   screen,
   safeStorage,
@@ -26,6 +28,30 @@ const {
 const path = require("path");
 const fs = require("fs");
 const { launchDetached } = require("./main-exec-launch.js");
+/* 常驻托盘 + 关闭收托盘 + 任务完成系统通知（本次需求）：主进程侧状态都在这个小模块里，
+   见 main-tray-notify.js 文件头。这里只做接线：close / window-all-closed / before-quit
+   与托盘、通知 IPC 的挂点；渲染层只负责判定「什么时候该提醒」。 */
+const { createTrayNotify } = require("./main-tray-notify.js");
+const trayNotify = createTrayNotify({
+  app,
+  Tray,
+  Menu,
+  Notification,
+  nativeImage,
+  ipcMain,
+  /* 托盘 / 通知图标用 renderer/img/tray.png（= build/icon.png 的副本，256×256）：
+     build/ 是 electron-builder 的 buildResources 目录，**不进 asar**，打包后
+     join(__dirname,"build","icon.png") 取不到文件（窗口图标一直是静默回落）。
+     renderer/** 在 build.json 的 files 白名单里，托盘与通知图标必须走这条可靠的路径。 */
+  iconPath: path.join(__dirname, "renderer", "img", "tray.png"),
+  getMainWin: () => mainWin,
+  log: (msg) => {
+    try {
+      errLog(msg);
+    } catch (_) {}
+  },
+});
+trayNotify.register();
 /* 隐藏进程宿主：运行期拉起的外部进程统一隐藏启动 + 按 runId 记账 + 随运行/退出回收 */
 const procHost = require("./main-proc-host.js");
 /* 函数节点运行时：一次运行 = 一个 worker 线程 + 一个 runId
@@ -62,6 +88,9 @@ const {
   startBackgroundCheck,
 } = require("./updater.js");
 const { registerPetIpc, shutdownPet } = require("./pet/main-pet.js");
+/* MOSS-TTS-Nano 内置语音后端（随包、首次启用自动下载，状态栏那枚 TTS 开关）：
+   退出时 shutdownMossTts 收掉常驻工作进程，不留后台 python。 */
+const { registerMossTtsIpc, shutdownMossTts } = require("./moss-tts/main-moss-tts.js");
 const { registerAppPluginsIpc, shutdownAppPlugins, openWindowPlugin, pluginBackendSnapshot } = require("./plugins/main-app-plugins.js");
 /* 用户自建插件（声明式 · <数据目录>/user-plugins + mtnode-plugin.json）：扫目录即出画布节点 /
    MCP / 技能，不碰源码、升级不失效；一键修复与诊断导出也在这里（见 plugins/user-plugins.js） */
@@ -76,6 +105,9 @@ const { registerManifestIpc } = require("./main-manifest.js");
 /* 质检节点（qa_text / qa_image / qa_video / qa_audio / qa_file）：ffprobe 硬指标 / 抽帧交给 VLM / 评分模板扫描 / 报告落盘 qa/reports/（见 main-qa-media.js） */
 const { registerQaMediaIpc } = require("./main-qa-media.js");
 const { registerMusic3Ipc, shutdownMusic3UiOnly } = require("./music3/main-music3.js");
+/* MOSS-Music 本地音乐理解（kind mossmusic）：主进程宿主 + 控制台窗；后端单例有意不随 MTNode 退出
+   （见 moss-music/main-moss-music.js 文件头）—— before-quit 只关控制台窗，不停它的 8790 服务。 */
+const { registerMossMusicIpc, shutdownMossMusicUiOnly } = require("./moss-music/main-moss-music.js");
 /* 本地音乐生成后端（YuE2）：与 Music3 同族，退出时由 before-quit 收尾一并结束 */
 const { registerYueIpc, shutdownYueUiOnly } = require("./yue/main-yue.js");
 const { registerH3Ipc, shutdownH3UiOnly } = require("./h3/main-h3.js");
@@ -168,6 +200,9 @@ const {
 /* 应用节点（画布上的 kind appnode）：可绑清单 / 应用解析 / 数据根（落在画布工作目录的
    apps-data 里）/ 工作目录内文件读写。见 apps-node-store.js。 */
 const { registerAppsNodeIpc } = require("./apps-node-store.js");
+/* 应用 / 插件窗口的重能力桥（画布 / agent / 文件 / 工具 / 联网）：中继到主窗口渲染层执行，
+   见 app-host-bridge.js 的文件头（画布真源只在渲染层，主进程只做认证 / 授权 / 中继）。 */
+const { createAppHostBridge } = require("./app-host-bridge.js");
 /* 全局音视频互斥锁（本地大模型一张卡只跑一个）：应用通道列图像后端 / 出图前先看它 */
 const mediaGenLock = require("./media-gen-global-lock.js");
 /* 本地模型显存释放编排器（h3 / music3 / yue / llama 共用一套口径）：
@@ -317,6 +352,11 @@ function dsh() {
    四项），让应用内 Agent 走**与第三方客户端完全相同**的入口 —— 同一套鉴权、审计、作业语义，
    不另开一条只有 agent 能走的后门。开关与端口由 mcp-server.js 决定（它调下面这个函数）。 */
 const SELF_LOOP_NAME = "mtnode-self";
+/* dsh-mcp-client 的传输名是**枚举**，不是自由字符串：
+   node_modules/@deepseek-ai/dsh-mcp-client 的 Config = z.union([z.const('stdio'), z.const('streamable-http')])。
+   早期这里写 'http' —— schema 直接判非法，那一行 MCP 服务器整条不加载，于是应用内 Agent
+   拿不到任何 MCP 工具（2026-11-01 真机踩到：会话工具表里 0 个 MCP 工具）。 */
+const MCP_TRANSPORT_HTTP = "streamable-http";
 async function applySelfLoop(cfg) {
   const want = !!(cfg && cfg.enabled && cfg.url);
   const url = want ? String(cfg.url) : "";
@@ -342,13 +382,22 @@ async function applySelfLoop(cfg) {
       return { ok: true, enabled: false };
     }
     if (cur) {
-      /* 端口每次启动都变：url 不一致就重写那一行（remove + add，引擎自己会重连） */
-      if (String(cur.url || "") === url && cur.disabled !== true) return { ok: true, enabled: true };
+      /* 端口每次启动都变：url 不一致就重写那一行（remove + add，引擎自己会重连）。
+         也要比 transport：dsh-mcp-client 的枚举只认 stdio | streamable-http，早期这里
+         写过 'http'（不在枚举里 → 整行非法 → 一个工具都不注册），只比 url 会让那行
+         永远修不好。 */
+      if (
+        String(cur.url || "") === url &&
+        String(cur.transport || "") === MCP_TRANSPORT_HTTP &&
+        cur.disabled !== true
+      ) {
+        return { ok: true, enabled: true };
+      }
       await dsh().mcpRemove(SELF_LOOP_NAME);
     }
     await dsh().mcpAdd({
       serverName: SELF_LOOP_NAME,
-      transport: "http",
+      transport: MCP_TRANSPORT_HTTP,
       url,
       args: "",
     });
@@ -409,6 +458,10 @@ function mcp() {
       /* GUI 族（mtnode_gui）不走渲染层：只有主进程拿得到 BrowserWindow 与 webContents，
          能往任意窗口注入脚本、能 capturePage 拍照（见 mcp-gui-agent.js）。 */
       gui: (action, params) => require("./mcp-gui-agent.js").run(action, params),
+      /* 开发调试族（mtnode_dev）：与 GUI 族同一处「第一类在主进程执行」的工具。
+         它另起一只隔离的调试实例并用 CDP 驱动它（见根目录 dev-agent.js），
+         现场（数据目录 / 仓库根 / 是否打包态）与 dsh:dev 完全一致。 */
+      dev: (action, params) => require("./dev-agent.js").run(action, params, devAgentOpts()),
       /* 媒体生成执行体（mtnode_generate）：四个后端都在主进程，且共用同一把音视频互斥锁
          （media-gen-global-lock.js）—— 自用回环与画布节点排的是同一队。 */
       media: mediaAgent(),
@@ -417,6 +470,32 @@ function mcp() {
     });
   }
   return mcpHost;
+}
+
+/* ── appHost 重能力桥（画布 / agent / 文件 / 工具 / 联网）────────────────────────
+ * 应用中心窗口（preload-app.js）与插件窗口（plugins/preload-window.js）共用这一份实例：
+ *   ① 认发送方窗口（应用 id / 插件 id 由各自主进程模块的窗口表给出，页面自报的一律不认）；
+ *   ② 认能力位声明 + 用户首次授权（app-host-bridge.js 的 grants，落在 <数据目录>/apps-host.json）；
+ *   ③ 画布与会话的活儿一律推给主窗口渲染层（renderer/app-apphost-bridge.js）——
+ *      画布真源与 agent 运行态只在渲染层，主进程不另写一套执行器。
+ * 主窗口不在线时回结构化 not_ready（不装成功、不悬挂）。 */
+let appHostBridgeInst = null;
+function appHostBridge() {
+  if (!appHostBridgeInst) {
+    appHostBridgeInst = createAppHostBridge({
+      getMainWin: () => mainWin,
+      getDataDir: DATA,
+      /* 能力位声明：只认本机真实存在的那份 app.json（apps-store 按磁盘判根） */
+      getApp: (id) => require("./apps-store.js").appHostSummaryOf(id),
+      t: (s) => I18n.t(s),
+      log: (line) => {
+        try {
+          dshLog(line);
+        } catch {}
+      },
+    });
+  }
+  return appHostBridgeInst;
 }
 
 const mk = (p) => {
@@ -1171,6 +1250,19 @@ ipcMain.handle("config:save", (e, cfg) =>
         }
       }
     }
+    /* 官方 DeepSeek 供应商不允许删除（需求）：渲染层整表写回时若把它整条弄丢了
+       （老配置 / 手工改档 / 别处写盘），按盘上那一份补回来 —— 只补「整条消失」，
+       同一条里的模型增删 / 排序 / Key 改动一律照 incoming 走（手动加模型是允许的）。
+       盘上也没有时（全新安装里插件卡先落盘、config 里从来没播过种子）用默认那条补，
+       否则「默认提供商 = 官方 DeepSeek」在整表写回后永远补不回来；用户点过删除的
+       （removedProviders 里有 deepseek）不补。 */
+    const diskDs = (existing.providers || []).find((p) => isOfficialDeepseekProvider(p));
+    const removedIds = new Set(
+      (Array.isArray(incoming.removedProviders) ? incoming.removedProviders : []).map(String),
+    );
+    const dsSeed =
+      diskDs || (removedIds.has("deepseek") ? null : defaultOfficialDeepseekProvider());
+    if (dsSeed && !saved.some((p) => isOfficialDeepseekProvider(p))) saved.unshift(dsSeed);
     next.providers = saved;
   }
   /* 紧凑 JSON（原为 stringify(next, null, 2)）：这份文件是本机设置（几百 KB 级），
@@ -4086,9 +4178,9 @@ function packMtNodes(wf) {
 }
 
 /* 导入落盘：把容器里的资产写回新工作流目录，并把 "@asset/<i>" 占位重映射为新绝对路径。
-   idPrefix 缺省 "imp_"（用户导入的画布）；首启注入「快速开始」时传 "wf_" ——
-   id 与资产目录必须**同一次**定下来：资产路径是按 id 算出来的，写盘后再改 id
-   会让路径指向一个不存在的目录（首启注入踩过这个坑）。 */
+   idPrefix 缺省 "imp_"（用户导入的画布）；需要与新建画布同形（wf_<ts>）时可在 opts.id
+   里直接给 id —— id 与资产目录必须**同一次**定下来：资产路径是按 id 算出来的，
+   写盘后再改 id 会让路径指向一个不存在的目录。 */
 function materializeImport(manifest, files, idPrefix, opts) {
   const wf = manifest.workflow || {};
   const wantId = String((opts && opts.id) || "").trim();
@@ -4513,57 +4605,10 @@ ipcMain.handle("mtnodes:importBase64", (e, base64) => {
   }
 });
 
-/* ── 首启注入「快速开始」画布 ────────────────────────────────────────────
-   需求：app 第一次进入时默认打开「快速开始」这张示例画布（此前是空的 default.json），
-   但新建画布仍然是空画布 —— 所以这里只负责「数据目录里一张画布都没有」时放一张进去，
-   不碰 newWorkflowDialog / 删除后的落点逻辑，也不做任何常驻 UI 入口。
-
-   口径：
-   · 模板随包分发（templates/starter-canvas.mtnodes，build.json files 白名单里），
-     复用既有 .mtnodes 解包 + 导入落盘链：里面引用的应用资产会被写进新画布的
-     assets/<id>/ 并把 "@asset/<i>" 占位重映射成新绝对路径 —— 等于用户手动导入一次。
-   · 只判 save 目录里有没有 <id>.json，**用 existsSync 探测、不 mkdir**：纯读不写盘，
-     不会因为一次启动就在数据目录里留下空文件夹。
-   · 已有画布（含老用户升级）一律不动：升级后不会凭空多出一张画布。
-   · id 用 wf_<时间戳>（与新建画布同形）；名字由模板自带（「快速开始」，走 i18n 词条）。
-   · 任何失败（模板缺失 / 坏档 / 写盘失败）只记日志，然后照旧返回 false 交给
-     ensureWorkflow 走原来的空 default 画布 —— 绝不让首启注入把应用拦在门外。 */
-function starterTemplatePath() {
-  return join(__dirname, "templates", "starter-canvas.mtnodes");
-}
-/* 数据目录里是否已经存在任何画布（严格只看 save/*.json，不含子目录 / 回收站）*/
-function anyWorkflowSaved() {
-  const d = join(DATA(), "save");
-  if (!fs.existsSync(d)) return false;
-  try {
-    return fs.readdirSync(d).some((f) => f.endsWith(".json"));
-  } catch {
-    /* 读不了就当作「没有」会让注入再跑一次，风险大于收益 → 当「有」，不注入 */
-    return true;
-  }
-}
-function ensureStarterWorkflow() {
-  try {
-    if (anyWorkflowSaved()) return false;
-    const tpl = starterTemplatePath();
-    if (!fs.existsSync(tpl)) {
-      errLog("[starter] 随包模板缺失，跳过首启注入：\n" + tpl);
-      return false;
-    }
-    const { manifest, files } = unpackMtNodes(fs.readFileSync(tpl));
-    /* 与「新建画布」同形（wf_<ts>）而不是导入用的 imp_<ts>：id 必须在 materializeImport
-       里一次定下，它同时决定资产目录 assets/<id>/ 与重映射后的绝对路径。 */
-    const wf = materializeImport(manifest, files, "wf_");
-    const id = wf.id;
-    /* 走 writeJson（先 mk 出 save/ 再写，与新建画布落盘同一条路）：save 目录在
-       纯净安装时还不存在，裸 writeFileSync 会因父目录缺失直接失败。 */
-    writeJson(wfPath(id), wf);
-    return true;
-  } catch (err) {
-    errLog("[starter] 首启注入「快速开始」失败：" + String((err && err.message) || err));
-    return false;
-  }
-}
+/* 首启不放任何示例画布：数据目录里一张画布都没有时，渲染层 ensureWorkflow 会
+   按原有兜底新建一张空白「默认画布」—— 这就是新用户进来看到的起点。
+   （此前的「快速开始」示例画布已下线：templates/starter-canvas.mtnodes 与首启注入
+   一并移除，已有画布的用户不受影响。） */
 
 /* 只解析清单中的工作流结构（不落盘资产），供模板商店节点预览 */
 ipcMain.handle("mtnodes:peekBase64", (e, base64) => {
@@ -7123,6 +7168,20 @@ function gptImageSizeForDims(w, h) {
   return best;
 }
 
+/* 思考预留（token）：显式开思考时，「思考 + 正文」共用池子里留给思考的那一份。
+   与下面的 applyTextThinkingEffort 认同一套档位；off / 不传（= 不下发 thinking）/ 「无」恒为 0，
+   调用方没给 maxTokens 时也用不到（不下发 max_tokens 就不存在被截断的正文）。 */
+function textThinkingHeadroom(effort) {
+  const e = String(effort == null ? "" : effort)
+    .trim()
+    .toLowerCase();
+  if (!e || e === "off" || e === "无") return 0;
+  if (e === "max" || e === "xhigh") return 16384;
+  if (e === "low" || e === "minimal" || e === "none") return 4096;
+  /* high / medium / 其它非 off 值（applyTextThinkingEffort 同样按 high 落） */
+  return 8192;
+}
+
 /* 文本模型思考强度 → Chat Completions 字段（映射方式参考 dsh-llm-deepseek）：
    - off / 无 → thinking.type = disabled，且不发送 reasoning_effort（关闭思考）
    - low / high / max → thinking.type = enabled + reasoning_effort
@@ -7459,11 +7518,16 @@ function buildRequestSpec(
       messages,
       temperature: temperature == null ? 0.7 : temperature,
     };
-    /* 可选输出上限（翻译等长文改写请求用）：只在调用方显式给值时下发，
-       且夹在合理区间，避免小值把译文截半句、大值把费用顶飞。 */
+    /* 可选输出上限（翻译等长文改写请求 / 应用宿主显式给的上限）：只在调用方显式给值时下发，
+       且夹在合理区间，避免小值把译文截半句、大值把费用顶飞。
+       **显式开思考时先给思考留预算**：max_tokens 是「思考 + 正文」共用的一个池子，
+       调用方按「正文要多少」给的值（应用常给 1200 这种）会被思考吃光，正文只剩半截 JSON
+       （应用侧就报「模型回复被输出上限截断，JSON 不完整」）。所以开思考时在调用方给的
+       正文预算上再加一份思考预留，总上限仍夹 32768。 */
     const cap = Number(maxTokens);
     if (Number.isFinite(cap) && cap > 0) {
-      body.max_tokens = Math.max(256, Math.min(32768, Math.round(cap)));
+      const budget = Math.round(cap) + textThinkingHeadroom(effort);
+      body.max_tokens = Math.max(256, Math.min(32768, budget));
     }
     /* DeepSeek V4：thinking 默认开启，附带 reasoning_effort */
     applyTextThinkingEffort(body, effort);
@@ -7725,6 +7789,41 @@ async function sendMultipart(
   );
 }
 
+/* 官方 DeepSeek 服务商的判据：默认播种的 id 是 "deepseek"，用户改过 id 时按官方域名认。
+   两处用它：① checkProvider 拦「没 Key」时广播引导窗；② config:save 保住这条不可删的条目。 */
+function isOfficialDeepseekProvider(p) {
+  if (!p || typeof p !== "object") return false;
+  if (String(p.id || "") === "deepseek") return true;
+  try {
+    return new URL(String(p.baseUrl || "")).hostname.toLowerCase().includes("deepseek");
+  } catch {
+    return false;
+  }
+}
+
+/* 默认的官方 DeepSeek 服务商条目：与 config:load 的首装默认值、渲染层
+   renderer/app-boot.js 的播种同源（flash 原生多模态 + pro 两只模型）。 */
+function defaultOfficialDeepseekProvider() {
+  return {
+    id: "deepseek",
+    name: "DeepSeek",
+    type: "text_openai",
+    baseUrl: "https://api.deepseek.com",
+    apiKey: "",
+    models: ["deepseek-flash", "deepseek-v4-pro"],
+    vision: true,
+  };
+}
+
+/* 「还没配 DeepSeek API Key」：渲染层据此弹图文引导窗（renderer/app-deepseek-onboard.js）。
+   只广播一个 reason，绝不带任何 Key 内容；窗口不在 / 已销毁时静默返回。 */
+function notifyDsKeyNeeded(reason) {
+  try {
+    if (mainWin && !mainWin.isDestroyed())
+      mainWin.webContents.send("ds:needKey", { reason: String(reason || "") });
+  } catch {}
+}
+
 function checkProvider(provider) {
   if (!provider) throw new Error(I18n.t("未配置服务商"));
   if (!String(provider.baseUrl || "").trim())
@@ -7746,8 +7845,12 @@ function checkProvider(provider) {
       );
     return;
   }
-  if (!String(provider.apiKey || "").trim())
+  if (!String(provider.apiKey || "").trim()) {
+    /* 官方 DeepSeek 没 Key 是最常见的第一次：除了照旧报错，还广播一次「去配 Key」，
+       渲染层会弹那张图文引导窗（注册 / 充值 / 拿 Key / 验证后写入供应商）。 */
+    if (isOfficialDeepseekProvider(provider)) notifyDsKeyNeeded("no-api-key");
     throw new Error(I18n.t("未配置 API Key（请在「设置 · API/配置」中填写）"));
+  }
 }
 
 /** 中转服务的**图像**余额闸：余额 > 0 但不够最便宜的一张图时给可执行的错。
@@ -8777,6 +8880,17 @@ ipcMain.handle("mcp:selfTest", () =>
 /* 渲染层执行回执（mcp-bridge.js 跑完一帧后回传） */
 ipcMain.handle("mcp:interact", (event, params) => mcp().settle(params || {}));
 
+/* ── appHost 宿主桥的回执与流式旁路（应用窗口 / 插件窗口那一侧，见 app-host-bridge.js）──
+ *   appHost:reply   主窗口渲染层跑完一帧后交回结果
+ *   appHost:stream  agent 一轮的中间事件：渲染层 → 主进程 → 发起调用的那只应用 / 插件窗口
+ * 两者都不认任何「客户端自报」的身份：回执只认 id，转发只认 callerKey（发起调用时登记的推送口）。 */
+ipcMain.handle("appHost:reply", (event, frame) => appHostBridge().settle(frame || {}));
+ipcMain.on("appHost:stream", (event, ev) => {
+  try {
+    appHostBridge().pushStream(ev || {});
+  } catch {}
+});
+
 /* 自用回环开关（设置 → 扩展能力 → 服务端）。写盘 + 立刻重注册那条客户端，不用重启引擎。 */
 ipcMain.handle("mcp:setSelfLoop", (event, { on } = {}) => {
   try {
@@ -8902,6 +9016,44 @@ ipcMain.handle("dsh:browser", (event, params) =>
     .browser(params)
     .catch((e) => ({ ok: false, error: (e && e.message) || String(e) })),
 );
+
+/* ── 真机调试（应用开发会话的 mtnode_gui）────────────────────────────────
+   工具面在运行时里（dsh/gateway/gui-plugin.mjs，只对「应用开发会话」这一档注册），
+   但 GUI 动作只有主进程能执行：BrowserWindow / webContents 注入脚本 / capturePage 截图
+   都在这里（见 mcp-gui-agent.js）。帧的路线与画布 / 数据库工具同一条桥：
+   运行时插件 → 网关 → 渲染层（renderer/app-nodes.js 的 handleGuiToolEvent）→ 这条 IPC
+   → 主进程执行 → kind:'gui' 原路回网关。与 dsh:browser 同一口径：兜底成 {ok:false,error}，
+   不 reject（模型拿到的是「这次 GUI 动作失败」而不是会话中断）。 */
+ipcMain.handle("dsh:gui", (event, params) => {
+  const p = params && typeof params === "object" ? params : {};
+  return Promise.resolve()
+    .then(() => require("./mcp-gui-agent.js").run(p.action, p.params || {}))
+    .catch((e) => ({ ok: false, error: (e && e.message) || String(e) }));
+});
+
+/* ── 开发调试（mtnode_dev · 「扩展能力管理 → 开发调试」总开关打开的那一轮）──────────
+   工具面在运行时里（dsh/gateway/dev-plugin.mjs，env MTNODE_DEV_DEBUG=1 才注册），
+   动作全在主进程执行（根目录 dev-agent.js）：起 `electron .` 要用 electron 二进制与
+   app.getAppPath()，CDP 截图 / 控制台也只有主进程能连。帧的路线与 mtnode_gui 同一条：
+   运行时插件 → 网关 → 渲染层（renderer/app-nodes.js 的 handleDevToolEvent）→ 这条 IPC
+   → 主进程执行 → kind:'dev' 原路回网关。兜底成 {ok:false,error}，不 reject。
+   现场（数据目录 / 仓库根 / 是否打包态 / electron 路径）由这里注入，dev-agent 不自己猜。 */
+function devAgentOpts() {
+  return {
+    dataDir: DATA(),
+    appRoot: __dirname,
+    packaged: !!app.isPackaged,
+    /* 开发态的 process.execPath 就是 electron 二进制（npm start = electron .）；
+       打包态没有「electron .」这回事，dev-agent 会直接拒绝（只支持开发态）。 */
+    electron: app.isPackaged ? "" : process.execPath,
+  };
+}
+ipcMain.handle("dsh:dev", (event, params) => {
+  const p = params && typeof params === "object" ? params : {};
+  return Promise.resolve()
+    .then(() => require("./dev-agent.js").run(p.action, p.params || {}, devAgentOpts()))
+    .catch((e) => ({ ok: false, error: (e && e.message) || String(e) }));
+});
 
 /* ── 语音输入（对话输入框的录音按钮）────────────────────────────────────────   透传到网关的 `speech` 方法：识别在网关拉起的运行时里用官方本地 SenseVoice 跑
    （CPU、离线），主进程只搬运 WAV 字节与结果，不落盘、不进任何模型上下文。
@@ -9289,6 +9441,15 @@ app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
 app.commandLine.appendSwitch("disable-features", "CalculateNativeWinOcclusion");
 
 app.whenReady().then(() => {
+  /* Windows 系统通知（任务完成提醒）要求有 AppUserModelID，否则 new Notification 静默
+     不显示 / 显示成 electron.app.Electron。值必须与 build.json 的 appId 一致（NSIS 生成的
+     开始菜单快捷方式用的就是它）。开发态没有快捷方式，通知可能不弹 —— 渲染层还有
+     应用内完成卡片兜底（见 renderer/app-notify.js）。 */
+  try {
+    app.setAppUserModelId("com.mtnode.pipeline-console");
+  } catch (e) {
+    errLog("[notify] setAppUserModelId 失败：" + ((e && e.message) || e));
+  }
   /* 隐藏原生窗口菜单栏（File/Edit/View/Window/Help），按键快捷方式由渲染层自行处理 */
   Menu.setApplicationMenu(null);
   /* 全局音视频锁：上一个进程留下的残留锁文件，会让节点白白报「已有任务进行中」。
@@ -9324,11 +9485,8 @@ app.whenReady().then(() => {
   } catch (e) {
     errLog("[sessions] 确保会话存储失败：" + String((e && e.message) || e));
   }
-  /* 首启（数据目录里一张画布都没有）放一张随包的「快速开始」示例画布：
-     它写盘后 mtime 最新 → 渲染层 ensureWorkflow 自然把它当默认画布打开；
-     已有画布的用户（含升级）什么都不做。全同步、失败只记日志，不阻塞启动。
-     （这里的 then 回调不是 async，所以不 await —— 它也确实是同步实现。） */
-  ensureStarterWorkflow();
+  /* 首启不再注入「快速开始」示例画布：数据目录里没有画布时，渲染层按原有兜底
+     新建一张空白「默认画布」。已有画布的用户（含升级）什么都不做。 */
   /* 画布备份：启动片刻后先做一次基线（无改动的后续 tick 自动跳过），之后每 5 分钟一次 */
   setTimeout(workflowBackupTick, 5000);
   setInterval(workflowBackupTick, WF_BACKUP_MS);
@@ -9431,6 +9589,48 @@ app.whenReady().then(() => {
     }
     return { action: "deny" };
   });
+  /* 关闭主窗 = 先问用户：最小化到任务栏，还是退出程序。
+     最小化：不退出、不销毁渲染层，任务继续在后台跑（完成时仍由渲染层弹系统通知 + 应用内卡片）；
+     退出：markQuitting 后 app.quit，走 before-quit 那套收尾。
+     另外托盘菜单「退出」仍是直接退出（不弹这个询问）。 */
+  let closeAsking = false;
+  mainWin.on("close", (ev) => {
+    if (trayNotify.isQuitting()) return;
+    ev.preventDefault();
+    if (closeAsking) return; /* 询问框还开着：重复点 ✕ 不再叠一层 */
+    closeAsking = true;
+    let choice = 0;
+    try {
+      choice = dialog.showMessageBoxSync(mainWin, {
+        type: "question",
+        title: "关闭 MTNode",
+        message: "要最小化到任务栏，还是退出程序？",
+        detail: "最小化后程序继续在后台运行，正在跑的任务不受影响；退出会结束所有运行。",
+        buttons: ["最小化到任务栏", "退出程序"],
+        defaultId: 0,
+        cancelId: 0, /* 关掉询问框（Esc / ✕）= 最小化，不误杀后台任务 */
+        noLink: true,
+      });
+    } catch (e) {
+      errLog("[close] 询问失败，按最小化处理：" + ((e && e.message) || e));
+      choice = 0;
+    } finally {
+      closeAsking = false;
+    }
+    if (choice === 1) {
+      trayNotify.markQuitting();
+      app.quit();
+      return;
+    }
+    try {
+      /* 托盘按需建（最好有：后台任务数、「全部终止运行」、直接退出都在托盘菜单里）；
+         建不出来也不影响最小化，任务栏图标点回来即可。 */
+      trayNotify.ensureTray();
+      if (mainWin && !mainWin.isDestroyed()) mainWin.minimize();
+    } catch (e) {
+      errLog("[close] 最小化失败：" + ((e && e.message) || e));
+    }
+  });
   mainWin.on("closed", () => {
     closeContentViewWin();
     setSoundWatch(false); /* 窗口没了：完成音心跳跟着停（否则往后每 2 秒空转一次） */
@@ -9461,6 +9661,8 @@ app.whenReady().then(() => {
     getMainWin: () => mainWin,
     appRoot: __dirname,
     getAppVersion: () => app.getVersion(),
+    /* 画布 / agent / 文件 / 工具 / 联网：与 appHost 同一份中继（插件窗口用「当前画布」） */
+    hostBridge: appHostBridge(),
     /* 当前登录账号（插件目录用它决定哪些插件可见：Blender 暂时只给作者账号） */
     getAuthUser: () => {
       const st = authStore.state();
@@ -9539,6 +9741,18 @@ app.whenReady().then(() => {
     /* 画布节点产物落应用资产目录（%APPDATA%\pipeline-console\assets\<wfId>，与 proc_image 同一去处）：
        调用方没给输出路径时由宿主兜底复进这里，显式传路径的调用方不受影响 */
     assetDirFor: (wfId) => assetDir(wfId),
+  });
+  registerMossMusicIpc({
+    getDataDir: DATA,
+    getMainWin: () => mainWin,
+    appRoot: __dirname,
+    assetDirFor: (wfId) => assetDir(wfId),
+  });
+  /* 内置 TTS（MOSS-TTS-Nano）：没有插件卡、没有安装窗，状态栏按钮点一下才走安装链 */
+  registerMossTtsIpc({
+    getDataDir: DATA,
+    getMainWin: () => mainWin,
+    appRoot: __dirname,
   });
   registerYueIpc({
     getDataDir: DATA,
@@ -9713,6 +9927,8 @@ app.whenReady().then(() => {
   registerAppsIpc({
     getDataDir: DATA,
     getMainWin: () => mainWin,
+    /* 画布 / agent / 文件 / 工具 / 联网（应用中心窗口的重能力）：见 app-host-bridge.js */
+    hostBridge: appHostBridge(),
     getAppVersion: () => app.getVersion(),
     t: (s) => I18n.t(s),
     authState: () => authStore.state(),
@@ -9754,7 +9970,11 @@ app.whenReady().then(() => {
 });
 
 app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") app.quit();
+  if (process.platform === "darwin") return;
+  /* 常驻托盘（本次需求）：主窗只是 hide，这里正常不会触发。真触发（窗口被销毁）时
+     只要还有托盘可回就留在后台；没有托盘 / 正在退出则照老路退出。 */
+  if (!trayNotify.isQuitting() && trayNotify.hasTray()) return;
+  app.quit();
 });
 
   /* 退出时关闭 dsh 网关与全部运行时子进程，避免遗留孤儿进程。
@@ -9765,6 +9985,9 @@ app.on("window-all-closed", () => {
    两阶段靠 quitCleanupState 拦住重入：第一趟 preventDefault，收完自己再 app.quit()。 */
 let quitCleanupState = "idle"; /* idle → running → done */
 app.on("before-quit", (ev) => {
+  /* 从这里开始「真的要退出」：主窗的 close 拦截必须放行，否则退出会被自己藏进托盘。
+     托盘菜单「退出」也先 markQuitting 再 app.quit，两处口径一致。 */
+  trayNotify.markQuitting();
   if (quitCleanupState === "done") return;
   if (quitCleanupState === "running") {
     ev.preventDefault();
@@ -9794,6 +10017,11 @@ app.on("before-quit", (ev) => {
   try { shutdownAppPlugins(); } catch {}
   try { shutdownApps(); } catch {}
   try { shutdownMusic3UiOnly(); } catch {}
+  /* MOSS-Music：只关控制台窗，**不停 8790 后端** —— 它是有意的常驻单例（不登记 vramShutdownAll），
+     用户下次开 MTNode 时 status / start 会探测 /health 直接复用。要停请走控制台「停止服务」。 */
+  try { shutdownMossMusicUiOnly(); } catch {}
+  /* 内置 TTS：渲染层关窗 / 应用退出就把 worker（含已加载的模型）收掉，下次启用再拉起 */
+  try { shutdownMossTts(); } catch {}
   try { shutdownYueUiOnly(); } catch {}
   try { shutdownH3UiOnly(); } catch {}
   try { shutdownLlamaUiOnly(); } catch {}
@@ -9862,6 +10090,8 @@ app.on("before-quit", (ev) => {
 });
 /* will-quit 兜底：before-quit 阶段若有运行仍在起进程，这里再收一次 */
 app.on("will-quit", () => {
+  /* 托盘图标随进程一起销毁（否则重启后会出现两只图标 / 一只死图标） */
+  try { trayNotify.destroy(); } catch {}
   /* 函数节点运行线程：先终止 worker 再扫进程树 —— 节点不在运行态就不该有线程/进程 */
   try { if (fnRuntime) fnRuntime.shutdown().catch(() => {}); } catch {}
   try { procHost.killAll().catch(() => {}); } catch {}

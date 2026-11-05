@@ -994,6 +994,7 @@ const FV_PEEK = {
   wrap: false,
   dims: "", /* 图片像素尺寸（只进头部那行小字，不占提示条） */
   mdSrc: false, /* md 等可渲染文件默认直接渲染（renderMarkdown），点「源码」才看原文 */
+  svgSrc: false, /* svg 同样是可渲染文件：默认出画好的图，点「源码」才看 <svg> 文本 */
   req: 0, /* 递增请求号：慢请求回来时若已切走文件就丢弃 */
   open: false,
   dirList: null,
@@ -1079,6 +1080,7 @@ function ensureFilePeek() {
     '<div class="fp-acts">' +
     '<button type="button" class="fp-btn fp-btn-txt" id="fpWrapBtn"></button>' +
     '<button type="button" class="fp-btn fp-btn-txt" id="fpMdBtn" hidden></button>' +
+    '<button type="button" class="fp-btn fp-btn-txt" id="fpSvgBtn" hidden></button>' +
     '<button type="button" class="fp-btn" id="fpUndoBtn" title="' +
     I18n.t("撤销") +
     ' (Ctrl+Z)" hidden>↶</button>' +
@@ -1172,6 +1174,11 @@ function ensureFilePeek() {
   host.querySelector("#fpMdBtn").onclick = () => {
     FV_PEEK.mdSrc = !FV_PEEK.mdSrc;
     renderFilePeekBody();
+  };
+  /* SVG：画面 / 源码 两看（切源码要重读文本，走 loadFilePeek） */
+  host.querySelector("#fpSvgBtn").onclick = () => {
+    FV_PEEK.svgSrc = !FV_PEEK.svgSrc;
+    loadFilePeek();
   };
   /* 编辑：进 / 出编辑态；保存：落盘；撤销 / 重做：走本文件自己的栈 */
   host.querySelector("#fpEditBtn").onclick = () => filePeekEditToggle();
@@ -1290,6 +1297,7 @@ function openFilePeek(path, opts) {
   FV_PEEK.line = Number(o.line) || 0;
   FV_PEEK.count = Number(o.count) || 0;
   FV_PEEK.mdSrc = false; /* 每次打开都回到「渲染」默认，与面板初始态一致 */
+  FV_PEEK.svgSrc = false; /* svg 同理：打开先给画好的图 */
   FV_PEEK.dirFilter = "";
   FV_PEEK.dirList = null;
   host.classList.add("on");
@@ -1379,6 +1387,12 @@ function renderFilePeekHead() {
   mdBtn.hidden = !isMd || !!FV_PEEK.editing;
   if (isMd) mdBtn.textContent = I18n.t(FV_PEEK.mdSrc ? "渲染" : "源码");
   mdBtn.classList.toggle("on", !FV_PEEK.mdSrc);
+  /* SVG 同一套「画面 / 源码」口径：只在 svg 上出现，编辑态里收起（切视图会丢改动） */
+  const svgBtn = host.querySelector("#fpSvgBtn");
+  const isSvg = fileviewExtOf(abs) === "svg";
+  svgBtn.hidden = !isSvg || !!FV_PEEK.editing;
+  if (isSvg) svgBtn.textContent = I18n.t(FV_PEEK.svgSrc ? "预览" : "源码");
+  svgBtn.classList.toggle("on", isSvg && !FV_PEEK.svgSrc);
   /* 编辑一组的可见性：能编辑的文本文件给「编辑」；在编辑里换成「取消 / 保存 / 撤销 / 重做」 */
   const editBtn = host.querySelector("#fpEditBtn");
   const canEdit =
@@ -1820,8 +1834,8 @@ async function loadFilePeek() {
   }
   if (req !== FV_PEEK.req || FV_PEEK.path !== abs) return;
   if (FV_PEEK.mode === "dir") FV_PEEK.mode = "read";
-  if (fileviewIsImagePath(abs) && fileviewExtOf(abs) !== "svg") {
-    /* svg 是文本，开发者更想看的是它的源码而不是画出来的样子（xml 高亮照样有） */
+  if (fileviewIsImagePath(abs) && !(fileviewExtOf(abs) === "svg" && FV_PEEK.svgSrc)) {
+    /* svg 也是图片（浏览器能直接画出来）：默认出画面，头部「源码」按钮才切到 xml 文本。 */
     if (api.assetMeta) {
       try {
         const m = await api.assetMeta(abs);
@@ -2443,6 +2457,23 @@ const FV_BADGE_MODE = { read: "读", write: "改", dir: "目录" };
  * 都会把全部徽标重算一遍 —— 所以按 ownerId 缓 250ms，切工作区立刻生效不至于等到。 */
 const FV_OWNER_WS_TTL = 250;
 const FV_OWNER_WS_CACHE = new Map();
+/* 一条会话自己的生效工作目录（单一真源）：会话正文里的相对路径、工具记录的文件徽标、
+ * 计划面板里的同一颗徽标，全都只认这一份 —— 三处各算一套，才会出现「徽标点得开、
+ * 正文点不开」。
+ *   · 助手会话：按所属画布现算（assistWorkspaceInfo），不认 st.workspace ——
+ *     那份往往是老版本「创建即冻结」留下的快照（常常就是应用默认文件夹）；
+ *   · 普通会话：agentRunWorkspace（手填 > 所属画布项目根 > 画布工作目录 > 默认）。 */
+function fileviewSessionWorkspace(st) {
+  if (!st) return "";
+  try {
+    if (st.assist && typeof assistWorkspaceInfo === "function") {
+      return String((assistWorkspaceInfo(st) || {}).path || "");
+    }
+    if (typeof agentRunWorkspace === "function") return String(agentRunWorkspace(st) || "");
+  } catch (_) {}
+  return "";
+}
+
 function fileviewOwnerWorkspace(ownerId) {
   const id = String(ownerId || "").trim();
   if (!id) return "";
@@ -2458,15 +2489,9 @@ function fileviewOwnerWorkspace(ownerId) {
     }
     if (!ws && id !== "assist" && typeof agentSessionById === "function") {
       const st = agentSessionById(id);
-      /* 助手会话的基准目录只有一个真源：**所属画布**现算（app-assist.js assistWorkspaceInfo，
-         与助手栏输入框 / 每轮快照 / 运行链路同一个函数）。不走 agentRunWorkspace ——
-         那条链先认 st.workspace，而助手会话上那份往往是老版本「创建即冻结」留下的快照
-         （常常就是应用默认文件夹），认它就等于把目录冻在某一版画布上。 */
-      if (st && st.assist && typeof assistWorkspaceInfo === "function") {
-        ws = String((assistWorkspaceInfo(st) || {}).path || "");
-      } else if (st && typeof agentRunWorkspace === "function") {
-        ws = String(agentRunWorkspace(st) || "");
-      }
+      /* 基准目录与正文里的相对路径同源（见 fileviewSessionWorkspace）：助手会话按
+         **所属画布**现算，普通会话走 agentRunWorkspace —— 两处口径必须一致。 */
+      ws = fileviewSessionWorkspace(st);
     }
   } catch (_) {
     ws = "";

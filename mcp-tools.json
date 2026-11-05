@@ -529,7 +529,8 @@
                   }
                 },
                 "agent": {
-                  "type": "boolean"
+                  "type": "boolean",
+                  "description": "已下线：只接受 false（关闭旧画布的文本智能模式）；true 会被忽略。"
                 },
                 "bgRmOn": {
                   "type": "boolean"
@@ -1361,7 +1362,7 @@
     },
     {
       "name": "mtnode_assets",
-      "description": "The MTNode asset library (素材库) and full-window still screenshots — for runs that must PREPARE MATERIALS (交付 · 素材交付, 分镜参考图, 界面静帧截图 …). Both live OUTSIDE your workspace, so read_file / shell cannot reach them: every path this tool returns is already host-verified.\n\nAvailable actions:\n- list: the library tree. Returns categories, then assets: [{id, rel, displayName, desc, items:[{index, id, title, type}]}] and root. Pass filter (substring over category path / asset name / description) to narrow it (character turnarounds 三视图 are usually named 「…三视图」), or type:\"image\" to keep only assets that have an image item. Content items are numbered: item index = the port number of an 素材节点 bound to that asset.\n- read: one content item. Pass id (asset id, e.g. \"as…\") or rel (library-relative folder, e.g. \"DS Adventure/Characters/AI娘原人设Q版三视图\") or path (an absolute file path you already have), plus itemId (or index, 0-based) to pick the item; type:\"image\" + limit picks the first N image items. Returns {asset, item, file:{path, bytes}} — text items also come back as text (binary never does). The absolute path is what mtnode_vision eats, and what you hand to a deliver terminal / a save node.\n- screenshot: take a still PNG of the MTNode window as it is right now and write it to an absolute path. Defaults: whole window, hidden menus/lightboxes removed, saved next to the current output into the canvas asset folder when path is omitted. Pass canvasOnly:true to shoot only the canvas viewport (the 起始态/丰富态 UI stills of a delivery list), width/height to force the output pixel size (e.g. 1920x1080 — capture is scaled to fit; it never resizes the user's window), hideUI:false to keep transient UI, maximize:true to enlarge the window first (only when the user is not using it: the window really does resize). FAILS when the window is minimized or hidden — ask the user to show the MTNode window, then retry.\n\nDiscipline: never guess that a file exists — call read and quote the path it returns. The library is a MIRROR of the user's own folders: this tool reads it, it never writes into it. Screenshots are the only thing that writes, and only to the path you are given.",
+      "description": "The MTNode asset library (素材库) and full-window still screenshots — for runs that must PREPARE MATERIALS (交付 · 素材交付, 分镜参考图, 界面静帧截图 …). Both live OUTSIDE your workspace, so read_file / shell cannot reach them: every path this tool returns is already host-verified.\n\nAvailable actions:\n- list: the library tree. Returns categories, then assets: [{id, rel, displayName, desc, items:[{index, id, title, type}]}] and root. Pass filter (substring over category path / asset name / description) to narrow it (character turnarounds 三视图 are usually named 「…三视图」), or type:\"image\" to keep only assets that have an image item. Content items are numbered: item index = the port number of an 素材节点 bound to that asset.\n- read: one content item. Pass id (asset id, e.g. \"as…\") or rel (library-relative folder, e.g. \"DS Adventure/Characters/AI娘原人设Q版三视图\") or path (an absolute file path you already have), plus itemId (or index, 0-based) to pick the item; type:\"image\" + limit picks the first N image items. Returns {asset, item, file:{path, bytes}} — text items also come back as text (binary never does). The absolute path is what mtnode_vision eats, and what you hand to a deliver terminal / a save node.\n- screenshot: take a still PNG of the MTNode window as it is right now and write it to an absolute path. Defaults: whole window, hidden menus/lightboxes removed, written to the current canvas workspace's .mtnode-input/ when path is omitted (a temporary still — kept out of the asset folder; give an explicit path for anything you must keep). Pass canvasOnly:true to shoot only the canvas viewport (the 起始态/丰富态 UI stills of a delivery list), width/height to force the output pixel size (e.g. 1920x1080 — capture is scaled to fit; it never resizes the user's window), hideUI:false to keep transient UI, maximize:true to enlarge the window first (only when the user is not using it: the window really does resize). FAILS when the window is minimized or hidden — ask the user to show the MTNode window, then retry.\n\nWrite actions (permission \"assets_write\", separate from read; same action set the app window gets):\n- create: new asset. {displayName, category?, desc?} — category is a library-relative category path, created when missing. Returns {asset}.\n- addItem: new content item in an asset. {id, type, title?, content?} for text, or {id, type, srcPath} / {id, type, base64} for media. Returns {item, asset}.\n- importFile: new asset made of local files. {paths:[absolute…], name?, category?, desc?} — files are COPIED into the library. Returns {asset, added, skipped}.\n- importFiles: append local files to an existing asset. {id, paths:[…]}. Returns {items, skipped, asset}.\n- updateText: overwrite a text item. {id, itemId, content, title?} — the previous body is kept under .versions/. Returns {item, asset, prevVersion, prevEmpty}.\n- updateMeta: {id, displayName?, desc?, catRel?} — rename / describe / move to another category. Returns {asset}.\n- removeItem: {id, itemId} — file goes to the system trash (restorable). Returns {removed, trash, asset}.\n- deleteAsset: {id} — whole asset folder goes to the trash (restorable). Returns {id, trash, rel}.\n\nDiscipline: never guess that a file exists — call read and quote the path it returns. Reading is never restricted; writes are gated by the separate \"write asset library\" permission and every delete goes to the trash, never an unlink. Creating an asset node on the canvas is a canvas action (mtnode_canvas_edit), not this tool.",
       "family": "asset",
       "source": "dsh/gateway/assets-plugin.mjs",
       "inputSchema": {
@@ -1369,11 +1370,19 @@
         "properties": {
           "action": {
             "type": "string",
-            "description": "Which asset action to run.",
+            "description": "Which asset action to run. list / read / screenshot need the \"read asset library\" permission; every other action needs the separate \"write asset library\" permission.",
             "enum": [
               "list",
               "read",
-              "screenshot"
+              "screenshot",
+              "create",
+              "addItem",
+              "importFile",
+              "importFiles",
+              "updateText",
+              "updateMeta",
+              "removeItem",
+              "deleteAsset"
             ]
           },
           "filter": {
@@ -1404,7 +1413,7 @@
           },
           "path": {
             "type": "string",
-            "description": "read: an absolute file path already in hand (or under the library) instead of id/rel. screenshot: absolute .png destination; omit to write into the current canvas asset folder."
+            "description": "read: an absolute file path already in hand (or under the library) instead of id/rel. screenshot: absolute .png destination; omit to write a temporary still into the canvas workspace's .mtnode-input/ (falling back to the canvas asset folder only when the canvas has no workspace folder)."
           },
           "itemId": {
             "type": "string",
@@ -1437,6 +1446,49 @@
           "hideUI": {
             "type": "boolean",
             "description": "screenshot: remove transient UI (open menus, hints, lightbox) before shooting (default true) so a delivery still has no残余 popups."
+          },
+          "paths": {
+            "type": "array",
+            "description": "importFile / importFiles: absolute paths of local files to COPY into the library. Directories are not walked — pass files.",
+            "items": {
+              "type": "string"
+            }
+          },
+          "name": {
+            "type": "string",
+            "description": "importFile: new asset display name (default = first file name without extension). Category is `category`."
+          },
+          "displayName": {
+            "type": "string",
+            "description": "create / updateMeta: asset display name shown in the library UI."
+          },
+          "category": {
+            "type": "string",
+            "description": "create / importFile: library-relative category path (e.g. \"story2video/Stills\"). Missing categories are created."
+          },
+          "catRel": {
+            "type": "string",
+            "description": "updateMeta: move the asset to this library-relative category (\"\" = library root)."
+          },
+          "desc": {
+            "type": "string",
+            "description": "create / importFile / updateMeta: asset description."
+          },
+          "title": {
+            "type": "string",
+            "description": "addItem / updateText: content item title (becomes the 素材节点 port title)."
+          },
+          "content": {
+            "type": "string",
+            "description": "addItem (type:\"text\") / updateText: the text body (text items are stored as .txt)."
+          },
+          "srcPath": {
+            "type": "string",
+            "description": "addItem: absolute path of one local file to copy in (media items)."
+          },
+          "base64": {
+            "type": "string",
+            "description": "addItem: inline base64 bytes instead of srcPath (small media only)."
           }
         },
         "required": [
@@ -1446,7 +1498,7 @@
     },
     {
       "name": "mtnode_gui",
-      "description": "Drive the MTNode desktop UI (the Electron app's windows) and shoot stills of them. Use it when the work is a *window* action rather than a canvas edit: opening the plugin dialog, pressing \"开始安装\" in the install window, starting a local backend, hitting its \"test generate\" button, reading an error dialog.\n\nWindows: pass which = \"main\" (default, the main window) · \"install\" (the plugin install window) · \"any\" (focused window) · or any substring of a window title (e.g. \"Minimax H3\" — plugin console windows are titled after the plugin). Call action:\"windows\" first when you are unsure what is open.\n\nElement targets (used by click / type / set / scroll / wait): an object with ONE of\n- { css: \"…\" } — CSS selector;\n- { text: \"…\", exact?: true, index?: 0 } — visible text; default substring match, deepest/shortest node wins, index picks among ties;\n- { title: \"…\" } — substring of aria-label / title / data-tip / placeholder;\n- { role: \"button\", name: \"…\" } — role-ish match on button / a / [role=button] / input plus a name substring;\n- { ref: \"r7\" } — a ref returned by action:\"outline\" (stable until the page re-renders; re-run outline if it goes stale).\nAdd includeHidden:true to allow a hidden element (rarely useful — a user could not click it either).\n\nActions:\n- windows: list every window (id / title / url / visible / minimized). Read-only.\n- outline: compact structure snapshot — visible interactive elements with a ref each, plus the window's visible text lines (textMax, default 80, 0 = none). This is how you learn what to click. Read-only, capped at 120 items.\n- text: visible text lines of the window (offset / limit). Read-only.\n- click: click a target (a real DOM click inside the page, so the page's own handlers run). mode:\"dblclick\" for double click; force:true to click a disabled element anyway.\n- type: focus a target (or the focused element) and type text; clear:true (default) empties it first; submit:true presses Enter afterwards. Works on input / textarea / contenteditable through the native value setter, so framework listeners fire. NEVER use it for passwords or any credential.\n- set: assign a value to a form element: text input, textarea, select (by value or option text), checkbox / radio (true/false), contenteditable.\n- key: press one key on the focused element (Enter / Escape / Tab / Backspace / arrows / PageDown / a single character).\n- scroll: scroll the window, or a target container, by dx / dy.\n- wait: wait until a target appears, until text appears (text:\"…\"), or until a target is gone (gone:true). timeoutMs default 15000, max 600000.\n- eval: run a small READ-ONLY expression inside the window and return its value (diagnostics; use click / type / set for anything that changes state).\n- screenshot: write a still PNG/JPG of a window to an absolute path (path is required). canvasOnly:true shoots just the canvas viewport, hideUI:true hides transient menus and the image lightbox first, delayMs waits before shooting. Fails when the window is minimized / hidden — bring it up first.\n\nDiscipline: every action returns {ok, window, element?: {tag,id,cls,text,label}} and, on failure, a readable error saying what was not found — read it and adjust instead of retrying blindly. After a click that changes the page, either rely on the automatic short settle or follow with action:\"wait\". Screenshots are written ONLY to the path you pass.",
+      "description": "Drive the MTNode desktop UI (the Electron app's windows) and shoot stills of them. Use it when the work is a *window* action rather than a canvas edit: opening a plugin's dialog or an app's own window on the real machine, pressing \"开始安装\" in the install window, starting a local backend, hitting its \"test generate\" button, reading an error dialog.\n\nApp development: action:\"open-app\" opens (or reloads, then focuses) an MTNode app's own window — the real window the user sees, with window.appHost injected — and returns its id / title / directory. Pass app = the app id from that app's app.json (kind:\"dev\" / \"down\" picks which copy when the same id exists in both roots; omit it to use the one present on disk). Then target that window by a substring of the returned title (e.g. \"我的应用 (开发目录 v1.0.0)\").\n\nWindows: pass which = \"main\" (default, the main window) · \"install\" (the plugin install window) · \"any\" (focused window) · or any substring of a window title (e.g. \"Minimax H3\" — plugin console windows are titled after the plugin). Call action:\"windows\" first when you are unsure what is open.\n\nElement targets (used by click / type / set / scroll / wait): an object with ONE of\n- { css: \"…\" } — CSS selector;\n- { text: \"…\", exact?: true, index?: 0 } — visible text; default substring match, deepest/shortest node wins, index picks among ties;\n- { title: \"…\" } — substring of aria-label / title / data-tip / placeholder;\n- { role: \"button\", name: \"…\" } — role-ish match on button / a / [role=button] / input plus a name substring;\n- { ref: \"r7\" } — a ref returned by action:\"outline\" (stable until the page re-renders; re-run outline if it goes stale).\nAdd includeHidden:true to allow a hidden element (rarely useful — a user could not click it either).\n\nActions:\n- open-app: open (or reload and focus) an MTNode app's own window: app = its id, optional kind:\"dev\"|\"down\". Returns {ok, id, title, dir}. Pass a substring of the returned title as which afterwards.\n- windows: list every window (id / title / url / visible / minimized). Read-only.\n- outline: compact structure snapshot — visible interactive elements with a ref each, plus the window's visible text lines (textMax, default 80, 0 = none). This is how you learn what to click. Read-only, capped at 120 items.\n- text: visible text lines of the window (offset / limit). Read-only.\n- click: click a target (a real DOM click inside the page, so the page's own handlers run). mode:\"dblclick\" for double click; force:true to click a disabled element anyway.\n- type: focus a target (or the focused element) and type text; clear:true (default) empties it first; submit:true presses Enter afterwards. Works on input / textarea / contenteditable through the native value setter, so framework listeners fire. NEVER use it for passwords or any credential.\n- set: assign a value to a form element: text input, textarea, select (by value or option text), checkbox / radio (true/false), contenteditable.\n- key: press one key on the focused element (Enter / Escape / Tab / Backspace / arrows / PageDown / a single character).\n- scroll: scroll the window, or a target container, by dx / dy.\n- wait: wait until a target appears, until text appears (text:\"…\"), or until a target is gone (gone:true). timeoutMs default 15000, max 600000.\n- eval: run a small READ-ONLY expression inside the window and return its value (diagnostics; use click / type / set for anything that changes state).\n- screenshot: write a still PNG/JPG of a window to an absolute path (path is required). canvasOnly:true shoots just the canvas viewport, hideUI:true hides transient menus and the image lightbox first, delayMs waits before shooting. Fails when the window is minimized / hidden — bring it up first.\n\nDiscipline: every action returns {ok, window, element?: {tag,id,cls,text,label}} and, on failure, a readable error saying what was not found — read it and adjust instead of retrying blindly. After a click that changes the page, either rely on the automatic short settle or follow with action:\"wait\". Screenshots are written ONLY to the path you pass.",
       "family": "gui",
       "source": "dsh/gateway/gui-plugin.mjs",
       "inputSchema": {
@@ -1457,6 +1509,7 @@
             "description": "Which GUI action to run.",
             "enum": [
               "windows",
+              "open-app",
               "outline",
               "text",
               "click",
@@ -1467,6 +1520,18 @@
               "wait",
               "eval",
               "screenshot"
+            ]
+          },
+          "app": {
+            "type": "string",
+            "description": "open-app: the app id (from that app's app.json). The app window is opened (or reloaded and focused when already open) and its id / title / directory are returned — use a substring of that title as which for the following actions."
+          },
+          "kind": {
+            "type": "string",
+            "description": "open-app: which copy to open when the same id exists in both roots — \"dev\" (project root) or \"down\" (download root). Omit to use the copy present on disk.",
+            "enum": [
+              "dev",
+              "down"
             ]
           },
           "which": {
@@ -1565,6 +1630,147 @@
           "settleMs": {
             "type": "number",
             "description": "After an action, wait this long for the page to settle (default 400, 0 = do not wait)."
+          }
+        },
+        "required": [
+          "action"
+        ]
+      }
+    },
+    {
+      "name": "mtnode_dev",
+      "description": "Start a second MTNode client (dev mode, isolated data directory), drive it over CDP, then verify your fix on it. Use this when you are changing MTNode's own code and must SEE the result: launch → screenshot / snapshot → click / type → edit files → reload (renderer only) or restart (main process) → verify again.\n\nBoundaries you must respect: this tool only ever touches the instance it started itself (ledger file), never the instance the user is working in; it refuses the default data directory; only one debug instance at a time; dev mode only (app.isPackaged === false).\n\nDifferent from mtnode_gui: mtnode_gui drives the windows of the instance the user is using (main-process DOM injection). mtnode_dev drives the instance YOU started over CDP, and can read console / exceptions / network, which mtnode_gui cannot.\n\nActions:\n- launch: spawn `electron .` with --remote-debugging-port and an isolated MTNODE_DATA_DIR (default <temp>/mtnode-dev/<timestamp>), wait until CDP answers, attach to the main window. Returns {ok, pid, port, dataDir, appDataDir, targetUrl}. Refuses when another debug instance is alive — stop or restart it instead.\n- attach: re-attach the instance recorded in the ledger (e.g. after a gateway/runtime restart). A port different from the ledger one is refused on purpose.\n- status: ledger + pid + port + dataDir + current target. Read-only.\n- stop: close the instance (CDP Browser.close → wait → kill the process tree) and clear the ledger. The data directory is kept for the evidence you collected.\n- reload: make new code take effect. Pass changedFiles (paths you just edited): renderer/… only → Page.reload; anything else (main.js, preload.js, root modules, dsh/, build.json) → full restart on the same data directory. how:\"reload\"|\"restart\" forces one.\n- restart: stop + launch again on the same data directory.\n- screenshot: write a PNG/JPG of the target window to an absolute path (path is required). delayMs waits before the shot.\n- snapshot: target window's title / url / viewport / visible text + up to 120 interactive elements with coordinates. This is how you learn what to click.\n- click: click an element target (see below) or an absolute {x,y}; mode:\"dblclick\" for double click.\n- type: focus an element target (or the focused element) and insert text; clear:true empties the field first, submit:true presses Enter afterwards. Never for credentials.\n- key: press one key (Enter / Escape / Tab / Backspace / arrows / PageDown / a single character).\n- scroll: wheel by dx / dy (optionally at x / y).\n- wait: wait until a target appears (or disappears with gone:true), timeoutMs default 15000 / max 600000.\n- eval: evaluate a JavaScript expression in the target window and return its value (diagnostics; prefer click / type for anything that changes state).\n- console: recent console + log entries (limit default 50).\n- exceptions: recent uncaught exceptions and log errors.\n- net: recent network requests / responses (method, url, status).\n\nWindows (which): \"main\" (default, the main window renderer) · any substring of a window url or title (an app window is usually found by its app id or its title, e.g. \"我的应用 (开发目录 v1.0.0)\").\n\nElement targets (click / type / wait): { css: \"…\" } · { text: \"…\", exact?: true } · { x, y } for an absolute point.\n\nFailures are reported, never retried silently: an instance that will not start returns the error plus the last lines of its stdout/stderr — read them instead of retrying blindly.",
+      "family": "dev",
+      "source": "dsh/gateway/dev-plugin.mjs",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "description": "Which debug action to run.",
+            "enum": [
+              "launch",
+              "attach",
+              "status",
+              "stop",
+              "reload",
+              "restart",
+              "eval",
+              "screenshot",
+              "console",
+              "exceptions",
+              "net",
+              "snapshot",
+              "click",
+              "type",
+              "key",
+              "scroll",
+              "wait"
+            ]
+          },
+          "which": {
+            "type": "string",
+            "description": "Target window: \"main\" (default, the main window renderer) or a substring of a window url / title (app windows: their app id or title)."
+          },
+          "target": {
+            "type": "object",
+            "description": "Element target: {css} or {text, exact?} or {x, y} for an absolute point.",
+            "additionalProperties": true
+          },
+          "text": {
+            "type": "string",
+            "description": "type: the text to insert. wait: the text to wait for."
+          },
+          "key": {
+            "type": "string",
+            "description": "key: the key to press (Enter / Escape / Tab / Backspace / ArrowDown / PageDown / a single character)."
+          },
+          "expression": {
+            "type": "string",
+            "description": "eval: JavaScript expression evaluated in the target window (returned by value)."
+          },
+          "path": {
+            "type": "string",
+            "description": "screenshot: absolute output path (.png or .jpg). Required for screenshot."
+          },
+          "changedFiles": {
+            "type": "array",
+            "description": "reload: the files you just edited (absolute or repo-relative). renderer/… only → Page.reload; anything else → full restart. Required for reload unless how is given.",
+            "items": {
+              "type": "string"
+            }
+          },
+          "how": {
+            "type": "string",
+            "description": "reload: force the strategy instead of deriving it from changedFiles.",
+            "enum": [
+              "reload",
+              "restart"
+            ]
+          },
+          "dataDir": {
+            "type": "string",
+            "description": "launch / restart: MTNODE_DATA_DIR for the debug instance (default <temp>/mtnode-dev/<timestamp>). The default data directory is refused."
+          },
+          "mode": {
+            "type": "string",
+            "description": "click: \"click\" (default) or \"dblclick\".",
+            "enum": [
+              "click",
+              "dblclick"
+            ]
+          },
+          "clear": {
+            "type": "boolean",
+            "description": "type: empty the field before typing (default true)."
+          },
+          "submit": {
+            "type": "boolean",
+            "description": "type: press Enter after typing (default false)."
+          },
+          "gone": {
+            "type": "boolean",
+            "description": "wait: wait until the target disappears instead of appearing."
+          },
+          "timeoutMs": {
+            "type": "number",
+            "description": "wait: how long to wait (default 15000, max 600000). launch: how long to wait for CDP (default 90000)."
+          },
+          "delayMs": {
+            "type": "number",
+            "description": "screenshot: wait this long before capturing (default 0)."
+          },
+          "settleMs": {
+            "type": "number",
+            "description": "After click / type / key / scroll, wait this long for the page to settle (default 400)."
+          },
+          "waitMs": {
+            "type": "number",
+            "description": "reload: settle time after the reload (default 1200)."
+          },
+          "dx": {
+            "type": "number",
+            "description": "scroll: horizontal delta in pixels."
+          },
+          "dy": {
+            "type": "number",
+            "description": "scroll: vertical delta in pixels (positive scrolls down)."
+          },
+          "x": {
+            "type": "number",
+            "description": "scroll: viewport x to wheel at (default 600)."
+          },
+          "y": {
+            "type": "number",
+            "description": "scroll: viewport y to wheel at (default 400)."
+          },
+          "limit": {
+            "type": "number",
+            "description": "console / exceptions / net: how many recent entries to return (default 50 / 50 / 60)."
+          },
+          "awaitPromise": {
+            "type": "boolean",
+            "description": "eval: await the result when the expression returns a promise (default true)."
           }
         },
         "required": [

@@ -604,6 +604,57 @@ function appendQwenImageSummaryBody(node, body) {
   });
 }
 
+/* 节点头部的「透明背景」Toggle：Qwen Image 2.1 原生 RGBA 直出（单遍成图，不像
+   云端节点那样需要黑白两通道差分），所以这里只做一键开关；画幅 / 步数等参数仍在 ⚙ 设置里。
+   外观复用 .n-bgrm-btn / .n-matte-toggle：关闭是灰白格，开启只剩一圈彩虹边缘。 */
+function qwenimageMatteButtonEl(node) {
+  qwenimageNormalize(node);
+  const on = !!node.bgRmOn;
+  const masking = qwenimageMaskActive(node);
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "n-play n-bgrm-btn n-matte-toggle" + (on ? " on" : "");
+  btn.setAttribute("role", "switch");
+  btn.setAttribute("aria-checked", on ? "true" : "false");
+  btn.setAttribute("aria-label", I18n.t("透明背景"));
+  btn.dataset.on = on ? "1" : "0";
+  btn.innerHTML = '<span class="n-bgrm-ico" aria-hidden="true"></span>';
+  const tipOn = I18n.t(
+    "透明背景已开启：按官方 RGBA 格式补一句透明说明，单遍出图，PNG 自带真实 Alpha。点击关闭",
+  );
+  const tipOff = I18n.t(
+    "透明背景：开启后单遍直出带 Alpha 的 PNG（Qwen Image 2.1 原生支持）。右键打开节点设置",
+  );
+  btn.title = on ? tipOn : tipOff;
+  btn.onclick = (ev) => {
+    ev.stopPropagation();
+    pushHistory();
+    node.bgRmOn = !node.bgRmOn;
+    scheduleSave(true);
+    /* 只调 renderCanvas() 是不够的：bgRmOn 不在 canvasRenderSig 里（那串签名只收
+       id / 尺寸 / 选中 / 运行态 / 标题…），这一拍必走「复用快速通道」——一个 DOM 都不拆，
+       节点头部这颗按钮与 body 的设置摘要就停在上一次的样式上，点下去像没反应
+       （要等下一次形状变化触发整幅重建才补上）。所以按模型把这一颗节点重建一次，
+       头部按钮的 on 类、aria-checked、title 与 body 的「透明背景 on/off」一次刷到位。 */
+    if (typeof refreshNodeEl === "function") refreshNodeEl(node.id);
+    renderCanvas();
+    if (node.bgRmOn && masking) {
+      toast(
+        I18n.t("透明背景已开启，但当前开着蒙版重绘：蒙版优先，关闭蒙版后透明背景才生效"),
+        "warn",
+      );
+    } else {
+      toast(node.bgRmOn ? I18n.t("透明背景已开启") : I18n.t("透明背景已关闭"), "ok");
+    }
+  };
+  btn.oncontextmenu = (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    if (typeof openNodeSettingsDialog === "function") openNodeSettingsDialog(node);
+  };
+  return btn;
+}
+
 function qwenimageMattePanel(ctx, node) {
   ctx.section(I18n.t("透明背景（原生 RGBA）"));
   nsCheck(
@@ -612,8 +663,11 @@ function qwenimageMattePanel(ctx, node) {
     !!node.bgRmOn,
     (v) => {
       node.bgRmOn = !!v;
+      /* 反方向同理：从设置窗勾选后，头部那颗按钮不会自己变（它不在重绘签名里），
+         按模型重建这一颗节点，勾完画布上当场就是新状态 */
+      if (typeof refreshNodeEl === "function") refreshNodeEl(node.id);
     },
-    null,
+    { commit: { history: true, rerender: true } },
   );
   ctx.hint(
     I18n.t(

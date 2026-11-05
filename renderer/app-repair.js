@@ -79,6 +79,10 @@ const PLUGIN_REPAIR_SKILLS = {
      配套的 blender-local-install 写明了怎么读现场、逐条验回去 */
   blender: "blender-local-install",
   "blender-local": "blender-local-install",
+  /* MOSS-Music 本地音乐理解：安装 / 自我修复的唯一真源在 skills/moss-music-install */
+  mossmusic: "moss-music-install",
+  "moss-music": "moss-music-install",
+  moss_music: "moss-music-install",
 };
 
 /* 插件 id / kind → 打开它自己控制台窗的 preload 桥方法名（「打开控制台看日志」用） */
@@ -110,6 +114,10 @@ const PLUGIN_REPAIR_CONSOLE = {
   /* Blender：控制台里能逐项看到 blender.exe / addon / uv / MCP / 端口，以及「测试连接」 */
   blender: "blenderOpen",
   "blender-local": "blenderOpen",
+  /* MOSS-Music：控制台里能看安装步骤 / 后端日志 / GPU / 试生成 / 产物 */
+  mossmusic: "mossmusicOpen",
+  "moss-music": "mossmusicOpen",
+  moss_music: "mossmusicOpen",
 };
 
 /* 插件 id / kind → 修完之后该调的「该服务自己的重启入口」与卡片刷新口。
@@ -186,6 +194,29 @@ const PLUGIN_REPAIR_SERVICE_BASE = {
     cards: ["soulxflashhead-local"],
     results: [".soulxflashhead-agent-result"],
   },
+  /* FLUX 3 Image Klein：本机独立 ComfyUI（默认 8197），常驻单例（MTNode 完全退出时才被收掉）
+     —— 修完调 flux3kleinStart 重新拉起 + /health 才算真验证。 */
+  flux3klein: {
+    label: "FLUX 3 Image Klein",
+    resident: true,
+    start: "flux3kleinStart",
+    stop: "flux3kleinStop",
+    status: "flux3kleinStatus",
+    card: "refreshFlux3KleinPluginCard",
+    cards: ["flux3-klein-local"],
+    results: [".flux3klein-agent-result"],
+  },
+  /* Qwen Image 2.1：本机独立 ComfyUI（默认 8196），同样常驻单例。 */
+  qwenimage: {
+    label: "Qwen Image 2.1",
+    resident: true,
+    start: "qwenimageStart",
+    stop: "qwenimageStop",
+    status: "qwenimageStatus",
+    card: "refreshQwenImagePluginCard",
+    cards: ["qwen-image-local"],
+    results: [".qwenimage-agent-result"],
+  },
   llama: {
     label: "llama.cpp",
     resident: true,
@@ -236,6 +267,17 @@ const PLUGIN_REPAIR_SERVICE_BASE = {
     cards: ["bongochat"],
     results: [".pet-agent-result"],
   },
+  /* MOSS-Music 本地音乐理解：8790 常驻单例（MTNode 完全退出时才收掉）—— 修完调
+     mossmusicStart 重新拉起 + /health 才算真验证；它自己的控制台能看日志与试生成。 */
+  mossmusic: {
+    label: "MOSS-Music 本地音乐理解",
+    resident: true,
+    start: "mossmusicStart",
+    stop: "mossmusicStop",
+    status: "mossmusicStatus",
+    card: "refreshMossMusicPluginCard",
+    cards: ["moss-music"],
+  },
 };
 
 /* 与 PLUGIN_REPAIR_SKILLS 同一套别名口径：主进程报 id 还是报 kind 都接得住 */
@@ -247,11 +289,14 @@ const PLUGIN_REPAIR_SERVICE = (function expandPluginRepairService() {
     breeze: ["breeze", "breeze-tts", "breeze-tts-local", "breeze_gen"],
     infinitetalk: ["infinitetalk", "infinitetalk-local", "infinitetalk_gen"],
     soulxflashhead: ["soulxflashhead", "soulxflashhead-local", "soulxflashhead_gen", "soulx-flashhead"],
+    flux3klein: ["flux3klein", "flux3-klein-local", "flux3-klein", "flux3klein_gen"],
+    qwenimage: ["qwenimage", "qwen-image-local", "qwen-image", "qwenimage_gen"],
     llama: ["llama", "llama-local", "llama-cpp"],
     remotion: ["remotion", "remotion-video", "remotion-render"],
     paseo: ["paseo", "paseo-remote", "paseo-bridge"],
     blender: ["blender", "blender-local", "blender-mcp"],
     pet: ["pet", "bongochat", "bongo-cat", "deskpet"],
+    mossmusic: ["mossmusic", "moss-music", "moss_music", "moss-music-local"],
   };
   const out = {};
   for (const key of Object.keys(alias)) {
@@ -688,9 +733,11 @@ function openPluginRepairDialog(raw) {
 
   const canRepair = !blocked && !info.started && !pluginRepairAutoSpent(info);
   /* Sage 加速是 H3 的必须项：缺它时不必开一条 Agent 会话，点一下就地补装 + 复检。
-     只在错误码是 sage_* 且宿主暴露了那条 IPC 时出现（别的插件不受影响）。 */
+     只在错误码是 sage_* 且宿主暴露了那条 IPC 时出现（别的插件不受影响）。
+     sage_compile_transient 例外：那只是编译器进程（ptxas）瞬时起不来，重装毫无用处。 */
   if (
     /^sage_/i.test(String(info.code || "")) &&
+    String(info.code || "").toLowerCase() !== "sage_compile_transient" &&
     window.api &&
     typeof window.api.h3InstallSage === "function"
   ) {

@@ -62,10 +62,11 @@
   function coinNum(coins) {
     return window.MtCoin ? window.MtCoin.coinNumText(coins) : String(Math.round(Number(coins) || 0));
   }
-  /* 「金币 + 数量」元件；opts 见 app-whalecoin.js 的 coinEl */
+  /* 「金币 + 数量」元件；opts 见 app-whalecoin.js 的 coinEl（opts.text 覆盖数字文案） */
   function coinEl(value, opts) {
     if (window.MtCoin && window.MtCoin.coinEl) return window.MtCoin.coinEl(value, opts);
-    return el("span", "coin-amt", coinNum(value));
+    var o = opts || {};
+    return el("span", "coin-amt", o.text != null ? o.text : coinNum(value));
   }
   /* 鲸圆币图标元件（本轮口径：币数后面跟它，不再写「币」字） */
   function coinIconOf(size) {
@@ -1130,6 +1131,188 @@
       });
   }
 
+  /* ---------- 价格表（余额窗里的按钮 → 二级弹窗） ----------
+     需求：余额界面里加一张价格表，按钮打开，展示 DeepSeek V4 Flash 与 GPT Image 2.5 的单价，
+     单位一律鲸圆币（GPT Image 2.5 = 10.5 币/张）。
+     · 价目真源 = 中转服务快照 `relay.prices`（与真正扣费的是同一份，后台改价客户端即跟随）；
+       快照缺席（未登录 / 还没同步过 / 老服务端不给价目）时退回本机兜底常量
+       （与 store-saas/relay.mjs 的 DEFAULT_PRICES 同值：flash 0.02 / 1 / 4 元、图 0.21 元/张）。
+     · 账目内部一律元，只在显示时按 MtCoin 的 1 币 = ¥0.02 换算（与全应用同一条口径）。
+     · 二级浮层挂在 #ovBody 里（position:fixed 仍按视口定位）：钱包窗一关 / 被别的窗顶掉，
+       它随整棵子树消失，不会留一只孤儿窗；关闭只走窗内 ✕ / 「关闭」/ Esc —— 点蒙层不关。 */
+  var PRICE_TEXT_ID = "deepseek-v4-flash";
+  var PRICE_TEXT_LABEL = "DeepSeek V4 Flash";
+  var PRICE_IMAGE_LABEL = "GPT Image 2.5";
+  var PRICE_IMAGE_IDS = ["gpt-image-2.5-vip", "gpt-image-2.5-all"];
+  /* 兜底价目（元）：文本 = 元/百万 token，图像 = 元/张 */
+  var PRICE_FALLBACK_TEXT = { cacheHit: 0.02, cacheMiss: 1, output: 4, peakMultiplier: 2 };
+  var PRICE_FALLBACK_IMAGE_YUAN = 0.21;
+
+  function priceNum(v) {
+    var n = Number(v);
+    return isFinite(n) && n > 0 ? n : 0;
+  }
+  /* 中转卡上的价目快照（app-relay.js 落的 relay 元数据）；取不到回 null */
+  function relayPriceMeta() {
+    try {
+      var card =
+        window.MtRelay && typeof window.MtRelay.provider === "function" ? window.MtRelay.provider() : null;
+      if (card && card.relay && typeof card.relay === "object") return card.relay;
+    } catch (e) {}
+    return null;
+  }
+  /* 在价目表里挑一个模型：先按首选 id 精确命中，再按正则找同类 ——
+     服务端换模型 id（gpt-image-2.5 那几个变体）时不至于整张表空掉。 */
+  function pickPrice(prices, preferIds, re, kind) {
+    var i, k;
+    for (i = 0; i < preferIds.length; i++) {
+      if (prices[preferIds[i]]) return prices[preferIds[i]];
+    }
+    for (k in prices) {
+      if (!Object.prototype.hasOwnProperty.call(prices, k)) continue;
+      var p = prices[k];
+      if (!p || typeof p !== "object") continue;
+      var pkind = String(p.kind || "") === "image" ? "image" : "text";
+      if (kind && pkind !== kind) continue;
+      if (re.test(k)) return p;
+    }
+    return null;
+  }
+  /* 价格表数据（纯读，不动状态也没有副作用）：文本三项 + 图像每张，单位都是元 */
+  function priceTableData() {
+    var meta = relayPriceMeta();
+    var prices = meta && meta.prices && typeof meta.prices === "object" ? meta.prices : {};
+    var t = pickPrice(prices, [PRICE_TEXT_ID], /flash/i, "text") || PRICE_FALLBACK_TEXT;
+    var img = pickPrice(prices, PRICE_IMAGE_IDS, /gpt-image/i, "image");
+    return {
+      text: {
+        cacheHit: priceNum(t.cacheHit),
+        cacheMiss: priceNum(t.cacheMiss),
+        output: priceNum(t.output),
+        peakMultiplier: priceNum(t.peakMultiplier) || 1,
+      },
+      imageYuan: img ? priceNum(img.perImageYuan) : PRICE_FALLBACK_IMAGE_YUAN,
+    };
+  }
+  /* 元 → 「币数 + 鲸圆币图标」元件：币数走 MtCoin.coinCostText（最多 2 位小数，10.5 / 1 / 200） */
+  function coinYuanEl(yuan) {
+    var c = coinsOfYuan(yuan);
+    /* 文案自己给（coinEl 默认会取整，10.5 会画成 11）；MtCoin 缺席时按同一口径手算 2 位小数 */
+    var txt =
+      window.MtCoin && window.MtCoin.coinCostText
+        ? window.MtCoin.coinCostText(c)
+        : String(Math.round(c * 100) / 100);
+    return coinEl(c, { text: txt, size: "sm" });
+  }
+
+  var priceHost = null;
+  function priceOnEsc(ev) {
+    if (!ev || ev.key !== "Escape") return;
+    /* 钱包窗被别处关掉时，这只浮层随 #ovBody 一起隐掉 —— 那时监听已经没用了，
+       顺手收掉并**不再吞掉这次 Esc**（否则会白挡一次全局 Esc 关闭）。 */
+    var ov = document.getElementById("overlay");
+    if (!priceHost || !priceHost.isConnected || (ov && ov.style.display === "none")) {
+      document.removeEventListener("keydown", priceOnEsc, true);
+      priceHost = null;
+      return;
+    }
+    /* 抢在全局 Esc（关钱包窗 / 取消选中）之前：先只收掉这张价格表本身 */
+    ev.preventDefault();
+    ev.stopPropagation();
+    closePriceDialog();
+  }
+  function closePriceDialog() {
+    if (!priceHost) return;
+    document.removeEventListener("keydown", priceOnEsc, true);
+    if (priceHost.parentNode) priceHost.parentNode.removeChild(priceHost);
+    priceHost = null;
+  }
+  /* 一行单价：span>1 时由第一行带出「模型」格（rowSpan），同模型的其余行不再重复写模型名 */
+  function priceRow(model, item, yuan, unit, span) {
+    var tr = el("tr");
+    if (span) {
+      var mc = el("td", "wl-price-model", model);
+      mc.rowSpan = span;
+      tr.appendChild(mc);
+    }
+    tr.appendChild(el("td", "wl-price-item", item));
+    var td = el("td", "num");
+    td.appendChild(coinYuanEl(yuan));
+    td.appendChild(el("span", "wl-price-unit", " / " + unit));
+    tr.appendChild(td);
+    return tr;
+  }
+  function openPriceDialog() {
+    if (priceHost) return; /* 已经开着：不叠第二只 */
+    var host = el("div", "mt-dialog wl-price-dlg on");
+    var box = el("div", "mt-dialog-box wl-price-box");
+    box.setAttribute("role", "dialog");
+    box.setAttribute("aria-modal", "true");
+
+    var head = el("div", "mt-dialog-head wl-price-head");
+    head.appendChild(el("b", "", T("模型价格表")));
+    var x = el("button", "mini wl-price-x", "✕");
+    x.type = "button";
+    x.title = T("关闭");
+    x.setAttribute("aria-label", T("关闭"));
+    x.onclick = closePriceDialog;
+    head.appendChild(x);
+    box.appendChild(head);
+
+    var body = el("div", "mt-dialog-body wl-price-body");
+    body.appendChild(
+      el(
+        "div",
+        "wl-price-note muted",
+        T("按 MTNode 中转服务的当前价目计费（1 币 = ¥0.02）；后台改价后这里自动跟着变。"),
+      ),
+    );
+    var data = priceTableData();
+    var table = el("table", "wl-table wl-price-table");
+    var thead = el("thead");
+    var htr = el("tr");
+    htr.appendChild(el("th", "", T("模型")));
+    htr.appendChild(el("th", "", T("计费项")));
+    var hnum = el("th", "num", T("单价"));
+    htr.appendChild(hnum);
+    thead.appendChild(htr);
+    table.appendChild(thead);
+    var tbody = el("tbody");
+    var per = T("百万 tokens");
+    tbody.appendChild(priceRow(PRICE_TEXT_LABEL, T("输入 · 缓存命中"), data.text.cacheHit, per, 3));
+    tbody.appendChild(priceRow("", T("输入 · 缓存未命中"), data.text.cacheMiss, per, 0));
+    tbody.appendChild(priceRow("", T("输出 token"), data.text.output, per, 0));
+    tbody.appendChild(priceRow(PRICE_IMAGE_LABEL, T("出图（每张）"), data.imageYuan, T("张"), 1));
+    table.appendChild(tbody);
+    body.appendChild(table);
+    if (data.text.peakMultiplier !== 1) {
+      body.appendChild(
+        el(
+          "div",
+          "wl-price-note muted",
+          T("文本单价为标准时段；高峰时段（北京时间工作日 9:00–12:00 / 14:00–18:00）×{n}", {
+            n: String(data.text.peakMultiplier),
+          }),
+        ),
+      );
+    }
+    box.appendChild(body);
+
+    var foot = el("div", "mt-dialog-foot");
+    var close = el("button", "mini", T("关闭"));
+    close.type = "button";
+    close.onclick = closePriceDialog;
+    foot.appendChild(close);
+    box.appendChild(foot);
+
+    host.appendChild(box);
+    /* 挂在钱包窗主体里：钱包窗一关就不再是「在屏上」，不会留孤儿浮层 */
+    var mount = (ST.root && ST.root.parentNode) || document.getElementById("ovBody") || document.body;
+    mount.appendChild(host);
+    priceHost = host;
+    document.addEventListener("keydown", priceOnEsc, true);
+  }
+
   /* ---------- 打开对话框 ---------- */
 
   function openWallet() {
@@ -1142,6 +1325,8 @@
     ST.gen = liveGen;
     ST.order = null;
     ST.pickedYuan = (ST.tiers[0] || 10);
+    /* 上一轮留下的价格表随旧主体一起作废（监听也一并收掉，见 closePriceDialog） */
+    closePriceDialog();
 
     openOverlay(T("余额"), { persistent: true, min: true });
     var body = document.getElementById("ovBody");
@@ -1165,7 +1350,7 @@
     var bv = el("div", "wl-v", "—");
     bv.id = "wlBalance";
     bal.appendChild(bv);
-    var rb = el("button", "wl-btn ghost sm", T("刷新"));
+    var rb = el("button", "wl-btn ghost sm wl-refresh-btn", T("刷新"));
     rb.type = "button";
     rb.onclick = function () {
       loadSummary().then(function () {
@@ -1174,7 +1359,15 @@
       });
       refreshUser();
     };
-    bal.appendChild(rb);
+    /* 右端一组动作：价格表 + 刷新（价格表是本次需求：余额界面里按钮打开价目弹窗） */
+    var acts = el("div", "wl-balance-acts");
+    var pb = el("button", "wl-btn ghost sm wl-price-btn", T("价格表"));
+    pb.type = "button";
+    pb.title = T("查看模型价格表");
+    pb.onclick = openPriceDialog;
+    acts.appendChild(pb);
+    acts.appendChild(rb);
+    bal.appendChild(acts);
     root.appendChild(bal);
 
     /* 提示条 */
@@ -1273,6 +1466,8 @@
     balanceCoinTextOf: balanceCoinTextOf,
     coinIcon: coinIconOf,
     relayWarnEl: relayWarnEl,
+    /* 价格表数据（纯读不碰 DOM）：价格表弹窗与验证都读这一份，口径只写一次 */
+    priceTableData: priceTableData,
     /* 流水折叠（纯函数）：冒烟在假 window 里真跑它，界面只读同一份实现 */
     foldLedgerRows: foldLedgerRows,
     open: openWallet,

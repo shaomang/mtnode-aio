@@ -209,7 +209,7 @@
     const p = Object.assign({}, frame.params || {});
     delete p.canvas;
     const replyToMcp = (result, error) => reply(frame.id, result, error);
-    return handleAssetToolEvent({ id: frame.id, params: p, action: p.action }, null, replyToMcp);
+    return handleAssetToolEvent({ id: frame.id, params: p, action: p.action, actor: "mcp" }, null, replyToMcp);
   }
 
   function mcpHandleLt(frame) {

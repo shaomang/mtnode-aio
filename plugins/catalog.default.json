@@ -70,6 +70,23 @@
       }
     },
     {
+      "id": "moss-music",
+      "kind": "mossmusic",
+      "handler": "mossmusic",
+      "order": 47,
+      "version": "1.0.0",
+      "minAppVersion": "1.6.2",
+      "icon": "moss-music.png",
+      "title": {
+        "zh": "MOSS-Music 本地音乐理解",
+        "en": "MOSS-Music Local Music Understanding"
+      },
+      "subtitle": {
+        "zh": "【插件测试中】本地 MOSS-Music（int8 16G / int4 12G）：音频 / 视频 → 逐句歌词与时间戳、曲风 / 曲式 / 和弦分析、情绪标签、自由提问；安装/启停后端、显存监视；画布「MOSS-Music 音乐理解」节点。安装过程复杂，可能会失败。移除插件不删已装项目。建议预留 ≥60GB 磁盘。",
+        "en": "[Testing] Local MOSS-Music (INT8 16G / INT4 12G): audio / video → timestamped lyrics, form and chord analysis, mood tags, free-form questions; install/start backend, VRAM monitor, canvas MOSS-Music node. Install is complex and may fail. Removing the plugin keeps your install. Reserve ≥60GB disk."
+      }
+    },
+    {
       "id": "llama-local",
       "kind": "llama",
       "handler": "llama",

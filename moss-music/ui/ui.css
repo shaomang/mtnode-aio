@@ -1,0 +1,266 @@
+:root {
+  --bg: #0e1117;
+  --bg-soft: #12161f;
+  --panel: #171c26;
+  --panel-2: #1d2331;
+  --text: #e9edf5;
+  --muted: #98a2b6;
+  --faint: #6f7a8f;
+  --accent: #7c9cff;
+  --accent-2: #59d3b0;
+  --ok: #46d39a;
+  --warn: #f0b429;
+  --danger: #ff6b6b;
+  --border: #2a3243;
+  --border-soft: #232a38;
+  --mono: ui-monospace, "Cascadia Mono", Consolas, "Courier New", monospace;
+}
+
+* { box-sizing: border-box; }
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font: 13px/1.5 system-ui, "Segoe UI", "Microsoft YaHei", sans-serif;
+}
+
+body { overflow: hidden; }
+.app {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  height: 100%;
+  padding: 12px;
+  overflow: auto;
+}
+
+header {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+h1 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: 0.2px;
+}
+.sub {
+  color: var(--muted);
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.badge::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.badge.on { color: var(--ok); border-color: #2d6a52; }
+.badge.warn { color: var(--warn); border-color: #6b5418; }
+.badge.off { color: var(--faint); }
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+  padding: 11px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+.card > h2 {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+}
+.row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.row.tight { gap: 6px; }
+.spacer { flex: 1; }
+
+button {
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 7px 12px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease, opacity 0.15s ease;
+}
+button:hover:not(:disabled) { border-color: var(--accent); }
+button.primary {
+  background: linear-gradient(180deg, #2c3f6b, #243352);
+  border-color: #3c5c96;
+}
+button.ghost { background: transparent; }
+button.danger { background: #3a2228; border-color: #7e3a45; color: #ffc9c9; }
+button:disabled { opacity: 0.42; cursor: not-allowed; }
+button.chip { padding: 5px 10px; border-radius: 999px; }
+button.chip.active {
+  border-color: var(--accent-2);
+  color: #bff8e7;
+  background: #1d3a33;
+}
+
+input[type="text"], textarea, select {
+  width: 100%;
+  border: 1px solid var(--border);
+  background: var(--bg-soft);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font: inherit;
+  outline: none;
+}
+input[type="text"]:focus, textarea:focus, select:focus { border-color: var(--accent); }
+textarea { resize: vertical; min-height: 68px; line-height: 1.5; }
+select { cursor: pointer; }
+
+.path {
+  flex: 1;
+  min-width: 120px;
+  color: var(--muted);
+  font-size: 12px;
+  word-break: break-all;
+}
+.meta { color: var(--muted); font-size: 12px; }
+.faint { color: var(--faint); font-size: 12px; }
+.warn { color: var(--warn); }
+.danger { color: var(--danger); }
+.ok { color: var(--ok); }
+
+.notice {
+  border-radius: 10px;
+  border: 1px solid #6b5418;
+  background: #2a2414;
+  color: #f0d27a;
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.notice.info {
+  border-color: #2c4a6b;
+  background: #141f2c;
+  color: #a8c8f0;
+}
+.notice.err {
+  border-color: #6b2a2a;
+  background: #2a1717;
+  color: #ffb4b4;
+}
+.notice.hidden, .hidden { display: none !important; }
+
+.bar {
+  height: 8px;
+  border-radius: 999px;
+  background: #0a0d13;
+  border: 1px solid var(--border-soft);
+  overflow: hidden;
+}
+.bar > i {
+  display: block;
+  width: 0;
+  height: 100%;
+  background: linear-gradient(90deg, #2f6fd0, var(--accent));
+  transition: width 0.25s ease;
+}
+.bar.vram > i { background: linear-gradient(90deg, #2f9e6b, var(--accent-2)); }
+.bar.util > i { background: linear-gradient(90deg, #a97710, var(--warn)); }
+.bar-row { display: flex; flex-direction: column; gap: 4px; }
+
+.drop {
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  padding: 8px 10px;
+  color: var(--faint);
+  font-size: 12px;
+  text-align: center;
+}
+.drop.hover { border-color: var(--accent-2); color: var(--accent-2); }
+
+audio {
+  width: 100%;
+  height: 32px;
+  filter: invert(0.88) hue-rotate(180deg);
+}
+
+#answer {
+  margin: 0;
+  max-height: 220px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--bg-soft);
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  padding: 9px 10px;
+  font: 12px/1.6 var(--mono);
+}
+
+.cues {
+  max-height: 170px;
+  overflow: auto;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+}
+.cues table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.cues td {
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border-soft);
+  vertical-align: top;
+}
+.cues td.time { width: 92px; color: var(--accent-2); font-family: var(--mono); white-space: nowrap; }
+.cues tr:last-child td { border-bottom: 0; }
+
+.files { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--muted); }
+.files code { color: #c6d2e8; font-family: var(--mono); word-break: break-all; }
+
+#console {
+  height: 170px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  background: #0a0d13;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  padding: 8px;
+  font: 11px/1.45 var(--mono);
+  color: #c3cfe5;
+}
+#console:empty::before { content: "（暂无日志）"; color: var(--faint); }
+
+@media (max-width: 480px) {
+  .app { padding: 9px; }
+  .card { padding: 10px; }
+}

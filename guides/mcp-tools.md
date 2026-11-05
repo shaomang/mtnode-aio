@@ -38,6 +38,7 @@ node scripts/build-mcp-contract.mjs --check  # 只比对，不一致退码 1（�
 | `dsh/gateway/longtask-plugin.mjs`（`lt_state`） | 同上 |
 | `dsh/gateway/assets-plugin.mjs`（`mtnode_assets`） | 同上 |
 | `dsh/gateway/gui-plugin.mjs`（`mtnode_gui`，主进程执行） | 同上 |
+| `dsh/gateway/dev-plugin.mjs`（`mtnode_dev`，主进程执行：起隔离调试实例 + CDP） | 同上 |
 | `dsh/gateway/mcp-extra-plugin.mjs`（`mtnode_generate` / `mtnode_run` / `mtnode_tools` / `mtnode_session`，回环四件） | 同上 |
 | 生成器内的 `MCP_RESOURCES` / `MCP_PROMPTS`（MCP 侧自有，无插件真源） | `resources[]` / `prompts[]` |
 
@@ -63,6 +64,9 @@ prompts[]    { name, title, description, arguments, builder(内部字段) }
 
 - `family:"gui"`（`mtnode_gui`）：`TOOL_OPS` 标 `local:true`，**主进程**执行（`mcp-gui-agent.js`）——
   只有主进程拿得到 `BrowserWindow` 与 `webContents`。
+- `family:"dev"`（`mtnode_dev`）：同样 `local:true`、主进程执行（根目录 `dev-agent.js`）——
+  起 `electron .` 子进程要 electron 二进制、要 `app.getAppPath()` / `app.isPackaged`；它只驱动
+  自己 spawn 的那只调试实例（默认数据目录硬拒），与 `mtnode_gui` 分工见 `AGENTS.md`。
 - `family:"gen"`（`mtnode_generate`）：主进程执行（`mcp-media-agent.js`），四个生成后端都在主进程，
   且共用那把全局音视频互斥锁。
 - `family:"run" | "tool" | "session"`：推渲染层的 `renderer/mcp-extra.js`（`window.MTNodeMcpExtra`），

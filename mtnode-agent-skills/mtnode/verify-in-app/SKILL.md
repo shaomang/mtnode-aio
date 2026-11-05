@@ -78,6 +78,31 @@ node tools/mtnode-gui.mjs call mtnode_app --args '{"action":"status"}' --data "<
 
 ---
 
+## 四·五、自己起客户端 + CDP 自调试：`mtnode_dev`
+
+`mtnode_gui` 点的是**用户正在用的那只窗口**；要「开一只新的、自己在里面调试、改完再复验」，用 `mtnode_dev`（工具面在 `dsh/gateway/dev-plugin.mjs`，执行体是根目录 `dev-agent.js`，**只有开发态实例**能起）。
+
+- **开关**：「扩展能力管理 → 调试」（`config.json` 的 `dsh.devTools`，**默认关**）。开着的那一轮运行才注册这个工具；关着一步都不发。
+- **它自己管一只实例**：`launch` 用 `electron .` + `--remote-debugging-port` 起一只，`MTNODE_DATA_DIR` 默认落在 `<temp>\mtnode-dev\<时间戳>`；账本 `dev-debug.json` 记 pid / 端口 / 数据目录。
+- **硬红线（代码层校验）**：默认数据目录 `%APPDATA%\pipeline-console` 一律拒绝；只接管账本里登记过的那一只；同时只允许一只；`stop` 时连进程树一起关。
+- **渲染层能做的全都能做**：`snapshot`（可见文本 + 最多 120 个可点元素与坐标）、`click` / `type` / `key` / `scroll` / `wait`、`eval`、`screenshot`、`console` / `exceptions` / `net`（`mtnode_gui` 拿不到这三样）。
+- **改完怎么生效**：`reload` 传 `changedFiles` —— 只动 `renderer/` 走 `Page.reload`；动了 `main.js` / `preload.js` / 根目录模块 / `dsh/` / `build.json` 就整只 `restart`（同一数据目录）。
+- **主进程调试是够不着的**：没有 `--inspect`，主进程改动只能靠 `restart` 生效，不能断点。这条要如实写进交付。
+
+```bash
+# 开关打开后（或用 MCP 直连，见第三节）
+node scripts/mtnode-dev.mjs launch   --data "<dir>"
+node scripts/mtnode-dev.mjs snapshot --data "<dir>"
+node scripts/mtnode-dev.mjs click    --data "<dir>" --args '{"target":{"text":"设置"}}'
+node scripts/mtnode-dev.mjs reload   --data "<dir>" --args '{"changedFiles":["renderer/app.js"]}'
+node scripts/mtnode-dev.mjs screenshot --data "<dir>" --args '{"path":"<run>\\shots\\10-after.png"}'
+node scripts/mtnode-dev.mjs stop     --data "<dir>"
+```
+
+`scripts/mtnode-dev.mjs` 与 `tools/mtnode-gui.mjs` 同构（同一套 `mcp-server.json` 发现 + `POST /ctl`），JSON 引号被吞时用环境变量 **`MTNODE_DEV_ARGS`**。
+
+---
+
 ## 五、判据四步 + 证据落点
 
 一次真机自验**四步全做到才算验过**：

@@ -1,4 +1,4 @@
-﻿"use strict";
+"use strict";
 /**
  * Paseo 手机接管 · 主进程宿主（应用插件 kind = paseo，id = paseo-remote）
  *
@@ -2162,8 +2162,18 @@ function scheduleOwnRestart() {
 /**
  * 起一份静默的自建 daemon（宿主持有）。
  * 返回 `{ ok, listen, pid }` 或 `{ ok:false, error, detail }`；**不在这里做端口重试**（见 startDaemon）。
+ * 同一时刻只允许一次启动在飞：并发的第二次直接拿第一次的结果（否则两个 supervisor 抢同一个端口，
+ * 输的那个立刻退出，会被下面那条 exit 逻辑当成「意外崩溃」）。
  */
-async function startOwnDaemonSilently(opts) {
+let ownStartInFlight = null;
+function startOwnDaemonSilently(opts) {
+  if (ownStartInFlight) return ownStartInFlight;
+  ownStartInFlight = doStartOwnDaemonSilently(opts).finally(() => {
+    ownStartInFlight = null;
+  });
+  return ownStartInFlight;
+}
+async function doStartOwnDaemonSilently(opts) {
   const o = opts || {};
   const cfg = loadConfig();
   if (cfg.mode !== "own") return { ok: false, error: "not_own_mode" };
@@ -2175,6 +2185,22 @@ async function startOwnDaemonSilently(opts) {
     const listening = String((lock && lock.listen) || ownDaemon.listen || "");
     if (listening && (await probeDaemon(listening)).ok) {
       return { ok: true, listen: listening, pid: Number((lock && lock.pid) || ownDaemon.pid || 0), already: true };
+    }
+  }
+  /* 同一个 home 已经有一份在服务（并发两次「启用 / 开机恢复」、或上一轮留下的进程还没退）：
+     **复用那份，绝不再 spawn**。用户报的「根本没启动后端却弹 daemon_exited」就是这么来的 ——
+     第二个 supervisor 抢不到 6768 立刻退出，而就绪探测读的是锁文件里的 listen（那份老 daemon
+     应答成功）→ 先报「已就绪」，紧接着把这次退出当崩溃，空转重启 3 次后弹报错卡。 */
+  {
+    const viaLock = daemonLock(o.home || paseoHomeOf(cfg));
+    const listening = String((viaLock && viaLock.listen) || "");
+    if (listening && (await probeDaemon(listening)).ok) {
+      ownDaemon.home = String(o.home || paseoHomeOf(cfg));
+      ownDaemon.listen = listening;
+      ownDaemon.pid = Number((viaLock && viaLock.pid) || 0);
+      ownDaemon.restarts = 0;
+      appendConsole("[daemon] 同一 home 已有后端在服务（listen=" + listening + "）：复用，不再重复启动");
+      return { ok: true, listen: listening, pid: ownDaemon.pid, adopted: true };
     }
   }
   const spec = ownCliSpec(pickNodeRuntime({}), cfg);
@@ -2238,24 +2264,38 @@ async function startOwnDaemonSilently(opts) {
     ownDaemon.child = null;
     ownDaemon.childPid = 0;
     if (ownDaemon.stopping) return;
-    const ranMs = Date.now() - ownDaemon.startedAt;
-    if (ranMs > RESTART_RESET_MS) ownDaemon.restarts = 0;
-    const tail = ownLogTail(400) || daemonLogTail(ownDaemon.home, 400);
-    appendConsole("[daemon] 意外退出（code=" + code + (signal ? " signal=" + signal : "") + "，跑了 " + Math.round(ranMs / 1000) + "s）");
-    if (tail) appendConsole("[daemon] 退出前最后几行：" + String(tail).replace(/\n/g, " ⏎ ").slice(-400));
-    if (ownDaemon.restarts >= RESTART_MAX) {
-      /* 人话 + 指路；日志尾巴已经在上一行写进控制台了，不再往报错卡的 message 里糊 */
-      reportErr(
-        "daemon_exited",
-        "Paseo 后端意外停止，自动重启已达上限（" + RESTART_MAX + " 次），已停止重启。点「打开控制台」可看日志，确认后手动再启动一次。",
-        { phase: "daemon" },
-      );
-      appendConsole("[daemon] 重启已达上限 " + RESTART_MAX + " 次 —— 停止自动重启，请到控制台点「启用后端」再试。");
-      return;
-    }
-    ownDaemon.restarts += 1;
-    appendConsole("[daemon] " + Math.round(RESTART_DELAY_MS / 1000) + " 秒后自动重启（第 " + ownDaemon.restarts + "/" + RESTART_MAX + " 次）");
-    scheduleOwnRestart();
+    /* 先确认后端**真的**没了：同一 home 还有一份在服务（重复实例被拒后自己退出、或 supervisor
+       交接给 worker）时这不是故障 —— 不重启、不写报错卡。用户报的「根本没启动后端却弹
+       daemon_exited」就是这里：老逻辑不看后端死活，只看 child 退出就一路重启到上限。 */
+    void (async () => {
+      const lock = daemonLock(ownDaemon.home || "");
+      const listening = String((lock && lock.listen) || "");
+      if (listening && (await probeDaemon(listening)).ok) {
+        ownDaemon.listen = listening;
+        ownDaemon.pid = Number((lock && lock.pid) || 0);
+        ownDaemon.restarts = 0;
+        appendConsole("[daemon] 这个进程退出了，但同一 home 的后端仍在服务（listen=" + listening + "）：不重启");
+        return;
+      }
+      const ranMs = Date.now() - ownDaemon.startedAt;
+      if (ranMs > RESTART_RESET_MS) ownDaemon.restarts = 0;
+      const tail = ownLogTail(400) || daemonLogTail(ownDaemon.home, 400);
+      appendConsole("[daemon] 意外退出（code=" + code + (signal ? " signal=" + signal : "") + "，跑了 " + Math.round(ranMs / 1000) + "s）");
+      if (tail) appendConsole("[daemon] 退出前最后几行：" + String(tail).replace(/\n/g, " ⏎ ").slice(-400));
+      if (ownDaemon.restarts >= RESTART_MAX) {
+        /* 人话 + 指路；日志尾巴已经在上一行写进控制台了，不再往报错卡的 message 里糊 */
+        reportErr(
+          "daemon_exited",
+          "Paseo 后端意外停止，自动重启已达上限（" + RESTART_MAX + " 次），已停止重启。点「打开控制台」可看日志，确认后手动再启动一次。",
+          { phase: "daemon" },
+        );
+        appendConsole("[daemon] 重启已达上限 " + RESTART_MAX + " 次 —— 停止自动重启，请到控制台点「启用后端」再试。");
+        return;
+      }
+      ownDaemon.restarts += 1;
+      appendConsole("[daemon] " + Math.round(RESTART_DELAY_MS / 1000) + " 秒后自动重启（第 " + ownDaemon.restarts + "/" + RESTART_MAX + " 次）");
+      scheduleOwnRestart();
+    })().catch(() => {});
   });
   return { ok: true, listen: ownDaemon.listen, pid: ownDaemon.pid };
 }

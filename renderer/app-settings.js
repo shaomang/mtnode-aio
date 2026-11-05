@@ -303,7 +303,19 @@ function deepseekTopupBanner() {
       window.open(DEEPSEEK_TOPUP_URL, "_blank");
     } catch {}
   };
+  /* 图文指引：直接打开那张 5 步海报 + Key 输入窗（renderer/app-deepseek-onboard.js）。
+     用户把引导窗「稍后配置」关掉之后，这里是它唯一还能回来的入口。 */
+  const guide = document.createElement("a");
+  guide.className = "ds-topup-link";
+  guide.href = "#";
+  guide.textContent = I18n.t("图文指引：注册 / 充值 / 拿 API Key") + " ↗";
+  guide.title = I18n.t("打开图文海报引导窗（含 Key 输入与验证）");
+  guide.onclick = (ev) => {
+    ev.preventDefault();
+    if (typeof dsOpenOnboard === "function") dsOpenOnboard();
+  };
   bar.appendChild(text);
+  bar.appendChild(guide);
   bar.appendChild(link);
   return bar;
 }
@@ -1514,6 +1526,59 @@ function openSettingsBody() {
     body.appendChild(sec);
   }
 
+  /* ── 画布预览（预览画质三档）──
+     显存优化需求的第一块：画布上的图像 / 视频预览统一按这一档取缩略图，
+     档位越低长边压得越小、按源分辨率建的纹理就越小。
+     读值真源只有一处：renderer/app-canvas.js 的 previewEdge()（缺省「中 320」），
+     这里只负责写 S.config.previewQuality 并即时落盘；已画好的预览在下次重绘 /
+     重新进入视口时按新档取图。 */
+  {
+    const sec = document.createElement("div");
+    sec.className = "settings-sec";
+    const secTitle = document.createElement("div");
+    secTitle.className = "settings-sec-title";
+    secTitle.textContent = I18n.t("画布预览");
+    settingsTipBeside(
+      secTitle,
+      "画布上图像 / 视频预览的清晰度，与显存占用直接相关：档位越低，预览图长边越小，显存占用越少。",
+      "画布预览说明",
+    );
+    sec.appendChild(secTitle);
+
+    const qRow = document.createElement("label");
+    qRow.className = "n-field";
+    qRow.appendChild(document.createTextNode(I18n.t("预览画质")));
+    const qSel = document.createElement("select");
+    for (const [v, label] of [
+      ["low", "低（192）"],
+      ["mid", "中（320）"],
+      ["high", "高（640）"],
+    ]) {
+      const o = document.createElement("option");
+      o.value = v;
+      o.textContent = I18n.t(label);
+      qSel.appendChild(o);
+    }
+    /* 缺省 / 不认识的值 = 中（320），与 previewEdge() 同一口径 */
+    const curQ = S.config && S.config.previewQuality;
+    qSel.value = curQ === "low" || curQ === "high" ? curQ : "mid";
+    qSel.onchange = () => {
+      if (!S.config) return;
+      S.config.previewQuality =
+        qSel.value === "low" || qSel.value === "high" ? qSel.value : "mid";
+      settingsSaved(0);
+    };
+    qRow.appendChild(qSel);
+    settingsTipBeside(
+      qRow,
+      "预览图长边像素：低 192 / 中 320 / 高 640（默认中）。画布节点、素材库与应用网格的预览都按这一档取图。",
+      "预览画质",
+    );
+    sec.appendChild(qRow);
+
+    body.appendChild(sec);
+  }
+
   /* ── 错误与崩溃日志（自动保存，可导出提交给开发者）── */
   {
     const sec = document.createElement("div");
@@ -1718,6 +1783,30 @@ function openSettingsBody() {
     );
     sec.appendChild(sndRow);
     dshEls.doneSound = sndCb;
+    /* 任务完成弹窗（本次需求）：应用不在前台（最小化 / 已收托盘 / 被别的窗口盖住）时，
+       任务跑完会弹 Windows 系统通知 + 右下角完成卡片。这个开关只管弹窗，不影响上面的
+       音效（两件事分开控制，见 renderer/app-notify.js）；默认开，不写配置就是开。 */
+    const popRow = document.createElement("label");
+    popRow.className = "n-field";
+    popRow.style.flexDirection = "row";
+    popRow.style.alignItems = "center";
+    const popCb = document.createElement("input");
+    popCb.type = "checkbox";
+    popCb.checked = S.config.dsh.donePopup !== false;
+    /* 即时生效：勾 / 取消立刻写盘，下一次任务收尾就按新档位弹或不弹 */
+    popCb.onchange = () => {
+      S.config.dsh.donePopup = !!popCb.checked;
+      settingsSaved(0);
+    };
+    popRow.appendChild(popCb);
+    popRow.appendChild(document.createTextNode(I18n.t("任务完成弹窗")));
+    settingsTipBeside(
+      popRow,
+      "任务完成弹窗（应用不在前台时 → 系统通知 + 右下角完成卡片；多件同时完成合成一条「N 项任务已完成」）",
+      "完成弹窗说明",
+    );
+    sec.appendChild(popRow);
+    dshEls.donePopup = popCb;
     /* 完成音效音量（本次需求）：滑杆只调这一档响度 —— 任务完成与「全部完成」同一把尺，
         没有「收尾那一声再乘 1.5」的档；自定义音频文件同理（<audio> 音量固定 0.5）。
         拖动时轻轻试听一声音量实况；即时写盘，无保存按钮。 */
@@ -4341,25 +4430,38 @@ function provCard(prov, i, onChange) {
   move.appendChild(up);
   move.appendChild(down);
   head.appendChild(move);
-  const del = document.createElement("span");
-  del.className = "del";
-  del.textContent = I18n.t("✕ 删除");
-  del.title = I18n.t("删除该服务商");
-  del.onclick = () => {
-    const pid = prov && prov.id ? String(prov.id) : "";
-    S.config.providers.splice(i, 1);
-    if (pid) {
-      /* 记入删除清单，随保存持久化：重启时 ensureDefaultProviders()
-         不再把该默认项补回来 */
-      S.config.removedProviders = Array.isArray(S.config.removedProviders)
-        ? S.config.removedProviders.slice()
-        : [];
-      if (S.config.removedProviders.indexOf(pid) < 0)
-        S.config.removedProviders.push(pid);
-    }
-    rerender();
-  };
-  head.appendChild(del);
+  /* 官方 DeepSeek 供应商不允许删除（需求）：这里不给「✕ 删除」，只留一枚只读角标。
+     模型仍然可以手动增删 / 排序（下方「添加模型」）—— 以后官方上新模型直接加一行即可，
+     不必等应用更新；真要删整家只能改配置文件，界面上不给这个入口。 */
+  if (typeof dsIsOfficialProvider === "function" && dsIsOfficialProvider(prov)) {
+    const locked = document.createElement("span");
+    locked.className = "prov-locked";
+    locked.textContent = I18n.t("官方 · 不可删除");
+    locked.title = I18n.t(
+      "官方 DeepSeek 供应商不允许删除；模型可以手动增删与排序（以后官方上新模型直接在「添加模型」里加）",
+    );
+    head.appendChild(locked);
+  } else {
+    const del = document.createElement("span");
+    del.className = "del";
+    del.textContent = I18n.t("✕ 删除");
+    del.title = I18n.t("删除该服务商");
+    del.onclick = () => {
+      const pid = prov && prov.id ? String(prov.id) : "";
+      S.config.providers.splice(i, 1);
+      if (pid) {
+        /* 记入删除清单，随保存持久化：重启时 ensureDefaultProviders()
+           不再把该默认项补回来 */
+        S.config.removedProviders = Array.isArray(S.config.removedProviders)
+          ? S.config.removedProviders.slice()
+          : [];
+        if (S.config.removedProviders.indexOf(pid) < 0)
+          S.config.removedProviders.push(pid);
+      }
+      rerender();
+    };
+    head.appendChild(del);
+  }
   card.appendChild(head);
 
   const gridEl = document.createElement("div");
@@ -5180,16 +5282,6 @@ function renderTop() {
 }
 function renderStatus() {
   if (!S.wf) return;
-  const bcount = S.wf.nodes.filter((n) => isBatchInput(n)).length;
-  $("#statWf").textContent = I18n.t("画布：") + S.wf.name;
-  $("#statCounts").textContent =
-    S.wf.nodes.length +
-    I18n.t(" 节点 · ") +
-    S.wf.wires.length +
-    I18n.t(" 连线") +
-    (bcount ? I18n.t(" · 批量 ") + bcount : "");
-  $("#statProviders").textContent = I18n.t("服务商 ") + S.config.providers.length;
-  $("#statGrid").textContent = I18n.t("网格 ") + grid() + "px";
   $("#statZoom").textContent = Math.round(S.cam.z * 100) + "%";
   /* 状态栏右侧不再显示保存状态（本轮需求）：成功 / 进行中 / 待保存 / 失败一概不上 footer。
      这个槽位只留给「生成高清总览图」的进度（app.js 的 canvasShot 临时写入，拍完清空），

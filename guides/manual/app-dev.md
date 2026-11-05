@@ -136,10 +136,86 @@ my-app/
 | 文本模型 | `textGenStream(opts, cb)`（文字 + 图像多模态；默认关思考）· `hostModels()` / `hostModel()` / `hostSetModel(id)` | — |
 | **图像生成** | `imageGen(opts, cb?)`（文生图 / 每次一张；`cb` 收进度）· **`imageEdit(opts, cb?)`**（图生图 · 参考图必填）· `imageGenCancel(reqId)` · `hostImageModels()` / `hostImageModel()` / `hostImageSetModel(id)` | — |
 | 语音转写 | `pickAudio()` / `transcribe()` / `transcribeWav(b64)` / `asrStatus()` / `asrPrepare()` / `onSpeechState(cb)` | — |
+| **画布读写** | `canvas.*`（见下节「画布与 agent」） | `pluginApi.canvas.*`（同样的方法名） |
+| **Agent 会话** | `agent.*`（新建 / 绑定 / 发消息 / 收流式 / 叫停） | `pluginApi.agent.*` |
+| 画布工作目录里的文件 | `fs.root()` / `readText` / `writeText` / `list` / `mkdir` / `remove` / `exists` | `pluginApi.fs.*` |
+| **语音合成**（Breeze TTS 2） | `audio.synth(opts)`（= `tts(opts)`）→ `{ok, path, bytes}` · `audio.presets()` · `audio.status()` · `audio.cancel()` | —（插件窗口没有这条） |
+| **素材库** | `assets.*`（列 / 读 / 新建 / 收文件 / 改文本 / 改元数据 / 删自己创建的） | —（插件窗口没有这条） |
+| 本机后端工具 | `tools.list()` / `tools.call(id, args)` | `pluginApi.tools.*` |
+| 联网 | `net.fetch(url)` | `pluginApi.net.fetch(url)` |
 | 窗口生命周期 | `close()` / `quit()` / `onWillClose(cb)` | `close()` / `onShown(cb)` |
 
-### 正确关闭（所有应用都要）
+## 画布与 agent：让应用连进 MTNode 内部
 
+应用不只能读写自己的数据，还能**读写画布、调 agent**（这两样是 MTNode 的真源，`appHost` 之外另开了五个命名空间：
+`canvas` / `agent` / `fs` / `tools` / `net`；插件窗口的 `pluginApi` 上同名同形状）。
+
+**为什么它们不是普通的桥**：画布真源与 agent 运行态只活在主窗口渲染层，所以每次调用都由主进程中继到主窗口、
+走**同一套**画布写入口（撤销栈 / 落盘 / 表单归一化全同源）。
+
+三条口径（写代码前先记住）：
+
+- **目标画布 = 这个应用对应的那张**，不是用户此刻打开的那张。默认是与应用同 id 的画布（新建应用时后台建好的）；
+  不存在时宿主弹窗让用户选一次并记住，`canvas.pick()` 可主动重选。目标画布没打开时宿主**后台加载**它，不动用户的视图。
+- **声明 + 一次授权**：`app.json` 的 `capabilities.canvasHost` / `agentHost` 要勾上，否则回 `not_declared`；
+  首次调用宿主弹一次窗，一次授权全部五类（画布 / agent / 文件 / 工具 / 联网）；在「应用设置」里把这两位都取消勾选 = 撤销那次授权。
+- **主窗口不在线就回 `not_ready`**（不装作成功）；`select` / `view` / `setView` 只对**用户眼前那张**画布有效，
+  后台画布回 `not_foreground`。
+
+```js
+// 读：整图 / 节点 / 表单（byLabel 是按字段标签取值的便捷索引）
+var g = await AppHost.canvas.graph();                 // { ok, nodes, wires, … }
+var f = await AppHost.canvas.form(nodeId);            // { ok, formName, fields, values, byLabel, file }
+// 写：只改给出的字段，其余原样保留；写完全部进撤销栈（用户 Ctrl+Z 能撤）并按画布口径落盘
+await AppHost.canvas.updateForm(nodeId, { 标题: "新标题", 正文: "…" });
+var n = await AppHost.canvas.addNode({ kind: "input_text", x: 0, y: 0, values: {} });
+await AppHost.canvas.connect({ from: n.id, to: someId });
+
+// agent：起一条会话（出现在 MTNode 左栏，用户可看 / 可打断 / 可接着聊）→ 发一句 → 收流式
+AppHost.agent.onEvent(function (ev) { render(ev.sessionId, ev.frame); });  // frame.type: text/tool/done/error…
+await AppHost.agent.send("把这张画布上的标题都改成英文", { sessionId: sid });
+```
+
+**执行画布节点（图像生成那条闭环）**：应用建好图像节点不等于图就出来了 —— 要真跑它：
+
+```js
+// 建图 → 连线（提示词 / 参考图）→ 执行 → 取产物
+var img = await AppHost.canvas.addNode({ kind: "proc_image", x: 320, y: 0 });
+await AppHost.canvas.connect({ from: textNodeId, to: img.id, toIndex: 0 });
+var r = await AppHost.canvas.runNode(img.id, { attempts: 1 });   // 等出图，默认 1 张
+r.images;                     // 本机绝对路径（落画布资产目录，与手点 ▶ 同一管道）
+r.meta;                       // { model, provider, size, seed, attempts, attemptErrors, hasOutput }
+await AppHost.canvas.nodeOutput(img.id);   // 之后想再取，不用重跑
+await AppHost.canvas.cancelNode(img.id);   // 随时终止（= 画布上的「终止」）
+```
+
+- `runNode` 与用户手点 ▶ 是**同一条路**：上游没处理的自动补齐、级联、运行态 / 进度、自动存盘全部同源；
+  同一节点已有运行在飞就等它结束、直接回那轮的产物（不重复出图、不多花一次钱）。
+- 默认出 **1 张**（`attempts` 1–10，不继承节点自己存的多次，跑完把原值还回去）。
+- **没有工作目录回 `no_workspace`**（宿主不弹窗 —— 应用窗口里没人能替你选目录）；
+  **宿主不给 `runNode` 挂超时**，长任务自己用 `cancelNode` 收口；被终止回 `code:"cancelled"`，已落盘的产物仍在。
+- **任意 kind 都能跑**（含 `save` / 控制类 / `super`）：会真写盘、真改画布状态，宿主如实回执。
+
+- **撤销栈**：写前台那张画布的改动进用户的撤销栈；写后台画布时**不进**（用户 Ctrl+Z 不会莫名撤掉看不见的改动）——
+  统一用 `canvas.save()` 落盘、按回执里的 `ok` 判断，别指望「撤销能回退到应用写之前」。
+- **文件**：`fs.*` 的根 = 那张画布的**工作目录**，`rel` 一律相对它，越界回 `outside`；单文件上限 8MB。
+- **工具**：`tools.list()` 是「重后端」面板里已登记的工具（音乐 / 视频 / 语音 / 渲染 / 数字人 / 出图），
+  `tools.call(id, args)` 直接调它 —— 与画布上的同名节点走同一份后端。
+- **联网**：`net.fetch(url)` 经宿主取 http(s)（应用页自己的 `fetch` 仍受 CSP / 跨域约束）。
+- **语音合成**：`audio.synth({ text, presetId, instruction?, outputPath })` 把 Breeze TTS 2 念出来的音频
+  **写进画布工作目录**，回 `{ ok, path, bytes }`。应用窗口没有二进制写口（`fs.writeText` 只收文本），
+  所以这条通道**回路径、不回 base64** —— 拿 `path` 再 `fs.exists()` 复核一次才算成功。
+  `outputPath` **必填**（相对工作目录或绝对路径都收，越界回 `outside`）；不接受「不给路径让它自己找地方」。
+  同一台后端一次只跑一个：画布节点 / MCP 正在合成时回 `busy`，界面提示稍后重试即可。
+  `audio.presets()` 拿角色预设清单（与画布跳窗同一份），`audio.status()` 看 `running` / `busy`，
+  `audio.cancel()` 叫停（**全量**：画布节点正在跑的也会停，显存立刻还回来）。
+- 常见错误码：`not_declared`（没声明）、`denied`（用户拒绝）、`not_ready`（主窗口关着）、`timeout`、
+  `no_canvas`（还没有可用的画布）、`not_foreground`、`outside`、`no_workdir`、
+  执行节点另有 `no_workspace` / `cancelled` / `run_failed` / `no_output` / `missing`，
+  语音另有 `no_text` / `no_path` / `busy` / `no_local_backend` / `no_file`（合成成功但磁盘上没有文件）与
+  breeze 自己的 `preset_missing` 等（原样透传）。
+
+### 正确关闭（所有应用都要）
 关闭按钮接 `AppHost.close()`。宿主**不会**直接销毁窗口：它先发 `apps:willClose`，等应用把 `AppClose.on(...)` 登记的收尾动作跑完
 （上限 1.5 秒）才真的关；主程序退出（`before-quit`）走的也是同一条。所以「写盘 + 退订」挂进 `AppClose.on` 就够了。
 `AppHost.quit()` 是「连 MTNode 一起退出」，只在应用自己带退出按钮时用。
@@ -178,16 +254,21 @@ var e = await AppHost.imageEdit("保持主体，把背景换成雪天", { images
 - **先看能力再画界面**：`hostImageModels()` 每项带 `refImages` / `maxRefImages` / `strength` 三个字段 ——
   据此把不支持参考图的后端置灰、把张数上限写出来，别让用户点下去才知道不行。
 - 每次只出一张（与画布图像节点同一口径）；本机后端与音乐 / 视频**共用全局锁**，忙时回 `busy_media`，界面提示等待 / 重试。
+- **产物落盘**：`opts.outputDir` 给目录，出完图回执里就带 `path` —— **本机与云端同一语义**（云端写不进去回
+  `image_write_failed`，不静默退回「只有 base64」）；不给就落 `<数据目录>\apps-data\<id>\gen`，云端同样带 `path`。
+  要做「出图 → 下一步用这张文件」的链路，就给 `outputDir` 并用 `fs.exists(path)` 复核，别拿 `base64` 当已落盘。
 - 取消：`AppHost.cancelImage(r.reqId)`（`imageEdit` 用同一个 `reqId` 机制）；用户主动取消回 `cancelled`，**不是错误**。
 - **不降级**：一个后端都没配回 `no_provider`，模型越界回 `bad_model`，显存不够回 `cuda_oom`，`imageEdit` 没给参考图回 `no_ref_image` —— 一律明确告知。
 - 想内建更重的本地能力（自己的后端进程 / 控制台窗）：升级为**本地后端插件**（见内置技能 `mtnode-plugin-dev`）。
 
 ## 能力位（app.json 的 capabilities）
 
-`app.json` 里有一份能力声明：`{ "textInput": true, "showDictate": true, "showAuthor": true, "imageGen": true }`。
-**新建应用时四位默认全开、也不再问**；要改就在开发页中栏「预览」条那枚 **⚙ 应用设置** → 「应用能力」
-里逐位调（**勾一下当场生效，那只窗里没有单独的保存按钮**；也不弹「要不要重写入口页」——见下）。它是**静态声明**，
-不是权限闸（桥上的接口始终可调）：
+`app.json` 里有一份能力声明：`{ "textInput": true, "showDictate": true, "showAuthor": true, "imageGen": true,
+"canvasHost": true, "agentHost": true, "assetHost": true }`。
+**新建应用时九位默认全开、也不再问**（`canvasHost` / `agentHost` / `assetHost` 新建时也默认开）；要改就在开发页中栏「预览」条那枚 **⚙ 应用设置** → 「应用能力」
+里逐位调（**勾一下当场生效，那只窗里没有单独的保存按钮**；也不弹「要不要重写入口页」——见下）。
+前几位是**静态声明**、不是权限闸（桥上的接口始终可调）；`canvasHost` / `agentHost` / `assetHost` 是**能力声明面**：
+它们决定那几类重能力调不调得到（声明 ≠ 放行，首次调用还要用户点一次授权；取消勾选 = 撤销授权）：
 
 | 位 | 为真时 | 为假 / 没声明（缺省） |
 | --- | --- | --- |
@@ -200,6 +281,42 @@ var e = await AppHost.imageEdit("保持主体，把背景换成雪天", { images
 只在**本次窗口**内藏它（不写回 `app.json`），下次打开应用窗口按声明重新出现；`apSpeechHidden()` 问现状，
 `apSpeechReveal()` 再唤起 —— 三个入口都幂等。
 | `imageGen` | 声明这个应用要出图，模板按需带出图入口 | 只是没声明；接口照旧可调 |
+| `canvasHost` | 允许调用 `canvas` / `fs` / `tools` / `net`（读写这个应用对应的那张画布、画布工作目录里的文件、本机后端工具、联网）；首次调用另弹一次授权窗 | 这四类调用一律回 `not_declared`（**这一位是能力声明面，不是 UI 开关**） |
+| `agentHost` | 允许调用 `agent`（起会话 / 发消息 / 收流式 / 叫停），会话出现在左栏、用户可看可打断 | 回 `not_declared` |
+| `assetHost` | 允许调用 `assets`（列 / 读素材库、把本机文件收进库、新建自己的素材与条目、改删自己创建的东西）；首次调用另弹一次授权窗。用户自己建的素材与条目对它只读 | 回 `not_declared`；插件窗口一律回 `not_supported` |
+
+## 素材库：应用能读，也能往里建内容
+
+`appHost.assets.*`（2026-11 新增，插件窗口不提供）。素材库根目录在 Agent 工作区之外，所以这一路
+不走 `fs`，而是主进程 `assets-store.js` 的同一个写入内核 —— 建出来的素材 / 条目与界面手建的是同一种东西。
+
+```js
+// 读
+const { scan } = await appHost.assets.scan();        // { tree, categories, assets[] }
+const one = await appHost.assets.readItem({ id, itemId, withDataUrl: true }); // 文本给 text，图像给 dataUrl
+// 建（分类不存在会自动建）
+const { asset } = await appHost.assets.create({ catRel: "我的应用/产物", displayName: "第一版", desc: "" });
+await appHost.assets.addItem({ id: asset.id, type: "text", title: "旁白", content: "……" });
+// 把本机文件收进库（复制，不记原始路径）；也可以往既有素材追加
+await appHost.assets.importFile({ paths: ["D:\\out\\a.png"], name: "静帧", category: "我的应用/图" });
+await appHost.assets.importFiles({ id: asset.id, paths: ["D:\\out\\b.wav"] });
+// 改 / 删（只限自己创建的；删除进回收站，可还原）
+await appHost.assets.updateText({ id, itemId, content: "第二版" });   // 旧正文留 .versions/
+await appHost.assets.updateMeta({ id, displayName: "改个名", catRel: "我的应用/归档" });
+await appHost.assets.removeItem({ id, itemId });
+await appHost.assets.deleteAsset({ id });
+```
+
+三条硬口径：
+
+- **归属**：应用只能改 / 删**自己创建的**素材与条目（`marker` 里记 `createdBy = "app:<id>"`）；
+  用户自己建的、以及用户后来加进应用素材里的条目，一律 `{ ok:false, code:"forbidden" }`。
+- **删除不实删**：素材 / 条目都进系统回收站（不可用时回退库内 `.trash/`），改文本会留历史版本。
+- **画布联动只在显式调用时发生**：`appHost.canvas.addAssetNode({ id })`（或给 `rel`）才会在应用画布上
+  建一颗绑定该素材的「素材」节点；应用不会自动往画布摆东西。
+
+外部客户端（MCP）读写同一份库：`mtnode_assets` 的写动作由单独的「写素材库」许可控制（与「读素材库」分开），
+不受归属限制，删除同样进回收站。
 
 **听写条（`showDictate`）怎么用**（2026-02 三轮：**两种转录模式 + 落点跟随光标 + AI 增强**）：
 

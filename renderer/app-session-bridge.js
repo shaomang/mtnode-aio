@@ -64,6 +64,30 @@
 
   /** 被观察的会话 id（主进程按 SSE 连接下发；空集合 = 一个字段都不推） */
   const watched = new Set();
+  /** 应用 / 插件窗口的宿主桥观察名单（renderer/app-apphost-bridge.js 的 watchHost）：
+   *  与手机端那份 watched **分开** —— 应用只要「它自己发起的那条会话」的流，
+   *  且同样经 slimFrame 瘦身（大图 / 长正文不往窗口里塞）。 */
+  const hostWatched = new Set();
+  const hostListeners = new Map();
+  function hostDeliver(sid, runKey, type, data) {
+    const cb = hostListeners.get(String(sid || ""));
+    if (typeof cb !== "function") return;
+    let frame;
+    try {
+      frame = slimFrame({
+        sessionId: String(sid || ""),
+        runKey: String(runKey || ""),
+        type: String(type || ""),
+        data: data || {},
+        at: (data && data.at) || Date.now(),
+      });
+    } catch (_) {
+      frame = { sessionId: String(sid || ""), type: String(type || ""), data: {} };
+    }
+    try {
+      cb(frame);
+    } catch (_) {}
+  }
   /** 「正被手机端驱动」的会话 id —— 与 watched 同一批（只是**记住**，unwatch 也不清）：
    *  手机端（Paseo）会按需开 / 关观察，而「这条会话不由电脑上的人作答」这个判断在整个
    *  Paseo 会话期间都得成立。见下面 sessionWatch 的口径说明。 */
@@ -243,7 +267,11 @@
         if (typeof window.MTNodeSession.off === "function") window.MTNodeSession.off();
       } catch (_) {}
     }
-    if (!watched.size) {
+    /* 宿主桥（应用中心窗口 / 插件窗口）的观察者与手机端那份名单互不影响：
+       只要这条会话有人在窗口里看着，这一帧就不能在这里被丢掉。 */
+    const hostSidEarly = sidOfRunKey(runKey);
+    const hostEarly = !!(hostSidEarly && hostWatched.has(hostSidEarly));
+    if (!watched.size && !hostEarly) {
       dropped++;
       return false;
     }
@@ -263,9 +291,11 @@
     if (gw && gw.indexOf("as") !== 0) gwOwner.set(gw, sid);
     const rid = String(reqId || "").trim();
     if (rid) reqOwner.set(rid, sid);
+    /* 应用 / 插件窗口这一路：到这里才推（type 已过白名单、归属已认出来） */
+    if (hostEarly) hostDeliver(sid, String(runKey), t, data || {});
     if (!watched.has(sid)) {
       dropped++;
-      return false;
+      return hostEarly;
     }
     const at = (data && data.at) || Date.now();
     pushEvent(slimFrame({ sessionId: sid, runKey: String(runKey), type: t, data: data || {}, at }));
@@ -815,6 +845,23 @@
       liveRuns: liveRuns.size,
       reqs: reqOwner.size,
     }),
+    /* 应用 / 插件窗口的流式观察（renderer/app-apphost-bridge.js 用它）：
+       同一个会话再调一次 = 换一个回调（后发的那次发送接管这条会话的转发）。 */
+    watchHost: (sid, cb) => {
+      const id = String(sid || "").trim();
+      if (!id || typeof cb !== "function") return false;
+      hostWatched.add(id);
+      hostListeners.set(id, cb);
+      return true;
+    },
+    unwatchHost: (sid) => {
+      const id = String(sid || "").trim();
+      if (!id) return false;
+      hostListeners.delete(id);
+      hostWatched.delete(id);
+      return true;
+    },
+    isHostWatching: (sid) => hostWatched.has(String(sid || "").trim()),
     pushTypes: [...PUSH_TYPES],
   };
 

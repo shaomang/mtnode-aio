@@ -3497,7 +3497,8 @@ registerNodeSettingsForm("proc_image", {
     for (const s of IMAGE_SIZES) {
       const o = document.createElement("option");
       o.value = s;
-      o.textContent = s;
+      /* 选项带比例：auto 原样，其余 "[4:3] 2048x1536" */
+      o.textContent = typeof sizeAspectLabel === "function" ? sizeAspectLabel(s) : s;
       selS.appendChild(o);
     }
     selS.value = IMAGE_SIZES.includes(node.size)
@@ -3984,7 +3985,10 @@ registerNodeSettingsForm("remotion", {
     nsSelect(
       ctx,
       I18n.t("分辨率"),
-      REMOTION_SIZES,
+      REMOTION_SIZES.map((s) => [
+        s,
+        typeof sizeAspectLabel === "function" ? sizeAspectLabel(s) : s,
+      ]),
       node.size || "1280x720",
       (v) => {
         node.size = v;
@@ -4042,6 +4046,80 @@ registerNodeSettingsForm("yue_gen", {
       (v) => {
         node.offload = v;
       },
+    );
+  },
+});
+
+registerNodeSettingsForm("moss_music", {
+  gearTitle: () => I18n.t("任务预设 / 量化档 / 长音频 / 输出上限"),
+  summary: (node) => {
+    const id = String((node && node.preset) || "full");
+    const tasks =
+      typeof MOSS_MUSIC_TASKS !== "undefined" && Array.isArray(MOSS_MUSIC_TASKS) ? MOSS_MUSIC_TASKS : [];
+    const task = tasks.find((t) => t.id === id) || tasks[0];
+    const quant = String(
+      node && ["int8", "int4"].includes(node.quant) ? node.quant : "int8",
+    ).toUpperCase();
+    return (
+      (task ? I18n.t(task.label) : id) +
+      " · " +
+      quant +
+      " · " +
+      (node && node.longAudio === true ? I18n.t("长音频：开") : I18n.t("长音频：关"))
+    );
+  },
+  build: (ctx) => {
+    const node = ctx.node;
+    const tasks =
+      typeof MOSS_MUSIC_TASKS !== "undefined" && Array.isArray(MOSS_MUSIC_TASKS) ? MOSS_MUSIC_TASKS : [];
+    const curId = String((node && node.preset) || "full");
+    nsSelect(
+      ctx,
+      I18n.t("任务预设"),
+      tasks.map((t) => [t.id, t.label]),
+      curId,
+      (v) => {
+        node.preset = String(v || "full");
+      },
+      { tip: I18n.t("预设决定发给模型的提问；自由提问填了就以它为准") },
+    );
+    nsSelect(
+      ctx,
+      I18n.t("量化档"),
+      [
+        ["int8", "INT8"],
+        ["int4", "INT4"],
+      ],
+      node && ["int8", "int4"].includes(node.quant) ? node.quant : "int8",
+      (v) => {
+        node.quant = v === "int4" ? "int4" : "int8";
+      },
+      { tip: I18n.t("int8 ≥16GB · int4 ≥12GB（后端按此档装载；全精度档已移除）") },
+    );
+    nsCheck(
+      ctx,
+      I18n.t("长音频（自动分块，30 分钟以上再开；更慢但不截断）"),
+      node && node.longAudio === true,
+      (v) => {
+        node.longAudio = !!v;
+      },
+      { tip: I18n.t("长音频按静音切块后分段分析再合并，30 分钟以上再开") },
+    );
+    /* 输出上限：官方默认 1024 就是「输出被截断」的根；撞上限后端会自动把这段音频对半再切，
+       所以这里只是兜底旋钮（密集歌词想一次收满可调到 8192，更慢）。 */
+    nsSelect(
+      ctx,
+      I18n.t("单段输出上限"),
+      [
+        ["2048", "2048 tokens"],
+        ["4096", "4096 tokens（默认）"],
+        ["8192", "8192 tokens（最慢）"],
+      ],
+      String(node && [2048, 4096, 8192].includes(node.maxNewTokens) ? node.maxNewTokens : 4096),
+      (v) => {
+        node.maxNewTokens = Number(v) === 8192 ? 8192 : Number(v) === 2048 ? 2048 : 4096;
+      },
+      { tip: I18n.t("撞上限会自动把这段音频对半再切后合并；调大只影响速度") },
     );
   },
 });
@@ -8639,6 +8717,19 @@ function portBadgeText(node, dir, idx, opt) {
           title: "",
           zh: true,
         };
+      case "moss_music":
+        /* 固定 3 颗：0=音频/视频路径 · 1=自由提问 · 2=控制输入 */
+        return {
+          badge:
+            i === 0 ? I18n.t("音频 / 视频") : i === 1 ? I18n.t("自由提问") : I18n.t("控制"),
+          title:
+            i === 0
+              ? I18n.t("（接音频或视频输入节点的输出）")
+              : i === 1
+                ? I18n.t("（留空则用节点里选的任务预设）")
+                : I18n.t("（触发分析）"),
+          zh: true,
+        };
       case "flux3klein_gen":
       case "qwenimage_gen":
         /* 固定 3 颗：0=提示词 · 1=参考图（可多接）· 2=控制输入 */
@@ -8830,6 +8921,14 @@ function portBadgeText(node, dir, idx, opt) {
       return { badge: I18n.t("分发") + (i + 1), title: "", zh: true };
     case "net_recv":
       return { badge: i === 0 ? I18n.t("信息") : I18n.t("控制"), title: "", zh: true };
+    case "moss_music":
+      /* 0=结果文本 · 1=JSON 文本 · 2=md 产物路径（全数据口，没有控制出） */
+      return {
+        badge:
+          i === 0 ? I18n.t("结果文本") : i === 1 ? I18n.t("JSON") : I18n.t("产物路径"),
+        title: "",
+        zh: true,
+      };
     case "flux3klein_gen":
     case "qwenimage_gen":
       return { badge: i === 0 ? I18n.t("图像") : I18n.t("控制"), title: "", zh: true };
@@ -9191,12 +9290,17 @@ function nodeElement(node) {
         I18n.t("；本节点自己写的正文不参与取值");
       head.appendChild(chip);
       head.appendChild(freezeInputButton(node));
-      /* 符合 YAML：闪烁「YAML」按钮，点击可关闭解析（仅显示原始内容） */
+      /* 符合 YAML：闪烁「YAML」按钮，点击可关闭解析（仅显示原始文本）
+         判定走 app.js 的 yamlBatchEntries（保守打分），不是「有冒号就算 YAML」——
+         否则散文 / Markdown 列表也会亮起这颗芯片。 */
       if (node.kind === "input_text") {
         const disp = displayValueOf(firstSource(node), node);
+        const dtext = disp && disp.text != null ? String(disp.text) : "";
         const es =
-          disp && disp.text != null && !jsonContainerOf(disp.text)
-            ? parseSimpleYaml(disp.text)
+          dtext && !jsonContainerOf(dtext)
+            ? typeof yamlBatchEntries === "function"
+              ? yamlBatchEntries(dtext)
+              : parseSimpleYaml(dtext)
             : [];
         if (es.length) {
           const yb = document.createElement("button");
@@ -9220,21 +9324,25 @@ function nodeElement(node) {
         }
       }
     } else {
-      const tb = document.createElement("button");
-      tb.className = "n-play n-batch-toggle" + (node.batch ? " on" : "");
-      tb.textContent =
-        I18n.t("批量") +
-        (node.batch && node.entries && node.entries.length
-          ? "·" + node.entries.length
-          : "");
-      tb.title = node.batch
-        ? I18n.t("批量模式已开启（") + (node.entries || []).length + I18n.t(" 条）· 点击关闭")
-        : I18n.t("开启批量模式：以多个「标题+内容」条目运行，下游自动批量处理");
-      tb.onclick = (ev) => {
-        ev.stopPropagation();
-        toggleBatch(node);
-      };
-      head.appendChild(tb);
+      /* 文本节点不再给「批量」开关（按需求移除）：批量文本一律由 YAML / JSON 继承自动形成，
+         老画布上已经是 batch 的文本节点仍保留下面的「拆」入口，可以拆回单条。 */
+      if (node.kind !== "input_text") {
+        const tb = document.createElement("button");
+        tb.className = "n-play n-batch-toggle" + (node.batch ? " on" : "");
+        tb.textContent =
+          I18n.t("批量") +
+          (node.batch && node.entries && node.entries.length
+            ? "·" + node.entries.length
+            : "");
+        tb.title = node.batch
+          ? I18n.t("批量模式已开启（") + (node.entries || []).length + I18n.t(" 条）· 点击关闭")
+          : I18n.t("开启批量模式：以多个「标题+内容」条目运行，下游自动批量处理");
+        tb.onclick = (ev) => {
+          ev.stopPropagation();
+          toggleBatch(node);
+        };
+        head.appendChild(tb);
+      }
       if (canExplodeBatch(node)) {
         const xb = document.createElement("button");
         xb.className = "n-play n-batch-explode";
@@ -9255,16 +9363,6 @@ function nodeElement(node) {
       const jc = NParam.jsonSwitchChip(node);
       if (jc) head.appendChild(jc);
     }
-    /* 文件参考：右上角小图标按钮（导入文本文件内容，不占用节点空间） */
-    const fr = document.createElement("button");
-    fr.className = "n-play n-file-ref";
-    fr.textContent = "📄";
-    fr.title = I18n.t("文件参考：导入文本文件内容到本节点");
-    fr.onclick = (ev) => {
-      ev.stopPropagation();
-      importFileToText(node);
-    };
-    head.appendChild(fr);
     /* Markdown 编辑器：像 WPS 一样写正文（所见即所得 + 全套 Markdown 工具栏 + 批注 /
        AI 逐轮修订）。实现自包含在 renderer/app-textedit.js（openTextNodeEditor），
        本处只给入口按钮；节点板身那个 textarea 原样保留，小改小修不必开大窗。 */
@@ -9361,26 +9459,17 @@ function nodeElement(node) {
        蒙版底图取端口 1 的第 1 张参考图（见 app.js 的 maskBaseImagePath） */
     if (node.kind === "flux3klein_gen" && typeof window.maskButtonEl === "function")
       head.appendChild(window.maskButtonEl(node));
-    /* Qwen Image 2.1：同上，蒙版底图取端口 1 的第 1 张参考图 */
-    if (node.kind === "qwenimage_gen" && typeof window.maskButtonEl === "function")
-      head.appendChild(window.maskButtonEl(node));
-    if (node.kind === "proc_text") {
-      /* 智能模式开关：提示词成为任务，agent 可读文件/联网/执行命令 */
-      const ag = document.createElement("button");
-      ag.className = "n-play n-agent-toggle" + (node.agent ? " on" : "");
-      ag.textContent = node.agent ? I18n.t("🐋 智能") : "🐋";
-      ag.title =
-        I18n.t("智能模式：提示词成为任务，模型可读文件 / 联网 / 执行命令后完成（需配置文本服务商，见帮助）");
-      ag.onclick = (ev) => {
-        ev.stopPropagation();
-        node.agent = !node.agent;
-        if (node.agent) syncAgentProviderRoute(node);
-        clearDownstream(node.id);
-        scheduleSave(true);
-        renderCanvas();
-      };
-      head.appendChild(ag);
+    /* Qwen Image 2.1：透明背景一键开关（原生 RGBA 直出，单遍成图）+ 蒙版按钮
+       （蒙版底图取端口 1 的第 1 张参考图）；右键透明背景按钮进 ⚙ 设置 */
+    if (node.kind === "qwenimage_gen") {
+      if (typeof qwenimageMatteButtonEl === "function")
+        head.appendChild(qwenimageMatteButtonEl(node));
+      if (typeof window.maskButtonEl === "function")
+        head.appendChild(window.maskButtonEl(node));
     }
+    /* 「文本处理节点转智能节点」已移除：这里不再摆 🐋 智能模式开关。
+       旧画布上已经是智能模式的文本节点仍按原样运行（node.agent 保留，见 app-nodes.js），
+       只是不再提供开启入口。 */
     /* 思考按钮：文本节点 / 智能任务。先出规划文本再出正文，思考文本由生成回执
        接进同一份思考缓冲。按钮本身只在有思考内容时才显形（CSS .n-think
        默认 display:none，有内容才加 .show），所以没思考内容的节点不会
@@ -9990,6 +10079,19 @@ function nodeElement(node) {
     appendMediaConsoleBtn(head, node);
     /* 原「设置」就地展开按钮已由统一 ⚙（跳窗）取代 —— 见 NODE_SETTINGS_FORMS */
     appendMediaPlayBtns(head, node, "调用 YuE2 本地后端生成音乐");
+  }
+  /* MOSS-Music 音乐理解：本地常驻后端（8790）· 端子 0=音频/视频 · 1=自由提问 · 2=控制 */
+  if (node.kind === "moss_music") {
+    const chip = document.createElement("span");
+    chip.className = "n-chip" + (node.running ? " on" : "");
+    chip.textContent = I18n.t("音乐理解");
+    chip.title = I18n.t(
+      "MOSS-Music 本地音乐理解 · 端子 0=音频/视频 · 1=自由提问 · 2=控制 · 执行时自动拉起后端并装载模型",
+    );
+    head.appendChild(chip);
+    appendBackendProbeBtn(head, node);
+    appendMediaConsoleBtn(head, node);
+    appendMediaPlayBtns(head, node, "调用 MOSS-Music 本地后端分析音频 / 视频");
   }
   /* FLUX 3 Image Klein：本地图像节点（状态 chip + ◎ 探活 + ▤ 控制台 + ▶/✕） */
   if (node.kind === "flux3klein_gen") {
@@ -11654,7 +11756,8 @@ function bentryImageRow(node, e) {
   if (e.path) {
     const img = document.createElement("img");
     img.className = "bentry-thumb";
-    img.src = thumbUrlWithBust(e.path, e.path);
+    /* 卡片行里的 30px 缩略：小图档就够（大档白解码一遍） */
+    img.src = thumbUrlWithBust(e.path, e.path, PREVIEW_EDGE_THUMB);
     bindImagePreview(img, e.path, entryDisplayTitle(e));
     bindImgSaveAs(img);
     row.appendChild(img);
@@ -11683,7 +11786,7 @@ function readonlyBatchRows(items, list, isImage) {
     if (isImage) {
       const img = document.createElement("img");
       img.className = "bentry-thumb";
-      img.src = thumbUrlWithBust(it.path);
+      img.src = thumbUrlWithBust(it.path, undefined, PREVIEW_EDGE_THUMB);
       bindImagePreview(img, it.path, entryDisplayTitle(it));
       bindImgSaveAs(img);
       row.appendChild(img);
@@ -12198,7 +12301,7 @@ function browseEntriesEl(items, node, isImage, emptyText) {
     if (isImage && path) {
       const img = document.createElement("img");
       img.className = "bentry-thumb";
-      img.src = thumbUrlWithBust(path, path);
+      img.src = thumbUrlWithBust(path, path, PREVIEW_EDGE_THUMB);
       img.alt = title;
       bindImagePreview(img, path, title);
       bindImgSaveAs(img);
@@ -12613,7 +12716,9 @@ NODE_BROWSE_BODY.input_text = function (node, body) {
     if (disp && disp.text != null) {
       const es =
         !node.yamlOff && !jsonContainerOf(disp.text)
-          ? parseSimpleYaml(disp.text) || []
+          ? typeof yamlBatchEntries === "function"
+            ? yamlBatchEntries(disp.text)
+            : parseSimpleYaml(disp.text) || []
           : [];
       if (es.length) {
         body.appendChild(
@@ -12625,7 +12730,16 @@ NODE_BROWSE_BODY.input_text = function (node, body) {
         );
         return;
       }
-      const v = browseTextEl(disp.text, node);
+      /* 关掉 YAML（芯片变灰）后必须真的回到普通文本形态：不能因为 browseTextEl
+         自己又判成 yaml 而继续按 YAML 着色显示。 */
+      const v = browseTextEl(
+        disp.text,
+        node,
+        node.yamlOff && typeof detectViewLang === "function" &&
+          detectViewLang(disp.text) === "yaml"
+          ? { lang: "plain" }
+          : undefined,
+      );
       if (!v) return false;
       body.appendChild(v);
       return;
@@ -12748,6 +12862,13 @@ function browseMdPreviewEl(text, node) {
      渲染产物、.md 挂在容器上）：排版与滚动口径因此完全复用，不另立一套。 */
   body.className = "ntv-md";
   body.innerHTML = html;
+  /* `![](绝对路径)` 渲染出来是 <img src="E:/…">，Chromium 不认这种 src —— 换成 file:///
+     （renderer/app-paste-shot.js 的 fixBoardImgs；只动本机绝对路径，相对引用 / http 不碰） */
+  if (window.MTPasteShot && typeof window.MTPasteShot.fixBoardImgs === "function") {
+    try {
+      window.MTPasteShot.fixBoardImgs(body);
+    } catch (_) {}
+  }
   wrap.appendChild(body);
   return wrap;
 }
@@ -12941,20 +13062,21 @@ NODE_BROWSE_BODY.save = function (node, body) {
     nm.title = node.savedPath || "";
     prev.appendChild(nm);
   } else if (media === "audio" || media === "video") {
-    /* 音频用方角波形预览器（点波形试听），视频用原生播放器。
-       视频元素走 mediaViewCreate（renderer/app-mediaview.js）：重绘时复用同一只
-       <video>，正在放的那只不会被摘断，也能被原生控件全屏。 */
-    const el =
-      media === "audio"
-        ? wavePreviewCreate("svaud-" + node.id)
-        : mediaViewCreate(document.createElement("video"), {
-            id: "svvid-" + node.id,
-            path: node.savedPath || "",
-          });
-    if (media === "video") el.controls = true;
-    el.preload = "metadata";
-    if (node.savedPath) el.dataset.path = node.savedPath;
-    mediaViewAttach(el, prev, node.savedPath || "");
+    /* 音频用方角波形预览器（点波形试听）；视频先给**首帧静图**，点一下才在原地换成
+       池化播放器并自动播放（renderer/app-mediaview.js 的 mediaViewPoster）——
+       一屏十几颗视频节点不会各开一个 demuxer + 一层 VIDEO 帧纹理。 */
+    if (media === "video") {
+      mediaViewPoster(prev, {
+        id: "svvid-" + node.id,
+        path: node.savedPath || "",
+        bust: node.savedAt || 0,
+      });
+    } else {
+      const el = wavePreviewCreate("svaud-" + node.id);
+      el.preload = "metadata";
+      if (node.savedPath) el.dataset.path = node.savedPath;
+      mediaViewAttach(el, prev, node.savedPath || "");
+    }
     if (!node.savedPath)
       prev.appendChild(
         emptyEl(
@@ -13083,23 +13205,20 @@ function assetBrowseThumbEl(node, it, lost, settled) {
   let el = null;
   try {
     if (it.type === "video") {
-      /* 首帧静图：只取 metadata 再 seek 到开头一帧，controls 关掉、muted 防出声 ——
-         不进 mediaView 播放器池（预览态可能有十几颗素材节点，池化播放器太重）。 */
-      const v = document.createElement("video");
+      /* 首帧静图：走主进程缩略图协议 host=video（ffmpeg 抽一帧、长边 ≤ 640），
+         连 <video> 都不建 —— 浏览态可能一屏十几颗素材节点，不必各开一个 demuxer
+         再解出一层视频帧纹理。纯只读：点击选中节点进编辑态（由节点根既有链路处理）。 */
+      const v = document.createElement("img");
       v.className = "n-view-asset-el";
-      v.muted = true;
-      v.playsInline = true;
-      v.preload = "metadata";
-      v.controls = false;
-      v.tabIndex = -1;
+      v.alt = it.title || "";
       v.draggable = false;
-      v.addEventListener("loadedmetadata", () => {
-        try {
-          v.currentTime = Math.min(0.1, (Number(v.duration) || 0.1) / 2);
-        } catch (_) {}
-      });
       v.addEventListener("error", bad);
-      v.src = window.api.toFileUrl(p);
+      v.src =
+        typeof mediaPosterUrl === "function"
+          ? mediaPosterUrl(p, "", 640)
+          : typeof thumbUrlWithBust === "function"
+            ? thumbUrlWithBust(p)
+            : window.api.toFileUrl(p);
       el = v;
     } else {
       const img = document.createElement("img");
@@ -13480,6 +13599,9 @@ function fnToolMediaPreview(host, kind, path) {
     return img;
   }
   if (k === "video") {
+    /* 先给首帧静图，点一下才在原地换池化播放器（renderer/app-mediaview.js 的 mediaViewPoster） */
+    if (typeof mediaViewPoster === "function")
+      return mediaViewPoster(host, { cls: "n-fnmedia", path: p });
     const v = mediaViewCreate(document.createElement("video"), { cls: "n-fnmedia", path: p });
     v.controls = true;
     v.preload = "metadata";
@@ -14683,34 +14805,35 @@ function assetItemMediaRow(node, it, view, type) {
   } else {
     box.className = "n-av n-asset-av";
     if (p) {
-      /* 音频条目也走方角波形预览器（css 的 .n-asset-av .n-wave 就是给它用的）；
-         视频条目走池化播放器（重绘不断播，见 renderer/app-mediaview.js）。 */
+      /* 音频条目走方角波形预览器（css 的 .n-asset-av .n-wave 就是给它用的）；
+         视频条目先给首帧静图，点一下才在原地换池化播放器（renderer/app-mediaview.js）。 */
       const isVid = type === "video";
-      const media = isVid
-        ? mediaViewCreate(document.createElement("video"), {
-            id: "assetvid-" + node.id + "-" + String(it.id || it.title || type),
-            cls: "n-av-el",
-            path: p,
-          })
-        : wavePreviewCreate("");
-      media.preload = "metadata";
-      if (!isVid) media.classList.add("n-av-el");
-      if (isVid) {
-        media.controls = true;
-        media.playsInline = true;
-        mediaSetVideoSrc(media, fileUrlWithBust(p, p), p);
-      } else if (typeof wavePreviewSetSource === "function") {
-        wavePreviewSetSource(media, p, p);
-      }
       const bad = document.createElement("div");
       bad.className = "n-av-ghost";
       bad.style.display = "none";
       bad.textContent = I18n.t("文件不存在或本机播放器无法解码该格式");
-      media.addEventListener("error", () => {
-        media.style.display = "none";
-        bad.style.display = "";
-      });
-      mediaViewAttach(media, box, p);
+      if (isVid) {
+        mediaViewPoster(box, {
+          id: "assetvid-" + node.id + "-" + String(it.id || it.title || type),
+          cls: "n-av-el",
+          path: p,
+          bust: p,
+          onError: (v) => {
+            if (v) v.style.display = "none";
+            bad.style.display = "";
+          },
+        });
+      } else {
+        const media = wavePreviewCreate("");
+        media.preload = "metadata";
+        media.classList.add("n-av-el");
+        if (typeof wavePreviewSetSource === "function") wavePreviewSetSource(media, p, p);
+        media.addEventListener("error", () => {
+          media.style.display = "none";
+          bad.style.display = "";
+        });
+        mediaViewAttach(media, box, p);
+      }
       box.appendChild(bad);
     } else {
       const g = document.createElement("div");
@@ -15975,7 +16098,8 @@ function buildLtartBody(node, body) {
   body.appendChild(cap);
   const stage = document.createElement("div");
   stage.className = "n-ltart-stage n-ltart-" + type;
-  const bust = node.ltMtime || node.ltAt || Date.now();
+  /* 防缓存串只跟产物时间走（不再兜 Date.now()：那样每次重绘都换串 = 每次都重新解码） */
+  const bust = node.ltMtime || node.ltAt || thumbBustOf(p);
   const url = typeof fileUrlWithBust === "function" ? fileUrlWithBust(p, bust) : window.api.toFileUrl(p);
   if (type === "image") {
     const img = document.createElement("img");
@@ -15993,16 +16117,14 @@ function buildLtartBody(node, body) {
     if (typeof bindImgSaveAs === "function") bindImgSaveAs(img);
     stage.appendChild(img);
   } else if (type === "video") {
-    /* 池化播放器 + 全屏托底（renderer/app-mediaview.js）：长周期产物节点重绘也不断播 */
-    const v = mediaViewCreate(document.createElement("video"), {
+    /* 首帧静图 → 点一下原地换池化播放器（重绘不断播、原生全屏键可用，
+       见 renderer/app-mediaview.js 的 mediaViewPoster） */
+    mediaViewPoster(stage, {
       id: "ltartvid-" + node.id + "-" + type,
       cls: "n-ltart-media",
       path: p,
+      bust: bust,
     });
-    v.controls = true;
-    v.preload = "metadata";
-    mediaSetVideoSrc(v, url, p);
-    mediaViewAttach(v, stage, p);
   } else if (type === "audio") {
     /* 原生 <audio controls> 已全应用下线：音频统一走方角波形预览器
        （全局播放引擎，重绘 / 失焦不断播，见 renderer/app-audioview.js）。 */
@@ -16205,7 +16327,7 @@ function buildBody(node, body) {
       } else if (disp && disp.text != null) {
         const es =
           !node.yamlOff && !jsonContainerOf(disp.text)
-            ? parseSimpleYaml(disp.text)
+            ? yamlBatchEntries(disp.text)
             : [];
         if (es.length) {
           const list = document.createElement("div");
@@ -16346,6 +16468,14 @@ function buildBody(node, body) {
       if (typeof MTMdEdit !== "undefined" && MTMdEdit && typeof MTMdEdit.bindSource === "function") {
         try {
           MTMdEdit.bindSource(ta);
+        } catch (_) {}
+      }
+      /* 粘贴截图 → 询问窗二选一（图像路径 / 识图）：走 renderer/app-paste-shot.js。
+         只有**纯图**粘贴才拦（有文字时文本优先、原生粘贴照旧）；插入后由上面那颗 input
+         监听写回 node.text，不另造一条正文通路。 */
+      if (window.MTPasteShot && typeof window.MTPasteShot.bindBoardTextarea === "function") {
+        try {
+          window.MTPasteShot.bindBoardTextarea(ta);
         } catch (_) {}
       }
       /* 正文框直接铺在 .n-body 里（flex:1，尺寸口径与套壳时一致）。
@@ -16509,29 +16639,36 @@ function buildBody(node, body) {
     };
     const p = inheriting ? inhPath : String(node.mediaAsset || "").trim();
     if (p) {
-      /* 音频：方角波形预览器（点波形任意位置试听）；视频：原生播放器（池化复用，
-         重绘不断播，见 renderer/app-mediaview.js）。
+      /* 音频：方角波形预览器（点波形任意位置试听）；视频：先给首帧静图，点一下才在
+         原地换成池化播放器并自动播放（见 renderer/app-mediaview.js 的 mediaViewPoster）。
          两者的 .n-av-el 类都保留 —— 节点点击换文件与拖拽放行都认这个类。 */
-      const media = isVid
-        ? mediaViewCreate(document.createElement("video"), { cls: "n-av-el", path: p })
-        : wavePreviewCreate("");
-      if (isVid) media.controls = true;
-      media.preload = "metadata";
-      /* 音频预览器外壳是 <div>：只补类名，不能整块覆盖 className（会丢掉 .n-wave），
-         音源也不走 .src 属性而是 wavePreviewSetSource。 */
-      if (!isVid) media.classList.add("n-av-el");
-      if (isVid) media.src = fileUrlWithBust(p, p);
-      else if (typeof wavePreviewSetSource === "function") wavePreviewSetSource(media, p, p);
-      if (isVid) media.playsInline = true;
       const bad = document.createElement("div");
       bad.className = "n-av-ghost";
       bad.style.display = "none";
       bad.textContent = I18n.t("文件不存在或本机播放器无法解码该格式");
-      media.addEventListener("error", () => {
-        media.style.display = "none";
-        bad.style.display = "";
-      });
-      mediaViewAttach(media, wrap, isVid ? p : "");
+      if (isVid) {
+        mediaViewPoster(wrap, {
+          cls: "n-av-el",
+          path: p,
+          bust: p,
+          onError: (v) => {
+            if (v) v.style.display = "none";
+            bad.style.display = "";
+          },
+        });
+      } else {
+        const media = wavePreviewCreate("");
+        media.preload = "metadata";
+        /* 音频预览器外壳是 <div>：只补类名，不能整块覆盖 className（会丢掉 .n-wave），
+           音源也不走 .src 属性而是 wavePreviewSetSource。 */
+        media.classList.add("n-av-el");
+        if (typeof wavePreviewSetSource === "function") wavePreviewSetSource(media, p, p);
+        media.addEventListener("error", () => {
+          media.style.display = "none";
+          bad.style.display = "";
+        });
+        mediaViewAttach(media, wrap, "");
+      }
       wrap.appendChild(bad);
     } else {
       const g = document.createElement("div");
@@ -17261,7 +17398,7 @@ function buildBody(node, body) {
       meta.title = I18n.t("收纳的节点数 · 子文件夹");
       card.appendChild(meta);
       /* 「运行本层」的状态行（renderer/app-super-run.js 的 superRunStatusLineEl）：
-         运行中 / 暂停中 / 上一次收尾汇总都写在这一行只读小字里 ——
+         运行中 / 上一次收尾汇总都写在这一行只读小字里 ——
          失败原因、跳过了几颗、有没有渲染异常，这是唯一常驻的留痕处。 */
       if (typeof superRunStatusLineEl === "function") {
         const runLine = superRunStatusLineEl(node);
@@ -17825,6 +17962,10 @@ function buildBody(node, body) {
       node.mutexStatus ||
       I18n.t("多入选一 · ") + mutexModeLabel(node.mutexMode);
     body.appendChild(st);
+  } else if (node.kind === "moss_music") {
+    /* MOSS-Music：预设 / 自由提问 / 长音频 / 模型档位 + 后端面板 + 结果预览 + 状态行。
+       具体布局写在 app-nodes.js（运行期 / 状态都在那边，避免两处各写一套口径）。 */
+    if (typeof mossMusicAppendNodeBody === "function") mossMusicAppendNodeBody(node, body);
   } else if (node.kind === "music_gen") {
     appendMediaGenSummaryBody(node, body, "audio");
     appendMediaBackendPanel(body, node);
@@ -18099,12 +18240,10 @@ function buildBody(node, body) {
     appendMediaBackendPanel(body, node);
     const prev = document.createElement("div");
     prev.className = "sv-prev mg-prev";
-    /* 视频播放器池化复用（renderer/app-mediaview.js）：重绘换容器而不换元素，
-       正在放的那只不会被摘断；全屏也走同一套托底。 */
-    const vid = mediaViewCreate(document.createElement("video"), { id: "mgvid-" + node.id });
-    vid.controls = true;
-    vid.preload = "metadata";
-    mediaViewAttach(vid, prev, "");
+    /* 视频预览：先给首帧静图，点一下才在原地换成池化播放器并自动播放
+       （renderer/app-mediaview.js 的 mediaViewPoster）；生成完成后 fillPreviews
+       就地更新这一块（mediaViewPosterSet）。 */
+    mediaViewPoster(prev, { id: "mgvid-" + node.id });
     const empty = document.createElement("div");
     empty.className = "sv-empty";
     empty.id = "mgempty-" + node.id;
@@ -18159,11 +18298,8 @@ function buildBody(node, body) {
     appendMediaBackendPanel(body, node);
     const prev = document.createElement("div");
     prev.className = "sv-prev mg-prev";
-    /* 池化播放器（renderer/app-mediaview.js）：重绘不断播 + 原生全屏键可用 */
-    const vid = mediaViewCreate(document.createElement("video"), { id: "mgvid-" + node.id });
-    vid.controls = true;
-    vid.preload = "metadata";
-    mediaViewAttach(vid, prev, "");
+    /* 视频预览：首帧静图 → 点一下原地换池化播放器（renderer/app-mediaview.js） */
+    mediaViewPoster(prev, { id: "mgvid-" + node.id });
     const empty = document.createElement("div");
     empty.className = "sv-empty";
     empty.id = "mgempty-" + node.id;
@@ -18315,11 +18451,8 @@ function buildBody(node, body) {
     body.appendChild(st);
     const prev = document.createElement("div");
     prev.className = "sv-prev mg-prev";
-    /* 池化播放器（renderer/app-mediaview.js）：重绘不断播 + 原生全屏键可用 */
-    const vid = mediaViewCreate(document.createElement("video"), { id: "mgvid-" + node.id });
-    vid.controls = true;
-    vid.preload = "metadata";
-    mediaViewAttach(vid, prev, "");
+    /* 视频预览：首帧静图 → 点一下原地换池化播放器（renderer/app-mediaview.js） */
+    mediaViewPoster(prev, { id: "mgvid-" + node.id });
     const empty = document.createElement("div");
     empty.className = "sv-empty";
     empty.id = "mgempty-" + node.id;
@@ -18474,15 +18607,12 @@ function buildBody(node, body) {
         prev.appendChild(e);
       }
     } else if (media === "video") {
-      /* 池化播放器（renderer/app-mediaview.js）：重绘不断播 + 原生全屏键可用 */
-      const vid = mediaViewCreate(document.createElement("video"), {
+      /* 视频预览：首帧静图 → 点一下原地换池化播放器（renderer/app-mediaview.js） */
+      mediaViewPoster(prev, {
         id: "svvid-" + node.id,
         path: node.savedPath || "",
+        bust: node.savedAt || 0,
       });
-      vid.controls = true;
-      vid.preload = "metadata";
-      if (node.savedPath) vid.dataset.path = node.savedPath;
-      mediaViewAttach(vid, prev, node.savedPath || "");
       if (!node.savedPath) {
         const e = document.createElement("div");
         e.className = "sv-empty";
@@ -18787,15 +18917,57 @@ function fileUrlWithBust(p, bust) {
   return u + (u.indexOf("?") >= 0 ? "&" : "?") + "t=" + encodeURIComponent(String(t));
 }
 
+/* 预览画质档位（设置 · 画布预览 的「预览画质」三档，值 = 长边像素）：
+   低 192 / 中 320（默认）/ 高 640。
+   这是**全局唯一**的读值入口：画布节点预览、视频首帧静图、素材库缩略、应用网格预览
+   都调 previewEdge() 取边长，不要再各写一份数字（真源 = S.config.previewQuality，
+   缺省 / 写了不认识的值一律按「中 320」）。 */
+const PREVIEW_EDGE_STEPS = { low: 192, mid: 320, high: 640 };
+const PREVIEW_EDGE_DEFAULT = PREVIEW_EDGE_STEPS.mid;
+/* 小图档（固定值，不跟设置档位走）：卡片行里 30–52px 的缩略
+   （.bentry-thumb / .sv-thumb），按 2x 屏也不到 110px，用不着 320。
+   其余按调用点显示尺寸：节点 body / 铺满 body 的用 previewEdge()，
+   长周期产物整幅预览仍显式传 1280。 */
+const PREVIEW_EDGE_THUMB = 128;
+function previewEdge() {
+  let q = "";
+  try {
+    q = String(
+      (typeof S !== "undefined" && S.config && S.config.previewQuality) || "",
+    );
+  } catch (_) {
+    q = "";
+  }
+  return PREVIEW_EDGE_STEPS[q] || PREVIEW_EDGE_DEFAULT;
+}
+
 /* 预览位取图：走主进程的缩略图协议（assets-store.js 的 registerThumbProtocol），
-   长边压到 ≤ edge（默认 640）后再进 <img>。
+   长边压到 ≤ edge（不给 = 设置档位 previewEdge()：低 192 / 中 320 / 高 640）后再进 <img>。
    为什么必须这样取：图解码出来的位图由 Chromium 的 GPU 进程按**源分辨率**建纹理，
    而纹理只有渲染进程销毁才归还 —— 画布上每多一张原图预览，显存就多占一块且永不下落
    （同机实测：重启前 GPU 进程 3151MB，重启后 265MB）。预览位本来只有一两百像素，
    按原图建纹理是纯浪费；大图 / 灯箱 / 导出仍走原图（fileUrlWithBust / toFileUrl）。 */
+/* 同路径的稳定防缓存串（不再用 Date.now()）：
+   以前不给 bust 时每次调用都取当前时间 —— 同一张图每次重绘 URL 都变，
+   浏览器就得重新取字节 + 重新解码（画布一重绘就一片重解码）。
+   现在「换路径 / 产物时间变了」才换：默认串按路径发一次并记住，
+   产物真的被覆写时由调用点传自己的 bust（ranAt / savedAt / mtime）。
+   协议本身带 no-store，URL 稳定反而正好命中同一份已解码位图。 */
+const thumbBustByPath = new Map(); /* path -> 串 */
+let thumbBustSeq = 0;
+function thumbBustOf(p) {
+  const key = String(p || "");
+  const hit = thumbBustByPath.get(key);
+  if (hit) return hit;
+  const v = "p" + (thumbBustSeq += 1).toString(36);
+  thumbBustByPath.set(key, v);
+  /* 长会话里路径会一直涨：超上限就淘汰最早的一条（只是换串，不影响正确性） */
+  if (thumbBustByPath.size > 2000) thumbBustByPath.delete(thumbBustByPath.keys().next().value);
+  return v;
+}
 function thumbUrlWithBust(p, bust, edge) {
   if (!p) return "";
-  const t = bust != null && bust !== "" ? bust : Date.now();
+  const t = bust != null && bust !== "" ? bust : thumbBustOf(p);
   /* 逐段编码（不把 "/" 编成 %2F：标准协议里那个编码会被 URL 归一化当成非法路径） */
   const segs = String(p)
     .replace(/\\/g, "/")
@@ -18807,7 +18979,7 @@ function thumbUrlWithBust(p, bust, edge) {
     "mtnode-thumb://img/" +
     segs +
     "?e=" +
-    (Number(edge) > 0 ? Math.round(Number(edge)) : 640) +
+    (Number(edge) > 0 ? Math.round(Number(edge)) : previewEdge()) +
     "&t=" +
     encodeURIComponent(String(t))
   );
@@ -18821,26 +18993,72 @@ function thumbUrlWithBust(p, bust, edge) {
    而 dataset.path 与大图预览的绑定都在，于是「点一下还能出图」。
    现在三处口径统一在这里：
      · 建元素时就按路径把 src 写上（不再依赖第二次异步回填）；
-     · 同一个路径 + 同一个防缓存串不重复赋值（不白白重新解码）；
+     · 同一个路径 + 同一档边长 + 同一个防缓存串不重复赋值（不白白重新解码）；
      · 缩略图协议万一取不到字节（stat / 读盘瞬时失败）→ 退回原图 file:///，
        预览宁可多解码一次，也不能变空白。 */
 function setThumbPreviewSrc(img, path, bust, edge) {
   if (!img || !path) return img;
-  const url = thumbUrlWithBust(path, bust, edge);
-  if (img.__thumbPath === path && img.__thumbBust === String(bust) && img.getAttribute("src") === url)
+  /* bust 不给时用「同路径稳定串」（见 thumbBustOf）：退回原图那条路也用同一个串，
+     免得退回时再变一次 URL、多解码一次。 */
+  const t = bust != null && bust !== "" ? bust : thumbBustOf(path);
+  const e = Number(edge) > 0 ? Math.round(Number(edge)) : previewEdge();
+  const url = thumbUrlWithBust(path, t, e);
+  if (
+    img.__thumbPath === path &&
+    img.__thumbEdge === e &&
+    img.getAttribute("src") === url
+  )
     return img;
   img.__thumbPath = path;
-  img.__thumbBust = String(bust);
+  img.__thumbEdge = e;
+  img.__thumbBust = String(t);
   img.__thumbFallback = false;
   img.onerror = () => {
     if (img.__thumbFallback) return;
     img.__thumbFallback = true;
     try {
-      img.src = fileUrlWithBust(path, bust);
+      img.src = fileUrlWithBust(path, t);
     } catch (_) {}
   };
   img.src = url;
   return img;
+}
+
+/* 任意图片来源 → 预览位地址（**唯一**一处的口径：素材库行内缩略、应用网格封面共用）：
+    · 本机文件（绝对路径 / file:// URL）改走主进程缩略图协议并按档位压好 —— 与画布预览
+      同一套：长边 ≤ edge 再进 <img>，解码出来的纹理不跟源图分辨率走（大图预览 / 灯箱
+      仍走原图，见 fileUrlWithBust）。edge 不给 = 设置档位 previewEdge()；
+      行内 40px 这类小图由调用点显式传 PREVIEW_EDGE_THUMB。
+    · 云端 http(s) / data: / 已经是 mtnode-thumb:// 的原样返回 —— 这些的档位由下发方决定，
+      绝不在这里二次拼地址。 */
+function previewLocalPathOf(src) {
+  const s = String(src || "").trim();
+  if (!s) return "";
+  if (/^(data|blob|https?|mtnode-thumb|app):/i.test(s)) return "";
+  if (/^file:/i.test(s)) {
+    let p = s.replace(/^file:\/{2,}/i, "");
+    try {
+      p = decodeURIComponent(p);
+    } catch (_) {}
+    /* Windows 下 file:///C:/x.png → C:/x.png（去掉开头那一刀） */
+    if (/^\/[a-zA-Z]:[\\/]/.test(p)) p = p.slice(1);
+    /* UNC（file://主机/共享/…）表达不成缩略图协议的路径：按「不是本机可缩略的路径」处理，
+       调用方原样用 file:// 地址，功能不缺 */
+    return /^[a-zA-Z]:[\\/]/.test(p) || p.charAt(0) === "/" ? p : "";
+  }
+  if (/^[a-zA-Z]:[\\/]/.test(s) || s.charAt(0) === "/") return s;
+  return "";
+}
+function previewSrcFor(src, edge, bust) {
+  const s = String(src || "");
+  const local = previewLocalPathOf(s);
+  if (!local) return s;
+  try {
+    if (typeof thumbUrlWithBust === "function") return thumbUrlWithBust(local, bust, edge);
+    return window.api.toFileUrl(local);
+  } catch (_) {
+    return s;
+  }
 }
 
 /* ═══════════ 保存节点「文本」预览的三道闸（体积 / 二进制 / 截断）═══════════
@@ -19100,7 +19318,8 @@ async function fillPreviews() {
         thumbs.querySelectorAll("img").forEach((img) => {
           const i = Number(img.dataset.idx);
           if (paths[i]) {
-            img.src = thumbUrlWithBust(paths[i], bust + ":" + i);
+            /* .sv-thumb 是 52px 卡片缩略：小图档 */
+            img.src = thumbUrlWithBust(paths[i], bust + ":" + i, PREVIEW_EDGE_THUMB);
             img.dataset.path = paths[i];
             bindImagePreview(img, paths[i], fileName(paths[i]));
           }
@@ -19134,14 +19353,14 @@ async function fillPreviews() {
       const empty = document.querySelector("#svempty-" + n.id);
       if (el) {
         if (paths.length) {
-          /* 视频走 mediaSetVideoSrc：同一个音源重复赋 src 会把正在播的那只打断 */
-          if (media === "video")
-            mediaSetVideoSrc(el, fileUrlWithBust(paths[0], bust), paths[0]);
+          /* 视频走 mediaViewPosterSet：同一个音源重复赋 src 会把正在播的那只打断；
+             换了文件才回静图，文件没变就让它继续放 */
+          if (media === "video") mediaViewPosterSet(el, paths[0], bust);
           else el.src = thumbUrlWithBust(paths[0], bust);
           el.dataset.path = paths[0];
           if (empty) empty.style.display = "none";
         } else {
-          if (media === "video") mediaViewClear(el);
+          if (media === "video") mediaViewPosterClear(el);
           else {
             el.removeAttribute("src");
             el.removeAttribute("data-path");
@@ -19179,8 +19398,9 @@ async function fillPreviews() {
         );
       if (el) {
         if (path) {
-          /* 视频走 mediaSetVideoSrc：同一个音源重复赋 src 会把正在播的那只打断 */
-          if (isVid) mediaSetVideoSrc(el, fileUrlWithBust(path, bust + ":" + path), path);
+          /* 视频走 mediaViewPosterSet：同一个音源重复赋 src 会把正在播的那只打断
+             （换了文件才回首帧静图，路径没变就让它继续放） */
+          if (isVid) mediaViewPosterSet(el, path, bust + ":" + path);
           else {
             el.src = thumbUrlWithBust(path, bust + ":" + path);
             el.dataset.path = path;
@@ -19199,8 +19419,12 @@ async function fillPreviews() {
             };
           }
         } else {
-          el.removeAttribute("src");
-          el.removeAttribute("data-path");
+          /* 视频槽位：放掉播放器 + 摘掉首帧静图（<img> / 图像节点仍是老口径） */
+          if (isVid) mediaViewPosterClear(el);
+          else {
+            el.removeAttribute("src");
+            el.removeAttribute("data-path");
+          }
           if (isSnImg) el.style.display = "none";
           if (empty) empty.style.display = "";
           if (nameEl) {

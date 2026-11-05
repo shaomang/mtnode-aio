@@ -65,6 +65,19 @@
   margin-left: auto;
 }
 
+/* 余额行右端一组动作（价格表 + 刷新）：整组靠右，组内两颗按钮紧挨着 ——
+   覆盖上面那条 margin-left:auto（在 flex 组里它会把两颗按钮推到两头）。 */
+.wl-balance-acts {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.wl-balance .wl-balance-acts .wl-btn {
+  margin-left: 0;
+}
+
 /* 提示条 */
 .wl-notice {
   padding: 8px 12px;
@@ -553,6 +566,67 @@
 .wl-table .st-partial_refunded,
 .wl-table .st-paid_mismatch {
   color: var(--red);
+}
+
+/* ── 价格表（余额窗里「价格表」按钮打开的二级弹窗） ─────────────
+   宿主复用 base.css 的 .mt-dialog 一套（fixed / 蒙层 / head / body / foot），
+   这里只补宽度与表内细节；结构与交互见 app-wallet.js 的 openPriceDialog。 */
+.mt-dialog-box.wl-price-box {
+  width: min(560px, 94vw);
+}
+
+.wl-price-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.wl-price-head b {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wl-price-x {
+  flex: none;
+}
+
+.wl-price-body {
+  display: grid;
+  gap: 10px;
+}
+
+.wl-price-note {
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.wl-price-table th.num {
+  text-align: right;
+}
+
+/* 模型列（rowSpan 合并同模型的三行）：靠上对齐 + 加粗，右侧一道细线把两个模型分开 */
+.wl-price-table td.wl-price-model {
+  vertical-align: top;
+  font-weight: 600;
+  border-right: 1px solid var(--bd);
+}
+
+.wl-price-table td {
+  white-space: nowrap;
+}
+
+/* 「计费项」列允许换行（英文 / 窄窗时别把单价挤出去） */
+.wl-price-table td.wl-price-item {
+  white-space: normal;
+}
+
+/* 单价单位（「/ 百万 tokens」「/ 张」）：跟在鲸圆币图标后面，弱化处理 */
+.wl-price-unit {
+  color: var(--muted);
+  font-size: 11.5px;
 }
 
 /* 底部 */

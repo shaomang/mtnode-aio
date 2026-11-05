@@ -853,8 +853,8 @@ mockServer.listen(0, '127.0.0.1', () => {
       await importFileToText(fr, bigPath);
       log('file ref large ok=' + (fr.text === bigContent));
       renderCanvas();
-      const frBtn = document.querySelector('.wf-node[data-nid="' + fr.id + '"] .n-head .n-file-ref');
-      log('file ref btn=' + (frBtn && frBtn.title.indexOf('文件参考') >= 0));
+      /* 参考按钮（📄 文件参考）已按需求移除：头部不再出现该按钮 */
+      log('file ref btn removed=' + (document.querySelector('.wf-node[data-nid="' + fr.id + '"] .n-head .n-file-ref') === null));
 
       // —— 停止按钮：运行中显示红方块，点击立即中止 ——
       addNode('proc_text', 100, 2750);

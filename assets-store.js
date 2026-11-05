@@ -17,9 +17,16 @@
  *     displayName: "显示名", desc: "描述",
  *     items: [ { id:"it…", title:"端子标题", type:"text"|"image"|"audio"|"video",
  *                file:"items/it….png",        // 相对素材夹、恒用 "/" 分隔
- *                bytes, createdAt, updatedAt } ],
- *     createdAt, updatedAt
+ *                bytes, createdAt, updatedAt,
+ *                createdBy:"app:<id>"|"mcp"|"agent" } ],   // 缺省 = 用户自己建的
+ *     createdAt, updatedAt,
+ *     createdBy: "app:<id>"|"mcp"|"agent", createdByName: "谁建的（界面显示用）"
  *   }
+ *
+ * 归属（2026-11 新增「应用 ↔ 素材库」）：
+ *   应用窗口（appHost.assets）与 MCP（mtnode_assets 的写动作）都能新建素材 / 条目，
+ *   建出来的东西在 marker 里记 createdBy。**应用只能改 / 删自己建的素材与条目**
+ *   （别人的一律只读，回 forbidden）；MCP 不受归属限制（用户共识）。缺字段 = 用户所有。
  * 条目文件恒为 items/<itemId><扩展名>：标题可改、文件名不动，改名不碰磁盘。
  *
  * 安全垫（都不实删）：
@@ -63,6 +70,14 @@ const ITEM_ID_RE = /^[A-Za-z0-9_-]{4,80}$/;
 /* 遍历与导入时永不下探的名字（隐藏目录一律跳过） */
 const SKIP_DIRS = new Set([TRASH_DIR, VERSIONS_DIR, ".git", "node_modules", "Thumbs.db"]);
 const ITEM_TYPES = { text: 1, image: 1, audio: 1, video: 1 };
+/* createdBy 的合法形状（app:<应用id> / mcp / agent）：只收 ASCII 安全字符，
+   非法值一律丢掉（宁可按「用户所有」处理，也不让脏标记混进库）。 */
+const CREATOR_RE = /^[A-Za-z0-9_:.-]{1,120}$/;
+
+function normCreator(v) {
+  const s = String(v == null ? "" : v).trim();
+  return CREATOR_RE.test(s) ? s : "";
+}
 
 const EXT_TYPE = (() => {
   const m = {};
@@ -361,6 +376,7 @@ function normItems(list) {
       bytes: Number(e.bytes) || 0,
       createdAt: Number(e.createdAt) || 0,
       updatedAt: Number(e.updatedAt) || 0,
+      createdBy: normCreator(e.createdBy),
     });
   }
   return out;
@@ -424,6 +440,7 @@ function itemSummary(root, assetDir, it) {
     missing: !exists,
     createdAt: it.createdAt || 0,
     updatedAt: it.updatedAt || 0,
+    createdBy: normCreator(it.createdBy),
   };
 }
 
@@ -440,6 +457,9 @@ function assetSummary(root, dir, rel, meta) {
     items: items,
     createdAt: Number(meta.createdAt) || 0,
     updatedAt: Number(meta.updatedAt) || 0,
+    /* 来源（界面按它打「来自应用 / MCP」标记）：缺省 = 用户自己建的 */
+    createdBy: normCreator(meta.createdBy),
+    createdByName: String(meta.createdByName || ""),
   };
 }
 
@@ -536,8 +556,9 @@ function writeLibraryOrder(root, order) {
   return o;
 }
 
-/* 新建素材夹 + 标记文件（folder 名与 displayName 同源，重名自动加后缀） */
-function createAssetDir(root, catRel, displayName, desc) {
+/* 新建素材夹 + 标记文件（folder 名与 displayName 同源，重名自动加后缀）
+   owner = { createdBy, createdByName }（可省；省 = 用户自己建的） */
+function createAssetDir(root, catRel, displayName, desc, owner) {
   const parent = relToAbs(root, catRel || "");
   fs.mkdirSync(parent, { recursive: true });
   const name = safeName(displayName, "asset");
@@ -553,6 +574,11 @@ function createAssetDir(root, catRel, displayName, desc) {
     createdAt: now,
     updatedAt: now,
   };
+  const by = normCreator(owner && owner.createdBy);
+  if (by) {
+    meta.createdBy = by;
+    meta.createdByName = String((owner && owner.createdByName) || "");
+  }
   writeMarker(dir, meta);
   return { dir: dir, rel: toRel(dir, root), meta: meta };
 }
@@ -572,7 +598,8 @@ function importPathsIntoLibrary(arg) {
   const catRel = safeName(a.category || "MCP 产物", "MCP");
   const first = list[0];
   const name = String(a.name || "").trim() || path.basename(first, path.extname(first));
-  const made = createAssetDir(root, catRel, name, String(a.desc || ""));
+  const owner = { createdBy: a.createdBy || "mcp", createdByName: a.createdByName || "MCP" };
+  const made = createAssetDir(root, catRel, name, String(a.desc || ""), owner);
   const found = { dir: made.dir, rel: made.rel, meta: made.meta };
   const added = [];
   const skipped = [];
@@ -650,10 +677,352 @@ function addItemEntry(root, found, arg) {
     createdAt: now,
     updatedAt: now,
   };
+  const by = normCreator(arg && arg.createdBy);
+  if (by) item.createdBy = by;
   items.push(item);
   meta.items = items;
   writeMarker(found.dir, meta);
   return item;
+}
+
+/* ---------------- 覆盖写内核（IPC 与程序化写入口共用） ----------------
+   旧文件先进 .versions/（撤销要能真回滚库文件）。
+   preCheck 在「动库里任何东西之前」跑一遍：文本上传用它挡超大 / 不存在的源文件 ——
+   先搬走旧正文再抛错，会留下一个文件缺失的条目，用户看到的是素材凭空坏了。 */
+function replaceItemFileCore(arg, writeFn, preCheck) {
+  const root = ensureRoot();
+  const found = findAssetDir(root, String((arg && arg.id) || ""));
+  if (!found) return { ok: false, error: t("素材不存在") };
+  const items = normItems(found.meta.items);
+  const itemId = String((arg && arg.itemId) || "");
+  const it = items.find((i) => i.id === itemId);
+  if (!it) return { ok: false, error: t("内容条目不存在") };
+  if (preCheck) preCheck(it);
+  const itemsDir = path.join(found.dir, ITEMS_DIR);
+  fs.mkdirSync(itemsDir, { recursive: true });
+  /* 条目没有落过盘（历史脏数据）时不能把 items/ 本身当旧文件搬进 .versions/ */
+  const oldName = String(it.file || "").split("/").pop();
+  const prevAbs = oldName ? path.join(itemsDir, oldName) : "";
+  const hadFile = !!prevAbs && fs.existsSync(prevAbs) && fs.statSync(prevAbs).isFile();
+  /* 0 字节 ＝ 这一项还没有内容（新建的空文本条目尤其常见）。
+     往空条目里写第一份内容不算「覆盖」：不留版本（撤销＝清回空，见 prevEmpty），
+     否则每填一条素材都会往 .versions/ 塞一个空文件，把真正有价值的历史挤掉。 */
+  let hadContent = false;
+  try {
+    hadContent = hadFile && (fs.statSync(prevAbs).size || 0) > 0;
+  } catch {
+    hadContent = false;
+  }
+  /* 自指保护：源文件就是这一条此刻那份 —— 什么都不做。
+     不拦的话：旧文件先被搬进 .versions/，再复制时「源文件不存在」，
+     条目反而凭空空掉（用户在文件选择框里挑了素材库自己那份）。 */
+  const srcAbs =
+    arg && typeof arg.srcPath === "string" && arg.srcPath.trim()
+      ? path.resolve(String(arg.srcPath).trim())
+      : "";
+  if (srcAbs && hadFile && srcAbs === path.resolve(prevAbs)) {
+    return {
+      ok: true,
+      noop: true, // 渲染层据此不记撤销账（什么都没变）
+      item: it,
+      prevVersion: "",
+      prevEmpty: false,
+      asset: assetSummary(root, found.dir, found.rel, found.meta),
+    };
+  }
+  const prevVersion = hadContent ? stashVersion(found.dir, itemId, prevAbs) : "";
+  /* 位置参数仍传旧路径：文本走就地改写，扩展名与文件名不因此漂移 */
+  const nextAbs = writeFn(itemsDir, it, hadFile ? prevAbs : "", prevAbs || "");
+  if (!nextAbs || !fs.existsSync(nextAbs)) throw new Error(t("写入失败"));
+  it.file = ITEMS_DIR + "/" + path.basename(nextAbs);
+  it.bytes = fs.statSync(nextAbs).size || 0;
+  it.updatedAt = Date.now();
+  if (typeof (arg && arg.title) === "string" && String(arg.title).trim())
+    it.title = String(arg.title).trim();
+  found.meta.items = items;
+  writeMarker(found.dir, found.meta);
+  return {
+    ok: true,
+    item: it,
+    /* prevVersion ＝ 覆盖前那份文件的绝对路径（已被搬进 .versions/）；
+       prevEmpty ＝ 覆盖前这一项本来就是空的。渲染层把两者记进撤销快照，
+       undo 时：有路径 → 从 .versions/ 复制回来；只有 prevEmpty → 清回空。 */
+    prevVersion: prevVersion,
+    prevEmpty: !hadContent,
+    asset: assetSummary(root, found.dir, found.rel, found.meta),
+  };
+}
+
+/* ---------------- 程序化写入口（应用窗口 ↔ 素材库）----------------
+ * 应用窗口的 appHost.assets（主进程 app-host-bridge.js）直接调这里，不绕渲染层 IPC：
+ * 归属校验是硬口径，放在库里判，不交给调用方自觉。
+ *
+ *   actor = { kind:"app"|"mcp"|"agent", id?, name? }
+ *   createdBy = "app:<应用id>" / "mcp" / "agent"（"" = 用户自己建的）
+ *
+ * 归属规则（用户共识）：
+ *   · 应用（kind="app"）：只能改 / 删**自己建的**素材与条目，别人的一律只读 → forbidden；
+ *   · MCP / 本机 Agent：不受归属限制（删除照旧进回收站、改文本照旧留版本）；
+ *   · 界面自己（不传 actor / kind 不是上面三个）：不校验，行为与以前完全一致。
+ * 返回一律是结构化回执（ok 字段），绝不 reject —— 桥与工具都直接把它回给调用方。 */
+function actorOwner(actor) {
+  const a = actor && typeof actor === "object" ? actor : {};
+  const kind = String(a.kind || "");
+  if (kind === "app") return "app:" + String(a.id || "").trim();
+  if (kind === "mcp") return "mcp";
+  if (kind === "agent") return "agent";
+  return "";
+}
+function actorDisplayName(actor) {
+  const a = actor && typeof actor === "object" ? actor : {};
+  const given = String(a.name || "").trim();
+  if (given) return given;
+  const kind = String(a.kind || "");
+  if (kind === "mcp") return "MCP 客户端";
+  if (kind === "agent") return "本机 Agent";
+  return "";
+}
+function isAppActor(actor) {
+  return String((actor && actor.kind) || "") === "app";
+}
+/** 归属判定：应用只能动自己建的；别的调用方一律放行（界面 = 用户本人） */
+function actorAllowed(actor, createdBy) {
+  if (!isAppActor(actor)) return true;
+  const own = actorOwner(actor);
+  return !!own && normCreator(createdBy) === own;
+}
+function forbiddenReply() {
+  return {
+    ok: false,
+    code: "forbidden",
+    error: t("只能改 / 删这个应用自己创建的内容：别人的素材与条目只读"),
+  };
+}
+
+/** 应用 / MCP 的素材库调用（唯一入口） */
+async function assetActorCall(actor, method, args) {
+  const a = args && typeof args === "object" ? args : {};
+  const who = { createdBy: actorOwner(actor), createdByName: actorDisplayName(actor) };
+  const rootOf = () => {
+    const { root, configured } = rootPath();
+    if (!configured) throw new Error(t("尚未指定素材库根目录"));
+    return { root: root, configured: configured };
+  };
+  try {
+    if (method === "root") {
+      const { root, configured } = rootPath();
+      return { ok: true, path: root, configured: configured, exists: fs.existsSync(root) };
+    }
+    if (method === "scan") {
+      const { root } = rootOf();
+      return { ok: true, root: root, scan: scanLibrary(root), order: readLibraryOrder(root) };
+    }
+    if (method === "mkdir") {
+      /* 建分类目录（可嵌套、幂等）：应用按项目名建目录 + 五个子分类，其中「场景图 / 道具图」
+         这一轮是空的占位目录 —— 没有这一条，应用就无法让一个空分类存在（create 只会建素材夹）。
+         只建目录、不建素材；名字逐段净化，越界（..）由 relToAbs 抛错挡掉。 */
+      const { root } = rootOf();
+      const raw = String(a.catRel || a.rel || "")
+        .split(/[\\/]+/)
+        .map((s) => s.trim())
+        .filter(Boolean);
+      if (!raw.length) return badArg(t("目录名不能为空"));
+      /* 「.」「..」这段一律拒掉，而不是交给净化改名：净化会把「..」变成别的名字，
+         结果是在库里悄悄建出一个谁也没要的怪目录（既不报错也不算越界，最难查）。 */
+      if (raw.some((s) => s === "." || s === "..")) return badArg(t("目录名不能是 . 或 .."));
+      const rel = raw
+        .map((s) => safeName(s, ""))
+        .filter(Boolean)
+        .join("/");
+      if (!rel) return badArg(t("目录名不能为空"));
+      const abs = relToAbs(root, rel);
+      const existed = fs.existsSync(abs);
+      if (existed && !fs.statSync(abs).isDirectory()) return { ok: false, error: t("同名文件已存在") };
+      fs.mkdirSync(abs, { recursive: true });
+      return { ok: true, rel: toRel(abs, root), created: !existed };
+    }
+    if (method === "create") {
+      const { root } = rootOf();
+      const name = String(a.displayName || a.name || "").trim();
+      if (!name) return badArg(t("素材名称不能为空"));
+      const made = createAssetDir(root, String(a.catRel || a.category || ""), name, String(a.desc || ""), who);
+      return { ok: true, asset: assetSummary(root, made.dir, made.rel, made.meta) };
+    }
+    if (method === "addItem") {
+      const { root } = rootOf();
+      const found = findAssetDir(root, String(a.id || ""));
+      if (!found) return { ok: false, error: t("素材不存在") };
+      if (!actorAllowed(actor, found.meta.createdBy)) return forbiddenReply();
+      const item = addItemEntry(root, found, Object.assign({}, a, { createdBy: who.createdBy }));
+      return { ok: true, item: item, asset: assetSummary(root, found.dir, found.rel, found.meta) };
+    }
+    if (method === "importFile") {
+      /* 新建素材并把本机文件收进去（任选分类，不存在自动建） */
+      const { root } = rootOf();
+      const paths = (Array.isArray(a.paths) ? a.paths : [a.path || a.srcPath || ""])
+        .map((p) => String(p || "").trim())
+        .filter(Boolean);
+      if (!paths.length) return badArg(t("没有要收进素材库的文件"));
+      const name =
+        String(a.name || a.displayName || "").trim() ||
+        path.basename(paths[0], path.extname(paths[0]));
+      const made = createAssetDir(root, String(a.category || a.catRel || ""), name, String(a.desc || ""), who);
+      const added = [];
+      const skipped = [];
+      for (const p of paths) {
+        const abs = path.resolve(p);
+        const type = typeOfExt(abs);
+        if (!type || !fs.existsSync(abs) || !fs.statSync(abs).isFile()) {
+          skipped.push(p);
+          continue;
+        }
+        try {
+          added.push(addItemEntry(root, made, { type: type, srcPath: abs, createdBy: who.createdBy }));
+        } catch (err) {
+          skipped.push(p + "（" + ((err && err.message) || err) + "）");
+        }
+      }
+      return {
+        ok: true,
+        asset: assetSummary(root, made.dir, made.rel, made.meta),
+        added: added,
+        skipped: skipped,
+      };
+    }
+    if (method === "importFiles") {
+      /* 往既有素材追加内容条目（应用只能往自己建的素材里加） */
+      const { root } = rootOf();
+      const found = findAssetDir(root, String(a.id || ""));
+      if (!found) return { ok: false, error: t("素材不存在") };
+      if (!actorAllowed(actor, found.meta.createdBy)) return forbiddenReply();
+      const paths = (Array.isArray(a.paths) ? a.paths : [a.path || a.srcPath || ""])
+        .map((p) => String(p || "").trim())
+        .filter(Boolean);
+      const added = [];
+      const skipped = [];
+      for (const p of paths) {
+        const abs = path.resolve(p);
+        const type = typeOfExt(abs);
+        if (!type || !fs.existsSync(abs) || !fs.statSync(abs).isFile()) {
+          skipped.push(p);
+          continue;
+        }
+        try {
+          added.push(addItemEntry(root, found, { type: type, srcPath: abs, createdBy: who.createdBy }));
+        } catch (err) {
+          skipped.push(p + "（" + ((err && err.message) || err) + "）");
+        }
+      }
+      return {
+        ok: true,
+        items: added,
+        skipped: skipped,
+        asset: assetSummary(root, found.dir, found.rel, found.meta),
+      };
+    }
+    if (method === "readItem") {
+      const { root } = rootOf();
+      const found = findAssetDir(root, String(a.id || ""));
+      if (!found) return { ok: false, error: t("素材不存在") };
+      const items = normItems(found.meta.items);
+      const itemId = String(a.itemId || "");
+      const idx = Number(a.index);
+      const it = itemId
+        ? items.find((i) => i.id === itemId)
+        : Number.isFinite(idx)
+          ? items[Math.max(0, Math.floor(idx))]
+          : items[0];
+      if (!it) return { ok: false, error: t("内容条目不存在") };
+      const abs = it.file ? path.join(found.dir, it.file.split("/").join(path.sep)) : "";
+      const exists = !!abs && fs.existsSync(abs);
+      return {
+        ok: true,
+        item: itemSummary(root, found.dir, it),
+        asset: { id: String(found.meta.id || ""), rel: found.rel, displayName: String(found.meta.displayName || "") },
+        file: {
+          path: exists ? abs : "",
+          bytes: exists ? fs.statSync(abs).size || 0 : 0,
+          exists: exists,
+        },
+        text: it.type === "text" && exists ? String(fs.readFileSync(abs, "utf8")) : "",
+      };
+    }
+    if (method === "updateText") {
+      const { root } = rootOf();
+      const found = findAssetDir(root, String(a.id || ""));
+      if (!found) return { ok: false, error: t("素材不存在") };
+      const it = normItems(found.meta.items).find((i) => i.id === String(a.itemId || ""));
+      if (!it) return { ok: false, error: t("内容条目不存在") };
+      if (it.type !== "text") return badArg(t("这一条不是文本条目（媒体条目用 importFile 换内容）"));
+      if (!actorAllowed(actor, it.createdBy)) return forbiddenReply();
+      const text = typeof a.content === "string" ? a.content : "";
+      const out = replaceItemFileCore(Object.assign({}, a, { title: a.title }), (itemsDir, cur) => {
+        const oldName = String(cur.file || "").split("/").pop();
+        const abs = oldName
+          ? path.join(itemsDir, oldName)
+          : path.join(itemsDir, uniqueItemFile(itemsDir, cur.id, ".txt", null));
+        fs.writeFileSync(abs, text, "utf8");
+        return abs;
+      });
+      return out;
+    }
+    if (method === "updateMeta") {
+      const { root } = rootOf();
+      const found = findAssetDir(root, String(a.id || ""));
+      if (!found) return { ok: false, error: t("素材不存在") };
+      if (!actorAllowed(actor, found.meta.createdBy)) return forbiddenReply();
+      const meta = found.meta;
+      if (typeof a.displayName === "string") {
+        const dn = safeName(a.displayName, "");
+        if (dn) meta.displayName = dn;
+      }
+      if (typeof a.desc === "string") meta.desc = a.desc;
+      /* 挪分类：只动文件夹位置（id 不变，绑定该素材的节点不受影响） */
+      let dir = found.dir;
+      let rel = found.rel;
+      if (typeof a.catRel === "string") {
+        const parent = relToAbs(root, a.catRel);
+        fs.mkdirSync(parent, { recursive: true });
+        const dest = path.join(parent, path.basename(found.dir));
+        if (path.resolve(dest) !== path.resolve(found.dir)) {
+          const final = fs.existsSync(dest) ? path.join(parent, uniqueName(parent, path.basename(found.dir), "")) : dest;
+          fs.renameSync(found.dir, final);
+          dir = final;
+          rel = toRel(final, root);
+        }
+      }
+      writeMarker(dir, meta);
+      return { ok: true, asset: assetSummary(root, dir, rel, meta) };
+    }
+    if (method === "removeItem") {
+      const { root } = rootOf();
+      const found = findAssetDir(root, String(a.id || ""));
+      if (!found) return { ok: false, error: t("素材不存在") };
+      const items = normItems(found.meta.items);
+      const i = items.findIndex((x) => x.id === String(a.itemId || ""));
+      if (i < 0) return { ok: false, error: t("内容条目不存在") };
+      if (!actorAllowed(actor, items[i].createdBy)) return forbiddenReply();
+      const it = items[i];
+      const abs = it.file ? path.join(found.dir, it.file.split("/").join(path.sep)) : "";
+      let trash = "";
+      if (abs && fs.existsSync(abs)) trash = await moveToTrash(root, abs, path.basename(abs));
+      items.splice(i, 1);
+      found.meta.items = items;
+      writeMarker(found.dir, found.meta);
+      return { ok: true, removed: it, trash: trash, asset: assetSummary(root, found.dir, found.rel, found.meta) };
+    }
+    if (method === "deleteAsset") {
+      const { root } = rootOf();
+      const found = findAssetDir(root, String(a.id || ""));
+      if (!found) return { ok: false, error: t("素材不存在") };
+      if (!actorAllowed(actor, found.meta.createdBy)) return forbiddenReply();
+      const dest = await moveToTrash(root, found.dir, found.meta.displayName || path.basename(found.dir));
+      return { ok: true, trash: dest, rel: found.rel };
+    }
+    return { ok: false, code: "bad_method", error: t("不认识的素材库操作：") + String(method || "") };
+  } catch (err) {
+    return fail(err);
+  }
 }
 
 /* ---------------- 备份（向指定位置同步一份副本） ----------------
@@ -886,6 +1255,7 @@ function registerAssetsIpc(opts) {
         (arg && arg.catRel) || "",
         (arg && arg.displayName) || (arg && arg.name) || "",
         (arg && arg.desc) || "",
+        { createdBy: arg && arg.createdBy, createdByName: arg && arg.createdByName },
       );
       return { ok: true, asset: assetSummary(root, a.dir, a.rel, a.meta) };
     } catch (err) {
@@ -1002,69 +1372,10 @@ function registerAssetsIpc(opts) {
 
   /* 覆盖写：旧文件先进 .versions/（撤销要能真回滚库文件）。
      preCheck 在「动库里任何东西之前」跑一遍：文本上传用它挡超大 / 不存在的源文件 ——
-     先搬走旧正文再抛错，会留下一个文件缺失的条目，用户看到的是素材凭空坏了。 */
+     先搬走旧正文再抛错，会留下一个文件缺失的条目，用户看到的是素材凭空坏了。
+     实现在模块级（replaceItemFileCore）：应用窗口的写入口与 IPC 共用同一份。 */
   function replaceItemFile(arg, writeFn, preCheck) {
-    const root = ensureRoot();
-    const found = findAssetDir(root, String((arg && arg.id) || ""));
-    if (!found) return { ok: false, error: t("素材不存在") };
-    const items = normItems(found.meta.items);
-    const itemId = String((arg && arg.itemId) || "");
-    const it = items.find((i) => i.id === itemId);
-    if (!it) return { ok: false, error: t("内容条目不存在") };
-    if (preCheck) preCheck(it);
-    const itemsDir = path.join(found.dir, ITEMS_DIR);
-    fs.mkdirSync(itemsDir, { recursive: true });
-    /* 条目没有落过盘（历史脏数据）时不能把 items/ 本身当旧文件搬进 .versions/ */
-    const oldName = String(it.file || "").split("/").pop();
-    const prevAbs = oldName ? path.join(itemsDir, oldName) : "";
-    const hadFile = !!prevAbs && fs.existsSync(prevAbs) && fs.statSync(prevAbs).isFile();
-    /* 0 字节 ＝ 这一项还没有内容（新建的空文本条目尤其常见）。
-       往空条目里写第一份内容不算「覆盖」：不留版本（撤销＝清回空，见 prevEmpty），
-       否则每填一条素材都会往 .versions/ 塞一个空文件，把真正有价值的历史挤掉。 */
-    let hadContent = false;
-    try {
-      hadContent = hadFile && (fs.statSync(prevAbs).size || 0) > 0;
-    } catch {
-      hadContent = false;
-    }
-    /* 自指保护：源文件就是这一条此刻那份 —— 什么都不做。
-       不拦的话：旧文件先被搬进 .versions/，再复制时「源文件不存在」，
-       条目反而凭空空掉（用户在文件选择框里挑了素材库自己那份）。 */
-    const srcAbs =
-      arg && typeof arg.srcPath === "string" && arg.srcPath.trim()
-        ? path.resolve(String(arg.srcPath).trim())
-        : "";
-    if (srcAbs && hadFile && srcAbs === path.resolve(prevAbs)) {
-      return {
-        ok: true,
-        noop: true, // 渲染层据此不记撤销账（什么都没变）
-        item: it,
-        prevVersion: "",
-        prevEmpty: false,
-        asset: assetSummary(root, found.dir, found.rel, found.meta),
-      };
-    }
-    const prevVersion = hadContent ? stashVersion(found.dir, itemId, prevAbs) : "";
-    /* 位置参数仍传旧路径：文本走就地改写，扩展名与文件名不因此漂移 */
-    const nextAbs = writeFn(itemsDir, it, hadFile ? prevAbs : "", prevAbs || "");
-    if (!nextAbs || !fs.existsSync(nextAbs)) throw new Error(t("写入失败"));
-    it.file = ITEMS_DIR + "/" + path.basename(nextAbs);
-    it.bytes = fs.statSync(nextAbs).size || 0;
-    it.updatedAt = Date.now();
-    if (typeof (arg && arg.title) === "string" && String(arg.title).trim())
-      it.title = String(arg.title).trim();
-    found.meta.items = items;
-    writeMarker(found.dir, found.meta);
-    return {
-      ok: true,
-      item: it,
-      /* prevVersion ＝ 覆盖前那份文件的绝对路径（已被搬进 .versions/）；
-         prevEmpty ＝ 覆盖前这一项本来就是空的。渲染层把两者记进撤销快照，
-         undo 时：有路径 → 从 .versions/ 复制回来；只有 prevEmpty → 清回空。 */
-      prevVersion: prevVersion,
-      prevEmpty: !hadContent,
-      asset: assetSummary(root, found.dir, found.rel, found.meta),
-    };
+    return replaceItemFileCore(arg, writeFn, preCheck);
   }
 
   ipcMain.handle("assets:itemUpdateText", (e, arg) => {
@@ -1237,7 +1548,10 @@ function registerAssetsIpc(opts) {
         (arg && arg.displayName) || path.basename(src),
         "asset",
       );
-      const a = createAssetDir(root, (arg && arg.catRel) || "", name, (arg && arg.desc) || "");
+      const a = createAssetDir(root, (arg && arg.catRel) || "", name, (arg && arg.desc) || "", {
+        createdBy: arg && arg.createdBy,
+        createdByName: arg && arg.createdByName,
+      });
       const picked = [];
       collectFiles(src, "", 4000, picked);
       let skipped = 0;
@@ -1252,6 +1566,7 @@ function registerAssetsIpc(opts) {
             type: type,
             title: f.rel.indexOf("/") < 0 ? path.basename(f.abs, path.extname(f.abs)) : f.rel,
             srcPath: f.abs,
+            createdBy: arg && arg.createdBy,
           });
         } catch {
           skipped++;
@@ -1289,7 +1604,11 @@ function registerAssetsIpc(opts) {
         }
         try {
           added.push(
-            addItemEntry(root, found, { type: type, srcPath: abs }),
+            addItemEntry(root, found, {
+              type: type,
+              srcPath: abs,
+              createdBy: arg && arg.createdBy,
+            }),
           );
         } catch (err) {
           skipped.push(String(p || "") + "（" + ((err && err.message) || err) + "）");
@@ -1382,14 +1701,16 @@ function collectFiles(dir, relPrefix, limit, out) {
    直接丢进 <img>。解码后的位图由 Chromium 的 GPU 进程按源分辨率建纹理，而这类纹理
    **只有渲染进程销毁才归还**（同一台机实测：MTNode 的 GPU 进程 3151MB → 重载后
    265MB，整卡 4.4G → 1.5G；最小化只掉二十来兆）。预览位实际只有一两百像素，
-   按原图建纹理纯属浪费，所以在「读」这一层就把长边压到 ≤ edge（默认 640），
+   按原图建纹理纯属浪费，所以在「读」这一层就把长边压到 ≤ edge（默认 320，
+   与设置里「预览画质 · 中」同一口径；渲染层按调用点显示尺寸自己传 e），
    纹理大小与源图分辨率脱钩。
-   URL：mtnode-thumb://img/<encodeURIComponent(绝对路径)>?e=640&t=<防缓存串>
+   URL：mtnode-thumb://img/<encodeURIComponent(绝对路径)>?e=320&t=<防缓存串>
    读不到 / 解不出 / 本来就比 edge 小 → 原样吐回原文件字节（预览绝不因此变空白）。
    不在磁盘留缓存文件：进程内按「路径 + mtime + 字节数 + edge」记少量 PNG（LRU 80），
    重启即清（数据不落应用目录）。 */
 const THUMB_SCHEME = "mtnode-thumb";
-const THUMB_DEFAULT_EDGE = 640;
+/* 没带 e 参数时的兜底长边：与渲染层 previewEdge() 的缺省档（中 320）一致 */
+const THUMB_DEFAULT_EDGE = 320;
 const THUMB_CACHE_MAX = 80;
 const thumbCache = new Map(); /* key -> { buf, mime } */
 
@@ -1566,4 +1887,10 @@ function registerThumbProtocol() {
   });
 }
 
-module.exports = { registerAssetsIpc, importPathsIntoLibrary, registerThumbProtocol };
+module.exports = {
+  registerAssetsIpc,
+  importPathsIntoLibrary,
+  registerThumbProtocol,
+  /* 应用窗口 / MCP 的程序化写入口（带归属校验，见 assetActorCall 的口径） */
+  assetActorCall,
+};

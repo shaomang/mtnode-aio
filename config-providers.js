@@ -49,6 +49,18 @@ function backupConfigFile(configPath) {
  * Atomically patch only the providers array in config.json.
  * Must be called synchronously after any async preparation.
  */
+/* 官方 DeepSeek 那条**不允许被删**（需求：默认提供商固定为官方 DeepSeek）。
+   删除请求里点名它时直接忽略；它自己的模型清单 / Key 照旧由「整条 upsert」改。 */
+function isOfficialDeepseek(p) {
+  if (!p || typeof p !== "object") return false;
+  if (String(p.id || "") === "deepseek") return true;
+  try {
+    return new URL(String(p.baseUrl || "")).hostname.toLowerCase().includes("deepseek");
+  } catch {
+    return false;
+  }
+}
+
 function patchProviders(configPath, opts) {
   opts = opts || {};
   const removeIds = new Set((opts.removeIds || []).map(String));
@@ -59,7 +71,10 @@ function patchProviders(configPath, opts) {
   const before = Array.isArray(appCfg.providers) ? appCfg.providers : [];
   let providers = before.filter((p) => {
     if (!p || typeof p !== "object") return false;
-    if (removeIds.has(String(p.id || ""))) return false;
+    if (removeIds.has(String(p.id || ""))) {
+      if (isOfficialDeepseek(p)) return true;
+      return false;
+    }
     if (p.source && removeSources.has(String(p.source))) return false;
     return true;
   });

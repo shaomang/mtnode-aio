@@ -491,7 +491,22 @@ async function appsCreateApp(name, id, style, capabilities) {
          标签：同样**默认开** —— 需求「默认开启、可启用禁用」，与语音转录（showDictate）同一条机制。 */
       capabilities && typeof capabilities === "object"
         ? capabilities
-        : { textInput: true, showDictate: true, showAuthor: true, imageGen: true },
+        : {
+            textInput: true,
+            showDictate: true,
+            showAuthor: true,
+            imageGen: true,
+            voiceGen: true,
+            /* 画布 / agent 两位（本轮新增）：新建应用默认**开**，与上面四位同一条口径。
+               注意它们不是「注入 UI」的开关，而是能力的声明面：没勾上时 appHost.canvas /
+               agent 一族直接回 not_declared（见 apps-capabilities.js 顶部）。声明 ≠ 放行 ——
+               首次调用宿主仍会弹一次授权窗，用户随时能在「应用设置」里取消勾选撤销。 */
+            canvasHost: true,
+            agentHost: true,
+            /* 素材库（本轮新增）：同样默认开 —— 应用能列 / 读全库、把本机文件收进库、
+               新建自己的素材与条目；用户自己那份对它只读（归属校验在 assets-store.js）。 */
+            assetHost: true,
+          },
     );
   } catch (err) {
     toast(I18n.t("新建应用失败：") + ((err && err.message) || String(err)), "err");
@@ -765,17 +780,22 @@ function startCustomStyleAsk(appId, appName, mode) {
  *   showDictate  显示听写条 → 应用窗口底部显示宿主注入的听写条（勾上即默认可见，条尾可收起）
  *   showAuthor   作者标签 → 应用窗口**左下角**显示宿主注入的作者标签（平时隐藏、hover 出
  *                `@作者 - v版本`、点击看只读应用详情）
+ *   showMediaPlayer 底部播放条 → 应用窗口底部显示宿主注入的播放条（音频画波形 / 视频带画面）
  *   imageGen     需要生成图片 → 用 MTNode 已配好的图像能力（云端服务商）
- * 缺省**四个都不勾**（缺省 = 宿主不注入；声明为真的应用注入进来就是生效的）。
+ * 缺省**都不勾**（缺省 = 宿主不注入；声明为真的应用注入进来就是生效的）。
+ * ★ 这组复选框必须与 apps-capabilities.js 的 APP_CAPABILITIES **逐个对齐**：
+ *   apps:capabilitiesSet 是整份替换（normCapabilities），这里漏一位 = 用户点一次保存就把那一
+ *   位静默清掉（底部播放条当初就是这么漏的：清单里有、设置窗里没有）。
  * 界面这边只负责「勾选 + 一句话说明」；真正的落盘、入口页重生成、语音文件补撤都在主进程
  * （apps:capabilitiesSet），渲染层不碰文件系统。
- * 返回 { box, get(), set() }：get() 回一份 { textInput, showDictate, showAuthor, imageGen } 布尔对象。
+ * 返回 { box, get(), set() }：get() 回一份 9 位布尔对象（textInput / showDictate / showAuthor /
+ * showMediaPlayer / imageGen / voiceGen / assetHost / canvasHost / agentHost，与 APP_CAPABILITIES 同序同全集）。
  * onChange（可选）＝**勾选即写盘**那条路的钩子（「应用设置」窗传它，用户口径：能力位不再单独
  * 保存，统一由勾选当场生效）：每次勾选/取消后回调一次新的能力位；写盘失败由调用方用 set()
  * 把勾选态回滚成磁盘上的真实值。不传 = 老口径（只改内存态，由调用方自己保存）。 */
 function appsCapabilityChecks(value, onChange) {
   const cur = Object.assign(
-    { textInput: false, showDictate: false, showAuthor: false, imageGen: false },
+    { textInput: false, showDictate: false, showAuthor: false, showMediaPlayer: false, imageGen: false, voiceGen: false, canvasHost: false, agentHost: false, assetHost: false },
     value || {},
   );
   const box = document.createElement("div");
@@ -784,13 +804,23 @@ function appsCapabilityChecks(value, onChange) {
     textInput: cur.textInput === true,
     showDictate: cur.showDictate === true,
     showAuthor: cur.showAuthor === true,
+    showMediaPlayer: cur.showMediaPlayer === true,
     imageGen: cur.imageGen === true,
+    voiceGen: cur.voiceGen === true,
+    canvasHost: cur.canvasHost === true,
+    agentHost: cur.agentHost === true,
+    assetHost: cur.assetHost === true,
   };
   const read = () => ({
     textInput: state.textInput === true,
     showDictate: state.showDictate === true,
     showAuthor: state.showAuthor === true,
+    showMediaPlayer: state.showMediaPlayer === true,
     imageGen: state.imageGen === true,
+    voiceGen: state.voiceGen === true,
+    canvasHost: state.canvasHost === true,
+    agentHost: state.agentHost === true,
+    assetHost: state.assetHost === true,
   });
   const rows = [
     {
@@ -809,9 +839,40 @@ function appsCapabilityChecks(value, onChange) {
       hint: I18n.t("在应用窗口左下角显示作者标签：平时隐藏，鼠标移上去显示「@作者 - v版本」，点一下看应用详情（作者取 app.json 的 author，没写就用当前登录账号昵称）"),
     },
     {
+      id: "showMediaPlayer",
+      label: I18n.t("显示底部播放条"),
+      hint: I18n.t("在应用窗口底部显示宿主注入的播放条（音频画波形、视频带画面）：应用里的音频视频都走这一条，没点播时自动收起"),
+    },
+    {
       id: "imageGen",
       label: I18n.t("需要图像生成"),
         hint: I18n.t("用 MTNode 已配好的图像能力出图：云端图像服务商（没配就用不了，界面会写清去哪配）"),
+    },
+    {
+      id: "voiceGen",
+      label: I18n.t("需要语音合成"),
+      hint: I18n.t("用本机 Breeze TTS 2 合成语音（选音色角色 + 文本 → wav 落进画布工作目录）；以前这条只能跟「画布读写」一起开，现在单独一位"),
+    },
+    /* 后两位（本轮新增）：**不是**「注入 UI」的开关，而是能力的声明面 ——
+       没勾上时 appHost.canvas / fs / tools / net（canvasHost）与 appHost.agent（agentHost）
+       一律回 not_declared。声明 ≠ 放行：首次调用宿主还会弹一次授权窗，
+       取消勾选 = 撤销那次授权（apps-store.js 的 appCapabilitiesSet 会顺手 revoke）。 */
+    {
+      id: "canvasHost",
+      label: I18n.t("画布读写"),
+      hint: I18n.t("允许读写这个应用对应的那张画布（建/改/删节点、连线、改表单、存盘），以及画布工作目录里的文件、本机后端工具、联网；首次使用时宿主会弹窗让你确认一次"),
+    },
+    {
+      id: "agentHost",
+      label: I18n.t("Agent 调用"),
+      hint: I18n.t("允许应用起一条 MTNode 会话（出现在左栏）对着自己的画布干活：发消息、看实时进度、随时叫停；会话你也能看、能打断、能接着聊"),
+    },
+    /* 素材库（本轮新增）：与画布读写同一条纪律 —— 声明面 + 首次授权的硬闸。
+       归属硬口径写在 assets-store.js 的 assetActorCall：应用只能改删自己创建的内容。 */
+    {
+      id: "assetHost",
+      label: I18n.t("素材库读写"),
+      hint: I18n.t("允许应用列 / 读整个素材库、把本机文件收进库、新建自己的素材与内容条目，并删除自己创建的东西（进回收站）；你自己创建的素材与条目对它只读。首次使用时宿主会弹窗让你确认一次"),
     },
   ];
   for (const r of rows) {
@@ -851,7 +912,12 @@ function appsCapabilityChecks(value, onChange) {
       state.textInput = nv.textInput === true;
       state.showDictate = nv.showDictate === true;
       state.showAuthor = nv.showAuthor === true;
+      state.showMediaPlayer = nv.showMediaPlayer === true;
       state.imageGen = nv.imageGen === true;
+      state.voiceGen = nv.voiceGen === true;
+      state.canvasHost = nv.canvasHost === true;
+      state.agentHost = nv.agentHost === true;
+      state.assetHost = nv.assetHost === true;
       const boxes = box.querySelectorAll("input[data-cap]");
       for (const b of boxes) b.checked = state[b.dataset.cap] === true;
     },
@@ -934,11 +1000,7 @@ async function appCapabilitiesDialog(appId, appName, opts) {
   ok.onclick = async () => {
     const next = box.get();
     const before = r0.capabilities || {};
-    const changed =
-      (before.textInput === true) !== (next.textInput === true) ||
-      (before.showDictate === true) !== (next.showDictate === true) ||
-      (before.showAuthor === true) !== (next.showAuthor === true) ||
-      (before.imageGen === true) !== (next.imageGen === true);
+    const changed = Object.keys(next).some((k) => (before[k] === true) !== (next[k] === true));
     if (!changed) {
       toast(I18n.t("能力没有变化"));
       return;

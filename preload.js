@@ -13,11 +13,63 @@ contextBridge.exposeInMainWorld('api', {
      WebAudio / <audio>。主进程侧只剩「判定心跳」：soundWatch(on) 告诉主进程"现在有活在跑"，
      主进程每 2 秒回一发 onSoundTick —— 让完成判定不再只依赖渲染层定时器（后台节流会把它
      推迟到切回窗口才响，见 main.js 的 setSoundWatch）。别再把它改成主进程发声。 */
+  /* ── MOSS-TTS-Nano 内置语音（状态栏那枚 TTS 开关）：见 moss-tts/main-moss-tts.js。
+        后端随包、首次启用自动下载，所以这里只有「状态 / 启停 / 合成 / 音色」四类入口。 ── */
+  mossTtsState: () => ipcRenderer.invoke('mosstts:getState'),
+  mossTtsEnable: () => ipcRenderer.invoke('mosstts:enable'),
+  mossTtsDisable: () => ipcRenderer.invoke('mosstts:disable'),
+  mossTtsInstall: () => ipcRenderer.invoke('mosstts:install'),
+  mossTtsSpeak: (payload) => ipcRenderer.invoke('mosstts:speak', payload || {}),
+  mossTtsCancel: (reqId) => ipcRenderer.invoke('mosstts:cancel', reqId || ''),
+  mossTtsSetVoice: (voice) => ipcRenderer.invoke('mosstts:setVoice', voice || {}),
+  mossTtsSetProvider: (provider) => ipcRenderer.invoke('mosstts:setProvider', provider || 'auto'),
+  mossTtsPickAudio: () => ipcRenderer.invoke('mosstts:pickAudio'),
+  mossTtsListBreeze: () => ipcRenderer.invoke('mosstts:listBreeze'),
+  mossTtsOpenRoot: () => ipcRenderer.invoke('mosstts:openRoot'),
+  mossTtsLog: (n) => ipcRenderer.invoke('mosstts:log', n),
+  mossTtsClearOut: () => ipcRenderer.invoke('mosstts:clearOut'),
+  onMossTtsProgress: (cb) => {
+    const h = (_e, d) => { try { cb(d); } catch (_) {} };
+    ipcRenderer.on('mosstts:progress', h);
+    return () => { try { ipcRenderer.removeListener('mosstts:progress', h); } catch (_) {} };
+  },
+  onMossTtsEvent: (cb) => {
+    const h = (_e, d) => { try { cb(d); } catch (_) {} };
+    ipcRenderer.on('mosstts:event', h);
+    return () => { try { ipcRenderer.removeListener('mosstts:event', h); } catch (_) {} };
+  },
+
+  /* 官方 DeepSeek 还没配 API Key：主进程 checkProvider 撞到时报一次，渲染层弹
+     图文引导窗（renderer/app-deepseek-onboard.js）。载荷只有 { reason }，不含 Key。 */
+  onDsNeedKey: (cb) => {
+    const h = (_e, d) => { try { cb(d || {}); } catch (_) {} };
+    ipcRenderer.on('ds:needKey', h);
+    return () => { try { ipcRenderer.removeListener('ds:needKey', h); } catch (_) {} };
+  },
   soundWatch: (on) => ipcRenderer.invoke('sound:watch', !!on),
   onSoundTick: (cb) => {
     const h = () => { try { cb(); } catch (_) {} };
     ipcRenderer.on('sound:tick', h);
     return () => { try { ipcRenderer.removeListener('sound:tick', h); } catch (_) {} };
+  },
+  /* 常驻托盘 + 任务完成提醒（本次需求，主进程侧见 main-tray-notify.js）：
+     · traySetRunning：把运行队列里的在飞条数报给主进程（托盘菜单「运行中任务」与
+       「全部终止运行」的可用性靠它；渲染层自己判重，只在数量变化时才发）；
+     · notifyShow：非前台时弹 Windows 系统通知（silent —— 声音仍由渲染层 WebAudio 发）；
+     · onNotifyClick：点了通知 → 主进程唤起主窗并回传跳转目标（只含 id，不含节点对象）；
+     · onTrayStopAll：托盘菜单「全部终止运行」→ 渲染层走既有 stopAllRuns。 */
+  traySetRunning: (n) => ipcRenderer.invoke('tray:setRunning', Number(n) || 0),
+  trayStatus: () => ipcRenderer.invoke('tray:status'),
+  notifyShow: (payload) => ipcRenderer.invoke('notify:show', payload || {}),
+  onNotifyClick: (cb) => {
+    const h = (_e, jump) => { try { cb(jump || null); } catch (_) {} };
+    ipcRenderer.on('notify:click', h);
+    return () => { try { ipcRenderer.removeListener('notify:click', h); } catch (_) {} };
+  },
+  onTrayStopAll: (cb) => {
+    const h = () => { try { cb(); } catch (_) {} };
+    ipcRenderer.on('tray:stopAll', h);
+    return () => { try { ipcRenderer.removeListener('tray:stopAll', h); } catch (_) {} };
   },
   crashStatus: () => ipcRenderer.invoke('crash:status'),
   crashExport: () => ipcRenderer.invoke('crash:export'),
@@ -874,6 +926,43 @@ contextBridge.exposeInMainWorld('api', {
     return () => ipcRenderer.removeListener('qwenimage:gpu', handler);
   },
 
+  /* ── MOSS-Music 本地音乐理解：安装 / 启停 / 分析，见 moss-music/main-moss-music.js ── */
+  mossmusicStatus: () => ipcRenderer.invoke('mossmusic:getStatus'),
+  mossmusicOpen: () => ipcRenderer.invoke('mossmusic:open'),
+  mossmusicClose: () => ipcRenderer.invoke('mossmusic:close'),
+  mossmusicInstall: (opts) => ipcRenderer.invoke('mossmusic:install', opts || {}),
+  mossmusicCancelInstall: () => ipcRenderer.invoke('mossmusic:cancelInstall'),
+  mossmusicStart: () => ipcRenderer.invoke('mossmusic:start'),
+  mossmusicStop: () => ipcRenderer.invoke('mossmusic:stop'),
+  mossmusicSwitchModel: (payload) => ipcRenderer.invoke('mossmusic:switchModel', payload || {}),
+  mossmusicSetQuant: (payload) => ipcRenderer.invoke('mossmusic:setQuant', payload || {}),
+  mossmusicGenerate: (params) => ipcRenderer.invoke('mossmusic:generate', params || {}),
+  /* 真打断在途推理：/cancel（分块边界退出）→ 3s → taskkill → /unload，画布节点 ■ 用 */
+  mossmusicCancelGenerate: (nodeId) => ipcRenderer.invoke('mossmusic:cancelGenerate', nodeId || ''),
+  mossmusicPickInstallDir: () => ipcRenderer.invoke('mossmusic:pickInstallDir'),
+  mossmusicConsoleTail: (n) => ipcRenderer.invoke('mossmusic:consoleTail', n),
+  onMossMusicConsole: (cb) => {
+    const handler = (_e, data) => {
+      try { cb(data); } catch (_) {}
+    };
+    ipcRenderer.on('mossmusic:console', handler);
+    return () => ipcRenderer.removeListener('mossmusic:console', handler);
+  },
+  onMossMusicGpu: (cb) => {
+    const handler = (_e, data) => {
+      try { cb(data); } catch (_) {}
+    };
+    ipcRenderer.on('mossmusic:gpu', handler);
+    return () => ipcRenderer.removeListener('mossmusic:gpu', handler);
+  },
+  onMossMusicConsoleChanged: (cb) => {
+    const handler = (_e, data) => {
+      try { cb(data); } catch (_) {}
+    };
+    ipcRenderer.on('mossmusic:consoleChanged', handler);
+    return () => ipcRenderer.removeListener('mossmusic:consoleChanged', handler);
+  },
+
   /* ── InfiniteTalk 数字人（Wan2.1 I2V 14B · 独立 ComfyUI）：安装 / 启停 / 出片，
         见 infinitetalk/main-infinitetalk.js 与控制台窗 infinitetalk/preload-infinitetalk.js ── */
   infinitetalkStatus: () => ipcRenderer.invoke('infinitetalk:getStatus'),
@@ -1078,6 +1167,18 @@ contextBridge.exposeInMainWorld('api', {
      {kind:'browser', id, outcome, answerText} 回传），type 'browser-act' 是活动流条目
      （只供界面回看与落库，不进模型上下文）。 */
   dshBrowser: (params) => ipcRenderer.invoke('dsh:browser', params),
+  /* ── 真机调试（应用开发会话的 mtnode_gui）──
+     { action:'windows'|'open-app'|'outline'|'text'|'click'|'type'|'set'|'key'|'scroll'|'wait'|'eval'|'screenshot',
+       params:{…} }。GUI 动作由主进程执行（窗口本体只在那边），渲染层只把运行时那一帧
+      （ctx.type === 'gui'）原样转过去，回执经 dshInteract({kind:'gui'}) 回网关。 */
+  dshGuiRun: (action, params) => ipcRenderer.invoke('dsh:gui', { action, params: params || {} }),
+  /* ── 开发调试（mtnode_dev · 「扩展能力管理 → 开发调试」总开关打开的那一轮）──
+     { action:'launch'|'attach'|'status'|'stop'|'reload'|'restart'|'eval'|'screenshot'|
+                'console'|'exceptions'|'net'|'snapshot'|'click'|'type'|'key'|'scroll'|'wait',
+       params:{…} }。它是**另起一只隔离的调试实例**并用 CDP 驱动它（执行体：根目录
+     dev-agent.js）—— 与 dshGuiRun 点用户正在用的那只窗口是两件事。回执同样经
+     dshInteract({kind:'dev'}) 回网关；失败回 {ok:false,error}，不 reject。 */
+  dshDevRun: (action, params) => ipcRenderer.invoke('dsh:dev', { action, params: params || {} }),
   /* ── 语音输入（对话输入框的录音按钮）──
      一条 IPC 全包：{ workspace, action:'state'|'prepare'|'cancel'|'transcribe',
                       providerId?, downloadSource?, language?, audio?（base64 WAV）}。
@@ -1240,6 +1341,20 @@ contextBridge.exposeInMainWorld('api', {
     };
     ipcRenderer.on('mcp:event', onEv);
     return () => ipcRenderer.removeListener('mcp:event', onEv);
+  },
+
+  /* ── appHost 宿主桥：应用中心窗口 / 插件窗口 → 主进程 → **渲染层执行** ─────────
+     app-host-bridge.js 把调用推成 {id, op, params}，renderer/app-apphost-bridge.js 执行完
+     用 appHostReply 交回结果（画布真源与会话运行态只在渲染层，主进程不碰它们）。
+     appHostStream：agent 一轮的流式事件 → 主进程 → 发起调用的那只应用窗口。 */
+  appHostReply: (frame) => ipcRenderer.invoke('appHost:reply', frame || {}),
+  appHostStream: (ev) => ipcRenderer.send('appHost:stream', ev || {}),
+  appHostOnEvent: (cb) => {
+    const onEv = (_e, msg) => {
+      try { cb(msg); } catch (e) { console.error('appHostOnEvent cb error:', e); }
+    };
+    ipcRenderer.on('appHost:event', onEv);
+    return () => ipcRenderer.removeListener('appHost:event', onEv);
   },
   skillAdd: (skill) => ipcRenderer.invoke('skill:add', skill),
   skillRemove: (name) => ipcRenderer.invoke('skill:remove', name),
@@ -1488,6 +1603,9 @@ contextBridge.exposeInMainWorld('api', {
   appNodeDataWrite: (arg) => ipcRenderer.invoke('appnode:dataWrite', arg || {}),
   appNodeOpenDir: (arg) => ipcRenderer.invoke('appnode:openDir', arg || {}),
   appNodeFs: (arg) => ipcRenderer.invoke('appnode:fs', arg || {}),
+  /* 联网取素材（net.search / net.download）：主进程 apps-node-store.js 的 appnode:net，
+     实现在 net-download.js；下载只认这张画布的工作目录 */
+  appNodeNet: (arg) => ipcRenderer.invoke('appnode:net', arg || {}),
   /* 预览现况（当前租约 + 是不是只读）：开发页用它把「应用已在独立窗口运行 ⇒ 预览只读」
      实时写进状态行并发给预览页（窗口开关事件到点时问一次）。 */
   appsPreviewState: () => ipcRenderer.invoke('apps:previewState'),
@@ -1567,8 +1685,22 @@ contextBridge.exposeInMainWorld('api', {
   /* 拖入路径判定：返回 {ok, kind:'file'|'dir'|'', name, exists}（只读） */
   assetsPathKind: (p) => ipcRenderer.invoke('assets:pathKind', p),
   assetsImportDir: (arg) => ipcRenderer.invoke('assets:importDir', arg),
-  assetsImportFiles: (id, paths) => ipcRenderer.invoke('assets:importFiles', { id, paths }),
+  assetsImportFiles: (id, paths, createdBy) => ipcRenderer.invoke('assets:importFiles', { id, paths, createdBy }),
   /* 备份：把库增量同步到指定文件夹（同内容跳过；上次目标记在 config.json） */
   assetsBackupInfo: () => ipcRenderer.invoke('assets:backupInfo'),
   assetsBackup: (p) => ipcRenderer.invoke('assets:backup', { path: p }),
+  /* 素材库被应用改过（主进程 app-host-bridge.js 的 callAssets 写成功后广播）：
+     渲染层重扫一次并刷新绑定了该素材的节点 —— 应用的写入与画布上的素材节点才是同一份内容。
+     cb() 不带参数；返回退订函数。 */
+  onAssetsChanged: (cb) => {
+    const h = () => {
+      try {
+        cb();
+      } catch (err) {
+        console.error('api.onAssetsChanged cb error:', err);
+      }
+    };
+    ipcRenderer.on('assets:changed', h);
+    return () => ipcRenderer.removeListener('assets:changed', h);
+  },
 });

@@ -339,6 +339,13 @@ function nodeTextViewEl(text, opts) {
           ? "<pre>" + escapeHtml(raw) + "</pre>"
           : raw;
     body.innerHTML = highlightAtRefsHtml(html, o.node);
+    /* 正文里的图片：绝对路径 / `assets/…` 相对引用换成 file:/// 才显示
+       （与画布板身浏览态同一份口径，见 renderer/app-paste-shot.js 的 displayableUrlOf） */
+    if (window.MTPasteShot && typeof window.MTPasteShot.fixBoardImgs === "function") {
+      try {
+        window.MTPasteShot.fixBoardImgs(body);
+      } catch (_) {}
+    }
     wrap.appendChild(body);
     return wrap;
   }

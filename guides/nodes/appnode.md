@@ -24,7 +24,7 @@
 | 命名空间 | 能做什么 |
 | --- | --- |
 | `appHost.dataRead / dataWrite / storage* / dataDirGet / dataDirOpen` | 这个节点自己的数据（落在画布工作目录里，见下） |
-| `appHost.canvas` | 读整张图（节点 / 连线 / 组 / 绘制）、增删改节点、连线 / 断线、选中、视图、保存；`canvas.onChange(cb)` 订阅画布变化 |
+| `appHost.canvas` | 读整张图（节点 / 连线 / 组 / 绘制）、增删改节点、连线 / 断线、选中、视图、保存；**`runNode(id, {attempts})` 真跑一颗节点并等它出结果、`nodeOutput(id)` 读最近一次产物、`cancelNode(id)` 等同画布「终止」**（见下节）；`canvas.onChange(cb)` 订阅画布变化 |
 | `appHost.agent` | `sessions()` 列左侧栏会话、`bind(id)` 绑定一条、`send(text)` 发一轮、`onEvent(cb)` 收过程、`cancel()` |
 | `appHost.fs` | 画布工作目录内的读 / 写 / 列目录 / 建目录 / 删 |
 | `appHost.tools` | `list()` 已登记的后端工具、`call(id, args)` 调一次 |
@@ -36,6 +36,35 @@
 
 页面改画布是全量读写，每次写入都会先进撤销栈 —— 用户 `Ctrl+Z` 能整批回退。
 agent 与手写操作同一把权限。
+
+## 在画布上跑图像节点（应用侧）
+
+应用不只能建图像节点，还能**真跑起来并拿到图**：
+
+```js
+const H = window.appHost;
+const txt = await H.canvas.addNode({ kind: "input_text", x: 0, y: 0 });
+const img = await H.canvas.addNode({ kind: "proc_image", x: 320, y: 0 });
+await H.canvas.updateForm(txt.id, { 文本: "雨夜的霓虹街角，电影感" });
+await H.canvas.connect({ from: txt.id, to: img.id, toIndex: 0 });
+
+const r = await H.canvas.runNode(img.id, { attempts: 1 });   // 等出图
+r.images;                                                   // 本机绝对路径
+r.meta;                                                     // seed / size / model / attemptErrors
+await H.canvas.nodeOutput(img.id);                          // 之后想再取，不用重跑
+await H.canvas.cancelNode(img.id);                          // 随时终止
+```
+
+| 口径 | 说明 |
+| --- | --- |
+| 与手点 ▶ 同一条路 | 上游没处理自动补齐、级联、运行态 / 进度、产物落画布资产目录，全部同源；执行完自动存盘 |
+| 出几张 | `runNode(id, { attempts })` 默认 **1 张**（不继承节点自己存的多次，1–10），跑完把原值还回去 |
+| 已在跑 | 等那一轮结束直接回它的产物 —— 不重复出图、不多花一次钱 |
+| 没有工作目录 | 回 `no_workspace`，**不弹窗**（应用窗口里没人能替你选目录） |
+| 终止 | `cancelNode` = 画布「终止」：这颗节点在跑的都停（含用户手点那次）；正在等的 `runNode` 回 `code:"cancelled"`，已落盘的产物还在 `nodeOutput` 里 |
+| 超时 | 宿主**不挂超时**：长任务自己 `Promise.race` + `cancelNode` 收口 |
+| 范围 | 任意 kind 可跑（含 `save` / 控制类 / `super`），不设白名单；产物一律本机绝对路径 |
+| 需要的能力位 | `capabilities.canvasHost`（首次调用宿主弹一次授权） |
 
 ## 数据放在哪
 

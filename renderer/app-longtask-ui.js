@@ -1570,7 +1570,10 @@ function ltMenuIsOpen(anchor) {
   return !!(LT_MENU && anchor && LT_MENU.anchor === anchor);
 }
 function ltMenuEsc(ev) {
-  if (ev.key === "Escape") ltMenuClose();
+  if (ev.key !== "Escape") return;
+  /* 这一次 Esc 归菜单：标成已处理，别让窗口级兜底把整只长周期任务窗也一起关掉 */
+  if (ev.preventDefault) ev.preventDefault();
+  ltMenuClose();
 }
 /* 点外部即收：锚点自己由它的 onclick 负责开合（这里跳过，免得刚开就被立刻收起） */
 function ltMenuOutside(ev) {

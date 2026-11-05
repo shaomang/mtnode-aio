@@ -54,6 +54,28 @@
  *   speechStatus()           { ok, available, ready, downloading, phase, completedBytes, totalBytes }
  *   speechPrepare(opts)      把首次权重大约 239MB 的下载跑起来（幂等）
  *   onSpeechState(cb)        下载 / 就绪状态订阅，返回退订函数
+ *
+ * 语音合成（只有 ① 有；Breeze TTS 2，app-host-bridge.js 的 audio 命名空间）：
+ *   synth(opts) / tts(opts)  文本 → 语音，产物**写进画布工作目录**并回 { ok, path, bytes }
+ *                            opts.outputPath **必填**（越界回 outside）；忙时回 busy
+ *   audioPresets()           角色预设清单 { ok, dir, presets }
+ *   audioStatus()            后端现况 { ok, running, busy }
+ *   audioCancel()            叫停正在合成的任务（全量：画布节点在跑的也会停）
+ *   判「能不能出声」看 cap.audio，不看 cap.audioPresets —— 只给得起清单的宿主不算有通道。
+ *
+ * 画布 / agent / 文件 / 本机工具 / 联网（同样只有 ① 与 ② 有；见下面 hostCall 那一段）：
+ *   canvas.info / list / pick / graph / nodes / node / form / updateForm / addNode /
+ *          updateNode / removeNode / connect / disconnect / select / view / setView / save /
+ *          runNode / nodeOutput / cancelNode
+ *                           目标画布 = **这个应用对应的那张**（不是用户此刻打开的那张）
+ *                           runNode(id, { attempts }) 真跑这颗节点并等到结束，回
+ *                           { ok, artifacts, images, paths, meta, elapsedMs }（与用户手点 ▶ 同一条路）；
+ *                           nodeOutput(id) 读最近一次运行的产物；cancelNode(id) = 画布「终止」
+ *   agent.bound / sessions / create / bind / send / cancel / onEvent
+ *                           会话出现在 MTNode 左栏，用户可看 / 可打断 / 可接着聊
+ *   file.root / readText / writeText / list / mkdir / remove / exists   根 = 画布工作目录
+ *   tools.list / call        本机已登记的重后端工具
+ *   netFetch(url)            经宿主取 http(s)（应用页自己的 fetch 仍受 CSP / 跨域约束）
  */
 (function () {
   "use strict";
@@ -106,6 +128,20 @@
     speechStatus: has(host, "asrStatus"),
     speechPrepare: has(host, "asrPrepare"),
     speechEvents: has(host, "onSpeechState"),
+    /* 语音合成（Breeze TTS 2）：合成是声音出口，presets 只是角色清单 ——
+       两件分开判，只给得起清单的宿主不会被误判成「能出声」（见 2.1.1 的坑）。 */
+    audio: has(host, "tts") || !!(host && host.audio && isFn(host.audio.synth)),
+    audioPresets: !!(host && host.audio && isFn(host.audio.presets)),
+    audioStatus: !!(host && host.audio && isFn(host.audio.status)),
+    audioCancel: !!(host && host.audio && isFn(host.audio.cancel)),
+    /* 画布 / agent / 文件 / 本机工具 / 联网（见下面 hostCall 那一段的口径） */
+    canvas: !!(host && host.canvas && isFn(host.canvas.graph)),
+    canvasWrite: !!(host && host.canvas && isFn(host.canvas.updateNode)),
+    agent: !!(host && host.agent && isFn(host.agent.send)),
+    agentEvents: !!(host && host.agent && isFn(host.agent.onEvent)),
+    fs: !!(host && host.fs && isFn(host.fs.readText)),
+    tools: !!(host && host.tools && isFn(host.tools.call)),
+    netHost: !!(host && host.net && isFn(host.net.fetch)),
   };
 
   var subs = [];
@@ -624,8 +660,7 @@
     return close();
   }
   /** 关窗收尾钩子：新桥直传，老桥交给 AppClose 自己兜底 */
-  function onWillClose(cb) {
-    if (cap.willClose) {
+  function onWillClose(cb) {    if (cap.willClose) {
       try {
         var off = host.onWillClose(cb);
         if (isFn(off)) return off;
@@ -635,11 +670,154 @@
     return function () {};
   }
 
+  /* ── 画布 / agent / 文件 / 本机工具 / 联网（宿主桥新一族：应用中心窗口与插件窗口都有）──
+   * 口径（与宿主实现同源：apps-store.js 的 apps:hostBridge → app-host-bridge.js）：
+   *   ① 目标画布 = **这个应用对应的那张**（默认与应用同 id 的那张），不是用户此刻打开的那张；
+   *      canvas.pick() 让用户重选（记住）。目标画布没打开时宿主后台加载，不动用户视图。
+   *   ② 首次调用宿主弹一次授权窗；app.json 的 capabilities.canvasHost / agentHost 要勾上，
+   *      没勾回 code:"not_declared"；用户拒绝回 "denied"；主窗口关着回 "not_ready"；
+   *      超时回 "timeout"；应用还没有画布回 "no_canvas"。
+   *   ③ select / view / setView 只对**用户眼前那张**画布有效：后台画布回 "not_foreground"
+   *      （绝不为了应用的一次调用把用户的视图切走）。
+   *   ④ agent 起的会话出现在 MTNode 左栏：用户能看、能打断、能接着聊（不是隐形 agent）。
+   * 每条都回 { ok, ... }；宿主没有这项能力时回 { ok:false, code:"no_host" }
+   * （浏览器直开 / 老版本宿主 / 预览态），调用方据此降级，不要当异常处理。
+   */
+  function hostCall(ns, method, args) {
+    var box = host && host[ns];
+    if (!box || !isFn(box[method]))
+      return Promise.resolve({ ok: false, code: "no_host", error: "宿主没有这项能力：" + ns + "." + method });
+    try {
+      var r = box[method].apply(box, args || []);
+      return r && isFn(r.then) ? r : Promise.resolve(r);
+    } catch (e) {
+      return Promise.resolve({ ok: false, code: "failed", error: String((e && e.message) || e) });
+    }
+  }
+
+  var canvas = {
+    info: function () { return hostCall("canvas", "info"); },
+    list: function () { return hostCall("canvas", "list"); },
+    pick: function () { return hostCall("canvas", "pick"); },
+    graph: function () { return hostCall("canvas", "graph"); },
+    nodes: function () { return hostCall("canvas", "nodes"); },
+    node: function (id) { return hostCall("canvas", "node", [id]); },
+    /* 表单节点：{ formName, fields, values, byLabel }（byLabel 是按字段标签取值的便捷索引） */
+    form: function (id) { return hostCall("canvas", "form", [id]); },
+    /* 只改给出的字段（键认字段 id 或标签），其余原样保留；写完自动落盘 */
+    updateForm: function (id, values) { return hostCall("canvas", "updateForm", [id, values]); },
+    addNode: function (opts) { return hostCall("canvas", "addNode", [opts]); },
+    updateNode: function (id, patch) { return hostCall("canvas", "updateNode", [id, patch]); },
+    removeNode: function (id) { return hostCall("canvas", "removeNode", [id]); },
+    connect: function (opts) { return hostCall("canvas", "connect", [opts]); },
+    disconnect: function (id) { return hostCall("canvas", "disconnect", [id]); },
+    select: function (ids) { return hostCall("canvas", "select", [ids]); },
+    view: function () { return hostCall("canvas", "view"); },
+    setView: function (v) { return hostCall("canvas", "setView", [v]); },
+    save: function () { return hostCall("canvas", "save"); },
+    /* 执行 / 取产物 / 终止（图像节点那条闭环的最后一段）：
+       · runNode(id, { attempts }) 等到跑完再回：{ ok, artifacts, images, paths, meta, elapsedMs }
+         attempts 默认 1 张（不继承节点自己的多次尝试，1-10）；
+         上游没跑过的自动补齐（与用户手点 ▶ 一致）；没有工作目录回 "no_workspace"（不弹窗）；
+         被 cancelNode 停掉回 "cancelled"（已落盘的产物还在 artifacts 里）。
+       · nodeOutput(id) 该节点最近一次运行的产物（从没跑过也回 ok:true，artifacts 为空）。
+       · cancelNode(id) = 画布上的「终止」：这颗节点上在跑的都停（含用户手点的那次）。
+       任意 kind 都能跑；宿主不给 runNode 挂超时，长任务靠 cancelNode 收口。 */
+    runNode: function (id, opts) { return hostCall("canvas", "runNode", [id, opts]); },
+    nodeOutput: function (id) { return hostCall("canvas", "nodeOutput", [id]); },
+    cancelNode: function (id) { return hostCall("canvas", "cancelNode", [id]); },
+  };
+
+  var agent = {
+    bound: function () { return hostCall("agent", "bound"); },
+    sessions: function () { return hostCall("agent", "sessions"); },
+    create: function (opts) { return hostCall("agent", "create", [opts]); },
+    bind: function (sessionId) { return hostCall("agent", "bind", [sessionId]); },
+    /* send(text, { sessionId? })：没绑会话时宿主自己建一条并绑到本应用的画布上 */
+    send: function (text, opts) { return hostCall("agent", "send", [text, opts]); },
+    cancel: function (sessionId) { return hostCall("agent", "cancel", [sessionId]); },
+    /* 这一轮的流式事件：cb 收 { type:"agent", sessionId, frame }，frame.type 是
+       text / tool / approval / question / done / error…；返回 true 表示订上了 */
+    onEvent: function (cb) {
+      if (!host || !host.agent || !isFn(host.agent.onEvent)) return false;
+      var off = host.agent.onEvent(cb);
+      if (isFn(off)) subs.push(off);
+      return true;
+    },
+  };
+
+  /* 文件：根 = 本应用那张画布的**工作目录**，rel 一律相对它，越界回 code:"outside" */
+  var file = {
+    root: function () { return hostCall("fs", "root"); },
+    readText: function (rel) { return hostCall("fs", "readText", [rel]); },
+    writeText: function (rel, content) { return hostCall("fs", "writeText", [rel, content]); },
+    list: function (rel) { return hostCall("fs", "list", [rel]); },
+    mkdir: function (rel) { return hostCall("fs", "mkdir", [rel]); },
+    remove: function (rel) { return hostCall("fs", "remove", [rel]); },
+    exists: function (rel) { return hostCall("fs", "exists", [rel]); },
+  };
+
+  /* 本机已登记的重后端工具（音乐 / 视频 / 语音 / 渲染 / 数字人 / 出图，见「重后端」面板） */
+  var tools = {
+    list: function () { return hostCall("tools", "list"); },
+    call: function (id, args) { return hostCall("tools", "call", [id, args]); },
+  };
+
+  /* 联网：经宿主取一个 http(s) 地址（应用页自己的 fetch 仍受 CSP / 跨域约束） */
+  function netFetch(url) {
+    return hostCall("net", "fetch", [url]);
+  }
+
+  /* ── 语音合成（Breeze TTS 2）────────────────────────────────────────────
+   * 应用窗口唯一能出声的出口：产物**写进画布工作目录**并回真实绝对路径（不回 base64 ——
+   * 应用没有二进制写口）。outputPath 必填，越界回 outside；后端一次只跑一个，忙时回 busy。
+   * 宿主没有这条通道（浏览器直开 / 老版本宿主 / 插件窗口那一套）时回 code:"no_host"，
+   * 界面据此如实降级 —— 只拿得到 presets（角色清单）不等于能出声，别当成已具备。 */
+  function synth(opts) {
+    var o = opts && typeof opts === "object" ? opts : {};
+    if (!cap.audio) return Promise.resolve({ ok: false, code: "no_host", error: "宿主没有语音合成通道" });
+    if (!String(o.text == null ? "" : o.text).trim())
+      return Promise.resolve({ ok: false, code: "no_text", error: "缺少合成文本" });
+    if (!String(o.outputPath == null ? "" : o.outputPath).trim())
+      return Promise.resolve({ ok: false, code: "no_path", error: "必须给 outputPath（画布工作目录里的路径）" });
+    var box = host && host.audio;
+    var fn = null;
+    if (box && isFn(box.synth)) fn = function () { return box.synth(o); };
+    else if (isFn(host && host.tts)) fn = function () { return host.tts(o); };
+    if (!fn) return Promise.resolve({ ok: false, code: "no_host", error: "宿主没有语音合成通道" });
+    return Promise.resolve()
+      .then(fn)
+      .then(function (r) {
+        if (r && r.ok === false)
+          return { ok: false, code: String(r.code || "tts_failed"), error: String(r.error || "语音合成失败") };
+        var p = String((r && r.path) || "");
+        if (!p) return { ok: false, code: "no_file", error: "合成回执里没有产物路径" };
+        return { ok: true, path: p, bytes: Number((r && r.bytes) || 0) };
+      })
+      .catch(function (e) {
+        return { ok: false, code: "failed", error: String((e && e.message) || e) };
+      });
+  }
+  function audioPresets() {
+    return hostCall("audio", "presets");
+  }
+  function audioStatus() {
+    return hostCall("audio", "status");
+  }
+  function audioCancel() {
+    return hostCall("audio", "cancel");
+  }
+
   window.AppHost = {
     host: host,
     hostName: hostName,
     cap: cap,
-    id: (host && host.id) || "",
+    id: (host && host.id) || "",    /* 画布 / agent / 文件 / 本机工具 / 联网（新一族，见下面那道注释的口径） */
+    canvas: canvas,
+    agent: agent,
+    file: file,
+    tools: tools,
+    netFetch: netFetch,
     getData: getData,
     setData: setData,
     /* 老名字：老应用写的 AppHost.getData / setData / dataGet / dataSet 都照旧能跑 */
@@ -674,6 +852,13 @@
     speechStatus: speechStatus,
     speechPrepare: speechPrepare,
     onSpeechState: onSpeechState,
+    /* 语音合成（Breeze TTS 2）：synth 是唯一的出声口（产物落盘回 path），tts 是同一件的别名；
+       presets 只是角色清单，别拿它当「能不能出声」的判据（据 cap.audio 判） */
+    synth: synth,
+    tts: synth,
+    audioPresets: audioPresets,
+    audioStatus: audioStatus,
+    audioCancel: audioCancel,
     /* 要模型给 JSON 就用这个：关思考 + 剥围栏 + 截断感知 + 重试一次（见 json() 头部注释） */
     json: json,
     on: on,

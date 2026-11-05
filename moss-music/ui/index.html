@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MOSS-Music · 本地音乐理解</title>
+  <link rel="stylesheet" href="ui.css" />
+</head>
+<body>
+  <div class="app">
+    <header>
+      <div class="title-row">
+        <h1>MOSS-Music</h1>
+        <span id="svcBadge" class="badge off">服务关闭</span>
+        <span id="loadBadge" class="badge off">未装载模型</span>
+        <span class="spacer"></span>
+        <span id="verText" class="faint"></span>
+      </div>
+      <div id="dirText" class="sub">安装目录：未选择</div>
+      <div class="faint">本地音乐理解 · Instruct 8B 模型 · 端口 8790 · 长音频按 3 分钟切片（5s 重叠）</div>
+    </header>
+
+    <div id="notice" class="notice hidden"></div>
+
+    <section id="installCard" class="card">
+      <h2>安装</h2>
+      <div class="row">
+        <span id="installDirText" class="path">未选择安装目录</span>
+        <button id="btnPickDir">选择目录</button>
+      </div>
+      <div class="row">
+        <button id="btnInstall" class="primary">开始安装</button>
+        <button id="btnCancelInstall" class="danger hidden">取消安装</button>
+        <span id="installHint" class="faint">磁盘建议 ≥60GB；两个 8B 权重约 36GB。</span>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>服务</h2>
+      <div class="row">
+        <button id="btnStart" class="primary">启动并装载</button>
+        <button id="btnStop">停止服务</button>
+        <span id="svcText" class="meta">未启动</span>
+      </div>
+      <div class="row tight">
+        <span class="faint">量化档：</span>
+        <button class="chip" data-quant="int8">int8 · 16GB</button>
+        <button class="chip" data-quant="int4">int4 · 12GB</button>
+      </div>
+      <div id="switchHint" class="faint">切量化档 = 卸载旧权重 + 重新装载 18GB 权重，约 30~60s。</div>
+    </section>
+
+    <section class="card">
+      <h2>显存</h2>
+      <div class="bar-row">
+        <div class="row tight">
+          <span id="gpuName" class="meta">显卡：未读到</span>
+          <span class="spacer"></span>
+          <span id="gpuMemTxt" class="faint">—</span>
+        </div>
+        <div id="gpuMemBar" class="bar vram"><i></i></div>
+      </div>
+      <div class="bar-row">
+        <div class="row tight">
+          <span class="meta">GPU 利用率</span>
+          <span class="spacer"></span>
+          <span id="gpuUtilTxt" class="faint">—</span>
+        </div>
+        <div id="gpuUtilBar" class="bar util"><i></i></div>
+      </div>
+      <div id="vramNote" class="faint"></div>
+    </section>
+
+    <section class="card">
+      <h2>试听 + 自由提问</h2>
+      <div class="row">
+        <input id="audioPath" type="text" spellcheck="false" placeholder="音频绝对路径（wav / mp3 / flac / m4a）" />
+        <button id="btnPickAudio" class="ghost">选择音频</button>
+        <input id="audioFile" type="file" accept="audio/*,.wav,.mp3,.flac,.m4a,.aac,.ogg" class="hidden" />
+      </div>
+      <div class="row">
+        <button id="btnPlay">试听</button>
+        <span id="audioHint" class="faint">选择或粘贴路径后可试听；生成用同一份音频。</span>
+      </div>
+      <audio id="player" controls preload="none"></audio>
+      <div id="drop" class="drop">也可以把音频文件拖到这里</div>
+
+      <div class="row tight">
+        <button class="chip" data-prompt="请完整描述这首音乐：风格 / 情绪 / 乐器 / 人声 / 曲式结构，并给出关键时间点。">整曲描述</button>
+        <button class="chip" data-prompt="请逐句转写歌词，并为每一句标注开始时间（mm:ss），输出时间戳歌词。">时间戳歌词</button>
+        <button class="chip" data-prompt="请分析曲式结构（前奏 / 主歌 / 副歌 / 桥段 / 尾奏）与调性、速度、和弦进行。">曲式与和弦</button>
+        <button class="chip" data-prompt="这首歌适合什么场景 / 情绪标签？请给出 3~5 个可用于检索的标签并说明理由。">情绪标签</button>
+      </div>
+      <textarea id="question" placeholder="自由提问，例如：副歌为什么听起来更亮？第 2 分钟发生了什么？"></textarea>
+      <div class="row">
+        <button id="btnGenerate" class="primary">开始理解</button>
+        <span id="genHint" class="faint">生成本地完成；结果落 md / json / srt 三份文件。</span>
+      </div>
+      <div id="genStatus" class="meta hidden"></div>
+      <div id="result" class="hidden">
+        <div class="row tight">
+          <span class="meta">回答</span>
+          <span class="spacer"></span>
+          <span id="resultMeta" class="faint"></span>
+        </div>
+        <pre id="answer"></pre>
+        <div id="cuesWrap" class="hidden">
+          <div class="row tight">
+            <span class="meta">时间戳</span>
+            <span id="cuesNote" class="faint"></span>
+          </div>
+          <div class="cues">
+            <table><tbody id="cuesBody"></tbody></table>
+          </div>
+        </div>
+        <div class="files" id="files"></div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>实时日志</h2>
+      <div class="row tight">
+        <span class="faint">尾部自动跟随（最近 2MB）</span>
+        <span class="spacer"></span>
+        <button id="btnLogClear" class="ghost">清屏</button>
+      </div>
+      <pre id="console"></pre>
+    </section>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

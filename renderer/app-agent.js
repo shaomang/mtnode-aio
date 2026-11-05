@@ -385,11 +385,20 @@ function dshSupported() {
   const hasKey = provs.some(
     (p) => p.type === "text_openai" && String(p.apiKey || "").trim(),
   );
-  if (!hasKey)
+  if (!hasKey) {
+    /* 一个带 Key 的文本服务商都没有（典型：DeepSeek 官方还没填 Key）→ 就地弹图文引导窗
+       （renderer/app-deepseek-onboard.js）。以前这里只回一句 reason，调用方 toast 一下就完了，
+       用户看不到该去哪儿拿 Key；会话发送 / 节点运行 / 助手全都先撞这条闸，引导必须在这里弹。 */
+    try {
+      if (typeof dsEnsureModelReady === "function")
+        dsEnsureModelReady("deepseek-official");
+      else if (typeof dsOpenOnboard === "function") dsOpenOnboard();
+    } catch (_) {}
     return {
       ok: false,
       reason: I18n.t("未配置带 API Key 的文本服务商（设置 · API/配置 → 模型服务）"),
     };
+  }
   return { ok: true, provider: dshProvider() };
 }
 

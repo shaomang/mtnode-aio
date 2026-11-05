@@ -23,6 +23,9 @@
      · mediaViewCreate(video, { id, cls, path }) → 池化的 <video>（同槽位复用时带进度与播放态）
      · mediaViewAttach(el, container, [path])   → 把播放器放进容器（重绘后重新挂载）
      · mediaViewClear(el)                       → 清掉音源与池绑定（预览路径被清空时调）
+     · mediaViewPoster(host, { id, cls, path }) → 视频预览槽位：先挂首帧静图，点一下原地换播放器
+     · mediaViewPosterSet(slot, path, [bust])   → 换静图（正在播的那只还播着就不打断）
+     · mediaViewPosterClear(slot)               → 清空槽位（放掉播放器 + 摘掉静图）
      · mediaViewFullscreenFix()                 → 全屏托底（脚本加载即自动装一次）
      · mediaViewLoopMount(el, container)        → 给预览播放器挂「循环播放」开关（默认开）
      · mediaViewLoopApply(el, [on])             → 把循环状态兑现到元素上（不挂按钮）
@@ -32,7 +35,8 @@
 
 /* ── 视频元素池 ────────────────────────────────────────────────────────────
    键 = 音源路径 + 宿主槽位 id。池上限 6：画布上同时预听的多半是一两个，
-   留出余量就够，超出按「最久未用」回收（回收 = 解绑并清 src，不留悬念）。 */
+   留出余量就够，超出按「最久未用」回收（回收 = **真解绑 src** + 触发 load 让解码器
+   退出，元素也摘掉；槽位里的那只则换回首帧静图 —— 见 mediaPoolSweep 的注释）。 */
 const MEDIA_POOL_MAX = 6;
 const mediaVideoPool = new Map(); // key -> { el, at }
 
@@ -47,11 +51,21 @@ function mediaPoolSweep() {
       continue; /* 正在全屏占位里：不能回收 */
     }
     mediaVideoPool.delete(key);
-    /* 真回收（本轮修的就是这里）：以前只删 Map 条目，元素照样连着 DOM 或飘在内存里，
-       解码器与已解出的帧纹理（VIDEO 帧是 GPU 进程里的纹理）一份也不还 ——
-       注释写着「解绑并清 src」，代码却没做。宿主已换掉的（不在文档里）在这里放手；
-       还挂在文档里的那只留着（下一轮重绘会用新元素替掉它，此刻清 src 会让预览闪空）。 */
-    if (el && !el.isConnected) mediaPoolRelease(el);
+    /* 真回收：解绑音源 + 触发一次 load 让解码器退出（帧纹理随之归还）。
+       还挂在文档里的那只**必须经由槽位回收** —— 槽位回收 = 播放器摘掉、回它的首帧
+       静图，画面不闪空；只删 Map 条目的话，元素会带着解码器留在 DOM 里，而池记录已经
+       没了，mediaViewPrune / mediaViewClear 再也找不到它（那才是真泄漏）。
+       不是槽位的（老口径宿主）直接放手。 */
+    if (el) {
+      const slot =
+        el.parentElement &&
+        el.parentElement.classList &&
+        el.parentElement.classList.contains("mv-slot")
+          ? el.parentElement
+          : null;
+      if (slot) mediaPosterReset(slot);
+      else mediaPoolRelease(el);
+    }
     over--;
   }
 }
@@ -225,7 +239,12 @@ function mediaViewCreate(el, opts) {
   if (o.cls) el.classList.add(o.cls);
   mediaViewTag(el);
   if (!path) return el;
-  const key = path + "|" + String(o.id || "");
+  /* 池键默认用元素自己的 id；给 mediaViewPoster 用时传 key（槽位 id），
+     让「播放器 id」与「槽位 id」不撞车（同一文档里两份 id 会互相盖掉）。 */
+  const key = path + "|" + String(o.key || o.id || "");
+  try {
+    el.dataset.mvKey = key;
+  } catch (_) {}
   const rec = mediaVideoPool.get(key);
   if (rec && rec.el && rec.el !== el) {
     /* 命中池：接着用上一轮那只元素（`el` 是调用方刚新建的壳，就地丢掉）。
@@ -339,7 +358,9 @@ function mediaViewClear(el) {
     delete el.dataset.mvResume;
   }
   if (el.dataset && el.dataset.mvPool === "1") {
-    const key0 = String(el.dataset.path || "") + "|" + String(el.id || "");
+    const key0 =
+      el.dataset.mvKey ||
+      String(el.dataset.path || "") + "|" + String(el.id || "");
     const rec = mediaVideoPool.get(key0);
     if (rec && rec.el === el) mediaVideoPool.delete(key0);
     /* 池绑定清掉了，循环开关的登记也一起摘掉（不留悬空元素） */
@@ -351,6 +372,239 @@ function mediaViewClear(el) {
     if (typeof el.load === "function") el.load();
   } catch (_) {}
   return el;
+}
+
+/* ── 首帧静图槽位（画布节点的视频预览）──────────────────────────────────────
+   为什么不再一上来就挂 <video preload=metadata>：一屏可能摆着十几颗视频节点，每只
+   <video> 都要开一次 demuxer 读文件头、再在 GPU 进程里建一层 VIDEO 帧纹理（纹理只有
+   渲染进程销毁才归还）。用户此刻多半只是在看缩略图 —— 按原图 / 原始视频建纹理是纯浪费。
+   新口径：
+     ① 槽位里先放**一张首帧静图**：走主进程缩略图协议 `mtnode-thumb://video/…`
+        （ffmpeg 抽 0.1s 一帧、长边 ≤ edge，与素材库封面同一份实现，见 assets-store.js
+        的 videoThumbEntry），解出来的是一张小图，显存占用可忽略；
+     ② 点一下才在**原地**换成池化播放器（mediaViewCreate，同路径 + 同槽位复用同一只
+        元素，进度 / 播放态自然延续）并自动播放；
+     ③ 滚出视口按既有离屏策略释放：**不在这里另建观察器** —— 槽位里的首帧 <img> 与
+        点出来的 <video> 都由 renderer/app-preview-lazy.js 那只 #stage 观察器接管
+        （进视口才取字节；离开「视口外一屏」就摘 src + load 让解码器退出；回来按记下的
+        进度与播放态续上，正在播的视频同样不豁免）。
+   槽位自己带 .mv-slot 类，id 沿用调用方的老 id（fillPreviews 等处按 #id 找的就是它）。 */
+const MEDIA_POSTER_EDGE = 640;
+
+/** 首帧静图的 URL（缩略图协议 · host=video；编码口径与 app-canvas.js 的 thumbUrlWithBust 一致） */
+function mediaPosterUrl(p, bust, edge) {
+  if (!p) return "";
+  const segs = String(p)
+    .replace(/\\/g, "/")
+    .split("/")
+    .filter((s) => s !== "")
+    .map((s) => encodeURIComponent(s))
+    .join("/");
+  const e = Number(edge) > 0 ? Math.round(Number(edge)) : MEDIA_POSTER_EDGE;
+  const t = bust != null && bust !== "" ? encodeURIComponent(String(bust)) : "";
+  return "mtnode-thumb://video/" + segs + "?e=" + e + (t ? "&t=" + t : "");
+}
+
+function mediaPosterImgOf(slot) {
+  try {
+    return slot ? slot.querySelector("img.mv-poster") : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function mediaPosterVideoOf(slot) {
+  try {
+    return slot ? slot.querySelector("video") : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+/* 槽位的状态类（冒烟桩里没有 classList 也不能炸：静图 / 播放器的显隐另有 style 兜底） */
+function mediaSlotMark(slot, cls, on) {
+  try {
+    if (slot && slot.classList) {
+      if (on) slot.classList.add(cls);
+      else slot.classList.remove(cls);
+    }
+  } catch (_) {}
+}
+
+function mediaPosterImgShow(img, on) {
+  try {
+    if (img && img.style) img.style.display = on ? "" : "none";
+  } catch (_) {}
+}
+
+/** 把首帧静图换成 path 那一帧（path 为空 = 摘掉图，槽位留空） */
+function mediaPosterPaint(slot, path, bust) {
+  if (!slot || !slot.dataset) return;
+  slot.dataset.path = path ? String(path) : "";
+  const img = mediaPosterImgOf(slot);
+  if (!img) return;
+  if (!path) {
+    try {
+      img.removeAttribute("src");
+    } catch (_) {}
+    mediaPosterImgShow(img, false);
+    mediaSlotMark(slot, "is-empty", true);
+    return;
+  }
+  mediaSlotMark(slot, "is-empty", false);
+  mediaPosterImgShow(img, true);
+  const url = mediaPosterUrl(path, bust, slot.dataset.mvEdge);
+  let cur = null;
+  try {
+    cur = img.getAttribute("src");
+  } catch (_) {
+    cur = null;
+  }
+  if (cur !== url) img.src = url;
+}
+
+/** 槽位里正在放的那只播放器 → 换回首帧静图（摘音源，解码器与帧纹理一起还掉） */
+function mediaPosterReset(slot) {
+  if (!slot) return;
+  const v = mediaPosterVideoOf(slot);
+  if (v) {
+    if (v.__mvHold) return; /* 正在全屏：此刻不能动它（退出全屏后归位再说） */
+    /* 循环开关是挂在槽位上的孤儿按钮：播放器走了，它也不能留 */
+    const btn = v.__mvLoopBtn;
+    if (btn && btn.remove) {
+      try {
+        btn.remove();
+      } catch (_) {}
+    }
+    try {
+      v.pause();
+    } catch (_) {}
+    if (typeof mediaViewClear === "function") mediaViewClear(v);
+    try {
+      v.remove();
+    } catch (_) {}
+  }
+  mediaSlotMark(slot, "is-playing", false);
+  if (slot.dataset && slot.dataset.path) {
+    mediaPosterImgShow(mediaPosterImgOf(slot), true);
+    mediaPosterPaint(slot, slot.dataset.path, slot.dataset.mvBust);
+  }
+}
+
+/** 点击就地起播：同一个槽位只换元素，不搬家（全屏托底仍由本文件那套接管） */
+function mediaPosterPlay(slot) {
+  if (!slot || !slot.dataset) return null;
+  const path = String(slot.dataset.path || "");
+  if (!path) return null;
+  const has = mediaPosterVideoOf(slot);
+  if (has) {
+    try {
+      const p = has.play();
+      if (p && p.catch) p.catch(() => {});
+    } catch (_) {}
+    return has;
+  }
+  const v = mediaViewCreate(document.createElement("video"), {
+    key: String(slot.id || ""),
+    cls: "mv-video",
+    path,
+  });
+  v.controls = true;
+  v.preload = "metadata";
+  v.playsInline = true;
+  if (v.dataset) v.dataset.path = path;
+  let url = path;
+  try {
+    if (window.api && typeof window.api.toFileUrl === "function") url = window.api.toFileUrl(path);
+  } catch (_) {}
+  if (typeof mediaSetVideoSrc === "function") mediaSetVideoSrc(v, url, path);
+  else v.src = url;
+  const img = mediaPosterImgOf(slot);
+  mediaPosterImgShow(img, false);
+  mediaSlotMark(slot, "is-playing", true);
+  /* 循环开关 / 进度记录 / 全屏都走既有那一套（mediaViewAttach 会把元素挂进槽位） */
+  if (typeof mediaViewAttach === "function") mediaViewAttach(v, slot, path);
+  else {
+    try {
+      slot.appendChild(v);
+    } catch (_) {}
+  }
+  if (typeof slot.__mvPosterOnMount === "function") {
+    try {
+      slot.__mvPosterOnMount(v);
+    } catch (_) {}
+  }
+  try {
+    const p = v.play();
+    if (p && p.catch) p.catch(() => {});
+  } catch (_) {}
+  return v;
+}
+
+/** 造一个视频预览槽位并挂进 host：初始只有首帧静图，点一下才换播放器。
+ *  opts: { id, cls, path, bust, edge, onMount(video), onError(el) }
+ *  onMount 在播放器挂上后调（各处补自己的类名 / 错误提示）；onError 挂给播放器的 error。 */
+function mediaViewPoster(host, opts) {
+  const o = opts || {};
+  const slot = document.createElement("div");
+  slot.className = "mv-slot" + (o.cls ? " " + String(o.cls) : "");
+  if (o.id) slot.id = String(o.id);
+  if (slot.dataset) {
+    slot.dataset.mvSlot = "1";
+    slot.dataset.mvEdge = String(o.edge || MEDIA_POSTER_EDGE);
+    slot.dataset.mvBust = o.bust == null ? "" : String(o.bust);
+  }
+  const img = document.createElement("img");
+  img.className = "mv-poster";
+  img.alt = "";
+  img.draggable = false;
+  /* 取不到首帧（没 ffmpeg / 文件没了 / 没有视频轨）→ 收起破图图标，槽位只剩 ▶：
+     这不代表视频播不了，所以**不**复用各处的「解码失败」提示（点了才知道真假）。 */
+  img.addEventListener("error", () => mediaPosterImgShow(img, false));
+  slot.appendChild(img);
+  const badge = document.createElement("span");
+  badge.className = "mv-play";
+  badge.textContent = "▶";
+  slot.appendChild(badge);
+  slot.__mvPosterOnMount =
+    typeof o.onMount === "function" || typeof o.onError === "function"
+      ? (v) => {
+          if (typeof o.onMount === "function") o.onMount(v);
+          if (typeof o.onError === "function" && v && v.addEventListener)
+            v.addEventListener("error", () => o.onError(v));
+        }
+      : null;
+  mediaPosterPaint(slot, String(o.path || ""), o.bust);
+  slot.addEventListener("click", (ev) => {
+    /* 点槽位 = 开始播放；已经在放就把事件让给原生控件（否则暂停 / 拖进度都会被吃掉） */
+    if (ev && ev.stopPropagation) ev.stopPropagation();
+    if (ev && ev.preventDefault) ev.preventDefault();
+    if (mediaPosterVideoOf(slot)) return;
+    mediaPosterPlay(slot);
+  });
+  if (host && host.appendChild) host.appendChild(slot);
+  /* 离屏释放不在这里做：槽位里的首帧 <img> 与点出来的 <video> 都落在 #stage 里，
+     renderer/app-preview-lazy.js 那只观察器按既有离屏策略一并接管（见本块 ③）。 */
+  return slot;
+}
+
+/** 同步槽位（fillPreviews 用）：换文件就重挂静图；正在放的那只文件没变就不打断 */
+function mediaViewPosterSet(slot, path, bust) {
+  if (!slot || !slot.dataset || slot.dataset.mvSlot !== "1") return null;
+  const next = String(path || "");
+  const old = String(slot.dataset.path || "");
+  if (bust != null && bust !== "") slot.dataset.mvBust = String(bust);
+  if (old !== next) mediaPosterReset(slot); /* 换了文件：回静图，让用户自己点 */
+  mediaPosterPaint(slot, next, slot.dataset.mvBust);
+  return slot;
+}
+
+/** 清空槽位（预览路径被清空时调）：放掉播放器 + 摘掉静图 */
+function mediaViewPosterClear(slot) {
+  if (!slot || !slot.dataset || slot.dataset.mvSlot !== "1") return null;
+  mediaPosterReset(slot);
+  mediaPosterPaint(slot, "", "");
+  return slot;
 }
 
 /* ── 全屏托底 ──────────────────────────────────────────────────────────────

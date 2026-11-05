@@ -4744,7 +4744,7 @@ body.theme-light .n-chip.n-chip-lt {
 }
 
 /* ---- 壳卡片底部的「运行本层」状态行（renderer/app-super-run.js）----
-   运行中 / 暂停中 / 上一次收尾汇总都写在这一行只读小字里：失败原因、跳过几颗、
+   运行中 / 上一次收尾汇总都写在这一行只读小字里：失败原因、跳过几颗、
    有没有渲染异常，这是唯一常驻的留痕处（本仓 ok toast 不显示，不能只靠它）。 */
 .super-run-status {
   margin-top: 2px;
@@ -4760,28 +4760,7 @@ body.theme-light .n-chip.n-chip-lt {
   color: rgba(95, 214, 138, .92);
 }
 
-.super-run-status.paused {
-  color: var(--orange);
-}
-
-/* 暂停态的「继续」键：比单字符的 ▶ 宽一点；门槛未满足时置灰但仍占位。 */
-.n-play.n-super-resume {
-  width: auto;
-  min-width: 34px;
-  padding: 0 6px;
-  font-size: 10px;
-  letter-spacing: 0;
-  border-color: var(--orange);
-  color: var(--orange);
-  background: rgba(255, 170, 60, .12);
-}
-
-.n-play.n-super-resume:hover {
-  background: rgba(255, 170, 60, .22);
-}
-
-.n-play.disabled,
-.n-play.n-super-resume.disabled {
+.n-play.disabled {
   opacity: .45;
   cursor: not-allowed;
   border-color: var(--bd2);
@@ -7851,6 +7830,40 @@ body.theme-light .n-chip.n-chip-lt {
   box-sizing: border-box;
   justify-content: center;
   cursor: pointer;
+}
+/* 绑定应用后：整块 body（卡片）就是一颗大按钮 —— 描边 + 立面 + 悬停上浮发光 + 按下回弹，
+   点在哪都算点卡片（app-appnode.js 给已绑定的卡片加 --cta）。 */
+.appnode-card--cta {
+  border: 1px solid #7c8cff55;
+  border-radius: 7px;
+  background: linear-gradient(180deg, #232a4a, #1a1f37);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, .07),
+    0 2px 6px rgba(0, 0, 0, .3);
+  transition: background .15s ease, border-color .15s ease, box-shadow .15s ease, transform .1s ease-out;
+}
+.appnode-card--cta:hover {
+  border-color: #9aa7ffcc;
+  background: linear-gradient(180deg, #2c3459, #212745);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, .12),
+    0 6px 14px -4px rgba(0, 0, 0, .55),
+    0 0 0 3px rgba(124, 140, 255, .16);
+  transform: translateY(-1px);
+}
+.appnode-card--cta:active {
+  transform: translateY(1px) scale(.985);
+  border-color: #9aa7ff;
+  background: linear-gradient(180deg, #1b2036, #161a2c);
+  box-shadow: inset 0 2px 6px rgba(0, 0, 0, .4);
+  transition-duration: .06s;
+}
+/* 卡片里的次级按钮（完全停止 / 重新绑定）按下时不要把整块卡片一起按扁 */
+.appnode-card--cta:has(.appnode-pick-btn:active) {
+  transform: none;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, .07),
+    0 2px 6px rgba(0, 0, 0, .3);
 }
 .appnode-name {
   font-size: 13px;

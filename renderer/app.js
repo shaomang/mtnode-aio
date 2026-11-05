@@ -265,6 +265,8 @@ const NODE_KIND_PLUGIN = {
   remotion: "remotion",
   /* H3（本地视频生成）与 Music 3 同为本地后端：门槛 16G（真源在 plugins/vram-gate.js） */
   video_gen: "minimax-h3",
+  /* MOSS-Music 本地音乐理解（门槛 24G，真源 plugins/vram-gate.js） */
+  moss_music: "moss-music",
 };
 function nodeKindPluginId(kind) {
   return NODE_KIND_PLUGIN[String(kind || "")] || "";
@@ -439,6 +441,8 @@ const KIND_CLS = {
   music_gen: "music",
   /* YuE2 音乐生成（本地 YuE2 后端 · 歌词 → 整曲 · 可编辑 ABC 谱面）：复用音乐族配色 */
   yue_gen: "music",
+  /* MOSS-Music 音乐理解：复用音乐族配色（产物是分析文本，不是音频） */
+  moss_music: "music",
   flux3klein_gen: "proc-img",
   /* Qwen Image 2.1 本机出图：与 FLUX 3 Klein 同族配色（图像类） */
   qwenimage_gen: "proc-img",
@@ -678,6 +682,8 @@ KIND_ICON_SVG.infinitetalk_gen = KIND_ICON_SVG.video_gen;
 KIND_ICON_SVG.soulxflashhead_gen = KIND_ICON_SVG.video_gen;
 KIND_ICON_SVG.flux3klein_gen = KIND_ICON_SVG.proc_image;
 KIND_ICON_SVG.qwenimage_gen = KIND_ICON_SVG.proc_image;
+/* MOSS-Music 音乐理解：与音乐生成节点同一枚音符图标（输入音频 / 视频，产出分析文本） */
+KIND_ICON_SVG.moss_music = KIND_ICON_SVG.music_gen;
 
 function nodeKindIconKey(node) {
   if (!node) return "proc_text";
@@ -780,6 +786,44 @@ const REMOTION_SIZES = [
   "1024x1024",
   "1080x1080",
 ];
+/* 像素尺寸 → 带比例的选项标签："2048x1536" → "[4:3] 2048x1536"，
+   "832×480"（全角乘号也认）同样适用；auto / 非法值原样返回。
+   约分后的比例太碎（如 1360x2048 = 85:128，用户读不出画幅）时，
+   退一步取最接近的常见画幅（差得离谱才退回一位小数的宽高比）。
+   用途：下拉选项要让用户一眼看出画幅，避免挑错尺寸。 */
+const SIZE_ASPECT_PRESETS = [
+  [1, 1], [5, 4], [4, 3], [3, 2], [16, 9], [21, 9], [2, 1],
+  [3, 4], [4, 5], [2, 3], [9, 16], [9, 21], [1, 2],
+];
+function sizeAspectOf(size) {
+  const m = /^(\d+)\s*[x×*]\s*(\d+)$/i.exec(String(size == null ? "" : size).trim());
+  if (!m) return "";
+  const w = Number(m[1]);
+  const h = Number(m[2]);
+  if (!(w > 0 && h > 0)) return "";
+  const gcd = (a, b) => (b ? gcd(b, a % b) : a);
+  const d = gcd(w, h) || 1;
+  const rw = w / d;
+  const rh = h / d;
+  if (rw <= 32 && rh <= 32) return rw + ":" + rh;
+  const R = w / h;
+  let best = "";
+  let bestDrift = Infinity;
+  for (const [pw, ph] of SIZE_ASPECT_PRESETS) {
+    const drift = Math.abs(Math.log(R / (pw / ph)));
+    if (drift < bestDrift) {
+      bestDrift = drift;
+      best = pw + ":" + ph;
+    }
+  }
+  return bestDrift <= 0.02 ? best : R.toFixed(2) + ":1";
+}
+function sizeAspectLabel(size) {
+  const s = String(size == null ? "" : size);
+  const a = sizeAspectOf(s);
+  return a ? "[" + a + "] " + s : s;
+}
+
 /* Agent 预设（对应 dsh/gateway/gateway.mjs 的 PRESETS）——渲染层唯一真源：
    会话模型菜单、右侧助手栏「预设」下拉（syncAssistPresetOptions）、智能节点面板「预设」、
    设置「Agent 预设」下拉、开发节点 🧠 弹层与 agentPresetLabel() 都遍历此表，
@@ -1540,6 +1584,26 @@ const NODE_DEFAULTS = {
     boundSaveId: "",
     offload: true,
     musicStatus: "",
+    output: null,
+    error: null,
+    ranAt: 0,
+    running: false,
+  },
+  /* MOSS-Music 本地音乐理解：音频 / 视频 → 结果文本 + JSON + 产物路径（三端子）。
+     输入 端口0=音频/视频路径 · 端口1=自由提问 · 端口2=控制输入；
+     输出 端口0=结果文本 · 端口1=JSON 文本 · 端口2=md 产物路径。 */
+  moss_music: {
+    w: 380,
+    h: 360,
+    title: "MOSS-Music 音乐理解",
+    preset: "full",
+    question: "",
+    longAudio: false,
+    model: "instruct",
+    quant: "int8",
+    /* 单段输出上限（token）：默认 4096（官方 1024 会把歌词掐半句）；撞上限后端会自动对半切 */
+    maxNewTokens: 4096,
+    mossStatus: "",
     output: null,
     error: null,
     ranAt: 0,
@@ -5299,6 +5363,8 @@ function outputCount(n) {
   if (n.kind === "judge" || n.kind === "task") return 2;
   /* 质检节点：0=报告 JSON · 1=控制·通过 · 2=控制·未过（门禁分流）—— 判定口已撤掉 */
   if (typeof isQaKindNode === "function" && isQaKindNode(n)) return 3;
+  /* MOSS-Music：0=结果文本 · 1=JSON 文本 · 2=md 产物路径（三颗纯数据口，无控制出） */
+  if (n.kind === "moss_music") return 3;
   if (n.kind === "net_recv") return 2; /* 端口0=信息输出(数据) · 端口1=控制输出 */
   if (n.kind === "net_send") return 0; /* 发送无输出（末端） */
   /* 音乐 / 语音 / 视频 / Remotion：端口0=内容输出(数据) · 端口1=控制输出（完成后触发下游控制目标） */
@@ -6574,11 +6640,19 @@ function dshSupported() {
   const hasKey = provs.some(
     (p) => p.type === "text_openai" && String(p.apiKey || "").trim(),
   );
-  if (!hasKey)
+  if (!hasKey) {
+    /* 无 Key 的同一口径（与 app-agent.js 的同名函数一致）：就地弹 DeepSeek 图文引导窗，
+       别只回一句 reason 让调用方 toast 掉。 */
+    try {
+      if (typeof dsEnsureModelReady === "function")
+        dsEnsureModelReady("deepseek-official");
+      else if (typeof dsOpenOnboard === "function") dsOpenOnboard();
+    } catch (_) {}
     return {
       ok: false,
       reason: I18n.t("未配置带 API Key 的文本服务商（设置 · API/配置 → 模型服务）"),
     };
+  }
   return { ok: true, provider: dshProvider() };
 }
 
@@ -7585,6 +7659,25 @@ function fmtTime(d) {
 function nodeById(id) {
   return S.wf ? S.wf.nodes.find((n) => n.id === id) : null;
 }
+/** 用「节点所属的那张画布」临时换手 S.wf 跑一段**同步**读取，结束立刻还原。
+ *  现场（用户报）：跑 Story To Video 的后处理节点层时，一大片节点报
+ *  「请连接源视频输入（端子 V）」，可线明明连着，切回那张画布重跑又全好。
+ *  原因：本层批次（以及应用 / 后台画布的批次）是跨画布跑的 —— 用户切去看别的图
+ *  时 S.wf 已经不是节点所在的那张图，而 wiresTo / nodeById / valueFromWire 全按
+ *  S.wf 找线，一条也看不到，于是「线在别的画布上」被当成「端子没接线」。
+ *  写法与 syncAllDynCtrlWires 同口径：只换同步窗口，不碰 _bgCanvasDepth 与落盘归属。 */
+function withOwningWf(node, fn) {
+  const owner =
+    typeof ownerWfOfNode === "function" ? ownerWfOfNode(node) : S.wf;
+  const prev = S.wf;
+  if (!owner || owner === prev) return fn();
+  S.wf = owner;
+  try {
+    return fn();
+  } finally {
+    S.wf = prev;
+  }
+}
 function isControlKind(n) {
   /* 控制 / 起点终点 / 需求等待 / 定时 / 延时 / 序列 / 闸门 / 分发 / 计数 / 互斥 / 判断 / 任务：指挥线 */
   return !!(
@@ -7703,6 +7796,8 @@ function inPortIsControl(node, idx) {
   if (node.kind === "net_send") return i === 1; /* 端口0=信息 · 端口1=控制输入 */
   if (node.kind === "music_gen") return i === 2;
   if (node.kind === "yue_gen") return i === 3;
+  /* MOSS-Music：0=音频/视频 · 1=自由提问 · 2=控制输入 */
+  if (node.kind === "moss_music") return i === 2;
   if (node.kind === "breeze_gen") return i === 4; /* 端口4=控制输入 */
   /* InfiniteTalk 数字人：0=人物图 · 1=语音 · 2=源视频 · 3=提示词 · 4=控制输入（固定 5 颗端子） */
   if (node.kind === "infinitetalk_gen") return i === 4;
@@ -7747,6 +7842,8 @@ const IN_PORT_DATA_KINDS = {
   net_send: ["text", "control"],
   music_gen: ["text", "text", "control"],
   yue_gen: ["text", "text", "text", "control"],
+  /* MOSS-Music：0=音频/视频（任意路径）· 1=自由提问 · 2=控制输入 */
+  moss_music: [null, "text", "control"],
   /* Breeze 语音：0=待合成文本 · 1=参考音频（音频文件 URL）· 2=参考文稿 · 3=指令 · 4=控制输入 */
   breeze_gen: ["text", "audio", "text", "text", "control"],
   /* InfiniteTalk 数字人：0=人物图（图像路径）· 1=语音（音频文件 URL/路径）· 2=源视频（V2V）
@@ -7835,6 +7932,7 @@ function hasFixedInPorts(n) {
       n.kind === "mutex" ||
       n.kind === "music_gen" ||
       n.kind === "yue_gen" ||
+      n.kind === "moss_music" ||
       n.kind === "breeze_gen" ||
       n.kind === "infinitetalk_gen" ||
       n.kind === "soulxflashhead_gen" ||
@@ -8024,6 +8122,7 @@ function isTextSource(n) {
     n.kind === "input_video" ||
     n.kind === "music_gen" ||
     n.kind === "yue_gen" ||
+    n.kind === "moss_music" ||
     n.kind === "breeze_gen" ||
     n.kind === "video_gen" ||
     isVideoPostKind(n) ||
@@ -9118,6 +9217,8 @@ function inputCount(node) {
   if (node.kind === "music_gen") return 3; /* 端口0=提示词 · 端口1=歌词 · 端口2=控制输入 */
   /* YuE2：端口0=风格提示词 · 端口1=歌词 · 端口2=ABC 谱（可选）· 端口3=控制输入 */
   if (node.kind === "yue_gen") return 4;
+  /* MOSS-Music：端口0=音频/视频 · 端口1=自由提问 · 端口2=控制输入（固定 3 颗） */
+  if (node.kind === "moss_music") return 3;
   if (node.kind === "breeze_gen") return 5;
   /* InfiniteTalk 数字人：端口0=人物图 · 1=语音 · 2=源视频 · 3=提示词 · 4=控制输入（固定 5 颗，不随连线增量） */
   if (node.kind === "infinitetalk_gen") return 5;
@@ -9410,6 +9511,9 @@ function minWFor(n) {
       return 320;
     case "yue_gen":
       return 320;
+    /* MOSS-Music 音乐理解：预设 + 提问 + 长音频开关 + 后端面板 + 结果预览 */
+    case "moss_music":
+      return 360;
     /* FLUX 3 Klein 图像生成：与音乐 / 语音节点同尺寸族（body 里有参数摘要 + 预览） */
     case "flux3klein_gen":
       return 340;
@@ -9468,6 +9572,9 @@ function minHFor(n) {
       return 220;
     case "yue_gen":
       return 220;
+    /* MOSS-Music：预设下拉 + 提问框 + 长音频 + 后端面板 + 结果预览 */
+    case "moss_music":
+      return 300;
     /* FLUX 3 Klein 图像生成：参数摘要 + 后端面板 + 图像预览，留够高度 */
     case "flux3klein_gen":
       return 240;
@@ -9599,6 +9706,11 @@ function selResult(n) {
    ok 一律不弹，别的成功提示也别往这里加。 */
 const TOAST_KINDS_SHOWN = { err: 1, warn: 1, copy: 1 };
 function toast(msg, kind) {
+  /* 报错播报（内置 TTS，见 renderer/app-tts.js）：只在 err 档开口，模板 = 「出错了：<一句话>」。
+     放在白名单判断之前 —— 播报口径与「右下角弹不弹」无关。 */
+  try {
+    if (window.MTNodeTts && window.MTNodeTts.onNotice) window.MTNodeTts.onNotice(kind, msg);
+  } catch (_) {}
   if (!TOAST_KINDS_SHOWN[String(kind || "").trim().toLowerCase()]) return;
   const box = $("#toastBox");
   const d = document.createElement("div");
@@ -9670,6 +9782,7 @@ function nodeKindLabel(node) {
     global: "全局",
     music_gen: "Minimax Music 3",
     yue_gen: "YuE2",
+    moss_music: "MOSS-Music 音乐理解",
     flux3klein_gen: "FLUX 3 Klein",
     qwenimage_gen: "Qwen Image 2.1",
     /* InfiniteTalk 数字人（本地视频生成 · Wan2.1 I2V 14B） */
@@ -9729,6 +9842,8 @@ function nodeKindPurposeKey(node) {
     proc_image: "图像生成（云端服务商）",
     music_gen: "Minimax Music 3（音乐生成 · 提示词 + 歌词）",
     yue_gen: "YuE2（音乐生成 · 风格提示词 + 歌词 → 整曲 · 可编辑 ABC 谱面）",
+    moss_music:
+      "MOSS-Music 音乐理解（本地音乐理解 · 音频 / 视频 → 时间戳歌词 / 曲式与和弦 / 情绪标签 / 自由提问）",
     flux3klein_gen:
       "FLUX 3 Image Klein（本地图像生成 · 5.6B 蒸馏 · INT8 / BF16 · 提示词 / 多参考图编辑 / 蒙版重绘 / 透明背景）",
     qwenimage_gen:
@@ -10417,8 +10532,8 @@ function collectRunQueueAll() {
   };
   dropSessOnlyDevRows();
   /* ⑤ 「运行本层」批次（renderer/app-super-run.js）：一整层跑起来时，层内节点是串行
-     挨个跑的，节点级队列只能看到「当前那一颗」；本层自己的进度 / 暂停态单独成一行
-     （n/N · 暂停在谁身上），行内 ■ = 停止本层、暂停态的 ▶ = 继续。 */
+     挨个跑的，节点级队列只能看到「当前那一颗」；本层自己的进度单独成一行
+     （n/N · 正在跑谁），行内 ■ = 停止本层（失败即终止，不再有暂停 / 继续）。 */
   if (typeof superRunQueueItems === "function") {
     try {
       for (const it of superRunQueueItems()) addItem(it);
@@ -10651,6 +10766,10 @@ function updateRunQueuePanel() {
      setSoundWatch）。完成判定不能只挂在渲染层定时器上 —— 后台节流会把它推迟到窗口被
      重新激活的那一刻，表现就是「后台跑完了没声音、切回界面才响」。 */
   syncSoundWatch(hasQueue);
+  /* 常驻托盘（本次需求）：把「在飞」条数报给主进程 —— 托盘菜单里的「运行中任务 N」与
+     「全部终止运行」的可用性靠它（app-notify.js 自己判重，只在数量变化时才发 IPC）。
+     只算 run：排队中 / 已暂停不是「在跑」。 */
+  if (typeof notifySyncTrayRunning === "function") notifySyncTrayRunning(runItems.length);
   /* 任务级完成短促音（本次需求）：同一次取数里先做一次「队列前后对比」——
      上拍还在的运行项这一拍不见了 = 它跑完了，响一声短促音（被手动停止 / 取消的不发）。
      放在这里 = 任何类型（智能体会话 / 节点 / 开发块 / 助手 / 后端媒体 / 排队项 / 批处理）
@@ -10781,14 +10900,9 @@ function updateRunQueuePanel() {
     stop.title = paused ? runQueueResumeHint(it) : runQueueStopHint(it);
     stop.onclick = (ev) => {
       ev.stopPropagation();
-      /* 节点层行（type "layer"）：运行中 = 停止本层（不再启动剩余节点），
-         暂停态 = 继续（门槛不满足时由 superRunResumeById 自己给 warn 提示）。 */
+      /* 节点层行（type "layer"）：只有停止本层（不再启动剩余节点） */
       if (it.type === "layer") {
-        if (paused) {
-          if (typeof superRunResumeById === "function") superRunResumeById(it.id);
-        } else if (typeof superRunStopById === "function") {
-          superRunStopById(it.id);
-        }
+        if (typeof superRunStopById === "function") superRunStopById(it.id);
         return;
       }
       if (paused) resumeRunQueueItem(it);
@@ -11186,10 +11300,31 @@ async function stopAllRuns() {
     toast(I18n.t("当前没有运行中的任务"), "warn");
     return;
   }
+  /* 误触保护：这是不可撤销的全局动作，先弹一次确认。顶栏「全部终止」按钮与托盘
+     「全部终止运行」两条入口都走本函数，所以确认只放这一处（判空之后、动手之前）。 */
+  const nRun =
+    running.length +
+    sessRunning.length +
+    subsToStop.length +
+    visionRows.length +
+    (assistOn ? 1 : 0);
+  const brief = [];
+  if (nRun) brief.push(nRun + I18n.t(" 个运行中"));
+  if (waiting.length) brief.push(waiting.length + I18n.t(" 个等待中"));
+  const okStopAll = await confirmDialog(
+    I18n.t("将立刻终止所有在跑与排队的任务（含画布助手与后端生成），且无法撤销。") +
+      (brief.length ? " " + I18n.t("当前：") + brief.join(" · ") : ""),
+    {
+      title: I18n.t("终止全部运行？"),
+      okText: I18n.t("全部终止"),
+      cancelText: I18n.t("取消"),
+      danger: true,
+    },
+  );
+  if (!okStopAll) return;
   /* ① 全局作废代号 */
   markGlobalStop();
-  /* ①a 节点层「运行本层」：一律退出本层（暂停中的也丢掉 —— 用户明说这些都不再要了，
-     再留一条可「继续」的暂停层等于替他保留刚被他放弃的那一轮）。 */
+  /* ①a 节点层「运行本层」：一律退出本层（不再启动剩余节点） */
   try {
     if (typeof superRunStopAllLayers === "function") superRunStopAllLayers();
   } catch (_) {}
@@ -12796,6 +12931,29 @@ function parseSimpleYaml(text) {
   }
   push();
   return entries;
+}
+
+/* 「要不要真的当 YAML 批量」的判定闸（parseSimpleYaml 之外的第二道）：
+   parseSimpleYaml 的口径是「有冒号就有条目」，于是「正文里夹一两行 key: value」的普通文本
+   （含 Markdown 列表项、中文散文里的冒号行）也会被拆成批量条目、节点上还亮起 YAML 芯片 ——
+   这就是「不是 YAML 却被当成 YAML 的文本节点」。
+   这里与画布只读文本的语言判定同源（app-nodeview.js 的保守打分器），另加一条占比：
+     · 必须被判成 yaml（Markdown / 散文 / 单行提示词一律不算）；
+     · 结构行要占非空行多数（≥60%），避免「大段正文 + 两行冒号」被整篇拆成批量。
+   yamlOff 不在这里判：这是「这段正文算不算 YAML」的问题，开关由调用方各自尊重
+   （关掉后原样显示普通文本）。 */
+function yamlBatchEntries(text) {
+  const t = String(text == null ? "" : text);
+  if (!t.trim()) return [];
+  const es = parseSimpleYaml(t);
+  if (!es.length) return [];
+  /* 语言判定器在 app-nodeview.js（排在 app.js 之后），调用期取用 */
+  if (typeof detectViewLang !== "function" || typeof analyzeTextView !== "function") return es;
+  const st = analyzeTextView(t);
+  if (!st.nonEmpty) return [];
+  if (detectViewLang(t) !== "yaml") return [];
+  if (st.yamlAny / st.nonEmpty < 0.6) return [];
+  return es;
 }
 
 function safeFile(s) {
@@ -15316,7 +15474,7 @@ function freezeInputNode(node) {
          （保留原有缩进 / 换行，回来后仍是「JSON 表单」），绝不进 YAML 批量解析；
          其余文本符合 YAML（且未关掉解析）才固化成批量条目。 */
       const isJson = !!jsonContainerOf(disp.text);
-      const es = !isJson && !node.yamlOff ? parseSimpleYaml(disp.text) : [];
+      const es = !isJson && !node.yamlOff ? yamlBatchEntries(disp.text) : [];
       apply = () => {
         if (es.length) {
           node.batch = true;
@@ -15439,7 +15597,7 @@ function isBatchInput(n) {
         v &&
         v.kind === "text" &&
         !jsonContainerOf(v.text) &&
-        parseSimpleYaml(v.text).length
+        yamlBatchEntries(v.text).length
       )
         return true; // 继承文本符合 YAML → 批量（可被 yamlOff 关闭；纯 JSON 不算批量）
     }
@@ -15508,7 +15666,7 @@ function originBatchInput(node, seen) {
       if (src.batch && (src.entries || []).length) return src; // 自有批量
       if (src.kind === "input_text" && inputInherited(src) && !src.yamlOff) {
         const v = inheritedValue(src, 0);
-        if (v && v.kind === "text" && parseSimpleYaml(v.text).length)
+        if (v && v.kind === "text" && yamlBatchEntries(v.text).length)
           return src; // YAML 继承批量
       }
       continue; // 普通继承的输入节点 → 继续向上找真正的批量源
@@ -15550,7 +15708,8 @@ function batchTitles(node) {
     if (node.batch && (node.entries || []).length) o = node;
     else if (node.kind === "input_text" && inputInherited(node)) {
       const v = inheritedValue(node, 0);
-      if (v && v.kind === "text" && parseSimpleYaml(v.text).length) o = node;
+      if (v && v.kind === "text" && !node.yamlOff && yamlBatchEntries(v.text).length)
+        o = node;
     }
   }
   if (!o) return [I18n.t("条目")];
@@ -15559,7 +15718,7 @@ function batchTitles(node) {
     es = mergeItems(o);
   } else if (o.kind === "input_text" && inputInherited(o)) {
     const v = inheritedValue(o, 0);
-    es = v && v.kind === "text" ? parseSimpleYaml(v.text) : [];
+    es = v && v.kind === "text" ? yamlBatchEntries(v.text) : [];
   } else if (o.kind === "input_image") {
     /* 与 valueForInput / itemTitleOf 一致：只计有 path 的条目，避免下标错位 */
     es = (o.entries || []).filter((e) => e && e.path);
@@ -15658,7 +15817,7 @@ function explodeBatchEntriesOf(node) {
     if (inputInherited(node) && !node.yamlOff) {
       const v = inheritedValue(node, 0);
       if (v && v.kind === "text") {
-        const es = parseSimpleYaml(v.text);
+        const es = yamlBatchEntries(v.text);
         if (es.length >= 2)
           return es.map((e, idx) => ({
             title: entryDisplayTitle(e, idx),
@@ -16245,7 +16404,7 @@ function valueForInput(src, idx, consumer, seen) {
         seen,
       );
       if (up && up.kind === "text" && !src.yamlOff && !jsonContainerOf(up.text)) {
-        const es = parseSimpleYaml(up.text);
+        const es = yamlBatchEntries(up.text);
         if (es.length) {
           // 继承文本符合 YAML → 按批量条目取值
           const e = es[Math.min(idx || 0, es.length - 1)];
@@ -16348,6 +16507,19 @@ function valueForInput(src, idx, consumer, seen) {
     if (po && Object.prototype.hasOwnProperty.call(po, key))
       return po[key] || null;
     return r && r.output ? r.output : null;
+  }
+  /* MOSS-Music：0=结果文本 · 1=JSON 文本 · 2=md 产物路径（三颗都是文本值） */
+  if (src.kind === "moss_music") {
+    const r = selResult(src);
+    const o = r && r.output;
+    if (!o) return null;
+    if (Number(idx) === 1) return { kind: "text", text: String(o.json || "") };
+    if (Number(idx) === 2)
+      return {
+        kind: "text",
+        text: String((o.files && o.files.md) || o.path || ""),
+      };
+    return { kind: "text", text: String(o.text || "") };
   }
   if (
     src.kind === "music_gen" ||
@@ -16655,7 +16827,7 @@ function allTextItems(src, consumer, portIdx) {
       );
       if (inner.length > 1) return inner; // 继承批量 → 全部条目
       if (inner.length === 1 && !src.yamlOff && !jsonContainerOf(inner[0].text)) {
-        const es = parseSimpleYaml(inner[0].text); // 继承文本符合 YAML → 解析为条目
+        const es = yamlBatchEntries(inner[0].text); // 继承文本符合 YAML → 解析为条目
         if (es.length)
           return es.map((e) => ({ title: e.title, text: e.content }));
         return [{ title: src.title, text: inner[0].text }];
@@ -16909,7 +17081,8 @@ function itemTitleOf(src, idx, consumer) {
     if (inputInherited(src)) {
       const v = inheritedValue(src, 0);
       if (v && v.kind === "text") {
-        const es = jsonContainerOf(v.text) ? [] : parseSimpleYaml(v.text);
+        const es =
+          src.yamlOff || jsonContainerOf(v.text) ? [] : yamlBatchEntries(v.text);
         if (es.length) {
           const e = es[Math.min(at, es.length - 1)];
           return e.title || fallback;
@@ -17042,6 +17215,19 @@ function displayValueOf(src, consumer) {
   /* 质检节点：显示必须与下游取值同一口径（报告 JSON / 判定文本），端口号取数据线的 fromIndex。
      缺了这一支，下游文本节点明明连上了线也只能显示「等待上游输出…」。 */
   if (typeof isQaKindNode === "function" && isQaKindNode(src)) {
+    let idx = 0;
+    if (consumer) {
+      const link = (S.wf.wires || []).find(
+        (x) => !x.rel && !x.ctrl && x.from === src.id && x.to === consumer.id,
+      );
+      if (link) idx = Math.max(0, Number(link.fromIndex) || 0);
+    }
+    const v = valueForInput(src, idx, consumer || null);
+    if (!v || v.kind !== "text") return null;
+    return { text: String(v.text || ""), title: src.title };
+  }
+  /* MOSS-Music：显示与下游取值同口径（结果文本 / JSON / 产物路径三颗文本端子） */
+  if (src.kind === "moss_music") {
     let idx = 0;
     if (consumer) {
       const link = (S.wf.wires || []).find(
@@ -21931,7 +22117,7 @@ function sideCatMatches(n, kinds) {
 const SIDE_CATS = [
   ["输入节点", ["input_text", "input_image", "input_audio", "input_video", "input_any", "input_form", "input_file", "db_table"]],
   ["全局节点", ["global"]],
-  ["处理节点", ["proc_text", "proc_image", "flux3klein_gen", "qwenimage_gen", "music_gen", "yue_gen", "breeze_gen", "video_gen", "infinitetalk_gen", "soulxflashhead_gen", "video_upscale", "video_interp", "remotion"]],
+  ["处理节点", ["proc_text", "proc_image", "flux3klein_gen", "qwenimage_gen", "music_gen", "yue_gen", "moss_music", "breeze_gen", "video_gen", "infinitetalk_gen", "soulxflashhead_gen", "video_upscale", "video_interp", "remotion"]],
   ["质检节点", ["qa_text", "qa_image", "qa_video", "qa_audio", "qa_file"]],
   ["保存节点", ["save", "save_pdf"]],
   ["工具节点", ["split", "merge", "function", "tool"]],
@@ -21963,6 +22149,7 @@ const KIND_TAGS = {
   qwenimage_gen: "图像生成",
   music_gen: "音乐",
   yue_gen: "音乐",
+  moss_music: "音乐理解",
   breeze_gen: "语音",
   video_gen: "视频",
   infinitetalk_gen: "数字人",
@@ -22695,6 +22882,12 @@ function canvasCreateMenuGroups(pt) {
             "yue_gen",
             I18n.t("YuE2（歌词→整曲 · 可编辑谱面）"),
             () => addNode("yue_gen", pt.x, pt.y),
+          ),
+          /* MOSS-Music：音频 / 视频 → 逐句歌词、曲式与和弦、情绪标签、自由提问（本地 24G 后端） */
+          ctxKindItem(
+            "moss_music",
+            I18n.t("MOSS-Music 音乐理解（本地 · 歌词 / 曲式 / 情绪 / 提问）"),
+            () => addNode("moss_music", pt.x, pt.y),
           ),
           ctxKindItem(
             "breeze_gen",
@@ -24683,6 +24876,44 @@ function bindCanvas() {
       }
       return;
     }
+    /* Esc 关窗兜底（本次需求）：各窗自己的 Esc 监听只挂在宿主元素上，焦点落到背景 / 窗内
+       控件之外时收不到事件，按 Esc 就像没反应。这里按「上层 → 下层」补一条窗口级兜底：
+       深色弹窗 #mtDialog（确认 / 输入 / 表单）→ 主弹窗壳 #overlay（设置 / 素材 / 工具库 /
+       工作流库 / 上架 / 消息 … 全应用共用那一只）。
+       已由窗内控件或窗自己的监听处理过（preventDefault）就不抢；#mtPop 这类盖在 #overlay
+       之上的二级浮层有自己的 Esc 出口（见 app-tips.js），它开着时不动下面的宿主窗。
+       阻塞式确认框（openOverlay 的 opts.min === false）与它没有 ✕ 同一条理由，也不给 Esc。 */
+    if (ev.key === "Escape" && !ev.defaultPrevented) {
+      const mtPop = document.getElementById("mtPop");
+      if (mtPop && mtPop.classList.contains("on")) return;
+      /* 工坊 / 模板商店的二级预览浮层（#tplSubOv）也盖在 #overlay 上：一次只关一层 */
+      const sub = document.getElementById("tplSubOv");
+      if (sub && sub.classList.contains("on") && typeof closeTplSubOverlay === "function") {
+        ev.preventDefault();
+        closeTplSubOverlay();
+        return;
+      }
+      /* 设置页里再开的「服务商配置」深色窗（#provCfgDlg）盖在 #overlay 上：
+         焦点不在它里面的输入框时也要先关它，别让宿主窗先收把这只窗留在屏上。 */
+      const prov = document.getElementById("provCfgDlg");
+      if (prov && prov.classList.contains("on") && typeof closeProvCfgDlg === "function") {
+        ev.preventDefault();
+        closeProvCfgDlg();
+        return;
+      }
+      const dlg = document.getElementById("mtDialog");
+      if (dlg && dlg.classList.contains("on") && _mtDlgActive) {
+        ev.preventDefault();
+        mtDlgSupersede();
+        return;
+      }
+      const ov = document.getElementById("overlay");
+      if (overlayClosable && ov && ov.style.display === "flex") {
+        ev.preventDefault();
+        closeOverlay();
+        return;
+      }
+    }
     /* Esc 收起画布菜单（右键「新建节点」/ 拖线落点「新建并连入」）：菜单没有焦点，靠 Esc 关掉 */
     if (ev.key === "Escape" && hideOpenCtx()) {
       ev.preventDefault();
@@ -25062,6 +25293,7 @@ const WIRE_DROP_TARGETS = [
   { kind: "qa_file", g: "质检节点" },
   { kind: "music_gen", g: "处理节点", vramKind: "music_gen" },
   { kind: "yue_gen", g: "处理节点", vramKind: "yue_gen" },
+  { kind: "moss_music", g: "处理节点", vramKind: "moss_music" },
   { kind: "breeze_gen", g: "处理节点" },
   { kind: "video_gen", g: "处理节点", vramKind: "video_gen" },
   { kind: "infinitetalk_gen", g: "处理节点" },
@@ -25317,9 +25549,11 @@ function bindImgSaveAs(img) {
 }
 
 /* 工作流内图像预览弹窗（点击缩略图）
- * 口径：预览一律显示**原图**。<img> 的 CSS 宽高 = 原生像素 × 缩放倍率（缩放改的是布局
- * 尺寸，不是把一张已经缩过的位图再 transform 拉大），配合 .img-lb-img 的
- * image-rendering:auto，任何一档缩放都是浏览器从原文件重新采样 → 缩小不锯齿、放大不糊。
+ * 取图分两级：打开先按灯箱可用区（含 DPR）取一张缩放图，「适应窗口 / 缩小」用它；
+ * 缩放档跨过接近 1:1 才换回原图（见 lbMaybeLoadOriginal），关闭时清空并释放。
+ * <img> 的 CSS 宽高 = **真原生像素** × 缩放倍率（缩放改的是布局尺寸，不是把一张已经
+ * 缩过的位图再 transform 拉大），配合 .img-lb-img 的 image-rendering:auto，
+ * 1:1 及其以上那一档用的就是原图 → 缩小不锯齿、放大不糊。
  * 交互：打开即「适应窗口」（整图完整可见、高度撑满灯箱；小图不放大到失真，封顶 1:1）；
  * 滚轮以指针为心缩放（必须 { passive:false } + preventDefault，否则滚轮被当成页面滚动吞掉，
  * 这就是「点开预览后滚轮缩放没反应」的根因）；点图逐级放大 / Shift+点缩小；放大后按住拖动平移；
@@ -25376,6 +25610,83 @@ function lbAvail(body) {
     h: Math.max(1, Math.floor(r.height)),
   };
 }
+/* ── 取图分两级：先缩放图，跨过接近 1:1 再换原图 ─────────────────────────────
+   灯箱过去一打开就解码原图：一张 8K 成图由 Chromium 按**源分辨率**建纹理，而「适应窗口」
+   那一档实际只用到窗口那么大 —— 打开一张大图的代价与它被看了多少无关。
+   现在打开时按灯箱可用区（含 DPR）取一张缩放图（走主进程的 mtnode-thumb:// 协议，
+   见 assets-store.js 的 thumbEntryFor），缩放档跨过接近 1:1 时才换回原图，
+   关闭时清空 <img> 并释放。缩放几何仍按**真原生像素**算，百分比与「1:1」语义不变。 */
+const LB_THUMB_MIN = 64;
+const LB_THUMB_MAX = 2048; /* = assets-store.js thumbEntryFor 的 maxEdge 上限 */
+const LB_ORIG_SCALE = 0.9; /* 接近 1:1（0.9 ≈ 100% 那一档）就换原图 */
+
+/** 缩放图长边：灯箱可用区（含 DPR）取整，夹在 [64, 2048] */
+function lbThumbEdge(avail) {
+  const dpr = (typeof window !== "undefined" && window.devicePixelRatio) || 1;
+  const need = Math.max((avail && avail.w) || 1, (avail && avail.h) || 1) * dpr;
+  return Math.max(LB_THUMB_MIN, Math.min(LB_THUMB_MAX, Math.ceil(need)));
+}
+
+/** 缩放档跨过接近 1:1 → 换原图（只换一次；先预载再换 src，1:1 那一下不闪白） */
+function lbMaybeLoadOriginal(v) {
+  if (!v || !v.img || !v.srcPath || v.origLoaded) return false;
+  if (!v.natSettled) return false; /* 真原生像素还不知道就先别换，免得 1:1 判错 */
+  if (!(v.scale >= LB_ORIG_SCALE)) return false;
+  /* 缩放图已经等于原尺寸（图本来就小）→ 没有更清的版本可换 */
+  if (v.natExact && v.nat.w && Math.max(v.nat.w, v.nat.h) <= v.thumbEdge) {
+    v.origLoaded = true;
+    return false;
+  }
+  const url = fileUrlWithBust(v.srcPath, v.bust);
+  v.origLoaded = true;
+  let swapped = false;
+  const swap = () => {
+    if (swapped || !v.img) return;
+    swapped = true;
+    try {
+      v.img.src = url;
+    } catch (_) {
+      v.origLoaded = false;
+    }
+  };
+  try {
+    const pre = new Image();
+    pre.onload = swap;
+    pre.onerror = () => {
+      /* 原图取不到（被删 / 坏文件）→ 继续用缩放图，不把灯箱打成错误态 */
+      if (!swapped) v.origLoaded = false;
+    };
+    pre.src = url;
+    if (pre.complete && pre.naturalWidth) swap();
+  } catch (_) {
+    swap();
+  }
+  return true;
+}
+
+/** 真原生像素只有主进程知道（缩放图的 naturalWidth 是缩过的）：问一次 assetMeta，
+    回来就校正 nat —— 底栏百分比、适应档与「1:1」都按原始像素算 */
+function lbFetchNat(body, view) {
+  const settle = (m) => {
+    if (!view || body._lbView !== view) return;
+    view.natSettled = true;
+    if (m && m.ok && m.width > 0 && m.height > 0) {
+      view.natExact = true;
+      view.nat = { w: m.width, h: m.height };
+    }
+    lbApplyView(body);
+  };
+  if (typeof getImageMeta !== "function") return settle(null);
+  let pr = null;
+  try {
+    pr = getImageMeta(view.srcPath);
+  } catch (_) {
+    pr = null;
+  }
+  if (!pr || typeof pr.then !== "function") return settle(null);
+  pr.then(settle, () => settle(null));
+}
+
 /** 状态 → DOM：写图片宽高（原生像素 × 倍率）、平移量、pannable 光标、底栏百分比 */
 function lbApplyView(body) {
   const v = body._lbView;
@@ -25402,6 +25713,8 @@ function lbApplyView(body) {
   body.classList.toggle("pannable", !!pan.canPan);
   const z = document.getElementById("imgLbZoom");
   if (z) z.textContent = Math.round(v.scale * 100) + "%";
+  /* 每档缩放都过一遍：跨过接近 1:1 就换原图，没跨过就一直用缩放图 */
+  lbMaybeLoadOriginal(v);
   return pan;
 }
 function lbSetZoom(body, want, px, py, markUser) {
@@ -25431,6 +25744,20 @@ function closeImageLightbox() {
     el.classList.remove("img-lb-top");
     const body = el.querySelector("#imgLbBody");
     if (body) {
+      /* 关灯箱即释放：摘掉 src + 解绑回调，缩放图 / 原图的解码位图才真的能回收 */
+      const v = body._lbView;
+      if (v) {
+        if (v.img) {
+          v.img.onload = null;
+          v.img.onerror = null;
+          try {
+            v.img.removeAttribute("src");
+          } catch (_) {}
+        }
+        v.img = null;
+        v.nat = { w: 0, h: 0 };
+        v.thumbEdge = 0;
+      }
       body._lbView = null;
       body.innerHTML = "";
     }
@@ -25573,15 +25900,25 @@ function openImageLightbox(path, title, opts) {
   const body = el.querySelector("#imgLbBody");
   body.innerHTML = "";
   body.classList.add("checker");
+  /* 先亮灯箱：缩放图档位要按「灯箱可用区」算，而可用区只有 .on 之后才有布局 */
+  el.classList.toggle("img-lb-top", !!(opts && opts.above));
+  el.classList.add("on");
   const tip = I18n.t("滚轮缩放 · 点击放大 · 放大后可拖动平移");
   const img = document.createElement("img");
   img.className = "img-lb-img";
   img.alt = name;
   img.title = tip;
-  /* 状态袋：img / 原生尺寸 / 适应档 / 当前倍率 / 平移量 / 是否用户手动缩过 */
+  /* 状态袋：img / 原生尺寸 / 适应档 / 当前倍率 / 平移量 / 是否用户手动缩过；
+     srcPath + thumbEdge + origLoaded 是「先缩放图、再换原图」那条链的状态 */
   const view = {
     img,
     nat: { w: 0, h: 0 },
+    natExact: false, /* nat 是否 = 真原生像素（缩放图只能给近似） */
+    natSettled: false, /* 是否已问过真尺寸（内存图 / 云端图和独立加载时无需问） */
+    srcPath: isData || isRemote ? "" : p,
+    bust: Date.now(),
+    thumbEdge: 0,
+    origLoaded: isData || isRemote,
     fit: 1,
     scale: 1,
     ox: 0,
@@ -25590,11 +25927,19 @@ function openImageLightbox(path, title, opts) {
     dragged: false,
     pan: null,
   };
+  view.natSettled = !view.srcPath;
   body._lbView = view;
   const ready = () => {
     if (body._lbView !== view) return;
-    view.nat = { w: img.naturalWidth || 0, h: img.naturalHeight || 0 };
+    if (!view.natExact) view.nat = { w: img.naturalWidth || 0, h: img.naturalHeight || 0 };
     if (!view.nat.w || !view.nat.h) return;
+    if (view.origLoaded) {
+      /* 原图到位（或本来就是原图地址）：这才是真原生像素；倍率与平移不动用户当前的
+         —— 从缩放图换成原图时不能把人刚滚到的档位重置掉 */
+      view.natExact = true;
+      lbApplyView(body);
+      return;
+    }
     view.userZoomed = false;
     view.ox = 0;
     view.oy = 0;
@@ -25602,6 +25947,15 @@ function openImageLightbox(path, title, opts) {
   };
   img.onload = ready;
   img.onerror = () => {
+    if (body._lbView !== view) return;
+    /* 缩放图取不到（协议读不到字节 / 不是图片）→ 退回原图；原图也打不开才报错 */
+    if (view.srcPath && !view.origLoaded) {
+      view.origLoaded = true;
+      try {
+        img.src = fileUrlWithBust(view.srcPath, view.bust);
+        return;
+      } catch (_) {}
+    }
     body._lbView = null;
     body.innerHTML = "";
     body.classList.remove("checker");
@@ -25612,8 +25966,18 @@ function openImageLightbox(path, title, opts) {
   };
   body.appendChild(img);
   /* 内存图 / 云端图直接用原样地址（data URL 或 http(s)），真文件仍走 file:// + bust */
-  if (isData || isRemote) img.src = p;
-  else img.src = fileUrlWithBust(p, Date.now());
+  if (isData || isRemote) {
+    img.src = p;
+  } else if (typeof thumbUrlWithBust !== "function") {
+    /* 缩略图协议不可用（老渲染层 / 单独加载本文件）→ 退回原图，功能不回退 */
+    view.origLoaded = true;
+    img.src = fileUrlWithBust(p, Date.now());
+  } else {
+    /* 第一级：按灯箱可用区（含 DPR）要一张缩放图，别为「适应窗口」那一档解码整张原图 */
+    view.thumbEdge = lbThumbEdge(lbAvail(body));
+    img.src = thumbUrlWithBust(p, view.bust, view.thumbEdge);
+    lbFetchNat(body, view); /* 真原生像素随后校正（百分比 / 1:1 都按它算） */
+  }
   if (img.complete) ready();
   const foot = el.querySelector("#imgLbFoot");
   foot.innerHTML = "";
@@ -25665,8 +26029,7 @@ function openImageLightbox(path, title, opts) {
   closeBtn.textContent = I18n.t("关闭");
   closeBtn.onclick = closeImageLightbox;
   foot.appendChild(closeBtn);
-  el.classList.toggle("img-lb-top", !!(opts && opts.above));
-  el.classList.add("on");
+  /* 灯箱已在函数前段点亮（缩放图档位要按可用区算），这里只补一次视图 */
   lbApplyView(body);
 }
 
@@ -26304,6 +26667,7 @@ async function stopNode(node) {
   if (
     node.kind === "music_gen" ||
     node.kind === "yue_gen" ||
+    node.kind === "moss_music" ||
     node.kind === "flux3klein_gen" ||
     node.kind === "qwenimage_gen" ||
     node.kind === "breeze_gen" ||
@@ -26352,6 +26716,8 @@ async function stopNode(node) {
     if (wasRunning) mediaGenCancelRemote(node);
     if (node.kind === "music_gen") node.musicStatus = I18n.t("已取消");
     else if (node.kind === "yue_gen") node.yueStatus = I18n.t("已取消");
+    else if (node.kind === "moss_music")
+      node.mossStatus = I18n.t("已终止（显存已释放）");
     else if (node.kind === "breeze_gen") node.breezeStatus = I18n.t("已取消");
     else if (node.kind === "video_gen" || isVideoPostKind(node))
       node.videoStatus = I18n.t("已取消");
@@ -26363,7 +26729,9 @@ async function stopNode(node) {
           ? "已取消音乐生成"
           : node.kind === "yue_gen"
             ? "已取消音乐生成"
-            : node.kind === "flux3klein_gen"
+            : node.kind === "moss_music"
+              ? "已终止音乐理解（显存已释放）"
+              : node.kind === "flux3klein_gen"
               ? "已取消图像生成"
               : node.kind === "qwenimage_gen"
                 ? "已取消图像生成"
@@ -26544,7 +26912,9 @@ function maskAnchorsForLinkify(html, store) {
 
 /* 会话正文里的「相对文件路径」（renderer/app-fileview.js、dsh/DESIGN.md 这种）才做成链接：
    必须带一层以上目录 + 认得出的扩展名。两条都满足才认 —— 正文里光溜溜的 "app.js" 或
-   "main" 太容易和普通词撞上，宁可不做，也不把满屏普通词变成链接。 */
+   "main" 太容易和普通词撞上，宁可不做，也不把满屏普通词变成链接。
+   `./renderer/app.js` / `../src/main.rs` 这两种相对写法要认（前置的 ./ ../ 属于路径本身，
+   以前被前置字符排除挡在门外，点了根本没反应）；单段文件名仍然不认。 */
 const MT_RELPATH_EXT =
   /\.(?:js|mjs|cjs|jsx|ts|tsx|json|jsonc|md|markdown|txt|log|csv|tsv|ya?ml|toml|ini|cfg|conf|css|scss|less|sass|html?|xhtml|xml|svg|vue|svelte|astro|py|rb|go|rs|java|kt|kts|c|h|cc|cpp|hpp|cs|php|sh|bash|zsh|ps1|bat|cmd|lua|sql|dart|swift|m|mm|r|pl|ex|exs|erl|hs|clj|scala|groovy|gradle|properties|patch|diff|png|jpe?g|gif|webp|bmp|ico|avif|tiff?|mp3|wav|ogg|flac|m4a|mp4|webm|mov|mkv|avi|pdf)$/i;
 
@@ -26555,11 +26925,12 @@ function linkifyEscapedText(text) {
   /* marked 已经解析出的 <a> 先盖起来，收尾原样回填（见 maskAnchorsForLinkify） */
   const anchors = [];
   if (src.indexOf("<a") !== -1) src = maskAnchorsForLinkify(src, anchors);
-  /* URL 那一支的字符类由 MT_URL_STOP 拼出来（中文 / 全角即止，见上），其余三支与原来一致 */
+  /* URL 那一支的字符类由 MT_URL_STOP 拼出来（中文 / 全角即止，见上），其余三支与原来一致；
+     相对路径那一支多了可选的 ./ ../ 前缀（属于路径本身，不是前置噪声） */
   const re = new RegExp(
     "https?:\\/\\/[^" +
       MT_URL_STOP +
-      "]+|file:\\/\\/\\/?[^\\s<&]+|(?:[A-Za-z]:(?:\\\\|\\/)|\\\\\\\\[^\\\\\\s<&]+)[^\\s<&|?*]+|(?<![\\w.@~+$\\-\\\\/])((?:[\\w.@~+$-]+[\\\\/])+[\\w.@~+$-]+\\.[A-Za-z]\\w{0,7})",
+      "]+|file:\\/\\/\\/?[^\\s<&]+|(?:[A-Za-z]:(?:\\\\|\\/)|\\\\\\\\[^\\\\\\s<&]+)[^\\s<&|?*]+|(?<![\\w.@~+$\\-\\\\/])((?:\\.{1,2}[\\\\/])*(?:[\\w.@~+$-]+[\\\\/])+[\\w.@~+$-]+\\.[A-Za-z]\\w{0,7})",
     "g",
   );
   let out = "";
@@ -26577,6 +26948,15 @@ function linkifyEscapedText(text) {
     const isUrl = /^https?:\/\//i.test(raw);
     const isFileUrl = /^file:/i.test(raw);
     if (!isUrl && !isFileUrl && raw.length < 4) continue;
+    /* 路径后面紧跟 `:123` / `:123-130`（Agent 引用行号最常见写法）：
+       行号留在正文里当文字，点开时滚到那一行（不把 ":123" 拼进 href 去 stat） */
+    let line = 0;
+    if (rel) {
+      const lm = /^:(\d{1,6})(?:[-–—](\d{1,6}))?/.exec(
+        src.slice(m.index + m[0].length),
+      );
+      if (lm) line = Number(lm[1]) || 0;
+    }
     out += src.slice(last, m.index);
     const kind = isUrl ? "url" : isFileUrl ? "file" : rel ? "relpath" : "path";
     out +=
@@ -26584,7 +26964,9 @@ function linkifyEscapedText(text) {
       raw +
       '" data-mt-open="' +
       kind +
-      '" title="' +
+      '"' +
+      (line > 0 ? ' data-mt-line="' + line + '"' : "") +
+      ' title="' +
       I18n.t("点击打开") +
       '">' +
       raw +
@@ -28105,7 +28487,9 @@ async function openTextViewer(filePath) {
 
 /* 会话正文里那条相对路径（renderer/app-fileview.js 这种）该落到哪个目录：
    按优先级取三个真源 —— 左栏「文件」页当前根（SF.root）→ 画布工作目录 → 画布上开发节点的项目根。
-   绝不自己拼一个默认目录出来。 */
+   绝不自己拼一个默认目录出来。
+   注意：这三个只是**兜底**基准；真正的第一顺位是这条会话自己的生效工作目录
+   （见 chatRelPathSessionBases），否则切了画布 / 会话写在别的项目里就必然点不开。 */
 function chatRelPathBases() {
   const out = [];
   const push = (p) => {
@@ -28124,25 +28508,173 @@ function chatRelPathBases() {
   return out;
 }
 
-/* 相对路径 → 绝对路径：只在候选基准里找一个「真有这个文件」的。
-   都找不到就返回 ""（调用方给一句提示），不猜、不乱开一个不存在的路径。 */
+/* 会话自己的基准目录（第一顺位）：与工具记录徽标 / 计划面板同一个真源
+   （app-fileview.js 的 fileviewSessionWorkspace），再补上**这条会话所属画布**的
+   项目根与工作目录 —— 不再只认「此刻前台那张画布」。
+   绑定会话（助手栏）优先，其次是会话页正看着的那条；两条都收，去重。 */
+function chatRelPathSessionBases() {
+  const out = [];
+  const push = (p) => {
+    const s = String(p == null ? "" : p).trim().replace(/[\\/]+$/, "");
+    if (s && out.indexOf(s) < 0) out.push(s);
+  };
+  const sts = [];
+  const addSt = (st) => {
+    if (!st || !st.id) return;
+    if (sts.some((x) => x && x.id === st.id)) return;
+    sts.push(st);
+  };
+  try {
+    if (typeof assistBoundSession === "function") addSt(assistBoundSession());
+  } catch (_) {}
+  try {
+    /* 会话页正看着的那条（走 id 查表，不调 agentSessionState —— 那会在没有会话时
+       现造一个占位空壳，这里只要真实存在的那条） */
+    if (typeof activeAgentId === "function" && typeof agentSessionById === "function")
+      addSt(agentSessionById(activeAgentId()));
+  } catch (_) {}
+  for (const st of sts) {
+    /* ① 会话生效工作目录 */
+    try {
+      if (typeof fileviewSessionWorkspace === "function")
+        push(fileviewSessionWorkspace(st));
+    } catch (_) {}
+    /* ② 会话所属画布的项目根（多根先取主根，再逐个收：多根 = 用户有多个开发块） */
+    try {
+      if (typeof canvasProjectRootOfSession === "function") {
+        const root = canvasProjectRootOfSession(st);
+        if (root) {
+          push(root.path);
+          for (const r of root.roots || []) push(r);
+        }
+      }
+    } catch (_) {}
+    /* ③ 会话所属画布自己的工作目录（顶栏「工作目录」） */
+    try {
+      if (typeof sessionCanvasWf === "function" && typeof canvasWorkspaceDirOf === "function")
+        push(canvasWorkspaceDirOf(sessionCanvasWf(st)));
+    } catch (_) {}
+  }
+  return out;
+}
+
+/* 全部候选基准：会话自己那份在最前，其后才是左栏 / 前台画布的兜底三个 */
+function chatRelPathBasesAll() {
+  const out = [];
+  const push = (p) => {
+    const s = String(p == null ? "" : p).trim().replace(/[\\/]+$/, "");
+    if (s && out.indexOf(s) < 0) out.push(s);
+  };
+  try {
+    for (const p of chatRelPathSessionBases()) push(p);
+  } catch (_) {}
+  try {
+    for (const p of chatRelPathBases()) push(p);
+  } catch (_) {}
+  return out;
+}
+
+/* 会话里写的相对路径可能带 ./ 前缀（./renderer/app.js）；../ 保留，交给
+   resolveToolPath → fvNormalizePath 里的词法归一真正消掉。 */
+function chatRelPathClean(rel) {
+  return String(rel == null ? "" : rel)
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/^\.\//, "")
+    .replace(/\/+$/, "");
+}
+
+/* 兜底搜索（只在上面全落空时才走）：在候选根里按「路径后缀」找这个文件。
+   · 最多下钻 4 层、最多 400 个目录 / 6000 个条目，跳过 node_modules / .git / dist / dist_check 与隐藏目录；
+   · 只在**第一个命中的基根**里找：命中唯一就返回它，命中多份就返回 ""（多处同名不猜，由调用方提示）；
+   · 纯只读（fileReadDir），不写盘、不改任何东西。 */
+const CHAT_REL_SEARCH = {
+  maxDepth: 4,
+  maxDirs: 400,
+  maxEntries: 6000,
+  skip: { node_modules: 1, ".git": 1, dist: 1, dist_check: 1 },
+};
+async function chatSearchRelInRoot(root, want) {
+  const api = window.api || {};
+  if (!api.fileReadDir) return [];
+  const hits = [];
+  const queue = [{ dir: root, depth: 0, rel: "" }];
+  let dirs = 0;
+  let entries = 0;
+  while (queue.length) {
+    if (dirs++ >= CHAT_REL_SEARCH.maxDirs) break;
+    const cur = queue.shift();
+    let r = null;
+    try {
+      r = await api.fileReadDir(cur.dir);
+    } catch (_) {
+      continue;
+    }
+    for (const e of (r && r.entries) || []) {
+      if (!e || !e.name) continue;
+      if (++entries > CHAT_REL_SEARCH.maxEntries) return hits;
+      const rel = cur.rel ? cur.rel + "/" + e.name : e.name;
+      if (!e.isDir) {
+        /* 按「路径后缀」比：Agent 少写了中间那几层（src/deep/target.js 实际在
+           ws/src/deep/target.js）也要认；后缀完全相同的只允许一份，两份就放弃 */
+        const low = rel.toLowerCase();
+        if (low === want || low.endsWith("/" + want)) {
+          hits.push(
+            (typeof joinPath === "function" ? joinPath(cur.dir, e.name) : cur.dir + "\\" + e.name),
+          );
+          if (hits.length > 1) return hits;
+        }
+        continue;
+      }
+      if (e.name.startsWith(".") || CHAT_REL_SEARCH.skip[e.name.toLowerCase()]) continue;
+      if (cur.depth + 1 > CHAT_REL_SEARCH.maxDepth) continue;
+      queue.push({
+        dir:
+          typeof joinPath === "function" ? joinPath(cur.dir, e.name) : cur.dir + "\\" + e.name,
+        depth: cur.depth + 1,
+        rel,
+      });
+    }
+  }
+  return hits;
+}
+async function chatFindRelPathBySuffix(rel) {
+  const want = chatRelPathClean(rel).toLowerCase();
+  if (!want || want.indexOf("/") < 0) return ""; /* 单段文件名不兜底搜索（太容易撞名） */
+  for (const base of chatRelPathBasesAll()) {
+    const hits = await chatSearchRelInRoot(base, want);
+    if (hits.length === 1) return hits[0];
+    if (hits.length > 1) return "";
+  }
+  return "";
+}
+
+/* 相对路径 → 绝对路径：先按基准顺序找一个「真有这个文件」的；全落空再按路径后缀
+   在候选根里搜唯一匹配。都找不到就返回 ""（调用方给一句提示），不猜、不乱开一个不存在的路径。 */
 async function resolveChatRelPath(rel) {
   const api = window.api || {};
   if (!api.fileStat) return "";
-  for (const base of chatRelPathBases()) {
-    const abs = typeof resolveToolPath === "function" ? resolveToolPath(rel, base) : "";
+  const want = chatRelPathClean(rel) || String(rel || "").trim();
+  if (!want) return "";
+  for (const base of chatRelPathBasesAll()) {
+    const abs = typeof resolveToolPath === "function" ? resolveToolPath(want, base) : "";
     if (!abs) continue;
     try {
       const st = await api.fileStat(abs);
       if (st && st.ok) return abs;
     } catch (_) {}
   }
-  return "";
+  try {
+    return await chatFindRelPathBySuffix(want);
+  } catch (_) {
+    return "";
+  }
 }
 
-async function openContentRef(href, kind) {
+async function openContentRef(href, kind, line) {
   const raw = htmlUnescape(String(href || "").trim());
   if (!raw) return;
+  const lineNo = Math.max(0, Math.round(Number(line) || 0));
   /* 会话正文里的相对文件路径：定位到真文件后走右侧「文件查看」面板（与工具条上的文件名同一个出口） */
   if (kind === "relpath") {
     const abs = await resolveChatRelPath(raw);
@@ -28155,7 +28687,9 @@ async function openContentRef(href, kind) {
       toast(I18n.t("无法定位该文件的完整路径，只给你看文件名"), "warn");
       return;
     }
-    openFilePeek(abs, { mode: "read" });
+    /* 正文里写成 `renderer/app.js:123` 时滚到那一行（行号越界由面板自己收在文末） */
+    if (lineNo > 0) openFilePeek(abs, { mode: "read", line: lineNo });
+    else openFilePeek(abs, { mode: "read" });
     return;
   }
   if (kind === "url" || /^https?:\/\//i.test(raw)) {
@@ -28248,7 +28782,9 @@ function bindOpenableContentClicks() {
         if (window.api && window.api.openExternal) window.api.openExternal(href);
         return;
       }
-      openContentRef(href, kind);
+      /* `renderer/app.js:123` 这类行号引用：行号在链接属性上，href 仍是干净路径 */
+      const line = Number(a.getAttribute("data-mt-line") || 0) || 0;
+      openContentRef(href, kind, line);
     },
     true,
   );
@@ -34723,6 +35259,26 @@ function migrateWf(wf) {
       if (n.seed == null || !isFinite(Number(n.seed))) n.seed = 0;
       if (n.rerollSeed == null) n.rerollSeed = true;
       if (n.offload == null) n.offload = true;
+    }
+    /* MOSS-Music 音乐理解：预设 / 提问 / 长音频 / 模型档位归一，旧图画布也能开 */
+    if (n.kind === "moss_music") {
+      const presets = ["full", "describe", "lyrics", "structure", "mood"];
+      if (!presets.includes(n.preset)) n.preset = "full";
+      if (typeof n.question !== "string") n.question = "";
+      if (n.longAudio == null) n.longAudio = false;
+      /* 模型只剩 Instruct（thinking 档已移除）：老画布里的 thinking 一律归一成 instruct */
+      if (n.model !== "instruct") {
+        if (String(n.model || "") === "thinking" && !window.__mossModelMigratedNotified) {
+          window.__mossModelMigratedNotified = true;
+          console.info("[moss-music] thinking 档已移除：老画布节点按 Instruct 运行");
+        }
+        n.model = "instruct";
+      }
+      /* 量化档只剩 int8 / int4（bf16 已下线）；老画布里的 bf16 归一到 int8 */
+      if (!["int8", "int4"].includes(n.quant)) n.quant = "int8";
+      /* 输出上限：老图没有这个字段 → 4096（1024 会把歌词掐半句） */
+      if (![1024, 2048, 4096, 8192].includes(n.maxNewTokens)) n.maxNewTokens = 4096;
+      if (typeof n.mossStatus !== "string") n.mossStatus = "";
     }
   }
   /* 移除音乐/视频配对保存节点，并把旧保存路径迁入节点 outputPath */

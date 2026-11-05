@@ -178,7 +178,11 @@
     el0.appendChild(box);
     /* persistent：点蒙层不关（浮层里有未提交的输入），只走 ✕ / Esc / 窗内关闭按钮 */
     document.addEventListener("keydown", function (ev) {
-      if (ev.key === "Escape" && el0.classList.contains("on")) popClose();
+      if (ev.key !== "Escape" || !el0.classList.contains("on")) return;
+      /* 只关这一层：stopPropagation 免得同一下 Esc 继续冒到窗口级兜底，
+         把下面那只 #overlay 宿主窗（工坊 / 应用中心）也一起关掉 */
+      ev.stopPropagation();
+      popClose();
     });
     document.body.appendChild(el0);
     return el0;

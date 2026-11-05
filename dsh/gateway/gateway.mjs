@@ -335,6 +335,9 @@ function syncUserPluginsFromHome() {
     if (k) ownedMap.set(k, r)
   }
   const mergedOwned = Array.from(ownedMap.values())
+  /* 传输名归一：历史行里可能写着 'http'（见 normalizeMcpTransport 的注释），
+     不修的话那一行永远加载不起来 —— 用户只会看到「Agent 没有 MCP 工具」。 */
+  for (const r of mergedOwned) r.block = normalizeMcpTransportBlock(r.block)
   const ownedYaml = rowsToYaml(mergedOwned)
   if (ownedYaml !== rowsToYaml(persistedOwned)) {
     writeFileSync(dest, (ownedYaml ? ownedYaml + '\n' : ''), 'utf8')
@@ -1928,7 +1931,7 @@ function pickRuntimeKey(baseKey, cancelTag) {
   return k
 }
 
-async function getRuntime(workspace, model, maxTokens, provider, apiKey, baseUrl, dshHome, envPatch, effort, webSearchApiKey, hostPersona, cancelTag, reqId, pure, runSession, hostSessionId, toolsJson, lean, noCanvas, hideTools, noBrowser) {
+async function getRuntime(workspace, model, maxTokens, provider, apiKey, baseUrl, dshHome, envPatch, effort, webSearchApiKey, hostPersona, cancelTag, reqId, pure, runSession, hostSessionId, toolsJson, lean, noCanvas, hideTools, noBrowser, appDebug, devDebug) {
   const home = dshHome || process.env.DSH_HOME || ''
   const effMaxTokens =
     Number.isFinite(Number(maxTokens)) && Number(maxTokens) > 0
@@ -1949,6 +1952,17 @@ async function getRuntime(workspace, model, maxTokens, provider, apiKey, baseUrl
      「与画布无关」会话 / 长任务未授权环节都由宿主打这一位 → 运行时整只不注册
      browser-plugin.mjs（约 12 个工具的 schema 一步都不发）。 */
   const noBrowserOn = !!noBrowser
+  /* 第五个整档标记：真机调试（mtnode_gui）只给**应用开发会话**这一档。
+     宿主在「这条会话属于某个应用」时打这一位 → 运行时才注册 gui-plugin.mjs，会话因此
+     能开应用自己的窗口、点一遍、读文字、截图（GUI 动作在主进程执行，帧走同一条交互桥）。
+     其余会话 / 助手 / 画布智能节点 / 长任务不打这一位：工具定义（约 4.5K 字符/步）
+     与「能点用户窗口」的能力都不该给它们。 */
+  const appDebugOn = !!appDebug
+  /* 第六个整档标记：开发调试（mtnode_dev）。判据 = 「扩展能力管理 → 开发调试」总开关
+     （renderer/app-db.js 的 dshDevToolsOn）随 run 参数下发，默认关。开着的那一轮注册
+     dev-plugin.mjs，会话因此能自己起一只隔离的调试实例、用 CDP 驱动它、改完再复验。
+     与 gui 档不同：它不点用户正在用的那只，只碰自己 spawn 的那只（数据目录硬校验在主进程）。 */
+  const devDebugOn = !!devDebug
   /* 第三通道 hideTools：宿主按运行算出的「这一轮根本不该存在的工具名」清单（数组或
      逗号串）。归一只认 tool-visibility.mjs 的白名单、去重、字典序排序 —— 同一档会话
      每轮算出的字符串逐字相同，指纹才稳定，提示缓存才不会被打爆。pure 轮画布 / 数据库
@@ -1973,7 +1987,7 @@ async function getRuntime(workspace, model, maxTokens, provider, apiKey, baseUrl
        即固定前缀的 tools 段本身 —— 不进 key 就会出现同一台运行时被两种可见集复用，
        既打爆提示缓存又让「精简」变成随机行为，所以必须与 pure: / tl: 同级。
        hx: = 同一件事的第三通道（按名字的隐藏名单，见 hideTools），同一档必得同一台。 */
-    (envPatch ? JSON.stringify(envPatch) : '') + '|ws:' + searchKey.slice(0, 8) + '|hp:' + personaHash + '|pure:' + (pureOn ? '1' : '0') + '|tl:' + tlHash + '|lean:' + (leanOn ? '1' : '0') + '|nc:' + (noCanvasOn ? '1' : '0') + '|nb:' + (noBrowserOn ? '1' : '0') + '|hx:' + hxHash,
+    (envPatch ? JSON.stringify(envPatch) : '') + '|ws:' + searchKey.slice(0, 8) + '|hp:' + personaHash + '|pure:' + (pureOn ? '1' : '0') + '|tl:' + tlHash + '|lean:' + (leanOn ? '1' : '0') + '|nc:' + (noCanvasOn ? '1' : '0') + '|nb:' + (noBrowserOn ? '1' : '0') + '|ad:' + (appDebugOn ? '1' : '0') + '|dd:' + (devDebugOn ? '1' : '0') + '|hx:' + hxHash,
     effort,
     /* cc: = 组合行指纹（见 cordisStampOf）。压缩档位只写在 cordis.yml 里、冷起时才读，
        不进 key 就会出现「宿主已改好、会话仍沿用旧档位」—— 与 effort 同理，必须同级。 */
@@ -2035,6 +2049,16 @@ async function getRuntime(workspace, model, maxTokens, provider, apiKey, baseUrl
      未授权环节整只不注册。与 lean / noCanvas 同进 runtime key（nb: 成分）。 */
   if (noBrowserOn) env.MTNODE_NO_BROWSER = '1'
   else delete env.MTNODE_NO_BROWSER
+  /* 真机调试整档闸（gui-plugin.mjs）：只有应用开发会话打这一位，其余运行整只不注册
+     mtnode_gui。与 lean / noCanvas / noBrowser 同进 runtime key（ad: 成分）——
+     否则同一台运行时会按「上一轮有没有 GUI 工具」随机复用，工具集与提示缓存都不稳。 */
+  if (appDebugOn) env.MTNODE_APP_DEBUG = '1'
+  else delete env.MTNODE_APP_DEBUG
+  /* 开发调试整档闸（dev-plugin.mjs）：只有「开发调试」总开关打开的运行打这一位。
+     与 lean / noCanvas / noBrowser / appDebug 同进 runtime key（dd: 成分）——
+     否则同一台运行时会按「上一轮有没有调试工具」随机复用。 */
+  if (devDebugOn) env.MTNODE_DEV_DEBUG = '1'
+  else delete env.MTNODE_DEV_DEBUG
   /* 规范名单（已排序去重）：空值必须显式 delete —— env 是从本进程 process.env 拷来的，
      留着上一次的脏值会让「这一轮不裁任何工具」变成「继续裁」。 */
   if (hiddenEnv) env[HIDE_TOOLS_ENV] = hiddenEnv
@@ -2362,7 +2386,7 @@ function onBridgeFrame(key, m, socket) {
     out({ event: { reqId: claim ? claim.reqId : '', type: 'ix-drop', data: { id: m.id, reason: 'dropped' } } })
     return
   }
-  if (m.t !== 'question' && m.t !== 'approval' && m.t !== 'canvas' && m.t !== 'db' && m.t !== 'facts' && m.t !== 'tool' && m.t !== 'lt' && m.t !== 'asset' && m.t !== 'manifest' && m.t !== 'browser') return
+  if (m.t !== 'question' && m.t !== 'approval' && m.t !== 'canvas' && m.t !== 'db' && m.t !== 'facts' && m.t !== 'tool' && m.t !== 'lt' && m.t !== 'asset' && m.t !== 'manifest' && m.t !== 'browser' && m.t !== 'gui' && m.t !== 'dev') return
   const claim = claimOf(key)
   /* 归属校验:交互帧一律自带发起轮的 session id(question/approval 来自 bridge-plugin,
      canvas/db 来自 canvas-plugin/db-plugin、facts 来自 ai-facts-plugin(MTNode AI 事实库)、
@@ -2969,7 +2993,7 @@ async function handleRun(params) {
     reqId, workspace, input, model, maxTokens,
     apiKey, baseUrl, systemPrompt, preset, effort, provider, mtnodeProviders, dshHome,
     permissionPreset, webSearchApiKey, hostPersona, cancelTag, pure, tools,
-    lean, noCanvas, hideTools, noBrowser,
+    lean, noCanvas, hideTools, noBrowser, appDebug, devDebug,
     resumeSession, hostSessionId, officialModels: officialModelsRaw,
   } = params
   const emitOut = (type, data) => out({ event: { reqId, type, data } })
@@ -3062,6 +3086,13 @@ async function handleRun(params) {
        用户声明「与画布无关」的会话 / 长任务未授权环节由宿主打这一位，
        运行时整只不注册 browser-plugin.mjs（含它的 12 个工具 schema）。 */
     const noBrowserFlag = !!noBrowser && !pureFlag
+    /* 真机调试整档闸（与 getRuntime 的 ad: 同源）：只有应用开发会话由宿主打这一位
+       （renderer/app-assist.js 按会话的 appId 下发 appDebug）→ 运行时才注册 mtnode_gui。
+       pure / 其它运行一律归零：纯净模式只有联网搜索，节点与长任务不该点用户窗口。 */
+    const appDebugFlag = !!appDebug && !pureFlag
+    /* 开发调试整档闸（与 getRuntime 的 dd: 同源）：宿主按「扩展能力管理 → 开发调试」总开关
+       每轮下发 devDebug → 运行时才注册 mtnode_dev。pure 轮归零（纯净模式只留联网搜索）。 */
+    const devDebugFlag = !!devDebug && !pureFlag
     /* 旧 id 归一(sketch → lean):预设文本按现名查表,否则历史会话会静默回落 standard */
     const presetId = normalizePresetId(preset)
     /* 目录同源服务商(如 opencode-go)映射回目录路由名,与 settings 注册一致 ——
@@ -3135,7 +3166,7 @@ async function handleRun(params) {
     const rt = await getRuntime(
       workspace, model, maxTokens, route, apiKey, baseUrl, dshHome, settings.envPatch, runEffort,
       webSearchApiKey, hostPersonaText, cancelTag, reqId, pureFlag, runSession, hostSessionId, toolsJson,
-      leanFlag, noCanvasFlag, hideTools, noBrowserFlag,
+      leanFlag, noCanvasFlag, hideTools, noBrowserFlag, appDebugFlag, devDebugFlag,
     )
     runKey = rt.key
     /* 占用成功 = 本轮的 session 归属已经钉死,第一时间报给宿主。
@@ -4853,10 +4884,42 @@ function mcpList() {
   return out
 }
 
+/* dsh-mcp-client 的 transport 是**枚举**（该包 lib/index.js 里
+   Config = z.union([z.const('stdio'), z.const('streamable-http')])）。
+   写成 'http' 这类不在枚举里的名字，整行会被 schema 判非法 → 这个 MCP 服务器根本不加载
+   → 它的工具一个都不注册（应用内 Agent 的表现就是「没有 MCP 工具」，而且看不到任何
+   连接错误，因为压根没连）。2026-11-01 真机就是这条：MTNode 自用回环那行写着 'http'。
+   这里既归一入参，也在启动同步时改写已落盘的行（自愈，用户不必手改 YAML）。 */
+function normalizeMcpTransport(v) {
+  const t = String(v == null ? '' : v).trim().replace(/^['"]|['"]$/g, '')
+  if (!t) return ''
+  const low = t.toLowerCase().replace(/[_\s]/g, '-')
+  if (low === 'stdio') return 'stdio'
+  if (low === 'http' || low === 'http-stream' || low === 'streamablehttp' || low === 'streamable-http') {
+    return 'streamable-http'
+  }
+  return ''
+}
+
+function normalizeMcpTransportBlock(block) {
+  const b = String(block || '')
+  if (!b.includes(MCP_PKG)) return b
+  const m = /^(\s*transport:\s*)['"]?([^'"\n]*)['"]?\s*$/m.exec(b)
+  if (!m) return b
+  const raw = String(m[2] || '').trim()
+  const norm = normalizeMcpTransport(raw)
+  if (!norm || norm === raw) return b
+  return b.replace(m[0], m[1] + "'" + norm + "'")
+}
+
 function mcpAdd(cfg) {
-  const { serverName, transport, command, args, url } = cfg
+  const { serverName, command, args, url } = cfg
   if (!/^[A-Za-z0-9_-]{1,32}$/.test(String(serverName || ''))) {
     throw new Error('serverName 需为 1-32 位字母/数字/下划线/短横线')
+  }
+  const transport = normalizeMcpTransport(cfg.transport)
+  if (!transport) {
+    throw new Error("transport 只能是 stdio 或 streamable-http（dsh-mcp-client 的配置是枚举，其它写法整行不加载）")
   }
   if (mcpList().some((s) => s.serverName === serverName)) {
     throw new Error('同名 MCP 服务器已存在')
@@ -5138,6 +5201,34 @@ rl.on('line', (line) => {
             try {
               pending.socket.write(JSON.stringify({
                 t: 'db-result',
+                id: p.id,
+                ok: !err,
+                result: p.result == null ? null : p.result,
+                ...(err ? { error: err } : {}),
+              }) + '\n')
+            } catch {}
+          } else if (p.kind === 'gui') {
+            /* GUI 动作（mtnode_gui · 应用开发会话的真机调试）：主进程执行完后把回执原样
+               送回去 —— 与 canvas / db / facts 同一形状。宿主取不到窗口 / 动作失败 =
+               ok:false + error 文本，运行时那一次调用以失败收场，会话不中断。 */
+            const err = p.error != null ? String(p.error) : ''
+            try {
+              pending.socket.write(JSON.stringify({
+                t: 'gui-result',
+                id: p.id,
+                ok: !err,
+                result: p.result == null ? null : p.result,
+                ...(err ? { error: err } : {}),
+              }) + '\n')
+            } catch {}
+          } else if (p.kind === 'dev') {
+            /* 开发调试动作（mtnode_dev · 「开发调试」总开关打开的那一轮）：主进程起实例、
+               连 CDP、执行动作，回执原样送回去 —— 与 canvas / gui 同一形状。起不来 /
+               连不上 = ok:false + error 文本（含实例输出尾巴），会话不中断。 */
+            const err = p.error != null ? String(p.error) : ''
+            try {
+              pending.socket.write(JSON.stringify({
+                t: 'dev-result',
                 id: p.id,
                 ok: !err,
                 result: p.result == null ? null : p.result,

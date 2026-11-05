@@ -2379,7 +2379,8 @@
     };
     if (c.type === "textarea") {
       const ta = el("textarea", "if-in if-ta");
-      ta.rows = 3;
+      /* 1 行文字只占 1 行，多了自己长到 3 行封顶（.if-ta 的 field-sizing: content） */
+      ta.rows = 1;
       ta.value = String(holder[c.id] == null ? "" : holder[c.id]);
       ta.readOnly = disabled;
       ta.oninput = () => setVal(ta.value);
@@ -2599,7 +2600,8 @@
     box.appendChild(top);
 
     const desc = el("textarea", "if-in if-desc");
-    desc.rows = 3;
+    /* 描述框：1 行文字只占 1 行，最多 3 行（.if-desc 的 field-sizing: content） */
+    desc.rows = 1;
     desc.placeholder = T("内容描述（可点「识图补充」自动填；每次 @引用 时 Agent 都会看到）");
     desc.value = media.desc || "";
     desc.oninput = () => {
@@ -3249,7 +3251,8 @@
       wrap.appendChild(inp);
     } else if (f.type === "textarea") {
       const ta = el("textarea", "if-in if-main if-ta");
-      ta.rows = 3;
+      /* 同上：最小 1 行，最多 3 行 */
+      ta.rows = 1;
       ta.value = String(node.values[f.id] || "");
       ta.readOnly = disabled;
       ta.oninput = () => setVal(ta.value);
@@ -3385,7 +3388,8 @@
     };
     if (c.type === "textarea") {
       const ta = el("textarea", "if-in if-main if-ta");
-      ta.rows = 2;
+      /* 列表行里的子字段同样：1 行起，最多 3 行 */
+      ta.rows = 1;
       ta.value = String(row.values[c.id] || "");
       ta.oninput = () => setVal(ta.value);
       ta.onchange = commit;
@@ -3564,7 +3568,8 @@
     box.appendChild(top);
 
     const desc = el("textarea", "if-in if-desc");
-    desc.rows = 2;
+    /* 描述框：1 行文字只占 1 行，最多 3 行（.if-desc 的 field-sizing: content） */
+    desc.rows = 1;
     desc.placeholder = T("内容描述（可点「识图补充」自动填；每次 @引用 时 Agent 都会看到）");
     desc.value = media.desc || "";
     desc.oninput = () => {

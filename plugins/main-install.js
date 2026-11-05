@@ -640,6 +640,11 @@ const INSTALL_API_CHANNELS = {
      qwenimage-pack/steps.json，宿主 qwenimage/main-qwenimage.js。 */
   qwenimageInstall: "qwenimage:install",
   qwenimagePickInstallDir: "qwenimage:pickInstallDir",
+  /* MOSS-Music 本地音乐理解（kind mossmusic，目录 id moss-music）：步骤表真源
+     moss-music-pack/steps.json，宿主 moss-music/main-moss-music.js。少了这两条，
+     安装窗点「开始安装」会被这张白名单挡成 api_not_allowed。 */
+  mossmusicInstall: "mossmusic:install",
+  mossmusicPickInstallDir: "mossmusic:pickInstallDir",
   remotionInstall: "remotion:install",
   remotionPickInstallDir: "remotion:pickInstallDir",
   /* Paseo 手机接管（kind paseo）：安装是纯 JS 驱动（无 PowerShell 脚本），

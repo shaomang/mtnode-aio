@@ -692,15 +692,21 @@ function applyMcpAndSkills(plugin) {
         out.mcp.push({ name: m.name, status: "exists" });
         continue;
       }
+      /* transport 是**枚举**（dsh-mcp-client 的 Config = stdio | streamable-http）：
+         插件清单里写成 'http' 的历史写法在这里归一 —— 不在枚举里的名字会被 schema 判非法，
+         整行不加载，用户只会看到「Agent 没有这个 MCP 工具」。 */
+      const transport = /^(http|streamable-http)$/i.test(String(m.transport || ""))
+        ? "streamable-http"
+        : String(m.transport || "");
       const lines = [
         "",
         "- id: user-mcp-" + plugin.id.replace(/[^a-z0-9]/gi, "").slice(0, 12) + "-" + m.name,
         "  name: '" + MCP_PKG + "'",
         "  config:",
         "    serverName: '" + m.name + "'",
-        "    transport: '" + m.transport + "'",
+        "    transport: '" + transport + "'",
       ];
-      if (m.transport === "stdio") {
+      if (transport === "stdio") {
         lines.push("    command: '" + m.command.replace(/'/g, "''") + "'");
         if (m.args.length)
           lines.push("    args: [" + m.args.map((a) => "'" + String(a).replace(/'/g, "''") + "'").join(", ") + "]");

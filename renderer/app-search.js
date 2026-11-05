@@ -1102,7 +1102,10 @@ async function gsCollectSkills(terms, push) {
               name: gsStr(sk.name || sk.id),
               title: gsStr(sk.title),
               description: gsStr(sk.description),
-              tags: gsStr(cat.title),
+              /* 类目标题 + 技能自己的 tags（index.json 里由 SKILL.md front matter 的 tags 带出） */
+              tags: [gsStr(cat.title)]
+                .concat((Array.isArray(sk.tags) ? sk.tags : []).map(gsStr))
+                .filter(Boolean),
             });
           }
         }

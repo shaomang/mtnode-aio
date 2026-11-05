@@ -1,0 +1,124 @@
+{
+  "version": 1,
+  "plugin": "moss-music",
+  "title": {
+    "zh": "MOSS-Music 本地音乐理解",
+    "en": "MOSS-Music Local Music Understanding"
+  },
+  "steps": [
+    {
+      "id": "disk",
+      "title": "检查磁盘空间",
+      "hint": "建议预留 ≥60GB（8B 权重约 18GB + torch / 依赖约 12GB）。空间不够判 low_disk，停在这一步。",
+      "messages": {
+        "moss.disk.low_space": {
+          "zh": "磁盘剩余约 {free}GB，低于建议的 {want}GB（8B 权重 + CUDA torch + 依赖）。清理磁盘或换一个剩余空间足够的安装目录后重跑。",
+          "en": "the disk has about {free}GB free, below the suggested {want}GB (the 8B weight set + CUDA torch + dependencies). Free up space or pick a different install directory and re-run."
+        },
+        "moss.disk.unreadable": {
+          "zh": "无法读取安装目录所在磁盘的剩余空间：{err}。",
+          "en": "cannot read the free space of the drive holding the install directory: {err}."
+        }
+      }
+    },
+    {
+      "id": "python",
+      "title": "准备 Python 3.12 并建虚拟环境（uv）",
+      "hint": "用 uv 取 Python 3.12（本机没有就自己下，缓存到安装目录的 tools\\uv-cache），在隔离的 .venv 里装依赖；不碰系统 Python。",
+      "messages": {
+        "moss.python.failed": {
+          "zh": "Python 3.12 / 虚拟环境准备失败：{tail}。多半是网络（取 uv 或 Python 时 Github / npmmirror 不可达）或安装目录不可写。确认网络后重跑本步即可（已下载的 uv 与解释器会复用）；也可以自己装一个 Python 3.12 后把 uv 加进 PATH。",
+          "en": "preparing Python 3.12 / the virtual environment failed: {tail}. Usually the network (GitHub / npmmirror unreachable while fetching uv or Python) or a non-writable install directory. Re-run this step once the network is fine (a fetched uv and interpreter are reused), or install Python 3.12 yourself and put uv on PATH."
+        }
+      }
+    },
+    {
+      "id": "torch",
+      "title": "安装 CUDA torch 2.9.1+cu128",
+      "hint": "官方要求 torch 2.9.1+cu128 / torchaudio 2.9.1+cu128；镜像顺序 SJTU → 阿里云 → 官方。装完立刻验 cuda.is_available()。",
+      "messages": {
+        "moss.torch.cuda_unavailable": {
+          "zh": "torch 装上了但 cuda.is_available() 为 false：装的是 CPU 版 torch，或本机 NVIDIA 驱动不支持 cu128（驱动主版本需 ≥ 525，建议 550+）。升级驱动后重跑本步。原始探针输出：{probe}",
+          "en": "torch is installed but cuda.is_available() is false: either the CPU build got installed, or the local NVIDIA driver does not support cu128 (driver major >= 525, 550+ recommended). Upgrade the driver and re-run this step. Raw probe output: {probe}"
+        },
+        "moss.torch.install_failed": {
+          "zh": "CUDA torch 安装失败：{tail}。三个镜像（SJTU / 阿里云 pytorch-wheels / 官方 download.pytorch.org）都没装上，通常是网络或磁盘问题；确认能访问镜像后重跑本步。",
+          "en": "CUDA torch install failed: {tail}. All three indexes (SJTU / Aliyun pytorch-wheels / official download.pytorch.org) failed, usually the network or the disk; make sure an index is reachable and re-run this step."
+        }
+      }
+    },
+    {
+      "id": "deps",
+      "title": "安装推理依赖（transformers 4.57.1 等）",
+      "hint": "transformers 固定 4.57.1，另含 accelerate / torchcodec / soundfile / modelscope / bitsandbytes；pip 依次试清华 / 阿里云 / USTC / 官方 PyPI。",
+      "messages": {
+        "moss.deps.pip_failed": {
+          "zh": "依赖安装失败：{tail}。pip 已依次试过清华 / 阿里云 / USTC / 官方 PyPI；若日志里是「No matching distribution found for 某包」，就是该包在四个源上都没同步、按包名上报；否则看本步日志尾部的原始报错后重跑。",
+          "en": "dependency install failed: {tail}. pip already tried Tsinghua / Aliyun / USTC / official PyPI in order; if the log says 'No matching distribution found for <package>', that package is not synced on those four indexes (report the package name); otherwise read the raw error in this step's log tail and re-run."
+        }
+      }
+    },
+    {
+      "id": "source",
+      "title": "下载官方推理源码（zip，不用 git）",
+      "hint": "从 codeload.github.com 拉 main 分支 zip，失败回退 gh-proxy / ghfast / ghproxy 三个镜像；解到 <安装目录>\\source\\MOSS-Music。",
+      "messages": {
+        "moss.source.download_failed": {
+          "zh": "官方源码下载失败：{tail}。codeload 与三个 GitHub 代理都不可达时会发生；网络恢复后重跑本步（已解出的源码会复用，加 -ForceSource 可强制重下）。",
+          "en": "downloading the official source failed: {tail}. This happens when codeload and all three GitHub proxies are unreachable; re-run once the network is back (an extracted copy is reused; pass -ForceSource to force a fresh download)."
+        }
+      }
+    },
+    {
+      "id": "weights",
+      "title": "下载官方 8B 权重",
+      "hint": "MOSS-Music-8B-Instruct，约 18GB。ModelScope 优先，失败回退 hf-mirror；已完成分片复用。",
+      "messages": {
+        "moss.weights.download_failed": {
+          "zh": "权重下载失败：{err}。ModelScope 与 hf-mirror 都没成功；确认网络后重跑（已下载的分片会复用）。也可以手工把仓库的全部文件放到 <安装目录>\\models\\MOSS-Music-8B-Instruct 后重跑，脚本会直接认。",
+          "en": "weight download failed: {err}. Both ModelScope and hf-mirror failed; re-run once the network is fine (finished shards are reused). You can also copy every file of the repo into <install dir>\\models\\MOSS-Music-8B-Instruct by hand and re-run - the script accepts them as-is."
+        }
+      }
+    },
+    {
+      "id": "files",
+      "title": "校验权重与源码清单",
+      "messages": {
+        "moss.files.incomplete": {
+          "zh": "文件不完整：{err}。重跑安装补齐（权重支持续传）；模型目录必须有 config.json 且 safetensors 合计 ≥1GB。",
+          "en": "files are incomplete: {err}. Re-run the install to fill the gaps (weight downloads resume); the model folder needs config.json and >=1GB of safetensors."
+        }
+      }
+    },
+    {
+      "id": "ffmpeg",
+      "title": "下载便携 ffmpeg",
+      "hint": "用于解码与长音频切片（>5 分钟切 3 分钟段 + 5 秒重叠）。下不到只跳过本步，生成时会明确报缺 ffmpeg。"
+    },
+    {
+      "id": "env",
+      "title": "写入运行时配置（.env）",
+      "messages": {
+        "moss.env.write_failed": {
+          "zh": "写 .env 失败：{err}。安装目录不可写（权限 / 被占用）时会这样；换目录或解除占用后重跑。",
+          "en": "writing .env failed: {err}. This happens when the install directory is not writable (permissions / locked); pick another directory or release the lock and re-run."
+        }
+      }
+    },
+    {
+      "id": "smoke",
+      "title": "冒烟：导入官方推理包并验 CUDA",
+      "hint": "只导入 torch / transformers / src.hf_inference，不加载 18GB 权重；通过后写 .install-ok。",
+      "messages": {
+        "moss.smoke.cuda_unavailable": {
+          "zh": "冒烟时 torch 看不到 CUDA（cuda False）：虚拟机没直通显卡、驱动掉了，或装完 torch 后被别的包换成了 CPU 版。先确认 nvidia-smi 可用，再重跑本步。",
+          "en": "torch cannot see CUDA during the smoke check (cuda False): the VM has no GPU passthrough, the driver dropped, or another package swapped torch for the CPU build. Make sure nvidia-smi works, then re-run this step."
+        },
+        "moss.smoke.import_failed": {
+          "zh": "冒烟导入失败：{err}。依赖装了一半、transformers 版本被换掉，或源码目录不完整；看这一步日志后重跑安装。",
+          "en": "the smoke import failed: {err}. Dependencies are half installed, transformers got replaced, or the source tree is incomplete; read this step's log and re-run the install."
+        }
+      }
+    }
+  ]
+}

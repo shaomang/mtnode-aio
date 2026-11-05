@@ -71,8 +71,12 @@ const TOOL_OPS = {
   mtnode_manifest: { op: "manifest", family: "manifest", write: true },
   mtnode_facts: { op: "facts", family: "facts", write: true },
   lt_state: { op: "lt", family: "lt", write: true },
-  mtnode_assets: { op: "asset", family: "asset", write: false },
+  mtnode_assets: { op: "asset", family: "asset", write: true },
   mtnode_gui: { op: "gui", family: "gui", local: true, write: true },
+  /* 开发调试（mtnode_dev）：与 gui 同一类「第一类在主进程执行」的工具（根目录 dev-agent.js），
+     但作用域不同 —— 它**另起一只隔离的调试实例**并用 CDP 驱动它（起 / 连 / 截图 / 点 /
+     reload / restart），从不碰用户正在用的那只。参数表真源在 dsh/gateway/dev-plugin.mjs。 */
+  mtnode_dev: { op: "dev", family: "dev", local: true, write: true },
   /* 自用回环四件（见 guides/mcp-server.md「自用回环」）：
      · generate 由主进程直接干（媒体生成内核都在主进程），异步作业；
      · run / tools / sessionTask 在渲染层执行（节点运行器 / 用户工具 / 会话都在那边），
@@ -192,6 +196,9 @@ function createMcpHost(o) {
   const packaged = !!o.packaged;
   const sendToRenderer = o.sendToRenderer;
   const guiRun = typeof o.gui === "function" ? o.gui : null;
+  /** 开发调试执行器（可选，main.js 注入根目录 dev-agent.js 的 run）：起隔离调试实例 +
+   *  CDP 驱动 + reload / restart。没注入时 mtnode_dev 明确报错，其余工具不受影响。 */
+  const devRun = typeof o.dev === "function" ? o.dev : null;
   /**
    * 媒体生成执行器（可选，main.js 注入 mcp-media-agent.js 的实例）：
    *   { run(kind, params, {jobId}), cancel(jobId) }。没注入时 mtnode_generate 明确报错。
@@ -775,21 +782,38 @@ function createMcpHost(o) {
       /* 主进程自执行的族（gui）：执行器是 main.js 注入的 mcp-gui-agent.js。
          这里不做 canvas / baseHash 那套路由 —— GUI 动作的作用域是「哪只窗 + 哪个元素」。 */
       if (op.local) {
-        if (!guiRun) throw mcpFail(-32603, "GUI 执行器不可用（主进程没有注入 mcp-gui-agent）");
+        /* 本地自执行的两族：gui（mcp-gui-agent.js）与 dev（dev-agent.js）。
+           两族的参数表都以网关插件为真源（gui-plugin.mjs / dev-plugin.mjs），
+           这里只按 family 选执行器，不重复解释参数。 */
+        const runner = op.family === "dev" ? devRun : guiRun;
+        if (op.family === "dev" && !runner) {
+          throw mcpFail(-32603, "开发调试执行器不可用（主进程没有注入 dev-agent）");
+        }
+        if (!runner) throw mcpFail(-32603, "GUI 执行器不可用（主进程没有注入 mcp-gui-agent）");
         const action = String(params.action || "").trim();
-        if (!action) throw mcpFail(-32602, "mtnode_gui 需要 action");
+        if (!action) {
+          throw mcpFail(-32602, op.family === "dev" ? "mtnode_dev 需要 action" : "mtnode_gui 需要 action");
+        }
         const started = Date.now();
         const result = await Promise.race([
-          guiRun(action, params),
+          runner(action, params),
           new Promise((_, rej) => {
             const t = setTimeout(
-              () => rej(new Error("GUI 动作超时（" + Math.round(TOOL_TIMEOUT_MS / 1000) + "s）：" + action)),
+              () =>
+                rej(
+                  new Error(
+                    (op.family === "dev" ? "调试动作超时（" : "GUI 动作超时（") +
+                      Math.round(TOOL_TIMEOUT_MS / 1000) +
+                      "s）：" +
+                      action,
+                  ),
+                ),
               TOOL_TIMEOUT_MS,
             );
             if (t && typeof t.unref === "function") t.unref();
           }),
         ]);
-        log("[mcp] gui " + action + " " + (Date.now() - started) + "ms");
+        log("[mcp] " + (op.family === "dev" ? "dev " : "gui ") + action + " " + (Date.now() - started) + "ms");
         return result;
       }
       const result = await callRenderer(op.op, params, meta);

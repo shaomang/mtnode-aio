@@ -335,6 +335,12 @@
        qwenimage/main-qwenimage.js，步骤表真源 qwenimage-pack/steps.json。 */
     "qwen-image-local": "qwenimageInstall",
     qwenimage: "qwenimageInstall",
+    /* MOSS-Music 本地音乐理解（kind mossmusic，目录 id moss-music）：宿主
+       moss-music/main-moss-music.js，步骤表真源 moss-music-pack/steps.json。
+       漏了这两条会掉进窗口插件那条 appPluginsInstall，点「开始安装」直接回
+       backend_plugin_route:mossmusic。 */
+    "moss-music": "mossmusicInstall",
+    mossmusic: "mossmusicInstall",
   };
   /* id → 选安装目录的桥 / 启动安装的桥（窗口插件与桌宠用它们自己的那两条） */
   function installApiOf(id) {

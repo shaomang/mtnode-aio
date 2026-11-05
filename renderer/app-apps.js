@@ -3639,6 +3639,17 @@ function appsHubNav(id) {
 /* 打开前的互斥清理：节点级浮层与瞬态菜单属于画布，本页盖住画布就该收掉；
    #overlay（设置 / 插件 / 工坊等）**不动** —— 它的 z-index 更高，后开的对话框压在本页之上。 */
 function appsHubPreOpenCleanup() {
+  /* @ 引用候选 / 斜杠命令候选（#refMenu · z-index 998）压在本页之上，开页前必须收掉 */
+  if (typeof closeRefMenu === "function") {
+    try {
+      closeRefMenu();
+    } catch (_) {}
+  }
+  if (typeof closeSlashMenu === "function") {
+    try {
+      closeSlashMenu();
+    } catch (_) {}
+  }
   if (typeof closeNodePopsExcept === "function") {
     try {
       closeNodePopsExcept("");
@@ -3652,6 +3663,15 @@ function appsHubPreOpenCleanup() {
   if (typeof window.hideNodeHelpTip === "function") {
     try {
       window.hideNodeHelpTip();
+    } catch (_) {}
+  }
+  /* 画布里开着的应用界面（.appnode-host，z-index 820）比本页（.apps-hub，z-index 90）高：
+     不收起就会浮在应用中心之上、跟正文叠成一片（用户报障：点右上角「应用」后应用窗还盖着本页）。
+     收起口径与卡片上的「收起」同一条 —— 回后台继续运行（不撤租约、不拆 iframe）；
+     这里**不传 id**：本页整幅盖住画布，同一个应用的界面同样必须收掉。 */
+  if (typeof window.appNodeCollapseForOther === "function") {
+    try {
+      window.appNodeCollapseForOther();
     } catch (_) {}
   }
 }
@@ -3935,6 +3955,11 @@ async function appsOpenApp(id, kind) {
     appsBridgeMissing();
     return;
   }
+  /* 从前台换成另一个应用：画布里开着的那个应用界面先收到后台去
+     （见 renderer/app-appnode.js 的 appNodeCollapseForOther；同一个应用不动） */
+  try {
+    if (typeof window.appNodeCollapseForOther === "function") window.appNodeCollapseForOther(id);
+  } catch (_) {}
   const k = kind ? String(kind) : appsOpenKindOf(id);
   let r = null;
   try {
@@ -7680,6 +7705,11 @@ function openAppsDetail(id) {
     return false;
   }
   const title = appsT("应用详情") + " · " + appsDetailTitleOf(sid);
+  /* 点开另一个应用的详情 = 前台换应用：画布里开着的应用界面先回后台
+     （同一只 id 不动，见 appNodeCollapseForOther） */
+  try {
+    if (typeof window.appNodeCollapseForOther === "function") window.appNodeCollapseForOther(sid);
+  } catch (_) {}
   const ovNow = document.getElementById("overlay");
   if (APPS_DETAIL.id === sid && APPS_DETAIL.dom.root && document.contains(APPS_DETAIL.dom.root)) {
     if (ovNow && ovNow.style.display === "flex") return true;

@@ -1,7 +1,7 @@
 ---
 name: mtnode-mcp-server
 title: MTNode MCP 服务端（第三方接进来操作）
-description: 从 MTNode 外面经 MCP 操作本机 MTNode：14 个工具、先读图拿 contentHash、权限与审计。
+description: 从 MTNode 外面经 MCP 操作本机 MTNode：15 个工具、先读图拿 contentHash、权限与审计。
 ---
 
 # MTNode MCP 服务端
@@ -19,7 +19,7 @@ MTNode 平时是 MCP **客户端**（去连别人的服务器给自家 Agent 加
   - **HTTP**：`POST http://127.0.0.1:<port>/mcp`，头带 `Authorization: Bearer <token>`。
 - MTNode 没开着 → 桥会回「连不上 MTNode MCP 服务端，请打开 MTNode 后重试」；主窗口被关掉 → 调用会超时（执行在渲染层，窗口不在就没人执行）。
 
-## 二、工具面（14 个，与自家 Agent 同名同义）
+## 二、工具面（15 个，与自家 Agent 同名同义）
 
 | 工具 | 干什么 | 写 |
 | --- | --- | --- |
@@ -32,15 +32,16 @@ MTNode 平时是 MCP **客户端**（去连别人的服务器给自家 Agent 加
 | `lt_state` | 长任务本轮共享状态 | 是（限环节内） |
 | `mtnode_assets` | 素材库：清单 / 读条目 / 窗口静帧截图 | 否 |
 | `mtnode_vision` | 识图子代理（读本机图片像素） | 否 |
-| `mtnode_gui` | 驱动 MTNode 窗口：认元素 / 点 / 输入 / 按键 / 滚动 / 等待 / 读结构 / 窗口截图 | 是 |
+| `mtnode_gui` | 驱动 MTNode 窗口：认元素 / 点 / 输入 / 按键 / 滚动 / 等待 / 读结构 / 窗口截图（用户正在用的那只） | 是 |
+| `mtnode_dev` | 开发调试：自己起一只隔离实例（开发态）→ CDP 快照 / 点输入 / 截图 / 控制台 / 异常 / 网络 → reload·restart 复验 → stop | 是 |
 | `mtnode_generate` | 媒体生成：`kind` = `image` / `music` / `speech` / `video`；回本机绝对路径并归档素材库 | 是（异步作业） |
 | `mtnode_run` | 跑单个节点（要 `nodeId` + `baseHash`）或整图（找那颗 `control` 节点） | 是（异步作业） |
 | `mtnode_tools` | 列 / 调当前画布的用户工具节点（`action:"list"` / `"call"`） | 调时写 |
 | `mtnode_session` | 新开一条会话跑一轮任务：`create` / `send` / `read` / `close`，默认用完即弃 | 是 |
 
-**参数表真源**：`dsh/gateway/{canvas,db,manifest,ai-facts,longtask,assets,gui,mcp-extra}-plugin.mjs` 里的 `defineTool` 参数表 —— 不在这里抄第二份。要完整 schema：`tools/list`，或读仓里生成的 `mcp-tools.json`（`node scripts/build-mcp-contract.mjs` 重新生成）。
+**参数表真源**：`dsh/gateway/{canvas,db,manifest,ai-facts,longtask,assets,gui,dev,mcp-extra}-plugin.mjs` 里的 `defineTool` 参数表 —— 不在这里抄第二份。要完整 schema：`tools/list`，或读仓里生成的 `mcp-tools.json`（`node scripts/build-mcp-contract.mjs` 重新生成）。
 
-**主进程执行的两族**：`mtnode_gui`（只有主进程拿得到 `BrowserWindow`，点的是页面里真实的 DOM 元素而不是屏幕坐标，所以窗口不必在前台）与 `mtnode_generate`（四个生成后端都在主进程，且共用画布那把全局音视频互斥锁）。生成 / 跑图 / 工具 / 会话都**推渲染层**的 `renderer/mcp-extra.js`，复用 `playNode` / `playControlNode` / `executeAgentToolCall` / `agentSessionSend`。
+**主进程执行的两族**：`mtnode_gui`（只有主进程拿得到 `BrowserWindow`，点的是页面里真实的 DOM 元素而不是屏幕坐标，所以窗口不必在前台）与 `mtnode_generate`（四个生成后端都在主进程，且共用画布那把全局音视频互斥锁）。`mtnode_dev` 也在主进程（起 `electron .` 子进程 + CDP，执行体 `dev-agent.js`）：它只碰自己 spawn 的那只调试实例，默认数据目录 `%APPDATA%\pipeline-console` 在代码层硬拒。生成 / 跑图 / 工具 / 会话都**推渲染层**的 `renderer/mcp-extra.js`，复用 `playNode` / `playControlNode` / `executeAgentToolCall` / `agentSessionSend`。
 
 `mtnode_gui` 的 `which` 选窗（`main` / `install` / `any` / 标题子串），`target` 五种写法（`css` / `text` / `title` / `role` / `ref`）。**够不着的**：原生菜单、系统文件选择框、托盘菜单、最小化窗口的截图、任何凭据输入 —— 这些会明确报错，别反复重试。
 

@@ -1,4 +1,4 @@
-﻿"use strict";
+"use strict";
 
 /* ── 应用窗口专属 preload（唯一桥 = window.appHost）────────────────────────────
  *
@@ -44,6 +44,11 @@
  *   语音转写那一组（官方本地 SenseVoice，识别跑在 dsh 运行时里）算一项能力「语音转写」：
  *   pickAudio / transcribe（本机音频或应用自录的 base64 WAV）/ asrStatus / asrPrepare /
  *   asrMic / onSpeechState。它只回**文本与状态**：读盘、解码、模型下载都在主进程 / 运行时。
+ *
+ *   语音合成那一组（Breeze TTS 2，走 app-host-bridge.js 的 audio 命名空间）算一项能力「语音合成」：
+ *   audio.synth（== tts）/ audio.presets / audio.status / audio.cancel。
+ *   产物**写盘并回 path**（应用拿它 fs.exists 复核），outputPath 必填且只能落在画布工作目录内；
+ *   同一后端一次只跑一个（忙时回 busy）。应用没有二进制写口，所以这一条不回 base64。
  * ↑ 本机存储那一组算一项（「本机存储读写」），数据文件夹那一组算一项（「数据落盘」）；
  *   关自己窗口的 close() 与退出 MTNode 的 quit() 属于窗口自身，不是宿主能力。
  * ─────────────────────────────────────────────────────────────────────── */
@@ -79,6 +84,60 @@ function runCloseHooks() {
 ipcRenderer.on("apps:willClose", () => {
   runCloseHooks();
 });
+
+/* 宿主桥统一入口（一条通道 + 逐类白名单；主进程 app-host-bridge.js 再校一遍） */
+const hostCall = (ns, method, args) =>
+  ipcRenderer.invoke("apps:hostBridge", { ns: String(ns || ""), method: String(method || ""), args: args || {} });
+
+/* ── 底部播放条的命令通道（appHost.media.* ↔ 页面世界里的 renderer/app-media-ui.js）──────
+ * 播放条是**页面世界**的宿主注入模块，preload 与它隔着 world 边界，只能走 DOM 事件：
+ *   · 这条往下发 "mtnode-media-cmd"，detail 是 JSON 字符串（纯值才过得了 world 边界）；
+ *   · 播放条做完回 "mtnode-media-reply"（{ id, result }），这里按 id 认领并 resolve。
+ * 没注入播放条（应用没声明 capabilities.showMediaPlayer）= 20 秒内没有回话 → no_player，
+ * 调用方照实报「宿主没有播放条」，不悬挂、不假装播过。 */
+let mediaCmdSeq = 0;
+const mediaPending = new Map();
+function mediaReject(id, code, error) {
+  const hit = mediaPending.get(id);
+  if (!hit) return;
+  mediaPending.delete(id);
+  hit.resolve({ ok: false, code: code, error: error });
+}
+try {
+  window.addEventListener("mtnode-media-reply", (ev) => {
+    let msg = null;
+    try {
+      msg = JSON.parse(String((ev && ev.detail) || ""));
+    } catch (_) {
+      msg = null;
+    }
+    if (!msg || !msg.id) return;
+    const hit = mediaPending.get(msg.id);
+    if (!hit) return;
+    mediaPending.delete(msg.id);
+    clearTimeout(hit.timer);
+    hit.resolve(msg.result && typeof msg.result === "object" ? msg.result : { ok: false, code: "no_result" });
+  });
+} catch (_) {}
+function mediaCmd(cmd, opts) {
+  return new Promise((resolve) => {
+    const id = "m" + (++mediaCmdSeq) + "-" + Date.now();
+    const timer = setTimeout(() => {
+      mediaReject(id, "no_player", "宿主没有注入播放条（app.json 的 capabilities.showMediaPlayer 没打开？）");
+    }, 20000);
+    mediaPending.set(id, { resolve: resolve, timer: timer });
+    try {
+      window.dispatchEvent(
+        new CustomEvent("mtnode-media-cmd", {
+          detail: JSON.stringify(Object.assign({ id: id, cmd: cmd }, opts || {})),
+        }),
+      );
+    } catch (err) {
+      clearTimeout(timer);
+      mediaReject(id, "no_player", String((err && err.message) || err));
+    }
+  });
+}
 
 const appHost = {
   /* 文本生成（流式）：opts = { prompt, system?, messages?, model?, temperature?, maxTokens? }；
@@ -253,6 +312,217 @@ const appHost = {
      { ok:false }（调用方据此不显示，绝不编造作者）。 */
   authorTag: () => ipcRenderer.invoke("apps:hostAuthorTag"),
 
+  /* ── 画布 / agent / 文件 / 工具 / 联网（本轮新增的重能力）────────────────────────
+   *
+   * 与文本 / 图像那几项不是一条路：画布真源与 agent 会话**只活在主窗口渲染层**，所以
+   * 这里的每一次调用都经主进程 app-host-bridge.js 中继到主窗口执行，拿的是**同一套**
+   * 画布写入口（撤销栈 / 落盘 / 表单归一化全同源）。
+   *
+   * 三条硬口径（用户共识，改之前先看）：
+   *   ① **目标画布 = 这个应用对应的那张**，不是用户此刻打开的那张：
+   *      默认是与应用同 id 的画布（新建应用时后台建好的那张）；不存在时宿主弹窗让用户选一次
+   *      并记住（canvas.pick() 可主动重选）。目标画布没被打开时由宿主后台加载，不动用户视图。
+   *   ② **声明 + 授权**：app.json 的 capabilities.canvasHost / agentHost 要勾上（否则回
+   *      not_declared）；首次调用宿主弹一次窗，一次授权全部五类，可在应用设置里关掉能力位撤销。
+   *   ③ **主窗口不在线回 not_ready**：不装成功、不悬挂。
+   *
+   * 通用错误码：not_declared / denied / not_ready / timeout / no_canvas / not_foreground。
+   */
+  canvas: {
+    /* 这张画布的信息 / 清单 / 重选绑定 */
+    info: () => hostCall("canvas", "info"),
+    list: () => hostCall("canvas", "list"),
+    pick: () => hostCall("canvas", "pick"),
+    /* 读：整图 / 节点清单 / 单节点 / 表单（含 byLabel 便捷索引） */
+    graph: () => hostCall("canvas", "graph"),
+    nodes: () => hostCall("canvas", "nodes"),
+    node: (id) => hostCall("canvas", "node", { id: id }),
+    form: (id) => hostCall("canvas", "form", { id: id }),
+    /* 写：全部先入撤销栈（用户 Ctrl+Z 可撤），并按画布自己的口径落盘 */
+    updateForm: (id, values) => hostCall("canvas", "updateForm", { id: id, values: values }),
+    addNode: (opts) => hostCall("canvas", "addNode", opts || {}),
+    updateNode: (id, patch) => hostCall("canvas", "updateNode", { id: id, patch: patch || {} }),
+    removeNode: (id) => hostCall("canvas", "removeNode", { id: id }),
+    connect: (opts) => hostCall("canvas", "connect", opts || {}),
+    disconnect: (id) => hostCall("canvas", "disconnect", { id: id }),
+    /* 选中 / 相机视图：只对**用户当前打开的那张**画布有效（后台画布回 not_foreground） */
+    select: (ids) => hostCall("canvas", "select", { ids: Array.isArray(ids) ? ids : [ids] }),
+    view: () => hostCall("canvas", "view"),
+    setView: (v) => hostCall("canvas", "setView", v || {}),
+    save: () => hostCall("canvas", "save"),
+    /* ── 执行 / 取产物 / 终止（图像生成那条闭环的最后一段）────────────────────
+     * 建节点（addNode）+ 连线（connect）+ 改参数（updateForm / updateNode）之后，
+     * 应用要能**真把它跑起来**并拿到图，否则画布上的图像节点对应用来说只是块板子：
+     *   · runNode(id, { attempts? })：等到跑完再回，回执与 nodeOutput 同一形状
+     *     （artifacts / images / paths / meta + elapsedMs）；
+     *     attempts 默认 1 张（不继承节点自己的多次尝试），1-10；
+     *     上游没跑过的自动补齐（与用户手点 ▶ 完全一致）；
+     *     没有工作目录 → code:"no_workspace"（**不弹窗**）；
+     *     被 cancelNode 停掉 → code:"cancelled"（不是错误，已落盘的产物还在）。
+     *   · nodeOutput(id)：该节点**最近一次运行**的产物；从没跑过也回 ok:true（artifacts 为空）。
+     *   · cancelNode(id)：= 画布上的「终止」，这颗节点上在跑的都停（含用户手点的那次）。
+     * 三条都任意 kind 可用（宿主不设白名单）；主进程**不给 runNode 挂超时** ——
+     * 出图可能几分钟，收口靠应用自己 cancelNode。
+     */
+    runNode: (id, opts) => hostCall("canvas", "runNode", Object.assign({}, opts || {}, { id: id })),
+    nodeOutput: (id) => hostCall("canvas", "nodeOutput", { id: id }),
+    cancelNode: (id) => hostCall("canvas", "cancelNode", { id: id }),
+    /* ── 组（wf.groups）──────────────────────────────────────────────────────
+     * 画布上「绘制」只剩文本，要把一批节点圈在一起用的是**组**（快捷键 G）：
+     * 组 = { id, title, nodeIds, markIds }，组里只存 id，成员是全量清单。
+     *   · addGroup({ title, nodeIds })           → { ok, id, group }
+     *   · updateGroup({ id, title?, nodeIds? })  → { ok, id, group }（成员全量替换）
+     *   · removeGroup({ id })                    → { ok, id, removed:true }（只删组，节点全留）
+     * 只动指定的那个组；节点不存在就整笔拒绝（bad_arg），不半途写一半。
+     */
+    /* 素材节点：把素材库里的一份素材**新建并绑定**成画布上的素材节点（应用显式调用才建，
+       不自动往画布摆东西）。assetId 或 rel 二选一；x / y 可选。
+       回 { ok, id, node, asset }（node = 新节点摘要，asset = 绑定到的素材摘要）。 */
+    addAssetNode: (opts) => hostCall("canvas", "addAssetNode", opts || {}),
+    addGroup: (opts) => hostCall("canvas", "addGroup", opts || {}),
+    updateGroup: (opts) => hostCall("canvas", "updateGroup", opts || {}),
+    removeGroup: (id) => hostCall("canvas", "removeGroup", typeof id === "string" ? { id: id } : id || {}),
+  },
+  agent: {
+    /* 这个应用绑定的那条会话：没有就 null（send 会自动建一条） */
+    bound: () => hostCall("agent", "bound"),
+    sessions: () => hostCall("agent", "sessions"),
+    /* 新建一条会话（自动绑到本应用的画布，出现在左侧栏，用户可查看 / 中断 / 接着聊） */
+    create: (opts) => hostCall("agent", "create", opts || {}),
+    /* 手动绑定左侧栏里已有的某条会话 */
+    bind: (sessionId) => hostCall("agent", "bind", { sessionId: sessionId }),
+    /* 发一条消息：sessionId 省略 = 用绑定的那条（没有就新建）。返回 { ok, sessionId, queued } */
+    send: (text, opts) =>
+      hostCall("agent", "send", Object.assign({}, opts || {}, { text: String(text == null ? "" : text) })),
+    /* 停这一轮（清排队） */
+    cancel: (sessionId) => hostCall("agent", "cancel", { sessionId: sessionId }),
+    /* 流式事件：cb 收 { type:'agent', sessionId, frame }，frame 与手机端/会话桥同一套
+       （type: text / tool / approval / question / done / error …）。返回退订函数。 */
+    onEvent: (cb) => {
+      const onEv = (_e, msg) => {
+        if (!msg || msg.type !== "agent") return;
+        try {
+          cb(msg);
+        } catch (err) {
+          console.error("appHost.agent.onEvent cb error:", err);
+        }
+      };
+      ipcRenderer.on("appHost:stream", onEv);
+      return () => ipcRenderer.removeListener("appHost:stream", onEv);
+    },
+  },
+  /* ── 素材库（2026-11 新增 · 用户共识）────────────────────────────────────
+   * 应用 ↔ 素材库双向互通：应用能列 / 读整个库、把本机文件收进库、新建自己的素材与条目，
+   * 也能改删**自己创建的**素材与条目；用户自己那份对它只读（归属校验在主进程
+   * assets-store.js 的 assetActorCall，越权回 code:"forbidden"）。
+   *
+   * 需要 app.json 的 capabilities.assetHost（否则 not_declared）；首次调用宿主弹一次授权。
+   * 插件窗口拿不到这一路（本轮共识：只给应用）。
+   *
+   * 方法：
+   *   root()                        → { ok, path, configured, exists }（没指定根目录时 configured:false）
+   *   scan()                        → { ok, root, scan:{tree,categories,assets}, order }
+   *   create({catRel?, displayName, desc?})            → { ok, asset }
+   *   addItem({id, title?, type?, content?, srcPath?, base64?}) → { ok, item, asset }
+   *   importFile({paths[], name?, category?, desc?})   → { ok, asset, added[], skipped[] }
+   *   importFiles({id, paths[]})                       → { ok, items[], skipped[], asset }
+   *   readItem({id, itemId?|index?, withDataUrl?})     → { ok, item, asset, file, text, dataUrl? }
+   *   updateText({id, itemId, content, title?})        → { ok, item, asset, prevVersion, prevEmpty }
+   *   updateMeta({id, displayName?, desc?, catRel?})   → { ok, asset }
+   *   removeItem({id, itemId})                         → { ok, removed, trash, asset }
+   *   deleteAsset({id})                                → { ok, trash, rel }（进回收站，可还原）
+   */
+  assets: {
+    root: () => hostCall("assets", "root"),
+    scan: () => hostCall("assets", "scan"),
+    /* 建分类目录（幂等、可嵌套）：应用按「项目名 + 五个子分类」建，其中「场景图 / 道具图」
+       本轮是空占位目录 —— create 只会建素材夹，没有这一条应用就绑不上素材库目录。
+       入参形状跟本命名空间其余条目一致（应用侧 assetsMkdir() 递的是 { catRel } 对象），
+       顺手兼容直接传字符串；主进程白名单（app-host-bridge.js）与存储层（assets-store.js）都已支持。 */
+    mkdir: (opts) => hostCall("assets", "mkdir", typeof opts === "string" ? { catRel: opts } : opts || {}),
+    create: (opts) => hostCall("assets", "create", opts || {}),
+    addItem: (opts) => hostCall("assets", "addItem", opts || {}),
+    importFile: (opts) => hostCall("assets", "importFile", opts || {}),
+    importFiles: (opts) => hostCall("assets", "importFiles", opts || {}),
+    readItem: (opts) => hostCall("assets", "readItem", opts || {}),
+    updateText: (opts) => hostCall("assets", "updateText", opts || {}),
+    updateMeta: (opts) => hostCall("assets", "updateMeta", opts || {}),
+    removeItem: (opts) => hostCall("assets", "removeItem", opts || {}),
+    deleteAsset: (opts) => hostCall("assets", "deleteAsset", opts || {}),
+  },
+  /* 文件：根 = 本应用那张画布的**工作目录**，越界一律 outside（主进程再守一道） */
+  fs: {
+    root: () => hostCall("fs", "root"),
+    readText: (rel) => hostCall("fs", "readText", { rel: rel }),
+    writeText: (rel, content) => hostCall("fs", "writeText", { rel: rel, content: content }),
+    list: (rel) => hostCall("fs", "list", { rel: rel }),
+    mkdir: (rel) => hostCall("fs", "mkdir", { rel: rel }),
+    remove: (rel) => hostCall("fs", "remove", { rel: rel }),
+    exists: (rel) => hostCall("fs", "exists", { rel: rel }),
+    /* 读一张图回 dataURL：应用窗口的 <img> 只认 self / data: / blob:，磁盘上的图（含画布节点
+       那张）读不了 —— 由宿主读字节转 dataURL。只读、只认图片扩展名、上限 8MB（见 app-host-bridge.js） */
+    imageDataUrl: (p) => hostCall("fs", "imageDataUrl", { path: p }),
+  },
+  /* 本机已登记的重后端工具（音乐 / 视频 / 语音 / 渲染 / 数字人 / 出图） */
+  tools: {
+    list: () => hostCall("tools", "list"),
+    call: (id, args) => hostCall("tools", "call", { id: id, args: args || {} }),
+  },
+  /* 语音合成（Breeze TTS 2）：应用窗口唯一能出声的出口。
+     产物**写进画布工作目录**并回真实绝对路径（应用拿它 fs.exists 复核），绝不回 base64 ——
+     应用没有二进制写口，回 base64 等于没给。
+       synth({ text, presetId, instruction?, voice?, cfgScale?, seed?, speed?,
+               outputPath, responseFormat? }) → { ok, path, bytes }
+         · outputPath **必填**（相对工作目录或绝对路径都收，越界回 outside）；
+         · 后端忙（含画布节点在合成）回 busy，不排队；
+         · 合成失败原样透传 breeze 的错误码（如 preset_missing）。
+       presets() → { ok, dir, presets }（与画布跳窗 / 管理台同一份清单）
+       status()  → { ok, backend, running, busy }
+       cancel()  → 叫停正在合成的任务（**全量**：画布节点在跑的也会停，显存立刻还回来） */
+  audio: {
+    presets: () => hostCall("audio", "presets"),
+    status: () => hostCall("audio", "status"),
+    synth: (opts) => hostCall("audio", "synth", opts || {}),
+    cancel: () => hostCall("audio", "cancel"),
+  },
+  /* 同一条通道的另一种写法（老应用按 host.tts 探测时用）：与 audio.synth 逐字段一致 */
+  tts: (opts) => hostCall("audio", "synth", opts || {}),
+  /* 底部播放条（宿主注入的 renderer/app-media-ui.js）：应用里的音频 / 视频都走这一条。
+     播放 / 暂停 / 点波形定位 / 时间 / 音量 / 倍速 / 全屏都在宿主那一份实现里，应用只调这里：
+       play({ path, title?, kind? }) → { ok, kind, duration, url } 或 { ok:false, name, message, code }
+         · path 传绝对路径（工作目录里的相对路径先自己拼好）；
+         · kind 省略按扩展名判（wav/mp3/… = audio，mp4/… = video）；
+         · **单实例**：新的播放会替换当前那一条（音频视频互斥），并自动起播；
+         · 播不出来照实回 name / message —— 这是「报错」，不假装播过了。
+       stop()            → { ok }
+       state()           → { ok, path, title, kind, playing, duration, currentTime }
+       fullscreen(on)    → { ok }（视频铺满窗口，Esc 退）
+       waveform(path)    → { ok, peaks:[0..1], durationSec, bytes, mtimeMs, code? }
+                           主进程读字节抽峰值（只回峰值，不回原始字节）；认不出编码回 peaks:[]。
+     没声明 capabilities.showMediaPlayer 时宿主不注入播放条 → 每条命令回 no_player。 */
+  media: {
+    play: (opts) => mediaCmd("play", opts || {}),
+    stop: () => mediaCmd("stop", {}),
+    state: () => mediaCmd("state", {}),
+    fullscreen: (on) => mediaCmd("fullscreen", { on: on !== false }),
+    waveform: (p) => ipcRenderer.invoke("apps:hostMediaWave", { path: String(p == null ? "" : p) }),
+  },
+  /* 联网：经宿主代理取一个 http(s) 地址（应用页自己的 fetch 仍受 CSP / 跨域约束）
+     · fetch(url)              取一段文本（老通道，回 { ok, text }）
+     · search(url, opts)       素材站搜索：带 headers / timeoutMs，回 { ok, status, text }
+     · download(url, rel, opts) 二进制落盘：rel 相对画布工作目录，回 { ok, path, bytes, ext }
+     后两条是本轮新增的「从网上取素材」通道 —— 应用页自己是发不了请求的。 */
+  net: {
+    fetch: (url) => hostCall("net", "fetch", { url: url }),
+    search: (url, opts) => hostCall("net", "search", Object.assign({ url: String(url == null ? "" : url) }, opts || {})),
+    download: (url, rel, opts) =>
+      hostCall(
+        "net",
+        "download",
+        Object.assign({ url: String(url == null ? "" : url), rel: String(rel == null ? "" : rel) }, opts || {})
+      ),
+  },
+
   /* 关窗收尾钩子：cb 可以是 async（宿主等它跑完再关，上限 1.5s）。
      返回退订函数；不打这个钩子也能关，宿主到点自己关。 */
   onWillClose: (cb) => {
@@ -289,15 +559,17 @@ contextBridge.exposeInMainWorld("appHost", appHost);
  * 作者标签平时隐藏、hover 才露）。桥上的接口始终在，能力位不是权限闸。
  * 作者标签还多一道闸：清单里**名字与版本缺任一个**也不注入（authorTagOf 回 null）——
  * 标签上要写的字凑不齐就不显示这枚标签，不写「未知作者」。 */
-const capAnswer = { at: 0, dict: null, auth: null }; /* 主进程对「这个应用声明了什么」的答复（只问一次） */
+const capAnswer = { at: 0, dict: null, auth: null, player: false }; /* 主进程对「这个应用声明了什么」的答复（只问一次） */
 function askCapabilities() {
   if (capAnswer.at) return Promise.resolve(capAnswer);
-  const fallback = () => ({ dict: false, auth: null });
+  const fallback = () => ({ dict: false, auth: null, player: false });
   return Promise.resolve(ipcRenderer.invoke("apps:hostCapabilities"))
     .then((r) => {
       if (!r || !r.ok || !r.capabilities) return fallback();
       capAnswer.at = Date.now();
       capAnswer.dict = r.capabilities.showDictate === true;
+      /* 底部播放条（renderer/app-media-ui.js）：声明了 showMediaPlayer 才注入 —— 与听写条同一条闸 */
+      capAnswer.player = r.capabilities.showMediaPlayer === true;
       /* author 只在主进程判定「名字 + 版本齐」时才带；老版主进程不带这一项 = 不注入 */
       capAnswer.auth = r.author && typeof r.author === "object" ? r.author : null;
       return capAnswer;
@@ -346,6 +618,8 @@ function maybeInjectAppUi() {
       } catch {}
     }
     if (ans.dict) injectAppUiScript("app-speech-ui.js", "dictate");
+    /* 底部播放条（appHost.media.* 的落点）：声明了 showMediaPlayer 才注入，没点播时整条收起 */
+    if (ans.player) injectAppUiScript("app-media-ui.js", "media");
     if (ans.auth) injectAppUiScript("app-author-ui.js", "author");
   });
 }

@@ -74,29 +74,58 @@ window.addEventListener("unhandledrejection", (ev) => {
 });
 
 /* 保证默认服务商存在（DeepSeek 文本 / GPT Image 2 图像）。
-   只做「全新空列表时的播种」：用户保存过任何服务商（列表非空）就一律不动
-   —— 不再自动补回被删的默认项、不再改写已有项的模型列表、不再强制重排、
-   也不再剔除无 Key 的 stability/mj，否则设置里删除/编辑/排序都会在重启
+   播种口径：列表非空时**只补缺失的官方 DeepSeek**（全新安装里它确实是默认提供商，
+   而插件卡可能先落盘让列表非空），不补回被删的其它默认项、不改写已有项的模型列表、
+   不强制重排、也不剔除无 Key 的 stability/mj —— 否则设置里删除/编辑/排序都会在重启
    或再次打开设置时被改回去（gpt-image 删不掉、配置一改就还原的根因）。 */
 /* 新安装（或用户清空了整份服务商列表）时的默认清单：flash（V4.1-Flash，原生
    多模态、能直接吃图）+ pro 两个模型（vision-exp 已下线、不再进清单）。 */
 const DEEPSEEK_DEFAULT_MODELS = ["deepseek-flash", "deepseek-v4-pro"];
 
+function isOfficialDeepseekProv(p) {
+  if (!p || typeof p !== "object") return false;
+  if (String(p.id || "") === "deepseek") return true;
+  try {
+    return new URL(String(p.baseUrl || "")).hostname
+      .toLowerCase()
+      .includes("deepseek");
+  } catch {
+    return false;
+  }
+}
+
 function ensureDefaultProviders() {
   const provs = Array.isArray(S.config.providers)
     ? S.config.providers.slice()
     : [];
-  if (provs.length) {
-    /* 已有任何服务商：尊重用户已保存的列表原样，不做任何改动 */
-    S.config.providers = provs;
-    return;
-  }
   const removed = new Set(
     (Array.isArray(S.config.removedProviders)
       ? S.config.removedProviders
       : []
     ).map(String),
   );
+  if (provs.length) {
+    /* 已有服务商：顺序 / 模型 / Key 一律按用户那份原样保留。
+       只补一件事 —— 全新安装时插件先落盘的卡（mtnode 中转、llama.cpp）会让列表
+       非空，旧口径在这里直接 return，官方 DeepSeek 就永远不播种（用户只看到那两张卡）。
+       所以「官方 DeepSeek 缺失且没被用户删过」时补到首位，其它条目一条不动。 */
+    if (
+      !removed.has("deepseek") &&
+      !provs.some((p) => isOfficialDeepseekProv(p))
+    ) {
+      provs.unshift({
+        id: "deepseek",
+        name: "DeepSeek",
+        type: "text_openai",
+        baseUrl: "https://api.deepseek.com",
+        apiKey: "",
+        models: DEEPSEEK_DEFAULT_MODELS.slice(),
+        vision: true,
+      });
+    }
+    S.config.providers = provs;
+    return;
+  }
   if (!removed.has("deepseek")) {
     provs.unshift({
       id: "deepseek",
@@ -1702,6 +1731,16 @@ async function init() {
     renderAgentSession();
   else if (bootView === "team" && typeof renderTeamPane === "function")
     renderTeamPane();
+  /* 首次使用引导：本机一个「带 Key 的文本服务商」都没有（新装 / 刚清掉 DeepSeek Key）
+     → 首绘落定后弹一次图文引导窗（renderer/app-deepseek-onboard.js，persistent，可「稍后配置」）。
+     只在启动这一段判一次，不跟着配置变化反复弹。 */
+  try {
+    const bootProvs = (S.config && Array.isArray(S.config.providers)) ? S.config.providers : [];
+    const bootHasTextKey = bootProvs.some(
+      (p) => p && p.type === "text_openai" && String(p.apiKey || "").trim(),
+    );
+    if (!bootHasTextKey && typeof dsOpenOnboard === "function") dsOpenOnboard();
+  } catch (_) {}
   ensureTimerScheduler();
   /* 会话正文的后台空闲补读（懒加载的第二条腿，见 app-assist.js agentWireBodyBackfill）：
      首屏已经按索引画完了，这一步只是趁空闲把还没读回来的会话分批读进内存 ——

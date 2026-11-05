@@ -39,6 +39,13 @@
           }
         },
         {
+          "id": "moss-music",
+          "title": {
+            "zh": "MOSS-Music：听懂一首歌",
+            "en": "MOSS-Music: understanding a track"
+          }
+        },
+        {
           "id": "ai-review",
           "title": {
             "zh": "AI 审阅：批注与修订",

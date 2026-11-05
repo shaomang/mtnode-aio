@@ -22,6 +22,8 @@ const fs = require("fs");
 const path = require("path");
 const { ipcMain, shell } = require("electron");
 const appsStore = require("./apps-store.js");
+/* 联网取素材：与独立应用窗口**同一份**实现（搜索 / 流式下载 + 扩展名白名单） */
+const netFetchMod = require("./net-download.js");
 
 let t = (s) => String(s == null ? "" : s);
 let getMainWin = () => null;
@@ -287,6 +289,16 @@ function registerAppsNodeIpc(opts) {
     const op = String(a.op || "");
     const rel = String(a.rel == null ? "" : a.rel).replace(/\\/g, "/");
     const abs = path.resolve(wd, rel || ".");
+    /* exists 只判存在性（不读内容 / 不写盘 / 不列目录）：**不限于工作目录** ——
+       应用要在「上传本机图 / 引用画布节点图」之后复核那张图还在不在，而这些路径天生在工作目录之外。
+       锁死工作目录 = 应用把每张外部图都报成「这张图不在」。其余操作仍只认工作目录。 */
+    if (op === "exists") {
+      try {
+        return { ok: true, path: abs, exists: fs.existsSync(abs), outside: !insideOf(wd, abs) };
+      } catch (err) {
+        return bad(t("文件操作失败：") + String((err && err.message) || err), "fs_failed");
+      }
+    }
     if (!insideOf(wd, abs)) return bad(t("只能读写画布工作目录里的文件"), "outside");
     try {
       if (op === "root") return { ok: true, root: wd };
@@ -320,13 +332,37 @@ function registerAppsNodeIpc(opts) {
         fs.rmSync(abs, { recursive: true, force: true });
         return { ok: true, path: abs };
       }
-      if (op === "exists") return { ok: true, path: abs, exists: fs.existsSync(abs) };
       return bad(t("不认识的文件操作"), "bad_op");
     } catch (err) {
       return bad(t("文件操作失败：") + String((err && err.message) || err), "fs_failed");
     }
   });
 
+  /* 联网取素材（net.search / net.download）：应用页 CSP 是 connect-src 'none'，
+     请求只能由主进程代发；实现在 net-download.js（与独立应用窗口逐字同一条）。
+     download 只往**这张画布的工作目录**里写：越界 / 非素材扩展名一律拒。 */
+  ipcMain.handle("appnode:net", async (_e, arg) => {
+    const a = isObj(arg) ? arg : {};
+    const op = String(a.op || "");
+    const url = String(a.url || "");
+    if (op === "search") return netFetchMod.search({ url: url, headers: a.headers, timeoutMs: a.timeoutMs });
+    if (op !== "download") return bad(t("不认识的联网操作"), "bad_op");
+    const wd = normWorkdir(a.workdir);
+    if (!wd) return bad(t("这张画布还没有工作目录（先在顶栏选一个文件夹）"), "no_workdir");
+    const rel = String(a.rel == null ? (a.path == null ? "" : a.path) : a.rel).replace(/\\/g, "/");
+    if (!rel) return bad(t("没给落盘位置（素材只能写进画布工作目录）"), "bad_dest");
+    const abs = path.resolve(wd, rel);
+    if (!insideOf(wd, abs)) return bad(t("只能写进画布工作目录里"), "outside");
+    const ext = path.extname(abs).toLowerCase();
+    if (!netFetchMod.OK_EXT.has(ext)) return bad(t("只认素材扩展名（图 / 音 / 视频）"), "bad_ext");
+    return netFetchMod.download({
+      url: url,
+      destPath: abs,
+      headers: a.headers,
+      maxBytes: a.maxBytes,
+      timeoutMs: a.timeoutMs,
+    });
+  });
   return true;
 }
 

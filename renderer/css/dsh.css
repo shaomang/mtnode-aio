@@ -1,23 +1,4 @@
 /* ============ dsh 智能能力 ============ */
-.n-play.n-agent-toggle {
-  width: auto;
-  padding: 0 5px;
-  font-size: 9px;
-  letter-spacing: 1px;
-  color: var(--muted)
-}
-
-.n-play.n-agent-toggle:hover {
-  border-color: var(--cyan);
-  color: var(--cyan2)
-}
-
-.n-play.n-agent-toggle.on {
-  color: var(--cyan2);
-  border-color: var(--cyan);
-  background: rgba(56, 214, 255, .16)
-}
-
 .n-play.n-expand-session {
   width: auto;
   padding: 0 5px;
@@ -4731,6 +4712,7 @@ body.theme-light #ixPanel {
 .dsh-msg-tail {
   display: flex;
   justify-content: flex-start;
+  gap: 6px;
   margin-top: -1px;
   pointer-events: none
 }

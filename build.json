@@ -7,6 +7,9 @@
   "files": [
     "main.js",
     "main-exec-launch.js",
+    /* 常驻托盘 + 关闭收托盘 + 任务完成系统通知（本次需求）：main.js 顶层 require 它，
+       漏进白名单 = 打包后启动即 Cannot find module './main-tray-notify.js'（窗口都出不来）。 */
+    "main-tray-notify.js",
     "main-proc-host.js",
     "fn-runtime.js",
     "desktop-capture.js",
@@ -32,10 +35,20 @@
     "assets-store.js",
     "shots-cache.js",
     "apps-store.js",
+    /* iframe（开发页预览 / 画布应用节点）的播放通道：apps-store.js require 它，
+       漏进白名单 = 打包后 Cannot find module './preview-media.js'（应用节点里试听直接崩） */
+    "preview-media.js",
     /* 应用节点（画布上的 kind appnode）：main.js require 它，漏进白名单就是
        Cannot find module './apps-node-store.js' */
     "apps-node-store.js",
     "apps-capabilities.js",
+    /* 应用 / 插件窗口的重能力桥（画布 / agent / 文件 / 工具 / 联网）：main.js require 它，
+       漏进白名单 = 打包后 Cannot find module './app-host-bridge.js'
+       （应用窗口的 appHost.canvas / agent 一族全部 not_ready）。 */
+    "app-host-bridge.js",
+    /* 联网抓取 / 下载（代理、超时、重定向）：app-host-bridge.js 顶层 require 它，
+       漏进白名单 = 打包后 Cannot find module './net-download.js'。 */
+    "net-download.js",
     /* 应用分支合并（他人分支 → 我本机开发中的那一支）：apps-store.js require 它，
        漏进白名单 = 打包后 Cannot find module './app-branch-merge.js'
        （应用中心「选择版本…」里的「合并到我的分支」直接报错）。 */
@@ -117,6 +130,10 @@
     /* MCP 的 GUI 动作执行器（mtnode_gui）：主进程直接操作窗口（注入脚本 + capturePage 截图）。
        mcp-server.js 经 main.js 注入调用，漏进白名单 = 打包后 gui 族报「执行器不可用」。 */
     "mcp-gui-agent.js",
+    /* 开发调试执行器（mtnode_dev）：起一只隔离的调试实例并用 CDP 驱动它（起进程 / 截图 /
+       控制台 / reload / restart）。main.js 的 dsh:dev 与 mcp() 都 require 它，
+       漏进白名单 = 打包后 Cannot find module './dev-agent.js'。 */
+    "dev-agent.js",
     /* MCP 的媒体生成执行体（mtnode_generate）：主进程调四路后端（图像 / 语音 / 音乐 / 视频）。
        同样由 main.js 的 mcp() 注入，漏进白名单 = 打包后生成类调用报「执行器不可用」。 */
     "mcp-media-agent.js",
@@ -144,6 +161,15 @@
     "music3/**",
     "yue/**",
     "h3/**",
+    /* MOSS-Music 本地音乐理解（kind mossmusic）：主进程宿主 + 控制台窗 + 预加载桥。
+       漏掉本条 = 打包后 require("./moss-music/main-moss-music.js") 直接
+       Cannot find module，应用起不来。 */
+    "moss-music/**",
+    /* MOSS-TTS-Nano 内置语音（状态栏 TTS 开关）：主进程宿主随包；随包脚手架
+       （推理代码 + 内置 Deepseek 音色 + requirements）走下面的 extraResources。
+       漏掉本条 = 打包后 require("./moss-tts/main-moss-tts.js") 直接
+       Cannot find module，应用起不来。 */
+    "moss-tts/**",
     "llama/**",
     "breeze/**",
     "infinitetalk/**",
@@ -472,6 +498,40 @@
         "manifest.json",
         "requirements.txt",
         ".gitignore"
+      ]
+    },
+    {
+      /* MOSS-Music（OpenMOSS 两个 8B 音乐理解模型，本地 HTTP 8790）：
+         安装窗步骤表（steps.json，供 plugins/main-install.js 通用安装窗）、安装编排
+         （scripts/install.ps1 + step.ps1）、标准库 HTTP 服务（app/server.py）与启动器。
+         venv / source / models / tools（uv、ffmpeg、权重，合计约 48GB）一律不随包：
+         它们只在安装时落到用户选定的安装目录；filter 是正向白名单，漏带 app/** 或
+         scripts/** 的后果就是安装窗一条步骤行都没有、宿主 spawn 直接失败。 */
+      "from": "moss-music-pack",
+      "to": "moss-music-pack",
+      "filter": [
+        "app/**",
+        "scripts/**",
+        "README.md",
+        "start_backend.cmd",
+        "steps.json",
+        "manifest.json",
+        "!**/__pycache__/**"
+      ]
+    },
+    {
+      /* MOSS-TTS-Nano 内置 TTS 脚手架：serve.py 工作进程 + 上游 ONNX 推理代码（已打
+         「不装 torch」补丁）+ 内置 Deepseek 参考音色 + requirements.txt。
+         权重（约 500MB）不随包，首次启用时由主进程从 hf-mirror 下到数据目录。
+         filter 是正向白名单，漏带 app/** 的后果是宿主找不到 serve.py、安装链直接失败。 */
+      "from": "moss-tts-pack",
+      "to": "moss-tts-pack",
+      "filter": [
+        "app/**",
+        "LICENSE",
+        "README.md",
+        "!**/__pycache__/**",
+        "!**/out/**"
       ]
     }
   ],

@@ -16,6 +16,13 @@
  *   ③ 反复刷新：应用中心每次打开都要先画壳、数据回来再整页重绘一次。解法：登记表按
  *      **元素**记账，元素已被拆掉 / 已不在文档里的一律安静出队；整页重绘前调用
  *      appAppsImgFlush() 把当前批次当场落定，重绘不会留下半张半张的卡。
+ *   ④ 档位与离屏（与素材库行内缩略、画布预览同一套口径）：
+ *      · 档位：地址一律经 renderer/app-canvas.js 的 previewSrcFor() 落到「预览位地址」——
+ *        本机图按显示档位压好（previewEdge / PREVIEW_EDGE_THUMB 是唯一真源），云端地址
+ *        原样返回（它的档位由下发方决定：卡片 640×360 缩略图 / 列表 1280 截图）。
+ *      · 离屏：卡片滚出「视口外一屏」就把已显形的图摘回透明占位（地址记在 rec.src），
+ *        回来再按同一个地址取 —— 与画布预览（renderer/app-preview-lazy.js）同一条口径：
+ *        看不见的图不持有解码后的位图与纹理。
  *
  * 对外入口（全局函数，供 renderer/app-apps.js 调用；本文件不依赖它，可单独加载）：
  *   appAppsImgDefer(cls, url, eager)  建「延迟取图」的 <img>：先占位，进视口才请求
@@ -24,7 +31,8 @@
  *   appAppsImgImmediate()             关掉延迟与分批（冒烟 / 验证台专用，生产不走）
  * ============================================================================ */
 
-/* 1×1 全透明占位：零请求、不破图，卡片底色与标题照旧可见 —— 这就是「界面先出来」那层 */
+/* 1×1 全透明占位：零请求、不破图，卡片底色与标题照旧可见 —— 这就是「界面先出来」那层。
+   离屏释放时也挂回它（不能留空 src：那会是一块破图）。 */
 const APPS_IMG_HOLD =
   "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
 
@@ -33,10 +41,13 @@ const APPS_IMG_HOLD =
 const APPS_IMG_BATCH_WINDOW = 80;
 /* 一次最多同时取几张：图多的目录不让首屏被网络挤死，其余排队 */
 const APPS_IMG_CONCURRENCY = 8;
+/* 视口外扩多少才算「要取图 / 还在近处」：这一圈之外就释放（离屏），进来再取。
+   与画布预览那只观察器同一量级（一屏上下 600px）。 */
+const APPS_IMG_MARGIN = "600px 0px";
 
 let APPS_IMG_IMMEDIATE = false; /* 冒烟 / 验证台：关掉延迟与分批 */
-let APPS_IMG_OBS = null; /* 视口观察器（延迟取图的唯一触发口，懒建） */
-const APPS_IMG_EL = new WeakMap(); /* img 元素 → { url, obs } */
+let APPS_IMG_OBS = null; /* 视口观察器（取图与离屏释放共用的唯一一只，懒建） */
+const APPS_IMG_EL = new WeakMap(); /* img 元素 → { el, url, src, obs, state } */
 let APPS_IMG_BATCH = null; /* { items:Set } 当前收集到的一批 */
 let APPS_IMG_TIMER = 0;
 let APPS_IMG_RUNNING = 0; /* 正在取图的张数 */
@@ -45,7 +56,7 @@ let APPS_IMG_HALT = false; /* 刚做过一次落定（切页 / 重绘）：新�
 const APPS_IMG_PENDING = []; /* 刚入队、还没进文档的图（下一轮微任务处理） */
 const APPS_IMG_QUEUE = []; /* 等待取图的元素（同一批内按挂载顺序） */
 const APPS_IMG_INFLIGHT = new Set(); /* 正在取图的元素（一次落定时要能一起收口） */
-const APPS_IMG_OBSERVED = new Set(); /* 已交给视口观察器、还在等进视口的元素 */
+const APPS_IMG_OBSERVED = new Set(); /* 已交给视口观察器的元素（等进视口 / 等离开两种） */
 
 /* 冒烟 / 验证台开关：生产路径上 window.__mtnodeAppsImg 恒为空，一行也不会走到。 */
 if (typeof window !== "undefined") {
@@ -59,14 +70,16 @@ if (typeof window !== "undefined") {
       running: APPS_IMG_RUNNING,
       batch: !!APPS_IMG_BATCH,
       batchSize: APPS_IMG_BATCH ? APPS_IMG_BATCH.items.size : 0,
+      observing: APPS_IMG_OBSERVED.size,
       hold: APPS_IMG_HOLD,
     }),
   };
 }
 
-/* 视口观察器（懒建）：进视口才取图。rootMargin 往外扩一屏 —— 滚到的位置图通常已就绪。
+/* 视口观察器（懒建）：进视口才取图、出这一圈才释放。rootMargin 往外扩一屏 ——
+   滚到的位置图通常已就绪，滚出去一屏之外才摘（不为一两像素的滚动反复取/摘）。
    没有 IntersectionObserver（老运行时 / 冒烟桩）退化成「挂上即取」：功能不缺，
-   只是不再省那点请求。 */
+   只是不再省那点请求，也不做离屏释放。 */
 function appsImgObserver() {
   if (APPS_IMG_IMMEDIATE) return null;
   if (APPS_IMG_OBS) return APPS_IMG_OBS;
@@ -75,20 +88,49 @@ function appsImgObserver() {
     APPS_IMG_OBS = new IntersectionObserver(
       (entries) => {
         for (const en of entries) {
-          if (!en || !en.isIntersecting) continue;
+          if (!en) continue;
           const el = en.target;
           const rec = APPS_IMG_EL.get(el);
-          if (!rec || !rec.url) continue;
-          appsImgUnobserve(rec);
-          appsImgEnqueue(el);
+          if (!rec) continue;
+          /* 已经被拆掉的卡：安静解除观察，不留悬挂记录 */
+          if (!appsImgLive(el)) {
+            appsImgUnobserve(rec);
+            continue;
+          }
+          if (en.isIntersecting) {
+            /* 回到了近处：离屏释放过的按记下的地址重取；还没取过的进队取图。
+               （两种都是幂等的：enqueue 自己会挡住重复排队） */
+            if (rec.state === "far") appsImgRestore(el, rec);
+            else if (rec.state === "wait") appsImgEnqueue(el);
+            continue;
+          }
+          /* 滚出这一圈：已显形的图摘回透明占位（离屏不持有位图 / 纹理） */
+          if (rec.state === "live") appsImgDrop(el, rec);
         }
       },
-      { rootMargin: "600px 0px" },
+      { rootMargin: APPS_IMG_MARGIN },
     );
   } catch (_) {
     APPS_IMG_OBS = null;
   }
   return APPS_IMG_OBS;
+}
+
+/* 交给观察器（幂等）：取图前的等待与显形后的离屏释放都靠它 */
+function appsImgObserve(el, rec) {
+  if (!el || !rec || rec.obs) return false;
+  const obs = appsImgObserver();
+  if (!obs) return false;
+  rec.obs = obs;
+  APPS_IMG_OBSERVED.add(el);
+  try {
+    obs.observe(el);
+  } catch (_) {
+    rec.obs = null;
+    APPS_IMG_OBSERVED.delete(el);
+    return false;
+  }
+  return true;
 }
 
 function appsImgUnobserve(rec) {
@@ -114,8 +156,25 @@ function appsImgLive(el) {
   return false;
 }
 
+/* 元素此刻是否还落在「视口外扩一屏」之内：拿不到 rect（桩环境 / 尚未布局）一律按
+   「在近处」处理 —— 宁可多留一张，绝不误放一张用户正看着的图。 */
+function appsImgNear(el) {
+  let r = null;
+  try {
+    r = el && typeof el.getBoundingClientRect === "function" ? el.getBoundingClientRect() : null;
+  } catch (_) {
+    r = null;
+  }
+  if (!r) return true;
+  const ih = Number(window.innerHeight) || 0;
+  const h = Math.max(600, ih);
+  return r.bottom >= -h && r.top <= ih + h;
+}
+
 /* 建一个延迟取图的 <img>：属性口径与原来逐个 img 时一致（class / alt），只是 src 先落在
-   透明占位上。url 为空 = 调用方自己走兜底（与改动前的口径相同）。 */
+   透明占位上。url 为空 = 调用方自己走兜底（与改动前的口径相同）。
+   地址先过一遍 previewSrcFor（app-canvas.js）：本机图落到缩略图协议的档位上，
+   云端 / data: 地址原样返回 —— 与素材库行内缩略用同一套「档位」口径。 */
 function appAppsImgDefer(cls, url, eager) {
   const img = document.createElement("img");
   img.className = cls || "";
@@ -124,22 +183,22 @@ function appAppsImgDefer(cls, url, eager) {
      的图带 eager —— 它没有「滚动才进视口」这回事，直接取。 */
   img.loading = "eager";
   img.decoding = "async";
-  const real = String(url || "");
+  const raw = String(url || "");
+  let real = raw;
+  if (raw) {
+    try {
+      if (typeof previewSrcFor === "function") real = previewSrcFor(raw);
+    } catch (_) {
+      real = raw;
+    }
+  }
   if (!real) return img;
   img.src = APPS_IMG_HOLD;
   img.dataset.src = real;
   img.setAttribute("data-apps-img", "hold");
-  const rec = { el: img, url: real, obs: null };
+  const rec = { el: img, url: real, src: "", obs: null, state: "wait" };
   APPS_IMG_EL.set(img, rec);
-  const obs = APPS_IMG_IMMEDIATE || eager ? null : appsImgObserver();
-  if (obs) {
-    rec.obs = obs;
-    APPS_IMG_OBSERVED.add(img);
-    try {
-      obs.observe(img);
-    } catch (_) {}
-    return img;
-  }
+  if (!APPS_IMG_IMMEDIATE && !eager && appsImgObserve(img, rec)) return img;
   appsImgEnqueue(img);
   return img;
 }
@@ -193,7 +252,11 @@ function appsImgPump() {
   appsImgDrainPending();
   while (APPS_IMG_RUNNING < APPS_IMG_CONCURRENCY && APPS_IMG_QUEUE.length) {
     const el = APPS_IMG_QUEUE.shift();
-    if (!appsImgLive(el)) continue; /* 已被拆掉的卡：安静出队，绝不把图换到别处 */
+    if (!appsImgLive(el)) {
+      /* 已被拆掉的卡：安静出队（连观察一起解除），绝不把图换到别处 */
+      appsImgUnobserve(APPS_IMG_EL.get(el));
+      continue;
+    }
     const rec = APPS_IMG_EL.get(el);
     if (!rec || !rec.url) continue;
     if (el.dataset) el.dataset.appsImg = "load";
@@ -249,15 +312,22 @@ function appsImgFetch(el, url, done) {
 function appsImgSwap(el, url, fail) {
   const rec = APPS_IMG_EL.get(el);
   if (rec) {
-    /* url = 待取地址（取过就清）；src = 最近一次要过的地址（一次落定时兜底重取用） */
+    /* url = 待取地址（取过就清）；src = 最近一次要过的地址（一次落定 / 离屏重取用） */
     rec.url = "";
     rec.src = url;
-    appsImgUnobserve(rec);
+    rec.state = "live";
     /* 不在文档里也照记账 —— 调用方必须先 appAppsImgFlush() 再拆 DOM；
        拆掉之后（整页重绘 / 滚出窗口）这张图绝不再碰 */
     if (!appsImgLive(el)) return;
+    /* 显形后仍留在观察器里：滚出视口外一屏就是它负责摘掉（离屏释放）。
+       回退链换图前若解除过观察，这里重新接上。 */
+    if (!rec.obs) appsImgObserve(el, rec);
   } else if (!appsImgLive(el)) {
     return;
+  } else {
+    /* 调用方自己建的 <img>（没走延迟取图）：也接进离屏口径，但只在真在文档里时 */
+    APPS_IMG_EL.set(el, { el: el, url: "", src: url, obs: null, state: "live" });
+    appsImgObserve(el, APPS_IMG_EL.get(el));
   }
   try {
     el.src = url;
@@ -267,7 +337,39 @@ function appsImgSwap(el, url, fail) {
     if (!APPS_IMG_BATCH) APPS_IMG_BATCH = { items: new Set() };
     APPS_IMG_BATCH.items.add(el);
     appsImgArmBatch();
+    /* 图到位时这一张其实已经滚出视口外一屏（落定 / 排队期间滚走了）：当场按离屏口径放掉，
+       不留一张谁也看不见的位图 —— 回来时按同一个地址重取。 */
+    if (rec && !appsImgNear(el)) appsImgDrop(el, rec);
   }
+}
+
+/* 离屏释放（滚出视口外一屏）：把已显形的图摘回透明占位，地址记在 rec.src。
+   不碰 dataset.coverStep / 回退链：这一张已经落定过，回来按同一个地址重取即可
+   （同一 URL 的字节由浏览器自己的图片缓存兜住，重设 src 不会把文件再读一遍）。
+   与画布预览（renderer/app-preview-lazy.js）同一条口径：看不见的图不持有位图与纹理。 */
+function appsImgDrop(el, rec) {
+  if (!rec || rec.state !== "live") return;
+  const cur = String(rec.src || "");
+  if (!cur) return;
+  rec.url = "";
+  rec.src = cur;
+  rec.state = "far";
+  if (el.dataset) el.dataset.appsImg = "hold";
+  /* 显形过渡也一起收回：回来时按新一批重新淡入，不早一帧露出来 */
+  if (el.classList) el.classList.remove("apps-img-in");
+  try {
+    el.src = APPS_IMG_HOLD;
+  } catch (_) {}
+}
+
+/* 回到近处：按离屏时记下的地址重取（同一批一起显形） */
+function appsImgRestore(el, rec) {
+  if (!rec || rec.state !== "far") return;
+  const url = String(rec.src || "");
+  if (!url) return;
+  rec.url = url;
+  rec.state = "wait";
+  appsImgEnqueue(el);
 }
 
 /* 一批到点：把这一批里「已就绪且还在文档里」的图一次性显形。
@@ -288,6 +390,15 @@ function appsImgReveal() {
   }
 }
 
+/* 清掉已经不在文档里的观察记录：观察器对摘出文档的元素不会再回调，
+   不主动清（整页重绘 / 关窗之后）就会一直挂着这份登记。 */
+function appsImgSweep() {
+  for (const el of Array.from(APPS_IMG_OBSERVED)) {
+    if (appsImgLive(el)) continue;
+    appsImgUnobserve(APPS_IMG_EL.get(el));
+  }
+}
+
 /* 立刻落定：正在排队 / 正在取图的当场挂上真地址（切页 / 关闭 / 整页重绘前调用）——
    用户看不到半张半张的卡；已经就绪的那批也一起显形（不再等窗口）。
    还在路上的那一张用「最近一次要过的地址」直接挂上，不等预取回来（图本身有浏览器缓存，
@@ -297,17 +408,19 @@ function appAppsImgFlush() {
     clearTimeout(APPS_IMG_TIMER);
     APPS_IMG_TIMER = 0;
   }
+  appsImgSweep();
   /* 待取的先并进取图队列，一起按「能出就出」处理 */
   appsImgDrainPending();
   const queued = APPS_IMG_QUEUE.splice(0, APPS_IMG_QUEUE.length);
   /* 在取的那几张也算进来：用「最近一次要过的地址」当场挂上（浏览器缓存多半已命中），
      不给用户留半张卡。这一步不算失败，回退链只按真实的 error 走。
-     注：**不**动「还在等进视口」的那些 —— 它们的卡已被拆 / 正要被重绘掉，图该省就省
-     （这正是懒加载本身；重绘后的新卡进视口时自然会取）。 */
+     注：**不**动「还在等进视口」与「已离屏释放」的那些 —— 它们的卡已被拆 / 正要被重绘掉，
+     图该省就省（这正是懒加载本身；重绘后的新卡进视口时自然会取）。 */
   for (const el of APPS_IMG_INFLIGHT) queued.push(el);
   for (const el of queued) {
     if (!appsImgLive(el)) continue;
     const rec = APPS_IMG_EL.get(el);
+    if (rec && rec.state === "far") continue; /* 离屏释放的不在这里复活 */
     const src = rec ? rec.url || rec.src : "";
     if (!src) continue;
     appsImgSwap(el, src, false);
@@ -332,9 +445,8 @@ function appAppsImgAdopt(el, url) {
   if (rec) {
     rec.url = waiting ? real : "";
     rec.src = real;
-    appsImgUnobserve(rec);
   } else {
-    APPS_IMG_EL.set(el, { el: el, url: "", src: real, obs: null });
+    APPS_IMG_EL.set(el, { el: el, url: "", src: real, obs: null, state: "wait" });
   }
   if (waiting) {
     appsImgPump(); /* 还在等取图：换掉地址接着取（预取成功再一起显形） */

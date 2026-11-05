@@ -1,4 +1,4 @@
-/* ===== 文本节点的 Markdown 编辑器（renderer/app-textedit.js）=====
+﻿/* ===== 文本节点的 Markdown 编辑器（renderer/app-textedit.js）=====
  * 与「✎ AI 审阅」对话框（css/review.css 的 .rv-*）共用同一套按钮 / 工具栏 / 批注卡片样式，
  * 所以这里只放编辑器自己的容器尺寸与开关：
  *   · 近全屏（98vw × 98vh 上限）、右下可拖调、最小宽 ≥ 50% 视口（与审阅窗同口径）；
@@ -39,6 +39,91 @@
 .txmd-dlg #textEditSizeBtn {
   min-width: 30px;
   font-size: 13px;
+}
+
+/* ── 局部批注：选中文字的青色呼吸灯框选（用户口径：只描外框，不填色）──
+   叠层实现（renderer/app-textedit.js 的 tePaintSelFrame）：::selection 只能改背景 /
+   下划线，做不出「呼吸灯外框」，所以每行选段画一个 <i> 描边，pointer-events 关闭，
+   不挡选择、不挡点正文。 */
+.txmd-dlg .te-sel-frame {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  pointer-events: none;
+}
+.txmd-dlg .te-sel-frame[hidden] { display: none; }
+.txmd-dlg .te-sel-frame i {
+  position: absolute;
+  display: block;
+  border: 1.5px solid var(--cyan);
+  border-radius: 3px;
+  box-shadow: 0 0 6px 0 color-mix(in srgb, var(--cyan) 45%, transparent);
+  animation: te-sel-breathe 1.6s ease-in-out infinite;
+}
+@keyframes te-sel-breathe {
+  0%, 100% {
+    opacity: .45;
+    box-shadow: 0 0 2px 0 color-mix(in srgb, var(--cyan) 20%, transparent);
+  }
+  50% {
+    opacity: 1;
+    box-shadow: 0 0 9px 1px color-mix(in srgb, var(--cyan) 70%, transparent);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .txmd-dlg .te-sel-frame i { animation: none; opacity: .9; }
+}
+
+/* ── 被批注正文的高亮层（renderer/app-textedit.js 的 tePaintAnnotations）──
+   淡橙色虚线下划线 + 一条连到右侧批注卡的曲线；整层 pointer-events 关闭，
+   只有连线描边可点（点线 = 点正文里那条批注）。 */
+.review-dlg .te-anno-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+}
+.review-dlg .te-anno-layer[hidden] { display: none; }
+.review-dlg .te-anno-svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+.review-dlg .te-anno-ul {
+  stroke: color-mix(in srgb, var(--orange) 62%, transparent);
+  stroke-width: 2;
+  stroke-dasharray: 4 3;
+  stroke-linecap: round;
+}
+.review-dlg .te-anno-link {
+  fill: none;
+  stroke: color-mix(in srgb, var(--orange) 55%, transparent);
+  stroke-width: 1.2;
+  stroke-dasharray: 3 3;
+  pointer-events: stroke;
+  cursor: pointer;
+}
+.review-dlg .te-anno-link:hover {
+  stroke: var(--orange);
+  stroke-width: 1.8;
+}
+
+/* 点正文里的批注高亮 → 重开这条批注的内容（可改可删） */
+.review-dlg .te-anno-edit { width: 300px; }
+.review-dlg .te-anno-edit-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.review-dlg .te-anno-edit-hint { color: var(--muted); font-size: 10.5px; }
+.review-dlg .te-anno-edit-snip {
+  color: var(--muted);
+  font-size: 11px;
+  font-style: italic;
+  margin-top: 6px;
+  word-break: break-all;
 }
 
 /* 编辑器开着时，节点板身那颗正文 textarea 只读 + 一行说明（同一份正文不让两个面同时写） */

@@ -862,6 +862,9 @@ const BACKEND_PLUGIN_SPECS = {
   /* Qwen Image 2.1（kind qwenimage，id qwen-image-local）：权重只发一版，不做
      「检查更新」—— 卡片 = 安装 / 重装 + 启用 / 停用 + 控制台（独立 ComfyUI，8196）。 */
   qwenimage: { key: "qwenimage", api: "qwenimage", hasService: true, update: false },
+  /* MOSS-Music 本地音乐理解（kind mossmusic，id moss-music）：权重只发一版，不做
+     「检查更新」—— 卡片 = 安装 / 重装 + 启用 / 停用 + 控制台（后端 8790）。 */
+  mossmusic: { key: "mossmusic", api: "mossmusic", hasService: true, update: false },
   remotion: { key: "remotion", api: "remotion", hasService: false },
   /* Blender 本地插件：卡片 = 安装 / 重装 + 启用 / 停用 + 控制台。宿主 blender/main-blender.js。
      「启用」= 插件自己拉起那只 Blender（用户手开的实例不做启停对象）；没有常驻后端要更新，
@@ -917,6 +920,8 @@ const BACKEND_INSTALL_IDS = {
   flux3klein: "flux3-klein-local",
   /* Qwen Image 2.1：目录 id 与卡片 kind 不同名 */
   qwenimage: "qwen-image-local",
+  /* MOSS-Music：安装窗里的插件 id 就是它的目录 id */
+  mossmusic: "moss-music",
   remotion: "remotion",
   /* Paseo 手机接管：安装窗里的插件 id 就是它的目录 id */
   paseo: "paseo-remote",
@@ -1220,6 +1225,43 @@ async function refreshQwenImagePluginCard(root) {
   });
 }
 
+/* ---- MOSS-Music 本地音乐理解（kind mossmusic，id moss-music；宿主
+   moss-music/main-moss-music.js）：卡片三颗按钮 = 安装 / 重装 · 启用 / 停用 · 控制台。
+   安装开的是通用安装窗（步骤表真源 moss-music-pack/steps.json）；「启用」静默起它自己那份
+   后端（8790，与 H3 / Music3 / YuE2 互斥由全局生成锁保证）。后端**有意常驻**：
+   关 MTNode 不停它，下次启动直接复用。 */
+async function refreshMossMusicPluginCard(root) {
+  return refreshBackendPluginCard(root, BACKEND_PLUGIN_SPECS.mossmusic, {
+    installLabel: (st) => (st.installed ? I18n.t("补装要件") : I18n.t("安装（国内镜像）")),
+  });
+}
+
+/** 卡片上的进度订阅：控制台开 / 关、启停、生成日志都走 consoleChanged 重绘；
+    GPU 读数缓存到卡片上供详情浮层用（卡片正文保持为空）。返回退订函数数组。 */
+function bindMossMusicProgress(card) {
+  const offs = [];
+  if (!card) return offs;
+  const api = window.api || {};
+  if (typeof api.onMossMusicConsoleChanged === "function") {
+    offs.push(api.onMossMusicConsoleChanged(() => refreshMossMusicPluginCard(card)));
+  }
+  if (typeof api.onMossMusicConsole === "function") {
+    offs.push(
+      api.onMossMusicConsole((data) => {
+        card._mossLastConsole = String((data && data.line) || "");
+      }),
+    );
+  }
+  if (typeof api.onMossMusicGpu === "function") {
+    offs.push(
+      api.onMossMusicGpu((gpu) => {
+        card._mossGpu = gpu || null;
+      }),
+    );
+  }
+  return offs;
+}
+
 /* ---- Paseo 手机接管（应用插件 kind paseo，id paseo-remote）----
    卡片口径（本轮需求）：与其它本地后端同一套 —— **三颗按钮 = 「安装 / 重装」+「启用 / 停用」+「控制台」**。
    安装 / 重装开的是那只**通用安装窗**（安装 / 重装 / 清干净重装 / 准备真 Node / 卸载都在窗里）；
@@ -1278,6 +1320,8 @@ const PLUGIN_VRAM_KNOWN_KINDS = {
   yue2: "yue2-local",
   /* H3（本地视频生成）：门槛 16G（真源 plugins/vram-gate.js） */
   h3: "minimax-h3",
+  /* MOSS-Music（本地音乐理解）：门槛 24G（真源 plugins/vram-gate.js） */
+  mossmusic: "moss-music",
 };
 /** 本次运行的「显示不支持的插件」开关（默认关；不落盘，重启即回默认） */
 let _showUnsupportedPlugins = false;
@@ -1812,6 +1856,7 @@ function repaintPluginCard(card, item) {
     soulxflashhead: refreshSoulxflashheadPluginCard,
     flux3klein: refreshFlux3KleinPluginCard,
     qwenimage: refreshQwenImagePluginCard,
+    mossmusic: refreshMossMusicPluginCard,
     paseo: refreshPaseoPluginCard,
     blender: refreshBlenderPluginCard,
   };
@@ -2214,6 +2259,10 @@ async function openAppPluginsDialog() {
         offs.push(window.api.onQwenImageConsoleChanged(() => refreshQwenImagePluginCard(card)));
       }
       refreshQwenImagePluginCard(card);
+    } else if (item.kind === "mossmusic" || item.handler === "mossmusic") {
+      /* MOSS-Music：控制台开 / 关、启停后端都会广播 consoleChanged，卡片据它重画 */
+      offs.push(...bindMossMusicProgress(card));
+      refreshMossMusicPluginCard(card);
     } else if (item.kind === "paseo" || item.handler === "paseo") {
       /* Paseo 手机接管：控制台窗开/关都会广播 consoleChanged，卡片据它重画状态行 */
       if (window.api && window.api.paseoRemoteOnConsoleChanged) {
@@ -2404,6 +2453,22 @@ const EXT_KINDS = [
     newLabel: "＋ 添加服务器",
   },
   {
+    /* 开发调试总开关（mtnode_dev）：默认关。开着的那一轮运行会注册「起一只隔离调试实例 +
+       CDP 驱动 + reload/restart 复验」那套工具（dsh/gateway/dev-plugin.mjs → 根目录
+       dev-agent.js）。它只碰自己 spawn 的那只实例，绝不碰用户正在用的这只 ——
+       数据目录硬校验在主进程。 */
+    key: "dev",
+    zh: "开发调试",
+    tab: "调试",
+    grid: "dshDevGrid",
+    empty: "（这一页只有总开关 →）",
+    install: false,
+    newLabel: "",
+    countKey: "",
+    noStore: true,
+    toolbarNone: true,
+  },
+  {
     /* MTNode 自己作为 **MCP 服务端**（与上面那条相反的方向：上面是 MTNode 去连别人的
        MCP 服务器，这一条是第三方客户端连进来操作 MTNode）。见 mcp-server.js 与
        guides/mcp-server.md；面板没有清单（只有一个服务端），右侧整块就是它。 */
@@ -2427,12 +2492,14 @@ const EXT_UI = {
   open: false,
   kind: "dsh",
   hintEl: null,
-  loaded: { dsh: false, skill: false, mcp: false, server: false },
-  errors: { dsh: "", skill: "", mcp: "", server: "", paseo: "" },
+  loaded: { dsh: false, skill: false, mcp: false, server: false, dev: true },
+  errors: { dsh: "", skill: "", mcp: "", server: "", paseo: "", dev: "" },
   state: {
     dsh: { list: [], selectedKey: "", query: "" },
     skill: { list: [], selectedKey: "", query: "", editor: null },
     mcp: { list: [], selectedKey: "", query: "", editor: null },
+    /* 开发调试：不是清单，只有一个总开关（config.json 的 dsh.devTools）+ 一段说明 */
+    dev: { list: [], selectedKey: "", query: "", busy: false },
     /* MCP 服务端：不是清单，只有一份运行状态 + 最近调用 / 抓包（见 mcpState / mcpPanel） */
     server: {
       list: [],
@@ -2692,9 +2759,14 @@ function paintExtToolbar(host) {
   if (meta.toolbarNone) {
     const tip = document.createElement("span");
     tip.className = "dsh-ext-count";
-    tip.textContent = I18n.t(
-      "MTNode 作为 MCP 服务端：第三方客户端（Claude Code / Cursor / 自研 Agent）连进来操作本机 MTNode。开关、地址与令牌在右侧面板。",
-    );
+    tip.textContent =
+      kind === "dev"
+        ? I18n.t(
+            "开发调试：一个总开关 —— Agent 能不能自己起一只隔离的客户端、用 CDP 驱动它并复验修复。开关与边界在右侧面板。",
+          )
+        : I18n.t(
+            "MTNode 作为 MCP 服务端：第三方客户端（Claude Code / Cursor / 自研 Agent）连进来操作本机 MTNode。开关、地址与令牌在右侧面板。",
+          );
     bar.appendChild(tip);
     return;
   }
@@ -2815,6 +2887,11 @@ function renderExtManagerInfo(host) {
   /* MCP 服务端是单例状态页，不走「清单 + 选中」那套（见 paintMcpServerPanel）。 */
   if (kind === "server") {
     paintMcpServerPanel(info);
+    return;
+  }
+  /* 开发调试同样不是清单：整块就是那个总开关（见 paintDevDebugPanel）。 */
+  if (kind === "dev") {
+    paintDevDebugPanel(info);
     return;
   }
   const st = extState(kind);
@@ -3608,7 +3685,7 @@ function paintExtManager() {
       mcp: I18n.t("筛选 MCP 服务器（按名称 / 命令 / URL）…"),
     }[EXT_UI.kind] || I18n.t("本页没有可筛选的清单");
     search.placeholder = ph;
-    search.disabled = EXT_UI.kind === "server";
+    search.disabled = EXT_UI.kind === "server" || EXT_UI.kind === "dev";
     if (search.value !== (extState(EXT_UI.kind).query || ""))
       search.value = extState(EXT_UI.kind).query || "";
   }
@@ -3651,6 +3728,8 @@ async function refreshExtInventory(opts) {
   if (!want.length) return;
   const fetchers = {
     dsh: fetchExtPlugins,
+    /* 开发调试没有远程清单：只有本地那个总开关，不需要抓任何东西 */
+    dev: async () => {},
     server: async () => {
       await fetchMcpServerState();
     },
@@ -3875,6 +3954,69 @@ function mcpClientSnippet(info) {
   const server = { command: cmd.node || "node", args: [cmd.script || "mcp-stdio.js"] };
   if (env) server.env = env;
   return JSON.stringify({ mcpServers: { mtnode: server } }, null, 2);
+}
+
+/* 开发调试（mtnode_dev）总开关：默认关。它是**一个开关 + 一段说明**，没有清单可管。
+   开着 = 每一轮 Agent 运行都带 devDebug=1 → 网关注册 mtnode_dev（agent 自己起一只隔离的
+   MTNode 客户端、用 CDP 驱动它、改完代码 reload/restart 再复验）；关着 = 一步都不发工具定义。
+   与「应用开发会话的 mtnode_gui」是两件事：那个点的是用户正在用的窗口，这个只碰自己 spawn 的
+   那只，数据目录还有主进程侧的硬校验（默认数据目录一律拒绝）。 */
+function devDebugOn() {
+  return !!(typeof S !== "undefined" && S.config && S.config.dsh && S.config.dsh.devTools);
+}
+
+function paintDevDebugPanel(info) {
+  const on = devDebugOn();
+  extInfoHead(
+    info,
+    I18n.t("开发调试（mtnode_dev）"),
+    [[on ? "on" : "off", on ? I18n.t("已开启") : I18n.t("已关闭")]],
+    "mtnode_dev",
+  );
+  extInfoField(
+    info,
+    I18n.t("这是什么"),
+    I18n.t(
+      "让 Agent 自己起一只隔离的 MTNode 客户端（开发态），用 CDP 连它的渲染层：截图、读控制台与未捕获异常、看网络请求、点与输入、DOM 快照；改完代码再 reload（只动渲染层）或 restart（动了主进程）复验。",
+    ),
+  );
+  extInfoField(
+    info,
+    I18n.t("边界"),
+    I18n.t(
+      "同时只允许一只调试实例；只接管它自己账本里登记过的那一只；默认数据目录（%APPDATA%\\pipeline-console）一律拒绝 —— 不会碰你正在用的这只实例。只连渲染层，主进程没有 --inspect，主进程改动只能靠 restart 生效。",
+    ),
+  );
+  extInfoField(
+    info,
+    I18n.t("什么时候会生效"),
+    on
+      ? I18n.t("已开启：下一轮 Agent 运行就带 mtnode_dev（工具定义也会随之多发一点）")
+      : I18n.t("已关闭：Agent 手上没有这套工具（每步少发一整段工具定义）"),
+  );
+  extInfoButtons(info, [
+    [
+      on ? I18n.t("关闭开发调试") : I18n.t("开启开发调试"),
+      on ? "" : "primary",
+      async () => {
+        try {
+          if (typeof S === "undefined" || !S.config) return;
+          if (!S.config.dsh) S.config.dsh = {};
+          S.config.dsh.devTools = !on;
+          if (typeof settingsSaved === "function") settingsSaved(0);
+          toast(
+            S.config.dsh.devTools
+              ? I18n.t("开发调试已开启（下一轮生效）")
+              : I18n.t("开发调试已关闭"),
+            "ok",
+          );
+        } catch (e) {
+          toast(I18n.t("设置没保存成功：") + extErrorText(e), "err");
+        }
+        paintExtManager();
+      },
+    ],
+  ]);
 }
 
 function paintMcpServerPanel(info) {

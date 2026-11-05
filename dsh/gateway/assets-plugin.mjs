@@ -7,6 +7,10 @@
 //           text body) so it can be handed to mtnode_vision or used as a deliverable;
 //   - screenshot: capture a still PNG of the MTNode window RIGHT NOW (whole window by
 //           default, canvas-only on request) and write it to an absolute path.
+//   - write actions (2026-11 用户共识 · assets_write 单独一档许可): create / addItem /
+//           importFile / importFiles / updateText / updateMeta / removeItem / deleteAsset —
+//           the app window gets the very same set over appHost.assets. Deletes go to the
+//           system trash, text overwrites keep the previous body under .versions/.
 //
 // Why it must live here and not in the shell: the library root (%APPDATA%\…\config.json
 // assetRoot) and the delivery directory both sit OUTSIDE the run's workspace, so a
@@ -36,9 +40,19 @@ const ASSETS_DESC = `The MTNode asset library (素材库) and full-window still 
 Available actions:
 - list: the library tree. Returns categories, then assets: [{id, rel, displayName, desc, items:[{index, id, title, type}]}] and root. Pass filter (substring over category path / asset name / description) to narrow it (character turnarounds 三视图 are usually named 「…三视图」), or type:"image" to keep only assets that have an image item. Content items are numbered: item index = the port number of an 素材节点 bound to that asset.
 - read: one content item. Pass id (asset id, e.g. "as…") or rel (library-relative folder, e.g. "DS Adventure/Characters/AI娘原人设Q版三视图") or path (an absolute file path you already have), plus itemId (or index, 0-based) to pick the item; type:"image" + limit picks the first N image items. Returns {asset, item, file:{path, bytes}} — text items also come back as text (binary never does). The absolute path is what mtnode_vision eats, and what you hand to a deliver terminal / a save node.
-- screenshot: take a still PNG of the MTNode window as it is right now and write it to an absolute path. Defaults: whole window, hidden menus/lightboxes removed, saved next to the current output into the canvas asset folder when path is omitted. Pass canvasOnly:true to shoot only the canvas viewport (the 起始态/丰富态 UI stills of a delivery list), width/height to force the output pixel size (e.g. 1920x1080 — capture is scaled to fit; it never resizes the user's window), hideUI:false to keep transient UI, maximize:true to enlarge the window first (only when the user is not using it: the window really does resize). FAILS when the window is minimized or hidden — ask the user to show the MTNode window, then retry.
+- screenshot: take a still PNG of the MTNode window as it is right now and write it to an absolute path. Defaults: whole window, hidden menus/lightboxes removed, written to the current canvas workspace's .mtnode-input/ when path is omitted (a temporary still — kept out of the asset folder; give an explicit path for anything you must keep). Pass canvasOnly:true to shoot only the canvas viewport (the 起始态/丰富态 UI stills of a delivery list), width/height to force the output pixel size (e.g. 1920x1080 — capture is scaled to fit; it never resizes the user's window), hideUI:false to keep transient UI, maximize:true to enlarge the window first (only when the user is not using it: the window really does resize). FAILS when the window is minimized or hidden — ask the user to show the MTNode window, then retry.
 
-Discipline: never guess that a file exists — call read and quote the path it returns. The library is a MIRROR of the user's own folders: this tool reads it, it never writes into it. Screenshots are the only thing that writes, and only to the path you are given.`
+Write actions (permission "assets_write", separate from read; same action set the app window gets):
+- create: new asset. {displayName, category?, desc?} — category is a library-relative category path, created when missing. Returns {asset}.
+- addItem: new content item in an asset. {id, type, title?, content?} for text, or {id, type, srcPath} / {id, type, base64} for media. Returns {item, asset}.
+- importFile: new asset made of local files. {paths:[absolute…], name?, category?, desc?} — files are COPIED into the library. Returns {asset, added, skipped}.
+- importFiles: append local files to an existing asset. {id, paths:[…]}. Returns {items, skipped, asset}.
+- updateText: overwrite a text item. {id, itemId, content, title?} — the previous body is kept under .versions/. Returns {item, asset, prevVersion, prevEmpty}.
+- updateMeta: {id, displayName?, desc?, catRel?} — rename / describe / move to another category. Returns {asset}.
+- removeItem: {id, itemId} — file goes to the system trash (restorable). Returns {removed, trash, asset}.
+- deleteAsset: {id} — whole asset folder goes to the trash (restorable). Returns {id, trash, rel}.
+
+Discipline: never guess that a file exists — call read and quote the path it returns. Reading is never restricted; writes are gated by the separate "write asset library" permission and every delete goes to the trash, never an unlink. Creating an asset node on the canvas is a canvas action (mtnode_canvas_edit), not this tool.`
 
 export function apply(ctx) {
   /* 按运行裁剪可见工具集：这一轮被「素材库与截图」（assets_read）许可拒掉时，宿主把
@@ -131,8 +145,21 @@ export function apply(ctx) {
       action: {
         type: 'string',
         required: true,
-        enum: ['list', 'read', 'screenshot'],
-        description: 'Which asset action to run.',
+        enum: [
+          'list',
+          'read',
+          'screenshot',
+          'create',
+          'addItem',
+          'importFile',
+          'importFiles',
+          'updateText',
+          'updateMeta',
+          'removeItem',
+          'deleteAsset',
+        ],
+        description:
+          'Which asset action to run. list / read / screenshot need the "read asset library" permission; every other action needs the separate "write asset library" permission.',
       },
       filter: {
         type: 'string',
@@ -161,7 +188,7 @@ export function apply(ctx) {
       path: {
         type: 'string',
         description:
-          'read: an absolute file path already in hand (or under the library) instead of id/rel. screenshot: absolute .png destination; omit to write into the current canvas asset folder.',
+          'read: an absolute file path already in hand (or under the library) instead of id/rel. screenshot: absolute .png destination; omit to write a temporary still into the canvas workspace\'s .mtnode-input/ (falling back to the canvas asset folder only when the canvas has no workspace folder).',
       },
       itemId: {
         type: 'string',
@@ -198,6 +225,51 @@ export function apply(ctx) {
         type: 'boolean',
         description:
           'screenshot: remove transient UI (open menus, hints, lightbox) before shooting (default true) so a delivery still has no残余 popups.',
+      },
+      /* ── 写动作（assets_write）────────────────────────────────────────── */
+      paths: {
+        type: 'array',
+        items: { type: 'string' },
+        description:
+          'importFile / importFiles: absolute paths of local files to COPY into the library. Directories are not walked — pass files.',
+      },
+      name: {
+        type: 'string',
+        description:
+          'importFile: new asset display name (default = first file name without extension). Category is `category`.',
+      },
+      displayName: {
+        type: 'string',
+        description: 'create / updateMeta: asset display name shown in the library UI.',
+      },
+      category: {
+        type: 'string',
+        description:
+          'create / importFile: library-relative category path (e.g. "story2video/Stills"). Missing categories are created.',
+      },
+      catRel: {
+        type: 'string',
+        description: 'updateMeta: move the asset to this library-relative category ("" = library root).',
+      },
+      desc: {
+        type: 'string',
+        description: 'create / importFile / updateMeta: asset description.',
+      },
+      title: {
+        type: 'string',
+        description: 'addItem / updateText: content item title (becomes the 素材节点 port title).',
+      },
+      content: {
+        type: 'string',
+        description: 'addItem (type:"text") / updateText: the text body (text items are stored as .txt).',
+      },
+      srcPath: {
+        type: 'string',
+        description: 'addItem: absolute path of one local file to copy in (media items).',
+      },
+      base64: {
+        type: 'string',
+        description: 'addItem: inline base64 bytes instead of srcPath (small media only).',
       },
     },
     timeoutMs: 60000,

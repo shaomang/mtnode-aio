@@ -14,7 +14,31 @@ const CATEGORY_TITLES = {
   video: "视频生成（MiniMax H3）",
   image: "图像生成（Qwen Image）",
   writing: "写作与润色",
+  film: "AI 影视创作",
+  remotion: "Remotion 视频制作",
 };
+
+/* 二级分组标题：类目目录下再按阶段 / 主题分子目录（如 film/script/…、remotion/animation/…）。
+   只影响索引与 INDEX.md 的分组小标题，不影响技能的安装目录名（安装名取 front matter 的 name）。
+   新加一组要在这里补标题，否则索引里直接显示目录名。 */
+const GROUP_TITLES = {
+  "film/script": "剧本与创意开发",
+  "film/storyboard": "分镜与镜头设计",
+  "film/asset": "角色与场景资产",
+  "film/prompt": "生成提示词工程",
+  "film/audio": "声音与字幕",
+  "film/post": "剪辑与成片交付",
+  "remotion/components": "工程与组件",
+  "remotion/animation": "动画与时序",
+  "remotion/audio-subtitle": "音频与字幕",
+  "remotion/data-params": "参数化与数据",
+  "remotion/render-deploy": "渲染与发布",
+};
+
+function groupTitle(category, group) {
+  if (!group) return "";
+  return GROUP_TITLES[category + "/" + group] || group;
+}
 
 function bundledRoot(appRoot) {
   return path.join(appRoot || path.join(__dirname), LIB_DIR);
@@ -32,8 +56,29 @@ function readJson(p, fb) {
   }
 }
 
+/* tags：只进 index.json（界面检索 / 分类看板用），不拼进每次会话注入的紧凑索引，
+   免得几十条技能 × 若干 tag 在白送的上下文里重复一遍。两种写法都认：
+     tags: 分镜, 镜头语言            （行内，逗号 / 顿号 / 分号分隔，可带 []）
+     tags:\n  - 分镜\n  - 镜头语言    （YAML 块状列表） */
+function normalizeTags(raw, block) {
+  const out = [];
+  const push = (s) => {
+    const v = String(s || "")
+      .replace(/^[\[【]\s*/, "")
+      .replace(/\s*[\]】]$/, "")
+      .replace(/^['"]|['"]$/g, "")
+      .trim();
+    if (!v) return;
+    const t = v.slice(0, 24);
+    if (!out.includes(t)) out.push(t);
+  };
+  for (const part of String(raw || "").split(/[,，、;；]/)) push(part);
+  for (const t of block || []) push(t);
+  return out.slice(0, 12);
+}
+
 function parseSkillMeta(text) {
-  const meta = { name: "", title: "", description: "", version: "", menu: "" };
+  const meta = { name: "", title: "", description: "", version: "", menu: "", tags: [] };
   /* 先归一换行：SKILL.md 若被 Windows 编辑器存成 CRLF，行尾的 \r 会让
      /^key:\s*(.*)$/ 里的 `.` 吃不掉它（`.` 不匹配 \r），整行匹配失败 →
      front matter 全部读空 → name 退回目录名（如 dev-architect 而不是
@@ -42,9 +87,16 @@ function parseSkillMeta(text) {
   const fm = raw.match(/^---\s*\n([\s\S]*?)\n---\s*\n?([\s\S]*)$/);
   const body = fm ? fm[2] || "" : raw;
   if (fm) {
+    let curKey = "";
+    const blockTags = [];
     for (const line of fm[1].split("\n")) {
       const km = line.match(/^([a-zA-Z0-9_-]+):\s*(.*)$/);
-      if (!km) continue;
+      if (!km) {
+        const li = line.match(/^\s*-\s+(.+)$/);
+        if (li && curKey === "tags") blockTags.push(String(li[1]).trim());
+        continue;
+      }
+      curKey = km[1];
       const k = km[1];
       const v = String(km[2] || "")
         .replace(/^['"]|['"]$/g, "")
@@ -53,10 +105,12 @@ function parseSkillMeta(text) {
       if (k === "title") meta.title = v;
       if (k === "description") meta.description = v;
       if (k === "version") meta.version = v;
+      if (k === "tags") meta.tags = v;
       /* menu: user —— 这条内置技能要在用户的技能列表 / 「/」菜单里出现（标「内置」只读），
          缺省不写 = 纯内部纪律技能，只进内置索引，不进用户技能清单。 */
       if (k === "menu") meta.menu = v;
     }
+    meta.tags = normalizeTags(meta.tags, blockTags);
   }
   if (!meta.title) {
     const h1 = body.match(/^#\s+(.+)$/m);
@@ -117,6 +171,9 @@ function buildIndexFromTree(root) {
     const meta = parseSkillMeta(body);
     const name = String(meta.name || path.basename(skillFolder)).trim();
     if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(name)) continue;
+    /* 四段路径（film/script/xxx/SKILL.md）= 类目 + 阶段分组 + 技能；
+       两段路径（app/impeccable/SKILL.md）的第二段是技能目录本身，不是分组。 */
+    const group = parts.length >= 4 ? parts[1] : "";
     const entry = {
       id: path.basename(skillFolder),
       name,
@@ -125,6 +182,8 @@ function buildIndexFromTree(root) {
       path: rel,
       version: String(meta.version || "").slice(0, 32),
     };
+    if (group) entry.group = group;
+    if (Array.isArray(meta.tags) && meta.tags.length) entry.tags = meta.tags;
     /* front matter 写了 menu: user → 这条内置技能同时进用户的技能清单（标「内置」、只读、
        不可卸载 / 覆盖），「/」菜单与助手技能菜单都点得到；缺省 = 只进内置索引给模型看。 */
     if (meta.menu === "user") entry.menu = "user";
@@ -167,7 +226,16 @@ function renderIndexMd(index) {
   for (const cat of index.categories || []) {
     lines.push("## " + (cat.title || cat.id));
     lines.push("");
+    let lastGroup = "";
     for (const sk of cat.skills || []) {
+      const g = sk.group || "";
+      if (g !== lastGroup) {
+        lastGroup = g;
+        if (g) {
+          lines.push("### " + groupTitle(cat.id, g));
+          lines.push("");
+        }
+      }
       lines.push(
         "- **" +
           sk.name +
@@ -477,6 +545,9 @@ module.exports = {
   LIB_DIR,
   INDEX_FORMAT,
   CATEGORY_TITLES,
+  GROUP_TITLES,
+  groupTitle,
+  normalizeTags,
   bundledRoot,
   dshLibRoot,
   parseSkillMeta,

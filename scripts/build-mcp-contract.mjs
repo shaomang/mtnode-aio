@@ -41,6 +41,7 @@ export const MCP_PLUGIN_FILES = [
   'longtask-plugin.mjs',
   'assets-plugin.mjs',
   'gui-plugin.mjs',
+  'dev-plugin.mjs',
   'mcp-extra-plugin.mjs',
 ]
 
@@ -60,6 +61,9 @@ export const TOOL_FAMILY = {
   lt_state: 'lt',
   mtnode_assets: 'asset',
   mtnode_gui: 'gui',
+  /* 开发调试（mtnode_dev）：同样是主进程执行（根目录 dev-agent.js），但作用域是
+     「自己 spawn 的那只隔离调试实例 + CDP」，不是用户正在用的那只窗口。 */
+  mtnode_dev: 'dev',
   /* 自用回环四件（mtnode_generate / mtnode_run / mtnode_tools / mtnode_session）：
      gen 与 session 由主进程执行（mcp-media-agent.js / 会话帧），run 与 tool 由渲染层执行
      （renderer/mcp-extra.js）。它们**不进 cordis.yml** —— 网关不加载这份插件。 */
@@ -123,23 +127,40 @@ function captureToolSpecs(file, defineTool) {
     body,
   )
   let firstError = null
-  fn(
-    stubDefine,
-    (apply) => {
-      if (typeof apply !== 'function') throw new Error(file + ' 里没有可调用的 apply(ctx)')
-      apply({ tools: { register: (t) => t } })
-    },
-    (e) => {
-      firstError = e
-    },
-    () => ({ on() {}, write() {}, end() {} }),
-    () => '00000000-0000-4000-8000-000000000000',
-    'inputSchema',
-    (a) => a,
-    () => false,
-    () => new Set(),
-    [],
-  )
+  /* 注册口可能按运行环境决定注不注册（gui-plugin.mjs 就是这么写的：只有应用开发会话那台
+     运行时才有 MTNODE_APP_DEBUG=1）。契约是**对外**的完整工具表（MCP 客户端由主进程
+     mcp-server.js 按本文件直接回 tools/list，从不经过 cordis 注册），所以生成期间把这一档
+     标记临时打上：抓到的永远是「这个插件能提供什么」，而不是「某台运行时此刻注册了什么」。 */
+  const prevAppDebug = process.env.MTNODE_APP_DEBUG
+  process.env.MTNODE_APP_DEBUG = '1'
+  /* 同理：dev-plugin.mjs 只在「开发调试」总开关打开的那一轮注册（MTNODE_DEV_DEBUG=1）。
+     契约是对外的完整工具表，所以生成期间也把这一档打上。 */
+  const prevDevDebug = process.env.MTNODE_DEV_DEBUG
+  process.env.MTNODE_DEV_DEBUG = '1'
+  try {
+    fn(
+      stubDefine,
+      (apply) => {
+        if (typeof apply !== 'function') throw new Error(file + ' 里没有可调用的 apply(ctx)')
+        apply({ tools: { register: (t) => t } })
+      },
+      (e) => {
+        firstError = e
+      },
+      () => ({ on() {}, write() {}, end() {} }),
+      () => '00000000-0000-4000-8000-000000000000',
+      'inputSchema',
+      (a) => a,
+      () => false,
+      () => new Set(),
+      [],
+    )
+  } finally {
+    if (prevAppDebug === undefined) delete process.env.MTNODE_APP_DEBUG
+    else process.env.MTNODE_APP_DEBUG = prevAppDebug
+    if (prevDevDebug === undefined) delete process.env.MTNODE_DEV_DEBUG
+    else process.env.MTNODE_DEV_DEBUG = prevDevDebug
+  }
   if (!specs.length && firstError) throw firstError
   return specs
 }

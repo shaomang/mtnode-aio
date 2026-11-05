@@ -394,7 +394,7 @@ dsh 0.2 的 `llm-deepseek` 把 `config.baseURL` / `DEEPSEEK_BASE_URL` 当 **Mess
 | `interruptSubagent` | `{parentSessionId, childSessionId}` | **中断一只子代理**:引擎的 `subagent` 工具**一调用就返回**(`started subagent <id>`),真正的活在后台上跑,而父会话那一轮此时往往已经 idle 收尾 —— 所以这里**不点名 runKey/reqId**(那一轮已经不在途了),网关按子代理归属表(`childSessionId → {key, parentSessionId}`,由常驻长订阅在 `subagent.started` 时登记)找到那台 runtime,下发运行时插件方法 `session/interrupt-subagent`(15s),插件再调 `subagents.interrupt(childSessionId, {kind:'user', parentSessionId})`。回执 `{ok:true}` / `{ok:false, reason:'invalid_params'\|'no_runtime'\|'unsupported'\|'error'}`。见「子代理运行提示契约」 |
 | `providerCatalog` | — | `{deepseek:[…], piai:[…]}` 服务商/模型目录(pi-ai 同源) |
 | `pluginList` / `pluginAdd` / `pluginRemove` / `pluginEnable` / `pluginDisable` | `{pkg, id?}` 等 | 读取/安装/移除/挂载/卸载 cordis.yml 插件。`pluginList` 每项含 `title`/`description`/`purpose`/`version`(来自 package.json、preset.yml、行上注释)。核心运行时行只读;非核心(用户插件、套装、可选 shipped 行)可在设置中挂载/卸载;变更后重启运行时 |
-| `mcpList` / `mcpAdd` / `mcpRemove` / `mcpSetEnabled` | `{serverName, …}` | MCP 服务器管理(cordis 用户段,变更后重启运行时) |
+| `mcpList` / `mcpAdd` / `mcpRemove` / `mcpSetEnabled` | `{serverName, transport, command?, args?, url?}` 等 | MCP 服务器管理(cordis 用户段,变更后重启运行时)。**`transport` 是枚举,不是自由字符串**:`dsh-mcp-client` 的 `Config = z.union([z.const('stdio'), z.const('streamable-http')])`(见 `gateway/node_modules/@deepseek-ai/dsh-mcp-client/lib/index.js` 的 Config 定义),写成 `http` 这类名字那一行会被判非法、服务器整个不加载 —— 表现是「Agent 没有 MCP 工具」且没有任何连接错误。`mcpAdd` 入口把 `http` 归一成 `streamable-http`,启动同步(`syncUserPluginsFromHome`)也会改写已落盘的历史行 |
 | `shutdown` | — | 关闭全部运行时并退出 gateway |
 
 `run` 的事件:`reasoning`(思考增量 `{text, turn, step, index}`)、`text`(正文增量

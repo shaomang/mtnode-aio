@@ -1,0 +1,7 @@
+# MOSS-TTS-Nano 内置后端（ONNX CPU 版）运行依赖 —— 刻意不含 torch / torchaudio：
+# 参考音频的读取与重采样已由本目录 app/onnx_tts_runtime.py 的 MTNode 补丁换成
+# soundfile + numpy（安装体积从约 2GB 降到约 80MB）。
+numpy>=1.24
+onnxruntime>=1.20.0
+sentencepiece>=0.1.99
+soundfile>=0.12.1
