@@ -2207,8 +2207,9 @@ function createFnDevSessionForNode(node, req) {
   const reqText = String(req === undefined || req === null ? "" : req).trim();
   const sess = {
     id: uid("as"),
-    title:
-      I18n.t("开发 · ") + (fnDevNameOf(node) || I18n.t("未命名函数")),
+    /* 标题口径（用户口径）：「开发」不写进标题 —— 它只占宽度、不说明这一轮做什么，
+       会话标题就是函数名（与开发节点同一口径，见 app.js devSessionTitleOf） */
+    title: fnDevNameOf(node) || I18n.t("未命名函数"),
     workspace: dshWorkspaceOf(node) || "",
     /* 函数开发会话：所属画布 = 该函数节点所在画布 */
     canvasWfId: canvasWfIdForNode(node),
@@ -2298,7 +2299,7 @@ async function developFunctionNode(node) {
     /* 边写边留存：取消 / Esc / 被别的弹窗顶掉都不丢，下次打开原样回填 */
     onText: (t) => devDraftSet(node, "fnDev", t),
     hint: I18n.t(
-      "确认 = 新会话后台运行（工作区 = 画布目录 · 标题「开发 · 函数名」· 只改这一个函数节点 · 不离开画布）· 取消 / 跳出不清空：再次打开本框接着上次写 · Ctrl+Enter 提交 · Esc 取消",
+      "确认 = 新会话后台运行（工作区 = 画布目录 · 标题「函数名」· 只改这一个函数节点 · 不离开画布）· 取消 / 跳出不清空：再次打开本框接着上次写 · Ctrl+Enter 提交 · Esc 取消",
     ),
     requireText: true,
     actions: [
@@ -2498,8 +2499,8 @@ function createToolDevSessionForNode(node, req) {
   const reqText = String(req === undefined || req === null ? "" : req).trim();
   const sess = {
     id: uid("as"),
-    title:
-      I18n.t("开发 · ") + (toolDevNameOf(node) || I18n.t("未命名工具")),
+    /* 标题口径同函数开发会话：「开发」不写进标题，会话标题就是工具名 */
+    title: toolDevNameOf(node) || I18n.t("未命名工具"),
     workspace: dshWorkspaceOf(node) || "",
     /* 工具开发会话：所属画布 = 该工具节点所在画布 */
     canvasWfId: canvasWfIdForNode(node),
@@ -2583,7 +2584,7 @@ async function developToolNode(node) {
     }),
     onText: (t) => devDraftSet(node, "toolDev", t),
     hint: I18n.t(
-      "确认 = 新会话后台运行（工作区 = 画布目录 · 标题「开发 · 工具名」· 只改这一个工具节点与它的内部子图 · 不离开画布）· 取消 / 跳出不清空：再次打开本框接着上次写 · Ctrl+Enter 提交 · Esc 取消",
+      "确认 = 新会话后台运行（工作区 = 画布目录 · 标题「工具名」· 只改这一个工具节点与它的内部子图 · 不离开画布）· 取消 / 跳出不清空：再次打开本框接着上次写 · Ctrl+Enter 提交 · Esc 取消",
     ),
     requireText: true,
     actions: [

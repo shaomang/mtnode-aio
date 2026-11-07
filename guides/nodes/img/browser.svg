@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 520 180" width="520" height="180">
+  <rect width="520" height="180" fill="#0d1016"/>
+  <defs>
+    <marker id="arr" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M0,0 L8,4 L0,8 z" fill="#f0c14d"/>
+    </marker>
+  </defs>
+  <rect x="16" y="56" width="108" height="48" rx="6" fill="#10141c" stroke="#4d8cff" stroke-width="1.6"/>
+  <text x="70" y="84" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">会话</text>
+  <line x1="124" y1="80" x2="168" y2="80" stroke="#4d8cff" stroke-width="1.8" marker-end="url(#arr)"/>
+  <rect x="168" y="44" width="140" height="72" rx="6" fill="#1a140e" stroke="#ff8f2e" stroke-width="1.6"/>
+  <text x="238" y="84" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">浏览器工具族</text>
+  <line x1="308" y1="80" x2="352" y2="80" stroke="#5fd68a" stroke-width="1.8" marker-end="url(#arr)"/>
+  <rect x="352" y="40" width="148" height="36" rx="6" fill="#101610" stroke="#5fd68a" stroke-width="1.6"/>
+  <text x="426" y="62" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">本机 Edge / Chrome</text>
+  <rect x="352" y="86" width="148" height="36" rx="6" fill="#12151b" stroke="#8b97a8" stroke-width="1.6"/>
+  <text x="426" y="108" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">独立用户数据目录</text>
+  <text x="260" y="142" text-anchor="middle" fill="#5a6472" font-size="10" font-family="Segoe UI,sans-serif">登录态单独一份 · 登录类求助由网关自动接管</text>
+  <text x="260" y="170" text-anchor="middle" fill="#5a6472" font-size="10" font-family="Segoe UI,sans-serif">只在会话里注册 · 智能节点不注册 · 纯净模式也不注册</text>
+  <text x="512" y="14" text-anchor="end" fill="#3b4452" font-size="9" font-family="Segoe UI,sans-serif">browser</text>
+</svg>

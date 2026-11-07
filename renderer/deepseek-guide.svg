@@ -1,100 +1,100 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1400" width="1000" height="1400" role="img" aria-label="如何获取 DeepSeek API Key：五步图文指引 / How to get a DeepSeek API Key: five steps">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1400" width="1000" height="1400" role="img" aria-label="如何获取 DeepSeek API Key：五步图文指引（深色）/ How to get a DeepSeek API Key: five steps (dark)">
   <defs>
     <linearGradient id="hd" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#4D6BFE"/>
-      <stop offset="1" stop-color="#7C93FF"/>
+      <stop offset="0" stop-color="#2C46B8"/>
+      <stop offset="1" stop-color="#4D6BFE"/>
     </linearGradient>
   </defs>
-  <rect x="0" y="0" width="1000" height="1400" fill="#F5F7FB"/>
+  <rect x="0" y="0" width="1000" height="1400" fill="#111319"/>
 
   <!-- header -->
   <rect x="0" y="0" width="1000" height="196" fill="url(#hd)"/>
   <text x="56" y="86" font-family="Segoe UI, Microsoft YaHei, PingFang SC, sans-serif" font-size="38" font-weight="700" fill="#FFFFFF">如何获取 DeepSeek API Key</text>
-  <text x="56" y="130" font-family="Segoe UI, Microsoft YaHei, PingFang SC, sans-serif" font-size="19" fill="#E8EDFF">5 步完成 · 全程约 3 分钟 · 官方平台，不装任何软件</text>
-  <text x="56" y="166" font-family="Segoe UI, Microsoft YaHei, PingFang SC, sans-serif" font-size="16" fill="#C9D5FF">How to get a DeepSeek API key — five steps, about three minutes, official platform only</text>
+  <text x="56" y="130" font-family="Segoe UI, Microsoft YaHei, PingFang SC, sans-serif" font-size="19" fill="#DDE4FF">5 步完成 · 全程约 3 分钟 · 官方平台，不装任何软件</text>
+  <text x="56" y="166" font-family="Segoe UI, Microsoft YaHei, PingFang SC, sans-serif" font-size="16" fill="#AFC0F5">How to get a DeepSeek API key — five steps, about three minutes, official platform only</text>
 
   <!-- step 1 -->
   <g>
-    <rect x="40" y="228" width="920" height="204" rx="20" fill="#FFFFFF" stroke="#E3E8F2" stroke-width="2"/>
+    <rect x="40" y="228" width="920" height="204" rx="20" fill="#1A1E28" stroke="#2C3240" stroke-width="2"/>
     <circle cx="70" cy="258" r="20" fill="#4D6BFE"/>
     <text x="70" y="266" text-anchor="middle" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="20" font-weight="700" fill="#FFFFFF">1</text>
-    <rect x="60" y="292" width="130" height="110" rx="14" fill="#F1F4FE"/>
-    <rect x="78" y="308" width="94" height="66" rx="8" fill="none" stroke="#4D6BFE" stroke-width="4"/>
-    <line x1="78" y1="324" x2="172" y2="324" stroke="#4D6BFE" stroke-width="4"/>
-    <circle cx="88" cy="316" r="3" fill="#4D6BFE"/>
-    <circle cx="98" cy="316" r="3" fill="#4D6BFE"/>
-    <circle cx="108" cy="316" r="3" fill="#4D6BFE"/>
-    <line x1="90" y1="342" x2="158" y2="342" stroke="#4D6BFE" stroke-width="4" stroke-linecap="round"/>
-    <line x1="90" y1="356" x2="132" y2="356" stroke="#A9B8F8" stroke-width="4" stroke-linecap="round"/>
-    <text x="216" y="304" font-family="Segoe UI, Microsoft YaHei, PingFang SC, sans-serif" font-size="25" font-weight="700" fill="#1F2430">打开 DeepSeek 开放平台</text>
-    <text x="216" y="342" font-family="Segoe UI, Microsoft YaHei, PingFang SC, sans-serif" font-size="18" fill="#4A5163">浏览器访问 platform.deepseek.com（官方唯一入口，认准这个域名）。</text>
-    <text x="216" y="374" font-family="Segoe UI, Microsoft YaHei, PingFang SC, sans-serif" font-size="15" fill="#8A92A6">Open platform.deepseek.com in your browser — the only official entry.</text>
-    <text x="216" y="406" font-family="Segoe UI, Microsoft YaHei, PingFang SC, sans-serif" font-size="15" fill="#8A92A6">Tip: 不要从搜索引擎广告位进，避免钓鱼站点 / avoid sponsored search ads.</text>
+    <rect x="60" y="292" width="130" height="110" rx="14" fill="#222838"/>
+    <rect x="78" y="308" width="94" height="66" rx="8" fill="none" stroke="#6E8BFF" stroke-width="4"/>
+    <line x1="78" y1="324" x2="172" y2="324" stroke="#6E8BFF" stroke-width="4"/>
+    <circle cx="88" cy="316" r="3" fill="#6E8BFF"/>
+    <circle cx="98" cy="316" r="3" fill="#6E8BFF"/>
+    <circle cx="108" cy="316" r="3" fill="#6E8BFF"/>
+    <line x1="90" y1="342" x2="158" y2="342" stroke="#6E8BFF" stroke-width="4" stroke-linecap="round"/>
+    <line x1="90" y1="356" x2="132" y2="356" stroke="#4A5C9E" stroke-width="4" stroke-linecap="round"/>
+    <text x="216" y="304" font-family="Segoe UI, Microsoft YaHei, PingFang SC, sans-serif" font-size="25" font-weight="700" fill="#EDF1FA">打开 DeepSeek 开放平台</text>
+    <text x="216" y="342" font-family="Segoe UI, Microsoft YaHei, PingFang SC, sans-serif" font-size="18" fill="#B7BFCF">浏览器访问 platform.deepseek.com（官方唯一入口，认准这个域名）。</text>
+    <text x="216" y="374" font-family="Segoe UI, Microsoft YaHei, PingFang SC, sans-serif" font-size="15" fill="#7F8798">Open platform.deepseek.com in your browser — the only official entry.</text>
+    <text x="216" y="406" font-family="Segoe UI, Microsoft YaHei, PingFang SC, sans-serif" font-size="15" fill="#7F8798">Tip: 不要从搜索引擎广告位进，避免钓鱼站点 / avoid sponsored search ads.</text>
   </g>
 
   <!-- step 2 -->
   <g>
-    <rect x="40" y="450" width="920" height="204" rx="20" fill="#FFFFFF" stroke="#E3E8F2" stroke-width="2"/>
+    <rect x="40" y="450" width="920" height="204" rx="20" fill="#1A1E28" stroke="#2C3240" stroke-width="2"/>
     <circle cx="70" cy="480" r="20" fill="#4D6BFE"/>
     <text x="70" y="488" text-anchor="middle" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="20" font-weight="700" fill="#FFFFFF">2</text>
-    <rect x="60" y="514" width="130" height="110" rx="14" fill="#F1F4FE"/>
-    <circle cx="125" cy="546" r="15" fill="none" stroke="#4D6BFE" stroke-width="4"/>
-    <path d="M99 596c4-18 13-27 26-27s22 9 26 27" fill="none" stroke="#4D6BFE" stroke-width="4" stroke-linecap="round"/>
-    <line x1="82" y1="530" x2="82" y2="596" stroke="#A9B8F8" stroke-width="3"/>
-    <line x1="168" y1="530" x2="168" y2="596" stroke="#A9B8F8" stroke-width="3"/>
-    <text x="216" y="526" font-family="Segoe UI, Microsoft YaHei, PingFang SC, sans-serif" font-size="25" font-weight="700" fill="#1F2430">注册 / 登录账号</text>
-    <text x="216" y="564" font-family="Segoe UI, Microsoft YaHei, PingFang SC, sans-serif" font-size="18" fill="#4A5163">用手机号或邮箱注册，完成登录；已有账号直接登录即可。</text>
-    <text x="216" y="596" font-family="Segoe UI, Microsoft YaHei, PingFang SC, sans-serif" font-size="15" fill="#8A92A6">Sign up with your phone number or email, then sign in.</text>
+    <rect x="60" y="514" width="130" height="110" rx="14" fill="#222838"/>
+    <circle cx="125" cy="546" r="15" fill="none" stroke="#6E8BFF" stroke-width="4"/>
+    <path d="M99 596c4-18 13-27 26-27s22 9 26 27" fill="none" stroke="#6E8BFF" stroke-width="4" stroke-linecap="round"/>
+    <line x1="82" y1="530" x2="82" y2="596" stroke="#4A5C9E" stroke-width="3"/>
+    <line x1="168" y1="530" x2="168" y2="596" stroke="#4A5C9E" stroke-width="3"/>
+    <text x="216" y="526" font-family="Segoe UI, Microsoft YaHei, PingFang SC, sans-serif" font-size="25" font-weight="700" fill="#EDF1FA">注册 / 登录账号</text>
+    <text x="216" y="564" font-family="Segoe UI, Microsoft YaHei, PingFang SC, sans-serif" font-size="18" fill="#B7BFCF">用手机号或邮箱注册，完成登录；已有账号直接登录即可。</text>
+    <text x="216" y="596" font-family="Segoe UI, Microsoft YaHei, PingFang SC, sans-serif" font-size="15" fill="#7F8798">Sign up with your phone number or email, then sign in.</text>
   </g>
 
   <!-- step 3 -->
   <g>
-    <rect x="40" y="672" width="920" height="204" rx="20" fill="#FFFFFF" stroke="#E3E8F2" stroke-width="2"/>
+    <rect x="40" y="672" width="920" height="204" rx="20" fill="#1A1E28" stroke="#2C3240" stroke-width="2"/>
     <circle cx="70" cy="702" r="20" fill="#4D6BFE"/>
     <text x="70" y="710" text-anchor="middle" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="20" font-weight="700" fill="#FFFFFF">3</text>
-    <rect x="60" y="736" width="130" height="110" rx="14" fill="#F1F4FE"/>
-    <rect x="80" y="766" width="90" height="58" rx="8" fill="none" stroke="#4D6BFE" stroke-width="4"/>
-    <path d="M80 782h90" stroke="#4D6BFE" stroke-width="4"/>
-    <circle cx="152" cy="800" r="7" fill="#4D6BFE"/>
-    <circle cx="125" cy="822" r="17" fill="#FFFFFF" stroke="#4D6BFE" stroke-width="4"/>
-    <text x="125" y="829" text-anchor="middle" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="16" font-weight="700" fill="#4D6BFE">¥</text>
-    <text x="216" y="748" font-family="Segoe UI, Microsoft YaHei, PingFang SC, sans-serif" font-size="25" font-weight="700" fill="#1F2430">充值余额</text>
-    <text x="216" y="786" font-family="Segoe UI, Microsoft YaHei, PingFang SC, sans-serif" font-size="18" fill="#4A5163">进入「充值」页按提示充值（按量计费，先充少量就够试用）。</text>
-    <text x="216" y="818" font-family="Segoe UI, Microsoft YaHei, PingFang SC, sans-serif" font-size="15" fill="#8A92A6">Top up your balance — pay-as-you-go, a small amount is enough to start.</text>
+    <rect x="60" y="736" width="130" height="110" rx="14" fill="#222838"/>
+    <rect x="80" y="766" width="90" height="58" rx="8" fill="none" stroke="#6E8BFF" stroke-width="4"/>
+    <path d="M80 782h90" stroke="#6E8BFF" stroke-width="4"/>
+    <circle cx="152" cy="800" r="7" fill="#6E8BFF"/>
+    <circle cx="125" cy="822" r="17" fill="#1A1E28" stroke="#6E8BFF" stroke-width="4"/>
+    <text x="125" y="829" text-anchor="middle" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="16" font-weight="700" fill="#8FA6FF">¥</text>
+    <text x="216" y="748" font-family="Segoe UI, Microsoft YaHei, PingFang SC, sans-serif" font-size="25" font-weight="700" fill="#EDF1FA">充值余额</text>
+    <text x="216" y="786" font-family="Segoe UI, Microsoft YaHei, PingFang SC, sans-serif" font-size="18" fill="#B7BFCF">进入「充值」页按提示充值（按量计费，先充少量就够试用）。</text>
+    <text x="216" y="818" font-family="Segoe UI, Microsoft YaHei, PingFang SC, sans-serif" font-size="15" fill="#7F8798">Top up your balance — pay-as-you-go, a small amount is enough to start.</text>
   </g>
 
   <!-- step 4 -->
   <g>
-    <rect x="40" y="894" width="920" height="204" rx="20" fill="#FFFFFF" stroke="#E3E8F2" stroke-width="2"/>
+    <rect x="40" y="894" width="920" height="204" rx="20" fill="#1A1E28" stroke="#2C3240" stroke-width="2"/>
     <circle cx="70" cy="924" r="20" fill="#4D6BFE"/>
     <text x="70" y="932" text-anchor="middle" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="20" font-weight="700" fill="#FFFFFF">4</text>
-    <rect x="60" y="958" width="130" height="110" rx="14" fill="#F1F4FE"/>
-    <circle cx="102" cy="996" r="14" fill="none" stroke="#4D6BFE" stroke-width="4"/>
-    <line x1="112" y1="1006" x2="156" y2="1050" stroke="#4D6BFE" stroke-width="4" stroke-linecap="round"/>
-    <line x1="148" y1="1042" x2="158" y2="1032" stroke="#4D6BFE" stroke-width="4" stroke-linecap="round"/>
-    <line x1="140" y1="1034" x2="150" y2="1024" stroke="#4D6BFE" stroke-width="4" stroke-linecap="round"/>
-    <text x="216" y="970" font-family="Segoe UI, Microsoft YaHei, PingFang SC, sans-serif" font-size="25" font-weight="700" fill="#1F2430">创建并复制 API Key</text>
-    <text x="216" y="1008" font-family="Segoe UI, Microsoft YaHei, PingFang SC, sans-serif" font-size="18" fill="#4A5163">左侧「API keys」→「创建 API key」→ 命名 → 复制（完整内容只显示一次）。</text>
-    <text x="216" y="1040" font-family="Segoe UI, Microsoft YaHei, PingFang SC, sans-serif" font-size="15" fill="#8A92A6">Create an API key and copy it — it is shown in full only once, so save it now.</text>
+    <rect x="60" y="958" width="130" height="110" rx="14" fill="#222838"/>
+    <circle cx="102" cy="996" r="14" fill="none" stroke="#6E8BFF" stroke-width="4"/>
+    <line x1="112" y1="1006" x2="156" y2="1050" stroke="#6E8BFF" stroke-width="4" stroke-linecap="round"/>
+    <line x1="148" y1="1042" x2="158" y2="1032" stroke="#6E8BFF" stroke-width="4" stroke-linecap="round"/>
+    <line x1="140" y1="1034" x2="150" y2="1024" stroke="#6E8BFF" stroke-width="4" stroke-linecap="round"/>
+    <text x="216" y="970" font-family="Segoe UI, Microsoft YaHei, PingFang SC, sans-serif" font-size="25" font-weight="700" fill="#EDF1FA">创建并复制 API Key</text>
+    <text x="216" y="1008" font-family="Segoe UI, Microsoft YaHei, PingFang SC, sans-serif" font-size="18" fill="#B7BFCF">左侧「API keys」→「创建 API key」→ 命名 → 复制（完整内容只显示一次）。</text>
+    <text x="216" y="1040" font-family="Segoe UI, Microsoft YaHei, PingFang SC, sans-serif" font-size="15" fill="#7F8798">Create an API key and copy it — it is shown in full only once, so save it now.</text>
   </g>
 
   <!-- step 5 -->
   <g>
-    <rect x="40" y="1116" width="920" height="204" rx="20" fill="#FFFFFF" stroke="#E3E8F2" stroke-width="2"/>
+    <rect x="40" y="1116" width="920" height="204" rx="20" fill="#1A1E28" stroke="#2C3240" stroke-width="2"/>
     <circle cx="70" cy="1146" r="20" fill="#4D6BFE"/>
     <text x="70" y="1154" text-anchor="middle" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="20" font-weight="700" fill="#FFFFFF">5</text>
-    <rect x="60" y="1180" width="130" height="110" rx="14" fill="#F1F4FE"/>
-    <rect x="76" y="1196" width="98" height="58" rx="8" fill="none" stroke="#4D6BFE" stroke-width="4"/>
-    <line x1="88" y1="1214" x2="146" y2="1214" stroke="#A9B8F8" stroke-width="4" stroke-linecap="round"/>
-    <line x1="88" y1="1230" x2="126" y2="1230" stroke="#A9B8F8" stroke-width="4" stroke-linecap="round"/>
+    <rect x="60" y="1180" width="130" height="110" rx="14" fill="#222838"/>
+    <rect x="76" y="1196" width="98" height="58" rx="8" fill="none" stroke="#6E8BFF" stroke-width="4"/>
+    <line x1="88" y1="1214" x2="146" y2="1214" stroke="#4A5C9E" stroke-width="4" stroke-linecap="round"/>
+    <line x1="88" y1="1230" x2="126" y2="1230" stroke="#4A5C9E" stroke-width="4" stroke-linecap="round"/>
     <circle cx="160" cy="1256" r="18" fill="#4D6BFE"/>
     <path d="M152 1256l6 6 11-12" fill="none" stroke="#FFFFFF" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
-    <text x="216" y="1192" font-family="Segoe UI, Microsoft YaHei, PingFang SC, sans-serif" font-size="25" font-weight="700" fill="#1F2430">粘贴到 MTNode 并验证</text>
-    <text x="216" y="1230" font-family="Segoe UI, Microsoft YaHei, PingFang SC, sans-serif" font-size="18" fill="#4A5163">把 Key 粘到本窗口输入框 → 点「验证并保存」，通过后自动写入 DeepSeek 供应商。</text>
-    <text x="216" y="1262" font-family="Segoe UI, Microsoft YaHei, PingFang SC, sans-serif" font-size="15" fill="#8A92A6">Paste the key into this window and click "Verify &amp; save" — it is stored only after it verifies.</text>
+    <text x="216" y="1192" font-family="Segoe UI, Microsoft YaHei, PingFang SC, sans-serif" font-size="25" font-weight="700" fill="#EDF1FA">粘贴到 MTNode 并验证</text>
+    <text x="216" y="1230" font-family="Segoe UI, Microsoft YaHei, PingFang SC, sans-serif" font-size="18" fill="#B7BFCF">把 Key 粘到本窗口输入框 → 点「验证并保存」，通过后自动写入 DeepSeek 供应商。</text>
+    <text x="216" y="1262" font-family="Segoe UI, Microsoft YaHei, PingFang SC, sans-serif" font-size="15" fill="#7F8798">Paste the key into this window and click "Verify &amp; save" — it is stored only after it verifies.</text>
   </g>
 
   <!-- footer -->
-  <rect x="40" y="1340" width="920" height="2" fill="#E3E8F2"/>
-  <text x="40" y="1378" font-family="Segoe UI, Microsoft YaHei, PingFang SC, sans-serif" font-size="15" fill="#6B7385">验证请求只读模型列表，不消耗 Token；Key 只存在本机配置里，不上传 MTNode。 / Verification costs no tokens; the key stays on this machine.</text>
+  <rect x="40" y="1340" width="920" height="2" fill="#2C3240"/>
+  <text x="40" y="1378" font-family="Segoe UI, Microsoft YaHei, PingFang SC, sans-serif" font-size="15" fill="#79818F">验证请求只读模型列表，不消耗 Token；Key 只存在本机配置里，不上传 MTNode。 / Verification costs no tokens; the key stays on this machine.</text>
 </svg>

@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 520 180" width="520" height="180">
+  <rect width="520" height="180" fill="#0d1016"/>
+  <defs>
+    <marker id="arr" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M0,0 L8,4 L0,8 z" fill="#f0c14d"/>
+    </marker>
+  </defs>
+  <rect x="16" y="24" width="120" height="34" rx="6" fill="#101820" stroke="#38d6ff" stroke-width="1.6"/>
+  <text x="76" y="45" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">文本源 A</text>
+  <rect x="16" y="76" width="120" height="34" rx="6" fill="#101820" stroke="#38d6ff" stroke-width="1.6"/>
+  <text x="76" y="97" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">图像源 B</text>
+  <rect x="16" y="128" width="120" height="34" rx="6" fill="#101820" stroke="#38d6ff" stroke-width="1.6"/>
+  <text x="76" y="149" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">更多源…</text>
+  <line x1="136" y1="41" x2="190" y2="84" stroke="#38d6ff" stroke-width="1.8" marker-end="url(#arr)"/>
+  <line x1="136" y1="93" x2="190" y2="93" stroke="#38d6ff" stroke-width="1.8" marker-end="url(#arr)"/>
+  <line x1="136" y1="145" x2="190" y2="102" stroke="#38d6ff" stroke-width="1.8" marker-end="url(#arr)"/>
+  <rect x="190" y="64" width="120" height="60" rx="6" fill="#1a140e" stroke="#ff8f2e" stroke-width="1.6"/>
+  <text x="250" y="98" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">全局节点</text>
+  <line x1="310" y1="94" x2="360" y2="60" stroke="#f0c14d" stroke-width="1.8" marker-end="url(#arr)"/>
+  <line x1="310" y1="94" x2="360" y2="94" stroke="#f0c14d" stroke-width="1.8" marker-end="url(#arr)"/>
+  <line x1="310" y1="94" x2="360" y2="128" stroke="#f0c14d" stroke-width="1.8" marker-end="url(#arr)"/>
+  <rect x="360" y="40" width="140" height="34" rx="6" fill="#101610" stroke="#5fd68a" stroke-width="1.6"/>
+  <text x="430" y="61" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">消费者 A</text>
+  <rect x="360" y="78" width="140" height="34" rx="6" fill="#101610" stroke="#5fd68a" stroke-width="1.6"/>
+  <text x="430" y="99" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">消费者 B</text>
+  <rect x="360" y="116" width="140" height="34" rx="6" fill="#101610" stroke="#5fd68a" stroke-width="1.6"/>
+  <text x="430" y="137" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">消费者 N</text>
+  <text x="260" y="170" text-anchor="middle" fill="#5a6472" font-size="10" font-family="Segoe UI,sans-serif">只连入、不连出 · 省掉重复连线</text>
+  <text x="512" y="14" text-anchor="end" fill="#3b4452" font-size="9" font-family="Segoe UI,sans-serif">global</text>
+</svg>

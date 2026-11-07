@@ -248,11 +248,46 @@
       "Voice input (off): click to start continuous dictation, click again for push-to-talk, click again to turn off",
     "持续转录中：说话即写入当前输入框（点一下切按键转录）":
       "Continuous dictation: speech goes straight into the focused input (click to switch to push-to-talk)",
-    "按键转录：按住 F1 说话（点一下关闭）": "Push-to-talk: hold F1 to speak (click to turn off)",
+    "按键转录：按住 F3 说话（点一下关闭）": "Push-to-talk: hold F3 to speak (click to turn off)",
+    /* ── 快捷会话小窗（mini-chat-window.js 的独立窗口 + 状态栏入口 #btnMiniChat）──
+       文案出现在：入口按钮 tooltip、小窗标题 / 左栏 / 输入区 / 运行态 / 空态 / 错误提示。
+       小窗自己的词条由主进程按下面这些中文原文现算后整份下发（见 main.js 的 i18nDict）。 */
+    "快捷会话": "Quick chat",
+    "会话列表": "Sessions",
+    "在主窗口打开该会话": "Open this session in the main window",
+    "输入指令…（Enter 发送，Shift+Enter 换行）":
+      "Type an instruction… (Enter to send, Shift+Enter for a new line)",
+    "还没有会话，点右上角 ＋ 新建一条": "No sessions yet — click ＋ at the top right to start one",
+    "这条会话还没有回复": "No reply in this session yet",
+    "正在跑，跑完这里会出现它的回复…": "Running — its reply shows up here when the round ends…",
+    "已下发": "Sent",
+    "你的指令": "Your instruction",
+    "排队中": "Queued",
+    "新建会话": "New session",
+    "先写一句指令": "Type an instruction first",
+    "操作失败": "Action failed",
+    "主窗口不可用，先在主窗口打开一次": "Main window unavailable — open it once first",
+    "主窗口没有响应，稍后再试": "The main window is not responding — try again later",
+    "这条会话已不存在": "That session no longer exists",
+    "F1 被其它程序占用，用左下角入口按钮打开":
+      "F1 is taken by another app — use the bottom-left entry button instead",
+    "快捷会话（F1）：下发指令、只看最后一条回复":
+      "Quick chat (F1): send instructions and see only the latest reply",
+    /* 项目文件夹 + 输入框上方那两枚模式开关（本轮需求）：小窗顶部那行小字、
+       左栏每行会话的第二行、以及两枚开关的键面与 tooltip 都用这几条。 */
+    "项目文件夹": "Project folder",
+    "未设置目录": "No folder set",
+    "这条会话还没解析出项目文件夹（主窗口里给它设一个工作目录即可）":
+      "This session has no project folder yet — set a working directory for it in the main window",
+    "热修": "Hotfix",
+    "拷问需求：开启后每轮先问清再动手（与「热修」互斥）":
+      "Grill me: clear the requirements before any work each round (mutually exclusive with Hotfix)",
+    "热修：最快路径 —— 只在真有歧义时问一句，不写文档、不跑 smoke test（与「拷问需求」互斥）":
+      "Hotfix: the fastest path — ask only when genuinely ambiguous, write no docs, run no smoke tests (mutually exclusive with Grill me)",
     "持续转录已开启：说话即写入当前输入框": "Continuous dictation on — speak and it is typed into the focused input",
-    "按键转录已开启：按住 F1 说话": "Push-to-talk on — hold F1 to speak",
-    "按住 F1 说话": "Hold F1 to speak",
-    "松开 F1 即写入": "Release F1 to insert it",
+    "按键转录已开启：按住 F3 说话": "Push-to-talk on — hold F3 to speak",
+    "按住 F3 说话": "Hold F3 to speak",
+    "松开 F3 即写入": "Release F3 to insert it",
     /* 浮窗标签与右键菜单的分组标题（都是短语，不是整句）：与上面两条「已开启」文案同源 */
     "持续转录": "Continuous dictation",
     "断句停顿": "Pause cutoff",
@@ -304,9 +339,9 @@
     /* 设置小节的说明：口径改成「停顿才提交」后，这句话必须跟着改 ——
        「说话即写入」会让人以为边说边出字（现在是一句说完才落字）。旧那句话的词条
        随改文一并删掉：留着就是一条永不命中的死条目。 */
-    "状态栏最左边那枚话筒：点一下开启持续转录（一直听，每说完一句——停顿——就把这一整句写进当前输入框），再点一下切按键转录（按住 F1 说话），再点关闭。识别在本地 CPU 上跑，不上传。":
-      "The mic at the far left of the status bar: click once for continuous dictation (it keeps listening and writes each sentence into the focused input once you pause), again for push-to-talk (hold F1 to speak), again to turn off. Recognition runs locally on the CPU and is never uploaded.",
-    /* 本地识别服务未就绪 / 不可用（浮窗标签与 toast）：PTT 键是 F1，服务还在重试时先把
+    "状态栏最左边那枚话筒：点一下开启持续转录（一直听，每说完一句——停顿——就把这一整句写进当前输入框），再点一下切按键转录（按住 F3 说话），再点关闭。识别在本地 CPU 上跑，不上传。":
+      "The mic at the far left of the status bar: click once for continuous dictation (it keeps listening and writes each sentence into the focused input once you pause), again for push-to-talk (hold F3 to speak), again to turn off. Recognition runs locally on the CPU and is never uploaded.",
+    /* 本地识别服务未就绪 / 不可用（浮窗标签与 toast）：PTT 键是 F3，服务还在重试时先把
        「为什么现在按了没反应」讲清楚；最后一句指向右键菜单里的同一枚动作，文案必须成对。 */
     "本地语音识别服务未就绪（正在重试…）":
       "The local speech recognition service is not ready yet (retrying…)",
@@ -1633,8 +1668,8 @@
     "链接文字": "link text",
     "该版本的批注": "Annotations in this version",
     "该版本没有批注": "No annotations in this version",
-    "暂无批注 · 添加批注后顶部会出现「让 AI 修订」":
-      "No annotations yet · the “Ask AI to revise” button appears at the top once you add one",
+    "暂无批注":
+      "No annotations yet",
     "删除批注": "Delete annotation",
     "点击修改这条批注": "Click to edit this annotation",
     "点这里修改这条批注": "Edit this annotation",
@@ -1652,6 +1687,25 @@
       "Roll back to this version? Later versions will be deleted and cannot be recovered.",
     "已回滚，该版现在是当前可编辑版":
       "Rolled back — this version is now the current editable one",
+    /* 版本删除（两个批注窗共用同一套文案）与批注栏顶部的「修订模型设置」⚙ */
+    "删除版本": "Delete version",
+    "删除此版": "Delete this version",
+    "删除当前查看的版本；删的是最新版时自动回滚到上一个版本":
+      "Delete the version you are viewing; deleting the latest one rolls back to the previous version",
+    "至少保留一个版本": "At least one version must be kept",
+    "确定删除该版本？删除后不可恢复（该版正文与批注一并删除）。":
+      "Delete this version? It cannot be recovered (its text and annotations are removed).",
+    "确定删除最新版本？删除后自动回滚到上一个版本，该版成为当前可编辑版。":
+      "Delete the latest version? It rolls back to the previous version, which becomes the current editable one.",
+    "已删除该版本": "Version deleted",
+    "已删除最新版本，已回滚到上一个版本":
+      "Latest version deleted — rolled back to the previous version",
+    "修订模型设置": "Revision model settings",
+    "修订模型设置（供应商 / 模型 / 思考强度）":
+      "Revision model settings (provider / model / thinking effort)",
+    "AI 依据批注修订时使用的供应商 / 模型 / 思考强度":
+      "Provider / model / thinking effort used when the AI revises from annotations",
+    "已更新修订模型设置": "Revision model settings updated",
     "局部 · 被批注片段：": "Local · annotated passage: ",
     "对本节点输出做所见即所得全文/局部批注，并让 AI 依据批注逐轮修订出新版本（可回看 / 回滚）。":
       "Annotate this node's output (whole text or a passage) in a WYSIWYG editor and have the AI revise it round by round from your annotations (every version can be reviewed / rolled back).",
@@ -1689,8 +1743,6 @@
       "Close the editor and this box becomes editable again",
     "已从节点正文同步最新内容": "Synced the latest content from the node body",
     "点这里在正文中定位该段": "Click to locate this passage in the text",
-    "暂无批注 · 添加批注后顶部会出现「让 AI 依据批注修订」":
-      "No annotations yet · the “Ask AI to revise from annotations” button appears at the top once you add one",
     "该节点的 Markdown 编辑器正开着：请先关掉它，再开 AI 审阅":
       "This node's Markdown editor is open — close it before opening AI Review",
     "插图需要先设置画布工作目录：请在弹出的窗口里选一个文件夹":
@@ -4530,6 +4582,9 @@
     "放大字号": "Larger text",
     "缩小字号": "Smaller text",
     "切换颜色": "Cycle color",
+    "字号：": "Font size: ",
+    " · 点击切换（编辑与预览同时生效）": " · click to cycle (applies to both edit and preview)",
+    "调整字号": "Adjust font size",
     "仅用于展示的绘制标注（可改颜色 / 大小）": "Display-only canvas annotation (color / size editable)",
     "已添加绘制：": "Added drawing: ",
     "说明文字": "Note",
@@ -5134,6 +5189,8 @@
       "Sequential generations (1–10); multiple runs save as #1, #2 …",
     "在文件夹中显示已生成文件": "Show generated file in folder",
     "用系统默认应用打开": "Open with default app",
+    "用系统默认应用打开原文件（保留 PDF 原样式）":
+      "Open the original file with the system default app (keeps the PDF's original layout)",
     /* ── H3 自建 ComfyUI 工作流（video_gen 节点面板 · 库/扫描/注入真源在主进程）── */
     "内置 H3 链（首末帧 / 多参考）": "Built-in H3 chain (first/last frame · multi-ref)",
     "自建 ComfyUI 工作流": "Custom ComfyUI workflow",
@@ -7337,6 +7394,366 @@
       "“Always” is saved on this node; “Once” lasts for this run; “Deny” blocks this call.",
     "未能解析具体路径，请根据工具与说明判断是否放行。":
       "Could not parse a concrete path; decide from the tool name and details.",
+    /* ===== 研究视图（知识图谱 + Markdown 笔记库）===== */
+    "研究": "Research",
+    /* 研究初始化（整画布投料台 / 文本项 / 队列进度 / 三层折叠） */
+    "初始化研究": "Set up research",
+    "这个课题还没有初始化": "This topic is not set up yet",
+    "初始化是一整块投料台：上面写课题，左边放核心文件，右边放参考资料（都能直接贴 arXiv / DOI / 网页链接、写笔记或检索式）。点「开始处理」才会创建 research/ 目录并交给 agent 处理。":
+      "Setup is one full-canvas board: the topic on top, core files left, references right (both accept arXiv / DOI / web links, free notes and search queries). The research/ folder is only created — and handed to the agent — after you press “Start”.",
+    "初始化": "Setup",
+    "初始化中…": "Setting up…",
+    "课题": "Topic",
+    "课题名称": "Topic name",
+    "这张画布在研究什么": "What this canvas is researching",
+    "核心问题": "Core question",
+    "一句话写清最想回答的那个问题（可以留空，以后再补）":
+      "One sentence for the question you most want answered (optional, can be added later)",
+    "这两项会写进 notes/00-课题.md，并带进初始化队列。":
+      "Both are written into notes/00-课题.md and carried into the setup queue.",
+    "参考资料": "References",
+    "核心文件：至少一个；也可以不选文件，直接把正文写进下面的框。":
+      "Core files: at least one — or skip files and write the body in the box below.",
+    "参考资料：可以留空；PDF 会复用应用内内核转 md，doc / ppt / tex 交给 agent。":
+      "References: may be empty; PDFs reuse the in-app PDF kernel for markdown, doc / ppt / tex go to the agent.",
+    "（可选）直接写正文：会存成 research/core/初始内容.md":
+      "(Optional) write the body directly — saved as research/core/初始内容.md",
+    "已放：核心文件 ": "Placed: core files ",
+    " 个 · 参考资料 ": " · references ",
+    "暂不初始化": "Not now",
+    "上一步": "Back",
+    "开始处理": "Start",
+    "三块同屏：课题、核心文件、参考资料。点「开始处理」才会创建 research/ 并交给 agent。":
+      "All three on one screen: topic, core files, references. research/ is created and handed to the agent only when you press “Start”.",
+    "旧条目只读；新条目接着排队（id 往后排，旧状态一项不动）":
+      "Old items are read-only; new ones queue up behind them (ids continue, old states untouched).",
+    "我在写的东西（tex / doc / ppt / 文本 / 链接）": "What I am writing (tex / doc / ppt / text / links)",
+    "外部资料（PDF / arXiv / DOI / 笔记 / 检索式）": "External material (PDF / arXiv / DOI / notes / queries)",
+    "还没有投料": "Nothing added yet",
+    "还没有入队项": "Nothing queued yet",
+    "文本 / 链接": "Text / link",
+    "检索式": "Search query",
+    "贴 arXiv / DOI / 网页链接，或直接写一段笔记（一行一条）":
+      "Paste an arXiv / DOI / web link, or write a note (one per line)",
+    "交给 agent 去检索，取前 5 篇作为参考资料自动入队":
+      "Let the agent search it and queue the top 5 as references",
+    "检索式：交给 agent 去检索": "Search query: the agent runs it",
+    "文本项：链接 / DOI / arXiv / 笔记（一行一条）": "Text item: link / DOI / arXiv / note (one per line)",
+    "投到核心文件": "to core files",
+    "投到参考资料": "to references",
+    "例如：diffusion model long-context efficiency": "e.g. diffusion model long-context efficiency",
+    "例如：https://arxiv.org/abs/2106.12345（也可以直接写一段摘录）":
+      "e.g. https://arxiv.org/abs/2106.12345 (or paste an excerpt)",
+    "解析并添加": "Parse and add",
+    "多行会先给你过一眼再添加": "Multi-line input is previewed first",
+    "确认这 ": "Confirm these ",
+    " 条（可改类型 / 可删）": " items (change type or remove)",
+    "这条不要了": "Drop this one",
+    "加入 ": "Add ",
+    " 条": " items",
+    "网页链接": "Web link",
+    "文字笔记": "Text note",
+    "条目标题": "Item title",
+    "条目内容": "Item content",
+    "备注 / 给 agent 的指示": "Note / instruction for the agent",
+    "例如：重点看第 4 节；只要实证部分": "e.g. focus on section 4; empirical parts only",
+    "编辑条目": "Edit item",
+    "改标题 / 写一句给 agent 的交代": "Edit the title or leave a note for the agent",
+    "收起编辑": "Close editor",
+    "移到参考资料 →": "Move to references →",
+    "← 移到核心文件": "← Move to core files",
+    "在这一栏与另一栏之间移动（也可以直接拖过去）": "Move between the two columns (or just drag it over)",
+    "主稿": "main draft",
+    "已入队 · ": "Queued · ",
+    "已入队 ": "Queued ",
+    "由检索式命中": "from a query",
+    "待抓取": "to fetch",
+    "已转 md": "converted",
+    "仅摘要（存疑）": "abstract only (doubt)",
+    "重试此条": "Retry this",
+    "剔除": "Drop",
+    "把这一项改回待处理并让 agent 重跑": "Set this item back to pending and have the agent retry it",
+    "这条不相关：从队列里去掉，并记进 literature/queries.jsonl":
+      "Not relevant: remove it from the queue and log it to literature/queries.jsonl",
+    "已经开始处理的条目不能剔除（只能重试）": "An item already being processed cannot be dropped (retry instead)",
+    "拖动调整两栏宽度（比例会记住）": "Drag to resize the two columns (the ratio is remembered)",
+    "核心 ": "Core ",
+    " 条 · 参考 ": " · refs ",
+    " ｜ ": "  |  ",
+    "完成 ": "done ",
+    "开始处理（": "Start (",
+    " 条）": ")",
+    "先写一个课题名（只要有课题名就能开始，资料以后再补）。":
+      "Name the topic first (a topic is all you need to start; material can come later).",
+    "这一轮没有新条目：先加文件 / 链接 / 笔记 / 检索式，再点开始处理。":
+      "No new items this round: add a file / link / note / query, then press Start.",
+    "（已复制进 research/ 的文件会留着，重试可继续）":
+      " (files already copied into research/ are kept; retrying continues)",
+    "先贴点什么：链接 / DOI / arXiv 编号 / 一段文字 / 检索式。":
+      "Paste something first: a link / DOI / arXiv id / text / query.",
+    "没认出任何条目。": "No item recognised.",
+    "预览里一条都不剩了。": "Nothing left in the preview.",
+    "打开投料台，增量添加文件 / 链接 / 笔记 / 检索式":
+      "Open the board to add files / links / notes / queries incrementally",
+    "选择核心文件（tex / doc / ppt / md / txt…）": "Choose core files (tex / doc / ppt / md / txt…)",
+    "选择参考资料（PDF / 文献 / 网页存档…）": "Choose references (PDF / papers / page archives…)",
+    "拖入核心文件": "Drop core files here",
+    "拖入参考资料": "Drop references here",
+    "PDF / 文献 PDF / 网页存档 / bib": "PDF / paper PDFs / page archives / bib",
+    "还没有文件": "No files yet",
+    "标为主稿（课题正文以它为准）": "Mark as the main draft (the topic body follows it)",
+    "从清单里移除（不会删原文件）": "Remove from the list (the original file is kept)",
+    "选择文件…": "Choose files…",
+    "至少一个（也可改成直接写正文）": "At least one (or write the body directly)",
+    "可以为空": "May be empty",
+    "收起这个窗口（内容不会丢，可再打开）": "Collapse this window (content is kept, reopen anytime)",
+    "队列还没生成。": "The queue has not been created yet.",
+    "全部处理完成：可以点顶部「转为图谱」看关系了":
+      "All done — press “To graph” at the top to see the relations.",
+    "agent 在专用会话里逐篇处理；这一页可以关掉，进度会自己刷新":
+      "The agent works through items in a dedicated session; you can close this and the progress keeps refreshing.",
+    "重试失败的 ": "Retry ",
+    " 项": " failed",
+    "待处理": "pending",
+    "处理中": "running",
+    "跳过": "skipped",
+    "这张画布还没有工作目录：先在画布顶栏设置，再回来初始化。":
+      "This canvas has no working folder yet: set it in the canvas top bar, then come back.",
+    "核心文件必填：拖一个文件进来，或直接在下面写点正文。":
+      "A core file is required: drop one in, or write some text below.",
+    "复制失败：": "Copy failed: ",
+    "初始内容": "Initial content",
+    "队列已生成，但会话没起来：": "Queue created, but the session did not start: ",
+    "研究初始化：逐项状态、失败重试": "Research setup: per-item status and retry",
+    "添加资料": "Add material",
+    /* 初始化已处理标记（投料台队列行 + 研究视图笔记 / 文献行 + 顶栏完成 chip + 只读清单）：
+       处理完的东西要在主视图里看得见，所以这几条是同一组文案。 */
+    "✓ 已处理": "✓ Done",
+    "初始化完成": "Setup complete",
+    " 篇已处理": " processed",
+    "查看已处理内容": "View processed items",
+    "初始化已完成：查看已处理内容（只读清单）":
+      "Setup complete: view processed items (read-only list)",
+    "初始化已处理：这篇内容已转成笔记与引用":
+      "Processed during setup: already turned into notes and citations",
+    "初始化已完成，关掉投料台也能看到":
+      "Setup is complete — this stays visible after the board is closed",
+    "处理完成时间": "Processed at",
+    "月": "/",
+    "日 ": " ",
+    "已处理内容": "Processed items",
+    "只读清单：初始化已处理 ": "Read-only list: ",
+    " 篇。正文在各笔记与文献里，这里只看结果。":
+      " processed item(s). The text lives in the notes and the literature; this list only shows the results.",
+    "还没有已处理的内容。": "Nothing has been processed yet.",
+    "关掉投料台，回研究视图并定位到第一篇已处理的笔记":
+      "Close the board, go back to the research view and jump to the first processed note",
+
+    "折叠（参考资料）": "Folds (references)",
+    " 段 · ": " paragraphs · ",
+    "折叠": "Fold",
+    "打开这篇的折叠视图（1 全文 / 2 关键原句 / 3 主题）":
+      "Open this item's fold view (1 full text / 2 key sentences / 3 themes)",
+    "这篇还没有折叠：让 agent 按技能生成 literature/folds/":
+      "This item has no folds yet: have the agent generate literature/folds/",
+    "关键原句": "Key sentences",
+    "主题": "Themes",
+    "全文层：作者原文，可编辑（源码）": "Full-text layer: the author's own words, editable (source)",
+    "只读投影：从全文折出来的第 ": "Read-only projection folded from the full text, layer ",
+    "第 ": "Layer ",
+    " 层是只读的（折叠出来的投影）：要改内容，切回「1 全文」层编辑。":
+      " is read-only (a projection): to edit, switch back to “1 Full text”.",
+    "初始化模块没加载：请重启应用": "The setup module did not load: please restart the app",
+    /* 研究视图 / 对话 / 折叠视图里剩下的零散文案（含拼接片段） */
+    "选择文件失败：": "File selection failed: ",
+    "（已复制进 research/ 的文件会留着，重试可继续）":
+      " (files already copied into research/ are kept; retry continues from there)",
+    "没拿到文件路径（试试「选择文件…」）": "No file path received (try “Choose file…”)",
+    "已收起": "Collapsed",
+    "重新打开这个窗口": "Reopen this window",
+    "tex / doc / ppt / md / txt": "tex / doc / ppt / md / txt",
+    "研究初始化": "Research setup",
+    "初始化中…": "Setting up…",
+    "会话能力尚未就绪": "Session capability is not ready yet",
+    "这条初始化会话已经关掉了：请到会话视图里让它继续":
+      "This setup session is closed: resume it from the session view",
+    "更新文献库": "Update the library",
+    "研究内容绑定当前画布与该画布的工作目录":
+      "Research content is bound to the current canvas and its workspace folder",
+    "已验证 ": "Verified ",
+    "初始化 ": "Setup ",
+    " 个节点 / ": " nodes / ",
+    " 条关系": " relations",
+    "论断": "Claim",
+    "提问": "Ask",
+    "未选择笔记": "No note selected",
+    "写回 md 的 note 块（图谱生成 annotates 边）":
+      "Write back as a note block in the md (the graph turns it into an annotates edge)",
+    "写回 md 的 claim 块（带来源，进图谱可标验证态）":
+      "Write back as a claim block in the md (with sources; the graph can mark it verified)",
+    "在正文光标处插入 Pandoc 式引用 [@key]": "Insert a Pandoc-style citation [@key] at the cursor",
+    "PDF 全文入库": "Add the full PDF text to the library",
+    "笔记里还没有可成图的内容（写 [[链接]] 或 claim 块）":
+      "Nothing to turn into a graph yet (add [[links]] or claim blocks)",
+    "你在协助用户研究一个课题。下面是笔记《":
+      "You are helping the user research a topic. Below is a passage selected from the note “",
+    "》里被框选的一段内容：\n\n": "”:\n\n",
+    " 层": " layer",
+    "要求：① 直接回答，不要客套；② 如果答案指向本文其他地方，用 [[笔记标题]] 指出；③ 如果属于外部依据，给出可核验的出处（作者 年份 标题 / DOI / URL），不确定就明说「不确定」；④ 公式用 $…$ 或 $$…$$ 写，不要用图片。":
+      "Rules: (1) answer directly, no pleasantries; (2) if the answer lies elsewhere in this note, point to it with [[note title]]; (3) if it rests on external evidence, give a checkable source (author year title / DOI / URL) and say “not sure” when you are not; (4) write formulas as $…$ or $$…$$, never as images.",
+    "研究目录：research": "Research folder: research",
+    "笔记": "Notes",
+    "文献": "Literature",
+    "图谱": "Graph",
+    "时间线": "Timeline",
+    "力导向": "Force",
+    "分层": "Layered",
+    "径向": "Radial",
+    "适应": "Fit",
+    "复位": "Reset",
+    "聚焦邻域": "Focus",
+    "图谱布局（只影响视图，不改数据）": "Graph layout (view only, data untouched)",
+    "按日期排出内容的时间线（无日期的排在最后）": "Lay content out as a timeline by date (undated items last)",
+    "把当前所有节点装进可视区（滚轮缩放、空白处拖动平移）":
+      "Fit every node into the viewport (wheel to zoom, drag empty space to pan)",
+    "清空搜索、筛选、聚焦与路径高亮，回到全图力导向布局":
+      "Clear search, filters, focus and path highlight; return to the full force layout",
+    "选中节点后按 N 跳邻域收窄视野；再点一次退出聚焦":
+      "With a node selected, narrow the view to its N-hop neighborhood; click again to exit focus",
+    "搜索节点…（标题 / 正文 / 引用键）": "Search nodes… (title / body / cite key)",
+    "只看该验证态下的论断（可多选）": "Show only claims in these verification states (multi-select)",
+    "已验证": "Verified",
+    "存疑": "Disputed",
+    "未验证": "Unverified",
+    "转为图谱": "Open graph",
+    "解析全部笔记，重建知识图谱（之后保存时增量更新）":
+      "Parse all notes and rebuild the knowledge graph (later saves update it incrementally)",
+    "解析全部笔记，重建知识图谱": "Parse all notes and rebuild the knowledge graph",
+    "一句话写清最想回答的问题（可以留空）": "State the question you most want answered (optional)",
+    "重新读取 research/ 目录（外部编辑器改过文件时用）":
+      "Re-read the research/ folder (use after editing files in an external editor)",
+    "撤销上一次写入（agent 与手工写入都记在 changes.jsonl）":
+      "Undo the last write (agent and manual writes are both logged in changes.jsonl)",
+    "新建笔记": "New note",
+    "在 notes/ 下新建一篇 Markdown 笔记": "Create a new Markdown note under notes/",
+    "新笔记标题": "New note title",
+    "未命名笔记": "Untitled note",
+    "未命名课题": "Untitled topic",
+    "编辑笔记": "Edit note",
+    "未保存…": "Unsaved…",
+    "在所见即所得与 Markdown 源码之间切换": "Switch between rich text and Markdown source",
+    "插入二级标题": "Insert heading",
+    "插入公式块": "Insert formula block",
+    "插入引用": "Insert citation",
+    "插入 Pele 图（flowchart / sequence / mindmap）": "Insert a Pele diagram (flowchart / sequence / mindmap)",
+    "流程图": "Flowchart",
+    "在光标处插入流程图（mermaid flowchart 代码块，正文里直接渲染成图）":
+      "Insert a flowchart at the caret (a mermaid flowchart block, rendered inline as a diagram)",
+    "已插入流程图：左边改源码，右边实时预览，点「完成」回到阅读态":
+      "Flowchart inserted: edit the source on the left with live preview on the right; hit Done to return to reading view",
+    "编辑 Markdown 源码：左边源码、右边实时预览":
+      "Edit the Markdown source: source on the left, live preview on the right",
+    "收起源码，回到渲染后的阅读态": "Fold the source away and return to the rendered reading view",
+    "这篇笔记当前不可编辑": "This note is read-only right now",
+    "展开左侧文件栏": "Show the file sidebar",
+    "收起左侧文件栏": "Hide the file sidebar",
+    "图谱渲染模块没加载（app-research-graph.js）":
+      "The graph renderer did not load (app-research-graph.js)",
+    "图谱容器挂载失败": "Mounting the graph view failed",
+    "图谱打开失败：": "Could not open the graph: ",
+    "文献库": "Library",
+    "文献库条目数": "Number of library entries",
+    "打开文献库：导入 BibTeX / 按 DOI 添加 / 检索 / PDF 入库 / 插入引用 / 折叠":
+      "Open the library: import BibTeX / add by DOI / search / add PDF / insert citation / fold",
+    "把选区写成论断（claim）": "Turn the selection into a claim",
+    "把这段提升成 claim 块，进入图谱并可标验证态":
+      "Promote this passage into a claim block; it enters the graph with a verification state",
+    "对选区加批注（写回 md 的 note 块）": "Annotate the selection (writes a note block back into the md)",
+    "把这段写成 note 块（写回 md）": "Write this passage as a note block (back into the md)",
+    "把选区写成待解决问题": "Turn the selection into an open question",
+    "批注": "Annotate",
+    "问 AI": "Ask AI",
+    "改成论断": "Make claim",
+    "就这段提问": "Ask about this",
+    "框选询问": "Ask about selection",
+    "就这段内容就地提问，结果可一键落图": "Ask about this passage in place; drop the answer into the graph in one click",
+    "想问什么？例如：这个式子的前提是什么 / 这句话有反例吗 / 出自哪篇文献":
+      "What do you want to ask? e.g. what does this formula assume / is there a counterexample / which paper is this from",
+    "提问依据：": "Grounded in: ",
+    "复制回答全文": "Copy full answer",
+    "选本地 PDF，抽取全文到 literature/pdf/（复用应用内 PDF 解析内核）":
+      "Pick a local PDF and extract its text into literature/pdf/ (reuses the in-app PDF parser)",
+    "解析 PDF 中…（大文件需要一会儿）": "Parsing PDF… (large files take a while)",
+    "PDF 入库": "Add PDF",
+    "PDF 入库失败：": "PDF import failed: ",
+    "没有解析到文本层（可能是扫描件，需要 OCR）":
+      "No text layer found (likely a scan; OCR required)",
+    "检索文献": "Search literature",
+    "检索中…": "Searching…",
+    "查询中…": "Querying…",
+    "检索并加入": "Search and add",
+    "检索失败：": "Search failed: ",
+    "没有结果": "No results",
+    "没有结果（换个源或换关键词）": "No results (try another source or keywords)",
+    "导入文献（": "Import literature (",
+    "导入 BibTeX": "Import BibTeX",
+    "粘贴 BibTeX": "Paste BibTeX",
+    "从 .bib 文件导入": "Import from a .bib file",
+    "按 DOI 添加": "Add by DOI",
+    "请输入 DOI": "Enter a DOI",
+    "加入": "Add",
+    "移除文献": "Remove",
+    "从文献库移除（不删 PDF 全文）": "Remove from the library (keeps the PDF full text)",
+    "已加入文献库：": "Added to library: ",
+    "已入库：": "Imported: ",
+    "文献库是空的。导入 BibTeX 或按 DOI / 标题检索后加入。":
+      "The library is empty. Import BibTeX, or search by DOI / title and add results.",
+    "还没有可成图的内容（写 [[链接]] 或 claim 块）":
+      "Nothing graphable yet (add [[links]] or claim blocks)",
+    "左侧选一篇笔记，或新建一篇": "Pick a note on the left, or create one",
+    "先打开一篇笔记": "Open a note first",
+    "先点一个节点再聚焦": "Select a node before focusing",
+    "没有可撤销的改动": "Nothing to undo",
+    "已撤销：": "Undone: ",
+    "研究内容要落在画布工作目录下的 research/ 目录里。请先在画布顶栏设置工作目录，再回到这里。":
+      "Research lives in the research/ folder inside the canvas working folder. Set the working folder in the canvas top bar first, then come back.",
+    "去设置工作目录": "Set working folder",
+    "请先在画布顶栏设置工作目录": "Set the canvas working folder first",
+    "未设置工作目录": "No working folder",
+    "会话 · 与当前画布共用上下文": "Session · shares context with this canvas",
+    "还没有对话。可以让 agent 帮你补文献、找反例、把论断拆成子问题。":
+      "No conversation yet. Ask the agent to find literature, hunt for counterexamples, or split a claim into sub-questions.",
+    "对 agent 说：帮我核实这条论断 / 把这段文献入库 / 补三条反例…":
+      "Tell the agent: verify this claim / add this paper / give me three counterexamples…",
+    "这里发的消息进入该画布绑定的会话（与「会话」视图同一条），回答会同步到那边":
+      "Messages here go to the session bound to this canvas (same one as the Chat view); answers sync back there",
+    "还没有绑定会话，发送即新建": "No session bound yet; sending creates one",
+    "没有可用的文本模型（设置 · 模型服务）": "No text model available (Settings · Model services)",
+    "该服务商没有可用模型": "This provider has no available model",
+    "会话不可用": "Session unavailable",
+    "会话发送入口不可用": "Session send entry unavailable",
+    "调用失败：": "Call failed: ",
+    "已刷新": "Refreshed",
+    "图谱已更新：": "Graph updated: ",
+    "已插入并写入图谱": "Inserted and written into the graph",
+    "已写入 ": "Written ",
+    "已新建 ": "Created ",
+    "用系统浏览器打开": "Open in system browser",
+    "插入为批注": "Insert as annotation",
+    "插入为论断": "Insert as claim",
+    "待解决问题": "Open question",
+    "写你的批注": "Write your annotation",
+    "写一句可验证的陈述": "Write one falsifiable statement",
+    "问题描述": "Question",
+    "标题 / 关键词 / 作者": "Title / keywords / authors",
+    "没有解析到条目": "No entries parsed",
+    "关系 ": "Links ",
+    "论断 已验证 ": "Claims verified ",
+    "存疑 ": "Disputed ",
+    "未验证 ": "Unverified ",
+    "悬空链接 ": "Broken links ",
+    "路径 ": "Path ",
+    "笔记 ": "Notes ",
     /* ===== 通用短词（多处界面共用）===== */
     "返回": "Back",
     "探索": "Explore",
@@ -7634,6 +8051,15 @@
     /* 开发节点「快速热修」（node.devHotfix，与 devGrill 互斥）：小型 Bug / <2 故事点功能 /
        原型探索 / 紧急热修 / 提案后补丁走最快路径。 */
     "快速热修": "Quick hotfix",
+    /* 会话「模式」菜单里的那一枚（st.hotfix，与会话的 grill 互斥）+ 会话侧【快速热修模式】契约 */
+    "开启 = 这条会话走最快路径：只在需求确有歧义时问一句，不加载拷问技能、不写文档、不写不跑 smoke test，只做必须的验证；与「先拷问需求」互斥":
+      "On = this session takes the fastest path: ask one question only when the requirement is genuinely ambiguous, load no interrogation skill, write no docs, write and run no smoke tests, and verify only what is necessary; mutually exclusive with “ask me first”",
+    "快速热修：开启中，点击关闭（关闭后回到普通节奏）":
+      "Quick hotfix: ON — click to turn off (it goes back to the normal pace)",
+    "快速热修：点击开启（只在真有歧义时问一句，不写文档、不写不跑 smoke test）":
+      "Quick hotfix: click to turn on (ask one question only when genuinely ambiguous; no docs, no smoke tests)",
+    "\n\n【快速热修模式 · 最快修完】这条会话开着「快速热修」：按最快路径把问题修好 —— 只在需求确有歧义时用 ask_user_question 只问卡住的那几点（不加载内置技能 mtnode-grill-me、不走整轮前沿拷问）；不写任何文档（changelog / DESIGN.md / guides / AGENTS.md 以及任何 .md 文件都不改）；不写、不跑 smoke test；只做必须做的验证（能直接说明改动正确的最小检查；拿不准就人工 Review）；收尾只一句话汇报改了什么，不列文件清单。":
+      "\n\n[Quick hotfix mode · fix it fastest] This session has “quick hotfix” switched on: fix the problem by the fastest path — only when the requirement is genuinely ambiguous, use ask_user_question for just the blocked points (do not load the built-in skill mtnode-grill-me, do not run the full-frontier interrogation); write no documentation at all (never touch changelog / DESIGN.md / guides / AGENTS.md or any .md file); write and run no smoke test; do only the verification that is necessary (the minimal check that directly proves the change is right; if unsure, rely on manual review); close with a single sentence about what changed, with no file list.",
     "开启 = 走最快路径：只在需求确有歧义时问一句，不写文档、不做 smoke test，只做必须做的验证。适合小型 Bug、少于 2 个故事点的功能、原型探索、紧急热修或提案后的补丁。":
       "On = fastest path: ask only when the requirement is genuinely ambiguous, write no docs, run no smoke test, and verify only what is necessary. Suited to small bug fixes, features under 2 story points, prototype exploration, urgent hotfixes or patches after a proposal.",
     /* 开发节点任务书的【快速热修模式】段（app.js devNodeContractText）：硬闸写死在这里，
@@ -8676,6 +9102,8 @@
       "No text could be parsed from “{name}” — only the file path is kept (downstream can reference that path to trigger a tool)",
     "解析不出文本 · 仅保留文件路径，下游引用到的就是这段路径":
       "Not parseable as text · only the file path is kept — that path is exactly what downstream references",
+    "PDF 原样保留（不解析成文本）· 下游引用到的就是这段路径":
+      "PDF kept as-is (not converted to text) · that path is exactly what downstream references",
     重新选择文件: "Choose another file",
     "已转为「{t}」：{name}": "Converted to “{t}”: {name}",
     "已转为「{t}」": "Converted to “{t}”",
@@ -8759,8 +9187,8 @@
       "… (text exceeds {size} and was truncated; the full content is in the original file:\n{path})",
     "已创建 {n} 个节点：": "Created {n} node(s): ",
     "{n} 个文件过大，正文已截断": "{n} file(s) were too large — text truncated",
-    "{n} 个文件读不出内容，改为文件块":
-      "{n} file(s) could not be read — kept as file blocks",
+    "{n} 个文件读不出内容，改为执行节点":
+      "{n} file(s) could not be read — turned into Execute nodes",
     "{n} 个文件取不到本机路径，已跳过":
       "{n} file(s) had no local path — skipped",
     创建节点失败: "Failed to create node",
@@ -9194,8 +9622,8 @@
       "e.g. trim the text input then split it on punctuation; add an image input and pass its path straight through to an output; on error don't throw — return { error } instead…",
     "请填写本次希望修改或扩展的内容":
       "Please describe what to change or extend this round",
-    "确认 = 新会话后台运行（工作区 = 画布目录 · 标题「开发 · 函数名」· 只改这一个函数节点 · 不离开画布）· 取消 / 跳出不清空：再次打开本框接着上次写 · Ctrl+Enter 提交 · Esc 取消":
-      "Confirm = runs in the background in a new session (workspace = the canvas folder · titled Dev · function name · it touches this one function node only · you stay on the canvas) · cancelling or stepping away keeps this text — reopen this box and continue where you left off · Ctrl+Enter submits · Esc cancels",
+    "确认 = 新会话后台运行（工作区 = 画布目录 · 标题「函数名」· 只改这一个函数节点 · 不离开画布）· 取消 / 跳出不清空：再次打开本框接着上次写 · Ctrl+Enter 提交 · Esc 取消":
+      "Confirm = runs in the background in a new session (workspace = the canvas folder · titled with the function name · it touches this one function node only · you stay on the canvas) · cancelling or stepping away keeps this text — reopen this box and continue where you left off · Ctrl+Enter submits · Esc cancels",
     "已创建函数开发会话「": "Function dev session created: ",
     /* 函数节点卡片「开发」按钮（app-canvas.js · 与开发节点按钮同款样式） */
     "弹窗填写本次要改 / 扩展的内容，确认后新建绑定该函数的会话在其中运行（只改这一个函数节点）":
@@ -9271,8 +9699,8 @@
       "A tool's behavior is its inner sub-graph: the session can build one from scratch against the current in/out params, or you can just adjust params / description without touching the inner graph.",
     "例如：把内部子图换成先提取关键词再查库的两段流程；新增一个 image 入参并透传到内部函数节点；出错时返回错误文本而不是抛异常…":
       "e.g. rebuild the inner sub-graph into a two-stage flow (extract keywords, then query); add an image input and pass it through to an inner function node; return an error text instead of throwing…",
-    "确认 = 新会话后台运行（工作区 = 画布目录 · 标题「开发 · 工具名」· 只改这一个工具节点与它的内部子图 · 不离开画布）· 取消 / 跳出不清空：再次打开本框接着上次写 · Ctrl+Enter 提交 · Esc 取消":
-      "Confirm = a new session runs in the background (workspace = canvas folder · title “Dev · tool name” · only this tool node and its inner sub-graph · stay on the canvas) · Cancel / escape keeps your draft for next time · Ctrl+Enter submits · Esc cancels",
+    "确认 = 新会话后台运行（工作区 = 画布目录 · 标题「工具名」· 只改这一个工具节点与它的内部子图 · 不离开画布）· 取消 / 跳出不清空：再次打开本框接着上次写 · Ctrl+Enter 提交 · Esc 取消":
+      "Confirm = a new session runs in the background (workspace = canvas folder · titled with the tool name · only this tool node and its inner sub-graph · stay on the canvas) · Cancel / escape keeps your draft for next time · Ctrl+Enter submits · Esc cancels",
     "已创建工具开发会话「": "Created tool dev session “",
     "已调整参数顺序：端子与已连数据线随参数移位":
       "Param order updated: ports and connected wires moved with the param",
@@ -10922,9 +11350,9 @@
     "重新读取图像后端清单（新装插件 / 刚配好服务商时点它）。": "Reload the image-backend list (use it right after installing a plugin or configuring a provider).",
     "生成音乐：写风格提示词（可加歌词），点 ▶ 得到一段音乐。": "Generate music: write a style prompt (lyrics optional) and press ▶ to get a track.",
     "（可接多张图像 · 最多 10 张）": "(multiple images allowed · up to 10)",
-    "FLUX 3 Image Klein（本地图像生成 · 5.6B 蒸馏 · INT8 / BF16 · 提示词 / 多参考图编辑 / 蒙版重绘 / 透明背景）":
-      "FLUX 3 Image Klein (local image generation · 5.6B distilled · INT8 / BF16 · prompt / multi-reference edit / mask repaint / transparent background)",
-    "FLUX 3 Image Klein（本地图像生成 · INT8 / BF16）": "FLUX 3 Image Klein (local image generation · INT8 / BF16)",
+    "FLUX 3 Image Klein（本地图像生成 · 5.6B 蒸馏 · INT8 / BF36 · 提示词 / 多参考图编辑 / 蒙版重绘 / 透明背景）":
+      "FLUX 3 Image Klein (local image generation · 5.6B distilled · INT8 / BF36 · prompt / multi-reference edit / mask repaint / transparent background)",
+    "FLUX 3 Image Klein（本地图像生成 · INT8 / BF36）": "FLUX 3 Image Klein (local image generation · INT8 / BF36)",
     "Qwen Image 2.1（本地图像生成 · 7B DiT · INT8 / Turbo INT8 双量化 · 提示词 / 多参考图编辑 / 蒙版重绘 / 原生透明背景）":
       "Qwen Image 2.1 (local image generation · 7B DiT · INT8 / Turbo INT8 dual-quant · prompt / multi-reference edit / mask repaint / native transparent background)",
     "Qwen Image 2.1（本地图像生成 · INT8 / Turbo INT8）": "Qwen Image 2.1 (local image generation · INT8 / Turbo INT8)",
@@ -11546,6 +11974,38 @@
     "尚未生成 PDF：点节点上的 ▶ 生成":
       "No PDF yet — click ▶ on the node to generate it",
     "点击用系统默认应用打开：": "Click to open with the system default app: ",
+    /* PDF 应用内预览（renderer/app-pdfview.js）：节点头部 / 卡片按钮 + 阅读浮层 */
+    "预览 PDF：应用内翻页查看（预览窗里可用系统阅读器打开）":
+      "Preview PDF: page through it in-app (the preview window can hand off to the system reader)",
+    "预览 PDF": "Preview PDF",
+    "预览这份 PDF：应用内翻页查看（窗里可切到系统阅读器）":
+      "Preview this PDF in-app (paging; switch to the system reader inside the window)",
+    "预览这件 PDF：应用内翻页查看（窗里可切到系统阅读器）":
+      "Preview this PDF artifact in-app (paging; switch to the system reader inside the window)",
+    "点击在应用内预览：": "Click to preview in-app: ",
+    "应用内预览 PDF（翻页 / 缩放；预览窗里可切到系统阅读器）":
+      "Preview the PDF in-app (paging / zoom; switch to the system reader inside the preview)",
+    "应用内预览 PDF（翻页 / 缩放；窗里可切到系统阅读器）":
+      "Preview the PDF in-app (paging / zoom; switch to the system reader inside the window)",
+    "关闭预览（Esc）": "Close the preview (Esc)",
+    "上一页（← / PageUp）": "Previous page (← / PageUp)",
+    "下一页（→ / PageDown）": "Next page (→ / PageDown)",
+    "缩小（Ctrl + 滚轮）": "Zoom out (Ctrl + wheel)",
+    "放大（Ctrl + 滚轮）": "Zoom in (Ctrl + wheel)",
+    "回到适应宽度（100%）": "Back to fit-width (100%)",
+    "适应宽度": "Fit width",
+    "系统阅读器": "System reader",
+    "用系统默认 PDF 阅读器打开（矢量版式 / 批注 / 可搜索文本）":
+      "Open with the system default PDF reader (vector layout / annotations / searchable text)",
+    "页码（回车跳转）": "Page number (Enter to jump)",
+    "正在渲染第 {n} / {t} 页…": "Rendering page {n} / {t}…",
+    "正在渲染…": "Rendering…",
+    "正在读取页数…": "Reading the page count…",
+    "当前窗口不支持页面渲染": "This window cannot render PDF pages",
+    "这份 PDF 需要口令，应用内无法渲染页面 —— 请用系统阅读器打开":
+      "This PDF needs a password, so pages cannot be rendered in-app — open it with the system reader",
+    "页面渲染失败": "Page rendering failed",
+    "PDF 页面": "PDF page",
     "还没有生成 PDF——点节点上的 ▶ 生成":
       "No PDF yet — click ▶ on the node to generate one",
     "直接在这里改输出文件名，不必打开 ⚙；留空则默认用输入节点的标题命名，落盘时自动补 .pdf。":
@@ -14040,6 +14500,29 @@
     "识图入口不可用": "Vision entry is unavailable",
     "默认模型不可用": "Default model unavailable",
     "模型没有返回任何内容": "The model returned nothing",
+  });
+
+  /* ── 状态栏「重新编译并重启」（renderer/app-self-rebuild.js + main.js 的 app:selfRebuild，
+        脚本 scripts/agent-rebuild.cmd；口径见两边文件头）── */
+  Object.assign(EN, {
+    "重新编译并重启": "Recompile and restart",
+    "重新编译并重启（仅本机开发账号）":
+      "Recompile and restart (this dev account only)",
+    "重新编译失败": "Recompile failed",
+    "重新编译入口不可用": "Recompile entry is unavailable",
+    "应用会立即关闭，编译在这只独立控制台窗里继续跑（约几分钟），完成后自动重启。编译失败时窗口会停住并保留日志。":
+      "The app closes right away; the build keeps running in its own console window (a few minutes) and the app restarts when it finishes. If the build fails the window stays open with the log.",
+    "已开始编译：应用即将关闭，跑完会自动重启。":
+      "Build started: the app is closing now and will restart when the build finishes.",
+    "日志目录：": "Log folder: ",
+    "拉起编译窗超时：系统没有响应 start 命令":
+      "Timed out starting the build window: the system did not accept the start command",
+    "编译窗没有起来（10 秒内没收到脚本启动信号），已取消退出":
+      "The build window did not start (no handshake within 10s), so the app did not quit",
+    "开发态不提供重新编译（会连当前调试进程一起杀掉）":
+      "Recompile is unavailable in dev mode (it would kill the debug process too)",
+    "找不到 scripts\\agent-rebuild.cmd（源码目录不在预期位置）":
+      "Cannot find scripts\\agent-rebuild.cmd (the source folder is not where expected)",
   });
 
   function listJoin(arr) {

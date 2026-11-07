@@ -1,0 +1,665 @@
+/* mini-chat.css — 快捷会话小窗（renderer/mini-chat.html 专用，独立页面）。
+ * 口径：极简、紧凑、暗色优先；只有「会话行 / 最后一条回复 / 输入框」三层信息，
+ * 不放思考、工具调用、历史。样式只活在这只独立窗口里，不继承主界面的变量。 */
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+}
+
+body.mc-body {
+  background: #0d1016;
+  color: #d7dde6;
+  font: 12px/1.55 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  overflow: hidden;
+  user-select: none;
+}
+
+.mc-shell {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid #2a3341;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #0f141c;
+}
+
+/* ── 标题栏（无边框窗口的拖动区）──────────────────────────────────────── */
+.mc-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  background: #121722;
+  border-bottom: 1px solid #222a36;
+  -webkit-app-region: drag;
+}
+
+.mc-head .mc-title {
+  font-size: 11.5px;
+  letter-spacing: 1px;
+  color: #8b97a8;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mc-gap {
+  flex: 1;
+}
+
+.mc-icon {
+  -webkit-app-region: no-drag;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: #8b97a8;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.mc-icon:hover {
+  color: #d7dde6;
+  border-color: #2f3948;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.mc-icon[aria-pressed="true"] {
+  color: #38d6ff;
+  border-color: rgba(56, 214, 255, 0.4);
+}
+
+.mc-close:hover {
+  color: #ff7b72;
+  border-color: rgba(255, 123, 114, 0.45);
+}
+
+/* ── 工作区：左栏（可收纳）+ 正文 ─────────────────────────────────────── */
+.mc-workspace {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.mc-side {
+  flex: none;
+  width: 168px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background: #10151e;
+  border-right: 1px solid #222a36;
+}
+
+.mc-side[hidden] {
+  display: none !important;
+}
+
+.mc-side-head {
+  flex: none;
+  padding: 7px 10px 5px;
+  font-size: 10.5px;
+  letter-spacing: 1px;
+  color: #6d7889;
+  border-bottom: 1px solid #1b222d;
+}
+
+.mc-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px;
+}
+
+.mc-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 7px;
+  border-radius: 5px;
+  border: 1px solid transparent;
+  color: #b9c3d1;
+  cursor: pointer;
+  user-select: none;
+}
+
+.mc-item:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.mc-item.is-active {
+  background: rgba(56, 214, 255, 0.1);
+  border-color: rgba(56, 214, 255, 0.32);
+  color: #e6eef8;
+}
+
+/* 左栏按项目文件夹分组（与会话界面同口径）：组标题一行，会话挂在下面 */
+.mc-group {
+  padding: 7px 7px 3px;
+  font-size: 9.5px;
+  letter-spacing: 0.2px;
+  color: #7f8b9c;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  user-select: none;
+}
+
+.mc-group.is-none {
+  color: #55606f;
+}
+
+.mc-item-name {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mc-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #ff8f2e;
+}
+
+.mc-dot[hidden] {
+  display: none !important;
+}
+
+.mc-badge {
+  flex: none;
+  font-size: 9.5px;
+  letter-spacing: 0.5px;
+  color: #6d7889;
+  border: 1px solid #2a3341;
+  border-radius: 3px;
+  padding: 0 3px;
+}
+
+.mc-main {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── 当前会话一条（名字 / 运行态 / 停止 / 跳主窗）──────────────────────── */
+.mc-sessbar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-bottom: 1px solid #1b222d;
+}
+
+.mc-sessname {
+  min-width: 0;
+  max-width: 60%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: #c8d2e0;
+}
+
+/* 项目文件夹那一行小字（本轮需求 · 共识 q1/q2）：只显示文件夹名，全路径在 tooltip 里 */
+.mc-wsrow {
+  flex: none;
+  padding: 3px 9px 6px;
+  font-size: 10.5px;
+  color: #6d7889;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border-bottom: 1px solid #1b222d;
+  user-select: none;
+}
+
+.mc-wsrow[hidden] {
+  display: none !important;
+}
+
+.mc-wsrow.is-none {
+  color: #55606f;
+}
+
+.mc-pill {
+  flex: none;
+  font-size: 10px;
+  letter-spacing: 0.5px;
+  padding: 0 6px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 143, 46, 0.45);
+  color: #ff8f2e;
+}
+
+.mc-pill[hidden] {
+  display: none !important;
+}
+
+.mc-pill.is-queued {
+  border-color: rgba(56, 214, 255, 0.4);
+  color: #38d6ff;
+}
+
+.mc-pill.is-paused {
+  border-color: rgba(227, 179, 65, 0.5);
+  color: #e3b341;
+}
+
+.mc-stop {
+  color: #ff7b72;
+}
+
+.mc-stop[hidden] {
+  display: none !important;
+}
+
+/* ── 正文：只显示这一条会话的最后一条 AI 回复 ─────────────────────────── */
+.mc-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 10px 12px 14px;
+  user-select: text;
+}
+
+/* 自己下发的那句排在 AI 回复**之后**（消息结尾，紧贴输入区）：整块连同「你的指令」小字
+   一起出现 / 一起隐藏，所以隐藏时用容器上的 [hidden]，不让那行小字单独留在底部。 */
+.mc-userturn {
+  margin: 14px 0 0;
+}
+
+.mc-userturn[hidden] {
+  display: none !important;
+}
+
+.mc-usertag {
+  margin: 0 0 4px;
+  padding-left: 1px;
+  font-size: 10px;
+  line-height: 1.3;
+  letter-spacing: 0.04em;
+  color: #6f7b8c;
+  user-select: none;
+}
+
+.mc-user {
+  margin: 0;
+  padding: 6px 9px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid #222a36;
+  color: #8b97a8;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 11.5px;
+}
+
+.mc-user[hidden] {
+  display: none !important;
+}
+
+.mc-reply {
+  word-break: break-word;
+  color: #dde5ef;
+  font-size: 12.5px;
+  line-height: 1.62;
+  /* 回复按 Markdown 渲染（renderer/app-mini-chat.js 的 replyHtml → window.MTRender）：
+     这里不再用 pre-wrap，换行由段落的 margin 表达，代码块自己保留空白。 */
+}
+
+/* ── 正文里的 Markdown 排版（只覆盖小窗用得上的那几样；观感对齐主窗口会话正文）── */
+.mc-reply > :first-child {
+  margin-top: 0;
+}
+
+.mc-reply > :last-child {
+  margin-bottom: 0;
+}
+
+.mc-reply p {
+  margin: 0 0 8px;
+}
+
+.mc-reply h1,
+.mc-reply h2,
+.mc-reply h3,
+.mc-reply h4,
+.mc-reply h5,
+.mc-reply h6 {
+  margin: 12px 0 6px;
+  line-height: 1.35;
+  color: #eaf1f9;
+  font-weight: 600;
+}
+
+.mc-reply h1 {
+  font-size: 15px;
+}
+
+.mc-reply h2 {
+  font-size: 14px;
+}
+
+.mc-reply h3 {
+  font-size: 13.5px;
+}
+
+.mc-reply h4,
+.mc-reply h5,
+.mc-reply h6 {
+  font-size: 12.5px;
+}
+
+.mc-reply ul,
+.mc-reply ol {
+  margin: 0 0 8px;
+  padding-left: 18px;
+}
+
+.mc-reply li {
+  margin: 2px 0;
+}
+
+.mc-reply li > p {
+  margin: 0 0 4px;
+}
+
+.mc-reply blockquote {
+  margin: 0 0 8px;
+  padding: 4px 9px;
+  border-left: 2px solid #2f3948;
+  background: rgba(255, 255, 255, 0.03);
+  color: #b9c3d1;
+}
+
+.mc-reply code {
+  padding: 0 4px;
+  border-radius: 3px;
+  background: #161d27;
+  border: 1px solid #232c39;
+  font-family: Consolas, "Cascadia Mono", "Courier New", monospace;
+  font-size: 11.5px;
+  color: #9fd6ff;
+  word-break: break-all;
+}
+
+.mc-reply pre {
+  margin: 0 0 8px;
+  padding: 7px 9px;
+  overflow-x: auto;
+  background: #0b1017;
+  border: 1px solid #202836;
+  border-radius: 5px;
+}
+
+.mc-reply pre code {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #cbd6e3;
+  font-size: 11.5px;
+  line-height: 1.55;
+  white-space: pre;
+  word-break: normal;
+}
+
+.mc-reply a {
+  color: #58c8ff;
+  text-decoration: none;
+  border-bottom: 1px dotted rgba(88, 200, 255, 0.6);
+  cursor: pointer;
+}
+
+.mc-reply a:hover {
+  color: #8fdfff;
+}
+
+.mc-reply strong {
+  color: #f0f6fc;
+  font-weight: 600;
+}
+
+.mc-reply em {
+  color: #cfd8e5;
+}
+
+.mc-reply hr {
+  margin: 10px 0;
+  border: 0;
+  border-top: 1px solid #222a36;
+}
+
+.mc-reply img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 4px;
+}
+
+/* 表格：窄窗里横滚，不把列挤成一列字 */
+.mc-reply table {
+  display: block;
+  width: max-content;
+  max-width: 100%;
+  margin: 0 0 8px;
+  overflow-x: auto;
+  border-collapse: collapse;
+  font-size: 11.5px;
+}
+
+.mc-reply th,
+.mc-reply td {
+  padding: 3px 8px;
+  border: 1px solid #28313e;
+  text-align: left;
+  vertical-align: top;
+}
+
+.mc-reply th {
+  background: #161d27;
+  color: #cfd8e5;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.mc-reply del {
+  color: #6d7889;
+}
+
+/* 公式（math-render.js + KaTeX）：显示式独占一行、超出就横滚，行内式跟随正文 */
+.mc-reply .rv-math {
+  color: inherit;
+}
+
+.mc-reply .rv-math-display {
+  display: block;
+  margin: 6px 0 8px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  text-align: center;
+}
+
+.mc-reply .katex {
+  color: inherit;
+  font-size: 1.02em;
+}
+
+.mc-empty {
+  color: #5f6a7a;
+  font-size: 11.5px;
+  padding: 6px 2px;
+}
+
+.mc-empty[hidden] {
+  display: none !important;
+}
+
+/* ── 输入区 ───────────────────────────────────────────────────────────── */
+/* 底部一条（模式开关 + 输入框 + 提示）：
+   整块 position:relative 当定位基准，提示 .mc-note 绝对定位贴它上沿 —— 提示出现 / 消失
+   都不占文档流，正文区（flex:1）高度不变，输入框不会向上位移。 */
+.mc-foot {
+  position: relative;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 输入框上方那两枚模式开关（本轮需求 · 共识 q4/q5/q7）：
+   整窗共用一份记忆、两枚互斥；亮 = 开。放在 compose 之上，不占正文区。 */
+.mc-modes {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px 0;
+  background: #10151e;
+}
+
+.mc-mode {
+  height: 22px;
+  padding: 0 9px;
+  background: #0b0f16;
+  color: #7b8698;
+  border: 1px solid #2a3341;
+  border-radius: 11px;
+  font: inherit;
+  font-size: 11px;
+  line-height: 20px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.mc-mode:hover {
+  border-color: #384454;
+  color: #b9c3d1;
+}
+
+.mc-mode.on {
+  background: #17313d;
+  border-color: rgba(56, 214, 255, 0.45);
+  color: #7fe4ff;
+}
+
+.mc-compose {
+  flex: none;
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  padding: 8px;
+  border-top: 1px solid #222a36;
+  background: #10151e;
+}
+
+#mcInput {
+  flex: 1;
+  min-width: 0;
+  max-height: 120px;
+  resize: none;
+  padding: 6px 8px;
+  background: #0b0f16;
+  color: #e6eef8;
+  border: 1px solid #2a3341;
+  border-radius: 5px;
+  font: inherit;
+  line-height: 1.5;
+  outline: none;
+  user-select: text;
+}
+
+#mcInput:focus {
+  border-color: rgba(56, 214, 255, 0.5);
+}
+
+.mc-send {
+  flex: none;
+  height: 30px;
+  padding: 0 12px;
+  background: #17313d;
+  color: #7fe4ff;
+  border: 1px solid rgba(56, 214, 255, 0.4);
+  border-radius: 5px;
+  font: inherit;
+  cursor: pointer;
+}
+
+.mc-send:hover {
+  background: #1b3b4a;
+}
+
+.mc-send:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* 提示条（「已下发」/ 出错原因）：悬在输入区上方的小胶囊，绝对定位、不参与布局 ——
+   这样提示出现或消失时正文区与输入框都不动（用户报的 bug：输入窗被顶上去）。
+   pointer-events:none 让它纯展示，点不到、也不会挡住正文里的链接。 */
+.mc-note {
+  position: absolute;
+  left: 12px;
+  right: auto;
+  bottom: 100%;
+  width: fit-content;
+  max-width: calc(100% - 24px);
+  margin-bottom: 4px;
+  padding: 2px 9px;
+  border-radius: 10px;
+  background: rgba(11, 15, 22, 0.92);
+  border: 1px solid #2a3341;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.4);
+  font-size: 10.5px;
+  line-height: 16px;
+  color: #8d99ab;
+  pointer-events: none;
+  /* 长文案（如「F1 被其它程序占用…」）允许换行：胶囊向上长，仍然不占分毫布局 */
+  overflow-wrap: break-word;
+}
+
+.mc-note[hidden] {
+  display: none !important;
+}
+
+.mc-note.is-warn {
+  color: #ff8f2e;
+  border-color: rgba(255, 143, 46, 0.4);
+}
+
+/* ── 滚动条（与主界面同一套细条观感）───────────────────────────────── */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #2a3341;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #384454;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}

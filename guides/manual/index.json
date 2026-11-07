@@ -69,6 +69,22 @@
       ]
     },
     {
+      "id": "research",
+      "title": {
+        "zh": "研究",
+        "en": "Research"
+      },
+      "pages": [
+        {
+          "id": "research",
+          "title": {
+            "zh": "研究视图：笔记 · 知识图谱 · 文献库",
+            "en": "Research view: notes, graph, literature"
+          }
+        }
+      ]
+    },
+    {
       "id": "assistant",
       "title": {
         "zh": "全局助手与工作流",
@@ -169,13 +185,6 @@
             "zh": "审批与权限",
             "en": "Approvals"
           }
-        },
-        {
-          "id": "paseo-bridge",
-          "title": {
-            "zh": "用手机接管会话（Paseo）",
-            "en": "Take over sessions from your phone (Paseo)"
-          }
         }
       ]
     },
@@ -192,13 +201,6 @@
             "zh": "工具节点与函数节点",
             "en": "Tool & function nodes"
           }
-        },
-        {
-          "id": "blender-local",
-          "title": {
-            "zh": "Blender 本地插件（让 Agent 操作 Blender）",
-            "en": "Blender local plugin (let the agent drive Blender)"
-          }
         }
       ]
     },
@@ -214,13 +216,6 @@
           "title": {
             "zh": "素材库与素材节点",
             "en": "Asset library"
-          }
-        },
-        {
-          "id": "manifest",
-          "title": {
-            "zh": "项目 manifest：资产登记与增量重建",
-            "en": "Project manifest: assets & rebuild"
           }
         }
       ]

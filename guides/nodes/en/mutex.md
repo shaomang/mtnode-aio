@@ -2,7 +2,13 @@
 
 ![diagram](img/mutex.svg)
 
-OR join: any input pulse releases the single output. ▶ marks a lane by first / priority / random.
+OR join: a pulse on any input releases the single output (first arrival triggers).
+
+## Ports
+- **In**: 2–8 lanes
+- **Out**: control ×1
 
 ## Settings
-**Input count and the pick mode** are edited in the settings window opened by **⚙ Settings** in the node header; the node keeps a one-line summary.
+- In the settings window opened by **⚙ Settings** in the node header; **Input count (2–8)**: default 2
+- **Select mode**: First wins (default) / Port priority (lowest first) / Random lane
+- The node shows only a one-line summary

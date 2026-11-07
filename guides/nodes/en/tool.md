@@ -1,86 +1,30 @@
 # Tool node (agent-callable)
 
-Package a piece of canvas processing (text / agent / function / save — any inner subgraph) into a tool **the agent can call directly**: give it a tool name, a description and input/output params, and the model in a smart session can call it like a function — params flow in through ports, results flow back to the session.
-
-A tool node is a **super-like container**: the processing it runs is its **inner subgraph** (child nodes attached under it, same mechanism as a node layer), executed topologically on ▶ or an agent call; its configuration lives in `toolConfig` (`name` / `description` / `inputs` / `outputs`).
+Package a piece of canvas processing (text / agent / function / save — any inner subgraph) into a tool **the agent can call directly**: give it a tool name, a description and input/output params, and the model in a session calls it like a function — params in through ports, results back to the session.
 
 Create: right-click empty canvas → **Other Nodes** → **Tool (agent-callable · input/output param ports)**.
 
-## Settings (params are ports)
-Click **Settings** in the node header to open the settings window (every parameter is edited there; the tool card itself keeps just the name / description and two read-only lines — inputs / outputs):
+## Ports
+- **In**: port 0 = control in (fixed) + one port per input param
+- **Out**: one port per output param (0..n-1) + **last = control out** (fixed)
+- **Group**: a **Parameters** port (9001) carries the inner graph's shared params, inherited automatically by inner function nodes (their own keys win)
+- Every data port carries a declared type (text / image / video / audio); disconnecting does not rearrange or add ports, and agent calls only touch data ports
 
-- **Tool name (name)**: also the call name the agent uses. The title follows the tool name by default; once you rename the title manually, the two stay independent.
-- **Description**: say clearly *what it does / when to use / watch out for* — the agent decides whether to call this tool based on it.
-- **Input param type (text / image / video / audio)**: each entry is one input port and the param name is the port name; a text port carries a string, while image / video / audio ports carry a `{kind, path, text}` path object (an absolute local path).
-- **Output param type (text / image / video / audio)**: each entry is one output port, and **outputs declare a type exactly like inputs** — mark an output result as "image" and it becomes an image port (its value = the picture path); likewise for video / audio.
+## Settings
+Change these in the settings window opened by **Settings** in the node header; the card keeps the name / description and the input/output summary:
 
-Adding/removing a param adds/removes a port; deleting a param drops its wires too; changing a type changes the port itself (it is re-coloured and downstream reads it with the new type).
-**Reordering params**: drag the ⠿ handle on a param row to insert it anywhere, or use the ▲▼ buttons at the row end to move one step — param order is port order, and wired data lines follow the param (they never drift onto another param).
+- **Tool name (name)**: also the agent's call name; the title follows it by default and becomes independent once you rename the title.
+- **Description**: what it does / when to use it / what to watch out for — the agent decides from this whether to call it.
+- **Input / output param type**: one entry per port; outputs declare a type too, so marking one "image" makes it an image port. Adding/removing a param adds/removes a port, and deleting one drops its wires.
+- **Six description slots**: purpose, a note per input, a note per output, optionality (tick **Optional**; express "one of these two" in **At least one of**), call example (minimal JSON, keys = param names), and limits / failure cases. Descriptions, examples and notes may use `{{outDir}}`, replaced at call time by the writable user output folder.
+- A yellow "Description not self-sufficient (missing …)" line only warns; it never blocks saving or running.
 
-## Self-sufficient description (so the agent gets it right first time)
-When the agent calls a tool, the model **only sees what the tool itself says** (name / description / param table / per-param notes / call example / limits) — it cannot see your inner sub-graph. With thin information it can only guess and retry. The Settings window has six slots; fill them in:
+## Usage
+- **The inner graph defines behaviour**: a tool runs its inner subgraph. Outer input ports become value sources for inner nodes, and inner outputs wire back to the outer output ports; each value is normalized to the output port's declared type (a path arriving at an image port becomes an image value).
+- **Running**: ▶ runs upstream first, then every runnable inner node topologically, writes results to the output ports and keeps going downstream. What downstream gets is decided by the output port — an image port into a save node saves `.png` automatically. For batches use batchMode on inner or downstream nodes (one item per run).
+- **Develop**: the button under the card binds a session that only touches this tool node: it may change `toolConfig` name / description / inputs / outputs and add / remove nodes and wires **inside** the tool; when it edits the param table it reminds you to re-check the wiring.
+- **Reuse across canvases**: the top-bar **Tool library** button wears the program's own icon and lists the **saved tool / function packages** plus the **built-in entries** (built-ins wear a grey "Built-in" badge: insert / test-run, but no rename or delete); nodes are still created from the right-click menu. Saving stores the node plus an inner-graph snapshot; **Insert** clones it into any canvas; the **Callable by sessions anytime** switch (off by default) lets sessions call it without a canvas copy.
 
-1. **Purpose (description)**: what it does, when to use it, what to watch out for.
-2. **A note for every input**: what goes into that slot (format, where it comes from, extension or not).
-3. **A note for every output**: what comes back (especially names like “bytes”).
-4. **Optionality**: tick **Optional** for params that may be omitted (unticked = required); express “one of these two” in **At least one of** (one group per line, names separated by `/`).
-5. **Call example**: one minimal working JSON (keys = input names). Failure receipts send it back to the agent, and the Test dialog can **Fill from call example**.
-6. **Limits and failure cases**: when it fails (output must be absolute; paths inside the app install folder are refused; a missing file errors out…).
-
-- Descriptions, examples and param notes may use `{{outDir}}`: on a real call it is replaced by this machine's writable **user output folder**, so the model never has to guess where to write.
-- A yellow “Description not self-sufficient (missing …)” line on the card means some slot is still empty; it disappears once filled. It **only warns — it never blocks saving or running**.
-- Built-in tools shipped with the app follow all six; copies already inserted on a canvas are **refreshed from the built-in latest when the canvas is opened** (param count and order never change, so existing wires stay put).
-
-## Develop (session bound to this tool)
-Tool nodes support **Develop** too (button under the card, same mechanism as function nodes):
-
-- Click **Develop** → the dialog shows the current state (tool name / description / in-out ports / inner sub-graph / session workspace), then type what to change or extend;
-- On confirm a **session bound to this tool** runs in the background (title “Dev · tool name” · workspace = canvas folder);
-- The session only touches **this one tool node**: it may change `toolConfig` name / description / inputs / outputs (params are ports — when it edits the param table it must remind you to re-check the wiring), and may create / delete / adjust nodes and wires **inside the tool** to rebuild behaviour — a tool's behaviour is its inner sub-graph;
-- Track progress in the session list / bottom-left queue; click Develop again later to keep iterating on top of the previous request.
-
-## What the port type is for (user-visible payoff)
-The type declared on a port is the single source of truth for **wire validation, save selection and wire colouring**:
-
-- **Drag a wire from an image / video / audio output port into a save node and it automatically saves as that media (the extension flips to `.png` / `.mp4` / `.wav`)**; from a text output port it saves as text. No need to pick by hand any more.
-- Each of the four kinds stays in its lane: image wires only enter image ports, video into video, audio into audio, text into text; a mismatch is refused with a message naming *which port is which type and where to change it* — media is never quietly dumped into a text port (if you really feed media into a text port, its path is taken as text and the node summary says so).
-- Image / video / audio ports and their wires get their own colours, so you can see at a glance which line carries what.
-
-## Port layout
-- **Input**: port 0 = control in (fixed), then one port per input param.
-- **Output**: one port per output param (0..n-1), **last = control out** (fixed).
-- Every data port carries a declared type (text / image / video / audio); control ports carry none and fall back to the value actually present.
-- A tool node also has a **Parameters** port (9001): it is the shared param set of its inner graph, inherited automatically by inner function nodes (their own keys win) — see “The Parameters port” in the Function node guide.
-- Ports are fixed: disconnecting does not rearrange ports or auto-add new ones; agent calls only touch data ports, never the control port.
-
-## Inner graph (what the tool does)
-A tool executes its **inner subgraph** (child nodes attached under this node):
-
-1. Build the inner subgraph — in the shell form (node layer + tool variant), expand / enter the inner canvas and arrange it like a node layer; a tool **inserted from the library** already carries its inner graph, expand it to inspect or adjust.
-2. Outer input ports (including control in) automatically become value sources for inner nodes — wire them the same way as a node layer's outer/inner bridging.
-3. Wire inner outputs back to the outer output ports (inner converge); when the tool runs, each value is written back to its output param **normalised to that port's declared type** — an image port that receives a path string is completed into an image value, a text port that receives an image keeps its path as text (the node summary mentions it once, nothing is lost). The badge / colour of the outer output port and of the matching inner converge port follow the same rule.
-
-## Running
-- Press ▶ (or trigger via a control ▶): upstream nodes are processed first, then every runnable inner node runs topologically (text / agent / function / save…, inner cascades included), results are written to the output ports and downstream keeps running.
-- A tool node can still be @-referenced / broadcast globally as text as before; **what downstream receives is decided by the output port you wired** — an image output port into a save node automatically saves as an image (`.png`), see "What the port type is for" above. For batches use batchMode on its inner or downstream nodes (batch mode processes exactly one item per run).
-
-## Cross-canvas reuse and "callable anytime"
-The top-bar **Tool library** button (it wears the program's own icon) opens a dialog that lists the **saved tool / function packages** plus the **built-in entries** shipped with the app (built-ins wear a grey "Built-in" badge: insert / test-run freely, but rename and delete are refused) — nodes are not created there (use the right-click menu above):
-
-- **Save to library**: saves this node plus a snapshot of its inner graph as a tool package (name / description / input-output params — each with its declared type — plus the inner graph JSON).
-- **Search**: a permanent search box filters by name / description / input-output param names (case-insensitive) and shows the hit count; clearing it restores the full list.
-- **One-line entries + paging**: each tool is a single row (badge / name / summary / switch / insert / rename / delete), at most 20 rows per page with a pager at the bottom.
-- **Insert**: the package can be inserted into any canvas repeatedly (cloned with new ids; inner parent-child relations and wires are rebuilt around the new ids).
-- **Callable by sessions anytime** (off by default): when on, the agent can call this tool from a session **without a canvas copy**; tool nodes on the canvas are in the callable list anyway. Renaming / overwrite-saving keeps the same library record, so the switch carries over.
-
-## When a tool fails
-If an inner node fails or the tool has no runnable inner nodes, the tool node shows ✕ with the reason; when an agent call fails, the session receives an error text reply — the session is never interrupted.
-
-## Built-in entry: screen / window capture
-One ready-to-use built-in **function package** (a single JS node) that turns "some other screen / some other window" into a PNG image:
-
-- Ports: `target` (`screen` / `window` / `all`, default `screen`), `screen` (device name `\\.\DISPLAY1` / `"x,y"` / index; empty = primary), `window` (a title keyword, a fragment is enough), `x` / `y` / `w` / `h` (optional region inside the captured object) → output **image path** (an image port).
-- It is a **function package**, so it carries no "callable by sessions anytime" switch (that switch only applies to tool nodes); to use it from a session, insert it into a canvas and press ▶, or let the agent call the canvas copy.
-- It runs the main-process desktop capture (`mtnode.screenShot`, PowerShell + GDI on Windows): occluded windows are captured with `PrintWindow`, self-drawn windows (media players…) fall back to copying the screen, and a minimised window is **refused explicitly** instead of returning a black picture. Screenshots land in `captures/` under the app data directory.
-- Insert it into a canvas and press **Test** — the fields come pre-filled with a runnable sample. To see what can be captured, run `mtnode.screenList()` / `mtnode.windowList()` first (also available inside a function node).
-- The output is an image path: wiring it into a **save node** writes a `.png`; hand the path to `mtnode_vision` (agent tool) to actually read the picture.
+## Notes
+- A thin description only lowers the odds the agent gets it right first time; built-ins fill all six slots, and older copies refresh their description and param notes when the canvas opens (count and order never change).
+- When an inner node fails or there is nothing runnable inside, the tool shows ✕ with the reason; a failed agent call returns error text without interrupting the session.

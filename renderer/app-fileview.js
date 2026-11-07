@@ -385,7 +385,10 @@ function fileviewLangOf(p) {
   const upper = base.toUpperCase();
   if (Object.prototype.hasOwnProperty.call(FV_NAME_LANG, upper)) return FV_NAME_LANG[upper];
   const ext = fileviewExtOf(base);
-  if (!ext) return "";
+  /* 没有后缀的文件（名字里整个没有 "."，如 notes / 会议纪要）按 Markdown 预览：
+     Markdown 渲染器对纯文本同样能正常显示，比退成一行不配色的裸文本更可读。
+     以 "." 开头的隐藏文件（.env / .gitignore 之类）不算「没有后缀」，走下面的表或纯文本。 */
+  if (!ext) return base.indexOf(".") < 0 ? "md" : "";
   return Object.prototype.hasOwnProperty.call(FV_EXT_LANG, ext) ? FV_EXT_LANG[ext] : "";
 }
 
@@ -996,6 +999,7 @@ const FV_PEEK = {
   mdSrc: false, /* md 等可渲染文件默认直接渲染（renderMarkdown），点「源码」才看原文 */
   svgSrc: false, /* svg 同样是可渲染文件：默认出画好的图，点「源码」才看 <svg> 文本 */
   req: 0, /* 递增请求号：慢请求回来时若已切走文件就丢弃 */
+  pdfScroll: null, /* PDF 阅读的滚动监听（挂在复用的 #fpScroll 上，换视图要摘掉） */
   open: false,
   dirList: null,
   dirFilter: "",
@@ -1861,6 +1865,12 @@ async function loadFilePeek() {
     renderFilePeekAudio();
     return;
   }
+  if (fileviewExtOf(abs) === "pdf") {
+    /* PDF 也走面板预览（页面图走 pdf:render），不弹浮层、不拉系统阅读器；
+       排序同视频 / 音频 —— 体积闸管的是「读整份文本」，PDF 是按页渲的。 */
+    renderFilePeekPdf();
+    return;
+  }
   if (FV_PEEK.size > FV_PEEK_HARD_BYTES) {
     FV_PEEK.note =
       I18n.t("文件过大（") + fvFmtBytes(FV_PEEK.size) + I18n.t("），预览上限 ") +
@@ -2142,6 +2152,261 @@ function renderFilePeekAudio() {
   scroller.appendChild(wrap);
   renderFilePeekHead();
   renderFilePeekNote();
+}
+
+/* PDF：右侧面板里连续滚动预览（页面图走主进程 pdf:probe / pdf:render ——
+   renderer/pdf-render.html 的 pdf.js 隐藏窗，与 app-pdfview.js 同一套通道）。
+   口径：像图片 / 视频 / 音频那样「在面板里给你看」，不弹浮层、点页面也不拉系统阅读器；
+   要矢量版式 / 批注就去头部「在资源管理器中显示」交给外部阅读器。
+   位图只在内存（dataUrl，按页 FIFO 上限 16 页），不落盘。 */
+const FV_PDF_CACHE_MAX = 16;
+const FV_PDF_RENDER = { scale: 2, maxWidth: 1600, maxHeight: 2400 };
+const FV_PDF_RATIO = 1 / Math.SQRT2; /* A4 竖版占位比例，首张真图回来后再校正 */
+
+async function renderFilePeekPdf() {
+  const host = document.getElementById("filePeek");
+  const abs = FV_PEEK.path;
+  const req = FV_PEEK.req;
+  FV_PEEK.view = "pdf";
+  const scroller = host.querySelector("#fpScroll");
+  scroller.innerHTML = "";
+  scroller.className = "fp-scroll fp-vpdf";
+  const status = document.createElement("div");
+  status.className = "fp-pdf-status";
+  const pagesEl = document.createElement("div");
+  pagesEl.className = "fp-pdf-pages";
+  scroller.appendChild(status);
+  scroller.appendChild(pagesEl);
+  renderFilePeekHead();
+  const api = window.api || {};
+  const alive = () => req === FV_PEEK.req && FV_PEEK.path === abs && FV_PEEK.view === "pdf";
+  const say = (msg, err) => {
+    status.textContent = msg || "";
+    status.hidden = !msg;
+    status.classList.toggle("is-err", !!err);
+  };
+  if (typeof api.filePdfInfo !== "function" || typeof api.fileRenderPdfPages !== "function") {
+    say(I18n.t("当前窗口没有 PDF 渲染通道，无法在面板里预览；可用「在资源管理器中显示」用系统阅读器打开"), true);
+    return;
+  }
+  say(I18n.t("正在读取页数…"));
+  let info = null;
+  try {
+    info = await api.filePdfInfo(abs);
+  } catch (err) {
+    info = null;
+  }
+  if (!alive()) return;
+  if (!info || info.ok === false) {
+    say(
+      (info && (info.warning || (info.error && info.error.message))) || I18n.t("读不出这份 PDF"),
+      true,
+    );
+    return;
+  }
+  if (info.encrypted) {
+    say(info.warning || I18n.t("这份 PDF 需要口令，应用内无法渲染页面 —— 请用系统阅读器打开"), true);
+    return;
+  }
+  const total = Number(info.pages) || 0;
+  if (!total) {
+    say(info.warning || I18n.t("这份 PDF 没有可渲染的页面"), true);
+    return;
+  }
+  say("");
+
+  /* 逐页占位：未渲染时按估算比例撑出高度，滚动条才不会乱跳 */
+  const sheets = [];
+  for (let i = 1; i <= total; i++) {
+    const d = document.createElement("div");
+    d.className = "fp-pdf-sheet";
+    d.dataset.page = String(i);
+    d.style.aspectRatio = String(FV_PDF_RATIO);
+    pagesEl.appendChild(d);
+    sheets.push(d);
+  }
+
+  const cache = new Map(); /* 页号 → { url, meta } */
+  const queue = [];
+  const failed = new Set();
+  let busy = false;
+  let focusPage = 1;
+  const visible = new Set(); /* 观察器报「在视野附近」的页，用来算当前页，避免遍历整卷 */
+
+  /* 提示条显示当前页号（随滚动实时更新），不再说「滚轮连续向下翻页」 */
+  const syncPageNote = () => {
+    renderFilePeekNote(I18n.t("共 {n} 页 · 第 {p} 页", { n: total, p: focusPage }));
+  };
+
+  /* 当前页 = 视野附近那几页里离视口顶部最近的一页（O(可见页数)） */
+  const trackCurrent = () => {
+    const top = scroller.getBoundingClientRect().top + 8;
+    let best = focusPage;
+    let bestD = Infinity;
+    const cand = visible.size ? Array.from(visible) : [focusPage];
+    for (const n of cand) {
+      const sheet = sheets[n - 1];
+      if (!sheet) continue;
+      const d = Math.abs(sheet.getBoundingClientRect().top - top);
+      if (d < bestD) {
+        bestD = d;
+        best = n;
+      }
+    }
+    if (best !== focusPage) {
+      focusPage = best;
+      syncPageNote();
+    }
+  };
+
+  const remember = (n, url, meta) => {
+    cache.set(n, { url, meta });
+    while (cache.size > FV_PDF_CACHE_MAX) {
+      const oldest = cache.keys().next().value;
+      cache.delete(oldest);
+      const sheet = sheets[oldest - 1];
+      const img = sheet && sheet.querySelector("img");
+      /* 已滚出缓存窗口的页：连 <img> 一起卸掉回收内存，占位比例补回去 */
+      if (img) {
+        img.remove();
+        sheet.style.aspectRatio = String(FV_PDF_RATIO);
+      }
+    }
+  };
+
+  const paint = (n, url, meta) => {
+    const sheet = sheets[n - 1];
+    if (!sheet) return;
+    sheet.classList.remove("is-loading", "is-failed");
+    const err = sheet.querySelector(".fp-pdf-err");
+    if (err) err.remove();
+    let img = sheet.querySelector("img");
+    if (!img) {
+      img = document.createElement("img");
+      img.className = "fp-pdf-img";
+      img.alt = I18n.t("PDF 页面");
+      img.draggable = false;
+      sheet.appendChild(img);
+    }
+    /* 真图有真实宽高：占位用的估算比例撤掉，避免横版页被拉成竖版 */
+    if (meta && meta.width && meta.height) sheet.style.aspectRatio = "";
+    if (img.getAttribute("src") !== url) img.src = url;
+  };
+
+  const fail = (n, text) => {
+    const sheet = sheets[n - 1];
+    if (!sheet) return;
+    failed.add(n);
+    sheet.classList.remove("is-loading");
+    sheet.classList.add("is-failed");
+    sheet.style.aspectRatio = "";
+    let tip = sheet.querySelector(".fp-pdf-err");
+    if (!tip) {
+      tip = document.createElement("span");
+      tip.className = "fp-pdf-err";
+      sheet.appendChild(tip);
+    }
+    tip.textContent = String(text || "");
+  };
+
+  const request = (n) => {
+    if (n < 1 || n > total) return;
+    const hit = cache.get(n);
+    if (hit) {
+      paint(n, hit.url, hit.meta);
+      return;
+    }
+    if (failed.has(n) || queue.indexOf(n) >= 0) return;
+    const sheet = sheets[n - 1];
+    if (sheet && sheet.querySelector("img")) return;
+    queue.push(n);
+    if (sheet) sheet.classList.add("is-loading");
+    pump();
+  };
+
+  /* 一次只渲一页，排队按「离当前阅读页远近」排序：快速滚动时不至于把中间页全渲一遍 */
+  const pump = () => {
+    if (busy || !queue.length) return;
+    if (!alive()) {
+      queue.length = 0;
+      return;
+    }
+    queue.sort((a, b) => Math.abs(a - focusPage) - Math.abs(b - focusPage));
+    const n = queue.shift();
+    const hit = cache.get(n);
+    if (hit) {
+      paint(n, hit.url, hit.meta);
+      return pump();
+    }
+    busy = true;
+    api
+      .fileRenderPdfPages({ path: abs, pages: [n], ...FV_PDF_RENDER })
+      .then((r) => {
+        if (!alive()) return;
+        const im = r && r.ok !== false ? (r.images || [])[0] : null;
+        if (!im || !im.dataUrl) {
+          const e = (r && r.error) || {};
+          const msg =
+            e.code === "password_required" || e.code === "encrypted"
+              ? I18n.t("这份 PDF 需要口令，应用内无法渲染页面 —— 请用系统阅读器打开")
+              : e.message || I18n.t("页面渲染失败");
+          fail(n, msg);
+          return;
+        }
+        remember(n, im.dataUrl, im);
+        paint(n, im.dataUrl, im);
+      })
+      .catch((err) => {
+        if (alive()) fail(n, String((err && err.message) || err));
+      })
+      .then(() => {
+        busy = false;
+        if (alive()) pump();
+      });
+  };
+
+  if (typeof IntersectionObserver === "function") {
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (!alive()) {
+          io.disconnect();
+          return;
+        }
+        entries.forEach((en) => {
+          const n = Number(en.target.dataset.page) || 0;
+          if (!n) return;
+          if (en.isIntersecting) {
+            visible.add(n);
+            request(n);
+          } else {
+            visible.delete(n);
+          }
+        });
+        trackCurrent();
+        pump();
+      },
+      { root: scroller, rootMargin: "1200px 0px", threshold: 0 },
+    );
+    sheets.forEach((s) => io.observe(s));
+  } else {
+    /* 老内核兜底：页数少时才可接受 */
+    for (let i = 1; i <= total; i++) request(i);
+  }
+  /* 滚动 → 页码（rAF 节流）；换文件时先把上一条监听摘掉，别叠在同一个 scroller 上 */
+  if (FV_PEEK.pdfScroll) scroller.removeEventListener("scroll", FV_PEEK.pdfScroll);
+  let scrollRaf = 0;
+  const onScroll = () => {
+    if (scrollRaf || !alive()) return;
+    scrollRaf = requestAnimationFrame(() => {
+      scrollRaf = 0;
+      if (!alive()) return;
+      trackCurrent();
+    });
+  };
+  FV_PEEK.pdfScroll = onScroll;
+  scroller.addEventListener("scroll", onScroll, { passive: true });
+  request(1);
+  syncPageNote();
 }
 
 /* 面板离开音频（换文件 / 收起）：先把这台波形播放器停下。

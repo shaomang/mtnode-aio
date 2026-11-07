@@ -1,0 +1,53 @@
+/* ============================================================================
+   状态栏「重新编译并重启」按钮（renderer/app-self-rebuild.js）
+   ----------------------------------------------------------------------------
+   位置：footer 里 #footerMascot 之前、版本号 #authorLink 左邻（DOM 顺序见
+   renderer/index.html 的 footer 段）。尺寸 / 边框 / 悬停手感与 .sb-cam 一致，
+   不改变状态栏高度（22×22，与话筒 / 相机按钮同高）。
+   默认 hidden：只有打包版 + 登录账号 ms2308 才由脚本显式显出来（连 CSS 的
+   display 在内都由脚本改），所以这里不写 position:absolute 之类的兜底。
+   ========================================================================== */
+
+.statusbar .sb-rebuild {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  /* 小人自己左右各抵 -9px，这里补一点右距，让按钮离小人与版本号都留空 */
+  margin-right: 2px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.statusbar .sb-rebuild:hover {
+  color: var(--orange2, #ffab70);
+  border-color: var(--bd2);
+  background: rgba(255, 171, 112, .1);
+}
+
+/* 已发起（编译中 / 等应用退出）：按钮禁用 + 图标慢转，防连点拉起第二只编译窗 */
+.statusbar .sb-rebuild:disabled {
+  opacity: .6;
+  cursor: progress;
+}
+
+.statusbar .sb-rebuild:disabled svg {
+  animation: sb-rebuild-spin 1.6s linear infinite;
+}
+
+@keyframes sb-rebuild-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* 亮色主题：橙色偏深一点，白底状态栏上仍看得清 */
+body.theme-light .statusbar .sb-rebuild:hover {
+  color: #b3541e;
+}

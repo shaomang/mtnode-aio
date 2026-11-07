@@ -2,9 +2,15 @@
 
 ![diagram](img/counter.svg)
 
-Release once every N pulses, then reset.
+Release once every N control pulses, then reset the count.
+
+## Ports
+- **In**: control
+- **Out**: control
 
 ## Settings
-**N (hits before passing)** is edited in the settings window opened by **⚙ Settings** in the node header; the node keeps showing a one-line summary, and “Reset count” stays on the node as an action.
+- In the settings window opened by **⚙ Settings** in the node header; **Pass every N hits (2–99)**: default 2
+- The node shows a one-line summary; “Reset count” stays on the node as an action
 
-▶ counts once.
+## Usage
+- **▶** counts once; it releases when the threshold is reached

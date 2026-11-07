@@ -1,0 +1,82 @@
+{
+  "form": "通用参数表",
+  "fields": [
+    {
+      "id": "fdp4j1d9",
+      "label": "风格",
+      "type": "text",
+      "required": false,
+      "hint": "",
+      "options": [],
+      "default": "cinematic",
+      "calc": "",
+      "showWhen": null,
+      "children": []
+    },
+    {
+      "id": "fdp4j1da",
+      "label": "比例",
+      "type": "select",
+      "required": false,
+      "hint": "",
+      "options": [
+        "16:9",
+        "9:16",
+        "1:1",
+        "4:3"
+      ],
+      "default": "16:9",
+      "calc": "",
+      "showWhen": null,
+      "children": []
+    },
+    {
+      "id": "fdp4j1db",
+      "label": "张数",
+      "type": "number",
+      "required": false,
+      "hint": "",
+      "options": [],
+      "default": "4",
+      "calc": "",
+      "showWhen": null,
+      "children": []
+    },
+    {
+      "id": "fdp4j1dc",
+      "label": "带字幕",
+      "type": "switch",
+      "required": false,
+      "hint": "",
+      "options": [],
+      "default": "",
+      "calc": "",
+      "showWhen": null,
+      "children": []
+    },
+    {
+      "id": "fdp4j1dd",
+      "label": "提示词",
+      "type": "text",
+      "required": false,
+      "hint": "",
+      "options": [],
+      "default": "",
+      "calc": "v.风格 + ' · ' + v.比例 + ' · ' + v.张数 + ' 张'",
+      "showWhen": null,
+      "children": []
+    }
+  ],
+  "values": {
+    "fdp4j1d9": "cinematic",
+    "fdp4j1da": "16:9",
+    "fdp4j1db": 4,
+    "fdp4j1dc": false,
+    "fdp4j1dd": "cinematic · 16:9 · 4 张"
+  },
+  "refs": [],
+  "meta": {
+    "nodeId": "nmw3pooxwz7c",
+    "updatedAt": 1793893206061
+  }
+}

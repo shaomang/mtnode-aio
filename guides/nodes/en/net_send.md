@@ -1,18 +1,23 @@
 # Network · send
 
-Pushes the data input text to a target `host:port` channel (TCP / UDP). Terminal node with no output.
+Pushes the upstream text as a frame to one channel on `host:port` (TCP / UDP). Terminal node, no output.
 
 ## Ports
-- **Input**: port 0 = data (text to send) · port 1 = control input (trigger)
-- **Output**: none
+- **In**: port 0 = info (text to send) · port 1 = control (triggers a send)
+- **Out**: none
 
 ## Settings
-Target address / port / channel / protocol are all edited in the settings window opened by **⚙ Settings** in the node header; “Send / Clear / netdebug” stay on the node as actions, and the node shows just a one-line summary of the current settings.
+- All of these are edited in the settings window opened by **⚙ Settings** in the node header:
+- **Target address**: 127.0.0.1 by default, a remote IP is fine
+- **Target port**: 0–65535, 41000 on a new node (kept apart from the listen port for two-way debugging on one machine); 0 = use the global port (Settings · Network, default 40999)
+- **Channel number (16-bit)**: 0–65535; the peer `net_recv` must listen on the same channel
+- **Protocol**: TCP / UDP (TCP by default) and it must match the peer
+- “▶ Send / Clear count / netdebug” stay on the card together with a one-line summary of the current settings
 
-## Options
-- **Protocol**: TCP / UDP
-- **Channel**: multiplexed per channel id (0–65535) on one port; a `net_recv` on the same channel receives it
-- **Host / port**: target address; port 0 means the global default (Settings · Network, default 41000)
+## Usage
+- Wire port 0 to an upstream node (text / asset), then press “▶ Send” or let a control wire on port 1 trigger it
 
-## Typical use
-Pair with **Network · receive** for cross-canvas / cross-machine text channels: process node → `net_send` → (network) → `net_recv` → downstream.
+## Notes
+- With nothing wired to port 0 it reports that no info input is connected; empty upstream content is not sent either
+- Frames are MTNode's own format (2-byte channel + 4-byte length + UTF-8 body), not bare text
+- If TCP cannot reach the peer, it reports a send timeout after about 4 seconds

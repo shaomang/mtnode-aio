@@ -14,7 +14,7 @@
   <text x="106" y="78.5" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">JS：input → return</text>
   <rect x="16" y="120" width="180" height="48" rx="6" fill="#1a1610" stroke="#f0c14d" stroke-width="1.6"/>
   <text x="106" y="141.5" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">工具节点</text>
-  <text x="106" y="154.5" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">超级节点 + 注册</text>
+  <text x="106" y="154.5" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">节点层 + 注册</text>
   <line x1="196" y1="68" x2="250" y2="68" stroke="#c792ea" stroke-width="1.8" marker-end="url(#arr-purple)"/>
   <line x1="196" y1="144" x2="250" y2="144" stroke="#f0c14d" stroke-width="1.8" marker-end="url(#arr-gold)"/>
   <rect x="250" y="44" width="330" height="124" rx="6" fill="#101820" stroke="#38d6ff" stroke-width="1.6"/>

@@ -1340,6 +1340,10 @@ function renderCanvas() {
       /* 先把模型坐标写回 DOM，再按同一份坐标撑组框：否则「只改坐标」的一拍会出现
          组框跳位、框内节点留在原处（见 syncCanvasNodeDomPos 注释） */
       syncCanvasNodeDomPos(parts);
+      /* 文本节点字号不在签名里（拖滑杆时不想整幅重建），复用通道这一拍顺手补上：
+         撤销 / 任何只改字号的复用重绘之后，正文框与预览块才不会停在旧字号。 */
+      for (const n of parts.visNodes)
+        if (n.kind === "input_text") applyTextNodeFontSizeLive(n);
       updateGroupFrames();
       /* 端子数与模型对不上就先重建那一颗（本次 bug：图像节点接上输入 1 之后，
          输入 2 不出现）。复用通道只给**已有**端子重排位置，从不补建新端子，而动态端子
@@ -5211,11 +5215,11 @@ function savePathActionButtons(node) {
       openBtn.textContent = I18n.t("打开");
       openBtn.title =
         media === "pdf"
-          ? I18n.t("用系统默认 PDF 阅读器打开")
+          ? I18n.t("应用内预览 PDF（翻页 / 缩放；预览窗里可切到系统阅读器）")
           : I18n.t("用阅读器打开（Markdown / YAML · 可编辑保存）");
       openBtn.onclick = async (ev) => {
         ev.stopPropagation();
-        /* PDF 交给系统默认阅读器（路径解析与提示同头部按钮，口径只留一处） */
+        /* PDF 走应用内预览（路径解析与提示同头部按钮，口径只留一处） */
         if (media === "pdf") {
           await openPdfSaveTarget(node);
           return;
@@ -5246,9 +5250,10 @@ function savePathActionButtons(node) {
 }
 
 /* ── PDF 生成节点：预览态只列文件名 + 节点上方「打开」小按钮 ──
-   预览（浏览）态不渲染预览图（PDF 当不了图片显示，留着只会是一块空图），
-   只列一行文件名；打开动作收进节点头部的小按钮 —— 浏览态只有头部那排按钮
-   带 onclick（见 NODE_BROWSE_BODY 口径），所以这枚按钮必须留在头部。 */
+   预览（浏览）态不渲染预览图（卡片里的 <img> 显示不了 PDF；要看内容走应用内
+   预览浮层，见 renderer/app-pdfview.js），只列一行文件名；打开动作收进节点头部的
+   小按钮 —— 浏览态只有头部那排按钮带 onclick（见 NODE_BROWSE_BODY 口径），
+   所以这枚按钮必须留在头部。 */
 
 /* 预览里显示的文件名：已生成用实际文件名，未生成给一句提示。 */
 function savePdfNameText(node) {
@@ -5257,8 +5262,11 @@ function savePdfNameText(node) {
     : I18n.t("尚未生成（点击 ▶ 生成 PDF）");
 }
 
-/* 打开已生成的 PDF（系统默认阅读器）：本次已保存的文件优先，
-   否则看配置路径上是否已有文件；都没有只给提示，不误开不存在的文件。 */
+/* 打开已生成的 PDF：本次已保存的文件优先，否则看配置路径上是否已有文件；
+   都没有只给提示，不误开不存在的文件。
+   默认走**应用内预览**（renderer/app-pdfview.js 的翻页浮层，页面图走 pdf:render）；
+   预览窗里另有「系统阅读器」按钮 —— 矢量版式 / 批注 / 可搜索文本仍是系统阅读器更完整。
+   预览模块不可用（老窗口）时退回系统阅读器，功能不回退。 */
 async function openPdfSaveTarget(node) {
   const last =
     (node.savedPaths && node.savedPaths[node.savedPaths.length - 1]) ||
@@ -5277,30 +5285,72 @@ async function openPdfSaveTarget(node) {
     toast(I18n.t("尚未生成 PDF：点节点上的 ▶ 生成"), "warn");
     return;
   }
+  if (typeof openPdfPreview === "function") {
+    openPdfPreview(target, { title: fileName(target) });
+    return;
+  }
   window.api.shellOpenPath(target);
 }
 
-/* PDF 文件图标（节点头部「打开」按钮用）：纸张 + 折角 + PDF 字样。
-   与 KIND_ICON_SVG 同风格（线性 · stroke=currentColor），文字用 fill=currentColor。 */
+/* PDF 预览图标（节点头部小按钮用）：放大镜 = 「看一眼预览」（不再用眼睛，色走 CSS 的绿色）。
+   ⚠ 必须带 width / height 属性：.n-play 是 flex 容器，只靠 CSS 里的 width/height
+   给一个没有内在尺寸的 <svg>（只有 viewBox）当弹性子项时，浏览器会把它压成 0 宽 ——
+   按钮只剩一圈边框、图标整个看不见（实测坑）。与 KIND_ICON_SVG 一样写死属性最稳。 */
 const PDF_OPEN_ICON_SVG =
-  '<svg viewBox="0 0 16 16" aria-hidden="true">' +
-  '<path d="M3.7 2.2h5.2l3.1 3.1v7.4a1 1 0 0 1-1 1H4.7a1 1 0 0 1-1-1V2.2z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>' +
-  '<path d="M8.8 2.4v3h2.9" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linejoin="round"/>' +
-  '<text x="8" y="12.2" text-anchor="middle" font-size="5" font-weight="700" font-family="Arial, Helvetica, sans-serif" fill="currentColor" stroke="none">PDF</text>' +
+  '<svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">' +
+  '<circle cx="7" cy="7" r="3.6" fill="none" stroke="currentColor" stroke-width="1.5"/>' +
+  '<path d="M9.7 9.7 13.2 13.2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>' +
   "</svg>";
 
+/* PDF 的 logo（保存节点 body 里那枚大图标）：红底圆角纸 + 白色 PDF 字样，
+   底色走 currentColor（.sv-pdf-ico 给的是 PDF 红），字样恒白。 */
+const PDF_LOGO_SVG =
+  '<svg viewBox="0 0 24 24" aria-hidden="true">' +
+  '<rect x="2.2" y="1.8" width="19.6" height="20.4" rx="3.2" fill="currentColor"/>' +
+  '<text x="12" y="15.4" text-anchor="middle" font-family="system-ui,-apple-system,\'Segoe UI\',Arial,sans-serif" font-size="7.6" font-weight="700" letter-spacing=".3" fill="#fff">PDF</text>' +
+  "</svg>";
+
+/* 泛用文件节点里留下的那份是不是 PDF（拖入 PDF 建的节点就是这一类）：
+   有它就意味着「这个节点的文件类型已定」，类型转换入口一律不再露出。 */
+function inputAnyHoldsPdf(node) {
+  const p = String((node && node.anyFile) || "").trim();
+  return !!p && typeof pdfIsPdfPath === "function" && !!pdfIsPdfPath(p);
+}
+
 /* PDF 生成节点头部的「打开」小按钮（节点上方）：预览 / 编辑态都在。
-   按钮不用文字，直接用 PDF 图标表示（文案只在 title / aria-label 里）。 */
+   按钮不用文字，直接用预览图标表示（文案只在 title / aria-label 里）。 */
 function savePdfOpenButtonEl(node) {
   const b = document.createElement("button");
   b.type = "button";
   b.className = "n-play n-pdf-open";
   b.innerHTML = PDF_OPEN_ICON_SVG;
-  b.title = I18n.t("打开 PDF：用系统默认阅读器打开已生成的 PDF");
-  b.setAttribute("aria-label", I18n.t("打开 PDF"));
+  b.title = I18n.t("预览 PDF：应用内翻页查看（预览窗里可用系统阅读器打开）");
+  b.setAttribute("aria-label", I18n.t("预览 PDF"));
   b.onclick = (ev) => {
     ev.stopPropagation();
     openPdfSaveTarget(node);
+  };
+  return b;
+}
+
+/* 泛用文件节点（input_any）里放着一份 PDF —— 拖入画布就是这么建的 —— 头部给一枚
+   PDF 预览小按钮：body 在浏览态点不动（见 NODE_BROWSE_BODY 口径），能点的位置只有头部。
+   不是 PDF / 没有路径 / 预览模块缺席（老窗口）时返回 null，节点外观与从前一致，
+   调用方拿不到按钮就当没这回事，绝不留一颗点了没反应的按钮。 */
+function inputAnyPdfButtonEl(node) {
+  const p = String((node && node.anyFile) || "").trim();
+  if (!inputAnyHoldsPdf(node)) return null;
+  if (typeof openPdfPreview !== "function") return null;
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "n-play n-pdf-open";
+  b.innerHTML = PDF_OPEN_ICON_SVG;
+  b.title = I18n.t("预览这份 PDF：应用内翻页查看（窗里可切到系统阅读器）");
+  b.setAttribute("aria-label", I18n.t("预览 PDF"));
+  b.onclick = (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    openPdfPreview(p, { title: fileName(p) });
   };
   return b;
 }
@@ -8431,7 +8481,7 @@ registerNodeSettingsForm("breeze_gen", {
       (v) => {
         node.rerollSeed = v;
       },
-      { title: I18n.t("每次执行种子 +1（默认开启）") },
+      { title: I18n.t("每次执行种子 +1。默认关闭：语音固定种子，同一段文字每次输出同一段音频；打开后每次换一个念法") },
     );
     ctx.section(I18n.t("输出"));
     nsNumber(
@@ -9276,7 +9326,12 @@ function nodeElement(node) {
      与右键「转换为输入节点」子菜单同一份真源（INPUT_ANY_TARGETS / convertAnyNodeKind，
      都在 app.js）。点一下就地换 kind：id / 位置 / 归属不变，Ctrl+Z 可撤销。 */
   if (node.kind === "input_any") {
-    head.appendChild(inputAnyConvertBar(node));
+    /* 留着一份 PDF 时不再露「手动更改类型」四连按钮：PDF 就是它的文件类型，不让切成
+       文本 / 图像 / 音频 / 视频（右键「转换为输入节点」同口径，见节点菜单）。 */
+    if (!inputAnyHoldsPdf(node)) head.appendChild(inputAnyConvertBar(node));
+    /* 本节点保留下来的是一份 PDF：与 PDF 生成节点同一枚图标，直接开应用内预览 */
+    const anyPdfBtn = inputAnyPdfButtonEl(node);
+    if (anyPdfBtn) head.appendChild(anyPdfBtn);
   }
   if (node.kind === "input_text" || node.kind === "input_image") {
     if (node.ro) {
@@ -9383,6 +9438,8 @@ function nodeElement(node) {
       openTextNodeEditor(node);
     };
     head.appendChild(me);
+    /* 字号：一颗小按钮开竖向吸附滑杆，选择落在 node.fontSize（编辑态正文框与预览态共用）。 */
+    head.appendChild(textNodeFontButton(node));
   }
   if (
     (node.kind === "proc_text" ||
@@ -11333,7 +11390,7 @@ function nodeElement(node) {
     /* 泛用文件节点：还没上传文件之前，允许手动指定要变成哪一种输入节点（四种本体一律
        保留，逻辑在 app.js 的 convertAnyNodeKind）。转换后就是一颗普通输入节点 —— 这里
        不再给任何「退回文件节点」的入口，那四类节点的菜单里也从来没有这条。 */
-    if (node.kind === "input_any") {
+    if (node.kind === "input_any" && !inputAnyHoldsPdf(node)) {
       items.unshift({
         label: I18n.t("转换为输入节点"),
         iconKey: "folder",
@@ -12700,6 +12757,7 @@ NODE_BROWSE_BODY.input_text = function (node, body) {
   if (node.ro) {
     const v = browseTextEl(node.text, node);
     if (!v) return false;
+    applyTextNodeFontSize(node, v);
     body.appendChild(v);
     return;
   }
@@ -12741,6 +12799,7 @@ NODE_BROWSE_BODY.input_text = function (node, body) {
           : undefined,
       );
       if (!v) return false;
+      applyTextNodeFontSize(node, v);
       body.appendChild(v);
       return;
     }
@@ -12772,6 +12831,7 @@ NODE_BROWSE_BODY.input_text = function (node, body) {
   }
   const v = browseMdPreviewEl(node.text, node) || browseTextEl(node.text, node);
   if (!v) return false;
+  applyTextNodeFontSize(node, v);
   body.appendChild(v);
 };
 
@@ -12815,6 +12875,252 @@ NODE_BROWSE_BODY.input_image = function (node, body) {
   body.appendChild(browseImageEl(node.imageAsset, singleImageTitle(node), node.sourceName));
 };
 
+/* ── 文本节点（input_text）字号 ────────────────────────────────────────────────
+   头部那颗「A」小按钮开一块字号浮层（persistent），里面是一根竖着拖、按档吸附的
+   滑杆：往上拖 = 变大，最低一档 = 默认（12.5px，不写 node.fontSize，沿用 CSS 基准）。
+   选中的值记在 node.fontSize 上，随画布一起落盘。
+   读这个值的只有一处真源：编辑态正文框（buildBody 的 input_text 分支）与失焦后的
+   Markdown 预览块（browseMdPreviewEl / 浏览态纯文本回落）—— 所以编辑态和预览态
+   永远是同一个字号。0 / 未设 = 沿用 CSS 基准（12.5px），不写内联样式。 */
+const TEXT_NODE_FONT_STEPS = [12.5, 13, 14, 15, 16, 18, 20, 22, 24, 28, 32];
+function textNodeFontSize(node) {
+  const fs = Number(node && node.fontSize);
+  return Number.isFinite(fs) && fs >= 10 && fs <= 48 ? fs : 0;
+}
+/* 当前档位下标：0 = 最低档（不写 fontSize，沿用 12.5px 基准）。找不到精确值就取最近一档。 */
+function textNodeFontIndex(node) {
+  const fs = textNodeFontSize(node) || TEXT_NODE_FONT_STEPS[0];
+  let best = 0;
+  for (let i = 1; i < TEXT_NODE_FONT_STEPS.length; i++) {
+    if (
+      Math.abs(TEXT_NODE_FONT_STEPS[i] - fs) <
+      Math.abs(TEXT_NODE_FONT_STEPS[best] - fs)
+    )
+      best = i;
+  }
+  return best;
+}
+function textNodeFontLabel(idx) {
+  return TEXT_NODE_FONT_STEPS[idx] + " px";
+}
+/* 只动字号，不碰颜色 / 行高 / 内边距：内联样式压得住 .n-text 与 .n-md-browse 的 px 口径。 */
+function applyTextNodeFontSize(node, el) {
+  if (!el || !el.style) return el;
+  const fs = textNodeFontSize(node);
+  if (fs) el.style.fontSize = fs + "px";
+  else el.style.removeProperty("font-size");
+  return el;
+}
+/* 改字号要**当场**看见：这条路径不能指望 renderCanvas() —— 签名（canvasNodeSig）里没有
+   fontSize，重绘会命中复用快速通道，一个 DOM 都不拆，于是正文框 / 预览块一直停旧字号
+   （现场表现就是「拖了滑杆没反应，松手 / 重新点选一下才变」）。
+   所以直接把当前这颗节点里正在显示的那几块（编辑态 .n-text、浏览态 .n-md-browse 与
+   .n-view 纯文本回落）的内联字号改掉，并同步头部「A」的高亮与 title；
+   下一次真正的整幅重建再由 applyTextNodeFontSize 按 node.fontSize 落一遍，两边同源。 */
+function applyTextNodeFontSizeLive(node) {
+  if (!node || node.kind !== "input_text") return false;
+  const el = document.querySelector('.wf-node[data-nid="' + node.id + '"]');
+  if (!el) return false;
+  const targets = el.querySelectorAll(".n-text, .n-md-browse, .n-view");
+  for (const t of targets) applyTextNodeFontSize(node, t);
+  const fs = textNodeFontSize(node);
+  const btn = el.querySelector(".n-font-size");
+  if (btn) {
+    btn.classList.toggle("on", !!fs);
+    btn.title =
+      I18n.t("字号：") +
+      (fs ? fs + " px" : textNodeFontLabel(0) + I18n.t("（默认）")) +
+      I18n.t(" · 点击打开滑杆（上下拖，编辑与预览同时生效）");
+  }
+  return targets.length > 0;
+}
+/* ── 字号浮层：一根竖着拖、按档吸附的滑杆 ─────────────────────────────────────
+   persistent（点外部不关）：只走窗内 ✕ / 再点那颗「A」收起，开新面板前先
+   closeNodePopsExcept("textFs") 与别块互斥；落位与跟随交给 app.js 的
+   nodePopAnchor / placeNodePop / repositionNodePops（那里有本块的登记项）。 */
+let _textFsNodeId = "";
+function textFsCurNode() {
+  return _textFsNodeId && typeof nodeById === "function"
+    ? nodeById(_textFsNodeId)
+    : null;
+}
+/* 拖到哪一档：按滑轨高度换算，四舍五入 = 吸附到最近一档。 */
+function textFsIdxFromY(rail, clientY) {
+  const r = rail.getBoundingClientRect();
+  const max = TEXT_NODE_FONT_STEPS.length - 1;
+  if (!r.height) return 0;
+  const t = 1 - (clientY - r.top) / r.height;
+  return Math.round(Math.max(0, Math.min(1, t)) * max);
+}
+function textFsSync(node) {
+  const el = document.getElementById("textFsPop");
+  if (!el) return;
+  const idx = textNodeFontIndex(node);
+  const max = TEXT_NODE_FONT_STEPS.length - 1;
+  const pct = max ? (idx / max) * 100 : 0;
+  const val = el.querySelector(".text-fs-val");
+  if (val) val.textContent = textNodeFontLabel(idx);
+  const rail = el.querySelector(".text-fs-rail");
+  if (rail) {
+    rail.setAttribute("aria-valuenow", String(idx));
+    rail.setAttribute("aria-valuetext", textNodeFontLabel(idx));
+  }
+  const fill = el.querySelector(".text-fs-fill");
+  if (fill) fill.style.height = pct + "%";
+  const thumb = el.querySelector(".text-fs-thumb");
+  if (thumb) thumb.style.bottom = pct + "%";
+}
+/* 落到某一档：0 档 = 默认（不写 fontSize，沿用 CSS 基准 12.5px）。
+   整段拖动只记一步撤销：一次手势里第一次真的改值时才 pushHistory。 */
+let _textFsPushed = false;
+function textFsSetIndex(idx) {
+  const node = textFsCurNode();
+  if (!node) return;
+  const max = TEXT_NODE_FONT_STEPS.length - 1;
+  idx = Math.max(0, Math.min(max, Math.round(idx)));
+  if (idx === textNodeFontIndex(node)) return;
+  if (typeof pushHistory === "function" && !_textFsPushed) {
+    _textFsPushed = true;
+    pushHistory();
+  }
+  node.fontSize = idx === 0 ? 0 : TEXT_NODE_FONT_STEPS[idx];
+  textFsSync(node);
+  scheduleSave(true);
+  /* 就地改字号（见 applyTextNodeFontSizeLive）：够不到节点 DOM 时才退回重绘。 */
+  if (!applyTextNodeFontSizeLive(node)) renderCanvas();
+}
+function textFsPopEl() {
+  let el = document.getElementById("textFsPop");
+  if (el) return el;
+  el = document.createElement("div");
+  el.id = "textFsPop";
+  el.className = "text-fs-pop";
+  el.innerHTML =
+    '<div class="text-fs-head"><b></b><span class="text-fs-val"></span>' +
+    '<button type="button" class="mini" data-act="close">✕</button></div>' +
+    '<div class="text-fs-body"><div class="text-fs-rail" tabindex="0" role="slider"' +
+    ' aria-orientation="vertical" aria-valuemin="0">' +
+    '<div class="text-fs-fill"></div><div class="text-fs-thumb"></div></div></div>' +
+    '<p class="text-fs-hint"></p>';
+  document.body.appendChild(el);
+  el.querySelector('[data-act="close"]').onclick = () => closeTextFsPop();
+  const rail = el.querySelector(".text-fs-rail");
+  const max = TEXT_NODE_FONT_STEPS.length - 1;
+  rail.setAttribute("aria-valuemax", String(max));
+  let dragging = false;
+  rail.addEventListener("pointerdown", (ev) => {
+    if (!textFsCurNode()) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    try {
+      rail.focus();
+    } catch (_) {}
+    /* 整段拖动只记一步撤销：按下时清标记，第一次真的改值才留快照。 */
+    _textFsPushed = false;
+    dragging = true;
+    try {
+      rail.setPointerCapture(ev.pointerId);
+    } catch (_) {}
+    textFsSetIndex(textFsIdxFromY(rail, ev.clientY));
+  });
+  rail.addEventListener("pointermove", (ev) => {
+    if (!dragging) return;
+    ev.preventDefault();
+    textFsSetIndex(textFsIdxFromY(rail, ev.clientY));
+  });
+  const stopDrag = (ev) => {
+    if (!dragging) return;
+    dragging = false;
+    try {
+      rail.releasePointerCapture(ev.pointerId);
+    } catch (_) {}
+  };
+  rail.addEventListener("pointerup", stopDrag);
+  rail.addEventListener("pointercancel", stopDrag);
+  /* 上下键 / 滚轮也能挪一档（键盘可达，鼠标滚轮就是「上下拉」最省事的一种）。 */
+  rail.addEventListener("keydown", (ev) => {
+    const node = textFsCurNode();
+    if (!node) return;
+    const k = ev.key;
+    let next = null;
+    if (k === "ArrowUp" || k === "ArrowRight") next = textNodeFontIndex(node) + 1;
+    else if (k === "ArrowDown" || k === "ArrowLeft")
+      next = textNodeFontIndex(node) - 1;
+    else if (k === "Home") next = 0;
+    else if (k === "End") next = max;
+    if (next == null) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    _textFsPushed = false;
+    textFsSetIndex(next);
+  });
+  rail.addEventListener(
+    "wheel",
+    (ev) => {
+      const node = textFsCurNode();
+      if (!node || !ev.deltaY) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      _textFsPushed = false;
+      textFsSetIndex(textNodeFontIndex(node) + (ev.deltaY < 0 ? 1 : -1));
+    },
+    { passive: false },
+  );
+  return el;
+}
+function openTextFsPop(node, anchor) {
+  if (!node) return;
+  if (typeof closeNodePopsExcept === "function") closeNodePopsExcept("textFs");
+  _textFsNodeId = node.id;
+  const el = textFsPopEl();
+  el.querySelector(".text-fs-head b").textContent = I18n.t("字号");
+  el.querySelector('[data-act="close"]').setAttribute("aria-label", I18n.t("关闭"));
+  const rail = el.querySelector(".text-fs-rail");
+  rail.setAttribute("aria-label", I18n.t("字号（上下拖动，按档吸附）"));
+  rail.title = I18n.t("上下拖动调整字号（按档吸附）");
+  el.querySelector(".text-fs-hint").textContent = I18n.t(
+    "上下拖动 · 按档吸附 · 编辑与预览同时生效",
+  );
+  el.classList.add("on");
+  textFsSync(node);
+  if (typeof nodePopAnchor === "function")
+    nodePopAnchor(
+      el,
+      '.wf-node[data-nid="' + node.id + '"] .n-font-size',
+      { w: 132, h: 210 },
+      node.id,
+    );
+  if (typeof placeNodePop === "function") placeNodePop(el, anchor, el._popOpt);
+}
+function closeTextFsPop() {
+  _textFsNodeId = "";
+  const el = document.getElementById("textFsPop");
+  if (el) el.classList.remove("on");
+}
+/* 头部「A」按钮：开着就收起，否则开字号浮层（编辑态与预览态同时生效）。 */
+function textNodeFontButton(node) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "n-play n-font-size" + (textNodeFontSize(node) ? " on" : "");
+  b.textContent = "A";
+  const cur = textNodeFontSize(node);
+  b.title =
+    I18n.t("字号：") +
+    (cur ? cur + " px" : textNodeFontLabel(0) + I18n.t("（默认）")) +
+    I18n.t(" · 点击打开滑杆（上下拖，编辑与预览同时生效）");
+  b.setAttribute("aria-label", I18n.t("调整字号"));
+  b.onclick = (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    if (_textFsNodeId === node.id) {
+      closeTextFsPop();
+      return;
+    }
+    openTextFsPop(node, b);
+  };
+  return b;
+}
+
 /* 浏览态正文的 **Markdown 预览块**（需求：失焦 / 未选中时这两处输入框的正文就该是
    渲染后的样子，而不是原文本）。谁在用：
      · 文本节点板身正文框（input_text 可编辑分支，见 NODE_BROWSE_BODY.input_text）
@@ -12857,6 +13163,9 @@ function browseMdPreviewEl(text, node) {
   wrap.className =
     "node-text-view ntv-md n-view n-view-md md n-md-browse" +
     (node && node.kind === "input_text" ? " n-md-browse-txt" : "");
+  /* 文本节点自选字号：内联写在壳上，段落 / 列表随 em 继承（标题与代码块在 canvas.css
+     里已改成 em 相对字号），因此预览态和外框字号一起变。 */
+  if (node && node.kind === "input_text") applyTextNodeFontSize(node, wrap);
   const body = document.createElement("div");
   /* 内层类名与 app-nodeview.js 的 Markdown 只读视图逐字相同（那里也是 .ntv-md 里装
      渲染产物、.md 挂在容器上）：排版与滚动口径因此完全复用，不另立一套。 */
@@ -15786,9 +16095,41 @@ function openToolBuildDialog(node, opts) {
    有值）上面再加一行「只保留的这条本机路径」—— 下游接线 / @引用 拿到的就是它。
    按钮就是本节点最常用的功能（选任意类型文件 → 就地转成对应输入节点），所以不铺四种
    类型按钮；手动转类型的入口在节点头部菜单栏的四连小按钮与节点右键菜单里（两处都不给
-   「退回文件节点」的选项）。 */
+   「退回文件节点」的选项）。
+   PDF 例外（拖入画布建成的就是这一类）：body 整块只留一个预览入口 —— 点内部直接开应用内
+   翻页浮层（renderer/app-pdfview.js）。路径 / 说明文字 / 上传按钮对 PDF 都用不上（原文件不
+   做正文抽取，路径也不在这里编辑），所以一概不铺；预览模块缺席（老窗口）时退回老的
+   「路径 + 上传」形态，功能不回退。 */
 function buildInputAnyBody(node, body) {
   const keptPath = String(node.anyFile || "").trim();
+  if (
+    keptPath &&
+    typeof pdfIsPdfPath === "function" &&
+    pdfIsPdfPath(keptPath) &&
+    typeof openPdfPreview === "function"
+  ) {
+    const name = fileName(keptPath);
+    const card = document.createElement("button");
+    card.type = "button";
+    card.className = "n-any-pdf";
+    card.innerHTML = PDF_OPEN_ICON_SVG;
+    const nameEl = document.createElement("span");
+    nameEl.className = "n-any-pdf-name";
+    nameEl.textContent = name;
+    card.appendChild(nameEl);
+    card.title =
+      I18n.t("预览这份 PDF：应用内翻页查看（窗里可切到系统阅读器）") +
+      "\n" +
+      keptPath;
+    card.setAttribute("aria-label", I18n.t("预览 PDF"));
+    card.onclick = (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      openPdfPreview(keptPath, { title: name });
+    };
+    body.appendChild(card);
+    return;
+  }
   if (keptPath) {
     /* 解析不出来 → 仅保留路径：正文块就是这条路径（可选中复制），文案说清它是什么。
        不提供正文编辑 —— 本节点对外给的正是这段路径，改了就不是那个文件了。 */
@@ -15799,9 +16140,13 @@ function buildInputAnyBody(node, body) {
     body.appendChild(pathEl);
     const keptNote = document.createElement("div");
     keptNote.className = "n-any-note";
-    keptNote.textContent = I18n.t(
-      "解析不出文本 · 仅保留文件路径，下游引用到的就是这段路径",
-    );
+    /* PDF（拖入画布建成的那一类）：它不是「解析不出来」，只是不做正文抽取 —— 文案别说错 */
+    keptNote.textContent =
+      typeof pdfIsPdfPath === "function" && pdfIsPdfPath(keptPath)
+        ? I18n.t("PDF 原样保留（不解析成文本）· 下游引用到的就是这段路径")
+        : I18n.t(
+            "解析不出文本 · 仅保留文件路径，下游引用到的就是这段路径",
+          );
     body.appendChild(keptNote);
   }
   const pick = document.createElement("button");
@@ -15915,6 +16260,8 @@ function ltartTypeOfNode(node) {
   if (["png", "jpg", "jpeg", "webp", "gif", "bmp", "avif", "svg"].indexOf(e) >= 0) return "image";
   if (["mp4", "mov", "webm", "mkv", "avi", "m4v"].indexOf(e) >= 0) return "video";
   if (["wav", "mp3", "flac", "m4a", "aac", "ogg", "opus"].indexOf(e) >= 0) return "audio";
+  /* 没有后缀的文件按文本件预览（Markdown 渲染），与 isMdFilePath / fileviewLangOf 同口径 */
+  if (!e) return "text";
   if (["md", "markdown", "txt", "log", "json", "csv", "tsv", "yaml", "yml", "html", "htm", "xml", "srt", "vtt"].indexOf(e) >= 0)
     return "text";
   return "file";
@@ -15932,19 +16279,36 @@ function ltartSizeLabel(size) {
   /* 复用画布既有的字节格式化（图像元信息那一套），不再抄一份 */
   return typeof formatBytes === "function" ? formatBytes(n) : "";
 }
-/* 头部「用系统程序打开」：产物是长任务跑出来的文件，用户常要拿本机软件接着处理 */
+/* 头部「用系统程序打开」：产物是长任务跑出来的文件，用户常要拿本机软件接着处理。
+   PDF 例外：先给**应用内预览**（renderer/app-pdfview.js 的翻页浮层，页面图走 pdf:render）——
+   跑完一份 PDF 报告的第一反应是看一眼，而不是先拉起外部阅读器；预览窗里仍可切到系统阅读器。
+   预览模块缺席（老窗口）时照旧系统打开，功能不回退。 */
 function ltartOpenButtonEl(node) {
   const b = document.createElement("button");
   b.type = "button";
   b.className = "n-play n-ltart-open";
   b.textContent = "⇢";
-  b.title = I18n.t("用系统默认程序打开这件产物（路径见节点底部）");
-  b.setAttribute("aria-label", I18n.t("用系统默认程序打开产物"));
+  const p = String(node.ltFile || "");
+  const canPreview =
+    !!p &&
+    typeof pdfIsPdfPath === "function" &&
+    pdfIsPdfPath(p) &&
+    typeof openPdfPreview === "function";
+  b.title = canPreview
+    ? I18n.t("预览这件 PDF：应用内翻页查看（窗里可切到系统阅读器）")
+    : I18n.t("用系统默认程序打开这件产物（路径见节点底部）");
+  b.setAttribute(
+    "aria-label",
+    canPreview ? I18n.t("预览 PDF") : I18n.t("用系统默认程序打开产物"),
+  );
   b.onclick = (ev) => {
     ev.preventDefault();
     ev.stopPropagation();
-    const p = String(node.ltFile || "");
     if (!p) return;
+    if (canPreview) {
+      openPdfPreview(p, { title: fileName(p) });
+      return;
+    }
     if (!window.api || !window.api.shellOpenPath) {
       toast(I18n.t("无法打开文件（当前环境不支持）"), "warn");
       return;
@@ -16158,7 +16522,9 @@ function buildLtartBody(node, body) {
         const clipped = content.length > keepLen;
         const shown = clipped ? content.slice(0, keepLen) : content;
         const view =
-          /\.(md|markdown)$/i.test(want) && typeof nodeTextViewEl === "function"
+          (typeof isMdFilePath === "function"
+            ? isMdFilePath(want)
+            : /\.(md|markdown)$/i.test(want)) && typeof nodeTextViewEl === "function"
             ? nodeTextViewEl(shown, { node: node, lang: "md", class: "md n-ltart-md" })
             : null;
         if (view) pre.replaceWith(view);
@@ -16315,6 +16681,7 @@ function buildBody(node, body) {
       ta.readOnly = true;
       ta.spellcheck = false;
       ta.value = node.text || "";
+      applyTextNodeFontSize(node, ta);
       body.appendChild(ta);
     } else if (inputInherited(node)) {
       /* 只读：继承输入内容；符合 YAML → 批量条目展示（yamlOff 时仅显示原始内容） */
@@ -16344,6 +16711,7 @@ function buildBody(node, body) {
           ta.readOnly = true;
           ta.spellcheck = false;
           ta.value = disp.text;
+          applyTextNodeFontSize(node, ta);
           body.appendChild(ta);
         }
       } else if (disp && disp.image) {
@@ -16456,6 +16824,8 @@ function buildBody(node, body) {
       ta.spellcheck = false;
       ta.placeholder = I18n.t("在此输入文本内容");
       ta.value = node.text || "";
+      /* 字号：与失焦后的 Markdown 预览读同一个 node.fontSize（见 textNodeFontSize） */
+      applyTextNodeFontSize(node, ta);
       ta.addEventListener("input", () => {
         node.text = ta.value;
       });
@@ -18572,21 +18942,22 @@ function buildBody(node, body) {
       });
       prev.appendChild(pre);
     } else if (media === "pdf") {
-      /* PDF：不预览页面，整块 body 就是一枚「打开该 PDF」的大按钮——
-         铺满预览区的 PDF 图标 + 文件名，点一下交系统默认应用打开。
-         未生成时按钮为禁用态（点击给提示），不会误开一个不存在的文件。 */
+      /* PDF：卡片里放不下整页，整块 body 是一枚「预览该 PDF」的大按钮——
+         铺满预览区的 PDF logo（红底 + 白色 PDF 字样）+ 文件名，点一下开应用内预览浮层（翻页 / 缩放，
+         窗里还能转系统阅读器）。未生成时按钮为禁用态（点击给提示），不会误开
+         一个不存在的文件。 */
       const dm = document.createElement("button");
       dm.type = "button";
       dm.className = "sv-pdf" + (node.savedPath ? "" : " is-empty");
       dm.id = "svpdf-" + node.id;
       const ico = document.createElement("span");
       ico.className = "sv-pdf-ico";
-      ico.innerHTML = KIND_ICON_SVG.input_file;
+      ico.innerHTML = PDF_LOGO_SVG;
       const cap = document.createElement("span");
       cap.className = "sv-pdf-name";
       cap.textContent = savePdfNameText(node);
       dm.title = node.savedPath
-        ? I18n.t("点击用系统默认应用打开：") + node.savedPath
+        ? I18n.t("点击在应用内预览：") + node.savedPath
         : I18n.t("还没有生成 PDF——点节点上的 ▶ 生成");
       dm.addEventListener("click", async (ev) => {
         ev.stopPropagation();

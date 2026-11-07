@@ -578,8 +578,6 @@ function teEnsureHost() {
     '<b id="textEditTitle"></b><span class="review-node" id="textEditSub"></span></div>' +
     '<div class="review-actions">' +
     '<button type="button" class="rv-btn" id="textEditSizeBtn"></button>' +
-    '<button type="button" class="rv-btn rv-revise" id="textEditReviseBtn" hidden>' +
-    '<span class="rv-revise-ic">✨</span><span id="textEditReviseTxt"></span></button>' +
     '<button type="button" class="rv-btn" id="textEditCloseBtn">✕</button>' +
     "</div></div>" +
     '<div class="review-toolbar" id="textEditToolbar"></div>' +
@@ -610,7 +608,6 @@ function teEnsureHost() {
   document.body.appendChild(host);
 
   host.querySelector("#textEditCloseBtn").onclick = () => teRequestClose();
-  host.querySelector("#textEditReviseBtn").onclick = () => teRunRevision();
   host.querySelector("#textEditSizeBtn").onclick = () => teToggleSize();
   host.addEventListener("keydown", (ev) => {
     if (ev.key === "Escape") {
@@ -967,7 +964,7 @@ function teRenderEditor() {
     ed.addEventListener("mousemove", (ev) => teAnnoHover("te", ev));
     ed.addEventListener("mousedown", (ev) => teAnnoMouseDown("te", ev));
     ed.addEventListener("mouseleave", () => {
-      ed.style.cursor = "";
+      teAnnoUnhover("te");
     });
     ed.addEventListener("input", () => {
       _te.richDirty = true;
@@ -1139,6 +1136,19 @@ function teRenderVerTabs() {
     };
     wrap.appendChild(rb);
   }
+  /* 删除版本：动的是「此刻正在看的那一版」；只留一版时不给删（删完就没有正文了） */
+  if (vs.length > 1) {
+    const db = document.createElement("button");
+    db.type = "button";
+    db.className = "rv-vtab del";
+    db.textContent = "🗑 " + I18n.t("删除此版");
+    db.title = I18n.t("删除当前查看的版本；删的是最新版时自动回滚到上一个版本");
+    db.onclick = (ev) => {
+      ev.stopPropagation();
+      teDeleteVersion(_te.verIdx);
+    };
+    wrap.appendChild(db);
+  }
   try {
     wrap.scrollLeft = wrap.scrollWidth;
   } catch (_) {}
@@ -1205,6 +1215,41 @@ async function teRollbackTo(idx) {
   teSaveToNode(true);
   teRenderAll();
   toast(I18n.t("已回到该版本，它现在是当前可编辑版"), "ok");
+}
+
+/* 删除某一版：真删（splice，不可恢复）。删的是最新版 → 新的尾版（原倒数第二版）
+   自动成为当前可编辑版，正文当场写回节点（＝回滚一格）；删中间 / 旧版时其余版本原位收拢，
+   当前查看位置一律落回尾版。至少保留一版。 */
+async function teDeleteVersion(idx) {
+  const vs = teVersions();
+  if (idx < 0 || idx >= vs.length) return;
+  if (vs.length <= 1) {
+    toast(I18n.t("至少保留一个版本"), "warn");
+    return;
+  }
+  const isLast = idx === vs.length - 1;
+  const ok = await confirmDialog(
+    isLast
+      ? I18n.t("确定删除最新版本？删除后自动回滚到上一个版本，该版成为当前可编辑版。")
+      : I18n.t("确定删除该版本？删除后不可恢复（该版正文与批注一并删除）。"),
+    { title: I18n.t("删除版本"), okText: I18n.t("删除"), danger: true },
+  );
+  if (!ok) return;
+  /* 先把编辑区落回当前版，再动版本链（否则删完再 commit 会写进错位的版本） */
+  teCommit();
+  vs.splice(idx, 1);
+  if (vs.length) vs[vs.length - 1].voided = false;
+  _te.verIdx = vs.length - 1;
+  _te.editing = true;
+  _te.richDirty = false;
+  teSaveToNode({ immediate: true, clearDown: true, silent: true, skipCommit: true });
+  teRenderAll();
+  toast(
+    isLast
+      ? I18n.t("已删除最新版本，已回滚到上一个版本")
+      : I18n.t("已删除该版本"),
+    "ok",
+  );
 }
 
 function teUid(prefix) {
@@ -1939,34 +1984,43 @@ function teRenderNotes() {
   wrap.innerHTML = "";
   const v = teVisible();
   const notes = (v && v.notes) || [];
-  const head = document.createElement("div");
-  head.className = "rv-notes-head";
-  if (_te.editing) {
+  /* 顶条：只在「可编辑 + 已有批注」时出现，唯一内容是「让 AI 依据批注修订」；
+     下方只列批注卡片本身，不带提示 / 说明文案。 */
+  if (_te.editing && notes.length) {
+    const head = document.createElement("div");
+    head.className = "review-notes-head";
+    const row = document.createElement("div");
+    row.className = "rv-notes-head-row";
     const bt = document.createElement("button");
     bt.type = "button";
-    bt.className = "rv-btn rv-add-full";
-    bt.textContent = "+ " + I18n.t("全文批注");
-    bt.title = I18n.t("对整个文档附加一条批注");
-    bt.onclick = () => teFullNoteDialog();
-    head.appendChild(bt);
-    const hint = document.createElement("span");
-    hint.className = "rv-notes-hint";
-    hint.textContent = I18n.t("拖选正文后点「局部批注」即可添加");
-    head.appendChild(hint);
-  } else {
-    const t = document.createElement("span");
-    t.className = "rv-notes-title";
-    t.textContent = I18n.t("该版本的批注");
-    head.appendChild(t);
+    bt.className = "rv-btn rv-revise rv-revise-top";
+    bt.id = "textEditReviseBtn";
+    bt.innerHTML =
+      '<span class="rv-revise-ic">✨</span><span id="textEditReviseTxt"></span>';
+    const t = bt.querySelector("#textEditReviseTxt");
+    if (t) t.textContent = I18n.t("让 AI 依据批注修订") + "（" + notes.length + "）";
+    bt.title = I18n.t("让 AI 依据批注修订");
+    bt.onclick = () => teRunRevision();
+    row.appendChild(bt);
+    /* 小设置按钮：本轮修订用哪个服务商 / 模型 / 思考强度 */
+    const set = document.createElement("button");
+    set.type = "button";
+    set.className = "rv-btn rv-revise-set";
+    set.id = "textEditReviseSetBtn";
+    set.textContent = "⚙";
+    set.title = I18n.t("修订模型设置（供应商 / 模型 / 思考强度）");
+    set.onclick = () => teReviseModelDialog(teNode());
+    row.appendChild(set);
+    head.appendChild(row);
+    wrap.appendChild(head);
   }
-  wrap.appendChild(head);
   const list = document.createElement("div");
   list.className = "rv-notes-list";
   if (!notes.length) {
     const e = document.createElement("div");
     e.className = "rv-notes-empty";
     e.textContent = _te.editing
-      ? I18n.t("暂无批注 · 添加批注后顶部会出现「让 AI 依据批注修订」")
+      ? I18n.t("暂无批注")
       : I18n.t("该版本没有批注");
     list.appendChild(e);
   }
@@ -2302,11 +2356,19 @@ function teShowFloatNote(x, y, snippet) {
 function teHideFloatNote(dropSelection) {
   const f = teEl("textEditNoteFloat");
   if (f) f.hidden = true;
-  if (dropSelection) {
-    try {
-      window.getSelection().removeAllRanges();
-    } catch (_) {}
-  }
+  if (!dropSelection) return;
+  /* 正在某个文本编辑面里打字时**绝不能**清文档选区：
+     Chromium 里 window.getSelection().removeAllRanges() 会把 textarea 自己的光标一起抹掉 ——
+     字还在、光标没了，接着敲字 / 退格都不生效，看起来就是「一编辑就失焦，得再点一下」。
+     源码档每次 input 都会走到这里（见 ta.oninput），这正是文本节点源码编辑失焦的根因；
+     富文本档（contenteditable）的选区就是文档选区，同样不能清。
+     批注「绑定 / 取消」那两处调用时焦点已经在按钮上，清选区照旧生效。 */
+  const ae = document.activeElement;
+  const tag = ae && ae.tagName ? String(ae.tagName).toUpperCase() : "";
+  if (tag === "TEXTAREA" || tag === "INPUT" || (ae && ae.isContentEditable)) return;
+  try {
+    window.getSelection().removeAllRanges();
+  } catch (_) {}
 }
 
 /* 改动后自动重锚：局部批注重新贴到就近匹配位置，找不到就标「失效」 */
@@ -2377,7 +2439,8 @@ function teJumpToSnippet(nt) {
  *
  * 做法：一层 SVG 叠在窗壳（#textEditBox）上，pointer-events 整体关闭：
  *   · 每行选段画一条虚线下划线（淡橙）；
- *   · 从该段右端拉一条贝塞尔到右侧对应批注卡的左中（连线本身可点，命中区是描边）；
+ *   · 从该段文字整体最右侧中点拉一条直线到右侧对应批注卡的左中（连线本身可点，命中区是描边；
+ *     平时不显示，hover 到被批注正文时才亮出来）；
  *   · 命中判定用「相对窗壳的坐标窄带」而不是 DOM 事件目标 —— 只有贴近虚线的窄条
  *     才算点到批注，在被批注的文字上正常打字 / 划选一律不受影响（刻意保住这一点，
  *     别改成整段吃鼠标）。
@@ -2608,34 +2671,34 @@ function tePaintAnnotations(kind) {
         bottom: y + TE_ANNO_HIT_H,
       });
     }
-    /* 连线：这一段最后一行的右端 → 右侧那张批注卡的左侧 */
+    /* 连线：这段文字整体的最右端中点 → 右侧那张批注卡的左侧中点。
+       用户口径：直线（不要贝塞尔），起点取被批注文字的最右侧 / 垂直中间；
+       平时不画（见 CSS 的 .te-anno-link 只在 hover 时显形）。 */
     const card = cards.get(en.id);
     if (!card) continue;
     const cr = card.getBoundingClientRect();
-    const last = vis[vis.length - 1];
-    const x1 = Math.round(Math.min(last.x2, er.right) - br.left) + 2;
-    const y1 = Math.round((last.y1 + last.y2) / 2 - br.top);
+    let uR = -Infinity;
+    let uT = Infinity;
+    let uB = -Infinity;
+    for (const r of vis) {
+      if (r.x2 > uR) uR = r.x2;
+      if (r.y1 < uT) uT = r.y1;
+      if (r.y2 > uB) uB = r.y2;
+    }
+    const x1 = Math.round(uR - br.left) + 2;
+    const y1 = Math.round((uT + uB) / 2 - br.top);
     const x2 = Math.round(cr.left - br.left) - 2;
-    const y2 = Math.round(cr.top - br.top + Math.min(cr.height / 2, 30));
-    const dx = Math.max(16, Math.round(Math.abs(x2 - x1) * 0.5));
+    const y2 = Math.round(cr.top - br.top + cr.height / 2);
     parts.push(
-      '<path class="te-anno-link" data-note="' +
+      '<line class="te-anno-link" data-note="' +
         teEscAttr(en.id) +
-        '" d="M ' +
+        '" x1="' +
         x1 +
-        " " +
+        '" y1="' +
         y1 +
-        " C " +
-        (x1 + dx) +
-        " " +
-        y1 +
-        ", " +
-        (x2 - dx) +
-        " " +
-        y2 +
-        ", " +
+        '" x2="' +
         x2 +
-        " " +
+        '" y2="' +
         y2 +
         '"/>',
     );
@@ -2659,11 +2722,32 @@ function teAnnoHitAt(kind, ev) {
   return null;
 }
 
-/* hover 到虚线上 → 手型（用行内 cursor 覆盖正文的 text 光标，移开就还原） */
+/* 连线只在 hover 到被批注正文时显形：一次只亮当前那条 */
+function teAnnoShowLink(kind, id) {
+  const layer = teAnnoLayerEl(kind, false);
+  if (!layer) return;
+  const links = layer.querySelectorAll(".te-anno-link");
+  for (let i = 0; i < links.length; i++) {
+    const on = !!id && links[i].getAttribute("data-note") === String(id);
+    if (on) links[i].classList.add("on");
+    else links[i].classList.remove("on");
+  }
+}
+
+/* hover 到虚线上 → 手型（用行内 cursor 覆盖正文的 text 光标，移开就还原），并把对应连线亮出来 */
 function teAnnoHover(kind, ev) {
   const ed = teAnnoRichEl(kind);
   if (!ed) return;
-  ed.style.cursor = teAnnoHitAt(kind, ev) ? "pointer" : "";
+  const hit = teAnnoHitAt(kind, ev);
+  ed.style.cursor = hit ? "pointer" : "";
+  teAnnoShowLink(kind, hit ? hit.id : "");
+}
+
+/* 移出正文编辑面 → 连线收起来 */
+function teAnnoUnhover(kind) {
+  const ed = teAnnoRichEl(kind);
+  if (ed) ed.style.cursor = "";
+  teAnnoShowLink(kind, "");
 }
 
 /* 点虚线 → 重开这条批注的内容（mousedown 里吃掉默认行为，光标才不会先跳进正文） */
@@ -2792,6 +2876,152 @@ function teRenderRevisionButton() {
   } else {
     b.hidden = true;
   }
+}
+
+/* ---------- 修订模型设置（批注栏顶部的 ⚙：供应商 / 模型 / 思考强度） ----------
+
+   写的就是文本节点自己的三件套（providerId / model / effort）——「让 AI 依据批注修订」
+   与节点运行读的是同一份，不另存一份设定。思考强度默认「无」（节点还没选过档时回显「无」）。 */
+function teReviseModelProvinces() {
+  if (typeof apiProvidersForKind === "function") {
+    const ps = apiProvidersForKind("proc_text");
+    if (ps && ps.length) return ps;
+  }
+  return ((S && S.config && S.config.providers) || []).filter(
+    (p) => p && p.type === "text_openai",
+  );
+}
+
+function teReviseEffortOf(node) {
+  const raw = String((node && node.effort) || "").trim();
+  if (!raw) return "off"; /* 默认无思考 */
+  return typeof normalizeTextEffort === "function"
+    ? normalizeTextEffort(raw)
+    : "low";
+}
+
+async function teReviseModelDialog(node) {
+  if (!node) return false;
+  if (typeof mtDialogForm !== "function") return false;
+  const provs = teReviseModelProvinces();
+  if (!provs.length) {
+    toast(
+      I18n.t("未找到可用文本服务商（请在设置 · API/配置中配置并填写 API Key）"),
+      "err",
+    );
+    return false;
+  }
+  const levels =
+    typeof EFFORT_LEVELS !== "undefined" && Array.isArray(EFFORT_LEVELS)
+      ? EFFORT_LEVELS
+      : ["off", "low", "medium", "high", "max"];
+  const effLabels =
+    typeof EFFORT_LABELS !== "undefined" && EFFORT_LABELS
+      ? EFFORT_LABELS
+      : { off: "无", low: "低", medium: "中", high: "高", max: "最强" };
+  const curProv =
+    provs.find((p) => p.id === String(node.providerId || "")) || provs[0];
+  /* 与「让 AI 依据批注修订」同一个取模型口径：选中优先，否则该服务商首个可用模型 */
+  const modelsOf = (p) => {
+    const all = (p && p.models) || [];
+    return typeof providerModelFilter === "function"
+      ? providerModelFilter(p, all)
+      : all;
+  };
+  const curModels = modelsOf(curProv);
+  const curModel = String(node.model || curModels[0] || "");
+  let picked = null;
+  const label = (text) => {
+    const d = document.createElement("div");
+    d.className = "if-dlg-lab";
+    d.textContent = text;
+    return d;
+  };
+  const res = await mtDialogForm({
+    title: I18n.t("修订模型设置"),
+    hint: I18n.t("AI 依据批注修订时使用的供应商 / 模型 / 思考强度"),
+    custom: (c) => {
+      const provSel = document.createElement("select");
+      provSel.className = "if-in if-dlg-sel";
+      for (const p of provs) {
+        const o = document.createElement("option");
+        o.value = p.id;
+        o.textContent = p.name || p.id;
+        provSel.appendChild(o);
+      }
+      provSel.value = curProv.id;
+      const modelSel = document.createElement("select");
+      modelSel.className = "if-in if-dlg-sel";
+      const fillModels = (provId, want) => {
+        const p = provs.find((x) => x.id === provId) || null;
+        const models = modelsOf(p).slice();
+        modelSel.innerHTML = "";
+        const cur = String(want || models[0] || "").trim();
+        if (cur && models.indexOf(cur) < 0) models.unshift(cur);
+        if (!models.length) {
+          const o = document.createElement("option");
+          o.value = "";
+          o.textContent = I18n.t("（无可用模型）");
+          modelSel.appendChild(o);
+          return;
+        }
+        for (const m of models) {
+          const o = document.createElement("option");
+          o.value = m;
+          o.textContent = m;
+          modelSel.appendChild(o);
+        }
+        modelSel.value = cur;
+      };
+      fillModels(curProv.id, curModel);
+      const effSel = document.createElement("select");
+      effSel.className = "if-in if-dlg-sel";
+      for (const lv of levels) {
+        const o = document.createElement("option");
+        o.value = lv;
+        o.textContent = I18n.t(effLabels[lv] || lv);
+        effSel.appendChild(o);
+      }
+      effSel.value = teReviseEffortOf(node);
+      const read = () => {
+        picked = {
+          providerId: provSel.value || "",
+          model: modelSel.value || "",
+          effort: effSel.value || "off",
+        };
+      };
+      provSel.onchange = () => {
+        fillModels(provSel.value, "");
+        read();
+      };
+      modelSel.onchange = read;
+      effSel.onchange = read;
+      read();
+      c.appendChild(label(I18n.t("供应商")));
+      c.appendChild(provSel);
+      c.appendChild(label(I18n.t("模型")));
+      c.appendChild(modelSel);
+      c.appendChild(label(I18n.t("思考强度")));
+      c.appendChild(effSel);
+    },
+    actions: [
+      { id: "cancel", label: I18n.t("取消") },
+      { id: "ok", label: I18n.t("保存"), primary: true },
+    ],
+  });
+  if (!res || res.action !== "ok" || !picked) return false;
+  const n = typeof nodeById === "function" ? nodeById(node.id) || node : node;
+  if (typeof pushHistory === "function") {
+    try {
+      pushHistory();
+    } catch (_) {}
+  }
+  n.providerId = picked.providerId;
+  n.model = picked.model;
+  n.effort = picked.effort;
+  tePersist(true);
+  toast(I18n.t("已更新修订模型设置"), "ok");
+  return true;
 }
 
 /* 修订用的服务商：节点自身 providerId 优先，没有就回退任一可用文本服务商

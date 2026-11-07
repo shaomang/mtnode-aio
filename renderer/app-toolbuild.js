@@ -1465,7 +1465,8 @@ function createToolBuildSessionForNode(node, req, filePath, route) {
   const reqText = String(req === undefined || req === null ? "" : req).trim();
   const sess = {
     id: typeof uid === "function" ? uid("as") : "as" + Date.now(),
-    title: I18n.t("开发 · ") + (toolDevNameOf(node) || I18n.t("未命名工具")),
+    /* 标题口径（用户口径）：「开发」不写进标题，会话标题就是工具名 */
+    title: toolDevNameOf(node) || I18n.t("未命名工具"),
     workspace: typeof dshWorkspaceOf === "function" ? dshWorkspaceOf(node) || "" : "",
     canvasWfId: typeof canvasWfIdForNode === "function" ? canvasWfIdForNode(node) : "",
     preset: (cur && cur.preset) || AGENT_PRESET_DEFAULT || "minimal",

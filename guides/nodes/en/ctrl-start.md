@@ -2,7 +2,7 @@
 
 ![diagram](img/ctrl-start.svg)
 
-Fixed task entry. Task ▶ pulses from here. Cannot delete.
+Fixed entry inside a task: task ▶ pulses from here. Cannot be deleted.
 
 ## Ports
 - **In**: none

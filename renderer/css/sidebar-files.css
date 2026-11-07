@@ -223,6 +223,11 @@
   color: #5ed3a8;
 }
 
+/* PDF：与画布上 PDF 预览按钮同族的红（一眼认出是可翻页预览的 PDF） */
+.sf-ico-pdf {
+  color: #e06c75;
+}
+
 .sf-name {
   flex: 1;
   min-width: 0;
@@ -435,6 +440,10 @@ body.theme-light .sf-ico-image {
 
 body.theme-light .sf-ico-media {
   color: #0f766e;
+}
+
+body.theme-light .sf-ico-pdf {
+  color: #c0392b;
 }
 
 body.theme-light .sf-row.sel {

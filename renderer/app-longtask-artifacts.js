@@ -58,6 +58,8 @@ function ltArtExtOf(p) {
 }
 function ltArtTypeOf(p) {
   const ext = ltArtExtOf(p);
+  /* 没有后缀的文件按文本件预览（Markdown 渲染），与 isMdFilePath / fileviewLangOf 同口径 */
+  if (!ext) return "text";
   for (const k of Object.keys(LT_ART_EXT)) if (LT_ART_EXT[k].indexOf(ext) >= 0) return k;
   return "file";
 }

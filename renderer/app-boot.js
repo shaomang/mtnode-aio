@@ -1155,9 +1155,28 @@ async function init() {
   $("#btnToolWf").onclick = () => setView("workflow");
   $("#btnToolAgent").onclick = () => setView("agent");
   if ($("#btnTeam")) $("#btnTeam").onclick = () => setView("team");
-  $("#wfSelect").onchange = (ev) => {
-    if (ev.target.value) loadWorkflow(ev.target.value);
-  };
+  /* 研究（第 4 个视图，测试用）：入口只对账号 ms2308 露出（显隐在 app-research.js 的
+     researchSyncEntry），这里再守一道 —— 即使有人手动把按钮 display 改回来，非本人也进不去。 */
+  if ($("#btnResearch"))
+    $("#btnResearch").onclick = () => {
+      if (window.MTResearch && !window.MTResearch.userIsOwner()) return;
+      setView("research");
+    };
+  /* 顶栏画布下拉（自绘菜单，见 app.js 的 wfPickToggle）：点按钮开合，点外部 / Esc 收起 */
+  if ($("#wfPickBtn")) {
+    $("#wfPickBtn").onclick = (ev) => {
+      ev.stopPropagation();
+      wfPickToggle();
+    };
+    document.addEventListener("click", (ev) => {
+      const box = $("#wfPick");
+      if (!box || box.contains(ev.target)) return;
+      wfPickClose();
+    });
+    document.addEventListener("keydown", (ev) => {
+      if (ev.key === "Escape") wfPickClose();
+    });
+  }
   $("#btnUndo").onclick = undo;
   $("#btnRedo").onclick = redo;
   /* 顶栏「复制」（Ctrl+D）：就地完整克隆选中节点（等同复制 + 粘贴，落点在源节点右下各一格；
@@ -1709,7 +1728,7 @@ async function init() {
   }
   const bootToAgentOrTeam = bootView === "agent" || bootView === "team";
   /* 会话 / 团队视图把右侧画布助手栏收掉（与 setView 同口径；不持久化，回画布仍按用户偏好） */
-  if (bootToAgentOrTeam && typeof setAssistOpen === "function")
+  if ((bootToAgentOrTeam || bootView === "research") && typeof setAssistOpen === "function")
     setAssistOpen(false, false);
   /* 启动期先把视图切过去，但**别**在这里拆建 DOM：setView 对 agent / team 会各画一遍
      （renderAgentSession / renderTeamPane），紧接着下面那句首绘还要整屏再画一遍 ——
@@ -1731,15 +1750,26 @@ async function init() {
     renderAgentSession();
   else if (bootView === "team" && typeof renderTeamPane === "function")
     renderTeamPane();
+  else if (bootView === "research") {
+    /* 研究视图（第 4 个视图）：首绘之后按当前画布装载 research/ 目录。
+       权限收口在 app-research.js 的 researchSyncEntry（用户名 ms2308 才显示入口）；
+       不是本人却带着 view=research 的旧配置启动时，那边会把它顶回画布视图。 */
+    try {
+      if (window.MTResearch && typeof window.MTResearch.enter === "function")
+        window.MTResearch.enter();
+    } catch (_) {}
+  }
   /* 首次使用引导：本机一个「带 Key 的文本服务商」都没有（新装 / 刚清掉 DeepSeek Key）
      → 首绘落定后弹一次图文引导窗（renderer/app-deepseek-onboard.js，persistent，可「稍后配置」）。
-     只在启动这一段判一次，不跟着配置变化反复弹。 */
+     需求：进应用时**只显示第一次** —— 弹过的那次把 config.dsGuideSeen 落盘，之后开
+     机不再自动弹；「调用官方 DeepSeek API 且没 Key」那条闸（dsEnsureModelReady /
+     主进程 ds:needKey）不受影响，仍然每次调用都弹。 */
   try {
     const bootProvs = (S.config && Array.isArray(S.config.providers)) ? S.config.providers : [];
     const bootHasTextKey = bootProvs.some(
       (p) => p && p.type === "text_openai" && String(p.apiKey || "").trim(),
     );
-    if (!bootHasTextKey && typeof dsOpenOnboard === "function") dsOpenOnboard();
+    if (!bootHasTextKey && typeof dsOpenBootGuide === "function") dsOpenBootGuide();
   } catch (_) {}
   ensureTimerScheduler();
   /* 会话正文的后台空闲补读（懒加载的第二条腿，见 app-assist.js agentWireBodyBackfill）：

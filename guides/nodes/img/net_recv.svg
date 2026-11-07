@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 520 190" width="520" height="190">
+  <rect width="520" height="190" fill="#0d1016"/>
+  <defs>
+    <marker id="arr" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M0,0 L8,4 L0,8 z" fill="#f0c14d"/>
+    </marker>
+  </defs>
+  <rect x="16" y="56" width="118" height="48" rx="6" fill="#101820" stroke="#38d6ff" stroke-width="1.6"/>
+  <text x="75" y="84" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">TCP / UDP 监听</text>
+  <line x1="134" y1="74" x2="178" y2="62" stroke="#38d6ff" stroke-width="1.8" marker-end="url(#arr)"/>
+  <line x1="178" y1="62" x2="134" y2="74" stroke="#38d6ff" stroke-width="1.8" marker-end="url(#arr)"/>
+  <rect x="178" y="44" width="140" height="72" rx="6" fill="#1a140e" stroke="#ff8f2e" stroke-width="1.6"/>
+  <text x="248" y="84" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">网络 · 接收</text>
+  <line x1="318" y1="62" x2="360" y2="44" stroke="#5fd68a" stroke-width="1.8" marker-end="url(#arr)"/>
+  <line x1="318" y1="90" x2="360" y2="104" stroke="#f0c14d" stroke-width="1.8" marker-end="url(#arr)"/>
+  <rect x="360" y="24" width="140" height="40" rx="6" fill="#101610" stroke="#5fd68a" stroke-width="1.6"/>
+  <text x="430" y="48" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">信息 · 收到的文本</text>
+  <rect x="360" y="86" width="140" height="40" rx="6" fill="#1a1610" stroke="#f0c14d" stroke-width="1.6"/>
+  <text x="430" y="110" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">控制 · 每收一条一发</text>
+  <text x="260" y="150" text-anchor="middle" fill="#5a6472" font-size="10" font-family="Segoe UI,sans-serif">监听一个 主机:端口 通道</text>
+  <text x="260" y="180" text-anchor="middle" fill="#5a6472" font-size="10" font-family="Segoe UI,sans-serif">纯数据源 · 不接上游 · 每收到一条脉冲一次</text>
+  <text x="512" y="14" text-anchor="end" fill="#3b4452" font-size="9" font-family="Segoe UI,sans-serif">net_recv</text>
+</svg>

@@ -8,8 +8,8 @@
  *     ＋「浏览…」手动选目录；默认画布工作目录；选择按画布记忆（S.wf.sideFiles）。
  *   · 树：递归懒加载（展开文件夹才读盘，一层一个 file:readDir）；显示点号隐藏文件，
  *     但 node_modules / .git 只列不自动展开。
- *   · 预览：md / 文本 / 图像 / 视频 / 音频行右侧「预览」字样，点击复用已有右侧面板 openFilePeek
- *     （音频由面板里的波形播放器承接）；
+ *   · 预览：md / 文本 / 图像 / 视频 / 音频 / PDF 行右侧「预览」字样，点击复用已有右侧面板 openFilePeek
+ *     （音频由面板里的波形播放器承接；PDF 走面板里的 PDF 视图，页面图走 pdf:render）；
  *     单击只选中，双击文件名 = 预览（目录 = 展开 / 收起）。Ctrl / Shift 多选。
  *   · 文件操作：右键菜单 重命名 / 复制 / 剪切 / 删除 / 在资源管理器中显示 / 复制完整路径，
  *     页头小工具条 刷新 / 粘贴，键盘 Ctrl+C / Ctrl+X / Ctrl+V（焦点在本页时生效）。
@@ -25,7 +25,8 @@
  *   · 批量：超过 100 项弹非模态进度框（带「中断」），中断后已完成的保留不回滚。
  *   · 删除：确认后走系统回收站（file:trash），回收站不可用时主进程报错 → 提示并中止。
  *   · 拖到画布：内部拖拽（application/x-mtnode-files）→ 先弹窗确认，再由 app.js 的
- *     createNodesFromDroppedFiles 按类型建节点（图像 / 文本 / 音视频 / 其余 → 文件块）；
+ *     createNodesFromDroppedFiles 按类型建节点（图像 / 文本 / 音视频 / PDF 文件节点 /
+ *     其余 → 执行节点）；
  *     拖文件夹只取**第一层**文件、不递归；整批记一步，Ctrl+Z 一次撤销。
  *
  * 依赖（都在 app.js 之后加载，取用时机在调用期，不做模块初始化绑定）：
@@ -98,14 +99,19 @@ function sfSplitName(name) {
 }
 function sfIsMd(p) {
   const e = sfExtOf(p);
-  return e === "md" || e === "markdown";
+  if (e === "md" || e === "markdown") return true;
+  /* 没有后缀的文件按 Markdown 预览（与 app-fileview.js 的 fileviewLangOf / app.js 的
+     isMdFilePath 同口径）：名字里整个没有 "." 才认，.env / .gitignore 这类隐藏文件不在此列 */
+  return !e && sfBaseName(p).indexOf(".") < 0;
 }
 /* 文本 / 代码：优先复用 app-fileview.js 的语言判定（单一真源），退化到扩展名表 */
 function sfLangOf(p) {
   return typeof fileviewLangOf === "function" ? fileviewLangOf(p) || "" : "";
 }
 function sfIsTextLike(p) {
-  return !!sfLangOf(p) || SF_TEXT_EXT.has(sfExtOf(p));
+  /* 没有后缀的文件按 Markdown 当文本看（fileviewLangOf 已判成 md，这里再兜一层，
+     免得脚本加载顺序变了就退成「其他」、连预览入口都没有） */
+  return sfIsMd(p) || !!sfLangOf(p) || SF_TEXT_EXT.has(sfExtOf(p));
 }
 function sfIsImagePath(p) {
   if (typeof fileviewIsImagePath === "function") return !!fileviewIsImagePath(p);
@@ -121,10 +127,22 @@ function sfIsAudioPath(p) {
   if (typeof fileviewIsAudioPath === "function") return !!fileviewIsAudioPath(p);
   return SF_AUDIO_EXT.has(sfExtOf(p));
 }
-/* 需求口径：md / 文本 / 图像 / 视频 / 音频给「预览」字样
-   （视频由面板里的原生播放器承接，音频由面板复用的波形播放器承接） */
+/* 与 app.js / pdf-markdown.js 同口径：桥在就委托它的 pdfIsPdfPath，缺席时按后缀判 */
+function sfIsPdfPath(p) {
+  if (typeof pdfIsPdfPath === "function") return !!pdfIsPdfPath(p);
+  return sfExtOf(p) === "pdf";
+}
+/* 需求口径：md / 文本 / 图像 / 视频 / 音频 / PDF 给「预览」字样
+   （视频由面板里的原生播放器承接，音频由面板复用的波形播放器承接，
+    PDF 由面板里的 PDF 视图承接（renderer/app-fileview.js 的 renderFilePeekPdf）） */
 function sfPreviewable(p) {
-  return sfIsImagePath(p) || sfIsVideoPath(p) || sfIsAudioPath(p) || sfIsTextLike(p);
+  return (
+    sfIsPdfPath(p) ||
+    sfIsImagePath(p) ||
+    sfIsVideoPath(p) ||
+    sfIsAudioPath(p) ||
+    sfIsTextLike(p)
+  );
 }
 /* 类型筛选格：全部 / 文本 / 图像 / 媒体 / 其他 */
 function sfTypeBucket(p) {
@@ -136,6 +154,7 @@ function sfTypeBucket(p) {
 /* 文件名左侧图标分档 */
 function sfIconKind(p, isDir) {
   if (isDir) return "dir";
+  if (sfIsPdfPath(p)) return "pdf";
   if (sfIsImagePath(p)) return "image";
   if (SF_MEDIA_EXT.has(sfExtOf(p))) return "media";
   if (sfIsMd(p)) return "md";
@@ -196,7 +215,8 @@ function sfDropSummary(counts, dirInfo) {
   if (counts.text) parts.push(T("文本") + " " + counts.text);
   if (counts.audio) parts.push(T("音频") + " " + counts.audio);
   if (counts.video) parts.push(T("视频") + " " + counts.video);
-  if (counts.other) parts.push(T("文件") + " " + counts.other);
+  if (counts.pdf) parts.push("PDF " + counts.pdf);
+  if (counts.other) parts.push(T("执行节点") + " " + counts.other);
   let s =
     T("将创建 {n} 个节点：", { n: counts.total || 0 }) + (parts.join(" / ") || "—");
   if (dirInfo && dirInfo.dirs) {
@@ -223,12 +243,14 @@ const SF_ICON = {
     '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.2" d="M2.6 3.2h4v9.6h-4zM8.9 5.4l4.5-2v9.2l-4.5-2z"/></svg>',
   file:
     '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.2" d="M3.5 2.5h6l3 3v8h-9z"/><path fill="none" stroke="currentColor" stroke-width="1.2" d="M9.5 2.5v3h3"/></svg>',
+  pdf:
+    '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.2" d="M3.5 2.5h6l3 3v8h-9z"/><path fill="none" stroke="currentColor" stroke-width="1.2" d="M9.5 2.5v3h3"/><path fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" d="M5.4 8.6h5.2M5.4 10.4h3.4"/></svg>',
 };
 
 /* ── 运行态（模块级单例，不进画布数据） ── */
 const SF = {
   tab: "nodes", /* nodes | files */
-  rootKind: "canvas", /* canvas | project | custom */
+  rootKind: "canvas", /* canvas | project | custom | research */
   root: "",
   expanded: new Set(),
   cache: new Map(), /* dir → {exists, entries[]} */
@@ -245,6 +267,9 @@ const SF = {
   search: null, /* {q, list, capped} */
   menu: null,
   renameInput: null,
+  /* 研究视图的根覆盖（<画布工作目录>/research）；只在研究视图里非空 */
+  overrideDir: "",
+  prevTab: "", /* 进研究视图前用户停在哪一格（离开时还回去） */
   wfId: "", /* 当前画布 id：切画布时重解析目录选择 */
 };
 
@@ -306,12 +331,44 @@ function sfSaveRoot(kind, dir) {
     if (typeof scheduleSave === "function") scheduleSave();
   } catch (_) {}
 }
-/* 当前根（按画布记忆；记忆失效则回落画布工作目录） */
+/* 当前根（按画布记忆；记忆失效则回落画布工作目录）。
+   研究视图强制覆盖成 <画布工作目录>/research（见 sfSetRootOverride）：覆盖只活在内存里，
+   不写进 wf.sideFiles —— 那是「画布」的选择，不该被研究视图改掉。 */
 function sfResolveRoot() {
+  if (SF.overrideDir) return { kind: "research", dir: SF.overrideDir };
   const st = sfStoredRoot();
   if (st && st.kind === "project" && st.dir) return { kind: "project", dir: st.dir };
   if (st && st.kind === "custom" && st.dir) return { kind: "custom", dir: st.dir };
   return { kind: "canvas", dir: sfCanvasWs() };
+}
+/* 研究视图用：根锁定在 research/（目录可能还不存在 —— 初始化之后才有） */
+function sfSetRootOverride(dir) {
+  const d = String(dir || "").trim();
+  SF.overrideDir = d;
+  const sb = sf$("sidebar");
+  if (sb) sb.classList.toggle("sf-research", !!d);
+  sfSetTab("files");
+  sfEnterRoot(d ? { kind: "research", dir: d } : null);
+}
+function sfClearRootOverride() {
+  if (!SF.overrideDir) return;
+  SF.overrideDir = "";
+  const sb = sf$("sidebar");
+  if (sb) sb.classList.remove("sf-research");
+  /* 回到画布记忆里那个根，并把 Tab 还给用户原来那一格 */
+  sfEnterRoot(null);
+  if (SF.prevTab) sfSetTab(SF.prevTab);
+  SF.prevTab = "";
+}
+/* 进 / 出研究视图的唯一入口（由视图外壳 applyViewChrome 调） */
+function sfOnViewChange(view) {
+  if (view === "research") {
+    if (!SF.overrideDir && SF.tab) SF.prevTab = SF.tab;
+    const ws = sfCanvasWs();
+    sfSetRootOverride(ws ? sfJoin(ws, "research") : "");
+    return;
+  }
+  sfClearRootOverride();
 }
 
 /* ── 页头：Tabs / 目录选择器 / 工具条 ── */
@@ -406,6 +463,19 @@ function sfBuildTabs() {
 function sfSyncRootSelect() {
   const sel = sf$("sideFilesRoot");
   if (!sel) return;
+  /* 研究视图里根是锁死的（research/），选择器退化成一行只读回显 */
+  if (SF.overrideDir) {
+    sel.innerHTML = "";
+    const o = document.createElement("option");
+    o.value = "__research__";
+    o.textContent = I18n.t("研究目录：research");
+    sel.appendChild(o);
+    sel.selectedIndex = 0;
+    sel.disabled = true;
+    sel.title = SF.overrideDir;
+    return;
+  }
+  sel.disabled = false;
   const cur = SF.rootKind === "project" ? "__proj__" + SF.root : SF.rootKind === "custom" ? "__custom__" : "__canvas__";
   const opts = [];
   const ws = sfCanvasWs();
@@ -424,7 +494,8 @@ function sfSyncRootSelect() {
   sel.title = SF.root || I18n.t("尚未设置工作目录");
 }
 function sfSetTab(tab) {
-  SF.tab = tab === "files" ? "files" : "nodes";
+  /* 研究视图里只有文件页（节点列表属于画布，硬切回 files 防止串场） */
+  SF.tab = SF.overrideDir ? "files" : tab === "files" ? "files" : "nodes";
   const sb = sf$("sidebar");
   if (sb) sb.classList.toggle("sf-on", SF.tab === "files");
   const nodes = sf$("sideTabNodes");
@@ -741,8 +812,15 @@ function sfToggleDir(path) {
   sfRender();
 }
 function sfPreview(path) {
+  /* PDF 也走右侧文件面板（renderer/app-fileview.js 的 renderFilePeekPdf：页面图走
+     主进程 pdf:render），与图片 / 视频 / 音频 / 文本同一个预览框，不再弹翻页浮层。
+     面板通道缺席时才退回 app-pdfview.js 的浮层。 */
   if (typeof openFilePeek === "function") {
     if (!openFilePeek(path, { mode: "read" })) toast(I18n.t("无法预览该文件"), "warn");
+    return;
+  }
+  if (sfIsPdfPath(path) && typeof openPdfPreview === "function") {
+    openPdfPreview(path, { title: sfBaseName(path) });
   }
 }
 
@@ -1259,10 +1337,16 @@ async function sidebarFilesDropToCanvas(paths, pt) {
     toast(I18n.t("这里没有可建节点的文件"), "warn");
     return true;
   }
-  const counts = { image: 0, text: 0, audio: 0, video: 0, other: 0, total: all.length };
+  const counts = { image: 0, text: 0, audio: 0, video: 0, pdf: 0, other: 0, total: all.length };
   for (const p of all) {
-    const k =
-      typeof classifyDropFile === "function" ? classifyDropFile(p) : "other";
+    /* PDF 拖入会建成普通「文件节点」（保留原文件，不解析成文本），摘要里单独算「PDF」；
+       其余认不出 / 可执行的文件建成执行节点，摘要里算「执行」 */
+    const isPdf = typeof pdfIsPdfPath === "function" && pdfIsPdfPath(p);
+    const k = isPdf
+      ? "pdf"
+      : typeof classifyDropFile === "function"
+        ? classifyDropFile(p)
+        : "other";
     if (counts[k] === undefined) counts.other++;
     else counts[k]++;
   }
@@ -1332,6 +1416,10 @@ window.MTNodeSideFiles = {
   importPaths: sfImportFromOS,
   dropPayload: sidebarFilesDropPayload,
   dropToCanvas: sidebarFilesDropToCanvas,
+  /* 研究视图专用：根锁到 <画布工作目录>/research，离开自动还回去 */
+  setRootOverride: sfSetRootOverride,
+  clearRootOverride: sfClearRootOverride,
+  onViewChange: sfOnViewChange,
 };
 window.sidebarFilesDropPayload = sidebarFilesDropPayload;
 window.sidebarFilesDropToCanvas = sidebarFilesDropToCanvas;

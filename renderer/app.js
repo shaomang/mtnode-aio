@@ -85,6 +85,7 @@ const S = {
   boxMode: false, /* 框选模式开关 */
   hideWires: false, /* 顶栏「隐藏线」：临时把连线压到几乎不可见（纯视觉，不落画布） */
   sidebarOpen: false,
+  researchSide: true, /* 研究视图的左栏（文件页）显隐，与画布侧栏互不影响 */
   sideCollapsed: {}, /* 边栏分类折叠状态 */
   sideSuperCollapsed: {}, /* 节点层树折叠状态 */
   /* 右侧画布助手 */
@@ -1699,8 +1700,10 @@ const NODE_DEFAULTS = {
     voiceMode: "auto", /* auto | clone | design | direction（能力；auto 按参数自动判定） */
     instruction: "", /* 指令（音色设计 / 音色导演）；留空则用端子给的指令 */
     cfgScale: 4, /* 指令跟随强度；默认 4（官方建议 instruction 场景用 4） */
-    seed: 42,
-    rerollSeed: true, /* 每次合成（含抽卡）种子 +1，避免重跑拿到一模一样的一段语音 */
+    seed: 1,
+    /* 语音默认**固定种子**：同文本 + 同角色 / 参考音频 + 同参数 ⇒ 同一段音频。
+       （以前默认每次 +1，同一句话每遍音色都不一样；想换念法就改种子，或在设置里打开摇数） */
+    rerollSeed: false,
     ttsFormat: "wav", /* 输出格式 wav | flac | mp3（mp3 需 ffmpeg） */
     outputPath: "",
     breezeStatus: "",
@@ -12989,12 +12992,13 @@ function mediaKindOfPath(p) {
   return "";
 }
 /* 拖文件进画布时用的图像清单：只列 Chromium <img> 能直接显示的格式
-   （tiff / heic 等不进图像节点，落到「其他」→ 开发文件块，避免建出一个瞎图） */
+   （tiff / heic 等不进图像节点，落到「其他」→ 执行节点，避免建出一个瞎图） */
 const IMAGE_FILE_EXTS = [
   "png", "jpg", "jpeg", "webp", "gif", "bmp", "svg", "ico", "avif", "apng",
 ];
 /* 可当正文读进「文本节点」的扩展名：文档 / 数据 / 代码 / 配置 / 脚本
-   （pdf 也在内：拖入后建「文本节点」，正文由 renderer/pdf-markdown.js 解析出的 Markdown 填充） */
+   （pdf 虽然列在下面，但拖入时**不按文本收**：createNodesFromDroppedFiles 先判 pdf →
+   建普通「文件节点」保留原文件，需要文字时再手动「解析为 Markdown」） */
 const TEXT_FILE_EXTS = [
   "txt", "text", "md", "markdown", "mdx", "rst", "adoc", "log", "json",
   "json5", "jsonc", "ndjson", "yaml", "yml", "toml", "ini", "cfg", "conf",
@@ -13006,12 +13010,19 @@ const TEXT_FILE_EXTS = [
   "graphql", "gql", "tpl", "njk", "mustache", "po", "pot", "srt", "vtt",
   "pdf",
 ];
+/* 可执行文件后缀（拖入画布时建成「执行节点」，双击 / ▶ 由 Windows 默认程序启动）：
+   .bat / .cmd 本来在 TEXT_FILE_EXTS 里，这里排在文本判定之前，先按可执行收 */
+const EXEC_FILE_EXTS = [
+  "exe", "bat", "cmd", "com", "msi", "lnk", "jar", "scr", "msc", "appx", "msix",
+];
 /* 外部拖入的文件该建哪种节点：'image' | 'text' | 'audio' | 'video' | 'other'
-   （other = 未知/二进制，一律建成开发节点「文件」块，只留路径引用） */
+   （other = 可执行文件 / 未知扩展名 / 二进制：一律建成「执行节点」，绑定这个文件，
+   执行时交给 Windows 启动，不再建开发节点「文件」块） */
 function classifyDropFile(p) {
   const e = fileExtNoDot(p);
   if (!e) return "other";
   if (IMAGE_FILE_EXTS.indexOf(e) >= 0) return "image";
+  if (EXEC_FILE_EXTS.indexOf(e) >= 0) return "other";
   const m = mediaKindOfPath(p);
   if (m) return m;
   if (TEXT_FILE_EXTS.indexOf(e) >= 0) return "text";
@@ -22372,9 +22383,15 @@ function renderSuperSidebarTree(tree, filter) {
   return true;
 }
 /** 画布左侧边栏只在画布视图存在：会话视图（自带会话列表 .agent-side）一律收起。
- *  用户偏好仍记在 S.sidebarOpen，切回画布自动恢复。 */
+ *  用户偏好仍记在 S.sidebarOpen，切回画布自动恢复。
+ *  研究视图复用同一条边栏（文件页，根 = research/），它的显隐单独记在 S.researchSide。 */
+function sidebarOpenForView() {
+  if (S.view === "agent") return false;
+  if (S.view === "research") return S.researchSide !== false;
+  return !!S.sidebarOpen;
+}
 function applySidebarVisibility() {
-  const open = !!S.sidebarOpen && S.view !== "agent";
+  const open = sidebarOpenForView();
   const layout = $("#layout");
   if (layout) layout.classList.toggle("sidebar-open", open);
   const btn = $("#btnSidebar");
@@ -22388,6 +22405,13 @@ function toggleSidebar() {
     toast(I18n.t("会话视图不使用画布边栏：请在「画布」视图中查看节点列表"), "warn");
     return;
   }
+  if (S.view === "research") {
+    S.researchSide = S.researchSide === false;
+    applySidebarVisibility();
+    if (typeof applyViewChrome === "function") applyViewChrome("research");
+    renderStatus();
+    return;
+  }
   S.sidebarOpen = !S.sidebarOpen;
   applySidebarVisibility();
   if (S.sidebarOpen) renderSidebar();
@@ -22398,6 +22422,15 @@ function renderSidebar() {
   applySidebarVisibility();
   if (S.view === "agent") {
     renderAgentSessionSidebar();
+    return;
+  }
+  /* 研究视图：同一条边栏换成「文件」页（根 = research/），节点树不参与 */
+  if (S.view === "research") {
+    const f = window.MTNodeSideFiles;
+    if (f) {
+      f.setTab("files");
+      f.refresh();
+    }
     return;
   }
   const tree = $("#sideTree");
@@ -24777,7 +24810,8 @@ function bindCanvas() {
     }
     if (!target) {
       /* 落点没有可接收文件的节点：不再弹「请拖到图像节点」警告，
-         而是按扩展名逐文件自动建节点（图像 / 文本 / 音频 / 视频 / 其他→开发文件块） */
+         而是按扩展名逐文件自动建节点（图像 / 文本 / 音频 / 视频 / PDF 文件节点 /
+         其他→执行节点） */
       await createNodesFromDroppedFiles(files, pt);
       return;
     }
@@ -26229,8 +26263,10 @@ function addNode(kind, x, y, extra) {
 /* ============ 拖外部文件进画布空白处：按类型自动建节点 ============
  * 图像 → input_image（复制进工作流资产）；文本/代码 → input_text（读正文，超大截断）；
  * 音频 / 视频 → input_audio / input_video（只引用原绝对路径）；
- * 其他（未知扩展名、二进制、无扩展名）→ 开发节点「文件」块，路径写进概述。
- * 先把所有磁盘 IO 做完（复制失败 / 读不出来的文件降级成文件块），再一次性建节点：
+ * PDF → input_any（普通「文件节点」，只登记本机路径，原样保留，需要文字时再解析）；
+ * 其他（可执行文件、未知扩展名、二进制、无扩展名）→ 执行节点（kind execute，绑定该文件，
+ * 双击 / ▶ 时交给 Windows 默认程序启动 —— 不再建开发节点「文件」块 / 节点层）。
+ * 先把所有磁盘 IO 做完（复制失败 / 读不出来的文件降级成执行节点），再一次性建节点：
  * 一次 pushHistory（一步撤销全部）、网格排布、建完全选、一条汇总 toast。 */
 const DROP_FILE_STEP_X = 340;
 const DROP_FILE_STEP_Y = 250;
@@ -26239,7 +26275,7 @@ const DROP_TEXT_KEEP_BYTES = 2 * 1024 * 1024;
 /* 超过这个大小干脆不读入：避免把上百 MB 文本经 IPC 灌进渲染层，只留路径提示 */
 const DROP_TEXT_MAX_READ_BYTES = 32 * 1024 * 1024;
 
-/* 拖入文件名 → 节点标题：开发文件块保留扩展名，输入节点用主名（与图像节点口径一致） */
+/* 拖入文件名 → 节点标题：执行节点保留扩展名，输入节点用主名（与图像节点口径一致） */
 function dropNodeTitle(p, keepExt) {
   const name = String(fileName(p) || "").trim() || I18n.t("文件");
   if (keepExt) return name;
@@ -26253,15 +26289,10 @@ function humanBytes(n) {
     : Math.round(Number(n) || 0) + " B";
 }
 
-/* 拖入的「其他」文件 → 开发节点文件块概述（两段式：【功能】设计说明 + 【实现】路径） */
-function devFileBlockNote(absPath) {
-  return I18n.t(
-    "【功能】外部拖入画布的文件资源：{name}，仅作引用与快速打开，不参与工作流数据流。\n【实现】绝对路径：{path}",
-    { name: fileName(absPath) || I18n.t("文件"), path: absPath },
-  );
-}
+/* 拖入的「其他」文件已改建成执行节点（见 createNodesFromDroppedFiles），
+   原先这里给开发节点「文件」块拼概述的 devFileBlockNote 已不再有调用方，随本轮删除。 */
 
-/* 读取拖入的文本文件；返回 null = 读不出来（调用方降级成文件块） */
+/* 读取拖入的文本文件；返回 null = 读不出来（调用方降级成执行节点） */
 async function readDroppedTextFile(p, size) {
   if (size > DROP_TEXT_MAX_READ_BYTES) {
     return {
@@ -26295,7 +26326,7 @@ async function readDroppedTextFile(p, size) {
 async function createNodesFromDroppedFiles(files, pt) {
   const list = [...(files || [])];
   const items = [];
-  /* noPath = 连本机路径都取不到（无法登记）；unreadable = 内容/复制失败，已降级成文件块 */
+  /* noPath = 连本机路径都取不到（无法登记）；unreadable = 内容/复制失败，已降级成执行节点 */
   let noPath = 0;
   let unreadable = 0;
   for (const f of list) {
@@ -26306,13 +26337,20 @@ async function createNodesFromDroppedFiles(files, pt) {
       noPath++;
       continue;
     }
-    items.push({ path: p, kind: classifyDropFile(p), name: fileName(p) });
+    /* PDF 单独成类：拖入后**不做任何解析**，原样保留原文件，建成普通「文件节点」
+       （input_any）—— 纯文本节点会把排版 / 表格 / 图片全丢掉，见下方建节点分支。 */
+    const isPdf = typeof pdfIsPdfPath === "function" && pdfIsPdfPath(p);
+    items.push({
+      path: p,
+      kind: isPdf ? "pdf" : classifyDropFile(p),
+      name: fileName(p),
+    });
   }
   if (!items.length) {
     toast(I18n.t("无法读取该文件路径"), "err");
     return;
   }
-  /* 先做完磁盘 IO：图像复制进资产、文本读正文；失败的一律降级成开发文件块 */
+  /* 先做完磁盘 IO：图像复制进资产、文本读正文；失败的一律降级成执行节点 */
   for (const it of items) {
     if (it.kind === "image") {
       try {
@@ -26328,31 +26366,19 @@ async function createNodesFromDroppedFiles(files, pt) {
     } else if (it.kind === "text") {
       const st = await window.api.fileStat(it.path).catch(() => null);
       it.size = (st && st.size) || 0;
-      /* PDF 不走「按文本读」（直接读会拿到二进制噪声）：先跑一次结构化解析，
-         没有文本层（扫描件）就等节点建好后逐页识图，见 renderer/pdf-markdown.js */
-      if (typeof pdfIsPdfPath === "function" && pdfIsPdfPath(it.path)) {
-        it.isPdf = true;
-        const md =
-          typeof pdfStructuredMarkdown === "function"
-            ? await pdfStructuredMarkdown(it.path)
-            : null;
-        it.text = md && md.ok ? String(md.markdown || "") : "";
-        it.needsVision = !it.text;
+      const rd = await readDroppedTextFile(it.path, it.size);
+      if (!rd) {
+        it.text = "";
+        it.kind = "other";
+        unreadable++;
       } else {
-        const rd = await readDroppedTextFile(it.path, it.size);
-        if (!rd) {
-          it.text = "";
-          it.kind = "other";
-          unreadable++;
-        } else {
-          it.text = rd.text;
-          if (rd.truncated) it.truncated = true;
-        }
+        it.text = rd.text;
+        if (rd.truncated) it.truncated = true;
       }
     }
   }
   const cols = items.length <= 2 ? items.length : items.length <= 6 ? 3 : 4;
-  const count = { image: 0, text: 0, audio: 0, video: 0, other: 0 };
+  const count = { image: 0, text: 0, audio: 0, video: 0, pdf: 0, other: 0 };
   let truncated = 0;
   pushHistory();
   const created = [];
@@ -26370,6 +26396,15 @@ async function createNodesFromDroppedFiles(files, pt) {
         node.title = uniqueNodeTitle(dropNodeTitle(it.path, false));
         count.image++;
       }
+    } else if (it.kind === "pdf") {
+      /* 普通「文件节点」（input_any）：只登记这条本机路径，不读正文、不解析 ——
+         版式 / 表格 / 图片都在原文件里；要看文字时由下游 / 引用拿到的就是这段路径。 */
+      node = makeNode("input_any", x, y);
+      if (node) {
+        node.anyFile = it.path;
+        node.title = uniqueNodeTitle(dropNodeTitle(it.path, false));
+        count.pdf++;
+      }
     } else if (it.kind === "text") {
       node = makeNode("input_text", x, y);
       if (node) {
@@ -26377,7 +26412,6 @@ async function createNodesFromDroppedFiles(files, pt) {
         node.title = uniqueNodeTitle(dropNodeTitle(it.path, false));
         count.text++;
         if (it.truncated) truncated++;
-        it.nodeId = node.id;
       }
     } else if (it.kind === "audio" || it.kind === "video") {
       node = makeNode(it.kind === "video" ? "input_video" : "input_audio", x, y);
@@ -26387,14 +26421,14 @@ async function createNodesFromDroppedFiles(files, pt) {
         count[it.kind]++;
       }
     } else {
-      node = makeNode("super", x, y);
+      /* 其余文件 = 执行节点（kind execute）：绑定这个文件，双击 / ▶ 时交给 Windows
+         默认程序启动（runExecuteNode → shellOpenPathDetached），不再建开发「文件块」节点层。 */
+      node = makeNode("execute", x, y);
       if (node) {
-        node.dev = true;
-        node.devKind = "file";
-        node.devStatus = "pending";
-        node.devColor = "";
-        node.note = devFileBlockNote(it.path);
-        node.title = uniqueNodeTitle(it.name || dropNodeTitle(it.path, true));
+        node.execPath = it.path;
+        node.title = uniqueNodeTitle(
+          dropNodeTitle(it.path, true) || it.name || I18n.t("执行"),
+        );
         count.other++;
       }
     }
@@ -26414,37 +26448,22 @@ async function createNodesFromDroppedFiles(files, pt) {
   renderCanvas();
   scheduleSave(true);
   renderStatus();
-  /* 拖入的 PDF 没有文本层（扫描件）：建好节点后逐页识图，结果落进这个文本节点 */
-  let pdfVision = 0;
-  let pdfFailed = 0;
-  for (const it of items) {
-    if (!it.isPdf || !it.needsVision || !it.nodeId) continue;
-    if (typeof openPdfParse !== "function") break;
-    const node = S.wf.nodes.find((n) => n.id === it.nodeId);
-    if (!node) continue;
-    const r = await openPdfParse(it.path, { node: node, visionOnly: true });
-    if (r && r.ok) pdfVision++;
-    else pdfFailed++;
-  }
   const parts = [];
   if (count.image) parts.push(I18n.t("图像") + " " + count.image);
   if (count.text) parts.push(I18n.t("文本") + " " + count.text);
+  if (count.pdf) parts.push(I18n.t("PDF") + " " + count.pdf);
   if (count.audio) parts.push(I18n.t("音频") + " " + count.audio);
   if (count.video) parts.push(I18n.t("视频") + " " + count.video);
-  if (count.other) parts.push(I18n.t("文件") + " " + count.other);
+  if (count.other) parts.push(I18n.t("执行节点") + " " + count.other);
   let msg =
     I18n.t("已创建 {n} 个节点：", { n: created.length }) + parts.join(" / ");
   if (truncated)
     msg += " · " + I18n.t("{n} 个文件过大，正文已截断", { n: truncated });
   if (unreadable)
-    msg += " · " + I18n.t("{n} 个文件读不出内容，改为文件块", { n: unreadable });
-  if (pdfVision)
-    msg += " · " + I18n.t("{n} 个 PDF 无文本层，已逐页识图", { n: pdfVision });
-  if (pdfFailed)
-    msg += " · " + I18n.t("{n} 个 PDF 解析失败（详见弹窗提示）", { n: pdfFailed });
+    msg += " · " + I18n.t("{n} 个文件读不出内容，改为执行节点", { n: unreadable });
   if (noPath)
     msg += " · " + I18n.t("{n} 个文件取不到本机路径，已跳过", { n: noPath });
-  toast(msg, truncated || unreadable || noPath || pdfFailed ? "warn" : "ok");
+  toast(msg, truncated || unreadable || noPath ? "warn" : "ok");
   return created;
 }
 
@@ -27489,7 +27508,15 @@ function bindYamlViewerIpc() {
  * 「编辑」默认把渲染出的正文本身变成可编辑区（所见即所得，无需切源码），
  * 头部「源码」可切回 Markdown 原文；两种档 Ctrl+S 或「保存」都写回文件。 */
 function isMdFilePath(p) {
-  return /\.(md|markdown|mdown)$/i.test(String(p || "").trim());
+  const s = String(p || "").trim();
+  if (!s) return false;
+  if (/[\\/]$/.test(s)) return false; /* 尾部带分隔符 = 目录，不是 Markdown 文件 */
+  if (/\.(md|markdown|mdown)$/i.test(s)) return true;
+  /* 没有后缀的文件也按 Markdown 打开（画布文件块 / 会话文件引用 / 侧栏文件页同口径）：
+     这类文件没有别的阅读器可去，md 阅读器对纯文本照样能正常显示。
+     以 "." 开头的隐藏文件不在此列（.env / .gitignore 还是按未知后缀走系统程序）。 */
+  const base = s.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || "";
+  return !!base && base.indexOf(".") < 0;
 }
 
 let _mdViewerState = {
@@ -28791,37 +28818,17 @@ function bindOpenableContentClicks() {
 }
 
 /* Markdown → HTML（全站预览唯一入口：文件预览 / 节点输出 / 会话正文 / 手册 / 搜索…）。
- * 公式：先交给 renderer/math-render.js 把 `$…$` / `$$…$$` / `\(…\)` / `\[…\]` 抽成
- * PUA 占位符，再照旧转义 + marked 解析，最后把占位符换回排版结果 —— 与审阅层同源，
- * 且不破坏既有「先转义再解析」的 HTML 注入防护（LaTeX 原文由 latexToHtml 自己转义）。 */
+ * 内核已经抽到 renderer/md-render.js（`window.MTRender.toHtml`）：快捷会话小窗是**另一只
+ * BrowserWindow**，调用不到本文件的函数，两处必须共用同一份内核 —— 否则小窗里的回复会退化成
+ * 未渲染的原文（就是用户报的那个 bug）。本函数只剩下「接线」：主窗口自己的转义与链接化。
+ * 公式仍走 renderer/math-render.js（`$…$` / `$$…$$` / `\(…\)` / `\[…\]` 四种定界符），
+ * 安全纪律仍是「先转义再解析 + 只放行 http(s)/mailto/锚点」，细节见 md-render.js 文件头。 */
 function renderMarkdown(text) {
-  const raw = text == null ? "" : String(text);
-  const esc = escapeHtml(text);
-  let html = "";
-  try {
-    const M = window.MTMathRender;
-    if (M && typeof M.splitMath === "function" && typeof M.latexToHtml === "function" && window.marked) {
-      const r = M.splitMath(raw);
-      html = marked.parse(escapeHtml(r.md), { gfm: true, breaks: true });
-      if (r.items && r.items.length) {
-        html = html.replace(M.TOKEN_RE, (m, idx) => {
-          const it = r.items[Number(idx)];
-          return it ? M.latexToHtml(it.tex, { display: it.display, delim: it.delim }) : "";
-        });
-      }
-    } else {
-      html = window.marked
-        ? marked.parse(esc, { gfm: true, breaks: true })
-        : "<pre>" + esc + "</pre>";
-    }
-  } catch {
-    html = "<pre>" + esc + "</pre>";
-  }
-  html = html.replace(/<a href="([^"]*)"/g, (m, u) => {
-    if (/^(https?:|mailto:)/i.test(u) || u.charAt(0) === "#") return m;
-    return I18n.t('<a href="#" title="已阻止不安全链接"');
-  });
-  return linkifyHtml(html);
+  const R = window.MTRender;
+  if (R && typeof R.toHtml === "function")
+    return R.toHtml(text, { escapeHtml: escapeHtml, linkify: linkifyHtml });
+  /* 兜底（md-render.js 没加载：理论上不会发生，但白屏比纯文本更糟） */
+  return "<pre>" + escapeHtml(text) + "</pre>";
 }
 
 /* 解析 Hex 颜色（#RRGGBB / RRGGBB） */
@@ -29898,8 +29905,11 @@ function closeNodePopById(id) {
   /* 表单节点「点卡就地编辑」浮层（renderer/app-input-form.js，晚于本文件加载） */
   else if (id === "ifItemPop" && typeof window.closeIfItemPop === "function")
     window.closeIfItemPop();
+  /* 文本节点字号滑杆（renderer/app-canvas.js，晚于本文件加载） */
+  else if (id === "textFsPop" && typeof closeTextFsPop === "function")
+    closeTextFsPop();
 }
-/* keep = "bgRm" | "ratioLock" | "devModel" | "aiCall" | "imgBackend" | "devColor" | "imgOut" | "cover" | "ifItem" | ""（全收） */
+/* keep = "bgRm" | "ratioLock" | "devModel" | "aiCall" | "imgBackend" | "devColor" | "imgOut" | "cover" | "ifItem" | "textFs" | ""（全收） */
 function closeNodePopsExcept(keep) {
   const pairs = [
     ["bgRm", "bgRmPop", closeBgRmPop],
@@ -29915,6 +29925,8 @@ function closeNodePopsExcept(keep) {
     ["cover", "coverPop", null],
     /* 表单节点条目浮层（renderer/app-input-form.js，晚于本文件加载） */
     ["ifItem", "ifItemPop", null],
+    /* 文本节点字号滑杆（renderer/app-canvas.js，晚于本文件加载） */
+    ["textFs", "textFsPop", null],
   ];
   for (const [name, id, fn] of pairs) {
     if (name === keep) continue;
@@ -29939,6 +29951,7 @@ function repositionNodePops() {
     "imgOutPop",
     "coverPop",
     "ifItemPop",
+    "textFsPop",
   ]) {
     const el = document.getElementById(id);
     if (!el || !el.classList || !el.classList.contains("on")) continue;
@@ -35109,11 +35122,22 @@ function migrateWf(wf) {
       const bc = Number(n.cfgScale);
       n.cfgScale = isFinite(bc) && bc > 0 ? Math.max(0.1, Math.min(10, bc)) : 4;
       const bsd = Math.floor(Number(n.seed));
-      n.seed = isFinite(bsd) ? bsd : 42;
+      n.seed = isFinite(bsd) ? bsd : 1;
       const bf = String(n.ttsFormat || "wav").toLowerCase();
       n.ttsFormat = ["wav", "flac", "mp3"].indexOf(bf) >= 0 ? bf : "wav";
       if (n.voice == null) n.voice = "";
       if (n.instruction == null) n.instruction = "";
+      /* 老画布迁移（一次性）：旧默认是「每次 +1」，正是「同样文字每遍音色都不一样」的来源。
+         这里把没被单独标记过的节点改成固定种子；想继续抽不同念法可在设置里重新打开摇数。 */
+      if (!n.seedFixMigrated) {
+        n.rerollSeed = false;
+        n.seedFixMigrated = true;
+      }
+      /* 默认种子口径统一成 1（旧默认 42）：老节点还是 42 的，一次性改成 1。 */
+      if (!n.seedOneMigrated) {
+        if (Math.floor(Number(n.seed)) === 42) n.seed = 1;
+        n.seedOneMigrated = true;
+      }
     }
     if (n.kind === "flux3klein_gen" && typeof flux3kleinNormalize === "function")
       flux3kleinNormalize(n);
@@ -35638,6 +35662,12 @@ async function loadWorkflow(id, opts) {
   }
   setForegroundWf(wf); /* 用户可见的画布切换：_fgWf 与 S.wf 同步换（顺带把视图交接：
                          存走掉那张的「层 + 相机」、套回这张的 —— 见 applyWfView） */
+  /* 研究视图（第 4 个视图）：一张画布 = 一个课题，数据在 <工作目录>/research/。
+     切画布后要让研究视图重新按新画布装载（不在研究视图时它自己会跳过重绘）。 */
+  try {
+    if (window.MTResearch && typeof window.MTResearch.onCanvasChanged === "function")
+      window.MTResearch.onCanvasChanged();
+  } catch (_) {}
   rememberWf(wf);
   /* 这里过去是一句 resetTaskFocus()：把任务 focus / 节点层 focus 一把清成根画布，
      于是「在壳里干活 → 切去看别的画布 → 切回来」每次都被打回根画布重新钻壳。
@@ -35740,23 +35770,88 @@ function renderWfTabs() {
   }
 }
 
-/* 顶栏工作流下拉：与 Tab 条并存,选中即切换并加入标签 */
-async function refreshWfSelect() {
-  const sel = $("#wfSelect");
-  if (!sel) return;
-  const list = await window.api.wfList();
-  sel.innerHTML = "";
-  for (const w of list) {
-    const o = document.createElement("option");
-    o.value = w.id;
-    o.textContent = wfNameLabel(w.name) + "（" + w.nodes + I18n.t(" 节点）");
-    sel.appendChild(o);
+/* 顶栏工作流下拉：与 Tab 条并存,选中即切换并加入标签。
+   自绘菜单（原先是一颗原生 <select>）：原生 option 里塞不进图标，而研究类画布
+   （工作目录下已有 research/research.json）要带一枚**橙色研究图标**，一眼能认出来。 */
+const WF_RESEARCH_ICO =
+  '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="4" cy="4" r="1.9" fill="none" stroke="currentColor" stroke-width="1.25"/><circle cx="12" cy="5.6" r="1.7" fill="none" stroke="currentColor" stroke-width="1.25"/><circle cx="7.4" cy="12" r="1.7" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M5.6 4.7l4.6.6M4.9 5.7l1.9 4.7M10.9 7l-2.6 3.6" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>';
+function wfPickClose() {
+  const menu = $("#wfPickMenu");
+  const btn = $("#wfPickBtn");
+  if (menu) menu.hidden = true;
+  if (btn) btn.setAttribute("aria-expanded", "false");
+}
+async function wfPickToggle() {
+  const menu = $("#wfPickMenu");
+  if (!menu) return;
+  if (!menu.hidden) {
+    wfPickClose();
+    return;
   }
+  /* 每次打开都重取一次列表：research/ 可能刚在别处建好或被删掉，图标要跟着变 */
+  await refreshWfSelect();
+  menu.hidden = false;
+  const btn = $("#wfPickBtn");
+  if (btn) btn.setAttribute("aria-expanded", "true");
+  const on = menu.querySelector(".wf-pick-row.on");
+  if (on && on.scrollIntoView) {
+    try {
+      on.scrollIntoView({ block: "nearest" });
+    } catch (_) {}
+  }
+}
+async function refreshWfSelect() {
+  const btn = $("#wfPickBtn");
+  const menu = $("#wfPickMenu");
+  if (!btn || !menu) return;
+  const list = await window.api.wfList();
   /* 选中的那一项必须是「用户正看着的画布」：后台换画布编辑（runAgainstWf）在飞时
      S.wf 是别人的画布，直接拿它当值会把下拉框 / 标签高亮跳到用户没在看的那一张。 */
   const shown = (typeof currentVisibleWf === "function" ? currentVisibleWf() : null) || S.wf;
-  sel.value = shown ? shown.id : "";
-  sel.title = I18n.t("打开画布（共 ") + list.length + I18n.t(" 个，切换即加载并加入标签）");
+  const curId = shown ? String(shown.id) : "";
+  const cur = list.find((w) => String(w.id) === curId) || null;
+  btn.title =
+    I18n.t("打开画布（共 ") + list.length + I18n.t(" 个，切换即加载并加入标签）");
+  /* 按钮本体：当前画布名 +（研究类画布）橙色研究图标 */
+  const nameEl = $("#wfPickName");
+  const icoEl = $("#wfPickIco");
+  if (nameEl)
+    nameEl.textContent =
+      (cur ? wfNameLabel(cur.name) : "") || (shown ? String(shown.name || shown.id) : "");
+  if (icoEl) {
+    const isResearch = !!(cur && cur.research);
+    icoEl.innerHTML = isResearch ? WF_RESEARCH_ICO : "";
+    icoEl.hidden = !isResearch;
+    icoEl.title = isResearch ? I18n.t("研究") : "";
+  }
+  /* 列表：研究类画布行首挂同一枚橙色图标（不研究就留空位，名字左边缘对齐） */
+  menu.innerHTML = "";
+  for (const w of list) {
+    const on = String(w.id) === curId;
+    const row = document.createElement("div");
+    row.className = "wf-pick-row" + (on ? " on" : "");
+    row.setAttribute("role", "option");
+    row.setAttribute("aria-selected", on ? "true" : "false");
+    row.dataset.id = w.id;
+    const ico = document.createElement("span");
+    ico.className = "wf-pick-row-ico" + (w.research ? " research" : "");
+    if (w.research) ico.innerHTML = WF_RESEARCH_ICO;
+    row.appendChild(ico);
+    const nm = document.createElement("span");
+    nm.className = "wf-pick-row-name";
+    nm.textContent = wfNameLabel(w.name) || w.id;
+    row.appendChild(nm);
+    const cnt = document.createElement("span");
+    cnt.className = "wf-pick-row-n";
+    cnt.textContent = w.nodes + I18n.t(" 节点");
+    row.appendChild(cnt);
+    if (w.research) row.title = I18n.t("研究");
+    row.onclick = async () => {
+      wfPickClose();
+      if (!on) await loadWorkflow(w.id);
+    };
+    menu.appendChild(row);
+  }
   renderWfTabs();
 }
 
@@ -35764,54 +35859,169 @@ async function refreshWfSelect() {
 function renderWfWorkspace() {
   const box = $("#wfWsBox");
   if (!box) return;
+  const ws = String(wfWorkspace() || "").trim();
   box.innerHTML = "";
-  const lab = document.createElement("span");
-  lab.className = "wf-ws-label";
-  lab.textContent = I18n.t("工作目录");
-  lab.title = I18n.t("设置后,本画布智能节点与保存节点的相对路径都相对该目录;改目录即可统一切换落盘位置;留空则各节点单独设置");
+  /* ① 目录本体就是一颗按钮：点它直接在文件资源管理器里打开 —— 顶栏最常见的动作是
+     「去这个目录看看」，不再需要用户先认出旁边那颗 📂。没设目录时点它 = 打开设置窗。 */
+  const chip = document.createElement("button");
+  chip.type = "button";
+  chip.className = "wf-ws-chip" + (ws ? "" : " empty");
+  chip.textContent = "📂 " + (ws || I18n.t("未设置工作目录"));
+  chip.title = ws
+    ? I18n.t("在文件资源管理器中打开：") + ws
+    : I18n.t("尚未设置工作目录：点右侧 ⚙ 设置");
+  chip.onclick = (ev) => {
+    ev.stopPropagation();
+    if (ws) openWorkspaceFolder(ws);
+    else openWfWorkspaceDialog();
+  };
+  box.appendChild(chip);
+  /* ② 右侧只留一颗 ⚙：输入路径 / 选择文件夹 / 工作目录占用与清理都收进设置窗。 */
+  const gear = document.createElement("button");
+  gear.type = "button";
+  gear.className = "mini btn-sq ws-gear";
+  gear.textContent = "⚙";
+  gear.title = I18n.t("设置工作目录（选择文件夹 / 占用与清理）");
+  gear.setAttribute("aria-label", gear.title);
+  gear.onclick = (ev) => {
+    ev.stopPropagation();
+    openWfWorkspaceDialog();
+  };
+  box.appendChild(gear);
+}
+
+/* 写入画布工作目录（顶栏 chip / 设置窗共用）：校验 → 保存 → 重渲染。
+   路径无效当场清空并提示：不让一个打错的路径拖到很深的写盘步骤才报「写入失败」。 */
+async function setWfWorkspace(raw) {
+  if (!S.wf) return false;
+  const v = String(raw == null ? "" : raw).trim();
+  if (v && !(await pathIsExistingDir(v))) {
+    S.wf.workspace = "";
+    scheduleSave(true);
+    renderWfWorkspace();
+    renderCanvas();
+    syncAssistWorkspaceChrome();
+    toast(
+      I18n.t("工作目录无效：该路径不存在或不是有效文件夹，已自动清空"),
+      "warn",
+    );
+    return false;
+  }
+  S.wf.workspace = v;
+  scheduleSave(true);
+  renderCanvas();
+  renderWfWorkspace();
+  syncAssistWorkspaceChrome();
+  return true;
+}
+
+/* 工作目录设置窗（顶栏唯一那颗 ⚙ 的落点）：只能通过系统窗口选文件夹（不再允许手打路径），
+   选择只是「草稿」，点「保存」才写进画布并关窗，点「取消」丢弃改动并关窗（✕ / Esc 同取消）。 */
+function openWfWorkspaceDialog() {
+  if (!S.wf) {
+    toast(I18n.t("先打开一张画布再设置工作目录"), "warn");
+    return;
+  }
+  openOverlay(I18n.t("工作目录设置"), { persistent: true });
+  const body = $("#ovBody");
+  /* 草稿：窗内一切改动只落在这里，保存前不碰画布 */
+  let draft = String(wfWorkspace() || "").trim();
+  const lab = document.createElement("label");
+  lab.className = "n-field";
+  lab.appendChild(document.createTextNode(I18n.t("画布工作目录")));
   const inp = document.createElement("input");
   inp.type = "text";
-  inp.value = wfWorkspace();
-  inp.placeholder = I18n.t("统一目录(留空 = 各节点单独设置)…");
-  /* 画布项目目录**只读**：这里手打错一个字，要等到很深的写盘步骤才报「写入失败」，
-     用户不知道该改哪。目录一律走右侧文件夹选择器（系统窗口里可直接新建）。 */
-  const setWs = async (raw) => {
-    if (!S.wf) return;
-    const v = String(raw === undefined ? inp.value : raw).trim();
-    if (v && !(await pathIsExistingDir(v))) {
-      S.wf.workspace = "";
-      scheduleSave(true);
-      renderWfWorkspace();
-      renderCanvas();
-      await showInfoOverlay(
-        I18n.t("工作目录无效"),
-        I18n.t(
-          "该路径不存在或不是有效文件夹，已自动清空。请重新选择有效的工作目录。",
-        ),
-        v,
-      );
-      syncAssistWorkspaceChrome();
+  inp.readOnly = true; /* 不再允许手动输入路径：只显示当前草稿，改动一律走「选择文件夹」 */
+  inp.value = draft;
+  inp.placeholder = I18n.t("尚未设置（留空 = 各节点单独设置）…");
+  inp.spellcheck = false;
+  inp.title = I18n.t("只能通过「选择文件夹」设置");
+  lab.appendChild(inp);
+  body.appendChild(lab);
+  let busy = false;
+  const syncInp = () => {
+    inp.value = draft;
+  };
+
+  const row = document.createElement("div");
+  row.className = "wf-ws-dlg-row";
+  const pick = document.createElement("button");
+  pick.type = "button";
+  pick.className = "mini";
+  pick.textContent = I18n.t("选择文件夹…");
+  pick.onclick = () => {
+    /* 只在草稿里改；保存时才落盘 */
+    pickFolder(inp, (p) => {
+      draft = String(p || "").trim();
+      syncInp();
+    });
+  };
+  const openDir = document.createElement("button");
+  openDir.type = "button";
+  openDir.className = "mini";
+  openDir.textContent = I18n.t("在资源管理器中打开");
+  openDir.onclick = () => openWorkspaceFolder(draft || wfWorkspace());
+  row.appendChild(pick);
+  row.appendChild(openDir);
+  body.appendChild(row);
+
+  const tempRow = document.createElement("div");
+  tempRow.className = "wf-ws-dlg-row";
+  const temp = document.createElement("button");
+  temp.type = "button";
+  temp.className = "mini";
+  temp.textContent = I18n.t("工作目录占用与清理…");
+  temp.title = I18n.t("统计并清理 .mtnode / .mtnode-input / recordings 等临时文件");
+  temp.onclick = async () => {
+    /* 清理统计按画布当前生效的目录算：草稿有改动就先按保存结算，免得统计的是旧目录 */
+    if (busy) return;
+    if (draft !== String(wfWorkspace() || "").trim()) {
+      busy = true;
+      const ok = await setWfWorkspace(draft);
+      busy = false;
+      draft = String(wfWorkspace() || "").trim();
+      syncInp();
+      if (!ok) return;
+    }
+    if (typeof window.openWorkspaceTempPanel === "function")
+      window.openWorkspaceTempPanel();
+  };
+  const tempHint = document.createElement("span");
+  tempHint.className = "wf-ws-dlg-hint";
+  tempHint.textContent = I18n.t("清理一律进系统回收站，可在资源管理器还原");
+  tempRow.appendChild(temp);
+  tempRow.appendChild(tempHint);
+  body.appendChild(tempRow);
+
+  const foot = $("#ovFoot");
+  const cancel = document.createElement("button");
+  cancel.className = "mini";
+  cancel.textContent = I18n.t("取消");
+  /* 取消 = 不保存并关闭：草稿直接丢弃，画布保持原值 */
+  cancel.onclick = () => closeOverlay();
+  const save = document.createElement("button");
+  save.className = "mini primary";
+  save.textContent = I18n.t("保存");
+  save.onclick = async () => {
+    if (busy) return;
+    if (draft === String(wfWorkspace() || "").trim()) {
+      closeOverlay();
       return;
     }
-    S.wf.workspace = v;
-    scheduleSave(true);
-    renderCanvas();
-    renderWfWorkspace();
-    syncAssistWorkspaceChrome();
+    busy = true;
+    const ok = await setWfWorkspace(draft);
+    busy = false;
+    if (!ok) {
+      /* 路径无效：保留窗口让用户重选（setWfWorkspace 已清空并提示） */
+      draft = String(wfWorkspace() || "").trim();
+      syncInp();
+      return;
+    }
+    closeOverlay();
+    if (draft) toast(I18n.t("工作目录已更新"), "ok");
   };
-  inp.addEventListener("change", () => setWs());
-  const wsGuard = workspaceReadOnlyGuard(inp);
-  wsGuard.hint(I18n.t("双击直选文件夹，Ctrl+V 粘贴路径"));
-  const br = workspaceBrowseButton(inp, (p) => setWs(p));
-  wsGuard.browse(() => br.click());
-  const openBtn = workspaceOpenButton(() => inp.value || wfWorkspace());
-  box.appendChild(lab);
-  box.appendChild(inp);
-  box.appendChild(openBtn);
-  box.appendChild(br);
-  /* 工作目录的磁盘占用与清理（.mtnode / .mtnode-input / recordings）：
-     位置固定 —— 📂 进入文件夹之后、✦ 画布助手之前（见 app-ws-temp.js）。 */
-  if (typeof workspaceTempButton === "function") box.appendChild(workspaceTempButton());
+  foot.appendChild(cancel);
+  foot.appendChild(save);
 }
 
 function renameWorkflowDialog() {
@@ -36398,13 +36608,15 @@ function devSessionsOf(node) {
 /* 计划只属于发起它的那个会话：新建「开发 / 细化」绑定会话一律从干净上下文开始，
    不再跨会话沿用旧计划（旧计划留在它自己的会话里，由面板「▶ 继续执行」续跑）。
    devSessionsOf 仍服务「最近一次要求」展示（devLastRequestOf）。 */
+/* 标题口径（用户口径）：「开发」不写进标题 —— 它只占宽度、不说明这一轮做什么，
+   开发会话的标题就是模块名；细化 / 问询保留各自前缀（它们本身是信息）。 */
 function devSessionTitleOf(node, mode) {
   return (
     (mode === "refine"
       ? I18n.t("细化 · ")
       : mode === "ask"
         ? I18n.t("问询") + " · "
-        : I18n.t("开发 · ")) + (node.title || I18n.t("开发节点"))
+        : "") + (node.title || I18n.t("未命名模块"))
   );
 }
 /* 节点改名 → 其名下的细化 / 开发会话标题跟随（保留各自前缀）。
@@ -36420,8 +36632,8 @@ function syncDevSessionTitles(node) {
     if (ids.indexOf(s.id) < 0) continue;
     if (s.titleLocked || s.titleAuto) continue;
     const m = String(s.title || "").match(/^(细化|开发|Refine|Dev)\s*·\s*/i);
-    const want =
-      (m ? m[0] : I18n.t("开发 · ")) + (node.title || I18n.t("开发节点"));
+    /* 「开发」会话标题就是模块名、没有前缀：m 为 null 时不能再把前缀补回来 */
+    const want = (m ? m[0] : "") + (node.title || I18n.t("未命名模块"));
     if (s.title !== want) {
       s.title = want;
       touched = true;

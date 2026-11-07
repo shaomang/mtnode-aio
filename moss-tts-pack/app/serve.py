@@ -6,7 +6,9 @@
 
 入（宿主 → 本进程）
   {"cmd":"ping"}
-  {"cmd":"speak","id":"<reqId>","text":"...","promptAudio":"<wav>","outDir":"<dir>","maxChars":42}
+  {"cmd":"speak","id":"<reqId>","text":"...","promptAudio":"<wav>","maxChars":42,
+   "params":{"audioTemperature":0.8,"audioTopK":25,"audioTopP":0.95,
+             "audioRepetitionPenalty":1.2,"textTemperature":1,"textTopK":50,"textTopP":1}}
   {"cmd":"cancel","id":"<reqId>"}
   {"cmd":"shutdown"}
 
@@ -14,7 +16,7 @@
   {"type":"ready","pid":1234}
   {"type":"device","provider":"cpu|cuda","requested":"auto|cpu|cuda","reason":"..."}
   {"type":"loaded","ms":1234}
-  {"type":"chunk","id":"..","index":0,"path":"...","text":"...","ms":900}
+  {"type":"chunk","id":"..","index":0,"data":"<wav base64>","text":"...","ms":900}
   {"type":"done","id":"..","chunks":3,"ms":2400}
   {"type":"cancelled","id":".."}
   {"type":"error","id":"..","code":"synth_failed","message":"..."}
@@ -31,6 +33,8 @@ providers 真的含 CUDAExecutionProvider；DLL 缺失 / 算子不支持 / 显�
 
 from __future__ import annotations
 
+import base64
+import io
 import json
 import logging
 import os
@@ -40,6 +44,7 @@ import sys
 import threading
 import time
 import traceback
+import wave
 from pathlib import Path
 
 APP_DIR = Path(__file__).resolve().parent
@@ -58,6 +63,20 @@ OUT = sys.stdout
 LOCK = threading.Lock()
 PROVIDERS = ("auto", "cpu", "cuda")
 CUDA_PROVIDER_ID = "CUDAExecutionProvider"
+
+# ── 采样参数（宿主可微调）────────────────────────────────────────────────────
+# 只暴露真正参与 ONNX 采样的那几项（见 ort_cpu_runtime 的采样函数）：音频头的
+# 温度 / top-k / top-p / 重复惩罚，以及文本头的三项。范围在这里统一钳住 ——
+# 宿主传来坏值（NaN / 超界 / 类型不对）一律钳到边界或忽略，绝不让调参把合成弄挂。
+GENERATION_PARAM_SPECS = {
+    "audioTemperature": ("audio_temperature", 0.1, 2.0),
+    "audioTopK": ("audio_top_k", 0, 200),
+    "audioTopP": ("audio_top_p", 0.05, 1.0),
+    "audioRepetitionPenalty": ("audio_repetition_penalty", 1.0, 2.0),
+    "textTemperature": ("text_temperature", 0.1, 2.0),
+    "textTopK": ("text_top_k", 0, 200),
+    "textTopP": ("text_top_p", 0.05, 1.0),
+}
 
 
 def normalize_provider(raw: str) -> str:
@@ -363,6 +382,23 @@ def _clean_for_speech(text: str) -> str:
     return s
 
 
+def _wav_bytes(waveform, sample_rate: int) -> bytes:
+    """把波形编成 wav 字节（纯内存，不落盘）：宿主拿 base64 直接喂 <audio>。"""
+    import numpy as np
+
+    audio = np.asarray(waveform, dtype=np.float32)
+    if audio.ndim == 1:
+        audio = audio.reshape(-1, 1)
+    pcm16 = np.round(np.clip(audio, -1.0, 1.0) * 32767.0).astype(np.int16)
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wav_file:
+        wav_file.setnchannels(int(pcm16.shape[1]))
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(int(sample_rate))
+        wav_file.writeframes(pcm16.tobytes())
+    return buf.getvalue()
+
+
 def _estimate_tokens(piece: str) -> int:
     """不依赖 tokenizer 的保守估算（中文 1 字 ≈ 1 token，英文 ~4 字符 1 token）。"""
     cjk = len(_CJK_RE.findall(piece))
@@ -442,6 +478,58 @@ def trim_silence(waveform, sample_rate: int, keep_ms: int = 60, thresh_ratio: fl
         return wav[start:end]
     except Exception:
         return waveform
+
+
+def _apply_generation_params(runtime, params) -> dict:
+    """把宿主传来的微调参数写进 runtime.manifest["generation_defaults"]。
+
+    每句合成前都会重读这份 manifest，所以改参不必重启进程、也不必重载模型；
+    返回真正写进去的字段，宿主 / 日志能据此确认「调了到底生没生效」。
+    """
+    applied: dict = {}
+    if not isinstance(params, dict):
+        return applied
+    defaults = runtime.manifest["generation_defaults"]
+    for key, (field, low, high) in GENERATION_PARAM_SPECS.items():
+        raw = params.get(key)
+        if raw is None or isinstance(raw, bool):
+            continue
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            continue
+        if value != value:  # NaN
+            continue
+        value = min(float(high), max(float(low), value))
+        if field.endswith("_top_k"):
+            defaults[field] = int(round(value))
+        else:
+            defaults[field] = float(value)
+        applied[key] = defaults[field]
+    return applied
+
+
+def _request_seed(msg) -> int | None:
+    """取本次合成的种子：msg.seed 优先，其次 msg.params.seed；都没有就用 1。
+
+    1 与宿主 / 画布节点的默认口径一致 —— 「不填也固定」，这样重复播报同一段文字
+    不会被上一句用剩的随机数带偏（老宿主不发 seed 也照样可复现）。
+    """
+    raw = None
+    if isinstance(msg, dict):
+        raw = msg.get("seed")
+        params = msg.get("params")
+        if raw is None and isinstance(params, dict):
+            raw = params.get("seed")
+    if raw is None or isinstance(raw, bool):
+        return 1
+    try:
+        value = int(float(raw))
+    except (TypeError, ValueError):
+        return 1
+    if value < 0 or value > 2147483647:
+        return 1
+    return value
 
 
 class Worker:
@@ -573,7 +661,6 @@ class Worker:
         req_id = str(msg.get("id") or "req")
         text = _clean_for_speech(_normalize_for_tts(str(msg.get("text") or "")))
         prompt_audio = str(msg.get("promptAudio") or "")
-        out_dir = Path(str(msg.get("outDir") or (APP_DIR / "out"))).expanduser()
         max_chars = int(msg.get("maxChars") or 42)
         pieces = [
             part
@@ -608,7 +695,6 @@ class Worker:
                 }
             )
             return
-        out_dir.mkdir(parents=True, exist_ok=True)
         try:
             codes = self.runtime.resolve_prompt_audio_codes(voice=None, prompt_audio_path=prompt_audio)
         except Exception as exc:
@@ -622,6 +708,25 @@ class Worker:
                 }
             )
             return
+
+        # 微调参数：每句都按宿主当前设置重写 manifest（改参不必重启 / 重载模型）
+        applied = _apply_generation_params(self.runtime, msg.get("params"))
+        if applied:
+            log("params: " + json.dumps(applied, ensure_ascii=False))
+
+        # 种子：采样用的 rng 是 runtime 上的**全局序列**（预热、上一句都消耗过它），
+        # 不重置的话同一段文字每次落在不同的随机数上，听感就是「音色每遍都不一样」。
+        # 每次合成前按请求里的 seed 重置一次 → 同文本 + 同参考音频 + 同参数
+        # ⇒ 完全相同的采样序列（可复现的音频）。
+        seed = _request_seed(msg)
+        if seed is not None:
+            try:
+                import numpy as np
+
+                self.runtime.rng = np.random.default_rng(int(seed))
+                log("seed: " + str(int(seed)))
+            except Exception:
+                log(traceback.format_exc())
 
         index = 0
         for piece in pieces:
@@ -640,15 +745,15 @@ class Worker:
                     prompt_audio_codes=codes,
                     streaming=True,
                 )
-                from onnx_tts_runtime import _write_waveform_to_wav
 
                 sample_rate = int(self.runtime.codec_meta["codec_config"]["sample_rate"])
-                wav_path = out_dir / ("%s_%03d.wav" % (req_id, index))
-                _write_waveform_to_wav(
-                    wav_path,
-                    trim_silence(_limit_peak(result["waveform"]), sample_rate),
-                    sample_rate,
-                )
+                # 只在内存里成 wav：播放端拿到 base64 直接播，不再往硬盘写临时文件
+                wav_b64 = base64.b64encode(
+                    _wav_bytes(
+                        trim_silence(_limit_peak(result["waveform"]), sample_rate),
+                        sample_rate,
+                    )
+                ).decode("ascii")
             except Exception as exc:
                 log(traceback.format_exc())
                 emit(
@@ -665,7 +770,7 @@ class Worker:
                     "type": "chunk",
                     "id": req_id,
                     "index": index,
-                    "path": str(wav_path),
+                    "data": wav_b64,
                     "text": piece,
                     "ms": int((time.time() - chunk_started) * 1000),
                 }

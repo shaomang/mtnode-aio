@@ -1,8 +1,7 @@
 /* ── 工作目录占用与清理（renderer/app-ws-temp.js）────────────────────────────
  *
  * 入口两处，打开的是**同一个面板**（一套 UI、一套实现）：
- *   ① 顶栏工作目录那一排、📂 进入文件夹之后、✦ 画布助手之前那颗按钮（见 app.js
- *      renderWfWorkspace 末尾的 workspaceTempButton()）；
+ *   ① 顶栏唯一那颗 ⚙ 的工作目录设置窗里（见 app.js 的 openWfWorkspaceDialog）；
  *   ② 设置 ·「存储占用与清理」小节里的一行入口。
  *
  * 统计与清理的真源全在主进程 workspace-temp.js：本文件只负责把结果画出来、
@@ -72,7 +71,7 @@ function wsTempWorkspace() {
   }
 }
 
-/** 顶栏那颗按钮（由 app.js 的 renderWfWorkspace 追加到工作目录右侧） */
+/** 同一面板的按钮封装（顶栏已收进设置窗，这里保留给需要就地放一颗入口的地方） */
 function workspaceTempButton() {
   const b = document.createElement("button");
   b.type = "button";

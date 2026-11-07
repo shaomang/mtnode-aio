@@ -65,6 +65,53 @@ curl -I -H "Range: bytes=0-100" http://mt-agent.com/mtnode/updates/MTNodeAIO-Set
 
 Range 应返回 `206 Partial Content`。
 
+## 应用内「重新编译并重启」（状态栏右下角按钮）
+
+装机后不想再切回资源管理器双击 `compile.cmd` 时用这颗按钮（**只对打包版 + 登录账号 ms2308 显示**）。
+
+- 位置：状态栏右下角版本号 `#authorLink` 左侧的循环箭头图标（`#btnSelfRebuild`）；
+  实现 `renderer/app-self-rebuild.js` + `css/self-rebuild.css`，主进程入口 `main.js` 的
+  `app:selfRebuild`，脚本 `scripts/agent-rebuild.cmd`。
+- 为什么不能「点了就在本进程里编译」：electron-builder 打包前会清空并重写
+  `dist\win-unpacked`，而应用正跑在那份产物里；原来的 `compile.cmd` 是应用进程的子进程，
+  应用一关脚本就被一起带走。所以真链是：确认窗 → `app:selfRebuild` 用
+  `cmd /c start ...` 拉起一只**脱离本进程**的控制台窗 → 窗里跑
+  `scripts\agent-rebuild.cmd --wait-pid <应用 pid>`：等应用真的退出 → 清残留 →
+  `node build.js --dir` → 拉起新的 `dist\win-unpacked\MTNodeAIO.exe`。
+- 重启这一步由 `scripts/relaunch-app.ps1` 负责（**不再是一句裸 `start`**）：启动后等新进程出现、
+  再等 4 秒确认没有闪退，失败就隔 2 秒重试，共 4 次（第 3 次换 `explorer.exe` 启动、第 4 次换成
+  隐藏的 `cmd start`），四次都失败才报错。原因：编译刚结束时 exe 可能还在被写盘 / 被杀软扫描，
+  一次性 `start` 失败而脚本照样 exit 0，用户看到的就是「编译完了应用没起来」。
+- **踩过的坑（症状：应用回来了，编译窗却不关、输出冻在中途）**：Electron 启动时会
+  `AttachConsole(ATTACH_PARENT_PROCESS)`，只要父进程还带着控制台，新应用就附到这只编译窗上；
+  脚本退出了，控制台会话仍被它挂着（Windows Terminal 下就是窗口一直停在那，连
+  `[agent-rebuild] EXITCODE=0` 都刷不出来）。实测：直接以 `DETACHED_PROCESS` 起 exe **不够**
+  （父进程 = 本脚本的 PowerShell，仍有控制台，AttachConsole 照样成功）。修法：先 `CreateProcess`
+  一只 `DETACHED_PROCESS` 的 cmd（自身没有控制台），由它 `cmd /c start "" <exe>` 拉起应用 ——
+  新应用的父进程没有控制台，`AttachConsole` 无从附着，脚本一退窗口就散（同一只探测 exe 在旧路径
+  上 `attached=True`、新路径上 `attached=False`，且运行后不留 `conhost` / `OpenConsole`）。
+  环境变量仍沿中间层继承，`MTNODE_DATA_DIR` 那套隔离实例照旧可用；应用自身的 stdout 因此不再
+  出现在这只终端里，启动排错看 `logs\rebuild-*.log` 的 `launch attempt` 与存活校验。
+- 日志：`%APPDATA%\pipeline-console\logs\rebuild-<时间戳>.log`（数据目录被 `MTNODE_DATA_DIR`
+  改过就跟着走；**不写进应用文件夹**），每次启动尝试与失败原因都写进去。日志与编译输出统一
+  UTF-8（脚本开头 `chcp 65001` + PowerShell 逐行 `Add-Content -Encoding UTF8`；原来
+  `Tee-Object` 写 UTF-16，一份日志里混两种编码，中文全是乱码）。
+- **踩过的坑（症状：编译跑完，应用没回来）**：`agent-rebuild.cmd` 里写
+  `echo ... done (no relaunch)`——`if` 块内的 `)` 会提前闭合块，块里剩下的
+  `endlocal & exit /b 0` 变成**无条件执行**，于是编译成功后脚本直接退出、`launching` 一步都没走，
+  日志里只有 `EXITCODE=0`、没有 `launching` 行。修法：cmd 的 `if`/`else` 块内 `echo` 文案不写括号
+  （冒烟测试有专门断言：任何 `echo` 行带未转义括号即失败）。
+- 失败：控制台窗 `pause` 留窗给人看错误与 exe 路径，旧 exe 还在就把旧版拉起来。
+- 手测脚本本身：`scripts\agent-rebuild.cmd --dry-run` 只走到「该编译什么」就退出，
+  不杀进程、不编译、不重启；`--relaunch-only` 只跑启动那一段（验证重启链路，不动编译）；
+  `--no-relaunch` 编译完不启动。
+- 隔离自测（不动真机产物与真正在跑的那只实例）：把 `scripts\`（副本里把两行 `taskkill` 换成
+  `echo selftest: skipped ...`）、一份桩 `build.js`、一个桩 exe 摆进临时目录，
+  `cd` 到那里跑同一个脚本，断言出现 `launching` / `launch attempt 1/4` / `OK: pid ... is up` 且新进程
+  有窗口（`MainWindowHandle != 0`）。`--dry-run` / `--no-relaunch` / 编译失败（rc 透传 + 回拉旧版）
+  三条分支也这样验证过。
+- 开发态（`npm start`）永远不显示也不执行：那里杀 `electron.exe` 会把整棵调试进程树带走。
+- 回归：`node test/smoke-self-rebuild.js`。
 ## 客户端行为
 
 | 场景 | 行为 |

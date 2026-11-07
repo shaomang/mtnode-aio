@@ -384,6 +384,23 @@
       });
   }
 
+  /* 启动期自动弹的那一次：只弹一次。
+     口径（需求）：进应用时只显示第一次，之后每次开机不再自动弹；但「调用官方 DeepSeek
+     API 且没设 Key」那条闸（dsEnsureModelReady / 主进程 ds:needKey 广播）照旧每次都弹 ——
+     这里只管启动期这一次，别拿它去拦调用路径。
+     标记落在 config.dsGuideSeen（config:save 顶层浅合并，不会丢）。 */
+  function dsOpenBootGuide() {
+    if (!S || !S.config) return false;
+    if (S.config.dsGuideSeen) return false;
+    S.config.dsGuideSeen = true;
+    try {
+      if (window.api && typeof window.api.configSave === "function")
+        Promise.resolve(window.api.configSave(S.config)).catch(() => {});
+    } catch (_) {}
+    dsOpenOnboard();
+    return true;
+  }
+
   /* 主进程广播（checkProvider 撞到「官方 DeepSeek 没 Key」时）：弹同一张窗。
      推送里只带 reason，不带任何 Key 内容。 */
   function dsBindMainNotice() {
@@ -404,6 +421,7 @@
   window.dsEnsureModelReady = dsEnsureModelReady;
   window.dsMissingKeyError = dsMissingKeyError;
   window.dsOpenOnboard = dsOpenOnboard;
+  window.dsOpenBootGuide = dsOpenBootGuide;
   window.dsCloseOnboard = dsCloseOnboard;
 
   if (document.readyState === "loading") {

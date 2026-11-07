@@ -1,0 +1,100 @@
+{
+  "form": "表单",
+  "fields": [
+    {
+      "id": "fdo2eh1",
+      "label": "封面",
+      "type": "image",
+      "required": false,
+      "hint": "",
+      "options": [],
+      "default": "",
+      "calc": "",
+      "showWhen": null,
+      "children": []
+    },
+    {
+      "id": "lso2eh6",
+      "label": "素材",
+      "type": "list",
+      "required": false,
+      "hint": "",
+      "options": [],
+      "default": "",
+      "calc": "",
+      "showWhen": null,
+      "children": [
+        {
+          "id": "fdo2eh2",
+          "label": "图像 / 视频",
+          "type": "image",
+          "required": false,
+          "hint": "",
+          "options": [],
+          "default": "",
+          "calc": "",
+          "showWhen": null,
+          "children": []
+        },
+        {
+          "id": "fdo2eh3",
+          "label": "描述",
+          "type": "textarea",
+          "required": false,
+          "hint": "",
+          "options": [],
+          "default": "",
+          "calc": "",
+          "showWhen": null,
+          "children": []
+        },
+        {
+          "id": "fdo2eh4",
+          "label": "标签",
+          "type": "text",
+          "required": false,
+          "hint": "逗号分隔",
+          "options": [],
+          "default": "",
+          "calc": "",
+          "showWhen": null,
+          "children": []
+        },
+        {
+          "id": "fdo2eh5",
+          "label": "用途",
+          "type": "text",
+          "required": false,
+          "hint": "",
+          "options": [],
+          "default": "",
+          "calc": "",
+          "showWhen": null,
+          "children": []
+        }
+      ]
+    },
+    {
+      "id": "fdo2eh9",
+      "label": "整体说明",
+      "type": "textarea",
+      "required": false,
+      "hint": "",
+      "options": [],
+      "default": "",
+      "calc": "",
+      "showWhen": null,
+      "children": []
+    }
+  ],
+  "values": {
+    "fdo2eh1": null,
+    "lso2eh6": [],
+    "fdo2eh9": ""
+  },
+  "refs": [],
+  "meta": {
+    "nodeId": "nmw3po2edsry",
+    "updatedAt": 1793893180188
+  }
+}

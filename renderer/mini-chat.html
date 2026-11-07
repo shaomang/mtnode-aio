@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <!-- CSP：script 只认本页脚本；style 需要 'unsafe-inline' —— KaTeX（vendor/katex）把公式的
+         行高 / 上下标位置写在行内 style 属性上，没有这一项公式会挤成一行。与本页其他隔离口径
+         （contextIsolation + 专用 preload 白名单 + 正文先转义再解析）配合，不放开 script-src。 -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' file: data:; font-src 'self'" />
+    <title>快捷会话</title>
+    <link rel="stylesheet" href="css/mini-chat.css" />
+    <!-- KaTeX 公式排版样式：与 vendor/katex/katex.min.js 成对出现（缺了它公式字形位置会错乱）。
+         与主窗口 index.html / pdf-print.html 同一份挂载口径。 -->
+    <link rel="stylesheet" href="vendor/katex/katex.min.css" />
+  </head>
+  <!-- 快捷会话小窗（独立窗口 · 唯一）：见 mini-chat-window.js 与 renderer/app-mini-chat.js。
+       它只做「下发指令 + 看最后一条 AI 回复」，不显示思考、不显示工具调用、不显示历史。
+       正文里的回复按 Markdown 渲染（用户报的 bug：以前是 textContent 直接塞原文）——
+       渲染内核走 renderer/md-render.js（window.MTRender），与主窗口 renderMarkdown 同一份代码；
+       公式走 math-render.js + KaTeX，与主窗口 / PDF 打印同源。 -->
+  <body class="mc-body">
+    <div class="mc-shell" id="mcShell">
+      <header class="mc-head" id="mcHead">
+        <button type="button" class="mc-icon mc-burger" id="mcListBtn" aria-pressed="false">☰</button>
+        <span class="mc-title" id="mcTitle">快捷会话</span>
+        <span class="mc-gap"></span>
+        <button type="button" class="mc-icon" id="mcNewBtn">＋</button>
+        <button type="button" class="mc-icon mc-close" id="mcCloseBtn">✕</button>
+      </header>
+
+      <div class="mc-workspace">
+        <!-- 左栏会话列表（可收纳，默认不显示）：全部会话按最近更新取前 20 条 -->
+        <aside class="mc-side" id="mcSide" hidden>
+          <div class="mc-side-head" id="mcSideHead">会话</div>
+          <div class="mc-list" id="mcList" role="list"></div>
+        </aside>
+
+        <main class="mc-main">
+          <div class="mc-sessbar">
+            <span class="mc-sessname" id="mcSessName">—</span>
+            <span class="mc-pill" id="mcPill" hidden></span>
+            <button type="button" class="mc-icon mc-stop" id="mcStopBtn" hidden>■</button>
+            <span class="mc-gap"></span>
+            <button type="button" class="mc-icon" id="mcGotoBtn">↗</button>
+          </div>
+          <!-- 项目文件夹（本轮需求 · 共识 q1/q2）：这条会话真正工作的目录 —— 只显示文件夹名，
+               悬停出完整路径与来源。展开左栏时按项目文件夹**分组**（组标题 📁 名 · 条数，
+               见 renderList）—— 与主窗口会话界面同一口径。 -->
+          <div class="mc-wsrow" id="mcWsRow" hidden></div>
+
+          <div class="mc-scroll" id="mcScroll">
+            <!-- 先 AI 回复、后自己那句（用户报的 bug）：自己刚下发的指令要落在**消息结尾**，
+                 贴着输入区、一眼可见；以前它排在回复上面，发送后反而跑到整段最上方。
+                 末尾这一块带一行小字「你的指令」（常显，免得在回复下方被误读成回复的一部分）。 -->
+            <div class="mc-reply" id="mcReply"></div>
+            <div class="mc-userturn" id="mcUserTurn" hidden>
+              <div class="mc-usertag" id="mcUserTag">你的指令</div>
+              <div class="mc-user" id="mcUser"></div>
+            </div>
+            <div class="mc-empty" id="mcEmpty"></div>
+          </div>
+
+          <!-- 底部一条：模式开关 + 输入框 + 提示。整块 position:relative，提示（#mcNote）
+               用绝对定位悬在它上方 —— 提示出现 / 消失都不占文档流，正文区高度不变，
+               输入框因此不会上下位移（用户报的 bug：「已下发」把输入窗顶上去）。 -->
+          <div class="mc-foot">
+            <div class="mc-note" id="mcNote" hidden></div>
+
+            <!-- 输入框上方那两枚模式开关（本轮需求 · 共识 q4/q5/q7）：整个小窗共用一份记忆，
+                 缺省「不拷问需求 + 热修开」，两枚互斥；只作用于本窗发出的那一轮。 -->
+            <div class="mc-modes" id="mcModes">
+              <button type="button" class="mc-mode" id="mcModeGrill" aria-pressed="false">拷问需求</button>
+              <button type="button" class="mc-mode" id="mcModeHotfix" aria-pressed="true">热修</button>
+            </div>
+
+            <div class="mc-compose">
+              <textarea id="mcInput" rows="2" spellcheck="false"></textarea>
+              <button type="button" class="mc-send" id="mcSendBtn">发送</button>
+            </div>
+          </div>
+        </main>
+      </div>
+    </div>
+    <script src="vendor/marked.min.js"></script>
+    <script src="vendor/katex/katex.min.js"></script>
+    <script src="math-render.js"></script>
+    <script src="md-render.js"></script>
+    <script src="app-mini-chat.js"></script>
+  </body>
+</html>

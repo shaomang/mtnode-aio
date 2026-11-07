@@ -248,8 +248,6 @@ function ensureReviewDlg() {
     '<div class="review-title"><span class="review-title-dot">✎</span><b id="reviewTitle"></b>' +
     '<span class="review-node" id="reviewNode"></span></div>' +
     '<div class="review-actions">' +
-    '<button type="button" class="rv-btn rv-btn-primary rv-revise" id="reviewReviseBtn" hidden>' +
-    '<span class="rv-revise-ic">✨</span><span id="reviewReviseTxt"></span></button>' +
     '<button type="button" class="rv-btn" id="reviewCloseBtn">✕</button>' +
     "</div></div>" +
     '<div class="review-settings" id="reviewSettings" hidden></div>' +
@@ -342,7 +340,6 @@ function ensureReviewDlg() {
     };
   });
 
-  host.querySelector("#reviewReviseBtn").onclick = () => runRevision();
   /* 被批注正文的高亮层（app-textedit.js 的 tePaintAnnotations）：正文 / 批注栏一滚、
      窗口一变大小就得按当前位置重画，否则虚线与连线会跟文字错位。 */
   const repaintAnno = () => {
@@ -622,7 +619,8 @@ function renderReviewDlg() {
 }
 
 function renderRevisionButton(h, n) {
-  const b = h.querySelector("#reviewReviseBtn");
+  const b = h && h.querySelector("#reviewReviseBtn");
+  if (!b) return;
   const cur = reviewCurrent();
   const total = (cur ? cur.notes.length : 0);
   if (_rv.editing && total > 0) {
@@ -678,6 +676,19 @@ function renderVersions(h, n) {
       rollbackTo(_rv.verIdx);
     };
     wrap.appendChild(rb);
+  }
+  /* 删除版本：动的是「此刻正在看的那一版」；只留一版时不给删（删完就没有正文了） */
+  if (versions.length > 1) {
+    const db = document.createElement("button");
+    db.type = "button";
+    db.className = "rv-vtab del";
+    db.textContent = "🗑 " + I18n.t("删除此版");
+    db.title = I18n.t("删除当前查看的版本；删的是最新版时自动回滚到上一个版本");
+    db.onclick = (ev) => {
+      ev.stopPropagation();
+      rvDeleteVersion(_rv.verIdx);
+    };
+    wrap.appendChild(db);
   }
   /* 默认滚动到最新 tab，保证新版本产生后「最新」可见 */
   try {
@@ -896,7 +907,8 @@ function renderEditor() {
         ed.addEventListener("mousemove", (ev) => teAnnoHover("rv", ev));
         ed.addEventListener("mousedown", (ev) => teAnnoMouseDown("rv", ev));
         ed.addEventListener("mouseleave", () => {
-          ed.style.cursor = "";
+          if (typeof teAnnoUnhover === "function") teAnnoUnhover("rv");
+          else ed.style.cursor = "";
         });
       }
       /* Markdown 编辑手感（renderer/app-mdedit.js 的共享实现）：Tab 只插 4 个空格
@@ -2383,61 +2395,54 @@ function renderNotesEl() {
   const wrap = host.querySelector("#reviewNotes");
   wrap.innerHTML = "";
   const v = _visVer();
-  if (!_rv.editing) {
-    /* 只读回看（非末版历史版本）：只读列出该版本绑定的批注，不带全文批注/提示与写操作 */
+  const notes = (v && v.notes) || [];
+  /* 顶条：只在「可编辑 + 已有批注」时出现，唯一内容是「让 AI 依据批注修订」；
+     下方只列批注卡片本身，不带提示 / 说明文案。 */
+  if (_rv.editing && notes.length) {
     const head = document.createElement("div");
-    head.className = "rv-notes-head";
-    const t = document.createElement("span");
-    t.className = "rv-notes-title";
-    t.textContent = I18n.t("该版本的批注");
-    head.appendChild(t);
+    head.className = "review-notes-head";
+    const row = document.createElement("div");
+    row.className = "rv-notes-head-row";
+    const bt = document.createElement("button");
+    bt.type = "button";
+    bt.className = "rv-btn rv-revise rv-revise-top";
+    bt.id = "reviewReviseBtn";
+    bt.innerHTML =
+      '<span class="rv-revise-ic">✨</span><span id="reviewReviseTxt"></span>';
+    const t = bt.querySelector("#reviewReviseTxt");
+    if (t) t.textContent = I18n.t("让 AI 依据批注修订") + "（" + notes.length + "）";
+    bt.title = I18n.t("让 AI 依据批注修订");
+    bt.onclick = () => runRevision();
+    row.appendChild(bt);
+    /* 小设置按钮：本轮修订用哪个服务商 / 模型 / 思考强度（事实库的同类设定在头部
+       #reviewSettings 那排，这里只给节点目标加） */
+    if (!rvTargetIs("fact")) {
+      const set = document.createElement("button");
+      set.type = "button";
+      set.className = "rv-btn rv-revise-set";
+      set.id = "reviewReviseSetBtn";
+      set.textContent = "⚙";
+      set.title = I18n.t("修订模型设置（供应商 / 模型 / 思考强度）");
+      set.onclick = () => rvReviseModelDialog();
+      row.appendChild(set);
+    }
+    head.appendChild(row);
     wrap.appendChild(head);
-    const list = document.createElement("div");
-    list.className = "rv-notes-list";
-    const notes = (v && v.notes) || [];
-    if (!notes.length) {
-      const e = document.createElement("div");
-      e.className = "rv-notes-empty";
-      e.textContent = I18n.t("该版本没有批注");
-      list.appendChild(e);
-    }
-    for (const nt of notes) {
-      list.appendChild(noteCardEl(nt, true));
-    }
-    wrap.appendChild(list);
-    return;
   }
-  /* 全文批注按钮（顶部批注条） */
-  const head = document.createElement("div");
-  head.className = "rv-notes-head";
-  const bt = document.createElement("button");
-  bt.type = "button";
-  bt.className = "rv-btn rv-add-full";
-  bt.textContent = "+ " + I18n.t("全文批注");
-  bt.title = I18n.t("对整个文档附加一条批注");
-  bt.onclick = () => {
-    reviewFullNoteDialog().then((box) => {
-      if (box && box.trim()) addFullNote(box.trim());
-    });
-  };
-  head.appendChild(bt);
-  const hint = document.createElement("span");
-  hint.className = "rv-notes-hint";
-  hint.textContent = I18n.t("拖选正文后点「局部批注」即可添加");
-  head.appendChild(hint);
-  wrap.appendChild(head);
 
   const list = document.createElement("div");
   list.className = "rv-notes-list";
-  const notes = (v && v.notes) || [];
   if (!notes.length) {
     const e = document.createElement("div");
     e.className = "rv-notes-empty";
-    e.textContent = I18n.t("暂无批注 · 添加批注后顶部会出现「让 AI 修订」");
+    e.textContent = _rv.editing
+      ? I18n.t("暂无批注")
+      : I18n.t("该版本没有批注");
     list.appendChild(e);
   }
   for (const nt of notes) {
-    list.appendChild(noteCardEl(nt));
+    /* 非末版回看（editing=false）只读：不挂删除 / 编辑动作 */
+    list.appendChild(noteCardEl(nt, !_rv.editing));
   }
   wrap.appendChild(list);
   /* 卡片换了 → 正文那层虚线与连线的落点跟着重画（app-textedit.js 的共用实现） */
@@ -2718,6 +2723,54 @@ async function rollbackTo(idx) {
   rvGcOrphanImages();
   renderReviewDlg();
   toast(I18n.t("已回滚，该版现在是当前可编辑版"), "ok");
+}
+
+/* 删除某一版：真删（splice，不可恢复）。删的是最新版 → 新的尾版（原倒数第二版）
+   自动成为当前可编辑版（＝回滚一格），并当场写回目标（节点输出 / 事实库正文）；
+   删中间 / 旧版时其余版本原位收拢，当前查看位置一律落回尾版。至少保留一版。 */
+async function rvDeleteVersion(idx) {
+  const n = reviewDoc();
+  if (!n) return;
+  const vv = n.review.versions || [];
+  if (idx < 0 || idx >= vv.length) return;
+  if (vv.length <= 1) {
+    toast(I18n.t("至少保留一个版本"), "warn");
+    return;
+  }
+  const isLast = idx === vv.length - 1;
+  const ok = await confirmDialog(
+    isLast
+      ? I18n.t("确定删除最新版本？删除后自动回滚到上一个版本，该版成为当前可编辑版。")
+      : I18n.t("确定删除该版本？删除后不可恢复（该版正文与批注一并删除）。"),
+    { title: I18n.t("删除版本"), okText: I18n.t("删除"), danger: true },
+  );
+  if (!ok) return;
+  commitEditorToDoc();
+  vv.splice(idx, 1);
+  _rv.verIdx = vv.length - 1;
+  _rv.editing = true;
+  persistReview(true);
+  if (isLast) {
+    /* 尾版换了 → 目标正文跟着回滚（DOM 还停在删掉的那版，故 skipCommit） */
+    const p = adoptLatestToNode({ skipCommit: true });
+    if (p && typeof p.then === "function") p.catch(() => {});
+  }
+  rvGcOrphanImages();
+  renderReviewDlg();
+  toast(
+    isLast
+      ? I18n.t("已删除最新版本，已回滚到上一个版本")
+      : I18n.t("已删除该版本"),
+    "ok",
+  );
+}
+
+/* 批注栏顶部 ⚙：修订模型设置（节点三件套 providerId / model / effort，
+   共用 app-textedit.js 的 teReviseModelDialog，两个批注窗同一套） */
+function rvReviseModelDialog() {
+  if (!_rv.target || rvTargetIs("fact")) return;
+  const node = nodeById(_rv.target.id);
+  if (typeof teReviseModelDialog === "function") teReviseModelDialog(node);
 }
 
 /* 自动采用最新可编辑版：把审阅结果写回目标（节点输出 / 事实库 md 正文；不关窗、不提示）。

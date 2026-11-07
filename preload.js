@@ -23,6 +23,7 @@ contextBridge.exposeInMainWorld('api', {
   mossTtsCancel: (reqId) => ipcRenderer.invoke('mosstts:cancel', reqId || ''),
   mossTtsSetVoice: (voice) => ipcRenderer.invoke('mosstts:setVoice', voice || {}),
   mossTtsSetProvider: (provider) => ipcRenderer.invoke('mosstts:setProvider', provider || 'auto'),
+  mossTtsSetParams: (params) => ipcRenderer.invoke('mosstts:setParams', params || {}),
   mossTtsPickAudio: () => ipcRenderer.invoke('mosstts:pickAudio'),
   mossTtsListBreeze: () => ipcRenderer.invoke('mosstts:listBreeze'),
   mossTtsOpenRoot: () => ipcRenderer.invoke('mosstts:openRoot'),
@@ -181,10 +182,14 @@ contextBridge.exposeInMainWorld('api', {
      （长录音要整段解码成 16k 单声道再切片），仍只读、不落盘 */
   fileReadAudioBytes: (p, maxBytes) => ipcRenderer.invoke('file:readAudioBytes', p, maxBytes),
   fileListDir: (p) => ipcRenderer.invoke('file:listDir', p),
-  /* PDF 解析（见 main.js pdf:probe / pdf:parse）：入参为路径字符串或 { path } / { bytes } / { base64 } / { data:[…] }，
-     只在主进程抽取文本后回传，绝不落盘；info 轻量探测，parse 出 markdown / pages / formulas / warning */
+  /* PDF 解析（见 main.js pdf:probe / pdf:parse / pdf:render，内核 pdf-read.js = pdf.js）：
+     入参为路径字符串或 { path } / { bytes } / { base64 } / { data:[…] }，
+     只在主进程抽取文本 / 渲染页面后回传，绝不落盘；info 轻量探测，
+     parse 出 markdown / pages / formulas / quality / warning，
+     render 按页出 PNG（{ images:[{ page, dataUrl, width, height }] }），供逐页识图兜底 */
   filePdfInfo: (arg) => ipcRenderer.invoke('pdf:probe', arg),
   fileParsePdf: (arg) => ipcRenderer.invoke('pdf:parse', arg),
+  fileRenderPdfPages: (arg) => ipcRenderer.invoke('pdf:render', arg),
   /* 文本 → PDF（见 main.js pdf:writeText / pdf-write.js）：Markdown 渲染 + 公式排版 +
      分页打印，落盘到 outPath；入参见 pdf-write.js writeTextPdf */
   fileWritePdf: (arg) => ipcRenderer.invoke('pdf:writeText', arg),
@@ -293,6 +298,11 @@ contextBridge.exposeInMainWorld('api', {
   dataSetRoot: (opts) => ipcRenderer.invoke('data:setRoot', opts || {}),
   dataOpenRoot: () => ipcRenderer.invoke('data:openRoot'),
   appRelaunch: () => ipcRenderer.invoke('app:relaunch'),
+  /* 状态栏「重新编译并重启」（仅打包版 + 账号 ms2308）：
+     selfRebuildInfo 只读探测（脚本在不在、是不是打包版、日志目录）；
+     selfRebuild 拉起脱离进程的控制台窗去编译，随后应用自己退出并重启。 */
+  selfRebuildInfo: () => ipcRenderer.invoke('app:selfRebuildInfo'),
+  selfRebuild: () => ipcRenderer.invoke('app:selfRebuild'),
   clipboardReadText: () => ipcRenderer.invoke('clipboard:readText'),
   /* 事实库插图：剪贴板/截图取图 + 复制进 assets 目录 + 删无引用图片（主进程校验目录白名单） */
   clipboardReadImage: () => ipcRenderer.invoke('clipboard:readImage'),
@@ -1702,5 +1712,38 @@ contextBridge.exposeInMainWorld('api', {
     };
     ipcRenderer.on('assets:changed', h);
     return () => ipcRenderer.removeListener('assets:changed', h);
+  },
+
+  /* ── 快捷会话小窗（mini-chat-window.js 那只独立 BrowserWindow，全局唯一）──
+     主窗口这一侧只有「接请求 → 执行 → 回结果」与「把状态推过去」两条：
+       · onMiniChatReq：小窗的 state / select / newSession / send / stop / goto 全交给渲染层执行
+         （agent 运行态只在这里），实现见 renderer/app-mini-chat-host.js 文件头；
+       · miniChatPush：会话列表 / 最后一条 AI 回复 / 运行态变了就推一拍；
+       · miniChatOpen：左下角入口按钮打开（或聚焦）那只唯一的小窗；
+       · onMiniChatVisibility：小窗开了 / 关了 —— 渲染层据此启停推送循环（关掉即停，不空转）。 */
+  miniChatOpen: () => ipcRenderer.invoke('minichat:open'),
+  miniChatRes: (msg) => ipcRenderer.send('minichat:res', msg || {}),
+  miniChatPush: (payload) => ipcRenderer.send('minichat:push', payload || {}),
+  onMiniChatReq: (cb) => {
+    const h = (_e, msg) => {
+      try {
+        cb(msg);
+      } catch (err) {
+        console.error('api.onMiniChatReq cb error:', err);
+      }
+    };
+    ipcRenderer.on('minichat:req', h);
+    return () => ipcRenderer.removeListener('minichat:req', h);
+  },
+  onMiniChatVisibility: (cb) => {
+    const h = (_e, p) => {
+      try {
+        cb(p);
+      } catch (err) {
+        console.error('api.onMiniChatVisibility cb error:', err);
+      }
+    };
+    ipcRenderer.on('minichat:visibility', h);
+    return () => ipcRenderer.removeListener('minichat:visibility', h);
   },
 });

@@ -382,13 +382,29 @@
   overflow: auto;
 }
 .review-notes .rv-notes-empty { color: var(--muted); font-size: 12px; padding: 12px; }
+/* 顶条：只放「让 AI 依据批注修订」一颗按钮，四周留一点空隙 */
 .review-notes-head {
   flex: none; display: flex; flex-direction: column; gap: 4px;
-  padding: 8px; border-bottom: 1px solid var(--bd2);
+  padding: 10px; border-bottom: 1px solid var(--bd2);
 }
-.rv-add-full { align-self: flex-start; }
-.rv-notes-hint { color: var(--muted); font-size: 10.5px; }
-.rv-notes-title { color: var(--muted); font-size: 11.5px; font-weight: 600; }
+/* 顶条里的修订按钮：撑满栏宽、字居中，四周留白由 .review-notes-head 的 padding 给 */
+.rv-btn.rv-revise-top {
+  display: block; width: 100%; padding: 5px 8px; text-align: center;
+}
+/* 顶条一行：修订按钮吃掉剩余宽度，右侧跟一颗小设置按钮（⚙ 模型设置） */
+.rv-notes-head-row {
+  display: flex; align-items: stretch; gap: 4px;
+}
+.rv-notes-head-row .rv-btn.rv-revise-top {
+  flex: 1 1 auto; width: auto; min-width: 0;
+}
+.rv-btn.rv-revise-set {
+  flex: 0 0 auto; width: 30px; padding: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 13px; line-height: 1;
+}
+.rv-vtab.del { color: var(--red); }
+.rv-vtab.del:hover { color: var(--red); border-color: var(--red); }
 .rv-notes-list { flex: 1 1 auto; padding: 8px; display: flex; flex-direction: column; gap: 8px; }
 .rv-note {
   border: 1px solid var(--bd2); border-radius: 7px;

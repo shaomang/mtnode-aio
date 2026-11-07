@@ -1,29 +1,25 @@
-# YuE2 music generation (lyrics → full song)
+# YuE2 music generation (lyrics to full song)
 
 ![diagram](img/yue_gen.svg)
 
-Right-click the canvas → **Process › Audio generation › YuE2**. Local YuE2 backend (the “YuE2 Local Music” plugin, ported after the open-source [YuE](https://github.com/multimodal-art-projection/YuE) project). **Each run produces exactly one audio file** (`.wav`) written to the node's own `outputPath`. **The output path may be left empty too**: wire its **data output** into a downstream **Save** node and the path becomes that node's job — the file lands in the **app-managed folder** (the canvas-asset / temp area under the app data directory) first, and that Save node then writes it to the save path you set.
-
-YuE2 takes the “lyrics → full song” route: give it a **style prompt** and **lyrics** and it sings the whole song, optionally producing an **ABC score** as well; you can also hand-write the score and feed it in (port 2 / the node's own field). **Lyrics are optional**: leave port 1 unwired and the node's own lyrics field empty and it submits pure instrumental `[instrumental]` (the same convention as Minimax Music 3), so you still get a track.
+Right-click the canvas → **Process Node › Audio generation › YuE2**. Local YuE2 backend: give it a style prompt plus lyrics and it sings the whole song (optionally producing an ABC score too); **each run produces exactly one audio file** (`.wav`).
 
 ## Ports
-- **Input**: port 0 = style prompt · port 1 = lyrics (optional: leave it unwired / empty for pure instrumental `[instrumental]`) · port 2 = ABC score (optional) · port 3 = control input
-- **Output**: port 0 = audio (play / save downstream) · port 1 = control output
+- **In**: port 0 = style prompt (required) · port 1 = lyrics (optional; unwired / empty = pure instrumental `[instrumental]`) · port 2 = ABC score (optional) · port 3 = control input
+- **Out**: port 0 = audio (preview / save downstream) · port 1 = control output
 
-When ports 0 / 1 / 2 are not wired, the node reads the style prompt / lyrics / ABC score typed on the node itself — only the **style prompt (port 0) is required**; that is the one whose absence blocks a run.
+## Settings
+- Change them in the **⚙ Settings** window opened from the node header.
+- **Output path**: where the `.wav` goes (relative to the working directory / node-layer subfolder). Empty is fine once a Save node is wired — that node writes the file. Without one it is required, and ▶ warns “Generation cannot start until an output path is set”.
+- **Chain-of-thought tier**: `full` (full CoT, best quality, default) · `melody` (melody guidance, faster) · `off` (no CoT, prompt only)
+- **Roll count**: sequential generations (1–10); multiple runs save as `#1`, `#2` … · **Seed** + **Reroll (seed +1 on every run, on by default)**
+- **auto CPU offload (recommended on 24G)**: on by default
 
-## Options
-Click **⚙ Settings** in the node header to open the settings window; changes apply immediately and the card itself keeps showing just a one-line summary.
-
-- **Output path**: `.wav` destination (relative to workspace / super subfolder). **Empty is fine once a Save node is wired** — the path then belongs to that Save node: the file lands in the app-managed folder first and the Save node writes it (see the Save node guide). Without a Save node it is required, and ▶ warns “Generation cannot start until an output path is set”.
-- **Chain-of-thought tier**: `full` (full CoT, best quality) · `melody` (melody guidance, faster) · `off` (no CoT, prompt only)
-- **Attempts**: gacha rolls (1–10), one file per roll, named `#1`, `#2` …
-- **Seed**: a fixed seed reproduces; with **reroll** on, each roll bumps the seed by +1
-- **auto CPU offload (recommended on 24G)**: offloads part of the weights; keep it on for a 24G GPU
+## Usage
+- Wire the style prompt to port 0 (lyrics to port 1; leave it empty for instrumental) → set the output path → press ▶.
 
 ## Notes
-- Only **1 audio/video task** is allowed globally at a time (music / speech / video are mutually exclusive); other tasks queue.
-- One backend instance per plugin; multiple YuE2 nodes share it, and this node shares the same serial chain as Minimax Music 3.
-- The backend is installed locally and wants a **24G-class NVIDIA GPU**; until it is installed the node shows a “plugin not installed” bar — install it in **Plugins › YuE2 Local Music**.
-- For lyrics and style-prompt conventions you can follow the **built-in skills** `minimax-music-lyrics` / `minimax-music-prompt` (they ship with the app — no Creative Workshop download; their structure and tone apply to YuE2 as well, and a style prompt is always **one English paragraph of six sentences**: style + mood → tempo & groove → instruments → vocals → structure & contrast → production).
-- **Backend errors pop a dialog**: when that install or the running backend breaks, the main window shows an **error report** (error code, error body, console log tail, the node that failed) and offers **🤖 Auto-repair** — a visible session that works in the `yue2-local-install` skill's self-repair mode inside this plugin's **INSTALL_DIR** and, on success, **restarts the YuE2 backend** and refreshes this node's status. Cancelled-by-you / busy / out of disk / no NVIDIA GPU / driver too old / invalid install directory get the report only, never an auto-repair (see “Plugin error dialogs and auto-repair” in the manual).
+- Only **1 audio/video task** runs globally at a time (music / speech / video are mutually exclusive); one backend instance serves every node, and this node shares one serial chain with Minimax Music 3.
+- A **24G-class NVIDIA GPU** is recommended. Until it is installed the node shows “plugin not installed” — install it from the **Plugins › YuE2 Local Music** card; the backend log is in the read-only console behind the ⓘ on the cover.
+- Lyrics and style prompts can follow the **built-in skills** `minimax-music-lyrics` / `minimax-music-prompt` (they ship with the app — no Creative Workshop download); a style prompt is always **one English paragraph of six sentences**.
+- **Plugin error dialog**: the `yue2-local-install` skill repairs it inside this plugin's INSTALL_DIR and restarts the backend; cancelled-by-you / installing / out of disk / no NVIDIA GPU get the report only.

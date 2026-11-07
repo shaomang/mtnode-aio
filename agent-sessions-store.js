@@ -109,6 +109,9 @@ const META_KEYS = [
   "pure",
   "overclock",
   "grill",
+  /* 「快速热修」（本轮需求）：会话级开关，与 grill 互斥 —— 必须同时进渲染层白名单
+     与这份索引元数据，否则重启后这一位就丢了 */
+  "hotfix",
   "showThink",
   "trajView",
   "noCanvasRead",

@@ -5486,7 +5486,7 @@ function breezeCfgSummaryOf(node) {
 }
 function breezeSeedOf(node) {
   const v = Math.floor(Number(node && node.seed));
-  return isFinite(v) ? v : 42;
+  return isFinite(v) ? v : 1;
 }
 /* 摘要里的种子片段：与其它媒体节点同口径（开着摇数时标出 +1，免得看到种子在变以为没生效） */
 function breezeSeedSlotText(node) {
@@ -6347,7 +6347,7 @@ async function playBreezeGenNode(node, quiet) {
       }
       if (exp.managed) managedRun = true;
       /* 种子：与其它媒体节点同一口径 —— 摇数开启时每次合成（含抽卡）种子 +1，
-         否则固定种子可复现。缺省值仍是 42（见 breezeSeedOf）。 */
+         否则固定种子可复现。缺省值仍是 1（见 breezeSeedOf）。 */
       if (!isFinite(Math.floor(Number(node.seed)))) node.seed = breezeSeedOf(node);
       const seed = nextMediaGenSeed(node);
       {

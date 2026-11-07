@@ -487,6 +487,135 @@ button:disabled:active {
   border-color: var(--orange)
 }
 
+/* 画布下拉改成自绘（按钮 + 列表，见 renderer/app.js 的 refreshWfSelect）：
+   外壳承担原先 <select> 的伸缩尺寸，按钮铺满外壳 —— 因为原生 option 里塞不进图标，
+   而研究类画布要在这一行行首挂一枚橙色研究图标。外观与旧的 .wf-select 逐字一致。 */
+.wf-pick {
+  position: relative;
+  flex: 0 1 150px;
+  min-width: 104px;
+  max-width: 150px;
+  height: 32px;
+}
+
+.wf-pick > .wf-select {
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  flex: none;
+  min-width: 0;
+  max-width: none;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  text-align: left;
+  font-family: var(--sans);
+}
+
+.wf-pick-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.wf-pick-caret {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  opacity: .6;
+}
+
+/* 橙色研究图标：当前画布是研究类画布时出现在按钮里，列表里出现在该行行首 */
+.wf-pick-ico {
+  flex: none;
+  width: 13px;
+  height: 13px;
+  display: inline-flex;
+  align-items: center;
+  color: var(--orange);
+}
+
+.wf-pick-ico[hidden] {
+  display: none !important;
+}
+
+.wf-pick-ico svg,
+.wf-pick-row-ico svg {
+  width: 13px;
+  height: 13px;
+  display: block;
+}
+
+.wf-pick-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 60;
+  box-sizing: border-box;
+  min-width: 230px;
+  max-width: min(380px, 60vw);
+  max-height: min(60vh, 420px);
+  overflow: auto;
+  padding: 4px;
+  border: 1px solid var(--bd2);
+  border-radius: 6px;
+  background: linear-gradient(180deg, var(--panel2), var(--panel));
+  box-shadow: var(--shadow-pop);
+}
+
+.wf-pick-menu[hidden] {
+  display: none !important;
+}
+
+.wf-pick-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  color: var(--ink);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.wf-pick-row:hover {
+  background: color-mix(in srgb, var(--orange) 14%, transparent);
+}
+
+.wf-pick-row.on {
+  background: color-mix(in srgb, var(--orange) 24%, transparent);
+}
+
+.wf-pick-row-ico {
+  flex: none;
+  width: 13px;
+  height: 13px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* 研究行：图标走橙色（--orange 与顶栏「工坊」同色，暗色底上足够亮） */
+.wf-pick-row-ico.research {
+  color: var(--orange);
+}
+
+.wf-pick-row-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.wf-pick-row-n {
+  flex: none;
+  font-size: 11px;
+  opacity: .6;
+}
+
 .btn-lang {
   box-sizing: border-box;
   width: 32px;
@@ -2593,6 +2722,34 @@ button.mini.btn-sq.ws-browse svg {
 .fn-canvas.is-snapshot .wg-del,
 .fn-canvas.is-snapshot .box-sel {
   visibility: hidden !important
+}
+
+/* 快捷会话小窗入口（renderer/app-mini-chat-host.js）：紧挨状态栏最左那枚话筒的右侧
+   （话筒 order:-3、AI 增强 order:-2、TTS order:-1；本按钮也取 -2，靠 DOM 次序排在话筒之后、
+   AI 增强之前 —— 想再挪位置只改这一个数）。 */
+.sb-minichat {
+  flex: none;
+  order: -2;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1;
+  font-family: var(--mono);
+}
+
+.sb-minichat:hover {
+  color: var(--cyan2, #38d6ff);
+  border-color: var(--bd2);
+  background: rgba(56, 214, 255, .08)
 }
 
 .statusbar .spacer {

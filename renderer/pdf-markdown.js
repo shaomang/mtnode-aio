@@ -5,21 +5,25 @@
  * 唯一入口：window.openPdfParse(pdfPath, opts)
  *
  * 三档降级（不是静默空文本，每一步都给可读理由）：
- *   ① 结构化解析：主进程 pdf:probe / pdf:parse（pdf-doc.js 内核）抽取文本层 →
+ *   ① 结构化解析：主进程 pdf:probe / pdf:parse（pdf-read.js = pdf.js 内核）抽取文本层 →
  *      标题 / 段落 / 列表 / 表格 / 公式占位，直接出 Markdown；
- *   ② 结构解析失败或没有文本层（扫描件 / 图片版 PDF）：逐页识图 —— 取页面图，
- *      用当前 / 默认模型 + dshRunTask({ images:[页图] }) 把每页转成 Markdown（公式走 LaTeX），
- *      结果按 <!-- page N --> 逐页拼接；没单独配视觉模型也照跑，模型不吃图片时如实报
- *      「当前模型不支持图片输入：<上游报错>」；
- *   ③ ①② 都不成：给一条可读错误（缺页面渲染通道 / 加密 …）。
+ *   ② 文本层不可用（没有文本层 = 扫描件 / 图片版，或抽出来是乱码 = 字体缺 Unicode 映射，
+ *      数学论文常见）：逐页识图 —— 主进程 pdf:render 把页面渲成 PNG，再用视觉模型
+ *      + dshRunTask({ images:[页图] }) 逐页转成 Markdown（公式走 LaTeX），
+ *      结果按 <!-- page N --> 逐页拼接；
+ *   ③ ①② 都不成：给一条可读错误（缺页面渲染通道 / 需要打开口令 …）。
+ *
+ * 首次识图会先问一次「允许把页面图发给模型服务吗」（持久确认窗），选择记进
+ * config.json 的 pdf.visionConsent / pdf.maxVisionPages（0 = 全篇），之后不再打扰。
  *
  * 进度与取消：整轮走一次 openOverlay 进度窗（持久窗，不点外部关闭），逐页刷新进度，
  * 「取消」= 立刻 dshCancelActive(本轮的 runKey) 并在页间停下；已完成页保留。
  *
  * 消费方（都在调用期按 typeof 取本文件的全局函数）：
- *   · 拖入 PDF → 文本节点：app.js createNodesFromDroppedFiles（kind "text" + pdf）
  *   · 文本节点「导入」对话框：app.js importFileToText（filters 里有 PDF 一项）
- *   · 数据库「文件节点」行上的「解析为 Markdown」：app-db.js dbFileRowEl
+ *   · 文件节点行上的「解析为 Markdown」：app-db.js dbFileRowEl
+ *   （**拖入 PDF 不再自动解析**：app.js createNodesFromDroppedFiles 直接把原 PDF 建成
+ *     普通「文件节点」（input_any，只登记本机路径）保留原样式，解析只由用户在上面两处主动点。）
  *       （原样保留该行的 binary 记录，只额外产出 Markdown 落盘并交给 Markdown 编辑器）
  *
  * 依赖（均为调用期取用的既有全局）：openOverlay / closeOverlay / toast / I18n /
@@ -236,10 +240,12 @@ async function pdfStructuredMarkdown(pdfPath, opts) {
     };
   }
   if (info && info.encrypted) {
+    /* pdf.js 会自己先用空口令解一次；走到这里说明**真要口令**（出版商的 AES 加密多有口令，
+       普通「限制复制」类加密已经在上一步被空口令放行了） */
     return {
       ok: false,
       markdown: "",
-      error: pdfT("PDF 已加密（/Encrypt）：无法抽取文本，也无法渲染页面识图"),
+      error: pdfT("PDF 需要打开口令（已先试过空口令），无法抽取文本，也无法渲染页面识图"),
       encrypted: true,
       info,
     };
@@ -252,24 +258,110 @@ async function pdfStructuredMarkdown(pdfPath, opts) {
   }
   if (!r) return { ok: false, markdown: "", error: pdfT("PDF 解析没有返回结果"), info };
   if (r.ok === false) {
+    const code = String((r.error && r.error.code) || "");
     return {
       ok: false,
       markdown: "",
       error: pdfErrText(r.error) || pdfT("PDF 解析失败"),
+      /* 需要口令 = 连页面也渲不出来，第 ② 档不用白跑一趟 */
+      encrypted: code === "password_required" || code === "encrypted",
       raw: r,
       info,
     };
   }
   const md = String(r.markdown || "");
+  const quality = r.quality && typeof r.quality === "object" ? r.quality : null;
   return {
     ok: !!md.trim(),
     markdown: md,
     warning: String(r.warning || ""),
     pages: Number(r.pages) || 0,
+    pagesWithText: Number(r.pagesWithText || 0),
+    emptyPages: Number(r.emptyPages || 0),
+    quality: quality,
     formulas: Array.isArray(r.formulas) ? r.formulas : [],
     raw: r,
     info,
   };
+}
+
+/** 文本层能不能直接交付：乱码 / 大半页没文字 → 一律降级去识图。
+    返回 { usable, reason }（reason 会写进进度窗，用户看得见为什么改道）。 */
+function pdfTextLayerUsable(st) {
+  if (!st || !st.ok) return { usable: false, reason: "" };
+  const q = st.quality;
+  if (q && q.garbled) {
+    return {
+      usable: false,
+      reason: pdfT("文本层编码不可靠（字体缺少 Unicode 映射，抽出来是乱码），改走逐页识图"),
+    };
+  }
+  if (st.pages >= 2 && st.emptyPages && st.emptyPages / st.pages >= 0.5) {
+    return {
+      usable: false,
+      reason: pdfT("超过一半的页面抽不到文字（可能是扫描件），改走逐页识图"),
+    };
+  }
+  return { usable: true, reason: "" };
+}
+
+/* ── 逐页识图的用户偏好（config.json 的 pdf 段）：同意过一次就不再问 ── */
+function pdfVisionPref() {
+  let c = null;
+  try {
+    c = typeof S !== "undefined" && S && S.config ? S.config : null;
+  } catch (_) {
+    c = null;
+  }
+  const o = c && c.pdf && typeof c.pdf === "object" ? c.pdf : {};
+  return {
+    consent: o.visionConsent === true,
+    maxPages: Number(o.maxVisionPages) || 0,
+  };
+}
+
+async function pdfVisionPrefSave(patch) {
+  try {
+    if (typeof S === "undefined" || !S || !S.config) return;
+    S.config.pdf = Object.assign({}, (S.config.pdf && typeof S.config.pdf === "object" ? S.config.pdf : {}), patch);
+    if (window.api && typeof window.api.configSave === "function") await window.api.configSave(S.config);
+  } catch (_) {}
+}
+
+/** 首次识图前确认一次：页面图会外传 + 计费，用户得有知情权；选择随后记进设置。
+    返回 { allowed, maxPages, model? }。 */
+async function pdfVisionConsent(route) {
+  const pref = pdfVisionPref();
+  if (pref.consent) return { allowed: true, maxPages: pref.maxPages };
+  const who = route ? route.provider + " / " + route.model : pdfT("当前 / 默认模型");
+  const msg =
+    pdfT("这份 PDF 的文本层不可用，要把它转成 Markdown 只能逐页识图。") +
+    "\n\n" +
+    pdfT("页面图会发送到模型服务（{m}）并按该服务计费。允许吗？", { m: who });
+  let ok = false;
+  try {
+    ok = await confirmDialog(msg, {
+      title: pdfT("逐页识图确认"),
+      okText: pdfT("允许并继续"),
+      cancelText: pdfT("不允许"),
+    });
+  } catch (_) {
+    ok = false;
+  }
+  if (!ok) return { allowed: false, maxPages: 0 };
+  let maxPages = 0;
+  try {
+    const ans = await promptDialog(
+      pdfT("页数上限：超过这个页数只处理前面的部分（0 = 全篇）"),
+      "0",
+      { title: pdfT("逐页识图页数上限"), okText: pdfT("确定") },
+    );
+    maxPages = Math.max(0, Number(String(ans == null ? "" : ans).trim()) || 0);
+  } catch (_) {
+    maxPages = 0;
+  }
+  await pdfVisionPrefSave({ visionConsent: true, maxVisionPages: maxPages });
+  return { allowed: true, maxPages };
 }
 
 /* ============================ ② 逐页识图 ============================ */
@@ -473,16 +565,23 @@ function pdfRenderChannelNames() {
   return out;
 }
 
-/** 取页面图：① 主进程页面渲染通道 → ② 解析结果自带的内嵌页图；都没有返回 [] */
-async function pdfCollectPageImages(pdfPath, parse, ctl) {
+/** 取页面图：① 主进程页面渲染通道（pdf:render）→ ② 解析结果自带的内嵌页图；都没有返回 [] */
+async function pdfCollectPageImages(pdfPath, parse, ctl, opts) {
   const api = window.api || {};
+  const o = opts || {};
   const names = pdfRenderChannelNames();
   for (const n of names) {
     if (typeof api[n] !== "function") continue;
     ctl.note(pdfT("页面渲染通道：") + n);
     let r = null;
     try {
-      r = await api[n]({ path: pdfPath, pageImages: true });
+      r = await api[n]({
+        path: pdfPath,
+        pageImages: true,
+        /* 2 倍缩放 ≈ 144dpi：公式上下标在这个分辨率下还能认清，再高只是白烧内存 */
+        scale: 2,
+        maxPages: Number(o.maxPages) || 0,
+      });
     } catch (e) {
       r = { ok: false, error: String((e && e.message) || e) };
     }
@@ -491,37 +590,49 @@ async function pdfCollectPageImages(pdfPath, parse, ctl) {
       continue;
     }
     const list = await pdfNormalizeImageList(r, "pdf-page", "pdf-" + pdfStemOf(pdfPath).slice(0, 24));
-    if (list.length) return list;
+    if (list.length) return { list, total: Number(r.pages) || list.length };
   }
   const emb = await pdfImagesFromParse(parse, pdfPath);
   if (emb.length) ctl.note(pdfT("使用 PDF 内嵌页面图（{n} 张）", { n: emb.length }));
-  return emb;
+  return { list: emb, total: emb.length };
 }
 
 /** 第 ② 档：逐页识图 → Markdown。返回 { ok, markdown, error, cancelled, pages } */
 async function pdfVisionParse(pdfPath, parse, ctl, opts) {
-  const imgs = await pdfCollectPageImages(pdfPath, parse, ctl);
+  const route = pdfVisionRoute();
+  /* 首次识图先问一次（页面图会外传 + 计费），同意后记进 config.json 的 pdf 段 */
+  const consent = await pdfVisionConsent(route);
+  if (!consent.allowed) {
+    return {
+      ok: false,
+      markdown: "",
+      error: pdfT("你未允许把页面图发给模型服务；需要时可在 config.json 的 pdf.visionConsent 打开"),
+      denied: true,
+    };
+  }
+  const budget = consent.maxPages > 0 ? consent.maxPages : PDF_VISION_MAX_PAGES;
+  const got = await pdfCollectPageImages(pdfPath, parse, ctl, { maxPages: budget });
+  const imgs = got.list;
   if (!imgs.length) {
     return {
       ok: false,
       markdown: "",
-      error: pdfT("没有拿到可识图的页面图（当前版本未提供 PDF 页面渲染通道）"),
+      error: pdfT("没有拿到可识图的页面图（页面渲染通道没返回图片）"),
     };
   }
-  const route = pdfVisionRoute();
   /* 去闸：找不到「明确的视觉模型」也照跑 —— 默就当当前模型能识图（dshRunTask 缺省取当前 / 默认模型）；
      真不吃图片时下面按 API 的原话如实报「当前模型不支持图片输入：<上游报错>」，不再提前拦死。 */
-  const cap = Math.min(imgs.length, PDF_VISION_MAX_PAGES);
+  const cap = Math.min(imgs.length, budget);
   ctl.note(
     route
       ? pdfT("识图模型：{provider} / {model}", { provider: route.provider, model: route.model })
       : pdfT("识图模型：当前模型（未单独指定视觉模型，按默认模型直跑）"),
   );
-  if (cap < imgs.length) {
+  if (got.total > cap) {
     ctl.note(
-      pdfT("页面较多：本轮只处理前 {cap} 页（共 {n} 页），其余可在文件节点上再次解析", {
+      pdfT("页面较多：本轮先处理前 {cap} 页（共 {n} 页），想多认几页就调高页数上限后重试", {
         cap: cap,
-        n: imgs.length,
+        n: got.total,
       }),
     );
   }
@@ -589,12 +700,14 @@ function pdfReadableError(st, vs) {
   const lines = [];
   lines.push(pdfT("这份 PDF 没能转成 Markdown，失败原因如下："));
   if (st && st.error) lines.push("· " + pdfT("结构化解析：") + st.error);
+  else if (st && st.quality && st.quality.garbled)
+    lines.push("· " + pdfT("结构化解析：文本层是乱码（字体缺少 Unicode 映射）"));
   else lines.push("· " + pdfT("结构化解析：未提取到文本层（可能是扫描件或图片版 PDF）"));
   if (vs && vs.error) lines.push("· " + pdfT("逐页识图：") + vs.error);
   lines.push(
     pdfT(
-      "可行的办法：① 在「设置 → 模型服务」配置一个支持识图的模型后重试（扫描件走逐页识图）；" +
-        "② 换一份带文本层的 PDF；③ 若 PDF 已加密，先去掉密码再解析。",
+      "可行的办法：① 在「设置 → 模型服务」配置一个支持识图的模型后重试（扫描件与数学公式都要走逐页识图）；" +
+        "② 若 PDF 需要打开口令，先去掉密码再解析；③ 换一份带可用文本层的 PDF。",
     ),
   );
   return lines.join("\n");
@@ -723,19 +836,26 @@ async function openPdfParse(pdfPath, opts) {
     if (st.ok) {
       ctl.note(pdfT("结构化解析完成：{n} 字", { n: st.markdown.trim().length }));
       if (st.warning) ctl.note(st.warning);
-      return await pdfFinish(path, st.markdown, Object.assign({}, st, { tier: "structured" }), ctl, opts);
+      /* 文本层抽到了不代表能用：字体缺 Unicode 映射时抽出来是乱码（数学论文的常见形态），
+         这时静默改走逐页识图，别把一屏「⌉⌋⌊」当结果交给用户 */
+      const use = pdfTextLayerUsable(st);
+      if (use.usable) {
+        return await pdfFinish(path, st.markdown, Object.assign({}, st, { tier: "structured" }), ctl, opts);
+      }
+      ctl.note(use.reason || pdfT("文本层不可用，改走逐页识图"));
+    } else {
+      ctl.note(pdfT("结构化解析未拿到文本层：") + (st.error || pdfT("（空文本）")));
     }
-    ctl.note(pdfT("结构化解析未拿到文本层：") + (st.error || pdfT("（空文本）")));
   }
   if (st.encrypted) {
-    const e = st.error || pdfT("PDF 已加密，无法解析");
+    const e = st.error || pdfT("PDF 需要打开口令，无法解析");
     if (ctl.ui) ctl.ui.fail(e);
     else pdfToast(e, "err");
     return { ok: false, error: e, tier: "error", encrypted: true };
   }
 
-  /* ② 逐页识图（视觉模型） */
-  ctl.step(pdfT("② 无文本层：逐页识图转 Markdown…"));
+  /* ② 文本层不可用：逐页识图（页面图 → 视觉模型） */
+  ctl.step(pdfT("② 逐页识图转 Markdown…"));
   const vs = await pdfVisionParse(path, st.raw || null, ctl, opts);
   if (vs.ok && String(vs.markdown || "").trim()) {
     return await pdfFinish(path, vs.markdown, Object.assign({}, vs, { tier: "vision" }), ctl, opts);

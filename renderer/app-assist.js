@@ -242,8 +242,34 @@ function assistCanvasTurnRelated(text) {
    （如 smoke-think 抠 agentModeEntryOf），多一层未一起抠出的依赖就会当场 ReferenceError。 */
 function grillTurnOn(s, opts) {
   opts = opts || {};
+  /* 快捷会话小窗那一轮的「本轮覆写」（本轮需求 · 共识 q3 / q7）：给了布尔就按它走，
+     **不读也不写会话字段** —— 小窗里那两枚开关只作用于它自己发出的那一轮。
+     其余闸（自动续跑 / 断点续跑 / 开发任务书会话）照旧一律生效。 */
+  if (typeof opts.grillOverride === "boolean")
+    return !!(
+      opts.grillOverride &&
+      !opts.autoContinue &&
+      !opts.resumeRound &&
+      !opts.devContract
+    );
   return !!(
     !(s && s.grill === false) &&
+    !opts.autoContinue &&
+    !opts.resumeRound &&
+    !opts.devContract
+  );
+}
+/* 「快速热修」（本轮需求）：会话级开关 st.hotfix，**缺省关**，与会话的「先拷问需求」
+   互斥（开热修就把 grill 写成 false，与开发节点 devGrill / devHotfix 同一口径）。
+   轮次闸与 grillTurnOn 一模一样：自动续跑 / 断点续跑 / 开发任务书会话都不注入。 */
+function hotfixTurnOn(s, opts) {
+  opts = opts || {};
+  const on =
+    typeof opts.hotfixOverride === "boolean"
+      ? !!opts.hotfixOverride
+      : !!(s && s.hotfix === true);
+  return !!(
+    on &&
     !opts.autoContinue &&
     !opts.resumeRound &&
     !opts.devContract
@@ -264,6 +290,14 @@ const GRILL_CONTRACT =
      ixSummaryBlock）：题面首行 + 空行后的 Markdown 总结 → 卡片渲染成「📋 总结」区。
      不写死这段，模型会把整份共识挤在题面那一行，卡片再好也只能显示成一坨。 */
   "收尾那张确认卡按固定格式写：question 的第一行只放一句话题面（如「以上共识是否无误？」），空行之后才是整份共识总结、用 Markdown 写（小标题 + 要点列表，必要时表格），卡片会把它渲染进「📋 总结」区；选项只留两项：「确认无歧义，开始实施（推荐）」与「还要改，我补充」，措辞随交流语言。";
+/* 快速热修契约正文（本轮需求）：文案与开发节点任务书那张【快速热修模式】同一套硬闸，
+   只把「该功能块」换成「这条会话 / 这一轮」—— 会话侧能改文件与画布，所以不禁只读查现状，
+   禁的是「写文档 / 自己加测试 / 铺开干活」。与 GRILL_CONTRACT 互斥，一轮只进其中一段。 */
+const HOTFIX_CONTRACT =
+  "\n\n【快速热修模式 · 最快修完】这条会话开着「快速热修」：" +
+  "按最快路径把问题修好 —— 只在需求确有歧义时用 ask_user_question 只问卡住的那几点（不加载内置技能 mtnode-grill-me、不走整轮前沿拷问）；" +
+  "不写任何文档（changelog / DESIGN.md / guides / AGENTS.md 以及任何 .md 文件都不改）；不写、不跑 smoke test；" +
+  "只做必须做的验证（能直接说明改动正确的最小检查；拿不准就人工 Review）；收尾只一句话汇报改了什么，不列文件清单。";
 
 function summarizeCanvasEdit(params) {
   params = params || {};
@@ -602,8 +636,9 @@ function sessionCanvasTooltipLine(st) {
   const nm = sessionCanvasName(st);
   return nm ? I18n.t("\n所属画布: ") + nm : "";
 }
-/* 节点绑定会话的标题形如「开发 · 模块名」（细化 / 问询 / 建议同理，函数与工具开发会话也用它）。
-   两种口径都认：会话契约字段（开发 / 细化 / 问询 必有）与标题前缀（建议记录会话只有标题）。
+/* 节点绑定会话的标题：细化 / 问询 / 建议形如「细化 · 模块名」，开发会话就是模块名
+   （「开发」不写进标题，只占宽度）。两种口径都认：会话契约字段（开发 / 细化 / 问询 必有）
+   与标题前缀（建议记录会话只有标题）。
    前缀词表 SESSION_BOUND_TITLE_WORDS 按当前 UI 语言 + 中文原文 + 英文原词三份取，
    判据（sessionIsDevBoundTitle）与自动命名（sessionDevTitlePrefix）共用同一份。 */
 const SESSION_BOUND_TITLE_WORDS = ["开发", "细化", "问询", "建议", "Dev", "Refine", "Ask", "Suggest"];
@@ -772,14 +807,25 @@ function sessionTopicOfBoundSession(st) {
    返回是否改了标题。 */
 function retitleBoundSessionByTopic(st) {
   if (!st || st.titleLocked || st.titleAuto) return false;
+  /* 前缀可以没有（「开发」会话标题就是模块名，见 app.js devSessionTitleOf）：
+     只要确实是一条绑定会话，主题照样落地，替掉的只是模块名那一段。 */
   const prefix = sessionDevTitlePrefix(st);
-  if (!prefix) return false;
+  if (!prefix && !sessionIsDevBoundTitle(st)) return false;
   const topic = sessionTopicOfBoundSession(st);
   if (!topic) return false;
   const next = prefix + topic;
   if (next === st.title) return false;
   st.title = next;
   return true;
+}
+
+/* 旧存档里绑定会话的标题形如「开发 · 模块名」：本轮起标题不再带「开发」字样
+   （它只占宽度、不说明这一轮做什么），载回时把这段前缀去掉，与新建会话同一口径。
+   只认「开发 · 」/「Dev · 」这一种形状，且只对绑定会话动手，别的标题一个字不改。 */
+function sessionTitleDropDevWord(title) {
+  return String(title || "")
+    .replace(/^(开发|Dev)\s*·\s*/i, "")
+    .trim();
 }
 
 /* 助手工作目录输入框的「只读守卫」句柄（app-db.js 的 workspaceReadOnlyGuard）：
@@ -1199,13 +1245,16 @@ function fillAssistModelControls() {
     typeof deepseekRouteSelectable === "function"
       ? deepseekRouteSelectable(S.config)
       : true;
+  /* 先清空再重建：这个函数每刷新一次助手栏都会跑（切会话 / 切语言 / 改配置），
+     原来只 append 不清空，选项就一轮一轮叠起来 —— 用户看到的就是「供应商列表里
+     同一家反复出现很多次」。模型下拉那边一直是 innerHTML="" 后再填，这里对齐。 */
+  provSel.innerHTML = "";
   if (dsOk)
     addOpt(provSel, "deepseek-official", (dp && dp.name) || I18n.t("DeepSeek 官方"));
   for (const p of mtnode) addOpt(provSel, "mtnode_" + p.route, p.name);
   if (![...provSel.options].some((o) => o.value === curProv)) {
     curProv = preferredAgentProviderRoute();
   }
-  provSel.value = curProv;
   provSel.value = curProv;
   S.assistProvider = curProv;
   fillModels(curProv);
@@ -1841,6 +1890,12 @@ function assistSessionRecord(o) {
     canvasFree: false,
     noPlanFlow: true,
     assist: true,
+    /* 助手栏三枚会话级开关的播种值（纯净 / 先拷问 / 超频）：空白态点的开关必须
+       带进这条新会话 —— 否则「先开超频、再发第一条」那一下就丢（新会话没这一位，
+       开关当场回到关、这一轮也不会固定 Max 档）。缺省值与 agentAssistSwitchOn 一致。 */
+    pure: S.assistSeedPure === true,
+    grill: S.assistSeedGrill !== false,
+    overclock: S.assistSeedOverclock === true,
     messages: Array.isArray(o.messages) ? o.messages : [],
     archived: false,
     createdAt: o.at || Date.now(),
@@ -2190,6 +2245,13 @@ async function assistSend(text, opts) {
      是否真拷问由模型自判（见下方 personaHostFull）。 */
   const assistPure = agentAssistSwitchOn("pure", aidSt);
   const assistGrill = agentAssistSwitchOn("grill", aidSt);
+  /* 快捷会话小窗那一轮的覆写（本轮需求 · 共识 q3 / q7）：小窗的两枚开关只作用于
+     它自己发出的那一轮 —— **不读也不写会话字段**，所以这里在会话字段之上盖一层；
+     没给覆写（普通发送）就完全按会话字段走，行为与改造前一致。 */
+  const miniHotfixOv = typeof opts.hotfixOverride === "boolean" ? opts.hotfixOverride : null;
+  const miniGrillOv = typeof opts.grillOverride === "boolean" ? opts.grillOverride : null;
+  const assistHotfix = miniHotfixOv == null ? !!(aidSt && aidSt.hotfix === true) : miniHotfixOv;
+  const assistGrillTurn = miniGrillOv == null ? assistGrill : miniGrillOv;
   /* 超频模式：思考档强制 Max + 注入极限测试提示词（会话字段 st.overclock，空白态走播种值） */
   const assistOverclock = agentAssistSwitchOn("overclock", aidSt);
   /* 不缩进序列化：这份快照每轮原样重发，缩进（null, 2）纯属白送的空格 token */
@@ -2269,7 +2331,11 @@ async function assistSend(text, opts) {
   /* 拷问契约（本次需求 · 助手栏「先拷问需求」那一枚）：贴在人设尾部（不是单开一节）——
      节序表里没有这个 id 会被排到全表末尾，离「该不该开工」的判断点太远；
      贴在人设后面才有约束力。纯净模式开着时整段 system prompt 都置空（本就不注入）。 */
-  const assistGrillContract = assistGrill && !assistPure ? GRILL_CONTRACT : "";
+  const assistGrillContract = assistGrillTurn && !assistPure ? GRILL_CONTRACT : "";
+  /* 「快速热修」（本轮需求）：与拷问互斥，两段里只有一段能进 system prompt ——
+     热修优先（小窗保证不会同时开，这里再兜一层）。 */
+  const assistHotfixContract = assistHotfix && !assistPure ? HOTFIX_CONTRACT : "";
+  const assistModeContract = assistHotfixContract || assistGrillContract;
   const visionMediaRules = assistCanvasFree
     ? /* 无画布档：整段画布 / 节点口径撤掉，只留「回执即事实」这条通用纪律 */
       "- 工具回执里没有的结果，不要向用户声称已完成。\n"
@@ -2354,9 +2420,9 @@ async function assistSend(text, opts) {
             hide: assistHide,
             maxTokens: assistMaxTok,
           }),
-        }).text + assistGrillContract
+        }).text + assistModeContract
       : /* 内核不在（老沙箱只抠单文件）：按同一节序直接串接，结果与分节渲染一致；
-           拷问契约按同一口径在**整段之后**追加（与会话侧 systemPrompt += GRILL_CONTRACT 同源）。 */
+           拷问 / 热修契约按同一口径在**整段之后**追加（与会话侧 systemPrompt += GRILL_CONTRACT 同源）。 */
         [
           personaHost,
           scopeBlock,
@@ -2368,7 +2434,7 @@ async function assistSend(text, opts) {
           principleBlock,
           appStateBlock,
         ].join("") +
-        assistGrillContract;
+        assistModeContract;
   /* ── 这一轮的开轮参数与会话视图完全同构（本轮需求 · 会话为主体）───────────────
      过去这些只存在于 agentSessionSend 里，助手栏这一轮一个都没传，于是：
        · round 缺 → 轨迹的 tr.round = 0 → tokUsageStepNote 直接返回 false，
@@ -2960,11 +3026,22 @@ function agentSessions() {
      现改为写入 _devContract（发送时注入系统提示）；载回旧会话时做一次迁移。 */
   if (typeof devContractHydrateSession === "function")
     for (const s of S.agentSessions) devContractHydrateSession(s);
+  /* 旧存档的绑定会话标题还带着「开发 · 」前缀（本轮起新会话不写它）：载回时去掉，
+     不用等用户重开一条。判据是绑定会话的契约字段，普通会话的标题一个字不动。 */
+  for (const s of S.agentSessions)
+    if (s && s._devContract) {
+      const bare = sessionTitleDropDevWord(s.title);
+      if (bare !== String(s.title || "")) s.title = bare;
+    }
   /* 「先拷问需求（grill-me）」水合（本次需求）：会话级开关**缺省开** ——
      老存档 / 没点过这一枚的会话都没有这一位，统一归一成 true（与开发节点 devGrill
      「没写过 = 默认开」同一口径）；用户点过关掉的会话是布尔 false，原样留着。 */
   for (const s of S.agentSessions)
     if (s && typeof s.grill !== "boolean") s.grill = true;
+  /* 「快速热修」水合（本轮需求）：会话级开关**缺省关** —— 没写过这一位的会话一律归一成
+     false（与开发节点 devHotfix「没写过 = 默认关」同一口径）；用户点开的会话是 true，原样留着。 */
+  for (const s of S.agentSessions)
+    if (s && typeof s.hotfix !== "boolean") s.hotfix = false;
   /* 懒加载钩子：眼前这条会话若只有索引（正文还在盘上），就地发起一次读回 ——
      读回来会重画一帧。这是**唯一**的自动加载点，其余读正文的入口显式 ensure
      （轨迹·改动栏 / 全局搜索 / 续跑），所以「什么会被读进内存」是可预期的。
@@ -3787,6 +3864,8 @@ function agentSessionMetaForDisk(s) {
     overclock: !!s.overclock,
     /* 「先拷问需求（grill-me）」会话级开关：缺省开 —— 只有用户亲口关掉才落 false */
     grill: s.grill !== false,
+    /* 「快速热修」会话级开关：缺省关，与 grill 互斥（见 agentModeEntryOf） */
+    hotfix: !!s.hotfix,
     /* 「显示思考」：只落这条会话自己点过的那一态（null = 跟随全局默认档） */
     showThink: typeof s.showThink === "boolean" ? s.showThink : null,
     trajView: s.trajView === "trace" || s.trajView === "changes" ? s.trajView : "",
@@ -4414,7 +4493,8 @@ function openAssistModeMenu() {
      第三颗按钮叫「清空」（原名「新建一条」，功能等价）：结束当前这条助手会话、正文立刻
      回空白态并落盘 assistEnded —— 切画布 / 重启都不会再自动绑回，旧会话只留在左栏会话
      历史里可回看，下一次输入时新建一条；
-   · chip 行照原生顺序：工作区 → 模型 → 技能 → 压缩上下文（+ 查看摘要）→ 工具 → 模式 → 浏览器活动；
+   · chip 行照原生顺序：工作区 → 模型 → 工具 → 模式（「技能」「压缩上下文 / 查看摘要」
+     「浏览器活动」三枚已按需求从界面移除，对应 JS 入口保留）；
      原来平铺的五格（预设 / 供应商 / 模型 / 思考强度 / 上下文压缩）收进「模型」chip 的菜单，
      「工作目录」收进「工作区」chip 的菜单 —— 元素与接线原样保留，只是搬了家、点开才出现；
    · 运行区：计划 / 任务清单 / 发送队列 / 暂停折成一行摘要（「计划 x/y · 待办 n · 排队 n · 已暂停」），
@@ -5667,10 +5747,47 @@ function agentModeEntryOf(key) {
       on,
       toggle: () => {
         st.grill = st.grill === false;
-  agentTouchSession();
+        /* 两枚语义相反 → **互斥**（本轮需求）：打开「先拷问需求」就当场关掉「快速热修」 */
+        if (st.grill !== false) st.hotfix = false;
+        agentTouchSession();
         renderAgentComposer();
         if (typeof renderAgentSession === "function") renderAgentSession();
         agentModeSyncAssist(st);
+      },
+    };
+  }
+  /* 「快速热修」（本轮需求 · 共识 q6）：与会话的「先拷问需求」**互斥**的一枚 ——
+     真源是会话字段 st.hotfix（缺省关，随会话落盘），与开发节点 devHotfix 同一套语义：
+     走最快路径修完，只在真有歧义时问一句，不写文档、不写不跑 smoke test。
+     契约按轮注入见 HOTFIX_CONTRACT（agentSessionSend / assistSend 各一处）。 */
+  if (key === "hotfix") {
+    const on = !!(st && st.hotfix === true);
+    return {
+      key: "hotfix",
+      label: "快速热修",
+      hint:
+        "开启 = 这条会话走最快路径：只在需求确有歧义时问一句，不加载拷问技能、不写文档、不写不跑 smoke test，只做必须的验证；与「先拷问需求」互斥",
+      title: on
+        ? "快速热修：开启中，点击关闭（关闭后回到普通节奏）"
+        : "快速热修：点击开启（只在真有歧义时问一句，不写文档、不写不跑 smoke test）",
+      on,
+      /* 落点式写入（与「显示思考」同款）：按**点击那一刻**的会话态取反，
+         菜单点完不关，连点第二下必须真的翻回去。 */
+      set(next) {
+        const s = agentSessionState() || st;
+        s.hotfix = !!next;
+        /* 互斥：开热修就把「先拷问需求」写成 false；关热修不动 grill（用户自己再开） */
+        if (s.hotfix) s.grill = false;
+        agentTouchSession();
+        renderAgentComposer();
+        if (typeof renderAgentSession === "function") renderAgentSession();
+        agentModeSyncAssist(s);
+      },
+      toggle() {
+        this.set(!((agentSessionState() || st).hotfix === true));
+      },
+      onPick() {
+        this.set(!((agentSessionState() || st).hotfix === true));
       },
     };
   }
@@ -5841,6 +5958,7 @@ function agentModeEntries() {
      关闭 = 整条不显示（不是折叠）。全局默认档仍在 设置 · 智能能力 里改。 */
   return [
     agentModeEntryOf("grill"),
+    agentModeEntryOf("hotfix"),
     agentModeEntryOf("overclock"),
     agentModeEntryOf("pure"),
     agentModeEntryOf("auto"),
@@ -6063,23 +6181,35 @@ function applyViewChrome(view) {
   const wf = $("#btnToolWf");
   const ag = $("#btnToolAgent");
   const tm = $("#btnTeam");
+  const rs = $("#btnResearch");
   if (wf) wf.classList.toggle("on", view === "workflow");
   if (ag) ag.classList.toggle("on", view === "agent");
   if (tm) tm.classList.toggle("on", view === "team");
+  if (rs) rs.classList.toggle("on", view === "research");
   const wrap = $("#wfWrap");
   const pane = $("#agentPane");
   const team = $("#teamPane");
+  const research = $("#researchPane");
   if (wrap) wrap.style.display = view === "workflow" ? "" : "none";
   if (pane) pane.style.display = view === "agent" ? "" : "none";
   if (team) team.style.display = view === "team" ? "" : "none";
-  /* 视图互斥：画布 / 智能会话 / 团队各有自己的左侧栏，彼此不得出现。
+  if (research) research.style.display = view === "research" ? "" : "none";
+  /* 视图互斥：画布 / 智能会话 / 团队 / 研究各有自己的左侧栏，彼此不得出现。
      - 画布视图：可用 #sidebar（节点/绘图/节点层列表），会话与团队列表不可展开
      - 会话视图：自带 .agent-side（会话列表），画布 #sidebar 强制收起
      - 团队视图：自带 .team-side（项目 / 专家 / 会话三段列表），画布 #sidebar 强制收起
+     - 研究视图：自带 .rs-side（笔记 / 文献列表），画布 #sidebar 同样强制收起
      统一由 applySidebarVisibility() 收口 + body.view-* 类做 CSS 硬闸。 */
   document.body.classList.toggle("view-agent", view === "agent");
   document.body.classList.toggle("view-team", view === "team");
   document.body.classList.toggle("view-workflow", view === "workflow");
+  document.body.classList.toggle("view-research", view === "research");
+  /* 研究视图的左栏 = 同一条「文件」页，但根锁在 <画布工作目录>/research；
+     离开研究视图由同一个入口还原用户原来选的那个根（画布 / 项目 / 自定义）。 */
+  try {
+    if (window.MTNodeSideFiles && typeof window.MTNodeSideFiles.onViewChange === "function")
+      window.MTNodeSideFiles.onViewChange(view);
+  } catch (_) {}
   if (typeof applySidebarVisibility === "function") applySidebarVisibility();
 }
 function setView(view) {
@@ -6098,6 +6228,16 @@ function setView(view) {
     /* 团队视图同样收掉右侧画布助手栏：右栏留给专家聊天区（不持久化） */
     setAssistOpen(false, false);
     if (typeof renderTeamPane === "function") renderTeamPane();
+  } else if (view === "research") {
+    /* 研究视图（第 4 个视图，测试用，仅账号 ms2308 可见）：右栏同样收起 ——
+       它自己的正文 + 会话框已经占了整块工作区；进入时由 app-research.js 按当前画布
+       与工作目录装载 research/ 目录（没工作目录就出设置闸门）。 */
+    setAssistOpen(false, false);
+    if (window.MTResearch && typeof window.MTResearch.enter === "function") {
+      try {
+        window.MTResearch.enter();
+      } catch (_) {}
+    }
   } else {
     renderCanvas();
   }
@@ -13406,6 +13546,10 @@ async function agentEnqueueMessage(st, text, opts) {
     _planExec: !!o._planExec || undefined,
     planRunId: o.planRunId != null ? String(o.planRunId) : undefined,
     sessionId: o.sessionId != null ? String(o.sessionId) : String(st.id || ""),
+    /* 快捷会话小窗那一轮的模式（本轮需求 · 共识 q3）：随条目一起存，排水时原样恢复 ——
+       否则会话正忙时排队的那条消息会丢掉「不拷问 / 热修」这层意图。 */
+    grillOverride: typeof o.grillOverride === "boolean" ? o.grillOverride : undefined,
+    hotfixOverride: typeof o.hotfixOverride === "boolean" ? o.hotfixOverride : undefined,
   });
   st.updatedAt = Date.now();
   await agentTouchSession();
@@ -13810,7 +13954,14 @@ async function agentDrainQueue(st) {
                 planRunId: item.planRunId,
                 sessionId: item.sessionId || st.id,
               }
-            : { sessionId: st.id },
+            : {
+                sessionId: st.id,
+                /* 小窗那一轮的模式跟着队列条目走（共识 q3：只作用于它发出的那一轮） */
+                grillOverride:
+                  typeof item.grillOverride === "boolean" ? item.grillOverride : undefined,
+                hotfixOverride:
+                  typeof item.hotfixOverride === "boolean" ? item.hotfixOverride : undefined,
+              },
         );
       }
     } finally {
@@ -14571,8 +14722,8 @@ async function agentSessionSend(text, opts) {
     /* 开发 / 细化绑定会话：合并模式，不追加消息，只按主题改名。 */
     /* 绑定会话同样要随主题改名：引擎那条 LLM 主题因首条用户消息超 maxInputBytes
        到不了（见 retitleBoundSessionByTopic 注释），所以这里按关键输入自己补一个 ——
-       只换「开发 · 」后面的模块名，前缀一个字符不动；用户手改过（titleLocked）或
-       引擎已定名（titleAuto）的会话不碰。 */
+       有前缀（细化 / 问询）只换前缀后面那段，没前缀（开发会话就是模块名）整条换成主题；
+       用户手改过（titleLocked）或引擎已定名（titleAuto）的会话不碰。 */
     retitleBoundSessionByTopic(st);
   }
   /* 引擎自动命名（title 事件）是「一次性武装」闸位：只要这条会话还没被引擎真正
@@ -14812,14 +14963,28 @@ async function agentSessionSend(text, opts) {
      四种轮次不带契约：纯净模式（整段 system 本就置空）、自动续跑轮（不该由模型自己
      追问自己）、断点续跑轮（那份 dsh 会话里 system 已落定，重发只会污染上下文）、
      开发 / 细化任务书会话（任务书自己那一段【拷问模式】才是它的契约，不叠第二份）。 */
+  /* 「快速热修」（本轮需求 · 共识 q6）：与「先拷问需求」互斥的另一段契约，真源 st.hotfix
+     （缺省关）；轮次闸与 grill 完全同源。小窗那一轮可按 opts.hotfixOverride 覆写。
+     先算它：两段互斥 → 热修开着时把 grillTurn 的覆写按 false 传下去，绝不两段都注入。 */
+  const hotfixTurn =
+    !pureMode &&
+    hotfixTurnOn(st, {
+      autoContinue: !!opts._autoContinue,
+      resumeRound,
+      devContract: !!devContract,
+      hotfixOverride: opts.hotfixOverride,
+    });
   const grillTurn =
     !pureMode &&
     grillTurnOn(st, {
       autoContinue: !!opts._autoContinue,
       resumeRound,
       devContract: !!devContract,
+      /* 互斥兜底：热修那一段已经进去了，拷问这一段这一轮就不再进（热修优先） */
+      grillOverride: hotfixTurn ? false : opts.grillOverride,
     });
   if (grillTurn) systemPrompt += GRILL_CONTRACT;
+  if (hotfixTurn) systemPrompt += HOTFIX_CONTRACT;
   try {
     /* 本轮的图像附件（只发这一轮新增的图）：本轮正文里的内嵌图行 → 网关 attachImages
        → 用户消息的 image 内容块（模型这才真正「看见」那张图，而不是只读到一行路径）。

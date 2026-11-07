@@ -1,4 +1,4 @@
-﻿/* ===== 文本节点的 Markdown 编辑器（renderer/app-textedit.js）=====
+/* ===== 文本节点的 Markdown 编辑器（renderer/app-textedit.js）=====
  * 与「✎ AI 审阅」对话框（css/review.css 的 .rv-*）共用同一套按钮 / 工具栏 / 批注卡片样式，
  * 所以这里只放编辑器自己的容器尺寸与开关：
  *   · 近全屏（98vw × 98vh 上限）、右下可拖调、最小宽 ≥ 50% 视口（与审阅窗同口径）；
@@ -96,15 +96,22 @@
   stroke-dasharray: 4 3;
   stroke-linecap: round;
 }
+/* 连线平时不显示：只有 hover 到被批注正文（.on 由 teAnnoShowLink 打上）才亮出来，
+   且是从文字最右侧中点拉到批注卡左侧中点的直线。 */
 .review-dlg .te-anno-link {
   fill: none;
   stroke: color-mix(in srgb, var(--orange) 55%, transparent);
   stroke-width: 1.2;
   stroke-dasharray: 3 3;
+  opacity: 0;
+  pointer-events: none;
+}
+.review-dlg .te-anno-link.on {
+  opacity: 1;
   pointer-events: stroke;
   cursor: pointer;
 }
-.review-dlg .te-anno-link:hover {
+.review-dlg .te-anno-link.on:hover {
   stroke: var(--orange);
   stroke-width: 1.8;
 }

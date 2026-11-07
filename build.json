@@ -10,11 +10,19 @@
     /* 常驻托盘 + 关闭收托盘 + 任务完成系统通知（本次需求）：main.js 顶层 require 它，
        漏进白名单 = 打包后启动即 Cannot find module './main-tray-notify.js'（窗口都出不来）。 */
     "main-tray-notify.js",
+    /* 快捷会话小窗（左下角入口 + 全局 F1 的独立窗口 · 全局唯一）：main.js 顶层 require
+       mini-chat-window.js，它的 preload 是 preload-mini-chat.js（两只都漏进白名单 =
+       打包后启动即 Cannot find module './mini-chat-window.js'）。页面与脚本走 renderer/** 通配。 */
+    "mini-chat-window.js",
+    "preload-mini-chat.js",
     "main-proc-host.js",
     "fn-runtime.js",
     "desktop-capture.js",
-    "pdf-math.js",
-    "pdf-doc.js",
+    /* PDF 读取内核（pdf.js）：main.js 顶层的 pdf:probe / pdf:parse / pdf:render 与
+       fnPdfRead 都走它，漏进白名单 = 打包后 Cannot find module './pdf-read.js'
+       （PDF 解析、逐页识图、扫描件兜底整块失效）。旧的 pdf-doc.js / pdf-math.js
+       已随自写解析器一并删除（无任何 require）。 */
+    "pdf-read.js",
     "pdf-write.js",
     "preload.js",
     "preload-app.js",
@@ -224,12 +232,20 @@
     "!node_modules/uiohook-napi/libuiohook/**",
     "!node_modules/uiohook-napi/src/**",
     "!node_modules/**/*.{map,lib,iobj,ipdb,tlog,exp,recipe,vcxproj,vcxproj.filters,sln,gyp,gypi,Makefile2,lastbuildstate}",
-    "!node_modules/**/*.d.{ts,cts,mts}"
+    "!node_modules/**/*.d.{ts,cts,mts}",
+    /* pdf.js（pdf-read.js 的唯一内核）：只用 legacy ESM 构建 + 中日韩 CMap + 标准字体 +
+       WASM 解码器，其余（非 legacy 构建 / 给浏览器打包的 web/ / 类型声明 / 演示图）全剪。
+       web/ 与 build/ 是同一份代码的另一套产物，主进程只 import legacy/build/pdf.mjs。 */
+    "!node_modules/pdfjs-dist/{build,web,types,image_decoders}/**",
+    "!node_modules/pdfjs-dist/legacy/{web,types}/**"
   ],
   "asar": true,
   "asarUnpack": [
     "**/node_modules/uiohook-napi/**",
-    "**/node_modules/node-gyp-build/**"
+    "**/node_modules/node-gyp-build/**",
+    /* pdf.js 是 ESM（.mjs）：Node 的 ESM 加载器读不了 asar 虚拟路径，pdf-read.js
+       会把路径折算到 app.asar.unpacked，所以这份必须摊到 asar 外。 */
+    "**/node_modules/pdfjs-dist/**"
   ],
   "extraResources": [
     {

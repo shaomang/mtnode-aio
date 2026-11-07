@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 520 200" width="520" height="200">
+  <rect width="520" height="200" fill="#0d1016"/>
+  <defs>
+    <marker id="arr" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M0,0 L8,4 L0,8 z" fill="#f0c14d"/>
+    </marker>
+  </defs>
+  <rect x="16" y="66" width="108" height="48" rx="6" fill="#10141c" stroke="#4d8cff" stroke-width="1.6"/>
+  <text x="70" y="94" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">会话 / 智能节点</text>
+  <line x1="124" y1="90" x2="164" y2="90" stroke="#4d8cff" stroke-width="1.8" marker-end="url(#arr)"/>
+  <rect x="164" y="56" width="130" height="80" rx="6" fill="#1a140e" stroke="#ff8f2e" stroke-width="1.6"/>
+  <text x="229" y="100" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">工具节点</text>
+  <rect x="166" y="10" width="126" height="30" rx="6" fill="#101820" stroke="#38d6ff" stroke-width="1.6"/>
+  <text x="229" y="30" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">入参端子</text>
+  <line x1="229" y1="40" x2="229" y2="52" stroke="#38d6ff" stroke-width="1.8" marker-end="url(#arr)"/>
+  <line x1="294" y1="106" x2="344" y2="120" stroke="#5fd68a" stroke-width="1.8" marker-end="url(#arr)"/>
+  <rect x="344" y="104" width="150" height="34" rx="6" fill="#101610" stroke="#5fd68a" stroke-width="1.6"/>
+  <text x="419" y="125" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">出参端子 · 结果回传</text>
+  <text x="222" y="168" text-anchor="middle" fill="#5a6472" font-size="10" font-family="Segoe UI,sans-serif">端子 0 = 控制入 · 末位 = 控制出</text>
+  <text x="260" y="190" text-anchor="middle" fill="#5a6472" font-size="10" font-family="Segoe UI,sans-serif">Agent 像调函数一样调用 · 参数从端子进出</text>
+  <text x="512" y="14" text-anchor="end" fill="#3b4452" font-size="9" font-family="Segoe UI,sans-serif">tool</text>
+</svg>

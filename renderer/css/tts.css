@@ -1,4 +1,4 @@
-﻿/* MOSS-TTS-Nano 内置语音（状态栏那枚 TTS 开关）—— 实现见 renderer/app-tts.js。
+/* MOSS-TTS-Nano 内置语音（状态栏那枚 TTS 开关）—— 实现见 renderer/app-tts.js。
    位置纪律：状态栏里**夹在「✨ AI 增强」与「📷 画布截图」之间**，
    order 链 = 话筒 -3 · AI 增强 -2 · TTS -1 · 画布截图 0（见 css/voice.css 的两处注释）。 */
 
@@ -189,6 +189,92 @@
   line-height: 1.5
 }
 
+/* ── 语音参数微调窗（persistent；实现见 app-tts.js openParamsDialog）────
+   一行一项：标题（右侧「默认 x」小按钮）+ 滑杆与数字框 + 一句说明。
+   数字框固定宽度，滑杆吃掉剩余空间。 */
+.tts-params {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-height: min(58vh, 520px);
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.tts-params-note {
+  color: var(--muted2, #b9c0cc);
+  font-size: 11px;
+  line-height: 1.6
+}
+
+.tts-param-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.tts-param-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.tts-param-reset {
+  margin-left: auto;
+  padding: 1px 6px;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--muted2, #b9c0cc);
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, .14);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.tts-param-reset:hover {
+  color: var(--fg, #e6e6e6);
+  border-color: color-mix(in srgb, var(--cyan2, #38d6ff) 45%, transparent)
+}
+
+.tts-param-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.tts-param-line input[type=range] {
+  flex: 1 1 auto;
+  min-width: 0;
+  accent-color: var(--cyan2, #38d6ff);
+}
+
+.tts-param-num {
+  flex: 0 0 72px;
+  width: 72px;
+  box-sizing: border-box;
+  padding: 3px 6px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--fg, #e6e6e6);
+  background: rgba(0, 0, 0, .25);
+  border: 1px solid rgba(255, 255, 255, .14);
+  border-radius: 4px;
+}
+
+.tts-param-num:focus {
+  outline: none;
+  border-color: color-mix(in srgb, var(--cyan2, #38d6ff) 55%, transparent)
+}
+
+.tts-param-hint {
+  color: var(--muted, #8b93a1);
+  font-size: 10.5px;
+  line-height: 1.5
+}
+
 /* ── 语音摘要气泡（自动消失；点一下复制）──────────────────────────────── */
 .tts-bubble {
   position: fixed;
@@ -347,18 +433,31 @@
    位置：占统计文字那一格（运行队列按钮右侧、spacer 左侧），不改变状态栏高度。 */
 .statusbar .sb-speak {
   position: relative;
-  flex: 0 1 auto;
+  /* 铺满状态栏这一行剩下的全部空间：横向吃到 spacer 之前（右侧不再留大片空白），
+     纵向跟随行高拉伸（细框贴住状态栏上下，底部不再留空隙）。
+     basis 0：正文再长也只缩不换行，新闻条永远占住这一行的剩余宽度。 */
+  flex: 1 1 0;
   min-width: 0;
-  max-width: min(46vw, 620px);
+  max-width: none;
+  align-self: stretch;
+  display: flex;
+}
+
+/* 字挤过来之前，spacer 不再和其它格子抢富余宽度，空间全给新闻条 */
+.statusbar .sb-speak + .spacer {
+  flex: 0 0 auto;
+  min-width: 0;
 }
 
 .statusbar .sb-speak-line {
   appearance: none;
   display: flex;
   align-items: center;
+  flex: 1 1 auto;
   gap: 6px;
   max-width: 100%;
   min-width: 0;
+  height: 100%;
   margin: 0;
   padding: 2px 8px;
   background: transparent;
@@ -401,10 +500,14 @@
   flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
+  /* 细框现在是整行高，文字在这一格里垂直居中 */
+  display: flex;
+  align-items: center;
 }
 
 .statusbar .sb-speak-track {
   display: flex;
+  align-items: center;
   width: max-content;
   gap: var(--sb-speak-gap, 32px);
 }
@@ -414,6 +517,14 @@
   display: inline-block;
   min-width: 0;
   white-space: nowrap;
+}
+
+/* 第二份（.sb-speak-ghost）只在「真的在滚」时才放出来：
+   它只是为了让单向循环无缝接上，静止时若也留在轨道里，
+   框比正文宽时就会把同一句话在右边再显示一遍（看起来像重复了两遍）。
+   滚动时框一定比一份正文窄，第二份只会在第一份走空后露出来，不会并排同屏。 */
+.statusbar .sb-speak-view:not(.is-roll) .sb-speak-ghost {
+  display: none;
 }
 
 /* 内容比框长：单向匀速循环滚动（新闻条口径）。走完一份接上第二份，绝不倒着滚回去。

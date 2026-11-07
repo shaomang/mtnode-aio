@@ -1,4 +1,4 @@
-﻿"use strict";
+"use strict";
 /* ============================================================
  * 函数节点运行时（主进程侧调度 + worker_threads 执行线程）
  * ------------------------------------------------------------
@@ -165,7 +165,7 @@ function toProcTarget(t) {
 }
 
 /* PDF 桥的入参归一：readPdf(路径) / readPdf({ path }) / readPdf(路径, {…}) /
-   readPdf({ bytes }) / readPdf(缓冲区) —— 主进程侧 pdfLoadBuffer 已认完整口径，
+   readPdf({ bytes }) / readPdf(缓冲区) —— 主进程侧 pdf-read.js 的 loadBuffer 已认完整口径，
    这里只把「第二参 opts」并进对象，并对字符串按路径归类（像 mtnode.readText）。 */
 function pdfArg(a, b) {
   if (typeof a === "string") {
@@ -513,7 +513,7 @@ function buildMtnodeBridge(deps = {}) {
     screenList: () => call("screenList", {}),
     /* 有哪些窗口可拍：[{hwnd, pid, process, title, x, y, width, height, visible}] */
     windowList: () => call("windowList", {}),
-    /* ─ PDF 解析（主进程侧 main.js 的 pdfLoadBuffer / pdfParseBuffer / pdfProbeBuffer
+    /* ─ PDF 解析（主进程侧 pdf-read.js 的 loadBuffer / probeInfo / parsePdf
        内核，与「拖入 PDF」链同一份实现，绝不另写解析器）──────────────
        函数线程里没有 Electron 能力，读 PDF 只能借主进程这座桥。两种用法：
          await mtnode.readPdf(路径或字节[, opts])  → 抽文本层，回 { ok, markdown, pages, formulas, warning }

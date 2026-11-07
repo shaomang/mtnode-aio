@@ -1,0 +1,198 @@
+/* ── css/pdf-view.css · PDF 应用内预览（renderer/app-pdfview.js）──────────────
+   一只居中的阅读浮层：铺满窗口（上下各留几像素），头部标题 + 页码，中间是页面图，
+   底部翻页 / 页码 / 缩放 / 系统阅读器 / 关闭。配色与 .img-lightbox 同族。
+   z-index 1450：压在画布与节点浮层之上，又在询问窗 #mtDialog（2400）之下
+   （从弹窗里开预览时 JS 会给它加 .pdf-pv-top 抬到 2500）。 */
+
+.pdf-pv {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 1450;
+  background: rgba(6, 8, 12, 0.86);
+  align-items: center;
+  justify-content: center;
+  padding: 6px;
+}
+
+.pdf-pv.on {
+  display: flex;
+}
+
+.pdf-pv.pdf-pv-top {
+  z-index: 2500;
+}
+
+.pdf-pv-box {
+  width: min(99vw, 4200px);
+  height: min(97vh, 4200px);
+  display: flex;
+  flex-direction: column;
+  background: linear-gradient(180deg, var(--panel2), var(--panel));
+  border: 2px solid var(--bd2);
+  border-radius: 4px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.55);
+  overflow: hidden;
+}
+
+.pdf-pv-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--bd);
+  flex: none;
+}
+
+.pdf-pv-head b {
+  color: var(--orange2);
+  font-size: 13px;
+  letter-spacing: 0.5px;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pdf-pv-head .pdf-pv-page {
+  flex: none;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.pdf-pv-body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  background: #0a0d12;
+  padding: 10px 12px 14px;
+}
+
+/* 长卷：页面竖排成一列，滚轮直接连续向下翻页（不再一屏一页） */
+.pdf-pv-pages {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  min-height: 100%;
+}
+
+/* 单页占位块（类名避开头部页码 .pdf-pv-page）：未渲染时按估算比例撑出高度，
+   滚动条才不会乱跳 */
+.pdf-pv-sheet {
+  position: relative;
+  flex: none;
+  background: #fff;
+  border: 1px solid var(--bd);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+}
+
+.pdf-pv-sheet.is-loading::after {
+  content: "…";
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.pdf-pv-sheet.is-failed {
+  background: var(--panel2);
+  border-color: var(--red);
+}
+
+.pdf-pv-sheet-err {
+  display: block;
+  padding: 18px 16px;
+  color: var(--red);
+  font-size: 12px;
+  line-height: 1.6;
+  word-break: break-word;
+}
+
+/* 页面图：位图已经是渲染侧按像素上限降采样的结果；这里只做显示尺寸的缩放
+   （适应宽度 = 页面块宽度）。image-rendering 显式回 auto，避免继承到最近邻抽点。 */
+.pdf-pv-img {
+  display: block;
+  width: 100%;
+  height: auto;
+  image-rendering: auto;
+  -webkit-user-drag: none;
+  user-select: none;
+}
+
+.pdf-pv-msg {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  max-width: min(80%, 640px);
+  padding: 10px 14px;
+  border: 1px solid var(--bd2);
+  border-radius: 4px;
+  background: var(--panel2);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: center;
+  word-break: break-word;
+  z-index: 1;
+}
+
+.pdf-pv-msg[hidden] {
+  display: none;
+}
+
+.pdf-pv-msg.is-err {
+  color: var(--red);
+  border-color: var(--red);
+}
+
+.pdf-pv-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--bd);
+  flex: none;
+  flex-wrap: wrap;
+}
+
+.pdf-pv-foot .pdf-pv-nav {
+  min-width: 28px;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.pdf-pv-pagein {
+  width: 64px;
+  flex: none;
+  text-align: center;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--txt);
+  background: var(--panel);
+  border: 1px solid var(--bd2);
+  border-radius: 3px;
+  padding: 3px 4px;
+}
+
+.pdf-pv-pagein:disabled {
+  opacity: 0.5;
+}
+
+.pdf-pv-zoom {
+  flex: none;
+  min-width: 44px;
+  text-align: center;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+}

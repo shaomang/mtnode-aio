@@ -1,6 +1,6 @@
 {
   "format": "mtnode-agent-skills-index-v1",
-  "updatedAt": "2026-11-04T08:50:18.430Z",
+  "updatedAt": "2026-11-06T13:51:18.778Z",
   "libraryRoot": "mtnode-agent-skills",
   "usage": "MTNode 内置 Agent 技能库。默认只注入本索引；任务匹配时再读取完整 SKILL.md（skill 工具或 read）。",
   "categories": [
@@ -622,7 +622,7 @@
           "id": "mcp-server",
           "name": "mtnode-mcp-server",
           "title": "MTNode MCP 服务端（第三方接进来操作）",
-          "description": "从 MTNode 外面经 MCP 操作本机 MTNode：14 个工具、先读图拿 contentHash、权限与审计。",
+          "description": "从 MTNode 外面经 MCP 操作本机 MTNode：15 个工具、先读图拿 contentHash、权限与审计。",
           "path": "mtnode/mcp-server/SKILL.md",
           "version": ""
         },
@@ -632,6 +632,14 @@
           "title": "音乐/语音/视频生成节点",
           "description": "music_gen / yue_gen / breeze_gen / video_gen：输出路径、抽卡、单任务互斥与媒体端子。",
           "path": "mtnode/media-gen-nodes/SKILL.md",
+          "version": ""
+        },
+        {
+          "id": "research",
+          "name": "mtnode-research",
+          "title": "研究画布（知识图谱 + 文献层）",
+          "description": "在研究视图里以课题为核心建知识图谱：Markdown 笔记规范（frontmatter / callout / wikilink / 引用 / 公式）、图谱查询与文献检索脚本、验证状态与溯源口径。改研究笔记或做文献调研前读它。",
+          "path": "mtnode/research/SKILL.md",
           "version": ""
         },
         {

@@ -17,11 +17,12 @@
  *   config.json   启用开关 / 当前音色（内置 / 自定义 / Breeze 指针）
  *   models/       两个 ONNX 仓库（MOSS-TTS-Nano-100M-ONNX、MOSS-Audio-Tokenizer-Nano-ONNX）
  *   voices/       用户上传的参考音频（原样拷贝，播放时再交给 worker）
- *   out/          每次合成的分句 wav（播完由渲染层通知清理，或下次启动整体清空）
+ *   合成产物不落盘：worker 把每句 wav 编成 base64 直接经 stdout 给宿主，宿主转给渲染层
+ *   用 Blob 播（临时 wav 文件已取消，见 chunk.data）。
  *   console.log   worker stderr / 安装链日志
  *
- * 流式：worker 每合成完一句就吐一条 {type:"chunk", path}，宿主立刻转发给渲染层去播，
- * 所以「首个字」只等第一句（十几字）而不是整段。
+ * 流式：worker 每合成完一句就吐一条 {type:"chunk", data}（wav base64），宿主立刻转发给
+ * 渲染层去播，所以「首个字」只等第一句（十几字）而不是整段。
  */
 
 const { app, ipcMain, dialog, shell } = require("electron");
@@ -160,6 +161,41 @@ function consoleTail(n) {
   }
 }
 
+/* ── 采样参数（温度 / top-k / top-p / 重复惩罚）────────────────────────────
+ * 用户可微调的那几项直接映射 worker manifest 的 generation_defaults（见
+ * moss-tts-pack/app/serve.py 的 GENERATION_PARAM_SPECS，两处范围同口径，两边都钳）。
+ * 只影响「怎么采样」，不动音色 / 参考音频；改完立刻对下一次合成生效，不重启 worker。 */
+const PARAM_SPECS = {
+  /* 采样种子：固定住它，同一段文字 + 同一参考音频 ⇒ 同一段音频。
+     以前 rng 是 worker 里的全局序列、且每次播报不重置，所以「同样的话每次音色都不一样」；
+     现在每次合成前都按这颗种子重置（见 moss-tts-pack/app/serve.py 的 _request_seed）。 */
+  seed: { min: 0, max: 999999, def: 1, int: true },
+  audioTemperature: { min: 0.1, max: 2, def: 0.8, int: false },
+  audioTopK: { min: 0, max: 200, def: 25, int: true },
+  audioTopP: { min: 0.05, max: 1, def: 0.95, int: false },
+  audioRepetitionPenalty: { min: 1, max: 2, def: 1.2, int: false },
+  textTemperature: { min: 0.1, max: 2, def: 1, int: false },
+  textTopK: { min: 0, max: 200, def: 50, int: true },
+  textTopP: { min: 0.05, max: 1, def: 1, int: false },
+};
+function defaultParams() {
+  const out = {};
+  for (const key of Object.keys(PARAM_SPECS)) out[key] = PARAM_SPECS[key].def;
+  return out;
+}
+/** 任意输入 → 一份合法参数（缺项补默认、超界钳住、乱值丢掉）。 */
+function normalizeParams(raw) {
+  const out = defaultParams();
+  const src = raw && typeof raw === "object" ? raw : {};
+  for (const [key, spec] of Object.entries(PARAM_SPECS)) {
+    const v = Number(src[key]);
+    if (!Number.isFinite(v)) continue;
+    const clamped = Math.min(spec.max, Math.max(spec.min, v));
+    out[key] = spec.int ? Math.round(clamped) : Math.round(clamped * 1000) / 1000;
+  }
+  return out;
+}
+
 /* ── 配置（启用开关 + 音色） ──────────────────────────────────────────── */
 function readConfig() {
   const p = paths().config;
@@ -168,10 +204,22 @@ function readConfig() {
     j = JSON.parse(fs.readFileSync(p, "utf8"));
   } catch {}
   const cfg = j && typeof j === "object" ? j : {};
+  /* 老配置里的 seed 42 是旧默认（当时写死 42）；现在默认统一成 1。
+     只在没有迁移标记时改一次 —— 之后用户自己填 42 也照旧生效。 */
+  const params = normalizeParams(cfg.params);
+  let seedDefaultMigrated = cfg.seedDefaultMigrated === true;
+  if (!seedDefaultMigrated) {
+    if (cfg.params && Number(cfg.params.seed) === 42) params.seed = 1;
+    seedDefaultMigrated = true;
+  }
   return {
     enabled: !!cfg.enabled,
     voice: cfg.voice && typeof cfg.voice === "object" ? cfg.voice : { kind: "builtin" },
     maxChars: Number(cfg.maxChars) || 42,
+    /* 语音微调：温度 / top-k / top-p / 重复惩罚（缺项按默认补） */
+    params,
+    /* 旧默认种子已迁移成 1 的标记（写盘后不再改用户自己填的值） */
+    seedDefaultMigrated,
     /* 推理设备偏好：auto = 按探测 + 实际初始化结果走；cpu = 强制 CPU（不试 CUDA） */
     provider: cfg.provider === "cpu" ? "cpu" : "auto",
     /* 上一次 worker 上报的设备决策，**仅展示用**（真源仍是 worker 事件） */
@@ -877,7 +925,6 @@ function startWorker() {
     return false;
   }
   const py = quietPython(fs.existsSync(p.python) ? p.python : p.pythonReal);
-  ensureDir(p.out);
   const provider = providerForWorker(readConfig());
   const proc = spawn(py, [script, "--model-dir", p.models, "--cpu-threads", "4", "--provider", provider], {
     windowsHide: true,
@@ -1005,6 +1052,8 @@ function state() {
     fallbackReason: device.fallback ? device.reason : "",
     voice,
     maxChars: cfg.maxChars,
+    params: cfg.params,
+    paramSpecs: PARAM_SPECS,
     paths: { root: p.root, models: p.models, log: p.log },
     breeze: breezePresets().map((x) => ({ id: x.id, name: x.name, groups: x.groups.map((g) => ({ id: g.id, name: g.name, kind: g.kind })) })),
     builtin: builtinVoice(),
@@ -1083,8 +1132,8 @@ function registerMossTtsIpc(opts) {
           id,
           text,
           promptAudio: voice.audioPath,
-          outDir: paths().out,
           maxChars: Number(o2.maxChars) || cfg.maxChars || 42,
+          params: cfg.params,
         }) + "\n"
       );
     } catch (err) {
@@ -1143,6 +1192,18 @@ function registerMossTtsIpc(opts) {
     return { ok: true, audioPath: dest, name: path.basename(src) };
   });
   ipcMain.handle("mosstts:listBreeze", async () => ({ ok: true, presets: breezePresets() }));
+  /* 语音微调参数：只写 config，下一次 speak 起生效（不用重启 worker / 重载模型） */
+  ipcMain.handle("mosstts:setParams", async (e, params) => {
+    const next = normalizeParams(params);
+    writeConfig({ params: next });
+    logLine(
+      "采样参数更新：" +
+        Object.keys(next)
+          .map((k) => k + "=" + next[k])
+          .join(" ")
+    );
+    return { ok: true, state: state() };
+  });
   ipcMain.handle("mosstts:openRoot", async () => {
     try {
       await shell.openPath(paths().root);

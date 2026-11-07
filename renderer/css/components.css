@@ -485,7 +485,7 @@
 .ds-key-poster-wrap {
   border: 1px solid var(--bd);
   border-radius: 6px;
-  background: #f5f7fb;
+  background: #111319; /* 海报本身是深色版（renderer/deepseek-guide.svg）：底色跟着走，不留白框 */
   padding: 6px;
   cursor: zoom-in;
   overflow: auto;
@@ -505,7 +505,7 @@
   z-index: 5;
   max-height: none;
   cursor: zoom-out;
-  background: #fff;
+  background: #111319;
 }
 
 .ds-key-dlg.zoom .ds-key-poster-wrap .ds-key-poster {

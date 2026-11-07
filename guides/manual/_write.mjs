@@ -359,6 +359,13 @@ const catalog = {
       ],
     },
     {
+      id: "research",
+      title: { zh: "研究", en: "Research" },
+      pages: [
+        { id: "research", title: { zh: "研究视图：笔记 · 知识图谱 · 文献库", en: "Research view: notes, graph, literature" } },
+      ],
+    },
+    {
       id: "assistant",
       title: { zh: "全局助手与工作流", en: "Assistant & workflows" },
       pages: [

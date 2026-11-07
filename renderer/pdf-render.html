@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>MTNode · PDF 页面渲染</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        background: #fff;
+      }
+      canvas {
+        display: block;
+      }
+    </style>
+  </head>
+  <body>
+    <!-- 隐藏渲染页（pdf-read.js 的 renderPages 专用）：
+         主进程把 pdf.js 的 legacy ESM 源码路径与要渲染的 PDF 传进来，这里用
+         blob: 模块载入 pdf.js（file:// 下 ESM 会被 CORS 挡掉，blob 是同源的），
+         逐页画到 canvas 上再回 dataURL。页面不联网、只读本机文件。 -->
+    <script>
+      "use strict";
+      (function () {
+        var libPromise = null;
+
+        function loadLib(mainPath, workerPath) {
+          if (libPromise) return libPromise;
+          var fs = require("fs");
+          libPromise = (async function () {
+            var src = fs.readFileSync(mainPath, "utf8");
+            var workerSrc = fs.readFileSync(workerPath, "utf8");
+            var mainUrl = URL.createObjectURL(new Blob([src], { type: "text/javascript" }));
+            var lib = await import(mainUrl);
+            /* 真 worker 在 file:// 页面上可能建不起来，pdf.js 会自动退回 fake worker；
+               两种情况都指向同一个 blob 模块，保证版本完全一致 */
+            lib.GlobalWorkerOptions.workerSrc = URL.createObjectURL(
+              new Blob([workerSrc], { type: "text/javascript" }),
+            );
+            return lib;
+          })();
+          return libPromise;
+        }
+
+        function bytesOf(payload) {
+          if (payload.path) {
+            return new Uint8Array(require("fs").readFileSync(payload.path));
+          }
+          var raw = atob(payload.base64 || "");
+          var out = new Uint8Array(raw.length);
+          for (var i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+          return out;
+        }
+
+        function pickPages(payload, total) {
+          var want = [];
+          if (payload.pages && payload.pages.length) {
+            for (var i = 0; i < payload.pages.length; i++) {
+              var n = Number(payload.pages[i]);
+              if (n >= 1 && n <= total) want.push(n);
+            }
+            return want;
+          }
+          var from = payload.from > 0 ? payload.from : 1;
+          var to = payload.to > 0 ? Math.min(payload.to, total) : total;
+          for (var k = from; k <= to; k++) want.push(k);
+          if (payload.maxPages > 0) want = want.slice(0, payload.maxPages);
+          return want;
+        }
+
+        window.__mtPdfRenderPages = async function (payload) {
+          try {
+            var lib = await loadLib(payload.mainPath, payload.workerPath);
+            var params = {
+              data: bytesOf(payload),
+              isEvalSupported: false,
+              disableFontFace: true,
+              useSystemFonts: false,
+              isOffscreenCanvasSupported: false,
+              verbosity: 0,
+            };
+            if (payload.password) params.password = payload.password;
+            var doc = await lib.getDocument(params).promise;
+            var total = doc.numPages || 0;
+            var want = pickPages(payload, total);
+            var images = [];
+            for (var i = 0; i < want.length; i++) {
+              var n = want[i];
+              var page = await doc.getPage(n);
+              /* 缩放：先按 scale（默认 2）算，再用 maxWidth / maxHeight 压一道 ——
+                 大版面图纸（CAD 页可以 12360×9014）在**渲染侧**就降到预览够用的像素，
+                 否则一张 15MB 的 base64 会顶爆 IPC 与渲染层内存（见 app-pdfview.js）。 */
+              var s = payload.scale || 2;
+              var probe = page.getViewport({ scale: 1 });
+              if (payload.maxWidth > 0 && probe.width > 0) {
+                s = Math.min(s, payload.maxWidth / probe.width);
+              }
+              if (payload.maxHeight > 0 && probe.height > 0) {
+                s = Math.min(s, payload.maxHeight / probe.height);
+              }
+              s = Math.max(0.2, Math.min(4, s));
+              var viewport = page.getViewport({ scale: s });
+              var canvas = document.createElement("canvas");
+              canvas.width = Math.max(1, Math.ceil(viewport.width));
+              canvas.height = Math.max(1, Math.ceil(viewport.height));
+              var ctx = canvas.getContext("2d");
+              ctx.fillStyle = "#ffffff";
+              ctx.fillRect(0, 0, canvas.width, canvas.height);
+              await page.render({ canvas: canvas, canvasContext: ctx, viewport: viewport }).promise;
+              images.push({
+                page: n,
+                width: canvas.width,
+                height: canvas.height,
+                dataUrl: canvas.toDataURL("image/png"),
+              });
+              canvas.width = canvas.height = 0;
+              try {
+                page.cleanup();
+              } catch (_) {}
+            }
+            var pages = total;
+            try {
+              await doc.destroy();
+            } catch (_) {}
+            return { ok: true, pages: pages, images: images };
+          } catch (err) {
+            var name = String((err && err.name) || "");
+            var code = name === "PasswordException" ? "password_required" : "render_failed";
+            return { ok: false, error: { code: code, message: String((err && err.message) || err) } };
+          }
+        };
+      })();
+    </script>
+  </body>
+</html>

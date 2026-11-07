@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 520 180" width="520" height="180">
+  <rect width="520" height="180" fill="#0d1016"/>
+  <defs>
+    <marker id="arr" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M0,0 L8,4 L0,8 z" fill="#f0c14d"/>
+    </marker>
+  </defs>
+  <rect x="18" y="56" width="108" height="48" rx="6" fill="#1a1610" stroke="#f0c14d" stroke-width="1.6"/>
+  <text x="72" y="84" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">长周期任务</text>
+  <line x1="126" y1="80" x2="170" y2="80" stroke="#f0c14d" stroke-width="1.8" marker-end="url(#arr)"/>
+  <rect x="170" y="44" width="128" height="76" rx="6" fill="#1a140e" stroke="#ff8f2e" stroke-width="1.6"/>
+  <text x="234" y="86" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">交付节点</text>
+  <line x1="298" y1="70" x2="348" y2="46" stroke="#38d6ff" stroke-width="1.8" marker-end="url(#arr)"/>
+  <rect x="348" y="22" width="150" height="36" rx="6" fill="#101820" stroke="#38d6ff" stroke-width="1.6"/>
+  <text x="423" y="44" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">每个待交文件 = 1 入</text>
+  <rect x="348" y="74" width="150" height="36" rx="6" fill="#12151b" stroke="#8b97a8" stroke-width="1.6"/>
+  <text x="423" y="96" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">交掉即消失 · 补位</text>
+  <text x="260" y="152" text-anchor="middle" fill="#5a6472" font-size="10" font-family="Segoe UI,sans-serif">只有启用中的长周期任务会创建它 · 无类型入口</text>
+  <text x="260" y="170" text-anchor="middle" fill="#5a6472" font-size="10" font-family="Segoe UI,sans-serif">长周期任务在主画布的人工落点 · 没有输出端子</text>
+  <text x="512" y="14" text-anchor="end" fill="#3b4452" font-size="9" font-family="Segoe UI,sans-serif">deliver</text>
+</svg>

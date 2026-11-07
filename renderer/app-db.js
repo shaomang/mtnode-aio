@@ -538,22 +538,41 @@ function dbFileRowEl(node, f) {
     scheduleSave();
     renderCanvas();
   });
-  /* PDF：行上直接给「解析为 Markdown」入口（结构化 → 无文本层则逐页识图，见 pdf-markdown.js）。
+  /* PDF：行上直接给「预览」+「解析为 Markdown」两个入口。
+     「预览」走应用内预览浮层（renderer/app-pdfview.js：翻页 / 缩放，页面图走主进程
+     pdf:render）；要看矢量原样式 / 批注 / 可搜索文本，预览窗里那颗「系统阅读器」就是。
+     解析是**用户主动点**才发生的动作，绝不会在拖入时自动跑。
      **原样保留这一行的 binary 记录**：解析产物只写成源文件同目录的 <同名>.md 并交给 Markdown 编辑器，
      不改 f.type / 不换引用，文件节点连给「表」的还是那份原始文件。 */
   const isPdf = /\.pdf$/i.test(String(f.name || f.path || ""));
-  if (isPdf && typeof openPdfParse === "function") {
-    const parseBtn = document.createElement("button");
-    parseBtn.className = "mini";
-    parseBtn.textContent = I18n.t("解析为 Markdown");
-    parseBtn.title = I18n.t(
-      "抽取 PDF 文本层转 Markdown；扫描件无文本层时逐页识图（公式还原为 LaTeX）。原文件记录不变。",
-    );
-    parseBtn.addEventListener("click", (ev) => {
+  if (isPdf) {
+    const openBtn = document.createElement("button");
+    openBtn.className = "mini";
+    openBtn.textContent = I18n.t("预览");
+    openBtn.title = I18n.t("应用内预览 PDF（翻页 / 缩放；窗里可切到系统阅读器）");
+    openBtn.addEventListener("click", (ev) => {
       ev.stopPropagation();
-      openPdfParse(f.path, {});
+      if (typeof openPdfPreview === "function") {
+        openPdfPreview(f.path, { title: f.name || "" });
+        return;
+      }
+      window.api.shellOpenPath(f.path);
     });
-    row.append(ico, nm, sz, tp, parseBtn, del);
+    const cells = [ico, nm, sz, tp, openBtn];
+    if (typeof openPdfParse === "function") {
+      const parseBtn = document.createElement("button");
+      parseBtn.className = "mini";
+      parseBtn.textContent = I18n.t("解析为 Markdown");
+      parseBtn.title = I18n.t(
+        "抽取 PDF 文本层转 Markdown；扫描件无文本层时逐页识图（公式还原为 LaTeX）。原文件记录不变。",
+      );
+      parseBtn.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        openPdfParse(f.path, {});
+      });
+      cells.push(parseBtn);
+    }
+    row.append(...cells, del);
     return row;
   }
   row.append(ico, nm, sz, tp, del);

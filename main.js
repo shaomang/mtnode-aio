@@ -24,6 +24,7 @@ const {
   screen,
   safeStorage,
   session,
+  globalShortcut,
 } = require("electron");
 const path = require("path");
 const fs = require("fs");
@@ -32,6 +33,12 @@ const { launchDetached } = require("./main-exec-launch.js");
    见 main-tray-notify.js 文件头。这里只做接线：close / window-all-closed / before-quit
    与托盘、通知 IPC 的挂点；渲染层只负责判定「什么时候该提醒」。 */
 const { createTrayNotify } = require("./main-tray-notify.js");
+/* 快捷会话小窗（独立窗口 · 全局唯一 · 左下角入口 + 全局 F1）：
+   窗口唯一性 / 位置记忆 / 全局热键 / 与主窗渲染层的中继都在这只模块里，见文件头。
+   agent 逻辑不在这里 —— 会话列表 / 发指令 / 最后回复 / 停止全部中继给主窗渲染层
+   （renderer/app-mini-chat-host.js），主进程只做一个转接头。 */
+const { createMiniChat } = require("./mini-chat-window.js");
+let miniChat = null;
 const trayNotify = createTrayNotify({
   app,
   Tray,
@@ -1026,6 +1033,24 @@ function loadMarkdownPack(root, id, locale) {
   } catch (err) {
     return { ok: false, error: (err && err.message) || String(err) };
   }
+  /* 节点指南的约定是每篇配一张 img/<id>.svg（见 guides/nodes/README.md）。少数几篇正文
+     历史上没写图片行，指南面板就成了纯文字 —— 这里按约定补一行；正文里已有图的不动。
+     图不存在时不插（guides/manual 的图按主题命名，不走这条）。 */
+  if (markdown.indexOf("![") < 0) {
+    const thumb = join(root, "img", safe + ".svg");
+    if (fs.existsSync(thumb)) {
+      const line = "![diagram](img/" + safe + ".svg)";
+      const lines = markdown.split(/\r?\n/);
+      let at = 0;
+      while (at < lines.length && !lines[at].trim()) at++;
+      if (at < lines.length && /^#{1,6}\s/.test(lines[at])) {
+        const add = ["", line];
+        if (at + 1 < lines.length && lines[at + 1].trim()) add.push("");
+        lines.splice(at + 1, 0, ...add);
+      } else lines.unshift(line, "");
+      markdown = lines.join("\n");
+    }
+  }
   const assets = {};
   const re = /!\[[^\]]*\]\(([^)]+)\)/g;
   let m;
@@ -1335,7 +1360,18 @@ ipcMain.handle("session:patch", (e, payload) =>
    失效口径同渲染层 app-search.js 的 GS.wfCache：按 (size, mtimeMs) 判定，stat 变了就重读
    那一个文件；stat 拿不到（文件正被删）时行为与旧的 readJson 兜底完全一致。
    返回结构、排序、mtime 取值都逐字不变（已用真实数据比对过输出字节）。 */
-const wfListMeta = new Map(); /* 绝对路径 -> { size, mtimeMs, id, name, nodes } */
+/* 研究画布标记：工作目录下已有 research/research.json（研究初始化落地那一刻起算）。
+   目录可能被中途创建 / 整个删掉，而画布 json 一字未改 —— 所以这条**不进**上面那份
+   缓存，每次 list 现查一次目录（一次 existsSync，可忽略）。 */
+function wfResearchFlag(ws) {
+  if (!ws) return false;
+  try {
+    return fs.existsSync(join(ws, "research", "research.json"));
+  } catch {
+    return false;
+  }
+}
+const wfListMeta = new Map(); /* 绝对路径 -> { size, mtimeMs, id, name, nodes, ws } */
 function wfListEntry(p, fname) {
   let st = null;
   try {
@@ -1343,12 +1379,13 @@ function wfListEntry(p, fname) {
   } catch {}
   const hit = wfListMeta.get(p);
   if (st && hit && hit.size === st.size && hit.mtimeMs === st.mtimeMs) {
-    return { id: hit.id, name: hit.name, mtime: st.mtimeMs, nodes: hit.nodes };
+    return { id: hit.id, name: hit.name, mtime: st.mtimeMs, nodes: hit.nodes, research: wfResearchFlag(hit.ws) };
   }
   const j = st ? readJson(p, {}) : {};
   const id = j.id || fname.slice(0, -5);
-  const out = { id, name: j.name || id, mtime: st ? st.mtimeMs : 0, nodes: (j.nodes || []).length };
-  if (st) wfListMeta.set(p, { size: st.size, mtimeMs: st.mtimeMs, id: out.id, name: out.name, nodes: out.nodes });
+  const ws = typeof j.workspace === "string" ? j.workspace : "";
+  const out = { id, name: j.name || id, mtime: st ? st.mtimeMs : 0, nodes: (j.nodes || []).length, research: wfResearchFlag(ws) };
+  if (st) wfListMeta.set(p, { size: st.size, mtimeMs: st.mtimeMs, id: out.id, name: out.name, nodes: out.nodes, ws });
   else wfListMeta.delete(p);
   return out;
 }
@@ -2387,746 +2424,47 @@ ipcMain.handle("file:readAudio", (e, p, maxBytes) => {
     return { ok: false, error: String((err && err.message) || err) };
   }
 });
-/* ═══════════ PDF 解析（pdf:probe / pdf:parse）═══════════════════════════
-   零依赖：只用 Node 内置 zlib 解 FlateDecode 流 + 自写内容流文本抽取
-   （Tj / TJ / Td / TD / Tm / T* / ' / "），字体优先走 ToUnicode CMap 还原
-   Unicode，无 CMap 时按 UTF-16BE / Latin-1 兜底。只读用户本机文件或传入
-   字节；解析结果仅回传渲染层，绝不落盘（数据不落应用文件夹口径）。 */
-const PDF_MAX_BYTES = 128 * 1024 * 1024;
+/* ═══════════ PDF 解析（pdf:probe / pdf:parse / pdf:render）═══════════════
+   内核只有一份：pdf-read.js（pdf.js，Mozilla 同一个引擎）。以前这里是自写的
+   零依赖解析器（正则扫对象 + 只认 ToUnicode），遇到数学论文这类「字体编码走
+   /Differences、没有 ToUnicode」的 PDF 会整篇乱码却仍回 ok:true —— 现在文本层
+   与页面位图都交给 pdf.js，字体编码 / 对象流 / CMap / 空口令加密由它处理。
+   三个通道都**只读用户本机文件或传入字节、只回传结果，绝不落盘**。 */
+const pdfRead = require("./pdf-read.js");
 
-/* pdf:parse / pdf:probe 入参归一：路径字符串 / Buffer / ArrayBuffer / TypedArray /
-   { path } / { bytes } / { base64 } / { data:[…] } / data:application/pdf;base64,… */
-function pdfSourceBuffer(arg) {
-  if (arg == null) return { error: { code: "no_source", message: I18n.t("未提供 PDF 路径或字节") } };
-  if (typeof arg === "string") {
-    const p = arg.trim();
-    if (!p) return { error: { code: "no_source", message: I18n.t("未提供 PDF 路径或字节") } };
-    if (/^data:application\/pdf;base64,/i.test(p)) {
-      return { buf: Buffer.from(p.replace(/^[^,]*,/, ""), "base64") };
-    }
-    return { path: p };
-  }
-  if (Buffer.isBuffer(arg)) return { buf: arg };
-  if (arg instanceof ArrayBuffer) return { buf: Buffer.from(arg) };
-  if (ArrayBuffer.isView(arg)) return { buf: Buffer.from(arg.buffer, arg.byteOffset, arg.byteLength) };
-  if (typeof arg === "object") {
-    if (typeof arg.path === "string" && arg.path.trim()) return { path: arg.path.trim() };
-    if (typeof arg.base64 === "string" && arg.base64) {
-      return { buf: Buffer.from(arg.base64.replace(/^[^,]*,/, ""), "base64") };
-    }
-    if (arg.bytes != null) return pdfSourceBuffer(arg.bytes);
-    if (Array.isArray(arg.data)) return { buf: Buffer.from(arg.data) };
-    if (arg.data != null) return pdfSourceBuffer(arg.data);
-  }
-  return { error: { code: "bad_source", message: I18n.t("无法识别的 PDF 输入（需要路径或字节）") } };
-}
-
-function pdfLoadBuffer(arg) {
-  const s = pdfSourceBuffer(arg);
-  if (s.error) return { error: s.error };
-  if (s.buf) {
-    if (!s.buf.length) return { error: { code: "empty", message: I18n.t("PDF 字节为空") } };
-    if (s.buf.length > PDF_MAX_BYTES) {
-      return { error: { code: "too_large", message: I18n.t("PDF 过大（上限 128MB）") } };
-    }
-    return { buf: s.buf };
-  }
-  const p = s.path;
-  let st;
+/* pdf:probe：是否是可解析的 PDF（页数 / 加密 / 能否解析） */
+ipcMain.handle("pdf:probe", async (e, arg) => {
   try {
-    st = fs.statSync(p);
-  } catch {
-    return { error: { code: "not_found", message: I18n.t("文件不存在：") + p } };
-  }
-  if (!st.isFile()) return { error: { code: "not_found", message: I18n.t("不是文件：") + p } };
-  if (st.size > PDF_MAX_BYTES) {
-    return { error: { code: "too_large", message: I18n.t("PDF 过大（上限 128MB）") } };
-  }
-  try {
-    return { buf: fs.readFileSync(p) };
+    return await pdfRead.probeInfo(arg);
   } catch (err) {
-    return { error: { code: "read_failed", message: String((err && err.message) || err) } };
-  }
-}
-
-/* CMap 目标字串：4 的倍数字节按 UTF-16BE 解读，否则按单字节 */
-function pdfCMapUnicode(hex) {
-  const h = String(hex || "").replace(/[^0-9A-Fa-f]/g, "");
-  if (!h) return "";
-  if (h.length % 4 === 0) {
-    let out = "";
-    for (let i = 0; i < h.length; i += 4) out += String.fromCharCode(parseInt(h.slice(i, i + 4), 16));
-    return out.replace(/^\uFEFF/, "");
-  }
-  let out = "";
-  for (let i = 0; i + 1 < h.length; i += 2) out += String.fromCharCode(parseInt(h.slice(i, i + 2), 16));
-  return out;
-}
-
-/* ToUnicode CMap → { map: Map<hexCode,string>, twoByte: boolean } */
-function pdfParseToUnicode(data) {
-  const s = Buffer.isBuffer(data) ? data.toString("latin1") : String(data || "");
-  const map = new Map();
-  let twoByte = false;
-  let m;
-  const cs = /begincodespacerange([\s\S]*?)endcodespacerange/g;
-  while ((m = cs.exec(s))) {
-    const r = /<([0-9A-Fa-f]+)>/g;
-    let a;
-    while ((a = r.exec(m[1]))) if (a[1].length > 2) twoByte = true;
-  }
-  const bc = /beginbfchar([\s\S]*?)endbfchar/g;
-  while ((m = bc.exec(s))) {
-    const r = /<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]*)>/g;
-    let a;
-    while ((a = r.exec(m[1]))) {
-      if (a[1].length > 2) twoByte = true;
-      map.set(a[1].toUpperCase(), pdfCMapUnicode(a[2]));
-    }
-  }
-  const br = /beginbfrange([\s\S]*?)endbfrange/g;
-  while ((m = br.exec(s))) {
-    const r = /<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>\s*(<[0-9A-Fa-f]*>|\[[^\]]*\])/g;
-    let a;
-    while ((a = r.exec(m[1]))) {
-      const width = a[1].length;
-      const lo = parseInt(a[1], 16);
-      const hi = parseInt(a[2], 16);
-      if (width > 2) twoByte = true;
-      if (!Number.isFinite(lo) || !Number.isFinite(hi) || hi < lo || hi - lo > 65535) continue;
-      const key = (n) => n.toString(16).toUpperCase().padStart(width, "0");
-      if (a[3][0] === "[") {
-        const items = a[3].match(/<[0-9A-Fa-f]*>/g) || [];
-        for (let i = 0; i < items.length && lo + i <= hi; i++) {
-          map.set(key(lo + i), pdfCMapUnicode(items[i].slice(1, -1)));
-        }
-      } else {
-        const baseHex = a[3].slice(1, -1);
-        const base = parseInt(baseHex, 16);
-        for (let i = 0; lo + i <= hi; i++) {
-          map.set(key(lo + i), pdfCMapUnicode((base + i).toString(16).toUpperCase().padStart(baseHex.length, "0")));
-        }
-      }
-    }
-  }
-  return { map, twoByte };
-}
-
-/* 字串字节 → 文本：有 CMap 按 CMap 查表，否则 UTF-16BE 启发式 / Latin-1 */
-function pdfDecodeBytes(buf, cmapInfo) {
-  if (!buf || !buf.length) return "";
-  if (cmapInfo && cmapInfo.map && cmapInfo.map.size) {
-    let out = "";
-    if (cmapInfo.twoByte) {
-      for (let i = 0; i + 1 < buf.length; i += 2) {
-        const k = buf.readUInt16BE(i).toString(16).toUpperCase().padStart(4, "0");
-        if (cmapInfo.map.has(k)) out += cmapInfo.map.get(k);
-      }
-    } else {
-      for (let i = 0; i < buf.length; i++) {
-        const k = buf[i].toString(16).toUpperCase().padStart(2, "0");
-        if (cmapInfo.map.has(k)) out += cmapInfo.map.get(k);
-      }
-    }
-    return out;
-  }
-  if (buf.length >= 2 && buf.length % 2 === 0) {
-    let zeros = 0;
-    for (let i = 0; i < buf.length; i += 2) if (buf[i] === 0) zeros++;
-    if (zeros >= buf.length / 4) {
-      let out = "";
-      for (let i = 0; i + 1 < buf.length; i += 2) out += String.fromCharCode(buf.readUInt16BE(i));
-      return out.replace(/\u0000/g, "");
-    }
-  }
-  let out = "";
-  for (const b of buf) out += b === 9 || b === 10 || b === 13 || (b >= 32 && b !== 127) ? String.fromCharCode(b) : "";
-  return out;
-}
-
-/* 单条流解码：FlateDecode / ASCIIHexDecode / RunLengthDecode，其它过滤器跳过并告警 */
-function pdfInflateStream(dict, raw, warnings) {
-  const fm = String(dict || "").match(/\/Filter\s*(\[[^\]]*\]|\/[A-Za-z0-9]+)/);
-  const filters = fm ? (fm[1].match(/\/([A-Za-z0-9]+)/g) || []).map((x) => x.slice(1)) : [];
-  let data = raw;
-  for (const name of filters) {
-    try {
-      if (name === "FlateDecode" || name === "Fl") {
-        data = zlib.inflateSync(data);
-      } else if (name === "ASCIIHexDecode" || name === "AHx") {
-        const h = data.toString("latin1").replace(/[^0-9A-Fa-f]/g, "");
-        data = Buffer.from(h.length % 2 ? h + "0" : h, "hex");
-      } else if (name === "RunLengthDecode" || name === "RL") {
-        const src = data;
-        const out = [];
-        for (let i = 0; i < src.length; ) {
-          const l = src[i++];
-          if (l === 128) break;
-          if (l < 128) {
-            for (let k = 0; k <= l && i < src.length; k++) out.push(src[i++]);
-          } else {
-            const b = src[i++];
-            for (let k = 0; k < 257 - l; k++) out.push(b);
-          }
-        }
-        data = Buffer.from(out);
-      } else {
-        if (warnings && !warnings.some((w) => w.includes(name))) {
-          warnings.push(I18n.t("不支持的流过滤器 {f}，已跳过部分内容").replace("{f}", name));
-        }
-        return null;
-      }
-    } catch {
-      return null;
-    }
-  }
-  return data;
-}
-
-/* 扫描顶层对象：num → { num, dict, raw, data }（流按需解压） */
-function pdfScanObjects(buf) {
-  const s = buf.toString("latin1");
-  const objs = new Map();
-  const re = /(\d+)\s+(\d+)\s+obj\b/g;
-  let m;
-  while ((m = re.exec(s))) {
-    const prev = m.index === 0 ? "\n" : s[m.index - 1];
-    if (prev !== "\n" && prev !== "\r" && prev !== " ") continue;
-    const num = Number(m[1]);
-    const start = m.index + m[0].length;
-    let endobj = s.indexOf("endobj", start);
-    if (endobj === -1) endobj = s.length;
-    const body = s.slice(start, endobj);
-    const sm = body.match(/stream(\r\n|\r|\n)/);
-    if (sm) {
-      const dataStart = start + sm.index + sm[0].length;
-      let dataEnd = s.indexOf("endstream", dataStart);
-      if (dataEnd === -1) dataEnd = s.length;
-      let rawEnd = dataEnd;
-      if (s[rawEnd - 2] === "\r" && s[rawEnd - 1] === "\n") rawEnd -= 2;
-      else if (s[rawEnd - 1] === "\n" || s[rawEnd - 1] === "\r") rawEnd -= 1;
-      objs.set(num, { num, dict: body.slice(0, sm.index), raw: buf.subarray(dataStart, Math.max(dataStart, rawEnd)), data: null, decoded: false });
-    } else {
-      objs.set(num, { num, dict: body, raw: null, data: null, decoded: false });
-    }
-    re.lastIndex = endobj;
-  }
-  return objs;
-}
-
-function pdfObjData(o, warnings) {
-  if (!o) return null;
-  if (o.decoded) return o.data;
-  o.decoded = true;
-  o.data = o.raw ? pdfInflateStream(o.dict, o.raw, warnings) : null;
-  return o.data;
-}
-
-/* /Type /ObjStm 里打包的对象展开成普通对象（页面对象常被压缩在这里） */
-function pdfExpandObjectStreams(objs, warnings) {
-  for (const o of Array.from(objs.values())) {
-    if (!/\/Type\s*\/ObjStm/.test(o.dict || "")) continue;
-    const data = pdfObjData(o, warnings);
-    if (!data) continue;
-    const head = data.toString("latin1", 0, Math.min(data.length, 256)).match(/^\s*(\d+)\s+(\d+)/);
-    if (!head) continue;
-    const count = Number(head[1]);
-    const first = Number(head[2]);
-    if (!(first > 0) || first > data.length) continue;
-    const header = data.toString("latin1", 0, Math.min(data.length, first));
-    const pairs = (header.match(/(\d+)\s+(\d+)/g) || []).map((x) => x.match(/(\d+)\s+(\d+)/).slice(1).map(Number));
-    for (let i = 0; i < pairs.length && i < count; i++) {
-      const onum = pairs[i][0];
-      const off = pairs[i][1];
-      const nextOff = i + 1 < pairs.length ? pairs[i + 1][1] : data.length - first;
-      const txt = data.toString("latin1", first + off, Math.max(first + off, Math.min(data.length, first + nextOff)));
-      if (!objs.has(onum)) objs.set(onum, { num: onum, dict: txt, raw: null, data: null, decoded: true, inline: true });
-    }
-  }
-}
-
-function pdfMatchDictEnd(s, start) {
-  let depth = 0;
-  for (let i = start; i + 1 < s.length; i++) {
-    if (s[i] === "<" && s[i + 1] === "<") {
-      depth++;
-      i++;
-    } else if (s[i] === ">" && s[i + 1] === ">") {
-      depth--;
-      i++;
-      if (depth <= 0) return i + 1;
-    }
-  }
-  return s.length;
-}
-
-/* 页面资源字典文本（内联或引用），用于取 /Font */
-function pdfResourcesText(objs, pageDict) {
-  const ref = String(pageDict || "").match(/\/Resources\s+(\d+)\s+\d+\s+R/);
-  if (ref) {
-    const o = objs.get(Number(ref[1]));
-    if (o) return o.dict || "";
-  }
-  const at = String(pageDict || "").indexOf("/Resources");
-  if (at === -1) return "";
-  const open = String(pageDict).indexOf("<<", at);
-  if (open === -1 || open - at > 16) return "";
-  const end = pdfMatchDictEnd(String(pageDict), open);
-  return String(pageDict).slice(open, end);
-}
-
-/* 资源 /Font << /F1 7 0 R … >> → Map<资源名, 字体对象号> */
-function pdfFontEntries(objs, resText) {
-  const out = new Map();
-  let block = null;
-  const inline = String(resText || "").match(/\/Font\s*<<([\s\S]*?)>>/);
-  if (inline) {
-    block = inline[1];
-  } else {
-    const ref = String(resText || "").match(/\/Font\s+(\d+)\s+\d+\s+R/);
-    if (ref) {
-      const o = objs.get(Number(ref[1]));
-      if (o) block = o.dict || "";
-    }
-  }
-  if (!block) return out;
-  const re = /\/([^\s/<>\[\](){}%]+)\s+(\d+)\s+\d+\s+R/g;
-  let m;
-  while ((m = re.exec(block))) out.set(m[1], Number(m[2]));
-  return out;
-}
-
-/* 走 /Root → /Pages → /Kids 还原页序；失败则按对象号取 /Type /Page */
-function pdfCollectPages(objs, src) {
-  const pages = [];
-  const seen = new Set();
-  const typeOf = (o) => ((o && String(o.dict || "").match(/\/Type\s*\/(\w+)/)) || [])[1] || "";
-  const walk = (num, depth, inherited) => {
-    if (depth > 64 || seen.has(num)) return;
-    seen.add(num);
-    const o = objs.get(num);
-    if (!o) return;
-    const t = typeOf(o);
-    const dict = String(o.dict || "");
-    const ownRes = /\/Resources\s/.test(dict) ? pdfResourcesText(objs, dict) : inherited;
-    if (t === "Pages") {
-      const kids = dict.match(/\/Kids\s*\[([\s\S]*?)\]/);
-      const nums = kids ? (kids[1].match(/(\d+)\s+\d+\s+R/g) || []).map((x) => Number(x.match(/(\d+)/)[1])) : [];
-      for (const k of nums) walk(k, depth + 1, ownRes);
-      return;
-    }
-    if (t === "Page") pages.push({ o, resText: ownRes });
-  };
-  const rootRe = /\/Root\s+(\d+)\s+\d+\s+R/g;
-  let rm;
-  let rootNum = null;
-  while ((rm = rootRe.exec(src))) rootNum = Number(rm[1]);
-  if (rootNum != null) {
-    const root = objs.get(rootNum);
-    const pr = root && String(root.dict || "").match(/\/Pages\s+(\d+)\s+\d+\s+R/);
-    if (pr) walk(Number(pr[1]), 0, "");
-  }
-  if (!pages.length) {
-    for (const o of Array.from(objs.values()).sort((a, b) => a.num - b.num)) {
-      if (typeOf(o) === "Page") pages.push({ o, resText: String(o.dict || "") });
-    }
-  }
-  return pages;
-}
-
-/* 内容流文本抽取：Tj / TJ / Td / TD / Tm / T* / ' / " */
-function pdfContentToText(data, cmapResolver) {
-  const s = Buffer.isBuffer(data) ? data.toString("latin1") : String(data || "");
-  const lines = [];
-  let line = "";
-  let cmap = null;
-  const stack = [];
-  const flush = () => {
-    lines.push(line.replace(/\s+$/, ""));
-    line = "";
-  };
-  const show = (buf) => {
-    if (buf && buf.length) line += pdfDecodeBytes(buf, cmap);
-  };
-  const space = () => {
-    if (line && !/\s$/.test(line)) line += " ";
-  };
-  const handle = (op) => {
-    switch (op) {
-      case "Tf":
-        cmap = cmapResolver ? cmapResolver(stack[stack.length - 2]) : null;
-        break;
-      case "Tj":
-        show(stack[stack.length - 1]);
-        break;
-      case "TJ": {
-        const arr = stack[stack.length - 1];
-        if (Array.isArray(arr)) {
-          for (const it of arr) {
-            if (Buffer.isBuffer(it)) show(it);
-            else if (typeof it === "number" && it < -120) space();
-          }
-        }
-        break;
-      }
-      case "'":
-      case "\"":
-        flush();
-        show(stack[stack.length - 1]);
-        break;
-      case "Td":
-      case "TD": {
-        const ty = Number(stack[stack.length - 1]) || 0;
-        const tx = Number(stack[stack.length - 2]) || 0;
-        if (ty !== 0) {
-          if (line) flush();
-        } else if (tx > 0) space();
-        break;
-      }
-      case "Tm":
-      case "T*":
-        if (line) flush();
-        break;
-      case "ET":
-      case "BT":
-        if (line) flush();
-        break;
-      default:
-        break;
-    }
-    stack.length = 0;
-  };
-  const readLiteral = (i) => {
-    i++;
-    const bytes = [];
-    let depth = 1;
-    while (i < s.length) {
-      const c = s[i];
-      if (c === "\\") {
-        const n = s[i + 1];
-        i += 2;
-        if (n === "n") bytes.push(10);
-        else if (n === "r") bytes.push(13);
-        else if (n === "t") bytes.push(9);
-        else if (n === "b") bytes.push(8);
-        else if (n === "f") bytes.push(12);
-        else if (n === "\n") continue;
-        else if (n === "\r") {
-          if (s[i] === "\n") i++;
-        } else if (n >= "0" && n <= "7") {
-          let oct = n;
-          while (oct.length < 3 && s[i] >= "0" && s[i] <= "7") oct += s[i++];
-          bytes.push(parseInt(oct, 8) & 0xff);
-        } else if (n != null) bytes.push(n.charCodeAt(0) & 0xff);
-        continue;
-      }
-      if (c === "(") {
-        depth++;
-        bytes.push(40);
-        i++;
-        continue;
-      }
-      if (c === ")") {
-        depth--;
-        i++;
-        if (!depth) break;
-        bytes.push(41);
-        continue;
-      }
-      bytes.push(c.charCodeAt(0) & 0xff);
-      i++;
-    }
-    return { buf: Buffer.from(bytes), next: i };
-  };
-  const readHex = (i) => {
-    i++;
-    let h = "";
-    while (i < s.length && s[i] !== ">") {
-      if (/[0-9A-Fa-f]/.test(s[i])) h += s[i];
-      i++;
-    }
-    if (s[i] === ">") i++;
-    if (h.length % 2) h += "0";
-    return { buf: Buffer.from(h, "hex"), next: i };
-  };
-  const readArray = (i) => {
-    i++;
-    const items = [];
-    while (i < s.length && s[i] !== "]") {
-      const c = s[i];
-      if (/\s/.test(c)) {
-        i++;
-      } else if (c === "(") {
-        const r = readLiteral(i);
-        items.push(r.buf);
-        i = r.next;
-      } else if (c === "<" && s[i + 1] !== "<") {
-        const r = readHex(i);
-        items.push(r.buf);
-        i = r.next;
-      } else if (c === "<") {
-        i = pdfMatchDictEnd(s, i);
-      } else if (/[+\-.0-9]/.test(c)) {
-        const m = /^[+\-]?(?:\d+\.?\d*|\.\d+)/.exec(s.slice(i, i + 32));
-        if (!m) {
-          i++;
-        } else {
-          items.push(Number(m[0]));
-          i += m[0].length;
-        }
-      } else {
-        i++;
-      }
-    }
-    return { items, next: i + 1 };
-  };
-  let i = 0;
-  while (i < s.length) {
-    const c = s[i];
-    if (c === "%") {
-      while (i < s.length && s[i] !== "\n" && s[i] !== "\r") i++;
-    } else if (/\s/.test(c)) {
-      i++;
-    } else if (c === "(") {
-      const r = readLiteral(i);
-      stack.push(r.buf);
-      i = r.next;
-    } else if (c === "<" && s[i + 1] !== "<") {
-      const r = readHex(i);
-      stack.push(r.buf);
-      i = r.next;
-    } else if (c === "<") {
-      i = pdfMatchDictEnd(s, i);
-    } else if (c === "[") {
-      const r = readArray(i);
-      stack.push(r.items);
-      i = r.next;
-    } else if (c === "]" || c === "}" || c === "{") {
-      i++;
-    } else if (c === "/") {
-      const m = /^\/([^\s/<>\[\](){}%]*)/.exec(s.slice(i, i + 256));
-      stack.push(m ? m[1] : "");
-      i += m ? m[0].length : 1;
-    } else if (/[+\-.\d]/.test(c)) {
-      const m = /^[+\-]?(?:\d+\.?\d*|\.\d+)/.exec(s.slice(i, i + 32));
-      if (!m) {
-        i++;
-      } else {
-        stack.push(Number(m[0]));
-        i += m[0].length;
-      }
-    } else if (c === "'" || c === "\"") {
-      handle(c);
-      i++;
-    } else if (/[A-Za-z]/.test(c)) {
-      const m = /^[A-Za-z][A-Za-z0-9*]*/.exec(s.slice(i, i + 32));
-      const op = m ? m[0] : c;
-      i += op.length;
-      if (op === "BI") {
-        const ei = s.indexOf("EI", i);
-        i = ei === -1 ? s.length : ei + 2;
-      } else {
-        handle(op);
-      }
-    } else {
-      i++;
-    }
-  }
-  if (line) flush();
-  return lines.join("\n");
-}
-
-function pdfCleanText(raw) {
-  return String(raw || "")
-    .replace(/\r\n?/g, "\n")
-    .replace(/\u0000/g, "")
-    .split("\n")
-    .map((l) => l.replace(/[ \t]+$/g, ""))
-    .join("\n")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-}
-
-/* 公式片段识别：只做「疑似公式」标注（PDF 公式多为排版图形，无法直接转 LaTeX） */
-function pdfExtractFormulas(pageTexts) {
-  const out = [];
-  const seen = new Set();
-  for (const page of pageTexts) {
-    for (const raw of String(page || "").split(/\n+/)) {
-      const t = raw.trim();
-      if (!t || t.length > 200) continue;
-      const digits = (t.match(/\d/g) || []).length;
-      const syms = (t.match(/[=+\-*/^_∫∑∏√≤≥≠±∞π]/g) || []).length;
-      const mathUni = /[\u2200-\u22FF\u2A00-\u2AFF]/.test(t);
-      const tex = /\\[a-zA-Z]{2,}|\^\{|_\{/.test(t);
-      if (!((syms >= 2 && digits >= 1) || mathUni || tex)) continue;
-      const key = t.toLowerCase();
-      if (seen.has(key)) continue;
-      seen.add(key);
-      out.push(t);
-      if (out.length >= 100) return out;
-    }
-  }
-  return out;
-}
-
-/* 轻量探测：是否为可解析 PDF（不解压流，只判头 / 加密 / 页数 / 内容流） */
-function pdfProbeBuffer(buf) {
-  const head = buf.toString("latin1", 0, Math.min(buf.length, 8192));
-  if (!/%PDF-\d\.\d/.test(head)) {
-    return { ok: true, isPdf: false, parseable: false, pages: 0, encrypted: false, warning: I18n.t("不是 PDF 文件（缺少 %PDF- 文件头）") };
-  }
-  const tail = buf.toString("latin1", Math.max(0, buf.length - 16384));
-  const encrypted = /\/Encrypt\b/.test(tail) || /\/Encrypt\b/.test(head);
-  const s = buf.toString("latin1");
-  let pages = (s.match(/\/Type\s*\/Page(?![sA-Za-z])/g) || []).length;
-  if (!pages) {
-    const cm = s.match(/\/Type\s*\/Pages[\s\S]{0,4000}?\/Count\s+(\d+)/);
-    if (cm) pages = Number(cm[1]) || 0;
-  }
-  const hasStream = /\bstream\r?\n/.test(s);
-  let warning = "";
-  if (encrypted) warning = I18n.t("PDF 已加密，无法解析文本");
-  else if (!hasStream) warning = I18n.t("PDF 内没有可解析的内容流");
-  return { ok: true, isPdf: true, parseable: !encrypted && hasStream, pages, encrypted, warning };
-}
-
-/* 完整解析：字节 → { ok, markdown, pages, formulas, warning } 或 { ok:false, error } */
-function pdfParseBuffer(buf) {
-  const head = buf.toString("latin1", 0, Math.min(buf.length, 8192));
-  if (!/%PDF-\d\.\d/.test(head)) {
-    return { ok: false, error: { code: "not_pdf", message: I18n.t("不是可解析的 PDF（缺少 %PDF- 文件头）") } };
-  }
-  const tail = buf.toString("latin1", Math.max(0, buf.length - 16384));
-  if (/\/Encrypt\b/.test(tail) || /\/Encrypt\b/.test(head)) {
-    return { ok: false, error: { code: "encrypted", message: I18n.t("PDF 已加密，无法解析文本") } };
-  }
-  const src = buf.toString("latin1");
-  const warnings = [];
-  const objs = pdfScanObjects(buf);
-  pdfExpandObjectStreams(objs, warnings);
-
-  const cmapCache = new Map();
-  let globalCmap = null;
-  let globalCmapSet = false;
-  const cmapForFont = (num) => {
-    if (cmapCache.has(num)) return cmapCache.get(num);
-    let info = null;
-    const o = objs.get(num);
-    if (o) {
-      const tu = String(o.dict || "").match(/\/ToUnicode\s+(\d+)\s+\d+\s+R/);
-      if (tu) {
-        const to = objs.get(Number(tu[1]));
-        if (to) {
-          const d = pdfObjData(to, warnings);
-          if (d) info = pdfParseToUnicode(d);
-        }
-      }
-    }
-    cmapCache.set(num, info);
-    if (info && !globalCmapSet) {
-      globalCmapSet = true;
-      globalCmap = info;
-    }
-    return info;
-  };
-  const fallbackCmap = () => {
-    if (!globalCmapSet) {
-      for (const o of Array.from(objs.values()).sort((a, b) => a.num - b.num)) {
-        if (/\/ToUnicode\s+\d+\s+\d+\s+R/.test(String(o.dict || ""))) {
-          cmapForFont(o.num);
-          break;
-        }
-      }
-    }
-    return globalCmap;
-  };
-
-  let pageItems = pdfCollectPages(objs, src).map((p) => ({
-    resText: p.resText,
-    contents: (() => {
-      const cm = String(p.o.dict || "").match(/\/Contents\s*(\[[\s\S]*?\]|\d+\s+\d+\s+R)/);
-      if (!cm) return [];
-      if (cm[1][0] === "[") return (cm[1].match(/(\d+)\s+\d+\s+R/g) || []).map((x) => Number(x.match(/(\d+)/)[1]));
-      return [Number(cm[1].match(/(\d+)/)[1])];
-    })(),
-  }));
-
-  if (!pageItems.length) {
-    /* 兜底：把含文本算子的内容流按对象号顺序当页处理 */
-    for (const o of Array.from(objs.values()).sort((a, b) => a.num - b.num)) {
-      if (!o.raw) continue;
-      const d = pdfObjData(o, warnings);
-      if (!d) continue;
-      const headText = d.toString("latin1", 0, Math.min(d.length, 200000));
-      if (/\bBT\b/.test(headText) && /\b(Tj|TJ)\b/.test(headText)) {
-        pageItems.push({ resText: "", contents: [o.num], direct: d });
-      }
-    }
-    if (!pageItems.length) {
-      return { ok: true, markdown: "", pages: 0, formulas: [], warning: I18n.t("未提取到文本层（可能是扫描件或图片版 PDF）") };
-    }
-  }
-
-  const pageTexts = [];
-  let emptyPages = 0;
-  for (const page of pageItems) {
-    const fontEntries = pdfFontEntries(objs, page.resText);
-    const resolver = (name) => (name && fontEntries.has(name) ? cmapForFont(fontEntries.get(name)) || fallbackCmap() : fallbackCmap());
-    let text;
-    if (page.direct) {
-      text = pdfContentToText(page.direct, resolver);
-    } else {
-      const parts = [];
-      for (const n of page.contents) {
-        const o = objs.get(n);
-        if (!o) continue;
-        const d = pdfObjData(o, warnings);
-        if (d) parts.push(d);
-      }
-      text = pdfContentToText(parts.length ? Buffer.concat(parts) : Buffer.alloc(0), resolver);
-    }
-    const clean = pdfCleanText(text);
-    if (!clean) emptyPages++;
-    pageTexts.push(clean);
-  }
-
-  const markdown = pageTexts.filter((t) => t).join("\n\n---\n\n").trim();
-  const formulas = pdfExtractFormulas(pageTexts);
-  if (emptyPages) warnings.push(I18n.t("{n} 页无可提取文本（可能是扫描件）").replace("{n}", String(emptyPages)));
-  if (!globalCmapSet) warnings.push(I18n.t("字体缺少 ToUnicode 映射，文本可能缺失或乱码"));
-  if (formulas.length) warnings.push(I18n.t("检测到 {n} 处疑似公式：PDF 公式多为排版图形，无法自动转为 LaTeX").replace("{n}", String(formulas.length)));
-  if (!markdown.trim() && !warnings.length) warnings.push(I18n.t("未提取到文本层（可能是扫描件或图片版 PDF）"));
-
-  return {
-    ok: true,
-    markdown,
-    pages: pageItems.length,
-    formulas,
-    warning: warnings.length ? warnings.join("；") : "",
-  };
-}
-
-/* pdf:probe：是否为可解析 PDF（轻量，不解压内容流） */
-ipcMain.handle("pdf:probe", (e, arg) => {
-  const r = pdfLoadBuffer(arg);
-  if (r.error) {
-    return { ok: false, isPdf: false, parseable: false, pages: 0, encrypted: false, warning: r.error.message, error: r.error };
-  }
-  try {
-    return pdfProbeBuffer(r.buf);
-  } catch (err) {
-    return { ok: false, isPdf: true, parseable: false, pages: 0, encrypted: false, warning: String((err && err.message) || err), error: { code: "corrupt", message: String((err && err.message) || err) } };
+    const message = String((err && err.message) || err);
+    return {
+      ok: false,
+      isPdf: true,
+      parseable: false,
+      pages: 0,
+      encrypted: false,
+      warning: message,
+      error: { code: "corrupt", message },
+    };
   }
 });
-/* pdf:parse：路径 / 字节 → { ok, markdown, pages, formulas, warning }（只回传，不落盘） */
-ipcMain.handle("pdf:parse", (e, arg) => {
-  const r = pdfLoadBuffer(arg);
-  if (r.error) return { ok: false, error: r.error };
+/* pdf:parse：路径 / 字节 → { ok, markdown, pages, formulas, quality, warning }
+   （pageImages:true 是旧渲染层的探路口径，这里忽略即可 —— 页面图走 pdf:render） */
+ipcMain.handle("pdf:parse", async (e, arg) => {
   try {
-    return pdfParseBuffer(r.buf);
+    return await pdfRead.parsePdf(arg);
   } catch (err) {
     return { ok: false, error: { code: "parse_failed", message: String((err && err.message) || err) } };
+  }
+});
+/* pdf:render：页面 → PNG（dataUrl）。逐页识图、扫描件与公式页兜底都靠它；
+   渲染在隐藏窗里做（pdf-read.js → renderer/pdf-render.html），同样不落盘。 */
+ipcMain.handle("pdf:render", async (e, arg) => {
+  try {
+    return await pdfRead.renderPages(arg || {});
+  } catch (err) {
+    return { ok: false, error: { code: "render_failed", message: String((err && err.message) || err) } };
   }
 });
 /* pdf:writeText：文本 / Markdown → PDF 落盘（隐藏窗口 + printToPDF，含公式与分页排版，
@@ -3624,8 +2962,8 @@ function fnRuntimeOf() {
          走这里（worker 线程没有任何 Electron 能力）。拍完 PNG 已落盘，回路径即可当图像值。 */
       screenCapture: (action, params) => fnScreenCapture(action, params),
       /* 函数节点的 PDF 解析后端：mtnode.readPdf(...) / pdfInfo(...) 走这里。
-         直接复用 pdf:parse / pdf:probe 的同一份内核（pdfLoadBuffer / pdfParseBuffer /
-         pdfProbeBuffer），只读用户本机文件、只回传结果，绝不落盘。 */
+         直接复用 pdf:parse / pdf:probe 的同一份内核（pdf-read.js 的 loadBuffer /
+         probeInfo / parsePdf），只读用户本机文件、只回传结果，绝不落盘。 */
       pdfConvert: (action, params) => fnPdfRead(action, params),
       /* 函数节点的 PDF 写出后端：mtnode.writePdf(...) 走这里（worker 线程没有
          Electron 能力，建不了隐藏打印窗）。直接复用 pdf-write.js 的 writeTextPdf ——
@@ -3773,13 +3111,17 @@ async function fnScreenCapture(action, params) {
 }
 /* 函数节点 jscode 里 mtnode.readPdf(...) / pdfInfo(...) 的执行体（PDF 解析）。
    action：read 抽文本层（回 markdown，与 pdf:parse 同形）· info 轻量探测（与 pdf:probe 同形）。
-   入参直接交给 pdfLoadBuffer（认路径 / Buffer / ArrayBuffer / TypedArray / {path} / {bytes} /
-   {base64} / {data:[…]} / data:application/pdf;base64,…）；**只读本机文件，绝不落盘**。
+   入参直接交给 pdf-read.js 的 loadBuffer（认路径 / Buffer / ArrayBuffer / TypedArray /
+   {path} / {bytes} / {base64} / {data:[…]} / data:application/pdf;base64,…）；
+   **只读本机文件，绝不落盘**，且与 pdf:parse 走**同一个 pdf.js 内核**。
    失败一律 { ok:false, error:{ code, message } }（不抛），与 mtnode.ai / screenShot 同一口径。 */
 async function fnPdfRead(action, params) {
   const act = String(action || "").trim() || "read";
   const arg = params && typeof params === "object" ? params : {};
-  const loaded = pdfLoadBuffer(arg);
+  if (act !== "read" && act !== "info") {
+    return { ok: false, error: { code: "bad_action", message: I18n.t("未知的 PDF 解析动作：") + act } };
+  }
+  const loaded = pdfRead.loadBuffer(arg);
   if (loaded.error) {
     if (act === "info") {
       return {
@@ -3795,9 +3137,8 @@ async function fnPdfRead(action, params) {
     return { ok: false, error: loaded.error };
   }
   try {
-    if (act === "info") return pdfProbeBuffer(loaded.buf);
-    if (act === "read") return pdfParseBuffer(loaded.buf);
-    return { ok: false, error: { code: "bad_action", message: I18n.t("未知的 PDF 解析动作：") + act } };
+    if (act === "info") return await pdfRead.probeInfo(loaded.buf);
+    return await pdfRead.parsePdf(loaded.buf);
   } catch (err) {
     const message = String((err && err.message) || err);
     const code = act === "info" ? "corrupt" : "parse_failed";
@@ -4032,8 +3373,9 @@ ipcMain.handle("shell:openInAppDialog", async (e, opts) => {
     } catch {}
   }
 
-  /* Markdown：交给渲染进程内嵌阅读器（查看 / 编辑 / 保存），不走 file:// 裸开 */
-  if (ext === ".md" || ext === ".markdown" || ext === ".mdown") {
+  /* Markdown：交给渲染进程内嵌阅读器（查看 / 编辑 / 保存），不走 file:// 裸开；
+     没有后缀的文件同样走这里（与渲染层 isMdFilePath 同口径：这类文件没有别的阅读器可去） */
+  if (ext === ".md" || ext === ".markdown" || ext === ".mdown" || ext === "") {
     try {
       if (parent && !parent.isDestroyed()) {
         parent.webContents.send("md-viewer:open", {
@@ -6740,6 +6082,137 @@ ipcMain.handle("app:relaunch", () => {
   app.relaunch();
   app.quit();
   return { ok: true };
+});
+
+/* ── 「重新编译并重启」自更新按钮（状态栏右下角，仅打包版 + 账号 ms2308）────────────
+   为什么不能在本进程里编译：electron-builder 打包前会清空并重写 dist\win-unpacked，
+   而应用此刻正跑在那份产物里 —— 必须先把应用关掉，编译才能进行。
+   所以整条链交给一只**脱离本进程**的控制台窗里的 scripts\agent-rebuild.cmd：
+   它先等本进程（--wait-pid）真的退出，再杀残留 / 编译 / 拉起新 exe。
+   进程脱离用 `cmd /c start ...`：Node 的 detached 只给 DETACHED_PROCESS（没有控制台、
+   也就没有窗口），而用户要求能看见编译输出，`start` 才会新开一只可见控制台窗；
+   窗口的父进程是那只一次性 cmd，不是本进程，所以 app.quit() 不会把它带走。
+   编译失败时脚本自己 pause 留窗（日志在 <数据目录>\logs\rebuild-*.log），
+   旧 exe 还在就把旧版拉起来，人不会剩下一片黑屏。 */
+function selfRebuildDirs() {
+  const out = [];
+  const push = (p) => {
+    try {
+      if (!p) return;
+      const abs = path.resolve(String(p));
+      if (out.indexOf(abs) < 0) out.push(abs);
+    } catch (_) {}
+  };
+  /* 显式覆盖（开发机把源码放别处时用） */
+  push(process.env.MTNODE_DEV_ROOT);
+  /* 开发态：__dirname 就是仓库根 */
+  push(__dirname);
+  /* 打包态：<仓库根>\dist\win-unpacked\resources\app.asar → 上四级回仓库根 */
+  push(path.resolve(__dirname, "..", "..", "..", ".."));
+  /* 同一条链的第二算法：从 exe 反推（<仓库根>\dist\win-unpacked\MTNodeAIO.exe） */
+  try {
+    push(path.resolve(process.execPath, "..", "..", ".."));
+  } catch (_) {}
+  return out;
+}
+function selfRebuildScript() {
+  for (const root of selfRebuildDirs()) {
+    const script = path.join(root, "scripts", "agent-rebuild.cmd");
+    try {
+      if (fs.existsSync(script)) return { root, script };
+    } catch (_) {}
+  }
+  return null;
+}
+ipcMain.handle("app:selfRebuildInfo", () => {
+  const hit = selfRebuildScript();
+  return {
+    ok: !!hit,
+    packaged: !!app.isPackaged,
+    available: !!hit && !!app.isPackaged,
+    root: hit ? hit.root : "",
+    script: hit ? hit.script : "",
+    logDir: path.join(DATA(), "logs"),
+  };
+});
+ipcMain.handle("app:selfRebuild", () => {
+  /* 开发态一律拒绝：npm start 下杀 electron.exe 会把整棵 dev 树（含当前会话）一起带走 */
+  if (!app.isPackaged)
+    return { ok: false, error: I18n.t("开发态不提供重新编译（会连当前调试进程一起杀掉）") };
+  const hit = selfRebuildScript();
+  if (!hit)
+    return { ok: false, error: I18n.t("找不到 scripts\\agent-rebuild.cmd（源码目录不在预期位置）") };
+  const logDir = path.join(DATA(), "logs");
+  /* 启动握手：脚本一跑起来就 touch 这个文件。spawn 成功只说明 cmd.exe 起来了，
+     控制台窗若没开成，应用一退就什么都不会发生 —— 那正是「点了按钮、应用关了、
+     再也没回来」的一半来源。所以只有拿到握手才允许退出。 */
+  const ackFile = path.join(logDir, "rebuild-ack-" + process.pid + ".txt");
+  try {
+    fs.mkdirSync(logDir, { recursive: true });
+    fs.rmSync(ackFile, { force: true });
+  } catch (_) {}
+  const { spawn } = require("child_process");
+  /* 内层引号成对套住：cmd /c ""<script>" --wait-pid <pid> --ack "<file>""（cmd 只剥最外一层） */
+  const inner =
+    '"' + hit.script + '" --wait-pid ' + process.pid + ' --ack "' + ackFile + '"';
+  const cmdline = 'start "MTNode Rebuild" cmd.exe /c "' + inner + '"';
+  return new Promise((resolve) => {
+    let done = false;
+    const fail = (msg) => {
+      if (done) return;
+      done = true;
+      resolve({ ok: false, error: msg });
+    };
+    let child = null;
+    try {
+      child = spawn("cmd.exe", ["/c", cmdline], {
+        cwd: hit.root,
+        detached: true,
+        stdio: "ignore",
+        windowsHide: false,
+        windowsVerbatimArguments: true,
+      });
+    } catch (err) {
+      fail((err && err.message) || String(err));
+      return;
+    }
+    child.on("error", (err) => fail((err && err.message) || String(err)));
+    /* 只有**真的起来了**才让应用退出：拉起失败时应用留在原地，错误照常回给渲染层 */
+    child.on("spawn", () => {
+      if (done) return;
+      const startedAt = Date.now();
+      const timer = setInterval(() => {
+        if (done) {
+          clearInterval(timer);
+          return;
+        }
+        let ready = false;
+        try {
+          ready = fs.existsSync(ackFile);
+        } catch (_) {}
+        if (ready) {
+          clearInterval(timer);
+          done = true;
+          try {
+            child.unref();
+          } catch (_) {}
+          setTimeout(() => {
+            try {
+              app.quit();
+            } catch (_) {}
+          }, 500);
+          resolve({ ok: true, script: hit.script, pid: process.pid, logDir });
+          return;
+        }
+        if (Date.now() - startedAt > 10000) {
+          clearInterval(timer);
+          fail(I18n.t("编译窗没有起来（10 秒内没收到脚本启动信号），已取消退出"));
+        }
+      }, 150);
+    });
+    /* 兜底：4 秒内连 cmd 都没 spawn 时不要永久挂住渲染层 */
+    setTimeout(() => fail(I18n.t("拉起编译窗超时：系统没有响应 start 命令")), 4000);
+  });
 });
 
 /* GIF 帧动画编码：frames = [{data: ArrayBuffer(RGBA), w, h}]；alpha=0 像素透明 */
@@ -9633,6 +9106,11 @@ app.whenReady().then(() => {
   });
   mainWin.on("closed", () => {
     closeContentViewWin();
+    /* 快捷会话小窗跟着主窗一起关（共识 q7）：它是主窗渲染层的「遥控器」，
+       主窗没了就没有会话可发指令，留着只会是一只只会报「主窗口不可用」的空窗。 */
+    try {
+      if (miniChat) miniChat.destroy();
+    } catch (_) {}
     setSoundWatch(false); /* 窗口没了：完成音心跳跟着停（否则往后每 2 秒空转一次） */
     mainWin = null;
     try { shutdownAppPlugins(); } catch {}
@@ -9644,6 +9122,73 @@ app.whenReady().then(() => {
     procHost.killAll().catch(() => {});
   });
   registerUpdateIpc(() => mainWin);
+  /* 快捷会话小窗（本次需求）：唯一实例 + 全局 F1 + 位置记忆。
+     窗口本体不跑 agent：请求经 minichat:req 中继给上面这只 mainWin 的渲染层执行
+     （renderer/app-mini-chat-host.js），所以我们只需要把「主窗在哪」告诉它。 */
+  try {
+    miniChat = createMiniChat({
+      app,
+      BrowserWindow,
+      ipcMain,
+      screen,
+      globalShortcut,
+      /* 正文里的 Markdown 链接交系统浏览器打开（只放行 http(s)/mailto，见 mini-chat-window.js） */
+      shell,
+      getMainWin: () => mainWin,
+      iconPath: join(__dirname, "renderer", "img", "tray.png"),
+      htmlPath: join(__dirname, "renderer", "mini-chat.html"),
+      preloadPath: join(__dirname, "preload-mini-chat.js"),
+      /* 尺寸 / 位置记忆只写用户数据目录（不落应用文件夹，见 AGENTS.md） */
+      storePath: join(DATA(), "mini-chat.json"),
+      t: (s) => I18n.t(s),
+      i18nDict: () => ({
+        title: I18n.t("快捷会话"),
+        list: I18n.t("会话列表"),
+        newSession: I18n.t("新建会话"),
+        close: I18n.t("关闭"),
+        goto: I18n.t("在主窗口打开该会话"),
+        stop: I18n.t("停止"),
+        send: I18n.t("发送"),
+        placeholder: I18n.t("输入指令…（Enter 发送，Shift+Enter 换行）"),
+        sessions: I18n.t("会话"),
+        running: I18n.t("运行中"),
+        queued: I18n.t("排队中"),
+        paused: I18n.t("已暂停"),
+        emptyNoSession: I18n.t("还没有会话，点右上角 ＋ 新建一条"),
+        emptyNoReply: I18n.t("这条会话还没有回复"),
+        waiting: I18n.t("正在跑，跑完这里会出现它的回复…"),
+        sent: I18n.t("已下发"),
+        /* 自己那句落在消息结尾，前面一行小字（常显，见 renderer/mini-chat.html） */
+        yourMsg: I18n.t("你的指令"),
+        emptyText: I18n.t("先写一句指令"),
+        failed: I18n.t("操作失败"),
+        mainNotReady: I18n.t("主窗口不可用，先在主窗口打开一次"),
+        timeout: I18n.t("主窗口没有响应，稍后再试"),
+        sessionMissing: I18n.t("这条会话已不存在"),
+        hotkeyFail: I18n.t("F1 被其它程序占用，用左下角入口按钮打开"),
+        /* 项目文件夹那一行小字 + 输入框上方那两枚模式开关（本轮需求） */
+        wsLabel: I18n.t("项目文件夹"),
+        wsFrom: I18n.t("来源："),
+        noWs: I18n.t("未设置目录"),
+        noWsHint: I18n.t("这条会话还没解析出项目文件夹（主窗口里给它设一个工作目录即可）"),
+        grill: I18n.t("拷问需求"),
+        hotfix: I18n.t("热修"),
+        grillTip: I18n.t("拷问需求：开启后每轮先问清再动手（与「热修」互斥）"),
+        hotfixTip: I18n.t(
+          "热修：最快路径 —— 只在真有歧义时问一句，不写文档、不跑 smoke test（与「拷问需求」互斥）",
+        ),
+      }),
+      log: (msg) => {
+        try {
+          errLog(msg);
+        } catch (_) {}
+      },
+    });
+    miniChat.register();
+  } catch (e) {
+    errLog("[minichat] 初始化失败：" + ((e && e.message) || e));
+    miniChat = null;
+  }
   registerPetIpc({
     getDataDir: DATA,
     getMainWin: () => mainWin,
@@ -9995,6 +9540,11 @@ app.on("before-quit", (ev) => {
   }
   quitCleanupState = "running";
   ev.preventDefault();
+  /* 快捷会话小窗：先注销全局 F1 再收窗口 —— 热键不注销会随进程残留，
+     下次启动注册同一键时拿不到（用户看到的是「按 F1 没反应」）。 */
+  try {
+    if (miniChat) miniChat.shutdown();
+  } catch (_) {}
   /* 函数节点运行线程：先终止 worker 再扫进程树 —— 节点不在运行态就不该有线程/进程。
      两步都要真的收干净（不是只点火），所以把 promise 拿在手上，和后面的插件收尾一起等。 */
   const fnShutdown = (() => {

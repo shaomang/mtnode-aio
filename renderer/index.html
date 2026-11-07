@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' file: data: mtnode-thumb: http://mt-agent.com https://mt-agent.com http://www.mt-agent.com https://www.mt-agent.com; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-eval'; frame-src https://open.weixin.qq.com http://mt-agent.com https://mt-agent.com mtnode-preview:; connect-src 'self'"><!-- frame-src：微信扫码登录把开放平台 qrconnect 页内嵌在登录对话框里（app-auth.js 的 authQrFrame），
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; media-src 'self' file: blob: data:; img-src 'self' file: data: mtnode-thumb: http://mt-agent.com https://mt-agent.com http://www.mt-agent.com https://www.mt-agent.com; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-eval'; frame-src https://open.weixin.qq.com http://mt-agent.com https://mt-agent.com mtnode-preview:; connect-src 'self'"><!-- frame-src：微信扫码登录把开放平台 qrconnect 页内嵌在登录对话框里（app-auth.js 的 authQrFrame），
      扫码确认后该页会自己跳到服务端回调域（默认 http://mt-agent.com，见 main.js 的 MTNODE_STORE_URL），两处都要放行。
      frame-src 里的 mtnode-preview:：应用中心「开发」页中栏的实时预览 iframe（renderer/app-apps-dev.js 的
      #appsDevFrame）src 就是这个主进程登记的标准 / 安全协议（apps-store.js 的 PREVIEW_SCHEME / registerPreviewProtocol）。
@@ -24,6 +24,10 @@
      静态目录 = http://mt-agent.com/mtnode/apps/icons/<主干>[__shot].png，云端接口兜底 =
      …/mtnode/store-api/api/apps/<id>/icon|thumb，
      两者都在放行的这两个主机之下；目录正文仍由主进程拉取并缓存，渲染层不直连网络。
+     media-src 的 blob:：语音播报（renderer/app-tts.js 的 wavUrlOf）把 worker 在内存里编好的 wav
+     拼成 blob URL 交给 <audio>，不放行 blob: 时 media-src 回落到 default-src 'self'，Chromium 在读源之前
+     就拦掉（audio.error = MEDIA_ELEMENT_ERROR: Media load rejected by URL safety check），
+     表现就是「开关开着、字幕也在走，却一点声音都没有」。file: 留给老宿主给的 file:// 音频。
      'unsafe-eval' 暂保留：函数节点的用户 JS 已改到主进程独立线程执行（fn-runtime.js，见 renderer/js-exec.js），渲染层不再 new Function —— 本指令只作兼容余量，不再承载函数节点能力 -->
 <title>MTNode AI工作站</title>
 <link rel="stylesheet" href="style.css">
@@ -32,6 +36,10 @@
      （晚于 style.css 生效，同优先级时以本文件为准）；配色一律用 base.css 的主题变量，
      不新造配色体系。 -->
 <link rel="stylesheet" href="css/ai-facts.css">
+<!-- 研究画布（renderer/app-research.js / app-research-graph.js / app-pele.js 的样式）：
+     与上面几份同一写法 —— 独立成一份、用 <link> 跟在 style.css 之后，配色只取 base.css
+     的主题变量（暗色 / 工业 / 亮色三套自动跟随）。 -->
+<link rel="stylesheet" href="css/research.css">
 <!-- KaTeX 公式排版样式（vendor/katex/，含 fonts/）：字形位置全靠这份 CSS 定位，
      与 vendor/katex/katex.min.js 成对出现；本文件与 pdf-print.html 必须同步挂载。 -->
 <link rel="stylesheet" href="vendor/katex/katex.min.css">
@@ -50,6 +58,9 @@
      独立成一份、用 <link> 跟在 style.css 之后；画面取自用户给的像素参考表原图
      （renderer/img/footer-mascot.png），本文件只管 32×24 的排版。 -->
 <link rel="stylesheet" href="css/footer-mascot.css">
+<!-- 状态栏「重新编译并重启」按钮（renderer/app-self-rebuild.js）：与上面同一写法，
+     独立成一份；只排版那颗 22×22 的图标按钮与它的悬停 / 禁用态。 -->
+<link rel="stylesheet" href="css/self-rebuild.css">
 <link rel="stylesheet" href="css/tts.css">
 <!-- 任务完成的应用内卡片（renderer/app-notify.js）：右下角浮层，兜底系统通知
      （系统勿扰 / 开发态通知不弹时仍然看得见）。独立成一份，配色走 base.css 的变量。 -->
@@ -160,6 +171,13 @@
       <svg class="tb-view-ico" viewBox="0 0 16 16" aria-hidden="true"><circle cx="5.8" cy="5.4" r="2.2" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M1.9 13.2c0-2.2 1.7-3.8 3.9-3.8s3.9 1.6 3.9 3.8" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"/><path d="M10.8 3.6a2.2 2.2 0 0 1 0 4.3" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"/><path d="M11.5 9.7c1.6.5 2.6 1.8 2.6 3.5" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"/></svg>
       <span class="tb-view-txt" data-i18n="专家团">专家团</span>
     </button>
+    <!-- 研究（第 4 个视图 · 测试用）：只对登录账号 ms2308 露出 —— 默认 hidden，
+         由 renderer/app-research.js 的 researchSyncEntry 按登录态同步显隐（口径同应用中心
+         的 APPS_USER_WHITELIST：用户名精确匹配，未登录 / 离线 / 其它账号一律隐藏）。 -->
+    <button id="btnResearch" class="corner tb-view" hidden data-i18n-title="研究：以课题为核心的知识图谱（Markdown 笔记 + 会话，测试用）" title="研究：以课题为核心的知识图谱（Markdown 笔记 + 会话，测试用）">
+      <svg class="tb-view-ico" viewBox="0 0 16 16" aria-hidden="true"><circle cx="4" cy="4" r="1.9" fill="none" stroke="currentColor" stroke-width="1.25"/><circle cx="12" cy="5.6" r="1.7" fill="none" stroke="currentColor" stroke-width="1.25"/><circle cx="7.4" cy="12" r="1.7" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M5.6 4.7l4.6.6M4.9 5.7l1.9 4.7M10.9 7l-2.6 3.6" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+      <span class="tb-view-txt" data-i18n="研究">研究</span>
+    </button>
     <span class="sep"></span>
     <button id="btnUndo" class="corner mini btn-ico" aria-label="撤销">
       <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.2 6.2h6.2a3.4 3.4 0 1 1 0 6.8H7.2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M5.6 3.6L3 6.2l2.6 2.6" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -208,7 +226,16 @@
       <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3.2v9.6M3.2 8h9.6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
       <span class="btn-ico-txt" data-i18n="新建">新建</span>
     </button>
-    <select id="wfSelect" class="wf-select" data-i18n-title="打开画布" title="打开画布"></select>
+    <!-- 画布下拉：原生 <select> 的 option 里塞不进图标，而研究类画布要带一枚橙色研究图标，
+         所以整颗下拉改成自绘（按钮 + 列表），外观与旧的 .wf-select 保持一致。 -->
+    <div class="wf-pick" id="wfPick">
+      <button type="button" id="wfPickBtn" class="wf-select wf-pick-btn" aria-haspopup="listbox" aria-expanded="false" data-i18n-title="打开画布" title="打开画布">
+        <span class="wf-pick-ico" id="wfPickIco" hidden></span>
+        <span class="wf-pick-name" id="wfPickName"></span>
+        <svg class="wf-pick-caret" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 6.4l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <div class="wf-pick-menu" id="wfPickMenu" role="listbox" hidden></div>
+    </div>
     <button id="btnRenameWf" class="corner mini btn-ico" aria-label="改名">
       <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M9.4 3.4l3.2 3.2L5.6 13.6H2.4v-3.2L9.4 3.4z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M8.2 4.6l3.2 3.2" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"/></svg>
       <span class="btn-ico-txt" data-i18n="改名">改名</span>
@@ -522,6 +549,12 @@
         </div>
       </div>
     </div>
+    <!-- ===== 研究画布（第 4 个顶层视图 · renderer/app-research.js）=====
+         与画布并列、共用同一套顶栏（logo / 原有 tabs / 画布下拉窗都在原位，随时切回去），
+         但内容与画布节点完全不同：以课题为核心的知识图谱 + Markdown 编辑窗 + 会话框。
+         入口按钮 #btnResearch 只对登录账号 ms2308 露出（app-research.js 的 researchSyncEntry）；
+         整块由 JS 构建（buildShell），这里只留容器，避免静态结构与动态状态两处维护。 -->
+    <div class="research-pane" id="researchPane" style="display:none"></div>
   </section>
   <aside class="assist-pane" id="assistPane" aria-label="画布助手">
     <div class="assist-resize" id="assistResize" data-i18n-title="拖动分界线调整助手栏宽度（整条边界都可拖）" title="拖动分界线调整助手栏宽度（整条边界都可拖）"></div>
@@ -544,7 +577,9 @@
       <button type="button" id="btnAssistClose" class="mini btn-sq" data-i18n-title="关闭右侧助手栏" title="关闭右侧助手栏">✕</button>
     </div>
     <!-- 输入区上方那排 chip＝与原生会话输入区同一套、同一顺序（本次需求）：
-         工作区 → 模型 → 技能 → 压缩上下文 / 查看摘要 → 工具 → 模式 → 浏览器活动。
+         工作区 → 模型 → 工具 → 模式。
+         「技能」「压缩上下文 / 查看摘要」「浏览器活动」三枚按需求从界面移除
+         （JS 侧入口与功能仍在，只是不再占位）。
          原来的「预设 / 供应商 / 模型 / 思考强度 / 上下文压缩」五行平铺下拉全部收进
          「模型」chip 的菜单里（字段与写入点一字未改，只是搬了家）；「工作目录」收进
          「工作区」chip 的菜单。栏窄时只留图标，全名走悬停提示（app-assist.js 的
@@ -553,16 +588,11 @@
       <div class="assist-chips" id="assistChips">
         <button type="button" class="assist-chip" id="assistWsChip" data-i18n-title="工作区：生效工作目录（跟随所属画布）" title="工作区：生效工作目录（跟随所属画布）"><i class="ach-icon">🗂</i><span class="ach-text" id="assistWsChipText" data-i18n="工作区">工作区</span></button>
         <button type="button" class="assist-chip" id="assistModelChip" data-i18n-title="模型提供商 / 预设 / 模型 / 思考强度 / 上下文压缩" title="模型提供商 / 预设 / 模型 / 思考强度 / 上下文压缩"><i class="ach-icon">⚙</i><span class="ach-text" id="assistModelChipText" data-i18n="模型">模型</span></button>
-        <button type="button" class="assist-chip" id="assistCmdChip" data-i18n-title="技能：把 /技能 放进输入框" title="技能：把 /技能 放进输入框"><i class="ach-icon">✦</i><span class="ach-text" data-i18n="技能">技能</span></button>
-        <button type="button" class="assist-chip assist-chip-compact" id="assistCompactChip" data-i18n-title="压缩上下文：把较早的对话收成一段摘要（会话保留，原文折起来仍可回看）" title="压缩上下文：把较早的对话收成一段摘要（会话保留，原文折起来仍可回看）"><i class="ach-icon">◧</i><span class="ach-text" data-i18n="压缩上下文">压缩上下文</span></button>
-        <button type="button" class="assist-chip assist-chip-compact-view" id="assistCompactViewChip" hidden data-i18n-title="查看压缩摘要：看最近一次压缩产出的摘要全文" title="查看压缩摘要：看最近一次压缩产出的摘要全文"><i class="ach-icon">▤</i><span class="ach-text" data-i18n="查看摘要">查看摘要</span></button>
         <button type="button" class="assist-chip" id="assistToolsChip" data-i18n-title="工具：逐工具 允许 / 询问 / 禁止" title="工具：逐工具 允许 / 询问 / 禁止"><i class="ach-icon">🔧</i><span class="ach-text" id="assistToolsChipText" data-i18n="工具">工具</span></button>
         <!-- 「模式」入口沿用原 id（app-boot.js 的 openAssistModeMenu 与冒烟都认它） -->
         <button type="button" class="assist-chip assist-chip-mode" id="assistModeTrigger" data-i18n-title="模式" title="模式"><i class="ach-icon">☰</i><span class="ach-text" data-i18n="模式">模式</span></button>
-        <button type="button" class="assist-chip" id="assistBrowserChip" data-i18n-title="浏览器活动：切到会话视图看这条助手会话开了哪些网页" title="浏览器活动：切到会话视图看这条助手会话开了哪些网页"><i class="ach-icon">🌐</i><span class="ach-text" data-i18n="浏览器活动">浏览器活动</span></button>
       </div>
       <div class="agent-menu agent-tools-menu" id="assistToolsMenu" hidden></div>
-      <div class="agent-menu agent-skill-menu" id="assistCmdMenu" hidden></div>
       <!-- 「模型」chip 的菜单：面里就是原来那五行下拉（档位清单仍由 app-assist.js 现算）。
            菜单关着时整块 display:none，行本身的计算 display 仍是 flex —— 默认 hidden 收起。 -->
       <div class="agent-menu assist-menu" id="assistModelMenu" hidden>
@@ -678,10 +708,15 @@
 
 <footer class="statusbar">
   <!-- 全局语音输入（renderer/app-voice.js）：状态栏最左 1 枚话筒，点一下在三态之间循环
-       （关闭 → 持续转录 → 按住 F1 按键转录 → 关闭），识别出的文字实时写进当前 focus 的输入框。
-       占位在 #btnCanvasShot 左侧（CSS 用 order:-2 钉死，即使别的按钮插到前面也不移位）。
-       键面内容（🎤 / ● / F1 / 下载百分比）由模块的 paint() 按状态改写，这里只给初始字。 -->
-  <button type="button" id="btnVoiceGlobal" class="sb-voice" aria-label="全局语音输入（按住 F1 说话）">🎤</button>
+       （关闭 → 持续转录 → 按住 F3 按键转录 → 关闭），识别出的文字实时写进当前 focus 的输入框。
+       占位在 #btnCanvasShot 左侧（CSS 用 order 钉死，即使别的按钮插到前面也不移位）。
+       键面内容（🎤 / ● / F3 / 下载百分比）由模块的 paint() 按状态改写，这里只给初始字。 -->
+  <button type="button" id="btnVoiceGlobal" class="sb-voice" aria-label="全局语音输入（按住 F3 说话）">🎤</button>
+  <!-- 快捷会话小窗入口（renderer/app-mini-chat-host.js）：紧挨话筒右侧（CSS order 见 css/layout.css），
+       点一下打开 / 聚焦那只唯一的独立小窗（全局 F1 也能呼出，窗口中心对齐鼠标）。
+       小窗只显示「当前会话最后一条 AI 回复」+ 自己刚下发的指令，不显示思考与工具调用。 -->
+  <button type="button" id="btnMiniChat" class="sb-minichat"
+          data-i18n-title="快捷会话（F1）：下发指令、只看最后一条回复" title="快捷会话（F1）：下发指令、只看最后一条回复">✦</button>
   <!-- 内置 TTS（MOSS-TTS-Nano）：夹在「AI 增强」与「画布截图」之间（CSS order 见 css/tts.css）。
        左键开 / 关（首次开启会确认并下载约 500MB ONNX 权重），右键是音色菜单
        （上传 prompt 音频 / 引用 Breeze 角色 / 试听 / 打开数据目录）。实现见 app-tts.js。 -->
@@ -717,6 +752,18 @@
        renderer/app-boot.js 的 applyAuthorVersion 从 S.appVersion 现算 —— 不在 HTML 里
        写死版本号（版本唯一真源是根目录 version 文件）；悬停提示改成「应用详情」，中英
        词条走 data-i18n-title。 -->
+  <!-- 「重新编译并重启」（renderer/app-self-rebuild.js + css/self-rebuild.css）：
+       放在版本号左邻，默认 hidden；只有**打包版**且登录账号是 ms2308 才由脚本显出来
+       （开发态杀 electron.exe 会连调试进程一起带走，所以那种环境永不出现）。
+       点一下先弹确认窗，确认后由主进程拉起一只脱离本进程的控制台窗去跑
+       scripts\agent-rebuild.cmd（等应用退出 → 编译 → 重启）。 -->
+  <button type="button" id="btnSelfRebuild" class="sb-rebuild" hidden
+          aria-label="重新编译并重启"
+          data-i18n-title="重新编译并重启（仅本机开发账号）" title="重新编译并重启（仅本机开发账号）">
+    <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+      <path fill="currentColor" d="M12 5V2L8 6l4 4V7a5 5 0 1 1-5 5H5a7 7 0 1 0 7-7zm0 9a2 2 0 1 1 0-4 2 2 0 0 1 0 4z"/>
+    </svg>
+  </button>
   <span id="authorLink" class="author" data-i18n-title="应用详情" title="应用详情"></span>
 </footer>
 
@@ -791,6 +838,12 @@
      左栏会话行徽标 / 左下运行队列 / 画布助手栏状态条。无加载期依赖（调用期取 I18n 与
      window.api），故排在 app.js 之前即可。 -->
 <script src="app-subagent.js"></script>
+<!-- Markdown → HTML 的唯一内核（renderer/md-render.js → window.MTRender）：本页 renderMarkdown
+     （app.js，全站预览入口）是它的薄包装；快捷会话小窗（另一只 BrowserWindow，mini-chat.html）
+     也加载同一份内核 —— 两处同源，改渲染口径只改这一个文件。
+     必须排在 app.js 之前（app.js 的 renderMarkdown 在调用期取 window.MTRender），
+     且 math-render.js 也在调用期取，这里的先后只表达依赖关系。 -->
+<script src="md-render.js"></script>
 <script src="app.js"></script>
 <!-- 模型形态识别（文本 / 图像生成）：纯函数段，设置页模型徽标、节点服务商 / 模型
      下拉、运行期兜底、导入导出解析共用同一份判定（见 renderer/app-model-kind.js）。
@@ -834,6 +887,12 @@
      自包含，app-canvas.js 调用期按 typeof 取 mediaViewCreate / mediaViewAttach /
      mediaViewClear / mediaSetVideoSrc / mediaViewPoster*。 -->
 <script src="app-mediaview.js"></script>
+<!-- PDF 应用内预览（renderer/app-pdfview.js + css/pdf-view.css）：翻页 / 缩放阅读浮层
+     #pdfPreview，页面图走主进程已有的 pdf:render（pdf-read.js 的 pdf.js 隐藏窗），
+     页数走 pdf:probe；不引新依赖、不落盘，位图只做内存缓存（上限 16 页）。
+     出口 window.openPdfPreview(path, opts)。**必须排在 app-db.js 与 app-canvas.js
+     之前**（文件节点里的 PDF 行、PDF 生成节点头部按钮都在调用期按 typeof 取它）。 -->
+<script src="app-pdfview.js"></script>
 <!-- 音频节点现场录制（renderer/app-recaudio.js + css/recaudio.css）：节点操作行的
      「录制」按钮 → 居中录音面板（实时声波 + 计时）→ 停止后编码成**真 mp3**
      （随包的 renderer/vendor/lame.min.js，全局 `lamejs`；本机 MediaRecorder 只出
@@ -1086,10 +1145,9 @@
      排在 app-settings.js 之后（用它的 settingsSaveNow / repaintSettingsProvTiles），
      在 app-db.js（dshRunTask）/ app-nodes.js（apiCallTextStream、出图）运行期按名字取用。 -->
 <script src="app-deepseek-onboard.js"></script>
-<!-- 工作目录占用与清理（顶栏工作目录右侧那颗按钮 + 设置里「存储占用与清理」的入口 ·
+<!-- 工作目录占用与清理（顶栏工作目录 ⚙ 设置窗里的入口 + 设置里「存储占用与清理」·
       renderer/app-ws-temp.js，样式 css/ws-temp.css，主进程 workspace-temp.js）：
-      必须在 app-boot.js 之前、由它触发的首次 renderWfWorkspace 要能按名字取到
-      workspaceTempButton()；设置里的入口按 window.openWorkspaceTempPanel 调用，故排在哪都行。 -->
+      两个入口都按 window.openWorkspaceTempPanel 调用，故排在哪都行。 -->
 <script src="app-ws-temp.js"></script>
 <script src="app-assist.js"></script>
 <!-- 会话长时自治：自动续跑开关 + 累计状态小字 + 自检判停（renderer/app-longrun.js）。
@@ -1218,6 +1276,21 @@
      排在 app-review.js 之后：正文 ⇄ Markdown 转换（mdToRichHtml / richToMarkdown /
      buildRevisionPrompt）与互斥判据都在调用期取它；插图走 app-inline-img.js（更早加载）。 -->
 <script src="app-textedit.js"></script>
+<!-- 研究画布（第 4 个顶层视图 · 测试用，仅账号 ms2308 露出）：
+     三个文件按依赖顺序 ——
+       ① research-core.js  = 纯内核（UMD）：frontmatter / callout / wikilink / [@citekey] 解析，
+          笔记 → 知识图谱，图查询与三套布局，BibTeX ⇄ CSL-JSON。零依赖、不碰 DOM 与网络，
+          同一份实现还被 scripts/research-lit.mjs 用（避免「每次重新做工具」）。
+       ② app-pele.js       = 轻量图 DSL 渲染器（Mermaid 替代）：flowchart / sequence / mindmap → SVG。
+       ③ app-research-graph.js = 图谱视图：SVG 渲染 + 平移缩放 + 网格刻度吸附 + 布局/时间线/聚焦。
+       ④ app-research.js   = 视图外壳：md 编辑窗、批注、框选询问、文献层、会话框、入口显隐。
+     全部排在 app-review.js / app-textedit.js / app-assist.js 之后：正文 ⇄ Markdown 转换、
+     会话发送（agentSessionSend）都在调用期按 typeof 取用，不依赖装载顺序。 -->
+<script src="research-core.js"></script>
+<script src="app-pele.js"></script>
+<script src="app-research-graph.js"></script>
+<script src="app-research.js"></script>
+<script src="app-research-init.js"></script>
 <!-- AI 事实库（新增的独立存储，给 AI 读的极简条例）：路径解析 / 读写 / 工具动作 / 查阅弹窗；
      挂 window.MTNodeAiFacts + 全局 aiFacts* 别名。放在 app-factlib.js 之后（同层相邻，
      两者之间没有调用关系）；左栏入口在 app-teamview.js，但那个文件的脚本行排在更前面，
@@ -1285,6 +1358,11 @@
      必须排在 app-assist.js / app-db.js / app.js 之后（调用期按 typeof 取既有全局）。 -->
 <script src="app-session-bridge.js"></script>
 <script src="app-footer-mascot.js"></script>
+<!-- 状态栏「重新编译并重启」按钮（renderer/app-self-rebuild.js）：自包含，只经
+     window.api.selfRebuildInfo / selfRebuild 与主进程对话；显隐取 MTNodeAuth 的
+     登录用户名（与研究视图同一口径），确认窗复用 app.js 的 confirmDialog。
+     排在 app.js / app-boot.js 之后（调用期按 typeof 取这些既有全局）。 -->
+<script src="app-self-rebuild.js"></script>
 <!-- 应用节点（kind appnode）：画布区里的全屏应用界面 + 页面桥（canvas / agent / fs /
      tools / net / data 逐类白名单）。必须排在 app.js / app-canvas.js / app-assist.js 之后
      —— 它要在载入时补 NODE_DEFAULTS / KIND_CLS / KIND_TAGS / KIND_ICON_SVG 那几张表，
@@ -1295,5 +1373,11 @@
      必须排在 app-session-bridge.js（会话族）与 app-appnode.js（APPNODE_ROUTES.canvas）之后。
      见 renderer/app-apphost-bridge.js 顶部口径。 -->
 <script src="app-apphost-bridge.js"></script>
+<!-- 快捷会话小窗的「主窗口一侧」执行端（renderer/app-mini-chat-host.js）：
+     独立小窗（mini-chat-window.js）把 会话列表 / 发指令 / 停止 / 跳转 中继到这里，
+     由本文件用既有的 agentSessionSend / stopSessionRuns / agentSelectSession 执行 ——
+     agent 运行态只在渲染层，小窗与主进程都不另造一套。
+     必须排在 app-assist.js（发送与会话选择）与 app.js（setView / stopSessionRuns）之后。 -->
+<script src="app-mini-chat-host.js"></script>
 </body>
 </html>

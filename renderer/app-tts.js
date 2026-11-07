@@ -34,6 +34,9 @@
     running: false,
     progress: { phase: "idle", pct: 0, label: "", error: "" },
     voice: { kind: "builtin", name: "Deepseek" },
+    /* 语音微调（采样参数）：真源在主进程 config.json，这里只存一份用于开窗 */
+    params: null,
+    paramSpecs: null,
     /* 推理设备：provider = 偏好（auto = GPU 优先 / cpu = 强制 CPU）；
        decision = 本机探测结论；device = 最近一次 worker 真正跑起来的设备（含回落原因） */
     provider: "auto",
@@ -50,15 +53,21 @@
      （session#0、session#1…）。这样模型还在写下一句时，上一句已经在合成 / 播放，
      真正做到「边生成边播」；打断时把 session 下所有在飞 reqId 一起取消。 */
   const play = {
-    queue: [], /* [{ path, text }]：文本跟着音频走，字幕才能对上正在念的那一句 */
+    queue: [], /* [{ data | path, text }]：文本跟着音频走，字幕才能对上正在念的那一句 */
     audio: null,
+    url: "", /* 当前这段的 blob URL（内存音频，停下时回收） */
     session: "",
     ids: new Set(),
     pending: 0,
     seq: 0,
     spoken: "",
     hideTimer: 0,
+    gapTimer: 0, /* 两段之间留的短暂停顿（见 SEG_GAP_MS） */
   };
+
+  /* 段与段之间的气口：每段是独立合成的一句完整话，首尾紧贴着播会被听成一整句，
+     留 220ms 让人耳能分出「这是两句话」。只加在段之间，第一段不受影响。 */
+  const SEG_GAP_MS = 220;
 
   /* 一轮播报的 reqId（打断时用它告诉 worker 别往下合成了） */
   function newReqId() {
@@ -220,54 +229,99 @@
     }, 1600);
   }
 
+  /* 一段 base64 wav → 可直接播放的 blob URL（纯内存，不落盘）。
+     老宿主（只给 path 不给 data）仍按 file:/// 走，避免两边版本错开时彻底没声。 */
+  function wavUrlOf(item) {
+    const b64 = String((item && item.data) || "");
+    if (b64) {
+      try {
+        const bin = atob(b64);
+        const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        return URL.createObjectURL(new Blob([bytes], { type: "audio/wav" }));
+      } catch (_) {}
+    }
+    const file = String((item && item.path) || "");
+    if (!file) return "";
+    try {
+      return api.toFileUrl(file);
+    } catch (_) {
+      return "file:///" + file.replace(/\\/g, "/");
+    }
+  }
+
   function playNext() {
+    if (play.gapTimer) {
+      clearTimeout(play.gapTimer);
+      play.gapTimer = 0;
+    }
     if (!play.queue.length) {
       play.audio = null;
       hideCaption(false);
       return;
     }
     const item = play.queue.shift();
-    const file = item.path;
-    let url = "";
-    try {
-      url = api.toFileUrl(file);
-    } catch (_) {
-      url = "file:///" + String(file).replace(/\\/g, "/");
+    const url = wavUrlOf(item);
+    if (!url) {
+      playNext();
+      return;
     }
     const a = new Audio(url);
     play.audio = a;
+    play.url = url;
     showCaption(item.text);
     const sync = () => {
       if (play.audio !== a) return;
       const d = Number(a.duration);
       paintCaption(item.text, d > 0 ? Math.min(1, a.currentTime / d) : 0);
     };
+    const finish = () => {
+      if (play.audio === a) play.audio = null;
+      if (play.url === url) revokePlayUrl();
+      /* 后面还有句子（队列里 / 还在合成）：先停一下再念下一段；
+         已经是最后一句就直接收尾，不必为气口空等。 */
+      if (!play.queue.length && !play.pending) {
+        playNext();
+        return;
+      }
+      if (play.gapTimer) clearTimeout(play.gapTimer);
+      play.gapTimer = setTimeout(() => {
+        play.gapTimer = 0;
+        playNext();
+      }, SEG_GAP_MS);
+    };
     a.addEventListener("timeupdate", sync);
-    a.onended = () => {
-      if (play.audio === a) play.audio = null;
-      playNext();
-    };
-    a.onerror = () => {
-      if (play.audio === a) play.audio = null;
-      playNext();
-    };
-    a.play().catch(() => {
-      if (play.audio === a) play.audio = null;
-      playNext();
-    });
+    a.onended = finish;
+    a.onerror = finish;
+    a.play().catch(finish);
   }
 
   /* 收掉当前这一段的 <audio>（不碰队列、不取消合成）：
      先把回调摘掉再 pause / 清 src，否则旧音频的 onended 会把播放链路再推一次。 */
   function dropCurrentAudio() {
+    if (play.gapTimer) {
+      clearTimeout(play.gapTimer);
+      play.gapTimer = 0;
+    }
     const a = play.audio;
     play.audio = null;
+    revokePlayUrl();
     if (!a) return;
     try {
       a.onended = null;
       a.onerror = null;
       a.pause();
       a.src = "";
+    } catch (_) {}
+  }
+
+  /* 回收当前这段的 blob URL（内存里的 wav 也一起释放） */
+  function revokePlayUrl() {
+    const url = play.url;
+    play.url = "";
+    if (!url || !url.startsWith("blob:")) return;
+    try {
+      URL.revokeObjectURL(url);
     } catch (_) {}
   }
 
@@ -303,10 +357,12 @@
       return;
     }
     if (ev.id && !play.ids.has(ev.id)) return; /* 上一轮 / 已被打断的尾巴，丢弃 */
-    if (ev.type === "chunk" && ev.path) {
-      /* 第一段合成好就开始播；后面的段继续在 worker 里合成（真正的边生成边播） */
-      play.queue.push({ path: ev.path, text: String(ev.text || "") });
-      if (!play.audio) playNext();
+    if (ev.type === "chunk" && (ev.data || ev.path)) {
+      /* 第一段合成好就开始播；后面的段继续在 worker 里合成（真正的边生成边播）。
+         音频是 base64（worker 内存编码），这里只拼 blob URL，不碰硬盘。 */
+      play.queue.push({ data: String(ev.data || ""), path: String(ev.path || ""), text: String(ev.text || "") });
+      /* 正在等气口（gapTimer）时别插队，让上一段留完那一下停顿 */
+      if (!play.audio && !play.gapTimer) playNext();
       return;
     }
     if (ev.type === "done" || ev.type === "cancelled" || ev.type === "error") {
@@ -389,6 +445,8 @@
     st.installed = !!s.installed;
     st.running = !!s.running;
     st.voice = s.voice || st.voice;
+    st.params = s.params || st.params;
+    st.paramSpecs = s.paramSpecs || st.paramSpecs;
     st.breeze = Array.isArray(s.breeze) ? s.breeze : [];
     st.provider = s.provider === "cpu" ? "cpu" : "auto";
     st.decision = s.decision || null;
@@ -622,6 +680,183 @@
     ta.select();
   }
 
+  /* ── 语音参数微调（采样参数）────────────────────────────────────────────
+     入口在右键菜单。暴露的是真正参与 ONNX 采样的那几项（音频温度 / top-k /
+     top-p / 重复惩罚 + 文本头三项），改完写进主进程 config.json，下一次合成即生效
+     （不用重启 worker、不重载模型）。窗是 persistent：只走窗内按钮 / ✕ 关闭。 */
+  const PARAM_UI = [
+    {
+      key: "seed",
+      label: "采样种子（seed）",
+      min: 0,
+      max: 999999,
+      step: 1,
+      int: true,
+      hint: "固定住这颗种子后，同一段文字 + 同一音色每次出来的音频完全一样；想让同一句话换个念法就把它改掉（默认 1）",
+    },
+    {
+      key: "audioTemperature",
+      label: "音频温度（temperature）",
+      min: 0.1,
+      max: 2,
+      step: 0.05,
+      hint: "越高语调起伏越大、越有表现力；越低越稳定（但也可能发平、发闷）",
+    },
+    { key: "audioTopK", label: "音频 top-k", min: 0, max: 200, step: 1, int: true, hint: "每步只从概率最高的 K 个候选里挑；0 = 不限制" },
+    { key: "audioTopP", label: "音频 top-p", min: 0.05, max: 1, step: 0.01, hint: "核采样阈值：越小越保守、越稳；1 = 不裁剪" },
+    { key: "audioRepetitionPenalty", label: "重复惩罚", min: 1, max: 2, step: 0.05, hint: "压制重复音节 / 拖音；1 = 关闭，调太高会含糊" },
+    { key: "textTemperature", label: "文本温度", min: 0.1, max: 2, step: 0.05, hint: "文本头采样的随机性，影响断句与发音走向，一般不用动" },
+    { key: "textTopK", label: "文本 top-k", min: 0, max: 200, step: 1, int: true, hint: "0 = 不限制" },
+    { key: "textTopP", label: "文本 top-p", min: 0.05, max: 1, step: 0.01, hint: "越小越保守" },
+  ];
+  const PARAM_DEFAULTS = {
+    seed: 1,
+    audioTemperature: 0.8,
+    audioTopK: 25,
+    audioTopP: 0.95,
+    audioRepetitionPenalty: 1.2,
+    textTemperature: 1,
+    textTopK: 50,
+    textTopP: 1,
+  };
+
+  function openParamsDialog() {
+    if (typeof openOverlay !== "function") return;
+    openOverlay(T("语音参数微调"), { persistent: true });
+    const body = document.getElementById("ovBody");
+    const foot = document.getElementById("ovFoot");
+    if (!body || !foot) return;
+
+    const draft = Object.assign({}, PARAM_DEFAULTS, st.params || {});
+    const wrap = document.createElement("div");
+    wrap.className = "tts-params";
+    const note = document.createElement("div");
+    note.className = "tts-params-note";
+    note.textContent = T(
+      "这些是模型采样参数：只影响「怎么念」（音色稳定性 / 语调起伏 / 拖音），不改音色本身。改完对下一次合成立即生效。"
+    );
+    wrap.appendChild(note);
+
+    const controls = [];
+    for (const spec of PARAM_UI) {
+      /* 范围以主进程 PARAM_SPECS 为准（state.paramSpecs），本地这份只是兜底文案 */
+      const lim = Object.assign({}, spec, (st.paramSpecs || {})[spec.key] || {});
+      const row = document.createElement("div");
+      row.className = "tts-param-row";
+
+      const head = document.createElement("div");
+      head.className = "tts-param-head";
+      const name = document.createElement("span");
+      name.className = "tts-param-name";
+      name.textContent = T(spec.label);
+      const def = PARAM_DEFAULTS[spec.key];
+      const reset = document.createElement("button");
+      reset.type = "button";
+      reset.className = "tts-param-reset";
+      reset.textContent = T("默认 " + def);
+      reset.title = T("恢复这一项的默认值");
+      head.appendChild(name);
+      head.appendChild(reset);
+
+      const line = document.createElement("div");
+      line.className = "tts-param-line";
+      const range = document.createElement("input");
+      range.type = "range";
+      range.min = String(lim.min);
+      range.max = String(lim.max);
+      range.step = String(lim.step);
+      const num = document.createElement("input");
+      num.type = "number";
+      num.className = "tts-param-num";
+      num.min = String(lim.min);
+      num.max = String(lim.max);
+      num.step = String(lim.step);
+      line.appendChild(range);
+      line.appendChild(num);
+
+      const hint = document.createElement("div");
+      hint.className = "tts-param-hint";
+      hint.textContent = T(spec.hint);
+
+      const round = (v) => {
+        const n = Math.min(lim.max, Math.max(lim.min, Number(v)));
+        if (!Number.isFinite(n)) return draft[spec.key];
+        return lim.int ? Math.round(n) : Math.round(n * 1000) / 1000;
+      };
+      const paint = () => {
+        const v = draft[spec.key];
+        range.value = String(v);
+        if (document.activeElement !== num) num.value = String(v);
+      };
+      range.addEventListener("input", () => {
+        draft[spec.key] = round(range.value);
+        paint();
+      });
+      num.addEventListener("input", () => {
+        if (num.value === "" || num.value === "-") return;
+        draft[spec.key] = round(num.value);
+        range.value = String(draft[spec.key]);
+      });
+      num.addEventListener("blur", () => {
+        draft[spec.key] = round(num.value === "" ? draft[spec.key] : num.value);
+        paint();
+      });
+      reset.addEventListener("click", () => {
+        draft[spec.key] = def;
+        paint();
+      });
+      paint();
+      controls.push(paint);
+
+      row.appendChild(head);
+      row.appendChild(line);
+      row.appendChild(hint);
+      wrap.appendChild(row);
+    }
+    body.appendChild(wrap);
+
+    const hint = document.createElement("div");
+    hint.className = "tts-speak-hint";
+    const saveBtn = document.createElement("button");
+    saveBtn.type = "button";
+    saveBtn.className = "mini primary";
+    saveBtn.textContent = T("保存");
+    const resetAllBtn = document.createElement("button");
+    resetAllBtn.type = "button";
+    resetAllBtn.className = "mini";
+    resetAllBtn.textContent = T("全部恢复默认");
+    const closeBtn = document.createElement("button");
+    closeBtn.type = "button";
+    closeBtn.className = "mini";
+    closeBtn.textContent = T("关闭");
+    closeBtn.onclick = () => {
+      if (typeof closeOverlay === "function") closeOverlay();
+    };
+    resetAllBtn.onclick = () => {
+      Object.assign(draft, PARAM_DEFAULTS);
+      for (const paint of controls) paint();
+    };
+    saveBtn.onclick = async () => {
+      if (!window.api || !api.mossTtsSetParams) return;
+      saveBtn.disabled = true;
+      try {
+        const r = await api.mossTtsSetParams(draft);
+        if (r && r.state) applyState(r.state);
+        else await refresh();
+        paint();
+        hint.textContent = T("已保存。可以点菜单里的「试听当前音色」听一下效果。");
+        bubble(T("语音参数已更新"));
+      } catch (e) {
+        hint.textContent = T("保存失败：") + String((e && e.message) || e);
+      }
+      saveBtn.disabled = false;
+    };
+    foot.appendChild(saveBtn);
+    foot.appendChild(resetAllBtn);
+    foot.appendChild(closeBtn);
+    body.appendChild(hint);
+  }
+
   async function openMenu(x, y) {
     closeMenu();
     const m = document.createElement("div");
@@ -680,6 +915,7 @@
       if (!st.enabled) await enable();
       speak(T("这是当前的语音播报音色，听起来还可以吗？"));
     }));
+    m.appendChild(menuItem(T("语音参数微调（temperature 等）…"), "", () => openParamsDialog()));
     m.appendChild(menuItem(T("朗读任意内容（测试）…"), "", () => openSpeakDialog()));
     m.appendChild(menuItem(T("打开数据目录（权重 / 日志）"), "", () => api.mossTtsOpenRoot()));
     document.body.appendChild(m);
@@ -703,13 +939,51 @@
     play.seq = 0;
     play.pending = 0;
     play.spoken = "";
+    /* 手里最多留两段不合成：留到最后才知道哪一段是「最后一段」，
+       短尾（「好的。」这种）要并进前一段再念，收尾才不会被听成话没说完。
+       end() 之前留 2 段，够判断前一段不是最后一段的，就先发出去念。 */
+    let held = [];
+    let fedChars = 0;
+    const drain = (all) => {
+      if (play.session !== session) {
+        held = [];
+        return;
+      }
+      if (!all) {
+        while (held.length > 2) {
+          let head = held.shift();
+          /* 每段不少于最低字数：头一段太短就先并进后面的段，别单独念出半句 */
+          while (isShortSpeechTail(head) && held.length) head = joinSpeechTail(head, held.shift());
+          if (held.length < 2) {
+            held.unshift(head); /* 后面不够两段了，留着和收尾一起判断 */
+            break;
+          }
+          sendPiece(head);
+        }
+        return;
+      }
+      const rest = mergeShortSpeechTail(held);
+      held = [];
+      for (const piece of rest) sendPiece(piece);
+    };
     return {
       session,
+      /** 已经喂进来的字数（结束前就知道有没有内容，不必看 play.spoken） */
+      get fedChars() {
+        return fedChars;
+      },
       feed(text) {
         if (play.session !== session) return; /* 已被新的播报打断：别再往新会话里塞旧句子 */
-        for (const piece of speechPieces(text)) sendPiece(piece);
+        for (const piece of speechPieces(text)) {
+          fedChars += piece.length;
+          held.push(piece);
+        }
+        drain(false);
       },
-      end() {},
+      /** 这次播报的话已经给完了：把手里留的段（含短尾合并）全部交给 worker */
+      end() {
+        drain(true);
+      },
     };
   }
 
@@ -763,6 +1037,7 @@
     if (!body || !st.enabled) return;
     const s = beginSpeech();
     s.feed(body);
+    s.end();
   }
 
   /* ── 悬浮摘要气泡（会自动消失；点一下复制）────────────────────────── */
@@ -922,8 +1197,59 @@
     return out.filter(Boolean);
   }
 
+  /** 每次播报的最少字数（去标点 / 空白后的有效字数）：少于这个数的一段单独念出来
+      像被打断（「好的。」「迁移完了。」），要和相邻段并成一段再合成。 */
+  const MIN_SPEECH_CHARS = 15;
+
+  /** 这一段是不是「太短」：不满足每次播报的最低字数，该并进相邻段 */
+  function isShortSpeechTail(text) {
+    const t = String(text || "").replace(/\s+/g, " ").trim();
+    if (!t) return true;
+    return t.replace(/[\s\p{P}\p{S}]/gu, "").length < MIN_SPEECH_CHARS;
+  }
+
+  /** 把短尾并进前一句：前一句已经带句末 / 句中停顿标点就直接粘，
+      否则补一个逗号（英文补「, 」），念出来的气口才连得住。 */
+  function joinSpeechTail(prev, tail) {
+    const p = String(prev || "").trim();
+    const t = String(tail || "").trim();
+    if (!p) return t;
+    if (!t) return p;
+    const latin = !/[\u3400-\u9fff]/.test(p + t);
+    if (/[。！？!?；;…，,、：:.]$/.test(p)) return p + (latin ? " " : "") + t;
+    return p + (latin ? ", " : "，") + t;
+  }
+
+  /** 收尾合并：末段过短就一路往前并（只动尾部，中间段落保持原样） */
+  function mergeShortSpeechTail(pieces) {
+    const out = (pieces || []).map((s) => String(s || "").trim()).filter(Boolean);
+    while (out.length > 1 && isShortSpeechTail(out[out.length - 1])) {
+      const tail = out.pop();
+      out[out.length - 1] = joinSpeechTail(out[out.length - 1], tail);
+    }
+    return out;
+  }
+
+  /** 每段都不少于最低字数：太短的一段并进相邻段 —— 有前一段就并进前一段，
+      否则（第一段太短）并进后一段。只合并、不丢字。 */
+  function mergeShortSpeechPieces(pieces) {
+    const out = [];
+    for (const raw of pieces || []) {
+      const t = String(raw || "").trim();
+      if (!t) continue;
+      if (out.length && (isShortSpeechTail(t) || isShortSpeechTail(out[out.length - 1]))) {
+        out[out.length - 1] = joinSpeechTail(out[out.length - 1], t);
+        continue;
+      }
+      out.push(t);
+    }
+    return out;
+  }
+
   /** 一次播报的「分段」：完整句子尽量整句念；只有第一句太长时才先切一小段，
-      让首字更早出声（播放同时 worker 还在合成后面的段）。 */
+      让首字更早出声（播放同时 worker 还在合成后面的段）。
+      每段都不少于 MIN_SPEECH_CHARS 个字：最后一段（或任何一段）太短就并进相邻段，
+      避免收尾只有两三个字被听成话没说完。 */
   function speechPieces(text) {
     const latin = speechNeedsSpace(text);
     const sents = splitSpeechSentences(text).filter(looksSpeakable);
@@ -936,7 +1262,7 @@
       for (const p of parts) pieces.push(p);
       first = false;
     }
-    return pieces;
+    return mergeShortSpeechTail(mergeShortSpeechPieces(pieces));
   }
 
   /** 确定性精简稿（不经过模型）：挑最像「结论 / 下一步」的前 1–2 句，超长截断 */
@@ -1059,7 +1385,8 @@
     "② 以回复结尾给出的结果 / 结论 / 下一步为主（做了什么、结果如何、需要用户做什么），" +
     "不复述开头的过程交代、不照抄第一句；③ 必须使用与原文相同的语言（原文是英文就用英文写）；" +
     "④ 口语、直白；绝对不出现代码、命令、变量名、文件路径、文件名、URL、表格、列表符号；" +
-    "⑤ 只输出这段摘要正文，不要解释、不要加引号、不要前缀。";
+    "⑤ 最后一句不要过短（别用「好的。」「就这样。」收尾），收不住就并进前一句；" +
+    "⑥ 只输出这段摘要正文，不要解释、不要加引号、不要前缀。";
 
   /** 流式摘要：模型吐到第一个完整句子就立刻交给 TTS（播放时模型还在写下一句） */
   function summarizeStream(raw, onSentence) {
@@ -1202,7 +1529,10 @@
       if (finished) return;
       finished = true;
       if (play.session !== session) return; /* 已经被新的播报打断 */
-      if (!play.spoken) sess.feed(fallback); /* 模型没给出可用句子 → 确定性精简稿 */
+      /* 模型没给出可用句子 → 确定性精简稿（fedChars 才是「已经喂过内容」，
+         模型句子要等 end() 才交给 worker，play.spoken 这时可能还是空的） */
+      if (!sess.fedChars) sess.feed(fallback);
+      sess.end(); /* 收尾：末段过短会并进前一段再合成 */
       const spoken = play.spoken;
       if (!spoken) return;
       told(spoken);
@@ -1287,14 +1617,6 @@
     if (window.api && api.onMossTtsProgress) api.onMossTtsProgress(onProgress);
     refresh();
     setInterval(watchQueue, 1500);
-    /* 播完清掉临时 wav（下次启动也会清一次，这里只做增量） */
-    setInterval(() => {
-      if (!play.audio && !play.queue.length && !play.pending && window.api && api.mossTtsClearOut) {
-        try {
-          api.mossTtsClearOut();
-        } catch (_) {}
-      }
-    }, 60000);
   }
 
   window.MTNodeTts = {

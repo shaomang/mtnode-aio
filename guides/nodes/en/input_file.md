@@ -1,14 +1,19 @@
 # File node (batch import)
 
-Used inside a **database node layer**: import arbitrary files (csv / txt / json / md / pdf …) into the database subfolder for the **Table** node to build tables.
-
-## How to use
-- Only available inside a database node layer (its inner right-click menu offers just “File node” and “Table”).
-- Drop files or pick several; files are **copied** into the database subfolder (default `db/`), the originals stay untouched.
-- Then build a table with a Table node, or click the database node’s header **⚙ Compile** to index them.
+Used inside a **database node layer**: import arbitrary files in bulk into the database subfolder for the **Table** node to build tables.
 
 ## Ports
-- **Input**: usually none
-- **Output**: file info (list / content) for the Table node or agent nodes
+- **In**: 1 data port + one control port at the end (content comes from the imported files; usually left unwired)
+- **Out**: 1 = file info (list / content) for the Table node or agent nodes
 
-See the manual: [Database nodes](#database-nodes).
+## Settings
+- No ⚙ settings window: adding and clearing live on the node body; compiling is the **⚙** button in the database node's header.
+
+## Usage
+- Expand the database node layer and right-click inside it → **File node** (the inner menu only offers "File node" and "Table").
+- Click **+ Add file** for a multi-select, or drop files onto the node; files are **copied** into the database subfolder (default `db/`) and the originals stay untouched.
+- Build a table with a Table node, or click the database node's header **⚙ Compile** to index them.
+
+## Notes
+- With no working directory / subfolder set on the layer, importing reports a failure.
+- **Clear all** only empties the node's list; files already copied into the subfolder are not deleted.

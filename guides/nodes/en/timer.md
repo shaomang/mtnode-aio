@@ -2,25 +2,19 @@
 
 ![diagram](img/timer.svg)
 
-At the scheduled **local time**, send a “you may start” pulse to whatever is wired on the output.
-
-## Turn it on / off
-
-The node’s **▶** does **not** run targets immediately. It **starts the alarm**:
-
-1. Pick the mode and time in the settings window opened by **⚙ Settings** in the node header (mode / scheduled time / interval / Cron all live there).
-2. Click **▶** to watch the clock until the next due time.
-3. Click **stop** to cancel waiting.
-
-The status line shows the next fire time. **Fire now** sends one pulse immediately without changing whether the alarm is on.
-
-## Modes
-- **Once**: fires once, then turns itself off
-- **Interval**: repeats every given days / hours / minutes
-- **Cron**: five-field expression; use Smart fill
+At the scheduled **system local time**, send one “you may start” pulse to the nodes wired on the output.
 
 ## Ports
-- **In**: none
-- **Out**: control (wire to nodes that should start on schedule)
+- **In**: none (control wires are rejected)
+- **Out**: control (wire to the nodes that should start on schedule)
 
-In a task control flow, an incoming pulse waits until the **next** scheduled time, then continues downstream.
+## Settings
+- In the settings window opened by **⚙ Settings** in the node header; **Mode**: once (scheduled time) / interval repeat / Cron expression (default interval repeat)
+- **Scheduled time (system local time)**: once mode only; fires once, then disarms itself
+- **Every (day / hour / min)**: interval repeat mode only, default every 1 hour
+- **Cron expression (minute hour day month weekday)**: Cron mode only, default `0 * * * *`; Smart fill writes one from a sentence
+
+## Usage
+- **▶** does not run targets now — it **arms** the alarm and watches the clock; **■** cancels the wait
+- The status line shows the next fire time; **Fire now** sends one pulse immediately without changing the alarm
+- To start a chain on schedule, wire the chain's first nodes to the timer's **output**

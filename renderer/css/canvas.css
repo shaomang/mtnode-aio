@@ -140,6 +140,63 @@
   white-space: nowrap
 }
 
+/* 工作目录本体（本轮需求）：一颗可点的目录按钮 —— 点它 = 在资源管理器中打开；
+   右侧只跟一颗 ⚙（输入路径 / 选文件夹 / 占用与清理都在设置窗里）。 */
+.wf-ws-chip {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 22vw;
+  padding: 3px 8px;
+  background: var(--code);
+  color: var(--ink);
+  border: 1px solid var(--bd2);
+  border-radius: 3px;
+  font: 11px var(--mono);
+  line-height: 16px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer
+}
+
+.wf-ws-chip:hover {
+  border-color: var(--cyan);
+  color: var(--cyan)
+}
+
+/* 未设置：虚线 + 次要色，和「已设置的目录」一眼分开 */
+.wf-ws-chip.empty {
+  border-style: dashed;
+  color: var(--muted)
+}
+
+.wf-ws-chip.empty:hover {
+  color: var(--cyan)
+}
+
+/* 顶栏唯一那颗 ⚙：icon 字号比文字按钮大一档，34px 方框里居中 */
+.wf-ws-box .ws-gear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  line-height: 1
+}
+
+/* 设置窗里的动作行（选文件夹 / 打开 / 占用与清理） */
+.wf-ws-dlg-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 8px
+}
+
+.wf-ws-dlg-hint {
+  font-size: 10.5px;
+  color: var(--muted)
+}
+
 .wf-ws-box input {
   width: 160px;
   max-width: 22vw;
@@ -2580,6 +2637,46 @@ body.theme-light .n-chip.n-chip-lt {
   user-select: text;
 }
 
+/* 泛用文件节点里放的是 PDF：body 整块就是一颗预览按钮（眼睛图标 + 文件名），点内部
+   直接开应用内翻页浮层。没有路径框、没有说明文字 —— PDF 原样保留、路径不在这里编辑。 */
+.wf-node .n-any-pdf {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  width: 100%;
+  flex: 1;
+  min-height: 54px;
+  margin: 0;
+  padding: 10px;
+  border-radius: 9px;
+  border: 1px dashed rgba(127, 224, 200, .5);
+  background: rgba(20, 31, 28, .6);
+  color: #7fe0c8;
+  cursor: pointer;
+  overflow: hidden;
+}
+
+.wf-node .n-any-pdf:hover {
+  border-style: solid;
+  background: rgba(86, 214, 184, .12);
+}
+
+.wf-node .n-any-pdf svg {
+  flex: none;
+  width: 18px;
+  height: 18px;
+}
+
+.wf-node .n-any-pdf-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 600;
+}
+
 .wf-node .n-any-note {
   flex: none;
   font-size: 10px;
@@ -4852,25 +4949,26 @@ body.theme-light .n-chip.n-chip-lt {
   background: rgba(56, 214, 255, .12);
 }
 
-/* PDF 生成节点头部的「打开」按钮：用 PDF 图标表示（红色纸 + PDF 字样，不带文字）
-   配色与预览区那枚大按钮同族（PDF 红），一眼能认出是「打开 PDF」 */
+/* PDF 生成节点头部的「打开」按钮：用**绿色放大镜**表示「看一眼预览」（不带文字）
+   配色与泛用文件节点那颗 PDF 卡片同族（绿），一眼能认出是「预览 PDF」 */
 .n-play.n-pdf-open {
   width: 24px;
-  color: var(--red, #e06c75);
-  border-color: rgba(224, 108, 117, .45);
-  background: rgba(224, 108, 117, .1);
+  color: var(--green, #5fd68a);
+  border-color: rgba(95, 214, 138, .45);
+  background: rgba(95, 214, 138, .1);
 }
 
 .n-play.n-pdf-open svg {
   width: 14px;
   height: 14px;
+  flex: none;
   display: block;
 }
 
 .n-play.n-pdf-open:hover {
-  color: #ff9aa2;
-  border-color: var(--red, #e06c75);
-  background: rgba(224, 108, 117, .22);
+  color: #8ef0b3;
+  border-color: var(--green, #5fd68a);
+  background: rgba(95, 214, 138, .22);
 }
 
 .n-backend-panel {
@@ -7193,16 +7291,16 @@ body.theme-light .n-chip.n-chip-lt {
 }
 
 .wf-node.browse .md.n-md-browse h1 {
-  font-size: 14px
+  font-size: 1.12em
 }
 
 .wf-node.browse .md.n-md-browse h2 {
-  font-size: 13px
+  font-size: 1.04em
 }
 
 .wf-node.browse .md.n-md-browse h3,
 .wf-node.browse .md.n-md-browse h4 {
-  font-size: 12.5px
+  font-size: 1em
 }
 
 .wf-node.browse .md.n-md-browse ul,
@@ -7239,7 +7337,7 @@ body.theme-light .n-chip.n-chip-lt {
 .wf-node.browse .md.n-md-browse pre code,
 .wf-node.browse .md.n-md-browse :not(pre)>code,
 .wf-node.browse .md.n-md-browse table {
-  font-size: 12.5px
+  font-size: 1em
 }
 
 .wf-node.browse .md.n-md-browse pre code {
@@ -8048,3 +8146,111 @@ body.theme-light .n-chip.n-chip-lt {
 .appnode-picker-name { font-size: 13px; }
 .appnode-picker-sub { font-size: 11px; color: #7f86ad; }
 .appnode-picker-empty { padding: 14px; font-size: 12.5px; color: #a9b0d8; line-height: 1.7; }
+
+/* ══ 文本节点（input_text）字号浮层 ══════════════════════════════════════════
+   节点头部那颗「A」（renderer/app-canvas.js 的 textNodeFontButton）开这块：
+   一根竖着拖的滑杆，按档吸附（往上拖 = 变大），最低一档就是默认 12.5px。
+   外壳口径与 bg-rm-pop 同一套；persistent —— 只走窗内 ✕ / 再点「A」收起，
+   点外部不关（见 AGENTS.md「协作约定」）。 落位与跟随由 app.js 的
+   nodePopAnchor / placeNodePop / repositionNodePops 负责（那里有 textFsPop 登记项）。 */
+.text-fs-pop {
+  display: none;
+  position: fixed;
+  z-index: 1500;
+  width: 132px;
+  padding: 0 0 8px;
+  background: linear-gradient(180deg, var(--panel2), var(--panel));
+  border: 2px solid var(--bd2);
+  border-radius: 4px;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, .55);
+}
+
+.text-fs-pop.on {
+  display: block
+}
+
+.text-fs-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--bd);
+}
+
+.text-fs-head b {
+  flex: 1;
+  font-size: 12px;
+  color: var(--cyan2);
+  letter-spacing: .5px;
+}
+
+.text-fs-val {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink);
+  text-align: right;
+  min-width: 46px;
+}
+
+.text-fs-body {
+  display: flex;
+  justify-content: center;
+  padding: 14px 0 12px;
+}
+
+.text-fs-rail {
+  position: relative;
+  width: 10px;
+  height: 132px;
+  border-radius: 6px;
+  border: 1px solid var(--bd2);
+  background: var(--code);
+  cursor: ns-resize;
+  outline: none;
+  touch-action: none;
+  user-select: none;
+}
+
+.text-fs-rail:focus-visible {
+  border-color: var(--cyan)
+}
+
+.text-fs-fill {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 0;
+  border-radius: 6px;
+  background: linear-gradient(180deg, var(--cyan2), var(--cyan));
+  opacity: .5;
+}
+
+.text-fs-thumb {
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  width: 18px;
+  height: 12px;
+  margin-bottom: -6px;
+  transform: translateX(-50%);
+  border-radius: 3px;
+  border: 1px solid rgba(0, 0, 0, .55);
+  background: var(--cyan2);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, .6);
+  pointer-events: none;
+}
+
+.text-fs-hint {
+  margin: 0 8px;
+  font-size: 10.5px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+/* 选过非默认档（或浮层开着）时「A」高亮，一眼能看出这颗节点被改过字号 */
+.n-play.n-font-size.on {
+  color: var(--cyan2);
+  border-color: var(--cyan);
+  background: rgba(56, 214, 255, .14);
+}

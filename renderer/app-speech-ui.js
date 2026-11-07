@@ -16,11 +16,11 @@
  * 本轮（改口径：与画布那枚话筒对齐 = 两种转录模式 + 落字 + AI 增强）：
  *   ① **三态模式**（照画布 renderer/app-voice.js 的 MODE_OFF / MODE_LIVE / MODE_PTT 同源）：
  *      **持续转录**（点一下一直听，按「说完一句的停顿」逐句交出去识别）与**按键转录**
- *      （按住 **F1** 说话、松开**立刻**交这一句，不等静音门 —— 语音指令要低延迟）。
+ *      （按住 **F3** 说话、松开**立刻**交这一句，不等静音门 —— 语音指令要低延迟）。
  *      条上话筒 / 左下角浮动话筒点一下 = 三态循环（关闭 → 持续转录 → 按键转录 → 关闭）；
  *      **F2** 是持续转录的总开关（关闭 ↔ 持续转录；在按键转录下按 F2 回关闭）—— 与旧版
  *      「F2 呼出并开始听写」的语义一致，老应用与老文档不受影响。Esc / 「收起」都停止。
- *      判键用 **ev.code === "F1"**（无字符、不污染输入框，与键盘布局无关）；keydown 起录
+ *      判键用 **ev.code === "F3"**（无字符、不污染输入框，与键盘布局无关）；keydown 起录
  *      （ev.repeat 只吞键、不重复起停），keyup 立即把这一句交出去；带 Ctrl/Alt/Meta 的组合键放行。
  *      开始采集前留一点**前卷**（按住前那 300ms），首字不会被切掉。
  *      句长不封顶，只在撞到后端单次请求的硬顶（约 131 秒）时切一刀（那不是句末，是硬顶）。
@@ -43,12 +43,12 @@
  *      原始识别**（绝不吞话），状态行说清原因；结果小窗保留原文可查。开关状态按应用持久化
  *      （appHost.storageSet("dictateEnhance")），桥缺席退内存态。默认**关**（不替用户花模型调用）。
  *   ④ **左下角浮动话筒**：常驻在左下角（宿主自建的角落区 #mtnode-dictate-zone）；按键转录态下
- *      鼠标**按住它就是按住说话**（松开即交），给不方便按 F1 的场景留一条路。正在听时它变成
+ *      鼠标**按住它就是按住说话**（松开即交），给不方便按 F3 的场景留一条路。正在听时它变成
  *      红点脉冲的「录音中」状态。位置纪律：角落区是**一列**（浮动话筒在下、作者标签在上），
  *      听写条若落在宿主自建的固定底栏里会左让一块给这列，互不压盖。
  *
  * 界面（与画布状态栏那枚话筒同族）：
- *   🎤 听写 / ■ 持续转录 / F1 按键转录   点一下按三态循环 → 逐句转写 → 结果小窗累加
+ *   🎤 听写 / ■ 持续转录 / F3 按键转录   点一下按三态循环 → 逐句转写 → 结果小窗累加
  *   ✨ AI 增强                          默认 LLM + 无思考，按简短上下文逐句润色（可关）
  *   结果小窗：贴着听写条上方，全文 + 一键复制 + 「原文 / 增强」切换；同时把定稿写进当时
  *             焦点所在的输入框（可关，见上）。应用也可以取 apSpeechLast()（最近一次识别到的
@@ -100,19 +100,19 @@
   var READY_TRIES = 8;
   var READY_GAP_MS = 1500;
   /** 快捷键：F2 是**持续转录**的总开关（关闭 ↔ 持续转录；按键转录态下按它回关闭）。
-   *  无字符、不会被录进输入框。老引擎只给 keyCode：**113 才是 F2**（旧版写 59 = F1，是错的：
-   *  老引擎上按 F1 会误触听写，而 F1 现在是按键转录键）。另有 Ctrl+Shift+D 作为**备选**：
+   *  无字符、不会被录进输入框。老引擎只给 keyCode：**113 才是 F2**（旧版写 59 = F3，是错的：
+   *  老引擎上按 F3 会误触听写，而 F3 现在是按键转录键）。另有 Ctrl+Shift+D 作为**备选**：
    *  应用自己也要用 F2 时，用户在它页面上仍有一条不会打架的入口。 */
   var HOTKEY_KEY = "F2";
   var HOTKEY_CODE = "F2";
   var HOTKEY_KEYCODE = 113;
   /** 按键转录（PTT）：与画布那枚话筒同一枚键、同一判据（按 ev.code 判，与输入法 / 布局无关）。
-   *  F1 无字符 —— 不需要字符推导，也不存在「先插进输入框再吞」的竞态。 */
-  var PTT_KEY = "F1";
+   *  F3 无字符 —— 不需要字符推导，也不存在「先插进输入框再吞」的竞态。 */
+  var PTT_KEY = "F3";
   /** 三态模式（与画布 renderer/app-voice.js 同源口径） */
   var MODE_OFF = "off"; /* 关闭 */
   var MODE_LIVE = "live"; /* 持续转录 */
-  var MODE_PTT = "ptt"; /* 按键转录（按住 F1） */
+  var MODE_PTT = "ptt"; /* 按键转录（按住 F3） */
   var MODE_CYCLE = [MODE_OFF, MODE_LIVE, MODE_PTT];
   /** 按键前卷（帧数）：按住键之前那点音频也接上，首字不被切掉（4 帧 ≈ 240ms） */
   var PRE_ROLL_FRAMES = 4;
@@ -135,7 +135,7 @@
   var preparing = false; /* 模型准备 / 下载在跑（与 busy 分开：听不受它影响） */
   var listening = false; /* 是否正在采集（持续转录与按键转录都握着话筒；由 mode 决定交接口径） */
   var mode = MODE_OFF; /* 三态模式（MODE_OFF / MODE_LIVE / MODE_PTT） */
-  var pttOn = false; /* 按键转录：F1（或浮动话筒鼠标）正按着 */
+  var pttOn = false; /* 按键转录：F3（或浮动话筒鼠标）正按着 */
   var enhOn = false; /* AI 增强开关（默认关；按应用持久化） */
   var enhApplied = false; /* 本段里是否至少增强成功过一次（决定「原文 / 增强」切换显不显示） */
   var showRaw = false; /* 结果小窗当前看的是原文还是增强文本 */
@@ -239,7 +239,7 @@
       ".mtn-dict-zone-btn:hover:not(:disabled){opacity:1;border-color:" + p.accent + ";color:" + p.accent + "}" +
       ".mtn-dict-zone-btn:disabled{opacity:.45;cursor:default}" +
       ".mtn-dict-zone-btn.is-rec{opacity:1;border-color:" + p.err + ";color:" + p.err + ";animation:mtn-dict-pulse 1.2s ease-in-out infinite}" +
-      /* 按键转录态：琥珀 + 更小的字号（"F1" 两个字要塞进 34px 的圆钮） */
+      /* 按键转录态：琥珀 + 更小的字号（"F3" 两个字要塞进 34px 的圆钮） */
       ".mtn-dict-zone-btn.is-ptt{opacity:.95;border-color:" + p.warn + ";color:" + p.warn + ";font-size:11px;font-weight:600}" +
       ".mtn-dict-zone-btn.is-ptt.is-rec{opacity:1;animation:mtn-dict-pulse 1.2s ease-in-out infinite}" +
       /* 录音中的小圆点：按钮保住话筒图标，只多一枚跳动红点（比整颗变方块更好认） */
@@ -503,7 +503,7 @@
     var ptt = mode === MODE_PTT;
     /* 正在采集的视觉锚点：持续转录握着话筒就算在录；按键转录只在**按着**时才算在录 */
     var rec = live || (ptt && pttOn);
-    var label = live ? t("持续转录", "Live") : ptt ? t("按键转录 F1", "Push-to-talk F1") : t("听写", "Dictate");
+    var label = live ? t("持续转录", "Live") : ptt ? t("按键转录 F3", "Push-to-talk F3") : t("听写", "Dictate");
     if (refs.mic) {
       refs.mic.classList.toggle("is-rec", rec);
       refs.mic.classList.toggle("is-ptt", ptt && !rec);
@@ -516,9 +516,9 @@
     if (zoneBtn) {
       zoneBtn.classList.toggle("is-rec", rec);
       zoneBtn.classList.toggle("is-ptt", ptt);
-      /* 图标按态换（🎤 关闭 / ■ 持续转录 / F1 按键转录）。注意顺序：textContent 会清掉子节点，
+      /* 图标按态换（🎤 关闭 / ■ 持续转录 / F3 按键转录）。注意顺序：textContent 会清掉子节点，
          所以先换字、再由 recordingDot 把红点挂回来（先挂点后换字的话点会被清掉）。 */
-      var glyph = ptt ? "F1" : live ? "■" : "🎤";
+      var glyph = ptt ? "F3" : live ? "■" : "🎤";
       if (zoneBtn.getAttribute("data-mtnode-glyph") !== glyph) {
         zoneBtn.textContent = glyph;
         zoneBtn.setAttribute("data-mtnode-glyph", glyph);
@@ -527,7 +527,7 @@
       zoneBtn.disabled = busy && !listening;
       zoneBtn.title =
         (ptt
-          ? t("按键转录：按住 F1 说话（也可以按住这枚话筒说话），松开就识别", "Push-to-talk — hold F1 (or hold this mic) and release to recognize")
+          ? t("按键转录：按住 F3 说话（也可以按住这枚话筒说话），松开就识别", "Push-to-talk — hold F3 (or hold this mic) and release to recognize")
           : live
             ? t("持续转录中：点一下切到按键转录（再点一下关闭）", "Live transcription — click for push-to-talk (click again to stop)")
             : t("语音听写：点一下开启持续转录（快捷键 F2），再点切按键转录", "Voice dictation — click for live mode (F2), click again for push-to-talk")) +
@@ -1188,7 +1188,7 @@
    *     音频喂进识别好几遍；
    *   · 持续转录：起音看**最近若干帧的中位数**（单帧噪声不算起音）；句末看**连续安静累计**
    *     （低于「噪声底 + 动态范围 ×12%」）够 SILENCE_MS —— 一句说完就交，用户不用点第二次；
-   *   · 按键转录：**按住 F1 起录、松开立刻把这一句交出去**（不等静音门 —— 语音指令要低延迟）。
+   *   · 按键转录：**按住 F3 起录、松开立刻把这一句交出去**（不等静音门 —— 语音指令要低延迟）。
    *     按键前留着 4 帧前卷（≈240ms），首字不被切；长按到硬顶才切一刀。这一态里麦克风
    *     保持开启（否则每次按键都要重新 getUserMedia，几百毫秒的起录延迟会把首字吃掉）。
    *   · 硬顶：某一句撑到 HARD_CAP_MS（后端 4 MiB ≈ 131 秒）还在说，就在尾部那段安静处切一刀
@@ -1379,7 +1379,7 @@
           var k = lvlWin.length - 1;
           var stable = medianLevel(lvlWin, k, 3) >= thr;
 
-          /* ⓪ 按键转录且**没按着**：只滚动保留前卷，不进这一句（按 F1 之前的音频不算数） */
+          /* ⓪ 按键转录且**没按着**：只滚动保留前卷，不进这一句（按 F3 之前的音频不算数） */
           if (mode === MODE_PTT && !pttOn) {
             preRoll.push(f32);
             while (preRoll.length > PRE_ROLL_FRAMES) preRoll.shift();
@@ -1545,11 +1545,11 @@
   /** 现在这一态该说哪句话（状态行 / 按钮 tooltip 共用） */
   function modeHint(m) {
     if (m === MODE_LIVE) return t("持续转录：说完一句自动识别", "Live: each sentence is recognized as you pause");
-    if (m === MODE_PTT) return t("按键转录：按住 F1 说话，松开立刻识别", "Push-to-talk: hold F1 and release to recognize");
+    if (m === MODE_PTT) return t("按键转录：按住 F3 说话，松开立刻识别", "Push-to-talk: hold F3 and release to recognize");
     return t("语音输入已关闭", "Voice input is off");
   }
   function modeBanner() {
-    if (mode === MODE_PTT) return t("按键转录：按住 F1 说话（松开就识别；也可以按住左下角那枚话筒）", "Push-to-talk: hold F1 and release to recognize (or hold the bottom-left mic)");
+    if (mode === MODE_PTT) return t("按键转录：按住 F3 说话（松开就识别；也可以按住左下角那枚话筒）", "Push-to-talk: hold F3 and release to recognize (or hold the bottom-left mic)");
     return t("正在听…（说完一句自动识别；再点话筒切到按键转录 / 关闭）", "Listening… (each sentence is recognized; click the mic again for push-to-talk / off)");
   }
   /** 三态切换（照画布那枚话筒的口径）：关 → 持续转录 → 按键转录 → 关 */
@@ -1605,7 +1605,7 @@
       } catch (_) {}
     }
     paintMic();
-    say(t("正在录这一句（松开 F1 立刻识别）…", "Recording this sentence — release F1 to recognize…"), "");
+    say(t("正在录这一句（松开 F3 立刻识别）…", "Recording this sentence — release F3 to recognize…"), "");
     return true;
   }
   /** 松开 = 手动定稿：把这一句立刻交出去识别（**不等静音门** —— 语音指令要低延迟） */
@@ -1636,7 +1636,7 @@
     var k = String(ev.key || "");
     var c = String(ev.code || "");
     if (k === HOTKEY_KEY || c === HOTKEY_CODE) return true;
-    /* 老引擎只给 keyCode：113 才是 F2（59 是 F1 —— 旧值会让老引擎上按 F1 误触听写） */
+    /* 老引擎只给 keyCode：113 才是 F2（59 是 F3 —— 旧值会让老引擎上按 F3 误触听写） */
     return Number(ev.keyCode) === HOTKEY_KEYCODE && !k;
   }
 
@@ -1956,7 +1956,7 @@
     root.id = "mtnode-dictate";
     root.innerHTML =
       '<button type="button" class="mtn-dict-btn" id="mtn-dict-mic" data-act="mic" aria-pressed="false" title="' +
-      esc(t("点一下按「关闭 → 持续转录 → 按键转录」循环：持续转录说完一句自动识别；按键转录按住 F1 说话、松开即识别。窗口内快捷键 F2 是持续转录的开关（备选 Ctrl+Shift+D），Esc 停止", "Click to cycle off → live → push-to-talk. Live recognizes each sentence as you pause; push-to-talk records while you hold F1 and recognizes on release. Window hotkey F2 toggles live (or Ctrl+Shift+D); Esc stops")) +
+      esc(t("点一下按「关闭 → 持续转录 → 按键转录」循环：持续转录说完一句自动识别；按键转录按住 F3 说话、松开即识别。窗口内快捷键 F2 是持续转录的开关（备选 Ctrl+Shift+D），Esc 停止", "Click to cycle off → live → push-to-talk. Live recognizes each sentence as you pause; push-to-talk records while you hold F3 and recognizes on release. Window hotkey F2 toggles live (or Ctrl+Shift+D); Esc stops")) +
       '">🎤<span>' +
       esc(t("听写", "Dictate")) +
       '</span></button>' +
@@ -2066,7 +2066,7 @@
      按一下就把它请出来并开始听；正在听（任何一态）就停。只吞这一下按键
      （preventDefault + 捕获阶段 stopPropagation），页面自己绑的 F2 不再收到这一下；
      F2 无字符，输入框里按它也不会污染输入。
-     按键转录态另加一条：**按住 F1 说话**（keydown 起录 / keyup 立刻交这一句），判键走 ev.code。 */
+     按键转录态另加一条：**按住 F3 说话**（keydown 起录 / keyup 立刻交这一句），判键走 ev.code。 */
   function hookHotkey() {
     try {
       window.addEventListener(
@@ -2090,7 +2090,7 @@
         true, /* 捕获阶段：先于页面自己的按键处理，吞掉后不再冒泡 */
       );
     } catch (_) {}
-    /* 松开 F1 = 立刻把这一句交出去识别（不等静音门） */
+    /* 松开 F3 = 立刻把这一句交出去识别（不等静音门） */
     try {
       window.addEventListener(
         "keyup",
@@ -2220,7 +2220,7 @@
     window.apSpeechCycle = function () {
       return cycleMode();
     };
-    /* 按键转录的鼠标路（浮动话筒按住）：起 / 交，给不方便按 F1 的场景用 */
+    /* 按键转录的鼠标路（浮动话筒按住）：起 / 交，给不方便按 F3 的场景用 */
     window.apSpeechPtt = function (on) {
       if (on === false) return stopPtt("api");
       return startPtt();
