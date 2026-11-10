@@ -340,10 +340,12 @@ function createBranchReplace(deps) {
       d.rmDirRecursive(oldDir);
     } catch {}
 
-    /* ⑤ 铺新画布：物化好的那份（或兜底的空白画布）落盘 + 写 <AppName>.mtnodes 镜像 */
+    /* ⑤ 铺新画布：物化好的那份（或兜底的空白画布）落盘 + 写 <AppName>.mtnodes 镜像。
+       落盘已改异步（主进程那条画布落盘队列），这里 await 完再判 ok —— 否则拿到的永远是
+       一个 pending 的 Promise，回执里会谎报成功。 */
     let canvas = null;
     if (fallbackCanvas) {
-      const r = d.writeCanvas(id, fallbackCanvas);
+      const r = await d.writeCanvas(id, fallbackCanvas);
       canvas = {
         ok: !!(r && r.ok !== false),
         kind: "empty",
@@ -352,7 +354,7 @@ function createBranchReplace(deps) {
         warnings: prepared.warnings || [],
       };
     } else {
-      const r = d.writeCanvas(id, prepared.workflow);
+      const r = await d.writeCanvas(id, prepared.workflow);
       canvas = {
         ok: !!(r && r.ok !== false),
         kind: "theirs",

@@ -256,6 +256,15 @@ const LAZY_ALLOWED_FILES = new Set([
   'node_modules/@earendil-works/pi-ai/dist/api/mistral-conversations.js',
   // bedrock-converse-stream.lazy.js 的 import() 目标：只有挂载 bedrock 能力才会走到
   'node_modules/@earendil-works/pi-ai/dist/api/bedrock-converse-stream.js',
+  /* (a) cloud-native-llm 能力组：pi-ai 的**原生协议适配器实现**（providers/*.js 只 import 各自的
+     `X.lazy.js` 壳，壳里是 `lazyStream(() => import('./X.js'))`，实现要等真选到该 provider 才求值）。
+     anthropic-messages.js 静态 import @anthropic-ai/sdk；google-generative-ai.js / google-vertex.js
+     静态 import @google/genai，google-shared.js 被这两者引用、自己也 import @google/genai。
+     守卫⑤ 会真 import providers/all（只碰 .lazy.js 壳）与 openai-completions.lazy，验证这条链仍起得来。 */
+  'node_modules/@earendil-works/pi-ai/dist/api/anthropic-messages.js',
+  'node_modules/@earendil-works/pi-ai/dist/api/google-generative-ai.js',
+  'node_modules/@earendil-works/pi-ai/dist/api/google-vertex.js',
+  'node_modules/@earendil-works/pi-ai/dist/api/google-shared.js',
   /* (b) cordis.yml 第 104–107 行把 otel / session-telemetry-otel 两行都标了 `disabled: true`
      （理由见 cordis.yml 第 97–103 行：这两行在本机运行时导入失败，网关另注入
      DSH_TELEMETRY_DISABLED=1），行不执行 → @deepseek-ai/dsh-otel 的模块体不被求值，

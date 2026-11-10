@@ -120,7 +120,6 @@ function ensureDefaultProviders() {
         baseUrl: "https://api.deepseek.com",
         apiKey: "",
         models: DEEPSEEK_DEFAULT_MODELS.slice(),
-        vision: true,
       });
     }
     S.config.providers = provs;

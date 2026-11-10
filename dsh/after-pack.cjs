@@ -1,11 +1,17 @@
-// electron-builder afterPack hook: copy the dsh gateway (including its
-// node_modules tree) into resources/dsh/gateway.
+// electron-builder afterPack hook: pack the dsh gateway (including its
+// node_modules tree) into ONE archive file under resources/dsh, which the app
+// unpacks into its data directory on first start (see dsh-node.js
+// ensureGatewayRoot)。
 //
 // electron-builder applies .gitignore-based pruning to extraResources sources,
 // which always drops dsh/gateway/node_modules (it must stay git-ignored).
-// A manual copy after packing sidesteps that: plain Node child processes also
+// A manual pass after packing sidesteps that: plain Node child processes also
 // cannot read asar, so the gateway has to live on the real filesystem anyway.
 // See dsh/DESIGN.md "打包(Windows)".
+//
+// 为什么打成单个归档而不是直接摊成 1.6 万个文件：安装阶段每个文件都要过一次安全软件
+// 实时扫描，文件数才是安装耗时的第一杠杆。归档格式与运行期解包见
+// dsh/gateway-archive.cjs（格式只有那一份定义，写与读共用）。
 
 'use strict'
 
@@ -15,6 +21,7 @@ const {
   ensureAppUpdateYml,
 } = require('../scripts/ensure-app-update-yml.cjs')
 const RULES = require('../scripts/app-deps-rules.cjs')
+const ARCHIVE = require('./gateway-archive.cjs')
 
 /* 打包剪枝的唯一依据是两份体检清单，判定与统计都走 scripts/app-deps-rules.cjs
    （体检 / 镜像复验 / 打包三处共用同一套判断，避免「分析说能省、打包实际没省」）：
@@ -64,9 +71,14 @@ exports.default = async function afterPack(context) {
   console.log(`[after-pack] wrote ${updateYml}`)
 
   const src = path.join(__dirname, 'gateway')
-  const dst = path.join(context.appOutDir, 'resources', 'dsh', 'gateway')
-  fs.rmSync(dst, { recursive: true, force: true })
-  fs.mkdirSync(path.dirname(dst), { recursive: true })
+  /* 产出目录 = resources/dsh：一个归档 + 一个旁挂索引（共 2 个文件）。
+     老布局 resources/dsh/gateway/（1.6 万个散文件）就地清掉，免得新旧两份同时进包。 */
+  const dst = path.join(context.appOutDir, 'resources', 'dsh')
+  const archivePath = path.join(dst, ARCHIVE.ARCHIVE_NAME)
+  fs.rmSync(path.join(dst, 'gateway'), { recursive: true, force: true })
+  fs.rmSync(archivePath, { force: true })
+  fs.rmSync(path.join(dst, ARCHIVE.SIDECAR_NAME), { force: true })
+  fs.mkdirSync(dst, { recursive: true })
 
   const excluder = RULES.loadExcluder({
     extraPackages: EXTRA_EXCLUDE_PACKAGES,
@@ -99,7 +111,7 @@ exports.default = async function afterPack(context) {
      这里显式报错，把「静默产出坏安装包」变成一眼可见的打包失败；正常布局由
      dsh/gateway/pnpm-workspace.yaml 的 `nodeLinker: hoisted`（同值也在 .npmrc 里，
      供 pnpm <11 读）保证 —— npm 式真实目录，顶层与包内部都没有目录链接。
-     指向**文件**的链接不算：copyFileSync 会按真实内容复制，.bin 里的命令壳就是这么进来的。 */
+     指向**文件**的链接不算：按真实内容读进归档就行，.bin 里的命令壳就是这么进来的。 */
   const assertNoDirLink = (abs, relPath) => {
     let st
     try { st = fs.statSync(abs) } catch (err) {
@@ -108,7 +120,7 @@ exports.default = async function afterPack(context) {
     if (!st.isDirectory()) return
     throw new Error(
       `[after-pack] 网关依赖树里出现指向目录的符号链接/junction：${relPath}\n`
-      + `  pnpm 若是隔离布局（isolated），打包会把 resources/dsh/gateway 复制到一半，\n`
+      + `  pnpm 若是隔离布局（isolated），打包会把网关归档写到一半就断，\n`
       + `  产出的安装包启动即 "dsh 网关已退出"(Cannot find package …)。\n`
       + `  修法：dsh/gateway 已固定 nodeLinker: hoisted（pnpm-workspace.yaml，pnpm<11 读 .npmrc），执行\n`
       + `    cd dsh/gateway && pnpm install\n`
@@ -116,7 +128,35 @@ exports.default = async function afterPack(context) {
     )
   }
 
-  // 手动遍历复制：electron-builder 的 cpSync filter 拿不到「整目录被剪」的体积，
+  /* 归档写入器：剪枝判定照旧（决定「入不入档」），只是落地方式从「逐文件复制」变成
+     「按原样串进一个归档」。运行期解回真实目录树，对 Node 完全等价（见 gateway-archive.cjs）。 */
+  const writer = ARCHIVE.createArchiveWriter(archivePath)
+
+  /* 安装包里的 cordis.yml 只带**发行组合**（marker 之前那截）：marker 之后是运行期快照，
+     记的是某一次运行的 MCP 端口 / 令牌 / 别的机器上的 uvx 路径。用开发机的快照出厂，
+     用户装上就是一个连不上的 MCP 服务器（2026-11-01 实测：两行残留 → 应用内 Agent 的
+     会话里 0 个 MCP 工具）。网关启动时本来就按用户自己的 $DSH_HOME/cordis-user.yml
+     重写这一段，所以这里清空既不改行为，又能挡住「开发机状态被冻进安装包」。
+     归档化之后没有「先拷出来再改」的机会，改写就发生在入档那一刻。 */
+  const USER_MARKER = '# ── user plugins (managed from MTNode settings) ──'
+  let cordisStripped = false
+  const addCordis = (relPath, abs) => {
+    const text = fs.readFileSync(abs, 'utf8')
+    const idx = text.indexOf(USER_MARKER)
+    if (idx < 0) {
+      writer.addFile(relPath, abs)
+      return
+    }
+    const stripped = text.slice(0, idx) + USER_MARKER + '\n'
+    if (stripped === text) {
+      writer.addFile(relPath, abs)
+      return
+    }
+    writer.addBuffer(relPath, stripped)
+    cordisStripped = true
+  }
+
+  // 手动遍历入档：electron-builder 的 cpSync filter 拿不到「整目录被剪」的体积，
   // 自己走一遍才能把「每组省了多少 MB」如实报出来。
   const walk = (from, rel) => {
     let entries
@@ -140,8 +180,7 @@ exports.default = async function afterPack(context) {
           drop(decision.bucket, dirBytes(abs), !!decision.atPkgRoot)
           continue
         }
-        const toDir = path.join(dst, ...relPath.split('/'))
-        fs.mkdirSync(toDir, { recursive: true })
+        writer.addDir(relPath)
         copied.dirs++
         walk(abs, relPath)
         continue
@@ -152,36 +191,22 @@ exports.default = async function afterPack(context) {
         drop(decision.bucket, size, false)
         continue
       }
-      const toFile = path.join(dst, ...relPath.split('/'))
-      fs.mkdirSync(path.dirname(toFile), { recursive: true })
-      fs.copyFileSync(abs, toFile)
+      if (relPath === 'cordis.yml') addCordis(relPath, abs)
+      else writer.addFile(relPath, abs)
       copied.files++
-      try { copied.bytes += fs.statSync(toFile).size } catch { /* 忽略 */ }
+      try { copied.bytes += fs.statSync(abs).size } catch { /* 忽略 */ }
     }
   }
-  walk(src, '')
-
-  /* 安装包里的 cordis.yml 只带**发行组合**（marker 之前那截）：marker 之后是运行期快照，
-     记的是某一次运行的 MCP 端口 / 令牌 / 别的机器上的 uvx 路径。用开发机的快照出厂，
-     用户装上就是一个连不上的 MCP 服务器（2026-11-01 实测：两行残留 → 应用内 Agent 的
-     会话里 0 个 MCP 工具）。网关启动时本来就按用户自己的 $DSH_HOME/cordis-user.yml
-     重写这一段，所以这里清空既不改行为，又能挡住「开发机状态被冻进安装包」。 */
-  const USER_MARKER = '# ── user plugins (managed from MTNode settings) ──'
+  let archived = null
   try {
-    const cordis = path.join(dst, 'cordis.yml')
-    const text = fs.readFileSync(cordis, 'utf8')
-    const idx = text.indexOf(USER_MARKER)
-    if (idx >= 0) {
-      const shipped = text.slice(0, idx)
-      const stripped = shipped + USER_MARKER + '\n'
-      if (stripped !== text) {
-        fs.writeFileSync(cordis, stripped, 'utf8')
-        console.log('[after-pack] cordis.yml 用户段已清空（运行期快照不随包出厂）')
-      }
-    }
+    walk(src, '')
+    archived = writer.finish()
+    ARCHIVE.writeSidecar(dst, archived)
   } catch (err) {
-    throw new Error(`[after-pack] 清空 cordis.yml 用户段失败：${err.message}`)
+    writer.abort()
+    throw new Error(`[after-pack] 网关归档写入失败：${(err && err.message) || err}`)
   }
+  if (cordisStripped) console.log('[after-pack] cordis.yml 用户段已清空（运行期快照不随包出厂）')
 
   const droppedBytes = [...dropped.values()].reduce((s, v) => s + v.bytes, 0)
 
@@ -210,9 +235,11 @@ exports.default = async function afterPack(context) {
   }
 
   console.log(
-    `[after-pack] dsh gateway → ${dst}\n`
-    + `[after-pack]   copied ${copied.files} files / ${MB(copied.bytes)}MB `
-    + `(${copied.dirs} dirs), pruned ${MB(droppedBytes)}MB`
+    `[after-pack] dsh gateway → ${archivePath}\n`
+    + `[after-pack]   archived ${copied.files} files / ${MB(archived.bytes)}MB`
+    + ` → 1 个归档（${MB(archived.archiveBytes)}MB）+ 1 个索引`
+    + ` · 安装阶段写盘文件数 ${copied.files} → 2`
+    + ` · pruned ${MB(droppedBytes)}MB · build ${archived.buildId}`
     + `\n` + lines.join('\n'),
   )
 }

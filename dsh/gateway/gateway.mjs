@@ -4950,14 +4950,21 @@ function mcpAdd(cfg) {
 
 function mcpRemove(serverName) {
   const { shipped, userPart, marker } = readRows()
-  const blocks = userPart.split(/\n- id: /)
+  /* 两处坑（都会把 cordis.yml 的逐行结构写坏，见 test/smoke-mcp-transport-enum.js 的 [4]）：
+     ① 切块用的 \n 不能被吃掉 —— split(/\n- id: /) + join('') 每卸载一次就把 marker 与
+        下一行粘成一行；
+     ② 切块前要先剥掉 marker —— kept[0] 本身就带着 marker，再前置一次就多出一个，
+        反复卸载会累积成一行几十个 marker。 */
+  const rest = userPart.startsWith(marker) ? userPart.slice(marker.length) : userPart
+  const blocks = rest.split(/\n- id: /)
   const kept = blocks
     .filter((block) => {
       if (block.includes(MCP_PKG) && block.includes(`serverName: ${yamlStr(serverName)}`)) return false
       return true
     })
     .map((block, i) => (i === 0 ? block : '- id: ' + block))
-  writeFileSync(CORDIS_PATH, shipped + marker + kept.join(''), 'utf8')
+  const next = shipped + marker + kept.join('\n')
+  writeFileSync(CORDIS_PATH, next.endsWith('\n') ? next : next + '\n', 'utf8')
   persistUserSection()
 }
 

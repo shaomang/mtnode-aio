@@ -1,13 +1,13 @@
-/* 全局语音输入（状态栏最左那枚话筒 + 跟随光标的转写浮窗 + 右键快捷菜单）——
+/* 全局语音输入（左下角状态栏第四颗话筒 + 跟随光标的转写浮窗 + 右键快捷菜单）——
    实现见 renderer/app-voice.js；本文件只放它自己的皮（前缀 .gv-*）与状态栏按钮 .sb-voice。
 
    为什么要单独一份：这不是节点样式也不是会话面板样式，而是**状态栏级**的一块 UI
    （按钮 + 浮窗 + 菜单三者同属一件功能），放 layout/dsh 里都会与既有分区打架。 */
 
-/* ── 状态栏按钮（紧挨 #btnCanvasShot 左侧）────────────────────────────── */
+/* ── 状态栏按钮（左下角第四颗：语音播报右邻、AI 增强左邻）──────────────── */
 .statusbar .sb-voice {
   flex: none;
-  order: -3; /* 永远排在状态栏最左（AI 增强 / TTS / 画布截图都在它右边） */
+  order: -2; /* 语音播报（-3）右侧；右边是随它显隐的 AI 增强（-1），再往右是画布截图（0） */
   width: 22px;
   height: 22px;
   padding: 0;
@@ -129,16 +129,24 @@
   }
 }
 
-/* ── AI 增强开关（#btnVoiceEnhance：话筒**右侧**那枚 ✨）────────────────────
+/* ── AI 增强开关（#btnVoiceEnhance：语音输入**右侧**那枚 ✨）─────────────────
    与话筒同一套皮（.sb-voice），只多两件事：order 钉在话筒后面、自己的强调色。
-   关着时是一枚很淡的灰 ✨（不抢戏）；打开后紫边紫底（与语音三态的青 / 琥珀区分开）。 */
+   关着时是一枚很淡的灰 ✨（不抢戏）；打开后紫边紫底（与语音三态的青 / 琥珀区分开）。
+   **只在语音输入开启时露面**（app-voice.js 的 paintEnhance 挂 hidden）：语音关着时整颗
+   从状态栏消失、不占位，也没有快捷键 —— 开关仍可从「设置 · 语音输入」与右键菜单进。 */
 .statusbar .sb-enh {
-  order: -2; /* 与 .sb-voice 的 -3 配对：紧挨在话筒右边；后面是 TTS(-1) 与画布截图(0) */
+  order: -1; /* 语音输入（-2）右邻；再往右是画布截图（0） */
   font-family: var(--sans, system-ui, sans-serif);
   font-size: 12px;
   line-height: 1;
   /* 关着：灰、半透明 —— 一眼看出「有这枚开关，但现在没开」 */
   opacity: .55
+}
+
+/* hidden 必须真隐藏：上面的 .statusbar .sb-voice 把 display 改成了 inline-flex，
+   浏览器默认的 [hidden]{display:none} 压不住它，这里补一条更高优先级的选择器。 */
+.statusbar .sb-voice[hidden] {
+  display: none !important
 }
 
 .statusbar .sb-enh:hover {

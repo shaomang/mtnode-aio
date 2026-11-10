@@ -1,4 +1,4 @@
-﻿/* ===== Pele · 轻量图 DSL 渲染器（Mermaid 替代）=====
+/* ===== Pele · 轻量图 DSL 渲染器（Mermaid 替代）=====
  *
  * 为什么自己写：本项目是「零依赖」口径（见 AGENTS 的打包白名单与安装包体积口径），
  * 不引 mermaid.js（约 1MB+ 且自带一套布局与主题）。Pele 只做研究笔记真正用到的三类图：
@@ -88,6 +88,20 @@
     ["{", "}"],
     [">", "]"],
   ];
+  /* 标签清理：写进 SVG 的那一行字，先按「看得见的正文」归一。
+     ① mermaid 的 `A["文本"]` 是带引号的写法，引号是包裹符不是正文 ——
+        过去原样留下，方框里就显示成 `"Transformer"`（外面一对引号）；
+     ② 研究笔记里术语按项目口径写成 `[[术语]]` / `[[术语|显示名]]`，但 SVG 里没有可点的双链，
+        留着方括号就是没渲染完的源码 —— 只留显示名（图注 / 正文里那条双链照样能点）。 */
+  function cleanLabel(s) {
+    let v = String(s == null ? "" : s).trim();
+    const q = /^"([\s\S]*)"$/.exec(v) || /^'([\s\S]*)'$/.exec(v);
+    if (q) v = q[1].trim();
+    v = v.replace(/\[\[([^[\]|\n]+)(?:\|([^[\]\n]+))?\]\]/g, (all, target, shown) =>
+      String(shown || target).trim(),
+    );
+    return v.trim();
+  }
   function parseNodeToken(tok) {
     const s = String(tok == null ? "" : tok).trim();
     const idm = /^([A-Za-z0-9_\u4e00-\u9fa5.-]+)\s*/.exec(s);
@@ -115,7 +129,7 @@
     label = label.trim();
     return {
       id,
-      label: label || id,
+      label: cleanLabel(label) || id,
       explicit: true,
       shape: shapeOfToken(open, inner.endsWith(close) ? close : ""),
     };
@@ -178,7 +192,7 @@
         let segClean = seg;
         const lm = /^\s*\|([^|]*)\|\s*([\s\S]*)$/.exec(seg);
         if (lm) {
-          label = lm[1].trim();
+          label = cleanLabel(lm[1]);
           segClean = lm[2] || "";
           if (!segClean.trim()) continue;
         }
@@ -439,7 +453,7 @@
     for (const raw of lines) {
       if (!raw.trim() || /^\s*%%/.test(raw)) continue;
       const indent = (/^\s*/.exec(raw)[0] || "").replace(/\t/g, "  ").length;
-      const text = raw.trim().replace(/^[-*+]\s+/, "");
+      const text = cleanLabel(raw.trim().replace(/^[-*+]\s+/, "")) || raw.trim();
       const node = { text, children: [], level: 0 };
       while (stack.length && stack[stack.length - 1].indent >= indent) stack.pop();
       if (!stack.length) {

@@ -68,19 +68,36 @@ function normalize(row) {
   };
 }
 
-function prune(db) {
-  /* 每会话超量丢最旧 */
-  db.prepare(
-    `DELETE FROM activity WHERE id IN (
-       SELECT id FROM activity a WHERE (
-         SELECT COUNT(*) FROM activity b WHERE b.session_id = a.session_id AND b.id >= a.id
-       ) > ?
-     )`,
-  ).run(PER_SESSION_CAP);
-  /* 整库超量再丢最旧 */
-  db.prepare(
-    "DELETE FROM activity WHERE id IN (SELECT id FROM activity ORDER BY at DESC, id DESC LIMIT -1 OFFSET ?)",
-  ).run(TOTAL_CAP);
+/* 清理（本次需求 · 残余热点 ④：落盘合批）
+   原来这里是「相关子查询」版的每会话裁量：对**每一行**再跑一次 COUNT —— 实测 8000 行时
+   一条 push 要 126 ms，3000 行 26 ms，300 行 4.4 ms（≈ 线性 × 两次全表数数），而这段
+   99% 的成本全在这一句上（同一条 SQL 单独量 118 ms / 8000 行，整库那条只有 1.0 ms）。
+   活动流是**逐事件**写盘（渲染层 400ms 一批，长任务里每批都来），于是主进程被这条
+   SQL 一遍遍拖住 —— 用户口径的「卡顿」就在这里。
+   换成等价的两步、全部走索引：
+     ① 先问这个会话到底有没有超（COUNT 走 activity_sess 索引，0.07 ms）；
+     ② 超了才删它最旧的 (n - CAP) 条（id IN (… ORDER BY id ASC LIMIT ?)，与原口径
+        「留 id 最大的 CAP 条」同一结果集）。
+   整库那一条改成先数一次总数（0.09 ms @8000 行），没超就整条不跑。
+   语义不变：会话内留最新的 PER_SESSION_CAP 条、整库留最新的 TOTAL_CAP 条；
+   区别只是「没超量时不做无用功」。 */
+function prune(db, sessionIds) {
+  /* ① 每会话超量丢最旧：只查这一批写进来的会话（别的会话这一拍没有新行，无需再数） */
+  const countSess = db.prepare("SELECT COUNT(*) AS n FROM activity WHERE session_id = ?");
+  const cutSess = db.prepare(
+    "DELETE FROM activity WHERE id IN (SELECT id FROM activity WHERE session_id = ? ORDER BY id ASC LIMIT ?)",
+  );
+  for (const sid of sessionIds) {
+    const n = countSess.get(sid).n || 0;
+    if (n > PER_SESSION_CAP) cutSess.run(sid, n - PER_SESSION_CAP);
+  }
+  /* ② 整库超量再丢最旧 */
+  const total = db.prepare("SELECT COUNT(*) AS n FROM activity").get().n || 0;
+  if (total > TOTAL_CAP) {
+    db.prepare(
+      "DELETE FROM activity WHERE id IN (SELECT id FROM activity ORDER BY at DESC, id DESC LIMIT -1 OFFSET ?)",
+    ).run(TOTAL_CAP);
+  }
 }
 
 function push(rows, dataDir) {
@@ -94,9 +111,12 @@ function push(rows, dataDir) {
     const ins = db.prepare(
       "INSERT INTO activity(at,kind,session_id,title,text,path,status) VALUES(@at,@kind,@session_id,@title,@text,@path,@status)",
     );
+    /* 这一批写进来的会话（去重）：清理只数它们，不整库每个会话都数一遍 */
+    const sessIds = [];
+    for (const r of list) if (sessIds.indexOf(r.session_id) < 0) sessIds.push(r.session_id);
     const tx = db.transaction(() => {
       for (const r of list) ins.run(r);
-      prune(db);
+      prune(db, sessIds);
     });
     tx();
     return { ok: true, written: list.length };

@@ -429,6 +429,44 @@ def _cap_piece_tokens(piece: str, limit: int = 75) -> list[str]:
     return out
 
 
+# ── 末句兜底：最后一段不得少于 15 字 ─────────────────────────────────────
+# 最后一句太短单独合成出来只有零点几秒，听感就是「话没说完 / 音色崩了」。
+# 渲染层（renderer/app-tts.js）已按段合并过一次，但这里还会按 max_chars 再切一遍
+# （中文 42 字 / 英文约 105 字符），切出来的尾巴可能只剩「好了。」「Done.」这种
+# 两三个字 —— 所以送给模型的最后一段必须在这里再兜一次底：短尾并进前一句。
+_MIN_TAIL_CHARS = 15
+
+
+def _spoken_chars(text: str) -> int:
+    """有效字数：去掉空白 / 标点 / 符号后的字符数（与渲染层 isShortSpeechTail 同口径）。"""
+    import unicodedata
+
+    return sum(
+        1
+        for ch in str(text or "")
+        if not ch.isspace() and unicodedata.category(ch)[0] not in ("P", "S")
+    )
+
+
+def merge_short_tail(pieces: list[str], min_chars: int = _MIN_TAIL_CHARS) -> list[str]:
+    """末段不足 min_chars 就一路往前并（只动尾部，中间各段保持原样）。
+
+    拼接规则与渲染层一致：前一段已带停顿 / 句末标点就直接粘，否则补一个逗号
+    （英文补「, 」）；末段自带的句末标点保留，模型才拿得到 EOS。
+    整次播报只有一段且它本身就短时无前句可并，原样返回。
+    """
+    out = [p for p in (str(p or "").strip() for p in pieces) if p]
+    while len(out) > 1 and _spoken_chars(out[-1]) < min_chars:
+        tail = out.pop()
+        prev = out[-1]
+        latin = not _contains_cjk(prev + tail)
+        if prev and prev[-1] in "。！？!?…；;，,、：:.":
+            out[-1] = prev + (" " if latin else "") + tail
+        else:
+            out[-1] = prev + (", " if latin else "，") + tail
+    return out
+
+
 def _limit_peak(waveform, ceiling: float = 0.98):
     """输出防削波：模型偶尔会把一句推过 0 dBFS，直接写 wav 会硬切出爆音
     （听感像「音色崩了 / 破音」）。超过就整段等比压下来，不改音色只改电平。"""
@@ -662,11 +700,13 @@ class Worker:
         text = _clean_for_speech(_normalize_for_tts(str(msg.get("text") or "")))
         prompt_audio = str(msg.get("promptAudio") or "")
         max_chars = int(msg.get("maxChars") or 42)
-        pieces = [
-            part
-            for piece in split_sentences(text, max_chars)
-            for part in _cap_piece_tokens(piece)
-        ]
+        pieces = merge_short_tail(
+            [
+                part
+                for piece in split_sentences(text, max_chars)
+                for part in _cap_piece_tokens(piece)
+            ]
+        )
         if not pieces:
             emit({"type": "done", "id": req_id, "chunks": 0, "ms": 0})
             return

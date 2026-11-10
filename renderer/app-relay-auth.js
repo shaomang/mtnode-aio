@@ -77,7 +77,24 @@
     if (!box) return;
     var d = document.createElement("div");
     d.className = "toast";
-    d.textContent = text;
+    var txt = document.createElement("span");
+    txt.className = "toast-msg";
+    txt.textContent = text;
+    d.appendChild(txt);
+    /* 与 app.js 的 toast() 一致：右上角 ✕ 立刻关闭 + 整条点一下也关（.toast 自己吃指针事件） */
+    var x = document.createElement("button");
+    x.className = "toast-x";
+    x.type = "button";
+    x.textContent = "✕";
+    x.title = T("关闭");
+    x.addEventListener("click", function (ev) {
+      ev.stopPropagation();
+      d.remove();
+    });
+    d.appendChild(x);
+    d.addEventListener("click", function () {
+      d.remove();
+    });
     box.appendChild(d);
     setTimeout(function () {
       d.remove();

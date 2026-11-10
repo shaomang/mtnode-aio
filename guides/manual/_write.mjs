@@ -392,6 +392,7 @@ const catalog = {
         { id: "agent-nodes", title: { zh: "智能任务与智能会话", en: "Agent task & session" } },
         { id: "agent-browser", title: { zh: "会话的浏览器能力", en: "The session's browser" } },
         { id: "approvals", title: { zh: "审批与权限", en: "Approvals" } },
+        { id: "paseo-bridge", title: { zh: "用手机接管会话（Paseo）", en: "Phone takeover (Paseo)" } },
       ],
     },
     {

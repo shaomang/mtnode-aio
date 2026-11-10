@@ -1,0 +1,1711 @@
+/* ===== 研究视图「演示（PPT）」编辑器样式（renderer/css/research-slides.css）=====
+ *
+ * 只服务研究演示的两块界面：renderer/app-research-slides.js 的三栏大浮层（window.MTResearchSlidesEditor）
+ * 与 renderer/app-research-slides-init.js 的初始化卡（window.MTResearchSlidesInit，.rs-deck-init*）。
+ * 两条硬口径：
+ *   ① 前缀只许 .rs-deck* —— 放映器 / 导出文件的样式在 research-slides-view.js 里内联（.rs-slide*），
+ *      两套互不覆盖：本文件一个 .rs-* 通用选择器都不写，也不碰 research.css 已有的任何类；
+ *   ② 颜色只吃 --rs-slide-*（主题变量，由编辑器按 deck 的主题贴到 .rs-deck-win 上），
+ *      取不到时回落到应用自己的 --panel / --ink / --bd 那一套 —— 换主题时整块浮层跟着变，
+ *      不会出现「页面变了、边框还是旧配色」。字号 / 圆角 / 阴影同理（--rs-slide-fs / -radius / -shadow）。
+ *
+ * 浮层是 persistent：幕布不接「点外面关」，关闭只走窗内 ✕ 与 Esc（js 那边对应的）。
+ * 布局不挤占画布可操作区：固定居中、三栏各自内部滚动，窗口高度不够时整块缩到 88vh。
+ */
+
+/* ── 幕布与窗口 ─────────────────────────────────────────────────────── */
+.rs-deck-curtain {
+  position: fixed;
+  inset: 0;
+  z-index: 9995;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.45);
+}
+.rs-deck-win {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: min(1180px, 94vw);
+  height: min(780px, 88vh);
+  overflow: hidden;
+  background: var(--rs-slide-paper, var(--panel));
+  color: var(--rs-slide-ink, var(--ink));
+  border: 1px solid var(--rs-slide-rule, var(--bd2));
+  border-radius: 14px;
+  box-shadow: 0 30px 90px rgba(0, 0, 0, 0.5);
+  font-family: var(--rs-slide-font, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.rs-deck-win *,
+.rs-deck-win *::before,
+.rs-deck-win *::after {
+  box-sizing: border-box;
+}
+.rs-deck-win input,
+.rs-deck-win textarea,
+.rs-deck-win button,
+.rs-deck-win select {
+  font-family: inherit;
+  font-size: 12.5px;
+  color: inherit;
+}
+
+/* ── 头部：标题 / 状态 / 四个动作 ───────────────────────────────────── */
+.rs-deck-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--rs-slide-rule, var(--bd));
+  background: var(--rs-slide-paper2, var(--panel2));
+}
+.rs-deck-title {
+  /* 标题一律不参与收缩：flex 项默认会被压缩，中文在 min-content 上逐字换行，
+     一压就成「演 / 示 / 编 / 辑 / 器」竖排 —— 顶栏排版 bug 的根就在这一条。 */
+  flex: 0 0 auto;
+  white-space: nowrap;
+  font-weight: 700;
+  font-size: 13.5px;
+  color: var(--rs-slide-ink, var(--ink));
+}
+.rs-deck-sub {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 24vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+  color: var(--rs-slide-muted, var(--muted));
+}
+.rs-deck-grow {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.rs-deck-status {
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--rs-slide-muted, var(--muted));
+  /* Agent 改写那一路会往这里写「等第 N 轮写出 …（4 分钟…）」：长句只截一行，别把顶栏按钮挤走 */
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 46vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 视频导出进度（顶栏「导出视频」跑起来时才显示）：细进度条 + 一句话 + 取消。
+   行高跟 .rs-deck-btn 对齐，出现 / 消失不顶动顶栏。 */
+.rs-deck-vprog {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 6px;
+  border: 1px solid var(--rs-slide-rule, var(--bd2));
+  border-radius: 7px;
+  font-size: 11px;
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums;
+  color: var(--rs-slide-muted, var(--muted));
+  max-width: 240px;
+}
+.rs-deck-vprog-track {
+  flex: 0 0 auto;
+  display: block;
+  width: 64px;
+  height: 4px;
+  border-radius: 3px;
+  background: color-mix(in srgb, currentColor 22%, transparent);
+  overflow: hidden;
+}
+.rs-deck-vprog-bar {
+  display: block;
+  height: 100%;
+  width: 0;
+  border-radius: 3px;
+  background: var(--rs-slide-primary, var(--cyan));
+  transition: width 0.2s linear;
+}
+.rs-deck-vprog-text {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.rs-deck-vprog-x {
+  flex: 0 0 auto;
+  padding: 0 2px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.rs-deck-vprog-x:hover {
+  color: var(--rs-slide-accent, var(--red));
+}
+/* 顶栏「版本」段（静态 / 视频 / 两者）：一小撮胶囊，切换 brief.mode；
+   视频态右栏才会多出「视频」块，所以这一段是那块的开关位置提示。 */
+.rs-deck-vers {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.rs-deck-vlabel {
+  font-size: 11px;
+  color: var(--rs-slide-muted, var(--muted));
+}
+.rs-deck-vers .rs-deck-segb {
+  padding: 1px 8px;
+  font-size: 11px;
+  line-height: 1.5;
+}
+.rs-deck-btn {
+  flex: 0 0 auto;
+  padding: 3px 10px;
+  border-radius: 7px;
+  border: 1px solid var(--rs-slide-rule, var(--bd2));
+  background: transparent;
+  color: var(--rs-slide-ink, var(--ink));
+  cursor: pointer;
+  line-height: 1.5;
+}
+.rs-deck-btn:hover {
+  border-color: var(--rs-slide-primary, var(--cyan));
+  color: var(--rs-slide-primary, var(--cyan));
+}
+.rs-deck-btn.danger {
+  color: var(--rs-slide-accent, var(--red));
+  border-color: var(--rs-slide-accent, var(--red));
+}
+.rs-deck-btn.danger:hover {
+  background: color-mix(in srgb, var(--rs-slide-accent, var(--red)) 14%, transparent);
+}
+/* 顶栏图标按钮（.rs-deck-ibtn）：一颗正方形，只放图标 —— 长条文案按钮会把顶栏撑爆。
+   文字标签收进 .rs-deck-blabel（视觉隐藏）：读屏、title 与自验脚本仍读得到按钮是什么。 */
+.rs-deck-ibtn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 26px;
+  height: 24px;
+  padding: 0;
+  line-height: 0;
+}
+.rs-deck-ibtn .rs-deck-ico {
+  display: block;
+  width: 15px;
+  height: 15px;
+  pointer-events: none;
+}
+.rs-deck-ibtn:focus-visible {
+  outline: 2px solid var(--rs-slide-primary, var(--cyan));
+  outline-offset: 1px;
+}
+.rs-deck-blabel {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.rs-deck-x {
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--rs-slide-muted, var(--muted));
+  cursor: pointer;
+  line-height: 1;
+}
+.rs-deck-x:hover {
+  color: var(--rs-slide-ink, var(--ink));
+  border-color: var(--rs-slide-rule, var(--bd2));
+}
+
+/* 重置确认条：默认空着不占高（:empty 收掉），要二次确认时才铺开 */
+.rs-deck-confirm {
+  display: none;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--rs-slide-rule, var(--bd));
+  background: color-mix(in srgb, var(--rs-slide-accent, var(--red)) 10%, transparent);
+}
+.rs-deck-confirm.show {
+  display: flex;
+}
+.rs-deck-confirm-t {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--rs-slide-ink, var(--ink));
+}
+
+/* 「这次想怎么改」小输入框（Agent 改写前收一句原话，可留空）：开在窗内、浮在三栏之上。
+   带输入的浮层按仓规 persistent —— 点外部不关，只走 ✕ / 取消 / Esc；显示与否由 JS 控。 */
+.rs-deck-memo {
+  display: none;
+  flex-direction: column;
+  gap: 7px;
+  position: absolute;
+  z-index: 40;
+  top: 84px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(520px, 88%);
+  padding: 10px 12px;
+  border: 1px solid var(--rs-slide-rule, var(--bd2));
+  border-radius: 10px;
+  background: var(--rs-slide-paper, var(--panel));
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.35);
+}
+.rs-deck-memo-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.rs-deck-memo-t {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--rs-slide-ink, var(--ink));
+}
+.rs-deck-memo-hint {
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--rs-slide-muted, var(--muted));
+}
+/* 第一次派活时这一行同时是「会消耗 Token」的提醒：换成警示色，别让它混在灰字里 */
+.rs-deck-memo-hint.is-warn {
+  padding: 5px 8px;
+  border-radius: 7px;
+  color: var(--rs-slide-accent, var(--red));
+  background: color-mix(in srgb, var(--rs-slide-accent, var(--red)) 12%, transparent);
+}
+.rs-deck-memo-in {
+  min-height: 62px;
+  resize: vertical;
+}
+.rs-deck-memo-row {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* ── 三栏骨架（各栏自己滚，整块不滚） ───────────────────────────────── */
+.rs-deck-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 282px minmax(0, 1fr) 272px;
+}
+.rs-deck-col {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border-right: 1px solid var(--rs-slide-rule, var(--bd));
+}
+.rs-deck-col.is-right {
+  border-right: 0;
+  border-left: 1px solid var(--rs-slide-rule, var(--bd));
+  /* 上下两段各自管滚动：主题区可滚，页面元素常驻在底部（不用滚下去找开关） */
+  overflow: hidden;
+}
+.rs-deck-colhead {
+  flex: 0 0 auto;
+  padding: 8px 12px 6px;
+  font-size: 11.5px;
+  letter-spacing: 0.02em;
+  color: var(--rs-slide-muted, var(--muted));
+}
+
+/* ── 左栏：页列表 ───────────────────────────────────────────────────── */
+.rs-deck-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 0 8px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.rs-deck-list.is-drop-end {
+  box-shadow: inset 0 -2px 0 var(--rs-slide-primary, var(--cyan));
+}
+.rs-deck-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 7px;
+  min-width: 0;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  cursor: pointer;
+  background: transparent;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.rs-deck-item:hover {
+  background: var(--rs-slide-paper2, var(--panel2));
+}
+.rs-deck-item.is-on {
+  background: var(--rs-slide-paper2, var(--panel2));
+  border-color: var(--rs-slide-primary, var(--cyan));
+}
+.rs-deck-item.is-hidden .rs-deck-tit {
+  color: var(--rs-slide-muted, var(--muted));
+  text-decoration: line-through;
+}
+.rs-deck-item.is-drag {
+  opacity: 0.45;
+}
+.rs-deck-item.is-drop {
+  box-shadow: inset 0 2px 0 var(--rs-slide-primary, var(--cyan));
+}
+.rs-deck-no {
+  flex: 0 0 20px;
+  text-align: right;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--rs-slide-muted, var(--muted));
+}
+.rs-deck-tit {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  color: var(--rs-slide-ink, var(--ink));
+}
+.rs-deck-kind {
+  flex: 0 0 auto;
+  padding: 0 5px;
+  font-size: 10.5px;
+  line-height: 15px;
+  border-radius: 8px;
+  color: var(--rs-slide-muted, var(--muted));
+  background: color-mix(in srgb, var(--rs-slide-rule, var(--bd)) 45%, transparent);
+}
+.rs-deck-acts {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.rs-deck-item:hover .rs-deck-acts,
+.rs-deck-item.is-on .rs-deck-acts {
+  opacity: 1;
+}
+.rs-deck-mini {
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--rs-slide-muted, var(--muted));
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+.rs-deck-mini:hover {
+  color: var(--rs-slide-primary, var(--cyan));
+  border-color: var(--rs-slide-rule, var(--bd2));
+}
+.rs-deck-mini.danger:hover {
+  color: var(--rs-slide-accent, var(--red));
+  border-color: var(--rs-slide-accent, var(--red));
+}
+.rs-deck-empty {
+  padding: 6px 4px;
+  font-size: 11.5px;
+  color: var(--rs-slide-muted, var(--muted));
+}
+.rs-deck-add {
+  flex: 0 0 auto;
+  margin: 6px 10px 10px;
+  padding: 5px 9px;
+  border: 1px dashed var(--rs-slide-rule, var(--bd2));
+  border-radius: 7px;
+  background: transparent;
+  color: var(--rs-slide-muted, var(--muted));
+  cursor: pointer;
+  font-size: 12px;
+}
+.rs-deck-add:hover {
+  color: var(--rs-slide-primary, var(--cyan));
+  border-color: var(--rs-slide-primary, var(--cyan));
+}
+.rs-deck-add.mini {
+  align-self: flex-start;
+  margin: 2px 0 0;
+  padding: 2px 8px;
+  font-size: 11.5px;
+}
+
+/* ── 中栏：实时预览（同一份 pageHtml 缩一档）+ 表单 ─────────────────── */
+.rs-deck-preview {
+  position: relative;
+  flex: 0 0 auto;
+  /* 手排要的是画布：预览跟着窗口长（矮屏给 240，高屏最多 460，别把下面那堆全挤掉） */
+  height: clamp(240px, 34vh, 460px);
+  margin: 10px 12px 6px;
+  overflow: hidden;
+  border: 1px solid var(--rs-slide-rule, var(--bd2));
+  border-radius: 9px;
+  /* 画框之外的空处是一块「台面」：非 16:9（4:3 / 9:16）时白页贴在台面上才看得见边界。
+     台面色 = 纸色里掺一点墨色（明暗两套主题各自成立，不写死灰） */
+  background: color-mix(in srgb, var(--rs-slide-ink, var(--ink)) 12%, var(--rs-slide-paper, var(--panel)));
+  box-shadow: var(--rs-slide-shadow, none);
+  /* 尺寸容器：预览里的画框与放映 / 导出同一把尺子（--rs-slide-ar 决定宽高比，多余处留边） */
+  container-type: size;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.rs-deck-pv {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.rs-deck-preview .rs-slide-frame {
+  box-shadow: 0 2px 14px rgba(0, 0, 0, 0.18);
+}
+/* 预览里的页：外壳就是放映器的 .rs-slides，只是字号（--rs-slide-fs，js 里设成 11px）与内边距缩一档 */
+.rs-deck-preview .rs-slide-page {
+  padding: 10px 12px 6px;
+}
+.rs-deck-preview .rs-slide-inner {
+  gap: 6px;
+}
+.rs-deck-preview .rs-slide-quote {
+  font-size: 0.92em;
+  margin: 0;
+}
+.rs-deck-form {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 0 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.rs-deck-meta {
+  font-size: 11.5px;
+  color: var(--rs-slide-muted, var(--muted));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rs-deck-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.rs-deck-field.rs-deck-bfield {
+  gap: 5px;
+}
+.rs-deck-flabel {
+  font-size: 11.5px;
+  color: var(--rs-slide-muted, var(--muted));
+}
+.rs-deck-hint {
+  font-size: 11px;
+  color: var(--rs-slide-muted, var(--muted));
+  opacity: 0.85;
+}
+/* 输入框跟着演示纸色走：`css/base.css` 的 `input[type="text"]`（0-1-1）比 `.rs-deck-input`
+   （0-1-0）重，会把标题 / 眉题 / 要点 / #hex 这几颗**文字框**上成 --code（暗色主题下近纯黑），
+   而 textarea 不在那条选择器里 —— 于是同一栏里「一部分框黑、一部分框正常」。
+   这里用 `.rs-deck-win input.rs-deck-input`（0-2-1 起）把底色 / 字色 / 边框 / 圆角 / 内边距 /
+   字号整组收回主题变量，:focus（0-3-1）也一并压掉 base 那条橙色描边。 */
+.rs-deck-win input.rs-deck-input,
+.rs-deck-win textarea.rs-deck-input,
+.rs-deck-input {
+  width: 100%;
+  min-width: 0;
+  padding: 5px 8px;
+  border: 1px solid var(--rs-slide-rule, var(--bd));
+  border-radius: 7px;
+  background: var(--rs-slide-paper, var(--panel));
+  color: var(--rs-slide-ink, var(--ink));
+  font-family: inherit;
+  font-size: 12.5px;
+  outline: none;
+  resize: vertical;
+}
+.rs-deck-win input.rs-deck-input:focus,
+.rs-deck-win textarea.rs-deck-input:focus,
+.rs-deck-input:focus {
+  border-color: var(--rs-slide-primary, var(--cyan));
+  box-shadow: none;
+}
+.rs-deck-ta {
+  min-height: 54px;
+  line-height: 1.6;
+}
+.rs-deck-brows {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.rs-deck-brow {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.rs-deck-seg {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.rs-deck-segb {
+  padding: 2px 9px;
+  border: 1px solid var(--rs-slide-rule, var(--bd2));
+  border-radius: 999px;
+  background: transparent;
+  color: var(--rs-slide-muted, var(--muted));
+  cursor: pointer;
+  font-size: 11.5px;
+}
+.rs-deck-segb:hover {
+  color: var(--rs-slide-primary, var(--cyan));
+}
+.rs-deck-segb.is-on {
+  color: var(--rs-slide-paper, var(--panel));
+  background: var(--rs-slide-primary, var(--cyan));
+  border-color: var(--rs-slide-primary, var(--cyan));
+}
+
+/* ── 中栏：媒体区块（＋图片 / ＋视频 + 每项的置前置后 / 适应 / XYWH / 备注）
+      与「手动排版」开关、「恢复自动版式」。配色只吃 --rs-slide-*，与输入框修复同一口径。 ── */
+.rs-deck-media {
+  gap: 6px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--rs-slide-rule, var(--bd));
+}
+.rs-deck-mhead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.rs-deck-mhead .rs-deck-flabel {
+  flex: 0 0 auto;
+}
+.rs-deck-mtools {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.rs-deck-mtools .rs-deck-btn {
+  padding: 2px 8px;
+  font-size: 11.5px;
+}
+.rs-deck-madd {
+  display: flex;
+  gap: 6px;
+}
+.rs-deck-madd .rs-deck-add {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 3px 10px;
+  font-size: 11.5px;
+}
+.rs-deck-mrow {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 6px 7px;
+  border: 1px solid var(--rs-slide-rule, var(--bd));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--rs-slide-paper2, var(--panel2)) 55%, transparent);
+}
+.rs-deck-mrow:hover {
+  border-color: var(--rs-slide-rule, var(--bd2));
+}
+.rs-deck-mrow.is-sel {
+  border-color: var(--rs-slide-primary, var(--cyan));
+  box-shadow: inset 0 0 0 1px var(--rs-slide-primary, var(--cyan));
+}
+.rs-deck-mtop {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.rs-deck-mtitle {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+  color: var(--rs-slide-ink, var(--ink));
+}
+.rs-deck-macts {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.rs-deck-mfit {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.rs-deck-mgrid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 4px;
+}
+.rs-deck-mcell {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+}
+.rs-deck-mcell-l {
+  flex: 0 0 auto;
+  font-size: 10.5px;
+  color: var(--rs-slide-muted, var(--muted));
+}
+/* 数值框 / 备注框比文字框再小一档（与 .rs-deck-input 同权重、在后面压住） */
+.rs-deck-win input.rs-deck-num {
+  padding: 3px 4px;
+  font-size: 11.5px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.rs-deck-win input.rs-deck-mnote {
+  padding: 3px 6px;
+  font-size: 11.5px;
+}
+.rs-deck-file {
+  display: none;
+}
+
+/* ── 预览里的拖拽与缩放 ─────────────────────────────────────────────────
+   可拖的块给 move 光标；拖动中提亮；工具条 / 手柄是编辑器自己挂的两个浮层元素，
+   用绝对定位压在预览框里（媒体块是 overflow:hidden，手柄挂在块外面才不被裁掉）。 */
+.rs-deck-preview .rs-slide-media-item,
+.rs-deck-preview .rs-slide-lead,
+.rs-deck-preview .rs-slide-body {
+  cursor: move;
+  touch-action: none;
+}
+.rs-deck-preview .is-dragging {
+  opacity: 0.86;
+}
+.rs-deck-tb {
+  position: absolute;
+  z-index: 7;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 4px;
+  border-radius: 7px;
+  border: 1px solid var(--rs-slide-primary, var(--cyan));
+  background: var(--rs-slide-paper, var(--panel));
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+}
+.rs-deck-tb-t {
+  padding: 0 3px;
+  font-size: 10.5px;
+  white-space: nowrap;
+  color: var(--rs-slide-muted, var(--muted));
+}
+.rs-deck-tb-b {
+  padding: 1px 6px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--rs-slide-ink, var(--ink));
+  font-size: 11px;
+  line-height: 1.5;
+  cursor: pointer;
+}
+.rs-deck-tb-b:hover {
+  color: var(--rs-slide-primary, var(--cyan));
+  border-color: var(--rs-slide-rule, var(--bd2));
+}
+.rs-deck-tb-b.danger:hover {
+  color: var(--rs-slide-accent, var(--red));
+  border-color: var(--rs-slide-accent, var(--red));
+}
+.rs-deck-h {
+  position: absolute;
+  z-index: 8;
+  width: 11px;
+  height: 11px;
+  border-radius: 2px;
+  background: var(--rs-slide-paper, var(--panel));
+  border: 1.5px solid var(--rs-slide-primary, var(--cyan));
+  cursor: nwse-resize;
+  touch-action: none;
+}
+
+/* ── 右栏：主题与配色 ───────────────────────────────────────────────── */
+.rs-deck-theme {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 0 12px 14px;
+}
+.rs-deck-sec {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-bottom: 10px;
+  border-bottom: 1px dashed var(--rs-slide-rule, var(--bd));
+}
+.rs-deck-sec:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+.rs-deck-sectitle {
+  font-size: 11.5px;
+  color: var(--rs-slide-muted, var(--muted));
+}
+.rs-deck-presets {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 5px;
+}
+.rs-deck-preset {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 3px;
+  padding: 4px;
+  border: 1px solid var(--rs-slide-rule, var(--bd2));
+  border-radius: 8px;
+  background: transparent;
+  cursor: pointer;
+  min-width: 0;
+}
+.rs-deck-preset:hover {
+  border-color: var(--rs-slide-primary, var(--cyan));
+}
+.rs-deck-preset.is-on {
+  border-color: var(--rs-slide-primary, var(--cyan));
+  box-shadow: inset 0 0 0 1px var(--rs-slide-primary, var(--cyan));
+}
+.rs-deck-swatch {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 3px;
+  height: 22px;
+  padding: 0 4px;
+  border: 1px solid var(--rs-slide-rule, var(--bd));
+  border-radius: 5px;
+}
+.rs-deck-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+.rs-deck-preset-t {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--rs-slide-ink, var(--ink));
+}
+.rs-deck-crow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.rs-deck-clabel {
+  flex: 0 0 44px;
+  font-size: 11.5px;
+  color: var(--rs-slide-ink, var(--ink));
+  opacity: 0.8;
+}
+.rs-deck-color {
+  flex: 0 0 30px;
+  width: 30px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--rs-slide-rule, var(--bd2));
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+}
+.rs-deck-hex {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: ui-monospace, Consolas, "Courier New", monospace;
+  font-size: 11.5px;
+  text-transform: lowercase;
+}
+
+/* ── 右栏「视频」块（视频态才出现）：预计时长 / 旁白 / 进度 / 上次失败 ────
+   进度条比顶栏那条长一点（栏内可用宽度），数字等宽，跑起来不跳字。 */
+.rs-deck-vsec {
+  gap: 5px;
+}
+.rs-deck-vval {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--rs-slide-ink, var(--ink));
+}
+.rs-deck-vbar-track {
+  flex: 1 1 auto;
+  min-width: 40px;
+  height: 4px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--rs-slide-ink, var(--ink)) 16%, transparent);
+  overflow: hidden;
+}
+.rs-deck-vbar-fill {
+  display: block;
+  height: 100%;
+  width: 0;
+  border-radius: 3px;
+  background: var(--rs-slide-primary, var(--cyan));
+  transition: width 0.2s linear;
+}
+.rs-deck-vtext {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--rs-slide-muted, var(--muted));
+}
+.rs-deck-vtext.is-err {
+  color: var(--rs-slide-accent, var(--red));
+}
+.rs-deck-vsec .rs-deck-hint {
+  line-height: 1.5;
+}
+
+/* ── 右栏：页面元素（哪些显示 / 哪些不显示）─────────────────────────────
+   一行一项：左边名字（长了就省略号，title 里有全称）+ 右边「显示 / 隐藏」两档。 */
+.rs-deck-chrome {
+  flex: 0 0 auto;
+  max-height: 54%;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 0 12px 16px;
+}
+.rs-deck-chrome .rs-deck-crow {
+  gap: 8px;
+}
+.rs-deck-chrome .rs-deck-seg {
+  flex: 0 0 auto;
+}
+.rs-deck-chlabel {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+  color: var(--rs-slide-ink, var(--ink));
+  opacity: 0.82;
+}
+
+/* ── 放映覆盖层（「预览放映」把放映器挂在这块上，盖住整个编辑器）───── */
+.rs-deck-cover {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  background: var(--rs-slide-paper, var(--panel));
+}
+.rs-deck-cover .rs-slides {
+  border-radius: 0;
+}
+
+/* ── 自由版面：工具条 / 对象清单 / 属性 / 选中框与参考线 ─────────────────
+   工具条压在中栏预览上方（一行两段：左边加对象，右边层级 / 撤销 / 比例 / 转换）。
+   选中框与参考线是挂在页面里的绝对定位浮层（百分比坐标，与对象同一把尺子）。 */
+.rs-deck-objbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin: 0 12px 2px;
+  padding: 5px 6px;
+  border: 1px solid var(--rs-slide-rule, var(--bd));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--rs-slide-paper2, var(--panel2)) 60%, transparent);
+}
+.rs-deck-obtools {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.rs-deck-obtools + .rs-deck-obtools {
+  margin-left: auto;
+}
+.rs-deck-ob {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  font-size: 11.5px;
+  line-height: 1.6;
+  border-radius: 6px;
+  border: 1px solid var(--rs-slide-rule, var(--bd2));
+  background: transparent;
+  color: var(--rs-slide-ink, var(--ink));
+  cursor: pointer;
+}
+.rs-deck-ob:hover:not(:disabled) {
+  border-color: var(--rs-slide-primary, var(--cyan));
+  color: var(--rs-slide-primary, var(--cyan));
+}
+.rs-deck-ob:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.rs-deck-ob.is-on {
+  border-color: var(--rs-slide-primary, var(--cyan));
+  color: var(--rs-slide-paper, var(--panel));
+  background: var(--rs-slide-primary, var(--cyan));
+}
+/* 对象清单：一行一件，点它选中；眼睛 / 锁在右边 */
+.rs-deck-orows {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-height: 168px;
+  overflow: auto;
+}
+.rs-deck-orow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 7px;
+  border: 1px solid var(--rs-slide-rule, var(--bd));
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--rs-slide-paper2, var(--panel2)) 45%, transparent);
+  cursor: pointer;
+}
+.rs-deck-orow:hover {
+  border-color: var(--rs-slide-rule, var(--bd2));
+}
+.rs-deck-orow.is-sel {
+  border-color: var(--rs-slide-primary, var(--cyan));
+  box-shadow: inset 0 0 0 1px var(--rs-slide-primary, var(--cyan));
+}
+.rs-deck-orow.is-off {
+  opacity: 0.55;
+}
+.rs-deck-orow-t {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+  color: var(--rs-slide-ink, var(--ink));
+}
+.rs-deck-orow-b {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  font-size: 11px;
+  line-height: 1;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--rs-slide-muted, var(--muted));
+  cursor: pointer;
+}
+.rs-deck-orow-b:hover {
+  border-color: var(--rs-slide-rule, var(--bd2));
+  color: var(--rs-slide-ink, var(--ink));
+}
+.rs-deck-osec {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 6px 7px;
+  border: 1px solid var(--rs-slide-rule, var(--bd));
+  border-radius: 8px;
+}
+.rs-deck-ogrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 5px;
+}
+.rs-deck-osegline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.rs-deck-obtns {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.rs-deck-colors {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.rs-deck-colorchip {
+  flex: 0 0 auto;
+  padding: 1px 7px;
+  font-size: 11px;
+  line-height: 1.7;
+  border-radius: 999px;
+  border: 1px solid var(--rs-slide-rule, var(--bd2));
+  background: transparent;
+  color: var(--rs-slide-muted, var(--muted));
+  cursor: pointer;
+}
+.rs-deck-colorchip:hover {
+  color: var(--rs-slide-ink, var(--ink));
+  border-color: var(--rs-slide-ink, var(--ink));
+}
+.rs-deck-colorchip.is-on {
+  color: var(--rs-slide-paper, var(--panel));
+  background: var(--rs-slide-primary, var(--cyan));
+  border-color: var(--rs-slide-primary, var(--cyan));
+}
+.rs-deck-colorpick {
+  flex: 0 0 auto;
+  width: 26px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid var(--rs-slide-rule, var(--bd2));
+  border-radius: 5px;
+  background: transparent;
+  cursor: pointer;
+}
+/* 选中 / 拖动时贴着框的读数（X% , Y% · W × H%）：只报数，不接鼠标 */
+.rs-deck-objtip {
+  position: absolute;
+  z-index: 9;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--rs-slide-ink, var(--fg));
+  color: var(--rs-slide-paper, #fff);
+  font-size: 11px;
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  pointer-events: none;
+}
+/* 选中框：只画框与手柄，自己不挡鼠标（手柄单独放开） */
+.rs-deck-selbox {
+  position: absolute;
+  z-index: 8;
+  box-sizing: border-box;
+  border: 1.5px solid var(--rs-slide-primary, var(--cyan));
+  pointer-events: none;
+}
+.rs-deck-selbox > .rs-slide-h {
+  display: block;
+  pointer-events: auto;
+}
+.rs-deck-selbox.is-locked {
+  border-style: dashed;
+  border-color: var(--rs-slide-accent, var(--red));
+}
+.rs-deck-selbox.is-locked > .rs-slide-h {
+  display: none;
+}
+/* 参考线：吸附时才亮（页中心的十字 + 其它对象的边线都用这一条） */
+.rs-deck-guide {
+  position: absolute;
+  z-index: 7;
+  display: none;
+  pointer-events: none;
+  background: var(--rs-slide-accent, var(--red));
+  opacity: 0.85;
+}
+.rs-deck-guide.is-on {
+  display: block;
+}
+.rs-deck-guide.is-v {
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  transform: translateX(-0.5px);
+}
+.rs-deck-guide.is-h {
+  left: 0;
+  right: 0;
+  height: 1px;
+  transform: translateY(-0.5px);
+}
+/* 取景中：光标提示可以拖 */
+.rs-deck-preview .rs-slide-obj.is-cropping {
+  cursor: grab;
+}
+.rs-deck-preview .rs-slide-obj.is-cropping:active {
+  cursor: grabbing;
+}
+/* 双击就地改字：盖在对象上的小编辑框 */
+.rs-deck-inline {
+  position: fixed;
+  z-index: 30;
+  padding: 2px 4px;
+  border: 1.5px solid var(--cyan, #4aa);
+  border-radius: 4px;
+  background: #fff;
+  color: #111;
+  resize: none;
+  outline: none;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.28);
+}
+
+/* ── 窄窗口：右栏收一档，预览缩一点（三栏始终都在，不藏功能） ───────── */
+@media (max-width: 1080px) {
+  .rs-deck-body {
+    grid-template-columns: 244px minmax(0, 1fr) 236px;
+  }
+  .rs-deck-preview {
+    height: clamp(200px, 30vh, 320px);
+  }
+  .rs-deck-presets {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* ── 顶栏「演示」图标的菜单（宿主 renderer/app-research.js 的 rsSlidesMenu）──
+   与 .rs-ask 同一套窗框（那份在 research.css 里，宽度 / padding / 阴影都对齐），
+   这里只补三件事：列表的排版、每条按钮的两行字（主标题 + 一行代价提示）、不可点时压暗。
+   只在顶栏那颗图标下沿展开，尺寸小、内容短 —— 不占画布可操作区。 */
+.rs-deck-menu {
+  width: 252px;
+  gap: 6px;
+}
+.rs-deck-menu-stat {
+  font-size: 11.5px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.rs-deck-menu-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.rs-deck-menu-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 7px 9px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: var(--ink);
+  font-family: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.14s ease, border-color 0.14s ease;
+}
+.rs-deck-menu-btn:hover:not(:disabled) {
+  background: var(--panel2);
+  border-color: var(--bd);
+}
+.rs-deck-menu-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.rs-deck-menu-lab {
+  font-weight: 600;
+}
+.rs-deck-menu-hint {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* ── 初始化卡（renderer/app-research-slides-init.js）──────────────────────
+   三块同屏：版本 / 风格（6 套 × 明暗缩略图）/ 额外指示；底部一句落盘提示与两个动作。
+   颜色只吃 --rs-slide-*（卡按选中的风格变量走，取不到回落到应用自己的 --panel / --ink / --bd），
+   尺寸 / 圆角 / 阴影同理 —— 选哪套风格，这张卡就长哪套，不会「卡是旧配色、演示是新配色」。
+   浮层是 persistent：幕布不接「点外面关」，关闭只走窗内 ✕ / 取消 / Esc（js 那边对应的）。 */
+.rs-deck-init-curtain {
+  position: fixed;
+  inset: 0;
+  /* 比编辑器（9995）高一层：从编辑器顶栏再打开改时，卡压在编辑器上面 */
+  z-index: 9996;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.5);
+}
+.rs-deck-init-win {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: min(1040px, 94vw);
+  height: min(760px, 90vh);
+  overflow: hidden;
+  background: var(--rs-slide-paper, var(--panel));
+  color: var(--rs-slide-ink, var(--ink));
+  border: 1px solid var(--rs-slide-rule, var(--bd2));
+  border-radius: 14px;
+  box-shadow: 0 30px 90px rgba(0, 0, 0, 0.5);
+  font-family: var(--rs-slide-font, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.rs-deck-init-win *,
+.rs-deck-init-win *::before,
+.rs-deck-init-win *::after {
+  box-sizing: border-box;
+}
+.rs-deck-init-win input,
+.rs-deck-init-win textarea,
+.rs-deck-init-win button {
+  font-family: inherit;
+  font-size: 12.5px;
+  color: inherit;
+}
+
+/* 头部 */
+.rs-deck-init-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--rs-slide-rule, var(--bd));
+  background: var(--rs-slide-paper2, var(--panel2));
+}
+.rs-deck-init-headbox {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.rs-deck-init-title {
+  flex: 0 0 auto;
+  font-weight: 700;
+  font-size: 13.5px;
+}
+.rs-deck-init-sub {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+  color: var(--rs-slide-muted, var(--muted));
+}
+.rs-deck-init-x {
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--rs-slide-muted, var(--muted));
+  cursor: pointer;
+  line-height: 1;
+}
+.rs-deck-init-x:hover {
+  border-color: var(--rs-slide-rule, var(--bd2));
+  color: var(--rs-slide-ink, var(--ink));
+}
+
+/* 主体：一块一块往下排，自己滚 */
+.rs-deck-init-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 14px 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.rs-deck-init-sec {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.rs-deck-init-sechead {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+}
+.rs-deck-init-secn {
+  flex: 0 0 auto;
+  font-size: 12px;
+  color: var(--rs-slide-primary, var(--cyan));
+  font-variant-numeric: tabular-nums;
+}
+.rs-deck-init-sectitle {
+  flex: 0 0 auto;
+  font-weight: 700;
+}
+.rs-deck-init-sechint {
+  min-width: 0;
+  font-size: 11.5px;
+  color: var(--rs-slide-muted, var(--muted));
+}
+
+/* ① 版本 */
+.rs-deck-init-modes {
+  display: flex;
+  gap: 8px;
+}
+/* ① 做法：档位按钮（与版本按钮同款，但类名分开 —— 版本档只数 .rs-deck-init-mode 那三个） */
+.rs-deck-init-tier {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  border: 1px solid var(--rs-slide-rule, var(--bd2));
+  border-radius: 9px;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+.rs-deck-init-tier b {
+  font-size: 12.5px;
+  font-weight: 700;
+}
+.rs-deck-init-tier:hover {
+  border-color: var(--rs-slide-primary, var(--cyan));
+}
+.rs-deck-init-tier.is-on {
+  border-color: var(--rs-slide-primary, var(--cyan));
+  background: color-mix(in srgb, var(--rs-slide-primary, var(--cyan)) 10%, transparent);
+  box-shadow: inset 0 0 0 1px var(--rs-slide-primary, var(--cyan));
+}
+.rs-deck-init-mode {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  border: 1px solid var(--rs-slide-rule, var(--bd2));
+  border-radius: 9px;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+.rs-deck-init-mode b {
+  font-size: 12.5px;
+  font-weight: 700;
+}
+.rs-deck-init-mode-h {
+  font-size: 11px;
+  color: var(--rs-slide-muted, var(--muted));
+}
+.rs-deck-init-mode:hover {
+  border-color: var(--rs-slide-primary, var(--cyan));
+}
+.rs-deck-init-mode.is-on {
+  border-color: var(--rs-slide-primary, var(--cyan));
+  background: color-mix(in srgb, var(--rs-slide-primary, var(--cyan)) 10%, transparent);
+  box-shadow: inset 0 0 0 1px var(--rs-slide-primary, var(--cyan));
+}
+.rs-deck-init-modehint {
+  font-size: 11.5px;
+  color: var(--rs-slide-muted, var(--muted));
+}
+
+/* ② 风格：6 列 × 明 / 暗两行（12 张缩略图） */
+.rs-deck-init-grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 8px;
+}
+@media (max-width: 900px) {
+  .rs-deck-init-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+.rs-deck-init-card {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 5px;
+  border: 1px solid var(--rs-slide-rule, var(--bd2));
+  border-radius: 9px;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+.rs-deck-init-card:hover {
+  border-color: var(--rs-slide-primary, var(--cyan));
+}
+.rs-deck-init-card.is-on {
+  border-color: var(--rs-slide-primary, var(--cyan));
+  box-shadow: inset 0 0 0 1px var(--rs-slide-primary, var(--cyan));
+}
+.rs-deck-init-thumb {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 46px;
+  overflow: hidden;
+  border: 1px solid transparent;
+  border-radius: 6px;
+}
+.rs-deck-init-aa {
+  font-size: 20px;
+  font-style: normal;
+  font-weight: 700;
+  line-height: 1;
+}
+.rs-deck-init-bar {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 66%;
+  height: 4px;
+  background: currentColor;
+}
+.rs-deck-init-bar.is-accent {
+  left: auto;
+  right: 0;
+  width: 34%;
+}
+.rs-deck-init-t {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+  font-weight: 600;
+}
+.rs-deck-init-f {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10.5px;
+  color: var(--rs-slide-muted, var(--muted));
+}
+
+/* ③ 额外指示：一行一个字段，输入框下一排 chips */
+.rs-deck-init-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.rs-deck-init-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+}
+.rs-deck-init-label {
+  flex: 0 0 58px;
+  padding-top: 4px;
+  font-size: 12px;
+  color: var(--rs-slide-muted, var(--muted));
+}
+.rs-deck-init-fields {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.rs-deck-init-input {
+  width: 100%;
+  padding: 4px 8px;
+  border: 1px solid var(--rs-slide-rule, var(--bd2));
+  border-radius: 7px;
+  background: transparent;
+  color: inherit;
+}
+.rs-deck-init-input::placeholder,
+.rs-deck-init-extra::placeholder {
+  color: var(--rs-slide-muted, var(--muted));
+  opacity: 0.75;
+}
+.rs-deck-init-input:focus,
+.rs-deck-init-extra:focus {
+  outline: none;
+  border-color: var(--rs-slide-primary, var(--cyan));
+}
+.rs-deck-init-num {
+  width: 96px;
+}
+.rs-deck-init-fhint {
+  font-size: 11px;
+  color: var(--rs-slide-muted, var(--muted));
+}
+.rs-deck-init-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.rs-deck-init-chip {
+  padding: 1px 8px;
+  border: 1px solid var(--rs-slide-rule, var(--bd2));
+  border-radius: 999px;
+  background: transparent;
+  color: var(--rs-slide-muted, var(--muted));
+  font-size: 11.5px;
+  line-height: 1.6;
+  cursor: pointer;
+}
+.rs-deck-init-chip:hover {
+  border-color: var(--rs-slide-primary, var(--cyan));
+  color: var(--rs-slide-primary, var(--cyan));
+}
+.rs-deck-init-chip.is-on {
+  border-color: var(--rs-slide-primary, var(--cyan));
+  color: var(--rs-slide-primary, var(--cyan));
+  background: color-mix(in srgb, var(--rs-slide-primary, var(--cyan)) 12%, transparent);
+}
+.rs-deck-init-extra {
+  width: 100%;
+  min-height: 76px;
+  padding: 6px 8px;
+  border: 1px solid var(--rs-slide-rule, var(--bd2));
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  resize: vertical;
+  line-height: 1.6;
+}
+
+/* 边界那句：固定文案，视觉上要压得住，不能被当成又一条 hint */
+.rs-deck-init-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  border-left: 3px solid var(--rs-slide-accent, var(--red));
+  border-radius: 0 8px 8px 0;
+  background: color-mix(in srgb, var(--rs-slide-accent, var(--red)) 8%, transparent);
+}
+.rs-deck-init-note-i {
+  flex: 0 0 auto;
+  font-weight: 700;
+  color: var(--rs-slide-accent, var(--red));
+}
+.rs-deck-init-note-t {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
+}
+.rs-deck-init-note-t b {
+  font-weight: 700;
+}
+.rs-deck-init-note-t span {
+  color: var(--rs-slide-muted, var(--muted));
+  font-size: 11.5px;
+}
+
+/* 底部动作 */
+.rs-deck-init-foot {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--rs-slide-rule, var(--bd));
+  background: var(--rs-slide-paper2, var(--panel2));
+}
+.rs-deck-init-hint {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+  color: var(--rs-slide-muted, var(--muted));
+}
+.rs-deck-init-err {
+  flex: 0 0 auto;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+  color: var(--rs-slide-accent, var(--red));
+}
+.rs-deck-init-btn {
+  flex: 0 0 auto;
+  padding: 4px 14px;
+  border: 1px solid var(--rs-slide-rule, var(--bd2));
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  line-height: 1.6;
+}
+.rs-deck-init-btn:hover:not(:disabled) {
+  border-color: var(--rs-slide-primary, var(--cyan));
+  color: var(--rs-slide-primary, var(--cyan));
+}
+.rs-deck-init-btn.primary {
+  border-color: var(--rs-slide-primary, var(--cyan));
+  background: var(--rs-slide-primary, var(--cyan));
+  color: var(--rs-slide-paper, #fff);
+  font-weight: 600;
+}
+.rs-deck-init-btn.primary:hover:not(:disabled) {
+  color: var(--rs-slide-paper, #fff);
+  filter: brightness(1.06);
+}
+.rs-deck-init-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}

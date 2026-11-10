@@ -16,9 +16,13 @@ description: 在研究视图里以课题为核心建知识图谱：Markdown 笔�
   init-queue.json            初始化队列（用户投的料；agent 逐项处理并回写状态）
   notes/*.md                 笔记（真源；子目录随意，id = note:<相对路径>）
   core/*.md                  核心文件转出的正文（主稿在这里，与 notes/ 同权：进图谱、可被 [[标题]] 指到）
+  core/<原名>.skim.md       3-Pass 变体：略读（贡献 / 证据 / 局限）
+  core/<原名>.concept.md    3-Pass 变体：关键概念（简要定义 + 简化解释 + 优先引原文的图）
+  core/<原名>.tech.md       3-Pass 变体：技术细节（方法 / 公式原样 / 实验设置）
+  terms/<slug>.md            术语页（一页一个术语，全库共用；第一层初始化时归纳，之后靠「引申」长下一层）
   literature/library.json    CSL-JSON 文献库（BibTeX 导入后也是这一份）
   literature/sources/<key>.md  参考资料转出的正文
-  literature/folds/<key>.md    参考资料的三层折叠（全文 / 关键原句 / 主题）
+  literature/folds/<key>.md    参考资料的三层折叠（全文 / 关键原句 / 主题）+ 节级三档（一句话 / 一段话 / 原文）
   literature/pdf/<key>.md    PDF 抽出的全文（已经过解析，可 grep）
   graph.json                 增量构建的图谱缓存（可删，删了重建）
   changes.jsonl              可撤销的改动日志（保留最近 500 条）
@@ -35,6 +39,7 @@ kind: claim            # 可选：topic / claim / concept / method / question / 
 tags: [claim, method]
 aliases: [SparseAttention]
 verify: doubt          # verified | doubt | unverified
+方向: 定义              # 可选：这条笔记从哪个方向写这个对象（自由文字，见下）
 date: 2026-03-01
 refs: [vaswani2017]    # 引用键，等价于正文写 [@vaswani2017]
 relates: [长序列建模]
@@ -56,10 +61,19 @@ relates: [长序列建模]
 | --- | --- | --- |
 | `[[目标]]` / `[[目标\|别名]]` | concept，能对上笔记标题/别名就并回该笔记 | `relates` / `mentions` |
 | `[@key]` / `[@key 第 3 节]` / `[-@key]` | paper 节点（键来自文献库） | `cites`（保留 locator） |
-| `$…$` / `$$…$$` | formula 节点 | 正文里 `uses`，callout 里 `depends` |
+| `> [!formula] 题目` | formula 节点（**按内容合并**） | `depends` |
 | `> [!claim|refute] 标题` | claim 节点 | `asserts`（`refute` 记 `refuted: true`） |
 
-callout 的可用种类：`claim`（论断，带 verify 状态）、`note`（批注，`annotates`）、`source`（外部来源，抽 URL/DOI，`cites`）、`formula`（公式块，`depends`）、`method`（方法/步骤，`part_of`）、`question`（待解问题，`asks`）、以及 `claim|refute`（被反驳的论断）。
+**公式不进图**：行内 `$…$` 与块级 `$$…$$` 只在正文渲染（阅读区按小节自动编号；点公式弹出「库里哪些笔记写过这条式子」的浮层，浮层头部那颗 ⤢ 才是原来的放大 / 改源码）。
+要让一条公式上图，就写成显式块 `> [!formula] 简短题目`，正文写 TeX —— 同一道公式按内容合并成一个节点。
+**章节标题也不进图**：`## 1. 引言` 是排版结构，导航交给阅读区右侧大纲。
+
+callout 的可用种类：`claim`（论断，带 verify 状态）、`note`（批注，`annotates`）、`source`（外部来源，抽 URL/DOI，`cites`）、`formula`（公式块，`depends`）、`method`（方法/步骤，`part_of`）、`question`（待解问题，`asks`）、`term`（术语定义，**只做渲染、不进图**：术语在别处首次出现时带锚点，悬停看定义、点击看「哪些笔记写过它」）、以及 `claim|refute`（被反驳的论断）。
+
+**「方向」是笔记自己的一个自由字段**：`方向: 定义` / `方向: 反例` / `方向: 动机` / `方向: 历史`……
+意思是「这条笔记从哪个方向写它谈到的那个对象」。它在阅读区点术语 / 点公式弹出来的浮层里，就是每张卡片开头那颗有色标签
+（标签后面紧跟正文，同一条流、整卡截三行）；没写方向的旧笔记退回 callout 种类（定义 / 公式 / 论断…），不留空标签。
+中英文主键都认（`方向:` 优先，其次 `angle:` / `direction:` / `dir:`），所以既有笔记不用改。
 
 代码块 ```mermaid / ```pele 会变成 figure 节点（Pele 只支持 `flowchart TD|LR`、`sequenceDiagram`、`mindmap` 三类，语法见 `renderer/app-pele.js` 头部注释）。
 
@@ -68,14 +82,22 @@ callout 的可用种类：`claim`（论断，带 verify 状态）、`note`（批
 **先看这份内核，别再写一套解析**：`renderer/research-core.js`（UMD，纯函数，零依赖）就是全部解析与图算法，Node 与渲染层共用同一份。
 
 ```powershell
-# 整库体检：节点/边计数、kind 分布、缺文献的引用、悬空链接
+# 整库体检：节点/边计数、kind 分布、缺文献的引用、悬空链接、没有出边的论断
+# 笔记真源是 notes/ + core/ + frontmatter 里的 parents —— 与界面 rsLoadNotes 同口径，core/ 的主稿不会被误报悬空
 node mtnode-agent-skills/mtnode/research/scripts/research-lit.mjs graph <research目录>
+
+# 体检 + 按界面同一份 buildGraph + pruneGraph 落 graph.json（这是命令行唯一允许写图谱的入口）
+node mtnode-agent-skills/mtnode/research/scripts/research-lit.mjs graph <research目录> --write
 
 # 单篇笔记解析结果（节点、边、verify 状态）
 node mtnode-agent-skills/mtnode/research/scripts/research-lit.mjs note <research目录> notes/xxx.md
 
 # 文献库清单（citeKey / 标题 / 年份 / 是否有 DOI 与 PDF 全文）
 node mtnode-agent-skills/mtnode/research/scripts/research-lit.mjs ls <research目录>
+
+# 文献入库（library.json 的唯一命令行写入口；同 DOI 覆盖、重键自动补 b/c）
+node mtnode-agent-skills/mtnode/research/scripts/research-lit.mjs lib <research目录> add --doi 10.1038/nature14539
+'{"title":"…","author":[{"family":"…"}],"issued":{"date-parts":[[2020]]},"DOI":"10.…"}' | node mtnode-agent-skills/mtnode/research/scripts/research-lit.mjs lib <research目录> add -
 
 # 在线检索（Crossref / arXiv），抓元数据落成 CSL-JSON 条目
 node mtnode-agent-skills/mtnode/research/scripts/research-lit.mjs search crossref "sparse attention" 5
@@ -84,14 +106,18 @@ node mtnode-agent-skills/mtnode/research/scripts/research-lit.mjs search arxiv "
 # 按 DOI 取准元数据（写库前先取，不手抄）
 node mtnode-agent-skills/mtnode/research/scripts/research-lit.mjs doi 10.5555/3295222
 
-# 初始化队列：看状态 / 取下一条 / 回写一条 / 追加入队 / 生成折叠骨架（唯一允许写 init-queue.json 的入口）
+# 初始化队列：看状态 / 取下一条 / 回写一条 / 追加入队 / 生成折叠骨架 / 体检（唯一允许写 init-queue.json 的入口）
 node mtnode-agent-skills/mtnode/research/scripts/research-queue.mjs status <research目录>
 node mtnode-agent-skills/mtnode/research/scripts/research-queue.mjs next   <research目录>
 node mtnode-agent-skills/mtnode/research/scripts/research-queue.mjs set    <research目录> it0001 done
 node mtnode-agent-skills/mtnode/research/scripts/research-queue.mjs set    <research目录> it0002 done --summary   # 只抓到元数据+摘要
 node mtnode-agent-skills/mtnode/research/scripts/research-queue.mjs add    <research目录> '{"role":"ref","source":"url","url":"https://arxiv.org/abs/2401.00001","hitBy":"long context"}'
-node mtnode-agent-skills/mtnode/research/scripts/research-queue.mjs folds  <research目录> <key> literature/sources/<key>.md
+node mtnode-agent-skills/mtnode/research/scripts/research-queue.mjs folds  <research目录> <key> literature/sources/<key>.md --write   # 落盘 + 原句按首句预填 + 节级三档骨架（原文已填，一句话/一段话留空）
+node mtnode-agent-skills/mtnode/research/scripts/research-queue.mjs folds  check <research目录>   # 三层空槽 / 段落 id 错位 / 节级三档空槽
+node mtnode-agent-skills/mtnode/research/scripts/research-queue.mjs doctor <research目录>         # 一轮还差什么（含缺节级 / 缺术语 / 缺变体），一次列全
 ```
+
+**传 JSON 别跟引号较劲**：PowerShell / cmd 会把内联 JSON 的双引号吃掉（`{"a":1}` 到 node 变成 `{a:1}`）。长载荷一律走管道 `-`（stdin）或 `@路径.json`，`add` 与 `lib add` 都认这两种写法。
 
 渲染层里对应的是 `window.MTResearch`（切笔记、落图、加批注、导入文献、撤上一步）与 `window.MTResearchGraph`（布局/聚焦/搜索）；抓网络必须走 `window.api.netFetch`（CSP 只放行 `'self'`，`fetch` 会被拦）。
 
@@ -148,20 +174,107 @@ node mtnode-agent-skills/mtnode/research/scripts/research-queue.mjs folds  <rese
    - `pdf`：先跑 `window.api.fileParsePdf` 等价能力（应用内已有内核），拿不到文本层就 `set ... failed "no-text"` 跳过 —— **不要自己 OCR，也不要猜内容**。扫描件请留 `failed` 并在 `error` 里写明原因。
    - `doc` / `ppt`：本机没有 Office 转换器时，能读到什么就写什么（文本层），读不到就 `set ... failed "需要手工导出"`，不要编造。
    - 正文第一行写 `# <title>`，frontmatter 用 `title / kind / source / convertedAt`（`kind` 取 `topic | note | source`）。
-4. **抽论断与概念**（核心与参考都做）：把可验证的陈述抽成 `> [!claim] …`，概念写成 `[[概念]]`，外部依据写 `[@key locator]`。**原文引用一字不改**，改写只在 `[!note]` 里做。
+4. **转写阶段不抽论断**：这一轮**不写** `> [!claim]`、不建图谱边 —— 论断与概念是作者的活，图谱由他在界面上按需构建（点「转为图谱」）。原文照抄：**不摘要、不改写、不补段落**。转写完成后，再按后面「三件跟着初始化学一起做的产物」补 3-Pass 变体 / 术语页 / 节级三档 —— 这三样是**衍生投影**，不改原文一个字节。
 5. **参考资料额外两件**：
-   - 三层折叠 → `foldsRel`。骨架用 `node ... research-queue.mjs folds <research> <key> <mdRel>` 生成（已按段落切好 `p0001…`），然后把每段的 `**全文**`（原文，可压缩长引用）/ `**关键原句**`（作者原话，逐字，不用改写）/ `**主题**`（3–6 字的主题词）填上；`# 主题地图` 一节按章节列 `- 章节 → 主题 · 主题`。**顺序与段落 id 不许改**，界面靠它对齐。
-   - 文献条目进 `literature/library.json`（CSL-JSON）：能从正文/DOI 认出就写准，认不出就把标题、作者、年份按原文抄进去，`citeKey` 用 `key`。
-   - 顺手写 `noteRel`：一段摘要 + 3–5 条可复用论断 + 与本课题的关系（这些论断要用 `[[…]]` 指回核心稿的概念）。
-6. **建边**：每篇处理完就把本篇的边建好（`cites` / `relates` / `asserts` / `depends` / `annotates`），不要攒到最后才建。
+   - 三层折叠 → `foldsRel`。用 `node ... research-queue.mjs folds <research> <key> <mdRel> --write` 直接落盘：脚本剥掉 frontmatter、按空行切段（`p0001…`）、`**全文**` 抄原文、`**关键原句**` 按段首句**逐字**预填（超长才在截断处留 `…`）、`**主题**` 留空。你只做判断的那部分：改不合适的原句、逐段补 3–6 字主题、按章节写 `# 主题地图`。**顺序与段落 id 不许改**，界面靠它对齐；收工前跑 `folds check <research>` 确认三层无空缺、id 不错位。
+   - 文献条目**别手抄 JSON**：`research-lit.mjs lib <research> add --doi <DOI>`（认不出 DOI 就管道传 CSL-JSON：`add -`），同 DOI 覆盖、重键自动补 b/c，与界面归并口径一致。
+   - 顺手写 `noteRel`：一段摘要 + 这篇文献与本课题的关系。**不写 claim 块、不写 `[[…]]` 链接**（那是作者的事）。
+6. **不建图谱边**：初始化不写 `cites` / `relates` / `asserts` 这些关系；正文里的引用 `[@key]` 照原文保留即可（文献库里没有的键也不用补）。
 7. **回写状态**：`... set <research> <id> done`；某项失败就 `set ... failed "原因"` 然后继续下一项 —— **一项失败不许中断整轮**。
-   - 处理完一条，除了把队列项 `status` 置 `done`，还要在它对应的笔记 frontmatter 里写 `init: done`（可带 `initAt: <毫秒时间戳>`）：队列项与笔记标记是「已处理」的两条依据，**界面靠这个标记**给笔记 / 文献行打 ✓ 徽标、把顶栏 chip 变成「初始化完成 · N 篇已处理」，所以两条都要写，别只写一条。
+   - `set ... done` 会**自动**在该项的 `noteRel` 笔记 frontmatter 里补 `init: done` / `initAt`（队列项与笔记标记是「已处理」的两条依据，界面靠这个给笔记 / 文献行打 ✓ 徽标、把顶栏 chip 变成「初始化完成 · N 篇已处理」）—— 不用再手工 edit，命令回执里会打印写没写上。项里没有 `noteRel`（例如后来手工追加的项）时脚本不会乱建文件。
 
 ### 收尾
 
-- 全部项跑完后，再**跑一轮全局建边**：把核心稿与各参考资料之间同一主题的 `[[概念]]` 对齐（标题/别名一致就并成同一个节点），该加 `relates` 的补上，默认 `verify: unverified`。
 - `... status <research>` 确认 `finished == total`，然后 `set` 最后一条（或任何一条）让 `phase` 变成 `done`。
-- 回到界面会看到「已建 N 条边 · 转为图谱」。**不要**自己弹窗、不要改画布节点、不要动 `graph.json`。
+- 收尾前跑一遍 `... doctor <research>`：它一次列出「待处理 / 卡在 running / 缺正文 / 缺笔记 / 缺 init 标记 / 折叠空槽 / 节级三档空槽 / 缺术语页 / 缺 3-Pass 变体 / phase 与进度不符 / 文献缺 DOI」，按清单补完再收尾（别再靠自己一项项肉眼核）。
+- **初始化不建图、不建边**：`graph.json` 只在用户点「转为图谱」时由界面投影生成，或由 `research-lit.mjs graph <research> --write` 生成。**不要**自己弹窗、不要改画布节点、不要手写 `graph.json`。
+
+## 三件跟着初始化学一起做的产物
+
+每个**核心原文**（`core/*.md`）除了正文，还要产出下面三样。它们互相独立、各自成文件，都在 `research/` 里，界面都认：
+
+### 1) 3-Pass 变体（三份独立文件）
+
+对每篇原文各写三份（后缀固定，别自创）：
+
+| 后缀 | 内容 | 篇幅 |
+| --- | --- | --- |
+| `.skim.md` | **略读**：贡献 / 证据 / 局限 | 200–320 字 |
+| `.concept.md` | **关键概念**：3–6 个概念，每个：简要定义 + 简化解释 + 优先引原文里已有的图 | ≤ 600 字 |
+| `.tech.md` | **技术细节**：方法步骤 / 公式原样抄 / 实验设置与关键数字 | 不限，但只写原文有的 |
+
+- frontmatter：`title`、`derived: skim | concept | tech`、`parent: core/<原名>.md`；不写 `lang`（这三份不是翻译）。
+- 文件名 = 原文件名 + 后缀：`core/attention.md` → `core/attention.skim.md`。
+- 旧的 `*.summary.md` / `*.excerpt.md` **留在盘上别动**（用户要求保留），但**不要再新写**这两种。
+- 三份都不许编：原文没写的写「原文没有展开」。
+
+### 2) 术语页 `terms/<slug>.md`（第一层）
+
+初始化时按原文自动归纳**第一层** 8–20 页；更深的层不自动跑，等用户在某页点「引申」。
+
+- 文件：`terms/<slug>.md`，`slug` = 术语名（中文保留、空白与符号转 `-`），全库一页一个术语名，不按文章分目录。
+- frontmatter 六键：
+  ```
+  ---
+  title: 稀疏注意力
+  kind: term            # term | concept | formula | symbol | theorem | method | dataset
+  slug: 稀疏注意力
+  aliases: [sparse attention]
+  derives: [attention]  # 来源原文的 title（图谱上 = 术语页 → 原文这条边）
+  relates: [注意力机制]  # 上层术语（术语页 → 父术语）
+  sources: [attention · §2]   # 原文里哪一节讲的
+  origin: init          # init | derive（第二层以后写 derive）
+  verify: unverified
+  date: 2026-11-09
+  ---
+  ```
+  **不写 `parent`**：那会在图上多出一条与 `derives` 对顶的边。
+- 正文骨架（缺的节删掉，别留空标题）：
+  ```
+  # 稀疏注意力
+
+  > [!term] 稀疏注意力
+  > 只让一部分 token 互看，其余置零。
+
+  ## 直觉
+  开会时只跟邻座说话 —— 省了寒暄，也漏掉了远处的信息。
+
+  ## 公式 / 记号
+  $$ \text{Attn}(Q,K,V) = \mathrm{softmax}(M \odot QK^\top/\sqrt{d})V $$
+
+  ## 符号
+  - $M$：掩码矩阵（0/1）
+
+  ## 在原文里
+  - attention · §2：定义与复杂度对比
+
+  ## 还能引申
+  > [!question] 待展开
+  > - [[块稀疏]]
+  > - [[Top-k 选择]]
+  ```
+- `## 直觉` 是必需节：没有一段简化解释，这页就只是抄词典。
+- `## 还能引申` 里列的是**下一层候选**（`[[…]]` 指向还不存在的页也允许）；用户点「引申」后你才生成那些页。
+- `kind: formula` / `symbol` 的页：公式 / 记号原样抄进 `## 公式 / 记号`，一个符号一行写进 `## 符号`；不许改写符号含义。
+
+### 3) 节级三档（写进折叠文件，不另起文件）
+
+`literature/folds/<key>.md` 除三层折叠外，还有一段 `# 节级三档`：读者在界面上给**每一节**切「一句话 / 一段话 / 原文」。
+
+- `folds --write` 已经把骨架写好：每节 `## s0001 · <锚点>` + `**一句话**` / `**一段话**` 留空（`—`）+ `**原文**` 抄好。
+- 你要做的是把每节的 `**一句话**`（≤ 40 字，说清这节干了什么）与 `**一段话**`（80–150 字，可独立读懂）填上；`**原文**` **一个字都不要动**（它是回落基准，顺序与 id 也不许改）。
+- 顶部 frontmatter 只有两行归你偶尔改：`secLevel: one | para | full`（全篇默认档）与 `secPins: s0002=full, s0005=one`（每节钉住，逗号分隔）。平时不用动 —— 读者在界面上切，界面自己写。
+- 节级三档与三层折叠**互不影响**：前者按「节」切颗粒度，后者按「段」做折叠投影；改一个别把另一个删了。
+
+## 用户明确要求建论断 / 建边时（超出初始化范围）
+
+初始化默认不建边（见上），但用户明确说「抽论断、抽概念、建边、跑一轮全局建边」时照下面做 —— 别为这件事临时写脚本：
+
+1. 论断按笔记规范写进正文：`> [!claim] 标题` + 支撑行 `> 支撑：[@key locator]`，`verify` 按证据给 `doubt` / `verified`（单一来源就是 `doubt`）；
+2. 概念写成 `notes/<编号>-<概念>.md`（`kind: concept`，带 `> [!term]`），别建空模板，别让 `[[…]]` 指向不存在的笔记；
+3. 建边 = 改正文后重算，不是手写 JSON：先 `research-lit.mjs graph <research>` 看缺口（悬空 wikilink / 没有出边的论断 / 引用键不在文献库），改到缺口归零；数值、条目一律回原文核对，别凭印象；
+4. 再 `graph <research> --write` 落盘 —— 走的正是界面那份 `buildGraph + pruneGraph`，节点 / 边 / kind 分布与界面完全一致；
+5. 交付时报 `nodes / edges / 各类边计数 / 缺口`，这些都能从命令回执里复核。
 
 ## 验证状态（三态，不许自创第四态）
 
@@ -181,8 +294,9 @@ node mtnode-agent-skills/mtnode/research/scripts/research-queue.mjs folds  <rese
 
 ## 硬规则
 
-- 只改 Markdown 正文（与 `library.json`、`init-queue.json` 的状态位）；**不要手改 `graph.json`、不要手写 `changes.jsonl`**。
-- `init-queue.json` 只通过 `research-queue.mjs set` 改状态——手改容易漏 `phase`，界面会卡在「处理中」。
+- 只改 Markdown 正文（与 `library.json`、`init-queue.json` 的状态位）；`graph.json` 只由界面「转为图谱」或 `research-lit.mjs graph --write` 生成，**不要手写**；`changes.jsonl` 不要手写。
+- `init-queue.json` 只通过 `research-queue.mjs set` 改状态——手改容易漏 `phase`，界面会卡在「处理中」；`library.json` 只通过 `research-lit.mjs lib add`（或界面导入）写，别手抄 JSON。
+- 需要「体检 / 折叠 / 入库 / 建图」这类活，先用上面那两条命令（`research-lit.mjs` / `research-queue.mjs`），**不要另写临时脚本**：内核 `renderer/research-core.js` 是唯一真源，另写一套必然与界面口径不一致。
 - 新增论断 = 新增 `> [!claim]` callout，不要另起一个孤立 md 文件（孤立节点等于没写）。
 - 每条 `claim` 至少要有一条出边（引用 / 依赖 / 反驳），否则图谱上就是悬空断言。
 - 图谱反向改正文只允许动 callout 块与 frontmatter 键，不动正文散文。

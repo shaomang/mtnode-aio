@@ -6,10 +6,10 @@
 //      fn-runtime 的 mtnode.subtitle 桥跑到画布上）。
 // 两处若各写一份，改一处必然漂移（时间码 / 断句 / 去句末句号任一处不一致，用户看到
 // 的就是两套字幕）。所以纯函数只在这里写一次：
-//   · 网关侧按相对路径 import（打包时整棵 dsh/gateway 复制到 resources/dsh/gateway，
-//     文件跟着走，见 dsh/after-pack.cjs）；
-//   · 主进程侧按 GATEWAY_PATH 的同级绝对路径动态 import（dsh/main-dsh.js 导出的
-//     GATEWAY_PATH 就是这份文件的目录）。
+//   · 网关侧按相对路径 import（打包时整棵 dsh/gateway 进 resources/dsh/gateway-tree.mtgw，
+//     运行期由 dsh-node.js 解到数据目录，见 dsh/after-pack.cjs 与 dsh/gateway-archive.cjs）；
+//   · 主进程侧按网关入口的同级绝对路径动态 import（dsh/main-dsh.js 导出的 gatewayPath()
+//     给出的就是这份文件的目录）。
 //
 // 口径（用户共识，改动前先复核）：
 //   · 默认单条 ≤ 6 秒；中文字幕 18 字 / 英文字幕 42 字符，按识别文本的 CJK 占比自动选；

@@ -34,6 +34,22 @@ function planFlowDirective() {
   );
 }
 
+/* 拼「本轮用户消息」：**用户原话永远紧跟「用户(最新)：」单独成块**，注入指令
+   （任务流程契约 / 沿用清单）一律排在原话之后，并标明这一段是系统注入。
+   为什么（用户第二次实报同一现场）：原先拼成「用户(最新)：<长契约…>\n<用户原话>」，
+   原话紧贴契约最后一行、没有任何边界 —— 模型会把整条消息读成「系统设定」，
+   于是首轮明明写了正文却被回「缺少任务正文」。上一次只补了「用户(最新)：」标记，
+   标记仍在契约之前，等于没解决顺序问题。 */
+function agentUserTurnInput(hist, injected, userText) {
+  const body = String(userText == null ? "" : userText);
+  const inj = String(injected || "").trim();
+  let turn = "用户(最新)：\n" + body;
+  if (inj)
+    turn +=
+      "\n\n【系统注入 · 本轮流程指令（上面那句才是用户说的话，本段不是用户内容）】\n" + inj;
+  return hist ? String(hist) + "\n\n" + turn : turn;
+}
+
 /* 解析计划标记文本 → { goal, excludes, tasks } | null */
 function planParseFromText(text) {
   const s = String(text || "");

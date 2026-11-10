@@ -78,14 +78,15 @@ function main() {
     `# MTNode AIO 更新通道 v${ver}`,
     ``,
     `发布时间: ${new Date().toISOString()}`,
-    `更新源 URL: http://mt-agent.com/mtnode/updates/`,
+    `更新源 URL: https://www.mt-agent.com/mtnode/updates/ （客户端 https 优先，http 仅回退）`,
     ``,
     `文件:`,
     `- latest.yml — electron-updater 清单`,
     `- MTNodeAIO-Setup-${ver}.exe — 完整安装包`,
     `- MTNodeAIO-Setup-${ver}.exe.blockmap — 差分块图（已装旧版时只下变更块）`,
     ``,
-    `nginx 需提供 /mtnode/updates/ 静态目录，并支持 HTTP Range（差分必需）。`,
+    `nginx 需提供 /mtnode/updates/ 静态目录（或 OSS/CDN 回源 + proxy_cache），并支持 HTTP Range 206（差分必需）。`,
+    `**历史版本不要删**：旧版客户端的差分要拿上一版（乃至几版前）的 .exe/.blockmap 做块比对，删掉就被迫整包下载。`,
     ``,
   ].join("\n");
   fs.writeFileSync(path.join(OUT, "README.txt"), notes, "utf8");

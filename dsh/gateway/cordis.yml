@@ -136,7 +136,7 @@
       mtnode-unattended:
         sandbox: workspace-write
         approval: ask
-    defaultPreset: workspace-write
+    defaultPreset: mtnode-unattended
 
 - id: tool-bash
   disabled: !!js process.platform === 'win32' || process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
@@ -649,11 +649,11 @@
     # Agent 一个 MCP 工具都没有。after-pack.cjs 现在还会再兜一道（打包时把这段剪掉）。
 
 
-# ── user plugins (managed from MTNode settings) ──# ── user plugins (managed from MTNode settings) ──# ── user plugins (managed from MTNode settings) ──# ── user plugins (managed from MTNode settings) ──# ── user plugins (managed from MTNode settings) ──# ── user plugins (managed from MTNode settings) ──# ── user plugins (managed from MTNode settings) ──# ── user plugins (managed from MTNode settings) ──# ── user plugins (managed from MTNode settings) ──
+# ── user plugins (managed from MTNode settings) ──
 
-- id: user-mcp-mw5z1zvq
+- id: user-mcp-mw9hu6wl
   name: '@deepseek-ai/dsh-mcp-client'
   config:
     serverName: 'mtnode-self'
     transport: 'streamable-http'
-    url: 'http://127.0.0.1:52777/mcp?token=82fcbd28bb69f0ec69f09f53117a88d3a62cd4011098ebe4'
+    url: 'http://127.0.0.1:63739/mcp?token=ea09108fc02ad41157f3d55c310cc7c99ace02b3b4af4519'

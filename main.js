@@ -28,6 +28,10 @@ const {
 } = require("electron");
 const path = require("path");
 const fs = require("fs");
+/* UTF-8 增量解码器：网络分片会从多字节字符中间切断（一个汉字 3 字节），逐块
+   Buffer.toString("utf8") 会在断点吐出 U+FFFD（界面上就是「附???」），
+   而且这串替换字符会随流式正文一路写进笔记 / 文档。见 streamTextChat。 */
+const { StringDecoder } = require("string_decoder");
 const { launchDetached } = require("./main-exec-launch.js");
 /* 常驻托盘 + 关闭收托盘 + 任务完成系统通知（本次需求）：主进程侧状态都在这个小模块里，
    见 main-tray-notify.js 文件头。这里只做接线：close / window-all-closed / before-quit
@@ -79,7 +83,7 @@ function gifenc() {
 
 /* dsh agent 适配器（网关侧车）：全部 dsh 能力经此模块，契约见 dsh/DESIGN.md。
    本文件与渲染层不 import 任何 dsh 代码，dsh 升级只触及 dsh/gateway/。 */
-const { createDshAdapter, GATEWAY_PATH: DSH_GATEWAY_PATH, dshKernelVersion } = require("./dsh/main-dsh.js");
+const { createDshAdapter, gatewayPath: dshGatewayPath, dshKernelVersion } = require("./dsh/main-dsh.js");
 const { createMcpHost } = require("./mcp-server.js");
 /* 子代理策略（嵌套深度 / 后台并行委派 / fork / 总开关）→ 只改写 cordis.yml 里
    subagent* 这 8 行的配置值与 disabled 取值；dsh 三层契约一字未动。
@@ -90,6 +94,13 @@ const { applySubagentPolicy, policyFromConfig } = require("./dsh-agent-policy.js
  * 与子代理策略同一口径：启动时与每次保存配置后写入，下一个新会话生效。 */
 const { applyCompactPolicy, compactPolicyFromConfig } = require("./dsh-compact-policy.js");
 const I18n = require("./renderer/i18n.js");
+/* 画布文档服务（读侧 + 写档）：Agent 读写画布这件事从渲染层搬到主进程 —— 开关
+ * canvases.docService = off|read|write，缺省 off（off 时一行都不走这里，IPC 也直接回 off，
+ * 行为与今天完全一致）。服务本体跑在 utilityProcess 里（任务 7/8），主进程只转发 + 落盘 +
+ * 管生命周期；起不来 / 崩了就回落 read。单处 require：渲染层只经 preload 白名单拿结果。 */
+const { createCanvasDocService } = require("./canvas-doc/canvas-doc-service.js");
+/* 服务进程客户端（任务 7/8）：服务本体跑在 utilityProcess 里，主进程只转发 + 落盘 + 管生命周期 */
+const { createCanvasDocClient } = require("./canvas-doc/canvas-doc-client.js");
 const {
   registerUpdateIpc,
   startBackgroundCheck,
@@ -182,6 +193,9 @@ const {
 const { patchProviders } = require("./config-providers.js");
 /* 文本 → PDF 落盘内核（隐藏窗口 + printToPDF，公式排版与画布预览同源，见 pdf-write.js） */
 const pdfWrite = require("./pdf-write.js");
+/* 幻灯片导出（PDF 一页一张 + 逐页 PNG）与演讲者第二屏窗口（主窗禁止 window.open），
+   见 slides-export.js（渲染层的 research:slidesPrint / research:slidesPresenter 走它） */
+const slidesExport = require("./slides-export.js");
 const { registerToolsIpc } = require("./tools-store.js");
 /* 工作流库（跨画布复用「一颗节点层」= 封装好的工作流，见 workflow-store.js） */
 const { registerWorkflowsIpc } = require("./workflow-store.js");
@@ -198,7 +212,10 @@ const {
   registerAppsIpc,
   shutdownApps,
   setQuitHandler,
-  mirrorAppCanvas,
+  /* 画布镜像的脏标记 + 空闲/退出刷（任务 7/8）：画布落盘链只记脏，不再每次同步镜像一份
+     （真正的写镜像在 apps-store.js 的 mirrorAppCanvas 里，这里不再需要它） */
+  markAppCanvasMirror,
+  flushAppCanvasMirror,
   /* 函数节点的 mtnode.image(...) 复用应用通道的同一份图像内核（见 fnImageCall）；
      图像后端清单给主窗口渲染层（函数节点头部「图像后端」按钮列候选）。 */
   hostImageGenerate,
@@ -227,6 +244,10 @@ const { registerAiFactsIpc } = require("./ai-facts-store.js");
 /* 「活动流」留痕库（浏览器动作 + shell 命令 + 文件读写摘要；只落个人数据目录，
    不进模型上下文）。见 activity-store.js 顶部口径。 */
 const activityStore = require("./activity-store.js");
+/* 助手侧三股流（会话流 / 活动流 / 文件树）的**独立渲染进程**宿主（任务 8/8）：
+   assist.isolation = off|on|window；off = 今天的内嵌路径，本模块一次都不起进程。
+   见 assist-isolation.js 顶部口径与 docs/assist-isolation.md。 */
+const assistIso = require("./assist-isolation.js");
 /* 本机微信 PC 版检测 / 启动：纯主进程、零新依赖，不做注入与本地数据读取 */
 const wechatPc = require("./wechat-pc.js");
 /* 剪贴板里「被复制的图片文件」列表解析（CF_HDROP / FileNameW 的纯函数口径，见该文件顶部） */
@@ -271,7 +292,9 @@ function dshLog(p) {
    失败只记日志：组合改不动不该把应用启动或配置保存带崩。 */
 function subagentPolicyPath() {
   try {
-    return path.join(path.dirname(DSH_GATEWAY_PATH), "cordis.yml");
+    /* 网关目录在打包态是「随包归档解到数据目录」的结果（见 dsh-node.js 的
+       ensureGatewayRoot），所以这里必须走函数调用而不是一个常量路径。 */
+    return path.join(path.dirname(dshGatewayPath(DATA())), "cordis.yml");
   } catch {
     return "";
   }
@@ -316,6 +339,75 @@ function syncCompactPolicy(cfg) {
     return { ok: false, reason: (e && e.message) || String(e) };
   }
 }
+/* ── dsh 事件合批（16ms 一拍）───────────────────────────────────────────────
+   网关把一次长回答拆成增量块下发（text / reasoning 各自逐块一帧，20k token ≈ 数千帧）。
+   逐帧 webContents.send 的代价是每帧一次结构化克隆 + 渲染层一次 IPC 派发，
+   几千帧下来这条单进程成本很可观（第 13 步要把会话流搬进独立进程，先把它削掉）。
+   合批口径（严格保序、不改帧内结构）：
+     · 只合 text / reasoning 且带非空 data.text 的增量帧；
+     · 只与**紧邻的队尾帧**合并，且必须同 reqId + 同 turn/step/index —— 换块 / 换轮 /
+       换流一律另起一帧，渲染层按这些字段归位的逻辑不受影响；
+     · 其余任何帧（tool / tool-run / usage / question / approval / ix-drop / browser /
+       session-event / error / done …）先把攒着的增量按序发出，再直发自己 ——
+       渲染层看到的事件顺序与逐帧直发完全一致（done 一定排在它前面所有增量之后）；
+     · data.text 直接拼接：渲染层本来就是往同一块里追加 data.text，语义不变。 */
+const DSH_EVENT_BATCH_MS = 16;
+let dshBatchFrames = [];   // 攒着待发的增量帧（已就地合并）
+let dshBatchTimer = null;
+let dshBatchKey = "";      // 队尾那帧的合并键：只与它同键的新帧才继续拼
+function dshDeltaKey(ev) {
+  const d = ev.data;
+  return (ev.reqId == null ? "" : String(ev.reqId)) + "\u0001" + ev.type +
+    "\u0001" + (d.turn == null ? "" : d.turn) +
+    "\u0001" + (d.step == null ? "" : d.step) +
+    "\u0001" + (d.index == null ? "" : d.index);
+}
+function dshFlushEvents() {
+  if (dshBatchTimer) { clearTimeout(dshBatchTimer); dshBatchTimer = null; }
+  if (!dshBatchFrames.length) return;
+  const frames = dshBatchFrames;
+  dshBatchFrames = [];
+  dshBatchKey = "";
+  if (!mainWin || mainWin.isDestroyed()) return;
+  for (let i = 0; i < frames.length; i++) {
+    mainWin.webContents.send("dsh:event", frames[i]);
+    assistIsoFeed(frames[i]);
+  }
+}
+/* 隔离渲染进程（assist.isolation = on|window）收**同一帧**：会话流 / 活动流要在那只进程里
+   自己画，所以这条链必须从主进程转发，不能靠画布进程再转一道（那样等于没搬走）。
+   没起宿主时这里只是一次 isHosting() 调用，逐帧零成本。 */
+function assistIsoFeed(ev) {
+  try {
+    if (assistIso.isHosting()) assistIso.sendEvent(ev);
+  } catch {}
+}
+function dshSendEvent(ev) {
+  const isDelta = !!ev && (ev.type === "text" || ev.type === "reasoning") &&
+    !!ev.data && typeof ev.data.text === "string" && ev.data.text !== "";
+  if (!isDelta) {
+    dshFlushEvents();
+    if (mainWin && !mainWin.isDestroyed()) {
+      /* 全部事件原样转发（含 reqId 为空的帧）：网关撤销「无在途归属」的提问 /
+         审批卡时发的 ix-drop 就是 reqId:'' 的全局撤卡帧，它不属于任何一次 run
+         的事件流，渲染层由 preload.dshOnIxDrop 在全局通道上按 id 兜底撤卡。 */
+      mainWin.webContents.send("dsh:event", ev);
+    }
+    assistIsoFeed(ev);
+    return;
+  }
+  const key = dshDeltaKey(ev);
+  const tailIdx = dshBatchFrames.length - 1;
+  if (tailIdx >= 0 && dshBatchKey === key) {
+    const tail = dshBatchFrames[tailIdx];
+    /* 顶层字段以新帧为准（reqId / type 同键必然相同），text 拼在旧文之后 */
+    tail.data = Object.assign({}, tail.data, ev.data, { text: tail.data.text + ev.data.text });
+  } else {
+    dshBatchFrames.push(Object.assign({}, ev));
+    dshBatchKey = key;
+  }
+  if (!dshBatchTimer) dshBatchTimer = setTimeout(dshFlushEvents, DSH_EVENT_BATCH_MS);
+}
 function dsh() {
   if (!dshAdapter) {    dshAdapter = createDshAdapter({
       dataDir: DATA(),
@@ -323,12 +415,7 @@ function dsh() {
       errLog,
       log: dshLog,
       onEvent: (ev) => {
-        if (mainWin && !mainWin.isDestroyed()) {
-          /* 全部事件原样转发（含 reqId 为空的帧）：网关撤销「无在途归属」的提问 /
-             审批卡时发的 ix-drop 就是 reqId:'' 的全局撤卡帧，它不属于任何一次 run
-             的事件流，渲染层由 preload.dshOnIxDrop 在全局通道上按 id 兜底撤卡。 */
-          mainWin.webContents.send("dsh:event", ev);
-        }
+        dshSendEvent(ev);
         try {
           const { onMusic3DshEvent } = require("./music3/main-music3.js");
           if (typeof onMusic3DshEvent === "function") onMusic3DshEvent(ev);
@@ -577,6 +664,17 @@ let mainWin = null;
 function win() {
   return mainWin;
 }
+
+/* ── 内嵌 webview 的总开关（who：主窗里的 guest 页；哪一只：只有 DeepSeek 官网会话页）───
+   默认开：渲染层要内嵌 chat.deepseek.com 时不必先握手。关掉 = 之后任何一次挂载都被
+   will-attach-webview 拒掉（已经在跑的 guest 不主动杀，渲染层自己销毁节点即可）。
+   开关本身只是一颗布尔，没有窗口级 API —— 见 preload.js 的 webviewSetEnabled 两条桥。 */
+let webviewAttachAllowed = true;
+ipcMain.handle("webview:getEnabled", () => ({ ok: true, enabled: webviewAttachAllowed }));
+ipcMain.handle("webview:setEnabled", (_e, on) => {
+  webviewAttachAllowed = on !== false;
+  return { ok: true, enabled: webviewAttachAllowed };
+});
 
 const crashReport = require("./crash-report");
 crashReport.init({
@@ -974,7 +1072,7 @@ function appVersion() {
 }
 /* dsh 内核版本随应用版本一起回给渲染层：会话左栏「DeepSeek Harness」后面那枚版本号
    （版本号真源与读法见 dsh/main-dsh.js 的 dshKernelVersion）。读不到就是空串，界面不显示。 */
-ipcMain.handle("app:version", () => ({ ok: true, version: appVersion(), dsh: dshKernelVersion() }));
+ipcMain.handle("app:version", () => ({ ok: true, version: appVersion(), dsh: dshKernelVersion(DATA()) }));
 /* ── 完成音的心跳（主进程驱动，不是"主进程发声"）─────────────────────────────
    声音本身仍然只由渲染层 WebAudio 发出（见 renderer/app-db.js 的 playTaskDoneSound）；
    这里补的是**判定时机**：完成音由「运行队列面板刷新 → dshRunQueueDoneCheck」判定，
@@ -1322,9 +1420,10 @@ ipcMain.handle("config:patchProviders", (e, opts) =>
 
 /* ── 会话通道（agentSessions 从 config.json 拆出后的读写口）──────────────────
    session:load = 索引（左栏字段，绝不含正文）；session:save = 只写脏会话 + 刷索引；
-   session:body = 按需读正文（懒加载）；session:patch = 按 id 改白名单字段（只 workspace，
-   不读正文）—— 工作目录体检修正旧路径时用它：这类会话既没读回正文、也没被标脏，
-   session:save 会整条跳过，改动就落不了盘（弹窗每次启动重现的根因）。四条都由
+   session:body = 按需读正文（懒加载）；session:patch = 按 id 改白名单字段（workspace 与
+   标题三键 title / titleAuto / titleLocked，不读正文）—— 工作目录体检修正旧路径、改名后把
+   标题同步进会话文件本体用它：这类会话既没读回正文、也没被标脏，session:save 会整条跳过，
+   改动就落不了盘（弹窗每次启动重现 / 改名重启后回退的根因）。四条都由
    agent-sessions-store.js 实现。 */
 /* ── 会话桥（session-bridge.js）：Paseo 远程接管 MTNode 会话的主进程回路 ────────
    读路径走文件层（列会话 / 读历史，窗口不在也能读），写路径仍推帧给渲染层执行
@@ -1389,7 +1488,10 @@ function wfListEntry(p, fname) {
   else wfListMeta.delete(p);
   return out;
 }
-ipcMain.handle("workflow:list", () => {
+ipcMain.handle("workflow:list", async () => {
+  /* 读盘前先把排队中的落盘写完：列表（mtime / 名字 / 节点数）读到的必须是最后一次保存
+     之后的磁盘状态，与异步化之前一致。队列空时这一步立即返回，不占时间。 */
+  await drainWorkflowWrites(2000);
   const d = mk(join(DATA(), "save"));
   const alive = new Set();
   const rows = fs
@@ -1405,26 +1507,227 @@ ipcMain.handle("workflow:list", () => {
   for (const p of wfListMeta.keys()) if (!alive.has(p)) wfListMeta.delete(p);
   return rows;
 });
-ipcMain.handle("workflow:load", (e, id) => {
+ipcMain.handle("workflow:load", async (e, id) => {
   if (!wfIdOk(id)) return { ok: false, error: I18n.t("非法工作流 id") };
+  /* 同上：先存后读要读到刚存的那一版，不能读到队列里还没落盘的前一版 */
+  await drainWorkflowWrites(2000);
   const j = readJson(wfPath(id));
   return j ? { ok: true, data: j } : { ok: false, error: I18n.t("工作流不存在") };
 });
-function writeWorkflowJson(p, obj) {
-  writeJson(p, obj);
-  /* 应用画布（wf.appId 由「新建应用」流程写入）：数据目录这份落盘后，顺手在应用目录里
-     镜像一份同名的 <AppName>.mtnodes（整目录搬走时不丢画布；导出 zip 不含它）。
-     best-effort：镜像失败只记日志，绝不让画布保存返回错误。 */
+
+/* ── 画布文档服务（开关 canvases.docService = off|read|write） ─────────────────────
+   Agent 读写画布的计算跑在 **utilityProcess** 里（canvas-doc/canvas-doc-worker.js）：文档
+   按 id 惰性装载后常驻（rev / 脏节点集合一起留着），读的全档位由共享内核算、写由共享编辑
+   引擎执行，渲染层那条老路整体保留。主进程这里只剩三件事 —— **转发**请求、**替它落盘**
+   （唯一出口是下面那条画布落盘异步串行队列）、**管生命周期**（惰性拉起 / 收尾 / 故障回落）。
+   默认 off：off 时下面这几个 IPC 一律直接回 { ok:false, error:"off" }，一个进程都不起。
+   read 只开读；write = read + 写（编辑帧由服务执行，渲染层降级为视图，随时可退回 read / off）。
+   服务进程起不来 / 崩了 → 记日志 + onFault，写档自动降级为 read（写回渲染层老路；读改用
+   进程内那台兜底，见 canvasDocFallbackService），本会话不再反复拉起。 */
+let canvasDocCli = null;
+let canvasDocFault = "";
+function canvasDocClient() {
+  if (!canvasDocCli)
+    canvasDocCli = createCanvasDocClient({
+      workerPath: path.join(__dirname, "canvas-doc", "canvas-doc-worker.js"),
+      saveDir: join(DATA(), "save"),
+      /* 服务侧的落盘：与渲染层同一个出口（异步队列 + 应用镜像脏标记 + putDoc），一处都不绕 */
+      writeDoc: (p, obj) => writeWorkflowJson(p, obj),
+      log: (m) => errLog(m),
+      onFault: (why) => {
+        canvasDocFault = String(why || "unknown");
+        errLog("[canvas-doc] 文档服务进程不可用，canvases.docService 已回落 read：" + canvasDocFault);
+      },
+    });
+  return canvasDocCli;
+}
+function canvasDocDown() {
+  return !!canvasDocFault;
+}
+/* 故障回落用：进程内那台（**只在服务进程起不来 / 崩了之后才建**，只服务读）。
+   正常路径上主进程一次都不会装这套渲染层 —— 那是搬去独立进程要解决的事。 */
+let canvasDocSvc = null;
+function canvasDocFallbackService() {
+  if (!canvasDocSvc)
+    canvasDocSvc = createCanvasDocService({
+      saveDir: join(DATA(), "save"),
+      readJson,
+      i18n: I18n,
+      log: (m) => errLog(m),
+      writeDoc: (p, obj) => writeWorkflowJson(p, obj),
+    });
+  return canvasDocSvc;
+}
+/* 开关只认 "read" / "write"（其余：没写 / 写了别的 / 读不到 / 坏档 → off）。配置走异步读盘那一路
+   （mtime 命中缓存即零 I/O），不在主进程事件循环上做同步大文件读。 */
+async function canvasDocMode() {
+  let v = "off";
+  try {
+    const cfg = await loadConfigTextAsync(join(DATA(), "config.json"));
+    const raw = String((cfg && cfg.obj && cfg.obj.canvases && cfg.obj.canvases.docService) || "");
+    v = raw === "write" ? "write" : raw === "read" ? "read" : "off";
+  } catch {
+    v = "off";
+  }
+  /* 服务进程不可用：写档降级为 read —— 编辑帧原路回渲染层执行（onFault 已记过日志） */
+  if (v === "write" && canvasDocDown()) return "read";
+  return v;
+}
+/* 读侧两个 IPC：read 与 write 档都要（write 档下渲染层的读也走服务，两路才看同一份文档） */
+ipcMain.handle("canvasdoc:get", async (e, { id, opts } = {}) => {
+  const mode = await canvasDocMode();
+  if (mode === "off") return { ok: false, error: "off", mode: "off" };
+  if (!wfIdOk(id)) return { ok: false, error: I18n.t("非法工作流 id") };
+  const o = opts && typeof opts === "object" ? opts : {};
+  /* 回落档：服务进程没了，读改用进程内那台（结果与它在服务进程里算出来的是同一份内核） */
+  if (canvasDocDown()) return canvasDocFallbackService().get(id, o);
+  return canvasDocClient().call("get", { id, opts: o });
+});
+ipcMain.handle("canvasdoc:status", async () => {
+  const mode = await canvasDocMode();
+  const base = { mode, worker: canvasDocClient().describe() };
+  if (canvasDocDown()) return Object.assign(base, canvasDocFallbackService().status());
+  const r = await canvasDocClient().call("status", {}, 8000);
+  if (r && r.ok) return Object.assign(base, r);
+  return Object.assign(base, { ok: false, error: (r && r.error) || "" });
+});
+ipcMain.handle("canvasdoc:list", async () => {
+  if ((await canvasDocMode()) === "off") return { ok: false, error: "off", mode: "off" };
+  if (canvasDocDown()) return { ok: true, rows: canvasDocFallbackService().list() };
+  return canvasDocClient().call("list", {}, 15000);
+});
+/* 写侧唯一入口（write 档）：服务改文档 → 请主进程落盘 → 回 receipt + diff。
+   params 与 canvas_edit 工具的入参完全一致；snap = 渲染层的排版网格（服务侧的 S 是中性现场），
+   runKey 只用于回执文案里的许可作用域，不改任何判断。这一笔**不设超时**：一次编辑跟一次
+   同步调用一样，等它自己给答案 —— 半路改判成失败会让渲染层把同一笔改两遍。 */
+ipcMain.handle("canvasdoc:edit", async (e, { id, params, runKey, snap } = {}) => {
+  if ((await canvasDocMode()) !== "write") return { ok: false, error: "off", mode: "off" };
+  if (!wfIdOk(id)) return { ok: false, error: I18n.t("非法工作流 id") };
+  /* 画布已被删（文件已进回收站）：服务的惰性装载会如实回「画布不存在」，不会把文件写回来 ——
+     删除与编辑撞车时以磁盘为准，绝不复活一张已删的画布。 */
+  return canvasDocClient().call("edit", {
+    id,
+    params: params && typeof params === "object" ? params : {},
+    runKey: String(runKey || ""),
+    snap: Number(snap) || 0,
+  });
+});
+ipcMain.handle("canvasdoc:invalidate", (e, { id } = {}) => {
+  /* 没起过就不必叫醒它（叫醒一次 = 一个进程 + 装一遍渲染层） */
+  if (canvasDocDown()) return { ok: canvasDocSvc ? canvasDocSvc.invalidate(id) : false };
+  if (!canvasDocCli) return { ok: false };
+  return canvasDocCli.call("invalidate", { id }, 8000);
+});
+
+/* ── 画布落盘：异步串行队列（手法照 agent-sessions-store.js 的 enqueueWrite）──────────
+   为什么：一次画布落盘 = parse（渲染层送来的是字符串）+ 两空格 stringify + writeFileSync +
+   renameSync，全是**同步**在主进程上做的 —— 大画布一次就是几十 ms 的整段心跳型长帧，
+   而主进程同时还服务着全部 IPC 与 dsh stdio。这是「agent 再忙也不卡 UI」必须拔掉的一颗钉子。
+   现在：
+     · 所有画布落盘（用户保存 / 服务进程改完要落 / 新建·重命名）统一进这条队列，**串行**执行：
+       同一张画布连续两次保存，落盘顺序就是调用顺序，后到的不会先落；
+     · parse 与 stringify 都在队列里做（不占 IPC 那一段事件循环），写盘走 fs.promises
+       （writeFile + rename，仍是「临时文件 + rename」的原子口径，字节格式一字不变：
+       2 空格缩进）；
+     · 返回结构与老路一致：成功 { ok:true, mtime }；写盘失败照老路**抛**（渲染层 persist 的
+       catch 接住并弹「保存失败」）。 */
+let wfWriteChain = Promise.resolve();
+let wfWritePending = 0;
+function enqueueWfWrite(fn) {
+  wfWritePending++;
+  const run = wfWriteChain.then(fn, fn);
+  wfWriteChain = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  const done = () => {
+    wfWritePending = Math.max(0, wfWritePending - 1);
+  };
+  run.then(done, done);
+  return run;
+}
+/* 队列里的一笔：stringify（2 空格）→ 异步原子写 → 落盘后的内存同步与镜像脏标记 */
+async function persistWorkflowDoc(p, obj) {
+  const text = JSON.stringify(obj, null, 2); /* 字节格式不变：仍是 2 空格缩进 */
+  const dir = path.dirname(p);
+  await fs.promises.mkdir(dir, { recursive: true });
+  const tmp = p + ".tmp" + process.pid;
+  await fs.promises.writeFile(tmp, text, "utf8");
+  await fs.promises.rename(tmp, p);
+  /* 画布文档服务（回落档那台进程内实例）：只有它已经存在才同步内存文档。服务进程正常时
+     它是 null —— 那边按 (mtime,size) 自己感知磁盘变了，不必把整份文档再推一遍。 */
+  if (canvasDocSvc) {
+    try {
+      canvasDocSvc.putDoc(path.basename(p, ".json"), obj);
+    } catch (err) {
+      errLog("[canvas-doc] putDoc 失败：" + String((err && err.message) || err));
+    }
+  }
+  /* 应用画布（wf.appId 由「新建应用」流程写入）：只打脏标记，由空闲 / 退出时统一刷镜像
+     （整目录搬走时不丢画布；导出 zip 不含它）。best-effort：失败只记日志，绝不影响保存。 */
   try {
     const app = obj && typeof obj === "object" ? String(obj.appId || "") : "";
-    if (app) {
-      const r = mirrorAppCanvas(app, obj);
-      if (r && r.ok === false) errLog("[apps] 画布镜像失败：" + ((r && r.error) || ""));
-    }
+    if (app) markAppCanvasMirror(app, obj);
   } catch (err) {
-    errLog("[apps] 画布镜像异常：" + String((err && err.message) || err));
+    errLog("[apps] 画布镜像标记异常：" + String((err && err.message) || err));
   }
   return { ok: true, mtime: Date.now() };
+}
+/* 渲染层送来的是已经 stringify 过的字符串（省掉 UI 线程上那一趟 parse 与对象图克隆）。
+   parse 挪进队列；解析失败带上 wfParse 标记 —— workflow:save 仍按老路把它折成回执里的
+   { ok:false, error }，写盘失败则照老路抛给渲染层。 */
+async function persistWorkflowDocText(p, text) {
+  let obj = null;
+  try {
+    obj = JSON.parse(text);
+  } catch (err) {
+    const e = new Error(String((err && err.message) || err));
+    e.wfParse = true;
+    throw e;
+  }
+  return persistWorkflowDoc(p, obj);
+}
+/* 画布落盘唯一出口（对象或字符串都收）：入队后返回 Promise<{ ok, mtime }> */
+function writeWorkflowJson(p, objOrText) {
+  return enqueueWfWrite(() =>
+    typeof objOrText === "string" ? persistWorkflowDocText(p, objOrText) : persistWorkflowDoc(p, objOrText),
+  );
+}
+/* 退出前把队列里还没写完的那几笔等完（有上限：退出不能被一次坏盘卡死）。
+   只等**调用这一刻**已经入队的那串；退出流程里不再有新写入排进来。 */
+function drainWorkflowWrites(timeoutMs) {
+  if (wfWritePending === 0) return Promise.resolve(0);
+  const tail = wfWriteChain;
+  const cap = new Promise((resolve) => {
+    const t = setTimeout(resolve, Number(timeoutMs) > 0 ? Number(timeoutMs) : 4000);
+    if (t && t.unref) t.unref();
+  });
+  return Promise.race([tail, cap]).then(() => wfWritePending);
+}
+/* 退出前收尾：服务进程手上那几笔跑完（含着它们的落盘 ack）→ 画布落盘队列写完 →
+   应用画布镜像刷干净。顺序不能反：服务进程可能在飞一笔编辑，它的落盘请求要先落进队列。
+   每一步都有上限，退出不会被一次坏盘 / 一个卡死的进程拦住。 */
+async function flushCanvasPersistenceForQuit(totalMs) {
+  const t0 = Date.now();
+  const cap = Number(totalMs) > 0 ? Number(totalMs) : 8000;
+  const left = (min) => Math.max(min, cap - (Date.now() - t0));
+  if (canvasDocCli) {
+    try {
+      await canvasDocCli.shutdown(Math.min(left(600), 4000));
+    } catch (err) {
+      errLog("[canvas-doc] 服务进程收尾异常：" + String((err && err.message) || err));
+    }
+  }
+  try {
+    await drainWorkflowWrites(Math.min(left(600), 4000));
+  } catch (_) {
+    /* 队列里那笔自己抛了：它已经把错误交给调用方，退出不该被它拦住 */
+  }
+  try {
+    flushAppCanvasMirror("quit");
+  } catch (err) {
+    errLog("[apps] 画布镜像退出前刷新失败：" + String((err && err.message) || err));
+  }
 }
 ipcMain.handle("workflow:save", (e, { id, data }) => {
   if (!wfIdOk(id)) return { ok: false, error: I18n.t("非法工作流 id") };
@@ -1432,19 +1735,13 @@ ipcMain.handle("workflow:save", (e, { id, data }) => {
      flushCurrentWf 原本为了剥掉 Promise / 函数这类不可克隆字段，先做一遍
      JSON.parse(JSON.stringify(wf)) —— 那是在 **UI 线程**上对整张画布（大画布实测
      几 MB）多跑一趟 parse，之后 IPC 还要再把整棵对象树克隆一次。现在只 stringify
-     一次并以字符串过桥：落盘字节完全不变（仍是 writeJson 的 2 空格缩进格式），
-     省掉的是渲染线程上的 parse + 对象图克隆。旧式直接传对象的调用
-     （smoke.js、新建 / 重命名画布等）行为一字不变，仍按原路 writeJson。 */
-  if (typeof data === "string") {
-    let obj = null;
-    try {
-      obj = JSON.parse(data);
-    } catch (err) {
-      return { ok: false, error: String((err && err.message) || err) };
-    }
-    return writeWorkflowJson(wfPath(id), obj);
-  }
-  return writeWorkflowJson(wfPath(id), data);
+     一次并以字符串过桥：落盘字节完全不变（仍是 2 空格缩进格式），省掉的是渲染线程上的
+     parse + 对象图克隆；主进程这一侧的 parse 也在落盘队列里做（见上面那条队列）。
+     旧式直接传对象的调用（smoke.js、新建 / 重命名画布等）行为一字不变。 */
+  return writeWorkflowJson(wfPath(id), data).catch((err) => {
+    if (err && err.wfParse) return { ok: false, error: String(err.message || err) };
+    throw err;
+  });
 });
 /* target 是否严格位于 parentDir 之下（parentDir 本身算越界）。
    一律用 path.resolve 后的绝对路径比较，防 .. / 大小写别名绕过。 */
@@ -1529,7 +1826,95 @@ function trashMove(src, dest) {
   }
 }
 
-ipcMain.handle("workflow:delete", (e, arg) => {
+/* ── 删画布时「连项目文件夹一起删」的只读判断 ────────────────────────────
+   项目文件夹 = 画布 json 里的 workspace（用户自选的任意目录），所以逐条守：
+   必须是已存在的绝对路径目录，不许是盘符根，不许是受保护位置本身、它的上级或它的内部
+   （数据目录 / 应用目录 / 用户目录 / 系统目录 —— 删了会连带带走它们）。
+   比较一律 path.resolve 后按平台口径（Windows 大小写不敏感）。拿不准就拒绝。 */
+function wsPathEq(a, b) {
+  const pa = path.resolve(String(a || ""));
+  const pb = path.resolve(String(b || ""));
+  return process.platform === "win32"
+    ? pa.toLowerCase() === pb.toLowerCase()
+    : pa === pb;
+}
+function wsPathUnder(parent, target) {
+  const p = String(parent || "");
+  const t = String(target || "");
+  if (!p || !t) return false;
+  const norm = (s) => (process.platform === "win32" ? s.toLowerCase() : s);
+  const P = norm(path.resolve(p) + path.sep);
+  const T = norm(path.resolve(t));
+  return T.length > P.length && T.startsWith(P);
+}
+function projectFolderDeleteGuard(wsRaw) {
+  const ws = String(wsRaw == null ? "" : wsRaw).trim();
+  if (!ws)
+    return { ok: false, code: "ws_empty", error: I18n.t("这个画布没有设置项目文件夹，没有可一起删除的目录") };
+  if (!path.isAbsolute(ws))
+    return {
+      ok: false,
+      code: "ws_not_absolute",
+      error: I18n.t("项目文件夹不是绝对路径，已拒绝删除：") + ws,
+    };
+  const abs = path.resolve(ws);
+  let st = null;
+  try {
+    st = fs.statSync(abs);
+  } catch {}
+  if (!st || !st.isDirectory())
+    return {
+      ok: false,
+      code: "ws_missing",
+      error: I18n.t("项目文件夹不存在或已不是文件夹，已拒绝删除：") + abs,
+    };
+  /* 盘符 / 文件系统根：abs 的根就是它自己 */
+  if (wsPathEq(abs, path.parse(abs).root))
+    return {
+      ok: false,
+      code: "ws_protected",
+      error: I18n.t("项目文件夹指向磁盘根目录，已拒绝删除：") + abs,
+    };
+  const prot = [];
+  const addProt = (p) => {
+    try {
+      if (p) prot.push(path.resolve(String(p)));
+    } catch {}
+  };
+  addProt(DATA());
+  addProt(app.getAppPath());
+  for (const k of ["home", "appData", "userData", "temp", "desktop", "documents"]) {
+    try {
+      addProt(app.getPath(k));
+    } catch {}
+  }
+  for (const k of [
+    "SystemRoot",
+    "windir",
+    "ProgramFiles",
+    "ProgramFiles(x86)",
+    "ProgramData",
+    "USERPROFILE",
+    "APPDATA",
+    "LOCALAPPDATA",
+  ])
+    addProt(process.env[k]);
+  for (const p of prot) {
+    /* ① 就是它 ② 它的上级（删了会连带带走它） ③ 它的内部（数据目录 / 应用目录里面） */
+    if (wsPathEq(abs, p) || wsPathUnder(abs, p) || wsPathUnder(p, abs))
+      return {
+        ok: false,
+        code: "ws_protected",
+        error:
+          I18n.t(
+            "项目文件夹是受保护的位置（应用目录 / 数据目录 / 用户目录 / 系统目录）或它们的上级/内部，已拒绝删除：",
+          ) + abs,
+      };
+  }
+  return { ok: true, dir: abs };
+}
+
+ipcMain.handle("workflow:delete", async (e, arg) => {
   /* ── 删除画布：双重校验 + 回收站软删 ─────────────────────────────
      兼容旧调用：arg 可以是 id 字符串；新调用传 { id, expectId, expectName }。
      1) wfIdOk 校验 id；
@@ -1539,13 +1924,26 @@ ipcMain.handle("workflow:delete", (e, arg) => {
      4) 不再 rmSync：把 <id>.json 与 assets/<id> 整体 move 进
         trash/<时间戳>__<id>/；rename 失败退化为同盘 copy + 校验，任何失败都
         如实返回，绝不静默物理删；
-     5) 成功返回被删画布名与节点数 + 回收站路径，供 UI 显示「可在回收站恢复」。 */
+     5) 成功返回被删画布名与节点数 + 回收站路径，供 UI 显示「可在回收站恢复」；
+      6) deleteWorkspace:true = 连画布的**项目文件夹（workspace）一起删**（可选项，默认不删）：
+         先过 projectFolderDeleteGuard 的只读守卫，再走 shell.trashItem（系统回收站，可在
+         资源管理器还原）；守卫不过或搬不动就**整笔拒绝**，画布保持完好 —— 绝不「文件夹没
+         删成却把画布删了」，也不静默物理删目录。 */
   const opts = arg && typeof arg === "object" ? arg : { id: arg };
   const id = String(opts.id == null ? "" : opts.id);
   const expectId = opts.expectId == null ? "" : String(opts.expectId);
   const expectName = opts.expectName == null ? "" : String(opts.expectName);
+  /* 可选项：连项目文件夹（workspace）一起删。默认不删，只有界面勾了 / 模型显式传了才生效。 */
+  const wantWs = opts.deleteWorkspace === true || opts.deleteProjectFiles === true;
+  const expectWs =
+    opts.expectWorkspace == null ? "" : String(opts.expectWorkspace).trim();
   if (!wfIdOk(id))
     return { ok: false, code: "wf_bad_id", error: I18n.t("非法工作流 id") };
+
+  /* 落盘是异步队列（见上面的 writeWorkflowJson）：先把「已经排进队列的那几笔」写完再删 ——
+     否则「刚存一笔就删」会变成「先删掉，随后那笔又把它写回来」的幽灵画布（老路同步写没有
+     这个缝）。删除本身照旧全同步，队列此刻是空的，不会再插进来。 */
+  await drainWorkflowWrites(5000);
 
   const saveRoot = path.resolve(join(DATA(), "save"));
   const assetsRoot = path.resolve(join(DATA(), "assets"));
@@ -1608,6 +2006,37 @@ ipcMain.handle("workflow:delete", (e, arg) => {
       diskName: shownName,
     };
 
+  /* 勾了「同时删除项目文件夹内容」：先做只读守卫 —— 此刻还什么都没动，守卫不过就整笔拒绝
+     （磁盘上那份 json 的 workspace 才是真源；界面传 expectWorkspace 防弹窗期间被换掉）。 */
+  let wsTarget = "";
+  if (wantWs) {
+    const wsRaw = String((diskJson && diskJson.workspace) || "").trim();
+    if (expectWs && !wsPathEq(expectWs, wsRaw))
+      return {
+        ok: false,
+        code: "ws_mismatch",
+        error:
+          I18n.t("项目文件夹在确认期间已变化，已拒绝删除：磁盘上是") +
+          " " +
+          (wsRaw || I18n.t("（空）")) +
+          I18n.t("，请求删的是") +
+          " " +
+          expectWs,
+        id,
+        name: shownName,
+      };
+    const g = projectFolderDeleteGuard(wsRaw);
+    if (!g.ok)
+      return {
+        ok: false,
+        code: g.code,
+        error: g.error + I18n.t("（可以取消勾选「同时删除项目文件夹内容」，只删画布）"),
+        id,
+        name: shownName,
+      };
+    wsTarget = g.dir;
+  }
+
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   const trashRoot = path.resolve(TRASH_DIR());
   const entry = path.resolve(join(trashRoot, stamp + "__" + id));
@@ -1627,6 +2056,33 @@ ipcMain.handle("workflow:delete", (e, arg) => {
     };
   }
 
+  /* 项目文件夹先删（与「删除应用 / 删素材 / 删分类」同一口径：shell.trashItem → 系统回收站，
+     可在资源管理器还原；回收站不可用就如实拒绝，绝不用 rmSync 顶上）。
+     放在前面是为了「失败即整笔不发生」：搬不动（被占用 / 网络盘）就返回错误、画布保持完好；
+     反过来先删画布再删文件夹，就会留下「画布没了、目录还在」的半截现场。 */
+  let wsTrashed = false;
+  let wsTrashError = "";
+  if (wsTarget) {
+    try {
+      await shell.trashItem(wsTarget);
+      wsTrashed = true;
+    } catch (err) {
+      wsTrashError = String((err && err.message) || err || "");
+    }
+    if (!wsTrashed)
+      return {
+        ok: false,
+        code: "ws_trash_failed",
+        error:
+          I18n.t("项目文件夹没能移入系统回收站，画布未删除（请关闭占用它的程序后重试）：") +
+          (wsTrashError || wsTarget),
+        id,
+        name: shownName,
+        workspace: wsTarget,
+        workspaceTrashed: false,
+      };
+  }
+
   /* 先搬资产目录，再搬画布 json：任一步失败画布都保持完整（或已回滚） */
   let hadAssets = false;
   try {
@@ -1639,10 +2095,14 @@ ipcMain.handle("workflow:delete", (e, arg) => {
       return {
         ok: false,
         code: r.code || "wf_move_failed",
-        error: r.error,
+        error: wsTrashed
+          ? r.error + I18n.t("（注意：项目文件夹已先移入系统回收站，可在资源管理器还原）")
+          : r.error,
         id,
         name: shownName,
         trashPath: entry,
+        workspace: wsTarget || "",
+        workspaceTrashed: wsTrashed,
       };
     assetsDest = r.dest;
   }
@@ -1658,12 +2118,21 @@ ipcMain.handle("workflow:delete", (e, arg) => {
     return {
       ok: false,
       code: rJson.code || "wf_move_failed",
-      error: rJson.error,
+      error: wsTrashed
+        ? rJson.error + I18n.t("（注意：项目文件夹已先移入系统回收站，可在资源管理器还原）")
+        : rJson.error,
       id,
       name: shownName,
       trashPath: entry,
+      workspace: wsTarget || "",
+      workspaceTrashed: wsTrashed,
     };
   }
+
+  /* 画布文档服务：文件已进回收站，那份内存文档也摘掉（下次 get 如实回「画布不存在」）。
+     服务进程正常时它在自己的进程里摘（转发过去即可）；没起过就不必为一次删除叫醒它。 */
+  if (canvasDocSvc) canvasDocSvc.forget(id);
+  else if (canvasDocCli) void canvasDocCli.call("forget", { id }, 8000);
 
   return {
     ok: true,
@@ -1672,6 +2141,9 @@ ipcMain.handle("workflow:delete", (e, arg) => {
     nodes: Array.isArray(diskJson.nodes) ? diskJson.nodes.length : 0,
     trashPath: entry,
     assets: !!hadAssets,
+    /* 项目文件夹的去向（没勾就是空串）：界面据此告诉用户「文件夹也在回收站里」 */
+    workspace: wsTrashed ? wsTarget : "",
+    workspaceTrashed: wsTrashed,
   };
 });
 /* 画布备份：状态查询与打开备份文件夹（备份文件本身只在定时任务里只读复制） */
@@ -2145,19 +2617,28 @@ ipcMain.handle("asset:writeBase64", (e, { wfId, name, base64, ext, native }) => 
   const written = writeAssetBytes(dest, buf);
   return { ok: true, path: dest, bytes: buf.length, written };
 });
+/* 图片 / 视频扩展名 → MIME。研究演示的「导出单文件 HTML」要把叠加媒体内联成 data: URL，
+   视频也必须带对 MIME，否则 <video src="data:image/png;..."> 根本播不出来。 */
+const ASSET_DATA_URL_MIME = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  webp: "image/webp",
+  gif: "image/gif",
+  bmp: "image/bmp",
+  svg: "image/svg+xml",
+  avif: "image/avif",
+  mp4: "video/mp4",
+  m4v: "video/mp4",
+  webm: "video/webm",
+  ogg: "video/ogg",
+  ogv: "video/ogg",
+  mov: "video/quicktime",
+};
 ipcMain.handle("asset:readDataUrl", (e, p) => {
   const buf = fs.readFileSync(p);
   const ext = path.extname(p).slice(1).toLowerCase();
-  const mime =
-    ext === "png"
-      ? "image/png"
-      : ext === "jpg" || ext === "jpeg"
-        ? "image/jpeg"
-        : ext === "webp"
-          ? "image/webp"
-          : ext === "gif"
-            ? "image/gif"
-            : "image/png";
+  const mime = ASSET_DATA_URL_MIME[ext] || "image/png";
   return {
     ok: true,
     dataUrl: "data:" + mime + ";base64," + buf.toString("base64"),
@@ -2449,11 +2930,13 @@ ipcMain.handle("pdf:probe", async (e, arg) => {
     };
   }
 });
-/* pdf:parse：路径 / 字节 → { ok, markdown, pages, formulas, quality, warning }
-   （pageImages:true 是旧渲染层的探路口径，这里忽略即可 —— 页面图走 pdf:render） */
+/* pdf:parse：路径 / 字节 → { ok, markdown, pages, formulas, figures, figurePages, quality, warning }
+   （pageImages:true 是旧渲染层的探路口径，这里忽略即可 —— 页面图走 pdf:render）
+   arg 同时当 opts 传：figures / maxFigures 这类选项跟着入参一起进来，
+   parsePdf 自己只挑认得的键，多传的（path / base64 / 字节）不影响解析。 */
 ipcMain.handle("pdf:parse", async (e, arg) => {
   try {
-    return await pdfRead.parsePdf(arg);
+    return await pdfRead.parsePdf(arg, arg);
   } catch (err) {
     return { ok: false, error: { code: "parse_failed", message: String((err && err.message) || err) } };
   }
@@ -2472,6 +2955,39 @@ ipcMain.handle("pdf:render", async (e, arg) => {
 ipcMain.handle("pdf:writeText", async (e, arg) => {
   try {
     return await pdfWrite.writeTextPdf(arg || {});
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+});
+/* research:slidesPrint：演示导出（一页一张 PDF + 逐页 PNG）。
+   渲染层把自包含 HTML 与目标绝对路径交过来；隐藏窗 + printToPDF / capturePage 全在主进程
+   （见 slides-export.js）。输出只在研究目录（调用方用内核 exportOf 拼），应用目录一律拒绝。 */
+ipcMain.handle("research:slidesPrint", async (e, arg) => {
+  try {
+    return await slidesExport.exportSlides(arg || {});
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+});
+/* research:slidesPresenter / Push / Close：演讲者第二屏（主窗 window.open 是被拒的）。
+   开窗给 id，之后每翻一页把状态推进去（executeJavaScript → window.__rrApply）。 */
+ipcMain.handle("research:slidesPresenter", (e, arg) => {
+  try {
+    return slidesExport.openPresenter(arg && arg.html);
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+});
+ipcMain.handle("research:slidesPresenterPush", async (e, arg) => {
+  try {
+    return await slidesExport.pushPresenter(arg && arg.id, arg && arg.state);
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+});
+ipcMain.handle("research:slidesPresenterClose", (e, arg) => {
+  try {
+    return slidesExport.closePresenter(arg && arg.id);
   } catch (err) {
     return { ok: false, error: String((err && err.message) || err) };
   }
@@ -2535,8 +3051,10 @@ function sfNeedPath(p) {
   if (!s) return "";
   return path.resolve(s);
 }
-/* 目录一层列举：{name, isDir, size, mtime, hidden}（不排序，排序在渲染层） */
-ipcMain.handle("file:readDir", (e, p) => {
+/* 目录一层列举：{name, isDir, size, mtime, hidden}（不排序，排序在渲染层）。
+   两处共用同一份实现：file:readDir（渲染层文件页）与 assist:iso:readDir（隔离进程里的
+   文件树）—— 口径必须逐字一致，否则「同一层目录两个界面看着不一样」。 */
+function sfReadDirOne(p) {
   try {
     const dir = sfNeedPath(p);
     if (!dir) return { ok: true, exists: false, entries: [] };
@@ -2571,7 +3089,8 @@ ipcMain.handle("file:readDir", (e, p) => {
   } catch (err) {
     return { ok: false, error: (err && err.message) || String(err) };
   }
-});
+}
+ipcMain.handle("file:readDir", (e, p) => sfReadDirOne(p));
 /* 重命名：path = 原绝对路径，name = 新文件名（同目录内改名，不含路径分隔符） */
 ipcMain.handle("file:rename", async (e, { path: p, name }) => {
   try {
@@ -3175,7 +3694,7 @@ async function fnSubtitle(params) {
     return await subtitleFromMedia(arg, {
       dataDir: DATA(),
       workspace: DATA(),
-      gatewayPath: DSH_GATEWAY_PATH,
+      gatewayPath: dshGatewayPath(DATA()),
       speech: (p) => dsh().speech(p),
     });
   } catch (err) {
@@ -3794,8 +4313,10 @@ function replaceAppDirOf(id) {
     return "";
   }
 }
-/* 新画布落盘 + <AppName>.mtnodes 镜像（镜像走既有 mirrorAppCanvas，best-effort） */
-function replaceWriteCanvas(id, wf) {
+/* 新画布落盘 + <AppName>.mtnodes 镜像（镜像走「脏标记 + 空闲/退出刷」，best-effort）。
+   落盘本身已改异步（进队列），所以这里也返回 Promise —— 调用方（分支替换）是 async 的，
+   await 之后拿到的仍是 { ok, path, error } 那份回执。 */
+async function replaceWriteCanvas(id, wf) {
   const sid = String(id || "");
   if (!replaceCanvasIdOk(sid)) return { ok: false, error: I18n.t("非法工作流 id"), code: "wf_bad_id" };
   if (!wf || typeof wf !== "object") return { ok: false, error: I18n.t("画布内容为空"), code: "bad_canvas" };
@@ -3803,7 +4324,7 @@ function replaceWriteCanvas(id, wf) {
   obj.id = sid;
   obj.appId = sid;
   try {
-    const r = writeWorkflowJson(wfPath(sid), obj);
+    const r = await writeWorkflowJson(wfPath(sid), obj);
     forgetWfListEntry(sid);
     return { ok: !(r && r.ok === false), path: wfPath(sid), error: (r && r.error) || "" };
   } catch (e) {
@@ -7848,6 +8369,11 @@ function streamTextChat(req, emit) {
       { method: req.method || "POST", headers },
       (res) => {
         let buf = "";
+        /* 流式正文必须走 StringDecoder 增量解码：一片 Buffer 的结尾可能只截到某个
+           汉字的 1~2 个字节，直接 toString("utf8") 会把它变成 U+FFFD（替换字符，
+           存进笔记就是「作为附???好处」这种差字乱码）；StringDecoder 会把
+           没凑满的字节留到下一片再拼，只有真正非法的字节才给替换字符。 */
+        const dec = new StringDecoder("utf8");
         let sse = false;
         let text = "";
         let reasoning = "";
@@ -7865,10 +8391,11 @@ function streamTextChat(req, emit) {
         if (res.statusCode >= 400) {
           res.on("data", (c) => {
             if (wd) wd.noteData();
-            buf += c.toString("utf8");
+            buf += dec.write(c);
           });
           res.on("end", () => {
             if (wd) wd.stop();
+            buf += dec.end();
             let j = null;
             try {
               j = JSON.parse(buf);
@@ -7883,7 +8410,7 @@ function streamTextChat(req, emit) {
         }
         res.on("data", (c) => {
           if (wd) wd.noteData();
-          buf += c.toString("utf8");
+          buf += dec.write(c);
           let i;
           while ((i = buf.indexOf("\n")) >= 0) {
             const line = buf.slice(0, i).trim();
@@ -7918,6 +8445,7 @@ function streamTextChat(req, emit) {
         });
         res.on("end", () => {
           if (wd) wd.stop();
+          buf += dec.end();
           if (sse) {
             finish(text, reasoning);
             return;
@@ -8549,16 +9077,219 @@ ipcMain.handle("dsh:speechState", (event, params) =>
 
 /* ── 活动流留痕（浏览器动作 / shell 命令 / 文件读写摘要）────────────────────
    只写本机数据目录，只供界面回看与核对；**不进模型上下文**（用户已确认）。
-   push 由渲染层在收到 dsh 事件时调用（批量），query/clear 供面板使用。 */
-ipcMain.handle("activity:push", (event, rows) =>
-  activityStore.push(rows, DATA()),
+   push 由渲染层在收到 dsh 事件时调用（批量），query/clear 供面板使用。
+
+   ── 落盘与转发合批（本次需求 · 残余热点 ④）───────────────────────────────────
+   现场：渲染层已经把同一拍的活动攒成一批（renderer/app-browser.js 的 400ms 缓冲），
+   但主进程这侧仍是「一次 IPC = 一次开库 + 一次插入 + 一次清理」；而清理在长任务里
+   （库长到几千行）实测一条 push 要 26 ms @3000 行 / 126 ms @8000 行，长回答期间
+   每 400ms 就砸主线程一次（清理本身已按索引重写，见 activity-store.js 的 prune）。
+   这里再把**入口**合批：一个短窗口内的多批并成一次写盘、一次转发给隔离页。
+   对外口径不变（只改了「什么时候落」）：
+     · activity:query / activity:clear 先冲一次 → 读的人绝不会看到「刚推的还没落」；
+     · 退出（will-quit）再冲一次 → 不留尾巴；
+     · 窗口内没有新行就是空操作，不空转。 */
+const ACTIVITY_PUSH_BATCH_MS = 150;
+let activityPushBuf = [];
+let activityPushTimer = 0;
+function activityFlushPush() {
+  if (activityPushTimer) {
+    clearTimeout(activityPushTimer);
+    activityPushTimer = 0;
+  }
+  const rows = activityPushBuf;
+  if (!rows.length) return { ok: true, written: 0 };
+  activityPushBuf = [];
+  const out = activityStore.push(rows, DATA());
+  /* 隔离进程里的活动流也吃这一批（assist.isolation 开着时才有宿主；没起 = 空调用） */
+  try {
+    /* kind 与渲染层那个状态仓（renderer/app-assist-state.js）的 applyPatch 同一份口径：
+       activity + append:true 才是「追加一批」，写错成 activity-append 会被它整条丢掉。 */
+    if (assistIso.isHosting()) assistIso.sendPatch({ kind: "activity", data: { append: true, rows: rows } });
+  } catch {}
+  return out;
+}
+function activityQueuePush(rows) {
+  const list = Array.isArray(rows) ? rows : rows ? [rows] : [];
+  for (const r of list) if (r) activityPushBuf.push(r);
+  if (!activityPushBuf.length) return { ok: true, written: 0 };
+  if (!activityPushTimer) {
+    activityPushTimer = setTimeout(() => {
+      activityPushTimer = 0;
+      try {
+        activityFlushPush();
+      } catch {}
+    }, ACTIVITY_PUSH_BATCH_MS);
+    /* 合批窗只是「这一拍还没落」，别把主进程的生命周期吊在这只定时器上 */
+    try {
+      if (activityPushTimer && activityPushTimer.unref) activityPushTimer.unref();
+    } catch {}
+  }
+  return { ok: true, queued: activityPushBuf.length };
+}
+ipcMain.handle("activity:push", (event, rows) => activityQueuePush(rows));
+ipcMain.handle("activity:query", (event, params) => {
+  try {
+    activityFlushPush();
+  } catch {}
+  return activityStore.query(params, DATA());
+});
+ipcMain.handle("activity:clear", (event, params) => {
+  try {
+    activityFlushPush();
+  } catch {}
+  return activityStore.clear(params, DATA());
+});
+
+/* ── 助手侧三股流（会话流 / 活动流 / 文件树）的进程隔离 ───────────────────────
+   任务 8/8：这三股流由一只**独立渲染进程**承载（assist-isolation.js 是宿主）。
+   主窗这一侧只做四件事，且全部是「转发 + 生命周期」：
+     ① 发布状态 patch（assist:iso:state）—— 真源仍是 S / BA / SF，旧的内嵌渲染路径一字未改；
+     ② 报矩形（assist:iso:bounds）—— WebContentsView 贴在会话区那一块上；
+     ③ 切档（assist:iso:set）—— 写 config.json 的 assist.isolation = off|on|window；
+     ④ 执行隔离页转回来的用户动作（assist:iso:act → 主窗 assist-iso:action）。
+   默认 off：一次 assistIso.open 都不会发生，界面与今天完全一样。
+   开关档位与回退口径写进 docs/assist-isolation.md §2、AGENTS.md 的目录约定。 */
+const ASSIST_ISO_PAGE = join(__dirname, "renderer", "assist-isolated.html");
+const ASSIST_ISO_PRELOAD = join(__dirname, "preload-assist.js");
+/* 隔离页允许读的目录根：只认主窗公布过的那几个工作区（画布工作目录 / 会话工作区），
+   以及它自己报的当前根。除此之外一律拒 —— 那只进程没有任意读盘的能力。 */
+const assistIsoRoots = new Set();
+/* 隔离页刚起来时的对齐快照（主窗发布的那一份；只留最近一份，不落盘）。 */
+let assistIsoSnapshot = null;
+/* 档位真源 = config.json 的 assist.isolation（缺省 off）。读盘只在这几处：
+   启动、问状态、切档、起宿主；逐帧链上一个都不读。 */
+function assistIsolationModeFromDisk() {
+  try {
+    const cfg = readJson(join(DATA(), "config.json"), {}) || {};
+    const a = cfgPlainObj(cfg.assist) ? cfg.assist : {};
+    return assistIso.normalizeMode(a.isolation);
+  } catch {
+    return "off";
+  }
+}
+function assistIsoAllowedDir(p) {
+  const dir = sfNeedPath(p);
+  if (!dir) return "";
+  for (const root of assistIsoRoots) {
+    const r = String(root || "");
+    if (!r) continue;
+    if (dir === r) return dir;
+    const rel = path.relative(r, dir);
+    if (rel && !rel.startsWith("..") && !path.isAbsolute(rel)) return dir;
+  }
+  return "";
+}
+function assistIsoNotifyMain(msg) {
+  try {
+    if (mainWin && !mainWin.isDestroyed()) mainWin.webContents.send("assist-iso:action", msg || {});
+  } catch {}
+}
+assistIso.init({
+  getWindow: () => mainWin,
+  page: ASSIST_ISO_PAGE,
+  preload: ASSIST_ISO_PRELOAD,
+  mode: assistIsolationModeFromDisk(),
+  log: (m) => {
+    try {
+      errLog("[assist-iso] " + m);
+    } catch {}
+  },
+  /* 崩了只记账、不自动反复拉起：主窗那套内嵌路径一直都在，界面不会空 */
+  onFault: (info) => {
+    try {
+      errLog("[assist-iso] 故障：" + JSON.stringify(info || {}));
+    } catch {}
+    assistIsoNotifyMain({ type: "fault", payload: info || {} });
+  },
+});
+ipcMain.handle("assist:iso:status", () => {
+  const st = assistIso.status();
+  return Object.assign({}, st, { ok: true, config: assistIsolationModeFromDisk(), hosts: assistIsoRoots.size });
+});
+/* 切档：写盘（config.json 的 assist.isolation）→ 起 / 关宿主 → 通知主窗按新档位重排。 */
+ipcMain.handle("assist:iso:set", (e, mode) =>
+  queueCfgWrite(() => {
+    const want = assistIso.normalizeMode(mode);
+    const fp = join(DATA(), "config.json");
+    const cfg = readJson(fp, {}) || {};
+    const prev = cfgPlainObj(cfg.assist) ? cfg.assist : {};
+    cfg.assist = Object.assign({}, prev, { isolation: want });
+    writeJson(fp, cfg);
+    const st = want === "off" ? (assistIso.close("mode-off"), assistIso.status()) : assistIso.open(want);
+    assistIsoNotifyMain({ type: "mode", payload: Object.assign({}, st, { config: want }) });
+    return Object.assign({}, st, { ok: true, config: want });
+  }),
 );
-ipcMain.handle("activity:query", (event, params) =>
-  activityStore.query(params, DATA()),
-);
-ipcMain.handle("activity:clear", (event, params) =>
-  activityStore.clear(params, DATA()),
-);
+/* 主窗发布：{type:'patch', patch} 或 {type:'snapshot', state}（对齐用）。 */
+ipcMain.handle("assist:iso:state", (e, msg) => {
+  const m = msg && typeof msg === "object" ? msg : {};
+  if (m.type === "snapshot") {
+    assistIsoSnapshot = m.state && typeof m.state === "object" ? m.state : null;
+    assistIso.sendSnapshot(assistIsoSnapshot, assistIso.status().mode);
+    return { ok: true };
+  }
+  return { ok: assistIso.sendPatch(m.patch) };
+});
+/* 主窗公布工作区根（隔离页的文件树只能在这些根下面读）。 */
+ipcMain.handle("assist:iso:roots", (e, roots) => {
+  const list = Array.isArray(roots) ? roots : [];
+  for (const r of list) {
+    const dir = sfNeedPath(r);
+    if (dir) assistIsoRoots.add(dir);
+  }
+  return { ok: true, count: assistIsoRoots.size };
+});
+/* 主窗报矩形：on 档时宿主还没起就顺手起（渲染层只在 flag 开着时才报）。 */
+ipcMain.handle("assist:iso:bounds", (e, rect) => {
+  const b = assistIso.setBounds(rect);
+  if (!assistIso.isHosting()) {
+    const mode = assistIsolationModeFromDisk();
+    if (mode !== "off") assistIso.open(mode);
+  }
+  return { ok: true, bounds: b };
+});
+/* 隔离页起来后要一次对齐快照：主窗发布的那一份（会话流 / 会话列表 / 文件树根）
+   + 库里最近的活动条目（活动流的唯一来路就是主进程，隔离页从不问画布进程要）。 */
+ipcMain.handle("assist:iso:ready", () => {
+  const st = assistIso.status();
+  const snap = Object.assign({}, assistIsoSnapshot || {});
+  try {
+    const q = activityStore.query({ limit: 300 }, DATA());
+    if (q && q.ok && Array.isArray(q.rows)) {
+      snap.activity = Object.assign({}, snap.activity || {}, { rows: q.rows });
+    }
+  } catch {}
+  assistIso.sendSnapshot(snap, st.mode);
+  return { ok: true, mode: st.mode, snapshot: snap };
+});
+/* 隔离页的用户动作 → 原样转回主窗执行（白名单，参数只透传不解释）。 */
+const ASSIST_ISO_ACTIONS = new Set([
+  "session-select",
+  "activity-clear",
+  "refresh-tree",
+  "open-file",
+  "close",
+  "refresh",
+]);
+ipcMain.handle("assist:iso:act", (e, msg) => {
+  const m = msg && typeof msg === "object" ? msg : {};
+  const type = String(m.type || "");
+  if (!ASSIST_ISO_ACTIONS.has(type)) return { ok: false, error: "unknown action" };
+  if (type === "close") {
+    assistIso.close("user-close");
+    assistIsoNotifyMain({ type: "closed", payload: { by: "user" } });
+    return { ok: true, closed: true };
+  }
+  assistIsoNotifyMain({ type: type, payload: m.payload && typeof m.payload === "object" ? m.payload : {} });
+  return { ok: true };
+});
+/* 隔离页读一层目录：必须落在已公布的工作区根下面（越界一律拒，不回任何路径信息）。 */
+ipcMain.handle("assist:iso:readDir", (e, p) => {
+  const dir = assistIsoAllowedDir(p);
+  if (!dir) return { ok: false, exists: false, entries: [], error: "目录不在已公布的工作区里" };
+  return sfReadDirOne(dir);
+});
 
 /* 运行中插话 / 暂停（dshSteer / dshPause → 网关 steer / pause）。
    params = { reqId | cancelTag, sessionId?, text?|contentBlocks?(仅插话) }。
@@ -9062,6 +9793,91 @@ app.whenReady().then(() => {
     }
     return { action: "deny" };
   });
+  /* ── 内嵌 webview 白名单（主窗只认一只 guest：DeepSeek 官网会话页）───────────────
+     页面侧用 <webview src="https://chat.deepseek.com/…" partition="persist:deepseek">
+     内嵌官网；主进程这一侧是唯一收口处，条件不满足就整笔拒挂（ev.preventDefault）：
+       · 总开关 webviewAttachAllowed（默认开，渲染层可经 api.webviewSetEnabled 关）；
+       · partition 必须正好是 persist:deepseek（guest 只能用这只专用会话，不碰主窗 session）；
+       · src 必须是 https 且 host 是 chat.deepseek.com（含子域），别的站一律不进。
+     放行后还把 webPreferences 改写成死值：guest 无 Node、开 contextIsolation 与沙箱、
+     同源策略不许关、不许再挂 webview，并且**剥掉渲染层传进来的 preload**（任何人写
+     preload= 都不生效）—— 内嵌官网不需要宿主桥，给了就等于把桥开到外网站上。 */
+  const DEEPSEEK_WEBVIEW_PARTITION = "persist:deepseek";
+  /* 已挂上来的 guest 登记簿：只用于主窗关闭时一次性销毁（见下面的 closed 处理）。
+     窗口最小化、切画布、切视图都**不**碰它 —— guest 的存活期就是主窗的存活期。 */
+  const deepseekGuests = new Set();
+  const isDeepseekHost = (u) => {
+    try {
+      const url = new URL(String(u || ""));
+      if (url.protocol !== "https:") return false;
+      const h = url.hostname.toLowerCase();
+      return h === "chat.deepseek.com" || h.endsWith(".chat.deepseek.com");
+    } catch {
+      return false;
+    }
+  };
+  mainWin.webContents.on("will-attach-webview", (ev, webPreferences, params) => {
+    const src = String((params && params.src) || "");
+    const part = String((webPreferences && webPreferences.partition) || "");
+    if (!webviewAttachAllowed || part !== DEEPSEEK_WEBVIEW_PARTITION || !isDeepseekHost(src)) {
+      ev.preventDefault();
+      errLog(
+        "[webview] 拒绝挂载 guest：" + (src || "(空 src)") + " partition=" + (part || "(空)") + " enabled=" + webviewAttachAllowed
+      );
+      return;
+    }
+    webPreferences.nodeIntegration = false;
+    webPreferences.nodeIntegrationInSubFrames = false;
+    webPreferences.contextIsolation = true;
+    webPreferences.sandbox = true;
+    webPreferences.webSecurity = true;
+    webPreferences.allowRunningInsecureContent = false;
+    webPreferences.webviewTag = false;
+    /* 后台节流：主窗是 backgroundThrottling:false，但 guest 是另一只 webContents，
+       这一项不继承 —— 不显式关掉，主窗最小化 / 被盖住 / 切到别的视图后页面定时器被降到
+       1Hz（答案流、心跳、"还在生成"的动画一起停），切回来就是一只卡住的页面。 */
+    webPreferences.backgroundThrottling = false;
+    delete webPreferences.preload;
+    delete webPreferences.preloadURL;
+  });
+  /* guest 里点出去的链接：DeepSeek 自己的页面在 guest 内就地打开（不新开窗口），
+     外链（OAuth / 文档 / 帮助 …）一律交系统浏览器 —— 应用里不长第二张外网站。
+     顺带登记这只 guest（主窗关掉时统一销毁），退出时自己摘掉自己。 */
+  mainWin.webContents.on("did-attach-webview", (_e, guest) => {
+    deepseekGuests.add(guest);
+    guest.once("destroyed", () => deepseekGuests.delete(guest));
+    /* guest 里按 F2 = 收回抽屉（用户口径：呼出后再按一次要收掉）。
+       F1–F4 的判键在主窗渲染层（renderer/app-status-keys.js），但焦点一旦落进这只
+       内嵌的 chat.deepseek.com，按键就只在 guest 里走，冒不到主窗 —— 于是「再按一次
+       收不回」的现场就是这么来的。这里在 guest 的 before-input-event 上把 F2 截下来
+       （不再传给网页），转给主窗渲染层走同一份 toggle。修饰键组合一律放行（Alt+F2 等
+       是系统 / DevTools 的键，不抢）。 */
+    guest.on("before-input-event", (ev, input) => {
+      const inp = input || {};
+      if (inp.type !== "keyDown" || inp.key !== "F2") return;
+      if (inp.control || inp.alt || inp.meta || inp.shift) return;
+      if (inp.isAutoRepeat) return;
+      try {
+        ev.preventDefault();
+      } catch {}
+      try {
+        if (mainWin && !mainWin.isDestroyed()) mainWin.webContents.send("deepseek:hotkey", "F2");
+      } catch {}
+    });
+    guest.setWindowOpenHandler(({ url }) => {
+      const u = String(url || "");
+      if (isDeepseekHost(u)) {
+        try {
+          guest.loadURL(u);
+        } catch {}
+      } else if (/^https?:\/\//i.test(u) || /^mailto:/i.test(u)) {
+        try {
+          shell.openExternal(u);
+        } catch {}
+      }
+      return { action: "deny" };
+    });
+  });
   /* 关闭主窗 = 先问用户：最小化到任务栏，还是退出程序。
      最小化：不退出、不销毁渲染层，任务继续在后台跑（完成时仍由渲染层弹系统通知 + 应用内卡片）；
      退出：markQuitting 后 app.quit，走 before-quit 那套收尾。
@@ -9106,6 +9922,15 @@ app.whenReady().then(() => {
   });
   mainWin.on("closed", () => {
     closeContentViewWin();
+    /* 内嵌 DeepSeek guest 随主窗一起销毁：Electron 默认会带走，这里显式做一遍 ——
+       退出路径上主窗先销毁、guest 后收尾的那段窗口期里，别留一只还在跑
+       chat.deepseek.com 的孤立渲染进程（最小化 / 切画布走的不是这条路，guest 原样活着）。 */
+    for (const g of deepseekGuests) {
+      try {
+        if (g && !g.isDestroyed()) g.destroy();
+      } catch (_) {}
+    }
+    deepseekGuests.clear();
     /* 快捷会话小窗跟着主窗一起关（共识 q7）：它是主窗渲染层的「遥控器」，
        主窗没了就没有会话可发指令，留着只会是一只只会报「主窗口不可用」的空窗。 */
     try {
@@ -9122,7 +9947,7 @@ app.whenReady().then(() => {
     procHost.killAll().catch(() => {});
   });
   registerUpdateIpc(() => mainWin);
-  /* 快捷会话小窗（本次需求）：唯一实例 + 全局 F1 + 位置记忆。
+  /* 快捷会话小窗（本次需求）：唯一实例 + 窗内 F1（原来是全局热键，本轮改口径）+ 位置记忆。
      窗口本体不跑 agent：请求经 minichat:req 中继给上面这只 mainWin 的渲染层执行
      （renderer/app-mini-chat-host.js），所以我们只需要把「主窗在哪」告诉它。 */
   try {
@@ -9134,6 +9959,8 @@ app.whenReady().then(() => {
       globalShortcut,
       /* 正文里的 Markdown 链接交系统浏览器打开（只放行 http(s)/mailto，见 mini-chat-window.js） */
       shell,
+      /* 粘贴截图（本轮需求）：位图只在主进程拿得到，小窗那个 sandbox 页面拿不到 */
+      clipboard,
       getMainWin: () => mainWin,
       iconPath: join(__dirname, "renderer", "img", "tray.png"),
       htmlPath: join(__dirname, "renderer", "mini-chat.html"),
@@ -9145,9 +9972,16 @@ app.whenReady().then(() => {
         title: I18n.t("快捷会话"),
         list: I18n.t("会话列表"),
         newSession: I18n.t("新建会话"),
+        /* 「＋」的 tooltip 带上快捷键（Ctrl + N，见 renderer/app-mini-chat.js 的 keydown） */
+        newSessionHotkey: I18n.t("新建会话（Ctrl + N）"),
         close: I18n.t("关闭"),
         goto: I18n.t("在主窗口打开该会话"),
         stop: I18n.t("停止"),
+        /* 删除这条会话（本轮需求）：按钮 tooltip + 两段式确认的两态键面 + 完成提示 */
+        delSession: I18n.t("删除这条会话"),
+        delConfirmShort: I18n.t("删掉？"),
+        delConfirm: I18n.t("再点一下删除这条会话（连会话记录一起删掉，不可恢复）"),
+        delDone: I18n.t("会话已删除"),
         send: I18n.t("发送"),
         placeholder: I18n.t("输入指令…（Enter 发送，Shift+Enter 换行）"),
         sessions: I18n.t("会话"),
@@ -9177,6 +10011,16 @@ app.whenReady().then(() => {
         hotfixTip: I18n.t(
           "热修：最快路径 —— 只在真有歧义时问一句，不写文档、不跑 smoke test（与「拷问需求」互斥）",
         ),
+        /* 粘贴截图（本轮需求）：提示条文案 + 胶囊条 / 缩略图的 tooltip */
+        shotAdded: I18n.t("已添加截图"),
+        needSession: I18n.t("先新建或选一条会话，再贴截图"),
+        shotFail: I18n.t("截图没能存下来，再贴一次"),
+        imgDel: I18n.t("删掉这张图"),
+        imgOpen: I18n.t("点开看大图（系统看图程序）"),
+        /* 左栏分组折叠 + 组内「＋」（本轮需求） */
+        foldGroup: I18n.t("折叠这一组"),
+        unfoldGroup: I18n.t("展开这一组"),
+        groupNew: I18n.t("在这个文件夹里新建会话"),
       }),
       log: (msg) => {
         try {
@@ -9189,6 +10033,15 @@ app.whenReady().then(() => {
     errLog("[minichat] 初始化失败：" + ((e && e.message) || e));
     miniChat = null;
   }
+  /* 快捷会话小窗：应用重新拿到前台就把它抬回最上层（本次修复 —— 用户报「微信 Alt+A 截图
+     回来小窗整只不见了」）。为什么挂在「应用获得焦点」上：截图浮层在前台时去抢 Z 序会把
+     小窗糊到浮层上面（截出来的图里带着小窗），等用户回到 MTNode 任一窗口才说明这一趟结束了。
+     只抬 Z 序 / 静默显示，不抢焦点（revealTop 内部判断 wantOpen，关掉时什么都不做）。 */
+  app.on("browser-window-focus", () => {
+    try {
+      if (miniChat) miniChat.revealTop();
+    } catch (_) {}
+  });
   registerPetIpc({
     getDataDir: DATA,
     getMainWin: () => mainWin,
@@ -9540,8 +10393,7 @@ app.on("before-quit", (ev) => {
   }
   quitCleanupState = "running";
   ev.preventDefault();
-  /* 快捷会话小窗：先注销全局 F1 再收窗口 —— 热键不注销会随进程残留，
-     下次启动注册同一键时拿不到（用户看到的是「按 F1 没反应」）。 */
+  /* 快捷会话小窗：退出时收掉那只窗口（F1 已改窗内快捷键，没有全局热键需要注销了）。 */
   try {
     if (miniChat) miniChat.shutdown();
   } catch (_) {}
@@ -9593,6 +10445,9 @@ app.on("before-quit", (ev) => {
      幂等：没有追加段的会话一个字节都不动；压缩本身是「先原子写基线、再删追加段」，
      崩在中间也不会重复贴（基线的 _deltaVer 兜底）。 */
   try { sessionStore().compactAllPending("quit"); } catch {}
+  /* 助手侧三股流的隔离渲染进程（任务 8/8）：它没有需要落盘的状态（活动流本来就落库、
+     会话流在会话库里），所以这里只把那只进程关干净 —— 不 await、不拖延退出。 */
+  try { assistIso.shutdown(); } catch {}
   if (dshAdapter) {
     try { dshAdapter.shutdown(); } catch {}
   }
@@ -9604,6 +10459,11 @@ app.on("before-quit", (ev) => {
      + 宿主持有的 Paseo daemon。都有上限，任何一项失败 / 超时都不拦退出，做完自己再 app.quit()。 */
   const quitCleanup = (async () => {
     const jobs = [];
+    /* 画布落盘（任务 7/8）：服务进程手上那几笔跑完（含着它们的落盘 ack）→ 落盘队列写完 →
+       应用画布镜像刷干净。放在最前面，让它跟其它收尾并行，别把退出拖长。 */
+    try {
+      jobs.push(flushCanvasPersistenceForQuit(8000));
+    } catch {}
     /* 函数节点拉起的外部进程 / 运行线程（python 等）：上面已经点火，这里等它真的收干净 */
     jobs.push(fnShutdown, procKilled);
     jobs.push(
@@ -9645,6 +10505,11 @@ app.on("will-quit", () => {
   /* 函数节点运行线程：先终止 worker 再扫进程树 —— 节点不在运行态就不该有线程/进程 */
   try { if (fnRuntime) fnRuntime.shutdown().catch(() => {}); } catch {}
   try { procHost.killAll().catch(() => {}); } catch {}
+  /* 画布镜像兜底：before-quit 那趟异步刷万一被硬超时截断，这里同步再刷一次（幂等，
+     脏集合空了就是空操作）—— 镜像丢一份不致命，但能保住就别丢。 */
+  try { flushAppCanvasMirror("quit"); } catch {}
+  /* 活动流合批窗里还剩的行：退出前同步落一次（见 activityQueuePush） */
+  try { activityFlushPush(); } catch {}
 });
 app.on("activate", () => {
   if (BrowserWindow.getAllWindows().length === 0) {

@@ -248,7 +248,7 @@
       "Voice input (off): click to start continuous dictation, click again for push-to-talk, click again to turn off",
     "持续转录中：说话即写入当前输入框（点一下切按键转录）":
       "Continuous dictation: speech goes straight into the focused input (click to switch to push-to-talk)",
-    "按键转录：按住 F3 说话（点一下关闭）": "Push-to-talk: hold F3 to speak (click to turn off)",
+    "按键转录：按住 F4 说话（点一下关闭）": "Push-to-talk: hold F4 to speak (click to turn off)",
     /* ── 快捷会话小窗（mini-chat-window.js 的独立窗口 + 状态栏入口 #btnMiniChat）──
        文案出现在：入口按钮 tooltip、小窗标题 / 左栏 / 输入区 / 运行态 / 空态 / 错误提示。
        小窗自己的词条由主进程按下面这些中文原文现算后整份下发（见 main.js 的 i18nDict）。 */
@@ -264,6 +264,7 @@
     "你的指令": "Your instruction",
     "排队中": "Queued",
     "新建会话": "New session",
+    "新建会话（Ctrl + N）": "New session (Ctrl + N)",
     "先写一句指令": "Type an instruction first",
     "操作失败": "Action failed",
     "主窗口不可用，先在主窗口打开一次": "Main window unavailable — open it once first",
@@ -271,6 +272,12 @@
     "这条会话已不存在": "That session no longer exists",
     "F1 被其它程序占用，用左下角入口按钮打开":
       "F1 is taken by another app — use the bottom-left entry button instead",
+    /* 删除会话（本轮需求）：小窗「跳主窗」左边那颗删除按钮的两态键面与 tooltip */
+    "删除这条会话": "Delete this session",
+    "删掉？": "Delete?",
+    "再点一下删除这条会话（连会话记录一起删掉，不可恢复）":
+      "Click again to delete this session (its record is removed too and cannot be restored)",
+    "会话已删除": "Session deleted",
     "快捷会话（F1）：下发指令、只看最后一条回复":
       "Quick chat (F1): send instructions and see only the latest reply",
     /* 项目文件夹 + 输入框上方那两枚模式开关（本轮需求）：小窗顶部那行小字、
@@ -284,10 +291,22 @@
       "Grill me: clear the requirements before any work each round (mutually exclusive with Hotfix)",
     "热修：最快路径 —— 只在真有歧义时问一句，不写文档、不跑 smoke test（与「拷问需求」互斥）":
       "Hotfix: the fastest path — ask only when genuinely ambiguous, write no docs, run no smoke tests (mutually exclusive with Grill me)",
+    /* 粘贴截图（本轮需求）：小窗输入框上那条缩略图胶囊与提示条 */
+    "已添加截图": "Screenshot added",
+    "先新建或选一条会话，再贴截图":
+      "Create or pick a session first, then paste the screenshot",
+    "截图没能存下来，再贴一次": "The screenshot could not be saved — paste it again",
+    "删掉这张图": "Remove this image",
+    "点开看大图（系统看图程序）": "Open the full image (system image viewer)",
+    /* 左栏分组折叠 + 组内「＋」（本轮需求）：组标题 tooltip 与那颗小加号 */
+    "折叠这一组": "Collapse this group",
+    "展开这一组": "Expand this group",
+    "在这个文件夹里新建会话": "New session in this folder",
+    "点击定位到正文里的这一行": "Click to jump to this line in the message",
     "持续转录已开启：说话即写入当前输入框": "Continuous dictation on — speak and it is typed into the focused input",
-    "按键转录已开启：按住 F3 说话": "Push-to-talk on — hold F3 to speak",
-    "按住 F3 说话": "Hold F3 to speak",
-    "松开 F3 即写入": "Release F3 to insert it",
+    "按键转录已开启：按住 F4 说话": "Push-to-talk on — hold F4 to speak",
+    "按住 F4 说话": "Hold F4 to speak",
+    "松开 F4 即写入": "Release F4 to insert it",
     /* 浮窗标签与右键菜单的分组标题（都是短语，不是整句）：与上面两条「已开启」文案同源 */
     "持续转录": "Continuous dictation",
     "断句停顿": "Pause cutoff",
@@ -339,9 +358,9 @@
     /* 设置小节的说明：口径改成「停顿才提交」后，这句话必须跟着改 ——
        「说话即写入」会让人以为边说边出字（现在是一句说完才落字）。旧那句话的词条
        随改文一并删掉：留着就是一条永不命中的死条目。 */
-    "状态栏最左边那枚话筒：点一下开启持续转录（一直听，每说完一句——停顿——就把这一整句写进当前输入框），再点一下切按键转录（按住 F3 说话），再点关闭。识别在本地 CPU 上跑，不上传。":
-      "The mic at the far left of the status bar: click once for continuous dictation (it keeps listening and writes each sentence into the focused input once you pause), again for push-to-talk (hold F3 to speak), again to turn off. Recognition runs locally on the CPU and is never uploaded.",
-    /* 本地识别服务未就绪 / 不可用（浮窗标签与 toast）：PTT 键是 F3，服务还在重试时先把
+    "状态栏左下角第四颗话筒：点一下开启持续转录（一直听，每说完一句——停顿——就把这一整句写进当前输入框），再点一下切按键转录（按住 F4 说话），再点关闭。识别在本地 CPU 上跑，不上传。":
+      "The fourth mic in the bottom-left status bar: click once for continuous dictation (it keeps listening and writes each sentence into the focused input once you pause), again for push-to-talk (hold F4 to speak), again to turn off. Recognition runs locally on the CPU and is never uploaded.",
+    /* 本地识别服务未就绪 / 不可用（浮窗标签与 toast）：PTT 键是 F4，服务还在重试时先把
        「为什么现在按了没反应」讲清楚；最后一句指向右键菜单里的同一枚动作，文案必须成对。 */
     "本地语音识别服务未就绪（正在重试…）":
       "The local speech recognition service is not ready yet (retrying…)",
@@ -5010,6 +5029,9 @@
     "在途生成": "Generation in flight",
     "节点预览": "Node preview",
     "点击查看大图": "Click to view full image",
+    /* 研究视图里 ```mermaid / ```pele 渲出来的图：灯箱标题与导出失败的提示 */
+    "关系图": "Diagram",
+    "这张图打不开大图（导出失败）": "Can't open this diagram at full size (export failed)",
     /* 图像预览灯箱：默认整图适应窗口高度，滚轮缩放 / 点击放大 / 拖动平移 */
     "缩小": "Zoom out",
     "放大": "Zoom in",
@@ -5191,6 +5213,12 @@
     "用系统默认应用打开": "Open with default app",
     "用系统默认应用打开原文件（保留 PDF 原样式）":
       "Open the original file with the system default app (keeps the PDF's original layout)",
+    /* ── 面板内 PDF 预览（app-filepeek.js · 主进程 PDF 渲染通道）── */
+    "当前窗口没有 PDF 渲染通道，无法在面板里预览；可用「在资源管理器中显示」用系统阅读器打开":
+      "This window has no PDF render channel, so it cannot preview the PDF here; use “Show in Explorer” to open it with the system reader",
+    "读不出这份 PDF": "Cannot read this PDF",
+    "这份 PDF 没有可渲染的页面": "This PDF has no renderable pages",
+    "共 {n} 页 · 第 {p} 页": "{n} pages · page {p}",
     /* ── H3 自建 ComfyUI 工作流（video_gen 节点面板 · 库/扫描/注入真源在主进程）── */
     "内置 H3 链（首末帧 / 多参考）": "Built-in H3 chain (first/last frame · multi-ref)",
     "自建 ComfyUI 工作流": "Custom ComfyUI workflow",
@@ -6717,6 +6745,7 @@
     "已进入任务：": "Entered task: ",
     "返回顶层画布": "Back to top-level canvas",
     "返回上一层": "Back one level",
+    "返回上一页": "Back to the previous page",
     "← 返回": "← Back",
     "进入任务：": "Enter task: ",
     "当前任务内部暂无节点": "No nodes inside this task yet",
@@ -7267,6 +7296,8 @@
     "摇数": "Reroll",
     "每次执行种子 +1（默认开启）":
       "Increment seed by +1 on every run (on by default)",
+    "每次执行种子 +1。默认关闭：语音固定种子，同一段文字每次输出同一段音频；打开后每次换一个念法":
+      "Increment the seed by +1 on every run. Off by default: voice keeps a fixed seed, so the same text yields the same audio every time; when on, each run reads it slightly differently",
     "输出目录": "Output folder",
     "文件名（可选）": "Filename (optional)",
     "随机种子": "Randomize seed",
@@ -7526,6 +7557,26 @@
     "队列已生成，但会话没起来：": "Queue created, but the session did not start: ",
     "研究初始化：逐项状态、失败重试": "Research setup: per-item status and retry",
     "添加资料": "Add material",
+    /* 「＋ 添加内容」对话框（左栏「资料」页那颗按钮，以及左栏拖放文件时预填进来的同一个窗）：
+       三段（文件 / 网址 / 给 agent 的指示）+ 底栏计数。行末「网页」「文字」是条目来源的短标签，
+       与 RS_ADD_SOURCES 的短码一一对应。 */
+    "添加内容": "Add content",
+    "文件（拖进来，或点「选择文件…」；可多次追加）":
+      "Files (drop them here, or click “Choose files…”; you can add more at any time)",
+    "把文件拖到这里": "Drop files here",
+    "链接 / DOI / arXiv / 检索式（一行一条，可一次贴多行）":
+      "Links / DOI / arXiv / search queries (one per line — paste as many lines as you like)",
+    "粘贴链接 / DOI / arXiv 编号 / 检索式，回车加入（Shift+回车换行）":
+      "Paste a link / DOI / arXiv id / search query, Enter to add (Shift+Enter for a new line)",
+    "给 agent 的指示（可为空）": "Instructions for the agent (optional)",
+    "例如：只收实证部分；重点看第 4 节；几篇结论冲突的地方列个表":
+      "e.g. keep only the empirical parts; focus on section 4; list where the papers disagree",
+    "已添加 {n} 项": "Added {n} item(s)",
+    "确认执行（{n} 项）": "Confirm & run ({n})",
+    "选择要添加的文件": "Choose files to add",
+    "这几行都在列表里了": "Those lines are already in the list",
+    "网页": "Web page",
+    "文字": "Text",
     /* 初始化已处理标记（投料台队列行 + 研究视图笔记 / 文献行 + 顶栏完成 chip + 只读清单）：
        处理完的东西要在主视图里看得见，所以这几条是同一组文案。 */
     "✓ 已处理": "✓ Done",
@@ -7558,6 +7609,25 @@
       "This item has no folds yet: have the agent generate literature/folds/",
     "关键原句": "Key sentences",
     "主题": "Themes",
+    /* 节级三档（与三层折叠并存：一个全篇档 + 每节可单独钉住） */
+    "一句话": "One sentence",
+    "一段话": "One paragraph",
+    "原文": "Original",
+    "跟随全篇": "Follow the article",
+    "每节右上角可单独钉住": "Pin any section from its own menu",
+    "缺这一档，显示原文": "This level is missing; showing the original",
+    "节级三档": "Section levels",
+    /* 术语页（初始化后自动归纳第一层，再靠「引申」长下一层） */
+    "术语页": "Term pages",
+    "引申": "Derive",
+    "让 Agent 再找一轮候选": "Ask the agent for another round of candidates",
+    "生成这一层": "Generate this layer",
+    "上一批还在等落盘": "The previous batch is still being written",
+    /* 投料台入口与补跑 */
+    "打开投料台": "Open the intake sheet",
+    "投料台：再投一批料 / 看处理队列 / 队列跑完后补跑一层":
+      "Intake sheet: add more material / watch the queue / backfill once the queue is done",
+    "补跑一层": "Backfill one layer",
     "全文层：作者原文，可编辑（源码）": "Full-text layer: the author's own words, editable (source)",
     "只读投影：从全文折出来的第 ": "Read-only projection folded from the full text, layer ",
     "第 ": "Layer ",
@@ -7604,6 +7674,7 @@
     "研究目录：research": "Research folder: research",
     "笔记": "Notes",
     "文献": "Literature",
+    "资料": "References",
     "图谱": "Graph",
     "时间线": "Timeline",
     "力导向": "Force",
@@ -7625,6 +7696,24 @@
     "已验证": "Verified",
     "存疑": "Disputed",
     "未验证": "Unverified",
+    /* 图谱右栏（点中节点后的详情） */
+    "验证态": "Verification",
+    "引用键": "Cite key",
+    "网址": "URL",
+    "日期": "Date",
+    "方向": "Angle",
+    "父": "Parent",
+    "悬空：目标不在库里": "Dangling: the target is not in the library",
+    "缺口：父笔记不在库里": "Gap: the parent note is not in the library",
+    "这个节点没有可展开的正文（只有标题）。":
+      "This node has no body to expand (title only).",
+    "这个节点还没有任何关系。": "This node has no relations yet.",
+    " 条关系没列出": " more relations not listed",
+    "打开正文": "Open article",
+    "打开文献": "Open paper",
+    "回到笔记视图并定位到这一段（": "Back to the note view, scrolled to this passage (",
+    "有全文就直接打开；没有则问一句要不要搜索并入库":
+      "Opens the full text if it is already downloaded; otherwise asks whether to search and ingest it",
     "转为图谱": "Open graph",
     "解析全部笔记，重建知识图谱（之后保存时增量更新）":
       "Parse all notes and rebuild the knowledge graph (later saves update it incrementally)",
@@ -7634,6 +7723,33 @@
       "Re-read the research/ folder (use after editing files in an external editor)",
     "撤销上一次写入（agent 与手工写入都记在 changes.jsonl）":
       "Undo the last write (agent and manual writes are both logged in changes.jsonl)",
+    "创建原文": "Create source note",
+    /* 原件（只读）：core/ 与 literature/sources/ 里的非 md 文件，只做打开入口 */
+    "原件": "Source file",
+    "原件只读，不随编辑改动": "Source files are read-only and never change with edits",
+    "打开原件（只读，不随编辑改动）：": "Open the source file (read-only, it never changes with edits): ",
+    "（core/ 与 literature/sources/ 里还没有原件）":
+      "(No source files yet in core/ or literature/sources/)",
+    "打开失败（没有系统打开通道）：": "Could not open (no system open channel): ",
+    "这一版被改过（同组有多版都动过）":
+      "This version was edited, and so were other versions in this group",
+    "按改动最大的那一版重新生成其它版本（会调用模型、消耗 Token，逐条串行跑）":
+      "Regenerate the other versions from the most-edited one (calls the model and spends tokens; one by one)",
+    "」（改动量最大的那一版）重新生成 ": "\" (the most-edited version) to regenerate ",
+    "这一步会调用模型、消耗 Token，且逐条串行跑；同组其它也被改过的版本会一起按它重写。建议在阶段性修改完成后再同步，别每改一句就同步一次。继续吗？":
+      "This calls the model and spends tokens, one version after another. Other edited versions in the same group are rewritten from it too. Best to sync after a round of edits rather than after every sentence. Continue?",
+    "组里没有别的版本可重写": "No other version in this group to rewrite",
+    /* 双链浮空卡（点 `[[…]]` 先弹卡，不直接进页面） */
+    "这一页": "This page",
+    "新建一条笔记": "New note from this link",
+    "让模型先给几个角度的候选，勾选后写成一篇笔记（会调用模型、消耗 Token）":
+      "Let the model propose a few angles first; the picked one becomes a note (calls the model, spends tokens)",
+    "这一条链接还没有对应内容（点下面那颗钮补一条）":
+      "Nothing answers this link yet (use the button below to create it)",
+    "这一版被改过（改动集中在这里）":
+      "This version was edited (the change lives here)",
+    "还原": "Revert",
+    "在 notes/ 下新建一篇 Markdown 原文": "Create a new Markdown source note under notes/",
     "新建笔记": "New note",
     "在 notes/ 下新建一篇 Markdown 笔记": "Create a new Markdown note under notes/",
     "新笔记标题": "New note title",
@@ -7654,7 +7770,48 @@
     "编辑 Markdown 源码：左边源码、右边实时预览":
       "Edit the Markdown source: source on the left, live preview on the right",
     "收起源码，回到渲染后的阅读态": "Fold the source away and return to the rendered reading view",
+    "正文就地编辑": "Edit in place",
+    "正文就地编辑：直接改 Markdown，Esc 退出":
+      "Editing in place: type straight into the Markdown; press Esc to leave",
+    "源码态": "Source",
+    "切到源码态（左边源码、右边实时预览）":
+      "Switch to source mode (source on the left, live preview on the right)",
+    "退出就地编辑（Esc），按阅读态重新渲染":
+      "Leave in-place editing (Esc) and re-render as the reading view",
+    "未保存（已取消写入）": "Unsaved (write cancelled)",
+    "批注栏": "Notes",
+    "给选中的这段正文加一条局部批注（只存进 research.json，不改 md 正文）":
+      "Attach a local annotation to the selection (stored in research.json only; the md body is not modified)",
+    "先在正文里拖选一段，再点这里加局部批注":
+      "Select a passage first, then click here to add a local annotation",
+    "不绑选段，给整篇写一条批注（列在批注栏顶部；不改 md 正文）":
+      "Add a whole-document annotation without a selection (listed on top of the notes pane; the md body is not modified)",
+    "拖选正文可加局部批注": "Select a passage to add a local annotation",
+    "先在正文里拖选一段": "Select a passage first",
+    "写一条批注…（只存进 research.json，不改 md 正文）":
+      "Write an annotation… (stored in research.json only; the md body is not modified)",
+    "写入批注": "Add annotation",
+    "改批注": "Edit annotation",
+    "删除这条批注": "Delete this annotation",
+    "批注已删除": "Annotation deleted",
+    "已写入全文批注": "Annotation added to the whole document",
+    "已写入局部批注": "Local annotation added",
+    "还没有批注：拖选正文加「局部批注」，或点「全文批注」":
+      "No annotations yet: select a passage to add a local one, or click “全文批注”",
+    "锚点文字已变更，这条批注已失效": "The anchored text has changed; this annotation no longer matches",
+    "锚点文字已变更，批注可能失效": "The anchored text has changed; this annotation may no longer match",
+    "未能在正文中找到这条批注的片段": "Could not find this annotation's passage in the text",
+    "点这里在正文里定位这一段": "Click to locate this passage in the text",
+    "点击修改这条批注": "Click to edit this annotation",
+    "关闭便笺（Esc）": "Close the note (Esc)",
+    "展开批注栏": "Show the notes pane",
+    "收起批注栏": "Hide the notes pane",
     "这篇笔记当前不可编辑": "This note is read-only right now",
+    "编辑源码": "Edit source",
+    "看渲染": "Show rendered",
+    "问模型：这条式子怎么来的": "Ask the model where this formula comes from",
+    "公式已更新": "Formula updated",
+    "这里改不了原文（只读）": "The note cannot be edited here (read-only)",
     "展开左侧文件栏": "Show the file sidebar",
     "收起左侧文件栏": "Hide the file sidebar",
     "图谱渲染模块没加载（app-research-graph.js）":
@@ -7711,6 +7868,8 @@
     "还没有可成图的内容（写 [[链接]] 或 claim 块）":
       "Nothing graphable yet (add [[links]] or claim blocks)",
     "左侧选一篇笔记，或新建一篇": "Pick a note on the left, or create one",
+    "点击查看原图": "Click to view the original",
+    "缺图：": "Missing image: ",
     "先打开一篇笔记": "Open a note first",
     "先点一个节点再聚焦": "Select a node before focusing",
     "没有可撤销的改动": "Nothing to undo",
@@ -7729,6 +7888,7 @@
       "Messages here go to the session bound to this canvas (same one as the Chat view); answers sync back there",
     "还没有绑定会话，发送即新建": "No session bound yet; sending creates one",
     "没有可用的文本模型（设置 · 模型服务）": "No text model available (Settings · Model services)",
+    "没有可用的文本模型（设置 · 默认模型）": "No text model available (Settings · Default model)",
     "该服务商没有可用模型": "This provider has no available model",
     "会话不可用": "Session unavailable",
     "会话发送入口不可用": "Session send entry unavailable",
@@ -9074,6 +9234,31 @@
       "The canvas was copied to the trash folder, but the source is locked and could not be removed — close whatever holds it and retry: ",
     "移入回收站失败，画布未删除：":
       "Moving to the trash folder failed, canvas not deleted: ",
+    /* 删画布时「连项目文件夹一起删」（可选项，默认不删；进系统回收站） */
+    "同时删除项目文件夹内容": "Also delete the project folder contents",
+    "勾选后整个文件夹移入系统回收站（可在资源管理器还原）；不勾则只删画布，文件夹原样保留。":
+      "When checked, the whole folder goes to the system recycle bin (restorable in File Explorer); when unchecked only the canvas is deleted and the folder is left untouched.",
+    "项目文件夹已一并移入系统回收站（可在资源管理器还原）：":
+      "The project folder was moved to the system recycle bin too (restorable in File Explorer): ",
+    "这个画布没有设置项目文件夹，没有可一起删除的目录":
+      "This canvas has no project folder set, so there is no folder to delete with it",
+    "项目文件夹不是绝对路径，已拒绝删除：":
+      "The project folder is not an absolute path — deletion rejected: ",
+    "项目文件夹不存在或已不是文件夹，已拒绝删除：":
+      "The project folder does not exist or is no longer a folder — deletion rejected: ",
+    "项目文件夹指向磁盘根目录，已拒绝删除：":
+      "The project folder points at a drive root — deletion rejected: ",
+    "项目文件夹是受保护的位置（应用目录 / 数据目录 / 用户目录 / 系统目录）或它们的上级/内部，已拒绝删除：":
+      "The project folder is a protected location (app folder / data folder / user folder / system folder) or above/inside one — deletion rejected: ",
+    "项目文件夹在确认期间已变化，已拒绝删除：磁盘上是":
+      "The project folder changed while you were confirming — deletion rejected. On disk it is",
+    "，请求删的是": " · requested for deletion:",
+    "项目文件夹没能移入系统回收站，画布未删除（请关闭占用它的程序后重试）：":
+      "The project folder could not be moved to the system recycle bin, canvas not deleted (close whatever holds it and retry): ",
+    "（可以取消勾选「同时删除项目文件夹内容」，只删画布）":
+      " (you can uncheck “Also delete the project folder contents” and delete only the canvas)",
+    "（注意：项目文件夹已先移入系统回收站，可在资源管理器还原）":
+      " (note: the project folder was already moved to the system recycle bin — restorable in File Explorer)",
   });
 
   /* ── 泛用「文件节点」（上传任意文件 → 自动转为对应输入节点） · 文本导入的两道警告 ── */
@@ -10047,6 +10232,9 @@
       "Type text here (written straight into this library item)",
     "（无图像）点击下方按钮选择": "No image — pick one with the button below",
     "（无内容）点击下方按钮选择": "No content — pick a file with the button below",
+    "（无内容）": "(no content)",
+    " · 点击打开滑杆（上下拖，编辑与预览同时生效）":
+      " · click to open the slider (drag up/down, applies to edit and preview alike)",
     "从本机选一个文件复制进素材库该条目（旧内容先进版本目录，可撤销）":
       "Pick a local file and copy it into this library item (the old one goes to the versions folder first · undoable)",
     "该素材还没有内容：点上方「设置」添加文本 / 图像 / 音频 / 视频":
@@ -11350,9 +11538,11 @@
     "重新读取图像后端清单（新装插件 / 刚配好服务商时点它）。": "Reload the image-backend list (use it right after installing a plugin or configuring a provider).",
     "生成音乐：写风格提示词（可加歌词），点 ▶ 得到一段音乐。": "Generate music: write a style prompt (lyrics optional) and press ▶ to get a track.",
     "（可接多张图像 · 最多 10 张）": "(multiple images allowed · up to 10)",
-    "FLUX 3 Image Klein（本地图像生成 · 5.6B 蒸馏 · INT8 / BF36 · 提示词 / 多参考图编辑 / 蒙版重绘 / 透明背景）":
-      "FLUX 3 Image Klein (local image generation · 5.6B distilled · INT8 / BF36 · prompt / multi-reference edit / mask repaint / transparent background)",
-    "FLUX 3 Image Klein（本地图像生成 · INT8 / BF36）": "FLUX 3 Image Klein (local image generation · INT8 / BF36)",
+    "FLUX 3 Image Klein（本地图像生成 · 5.6B 蒸馏 · INT8 / BF16 · 提示词 / 多参考图编辑 / 蒙版重绘 / 透明背景）":
+      "FLUX 3 Image Klein (local image generation · 5.6B distilled · INT8 / BF16 · prompt / multi-reference edit / mask repaint / transparent background)",
+    "FLUX 3 Image Klein（本地图像生成 · INT8 / BF16）": "FLUX 3 Image Klein (local image generation · INT8 / BF16)",
+    "MOSS-Music 音乐理解（本地音乐理解 · 音频 / 视频 → 时间戳歌词 / 曲式与和弦 / 情绪标签 / 自由提问）":
+      "MOSS-Music understanding (local audio understanding · audio / video → timestamped lyrics / form & chords / mood tags / free-form questions)",
     "Qwen Image 2.1（本地图像生成 · 7B DiT · INT8 / Turbo INT8 双量化 · 提示词 / 多参考图编辑 / 蒙版重绘 / 原生透明背景）":
       "Qwen Image 2.1 (local image generation · 7B DiT · INT8 / Turbo INT8 dual-quant · prompt / multi-reference edit / mask repaint / native transparent background)",
     "Qwen Image 2.1（本地图像生成 · INT8 / Turbo INT8）": "Qwen Image 2.1 (local image generation · INT8 / Turbo INT8)",
@@ -14523,6 +14713,346 @@
       "Recompile is unavailable in dev mode (it would kill the debug process too)",
     "找不到 scripts\\agent-rebuild.cmd（源码目录不在预期位置）":
       "Cannot find scripts\\agent-rebuild.cmd (the source folder is not where expected)",
+  });
+
+  /* ── 研究视图 · 规则表「＋ 变体」面板（renderer/app-research.js 的 rsAddPanel）──
+     「添加」只写规则表、不立即生成；旧词条（如「确认并生成」）即便不再使用也一律不删。 */
+  Object.assign(EN, {
+    "添加": "Add",
+    "往这一页的规则表里加一条变体（种类 + 语言）：只写入规则表，不立即生成":
+      "Add one more variant to this page's rule table (kind + language): it only writes the rule table, nothing is generated yet",
+    "已加入规则表：": "Added to the rule table: ",
+    "这一页的规则表里已有 ": "This page's rule table already has ",
+    "（未生成 · 点那颗 chip 就地生成）":
+      " (not generated yet — click the chip to generate it right here)",
+  });
+
+  /* ── 研究视图 · 缺失条目候选面板里的「自定义…」方向（renderer/app-research.js 的
+     rsMissingOpen / paintCustom）：提交后仍先走那一行「会消耗 Token」的确认再调模型。 */
+  Object.assign(EN, {
+    "自定义…": "Custom…",
+    "自己写一个方向（提交后同样先确认是否调用模型）":
+      "Write your own angle (you still confirm before the model is called)",
+    "写下你想补的角度（例如：它在证明里起什么作用）":
+      "Write the angle you want (e.g. what role it plays in the proof)",
+    "再看别的方向": "Other angles",
+  });
+
+  /* ── 研究视图 · 正文字号菜单（renderer/app-research.js 的 rsViewBar / rsFsMenu）──
+     按钮与菜单标题共用「正文字号」（已有词条）；档位按钮是纯数字 + px，不进词表。
+     旧的 A- / A+（「减小正文字号」「增大正文字号」）已随步进按钮移除，不另补。 */
+  Object.assign(EN, {
+    "正文字号（11–24）": "Body font size (11–24)",
+  });
+
+  /* ── 研究视图 · 公式浮层（renderer/research-reader.js 的 openEq）──
+     头部四件 = 公式号 +「编辑 LaTeX」+「放大」+「关闭」；中部渲染式，下部「扩充方向」
+     （与术语浮层同一份，见 app-research.js 的 rsMissSuggest）。
+     「放大」「关闭」「保存」「取消」「保存中…」复用已有词条，这里只补新出现的那几句。 */
+  Object.assign(EN, {
+    "编辑 LaTeX": "Edit LaTeX",
+    "编辑这条式子的 LaTeX 源码": "Edit the LaTeX source of this formula",
+    "把这条式子放大看（再点一次收回）": "Enlarge this formula (click again to restore)",
+    "打开公式浮层（编辑 LaTeX / 放大 / 补充方向）":
+      "Open the formula panel (edit LaTeX / enlarge / add an angle)",
+    "没保存：写入被拒，公式已回到修改前":
+      "Not saved: the write was rejected, so the formula is back to how it was",
+    "扩充方向": "Add an angle",
+  });
+
+  /* ── 研究视图 · 候选面板的「不经过 Agent」那条路 + 断链提醒（app-research.js 的
+     rsMissBlank / rsDeadOpen / rsDeadDelete）──
+     空笔记 = 只落一个 frontmatter 骨架就打开，不调模型；断链对话框 = 上游标题 / 别名
+     改了或被删了之后，别的笔记里还写着 [[旧名字]] 的那些位置列成清单，保留还是删。 */
+  Object.assign(EN, {
+    "直接新建空笔记": "Create an empty note",
+    "不调用模型：只落一个空骨架（标题 + frontmatter），建好就打开，正文由你自己写":
+      "No model call: write just an empty skeleton (title + frontmatter) and open it so you can fill it in",
+    "新建空笔记失败：": "Failed to create the empty note: ",
+    "已新建空笔记 ": "Created the empty note ",
+    "（正文由你自己写）": " (fill in the body yourself)",
+    "链接被断开：": "Broken links: ",
+    "这些笔记里还写着旧名字，点过去已经找不到那篇笔记了。可以保留（一个字节都不动，之后自己改标题或补回那篇），也可以删掉这些链接（只摘掉 [[ ]] 这一层，显示文字留在原处）。":
+      "These notes still use the old name, and clicking through no longer finds that note. Keep them (not a byte changes — rename later or restore that note yourself), or drop the links (only the [[ ]] wrapper goes; the visible text stays where it is).",
+    "删除这些链接": "Drop these links",
+    "保留": "Keep",
+    "断开链接": "Broken link",
+    "没有改动：这些链接已经不在了": "Nothing changed: those links are already gone",
+    "已摘掉 ": "Dropped broken links in ",
+    " 篇里的断链（显示文字留在原处）": " note(s) (the visible text stays)",
+  });
+
+  /* ── DeepSeek 对话抽屉（renderer/app-deepseek.js + css/deepseek.css）──
+     文案出现在：状态栏入口 #btnDeepSeek 的 tooltip、抽屉标题栏、网页没加载出来时那条兜底
+     链接（「关闭」复用上面已有的键，不另加）。 */
+  Object.assign(EN, {
+    "DeepSeek 对话（F2 · 右侧抽屉）":
+      "DeepSeek chat (F2 · right-side drawer)",
+    "DeepSeek 对话": "DeepSeek chat",
+    "网页没加载出来 —— 在系统浏览器中打开":
+      "The page did not load — open it in your system browser",
+  });
+
+  /* ── 研究视图 · 依据批注让 AI 处理这一篇（renderer/app-research.js 的
+     rsAnnoBarRender / rsAnnoAiRun / rsAnnoAiCard / rsAnnoAiAccept + css/research.css）──
+     入口按钮 → 就地确认（会消耗 Token）→ 结果卡（±行 diff）→ 采纳并覆盖 / 放弃。
+     「已处理」复用上面已有的词条（"已处理": "Done"）；「继续」「取消」「 字」「 行」「模型」
+     也复用已有词条，这里只补这一轮新出现的几句。换成英文时注意：带前导空格的几条是拼接用的
+     半句（前面接标题、后面接数字），别把空格吃掉。 */
+  Object.assign(EN, {
+    "让 AI 依据批注处理": "Let AI apply the annotations",
+    "查看处理结果": "View result",
+    "这份结果还没写进文件：点开看差异，再决定采纳还是放弃":
+      "This result is not in the file yet: open it to see the diff, then accept or discard",
+    "正在依据批注重写这一篇（正文照常可编辑）；结果出来后再决定是否覆盖":
+      "Rewriting this note from the annotations (the text stays editable); decide about overwriting once the result arrives",
+    "把这一篇连同 ": "Send this note plus ",
+    " 条未处理批注交给模型重写（点了会先确认：会消耗 Token）":
+      " unhandled annotations to the model for a rewrite (you confirm first: it spends tokens)",
+    "没有未处理的批注：先在批注栏写几条，或把「已处理」的删掉":
+      "No unhandled annotations: write a few in the notes pane, or delete the ones marked done",
+    "将让 Agent 依据这 ": "The agent will use these ",
+    " 条批注重写整篇，会消耗 Token。确认继续？":
+      " annotations to rewrite the whole note. This spends tokens — continue?",
+    "AI 处理中…": "AI working…",
+    "AI 处理失败：": "AI processing failed: ",
+    "AI 处理结果": "AI result",
+    "AI 结果与原文一致：没有要覆盖的改动":
+      "The AI result matches the original: nothing to overwrite",
+    "… 其余 ": "… ",
+    "展开这段未改动的上下文": "Expand this unchanged context",
+    "采纳并覆盖": "Accept and overwrite",
+    "把这份结果写回笔记，并把已处理的批注标记为完成":
+      "Write this result back into the note and mark the handled annotations as done",
+    "放弃": "Discard",
+    "丢掉这份结果，笔记不动": "Discard this result; the note stays untouched",
+    "已放弃这次处理结果": "Result discarded",
+    "已生成处理结果，请确认差异": "Result ready — review the diff",
+    "无未处理批注": "No unhandled annotations",
+    "模型未返回处理结果": "The model returned no result",
+    "折叠的第 2/3 层是只读投影，先回到全文再让 AI 处理":
+      "The 2nd/3rd fold level is a read-only projection: go back to the full text before letting AI process it",
+    "该服务商还没有 API Key：到 设置 · 服务商 里填上再试":
+      "This provider has no API key yet: add one under Settings · Providers and try again",
+    "文本模型通道未就绪（设置 · 默认模型）":
+      "The text-model channel is not ready (Settings · Default model)",
+    "已覆盖原文件": "Overwrote the original file",
+    "已覆盖原文件，": "Overwrote the original file, ",
+    " 条批注标记为已处理": " annotation(s) marked as done",
+    "版本组里这一版被改过，这次覆盖已取消（diff 结果还留着）":
+      "This version in the group was edited, so this overwrite was cancelled (the diff is still here)",
+    "这份结果来自另一篇笔记，已丢弃": "That result belonged to another note and was discarded",
+    "这条批注已经用在一次采纳里：不再进下一轮的 AI 处理":
+      "This annotation was used in an accepted round: it no longer feeds the next AI run",
+  });
+
+  /* ── 研究视图 · 演示（PPT）入口接线（renderer/app-research.js 的「演示」一段 +
+     renderer/app-research-tree.js 的右键项）──
+     三处入口：顶栏那颗「演示」图标（打开菜单）/ 菜单里三条（打开编辑器 · 让 Agent 重写整份 ·
+     让 Agent 重写这一页）/ 树上右键「生成演示…」。落盘与派单都在宿主，
+     编辑器自己的文案暂为中文常量（那一轮不做 i18n）。带前导 / 尾随空格的几条是拼接用的半句。 */
+  Object.assign(EN, {
+    "演示": "Slides",
+    "演示：把核心稿与 3-Pass 变体排成一套可放映的页（编辑 / 放映 / 导出 HTML）":
+      "Slides: turn the core note and its 3-Pass variants into a deck you can present (edit / present / export HTML)",
+    "演示：还没有核心稿件（先投料或新建一篇原文）":
+      "Slides: no core note yet (run the intake sheet or create an original first)",
+    "还没有核心稿件：先投料或新建一篇原文，再做演示":
+      "No core note yet: run the intake sheet or create an original note before making slides",
+    "演示模块没加载（research-slides.js / app-research-slides.js）":
+      "The slides modules are not loaded (research-slides.js / app-research-slides.js)",
+    "打开演示编辑器": "Open the slides editor",
+    "内核直出 · 不花 Token": "Built from the notes · no tokens",
+    "让 Agent 重写整份…": "Have the agent rewrite the whole deck…",
+    "让 Agent 重写这一页…": "Have the agent rewrite this page…",
+    "先写一句想怎么改 · 会消耗 Token": "Say what to change first · spends tokens",
+    "演示还没打开（先把初始化卡确认掉），再点一次这条":
+      "The slides editor is not open yet (confirm the setup card first), then pick this again",
+    "正在读取演示…": "Reading the deck…",
+    "这一页：": "This page: ",
+    "没有可重写的页": "No page to rewrite",
+    " 页": " page(s)",
+    "隐藏 ": "hidden ",
+    "手改 ": "hand edits ",
+    " 处": "",
+    "演示存档没写进去：": "Could not write the deck store: ",
+    "演示已导出：": "Slides exported: ",
+    "模型重写演示": "Model rewrite of the deck",
+    "重写演示": "Rewrite slides",
+    "将派一条 Agent 会话，让模型重写「":
+      "An agent session will be started to have the model rewrite “",
+    "」这一页（会消耗 Token，可能要等几十秒）。继续吗？":
+      "” (this spends tokens and may take a while). Continue?",
+    "将派一条 Agent 会话，让模型重写整份演示（会消耗 Token，可能要等几十秒）。继续吗？":
+      "An agent session will be started to have the model rewrite the whole deck (this spends tokens and may take a while). Continue?",
+    "已派给会话，等它写出 ": "Dispatched to the session; waiting for it to write ",
+    "超时：会话没有写出 ": "Timed out: the session did not write ",
+    "（去左栏那条「重写演示」会话看它卡在哪）":
+      " (check the “Rewrite slides” session in the left sidebar to see where it got stuck)",
+    "模型写出的演示文稿不是合法 JSON：": "The model's deck output is not valid JSON: ",
+    "模型写出的演示文稿里没有 pages：": "The model's deck output has no pages: ",
+    "模型写出的页 id 一个都对不上：演示没有改动":
+      "None of the page ids from the model match: the deck was left unchanged",
+    "模型重写已合进演示：改了 ": "Model rewrite merged into the deck: ",
+    "生成演示…": "Generate slides…",
+    "在文件管理器打开": "Open in the file manager",
+    "你要把一份研究演示（PPT）的讲稿改写得更适合当面讲：一页只说一件事、每条要点一句话、去掉论文腔与朗读不出来的符号。":
+      "You are rewriting the script of a research slide deck so it works when spoken aloud: one point per slide, one sentence per bullet, no academic padding and nothing that cannot be read out.",
+    "要写的文件（唯一）": "The file to write (the only one)",
+    "演示名": "Deck name",
+    "只重写下面列出来的这一页：文件里的 pages 只放这一页，其它页一个都不许出现。":
+      "Rewrite only the single page listed below: `pages` in the file holds this page and nothing else.",
+    "整份都重写：文件里的 pages 覆盖下面列出的每一页，一页都不许漏、也不许新增。":
+      "Rewrite the whole deck: `pages` in the file covers every page listed below — none missing, none added.",
+    "页 id 原样照抄，一个字都不许改（改了就对不上页，宿主管不了手改）。":
+      "Copy every page id exactly (a changed id no longer matches a page and the host cannot apply the edit).",
+    "不许编：不新增数字、结论、引文与文献；只能压缩、重排、换更清楚的说法。原文没说的，一个字都别加。":
+      "Do not invent: no new numbers, conclusions, quotations or references. Only compress, reorder and rephrase; if the source does not say it, do not add it.",
+    "每条要点 ≤ 60 字、一页最多 5 条；标题 ≤ 24 字；讲者备注 2–3 句，写「这一页要讲什么」。":
+      "Each bullet ≤ 60 characters, at most 5 per page; titles ≤ 24 characters; speaker notes are 2–3 sentences about what this page says.",
+    '输出格式：UTF-8、合法 JSON、不要 Markdown 围栏 —— {"pages":[{"id":"原样照抄","title":"…","kicker":"…","bullets":["…"],"quote":"…","note":"…"}]}':
+      'Output format: UTF-8, valid JSON, no Markdown fence — {"pages":[{"id":"copy exactly","title":"…","kicker":"…","bullets":["…"],"quote":"…","note":"…"}]}',
+    "需要改写的页（id / 现在的内容）：": "Pages to rewrite (id / current content):",
+    "写完只回一句话：写了哪个文件、改了几页。":
+      "When done, answer in one line: which file you wrote and how many pages you changed.",
+    "硬性要求：": "Hard requirements:",
+    "派给会话": "Dispatch to session",
+    "派活失败：": "Dispatch failed: ",
+    "会话模块没加载（agent 会话不可用）":
+      "The session module is not loaded (agent sessions unavailable)",
+    "新建会话失败": "Could not create a session",
+    "研究目录还没就绪": "The research folder is not ready yet",
+  });
+
+  /* ── PDF 解析 · 图元落盘（renderer/pdf-markdown.js 的 pdfMaterializeFigures）──
+     把正文里的 {{FIG:name}} / {{PAGE:n}} 换成真图：写 md 同目录的 assets/<mdStem>/，
+     写不动 / 渲染失败时退成注记或删行（「未知错误」「写入失败」「图片数据解码失败」
+     等半句与已有词条复用，这里只补这条链路新出现的几句）。 */
+  Object.assign(EN, {
+    "图元没能落盘：没有可写出的目录（先给画布设一个工作目录，或把 PDF 放到可写的位置）":
+      "Figures were not saved: there is no writable folder (set a workspace for the canvas, or put the PDF somewhere writable)",
+    "（图 {name} 已抽取但未落盘：{err}）":
+      "(figure {name} was extracted but not saved: {err})",
+    "没有可写出的目录": "no writable folder",
+    "本次不落盘": "this run does not write files",
+    "图片数据解码失败": "failed to decode the image data",
+    "页面图解码失败": "failed to decode the page image",
+    "图已抽取但未落盘：": "Figure extracted but not saved: ",
+    "（图 {name} 未随解析结果返回）":
+      "(figure {name} did not come back with the parse result)",
+    "这些图没有随解析结果返回，占位已去掉：":
+      "These figures did not come back with the parse result, so their placeholders were dropped: ",
+    "整页图表渲染失败，已删掉这一行占位（第 {n} 页）：":
+      "Page-chart rendering failed, so that placeholder line was removed (page {n}): ",
+    "图元已落盘：{n} 张 → {dir}": "Figures saved: {n} → {dir}",
+    "整页图表已出图：{n} 页 → {dir}": "Page charts rendered: {n} page(s) → {dir}",
+    "当前版本没有写文件通道（缺少 file:writeBytes）":
+      "This build has no file-write channel (file:writeBytes missing)",
+    "同名文件太多，换不到可写的文件名":
+      "Too many files with the same name; no writable file name left",
+    "当前版本没有页面渲染通道（缺少 pdf:render）":
+      "This build has no page-render channel (pdf:render missing)",
+    "渲染通道没有返回这一页的图片":
+      "The render channel returned no image for this page",
+  });
+
+  /* ── 研究演示（slides）新增链路：导出视频 / 初始化卡 / 模型改写 ──
+     键 = renderer/app-research.js 里 t("…") 的原样中文（含首尾空格与标点，逐条对齐，
+     拼接型的那几句必须把空格一起带上，英文才连得顺）；值 = 英文。 */
+  Object.assign(EN, {
+    /* 研究目录 / 媒体导入与内联 */
+    "还没装载研究目录": "The research folder is not loaded yet",
+    "选择图片或视频（会复制进研究目录）":
+      "Choose images or videos (they are copied into the research folder)",
+    "图片 / 视频": "Images / videos",
+    "打开选择框失败：": "Could not open the picker: ",
+    "有文件没导入：": "Some files were not imported: ",
+    "读不出来": "could not be read",
+    "这些媒体没能内联进单文件（超过 24MB 或读不出来）：":
+      "These media files were not inlined into the single file (over 24 MB or unreadable): ",
+    /* 导出 PDF / PNG */
+    "主进程没接导出接口（slidesPrint）":
+      "The main process has no export channel (slidesPrint)",
+    "导出 PDF / PNG 失败：": "PDF / PNG export failed: ",
+    "已导出 PDF：": "PDF exported: ",
+    "，逐页 PNG ": ", page PNGs: ",
+    /* 导出视频（Remotion） */
+    "视频工程生成器没加载（research-slides-video.js）":
+      "The video project generator is not loaded (research-slides-video.js)",
+    "主进程没接视频导出接口（research:slidesVideo）":
+      "The main process has no video export channel (research:slidesVideo)",
+    "已经有一个视频导出在跑：等它结束，或先在顶栏点「取消」":
+      "A video export is already running: wait for it to finish, or hit Cancel in the top bar first",
+    "视频工程生成失败：": "Could not generate the video project: ",
+    "工程没通过静态检查": "the project failed the static checks",
+    "视频工程没通过静态检查：":
+      "The video project failed the static checks: ",
+    "导出视频失败：": "Video export failed: ",
+    "（宿主日志：": " (host log: ",
+    "视频已导出：": "Video exported: ",
+    " · 封面 ": " · cover ",
+    "演讲者视图没开起来：": "Could not open the presenter view: ",
+    /* 初始化卡 */
+    "演示还没生成": "The deck has not been generated yet",
+    "没写进 ": "nothing was written to ",
+    "初始化卡没加载（app-research-slides-init.js）":
+      "The init card is not loaded (app-research-slides-init.js)",
+    /* 模型改写提示词（派给会话的那一段） */
+    "这是一次可以反复来的改写：每一轮只做这一轮要改的事，改完就停手等下一轮。":
+      "This rewrite can happen many times: each round only does what this round asks for, then stops and waits for the next round.",
+    "这份演示是讲给谁听的（用户填的 brief，原样照做，别自己另设一套）：":
+      "Who this deck is for (the brief the user filled in — follow it as-is, do not invent your own):",
+    "用户没填：按「第一次听这个课题的人也能跟上」的默认口径改，别堆术语与缩写。":
+      "The user left it empty: use the default stance of someone hearing this topic for the first time being able to follow along — do not pile up jargon and abbreviations.",
+    "受众": "audience",
+    "场合": "occasion",
+    "重点讲透": "explain thoroughly",
+    "别出现": "do not mention",
+    "额外指示": "extra instructions",
+    "用户这一轮想怎么改（原话，可能为空）：":
+      "What the user wants changed this round (verbatim, may be empty):",
+    "（空）没有额外要求：按下面的原页把该改的改好。":
+      "(empty) no extra request: fix what needs fixing on the pages below.",
+    "可以读的参考（只读，一个字都不许改）：":
+      "Reference you may read (read-only; do not change a single word):",
+    "`notes/*.md`（含 `notes/cites/*.md` 里的引文）：需要核对原文、补上下文、确认一句话原本怎么说时读它。":
+      "`notes/*.md` (including the quotes in `notes/cites/*.md`): read it when you need to check the source, add context, or confirm how a sentence was originally worded.",
+    "`literature/library.json`（CSL-JSON 文献库）：需要核对引文出处、作者年份、引用键时读它；只引用库里真有的条目。":
+      "`literature/library.json` (CSL-JSON library): read it when you need to check where a citation comes from, the author and year, or the cite key; only cite entries that really exist in it.",
+    "除了上面那个要写的文件，别的文件一律不写、不改、不新建。":
+      "Apart from the one file above that you must write, do not write, change or create any other file.",
+    "这一轮按用户那句话改：文件里的 pages 只放这一轮真改过的页（宿主按页 id 合并，没写的页保持原样），别顺手把整份重写一遍。":
+      "This round follows that sentence: put only the pages you really changed this round into pages (the host merges by page id, so unlisted pages stay as they are) — do not rewrite the whole deck while you are at it.",
+    "这一轮就到这里：把该写的写进上面那个文件，然后停手 —— 不要顺手改别的页、不要改页结构（新增 / 删页 / 换页序 / 显隐都不归你）。":
+      "That is all for this round: write what needs writing into that file above, then stop — do not touch other pages and do not change page structure (adding / deleting pages, reordering, hiding are not yours to do).",
+    "写完后只回一句话：这一轮改了哪几页、每页改了什么。下一轮我会带新的「想怎么改」再来，改写同一个文件即可。":
+      "When done, reply with one sentence only: which pages this round changed and what changed on each. Next round I will come back with a new \"what to change\"; just rewrite the same file.",
+    /* 对不上时让它修的提示（只重试一次） */
+    "上一轮写出的 ": "The file written last round ",
+    " 用不了：": " cannot be used: ",
+    "。请按提示词里的格式重写这同一个文件（同一个路径、覆盖写，页 id 原样照抄），写完只回一句话。":
+      ". Please rewrite this same file in the format given in the prompt (same path, overwrite, copy the page ids verbatim), then reply with one sentence.",
+    "模型写出的结果对不上，已回它一句让它修（只重试这一次）":
+      "What the model wrote did not match, so it was asked to fix it (this one retry only)",
+    "不是合法 JSON（多余的解释或 Markdown 围栏都不行）":
+      "not valid JSON (no extra explanation and no Markdown fences)",
+    "JSON 里没有 pages 数组": "the JSON has no pages array",
+    "pages 里的页 id 一个都对不上，要原样照抄提示词里列出的那些 id":
+      "none of the page ids in pages matched — copy the ids listed in the prompt verbatim",
+    /* 等模型写出的超时窗（继续等 / 放弃） */
+    "已经等了 ": "Already waited ",
+    " 分钟，会话还没写出 ": " minute(s) and the session has not written ",
+    "。要继续等吗？（选「放弃」就收工，去左栏那条「重写演示」会话看它卡在哪）":
+      ". Keep waiting? (Choosing Give up stops here; open the \"Rewrite deck\" session in the left column to see where it is stuck)",
+    "还在等模型": "Still waiting for the model",
+    "继续等": "Keep waiting",
+    "继续等 ": "Still waiting for ",
+    "已放弃：会话没有写出 ": "Gave up: the session did not write ",
+    /* 撤销这次模型改写（成功 / 没有快照 / 快照读不出来） */
+    "没有可撤销的快照：这一份演示还没有模型改写记录":
+      "No snapshot to undo: this deck has no model rewrite on record yet",
+    "快照读不出来：": "Could not read the snapshot: ",
+    "已撤销这次模型改写：回到 ": "Undid this model rewrite: back to ",
   });
 
   function listJoin(arr) {

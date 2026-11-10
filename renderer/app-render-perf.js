@@ -172,9 +172,19 @@
   }
 
   /* ── 30fps 合并刷新 ───────────────────────────────────────────────────────
-     同一个 key 连续调用：只保留最后一次 fn，33ms 后执行一次。key 之间互不影响
-     （正文 / 思考 / 工具卡各自的节奏不会被互相拖住）。 */
+     同一个 key 连续调用：只保留最后一次 fn，约 33ms 后执行一次。key 之间互不影响
+     （正文 / 思考 / 工具卡各自的节奏不会被互相拖住）。
+     实际执行交给帧预算调度器（app-frame-budget.js）：一个连拍里三处 key 同时到点时，
+     它们不再挤在同一帧里连着砸主线程 —— 一帧只给 8ms 预算，超了剩下的留到下一帧，
+     用户正在拖的那一下始终有帧可用（「会话最忙时画布交互优先」）。
+     没有调度器（node 冒烟单测 / 老壳）时退回原来的 setTimeout 口径，行为不变。 */
   const pending = new Map();
+  const SCHED_PREFIX = "ui:";
+
+  function sched() {
+    const sc = typeof window === "undefined" ? null : window.MTNodeSched;
+    return sc && typeof sc.post === "function" ? sc : null;
+  }
 
   function frameFor(key, fn) {
     if (typeof fn !== "function") return;
@@ -187,6 +197,12 @@
           console.error(e);
         } catch (_) {}
       }
+      return;
+    }
+    const sc = sched();
+    if (sc) {
+      /* 合流 + 帧预算都在调度器里：同 key 尾沿取最新，最早 FRAME_MS 后跑 */
+      sc.post(SCHED_PREFIX + k, fn, FRAME_MS);
       return;
     }
     const rec = pending.get(k);
@@ -214,7 +230,10 @@
   /* 立刻把某个 key 排队的刷新跑掉（收尾 / 切换会话前用，避免最后一帧被吞掉） */
   function flushFrame(key) {
     const k = String(key || "");
-    const rec = k ? pending.get(k) : null;
+    if (!k) return false;
+    const sc = sched();
+    if (sc && typeof sc.flushKey === "function") return !!sc.flushKey(SCHED_PREFIX + k);
+    const rec = pending.get(k);
     if (!rec) return false;
     if (rec.timer) clearTimeout(rec.timer);
     pending.delete(k);
@@ -232,6 +251,10 @@
   }
 
   function flushAllFrames() {
+    const sc = sched();
+    if (sc && typeof sc.flushPrefix === "function") {
+      sc.flushPrefix(SCHED_PREFIX);
+    }
     for (const k of Array.from(pending.keys())) flushFrame(k);
   }
 
@@ -245,13 +268,16 @@
     flushFrame,
     flushAllFrames,
     stats() {
+      const sc = sched();
       return {
         trace: state.trace,
         slow: state.slow,
         longTasks: state.longTasks,
         frames: state.frames,
         worstFrameMs: Math.round(state.worstFrameMs * 10) / 10,
-        pending: pending.size,
+        pending: (sc && typeof sc.pendingCount === "function"
+          ? sc.pendingCount(SCHED_PREFIX)
+          : 0) + pending.size,
       };
     },
   };

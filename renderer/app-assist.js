@@ -721,24 +721,24 @@ function autoSessionTitleOf(raw) {
 }
 /* 消费引擎的 session-title 事件（网关 → {type:"title",data:{title,source}}）：
    会话执行任务时，把左侧栏那条标题换成这一轮内容的主题。
-   三道闸：· 一次性武装（st._autoTitleRound，发送时按 titleAuto/titleLocked 置一次）
-             —— 只要还没真正命名过一次就保持放行，round-1 迟到的 title
-              （含刚过 done、下一轮发送前到达的）与后续轮的首个主题都能落地；
-           · 用户手改过的标题永不被覆盖（st.titleLocked，在飞事件迟到也一样）；
-           · 清洗后为空 → 保留原回落（首条消息前 20 字，非中文 8 词）。
-   按来源分流：provider/user 命中写 st.title / st.titleAuto 并关闭武装位（provider 锁最终主题、
-   user 视同 titleLocked 永不让位）；fallback／缺省仅占位不锁位；同值直接返回（幂等，不重绘不落盘）。 */
+   每轮都改（用户口径 · 本次需求）：网关的 mtnode-session-title 已改成每轮重命名
+   （automatic: "all-prompts"，只把最后一条用户消息送进标题模型），所以这里不再有
+   「命名过一次就关闸」的武装位 —— 引擎每给一个新主题就照写，上一轮的话题能被这一轮换掉。
+   唯一的硬闸：用户亲口改过的标题永不被覆盖（st.titleLocked，在飞事件迟到也一样）；
+   清洗后为空 → 保留原回落（首条消息前 20 字，非中文 8 词）。
+   按来源分流：provider/user 命中写 st.title / st.titleAuto 并落盘（titleAuto = 这条是引擎
+   命名而不是节点名派生，节点改名不再刷回模块名；user 视同 titleLocked 永不让位）；
+   fallback／缺省仅占位、只在当前无标题时写一次，决不锁位；同值直接返回（幂等，不重绘不落盘）。 */
 function applyAutoSessionTitle(st, raw, srcKind) {
-  if (!st || st.titleLocked || !st._autoTitleRound) return false;
+  if (!st || st.titleLocked) return false;
   const theme = autoSessionTitleOf(raw);
   if (!theme) return false;
   const next = sessionDevTitlePrefix(st) + theme;
   if (next === st.title) return false;
   if (srcKind === "provider" || srcKind === "user") {
-    /* 引擎 LLM 真实主题(provider) / 用户改名(user)：最终定名，上锁并关闭武装位 */
+    /* 引擎真主题(provider) / 用户改名(user)：写名上位（titleLocked 只由 user 置） */
     st.title = next;
     st.titleAuto = true;
-    st._autoTitleRound = false;
     if (srcKind === "user") st.titleLocked = true;
   } else {
     /* 引擎 5 词回落(fallback) / 缺省：仅占位，仅当当前无标题时写一次，决不锁位 */
@@ -748,9 +748,19 @@ function applyAutoSessionTitle(st, raw, srcKind) {
   try {
     if (typeof renderAgentSessionSidebar === "function") renderAgentSessionSidebar();
   } catch (_) {}
+  /* 真定名（provider / user）也要写进会话文件本体：自动命名若只落索引，重启补读正文时
+     盘上那份旧标题（首条消息回落 / 「新会话」）会把这条新主题盖回去、再写回索引。
+     fallback 只占位、不落盘（它本来就允许被下一次真定名覆盖）。 */
+  if (srcKind === "provider" || srcKind === "user") {
+    try {
+      Promise.resolve(agentPersistSessionTitle(st)).catch(() => {});
+    } catch (_) {}
+  }
   try {
+    /* 点名这条会话：标题事件可能来自快捷会话小窗里那条（它此刻不是主窗选中项），
+       不点名就会去 touch 活动会话 —— 该置顶的没动、不相干的被顶到前面。 */
     if (typeof agentTouchSession === "function")
-      Promise.resolve(agentTouchSession()).catch(() => {});
+      Promise.resolve(agentTouchSession(st)).catch(() => {});
   } catch (_) {}
   return true;
 }
@@ -2368,7 +2378,8 @@ async function assistSend(text, opts) {
     : "本轮 app_state 只给节点计数与选中 / 焦点，不含节点索引、更不含正文：要看节点列表用 mtnode_canvas_get 缺省档（detail:\"minimal\"，每节点只给标题 / 描述(note) / 类别）；要看连线 / 绘制 / 分组 / 树再加 sections，要看配置用 detail:\"standard\"，要看某节点正文 / 提示词用 ids:[标题或 id] + detail:\"full\"。快照里没有的一律不要编造。\n";
   const appStateBlock = appStateHeads + "当前应用状态 JSON：\n" + stateJson;
   const latest = skillWrap ? skillTaskPrompt(skillWrap) : t;
-  let input = hist ? hist + "\n\n用户(最新)：" + latest : latest;
+  /* 首轮也要带标记，理由同会话侧：不带标记时用户原话只是最后一行，容易被当成系统设定的一部分。 */
+  let input = hist ? hist + "\n\n用户(最新)：" + latest : "用户(最新)：" + latest;
   const assistMaxTok = dshRunMaxTokens();
   /* 三个可见集通道的助手侧取值：助手没有节点也就不可能接入数据库副本（dbGrounded 恒 false）；
      noCanvas = 本轮被自动判定「与画布无关」（Gate B 助手侧，判据 agentCanvasTurnRelated），
@@ -3101,6 +3112,18 @@ function devContractHydrateSession(s) {
 const AGENT_BODY_BATCH = 4; /* 后台批量读的每次请求条数：一份 5 MB 的会话解析要几十毫秒，
                                4 条一批 + 让出一帧，界面不会因为加载会话而卡顿 */
 S._sessionBodyWait = S._sessionBodyWait instanceof Map ? S._sessionBodyWait : new Map();
+/* 「占位名」判据：空串 / 「新会话」/「New session」都只是占位，用户在左栏看见的真名不长这样。
+   与 agent-sessions-store.js 的 PLACEHOLDER_TITLES 同口径（主进程那份决定对账时谁更权威，
+   渲染层这份决定读回正文时护不护内存里的名字，两边不一致就会出现「一边认、一边盖」。） */
+function sessionTitleIsPlaceholder(t) {
+  const s = String(t == null ? "" : t).trim();
+  if (!s) return true;
+  if (s === "新会话" || s === "New session") return true;
+  try {
+    if (s === I18n.t("新会话")) return true;
+  } catch (_) {}
+  return false;
+}
 /* 读回一条会话的正文并原地合并（保留数组里的对象引用：别处的 st 变量不会失效）。
    返回 true = 现在可以读 messages 了。 */
 async function agentEnsureSessionBody(st) {
@@ -3127,7 +3150,36 @@ async function agentEnsureSessionBody(st) {
     const got = res && Array.isArray(res.sessions) ? res.sessions.find((x) => x && x.id === id) : null;
     if (got) {
       /* 原地合并：索引里的元数据 + 正文（正文优先，索引那份只是同一份数据的旧快照） */
+      /* 标题是例外（真机 bug：重启后标题又被改回「新会话」）：用户亲口改过的名字
+         （titleLocked）在懒加载口径下只落过索引，盘上那份会话文件的 title 还是旧值。
+         读回正文不许把它盖回去 —— 保住内存里这一份，并立刻补写进会话文件，否则下一次
+         保存又会把旧值写回索引，形成「重启一次退一次」的死循环。 */
+      const keepTitle = String(st.title || "");
+      const keepTitleLocked = !!st.titleLocked;
+      const keepTitleAuto = !!st.titleAuto;
       Object.assign(st, got);
+      /* 保留条件两条，任一成立就不许盘上那份盖回去：
+         ① 用户亲口改过名（titleLocked）；
+         ② 索引这份是真名，而盘上那份退化了 —— 是占位名（「新会话」），或者引擎已定名的
+            标记（titleAuto）在盘上丢了。②是「快捷会话建的新会话标题回滚成新会话」的主路径：
+            小窗建会话时会先落一次盘（文件里写着占位名），此后日常落盘只走追加段、基线顶层
+            字段一个字节都不动；这类会话的标题只来自引擎首轮命名 / 首条消息回落，从不置
+            titleLocked —— 只认 ① 的话，每次重启读回正文都会把名字退回占位值。 */
+      const diskTitle = String(st.title || "");
+      if (keepTitle && diskTitle !== keepTitle) {
+        const staleDisk =
+          keepTitleLocked ||
+          (!sessionTitleIsPlaceholder(keepTitle) &&
+            (sessionTitleIsPlaceholder(diskTitle) || (keepTitleAuto && !st.titleAuto)));
+        if (staleDisk) {
+          st.title = keepTitle;
+          st.titleAuto = keepTitleAuto;
+          st.titleLocked = keepTitleLocked;
+          try {
+            Promise.resolve(agentPersistSessionTitle(st)).catch(() => {});
+          } catch (_) {}
+        }
+      }
       /* 工作目录体检刚修正过的值按它重放：盘上那份（或这次飞行中已经发出去的旧响应）
          里的旧路径不许把修正值盖回去 —— 否则「修好了盘、下次读回正文又变回旧路径」。 */
       const fixedWs =
@@ -3380,6 +3432,74 @@ function agentSetSessionWorkspace(st, v, opts) {
   };
   return Promise.resolve(run()).catch(() => false);
 }
+/* ── 标题落盘的兜底同步（真机 bug：改好的名字重启后又变回「新会话」）────────────
+   为什么光有下面那条 agentPersistSessionTitle 还不够：它只覆盖「显式改名」的三个调用点，
+   而标题其实有更多来源 —— 首条消息的回落命名、绑定会话按主题改名、引擎的 session-title
+   自动命名。这些路径改的只是内存里的 st.title，落盘那一层却**只把元数据写进索引**：
+   会话正文日常走追加段（agentWriteAgentSessionsNow 的 delta 分支），基线文件顶层的
+   title / titleAuto / titleLocked 一个字节都不动，而重启对账是**按会话文件重建条目**的
+   （agent-sessions-store.js 的 reconcile）—— 于是文件里那份旧占位值（典型就是「新会话」）
+   一路盖回索引，用户看到「改名后重启又变回新会话」。
+   所以这里加一条兜底：每次落盘时，凡是脏会话就把标题三键与「上次已同步进文件的那一份」
+   比一下，不一致就经 session:patch 直写会话文件本体。任何来源的改名都因此自动落盘，
+   不需要每个调用点都记得调持久化；patch 回 missing（全新会话盘上还没有文件）不记同步位，
+   下一笔保存自动再试。 */
+S._titleSynced = S._titleSynced instanceof Map ? S._titleSynced : new Map();
+function agentTitleSigOf(s) {
+  return [
+    String((s && s.title) || "").trim(),
+    !!(s && s.titleAuto),
+    !!(s && s.titleLocked),
+  ].join("\u0001");
+}
+function agentSyncSessionTitleToFile(s) {
+  const id = String((s && s.id) || "");
+  if (!id) return Promise.resolve(false);
+  const title = String(s.title || "").trim();
+  /* 空标题不写：宁可保留盘上旧的，也不把名字抹成「新会话」 */
+  if (!title) return Promise.resolve(false);
+  const sig = agentTitleSigOf(s);
+  if (S._titleSynced.get(id) === sig) return Promise.resolve(true);
+  const api = window.api && window.api.sessionPatch;
+  if (!api) return Promise.resolve(false);
+  return Promise.resolve(
+    api({
+      id: id,
+      patch: { title: title, titleAuto: !!s.titleAuto, titleLocked: !!s.titleLocked },
+    }),
+  )
+    .then((r) => {
+      /* missing（盘上还没有这份文件）/ 写失败：都不记同步位，下一笔保存再来一次 */
+      if (r && r.ok !== false) S._titleSynced.set(id, sig);
+      return !!(r && r.ok !== false);
+    })
+    .catch(() => false);
+}
+/* ── 会话标题的唯一写盘入口（真机 bug：重启后标题又被改回「新会话」）────────────
+   根因：改名在懒加载口径下**只落索引、不碰会话文件**（见 agentWriteAgentSessionsNow
+   的「脏但正文不在内存」分支）—— 会话文件里的 title 还停在旧值。重启后空闲补读
+   （agentWireBodyBackfill）把会话文件读回，agentEnsureSessionBody 的 Object.assign
+   一盖，索引里的新标题就退回盘上旧值，随后任意一次保存再把旧值写回索引 = 永久回退。
+   所以改名的三处（左栏改名 / 助手栏改名 / /rename）都经这里把标题同步进会话文件本体；
+   桥不可用（老宿主）时退化为标脏 + flush，由整份保存带上。 */
+function agentPersistSessionTitle(st) {
+  const id = st && st.id ? String(st.id) : "";
+  if (!id) return Promise.resolve(false);
+  agentMarkSessionDirty(id);
+  const api = window.api && window.api.sessionPatch;
+  if (!api) return Promise.resolve(agentFlushSessionSave()).catch(() => false);
+  const patch = { titleAuto: !!st.titleAuto, titleLocked: !!st.titleLocked };
+  const title = String(st.title || "").trim();
+  if (title) patch.title = title; /* 空标题不写：宁可保留盘上旧的，也不把名字抹成「新会话」 */
+  return Promise.resolve(api({ id: id, patch: patch }))
+    .then((r) => {
+      /* 写成功就记下「文件里已经是这一份」：兜底同步（agentSyncSessionTitleToFile）
+         据此不再重复打补丁 */
+      if (r && r.ok !== false) S._titleSynced.set(id, agentTitleSigOf(st));
+      return r;
+    })
+    .catch(() => false);
+}
 /* 视图会话 id：覆盖态 = 覆盖值（空串 = 空态 / 那条会话已不在）；否则 = 用户选中的 */
 function agentViewId() {
   if (!agentViewOverrideOn()) return activeAgentId();
@@ -3537,6 +3657,12 @@ function wsGroupOf(ws) {
    「画布一个节点都没动也顿一下」。2000 ms 只影响「运行中的常规写盘」，用户主动操作
    （切会话 / 关窗 / 本轮结束 / 切画布）依旧立即 flush —— 见 agentFlushSessionSave 的调用点。 */
 const AGENT_SAVE_MS = 2000;
+/* 运行期再放宽一档（本次需求 · 会话最忙时画布交互优先）：轮中每一次「改了」都等窗口过去
+   才写，窗口一过就是整份会话文档的快照（序列化 + 过 IPC + 主进程落盘）。会话正在跑的时候
+   这类快照最密，且完全不该和用户手上的拖拽抢主线程 —— 所以运行期把窗口放到 4s。
+   **只改频率，不改内容**：写的还是同一份会话文档，切会话 / 关窗 / 本轮结束 / 切画布
+   照旧走 agentFlushSessionSave 立即落盘（见上文合并窗口的口径）。 */
+const AGENT_SAVE_RUN_MS = 4000;
 S._sessionDirty = S._sessionDirty instanceof Set ? S._sessionDirty : new Set();
 /* 「待删名单」：用户删掉的会话 id。主进程 session:save 只会删 drop 名单里的会话
    （文件 + 索引条目），渲染层不点名就等于没删 —— 本机 bug「删了会话，重启又回来」
@@ -3647,10 +3773,16 @@ function agentMarkSessionDirty(id) {
   if (!id) return;
   S._sessionDirty.add(String(id));
   if (S._sessionSaveTimer) clearTimeout(S._sessionSaveTimer);
+  /* 运行期把窗口放宽到 AGENT_SAVE_RUN_MS（只调度、不改落盘内容，见常量注释） */
+  let win = AGENT_SAVE_MS;
+  try {
+    const sc = window.MTNodeSched;
+    if (sc && typeof sc.runBusy === "function" && sc.runBusy()) win = AGENT_SAVE_RUN_MS;
+  } catch (_) {}
   S._sessionSaveTimer = setTimeout(() => {
     S._sessionSaveTimer = null;
     Promise.resolve(agentWriteAgentSessions()).catch(() => {});
-  }, AGENT_SAVE_MS);
+  }, win);
 }
 /* 记一条「这条会话被删了」：随下一次 session:save 的 drop 一起下发（见 agentWriteAgentSessions）。
    删掉的会话已不在列表里，光靠「列表里没有它」主进程无从判断（懒加载下本来就只送脏会话），
@@ -3737,6 +3869,14 @@ async function agentWriteAgentSessionsNow() {
       /* 既没脏、正文也还在盘上：本进程完全没动过它 —— 一条都不用送，
          索引里那份（连同它记的 size/mtime 签名）保持原样。 */
       if (!isDirty && !s._lcLoaded) continue;
+      /* 标题兜底同步（见 agentSyncSessionTitleToFile）：脏会话的标题三键一旦与文件里
+         那一份不一致，就直写会话文件本体 —— 正文走追加段时基线顶层字段不会自己更新，
+         不补这一下，重启对账按文件重建条目就会把名字退回「新会话」。 */
+      if (isDirty) {
+        try {
+          agentSyncSessionTitleToFile(s);
+        } catch (_) {}
+      }
       const meta = agentSessionMetaForDisk(s);
       if (isDirty && s._lcLoaded) {
         /* 脏 + 正文在内存：只送**追加段**（本窗口新增条目 + 尾部增长条目的最新内容）。
@@ -3746,8 +3886,10 @@ async function agentWriteAgentSessionsNow() {
         if (delta) payloadSessions.push(Object.assign({}, meta, { delta: delta }));
         else payloadSessions.push(Object.assign({}, meta, { body: agentSessionBodyForDisk(s) }));
       } else if (isDirty) {
-        /* 脏但正文不在内存（只有索引里的元数据被改过：改名 / 归档 / 拖序…）：
-           只更新索引条目 —— 主进程见到 body / delta 缺省就绝不碰会话文件。 */
+        /* 脏但正文不在内存（只有索引里的元数据被改过：归档 / 拖序…）：
+           只更新索引条目 —— 主进程见到 body / delta 缺省就绝不碰会话文件。
+           **改名不属这一类**：标题另走 agentPersistSessionTitle（session:patch）直写
+           文件本体，否则重启补读正文时盘上旧标题会把新名字盖回去。 */
         payloadSessions.push(Object.assign({}, meta, { loaded: false }));
       } else {
         /* 正文在内存、这次没改过：只送元数据，让索引（含它记的签名）与原样文件对齐 */
@@ -4852,6 +4994,8 @@ function startAssistTitleEdit() {
       st.updatedAt = Date.now();
       try {
         agentMarkSessionDirty(st.id);
+        /* 同左栏改名：标题必须写进会话文件本体，否则重启补读正文时会被盘上旧标题盖回 */
+        Promise.resolve(agentPersistSessionTitle(st)).catch(() => {});
         persistAgentSession().catch(() => {});
       } catch (_) {}
     }
@@ -6198,7 +6342,7 @@ function applyViewChrome(view) {
      - 画布视图：可用 #sidebar（节点/绘图/节点层列表），会话与团队列表不可展开
      - 会话视图：自带 .agent-side（会话列表），画布 #sidebar 强制收起
      - 团队视图：自带 .team-side（项目 / 专家 / 会话三段列表），画布 #sidebar 强制收起
-     - 研究视图：自带 .rs-side（笔记 / 文献列表），画布 #sidebar 同样强制收起
+     - 研究视图：复用画布 #sidebar，但换成 文件 / 核心 / 资料 三格（节点列表不参与）
      统一由 applySidebarVisibility() 收口 + body.view-* 类做 CSS 硬闸。 */
   document.body.classList.toggle("view-agent", view === "agent");
   document.body.classList.toggle("view-team", view === "team");
@@ -7199,17 +7343,45 @@ function histMsgKey(scope, idx, m) {
   );
 }
 
+/* ── 两行判定：行高 / 内边距缓存（本次需求 · 残余热点 ②）────────────────────────
+   现场（docs/assist-jank-attribution.md §E3）：整表重建之后紧跟的这趟折叠判定，每一行都要
+   一次 getComputedStyle —— 那是**一次强制样式解析 + 排版**；200 行就是这样付 200 次，
+   Chromium 实测一趟 0.40ms 净成本，其中约一半就是这些读。
+   但行高与内边距只由 CSS 决定，与这一行写的是什么无关：量第一行一次就够，之后每行只读
+   `scrollHeight`（那一读本来就要，用来判「超没超两行」）。
+   失效点：窗口 resize / 缩放 / 转屏 —— 行高只在这几种情况下会变，一次回调把缓存清掉。
+   换会话 / 换档位 / 换语言时行是**新建的**，但缓存不跟着换也没有害处：字号与行高来自同一份
+   CSS，量出来的还是同一个数（真变了也只有 resize 那条路，见上）。
+   缓存挂在函数自己身上（`histBodyExceedsTwoLines._m`）而不是外层变量：这台函数的正文会被
+   test/bench-assist-stream-chromium.cjs 按名字整段切出来单独跑（同一个 vm 里只有它自己），
+   自引用才在两边都成立。 */
 function histBodyExceedsTwoLines(body) {
   if (!body) return false;
-  const cs = getComputedStyle(body);
-  let lh = parseFloat(cs.lineHeight);
-  if (!Number.isFinite(lh) || lh <= 0) {
-    const fs = parseFloat(cs.fontSize);
-    lh = (Number.isFinite(fs) && fs > 0 ? fs : 12.5) * 1.75;
+  let m = histBodyExceedsTwoLines._m;
+  if (!m) {
+    const cs = getComputedStyle(body);
+    let lh = parseFloat(cs.lineHeight);
+    if (!Number.isFinite(lh) || lh <= 0) {
+      const fs = parseFloat(cs.fontSize);
+      lh = (Number.isFinite(fs) && fs > 0 ? fs : 12.5) * 1.75;
+    }
+    const pad =
+      (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0);
+    m = histBodyExceedsTwoLines._m = { lh, pad };
   }
-  const pad =
-    (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0);
-  return body.scrollHeight > lh * 2 + pad + 1;
+  return body.scrollHeight > m.lh * 2 + m.pad + 1;
+}
+/* 缓存失效：只挂一个监听、只清一个字段（与 histRailWatchWindow 同一条纪律：不按行挂） */
+function histLineMetricsReset() {
+  histBodyExceedsTwoLines._m = null;
+}
+if (typeof window !== "undefined" && window.addEventListener) {
+  window.addEventListener("resize", histLineMetricsReset);
+  window.addEventListener("orientationchange", histLineMetricsReset);
+  try {
+    if (window.visualViewport && window.visualViewport.addEventListener)
+      window.visualViewport.addEventListener("resize", histLineMetricsReset);
+  } catch (_) {}
 }
 
 function histCollectRows(list) {
@@ -7785,17 +7957,12 @@ function applyHistoryCollapse(list) {
       el.removeAttribute("title");
       return;
     }
-    const cs = getComputedStyle(body);
-    let lh = parseFloat(cs.lineHeight);
-    if (!Number.isFinite(lh) || lh <= 0) {
-      const fs = parseFloat(cs.fontSize);
-      lh = (Number.isFinite(fs) && fs > 0 ? fs : 12.5) * 1.75;
-    }
-    const pad =
-      (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0);
+    /* 行高 / 内边距取上面那次判定量好的一份（同一次缓存，见 histBodyExceedsTwoLines）：
+       原来这里还要再 getComputedStyle 一次 —— 同一行、同一份 CSS，两读一模一样。 */
+    const lm = histBodyExceedsTwoLines._m;
     el.classList.add("hist-collapsed");
     el.classList.remove("hist-expanded");
-    body.style.maxHeight = lh * 2 + pad + "px";
+    if (lm) body.style.maxHeight = lm.lh * 2 + lm.pad + "px";
     el.title = I18n.t("点击展开");
   });
   updateHistRail(list);
@@ -10911,12 +11078,78 @@ function dshUserImgHtml(l, m) {
     '">'
   );
 }
-function dshUserBodyHtml(text) {
+/* ── 用户消息正文：**也走 markdown**（本次需求 · 会话里的用户输入不全是手打的）──────
+   起因：长任务 / 工作流 / 派单模板会把一整段带标题、列表、表格、围栏的正文自动写进输入框
+   （「【任务流程】…」「【系统设定】…」这类整段派单就是），以前一律按纯文本 pre-wrap 贴出来，
+   屏上就是一大坨 `#` / `-` / ``` 原文。
+   现在正文走与 AI 回复**同一条管线**（renderMarkdown = renderer/md-render.js：先转义再解析、
+   公式同源、链接只放行 http(s)），并吃 dshMdCached 的缓存（历史消息整表重建不再逐条重解析）。
+   两条必须保持原样（图照旧能看 · 代码里的图行别被当成图）：
+     ① 整行 `![名称](绝对路径)` 仍是**缩略图 + 灯箱**（MTInlineImg 那条链：src 是 file:/// URL、
+        带 data-dsh-img-path）。做法与公式同一手法 —— 解析前换成 PUA 占位符（marked 原样保留
+        PUA 字符），解析完再换回缩略图 HTML；绝不让 marked 自己出 <img>（反斜杠 / 相对路径
+        会变成裂图，也没有灯箱要的本机路径）。引用显示不出来的图行（相对路径）照旧退成原文。
+     ② 代码围栏里的那行「图行」是代码原文、不是图：围栏状态机里不认它。
+   渲染器缺席时（切片冒烟 / 极端兜底）退回改动前的纯文本 + 链接 + 图行缩略图，绝不白屏。 */
+const DSH_USER_IMG_TOK_RE = /\uE002(\d+)\uE003/g;
+/* 围栏行（``` / ~~~）：字符用 Unicode 转义写 —— 源码里不出现反引号，
+   测试的切片器按引号跳字符串，看见反引号会当成模板串把函数体切坏。 */
+const DSH_USER_FENCE_RE = /^ {0,3}[\u0060\u007E]{3,}/;
+function dshUserBodyHtml(text, holder) {
   const raw = String(text == null ? "" : text);
   const m = window.MTInlineImg;
+  const mdFn = typeof renderMarkdown === "function" ? renderMarkdown : null;
+  if (!mdFn) return dshUserPlainHtml(raw, m);
+  /* 空正文：保持空，别让 markdown 把它渲成一个空 <p> */
+  if (!raw.trim()) return "";
+  const byStart = new Map();
+  if (m && typeof m.imgLines === "function")
+    for (const l of m.imgLines(raw)) if (l) byStart.set(l.start, l);
+  /* 解析前：图行换成 PUA 占位符，其余行原样（围栏内一律不动） */
+  const parts = [];
+  const out = [];
+  let off = 0;
+  let fence = ""; /* 当前围栏的首字符（u0060 或 u007E），空串 = 不在围栏里 */
+  for (const line of raw.split("\n")) {
+    const start = off;
+    off += line.length + 1;
+    const f = DSH_USER_FENCE_RE.exec(line);
+    if (f) {
+      const ch = f[0].trim().charAt(0);
+      if (!fence) fence = ch;
+      else if (fence === ch) fence = "";
+      out.push(line);
+      continue;
+    }
+    const hit = fence ? null : byStart.get(start);
+    if (!hit) {
+      out.push(line);
+      continue;
+    }
+    parts.push(
+      hit.url
+        ? dshUserImgHtml(hit, m)
+        : dshUserPlainHtml(raw.slice(hit.start, hit.end), null),
+    );
+    out.push("\uE002" + (parts.length - 1) + "\uE003");
+  }
+  const src = out.join("\n");
+  let html = "";
+  try {
+    html = typeof dshMdCached === "function" ? dshMdCached(holder, src) : mdFn(src);
+  } catch (_) {
+    html = "";
+  }
+  if (!html) return dshUserPlainHtml(raw, m);
+  html = html.replace(DSH_USER_IMG_TOK_RE, (_all, i) => parts[Number(i)] || "");
+  return '<div class="md">' + html + "</div>";
+}
+/* 纯文本 + 链接 + 图行缩略图：改动前的渲染，渲染器缺席 / 解析失败时的兜底 */
+function dshUserPlainHtml(text, m) {
+  const raw = String(text == null ? "" : text);
   if (!m || typeof m.imgLines !== "function") return plainTextToLinkHtml(raw);
   const byStart = new Map();
-  for (const l of m.imgLines(raw)) if (l.url) byStart.set(l.start, l);
+  for (const l of m.imgLines(raw)) if (l && l.url) byStart.set(l.start, l);
   if (!byStart.size) return plainTextToLinkHtml(raw);
   /* 逐行处理再按 \n 拼回：正文整块是 white-space: pre-wrap，只有原样保留换行，
      非图行那部分的排版才与改动前一致。 */
@@ -11429,7 +11662,9 @@ function dshMsgBlock(m, nodeId, idx, opts) {
     const body = document.createElement("div");
     body.className = "dsh-msg-body";
     if (m.role === "user") {
-      body.innerHTML = dshUserBodyHtml(m.content);
+      /* 第二个参数 = 缓存 holder（dshMdCached 的 WeakMap 键）：整表重建时同一条用户消息
+         不再重解析一遍 markdown */
+      body.innerHTML = dshUserBodyHtml(m.content, m);
       bindDshUserImgOpen(body);
     } else
       body.innerHTML =
@@ -11709,6 +11944,9 @@ let _dshRebuildTimer = 0;
 let _dshRebuildAt = 0;
 function agentRebuildSoon() {
   if (_dshRebuildTimer) return;
+  /* 接管闸（assist.isolation = on）：连这一次整表重建都不排队（状态由 S 自己长，
+     隔离页按事件帧画；闸一落由 app-assist-isolation.js 补画一帧） */
+  if (agentPaintHeld()) return;
   const wait = Math.max(0, DSH_REBUILD_MIN_GAP_MS - (Date.now() - _dshRebuildAt));
   _dshRebuildTimer = setTimeout(() => {
     _dshRebuildTimer = 0;
@@ -11743,6 +11981,9 @@ function dshStreamGapFor(len) {
    一次对齐 DOM；非分段（老路径 / 节点绑定运行）→ 直接写 #agent-stream。 */
 function paintAgentStream(st) {
   if (!st || !agentViewIs(st)) return;
+  /* 接管闸（assist.isolation = on）：会话区由隔离页画 —— 这一帧连 #agent-stream 都不碰，
+     底下那一段正文的 markdown 也就一次都不解析（那是长回答里最贵的一笔）。 */
+  if (agentPaintHeld()) return;
   const el = document.getElementById("agent-stream");
   const items = agentChatSegItems(st);
   /* 尾段不是正文（思考 / 工具正在长）：正文段一出现就会成为尾段，下一帧自会画它 ——
@@ -11792,6 +12033,8 @@ function paintAgentStream(st) {
    都是最新状态，两次真重建之间不会再连着砸主线程。 */
 function agentLiveRepaint(st) {
   if (!st || !agentViewIs(st)) return;
+  /* 接管闸（assist.isolation = on）：运行中那一行也不画（状态仍在 S 里照常长） */
+  if (agentPaintHeld()) return;
   const items = agentChatSegItems(st);
   const box = st._liveBox;
   const list = $("#agentList");
@@ -11817,6 +12060,21 @@ function agentLiveRepaint(st) {
     return;
   }
   if (list.clientHeight > 0) scrollElToBottomIfStuck(list);
+}
+/* ── 隔离接管闸（assist.isolation = on 的接管档）──────────────────────────────
+ * on 档下这三股流（会话区 / 活动流 / 文件树）的绘制唯一出口是隔离页
+ * （renderer/app-assist-isolated.js）：主窗这一侧**只更新状态、不再落 DOM**。
+ * 闸的真源在 renderer/app-assist-isolation.js（window.assistIsoHold）：它只在
+ * 「on 档 + 宿主在位 + 页面已就绪 + 隔离进程没崩」时回 true；所以 off / window 档、
+ * 宿主没起来、页面没加载完、隔离进程刚崩掉这几种情况一律 false —— 主窗照旧自己画，
+ * 行为与改动前逐字一致。
+ * 纪律：**只加门，不删逻辑**（门后那一行原样留着，闸一落立刻按当下状态重画）。 */
+function agentPaintHeld() {
+  try {
+    return typeof window.assistIsoHold === "function" ? !!window.assistIsoHold() : false;
+  } catch (_) {
+    return false;
+  }
 }
 /* 整表重建的诊断外壳（trace 关着时是一次直通调用）：重建已经只留给「必须整份对齐」的
    时机（换轮 / 收尾 / 手动展开更早内容 / 段类型切换），不再挂在校验工具事件上。 */
@@ -12043,7 +12301,10 @@ function renderAgentSessionRaw(opts) {
   agentNotifyBrowserSession();
   const list = $("#agentList");
   if (!list) return;
-  if (!bodyPending) {
+  /* 接管闸（assist.isolation = on）：对话区（含每条消息的 renderMarkdown）这一帧整块不画，
+     只留下面的收尾（草稿存回 / 当前视图键 / 工作目录条）—— 那几笔是状态，不是绘制。
+     判定放进条件里而不是提前 return：收尾那一步现有逻辑一行不动。 */
+  if (!bodyPending && !agentPaintHeld()) {
   /* 切换会话 = 新的阅读上下文：清掉上一个会话遗留的「用户已上翻」状态，
      直接定位到新会话底部；同一会话内则完全尊重用户自己的滚动位置 */
   const switched = S._agentRenderedSessionId && S._agentRenderedSessionId !== st.id;
@@ -12518,6 +12779,9 @@ function startSessionTitleEdit(s, nameEl) {
          —— 按 Esc 没改 —— 上面那个 if 整段不跑，一个字都不刷新）。 */
       s.updatedAt = Date.now();
       agentMarkSessionDirty(s.id);
+      /* 标题同时写进会话文件本体：只落索引的话，重启后补读正文会把旧标题盖回来
+          （见 agentPersistSessionTitle 的注释） */
+      Promise.resolve(agentPersistSessionTitle(s)).catch(() => {});
       persistAgentSession().catch(() => {});
     }
     renderAgentSessionSidebar();
@@ -12541,6 +12805,11 @@ function renderAgentSessionSidebar() {
      宿主不在 → 逐字走原来的总会话视图，#agentSideList 的渲染一字未改。 */
   const host = typeof appsDevSidebarHost === "function" ? appsDevSidebarHost() : null;
   const hostApps = host && Array.isArray(host.apps) ? host.apps : null;
+  /* 接管闸（assist.isolation = on）：会话列表这一帧连行都不建（逐帧重建就此停下）。
+     状态与发布不断 —— 调用方（app-assist-isolation.js）包在本函数外面的发布钩子照旧跑，
+     它读的是 S.agentSessions，不是这里画出来的 DOM。
+     开发页左栏借本函数（host 在位）时不受闸影响：那一栏不在隔离页的覆盖面上。 */
+  if (!host && agentPaintHeld()) return;
   const all = agentSessions();
   const active = host ? String(host.active || "") : activeAgentId();
   const list =
@@ -14651,6 +14920,7 @@ async function agentSessionSend(text, opts) {
         scheduleSave(true);
         renderCanvas();
       }
+      await agentPersistSessionTitle(st);
       await agentFlushSessionSaveQuiet();
       renderAgentSession();
       renderAgentSessionSidebar();
@@ -14715,23 +14985,30 @@ async function agentSessionSend(text, opts) {
     st.messages.push(um);
     if (st.messages.filter((m) => m.role === "user").length === 1) {
       /* 回落命名（首条消息前 20 字 / 非中文 8 词）同样不得覆盖用户亲口改的名 */
-      if (!st.titleLocked)
+      if (!st.titleLocked) {
         st.title = autoSessionTitleOf(t) || t.slice(0, 20) + (t.length > 20 ? "…" : "");
+        /* 回落的这个名字也要直写会话文件本体（不只进索引）：快捷会话建会话时会先落一次
+           盘（文件里写着占位「新会话」），此后日常落盘只走追加段、基线顶层字段不动 ——
+           只写索引的话，重启读回正文时盘上那份占位名就把名字盖回去了（用户报的
+           「快捷会话建的新会话标题回滚成新会话」）。 */
+        try {
+          Promise.resolve(agentPersistSessionTitle(st)).catch(() => {});
+        } catch (_) {}
+      }
     }
   } else {
     /* 开发 / 细化绑定会话：合并模式，不追加消息，只按主题改名。 */
-    /* 绑定会话同样要随主题改名：引擎那条 LLM 主题因首条用户消息超 maxInputBytes
-       到不了（见 retitleBoundSessionByTopic 注释），所以这里按关键输入自己补一个 ——
+    /* 绑定会话的首轮也先按关键输入自己改一次名：这一轮的首条消息是整份开发任务书，
+       引擎那条 LLM 主题有 maxInputBytes 闸（见 retitleBoundSessionByTopic 注释），
+       等它不如先把「模块名」换成用户真正要的东西。之后每轮由引擎主题接管
+       （applyAutoSessionTitle 已改成每轮落地，它会置 titleAuto，这里自然让位）。
        有前缀（细化 / 问询）只换前缀后面那段，没前缀（开发会话就是模块名）整条换成主题；
        用户手改过（titleLocked）或引擎已定名（titleAuto）的会话不碰。 */
     retitleBoundSessionByTopic(st);
   }
-  /* 引擎自动命名（title 事件）是「一次性武装」闸位：只要这条会话还没被引擎真正
-     命名过一次（!titleAuto）且用户没亲口改名（!titleLocked），就保持放行 ——
-     不再像以前那样每次发送按用户消息数 ≤1 重置、只认本轮窗口。这样 round-1
-     迟到的 title（含刚过 done、下一轮发送前到达的）以及后续轮才到的首个主题
-     都能落地；真正应用过一次（titleAuto=true）或用户手改后，此位才让位。 */
-  st._autoTitleRound = !st.titleAuto && !st.titleLocked;
+  /* 标题不再有「一次性武装」闸位（用户口径 · 本次需求）：引擎每轮都会给一个新主题，
+     由 applyAutoSessionTitle 直接落地 —— 唯一还挡着的是用户亲口改过名（titleLocked）。
+     这里不用按轮重置任何标记，也就不再有「round-1 迟到的 title 被丢掉」这类时序问题。 */
   st.updatedAt = Date.now();
   /* 开轮不再裁消息（本次需求 · 用户口径「保留全部」）：这里历史上先是
      `length > 100 → splice` 的一刀切，后改成「按轮保留」的裁剪函数 —— 两版都会把最老
@@ -14829,13 +15106,20 @@ async function agentSessionSend(text, opts) {
     !!flowText &&
     (typeof planFlowAsksForNewPlan !== "function" ||
       planFlowAsksForNewPlan(flowText));
-  const latest = skillWrap
-    ? skillTaskPrompt(skillWrap)
-    : flowText
-      ? flowText + "\n" + t
-      : t;
-  let input =
-    resumeRound || !hist ? latest : hist + "\n\n用户(最新)：" + latest;
+  /* 技能轮：用户原话并进技能任务书（skillTaskPrompt），「任务流程」指令被它取代；
+     普通轮：用户原话在前、注入指令在后。首轮（hist 为空）同样走这一条 ——
+     原先把长契约排在用户原话之前、只补一枚「用户(最新)：」标记是不够的：
+     模型仍会把整条消息当成系统设定（首轮正文被忽略的现场，见 app-plan.js 的
+     agentUserTurnInput 注释）。 */
+  const flowInjected = skillWrap ? "" : flowText;
+  const latest = skillWrap ? skillTaskPrompt(skillWrap) : t;
+  let input = resumeRound
+    ? latest
+    : typeof agentUserTurnInput === "function"
+      ? agentUserTurnInput(hist, flowInjected, latest)
+      : hist
+        ? hist + "\n\n用户(最新)：" + latest
+        : "用户(最新)：" + latest;
   /* 续跑轮（暂停后点「继续」/ 出错自动重发点名那条 dsh 会话）：正常能续上时上下文
      就在那份 session 里，一个字都不必重发。但「拿不到那条会话 / 宿主登记里没有它」
      时续跑会在运行时撞 RESUME_UNAVAILABLE，宿主随即退化成「用原始 input 整轮重发」——

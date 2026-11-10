@@ -41,14 +41,114 @@
   font-weight: 600;
 }
 
+/* 拖文件到 Tab 上：那一格亮起来，说明松手就是投到这一页 */
+.side-tab.drop-on {
+  color: var(--cyan2, #7fd4e8);
+  background: var(--code);
+  outline: 1px dashed var(--cyan);
+  outline-offset: -2px;
+}
+
+/* 研究视图专用两格（核心 / 资料）：只在 body.view-research 下出现，节点格让位 */
+.side-tab.rs-only {
+  display: none;
+}
+
+body.view-research .side-tab.rs-only {
+  display: block;
+}
+
+body.view-research #sideTabNodes {
+  display: none;
+}
+
 /* Tab 互斥：文件页占位时收起节点页的搜索与树，反之亦然 */
 #sidebar.sf-on .sidebar-search,
 #sidebar.sf-on #sideTree {
   display: none;
 }
 
+/* 研究视图里左栏只有 文件 / 核心 / 资料 三格：节点页的搜索框与节点树一律不出现 */
+body.view-research .sidebar-search,
+body.view-research #sideTree {
+  display: none;
+}
+
 #sidebar:not(.sf-on) .side-files {
   display: none;
+}
+
+/* ── 研究视图的「核心」「资料」两页（内容由 app-research.js 画进 #sideCore / #sideRefs）── */
+.side-panel {
+  display: none;
+  flex: 1 1 auto;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+#sidebar.sf-core #sideCore,
+#sidebar.sf-refs #sideRefs {
+  display: flex;
+}
+
+/* 拖入投料：文件被拖动时整条左栏泛一圈虚线 + 内容区居中「拖入文件」，
+   手指松在哪就是投到哪（平时不占位，静态那条 hint 行已移除） */
+#sidebar.rs-drop-on {
+  outline: 1.5px dashed var(--cyan);
+  outline-offset: -4px;
+}
+
+.side-panel.sf-drop-on {
+  position: relative;
+  background: color-mix(in srgb, var(--code) 70%, transparent);
+}
+
+.side-drop-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--panel) 82%, transparent);
+}
+
+.side-drop-overlay-t {
+  padding: 7px 14px;
+  border: 1.5px dashed var(--cyan);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--cyan);
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+
+/* 研究左栏「核心」「资料」两页顶上的搜索行 */
+.side-search {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 8px 4px;
+}
+
+.side-search input {
+  flex: 1 1 auto;
+  min-width: 0;
+  background: var(--code);
+  color: var(--ink);
+  border: 1px solid var(--bd2);
+  border-radius: 3px;
+  padding: 5px 7px;
+  font-size: 12px;
+  outline: none;
+}
+
+.side-search input:focus {
+  border-color: var(--orange);
 }
 
 /* ── 文件页外框 ── */

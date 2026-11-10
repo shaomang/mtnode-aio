@@ -1253,7 +1253,6 @@
     head.appendChild(el("b", "", T("模型价格表")));
     var x = el("button", "mini wl-price-x", "✕");
     x.type = "button";
-    x.title = T("关闭");
     x.setAttribute("aria-label", T("关闭"));
     x.onclick = closePriceDialog;
     head.appendChild(x);

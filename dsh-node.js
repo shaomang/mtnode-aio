@@ -395,6 +395,231 @@ async function installManagedNode(opts) {
   return { ok: true, bin, version: probe.version }
 }
 
+/* ── 网关目录（打包态：随包归档 → 数据目录；开发态：仓库树）────────────────
+   打包产出的 resources/dsh 里只有两个文件：gateway-tree.mtgw（整棵网关树，1 个文件）
+   与 gateway-tree.json（旁挂索引）。首次启动把它解到
+   <dataDir>/dsh-runtime/gateway-<buildId>，之后同一 buildId 直接复用 —— 判据是解包
+   目录里的 .unpack-ok 与旁挂索引的 buildId 相同（应用更新换了归档 = 换了 buildId =
+   重新解一次）。
+   为什么解到数据目录：① 应用目录可能只读（装进 Program Files 时）；② 网关运行期会改写
+   cordis.yml，那属于用户状态，按仓库规矩不许落在应用文件夹；③ 新版本换新 buildId，
+   旧目录整套丢掉，不会出现「新代码配旧依赖」的半新半旧树。
+   格式与解包实现见 dsh/gateway-archive.cjs（打包侧共用同一份）。 */
+
+const gatewayArchive = require('./dsh/gateway-archive.cjs')
+
+/** 数据目录下的解包根（与 node-runtime 并列） */
+const GATEWAY_RUNTIME_DIR = 'dsh-runtime'
+/** 进程内缓存：dataDir + resourcesDir → 解析结果（解包只做一次） */
+const gatewayRootCache = new Map()
+
+const mb = (n) => Math.round((n / 1048576) * 100) / 100
+
+function readJsonFile(p) {
+  try { return JSON.parse(fs.readFileSync(p, 'utf8')) } catch { return null }
+}
+
+/** 解包目录可用吗：标记文件的 buildId 与随包索引一致，且 gateway.mjs 真在 */
+function unpackedOk(dir, buildId) {
+  const marker = readJsonFile(path.join(dir, gatewayArchive.MARKER_NAME))
+  if (!marker || String(marker.buildId || '') !== String(buildId)) return false
+  return fs.existsSync(path.join(dir, 'gateway.mjs'))
+}
+
+/** 删掉除当前 buildId 以外的旧解包目录（升级后不留几十份 500MB 的树） */
+function pruneOldRuntimes(root, current, log) {
+  let entries = []
+  try { entries = fs.readdirSync(root, { withFileTypes: true }) } catch { return }
+  for (const e of entries) {
+    if (!e.isDirectory() || !e.name.startsWith('gateway-')) continue
+    const full = path.join(root, e.name)
+    if (full === current) continue
+    try {
+      fs.rmSync(full, { recursive: true, force: true })
+    } catch (err) {
+      /* 另一个实例正在用它（Windows 上目录被占用）：留着不致命 */
+      log('dsh gateway 旧解包目录清理失败（可忽略）：' + full + ' · ' + ((err && err.message) || err))
+    }
+  }
+}
+
+/**
+ * 解包归档到 <root>/gateway-<buildId>（先解到 .tmp-<pid> 再 rename，半截树不会被复用）。
+ * @param {{archive:string, buildId:string}} info
+ * @param {string} root 解包根目录
+ * @param {string} buildId
+ * @param {(m:string)=>void} log
+ * @returns {{files:number, bytes:number, ms:number}}
+ */
+function unpackGatewayArchive(info, root, buildId, log) {
+  const finalDir = path.join(root, 'gateway-' + buildId)
+  const tmp = finalDir + '.tmp-' + process.pid
+  fs.mkdirSync(root, { recursive: true })
+  fs.rmSync(tmp, { recursive: true, force: true })
+  const t0 = Date.now()
+  let r
+  try {
+    r = gatewayArchive.extractArchive(info.archive, tmp, { log, progressEvery: 4000 })
+  } catch (err) {
+    /* 半截目录立刻清掉：下一次启动不该看到一堆无主的 .tmp 树 */
+    fs.rmSync(tmp, { recursive: true, force: true })
+    throw err
+  }
+  fs.writeFileSync(path.join(tmp, gatewayArchive.MARKER_NAME), JSON.stringify({
+    buildId,
+    files: r.files,
+    bytes: r.bytes,
+    at: new Date().toISOString(),
+  }, null, 2), 'utf8')
+  /* rename 在 Windows 上不覆盖非空目录：上一次解包中途被杀留下的半棵树先清掉 */
+  fs.rmSync(finalDir, { recursive: true, force: true })
+  try {
+    fs.renameSync(tmp, finalDir)
+  } catch (err) {
+    fs.rmSync(tmp, { recursive: true, force: true })
+    /* 另一个实例刚好解完同一个 buildId（rename 撞车）：它可用就直接复用 */
+    if (!unpackedOk(finalDir, buildId)) throw err
+    return { files: r.files, bytes: r.bytes, ms: Date.now() - t0 }
+  }
+  const ms = Date.now() - t0
+  log('dsh gateway 归档已解包：' + info.archive + ' → ' + finalDir
+    + '（' + r.files + ' files / ' + mb(r.bytes) + 'MB / ' + ms + 'ms）')
+  pruneOldRuntimes(root, finalDir, log)
+  return { files: r.files, bytes: r.bytes, ms }
+}
+
+/**
+ * 解析网关目录（含 gateway.mjs 与 node_modules 的那一层）。
+ * 失败**不抛**：返回 ok:false + error，调用方把原因写进日志，spawn 时自然会报
+ * 「找不到 gateway.mjs」—— 打包链上的错误不该把主进程带崩。
+ * @param {{dataDir?:string, log?:(m:string)=>void, packaged?:boolean,
+ *          resourcesDir?:string, repoDir?:string}} opts
+ * @returns {{ok:boolean, dir:string, source:'dev'|'archive'|'legacy'|'none',
+ *            reused:boolean, buildId:string, files:number, bytes:number,
+ *            ms?:number, error?:string}}
+ */
+function ensureGatewayRoot(opts) {
+  const o = opts || {}
+  const log = typeof o.log === 'function' ? o.log : () => {}
+  const packaged = o.packaged === undefined ? !!o.resourcesDir : !!o.packaged
+  const repoDir = o.repoDir || path.join(__dirname, 'dsh', 'gateway')
+  if (!packaged) {
+    return {
+      ok: fs.existsSync(path.join(repoDir, 'gateway.mjs')),
+      dir: repoDir,
+      source: 'dev',
+      reused: true,
+      buildId: '',
+      files: 0,
+      bytes: 0,
+    }
+  }
+
+  const dshDir = String(o.resourcesDir
+    || (process.resourcesPath ? path.join(process.resourcesPath, 'dsh') : ''))
+  const dataDir = String(o.dataDir || '')
+  const key = dshDir + '|' + dataDir
+  const hit = gatewayRootCache.get(key)
+  if (hit) return hit
+
+  const legacyDir = path.join(dshDir, 'gateway')
+  const info = dshDir ? gatewayArchive.readSidecar(dshDir) : null
+  if (info) {
+    if (!dataDir) {
+      return {
+        ok: false,
+        dir: legacyDir,
+        source: 'archive',
+        reused: false,
+        buildId: info.buildId,
+        files: 0,
+        bytes: 0,
+        error: '没有数据目录，无法解包网关归档',
+      }
+    }
+    const root = path.join(dataDir, GATEWAY_RUNTIME_DIR)
+    const finalDir = path.join(root, 'gateway-' + info.buildId)
+    if (unpackedOk(finalDir, info.buildId)) {
+      const r = {
+        ok: true,
+        dir: finalDir,
+        source: 'archive',
+        reused: true,
+        buildId: info.buildId,
+        files: info.files,
+        bytes: info.bytes,
+      }
+      gatewayRootCache.set(key, r)
+      return r
+    }
+    try {
+      const done = unpackGatewayArchive(info, root, info.buildId, log)
+      const r = {
+        ok: true,
+        dir: finalDir,
+        source: 'archive',
+        reused: false,
+        buildId: info.buildId,
+        files: done.files,
+        bytes: done.bytes,
+        ms: done.ms,
+      }
+      gatewayRootCache.set(key, r)
+      return r
+    } catch (err) {
+      const msg = (err && err.message) || String(err)
+      log('dsh gateway 归档解包失败：' + msg)
+      /* 旧布局若还在（手工塞的包 / 灰度回滚）就用它，否则把失败原因带上去 */
+      if (fs.existsSync(path.join(legacyDir, 'gateway.mjs'))) {
+        return {
+          ok: true,
+          dir: legacyDir,
+          source: 'legacy',
+          reused: true,
+          buildId: '',
+          files: 0,
+          bytes: 0,
+          error: msg,
+        }
+      }
+      return {
+        ok: false,
+        dir: finalDir,
+        source: 'archive',
+        reused: false,
+        buildId: info.buildId,
+        files: 0,
+        bytes: 0,
+        error: msg,
+      }
+    }
+  }
+
+  if (fs.existsSync(path.join(legacyDir, 'gateway.mjs'))) {
+    return {
+      ok: true,
+      dir: legacyDir,
+      source: 'legacy',
+      reused: true,
+      buildId: '',
+      files: 0,
+      bytes: 0,
+    }
+  }
+  return {
+    ok: false,
+    dir: legacyDir,
+    source: 'none',
+    reused: false,
+    buildId: '',
+    files: 0,
+    bytes: 0,
+    error: dshDir
+      ? '随包网关归档缺失（' + path.join(dshDir, gatewayArchive.SIDECAR_NAME) + '）'
+      : '拿不到 resources 目录，无法定位网关归档',
+  }
+}
+
 /* ── 报错翻译（截获 dsh 的原始报错，给出可执行的下一步） ────────────────── */
 
 const RUNTIME_REJECT = /unsupported Electron runtime fingerprint|node-addon-require-builtin unsupported|host preparation failed/i
@@ -436,4 +661,7 @@ module.exports = {
   extractZipBuffer,
   translateRuntimeReject,
   versionAtLeast,
+  /* 网关目录（打包态 = 随包归档解到数据目录，见本文件「网关目录」一节） */
+  GATEWAY_RUNTIME_DIR,
+  ensureGatewayRoot,
 }

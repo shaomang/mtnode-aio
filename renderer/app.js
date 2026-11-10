@@ -69,6 +69,9 @@ const S = {
   _mcpAuthorized: false,
   /* 后台对非当前画布做 canvas 编辑时为 false，禁止 renderCanvas 闪到别的画布 */
   _canvasEditVisible: true,
+  /* 编辑事务（canvases.editTxn = on）：runKey → { wf, visible }，攒着的「该重绘 / 该落盘」。
+     见 app-nodes.js 的 canvasEditTxnQueue / commitCanvasEditTxn；关掉开关时恒为空。 */
+  _editTxnPending: null,
   /* 前台画布唯一真源：用户当前看到的那个画布对象。只由用户可见的切换
      （ensureWorkflow / loadWorkflow / newWorkflowDialog / createWorkflowNamed /
      adoptImportedWorkflow / 删除后重建默认画布）经 setForegroundWf 赋值；
@@ -743,41 +746,12 @@ function fillNodeKindIcon(el, node) {
   el.innerHTML = svg;
   el.dataset.kindIcon = key;
 }
-/* gpt-image-2-vip 支持的尺寸（含 auto） */
-const IMAGE_SIZES = [
-  "auto",
-  "1280x1280",
-  "848x1280",
-  "1280x848",
-  "960x1280",
-  "1280x960",
-  "1024x1280",
-  "1280x1024",
-  "720x1280",
-  "1280x720",
-  "1280x544",
-  "2048x2048",
-  "1360x2048",
-  "2048x1360",
-  "1536x2048",
-  "2048x1536",
-  "1632x2048",
-  "2048x1632",
-  "1152x2048",
-  "2048x1152",
-  "2048x864",
-  "2880x2880",
-  "2336x3520",
-  "3520x2336",
-  "2480x3312",
-  "3312x2480",
-  "2560x3216",
-  "3216x2560",
-  "2160x3840",
-  "3840x2160",
-  "3840x1632",
-];
-const DEFAULT_IMAGE_SIZE = "2048x1360";
+/* gpt-image-2-vip 支持的尺寸（含 auto）· 默认档。
+   真源已移到 canvas-doc/canvas-doc-core.js（浏览器全局 MTCanvasDoc，主进程 require 同一份文件），
+   这里只取一次引用：画布选档、节点默认值、Agent 快照读到的都还是同一个数组。
+   加载顺序由 index.html 保证（它排在 app.js 之前）。 */
+const IMAGE_SIZES = MTCanvasDoc.IMAGE_SIZES;
+const DEFAULT_IMAGE_SIZE = MTCanvasDoc.DEFAULT_IMAGE_SIZE;
 /* Remotion 视频输出分辨率预设（宽x高，px）——app-canvas.js / app-nodes.js 共用 */
 const REMOTION_SIZES = [
   "1280x720",
@@ -9718,7 +9692,27 @@ function toast(msg, kind) {
   const box = $("#toastBox");
   const d = document.createElement("div");
   d.className = "toast" + (kind ? " " + kind : "");
-  d.textContent = msg;
+  const txt = document.createElement("span");
+  txt.className = "toast-msg";
+  txt.textContent = msg;
+  /* 右上角那颗 ✕：把「能立刻关掉」摆到明面上（以前只有整条可点，用户看不出），
+     点它一格就收掉，不用等 3.4 秒自动消失。 */
+  const x = document.createElement("button");
+  x.className = "toast-x";
+  x.type = "button";
+  x.textContent = "✕";
+  x.title = I18n.t("关闭");
+  x.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    d.remove();
+  });
+  d.appendChild(txt);
+  d.appendChild(x);
+  /* 整条照旧可点关闭（点 ✕ 以外的任何地方）：提示压在画布 / 右栏那一角的工作内容上时
+     不必干等。空容器 #toastBox 仍然不吃指针事件，只有这条提示自己的像素可点，右栏那条
+     分界线在提示框以外的位置照旧能按。 */
+  d.title = I18n.t("点击立即关闭");
+  d.addEventListener("click", () => d.remove());
   box.appendChild(d);
   setTimeout(() => d.remove(), 3400);
 }
@@ -10306,6 +10300,39 @@ function collectRunQueueAll() {
       });
     }
   } catch (_) {}
+  /* ②c 研究视图「生成变体」在途（research-derive.js 的 window.MTNodeDeriveRuns）：
+     模型正在改写一篇稿子的那几十秒，以前只有研究视图顶栏那颗 chip 知道 —— 离开那一页
+     就完全看不见、也停不掉。这里出成一行：点行回研究视图（结果就在那篇原文旁边），
+     行内 ■ 走 row.stop() + apiAbort(abKey)，只中止这一次生成，不碰画布节点。 */
+  try {
+    const dr = typeof window !== "undefined" ? window.MTNodeDeriveRuns : null;
+    const rows = dr && dr.rows ? Array.from(dr.rows.values()) : [];
+    for (const row of rows) {
+      if (!row) continue;
+      const secs = Math.max(0, Math.round((Date.now() - Number(row.startedAt || 0)) / 1000));
+      addItem({
+        key: "derive:" + row.key,
+        type: "derive",
+        id: row.key,
+        title: row.title || I18n.t("生成变体"),
+        kindCls: row.kindCls || "derive",
+        kindLabel: row.kindLabel || I18n.t("变体"),
+        stateText: (row.stateText ? row.stateText + " · " : "") + secs + "s",
+        sub: row.sub || "",
+        state: "run",
+        wfId: "",
+        wfName: "",
+        crossWf: false,
+        node: null,
+        sess: null,
+        deriveRun: true,
+        deriveKey: row.key,
+        derivePath: row.path || "",
+        deriveParent: row.parentPath || "",
+        abKey: row.abKey || "",
+      });
+    }
+  } catch (_) {}
   /* ③ 独立智能会话：被「运行中的宿主智能节点」或「sess 态开发块」代表的，
      折进那一行的状态文案里（带上会话标题），不再单独出条 */
   const sessIsRun = (st) => {
@@ -10626,6 +10653,7 @@ function runQueueSubOf(it) {
     (it.crossWf ||
       it.type === "session" ||
       it.type === "media" ||
+      it.type === "derive" ||
       it.type === "subagent")
   )
     bits.push(it.sub);
@@ -10636,6 +10664,7 @@ function runQueueJumpHint(it) {
   if (it.type === "session") return I18n.t("点击打开该会话");
   if (it.type === "subagent") return I18n.t("点击打开它所在的那条会话");
   if (it.type === "layer") return I18n.t("点击定位到节点层");
+  if (it.type === "derive") return I18n.t("点击回到研究视图（生成结果就在那篇原文旁边）");
   if (it.type !== "node" && it.type !== "dev" && it.type !== "media") return "";
   /* 开发块的「建议 / 问询」只读调研在跑：点行 = 打开对应的进度窗口（见 jumpRunQueueItem） */
   if (it.type === "dev") {
@@ -10656,6 +10685,8 @@ function runQueueStopHint(it) {
   if (it.type === "subagent")
     return I18n.t("中断这只子代理（父会话那一轮已经收尾，停的只是后台子任务）");
   if (it.type === "layer") return I18n.t("停止本层运行（立即中止正在跑的节点）");
+  if (it.type === "derive")
+    return I18n.t("停止这次变体生成（停掉队列，并中止正在进行的那次模型调用）");
   if (it.type === "session") {
     /* 独立并行组行 / 折进会话行的并行进度：文案说清楚这一枪会打掉什么 */
     if (it.planPar) return I18n.t("停止该并行任务组");
@@ -10690,7 +10721,9 @@ function runQueueTipOf(it) {
         ? I18n.t("工作目录")
         : it.type === "subagent"
           ? I18n.t("所属会话")
-          : I18n.t("画布")) +
+          : it.type === "derive"
+            ? I18n.t("范围")
+            : I18n.t("画布")) +
         "：" +
         it.sub,
     );
@@ -10762,6 +10795,8 @@ function updateRunQueuePanel() {
   /* 子代理：单独计数 —— 它不算「会话」（父那一轮已经收尾了），
      用户要能一眼看出「还有 N 只子代理在后台跑」 */
   const nSub = countOf("subagent");
+  /* 研究视图的变体生成：单独计数 —— 它既不是画布节点也不是会话，混进「处理中」会被误读 */
+  const nDerive = countOf("derive");
   const hasQueue = !!items.length;
   /* 心跳：有运行项才定时重绘面板（解决长任务期间「看着不动」），队列空即停 */
   syncRunQueueTicker(hasQueue);
@@ -10787,6 +10822,7 @@ function updateRunQueuePanel() {
   if (nSub) summary.push(nSub + I18n.t(" 子代理"));
   if (nPar) summary.push(nPar + I18n.t(" 并行任务"));
   if (nMedia) summary.push(nMedia + I18n.t(" 后端生成中"));
+  if (nDerive) summary.push(nDerive + I18n.t(" 变体生成中"));
   /* 节点层「运行本层」批次：整批进度不在节点级计数里，单独报一行 */
   const nLayer = items.reduce((m, it) => m + (it.type === "layer" ? 1 : 0), 0);
   if (nLayer) summary.push(nLayer + I18n.t(" 节点层"));
@@ -11031,6 +11067,17 @@ try {
    运行中的内存对象，不打断任务）再 focusNode。旧版直接 toast「节点不在当前画布」。 */
 async function jumpRunQueueItem(it) {
   if (!it) return;
+  /* 研究视图的变体生成：点行 = 回研究视图，定位到那一篇原文（生成结果就在它旁边） */
+  if (it.type === "derive") {
+    try {
+      if (typeof setView === "function") setView("research");
+      const want = String(it.deriveParent || it.derivePath || "");
+      if (want && window.MTResearch && typeof window.MTResearch.openNote === "function")
+        void window.MTResearch.openNote(want);
+    } catch (_) {}
+    updateRunQueuePanel();
+    return;
+  }
   /* 子代理行：点行 = 打开它所在的那条会话（工具卡里同样能看见走秒与状态） */
   if (it.type === "subagent") {
     const st = it.sess;
@@ -11182,6 +11229,19 @@ function stopSessionRuns(st, clearRunning) {
    并在跑的是计划并行组时逐个取消那一组的 runKey（stopSessionRuns）。 */
 async function stopRunQueueItem(it) {
   if (!it) return;
+  /* 研究视图的变体生成：■ = 停这一批（停掉队列，并按 abKey 中止此刻在途的那次模型请求）。
+     不碰 stopNode —— 研究的生成不是画布节点的运行。 */
+  if (it.deriveRun) {
+    try {
+      const dr = typeof window !== "undefined" ? window.MTNodeDeriveRuns : null;
+      const row = dr && dr.rows ? dr.rows.get(it.deriveKey) : null;
+      if (row && typeof row.stop === "function") row.stop();
+      if (it.abKey && typeof window.api !== "undefined" && window.api.apiAbort)
+        window.api.apiAbort(String(it.abKey));
+    } catch (_) {}
+    updateRunQueuePanel();
+    return;
+  }
   /* 子代理行（本次需求）：■ = 中断这一只子代理。走网关的 session/interrupt-subagent，
      只作废它自己，不动父会话（父那一轮通常已经收尾了，没什么可停的）。 */
   if (it.type === "subagent") {
@@ -11289,6 +11349,15 @@ async function stopAllRuns() {
   } catch (_) {
     visionRows = [];
   }
+  /* 研究视图的变体生成（research-derive.js 的登记表）：同样不是节点的 running，
+     不列进来就会出现「队列里挂着一行变体生成，全部终止却回『当前没有运行中的任务』」。 */
+  let deriveRows = [];
+  try {
+    const dr = typeof window !== "undefined" ? window.MTNodeDeriveRuns : null;
+    deriveRows = dr && dr.rows ? Array.from(dr.rows.values()) : [];
+  } catch (_) {
+    deriveRows = [];
+  }
   if (
     !running.length &&
     !waiting.length &&
@@ -11296,6 +11365,7 @@ async function stopAllRuns() {
     !sessRunning.length &&
     !subsToStop.length &&
     !visionRows.length &&
+    !deriveRows.length &&
     !hasAnyMediaGenActivity() &&
     !hasAnyComputeExecActivity() &&
     !(typeof superRunHasActiveLayer === "function" && superRunHasActiveLayer())
@@ -11356,6 +11426,20 @@ async function stopAllRuns() {
     try {
       dshCancelActive();
     } catch (_) {}
+  }
+  /* ③a0 变体生成在途：只挂着它时上面几条都是空，这一枪也得打 ——
+     停掉队列 + 按 abKey 中止那次请求。登记表不在这里清：队列收手后会自己 runEnd 掉这一行，
+     留着它才能把「已取消」记进会话活动流。 */
+  if (deriveRows.length) {
+    for (const row of deriveRows) {
+      try {
+        if (row && typeof row.stop === "function") row.stop();
+      } catch (_) {}
+      try {
+        if (row && row.abKey && typeof window.api !== "undefined" && window.api.apiAbort)
+          window.api.apiAbort(String(row.abKey));
+      } catch (_) {}
+    }
   }
   /* ③a 识图在途：只挂着识图时 needDsh 是 false，这一枪也得打（否则模型还在看图，
      队列行却被「全部终止」清掉了）。按各自 runKey 精确取消，再摘掉登记行。 */
@@ -11519,6 +11603,7 @@ async function stopAllRuns() {
   if (nDevJob) bits.push(nDevJob + I18n.t(" 个调研"));
   if (nFnProc) bits.push(I18n.t("回收 ") + nFnProc + I18n.t(" 个进程"));
   if (nSubStop) bits.push(nSubStop + I18n.t(" 个子代理"));
+  if (deriveRows.length) bits.push(deriveRows.length + I18n.t(" 个变体生成"));
   if (assistOn) bits.push(I18n.t("画布助手"));
   toast(
     I18n.t("已全部终止") + (bits.length ? "：" + bits.join(" · ") : ""),
@@ -11742,6 +11827,9 @@ function closeMtDialog() {
 
 function confirmDialog(message, opts) {
   opts = opts || {};
+  /* defaultCancel：默认按钮是「取消」（Enter 与初始焦点都落在取消上）。
+     给「本来就不该做、要用户主动越过」的确认用 —— 破坏性动作不该是回车即执行的那一颗。 */
+  const defaultCancel = !!opts.defaultCancel;
   return new Promise((resolve) => {
     mtDlgSupersede(); /* 顶掉前一只窗：它当场以「取消」结算，别让它的调用方永久挂住 */
     const host = ensureMtDialog();
@@ -11765,7 +11853,7 @@ function confirmDialog(message, opts) {
         finish(false);
       } else if (ev.key === "Enter") {
         ev.preventDefault();
-        finish(true);
+        finish(!defaultCancel);
       }
     };
     const finish = (ok) => {
@@ -11787,12 +11875,12 @@ function confirmDialog(message, opts) {
     };
     const cancel = document.createElement("button");
     cancel.type = "button";
-    cancel.className = "mini";
+    cancel.className = defaultCancel ? "mini primary" : "mini";
     cancel.textContent = opts.cancelText || I18n.t("取消");
     cancel.onclick = () => finish(false);
     const ok = document.createElement("button");
     ok.type = "button";
-    ok.className = opts.danger ? "mini danger" : "mini primary";
+    ok.className = defaultCancel ? "mini" : opts.danger ? "mini danger" : "mini primary";
     ok.textContent = opts.okText || I18n.t("确定");
     ok.onclick = () => finish(true);
     if (foot) {
@@ -11804,7 +11892,7 @@ function confirmDialog(message, opts) {
     _mtDlgActive = { finish: supersede, close: closeMtDialog }; /* 登记在监听之后（同 mtDialogForm） */
     setTimeout(() => {
       try {
-        ok.focus();
+        (defaultCancel ? cancel : ok).focus();
       } catch (_) {}
     }, 0);
   });
@@ -22424,13 +22512,11 @@ function renderSidebar() {
     renderAgentSessionSidebar();
     return;
   }
-  /* 研究视图：同一条边栏换成「文件」页（根 = research/），节点树不参与 */
+  /* 研究视图：同一条边栏 = 文件 / 核心 / 资料 三格（文件页根 = research/），节点树不参与；
+     这里不硬切页码，只把用户当前停的那一格按新画布重画 */
   if (S.view === "research") {
     const f = window.MTNodeSideFiles;
-    if (f) {
-      f.setTab("files");
-      f.refresh();
-    }
+    if (f && typeof f.repaintCurrent === "function") f.repaintCurrent();
     return;
   }
   const tree = $("#sideTree");
@@ -34231,7 +34317,20 @@ function setForegroundWf(wf) {
       assistRebindToCanvas();
     } catch (_) {}
   }
+  /* 研究视图（第 4 个视图）：一张画布 = 一个课题，数据在 <工作目录>/research/。
+     前台画布一换就得让它按新画布重新装载 —— 通知统一挂在这里，因为换画布有两条路：
+     loadWorkflow（下拉 / Tab）与几处「新建 / 导入即切前台」直接 setForegroundWf，
+     后者过去没有这份通知，于是新建画布后研究视图还停在上一张画布的笔记上。
+     不在研究视图时 onCanvasChanged 自己会跳过重绘，只把状态作废。 */
+  if (switching) notifyCanvasSwitched();
   return wf;
+}
+/* 前台画布换掉的派生视图通知：研究视图（含左栏「核心 / 资料」与图谱）。 */
+function notifyCanvasSwitched() {
+  try {
+    if (window.MTResearch && typeof window.MTResearch.onCanvasChanged === "function")
+      window.MTResearch.onCanvasChanged();
+  } catch (_) {}
 }
 /* ── 画布视图记忆（切 Tab 不弹回根画布）──
    用户眼里的「在这张画布的哪里」由三样拼成：① 任务子画布焦点（S.taskFocus + 返回栈）、
@@ -34711,7 +34810,12 @@ function scheduleSave(immediate) {
     return;
   }
   clearTimeout(S.saveTimer);
-  S.saveTimer = setTimeout(persist, 250);
+  /* 会话最忙时画布交互优先（本次需求）：自动保存的**调度窗口**在会话运行期 / 用户正在
+     拖拽时放宽（缺省 250ms → 运行期 800ms）。只改「什么时候写」：
+     落盘内容、触发条件、scheduleSave(true) 的立即保存、失焦 / 关闭前的 flushNow 一概不变。 */
+  const sc = typeof window !== "undefined" ? window.MTNodeSched : null;
+  const delay = sc && typeof sc.saveDelay === "function" ? sc.saveDelay(250) : 250;
+  S.saveTimer = setTimeout(persist, delay);
 }
 
 /* 窗口失焦 / 关闭前立即落盘：确保最后的输出/编辑一定写入存档 */
@@ -34720,6 +34824,9 @@ function flushNow() {
      排队的会话改动写下去 —— 否则强退会丢掉最后一个窗口内的改动。放在画布那两行
      之前，因为下面那句 `if (!S.wf) return` 在没打开画布时直接返回。 */
   if (typeof agentFlushSessionSave === "function") Promise.resolve(agentFlushSessionSave()).catch(() => {});
+  /* 编辑事务（canvases.editTxn = on）：攒着的「该重绘 / 该落盘」也要在失焦 / 关闭前收口，
+     否则强退会丢掉最后一笔重绘与它的落盘。放在下面那句 `if (!S.wf) return` 之前。 */
+  if (typeof commitCanvasEditTxn === "function") commitCanvasEditTxn();
   if (!S.wf) return;
   clearTimeout(S.saveTimer);
   persist();
@@ -35662,12 +35769,8 @@ async function loadWorkflow(id, opts) {
   }
   setForegroundWf(wf); /* 用户可见的画布切换：_fgWf 与 S.wf 同步换（顺带把视图交接：
                          存走掉那张的「层 + 相机」、套回这张的 —— 见 applyWfView） */
-  /* 研究视图（第 4 个视图）：一张画布 = 一个课题，数据在 <工作目录>/research/。
-     切画布后要让研究视图重新按新画布装载（不在研究视图时它自己会跳过重绘）。 */
-  try {
-    if (window.MTResearch && typeof window.MTResearch.onCanvasChanged === "function")
-      window.MTResearch.onCanvasChanged();
-  } catch (_) {}
+  /* 研究视图按新画布重载的通知已收进 setForegroundWf（新建 / 导入即切前台也走同一条），
+     这里不再重复通知，免得一次切换读两遍盘。 */
   rememberWf(wf);
   /* 这里过去是一句 resetTaskFocus()：把任务 focus / 节点层 focus 一把清成根画布，
      于是「在壳里干活 → 切去看别的画布 → 切回来」每次都被打回根画布重新钻壳。
@@ -37337,6 +37440,36 @@ function deleteWorkflowDialog() {
     "<br>" +
     I18n.t("请先核对上面的 id 与节点数，确认要删的就是它。");
   body.appendChild(w);
+  /* 项目文件夹（画布 workspace）：有才给这个选项 —— 默认不勾（删画布 ≠ 删项目文件夹），
+     勾了就把路径原样摊在下面，用户不用猜「我的代码到底会不会没」。 */
+  const wsPath = String((snap.wf && snap.wf.workspace) || "").trim();
+  let cbWs = null;
+  if (wsPath) {
+    const row = document.createElement("label");
+    row.className = "mt-sug-opt";
+    cbWs = document.createElement("input");
+    cbWs.type = "checkbox";
+    cbWs.checked = false;
+    cbWs.onchange = () => row.classList.toggle("on", !!cbWs.checked);
+    const txt = document.createElement("div");
+    txt.className = "mt-sug-txt";
+    const tt = document.createElement("b");
+    tt.className = "mt-sug-title";
+    tt.textContent = I18n.t("同时删除项目文件夹内容");
+    const dd = document.createElement("div");
+    dd.className = "mt-sug-desc";
+    dd.textContent =
+      wsPath +
+      "\n" +
+      I18n.t(
+        "勾选后整个文件夹移入系统回收站（可在资源管理器还原）；不勾则只删画布，文件夹原样保留。",
+      );
+    txt.appendChild(tt);
+    txt.appendChild(dd);
+    row.appendChild(cbWs);
+    row.appendChild(txt);
+    body.appendChild(row);
+  }
   const foot = $("#ovFoot");
   const ok = document.createElement("button");
   ok.className = "mini danger";
@@ -37407,7 +37540,12 @@ function deleteWorkflowDialog() {
       /* 删除结果必须看返回值：失败就不谎报成功，也不重建默认画布。
          主进程无论物理删还是软删（进回收站），只要回 ok 就代表这张画布
          「对用户已不存在、对渲染层已不可写」，后面统一按已删收口。 */
-      const r = await window.api.wfDelete(snap.id);
+      const delWs = !!(cbWs && cbWs.checked);
+      const r = await window.api.wfDelete(
+        delWs
+          ? { id: snap.id, deleteWorkspace: true, expectWorkspace: wsPath }
+          : snap.id,
+      );
       if (!r || !r.ok) {
         toast(
           I18n.t("删除失败：") + ((r && r.error) || I18n.t("未知错误")),
@@ -37441,6 +37579,14 @@ function deleteWorkflowDialog() {
         await createDefaultWorkflowFresh();
         toast(I18n.t("画布已删除，已重建默认画布"), "ok");
       }
+      /* 项目文件夹也删了：单独再报一句（这条是用户勾的，不能悄悄过去）——
+         它进的是**系统回收站**，与画布进的本机 trash 目录不是同一处，得说清楚在哪还原。 */
+      if (r.workspaceTrashed)
+        toast(
+          I18n.t("项目文件夹已一并移入系统回收站（可在资源管理器还原）：") +
+            (r.workspace || wsPath),
+          "ok",
+        );
       await refreshWfSelect();
     } finally {
       ok.disabled = false;

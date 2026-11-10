@@ -2857,9 +2857,9 @@ function appDetailSummary(id) {
  * 居中）→ **创建后留在应用界面**：应用中心不收浮层、不返回画布，开发页切到这条新应用。
  *
  * 画布落在数据目录（<数据目录>/save/<id>.json，用户数据不落应用目录）；应用目录内那份
- * <AppName>.mtnodes 只是镜像 —— 每次 workflow:save 由主进程按画布上的 appId 顺手同步
- * （main.js 的 writeWorkflowJson 钩子 → 本文件的 mirrorAppCanvas），供整目录迁移使用。
- * 导出 zip 不含它（见 exportZip）。
+ * <AppName>.mtnodes 只是镜像 —— workflow:save 由主进程按画布上的 appId 记脏，空闲（3s）与
+ * 退出前统一刷一次（main.js 的 writeWorkflowJson → markAppCanvasMirror → flushAppCanvasMirror
+ * → 本文件的 mirrorAppCanvas），供整目录迁移使用。导出 zip 不含它（见 exportZip）。
  */
 
 /* 画布 id 规则（与 main.js 的 wfIdOk 同一口径：/^[A-Za-z0-9_-]{4,120}$/）。
@@ -3042,6 +3042,57 @@ function mirrorAppCanvas(id, obj) {
   } catch (err) {
     return fail(err);
   }
+}
+
+/* ── 画布镜像的脏标记 + 空闲刷（任务 7/8：保存链上不再每次同步镜像一份）───────────────
+   以前每次画布落盘（用户拖一下节点就是一次自动保存）都在主进程同步写一份镜像：整份
+   JSON.stringify + writeFileSync，而镜像只服务「整目录搬走时不丢画布」这一件事 —— 保存
+   路径上没必要每次都做。现在只记脏（同 id 后到的覆盖先到的：镜像天然就是「最后一份」），
+   由空闲定时器批量刷一次；退出前 main.js 的 before-quit 调 flushAppCanvasMirror 兜底。
+   失败照旧只记日志：镜像失败绝不能打扰画布保存（回执与磁盘真源都不受影响）。 */
+const APP_MIRROR_IDLE_MS = 3000;
+const appMirrorDirty = new Map(); /* id → 最新一份 obj（深引用即可：它是刚写完盘的那份） */
+let appMirrorTimer = null;
+
+/* 记脏：同一个 id 反复保存只留最后一份，定时器只挂一只（空闲刷：3s 内的多次保存合成一次） */
+function markAppCanvasMirror(id, obj) {
+  const sid = String(id || "");
+  if (!sid) return false;
+  appMirrorDirty.set(sid, obj && typeof obj === "object" ? obj : {});
+  if (appMirrorTimer) return true;
+  appMirrorTimer = setTimeout(() => {
+    appMirrorTimer = null;
+    flushAppCanvasMirror("idle");
+  }, APP_MIRROR_IDLE_MS);
+  if (appMirrorTimer && typeof appMirrorTimer.unref === "function") appMirrorTimer.unref();
+  return true;
+}
+
+/* 真刷一次（idle / 退出）：逐个写镜像，写完即从脏集合摘掉；失败只记日志、不抛。
+   返回本次刷了几个 —— 只给日志与自检看。 */
+function flushAppCanvasMirror(reason) {
+  if (appMirrorTimer) {
+    clearTimeout(appMirrorTimer);
+    appMirrorTimer = null;
+  }
+  let n = 0;
+  for (const [id, obj] of Array.from(appMirrorDirty.entries())) {
+    appMirrorDirty.delete(id);
+    n++;
+    try {
+      const r = mirrorAppCanvas(id, obj);
+      if (r && r.ok === false) console.log("[apps] 画布镜像失败（" + id + "）：" + ((r && r.error) || ""));
+    } catch (err) {
+      console.log("[apps] 画布镜像异常（" + id + "）：" + String((err && err.message) || err));
+    }
+  }
+  if (n && String(reason || "") !== "idle") console.log("[apps] 画布镜像已刷 " + n + " 份（" + (reason || "") + "）");
+  return n;
+}
+
+/* 还没刷出去的份数（自检 / 状态用） */
+function appCanvasMirrorPending() {
+  return appMirrorDirty.size;
 }
 
 /* ---------------- 云端目录（拉取 + 缓存） ---------------- */
@@ -8457,6 +8508,11 @@ module.exports = {
   stylePreviewDataUrl,
   defaultPageHtml,
   mirrorAppCanvas,
+  /* 画布镜像的脏标记 + 空闲/退出刷（任务 7/8）：main.js 的落盘链只记脏，
+     退出前 flush；冒烟与自检直接调这两个 */
+  markAppCanvasMirror,
+  flushAppCanvasMirror,
+  appCanvasMirrorPending,
   loadCatalog,
   installApp,
   uninstallApp,

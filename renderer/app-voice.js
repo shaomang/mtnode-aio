@@ -1,13 +1,14 @@
 /* 全局语音输入（左下角状态栏那一枚话筒）+ 会话「语音输入」设置小节 —— 自包含模块。
  *
- * 用途：把语音变成**全局文字输入**。按钮固定在状态栏最左侧（#btnCanvasShot 左边），
- * 点一下在三态之间循环：
+ * 用途：把语音变成**全局文字输入**。按钮固定在状态栏左下角第四颗（DeepSeek 右邻、
+ * 画布截图隔两颗），点一下在三态之间循环：
  *   ① 关闭（默认）—— 不采集、不占用麦克风；
  *   ② 持续转录 —— 一直听，**每说完一句（停顿）**就把这一整句写进**当前 focus 的文本窗**；
- *   ③ 按键转录 —— 只有**按住 F3 键**时才听（松开即止；F3 无字符，不插进输入框）；
- *   再点一下回 ①。
+ *   ③ 按键转录 —— 只有**按住 F4 键**时才听（松开即止；F4 无字符，不插进输入框）；
+ *   再点一下回 ①。窗内快捷键 F4 = 开 / 关（renderer/app-status-keys.js）：关着按一下开持续
+ *   转录、开着按一下关；处在③时按住 F4 说话。
  *
- * 话筒**右侧**还有一枚 ✨ 开关（#btnVoiceEnhance，本轮新增）：
+ * 话筒**右侧**还有一枚 ✨ 开关（#btnVoiceEnhance）：
  *   **AI 增强**（默认关）—— 打开后每一句识别完先过一次**默认文本模型**（无思考）做润色
  *   （同音字 / 标点 / 断句 / 语气词），再交付这一句；原始识别永远是先落进去的那一份，
  *   增强结果回来时**就地替换**那一段（元素值一字不差才换，用户中途改过就不动它）。
@@ -73,12 +74,12 @@
   /* ── 模式 ──────────────────────────────────────────────────────────────── */
   const MODE_OFF = "off";
   const MODE_LIVE = "live"; /* 持续转录 */
-  const MODE_PTT = "ptt"; /* 按住 F3 转录 */
+  const MODE_PTT = "ptt"; /* 按住 F4 转录 */
   const MODE_CYCLE = [MODE_OFF, MODE_LIVE, MODE_PTT];
-  /* PTT 键就是 F3：无字符、不会被录进输入框。
+  /* PTT 键就是 F4（原来是 F3 —— 键位统一给 F1 快捷会话 / F2 DeepSeek / F3 语音播报 / F4 语音输入）：无字符、不会被录进输入框。
      早前用 ` 那类字符键，一律要在按键**插入之后**才吞得掉（吞键与插入竞态），
-     会出现「` 先落进消息框」；F3 没有字符产出，天然不会被录入。 */
-  const PTT_KEY = "F3";
+     会出现「` 先落进消息框」；F4 没有字符产出，天然不会被录入。 */
+  const PTT_KEY = "F4";
 
   /** 采样参数 */
   const SR = 16000; /* 官方 wave 契约：16 kHz 单声道 PCM16 */
@@ -2095,13 +2096,13 @@
 
   function modeHint(m) {
     if (m === MODE_LIVE) return T("持续转录已开启：说话即写入当前输入框");
-    if (m === MODE_PTT) return T("按键转录已开启：按住 F3 说话");
+    if (m === MODE_PTT) return T("按键转录已开启：按住 F4 说话");
     return T("语音输入已关闭");
   }
 
   /* ── 按键转录（PTT）───────────────────────────────────────────────────── */
   /** 只认 PTT 键本身（按 ev.code 判，与输入法 / 键盘布局无关）。
-   *  F3 无字符，不需要字符推导，也不存在「先插进输入框再吞」的竞态。 */
+   *  F4 无字符，不需要字符推导，也不存在「先插进输入框再吞」的竞态。 */
   function pttIsKey(ev) {
     return String((ev && ev.code) || "") === PTT_KEY;
   }
@@ -2197,7 +2198,7 @@
       : 0;
     const on = state.mode !== MODE_OFF;
     const provErr = !!state.provErr;
-    /* 正在采集（持续转录握着麦克风，或按键态按着 F3）：录音点优先于载入弧 —— 用户明确要听了，
+    /* 正在采集（持续转录握着麦克风，或按键态按着 F4）：录音点优先于载入弧 —— 用户明确要听了，
        就不能让按钮还停在「转圈」上（启动期的那轮就绪重试可能还没走完）。
        判据带上 stream：麦克风没起成（模型还在下载 / 权限被拒）时不画录音点 ——
        否则界面看着在录、其实一个字节都没采（旧稿那个「按钮亮着却不落字」的假象）。 */
@@ -2232,13 +2233,13 @@
               : state.pttOn
                 ? "●"
                 : state.mode === MODE_PTT
-                  ? "F3"
+                  ? "F4"
                   : "●";
     b.title = state.mode === MODE_OFF
       ? T("语音输入（关闭）：点一下开启持续转录，再点按键转录，再点关闭")
       : state.mode === MODE_LIVE
         ? T("持续转录中：说话即写入当前输入框（点一下切按键转录）")
-        : T("按键转录：按住 F3 说话（点一下关闭）");
+        : T("按键转录：按住 F4 说话（点一下关闭）");
     if (state.lastErr) b.title += "\n" + T("最近一次失败：") + state.lastErr;
     /* 可执行说明（already i18n）：按钮 tooltip 里常驻一句怎么修 */
     if (provErr) b.title += "\n" + state.provErr;
@@ -2256,13 +2257,20 @@
   }
 
   /** AI 增强那枚开关的皮（#btnVoiceEnhance）：两态 + 三种「用不了」的说明。
-   *  开关状态在 cfg().enhance（一个开关只有两态），持久化与右键 / 设置入口同源。 */
+   *  开关状态在 cfg().enhance（一个开关只有两态），持久化与右键 / 设置入口同源。
+   *  **显隐**（本轮口径）：只在语音输入开启时露面 —— 语音关着（MODE_OFF）时整颗挂 hidden、
+   *  从状态栏消失且不占位；它没有快捷键，语音关着也没有「增强这一句」可谈。
+   *  hidden 由 css/voice.css 的 `.statusbar .sb-voice[hidden]` 真隐藏（那条 display:inline-flex
+   *  会压掉浏览器默认的 [hidden]{display:none}）。 */
   function paintEnhance(btn) {
     const b = btn || state.enhBtn;
     if (!b) return;
     const on = cfg().enhance === "on";
     const capable = enhanceCapable();
     const pick = capable ? enhanceDefault() : null;
+    const visible = state.mode !== MODE_OFF;
+    b.hidden = !visible;
+    b.setAttribute("aria-hidden", visible ? "false" : "true");
     b.classList.toggle("on", on);
     b.setAttribute("aria-pressed", on ? "true" : "false");
     b.title = !capable
@@ -2421,9 +2429,9 @@
       state.noteTag.textContent = state.mode === MODE_OFF
         ? T("语音输入已关闭")
         : state.mode === MODE_PTT
-          ? T("按住 F3 说话")
+          ? T("按住 F4 说话")
           : state.pttOn
-            ? T("松开 F3 即写入")
+            ? T("松开 F4 即写入")
             : T("持续转录");
     }
     d.classList.toggle("is-err", !!(state.lastErr || state.provErr));
@@ -2632,7 +2640,7 @@
     title.textContent = T("语音输入（全局）");
     tip(
       title,
-      "状态栏最左边那枚话筒：点一下开启持续转录（一直听，每说完一句——停顿——就把这一整句写进当前输入框），再点一下切按键转录（按住 F3 说话），再点关闭。识别在本地 CPU 上跑，不上传。",
+      "状态栏左下角第四颗话筒：点一下开启持续转录（一直听，每说完一句——停顿——就把这一整句写进当前输入框），再点一下切按键转录（按住 F4 说话），再点关闭。识别在本地 CPU 上跑，不上传。",
       "语音输入说明",
     );
     d.appendChild(title);
@@ -2830,8 +2838,9 @@
   }
 
   /* ── 挂载 ─────────────────────────────────────────────────────────────── */
-  /** 话筒右侧那枚 ✨ 开关（#btnVoiceEnhance）：本轮新增。挂在话筒紧后面（CSS 用
-   *  order:-2 / -1 把这一对钉在状态栏最左），点一下开 / 关 AI 增强。 */
+  /** 语音输入右侧那枚 ✨ 开关（#btnVoiceEnhance）：挂在话筒紧后面（CSS order
+   *  话筒 -2 / 本按钮 -1 把这一对钉在语音播报与画布截图之间），点一下开 / 关 AI 增强。
+   *  语音输入关着时它整颗 hidden（见 paintEnhance），DOM 位置不变。 */
   function mountEnhanceButton(foot, mic) {
     if (state.enhBtn && state.enhBtn.parentNode) return state.enhBtn;
     if (typeof document === "undefined") return null;

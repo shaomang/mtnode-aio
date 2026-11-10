@@ -261,6 +261,11 @@
   }
 
   window.MtCoin = {
+    /* DeepSeek 官方 logo 的路径与品牌色：**唯一真源**就是上面那两行 DS_LOGO_D /
+       DS_LOGO_COLOR。状态栏 DeepSeek 抽屉（renderer/app-deepseek.js）要画同一枚官方
+       logo，从这里取，别在那边复制第二份 path、也别引图片文件。 */
+    logoPath: DS_LOGO_D,
+    logoColor: DS_LOGO_COLOR,
     YUAN_PER_COIN: YUAN_PER_COIN,
     COIN_PER_YUAN: COIN_PER_YUAN,
     coinsOfYuan: coinsOfYuan,

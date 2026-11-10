@@ -2,7 +2,9 @@
 /**
  * 内置版本更新（electron-updater + NSIS blockmap 差分下载）。
  * 流程：
- *   1. 用户确认 → 差分下载（应用不退出，可继续使用）
+ *   1. 用户确认 → 差分下载（应用不退出，可继续使用）；差分不可用 / 失败时走全量：
+ *      全量下载是自研的多连接分段下载器（4–8 段 Range 并发 + 断点续传，
+ *      MTNODE_UPDATE_SEGMENTS=1 可回退 electron-updater 原生的单连接下载）
  *   2. 下载完毕 → 提示将后台静默安装，完成后自动重新打开
  *   3. 用户确认或之后退出 → 静默 NSIS 安装并自动拉起新版本
  *
@@ -22,9 +24,56 @@
  */
 const { app, ipcMain, dialog } = require("electron");
 const path = require("path");
+const fs = require("fs");
+const fsp = fs.promises;
+/* 全量兜底的自研下载器（多连接分段 + 断点续传）：纯 node 实现，不 require electron */
+const {
+  downloadSegmented,
+  segmentsFromEnv,
+  isInstallerDownload,
+  partDirFor,
+} = require("./update-segmented.js");
 
-const UPDATE_FEED =
-  process.env.MTNODE_UPDATE_URL || "http://mt-agent.com/mtnode/updates";
+/* ── 更新源：HTTPS 优先，HTTP 回退 ─────────────────────────────────────────
+   默认源走 https + www：源站已是 TLS 终结 + OSS/CDN 缓存层（响应带 x-oss-request-id，
+   Range 直接 206），apex 域名 mt-agent.com 会 301 到 www —— 差分的每个 Range 请求都多一跳
+   301 就是白付一次往返，所以默认值直接写 www 的 https。
+   回退：默认源第一次检查失败（老系统没有根证书 / 中间设备拦 TLS）时切到 http 再试一次，
+   只回退一次、进程内记住；MTNODE_UPDATE_URL 显式覆盖时既不拼 www 也不回退，完全按调用方给的那个源。 */
+const UPDATE_FEED_HTTPS = "https://www.mt-agent.com/mtnode/updates";
+const UPDATE_FEED_HTTP = "http://www.mt-agent.com/mtnode/updates";
+const UPDATE_FEED_OVERRIDE = String(process.env.MTNODE_UPDATE_URL || "")
+  .trim()
+  .replace(/\/+$/, "");
+const UPDATE_FEED = UPDATE_FEED_OVERRIDE || UPDATE_FEED_HTTPS;
+const UPDATE_FEED_FALLBACK = UPDATE_FEED_OVERRIDE ? "" : UPDATE_FEED_HTTP;
+/** https 源失败过、已切到 http 回退（进程内只切一次） */
+let feedFallbackActive = false;
+
+/** 当前实际在用的源（回退生效后是 http 那条） */
+function currentFeedUrl() {
+  return feedFallbackActive && UPDATE_FEED_FALLBACK
+    ? UPDATE_FEED_FALLBACK
+    : UPDATE_FEED;
+}
+
+/** 还能不能回退：只在默认（未显式覆盖）、且主源不是 http 时成立 */
+function canFallbackToHttp() {
+  return !!UPDATE_FEED_FALLBACK && !/^http:/i.test(UPDATE_FEED);
+}
+
+/** 把当前源（含回退后的那条）写回 electron-updater；换源只走这一处 */
+function applyFeedUrl() {
+  if (!autoUpdater) return;
+  try {
+    autoUpdater.setFeedURL({
+      provider: "generic",
+      url: currentFeedUrl(),
+    });
+  } catch (e) {
+    lastError = String((e && e.message) || e);
+  }
+}
 
 let autoUpdater = null;
 let mainWinRef = null;
@@ -135,8 +184,13 @@ function parseLatestYmlVersion(text) {
   return m ? String(m[1]).trim() : "";
 }
 
-/** 极简 GET 文本（带超时与体积上限）：商店包探测不引入任何新依赖 */
+/** 极简 GET 文本（带超时、体积上限与 3 次 301/302/307/308 跟随）：商店包探测不引入任何新依赖。
+    跟随跳转是为了 http 回退：源站会把 http 301 到 https，不跟随就只剩一句「HTTP 301」。 */
 function fetchText(url) {
+  return fetchTextFollowing(url, 3);
+}
+
+function fetchTextFollowing(url, hops) {
   return new Promise((resolve, reject) => {
     let mod = null;
     try {
@@ -146,9 +200,25 @@ function fetchText(url) {
       return;
     }
     const req = mod.get(url, { timeout: 8000 }, (res) => {
-      if (res.statusCode !== 200) {
+      const code = res.statusCode || 0;
+      if (code >= 300 && code < 400 && res.headers && res.headers.location && hops > 0) {
         res.resume();
-        reject(new Error("HTTP " + res.statusCode));
+        let next = "";
+        try {
+          next = new URL(res.headers.location, url).toString();
+        } catch (_) {
+          next = "";
+        }
+        if (!next) {
+          reject(new Error("HTTP " + code + " (bad location)"));
+          return;
+        }
+        fetchTextFollowing(next, hops - 1).then(resolve, reject);
+        return;
+      }
+      if (code !== 200) {
+        res.resume();
+        reject(new Error("HTTP " + code));
         return;
       }
       let buf = "";
@@ -170,14 +240,23 @@ function fetchText(url) {
  * 不加载 electron-updater、不设 feed、不下载不安装 —— 只为了「右下角版本号要不要蓝色高亮」
  * 与弹窗里那句「商店里可能有新版」。探测成功会补发一次 update:status 让渲染层重画。
  * 失败静默（只记 storeProbeError），由 6 小时后台定时器下一轮再试。
+ * https 源失败且允许回退时，切 http 再探一次（与 setupAutoUpdater 同一套源口径）。
  */
 async function probeStoreLatestVersion() {
   if (!isStorePackage()) return storeLatest;
   if (storeProbing) return storeLatest;
   storeProbing = true;
   try {
-    const base = String(UPDATE_FEED || "").replace(/\/+$/, "");
-    const txt = await (storeProbeFetch || fetchText)(base + "/latest.yml");
+    const base = String(currentFeedUrl() || "").replace(/\/+$/, "");
+    let txt = "";
+    try {
+      txt = await (storeProbeFetch || fetchText)(base + "/latest.yml");
+    } catch (e) {
+      if (!canFallbackToHttp() || feedFallbackActive) throw e;
+      feedFallbackActive = true;
+      const fallbackBase = String(currentFeedUrl() || "").replace(/\/+$/, "");
+      txt = await (storeProbeFetch || fetchText)(fallbackBase + "/latest.yml");
+    }
     const v = parseLatestYmlVersion(txt);
     if (v) {
       storeLatest = v;
@@ -281,6 +360,156 @@ function bindInstallDirectory() {
   } catch (_) {}
 }
 
+/* ── 差分基座（cacheDir\installer.exe）可靠性与更新缓存 ─────────────────────
+   electron-updater 的差分下载以「缓存目录根上的 installer.exe」为基座
+   （NsisUpdater.doDownloadUpdate → differentialDownloadInstaller(..., CURRENT_APP_INSTALLER_FILE_NAME)）：
+   它只把新包的变更块叠在这个旧包上，叠完按 latest.yml 的 sha512 校验 —— 基座一旦不是
+   「当前安装的这一版」，组装出来的包必然对不上 sha512，于是整包重下，用户侧表现为
+   「更新卡很久，然后失败」。
+
+   这个 installer.exe 由 NSIS 安装时写入（APP_INSTALLER_STORE_FILE），手动重装覆盖旧版、
+   换机、从商店包迁过来之后都可能停在某个老版本（实测本机：installer.exe 来自 1.5.0，
+   当时已装 1.6.x）。对策分两步：
+     ① 回填：update-downloaded（本次安装包已落盘、即将静默安装）时把它复制回基座位置，
+        并写一份 installer-base.json 版本标记 —— 装完之后基座就等于新装的这一版；
+     ② 校验：downloadUpdate 之前比对「标记里的版本 + 字节数」与当前安装版本，对不上就把
+        disableDifferentialDownload 置 true 直接走全量，不再做注定失败的差分尝试。
+   代价：缓存里多留一份安装包（约 165MB），设置里有「更新缓存」面板可看占用 / 清理
+   （IPC update:cacheInfo / update:clearCache）；清掉后下一次更新走全量下载。 */
+const BASE_INSTALLER_NAME = "installer.exe"; /* 与 builder-util-runtime 的 CURRENT_APP_INSTALLER_FILE_NAME 同值 */
+const BASE_MARKER_NAME = "installer-base.json";
+const BASE_MARKER_VERSION = 1;
+const CACHE_BLOCKMAP_NAME = "current.blockmap";
+/** 解析出来的缓存目录（进程内只解析一次；空串 = 解析失败，调用方一律不干预） */
+let baseDirResolved = "";
+/** 最近一次基座校验 / 回填的结果（设置里的缓存面板与排障都用它） */
+let lastBaseCheck = null;
+
+/** electron-updater 放缓存的根目录（与 electron-updater 的 AppAdapter.getAppCacheDir 同口径） */
+function cacheBasePath() {
+  let home = process.env.USERPROFILE || "";
+  try {
+    home = require("os").homedir() || home;
+  } catch (_) {}
+  if (process.platform === "win32")
+    return process.env.LOCALAPPDATA || path.join(home, "AppData", "Local");
+  if (process.platform === "darwin") return path.join(home, "Library", "Caches");
+  return process.env.XDG_CACHE_HOME || path.join(home, ".cache");
+}
+
+/** 从 app-update.yml（打包态）/ dev-app-update.yml 里取 updaterCacheDirName */
+function readCacheDirNameFromYml() {
+  const files = [];
+  try {
+    if (process.resourcesPath)
+      files.push(path.join(process.resourcesPath, "app-update.yml"));
+  } catch (_) {}
+  try {
+    if (typeof app.getAppPath === "function")
+      files.push(path.join(app.getAppPath(), "dev-app-update.yml"));
+  } catch (_) {}
+  for (const f of files) {
+    try {
+      const txt = fs.readFileSync(f, "utf8");
+      const m = txt.match(/^\s*updaterCacheDirName\s*:\s*['"]?([^'"\r\n#]+?)['"]?\s*$/m);
+      if (m && m[1] && m[1].trim()) return m[1].trim();
+    } catch (_) {}
+  }
+  return "";
+}
+
+/** 差分缓存目录（<cacheRoot>\<updaterCacheDirName>）；解析不出来回空串 */
+async function resolveUpdaterCacheDir() {
+  if (baseDirResolved) return baseDirResolved;
+  /* 首选 electron-updater 自己算出来的目录：下载过至少一次后 helper 上就有 */
+  try {
+    const helper = autoUpdater && autoUpdater.downloadedUpdateHelper;
+    if (helper && helper.cacheDir) {
+      baseDirResolved = String(helper.cacheDir);
+      return baseDirResolved;
+    }
+  } catch (_) {}
+  let name = "";
+  try {
+    const cfg = await autoUpdater.configOnDisk.value; /* MemoLazy：await 后是配置对象 */
+    if (cfg && cfg.updaterCacheDirName) name = String(cfg.updaterCacheDirName);
+  } catch (_) {}
+  if (!name) name = readCacheDirNameFromYml();
+  if (!name || name.includes("/") || name.includes("\\")) return "";
+  const dir = path.join(cacheBasePath(), name);
+  if (!dir || !path.isAbsolute(dir)) return "";
+  baseDirResolved = dir;
+  return baseDirResolved;
+}
+
+/* ── 全量下载：多连接分段 + 断点续传（差分链保持原样）─────────────────────
+   electron-updater 的全量兜底是 ElectronHttpExecutor.download：一条连接、一个
+   Content-Length、失败就整包重来。线上包约 165MB，单连接在弱网 / 抖动下就是
+   「卡很久然后失败」，重试还得从头开始。
+
+   这里把 autoUpdater.httpExecutor.download 包一层，只在「带 sha512 + 目标是 .exe」
+   这一种调用上切到 update-segmented.js 的分段并发下载（4–8 段 Range、断点续传、
+   整包 sha512 校验通过后才交给 electron-updater 的 setDownloadedFile / quitAndInstall）。
+   差分下载走的是 httpExecutor.createRequest，不经这个入口，所以链路保持原样。
+
+   回退：MTNODE_UPDATE_SEGMENTS=1（或 0）→ 不装这层包装，走原来的单连接下载；
+   服务端不给 206（不支持 Range）/ 连不上（代理、证书、DNS）时分段器返回 fallback，
+   当场退回原生单连接，用户侧不会因此更新不了。 */
+let segmentedInstalled = false;
+/** 最近一次分段下载的结果（排障用：段数、续传字节数、耗时、吞吐、失败原因） */
+let lastSegmentedRun = null;
+
+/** 分段文件目录：优先 <cacheDir>/segments（destination 在 <cacheDir>/pending/ 下时能直接推出来） */
+async function segmentedPartDir(destination) {
+  const dir = await resolveUpdaterCacheDir();
+  if (dir) return path.join(dir, "segments");
+  return partDirFor(destination);
+}
+
+function installSegmentedFullDownload() {
+  if (segmentedInstalled || !autoUpdater) return;
+  const exec = autoUpdater.httpExecutor;
+  if (!exec || typeof exec.download !== "function") return;
+  /* 开关：显式回退单连接（旧行为），不装包装 */
+  if (segmentsFromEnv(process.env) <= 1) return;
+  const original = exec.download.bind(exec);
+  exec.download = async (url, destination, options) => {
+    if (!isInstallerDownload(url, destination, options)) {
+      return original(url, destination, options);
+    }
+    const href = typeof url === "string" ? url : String((url && url.href) || url);
+    let info = null;
+    try {
+      info = await downloadSegmented({
+        url: href,
+        destination: String(destination),
+        sha512: options && options.sha512,
+        headers: options && options.headers,
+        onProgress: options && options.onProgress,
+        cancellationToken: options && options.cancellationToken,
+        partDir: await segmentedPartDir(destination),
+      });
+    } catch (e) {
+      /* 不吞错：交给 electron-updater 清掉 pending 临时文件并派发 error 事件；
+         已下的分段留在 <cacheDir>/segments/，下次同一 URL 从断点续 */
+      lastSegmentedRun = {
+        ok: false,
+        code: (e && e.code) || "",
+        error: String((e && e.message) || e),
+      };
+      throw e;
+    }
+    if (info && info.ok) {
+      lastSegmentedRun = info;
+      return destination;
+    }
+    /* 环境不支持分段（无 Range / 200 / 禁用了）→ 退回原生单连接，行为与改动前一致 */
+    lastSegmentedRun = info || { ok: false, fallback: true, reason: "unknown" };
+    return original(url, destination, options);
+  };
+  segmentedInstalled = true;
+}
+
 function setupAutoUpdater() {
   if (started) return;
   started = true;
@@ -304,14 +533,10 @@ function setupAutoUpdater() {
   try {
     autoUpdater.forceDevUpdateConfig = false;
   } catch (_) {}
-  try {
-    autoUpdater.setFeedURL({
-      provider: "generic",
-      url: UPDATE_FEED,
-    });
-  } catch (e) {
-    lastError = String((e && e.message) || e);
-  }
+  /* 更新源：默认 https（www + TLS + CDN 缓存），失败才回退 http（见 applyFeedUrl） */
+  applyFeedUrl();
+  /* 全量下载换成多连接分段 + 断点续传（差分链不受影响；见 installSegmentedFullDownload） */
+  installSegmentedFullDownload();
 
   autoUpdater.on("checking-for-update", () => {
     send("update:status", statusPayload());
@@ -366,10 +591,24 @@ function setupAutoUpdater() {
   });
 }
 
+/* 把一次检查结果收进 latestInfo（常规 / 同版本重装两种口径），换源重试复用同一份判定 */
+function absorbCheckResult(result, sameVersion) {
+  if (!result || !result.updateInfo) return;
+  const cur = app.getVersion();
+  const next = result.updateInfo.version;
+  if (sameVersion) {
+    /* 同版本重装：只要线上拿得到版本号就收（相同 / 更新 / 更旧都算一次重装源） */
+    latestInfo = next ? result.updateInfo : null;
+  } else if (next && next !== cur) {
+    latestInfo = result.updateInfo;
+  }
+}
+
 /**
  * 检查更新。
  * opts 省略 = 常规检查：只有线上版本号更新时才置 latestInfo（行为与旧版一致）。
  * opts.sameVersion = 手动「同版本号重装」：放行同版本，latestInfo 照收（见 update:reinstallSame）。
+ * https 默认源失败一次 → 切 http 回退再检查一次（只回退一次，显式 MTNODE_UPDATE_URL 不回退）。
  */
 async function checkForUpdates(quiet, opts) {
   const sameVersion = !!(opts && opts.sameVersion);
@@ -387,17 +626,18 @@ async function checkForUpdates(quiet, opts) {
   try {
     lastError = "";
     if (sameVersion) forceSameVersion = true;
-    const result = await autoUpdater.checkForUpdates();
-    if (result && result.updateInfo) {
-      const cur = app.getVersion();
-      const next = result.updateInfo.version;
-      if (sameVersion) {
-        /* 同版本重装：只要线上拿得到版本号就收（相同 / 更新 / 更旧都算一次重装源） */
-        latestInfo = next ? result.updateInfo : null;
-      } else if (next && next !== cur) {
-        latestInfo = result.updateInfo;
-      }
+    let result = null;
+    try {
+      result = await autoUpdater.checkForUpdates();
+    } catch (e) {
+      if (!canFallbackToHttp() || feedFallbackActive) throw e;
+      /* https 打不通（缺根证书 / TLS 被拦）：切 http 回退源，本次只重试一次 */
+      feedFallbackActive = true;
+      applyFeedUrl();
+      result = await autoUpdater.checkForUpdates();
+      lastError = "";
     }
+    absorbCheckResult(result, sameVersion);
     return statusPayload();
   } catch (e) {
     lastError = String((e && e.message) || e);
@@ -639,6 +879,9 @@ function __testResetState() {
   storeLatest = "";
   storeProbing = false;
   storeProbeError = "";
+  /* 回退生效后源变成 http：复位时一并切回默认 https 源 */
+  feedFallbackActive = false;
+  applyFeedUrl();
 }
 
 function I18nSafe(s) {
@@ -681,6 +924,8 @@ module.exports = {
   isStorePackage,
   statusPayload,
   UPDATE_FEED,
+  /* http 回退源（默认源未被覆盖时才有值）；供冒烟测试断言「https 优先、http 只兜底」 */
+  UPDATE_FEED_FALLBACK,
   /* 同版本号重装（设置最底部的手动更新入口）：供冒烟测试直接驱动同一条链 */
   reinstallSameVersion,
   /* 商店包只读版本探测（不下载不安装）与其纯函数件：供冒烟测试直接驱动同一份实现 */
@@ -693,6 +938,14 @@ module.exports = {
   __setStoreProbeFetch(fn) {
     storeProbeFetch = typeof fn === "function" ? fn : null;
   },
+  /* 全量下载（多连接分段 + 断点续传）：包装 httpExecutor.download 的那一步 + 最近一次结果。
+     供冒烟测试确认「只接管全量 .exe、差分与其它下载原样」；生产由 setupAutoUpdater 调用。 */
+  installSegmentedFullDownload,
+  __segmentedRunInfo() {
+    return lastSegmentedRun;
+  },
+  /* 段数开关的同一份读法（MTNODE_UPDATE_SEGMENTS；1 = 回退单连接） */
+  segmentsFromEnv,
   /* 重置运行态：仅供冒烟测试在同一进程里跑多场景（生产不调用） */
   __testResetState,
 };

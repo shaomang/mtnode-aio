@@ -2,7 +2,7 @@
  * app-deps-rules.cjs —— 打包减重的**唯一规则源**。
  *
  * 三处共用同一份判断，避免「分析说能省、打包实际没省」：
- *   · dsh/after-pack.cjs        —— 复制 resources/dsh/gateway 时按本规则剪枝
+ *   · dsh/after-pack.cjs        —— 打 resources/dsh/gateway-tree.mtgw（网关整树归档）时按本规则剪枝
    · scripts/app-deps-usage.mjs —— 体检报告里的「文件级可剪量」
  *   · scripts/app-deps-check.mjs—— 在临时镜像上复现同一套剪枝并跑网关冒烟
  *

@@ -2967,6 +2967,50 @@ async function dshRunAskSwitchModel(opts, errText) {
   return ok ? picked : null;
 }
 
+/* ── 会话最忙时画布交互优先（本次需求）· 帧预算调度器接入 ───────────────────────
+ * 网关的正文 / 思考是**逐 token 的增量帧**（一次长回答数千帧）。过去每一帧都在 IPC 回调里
+ * 当场派给界面（opts.onEvent → 写 textContent / 贴底滚动 / 整表重建），用户这时候正在拖节点，
+ * 手上就掉帧。这里只改**调度**，一帧的处理内容一字不动：
+ *   · 增量帧（text / reasoning）：到达时先把文字累进缓冲（与逐帧追加的结果完全一致），
+ *     再合流到下一帧派发一次 —— 同一帧里的多帧只画一遍；
+ *   · 其余帧（tool / tool-result / usage / done / error / canvas / question / …）：
+ *     **先 flush 这一轮攒着的增量**再当场处理，所以派发顺序仍然等于到达顺序，
+ *     done / error 看到的一定是完整正文；
+ *   · 一帧的预算由 app-frame-budget.js 兜着（8ms），超了就把剩下的帧留到下一帧（让帧）。
+ * 没有调度器（node 冒烟单测 / 老壳）时全部退回逐帧同步派发，行为与改动前一致。 */
+const DSH_EV_COALESCE_TYPES = { text: 1, reasoning: 1 };
+const dshEvDeltaBuf = new Map(); /* "runKey|type" → { text, data } 累加中的增量 */
+
+/* 增量缓冲 / 排队项的键：一轮 + 一类 */
+function dshEvDeltaKey(runKey, type) {
+  return String(runKey) + "|" + String(type);
+}
+
+function dshSchedNoteRun(delta) {
+  try {
+    const sc = window.MTNodeSched;
+    if (sc && typeof sc.noteRun === "function") sc.noteRun(delta);
+  } catch (_) {}
+}
+/* 把某一轮攒着的增量立刻派发掉（FIFO）：非增量帧进场前、本轮收尾前都走它 */
+function dshEvFlushRun(runKey) {
+  try {
+    const sc = window.MTNodeSched;
+    if (sc && typeof sc.flushPrefix === "function")
+      return sc.flushPrefix("dshev:" + String(runKey) + "|");
+  } catch (_) {}
+  return 0;
+}
+/* 一帧真正的派发（诊断 span + 交给各自的 onEvent）：与改造前逐帧那一次调用等价 */
+function dshEvDispatch(opts, msg) {
+  try {
+    const P = window.MTNodePerf;
+    if (P && typeof P.span === "function")
+      P.span("dsh:" + String(msg.type || ""), () => opts.onEvent(msg.type, msg.data || {}));
+    else opts.onEvent(msg.type, msg.data || {});
+  } catch (_) {}
+}
+
 function dshRunTask(input, opts) {
   opts = opts || {};
   /* 首次使用闸（renderer/app-deepseek-onboard.js）：这一轮实际要跑的路由就是
@@ -3980,6 +4024,9 @@ function dshRunOnce(input, opts) {
   /* 交互面板:仅首个 run 清空,后续 run 保留其他会话/节点在途的提问与审批 */
   if (!(S._runCount || 0)) ixReset();
   S._runCount = (S._runCount || 0) + 1;
+  /* 会话最忙时画布交互优先（本次需求）：把「有一轮在跑」这件事记到帧预算调度器上 ——
+     自动保存的调度窗口按它放宽，会话侧的排队项也按它让帧（见 app-frame-budget.js）。 */
+  dshSchedNoteRun(1);
   if (opts.node && isAgentSuperPerm(opts.node) && opts.node.agentPermOutside === "ask") {
     if (S._agentPermSessionPaths) delete S._agentPermSessionPaths[opts.node.id];
   }
@@ -4046,6 +4093,9 @@ function dshRunOnce(input, opts) {
       if (settled) return;
       settled = true;
       clearInterval(watchdog);
+      /* 这一轮攒着还没派发的增量帧先补派一次（收尾路径可能来自看门狗 / 手动终止，
+         最后半截正文不能因为排队被吞掉；正常 done 路径在这次收尾前已经 flush 过） */
+      dshEvFlushRun(runKey);
       /* 本轮工具定位表只活到本轮结束：下一轮重收集（画布 / 工具库可能已变） */
       if (S._runToolDescs) delete S._runToolDescs[runKey];
       /* 只删自己这一轮登记的条目：同 runKey 的下一轮可能已覆盖它（见 runInst 注释），
@@ -4059,6 +4109,8 @@ function dshRunOnce(input, opts) {
         }
       }
       S._runCount = Math.max(0, (S._runCount || 1) - 1);
+      /* 与起跑那一笔成对：这一轮不再占用「会话在跑」的那档调度窗口 */
+      dshSchedNoteRun(-1);
       /* 本轮收尾把这一轮推上来的卡片**按族收口**（见 ixEndRound）：危险动作确认卡当场
          撤卡，提问卡 / 审批卡 / **浏览器求助卡**（本次需求：求助卡与询问卡同族）转
          「这一轮已经结束」态留住（回答没丢，卡上给一枚键把它当新消息发出去），
@@ -4069,6 +4121,10 @@ function dshRunOnce(input, opts) {
       if (typeof canvasConfirmDropRun === "function")
         canvasConfirmDropRun(runKey);
       endCanvasRun(boundWf);
+      /* 编辑事务的回合末收口（开关 canvases.editTxn = on 才有攒着的）：本轮攒下的
+         「该重绘 / 该落盘」在这里各做一次 —— 放在 endCanvasRun 之后，此时画布可见性
+         已按运行前的归属还原，用户看到的就是最终那一屏。开关 off 时这里是空操作。 */
+      if (typeof commitCanvasEditTxn === "function") commitCanvasEditTxn(runKey);
       if (scopeLock) {
         S._canvasNodeAgentDepth = Math.max(
           0,
@@ -4358,13 +4414,38 @@ function dshRunOnce(input, opts) {
           if (opts.onEvent && !userClosedFrame) {
             /* 诊断（app-render-perf.js）：网关逐帧事件在渲染层的整段处理耗时。trace 关着时
                是一次直通调用；开着时只有超过 50ms 才打一行 —— 会话运行期间画布卡顿到底卡在
-               哪一类帧上（text / reasoning / tool / usage）就靠这一行认。 */
-            try {
-              const P = window.MTNodePerf;
-              if (P && typeof P.span === "function")
-                P.span("dsh:" + String(msg.type || ""), () => opts.onEvent(msg.type, msg.data || {}));
-              else opts.onEvent(msg.type, msg.data || {});
-            } catch {}
+               哪一类帧上（text / reasoning / tool / usage）就靠这一行认。
+               调度（本次需求 · 会话最忙时画布交互优先）：正文 / 思考这两类增量帧合流到下一帧
+               派发，其余帧先 flush 再当场处理 —— 派发顺序仍等于到达顺序（见上方 helper 注释）。 */
+            const evType = String(msg.type || "");
+            const evData = msg.data || {};
+            const canCoalesce =
+              !!DSH_EV_COALESCE_TYPES[evType] &&
+              typeof evData.text === "string" &&
+              !!evData.text;
+            const sc =
+              canCoalesce && typeof window !== "undefined" ? window.MTNodeSched : null;
+            if (sc && typeof sc.post === "function") {
+              const bufKey = dshEvDeltaKey(runKey, evType);
+              let buf = dshEvDeltaBuf.get(bufKey);
+              if (!buf) {
+                buf = { text: "", data: evData };
+                dshEvDeltaBuf.set(bufKey, buf);
+              }
+              buf.text += evData.text;
+              sc.post("dshev:" + bufKey, () => {
+                const cur = dshEvDeltaBuf.get(bufKey);
+                if (!cur) return;
+                dshEvDeltaBuf.delete(bufKey);
+                dshEvDispatch(opts, {
+                  type: evType,
+                  data: Object.assign({}, cur.data, { text: cur.text }),
+                });
+              });
+            } else {
+              dshEvFlushRun(runKey);
+              dshEvDispatch(opts, { type: evType, data: evData });
+            }
           }
           if (msg.type === "done") {
             /* 完成音效：**不在这里发声**。任务级短促音由 dshRunQueueDoneCheck 按运行队列
@@ -6712,13 +6793,18 @@ function renderIxPanel() {
   ixDraftSaveFromDom();
   ixFocusSaveFromDom();
   const items = (S.activeIx && S.activeIx.items) || [];
-  /* 询问窗来了新的待回应项 → 内置 TTS 报一句「有新的询问等你回应」（见 renderer/app-tts.js）。
-     只按「待回应条数变多」触发：重绘 / 收口 / 撤卡都不重复开口。 */
+  /* 询问窗来了新的待回应项 → 内置 TTS 只报固定一句「有新的询问等你回应」，不念题面
+     （见 renderer/app-tts.js 的 onAsk；题面在卡片 / 任务栏通知里看）。只按「待回应条数变多」
+     触发：重绘 / 收口 / 撤卡都不重复开口。 */
   try {
-    const pendingN = items.filter((x) => !x.ended).length;
-    if (pendingN > (renderIxPanel._ttsSeenN || 0) && window.MTNodeTts && window.MTNodeTts.onAsk)
+    const pending = items.filter((x) => !x.ended);
+    if (
+      pending.length > (renderIxPanel._ttsSeenN || 0) &&
+      window.MTNodeTts &&
+      window.MTNodeTts.onAsk
+    )
       window.MTNodeTts.onAsk();
-    renderIxPanel._ttsSeenN = pendingN;
+    renderIxPanel._ttsSeenN = pending.length;
   } catch (_) {}
   let box = $("#ixPanel");
   if (!items.length) {

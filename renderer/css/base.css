@@ -30,6 +30,22 @@
    新界面的焦点环 / 浮层阴影一律取这里，不要再各写一份。 */
 :root,
 body {
+  /* ── 应用主题色的「别名」──
+     研究页会把 --bg / --bg2 / --panel2 / --ink 等内联写在 #researchPane 上换成阅读纸色，
+     同一页里的工具行（顶栏 / 展开行）不能跟着纸色走，改用这一组别名回到**应用主题**口径。
+     为什么写在 :root 与 body 两处（与下面令牌同一理由）：body.theme-* 在 body 上重定义
+     --bg 等槽位，别名只有挂到 body 才能解析成主题值，只挂 :root 会按暗色值算死。 */
+  --app-bg: var(--bg);
+  --app-bg2: var(--bg2);
+  --app-panel: var(--panel);
+  --app-panel2: var(--panel2);
+  --app-bd: var(--bd);
+  --app-bd2: var(--bd2);
+  --app-ink: var(--ink);
+  --app-muted: var(--muted);
+  --app-cyan: var(--cyan);
+  --app-cyan2: var(--cyan2);
+  --app-code: var(--code);
   --focus-ring: color-mix(in srgb, var(--cyan) 70%, var(--ink));
   --focus-halo: color-mix(in srgb, var(--cyan) 22%, transparent);
   --shadow-pop: 0 2px 6px rgba(0, 0, 0, .28), 0 12px 32px -6px rgba(0, 0, 0, .5);

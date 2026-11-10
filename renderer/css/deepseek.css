@@ -1,0 +1,274 @@
+/* deepseek.css — 状态栏入口（#btnDeepSeek）+ **整个页面右半边**的 DeepSeek 抽屉浮层。
+   实现见 renderer/app-deepseek.js；本文件只管这块 UI 与那颗入口按钮的皮（前缀 .ds-*），
+   配色一律取 base.css 的主题变量（暗色 / 工业 / 亮色三套自动跟随）。
+
+   口径（与 AGENTS.md 的浮层纪律一致）：
+   · 入口按钮是左下角第二颗：状态栏 order 链 = 快捷会话 -5 · 本按钮 -4 ·
+     语音播报 -3 · 语音输入 -2 · AI 增强 -1 · 画布截图 0。五颗按钮各占一个整数位，
+     不再靠 DOM 次序凑（想再挪只改下面这一个数）。
+   · 抽屉挂在 #layout（.layout，position:relative）上的绝对定位浮层：
+     top/bottom/right = 0 —— 上到顶栏之下、下到状态栏之上、右到窗口右缘，占「整个页面右半边」；
+     **不参与** sidebar / pane / agentPane / assistPane 的 flex 布局：
+     打开不挤压画布，关掉不留空位。
+   · persistent：点外部 / 点画布都不关，只走 ✕ / Esc / 再点按钮 / 窗内 F2。
+     反引号键已停用（键位统一给 F1–F4，见 renderer/app-status-keys.js）。
+   · 进出只走 transform + visibility（不 display:none、不销毁 webview）——
+     里面装的是 DeepSeek 网页，节点一销毁登录态与对话就没了。 */
+
+/* ── 状态栏入口按钮（左下角第二颗：快捷会话右邻、语音播报左邻）────────────── */
+#btnDeepSeek.sb-deepseek {
+  flex: none;
+  order: -4; /* 快捷会话（-5）右邻、语音播报（-3）左邻；见本文件顶部那段 order 链 */
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1;
+  font-family: var(--mono, ui-monospace, monospace);
+  opacity: .8;
+  transition: color var(--dur-fast, .12s), border-color var(--dur-fast, .12s),
+    background-color var(--dur-fast, .12s), opacity var(--dur-fast, .12s);
+}
+
+#btnDeepSeek.sb-deepseek:hover {
+  color: #8ea6ff;
+  border-color: var(--bd2);
+  background: rgba(77, 107, 254, .12);
+  opacity: 1
+}
+
+#btnDeepSeek.sb-deepseek:focus-visible {
+  outline: 1px solid #6d8bff;
+  outline-offset: 1px;
+  opacity: 1
+}
+
+/* 抽屉开着时入口本身就是「亮着的开关」：再点一次 / 再按 F2 = 关。
+   点亮语言与语音播报的 .statusbar .sb-tts.on 完全一致（青字 + 青边 + 青底 + 不透明度拉满），
+   三颗带面板的按钮（快捷会话 / 本按钮 / 语音播报）看过去是同一种「亮着」；
+   鲸鱼仍按品牌色 #4D6BFE 画（app-whalecoin.js 写死 fill，不跟 currentColor）。 */
+#btnDeepSeek.sb-deepseek.is-open,
+#btnDeepSeek.sb-deepseek[aria-pressed="true"] {
+  color: var(--cyan2, #38d6ff);
+  border-color: color-mix(in srgb, var(--cyan2, #38d6ff) 45%, transparent);
+  background: rgba(56, 214, 255, .1);
+  opacity: 1
+}
+
+/* 官方 DeepSeek logo（状态栏入口与抽屉标题共用同一份 SVG；路径唯一真源是
+   renderer/app-whalecoin.js 的 DS_LOGO_D，由 window.MtCoin.logoPath 导出） */
+#btnDeepSeek.sb-deepseek .ds-logo,
+.ds-dot .ds-logo {
+  display: block;
+  width: 14px;
+  height: 14px
+}
+
+/* ── 抽屉外壳（#layout 内的右侧半屏浮层）───────────────────────────────── */
+.ds-drawer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 74; /* 高于各 pane（4）与节点弹层（50~70），低于画布面包屑（80） */
+  width: 50%; /* 兜底：JS 打开时会写具体像素（默认同样是窗口一半，拖过就按拖出来的宽度） */
+  max-width: 1600px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--bd2);
+  border-right: 0; /* 贴窗口右缘，右边这条边框落在窗口外，去掉免得视觉上多一根线 */
+  border-radius: 8px 0 0 8px;
+  background: var(--panel2, #12161f);
+  box-shadow: -18px 0 40px rgba(0, 0, 0, .45);
+  /* 收起态：整块推到窗口右缘之外。**不用 display:none / 不摘节点** ——
+     里面的 webview 要一直活着，登录态与对话记录才不会丢。 */
+  transform: translateX(calc(100% + 24px));
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+  transition: transform .22s cubic-bezier(.2, .7, .3, 1), opacity .16s linear,
+    visibility 0s linear .22s;
+}
+
+.ds-drawer.is-open {
+  transform: translateX(0);
+  visibility: visible;
+  opacity: 1;
+  pointer-events: auto;
+  transition: transform .22s cubic-bezier(.2, .7, .3, 1), opacity .16s linear,
+    visibility 0s;
+}
+
+/* 拖宽期间别让过渡跟着抖 */
+.ds-drawer.is-resizing {
+  transition: none
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ds-drawer,
+  .ds-drawer.is-open {
+    transition: none
+  }
+}
+
+/* ── 左边缘拖动把手（改抽屉宽度；双击复位）────────────────────────────── */
+.ds-grip {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  z-index: 6; /* 压在标题栏与正文（含 webview）之上，左边缘这一条永远抓得到 */
+  width: 8px;
+  cursor: col-resize;
+  background: transparent;
+  touch-action: none
+}
+
+.ds-grip::after {
+  content: "";
+  position: absolute;
+  left: 2px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 2px;
+  height: 34px;
+  border-radius: 2px;
+  background: var(--bd2);
+  opacity: 0;
+  transition: opacity .15s
+}
+
+.ds-grip:hover::after,
+.ds-drawer.is-resizing .ds-grip::after {
+  opacity: .9
+}
+
+/* ── 抽屉标题栏 ──────────────────────────────────────────────────────── */
+.ds-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 6px 0 12px;
+  border-bottom: 1px solid var(--bd2);
+  background: var(--panel, #141922);
+  font-family: var(--sans, system-ui, sans-serif)
+}
+
+.ds-dot {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  font-size: 12px;
+  line-height: 1
+}
+
+.ds-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  letter-spacing: .5px;
+  color: var(--fg, #d7dde6)
+}
+
+.ds-close {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1
+}
+
+.ds-close:hover {
+  color: var(--red, #e86c6c);
+  border-color: var(--bd2);
+  background: rgba(232, 108, 108, .08)
+}
+
+/* ── 抽屉正文（DeepSeek 网页）─────────────────────────────────────────── */
+.ds-body {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  background: var(--bg2, #0f1319)
+}
+
+.ds-webview {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: #fff
+}
+
+/* 拖宽期间（app-deepseek.js 的 is-resizing）：网页是独立渲染进程（webview/OOPIF），
+   指针往右滑进网页区域时 pointermove 会被 guest 吞掉，抽屉走到一半就卡住、左边界因此
+   「调不了宽度」（用户报的 bug）。拖动期间让网页整块不接指针事件，全程由把手自己收事件；
+   顺带把整页光标钉成 col-resize，别在画布与网页之间来回闪。 */
+.ds-drawer.is-resizing .ds-body,
+.ds-drawer.is-resizing .ds-webview {
+  pointer-events: none
+}
+
+html.ds-resizing,
+html.ds-resizing * {
+  cursor: col-resize !important;
+  -webkit-user-select: none !important;
+  user-select: none !important
+}
+
+/* 网页没加载出来时的兜底：只给一条「在系统浏览器里打开」，不重试、不自己造聊天界面 */
+.ds-fallback {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 18px;
+  text-align: center;
+  background: var(--bg2, #0f1319)
+}
+
+.ds-link {
+  max-width: 100%;
+  padding: 6px 12px;
+  background: transparent;
+  border: 1px dashed var(--bd2);
+  border-radius: 6px;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+  cursor: pointer
+}
+
+.ds-link:hover {
+  color: #8ea6ff;
+  border-color: rgba(77, 107, 254, .55);
+  background: rgba(77, 107, 254, .1)
+}

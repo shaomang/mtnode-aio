@@ -33,6 +33,7 @@
     wfName: "",
     topic: "",
     question: "",
+    instruction: "", // 这一批投料随附的「给 agent 的指示」（进 taskPrompt，执行完清空）
     core: [], // entry: {rid,source,src,text,title,note,size,main}
     refs: [],
     busy: false,
@@ -49,6 +50,9 @@
     preview: null, // {role, rows:[{source,value,title,role}]}
     editing: "", // 正在内联编辑的 entry rid
     ridSeq: 0,
+    /* 每 close() 一次 +1：startInit 是长异步（复制 / 解析 / 落盘 / 拉起会话），跑完时用它判断
+       「这期间界面有没有被关掉（换画布 / 回闸门）」—— 被关掉就不要再把投料台弹回来。 */
+    runSeq: 0,
   };
   window.MTResearchInitState = RI;
 
@@ -984,6 +988,14 @@
       g.title = t("解析全部笔记，重建知识图谱");
       g.onclick = () => toGraph();
       foot.appendChild(g);
+      /* 补跑：老库（上一版初始化跑出来的）没有术语页 / 3-Pass 变体 / 节级三档。
+         不自动烧 Token，这里给一颗手动入口 —— 点它才派一条任务给同一条初始化会话。 */
+      const more = el("button", "rs-btn", t("补跑一层"));
+      more.title = t(
+        "给已经入库的原文补上：术语页第一层（terms/）、3-Pass 变体（略读 / 关键概念 / 技术细节）、节级三档（# 节级三档）。会消耗 Token。",
+      );
+      more.onclick = () => backfill();
+      foot.appendChild(more);
       /* 交棒：处理完就不该只靠这个窗口，一键回主视图看已处理内容 */
       if (C().processedList(RI.queue).length) {
         const v = el("button", "rs-btn", t("查看已处理内容"));
@@ -1004,6 +1016,48 @@
     return foot;
   }
 
+  /* ── 补跑一层（老库）──
+     上一版初始化只写了三层折叠与论断/概念：没有术语页、没有 3-Pass 变体、折叠里也没有节级三档。
+     这些都要花 Token，所以**不自动补**，只在这颗按钮被点时发一条任务给同一条初始化会话；
+     具体缺什么由 agent 读盘判断（它看得到 research/ 里已经有什么）。 */
+  function backfill() {
+    const root = rootOf();
+    if (!root) {
+      toastSafe(t("研究目录还没就绪"), "warn");
+      return;
+    }
+    const st = findInitSession(root);
+    if (!st || typeof agentSessionSend !== "function") {
+      toastSafe(t("这条初始化会话已经关掉了：重开投料台再点「开始处理」即可接着用"), "warn");
+      return;
+    }
+    const L = [];
+    L.push("按技能 mtnode-research 给这个研究目录**补一层**（只补缺的，不许重写已有的、不许动 notes/ 里人工写的稿子）。");
+    L.push("");
+    L.push("逐篇检查 `core/*.md` 与它的 `literature/folds/<key>.md`，按下面三项补齐：");
+    L.push("");
+    L.push("1. **节级三档**：折叠文件里若没有 `# 节级三档` 这一段，就按原文的 `##` 小节补上 ——");
+    L.push("   逐节写 `## s0001 · <小节标题>`（s 编号从 1 起、四位补零），每节下三档：");
+    L.push("   `**一句话**`（这一节一句话干了什么）/ `**一段话**`（80–160 字）/ `**原文**`（原文照抄，公式与 `![…](…/assets/…)` 相对路径原样保留）。");
+    L.push("   frontmatter 补 `secLevel: para`（没有 `secPins` 就写空）。原有三层折叠内容一个字都不许改。");
+    L.push("2. **术语页第一层**：`terms/` 里还没有页时，从原文归纳 8–20 篇 `terms/<slug>.md`（六种 kind：term / concept / formula / symbol / theorem / method / dataset）；");
+    L.push("   frontmatter 带 `title / kind / slug / derives: [原文标题] / sources: [原文标题 · §小节] / origin: init / verify: unverified / init: done / date`，不写 parent；");
+    L.push("   正文骨架 `# 名` → `> [!term] 名` 一句定义 → `## 直觉` → 有公式才 `## 公式 / 记号` → `## 在原文里` → `## 还能引申`（`> [!question] 待展开` + `> - [[下层术语]]`）。");
+    L.push("   原文里已有的图直接引相对路径，不生成新图；要画流程才用 ```mermaid（≤12 节点）；原文没写的写「原文没有展开」，不许编。");
+    L.push("3. **3-Pass 变体**：每篇原文缺哪份就补哪份 —— `<原名>.skim.md`（略读：贡献 / 证据 / 局限，200–320 字）、");
+    L.push("   `<原名>.concept.md`（关键概念：3–6 个，每个：简要定义 + 简化解释，优先引原文的图）、`<原名>.tech.md`（技术细节：方法步骤 / 公式原样 / 实验设置与关键数字）。");
+    L.push("   frontmatter 写 `derived: skim|concept|tech`、`parent: <原文路径>`；旧的 `.summary.md` / `.excerpt.md` 留在盘上别动，但不要再新写这两种。");
+    L.push("");
+    L.push("做完回一段话：补了哪几项、各多少篇、还有哪些没补（以及为什么）。");
+    try {
+      agentSessionSend(L.join("\n"), { sessionId: st.id });
+    } catch (e) {
+      toastSafe(String((e && e.message) || e), "err");
+      return;
+    }
+    toastSafe(t("已派「补跑一层」：术语页 / 3-Pass 变体 / 节级三档，进度看那条初始化会话"), "ok");
+  }
+
   /* ── 开始初始化 ── */
   /* 落盘重名：同批次用过的（used）与磁盘上已有的都算冲突，`a.pdf` → `a-2.pdf`。
      不能每次从 rel 重新算 —— 磁盘上那一份不在 set 里时唯一性判断会原地打转。 */
@@ -1018,6 +1072,56 @@
     }
     return cand;
   }
+  /* PDF 图元落盘（研究投料专用）：正文里的 {{FIG:name}} / {{PAGE:n}} 换成真图 +
+     相对路径 assets/<md 词干>/<name>（相对 md 自己的目录 —— core 项就是 research/core/assets/<mdBase>/，
+     ref 项就是 research/literature/sources/assets/<key>/）。落盘 / 单页出图只走
+     renderer/pdf-markdown.js 那一份实现（pdfMaterializeFigures，页图内部走 fileRenderPdfPages），
+     这里只做三件事：把 md 绝对路径当落盘基准传进去、把 note 收成可留痕的文本、
+     有图没落成就把说明附在正文末尾（正文里绝不留 {{…}} 或指向不存在文件的链接）。
+     返回 { markdown, figures, pages, images }（images = 落盘图总数，写进 frontmatter 的 figures:）。 */
+  async function materializeFigures(text, parsed, pdfAbs, mdAbs) {
+    const body = String(text || "");
+    const out = { markdown: body, figures: 0, pages: 0, images: 0 };
+    if (typeof pdfMaterializeFigures !== "function") {
+      console.warn("[research-init] 缺少 PDF 图元落盘内核（pdf-markdown.js 没加载），图元未落盘：" + mdAbs);
+      return out;
+    }
+    const notes = [];
+    let r = null;
+    try {
+      r = await pdfMaterializeFigures(
+        body,
+        parsed,
+        pdfAbs,
+        { note: (l) => notes.push(String(l)) },
+        { writePath: mdAbs },
+      );
+    } catch (e) {
+      notes.push(String((e && e.message) || e));
+    }
+    out.markdown = String((r && r.markdown) || body);
+    out.figures = Number((r && r.figures) || 0);
+    out.pages = Number((r && r.pages) || 0);
+    out.images = out.figures + out.pages;
+    for (const l of notes) console.warn("[research-init] PDF 图元 · " + mdAbs + " · " + l);
+    /* 原本要落几张 / 实际落了几张：少了就把失败说明附在正文末尾，不吞错也不留坏引用 */
+    const wantFig = (body.match(/\{\{\s*FIG:/g) || []).length;
+    const wantPage = [];
+    const scan = /\{\{\s*PAGE:(\d+)\s*\}\}/g;
+    let m;
+    while ((m = scan.exec(body))) {
+      const n = Number(m[1]);
+      if (n > 0 && wantPage.indexOf(n) < 0) wantPage.push(n);
+    }
+    if (out.figures < wantFig || out.pages < wantPage.length) {
+      out.markdown +=
+        "\n> [!warning] 图元没能全部落盘（正文里的占位已去掉，不留坏链接）\n" +
+        (notes.length ? notes.map((l) => "> · " + l).join("\n") : "> · （没有更多说明）") +
+        "\n";
+    }
+    return out;
+  }
+
   async function startInit() {
     if (RI.busy) return;
     RI.err = "";
@@ -1033,7 +1137,10 @@
       return;
     }
     const entries = RI.core.length + RI.refs.length;
-    if (RI.existing && !entries) {
+    /* 只发指示也能跑（增量补料时说一句「按这个侧重」，不必非建条目）；
+       条目与指示都没有才是空跑 */
+    const instruction = String(RI.instruction || "").trim();
+    if (RI.existing && !entries && !instruction) {
       RI.err = t("这一轮没有新条目：先加文件 / 链接 / 笔记 / 检索式，再点开始处理。");
       render();
       return;
@@ -1041,6 +1148,9 @@
     RI.busy = true;
     RI.err = "";
     render();
+    /* 这一轮的令牌：跑完时若界面已被关掉（换画布 / 回闸门 = close() 把 runSeq 加了），
+       队列仍属于原来那张画布，但投料台不该自己再弹回来（用户报的「切画布后初始化界面还在」）。 */
+    const runSeq = RI.runSeq;
     const root = rootOf();
     try {
       await ensureDirs(root);
@@ -1090,7 +1200,9 @@
         await window.api.fileWriteText(joinP(root, rel), C().initFetchDoc(it));
       }
       /* PDF 先就地转 md：复用应用内 PDF 解析内核（与「PDF 入库」同一份），
-         不让 agent 为每篇 PDF 现写解析器。扫描件 / 解析失败就留空，交给 agent 尽力。 */
+         不让 agent 为每篇 PDF 现写解析器。扫描件 / 解析失败就留空，交给 agent 尽力。
+         图元一起取回来（figures:true）并按 md 位置落盘：core 项 → core/assets/<mdBase>/，
+         ref 项 → literature/sources/assets/<key>/（两者都是「md 同目录的 assets/<md 词干>/」）。 */
       for (const it of q.items) {
         if (it.kind !== "pdf" || it.mdDone) continue;
         if (it.status === "done") continue; /* 旧批次里已处理完的不再重转 */
@@ -1101,23 +1213,30 @@
           continue;
         }
         try {
-          const parsed = await window.api.fileParsePdf({ path: joinP(root, it.rel) });
+          const pdfAbs = joinP(root, it.rel);
+          const parsed = await window.api.fileParsePdf({ path: pdfAbs, figures: true });
           const text = String((parsed && (parsed.text || parsed.markdown)) || "");
+          /* 没有文本层（扫描件 / 图片版）：仍走原分支，不因为图元逻辑变成「转成了」 */
           if (!text.trim()) {
             it.note = "no-text";
             continue;
           }
+          const fig = await materializeFigures(text, parsed, pdfAbs, mdAbs);
           const head =
             "---\ntitle: " +
             JSON.stringify(it.title || it.key) +
             "\ntags: [pdf]\nsource: " +
             JSON.stringify(it.rel) +
+            "\norigin: " +
+            JSON.stringify(it.origin || it.rel) +
+            "\nfigures: " +
+            fig.images +
             "\ningestedAt: " +
             JSON.stringify(new Date().toISOString()) +
             "\n---\n\n# " +
             (it.title || it.key) +
             "\n\n";
-          await window.api.fileWriteText(joinP(root, it.mdRel), head + text);
+          await window.api.fileWriteText(mdAbs, head + fig.markdown);
           it.mdDone = true;
         } catch (e) {
           it.note = "pdf-failed";
@@ -1139,6 +1258,18 @@
       await writeTopicNote(root, finalQ);
       const sess = await ignite(root, finalQ);
       RI.busy = false;
+      /* 期间界面被关掉（换画布 / 回闸门）：队列与元信息已经落在原画布盘上，这里只收工，
+         不再重开投料台、也不再回调 onDone（onDone 会把「当前这张新画布」的视图再刷一遍）。
+         投料栏一样清空 —— 它们属于刚离开的那张画布，不能带到下一张去。 */
+      if (RI.runSeq !== runSeq) {
+        RI.core = [];
+        RI.refs = [];
+        RI.composer = null;
+        RI.preview = null;
+        RI.editing = "";
+        RI.instruction = "";
+        return;
+      }
       /* 投过的料已经进了队列：清空两栏，免得下次「＋ 添加资料」把旧文件再复制一遍
          （课题与核心问题留着，增量补料还要用） */
       RI.core = [];
@@ -1146,6 +1277,7 @@
       RI.composer = null;
       RI.preview = null;
       RI.editing = "";
+      RI.instruction = ""; // 指示已经随这一轮任务发出去，下一批重新给
       RI.err = sess.ok ? "" : t("队列已生成，但会话没起来：") + (sess.error || "");
       RI.open = true;
       render();
@@ -1222,9 +1354,8 @@
   /* ── 点火：新建专用会话 + 发任务 ── */
   function taskPrompt() {
     const head = "按技能 mtnode-research 的「初始化队列」一节处理研究初始化。";
-    return [
-      head,
-      "",
+    const instruction = String(RI.instruction || "").trim();
+    const body = [
       "- 队列文件：`" + joinP(rootOf(), QUEUE_FILE).replace(/\\/g, "/") + "`（逐项把 status 从 pending 改成 running / done / failed，失败的写 error）",
       "- 顺序：逐篇串行，不要跳；每完成一项就回写一次队列（界面靠扫这个文件显示进度）。",
       "- 先看每一项的 `source`：",
@@ -1233,8 +1364,23 @@
       "  - `text`：用户直接写的笔记，整理成正文即可，不需要抓取。",
       "  - `query`：用户投的检索式，按它检索，取前 5 篇用 `research-queue.mjs add` 追加成 ref 项（带 `--hit-by`），再逐项处理。",
       "- 参考资料另外要做：写 `literature/folds/<key>.md`（三层：全文 / 关键原句 / 主题，按段落分组共用段落 id）→ 文献条目进 `literature/library.json` → 抽论断与概念 → 建本篇的边。",
+      "- 每篇处理完**还要多写两块**（都与上面同一份折叠文件、同一批原文）：",
+      "  - 节级三档：在这份 `literature/folds/<key>.md` 里加一节 `# 节级三档`，按原文的 `##` 分节逐节写 `## s0001 · <小节标题>`，每节下三档 `**一句话**`（这一节一句话说清它干了什么）/ `**一段话**`（80–160 字，术语不缩写）/ `**原文**`（这一节原文，公式与图片相对路径原样保留，不许改写）。顶部 frontmatter 写 `secLevel: para` 与空的 `secPins`。这是**逐节换粒度**用的，和上面三层折叠互不覆盖。",
+      "  - 三层折叠与节级三档是两套机制：折叠按段落折（全文 / 关键原句 / 主题），节级按小节给三档；两处都写，别互相替代。",
+      "- 术语页（第一层，自动）：核心原文都入库后，从原文里归纳术语 / 公式页，每页一个文件 `terms/<slug>.md`：",
+      "  - 种类只有六种：术语 / 概念、公式、符号约定、定理 · 命题 · 引理、方法 · 算法、数据集 · 实验设置；合计 8–20 页（原文短就少，宁少不多）。",
+      "  - frontmatter 必须带：`title`、`kind`（term / concept / formula / symbol / theorem / method / dataset）、`slug`、`derives: [原文标题…]`（从哪几篇长出来的）、`sources: [原文标题 · §小节]`、`origin: init`、`verify: unverified`、`init: done`、`date`。",
+      "  - 正文骨架：`# 名字` → `> [!term] 名字` 加一句能独立看懂的定义 → `## 直觉`（简化解释 / 极端例子 / 它排除了什么）→ 有公式才写 `## 公式 / 记号`（LaTeX 原样）→ `## 在原文里`（sources 逐条 + 它出现在哪一节）→ `## 还能引申`（`> [!question] 待展开` 再列 0–4 个 `> - [[下层术语]]`）。",
+      "  - 直觉那段是重点：让人不看原文也能懂；不许编，原文没写就写「原文没有展开」。图优先引原文的 `![…](../core/assets/…)`，要画流程才用 ```mermaid（≤12 节点）。",
+      "  - 不许给术语页写 parent（父页方向由 derives 表达，写了会在图上多一条对顶的线）。",
+      "- 变体：默认变体表已改成 3-Pass（略读 `.skim` / 关键概念 `.concept` / 技术细节 `.tech`）＋中译 / 英译共五条；不要再用 summary / excerpt 这两个旧后缀。三份都从原文派生，各自独立成文件、frontmatter 写 `derived: skim|concept|tech` 与 `parent: <原文路径>`。",
       "- 全部处理完：跑一轮全局建边，然后把队列 phase 改成 done。",
-    ].join("\n");
+    ];
+    /* 这一批随投料给的指示压在最前（条目说明之前）：先说取舍 / 侧重，再说每条怎么处理 */
+    if (instruction) {
+      body.unshift("- 用户这次随投料给的指示：" + instruction + "（按它决定取舍 / 侧重，不要自行扩大范围）", "");
+    }
+    return [head, ""].concat(body).join("\n");
   }
   /* 找上一次那条初始化会话（判据：工作区就是 research/ 且标题带「研究初始化」） */
   function findInitSession(root) {
@@ -1447,8 +1593,58 @@
     schedulePoll();
     return RI;
   }
+  /* ── 批量投料：投料台以外（「＋ 添加内容」对话框）一次交进来，一次执行 ──
+     走的还是同一条通道：addFiles / addRows 自带去重与渲染，instruction 存进 RI.instruction
+     交给 taskPrompt；随后直接 startInit() —— 一次 buildInitQueue + 一次 initQueueAppend +
+     一次 ignite，也就是用户看到的「一起执行」（旧队列项状态一个都不动）。 */
+  async function submitBatch(batch) {
+    const b = batch || {};
+    const files = Array.isArray(b.files) ? b.files : [];
+    const rows = Array.isArray(b.rows) ? b.rows : [];
+    const instruction = String(b.instruction == null ? "" : b.instruction).trim();
+    if (!RI.ws && !b.ws) {
+      const msg = t("这张画布还没有工作目录：先在画布顶栏设置，再回来初始化。");
+      RI.err = msg;
+      toastSafe(msg, "warn");
+      return { ok: false, error: msg };
+    }
+    /* 界面没开着也照常收：先按增量口径开一次，把 root / ws 与队列基线拿到手 */
+    if (!RI.open) {
+      await open({
+        existing: true,
+        ws: b.ws != null ? b.ws : RI.ws,
+        root: b.root != null ? b.root : RI.root,
+        wfId: b.wfId != null ? b.wfId : RI.wfId,
+        wfName: b.wfName != null ? b.wfName : RI.wfName,
+        topic: b.topic != null ? b.topic : RI.topic,
+        question: b.question != null ? b.question : RI.question,
+        saveMeta: b.saveMeta != null ? b.saveMeta : RI.saveMeta,
+        onDone: b.onDone || RI.onDone,
+        onGraph: b.onGraph || RI.onGraph,
+        onView: b.onView || RI.onView,
+      });
+    } else {
+      attach({ ws: b.ws, root: b.root, wfId: b.wfId, wfName: b.wfName });
+    }
+    /* 文件按角色灌（role: "core" | "ref"，缺省按参考资料） */
+    for (const f of files) {
+      const path = String((f && f.path) || (typeof f === "string" ? f : "")).trim();
+      if (!path) continue;
+      addFiles(f && f.role === "core" ? "core" : "ref", [path]);
+    }
+    /* 网址 / DOI / arXiv / 检索式 / 文字：一条一条进，role 逐条认 */
+    for (const r of rows) {
+      if (!r) continue;
+      addRows(r.role === "core" ? "core" : "ref", [r]);
+    }
+    RI.instruction = instruction;
+    await startInit();
+    return { ok: !RI.err, error: RI.err || "", queue: RI.queue, sessionId: RI.sessionId };
+  }
   function close() {
     RI.open = false;
+    /* 令牌 +1：正在跑的 startInit 回来时据此不再把界面弹回来（见 startInit 里的 runSeq） */
+    RI.runSeq += 1;
     RI.composer = null;
     RI.preview = null;
     RI.editing = "";
@@ -1477,6 +1673,8 @@
     const box = qid("rsInit");
     if (box) box.remove();
     RI.open = false;
+    /* 与 close 同一口径：销毁后正在跑的那一轮也不许再把界面建回来 */
+    RI.runSeq += 1;
     RI.built = false;
   }
 
@@ -1500,6 +1698,7 @@
     addFiles,
     parseBlock,
     addRows,
+    submitBatch,
     moveEntry,
     commitComposer,
     commitPreview,

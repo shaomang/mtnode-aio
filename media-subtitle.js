@@ -67,8 +67,9 @@ const NOT_FOUND_HINT =
 let cuesModPromise = null;
 /**
  * 载入共享的字幕排版模块（dsh/gateway/subtitle-cues.mjs）。
- * 打包后 gateway 在 resources/dsh/gateway（asar 外），dev 在仓库树里 —— 两种布局都由
- * dsh/main-dsh.js 的 GATEWAY_PATH 给出，这里只借它的目录，不另写路径知识。
+ * 打包后 gateway 在「随包归档解到数据目录」的那棵树里（见 dsh-node.js 的 ensureGatewayRoot），
+ * dev 在仓库树里 —— 两种布局都由 dsh/main-dsh.js 的 gatewayPath() 给出，这里只借它的目录，
+ * 不另写路径知识。
  * @param {string} [gatewayPath] 网关入口路径（测试可注入）
  */
 function loadCueModule(gatewayPath) {

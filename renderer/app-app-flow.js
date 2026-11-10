@@ -13,8 +13,9 @@
  *    （用户就是从库页 / 开发页的「＋新建应用」进来的）就不收浮层、不返回画布，并把开发页
  *    切到这条新应用 —— 接着就能写第一条开发需求；要看画布走开发页工具栏的「打开画布」。
  *    画布 / 会话 / 开发节点全部落在数据目录与既有存储里，**不往应用文件夹写用户数据**；
- *    应用目录里那份 <AppName>.mtnodes 是主进程每次 workflow:save 顺手同步的镜像
- *    （main.js 的 writeWorkflowJson → apps-store.js 的 mirrorAppCanvas，供整目录迁移）。
+ *    应用目录里那份 <AppName>.mtnodes 是主进程按画布上的 appId 记脏、空闲（3s）与退出前
+ *    统一刷的镜像（main.js 的 writeWorkflowJson → markAppCanvasMirror → flushAppCanvasMirror
+ *    → apps-store.js 的 mirrorAppCanvas，供整目录迁移）。
  *
  * ② 开发页的会话归属 appIdOfDevNode() / appSessionsOf(appId) / openAppCanvas(appId)
  *    会话对象上的 appId 标记（新建开发会话时由 app.js 的 createDevSessionForNode 写入，

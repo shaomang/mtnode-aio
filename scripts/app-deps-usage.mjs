@@ -126,6 +126,76 @@ const CAPABILITY_GROUPS = [
       + '注意 mistralai 自己的 esm/extra/observability/otel.js 静态 import @opentelemetry/* —— 与 otel 组'
       + '同时摘才自洽；只摘一边不会炸（对方只是它的一次性消费者）。',
   },
+  /* ── 下面四组是 2026-10-05 那一轮「可选网关能力改为用时再装」（见
+        docs/app-size-audit.md §8）：与 office 同一套机制 —— 组在 CAPABILITY_GROUPS 里声明、
+        after-pack 按组剪、安装链在 skills/gateway-capability-install/SKILL.md。 ── */
+  {
+    key: 'browser-automation', title: 'dsh 浏览器自动化 / 计算机使用插件簇（Playwright · chrome-devtools-mcp · cua-driver）',
+    globs: [
+      'playwright', 'playwright-core', '@playwright/*', 'chrome-devtools-mcp', '@trycua/*', '@browserbasehq/*',
+      '@deepseek-ai/dsh-browser-use', '@deepseek-ai/dsh-computer-use',
+      '@deepseek-ai/dsh-experimental-browser-use-*', '@deepseek-ai/dsh-experimental-computer-use-*',
+    ],
+    reason: '这一簇只有两个入口能点亮它们：dsh-experimental-browser-use-* / '
+      + 'dsh-experimental-computer-use-* 这些**未挂载**的实验插件（各自懒加载 playwright / '
+      + 'chrome-devtools-mcp / @trycua/cua-driver / @browserbasehq/stagehand），以及 dsh-base 之外的 '
+      + 'bundle/profile 模板（acp-app 那套走的是 @deepseek-ai/dsh-acp-app，MTNode 从不使用）。'
+      + 'MTNode 的 browser_* 工具面**不依赖它们**：dsh/gateway/cordis.yml 只挂 ./browser-plugin.mjs '
+      + '（mtnode-browser 行），驱动全在 gateway 侧的 browser-host.mjs，零 playwright / puppeteer 依赖，'
+      + '也不随包发浏览器内核（见该文件第 12 行注释）。实测这一簇在当前网关上占 68.75MB'
+      + '（入口 16 个 64.44MB + 独占下游 19 个 4.31MB，最大两项 @trycua/cua-driver-win32-x64-msvc 24.70MB '
+      + '与 playwright-core 12.81MB）。'
+      + '**注意 @modelcontextprotocol/* 不在本组通配里**，且不可以加进来：MTNode 自己的 MCP 客户端'
+      + '（cordis.yml 的 user-mcp 行 → @deepseek-ai/dsh-mcp-client，以及 dsh/gateway/mcp-resources.mjs '
+      + '第 35 行 `await import(\'@modelcontextprotocol/client\')`）在用，摘掉会直接弄坏「扩展能力管理 → '
+      + 'MCP 服务器」的资源浏览。',
+    risk: '摘除后「浏览器自动化 / 计算机使用」这类 dsh 实验能力不可用（MTNode 界面里本来也没有入口：'
+      + 'cordis.yml 不挂任何一行）。要恢复：删掉本组对象（或删对应名字）重跑 deps:cap / deps:check，'
+      + '把包装回网关树（见 skills/gateway-capability-install/SKILL.md）。'
+      + 'dsh 升级后若把 playwright 等重新带回来，闭包会按组再摘一遍；若某个**保留包**开始真 import 它们，'
+      + '闭包会自动把该名字退回保留集（打印在 rejected 里），不会剪坏。',
+  },
+  {
+    key: 'cloud-native-llm', title: 'Google GenAI / Anthropic 原生协议 SDK',
+    globs: ['@google/genai', '@anthropic-ai/sdk'],
+    reason: '两个包只被 @earendil-works/pi-ai 的**原生协议适配器实现** import：'
+      + '@google/genai ← dist/api/google-generative-ai.js · google-vertex.js · google-shared.js；'
+      + '@anthropic-ai/sdk ← dist/api/anthropic-messages.js。'
+      + 'pi-ai 的 providers/*.js 一律只 import 各自的 *.lazy.js 壳（`lazyStream(() => import(...))`），'
+      + '实现要等用户真的把某个 provider 解析到 anthropic-messages / google-generative-ai 才会被求值；'
+      + 'MTNode 的服务商设置（gateway.mjs applySettings → llm-pi-ai）只写 baseURL + OpenAI 兼容口径，'
+      + '原生协议适配器在本部署里永不点亮。',
+    risk: '摘除后若在设置里选到走**原生协议**的 Anthropic / Google 服务商，会在 lazyApi 处报'
+      + '`Cannot find package \'@anthropic-ai/sdk\'`（OpenAI 兼容链路完全不受影响，deepseek / openai / '
+      + '任何 baseURL 中转照旧）。要恢复：删本组对象重跑 deps:cap / deps:check 后重打包，'
+      + '或按 skills/gateway-capability-install/SKILL.md 把两个包按 pi-ai 声明的版本装回网关树'
+      + '（@google/genai 2.21.0 · @anthropic-ai/sdk 0.129.0）。',
+  },
+  {
+    key: 'markdown-render', title: 'Markdown / 语法高亮渲染链（@shikijs · katex）',
+    globs: ['@shikijs/*', 'shiki', 'katex', 'vscode-textmate', 'vscode-oniguruma'],
+    reason: 'dsh 自带 Web 前端的 Markdown 渲染与公式渲染链（@shikijs/* 语法高亮 + katex 公式），'
+      + 'v1.5.0 那次体检里它们的引用方是 awsui 组里的 dsh-client-ui-* 前端包（当时被 rejected 挡住，'
+      + '见 docs/app-size-audit.md §5）。MTNode 用自己的 renderer（无框架 SVG 画布）'
+      + '与自己的 Markdown 渲染，网关以 stdio JSON-RPC 无界面启动，永不初始化 web profile。'
+      + '当前 dsh 0.2 树上这条链**已经不在**（dsh 升级后前端改走 inline bundle），所以本组此刻'
+      + 'entryCount = 0、省 0MB；留着它的意义是护栏：dsh 下次升级若把 @shikijs/* / katex 重新带回来，'
+      + '按组直接摘，不用再论证一遍。',
+    risk: '若将来真的要用 dsh 的 web 前端（`dsh --profile web`）渲染 Markdown，需要回滚本组。'
+      + '本部署没有该入口。',
+  },
+  {
+    key: 'sharp-wasm', title: 'sharp 的 wasm 兜底（win32-x64 上永不加载）',
+    globs: ['@img/sharp-wasm32'],
+    reason: 'sharp 的原生分支解析顺序是「先 @img/sharp-<platform>-<arch>，失败才回退 @img/sharp-wasm32」；'
+      + '本包**总是**带着 win32-x64 原生包（@img/sharp-win32-x64，18.89MB，已挂在 forceKeep 里），'
+      + '原生分支必命中 → wasm 兜底永不可达。历史口径见 docs/app-size-audit.md §1.1.1 第 2 条与 §5：'
+      + '上一轮它被 forceKeep 的 `@img` 前缀一并保住，本轮把 forceKeep 收窄到'
+      + '`@img/sharp-win32-x64`，才让本组真正生效。当前树上它已不在（省 0MB），组保留作护栏。',
+    risk: '只有在「@img/sharp-win32-x64 装不上 / 加载失败」的机器上才会走到 wasm 兜底；那时 sharp 会用'
+      + 'wasm 版解码，摘掉即报错。要恢复：删本组对象重跑 deps:cap / deps:check 后重打包，'
+      + '或按 skills/gateway-capability-install/SKILL.md 把 @img/sharp-wasm32（与 sharp 同版本）装回网关树。',
+  },
   {
     key: 'office', title: 'Office→PDF 与 office 技能（LibreOffice 引擎）',
     globs: [
@@ -183,7 +253,10 @@ const TREES = {
     directDepsFrom: 'dsh/gateway/package.json',
     // 静态分析容易误判的动态加载族 / 宿主注入项：无论扫描结果如何一律保留
     forceKeep: [
-      '@img',                        // sharp: require('@img/sharp-' + platform + '-' + arch)
+      /* sharp: require('@img/sharp-' + platform + '-' + arch)。只钉**本平台原生包**：
+         前缀写成 `@img` 会把 wasm 兜底（@img/sharp-wasm32，win32-x64 上永不加载）一起保住，
+         那样 sharp-wasm 能力组永远摘不掉。@img/colour 由 sharp 的 runtime 声明自动保活。 */
+      '@img/sharp-win32-x64',
       '@vscode/ripgrep',             // @vscode/ripgrep-${platform}-${arch}
       'node-addon-require-builtin',  // cordis 原生垫片：经 NODE_OPTIONS --require 注入
       'bufferutil', 'utf-8-validate', // ws 的可选原生加速包（存在即启用）

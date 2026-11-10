@@ -32,6 +32,7 @@
 
 const fs = require("fs");
 const path = require("path");
+const { StringDecoder } = require("string_decoder");
 const { Worker } = require("worker_threads");
 const { ipcMain, shell } = require("electron");
 
@@ -286,8 +287,9 @@ async function moveToTrash(abs, label) {
    判据保守：只要文件名在**现役存档或那条画布的备份快照**里出现过，就算在用。
    回收站（trash/）**不算引用**：里面是已经删掉的画布与资产，它自己也是本清理器的一类；
    若把它当引用，用户一清回收站就会连带改变别的分类的可清理量，判据变得不可预期。
-   匹配分两步：候选名拼成一条 alternation 正则扫全文拿「疑似命中」（本机 93ms），
-   再对每个疑似名做一次精确 indexOf 复核（1432ms 的逐个 indexOf 换成正则 + 少量复核）。 */
+   匹配是**逐文件流式**的：每读到一个文件就单独过一遍候选名的 alternation 正则，扫完即弃 ——
+   绝不把整棵文本攒下来再 join 成一条大字符串（本机 save-backups 有 824MB 文本，join 出来
+   超过 V8 的 512MB 字符串上限，设置里只会看到「统计失败：Invalid string length」）。 */
 /** 候选名 → 一条 alternation 正则（长名优先，避免短名先吃掉长名） */
 function refRegexOf(names) {
   const sorted = names.slice().sort((a, b) => b.length - a.length);
@@ -297,7 +299,7 @@ function refRegexOf(names) {
   return body ? new RegExp(body, "g") : null;
 }
 
-/** 一段文本里的「疑似命中」候选名（调用方随后逐名精确复核） */
+/** 一段文本里命中的候选名（正则匹配的就是候选名本身，命中即字面命中） */
 function susOf(text, re, hits) {
   if (!re) return;
   re.lastIndex = 0;
@@ -328,15 +330,66 @@ function collectRefNames(cand) {
   const re = refRegexOf(names);
   const sus = new Set();
   const pending = new Set(wanted);
-  const texts = [];
+  /* 单文件超过 8MB 就分块扫（块尾留出「最长候选名」那么长的重叠，名字被切在块边界上也能命中）：
+     内存里任何时刻只有一个块 + 这段重叠，绝不为一个文件造出超上限的字符串。 */
+  const CHUNK = 8 * 1024 * 1024;
+  let overlap = 1;
+  for (const n of names) if (n.length > overlap) overlap = n.length;
+  if (overlap > 4096) overlap = 4096;
+  /** 扫一段文本：alternation 正则本身就是「逐个转义过的候选名」的字面匹配，命中即等价于
+   *  对疑似名做一次 indexOf 复核（原先那遍「先正则再逐个 indexOf 复核」由此省掉）。 */
+  const scanText = (text) => {
+    if (!text) return;
+    sus.clear();
+    susOf(text, re, sus);
+    for (const name of sus) {
+      if (pending.has(name)) {
+        hits.add(name);
+        pending.delete(name);
+      }
+    }
+  };
+  /** 读一个文件并就地扫掉（扫完即弃，不再攒 texts） */
   const readFile = (p) => {
+    let size = 0;
     try {
-      /* 逐文件读（本机最大单文件 2.4MB）：join 后一次匹配比按块流式匹配快得多 */
-      texts.push(fs.readFileSync(p, "utf8"));
+      size = fs.statSync(p).size || 0;
     } catch (err) {
-      /* 读不动任何一个引用文件（含 save/ 目录整体不存在）都记下来 ——
-         调用方据此放弃本轮清理：宁可不清，也绝不因为「没读到」而错删。 */
       readErr = String((err && err.message) || err);
+      return;
+    }
+    if (size <= CHUNK) {
+      try {
+        scanText(fs.readFileSync(p, "utf8"));
+      } catch (err) {
+        /* 读不动任何一个引用文件（含 save/ 目录整体不存在）都记下来 ——
+           调用方据此放弃本轮清理：宁可不清，也绝不因为「没读到」而错删。 */
+        readErr = String((err && err.message) || err);
+      }
+      return;
+    }
+    let fd = null;
+    try {
+      fd = fs.openSync(p, "r");
+      const buf = Buffer.allocUnsafe(CHUNK);
+      const dec = new StringDecoder("utf8");
+      let carry = "";
+      for (;;) {
+        const n = fs.readSync(fd, buf, 0, CHUNK, null);
+        if (!n) break;
+        const piece = carry + dec.write(buf.subarray(0, n));
+        scanText(piece);
+        carry = piece.length > overlap ? piece.slice(piece.length - overlap) : piece;
+      }
+      scanText(carry + dec.end());
+    } catch (err) {
+      readErr = String((err && err.message) || err);
+    } finally {
+      if (fd !== null) {
+        try {
+          fs.closeSync(fd);
+        } catch {}
+      }
     }
   };
   const walk = (dir, depth) => {
@@ -361,19 +414,14 @@ function collectRefNames(cand) {
   };
   /* 引用集必须能读到：save/ 目录不存在 / 读不动就等于「不知道谁在用」，直接放弃 */
   if (!isDir(at("save"))) readErr = at("save") + " " + t("不可读");
-  /** 第一段文本匹配：拿疑似命中 + 精确复核，命中的从 pending 里摘掉 */
-  const settle = (from) => {
-    for (let i = from; i < texts.length; i++) susOf(texts[i], re, sus);
-    for (const name of sus) {
-      if (pending.has(name) && texts.slice(from).some((s) => s.indexOf(name) >= 0)) {
-        hits.add(name);
-        pending.delete(name);
-      }
-    }
+  const done = () => {
+    if (readErr) hits.error = readErr;
+    return hits;
   };
   /* 第一段：现役存档 save/（谁在用，以活着的画布为准） */
   walk(at("save"), 0);
-  settle(0);
+  /* 候选全在现役存档里命中：备份一个字节都不用读 */
+  if (!pending.size) return done();
   /* 第二段（按需）：只在「某画布还有没被命中的候选文件」时，才去读它的 save-backups/ ——
      保住「备份里提过就不算冗余」，又不去读全量 373MB。
      现役一条存档都没有（数据目录异常 / 全新安装）时退回全量读备份，宁可慢也不漏判。 */
@@ -382,7 +430,6 @@ function collectRefNames(cand) {
     if (f.isFile() && /\.json$/i.test(f.name)) liveIds.add(f.name.replace(/\.json$/i, ""));
   }
   const bakRoot = at("save-backups");
-  const mark = texts.length;
   if (!liveIds.size) walk(bakRoot, 0);
   else {
     const need = new Set();
@@ -391,13 +438,7 @@ function collectRefNames(cand) {
       if (isDir(path.join(bakRoot, bakId))) walk(path.join(bakRoot, bakId), 0);
     }
   }
-  if (!pending.size) return hits;
-  susOf(texts.slice(mark).join("\n"), re, sus);
-  for (const name of sus) {
-    if (pending.has(name) && texts.slice(mark).some((s) => s.indexOf(name) >= 0)) hits.add(name);
-  }
-  if (readErr) hits.error = readErr;
-  return hits;
+  return done();
 }
 /** 引用判据闭包：先用候选集反查（collectRefNames），再按命中集合回答 */
 function makeRefChecker(names) {

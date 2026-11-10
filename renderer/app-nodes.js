@@ -293,6 +293,7 @@ async function runDshOnce(node, spec, attemptT, images) {
   let latest = skillLatest || String(sentAsk || "").trim() || spec.prompt;
   /* 复杂任务计划：注入「任务流程」指令（Skill / 计划执行器 / 已判定过跳过） */
   let planFlowInjected = false; /* 本次运行是否被要求「按契约输出计划块」（漏弹自愈的闸门） */
+  let flowInjected = ""; /* 本轮注入的流程指令：会话模式下排在用户原话之后，不盖住原话 */
   if (
     node.kind === "agent_task" &&
     attemptCount(node) <= 1 &&
@@ -301,15 +302,16 @@ async function runDshOnce(node, spec, attemptT, images) {
     !node._planFlowDone &&
     typeof planFlowDirective === "function"
   ) {
-    if (String(spec.prompt || "").trim())
-      spec.prompt = planFlowDirective() + "\n" + spec.prompt;
-    latest = planFlowDirective() + "\n" + latest;
+    flowInjected = planFlowDirective();
+    if (String(spec.prompt || "").trim()) spec.prompt = flowInjected + "\n" + spec.prompt;
     node._planFlowDone = true;
     planFlowInjected = true;
   }
   let input =
     useHist && hist
-      ? hist + "\n\n用户(最新)：" + latest
+      ? typeof agentUserTurnInput === "function"
+        ? agentUserTurnInput(hist, flowInjected, latest)
+        : hist + "\n\n用户(最新)：" + latest
       : spec.prompt;
   /* 音频 / 视频转写（官方本地 SenseVoice）：文字节点不再自己转写 —— 接线上的音频节点
      该转的前面「转录闸门」已经转好并写回它自己身上，这里只把它的文字取来用。
@@ -8180,7 +8182,7 @@ function remotionSafeFileName(name) {
 }
 
 /* 静态校验（保存 / 构建后立刻跑，不渲染）：
- *   ① 入口存在且导出 Main；② 依赖只允许 react / remotion + 工程内相对文件；
+ *   ① 入口存在且导出 Main；② 依赖只允许 react / remotion / three + 工程内相对文件；
  *   ③ 相对 import 指到的文件必须在文件树里；④ 契约能解析。
  * 返回 { ok, errors:[], warnings:[] } */
 function remotionStaticCheck(files, entryName) {
@@ -8230,7 +8232,7 @@ function remotionStaticCheck(files, entryName) {
         name +
           I18n.t(" 里有不允许的 import：") +
           bad.join(", ") +
-          I18n.t("（只允许 react / remotion 与工程内的相对文件）"),
+          I18n.t("（只允许 react / remotion / three 与工程内的相对文件）"),
       );
     if (name === entry) {
       if (!/export\s+(?:const|let|var|function|class)\s+Main\b|export\s+default\b/.test(src))
@@ -8784,7 +8786,7 @@ async function remotionRunVerify(node, p) {
    remotionStaticCheck 会同步调它们，而它们此前只定义在 remotion/main-remotion.js（主进程），
    渲染层没有 → 画布编辑接口写 remotionFiles 立刻抛
    「collectImportSpecs is not defined」，工程源码一个字都写不进去。口径与主进程那份保持一致。 */
-const CUSTOM_IMPORT_ALLOWED = /^(?:react|remotion)(?:\/|$)/;
+const CUSTOM_IMPORT_ALLOWED = /^(?:react|react-dom|remotion|three|@remotion\/three|@react-three\/fiber)(?:\/|$)/;
 
 /* 模块说明符是否在白名单内（react / remotion 与相对路径放行） */
 function customImportAllowed(spec) {
@@ -14931,512 +14933,127 @@ function applySuperConnect(pairs, ctx) {
 }
 
 
-function clipStr(s, n) {
-  s = String(s == null ? "" : s);
-  return s.length > n ? s.slice(0, n) + "…" : s;
-}
-
-/* canvas_get：节点正文一律全文，不做字数或 token 截断（正文是模型显式 detail:"full"
-   要来的）。助手每轮快照不同：它只给节点计数与选中 / 焦点，连节点索引都不带
-   （见 app-assist.js assistAppSnapshot），列表 / 结构 / 正文一律由模型按需现拉。 */
-function snapTextField(raw) {
-  const s = String(raw == null ? "" : raw);
-  return { text: s, textLen: s.length };
-}
-
-/* canvas_get 颗粒度：
-   detail   = 节点字段档位：minimal（缺省。每节点仅 标题/描述(note)/类别(kind)，且重型块只留
-              nodes）| standard（+全部配置字段与正文长度，不含正文，+ 建图参考表）| full（全部）
-   ids      = 只返回这些节点（按 id 或唯一标题匹配），wires 随之收窄
-   scope    = 只读某一颗节点层 / 开发节点内部（id / 唯一标题；"global" = 整图；缺省 = 跟着用户当前所在的壳）
-   scopeDepth = direct（只给直接子节点 · 默认）| all（给整棵子树）
-   bodies   = 是否返回正文全文（text/prompt/task/goal）；缺省：full 时为 true，其余为 false
-   bodyLimit= 正文按 N 字符截断（0=不限）；*Len 始终为真实长度
-   sections = 重型块白名单（nodes/marks/wires/groups/taskTree/superTree/tagCatalog/workflows/selection）
-              ＋一个静态参考表令牌 "refs"（别名 "staticRefs"）。minimal 档缺省只留 nodes，点名
-              哪块才带哪块；standard / full 档缺省全给、这份名单做收窄。静态参考表
-              （imageSizes / defaultImageSize / kinds）任何档位缺省都不带，只有点名 "refs" 才补回。
-              恒保留的只有极小信封：workflow / scopeInfo / assistScope · scopeNote。 */
-/* minimal = 最小信息量：每节点只给 标题(title) / 描述(note) / 类别(kind)。
-   id、坐标、尺寸、运行态、层级归属、tags 一律不带 —— 节点按标题 / ids 定位，
-   要看结构（位置 / 连线 / 层级）显式用 standard / full。 */
-const NODE_MINIMAL_KEYS = ["title", "note", "kind"];
-/* jscode（函数节点函数体）与 prompt / task 同属正文：bodies:false 时只留 *Len，bodyLimit 生效 */
-const NODE_BODY_KEYS = ["text", "prompt", "task", "goal", "jscode"];
-const SNAPSHOT_HEAVY_SECTIONS = [
-  "nodes", "marks", "wires", "groups", "taskTree", "superTree",
-  "tagCatalog", "workflows", "selection",
-];
-/* ── minimal 档 = 纯粹的「节点索引」───────────────────────────────────────────
-   模型缺省读图（网关 DEFAULT_GET_DETAIL="minimal"）只该拿到「这张图上有哪些节点」，
-   而不是一份整图配置。所以除了每节点裁到 标题/描述/类别，重型块也只留 nodes ——
-   marks / wires / groups / taskTree / superTree / tagCatalog / workflows / selection
-   一律不带（要哪块就 sections 显式点名，例如只查连线 sections:["nodes","wires"]）。 */
-const MINIMAL_SNAPSHOT_SECTIONS = ["nodes"];
-/* 这些「恒带小上下文」在 minimal 档同样要摘：视角信息（cam / view / 焦点）与色卡
-   （markColors / devFuncColors）都是「要动手建图 / 看配置」时才用得上，节点索引里没有
-   任何一条引用它们，却每份都跟着重发。要它们显式 detail:"standard"。
-   静态参考表（imageSizes / defaultImageSize / kinds）已从所有档位移除，不在这份名单里 ——
-   见 attachSnapshotStaticRefs：只有 sections 点名 "refs" 才补回。 */
-const MINIMAL_SNAPSHOT_DROP = [
-  "view", "cam",
-  "taskFocus", "superFocus", "markColors", "devFuncColors",
-];
-
-function normalizeSnapshotOpts(opts) {
-  opts = opts || {};
-  const detail =
-    opts.detail === "minimal" || opts.detail === "standard"
-      ? opts.detail
-      : "full";
-  const wantBodies =
-    opts.bodies === undefined ? detail === "full" : !!opts.bodies;
-  const bodyLimit = Math.max(0, Math.round(Number(opts.bodyLimit) || 0));
-  const ids =
-    Array.isArray(opts.ids) && opts.ids.length
-      ? opts.ids.map((x) => (x == null ? "" : String(x))).filter(Boolean)
-      : null;
-  const scope = opts.scope == null ? "" : String(opts.scope).trim();
-  const scopeDepth = opts.scopeDepth === "all" ? "all" : "direct";
-  return { detail, wantBodies, bodyLimit, onlyIds: ids, scope, scopeDepth };
-}
-
-/* ==================== 局部画布（scope）：只读 / 只改一颗壳内部 ====================
-   需求：查看与编辑工具要能「只钻进某一颗节点层 / 开发节点」（而不是每次灌整张图），
-   省时间与 token。两条入口：
-     · 显式 —— scope:"标题或 id" + scopeDepth:"direct"|"all"；
-     · 屏幕 —— 缺省跟着用户当前停留的那一层（用户点进壳里时可见集本就是那一层，快照不再
-       把整图灌进去；scopeInfo 会点名这颗壳，Agent 可照抄标题显式传 scope）。
-   显式 scope 一旦给了，它就是这次调用要看的「那一层」，不再被 S.superFocus 二次砍小。
-   本段是只读侧（canvasSnapshot），写入侧的越界防护在 applyCanvasEdit 的 scope 闸。 */
-
-/* scope 令牌 → 那颗壳；"global" / "" 解析为 null（= 整图），非 super 的令牌返回
-   { bad:true, token } 由调用方警告。首尾一层引号顺手剥掉：模型偶尔把 id 写成 "\"abc\""。 */
-function resolveScopeHost(token) {
-  let raw = String(token == null ? "" : token).trim();
-  if (/^".*"$/.test(raw) || /^'.*'$/.test(raw)) raw = raw.slice(1, -1).trim();
-  if (!raw || raw === "global" || raw === "all" || raw === "*") return null;
-  const n = typeof nodeById === "function" ? nodeById(raw) : null;
-  if (!n) return { bad: true, token: raw };
-  if (n.kind !== "super") return { bad: true, token: raw, notSuper: true };
-  return n;
-}
-
-/* 从 startId 沿 parentSuperId 向上收集祖先（不含自己），带环保护 */
-function superAncestorIdsOf(startId) {
-  const out = [];
-  const seen = new Set();
-  const all = (S.wf && S.wf.nodes) || [];
-  let sid = startId;
-  while (sid && !seen.has(sid)) {
-    seen.add(sid);
-    const host = all.filter((x) => x.id === sid)[0];
-    if (!host || host.kind !== "super") break;
-    const up = String(host.parentSuperId || "");
-    if (!up) break;
-    out.push(up);
-    sid = up;
-  }
-  return out;
-}
-
-/* host 的子树节点（不含 host 自己；含 super_io 端口节点 —— 局部视图里端子要看得见） */
-function superSubtreeIds(host) {
-  const all = (S.wf && S.wf.nodes) || [];
-  const out = new Set();
-  if (!host) return out;
-  const queue = [host.id];
-  const seen = new Set([host.id]);
-  while (queue.length) {
-    const cur = queue.shift();
-    for (const n of all) {
-      if (!n || seen.has(n.id)) continue;
-      if (String(n.parentSuperId || "") !== cur) continue;
-      seen.add(n.id);
-      out.add(n.id);
-      queue.push(n.id);
-    }
-  }
-  return out;
-}
-
-/* scope 命中判定（= applyCanvasEdit 写入闸与快照只读闸共用的真源）：
-   allowed = "both"（壳里 + 嵌套子块）| "self"（只那颗壳自己）。
-   · 壳里任何一颗（直接子节点）都算 allowed；
-   · 嵌套更深的子块，其祖先链上每一颗都必须 allowed —— 库里还有别的壳把节点围住时，
-     围住它的那颗壳本身不在范围内，就不算命中（scope 是硬边界，不是"沾亲就放行"）。 */
-function nodeInSuperScope(n, host, allowed) {
-  if (!n || !host || !allowed) return false;
-  if (n.id === host.id) return true;
-  const chain = superAncestorIdsOf(n.id);
-  if (!chain.length) return false;
-  for (const id of chain) {
-    if (!allowed.has(id)) return false;
-  }
-  return true;
-}
-
-/* 显式 x/y 是否落在这颗壳的范围内（shell 展开态按绘制尺寸，收起态按存储尺寸）：
-   只有「给了坐标、又没点名归属」的新节点才拿它做界外判定；壳内坐标可以是嵌套子块的
-   世界坐标（画布内是相对的，展开壳里子块的坐标落在壳的绘制框内），故留 2 倍余量。 */
-function pointInScopeHost(host, x, y) {
-  if (!host) return false;
-  const size =
-    typeof superDisplaySize === "function"
-      ? superDisplaySize(host)
-      : { w: host.w || 280, h: host.h || 200 };
-  const pad = 160;
-  return (
-    Number(x) >= host.x - pad &&
-    Number(x) <= host.x + size.w + pad &&
-    Number(y) >= host.y - pad &&
-    Number(y) <= host.y + size.h + pad
-  );
-}
-
-/* 局部只读的允许集：host 自己 + 直接子节点（+ 递归子块，scopeDepth="all" 时） */
-function scopedNodeIdSet(host, depth) {
-  const out = new Set();
-  if (!host) return out;
-  out.add(host.id);
-  const all = (S.wf && S.wf.nodes) || [];
-  for (const n of all) {
-    if (n && String(n.parentSuperId || "") === host.id) out.add(n.id);
-  }
-  if (depth === "all") {
-    for (const id of superSubtreeIds(host)) out.add(id);
-  }
-  return out;
-}
-
-/* 局部视图的可见判据（与「用户点进壳里」的所见同一语义，但按本次 scope 的层级算）：
-   壳里 = 壳自己 + 它的直接子节点（+ scopeDepth="all" 时叠上整棵子树）。
-   刻意不看 S.superFocus / 展开态：scope 一旦被显式指定，它就是这次调用要看的「那一层」，
-   用户此刻停在哪颗壳里不该再把返回集砍小（否则 scope:"开发壳" 只回得回一个 file 块）。 */
-function nodeInSnapshotScope(n, host, depth) {
-  if (!n || !host) return false;
-  if (n.id === host.id) return true;
-  if (String(n.parentSuperId || "") === host.id) return true;
-  return depth === "all" && superSubtreeIds(host).has(n.id);
-}
-
-/* 快照 / 视图层口径：算出本次要收窄到哪颗壳。
-   opts.scope 显式给了就认它（"global" = 整图）；没给就跟着用户当前停留的壳。 */
-function snapshotScopeOf(opts) {
-  opts = opts || {};
-  const raw = opts.scope == null ? "" : String(opts.scope).trim();
-  if (raw) {
-    if (raw === "global" || raw === "all" || raw === "*")
-      return { host: null, origin: "global", bad: null };
-    const resolved = resolveScopeHost(raw);
-    if (resolved && resolved.bad)
-      return { host: null, origin: "global", bad: resolved };
-    return {
-      host: resolved,
-      origin: "explicit",
-      depth: opts.scopeDepth === "all" ? "all" : "direct",
-      bad: null,
-    };
-  }
-  const focus =
-    typeof currentSuperFocus === "function" ? currentSuperFocus() : S.superFocus || "";
-  if (focus) {
-    const host = typeof nodeById === "function" ? nodeById(focus) : null;
-    if (host && host.kind === "super")
-      return { host, origin: "screen", depth: "direct", bad: null };
-  }
-  return { host: null, origin: "global", bad: null };
-}
-
-function scopeInfoBlock(sc, hostsAll) {
-  if (!sc) return undefined;
-  const host = sc.host;
-  const focusHost =
-    !host && typeof currentSuperFocus === "function" && currentSuperFocus()
-      ? nodeById(currentSuperFocus())
-      : null;
-  const info = {
-    mode: host ? "subtree" : "global",
-    origin: sc.origin,
-    depth: host ? sc.depth : undefined,
-    hostId: host ? host.id : undefined,
-    hostTitle: host ? host.title : undefined,
-    hostKind: host ? (host.dev ? "dev" : host.db ? "db" : "super") : undefined,
+/* ==================== 画布读侧内核（canvas-doc/canvas-doc-core.js）====================
+   快照各档位 / 端子与 portRule · paramKeys 推导 / childCount 预聚合 / scope 判定 /
+   contentHash / 静态表（imageSizes · defaultImageSize · kinds）全部搬到了
+   canvas-doc/canvas-doc-core.js —— 同一份代码两处入口：
+     · 浏览器：index.html 在 app.js 之前加载它，挂 globalThis.MTCanvasDoc（本文件是它的调用方）；
+     · 主进程 / 脚本：require("canvas-doc/canvas-doc-core.js") 拿同一份 api。
+   本文件只留「同名包装」：用 canvasDocHost() 把画布现场（S / I18n / 各节点原语）拼成宿主
+   对象 H 再转发进去。函数名、入参、返回值口径与搬家前逐字节一致 —— 渲染、写侧闸、MCP 与
+   助手快照都还按老名字调，谁也不用改。
+   纪律：读侧逻辑只许改 canvas-doc/canvas-doc-core.js，这里不许再长出第二份实现。 */
+function canvasDocHost() {
+  return {
+    /* 画布现场：原来读侧直接读 S 的那几项，只读投影，不写回 */
+    state: { wf: S.wf, view: S.view, cam: S.cam, superFocus: S.superFocus },
+    /* 文案由调用方给：内核不持有任何词条 */
+    i18n: I18n,
+    /* 静态表：imageSizes / defaultImageSize 的真源就在内核里（app.js 取的也是这一份）；
+       nodeDefaults 是建图 kinds 表的来源，插件会往里追加条目，所以每次现取不缓存 */
+    imageSizes: MTCanvasDoc.IMAGE_SIZES,
+    defaultImageSize: MTCanvasDoc.DEFAULT_IMAGE_SIZE,
+    nodeDefaults: typeof NODE_DEFAULTS === "object" ? NODE_DEFAULTS : {},
+    /* 节点原语（读侧的全部外部依赖都在这一段，逐个点名 = 一眼看得全） */
+    nodeById, currentTaskFocus, currentSuperFocus, nodeInCurrentScope, markInCurrentScope,
+    isSuperIoNode, nodeParentSuperId, wfTagCatalog, isFunctionNode, canUseGlobalRefs,
+    normalizeNodeTags, isToolNode, ensureFnToolNodeState, fnToolParamList, execIconKeyOf,
+    execColorOf, isNetNode, isCustomVideoGen, h3WfPortOf, mediaGenOutputRaw, yueGenCotOf,
+    breezeModeOf, breezeCfgScaleOf, breezeSeedOf, breezeFormatOf, remotionContractOf,
+    MARK_COLORS, DEV_FUNC_COLORS, relArrowOf, devKindOf, devColorOf, devCoreFilesOf,
+    devCoreFilesSourceOf, entryDisplayTitle, singleImageTitle,
+    isFnToolNode, isAssetNode, assetItems, inputCount, outputCount, editPortNameOf,
+    editPortKindOf, isControlKind, isDynCtrlNode, dynCtrlInPortIndex, allWiresTo,
+    superDisplaySize,
+    /* 这两个由后加载的脚本提供（app-node-params.js / app-assets.js）：取值时守一道，
+       免得在这两只脚本还没求值时被调到就抛引用错误（与搬家前的 typeof 口径一致）。 */
+    NParam: typeof NParam === "object" ? NParam : undefined,
+    assetNodeIsLost: typeof assetNodeIsLost === "function" ? assetNodeIsLost : undefined,
   };
-  if (!host) {
-    /* 用户此刻停在某颗壳里：不自动收窄（别的消费者还要整图），只提醒可以显式传 scope */
-    if (focusHost && focusHost.kind === "super") {
-      info.hint = I18n.t(
-        "用户当前正停在这颗壳里：{title}（id {id}）。只看 / 只改它内部请传 scope 用这颗壳的标题或 id，配 scopeDepth 决定一层还是整棵 —— 避免整图灌进来浪费 token。",
-        { title: focusHost.title, id: focusHost.id },
-      );
-    }
-    return info;
-  }
-  if (sc.origin === "screen") {
-    info.note = I18n.t("当前可见 = 用户正停在的这颗壳内部。");
-  } else {
-    info.note = I18n.t("范围 = 这一颗壳内部：界外节点未返回。");
-    const above = superAncestorIdsOf(host.id)
-      .map((id) => (hostsAll || []).filter((x) => x.id === id)[0])
-      .filter(Boolean)
-      .map((x) => ({ id: x.id, title: x.title }));
-    if (above.length) info.above = above;
-  }
-  return info;
 }
 
+/* ── 同名包装（转发到内核）───────────────────────────────────────────────────
+   只做一件事：拼宿主 + 原样转发。任何字段加工都该写在内核里，不要写在这几行。 */
+function clipStr(s, n) {
+  return MTCanvasDoc.clipStr(s, n);
+}
+function snapTextField(raw) {
+  return MTCanvasDoc.snapTextField(raw);
+}
+function normalizeSnapshotOpts(opts) {
+  return MTCanvasDoc.normalizeSnapshotOpts(opts);
+}
+/* 局部画布（scope）：只读 / 只改一颗壳内部 —— 判定真源见内核
+   （写入侧的越界防护仍在 applyCanvasEdit 的 scope 闸，用的是同一批包装函数） */
+function resolveScopeHost(token) {
+  return MTCanvasDoc.resolveScopeHost(canvasDocHost(), token);
+}
+function superAncestorIdsOf(startId) {
+  return MTCanvasDoc.superAncestorIdsOf(canvasDocHost(), startId);
+}
+function superSubtreeIds(host) {
+  return MTCanvasDoc.superSubtreeIds(canvasDocHost(), host);
+}
+function nodeInSuperScope(n, host, allowed) {
+  return MTCanvasDoc.nodeInSuperScope(canvasDocHost(), n, host, allowed);
+}
+function pointInScopeHost(host, x, y) {
+  return MTCanvasDoc.pointInScopeHost(canvasDocHost(), host, x, y);
+}
+function scopedNodeIdSet(host, depth) {
+  return MTCanvasDoc.scopedNodeIdSet(canvasDocHost(), host, depth);
+}
+function nodeInSnapshotScope(n, host, depth) {
+  return MTCanvasDoc.nodeInSnapshotScope(canvasDocHost(), n, host, depth);
+}
+function snapshotScopeOf(opts) {
+  return MTCanvasDoc.snapshotScopeOf(canvasDocHost(), opts);
+}
+function scopeInfoBlock(sc, hostsAll) {
+  return MTCanvasDoc.scopeInfoBlock(canvasDocHost(), sc, hostsAll);
+}
 function nodeInFilter(n, o) {
-  if (!o.onlyIds) return true;
-  return o.onlyIds.some((t) => n.id === t || n.title === t);
+  return MTCanvasDoc.nodeInFilter(n, o);
 }
-
 function pruneNodeSnap(node, o) {
-  if (!node) return node;
-  if (o.detail === "minimal") {
-    const out = {};
-    for (const k of NODE_MINIMAL_KEYS) {
-      if (node[k] !== undefined) out[k] = node[k];
-    }
-    return out;
-  }
-  if (!o.wantBodies) {
-    const out = {};
-    for (const k of Object.keys(node)) {
-      if (!NODE_BODY_KEYS.includes(k)) out[k] = node[k];
-    }
-    return out;
-  }
-  if (o.bodyLimit > 0) {
-    for (const k of NODE_BODY_KEYS) {
-      const v = node[k];
-      if (typeof v === "string" && v.length > o.bodyLimit) {
-        node[k] = v.slice(0, o.bodyLimit);
-      }
-    }
-  }
-  return node;
+  return MTCanvasDoc.pruneNodeSnap(node, o);
 }
-
 function applySnapshotSectionFilter(snap, sections) {
-  if (!snap || !Array.isArray(sections) || !sections.length) return snap;
-  const keep = new Set(sections.map((s) => String(s)));
-  for (const k of SNAPSHOT_HEAVY_SECTIONS) {
-    if (!keep.has(k)) delete snap[k];
-  }
-  return snap;
+  return MTCanvasDoc.applySnapshotSectionFilter(snap, sections);
 }
-
-/* minimal 档裁剪：重型块只留 MINIMAL_SNAPSHOT_SECTIONS（nodes），恒带小上下文里再摘掉
-   视角与色卡（MINIMAL_SNAPSHOT_DROP）。sections 是「白名单」语义 —— 显式点名哪块就
-   放行哪块（sections:["nodes","wires"] 仍能便宜地只查连线），缺省则只剩节点索引。
-   保留：workflow（这是哪张图）/ scopeInfo（这次看到的是整图还是某颗壳内部）/
-   assistScope · scopeNote（跨画布锁定的安全口径）。 */
 function pruneMinimalSnapshot(snap, opts) {
-  if (!snap || typeof snap !== "object") return snap;
-  const keep = new Set(MINIMAL_SNAPSHOT_SECTIONS);
-  const asked =
-    opts && Array.isArray(opts.sections) ? opts.sections : [];
-  for (const s of asked) keep.add(String(s));
-  for (const k of SNAPSHOT_HEAVY_SECTIONS) {
-    if (!keep.has(k)) delete snap[k];
-  }
-  for (const k of MINIMAL_SNAPSHOT_DROP) delete snap[k];
-  return snap;
+  return MTCanvasDoc.pruneMinimalSnapshot(snap, opts);
 }
-
-/* 这次调用是否要带上某一个重型块：非 minimal 档恒要（除非 sections 另行收窄），
-   minimal 档只有 sections 显式点名才要。canvasSnapshotFull 与 canvasSnapshot 共用。 */
 function snapshotWantsSection(o, opts, key) {
-  if (!o || o.detail !== "minimal") return true;
-  const asked = opts && Array.isArray(opts.sections) ? opts.sections : [];
-  return asked.map((s) => String(s)).indexOf(key) >= 0;
+  return MTCanvasDoc.snapshotWantsSection(o, opts, key);
 }
-
-/* ── 静态参考表（按需闸）─────────────────────────────────────────────────────
-   imageSizes / defaultImageSize / kinds 是三张「建图 / 选尺寸」才用得上的静态表：它们
-   既不属于任何档位（minimal / standard / full 缺省都不带），也不是重型块 —— 所以不进
-   SNAPSHOT_HEAVY_SECTIONS，只由这一个闸单独判：sections 白名单里出现 "refs"（或别名
-   "staticRefs"）才补回。补在裁剪之后，minimal 的 DROP 名单不会再把它们摘掉。 */
 function snapshotWantsStaticRefs(opts) {
-  const asked = opts && Array.isArray(opts.sections) ? opts.sections : [];
-  return asked
-    .map((s) => String(s).trim())
-    .some((s) => s === "refs" || s === "staticRefs");
+  return MTCanvasDoc.snapshotWantsStaticRefs(opts);
 }
-
 function attachSnapshotStaticRefs(snap) {
-  if (!snap || typeof snap !== "object") return snap;
-  snap.imageSizes = IMAGE_SIZES.slice();
-  snap.defaultImageSize = DEFAULT_IMAGE_SIZE;
-  snap.kinds = Object.keys(NODE_DEFAULTS).map((k) => ({
-    kind: k,
-    title: NODE_DEFAULTS[k].title,
-    w: NODE_DEFAULTS[k].w,
-    h: NODE_DEFAULTS[k].h,
-  }));
-  return snap;
+  return MTCanvasDoc.attachSnapshotStaticRefs(canvasDocHost(), snap);
 }
-
-/* ── 端子表（快照 / 回执 / 连线预检共用同一份推导）─────────────────────────────
-   数量 inputCount / outputCount、名称 editPortNameOf、类型 editPortKindOf（工具 /
-   函数节点按参数表）、占用按 S.wf.wires —— 与连线校验 connectError 同一套原语，
-   这里只做搬运，不另立第二份端子口径。 */
+/* 端子表：数量 / 名称 / 类型 / 占用与画布端子徽标、连线预检同一套原语 */
 function nodePortList(node, dir) {
-  if (!node || !S.wf) return [];
-  const isFnT = isFnToolNode(node);
-  const count = dir === "in" ? inputCount(node) : outputCount(node);
-  const wires = S.wf.wires || [];
-  const out = [];
-  for (let i = 0; i < Math.max(0, count); i++) {
-    const links = [];
-    for (const w of wires) {
-      if (w.rel) continue;
-      if (dir === "in") {
-        if (w.to !== node.id || Number(w.toIndex || 0) !== i) continue;
-        const other = nodeById(w.from);
-        links.push({ node: other ? other.title : "", port: Number(w.fromIndex || 0) });
-      } else {
-        if (w.from !== node.id || Number(w.fromIndex || 0) !== i) continue;
-        const other = nodeById(w.to);
-        links.push({ node: other ? other.title : "", port: Number(w.toIndex || 0) });
-      }
-    }
-    out.push({
-      dir,
-      index: i,
-      name: editPortNameOf(node, dir, i, isFnT),
-      kind: editPortKindOf(node, dir, i, isFnT),
-      connectedTo: links.length ? links : null,
-    });
-  }
-  return out;
+  return MTCanvasDoc.nodePortList(canvasDocHost(), node, dir);
 }
-
-/* 端子数固定的节点：快照（standard / full）里直接暴露端口表，让模型接线前就看得见
-   「几号端子、什么类型、被谁占了」，不必等 connect 报错再改 —— 运行期才发现端子冲突
-   是实测里最贵的一类往返。minimal 档不带（app_state 每轮重发，必须最轻）。 */
-const SNAPSHOT_PORT_KINDS = [
-  "proc_image", "video_gen", "video_upscale", "video_interp", "remotion", "judge", "super",
-  /* 质检节点（五种同构）：3 进 4 出全由结构钉死，且入 1「质检要求」同时收文字口径与参考样例、
-     出 2/3 是门禁分流 —— 接线前必须一次读全。 */
-  "qa_text", "qa_image", "qa_video", "qa_audio", "qa_file",
-  /* 音频 / 视频输入：两个固定数据出端子（0=音频 / 视频输出＝文件 file:/// URL ·
-     1=转写输出＝该文件的文字），接线前就该看得见「哪个是文件、哪个是文字」，
-     所以也进定端口名单。 */
-  "input_audio", "input_video",
-];
 function snapshotHasFixedPorts(node) {
-  if (!node) return false;
-  /* 素材节点：端子数 = 内容条目数（内容条目即端子 · 第 i 入 ↔ 第 i 出）。
-     它以前不在 ports 之列，模型只看得见「节点在、里面空」——条目号 / 条目标题 /
-     类型 / 占用全要等 connect 报错才知道。条目是可增删的固定端子，必须一起预检。 */
-  if (isAssetNode(node)) return true;
-  if (isFnToolNode(node)) return true;
-  return SNAPSHOT_PORT_KINDS.indexOf(node.kind) >= 0;
+  return MTCanvasDoc.snapshotHasFixedPorts(canvasDocHost(), node);
 }
-/* 「输入端子随连线增量长出来」的节点（= app.js inputCount 落到泛用增量公式
-   `Math.max(1, allWiresTo(id).length + 1)` 的那几类）：端子数是现算的，ports 报的只是
-   「当下真实存在」的那几个槽。它们与 SNAPSHOT_PORT_KINDS 有交集（proc_image /
-     remotion），所以不能拿「在不在固定名单里」当判据；名单照固定端子节点那一族的写法
-   列成常量（真源仍是 app.js inputCount，改那边要顺手核对这里）。 */
-const INCREMENTAL_PORT_KINDS = [
-  "proc_text", "proc_image", "agent_task",
-  "input_text", "input_image", "input_audio", "input_video", "input_file", "input_any",
-];
-/* 是不是「随连线增量」的那一类：名单内 + 端子数确实等于「已连数据线 + 1」（再核一道，
-   名单漂了也不会误报）。工具 / 函数 / 素材 / super / 控制类节点各有自己的端子口径，排除。 */
 function snapshotInputGrowsWithWires(node) {
-  if (!node) return false;
-  if (isFnToolNode(node) || isAssetNode(node)) return false;
-  if (node.kind === "super" || isControlKind(node)) return false;
-  if (INCREMENTAL_PORT_KINDS.indexOf(node.kind) < 0) return false;
-  /* 动态端子族（app.js DYN_CTRL_KINDS）：端子数现在含末位那颗专用控制端子，
-     按同一份真源核一道（不再按「已连线条数 + 1」数）。 */
-  if (
-    typeof isDynCtrlNode === "function" &&
-    isDynCtrlNode(node) &&
-    typeof dynCtrlInPortIndex === "function"
-  )
-    return (Number(inputCount(node)) || 0) === dynCtrlInPortIndex(node) + 1;
-  let wired = 0;
-  try {
-    wired = allWiresTo(node.id).length;
-  } catch (e) {
-    wired = 0;
-  }
-  return (Number(inputCount(node)) || 0) === wired + 1;
+  return MTCanvasDoc.snapshotInputGrowsWithWires(canvasDocHost(), node);
 }
 function snapshotPortsOf(node) {
-  if (!snapshotHasFixedPorts(node)) return undefined;
-  const ports = nodePortList(node, "in").concat(nodePortList(node, "out"));
-    /* proc_image / remotion 这类节点也在这份「定端口」名单里，但它们的输入是**增量**的：
-     空白节点只列得出「端口 0 = 提示词」，实测中模型据此误判「这个节点没有图像参考端子」，
-     去试连一条线再看 warnings 反推接法（白花两轮往返）。给它们的 ports 挂一句「端子怎么长」，
-     一次读图就读全。理由同 snapshotDynamicPortRule，两处共用一份文案真源。 */
-  if (node.kind === "remotion" || snapshotInputGrowsWithWires(node)) {
-    const rule = snapshotPortRuleOf(node);
-    if (rule) ports.rule = rule;
-  }
-  return ports;
+  return MTCanvasDoc.snapshotPortsOf(canvasDocHost(), node);
 }
-
-/* Remotion 的端子规则（标准 / 完整档）：它是全仓唯一「数据线与控制线共用同一批端子」的
-   节点，Agent 只读 ports 会以为「控制口固定在 0 / 描述口固定在某号」，必须一次说明白。 */
 function snapshotRemotionPortRule(node) {
-  const nIn = Number(inputCount(node)) || 0;
-  const nOut = Number(outputCount(node)) || 0;
-  return {
-    note: I18n.t(
-      "输入端子无差别：端口 0、1、2… 连一条多一个，数据线（视频 / 图片 / 音频 / 台词文本）与控制线共用同一批端子，先占先得；描述已改成节点内字段 text（可空），不占端子。",
-    ),
-    input: I18n.t("端口 0+ = 输入端子（任意来源：视频 / 图片 → 主素材 hero · 音频 → 语音 voice · 文本 → 台词 narration · 控制节点 → 触发渲染）"),
-    output: I18n.t("端口 0 = 内容（mp4 路径）· 端口 1 = 控制输出"),
-    now: { in: nIn, out: nOut },
-    hint: I18n.t(
-      "接线不必指定 toIndex：不传就落第一个空闲端子。三路线（动态层 / 语音 / 台词）依次连即落 0、1、2。描述写进节点 text（支持 @节点标题 引用已接线内容）。",
-    ),
-  };
+  return MTCanvasDoc.snapshotRemotionPortRule(canvasDocHost(), node);
 }
-/* ports.rule 的统一取值：remotion 用自己的那一份，其余增量节点用通用那一份 */
 function snapshotPortRuleOf(node) {
-  if (node && node.kind === "remotion") return snapshotRemotionPortRule(node);
-  return snapshotDynamicPortRule(node);
+  return MTCanvasDoc.snapshotPortRuleOf(canvasDocHost(), node);
 }
-
-  /* 端子数**不固定**的节点（proc_text / proc_image / input_* …）：
-   它们的输入端子是按已连线条数**增量长出来**的，ports 只能报「当下这一条、这一张图
-   真实存在的那几个槽」——空白节点回的就是「端口 0 = 提示词」这一条。只给 ports 会让模型
-   以为「这个节点根本没有图像参考端子」（实测：模型读不到 1+ 号槽，就去试连一条线再看
-   warnings 反推接法，白花两轮往返）。
-   所以这里补一条「端子怎么长」的规则，让读图一次就读全：端口 0 = 提示词 / 文本入口、
-   端口 1+ = 数据槽（连一条多一个，文本与图像引用都收）、输出 0 = 内容、末位 = 控制。
-   只在 standard / full 档给（minimal 档是纯索引，照旧不带）；接线时怎么读这条规则的
-   唯一说明在 canvas_get 描述的 portRule 一条（dsh/gateway/canvas-plugin.mjs），此处不再抄。 */
 function snapshotDynamicPortRule(node) {
-  if (!node) return undefined;
-  if (!snapshotInputGrowsWithWires(node)) return undefined;
-  const nIn = Number(inputCount(node)) || 0;
-  const nOut = Number(outputCount(node)) || 0;
-  /* 专用控制端子（真源 app.js dynCtrlInPortIndex）：数据槽之后单独一颗，恒存在、可接多条控制线 */
-  const ctrl =
-    typeof isDynCtrlNode === "function" && isDynCtrlNode(node) && typeof dynCtrlInPortIndex === "function"
-      ? dynCtrlInPortIndex(node)
-      : null;
-  return {
-    note: I18n.t(
-      "输入端子随连线增量：端口 0 = 提示词 / 内容入口，每多连一条数据线多出一个数据槽；末位另有一颗**专用控制端子**（控制线只连它，数据线永不占它，可接多条 · 任一到达即触发一次）。",
-    ),
-    input: I18n.t(
-      "端口 0 = 提示词 / 文本入口 · 端口 1+ = 数据槽（连一条多一个 · 文本 / 图像引用都收）· 末位 = 控制输入（现在是端口 {n}）",
-      { n: ctrl == null ? "—" : ctrl },
-    ),
-    output: I18n.t("端口 0 = 内容 · 末位 = 控制输出"),
-    now: { in: nIn, out: nOut },
-    hint: I18n.t(
-      "ports 只列当前真实存在的端子；要接参考图直接连端口 1+ 即可，不必先试连一次看 warnings。控制线（▶ control / 上游控制输出）连这颗末位控制端子即可，不传 toIndex 时也会自动落到它。",
-    ),
-  };
+  return MTCanvasDoc.snapshotDynamicPortRule(canvasDocHost(), node);
 }
 
 /* ── 素材节点（kind "asset"）在 canvas_get 里的回读口径 ──────────────────────────
@@ -15447,31 +15064,11 @@ function snapshotDynamicPortRule(node) {
        这正是「素材节点内容是空的」这条报告的根因；
      · snapshotAssetContentOf —— full / bodies 档的条目正文（文本给正文，媒体给本机
        路径），复用 bodyLimit 截断口径。standard 档只给清单与 *Len 长度提示符，
-       正文仍要显式 detail:"full" 才下来（与 text / prompt 同一档位纪律）。 */
-
+       正文仍要显式 detail:"full" 才下来（与 text / prompt 同一档位纪律）。
+       （这一只读素材库 / 走异步，留在本文件；条目清单的推导在内核。） */
 /** 素材节点 Snapshot 绑定 + 条目清单；非素材节点 / 未绑定 / 空条目 → undefined */
 function snapshotAssetNodeOf(node) {
-  if (!isAssetNode(node)) return undefined;
-  const assetId = String(node.assetId || "").trim();
-  const items = assetItems(node).map((it, i) => ({
-    index: i,
-    id: it.id,
-    title: it.title,
-    type: it.type,
-  }));
-  const lost =
-    assetId &&
-    typeof assetNodeIsLost === "function" &&
-    assetNodeIsLost(node);
-  return {
-    assetId: assetId || undefined,
-    assetName: String(node.assetName || "").trim() || undefined,
-    assetRel: String(node.assetRel || "").trim() || undefined,
-    assetDesc: String(node.assetDesc || "").trim() || undefined,
-    lost: lost ? true : undefined,
-    itemCount: items.length,
-    items: items.length ? items : undefined,
-  };
+  return MTCanvasDoc.snapshotAssetNodeOf(canvasDocHost(), node);
 }
 
 /** 一条内容条目转成 Agent 可读的值：文本 → {text}；媒体 → {path, url}（与素材端子
@@ -15565,604 +15162,18 @@ async function snapshotAssetContentOf(snap, opts) {
    这里只搬运 key / zh / en / hex（keywords 属内部推断细节，不塞进快照浪费 token）。
    mtnode_canvas_get 与助手快照都通过 devFuncColors 字段读到同一张表。 */
 function devFuncColorCatalog() {
-  const src =
+  return MTCanvasDoc.devFuncColorCatalog(
     typeof DEV_FUNC_COLORS !== "undefined" && Array.isArray(DEV_FUNC_COLORS)
       ? DEV_FUNC_COLORS
-      : [];
-  return src
-    .map((c) => ({
-      key: String((c && c.key) || ""),
-      zh: String((c && c.zh) || ""),
-      en: String((c && c.en) || ""),
-      hex: String((c && c.hex) || "").toLowerCase(),
-    }))
-    .filter((c) => c.key && /^#[0-9a-f]{6}$/.test(c.hex));
+      : [],
+  );
 }
 
+/* 画布快照（各档位 / scope / sections / 静态参考表按需闸）：实现全在
+   canvas-doc/canvas-doc-core.js 的 canvasSnapshot —— 与主进程 / MCP 用的是同一份计算，
+   返回结构逐字节不变（含字段顺序与 childCount 预聚合后的同一口径）。 */
 function canvasSnapshot(opts) {
-  const o = normalizeSnapshotOpts(opts);
-  const wf = S.wf || { id: "", name: "", nodes: [], wires: [], groups: [], marks: [] };
-  const allNodes = wf.nodes || [];
-  /* 局部画布（scope）：只返回某颗节点层 / 开发节点里的内容；scopeInfo 恒保留，
-     模型永远知道自己看到的是整图还是某一颗壳内部。 */
-  const sc = snapshotScopeOf(o);
-  const inScope = sc.host ? scopedNodeIdSet(sc.host, sc.depth) : null;
-  const scopeHit = (n) => !inScope || (n && inScope.has(n.id));
-  /* 局部视图里一条线 / 一个任务是否算「在壳里」：显式 scope 按 scope 层级，
-     否则按当前屏幕那一层（原口径）。标注另有 mark 版判据（看 parentSuperId）。 */
-  const viewHit = (n) =>
-    sc.host
-      ? nodeInSnapshotScope(n, sc.host, sc.depth)
-      : nodeInCurrentScope(n);
-  const markViewHit = (m) =>
-    sc.host
-      ? !!(m && (m.parentSuperId || "") === sc.host.id)
-      : markInCurrentScope(m);
-  const scopeNodes = allNodes
-    .filter((n) => !isSuperIoNode(n))
-    .filter((n) => (sc.host ? nodeInSnapshotScope(n, sc.host, sc.depth) : nodeInCurrentScope(n)))
-    .filter((n) => scopeHit(n))
-    .filter((n) => nodeInFilter(n, o));
-  /* 实际会返回的节点 id（scope + 屏幕层 + ids 三层过滤后的结果）：scopeNestedIn 用得到 */
-  const returnedNodeIds = new Set(scopeNodes.map((n) => n.id));
-  const selNodeIds = o.onlyIds ? new Set(scopeNodes.map((n) => n.id)) : null;
-  const ancestorsOfScope = sc.host ? superAncestorIdsOf(sc.host.id) : [];
-  const snap = {
-    workflow: {
-      id: wf.id,
-      name: wf.name,
-      nodeCount: allNodes.length,
-      workspace: wf.workspace || "",
-    },
-    view: S.view || "workflow",
-    cam: S.cam
-      ? { x: Math.round(S.cam.x), y: Math.round(S.cam.y), z: Number(S.cam.z.toFixed(3)) }
-      : null,
-    /* 静态参考表（imageSizes / defaultImageSize / kinds）不在这里：任何档位缺省都不带，
-       只有 sections 点名 "refs" 时由 attachSnapshotStaticRefs 补回（见该函数）。 */
-    taskFocus: currentTaskFocus() || undefined,
-    superFocus: currentSuperFocus() || undefined,
-    taskTree: allNodes
-      .filter((n) => n.kind === "task" && viewHit(n) && scopeHit(n))
-      .map((n) => ({
-        id: n.id,
-        title: n.title,
-        parentTaskId: n.parentTaskId || "",
-        goal: clipStr(n.goal, 160),
-        status: n.taskStatus || "pending",
-        steps: (n.steps || []).map((s) => (s && s.title) || ""),
-        childCount: allNodes.filter((x) => x.parentTaskId === n.id)
-          .length,
-      })),
-    superTree: allNodes
-      .filter((n) => n.kind === "super")
-      .filter(
-        (n) =>
-          !inScope ||
-          n.id === sc.host.id ||
-          ancestorsOfScope.includes(n.id) ||
-          inScope.has(n.id),
-      )
-      .map((n) => ({
-        id: n.id,
-        title: n.title,
-        parentSuperId: n.parentSuperId || "",
-        parentTaskId: n.parentTaskId || "",
-        subFolder: n.subFolder || "",
-        superOpen: !!n.superOpen,
-        db: !!n.db,
-        dbCount: n.dbIndex && n.dbIndex.records ? n.dbIndex.records.length : 0,
-        dev: !!n.dev,
-        devPath: n.dev ? String(n.devPath || "") || undefined : undefined,
-        devStatus: n.dev ? n.devStatus || "pending" : undefined,
-        devKind: n.dev ? devKindOf(n) || "module" : undefined,
-        /* 核心文件列表（展示口径：显式写入优先，为空时是自动兜底收集的结果） */
-        devFiles: n.dev ? devCoreFilesOf(n) : undefined,
-        devModel: n.dev ? String(n.devModel || "").trim() || undefined : undefined,
-        devProvider: n.dev
-          ? String(n.devProvider || "").trim() || undefined
-          : undefined,
-        /* Agent 预设 / 思考强度（与会话同一张档位表；空 = 跟随默认） */
-        devPreset: n.dev
-          ? String(n.devPreset || "").trim() || undefined
-          : undefined,
-        devEffort: n.dev
-          ? String(n.devEffort || "").trim() || undefined
-          : undefined,
-        childCount: allNodes.filter(
-          (x) => nodeParentSuperId(x) === n.id && !isSuperIoNode(x),
-        ).length,
-        note: clipStr(n.note, 120),
-      })),
-    tagCatalog: wfTagCatalog().slice(),
-    nodes: scopeNodes.map((n) => {
-      const inputSnap =
-        n.kind === "input_text" ? snapTextField(n.text) : null;
-      const promptSnap =
-        n.prompt != null ? snapTextField(n.prompt) : null;
-      const taskSnap =
-        n.task != null ? snapTextField(n.task) : null;
-      const goalSnap =
-        n.kind === "task" ? snapTextField(n.goal) : null;
-      /* 函数节点的 JS 函数体（node.jscode）与 prompt / task 同属正文口径 */
-      const jscodeSnap = isFunctionNode(n) ? snapTextField(n.jscode) : null;
-      const node = {
-      id: n.id,
-      kind: n.kind,
-      title: n.title,
-      x: n.x,
-      y: n.y,
-      w: n.w,
-      h: n.h,
-      running: !!n.running,
-      text: inputSnap ? inputSnap.text : undefined,
-      textLen: inputSnap ? inputSnap.textLen : undefined,
-      prompt: promptSnap ? promptSnap.text : undefined,
-      promptLen: promptSnap ? promptSnap.textLen : undefined,
-      task: taskSnap ? taskSnap.text : undefined,
-      taskLen: taskSnap ? taskSnap.textLen : undefined,
-      jscode: jscodeSnap ? jscodeSnap.text : undefined,
-      jscodeLen: jscodeSnap ? jscodeSnap.textLen : undefined,
-      savePath: n.savePath || undefined,
-      waitPath: n.kind === "wait_file" ? n.waitPath || undefined : undefined,
-      waitIntervalSec:
-        n.kind === "wait_file"
-          ? Math.max(1, Math.min(60, Math.round(Number(n.waitIntervalSec) || 2)))
-          : undefined,
-      timerMode: n.kind === "timer" ? n.timerMode || undefined : undefined,
-      timerAt: n.kind === "timer" ? n.timerAt || undefined : undefined,
-      timerEverySec:
-        n.kind === "timer"
-          ? Math.max(1, Math.round(Number(n.timerEverySec) || 3600))
-          : undefined,
-      timerCron: n.kind === "timer" ? n.timerCron || undefined : undefined,
-      timerArmed: n.kind === "timer" ? !!n.timerArmed : undefined,
-      timerNextAt: n.kind === "timer" ? n.timerNextAt || undefined : undefined,
-      delaySec: n.kind === "delayer" ? n.delaySec || undefined : undefined,
-      popupTitle: n.kind === "popup" ? String(n.popupTitle || "") : undefined,
-      popupText: n.kind === "popup" ? String(n.popupText || "") : undefined,
-      seqOutputs: n.kind === "sequencer" ? n.seqOutputs || undefined : undefined,
-      seqGapSec: n.kind === "sequencer" ? n.seqGapSec || undefined : undefined,
-      gateInputs: n.kind === "gate" ? n.gateInputs || undefined : undefined,
-      splitOutputs:
-        n.kind === "splitter" ? n.splitOutputs || undefined : undefined,
-      counterEvery:
-        n.kind === "counter" ? n.counterEvery || undefined : undefined,
-      counterCount:
-        n.kind === "counter" ? n.counterCount || undefined : undefined,
-      mutexInputs: n.kind === "mutex" ? n.mutexInputs || undefined : undefined,
-      mutexMode: n.kind === "mutex" ? n.mutexMode || undefined : undefined,
-      agent: n.kind === "proc_text" ? !!n.agent : undefined,
-      globalRefs: canUseGlobalRefs(n) ? !!n.globalRefs : undefined,
-      tags:
-        n.kind !== "global" && normalizeNodeTags(n).length
-          ? normalizeNodeTags(n).slice()
-          : undefined,
-      providerId:
-        n.kind === "proc_text" ||
-        n.kind === "proc_image" ||
-        n.kind === "judge"
-          ? n.providerId || undefined
-          : undefined,
-      provider:
-        n.kind === "agent_task" || (n.kind === "proc_text" && n.agent)
-          ? n.provider || undefined
-          : undefined,
-      model:
-        n.kind === "proc_text" ||
-        n.kind === "proc_image" ||
-        n.kind === "agent_task" ||
-        n.kind === "judge"
-          ? n.model || undefined
-          : undefined,
-      size:
-        n.kind === "proc_image"
-          ? IMAGE_SIZES.includes(n.size)
-            ? n.size
-            : DEFAULT_IMAGE_SIZE
-          : undefined,
-      bgRmOn:
-        n.kind === "proc_image" ? !!n.bgRmOn : undefined,
-      imgQuality:
-        n.kind === "proc_image" ? String(n.imgQuality || "") : undefined,
-      imgBackground:
-        n.kind === "proc_image" ? String(n.imgBackground || "") : undefined,
-      maskOn: n.kind === "proc_image" ? !!n.maskOn : undefined,
-      hasImage:
-        n.kind === "input_image"
-          ? !!(
-              n.imageAsset ||
-              (Array.isArray(n.entries) &&
-                n.entries.some((e) => e && e.path))
-            )
-          : undefined,
-      imageName:
-        n.kind === "input_image" && n.imageAsset
-          ? singleImageTitle(n)
-          : n.kind === "input_image" &&
-              Array.isArray(n.entries) &&
-              n.entries[0] &&
-              n.entries[0].path
-            ? entryDisplayTitle(n.entries[0])
-            : undefined,
-      imageTitles:
-        n.kind === "input_image" && n.batch
-          ? (n.entries || [])
-              .filter((e) => e && e.path)
-              .map((e) => entryDisplayTitle(e))
-          : undefined,
-      imageCount:
-        n.kind === "input_image"
-          ? n.batch
-            ? (n.entries || []).filter((e) => e && e.path).length
-            : n.imageAsset
-              ? 1
-              : 0
-          : undefined,
-      ctrlAction: n.kind === "control" ? n.ctrlAction || "run" : undefined,
-      ctrlFillOnly: n.kind === "control" ? !!n.ctrlFillOnly : undefined,
-      ctrlRole: n.kind === "control" ? n.ctrlRole || undefined : undefined,
-      ctrlPinned: n.kind === "control" && n.ctrlPinned ? true : undefined,
-      judgeResult: n.kind === "judge" ? n.judgeResult || undefined : undefined,
-      parentTaskId: n.parentTaskId || undefined,
-      parentSuperId: n.parentSuperId || undefined,
-      /* 局部视图（scope）里嵌套更深的子块：它的直接宿主可能被 ids 等再收窄掉，
-         这里补一句「谁真正围住它」，避免模型按缺省值误判层级 */
-      scopeNestedIn:
-        inScope &&
-        sc.host &&
-        n.parentSuperId &&
-        !returnedNodeIds.has(n.parentSuperId)
-          ? n.parentSuperId
-          : undefined,
-      note: n.kind === "super" ? n.note || undefined : undefined,
-      expandW: n.kind === "super" ? n.expandW || undefined : undefined,
-      expandH: n.kind === "super" ? n.expandH || undefined : undefined,
-      subFolder: n.kind === "super" ? n.subFolder || undefined : undefined,
-      superOpen: n.kind === "super" ? !!n.superOpen : undefined,
-      db: n.kind === "super" ? !!n.db : undefined,
-      dbMode:
-        n.kind === "super" && n.db ? n.dbMode || "super" : undefined,
-      dbCount:
-        n.kind === "super" && n.dbIndex && n.dbIndex.records
-          ? n.dbIndex.records.length
-          : undefined,
-      dbNodeId: n.kind === "db_replica" ? n.dbNodeId || undefined : undefined,
-      dbName: n.kind === "db_replica" ? n.dbName || undefined : undefined,
-      compiledAt: n.kind === "db_replica" ? n.compiledAt || undefined : undefined,
-      dev: n.kind === "super" && !n.db ? !!n.dev : undefined,
-      devPath:
-        n.kind === "super" && n.dev ? String(n.devPath || "") || undefined : undefined,
-      devStatus:
-        n.kind === "super" && n.dev ? n.devStatus || "pending" : undefined,
-      devKind:
-        n.kind === "super" && n.dev ? devKindOf(n) || "module" : undefined,
-      devColor:
-        n.kind === "super" && n.dev ? devColorOf(n) || undefined : undefined,
-      devModel:
-        n.kind === "super" && n.dev
-          ? String(n.devModel || "").trim() || undefined
-          : undefined,
-      devProvider:
-        n.kind === "super" && n.dev
-          ? String(n.devProvider || "").trim() || undefined
-          : undefined,
-      /* Agent 预设 / 思考强度：与本块模型同一就近继承链，空 = 跟随默认 */
-      devPreset:
-        n.kind === "super" && n.dev
-          ? String(n.devPreset || "").trim() || undefined
-          : undefined,
-      devEffort:
-        n.kind === "super" && n.dev
-          ? String(n.devEffort || "").trim() || undefined
-          : undefined,
-      /* 核心文件列表（≤10 · 相对本块项目根）：与节点「文件」按钮同一口径；
-         最外层（项目）开发节点恒为空数组 */
-      devFiles:
-        n.kind === "super" && n.dev ? devCoreFilesOf(n) : undefined,
-      devFilesAuto:
-        n.kind === "super" && n.dev && devCoreFilesSourceOf(n) === "auto"
-          ? true
-          : undefined,
-      /* 工具节点（kind super + tool:true · 判定 isToolNode）：toolConfig 即定义与端子表；
-         函数节点（kind function）：fnName / description / inputs / outputs（jscode 走正文口径）。
-         参数即端子（输入 0 = 控制入、1..N = 各入参；输出 0..M-1 = 各出参、末位 = 控制出）。
-         回读与 canvas_edit 参数补丁、设置面板、存档加载共用同一归一真源：入参如实带 list
-         （列表端子 = 可被多条数据线重复连入、JS 侧取到数组），出参恒单值（list 归一时已清掉）。 */
-      tool: isToolNode(n) ? true : undefined,
-      toolConfig: isToolNode(n)
-        ? (() => {
-            ensureFnToolNodeState(n);
-            const c = n.toolConfig || {};
-            return {
-              name: String(c.name || ""),
-              description: String(c.description || ""),
-              inputs: fnToolParamList(n, "in").map((p) => ({
-                name: p.name,
-                kind: p.kind,
-                list: p.list === true,
-              })),
-              outputs: fnToolParamList(n, "out").map((p) => ({
-                name: p.name,
-                kind: p.kind,
-              })),
-            };
-          })()
-        : undefined,
-      fnName: isFunctionNode(n)
-        ? String(n.fnName || "") || undefined
-        : undefined,
-      description: isFunctionNode(n)
-        ? String(n.description || "") || undefined
-        : undefined,
-      inputs: isFunctionNode(n)
-        ? fnToolParamList(n, "in").map((p) => ({
-            name: p.name,
-            kind: p.kind,
-            list: p.list === true,
-          }))
-        : undefined,
-      outputs: isFunctionNode(n)
-        ? fnToolParamList(n, "out").map((p) => ({ name: p.name, kind: p.kind }))
-        : undefined,
-      /* 「参数」端子（renderer/app-node-params.js）：paramKeys = 本节点**可被参数覆写**的键
-         （standard / full 档才回，minimal 省 token）。参数只能从端子（toIndex 9001）传入 ——
-         canvas_edit 的 params 字段已取消，节点上不存在「自带参数」这回事。
-         参数端子的端子号是哨兵值 PARAM_IN_INDEX（不进 0..N-1 的顺序端口）。 */
-      paramKeys:
-        o.detail !== "minimal" &&
-        typeof NParam === "object" &&
-        NParam &&
-        typeof NParam.eligible === "function" &&
-        NParam.eligible(n)
-          ? NParam.schemaOf(n).map((s) => s.key)
-          : undefined,
-      paramStrict: n._npStrict ? true : undefined,
-      execPath:
-        n.kind === "execute" ? String(n.execPath || "") || undefined : undefined,      execIcon:
-        n.kind === "execute" ? execIconKeyOf(n) || undefined : undefined,
-      execColor:
-        n.kind === "execute" ? execColorOf(n) || undefined : undefined,
-      fileCount: n.kind === "input_file" ? (n.files || []).length : undefined,
-      dbFiles: n.kind === "input_file" ? (n.files || undefined) : undefined,
-      tableDef: n.kind === "db_table" ? n.tableDef || undefined : undefined,
-      rows: n.kind === "db_table" ? n.rows || undefined : undefined,
-      schemaFile: n.kind === "db_table" ? n.schemaFile || undefined : undefined,
-      dataFile: n.kind === "db_table" ? n.dataFile || undefined : undefined,
-      builtAt: n.kind === "db_table" ? n.builtAt || undefined : undefined,
-      netChannel: isNetNode(n) ? (Number(n.netChannel) || 0) & 0xffff : undefined,
-      netProto: isNetNode(n) ? (n.netProto === "udp" ? "udp" : "tcp") : undefined,
-      netHost: isNetNode(n) ? String(n.netHost || "127.0.0.1") : undefined,
-      netPort: isNetNode(n) ? Number(n.netPort) || 0 : undefined,
-      netListening: n.kind === "net_recv" ? !!n.netListening : undefined,
-      netAutoListen: n.kind === "net_recv" ? n.netAutoListen !== false : undefined,
-      netCount: isNetNode(n) ? n.netCount || 0 : undefined,
-      delaySec: n.kind === "delayer" ? n.delaySec || 0 : undefined,
-      popupTitle: n.kind === "popup" ? String(n.popupTitle || "") : undefined,
-      popupText: n.kind === "popup" ? String(n.popupText || "") : undefined,
-      seqOutputs: n.kind === "sequencer" ? n.seqOutputs || 3 : undefined,
-      seqGapSec: n.kind === "sequencer" ? n.seqGapSec || 0 : undefined,
-      gateInputs: n.kind === "gate" ? n.gateInputs || 2 : undefined,
-      splitOutputs: n.kind === "splitter" ? n.splitOutputs || 3 : undefined,
-      counterEvery: n.kind === "counter" ? n.counterEvery || 2 : undefined,
-      counterCount: n.kind === "counter" ? n.counterCount || 0 : undefined,
-      mutexInputs: n.kind === "mutex" ? n.mutexInputs || 2 : undefined,
-      mutexMode: n.kind === "mutex" ? n.mutexMode || "first" : undefined,
-      /* video_gen / music_gen 配置（agent 可读可改） */
-      videoMode: n.kind === "video_gen" ? n.videoMode || "fl2va" : undefined,
-      /* 自建 ComfyUI 工作流：非空 = 该节点走工作流库分支（内置参数失效） */
-      workflowId:
-        n.kind === "video_gen" && String(n.workflowId || "").trim()
-          ? String(n.workflowId).trim()
-          : undefined,
-      wfTitle:
-        n.kind === "video_gen" && isCustomVideoGen(n)
-          ? String((n.wfMeta && n.wfMeta.title) || "")
-          : undefined,
-      wfParams:
-        n.kind === "video_gen" && isCustomVideoGen(n)
-          ? (Array.isArray(n.wfParams) ? n.wfParams : []).map((p) => ({
-              key: p.key,
-              type: p.type,
-              label: p.label,
-              port: h3WfPortOf(n, p.key),
-              source: p.source,
-            }))
-          : undefined,
-      duration:
-        n.kind === "video_gen" || n.kind === "remotion"
-          ? Number(n.duration) || 5
-          : undefined,
-      outputRes:
-        n.kind === "video_gen" ? n.outputRes || "auto" : undefined,
-      steps: n.kind === "video_gen" ? Number(n.steps) || 20 : undefined,
-      ratio: n.kind === "video_gen" ? n.ratio || "16:9" : undefined,
-      postEnabled:
-        n.kind === "video_gen" ? n.postEnabled !== false : undefined,
-      postInterp:
-        n.kind === "video_gen" ? n.postInterp !== false : undefined,
-      attempts:
-        n.kind === "video_gen" ||
-        n.kind === "music_gen" ||
-        n.kind === "yue_gen" ||
-        n.kind === "breeze_gen" ||
-        n.kind === "remotion"
-          ? Math.max(1, Math.min(10, Math.round(Number(n.attempts) || 1)))
-          : undefined,
-      outputPath:
-        n.kind === "video_gen" ||
-        n.kind === "music_gen" ||
-        n.kind === "yue_gen" ||
-        n.kind === "breeze_gen" ||
-        n.kind === "remotion"
-          ? mediaGenOutputRaw(n) || n.outputPath || undefined
-          : undefined,
-      /* yue_gen 配置（agent 可读可改） */
-      cot: n.kind === "yue_gen" ? yueGenCotOf(n) : undefined,
-      style:
-        n.kind === "yue_gen" ? String(n.style || "").slice(0, 2000) : undefined,
-      lyrics:
-        n.kind === "yue_gen"
-          ? String(n.lyrics || "").slice(0, 6000)
-          : undefined,
-      abc: n.kind === "yue_gen" ? String(n.abc || "").slice(0, 6000) : undefined,
-      yueStatus:
-        n.kind === "yue_gen"
-          ? String(n.yueStatus || "").slice(0, 200) || undefined
-          : undefined,
-      /* breeze_gen 配置（agent 可读可改）：参考源优先级 = 端子优先，端子空了才用 voice */
-      breezeVoice: n.kind === "breeze_gen" ? String(n.voice || "") : undefined,
-      breezeMode: n.kind === "breeze_gen" ? breezeModeOf(n) : undefined,
-      breezeInstruction: n.kind === "breeze_gen" ? String(n.instruction || "") : undefined,
-      breezeCfgScale: n.kind === "breeze_gen" ? breezeCfgScaleOf(n) : undefined,
-      breezeSeed: n.kind === "breeze_gen" ? breezeSeedOf(n) : undefined,
-      breezeFormat: n.kind === "breeze_gen" ? breezeFormatOf(n) : undefined,
-      breezeStatus:
-        n.kind === "breeze_gen"
-          ? String(n.breezeStatus || "").slice(0, 240) || undefined
-          : undefined,
-      breezeRefSource:
-        n.kind === "breeze_gen"
-          ? String(n.refSource || "").slice(0, 120) || undefined
-          : undefined,
-      breezeOutput:
-        n.kind === "breeze_gen" && n.output && n.output.path
-          ? {
-              kind: "audio",
-              path: String(n.output.path),
-            }
-          : undefined,
-      /* remotion 配置（agent 可读可改） */
-      remotionSize:
-        n.kind === "remotion" ? n.size || "1280x720" : undefined,
-      fps:
-        n.kind === "remotion" ? Math.max(1, Math.min(60, Number(n.fps) || 30)) : undefined,
-      seed: n.kind === "remotion" ? Math.floor(Number(n.seed) || 0) : undefined,
-      remotionText:
-        n.kind === "remotion" ? String(n.text || "").slice(0, 500) : undefined,
-      /* 构建描述（点「构建」时弹窗里填的那段需求）：构建 Agent 唯一的输入。
-         与 remotionText（节点功能说明，只给人看）是两个字段，别混。 */
-      remotionBuildNote:
-        n.kind === "remotion"
-          ? String(n.remotionBuildNote || "").slice(0, 2000)
-          : undefined,
-      remotionTsxLen: n.kind === "remotion" ? (n.tsx || "").length : undefined,
-      /* 工程源码树与端子契约（agent 可读可写：canvas_edit 的 remotionFiles / remotionInputs）。
-         契约不大，standard 档就给全（它就是当前生效的端子表）；源码树按正文档位
-         （detail:"full" / bodies:true）才回，standard 档只回文件名清单，免得一次读图把
-         整棵工程灌进上下文。源码只认节点上的 remotionFiles（老节点的 tsxTsx 单文件见 remotionTsxLen）。 */
-      remotionFileNames:
-        n.kind === "remotion" ? Object.keys(n.remotionFiles || {}) : undefined,
-      remotionFiles:
-        n.kind === "remotion" && o.wantBodies
-          ? (() => {
-              const files = n.remotionFiles;
-              if (!files || typeof files !== "object") return undefined;
-              if (!(o.bodyLimit > 0)) return files;
-              const out = {};
-              for (const [name, src] of Object.entries(files))
-                out[name] = String(src || "").slice(0, o.bodyLimit);
-              return out;
-            })()
-          : undefined,
-      remotionInputs:
-        n.kind === "remotion" ? remotionContractOf(n) : undefined,
-      remotionBuiltAt:
-        n.kind === "remotion" ? Number(n.remotionBuiltAt) || undefined : undefined,
-      goal: goalSnap ? goalSnap.text : undefined,
-      goalLen: goalSnap ? goalSnap.textLen : undefined,
-      steps:
-        n.kind === "task"
-          ? (n.steps || []).map((s) => (s && s.title) || "")
-          : undefined,
-      /* 素材节点（kind "asset"）：绑定 + 内容条目清单一起回读 —— 条目即端子，
-         第 i 入 ↔ 第 i 出。缺了这一段，Agent 读到的素材节点配置是空的。 */
-      assetItems: snapshotAssetNodeOf(n),
-      taskStatus: n.kind === "task" ? n.taskStatus || "pending" : undefined,
-      };
-      /* 带端口表的节点（proc_image / video_gen / remotion / judge / 工具 · 函数 /
-         super 边界 / 素材节点）：standard 与 full 档直接带端口表（index / name /
-         kind / connectedTo），模型接线前就看得见占用情况；minimal 档不带。
-         remotion 的输入是增量端子（与 proc_text 同族），端口表随 ports.rule 一起说明
-         「连一条长一条、控制线与数据线共用」—— 否则模型会以为它只有一个描述口。
-         素材节点的端子名 = 内容条目标题，与 assetItems.items[].title 同一份口径。 */
-      if (o.detail !== "minimal" && snapshotHasFixedPorts(n)) {
-        const ports = snapshotPortsOf(n);
-        if (ports && ports.length) node.ports = ports;
-      }
-        /* 端子数**随连线增量**的节点（proc_text / proc_image / input_* …）：
-         ports 只报得到「当下真实存在」的那几个槽（空白节点就只剩端口 0 = 提示词），
-         实测中模型据此误判「这个节点没有图像参考端子」，去试连一条线再看 warnings 反推接法。
-         这里补一条「端子怎么长」的规则 —— 它们与 ports 名单有交集，所以这一支是独立的
-         portRule 字段（ports 名单里那几个的规则挂在 ports.rule 上，文案同源）。 */
-      if (o.detail !== "minimal") node.portRule = snapshotDynamicPortRule(n);
-      return pruneNodeSnap(node, o);
-    }),
-    marks: (wf.marks || [])
-      .filter((m) => markViewHit(m))
-      .filter((m) => !inScope || inScope.has(String(m.parentSuperId || "")))
-      .map((m) => ({
-      id: m.id,
-      kind: m.kind,
-      x: m.x,
-      y: m.y,
-      w: m.w,
-      h: m.h,
-      text: m.kind === "text" ? clipStr(m.text, 120) : undefined,
-      color: m.color,
-      fontSize: m.kind === "text" ? m.fontSize : undefined,
-      stroke: m.kind === "box" || m.kind === "arrow" ? m.stroke : undefined,
-      x2: m.kind === "arrow" ? m.x2 : undefined,
-      y2: m.kind === "arrow" ? m.y2 : undefined,
-      parentSuperId: m.parentSuperId || undefined,
-    })),
-    markColors: MARK_COLORS.slice(),
-    /* 开发节点功能色卡（Agent 按功能分类上色要用）：常量透出，真源见 app-devnode.js */
-    devFuncColors: devFuncColorCatalog(),
-    wires: (wf.wires || [])
-      .filter((w) => {
-        const a = nodeById(w.from);
-        const b = nodeById(w.to);
-        if (!a || !b || !viewHit(a) || !viewHit(b)) return false;
-        if (inScope && (!inScope.has(a.id) || !inScope.has(b.id))) return false;
-        if (selNodeIds && (!selNodeIds.has(a.id) || !selNodeIds.has(b.id))) return false;
-        return true;
-      })
-      .map((w) => {
-      const a = nodeById(w.from);
-      const b = nodeById(w.to);
-      return {
-        id: w.id,
-        from: w.from,
-        to: w.to,
-        fromTitle: a ? a.title : "",
-        toTitle: b ? b.title : "",
-        rel: w.rel ? true : undefined,
-        relLabel: w.rel ? w.relLabel || "" : undefined,
-        relArrow: w.rel ? relArrowOf(w) : undefined,
-      };
-    }),
-    groups: (wf.groups || [])
-      .filter(
-        (g) =>
-          !inScope ||
-          (g.nodeIds || []).length === 0 ||
-          (g.nodeIds || []).every((id) => inScope.has(id)),
-      )
-      .map((g) => ({
-      id: g.id,
-      title: g.title,
-      nodeIds: (g.nodeIds || []).slice(),
-      markIds: (g.markIds || []).slice(),
-    })),
-    /* 局部画布（scope）：恒保留 —— 模型永远知道自己看到的是整图还是某一颗壳内部，
-       以及怎么切回整图（scope:"global"）或换一颗壳（scope:"标题"）。 */
-    scopeInfo: scopeInfoBlock(sc, allNodes),
-  };
-  const out = o.detail === "minimal" ? pruneMinimalSnapshot(snap, opts) : snap;
-  /* 静态参考表按需闸：裁剪之后才补（否则会被 MINIMAL_SNAPSHOT_DROP 又摘掉）。 */
-  if (snapshotWantsStaticRefs(opts)) attachSnapshotStaticRefs(out);
-  return out;
+  return MTCanvasDoc.canvasSnapshot(canvasDocHost(), opts);
 }
 
 function assistScopeIsCurrent() {
@@ -16360,71 +15371,16 @@ function applyAssistScopeToSnapshot(snap, opts) {
    contentHash 原样回传」时就会被判成「画布已被改动」而拒写（实测：minimal 读 → standard
    读，哈希即变，写必被拒）。所以哈希只覆盖真源里会随编辑变化的结构与设置：
    nodes（结构字段 + 正文长度；正文本身不参与——按「显式存盘才改文件」的既有口径）、
-   wires / groups / marks / 画布名。刻意剔除 cam / view / selection / 运行态等易变项。 */
+   wires / groups / marks / 画布名。刻意剔除 cam / view / selection / 运行态等易变项。
+   实现（含标量归一与真源规范化文本）在 canvas-doc/canvas-doc-core.js。 */
 function snapshotContentHashOf(snapOrWf) {
-  try {
-    const src = snapshotHashSource(snapOrWf);
-    let h = 0x811c9dc5;
-    for (let i = 0; i < src.length; i++) {
-      h ^= src.charCodeAt(i);
-      h = (h * 0x01000193) >>> 0;
-    }
-    return "fnv1a-" + h.toString(16).padStart(8, "0") + "-" + src.length.toString(16);
-  } catch {
-    return "";
-  }
+  return MTCanvasDoc.snapshotContentHashOf(canvasDocHost(), snapOrWf);
 }
-
-/* 标量归一：函数 / undefined / Symbol 一律转成稳定的空串，避免序列化差异。 */
 function hashScalar(v) {
-  if (v == null) return "";
-  const t = typeof v;
-  if (t === "function" || t === "symbol") return "";
-  if (t === "number") return Number.isFinite(v) ? v : "";
-  if (t === "boolean") return v;
-  return String(v);
+  return MTCanvasDoc.hashScalar(v);
 }
-
-/* 画布真源的规范化文本：键按字典序排（对象字面量顺序无关），
-   节点正文只取长度（textLen / promptLen / taskLen / goalLen / jscodeLen）。 */
 function snapshotHashSource(snapOrWf) {
-  const wf = snapOrWf && (snapOrWf.nodes || snapOrWf.wires) ? snapOrWf : S.wf || {};
-  const nodePart = (wf.nodes || [])
-    .map((n) => {
-      if (!n || typeof n !== "object") return "";
-      const keys = Object.keys(n)
-        .filter((k) => k.charAt(0) !== "_")
-        .filter((k) => NODE_BODY_KEYS.indexOf(k) < 0)
-        .sort();
-      const body =
-        NODE_BODY_KEYS.map((k) => k + "Len:" + hashScalar(String(n[k] == null ? "" : n[k]).length)).join(",");
-      return (
-        "{" +
-        keys
-          .map((k) => {
-            const v = n[k];
-            if (Array.isArray(v)) return k + ":[" + v.map((x) => hashScalar(x && typeof x === "object" ? JSON.stringify(x) : x)).join("|") + "]";
-            if (v && typeof v === "object") return k + ":" + JSON.stringify(v);
-            return k + ":" + hashScalar(v);
-          })
-          .join(",") +
-        "}|" +
-        body
-      );
-    })
-    .join("\n");
-  const wirePart = (wf.wires || [])
-    .map((w) => hashScalar(w && w.from) + ">" + hashScalar(w && w.to) + "#" + hashScalar(w && w.fromIndex) + (w && w.rel ? "~rel" : ""))
-    .join(",");
-  const groupPart = (wf.groups || [])
-    .map((g) => JSON.stringify(g && g.nodes ? { id: g.id, title: g.title, nodes: g.nodes } : g))
-    .join(",");
-  const markPart = (wf.marks || [])
-    .map((m) => JSON.stringify(m))
-    .join(",");
-  return (
-    "name:" + hashScalar(wf.name) + "\n" + nodePart + "\n" + wirePart + "\n" + groupPart + "\n" + markPart
-  );
+  return MTCanvasDoc.snapshotHashSource(canvasDocHost(), snapOrWf);
 }
 
 /* 全量快照（含 wfList IPC）。opts 直通 canvasSnapshot 的档位：canvas_get 用 detail 按需取
@@ -18982,6 +17938,55 @@ async function confirmAssistAppOp(params, owner, runWf) {
   });
 }
 
+/* 走主进程画布文档服务取一次快照（读侧开关 canvases.docService=read 时才试）。
+   为什么这里还要过一道：只有渲染层知道「本轮绑定的是哪张画布」（会话→画布映射在主进程
+   不存在），所以 id 由这里定，快照本体与 contentHash 由主进程算（不进 UI 线程）。
+   回执上只补渲染层独有的现场，顺序与 canvasSnapshotFull 完全一致：选中项 → 助手面板开关
+   → 会话锁定的 scopeNote / 单张 workflows → minimal 收口 → sections 过滤。
+   任何一步不成（开关没开 / 主进程没就绪 / 报错 / 素材条目正文要渲染层补）都返回 null，
+   由调用方原路退回 canvasSnapshotFull —— 老路整体保留。 */
+async function canvasDocSnapshotViaService(opts, boundWf) {
+  const cfg = S.config && S.config.canvases;
+  if (!cfg || cfg.docService !== "read") return null;
+  const api = window.api;
+  if (!api || typeof api.canvasDocGet !== "function") return null;
+  const id = String((boundWf || S.wf || {}).id || "");
+  if (!id) return null;
+  /* 文档真源在磁盘：自动保存有 250ms 防抖，刚改完立刻让 Agent 读会读到上一版。
+     有待写的那一版就先刷下去（没有待写就什么都不做，不给每次读都加一次落盘）。 */
+  if (S.saveTimer) {
+    try {
+      await flushCurrentWf();
+    } catch (_) {}
+  }
+  let r = null;
+  try {
+    r = await api.canvasDocGet(id, opts || {});
+  } catch (_) {
+    return null;
+  }
+  if (!r || !r.ok || !r.snapshot || typeof r.snapshot !== "object") return null;
+  const snap = r.snapshot;
+  const o = normalizeSnapshotOpts(opts || {});
+  const want = (k) => snapshotWantsSection(o, opts || {}, k);
+  /* 素材节点的条目正文只在渲染层（素材库条目 + 本机路径）补得出来：这一档要求正文，
+     而这张图里确实有素材节点 —— 交回老路，宁可多算一次也不能少给正文。 */
+  if (o.wantBodies && (snap.nodes || []).some((n) => n && n.kind === "asset" && n.assetItems))
+    return null;
+  if (want("selection"))
+    snap.selection = currentSelection().map((n) => ({ id: n.id, kind: n.kind, title: n.title }));
+  if (o.detail !== "minimal") {
+    snap.assistOpen = !!S.assistOpen;
+    snap.sidebarOpen = !!S.sidebarOpen && S.view !== "agent";
+  }
+  applyAssistScopeToSnapshot(snap, { wf: boundWf });
+  /* 锁定本画布时 applyAssistScopeToSnapshot 会回写 workflows（= 本图一行）；minimal 档下
+     它仍能在 scopeNote 里说明「工作范围 = 本会话所属画布」，不必再带一份画布列表。 */
+  if (o.detail === "minimal" && !want("workflows")) delete snap.workflows;
+  applySnapshotSectionFilter(snap, (opts || {}).sections);
+  return snap;
+}
+
 async function applyCanvasOp(op, params, runCtx) {
   /* 本轮绑定画布（会话「所属画布」）：应用级操作的目标解析只认它，不认栈顶。 */
   const boundWf = (runCtx && runCtx.wf) || null;
@@ -19003,6 +18008,9 @@ async function applyCanvasOp(op, params, runCtx) {
   if (wfWriteBlocked(S.wf)) throw new Error(deletedWfError(S.wf));
   if (op === "get") {
     await ensureAgentTool("canvas_read", undefined, runKey);
+    /* 读侧开关 canvases.docService=read：快照改由主进程文档服务算；没开 / 不成 → 老路 */
+    const viaService = await canvasDocSnapshotViaService(params || {}, boundWf);
+    if (viaService) return Object.assign({ ok: true }, viaService);
     return Object.assign(
       { ok: true },
       await canvasSnapshotFull(params || {}, { wf: boundWf }),
@@ -22685,6 +21693,218 @@ function canvasEditLayoutReport() {
   }
   return { levels: groups.size, ratioOk, worst, w, h };
 }
+/* ══ 写侧：编辑引擎（canvas-doc/canvas-doc-edit.js）＋ 现场出口 ═════════════════
+   任务 5/8：applyCanvasEdit 里与 DOM 无关的那一段（参数端子拒绝闸 / scope 写入闸 / alias
+   解析 / create·update·connect·disconnect·remove / marks / 分组 / layout 闸 / warnings 与
+   回执组装）已抽成纯函数 applyEdit(doc, params, ctx)，本文件只剩这层薄包装：
+
+     ① 前置闸：没有打开的画布 / 画布已被删除 → 抛（原样）
+     ② 把画布现场拼成宿主 ctx（canvasEditHostCtx：引擎要的原语逐个列出，真源仍在渲染层）
+     ③ 重绘与落盘：前台画布 renderCanvas + renderStatus + scheduleSave(true)；后台画布 persistWf
+     ④ 事务（canvases.editTxn = off|on）：同一 runKey 的连续编辑攒到回合末一次重绘 + 一次落盘
+
+   行为不变的判据是 test/smoke-canvas-doc-parity.js 的 [3] 编辑黄金（画布 JSON + 回执计数 +
+   warnings 逐条），不是肉眼。 */
+
+/* 引擎的宿主：引擎不碰任何全局，这里就是它的全部依赖。值在**调用期**取 —— 被引用的符号有
+   排在 app-nodes.js 之后才定义的文件（app-node-params.js 的 NParam、app-assets.js 的 snap…）。 */
+function canvasEditHostCtx() {
+  return {
+    /* 建 / 改节点 */
+    NODE_DEFAULTS, makeNode, applyNodePatch, uniqueNodeTitle, devAutoColorNode,
+    importImagePathsForNode, imagePathsFromPatch, ensureDefaultSavePath, sizeNodeForContent,
+    /* 引用解析 / 归属 */
+    resolveCanvasRef, canMoveNodeIntoSuper, rewriteNodePathsForSuperContext,
+    applyNewNodePlacement, ensurePromptRefs, ensureTaskScaffold, nodeById,
+    nodeParentTaskId, nodeParentSuperId, isSuperIoNode, isPinnedCtrl, taskDescendantIds,
+    /* 连线 */
+    relConnectError, addRelWire, dataInPortIndexForWire, connectError, wireKeepsLayerRule,
+    bridgeNodesBetween, connectPortAdvice, dropWiresForReplace, isControlKind, addWire,
+    applySuperConnect, clearDownstream, pruneInvalidSuperBoundaryWires,
+    /* 绘制 / 组 */
+    marksOf, markById, makeMarkFromSpec, applyMarkPatch, resolveMarkRef,
+    ensureGroupArrays, pruneEmptyGroups, uid,
+    /* scope 闸（与只读侧同一批包装函数） */
+    resolveScopeHost, scopedNodeIdSet, pointInScopeHost,
+    /* 排版 */
+    layoutFlowEx, layoutOrigin, snap, fitAllOpenSuperShells, canvasEditWantsLayout,
+    /* 回执字段 */
+    editNodePortSummary, nodeHasImage, canUseGlobalRefs,
+    IMAGE_SIZES, DEFAULT_IMAGE_SIZE,
+    /* 交付节点禁建表（引擎里叫 lockedKinds，原 window.LT.LOCKED） */
+    lockedKinds: (window.LT && window.LT.LOCKED) || null,
+    /* 现场出口 / 许可闸 */
+    pushHistory, trackWorkflow, closeNodeSettingsDialogIfStale, collectEditStaticWarnings,
+    ensureCanvasEditTools, NParam,
+  };
+}
+
+/* ── 编辑事务（开关 canvases.editTxn = off|on）─────────────────────────────────
+   开 = 同一 runKey 内连续编辑**只记「这张画布该重绘 / 该落盘」**，回合末做一次：
+   dsh 运行收尾（app-db.js 的 finish → commitCanvasEditTxn(runKey)）或窗口失焦 / 关闭
+   （app.js 的 flushNow）都收口；也可以显式 commit。每次调用照样即时返回回执 ——
+   回执里的快照读的是内存文档（S.wf），与重绘时机无关。
+   关（缺省）/ 没有 runKey（MCP 直连、没有会话归属的调用）：当场重绘 + 当场落盘，
+   与今天逐字节一致。 */
+function canvasEditTxnOn() {
+  const v = S.config && S.config.canvases && S.config.canvases.editTxn;
+  return String(v || "") === "on";
+}
+function canvasEditTxnPending() {
+  if (!(S._editTxnPending instanceof Map)) S._editTxnPending = new Map();
+  return S._editTxnPending;
+}
+/* 一笔编辑的「摆给用户看」：前台画布重绘 + 走前台存盘通道；后台画布直接按对象自己的 id
+   落盘（persistWf 用 wf.id 写 wfSave，写谁就是谁，绝不串到前台那张图上）。
+   save=false：只重绘、不落盘 —— 写侧开关 canvases.docService=write 时，字节已经由主进程
+   文档服务写完（见 canvasEditViaDocService），渲染层这一半只剩「摆给用户看」。 */
+function canvasEditCommitNow(editWf, visible, save) {
+  const doSave = save !== false;
+  if (visible) {
+    renderCanvas();
+    /* 不平移/缩放用户视角：节点在世界坐标中更新，相机保持不动 */
+    renderStatus();
+    if (typeof renderSidebar === "function" && S.sidebarOpen) renderSidebar();
+    if (doSave) scheduleSave(true);
+  } else if (doSave) {
+    persistWf(editWf);
+  }
+}
+/* 结账：给了 runKey 只结那一轮，没给就全结；返回结掉几笔（自检用）。 */
+function commitCanvasEditTxn(runKey) {
+  const pend = canvasEditTxnPending();
+  if (!pend.size) return 0;
+  const key = String(runKey || "");
+  const jobs = [];
+  for (const [k, it] of pend) if (!key || k === key) jobs.push([k, it]);
+  for (const [k, it] of jobs) {
+    pend.delete(k);
+    /* 回合末收尾：一次重绘失败不能把整轮拖挂（文档已在内存里，下一笔 / 失焦还会再落） */
+    try {
+      canvasEditCommitNow(it.wf, it.visible);
+    } catch (err) {
+      console.error("[canvas-edit] 事务收尾失败", err);
+    }
+  }
+  return jobs.length;
+}
+/* 新一笔进来之前：事务被关掉 → 先把攒着的结掉；同一轮换了画布 → 先结上一张。 */
+function canvasEditTxnSettle(runKey, editWf) {
+  const pend = canvasEditTxnPending();
+  if (!pend.size) return;
+  if (!canvasEditTxnOn()) {
+    commitCanvasEditTxn();
+    return;
+  }
+  const it = pend.get(runKey);
+  if (it && it.wf !== editWf) commitCanvasEditTxn(runKey);
+}
+/* 一句话提示：与搬家前同文案、同顺序（创建 / 绘制 / 连接 / 删除 / 已排版）。 */
+function canvasEditToast(receipt, laidOut) {
+  const bits = [];
+  if (receipt.created && receipt.created.length)
+    bits.push(I18n.t("创建 ") + receipt.created.length + I18n.t(" 个节点"));
+  if (receipt.createdMarks && receipt.createdMarks.length)
+    bits.push(I18n.t("绘制 {n} 个", { n: receipt.createdMarks.length }));
+  if (receipt.connected && receipt.connected.length)
+    bits.push(I18n.t("连接 ") + receipt.connected.length + I18n.t(" 条线"));
+  if (receipt.removed && receipt.removed.length)
+    bits.push(I18n.t("删除 ") + receipt.removed.length + I18n.t(" 个节点"));
+  if (laidOut) bits.push(I18n.t("已排版"));
+  if (bits.length) toast(I18n.t("智能助手已更新画布：") + bits.join(" · "), "ok");
+}
+
+/* ── 写侧开关（canvases.docService = write）：编辑引擎进文档服务（任务 6/8）─────────
+   开 = 编辑帧交给主进程文档服务执行：服务持文档、用**同一份**引擎（MTCanvasDocEdit.applyEdit）
+   改、自己落盘，只把「回执 + 差量」回给渲染层；本层降级为视图 —— 把差量合进 S.wf、压一格
+   撤销栈、重绘一次。回执字段与搬家前一字不改（快照仍由渲染层补：选中项 / 面板开关只有它知道）。
+   关（缺省）/ 桥没装 / 服务不成 / 这一笔带图片路径 → 一行都不走这里，仍旧是渲染层自己改 + 自己存。
+   随时可把开关退成 read / off：那两条路一个字都没动。 */
+function canvasDocWriteEnabled() {
+  const cfg = S.config && S.config.canvases;
+  if (!cfg || String(cfg.docService || "") !== "write") return false;
+  return !!(window.api && typeof window.api.canvasDocEdit === "function");
+}
+/* 这一笔要不要留在渲染层：带 imagePath / imagePaths 的编辑要在渲染进程里拷图片资产
+   （window.api.assetCopy 那条 IPC 桥服务侧的 vm 里没有），交出去的只会是一句「载入图像失败」。 */
+function canvasEditNeedsRenderAssets(params) {
+  const specs = (Array.isArray(params && params.create) ? params.create : []).concat(
+    Array.isArray(params && params.update) ? params.update : [],
+  );
+  return specs.some(
+    (sp) => sp && ((Array.isArray(sp.imagePaths) && sp.imagePaths.length) || sp.imagePath),
+  );
+}
+/* 服务回的排版报告是纯数组（Map 过不了 JSON），这里还原成引擎那套 Map 形状：
+   canvasEditLayoutReport 只读 size / label / report.ratioOk / w / h。 */
+function canvasEditLayoutGroupsFromService(list) {
+  const m = new Map();
+  (list || []).forEach((g, i) => {
+    m.set(g && g.key != null ? g.key : i, {
+      label: (g && g.label) || "",
+      report: (g && g.report) || null,
+    });
+  });
+  return m;
+}
+/* write 档的一笔编辑：发 op → 服务改文档并落盘 → 把差量合进 S.wf → 只重绘一次。
+   返回回执（含渲染层补的那份快照）；返回 null = 这一笔没走成，调用方原路回落到渲染层写路径
+   （一行行为都不变：错误文案、撤销粒度、落盘时机都在老路上）。 */
+async function canvasEditViaDocService(editWf, params, o) {
+  const api = window.api;
+  const runKey = (o && o.runKey) || "";
+  if (typeof MTCanvasDocEdit.editSkipsWrites !== "function") return null;
+  /* 工具许可闸（渲染层才知道权限现场）：顺序与引擎一致 —— 空笔不跑闸，有内容才跑。
+     它在渲染层跑过之后，服务侧那一份是空实现（不许拿 vm 里的假配置改用户设置）。 */
+  if (!MTCanvasDocEdit.editSkipsWrites(params)) await ensureCanvasEditTools(params, runKey);
+  /* 文档真源在磁盘：服务改的是落盘那一份，先把防抖里待写的刷下去（否则服务在改上一版） */
+  if (S.saveTimer) {
+    try {
+      await flushCurrentWf();
+    } catch (_) {}
+  }
+  /* 撤销栈沿用现有快照式：编辑前的现场压一格（粒度 = 一次调用一格，与搬家前一致；
+     空笔 / 整笔拒绝不压 —— 只看服务回没回「有改动」）。 */
+  const before = snapshotState();
+  let r = null;
+  try {
+    r = await api.canvasDocEdit(String(editWf.id || ""), params, { runKey, snap: grid() });
+  } catch (err) {
+    console.error("[canvas-edit] 文档服务编辑失败，回落渲染层写路径", err);
+    return null;
+  }
+  if (!r || r.ok === false || !r.receipt) return null;
+  const receipt = r.receipt;
+  const diff = r.diff || null;
+  const diffOk = typeof MTCanvasDocDiff === "object" && MTCanvasDocDiff;
+  const changed = r.changed !== false && !(diffOk && MTCanvasDocDiff.diffIsEmpty(diff));
+  /* 没有改动 / 整笔拒绝：文档一个字节都没动，回执照旧带一份无参快照（与搬家前同口径） */
+  if (!changed) return Object.assign(receipt, canvasSnapshot());
+  /* 服务已经改成功（且落了盘）：这一笔**不许**再回落到老路重放一遍 —— 差量用不了就如实报错 */
+  if (!diffOk || !diff)
+    throw new Error(
+      I18n.t("画布差量无法应用：文档已在服务侧更新，请重新打开画布"),
+    );
+  /* 差量 → S.wf（就地合，保对象身份：设置窗 / 选中项抓的还是同一个节点对象） */
+  MTCanvasDocDiff.applyDocDiff(editWf, diff);
+  pushHistory(before);
+  if (r.effects && r.effects.layoutGroups)
+    S._editLayoutGroups = canvasEditLayoutGroupsFromService(r.effects.layoutGroups);
+  const visible = editWf === currentVisibleWf() && S._canvasEditVisible !== false;
+  /* 引擎里那两处 UI 出口（服务侧是空实现）：按回执 / 差量补一次，条件与引擎一致 */
+  if ((receipt.removed || []).length && typeof closeNodeSettingsDialogIfStale === "function")
+    closeNodeSettingsDialogIfStale({ silentRerender: true, skipSave: true, quiet: true });
+  if (diff.keys && diff.keys.set && Object.prototype.hasOwnProperty.call(diff.keys.set, "name"))
+    trackWorkflow(editWf.id, editWf.name);
+  /* 「只重绘一次」：字节已由服务落盘，这里不再 scheduleSave / persistWf */
+  canvasEditCommitNow(editWf, visible, false);
+  canvasEditToast(receipt, canvasEditWantsLayout(params));
+  return Object.assign(
+    receipt,
+    canvasSnapshot({ scope: params.scope, scopeDepth: params.scopeDepth }),
+  );
+}
+
 async function applyCanvasEdit(params, ctx) {
   params = params || {};
   /* 二次防线：这是真正改图并落盘的入口，绑定画布若已被删除就直接抛错，
@@ -22696,918 +21916,41 @@ async function applyCanvasEdit(params, ctx) {
   if (!S.wf) throw new Error(I18n.t("当前没有打开的画布"));
   const editWf = S.wf;
   if (wfWriteBlocked(editWf)) throw new Error(deletedWfError(editWf));
-  const warnings = [];
-  const created = [];
-  const updated = [];
-  const connected = [];
-  const removed = [];
-  const createdMarks = [];
-  const updatedMarks = [];
-  const removedMarks = [];
-  const aliasMap = new Map();
-  const aliasById = {};
-  const markAliasMap = new Map();
-  const running = new Set(
-    (S.wf.nodes || []).filter((n) => n.running).map((n) => n.id),
-  );
-  const creates = Array.isArray(params.create) ? params.create : [];
-  const updates = Array.isArray(params.update) ? params.update : [];
-  /* 参数只能从「参数」端子来：create / update 里带 params 就整笔拒绝（写入口的闸，
-     放在 pushHistory / 任何写操作之前 —— 见 renderer/app-node-params.js 的同名函数）。
-     不接线而把参数挂到节点上，会把用户在 ⚙ 里改的值压住，等于用户改不动参数。 */
-  {
-    const reject =
-      typeof NParam === "object" && NParam && typeof NParam.editParamsRejection === "function"
-        ? NParam.editParamsRejection(params)
-        : "";
-    if (reject) throw new Error(reject);
+  const runKey = String((ctx && ctx.runKey) || "");
+  /* 只有「真有一轮回合」的编辑才进事务：MCP 帧（第三方客户端）虽然也带 runKey，但它一帧
+     就是一次完整调用、没有回合末，必须当场重绘（mcpFrameSettle 是它的回执通道）。 */
+  const txnable = !!runKey && !(ctx && typeof ctx.mcpFrameSettle === "function");
+  canvasEditTxnSettle(runKey, editWf);
+  /* write 档：编辑交给主进程文档服务执行，这里只把差量合进 S.wf 并重绘一次。
+     没走成（开关关着 / 桥没装 / 服务回失败 / 这一笔要拷图片资产）→ 原路走下面的渲染层写路径。 */
+  if (canvasDocWriteEnabled() && !canvasEditNeedsRenderAssets(params)) {
+    const viaSvc = await canvasEditViaDocService(editWf, params, { runKey });
+    if (viaSvc) return viaSvc;
   }
-  const connects = Array.isArray(params.connect) ? params.connect : [];
-  const disconnects = Array.isArray(params.disconnect) ? params.disconnect : [];
-  const removes = Array.isArray(params.remove) ? params.remove : [];
-  const createMarks = Array.isArray(params.createMarks)
-    ? params.createMarks
-    : Array.isArray(params.marks)
-      ? params.marks
-      : [];
-  const updateMarks = Array.isArray(params.updateMarks)
-    ? params.updateMarks
-    : [];
-  const removeMarksList = Array.isArray(params.removeMarks)
-    ? params.removeMarks
-    : [];
-  /* 数量上限已移除：整笔调用完整执行。此前 40/80 的截断会造成「部分创建」——
-     大调用（架构图、批量建图）的 connect / createMarks / group 引用被截掉的
-     alias 全部落空，曾导致节点层 / 开发节点架构图建成半成品（孤儿节点）。
-     null.push 崩溃根因已修，大调用现在可安全完整执行。 */
-  /* 排版闸：只有本笔显式写了 layout:true 才排。2026-02 需求「不要自动改变」——
-     编辑只落内容与连线，不再因为建图 / 连线 / 改标注 / 删除 / 改尺寸就顺手重排，
-     也不再按正文长短重算节点尺寸（见 canvasEditWantsLayout 与 freeSpotForNode）。 */
-  const wantsLayout = canvasEditWantsLayout(params, creates);
-  const doLayout = wantsLayout;
-
-  /* ── 局部画布（scope）：写入侧的越界闸 ──────────────────────────────
-     需求：编辑工具要能「只改某一颗节点层 / 开发节点内部」。传了 scope 就把这次调用
-     钉在那颗壳的子树里：界外节点一律不碰（跳过 + warnings 逐条说明），
-     新节点缺 parentSuperId 时默认落进这颗壳，免得建完飘在根画布上。
-     两种口径（与只读侧 scopedNodeIdSet 同一真源）：
-       · scopeScope  = 那颗壳 + 它的直接子节点（+ scopeDepth:"all" 时的整棵子树）
-         —— 这次调用允许触碰的节点；
-       · nodeScopeScope = 同上再放宽一层：嵌套更深的子块只要祖先链都在
-         nodeScopeScope 里就放行（编辑子块内容时用它）。 */
-  const editScopeHost = resolveScopeHost(params.scope);
-  const editScope =
-    editScopeHost && !editScopeHost.bad
-      ? { host: editScopeHost, short: params.scopeDepth === "all" ? "all" : "direct" }
-      : null;
-  if (editScopeHost && editScopeHost.bad) {
-    warnings.push(
-      I18n.t("无效的 scope（要给节点层 / 开发节点的 id 或唯一标题）：") +
-        editScopeHost.token,
-    );
-  }
-  const editAllowed = editScope
-    ? editScope.short === "all"
-      ? scopedNodeIdSet(editScope.host, "all")
-      : scopedNodeIdSet(editScope.host, "direct")
-    : null;
-  const nodeScopeAllowed = editScope
-    ? scopedNodeIdSet(editScope.host, "all")
-    : null;
-  const outOfEditScope = (n) => !!(editAllowed && !editAllowed.has(n.id));
-  const outOfNodeScope = (n) => !!(nodeScopeAllowed && !nodeScopeAllowed.has(n.id));
-  /* 绘制（mark）只在 scope 那颗壳里可改；根画布上的绘制（parentSuperId 为空）也算界外 */
-  const outOfMarkScope = (m) =>
-    !!(editAllowed && !editAllowed.has(String((m && m.parentSuperId) || "")));
-  const scopeSkip = (what) =>
-    warnings.push(
-      I18n.t("scope 界外已跳过：") +
-        what +
-        I18n.t("（本次只改 ") +
-        (editScope.host.title || editScope.host.id) +
-        I18n.t("）"),
-    );
-  const scopeExtra = editScope
-    ? {
-        scopeInfo: {
-          mode: "subtree",
-          origin: "explicit",
-          depth: editScope.short,
-          hostId: editScope.host.id,
-          hostTitle: editScope.host.title,
-          note: I18n.t("本次编辑被限定在这一颗壳内部：界外节点未改动。"),
-        },
-      }
-    : {};
-
-  if (
-    !creates.length &&
-    !updates.length &&
-    !connects.length &&
-    !disconnects.length &&
-    !removes.length &&
-    !createMarks.length &&
-    !updateMarks.length &&
-    !removeMarksList.length &&
-    !(Array.isArray(params.superConnect) && params.superConnect.length) &&
-    !params.group &&
-    !params.setWorkflowName &&
-    !doLayout
-  ) {
-    return Object.assign({ ok: true, message: I18n.t("没有改动"), warnings }, canvasSnapshot());
-  }
-
-  await ensureCanvasEditTools(params, ctx && ctx.runKey);
-
-  pushHistory();
-  if (!Array.isArray(S.wf.groups)) S.wf.groups = [];
-  if (!Array.isArray(S.wf.marks)) S.wf.marks = [];
-
-  if (params.setWorkflowName) {
-    const name = String(params.setWorkflowName).trim();
-    if (name) {
-      S.wf.name = name;
-      if (typeof trackWorkflow === "function") trackWorkflow(S.wf.id, name);
-    }
-  }
-
-  const originHint = layoutOrigin(
-    (S.wf.nodes || []).filter((n) => !aliasMap.has(n.id)),
-  );
-  /* 本笔显式给了 x/y 的新节点：记下来，收尾统一摆位时跳过它们（坐标是调用方钉的） */
-  const newXY = new Set();
-
-  for (const spec of creates) {
-    let kind = spec && spec.kind;
-    if (kind === "image" || kind === "img") kind = "input_image";
-    if (kind === "text") kind = "input_text";
-    if (kind === "save_text" || kind === "save_image") kind = "save";
-    if (!NODE_DEFAULTS[kind]) {
-      warnings.push(I18n.t("未知节点类型：") + (spec && spec.kind));
-      continue;
-    }
-    /* 系统专属 kind（交付节点）：智能体建图也不给建（需求 2「不能手动新建」含代理入口） */
-    if (window.LT && window.LT.LOCKED && window.LT.LOCKED.indexOf(kind) >= 0) {
-      warnings.push(I18n.t("交付节点由长周期任务自动创建，不能用 canvas_edit 新建，已跳过：") + (spec && spec.alias));
-      continue;
-    }
-    const alias = String((spec && spec.alias) || "").trim();
-    if (!alias) {
-      warnings.push(I18n.t("create 项缺少 alias，已跳过"));
-      continue;
-    }
-    if (aliasMap.has(alias)) {
-      warnings.push(I18n.t("重复 alias：") + alias);
-      continue;
-    }
-    const hasXY =
-      typeof spec.x === "number" &&
-      isFinite(spec.x) &&
-      typeof spec.y === "number" &&
-      isFinite(spec.y);
-    const node = makeNode(
-      kind,
-      hasXY ? spec.x : originHint.x,
-      hasXY ? spec.y : originHint.y,
-    );
-    /* 局部画布：scope 界外的锚点（x/y 落在壳外面）不建 —— 建了也只会飘在根画布上。
-       给了 parentSuperId / packIntoSuper 的（含 alias 指向本次新建的壳）按后面的归属闸走。 */
-    if (
-      editScope &&
-      hasXY &&
-      !pointInScopeHost(editScope.host, spec.x, spec.y) &&
-      spec.parentSuperId == null &&
-      spec.packIntoSuper == null
-    ) {
-      scopeSkip(I18n.t("新节点 ") + alias);
-      continue;
-    }
-    const wantTitle = String(spec.title || NODE_DEFAULTS[kind].title || alias);
-    node.title = uniqueNodeTitle(wantTitle);
-    applyNodePatch(node, spec, warnings);
-    /* 开发节点：创建即按功能色卡上色（spec 显式给了 devColor 则不覆盖；
-       须在 title / note 定稿后调用，归类靠这两项推断） */
-    if (typeof devAutoColorNode === "function") devAutoColorNode(node);
-    await importImagePathsForNode(node, imagePathsFromPatch(spec), warnings);
-    node.title = uniqueNodeTitle(node.title || wantTitle, node.id);
-    ensureDefaultSavePath(node);
-    /* 新建节点仍给「美观尺寸」（下方 sizeNodeForContent）—— 只对**已存在**节点不改尺寸。
-       没给坐标的新节点先落在 origin 附近，等父壳 / 父任务解析完（下面那次统一摆位）
-       再就近找空位：那时才拿得到真实的层级，局部坐标才对得上。 */
-    sizeNodeForContent(node);
-    S.wf.nodes.push(node);
-    aliasMap.set(alias, node);
-    aliasById[node.id] = alias;
-    if (hasXY) newXY.add(node.id);
-    created.push(node);
-  }
-
-  for (const node of created) {
-    /* media gens: path is set in-node; no bound save */
-  }
-
-  for (const spec of creates) {
-    const alias = String((spec && spec.alias) || "").trim();
-    const node = aliasMap.get(alias);
-    if (!node || !spec || spec.parentTaskId == null) continue;
-    const raw = String(spec.parentTaskId).trim();
-    if (!raw) {
-      node.parentTaskId = "";
-      continue;
-    }
-    const p = resolveCanvasRef(raw, aliasMap, warnings);
-    if (p && p.kind === "task" && p.id !== node.id) node.parentTaskId = p.id;
-    else if (raw && warnings)
-      warnings.push(I18n.t("无效的父任务：") + raw);
-  }
-
-  /* 收纳进节点层：与 parentTaskId 一样，须在整批 create 入 aliasMap 后再解析 alias/title */
-  const applyParentSuper = (node, raw, warningsArr) => {
-    if (!node) return;
-    /* 局部画布（scope）：界外节点不收纳 —— 收纳会把界外节点拖进这颗壳，等于改到界外 */
-    if (editScope && node.id !== editScope.host.id && outOfNodeScope(node)) {
-      scopeSkip(node.title || node.id);
-      return;
-    }
-    const token = String(raw == null ? "" : raw).trim();
-    if (!token) {
-      /* scope 生效且没点名父壳 → 默认落进 scope 这颗壳（用户语义就是"在这颗壳里编辑"） */
-      if (editScope && node.id !== editScope.host.id) {
-        node.parentSuperId = editScope.host.id;
-        node.parentTaskId = editScope.host.parentTaskId || node.parentTaskId || "";
-        rewriteNodePathsForSuperContext(node);
-        return;
-      }
-      node.parentSuperId = "";
-      return;
-    }
-    const p = resolveCanvasRef(token, aliasMap, warningsArr);
-    if (p && p.kind === "super" && canMoveNodeIntoSuper(p, node)) {
-      if (editScope && !editAllowed.has(p.id)) {
-        scopeSkip(p.title || p.id);
-        return;
-      }
-      node.parentSuperId = p.id;
-      node.parentTaskId = p.parentTaskId || node.parentTaskId || "";
-      rewriteNodePathsForSuperContext(node);
-    } else if (token && warningsArr) {
-      warningsArr.push(I18n.t("无效的节点层：") + token);
-    }
-  };
-  for (const spec of creates) {
-    const alias = String((spec && spec.alias) || "").trim();
-    const node = aliasMap.get(alias);
-    if (!node || !spec) continue;
-    if (spec.parentSuperId == null && spec.packIntoSuper == null) continue;
-    const raw =
-      spec.parentSuperId != null ? spec.parentSuperId : spec.packIntoSuper;
-    applyParentSuper(node, raw, warnings);
-  }
-
-  /* ── 新节点就近摆位（2026-02 需求：编辑不再自动排版）──────────────
-     父壳 / 父任务已定，这里的层级与坐标系才是最终口径 —— 见 applyNewNodePlacement。 */
-  applyNewNodePlacement(created, {
-    origin: originHint,
-    pinned: newXY,
-    outOfScope: outOfEditScope,
+  /* 引擎只认 doc + params + 宿主；pushHistory / 许可闸 / 回执与 warnings 都在它里面，
+     顺序与搬家前一致（拒绝闸先于 pushHistory，pushHistory 先于任何写操作）。 */
+  const out = await MTCanvasDocEdit.applyEdit(editWf, params, {
+    i18n: I18n,
+    runKey,
+    host: canvasEditHostCtx(),
   });
-
-  for (const spec of updates) {
-    const token = (spec && (spec.id || spec.alias || spec.title)) || "";
-    const node = resolveCanvasRef(token, aliasMap, warnings);
-    if (!node) continue;
-    /* 局部画布：scope 界外的节点一律不碰（跳过而不是整体报错 —— 一批里其余照做） */
-    if (outOfEditScope(node)) {
-      scopeSkip(node.title || node.id);
-      continue;
-    }
-    if (running.has(node.id) && spec.setTitle) {
-      warnings.push(I18n.t("运行中的节点未改标题：") + node.title);
-      spec = Object.assign({}, spec, { setTitle: undefined });
-    }
-    if (
-      running.has(node.id) &&
-      (spec.model != null ||
-        spec.providerId != null ||
-        spec.provider != null)
-    ) {
-      warnings.push(I18n.t("运行中的节点未改模型：") + node.title);
-      spec = Object.assign({}, spec, {
-        model: undefined,
-        providerId: undefined,
-        provider: undefined,
-      });
-    }
-    applyNodePatch(node, spec, warnings);
-    await importImagePathsForNode(node, imagePathsFromPatch(spec), warnings);
-    if (spec.refs) ensurePromptRefs(node, spec.refs, aliasMap);
-    /* 2026-02 需求：**已存在节点的尺寸不再被自动重算**。原先这里跟着调
-       sizeNodeForContent()，会把用户 / 模型调好的 w/h 按新正文长短改掉（还会缩回默认尺寸）。
-       现在尺寸只认本笔显式给的 w/h（applyNodePatch 里那两行）与用户手拖。 */
-    updated.push({
-      id: node.id,
-      title: node.title,
-      kind: node.kind,
-      /* 回执自足：带上位置 / 尺寸与端口占用摘要，模型改完不必再 canvas_get 回读 */
-      x: Math.round(Number(node.x) || 0),
-      y: Math.round(Number(node.y) || 0),
-      w: Math.round(Number(node.w) || 0),
-      h: Math.round(Number(node.h) || 0),
-      ports: editNodePortSummary(node),
-      hasImage: nodeHasImage(node),
-      providerId: node.providerId || undefined,
-      provider: node.provider || undefined,
-      model: node.model || undefined,
-      size:
-        node.kind === "proc_image"
-          ? IMAGE_SIZES.includes(node.size)
-            ? node.size
-            : DEFAULT_IMAGE_SIZE
-          : undefined,
-    });
-  }
-
-  /* update 里的 parentSuperId 可能是 alias/title：在 patch 后再用 aliasMap 解析一次 */
-  for (const spec of updates) {
-    if (!spec || (spec.parentSuperId == null && spec.packIntoSuper == null))
-      continue;
-    const token = (spec.id || spec.alias || spec.title) || "";
-    const node = resolveCanvasRef(token, aliasMap, warnings);
-    if (!node) continue;
-    const raw =
-      spec.parentSuperId != null ? spec.parentSuperId : spec.packIntoSuper;
-    applyParentSuper(node, raw, warnings);
-  }
-
-  for (const spec of creates) {
-    const alias = String((spec && spec.alias) || "").trim();
-    const node = aliasMap.get(alias);
-    if (node && spec && spec.refs) ensurePromptRefs(node, spec.refs, aliasMap);
-  }
-
-  for (const node of created) {
-    if (node && node.kind === "task") ensureTaskScaffold(node);
-  }
-
-  for (const pair of disconnects) {
-    const a = resolveCanvasRef(pair && pair.from, aliasMap, warnings);
-    const b = resolveCanvasRef(pair && pair.to, aliasMap, warnings);
-    if (!a || !b) continue;
-    if (outOfEditScope(a) || outOfEditScope(b)) {
-      scopeSkip((a.title || a.id) + " → " + (b.title || b.id));
-      continue;
-    }
-    const before = S.wf.wires.length;
-    S.wf.wires = S.wf.wires.filter(
-      (w) =>
-        !(
-          (w.from === a.id && w.to === b.id) ||
-          (w.rel && w.from === b.id && w.to === a.id)
-        ),
-    );
-    if (S.wf.wires.length === before) warnings.push(I18n.t("没有可断开的连线：") + a.title + " → " + b.title);
-    else clearDownstream(b.id);
-  }
-
-  for (const pair of connects) {
-    const a = resolveCanvasRef(pair && pair.from, aliasMap, warnings);
-    const b = resolveCanvasRef(pair && pair.to, aliasMap, warnings);
-    if (!a || !b) continue;
-    if (outOfEditScope(a) || outOfEditScope(b)) {
-      scopeSkip((a.title || a.id) + " → " + (b.title || b.id));
-      continue;
-    }
-    if (pair && pair.rel) {
-      /* 关系线：仅表示关系，不走数据流校验 */
-      const err = relConnectError(a.id, b.id);
-      if (err) {
-        warnings.push(a.title + " ↔ " + b.title + "：" + err);
-        continue;
-      }
-      addRelWire(a.id, b.id, {
-        relArrow: pair.relArrow,
-        relLabel: pair.relLabel,
-      });
-      connected.push({ from: a.id, to: b.id, fromTitle: a.title, toTitle: b.title, rel: true });
-      continue;
-    }
-    /* 显式端子（toIndex）：不传 = null = 沿用原来的「自动选槽」。媒体节点
-       （breeze_gen 的 0/1/2/3 与端口 4 控制、video_gen 的控制口在 0）靠它才能落对槽位。 */
-    const wantIndex =
-      pair && pair.toIndex != null && pair.toIndex !== "" ? Number(pair.toIndex) : null;
-    if (wantIndex != null && (!Number.isInteger(wantIndex) || wantIndex < 0)) {
-      warnings.push(a.title + " → " + b.title + "：toIndex 非法（需 0 起始整数）");
-      continue;
-    }
-    /* 端子归一：数据线落到越界 / 控制端子时改落最近空闲的数据端子（静默改落，与手拖同一口径） */
-    const useIndex = dataInPortIndexForWire(b, a, pair.fromIndex || 0, wantIndex);
-    const err = connectError(a.id, b.id, useIndex, pair.fromIndex || 0);
-    if (err) {
-      /* 跨节点层是硬规则不许直连：自动改写成经边界端子的逐层桥接（同层不在此列）。
-         连成 → 记一条 viaSuper；连不成 → bridgeNodesBetween 已把原因写进 warnings。 */
-      if (!wireKeepsLayerRule(a, b)) {
-        const bridgeOut = {};
-        const created = bridgeNodesBetween(a, b, pair.fromIndex || 0, useIndex, warnings, bridgeOut);
-        if (created > 0) {
-          const entry = {
-            from: a.id,
-            to: b.id,
-            fromTitle: a.title,
-            toTitle: b.title,
-            viaSuper: true,
-            wires: created,
-          };
-          if (bridgeOut.replaced && bridgeOut.replaced.length)
-            entry.replaced = bridgeOut.replaced;
-          connected.push(entry);
-        }
-        continue;
-      }
-      /* 端口 / 接法预检：把候选端子清单与正确接法一并回给模型，
-         省掉「报错 → 再读图 → 再改」的往返。 */
-      const adv = connectPortAdvice(a.id, b.id, useIndex, pair.fromIndex || 0, err);
-      warnings.push(
-        a.title + " → " + b.title + "：" + err +
-          (adv && adv.suggestion ? " · " + adv.suggestion : ""),
-      );
-      continue;
-    }
-    /* 已占用的端子 → 先顶掉旧的同类线（替换语义）：回执里点名被换掉的上游与端子号，
-       这样 Agent 不会把「替换」误当成「新加了一条线」。 */
-    const replacedWires = dropWiresForReplace(b, useIndex, isControlKind(a));
-    addWire(a.id, b.id, useIndex, { fromIndex: pair.fromIndex || 0 });
-    const entry = { from: a.id, to: b.id, fromTitle: a.title, toTitle: b.title };
-    if (replacedWires.length) entry.replaced = replacedWires;
-    connected.push(entry);
-  }
-
-  /* 跨节点层连接：任意层级 / 任意节点层内的两个节点自动贯通。
-     局部画布（scope）：界外的对先剔掉再交给它，避免"顺手"连到壳外面去。 */
-  const superPairs = Array.isArray(params.superConnect) ? params.superConnect : [];
-  if (superPairs.length) {
-    const usePairs = editScope
-      ? superPairs.filter((p) => {
-          const a = resolveCanvasRef(p && p.from, aliasMap, warnings);
-          const b = resolveCanvasRef(p && p.to, aliasMap, warnings);
-          if (!a || !b) return false;
-          if (outOfEditScope(a) || outOfEditScope(b)) {
-            scopeSkip((a.title || a.id) + " → " + (b.title || b.id));
-            return false;
-          }
-          return true;
-        })
-      : superPairs;
-    if (usePairs.length) {
-      applySuperConnect(usePairs, { aliasMap, warnings, connected });
-    }
-  }
-
-  for (const token of removes) {
-    const node = resolveCanvasRef(token, aliasMap, warnings);
-    if (!node) continue;
-    if (outOfEditScope(node)) {
-      scopeSkip(node.title || node.id);
-      continue;
-    }
-    if (running.has(node.id)) {
-      warnings.push(I18n.t("不能删除正在运行的节点：") + node.title);
-      continue;
-    }
-    removed.push(node.id);
-    if (node.kind === "task") {
-      for (const id of taskDescendantIds(node.id)) removed.push(id);
-    }
-  }
-  if (removed.length) {
-    const expanded = new Set(removed);
-    const finalIds = [];
-    for (const id of expanded) {
-      const n = nodeById(id);
-      if (!n) continue;
-      if (isPinnedCtrl(n) && !(n.parentTaskId && expanded.has(n.parentTaskId))) {
-        warnings.push(I18n.t("起点 / 终点为固定节点，无法删除") + "：" + n.title);
-        continue;
-      }
-      finalIds.push(id);
-    }
-    removed.length = 0;
-    removed.push(...finalIds);
-  }
-  if (removed.length) {
-    const set = new Set(removed);
-    S.wf.nodes = S.wf.nodes.filter((n) => !set.has(n.id));
-    S.wf.wires = S.wf.wires.filter((w) => !set.has(w.from) && !set.has(w.to));
-    for (const g of S.wf.groups) {
-      ensureGroupArrays(g);
-      g.nodeIds = g.nodeIds.filter((id) => !set.has(id));
-    }
-    pruneEmptyGroups();
-    for (const n of created) {
-      if (set.has(n.id)) aliasMap.delete(n.id);
-    }
-    /* Agent 侧删节点绕过了 deleteNodes：设置窗若绑在被删节点上同样必须关掉
-       （quiet —— 这条路径的反馈走 warnings 回执，不弹用户提示；本函数随后自己重绘落盘）。 */
-    closeNodeSettingsDialogIfStale({
-      silentRerender: true,
-      skipSave: true,
-      quiet: true,
-    });
-  }
-
-  const createdLive = created.filter((n) => nodeById(n.id));
-  if (doLayout) {
-    const targets = (
-      createdLive.length && params.layout !== true
-        ? createdLive
-        : createdLive.length
-          ? createdLive
-          : (S.wf.nodes || []).filter((n) => !running.has(n.id))
-    ).filter((n) => !editScope || editAllowed.has(n.id));
-    /* 分「所属层级」各自排版：壳层内子节点用的是舞台局部坐标，
-       与顶层画布坐标不是同一个空间，混在一起排会排飞（开发节点架构图就踩过） */
-    const groups = new Map();
-    for (const n of targets) {
-      const tid = nodeParentTaskId(n) || "";
-      const sid = nodeParentSuperId(n) || "";
-      const key = tid + "|" + sid;
-      if (!groups.has(key)) groups.set(key, { tid, sid, key, list: [] });
-      groups.get(key).list.push(n);
-    }
-    S._editLayoutGroups = groups;
-    for (const g of groups.values()) {
-      const list = g.list;
-      const set = new Set(list.map((n) => n.id));
-      const obstacles = (S.wf.nodes || []).filter((n) => {
-        if (set.has(n.id) || running.has(n.id) || isSuperIoNode(n)) return false;
-        return g.sid
-          ? nodeParentSuperId(n) === g.sid
-          : !nodeParentSuperId(n) && nodeParentTaskId(n) === g.tid;
-      });
-      const origin = g.sid
-        ? { x: snap(16), y: snap(16) }
-        : createdLive.length && params.layout !== true
-          ? layoutOrigin(obstacles)
-          : { x: snap(48), y: snap(48) };
-      /* agent 显式给过 x/y 的老节点当起始锚点：仍参与排版，但尽量少位移；
-         本次新建的节点不算锚点（它们还没被用户摆过） */
-      const anchored = list.some((n) => createdLive.indexOf(n) < 0);
-      const report = layoutFlowEx(
-        list,
-        S.wf.wires || [],
-        origin,
-        obstacles,
-        anchored ? { preferAnchor: true } : {},
-      );
-      g.report = report;
-      const host = g.sid && !g.tid ? nodeById(g.sid) : null;
-      g.label = host ? host.title || host.id : I18n.t("顶层画布");
-      /* 宽高比不再是硬约束：只在「排出来细长到不好读」时给一句提示（不缩节点、不放宽缝宽） */
-      const ratio = report && report.h > 0 ? report.w / report.h : 1;
-      if (report && ratio > 3) {
-        warnings.push(
-          I18n.t(
-            "排版提示：「{label}」这层排成了长条（宽 {w} × 高 {h}）。节点之间已按 1 个网格间距排开、互不重叠；想更方正可再增删节点或手动微调。",
-            {
-              label: g.label || "",
-              w: Math.round(report.w || 0),
-              h: Math.round(report.h || 0),
-            },
-          ),
-        );
-      }
-    }
-    /* 壳层按新的内容范围撑开，否则子块 / 关系线被 720×480 默认舞台裁掉 */
-    fitAllOpenSuperShells();
-  }
-
-  /* 绘制标注：在节点排版之后创建，便于 around 包住最终坐标 */
-  const resolveAroundNodes = (list) => {
-    const out = [];
-    for (const t of list || []) {
-      const n = resolveCanvasRef(t, aliasMap, warnings);
-      if (n) out.push(n);
-    }
-    return out;
-  };
-  const applyAroundToSpec = (spec) => {
-    const around = spec.around || spec.nodes || spec.wrap;
-    if (!around || !around.length) return spec;
-    const ns = resolveAroundNodes(around);
-    if (!ns.length) return spec;
-    let minX = Infinity,
-      minY = Infinity,
-      maxX = -Infinity,
-      maxY = -Infinity;
-    for (const n of ns) {
-      minX = Math.min(minX, n.x);
-      minY = Math.min(minY, n.y);
-      maxX = Math.max(maxX, n.x + (n.w || 0));
-      maxY = Math.max(maxY, n.y + (n.h || 0));
-    }
-    const pad = Math.max(0, Number(spec.pad) || 36);
-    const titleH =
-      spec.kind === "box" || !spec.kind || spec.kind === "frame"
-        ? 0
-        : 0;
-    return Object.assign({}, spec, {
-      x: minX - pad,
-      y: minY - pad - titleH,
-      w: maxX - minX + pad * 2,
-      h: maxY - minY + pad * 2,
-    });
-  };
-
-  const applyMarkParentSuper = (m, raw, warningsArr) => {
-    if (!m) return;
-    const token = String(raw == null ? "" : raw).trim();
-    if (!token) {
-      /* scope 生效且没点名归属 → 绘制也落进这颗壳（与节点同口径） */
-      if (editScope) m.parentSuperId = editScope.host.id;
-      else m.parentSuperId = "";
-      return;
-    }
-    const p = resolveCanvasRef(token, aliasMap, warningsArr);
-    if (p && p.kind === "super") {
-      if (editScope && !editAllowed.has(p.id)) {
-        scopeSkip(p.title || p.id);
-        return;
-      }
-      m.parentSuperId = p.id;
-      m.parentTaskId = p.parentTaskId || m.parentTaskId || "";
-    } else if (token && warningsArr) {
-      warningsArr.push(I18n.t("无效的节点层：") + token);
-    }
-  };
-  for (const raw of createMarks) {
-    const alias = String((raw && raw.alias) || "").trim();
-    let spec = applyAroundToSpec(raw || {});
-    if (!spec.kind && (spec.around || spec.nodes || spec.wrap))
-      spec = Object.assign({ kind: "box" }, spec);
-    const m = makeMarkFromSpec(spec, warnings);
-    if (!m) continue;
-    if (raw && (raw.parentSuperId != null || raw.packIntoSuper != null)) {
-      const rawSuper =
-        raw.parentSuperId != null ? raw.parentSuperId : raw.packIntoSuper;
-      applyMarkParentSuper(m, rawSuper, warnings);
-    }
-    marksOf().push(m);
-    if (alias) {
-      if (markAliasMap.has(alias))
-        warnings.push(I18n.t("重复绘制 alias：") + alias);
-      else markAliasMap.set(alias, m);
-    }
-    /* 框体旁可选标题文字：label / title */
-    const label = String((raw && (raw.label || raw.title)) || "").trim();
-    if (label && m.kind === "box") {
-      const tm = makeMarkFromSpec(
-        {
-          kind: "text",
-          x: m.x + 8,
-          y: m.y - 28,
-          w: Math.max(120, Math.min(m.w - 16, 280)),
-          h: 32,
-          text: label,
-          fontSize: Number(raw.labelSize) || 15,
-          color: m.color,
-        },
-        warnings,
-      );
-      if (tm) {
-        marksOf().push(tm);
-        createdMarks.push({
-          alias: alias ? alias + "_label" : "",
-          id: tm.id,
-          kind: tm.kind,
-          text: tm.text,
-          x: tm.x,
-          y: tm.y,
-        });
-      }
-    }
-    createdMarks.push({
-      alias: alias || "",
-      id: m.id,
-      kind: m.kind,
-      text: m.kind === "text" ? m.text : label || undefined,
-      x: m.x,
-      y: m.y,
-      w: m.w,
-      h: m.h,
-    });
-  }
-
-  for (const raw of updateMarks) {
-    const token = (raw && (raw.id || raw.alias || raw.title || raw.text)) || "";
-    const m = resolveMarkRef(token, markAliasMap, warnings);
-    if (!m) continue;
-    if (outOfMarkScope(m)) {
-      scopeSkip(m.kind + " " + (m.text || m.id));
-      continue;
-    }
-    let patch = raw;
-    if (raw.around || raw.nodes || raw.wrap) {
-      patch = applyAroundToSpec(
-        Object.assign({}, raw, { kind: m.kind }),
-      );
-    }
-    applyMarkPatch(m, patch, warnings);
-    updatedMarks.push({
-      id: m.id,
-      kind: m.kind,
-      text: m.kind === "text" ? m.text : undefined,
-      x: m.x,
-      y: m.y,
-      w: m.w,
-      h: m.h,
-    });
-  }
-
-  if (removeMarksList.length) {
-    const delIds = [];
-    for (const token of removeMarksList) {
-      const m = resolveMarkRef(token, markAliasMap, warnings);
-      if (!m) continue;
-      if (outOfMarkScope(m)) {
-        scopeSkip(m.kind + " " + (m.text || m.id));
-        continue;
-      }
-      delIds.push(m.id);
-    }
-    if (delIds.length) {
-      const set = new Set(delIds);
-      S.wf.marks = marksOf().filter((m) => !set.has(m.id));
-      for (const g of S.wf.groups || []) {
-        ensureGroupArrays(g);
-        g.markIds = g.markIds.filter((id) => !set.has(id));
-      }
-      pruneEmptyGroups();
-      removedMarks.push(...delIds);
-    }
-  }
-
-  /* 组：在节点排版与绘制创建之后，可同时纳入节点与绘制 */
-  let grouped = null;
-  if (params.group && typeof params.group === "object") {
-    const gspec = params.group;
-    let nodeIds = [];
-    let markIds = [];
-    if (Array.isArray(gspec.nodes) && gspec.nodes.length) {
-      for (const t of gspec.nodes) {
-        /* 传入真实 warnings：resolveCanvasRef 找不到成员时会 push 提示，
-           传 null 会在 null 上 push 抛 TypeError（曾导致建图调用半途崩溃） */
-        const n = resolveCanvasRef(t, aliasMap, warnings);
-        if (n) {
-          nodeIds.push(n.id);
-          continue;
-        }
-        const m = resolveMarkRef(t, markAliasMap, warnings);
-        if (m) markIds.push(m.id);
-        else warnings.push(I18n.t("组内找不到成员：") + t);
-      }
-    } else {
-      nodeIds = createdLive.map((n) => n.id);
-    }
-    if (Array.isArray(gspec.marks) && gspec.marks.length) {
-      for (const t of gspec.marks) {
-        const m = resolveMarkRef(t, markAliasMap, warnings);
-        if (m) markIds.push(m.id);
-      }
-    } else if (
-      !(Array.isArray(gspec.nodes) && gspec.nodes.length) &&
-      createdMarks.length
-    ) {
-      /* 未显式列 marks 且未列 nodes：把本批 createMarks 一并入组 */
-      markIds = createdMarks.map((x) => x.id).filter(Boolean);
-    }
-    nodeIds = nodeIds.filter((id, i) => nodeIds.indexOf(id) === i);
-    markIds = markIds.filter((id, i) => markIds.indexOf(id) === i);
-    /* scope 生效：组只能收纳壳内成员（成组会把成员一起搬动 / 缩放，界外成员一并被挪） */
-    if (editScope) {
-      const beforeN = nodeIds.length;
-      nodeIds = nodeIds.filter((id) => editAllowed.has(id));
-      if (nodeIds.length !== beforeN) scopeSkip(I18n.t("组"));
-      markIds = markIds.filter((id) => {
-        const m = marksOf().filter((x) => x.id === id)[0];
-        return m && !outOfMarkScope(m);
-      });
-    }
-    if (nodeIds.length || markIds.length) {
-      grouped = {
-        id: uid("g"),
-        title: String(gspec.title || I18n.t("组")).trim() || I18n.t("组"),
-        nodeIds,
-        markIds,
-      };
-      S.wf.groups.push(grouped);
-    }
-  }
-
-  /* 孤儿防护：本笔编辑产生的节点 / 绘制不允许挂在画布上不存在的节点层下
-     （历史 bug：整棵开发节点架构图挂到幽灵父级后，最外层功能块从此消失，
-      内部块仍在，但左侧栏与层级视图全部错乱） */
-  {
-    const liveIds = new Set((S.wf.nodes || []).map((n) => n.id));
-    let orphanNodes = 0;
-    for (const n of createdLive) {
-      const sid = nodeParentSuperId(n);
-      if (sid && !liveIds.has(sid)) {
-        n.parentSuperId = "";
-        orphanNodes++;
-      }
-    }
-    for (const rec of createdMarks) {
-      const m = rec && rec.id ? markById(rec.id) : null;
-      if (m && m.parentSuperId && !liveIds.has(m.parentSuperId)) {
-        m.parentSuperId = "";
-        orphanNodes++;
-      }
-    }
-    if (orphanNodes) {
-      warnings.push(
-        I18n.t("已清理 ") + orphanNodes + I18n.t(" 个指向不存在节点层的引用"),
-      );
-    }
-  }
-
-  /* 收尾落盘：只有「这张就是用户正看着的画布」才重绘 + 走前台保存通道；
-     否则（会话所属画布在后台 / 用户中途切走了）不碰他的画面，直接按对象自己的 id
-     落盘 —— persistWf 用 wf.id 写 wfSave，写谁就是谁，绝不会串到前台那张图上。 */
-  if (editWf === currentVisibleWf() && S._canvasEditVisible !== false) {
-    renderCanvas();
-    /* 不平移/缩放用户视角：节点在世界坐标中更新，相机保持不动 */
-    renderStatus();
-    if (typeof renderSidebar === "function" && S.sidebarOpen) renderSidebar();
-    scheduleSave(true);
+  const receipt = out.receipt;
+  if (out.effects && out.effects.layoutGroups)
+    S._editLayoutGroups = out.effects.layoutGroups;
+  /* 「没有改动」：与搬家前一致 —— 不重绘、不落盘，直接回一份无参快照 */
+  if (out.effects && out.effects.noChange)
+    return Object.assign(receipt, canvasSnapshot());
+  /* 收尾：只有「这张就是用户正看着的画布」才重绘 + 走前台保存通道；否则按对象自己的
+     id 落盘。事务开着且有回合归属 → 攒到回合末（见上方 canvasEditTxnOn 的说明）。 */
+  const visible = editWf === currentVisibleWf() && S._canvasEditVisible !== false;
+  if (txnable && canvasEditTxnOn()) {
+    canvasEditTxnPending().set(runKey, { wf: editWf, visible });
   } else {
-    persistWf(editWf);
+    canvasEditCommitNow(editWf, visible);
   }
-
-  const bits = [];
-  if (createdLive.length) bits.push(I18n.t("创建 ") + createdLive.length + I18n.t(" 个节点"));
-  if (createdMarks.length)
-    bits.push(I18n.t("绘制 {n} 个", { n: createdMarks.length }));
-  if (connected.length) bits.push(I18n.t("连接 ") + connected.length + I18n.t(" 条线"));
-  if (removed.length) bits.push(I18n.t("删除 ") + removed.length + I18n.t(" 个节点"));
-  if (doLayout) bits.push(I18n.t("已排版"));
-  if (bits.length) toast(I18n.t("智能助手已更新画布：") + bits.join(" · "), "ok");
-
-  /* edit 收尾一次性静态校验：本笔触碰到的节点 / 连线统一过一遍，
-     warnings 合并进本轮回执（旧口径的批量 N² 检查也并入这一趟）。 */
-  const touchedIds = new Set();
-  for (const n of createdLive) touchedIds.add(n.id);
-  for (const u of updated) if (u && u.id) touchedIds.add(u.id);
-  for (const c of connected) {
-    if (c && c.from) touchedIds.add(c.from);
-    if (c && c.to) touchedIds.add(c.to);
-  }
-  if (grouped) for (const id of grouped.nodeIds || []) touchedIds.add(id);
-  collectEditStaticWarnings(touchedIds, warnings);
-  /* 跨节点层硬规则的收口：改 parentSuperId / 删节点都可能留下层外的野线，
-     每次编辑结束静默剪掉（与装箱 / 拆箱同一口径，不提示）。 */
-  pruneInvalidSuperBoundaryWires();
-
+  canvasEditToast(receipt, canvasEditWantsLayout(params));
   return Object.assign(
-    {
-      ok: true,
-      created: createdLive.map((n) => ({
-        alias: aliasById[n.id] || "",
-        id: n.id,
-        kind: n.kind,
-        title: n.title,
-        x: n.x,
-        y: n.y,
-        w: n.w,
-        h: n.h,
-        ports: editNodePortSummary(n),
-        hasImage: nodeHasImage(n),
-        size:
-          n.kind === "proc_image"
-            ? IMAGE_SIZES.includes(n.size)
-              ? n.size
-              : DEFAULT_IMAGE_SIZE
-            : undefined,
-        model: n.model || undefined,
-        ctrlAction: n.kind === "control" ? n.ctrlAction || "run" : undefined,
-        ctrlFillOnly: n.kind === "control" ? !!n.ctrlFillOnly : undefined,
-        globalRefs: canUseGlobalRefs(n) ? !!n.globalRefs : undefined,
-      })),
-      updated,
-      createdMarks,
-      updatedMarks,
-      removedMarks,
-      connected,
-      removed,
-      grouped: grouped
-        ? {
-            id: grouped.id,
-            title: grouped.title,
-            nodeIds: grouped.nodeIds,
-            markIds: grouped.markIds || [],
-          }
-        : undefined,
-      warnings,
-    },
-    scopeExtra,
+    receipt,
     canvasSnapshot({ scope: params.scope, scopeDepth: params.scopeDepth }),
   );
 }

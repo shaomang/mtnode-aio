@@ -3,6 +3,49 @@ const { contextBridge, ipcRenderer, webUtils } = require('electron');
 const { pathToFileURL } = require('url');
 const path = require('path');
 
+/* ── dsh:event 单监听分发 ──────────────────────────────────────────────────
+   网关事件统一从**一条** ipcRenderer.on('dsh:event') 进来，再按 reqId / type 派发给订阅者：
+     · dshRun            → 按 reqId 认领（收到 done 即退订，与 removeListener 同序：先退订再回调）
+     · dshOnIxDrop / onSpeechState / onBrowserFrame / dshOnActivity / dshOnSubagent → 按 type 认领
+     · dshOnEventAny     → 不筛，整帧收
+   为什么不再每条 API 各挂一条监听：一次长回答的正文与思考是增量帧（数千帧），每帧都要在
+   每条监听里各跑一遍 if 判断，重复开销纯属浪费；合成一条后每帧只查两张表。
+   语义逐条对齐既有实现：回调签名不变（dshRun 收整帧，其余收 msg.data || {}）、
+   各 API 照旧返回退订函数、异常仍只打日志不打断其它订阅者。
+   挂在模块作用域：preload 进程级只注册这一次，订阅表随 API 的调用 / 退订增减。 */
+const dshRunSubs = new Map();   // reqId -> Set<{cb,label,silent}>
+const dshTypeSubs = new Map();  // type  -> Set<{cb,label,silent}>
+const dshAnySubs = new Set();   // 通用订阅 {cb,label,silent}
+function dshSubEntry(cb, label, silent) {
+  return { cb, label, silent: !!silent };
+}
+function dshSubAdd(table, key, entry) {
+  let set = table.get(key);
+  if (!set) { set = new Set(); table.set(key, set); }
+  set.add(entry);
+  return () => { set.delete(entry); if (!set.size) table.delete(key); };
+}
+function dshSubCall(entry, arg) {
+  try { entry.cb(arg); } catch (e) { if (!entry.silent) console.error(entry.label + ' cb error:', e); }
+}
+function dshSubCallAll(set, arg) {
+  if (!set || !set.size) return;
+  for (const entry of Array.from(set)) dshSubCall(entry, arg);
+}
+function dshEventDispatch(_e, msg) {
+  if (!msg) return;
+  if (msg.reqId) {
+    const runs = dshRunSubs.get(msg.reqId);
+    if (runs) {
+      if (msg.type === 'done') dshRunSubs.delete(msg.reqId);
+      dshSubCallAll(runs, msg);
+    }
+  }
+  dshSubCallAll(dshTypeSubs.get(msg.type), msg.data || {});
+  if (dshAnySubs.size) for (const entry of Array.from(dshAnySubs)) dshSubCall(entry, msg);
+}
+ipcRenderer.on('dsh:event', dshEventDispatch);
+
 contextBridge.exposeInMainWorld('api', {
   toFileUrl: (p) => pathToFileURL(p).href,
   getPathForFile: (f) => webUtils.getPathForFile(f),
@@ -120,8 +163,9 @@ contextBridge.exposeInMainWorld('api', {
      尾部增长条目的最新内容；主进程追加到 <id>.jsonl，攒够阈值 / 切换会话 / 收尾 / 退出时
      再压回基线）；payload.compact = 点名让主进程把这几条会话的追加段压回基线。
      sessionBody = 按需读正文（懒加载：选中会话 / 轨迹·改动 / 全局搜索 / 续跑时）；
-     sessionPatch = 按 id 改白名单字段（只 workspace，不读正文）—— 工作目录体检修正旧
-     路径用它：既没读回正文、也没标脏的会话会被 sessionSave 整条跳过，改动落不了盘。
+     sessionPatch = 按 id 改白名单字段（workspace 与标题三键 title / titleAuto / titleLocked，
+     不读正文）—— 工作目录体检修正旧路径、改名后把标题写进会话文件本体用它：
+     既没读回正文、也没标脏的会话会被 sessionSave 整条跳过，改动落不了盘。
      实现与三条硬口径见主进程 agent-sessions-store.js 文件头。 */
   sessionLoad: () => ipcRenderer.invoke('session:load'),
   sessionSave: (payload) => ipcRenderer.invoke('session:save', payload),
@@ -131,8 +175,24 @@ contextBridge.exposeInMainWorld('api', {
   wfList: () => ipcRenderer.invoke('workflow:list'),
   wfLoad: (id) => ipcRenderer.invoke('workflow:load', id),
   wfSave: (id, data) => ipcRenderer.invoke('workflow:save', { id, data }),
-  /* 删除画布：兼容旧调用（传 id 字符串）；新调用传 { id, expectId, expectName }
-     由主进程双重校验后移入回收站（软删），失败返回 { ok:false, code, error }。 */
+  /* 画布文档服务（开关 canvases.docService = off|read|write）：读侧 = 快照 / 状态 / 列表 /
+     作废缓存；写侧 = canvasDocEdit（write 档才开：服务改文档并落盘，回 receipt + diff，
+     渲染层把 diff 合进 S.wf）。off 档主进程直接回 { ok:false, error:'off' }，渲染层不会走到
+     这里（它先看自己的 S.config），所以老路行为不变。 */
+  canvasDocGet: (id, opts) => ipcRenderer.invoke('canvasdoc:get', { id, opts: opts || {} }),
+  canvasDocStatus: () => ipcRenderer.invoke('canvasdoc:status'),
+  canvasDocList: () => ipcRenderer.invoke('canvasdoc:list'),
+  canvasDocInvalidate: (id) => ipcRenderer.invoke('canvasdoc:invalidate', { id }),
+  canvasDocEdit: (id, params, opts) =>
+    ipcRenderer.invoke('canvasdoc:edit', {
+      id,
+      params: params || {},
+      runKey: String((opts && opts.runKey) || ''),
+      snap: Number((opts && opts.snap) || 0) || 0,
+    }),
+  /* 删除画布：兼容旧调用（传 id 字符串）；新调用传 { id, expectId, expectName }，
+     要连画布的项目文件夹（workspace）一起删再加 { deleteWorkspace:true, expectWorkspace }。
+     由主进程双重校验后移入回收站（软删 / 文件夹进系统回收站），失败返回 { ok:false, code, error }。 */
   wfDelete: (idOrOpts, maybeOpts) => {
     const isPlainId = typeof idOrOpts === 'string' || typeof idOrOpts === 'number';
     const payload = isPlainId
@@ -263,6 +323,31 @@ contextBridge.exposeInMainWorld('api', {
     return () => ipcRenderer.removeListener('fn:event', handler);
   },
   openInAppDialog: (opts) => ipcRenderer.invoke('shell:openInAppDialog', opts || {}),
+  /* 幻灯片导出（一页一张 PDF + 逐页 PNG）与演讲者第二屏：主窗的 window.open 被拒，
+     第二屏必须由主进程开窗（见 slides-export.js 与 main.js 的 research:slidesPrint*）。
+     slidesPrint({ html, pdfPath, pngDir, base, aspect }) → { ok, pdf, pngs } */
+  slidesPrint: (o) => ipcRenderer.invoke('research:slidesPrint', o || {}),
+  slidesPresenter: (html) => ipcRenderer.invoke('research:slidesPresenter', { html: String(html || '') }),
+  slidesPresenterPush: (id, state) =>
+    ipcRenderer.invoke('research:slidesPresenterPush', { id: String(id || ''), state: state || null }),
+  slidesPresenterClose: (id) =>
+    ipcRenderer.invoke('research:slidesPresenterClose', { id: String(id || '') }),
+  /* 研究演示「导出视频」：把生成器算好的 Remotion 源码树 + props + 输出路径交给宿主渲染
+     （宿主人是 remotion/main-remotion.js 的 renderProjectTree，不依赖画布节点）。
+     researchSlidesVideo({ jobId, files, props, narrationPath?, outputPath, coverPath,
+                           fps, width, height, durationSeconds, durationInFrames, compositionId, timeoutSec })
+       → { ok, path, cover, durationSec, width, height, fps } | { ok:false, error, message, logPath }
+     进度走 research:slidesVideoProgress（{ jobId, pct, message, done, error, cancelled }），
+     取消走 researchSlidesVideoCancel(jobId)（宿主会结束这次渲染的进程树，不报错总线）。 */
+  researchSlidesVideo: (o) => ipcRenderer.invoke('research:slidesVideo', o || {}),
+  researchSlidesVideoCancel: (jobId) => ipcRenderer.invoke('research:slidesVideoCancel', String(jobId || '')),
+  onResearchSlidesVideoProgress: (cb) => {
+    const handler = (_e, data) => {
+      try { cb(data); } catch (_) {}
+    };
+    ipcRenderer.on('research:slidesVideoProgress', handler);
+    return () => ipcRenderer.removeListener('research:slidesVideoProgress', handler);
+  },
   onYamlViewerOpen: (cb) => {
     const handler = (_e, data) => {
       try {
@@ -1128,13 +1213,12 @@ contextBridge.exposeInMainWorld('api', {
   dshInstallNode: () => ipcRenderer.invoke('dsh:installNode'),
   dshRun: (params, cb) => {
     const reqId = Date.now().toString(36) + Math.random().toString(36).slice(2);
-    const onEv = (ev, msg) => {
-      if (!msg || msg.reqId !== reqId) return;
-      if (msg.type === 'done') ipcRenderer.removeListener('dsh:event', onEv);
-      try { cb(msg); } catch (e) { console.error('dshRun cb error:', e); }
-    };
-    ipcRenderer.on('dsh:event', onEv);
-    return ipcRenderer.invoke('dsh:run', Object.assign({}, params, { reqId }));
+    const off = dshSubAdd(dshRunSubs, reqId, dshSubEntry(cb, 'dshRun'));
+    const p = ipcRenderer.invoke('dsh:run', Object.assign({}, params, { reqId }));
+    /* 没有 done 帧的彻底失败（invoke 直接 reject）：顺手把这条订阅撤掉，免得表里留下
+       一条永远收不到帧的订阅（老写法同样会留，这里只是不再留） */
+    if (p && typeof p.catch === 'function') p.catch(() => off());
+    return p;
   },
   /* 全局撤卡通道：ix-drop 帧按 id 兜底撤卡（渲染层 ixDrop / canvasConfirmDrop 都幂等）。
      两种帧都要收：
@@ -1146,14 +1230,7 @@ contextBridge.exposeInMainWorld('api', {
           用户点它任何按钮都只撞 { ok:true, stale:true }，右下角弹「这张卡已失效
           （发起轮已结束）」。所以这里**不再按 reqId 过滤**（撤卡幂等，run 侧再收一次无害）。
      返回退订函数（启动时订阅一次即可）。 */
-  dshOnIxDrop: (cb) => {
-    const onEv = (ev, msg) => {
-      if (!msg || msg.type !== 'ix-drop') return;
-      try { cb(msg.data || {}); } catch (e) { console.error('dshOnIxDrop cb error:', e); }
-    };
-    ipcRenderer.on('dsh:event', onEv);
-    return () => ipcRenderer.removeListener('dsh:event', onEv);
-  },
+  dshOnIxDrop: (cb) => dshSubAdd(dshTypeSubs, 'ix-drop', dshSubEntry(cb, 'dshOnIxDrop')),
   dshPluginList: () => ipcRenderer.invoke('dsh:pluginList'),
   dshPluginAdd: (pkg) => ipcRenderer.invoke('dsh:pluginAdd', pkg),
   dshPluginRemove: (pkg) => ipcRenderer.invoke('dsh:pluginRemove', pkg),
@@ -1214,14 +1291,7 @@ contextBridge.exposeInMainWorld('api', {
   speechCacheClear: (opts) => ipcRenderer.invoke('speechCache:clear', opts || {}),
   speechCacheList: () => ipcRenderer.invoke('speechCache:list'),
   /* 语音准备状态订阅（下载进度 / 就绪 / 失败；reqId 为空的全局通道）：返回退订函数。 */
-  onSpeechState: (cb) => {
-    const onEv = (ev, msg) => {
-      if (!msg || msg.type !== 'speech-state') return;
-      try { cb(msg.data || {}); } catch (e) { console.error('onSpeechState cb error:', e); }
-    };
-    ipcRenderer.on('dsh:event', onEv);
-    return () => ipcRenderer.removeListener('dsh:event', onEv);
-  },
+  onSpeechState: (cb) => dshSubAdd(dshTypeSubs, 'speech-state', dshSubEntry(cb, 'onSpeechState')),
   /* ── 会话右边栏「实况」区（浏览器默认 dock 在会话主内容右栏，可提出来变独立窗口）──
      帧通路：网关 → main-dsh.js → main.js（dsh:event）→ 这里 onBrowserFrame。
      帧只在内存/界面里走：**不落库（activityPush 那条路不经过它）、不进模型上下文**。
@@ -1231,28 +1301,28 @@ contextBridge.exposeInMainWorld('api', {
   dshBrowserViewInput: (params) => ipcRenderer.invoke('dsh:browser', { action: 'view', method: 'input', params: params || {} }),
   dshBrowserViewMode: (mode) => ipcRenderer.invoke('dsh:browser', { action: 'view', method: 'mode', mode }),
   /* 实况帧订阅（reqId 为空的全局通道）：返回退订函数。 */
-  onBrowserFrame: (cb) => {
-    const onEv = (ev, msg) => {
-      if (!msg || msg.type !== 'browser-frame') return;
-      try { cb(msg.data || {}); } catch (e) { console.error('onBrowserFrame cb error:', e); }
-    };
-    ipcRenderer.on('dsh:event', onEv);
-    return () => ipcRenderer.removeListener('dsh:event', onEv);
-  },
+  onBrowserFrame: (cb) => dshSubAdd(dshTypeSubs, 'browser-frame', dshSubEntry(cb, 'onBrowserFrame')),
   /* 活动流留痕库（浏览器动作 + shell 命令 + 文件读写摘要；只写本机数据目录） */
   activityPush: (rows) => ipcRenderer.invoke('activity:push', rows),
   activityQuery: (params) => ipcRenderer.invoke('activity:query', params),
   activityClear: (params) => ipcRenderer.invoke('activity:clear', params),
+  /* ── 助手侧三股流（会话流 / 活动流 / 文件树）的进程隔离（任务 8/8）──────────────
+     assist.isolation = off|on|window（config.json 的 assist.isolation，缺省 off）。
+     主窗这边只有六个入口：问状态、切档、发布状态 patch（或整份对齐快照）、报会话区矩形、
+     公布工作区根、收隔离页转回来的动作。旧的内嵌路径不经过这里的任何一条。 */
+  assistIsoStatus: () => ipcRenderer.invoke('assist:iso:status'),
+  assistIsoSet: (mode) => ipcRenderer.invoke('assist:iso:set', String(mode || 'off')),
+  assistIsoState: (msg) => ipcRenderer.invoke('assist:iso:state', msg || {}),
+  assistIsoRoots: (roots) => ipcRenderer.invoke('assist:iso:roots', Array.isArray(roots) ? roots : []),
+  assistIsoBounds: (rect) => ipcRenderer.invoke('assist:iso:bounds', rect || {}),
+  onAssistIsoAction: (cb) => {
+    const h = (_e, d) => { try { cb(d || {}); } catch (_) {} };
+    ipcRenderer.on('assist-iso:action', h);
+    return () => { try { ipcRenderer.removeListener('assist-iso:action', h); } catch (_) {} };
+  },
   /* 活动流事件订阅：reqId 为空的全局通道（与 dshOnIxDrop 同一套路由）。
      返回退订函数。 */
-  dshOnActivity: (cb) => {
-    const onEv = (ev, msg) => {
-      if (!msg || msg.type !== 'browser-act') return;
-      try { cb(msg.data || {}); } catch (e) { console.error('dshOnActivity cb error:', e); }
-    };
-    ipcRenderer.on('dsh:event', onEv);
-    return () => ipcRenderer.removeListener('dsh:event', onEv);
-  },
+  dshOnActivity: (cb) => dshSubAdd(dshTypeSubs, 'browser-act', dshSubEntry(cb, 'dshOnActivity')),
   /* 运行中插话 / 暂停（只在「本轮还在跑」时点名那一轮；见 dsh/DESIGN.md）：
      params {reqId | cancelTag, sessionId?, text?|contentBlocks?（仅插话）}
      → {ok:true, reqId, sessionId, steered|paused:true}；送不出去时
@@ -1266,14 +1336,7 @@ contextBridge.exposeInMainWorld('api', {
      就 idle 收尾了，而子代理跑完的通知可能几分钟后才到，那时 run 的按 reqId 订阅早退了。
      所以网关让每台 runtime 挂一条常驻长订阅、一律发 reqId 为空的全局帧（见 gateway.mjs
      的 watchSubagentLifecycle），这里只按 type 过滤，不看 reqId，永不退订（进程级）。 */
-  dshOnSubagent: (cb) => {
-    const onEv = (ev, msg) => {
-      if (!msg || msg.type !== 'subagent') return;
-      try { cb(msg.data || {}); } catch (e) { console.error('dshOnSubagent cb error:', e); }
-    };
-    ipcRenderer.on('dsh:event', onEv);
-    return () => ipcRenderer.removeListener('dsh:event', onEv);
-  },
+  dshOnSubagent: (cb) => dshSubAdd(dshTypeSubs, 'subagent', dshSubEntry(cb, 'dshOnSubagent')),
   /* 中断一只子代理（运行队列那行的 ■）：{parentSessionId?, childSessionId} →
      {ok:true} | {ok:false, reason:'no_runtime'|'unsupported'|'rejected'|'error'}。
      只停在这一只上：不关 runtime、不动会话其它在跑的活。 */
@@ -1631,11 +1694,9 @@ contextBridge.exposeInMainWorld('api', {
   /* dsh:event 的通用订阅（开发页用它接住预览里被禁 / 被拒调用发的 preview-notice 帧
      与语音状态帧；其余类型的帧它自己忽略）。 */
   dshOnEventAny: (cb) => {
-    const handler = (_e, msg) => {
-      try { cb(msg); } catch (_) {}
-    };
-    ipcRenderer.on('dsh:event', handler);
-    return () => ipcRenderer.removeListener('dsh:event', handler);
+    const entry = dshSubEntry(cb, 'dshOnEventAny', true);
+    dshAnySubs.add(entry);
+    return () => { dshAnySubs.delete(entry); };
   },
   /* 应用数据目录（应用中心库页 / 开发页）：打开这个应用的数据文件夹
      （默认 <数据目录>/apps-data/<id>/，用户改过数据文件夹则是他选的那个）——
@@ -1720,8 +1781,14 @@ contextBridge.exposeInMainWorld('api', {
          （agent 运行态只在这里），实现见 renderer/app-mini-chat-host.js 文件头；
        · miniChatPush：会话列表 / 最后一条 AI 回复 / 运行态变了就推一拍；
        · miniChatOpen：左下角入口按钮打开（或聚焦）那只唯一的小窗；
+       · miniChatToggle：窗内 F1 用（renderer/app-status-keys.js）—— 开着就关、没开就开到
+         鼠标位置（主进程那条 toggle 是唯一实现，渲染层不自己记开合状态）；
        · onMiniChatVisibility：小窗开了 / 关了 —— 渲染层据此启停推送循环（关掉即停，不空转）。 */
   miniChatOpen: () => ipcRenderer.invoke('minichat:open'),
+  miniChatToggle: () => ipcRenderer.invoke('minichat:toggle'),
+  /* 小窗此刻是否开着（只读，不会开窗）：渲染层重载后据此把推送循环接回来，
+     不能靠 minichat:visibility 那个一次性事件（重载即丢）。 */
+  miniChatIsOpen: () => ipcRenderer.invoke('minichat:isOpen'),
   miniChatRes: (msg) => ipcRenderer.send('minichat:res', msg || {}),
   miniChatPush: (payload) => ipcRenderer.send('minichat:push', payload || {}),
   onMiniChatReq: (cb) => {
@@ -1745,5 +1812,29 @@ contextBridge.exposeInMainWorld('api', {
     };
     ipcRenderer.on('minichat:visibility', h);
     return () => ipcRenderer.removeListener('minichat:visibility', h);
+  },
+
+  /* ── 内嵌 webview 的总开关（只两条，不含任何窗口级 API）──
+     真正拦挂载的是主进程 main.js 的 will-attach-webview 白名单（只认
+     chat.deepseek.com + persist:deepseek，并剥掉 guest 的 preload）。
+     这里只让渲染层能把这个开关关掉 / 打开：不需要内嵌页时关掉，之后任何
+     <webview> 挂载都被主进程直接拒掉；默认开（见 main.js 的 webviewAttachAllowed）。 */
+  webviewGetEnabled: () => ipcRenderer.invoke('webview:getEnabled'),
+  webviewSetEnabled: (on) => ipcRenderer.invoke('webview:setEnabled', !!on),
+
+  /* ── 内嵌页里的窗内热键（只一条：F2）──
+     焦点在 chat.deepseek.com 那只 guest 里时，F1–F4 的判键拿不到键 ——
+     主进程在 guest 的 before-input-event 上截下 F2 并从 'deepseek:hotkey' 转过来，
+     渲染层据此开 / 合 DeepSeek 抽屉（与状态栏那颗按钮、主窗窗内 F2 同一份 toggle）。 */
+  onDeepSeekHotkey: (cb) => {
+    const h = (_e, key) => {
+      try {
+        cb(key);
+      } catch (err) {
+        console.error('api.onDeepSeekHotkey cb error:', err);
+      }
+    };
+    ipcRenderer.on('deepseek:hotkey', h);
+    return () => ipcRenderer.removeListener('deepseek:hotkey', h);
   },
 });

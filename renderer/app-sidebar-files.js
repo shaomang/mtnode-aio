@@ -249,7 +249,7 @@ const SF_ICON = {
 
 /* ── 运行态（模块级单例，不进画布数据） ── */
 const SF = {
-  tab: "nodes", /* nodes | files */
+  tab: "nodes", /* nodes | files（画布）· files | core | refs（研究视图） */
   rootKind: "canvas", /* canvas | project | custom | research */
   root: "",
   expanded: new Set(),
@@ -270,6 +270,7 @@ const SF = {
   /* 研究视图的根覆盖（<画布工作目录>/research）；只在研究视图里非空 */
   overrideDir: "",
   prevTab: "", /* 进研究视图前用户停在哪一格（离开时还回去） */
+  researchTab: "", /* 研究视图里用户停在哪一格：files / core / refs */
   wfId: "", /* 当前画布 id：切画布时重解析目录选择 */
 };
 
@@ -347,19 +348,37 @@ function sfSetRootOverride(dir) {
   SF.overrideDir = d;
   const sb = sf$("sidebar");
   if (sb) sb.classList.toggle("sf-research", !!d);
-  sfSetTab("files");
+  /* 进研究视图：落回上次那一格（文件 / 核心 / 资料），没记过就用「核心」——
+     左栏原来那棵内容树被搬到这里，进来第一眼该看到的是它。 */
+  sfSetTab(d ? SF.researchTab || "core" : "files");
   sfEnterRoot(d ? { kind: "research", dir: d } : null);
 }
 function sfClearRootOverride() {
-  if (!SF.overrideDir) return;
+  /* 没有工作目录时 overrideDir 一直是空的，但左栏仍是研究视图那三格 —— 离开时照样要还原，
+     否则画布视图会停在「核心 / 资料」的空白页上。 */
+  if (!SF.overrideDir && SF.tab !== "core" && SF.tab !== "refs") return;
   SF.overrideDir = "";
   const sb = sf$("sidebar");
   if (sb) sb.classList.remove("sf-research");
   /* 回到画布记忆里那个根，并把 Tab 还给用户原来那一格 */
   sfEnterRoot(null);
   if (SF.prevTab) sfSetTab(SF.prevTab);
+  else sfSetTab("nodes");
   SF.prevTab = "";
 }
+/* 研究视图重绘当前那一格：文件页重读盘，核心 / 资料两页交给研究模块自己画。
+   （以前 renderSidebar 直接 setTab("files")，会把用户选中的「核心 / 资料」硬切掉。） */
+function sfRepaintCurrent() {
+  if (SF.tab === "core" || SF.tab === "refs") {
+    try {
+      if (window.MTResearch && typeof window.MTResearch.paintSide === "function")
+        window.MTResearch.paintSide(SF.tab);
+    } catch (_) {}
+    return;
+  }
+  sfRefresh();
+}
+
 /* 进 / 出研究视图的唯一入口（由视图外壳 applyViewChrome 调） */
 function sfOnViewChange(view) {
   if (view === "research") {
@@ -372,14 +391,53 @@ function sfOnViewChange(view) {
 }
 
 /* ── 页头：Tabs / 目录选择器 / 工具条 ── */
+/* 研究视图的「核心 / 资料」两颗 Tab 接拖入：从资源管理器拖文件到 Tab 上 = 投进投料台对应那一栏。
+   （面板空白处的拖入在 app-research.js 的 bindPanelDrop 里，两边共用 dropIntoPanel。） */
+function sfBindResearchTabDrop(tabEl, role) {
+  if (!tabEl || tabEl.__dropBound) return;
+  tabEl.__dropBound = "1";
+  const hasFiles = (dt) => {
+    try {
+      return !!dt && Array.prototype.indexOf.call(dt.types || [], "Files") >= 0;
+    } catch (_) {
+      return false;
+    }
+  };
+  tabEl.addEventListener("dragover", (ev) => {
+    if (!hasFiles(ev.dataTransfer)) return;
+    ev.preventDefault();
+    try {
+      ev.dataTransfer.dropEffect = "copy";
+    } catch (_) {}
+    tabEl.classList.add("drop-on");
+  });
+  tabEl.addEventListener("dragleave", () => tabEl.classList.remove("drop-on"));
+  tabEl.addEventListener("drop", (ev) => {
+    if (!hasFiles(ev.dataTransfer)) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    tabEl.classList.remove("drop-on");
+    try {
+      if (window.MTResearch && typeof window.MTResearch.dropIntoPanel === "function")
+        window.MTResearch.dropIntoPanel(role, ev.dataTransfer);
+    } catch (_) {}
+  });
+}
 function sfBuildTabs() {
   const tabs = sf$("sideTabs");
   if (!tabs || tabs.__sfBound) return;
   tabs.__sfBound = true;
   const nodes = sf$("sideTabNodes");
   const files = sf$("sideTabFiles");
+  const core = sf$("sideTabCore");
+  const refs = sf$("sideTabRefs");
   if (nodes) nodes.onclick = () => sfSetTab("nodes");
   if (files) files.onclick = () => sfSetTab("files");
+  if (core) core.onclick = () => sfSetTab("core");
+  if (refs) refs.onclick = () => sfSetTab("refs");
+  /* 「核心 / 资料」两格也接拖入：文件直接拖到 Tab 上 = 投进投料台对应的那一栏 */
+  sfBindResearchTabDrop(core, "core");
+  sfBindResearchTabDrop(refs, "ref");
   const rootSel = sf$("sideFilesRoot");
   if (rootSel) {
     rootSel.onchange = async () => {
@@ -493,16 +551,46 @@ function sfSyncRootSelect() {
   }
   sel.title = SF.root || I18n.t("尚未设置工作目录");
 }
+/* 当前是不是在研究视图：根覆盖生效，或视图外壳已经把 body 挂成 view-research */
+function sfInResearch() {
+  try {
+    if (SF.overrideDir) return true;
+    return !!document.body && document.body.classList.contains("view-research");
+  } catch (_) {
+    return !!SF.overrideDir;
+  }
+}
 function sfSetTab(tab) {
-  /* 研究视图里只有文件页（节点列表属于画布，硬切回 files 防止串场） */
-  SF.tab = SF.overrideDir ? "files" : tab === "files" ? "files" : "nodes";
+  const want = String(tab || "");
+  /* 画布视图只有 节点 / 文件 两格；研究视图换成 文件 / 核心 / 资料 三格
+     （节点列表属于画布）。判据 = 根覆盖生效，或视图外壳已把 body 挂成 view-research
+     —— 没有工作目录时 overrideDir 是空的，左栏照样是三格，不能退回节点页。 */
+  const inRs = sfInResearch();
+  if (inRs) SF.tab = want === "files" || want === "refs" ? want : "core";
+  else SF.tab = want === "files" ? "files" : "nodes";
+  if (inRs) SF.researchTab = SF.tab;
   const sb = sf$("sidebar");
-  if (sb) sb.classList.toggle("sf-on", SF.tab === "files");
+  if (sb) {
+    sb.classList.toggle("sf-on", SF.tab === "files");
+    sb.classList.toggle("sf-core", SF.tab === "core");
+    sb.classList.toggle("sf-refs", SF.tab === "refs");
+  }
   const nodes = sf$("sideTabNodes");
   const files = sf$("sideTabFiles");
+  const core = sf$("sideTabCore");
+  const refs = sf$("sideTabRefs");
   if (nodes) nodes.classList.toggle("on", SF.tab === "nodes");
   if (files) files.classList.toggle("on", SF.tab === "files");
+  if (core) core.classList.toggle("on", SF.tab === "core");
+  if (refs) refs.classList.toggle("on", SF.tab === "refs");
   if (SF.tab === "files") sfEnterRoot(null);
+  /* 核心 / 资料两页由研究模块自己画（内容树 / 文献库），这里只递一声「该画哪一页」 */
+  if (SF.tab === "core" || SF.tab === "refs") {
+    try {
+      if (window.MTResearch && typeof window.MTResearch.paintSide === "function")
+        window.MTResearch.paintSide(SF.tab);
+    } catch (_) {}
+  }
 }
 function sfEnterRoot(next) {
   if (next) {
@@ -1420,6 +1508,7 @@ window.MTNodeSideFiles = {
   setRootOverride: sfSetRootOverride,
   clearRootOverride: sfClearRootOverride,
   onViewChange: sfOnViewChange,
+  repaintCurrent: sfRepaintCurrent,
 };
 window.sidebarFilesDropPayload = sidebarFilesDropPayload;
 window.sidebarFilesDropToCanvas = sidebarFilesDropToCanvas;

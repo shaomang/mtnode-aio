@@ -751,9 +751,282 @@ async function pdfWriteMarkdown(pdfPath, markdown, opts) {
   return { ok: false, error: lastErr || pdfT("没有可写出的目录（先给画布设一个工作目录）") };
 }
 
+/* ── 图元落盘：正文里的占位符 → 真图文件 + 相对路径 ──────────────────────────
+   pdf-read.js 只留锚点（主进程解析路径不写盘）：
+     ![图 p3-1]({{FIG:p3-1.png}}) —— 位图已抽好，base64 在同一次解析结果的 figures[]
+     ![第 N 页图表]({{PAGE:N}})    —— 纯矢量页，用 pdf:render 单页出图（scale 2 / 1600px）
+   落盘位置 = md 同目录 / assets/<mdStem>/，正文换成相对路径。写不动就退成一条注记，
+   渲染失败就把那一行删掉 —— 正文里绝不留 {{…}} 或指向不存在文件的链接。
+   拖入 PDF（进文本节点正文）与「PDF 入库」节点（写成 .md）都经过 pdfFinish，行为一致。 */
+
+const PDF_FIG_DIR = "assets";
+/* 单页出图的参数：2 倍缩放 ≈ 144dpi，maxWidth 1600 让长边不爆内存 */
+const PDF_PAGE_RENDER_ARG = { scale: 2, maxWidth: 1600 };
+
+function pdfBase64ToBytes(b64) {
+  try {
+    const bin = atob(String(b64 || "").replace(/^data:[^,]*,/, ""));
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+  } catch (_) {
+    return null;
+  }
+}
+
+/** 落盘目标：{ abs(绝对目录), rel(正文里的相对目录 "assets/<mdStem>") , stem }；没有目录 → null */
+async function pdfFigureTarget(pdfPath, opts) {
+  const api = window.api || {};
+  let mdPath = "";
+  try {
+    mdPath = await pdfOutputPath(pdfPath, opts);
+  } catch (_) {
+    mdPath = "";
+  }
+  const dir = pdfDirOf(mdPath);
+  if (!dir) return null;
+  const stem = pdfStemOf(mdPath) || "document";
+  const rel = PDF_FIG_DIR + "/" + stem;
+  const abs =
+    typeof api.pathJoin === "function"
+      ? api.pathJoin(dir, PDF_FIG_DIR, stem)
+      : dir + "\\" + PDF_FIG_DIR + "\\" + stem;
+  return { abs, rel, stem };
+}
+
+/** 写一张图进目标目录：同名文件已存在就换序号（不覆盖别人的文件）；失败抛出原文 */
+async function pdfFigureWrite(target, name, bytes) {
+  const api = window.api || {};
+  if (typeof api.fileWriteBytes !== "function") {
+    throw new Error(pdfT("当前版本没有写文件通道（缺少 file:writeBytes）"));
+  }
+  const base = String(name || "fig.png").replace(/[^\w.-]+/g, "_") || "fig.png";
+  const dot = base.lastIndexOf(".");
+  const root = dot > 0 ? base.slice(0, dot) : base;
+  const ext = dot > 0 ? base.slice(dot) : ".png";
+  for (let i = 0; i < 200; i++) {
+    const nm = i ? root + "-" + (i + 1) + ext : base;
+    const abs =
+      typeof api.pathJoin === "function" ? api.pathJoin(target.abs, nm) : target.abs + "\\" + nm;
+    if (typeof api.fileExists === "function") {
+      let exists = false;
+      try {
+        exists = !!(await api.fileExists(abs));
+      } catch (_) {
+        exists = false;
+      }
+      if (exists) continue;
+    }
+    const r = await api.fileWriteBytes(abs, bytes);
+    if (r && r.ok === false) throw new Error(pdfErrText(r.error) || pdfT("写入失败"));
+    return nm;
+  }
+  throw new Error(pdfT("同名文件太多，换不到可写的文件名"));
+}
+
+/** 单页出图（{{PAGE:n}}）：与逐页识图同一批渲染通道，只渲这一页。返回 { bytes } 或 { error } */
+async function pdfRenderOnePage(pdfPath, pageNo) {
+  const api = window.api || {};
+  const names = pdfRenderChannelNames();
+  if (!names.length) return { error: pdfT("当前版本没有页面渲染通道（缺少 pdf:render）") };
+  let lastErr = "";
+  for (const n of names) {
+    let r = null;
+    try {
+      r = await api[n](Object.assign({ path: pdfPath, pages: [pageNo] }, PDF_PAGE_RENDER_ARG));
+    } catch (e) {
+      lastErr = String((e && e.message) || e);
+      continue;
+    }
+    if (!r || r.ok === false) {
+      lastErr = pdfErrText(r && r.error) || pdfT("未知错误");
+      continue;
+    }
+    const list = Array.isArray(r.images) ? r.images : Array.isArray(r.pages) ? r.pages : [];
+    /* 只认这一页：通道忽略了 pages 参数、回了整份页面图时不能拿错页 */
+    let hit = list.filter((x) => x && Number(x.page) === Number(pageNo))[0] || null;
+    if (!hit && list.length === 1 && !(list[0] && list[0].page)) hit = list[0];
+    const b64 = hit && (hit.dataUrl || hit.base64 || hit.data || hit.png);
+    if (!b64) {
+      lastErr = pdfT("渲染通道没有返回这一页的图片");
+      continue;
+    }
+    const bytes = pdfBase64ToBytes(b64);
+    if (!bytes || !bytes.length) {
+      lastErr = pdfT("页面图解码失败");
+      continue;
+    }
+    return { bytes };
+  }
+  return { error: lastErr || pdfT("未知错误") };
+}
+
+function pdfFigureKey(name) {
+  return String(name || "").replace(/\.png$/i, "");
+}
+
+function pdfEscRe(s) {
+  return String(s || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** 行级替换一个占位符：replacement 非空 = 只换锚点（保留外面的图片语法）；
+    replacement 为空 = 整行换成 noteText（失败态：注记替代那条图，不留坏链接）。 */
+function pdfReplaceAnchorLine(markdown, tokenRe, replacement, noteText) {
+  const hit = new RegExp(tokenRe.source);
+  const all = new RegExp(tokenRe.source, "g");
+  const out = [];
+  for (const l of String(markdown).split("\n")) {
+    if (!hit.test(l)) {
+      out.push(l);
+      continue;
+    }
+    if (replacement) out.push(l.replace(all, () => replacement));
+    else if (noteText) out.push(noteText);
+  }
+  return out.join("\n");
+}
+
+/**
+ * 占位符 → 真图：{{FIG:name}} 写 figures[] 里的 base64，{{PAGE:n}} 单页渲染后落盘。
+ * 返回 { markdown, figures, pages }，markdown 已经是可交付正文（无残留占位符）。
+ */
+async function pdfMaterializeFigures(markdown, parse, pdfPath, ctl, opts) {
+  const md = String(markdown || "");
+  const src = parse && typeof parse === "object" ? parse : {};
+  const figs = Array.isArray(src.figures) ? src.figures : [];
+  const hasFig = /\{\{\s*FIG:/.test(md);
+  const hasPage = /\{\{\s*PAGE:\d+\s*\}\}/.test(md);
+  const out = { markdown: md, figures: 0, pages: 0 };
+  if (!md || (!hasFig && !hasPage)) return out;
+  const note = (l) => {
+    try {
+      if (ctl && typeof ctl.note === "function") ctl.note(l);
+    } catch (_) {}
+  };
+  /* silent = 不落盘（调用方的契约）：只把锚点收干净，一个文件都不写 */
+  const silent = !!(opts && opts.silent);
+  const target = silent ? null : await pdfFigureTarget(pdfPath, opts);
+  if (!target && !silent) {
+    note(pdfT("图元没能落盘：没有可写出的目录（先给画布设一个工作目录，或把 PDF 放到可写的位置）"));
+  }
+
+  /* ① 位图：figures[] 里带 base64，逐张写盘并记下相对路径 */
+  let text = md;
+  const figOk = new Map();   /* key → 相对路径（写成了） */
+  const figBad = new Map();  /* key → 注记（已抽取但没落盘） */
+  for (const f of figs) {
+    const name = String((f && f.name) || "");
+    const raw = f && (f.png || f.base64 || f.data);
+    if (!name || !raw) continue;
+    const key = pdfFigureKey(name);
+    const bad = (err) =>
+      figBad.set(
+        key,
+        pdfT("（图 {name} 已抽取但未落盘：{err}）", { name: name, err: err }),
+      );
+    if (!target) {
+      bad(silent ? pdfT("本次不落盘") : pdfT("没有可写出的目录"));
+      continue;
+    }
+    const bytes = pdfBase64ToBytes(raw);
+    if (!bytes) {
+      bad(pdfT("图片数据解码失败"));
+      note(pdfT("图已抽取但未落盘：") + name + " · " + pdfT("图片数据解码失败"));
+      continue;
+    }
+    try {
+      const nm = await pdfFigureWrite(target, name, bytes);
+      figOk.set(key, target.rel + "/" + nm);
+      out.figures++;
+    } catch (e) {
+      const err = String((e && e.message) || e) || pdfT("写入失败");
+      bad(err);
+      note(pdfT("图已抽取但未落盘：") + name + " · " + err);
+    }
+  }
+  if (out.figures) {
+    note(pdfT("图元已落盘：{n} 张 → {dir}", { n: out.figures, dir: (target && target.abs) || "" }));
+  }
+  for (const [key, rel] of figOk) {
+    text = pdfReplaceAnchorLine(text, new RegExp("\\{\\{\\s*FIG:" + pdfEscRe(key) + "(\\.png)?\\s*\\}\\}"), rel);
+  }
+  for (const [key, msg] of figBad) {
+    text = pdfReplaceAnchorLine(
+      text,
+      new RegExp("\\{\\{\\s*FIG:" + pdfEscRe(key) + "(\\.png)?\\s*\\}\\}"),
+      "",
+      msg,
+    );
+  }
+  /* 正文里有锚点却拿不到位图（figures 被关掉 / 预算截断）：同样不留坏引用 */
+  const missing = [];
+  const rest = /\{\{\s*FIG:([^}]+?)\s*\}\}/g;
+  let fm;
+  while ((fm = rest.exec(text))) {
+    const nm = String(fm[1] || "");
+    if (nm && missing.indexOf(nm) < 0) missing.push(nm);
+  }
+  for (const nm of missing) {
+    const msg = pdfT("（图 {name} 未随解析结果返回）", { name: nm });
+    text = pdfReplaceAnchorLine(text, new RegExp("\\{\\{\\s*FIG:" + pdfEscRe(nm) + "\\s*\\}\\}"), "", msg);
+  }
+  if (missing.length) {
+    note(pdfT("这些图没有随解析结果返回，占位已去掉：") + missing.join("、"));
+  }
+
+  /* ② 整页图表：{{PAGE:n}} 单页出图落盘；渲染 / 写盘失败 = 注记替掉那一行并说明 */
+  const pages = [];
+  const pageScan = /\{\{\s*PAGE:(\d+)\s*\}\}/g;
+  let pm;
+  while ((pm = pageScan.exec(text))) {
+    const n = Number(pm[1]);
+    if (n > 0 && pages.indexOf(n) < 0) pages.push(n);
+  }
+  for (const n of pages) {
+    let mark = "";
+    let err = "";
+    if (!target) {
+      err = silent ? pdfT("本次不落盘") : pdfT("没有可写出的目录");
+    } else {
+      const r = await pdfRenderOnePage(pdfPath, n);
+      if (r && r.bytes) {
+        try {
+          const nm = await pdfFigureWrite(target, "p" + n + ".png", r.bytes);
+          mark = target.rel + "/" + nm;
+          out.pages++;
+        } catch (e) {
+          err = String((e && e.message) || e) || pdfT("写入失败");
+        }
+      } else {
+        err = (r && r.error) || pdfT("未知错误");
+      }
+    }
+    if (!mark) {
+      note(pdfT("整页图表渲染失败，已删掉这一行占位（第 {n} 页）：", { n: n }) + err);
+    }
+    /* 失败 = 整行删掉（noteText 传空），正文里不留指向不存在页图的链接 */
+    text = pdfReplaceAnchorLine(text, new RegExp("\\{\\{\\s*PAGE:" + n + "\\s*\\}\\}"), mark);
+  }
+  if (out.pages) {
+    note(pdfT("整页图表已出图：{n} 页 → {dir}", { n: out.pages, dir: (target && target.abs) || "" }));
+  }
+  out.markdown = text;
+  return out;
+}
+
 /** 收口：进节点正文 / 写成 .md 并交给 Markdown 编辑器 / 纯返回（silent） */
 async function pdfFinish(pdfPath, markdown, info, ctl, opts) {
-  const res = { ok: true, markdown: markdown, tier: info && info.tier, pages: (info && info.pages) || 0 };
+  /* 占位符先换真图：这一步之后正文才是不带 {{…}} 的可交付稿（写盘与节点正文共用） */
+  const fig = await pdfMaterializeFigures(markdown, info && info.raw, pdfPath, ctl, opts);
+  markdown = fig.markdown;
+  const res = {
+    ok: true,
+    markdown: markdown,
+    tier: info && info.tier,
+    pages: (info && info.pages) || 0,
+    figures: fig.figures || 0,
+    figurePages: fig.pages || 0,
+  };
   if (ctl.ui) ctl.paint(1, 1, pdfT("完成"));
   if (opts.silent) {
     if (ctl.ui) ctl.ui.close();

@@ -148,16 +148,102 @@ body.mc-body {
   color: #e6eef8;
 }
 
-/* 左栏按项目文件夹分组（与会话界面同口径）：组标题一行，会话挂在下面 */
+/* 左栏按项目文件夹分组（与会话界面同口径）：组标题一行，会话挂在下面。
+   本轮需求：组标题本身是一颗按钮（点着折叠 / 展开，▾/▸），右侧那颗「＋」平时不占视线 ——
+   悬停这一组才露出来（点它 = 就在这一组的文件夹里新建会话）。 */
 .mc-group {
-  padding: 7px 7px 3px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 5px 3px 2px 4px;
+  border-radius: 5px;
   font-size: 9.5px;
   letter-spacing: 0.2px;
   color: #7f8b9c;
+  user-select: none;
+}
+
+.mc-group:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.mc-group-head {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 2px;
+  margin: 0;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.mc-group-head:focus-visible {
+  outline: 1px solid rgba(56, 214, 255, 0.5);
+  outline-offset: 0;
+}
+
+.mc-chev {
+  flex: none;
+  width: 8px;
+  font-size: 8px;
+  font-style: normal;
+  line-height: 1;
+  color: #6d7889;
+}
+
+.mc-group-name {
+  min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  user-select: none;
+}
+
+/* 折叠态：只留标题，颜色压暗一档（提示「里面还有东西，但收起来了」） */
+.mc-group.is-folded .mc-group-name,
+.mc-group.is-folded .mc-chev {
+  color: #5f6a79;
+}
+
+/* 组内「＋」：一直占着那 15px（悬停时不再挤动组名），平时透明且不可点，
+   悬停这一组 / 键盘聚焦时才亮出来。 */
+.mc-group-add {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  padding: 0;
+  border: 1px solid #2a3341;
+  border-radius: 4px;
+  background: #161d28;
+  color: #8f9cae;
+  font-size: 10px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s;
+}
+
+.mc-group:hover .mc-group-add,
+.mc-group-add:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.mc-group-add:hover {
+  background: #1f2836;
+  border-color: #3a4658;
+  color: #e6eef8;
 }
 
 .mc-group.is-none {
@@ -272,6 +358,31 @@ body.mc-body {
 
 .mc-stop[hidden] {
   display: none !important;
+}
+
+/* 删除会话（本轮需求）：悬停转红；第一下点完进「删掉？」待确认态（红框 + 略宽），
+   4 秒内再点一下才真删，超时自动收回（见 app-mini-chat.js 的 deleteSession） */
+.mc-del {
+  font-size: 11px;
+}
+
+.mc-del[hidden] {
+  display: none !important;
+}
+
+.mc-del:hover {
+  color: #ff7b72;
+  border-color: rgba(255, 123, 114, 0.45);
+}
+
+.mc-del.is-armed {
+  width: auto;
+  min-width: 34px;
+  padding: 0 5px;
+  font-size: 10.5px;
+  color: #ff7b72;
+  border-color: rgba(255, 123, 114, 0.65);
+  background: rgba(255, 123, 114, 0.12);
 }
 
 /* ── 正文：只显示这一条会话的最后一条 AI 回复 ─────────────────────────── */
@@ -569,6 +680,115 @@ body.mc-body {
   padding: 8px;
   border-top: 1px solid #222a36;
   background: #10151e;
+}
+
+/* ── 粘贴截图（本轮需求）───────────────────────────────────────────────
+   发送前：输入区上方一条缩略图胶囊，一枚对正文里的一行图（#行号 + 缩略图 + 名称 + ✕）；
+   没有图时整条 [hidden]（连定位盒都不留，输入框不会因为「有图没图」上下跳）。 */
+.mc-chips {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  background: #10151e;
+}
+
+.mc-chips[hidden] {
+  display: none !important;
+}
+
+.mc-chip {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 200px;
+  padding: 3px 5px 3px 3px;
+  background: #0b0f16;
+  border: 1px solid #2a3341;
+  border-radius: 5px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.mc-chip:hover {
+  border-color: #384454;
+}
+
+.mc-chip-thumb {
+  flex: none;
+  display: block;
+  width: 22px;
+  height: 22px;
+  border-radius: 3px;
+  object-fit: cover;
+  background: #0d1219;
+  color: #7b8698;
+  font-size: 12px;
+  line-height: 22px;
+  text-align: center;
+}
+
+.mc-chip-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10.5px;
+  color: #9aa6b6;
+}
+
+.mc-chip-x {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  background: transparent;
+  color: #6f7b8c;
+  border: 0;
+  border-radius: 3px;
+  font: inherit;
+  font-size: 11px;
+  line-height: 16px;
+  cursor: pointer;
+}
+
+.mc-chip-x:hover {
+  background: rgba(255, 143, 46, 0.16);
+  color: #ff8f2e;
+}
+
+/* 发送后：「你的指令」气泡里的图行渲染成缩略图（点一下交系统看图程序打开原图） */
+.mc-userimg {
+  display: block;
+  margin: 4px 0;
+  padding: 0;
+  background: transparent;
+  border: 1px solid #2a3341;
+  border-radius: 5px;
+  overflow: hidden;
+  cursor: zoom-in;
+}
+
+.mc-userimg:hover {
+  border-color: rgba(56, 214, 255, 0.45);
+}
+
+.mc-userimg img {
+  display: block;
+  max-width: 100%;
+  max-height: 160px;
+  object-fit: contain;
+}
+
+.mc-userimg span {
+  display: block;
+  padding: 4px 6px;
+  font-size: 11px;
+  color: #7b8698;
 }
 
 #mcInput {

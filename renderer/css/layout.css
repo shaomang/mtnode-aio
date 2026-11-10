@@ -2724,12 +2724,14 @@ button.mini.btn-sq.ws-browse svg {
   visibility: hidden !important
 }
 
-/* 快捷会话小窗入口（renderer/app-mini-chat-host.js）：紧挨状态栏最左那枚话筒的右侧
-   （话筒 order:-3、AI 增强 order:-2、TTS order:-1；本按钮也取 -2，靠 DOM 次序排在话筒之后、
-   AI 增强之前 —— 想再挪位置只改这一个数）。 */
+/* 快捷会话小窗入口（renderer/app-mini-chat-host.js）：状态栏最左第一颗。
+   左下角五颗按钮的 order 链（本轮定稿，全仓只有这五处）：
+   快捷会话 -5 · DeepSeek -4（css/deepseek.css）· 语音播报 -3（css/tts.css）·
+   语音输入 -2 与 AI 增强 -1（css/voice.css）· 画布截图 0。
+   想再挪位置只改对应文件里那一个数，DOM 次序不影响结果。 */
 .sb-minichat {
   flex: none;
-  order: -2;
+  order: -5;
   width: 22px;
   height: 22px;
   padding: 0;
@@ -2750,6 +2752,39 @@ button.mini.btn-sq.ws-browse svg {
   color: var(--cyan2, #38d6ff);
   border-color: var(--bd2);
   background: rgba(56, 214, 255, .08)
+}
+
+/* MTNode 标记（快捷会话按钮里那枚 24×24 SVG）：按 12px 渲染 = 恰好半个网格，
+   偶数格上的坐标与 2px 描边都落在整像素上，缩放 / 换主题都不发虚。
+   颜色是品牌色（橙框 #F7943E + 青块 #3BC8F5），不跟主题色走；hover 只提亮度。 */
+.sb-minichat .mt-mark {
+  display: block;
+  width: 12px;
+  height: 12px;
+  opacity: .92;
+  transition: opacity var(--dur-fast, .12s);
+}
+
+.sb-minichat:hover .mt-mark,
+.sb-minichat:focus-visible .mt-mark {
+  opacity: 1
+}
+
+/* 小窗开着时入口本身就是「亮着的开关」（关掉走小窗的 ✕ 或再按 F1；点按钮 = 打开 / 聚焦）。
+   三颗带面板的按钮共用同一套点亮语言 = 语音播报的 .on：青字 + 青边 + 青底、不透明度拉满
+   （css/tts.css 的 .statusbar .sb-tts.on、css/deepseek.css 的 #btnDeepSeek.is-open）。
+   只换皮不动行为：状态由 renderer/app-mini-chat-host.js 的 setOpen 打 is-open / aria-pressed。 */
+.sb-minichat.is-open,
+.sb-minichat[aria-pressed="true"] {
+  color: var(--cyan2, #38d6ff);
+  border-color: color-mix(in srgb, var(--cyan2, #38d6ff) 45%, transparent);
+  background: rgba(56, 214, 255, .1);
+  opacity: 1
+}
+
+.sb-minichat.is-open .mt-mark,
+.sb-minichat[aria-pressed="true"] .mt-mark {
+  opacity: 1
 }
 
 .statusbar .spacer {

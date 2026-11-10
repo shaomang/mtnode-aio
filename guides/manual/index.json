@@ -185,6 +185,13 @@
             "zh": "审批与权限",
             "en": "Approvals"
           }
+        },
+        {
+          "id": "paseo-bridge",
+          "title": {
+            "zh": "用手机接管会话（Paseo）",
+            "en": "Phone takeover (Paseo)"
+          }
         }
       ]
     },

@@ -6,7 +6,10 @@
  *
  * 交互（与共识一致，多做的只有「手动微调节点位置」，它不改数据、只改视图）：
  *   · 搜索、按验证态与 tag 筛选；
- *   · 点节点 → 回调打开正文对应段（onOpen）；
+ *   · 点节点 → 选中：右侧详情栏展开该节点的内容与关系，图上同时高亮与它相连的边；
+ *     进正文不再由点击代替 —— 详情栏里那颗「打开正文」才导航（onOpen），
+ *     否则点上就跳走，等于没得选（真机报的「节点选不中」就是这个）；
+ *   · 点空白 → 取消选中（详情栏收起）；
  *   · 双击节点 → N 跳邻域聚焦；Ctrl+点击两个节点 → 高亮最短路径；
  *   · 布局切换（力导向 / 分层 / 径向）与时间线视图切换；
  *   · 拖节点 = 微调（吸附网格，只活在视图层，不写回 md）。
@@ -29,6 +32,12 @@
     question: "#ff6b6b",
     method: "#a3e635",
     annotation: "#b0b8c4",
+    /* 术语页（terms/<slug>.md）的六种：与 concept / formula / method 同一族色相但各差一档，
+       一眼能分出「这是从原文归纳出来的概念页」，又不至于跟正文里的论断 / 概念撞色。 */
+    term: "#38d9a9",
+    symbol: "#ffd8a8",
+    theorem: "#e599f7",
+    dataset: "#74c0fc",
   };
 
   let st = null;
@@ -50,6 +59,63 @@
     const e = document.createElementNS(NS, tag);
     for (const k in attrs || {}) if (attrs[k] != null) e.setAttribute(k, String(attrs[k]));
     return e;
+  }
+
+  /* ── 图谱标签里的公式 ──
+     SVG <text> 排不了公式（KaTeX 输出的是 HTML）。标签里出现 `$…$` / `\(…\)` 时，
+     改用 <foreignObject> 装一块 HTML 标签（与正文同一套 math-render）；其余标签仍是
+     <text>（光晕描边、反缩放那套原样不动）。 */
+  const RE_TEX = /\$\$[\s\S]+?\$\$|\$[^$\n]+\$|\\\([\s\S]+?\\\)/;
+  function hasTex(s) {
+    return RE_TEX.test(String(s || ""));
+  }
+  /* 原生 tooltip（<title> / title=）排不了公式：只把定界符摘掉，
+     免得悬停提示里冒出一个看着像漏渲染的 `$`。 */
+  function tipText(s) {
+    return String(s || "").replace(/\\\(|\\\)|\\\[|\\\]|\$\$/g, "").replace(/\$/g, "");
+  }
+  /* 截断标签时别把 `$…$` 切一半（半个公式在 KaTeX 里就是一条报错，还会冒出裸 $）：
+     截口落在公式中间时，延长到配对的收尾 `$`。 */
+  function clipLabel(s, n) {
+    const str = String(s || "");
+    if (str.length <= n) return str;
+    const cut = str.slice(0, n);
+    if ((cut.match(/\$/g) || []).length % 2 === 1) {
+      const close = str.indexOf("$", n);
+      if (close > 0 && close - n <= 40) return str.slice(0, close + 1);
+    }
+    return cut;
+  }
+  function inlineHtml(s) {
+    const R = typeof window !== "undefined" ? window.MTRender : null;
+    if (R && typeof R.inlineHtml === "function") return R.inlineHtml(String(s || ""));
+    return String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+  /* 右栏正文那段：带行内 Markdown 与公式，用 inlineMd（只出流、不出块级结构） */
+  function inlineMd(s) {
+    const R = typeof window !== "undefined" ? window.MTRender : null;
+    if (R && typeof R.inlineMd === "function") return R.inlineMd(String(s || ""));
+    return inlineHtml(s);
+  }
+  /* HTML 标签：塞进 foreignObject，宽度 / 高度按内容量出来（否则会被 foreignObject 的框裁掉） */
+  function htmlLabel(text, cls, x, y) {
+    const fo = svgEl("foreignObject", { class: "rg-fo", x: x, y: y, width: 260, height: 18 });
+    const div = document.createElement("div");
+    div.className = "rg-label-html" + (cls ? " " + cls : "");
+    div.innerHTML = inlineHtml(text);
+    fo.appendChild(div);
+    return fo;
+  }
+  function fitFo(g, z) {
+    const fo = g.querySelector("foreignObject.rg-fo");
+    if (!fo) return;
+    const div = fo.firstElementChild;
+    if (!div) return;
+    const w = div.scrollWidth || 40;
+    const h = div.scrollHeight || 14;
+    fo.setAttribute("width", String(w + 2));
+    fo.setAttribute("height", String(h + 2));
+    fo.setAttribute("y", String((fo.dataset.dy ? +fo.dataset.dy : 0) / z - h / 2));
   }
   function gridStep() {
     try {
@@ -76,6 +142,8 @@
     st = {
       host,
       onOpen: o.onOpen || function () {},
+      onCite: o.onCite || null,
+      onSelect: o.onSelect || null,
       onAsk: o.onAsk || null,
       full: emptyGraph(),
       view: null,
@@ -93,8 +161,10 @@
       ty: 0,
       positions: new Map(), // id -> {x,y}（视图层，可能被拖动/布局改写）
       dragging: null,
+      press: null, // {id,x,y,off,ctrl}：按下尚未判定是「点选」还是「拖动」
       panning: null,
       nodeSel: null,
+      sideEl: null,
     };
     buildDom();
     return api;
@@ -210,6 +280,8 @@
       st.mode = "map";
       modeBtn.classList.remove("on");
       modeBtn.textContent = t("时间线");
+      st.nodeSel = null;
+      renderSide();
       relayout();
       paint();
       draw();
@@ -217,6 +289,7 @@
     };
     bar.appendChild(reset);
 
+    const bodyWrap = el("div", "rg-body");
     const canvas = el("div", "rg-canvas");
     canvas.tabIndex = 0;
     const svg = svgEl("svg", { class: "rg-svg" });
@@ -224,8 +297,14 @@
     const axis = el("div", "rg-axis");
     axis.innerHTML = '<div class="rg-axis-x"></div><div class="rg-axis-y"></div>';
     canvas.appendChild(axis);
+    /* 右侧详情栏：选中的节点在这里展开（内容 + 关系 + 去正文的入口）。
+       它是常驻 DOM —— draw() 只洗 svg，不动它，所以点节点不会把面板顶掉。 */
+    st.sideEl = el("aside", "rg-side");
+    st.sideEl.hidden = true;
+    bodyWrap.appendChild(canvas);
+    bodyWrap.appendChild(st.sideEl);
     host.appendChild(bar);
-    host.appendChild(canvas);
+    host.appendChild(bodyWrap);
 
     const foot = el("div", "rg-foot");
     host.appendChild(foot);
@@ -255,11 +334,20 @@
     );
     canvas.addEventListener("pointerdown", (ev) => {
       if (ev.target.closest(".rg-node")) return;
-      st.panning = { x: ev.clientX, y: ev.clientY, tx: st.tx, ty: st.ty };
+      st.panning = { x: ev.clientX, y: ev.clientY, tx: st.tx, ty: st.ty, moved: false };
       canvas.setPointerCapture(ev.pointerId);
     });
     canvas.addEventListener("pointermove", (ev) => {
+      /* 按下后超过 3px 才算拖动：手一抖就把节点拖走、click 也被吃掉，
+         正是「点节点选不中」的另一半原因。 */
+      if (st.press && !st.press.noDrag && !st.dragging) {
+        const dx = ev.clientX - st.press.x;
+        const dy = ev.clientY - st.press.y;
+        if (dx * dx + dy * dy > 9) st.dragging = st.press.id;
+      }
       if (st.panning) {
+        if (Math.abs(ev.clientX - st.panning.x) + Math.abs(ev.clientY - st.panning.y) > 3)
+          st.panning.moved = true;
         st.tx = st.panning.tx + (ev.clientX - st.panning.x);
         st.ty = st.panning.ty + (ev.clientY - st.panning.y);
         applyTransform();
@@ -274,11 +362,24 @@
       }
     });
     const up = (ev) => {
-      st.panning = null;
+      /* 选中判定放在 pointerup：节点在 pointerdown 时会被 setPointerCapture 抢走指针，
+         再叠加拖动时 draw() 重建 SVG（原元素已不在 DOM 里）—— 靠 click 事件永远收不到，
+         这里按「按下到抬起有没有拖动」自己算一次点选。 */
+      const press = st.press;
+      const dragged = !!st.dragging;
+      const panning = st.panning;
+      st.press = null;
       st.dragging = null;
+      st.panning = null;
       try {
         canvas.releasePointerCapture(ev.pointerId);
       } catch (_) {}
+      if (press) {
+        if (!dragged) pickNode(press.id, { ctrl: press.ctrl });
+      } else if (panning && !panning.moved && st.nodeSel) {
+        /* 空白处点一下（没拖动）= 取消选中；拖动过就是平移，别顺手把选择清掉 */
+        selectNode(null);
+      }
     };
     canvas.addEventListener("pointerup", up);
     canvas.addEventListener("pointercancel", up);
@@ -429,27 +530,64 @@
         if ((e.from === a && e.to === b) || (e.from === b && e.to === a)) pathEdge.add(e.id);
       }
     }
+    /* 选中节点 → 与它相连的边点亮、其余边退暗；相邻节点也各点一下（看清「跟谁有关系」）。
+       路径高亮优先级更高：它是显式查询的结果，不该被点选覆盖。 */
+    const selId = st.nodeSel && g.adj && g.adj.has(st.nodeSel) ? st.nodeSel : null;
+    const linkEdge = new Set();
+    const adjNode = new Set();
+    if (selId) {
+      for (const e of g.edges) {
+        if (e.from !== selId && e.to !== selId) continue;
+        linkEdge.add(e.id);
+        adjNode.add(e.from === selId ? e.to : e.from);
+      }
+    }
     const edgeLayer = svgEl("g", { class: "rg-edges" });
     for (const e of g.edges) {
       const a = posOf(e.from);
       const b = posOf(e.to);
       const onPath = pathEdge.has(e.id);
+      const onLink = linkEdge.has(e.id);
+      const quiet = !!selId && !onLink && !onPath;
       const line = svgEl("path", {
-        class: "rg-edge" + (onPath ? " is-path" : ""),
+        class: "rg-edge" + (onPath ? " is-path" : "") + (onLink ? " is-link" : "") + (quiet ? " is-quiet" : ""),
         d: `M${a.x},${a.y} L${b.x},${b.y}`,
         fill: "none",
-        stroke: onPath ? "var(--accent, #38d6ff)" : "var(--bd2, #46536b)",
-        "stroke-width": onPath ? 2.4 : 1.4,
-        opacity: onPath ? 1 : 0.85,
+        stroke: onPath
+          ? "var(--accent, #38d6ff)"
+          : onLink
+            ? "var(--cyan, #38d6ff)"
+            : "var(--bd2, #46536b)",
+        "stroke-width": onPath ? 2.4 : onLink ? 2.6 : 1.4,
+        "stroke-dasharray": e.kind === "derives" && !onPath && !onLink ? "5 4" : null,
+        opacity: onPath || onLink ? 1 : quiet ? 0.22 : 0.85,
         "marker-end": "url(#rg-arrow)",
         "data-ek": e.kind,
         "vector-effect": "non-scaling-stroke",
       });
+      /* 推导边要跟普通关联边分开：它表达「谁从谁派生」，实体是 note→note，
+         用虚线画，且不等到「命中路径」才显标签（否则图上根本看不出衍生物挂在谁下面）。 */
+      const et = svgEl("title");
+      et.textContent =
+        (C().EDGE_KINDS[e.kind] || e.kind) +
+        (e.fromMeta ? t("（frontmatter）") : "") +
+        (e.gap ? t("（父笔记不在库里）") : "");
+      line.appendChild(et);
       edgeLayer.appendChild(line);
-      if (st.zoom >= 0.75 && onPath) {
+      const showLabel = onPath
+        ? st.zoom >= 0.75
+        : onLink
+          ? st.zoom >= 0.5
+          : e.kind === "derives" && st.zoom >= 0.55;
+      if (showLabel) {
         const lx = (a.x + b.x) / 2;
         const ly = (a.y + b.y) / 2;
-        const lb = svgEl("text", { x: lx, y: ly - 4, "text-anchor": "middle", class: "rg-edge-label" });
+        const lb = svgEl("text", {
+          x: lx,
+          y: ly - 4,
+          "text-anchor": "middle",
+          class: "rg-edge-label" + (onLink ? " is-link" : ""),
+        });
         lb.textContent = C().EDGE_KINDS[e.kind] || e.kind;
         edgeLayer.appendChild(lb);
       }
@@ -460,13 +598,18 @@
     for (const n of g.nodes) {
       const p = posOf(n.id);
       const active = hit(n);
+      const isSel = st.nodeSel === n.id;
+      const isAdj = adjNode.has(n.id);
       const cls =
         "rg-node k-" +
         n.kind +
         (active ? "" : " is-dim") +
-        (st.nodeSel === n.id ? " is-sel" : "") +
+        (isSel ? " is-sel" : "") +
+        (isAdj ? " is-adj" : "") +
+        (selId && !isSel && !isAdj && !pathSet.has(n.id) ? " is-quiet" : "") +
         (pathSet.has(n.id) ? " is-path" : "") +
-        (n.missing || n.missingItem ? " is-missing" : "");
+        (n.missing || n.missingItem ? " is-missing" : "") +
+        (n.derived ? " is-derived" : "");
       const gnode = svgEl("g", { class: cls, transform: `translate(${p.x} ${p.y})`, "data-nid": n.id });
       const r = n.kind === "topic" ? 16 : n.core ? 14 : 9;
       const circle = svgEl("circle", {
@@ -483,48 +626,56 @@
         tick.textContent = "✓";
         gnode.appendChild(tick);
       }
-      const label = svgEl("text", {
-        x: r + 6,
-        y: 4,
-        class: "rg-label" + (n.kind === "topic" ? " is-topic" : ""),
-      });
-      label.textContent = String(n.label || "").slice(0, 26);
+      const rawLabel = String(n.label || "");
+      const labelText = clipLabel(rawLabel, 26);
+      let label = null;
+      if (hasTex(labelText)) {
+        label = htmlLabel(labelText, n.kind === "topic" ? "is-topic" : "", r + 6, -5);
+        label.dataset.dy = "4";
+        gnode.dataset.fo = "1";
+      } else {
+        label = svgEl("text", {
+          x: r + 6,
+          y: 4,
+          class: "rg-label" + (n.kind === "topic" ? " is-topic" : ""),
+        });
+        label.textContent = labelText;
+      }
       gnode.dataset.r = String(r);
       gnode.appendChild(label);
       const title = svgEl("title");
       title.textContent =
         (C().NODE_KINDS[n.kind] || n.kind) +
         " · " +
-        String(n.label || "") +
+        String(tipText(n.label)) +
         (n.kind === "claim" ? "\n" + (C().VERIFY_LABEL[n.verify] || "") : "") +
+        (n.derived
+          ? "\n" +
+            t("衍生物") +
+            (Array.isArray(n.parents) && n.parents.length ? t(" · 父：") + n.parents.join(" / ") : "")
+          : "") +
+        (n.gap ? "\n" + t("缺口：父笔记不在库里") : "") +
         (n.path ? "\n" + n.path + ":" + (n.line || 1) : "");
       gnode.appendChild(title);
 
       gnode.addEventListener("pointerdown", (ev) => {
         ev.stopPropagation();
+        if (ev.button != null && ev.button !== 0) return;
         const wp = worldPoint(ev);
-        st.dragging = n.id;
-        st.dragOff = { x: wp.x - p.x, y: wp.y - p.y };
+        st.press = {
+          id: n.id,
+          x: ev.clientX,
+          y: ev.clientY,
+          off: { x: wp.x - p.x, y: wp.y - p.y },
+          ctrl: !!(ev.ctrlKey || ev.metaKey),
+        };
+        st.dragging = null;
+        st.dragOff = st.press.off;
         st.canvas.setPointerCapture(ev.pointerId);
-      });
-      gnode.addEventListener("click", (ev) => {
-        ev.stopPropagation();
-        if (ev.ctrlKey || ev.metaKey) {
-          if (st.pathSel.includes(n.id)) st.pathSel = st.pathSel.filter((x) => x !== n.id);
-          else st.pathSel.push(n.id);
-          if (st.pathSel.length > 2) st.pathSel = st.pathSel.slice(-2);
-          st.path =
-            st.pathSel.length === 2 ? C().shortestPath(g, st.pathSel[0], st.pathSel[1]) : [];
-          st.nodeSel = n.id;
-          draw();
-          return;
-        }
-        st.nodeSel = n.id;
-        draw();
-        if (n.path) st.onOpen(n);
       });
       gnode.addEventListener("dblclick", (ev) => {
         ev.stopPropagation();
+        st.press = null;
         st.focus = { id: n.id, dist: C().neighborhood(g, n.id, st.hops) };
         dryFocusBtn(true);
         draw();
@@ -535,6 +686,214 @@
     applyTransform();
     rescaleText();
     paintFoot(g);
+  }
+
+  /* ── 选中 / 右栏详情 ──
+   * 点节点只做「选中」：图上点亮与它相连的边，右边展开它的内容。
+   * 进正文是详情栏里那颗按钮的事（onOpen → 研究视图回笔记态并滚到对应行），
+   * 点一下就跳走的话，等于没有选择这回事。 */
+  function nodeById(id) {
+    if (!id) return null;
+    return ((st && st.full && st.full.nodes) || []).find((n) => n.id === id) || null;
+  }
+  function relationsOf(id) {
+    const out = [];
+    for (const e of (st && st.full && st.full.edges) || []) {
+      if (e.from !== id && e.to !== id) continue;
+      const otherId = e.from === id ? e.to : e.from;
+      const other = nodeById(otherId) || { id: otherId, label: otherId };
+      out.push({ dir: e.from === id ? "out" : "in", kind: e.kind, edge: e, node: other });
+    }
+    /* 同一对节点之间可能有多条边（断言 + 提及）：按「方向 + 关系 + 对方」去重，别把右栏刷成一长串 */
+    const seen = new Set();
+    return out.filter((r) => {
+      const k = r.dir + "|" + r.kind + "|" + r.node.id;
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    });
+  }
+  function ensureVisible(id) {
+    const p = st.positions.get(id);
+    if (!p || !st.canvas) return;
+    const rect = st.canvas.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    const sx = p.x * st.zoom + st.tx;
+    const sy = p.y * st.zoom + st.ty;
+    const m = 70;
+    if (sx >= m && sx <= rect.width - m && sy >= m && sy <= rect.height - m) return;
+    st.tx += rect.width / 2 - sx;
+    st.ty += rect.height / 2 - sy;
+    applyTransform();
+  }
+  function selectNode(id, opts) {
+    if (!st) return;
+    const o = opts || {};
+    const next = id || null;
+    const same = st.nodeSel === next && !o.force;
+    st.nodeSel = next;
+    st.press = null;
+    st.dragging = null;
+    /* 已经是选中项时不再重画：双击要落在这颗节点上（pointerup 里一重画，元素就换了，
+       dblclick 跟着丢），只有选中项真变了才重建 SVG 与右栏。 */
+    if (!same) {
+      renderSide();
+      draw();
+    }
+    if (st.nodeSel && !o.noPan) ensureVisible(st.nodeSel);
+    if (typeof st.onSelect === "function") {
+      try {
+        st.onSelect(api.selection());
+      } catch (_) {}
+    }
+  }
+  /* 点选（含 Ctrl 两点最短路）：与旧的 click 分支同一份语义，只是改由 pointerup 调用 */
+  function pickNode(id, opts) {
+    if (!st) return;
+    const o = opts || {};
+    if (o.ctrl) {
+      const g = st.view || emptyGraph();
+      if (st.pathSel.includes(id)) st.pathSel = st.pathSel.filter((x) => x !== id);
+      else st.pathSel.push(id);
+      if (st.pathSel.length > 2) st.pathSel = st.pathSel.slice(-2);
+      st.path = st.pathSel.length === 2 ? C().shortestPath(g, st.pathSel[0], st.pathSel[1]) : [];
+      selectNode(id, { force: true });
+      return;
+    }
+    selectNode(id);
+  }
+  /* 右栏：节点内容 + 关系 + 去正文 / 去文献的入口。depth 已截断的正文由 CSS 控高滚动。 */
+  function renderSide() {
+    const box = st && st.sideEl;
+    if (!box) return;
+    const n = nodeById(st.nodeSel);
+    if (!n) {
+      box.hidden = true;
+      box.innerHTML = "";
+      return;
+    }
+    box.innerHTML = "";
+    box.hidden = false;
+
+    const head = el("div", "rg-side-head");
+    head.appendChild(el("span", "rg-side-kind", C().NODE_KINDS[n.kind] || n.kind || ""));
+    const shut = el("button", "rg-side-close", "✕");
+    shut.type = "button";
+    shut.title = t("收起详情");
+    shut.onclick = () => selectNode(null);
+    head.appendChild(shut);
+    box.appendChild(head);
+
+    const title = el("div", "rg-side-title");
+    title.innerHTML = inlineHtml(String(n.label || n.id || ""));
+    title.title = tipText(n.label || n.id || "");
+    box.appendChild(title);
+
+    /* 内容也能点：标题 / 正文段落点一下就进正文（与底部那颗「打开正文」同一个出口） */
+    const openSelf = () => {
+      if (!n.path) return;
+      try {
+        st.onOpen(n);
+      } catch (_) {}
+    };
+    if (n.path) {
+      title.classList.add("rg-side-click");
+      title.onclick = openSelf;
+    }
+
+    const body = el("div", "rg-side-body");
+    box.appendChild(body);
+
+    const rows = [];
+    if (n.kind === "claim" || n.kind === "question")
+      rows.push([t("验证态"), C().VERIFY_LABEL[n.verify] || n.verify || t("未验证")]);
+    if (n.path) rows.push([t("位置"), n.path + ":" + (n.line || 1)]);
+    if (n.citeKey) rows.push([t("引用键"), "@" + n.citeKey]);
+    if (n.doi) rows.push(["DOI", n.doi]);
+    if (n.url) rows.push([t("网址"), n.url]);
+    if (n.at) rows.push([t("日期"), String(n.at)]);
+    if (n.angle) rows.push([t("方向"), n.angle]);
+    if (Array.isArray(n.tags) && n.tags.length) rows.push([t("标签"), n.tags.join(" · ")]);
+    if (Array.isArray(n.parents) && n.parents.length) rows.push([t("父"), n.parents.join(" / ")]);
+    if (n.missing) rows.push([t("状态"), t("悬空：目标不在库里")]);
+    if (n.gap) rows.push([t("状态"), t("缺口：父笔记不在库里")]);
+    for (const [k, v] of rows) {
+      const row = el("div", "rg-side-row");
+      row.appendChild(el("span", "rg-side-k", k));
+      const val = el("span", "rg-side-v", String(v));
+      val.title = String(v);
+      row.appendChild(val);
+      body.appendChild(row);
+    }
+
+    const text = String(n.text || n.excerpt || "").trim();
+    const tex = String(n.tex || "").trim();
+    if (text) {
+      const p = el("div", "rg-side-text");
+      p.innerHTML = inlineMd(text.length > 1400 ? text.slice(0, 1400) + "…" : text);
+      if (n.path) {
+        p.classList.add("rg-side-click");
+        p.onclick = openSelf;
+        p.title = t("打开正文");
+      }
+      body.appendChild(p);
+    } else if (tex) {
+      const p = el("div", "rg-side-text");
+      p.innerHTML = inlineMd("$$" + tex.replace(/^\$\$|\$\$$/g, "") + "$$");
+      body.appendChild(p);
+    } else if (!rows.length) {
+      body.appendChild(el("div", "rg-side-empty", t("这个节点没有可展开的正文（只有标题）。")));
+    }
+
+    /* 关系：点一行就跳到对面那个节点（图上一个一个点过去太费劲） */
+    const rels = relationsOf(n.id);
+    const relBox = el("div", "rg-side-rels");
+    const relHead = el("div", "rg-side-relhead", t("关系 ") + rels.length);
+    relBox.appendChild(relHead);
+    const cap = 40;
+    for (const r of rels.slice(0, cap)) {
+      const row = el("button", "rg-side-rel");
+      row.type = "button";
+      row.appendChild(el("span", "rg-side-dir", r.dir === "out" ? "→" : "←"));
+      row.appendChild(el("span", "rg-side-relkind", C().EDGE_KINDS[r.kind] || r.kind));
+      const lab = el("span", "rg-side-relname");
+      lab.innerHTML = inlineHtml(String(r.node.label || r.node.id));
+      row.appendChild(lab);
+      row.title = String(r.node.label || r.node.id) + (r.node.path ? " · " + r.node.path : "");
+      row.onclick = () => selectNode(r.node.id);
+      relBox.appendChild(row);
+    }
+    if (rels.length > cap)
+      relBox.appendChild(el("div", "rg-side-more", t("还有 ") + (rels.length - cap) + t(" 条关系没列出")));
+    if (!rels.length) relBox.appendChild(el("div", "rg-side-empty", t("这个节点还没有任何关系。")));
+    body.appendChild(relBox);
+
+    /* 出口：有 path → 回笔记视图并滚到那一段；文献节点（paper）→ 有全文就打开、没有就问一句入库 */
+    const acts = el("div", "rg-side-acts");
+    if (n.path) {
+      const go = el("button", "rg-side-go", t("打开正文"));
+      go.type = "button";
+      go.title = t("回到笔记视图并定位到这一段（") + n.path + ":" + (n.line || 1) + "）";
+      go.onclick = () => {
+        try {
+          st.onOpen(n);
+        } catch (_) {}
+      };
+      acts.appendChild(go);
+    }
+    if (n.citeKey) {
+      const b = el("button", "rg-side-go alt", t("打开文献"));
+      b.type = "button";
+      b.title = t("有全文就直接打开；没有则问一句要不要搜索并入库");
+      b.onclick = () => {
+        if (typeof st.onCite !== "function") return;
+        try {
+          st.onCite(n.citeKey);
+        } catch (_) {}
+      };
+      acts.appendChild(b);
+    }
+    if (acts.children.length) box.appendChild(acts);
   }
 
   /* 文字反缩放：标签活在世界坐标里，会被 zoom 一起缩小 —— 0.5 倍时 11px 只剩 5px，
@@ -550,6 +909,17 @@
         lb.setAttribute("y", 4 / z);
         lb.style.fontSize = (lb.classList.contains("is-topic") ? 13 : 11) / z + "px";
       }
+      /* HTML 标签（带公式的那些）：字号同样按 1/zoom 补偿，再按内容量一次框 */
+      const fo = g.querySelector("foreignObject.rg-fo");
+      if (fo) {
+        const div = fo.firstElementChild;
+        fo.setAttribute("x", String(r + 6 / z));
+        if (div) {
+          div.style.fontSize = (div.classList.contains("is-topic") ? 13 : 11) / z + "px";
+          div.style.lineHeight = "1.3";
+        }
+        fitFo(g, z);
+      }
       const tk = g.querySelector(".rg-tick");
       if (tk) {
         tk.setAttribute("y", 4 / z);
@@ -561,6 +931,17 @@
     });
     st.svg.querySelectorAll(".rg-tl-date, .rg-tl-label").forEach((el2) => {
       el2.style.fontSize = 11 / z + "px";
+    });
+    st.svg.querySelectorAll(".rg-tl-item").forEach((g) => {
+      const fo = g.querySelector("foreignObject.rg-fo");
+      if (!fo) return;
+      const div = fo.firstElementChild;
+      if (div) {
+        div.style.fontSize = 11 / z + "px";
+        div.style.lineHeight = "1.3";
+      }
+      fo.setAttribute("x", String(12 / z));
+      fitFo(g, z);
     });
   }
 
@@ -599,18 +980,44 @@
     shown.forEach((r) => {
       const p = pos.get(r.node.id);
       const gnode = svgEl("g", {
-        class: "rg-tl-item k-" + r.node.kind + (hit(r.node) ? "" : " is-dim"),
+        class:
+          "rg-tl-item k-" +
+          r.node.kind +
+          (hit(r.node) ? "" : " is-dim") +
+          (st.nodeSel === r.node.id ? " is-sel" : ""),
         transform: `translate(${p.x} ${p.y})`,
+        "data-nid": r.node.id,
       });
       const date = isNaN(r.t) ? t("未标日期") : new Date(r.t).toISOString().slice(0, 10);
       const dt = svgEl("text", { x: 0, y: -10, class: "rg-tl-date" });
       dt.textContent = date;
-      const lb = svgEl("text", { x: 12, y: 8, class: "rg-tl-label" });
-      lb.textContent = (C().NODE_KINDS[r.node.kind] || "") + " · " + String(r.node.label || "").slice(0, 18);
+      const tlText = (C().NODE_KINDS[r.node.kind] || "") + " · " + clipLabel(String(r.node.label || ""), 18);
+      let lb = null;
+      if (hasTex(tlText)) {
+        lb = htmlLabel(tlText, "is-tl", 12, -4);
+        lb.dataset.dy = "8";
+      } else {
+        lb = svgEl("text", { x: 12, y: 8, class: "rg-tl-label" });
+        lb.textContent = tlText;
+      }
       gnode.appendChild(svgEl("circle", { cx: 0, cy: 4, r: 6, fill: KIND_COLOR[r.node.kind] || "#9aa7b8" }));
       gnode.appendChild(dt);
       gnode.appendChild(lb);
+      /* 时间线的条目也走「按下→抬起」这套判定：canvas 上的指针捕获会把 click 抢走，
+         光靠 click 事件在这里同样收不到（与图谱视角同一个坑）。 */
+      gnode.addEventListener("pointerdown", (ev) => {
+        ev.stopPropagation();
+        if (ev.button != null && ev.button !== 0) return;
+        st.press = { id: r.node.id, x: ev.clientX, y: ev.clientY, off: { x: 0, y: 0 }, ctrl: false, noDrag: true };
+        st.dragging = null;
+        st.canvas.setPointerCapture(ev.pointerId);
+      });
       gnode.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        /* 与图谱视角一致：点 = 选中（右栏出内容），进正文走右栏那颗按钮 */
+        selectNode(r.node.id, { noPan: true });
+      });
+      gnode.addEventListener("dblclick", (ev) => {
         ev.stopPropagation();
         if (r.node.path) st.onOpen(r.node);
       });
@@ -631,6 +1038,8 @@
       t("存疑 ") + (s.byVerify.doubt || 0),
       t("未验证 ") + (s.byVerify.unverified || 0),
     ];
+    if (s.derived) bits.push(t("推导 ") + s.derived);
+    if (s.gaps) bits.push(t("缺口 ") + s.gaps);
     if (s.missing) bits.push(t("悬空链接 ") + s.missing);
     if (st.path.length)
       bits.push(
@@ -638,11 +1047,12 @@
           st.path
             .map((id) => {
               const n = (st.full.nodes || []).find((x) => x.id === id);
-              return n ? String(n.label).slice(0, 12) : id;
+              return n ? clipLabel(String(n.label), 12) : id;
             })
             .join(" → "),
       );
-    st.foot.textContent = bits.join(" · ");
+    /* 页脚是 HTML：路径那一截带笔记题名（可能有 `$…$`），按标签口径渲染公式 */
+    st.foot.innerHTML = bits.map((b) => inlineHtml(b)).join(" · ");
   }
 
   /* 适应窗口：把当前视图的所有节点装进可视区。
@@ -685,7 +1095,10 @@
       st.focus = null;
       st.path = [];
       st.pathSel = [];
+      /* 选中的节点若已不在新图里（笔记被删 / 改名），右栏跟着收起 */
+      if (st.nodeSel && !nodeById(st.nodeSel)) st.nodeSel = null;
       paint();
+      renderSide();
       draw();
       if (!opts || opts.fit !== false) fitView();
     },
@@ -695,23 +1108,32 @@
     setGraphNoRelayout(graph) {
       if (!st) return;
       st.full = graph || emptyGraph();
+      if (st.nodeSel && !nodeById(st.nodeSel)) st.nodeSel = null;
       st.view = computeView();
+      renderSide();
       draw();
     },
     rerender() {
       if (!st) return;
       paint();
+      renderSide();
       draw();
     },
     getNode(id) {
       if (!st) return null;
       return (st.full.nodes || []).find((n) => n.id === id) || null;
     },
+    /* 外部（左栏笔记树 / 会话）也能把某个节点选中并展开右栏 */
+    select(id) {
+      if (!st) return;
+      selectNode(id || null);
+    },
     focusNode(id, hops) {
       if (!st || !id) return;
       st.focus = { id, dist: C().neighborhood(st.full, id, hops || st.hops) };
       st.nodeSel = id;
       paint();
+      renderSide();
       draw();
     },
     /* 当前选中节点（只读）：研究视图的会话框发消息时要把「用户现在盯着哪个节点」带给 agent，

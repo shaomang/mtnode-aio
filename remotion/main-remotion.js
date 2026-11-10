@@ -75,8 +75,12 @@ let installRep = null;
 let getDsh = null;
 /** @type {{ nodeId: string, child: import('child_process').ChildProcess|null, abort?: boolean, pct?: number, outputPath?: string }|null} */
 let renderProc = null;
-/* 已取锁、正在跑渲染的节点 id（取锁到 spawn 子进程之间那段也算在跑） */
+/* 正在跑渲染的节点 id（取锁到 spawn 子进程之间那段也算在跑） */
 let activeRenderNode = "";
+/* 研究演示视频的「在途 job」登记表：jobId → { abortNow, params, reject }。
+   取消 / 超时都经它：进程已经起来就 kill，进程还没起来（浏览器预置 / 打包前）就挂 abortNow，
+   等 runRender 真把子进程拉起来时立刻自灭 —— 绝不留一只没人认领的渲染在后台跑。 */
+const researchAborts = new Map();
 
 /* 全局媒体锁活性探针（口径见 media-gen-global-lock.js 头部）：内存里有没有在途渲染才是真相。
    Remotion 渲染是子进程、没有常驻服务，所以不提供 isAlive（判不了就跳过）。 */
@@ -416,7 +420,7 @@ function validateProjectTree(rawFiles, entryRel) {
           errors.push(rel + " 里 import 的相对文件不存在：" + spec);
         continue;
       }
-      errors.push(rel + " 里不许 import「" + spec + "」：只允许 react / remotion / 工程内相对文件");
+      errors.push(rel + " 里不许 import「" + spec + "」：只允许 react / remotion / three / 工程内相对文件");
     }
   }
   /* 入口必须导出 Main（验收口径与单文件一致：Main 或唯一大写具名导出自动别名） */
@@ -2434,7 +2438,7 @@ export const Main: React.FC = () => {
 }
 
 /** 自定义合成的依赖白名单：安装目录只装了 react / remotion，其它包打包必失败 */
-const CUSTOM_IMPORT_ALLOWED = /^(?:react|remotion)(?:\/|$)/;
+const CUSTOM_IMPORT_ALLOWED = /^(?:react|react-dom|remotion|three|@remotion\/three|@react-three\/fiber)(?:\/|$)/;
 
 /* 注：「角色动态 + 台词卡」专用内置模板（portrait-dialogue.tsx）连同它的
    wantsBuiltinDialogue / pickPortraitInputs 已在引擎侧移除 —— 那套是给单一工作流定制的，
@@ -3112,6 +3116,9 @@ async function runRender(installDir, params, nodeId, written) {
     reportErr("browser_missing", browserInfo.hint || "渲染浏览器缺失", renderReportCtx(params, nodeId));
     throw new Error(browserInfo.hint || "browser_missing");
   }
+  /* 进度钩子（可选）：研究演示视频导出要的是「原始 0–100 百分比 + 阶段话术」，
+     走它自己的 research:slidesVideoProgress 通道，不跟画布节点的 remotion:progress 混。 */
+  const progressHook = typeof params.progressHook === "function" ? params.progressHook : null;
   return new Promise((resolve, reject) => {
     /* ---- 按 remotion-pack/render.mjs 契约写 render.json（render.mjs 默认读 ./render.json） ---- */
     const fps = Number(params.fps) || 30;
@@ -3154,10 +3161,21 @@ async function runRender(installDir, params, nodeId, written) {
     if (String(params.audioPath || "").trim()) {
       renderJson.inputProps.audioPath = String(params.audioPath).trim();
     }
+    /* ── 直传 inputProps（研究演示视频导出这条入口用）─────────────────
+       调用方已经把「源码树 + props + 媒体二进制」算好，这里一个键都不再解析：
+       与下面画布节点那两条通道（端子契约 / 自定义参数）互斥，绝不叠加。 */
+    if (params.propsDirect) {
+      Object.assign(
+        renderJson.inputProps,
+        params.inputProps && typeof params.inputProps === "object" ? params.inputProps : {},
+      );
+      const keys = Object.keys(renderJson.inputProps);
+      appendConsole("[render] direct inputProps: " + (keys.length ? keys.join(", ") : "-"));
+    }
     /* ── 自定义合成参数（通用通道，见 customPropsOf / propsFromInputs）──
        专属「台词卡」模板已移除：接线文本里声明的 props、节点参数里的未知键、参数文件，
        全部只经这一条通道交给合成代码，不会被任何内置模板抢先注入或改写。 */
-    if (renderModeOf(params) === "custom") {
+    if (!params.propsDirect && renderModeOf(params) === "custom") {
       const nodeProps = customPropsOf(params);
       if (contractBuilt) {
         /* 固化工程：契约是唯一 props 通道；节点参数里的显式同名键仍可覆盖（老口径） */
@@ -3226,7 +3244,11 @@ async function runRender(installDir, params, nodeId, written) {
        图片（<Img> 不走 proxy）保持 data URL 原样。
        固化工程这一路：文件名与 props 值都由 contractPropsOf 定好（数组项按接线顺序），
        render.mjs 只照 meta 写盘、把 name 放回 props。 */
-    if (contractBuilt && Object.keys(contractBuilt.mediaBlobs).length) {
+    if (params.propsDirect && params.mediaBlobs && Object.keys(params.mediaBlobs).length) {
+      renderJson.mediaBlobs = params.mediaBlobs;
+      renderJson.mediaBlobsMeta = params.mediaBlobsMeta || {};
+      appendConsole("[render] media parked (direct): " + Object.keys(params.mediaBlobs).join(", "));
+    } else if (contractBuilt && Object.keys(contractBuilt.mediaBlobs).length) {
       renderJson.mediaBlobs = contractBuilt.mediaBlobs;
       renderJson.mediaBlobsMeta = contractBuilt.mediaBlobsMeta;
       appendConsole("[render] media parked (contract): " + Object.keys(contractBuilt.mediaBlobs).join(", "));
@@ -3271,7 +3293,17 @@ async function runRender(installDir, params, nodeId, written) {
         MTNODE_REMOTION_PROJECT_DIR: projectDir,
       }),
     });
+    if (progressHook) progressHook({ pct: 8, message: "打包并渲染…" });
     renderProc = { nodeId, child, abort: false, pct: 0, outputPath: "" };
+    /* 入口侧已经判超时（或取消）但进程才刚起来：立刻自己收掉，别留一只没人认领的渲染在后台跑 */
+    if (params.abortNow) {
+      renderProc.abort = true;
+      appendConsole("[render] abortNow after spawn node=" + nodeId);
+      try {
+        child.kill();
+      } catch {}
+      killPidTree(child.pid);
+    }
     const cur = { pct: 0, outputPath: "", error: "" };
     let out = "";
     const deadline = Date.now() + RENDER_MAX_MS;
@@ -3284,6 +3316,15 @@ async function runRender(installDir, params, nodeId, written) {
         if (!line) continue;
         appendConsole((isErr ? "[err] " : "") + line);
         parseRenderProgressLine(line, cur);
+        /* 打包（webpack）阶段的进度：render.mjs 单独一行 JSON，不含在 0..1 的渲染进度里。
+           研究演示视频导出会在这里停一会儿，进度得动，否则看着像卡死（只喂钩子，不动画布节点那条线）。 */
+        if (progressHook) {
+          const bp = /"type"\s*:\s*"bundleProgress"[^}]*"progress"\s*:\s*([\d.]+)/.exec(line);
+          if (bp) {
+            const v = Math.max(0, Math.min(1, Number(bp[1]) || 0));
+            progressHook({ pct: 2 + v * 6, message: "打包工程 " + Math.round(v * 100) + "%" });
+          }
+        }
         if (cur.pct != null && isFinite(cur.pct)) {
           renderProc.pct = cur.pct;
           emitProgress({
@@ -3292,6 +3333,7 @@ async function runRender(installDir, params, nodeId, written) {
             message: "渲染 " + Math.round(cur.pct) + "%",
             pct: Math.max(1, Math.min(95, Math.round(cur.pct * 0.95))),
           });
+          if (progressHook) progressHook({ pct: cur.pct, message: "渲染 " + Math.round(cur.pct) + "%" });
         }
         if (cur.outputPath) renderProc.outputPath = cur.outputPath;
       }
@@ -3409,6 +3451,360 @@ async function renderVideo(params) {
     emitProgress({ phase: "render", nodeId, message: err, error: true, pct: 0 });
     reportErr(err, err, renderReportCtx(params, nodeId));
     return { ok: false, error: err, message: err };
+  }
+}
+
+/* ── 研究演示视频：给定源码树 + props + 输出路径（不依赖画布节点）───────
+   调用方（renderer/app-research.js 的「导出视频」）只交出四样东西：
+     · files       冻结的 Remotion 源码树（入口 Composition.tsx，工程生成器现算）
+     · props       直接给合成的 inputProps（不再走端子契约 / 节点参数两条通道）
+     · narration   可选旁白音轨（本机文件；存在才混，读不到就跳过并记 warning）
+     · outputPath  成片落点（封面帧另给 coverPath，用 ffmpeg 抽一帧 png）
+   内核仍是同一条 writeRenderSources（多文件校验 / 落盘）→ runRender（bundle + renderMedia），
+   只是不认 nodeId / workflow / 工作目录这些画布概念。进度走 research:slidesVideoProgress，
+   取消走 research:slidesVideoCancel，超时由这里兜（kill 渲染进程树）。 */
+
+/** 研究演示视频的进度广播（独立通道：编辑器只认它，画布节点那条 remotion:progress 不受影响） */
+function emitResearchProgress(ev) {
+  broadcast("research:slidesVideoProgress", Object.assign({ at: Date.now() }, ev || {}));
+}
+
+/** 旁白音轨 → mediaBlobs 一项（文件不在 / 读不出来 / 超过 64MB 就返回 null = 这次不混旁白） */
+function parkNarrationAudio(file) {
+  const p = String(file || "").trim();
+  if (!p) return null;
+  let st = null;
+  try {
+    st = fs.statSync(p);
+  } catch {
+    return null;
+  }
+  if (!st.isFile() || st.size <= 0 || st.size > 64 * 1024 * 1024) return null;
+  const ext = path.extname(p).toLowerCase();
+  const mime = MIME_OF_EXT[ext] || "audio/mpeg";
+  /* 落 public/ 的文件名：合成层用 staticFile(名字) 取（见 remotion-pack/render.mjs 的 mediaBlobs） */
+  const name = "narration" + (/^\.[a-z0-9]{1,5}$/.test(ext) ? ext : ".mp3");
+  try {
+    return { name, mime, bytes: fs.readFileSync(p), source: p };
+  } catch {
+    return null;
+  }
+}
+
+/** 封面帧：ffmpeg 从成片抽一帧 PNG（先试 1s 再退回 0s；失败只记 warning，不影响成片） */
+function extractCoverFrame(videoPath, coverPath) {
+  return new Promise((resolve) => {
+    const src = String(videoPath || "").trim();
+    const out = String(coverPath || "").trim();
+    if (!src || !out || !fs.existsSync(src)) return resolve({ ok: false, error: "no_video" });
+    let ffmpeg = "";
+    try {
+      /* ffmpeg 查找顺序与 QA 节点同一份（PATH → Remotion 安装目录 → 其它本地后端便携目录） */
+      ffmpeg = require("../main-qa-media.js").resolveFfmpeg().ffmpeg;
+    } catch (e) {
+      return resolve({ ok: false, error: String((e && e.message) || e) });
+    }
+    mk(path.dirname(out));
+    const attempt = (at, done) => {
+      let child = null;
+      try {
+        child = spawn(ffmpeg, ["-y", "-loglevel", "error", "-ss", String(at), "-i", src, "-frames:v", "1", out], {
+          windowsHide: true,
+        });
+      } catch (e) {
+        return done(false, String((e && e.message) || e));
+      }
+      let err = "";
+      child.stderr.on("data", (d) => (err += d.toString()));
+      child.on("error", (e) => done(false, String((e && e.message) || e)));
+      child.on("close", (code) => {
+        let ok = false;
+        try {
+          ok = code === 0 && fs.existsSync(out) && fs.statSync(out).size > 0;
+        } catch {}
+        done(ok, ok ? "" : "ffmpeg_exit_" + code + (err ? ": " + err.trim().slice(-300) : ""));
+      });
+      const timer = setTimeout(() => {
+        try {
+          child.kill();
+        } catch {}
+      }, 60000);
+      if (timer.unref) timer.unref();
+    };
+    attempt(1, (ok1, err1) => {
+      if (ok1) return resolve({ ok: true, path: out });
+      attempt(0, (ok2, err2) => resolve(ok2 ? { ok: true, path: out } : { ok: false, error: err2 || err1 || "ffmpeg_failed" }));
+    });
+  });
+}
+
+/** 结束**这只**渲染子进程（只杀进程 + 置 abort，不碰 promise / 事件）：取消与超时共用的底层 */
+function killRenderProc(jobId) {
+  const nid = String(jobId || "");
+  if (!renderProc || !renderProc.child) return false;
+  if (nid && renderProc.nodeId !== nid) return false;
+  const pid = renderProc.child.pid;
+  renderProc.abort = true;
+  appendConsole("[research-video] kill render job=" + (renderProc.nodeId || "?") + " pid=" + pid);
+  try {
+    renderProc.child.kill();
+  } catch {}
+  killPidTree(pid);
+  return true;
+}
+
+/** 标记某个 job 作废：进程在跑就杀，进程还没起来就挂 abortNow（起来即自灭）；
+ *  rejectWith 给了就把入口侧的等待立刻结束（取消要立刻回，不能等浏览器预置跑完）。 */
+function markJobAbort(jobId, rejectWith) {
+  const nid = String(jobId || "");
+  const pending = nid ? researchAborts.get(nid) : null;
+  if (!pending) return false;
+  pending.abortNow = true;
+  if (pending.params) pending.params.abortNow = true;
+  killRenderProc(nid);
+  if (rejectWith && typeof pending.reject === "function") {
+    try {
+      pending.reject(new Error(rejectWith));
+    } catch {}
+  }
+  return true;
+}
+
+/** 取消研究演示视频渲染：只结束**这次 job** 的子进程树（不动别的渲染），不往报错总线写「失败」 */
+function cancelProjectRender(jobId) {
+  const nid = String(jobId || "");
+  const cancelled = markJobAbort(nid, "cancelled");
+  return { ok: true, cancelled };
+}
+
+/**
+ * 「给定源码树 + props + 输出路径」的渲染入口（研究视图「导出视频」）。
+ * 与 renderVideo 的区别（全部刻意的）：
+ *   · 不认画布节点：jobId 只是进度 / 取消的句柄，工程目录落数据目录（remotion-projects/<jobId>）；
+ *   · props 直传（propsDirect），不让端子契约 / 节点参数改写，也不让音频时长覆盖视频时间轴；
+ *   · 旁白音轨由 narrationPath 给，**存在才混**（混进 mediaBlobs，合成层以 staticFile 取）；
+ *   · 超时 kill 渲染进程树并回 render_timeout；取消回 cancelled（都不进报错总线）。
+ * @returns {Promise<{ok:boolean, jobId:string, path?:string, cover?:string, bytes?:number,
+ *   durationSec?:number, width?:number, height?:number, fps?:number, warnings?:string[],
+ *   error?:string, message?:string, logPath?:string}>}
+ */
+async function renderProjectTree(params) {
+  const p = params && typeof params === "object" ? params : {};
+  const t0 = Date.now();
+  const jobId = String(p.jobId || "").trim() || "research-slides-" + Date.now().toString(36);
+  const outPath = String(p.outputPath || "").trim();
+  const fps = Number(p.fps) > 0 ? Number(p.fps) : 30;
+  const width = Number(p.width) > 0 ? Number(p.width) : 1920;
+  const height = Number(p.height) > 0 ? Number(p.height) : 1080;
+  const frames = Math.max(0, Math.round(Number(p.durationInFrames) || 0));
+  let durationSec = Number(p.durationSeconds) > 0 ? Number(p.durationSeconds) : frames > 0 ? frames / fps : 5;
+  if (frames > 0) durationSec = frames / fps; /* 帧数是合成层给的真值，秒跟着它走 */
+  const warnings = [];
+  const logPath = consoleLogPath();
+
+  if (!outPath) {
+    appendConsole("[research-video] error: missing_output_path job=" + jobId);
+    return { ok: false, jobId, error: "missing_output_path", message: "没给输出路径", logPath };
+  }
+  /* 工程树先校验：不合规直接点名文件回去，不 spawn 渲染（与画布节点同一份校验） */
+  const check = validateProjectTree(p.files, "Composition.tsx");
+  if (!check.ok) {
+    const message = check.errors.join("\n");
+    appendConsole("[research-video] project invalid job=" + jobId + "\n" + message);
+    return { ok: false, jobId, error: "project_invalid", message, errors: check.errors, logPath };
+  }
+  const cfg = loadConfig();
+  const installDir = String(cfg.installDir || "").trim();
+  if (!installDir || !fs.existsSync(installDir)) {
+    appendConsole("[research-video] not_installed job=" + jobId + " dir=" + installDir);
+    return {
+      ok: false,
+      jobId,
+      error: "not_installed",
+      message: "Remotion 后端尚未安装（安装目录不存在）",
+      logPath,
+    };
+  }
+  if (!runtimeReadyAt(installDir)) {
+    appendConsole("[research-video] not_ready job=" + jobId);
+    return {
+      ok: false,
+      jobId,
+      error: "not_ready",
+      message: "Remotion 依赖未就绪：node_modules/remotion 缺失，请先在插件卡片点「下载安装」",
+      logPath,
+    };
+  }
+  /* renderProc 是宿主唯一一只渲染子进程：画布节点在渲染时这里必须让开（不抢同一只句柄） */
+  if (renderProc) {
+    appendConsole("[research-video] busy job=" + jobId + " running=" + (renderProc.nodeId || "?"));
+    return {
+      ok: false,
+      jobId,
+      error: "render_busy",
+      message: "已有渲染任务在跑（画布节点或另一次导出），等它结束再试",
+      logPath,
+    };
+  }
+
+  const acq = tryAcquireLock({ nodeId: jobId, host: "remotion", kind: "video_gen" });
+  if (!acq.ok) {
+    const msg = busyMessage(acq.lock) || "全局音视频锁被另一个任务占着（同一时刻只允许 1 个音乐 / 视频任务）";
+    appendConsole("[research-video] busy_other_node job=" + jobId);
+    return { ok: false, jobId, error: "busy_other_node", message: msg, lock: acq.lock, logPath };
+  }
+  activeRenderNode = jobId;
+
+  /* 先登记这次 job（此刻还没有工程树 / 子进程）：取消能立刻把它标成作废，不必等子进程起来 */
+  let abortReject = null;
+  const aborted = new Promise((_, reject) => {
+    abortReject = reject;
+  });
+  aborted.catch(() => {}); /* 取消可能比 await 来得早：先认领会处理，免得算未处理拒绝 */
+  const jobEntry = { abortNow: false, params: null, reject: abortReject };
+  researchAborts.set(jobId, jobEntry);
+
+  try {
+    emitResearchProgress({ jobId, phase: "render", pct: 2, message: "写入工程…" });
+    /* ── props 与旁白 ──────────────────────────────────────────────── */
+    const inputProps = Object.assign({}, p.props && typeof p.props === "object" ? p.props : {});
+    const mediaBlobs = {};
+    const mediaBlobsMeta = {};
+    const audio = parkNarrationAudio(p.narrationPath);
+    if (audio) {
+      mediaBlobs[audio.name] = audio.bytes.toString("base64");
+      mediaBlobsMeta[audio.name] = { mime: audio.mime, key: "narration", index: -1, name: audio.name };
+      inputProps.narration = inputProps.narration || audio.name;
+      appendConsole(
+        "[research-video] narration mixed: " + path.basename(audio.source) + " (" + Math.round(audio.bytes.length / 1024) + "KB)",
+      );
+    } else if (String(p.narrationPath || "").trim()) {
+      warnings.push("旁白音轨读不到（" + String(p.narrationPath) + "）：这次不混旁白、也不铺字幕");
+      appendConsole("[research-video] narration skipped: " + String(p.narrationPath));
+    }
+
+    const renderParams = {
+      nodeId: jobId,
+      files: check.files,
+      propsDirect: true,
+      inputProps,
+      mediaBlobs,
+      mediaBlobsMeta,
+      compositionId: String(p.compositionId || "Main"),
+      fps,
+      width,
+      height,
+      durationSeconds: durationSec,
+      durationInFrames: frames,
+      outputPath: path.resolve(outPath),
+      progressHook: (ev) => emitResearchProgress(Object.assign({ jobId, phase: "render" }, ev || {})),
+    };
+    /* 让「登记表 → 渲染参数」连起来：取消 / 超时置 abortNow 时，runRender 起来那一刻就能自己收掉 */
+    renderParams.abortNow = !!jobEntry.abortNow;
+    jobEntry.params = renderParams;
+    const written = writeRenderSources(installDir, renderParams);
+    if (written.error) throw new Error(written.error);
+    /* 写工程这段可能几百毫秒：其间点了取消就不再往下拉进程 */
+    if (jobEntry.abortNow) throw new Error("cancelled");
+    emitResearchProgress({ jobId, phase: "render", pct: 5, message: "启动渲染…" });
+
+    /* 超时：到点 kill 渲染进程树（子进程在 cwd=工程目录里，node + 无头 Chrome 一并带走） */
+    const timeoutMs = Math.max(30, Number(p.timeoutSec) || 20 * 60) * 1000;
+    let timer = null;
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        appendConsole("[research-video] timeout after " + timeoutMs + "ms — killing job=" + jobId);
+        /* 只杀不 reject：这里要保留 render_timeout 这个标签（不是「取消」） */
+        markJobAbort(jobId, "");
+        reject(new Error("render_timeout"));
+      }, timeoutMs);
+      if (timer.unref) timer.unref();
+    });
+    let r = null;
+    try {
+      r = await Promise.race([runRender(installDir, renderParams, jobId, written), timeout, aborted]);
+    } finally {
+      if (timer) clearTimeout(timer);
+      /* 渲染阶段结束（成功 / 失败 / 取消）就摘牌：后面的封面帧不再受取消影响，晚到的取消也如实回「没在跑」 */
+      researchAborts.delete(jobId);
+    }
+
+    const realOut = r && r.outputPath ? r.outputPath : renderParams.outputPath;
+    if (!fs.existsSync(realOut)) throw new Error("output_missing: " + realOut);
+    let bytes = 0;
+    try {
+      bytes = fs.statSync(realOut).size || 0;
+    } catch {}
+    if (bytes < 64) throw new Error("output_file_empty_or_too_small: " + realOut);
+
+    /* 封面帧（可选）：成片已经落盘，封面失败只记 warning，不把交付判失败 */
+    let cover = "";
+    if (String(p.coverPath || "").trim()) {
+      emitResearchProgress({ jobId, phase: "cover", pct: 96, message: "抽封面帧…" });
+      const cv = await extractCoverFrame(realOut, p.coverPath);
+      if (cv.ok) cover = cv.path;
+      else {
+        warnings.push("封面帧没抽出来：" + String(cv.error || ""));
+        appendConsole("[research-video] cover failed: " + String(cv.error || ""));
+      }
+    }
+
+    clearLock();
+    activeRenderNode = "";
+    emitResearchProgress({ jobId, phase: "render", pct: 100, done: true, message: "完成" });
+    appendConsole(
+      "[research-video] ok job=" +
+        jobId +
+        " path=" +
+        realOut +
+        " bytes=" +
+        bytes +
+        (cover ? " cover=" + cover : "") +
+        " " +
+        Math.round((Date.now() - t0) / 1000) +
+        "s",
+    );
+    return {
+      ok: true,
+      jobId,
+      path: realOut,
+      cover,
+      bytes,
+      durationSec: Math.round(durationSec * 100) / 100,
+      width,
+      height,
+      fps,
+      warnings,
+      elapsedMs: Date.now() - t0,
+      logPath,
+    };
+  } catch (e) {
+    const raw = String((e && e.message) || e);
+    const err =
+      raw === "cancelled" || raw === "render_timeout" ? raw : friendlyRenderError(raw, true);
+    appendConsole("[research-video] error job=" + jobId + ": " + err);
+    clearLock();
+    activeRenderNode = "";
+    emitResearchProgress({
+      jobId,
+      phase: "render",
+      pct: 0,
+      error: true,
+      cancelled: raw === "cancelled",
+      message: err,
+    });
+    return {
+      ok: false,
+      jobId,
+      error: err,
+      message: err,
+      cancelled: raw === "cancelled",
+      warnings,
+      logPath,
+    };
+  } finally {
+    /* 收尾一律摘牌：之后再到同一个 jobId 的取消 / 超时都算「没有在跑的东西」 */
+    researchAborts.delete(jobId);
   }
 }
 
@@ -3970,6 +4366,31 @@ function registerRemotionIpc(opts) {
     }
   });
   ipcMain.handle("remotion:cancelRender", async (e, nodeId) => cancelRender(nodeId));
+  /* 研究视图「导出视频」：给定源码树 + props + 输出路径（不依赖画布节点，见 renderProjectTree）。
+     失败也回结构化回执（error / message / logPath），渲染层据此 toast 并指路宿主日志。 */
+  ipcMain.handle("research:slidesVideo", async (e, params) => {
+    try {
+      return await renderProjectTree(params || {});
+    } catch (err) {
+      const msg = String((err && err.message) || err);
+      appendConsole("[research-video] handler error: " + msg);
+      return { ok: false, error: msg, message: msg, logPath: consoleLogPath() };
+    }
+  });
+  ipcMain.handle("research:slidesVideoCancel", async (e, jobId) => {
+    const r = cancelProjectRender(jobId);
+    if (r.cancelled) {
+      emitResearchProgress({
+        jobId: String(jobId || ""),
+        phase: "render",
+        pct: 0,
+        error: true,
+        cancelled: true,
+        message: "已取消导出",
+      });
+    }
+    return r;
+  });
   ipcMain.handle("remotion:getLock", async () => ({ ok: true, lock: refreshStaleLock() }));
   ipcMain.handle("remotion:consoleTail", async (e, n) => consoleTail(n));
   /* 环境自检（本轮新增）：只读地查 node / npm、目录可写、磁盘、npm 源、随包脚手架与安装脚本，
@@ -4038,4 +4459,9 @@ module.exports = {
   contractPropsOf,
   mediaExtOfMime,
   writeRenderSources,
+  /* 研究演示视频导出：给定源码树 + props + 输出路径的渲染入口（不依赖画布节点） */
+  renderProjectTree,
+  cancelProjectRender,
+  extractCoverFrame,
+  parkNarrationAudio,
 };

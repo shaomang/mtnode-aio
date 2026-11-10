@@ -24,6 +24,7 @@ const {
   managedNodeStatus,
   installManagedNode,
   translateRuntimeReject,
+  ensureGatewayRoot,
 } = require('../dsh-node.js')
 /* 国内镜像源单一真源（npm registry 等）：见仓库根 cn-mirrors.js */
 const mirrors = require('../cn-mirrors.js')
@@ -49,6 +50,11 @@ const INSTALL_SKILL_SOURCES = {
      真实流式基准」这类现场；硬门槛（flash-attn 装不上即失败）与实时口径都写在 SKILL 里 */
   'soulx-flashhead-local-install': path.join(__dirname, '..', 'skills', 'soulx-flashhead-local-install', 'SKILL.md'),
   'office-local-install': path.join(__dirname, '..', 'skills', 'office-local-install', 'SKILL.md'),
+  /* 网关可选能力按需安装（browser-automation / cloud-native-llm / markdown-render / sharp-wasm
+     四组由 docs/app-deps-capability.json 剪掉，见 docs/app-size-audit.md §8）：装回的是
+     **网关树自己的 node_modules**（没有 office 引擎那种 cli 配置位），SKILL 里写明版本真源、
+     真 import 验证与「重装应用会覆盖」这条边界 */
+  'gateway-capability-install': path.join(__dirname, '..', 'skills', 'gateway-capability-install', 'SKILL.md'),
 }
 const INSTALL_SKILL_NAMES = new Set(Object.keys(INSTALL_SKILL_SOURCES))
 
@@ -64,26 +70,43 @@ function sha256Hex(buf) {
    所以**网关自己必须是真 Node**，否则运行时仍以 Electron 指纹起机，被 dsh 0.2 的内核
    直接拒绝（`unsupported Electron runtime fingerprint`，界面表现为「dsh 网关已退出」）。
    本机真 Node 的解析与托管安装见 ../dsh-node.js（装在数据目录，不进应用目录）。 */
-/* 打包后 gateway(含 cordis.yml 与 node_modules)经 electron-builder
-   extraResources 放在 resources/dsh/gateway —— 普通 Node 子进程无法读取
-   asar 内文件,因此 gateway 必须始终落在真实文件系统上。 */
-const GATEWAY_PATH = app.isPackaged
-  ? path.join(process.resourcesPath, 'dsh', 'gateway', 'gateway.mjs')
-  : path.join(__dirname, 'gateway', 'gateway.mjs')
+/* 打包后 gateway(含 cordis.yml 与 node_modules)不再是 resources/dsh/gateway 那棵散树，
+   而是单个归档 resources/dsh/gateway-tree.mtgw；首次启动由 ../dsh-node.js 的
+   ensureGatewayRoot() 解到数据目录（<dataDir>/dsh-runtime/gateway-<buildId>），之后同一
+   buildId 直接复用。普通 Node 子进程读不了 asar，所以运行期必须是真实目录树 —— 解包后
+   的路径就是真实路径（原生 .node 与动态 require 都不经过任何打包器分析）。
+   因此这里是**函数而不是常量**：要等 dataDir 才知道解包落在哪。 */
+function gatewayPath(dataDir, log) {
+  const root = ensureGatewayRoot({
+    dataDir: dataDir || '',
+    log: typeof log === 'function' ? log : undefined,
+    packaged: app.isPackaged,
+  })
+  return path.join(root.dir, 'gateway.mjs')
+}
+
+/** 网关目录的解析结果（诊断用：来源 / buildId / 是否刚解包） */
+function gatewayRoot(dataDir, log) {
+  return ensureGatewayRoot({
+    dataDir: dataDir || '',
+    log: typeof log === 'function' ? log : undefined,
+    packaged: app.isPackaged,
+  })
+}
 
 /* dsh 内核版本（会话左栏「DeepSeek Harness」后面那枚版本号读的就是它）。
    真源 = 网关树里 @deepseek-ai/dsh 的 package.json（与 gateway.mjs 的 RUNTIME_BIN
    用 require.resolve('@deepseek-ai/dsh/package.json') 解析到的是同一个包，也与
    scripts/app-deps-check.mjs 的运行时入口判定同源）。dev 与打包两种布局都从
-   GATEWAY_PATH 的目录推出来，所以只有一处路径知识。
+   网关目录推出来，所以只有一处路径知识。
    读不到就回空串 —— 界面宁可不显示版本，也绝不编一个。 */
 let kernelVersionCache = ''
 let kernelVersionProbed = false
-function dshKernelVersion() {
+function dshKernelVersion(dataDir) {
   if (kernelVersionProbed) return kernelVersionCache
   kernelVersionProbed = true
   try {
-    const manifest = path.join(path.dirname(GATEWAY_PATH), 'node_modules', '@deepseek-ai', 'dsh', 'package.json')
+    const manifest = path.join(path.dirname(gatewayPath(dataDir)), 'node_modules', '@deepseek-ai', 'dsh', 'package.json')
     const v = String(JSON.parse(fs.readFileSync(manifest, 'utf8')).version || '').trim()
     if (v) kernelVersionCache = v
   } catch { /* 依赖还没装 / 打包缺包：留空 */ }
@@ -246,6 +269,16 @@ function createDshAdapter(opts) {
     if (child && !child.killed && child.exitCode === null) return
     const nodeInfo = ensureNodeInfo()
     const node = nodeInfo.bin
+    /* 网关目录 = 随包归档解出来的真实目录（打包态）或仓库树（开发态）。
+       解包失败不在这里抛：把原因写进日志 + 判掉在途请求，主进程照常活着。 */
+    const gwRoot = gatewayRoot(dataDir, log)
+    const gwPath = path.join(gwRoot.dir, 'gateway.mjs')
+    if (!gwRoot.ok || !fs.existsSync(gwPath)) {
+      const why = gwRoot.error || ('找不到网关入口 ' + gwPath)
+      errLog('dsh 网关不可用：' + why)
+      failPending('dsh 网关不可用：' + why)
+      return
+    }
     fs.mkdirSync(dshHome, { recursive: true })
     const env = nodeEnvFor(nodeInfo, { ...process.env })
     env.DSH_HOME = dshHome
@@ -258,9 +291,11 @@ function createDshAdapter(opts) {
     delete env.DSH_SESSION_JSONL
     delete env.DSH_WEB_URL
     delete env.DSH_SHELL
-    log('dsh gateway spawn: ' + node + ' ' + GATEWAY_PATH
-      + ' [node ' + (nodeInfo.version || '?') + ' · ' + nodeInfo.source + ']')
-    child = spawn(node, [GATEWAY_PATH], {
+    log('dsh gateway spawn: ' + node + ' ' + gwPath
+      + ' [node ' + (nodeInfo.version || '?') + ' · ' + nodeInfo.source + ']'
+      + ' [gateway ' + gwRoot.source + (gwRoot.buildId ? ' · ' + gwRoot.buildId : '')
+      + (gwRoot.reused ? ' · 复用已解包' : '') + ']')
+    child = spawn(node, [gwPath], {
       stdio: ['pipe', 'pipe', 'pipe'],
       env,
       windowsHide: true,
@@ -399,7 +434,9 @@ function createDshAdapter(opts) {
   }
 
   return {
-    gatewayPath: GATEWAY_PATH,
+    /* 网关入口（懒解析：打包态要等归档解到数据目录） */
+    gatewayPath: () => gatewayPath(dataDir, log),
+    gatewayRoot: () => gatewayRoot(dataDir, log),
     dshHome,
 
     /* 诊断 / 自检：本进程用的哪个 node、托管 Node 装没装（见 dsh/DESIGN.md「Node 运行时」） */
@@ -970,4 +1007,4 @@ function createDshAdapter(opts) {
   }
 }
 
-module.exports = { createDshAdapter, GATEWAY_PATH, dshKernelVersion }
+module.exports = { createDshAdapter, gatewayPath, gatewayRoot, dshKernelVersion }

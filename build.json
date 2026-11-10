@@ -24,7 +24,19 @@
        已随自写解析器一并删除（无任何 require）。 */
     "pdf-read.js",
     "pdf-write.js",
+    /* 幻灯片导出（PDF / 逐页 PNG）与演讲者第二屏窗口：main.js 顶层 require 它，
+       漏进白名单 = 打包后演示的「导出 PDF / PNG / 讲者视图」整块失效（Cannot find module）。 */
+    "slides-export.js",
     "preload.js",
+    /* 助手侧三股流（会话流 / 活动流 / 文件树）的进程隔离（任务 8/8）：
+       · assist-isolation.js = 隔离渲染进程的宿主（main.js 顶层 require）；
+       · preload-assist.js   = 那只进程的专用窄口桥（宿主 loadFile 时挂上去）。
+       页面与脚本走 renderer/** 通配（assist-isolated.html / app-assist-isolated.js /
+       app-assist-state.js / css/assist-isolated.css 都在里面）。
+       漏掉这两条 = 打包后要么启动即 Cannot find module './assist-isolation.js'
+       （窗口都出不来），要么 assist.isolation 一开就白屏（页面起不来 = 隔离档失效）。 */
+    "assist-isolation.js",
+    "preload-assist.js",
     "preload-app.js",
     "config-providers.js",
     /* 会话转写（agentSessions）从 config.json 拆出后的独立存储：main.js 会 require 它，
@@ -158,6 +170,12 @@
     "activity-store.js",
     "mtnode-agent-skills/**",
     "renderer/**",
+    /* 画布读侧计算内核（canvas-doc/canvas-doc-core.js）：渲染层由 renderer/index.html 以
+       <script src="../canvas-doc/canvas-doc-core.js"> 加载（web 资源，不走 require），主进程 /
+       MCP / 脚本侧 require("canvas-doc/canvas-doc-core.js") 是同一份文件 —— 它不在 renderer/**
+       通配里，漏了这条 = 打包后 require('./canvas-doc/canvas-doc-core.js') 直接
+       Cannot find module（画布读取 / 写入的版本闸整块失效）。 */
+    "canvas-doc/**",
     /* 插件安装窗（独立 BrowserWindow，plugins/main-install.js 加载 install/index.html）：
        漏进白名单 = 打包后点「安装」打不开窗（loadFile ENOENT）。 */
     "install/**",
@@ -188,6 +206,10 @@
     "plugins/**",
     "forum/**",
     "dsh/main-dsh.js",
+    /* 网关单文件归档格式（打包侧 dsh/after-pack.cjs 写、运行期 dsh-node.js 读，共用这一份）：
+       主进程 require 它，漏进白名单 = 打包后 Cannot find module './dsh/gateway-archive.cjs'
+       （启动即崩，网关目录根本解析不出来）。 */
+    "dsh/gateway-archive.cjs",
     "dsh/mtnode-llm-creds.js",
     "dsh/DESIGN.md",
     "dsh/README.md",
@@ -200,6 +222,10 @@
     "package.json",
     "version",
     "updater.js",
+    /* 全量更新包的分段并发下载器（多连接 Range + 断点续传 + sha512 校验）：updater.js
+       顶层 require 它，漏进白名单 = 打包后 Cannot find module './update-segmented.js'
+       （自更新链整条失效，用户只能手动重装）。 */
+    "update-segmented.js",
     "crash-report.js",
     "!pet-pack/**",
     "!smoke.js",
@@ -552,8 +578,10 @@
     }
   ],
   "afterPack": "dsh/after-pack.cjs",
-  /* normal：多核压缩，明显快于 maximum；体积通常接近 */
-  "compression": "normal",
+  /* maximum：最高档压缩（nsis 的 LZMA / solid 参数全开），体积比 normal 再小 5–10%，
+     代价只是打包时间更长。differentialPackage 保持 true：差分下载依赖 .blockmap，
+     与压缩档位无关，但两者同时存在时 blockmap 索引会按新压缩产物重算。 */
+  "compression": "maximum",
   "electronVersion": "39.8.10",
   "publish": [
     {

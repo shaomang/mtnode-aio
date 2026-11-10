@@ -2,7 +2,8 @@
 
 ## 原理
 
-- 客户端用 **electron-updater** 检查 `http://mt-agent.com/mtnode/updates/latest.yml`
+- 客户端用 **electron-updater** 检查 `https://www.mt-agent.com/mtnode/updates/latest.yml`
+  （https 优先，失败才回退 `http://` 那条；见「更新源：https + 更快的一跳」一节）
 - 安装包为 NSIS；配套 **`.blockmap`** 做差分下载——已安装旧版时只拉取变更块，包体远小于整包
 - 用户看到顶栏「更新」→ 确认 → 下载 → **自动安装并重启**
 
@@ -59,11 +60,65 @@
 验证:
 
 ```bash
-curl -I http://mt-agent.com/mtnode/updates/latest.yml
-curl -I -H "Range: bytes=0-100" http://mt-agent.com/mtnode/updates/MTNodeAIO-Setup-x.y.z.exe
+curl -I https://www.mt-agent.com/mtnode/updates/latest.yml
+curl -I -L -H "Range: bytes=0-100" https://www.mt-agent.com/mtnode/updates/MTNodeAIO-Setup-x.y.z.exe
 ```
 
-Range 应返回 `206 Partial Content`。
+Range 必须最终返回 `206 Partial Content`（**本项是差分的硬前提**：拿不到 206 时 electron-updater 会整包下载）。
+现网 `/mtnode/updates/` 先回 `302`（跳到对象存储），所以 `-L` 之后**最后一段**是 206 才算通过：
+`HTTP/1.1 302` → `Location: https://<bucket>/updates/...` → `HTTP/1.1 206`。
+再确认走的是 HTTP/2 与 TLS：
+
+```bash
+curl -sS -o NUL -w '%{http_code} %{http_version} ssl=%{ssl_verify_result}\n' \
+  https://www.mt-agent.com/mtnode/updates/latest.yml   # 期望 `200 2 0`
+```
+
+吞吐对比（同一条链路、同一个 164.7MB 安装包，取两次里快的一次）：
+
+```bash
+# 经 www（302 → OSS）
+curl -sS -L -o NUL -w '%{speed_download}\n' https://www.mt-agent.com/mtnode/updates/MTNodeAIO-Setup-x.y.z.exe
+# 直连桶
+curl -sS -o NUL -w '%{speed_download}\n' https://<bucket>.oss-cn-beijing.aliyuncs.com/updates/MTNodeAIO-Setup-x.y.z.exe
+```
+
+本机脚本版：`powershell -ExecutionPolicy Bypass -File docs/bench-updates-feed.ps1`
+（4MB 单次 / 4×1MB / 8×512KB / 整包，www 与桶两边各跑两遍取快值）。
+
+## 更新源：https + 更快的一跳（302 → OSS / nginx proxy_cache / 静态）
+
+- 客户端默认源是 `https://www.mt-agent.com/mtnode/updates`（`updater.js` 的 `UPDATE_FEED_HTTPS`）：
+  apex 域名 `mt-agent.com` 会 301 到 `www`，差分每块都多一跳，所以默认值直接写 `www`。
+  `http://` 那条只作回退：https 第一次检查失败（老系统缺根证书 / 中间设备拦 TLS）才切一次，进程内记住。
+- 现网 `/mtnode/updates/` 走的是 **302 → 对象存储**（补丁脚本的默认模式），字节不经过这台机器：
+  实测这台 VPS 的出网带宽只有 ~100 Mbps（对异地客户端 13.9 MB/s），而桶能跑到 ~104 MB/s，
+  让 nginx 反代 170MB 安装包比直接跳过去慢 7~8 倍（整包 11.8s vs 1.65s）。
+  Range 206 由 OSS 直接给；electron-updater 会跟随 302（`builder-util-runtime` 的
+  `HttpExecutor.doDownload` → `prepareRedirectUrlOptions`，Range 头保留），
+  `latest.yml` 与差分用的 `.exe` / `.blockmap` 小块都走这条路。
+- 三种形态都支持，**Range 206 才是硬要求**（拿不到就整包下载）：
+
+| 形态 | 做法 | Range 谁给 |
+|---|---|---|
+| 302 → OSS/CDN（现网默认） | `scripts/patch-nginx-updates.py --origin=https://<bucket>.oss-...`：`rewrite ... redirect`，字节完全不落地 | OSS/CDN 原生 206 |
+| nginx 反代 + `proxy_cache`（`--proxy-bytes`） | 同一脚本加 `--proxy-bytes`：`proxy_cache` + `proxy_force_ranges on`，完整 200 响应体进缓存、Range 原样透传上游 | 未命中透传上游 206；命中时 nginx 直接回 206 |
+| nginx 静态目录 | 不加 `--origin`：`alias` 目录 + `sendfile`/`tcp_nopush`（**不要**给这个 location 开 gzip，会丢字节区间） | nginx 静态原生 206 |
+
+- `--proxy-bytes` 只在「桶很慢、或只有这台机器能连桶」时才值得用：现网实测反代整包
+  11.8s / 13.9 MB/s，缓存命中也不变快（瓶颈是出口带宽，不是 OSS）。
+- **`slice` 默认关闭，别开**：nginx 1.22 + 这个 OSS 源上 `slice 4m` 会把整包下载截断
+  （`curl: (18) end of response with ... bytes missing`，171,966,464 ≠ 172,727,760）。
+- 补丁脚本 `scripts/patch-nginx-updates.py` 是幂等的（带 `# >>> mtnode-updates` 标记，重跑原地替换），
+  同时把 443 的 `listen` 补成 `ssl http2`；写完先 `nginx -t`，失败自动回滚备份，最后做一次
+  带 Range 的自检（跟随后要求**最后一段**是 206，302 模式下还要求跳到桶上）。`--dry-run` 只打印改后的配置。
+- **备份不要放在 `sites-enabled/` 里**：nginx 的 `include sites-enabled/*` 会把 `*.bak` 也当配置加载，
+  出现重复 `server_name`，甚至因为旧块里的 `proxy_cache` 找不到 zone 让 `nginx -t` 直接失败。
+  脚本现在统一备份到 `/etc/nginx/backups/<name>.bak`。
+- **历史版本一律不删**：旧客户端的差分要拿上一版（乃至几版前）的 `.exe` / `.blockmap` 做块比对，
+  删掉任何一份都让那批客户端退回整包下载。现网 1.5.0 / 1.5.6 / 1.6.1 的成对文件都还在，
+  这条保留策略是差分能用的前提，不是可选的清理项。`deploy-updates.sh` / `stage-updates.mjs`
+  里 `rsync -a --delete` 的示例只对本地暂存目录用，**别指向线上 `updates/`**。
 
 ## 应用内「重新编译并重启」（状态栏右下角按钮）
 
@@ -122,8 +177,38 @@ Range 应返回 `206 Partial Content`。
 
 可用环境变量:
 
-- `MTNODE_UPDATE_URL` — 覆盖更新源（默认 `http://mt-agent.com/mtnode/updates`）
+- `MTNODE_UPDATE_URL` — 覆盖更新源（默认 `https://www.mt-agent.com/mtnode/updates`；
+  显式覆盖时不再自动回退 `http://`，完全按给的那个源走）
 - `MTNODE_FORCE_UPDATE=1` — 强制在非标准路径下也启用更新器（自测）
+- `MTNODE_UPDATE_SEGMENTS` — 全量下载的并发段数（默认 6，取值 2–8）；设 `1` 或 `0` 回退
+  electron-updater 原生的单连接下载（旧行为）。差分链不受它影响。
+
+### 全量下载：多连接分段 + 断点续传
+
+差分下载失败 / 基座不符时 electron-updater 会退回「全量」——原生实现是一条连接、失败整包重来，
+165MB 的包在弱网下就是「卡很久然后失败」。现在这一条路换成 `update-segmented.js`：
+
+- 探一次 `Range: bytes=0-0`，拿总长与 ETag，确认服务端给 206（nginx 那条链已实测可用）；
+  给 200（不支持 Range）→ 当场退回原生单连接，不影响可用性。
+- 按段切 Range 请求，默认 6 段并发（每段不小于 4MB）；每段写自己的 `.part` 文件，失败重试时按
+  `.part` 的实际字节数续传，**不重下整包**。分段落在
+  `%LOCALAPPDATA%\mtnode-ai-orchestrator-updater\segments\`（不在 `pending\` 里，
+  electron-updater 失败时会清空 `pending\`），7 天没动过的残留会在下次下载开头清掉。
+- 全部段就绪后按顺序拼成 `.full`（拼一段删一段，峰值占用 ≈ 一份包），整份 **sha512 校验通过**
+  才 rename 到 electron-updater 的临时文件、交给它的 `setDownloadedFile` / `quitAndInstall`；
+  校验不过直接清掉分段重来，绝不把坏包交给安装器。
+
+实测（本机，线上包 `MTNodeAIO-Setup-1.6.1.exe` 172,727,760B）：
+
+| 场景 | 结果 |
+|------|------|
+| 单连接（含落盘 + sha512，同口径） | 2,467ms（纯网络 1,661ms）|
+| 6 段并发 | 2,605–2,728ms（**链路已到线速时，多连接不再涨吞吐**）|
+| 弱网/被限速链路（本地每连接 16MB/s） | 单流 4.03MB/s → 6 段 22.96MB/s（**5.7×**）|
+| 断网续传（下到 82.6MB 掐断后重跑） | 续传 82,647,399B，剩余 90MB 用 1,819ms，sha512 命中 |
+
+结论：分段解决的是「单连接被限速 / 抖断」这一类，不是「链路本来就快」；两条路的总耗时都在秒级，
+所以默认开启、留 `MTNODE_UPDATE_SEGMENTS=1` 一键回退。
 
 ## 目录约定
 

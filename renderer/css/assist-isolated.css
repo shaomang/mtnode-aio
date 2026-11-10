@@ -1,0 +1,394 @@
+/* ============================================================
+ * css/assist-isolated.css — 隔离渲染进程页（renderer/assist-isolated.html）的样式
+ *
+ * 只服务这一个页面：三块流各有自己的滚动区，配色跟主窗深色主题同一套（#0d1016 系）。
+ * 不 import 主窗样式（那个 800KB 的 CSS 树没必要拖进独立进程，且类名会互相污染）。
+ * ============================================================ */
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: #0d1016;
+  color: #cfd6e4;
+  font: 13px/1.55 "Segoe UI", "Microsoft YaHei", sans-serif;
+  overflow: hidden;
+}
+
+.iso-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-width: 0;
+}
+
+/* ── 页头 ── */
+.iso-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border-bottom: 1px solid #1d2430;
+  background: #111722;
+  flex: 0 0 auto;
+}
+
+.iso-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #37c07a;
+  box-shadow: 0 0 6px #37c07a88;
+  flex: 0 0 auto;
+}
+
+.iso-dot.off {
+  background: #8a8f9c;
+  box-shadow: none;
+}
+
+.iso-title {
+  font-weight: 600;
+  color: #e6ecf7;
+  flex: 0 0 auto;
+}
+
+.iso-meta {
+  color: #7b8598;
+  font-size: 11.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1 1 auto;
+}
+
+.iso-head-acts {
+  display: flex;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.iso-btn {
+  appearance: none;
+  border: 1px solid #263041;
+  background: #18202c;
+  color: #b9c3d4;
+  border-radius: 5px;
+  font: inherit;
+  font-size: 11.5px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+
+.iso-btn:hover {
+  border-color: #33507a;
+  color: #e6ecf7;
+}
+
+.iso-btn.on {
+  border-color: #2c7be5;
+  color: #cfe2ff;
+  background: #16283f;
+}
+
+/* ── 页签 ── */
+.iso-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 6px 8px 0;
+  border-bottom: 1px solid #1d2430;
+  flex: 0 0 auto;
+}
+
+.iso-tab {
+  appearance: none;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: 6px 6px 0 0;
+  background: transparent;
+  color: #8b95a8;
+  font: inherit;
+  padding: 4px 12px;
+  cursor: pointer;
+}
+
+.iso-tab:hover {
+  color: #cfd6e4;
+}
+
+.iso-tab.on {
+  background: #151c28;
+  border-color: #263041;
+  color: #e6ecf7;
+}
+
+/* ── 面板 ── */
+.iso-pane {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.iso-pane[hidden] {
+  display: none;
+}
+
+.iso-split {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.iso-sessions {
+  flex: 0 0 190px;
+  border-right: 1px solid #1d2430;
+  overflow: auto;
+  padding: 6px;
+}
+
+.iso-sess {
+  padding: 5px 7px;
+  border-radius: 5px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  margin-bottom: 2px;
+}
+
+.iso-sess:hover {
+  background: #151c28;
+}
+
+.iso-sess.on {
+  background: #16283f;
+  border-color: #2c7be5;
+}
+
+.iso-sess-name {
+  display: block;
+  color: #dfe6f4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.iso-sess-meta {
+  display: block;
+  color: #79839a;
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.iso-sess.running .iso-sess-name::before {
+  content: "●";
+  color: #37c07a;
+  margin-right: 4px;
+  font-size: 9px;
+  vertical-align: middle;
+}
+
+.iso-stream {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: auto;
+  padding: 10px 12px;
+}
+
+.iso-item {
+  margin: 0 0 8px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.iso-item.user {
+  border-left: 2px solid #2c7be5;
+  padding-left: 8px;
+  color: #d7e3f7;
+}
+
+.iso-item.think {
+  color: #8792a8;
+  font-style: italic;
+}
+
+.iso-item.tool,
+.iso-item.err,
+.iso-item.note {
+  font-size: 12px;
+  color: #9aa6bd;
+  border-left: 2px solid #263041;
+  padding-left: 8px;
+}
+
+.iso-item.tool b {
+  color: #b8c6de;
+  font-weight: 600;
+}
+
+.iso-item.err {
+  color: #ff9a9a;
+  border-left-color: #7a2b2b;
+}
+
+.iso-item.done {
+  color: #6f7c93;
+}
+
+.iso-empty {
+  color: #6f7c93;
+  padding: 14px 4px;
+}
+
+/* ── 活动流 ── */
+.iso-filter {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 10px;
+  border-bottom: 1px solid #1d2430;
+  flex: 0 0 auto;
+}
+
+.iso-filter input[type="text"] {
+  flex: 1 1 auto;
+  min-width: 0;
+  background: #10161f;
+  border: 1px solid #263041;
+  border-radius: 5px;
+  color: #cfd6e4;
+  font: inherit;
+  padding: 3px 7px;
+}
+
+.iso-check {
+  color: #8b95a8;
+  font-size: 11.5px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.iso-list {
+  flex: 1 1 auto;
+  overflow: auto;
+  padding: 6px 10px 12px;
+}
+
+.iso-act {
+  display: flex;
+  gap: 8px;
+  padding: 4px 0;
+  border-bottom: 1px dashed #1a212d;
+}
+
+.iso-act-time {
+  flex: 0 0 52px;
+  color: #6f7c93;
+  font-size: 11px;
+  padding-top: 1px;
+}
+
+.iso-act-kind {
+  flex: 0 0 auto;
+  color: #7fb2ff;
+  font-size: 11px;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.iso-act-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  word-break: break-word;
+  color: #c6cfe0;
+}
+
+.iso-act-text i {
+  color: #79839a;
+  font-style: normal;
+}
+
+/* ── 文件树 ── */
+.iso-treehead {
+  display: flex;
+  gap: 6px;
+  padding: 8px 10px;
+  border-bottom: 1px solid #1d2430;
+  flex: 0 0 auto;
+}
+
+.iso-treehead input {
+  flex: 1 1 auto;
+  min-width: 0;
+  background: #10161f;
+  border: 1px solid #263041;
+  border-radius: 5px;
+  color: #cfd6e4;
+  font: inherit;
+  padding: 3px 7px;
+}
+
+.iso-tree {
+  flex: 1 1 auto;
+  overflow: auto;
+  padding: 6px 8px 12px;
+  font-size: 12.5px;
+}
+
+.iso-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 1px 2px;
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.iso-row:hover {
+  background: #151c28;
+}
+
+.iso-row .ic {
+  width: 12px;
+  text-align: center;
+  color: #7b8598;
+  flex: 0 0 auto;
+}
+
+.iso-row .nm {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.iso-row.dir .nm {
+  color: #cfd6e4;
+}
+
+.iso-row.file .nm {
+  color: #a9b4c8;
+}
+
+.iso-row .sz {
+  color: #66708a;
+  font-size: 11px;
+  margin-left: auto;
+  padding-left: 8px;
+}
+
+.iso-msg {
+  color: #79839a;
+  padding: 3px 2px;
+  font-size: 12px;
+}
+
+.iso-msg.err {
+  color: #ff9a9a;
+}

@@ -954,6 +954,9 @@
           let head = held.shift();
           /* 每段不少于最低字数：头一段太短就先并进后面的段，别单独念出半句 */
           while (isShortSpeechTail(head) && held.length) head = joinSpeechTail(head, held.shift());
+          /* 紧跟的这一段太短（不足 15 字）也要并进这一句再发 —— 前方句就是它，
+             否则等它轮到自己时前一句已经念出去了，只能单独成段。 */
+          while (held.length > 1 && isShortSpeechTail(held[0])) head = joinSpeechTail(head, held.shift());
           if (held.length < 2) {
             held.unshift(head); /* 后面不够两段了，留着和收尾一起判断 */
             break;
@@ -962,7 +965,9 @@
         }
         return;
       }
-      const rest = mergeShortSpeechTail(held);
+      /* 收尾：不只末段，手里任何一段太短（不足 15 字）都并进前方句 —— 流式喂进来的
+         句子短句可能夹在中间（模型先吐「已修好。」再吐长句），只并尾部会留一段半句话。 */
+      const rest = mergeShortSpeechTail(mergeShortSpeechPieces(held));
       held = [];
       for (const piece of rest) sendPiece(piece);
     };
@@ -1040,7 +1045,7 @@
     s.end();
   }
 
-  /* ── 悬浮摘要气泡（会自动消失；点一下复制）────────────────────────── */
+  /* ── 悬浮摘要气泡（会自动消失；点一下复制并立刻收起）────────────────── */
   let bubbleTimer = 0;
   function bubble(text) {
     const body = String(text || "").trim();
@@ -1061,10 +1066,16 @@
     txt.textContent = body;
     el.appendChild(tag);
     el.appendChild(txt);
-    el.title = T("点一下复制这段摘要");
+    el.title = T("点一下复制这段摘要并收起");
     /* 剪贴板统一走 app-clipboard.js 的三级出口（renderer 里不许直连 navigator.clipboard） */
     el.onclick = () => {
       if (typeof appClipboardCopy === "function") appClipboardCopy(body, T("已复制语音摘要"));
+      /* 点过就收起：这条气泡压在右下角工作区上，等 12s 自动消失会挡人干活 */
+      if (bubbleTimer) {
+        clearTimeout(bubbleTimer);
+        bubbleTimer = 0;
+      }
+      el.hidden = true;
     };
     el.hidden = false;
     if (bubbleTimer) clearTimeout(bubbleTimer);
@@ -1198,10 +1209,11 @@
   }
 
   /** 每次播报的最少字数（去标点 / 空白后的有效字数）：少于这个数的一段单独念出来
-      像被打断（「好的。」「迁移完了。」），要和相邻段并成一段再合成。 */
+      像被打断（「好的。」「迁移完了。」），要和相邻段并成一段再合成。
+      15 字是允许的最小值 —— 不足 15 字才并，刚好 15 字可以单独成段。 */
   const MIN_SPEECH_CHARS = 15;
 
-  /** 这一段是不是「太短」：不满足每次播报的最低字数，该并进相邻段 */
+  /** 这一段是不是「太短」：少于 15 字（去标点 / 空白后）即太短，该并进前方句 */
   function isShortSpeechTail(text) {
     const t = String(text || "").replace(/\s+/g, " ").trim();
     if (!t) return true;
@@ -1231,8 +1243,7 @@
   }
 
   /** 每段都不少于最低字数：太短的一段并进相邻段 —— 有前一段就并进前一段，
-      否则（第一段太短）并进后一段。只合并、不丢字。 */
-  function mergeShortSpeechPieces(pieces) {
+      否则（第一段太短）并进后一段。只合并、不丢字。 */  function mergeShortSpeechPieces(pieces) {
     const out = [];
     for (const raw of pieces || []) {
       const t = String(raw || "").trim();
@@ -1509,6 +1520,21 @@
       永远不会把整篇回复（尤其代码 / 路径）直接念出来；模型不可用 / 超时 /
       吐不出可用句子时，回落到确定性精简稿。
       onSpoken(实际要念的那段话) 在开念后回调一次 —— 调用方记在消息上供「重播」。 */
+  /* 本轮播报稿的「承诺」：{ text: 原始正文, ready: Promise<实际念的那段话> }。
+     renderer/app-notify.js 的 Windows 任务栏通知会等它 —— 通知正文与播报内容必须是
+     同一句话（用户口径：任务栏消息通知的内容应与播报内容一致）。 */
+  let pendingSpeech = null;
+  /** 等「这一轮」的播报稿落地（最多 maxMs）；正文对不上（不是这一轮）立刻返回 ""。
+      语音没开 / 这一轮没播 → 直接返回 ""，调用方回落到自己的口径。 */
+  function awaitSpokenFor(rawText, maxMs) {
+    const p = pendingSpeech;
+    if (!p || !p.ready) return Promise.resolve("");
+    const want = String(rawText || "");
+    if (want && String(p.text || "") !== want) return Promise.resolve("");
+    const wait = Math.max(0, Number(maxMs) || 0);
+    if (!wait) return p.ready;
+    return Promise.race([p.ready, new Promise((r) => setTimeout(() => r(""), wait))]);
+  }
   function onTurnEnd(rawText, onSpoken) {
     if (!st.enabled) return;
     const raw = String(rawText || "");
@@ -1522,21 +1548,40 @@
         if (onSpoken) onSpoken(t);
       } catch (_) {}
     };
+    let resolveReady = null;
+    const ready = new Promise((r) => {
+      resolveReady = r;
+    });
+    pendingSpeech = { text: raw, ready };
+    const settle = (t) => {
+      const fn = resolveReady;
+      resolveReady = null;
+      try {
+        if (fn) fn(String(t || ""));
+      } catch (_) {}
+    };
     const sess = beginSpeech();
     const session = play.session;
     let finished = false;
     const done = () => {
       if (finished) return;
       finished = true;
-      if (play.session !== session) return; /* 已经被新的播报打断 */
+      if (play.session !== session) {
+        settle(""); /* 已经被新的播报打断 */
+        return;
+      }
       /* 模型没给出可用句子 → 确定性精简稿（fedChars 才是「已经喂过内容」，
          模型句子要等 end() 才交给 worker，play.spoken 这时可能还是空的） */
       if (!sess.fedChars) sess.feed(fallback);
       sess.end(); /* 收尾：末段过短会并进前一段再合成 */
       const spoken = play.spoken;
-      if (!spoken) return;
+      if (!spoken) {
+        settle("");
+        return;
+      }
       told(spoken);
       bubble(spoken);
+      settle(spoken);
     };
     if (!defaultTextModel()) {
       done();
@@ -1564,6 +1609,10 @@
   }
 
   /* ── 其他场合 ──────────────────────────────────────────────────────── */
+  /* 模型停下来等你回应：**只念固定一句「有新的询问等你回应」，不念题面**
+     （用户口径：询问时仅播报「有新的询问等您回应」即可，无需播报内容 —— 题面本来就摆在
+     询问窗里，念一遍又长又打断手上的事）。
+     调用点（renderer/app-db.js 的 renderIxPanel）也不再算题面，直接空参调用。 */
   function onAsk() {
     if (!st.enabled) return;
     speak(T("有新的询问等你回应"));
@@ -1626,8 +1675,12 @@
     onNotice,
     speak,
     bubble,
+    /* 等本轮播报稿落地（Windows 通知正文与播报同一句话），见 renderer/app-notify.js */
+    awaitSpokenFor,
     isOn: () => !!st.enabled,
     refresh,
+    /* 开关（窗内 F3 用，见 renderer/app-status-keys.js）：与左键点 #btnTts 同一条路径 */
+    toggle,
     openMenuAt: (x, y) => openMenu(x, y),
   };
 

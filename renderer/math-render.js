@@ -34,6 +34,7 @@
  * 出口（window.MTMathRender）：
  *   latexToHtml(tex, {display, delim}) -> 单个公式的 HTML（含 data-rv-* 根节点）
  *   mdToHtml(markdown, parseFn)        -> Markdown 全文 HTML（公式已渲染）
+ *   inlineToHtml(text)                 -> 一行字里的公式 HTML（标题 / 大纲 / 题名等标签用）
  *   splitMath(markdown)                -> { md, items:[{tex,display,delim}] } 占位符化
  *   texAttrsOf(el)                     -> { tex, display, delim } | null（序列化用）
  *   TOKEN_RE                           -> 占位符正则（需要自己替换时用）
@@ -950,22 +951,27 @@
     let pending = null; /* 跨行显示公式：{ closer, delim, lines } */
 
     for (const line of lines) {
+      /* 引用块里的显示公式也要认：`> [!formula] …` 后面的 `> $$ … $$` 很常见。
+         先把行首的引用前缀（`> ` 链）剥出来，判定与累积都按剩下的正文做，输出时再接回去。 */
+      const pm = /^([ \t]*(?:>[ \t]?)*)([\s\S]*)$/.exec(line);
+      const prefix = pm ? pm[1] : "";
+      const body = pm ? pm[2] : line;
       if (pending) {
-        const close = line.indexOf(pending.closer);
+        const close = body.indexOf(pending.closer);
         if (close < 0) {
-          pending.lines.push(line);
+          pending.lines.push(body);
           continue;
         }
-        pending.lines.push(line.slice(0, close));
+        pending.lines.push(body.slice(0, close));
         const tex = pending.lines.join("\n").trim();
-        const tail = line.slice(close + pending.closer.length);
+        const tail = body.slice(close + pending.closer.length);
         const open = pending.delim === "\\[" ? "\\[" : "$$";
         const seg = tex
           ? tokenOf(items.length) + tail
           : open + pending.lines.join("\n") + pending.closer + tail;
         if (tex) items.push({ tex: tex, display: true, delim: pending.delim });
         pending = null;
-        out.push(seg);
+        out.push(prefix + seg);
         continue;
       }
       if (fence) {
@@ -980,7 +986,7 @@
         out.push(line);
         continue;
       }
-      const trimmed = line.replace(/^\s+/, "");
+      const trimmed = body.replace(/^\s+/, "");
       /* 行首开显示公式：`$$…$$` 与 `\[…\]`（同一行闭合就单行处理，否则开跨行累积） */
       const openTok =
         trimmed.slice(0, 2) === "$$" ? "$$" :
@@ -992,7 +998,7 @@
         if (close >= 0) {
           const tex = rest.slice(0, close).trim();
           out.push(tex
-            ? tokenOf(items.length) + rest.slice(close + closer.length)
+            ? prefix + tokenOf(items.length) + rest.slice(close + closer.length)
             : line);
           if (tex) items.push({ tex: tex, display: true, delim: openTok });
         } else {
@@ -1000,7 +1006,7 @@
         }
         continue;
       }
-      out.push(scanInline(line, items));
+      out.push(prefix + scanInline(body, items));
     }
     if (pending)
       out.push(
@@ -1032,6 +1038,23 @@
     });
   }
 
+  /**
+   * 一行文字里的公式 → HTML（标题 / 大纲 / 树行 / 文献题名 / 术语定义这类「一行字」用）。
+   * 与 mdToHtml 走同一套 splitMath + latexToHtml：公式照常排版，其余文字**只转义、不交给
+   * marked** —— 这些地方是一条标签，不该冒出 <p> / <ul> 结构，也不该把 `$…$` 原样露给读者。
+   * 没有公式时等价于 esc(原文)，不会吞字符。
+   */
+  function inlineToHtml(text) {
+    const r = splitMath(text);
+    const html = esc(r.md);
+    if (!r.items.length) return html;
+    return html.replace(TOKEN_RE, (m, idx) => {
+      const it = r.items[Number(idx)];
+      if (!it) return "";
+      return latexToHtml(it.tex, { display: it.display, delim: it.delim });
+    });
+  }
+
   /* 序列化辅助：从渲染根节点读回原始 LaTeX / 是否显示式 / 原定界符 */
   function texAttrsOf(el) {
     if (!el || !el.getAttribute) return null;
@@ -1048,6 +1071,7 @@
   const api = {
     latexToHtml: latexToHtml,
     mdToHtml: mdToHtml,
+    inlineToHtml: inlineToHtml,
     splitMath: splitMath,
     texAttrsOf: texAttrsOf,
     TOKEN_RE: TOKEN_RE,

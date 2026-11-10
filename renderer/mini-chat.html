@@ -23,7 +23,7 @@
         <button type="button" class="mc-icon mc-burger" id="mcListBtn" aria-pressed="false">☰</button>
         <span class="mc-title" id="mcTitle">快捷会话</span>
         <span class="mc-gap"></span>
-        <button type="button" class="mc-icon" id="mcNewBtn">＋</button>
+        <button type="button" class="mc-icon" id="mcNewBtn" title="新建会话（Ctrl + N）" aria-keyshortcuts="Control+N">＋</button>
         <button type="button" class="mc-icon mc-close" id="mcCloseBtn">✕</button>
       </header>
 
@@ -40,6 +40,9 @@
             <span class="mc-pill" id="mcPill" hidden></span>
             <button type="button" class="mc-icon mc-stop" id="mcStopBtn" hidden>■</button>
             <span class="mc-gap"></span>
+            <!-- 删除当前会话（本轮需求）：紧挨「跳主窗」左边，两次点击才真删
+                 （第一下变「删掉？」并在 4 秒后自动收回，见 app-mini-chat.js 的 deleteSession） -->
+            <button type="button" class="mc-icon mc-del" id="mcDelBtn" hidden>🗑</button>
             <button type="button" class="mc-icon" id="mcGotoBtn">↗</button>
           </div>
           <!-- 项目文件夹（本轮需求 · 共识 q1/q2）：这条会话真正工作的目录 —— 只显示文件夹名，
@@ -71,6 +74,10 @@
               <button type="button" class="mc-mode" id="mcModeGrill" aria-pressed="false">拷问需求</button>
               <button type="button" class="mc-mode" id="mcModeHotfix" aria-pressed="true">热修</button>
             </div>
+
+            <!-- 粘贴截图后输入区上方那一条缩略图胶囊（本轮需求）：一枚对一行图，
+                 点胶囊把光标定位到正文那一行、✕ 删掉整行；没有图时整条 hidden。 -->
+            <div class="mc-chips" id="mcChips" hidden></div>
 
             <div class="mc-compose">
               <textarea id="mcInput" rows="2" spellcheck="false"></textarea>

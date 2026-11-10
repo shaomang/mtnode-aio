@@ -136,10 +136,17 @@ const META_KEYS = [
   "devContract",
 ];
 
-/* 字段级补丁（patchSessionMeta）**唯一**允许改的键。故意只有 workspace 一个：
+/* 字段级补丁（patchSessionMeta）**唯一**允许改的键。故意收得很窄：
    这条通道是按 id 直接改盘上那份会话文件的，写入面越小越安全 —— 日后要放宽，
-   必须在这里显式加键（而不是让调用方随手传任意字段）。 */
-const PATCH_KEYS = ["workspace"];
+   必须在这里显式加键（而不是让调用方随手传任意字段）。
+   title / titleAuto / titleLocked（本轮真机 bug：重启后标题又被改回「新会话」）：
+   改名在懒加载口径下只落索引、不碰会话文件（见 saveSessions 的硬口径②），于是盘上那份
+   title 一直是旧值；重启后空闲补读把会话文件读回、Object.assign 一盖，索引里的新标题
+   就退回旧值（用户看到的就是「改好的名字重启后变回新会话」）。所以标题必须有一条
+   独立的、按 id 直写会话文件的通道 —— 就是这三个键。 */
+const PATCH_KEYS = ["workspace", "title", "titleAuto", "titleLocked"];
+/* 这两个键在会话文件里是布尔：补丁通道不许把它们 String 化成 "true" / "false" */
+const PATCH_BOOL_KEYS = new Set(["titleAuto", "titleLocked"]);
 
 function compactJson(v) {
   return JSON.stringify(v);
@@ -806,6 +813,36 @@ function createAgentSessionsStore(opts) {
     return e;
   }
 
+  /* ── 标题三键以谁为准（真机 bug：改好的名字重启后变回「新会话」）──────────────
+     会话文件顶层的 title / titleAuto / titleLocked **只在「整份正文写」时**才刷新，
+     日常落盘走追加段（<id>.jsonl，只追加消息）—— 于是文件里的 title 可能停在很久以前
+     的占位值（典型就是「新会话」），而索引是最后写的那一份（写序硬口径 ③：先会话体、
+     后索引），左栏读的也正是索引。对账按文件重建条目时若照抄文件，索引里的真名就被
+     占位值盖掉，用户看到的就是「重启一次退一次」。
+     所以重建条目前先判一次：文件是空 / 占位标题而索引有真名，或索引那三键已被定名
+     （titleAuto = 引擎命名 / titleLocked = 用户亲口改名）而文件与它不一致 —— 保留索引
+     那一份，并把它写回文件（顺手把文件自愈，下次重启不再需要靠这条判据）。
+     反过来（文件里有真名、索引也没定名）一律以文件为准：那是外部改写的口径。 */
+  const PLACEHOLDER_TITLES = new Set(["新会话", "New session"]);
+  function isPlaceholderTitle(t) {
+    const s = String(t == null ? "" : t).trim();
+    return !s || PLACEHOLDER_TITLES.has(s);
+  }
+  function titleFromIndex(entry, body) {
+    if (!entry) return null;
+    const idxTitle = String(entry.title == null ? "" : entry.title).trim();
+    if (isPlaceholderTitle(idxTitle)) return null;
+    const bodyTitle = String(body && body.title == null ? "" : body.title).trim();
+    if (bodyTitle === idxTitle) return null;
+    const named = !!(entry.titleAuto || entry.titleLocked);
+    if (!isPlaceholderTitle(bodyTitle) && !named) return null;
+    return {
+      title: idxTitle,
+      titleAuto: !!entry.titleAuto,
+      titleLocked: !!entry.titleLocked,
+    };
+  }
+
   /* ── 对账：一次把索引与磁盘对齐（口径见文件头）────────────────────────── */
   function reconcile(reason) {
     const d = dir();
@@ -823,6 +860,7 @@ function createAgentSessionsStore(opts) {
     let rewritten = 0;
     let orphans = 0;
     let missing = 0;
+    let healed = 0; /* 标题以索引为准回写文件的会话数（见 titleFromIndex） */
     for (const id of files) {
       const e = prev.get(id);
       /* 孤儿判据 = **本次对账开始前索引里没有它**：盘上有、索引没有 = 上一次写到一半
@@ -872,6 +910,18 @@ function createAgentSessionsStore(opts) {
            要在最后一步才落定，对账标记才记得准。 */
         orphansPending.push(id);
         continue;
+      }
+      /* 标题三键：索引里那份若更权威（见 titleFromIndex），就用它覆盖文件里的旧值 ——
+         归一写盘紧接着会把这份 body 落回文件，等于顺手把文件自愈了。 */
+      const keepTitle = titleFromIndex(e, body);
+      if (keepTitle) {
+        body.title = keepTitle.title;
+        body.titleAuto = keepTitle.titleAuto;
+        body.titleLocked = keepTitle.titleLocked;
+        healed++;
+        log(
+          "[sessions] 会话 " + id + " 的标题以索引为准回写文件：" + keepTitle.title,
+        );
       }
       try {
         writeAtomicSync(sessionPath(id), compactJson(body));
@@ -929,7 +979,7 @@ function createAgentSessionsStore(opts) {
       } catch {}
     }
     if (orphans) writeMarkSync();
-    if (rewritten || orphans || missing) {
+    if (rewritten || orphans || missing || healed) {
       log(
         "[sessions] 对账（" +
           reason +
@@ -939,12 +989,14 @@ function createAgentSessionsStore(opts) {
           orphans +
           " / 缺文件 " +
           missing +
+          " / 标题回写 " +
+          healed +
           "（共 " +
           rows.length +
           " 条）",
       );
     }
-    return { ok: true, rebuilt: rewritten, orphans, missing, count: rows.length };
+    return { ok: true, rebuilt: rewritten, orphans, missing, healed, count: rows.length };
   }
   function rescueFromBackup(id) {
     const bp = latestBackup();
@@ -1390,11 +1442,12 @@ function createAgentSessionsStore(opts) {
     const dver = merged.ver;
     const changed = [];
     for (const k of keys) {
-      const before = String(body[k] == null ? "" : body[k]);
-      const next = String(src[k] == null ? "" : src[k]);
+      const isBool = PATCH_BOOL_KEYS.has(k);
+      const before = isBool ? !!body[k] : String(body[k] == null ? "" : body[k]);
+      const next = isBool ? !!src[k] : String(src[k] == null ? "" : src[k]);
       if (before === next) continue;
       body[k] = next;
-      changed.push({ key: k, from: before, to: next });
+      changed.push({ key: k, from: String(before), to: String(next) });
     }
     if (!changed.length) return { ok: true, changed: 0, keys: [] };
     if (dver) body[DELTA_VER_KEY] = dver;

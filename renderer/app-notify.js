@@ -26,6 +26,9 @@
   /* 收在托盘期间产生的卡片，用户可能很久以后才回到窗口：超过这个岁数就不再补弹，
      免得「一小时前的完成提示」在回来后突然冒出来（系统通知那条已经尽责了）。 */
   const CARD_STALE_MS = 10 * 60 * 1000;
+  /* 等本轮语音播报稿落地的上限：通知正文要跟着播报走（同一句话），
+     但等待也不能把「任务完成」这件事拖到用户以为没提醒（见 flush）。 */
+  const SPOKEN_WAIT_MS = 6000;
 
   let batch = [];
   let batchTimer = null;
@@ -107,24 +110,32 @@
     return t.length > n ? t.slice(0, n) + "…" : t;
   }
 
-  /* 会话最后一段回复的首句（够判断「要不要现在回去看」，又不把正文塞进通知） */
-  function sessionSnippet(st) {
+  /* 会话最后一段回复：优先用**本轮真实播报的那句话**（msg._tts，见 renderer/app-tts.js
+     的 onTurnEnd 回调），没有播报才回落到首句 —— 任务栏通知与语音播报必须是同一句话
+     （用户口径：通知内容应与播报内容一致）。同时把 spoken（已就绪的播报稿）与 raw
+     （正文原文）带出去：flush 用 raw 去等那一句、用 spoken 判断还需不需要等。 */
+  function sessionSpeech(st) {
     try {
       const msgs = (st && st.messages) || [];
       for (let i = msgs.length - 1; i >= 0; i--) {
         const m = msgs[i];
         if (!m || m.role !== "assistant") continue;
-        const raw = String(m.content || "")
+        const rawText = String(m.content || "");
+        const spoken = String(m._tts || "")
+          .replace(/\s+/g, " ")
+          .trim();
+        if (spoken) return { body: clip(spoken, 90), spoken, raw: rawText };
+        const raw = rawText
           .replace(/```[\s\S]*?```/g, " ")
           .replace(/[#*`>_~|-]/g, " ")
           .replace(/\s+/g, " ")
           .trim();
         if (!raw) continue;
         const first = raw.split(/[。！？!?\n]/)[0] || raw;
-        return clip(first, 60);
+        return { body: clip(first, 60), spoken: "", raw: rawText };
       }
     } catch (_) {}
-    return "";
+    return { body: "", spoken: "", raw: "" };
   }
 
   /* 开发块 / 工具节点的「绑定会话」在运行队列里被折进那一行（type=dev / node），
@@ -148,9 +159,12 @@
         st = agentSessionById(String(id));
       } catch (_) {}
       if (!st) continue;
+      const sp = sessionSpeech(st);
       return {
         title: clip(st.title || rec.title || I18n.t("会话"), 48),
-        body: sessionSnippet(st) || I18n.t("这一轮已经跑完了"),
+        body: sp.body || I18n.t("这一轮已经跑完了"),
+        spoken: sp.spoken,
+        raw: sp.raw,
         jump: { type: "session", id: String(st.id) },
       };
     }
@@ -170,9 +184,12 @@
         } catch (_) {}
       }
       const title = clip((st && st.title) || rec.title || I18n.t("会话"), 48);
+      const sp = sessionSpeech(st);
       return {
         title,
-        body: sessionSnippet(st) || I18n.t("这一轮已经跑完了"),
+        body: sp.body || I18n.t("这一轮已经跑完了"),
+        spoken: sp.spoken,
+        raw: sp.raw,
         jump: { type: "session", id: String(rec.id || "") },
       };
     }
@@ -391,15 +408,37 @@
       batchTimer = null;
       const list = batch;
       batch = [];
-      flush(list);
+      /* flush 现在是 async（要等本轮语音播报稿落地）：失败也不能变成 unhandled rejection，
+         提醒本身丢了就丢了，别把整页 console 刷红 */
+      Promise.resolve()
+        .then(() => flush(list))
+        .catch(() => {});
     }, MERGE_MS);
   }
 
-  function flush(list) {
+  async function flush(list) {
     if (!popupOn() || !list || !list.length) return;
     /* 时机口径：只在应用不在前台时提醒（用户正盯着看的时候不打扰） */
     if (!userAway()) return;
     const one = list.length === 1 ? list[0] : null;
+    /* 单条会话完成、语音播报正在出稿：等那一句落地（最多 SPOKEN_WAIT_MS）再做正文 ——
+       任务栏通知上写的与播报念的必须是同一句话（用户口径：通知内容应与播报内容一致）。
+       语音没开 / 播报稿已就绪 / 不是会话完成 → 不等，立刻发。 */
+    if (
+      one &&
+      one.raw &&
+      !one.spoken &&
+      window.MTNodeTts &&
+      typeof window.MTNodeTts.isOn === "function" &&
+      window.MTNodeTts.isOn() &&
+      typeof window.MTNodeTts.awaitSpokenFor === "function"
+    ) {
+      try {
+        const sp = await window.MTNodeTts.awaitSpokenFor(one.raw, SPOKEN_WAIT_MS);
+        if (sp) one.body = clip(sp, 90);
+      } catch (_) {}
+      if (!popupOn()) return;
+    }
     const title = one ? one.title : I18n.t("{n} 项任务已完成", { n: list.length });
     let body;
     if (one) body = one.body;

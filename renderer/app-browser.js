@@ -138,6 +138,7 @@
     tabs: "标签页",
     takeover: "接管",
     help: "求助",
+    derive: "变体",
     tool: "工具",
     "tool-result": "结果",
     shell: "命令",

@@ -8,8 +8,9 @@
  *   op            args                    本文件做的
  *   state         {}                       组一份 {sessions, selectedId, selected}
  *   select        {id}                     记住小窗选中的会话，回一份最新 state
- *   newSession    {}                       按主窗当前画布 + 默认模型新建一条（不切主窗视图）
+ *   newSession    {ws?}                     新建一条（不带 ws 接当前选中会话；带 ws 就落这一组文件夹）
  *   send          {sessionId, text}        走 agentSessionSend（忙则自动进发送队列，与主界面同源）
+ *   attachImage   {sessionId, base64, ext} 粘贴的截图落成真文件（会话工作区 .mtnode-input/），回绝对路径
  *   stop          {id}                     stopSessionRuns（助手会话再补 assistStop）
  *   goto          {id}                     主窗切到会话视图并选中该条（主进程负责还原窗口与关小窗）
  *
@@ -34,6 +35,9 @@
   var miniOpen = false;
   var timer = null;
   var lastSig = "";
+  /* 状态快照的单调序号：buildState 一开跑就取号（不是回来时取），
+     小窗据此丢掉「比手上这份还旧」的迟到快照（见 app-mini-chat.js 的 acceptState）。 */
+  var stateRev = 0;
 
   function t(s) {
     try {
@@ -138,8 +142,26 @@
     return top.length ? String(top[0].id) : "";
   }
 
+  /* 会话正文里最后一条非空消息的角色（"" = 一条都没有）。
+     小窗只画「最后一句用户话 + 最后一条回复」这一对，所以只有**这一对真成对**时
+     才把回复下发：最后一条非空消息不是助手（刚下发 / 已排队 / 提问已回答），说明
+     这一轮还没回复，此时把上一条回复一起递下去，窗口就成了「新指令配旧回答」——
+     读起来正是「agent 没看见我写的内容、答非所问」。 */
+  function lastNonEmptyRole(st) {
+    var ms = (st && Array.isArray(st.messages) && st.messages) || [];
+    for (var i = ms.length - 1; i >= 0; i--) {
+      var m = ms[i];
+      if (!m) continue;
+      if (!String(m.content == null ? "" : m.content).trim()) continue;
+      return String(m.role || "");
+    }
+    return "";
+  }
+
   /** 组一份小窗要的状态（只含它要画的东西） */
   async function buildState() {
+    /* 取号在对齐任何 await 之前：先起跑的 buildState 必然拿到更小的号 */
+    var rev = ++stateRev;
     var top = topSessions();
     var sid = pickId(top);
     selectedId = sid;
@@ -164,6 +186,21 @@
         } catch (_) {}
       }
       var wsel = wsOf(st);
+      /* 排队中的那句还没进正文（在会话的 outbox 里，等前面这一轮跑完才发）：
+         不把它当「最后一句用户话」，小窗就会在自己发出去之后把刚写的那句抹掉，
+         再配一条上轮的回复 —— 同样读成「agent 没收到我说的」。排队条目永远比起
+         正文里的更晚，所以有就直接用它。 */
+      var queuedText = "";
+      try {
+        var ob = Array.isArray(st.outbox) ? st.outbox : [];
+        for (var qi = ob.length - 1; qi >= 0; qi--) {
+          var qt = String((ob[qi] && ob[qi].text) || "").trim();
+          if (qt) {
+            queuedText = qt;
+            break;
+          }
+        }
+      } catch (_) {}
       selected = {
         id: String(st.id),
         title: String(st.title || t("新会话")),
@@ -172,11 +209,12 @@
         paused: !!st.paused,
         ws: wsel.ws,
         wsSrc: wsel.wsSrc,
-        lastReply: lastOfRole(st, "assistant", REPLY_MAX),
-        lastUser: lastOfRole(st, "user", 4000),
+        lastReply:
+          lastNonEmptyRole(st) === "assistant" ? lastOfRole(st, "assistant", REPLY_MAX) : "",
+        lastUser: queuedText || lastOfRole(st, "user", 4000),
       };
     }
-    return { sessions: sessions, selectedId: sid, selected: selected };
+    return { rev: rev, sessions: sessions, selectedId: sid, selected: selected };
   }
 
   function pushNow() {
@@ -186,7 +224,10 @@
       .then(function (data) {
         var sig = "";
         try {
-          sig = JSON.stringify(data);
+          /* 去重只看内容：rev 每拍都变，带上它等于「永远有变化」，800ms 一拍就白推了 */
+          var forSig = Object.assign({}, data);
+          delete forSig.rev;
+          sig = JSON.stringify(forSig);
         } catch (_) {
           sig = "";
         }
@@ -216,10 +257,21 @@
     timer = null;
   }
 
+  /* 小窗开 / 关的唯一状态入口（主进程的 minichat:visibility 与启动自愈都走这里）。
+     open 不只是「起停推送循环」：状态栏入口 #btnMiniChat 也要跟着点亮 / 熄灭 ——
+     与 DeepSeek 入口、语音播报同一套「亮着的开关」（css/layout.css 的 .sb-minichat.is-open）。
+     按钮可能还没解析出来（DOMContentLoaded 之前的 visibility 推送），getElementById 现取即可。 */
   function setOpen(open) {
     miniOpen = !!open;
     if (miniOpen) startLoop();
     else stopLoop();
+    try {
+      var btn = document.getElementById("btnMiniChat");
+      if (btn) {
+        btn.classList.toggle("is-open", miniOpen);
+        btn.setAttribute("aria-pressed", miniOpen ? "true" : "false");
+      }
+    } catch (_) {}
   }
 
   /* ── 各 op 的实现 ──────────────────────────────────────────────────── */
@@ -228,6 +280,50 @@
     if (!sid) return null;
     var hit = sessionsArr().filter(function (s) { return String(s && s.id) === sid; })[0];
     return hit || null;
+  }
+
+  /* 粘贴截图的落盘目录：真源是主窗那套生效工作区（agentRunWorkspace），小窗不另算一套 */
+  function attachWsOf(st) {
+    return function () {
+      try {
+        return typeof agentRunWorkspace === "function"
+          ? String(agentRunWorkspace(st) || "")
+          : "";
+      } catch (_) {
+        return "";
+      }
+    };
+  }
+  /* 共享落盘函数缺席（脚本加载顺序被打断的沙箱）时的兜底：同样的目录口径，
+     只是少了「无引用回收」那层判据 —— 绝不改写到别处，也绝不写坏字节。 */
+  async function attachWriteFallback(picked, wsGetter) {
+    var a2 = typeof window !== "undefined" ? window.api : null;
+    if (!a2 || typeof a2.fileWriteBytes !== "function") return null;
+    if (typeof joinPath !== "function") return null;
+    var dir = "";
+    try {
+      var ws = String((wsGetter && wsGetter()) || "").trim();
+      if (ws) dir = joinPath(ws, ".mtnode-input");
+    } catch (_) {}
+    if (!dir) {
+      try {
+        var r = await a2.dataGetRoot();
+        if (r && r.ok && r.path) dir = joinPath(String(r.path), "chat-input");
+      } catch (_) {}
+    }
+    if (!dir) return null;
+    var ext = String((picked && picked.ext) || "png").replace(/^\./, "") || "png";
+    var dest = joinPath(dir, "paste-" + Date.now().toString(36) + "." + ext);
+    try {
+      var bin = atob(String((picked && picked.base64) || ""));
+      var bytes = new Uint8Array(bin.length);
+      for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      var w = await a2.fileWriteBytes(dest, bytes);
+      if (w && w.ok === false) return null;
+    } catch (_) {
+      return null;
+    }
+    return { path: dest, alt: t("截图") };
   }
 
   async function handle(op, args) {
@@ -251,6 +347,9 @@
          小窗里「＋」的语义是「接着我在看的这条干活」，不是「按主窗此刻的画布另起一条」。
          目录本身不另算，真源仍是主窗那套生效工作区（agentRunWorkspace）；
          选中会话解析不出目录时退回原来那套（按新会话所属画布冻结一次，再不行落默认目录）。 */
+      /* 目标文件夹（组内「＋」）：小窗左栏某一组标题右边的 ＋ = 就**在这一组**里新建一条，
+         不管此刻选中的是别组的哪条会话；空串 = 沿用上面那套（接当前选中会话的目录）。 */
+      var wantWs = String((a && a.ws) || "").trim();
       var base = selectedId ? findSession(selectedId) : null;
       var st = newAgentSession();
       /* newAgentSession 会把主窗的选中项拨到新会话上 —— 小窗新建不该改变主窗正在看的东西，
@@ -283,6 +382,16 @@
           } catch (_) {}
         }
       }
+      /* 组内「＋」钉的目标文件夹：盖掉上面继承来的那一份（用户共识 q2 —— 点哪组就落哪组） */
+      if (st && wantWs) {
+        try {
+          if (typeof agentSetSessionWorkspace === "function")
+            await agentSetSessionWorkspace(st, wantWs);
+          else st.workspace = wantWs;
+        } catch (_) {
+          st.workspace = wantWs;
+        }
+      }
       selectedId = String((st && st.id) || "");
       try {
         if (typeof agentFlushSessionSaveQuiet === "function") await agentFlushSessionSaveQuiet();
@@ -292,6 +401,36 @@
       } catch (_) {}
       lastSig = "";
       return { ok: true, data: await buildState() };
+    }
+
+    /* ── 粘贴截图（本轮需求）：落盘口径与主窗输入框完全同源 ──────────────────
+       真源是 app-assist.js 的 chatImgWriteBase64：会话工作区 .mtnode-input/paste-<36进制>.<ext>，
+       没有工作目录退回数据目录 chat-input/（命名与「无引用回收」的 isChatInputImage 判据同源）。
+       小窗只递过来「一只图」（base64），落哪儿、叫什么由这里算 —— 它不猜路径。 */
+    if (op === "attachImage") {
+      var targetImg = findSession(a.sessionId);
+      if (!targetImg) return { ok: false, error: "missing" };
+      var b64 = String(a.base64 || "").replace(/^data:[^,]*,/, "");
+      if (!b64) return { ok: false, error: "empty" };
+      var extImg = String(a.ext || "png").replace(/^\./, "").toLowerCase() || "png";
+      var picked = { base64: b64, ext: extImg, name: "" };
+      var wsGetter = attachWsOf(targetImg);
+      var saved = null;
+      try {
+        if (typeof chatImgWriteBase64 === "function")
+          saved = await chatImgWriteBase64(picked, wsGetter);
+      } catch (_) {
+        saved = null;
+      }
+      if (!saved || !saved.path) {
+        try {
+          saved = await attachWriteFallback(picked, wsGetter);
+        } catch (_) {
+          saved = null;
+        }
+      }
+      if (!saved || !saved.path) return { ok: false, error: "write_failed" };
+      return { ok: true, data: { path: String(saved.path), alt: String(saved.alt || "") } };
     }
 
     if (op === "send") {
@@ -334,6 +473,23 @@
       } catch (_) {}
       setTimeout(pushNow, 120);
       return { ok: true };
+    }
+
+    if (op === "delete") {
+      /* 删除会话（本轮需求）：交给主窗那条真删内核 deleteAgentSession ——
+         摘节点关联 → 从列表摘掉 → 点名删会话文件 + 索引条目 → 重绘，盘上不留。
+         小窗只递 id，磁盘口径不在这里另算一套。 */
+      var s5 = findSession(a.id);
+      if (!s5) return { ok: false, error: "missing" };
+      if (typeof deleteAgentSession !== "function") return { ok: false, error: "unsupported" };
+      try {
+        await deleteAgentSession(String(s5.id));
+      } catch (e) {
+        return { ok: false, error: "exception", detail: String((e && e.message) || e) };
+      }
+      if (String(selectedId) === String(s5.id)) selectedId = "";
+      lastSig = "";
+      return { ok: true, data: await buildState() };
     }
 
     if (op === "goto") {
@@ -381,6 +537,19 @@
   api.onMiniChatVisibility(function (p) {
     setOpen(!!(p && p.open));
   });
+
+  /* 推送循环的「自愈」入口（本次修复）：主窗渲染层重载后，上面那个 visibility 事件
+     不会再送一遍 —— miniOpen 停在 false，推送循环永远起不来，小窗就停在旧内容上：
+     用户在小窗里发了新指令、agent 也跑完了，窗口里却一直等不到那条回复。
+     初始化时主动问主进程「小窗现在开着吗」：开着就把循环接回来（问完再推一拍）。 */
+  try {
+    if (typeof api.miniChatIsOpen === "function")
+      Promise.resolve(api.miniChatIsOpen())
+        .then(function (r) {
+          if (r && r.open) setOpen(true);
+        })
+        .catch(function () {});
+  } catch (_) {}
 
   /* 左下角入口（状态栏话筒旁那枚按钮）：点一下 = 打开 / 聚焦那只唯一的小窗 */
   function wireEntry() {

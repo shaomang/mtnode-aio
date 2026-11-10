@@ -285,7 +285,8 @@ dsh 0.2 的 `llm-deepseek` 把 `config.baseURL` / `DEEPSEEK_BASE_URL` 当 **Mess
 - 升级后 `node_modules` 实测（0.2.1-rc.2 · hoisted）= **600MB / 318 个 `@deepseek-ai`
   目录 / 0 个符号链接**（0.2.0-rc.2 代记录的 760MB 是另一代包数与布局下的旧口径，
   一律以实测为准）；`dsh/after-pack.cjs` 会把整棵网关树按
-  `docs/app-deps-prune.json` 的零引用口径剪枝后再进安装包，浏览器内核仍由
+  `docs/app-deps-prune.json` 的零引用口径剪枝后打成单个归档进安装包（见「打包(Windows)」），
+  浏览器内核仍由
   playwright / `@puppeteer/browsers` 在用户机器上按需下载，不随包发。
 
 ## 运行时托管
@@ -1086,25 +1087,47 @@ Edge 风格的画布 Tab 条:切换过的工作流显示为标签页(最多 12 �
 ## 打包(Windows)
 
 - `dsh/main-dsh.js` 随 asar 打包;gateway(含 cordis.yml 与 node_modules 全树)由
-  `dsh/after-pack.cjs`(electron-builder afterPack 钩子)复制到
-  `resources/dsh/gateway` —— 普通 Node 子进程读不了 asar,运行时侧必须全部在真实
-  文件系统上。gateway 路径已在 main-dsh.js 按 `app.isPackaged` 区分。
+  `dsh/after-pack.cjs`(electron-builder afterPack 钩子)打成 **一个归档文件**
+  `resources/dsh/gateway-tree.mtgw` + 一个旁挂索引 `resources/dsh/gateway-tree.json`,
+  不再是 `resources/dsh/gateway/` 那棵 1.6 万文件的散树 —— 普通 Node 子进程读不了 asar,
+  运行期必须是真实目录树,所以由 `dsh-node.js` 的 `ensureGatewayRoot()` 在**首次启动**
+  解到数据目录 `<DATA>/dsh-runtime/gateway-<buildId>/`(解包目录里有 `.unpack-ok`,
+  buildId 与旁挂索引一致就直接复用;应用更新换了归档 = 换了 buildId = 重解一次,
+  旧目录整套删掉)。网关入口由 `dsh/main-dsh.js` 的 `gatewayPath(dataDir)` 给出，
+  dev 态仍是仓库内 `dsh/gateway/gateway.mjs`。
+- **为什么是归档而不是 asar / 7z 打包器**：① 网关必须由真 Node(≥22.19)拉起,Node 的
+  require / ESM 解析读不了 asar 虚拟路径;② 原生 `.node` 与动态 require(sharp/@img、
+  sherpa-onnx)经打包器静态分析就有被改坏的风险。归档只做「把真实文件按原样串成一个
+  文件」,运行期原样解回真实目录树 —— 解包后的路径与开发树逐字节相同,模块解析 / 原生
+  模块 / 动态 require 全都不参与分析。格式与读写实现只有一份:`dsh/gateway-archive.cjs`
+  (after-pack 写、dsh-node.js 读)。
+- **实测收益(本机 SSD)**：`resources/dsh` **16,028 个文件 / 271.17 MB → 2 个文件**
+  (归档 272.65MB + 索引 200B;归档是不压缩的净字节,压缩交给 NSIS 做一次)——
+  安装阶段少写 16,026 个文件。随剪枝清单调整,数字会跟着变:2026-11-07 重算后的清单口径是
+  **13,474 个文件 / 196.21MB → 归档 196.21MB**,机制不变。
+  代价:每次应用版本变更后的**首次启动**多一次解包 —— 实测 13.5k/196MB 解 **6.0 秒**、
+  16k/271MB 解 **7.5 秒**(之后同一 buildId 命中标记,**2 ms** 复用);
+  磁盘上同时存在归档与解包树(各约 200-270MB,旧 buildId 的树在下次解包成功后删掉)。
+  抽样验证:解包树里 `sharp`(动态 require `@img/sharp-win32-x64`)、`node-pty`、
+  `sherpa-onnx-node`(运行时拼路径 `require('../sherpa-onnx-win-x64/sherpa-onnx.node')`)
+  都能在真 Node 下正常加载。
 - 不用 extraResources:electron-builder 对 extraResources 来源同样应用
-  .gitignore 剪枝,而 node_modules 必须保持 git 忽略,因此改用 afterPack 手动复制。
+  .gitignore 剪枝,而 node_modules 必须保持 git 忽略,因此改用 afterPack 手动遍历。
+  `docs/app-size-audit.md` 里的目录口径记的是归档化之前的散树布局。
 - **依赖布局(打包硬约束 · 2026-09-30 实测事故)**:网关依赖只能用 npm 式**真实目录**布局安装 ——
   `dsh/gateway/pnpm-workspace.yaml` 固定 `nodeLinker: hoisted`(同值也写在 `dsh/gateway/.npmrc`,
   供 pnpm < 11 读;**pnpm 11 只认 pnpm-workspace.yaml,`.npmrc` 里的 `node-linker` 会被忽略**)。
   病根:pnpm 默认 isolated 布局把包做成 junction 指向 `node_modules/.pnpm`,而 afterPack 是手动遍历复制
   (只搬真实文件)—— `fs.readdirSync` 的 dirent 对 junction 报 `isDirectory()=false`,于是 junction
-  被当普通文件走 `fs.copyFileSync`,在 Windows 上直接抛 EPERM/EISDIR:复制中断后
-  `resources/dsh/gateway` 只剩半棵树(`node_modules`、`package.json`、`plugins/` 全缺),
+  被当普通文件读,在 Windows 上直接抛 EPERM/EISDIR:归档写到一半就断,
+  打出来的 `resources/dsh` 只剩个半截归档(缺 `node_modules` / `package.json` / `plugins/`),
   安装包启动时网关立刻 exit 1 —— `Cannot find package '@deepseek-ai/dsh-sdk-client'`
   (main-dsh.js 侧表现为「dsh 网关已退出(code=1)」)。因此 after-pack 两道保险:
   ① 顶层 `node_modules/.pnpm` 整目录跳过 —— hoisted 下它运行时不可达(顶层与各包内部都没有任何链接
   指回 `.pnpm`,Node 只会向上找 `node_modules`),实测把它改名后 `node dsh/smoke-gateway.mjs` 仍 exit 0,
   它却白占 ~1.8GB;② 遇到「指向目录的符号链接」直接报错中止打包(`assertNoDirLink`),
   把「静默产出坏安装包」变成一眼可见的打包失败。hoisted 重装命令:`cd dsh/gateway && pnpm install`。
-- **减重(依赖体检)**:`resources/dsh/gateway` 是安装包里最大的一块。剪枝依据是 `docs/` 下**两份名单**,
+- **减重(依赖体检)**:`resources/dsh`(归档 `gateway-tree.mtgw`)是安装包里最大的一块。剪枝依据是 `docs/` 下**两份名单**,
   都由 `scripts/app-deps-usage.mjs` 生成,`dsh/after-pack.cjs` 经 `scripts/app-deps-rules.cjs` 的
   `loadExcluder()` 合并读取(三处共用同一判定,不各自写死名单),`build.json` 的 `files` 取反只管根树:
   ① `docs/app-deps-prune.json` —— **零引用口径**(机器判定:从入口出发完全没有任何引用);

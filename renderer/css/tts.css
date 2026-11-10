@@ -1,10 +1,11 @@
 /* MOSS-TTS-Nano 内置语音（状态栏那枚 TTS 开关）—— 实现见 renderer/app-tts.js。
-   位置纪律：状态栏里**夹在「✨ AI 增强」与「📷 画布截图」之间**，
-   order 链 = 话筒 -3 · AI 增强 -2 · TTS -1 · 画布截图 0（见 css/voice.css 的两处注释）。 */
+   位置纪律：左下角第三颗（DeepSeek 右邻、语音输入左邻）。
+   order 链 = 快捷会话 -5 · DeepSeek -4 · TTS -3 · 语音输入 -2 · AI 增强 -1 · 画布截图 0
+   （五颗按钮各占一个整数位，见 css/layout.css / deepseek.css / voice.css 里的同一段说明）。 */
 
 .statusbar .sb-tts {
   flex: none;
-  order: -1; /* AI 增强（-2）右侧、画布截图（0）左侧 */
+  order: -3; /* DeepSeek（-4）右侧、语音输入（-2）左侧 */
   width: 22px;
   height: 22px;
   padding: 0;
@@ -275,7 +276,7 @@
   line-height: 1.5
 }
 
-/* ── 语音摘要气泡（自动消失；点一下复制）──────────────────────────────── */
+/* ── 语音摘要气泡（12s 自动消失；点一下复制并立刻收起）────────────────────── */
 .tts-bubble {
   position: fixed;
   right: 18px;

@@ -10,7 +10,11 @@
  * 出口（与旧内核同形，调用方不用改契约）：
  *   loadBuffer(arg)           入参归一 → { buf } / { error }
  *   probeInfo(arg)            → { ok, isPdf, parseable, pages, encrypted, warning }
- *   parsePdf(arg, opts)       → { ok, markdown, pages, formulas, warning, quality, encrypted }
+ *   parsePdf(arg, opts)       → { ok, markdown, pages, formulas, figures, figurePages, warning, quality, encrypted }
+ *                               markdown 里的图表锚点：![图 p3-1]({{FIG:p3-1.png}}) 与
+ *                               ![第 N 页图表]({{PAGE:N}})（纯矢量页，调用方用 pdf:render 单页出图）
+ *   extractPageFigures(page)  → { figures:[{name,page,x,y,yBottom,w,h,width,height,png}], truncated, vector }
+ *                               （页面图元：pdf.js 算子表定位 + 自带 zlib 写无损 PNG，不需要 Electron）
  *   renderPages(arg, opts)    → { ok, images:[{page,dataUrl,width,height}], pages, ms }（需 Electron）
  *   looksGarbled(md)          文本层质量判据（乱码 → 调用方降级到逐页识图）
  *
@@ -22,6 +26,8 @@
 
 const fs = require("fs");
 const path = require("path");
+const zlib = require("zlib");
+const crypto = require("crypto");
 const { pathToFileURL } = require("url");
 const I18n = require("./renderer/i18n.js");
 
@@ -182,34 +188,47 @@ function pdfErrorOf(err) {
 }
 
 /* ── 文本层 → Markdown ───────────────────────────────────────────────────── */
-/** 一页 textContent 的条目 → 重建行。
+/** 一页 textContent 的条目 → 重建行，返回行对象 [{ text, y }]。
     换行判据用「x 回退」（下一个字串跳回左边 = 新的一行）而不是 y 跳变：数学论文的
     上下标、分式分数线会让相邻条目的 y 抖动，按 y 切会把一个公式拆成一行一个符号。
-    x 回退 + 字距补空格能保住正文段落，同时让公式尽量待在同一行。 */
+    x 回退 + 字距补空格能保住正文段落，同时让公式尽量待在同一行。
+    y 是这一行第一个条目的基线（PDF 用户空间，向上为正）：同页的位图要按 y 插到
+    「它上下相邻的两行」之间，所以行必须带着 y 一起返回，不能拼成一整串丢掉位置。 */
 function pageItemsToText(items) {
   const lines = [];
   let line = "";
+  let lineY = null;
   let lastEndX = null;
   const flush = () => {
     const s = line.replace(/[ \t]+$/g, "");
-    if (s.trim()) lines.push(s);
+    if (s.trim()) lines.push({ text: s, y: lineY });
     line = "";
+    lineY = null;
     lastEndX = null;
   };
   for (const it of items) {
     if (!it || typeof it.str !== "string") continue;
     const tr = Array.isArray(it.transform) ? it.transform : null;
     const x = tr ? Number(tr[4]) : null;
+    const y = tr ? Number(tr[5]) : null;
     const h = Math.abs(it.height || (tr && tr[3]) || 10) || 10;
     if (line && x != null && lastEndX != null) {
       if (x < lastEndX - h * 0.5) flush();
       else if (x - lastEndX > h * 0.22 && !/\s$/.test(line)) line += " ";
     }
+    if (lineY == null && Number.isFinite(y)) lineY = y;
     line += it.str;
     if (x != null) lastEndX = x + (Number(it.width) || 0);
   }
   flush();
-  return lines.join("\n");
+  return lines;
+}
+
+/** 行对象 → 整页文本：拼回去照样走 cleanPageText（与旧口径逐字节一致）。 */
+function pageLinesToText(lines) {
+  return cleanPageText(
+    (Array.isArray(lines) ? lines : []).map((l) => (typeof l === "string" ? l : (l && l.text) || "")).join("\n"),
+  );
 }
 
 /** 页码 / 页眉行的粗清理：连续空行折叠，行尾空白去掉 */
@@ -222,6 +241,16 @@ function cleanPageText(text) {
     .join("\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
+}
+
+/** 单行清理：与 cleanPageText 同一口径（行内没有行边界，不碰空行折叠） */
+function cleanLineText(text) {
+  return String(text == null ? "" : text)
+    .replace(/\r\n?/g, "\n")
+    .replace(/\u00a0/g, " ")
+    .split("\n")
+    .map((l) => l.replace(/[ \t]+/g, " ").trim())
+    .join("\n");
 }
 
 /* 公式线索统计（只用于「公式多 → 建议识图」的提示，不做 LaTeX 还原） */
@@ -297,6 +326,476 @@ function looksGarbled(md) {
   return { garbled, reason, lettersRatio, puaRatio, commonHits };
 }
 
+/* ── 图元（页面里的图片）无损抽取 ─────────────────────────────────────────
+   为什么自己做：页面渲染要走 Electron 隐藏窗（renderPages），而主进程解析路径
+   连 DOM 都没有。图片在 pdf.js 里本来就是「已解码的 RGBA 位图」，所以只需要
+   ① 从算子表里认出 paintImageXObject / Repeat / InlineImage，
+   ② 顺着 save/restore/cm 的 CTM 算出它在页面上的落点，
+   ③ 用内置 zlib 拼一个最小 PNG（IHDR/IDAT/IEND + CRC32）。
+   全程不重采样、不做有损压缩，也不引入新依赖；不写盘，只在返回值里回 base64。 */
+
+/* 装饰过滤：小图标（项目符号、分隔线）与整页铺底的浅色水印不该算图元 */
+const FIG_MIN_EDGE = 48;              /* 显示边长下限（pt，scale=1 时 1pt≈1px） */
+const FIG_MIN_AREA_RATIO = 0.003;     /* 面积下限：页面面积的 0.3% */
+const FIG_MAX_PER_PAGE = 20;
+const FIG_MAX_ONE_BYTES = 8 * 1024 * 1024;
+const FIG_MAX_TOTAL = 200;
+const FIG_MAX_TOTAL_BYTES = 40 * 1024 * 1024;
+const FIG_OBJ_TIMEOUT_MS = 5000;
+
+/* ── 占位符：位图按 y 插回正文 + 纯矢量页兜底 ─────────────────────────────
+   markdown 里只留锚点，真正出图交给调用方：
+     ![图 p3-1]({{FIG:p3-1.png}})   —— 正文中按 y 落位的位图（base64 在 figures[] 里）
+     ![第 4 页图表]({{PAGE:4}})      —— 这一页是纯矢量图形（matplotlib / TikZ / 表格线
+                                        画出来的图），没有位图可抽，只能整页用 pdf:render
+                                        出一张图；页码同时记进 figurePages[]
+   坐标全是 PDF 用户空间（y 向上）：行 y = 基线，图元 y = 底边，两边可直接比。 */
+const FIG_PAGE_MIN_PATHS = 4;         /* 至少这么多条路径：零星装饰线不算图表 */
+const FIG_PAGE_MIN_RATIO = 0.05;      /* 矢量覆盖面积 ≥ 页面积 5% 才算显著图形 */
+const FIG_PAGE_BITMAP_RATIO = 0.05;   /* 有这种量级的位图 = 这页不是「纯矢量图表」 */
+const FIG_FORM_MAX_RATIO = 0.6;       /* 整页 form 包裹（导出器的版面包装）不是图形 */
+
+/** 一条图元占位符 */
+function figureMarkdown(f) {
+  if (f.kind === "page") return "![第 " + f.page + " 页图表]({{PAGE:" + f.page + "}})";
+  return "![图 " + f.name + "]({{FIG:" + f.name + ".png}})";
+}
+
+/** 行对象 + 图元 → 一页 markdown：图元落到「它上下相邻的两行」之间。
+    行与图元都在 PDF 用户空间（y 向上），y 从大到小就是自上而下；底边低于某行基线的
+    图元先让上面那些行出去。排在所有行下方（或没有 y）的图元收在页末。 */
+function assemblePageWithFigures(lines, figs) {
+  const rows = [];
+  for (const l of Array.isArray(lines) ? lines : []) {
+    const s = cleanLineText(typeof l === "string" ? l : (l && l.text) || "");
+    if (!s.trim()) continue;
+    rows.push({ text: s, y: l && typeof l === "object" && Number.isFinite(l.y) ? l.y : null });
+  }
+  const images = (figs || [])
+    .filter((f) => f.kind === "image" && Number.isFinite(f.y))
+    .sort((a, b) => b.y - a.y);
+  const tail = (figs || []).filter((f) => f.kind !== "image" || !Number.isFinite(f.y));
+  const out = [];
+  let i = 0;
+  for (const row of rows) {
+    while (row.y != null && i < images.length && images[i].y > row.y) out.push(figureMarkdown(images[i++]));
+    out.push(row.text);
+  }
+  while (i < images.length) out.push(figureMarkdown(images[i++]));
+  for (const f of tail) out.push(figureMarkdown(f));
+  return out.join("\n").trim();
+}
+
+/** 一页的图元计划：位图按 y 插进正文；「显著矢量 + 无位图」加页末整页图表占位。
+    vector 来自 extractPageFigures 的顺带统计（paths / vectorRatio / bitmapRatio）。 */
+function pageFigurePlan(pageNo, bitmapFigures, vector) {
+  const items = (Array.isArray(bitmapFigures) ? bitmapFigures : []).map((f) => ({
+    kind: "image",
+    name: String(f.name || "").replace(/\.png$/i, ""),
+    y: Number(f.yBottom),
+  }));
+  const v = vector || {};
+  const paths = Number(v.paths) || 0;
+  const vectorRatio = Number(v.vectorRatio) || 0;
+  const bitmapRatio = Number(v.bitmapRatio) || 0;
+  const figurePage =
+    paths >= FIG_PAGE_MIN_PATHS && vectorRatio >= FIG_PAGE_MIN_RATIO && bitmapRatio < FIG_PAGE_BITMAP_RATIO;
+  if (figurePage) items.push({ kind: "page", page: pageNo });
+  return { items, figurePage };
+}
+
+/* ── 最小 PNG 编码器（纯 RGBA → PNG，无重采样 / 无有损）─────────────────── */
+const PNG_SIG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+let _crcTable = null;
+function crcTable() {
+  if (_crcTable) return _crcTable;
+  const t = new Int32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    t[n] = c;
+  }
+  _crcTable = t;
+  return t;
+}
+function crc32Of(buffers) {
+  const t = crcTable();
+  let c = -1;
+  for (const b of buffers) {
+    for (let i = 0; i < b.length; i++) c = t[(c ^ b[i]) & 0xff] ^ (c >>> 8);
+  }
+  return (c ^ -1) >>> 0;
+}
+function pngChunk(type, data) {
+  const head = Buffer.alloc(8);
+  head.writeUInt32BE(data.length, 0);
+  head.write(type, 4, "latin1");
+  const crc = Buffer.alloc(4);
+  crc.writeUInt32BE(crc32Of([head.subarray(4, 8), data]), 0);
+  return Buffer.concat([head, data, crc]);
+}
+/** RGBA 位图 → PNG Buffer（filter 全 None，deflate 无损，逐字节还原源像素） */
+function encodePngRgba(rgba, width, height) {
+  const w = Math.floor(Number(width) || 0);
+  const h = Math.floor(Number(height) || 0);
+  if (!(w > 0 && h > 0)) throw new Error("PNG 尺寸非法");
+  const stride = w * 4;
+  const need = stride * h;
+  if (!rgba || rgba.length < need) throw new Error("PNG 像素数据不足");
+  const src = Buffer.from(rgba.buffer, rgba.byteOffset, rgba.byteLength);
+  const raw = Buffer.allocUnsafe(need + h);
+  for (let y = 0; y < h; y++) {
+    const dst = y * (stride + 1);
+    raw[dst] = 0; /* 行滤镜类型 0（None）：不预测，像素就是源字节 */
+    src.copy(raw, dst + 1, y * stride, y * stride + stride);
+  }
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(w, 0);
+  ihdr.writeUInt32BE(h, 4);
+  ihdr[8] = 8; /* bit depth */
+  ihdr[9] = 6; /* color type 6 = truecolour + alpha */
+  ihdr[10] = 0; /* compression: deflate */
+  ihdr[11] = 0; /* filter method 0 */
+  ihdr[12] = 0; /* interlace 0 */
+  return Buffer.concat([
+    PNG_SIG,
+    pngChunk("IHDR", ihdr),
+    pngChunk("IDAT", zlib.deflateSync(raw)),
+    pngChunk("IEND", Buffer.alloc(0)),
+  ]);
+}
+
+/* ── 图形状态（CTM）──────────────────────────────────────────────────────── */
+/** pdf.js 的算子参数（minMax / Matrix / BBox）过了结构化克隆后多是 Float32Array，
+    偶尔仍是普通数组 —— 只认「能按下标读的定长数值序列」，别用 Array.isArray 卡死。 */
+function isNumArray(v) {
+  return !!v && (Array.isArray(v) || ArrayBuffer.isView(v)) && typeof v.length === "number";
+}
+/** 2×3 行向量矩阵相乘（与 pdf.js Util.transform 同口径：m 先作用，n 后作用） */
+function matMul(m, n) {
+  return [
+    m[0] * n[0] + m[1] * n[2],
+    m[0] * n[1] + m[1] * n[3],
+    m[2] * n[0] + m[3] * n[2],
+    m[2] * n[1] + m[3] * n[3],
+    m[4] * n[0] + m[5] * n[2] + n[4],
+    m[4] * n[1] + m[5] * n[3] + n[5],
+  ];
+}
+/** 图片始终画在当前用户空间的单位正方形里（pdf.js 内部先 scale(1/w, -1/h)） */
+function unitSquareBBox(m) {
+  const xs = [];
+  const ys = [];
+  for (const [u, v] of [
+    [0, 0],
+    [1, 0],
+    [0, 1],
+    [1, 1],
+  ]) {
+    xs.push(m[0] * u + m[2] * v + m[4]);
+    ys.push(m[1] * u + m[3] * v + m[5]);
+  }
+  return {
+    x0: Math.min(...xs),
+    y0: Math.min(...ys),
+    x1: Math.max(...xs),
+    y1: Math.max(...ys),
+  };
+}
+
+/** 用户空间矩形（[x0,y0,x1,y1]）在当前 CTM 下的页面空间包围盒面积 ÷ 页面积。
+    用于「矢量覆盖了多少版面」：路径是按用户空间坐标给的，得先过 CTM。 */
+function rectAreaRatio(m, box, pageArea) {
+  const area = Number(pageArea) || 0;
+  if (!(area > 0) || !m || !isNumArray(box) || box.length !== 4) return 0;
+  let x0 = Infinity;
+  let y0 = Infinity;
+  let x1 = -Infinity;
+  let y1 = -Infinity;
+  for (const [u, v] of [
+    [box[0], box[1]],
+    [box[2], box[1]],
+    [box[2], box[3]],
+    [box[0], box[3]],
+  ]) {
+    const x = m[0] * u + m[2] * v + m[4];
+    const y = m[1] * u + m[3] * v + m[5];
+    if (x < x0) x0 = x;
+    if (x > x1) x1 = x;
+    if (y < y0) y0 = y;
+    if (y > y1) y1 = y;
+  }
+  return (Math.max(0, x1 - x0) * Math.max(0, y1 - y0)) / area;
+}
+
+/* ── 已解码位图 → RGBA ───────────────────────────────────────────────────── */
+/** pdf.js ImageKind：1=GRAYSCALE_1BPP · 2=RGB_24BPP · 3=RGBA_32BPP
+    只认「拿到字节」的那种：ImageBitmap（需要 canvas）一律当没有。 */
+function toRgbaPixels(img) {
+  if (!img) return null;
+  const w = Math.floor(Number(img.width) || 0);
+  const h = Math.floor(Number(img.height) || 0);
+  if (!(w > 0 && h > 0)) return null;
+  const data = img.data;
+  if (!data || typeof data.length !== "number" || !data.buffer) return null;
+  const px = w * h;
+  const kind = Number(img.kind) || 0;
+  if (data.length >= px * 4 && (kind === 3 || kind === 0 || data.length === px * 4)) {
+    return { width: w, height: h, data: data.length === px * 4 ? data : data.subarray(0, px * 4) };
+  }
+  if (data.length >= px * 3 && (kind === 2 || data.length === px * 3)) {
+    const out = new Uint8ClampedArray(px * 4);
+    for (let i = 0, s = 0, d = 0; i < px; i++, s += 3, d += 4) {
+      out[d] = data[s];
+      out[d + 1] = data[s + 1];
+      out[d + 2] = data[s + 2];
+      out[d + 3] = 255;
+    }
+    return { width: w, height: h, data: out };
+  }
+  if (kind === 1) {
+    const stride = (w + 7) >> 3;
+    if (data.length < stride * h) return null;
+    const out = new Uint8ClampedArray(px * 4);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const bit = (data[y * stride + (x >> 3)] >> (7 - (x & 7))) & 1;
+        const v = bit ? 0 : 255;
+        const d = (y * w + x) * 4;
+        out[d] = v;
+        out[d + 1] = v;
+        out[d + 2] = v;
+        out[d + 3] = 255;
+      }
+    }
+    return { width: w, height: h, data: out };
+  }
+  return null;
+}
+
+/** 抽样判「纯白 / 全透明」（全量扫 40MP 图太贵，4096 个点足够定性） */
+function pixelStat(px) {
+  const data = px.data;
+  const total = px.width * px.height;
+  const step = Math.max(1, Math.floor(total / 4096));
+  let white = true;
+  let transparent = true;
+  for (let i = 0; i < total; i += step) {
+    const o = i * 4;
+    const a = data[o + 3];
+    if (a >= 8) transparent = false;
+    if (a < 250 || data[o] < 250 || data[o + 1] < 250 || data[o + 2] < 250) white = false;
+    if (!white && !transparent) break;
+  }
+  return { white, transparent };
+}
+
+/** 像素哈希（含尺寸）：同一枚水印 logo 每页重复只留第一次 */
+function pixelHash(px) {
+  const h = crypto.createHash("sha1");
+  h.update(px.width + "x" + px.height + ":");
+  h.update(Buffer.from(px.data.buffer, px.data.byteOffset, Math.min(px.data.byteLength, px.width * px.height * 4)));
+  return h.digest("hex");
+}
+
+/** page.objs.get 的回调式取值（未就绪时不能同步 get，会抛） */
+function objectGet(objs, name, timeoutMs) {
+  return new Promise((resolve) => {
+    if (!objs || typeof objs.get !== "function") return resolve(null);
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      resolve(null);
+    }, timeoutMs || FIG_OBJ_TIMEOUT_MS);
+    if (timer.unref) timer.unref();
+    const done = (v) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(v || null);
+    };
+    try {
+      objs.get(name, done);
+    } catch (_) {
+      done(null);
+    }
+  });
+}
+
+const round2 = (v) => Math.round(Number(v) * 100) / 100;
+
+/**
+ * extractPageFigures(page, budget) →
+ *   { figures:[{name,page,x,y,w,h,width,height,png(base64)}], truncated, dropped }
+ * x/y/w/h = 页面坐标系（原点左上、y 自上而下、单位 pt）；width/height = 位图原始像素。
+ * budget 为整份 PDF 共享的 { count, bytes, hashes:Set, ... }，缺省即单页独立预算。
+ */
+async function extractPageFigures(page, budget) {
+  const out = { figures: [], truncated: false, dropped: 0, vector: { paths: 0, vectorRatio: 0, bitmapRatio: 0 } };
+  const b = budget || { count: 0, bytes: 0, hashes: new Set() };
+  if (!b.hashes) b.hashes = new Set();
+  /* max：整份文档最多出多少张图（调用方给的 figures/maxFigures 选项能压下来） */
+  const maxTotal = Number(b.max) > 0 ? Math.min(Number(b.max), FIG_MAX_TOTAL) : FIG_MAX_TOTAL;
+  if (!page || typeof page.getOperatorList !== "function") return out;
+  let pdfjs;
+  try {
+    pdfjs = await loadPdfjs();
+  } catch (_) {
+    return out;
+  }
+  const OPS = (pdfjs && pdfjs.OPS) || {};
+  const view = isNumArray(page.view) && page.view.length === 4 ? page.view : [0, 0, 612, 792];
+  const vx0 = Number(view[0]) || 0;
+  const vy1 = Number(view[3]) || 0;
+  const pageW = Math.max(1, (Number(view[2]) || 612) - vx0);
+  const pageH = Math.max(1, vy1 - (Number(view[1]) || 0));
+  const pageArea = pageW * pageH;
+  const pageNo = Number(page.pageNumber) || 0;
+  let opList;
+  try {
+    opList = await page.getOperatorList();
+  } catch (_) {
+    return out;
+  }
+  const fnArray = opList.fnArray || [];
+  const argsArray = opList.argsArray || [];
+  let ctm = [1, 0, 0, 1, 0, 0];
+  const stack = [];
+  for (let i = 0; i < fnArray.length; i++) {
+    const op = fnArray[i];
+    const a = argsArray[i];
+    if (op === OPS.save) {
+      stack.push(ctm);
+      ctm = ctm.slice();
+      continue;
+    }
+    if (op === OPS.restore) {
+      if (stack.length) ctm = stack.pop();
+      continue;
+    }
+    if (op === OPS.transform) {
+      if (a && a.length >= 6) ctm = matMul(ctm, a);
+      continue;
+    }
+    /* 顺带统计矢量覆盖面积：matplotlib / TikZ 这类图表是「路径画出来的」，没有位图
+       可抽，只能靠这堆面积判断「这一页有显著图形」，再由调用方整页出图 */
+    if (op === OPS.constructPath) {
+      const minMax = isNumArray(a && a[2]) && a[2].length === 4 ? Array.from(a[2]) : null;
+      if (minMax) {
+        out.vector.paths++;
+        out.vector.vectorRatio += rectAreaRatio(ctm, minMax, pageArea);
+      }
+      continue;
+    }
+    /* 表单 XObject：没有自己的坐标系变换，只是把它的 Matrix 接在 CTM 后面 */
+    if (op === OPS.paintFormXObjectBegin) {
+      if (a && isNumArray(a[0]) && a[0].length === 6) ctm = matMul(ctm, a[0]);
+      const bbox = a && isNumArray(a[1]) && a[1].length === 4 ? a[1] : null;
+      if (bbox) {
+        const ratio = rectAreaRatio(ctm, bbox, pageArea);
+        /* 有些导出器把整页内容包进一只 Form XObject：那是版面包装，不是图形 */
+        if (ratio <= FIG_FORM_MAX_RATIO) out.vector.vectorRatio += ratio;
+      }
+      stack.push(ctm);
+      ctm = ctm.slice();
+      continue;
+    }
+    if (op === OPS.paintFormXObjectEnd) {
+      if (stack.length) ctm = stack.pop();
+      continue;
+    }
+    let objId = null;
+    let inline = null;
+    if (op === OPS.paintImageXObject || op === OPS.paintImageXObjectRepeat) {
+      objId = a && typeof a[0] === "string" ? a[0] : null;
+    } else if (op === OPS.paintInlineImageXObject) {
+      inline = a && a[0];
+    } else {
+      continue;
+    }
+    if (!objId && !inline) continue;
+    if (b.count >= maxTotal || out.figures.length >= FIG_MAX_PER_PAGE) {
+      out.truncated = true;
+      break;
+    }
+    const box = unitSquareBBox(ctm);
+    const fw = box.x1 - box.x0;
+    const fh = box.y1 - box.y0;
+    if (!(fw > 0 && fh > 0)) continue;
+    /* 这一页最大的位图占多大（判「这页有没有位图」，与下面的装饰过滤无关） */
+    const boxRatio = (fw * fh) / pageArea;
+    if (boxRatio > out.vector.bitmapRatio) out.vector.bitmapRatio = boxRatio;
+    if (fw < FIG_MIN_EDGE || fh < FIG_MIN_EDGE) {
+      out.dropped++;
+      continue;
+    }
+    if (fw * fh < pageW * pageH * FIG_MIN_AREA_RATIO) {
+      out.dropped++;
+      continue;
+    }
+    let raw = null;
+    try {
+      if (inline) raw = toRgbaPixels(inline);
+      else {
+        /* g_ 前缀的是跨页共享对象（commonObjs），其余在本页 objs 里 */
+        const store = objId.startsWith("g_") ? page.commonObjs : page.objs;
+        raw = toRgbaPixels(await objectGet(store, objId, FIG_OBJ_TIMEOUT_MS));
+      }
+    } catch (_) {
+      raw = null;
+    }
+    if (!raw) {
+      out.dropped++;
+      continue;
+    }
+    const stat = pixelStat(raw);
+    if (stat.white || stat.transparent) {
+      out.dropped++;
+      continue;
+    }
+    const hash = pixelHash(raw);
+    if (b.hashes.has(hash)) {
+      out.dropped++;
+      continue;
+    }
+    let png;
+    try {
+      png = encodePngRgba(raw.data, raw.width, raw.height);
+    } catch (_) {
+      out.dropped++;
+      continue;
+    }
+    if (png.length > FIG_MAX_ONE_BYTES) {
+      out.truncated = true;
+      out.dropped++;
+      continue;
+    }
+    if (b.bytes + png.length > FIG_MAX_TOTAL_BYTES || b.count >= maxTotal) {
+      out.truncated = true;
+      break;
+    }
+    b.hashes.add(hash);
+    b.count++;
+    b.bytes += png.length;
+    out.figures.push({
+      name: "p" + pageNo + "-" + (out.figures.length + 1) + ".png",
+      page: pageNo,
+      x: round2(box.x0 - vx0),
+      y: round2(vy1 - box.y1),
+      w: round2(fw),
+      h: round2(fh),
+      /* 底边（PDF 用户空间，y 向上）：占位符按它插到相邻两行之间 */
+      yBottom: round2(box.y0),
+      width: raw.width,
+      height: raw.height,
+      png: png.toString("base64"),
+    });
+  }
+  if (out.truncated && b) b.truncated = true;
+  return out;
+}
+
 /* ── 对外：探针 ─────────────────────────────────────────────────────────── */
 async function probeInfo(arg, opts) {
   const loaded = loadBuffer(arg);
@@ -358,20 +857,50 @@ async function parsePdf(arg, opts) {
     const total = Math.min(Number(doc.numPages) || 0, Number(o.maxPages) || PDF_MAX_PAGES);
     const pageTexts = [];
     let emptyPages = 0;
+    /* 图元抽取默认开；o.figures === false 可整体关掉（只需要文本时省掉算子表扫描，
+       关掉后 markdown 与本改动之前逐字节一致） */
+    const wantFigures = o.figures !== false && o.figures !== 0 && o.figures !== "0";
+    const figBudget = { count: 0, bytes: 0, hashes: new Set(), truncated: false };
+    if (Number(o.maxFigures) > 0) figBudget.max = Number(o.maxFigures);
+    const figures = [];
+    let figuresTruncated = false;
+    /* 「有显著矢量图形但无位图」的页：markdown 里是 {{PAGE:n}} 占位，由调用方单页出图 */
+    const figurePages = [];
     for (let n = 1; n <= total; n++) {
       let text = "";
+      let lines = [];
+      let page = null;
       try {
-        const page = await doc.getPage(n);
+        page = await doc.getPage(n);
         const tc = await page.getTextContent({ includeMarkedContent: false, disableNormalization: false });
-        text = cleanPageText(pageItemsToText(tc.items || []));
-        try {
-          page.cleanup();
-        } catch (_) {}
+        lines = pageItemsToText(tc.items || []);
+        text = pageLinesToText(lines);
       } catch (err) {
         warnings.push(I18n.t("第 {n} 页抽取失败：{e}").replace("{n}", String(n)).replace("{e}", String((err && err.message) || err)));
       }
       if (!text) emptyPages++;
-      pageTexts.push(text);
+      let pageText = text;
+      if (page && wantFigures) {
+        try {
+          /* 算子表要在 cleanup 之前读：cleanup 会把这一页的算子表与图像缓存丢掉 */
+          const fe = await extractPageFigures(page, figBudget);
+          if (fe.figures.length) figures.push(...fe.figures);
+          if (fe.truncated) figuresTruncated = true;
+          const plan = pageFigurePlan(n, fe.figures, fe.vector);
+          if (plan.items.length) {
+            pageText = assemblePageWithFigures(lines, plan.items);
+            if (plan.figurePage) figurePages.push(n);
+          }
+        } catch (err) {
+          warnings.push(
+            I18n.t("第 {n} 页图元抽取失败：{e}").replace("{n}", String(n)).replace("{e}", String((err && err.message) || err)),
+          );
+        }
+      }
+      pageTexts.push(pageText);
+      try {
+        if (page) page.cleanup();
+      } catch (_) {}
     }
     const markdown = pageTexts.filter((t) => t).join("\n\n---\n\n").trim();
     const formulas = formulaSamples(pageTexts);
@@ -390,6 +919,12 @@ async function parsePdf(arg, opts) {
           .replace("{n}", String(formulas.length)),
       );
     }
+    if (figuresTruncated) {
+      warnings.push(I18n.t("页面图元过多，已按上限截断（单页 20 张、单张 8MB、整份 200 张 / 40MB）"));
+      if (figBudget.max && figBudget.max < FIG_MAX_TOTAL) {
+        warnings.push(I18n.t("已按 maxFigures 限制为 {n} 张").replace("{n}", String(figBudget.max)));
+      }
+    }
     return {
       ok: true,
       markdown,
@@ -397,6 +932,9 @@ async function parsePdf(arg, opts) {
       pagesWithText: pageTexts.length - emptyPages,
       emptyPages,
       formulas,
+      figures,
+      figuresTruncated,
+      figurePages,
       quality,
       warning: warnings.length ? warnings.join("；") : "",
       encrypted: false,
@@ -576,6 +1114,8 @@ module.exports = {
   hasPdfHeader,
   probeInfo,
   parsePdf,
+  extractPageFigures,
+  encodePngRgba,
   renderPages,
   looksGarbled,
 };

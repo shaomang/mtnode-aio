@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;" />
+    <title>助手副驾 · 独立进程</title>
+    <link rel="stylesheet" href="css/assist-isolated.css" />
+  </head>
+  <!-- 助手侧三股流（会话流 / 活动流 / 文件树）的**隔离渲染进程**页面（任务 8/8）。
+       它由 main 进程的 assist-isolation.js 起（assist.isolation = on|window），
+       数据全部由主进程转发（patch / dsh 事件 / 一层目录），页面自己不读盘、不碰 node。
+       与画布主窗旧的渲染路径并存：开关 off = 完全走主窗内嵌那套，这个页面根本不存在。 -->
+  <body>
+    <div class="iso-shell">
+      <header class="iso-head">
+        <span class="iso-dot" id="isoDot" title="隔离进程在线"></span>
+        <b class="iso-title">助手副驾</b>
+        <span class="iso-meta" id="isoMeta"></span>
+        <span class="iso-head-acts">
+          <button type="button" class="iso-btn" id="isoFollow" title="新条目进来就滚到底">跟随最新</button>
+          <button type="button" class="iso-btn" id="isoClear" title="清空眼前这条会话的活动流（库里一并清）">清空活动</button>
+        </span>
+      </header>
+
+      <nav class="iso-tabs" id="isoTabs">
+        <button type="button" class="iso-tab on" data-pane="stream" title="会话流：当前会话这一轮说了什么、调了什么工具">会话流</button>
+        <button type="button" class="iso-tab" data-pane="activity" title="活动流：浏览器动作 / 命令 / 文件读写摘要">活动流</button>
+        <button type="button" class="iso-tab" data-pane="tree" title="文件树：画布工作目录（懒加载，只读一层）">文件树</button>
+      </nav>
+
+      <section class="iso-pane" id="paneStream">
+        <div class="iso-split">
+          <div class="iso-sessions" id="isoSessions"></div>
+          <div class="iso-stream" id="isoStream">
+            <div class="iso-empty" id="isoStreamEmpty">还没有选中会话</div>
+          </div>
+        </div>
+      </section>
+
+      <section class="iso-pane" id="paneActivity" hidden>
+        <div class="iso-filter">
+          <input type="text" id="isoFilter" placeholder="筛活动…" autocomplete="off" />
+          <label class="iso-check" title="不勾 = 连其它会话的活动一起看"><input type="checkbox" id="isoOnlyCurrent" checked /> 只看当前会话</label>
+        </div>
+        <div class="iso-list" id="isoActivity"></div>
+      </section>
+
+      <section class="iso-pane" id="paneTree" hidden>
+        <div class="iso-treehead">
+          <input type="text" id="isoRoot" readonly title="当前工作目录（跟随画布工作目录）" />
+          <button type="button" class="iso-btn" id="isoTreeRefresh" title="重读根目录">↻</button>
+        </div>
+        <div class="iso-tree" id="isoTree"></div>
+      </section>
+    </div>
+    <script src="app-assist-state.js"></script>
+    <script src="app-assist-isolated.js"></script>
+  </body>
+</html>
