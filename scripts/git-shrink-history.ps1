@@ -93,6 +93,7 @@ function DirBytes([string]$p) {
 }
 
 function GitLines([string[]]$a) {
+  $ErrorActionPreference = 'Continue'
   $out = & git @a 2>$null
   if ($LASTEXITCODE -ne 0) { return @() }
   return @($out | Where-Object { $null -ne $_ -and ([string]$_).Trim() -ne '' } |
@@ -100,6 +101,7 @@ function GitLines([string[]]$a) {
 }
 
 function GitQuiet([string[]]$a) {
+  $ErrorActionPreference = 'Continue'
   & git @a 2>&1 | Out-Null
   return $LASTEXITCODE
 }
@@ -233,11 +235,11 @@ if (-not $script:pyExe) {
 }
 Say ('python        : ' + $script:pyExe + ' ' + $pyVer)
 
-$script:GitDir = (GitLines @('rev-parse', '--absolute-git-dir'))[0]
+$script:GitDir = @(GitLines @('rev-parse', '--absolute-git-dir'))[0]
 if (-not $script:GitDir) { Fail 'could not resolve the git directory' }
 
-$headBefore = (GitLines @('rev-parse', 'HEAD'))[0]
-$branchBefore = (GitLines @('rev-parse', '--abbrev-ref', 'HEAD'))[0]
+$headBefore = @(GitLines @('rev-parse', 'HEAD'))[0]
+$branchBefore = @(GitLines @('rev-parse', '--abbrev-ref', 'HEAD'))[0]
 $refsBefore = @(GitLines @('for-each-ref', '--format=%(refname)'))
 $tagsBefore = @(GitLines @('tag', '--list'))
 Say ('HEAD          : ' + $branchBefore + ' ' + $headBefore.Substring(0, 10))
@@ -254,7 +256,9 @@ if (-not $BackupPath) {
 }
 $BackupPath = [IO.Path]::GetFullPath($BackupPath)
 
-if ($BackupPath.TrimEnd('\', '/').StartsWith($RepoRoot.TrimEnd('\', '/'), [StringComparison]::OrdinalIgnoreCase)) {
+if ($BackupPath.TrimEnd('\', '/') -eq $RepoRoot.TrimEnd('\', '/') -or
+    $BackupPath.TrimEnd('\', '/').StartsWith($RepoRoot.TrimEnd('\', '/') + '\', [StringComparison]::OrdinalIgnoreCase) -or
+    $BackupPath.TrimEnd('\', '/').StartsWith($RepoRoot.TrimEnd('\', '/') + '/', [StringComparison]::OrdinalIgnoreCase)) {
   Fail ('the backup must live outside the repo: ' + $BackupPath)
 }
 
@@ -266,7 +270,7 @@ if ($RecreateBackup -and (Test-Path -LiteralPath $BackupPath)) {
 if (-not (Test-Path -LiteralPath $BackupPath)) {
   Say ('no backup yet, creating a mirror clone: ' + $BackupPath)
   Say '  (this is the only safety net for the rewrite; it takes as long as copying .git)'
-  & git clone --mirror --no-hardlinks --quiet $RepoRoot $BackupPath
+  & { $ErrorActionPreference = 'Continue'; & git clone --mirror --no-hardlinks --quiet $RepoRoot $BackupPath }
   if ($LASTEXITCODE -ne 0) { $BackupPath = ''; Fail 'mirror clone failed' }
   $script:BackupMade = $true
 }
@@ -469,7 +473,7 @@ Say 'git reflog expire --expire=now --all'
 if ((GitQuiet @('reflog', 'expire', '--expire=now', '--all')) -ne 0) { Fail 'reflog expire failed' }
 
 Say 'git gc --prune=now'
-& git gc --prune=now 2>&1 | ForEach-Object { Say ('  ' + [string]$_) }
+& { $ErrorActionPreference = 'Continue'; & git gc --prune=now 2>&1 | ForEach-Object { Say ('  ' + [string]$_) } }
 if ($LASTEXITCODE -ne 0) { Fail 'git gc failed' }
 
 # ---------------------------------------------------------------- stage 6
@@ -515,3 +519,4 @@ Say 'Delete the backup only after the force push has been verified.'
 
 Pop-Location
 exit 0
+
