@@ -1,0 +1,866 @@
+{
+  "format": "mtnode-agent-skills-index-v1",
+  "updatedAt": "2026-11-10T16:49:35.269Z",
+  "libraryRoot": "mtnode-agent-skills",
+  "usage": "MTNode 内置 Agent 技能库。默认只注入本索引；任务匹配时再读取完整 SKILL.md（skill 工具或 read）。",
+  "categories": [
+    {
+      "id": "app",
+      "title": "应用开发",
+      "skills": [
+        {
+          "id": "impeccable",
+          "name": "impeccable",
+          "title": "Impeccable（前端设计规范）",
+          "description": "前端界面设计 / 改版 / 评审：视觉层级、排版、动效、可访问性与设计系统。",
+          "path": "app/impeccable/SKILL.md",
+          "version": "4.4.0",
+          "menu": "user"
+        },
+        {
+          "id": "app-dev",
+          "name": "mtnode-app-dev",
+          "title": "MTNode 应用开发",
+          "description": "开发 MTNode「应用」（应用中心 / 插件 kind=window）：静态页契约、两套宿主桥、能力位、数据落盘与常见坑。",
+          "path": "app/app-dev/SKILL.md",
+          "version": ""
+        },
+        {
+          "id": "app-merge",
+          "name": "mtnode-app-merge",
+          "title": "MTNode 应用版本合并",
+          "description": "把云端「对方那一版」按用户逐项确认合进本机应用目录的合并会话流程（不改版本号、不自动上架）。",
+          "path": "app/app-merge/SKILL.md",
+          "version": ""
+        },
+        {
+          "id": "story2video-workflow",
+          "name": "story2video-workflow",
+          "title": "story2video 工作流搭建",
+          "description": "给 story2video 应用的八步（创意 / 剧本 / 分镜 / 素材图 / 分镜图 / 视频 / 成片 / 导出）在画布上建节点层与链：层与标题口径、场景图零参考图、参考图怎么接（@ + 节点名）、画布提示词一律英文、产物写哪、回执按什么契约回。真源是应用仓库的 AGENTS.md。",
+          "path": "app/story2video-workflow/SKILL.md",
+          "version": ""
+        }
+      ]
+    },
+    {
+      "id": "film",
+      "title": "AI 影视创作",
+      "skills": [
+        {
+          "id": "film-asset-character",
+          "name": "film-asset-character",
+          "title": "角色资产与一致性锚点",
+          "description": "把剧本里的一个人做成可复用的角色资产：填满设定卡字段、出三视图与表情板、建 10–20 张参考图集、绑定 Soul ID／参考图权重／种子等一致性锚点，并用 10/10 压力测试过关。建角色、定装、跨镜头保脸保人设时用。",
+          "path": "film/asset/film-asset-character/SKILL.md",
+          "version": "1.0.0",
+          "group": "asset",
+          "tags": [
+            "角色设定卡",
+            "三视图",
+            "表情板",
+            "参考图集",
+            "Soul ID",
+            "一致性锚点"
+          ]
+        },
+        {
+          "id": "film-asset-qc",
+          "name": "film-asset-qc",
+          "title": "资产与角色一致性质检",
+          "description": "用资产护照、压力测试矩阵与角色动画 QA 检查点给资产判生死：角色 10/10 才锁，角色/地点/道具逐项打勾，miss 不许平均，返修按 P0–P3 排队。开拍前验收、跨镜头漂移排查、交付前终检时用。",
+          "path": "film/asset/film-asset-qc/SKILL.md",
+          "version": "1.0.0",
+          "group": "asset",
+          "tags": [
+            "资产护照",
+            "压力测试",
+            "一致性质检",
+            "角色动画QA",
+            "返修优先级",
+            "验收门槛"
+          ]
+        },
+        {
+          "id": "film-asset-scene-prop",
+          "name": "film-asset-scene-prop",
+          "title": "场景与道具资产",
+          "description": "把剧本里的空间与物件做成可复用资产：场景出四向视图与反打、写平面布局与光照基调，道具出多视角细节板并建「道具—使用镜头」对照表。要搭景、定空间、锁道具形制，或同一空间多机位时用。",
+          "path": "film/asset/film-asset-scene-prop/SKILL.md",
+          "version": "1.0.0",
+          "group": "asset",
+          "tags": [
+            "场景资产",
+            "四向视图",
+            "平面布局",
+            "光照基调",
+            "道具卡",
+            "使用镜头对照"
+          ]
+        },
+        {
+          "id": "film-asset-style-bible",
+          "name": "film-asset-style-bible",
+          "title": "美术风格圣经",
+          "description": "用一页纸锁死全片美术语言：把 noir／cyberpunk／epic／fantasy／horror／romance／war 拆成色彩、材质、光线、构图、镜头、声音六维参数，定主锚点与禁止清单，并给冲突裁决顺序。开拍前定调与跨部门对齐时用。",
+          "path": "film/asset/film-asset-style-bible/SKILL.md",
+          "version": "1.0.0",
+          "group": "asset",
+          "tags": [
+            "风格圣经",
+            "色彩板",
+            "光线逻辑",
+            "材质",
+            "镜头语法",
+            "禁止清单"
+          ]
+        },
+        {
+          "id": "film-audio-loudness",
+          "name": "film-audio-loudness",
+          "title": "响度与母版：LUFS·真峰值·交付",
+          "description": "按交付平台定响度目标，用 ffmpeg loudnorm 两遍法做线性归一，必要时先上真峰值限幅，编码后再复测真峰值与时长。成片混音收尾、平台退片、声音忽大忽小时用。",
+          "path": "film/audio/film-audio-loudness/SKILL.md",
+          "version": "1.0.0",
+          "group": "audio",
+          "tags": [
+            "响度",
+            "LUFS",
+            "真峰值",
+            "母版",
+            "loudnorm",
+            "交付检查"
+          ]
+        },
+        {
+          "id": "film-audio-sound-design",
+          "name": "film-audio-sound-design",
+          "title": "音效与配乐：选材·卡点·混音",
+          "description": "把分镜翻成可检索的声音需求，按动作、材质、时长与许可选音效，用节拍网格把切点钉到拍上，再按层级铺 BGM 与 SFX 并做闪避。需要配乐选型、找音效、卡点剪辑、混音层级或交付双版本时用。",
+          "path": "film/audio/film-audio-sound-design/SKILL.md",
+          "version": "1.0.0",
+          "group": "audio",
+          "tags": [
+            "音效",
+            "配乐",
+            "BGM",
+            "卡点",
+            "混音",
+            "许可",
+            "Freesound"
+          ]
+        },
+        {
+          "id": "film-audio-voiceover",
+          "name": "film-audio-voiceover",
+          "title": "配音与旁白：选型·表演·对位",
+          "description": "把旁白稿做成可剪辑的配音音轨：按语言、情绪与预算选 TTS 引擎，写可执行的表演指令，逐句核算时间窗并做有上限的语速补偿，最后校验音画与口型同步。需要配音、旁白、角色台词、换声重配时用。",
+          "path": "film/audio/film-audio-voiceover/SKILL.md",
+          "version": "1.0.0",
+          "group": "audio",
+          "tags": [
+            "配音",
+            "旁白",
+            "TTS",
+            "表演指令",
+            "时间对齐",
+            "口型同步"
+          ]
+        },
+        {
+          "id": "film-deliver-platform",
+          "name": "film-deliver-platform",
+          "title": "平台交付规格与多版本导出",
+          "description": "按抖音、视频号、小红书、B站、YouTube 的画幅、时长、码率、封面与字幕策略出片，给一份母版导出多版本的完整参数表与命令。成片要投平台、或被二压糊掉、封面被裁时用。",
+          "path": "film/post/film-deliver-platform/SKILL.md",
+          "version": "1.0.0",
+          "group": "post",
+          "tags": [
+            "交付",
+            "平台规格",
+            "多版本导出",
+            "封面",
+            "字幕",
+            "码率",
+            "安全区"
+          ]
+        },
+        {
+          "id": "film-edit-ffmpeg",
+          "name": "film-edit-ffmpeg",
+          "title": "ffmpeg 剪辑命令工具链",
+          "description": "用本机 ffmpeg 完成裁切、拼接、变速、抽帧、转码、加字幕、加音轨与响度归一，给出可直接照抄的完整参数与 CRF／preset／硬件编码取舍。拿到素材要落地成片，或命令跑出黑帧、花屏、音画不同步时用。",
+          "path": "film/post/film-edit-ffmpeg/SKILL.md",
+          "version": "1.0.0",
+          "group": "post",
+          "tags": [
+            "ffmpeg",
+            "剪辑",
+            "转码",
+            "抽帧",
+            "字幕",
+            "响度",
+            "编码参数"
+          ]
+        },
+        {
+          "id": "film-edit-narrative",
+          "name": "film-edit-narrative",
+          "title": "解说与节奏剪辑",
+          "description": "把长素材做成有钩子的成片：用词级转写驱动粗剪、删停顿与口误，按信息密度排节奏，按镜头功能选转场，写与画面对位的解说。素材很多不知从哪剪、粗剪发拖、转场乱用时用。",
+          "path": "film/post/film-edit-narrative/SKILL.md",
+          "version": "1.0.0",
+          "group": "post",
+          "tags": [
+            "解说",
+            "粗剪",
+            "节奏",
+            "钩子",
+            "转场",
+            "口播",
+            "音画对位"
+          ]
+        },
+        {
+          "id": "film-post-jianying",
+          "name": "film-post-jianying",
+          "title": "剪映草稿交接",
+          "description": "把成片工程导成剪映专业版可继续编辑的草稿：目录结构、draft_content.json 的轨道与片段字段、字幕素材与时间单位，以及交付后人工接手要注意的坑。需要客户或同事在剪映里改字幕、换镜头、调音时用。",
+          "path": "film/post/film-post-jianying/SKILL.md",
+          "version": "1.0.0",
+          "group": "post",
+          "tags": [
+            "剪映",
+            "草稿",
+            "交付",
+            "时间线",
+            "字幕",
+            "多轨",
+            "JSON"
+          ]
+        },
+        {
+          "id": "film-post-qc",
+          "name": "film-post-qc",
+          "title": "成片质检与自动检测",
+          "description": "成片交付前的可勾选体检：黑帧、静帧、爆音削波、字幕错位、响度、尺寸时长、首帧钩子，逐项给自动检测命令与通过阈值，附问题到修法的映射。导出后、上传前用。",
+          "path": "film/post/film-post-qc/SKILL.md",
+          "version": "1.0.0",
+          "group": "post",
+          "tags": [
+            "质检",
+            "黑帧",
+            "静帧",
+            "响度",
+            "字幕",
+            "首帧",
+            "交付验收"
+          ]
+        },
+        {
+          "id": "film-previs-blockout",
+          "name": "film-previs-blockout",
+          "title": "白模预演：分镜到 3D layout",
+          "description": "把分镜编译成可播放的三维白模预演：定坐标与时间、写相机关键帧、选普通/关节后端、渲染 MP4 并用解码器核对时长帧率。需要验证机位与走位、排查空间说不清的镜头、给生成模型三维参照时用。",
+          "path": "film/storyboard/film-previs-blockout/SKILL.md",
+          "version": "1.0.0",
+          "group": "storyboard",
+          "tags": [
+            "白模预演",
+            "previs",
+            "机位关键帧",
+            "走位",
+            "Blender",
+            "渲染核对"
+          ]
+        },
+        {
+          "id": "film-prompt-cinematography",
+          "name": "film-prompt-cinematography",
+          "title": "摄影词表与提示词用法",
+          "description": "把「压迫感、孤独、温柔」这类中文意图翻译成模型认得的英文摄影片段：机位、运镜、焦段、光位、光质、色温、构图、材质、天气九类词表，并给意图对照表与摄影机层写法。",
+          "path": "film/prompt/film-prompt-cinematography/SKILL.md",
+          "version": "1.0.0",
+          "group": "prompt",
+          "tags": [
+            "摄影词表",
+            "运镜",
+            "景别",
+            "光线",
+            "色温",
+            "构图",
+            "材质天气"
+          ]
+        },
+        {
+          "id": "film-prompt-consistency",
+          "name": "film-prompt-consistency",
+          "title": "跨镜头一致性提示词",
+          "description": "让角色、场景、风格在多个镜头与多段续写里不漂：三类锁定策略、omni-reference 与多图参考的角色映射、continuation 续写写法，并给可逐条打勾的一致性检查清单。",
+          "path": "film/prompt/film-prompt-consistency/SKILL.md",
+          "version": "1.0.0",
+          "group": "prompt",
+          "tags": [
+            "一致性",
+            "角色锁定",
+            "参考图",
+            "omni-reference",
+            "续写",
+            "场景复现"
+          ]
+        },
+        {
+          "id": "film-prompt-keyframe-image",
+          "name": "film-prompt-keyframe-image",
+          "title": "关键帧与首帧图像提示词",
+          "description": "写「下一步要拿去做视频」的静态图提示词：分清图像与视频各自管什么、按资产类型选图像模型、排角色卡与首帧构图、留出运动空间，并给出可延伸性检查与交接写法。",
+          "path": "film/prompt/film-prompt-keyframe-image/SKILL.md",
+          "version": "1.0.0",
+          "group": "prompt",
+          "tags": [
+            "关键帧",
+            "首帧",
+            "图像提示词",
+            "角色卡",
+            "构图留白",
+            "资产选型"
+          ]
+        },
+        {
+          "id": "film-prompt-qc",
+          "name": "film-prompt-qc",
+          "title": "出片质检与返修",
+          "description": "片子已经出来但不对时用：把畸变、多指、穿模、身份漂移、口型不符、动作截断等症状归到具体层（素材/首帧、提示词、参数、后期），按最小改动原则返修，并给诊断表与重试停损规则。",
+          "path": "film/prompt/film-prompt-qc/SKILL.md",
+          "version": "1.0.0",
+          "group": "prompt",
+          "tags": [
+            "质检",
+            "返修",
+            "失败模式",
+            "诊断",
+            "重试预算",
+            "交付验收"
+          ]
+        },
+        {
+          "id": "film-prompt-video-models",
+          "name": "film-prompt-video-models",
+          "title": "视频模型提示词骨架",
+          "description": "按 Seedance 2.0/2.5、Kling 3.0、Veo 3.1、Sora、MiniMax H3 等模型的字段结构写可直接粘贴的视频提示词：定规格、选骨架、排时间轴、锁参考、写声音，并给出跨模型差异表与参数上限。",
+          "path": "film/prompt/film-prompt-video-models/SKILL.md",
+          "version": "1.0.0",
+          "group": "prompt",
+          "tags": [
+            "视频提示词",
+            "模型差异",
+            "Seedance",
+            "Kling",
+            "镜头结构",
+            "参数上限"
+          ]
+        },
+        {
+          "id": "film-script-scene-dialogue",
+          "name": "film-script-scene-dialogue",
+          "title": "场景与对白：冲突·潜台词",
+          "description": "把一场戏写到能演：定场景目标与价值转折，用动名词节拍表把谈话变成行动，写出有潜台词的对白，给对手一把刀，让道具与细节做功。修「什么都没发生」的场、对白太直太解释、人物扁平、冲突停滞或跳跃时用。",
+          "path": "film/script/film-script-scene-dialogue/SKILL.md",
+          "version": "1.0.0",
+          "group": "script",
+          "tags": [
+            "场景写作",
+            "对白",
+            "潜台词",
+            "人物冲突",
+            "节拍",
+            "契诃夫"
+          ]
+        },
+        {
+          "id": "film-script-series-bible",
+          "name": "film-script-series-bible",
+          "title": "剧集圣经与长线一致性",
+          "description": "为长剧与漫剧建一份可维护的剧集圣经：人物弧账本、伏笔表、故事线网格、知情边界与跨集连续性台账，并用引擎句与季弧检查一致性。写 bible、管长线连载、处理人设崩塌与伏笔失准时用。",
+          "path": "film/script/film-script-series-bible/SKILL.md",
+          "version": "1.0.0",
+          "group": "script",
+          "tags": [
+            "剧集圣经",
+            "人物弧",
+            "伏笔表",
+            "连续性",
+            "长线剧集",
+            "一致性"
+          ]
+        },
+        {
+          "id": "film-script-short-drama",
+          "name": "film-script-short-drama",
+          "title": "竖屏短剧与漫剧结构",
+          "description": "按竖屏短剧的节奏搭结构：3 秒入画钩子、单集九拍、每 3–5 集一个回合、反转密度、集尾卡点与付费点，以及 60 集全剧骨架与知情边界表。写短剧或漫剧集纲、改钩子、诊断完播率时用。",
+          "path": "film/script/film-script-short-drama/SKILL.md",
+          "version": "1.0.0",
+          "group": "script",
+          "tags": [
+            "竖屏短剧",
+            "漫剧",
+            "钩子",
+            "卡点",
+            "集纲",
+            "反转"
+          ]
+        },
+        {
+          "id": "film-script-story-architecture",
+          "name": "film-script-story-architecture",
+          "title": "故事结构：前提·类型·引擎",
+          "description": "把模糊想法做成可检验的故事结构：用前提与主控思想定主题，用类型节拍表查漏，用三幕页表排布，用剧集引擎判断能否撑成长线。写梗概、logline、分集骨架，或诊断「事件很多却没有故事」时用。",
+          "path": "film/script/film-script-story-architecture/SKILL.md",
+          "version": "1.0.0",
+          "group": "script",
+          "tags": [
+            "故事结构",
+            "前提",
+            "主题",
+            "类型节拍",
+            "剧集引擎",
+            "梗概"
+          ]
+        },
+        {
+          "id": "film-script-style-adaptation",
+          "name": "film-script-style-adaptation",
+          "title": "风格化写作与跨文化改编",
+          "description": "按导演与国别传统选剧作法：小津式画外叙事、日式起承转合、韩式类型承诺、法式情绪优先，以及戏曲板腔体与曲牌体的唱词规矩、电影与日式剧本格式、小说改编取舍。定风格、写跨文化改编、转剧本格式时用。",
+          "path": "film/script/film-script-style-adaptation/SKILL.md",
+          "version": "1.0.0",
+          "group": "script",
+          "tags": [
+            "风格化写作",
+            "跨文化改编",
+            "小津",
+            "日韩剧作",
+            "戏曲",
+            "剧本格式"
+          ]
+        },
+        {
+          "id": "film-shot-director-styles",
+          "name": "film-shot-director-styles",
+          "title": "导演风格叠加：10 种可执行参数",
+          "description": "把「像某某导演」拆成能写进提示词的参数差：机位高度、焦段倾向、运动预算、平均镜长、明暗比与色彩，每种风格给 3–5 条硬特征与适用/慎用场景。要定视觉基调、做风格提案、判断某个镜头「不像」时用。",
+          "path": "film/storyboard/film-shot-director-styles/SKILL.md",
+          "version": "1.0.0",
+          "group": "storyboard",
+          "tags": [
+            "导演风格",
+            "视觉基调",
+            "焦段",
+            "明暗比",
+            "剪辑节奏",
+            "风格叠加"
+          ]
+        },
+        {
+          "id": "film-shot-language",
+          "name": "film-shot-language",
+          "title": "镜头语言：景别·机位·轴线",
+          "description": "把剧本意图翻译成可执行的镜头：先定功能再定景别，用机位高度与角度管权力关系，用焦段管空间压缩，排构图与运镜，守住 180 度轴线、30 度规则与屏幕方向。设计分镜、诊断「镜头为什么不对」、检查跨镜连续性时用。",
+          "path": "film/storyboard/film-shot-language/SKILL.md",
+          "version": "1.0.0",
+          "group": "storyboard",
+          "tags": [
+            "镜头语言",
+            "景别",
+            "机位",
+            "轴线",
+            "构图",
+            "运镜",
+            "焦段"
+          ]
+        },
+        {
+          "id": "film-shot-list-breakdown",
+          "name": "film-shot-list-breakdown",
+          "title": "分镜拆解：剧本→场景表→分镜表",
+          "description": "把剧本或一句话创意拆成可执行的场景表与分镜表：先写节拍表再定覆盖，用三泳道 22 字段锁死每镜的身份、导演与摄影信息，按模型时长切 clip、剥离画内文字、给风险分档。要出分镜表、算镜头数、查漏字段时用。",
+          "path": "film/storyboard/film-shot-list-breakdown/SKILL.md",
+          "version": "1.0.0",
+          "group": "storyboard",
+          "tags": [
+            "分镜表",
+            "剧本拆解",
+            "场景表",
+            "节拍表",
+            "镜头数",
+            "覆盖",
+            "时长预算"
+          ]
+        },
+        {
+          "id": "film-storyboard-prompt",
+          "name": "film-storyboard-prompt",
+          "title": "分镜图提示词：九槽位与负面清单",
+          "description": "把分镜行写成能直接出图的关键帧提示词：按九槽位固定顺序排构图与光位，用身份锚点锁角色一致性，分层写负面清单，并给中英对照的完整示例。要做分镜图、首尾帧、角色设定图，或图老是换脸、长乱字时用。",
+          "path": "film/storyboard/film-storyboard-prompt/SKILL.md",
+          "version": "1.0.0",
+          "group": "storyboard",
+          "tags": [
+            "分镜图",
+            "关键帧提示词",
+            "身份一致性",
+            "光位",
+            "负面清单",
+            "中英对照"
+          ]
+        },
+        {
+          "id": "film-subtitle-production",
+          "name": "film-subtitle-production",
+          "title": "字幕生产：转写·断句·双语·烧录",
+          "description": "把音轨做成可交付字幕：ASR 转写取词级时间戳，按语义与每行字数断句，翻译后做 CPS 与最短显示时长校对，再按平台安全区烧录或封装软字幕。做字幕、双语字幕、译制或修时间轴时用。",
+          "path": "film/audio/film-subtitle-production/SKILL.md",
+          "version": "1.0.0",
+          "group": "audio",
+          "tags": [
+            "字幕",
+            "ASR",
+            "断句",
+            "双语",
+            "CPS",
+            "烧录",
+            "SRT"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "image",
+      "title": "图像生成（Qwen Image）",
+      "skills": [
+        {
+          "id": "qwen-image-prompt",
+          "name": "qwen-image-prompt",
+          "title": "Qwen Image 2.1 提示词",
+          "description": "【内置】把一句话需求写成 Qwen Image 2.1 能出图的提示词（文生图 / 多图编辑 / 文字密集图 / 分镜，含官方骨架与防错约束）。",
+          "path": "image/qwen-image-prompt/SKILL.md",
+          "version": "",
+          "menu": "user"
+        }
+      ]
+    },
+    {
+      "id": "mtnode",
+      "title": "MTNode 产品与画布",
+      "skills": [
+        {
+          "id": "ai-facts",
+          "name": "mtnode-ai-facts",
+          "title": "AI 事实库",
+          "description": "画布 AI 事实库（mtnode_facts）：建架构 / 工作流前先查，定下约定与路径后写回关键结论。",
+          "path": "mtnode/ai-facts/SKILL.md",
+          "version": ""
+        },
+        {
+          "id": "canvas-batch-safety",
+          "name": "mtnode-canvas-batch-safety",
+          "title": "画布批量与文生图防 N²",
+          "description": "画布 batchMode=batch 每次只处理单条、proc_image 每次只出 1 张（防 N² 调用）。",
+          "path": "mtnode/canvas-batch-safety/SKILL.md",
+          "version": ""
+        },
+        {
+          "id": "canvas-edit-rules",
+          "name": "mtnode-canvas-edit-rules",
+          "title": "画布编辑硬规则",
+          "description": "建图 / 连线 / 批量的完整硬规则（kind、super 端子、@引用、save 与 wait_file、排版）；工具描述只留卡口。",
+          "path": "mtnode/canvas-edit-rules/SKILL.md",
+          "version": ""
+        },
+        {
+          "id": "canvas-layout-ux",
+          "name": "mtnode-canvas-layout-ux",
+          "title": "画布排版与可操作区",
+          "description": "画布排版：控制与可编辑节点靠上、处理与保存靠下，createMarks 分区，禁止调 layout。",
+          "path": "mtnode/canvas-layout-ux/SKILL.md",
+          "version": ""
+        },
+        {
+          "id": "db-facts",
+          "name": "mtnode-db-facts",
+          "title": "数据库事实查询纪律",
+          "description": "接入数据库副本（db_replica）时的事实纪律：一切事实走 mtnode_db、断言带记录引用、查不到就说没有。",
+          "path": "mtnode/db-facts/SKILL.md",
+          "version": ""
+        },
+        {
+          "id": "dev-architect",
+          "name": "mtnode-dev-architect",
+          "title": "开发节点架构师",
+          "description": "在画布上用开发节点（super + dev）搭建 / 分析项目架构（模式 A 扫描 / 模式 B 新建，含细化与总量护栏）；只在用户要求建架构时用。",
+          "path": "mtnode/dev-architect/SKILL.md",
+          "version": ""
+        },
+        {
+          "id": "grill-me",
+          "name": "mtnode-grill-me",
+          "title": "拷问我",
+          "description": "需求拷问：动手前用 ask_user_question 按轮问完整个决策前沿，用户确认共识再开工。",
+          "path": "mtnode/grill-me/SKILL.md",
+          "version": ""
+        },
+        {
+          "id": "local-media",
+          "name": "mtnode-local-media",
+          "title": "本地语音与视频分析",
+          "description": "听音频 / 做字幕 / 看视频用本机 audio_subtitle、audio_transcribe、ffmpeg，别另装 ASR。",
+          "path": "mtnode/local-media/SKILL.md",
+          "version": ""
+        },
+        {
+          "id": "mcp-server",
+          "name": "mtnode-mcp-server",
+          "title": "MTNode MCP 服务端（第三方接进来操作）",
+          "description": "从 MTNode 外面经 MCP 操作本机 MTNode：15 个工具、先读图拿 contentHash、权限与审计。",
+          "path": "mtnode/mcp-server/SKILL.md",
+          "version": ""
+        },
+        {
+          "id": "media-gen-nodes",
+          "name": "mtnode-media-gen-nodes",
+          "title": "音乐/语音/视频生成节点",
+          "description": "music_gen / yue_gen / breeze_gen / video_gen：输出路径、抽卡、单任务互斥与媒体端子。",
+          "path": "mtnode/media-gen-nodes/SKILL.md",
+          "version": ""
+        },
+        {
+          "id": "research",
+          "name": "mtnode-research",
+          "title": "研究画布（知识图谱 + 文献层）",
+          "description": "在研究视图里以课题为核心建知识图谱：Markdown 笔记规范（frontmatter / callout / wikilink / 引用 / 公式）、图谱查询与文献检索脚本、验证状态与溯源口径。改研究笔记或做文献调研前读它。",
+          "path": "mtnode/research/SKILL.md",
+          "version": ""
+        },
+        {
+          "id": "self-check",
+          "name": "mtnode-self-check",
+          "title": "自检与交付纪律",
+          "description": "自检与交付纪律：阶段自检、交付前全检、先自修再问人、硬断言带证据。",
+          "path": "mtnode/self-check/SKILL.md",
+          "version": ""
+        },
+        {
+          "id": "verify-in-app",
+          "name": "mtnode-verify-in-app",
+          "title": "真机自验（改 MTNode 时怎么验）",
+          "description": "改 MTNode 自身功能时起独立数据目录的开发态实例、用 MCP 驱动真实窗口截图自验。Use when developing MTNode itself (plugin / app window / renderer UI) and you must prove it really works. 做不到就如实写「未验证 + 原因」。",
+          "path": "mtnode/verify-in-app/SKILL.md",
+          "version": ""
+        },
+        {
+          "id": "workflow-design",
+          "name": "mtnode-workflow-design",
+          "title": "工作流设计",
+          "description": "把一段流程搭成画布节点层（super）：外侧端子自洽、入口 → 处理 → 保存可一键重跑。",
+          "path": "mtnode/workflow-design/SKILL.md",
+          "version": ""
+        }
+      ]
+    },
+    {
+      "id": "music",
+      "title": "音乐生成（MiniMax Music）",
+      "skills": [
+        {
+          "id": "breeze-script-format",
+          "name": "breeze-script-format",
+          "title": "Breeze 台词规范",
+          "description": "【内置】把台词规范成 Breeze TTS 2 能念的正文：语气走 instruction、发声事件内联、口播安全化。",
+          "path": "music/breeze-script-format/SKILL.md",
+          "version": "",
+          "menu": "user"
+        },
+        {
+          "id": "breeze-voice-design",
+          "name": "breeze-voice-design",
+          "title": "Breeze 音色设计",
+          "description": "【内置】把一句话需求扩成 Breeze TTS 2 音色提示词（简洁 / 详细两档）。",
+          "path": "music/breeze-voice-design/SKILL.md",
+          "version": "",
+          "menu": "user"
+        },
+        {
+          "id": "minimax-music-lyrics",
+          "name": "minimax-music-lyrics",
+          "title": "MiniMax Music 歌词",
+          "description": "【内置】按官方规范写可演唱的 MiniMax Music 歌词正文（结构标签、行长、副歌钩子）。",
+          "path": "music/minimax-music-lyrics/SKILL.md",
+          "version": "",
+          "menu": "user"
+        },
+        {
+          "id": "minimax-music-prompt",
+          "name": "minimax-music-prompt",
+          "title": "MiniMax Music 提示词",
+          "description": "【内置】把一句话想法写成 MiniMax Music 风格提示词（英文六句：风格→速度→乐器→人声→结构→制作）。",
+          "path": "music/minimax-music-prompt/SKILL.md",
+          "version": "",
+          "menu": "user"
+        }
+      ]
+    },
+    {
+      "id": "plugins",
+      "title": "插件与后端",
+      "skills": [
+        {
+          "id": "plugin-dev",
+          "name": "mtnode-plugin-dev",
+          "title": "MTNode 插件开发规范",
+          "description": "MTNode 应用插件（catalog 窗口 / builtin / 本地后端）的开发规范：三层结构、接线点、打包与交付清单。",
+          "path": "plugins/plugin-dev/SKILL.md",
+          "version": ""
+        }
+      ]
+    },
+    {
+      "id": "remotion",
+      "title": "Remotion 视频制作",
+      "skills": [
+        {
+          "id": "remotion-animation-timing",
+          "name": "remotion-animation-timing",
+          "title": "Remotion 动画与时序",
+          "description": "用 interpolate / spring / Easing 排动画手感：参数含义、进入退出编排、错峰节奏、帧率换算与逐帧性能。写镜头动效、觉得动作\"很廉价\"或某段卡顿时读它。",
+          "path": "remotion/animation/remotion-animation-timing/SKILL.md",
+          "version": "1.0.0",
+          "group": "animation",
+          "tags": [
+            "动画",
+            "缓动",
+            "spring",
+            "时序",
+            "错峰",
+            "性能"
+          ]
+        },
+        {
+          "id": "remotion-audio-captions",
+          "name": "remotion-audio-captions",
+          "title": "音频、字幕与卡点",
+          "description": "在 Remotion 里铺音频与字幕：Audio/staticFile、音量包络与旁白闪避、逐词字幕数据格式、卡点对齐与带字幕导出。做口播、讲解、带 BGM 的片子时读它。",
+          "path": "remotion/audio-subtitle/remotion-audio-captions/SKILL.md",
+          "version": "1.0.0",
+          "group": "audio-subtitle",
+          "tags": [
+            "音频",
+            "字幕",
+            "卡点",
+            "BGM",
+            "音量包络",
+            "导出"
+          ]
+        },
+        {
+          "id": "remotion-data-params",
+          "name": "remotion-data-params",
+          "title": "参数化与数据驱动",
+          "description": "让一支片子能被参数与外部数据驱动：props 加 zod schema、calculateMetadata 动态时长、JSON/CSV 驱动画面、一张表批量出 N 条视频。做模板化、批量生产、多语言或多 SKU 版本时读它。",
+          "path": "remotion/data-params/remotion-data-params/SKILL.md",
+          "version": "1.0.0",
+          "group": "data-params",
+          "tags": [
+            "参数化",
+            "zod",
+            "批量出片",
+            "数据驱动",
+            "calculateMetadata",
+            "模板"
+          ]
+        },
+        {
+          "id": "remotion-project-basics",
+          "name": "remotion-project-basics",
+          "title": "Remotion 工程与合成基础",
+          "description": "搭 Remotion 工程骨架与合成：项目结构、Composition/Still、useCurrentFrame、Sequence 与 Series 取舍、staticFile 与常用配置。新建工程或首帧跑不起来时读它。",
+          "path": "remotion/components/remotion-project-basics/SKILL.md",
+          "version": "1.0.0",
+          "group": "components",
+          "tags": [
+            "Remotion",
+            "工程结构",
+            "Composition",
+            "Sequence",
+            "静态资源",
+            "配置"
+          ]
+        },
+        {
+          "id": "remotion-render-encoding",
+          "name": "remotion-render-encoding",
+          "title": "渲染、编码与发布",
+          "description": "把 Remotion 工程渲成文件：bundle/selectComposition/renderMedia/renderStill、并发与内存、codec 与 crf 取舍、Serverless 与 CI 部署、报错定位。要出成片时读它。",
+          "path": "remotion/render-deploy/remotion-render-encoding/SKILL.md",
+          "version": "1.0.0",
+          "group": "render-deploy",
+          "tags": [
+            "渲染",
+            "编码",
+            "crf",
+            "并发",
+            "部署",
+            "报错"
+          ]
+        },
+        {
+          "id": "remotion-shot-recipes",
+          "name": "remotion-shot-recipes",
+          "title": "镜头配方与电影感动效",
+          "description": "把镜头卡抽象成可复用动效模式：推拉、快切与变速、字形动效、群体入场、数据可视化、纸张拼贴、转场与光效。每种给适用场景、具体参数与实现要点。排分镜、挑镜头、觉得片子\"很平\"时读它。",
+          "path": "remotion/animation/remotion-shot-recipes/SKILL.md",
+          "version": "1.0.0",
+          "group": "animation",
+          "tags": [
+            "镜头配方",
+            "电影感",
+            "运镜",
+            "转场",
+            "排版动效",
+            "节奏"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "video",
+      "title": "视频生成（MiniMax H3）",
+      "skills": [
+        {
+          "id": "h3-dynamic-still-prompt",
+          "name": "h3-dynamic-still-prompt",
+          "title": "H3 动态静图（首尾帧）",
+          "description": "把一张静图做成可无缝循环的微动背景：识图、归一化、搭 H3 首尾帧工作流、写中文提示词、PSNR 验缝。",
+          "path": "video/h3-dynamic-still-prompt/SKILL.md",
+          "version": "",
+          "menu": "user"
+        }
+      ]
+    },
+    {
+      "id": "writing",
+      "title": "写作与润色",
+      "skills": [
+        {
+          "id": "humanizer-zh",
+          "name": "humanizer-zh",
+          "title": "去 AI 味与写作润色",
+          "description": "润色中文文稿：删空话与套路，保留事实与作者声音",
+          "path": "writing/humanizer-zh/SKILL.md",
+          "version": "",
+          "menu": "user"
+        }
+      ]
+    }
+  ]
+}

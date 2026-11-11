@@ -212,6 +212,19 @@
     return handleAssetToolEvent({ id: frame.id, params: p, action: p.action, actor: "mcp" }, null, replyToMcp);
   }
 
+  /* 截屏标注（mtnode_screenshot）：与自家 Agent 走同一个执行器 app-shot.js ——
+     先弹对话框（写一句话 + 可选本机图片路径），点「开始截图…」才冻结鼠标那块屏；
+     框选 → 标注 → 完成后回「图 + 编号清单」，用户直接给路径就回那张图。
+     客户端取消 = canceled:true（正常收场，不是错误）。 */
+  function mcpHandleShot(frame) {
+    const replyToMcp = (result, error) => reply(frame.id, result, error);
+    if (!window.MTNodeShot || typeof window.MTNodeShot.handleToolEvent !== "function") {
+      replyToMcp({ ok: false, error: I18n.t("截图工具未接线（缺少 preload 桥）") });
+      return;
+    }
+    return window.MTNodeShot.handleToolEvent({ id: frame.id, params: frame.params || {} }, replyToMcp);
+  }
+
   function mcpHandleLt(frame) {
     /* 只读：把长任务的定义与运行态（若在跑）交给客户端 —— 走既有的 LT 只读入口，
        不做任何状态写入（写入只在长任务 Agent 环节里有归属，见 LT_NOTE）。 */
@@ -353,6 +366,8 @@
             return mcpHandleFacts(frame);
           case "asset":
             return mcpHandleAsset(frame);
+          case "shot":
+            return mcpHandleShot(frame);
           case "lt":
             return mcpHandleLt(frame);
           case "gui":

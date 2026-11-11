@@ -178,7 +178,8 @@ function ltgCreateCfg() {
 /* ── 契约正文 ─────────────────────────────────────────────────────────
    与 app.js 的开发任务书同一写法：契约是给模型看的固定口径，每轮注入系统提示。 */
 function ltgContractText() {
-  return (
+  /* 整段可被「设置 → 内置能力」覆盖（id: longtask.grill_contract） */
+  const base = (
     LTG_MARK +
     "\n本会话的唯一目标：把用户的模糊想法问清楚，产出一张**可直接启用**的「长周期任务图」（状态机 DAG），并用 mtnode_app 的 create_longtask 落库到当前画布。" +
     "\n" +
@@ -203,6 +204,7 @@ function ltgContractText() {
     "\n· 若共识还没达成，用 ask_user_question 继续问，不要拿一份计划 / 任务清单代替提问，也不要提前交图。" +
     "\n\n回答简洁（交流语言见文末「语言口味」）；工具回执里没有的结果不要声称已完成。"
   );
+  return PS("longtask.grill_contract", base);
 }
 
 /* ── 会话认领 / 取用 ─────────────────────────────────────────────── */

@@ -8,12 +8,24 @@
 
 /* ── 参数端子：接在输入端最末位 ── */
 .wf-node > .port.in.np-port {
-  /* 与普通数据端子同尺寸，换成琥珀色：一眼看得出它喂的是「配置」不是「内容」 */
+  /* 与普通数据端子同尺寸，换成琥珀色：一眼看得出它喂的是「配置」不是「内容」。
+     --rim 一并给成琥珀：插芯（.port.linked::before / 悬停 / 将替换）填的是 --rim，
+     不给就会拿 .port.in 的蓝去填一颗琥珀端子。 */
+  --rim: #d9a84a;
   background: #d9a84a;
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35), 0 0 6px rgba(217, 168, 74, 0.45);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35), 0 0 6px -1px rgba(217, 168, 74, 0.45);
 }
 .wf-node > .port.in.np-port.spare {
   background: rgba(217, 168, 74, 0.35);
+  box-shadow: none;
+}
+/* 已接线的参数端子：壳提亮一档 + 插芯填满插孔，与空槽（半透明琥珀）一眼可分 */
+.wf-node > .port.in.np-port.linked {
+  background: #e7c579;
+  box-shadow: 0 0 0 1px #f0d9a6, 0 0 6px -1px rgba(217, 168, 74, 0.65);
+}
+.wf-node > .port.in.np-port.linked::before {
+  background: #d9a84a;
   box-shadow: none;
 }
 .wf-node > .port.in.np-port .np-port-badge {

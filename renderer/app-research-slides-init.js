@@ -11,9 +11,9 @@
  * 四块（与 docs/research-slides-video-spec.md §4 / §9 对齐）：
  *   ① 做法  tier：按指示创作（Agent 先写演示稿 → 内核编页）/ 照原文直出（确定性切页）+ 联网补料开关
  *   ② 版本  brief.mode：静态演示 / Remotion 视频 / 两个都要（白名单与文案都以内核为准）
- *   ③ 风格  theme：6 套预设 × 明 / 暗，缩略图直接吃 styleTokens 的颜色 + 字体（与 HTML / 视频同一份）
- *   ④ 指示  brief：受众 / 场合 / 时长 / 重点 / 忌口（各带快捷 chips）+ 自由文本 extra
- * 边界那句随做法变：创作档「研究里的稿子只是素材，新内容写成研究笔记并注明出处」。
+ *   ③ 风格  两段：展示风格（brief.style，一行 chips，各带一句说明）/ 颜色主题（theme，一行色板：
+ *            6 个色点 = 纸色圆底 + 主色点 + 点色点，悬停看名字；行尾两格 明 / 暗）
+ *   ④ 指示  brief：受众 / 场合 / 时长 / 重点（各带快捷 chips）+ 自由文本 extra
  *
  * 浮层口径（仓规 persistent）：只走窗内 ✕ / 取消 / Esc，点幕布与点外部一律不关；
  * 同一时刻只留一块（OPEN 单例，重复 open 抬回并保持已填内容）。
@@ -51,17 +51,23 @@
     video: "只出 Remotion 视频（mp4），按这套风格的运动参数排",
     both: "两版都出：同一份页、同一份颜色与字体，只有出口不同",
   };
-  const FONT_FALLBACK = { sans: "无衬线", serif: "衬线", kai: "楷体" };
   const MODE_FALLBACK = ["light", "dark"];
   const MODE_CN = { light: "明", dark: "暗" };
+  /* 展示风格（brief.style；内核 SLIDE_STYLES）：决定「怎么演」，与颜色主题正交 —— 一档一句说明 */
+  const STYLE_INFO = {
+    auto: { label: "自动", desc: "按内容自动判定" },
+    scholarly: { label: "学术", desc: "克制慢推、图注与公式优先" },
+    motion: { label: "Motion Graphics", desc: "大字色块与数字动效" },
+    d2_5: { label: "2.5D", desc: "分层视差与轻微景深" },
+    d3: { label: "3D", desc: "三维场景与轨道相机" },
+  };
 
-  /* 快捷 chips：点一下填进对应字段（受众 / 场合 再点一次清空；重点 / 忌口 是增删） */
+  /* 快捷 chips：点一下填进对应字段（受众 / 场合 再点一次清空；重点是增删） */
   const CHIPS = {
     audience: ["同行研究者", "评审 / 答辩委员", "学生", "客户 / 高管", "公众"],
     occasion: ["组会", "周会", "学术会议", "答辩", "路演", "课堂"],
     duration: [5, 10, 20, 45],
     focus: ["方法", "结论", "数据", "局限", "应用"],
-    avoid: ["不吹成果", "不堆术语", "不念稿", "不放公式", "不展开背景"],
   };
 
   function core() {
@@ -110,9 +116,11 @@
       plan: null,
     };
   }
-  function fontLabelOf(C, font) {
-    const one = C && C.FONTS ? C.FONTS[font] : null;
-    return (one && one.label) || FONT_FALLBACK[font] || str(font);
+  /* 展示风格的名字：内核 SLIDE_STYLE_LABEL 优先，取不到回落到本卡的说明表 */
+  function styleLabelOf(C, id) {
+    const k = str(id);
+    const one = C && C.SLIDE_STYLE_LABEL ? C.SLIDE_STYLE_LABEL[k] : null;
+    return str(one || (STYLE_INFO[k] && STYLE_INFO[k].label) || k);
   }
   function splitList(v) {
     return str(v)
@@ -303,62 +311,106 @@
         "当前：" + (MODE_LABEL[st.brief.mode] || st.brief.mode) + " · 页模型与 brief 两版共用同一份，改版本不会重排内容";
     }
 
-    /* ── ③ 风格：6 套 × 明 / 暗（纸色 / 主色 / 字体缩略预览，选中即写 theme） ── */
+    /* ── ③ 风格：展示风格（怎么演，写 brief.style）+ 颜色主题（一行色板） ── */
     const secStyle = el(D, "div", "rs-deck-init-sec");
     const headStyle = el(D, "div", "rs-deck-init-sechead");
     headStyle.appendChild(el(D, "span", "rs-deck-init-secn", "③"));
     headStyle.appendChild(el(D, "span", "rs-deck-init-sectitle", "风格"));
-    headStyle.appendChild(el(D, "span", "rs-deck-init-sechint", "纸色 / 主色 / 字体就按缩略图这套来，与视频版同源"));
+    headStyle.appendChild(el(D, "span", "rs-deck-init-sechint", "展示风格管怎么演，颜色主题管长什么样；两版同源，选哪套这张卡就长哪套"));
     secStyle.appendChild(headStyle);
-    const grid = el(D, "div", "rs-deck-init-grid");
-    const styleBtns = [];
     const presets = Array.isArray(C.THEME_PRESETS) && C.THEME_PRESETS.length ? C.THEME_PRESETS : [];
-    const styled = Array.isArray(C.MODES) && C.MODES.length ? C.MODES : MODE_FALLBACK;
-    for (const m of styled) {
-      for (const p of presets) {
-        const tok = tokensOf(C, st.brief, { preset: p.id, mode: m });
-        const vars = tok.css || {};
-        const th = tok.theme || C.normalizeTheme({ preset: p.id, mode: m });
-        const card = el(D, "button", "rs-deck-init-card");
-        card.type = "button";
-        card.dataset.preset = p.id;
-        card.dataset.mode = m;
-        card.title = (p.desc || p.label || p.id) + " · " + (MODE_CN[m] || m);
-        const thumb = el(D, "span", "rs-deck-init-thumb");
-        if (vars["--rs-slide-paper"]) thumb.style.background = vars["--rs-slide-paper"];
-        if (vars["--rs-slide-ink"]) thumb.style.color = vars["--rs-slide-ink"];
-        if (vars["--rs-slide-rule"]) thumb.style.borderColor = vars["--rs-slide-rule"];
-        const aa = el(D, "i", "rs-deck-init-aa", "Aa");
-        aa.style.fontFamily = vars["--rs-slide-font"] || tok.font || "";
-        if (vars["--rs-slide-primary"]) aa.style.color = vars["--rs-slide-primary"];
-        thumb.appendChild(aa);
-        const bar = el(D, "i", "rs-deck-init-bar");
-        if (vars["--rs-slide-primary"]) bar.style.background = vars["--rs-slide-primary"];
-        const bar2 = el(D, "i", "rs-deck-init-bar is-accent");
-        if (vars["--rs-slide-accent"]) bar2.style.background = vars["--rs-slide-accent"];
-        thumb.appendChild(bar);
-        thumb.appendChild(bar2);
-        card.appendChild(thumb);
-        card.appendChild(el(D, "span", "rs-deck-init-t", (p.label || p.id) + " · " + (MODE_CN[m] || m)));
-        card.appendChild(el(D, "span", "rs-deck-init-f", fontLabelOf(C, th.font)));
-        card.addEventListener("click", () => {
-          st.theme.preset = str(p.id);
-          st.theme.mode = m;
-          paintStyles();
-          applyVars();
-          paintFoot();
-        });
-        styleBtns.push(card);
-        grid.appendChild(card);
-      }
+
+    /* 展示风格：一行 chips（写进 brief.style，静态版与视频版共用） */
+    const styleRow = el(D, "div", "rs-deck-init-row");
+    styleRow.appendChild(el(D, "span", "rs-deck-init-label", "展示风格"));
+    const styleFields = el(D, "div", "rs-deck-init-fields");
+    const styleBar = el(D, "div", "rs-deck-init-modes");
+    const styleBtns = [];
+    const styles = Array.isArray(C.SLIDE_STYLES) && C.SLIDE_STYLES.length ? C.SLIDE_STYLES : Object.keys(STYLE_INFO);
+    for (const id of styles) {
+      const one = STYLE_INFO[id] || { label: str(id), desc: "" };
+      const b = el(D, "button", "rs-deck-init-style");
+      b.type = "button";
+      b.dataset.val = id;
+      b.title = styleLabelOf(C, id) + (one.desc ? " · " + one.desc : "");
+      b.appendChild(el(D, "b", null, styleLabelOf(C, id) || one.label));
+      b.appendChild(el(D, "span", "rs-deck-init-mode-h", one.desc));
+      b.addEventListener("click", () => {
+        st.brief.style = id;
+        paintStyleBtns();
+        applyVars();
+        paintFoot();
+      });
+      styleBtns.push(b);
+      styleBar.appendChild(b);
     }
-    secStyle.appendChild(grid);
-    if (!presets.length) secStyle.appendChild(el(D, "div", "rs-deck-init-sechint", "内核没给出预设表（research-slides.js 未加载）"));
+    styleFields.appendChild(styleBar);
+    styleRow.appendChild(styleFields);
+    secStyle.appendChild(styleRow);
+    function paintStyleBtns() {
+      for (const b of styleBtns) b.classList.toggle("is-on", b.dataset.val === str(st.brief.style));
+    }
+
+    /* 颜色主题：只占一行 —— 纸色圆底 + 主色点 + 点色点（名字在悬停 title 里），行尾两格 明 / 暗 */
+    const colorRow = el(D, "div", "rs-deck-init-row");
+    colorRow.appendChild(el(D, "span", "rs-deck-init-label", "颜色主题"));
+    const colorFields = el(D, "div", "rs-deck-init-fields");
+    const palette = el(D, "div", "rs-deck-init-palette");
+    const swatches = [];
+    for (const p of presets) {
+      const b = el(D, "button", "rs-deck-init-swatch");
+      b.type = "button";
+      b.dataset.preset = str(p.id);
+      b.title = str(p.label || p.id) + (p.desc ? " · " + str(p.desc) : "");
+      const dot = el(D, "i", "rs-deck-init-dot");
+      const dot2 = el(D, "i", "rs-deck-init-dot is-accent");
+      b.appendChild(dot);
+      b.appendChild(dot2);
+      b.addEventListener("click", () => {
+        st.theme.preset = str(p.id);
+        paintPalette();
+        applyVars();
+        paintFoot();
+      });
+      swatches.push({ preset: str(p.id), btn: b, dot: dot, dot2: dot2 });
+      palette.appendChild(b);
+    }
+    if (!presets.length) {
+      colorFields.appendChild(el(D, "span", "rs-deck-init-fhint", "内核没给出预设表（research-slides.js 未加载）"));
+    }
+    /* 明 / 暗：同一套预设的另一张变量表，行尾那两格 */
+    const mCells = [];
+    const mBox = el(D, "div", "rs-deck-init-mm");
+    const modeIds = Array.isArray(C.MODES) && C.MODES.length ? C.MODES : MODE_FALLBACK;
+    for (const m of modeIds) {
+      const b = el(D, "button", "rs-deck-init-mcell", MODE_CN[m] || str(m));
+      b.type = "button";
+      b.dataset.val = m;
+      b.title = (MODE_CN[m] || str(m)) + "色主题";
+      b.addEventListener("click", () => {
+        st.theme.mode = m;
+        paintPalette();
+        applyVars();
+        paintFoot();
+      });
+      mCells.push(b);
+      mBox.appendChild(b);
+    }
+    palette.appendChild(mBox);
+    colorFields.appendChild(palette);
+    colorRow.appendChild(colorFields);
+    secStyle.appendChild(colorRow);
     body.appendChild(secStyle);
-    function paintStyles() {
-      for (const b of styleBtns) {
-        b.classList.toggle("is-on", b.dataset.preset === st.theme.preset && b.dataset.mode === st.theme.mode);
+    function paintPalette() {
+      for (const s of swatches) {
+        const vars = tokensOf(C, st.brief, { preset: s.preset, mode: st.theme.mode }).css || {};
+        s.btn.style.background = vars["--rs-slide-paper"] || "";
+        s.btn.style.borderColor = vars["--rs-slide-rule"] || "";
+        s.dot.style.background = vars["--rs-slide-primary"] || "";
+        s.dot2.style.background = vars["--rs-slide-accent"] || "";
+        s.btn.classList.toggle("is-on", s.preset === st.theme.preset);
       }
+      for (const b of mCells) b.classList.toggle("is-on", b.dataset.val === st.theme.mode);
     }
 
     /* ── ④ 额外指示 ─────────────────────────────────────────────────────── */
@@ -423,7 +475,7 @@
       return inp;
     }
 
-    /* 重点 / 忌口：多值（内核 focus / avoid 各 ≤ 12 条），逗号 / 顿号分隔；chip 是增删 */
+    /* 重点：多值（内核 focus ≤ 12 条），逗号 / 顿号分隔；chip 是增删 */
     function listField(label, key, chipList, placeholder) {
       const { fields } = row(label);
       const inp = el(D, "input", "rs-deck-init-input");
@@ -493,7 +545,6 @@
     textField("受众", "audience", CHIPS.audience, "讲给谁听（组会 / 评审 / 课堂 / 客户…）");
     textField("场合", "occasion", CHIPS.occasion, "什么场合讲多久（周会 / 答辩 / 路演…）");
     listField("重点", "focus", CHIPS.focus, "要突出什么（关键词或章节名，逗号分隔）");
-    listField("忌口", "avoid", CHIPS.avoid, "不要出现的说法 / 不要展开的章节（逗号分隔）");
 
     /* 自由文本：与上面同级，最高优先级（内核 brief.extra） */
     const extraRow = row("自由指示");
@@ -506,30 +557,6 @@
     });
     extraRow.fields.appendChild(extraIn);
     secExtra.appendChild(rows);
-
-    /* 边界那句（随做法变）：这一版的分工是「以用户指示为准，现有资料只作参考」 */
-    const notice = el(D, "div", "rs-deck-init-note");
-    notice.appendChild(el(D, "span", "rs-deck-init-note-i", "！"));
-    const noticeText = el(D, "div", "rs-deck-init-note-t");
-    const noticeB = el(D, "b", null, "");
-    const noticeS = el(D, "span", null, "");
-    noticeText.appendChild(noticeB);
-    noticeText.appendChild(noticeS);
-    notice.appendChild(noticeText);
-    secExtra.appendChild(notice);
-    function paintNotice() {
-      if (st.tier === "author") {
-        noticeB.textContent = "按你的指示做演示：研究里的稿子只是素材，不是必须照念的原文。";
-        noticeS.textContent = st.online
-          ? "需要解释原文术语 / 公式而本地资料不够时，可以联网找公开来源；新增内容一律写成研究笔记（notes/<slug>.explain.md 等）并注明出处，演示页引用它。"
-          : "只用本地资料：不联网、不引入外部来源；需要解释的地方从现有笔记里取，取不到就留白，不编。";
-      } else {
-        noticeB.textContent = "照原文直出：不重写叙事，页按核心原文与 3-Pass 变体确定性切出来。";
-        noticeS.textContent = st.online
-          ? "勾了联网补料就只补「解释性笔记」（不改原文、不改页序），演示里以引用形式出现。"
-          : "零 Token、同输入同输出；要按指示重写请把做法切到「按指示创作」。";
-      }
-    }
     body.appendChild(secExtra);
 
     /* ── 底部动作 ───────────────────────────────────────────────────────── */
@@ -567,14 +594,13 @@
       const bits = [];
       bits.push("做法：" + (st.tier === "author" ? "按指示创作" : "照原文直出"));
       bits.push("版本：" + (MODE_LABEL[b.mode] || b.mode));
-      bits.push("风格：" + presetLabel(st.theme.preset) + " · " + (MODE_CN[st.theme.mode] || st.theme.mode));
+      bits.push("风格：" + styleLabelOf(C, b.style));
+      bits.push("颜色：" + presetLabel(st.theme.preset) + " · " + (MODE_CN[st.theme.mode] || st.theme.mode));
       if (st.online) bits.push("联网补料：开");
       if (b.durationSec > 0) bits.push("时长：" + Math.round(b.durationSec / 60) + " 分钟");
       if (b.focus.length) bits.push("重点 " + b.focus.length + " 条");
-      if (b.avoid.length) bits.push("忌口 " + b.avoid.length + " 条");
       footHint.textContent =
         bits.join(" · ") + (st.hint ? " · 写进 " + st.hint : "") + (st.reason === "settings" ? "（手改保留）" : "");
-      paintNotice();
     }
     function setBusy(on) {
       st.busy = !!on;
@@ -638,7 +664,8 @@
     body.addEventListener("click", repaint);
 
     paintModes();
-    paintStyles();
+    paintStyleBtns();
+    paintPalette();
     paintTier();
     paintDur();
     paintFoot();

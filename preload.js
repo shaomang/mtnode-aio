@@ -229,6 +229,10 @@ contextBridge.exposeInMainWorld('api', {
      函数节点里的 mtnode.screenShot 走主进程直连，不经这里。 */
   desktopList: (what) => ipcRenderer.invoke('desktop:list', { what: what || 'screens' }),
   desktopShot: (params) => ipcRenderer.invoke('desktop:shot', params || {}),
+  /* 截屏标注工具的 Agent 入口（main.js 的 shot:agent → screenshot-overlay.js 的 request）：
+     先弹询问窗，用户点头才冻结鼠标那块屏；回来是 { ok, path, markdown, notes, width, height }，
+     或 { ok:false, canceled:true }（用户按 Esc / 选「暂不」）。见 renderer/app-shot.js。 */
+  shotAgent: (payload) => ipcRenderer.invoke('shot:agent', payload || {}),
   fileCopyAssetTo: (a, d) => ipcRenderer.invoke('file:copyAssetTo', { assetPath: a, destPath: d }),
   fileExists: (p) => ipcRenderer.invoke('file:exists', p),
   fileIsDir: (p) => ipcRenderer.invoke('file:isDir', p),
@@ -1346,6 +1350,22 @@ contextBridge.exposeInMainWorld('api', {
   skillGet: (name) => ipcRenderer.invoke('skill:get', name),
   mtnodeAgentSkillIndex: () => ipcRenderer.invoke('mtnodeAgentSkill:index'),
   mtnodeAgentSkillGet: (name) => ipcRenderer.invoke('mtnodeAgentSkill:get', name),
+  /* ── 内置能力（Agent 指示 · 内置技能）：设置 →「内置能力」那一页 ──
+     list     ：清单 + 每项生效正文 / 来源（override / source / default）+ 作者态
+     save/reset：把某一段写进覆盖层（%APPDATA%\pipeline-console\builtin-overrides\）
+     writeSource：作者（ms2308 + 找得到可写源码根）把当前正文写回源码（agent-prompts/<id>.md
+                  / 技能 SKILL.md），写前自动备份；写成功后这一条就成了全应用的默认
+     技能侧：builtinSkill* 是内置 SKILL.md 的覆盖层读写、源码默认正文与写回 */
+  agentPrompts: () => ipcRenderer.invoke('agentPrompts:list'),
+  agentPromptsSave: (p) => ipcRenderer.invoke('agentPrompts:save', p || {}),
+  agentPromptsReset: (p) => ipcRenderer.invoke('agentPrompts:reset', p || {}),
+  agentPromptsResetAll: () => ipcRenderer.invoke('agentPrompts:resetAll'),
+  agentPromptsWriteSource: (p) => ipcRenderer.invoke('agentPrompts:writeSource', p || {}),
+  builtinSkillOverrides: () => ipcRenderer.invoke('builtinSkill:overrides'),
+  builtinSkillSave: (p) => ipcRenderer.invoke('builtinSkill:save', p || {}),
+  builtinSkillReset: (p) => ipcRenderer.invoke('builtinSkill:reset', p || {}),
+  builtinSkillSource: (p) => ipcRenderer.invoke('builtinSkill:source', p || {}),
+  builtinSkillWriteSource: (p) => ipcRenderer.invoke('builtinSkill:writeSource', p || {}),
   /* ── MCP 服务端（第三方客户端接进来操作 MTNode，见 mcp-server.js / docs/mcp-server.md）──
      主进程是服务端与执行调度的唯一入口；渲染层只出「执行桥」：
        mcpStatus / mcpSetEnabled / mcpResetToken / mcpSetClientId：面板读写（开关、令牌、客户端标识）
@@ -1789,6 +1809,10 @@ contextBridge.exposeInMainWorld('api', {
   /* 小窗此刻是否开着（只读，不会开窗）：渲染层重载后据此把推送循环接回来，
      不能靠 minichat:visibility 那个一次性事件（重载即丢）。 */
   miniChatIsOpen: () => ipcRenderer.invoke('minichat:isOpen'),
+  /* 小窗上次选中的那条会话（只存 id，落 mini-chat.json）：开窗先读回来、换会话就写回去，
+     关掉 MTNode 再开也仍然落在同一条上（主进程侧见 mini-chat-window.js）。 */
+  miniChatLastSession: () => ipcRenderer.invoke('minichat:lastSession'),
+  miniChatSetLastSession: (id) => ipcRenderer.invoke('minichat:setLastSession', String(id || '')),
   miniChatRes: (msg) => ipcRenderer.send('minichat:res', msg || {}),
   miniChatPush: (payload) => ipcRenderer.send('minichat:push', payload || {}),
   onMiniChatReq: (cb) => {

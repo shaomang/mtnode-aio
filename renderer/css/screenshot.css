@@ -1,0 +1,273 @@
+/* ============================================================
+ * 截图标注浮层（renderer/screenshot.html）
+ * 风格与主窗同源：深色面板 + 青色强调 + 10px 圆角（色值取 renderer/css/base.css
+ * 的 --bg / --panel / --bd / --ink / --muted / --cyan，本页是独立窗口，不复用主窗 CSS 文件）。
+ * ============================================================ */
+:root {
+  --bg: #0d1016;
+  --panel: #161b25;
+  --panel-2: #1b2230;
+  --bd: #2a3342;
+  --ink: #d8dee8;
+  --muted: #7f8a9c;
+  --cyan: #38d6ff;
+  --orange: #ff8f2e;
+  --red: #ff5f56;
+  --shadow: 0 2px 6px rgba(0, 0, 0, 0.3), 0 14px 36px -8px rgba(0, 0, 0, 0.55);
+  --r: 10px;
+  --sans: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #000;
+  color: var(--ink);
+  font: 13px/1.45 var(--sans);
+  user-select: none;
+  cursor: crosshair;
+}
+
+.sh-canvas {
+  position: fixed;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  cursor: crosshair;
+}
+
+/* ── 选区阶段 ─────────────────────────────────────────────── */
+.sh-tip {
+  position: fixed;
+  left: 50%;
+  top: 18px;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  max-width: calc(100vw - 40px);
+  padding: 8px 14px;
+  border-radius: var(--r);
+  border: 1px solid var(--bd);
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
+  box-shadow: var(--shadow);
+  pointer-events: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sh-tip b {
+  font-weight: 600;
+  color: var(--ink);
+}
+.sh-tip span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.sh-size {
+  position: fixed;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: rgba(13, 16, 22, 0.86);
+  border: 1px solid var(--bd);
+  color: var(--cyan);
+  font: 12px/1.3 "Cascadia Code", Consolas, monospace;
+  pointer-events: none;
+  white-space: nowrap;
+  box-shadow: var(--shadow);
+}
+
+.sh-mag {
+  position: fixed;
+  width: 132px;
+  height: 132px;
+  border-radius: 8px;
+  border: 1px solid var(--bd);
+  background: #0b0e13;
+  box-shadow: var(--shadow);
+  pointer-events: none;
+  image-rendering: pixelated;
+}
+
+.sh-hud {
+  position: fixed;
+  left: 16px;
+  bottom: 16px;
+  padding: 5px 9px;
+  border-radius: 8px;
+  background: rgba(13, 16, 22, 0.86);
+  border: 1px solid var(--bd);
+  color: var(--muted);
+  font: 12px/1.35 "Cascadia Code", Consolas, monospace;
+  pointer-events: none;
+  white-space: pre;
+}
+
+/* ── 标注阶段：贴着选区右下角浮动的工具栏（位置由脚本按选区算，见 updateChrome）── */
+.sh-tools {
+  position: fixed;
+  left: 0;
+  top: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: calc(100vw - 16px);
+  padding: 6px 8px;
+  border-radius: 12px;
+  border: 1px solid var(--bd);
+  background: color-mix(in srgb, var(--panel) 96%, transparent);
+  box-shadow: var(--shadow);
+  cursor: default;
+}
+.sh-tools-group {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+.sh-sep {
+  width: 1px;
+  height: 20px;
+  background: var(--bd);
+  margin: 0 2px;
+}
+.sh-gap {
+  flex: 1 1 auto;
+  min-width: 8px;
+}
+.sh-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 30px;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--ink);
+  font: 13px/1 var(--sans);
+  cursor: pointer;
+  transition:
+    background 0.16s cubic-bezier(0.16, 1, 0.3, 1),
+    border-color 0.16s,
+    color 0.16s;
+}
+.sh-btn i {
+  font-style: normal;
+  font-size: 12px;
+  color: var(--muted);
+}
+.sh-btn:hover {
+  background: var(--panel-2);
+  border-color: var(--bd);
+}
+.sh-btn:hover i {
+  color: var(--ink);
+}
+.sh-btn[aria-pressed="true"] {
+  background: color-mix(in srgb, var(--cyan) 16%, transparent);
+  border-color: color-mix(in srgb, var(--cyan) 55%, transparent);
+  color: var(--cyan);
+}
+.sh-btn[aria-pressed="true"] i {
+  color: var(--cyan);
+}
+.sh-btn[disabled] {
+  opacity: 0.4;
+  cursor: default;
+}
+.sh-primary {
+  border-color: color-mix(in srgb, var(--cyan) 55%, transparent);
+  background: color-mix(in srgb, var(--cyan) 18%, transparent);
+  color: var(--cyan);
+  font-weight: 600;
+}
+.sh-primary i {
+  color: var(--cyan);
+  font-weight: 600;
+}
+.sh-primary:hover {
+  background: color-mix(in srgb, var(--cyan) 28%, transparent);
+}
+.sh-zoom {
+  color: var(--muted);
+  font: 12px/1 "Cascadia Code", Consolas, monospace;
+  padding: 0 4px;
+}
+
+/* ── 图上就地写文字（点一下落点 / 点已有的那行字就在这里弹出来）── */
+.sh-input {
+  position: fixed;
+  z-index: 30;
+  width: 264px;
+  min-height: 66px;
+  max-height: 180px;
+  box-sizing: border-box;
+  resize: vertical;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--cyan) 65%, var(--bd));
+  background: color-mix(in srgb, var(--panel) 97%, transparent);
+  color: var(--ink);
+  font: 13px/1.5 var(--sans);
+  box-shadow: var(--shadow), 0 0 0 2px color-mix(in srgb, var(--cyan) 22%, transparent);
+  outline: none;
+  user-select: text;
+  cursor: text;
+}
+.sh-input::placeholder {
+  color: var(--muted);
+}
+
+/* ── 回执 ─────────────────────────────────────────────────── */
+.sh-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 42px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: calc(100vw - 32px);
+  padding: 9px 16px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--cyan) 50%, var(--bd));
+  background: color-mix(in srgb, var(--panel) 96%, transparent);
+  color: var(--cyan);
+  box-shadow: var(--shadow);
+  font-weight: 600;
+  pointer-events: none;
+}
+/* 带动作按钮时（保存成功后的「打开文件夹」）才收回指针事件，别的时候点它照旧算点画布 */
+.sh-toast.has-act {
+  pointer-events: auto;
+}
+.sh-toast-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sh-toast-act {
+  flex: 0 0 auto;
+  height: 26px;
+  padding: 0 10px;
+  border-radius: 7px;
+  border: 1px solid color-mix(in srgb, var(--cyan) 55%, transparent);
+  background: color-mix(in srgb, var(--cyan) 16%, transparent);
+  color: var(--cyan);
+  font: 600 12px/1 var(--sans);
+  cursor: pointer;
+}
+.sh-toast-act:hover {
+  background: color-mix(in srgb, var(--cyan) 28%, transparent);
+}
+.sh-toast.sh-err {
+  border-color: color-mix(in srgb, var(--red) 60%, var(--bd));
+  color: var(--red);
+}

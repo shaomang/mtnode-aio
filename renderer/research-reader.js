@@ -62,8 +62,11 @@
     /* 引用梗浮层顶上那条「文献」行：这篇文章在本地有没有正文，由宿主判（阅读器不读盘、不联网）。
        citeInfo(keys) → [{ key, title, found, downloaded }] */
     const citeInfo = typeof d.citeInfo === "function" ? d.citeInfo : null;
-    /* onOpenCite(key)：有正文 → 导向那篇文章；没有 → 宿主问一句要不要搜索并入库 */
+    /* onOpenCite(key)：有正文 → 导向那篇文章；没有 → 宿主走「获取文献」（派 agent 去取） */
     const onOpenCite = typeof d.onOpenCite === "function" ? d.onOpenCite : null;
+    /* 参考文献段落里点整行：reader 只负责认出「这一行是文献」（行内含 `[@key]` 或 DOI / arXiv），
+       本地有没有全文、要不要派 agent 获取，全由宿主决定。openRef({ key, doi, arxiv, title }) */
+    const openRef = typeof d.openRef === "function" ? d.openRef : null;
     /* 选区右键菜单里要动 Markdown 的两项（阅读器自己不改 md、不落盘，只回调宿主）：
        wrapLink(选中文字) → 在正文里包成 [[…]] 并落盘；
        cutSelection(选中文字) → 编辑态从源码里删掉这段并写剪贴板；
@@ -254,6 +257,69 @@
       });
     }
 
+    /* ── 段首引导句提级：`**贡献。** 本文提出…` 这种「行内粗体 + 紧随正文」的写法，
+       阅读态把块首那一截粗体提成独立的 `.rs-h-lead` 小标题块，后继文字留成它下面的一段。
+       判定只看块首那颗 <strong>/<b>：文本以 。：: 收尾，或者它自己就短（中文 ≤ 12 字 /
+       英文 ≤ 6 词）—— 太长的粗体是强调，提出来会读成一条假标题。
+       **只在阅读态 DOM 上做**：编辑面（contenteditable）不走 decorate，richToMarkdown 也
+       就看不到这些块，回写不受影响。 */
+    const LEAD_END_RE = /[。：:]$/;
+    const LEAD_LATIN_RE = /[A-Za-z]/;
+    /* 不参与提级的上下文：代码 / 表格 / SVG 里改结构会烂排版；列表项里塞块级子节点会断列表；
+       引用块与术语卡本身就是「块中块」、自带抬头形制；溯源行是元信息，不是标题。 */
+    const LEAD_SKIP_SEL =
+      "pre, code, table, svg, li, figcaption, button, .rs-callout, .rs-term-card, .rs-meta-line, .rs-meta, .rs-h-lead";
+    function isLeadHeading(txt) {
+      const s = String(txt == null ? "" : txt).replace(/\s+/g, " ").trim();
+      if (!s) return false;
+      if (LEAD_END_RE.test(s)) return true;
+      /* 带拉丁字母的（纯英文，或 `对 Rademacher 与 Stein` 这种夹专名的）按词数算：
+         按字数算会把这类短引导句误判成长句，把中文长句误判成标题 */
+      if (LEAD_LATIN_RE.test(s)) return s.split(" ").filter(Boolean).length <= 6;
+      return s.length <= 12;
+    }
+    function promoteLeadInlines(rootEl) {
+      if (!rootEl) return;
+      [...rootEl.querySelectorAll("p")].forEach((p) => {
+        if (p.dataset.leadDone === "1") return;
+        p.dataset.leadDone = "1";
+        if (typeof p.closest === "function" && p.closest(LEAD_SKIP_SEL)) return;
+        /* 块首第一颗「有内容」的节点：前导空白文本节点不算，先遇到文字就不是引导句 */
+        let first = null;
+        for (const nd of [...p.childNodes]) {
+          if (nd.nodeType === 3) {
+            if (String(nd.nodeValue || "").trim()) return;
+            continue;
+          }
+          if (nd.nodeType !== 1) continue;
+          first = nd;
+          break;
+        }
+        if (!first || (first.tagName !== "STRONG" && first.tagName !== "B")) return;
+        /* 一截「行内」粗体：里面还套了换行 / 块级节点就不是引导句 */
+        if (first.querySelector("br, p, div, ul, ol, table, pre")) return;
+        if (!isLeadHeading(first.textContent)) return;
+        const lead = el("div", "rs-h-lead");
+        lead.appendChild(first); /* 搬走这块粗体；p 里剩下的就是后继正文 */
+        p.parentNode.insertBefore(lead, p);
+        /* 换行合并后段首常留一个空格、或者留一个 <br>（元信息行旁边那一颗不参与合并）：
+           去掉，否则新段落第一行会空一格 / 空一行 */
+        let head = p.firstChild;
+        while (
+          head &&
+          ((head.nodeType === 3 && !String(head.nodeValue || "").trim()) ||
+            (head.nodeType === 1 && head.tagName === "BR"))
+        ) {
+          const next = head.nextSibling;
+          head.remove();
+          head = next;
+        }
+        if (head && head.nodeType === 3) head.nodeValue = String(head.nodeValue || "").replace(/^\s+/, "");
+        /* 原来整段只有这一句标题（没有后继正文）：空段落就地删掉 */
+        if (!String(p.textContent || "").trim() && !p.querySelector("*")) p.remove();
+      });
+    }
+
     /* ── 软换行合并：把「每句话单独一行」收成正常段落流 ──
        笔记源码是一句一行（机器写出来的就是这种行文），marked 开着 breaks:true 会把每个
        换行都渲染成 <br>，读起来就成了「每句话都自动换行」。这里在读完结构装饰之后，
@@ -275,6 +341,8 @@
       /* 同一趟「渲染收尾」里先把 `[@key]` 包成引用梗：阅读态、分栏预览、折叠投影、会话消息
          都走这一步，不必各自再调一次。 */
       decorateCitations(rootEl);
+      /* 参考文献段落里含 `[@key]` / DOI / arXiv 的列表行整行可点（与引用梗同一趟收尾） */
+      decorateRefLines(rootEl);
       for (const br of [...rootEl.querySelectorAll("br")]) {
         /* 代码块 / 表格里的换行是排版本身，别碰 */
         if (br.closest("pre, code, table")) continue;
@@ -381,6 +449,68 @@
         if (pos < s.length) frag.appendChild(document.createTextNode(s.slice(pos)));
         node.parentNode.replaceChild(frag, node);
       }
+    }
+
+    /* ── 参考文献段落：整行可点 ──
+       判据（本轮共识）：**只认行内含 `[@key]` 或 DOI / arXiv 编号**的列表行 —— 不按「参考文献」标题推断，
+       也不认纯文本的「作者. 题名. 年份」。命中就给整行挂 data-ref-* 与 .rs-refline；
+       点下去做什么（打开全文 / 派 agent 获取）由宿主的 openRef 决定。 */
+    const CITE_ONE_RE = /\[@([^\]\n]{1,160})\]/;
+    const DOI_RE = /\b(10\.\d{4,9}\/[^\s，。；;)\]>"'）】]+)/;
+    const ARXIV_RE = /\barXiv:\s*(\d{4}\.\d{4,5})(?:v\d+)?\b/i;
+    function refLineInfo(li) {
+      if (!li) return null;
+      if (typeof li.closest === "function" && li.closest("pre, code, table")) return null;
+      const txt = String(li.textContent || "").trim();
+      if (!txt) return null;
+      /* `[@key]` 这一趟已经被 decorateCitations 包成 `.rs-cite`（文字里只剩 `@key`），
+         所以先看那颗引用梗的 data-cite，再退回原文正则（防止装饰顺序变化时漏掉）。 */
+      const citeEl = li.querySelector ? li.querySelector(".rs-cite") : null;
+      const mc = CITE_ONE_RE.exec(txt);
+      const src = (citeEl && citeEl.dataset && citeEl.dataset.cite) || (mc ? mc[1] : "");
+      const keys = src
+        ? String(src)
+            .split(/[;,]/)
+            .map((k) => k.replace(/^[\s@]+/, "").trim())
+            .filter(Boolean)
+        : [];
+      const md = DOI_RE.exec(txt);
+      const ma = ARXIV_RE.exec(txt);
+      if (!keys.length && !md && !ma) return null;
+      return {
+        key: keys[0] || "",
+        doi: md ? String(md[1]).replace(/[.,;]+$/, "") : "",
+        arxiv: ma ? String(ma[1]) : "",
+        title: txt.slice(0, 160),
+      };
+    }
+    function decorateRefLines(rootEl) {
+      if (!rootEl || !openRef) return;
+      rootEl.querySelectorAll("li").forEach((li) => {
+        if (li.dataset.refline === "1") return;
+        const info = refLineInfo(li);
+        if (!info) return;
+        li.dataset.refline = "1";
+        if (info.key) li.dataset.refKey = info.key;
+        if (info.doi) li.dataset.refDoi = info.doi;
+        if (info.arxiv) li.dataset.refArxiv = info.arxiv;
+        li.dataset.refTitle = info.title;
+        li.classList.add("rs-refline");
+        li.setAttribute("role", "link");
+        li.tabIndex = 0;
+        li.title = info.key
+          ? t("这一行引用的是 @") + info.key + t("：本地有全文就打开，没有就让 agent 获取")
+          : t("这一段是文献引用：本地有全文就打开，没有就让 agent 获取");
+      });
+    }
+    function openRefLine(li) {
+      if (!li || !openRef) return;
+      openRef({
+        key: String(li.dataset.refKey || ""),
+        doi: String(li.dataset.refDoi || ""),
+        arxiv: String(li.dataset.refArxiv || ""),
+        title: String(li.dataset.refTitle || ""),
+      });
     }
 
     /* ── 术语卡：`> [!term] 名称` 的引用块 → 「术语 · 名称」+ 定义 ── */
@@ -572,10 +702,11 @@
     }
 
     /* ── 章节数据：一次解析，右侧大纲与顶栏面包屑共用 ──
-       h1 / h2 算「章」，h3 算「节」（与大纲的层级缩进同一口径）。
+       h1 / h2 算「章」，h3 算「节」，`.rs-h-lead`（阅读态提级的段首引导句）算「小标题」：
+       大纲里比「节」再缩进一级，面包屑不吃它（末两级仍是 章 / 节）。
        state.sections 是唯一的章节表：换笔记时整体替换，源码 / 折叠投影 / 图谱态置空。 */
     function collectSections(rootEl) {
-      const heads = rootEl ? [...rootEl.querySelectorAll("h1, h2, h3")] : [];
+      const heads = rootEl ? [...rootEl.querySelectorAll("h1, h2, h3, .rs-h-lead")] : [];
       const out = [];
       heads.forEach((h) => {
         const text = inlineTextOf(h);
@@ -584,7 +715,7 @@
         out.push({
           id: h.id,
           el: h,
-          level: h.tagName === "H1" ? 1 : h.tagName === "H2" ? 2 : 3,
+          level: h.tagName === "H1" ? 1 : h.tagName === "H2" ? 2 : h.tagName === "H3" ? 3 : 4,
           text: text,
           html: inlineHtmlOf(h),
         });
@@ -595,8 +726,8 @@
       if (firstH1) firstH1.isDocTitle = true;
       return out;
     }
-    /* 现在读到哪一节：章 = 当前 / 之前最近的 h1·h2，节 = 当前正好是 h3 时的那一节。
-       面包屑末两级吃这一份结构，滚动时不再解析 Markdown。 */
+    /* 现在读到哪一节：章 = 当前 / 之前最近的 h1·h2，节 = 当前正好是 h3（或 h3 下的段首小标题）
+       时的那一节。面包屑末两级吃这一份结构，滚动时不再解析 Markdown。 */
     function activeInfo() {
       const secs = state.sections || [];
       const i = typeof state.active === "number" ? state.active : -1;
@@ -608,9 +739,18 @@
           break;
         }
       }
-      const part =
-        secs[i].level === 3 ? { index: i, kind: t("节"), text: secs[i].text, html: secs[i].html } : null;
+      const part = secs[i].level >= 3 ? nearestPart(i) : null;
       return { index: i, chapter: chapter, part: part };
+    }
+    /* 当前落在「节」或节内的段首小标题（level 4）上时，那一节 = 往上最近的 h3。
+       小标题自己不进面包屑，但读它时「章 / 节」不该空掉。 */
+    function nearestPart(i) {
+      const secs = state.sections || [];
+      for (let k = i; k >= 0; k--) {
+        if (secs[k].level === 3) return { index: k, kind: t("节"), text: secs[k].text, html: secs[k].html };
+        if (secs[k].level <= 2) return null;
+      }
+      return null;
     }
     function emitActive() {
       if (typeof state.onActive !== "function") return;
@@ -632,7 +772,7 @@
       emitActive();
     }
 
-    /* ── 右侧大纲：h1/h2/h3 进目录，点击平滑滚动，滚动时高亮当前节 ── */
+    /* ── 右侧大纲：h1/h2/h3 与段首小标题（lv4，再缩进一级）进目录，点击平滑滚动，滚动时高亮当前节 ── */
     function buildOutline(rootEl, pane, scrollEl, opts) {
       const o = opts || {};
       if (typeof o.onActive === "function") state.onActive = o.onActive;
@@ -775,12 +915,29 @@
         if (to && (s.contains(to) || (state.tip && state.tip.contains(to)))) return;
         hideTermTip();
       });
+      /* 参考文献整行是 role=link：键盘 Enter / 空格与点击同一条路（不做「看不见的可聚焦点」） */
+      host.addEventListener("keydown", (ev) => {
+        if (ev.key !== "Enter" && ev.key !== " ") return;
+        const tgt = ev.target;
+        if (!(tgt && tgt.closest && tgt.closest(".rs-rich"))) return;
+        const li = tgt.closest(".rs-refline");
+        if (!li) return;
+        ev.preventDefault();
+        openRefLine(li);
+      });
       host.addEventListener("click", (ev) => {
         const tgt = ev.target;
         /* 只在自己的 `.rs-rich` 宿主里生效：委托挂在**滚动容器**上（跨笔记复用），索引页
            `.rs-idx-src` 的正文也在容器里，但整张卡就是一个按钮 —— 里面的公式要是照常弹公式浮层，
            卡就打不开了。术语 / 引用梗 / 双链本来就只在 `.rs-rich` 里装饰，这里一并按宿主收口。 */
         if (!(tgt && tgt.closest && tgt.closest(".rs-rich"))) return;
+        /* 参考文献整行可点：行内那颗 `[@key]` 引用梗自己优先（它弹引用浮层，浮层里就是「文献」行） */
+        const refLi = tgt.closest && tgt.closest(".rs-refline");
+        if (refLi && !(tgt.closest && tgt.closest(".rs-cite"))) {
+          ev.preventDefault();
+          openRefLine(refLi);
+          return;
+        }
         const wl = tgt.closest && tgt.closest(".rs-wl");
         if (wl) {
           /* 就地编辑面（data-rs-inline）：双链只是显示层，点了放光标就好 —— 编辑到一半
@@ -1076,12 +1233,12 @@
     }
 
     /* ── 笔记浮层：点术语 / 点公式 → 「这条东西，库里哪些笔记写过它」──
-       共识（真机拍的板）：浮层里一篇笔记一张卡，卡 = **方向标题 + 正文**。
-       方向来自 frontmatter 的 `方向:` / `angle:` / `direction:`（值是自由文字）；旧笔记没写方向，
+       共识（真机拍的板）：浮层里一篇笔记一张卡，默认一行 = **标题 + 一行摘要**。
+       标题取方向来自 frontmatter 的 `方向:` / `angle:` / `direction:`（值是自由文字）；旧笔记没写方向，
        就退回这条 callout 的种类（定义 / 公式 / 论断 / 注记…），不留空标签。
-       正文用普通正文字体，紧跟方向文字后面**同一行**（不另起一行），整卡截断 3 行（CSS 见
-       research.css 的 .rs-ncard-body）；正文里的行内 Markdown / 公式照正文同一套排出来
-       （cardInlineHtml：`**粗**`、`` `代码` ``、`$…$` 都不许露源码）。点卡片本体 = 打开出处并滚到那一行。 */
+       摘要取正文第一句（剥掉行内 Markdown 标记，单行省略交给 CSS），不改写任何数据。
+       点这条 = 就地向下展开全文（cardInlineHtml：`**粗**`、`` `代码` ``、`$…$` 都不许露源码）；
+       进笔记只走展开后行尾那颗「打开」（页那一行 line=0 = 进整篇）。同一份卡一次只展开一条。 */
     const CARDS_MAX = 24;
     /* 引用笔记的「来源行」：`来源：notes/x.md:120`（全角/半角冒号都认）——
        这一行就是「仅针对当前上下文」的唯一键，引用键只说明引的是哪一篇，不说明是哪一处。 */
@@ -1148,6 +1305,104 @@
         }
       }
       return out;
+    }
+    /* ── 一条卡的去处：页那一行（h.page）没有行号（0）= 进整篇；
+       其余落在写过它的那一行。展开态里行尾那颗「打开」才走这里。 */
+    function hitLine(h) {
+      return Number(h && h.line) || 0;
+    }
+    function openHit(h) {
+      const path = String((h && h.path) || "");
+      if (!path || !openNote) return false;
+      openNote(path, { line: hitLine(h) });
+      return true;
+    }
+    /* 默认那一行摘要 = 正文第一句：剥掉行内 Markdown 标记后压成一行（只读，不改数据）。
+       CSS 再单行省略；这里不改写、不落盘，也不抽新字段。 */
+    function hitSummary(text) {
+      let s = String(text == null ? "" : text);
+      s = s.replace(/```[\s\S]*?```/g, " ");
+      s = s.replace(/^\s{0,3}#{1,6}\s+/gm, "");
+      s = s.replace(/^\s{0,3}>\s?/gm, "");
+      s = s.replace(/!?\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (_m, a, b) => String(b || a));
+      s = s.replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1");
+      s = s.replace(/(\*\*|__)([\s\S]*?)\1/g, "$2");
+      s = s.replace(/(^|[^*\w])\*([^*\n]+)\*/g, "$1$2");
+      s = s.replace(/`([^`]*)`/g, "$1");
+      s = s.replace(/\$([^$]*)\$/g, "$1");
+      s = s.replace(/^\s*[-*+]\s+/gm, "");
+      s = s.replace(/\s+/g, " ").trim();
+      const m = /[^。！？；!?;]*[。！？；!?;]/.exec(s);
+      if (m && m[0].trim()) s = m[0].trim();
+      return s;
+    }
+    /* ── 一份卡：hits → 一串「标题 + 一行摘要 + 点开展开 + 行尾打开」──
+       阅读区浮空卡与索引页浮空卡共用这一份（索引页不复制第二份卡）。
+       opts: { onOpen(hit), empty, className }
+       · 点这条 = 就地向下展开全文；同一份一次只展开一条（点开新的旧的自动收起）；
+       · 展开后在行尾挂一颗「打开」，只有它进笔记（点行本身不跳转）；
+       · 展开态是 DOM 节点（body / 打开钮按需挂、收起即摘），不赖 CSS 才敢动，
+         整份重画（关浮层、切标签页、改筛选、重读笔记）自然全部收起，不做记忆。 */
+    function noteCardList(hits, opts) {
+      const o = opts || {};
+      const list = el("div", "rs-ncards-list" + (o.className ? " " + o.className : ""));
+      let openRow = null;
+      function collapse(row) {
+        if (!row) return;
+        row.classList.remove("is-open");
+        if (row.rsBody && row.rsBody.parentNode) row.rsBody.parentNode.removeChild(row.rsBody);
+        if (row.rsOpen && row.rsOpen.parentNode) row.rsOpen.parentNode.removeChild(row.rsOpen);
+        row.rsBody = null;
+        row.rsOpen = null;
+        if (openRow === row) openRow = null;
+      }
+      function expand(row, h) {
+        if (openRow && openRow !== row) collapse(openRow);
+        openRow = row;
+        row.classList.add("is-open");
+        const body = el("div", "rs-ncard-body");
+        const textEl = el("div", "rs-ncard-text");
+        textEl.innerHTML = cardInlineHtml(h && h.text);
+        body.appendChild(textEl);
+        row.appendChild(body);
+        /* 进笔记的唯一入口：展开后挂在行尾（这颗钮只负责「打开」，点行是展开） */
+        const go = el("button", "rs-ncard-open", t("打开"));
+        go.type = "button";
+        go.title = h && h.page ? t("打开这一页") : t("打开出处（滚到写过它的那一行）");
+        go.onclick = (ev) => {
+          if (ev && ev.stopPropagation) ev.stopPropagation();
+          if (typeof o.onOpen === "function") o.onOpen(h);
+          else openHit(h);
+        };
+        row.rsHead.appendChild(go);
+        row.rsBody = body;
+        row.rsOpen = go;
+      }
+      const rows = Array.isArray(hits) ? hits : [];
+      if (!rows.length) {
+        list.appendChild(el("div", "rs-ncards-empty", o.empty || t("库里还没有写过它的笔记")));
+        return list;
+      }
+      for (const h of rows) {
+        /* 双链卡的第一行是「它指向的那一页」（h.page）：与其它卡分开一档，
+           「打开」进那一页；其它卡落在写过它的那一行 */
+        const card = el("div", "rs-ncard" + (h.page ? " is-page" : ""));
+        const head = el("div", "rs-ncard-head");
+        head.appendChild(el("span", "rs-ncard-dir", h.dir));
+        head.appendChild(el("span", "rs-ncard-sum", hitSummary(h.text)));
+        card.appendChild(head);
+        card.rsHead = head;
+        card.title = h.page ? String(h.path || "") : String(h.path || "") + " · " + t("第 ") + hitLine(h) + t(" 行");
+        card.onclick = (ev) => {
+          /* 展开出来的全文里点 / 拖选不该把卡收回去：只有点「行」（抬头）才折叠 */
+          const tgt = ev && ev.target;
+          if (tgt && tgt.nodeType === 1 && card.rsBody && card.rsBody.contains(tgt)) return;
+          if (card.classList.contains("is-open")) collapse(card);
+          else expand(card, h);
+        };
+        list.appendChild(card);
+      }
+      return list;
     }
     function hideNoteCards() {
       if (state.cardsEsc) document.removeEventListener("keydown", state.cardsEsc, true);
@@ -1260,14 +1515,21 @@
             const line = el("div", "rs-ncards-lit-row");
             const ttl = el("span", "rs-ncards-lit-t", String(r.title || "@" + r.key));
             ttl.title = (r.downloaded ? t("打开这篇的正文：") : t("本地还没有这篇的全文：")) + String(r.title || "@" + r.key);
-            const go = el("button", "rs-btn" + (r.downloaded ? " primary" : ""), r.downloaded ? t("打开文章") : t("搜索并入库"));
+            const go = el("button", "rs-btn" + (r.downloaded ? " primary" : ""), r.downloaded ? t("打开文章") : t("获取文献"));
             go.type = "button";
             go.title = r.downloaded
               ? t("导向这篇文献的正文（literature/ 里的全文）")
               : r.found
-                ? t("这篇在文献库里，但本地没有全文：按 DOI / 网址检索并入库")
-                : t("文献库里没有这一条：先检索这篇，再入库");
-            go.onclick = () => {
+                ? t("这篇在文献库里，但本地没有全文：让 agent 按 DOI / 网址获取这一篇")
+                : t("文献库里没有这一条：让 agent 检索这一篇并入库");
+            go.onclick = (ev) => {
+              if (ev && ev.stopPropagation) ev.stopPropagation();
+              const key = String(r.key || "");
+              hideNoteCards();
+              if (onOpenCite) onOpenCite(key);
+            };
+            /* 整行可点：与那颗按钮同一条路（一个点击一个结果，不必先瞄准按钮） */
+            line.onclick = () => {
               const key = String(r.key || "");
               hideNoteCards();
               if (onOpenCite) onOpenCite(key);
@@ -1280,45 +1542,23 @@
         }
       }
 
-      const list = el("div", "rs-ncards-list");
       const hits = Array.isArray(opts.hits)
         ? opts.hits
         : noteHits(kind === "link" ? "term" : kind, opts.keys || [title], citeCtx);
-      if (!hits.length) {
-        list.appendChild(
-          el(
-            "div",
-            "rs-ncards-empty",
-            kind === "cite"
-              ? t("这一处引用还没有笔记（点下面那颗钮写一条）")
-              : kind === "link"
-                ? t("这一条链接还没有对应内容（点下面那颗钮补一条）")
-                : t("库里还没有写过它的笔记"),
-          ),
-        );
-      }
-      for (const h of hits) {
-        /* 双链卡的第一行是「它指向的那一页」（h.page）：与其它卡分开一档底色，
-           点它才是「进那一页」，点其它卡是「跳到写过它的那一行」 */
-        const card = el("div", "rs-ncard" + (h.page ? " is-page" : ""));
-        const body = el("div", "rs-ncard-body");
-        body.appendChild(el("span", "rs-ncard-dir", h.dir));
-        /* 正文按行内 Markdown 排（粗体 / 代码 / 公式）：方向标题与正文仍是同一段流，3 行截断照旧 */
-        const textEl = el("span", "rs-ncard-text");
-        textEl.innerHTML = cardInlineHtml(h.text);
-        body.appendChild(document.createTextNode(" "));
-        body.appendChild(textEl);
-        card.appendChild(body);
-        card.title = h.page ? h.path : h.path + " · " + t("第 ") + h.line + t(" 行");
-        card.onclick = () => {
-          const path = h.path;
-          /* 页那一行没有行号（0）：进整篇；其它卡落在写过它的那一行 */
-          const line = Number(h.line) || 0;
+      /* 卡片本体交给 noteCardList（索引页浮空卡吃的是同一份）：空话说一次，行怎么长只有一处 */
+      const list = noteCardList(hits, {
+        empty:
+          kind === "cite"
+            ? t("这一处引用还没有笔记（点下面那颗钮写一条）")
+            : kind === "link"
+              ? t("这一条链接还没有对应内容（点下面那颗钮补一条）")
+              : t("库里还没有写过它的笔记"),
+        /* 阅读区这次只负责「打开」：收起浮层再进笔记（索引页自己那一份会先收它自己的浮层） */
+        onOpen: (h) => {
           hideNoteCards();
-          if (openNote) openNote(path, { line });
-        };
-        list.appendChild(card);
-      }
+          openHit(h);
+        },
+      });
       box.appendChild(list);
       /* 引用梗才有：把这**一处** @ 写成一篇笔记（骨架由宿主落盘，阅读器不碰文件） */
       if (citeCtx && onNewNote) {
@@ -1379,8 +1619,9 @@
       };
       document.addEventListener("keydown", state.cardsEsc, true);
       /* 点外部就关：这一块是「点一下看一眼」的只读浮层，不做 persistent（带输入的
-         .rs-eqmodal / .rs-ask 才 persistent）。被点的那个词本身除外 —— 那颗 click
-         还要负责「再点一次 = 关」，别在 mousedown 就把它收掉再被 click 弹回来。 */
+         .rs-ask 表单才 persistent；公式浮层 .rs-eqmodal 同样是看一眼的，点幕布即收）。
+         被点的那个词本身除外 —— 那颗 click 还要负责「再点一次 = 关」，
+         别在 mousedown 就把它收掉再被 click 弹回来。 */
       if (state.cardsDown) document.removeEventListener("mousedown", state.cardsDown, true);
       state.cardsAnchor = anchorEl || null;
       state.cardsDown = (ev) => {
@@ -1408,12 +1649,24 @@
           '<button class="rs-btn primary" data-a="save"></button>' +
           '<button class="rs-btn" data-a="cancel"></button></div></div>' +
           '<div class="rs-eqmodal-expand"></div></div>';
-        /* persistent：这里带 LaTeX 输入框，点蒙层不关窗 —— 只走窗内「关闭」与 Esc */
+        /* 出口三选一：窗内「关闭」、Esc、**点幕布（窗外面任意位置）**。
+           公式浮层是「点一下看一眼」的浮层，不做 persistent —— 点外面就收；
+           窗内（含 LaTeX 源码框、方向区）一律不关，滚动条与拖选也不误伤（只认 mousedown 在幕布本身）。 */
         document.addEventListener(
           "keydown",
           (ev) => {
             if (ev.key !== "Escape" || !box.classList.contains("show")) return;
             ev.stopPropagation();
+            box.classList.remove("show");
+          },
+          true,
+        );
+        document.addEventListener(
+          "mousedown",
+          (ev) => {
+            if (!box.classList.contains("show")) return;
+            /* 只有落在幕布自己身上（= 窗外）才收：窗内点按 target 是盒子里的元素 */
+            if (ev.target !== box) return;
             box.classList.remove("show");
           },
           true,
@@ -1545,6 +1798,16 @@
       box.classList.add("show");
     }
 
+    /* ── 引用块的「收标记」一趟：术语卡 + callout 抬头 ──
+       阅读态整份 decorate 里有这两步；图谱右栏这种只渲一块正文的地方单独要它
+       （不能跑整份 decorate：那会重建大纲、进度与滚动侦听）。顺序与 decorate 一致：
+       先术语卡（`[!term]` 的抬头形制与其余种类不同），再其余种类。 */
+    function decorateCalloutHeads(rootEl) {
+      if (!rootEl) return;
+      decorateTermCards(rootEl);
+      decorateCalloutTitles(rootEl);
+    }
+
     /* ── 总入口：顺序有讲究（先术语卡去标记，再包公式容器，最后才高亮术语） ── */
     function decorate(rootEl, opts) {
       const o = opts || {};
@@ -1571,6 +1834,9 @@
       decorateWikilinks(rootEl);
       decorateMetaLines(rootEl);
       joinSoftBreaks(rootEl);
+      /* 收标记收完、软换行合完，段落已经是干净的文字流：这时才把段首引导句提成小标题，
+         免得反过来被「合并换行 / 包引用梗」当成正文中间的节点去处理。 */
+      promoteLeadInlines(rootEl);
       numberFormulas(rootEl);
       state.root = rootEl;
       /* 挂一次 resize 重算：窗口变宽后，上一轮为长式子缩掉的字号要还回去 */
@@ -1596,12 +1862,23 @@
       tip: hideTermTip,
       cards: showNoteCards,
       hideCards: hideNoteCards,
+      /* 浮空卡的可复用入口（索引页「论断 / 概念 / 方法 / 问题」弹的是同一款卡，不复制第二份）：
+         noteCardList(hits, { onOpen, empty, className }) → .rs-ncards-list（标题 + 一行 + 点开展开 + 行尾打开）；
+         openHit(hit) = 打开某一条（页那一行进整篇，其余落在写过它的那一行）；
+         summary(text) = 那一行摘要的取法（正文第一句，剥掉行内 Markdown 标记）。 */
+      noteCardList,
+      openHit,
+      summary: hitSummary,
       noteHits,
       eq: openEq,
       fit: fitFormulas,
       termIndex,
       /* 编辑态右侧实时预览没有走 decorate，单独要这一步合软换行 */
       joinSoftBreaks,
+      /* 只渲一块正文的地方（图谱右栏预览）：`[!term]` / `[!claim]` 的抬头与术语卡 */
+      decorateCalloutHeads,
+      /* 溯源行（`支撑：…` / `verify: doubt`）收成小字，免得预览里露成正文 */
+      decorateMetaLines,
       /* 就地编辑面（contenteditable）单独要的一步：`[[…]]` 收成链接，回写由宿主按 data-wl 还原 */
       decorateWikilinks,
       /* 选区右键菜单的委托：编辑态没有 decorate，由宿主在正文容器上补挂一次 */

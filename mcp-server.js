@@ -72,6 +72,10 @@ const TOOL_OPS = {
   mtnode_facts: { op: "facts", family: "facts", write: true },
   lt_state: { op: "lt", family: "lt", write: true },
   mtnode_assets: { op: "asset", family: "asset", write: true },
+  /* 截屏标注（mtnode_screenshot）：与 asset 同一条渲染层帧链路 —— 渲染层只做转手，
+     真正抢屏 / 浮层 / 落盘在主进程。第三方客户端调它同样会弹询问窗（用户不点头就没有
+     屏幕被冻结），所以 write:true 只是审计标注，不是「静默改盘」。 */
+  mtnode_screenshot: { op: "shot", family: "shot", write: true },
   mtnode_gui: { op: "gui", family: "gui", local: true, write: true },
   /* 开发调试（mtnode_dev）：与 gui 同一类「第一类在主进程执行」的工具（根目录 dev-agent.js），
      但作用域不同 —— 它**另起一只隔离的调试实例**并用 CDP 驱动它（起 / 连 / 截图 / 点 /

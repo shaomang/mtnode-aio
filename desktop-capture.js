@@ -75,7 +75,9 @@ function parseIntOrNull(v) {
 }
 
 /* 目标归一：中文 / 英文 / 别名都收，认不出来时返回 ""（由调用方给错误文案）。
-   screen | window | all —— all = 整块虚拟桌面（所有屏幕拼一起）。 */
+   screen | window | all | cursor ——
+   all    = 整块虚拟桌面（所有屏幕拼一起）；
+   cursor = 鼠标所在那块屏（在 PowerShell 自己的坐标系里判，不需要跨进程对 DPI）。 */
 function normTarget(v) {
   const s = String(v == null ? "" : v).trim().toLowerCase();
   if (!s) return "";
@@ -84,6 +86,8 @@ function normTarget(v) {
   if (["window", "win", "窗口", "某个窗口"].includes(s)) return "window";
   if (["all", "desktop", "virtual", "全部", "所有屏幕", "整块桌面", "桌面"].includes(s))
     return "all";
+  if (["cursor", "pointer", "mouse", "鼠标", "光标", "鼠标所在屏幕", "鼠标所在的屏幕"].includes(s))
+    return "cursor";
   return "";
 }
 
@@ -108,7 +112,7 @@ function normCaptureParams(raw) {
     return {
       ok: false,
       error: t(
-        "target 只能是 screen（某个屏幕）/ window（某个窗口）/ all（整块桌面）：拿到 " +
+        "target 只能是 screen（某个屏幕）/ window（某个窗口）/ all（整块桌面）/ cursor（鼠标所在那块屏）：拿到 " +
           JSON.stringify(p.target != null ? p.target : p.mode),
       ),
     };
@@ -162,13 +166,41 @@ $ProgressPreference = "SilentlyContinue"
 Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName System.Windows.Forms`;
 
+/* 让 PowerShell 变成「每显示器 DPI 感知」（Win10 1703+ 的 per-monitor v2，退一步 system-aware）。
+   不设的话 Windows 会把桌面坐标虚拟化：Screen.Bounds / Cursor.Position / CopyFromScreen
+   全按缩放折算过的尺寸说话（本机 150% 的屏会被当成 2294×960 而不是 3441×1440），
+   拍出来既糊、又和主进程那边的 DIP 不是一个单位 —— 「截图只显示桌面一个角落」就是这么来的。
+   Add-Type 或 API 调用失败都只是退回原来的虚拟化坐标：本脚本内部始终自洽（见 target=cursor）。 */
+const PS_DPI = `$mtnodeDpiSrc = @'
+using System;
+using System.Runtime.InteropServices;
+public class MtnodeDpi {
+  [DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(IntPtr ctx);
+  [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+}
+'@
+try {
+  Add-Type -TypeDefinition $mtnodeDpiSrc -ErrorAction Stop
+  $mtnodeDpiOk = $false
+  try { $mtnodeDpiOk = [MtnodeDpi]::SetProcessDpiAwarenessContext([IntPtr](-4)) } catch { $mtnodeDpiOk = $false }
+  if (-not $mtnodeDpiOk) { try { $mtnodeDpiOk = [MtnodeDpi]::SetProcessDPIAware() } catch { $mtnodeDpiOk = $false } }
+} catch { }`;
+
 const PS_WINAPI = `Add-Type @"
 using System;
+using System.Text;
 using System.Runtime.InteropServices;
 public class MtnodeWinApi {
   [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h, IntPtr dc, uint f);
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
   [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
+  [DllImport("user32.dll")] public static extern IntPtr GetTopWindow(IntPtr h);
+  [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr h, uint cmd);
+  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+  [DllImport("user32.dll")] public static extern int GetWindowTextLength(IntPtr h);
+  [DllImport("user32.dll")] public static extern int GetWindowText(IntPtr h, StringBuilder s, int max);
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+  [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr h, uint attr, out int val, uint size);
   [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
 }
 "@`;
@@ -205,11 +237,30 @@ function psIfNum(name, cond, thenVal, elseVal) {
    不经命令行传参 —— 少一类引号与 -File 路径坑。 */
 function buildPowerShell(mode, p) {
   const m = String(mode || "capture");
+  if (m === "screens") return `${PS_DPI}\n${PS_COMMON}\n` + screensBody();
+  if (m === "windows") return `${PS_DPI}\n${PS_COMMON}\n${PS_WINAPI}\n` + windowsBody();
+  if (m !== "capture") return `${PS_DPI}\n${PS_COMMON}\n` + unknownBody(m);
   const opt = p && typeof p === "object" ? p : {};
+  return `${PS_DPI}\n${PS_COMMON}\n${PS_WINAPI}\n` + captureBody(opt);
+}
 
-  if (m === "screens") {
-    return `${PS_COMMON}
-$list = @()
+/* 只取「主体」（不含前言）：常驻助手进程已经把 PS_DPI / PS_COMMON / PS_WINAPI / 空白检测
+   跑过一次，之后每次请求只送这一小段 —— 这才有可能把唤起压到几百毫秒。 */
+function buildBody(mode, p) {
+  const m = String(mode || "capture");
+  const opt = p && typeof p === "object" ? p : {};
+  if (m === "screens") return screensBody();
+  if (m === "windows") return windowsBody();
+  if (m === "capture") return captureBody(opt);
+  return unknownBody(m);
+}
+
+function unknownBody(m) {
+  return `Write-Output ("${CAPTURE_MARK}" + (@{ ok = $false; error = ${psQuote(t("未知截图模式：") + m)} } | ConvertTo-Json -Compress))`;
+}
+
+function screensBody() {
+  return `$list = @()
 foreach ($s in @([System.Windows.Forms.Screen]::AllScreens)) {
   $list += [pscustomobject]@{
     index = $list.Count
@@ -222,56 +273,96 @@ foreach ($s in @([System.Windows.Forms.Screen]::AllScreens)) {
   }
 }
 ${PS_EMIT("@{ ok = $true; screens = @($list) } | ConvertTo-Json -Depth 6 -Compress")}`;
-  }
+}
 
-  if (m === "windows") {
-    return `${PS_COMMON}
-${PS_WINAPI}
+/* 窗口清单：**按 Z 序**从最上层往下枚举（GetTopWindow → GetWindow(GW_HWNDNEXT)），
+   z=0 就是最顶层。以前走 Process.MainWindowHandle，拿到的顺序跟叠放层次毫无关系，
+   页面只好按「面积小的优先」猜命中，于是被压在底下的窗口也会被选中（用户报的
+   「选择窗口会选到被遮挡的窗口」）。顺带把「看不见的」一次剔掉：
+   IsWindowVisible=false（隐藏 / 最小化到托盘）、DWM cloaked（关掉的 UWP、别的虚拟桌面里
+   的窗口）、没有标题的（桌面 Progman 之类）、零尺寸的辅助窗 —— 剩下的每一个都真在屏幕上。
+   pid → 进程名先建一张表：逐个窗口 Get-Process 会把枚举拖慢好几倍。 */
+function windowsBody() {
+  return `$procs = @{}
+foreach ($pr in [System.Diagnostics.Process]::GetProcesses()) {
+  try { $procs[[int]$pr.Id] = [string]$pr.ProcessName } catch {}
+}
 $rows = New-Object System.Collections.ArrayList
-foreach ($p in [System.Diagnostics.Process]::GetProcesses()) {
-  $h = [IntPtr]::Zero
-  try { $h = $p.MainWindowHandle } catch { continue }
-  if ($h -eq [IntPtr]::Zero) { continue }
-  $t = ""
-  try { $t = [string]$p.MainWindowTitle } catch {}
-  if ($t.Trim() -eq "") { continue }
-  $r = New-Object MtnodeWinApi+RECT
-  if (-not [MtnodeWinApi]::GetWindowRect($h, [ref]$r)) { continue }
-  $pn = ""
-  try { $pn = [string]$p.ProcessName } catch {}
-  $mini = $false
-  try { $mini = [MtnodeWinApi]::IsIconic($h) } catch { $mini = $false }
-  [void]$rows.Add([pscustomobject]@{
-    hwnd = [int64]$h
-    pid = [int]$p.Id
-    process = $pn
-    title = $t
-    x = [int]$r.Left
-    y = [int]$r.Top
-    width = [int]($r.Right - $r.Left)
-    height = [int]($r.Bottom - $r.Top)
-    minimized = [bool]$mini
-  })
+$z = 0
+$h = [MtnodeWinApi]::GetTopWindow([IntPtr]::Zero)
+while ($h -ne [IntPtr]::Zero) {
+  $vis = $false
+  try { $vis = [MtnodeWinApi]::IsWindowVisible($h) } catch { $vis = $false }
+  if ($vis) {
+    $cloaked = 0
+    try {
+      $cv = 0
+      if ([MtnodeWinApi]::DwmGetWindowAttribute($h, 14, [ref]$cv, 4) -eq 0) { $cloaked = [int]$cv }
+    } catch { $cloaked = 0 }
+    if ($cloaked -eq 0) {
+      $len = 0
+      try { $len = [MtnodeWinApi]::GetWindowTextLength($h) } catch { $len = 0 }
+      $t = ""
+      if ($len -gt 0) {
+        $sb = New-Object System.Text.StringBuilder ([Math]::Max(8, $len + 2))
+        try {
+          [void][MtnodeWinApi]::GetWindowText($h, $sb, $sb.Capacity)
+          $t = $sb.ToString()
+        } catch { $t = "" }
+      }
+      $r = New-Object MtnodeWinApi+RECT
+      if ($t.Trim() -ne "" -and [MtnodeWinApi]::GetWindowRect($h, [ref]$r)) {
+        $ww = [int]($r.Right - $r.Left)
+        $hh = [int]($r.Bottom - $r.Top)
+        if ($ww -gt 1 -and $hh -gt 1) {
+          $wpid = [uint32]0
+          try { [void][MtnodeWinApi]::GetWindowThreadProcessId($h, [ref]$wpid) } catch {}
+          $pn = ""
+          if ($procs.ContainsKey([int]$wpid)) { $pn = [string]$procs[[int]$wpid] }
+          $mini = $false
+          try { $mini = [MtnodeWinApi]::IsIconic($h) } catch { $mini = $false }
+          [void]$rows.Add([pscustomobject]@{
+            hwnd = [int64]$h
+            z = [int]$z
+            pid = [int]$wpid
+            process = $pn
+            title = $t
+            x = [int]$r.Left
+            y = [int]$r.Top
+            width = $ww
+            height = $hh
+            visible = [bool]$vis
+            minimized = [bool]$mini
+          })
+          $z = $z + 1
+        }
+      }
+    }
+  }
+  $h = [MtnodeWinApi]::GetWindow([IntPtr]$h, 2)
 }
 ${PS_EMIT("@{ ok = $true; windows = @($rows) } | ConvertTo-Json -Depth 6 -Compress")}`;
-  }
+}
 
-  if (m !== "capture")
-    return `${PS_COMMON}
-Write-Output ("${CAPTURE_MARK}" + (@{ ok = $false; error = ${psQuote(t("未知截图模式：") + m)} } | ConvertTo-Json -Compress))`;
-
+/* capture 模式的脚本主体（不含前言）：一次性脚本与常驻助手共用这一份。
+   ⚠ 失败分支只能 `return`，不能 `exit` —— 常驻助手用 scriptblock 跑这段，
+   `exit` 会把整只助手进程带走（第一次失败之后就再也截不了图）。 */
+function captureBody(opt) {
   const regionGiven = opt.w != null && opt.h != null;
   /* 脚本里的中文原因同样过 i18n（英文界面下模型 / 用户看到的是英文）：
      这些字面量是**脚本文本**，所以在这里 t() 一次、直接拼进字符串。 */
   const msg = {
     noWindow: t("没找到匹配的窗口（关键字 / hwnd / pid 都对不上）："),
     noScreen: t("没有匹配的屏幕（屏幕 id / 名称 / 序号都对不上）："),
+    noCursorScreen:
+      t("鼠标当前所在的位置不属于任何屏幕（远程桌面临时断开？）：先把鼠标移到要拍的屏幕上再试"),
     minimized: t("这个窗口当前最小化了（最小化的窗口拍出来只会是黑图）：先把它显示出来再拍 —— "),
     rectFail: t("取窗口位置失败（窗口可能正在创建 / 关闭）"),
     noArea: t("被拍对象当前没有可见区域（最小化了？）：先把它显示出来再拍"),
     emptyRegion: t("截图区域为空（偏移 / 尺寸超出被拍对象范围？）"),
   };
-  return `${PS_COMMON}
+  return `${PS_DPI}
+${PS_COMMON}
 ${PS_WINAPI}
 $OutPath = ${psQuote(opt.outPath)}
 $Target = ${psQuote(opt.target)}
@@ -345,6 +436,18 @@ if ($Target -eq "window") {
   if ($Target -eq "all") {
     $bx = [int]$virtual.X; $by = [int]$virtual.Y
     $bw = [int]$virtual.Width; $bh = [int]$virtual.Height
+  } elseif ($Target -eq "cursor") {
+    # 鼠标所在那块屏：判屏与被拍区域全在这个进程的坐标系里，
+    # 所以不管 Windows 有没有把 DPI 虚拟化、这块屏在左边还是右边，框出来的都是整块屏。
+    $pt = [System.Windows.Forms.Cursor]::Position
+    $sc = [System.Windows.Forms.Screen]::FromPoint($pt)
+    if ($null -eq $sc) {
+      $FailMsg = ${psQuote(msg.noCursorScreen)}
+    } else {
+      $bx = [int]$sc.Bounds.X; $by = [int]$sc.Bounds.Y
+      $bw = [int]$sc.Bounds.Width; $bh = [int]$sc.Bounds.Height
+      $WantScreen = [string]$sc.DeviceName
+    }
   } else {
     $sc = Pick-MtnodeScreen $WantScreen
     if ($null -eq $sc) {
@@ -373,7 +476,7 @@ ${psIfNum("capH", "$RegionH -gt 0", "$RegionH", "($bh - $OffY)")}
 
 if ($FailMsg -ne "") {
   Write-Output ("${CAPTURE_MARK}" + (@{ ok = $false; error = $FailMsg; target = $Target } | ConvertTo-Json -Compress))
-  exit 0
+  return
 }
 
 $bmp = New-Object System.Drawing.Bitmap($capW, $capH, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
@@ -411,6 +514,239 @@ ${PS_EMIT(
 /* capture 模式的完整脚本 = 空白检测函数 + 主体（Windows 分支要用到它） */
 function buildCaptureScript(p) {
   return PS_BLANK_HELPER + "\n" + buildPowerShell("capture", p);
+}
+
+/* ── 常驻热进程（warm worker）────────────────────────────────────
+   为什么要有它：一次性脚本每次都要付「解释器启动 158ms + Add-Type 现编 C# 约 90ms +
+   程序集加载」的固定开销（本机实测 `capture(target=cursor)` 501ms）。按一次快捷键就等
+   半秒多，用户感觉到的就是「按了要停一下才出来」。
+   常驻助手把这些一次性开销留在进程里：启动时把前言（DPI 感知 / 程序集 / WinApi 类型 /
+   空白检测函数）跑一遍，之后每次只送「主体」，回一行 JSON。热态只剩抓屏与存 PNG，
+   本机实测约 300ms。
+   协议（都靠前缀认，避免被别的东西的输出干扰）：
+     请求  {id, script}                     —— 一行 JSON，script = buildBody(mode, p)
+     回执  __MTNODE_WARM__{id, stdout}       —— 一行 JSON，stdout = 主体自己写的那行结果
+   任何异常（起不来 / 没回音 / 崩了）都只是**这一条**失败：调用方退回一次性脚本。 */
+const WARM_MARK = "__MTNODE_WARM__";
+const WARM_IDLE_MS = 5 * 60 * 1000;
+
+function buildWarmScript() {
+  return `${PS_DPI}
+${PS_COMMON}
+${PS_WINAPI}
+${PS_BLANK_HELPER}
+$mtnodeMark = ${psQuote(WARM_MARK)}
+while ($true) {
+  $line = [Console]::In.ReadLine()
+  if ($null -eq $line) { break }
+  if ($line.Trim() -eq "") { continue }
+  $reqId = 0
+  $text = ""
+  try {
+    $cmd = $line | ConvertFrom-Json
+    $reqId = [int]$cmd.id
+    $sb = [scriptblock]::Create([string]$cmd.script)
+    $text = [string](@(& $sb) -join [Environment]::NewLine)
+  } catch {
+    $text = ${psQuote(CAPTURE_MARK)} + (@{ ok = $false; error = [string]$_.Exception.Message } | ConvertTo-Json -Compress)
+  }
+  $payload = @{ id = $reqId; stdout = [string]$text } | ConvertTo-Json -Compress -Depth 4
+  [Console]::Out.WriteLine($mtnodeMark + $payload)
+  [Console]::Out.Flush()
+}`;
+}
+
+/* 进程退出时把还活着的助手收掉（否则会留下孤儿 powershell.exe） */
+const liveWorkers = new Set();
+let exitHookInstalled = false;
+function trackWorker(w) {
+  liveWorkers.add(w);
+  if (exitHookInstalled) return;
+  exitHookInstalled = true;
+  try {
+    process.once("exit", () => {
+      for (const x of liveWorkers) {
+        try {
+          x.dispose();
+        } catch {}
+      }
+    });
+  } catch {}
+}
+
+function createWarmWorker(opts = {}) {
+  const spawnFn = typeof opts.spawn === "function" ? opts.spawn : spawn;
+  const exeList =
+    Array.isArray(opts.exeList) && opts.exeList.length ? opts.exeList.map(String) : PS_EXE_CANDIDATES.slice();
+  const idleMs = Number(opts.idleMs) > 0 ? Number(opts.idleMs) : WARM_IDLE_MS;
+  const replyMs = Number(opts.replyMs) > 0 ? Number(opts.replyMs) : DEFAULT_TIMEOUT_MS;
+  const encoded = Buffer.from(buildWarmScript(), "utf16le").toString("base64");
+
+  let child = null;
+  let exeIdx = 0;
+  let buf = "";
+  let nextId = 1;
+  let idleTimer = null;
+  let disposed = false;
+  const waiting = new Map();
+
+  function failAll(reason) {
+    for (const item of waiting.values()) {
+      try {
+        clearTimeout(item.timer);
+      } catch {}
+      try {
+        item.resolve({ ok: false, error: reason, unavailable: true });
+      } catch {}
+    }
+    waiting.clear();
+  }
+  function armIdle() {
+    if (idleTimer) {
+      try {
+        clearTimeout(idleTimer);
+      } catch {}
+    }
+    idleTimer = setTimeout(() => stop("idle"), idleMs);
+    if (idleTimer && typeof idleTimer.unref === "function") idleTimer.unref();
+  }
+  function stop(reason) {
+    if (idleTimer) {
+      try {
+        clearTimeout(idleTimer);
+      } catch {}
+      idleTimer = null;
+    }
+    const c = child;
+    child = null;
+    buf = "";
+    if (c) {
+      try {
+        if (c.stdin) c.stdin.end();
+      } catch {}
+      try {
+        c.kill();
+      } catch {}
+    }
+    failAll(t("常驻截图进程已退出"));
+    void reason;
+  }
+  function onStdout(chunk) {
+    buf += String(chunk);
+    let at = 0;
+    for (;;) {
+      const i = buf.indexOf("\n", at);
+      if (i < 0) break;
+      const line = buf.slice(at, i).trim();
+      at = i + 1;
+      if (!line) continue;
+      const k = line.indexOf(WARM_MARK);
+      if (k < 0) continue;
+      let msg = null;
+      try {
+        msg = JSON.parse(line.slice(k + WARM_MARK.length));
+      } catch {
+        msg = null;
+      }
+      if (!msg) continue;
+      const item = waiting.get(Number(msg.id));
+      if (!item) continue;
+      waiting.delete(Number(msg.id));
+      try {
+        clearTimeout(item.timer);
+      } catch {}
+      item.resolve({ ok: true, stdout: String(msg.stdout == null ? "" : msg.stdout) });
+    }
+    if (at > 0) buf = buf.slice(at);
+    /* 半行垃圾别把缓冲撑爆（只在真的异常输出时才发生） */
+    if (buf.length > 8 * 1024 * 1024) buf = "";
+  }
+  function start() {
+    if (disposed) return false;
+    if (child) return true;
+    for (let i = exeIdx; i < exeList.length; i++) {
+      const exe = exeList[i];
+      let c = null;
+      try {
+        c = spawnFn(exe, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded], {
+          windowsHide: true,
+          stdio: ["pipe", "pipe", "pipe"],
+        });
+      } catch (err) {
+        continue;
+      }
+      if (!c) continue;
+      child = c;
+      exeIdx = i;
+      buf = "";
+      try {
+        if (c.stdout) c.stdout.on("data", onStdout);
+      } catch {}
+      try {
+        if (c.stderr) c.stderr.on("data", () => {});
+      } catch {}
+      c.on("error", (e) => {
+        if (child !== c) return;
+        child = null;
+        /* 这个可执行文件根本不存在：下次换下一个候选 */
+        if (e && (e.code === "ENOENT" || e.code === "EACCES")) exeIdx = i + 1;
+        failAll((e && e.message) || String(e));
+      });
+      c.on("close", () => {
+        if (child !== c) return;
+        child = null;
+        failAll(t("常驻截图进程已退出"));
+      });
+      armIdle();
+      return true;
+    }
+    return false;
+  }
+  function request(bodyScript) {
+    if (disposed) return Promise.resolve({ ok: false, error: t("常驻截图进程已关闭"), unavailable: true });
+    if (!start()) return Promise.resolve({ ok: false, error: t("常驻截图进程起不来"), unavailable: true });
+    const c = child;
+    if (!c || !c.stdin || typeof c.stdin.write !== "function")
+      return Promise.resolve({ ok: false, error: t("常驻截图进程不可写"), unavailable: true });
+    const id = nextId++;
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        if (!waiting.has(id)) return;
+        waiting.delete(id);
+        resolve({ ok: false, error: t("常驻截图进程没有回音"), unavailable: true });
+        stop("timeout");
+      }, replyMs);
+      waiting.set(id, { resolve, timer });
+      try {
+        c.stdin.write(JSON.stringify({ id: id, script: String(bodyScript) }) + "\n");
+      } catch (err) {
+        waiting.delete(id);
+        try {
+          clearTimeout(timer);
+        } catch {}
+        resolve({ ok: false, error: (err && err.message) || String(err), unavailable: true });
+        stop("write-failed");
+        return;
+      }
+      armIdle();
+    });
+  }
+
+  const api = {
+    /* 预热：发一条空请求把「前言」跑完（编译好的类型 / DPI 上下文留在进程里），
+       这样用户第一次按快捷键也是热态的。 */
+    warm: () => request(`Write-Output "${CAPTURE_MARK}" + (@{ ok = $true } | ConvertTo-Json -Compress)`),
+    request,
+    stop: () => stop("stop"),
+    dispose: () => {
+      disposed = true;
+      liveWorkers.delete(api);
+      stop("dispose");
+    },
+    alive: () => !!(child && !child.killed),
+  };
+  trackWorker(api);
+  return api;
 }
 
 /* ── 脚本执行（可注入，便于纯 Node 测试）────────────────────── */
@@ -543,14 +879,16 @@ function captureFileName(p, now) {
       ? p.window || (p.hwnd ? "hwnd" + p.hwnd : p.pid ? "pid" + p.pid : "window")
       : p.target === "all"
         ? "desktop"
-        : p.screen || "primary";
+        : p.target === "cursor"
+          ? "cursor"
+          : p.screen || "primary";
   const safe =
     String(what)
       .replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_")
       .replace(/\s+/g, " ")
       .trim()
       .slice(0, 40) || "shot";
-  return "shot-" + p.target + "-" + safe + "-" + stampOf(now) + ".png";
+  return ("shot-" + p.target + (safe === p.target ? "" : "-" + safe) + "-" + stampOf(now) + ".png");
 }
 
 /* ── 对外工厂 ─────────────────────────────────────────────────
@@ -567,6 +905,33 @@ function createDesktopCapture(deps = {}) {
   const timeoutMs = Number(deps.timeoutMs) > 0 ? Number(deps.timeoutMs) : DEFAULT_TIMEOUT_MS;
   const nowFn = typeof deps.now === "function" ? deps.now : () => Date.now();
   const platform = String(deps.platform || process.platform);
+  /* 常驻热进程：Windows 上默认开；注入了 runPowerShell 的调用方（测试 / 特殊环境）走原来
+     那条一次性脚本的路，行为不变。deps.warm === false 可以显式关掉。 */
+  const useWarm = platform === "win32" && deps.warm !== false && typeof deps.runPowerShell !== "function";
+  let worker = null;
+  function warmWorker() {
+    if (!useWarm) return null;
+    if (!worker) {
+      worker = createWarmWorker({
+        spawn: deps.spawn,
+        exeList: deps.exeList,
+        idleMs: deps.warmIdleMs,
+        replyMs: deps.warmReplyMs,
+      });
+    }
+    return worker;
+  }
+  /* 一次请求：优先常驻助手（热态），失败立刻退回一次性脚本（慢一点但一定能拍）。 */
+  async function runScript(mode, params) {
+    const body = buildBody(mode, params);
+    const w = warmWorker();
+    if (w) {
+      const r = await w.request(body);
+      if (r && r.ok === true) return { ok: true, stdout: r.stdout, stderr: "", mode: mode, warm: true };
+    }
+    const script = mode === "capture" ? buildCaptureScript(params) : buildPowerShell(mode, params);
+    return runPs(script, { exe: exe, timeoutMs: timeoutMs, mode: mode });
+  }
 
   async function run(mode, params) {
     if (!outDir) return { ok: false, error: t("桌面截图未初始化（缺少输出目录）") };
@@ -579,8 +944,7 @@ function createDesktopCapture(deps = {}) {
             "。拍 MTNode 自己的窗口 / 画布请用画布拍照类能力。",
         ),
       };
-    const script = mode === "capture" ? buildCaptureScript(params) : buildPowerShell(mode, params);
-    const r = await runPs(script, { exe: exe, timeoutMs: timeoutMs, mode: mode });
+    const r = await runScript(mode, params);
     if (!r || r.ok === false)
       return { ok: false, error: (r && r.error) || t("截图脚本执行失败") };
     const parsed = parseCaptureOutput(r.stdout);
@@ -599,6 +963,27 @@ function createDesktopCapture(deps = {}) {
   return {
     outDir: outDir,
     available: () => platform === "win32",
+    /* 预热常驻助手（应用启动后调一次）：把解释器 / C# 编译 / DPI 上下文提前付掉。
+       回 { ok, ms }：ms 是「从起进程到第一条应答回来」的真实耗时，写日志用来看热态到底有没有生效。 */
+    warm() {
+      const w = warmWorker();
+      if (!w) return Promise.resolve({ ok: false, error: t("常驻截图进程未启用") });
+      const t0 = Date.now();
+      return w.warm().then((r) => ({
+        ok: !!(r && r.ok === true),
+        ms: Date.now() - t0,
+        error: r && r.error,
+      }));
+    },
+    warmAlive: () => !!(worker && worker.alive()),
+    dispose() {
+      if (worker) {
+        try {
+          worker.dispose();
+        } catch {}
+        worker = null;
+      }
+    },
     /* 有哪些屏幕可拍：[{index, deviceName, primary, x, y, width, height}] */
     async listScreens() {
       const r = await run("screens", {});
@@ -670,9 +1055,14 @@ module.exports = {
   psNum,
   psBool,
   PS_BLANK_HELPER,
+  PS_DPI,
   PS_EXE_CANDIDATES,
   buildPowerShell,
+  buildBody,
   buildCaptureScript,
+  buildWarmScript,
+  WARM_MARK,
+  createWarmWorker,
   runPowerShellOnce,
   runPowerShellEncoded,
   parseCaptureOutput,

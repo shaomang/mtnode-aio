@@ -1,0 +1,307 @@
+{
+  "format": 3,
+  "fingerprint": "app/app-dev/SKILL.md:55840:1793569900670|app/app-merge/SKILL.md:6260:1793274313889|app/impeccable/SKILL.md:11200:1793274313889|app/story2video-workflow/SKILL.md:11638:1793615908880|film/asset/film-asset-character/SKILL.md:14843:1793781640127|film/asset/film-asset-qc/SKILL.md:13731:1793781840564|film/asset/film-asset-scene-prop/SKILL.md:14688:1793781854921|film/asset/film-asset-style-bible/SKILL.md:13840:1793781847771|film/audio/film-audio-loudness/SKILL.md:10616:1793781892028|film/audio/film-audio-sound-design/SKILL.md:12169:1793781897392|film/audio/film-audio-voiceover/SKILL.md:12017:1793781692287|film/audio/film-subtitle-production/SKILL.md:11012:1793781915101|film/post/film-deliver-platform/SKILL.md:13949:1793781793057|film/post/film-edit-ffmpeg/SKILL.md:15852:1793781681287|film/post/film-edit-narrative/SKILL.md:14112:1793781926727|film/post/film-post-jianying/SKILL.md:14472:1793781929687|film/post/film-post-qc/SKILL.md:14489:1793781921008|film/prompt/film-prompt-cinematography/SKILL.md:14577:1793781960915|film/prompt/film-prompt-consistency/SKILL.md:13495:1793782009565|film/prompt/film-prompt-keyframe-image/SKILL.md:13206:1793782013102|film/prompt/film-prompt-qc/SKILL.md:14138:1793782010892|film/prompt/film-prompt-video-models/SKILL.md:18764:1793782114448|film/script/film-script-scene-dialogue/SKILL.md:13157:1793781712693|film/script/film-script-series-bible/SKILL.md:12795:1793781723543|film/script/film-script-short-drama/SKILL.md:13494:1793781718990|film/script/film-script-story-architecture/SKILL.md:14963:1793781503223|film/script/film-script-style-adaptation/SKILL.md:15759:1793781715735|film/storyboard/film-previs-blockout/SKILL.md:16637:1793781931179|film/storyboard/film-shot-director-styles/SKILL.md:18141:1793781942915|film/storyboard/film-shot-language/SKILL.md:15580:1793781916982|film/storyboard/film-shot-list-breakdown/SKILL.md:14540:1793781942928|film/storyboard/film-storyboard-prompt/SKILL.md:20695:1793781929304|image/qwen-image-prompt/SKILL.md:11290:1793371577303|mtnode/ai-facts/SKILL.md:5930:1793274313890|mtnode/canvas-batch-safety/SKILL.md:2572:1793274313890|mtnode/canvas-edit-rules/SKILL.md:35925:1793286072611|mtnode/canvas-layout-ux/SKILL.md:3124:1793274313891|mtnode/db-facts/SKILL.md:2567:1793274313891|mtnode/dev-architect/SKILL.md:34442:1793274313891|mtnode/grill-me/SKILL.md:13575:1793274313892|mtnode/local-media/SKILL.md:6718:1793274313892|mtnode/mcp-server/SKILL.md:14071:1793876017789|mtnode/media-gen-nodes/SKILL.md:5706:1793274313893|mtnode/research/SKILL.md:24364:1794257992774|mtnode/self-check/SKILL.md:2662:1793274313893|mtnode/verify-in-app/SKILL.md:12105:1793875362795|mtnode/workflow-design/SKILL.md:6136:1793274313894|music/breeze-script-format/SKILL.md:10524:1793274313894|music/breeze-voice-design/SKILL.md:11126:1793274313895|music/minimax-music-lyrics/SKILL.md:8559:1793274313895|music/minimax-music-prompt/SKILL.md:14314:1793274313895|plugins/plugin-dev/SKILL.md:24360:1793274313895|remotion/animation/remotion-animation-timing/SKILL.md:12528:1793782019504|remotion/animation/remotion-shot-recipes/SKILL.md:17372:1793781962499|remotion/audio-subtitle/remotion-audio-captions/SKILL.md:14293:1793782034341|remotion/components/remotion-project-basics/SKILL.md:13419:1793782019508|remotion/data-params/remotion-data-params/SKILL.md:12008:1793781861801|remotion/render-deploy/remotion-render-encoding/SKILL.md:11477:1793782009302|video/h3-dynamic-still-prompt/SKILL.md:19123:1793274313897|writing/humanizer-zh/SKILL.md:9827:1792468569111||ov:",
+  "count": 60,
+  "skills": [
+    {
+      "name": "impeccable",
+      "path": "app/impeccable/SKILL.md",
+      "visible": true
+    },
+    {
+      "name": "mtnode-app-dev",
+      "path": "app/app-dev/SKILL.md",
+      "visible": false
+    },
+    {
+      "name": "mtnode-app-merge",
+      "path": "app/app-merge/SKILL.md",
+      "visible": false
+    },
+    {
+      "name": "story2video-workflow",
+      "path": "app/story2video-workflow/SKILL.md",
+      "visible": false
+    },
+    {
+      "name": "film-asset-character",
+      "path": "film/asset/film-asset-character/SKILL.md",
+      "visible": false
+    },
+    {
+      "name": "film-asset-qc",
+      "path": "film/asset/film-asset-qc/SKILL.md",
+      "visible": false
+    },
+    {
+      "name": "film-asset-scene-prop",
+      "path": "film/asset/film-asset-scene-prop/SKILL.md",
+      "visible": false
+    },
+    {
+      "name": "film-asset-style-bible",
+      "path": "film/asset/film-asset-style-bible/SKILL.md",
+      "visible": false
+    },
+    {
+      "name": "film-audio-loudness",
+      "path": "film/audio/film-audio-loudness/SKILL.md",
+      "visible": false
+    },
+    {
+      "name": "film-audio-sound-design",
+      "path": "film/audio/film-audio-sound-design/SKILL.md",
+      "visible": false
+    },
+    {
+      "name": "film-audio-voiceover",
+      "path": "film/audio/film-audio-voiceover/SKILL.md",
+      "visible": false
+    },
+    {
+      "name": "film-deliver-platform",
+      "path": "film/post/film-deliver-platform/SKILL.md",
+      "visible": false
+    },
+    {
+      "name": "film-edit-ffmpeg",
+      "path": "film/post/film-edit-ffmpeg/SKILL.md",
+      "visible": false
+    },
+    {
+      "name": "film-edit-narrative",
+      "path": "film/post/film-edit-narrative/SKILL.md",
+      "visible": false
+    },
+    {
+      "name": "film-post-jianying",
+      "path": "film/post/film-post-jianying/SKILL.md",
+      "visible": false
+    },
+    {
+      "name": "film-post-qc",
+      "path": "film/post/film-post-qc/SKILL.md",
+      "visible": false
+    },
+    {
+      "name": "film-previs-blockout",
+      "path": "film/storyboard/film-previs-blockout/SKILL.md",
+      "visible": false
+    },
+    {
+      "name": "film-prompt-cinematography",
+      "path": "film/prompt/film-prompt-cinematography/SKILL.md",
+      "visible": false
+    },
+    {
+      "name": "film-prompt-consistency",
+      "path": "film/prompt/film-prompt-consistency/SKILL.md",
+      "visible": false
+    },
+    {
+      "name": "film-prompt-keyframe-image",
+      "path": "film/prompt/film-prompt-keyframe-image/SKILL.md",
+      "visible": false
+    },
+    {
+      "name": "film-prompt-qc",
+      "path": "film/prompt/film-prompt-qc/SKILL.md",
+      "visible": false
+    },
+    {
+      "name": "film-prompt-video-models",
+      "path": "film/prompt/film-prompt-video-models/SKILL.md",
+      "visible": false
+    },
+    {
+      "name": "film-script-scene-dialogue",
+      "path": "film/script/film-script-scene-dialogue/SKILL.md",
+      "visible": false
+    },
+    {
+      "name": "film-script-series-bible",
+      "path": "film/script/film-script-series-bible/SKILL.md",
+      "visible": false
+    },
+    {
+      "name": "film-script-short-drama",
+      "path": "film/script/film-script-short-drama/SKILL.md",
+      "visible": false
+    },
+    {
+      "name": "film-script-story-architecture",
+      "path": "film/script/film-script-story-architecture/SKILL.md",
+      "visible": false
+    },
+    {
+      "name": "film-script-style-adaptation",
+      "path": "film/script/film-script-style-adaptation/SKILL.md",
+      "visible": false
+    },
+    {
+      "name": "film-shot-director-styles",
+      "path": "film/storyboard/film-shot-director-styles/SKILL.md",
+      "visible": false
+    },
+    {
+      "name": "film-shot-language",
+      "path": "film/storyboard/film-shot-language/SKILL.md",
+      "visible": false
+    },
+    {
+      "name": "film-shot-list-breakdown",
+      "path": "film/storyboard/film-shot-list-breakdown/SKILL.md",
+      "visible": false
+    },
+    {
+      "name": "film-storyboard-prompt",
+      "path": "film/storyboard/film-storyboard-prompt/SKILL.md",
+      "visible": false
+    },
+    {
+      "name": "film-subtitle-production",
+      "path": "film/audio/film-subtitle-production/SKILL.md",
+      "visible": false
+    },
+    {
+      "name": "qwen-image-prompt",
+      "path": "image/qwen-image-prompt/SKILL.md",
+      "visible": true
+    },
+    {
+      "name": "mtnode-ai-facts",
+      "path": "mtnode/ai-facts/SKILL.md",
+      "visible": false
+    },
+    {
+      "name": "mtnode-canvas-batch-safety",
+      "path": "mtnode/canvas-batch-safety/SKILL.md",
+      "visible": false
+    },
+    {
+      "name": "mtnode-canvas-edit-rules",
+      "path": "mtnode/canvas-edit-rules/SKILL.md",
+      "visible": false
+    },
+    {
+      "name": "mtnode-canvas-layout-ux",
+      "path": "mtnode/canvas-layout-ux/SKILL.md",
+      "visible": false
+    },
+    {
+      "name": "mtnode-db-facts",
+      "path": "mtnode/db-facts/SKILL.md",
+      "visible": false
+    },
+    {
+      "name": "mtnode-dev-architect",
+      "path": "mtnode/dev-architect/SKILL.md",
+      "visible": false
+    },
+    {
+      "name": "mtnode-grill-me",
+      "path": "mtnode/grill-me/SKILL.md",
+      "visible": false
+    },
+    {
+      "name": "mtnode-local-media",
+      "path": "mtnode/local-media/SKILL.md",
+      "visible": false
+    },
+    {
+      "name": "mtnode-mcp-server",
+      "path": "mtnode/mcp-server/SKILL.md",
+      "visible": false
+    },
+    {
+      "name": "mtnode-media-gen-nodes",
+      "path": "mtnode/media-gen-nodes/SKILL.md",
+      "visible": false
+    },
+    {
+      "name": "mtnode-research",
+      "path": "mtnode/research/SKILL.md",
+      "visible": false
+    },
+    {
+      "name": "mtnode-self-check",
+      "path": "mtnode/self-check/SKILL.md",
+      "visible": false
+    },
+    {
+      "name": "mtnode-verify-in-app",
+      "path": "mtnode/verify-in-app/SKILL.md",
+      "visible": false
+    },
+    {
+      "name": "mtnode-workflow-design",
+      "path": "mtnode/workflow-design/SKILL.md",
+      "visible": false
+    },
+    {
+      "name": "breeze-script-format",
+      "path": "music/breeze-script-format/SKILL.md",
+      "visible": true
+    },
+    {
+      "name": "breeze-voice-design",
+      "path": "music/breeze-voice-design/SKILL.md",
+      "visible": true
+    },
+    {
+      "name": "minimax-music-lyrics",
+      "path": "music/minimax-music-lyrics/SKILL.md",
+      "visible": true
+    },
+    {
+      "name": "minimax-music-prompt",
+      "path": "music/minimax-music-prompt/SKILL.md",
+      "visible": true
+    },
+    {
+      "name": "mtnode-plugin-dev",
+      "path": "plugins/plugin-dev/SKILL.md",
+      "visible": false
+    },
+    {
+      "name": "remotion-animation-timing",
+      "path": "remotion/animation/remotion-animation-timing/SKILL.md",
+      "visible": false
+    },
+    {
+      "name": "remotion-audio-captions",
+      "path": "remotion/audio-subtitle/remotion-audio-captions/SKILL.md",
+      "visible": false
+    },
+    {
+      "name": "remotion-data-params",
+      "path": "remotion/data-params/remotion-data-params/SKILL.md",
+      "visible": false
+    },
+    {
+      "name": "remotion-project-basics",
+      "path": "remotion/components/remotion-project-basics/SKILL.md",
+      "visible": false
+    },
+    {
+      "name": "remotion-render-encoding",
+      "path": "remotion/render-deploy/remotion-render-encoding/SKILL.md",
+      "visible": false
+    },
+    {
+      "name": "remotion-shot-recipes",
+      "path": "remotion/animation/remotion-shot-recipes/SKILL.md",
+      "visible": false
+    },
+    {
+      "name": "h3-dynamic-still-prompt",
+      "path": "video/h3-dynamic-still-prompt/SKILL.md",
+      "visible": true
+    },
+    {
+      "name": "humanizer-zh",
+      "path": "writing/humanizer-zh/SKILL.md",
+      "visible": true
+    }
+  ]
+}

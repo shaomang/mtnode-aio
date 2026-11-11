@@ -7,29 +7,33 @@
  *
  *   页头     「索引 · 原文在前」+ 一颗「原文」（切回这一篇的 Markdown 阅读态）
  *   课题头卡 课题标题 + 核心问题（取自索引那一篇的 frontmatter title / `> [!question] 核心问题`，
- *            读不到才退 research.json）：两处就地编辑，改完写回那一篇真源；右下「＋ 新增问题」
- *   数字行   原文 / 论断 / 概念 / 方法 / 问题 —— 只要数字，不摆卡片
- *   问题清单 全库 `> [!question]` 块 + kind: question 的笔记，一行一条：内容就地改、删除、
+ *            读不到才退 research.json）：两处就地编辑，改完写回那一篇真源
+ *   问题清单 就在课题头卡内部（和「核心问题」同一块，不再单占一区），
+ *            全库 `> [!question]` 块 + kind: question 的笔记，一行一条：内容就地改、删除、
  *            状态（callout 里的 `> qstatus:` 行）、勾选与批量改状态、
  *            建议 / 方案（块里的 `> advice: [[…]]` / `> fix: [[…]]`，可多条、可续行；
- *            每行一颗入口：挂上了显示建议笔记标题、点开那一篇，没挂上是「＋ 建议」）、
+ *            每行一颗入口：挂上了显示建议笔记标题、点开那一篇；没挂上就不摆这一颗）、
  *            新增（头行「＋ 新增问题」：就地一行输入标题 + 正文，交宿主 onQuestionNew 落盘）、
  *            状态字典（默认四档 + 自定义名称 / 颜色，存 research.json 的 questionStatus；
  *            入口是每行状态下拉最下面的「＋ 新状态」）
- *   筛选行   关键词（原文标题 / 路径）
- *   原文区   core/*.md 的原件，一张卡一篇：正文**从头按 Markdown 渲染**（含 `# 标题`，
- *            列表 / 表格 / 公式 / 代码都能显示，至少露五行）+ 路径，
- *            点一下进那一篇；**只有一篇时这张卡占满整页**
- *   最近改动 changes.jsonl 最近 10 条（同一版本组只留最新一条），一条一行的列表，点一行跳到那篇
+ *   标签页   原文 / 论断 / 概念 / 方法 / 问题 —— 就是原来那排数字，现在每颗都能点
+ *            （button toggle）：默认「原文」，点一下下方卡片区跟着换成那一类
+ *   卡片区   当前标签页那几篇：
+ *            原文 = core/*.md 原件（衍生物并进同一张卡），**双列大卡**（正文至少露五行 + 路径，
+ *            只有一张卡时占满整页）；
+ *            论断 / 概念 / 方法 / 问题 = **纵向一列、一行一条**（标题 + 一行摘要，不再摆大卡预览），
+ *            点行 = 在那一行下方弹**与阅读区同款**的浮空卡（卡里就这一篇一条，点开展开全文，
+ *            行尾那颗「打开」才进笔记；问题行按 line 跳到那一块）。卡本体在
+ *            renderer/research-reader.js 的 noteCardList 里，索引页只递 hits，不复制第二份
  *
  * 三条纪律（共识，改之前先看）：
- *   1. **Markdown 是真源**：本模块只读 RS.notes / changes.jsonl 的记录，**自己不写盘**
+ *   1. **Markdown 是真源**：本模块只读 RS.notes 的记录，**自己不写盘**
  *      （头卡的两处编辑只产出「改好的 Markdown 文本」，落盘是宿主 writeText + logChange 的事），
  *      也不重排正文；
  *   2. **衍生物必须并进原文**：versions 组（research-versions.js 的 buildGroups）里
  *      只有原件出一张卡，译稿 / 摘要 / 节选一律不单独成卡 —— 它们只在**那一篇页面内**
  *      用阅读区上方的平铺条切换（见 app-research.js 的 renderReadTools）；
- *      文献（library.json）与笔记（notes/ 里其余）不出卡，只在数字行里计数；
+ *      文献（library.json）与笔记（notes/ 里其余）只在标签页上计数；
  *   3. **视觉只吃主题变量**：颜色 / 字体 / 圆角全部沿用 css/research.css 的既有 token
  *      （--ink / --muted / --bd / --panel2 / --cyan…），不新造一套配色。
  *
@@ -43,13 +47,12 @@
 })(typeof window !== "undefined" ? window : globalThis, function () {
   "use strict";
 
-  /* 数字行：原文 + 四类知识（文献 / 笔记不出卡，也不单独列数） */
+  /* 标签页：原文 + 四类知识（文献 / 笔记不出卡，只在标签上计数） */
   const KIND_ORDER = ["claim", "concept", "method", "question"];
   const KIND_LABEL = { claim: "论断", concept: "概念", method: "方法", question: "问题" };
   /* 卡片正文至少露五行（共识）；从正文里多取一些交给 CSS 截，单篇占满时自然铺开 */
   const PREVIEW_LINES = 5;
   const PREVIEW_MAX = 40;
-  const RECENT_MAX = 10; /* 最近改动最多留 10 条（同一版本组只算一条） */
 
   const str = (v) => (v == null ? "" : String(v)).trim();
 
@@ -68,102 +71,14 @@
     );
   }
 
-  /* ── 标题里的行内 Markdown ────────────────────────────────────────────────
-     标题（frontmatter 的 title / `# 行`）可能带 `**重点**`、`` `code` ``、`[文字](url)`：
-     列表里按样式出，不把符号原样露在页面上。逐段建节点（不拼 innerHTML），
-     标题里的尖括号只是文字；`snake_case` 这种词里的下划线不动（要求左边界不是字母数字）。 */
-  const MD_INLINE = [
-    { re: /^`([^`\n]+)`/, tag: "code" },
-    { re: /^\*\*([\s\S]+?)\*\*/, tag: "strong" },
-    { re: /^__([\s\S]+?)__/, tag: "strong", word: true },
-    { re: /^~~([\s\S]+?)~~/, tag: "span", cls: "rs-md-del" },
-    { re: /^\*([^*\n]+?)\*/, tag: "em", word: true },
-    { re: /^\[\[([^\]\n|]+)(?:\|([^\]\n]+))?\]\]/, text: (m) => str(m[2] || m[1]) },
-    { re: /^\[([^\]\n]+)\]\([^)\n]*\)/, text: (m) => m[1] },
-  ];
-
-  function mdInlineNodes(text, doc, depth) {
-    const d = doc || (typeof document !== "undefined" ? document : null);
-    const out = [];
-    if (!d) return out;
-    const s = String(text == null ? "" : text).replace(/\s*\n+\s*/g, " ");
-    const deep = Number(depth) || 0;
-    let buf = "";
-    const flush = () => {
-      if (buf) out.push(d.createTextNode(buf));
-      buf = "";
-    };
-    for (let i = 0; i < s.length; ) {
-      const ch = s.charAt(i);
-      if (ch === "\\" && i + 1 < s.length) {
-        buf += s.charAt(i + 1);
-        i += 2;
-        continue;
-      }
-      let hit = null;
-      if ("`*_~[".indexOf(ch) >= 0) {
-        const rest = s.slice(i);
-        for (const r of MD_INLINE) {
-          const m = r.re.exec(rest);
-          if (!m) continue;
-          if (r.word && i > 0 && /[A-Za-z0-9]/.test(s.charAt(i - 1))) continue;
-          hit = { r: r, m: m };
-          break;
-        }
-      }
-      if (hit) {
-        flush();
-        if (hit.r.text) {
-          out.push(d.createTextNode(hit.r.text(hit.m)));
-        } else {
-          const node = d.createElement(hit.r.tag);
-          if (hit.r.cls) node.className = hit.r.cls;
-          const inner = hit.m[1];
-          if (deep < 2) for (const c of mdInlineNodes(inner, d, deep + 1)) node.appendChild(c);
-          else node.textContent = inner;
-          out.push(node);
-        }
-        i += hit.m[0].length;
-        continue;
-      }
-      buf += ch;
-      i += 1;
-    }
-    flush();
-    return out;
-  }
-
-  /* 标题 → 元素内容：行内 Markdown 出样式，标题开头的 `#` / `>` 去掉（那是结构标记，不是字） */
-  function fillTitle(node, title, doc) {
-    if (!node) return node;
-    node.textContent = "";
-    for (const c of mdInlineNodes(str(title).replace(/^[#>\s]+/, ""), doc)) node.appendChild(c);
-    return node;
-  }
-
-  /* 时间 → 人话（最近改动那一列用；超过 30 天退回日期，别写「97 天前」这种没用的数字） */
-  function whenText(ts, now) {
-    const t0 = Number(ts) || 0;
-    if (!t0) return "";
-    const base = Number(now) || Date.now();
-    const d = Math.max(0, base - t0);
-    const min = Math.floor(d / 60000);
-    if (min < 1) return "刚刚";
-    if (min < 60) return min + " 分钟前";
-    const h = Math.floor(min / 60);
-    if (h < 24) return h + " 小时前";
-    const day = Math.floor(h / 24);
-    if (day < 30) return day + " 天前";
-    const dt = new Date(t0);
-    const pad = (n) => (n < 10 ? "0" + n : String(n));
-    return dt.getFullYear() + "-" + pad(dt.getMonth() + 1) + "-" + pad(dt.getDate());
-  }
-
   /* 卡片正文 = 真 Markdown 的投影（不是第二份内容）：只削掉 frontmatter ——
      开头的大标题**留着**，卡片要从「# 标题」读起；callout / 列表 / 表格 / 公式 / 代码
      原样保留，交给渲染器出真结构。截断按非空行数算（空行不占五行，别拿五行空白充数），
-     围栏代码块整块留下；真截在围栏里就把围栏收口，不让它吞掉后面全部内容。
+     围栏代码块与跨行显示公式（`$$ … $$` / `\[ … \]`）整块留下 —— 切在中间会让渲染器
+     把半截 LaTeX 当正文吐出来（卡片上露 `$$` / `\frac` 源码）；真截在围栏里就把围栏
+     收口、真截在公式里就补上闭合符。
      返回 Markdown 文本（不在这里出 HTML：渲染器只有宿主有，见 previewHtml）。 */
+  const DISPLAY_MAX_ROWS = 30; /* 跨行公式最多跟着收这么多行，防一个畸形块把卡撑爆 */
   function previewMarkdown(md, maxLines) {
     const limit = Number(maxLines) > 0 ? Number(maxLines) : PREVIEW_MAX;
     let body = String(md == null ? "" : md)
@@ -173,6 +88,8 @@
     if (fm) body = body.slice(fm[0].length);
     const out = [];
     let fence = ""; /* 正在哪个围栏里（``` / ~~~），空 = 围栏外 */
+    let display = ""; /* 正在跨行显示公式里（`$$` 的闭合符 / `\]`），空 = 不在里面 */
+    let displayRows = 0; /* 跨行公式已收了多少行（见 DISPLAY_MAX_ROWS） */
     let used = 0; /* 已收的有效行（空行不计数） */
     for (const raw of body.split("\n")) {
       const line = raw.replace(/\s+$/, "");
@@ -185,6 +102,19 @@
         used++;
         continue;
       }
+      /* 跨行显示公式：**整块收进来**，不按行数上限切断（只受 DISPLAY_MAX_ROWS 兜底）。 */
+      if (display) {
+        if (displayRows >= DISPLAY_MAX_ROWS) {
+          out.push(display); /* 太长的畸形块：就地补闭合符收口 */
+          display = "";
+          break;
+        }
+        out.push(line);
+        used++;
+        displayRows++;
+        if (line.indexOf(display) >= 0) display = "";
+        continue;
+      }
       if (!fence && !line.trim()) {
         if (used) out.push(""); /* 已有内容才留空行：卡片开头别空一片 */
         continue;
@@ -192,9 +122,19 @@
       if (!fence && used >= limit) break;
       out.push(line);
       used++;
+      /* 行首开了显示公式但这一行没闭合：记住闭合符，后面几行都算这一块 */
+      if (!fence) {
+        const trimmed = line.replace(/^\s*(?:>\s?)*/, "").replace(/^\s+/, "");
+        const closer = trimmed.slice(0, 2) === "$$" ? "$$" : trimmed.slice(0, 2) === "\\[" ? "\\]" : "";
+        if (closer && trimmed.slice(2).indexOf(closer) < 0) {
+          display = closer;
+          displayRows = 0;
+        }
+      }
     }
     let text = out.join("\n").replace(/\s+$/, "");
     if (fence) text += "\n" + fence.repeat(3);
+    if (display) text += "\n" + display; /* 上限到了却没闭合：补上闭合符，别留半截 */
     return text;
   }
 
@@ -828,6 +768,13 @@
     return out;
   }
 
+  /* 初始化 / 引申自动写出来的占位问题（旧版本的术语页里是 `> [!question] 待展开`）不进清单：
+     问题清单是用户自己填「要解决的问题」的地方，机器占位不是用户的问题。
+     只认这一个标题 —— 用户自己写的块不会叫「待展开」。 */
+  function isPlaceholderQuestion(title) {
+    return /^待展开$/.test(str(title).trim());
+  }
+
   function questionItems(input) {
     const o = input || {};
     const notes = (Array.isArray(o.notes) ? o.notes : []).filter(Boolean);
@@ -844,6 +791,7 @@
       );
       const blocks = questionBlocks(md);
       blocks.forEach((b, i) => {
+        if (isPlaceholderQuestion(b.title)) return;
         const at = b.start + 1;
         const nd = anchors.find((x) => Number(x && x.line) === at) || anchors[i] || null;
         out.push({
@@ -884,14 +832,13 @@
   }
 
   /* ── 数据 → 视图模型（纯函数：node 里可 require 复核，不碰 DOM） ──
-   * input: { notes, changes, groups, indexPath, keyword, now, renderMd, meta, questionStatus }
+   * input: { notes, groups, indexPath, keyword, renderMd, meta, questionStatus }
    *   notes   RS.notes：[{path,title,md,meta,parsed}]（parsed 来自 research-core.parseNote）
    *   groups  research-versions.buildGroups 的结果（原文 → 衍生物）；缺省 = 不合并
-   *   changes changes.jsonl 的记录（已有 ts / kind / path；before/after 可缺）
    *   renderMd Markdown → HTML（宿主注入的 renderMarkdown；缺省退化成转义纯文本）
    *   meta    research.json（头卡的标题 / 核心问题读不到时退到这里；questionStatus = 状态字典）
    *   questionStatus 宿主算好的状态字典（缺省按 meta.questionStatus 现算，见 qStatusDict）
-   * 返回：{ topic, questions, status, numbers, sources, recent, total, shown, filtered, empty }
+   * 返回：{ topic, questions, status, numbers, sources, total, shown, filtered, empty }
    *   topic = 课题头卡 { path, title, question, titleFrom, questionFrom, questions }
    *   questions = 问题清单 [{ id, kind, path, line, endLine, note, title, text, status, advice, fix }]
    *   status = 状态字典 [{ id, label, color, custom }]（chip 的标签与颜色都按它出）
@@ -899,7 +846,6 @@
   function buildModel(input) {
     const o = input || {};
     const notes = (Array.isArray(o.notes) ? o.notes : []).filter(Boolean);
-    const changes = Array.isArray(o.changes) ? o.changes : [];
     const groups = Array.isArray(o.groups) ? o.groups : null;
     const indexPath = normRel(o.indexPath);
     const keyword = str(o.keyword).toLowerCase();
@@ -980,19 +926,63 @@
     }
     sources.sort((a, b) => a.path.localeCompare(b.path, "zh-Hans-CN"));
 
-    /* ── 数字行：计数永远按全库算，不随筛选变 ── */
-    const counts = { claim: 0, concept: 0, method: 0, question: 0 };
+    /* 概念名的归一键：真源是 research-core 的 nameKey（图与索引同一套口径），宿主没注进来时
+       用这里同一份规则兜底（只抹大小写 / 全半角 / 空格 / 标点，不做中英互译）。 */
+    const keyOf = (s) => {
+      let v = str(s).replace(/^\[\[|\]\]$/g, "");
+      try {
+        if (v.normalize) v = v.normalize("NFKC");
+      } catch (_) {}
+      v = v
+        .toLowerCase()
+        .replace(/[\s\u3000]+/g, "")
+        .replace(/[（）()\[\]【】{}《》<>「」『』“”‘’'"`~!！?？,，.。;；:：、·・|/\\_\-—–+*#]/g, "");
+      return typeof o.nameKey === "function" ? str(o.nameKey(s)) || v : v;
+    };
+
+    /* ── 论断 / 概念 / 方法：notes/ 里 frontmatter 写了对应 kind 的那一类笔记 ──
+       同一个概念写成两篇（terms/ 与 notes/ 各一份，或只是大小写 / 全半角括号不同）时
+       **只出一张卡**：正本优先 terms/ > notes/，其余并进同一张（`alsoPaths` 记着它们，
+       卡片标题的悬停提示里能看到「同题还有哪几篇」）。计数与卡片同一套归并，数字与列表对得上。 */
+    const kindNoteCards = (want) => {
+      const byKey = new Map();
+      const rank = (p) => (/^terms\//i.test(p) ? 0 : /^notes\//i.test(p) ? 1 : 2);
+      for (const n of notes) {
+        const p = normRel(n.path);
+        if (!p || (indexPath && p === indexPath)) continue;
+        if (/^core\//i.test(p) || isVariant(p)) continue;
+        const parsed = n.parsed || {};
+        if (str(parsed.note && parsed.note.kind) !== want) continue;
+        const card = Object.assign({ path: p, title: noteTitle(n), variants: 0, exists: true }, sourceBody(n, renderMd));
+        const k = keyOf(card.title) || p;
+        const cur = byKey.get(k);
+        if (!cur) {
+          byKey.set(k, card);
+          continue;
+        }
+        const keep = rank(card.path) < rank(cur.path) ? card : cur;
+        const drop = keep === card ? cur : card;
+        keep.alsoPaths = (keep.alsoPaths || []).concat(drop.path, drop.alsoPaths || []);
+        byKey.set(k, keep);
+      }
+      const out = [...byKey.values()];
+      out.sort((a, b) => a.path.localeCompare(b.path, "zh-Hans-CN"));
+      return out;
+    };
+
+    /* ── 数字行：计数永远按全库算，不随筛选变；论断 / 概念 / 方法用同一份归并后的卡片数 ── */
+    const counts = { claim: kindNoteCards("claim").length, concept: kindNoteCards("concept").length, method: kindNoteCards("method").length, question: 0 };
     let asks = 0; /* `> [!question]` 块：与「kind: question 的笔记」一起算待解问题 */
     for (const n of notes) {
       const p = normRel(n.path);
       if (!p || (indexPath && p === indexPath)) continue;
       const parsed = n.parsed || {};
-      if (!/^core\//i.test(p) && !isVariant(p)) {
-        const kind = str(parsed.note && parsed.note.kind);
-        if (counts[kind] != null) counts[kind]++;
-      }
+      if (!/^core\//i.test(p) && !isVariant(p) && str(parsed.note && parsed.note.kind) === "question") counts.question++;
       for (const nd of parsed.nodes || []) {
-        if (str(nd && nd.kind) === "question" && /^question:/.test(str(nd && nd.id))) asks++;
+        if (str(nd && nd.kind) !== "question" || !/^question:/.test(str(nd && nd.id))) continue;
+        /* 机器写的「待展开」占位不算待解问题（与 questionItems 的过滤同一口径，数字与清单对得上） */
+        if (isPlaceholderQuestion(nd && nd.label)) continue;
+        asks++;
       }
     }
     const numbers = [{ key: "sources", label: "原文", value: sources.length }];
@@ -1000,34 +990,47 @@
       numbers.push({ key: k, label: KIND_LABEL[k], value: k === "question" ? counts.question + asks : counts[k] });
     }
 
+    /* ── 标签页：原来的数字行就是切换器（原文 / 论断 / 概念 / 方法 / 问题），默认「原文」 ──
+       原文 = core/*.md 原件（衍生物并进那一张卡，不单列）；
+       论断 / 概念 / 方法 = 上面 kindNoteCards 归并后的卡（同题只留一张）；
+       问题 = 全库 `> [!question]` 一条一张卡（计数与问题清单同一口径），点开跳到那一块。 */
+    const questionCards = questions.map((it) => {
+      /* 整篇就是一条问题（kind: note）：正文用那一篇的预览；块级项：这一条问题的正文就是那句 */
+      const rec = it.kind === "note" ? noteByPath.get(it.path) || null : null;
+      let body = null;
+      if (rec) body = sourceBody(rec, renderMd);
+      else {
+        const md = previewMarkdown(it.text || it.title, PREVIEW_LINES);
+        body = { md: md, html: previewHtml(md, renderMd), headed: false };
+      }
+      return Object.assign(
+        { path: it.path, line: it.line, title: it.title, variants: 0, exists: true, status: it.status },
+        body,
+      );
+    });
+
     /* ── 筛选：关键词只打原文的标题与路径 ── */
     const shown = sources.filter(
       (c) => !keyword || c.title.toLowerCase().indexOf(keyword) >= 0 || c.path.toLowerCase().indexOf(keyword) >= 0,
     );
 
-    /* ── 最近改动：同一版本组只留最新一条，点开的是那一组的原件 ──
-       （衍生物只允许在页面内切换，所以这里不把译稿 / 摘要排成另一行） */
-    const seenGroup = new Set();
-    const recent = [];
-    const ordered = changes.slice().sort((a, b) => (Number(b && b.ts) || 0) - (Number(a && a.ts) || 0));
-    for (const c of ordered) {
-      const p = normRel(c && c.path);
-      if (!p) continue;
-      const g = groupOfPath(p);
-      const orig = g ? normRel(g.original) : "";
-      const openPath = orig && noteByPath.has(orig) ? orig : p;
-      const key = g ? "g:" + g.key : "p:" + p;
-      if (seenGroup.has(key)) continue;
-      seenGroup.add(key);
-      recent.push({
-        path: openPath,
-        title: noteTitle(noteByPath.get(openPath) || noteByPath.get(p) || { path: openPath }),
-        kind: str(c && c.kind),
-        ts: Number(c && c.ts) || 0,
-        when: whenText(c && c.ts, o.now),
-      });
-      if (recent.length >= RECENT_MAX) break;
-    }
+    /* 按标签页组织成「这一页摆哪几张卡」（关键词对每页同样生效） */
+    const matchCard = (c) =>
+      !keyword ||
+      str(c.title).toLowerCase().indexOf(keyword) >= 0 ||
+      str(c.path).toLowerCase().indexOf(keyword) >= 0 ||
+      str(c.md).toLowerCase().indexOf(keyword) >= 0;
+    const tabCards = {
+      sources: shown,
+      claim: kindNoteCards("claim").filter(matchCard),
+      concept: kindNoteCards("concept").filter(matchCard),
+      method: kindNoteCards("method").filter(matchCard),
+      question: questionCards.filter(matchCard),
+    };
+    /* 「问题」那一颗的数字以**这一页会摆出来的条数**为准：问题清单连索引那一篇里的块
+       一起收（上面的纯计数不算索引那一篇），两套口径摆在同一颗按钮上会自相矛盾。 */
+    const qNum = numbers.find((s) => s.key === "question");
+    if (qNum) qNum.value = questionCards.length;
 
     return {
       topic: topic,
@@ -1035,12 +1038,13 @@
       /* 状态字典（默认四档 + 自定义）：清单每行的 chip 与批量下拉都按它出 */
       status: status,
       numbers: numbers,
+      /* 标签页的卡：键 = 标签 key（sources / claim / concept / method / question） */
+      tabCards: tabCards,
       sources: shown,
       total: sources.length,
       shown: shown.length,
       filtered: !!keyword,
       keyword: str(o.keyword),
-      recent: recent,
       empty: notes.length === 0,
       noSources: sources.length === 0,
     };
@@ -1068,6 +1072,8 @@
                 消费掉就清空（不长期留高亮）。 */
     const state = {
       keyword: "",
+      /* 当前标签页（原文 / 论断 / 概念 / 方法 / 问题）：默认「原文」，重画后仍停在原来那一页 */
+      tab: "sources",
       model: null,
       sel: new Set(),
       dictOpen: false,
@@ -1094,7 +1100,6 @@
       const o = opts || {};
       return {
         notes: o.notes || depOf(D.notes, []),
-        changes: o.changes || depOf(D.changes, []),
         groups: o.groups || depOf(D.groups, null),
         indexPath: o.indexPath || depOf(D.indexPath, ""),
         /* 渲染器只有宿主有（app-research.js 的 renderMarkdown）；module 侧不引第二份 */
@@ -1103,7 +1108,8 @@
         meta: o.meta || depOf(D.meta, null),
         /* 状态字典（默认四档 + research.json 的 questionStatus）：宿主给一份就直用，省得再算 */
         questionStatus: o.questionStatus || depOf(D.questionStatus, null),
-        now: Number(o.now) || Number(depOf(D.now, 0)) || Date.now(),
+        /* 概念查重的归一键：真源在 research-core 的 nameKey（图与索引同一套口径），宿主注入 */
+        nameKey: o.nameKey || (typeof D.nameKey === "function" ? D.nameKey : null),
       };
     }
 
@@ -1131,9 +1137,11 @@
       return head;
     }
 
-    /* ── 课题头卡：标题 + 核心问题 ──
-       两处都是就地编辑（contenteditable）：Esc 撤销这次输入、回车 / 失焦保存。
-       保存交给宿主 D.onTopicSave（writeText + logChange + rsLoadNotes + renderEditor）——
+    /* ── 课题头卡：标题 + 核心问题 + 问题清单 ──
+       三块合成**同一张卡**（用户口径：问题清单就在索引标题内部、和「核心问题」是一块）：
+       标题 / 核心问题两处就地编辑（contenteditable）：Esc 撤销这次输入、回车 / 失焦保存，
+       保存交给宿主 D.onTopicSave（writeText + logChange + rsLoadNotes + renderEditor）；
+       问题清单由 paintQuestions 画进这张卡（不再单占一区，「写在 xxx.md」那行提示也已去掉）。
        模块是 UMD 纯函数、不碰盘，node 侧照样能 require。 */
     function editBox(tag, cls, value, placeholder, onSave) {
       const box = el(tag, cls);
@@ -1191,55 +1199,40 @@
       return box;
     }
 
-    function paintTopic(host, topic) {
-      if (!host || !topic) return null;
-      const save = (field, value) => {
-        if (typeof D.onTopicSave !== "function") return;
-        try {
-          D.onTopicSave({ field: field, value: value, path: topic.path });
-        } catch (_) {}
-      };
+    function paintTopic(host, topic, items, statusDict) {
+      if (!host) return null;
       const card = el("section", "rs-idx-topic");
-      const ttl = editBox("div", "rs-idx-topic-t", topic.title, t("课题标题"), (v) => save("title", v));
-      ttl.title = t("点一下改标题（回车保存，Esc 取消）：写回这一篇的 frontmatter title 与首个 # 行");
-      card.appendChild(ttl);
-      const qRow = el("div", "rs-idx-topic-qrow");
-      qRow.appendChild(el("span", "rs-idx-topic-ql", t("核心问题")));
-      const qBox = editBox(
-        "div",
-        "rs-idx-topic-q",
-        topic.question,
-        t("点一下写下这个课题要回答的核心问题"),
-        (v) => save("question", v),
-      );
-      qBox.title = t("点一下改核心问题（回车保存，Esc 取消）：写回这一篇 `> [!question] 核心问题` 的正文");
-      qRow.appendChild(qBox);
-      card.appendChild(qRow);
-      const foot = el("div", "rs-idx-topic-foot");
-      const src = el(
-        "span",
-        "rs-idx-topic-src",
-        topic.path ? t("写在 ") + topic.path : "",
-      );
-      src.title = topic.path || "";
-      foot.appendChild(src);
-      const add = el("button", "rs-btn rs-idx-topic-add", "＋ " + t("新增问题"));
-      add.title = t("在这一篇笔记里追加一条 `> [!question] 问题` 块");
-      add.onclick = (ev) => {
-        if (ev && ev.stopPropagation) ev.stopPropagation();
-        if (typeof D.onQuestionAdd !== "function") return;
-        try {
-          D.onQuestionAdd({ path: topic.path });
-        } catch (_) {}
-      };
-      foot.appendChild(add);
-      card.appendChild(foot);
+      if (topic) {
+        const save = (field, value) => {
+          if (typeof D.onTopicSave !== "function") return;
+          try {
+            D.onTopicSave({ field: field, value: value, path: topic.path });
+          } catch (_) {}
+        };
+        const ttl = editBox("div", "rs-idx-topic-t", topic.title, t("课题标题"), (v) => save("title", v));
+        ttl.title = t("点一下改标题（回车保存，Esc 取消）：写回这一篇的 frontmatter title 与首个 # 行");
+        card.appendChild(ttl);
+        const qRow = el("div", "rs-idx-topic-qrow");
+        qRow.appendChild(el("span", "rs-idx-topic-ql", t("核心问题")));
+        const qBox = editBox(
+          "div",
+          "rs-idx-topic-q",
+          topic.question,
+          t("点一下写下这个课题要回答的核心问题"),
+          (v) => save("question", v),
+        );
+        qBox.title = t("点一下改核心问题（回车保存，Esc 取消）：写回这一篇 `> [!question] 核心问题` 的正文");
+        qRow.appendChild(qBox);
+        card.appendChild(qRow);
+      }
+      /* 问题清单：并进这张头卡（和「核心问题」同一块），不再单独占一区 */
+      paintQuestions(card, items, statusDict);
       host.appendChild(card);
       return card;
     }
 
     /* ── 问题清单：一行一条 ──
-       每行 = 勾选框 + 内容（contenteditable，写回那一块的正文行）+ 建议 / 方案入口
+       每行 = 勾选框 + 内容（contenteditable，写回那一块的正文行）+ 建议入口（挂上才有）
              + 状态 chip + 打开原文 + 删除；
        顶部 = 全选 / 共 N 项 / 批量状态下拉（下拉最下面一项是「＋ 新状态」）/「＋ 新增问题」
              （点了在头行下面开一行输入：标题 + 正文两格，确认交宿主 D.onQuestionNew 落盘）。
@@ -1734,8 +1727,9 @@
             : t("点一下改这条问题的正文（回车保存，Esc 取消）：写回 `> [!question]` 块里的正文行");
         main.appendChild(box);
         /* 建议 / 方案入口（就在这一条问题的正文下面）：
-           挂上了 = 建议笔记的标题（点一下 D.openNote 打开那一篇，多篇时后面带 +N）；
-           没挂上 = 「＋ 建议」（点一下回到原文那一块，去写 `> advice: [[笔记标题]]`）。
+           挂上了 = 建议笔记的标题（点一下 D.openNote 打开那一篇，多篇时后面带 +N）。
+           没挂上就**什么都不摆**：以前的「＋ 建议」占位已撤掉（用户口径：问题行只留问题本身），
+           没挂建议的问题不显示第二颗按钮。
            标题来自块里的 `> advice:` / `> fix:` 行（questionItems 出的字符串数组），
            这里只按标题反查路径，不认别的口径。 */
         const titles = [];
@@ -1759,15 +1753,8 @@
             else if (typeof D.toast === "function")
               D.toast(t("这条建议指向的笔记还没进本库：") + titles[0], "warn");
           };
-        } else {
-          adv.textContent = "＋ " + t("建议");
-          adv.title = t("还没有挂建议 / 方案：在原文那一块的正文下面写一行 `> advice: [[笔记标题]]`");
-          adv.onclick = (ev) => {
-            if (ev && ev.stopPropagation) ev.stopPropagation();
-            if (typeof D.openNote === "function") D.openNote(it.path, { line: it.line });
-          };
+          main.appendChild(adv);
         }
-        main.appendChild(adv);
         /* 这一条在哪一篇**不摆成副标题**（用户口径：清单只要问题本身）：
            路径仍在勾选框与「打开原文」的悬停提示里，需要时照样看得到 */
         row.appendChild(main);
@@ -1906,7 +1893,7 @@
       return sec;
     }
 
-    /* ── 正文：数字行 + 原文卡（至少五行，单篇占满）+ 最近改动 ── */
+    /* ── 正文：标签页（原来的数字行）+ 卡片区（至少五行，单张占满） ── */
     function renderBody(host, opts) {
       if (!host) return null;
       const o = opts || {};
@@ -1916,76 +1903,199 @@
       const makeModel = () =>
         buildModel({
           notes: data.notes,
-          changes: data.changes,
           groups: data.groups,
           indexPath: data.indexPath,
           renderMd: data.renderMd,
           meta: data.meta,
           questionStatus: data.questionStatus,
+          nameKey: data.nameKey,
           keyword: state.keyword,
-          now: data.now,
         });
 
       let model = makeModel();
       state.model = model;
 
-      /* 课题头卡（标题 + 核心问题）：在数字行之前，两处都能就地改、写回那一篇真源 */
-      paintTopic(host, model.topic);
-
-      /* 数字行：只有数字 + 名字（不摆卡片，一排读完） */
-      const nums = el("div", "rs-idx-nums");
-      for (const s of model.numbers) {
-        const w = el("span", "rs-idx-num");
-        w.appendChild(el("b", "rs-idx-num-v", String(s.value)));
-        w.appendChild(el("i", "rs-idx-num-l", t(s.label)));
-        nums.appendChild(w);
+      /* 课题头卡（标题 + 核心问题 + 问题清单）：清单已经并进这张卡，不再单独占一区 */
+      const topicCard = paintTopic(host, model.topic, model.questions, model.status);
+      if (!topicCard) {
+        /* 没有索引那一篇（空库 / 还没建）：问题清单照样要能看到 */
+        const only = el("section", "rs-idx-topic");
+        paintQuestions(only, model.questions, model.status);
+        host.appendChild(only);
       }
-      host.appendChild(nums);
 
-      /* 问题清单：一行一条（内容就地改 / 状态 chip / 勾选批量改状态），在原文区之前 */
-      paintQuestions(host, model.questions, model.status);
+      /* 标签页：原来那排数字，现在每颗都能点（默认「原文」）。点一下只是换下方卡片区，
+         不改笔记、不写盘 —— 与页头「原文 / 卡片」那颗只切阅读形态的开关互不相干。 */
+      const tabs = el("div", "rs-idx-nums");
+      host.appendChild(tabs);
 
-      /* 筛选行已移除：原文标题不再做关键词过滤（篇数看下面那张卡的头「原文 n」） */
-
-      /* 原文区（在页面最前面；只有一篇时这张卡占满余量） */
+      /* 卡片区：标题与计数跟着标签页走（不再固定叫「原文」） */
       const sec = el("section", "rs-idx-orig");
       const h = el("h3", "rs-idx-orig-h");
-      h.appendChild(el("span", "rs-idx-orig-name", t("原文")));
-      h.appendChild(el("span", "rs-idx-orig-n", String(model.total)));
+      const hName = el("span", "rs-idx-orig-name", "");
+      const hN = el("span", "rs-idx-orig-n", "");
+      h.appendChild(hName);
+      h.appendChild(hN);
       sec.appendChild(h);
       const grid = el("div", "rs-idx-src-grid");
       sec.appendChild(grid);
       host.appendChild(sec);
 
-      /* 最近改动（没有日志就整块不出现） */
-      const recentBox = el("div", "rs-idx-recent-box");
-      host.appendChild(recentBox);
+      /* 每一页没事可摆时说一句「怎么才会有」（不写占位内容） */
+      const TAB_EMPTY = {
+        sources: "core/ 里还没有原文：在左栏「核心」页拖入文件投料，索引会把转出来的正文摆在这里",
+        claim: "还没有论断：原文里写成一条论断，它会自动聚到这一页",
+        concept: "还没有概念：原文里写成一条概念，它会自动聚到这一页",
+        method: "还没有方法：原文里写成一条方法，它会自动聚到这一页",
+        question: "还没有问题：在原文里写 `> [!question]` 块，或用上面的「＋ 新增问题」",
+      };
+      const tabOf = (key) =>
+        model.numbers.find((s) => s.key === key) || model.numbers[0] || { key: "sources", label: "原文" };
+      /* 当前页：state.tab 认不出（模型里没这一类）就退回「原文」 */
+      const curKey = () =>
+        state.tab && model.tabCards && state.tab in model.tabCards ? state.tab : "sources";
 
-      const paintRecent = (m) => {
-        recentBox.innerHTML = "";
-        if (!m.recent.length) return;
-        /* 一条一行：标题（可换行，行内 Markdown 出样式）+ 右侧动作 · 时间，不再两列 grid，
-           也不因「只有一篇原文」压成一行（那样会一行挤出两三条） */
-        recentBox.appendChild(el("div", "rs-idx-side-h", t("最近改动")));
-        const list = el("div", "rs-idx-recent-list");
-        for (const r of m.recent) {
-          const row = el("button", "rs-idx-recent");
-          row.title = r.path;
-          row.appendChild(fillTitle(el("span", "rs-idx-recent-t"), r.title));
-          row.appendChild(el("span", "rs-idx-recent-m", (r.kind ? r.kind + " · " : "") + r.when));
-          row.onclick = () => {
-            if (typeof D.openNote === "function") D.openNote(r.path);
-          };
-          list.appendChild(row);
-        }
-        recentBox.appendChild(list);
+      /* ── 行式四页（论断 / 概念 / 方法 / 问题）用的几个小工具 ──────────────────
+         卡的形状不在这一层决定：renderer/research-reader.js 的 noteCardList 是唯一真源
+         （标题 + 一行摘要 + 点开展开 + 行尾「打开」），索引页只把「这一篇」包成一条 hit 递过去。 */
+      const noteMap = new Map();
+      for (const n of data.notes || []) noteMap.set(normRel(n && n.path), n);
+      /* 问题那一页的卡多数是「某一篇里的某一块」：全文只在 questionItems 里（卡上只存五行预览），
+         按 路径 + 行号 找回来，展开的才是那一块本身（不是整篇） */
+      const qMap = new Map();
+      for (const q of model.questions || []) {
+        qMap.set(normRel(q && q.path) + ":" + (Number(q && q.line) || 0), q);
+      }
+      const FULL_ROWS = 999; /* 展开用的上限：只借 previewMarkdown 剥 frontmatter / 收围栏，等于不截断 */
+      const blockOf = (c) => {
+        const q = qMap.get(normRel(c.path) + ":" + (Number(c.line) || 0));
+        return q && q.kind !== "note" ? q : null;
+      };
+      /* 这一篇（或这一块）的正文全文：卡展开时放的就是这一段，不是卡上那五行预览 */
+      const bodyText = (c) => {
+        const block = blockOf(c);
+        if (block) return str(block.text);
+        const n = noteMap.get(normRel(c.path));
+        const md = n && n.md ? String(n.md) : "";
+        if (!md) return str(c.md);
+        /* 整篇：剥 frontmatter，再去掉标题行与引用 / callout 的 `>` 前缀 —— 卡上已经有标题，
+           展开的正文里不该露 `# 标题` / `> [!claim]` 这些源码（行内 Markdown 照旧交给阅读器排） */
+        return previewMarkdown(md, FULL_ROWS)
+          .replace(/^[ \t]{0,3}#{1,6}[ \t]+.*$/gm, "")
+          .replace(/^[ \t]{0,3}>[ \t]?(\[![^\]]+\][ \t]*)?/gm, "")
+          .replace(/\n{2,}/g, "\n")
+          .trim();
+      };
+      /* 卡上那一条的标题 = 方向（frontmatter 的 `方向:`，research-core 读成 note.angle），
+         没写方向就退回这一页的种类名 —— 与阅读区浮空卡同一口径 */
+      const dirOf = (c, key) => {
+        const n = noteMap.get(normRel(c.path));
+        const note = (n && n.parsed && n.parsed.note) || {};
+        return str(note.angle) || t(tabOf(key).label);
+      };
+      /* 一行摘要：取法在阅读器那份 summary 里（正文第一句 + 剥掉行内标记），不在这里写第二份 */
+      const summaryText = (text) => {
+        const NC = D.noteCards;
+        if (NC && typeof NC.summary === "function") return str(NC.summary(text));
+        return str(text).replace(/\s+/g, " ");
+      };
+      /* 一条的去处：问题行带行号，直接跳到那一块（与「打开原文」同一条路径） */
+      const openEntry = (c) => {
+        if (typeof D.openNote !== "function") return;
+        if (c.line) D.openNote(c.path, { line: c.line });
+        else D.openNote(c.path);
       };
 
-      const paintSources = () => {
-        model = makeModel();
-        state.model = model;
+      /* ── 论断 / 概念 / 方法 / 问题：纵向一列、一行一条（标题 + 一行摘要）──
+         以前这四页跟「原文」一样摆双列大卡（正文预览 + 路径 · 衍生 N 版 · 同题 N 篇 · 点击进入），
+         一屏放不下几条。现在行内只留标题与一行摘要，那些元信息全并进行的悬停提示
+         （同题其它篇的路径仍在提示里）；点行 = 在它下方弹**同一份**浮空卡（卡里就这一篇一条），
+         进笔记只走展开后行尾那颗「打开」—— 点行本身不再跳转。 */
+      const paintRows = (cards, key) => {
+        for (const c of cards) {
+          const row = el("div", "rs-idx-row");
+          row.dataset.path = c.path;
+          if (c.line) row.dataset.line = String(c.line);
+          /* 同题归并（同一个概念写过两篇）：其余那几篇不单独成行，路径挂在悬停提示里 */
+          const also = (c.alsoPaths || []).filter((p) => p && p !== c.path);
+          row.title =
+            c.path +
+            (c.variants ? "\n" + t("衍生 ") + c.variants + t(" 版") : "") +
+            (also.length ? "\n" + t("同题 ") + also.length + t(" 篇：") + "\n" + also.join("\n") : "");
+          row.setAttribute("role", "button");
+          row.tabIndex = 0;
+          row.appendChild(el("span", "rs-idx-row-t", c.title));
+          const body = bodyText(c);
+          row.appendChild(el("span", "rs-idx-row-sum", summaryText(body)));
+          const toggle = () => {
+            const NC = D.noteCards;
+            if (NC && typeof NC.show === "function") {
+              /* hits 只有一条：卡里就这一篇；锚点 = 这一行，出界翻上方 / 点外面关 / 同一条再点一次收
+                 全在阅读器那一套里（索引页不另写定位与关闭） */
+              NC.show(row, {
+                hits: [{ path: c.path, line: Number(c.line) || 0, dir: dirOf(c, key), text: body }],
+                kind: "term",
+                kindLabel: t(tabOf(key).label),
+                title: c.title,
+                keys: [c.title],
+              });
+              return;
+            }
+            /* 阅读器缺席（老页面 / 模块没加载）：退回「点行 = 打开笔记」，不让界面变死 */
+            openEntry(c);
+          };
+          row.onclick = toggle;
+          row.onkeydown = (ev) => {
+            if (ev.key === "Enter" || ev.key === " ") {
+              ev.preventDefault();
+              toggle();
+            }
+          };
+          grid.appendChild(row);
+        }
+      };
+
+      const buttons = [];
+      const paintTabs = () => {
+        const key = curKey();
+        for (const b of buttons) {
+          const on = b.dataset.key === key;
+          b.classList.toggle("is-on", on);
+          b.setAttribute("aria-pressed", on ? "true" : "false");
+        }
+      };
+
+      for (const s of model.numbers) {
+        const b = el("button", "rs-idx-num");
+        b.type = "button";
+        b.dataset.key = s.key;
+        b.title = t("点一下只看") + t(s.label);
+        b.appendChild(el("b", "rs-idx-num-v", String(s.value)));
+        b.appendChild(el("i", "rs-idx-num-l", t(s.label)));
+        b.onclick = (ev) => {
+          if (ev && ev.stopPropagation) ev.stopPropagation();
+          if (curKey() === s.key) return;
+          state.tab = s.key;
+          paintTabs();
+          paintCards();
+        };
+        buttons.push(b);
+        tabs.appendChild(b);
+      }
+
+      const paintCards = () => {
+        const key = curKey();
+        /* 换标签页 / 改筛选都是重画：浮空卡先收起，展开态不记忆（阅读器那一份 hideCards） */
+        if (D.noteCards && typeof D.noteCards.hide === "function") D.noteCards.hide();
+        const cards = (model.tabCards && model.tabCards[key]) || [];
+        /* 原文页保持双列大卡；论断 / 概念 / 方法 / 问题走行式（一列一行一条） */
+        const rows = key !== "sources";
+        hName.textContent = t(tabOf(key).label);
+        hN.textContent = String(cards.length);
         grid.innerHTML = "";
-        sec.classList.toggle("is-solo", model.total === 1);
+        grid.classList.toggle("is-rows", rows);
+        /* 只有一张卡时占满余量（原文一篇走这条；行式那四页是一列，不铺开） */
+        sec.classList.toggle("is-solo", !rows && cards.length === 1);
 
         if (!data.notes.length) {
           /* 空库：给一条能走下去的路（投料台 / 新建笔记），不留一张空白面板 */
@@ -2006,23 +2116,29 @@
           grid.appendChild(guide);
           return;
         }
-        if (model.noSources) {
-          grid.appendChild(
-            el("div", "rs-idx-empty", t("core/ 里还没有原文：在左栏「核心」页拖入文件投料，索引会把转出来的正文摆在这里")),
-          );
+        if (!cards.length) {
+          grid.appendChild(el("div", "rs-idx-empty", t(TAB_EMPTY[key] || TAB_EMPTY.sources)));
           return;
         }
-        for (const c of model.sources) {
+        /* 论断 / 概念 / 方法 / 问题：一列一行一条，点行弹同款浮空卡（见 paintRows） */
+        if (rows) {
+          paintRows(cards, key);
+          return;
+        }
+        for (const c of cards) {
           /* 卡片是 div 不是 button：正文要放 h1 / 列表 / 表格（button 里只能是行内内容），
              所以用 role=button + tabindex + Enter/Space 手动补上键盘可用性 */
           const card = el("div", "rs-idx-src");
           card.dataset.path = c.path;
-          card.title = c.path;
+          if (c.line) card.dataset.line = String(c.line);
+          /* 同题归并（同一个概念写过两篇）：其余那几篇不单独成卡，路径挂在悬停提示里，
+             点它们照旧能开（关系不丢，也不再多一张同名卡） */
+          const also = (c.alsoPaths || []).filter((p) => p && p !== c.path);
+          card.title = c.path + (also.length ? "\n" + t("同题还有：") + "\n" + also.join("\n") : "");
           card.setAttribute("role", "button");
           card.tabIndex = 0;
-          const open = () => {
-            if (typeof D.openNote === "function") D.openNote(c.path);
-          };
+          /* 原文卡整张是一个入口：点开那一篇（进笔记只走这一处，与行式那四页不同） */
+          const open = () => openEntry(c);
           /* 正文自己带标题（# / ##）：那张 h1 就是卡上的标题，不再重复摆一行 */
           if (!c.headed) card.appendChild(el("span", "rs-idx-src-t", c.title));
           const bodyBox = el("div", "rs-idx-src-body");
@@ -2040,7 +2156,9 @@
             el(
               "span",
               "rs-idx-src-m",
-              c.path + (c.variants ? " · " + t("衍生 ") + c.variants + t(" 版") : "") + " · " + t("点击进入"),
+              c.path + (c.variants ? " · " + t("衍生 ") + c.variants + t(" 版") : "") +
+                (also.length ? " · " + t("同题 ") + also.length + t(" 篇") : "") +
+                " · " + t("点击进入"),
             ),
           );
           card.onclick = open;
@@ -2054,8 +2172,8 @@
         }
       };
 
-      paintRecent(model);
-      paintSources();
+      paintTabs();
+      paintCards();
       return model;
     }
 
@@ -2087,7 +2205,6 @@
   return {
     create: create,
     buildModel: buildModel,
-    whenText: whenText,
     previewMarkdown: previewMarkdown,
     previewHtml: previewHtml,
     /* 课题头卡：读那一篇（topicModel / questionBlocks）与改那一篇（三个纯字符串手术） */

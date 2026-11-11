@@ -159,6 +159,21 @@ function createMiniChat(opts) {
     return { grill, hotfix };
   }
 
+  /* ── 上一次用的会话（本次修复）──────────────────────────────────────────
+     小窗自己记住「上次在小窗里选的是哪一条」，与尺寸 / 草稿 / 两枚模式同一份 JSON ——
+     关掉 MTNode 再打开、按 F1 唤出小窗，回来的还是那一条（不是主窗此刻选中的、
+     也不是列表里第一条）。这里只存一个 id，会话内容一概不碰；那一条会话被删掉 /
+     不在库里时由渲染层自己回落，本层不猜。 */
+  function readLastSession() {
+    const got = readStore();
+    return typeof got.lastSessionId === "string" ? got.lastSessionId : "";
+  }
+  function writeLastSession(id) {
+    const sid = String(id || "");
+    writeStore({ lastSessionId: sid, lastSessionAt: Date.now() });
+    return sid;
+  }
+
   /* ── 位置：默认贴主窗右下角附近；夹进所在显示器的工作区 ──────────────── */
   function clampToWorkArea(cx, cy, w, h) {
     let wa = null;
@@ -613,6 +628,9 @@ function createMiniChat(opts) {
     /* 两枚模式开关：读 / 写（写会落盘，重启仍生效） */
     ipcMain.handle("minichat:modes", () => readModes());
     ipcMain.handle("minichat:setModes", (e, patch) => writeModes(patch));
+    /* 上一次用的会话（本次修复）：开窗先读回来，换会话就写回去 —— 重启后照旧落在同一条 */
+    ipcMain.handle("minichat:lastSession", () => ({ id: readLastSession() }));
+    ipcMain.handle("minichat:setLastSession", (e, id) => ({ id: writeLastSession(id) }));
     /* 草稿（本次修复）：关窗不清、发送成功才清 —— 下次开窗按它回填输入框 */
     ipcMain.handle("minichat:draft", () => readDraft());
     ipcMain.handle("minichat:setDraft", (e, payload) => writeDraft(payload));

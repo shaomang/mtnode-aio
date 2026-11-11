@@ -171,6 +171,21 @@
   function stripExt(p) {
     return baseName(p).replace(/\.md$/i, "");
   }
+  /* 概念 / 术语名的归一键（查重专用，不用于显示、也不用于文件名）：
+     同一个概念常被写成几种样子 —— 大小写（Attention / attention）、全半角括号与破折号、
+     空格、首尾的 `[[ ]]`。这些差异不构成「两页讲两个概念」，所以比对前一律抹平。
+     只抹标点与空白，不做中英互译：`自注意力` 与 `self-attention` 仍是两个键
+     （同义靠 frontmatter 的 aliases 表达，不靠猜）。 */
+  function nameKey(v) {
+    let s = str(v).replace(/^\[\[|\]\]$/g, "").trim();
+    try {
+      if (s.normalize) s = s.normalize("NFKC");
+    } catch (_) {}
+    return s
+      .toLowerCase()
+      .replace(/[\s\u3000]+/g, "")
+      .replace(/[（）()\[\]【】{}《》<>「」『』“”‘’'"`~!！?？,，.。;；:：、·・|/\\_\-—–+*#]/g, "");
+  }
 
   /* ── frontmatter ──
    * 只认最朴素的 YAML 子集：key: value / key: [a, b] / key: 多行（缩进行）。
@@ -890,10 +905,70 @@
         }
       }
     }
-    /* [[wikilink]] 的 concept 若能对上笔记标题/别名，合并到那条笔记 */
+    /* ── 同一件事写成两篇：图里只留一颗节点（查重）──
+       概念 / 术语页是 agent 直接写盘的，去重只有提示词那一层；同一个词换个写法
+       （大小写 / 全半角括号 / 空格 / 首尾 `[[ ]]`）或换个目录（terms/ 与 notes/）就会落成两份，
+       索引页就成了两张同名卡、图上两颗同名节点。这里按 nameKey 归一：
+         · **已存在的不再添加**：只保留一颗（正本：terms/ > notes/ > 其他，同级取路径短的）；
+         · **通过图谱连回去**：被并进来的那一篇的边全部改接到正本，它的路径记进 `alsoPaths`
+           （关系一条都不丢，点开仍然能回到那一页）。 */
+    const DEDUP_KINDS = new Set(["concept", "term", "formula", "symbol", "theorem", "method", "dataset", "note"]);
+    const dedupable = (n) =>
+      !!n &&
+      !!n.path &&
+      !n.core &&
+      !n.derived &&
+      !(Array.isArray(n.parents) && n.parents.length) &&
+      DEDUP_KINDS.has(str(n.kind));
+    const dedupRank = (n) => {
+      const p = normRel(n.path);
+      if (/^terms\//i.test(p)) return 0;
+      if (/^notes\//i.test(p)) return 1;
+      if (/^literature\//i.test(p)) return 3;
+      return 2;
+    };
+    const byNameKey = new Map(); /* 归一键 → 正本节点 id（[[链接]] 合并也用它兜底） */
+    const nameGroups = new Map();
+    for (const [id, n] of nodesById) {
+      if (!dedupable(n)) continue;
+      const k = nameKey(n.label);
+      if (!k) continue;
+      if (!nameGroups.has(k)) nameGroups.set(k, []);
+      nameGroups.get(k).push({ id, n });
+    }
+    for (const [k, list] of nameGroups) {
+      list.sort(
+        (a, b) =>
+          dedupRank(a.n) - dedupRank(b.n) ||
+          normRel(a.n.path).length - normRel(b.n.path).length ||
+          normRel(a.n.path).localeCompare(normRel(b.n.path), "zh-Hans-CN"),
+      );
+      const keep = list[0];
+      byNameKey.set(k, keep.id);
+      if (list.length < 2) continue;
+      const also = [];
+      for (let i = 1; i < list.length; i++) {
+        const drop = list[i];
+        for (const e of edges) {
+          if (e.from === drop.id) e.from = keep.id;
+          if (e.to === drop.id) e.to = keep.id;
+        }
+        /* 正本缺的字段从被并进来的那一篇补（已有的一律不覆盖） */
+        for (const key of ["excerpt", "aliases", "angle", "verify", "tags"]) {
+          const v = drop.n[key];
+          if (v == null || v === "" || (Array.isArray(v) && !v.length)) continue;
+          const cur = keep.n[key];
+          if (cur == null || cur === "" || cur === "unverified" || (Array.isArray(cur) && !cur.length)) keep.n[key] = v;
+        }
+        nodesById.delete(drop.id);
+        also.push(normRel(drop.n.path));
+      }
+      if (also.length) keep.n.alsoPaths = also;
+    }
+    /* [[wikilink]] 的 concept 若能对上笔记标题/别名（或归一后同名），合并到那条笔记 */
     for (const [id, n] of nodesById) {
       if (!id.startsWith("concept:")) continue;
-      const hit = byTitle.get(n.label) || byAlias.get(n.label);
+      const hit = byTitle.get(n.label) || byAlias.get(n.label) || byNameKey.get(nameKey(n.label));
       if (!hit || hit === id) continue;
       for (const e of edges) {
         if (e.from === id) e.from = hit;
@@ -1845,12 +1920,48 @@
     if (!sources.length) body.push("（还没有登记来源）");
     else for (const s of sources) body.push("- " + s);
     if (where) body.push("", where);
-    body.push("", "## 还能引申", "");
     const next = (Array.isArray(o.next) ? o.next : []).map((s) => str(s).trim()).filter(Boolean);
-    body.push("> [!question] 待展开");
-    if (!next.length) body.push("> - （暂无：读到这里没再冒出新的术语）");
-    else for (const n of next) body.push("> - [[" + n + "]]");
+    /* 下一层候选只写成普通列表行，**不写成 `> [!question]` 块**：问题清单是用户自己填
+       「要解决的问题」的地方，机器写的「待展开」占位块会把它刷成一片，不是用户的问题。
+       没有候选就**整节不写**：空标题（或「暂无」占位）在正文里只是一段白占地方的字。 */
+    if (next.length) {
+      body.push("", "## 还能引申", "");
+      for (const n of next) body.push("- [[" + n + "]]");
+    }
     return stringifyFrontmatter(meta, "\n" + body.join("\n").replace(/\n{3,}/g, "\n\n").replace(/\s+$/, "") + "\n");
+  }
+  /* 去掉空的「## 还能引申」整节：机器写的页常常只留一个空标题（或「暂无…」占位），
+     正文里就是一段白占地方的字。只删「没有 [[候选]] 且正文是空的 / 只有占位」的那一节，
+     用户真写了内容的段落一个字都不动。返回新 md（没变化就原样返回）。 */
+  function stripEmptyNextSection(md) {
+    const src = str(md);
+    if (!src || src.indexOf("还能引申") < 0) return src;
+    const lines = src.split(/\r?\n/);
+    const at = lines.findIndex((l) => /^##\s+还能引申\s*(?:[（(].*)?$/.test(l));
+    if (at < 0) return src;
+    let end = lines.length;
+    for (let k = at + 1; k < lines.length; k++) {
+      if (/^#{1,2}\s+/.test(lines[k])) { end = k; break; }
+    }
+    const body = lines.slice(at + 1, end).join("\n");
+    const bare = body.trim();
+    const isPlaceholder = (l) => {
+      const t = l.trim();
+      if (!t) return true;
+      if (/^[-*+]\s*$/.test(t)) return true;
+      const bareLine = t.replace(/^[-*+]\s*/, "").replace(/^[（(][^）)]*[）)]$/, "").trim();
+      if (!bareLine) return true;
+      /* 只认短占位（「暂无」「待补」「父页没有展开」这类），长句子当用户自己的正文，不删 */
+      if (bareLine.length > 16) return false;
+      return /暂无|待补|待展开|父页没有展开|还没有展开/.test(bareLine);
+    };
+    if (bare.indexOf("[[") >= 0) return src;
+    if (!bare.split(/\n+/).every(isPlaceholder)) return src;
+    const out = lines.slice(0, at).concat(lines.slice(end));
+    /* 收掉删完留下的多余空行（最多留一个空行分隔） */
+    while (out.length > 1 && out[out.length - 1].trim() === "" && out[out.length - 2].trim() === "") out.pop();
+    const res = out.join("\n");
+    return res.replace(/\n{3,}/g, "\n\n").replace(/\s+$/, "") + "\n";
   }
   /* 从一篇已存在的术语页里读「已建过什么」（去重用）：docs 是 [{path, md}] */
   function termIndex(docs) {
@@ -2381,7 +2492,10 @@
     termSlug,
     termRelOf,
     termDoc,
+    stripEmptyNextSection,
     termIndex,
+    /* 概念查重：同一个名字的几种写法（大小写 / 全半角 / 空格 / 标点）归一成同一个键 */
+    nameKey,
     parseTermCandidates,
     termExpandPrompt,
     /* 初始化 · 队列 */

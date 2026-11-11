@@ -1,0 +1,358 @@
+{
+  "format": "mtnode-agent-prompts-v1",
+  "note": "Agent 指示清单：每一项对应代码里一处 PS(id, 默认文本) 调用。新增注入段必须同时在这里登记（冒烟 test/smoke-agent-prompts.js 会对账），否则设置页看不到它。text 列不在这里——出厂默认在代码里，作者「覆盖到源码」后落到 agent-prompts/<id>.md，用户改动落 <数据目录>/builtin-overrides/agent-prompts.json。",
+  "groups": [
+    { "id": "session", "title": "会话人设与纪律", "desc": "左侧会话窗口每一轮注入的系统提示" },
+    { "id": "assist", "title": "右侧助手栏", "desc": "画布右侧助手 / 通用助手的分节提示" },
+    { "id": "contract", "title": "模式契约", "desc": "拷问模式、快速热修等会话级契约段" },
+    { "id": "flow", "title": "流程注入", "desc": "计划模式、超频模式等加在用户输入前的固定指示" },
+    { "id": "team", "title": "专家 / 团队", "desc": "专家人设与团队运行提示" },
+    { "id": "subagent", "title": "子代理", "desc": "主代理派单给子代理的固定包装" },
+    { "id": "longtask", "title": "长周期任务", "desc": "长任务 agent 环节的目标模板与审批 / 交付文案" },
+    { "id": "devnode", "title": "开发节点", "desc": "开发 / 细化绑定会话的任务书骨架" },
+    { "id": "app", "title": "应用派单", "desc": "应用开发 / 版本合并会话的派单与人设段" },
+    { "id": "node", "title": "智能节点", "desc": "agent_task / proc_text 等节点运行时垫在用户 task 外的固定壳" }
+  ],
+  "items": [
+    {
+      "id": "session.persona.canvas",
+      "title": "会话人设 · 画布档（全量工具）",
+      "group": "session",
+      "where": "renderer/app-assist.js · agentSessionSend（canvasPersona 为空档）",
+      "desc": "画布工具三件套都在时的主身份段：能读写本画布、先读图再动手、@引用、工具存在性等硬闸。"
+    },
+    {
+      "id": "session.persona.noRead",
+      "title": "会话人设 · 开发绑定档（只读画布）",
+      "group": "session",
+      "where": "renderer/app-assist.js · agentSessionSend（st.noCanvasRead）",
+      "desc": "开发 / 细化绑定会话用：不注册 mtnode_canvas_get 与 mtnode_app，画布现状以开发任务书为准。"
+    },
+    {
+      "id": "session.persona.none",
+      "title": "会话人设 · 与画布无关档",
+      "group": "session",
+      "where": "renderer/app-assist.js · agentSessionSend（turnCanvasFree）",
+      "desc": "宿主判定本轮与画布无关：不注册任何画布 / 应用工具，只读写文件、联网、执行命令。"
+    },
+    {
+      "id": "session.canvas_mode.all",
+      "title": "画布确认档 · 全部允许",
+      "group": "session",
+      "where": "renderer/app-assist.js · 画布人设里的 canvasMode 分支",
+      "desc": "「画布修改确认」= 全部允许时插进人设的那一句。"
+    },
+    {
+      "id": "session.canvas_mode.approve",
+      "title": "画布确认档 · 批准",
+      "group": "session",
+      "where": "renderer/app-assist.js · 画布人设里的 canvasMode 分支",
+      "desc": "「画布修改确认」= 批准时插进人设的那一句（危险操作仍弹窗）。"
+    },
+    {
+      "id": "session.canvas_mode.ask",
+      "title": "画布确认档 · 逐次询问",
+      "group": "session",
+      "where": "renderer/app-assist.js · 画布人设里的 canvasMode 分支",
+      "desc": "「画布修改确认」= 询问时插进人设的那一句（未确认不得声称成功）。"
+    },
+    {
+      "id": "session.self_check",
+      "title": "自检与交付纪律",
+      "group": "session",
+      "where": "renderer/app-assist.js · SELF_CHECK_DISCIPLINE",
+      "desc": "分阶段自检、交付前全检、先自修再问人、硬断言带证据这一整段。"
+    },
+    {
+      "id": "session.gui_debug",
+      "title": "真机调试能力段",
+      "group": "session",
+      "where": "renderer/app-assist.js · st.appId 时追加",
+      "desc": "应用开发 / 版本合并会话才注入：mtnode_gui 怎么用、边界在哪。"
+    },
+    {
+      "id": "session.dev_contract",
+      "title": "开发任务书骨架",
+      "group": "session",
+      "where": "renderer/app-assist.js · 开发 / 细化绑定会话",
+      "desc": "包住开发任务书正文的固定骨架。可用占位符：{{devContract}}。",
+      "vars": ["devContract"]
+    },
+    {
+      "id": "session.grill_contract",
+      "title": "会话 · 先拷问需求契约",
+      "group": "contract",
+      "where": "renderer/app-assist.js · GRILL_CONTRACT（会话侧）",
+      "desc": "会话窗口「先拷问需求」打开时按轮追加的契约。"
+    },
+    {
+      "id": "session.hotfix_contract",
+      "title": "会话 · 快速热修契约",
+      "group": "contract",
+      "where": "renderer/app-assist.js · HOTFIX_CONTRACT（会话侧）",
+      "desc": "「快速热修」打开时追加的契约（与拷问互斥）。"
+    },
+    {
+      "id": "contract.grill",
+      "title": "助手栏 · 先拷问需求契约",
+      "group": "contract",
+      "where": "renderer/app-assist.js · assistGrillContract",
+      "desc": "右侧助手栏的拷问契约（与 GRILL_CONTRACT 同源，可分开覆盖）。"
+    },
+    {
+      "id": "contract.hotfix",
+      "title": "助手栏 · 快速热修契约",
+      "group": "contract",
+      "where": "renderer/app-assist.js · assistHotfixContract",
+      "desc": "右侧助手栏的热修契约。"
+    },
+    {
+      "id": "flow.plan_mode_directive",
+      "title": "计划模式指示",
+      "group": "flow",
+      "where": "renderer/app-assist.js · PLAN_MODE_USER_DIRECTIVE",
+      "desc": "输入框敲 /plan 或计划开关打开时，加在用户消息前的固定指示。"
+    },
+    {
+      "id": "flow.overclock_directive",
+      "title": "超频模式指示",
+      "group": "flow",
+      "where": "renderer/app-assist.js · OVERCLOCK_DIRECTIVE",
+      "desc": "超频模式（思考档强制 Max + 极限测试提示）加在用户消息前的固定指示。"
+    },
+    {
+      "id": "assist.persona.canvas",
+      "title": "助手栏人设 · 画布档",
+      "group": "assist",
+      "where": "renderer/app-assist.js · personaHost（有画布）",
+      "desc": "右侧画布助手的身份段。"
+    },
+    {
+      "id": "assist.persona.canvas_free",
+      "title": "助手栏人设 · 与画布无关档",
+      "group": "assist",
+      "where": "renderer/app-assist.js · personaHost（assistCanvasFree）",
+      "desc": "宿主判定本轮与画布无关时的助手身份段。"
+    },
+    {
+      "id": "assist.scope.canvas_free",
+      "title": "助手栏工作范围 · 与画布无关",
+      "group": "assist",
+      "where": "renderer/app-assist.js · scopeBlock",
+      "desc": "本轮只列文件 / 联网 / 命令工具时的范围说明。"
+    },
+    {
+      "id": "assist.scope.current",
+      "title": "助手栏工作范围 · 仅当前画布",
+      "group": "assist",
+      "where": "renderer/app-assist.js · scopeBlock",
+      "desc": "只暴露本画布时的范围说明与工具清单。"
+    },
+    {
+      "id": "assist.scope.global",
+      "title": "助手栏工作范围 · 全局",
+      "group": "assist",
+      "where": "renderer/app-assist.js · scopeBlock",
+      "desc": "可参考全部画布时的范围说明与工具清单。"
+    },
+    {
+      "id": "assist.canvas_rules",
+      "title": "助手栏 · 画布编辑口径",
+      "group": "assist",
+      "where": "renderer/app-assist.js · canvasEditRule",
+      "desc": "mtnode_canvas_edit 的确认策略与参数机制指向工具描述的说明。"
+    },
+    {
+      "id": "assist.superconnect_rules",
+      "title": "助手栏 · 跨节点层连线",
+      "group": "assist",
+      "where": "renderer/app-assist.js · superConnectRule",
+      "desc": "superConnect 契约段。"
+    },
+    {
+      "id": "assist.devnode_rules",
+      "title": "助手栏 · 开发节点规范",
+      "group": "assist",
+      "where": "renderer/app-assist.js · devNodeRule",
+      "desc": "开发节点两段式规范与 devFiles 契约。"
+    },
+    {
+      "id": "assist.vision_media_rules.none",
+      "title": "助手栏 · 识图 / 媒体纪律（无画布档）",
+      "group": "assist",
+      "where": "renderer/app-assist.js · visionMediaRules",
+      "desc": "与画布无关时只剩「回执即事实」一条。"
+    },
+    {
+      "id": "assist.vision_media_rules.full",
+      "title": "助手栏 · 识图 / 媒体纪律（全量）",
+      "group": "assist",
+      "where": "renderer/app-assist.js · visionMediaRules",
+      "desc": "mtnode_vision、图像参考节点、媒体生成节点的口径。"
+    },
+    {
+      "id": "assist.layout_rules",
+      "title": "助手栏 · 排版规则",
+      "group": "assist",
+      "where": "renderer/app-assist.js · layoutRules",
+      "desc": "createMarks 分区、控制节点、一键排版的开法与禁令。"
+    },
+    {
+      "id": "assist.principle.canvas_free",
+      "title": "助手栏 · 收尾原则（无画布档）",
+      "group": "assist",
+      "where": "renderer/app-assist.js · principleBlock",
+      "desc": "不读写画布、不编造节点、回答简洁。"
+    },
+    {
+      "id": "assist.principle.current",
+      "title": "助手栏 · 收尾原则（仅当前画布）",
+      "group": "assist",
+      "where": "renderer/app-assist.js · principleBlock",
+      "desc": "长正文不入主上下文、收尾克制等纪律。"
+    },
+    {
+      "id": "assist.principle.global",
+      "title": "助手栏 · 收尾原则（全局）",
+      "group": "assist",
+      "where": "renderer/app-assist.js · principleBlock",
+      "desc": "全局档的收尾纪律。"
+    },
+    {
+      "id": "assist.app_state.heads",
+      "title": "助手栏 · 应用状态快照说明",
+      "group": "assist",
+      "where": "renderer/app-assist.js · appStateHeads",
+      "desc": "紧贴「当前应用状态 JSON」前的那段说明（快照不含节点正文，别编造）。"
+    },
+    {
+      "id": "devnode.suggest_system",
+      "title": "开发节点 · 进度评估器系统提示",
+      "group": "devnode",
+      "where": "renderer/app-devnode.js · devSuggestSystemPrompt",
+      "desc": "「建议」按钮那一次只读调研的完整系统提示（含 JSON 契约与禁止项）。"
+    },
+    {
+      "id": "devnode.ask_system",
+      "title": "开发节点 · 问询会话系统提示",
+      "group": "devnode",
+      "where": "renderer/app-devnode.js · devAskSystemPrompt",
+      "desc": "「问询」绑定会话的只读人设与纪律。"
+    },
+    {
+      "id": "devnode.ask_task",
+      "title": "开发节点 · 问询任务书",
+      "group": "devnode",
+      "where": "renderer/app-devnode.js · devAskPrompt",
+      "desc": "问询会话写进 _devContract、每轮随系统提示注入的任务书正文。"
+    },
+    {
+      "id": "devnode.dev_rules.implementation",
+      "title": "开发会话 · 实施要求",
+      "group": "devnode",
+      "where": "renderer/app-devnode.js · 开发任务书",
+      "desc": "「实施要求：以项目根目录内的真实代码为准…」这一条。"
+    },
+    {
+      "id": "devnode.dev_rules.agents_md",
+      "title": "开发会话 · AGENTS.md 共识",
+      "group": "devnode",
+      "where": "renderer/app-devnode.js · 开发任务书",
+      "desc": "「先读 AGENTS.md 并遵守目录约定 / 不要修改清单」这一条。"
+    },
+    {
+      "id": "devnode.dev_rules.no_canvas",
+      "title": "开发会话 · 不改画布纪律",
+      "group": "devnode",
+      "where": "renderer/app-devnode.js · 开发任务书",
+      "desc": "开发绑定会话不读也不改画布、收尾一句话汇报这一条。"
+    },
+    {
+      "id": "subagent.db_extract_rows",
+      "title": "子代理 · 数据库抽取派单",
+      "group": "subagent",
+      "where": "renderer/app-db.js · dbExtractRowsBatch",
+      "desc": "按批次抽表字段的子代理前言。可用占位符：{{columns}}。",
+      "vars": ["columns"]
+    },
+    {
+      "id": "subagent.vision",
+      "title": "子代理 · 识图",
+      "group": "subagent",
+      "where": "renderer/app-nodes.js · visionRouteCall",
+      "desc": "识图子代理的固定前言（后面接用户问题）。"
+    },
+    {
+      "id": "team.expert_persona",
+      "title": "团队专家人设整段",
+      "group": "team",
+      "where": "renderer/app-team.js · expertSystemPrompt",
+      "desc": "专家四段式人设（身份 / 目标 / 约束 / 输出 + 工具许可）。可用占位符：{{name}}、{{role}}。",
+      "vars": ["name", "role"]
+    },
+    {
+      "id": "node.remotion_build",
+      "title": "Remotion 节点 · 构建器身份",
+      "group": "node",
+      "where": "renderer/app-nodes.js · remotion 构建派单",
+      "desc": "「你是 Remotion 视频节点构建器」那一句身份说明（后面是需求与硬约束）。"
+    },
+    {
+      "id": "node.remotion_write",
+      "title": "Remotion 节点 · 写文件构建器身份",
+      "group": "node",
+      "where": "renderer/app-nodes.js · remotion 写文件派单",
+      "desc": "「只负责在给定目录里写 React 源码文件」那一句身份说明。"
+    },
+    {
+      "id": "flow.plan_parallel_system",
+      "title": "计划 · 并行子任务系统提示",
+      "group": "flow",
+      "where": "renderer/app-plan.js · 计划并行步骤",
+      "desc": "计划里每个并行步骤作为 subagent 跑时的系统提示。"
+    },
+    {
+      "id": "flow.plan_single_system",
+      "title": "计划 · 单步任务系统提示",
+      "group": "flow",
+      "where": "renderer/app-plan.js · 计划单步执行",
+      "desc": "计划单步直跑时的系统提示。"
+    },
+    {
+      "id": "team.recruit_card_system",
+      "title": "团队 · HR 招聘助手系统提示",
+      "group": "team",
+      "where": "renderer/app-team-recruit.js · AUTO_RUN_PROMPT",
+      "desc": "把用人需求转成专家角色卡的整段提示（含 JSON 结构与硬约束）。可用占位符：{{iconKeys}}。",
+      "vars": ["iconKeys"]
+    },
+    {
+      "id": "longtask.grill_contract",
+      "title": "长周期任务 · 建图会话契约",
+      "group": "longtask",
+      "where": "renderer/app-longtask-guide.js · ltgContractText",
+      "desc": "「长任务建图」会话每轮注入的整份契约（先拷问、共识后 create_longtask 落库）。"
+    },
+    {
+      "id": "app.merge.order",
+      "title": "应用合并 · 执行顺序",
+      "group": "app",
+      "where": "renderer/app-apps-dev.js · 合并任务书",
+      "desc": "「① 先加载 mtnode-app-merge；② 再拷问；③ 确认前不改文件；④ 确认后自己改」这一条。"
+    },
+    {
+      "id": "app.merge.hard_rules",
+      "title": "应用合并 · 硬规则",
+      "group": "app",
+      "where": "renderer/app-apps-dev.js · 合并任务书",
+      "desc": "只按拷问结果覆盖差异、不动 storage / app.json / 版本号这一条。"
+    },
+    {
+      "id": "app.merge.forbidden",
+      "title": "应用合并 · 不许做的事",
+      "group": "app",
+      "where": "renderer/app-apps-dev.js · 合并任务书",
+      "desc": "不自动上架、不改画布、不动备份、不改对方那一版这一条。"
+    }
+  ]
+}

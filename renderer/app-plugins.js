@@ -3133,8 +3133,9 @@ function renderExtSkillInfo(s, info) {
   const actions = [];
   actions.push([s.builtin ? "阅读" : "编辑", "", async () => {
     if (s.builtin) {
-      /* 内置技能只读：正文用内置 Markdown 阅读器打开（不落到下方 `<pre>` 里看原文） */
-      toast(I18n.t("内置技能只读，不可修改"), "warn");
+      /* 内置技能正文随包只读，但可以「覆盖」：改到「设置 → 内置能力 → 内置技能」
+         （覆盖层落在数据目录，随包那份不动）。这里只负责读，改给出入口提示。 */
+      toast(I18n.t("内置技能请到「设置 → 内置能力 → 内置技能」里修改"), "info");
       await openSkillMarkdownViewer(s, { readOnly: true });
       return;
     }

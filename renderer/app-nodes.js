@@ -8373,7 +8373,10 @@ function remotionBuildPrompt(node, opt) {
     : "";
   return (
     header +
-    I18n.t("你是 MTNode 里 Remotion 视频节点的构建器。按下面的需求，写出一份**可本地渲染**的 Remotion React 工程。") +
+    PS(
+      "node.remotion_build",
+      I18n.t("你是 MTNode 里 Remotion 视频节点的构建器。按下面的需求，写出一份**可本地渲染**的 Remotion React 工程。"),
+    ) +
     "\n\n" +
     I18n.t("需求：") +
     "\n" +
@@ -8570,7 +8573,10 @@ async function remotionBuildNode(node, opts) {
         writeRoots: [buildDir],
         noCanvas: true,
         systemPrompt:
-          I18n.t("你是 Remotion 动效工程构建器，只负责在给定目录里写 React 源码文件。"),
+          PS(
+      "node.remotion_write",
+      I18n.t("你是 Remotion 动效工程构建器，只负责在给定目录里写 React 源码文件。"),
+    ),
         ...remotionBuildAgentOpts(node),
       });
       void text;
@@ -17535,7 +17541,10 @@ async function applyVisionInspect(params, runKey) {
     };
   }
   const prompt =
-    I18n.t("你是识图子代理。根据用户问题仔细查看图片并作答；只输出与问题相关的观察与结论，不要编造看不到的内容。\n\n问题：") +
+    PS(
+      "subagent.vision",
+      I18n.t("你是识图子代理。根据用户问题仔细查看图片并作答；只输出与问题相关的观察与结论，不要编造看不到的内容。\n\n问题："),
+    ) +
     question;
   const failures = [];
   for (let i = 0; i < routes.length; i++) {

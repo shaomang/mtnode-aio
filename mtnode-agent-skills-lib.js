@@ -311,7 +311,9 @@ function compactIndexText(index, maxChars) {
    老标记格式对不上即整树重建一次 —— 免得算法升级后快路径把新产物漏装。
    缺文件 / 缺标记 / 多出一个该回收的内置目录，一律退回整树重建（升级自愈的口径不变）。 */
 const SYNC_STATE_FILE = ".mtnode-skills-sync.json";
-const SYNC_FORMAT = 2;
+/* 3：多了一步「把覆盖层正文写进同步出来的技能树」（设置 →「内置能力」里改的 SKILL.md）。
+   形态一变就 +1，老标记对不上即整树重建一次。 */
+const SYNC_FORMAT = 3;
 
 function srcTreeFingerprint(src) {
   const parts = [];
@@ -328,6 +330,57 @@ function srcTreeFingerprint(src) {
   }
   parts.sort();
   return parts.join("|");
+}
+
+/* 内置技能覆盖层（<数据目录>/builtin-overrides/builtin-skills.json，见 agent-prompts-lib.js）。
+   内核按需 require：老沙箱只抠本文件时缺这个模块也不至于整块炸。 */
+function skillOverridesOf(dataDir) {
+  if (!dataDir) return {};
+  try {
+    return require("./agent-prompts-lib.js").readSkillOverrides(dataDir) || {};
+  } catch {
+    return {};
+  }
+}
+
+function shortHash(s) {
+  let h = 0x811c9dc5;
+  const str = String(s == null ? "" : s);
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h.toString(16);
+}
+
+/* 覆盖层里改过的正文，同步时逐条写进目标树（按 front matter name 优先、目录名兜底）。
+   与 buildIndexFromTree 取值口径一致，用户改了 front matter 也不会锁死旧名字。 */
+function applySkillOverridesToTree(root, overrides) {
+  const names = Object.keys(overrides || {});
+  if (!names.length) return 0;
+  let n = 0;
+  for (const hit of walkSkillFiles(root)) {
+    let body = "";
+    try {
+      body = fs.readFileSync(hit.full, "utf8");
+    } catch {
+      continue;
+    }
+    const meta = parseSkillMeta(body);
+    const dirName = path.basename(path.dirname(hit.full));
+    const name = String(meta.name || dirName).trim().toLowerCase();
+    const key = Object.prototype.hasOwnProperty.call(overrides, name)
+      ? name
+      : Object.prototype.hasOwnProperty.call(overrides, dirName.toLowerCase())
+        ? dirName.toLowerCase()
+        : "";
+    if (!key) continue;
+    try {
+      fs.writeFileSync(hit.full, String(overrides[key]), "utf8");
+      n++;
+    } catch {}
+  }
+  return n;
 }
 
 /* 目标盘上「该有的都在吗」：库根两个产物 + 每颗技能的 SKILL.md 与应有的出处标记。
@@ -373,12 +426,19 @@ function writeSyncState(dist, fingerprint, skills, count) {
   } catch {}
 }
 
-function syncMtnodeAgentSkills(dshHome, appRoot) {
+function syncMtnodeAgentSkills(dshHome, appRoot, dataDir) {
   const src = bundledRoot(appRoot);
   const dest = dshLibRoot(dshHome);
   if (!fs.existsSync(src)) return { ok: false, error: "bundled library missing: " + src };
   const skillsRoot0 = path.join(dshHome, "skills");
-  const fingerprint = srcTreeFingerprint(src);
+  /* 覆盖层参与指纹：用户改了某颗内置技能的正文，也要让快路径失效、整树重建一次，
+     否则同步出来的 dsh-home/skills 里还是旧正文（症状：设置里改完、模型读到的没变）。 */
+  const skillOverrides = skillOverridesOf(dataDir);
+  const ovKey = Object.keys(skillOverrides)
+    .sort()
+    .map((k) => k + "≈" + shortHash(skillOverrides[k]))
+    .join("|");
+  const fingerprint = srcTreeFingerprint(src) + "||ov:" + ovKey;
   const prev = readJson(path.join(dest, SYNC_STATE_FILE), null);
   if (prev && prev.fingerprint === fingerprint && syncStateUsable(prev, dest, skillsRoot0)) {
     const index = readIndexAt(dest);
@@ -397,6 +457,8 @@ function syncMtnodeAgentSkills(dshHome, appRoot) {
   }
   rmDirSafe(dest);
   copyDir(src, dest);
+  /* 覆盖层正文写进刚同步出来的树（front matter 也一并覆盖），索引随后按覆盖后的正文重建 */
+  const ovApplied = applySkillOverridesToTree(dest, skillOverrides);
   /* 索引一律按**落盘后的技能树**重建，不信任随包携带的 index.json：
      它可能被手工改过 / 忘了跑 tools/build-mtnode-agent-skill-index.js，
      而下面的安装目录名取自索引条目 name —— 索引里 name 写错（如少了 mtnode- 前缀）
@@ -466,7 +528,7 @@ function syncMtnodeAgentSkills(dshHome, appRoot) {
   };
 }
 
-function getMtnodeAgentSkill(dshHome, name) {
+function getMtnodeAgentSkill(dshHome, name, dataDir) {
   const nm = String(name || "").trim().toLowerCase();
   if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(nm)) {
     return { ok: false, error: "技能不存在" };
@@ -477,7 +539,10 @@ function getMtnodeAgentSkill(dshHome, name) {
   if (!hit) return { ok: false, error: "技能不存在" };
   const skillMd = path.join(lib, hit.path);
   if (!fs.existsSync(skillMd)) return { ok: false, error: "技能不存在" };
-  const body = fs.readFileSync(skillMd, "utf8");
+  let body = fs.readFileSync(skillMd, "utf8");
+  /* 覆盖层优先（快路径未重建时 lib 树里仍是随包正文，这里再兜一层，读到的永远是用户改过的那份） */
+  const ovs = skillOverridesOf(dataDir);
+  if (Object.prototype.hasOwnProperty.call(ovs, nm)) body = String(ovs[nm]);
   const files = [];
   const skillDir = path.dirname(skillMd);
   try {
@@ -513,10 +578,10 @@ function getMtnodeAgentSkill(dshHome, name) {
   };
 }
 
-function mtnodeAgentSkillIndex(dshHome, appRoot) {
+function mtnodeAgentSkillIndex(dshHome, appRoot, dataDir) {
   const lib = dshLibRoot(dshHome);
   if (!fs.existsSync(path.join(lib, "index.json"))) {
-    const synced = syncMtnodeAgentSkills(dshHome, appRoot);
+    const synced = syncMtnodeAgentSkills(dshHome, appRoot, dataDir);
     if (!synced.ok) return synced;
     return {
       ok: true,

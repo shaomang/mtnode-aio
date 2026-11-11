@@ -1,6 +1,6 @@
 {
   "format": "mtnode-agent-skills-index-v1",
-  "updatedAt": "2026-11-06T13:51:18.778Z",
+  "updatedAt": "2026-11-11T00:23:29.310Z",
   "libraryRoot": "mtnode-agent-skills",
   "usage": "MTNode 内置 Agent 技能库。默认只注入本索引；任务匹配时再读取完整 SKILL.md（skill 工具或 read）。",
   "categories": [
@@ -622,7 +622,7 @@
           "id": "mcp-server",
           "name": "mtnode-mcp-server",
           "title": "MTNode MCP 服务端（第三方接进来操作）",
-          "description": "从 MTNode 外面经 MCP 操作本机 MTNode：15 个工具、先读图拿 contentHash、权限与审计。",
+          "description": "从 MTNode 外面经 MCP 操作本机 MTNode：16 个工具、先读图拿 contentHash、权限与审计。",
           "path": "mtnode/mcp-server/SKILL.md",
           "version": ""
         },

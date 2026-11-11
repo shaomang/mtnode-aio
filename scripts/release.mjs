@@ -55,6 +55,8 @@ const USAGE = `发版主链：一次 release 同时出 NSIS 安装包与 Microso
 
   --store-only   只出 Store 包（跳过 NSIS 打包与 stage-updates）
                  = npm run release:store
+  --skip-build   只与 --store-only 一起用：不跑 electron-builder，直接复用现有 dist\\win-unpacked
+                 （应用正从 dist\\win-unpacked 运行时那份目录被占用、无法重建，只能走这条）
   --no-git       跳过最后一步 git 同步（不改动仓库；默认会提交 + tag + push）
   --no-push      做 git 同步但只本地提交，不 push 远端
   --dry-run      干跑：只做版本一致性校验 + 打印将要执行的步骤，不构建 / 不打包 / 不上传 / 不提交
@@ -85,9 +87,10 @@ function fileSize(p) {
   }
 }
 function parseArgs(argv) {
-  const opt = { storeOnly: false, dryRun: false, help: false, git: true, push: true };
+  const opt = { storeOnly: false, dryRun: false, help: false, git: true, push: true, skipBuild: false };
   for (const a of argv) {
     if (a === '--store-only') opt.storeOnly = true;
+    else if (a === '--skip-build') opt.skipBuild = true;
     else if (a === '--dry-run') opt.dryRun = true;
     else if (a === '--no-git') opt.git = false;
     else if (a === '--no-push') opt.push = false;
@@ -302,6 +305,9 @@ if (opt.help) {
   console.log(USAGE);
   process.exit(0);
 }
+if (opt.skipBuild && !opt.storeOnly) {
+  die('--skip-build 只能与 --store-only 一起用（完整发版必须重新构建 NSIS 安装包）', 2);
+}
 
 const started = Date.now();
 const ver = readVersionFile();
@@ -330,7 +336,11 @@ if (opt.dryRun) {
   if (opt.storeOnly) {
     console.log('  ① 版本校验：根 version ↔ package.json（已完成）');
     console.log('  ①b 更新日志校验：changelog/v<版本>.md 存在且有条目（已完成）');
-    console.log('  ② node scripts/msix/make-msix.mjs（自建 win-unpacked → .msix）');
+    console.log(
+      opt.skipBuild
+        ? '  ② node scripts/msix/make-msix.mjs --skip-build（复用现有 win-unpacked → .msix）'
+        : '  ② node scripts/msix/make-msix.mjs（自建 win-unpacked → .msix）',
+    );
     console.log('  ③ 另存 dist\\msix-publish\\ + 打印 Partner Center 上传指引');
     console.log(
       opt.git
@@ -356,8 +366,12 @@ if (opt.dryRun) {
 }
 
 if (opt.storeOnly) {
-  console.log('\n[2] 构建并封装 Store 包（make-msix 自建 win-unpacked）');
-  stepMsix(false);
+  console.log(
+    opt.skipBuild
+      ? '\n[2] 复用现有 win-unpacked 封装 Store 包（--skip-build，不跑 electron-builder）'
+      : '\n[2] 构建并封装 Store 包（make-msix 自建 win-unpacked）',
+  );
+  stepMsix(opt.skipBuild);
   console.log('\n[3] 另存 .msix 并打印上传指引');
   stepPublishMsix(ver);
   if (opt.git) {

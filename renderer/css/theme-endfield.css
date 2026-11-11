@@ -1,0 +1,1213 @@
+/* ── 终末地（Endfield）主题 ────────────────────────────────────────────────────
+   参考 GlacierGlimmer/zmd-charge-plus（终末地风 HUD）的取值与动效语言：
+     · 石墨黑底 #141414 / 面板 #1b1b1b / 卡片 #202020 / 输入槽 #171717 / 发丝线 #3b3b3b
+     · 信号黄 #fffa00（主强调，配黑字）+ 橄榄黄绿 #c6ca4c（次强调）+ 象牙白 #e9e7e4（高对比板）
+     · 形状：直角 / 45° 切角 / 1px 发丝线 / 等宽数字 / 危险斜纹
+     · 动效：back-out 弹入 cubic-bezier(.175,.885,.32,1.275)、方角辉光、呼吸灯（无全屏扫光/滚动虚线）
+   落地口径：
+     · 一律以 body.theme-endfield 起头（applyTheme 会在 body 上挂这个类），
+       深色 / 工业 / 亮色三套主题一个字节都不受影响。
+     · 颜色先落到 base.css 的槽位（--bg / --panel / --ink / --cyan / --orange …），
+       组件层只补「槽位管不到」的部分：写死的节点底色、切角、斜纹与动效。
+     · 动效全部有 @media (prefers-reduced-motion: reduce) 兜底（base.css 的全局兜底之外
+       再单独关掉扫描线，避免它吃掉一整个合成层的 GPU）。 */
+
+/* ── 一、主题槽位 ─────────────────────────────────────────────────────────── */
+body.theme-endfield {
+  /* 终末地自己的色板（组件层取用，便于以后统一微调） */
+  --ef-black: #0b0b0b;
+  --ef-canvas: #101010;
+  --ef-surface: #141414;
+  --ef-panel: #1b1b1b;
+  --ef-card: #202020;
+  --ef-input: #171717;
+  --ef-line: #3b3b3b;
+  --ef-line-2: #565656;
+  --ef-text: #f2f2f2;
+  --ef-muted: #a1a1a1;
+  --ef-signal: #fffa00;
+  --ef-signal-2: #f2f27a;
+  --ef-olive: #c6ca4c;
+  --ef-plate: #e9e7e4;
+  /* 面板轮廓：整个窗口一圈（四边 + 切角斜边）只用这一支颜色，
+     --ef-frame 是呼吸的谷值、--ef-frame-hi 是峰值，粗细恒 1px */
+  --ef-frame: #b6b300;
+  --ef-frame-hi: #fffa00;
+  --ef-frame-plate: #b8b6b2;
+  /* 切角斜边色带的宽度（沿切线法线方向）。四边那条 1px 边框在整数倍缩放下正好是
+     1 个设备像素，但 1.25~1.75 倍缩放时 Chromium 会把它吸附成 1 个设备像素（不放大），
+     而色带仍按 CSS px 跟着 dpr 放大 —— 斜边就成了 2~2.5 个设备像素，比四边粗一档。
+     逐档实测后按 dpr 收窄（见本节末尾的 @media），让斜边「每行墨量 ÷ √2」≈ 四边每列墨量。 */
+  --ef-cut-w: 1px;
+
+  /* ── 应用槽位（全量 UI 的底色都从这里来）── */
+  --bg: #101010;
+  --bg2: #161616;
+  --panel: #1b1b1b;
+  --panel2: #232323;
+  --bd: #3f3f3f;
+  --bd2: #525252;
+  --ink: #f4f4f4;
+  --muted: #a8a8a8;
+  --orange: #fffa00;
+  --orange2: #f2f27a;
+  --cyan: #e2dfd2;
+  --cyan2: #f6f4ea;
+  --blue: #9fb6cc;
+  --green: #b6d94a;
+  --red: #ff4a3d;
+  --yellow: #fffa00;
+  --code: #0d0d0d;
+
+  /* 交互令牌：焦点环与浮层投影跟信号黄走 */
+  --focus-ring: color-mix(in srgb, var(--ef-signal) 82%, #ffffff);
+  --focus-halo: color-mix(in srgb, var(--ef-signal) 20%, transparent);
+  --shadow-pop: 0 2px 4px rgba(0, 0, 0, .5), 0 14px 34px -6px rgba(0, 0, 0, .62);
+  --ef-ease-back: cubic-bezier(.175, .885, .32, 1.275);
+}
+
+/* 数字 / 版本号 / 状态灯一律等宽：终末地 HUD 的读数质感 */
+body.theme-endfield .ver-tag,
+body.theme-endfield .statusbar,
+body.theme-endfield .port-badge,
+body.theme-endfield .n-stat,
+body.theme-endfield .lt-s-label {
+  font-variant-numeric: tabular-nums;
+}
+
+body.theme-endfield ::selection {
+  background: color-mix(in srgb, var(--ef-signal) 34%, transparent);
+  color: #fff;
+}
+
+/* ── 二、全局底纹：细网格 + 扫描线 + 暗角 ────────────────────────────────────
+   一个固定定位的伪元素压在整窗之上（pointer-events:none，不吃点击）。
+   扫描线极淡（约 3% 白），暗角压住四角 → 画面有 CRT / 全息面板的层次，
+   但不会盖住文字对比度。 */
+body.theme-endfield::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  pointer-events: none;
+  background:
+    repeating-linear-gradient(180deg,
+      rgba(255, 255, 255, .02) 0 1px,
+      rgba(0, 0, 0, 0) 1px 3px),
+    radial-gradient(ellipse at 50% 42%, rgba(0, 0, 0, 0) 62%, rgba(0, 0, 0, .2) 100%);
+  mix-blend-mode: normal;
+  opacity: .9;
+}
+
+/* 注：这里曾有一条循环下移的全屏扫光带（22vh 淡黄渐变，9s 一轮）——
+   用户反馈那层从上到下的光影波浪晃眼，已整段撤掉；扫描线 + 暗角（::after）保留。 */
+
+/* 滚动条：直角、石墨、悬停转信号黄 */
+body.theme-endfield ::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+body.theme-endfield ::-webkit-scrollbar-track {
+  background: #101010;
+}
+
+body.theme-endfield ::-webkit-scrollbar-thumb {
+  background: #3b3b3b;
+  border: 2px solid #101010;
+  border-radius: 0;
+}
+
+body.theme-endfield ::-webkit-scrollbar-thumb:hover {
+  background: var(--ef-olive);
+}
+
+body.theme-endfield ::-webkit-scrollbar-corner {
+  background: #101010;
+}
+
+/* ── 三、顶栏：发丝底边 + 像素感 logo ─────────────────────────────────────── */
+body.theme-endfield .topbar {
+  background: linear-gradient(180deg, #202020, #171717 62%, #141414);
+  border-bottom: 1px solid var(--ef-line);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, .04), 0 6px 16px -8px rgba(0, 0, 0, .8);
+}
+
+/* 注：顶栏底缘那条会流动的黄黑警示带（repeating-linear-gradient + ef-hazard 循环）
+   用户反馈碍眼，已撤掉 —— 顶栏只留一条 1px 发丝线；面板里的静态斜纹不受影响。 */
+
+body.theme-endfield .logo-mark {
+  background: linear-gradient(135deg, #242424, #0d0d0d);
+  border: 1px solid var(--ef-signal);
+  border-radius: 0;
+  box-shadow: 0 0 0 3px rgba(255, 250, 0, .08), inset 0 0 10px rgba(255, 250, 0, .18);
+}
+
+body.theme-endfield .logo-mark::before,
+body.theme-endfield .logo-mark::after {
+  background: var(--ef-signal);
+  width: 5px;
+  height: 5px;
+}
+
+body.theme-endfield .logo-txt {
+  color: var(--ef-plate);
+  letter-spacing: 4px;
+  text-shadow: 0 0 12px rgba(255, 250, 0, .22);
+}
+
+body.theme-endfield .logo-sub {
+  color: var(--ef-olive);
+  letter-spacing: 1.6px;
+}
+
+/* 顶栏按钮：直角、发丝线、悬停时左缘亮一道信号黄 */
+body.theme-endfield .topbar button,
+body.theme-endfield .topbar .wf-select {
+  border-radius: 0;
+  border-width: 1px;
+  background: linear-gradient(180deg, #232323, #1a1a1a);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .045);
+}
+
+body.theme-endfield .topbar button:hover {
+  border-color: var(--ef-olive);
+  color: var(--ef-plate);
+  background: linear-gradient(180deg, #2b2b2b, #1d1d1d);
+  box-shadow: inset 2px 0 0 var(--ef-signal), inset 0 1px 0 rgba(255, 255, 255, .06);
+}
+
+body.theme-endfield .topbar .tb-view.on,
+body.theme-endfield .topbar .btn-plugins.on,
+body.theme-endfield .topbar .btn-tools.on,
+body.theme-endfield .topbar .btn-assets.on,
+body.theme-endfield .topbar .btn-perf.on {
+  border-color: var(--ef-signal);
+  color: #111;
+  background: linear-gradient(180deg, #fffa00, #d8d400);
+  box-shadow: 0 0 14px -2px rgba(255, 250, 0, .45);
+}
+
+body.theme-endfield .topbar .tb-view.on svg,
+body.theme-endfield .topbar .btn-tools.on svg {
+  stroke: #111;
+}
+
+body.theme-endfield .topbar .ver-tag {
+  color: var(--ef-olive);
+  border-color: var(--ef-line);
+  border-radius: 0;
+  font-family: var(--mono);
+  letter-spacing: .6px;
+}
+
+/* ── 四、左栏：直角标签页 + 选中态信号黄下划线 ────────────────────────────── */
+body.theme-endfield .sidebar {
+  background: linear-gradient(180deg, #1a1a1a, #141414);
+  border-right: 1px solid var(--ef-line);
+}
+
+body.theme-endfield .side-tabs {
+  border-bottom: 1px solid var(--ef-line);
+}
+
+body.theme-endfield .side-tab {
+  border-radius: 0;
+  border: 1px solid transparent;
+  color: var(--ef-muted);
+  letter-spacing: 1px;
+}
+
+body.theme-endfield .side-tab:hover {
+  color: var(--ef-plate);
+  border-color: var(--ef-line);
+}
+
+body.theme-endfield .side-tab.on {
+  color: #111;
+  background: var(--ef-signal);
+  border-color: var(--ef-signal);
+  box-shadow: 0 0 16px -4px rgba(255, 250, 0, .55);
+}
+
+body.theme-endfield .sidebar-search input {
+  border-radius: 0;
+  background: #141414;
+  border-color: var(--ef-line);
+}
+
+body.theme-endfield .sidebar-tree .sess,
+body.theme-endfield .sidebar-tree .tree-row,
+body.theme-endfield .side-sess {
+  border-radius: 0;
+}
+
+body.theme-endfield .side-sess-btn {
+  border-radius: 0;
+}
+
+body.theme-endfield .side-sess-btn:hover {
+  border-color: var(--ef-olive);
+  color: var(--ef-plate);
+  box-shadow: inset 2px 0 0 var(--ef-signal);
+}
+
+/* ── 五、画布：点阵 + 节点 ───────────────────────────────────────────────── */
+body.theme-endfield .fn-canvas {
+  background:
+    radial-gradient(circle at 1px 1px, rgba(233, 231, 228, .17) var(--grid-dot-r), transparent var(--grid-dot-end)) var(--grid-x) var(--grid-y) / var(--grid-size) var(--grid-size),
+    radial-gradient(ellipse at 50% 0%, rgba(255, 250, 0, .028), transparent 58%),
+    linear-gradient(180deg, #121212, #0c0c0c);
+  border: 1px solid var(--ef-line);
+  border-radius: 0;
+}
+
+/* 节点底盘：石墨卡片 + 1px 发丝线 + 硬投影（终末地面板都是「贴上去的板子」） */
+body.theme-endfield .wf-node {
+  --n-accent: var(--ef-plate);
+  border-radius: 0;
+  border: 1px solid #555555;
+  background: linear-gradient(180deg, #232323, #181818);
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, .55),
+    3px 3px 0 0 rgba(0, 0, 0, .5),
+    4px 8px 14px -4px rgba(0, 0, 0, .55),
+    inset 0 1px 0 rgba(255, 255, 255, .05);
+}
+
+body.theme-endfield .wf-node:hover {
+  border-color: var(--ef-line-2);
+}
+
+/* 每类节点的强调色（只改强调，不改底盘）：颜色语义沿用原来的分类体系，
+   但全部换成终末地里出现过的黄 / 橄榄 / 象牙 / 铁灰这几支 */
+body.theme-endfield .wf-node.in {
+  --n-accent: var(--ef-plate);
+  border-color: #6f6f68;
+}
+
+body.theme-endfield .wf-node.proc,
+body.theme-endfield .wf-node.tool-node:not(.super-open) {
+  --n-accent: var(--ef-signal);
+  border-color: #7a7a2a;
+}
+
+body.theme-endfield .wf-node.proc-img {
+  --n-accent: #ff9d5c;
+  border-color: #6a4a55;
+}
+
+body.theme-endfield .wf-node.music {
+  --n-accent: #a9a2e0;
+  border-color: #4d4468;
+}
+
+body.theme-endfield .wf-node.video {
+  --n-accent: #7fe0c8;
+  border-color: #3f625c;
+}
+
+body.theme-endfield .wf-node.tts {
+  --n-accent: var(--ef-olive);
+  border-color: #6a6f30;
+}
+
+body.theme-endfield .wf-node.net {
+  --n-accent: #9aa8d8;
+  border-color: #494f6a;
+}
+
+body.theme-endfield .wf-node.agent {
+  --n-accent: #8ab4e8;
+  border-color: #44526a;
+}
+
+body.theme-endfield .wf-node.db-tbl {
+  --n-accent: #7fd6b8;
+  border-color: #3d6055;
+}
+
+body.theme-endfield .wf-node.sv {
+  --n-accent: var(--ef-green);
+  border-color: #55682c;
+}
+
+body.theme-endfield .wf-node.dlv {
+  --n-accent: #f0a63a;
+  border-color: #6a5228;
+}
+
+body.theme-endfield .wf-node.task {
+  --n-accent: #7fd9d9;
+  border-color: #3c5f5f;
+  --task-sel-rgb: 255, 250, 0;
+}
+
+body.theme-endfield .wf-node.super {
+  --n-accent: #c3c3bb;
+  border-color: #4e4e4a;
+  background:
+    linear-gradient(145deg, rgba(255, 250, 0, .05) 0%, transparent 40%),
+    linear-gradient(180deg, #1e1e1e, #161616 60%, #111 100%);
+}
+
+body.theme-endfield .wf-node.global {
+  --n-accent: var(--ef-plate);
+}
+
+/* 节点头：暗条 + 左侧一道强调色，像 HUD 上的项目条 */
+body.theme-endfield .n-head {
+  background: linear-gradient(90deg, color-mix(in srgb, var(--n-accent, var(--ef-plate)) 16%, #101010), #131313 62%, #101010);
+  border-bottom: 1px solid #0a0a0a;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .06), inset 2px 0 0 var(--n-accent, var(--ef-plate));
+}
+
+body.theme-endfield .n-title {
+  color: var(--ef-text);
+  letter-spacing: 1.4px;
+}
+
+/* 选中：信号黄描边 + 外发光（终末地里「选中」永远是那支黄） */
+body.theme-endfield .wf-node.sel {
+  border-color: var(--ef-signal);
+  box-shadow:
+    0 0 0 1px var(--ef-signal),
+    0 0 18px -2px rgba(255, 250, 0, .5),
+    3px 3px 0 0 rgba(0, 0, 0, .5),
+    4px 8px 14px -4px rgba(0, 0, 0, .55);
+}
+
+body.theme-endfield .wf-node.sel .n-head {
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .08), inset 3px 0 0 var(--ef-signal);
+}
+
+/* 端子：终末地接插件 —— 10px 正方插口（石墨面 + 1px 类别色框，2D 平涂口径：
+   只有一圈实心边框 + 纯黑方孔，不用内斜面高光） */
+body.theme-endfield .port {
+  --port-ring: #6e6e6e;
+  border-radius: 0;
+  background: #131313;
+  box-shadow:
+    inset 0 0 0 1px var(--port-ring),
+    0 1px 1px rgba(0, 0, 0, .35);
+}
+
+/* 插孔芯：方角内凹（2px 让位 → 中心 6px 深色方孔） */
+body.theme-endfield .port::before {
+  inset: 2px;
+  border-radius: 0;
+  background: #050505;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .9);
+}
+
+body.theme-endfield .port.in {
+  --port-ring: var(--ef-plate);
+}
+
+body.theme-endfield .port.out {
+  --port-ring: var(--ef-signal);
+}
+
+body.theme-endfield .port.ctrl {
+  --port-ring: var(--ef-olive);
+}
+
+body.theme-endfield .port.img {
+  --port-ring: #ff9d5c;
+}
+
+body.theme-endfield .port.aud {
+  --port-ring: #a9a2e0;
+}
+
+body.theme-endfield .port.vid {
+  --port-ring: #7fe0c8;
+}
+
+/* 已接线端子（canvas.css 的 .port.linked，类名由渲染层按「端子上确实挂着线」追加）：
+   终末地口径 = 方孔**原位**被类别色插芯填满（孔仍是 ::before 那个 2px 让位的 6px 方孔，
+   只是不再是纯黑）+ 方孔外一圈细亮框 + 方角辉光，与空槽那颗「纯黑方孔」一眼可分；
+   几何与命中区不动。 */
+body.theme-endfield .port.linked {
+  background: #131313;
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--port-ring) 55%, #ffffff),
+    0 0 6px -1px color-mix(in srgb, var(--port-ring) 62%, transparent);
+}
+
+body.theme-endfield .port.linked::before {
+  background: var(--port-ring);
+  box-shadow: none;
+}
+
+/* 悬停（JS 的 .hover 类与原生 :hover 两条路都盖住）：方角亮框 + 方角辉光 */
+body.theme-endfield .port:hover,
+body.theme-endfield .port.hover,
+body.theme-endfield .port.ctrl.hover,
+body.theme-endfield .port.img.hover,
+body.theme-endfield .port.aud.hover,
+body.theme-endfield .port.vid.hover {
+  transform: scale(1.24);
+  filter: brightness(1.12);
+  box-shadow:
+    inset 0 0 0 1px var(--port-ring),
+    inset 0 0 0 2px rgba(0, 0, 0, .5),
+    0 0 10px -1px color-mix(in srgb, var(--port-ring) 72%, transparent),
+    0 1px 2px rgba(0, 0, 0, .7);
+}
+
+body.theme-endfield .port:hover::before,
+body.theme-endfield .port.hover::before,
+body.theme-endfield .port.ctrl.hover::before,
+body.theme-endfield .port.img.hover::before,
+body.theme-endfield .port.aud.hover::before,
+body.theme-endfield .port.vid.hover::before {
+  background: var(--port-ring);
+  box-shadow: none;
+}
+
+/* 拖线悬停的「将替换」预告：红框红芯，排在上面几条之后才盖得住 */
+body.theme-endfield .port.will-replace {
+  box-shadow:
+    inset 0 0 0 1px #ff4d4d,
+    inset 0 0 0 2px rgba(0, 0, 0, .5),
+    0 0 10px -1px rgba(255, 77, 77, .9);
+}
+
+body.theme-endfield .port.will-replace::before {
+  background: #ff4d4d;
+}
+
+/* 已接线端子的悬停：壳外那圈类别色辉光放大一号、亮框提亮（比空槽醒目）。
+   必须写在上面几条悬停 / 将替换之后并带 :not(.will-replace) —— 它们同为
+   「body.theme-endfield + 3 个类」的优先级，靠本文件后加载才能压住
+   canvas.css 的 .port.linked:hover（拖线的红框仍归 .port.will-replace 管）。 */
+body.theme-endfield .port.linked:not(.will-replace):hover,
+body.theme-endfield .port.linked:not(.will-replace).hover {
+  filter: brightness(1.12);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--port-ring) 45%, #ffffff),
+    0 0 11px -1px color-mix(in srgb, var(--port-ring) 85%, transparent);
+}
+
+body.theme-endfield .port.linked:not(.will-replace):hover::before,
+body.theme-endfield .port.linked:not(.will-replace).hover::before {
+  background: color-mix(in srgb, var(--port-ring) 80%, #ffffff);
+  box-shadow: none;
+}
+
+/* 判定节点的 YES / NO 输出：保留语义色，但同样是方角框 */
+body.theme-endfield .port.out.yes {
+  --port-ring: var(--green);
+}
+
+body.theme-endfield .port.out.no {
+  --port-ring: var(--red);
+}
+
+/* 节点层内侧端子（子画布左右缘的桥 / 汇端子）与全屏聚焦层：
+   canvas.css 给它们单独写过 box-shadow（蓝色 / 青色晕圈），这里统一压回方角框 */
+body.theme-endfield .super-stage .port.out.super-inner-bridge,
+body.theme-endfield .super-stage .port.in.super-inner-sink,
+body.theme-endfield .super-focus-port-layer .port.out.super-inner-bridge,
+body.theme-endfield .super-focus-port-layer .port.in.super-inner-sink {
+  box-shadow:
+    inset 0 0 0 1px var(--port-ring),
+    0 1px 1px rgba(0, 0, 0, .35);
+}
+
+/* 同一批端子的「已接线」版：上面那四条是 0,4,1，比 body.theme-endfield .port.linked
+   的 0,2,1 高，会把方角亮框 + 类别色辉光照样盖掉 —— 补一份 linked 版本（与 .port.linked
+   同口径），内侧端子挂上线后壳上那圈亮框在子画布与全屏聚焦层里都还在。 */
+body.theme-endfield .super-stage .port.linked.out.super-inner-bridge,
+body.theme-endfield .super-stage .port.linked.in.super-inner-sink,
+body.theme-endfield .super-focus-port-layer .port.linked.out.super-inner-bridge,
+body.theme-endfield .super-focus-port-layer .port.linked.in.super-inner-sink {
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--port-ring) 55%, #ffffff),
+    0 0 6px -1px color-mix(in srgb, var(--port-ring) 62%, transparent);
+}
+
+/* 「参数」端子（node-params.css 给的是实心琥珀 + 琥珀晕圈）：改成琥珀方框，与其余端子同形 */
+body.theme-endfield .wf-node>.port.in.np-port {
+  --port-ring: #d9a84a;
+  background: #131313;
+  box-shadow:
+    inset 0 0 0 1px var(--port-ring),
+    0 1px 1px rgba(0, 0, 0, .35);
+}
+
+body.theme-endfield .wf-node>.port.in.np-port.spare {
+  --port-ring: #8a6c33;
+  background: #131313;
+  box-shadow: inset 0 0 0 1px var(--port-ring);
+}
+
+/* 组线端子（canvas.css 用紫色 --rim / 紫徽标）：换成橄榄，仍是方角 */
+body.theme-endfield .port.out.grp-out,
+body.theme-endfield .port.grp-port {
+  --port-ring: var(--ef-olive);
+}
+
+body.theme-endfield .port.out.grp-out>.port-badge,
+body.theme-endfield .port.grp-port>.port-badge {
+  border-color: var(--ef-olive);
+  color: var(--ef-olive);
+}
+
+body.theme-endfield .port-badge {
+  border-radius: 0;
+  font-family: var(--mono);
+  letter-spacing: .4px;
+  background: #141414;
+  border: 1px solid var(--ef-line);
+  color: var(--ef-muted);
+}
+
+body.theme-endfield .port-badge .pb-name {
+  color: var(--ef-text);
+}
+
+/* 画布上的文字标注：等宽、带一点全息辉光 */
+body.theme-endfield .mk-text {
+  color: var(--ef-plate);
+  letter-spacing: .6px;
+  text-shadow: 0 0 12px rgba(255, 250, 0, .18);
+}
+
+/* ── 六、对话框 / 面板：45° 切角 + 整窗一圈同色轮廓（会呼吸） ─────────────── */
+/* 轮廓口径（用户两轮反馈后收敛的唯一写法）：
+   「整个窗口只有一种颜色、一种粗细」—— 四边与 45° 切角那条斜边都是 1px 的同一支黄，
+   同色同亮、首尾相接成一圈，然后整圈一起极轻微地呼吸（5.6s 一个来回）。
+   上一版的错在配色分工：四边是灰发丝线 --ef-line、顶边与斜边是信号黄，
+   看上去就是「灰框上单独插了一根亮斜线」，被读成「轮廓没画全 + 斜线颜色不一致」。
+   斜边为什么必须单独补一条边：clip-path 是按边框盒剪的，1px 边框会被斜边一起剪断，
+   斜边处就成了「没有线的豁口」，看上去像少画了一笔的 bug。
+   background-origin: border-box 让色带贴住边框盒；色带取「距切线内侧 0 ~ 1px」，
+   即外沿正好压在那条切线上、宽 1px（垂直方向）—— 这才是与四边等粗的唯一取法。 */
+/* 斜边色带的两个死过的坑，用离屏渲染逐像素量过（dpr 1 / 1.5 / 2）：
+   ① 内缩就不能等粗。原来取「内侧 0.6 ~ 1.6px」，外沿离切线还差 0.6px，clip-path 的抗锯齿
+      再吃掉半个像素，于是首尾两端各留一个 1px 的空档（用户截图里顶边断了、斜边从下一行
+      才起笔，正是这个 notch），粗细则只剩 1.0 墨量（理论 1.414）—— 又细又断。
+      改成外沿贴线后：斜边每行墨量 1.5（理论 1.414，误差来自抗锯齿那半个像素），
+      两端与顶边末像素 / 右边首像素直接相接，没有缺口。
+   ② 内辉会偷粗。上一版在关键帧里挂了 inset 0 0 16px -4px 的淡黄内辉，它把斜边紧邻的那个
+      抗锯齿像素从 0.5 顶到 0.94，于是斜边每行变成「两个满色像素」（墨量 1.94 ≈ 1.4px 粗），
+      四边却仍只有 1px —— 这就是「粗细不一致 + 斜边颜色看着不对」的真凶。
+      呼吸灯现在只动颜色（#b6b300 ↔ #fffa00），不再动 box-shadow，粗细全程恒定 1px。 */
+/* 斜边的颜色画在 background 上，改 border-color 动不到它，只能让它自己跟着呼吸 ——
+   否则四边亮起来、斜边还停在原色，又回到「两段不一样」的老问题。
+   @property 把 --ef-edge 注册成 <color>，关键帧里才能插值出平滑的明暗。 */
+@property --ef-edge {
+  syntax: "<color>";
+  inherits: false;
+  initial-value: #b6b300;
+}
+
+body.theme-endfield .overlay-box,
+body.theme-endfield .mt-dialog-box {
+  border-radius: 0;
+  /* 让弹窗自成一层：合成层会被吸附到整像素，四边（尤其上下两条水平边）不再被亚像素抗锯齿
+     压暗 —— 否则同一支黄画出来上下暗一档、左右亮一档，看着仍旧是「颜色不一致」。
+     实测（离屏渲染、dpr 1.5）：不加时顶边 194,190,7、左边 255,250,0；加上后顶边也是 255,250,0。 */
+  will-change: transform;
+  /* 四边统一：与斜边同一支黄、同一粗细（1px），不再有「灰三边 + 黄一边」。
+     边框与色带都只认 --ef-edge 这**一个**变量：颜色只有一处定义、一处插值，
+     四边与斜边不可能各走一条取色路径（早先各自名一个颜色属性，中段会差出几个色阶）。 */
+  border: 1px solid var(--ef-edge);
+  --ef-edge: var(--ef-frame);
+  background:
+    linear-gradient(to top right,
+      transparent calc(50% - var(--ef-cut-w)),
+      var(--ef-edge) calc(50% - var(--ef-cut-w)),
+      var(--ef-edge) 50%,
+      transparent 50%) no-repeat right top / 18px 18px border-box,
+    linear-gradient(180deg, #1d1d1d, #161616);
+  /* 右上角 45° 切角：终末地面板的招牌轮廓 */
+  clip-path: polygon(0 0, calc(100% - 18px) 0, 100% 18px, 100% 100%, 0 100%);
+  animation: ef-panel-in .26s var(--ef-ease-back) both,
+    ef-panel-breath 5.6s ease-in-out .3s infinite;
+}
+
+/* 深色确认 / 输入窗（#mtDialog）自带一条更「重」的弹入动画：
+   base.css 的 .mt-dialog.on>.mt-dialog-box 是三个类的选择器，会把上面那条 animation 整条顶掉
+   —— 呼吸灯于是根本没跑（用户反馈的「未实现呼吸灯」正是这一处）。
+   这里把弹入与呼吸两条一起写回来，呼吸才真正落在这个窗上。 */
+body.theme-endfield .mt-dialog.on > .mt-dialog-box {
+  animation: mtPopIn .22s var(--ease-out),
+    ef-panel-breath 5.6s ease-in-out .3s infinite;
+}
+
+/* 作者小窗走象牙白那一支：四边 + 斜边同样只用一种颜色（否则黄框上顶一条白边，
+   又是一处「颜色不一致」）。粗细照旧 1px（基础样式给的是 3px）。 */
+body.theme-endfield .overlay-box.author-box {
+  border: 1px solid var(--ef-edge);
+  --ef-edge: var(--ef-frame-plate);
+  background:
+    linear-gradient(to top right,
+      transparent calc(50% - var(--ef-cut-w)),
+      var(--ef-edge) calc(50% - var(--ef-cut-w)),
+      var(--ef-edge) 50%,
+      transparent 50%) no-repeat right top / 18px 18px border-box,
+    linear-gradient(180deg, #1d1d1d, #161616);
+  animation: ef-panel-in .26s var(--ef-ease-back) both,
+    ef-panel-breath-plate 5.6s ease-in-out .3s infinite;
+}
+
+/* 分数倍缩放（Windows 125% / 150% / 175%）：色带按设备像素分档收窄，斜边才不会比四边粗。
+   离屏渲染逐像素实测（四只壳、每行墨量 ÷ √2 对四边每列墨量的比值，1.00 才是等粗）——
+     100%：0.71~1.01（色带 1px）            125%：0.65（1px）→ 1.19~1.29（1.2px）
+     150%：1.01（1px 时是 1.77，太粗）→ .7px 后 1.01     175%：0.61（1px 时 1.72）→ .58px 后 0.61~1.01
+     200%：0.71~0.86（1px）
+   斜边在亚像素上只能落在整设备像素上（色带色标边界不抗锯齿、clip-path 的锯齿也按设备像素
+   吸附），所以每一档只有一个可选值 —— 上面这套是各档里离 1.00 最近的那个。
+   验收：node test/verify-theme-endfield-frame.js [dpr] —— 五档都得 24/24 通过。 */
+@media (min-resolution: 1.2dppx) and (max-resolution: 1.45dppx) {
+  body.theme-endfield {
+    --ef-cut-w: 1.2px;
+  }
+}
+
+@media (min-resolution: 1.45dppx) and (max-resolution: 1.65dppx) {
+  body.theme-endfield {
+    --ef-cut-w: .7px;
+  }
+}
+
+@media (min-resolution: 1.65dppx) and (max-resolution: 1.9dppx) {
+  body.theme-endfield {
+    --ef-cut-w: .58px;
+  }
+}
+
+body.theme-endfield .overlay-head,
+body.theme-endfield .mt-dialog-head {
+  border-bottom: 1px solid var(--ef-line);
+  background: linear-gradient(90deg, rgba(255, 250, 0, .07), transparent 58%);
+}
+
+/* 窗脚按钮条的分隔线同理收成 1px（基础样式 2px，比外框还重） */
+body.theme-endfield .overlay-foot {
+  border-top: 1px solid var(--ef-line);
+}
+
+body.theme-endfield .overlay-head b,
+body.theme-endfield .mt-dialog-head b {
+  letter-spacing: 1.6px;
+  color: var(--ef-plate);
+}
+
+body.theme-endfield .overlay-head .tag,
+body.theme-endfield .mt-dialog-head .tag {
+  border-radius: 0;
+  border: 1px solid var(--ef-line-2);
+  color: var(--ef-olive);
+  font-family: var(--mono);
+  letter-spacing: .8px;
+}
+
+@keyframes ef-panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(-10px) scale(.992)
+  }
+
+  to {
+    opacity: 1;
+    transform: none
+  }
+}
+
+/* 面板呼吸灯（极轻微）：整圈轮廓（四边 + 斜边）一起在谷值与峰值之间明暗，
+   5.6s 一个来回；粗细始终 1px，只有亮度在动，像面板通了电。
+   为什么不用 box-shadow / filter 的外发光：clip-path 会把元素轮廓外的阴影整块剪掉
+   （实测斜边外侧恒为纯黑），所以「灯」只能画在轮廓自己身上 —— 而内辉会把斜边紧邻的
+   抗锯齿像素顶亮，等于把斜边偷偷加粗（见上文的像素实测），所以连内辉也不留：
+   这一版呼吸只动颜色，四边与斜边全程同色同粗细。 */
+@keyframes ef-panel-breath {
+
+  0%,
+  100% {
+    --ef-edge: var(--ef-frame);
+  }
+
+  50% {
+    --ef-edge: var(--ef-frame-hi);
+  }
+}
+
+/* 作者小窗那一支（象牙白）：同样是整圈一起呼吸，别在暗面板上突然泛黄 */
+@keyframes ef-panel-breath-plate {
+
+  0%,
+  100% {
+    --ef-edge: var(--ef-frame-plate);
+  }
+
+  50% {
+    border-color: var(--ef-plate);
+    --ef-edge: var(--ef-plate);
+  }
+}
+
+/* 面板里的小标题 / 分隔线：发丝线 + 短黄标 */
+body.theme-endfield .settings-sec-title {
+  color: var(--ef-olive);
+  letter-spacing: 1.4px;
+  border-bottom: 1px solid var(--ef-line);
+  padding-bottom: 4px;
+}
+
+body.theme-endfield .settings-sec-title::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 8px;
+  background: var(--ef-signal);
+  transform: translateY(-1px);
+}
+
+/* ── 七、按钮 / 输入：直角 + 信号黄焦点 ───────────────────────────────────── */
+body.theme-endfield button {
+  border-radius: 0;
+  border-width: 1px;
+  letter-spacing: .6px;
+}
+
+body.theme-endfield button:hover {
+  border-color: var(--ef-signal);
+  color: var(--ef-signal-2);
+  box-shadow: inset 2px 0 0 var(--ef-signal);
+}
+
+body.theme-endfield button:active {
+  transform: translateY(1px);
+}
+
+body.theme-endfield input[type="text"],
+body.theme-endfield input[type="number"],
+body.theme-endfield input[type="password"],
+body.theme-endfield input[type="search"],
+body.theme-endfield input:not([type]),
+body.theme-endfield textarea,
+body.theme-endfield select {
+  border-radius: 0;
+  background: #141414;
+  border: 1px solid var(--ef-line);
+  color: var(--ef-text);
+  transition: border-color var(--dur-fast), box-shadow var(--dur-fast), background-color var(--dur-fast);
+}
+
+body.theme-endfield input[type="text"]:focus,
+body.theme-endfield input[type="number"]:focus,
+body.theme-endfield input[type="password"]:focus,
+body.theme-endfield input[type="search"]:focus,
+body.theme-endfield input:not([type]):focus,
+body.theme-endfield textarea:focus,
+body.theme-endfield select:focus {
+  border-color: var(--ef-signal);
+  background: #171717;
+  box-shadow: 0 0 0 3px rgba(255, 250, 0, .16), inset 0 0 0 1px rgba(255, 250, 0, .25);
+  outline: none;
+}
+
+body.theme-endfield :where(button, a, summary, [tabindex], [role="button"], [role="tab"], [role="menuitem"]):focus-visible {
+  outline: 2px solid var(--ef-signal);
+  outline-offset: 2px;
+}
+
+/* 复选框 / 单选框：方形黄勾（原生控件跟 accent-color 走，这里把圆角掰直） */
+body.theme-endfield input[type="checkbox"] {
+  border-radius: 0;
+}
+
+/* ── 八、状态栏：等宽读数 + 顶部发丝线 ────────────────────────────────────── */
+body.theme-endfield .statusbar {
+  background: linear-gradient(180deg, #1a1a1a, #121212);
+  border-top: 1px solid var(--ef-line);
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: .4px;
+}
+
+body.theme-endfield .statusbar .ok {
+  color: var(--ef-green);
+}
+
+body.theme-endfield .statusbar button {
+  border-radius: 0;
+  background: transparent;
+  border-color: transparent;
+}
+
+body.theme-endfield .statusbar button:hover {
+  border-color: var(--ef-line-2);
+  background: #202020;
+}
+
+/* ── 九、会话 / 助手窗格：暗底 + 黄线分隔 ─────────────────────────────────── */
+body.theme-endfield .agent-pane,
+body.theme-endfield .agent-main,
+body.theme-endfield .assist-pane {
+  background: #131313;
+}
+
+body.theme-endfield .agent-side {
+  background: linear-gradient(180deg, #191919, #131313);
+  border-right: 1px solid var(--ef-line);
+}
+
+body.theme-endfield .agent-side-new,
+body.theme-endfield .agent-side-search input {
+  border-radius: 0;
+}
+
+/* 消息卡片 / 输入框：直角、左侧发丝黄线 */
+body.theme-endfield .msg,
+body.theme-endfield .dsh-msg,
+body.theme-endfield .ix-card {
+  border-radius: 0;
+}
+
+body.theme-endfield .chat-input,
+body.theme-endfield .dsh-input,
+body.theme-endfield .assist-input {
+  border-radius: 0;
+  border: 1px solid var(--ef-line);
+}
+
+/* 正在运行 / 生成中的呼吸灯：黄，2 秒一次（终末地的「系统在工作」提示） */
+body.theme-endfield .side-sess-spinner,
+body.theme-endfield .dsh-spinner,
+body.theme-endfield .sb-live-dot {
+  animation: ef-pulse 1.8s ease-in-out infinite;
+}
+
+@keyframes ef-pulse {
+
+  0%,
+  100% {
+    opacity: .35;
+    filter: drop-shadow(0 0 0 rgba(255, 250, 0, 0))
+  }
+
+  50% {
+    opacity: 1;
+    filter: drop-shadow(0 0 6px rgba(255, 250, 0, .75))
+  }
+}
+
+/* ── 十、Tab / 列表选中态统一成「黄底黑字」或「黄条」 ─────────────────────── */
+body.theme-endfield .tab.on,
+body.theme-endfield .tabbtn.on,
+body.theme-endfield .seg-btn.on {
+  border-color: var(--ef-signal);
+  color: #111;
+  background: linear-gradient(180deg, #fffa00, #deda00);
+}
+
+body.theme-endfield .apps-tab.on,
+body.theme-endfield .settings-tab.on {
+  color: var(--ef-signal);
+  border-bottom: 2px solid var(--ef-signal);
+}
+
+/* 长周期任务 / 任务节点的状态条：沿用语义色，但统一直角 + 等宽标签 */
+body.theme-endfield .lt-s-label,
+body.theme-endfield .lt-edge-label {
+  font-family: var(--mono);
+  letter-spacing: .4px;
+}
+
+/* ── 十一、页面级弹入：整窗首次绘制时的一次「上电」 ───────────────────────── */
+body.theme-endfield .topbar,
+body.theme-endfield .sidebar,
+body.theme-endfield .statusbar {
+  animation: ef-boot .3s ease-out both;
+}
+
+body.theme-endfield .sidebar {
+  animation-delay: .04s;
+}
+
+body.theme-endfield .statusbar {
+  animation-delay: .08s;
+}
+
+@keyframes ef-boot {
+  from {
+    opacity: 0;
+    transform: translateY(-4px)
+  }
+
+  to {
+    opacity: 1;
+    transform: none
+  }
+}
+
+/* 终端 / 日志块：等宽 + 黄绿光标色（dsh 工具输出与运行日志） */
+body.theme-endfield .dsh-tool-pre,
+body.theme-endfield .plg-repair-pre,
+body.theme-endfield .think-doc pre {
+  border-radius: 0;
+  border-left: 2px solid var(--ef-olive);
+}
+
+/* ── 十一·五、控制 / 判定 / 任务类节点：统一石墨底盘 + 各自一支强调色 ────────
+   canvas.css 里这些节点各有写死的底色（棕 / 紫 / 蓝 / 青…），逐类只是「强调色不同」；
+   这里把底盘统一成终末地的石墨板，只让标题条与描边带出类别色 —— 一眼能分家，
+   又不会把画布调成调色盘。--n-accent 由下面的分组规则给出。 */
+body.theme-endfield .wf-node.ctrl,
+body.theme-endfield .wf-node.judge,
+body.theme-endfield .wf-node.wait,
+body.theme-endfield .wf-node.timer,
+body.theme-endfield .wf-node.delayer,
+body.theme-endfield .wf-node.sequencer,
+body.theme-endfield .wf-node.gate,
+body.theme-endfield .wf-node.splitter,
+body.theme-endfield .wf-node.counter,
+body.theme-endfield .wf-node.mutex,
+body.theme-endfield .wf-node.exec,
+body.theme-endfield .wf-node.appnode,
+body.theme-endfield .wf-node.db,
+body.theme-endfield .wf-node.dev-el {
+  background: linear-gradient(180deg,
+      color-mix(in srgb, var(--n-accent) 8%, #242424),
+      #1a1a1a 58%, #141414);
+  border-color: color-mix(in srgb, var(--n-accent) 42%, #4a4a4a);
+}
+
+body.theme-endfield .wf-node.ctrl-start {
+  --n-accent: #7fe0c8
+}
+
+body.theme-endfield .wf-node.ctrl-ok {
+  --n-accent: var(--ef-green)
+}
+
+body.theme-endfield .wf-node.ctrl-fail {
+  --n-accent: var(--ef-red)
+}
+
+body.theme-endfield .wf-node.judge,
+body.theme-endfield .wf-node.sequencer {
+  --n-accent: #c3a6ec
+}
+
+body.theme-endfield .wf-node.wait,
+body.theme-endfield .wf-node.delayer {
+  --n-accent: #7fd6b8
+}
+
+body.theme-endfield .wf-node.timer,
+body.theme-endfield .wf-node.splitter {
+  --n-accent: #9ab4d8
+}
+
+body.theme-endfield .wf-node.gate {
+  --n-accent: #f0d38a
+}
+
+body.theme-endfield .wf-node.counter {
+  --n-accent: #f0b58a
+}
+
+body.theme-endfield .wf-node.mutex {
+  --n-accent: #d8a2cb
+}
+
+body.theme-endfield .wf-node.exec {
+  --n-accent: var(--ef-olive)
+}
+
+body.theme-endfield .wf-node.db {
+  --n-accent: #7fd6b8
+}
+
+/* 节点里的图标按钮（? / 思考 / 运行）也换掉那层青色底：黄theme 里不留冷蓝 */
+body.theme-endfield .n-play.n-help-btn,
+body.theme-endfield .n-think {
+  background: rgba(255, 250, 0, .08);
+  border-color: var(--ef-line);
+  color: var(--ef-plate);
+}
+
+body.theme-endfield .n-play.n-help-btn:hover,
+body.theme-endfield .n-think:hover {
+  background: rgba(255, 250, 0, .16);
+  border-color: var(--ef-signal);
+}
+/* ── 十一·六、收敛残留冷色 ───────────────────────────────────────────────────
+   组件层有一批「功能入口专属色」写死的亮蓝（#6db4ff / #9ecdff）与青色半透底
+   （应用中心导航、应用弹窗、画布页签激活态、顶栏「应用」按钮）。它们在别的主题里
+   是分类色，放进黄黑配色里就成了整页唯一的冷色块 —— 这里统一收到信号黄 / 橄榄黄绿。 */
+body.theme-endfield .topbar .btn-apps {
+  color: var(--ef-olive);
+}
+
+body.theme-endfield .topbar .btn-apps:hover,
+body.theme-endfield .topbar .btn-apps.on {
+  border-color: var(--ef-signal);
+  color: #111;
+  background: linear-gradient(180deg, #fffa00, #d8d400);
+}
+
+body.theme-endfield .apps-hub-brand {
+  color: var(--ef-olive);
+  letter-spacing: 1.4px;
+}
+
+body.theme-endfield .apps-hub-navbtn.on {
+  border-color: var(--ef-signal);
+  color: var(--ef-signal-2);
+  background: rgba(255, 250, 0, .09);
+  box-shadow: inset 2px 0 0 var(--ef-signal);
+}
+
+body.theme-endfield .apps-tagchip:hover {
+  border-color: var(--ef-olive);
+  color: var(--ef-plate);
+}
+
+body.theme-endfield .apps-modal-box {
+  border-radius: 0;
+  will-change: transform; /* 同上：吸附整像素，四条边一样亮 */
+  /* 同一口径：四边与斜边一种颜色、1px，整圈一起呼吸（边框与色带共用 --ef-edge） */
+  border: 1px solid var(--ef-edge);
+  --ef-edge: var(--ef-frame);
+  /* 同一个「切角要补斜边」的问题：16px 切角 + 1px 边框，斜边同样取「贴线、宽 1px」 */
+  background:
+    linear-gradient(to top right,
+      transparent calc(50% - var(--ef-cut-w)),
+      var(--ef-edge) calc(50% - var(--ef-cut-w)),
+      var(--ef-edge) 50%,
+      transparent 50%) no-repeat right top / 16px 16px border-box,
+    linear-gradient(180deg, var(--panel2), var(--panel));
+  clip-path: polygon(0 0, calc(100% - 16px) 0, 100% 16px, 100% 100%, 0 100%);
+  animation: ef-panel-breath 5.6s ease-in-out .3s infinite;
+}
+
+/* 窗内分隔线跟外框同粗（基础样式给的是 2px，比 1px 外框还重） */
+body.theme-endfield .apps-modal-head {
+  border-bottom: 1px solid var(--ef-line);
+}
+
+body.theme-endfield .apps-modal-foot {
+  border-top: 1px solid var(--ef-line);
+}
+
+body.theme-endfield .apps-modal-head {
+  color: var(--ef-olive);
+}
+
+body.theme-endfield .wf-tab.active,
+body.theme-endfield .wf-tab.on {
+  background: rgba(255, 250, 0, .1);
+  border-color: var(--ef-olive);
+  color: var(--ef-signal-2);
+}
+/* ── 十一·七、终末地的几处招牌细节 ──────────────────────────────────────────
+   1) 顶栏 logo 的呼吸辉光
+   2) 对话框标题栏底缘那条细警示斜纹（与顶栏同族）
+   注：原先这里还有一层「开机 / 换主题时的一次性全屏上电扫光」（html[data-theme]::after，
+   0.6s 的黄色渐变从上往下扫）—— 与那条循环扫光带同批被用户否掉，整段删除。 */
+
+body.theme-endfield .logo-mark {
+  animation: ef-logo 4.5s ease-in-out infinite;
+}
+
+@keyframes ef-logo {
+
+  0%,
+  100% {
+    box-shadow: 0 0 0 3px rgba(255, 250, 0, .07), inset 0 0 10px rgba(255, 250, 0, .15)
+  }
+
+  50% {
+    box-shadow: 0 0 0 3px rgba(255, 250, 0, .16), inset 0 0 16px rgba(255, 250, 0, .3), 0 0 14px -2px rgba(255, 250, 0, .35)
+  }
+}
+
+body.theme-endfield .overlay-head,
+body.theme-endfield .mt-dialog-head {
+  position: relative;
+}
+
+body.theme-endfield .overlay-head::after,
+body.theme-endfield .mt-dialog-head::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 2px;
+  pointer-events: none;
+  background: repeating-linear-gradient(115deg,
+      var(--ef-signal) 0 6px,
+      rgba(255, 250, 0, 0) 6px 14px);
+  opacity: .42;
+}
+/* ── 十一·八、零散冷色的收口 ────────────────────────────────────────────────
+   全量扫过一遍计算样式，剩下的蓝色 / 紫色只有这三处：正文链接、工具钮图标、
+   节点拖拽把手与组端口徽标。统一压成象牙白 / 信号黄，hover 才亮。 */
+body.theme-endfield a[href] {
+  color: var(--ef-olive, #f2f27a);
+  text-decoration-color: rgba(255, 250, 0, .45);
+  text-underline-offset: 2px;
+}
+
+body.theme-endfield a[href]:hover {
+  color: var(--ef-signal);
+  text-decoration-color: var(--ef-signal);
+}
+
+body.theme-endfield button.btn-tools,
+body.theme-endfield button.btn-tools .btn-ico-txt {
+  color: var(--ef-ink) !important;
+}
+
+body.theme-endfield button.btn-tools:hover {
+  color: var(--ef-signal) !important;
+}
+
+body.theme-endfield .n-drag-handle,
+body.theme-endfield .n-drag-handle svg {
+  color: var(--ef-muted) !important;
+}
+
+body.theme-endfield .n-drag-handle:hover,
+body.theme-endfield .n-drag-handle:hover svg {
+  color: var(--ef-signal) !important;
+}
+
+body.theme-endfield .port-badge.grp-port-badge {
+  color: var(--ef-ink) !important;
+  background: #2b2b2b;
+  border: 1px solid var(--ef-line, #4a4a4a);
+}
+/* ── 十二、减少动效：扫描线与循环动效一律停掉 ─────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  body.theme-endfield .logo-mark {
+    animation: none !important;
+  }
+
+  body.theme-endfield .topbar,
+  body.theme-endfield .sidebar,
+  body.theme-endfield .statusbar,
+  body.theme-endfield .overlay-box,
+  body.theme-endfield .mt-dialog-box,
+  body.theme-endfield .apps-modal-box {
+    animation: none !important;
+  }
+}
+/* ── 十三、打印 / 导出 PDF：底纹与扫描线不进纸 ────────────────────────────────
+   应用内的 PDF 生成走隐藏打印窗 + printToPDF，用的是同一份渲染层样式；
+   全局覆盖层（细扫描线 + 暗角）在纸上只会变成一条条灰纹，这里整段撤掉。 */
+@media print {
+
+  body.theme-endfield::after {
+    display: none !important;
+  }
+}

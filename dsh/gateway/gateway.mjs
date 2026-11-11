@@ -2386,7 +2386,7 @@ function onBridgeFrame(key, m, socket) {
     out({ event: { reqId: claim ? claim.reqId : '', type: 'ix-drop', data: { id: m.id, reason: 'dropped' } } })
     return
   }
-  if (m.t !== 'question' && m.t !== 'approval' && m.t !== 'canvas' && m.t !== 'db' && m.t !== 'facts' && m.t !== 'tool' && m.t !== 'lt' && m.t !== 'asset' && m.t !== 'manifest' && m.t !== 'browser' && m.t !== 'gui' && m.t !== 'dev') return
+  if (m.t !== 'question' && m.t !== 'approval' && m.t !== 'canvas' && m.t !== 'db' && m.t !== 'facts' && m.t !== 'shot' && m.t !== 'tool' && m.t !== 'lt' && m.t !== 'asset' && m.t !== 'manifest' && m.t !== 'browser' && m.t !== 'gui' && m.t !== 'dev') return
   const claim = claimOf(key)
   /* 归属校验:交互帧一律自带发起轮的 session id(question/approval 来自 bridge-plugin,
      canvas/db 来自 canvas-plugin/db-plugin、facts 来自 ai-facts-plugin(MTNode AI 事实库)、
@@ -5343,6 +5343,22 @@ rl.on('line', (line) => {
                 item.resolve({ outcome: outcome === 'rejected' ? 'cancelled' : outcome, answer: p.answerText || p.answer || '', selected: p.selected || [] })
               } else item.resolve(outcome)
             }
+          } else if (p.kind === 'shot') {
+            /* 截图标注工具（mtnode_screenshot）：宿主先问一句、再冻结画面让用户框选 + 标注，
+               回执里是成品 PNG 的绝对路径 + 编号清单 Markdown。用户取消 = ok:true +
+               result.canceled:true（这是正常收场，不是工具失败 —— 模型据此换条路走）；
+               真正出错（拍不到屏 / 写不了盘）才 ok:false + error 文本，会话不中断。
+               与 canvas / asset / facts 同一形状。 */
+            const err = p.error != null ? String(p.error) : ''
+            try {
+              pending.socket.write(JSON.stringify({
+                t: 'shot-result',
+                id: p.id,
+                ok: !err,
+                result: p.result == null ? null : p.result,
+                ...(err ? { error: err } : {}),
+              }) + '\n')
+            } catch {}
           } else if (p.kind === 'tool') {
             /* 用户工具节点 func call 结果：渲染层跑完节点图后回传输出值；
                失败（err 非空）→ ok:false + error 文本，运行时工具以失败收场，会话不中断 */

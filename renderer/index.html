@@ -975,6 +975,11 @@
      提问/审批卡的弹出点（playIxSound 旁边），两处都按名字调本文件的入口。 -->
 <script src="app-notify.js"></script>
 <script src="app-prompt-sections.js"></script>
+<!-- 内置 Agent 指示的取文本口（renderer/agent-prompts-client.js）：
+     暴露 window.PS(id, 默认文本, 变量表) 与 window.AgentPrompts。要排在所有会拼系统提示的
+     脚本（app-assist.js / app-db.js / app-team.js …）之前；文件自身立刻发起一次异步拉取，
+     拉不到就返回默认文本（= 拆分前的行为，绝不因为存储慢而少一段提示）。 -->
+<script src="agent-prompts-client.js"></script>
 <script src="app-db.js"></script>
 <!-- 项目 manifest 执行桥（renderer/app-manifest.js · 缺口文档 P0-2 / G2+G3）：
      Agent 工具 mtnode_manifest 的帧在这里落到主进程 manifest:op；顺带给生成节点的
@@ -1208,6 +1213,10 @@
       主进程侧真源是根目录 dsh-compact-policy.js（用户设置 → cordis.yml 的写入点）。 -->
 <script src="app-dsh-compact.js"></script>
 <script src="app-settings.js"></script>
+<!-- 设置 →「内置能力」页（renderer/app-builtin.js）：Agent 指示 + 内置 SKILL.md 的统一管理
+     （window.BuiltinCap.settingsSection / open）。app-settings.js 运行时按名字取用，
+     所以排在它之后即可；文件自身不依赖前面的任何绑定，缺了也不影响设置其余部分。 -->
+<script src="app-builtin.js"></script>
 <!-- DeepSeek 官方 API Key 首次使用引导（renderer/app-deepseek-onboard.js）：
      未配置 Key 时任何模型能力开跑前弹图文海报 + Key 输入窗（验证通过才写入供应商）。
      排在 app-settings.js 之后（用它的 settingsSaveNow / repaintSettingsProvTiles），
@@ -1398,6 +1407,12 @@
      两者之间没有调用关系）；左栏入口在 app-teamview.js，但那个文件的脚本行排在更前面，
      所以它对本模块的调用一律在调用期按 typeof 取用，不依赖装载顺序。 -->
 <script src="app-ai-facts.js"></script>
+<!-- 截屏标注工具 · Agent 入口（renderer/app-shot.js · window.MTNodeShot）：网关插件
+      mtnode_screenshot 发来 'shot' 帧 → 这里先弹一只对话框（写一句话 + 可选本机图片路径），
+      用户点「开始截图…」才递到主进程（api.shotAgent → shot:agent → screenshot-overlay.js
+      的 request）冻结屏幕；标完 / 用户直接给了图片路径，把结果经 dshInteract kind:'shot'
+      回给运行时。浮层自己的页面是 screenshot.html（独立窗口，不在这份 index.html 里）。 -->
+<script src="app-shot.js"></script>
 <!-- 画布左侧边栏「文件」页（VSCode explorer 式文件树 / 预览 / 重命名·复制·剪切·删除 / 拖入画布）：
      自包含（renderer/app-sidebar-files.js + css/sidebar-files.css）。必须排在 app.js 之后——
      它包装 renderSidebar，并在调用期取 openFilePeek（app-fileview.js）与

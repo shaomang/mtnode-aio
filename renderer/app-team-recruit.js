@@ -1835,7 +1835,7 @@
 
   /* ───────────────────────── HR 招聘提示 ───────────────────────── */
 
-  var AUTO_RUN_PROMPT =
+  var AUTO_RUN_PROMPT_RAW =
     "你是「HR 招聘」助手：把用户的用人需求转成一张专家角色卡。\n" +
     "只输出一个严格 JSON 对象，不要任何解释、前后缀或 Markdown 代码围栏。\n" +
     "结构（字段缺一不可）：\n" +
@@ -1865,6 +1865,11 @@
     "icon 只能取以下 key（不在目录内一律拒收）：" +
     iconKeys().join(" ") +
     "。";
+  /* HR 招聘助手整段系统提示可被「设置 → 内置能力」覆盖（id: team.recruit_card_system）：
+     没覆盖时 PS 原样返回上面那一份，逐字不变。 */
+  var AUTO_RUN_PROMPT = PS("team.recruit_card_system", AUTO_RUN_PROMPT_RAW, {
+    iconKeys: iconKeys().join(" "),
+  });
 
   function autoRecruitInput(brief) {
     return (

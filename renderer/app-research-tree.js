@@ -627,13 +627,81 @@
 
     /* 变体兜底标签（版本模块缺席时才用）：与 DEFAULT_RULES 的五条一一对应 */
     const VARIANT_LABEL = { zh: "中译", en: "英译", skim: "略读", concept: "关键概念", tech: "技术细节" };
+    /* 原文语言（译稿互斥按它判）：先看这篇 note 的 frontmatter lang —— 与阅读区平铺条
+       （app-research.js 的 baseLang）同一口径；读不到就问版本组的原文成员；
+       都读不到返回 ""，此时不过滤（宁可多列一稿，也不凭猜藏掉用户的文件）。 */
+    function baseLangOf(rel) {
+      const want = normRel(rel);
+      if (!want) return "";
+      const n = noteByRel(want);
+      const meta = (n && n.meta) || {};
+      let lang = String(meta.lang || "")
+        .trim()
+        .toLowerCase();
+      if (lang) return lang;
+      const V = versions();
+      try {
+        if (V && typeof V.groupOf === "function") {
+          const g = V.groupOf(want);
+          const members = (g && g.members) || [];
+          const head = normRel((g && g.original) || want);
+          for (let i = 0; i < members.length; i++) {
+            const m = members[i] || {};
+            if (normRel(m.path) !== head) continue;
+            lang = String(m.lang || "")
+              .trim()
+              .toLowerCase();
+            break;
+          }
+        }
+      } catch (_) {
+        lang = "";
+      }
+      return lang;
+    }
+
+    /* ── 译稿语言互斥（**只过滤展示层**：规则表、盘上文件、判色、批量生成一概不动）──
+       原文是英文就只留中译、原文是中文就只留英译：与原文同语言的那一份译稿就是原文本身，
+       再列一行「英译」只会让人以为还有第二份稿子。
+       非译稿（摘要 / 节选 / 关键概念 / 技术细节…）与语言不明的稿子一律保留。 */
+    function variantShown(v, baseLang) {
+      if (!baseLang) return true;
+      const lang = String((v && v.lang) || "")
+        .trim()
+        .toLowerCase();
+      if (!lang || lang !== baseLang) return true;
+      const kind = String((v && v.kind) || "")
+        .trim()
+        .toLowerCase();
+      let derived = "";
+      const V = versions();
+      try {
+        if (V && typeof V.kindOf === "function") {
+          const r = V.kindOf(kind);
+          derived = String((r && r.derived) || "")
+            .trim()
+            .toLowerCase();
+        }
+      } catch (_) {
+        derived = "";
+      }
+      /* 版本模块缺席时的兜底：.zh / .en 这两类后缀就是译稿 */
+      if (!derived) derived = kind === "zh" || kind === "en" ? "translate" : "";
+      return derived !== "translate";
+    }
+
     /* ── 文档的子内容 = 它的变体（不再是章节）──
        真源是 research-versions.js 的版本组（与平铺条、判色同一份成员表）：
        只列**盘上已有**的兄弟稿，去掉自己；标签取规则表里的 label（中译 / 英译 / 摘要 / 节选）。
-       版本模块缺席时退回文件名后缀兜底，绝不猜不存在的稿子。 */
+       版本模块缺席时退回文件名后缀兜底，绝不猜不存在的稿子。
+       译稿互斥：只留「另一种语言」的译稿（见 variantShown）。 */
     function variantsOf(rel) {
       const want = normRel(rel);
       if (!want) return [];
+      const baseLang = baseLangOf(want);
+      const keep = function (v) {
+        return variantShown(v, baseLang);
+      };
       const out = [];
       const V = versions();
       try {
@@ -655,7 +723,7 @@
       } catch (_) {
         out.length = 0;
       }
-      if (out.length) return out;
+      if (out.length) return out.filter(keep);
       const notes = (ctx.state && ctx.state.notes) || [];
       const base = normRel(want.replace(/\.md$/i, "") + ".md");
       for (let i = 0; i < notes.length; i++) {
@@ -670,7 +738,7 @@
           lang: k === "zh" || k === "en" ? k : "",
         });
       }
-      return out;
+      return out.filter(keep);
     }
 
     /* ── 行 ── */
@@ -942,18 +1010,18 @@
       const originals = M.originals;
       const files = M.files;
 
-      /* 原件（core/ 与 literature/sources/ 里的非 md 文件）：只读入口，锁形图标 + 悬停说明 */
-      box.appendChild(
-        groupHead("grp:file", t("原件"), files.length, false, files.length > 0, {
-          icon: "🔒",
-          title: t("原件只读，不随编辑改动"),
-        }),
-      );
-      if (!isCollapsed("grp:file", false)) {
-        if (!files.length) {
-          box.appendChild(el("div", "rs-tree-empty", t("（core/ 与 literature/sources/ 里还没有原件）")));
+      /* 原件（core/ 与 literature/sources/ 里的非 md 文件）：只读入口，锁形图标 + 悬停说明。
+         没有原件时整组不出现（不占一行、不写空提示）。 */
+      if (files.length) {
+        box.appendChild(
+          groupHead("grp:file", t("原件"), files.length, false, true, {
+            icon: "🔒",
+            title: t("原件只读，不随编辑改动"),
+          }),
+        );
+        if (!isCollapsed("grp:file", false)) {
+          for (let i = 0; i < files.length; i++) appendOriginal(box, files[i]);
         }
-        for (let i = 0; i < files.length; i++) appendOriginal(box, files[i]);
       }
 
       /* 原文（core/*.md） */
@@ -973,7 +1041,6 @@
       }
       box.appendChild(
         groupHead("grp:term", t("术语页"), terms.length, false, terms.length > 0, {
-          icon: "◇",
           title: t("从原文归纳出的术语 / 公式页；每页底部可继续「引申」出下一层"),
         }),
       );

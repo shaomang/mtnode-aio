@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <!-- CSP：脚本只认本页脚本（不用 eval / 远端）；样式需要 'unsafe-inline'（画标注时的行内尺寸）；
+         图片只认 file: / data: / blob:（冻结画面是主进程拍的本地 PNG）。 -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' file: data: blob:; font-src 'self'" />
+    <title>截图标注</title>
+    <link rel="stylesheet" href="css/screenshot.css" />
+  </head>
+  <!-- 截图标注浮层（全屏 · 置顶 · 唯一）：主进程 screenshot-overlay.js 先拍屏再铺这只窗，
+       所以这里看到的是一张静止的照片 —— 桌面上的菜单 / 视频 / 通知都不会让选区跑掉。
+       两段式：① 框选（悬停高亮窗口 / 拖框）→ 松手就地标注（**不裁剪**：整屏原图 1:1 留在原地，
+       选区外压暗，工具栏贴着选区右下角浮动）→ 完成即「PNG 落盘 + Markdown 写剪贴板」
+       （图 + 编号清单一起，粘进 Agent 输入框即可）。 -->
+  <body class="sh-body">
+    <canvas id="shCanvas" class="sh-canvas"></canvas>
+
+    <!-- 选区阶段的顶部提示条 -->
+    <div class="sh-tip" id="shTip">
+      <b id="shTipMain">拖拽框选要交给 AI 的区域，松手就能直接标注</b>
+      <span id="shTipSub">悬停高亮窗口、单击即选中 · 方向键微调 · Enter 完成 · Esc 取消</span>
+    </div>
+
+    <!-- 光标旁的尺寸读数（微信截图同款） -->
+    <div class="sh-size" id="shSize" hidden>0 × 0</div>
+    <!-- 拖框时的放大镜 -->
+    <canvas class="sh-mag" id="shMag" width="132" height="132" hidden></canvas>
+    <!-- 角落的坐标读数 -->
+    <div class="sh-hud" id="shHud" hidden></div>
+
+    <!-- 标注阶段的工具栏（贴着选区右下角浮动，MTNode 风格：深色面板 + 青色强调） -->
+    <div class="sh-tools" id="shTools" hidden>
+      <div class="sh-tools-group" id="shToolBtns">
+        <!-- 只剩一支矩形：箭头 / 画笔 / 文字已撤；每画一个框就在落点写这一框的说明 -->
+        <button type="button" class="sh-btn sh-tool" data-tool="rect" aria-pressed="true" title="矩形 (1)" data-i18n-title="矩形 (1)">▭<i id="shLblRect">矩形</i></button>
+      </div>
+      <span class="sh-sep"></span>
+      <button type="button" class="sh-btn" id="shUndo" title="撤销 (Ctrl+Z)" data-i18n-title="撤销 (Ctrl+Z)">↶</button>
+      <button type="button" class="sh-btn" id="shRedo" title="重做 (Ctrl+Y)" data-i18n-title="重做 (Ctrl+Y)">↷</button>
+      <button type="button" class="sh-btn" id="shReselect" title="重新框选 (R)" data-i18n-title="重新框选 (R)">⟲<i id="shLblReselect">重新框选</i></button>
+      <span class="sh-gap"></span>
+      <span class="sh-zoom" id="shZoom">100%</span>
+      <button type="button" class="sh-btn" id="shSave" title="另存为文件 (Ctrl+S)" data-i18n-title="另存为文件 (Ctrl+S)">⤓<i id="shLblSave">保存</i></button>
+      <button type="button" class="sh-btn sh-primary" id="shDone" title="保存并在剪贴板里写好 Markdown (Enter)" data-i18n-title="保存并在剪贴板里写好 Markdown (Enter)">✓<i id="shLblDone">完成并复制</i></button>
+      <button type="button" class="sh-btn" id="shCancel" title="取消 (Esc)" data-i18n-title="取消 (Esc)">✕<i id="shLblCancel">取消</i></button>
+    </div>
+
+    <!-- 右侧备注栏已删除：所有文字都写在你点下去的那个位置（图上就地输入框） -->
+
+    <!-- 操作回执（已复制 / 已交回 Agent） -->
+    <div class="sh-toast" id="shToast" hidden></div>
+
+    <!-- 图上就地写文字：点文字工具 / 点已有的那行字，就在落点弹出来（回车收笔，Esc 取消） -->
+    <textarea
+      class="sh-input"
+      id="shInput"
+      spellcheck="false"
+      placeholder="写一句要怎么改（回车收笔 · Shift+回车换行）"
+      data-i18n-placeholder="写一句要怎么改（回车收笔 · Shift+回车换行）"
+      hidden
+    ></textarea>
+
+    <script src="i18n.js"></script>
+    <script src="app-screenshot.js"></script>
+  </body>
+</html>

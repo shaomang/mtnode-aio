@@ -353,6 +353,28 @@ input[type="number"]::-webkit-outer-spin-button {
   outline: none;
 }
 
+/* 「不再提醒」这类勾选行（confirmDialog 的 opts.checkbox）：跟在正文下方，一行说完，
+   只改自己的排版，不动窗内其它控件。 */
+.mt-dialog-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 12px;
+  font-size: 13px;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.mt-dialog-check input {
+  accent-color: var(--orange);
+  cursor: pointer;
+}
+
+.mt-dialog-check:hover {
+  color: var(--ink);
+}
+
 .mt-dialog-input:focus {
   border-color: var(--orange);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--orange) 18%, transparent)
@@ -588,6 +610,40 @@ input[type="number"]::-webkit-outer-spin-button {
   color: var(--muted);
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* ── 截图询问窗（mtnode_screenshot：写一句话 + 可选一张本机图片的路径）──
+   路径那一行是「输入框 + 选择按钮」，提示行复用 .mt-form-hint（.bad = 路径不能用）。 */
+.mt-shotask {
+  margin-top: 2px;
+}
+
+.mt-shotask-row {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+}
+
+.mt-shotask-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin-top: 5px;
+  resize: none;
+}
+
+.mt-shotask-row button {
+  flex: none;
+  align-self: flex-end;
+  height: 33px;
+}
+
+.mt-shotask-tip {
+  margin-top: 4px;
+  color: var(--green);
+}
+
+.mt-shotask-tip.bad {
+  color: color-mix(in srgb, var(--red) 70%, var(--ink));
 }
 
 /* ── 剪贴板图像询问窗（画布 Ctrl+V）：缩略图 + 点击开大图灯箱 + 「以后不再询问」 ──

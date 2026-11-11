@@ -11,6 +11,11 @@
 @import url("./css/dsh-tokens.css");
 @import url("./css/assist.css");
 @import url("./css/theme-light.css");
+/* 终末地（Endfield）主题：石墨黑底 + 信号黄，切角 / 扫描线 / 斜纹动效。
+   与 theme-light.css 同一口径 —— 槽位在 base.css 之外另起一份，组件层只补写死的底色；
+   所有规则都以 body.theme-endfield 起头，不参与另外三套主题。放在 theme-light 之后：
+   两套主题互斥（applyTheme 只挂其中一个类），顺序只为可读性。 */
+@import url("./css/theme-endfield.css");
 @import url("./css/puzzle.css");
 /* 内嵌图片共享样式：粘贴 / 拖入 / 落盘 / 无引用回收那套能力的对话框与编辑器内图片
    （renderer/app-inline-img.js）；审阅 / 节点正文框 / 会话输入框三处共用。

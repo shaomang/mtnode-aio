@@ -1841,14 +1841,29 @@ function appsMergeContractText(pull, appDir) {
     lines.push("  " + appsDevT("（另有 ") + (rows.length - APPS_MERGE_LIST_MAX) + appsDevT(" 个要处理的文件没列在这里，自己扫两边目录补齐）"));
   }
   lines.push("");
-  lines.push(appsDevT("【必须按这个顺序来】① 先用 skill 工具加载内置技能 mtnode-app-merge，并严格照它执行；② 再加载 mtnode-grill-me，用 ask_user_question 一次问满整个前沿：每个 add / diff 都要问到「怎么覆盖」，外加一问「我这一版要不要跟着动」（默认不动）；③ **用户确认之前，不许改任何文件**；④ 确认之后自己改开发目录（文本用文件工具改，二进制与新增文件用 shell 拷贝）。"));
-  lines.push(appsDevT("【硬规则】只按拷问结果覆盖差异，不做任何额外改动；「只有我有」的文件一律保留、不用问；不动 storage/、data.json、*.mtnodes 与备份目录；**不许直接改 app.json、不许改版本号**。"));
+  lines.push(
+    PS(
+      "app.merge.order",
+      appsDevT("【必须按这个顺序来】① 先用 skill 工具加载内置技能 mtnode-app-merge，并严格照它执行；② 再加载 mtnode-grill-me，用 ask_user_question 一次问满整个前沿：每个 add / diff 都要问到「怎么覆盖」，外加一问「我这一版要不要跟着动」（默认不动）；③ **用户确认之前，不许改任何文件**；④ 确认之后自己改开发目录（文本用文件工具改，二进制与新增文件用 shell 拷贝）。"),
+    ),
+  );
+  lines.push(
+    PS(
+      "app.merge.hard_rules",
+      appsDevT("【硬规则】只按拷问结果覆盖差异，不做任何额外改动；「只有我有」的文件一律保留、不用问；不动 storage/、data.json、*.mtnodes 与备份目录；**不许直接改 app.json、不许改版本号**。"),
+    ),
+  );
   lines.push(
     appsDevT("【收尾】把这次采纳的清单写进这个文件：") +
       String(p.staging || "") + "/.merge-done.json" +
       appsDevT("（形如 {\"done\":true,\"files\":[\"index.html\"],\"version\":\"\"}）。主进程见到它就补一条合并留痕并清掉暂存目录。version 留空 = 版本号不动；只有我在拷问里明确要「跟着动」时才填我要的新版本号。"),
   );
-  lines.push(appsDevT("【不许做的事】不自动上架、不改画布、不动备份目录、不改对方那一版；合并结束前不要删暂存目录。"));
+  lines.push(
+    PS(
+      "app.merge.forbidden",
+      appsDevT("【不许做的事】不自动上架、不改画布、不动备份目录、不改对方那一版；合并结束前不要删暂存目录。"),
+    ),
+  );
   return lines.join("\n");
 }
 

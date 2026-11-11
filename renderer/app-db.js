@@ -807,9 +807,16 @@ async function dbExtractRowsBatch(node, columns, batch) {
     .map((c) => c.name + (c.desc ? "（" + c.desc + "）" : ""))
     .join("，");
   const prompt =
-    "你是数据抽取子代理。下面给出若干文本文件的名称与内容（可能因篇幅截断）。请为【每个文件】分别抽取一行，按给定「表」的字段取该文件对应字段的值。" +
-    "只输出一个 JSON 数组，每个元素形如 {\"file\":\"文件名\",\"字段名\":\"字段值\"}。键为字段名，值为该文件对应字段的取值；没有的字段可省略，不要臆造。" +
-    "元素里的 file 必须与输入中的文件名完全一致。只输出数组，不要任何其他文字。\n\n字段：" +
+    /* 子代理派单的固定前言可被「设置 → 内置能力」覆盖（id: subagent.db_extract_rows）：
+       覆盖后自带的字段 / 数据由下面照常拼在后面，所以默认路径逐字不变。 */
+    PS(
+      "subagent.db_extract_rows",
+      "你是数据抽取子代理。下面给出若干文本文件的名称与内容（可能因篇幅截断）。请为【每个文件】分别抽取一行，按给定「表」的字段取该文件对应字段的值。" +
+        "只输出一个 JSON 数组，每个元素形如 {\"file\":\"文件名\",\"字段名\":\"字段值\"}。键为字段名，值为该文件对应字段的取值；没有的字段可省略，不要臆造。" +
+        "元素里的 file 必须与输入中的文件名完全一致。只输出数组，不要任何其他文字。",
+      { columns: colDescs },
+    ) +
+    "\n\n字段：" +
     colDescs +
     "\n\n" +
     batch
@@ -3531,6 +3538,51 @@ function dshRunOnce(input, opts) {
       ? dshDefaultProviderRoute()
       : "";
   let provider = ownProvider || dfltProvider || "deepseek-official";
+  /* 陈旧路由自愈：mtnode_<id> 这一族只有真在 mtnodePiProviders 表里的那几条才有适配器
+     （官方 DeepSeek 卡故意不进这张表 —— 它走 llm-deepseek 的 deepseek-official 路由）。
+     老版本存下来的「自配 DeepSeek 卡 → mtnode_deepseek」这类路由发出去只会换来
+     引擎一句 no adapter registered for provider，宿主再按重发闸一轮轮重试，1 分钟起步、
+     一个 token 都不出。这里就地按服务商 id 回查：能拨正就拨正（同一张卡、同一个 Key、
+     同一个端点，不存在「换家」），并把拨正结果写回会话，别让它下一轮再犯。 */
+  if (
+    provider.indexOf("mtnode_") === 0 &&
+    !piProvs.some((x) => "mtnode_" + x.route === provider)
+  ) {
+    const healId = provider.slice("mtnode_".length);
+    const healCard =
+      ((S.config && S.config.providers) || []).find(
+        (x) => x && String(x.id || "") === healId,
+      ) || null;
+    let healHost = "";
+    try {
+      healHost = new URL((healCard && healCard.baseUrl) || "").hostname.toLowerCase();
+    } catch (_) {}
+    const healed =
+      healHost.indexOf("deepseek") >= 0
+        ? "deepseek-official"
+        : typeof agentRouteFromProviderId === "function"
+          ? agentRouteFromProviderId(healId)
+          : "";
+    if (healed && healed !== provider) {
+      try {
+        const stHeal =
+          typeof agentSessionOfRun === "function" ? agentSessionOfRun(opts) : null;
+        if (stHeal && String(stHeal.provider || "") === provider) {
+          stHeal.provider = healed;
+          if (typeof agentFlushSessionSaveQuiet === "function")
+            agentFlushSessionSaveQuiet();
+        }
+      } catch (_) {}
+      console.warn("[dsh] 路由自愈：" + provider + " → " + healed);
+      provider = healed;
+      if (
+        String(opts.model || "").trim() &&
+        typeof dshModelFitsRouteNow === "function" &&
+        !dshModelFitsRouteNow(provider, opts.model)
+      )
+        opts.model = "";
+    }
+  }
   if (!String(opts.model || "").trim()) {
     if (
       dfltModel &&
@@ -4251,6 +4303,17 @@ function dshRunOnce(input, opts) {
                （工具失败但会话不中断，与 db / facts 同一口径）。见 app-manifest.js。 */
             if (typeof handleManifestToolEvent === "function")
               handleManifestToolEvent(msg.data || {}, opts.node, boundWf);
+            return;
+          }
+          if (msg.type === "shot") {
+            /* 截屏标注工具（mtnode_screenshot）：先弹一只对话框（写一句话 + 可选本机图片
+               路径），用户点「开始截图…」才冻结鼠标那块屏，框选 → 标注 → 完成，回执把
+               「图（截图或他给的路径）+ 编号清单 + 他写的那句话」送回去（kind:'shot'）。
+               用户取消 = canceled，工具以正常结果收场，会话不中断。实现体在 app-shot.js。 */
+            try {
+              if (window.MTNodeShot && typeof window.MTNodeShot.handleToolEvent === "function")
+                window.MTNodeShot.handleToolEvent(msg.data || {});
+            } catch (_) {}
             return;
           }
           if (msg.type === "facts") {
@@ -5966,6 +6029,9 @@ function agentHistoryEntries(st, opts) {
     /* 「这一轮已经结束」痕迹同理（本次需求：轮次收尾时卡片收口的界面痕迹，
        同样是给用户看的，不是用户说过的话） */
     if (String(m._src || "") === "ix-round-end") continue;
+    /* 研究初始化的过程行（app-research-init.js 的 initNote）同理：那是给用户看的过程
+       （复制文件 / 转 PDF / 队列就绪），不是模型说过的话 —— 抄进上下文只会白烧 token */
+    if (String(m._src || "") === "ix-init-progress") continue;
     /* 「用户主动关闭会话」状态行同理（本次需求）：它是界面状态，不是用户说过的话 */
     if (String(m._src || "") === USER_CLOSED_SRC) continue;
     /* 手动压缩折起来的历史（本次开发需求 · 拷问共识）：它们已经被收进摘要，**不再进
@@ -7098,7 +7164,9 @@ function renderIxPanel() {
   ixFocusRestoreToDom();
 }
 
-/* ── 主题(industrial = 默认 MTNode, dsh = DSH) ──
+/* ── 主题(industrial = 默认 MTNode, dsh = DSH, endfield = 终末地) ──
+   endfield 的颜色真源在 css/theme-endfield.css 的 body.theme-endfield 槽位里；
+   这里只给「切换瞬间就要用到」的几支强调色（#themeStyle 那一段 :root 覆盖）。
    亮色（white）主题暂时隐藏：从这张表里摘掉后，设置窗不再列出它，
    存档里若还是 light 会被下面 applyTheme 的回落改成 industrial（同时清掉 body.theme-light），
    css/theme-light.css 原样保留，日后恢复只需把 light 这一条加回来。 */
@@ -7113,6 +7181,11 @@ const THEMES = {
     cyan: "#38d6ff", cyan2: "#7ce8ff", orange: "#ff8f2e", orange2: "#ffb066",
     green: "#5fd68a", red: "#ff5f56",
   },
+  endfield: {
+    name: "终末地",
+    cyan: "#e2dfd2", cyan2: "#f6f4ea", orange: "#fffa00", orange2: "#f2f27a",
+    green: "#b6d94a", red: "#ff4a3d",
+  },
 };
 function applyTheme(name) {
   const t = THEMES[name] || THEMES.industrial;
@@ -7121,6 +7194,7 @@ function applyTheme(name) {
   document.documentElement.dataset.theme = theme;
   document.body.classList.toggle("theme-industrial", theme === "industrial");
   document.body.classList.toggle("theme-light", theme === "light");
+  document.body.classList.toggle("theme-endfield", theme === "endfield");
   let el = $("#themeStyle");
   if (!el) {
     el = document.createElement("style");

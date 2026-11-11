@@ -97,6 +97,35 @@
     if (R && typeof R.inlineMd === "function") return R.inlineMd(String(s || ""));
     return inlineHtml(s);
   }
+  /* 右栏正文块：**与正文同一套渲染**（宿主的 renderMarkdown：段落 / 列表 / 标题 / 引用 /
+     表格 / 代码 / callout / 公式 / mermaid 图全在那一份里），不再是「只出行内标记的一段流」——
+     以前这里走 inlineMd，`- 列表` / `> 引用` / `| 表格 |` 都原样露着源码。
+     宿主没注入 renderMd 时退回页面上的 MTRender.toHtml（同一内核），再没有才退回行内。 */
+  function bodyHtml(s) {
+    const raw = String(s == null ? "" : s);
+    if (st && typeof st.renderMd === "function") {
+      try {
+        const html = st.renderMd(raw);
+        if (html) return html;
+      } catch (_) {}
+    }
+    const R = typeof window !== "undefined" ? window.MTRender : null;
+    if (R && typeof R.toHtml === "function") {
+      try {
+        const html = R.toHtml(raw);
+        if (html) return html;
+      } catch (_) {}
+    }
+    return inlineMd(raw);
+  }
+  /* 正文那层收尾装饰（`[[双链]]` / `[@引用]` / 软换行合并）：宿主注入 reader 的那几个装饰器，
+     与阅读态逐条一致；不注入就只是少了这几颗记号，块级排版照旧。 */
+  function decorateBody(root) {
+    if (!root || !st || typeof st.decorate !== "function") return;
+    try {
+      st.decorate(root);
+    } catch (_) {}
+  }
   /* HTML 标签：塞进 foreignObject，宽度 / 高度按内容量出来（否则会被 foreignObject 的框裁掉） */
   function htmlLabel(text, cls, x, y) {
     const fo = svgEl("foreignObject", { class: "rg-fo", x: x, y: y, width: 260, height: 18 });
@@ -145,6 +174,12 @@
       onCite: o.onCite || null,
       onSelect: o.onSelect || null,
       onAsk: o.onAsk || null,
+      /* 与正文同一套：整段 Markdown 渲染器 + 阅读器那层记号装饰（都由 app-research.js 注入） */
+      renderMd: typeof o.renderMd === "function" ? o.renderMd : null,
+      decorate: typeof o.decorate === "function" ? o.decorate : null,
+      /* 取某一篇笔记的正文（app-research.js 注入：读的就是磁盘上那份 Markdown）。
+         笔记级节点在 core 里只带 120 字 excerpt，右栏预览要能看见真正的内容。 */
+      noteText: typeof o.noteText === "function" ? o.noteText : null,
       full: emptyGraph(),
       view: null,
       layout: o.layout || "force",
@@ -762,6 +797,25 @@
     }
     selectNode(id);
   }
+  /* 这一篇笔记的正文（只对 `note:` 级节点 —— 块级节点自己有 text，不必整篇）：
+     图谱载荷里笔记节点只带 120 字 excerpt（见 research-core 的 parseNote），
+     右栏预览要能看见真正的正文，所以向宿主取这一篇的 Markdown（app-research.js 注入的
+     noteText，内容就是盘上那份文件）。取不到就回空串，调用方照旧退回 excerpt。
+     截到 6000 字：预览只露 8 行，展开也不该把一整篇文章的 DOM 全铺进这只 320px 的栏。 */
+  function noteBodyOf(n) {
+    if (!n || !n.path) return "";
+    if (String(n.id || "").indexOf("note:") !== 0) return "";
+    if (!st || typeof st.noteText !== "function") return "";
+    let md = "";
+    try {
+      md = String(st.noteText(n.path) || "");
+    } catch (_) {
+      return "";
+    }
+    /* 头一行是重复的一级标题就去掉：右栏顶上已经写过一遍了 */
+    md = md.replace(/^\s*#[^#\r\n]*(\r?\n|$)/, "").replace(/^\s+/, "");
+    return md.length > 6000 ? md.slice(0, 6000) + "\n\n…" : md;
+  }
   /* 右栏：节点内容 + 关系 + 去正文 / 去文献的入口。depth 已截断的正文由 CSS 控高滚动。 */
   function renderSide() {
     const box = st && st.sideEl;
@@ -826,21 +880,89 @@
       body.appendChild(row);
     }
 
-    const text = String(n.text || n.excerpt || "").trim();
+    /* 笔记级节点：预览用**这一篇的正文**（否则只是 core 里那 120 字 excerpt，
+       窄栏里正好三行 —— 用户看到的「只显示 3 行」就是它）。块级节点仍用自己那段 text。 */
+    const noteBody = noteBodyOf(n);
+    const text = String(noteBody || n.text || n.excerpt || "").trim();
     const tex = String(n.tex || "").trim();
+    const code = String(n.code || "").trim();
+    /* 预览块：容器带 .rs-rich（正文那套记号与 callout / 公式 / 表格的形制都在这个作用域里），
+       再挂 .rg-side-md 收小字号与行距 —— 与正文是**同一份渲染**，只是版心更窄。
+       .rg-side-fold 把高度折到 8 行（正文块动辄一整页，右栏第一屏要留着看关系与出口），
+       超了再给一颗「展开全部」；不用 -webkit-line-clamp：它会把表格 / callout / 公式挤变形。 */
+    const preview = (html) => {
+      const box = el("div", "rg-side-text rg-side-md rs-rich rg-side-fold");
+      box.innerHTML = html;
+      return box;
+    };
+    /* 挂进右栏并接上折叠开关：量自然高度用 scrollHeight（折叠时 clientHeight 就是 8 行上限）。
+       图 / 公式要等一次布局才定尺寸，所以下一帧再校一次。 */
+    const attachPreview = (box) => {
+      body.appendChild(box);
+      const bar = el("button", "rg-side-fold-toggle", t("展开全部"));
+      bar.type = "button";
+      bar.title = t("展开全部正文（预览只露 8 行）");
+      bar.hidden = true;
+      const sync = () => {
+        if (box.classList.contains("rg-side-open")) {
+          bar.hidden = false;
+          return;
+        }
+        /* 量不到高度（右栏刚显示 / 侧栏还没布局）就先把开关露出来：宁可多一颗按钮，
+           也不要让长正文被折在 8 行里再也打不开 */
+        const h = box.clientHeight;
+        bar.hidden = h > 0 ? !(box.scrollHeight > h + 4) : false;
+      };
+      bar.onclick = () => {
+        const open = box.classList.toggle("rg-side-open");
+        bar.textContent = open ? t("收起") : t("展开全部");
+        bar.title = open ? t("收起，预览回到 8 行") : t("展开全部正文（预览只露 8 行）");
+        sync();
+      };
+      body.appendChild(bar);
+      sync();
+      if (typeof requestAnimationFrame === "function") requestAnimationFrame(sync);
+      return box;
+    };
     if (text) {
-      const p = el("div", "rg-side-text");
-      p.innerHTML = inlineMd(text.length > 1400 ? text.slice(0, 1400) + "…" : text);
+      const p = preview(bodyHtml(text.length > 4000 ? text.slice(0, 4000) + "…" : text));
+      decorateBody(p);
       if (n.path) {
         p.classList.add("rg-side-click");
-        p.onclick = openSelf;
         p.title = t("打开正文");
       }
-      body.appendChild(p);
+      /* 块里的记号自己先吃点击：`[[双链]]` → 图上那个节点，`[@引用]` → 文献出口；
+         其余位置仍是「点一下进正文」 */
+      p.onclick = (ev) => {
+        const tgt = ev.target && ev.target.closest ? ev.target.closest(".rs-wl, .rs-cite") : null;
+        if (tgt) {
+          ev.stopPropagation();
+          if (tgt.classList.contains("rs-cite")) {
+            const key = String(tgt.dataset.cite || "").split(";")[0].trim();
+            if (key && typeof st.onCite === "function") {
+              try {
+                st.onCite(key);
+              } catch (_) {}
+            }
+            return;
+          }
+          const want = String(tgt.dataset.wl || tgt.textContent || "").trim();
+          const hit = (st.full.nodes || []).find((x) => String(x.label || "").trim() === want);
+          if (hit) selectNode(hit.id);
+          return;
+        }
+        openSelf();
+      };
+      attachPreview(p);
     } else if (tex) {
-      const p = el("div", "rg-side-text");
-      p.innerHTML = inlineMd("$$" + tex.replace(/^\$\$|\$\$$/g, "") + "$$");
-      body.appendChild(p);
+      const p = preview(bodyHtml("$$" + tex.replace(/^\$\$|\$\$$/g, "") + "$$"));
+      decorateBody(p);
+      attachPreview(p);
+    } else if (code && n.figure) {
+      /* 图示节点（```mermaid / ```pele）：与正文里那块图同一个渲染入口（renderMarkdown 现场出 SVG），
+         点开看大图那层绑定只挂在正文里，这里只作预览 */
+      const p = preview(bodyHtml("```" + n.figure + "\n" + code + "\n```"));
+      attachPreview(p);
     } else if (!rows.length) {
       body.appendChild(el("div", "rg-side-empty", t("这个节点没有可展开的正文（只有标题）。")));
     }
@@ -884,7 +1006,7 @@
     if (n.citeKey) {
       const b = el("button", "rg-side-go alt", t("打开文献"));
       b.type = "button";
-      b.title = t("有全文就直接打开；没有则问一句要不要搜索并入库");
+      b.title = t("有全文就直接打开；没有则让 agent 获取这一篇");
       b.onclick = () => {
         if (typeof st.onCite !== "function") return;
         try {

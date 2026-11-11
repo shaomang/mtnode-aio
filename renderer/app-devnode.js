@@ -668,7 +668,9 @@ function devSuggestContextText(node, focus) {
 
 /* ---------- 任务书与系统提示 ---------- */
 function devSuggestSystemPrompt() {
-  return [
+  /* 整段系统提示可被「设置 → 内置能力」覆盖（id: devnode.suggest_system）：
+     没有覆盖时 PS 原样返回下面拼好的文本，逐字不变。 */
+  const base = [
     "你是 MTNode「开发节点」的进度评估器：只做只读调研并给出方案，绝不实施。",
     "禁止：创建 / 修改 / 删除任何文件（write、edit、str_replace_editor）；执行任何有副作用的命令（安装、删除、移动、复制、构建、重启服务、清理目录）；调用 mtnode_canvas_edit / mtnode_app 的修改类动作；用 todo_write 登记执行清单；用 create_goal 立执行目标；用 subagent 派生实现工作。",
     "禁止使用任何 git 命令（含 git status / diff / log 这类只读子命令）：git 不保留每次更新信息（agent 不会每改一次就 git add），它的状态与真实改动不一致 —— 要看改动请重读文件、跑冒烟，或看会话的「改动」面板。",
@@ -681,6 +683,7 @@ function devSuggestSystemPrompt() {
       DEV_SUGGEST_COUNT +
       " 条，按推荐程度从高到低排列；每条都能独立开工、彼此不重复（用户会多选组合后一起交给开发）；basis 给 3~5 条真实证据。",
   ].join("\n");
+  return PS("devnode.suggest_system", base);
 }
 function devSuggestPrompt(node, focus) {
   const lines = [];
@@ -968,18 +971,27 @@ function devSuggestBriefText(node, sug, pickedIds, supplement) {
   if (extra) lines.push(I18n.t("用户补充：") + extra);
   lines.push("");
   lines.push(
-    I18n.t(
-      "实施要求：以项目根目录内的真实代码为准；上述方案若与现状冲突，先说清取舍再动手；每完成一项做一次可验证检查（构建 / 运行 / 测试 / 只读命令）。",
+    PS(
+      "devnode.dev_rules.implementation",
+      I18n.t(
+        "实施要求：以项目根目录内的真实代码为准；上述方案若与现状冲突，先说清取舍再动手；每完成一项做一次可验证检查（构建 / 运行 / 测试 / 只读命令）。",
+      ),
     ),
   );
   lines.push(
-    I18n.t(
-      "共识：若项目根目录有 AGENTS.md，先读并遵守（目录约定 / 不要修改清单），新文件按约定放置。",
+    PS(
+      "devnode.dev_rules.agents_md",
+      I18n.t(
+        "共识：若项目根目录有 AGENTS.md，先读并遵守（目录约定 / 不要修改清单），新文件按约定放置。",
+      ),
     ),
   );
   lines.push(
-    I18n.t(
-      "本会话是「开发」绑定会话（不读也不改画布）：执行期间与收尾都不得修改画布上任何内容 —— 不改该功能块节点的 title / note / devStatus / devFiles，也不动其它节点或连线；任务完成后在会话里用一句话汇报改了什么。",
+    PS(
+      "devnode.dev_rules.no_canvas",
+      I18n.t(
+        "本会话是「开发」绑定会话（不读也不改画布）：执行期间与收尾都不得修改画布上任何内容 —— 不改该功能块节点的 title / note / devStatus / devFiles，也不动其它节点或连线；任务完成后在会话里用一句话汇报改了什么。",
+      ),
     ),
   );
   return lines.join("\n");
@@ -2137,7 +2149,8 @@ async function suggestDevNode(node) {
  */
 /* 只读纪律（问询任务书的规则段）：可以放开了读，但不许动一根手指 */
 function devAskSystemPrompt() {
-  return [
+  /* 整段可被「设置 → 内置能力」覆盖（id: devnode.ask_system） */
+  const base = [
     "本会话是 MTNode「开发节点」的**问询会话**：只读地回答用户关于本功能块（模块）的问题——职责、代码结构、真实完成度、接口与数据流、下一步建议等。",
     "整个过程**严格只读**：禁止创建 / 修改 / 删除任何文件（write、edit、str_replace_editor、文件保存类动作）；禁止执行任何有副作用的命令（安装 / 删除 / 移动 / 复制 / 构建 / 重启服务 / 清理目录）；禁止调用 mtnode_canvas_edit / mtnode_app 的修改类动作；禁止用 todo_write 登记执行清单；禁止用 create_goal 立执行目标；禁止用 subagent 派生实现工作。",
     "禁止使用任何 git 命令（含 git status / diff / log 这类只读子命令）：git 不保留每次更新信息（agent 不会每改一次就 git add），它的状态与真实改动不一致 —— 要看改动请重读文件、跑冒烟，或看会话的「改动」面板。",
@@ -2147,6 +2160,7 @@ function devAskSystemPrompt() {
     "若用户的问题本质上是「请帮我改 / 实现 / 重构」，先礼貌说明问询是只读的、不会改动任何文件，再给出实现思路或修改方案概要，并建议用户点击该功能块的「开发」按钮正式开工。",
     "回答简洁、直接、分点（交流语言按文末「语言口味」跟随界面设置），最后不要输出任何 JSON 契约或多余格式。",
   ].join("\n");
+  return PS("devnode.ask_system", base);
 }
 /* 问询上下文：比建议精简（不带「上一次 AI 建议」的纠偏说明），其余同源 */
 function devAskContextText(node) {
@@ -2200,11 +2214,13 @@ function devAskContextText(node) {
 }
 /* 任务书收尾指令：问题本身不进任务书（会话里就是用户消息），免得多轮追问被首问绑死 */
 function devAskPrompt() {
-  return [
+  /* 整段可被「设置 → 内置能力」覆盖（id: devnode.ask_task） */
+  const base = [
     I18n.t("工作方式：用户每提出一个问题，先只读调研项目里的真实代码与该模块的开发进度，再直接给出回答。"),
     I18n.t("本会话不做任何修改：不改文件、不改画布、不回写节点概述与开发状态；要动手请让用户点该功能块的「开发」按钮。"),
     I18n.t("会话里的每一个问题都要回答；与本模块无关的请求，礼貌说明本会话只负责该模块的问询。"),
   ].join("\n");
+  return PS("devnode.ask_task", base);
 }
 /* 只读问询任务书 = 该问询会话的契约：写进 session._devContract，每轮随系统提示注入 */
 function devAskContractText(node) {

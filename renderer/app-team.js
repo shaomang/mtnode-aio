@@ -1673,7 +1673,12 @@
     if (note) lines.push(note);
     var fl = factLibNote(exp);
     if (fl) lines.push(fl);
-    return lines.join("\n");
+    /* 专家人设整段可被「设置 → 内置能力」覆盖（id: team.expert_persona）：
+       覆盖文本可用 {{name}} / {{role}}；没覆盖时 PS 原样返回上面拼好的那一份。 */
+    return PS("team.expert_persona", lines.join("\n"), {
+      name: (exp && exp.name) || T("专家"),
+      role: (exp && exp.role) || "",
+    });
   }
   /* 团队事实库索引：列出库内全部文档的「名称 → 绝对路径」与共享 assets 目录，并写清
      查阅 / 建档纪律。只给路径与纪律，绝不把库正文塞进每轮系统提示（省 token）——

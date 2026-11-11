@@ -32,6 +32,11 @@
   var PUSH_MS = 800;
   var REPLY_MAX = 20000; /* 单条回复上限：够读结论，又不至于把 IPC 撑爆 */
   var selectedId = "";
+  /* 上一次用的那条会话（本次修复）：盘上记着（主进程 mini-chat.json 的 lastSessionId），
+     关掉 MTNode 再开、重新唤出小窗，回到的还是这一条。
+     lastLoaded 之前**不写盘** —— 读回来之前别拿「主窗此刻选中的」把它盖掉。 */
+  var lastId = "";
+  var lastLoaded = false;
   var miniOpen = false;
   var timer = null;
   var lastSig = "";
@@ -132,14 +137,73 @@
     return out;
   }
 
+  /* 选哪一条：① 小窗这次已经选过的 → ② 盘上记的「上一次用的」→ ③ 主窗当前选中的 → ④ 列表第一条。
+     ②那一条可能已经掉出「最近 20 条」，那就把它补进列表末尾 —— 否则它永远选不回来，
+     用户看到的就是「每次开小窗都跳回别的会话」。 */
   function pickId(top) {
-    if (selectedId && top.some(function (s) { return String(s.id) === selectedId; })) return selectedId;
+    var want = String(selectedId || lastId || "");
+    if (want) {
+      var hit = findSession(want);
+      if (hit && !hit.archived) {
+        var listed = top.some(function (s) {
+          return String(s.id) === want;
+        });
+        if (!listed) top.push(hit);
+        return String(hit.id);
+      }
+    }
     var act = "";
     try {
       act = String((typeof S !== "undefined" && S.agentActiveId) || "");
     } catch (_) {}
     if (act && top.some(function (s) { return String(s.id) === act; })) return act;
     return top.length ? String(top[0].id) : "";
+  }
+
+  /* 记住小窗这一轮选中的会话（换会话 / 新建 / 删除后都会走到这里）。
+     只写 id，内容一概不碰；force = 用户自己点的，读盘还没回来也照写。 */
+  function rememberSession(id, force) {
+    var sid = String(id || "");
+    /* 空 id 只在用户主动那一路（删掉最后一条、点了条不存在的）才落盘：
+       会话列表还没装载完时的空快照不该把「上一次用的那条」抹掉。 */
+    if (!sid && !force) return;
+    if (sid === lastId) return;
+    if (!lastLoaded && !force) return;
+    lastId = sid;
+    try {
+      if (typeof api.miniChatSetLastSession === "function")
+        Promise.resolve(api.miniChatSetLastSession(sid)).catch(function () {});
+    } catch (_) {}
+  }
+
+  /* 开机读回上一次用的那条：先落 selectedId（用户此刻已经点过别的就不动），再解禁写盘 */
+  function loadLastSession() {
+    try {
+      if (typeof api.miniChatLastSession !== "function") {
+        lastLoaded = true;
+        return;
+      }
+      Promise.resolve(api.miniChatLastSession())
+        .then(
+          function (r) {
+            var id = r && r.id != null ? String(r.id) : "";
+            if (id) {
+              lastId = id;
+              if (!selectedId) selectedId = id;
+            }
+            lastLoaded = true;
+            lastSig = ""; /* 读回来后下一拍按它重选、重推 */
+          },
+          function () {
+            lastLoaded = true;
+          },
+        )
+        .catch(function () {
+          lastLoaded = true;
+        });
+    } catch (_) {
+      lastLoaded = true;
+    }
   }
 
   /* 会话正文里最后一条非空消息的角色（"" = 一条都没有）。
@@ -165,6 +229,8 @@
     var top = topSessions();
     var sid = pickId(top);
     selectedId = sid;
+    /* 落在哪一条就记下来（下次开窗 / 重启后还落这一条）；只写一个 id，不写会话内容 */
+    rememberSession(sid, false);
     var sessions = top.map(function (s) {
       var w = wsOf(s);
       return {
@@ -333,6 +399,7 @@
     if (op === "select") {
       var pick = findSession(a.id);
       selectedId = pick ? String(pick.id) : "";
+      rememberSession(selectedId, true);
       lastSig = "";
       return { ok: true, data: await buildState() };
     }
@@ -393,6 +460,7 @@
         }
       }
       selectedId = String((st && st.id) || "");
+      rememberSession(selectedId, true);
       try {
         if (typeof agentFlushSessionSaveQuiet === "function") await agentFlushSessionSaveQuiet();
       } catch (_) {}
@@ -488,6 +556,7 @@
         return { ok: false, error: "exception", detail: String((e && e.message) || e) };
       }
       if (String(selectedId) === String(s5.id)) selectedId = "";
+      rememberSession(selectedId, true);
       lastSig = "";
       return { ok: true, data: await buildState() };
     }
@@ -537,6 +606,10 @@
   api.onMiniChatVisibility(function (p) {
     setOpen(!!(p && p.open));
   });
+
+  /* 上一次用的会话先读回来（本次修复）：小窗一开就落在这一条上，关掉 MTNode 再开也一样。
+     放在推送循环自愈之前 —— 读回来那一拍正好把 selectedId 拨对。 */
+  loadLastSession();
 
   /* 推送循环的「自愈」入口（本次修复）：主窗渲染层重载后，上面那个 visibility 事件
      不会再送一遍 —— miniOpen 停在 false，推送循环永远起不来，小窗就停在旧内容上：

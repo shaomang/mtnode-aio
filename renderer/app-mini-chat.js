@@ -298,19 +298,89 @@
       })(lines[i]);
     }
   }
-  /* 「你的指令」气泡：没有图行时仍旧走 textContent（与改动前逐字一致）；
-     有图行时把图渲染成缩略图（路径不外露），其余文字照旧。 */
+  /* ── 「你的指令」气泡：**也走 markdown**（本次需求）──────────────────────
+     下发的不全是手打的：长任务 / 派单模板会把整段带标题、列表、表格、围栏的正文塞进输入框，
+     按纯文本贴出来就是一大坨 `#` / `-` / 围栏原文。所以正文与 AI 回复走同一个内核
+     （renderer/md-render.js 的 window.MTRender：先转义再解析、公式同源、链接只放行 http(s)）。
+     两条必须保持原样（与主窗口 app-assist.js 的 dshUserBodyHtml 同一手法）：
+       ① 整行 `![名称](路径)` 仍是缩略图（点一下交系统看图程序、路径不外露）：解析前换成
+          PUA 占位符（marked 原样保留），解析完再把占位符换成缩略图节点；
+       ② 代码围栏里的那行「图行」是代码原文、不是图：围栏状态机里不认它。
+     内核缺席 / 解析失败时退回改动前的纯文本 + 缩略图（paintUserPlain），绝不白屏。 */
+  var IMG_TOK_RE = /\uE002(\d+)\uE003/g;
+  var FENCE_RE = /^ {0,3}[\u0060\u007E]{3,}/;
   function paintUserBody(userEl, body) {
     var txt = String(body || "");
+    if (userEl.classList && typeof userEl.classList.remove === "function")
+      userEl.classList.remove("is-plain");
+    if (!txt.trim()) {
+      userEl.textContent = "";
+      return;
+    }
     var lines = imgLinesOf(txt);
-    if (!lines.length || typeof document.createTextNode !== "function") {
+    var thumbs = [];
+    var src = txt;
+    if (lines.length) {
+      var byLine = {};
+      var i;
+      for (i = 0; i < lines.length; i++) byLine[lines[i].n] = lines[i];
+      var out = [];
+      var fence = "";
+      var arr = txt.split("\n");
+      for (var k = 0; k < arr.length; k++) {
+        var raw = String(arr[k] || "").replace(/\r$/, "");
+        var f = FENCE_RE.exec(raw);
+        if (f) {
+          var ch = String(f[0] || "").trim().charAt(0);
+          if (!fence) fence = ch;
+          else if (fence === ch) fence = "";
+          out.push(raw);
+          continue;
+        }
+        var hit = fence ? null : byLine[k + 1];
+        if (!hit) {
+          out.push(raw);
+          continue;
+        }
+        thumbs.push(hit);
+        out.push("\uE002" + (thumbs.length - 1) + "\uE003");
+      }
+      src = out.join("\n");
+    }
+    var html = replyHtml(src);
+    if (!html) {
+      paintUserPlain(userEl, txt, lines);
+      return;
+    }
+    if (thumbs.length)
+      html = html.replace(IMG_TOK_RE, function (_m, idx) {
+        return '<span class="mc-imgslot" data-mc-img="' + String(idx) + '"></span>';
+      });
+    userEl.innerHTML = html;
+    if (!thumbs.length || !userEl.querySelectorAll) return;
+    var slots = userEl.querySelectorAll("span.mc-imgslot");
+    for (var s = 0; s < slots.length; s++) {
+      var slot = slots[s];
+      var l = thumbs[Number(slot.getAttribute("data-mc-img") || 0)];
+      if (!l || !slot.parentNode) continue;
+      slot.parentNode.replaceChild(userThumb(l), slot);
+    }
+  }
+  /* 兜底（渲染内核缺席 / 解析失败）：改动前的口径 —— 纯文本（靠 is-plain 保住换行）
+     + 图行缩略图，路径同样不外露。 */
+  function paintUserPlain(userEl, txt, lines) {
+    var all = lines || imgLinesOf(txt);
+    if (userEl.classList && typeof userEl.classList.add === "function")
+      userEl.classList.add("is-plain");
+    if (!all.length || typeof document.createTextNode !== "function") {
       text(userEl, txt);
       return;
     }
     userEl.textContent = "";
     var byLine = {};
-    for (var i = 0; i < lines.length; i++) byLine[lines[i].n] = lines[i];
-    var arr = txt.split("\n");
+    var i;
+    for (i = 0; i < all.length; i++) byLine[all[i].n] = all[i];
+    var arr = String(txt || "").split("\n");
     var buf = [];
     function flush() {
       if (!buf.length) return;
@@ -746,7 +816,7 @@
     var user = sel && sel.lastUser ? String(sel.lastUser) : "";
     if (user) {
       userTurnEl.hidden = false;
-      /* 图行渲染成缩略图、路径不外露（本轮需求）；没有图行时与改动前逐字一致 */
+      /* 正文按 Markdown 渲染（与 AI 回复同一条管线），图行仍渲染成缩略图、路径不外露 */
       paintUserBody(userEl, user);
     } else {
       userTurnEl.hidden = true;
@@ -754,7 +824,7 @@
     }
     if (reply) {
       /* 标题 / 列表 / 代码块 / 表格 / 加粗都按 Markdown 渲染（replyHtml 已经做过 HTML 转义）。
-         自己下发的那句仍是灰色纯文本气泡（见上），用户写什么就显示什么。 */
+         自己下发的那句也走同一套 Markdown（见 paintUserBody）。 */
       var html = replyHtml(reply);
       if (html) replyEl.innerHTML = html;
       else text(replyEl, reply);
@@ -1062,10 +1132,11 @@
       queueDraft();
     });
     /* 正文里的链接（Markdown 的 [文字](https://…)）：小窗不给导航离开本页 ——
-       一律拦下，http(s)/mailto 交系统默认程序打开，其余（相对路径 / file:）点了不动。 */
-    var replyEl = $("mcReply");
-    if (replyEl) {
-      replyEl.addEventListener("click", function (ev) {
+       一律拦下，http(s)/mailto 交系统默认程序打开，其余（相对路径 / file:）点了不动。
+       委托挂在滚动区上：AI 回复与自己那句（也按 Markdown 渲染）共用这一份口径。 */
+    var scrollEl = $("mcScroll");
+    if (scrollEl) {
+      scrollEl.addEventListener("click", function (ev) {
         var a = ev.target && ev.target.closest ? ev.target.closest("a[href]") : null;
         if (!a) return;
         ev.preventDefault();

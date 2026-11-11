@@ -15,6 +15,11 @@
        打包后启动即 Cannot find module './mini-chat-window.js'）。页面与脚本走 renderer/** 通配。 */
     "mini-chat-window.js",
     "preload-mini-chat.js",
+    /* 截图标注工具（Ctrl+Alt+A）：main.js 顶层 require screenshot-overlay.js，浮层页面走
+       renderer/** 通配，但它那只专用 preload 在根目录、必须单列 —— 漏了就 `Cannot find module`
+       （表现为浮层起来了一片黑，标注完也交不回去）。 */
+    "screenshot-overlay.js",
+    "preload-screenshot.js",
     "main-proc-host.js",
     "fn-runtime.js",
     "desktop-capture.js",
@@ -122,6 +127,13 @@
     "fs-clipboard.js",
     "plugin-error-repair.js",
     "mtnode-agent-skills-lib.js",
+    /* 内置能力库（Agent 指示 · 内置 SKILL.md 的统一管理：覆盖层 / 源码写回 / 备份）：
+       main.js 顶层 require 它，漏进白名单 = 打包后 Cannot find module
+       './agent-prompts-lib.js'（设置里「内置能力」整页打不开）。 */
+    "agent-prompts-lib.js",
+    /* 作者「覆盖到源码」写回的那一层默认正文（agent-prompts/<id>.md + index.json 清单）。
+       运行期由 agent-prompts-lib 读，渲染层靠 IPC 拿；漏进白名单 = 打包后内置能力清单是空的。 */
+    "agent-prompts/**",
     /* MCP 服务端（第三方客户端接进来操作 MTNode）：主进程服务端 + 生成的契约与校验表 +
        stdio 桥脚本。mcp-tools.json 是运行时真源（tools/list 的描述正文），必须随包。 */
     "mcp-server.js",

@@ -764,7 +764,7 @@ function openSettingsBody() {
     settingsSaved(0);
   };
 
-  /* 主题(2 款,默认 MTNode;选完立刻换肤并由 applyTheme 写盘) */
+  /* 主题(3 款: MTNode / DSH / 终末地;默认 MTNode;选完立刻换肤并由 applyTheme 写盘) */
   const themeRow = document.createElement("label");
   themeRow.className = "n-field";
   themeRow.style.flexDirection = "row";
@@ -2111,6 +2111,21 @@ function openSettingsBody() {
     refreshExtInventory();
 
     body.appendChild(sec);
+  }
+
+  /* ── 内置能力（Agent 指示 · 内置技能）：统一管理全应用注入给模型的固定提示词与内置
+     SKILL.md —— 可改、可恢复默认、可与默认比差异；作者账号（ms2308）在开发态还能把改动
+     覆盖到源码路径（= 覆盖随包默认）。整块由 renderer/app-builtin.js 自包含提供
+     （window.BuiltinCap.settingsSection / open），这里只负责放进设置正文。 */
+  {
+    try {
+      if (typeof window !== "undefined" && window.BuiltinCap && typeof window.BuiltinCap.settingsSection === "function") {
+        const builtinSec = window.BuiltinCap.settingsSection();
+        if (builtinSec) body.appendChild(builtinSec);
+      }
+    } catch (err) {
+      console.warn("[settings] 内置能力小节挂载失败：", err);
+    }
   }
 
   /* ── 语音输入（全局）：状态栏最左那枚话筒的行为设置 ──

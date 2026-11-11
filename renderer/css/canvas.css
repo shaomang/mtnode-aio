@@ -1123,10 +1123,8 @@
   right: auto !important;
   --rim: var(--cyan);
   box-shadow:
-    0 0 0 2px rgba(56, 214, 255, .25),
-    inset 0 1px 1px rgba(255, 255, 255, .22),
-    inset 0 -1px 2px rgba(0, 0, 0, .75),
-    0 1px 2px rgba(0, 0, 0, .55);
+    0 0 0 2px rgba(56, 214, 255, .22),
+    0 0 0 1px rgba(6, 9, 14, .9);
 }
 
 .super-focus-port-layer .port.in.super-inner-sink {
@@ -1134,10 +1132,8 @@
   left: auto !important;
   --rim: var(--green);
   box-shadow:
-    0 0 0 2px rgba(95, 214, 138, .25),
-    inset 0 1px 1px rgba(255, 255, 255, .22),
-    inset 0 -1px 2px rgba(0, 0, 0, .75),
-    0 1px 2px rgba(0, 0, 0, .55);
+    0 0 0 2px rgba(95, 214, 138, .22),
+    0 0 0 1px rgba(6, 9, 14, .9);
 }
 
 .wf-node.super.sel {
@@ -4277,6 +4273,13 @@ body.theme-light .n-chip.n-chip-lt {
   border: 1px solid var(--bd)
 }
 
+/* 正文里认不出的图片引用（相对路径 / 取不到本机文件）：不摆断链图标，退成一行原文
+   —— 见 renderer/md-render.js 的 fixImages（那条管线是主窗与小窗共用的唯一出口）。 */
+.md .md-img-missing {
+  opacity: .62;
+  font-size: .92em
+}
+
 .chat-list {
   flex: 1;
   min-height: 0;
@@ -6368,8 +6371,11 @@ body.theme-light .n-chip.n-chip-lt {
   box-shadow: inset 1px 0 0 rgba(0, 0, 0, .45), inset 2px 0 0 rgba(0, 0, 0, .24), inset 3px 0 0 rgba(255, 255, 255, .09), inset 4px 0 3px rgba(0, 0, 0, .10)
 }
 
-/* ===== 端子（DAW 效果器插件式接线口：金属外圈 + 内凹插孔，镶嵌在板内接线排上） =====
-   10px 圆孔（原 8px）+ 20px 宽接线排：圆心距板缘 10px，与 app.js PORT_OFF=9 / PORT_R=5 对齐 */
+/* ===== 端子（插孔式接线口：一圈端子色圆环 + 一块纯色深孔） =====
+   10px 圆孔（原 8px）+ 20px 宽接线排：圆心距板缘 10px，与 app.js PORT_OFF=9 / PORT_R=5 对齐。
+   画法（2D 平涂）：壳 = 端子色压一档的平涂圆，孔 = 一块纯深色圆，靠「彩环 + 深孔」这两件
+   读出插孔；不再用金属径向渐变 / 内斜面 / 球面高光那套立体做法 —— 10px 直径下多段
+   径向渐变只会糊成一团黑球，平涂反而边界清楚、端子色一眼认得出。 */
 .port {
   position: absolute;
   width: 10px;
@@ -6378,26 +6384,23 @@ body.theme-light .n-chip.n-chip-lt {
   cursor: crosshair;
   z-index: 3;
   --rim: #3d4a5e;
-  background: radial-gradient(circle at 50% 40%,
-      #05070b 0%, #05070b 30%,
-      var(--rim) 34%, #9fb0c8 41%, var(--rim) 47%,
-      #151b25 61%, #090c11 100%);
+  background: color-mix(in srgb, var(--rim) 70%, #0b1119);
   box-shadow:
-    inset 0 1px 1px rgba(255, 255, 255, .22),
-    inset 0 -1px 2px rgba(0, 0, 0, .75),
-    0 1px 2px rgba(0, 0, 0, .55);
-  transition: box-shadow .1s ease, transform .1s ease, filter .1s ease;
+    0 0 0 1px rgba(6, 9, 14, .9),
+    0 1px 1px rgba(0, 0, 0, .3);
+  transition: box-shadow .1s ease, transform .1s ease, filter .1s ease, background .1s ease;
 }
 
-/* 插孔内芯：暗色凹陷，表示“可插入”（z-index 盖过插口底座）；内芯缩小 → 插线洞更小 */
+/* 插孔（空槽）：一块纯深色圆，没有渐变也没有内阴影 —— 与彩环的明度差就是全部的"凹"。
+   已接线 / 悬停 / 将替换时这块孔会被插芯整个盖住（见下面各条 ::before）。 */
 .port::before {
   content: "";
   position: absolute;
-  inset: 3px;
+  inset: 2px;
   border-radius: 50%;
   z-index: 1;
-  background: radial-gradient(circle at 38% 32%, #2b3442 0%, #03050a 82%);
-  box-shadow: inset 0 1px 3px rgba(0, 0, 0, .9);
+  background: #080c13;
+  box-shadow: none;
   transition: background .12s ease, box-shadow .12s ease;
 }
 
@@ -6446,26 +6449,91 @@ body.theme-light .n-chip.n-chip-lt {
 
 .port:hover {
   transform: scale(1.18);
-  filter: brightness(1.18);
+  filter: brightness(1.12);
   box-shadow:
-    0 0 8px rgba(255, 143, 46, .55),
-    inset 0 1px 1px rgba(255, 255, 255, .3),
-    inset 0 -1px 2px rgba(0, 0, 0, .75);
+    0 0 0 1px rgba(255, 170, 90, .9),
+    0 0 8px -1px rgba(255, 143, 46, .7);
 }
 
+/* 悬停 = 插孔点亮成一枚橙色实心芯（平涂，只留一圈亮边） */
 .port:hover::before {
-  background: radial-gradient(circle at 38% 32%, #ffd9a8 0%, #ff8f2e 78%);
-  box-shadow: 0 0 6px rgba(255, 143, 46, .9), inset 0 1px 2px rgba(0, 0, 0, .35)
+  background: #ff8f2e;
+  box-shadow: none;
 }
 
 .port.spare {
-  opacity: .45;
+  opacity: .55;
   filter: saturate(.55)
 }
 
 .port.spare:hover {
   opacity: 1;
   filter: none
+}
+
+/* ===== 已接线端子（线插到底） =====================================================
+   类名由渲染层按「这颗端子上确实挂着线」追加（.linked，见 app-canvas.js 的
+   linkedIn / linkedOut 与参数 / 组 / 节点层内侧端子、app.js 的焦点端子层）：
+   读法 = 插孔**原位被插芯填满** —— 孔的几何一点没变（还是 ::before 那个 2px 让位、
+   6px 的孔），只是孔里不再是黑的，而是端子色的实心芯，外面留一圈孔沿 + 同色柔光。
+   空闲端子 .spare 仍是「孔是空的」（近黑孔 + 彩环），1:1 下靠"空心 / 实心"直接分开。
+   只加视觉层次：端子几何、::after 命中区、端子号与 spare 判据一律不动。 */
+.port.linked {
+  background: color-mix(in srgb, var(--rim) 72%, #0b1119);
+  box-shadow:
+    0 0 0 1px rgba(6, 9, 14, .9),
+    0 0 6px -1px color-mix(in srgb, var(--rim) 55%, transparent);
+}
+
+/* 插芯：插孔**原位**被端子色实心圆填满（inset 沿用 .port::before 的 2px —— 孔的几何
+   一点没变，只是不再是黑的）。平涂、没有高光球也没有内阴影：整颗端子只剩两种颜色
+   （孔沿 + 插芯），10px 下边界干净，不会糊成一团。 */
+.port.linked::before {
+  background: color-mix(in srgb, var(--rim) 78%, #ffffff);
+  box-shadow: none;
+}
+
+/* 悬停：沿用橙光，但比空槽更亮一点（亮度 1.2、光晕 10px），插芯换成更亮的橙。
+   .linked 包在 :where() 里（0 优先级），本条只算「.port + :hover/.hover + :not(.will-replace)」
+   的 0,3,0 —— 于是三件事同时成立：
+   · 比 .port:hover / .port.hover（0,2,0）亮 → 悬停手感确实是「更亮」；
+   · 拖线落到「将替换」的端子上时，:not(.will-replace) 让位，红框仍归 .port.will-replace；
+   · 图像 / 音频 / 视频 / 控制端子拖线瞄准时由 .port.img.hover / .aud / .vid / .ctrl
+     （同为 0,3,0、写在本条之后）用各自的类别色发光 —— 同一个端子空闲 / 已接线两种状态下
+     的拖线高亮一致，不会被这一条盖成橙光。
+   transform 不写 → 沿用 .port:hover 的 1.18 / .port.hover 的 1.25，放大手感不变。 */
+.port:where(.linked):not(.will-replace):hover,
+.port:where(.linked):not(.will-replace).hover {
+  filter: brightness(1.12);
+  box-shadow:
+    0 0 0 1px rgba(255, 190, 130, .95),
+    0 0 10px -1px rgba(255, 143, 46, .9);
+}
+
+.port:where(.linked):not(.will-replace):hover::before,
+.port:where(.linked):not(.will-replace).hover::before {
+  background: color-mix(in srgb, var(--rim) 52%, #ffffff);
+  box-shadow: none;
+}
+
+/* 全屏焦点端子层（.super-focus-port-layer）给那两颗端子单独写过壳描边（0,3,0 的
+   .port.out.super-inner-bridge / .port.in.super-inner-sink），比 .port.linked 的 0,2,0
+   高一级：这里按同一口径给焦点层补一份 linked 版本（孔沿提亮 + 同色柔光，插芯仍是
+   那两颗的 --rim 青 / 绿），进壳后满屏那两颗端子插上线也是"孔被填满"的读法。 */
+.super-focus-port-layer .port.linked.out.super-inner-bridge {
+  background: color-mix(in srgb, var(--cyan) 72%, #0b1119);
+  box-shadow:
+    0 0 0 2px rgba(56, 214, 255, .22),
+    0 0 0 1px rgba(6, 9, 14, .9),
+    0 0 7px -1px color-mix(in srgb, var(--cyan) 65%, transparent);
+}
+
+.super-focus-port-layer .port.linked.in.super-inner-sink {
+  background: color-mix(in srgb, var(--green) 72%, #0b1119);
+  box-shadow:
+    0 0 0 2px rgba(95, 214, 138, .22),
+    0 0 0 1px rgba(6, 9, 14, .9),
+    0 0 7px -1px color-mix(in srgb, var(--green) 65%, transparent);
 }
 
 .port.in {
@@ -6494,13 +6562,13 @@ body.theme-light .n-chip.n-chip-lt {
 
 .port.img.hover {
   transform: scale(1.25);
-  filter: brightness(1.2);
-  box-shadow: 0 0 10px rgba(255, 94, 168, .95)
+  filter: brightness(1.15);
+  box-shadow: 0 0 0 1px rgba(255, 94, 168, .9), 0 0 10px -1px rgba(255, 94, 168, .9)
 }
 
 .port.img.hover::before {
-  background: radial-gradient(circle at 38% 32%, #ffd7e8 0%, #ff5ea8 80%);
-  box-shadow: 0 0 6px rgba(255, 94, 168, .9)
+  background: #ff5ea8;
+  box-shadow: none
 }
 
 /* 音频 / 视频条目端子（素材节点按内容类型着色）：与 .port.img 同一写法，
@@ -6515,13 +6583,13 @@ body.theme-light .n-chip.n-chip-lt {
 
 .port.aud.hover {
   transform: scale(1.25);
-  filter: brightness(1.2);
-  box-shadow: 0 0 10px rgba(106, 166, 255, .95)
+  filter: brightness(1.15);
+  box-shadow: 0 0 0 1px rgba(106, 166, 255, .9), 0 0 10px -1px rgba(106, 166, 255, .9)
 }
 
 .port.aud.hover::before {
-  background: radial-gradient(circle at 38% 32%, #dbe8ff 0%, #6aa6ff 80%);
-  box-shadow: 0 0 6px rgba(106, 166, 255, .9)
+  background: #6aa6ff;
+  box-shadow: none
 }
 
 .port.vid {
@@ -6534,13 +6602,13 @@ body.theme-light .n-chip.n-chip-lt {
 
 .port.vid.hover {
   transform: scale(1.25);
-  filter: brightness(1.2);
-  box-shadow: 0 0 10px rgba(94, 200, 168, .95)
+  filter: brightness(1.15);
+  box-shadow: 0 0 0 1px rgba(94, 200, 168, .9), 0 0 10px -1px rgba(94, 200, 168, .9)
 }
 
 .port.vid.hover::before {
-  background: radial-gradient(circle at 38% 32%, #d8fff0 0%, #5ec8a8 80%);
-  box-shadow: 0 0 6px rgba(94, 200, 168, .9)
+  background: #5ec8a8;
+  box-shadow: none
 }
 
 /* 设置面板参数行左侧的类型标记：与端子 .img 同一识别色 */
@@ -6609,24 +6677,24 @@ body.theme-light .n-chip.n-chip-lt {
 
 .port.ctrl.hover {
   transform: scale(1.25);
-  filter: brightness(1.2);
-  box-shadow: 0 0 10px rgba(240, 193, 77, .95)
+  filter: brightness(1.15);
+  box-shadow: 0 0 0 1px rgba(240, 193, 77, .9), 0 0 10px -1px rgba(240, 193, 77, .9)
 }
 
 .port.ctrl.hover::before {
-  background: radial-gradient(circle at 38% 32%, #fff3d0 0%, #f0c14d 80%);
-  box-shadow: 0 0 6px rgba(240, 193, 77, .9)
+  background: #f0c14d;
+  box-shadow: none
 }
 
 .port.hover {
   transform: scale(1.25);
-  filter: brightness(1.25);
-  box-shadow: 0 0 10px rgba(255, 143, 46, .95)
+  filter: brightness(1.15);
+  box-shadow: 0 0 0 1px rgba(255, 180, 110, .95), 0 0 10px -1px rgba(255, 143, 46, .95)
 }
 
 .port.hover::before {
-  background: radial-gradient(circle at 38% 32%, #ffd9a8 0%, #ff8f2e 80%);
-  box-shadow: 0 0 6px rgba(255, 143, 46, .9)
+  background: #ff8f2e;
+  box-shadow: none
 }
 
 /* 拖线悬停「将替换」预告（判定见 app-nodes.js 的 inPortOccupancy）：
@@ -6634,13 +6702,13 @@ body.theme-light .n-chip.n-chip-lt {
    必须排在 .port.hover 之后：同为单类选择器，靠顺序覆盖悬停描边。 */
 .port.will-replace {
   transform: scale(1.25);
-  filter: brightness(1.2);
-  box-shadow: 0 0 10px rgba(255, 77, 77, .95)
+  filter: brightness(1.15);
+  box-shadow: 0 0 0 1px rgba(255, 77, 77, .95), 0 0 10px -1px rgba(255, 77, 77, .95)
 }
 
 .port.will-replace::before {
-  background: radial-gradient(circle at 38% 32%, #ffd2d2 0%, #ff4d4d 80%);
-  box-shadow: 0 0 6px rgba(255, 77, 77, .9)
+  background: #ff4d4d;
+  box-shadow: none
 }
 
 .fn-edge.wire-replace {

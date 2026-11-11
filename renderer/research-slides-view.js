@@ -1463,8 +1463,8 @@
     ".rs-slide-btn{font:inherit;font-size:12px;line-height:1.5;padding:2px 9px;border-radius:6px;",
     "border:1px solid var(--rs-slide-rule);background:transparent;color:var(--rs-slide-muted);cursor:pointer;}",
     ".rs-slide-btn:hover{color:var(--rs-slide-primary);border-color:var(--rs-slide-primary);}",
-    ".rs-slide-btn.primary{color:var(--rs-slide-paper);background:var(--rs-slide-primary);border-color:var(--rs-slide-primary);}",
-    ".rs-slide-btn.primary:hover{opacity:.9;color:var(--rs-slide-paper);}",
+    ".rs-slide-btn.primary{color:var(--rs-slide-primary);background:transparent;border-color:var(--rs-slide-primary);}",
+    ".rs-slide-btn.primary:hover{color:var(--rs-slide-primary);background:transparent;border-color:var(--rs-slide-primary);}",
     /* 舞台与页：舞台是一只尺寸容器，画框按 deck 比例（--rs-slide-ar）居中 ——
        16:9 铺满、4:3 / 9:16 自动加边，导出、放映、打印三处同一把尺子。 */
     ".rs-slide-stage{position:relative;flex:1 1 auto;min-height:0;overflow:hidden;",

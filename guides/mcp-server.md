@@ -7,7 +7,7 @@
 ## 1. 这是什么
 
 MTNode 原本只做 MCP **客户端**（`dsh/gateway/mcp-resources.mjs` 连别人的服务器，给自家 Agent 加工具）。
-本模块补上另一半：MTNode 自己作为 MCP **服务端**，对外暴露 15 个工具 ——
+本模块补上另一半：MTNode 自己作为 MCP **服务端**，对外暴露 16 个工具 ——
 画布 / 应用 / 数据库 / 事实库 / 长任务 / 素材 / 识图 / 窗口操作（`mtnode_gui`）/ 开发调试（`mtnode_dev`），
 以及**媒体生成**（图像 / 音乐 / 语音 / 视频）、**跑节点与整图**、**用户工具节点**、**会话**。
 
@@ -60,7 +60,7 @@ handleCanvasEvent / handleDbToolEvent / handleAiFactsToolEvent / handleAssetTool
 - macOS / Linux 同上（`command` 换成实际的 MTNode 可执行文件或 `node`，路径换成实际安装位置；用应用可执行文件时同样要带 `ELECTRON_RUN_AS_NODE=1`）。
 - 桥脚本自己读数据目录里的 `mcp-server.json` 拿端口与令牌，所以**配置里不需要地址与令牌**；
   也可用环境变量显式覆盖（便携版 / 多用户）：`MTNODE_DATA_DIR`、`MTNODE_MCP_URL`、`MTNODE_MCP_TOKEN`。
-- 客户端重启一次即可看到全部 15 个工具（包含只在 MCP 这一侧提供的 `mtnode_gui` / `mtnode_dev` 与生成 / 跑图四件）。
+- 客户端重启一次即可看到全部 16 个工具（包含只在 MCP 这一侧提供的 `mtnode_gui` / `mtnode_dev` 与生成 / 跑图四件）。
 
 ### 2.2 本机 HTTP（自研客户端 / 远程工具宿主）
 
@@ -109,6 +109,7 @@ curl -s http://127.0.0.1:<port>/mcp \
 | `mtnode_facts` | facts / `facts` | 部分 | 本画布 AI 事实库 |
 | `lt_state` | lt / `lt` | 是 | 长任务本轮状态（只在环节内有归属） |
 | `mtnode_assets` | asset / `asset` | 部分 | 素材库：`list` / `read` / `screenshot` 只读；`create` / `addItem` / `importFile` / `importFiles` / `updateText` / `updateMeta` / `removeItem` / `deleteAsset` 是写（另需「写素材库」许可；删除进回收站、改文本留历史版本） |
+| `mtnode_screenshot` | shot / `shot` | 是 | 截屏标注：先在主窗上问一句，用户点头才冻结鼠标那块屏 → 框选 → 裁剪图上标注（矩形 / 箭头 / 画笔 / 文字 / 编号，每条带备注）→ 回 `{ok, path, markdown, width, height, notes[]}`；`canceled:true` = 用户拒绝（正常收场，不是失败） |
 | `mtnode_generate` | gen / **主进程执行** | 是 | 媒体生成：`kind` = `image` / `music` / `speech` / `video`；回本机绝对路径，默认顺手进素材库 |
 | `mtnode_run` | run / `run`（渲染层 `MTNodeMcpExtra.run`） | 是 | `action:"node"` 跑单个节点（要 `nodeId` + `baseHash`），`action:"graph"` 跑整图（找那颗 `control` 节点） |
 | `mtnode_tools` | tool / `tool` | 否 | `action:"list"` 列当前画布**用户工具节点**（参数即端子），`action:"call"` 真调一个 |
@@ -291,7 +292,7 @@ $env:MTNODE_DATA_DIR = "E:\tmp\mtnode-mcp-e2e"
 node scripts/e2e-mcp-full.mjs --data "E:\tmp\mtnode-mcp-e2e\pipeline-console" --report "E:\tmp\e2e-report.json"
 ```
 
-覆盖：端口/令牌落盘与桥自解析、`/meta` `/health` 免令牌与 401、15 个工具的 `tools/list`、
+覆盖：端口/令牌落盘与桥自解析、`/meta` `/health` 免令牌与 401、16 个工具的 `tools/list`、
 2+3 资源、3 份提示词、协议级错误面（未知方法 / 未导出工具 / 参数类型 / 枚举越界）、
 `canvas_get` 三档 detail 与 `sections`、`canvas_edit` 建连改分组绘制 + 版本闸（过期 baseHash 被拒、
 写后哈希刷新、**哈希与 detail 档位无关**）、`mtnode_app` 六种动作、`mtnode_facts` / `mtnode_db` /

@@ -2699,6 +2699,7 @@
     "智能节点": "Agent Node",
     "智能任务": "Agent task",
     "主题色：": "Theme: ",
+    "终末地": "Endfield",
     "子代理 ": "Sub-agent ",
     "自定义源": "Custom source",
     "MTNode 官方": "MTNode official",
@@ -6619,6 +6620,8 @@
     "（已挂载 ": " (mounted ",
     "（部分列表不可用：": " (some lists unavailable: ",
     "内置技能只读，不可修改": "Built-in skills are read-only",
+    "内置技能请到「设置 → 内置能力 → 内置技能」里修改":
+      "To change a built-in skill, use Settings → Built-in capabilities → Built-in skills",
     "选择左侧条目查看说明与管理操作":
       "Select an item on the left to view details and manage it",
     "无匹配 ": "No match for ",
@@ -7430,8 +7433,8 @@
     /* 研究初始化（整画布投料台 / 文本项 / 队列进度 / 三层折叠） */
     "初始化研究": "Set up research",
     "这个课题还没有初始化": "This topic is not set up yet",
-    "初始化是一整块投料台：上面写课题，左边放核心文件，右边放参考资料（都能直接贴 arXiv / DOI / 网页链接、写笔记或检索式）。点「开始处理」才会创建 research/ 目录并交给 agent 处理。":
-      "Setup is one full-canvas board: the topic on top, core files left, references right (both accept arXiv / DOI / web links, free notes and search queries). The research/ folder is only created — and handed to the agent — after you press “Start”.",
+    "初始化是一整块资料库：上面写课题，左边放核心文件，右边放参考资料（都能直接贴 arXiv / DOI / 网页链接、写笔记或检索式）。点「开始处理」才会创建 research/ 目录并交给 agent 处理；以后加了新资料，这颗按钮变成「补充处理」，只处理新内容。":
+      "Setup is one full-canvas library board: the topic on top, core files left, references right (both accept arXiv / DOI / web links, free notes and search queries). The research/ folder is only created — and handed to the agent — after you press “Start”; once new material arrives the button becomes “Supplement”, which only processes the new items.",
     "初始化": "Setup",
     "初始化中…": "Setting up…",
     "课题": "Topic",
@@ -7516,16 +7519,26 @@
     " 条）": ")",
     "先写一个课题名（只要有课题名就能开始，资料以后再补）。":
       "Name the topic first (a topic is all you need to start; material can come later).",
-    "这一轮没有新条目：先加文件 / 链接 / 笔记 / 检索式，再点开始处理。":
-      "No new items this round: add a file / link / note / query, then press Start.",
+    "这一轮没有新改动：先加文件 / 链接 / 笔记 / 检索式，或改课题与指示，再点「补充处理」。":
+      "Nothing changed this round: add a file / link / note / query, or edit the topic or instruction, then press “Supplement”.",
+    "补充处理": "Supplement",
+    "补充处理（": "Supplement (",
+    "创建 research/ 目录，把这一批资料交给 agent 处理":
+      "Create the research/ folder and hand this batch to the agent",
+    "只处理新条目，已有内容不重跑；术语页命中即复用，缺的老库项一并补齐":
+      "Only new items are processed; existing content is never redone, term pages are reused when they already exist, and missing legacy pieces are filled in",
+    "还没有新改动：加文件 / 链接 / 笔记 / 检索式，或改课题与指示":
+      "No changes yet: add a file / link / note / query, or edit the topic or instruction",
+    "关掉这块初始化画布，回研究视图（进度在顶栏照常看得到）":
+      "Close this setup board and return to the research view (progress stays visible in the top bar)",
     "（已复制进 research/ 的文件会留着，重试可继续）":
       " (files already copied into research/ are kept; retrying continues)",
     "先贴点什么：链接 / DOI / arXiv 编号 / 一段文字 / 检索式。":
       "Paste something first: a link / DOI / arXiv id / text / query.",
     "没认出任何条目。": "No item recognised.",
     "预览里一条都不剩了。": "Nothing left in the preview.",
-    "打开投料台，增量添加文件 / 链接 / 笔记 / 检索式":
-      "Open the board to add files / links / notes / queries incrementally",
+    "打开资料库，增量添加文件 / 链接 / 笔记 / 检索式":
+      "Open the library to add files / links / notes / queries incrementally",
     "选择核心文件（tex / doc / ppt / md / txt…）": "Choose core files (tex / doc / ppt / md / txt…)",
     "选择参考资料（PDF / 文献 / 网页存档…）": "Choose references (PDF / papers / page archives…)",
     "拖入核心文件": "Drop core files here",
@@ -7587,8 +7600,8 @@
       "Setup complete: view processed items (read-only list)",
     "初始化已处理：这篇内容已转成笔记与引用":
       "Processed during setup: already turned into notes and citations",
-    "初始化已完成，关掉投料台也能看到":
-      "Setup is complete — this stays visible after the board is closed",
+    "初始化已完成，关掉资料库也能看到":
+      "Setup is complete — this stays visible after the library is closed",
     "处理完成时间": "Processed at",
     "月": "/",
     "日 ": " ",
@@ -7597,8 +7610,8 @@
     " 篇。正文在各笔记与文献里，这里只看结果。":
       " processed item(s). The text lives in the notes and the literature; this list only shows the results.",
     "还没有已处理的内容。": "Nothing has been processed yet.",
-    "关掉投料台，回研究视图并定位到第一篇已处理的笔记":
-      "Close the board, go back to the research view and jump to the first processed note",
+    "关掉资料库，回研究视图并定位到第一篇已处理的笔记":
+      "Close the library, go back to the research view and jump to the first processed note",
 
     "折叠（参考资料）": "Folds (references)",
     " 段 · ": " paragraphs · ",
@@ -7623,11 +7636,26 @@
     "让 Agent 再找一轮候选": "Ask the agent for another round of candidates",
     "生成这一层": "Generate this layer",
     "上一批还在等落盘": "The previous batch is still being written",
-    /* 投料台入口与补跑 */
-    "打开投料台": "Open the intake sheet",
-    "投料台：再投一批料 / 看处理队列 / 队列跑完后补跑一层":
-      "Intake sheet: add more material / watch the queue / backfill once the queue is done",
+    /* 资料库入口（原「投料台」入口与补跑） */
+    "打开资料库": "Open the library",
+    "资料库：再投一批料 / 看处理队列 / 有新改动时点「补充处理」":
+      "Library: add more material / watch the queue / press “Supplement” when something changed",
     "补跑一层": "Backfill one layer",
+    /* 资料库（原「投料台」）的提示语：改名后与「补充处理」这条新流程一起补上英文 */
+    "已加进资料库：点底栏的处理按钮后会把 @":
+      "Added to the library: the bottom action will ingest the full text of @",
+    " 的全文入库": " into the library",
+    "已交给资料库：": "Handed to the library: ",
+    "交给资料库失败：": "Failed to hand it to the library: ",
+    "资料库正在复制文件 / 转 PDF / 拉起会话，跑完会自己进索引页。可以先去别的视图，回来进度还在。":
+      "The library is copying files / converting PDFs / starting the session, and will move on to the index page when done. You can switch views meanwhile — progress is kept.",
+    "已追加 ": "Added ",
+    "，另有 ": ", plus ",
+    " 项失败重排": " failed item(s) requeued",
+    "：待处理 ": ": ",
+    " 项，只跑这些，已处理的旧内容不重跑":
+      " pending item(s) to run — processed content is not redone",
+    "：没有待处理的项": ": nothing pending",
     "全文层：作者原文，可编辑（源码）": "Full-text layer: the author's own words, editable (source)",
     "只读投影：从全文折出来的第 ": "Read-only projection folded from the full text, layer ",
     "第 ": "Layer ",
@@ -7711,9 +7739,43 @@
     " 条关系没列出": " more relations not listed",
     "打开正文": "Open article",
     "打开文献": "Open paper",
+    /* 载入反馈：文献原文很长时阅读区先盖一层淡纱 + 转圈（app-research.js 的 rsBusyShow） */
+    "正在载入…": "Loading…",
+    "正在载入原文…": "Loading the full text…",
+    "正在读取文献目录…": "Reading the literature folder…",
     "回到笔记视图并定位到这一段（": "Back to the note view, scrolled to this passage (",
-    "有全文就直接打开；没有则问一句要不要搜索并入库":
-      "Opens the full text if it is already downloaded; otherwise asks whether to search and ingest it",
+    "有全文就直接打开；没有则让 agent 获取这一篇":
+      "Opens the full text if it is already downloaded; otherwise lets the agent fetch it",
+    /* 获取文献：默认不联网（很贵），只有用户点这里才派 agent 去检索 / 下载 / 转 md / 入库 */
+    "获取文献": "Get paper",
+    "本地还没有全文：让 agent 联网检索并下载这一篇":
+      "No full text locally yet: let the agent search the web and download it",
+    "本地还没有全文：点它获取这一篇": "No full text locally yet: click to fetch it",
+    "正在获取文献：": "Fetching paper: ",
+    "已获取文献：": "Fetched paper: ",
+    "已交给 agent 获取：": "Handed to the agent: ",
+    "这一篇": "this paper",
+    "不再提醒（我已知会联网检索并花 token）":
+      "Don't ask again (I understand this searches the web and spends tokens)",
+    "将让 agent 联网检索并下载这一篇的全文，再转成 Markdown 入库 —— 会花时间，也会消耗不少 token：":
+      "The agent will search the web for this paper, download the full text and convert it to Markdown. That takes time and a fair number of tokens:",
+    "【获取文献】只取这一篇，不要顺带检索或下载别的文献。":
+      "[Get paper] Only this one — do not search for or download other papers.",
+    "文献：": "Paper: ",
+    "链接：": "Link: ",
+    "全文写到 {path}（或 {path2}），文献库条目的 citeKey 用 @{key}。":
+      "Write the full text to {path} (or {path2}); the library citeKey is @{key}.",
+    "步骤：① 按 DOI / arXiv / 题名检索并确认是同一篇（认不出就用题名加作者再试一次）；② 抓取全文并转成 Markdown（PDF 走应用内内核，抓不到全文就退摘要并说明）；③ 用 `research-lit.mjs lib <research> add` 写进 `literature/library.json`；④ 需要时补 `literature/folds/<key>.md`；⑤ 回一句回执：拿到了什么、落在哪个路径，没拿到就写清卡在哪。":
+      "Steps: (1) look it up by DOI / arXiv / title and confirm it is the same paper (retry with title + author if unsure); (2) fetch the full text and convert it to Markdown (PDF goes through the in-app kernel; fall back to the abstract and say so); (3) register it with `research-lit.mjs lib <research> add` into `literature/library.json`; (4) add `literature/folds/<key>.md` if needed; (5) reply with a receipt: what you got and where it landed, or where it got stuck.",
+    "这一行引用的是 @": "This line cites @",
+    "：本地有全文就打开，没有就让 agent 获取":
+      ": opens the full text if present, otherwise lets the agent fetch it",
+    "这一段是文献引用：本地有全文就打开，没有就让 agent 获取":
+      "This line is a citation: opens the full text if present, otherwise lets the agent fetch it",
+    "这篇在文献库里，但本地没有全文：让 agent 按 DOI / 网址获取这一篇":
+      "This paper is in the library but has no local full text: let the agent fetch it by DOI / URL",
+    "文献库里没有这一条：让 agent 检索这一篇并入库":
+      "This entry is not in the library: let the agent search for it and ingest it",
     "转为图谱": "Open graph",
     "解析全部笔记，重建知识图谱（之后保存时增量更新）":
       "Parse all notes and rebuild the knowledge graph (later saves update it incrementally)",
@@ -7880,8 +7942,8 @@
     "请先在画布顶栏设置工作目录": "Set the canvas working folder first",
     "未设置工作目录": "No working folder",
     "会话 · 与当前画布共用上下文": "Session · shares context with this canvas",
-    "还没有对话。可以让 agent 帮你补文献、找反例、把论断拆成子问题。":
-      "No conversation yet. Ask the agent to find literature, hunt for counterexamples, or split a claim into sub-questions.",
+    "还没有对话。可以让 agent 解释这一段、找反例、把论断拆成子问题。":
+      "No conversation yet. Ask the agent to explain this passage, hunt for counterexamples, or split a claim into sub-questions.",
     "对 agent 说：帮我核实这条论断 / 把这段文献入库 / 补三条反例…":
       "Tell the agent: verify this claim / add this paper / give me three counterexamples…",
     "这里发的消息进入该画布绑定的会话（与「会话」视图同一条），回答会同步到那边":
@@ -15053,6 +15115,67 @@
       "No snapshot to undo: this deck has no model rewrite on record yet",
     "快照读不出来：": "Could not read the snapshot: ",
     "已撤销这次模型改写：回到 ": "Undid this model rewrite: back to ",
+    /* ── 截图标注工具（Ctrl+Alt+A · screenshot-overlay.js / renderer/app-screenshot.js）──
+       主进程那半边用 I18n.t(...) 给窗口标题与错误文案，浮层那半边用页面里的 T(...)：
+       两边共用这同一份字典，所以一条也不能只写在一边。 */
+    "矩形": "Rectangle",
+    "重新框选": "Reselect area",
+    "完成并复制": "Done & copy",
+    "截图标注": "Screenshot & annotate",
+    "截图失败": "Screenshot failed",
+    "截图已结束": "This screenshot session has ended",
+    "截图目录不可用": "The capture folder is unavailable",
+    "截图写盘失败：": "Could not write the screenshot: ",
+    "截图不可用：主进程没有注入截图函数":
+      "Screenshot unavailable: the main process did not inject a capture function",
+    "截图浮层不可用：缺少窗口或页面路径":
+      "Screenshot overlay unavailable: missing window or page path",
+    "截图浮层已经打开了，等它关掉再试一次":
+      "The screenshot overlay is already open — try again after it closes",
+    "截图快捷键没能注册上": "The screenshot shortcut could not be registered",
+    "换个占用更少的键位，或先关掉占用它的软件。":
+      "Pick a less contested key combo, or close the app that is using it.",
+    "快捷键被其它程序占用了：": "The shortcut is taken by another app: ",
+    "这个环境不支持全局快捷键": "This environment does not support global shortcuts",
+    "导出的图片是空的": "The exported image is empty",
+    "生成图片失败：": "Could not render the image: ",
+    "没有可复制的内容": "Nothing to copy",
+    "系统剪贴板不可用": "The system clipboard is unavailable",
+    "图像尺寸：": "Image size: ",
+    "图像尺寸：未知": "Image size: unknown",
+    "（下列坐标均为裁剪图内像素，原点在左上角）":
+      "(coordinates are pixels inside the cropped image, origin at the top-left)",
+    "标注清单（编号与图上圆点一一对应）：": "Annotations (numbers match the dots on the image):",
+    "（没有写备注）": "(no note)",
+    "这次没有标注，只有截图本身。": "No annotations this time — just the screenshot itself.",
+    "冻结画面加载失败：": "Could not load the frozen screen: ",
+    "截图工具未接线（缺少 preload 桥）": "Screenshot tool not wired (missing preload bridge)",
+    "截图工具未接线，无法保存": "Screenshot tool not wired — cannot save",
+    "写一句要怎么改（回车收笔 · Shift+回车换行）":
+      "Say what should change (Enter commits · Shift+Enter for a new line)",
+    "已保存，但剪贴板不可用": "Saved, but the clipboard is unavailable",
+    "已复制到剪贴板，并把结果交回 Agent": "Copied to the clipboard and handed back to the agent",
+    "已复制到剪贴板：粘到 Agent 输入框即可":
+      "Copied to the clipboard — paste it into the agent input",
+    "拖拽框选要交给 AI 的区域（或悬停高亮窗口、单击选中），松手就能直接标注":
+      "Drag to select the area for the AI (or hover a window to highlight it, click to take it) — let go and you are already annotating",
+    "方向键微调 · Ctrl+方向键改尺寸 · Enter 完成 · Esc 取消":
+      "Arrows nudge · Ctrl+arrows resize · Enter finishes · Esc cancels",
+    /* 浮层按钮的悬停提示（screenshot.html 的 data-i18n-title · 带快捷键后缀） */
+    "矩形 (1)": "Rectangle (1)",
+    "撤销 (Ctrl+Z)": "Undo (Ctrl+Z)",
+    "重做 (Ctrl+Y)": "Redo (Ctrl+Y)",
+    "重新框选 (R)": "Reselect area (R)",
+    "另存为文件 (Ctrl+S)": "Save as file (Ctrl+S)",
+    "保存截图": "Save screenshot",
+    "PNG 图片": "PNG image",
+    "这个环境不支持另存为": "Saving as a file is not supported in this environment",
+    "没有可打开的文件": "There is no file to open",
+    "这个环境不支持打开文件夹": "Opening a folder is not supported in this environment",
+    "已保存到 ": "Saved to ",
+    "保存并在剪贴板里写好 Markdown (Enter)":
+      "Save and put the Markdown on the clipboard (Enter)",
+    "取消 (Esc)": "Cancel (Esc)",
   });
 
   function listJoin(arr) {

@@ -50,8 +50,9 @@
  *     patch: { overlay: { 页 id: {标题 / 要点 / …} }, order: [页 id], hidden: [页 id],
  *              aspect: "16:9" | "4:3" | "9:16",
  *              chrome: { pgno, src, kind, date, kicker } },     ← 页面元素开关（缺省全开，全开不写）
- *     brief: { ver, mode, audience, occasion, durationSec, tone, focus, avoid, extra, lang, updatedAt },
- *                                              ← 额外指示（**全默认时不写这个键**：老存档与导出的 HTML 字节不变）
+ *     brief: { ver, mode, style, audience, occasion, durationSec, tone, focus, avoid, extra, lang, updatedAt },
+ *                                              ← 额外指示（**全默认时不写这个键**：老存档与导出的 HTML 字节不变；
+ *                                                 style 缺省 auto = 由内容判，见 resolveStyle）
  *     builtAt: <ms>
  *   }
  *
@@ -77,6 +78,13 @@
  *   · 颜色 / 字体档 / 圆角 / 阴影 = THEME_PRESETS 的 light / dark 两张表 → themeVars()（静态侧只读这个，字节不变）；
  *   · 动效 = 每套预设的 motion 表（缓动 / 入场 / 转场帧数 / 字速 / 节拍 / 背景）→ motionOf(theme)；
  *   · 一次取齐 = styleTokens(brief, theme, pages)（颜色 + 字体 + 圆角 + 运动量 + 节奏系数）。
+ *
+ * 展示风格（style）与颜色（theme）是两件事，别混：
+ *   颜色回答「长什么样」（6 套预设 × 明 / 暗）；风格回答「怎么演」——
+ *   auto 由内容判（resolveStyle：公式术语多 → 学术，数字与对比多 → Motion Graphics，
+ *   层级结构多 → 2.5D，空间关系硬 → 3D），另外四种是用户在初始化卡上明选的。
+ *   风格只覆写运动量（STYLE_MOTION）与 3D 场景页预算（STYLE_SCENE_MAX），不动颜色、不动页序。
+ *   deck.style = 实际用的那一种（auto 已判成具体档），界面与视频侧都读 styleOf(deck) 这一份。
  *   motion 不进 deck.themePresets，也不进导出的 HTML —— 视频侧取，静态侧看不见。
  */
 (function (root, factory) {
@@ -751,14 +759,96 @@
     if (o.ease || o.cpsBullet || o.bpm || o.minPageSec || o.enterFrames) return normalizeMotion(o);
     return motionOf(o);
   }
+
+  /* ── 展示风格（style）：内容怎么「演」，与颜色主题（theme）正交 ────────────────
+     颜色回答「长什么样」，风格回答「怎么演」：
+       scholarly 学术           克制慢推、图注与公式优先、几乎不加装饰
+       motion    Motion Graphics 大字号、色块、数字与对比动效、遮罩转场
+       d2_5      2.5D           分层视差与轻微景深（层级结构最好看）
+       d3        3D             真三维场景 + 轨道相机（空间关系才值得上）
+     auto = 由内容判（resolveStyle），判定只数页上的字：确定性、不看时间、不看网络。
+     风格**只覆写运动量与 3D 场景页预算**，颜色 / 字体 / 圆角 / 页序一概不动。 */
+  const SLIDE_STYLES = ["auto", "scholarly", "motion", "d2_5", "d3"];
+  const SLIDE_STYLE_LABEL = { auto: "自动", scholarly: "学术", motion: "Motion Graphics", d2_5: "2.5D", d3: "3D" };
+  const DEFAULT_STYLE = "scholarly";
+  /* 每种风格的运动量覆写（只给这几项，其余沿用主题 motion；明暗仍然不改变运动量）：
+     学术最慢最克制（长入场、少位移、无背景装饰、节拍松）；
+     Motion Graphics 最快最跳（outBack + scale、短 stagger、节拍密、网格底）；
+     2.5D 中速分层（rise + 颗粒底，留出分层的观感）；3D 中速轨道（scale + 暗角，给三维留亮度）。 */
+  const STYLE_MOTION = {
+    scholarly: { ease: "out", enter: "fade", enterFrames: 24, staggerFrames: 7, transitionFrames: 20, cpsTitle: 5.4, cpsBullet: 4.0, bpm: 72, bg: "none" },
+    motion: { ease: "outBack", enter: "scale", enterFrames: 12, staggerFrames: 3, transitionFrames: 9, cpsTitle: 6.6, cpsBullet: 5.2, bpm: 120, bg: "grid" },
+    d2_5: { ease: "inOut", enter: "rise", enterFrames: 18, staggerFrames: 5, transitionFrames: 14, cpsTitle: 6.0, cpsBullet: 4.6, bpm: 92, bg: "grain" },
+    d3: { ease: "inOut", enter: "scale", enterFrames: 20, staggerFrames: 5, transitionFrames: 15, cpsTitle: 6.0, cpsBullet: 4.6, bpm: 88, bg: "vignette" },
+  };
+  /* 3D 场景页预算（每个 ThreeCanvas 一个 WebGL context，Chromium 上限约 16）：
+     学术几乎不用（一页示意足够），Motion Graphics 不用（它靠字与色块），3D 用满。 */
+  const SCENE_MAX_HARD = 6;
+  const STYLE_SCENE_MAX = { scholarly: 1, motion: 0, d2_5: 2, d3: 6 };
+
+  /* 内容特征（只数页上的字）：每种风格用到的几样在这里一次数完 */
+  function styleFeaturesOf(pages) {
+    const list = Array.isArray(pages) ? pages : pages && Array.isArray(pages.pages) ? pages.pages : [];
+    const f = { pages: 0, formula: 0, term: 0, toc: 0, part: 0, nested: 0, numeric: 0, compare: 0, spatial: 0 };
+    for (const pg of list) {
+      if (!pg || typeof pg !== "object" || pg.hidden) continue;
+      f.pages += 1;
+      const kind = str(pg.kind);
+      if (kind === "formula" || str(pg.formula).trim()) f.formula += 1;
+      if (kind === "term") f.term += 1;
+      if (kind === "toc") f.toc += 1;
+      if (Number(pg.part) > 1) f.part += 1;
+      /* H3 页（眉题 = 它的 H2 且不是「续 n」）= 层级结构 */
+      if (kind === "section" && str(pg.kicker).trim() && !/^续/.test(str(pg.kicker).trim())) f.nested += 1;
+      const text = [pg.title, pg.kicker, pg.quote].concat(Array.isArray(pg.bullets) ? pg.bullets : []).join(" ");
+      f.numeric += (text.match(/\d+(?:\.\d+)?/g) || []).length;
+      f.compare += (text.match(/对比|相比|高出|低于|提升|下降|增长|减少|占比|倍/g) || []).length;
+      f.spatial += (text.match(/空间|维度|坐标|轨道|传播|距离|方向|映射|拓扑|曲率|向量|三维/g) || []).length;
+    }
+    return f;
+  }
+  /* 判风格：四样特征各换算成 0–1 的「强度」（各自有一个饱和密度，见下），谁高听谁的；
+     同分按 学术 → Motion → 2.5D → 3D 的顺序取靠前的；都没到一半就落回学术
+     （一页里差不多没有这些特征时，学术最不会把内容演坏）。
+       学术     每 5 页有 1 页公式 / 术语就到顶
+       Motion   每页 4 个数字（或每页 1 个「对比 / 提升 / 倍」这类词）就到顶
+       2.5D     每 10 页有 3 页续页 / H3 层级就到顶（大纲页几乎每份都有，不算特征）
+       3D       每页 1 个空间词（空间 / 维度 / 坐标 / 轨道…）就到顶 */
+  function resolveStyle(style, pages) {
+    const s = str(style).trim();
+    if (SLIDE_STYLES.indexOf(s) >= 0 && s !== "auto") return s;
+    const f = styleFeaturesOf(pages);
+    if (!f.pages) return DEFAULT_STYLE;
+    const sat = (x, full) => Math.max(0, Math.min(1, x / Math.max(0.0001, full)));
+    const score = [
+      [DEFAULT_STYLE, sat(f.formula + f.term, f.pages * 0.2)],
+      ["motion", sat(f.numeric + f.compare * 4, f.pages * 4)],
+      ["d2_5", sat(f.part + f.nested, f.pages * 0.3)],
+      ["d3", sat(f.spatial, f.pages)],
+    ];
+    let best = score[0];
+    for (const one of score) if (one[1] > best[1]) best = one;
+    return best[1] >= 0.5 ? best[0] : DEFAULT_STYLE;
+  }
+  /* 一份 deck 实际用的展示风格（auto 已判成具体那一种）：界面显示 / 派单指示 / 视频 meta 都取这一份 */
+  function styleOf(deck) {
+    const d = deck && typeof deck === "object" ? deck : {};
+    return resolveStyle(briefOf(d).style, d.pages);
+  }
   /* styleTokens(brief, theme, pages)：静态版与视频版共用的那一份「颜色 + 字体 + 圆角 + 运动量」。
      pages 可选（给了就把节奏系数 / 目标时长 / 页数区间一并算出来，见 planBrief）；
-     颜色走 themeVars（静态侧同一个函数），运动量走预设 motion —— 两边不可能各说一套。 */
+     颜色走 themeVars（静态侧同一个函数）；运动量 = 主题 motion 被展示风格覆写后的那一份
+     （学术慢 / Motion 快 / 2.5D 分层 / 3D 轨道），并带上这份风格的 3D 场景页预算 sceneMax ——
+     两边不可能各说一套。style 只影响「怎么演」，不改任何一页的字。 */
   function styleTokens(brief, theme, pages) {
     const th = normalizeTheme(theme);
+    const b = normalizeBrief(brief);
     const f = FONTS[th.font] || FONTS.sans;
-    const motion = motionOf(th);
-    const plan = planBrief(brief, pages, th);
+    const list = Array.isArray(pages) ? pages : pages && Array.isArray(pages.pages) ? pages.pages : [];
+    const style = resolveStyle(b.style, list);
+    const motion = normalizeMotion(Object.assign({}, motionOf(th), STYLE_MOTION[style] || {}));
+    /* 节奏与目标时长按**风格化后**的字速 / 节拍算：换个风格，页秒数与该留几页跟着变 */
+    const plan = planBrief(b, list, motion);
     motion.fps = FPS;
     motion.pace = plan.pace;
     motion.targetSec = plan.durationSec;
@@ -771,6 +861,10 @@
       radius: RADIUS[th.radius] || RADIUS.soft,
       shadow: SHADOW[th.shadow] || SHADOW.flat,
       transition: th.transition,
+      /* 展示风格（auto 已判成具体档）+ 它的 3D 场景页预算 */
+      style: style,
+      styleLabel: SLIDE_STYLE_LABEL[style] || style,
+      sceneMax: Math.min(SCENE_MAX_HARD, Number(STYLE_SCENE_MAX[style]) || 0),
       motion: motion,
       plan: plan,
     };
@@ -1149,8 +1243,8 @@
   }
 
   /* ── brief：初始化时用户给的「额外指示」────────────────────────────────────
-     作用面（务必与派单提示词一致）：只影响**叙事重组与节奏**（谁先说 / 说几件 / 停留多久），
-     **不许新增**数字、结论、引文与文献 —— 原文没说的，一个字都不加。
+     作用面（务必与派单提示词一致）：只影响**叙事重组与节奏**（谁先说 / 说几件 / 停留多久）
+     与**怎么演**（style 选展示风格），**不许新增**数字、结论、引文与文献 —— 原文没说的，一个字都不加。
      存放：slides/<slug>.json 的顶层 brief（与 theme / patch 同级），**不进 patch**（patch 只装手改）；
      全默认时 build() 不写这个键，老存档读进来 / 导出的 HTML 字节都不变。 */
   const BRIEF_VER = 1;
@@ -1173,6 +1267,8 @@
     return {
       ver: BRIEF_VER,
       mode: "slides",
+      /* 展示风格：auto = 由内容判（resolveStyle），老存档缺这个键就是 auto */
+      style: "auto",
       audience: "",
       occasion: "",
       durationSec: 0,
@@ -1197,11 +1293,12 @@
     }
     return out;
   }
-  /* 归一：缺项补默认（mode=slides、durationSec=0 即「自动」、extra 空），脏数据一律夹回来 */
+  /* 归一：缺项补默认（mode=slides、style=auto、durationSec=0 即「自动」、extra 空），脏数据一律夹回来 */
   function normalizeBrief(v) {
     const s = v && typeof v === "object" && !Array.isArray(v) ? v : {};
     const out = defaultBrief();
     out.mode = pickEnum(s.mode, BRIEF_MODES, "slides");
+    out.style = pickEnum(s.style, SLIDE_STYLES, "auto");
     out.audience = clip(s.audience, BRIEF_TEXT_MAX);
     out.occasion = clip(s.occasion, BRIEF_TEXT_MAX);
     out.durationSec = Math.round(numIn(s.durationSec, 0, 0, BRIEF_MAX_SEC));
@@ -1759,6 +1856,10 @@
     /* 封面 → 大纲 → 其余（顺序就是放映顺序） */
     const ordered = [pages[0], tocPage].concat(pages.slice(1));
 
+    /* 展示风格：auto 在这一步按这一摞页判定。判定的**结果**写进 deck（不是 auto）——
+       界面显示、派单指示与视频侧的 meta 从此读同一份，不会各判一次各说一套。 */
+    const style = resolveStyle(brief.style, ordered);
+
     const deck = {
       ver: VER,
       slug: slug,
@@ -1767,6 +1868,7 @@
       core: core ? core.path : corePath,
       theme: theme,
       transition: theme.transition,
+      style: style,
       aspect: normalizeAspect(o.aspect || (meta && meta.aspect)),
       pages: ordered,
       themePresets: presetsForDeck(),
@@ -1776,8 +1878,7 @@
     /* brief 只在「真的填过」时才写进 deck：老存档读进来、导出的 HTML 字节都不变。
        页数与页序**不受 brief 影响**（裁剪是视频侧的计划，见 planBrief —— 静态版永远全量）。 */
     if (!briefIsDefault(brief)) deck.brief = brief;
-    const out = applyPatch(deck, deck.patch);
-    /* 档位与联网补料只在这两样**非缺省**时出现：缺省 = 今天的行为（确定性直出、不联网），
+    const out = applyPatch(deck, deck.patch);    /* 档位与联网补料只在这两样**非缺省**时出现：缺省 = 今天的行为（确定性直出、不联网），
        老存档读进来 / 导出的 HTML 字节都不变。author = 页由演示稿（slides/<slug>.script.md）编来。
        online 的缺省是「开」（初始化卡默认勾上），所以**只有关掉时才写 online:false**。 */
     if (str(o.tier) === "author" || str(o.tier) === "direct") out.tier = str(o.tier);
@@ -1957,6 +2058,8 @@
       });
       pages.push(pg);
     }
+    /* 展示风格：auto 按演示稿编出来的这一摞页判；判定的结果写进 deck（与直切档同一套口径） */
+    const style = resolveStyle(brief.style, pages);
     const deck = {
       ver: VER,
       slug: slug,
@@ -1965,6 +2068,7 @@
       core: str(o.corePath) || str(meta.corePath) || scriptPath,
       theme: theme,
       transition: theme.transition,
+      style: style,
       aspect: normalizeAspect(o.aspect || (meta && meta.aspect)),
       pages: pages,
       themePresets: presetsForDeck(),
@@ -2140,6 +2244,16 @@
     normalizeMotion: normalizeMotion,
     motionOf: motionOf,
     styleTokens: styleTokens,
+    /* 展示风格（怎么演：学术 / Motion Graphics / 2.5D / 3D；auto 由内容判） */
+    SLIDE_STYLES: SLIDE_STYLES,
+    SLIDE_STYLE_LABEL: SLIDE_STYLE_LABEL,
+    DEFAULT_STYLE: DEFAULT_STYLE,
+    STYLE_MOTION: STYLE_MOTION,
+    STYLE_SCENE_MAX: STYLE_SCENE_MAX,
+    SCENE_MAX_HARD: SCENE_MAX_HARD,
+    styleFeaturesOf: styleFeaturesOf,
+    resolveStyle: resolveStyle,
+    styleOf: styleOf,
     /* brief：初始化时的额外指示（只影响重组与节奏，不新增事实） */
     BRIEF_MODES: BRIEF_MODES,
     BRIEF_MODE_LABEL: BRIEF_MODE_LABEL,

@@ -17,6 +17,10 @@
  *   §5.2 章节卡按可见页序列里 kicker 的首段（› 前那段）变化处插一张，不写进 deck.pages；
  *   §5.4 页间转场发生在上一页尾巴里（两页交叠，总时长不增加），要点按 stagger 逐条入场、最后一条留 0.6s；
  *   §5.5 旁白可选：notes 逐句 → 时间轴；工程里留一个可空的 audio 端子，空 = 不铺旁白也不铺字幕。
+ *   §展示风格：styleTokens().style 决定**怎么演** —— 镜头编排（学术＝建立镜 + 图注 / 公式特写、慢推；
+ *     Motion＝数字与对比动效镜 + 遮罩转场 + 更大字号；2.5D＝多层卡片分层位移 + 轻微视差；
+ *     3D＝轨道相机 + 场景镜）、3D 场景页预算（用 tokens.sceneMax：3D 6 / 学术 1 / Motion 0 / 2.5D 2）、
+ *     背景装饰强度与字幕节奏。颜色 / 字体仍只来自 theme，import 白名单与依赖不动。
  *
  * 两条「纯函数拿不到」的事，如实写在返回值里而不是假装做到：
  *   · 旁白音频**时长**：本模块不读盘，量不到 TTS 有多长 —— 时间轴按 notes 文字排（narration 给出逐句 ms 窗口），
@@ -33,7 +37,9 @@
  *   Composition.tsx   入口：export const Main + export const inputs + calculateMetadata
  *   data.ts           时间轴数据（页 / 章节 / 字幕；帧是落点，秒是预算）
  *   theme.ts          颜色 / 字体 / 圆角 / 阴影（全片唯一一处颜色字面量，逐字来自 styleTokens().css）
- *   motion.ts         运动量常量（缓动 / 入场 / 转场帧数 / 字速 / 节拍 / 背景）+ 三个版式钩子
+ *   motion.ts         运动量常量（缓动 / 入场 / 转场帧数 / 字速 / 节拍 / 背景）+ 展示风格演法参数
+ *                     （STYLE / TYPE_SCALE / DECOR / PARALLAX / USE_MASK / CAPTION_WINDOW）+ 版式钩子
+ *                     （缩放 / 入场 / 转场 / 镜头 / 2.5D 分层视差）
  *   types.ts          类型
  *   Backdrop.tsx      背景（none / grain / grid / vignette，只用 rgba 遮罩）
  *   PageBody.tsx      单页版式（封面 / 大纲 / 正文 / 术语 / 公式 / 文献 / 结语，未知 kind 退化成正文）
@@ -44,7 +50,11 @@
  *
  * 产出（build 的返回）：
  *   { ok, files, entry, contract, meta, timeline, captions, narration, colors, buildKey, audit, warnings, error }
- *   meta      → 宿主交 remotion 宿主的时长 / 分辨率（calculateMetadata 同值）
+ *   meta      → 宿主交 remotion 宿主的时长 / 分辨率（calculateMetadata 同值）；
+ *               另带展示风格 style / styleLabel / stylePicked（auto 已判成具体档）与 styleSceneMax，
+ *               以及这一档的演法（shotFocusMax / cameraEstablish / cameraFocus / typeScale / decor /
+ *               maskTransition / layeredCards / captionWindowMs / captionSize / sceneMax），
+ *               界面与日志读这一份，不在别处再判一次
  *   timeline  → 页序列与帧落点（可对账：页 id 序列 === 可见页 id 序列）
  *   captions  → remotion-audio-captions 的逐词格式 {text, startMs, endMs, timestampMs, confidence}
  */
@@ -56,7 +66,7 @@
 })(typeof window !== "undefined" ? window : globalThis, function () {
   "use strict";
 
-  const VER = 1;
+  const VER = 2;
   /* 入口固定 src/Composition.tsx（remotion 宿主的 buildIndexSource 只认这个名） */
   const ENTRY = "Composition.tsx";
   /* 章节卡上限：再多就不是「过场」而是另一份目录了（口径见 spec §5.2） */
@@ -187,42 +197,183 @@
     return out;
   }
 
-  /* ── 镜头（shot）规划：一页拆成 1–4 个镜头 ─────────────────────────────────
+  /* ── 展示风格怎么「演」：镜头编排 / 运镜 / 字号 / 转场 / 装饰 / 字幕节奏 ──────
+     风格的唯一真源是 styleTokens().style（brief.style = auto 时已判成具体档），
+     这里只把「怎么演」翻成参数 —— 颜色与字体一概不碰（那是 theme 的事）：
+       scholarly 学术            建立镜 + 图注 / 公式特写、慢推（pushIn 只推 0.035）、几乎不加装饰；
+       motion    Motion Graphics 数字与对比要点各一个动效镜（snapZoom）、遮罩转场、字号 × 1.14；
+       d2_5      2.5D            多层卡片按景深分层位移 + 轻微视差（PARALLAX），镜头几乎不动；
+       d3        3D              轨道相机（orbit）+ 有 scene 的页先给场景镜。
+     focusMax = 每页最多几个细节镜；spots = 先特写什么（scene / formula / quote / stat / layer，要点兜底）。 */
+  const STYLE_PLAY = {
+    scholarly: {
+      focusMax: 1,
+      spots: ["formula", "quote"],
+      moves: { establish: "pushIn", focus: "pushIn" },
+      establishShare: 0.46,
+      depth: 3,
+      typeScale: 1,
+      decor: 0.45,
+      mask: false,
+      captionWindowMs: 2400,
+      captionSize: 34,
+      captionLeadMs: 500,
+      captionTailMs: 380,
+    },
+    motion: {
+      focusMax: 3,
+      spots: ["stat"],
+      moves: { establish: "snapZoom", focus: "snapZoom" },
+      establishShare: 0.3,
+      depth: 4,
+      typeScale: 1.14,
+      decor: 1,
+      mask: true,
+      captionWindowMs: 1300,
+      captionSize: 38,
+      captionLeadMs: 260,
+      captionTailMs: 200,
+    },
+    d2_5: {
+      focusMax: 2,
+      spots: ["layer"],
+      moves: { establish: "parallax", focus: "parallax" },
+      establishShare: 0.36,
+      depth: 2,
+      typeScale: 1.05,
+      decor: 0.8,
+      mask: false,
+      cards: true,
+      captionWindowMs: 1800,
+      captionSize: 34,
+      captionLeadMs: 380,
+      captionTailMs: 300,
+    },
+    d3: {
+      focusMax: 2,
+      spots: ["scene", "bullet"],
+      moves: { establish: "orbit", focus: "orbit" },
+      establishShare: 0.34,
+      depth: 2,
+      typeScale: 1.04,
+      decor: 0.7,
+      mask: false,
+      captionWindowMs: 1900,
+      captionSize: 34,
+      captionLeadMs: 400,
+      captionTailMs: 300,
+    },
+  };
+  /* 风格缺省 = 学术（与内核 DEFAULT_STYLE 一致）：认不出的值不另编一套演法 */
+  function stylePlayOf(style) {
+    return STYLE_PLAY[str(style).trim()] || STYLE_PLAY.scholarly;
+  }
+
+  /* ── 镜头（shot）规划：一页拆成 1–4 个镜头，怎么切由展示风格决定 ─────────────
      为什么要镜头而不是「一页一个画面」：成片感来自**镜头内的运动**与**镜头之间的切**，
      不是页与页之间的淡入淡出。每页：
-       · establish  建立镜头：整页入画（推 / 拉 / 摇），承载标题与第一眼信息；
-       · focus      细节镜头：一条要点一个，画面轻摇 + 该条高亮（其余压暗）；
+       · establish  建立镜头：整页入画，运镜按风格（学术慢推 / motion 快推 / 2.5D 视差 / 3D 轨道）；
+       · focus      细节镜头：特写一样东西 —— spot 说明特写谁（formula / quote / bullet / scene），
+                    focus = 聚焦那条要点的下标（-1 = 不是要点），tag = 这一镜把数字做大（numeric / compare / layer）；
      规则（确定性，同输入同输出）：镜头帧数首尾必须对齐页时长；页太短（< 1.2s 量级）只留一个镜头；
-     封面 / 章节 / 结语只给一个运镜（不切碎）。move 在相邻镜头上尽量不同向，避免「整片往一个方向飘」。 */
+     封面 / 章节 / 结语只给一个运镜（不切碎）。同一份 shots 同时决定画面怎么动与谁被点亮。 */
   const SHOT_MAX = 4;
   const SHOT_MIN_FRAMES = 14;
-  const MOVES = ["pushIn", "pullOut", "panLeft", "panRight", "dolly", "tiltUp"];
-  function shotMoveOf(index, kind) {
-    if (kind === "cover") return "dolly";
-    if (kind === "end") return "pullOut";
-    if (index === 0) return "pullOut";
-    return MOVES[index % MOVES.length];
+  /* 「讲得出变化」的两类要点：数字（motion 的头号主角）与对比词（A 对 B） */
+  const STAT_RE = /[0-9０-９]/;
+  const COMPARE_RE = /对比|相比|高出|低于|提升|下降|增长|减少|占比|倍|前后/;
+  /* 公式整行不算一条能念的要点（它由 formula 卡片单独排版、单独给特写镜） */
+  function isFormulaBullet(t) {
+    return /^\$\$?[\s\S]*\$\$?$/.test(str(t).trim());
   }
-  function planShots(pg, motion, displayFrames, fps) {
+  /* 这一页在这档风格下值得特写的对象（有序，去重；同一输入永远同一份清单） */
+  function spotTargetsOf(pg, play) {
+    const out = [];
+    const formula = str(pg && pg.formula).trim();
+    const quote = str(pg && pg.quote).trim();
+    const scene = str(pg && pg.scene).trim();
+    const bullets = Array.isArray(pg && pg.bullets) ? pg.bullets : [];
+    if (play.spots.indexOf("scene") >= 0 && scene) out.push({ spot: "scene", focus: -1, tag: "" });
+    if (play.spots.indexOf("formula") >= 0 && formula) out.push({ spot: "formula", focus: -1, tag: "" });
+    if (play.spots.indexOf("quote") >= 0 && quote) out.push({ spot: "quote", focus: -1, tag: "" });
+    if (play.spots.indexOf("stat") >= 0) {
+      const stat = [];
+      const cmp = [];
+      bullets.forEach((b, i) => {
+        const t = str(b).trim();
+        if (!t || isFormulaBullet(t)) return;
+        if (STAT_RE.test(t)) stat.push(i);
+        else if (COMPARE_RE.test(t)) cmp.push(i);
+      });
+      for (const i of stat) out.push({ spot: "bullet", focus: i, tag: "numeric" });
+      for (const i of cmp) out.push({ spot: "bullet", focus: i, tag: "compare" });
+    }
+    if (play.spots.indexOf("layer") >= 0) {
+      bullets.forEach((b, i) => {
+        const t = str(b).trim();
+        if (t && !isFormulaBullet(t)) out.push({ spot: "bullet", focus: i, tag: "layer" });
+      });
+    }
+    /* 兜底：有字要点按序（学术没公式没图注、3D 没场景时，仍然切出细节镜） */
+    bullets.forEach((b, i) => {
+      const t = str(b).trim();
+      if (t && !isFormulaBullet(t)) out.push({ spot: "bullet", focus: i, tag: "" });
+    });
+    const seen = new Set();
+    const uniq = [];
+    for (const t of out) {
+      const key = t.spot + ":" + t.focus;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      uniq.push(t);
+    }
+    return uniq;
+  }
+  function planShots(pg, motion, displayFrames, fps, style) {
+    const play = stylePlayOf(style);
     const total = Math.max(1, roundInt(displayFrames));
     const kind = str(pg && pg.kind);
-    const bullets = Array.isArray(pg && pg.bullets) ? pg.bullets.length : 0;
     const single = ["cover", "end", "toc", "chapter"].indexOf(kind) >= 0;
-    const focusCount = single ? 0 : Math.min(SHOT_MAX - 1, Math.max(0, Math.min(3, bullets)));
-    if (total < SHOT_MIN_FRAMES * 4 || !focusCount) {
-      return [{ kind: "establish", from: 0, frames: total, move: shotMoveOf(0, kind), focus: -1, depth: single ? 5 : 3 }];
-    }
-    const est = Math.max(SHOT_MIN_FRAMES, Math.round(total * 0.38));
-    const rest = Math.max(SHOT_MIN_FRAMES, total - est);
-    const per = Math.max(SHOT_MIN_FRAMES, Math.floor(rest / focusCount));
-    const shots = [{ kind: "establish", from: 0, frames: est, move: shotMoveOf(0, kind), focus: -1, depth: 4 }];
+    const targets = single ? [] : spotTargetsOf(pg, play);
+    /* 一页最多 SHOT_MAX 镜（含建立镜）：再切就不是「一页」而是一串闪回了 */
+    const cuts = Math.min(SHOT_MAX - 1, play.focusMax, targets.length);
+    /* 封面 / 章节 / 结语：一个运镜到底（深度 5 = 背景最虚，画面最干净） */
+    const establish = {
+      kind: "establish",
+      from: 0,
+      frames: total,
+      move: single && kind === "end" ? "pullOut" : play.moves.establish,
+      focus: -1,
+      spot: "none",
+      tag: "",
+      depth: single ? 5 : play.depth,
+    };
+    if (total < SHOT_MIN_FRAMES * 4 || !cuts) return [establish];
+    const est = clampNum(
+      Math.round(total * play.establishShare),
+      SHOT_MIN_FRAMES,
+      Math.max(SHOT_MIN_FRAMES, total - SHOT_MIN_FRAMES * cuts),
+    );
+    const shots = [Object.assign({}, establish, { frames: est })];
     let from = est;
-    for (let i = 0; i < focusCount; i++) {
-      const last = i === focusCount - 1;
-      const frames = last ? Math.max(SHOT_MIN_FRAMES, total - from) : Math.min(per, Math.max(SHOT_MIN_FRAMES, total - from));
-      shots.push({ kind: "focus", from: from, frames: frames, move: shotMoveOf(i + 1, kind), focus: i, depth: 2 });
-      from += frames;
+    for (let i = 0; i < cuts; i++) {
+      const left = Math.max(1, total - from);
       if (from >= total) break;
+      const last = i === cuts - 1;
+      const frames = last ? left : Math.max(SHOT_MIN_FRAMES, Math.floor(total > from ? (total - from) / (cuts - i) : left));
+      const span = Math.min(frames, left);
+      const t = targets[i];
+      shots.push({
+        kind: "focus",
+        from: from,
+        frames: span,
+        move: play.moves.focus,
+        focus: Number(t.focus),
+        spot: str(t.spot),
+        tag: str(t.tag),
+        depth: t.spot === "scene" ? 1 : 2,
+      });
+      from += span;
     }
     /* 收尾对齐：最后一镜吃掉余下的帧（不多不少，页时长不变） */
     const tail = shots[shots.length - 1];
@@ -232,7 +383,9 @@
   /* 页内某帧属于哪个镜头（Camera 与 PageBody 共用同一份判断，画面与高亮不会错位） */
   function shotAt(pg, frame) {
     const list = Array.isArray(pg && pg.shots) && pg.shots.length ? pg.shots : null;
-    if (!list) return { kind: "establish", from: 0, frames: Number(pg && pg.frames) || 1, move: "pushIn", focus: -1, depth: 3 };
+    if (!list) {
+      return { kind: "establish", from: 0, frames: Number(pg && pg.frames) || 1, move: "pushIn", focus: -1, spot: "none", tag: "", depth: 3 };
+    }
     let cur = list[0];
     for (const s of list) if (Number(frame) >= Number(s.from)) cur = s;
     return cur;
@@ -267,13 +420,16 @@
       "  shots: Shot[];",
       "}",
       "",
-      "/* 一个镜头：页内的一段连续画面（from 相对页起点；move 是相机运动，focus = 高亮的要点下标，-1 = 无） */",
+      "/* 一个镜头：页内的一段连续画面（from 相对页起点；move 是相机运动，focus = 高亮的要点下标，-1 = 无）",
+      "   spot = 这一镜特写谁（none / formula / quote / bullet / scene），tag = 要不要把数字做大（numeric / compare / layer） */",
       "export interface Shot {",
       "  kind: \"establish\" | \"focus\";",
       "  from: number;",
       "  frames: number;",
       "  move: string;",
       "  focus: number;",
+      "  spot: string;",
+      "  tag: string;",
       "  depth: number;",
       "}",
       "",
@@ -333,10 +489,11 @@
     return out.join("\n");
   }
 
-  /* motion.ts：运动量常量 + 三个版式钩子（缩放 / 入场 / 转场）
+  /* motion.ts：运动量常量 + 展示风格的演法参数 + 四个版式钩子（缩放 / 入场 / 转场 / 镜头）
      transition 单独传：它是 deck.theme 的字段（只有 fade / push 两档），不在 motion 表里 ——
-     转场只换手感（transitionFrames），不新增枚举，静态版与视频版才不会分叉。 */
-  function motionSrc(motion, transition, dims, totalFrames) {
+     转场只换手感（transitionFrames），不新增枚举，静态版与视频版才不会分叉。
+     mask 是风格层的**叠加**（motion 档的遮罩转场），不改 theme.transition，fade / push 仍然有效。 */
+  function motionSrc(motion, transition, dims, totalFrames, style, play) {
     const ease =
       motion.ease === "inOut"
         ? "Easing.inOut(Easing.cubic)"
@@ -345,7 +502,8 @@
           : "Easing.out(Easing.cubic)";
     return [
       "/* 运动量：逐字来自内核 motion 表（缓动 / 入场 / 转场帧数 / 字速 / 节拍 / 背景）。",
-      "   切主题换的就是这里的数字 —— 工程要重新生成（宿主按 buildKey 判失效）。 */",
+      "   切主题换的就是这里的数字 —— 工程要重新生成（宿主按 buildKey 判失效）。",
+      "   展示风格（STYLE 那几行）再叠一层演法：字号 / 装饰 / 视差 / 遮罩转场 / 字幕节奏。 */",
       "import type { CSSProperties } from \"react\";",
       "import { Easing, interpolate, useCurrentFrame, useVideoConfig } from \"remotion\";",
       "",
@@ -367,6 +525,23 @@
       "export const CPS_TITLE = " + Number(motion.cpsTitle) + ";",
       "export const CPS_BULLET = " + Number(motion.cpsBullet) + ";",
       "export const BPM = " + Math.max(1, roundInt(motion.bpm)) + ";",
+      "",
+      "/* ── 展示风格（怎么演）：只影响演法，不碰颜色与字体 ────────────────────────── */",
+      "export const STYLE: string = " + JSON.stringify(str(style)) + ";",
+      "/* 字号系数：Motion Graphics 更大（大字色块），学术 1.0 */",
+      "export const TYPE_SCALE = " + (Number(play && play.typeScale) || 1) + ";",
+      "/* 装饰强度：学术 0.45（背景光斑压到几乎看不见）→ motion 1 */",
+      "export const DECOR = " + (Number(play && play.decor) || 0) + ";",
+      "/* 2.5D 分层视差：每层按 depth 分层位移的幅度（px）；0 = 不分层（其余档） */",
+      "export const PARALLAX = " + (play && play.cards ? 26 : 0) + ";",
+      "/* 遮罩转场（motion 档）：入场用 clipPath 扫过；主题的 fade / push 不动 */",
+      "export const USE_MASK = " + (play && play.mask ? "true" : "false") + ";",
+      "/* 字幕节奏：一屏窗口（ms）与字号跟风格走（学术慢而少，Motion 快而大） */",
+      "export const CAPTION_WINDOW = " + Math.max(600, roundInt((play && play.captionWindowMs) || CAPTION_WINDOW_MS)) + ";",
+      "export const CAPTION_SIZE = " + Math.max(20, roundInt((play && play.captionSize) || 34)) + ";",
+      "/* 这一档的运镜（写进来只为让工程自解释；镜头切分在 data.ts 的 shots 里） */",
+      "export const CAMERA_ESTABLISH: string = " + JSON.stringify(str(play && play.moves && play.moves.establish)) + ";",
+      "export const CAMERA_FOCUS: string = " + JSON.stringify(str(play && play.moves && play.moves.focus)) + ";",
       "",
       "/* 画框缩放：设计稿按 1920 宽排，9:16 / 4:3 等比缩（字与间距一起缩，不各缩一样） */",
       "export const useScale = (): number => {",
@@ -409,6 +584,12 @@
       "    easing: EASE,",
       "  });",
       "  const opacity = Math.max(0, Math.min(1, Math.min(p, 1 - q)));",
+      "  /* 遮罩转场（Motion Graphics 档）：clipPath 从右往左揭开一条竖缝，比淡入「有动作」；",
+      "     它是主题 fade / push 之上的叠加，不替换主题转场。 */",
+      "  if (USE_MASK && !isLast) {",
+      "    const inset = Math.max(0, Math.min(100, Math.round((1 - p) * 100)));",
+      "    return { opacity: opacity, clipPath: \"inset(0 \" + inset + \"% 0 0)\" };",
+      "  }",
       "  if (TRANSITION === \"push\" && !isLast) {",
       "    const x = (1 - p) * 56 * k - q * 56 * k;",
       "    return { opacity: opacity, transform: \"translateX(\" + Math.round(x) + \"px)\" };",
@@ -417,21 +598,45 @@
       "};",
       "",
       "/* 镜头运镜：move × 镜头内进度 → CSS 变换（画面按中心缩放，位移按 k 缩）。",
-      "   pushIn / pullOut / dolly 只动 scale，pan / tilt 只动位移 —— 一镜只做一件事，叠加就是晃。 */",
+      "   一镜只做一件事（叠加就是晃）：",
+      "     pushIn 慢推（学术档，0.035 一口气推完）· snapZoom 快推（motion 档，0.13 起跳）·",
+      "     pullOut / dolly 只动 scale · pan / tilt 只动位移 · parallax 轻微视差 · orbit 轨道相机（绕画心转一点）。 */",
       "export const cameraStyle = (move: string, progress: number, k: number): CSSProperties => {",
       "  const p = Math.max(0, Math.min(1, progress));",
       "  const e = Easing.inOut(Easing.cubic)(p);",
+      "  const snap = Easing.out(Easing.cubic)(p);",
       "  const drift = 42 * k;",
       "  const panX = move === \"panLeft\" ? drift * (0.5 - e) : move === \"panRight\" ? -drift * (0.5 - e) : 0;",
       "  const panY = move === \"tiltUp\" ? drift * (0.5 - e) : 0;",
+      "  /* 2.5D / 3D 的位移都很小（它们靠分层与三维本身，不靠甩镜头） */",
+      "  const slide = move === \"parallax\" ? Math.round((0.5 - e) * 14 * k) : 0;",
+      "  const orbitX = move === \"orbit\" ? Math.round(Math.sin(p * Math.PI) * 18 * k) : 0;",
+      "  const rotate = move === \"orbit\" ? Math.sin(p * Math.PI * 2) * 3.2 : 0;",
       "  const scale =",
-      "    move === \"pushIn\" ? 1 + 0.06 * e",
+      "    move === \"pushIn\" ? 1 + 0.035 * e",
+      "      : move === \"snapZoom\" ? 1 + 0.13 * snap",
       "      : move === \"pullOut\" ? 1.06 - 0.06 * e",
       "      : move === \"dolly\" ? 1 + 0.12 * e",
+      "      : move === \"parallax\" ? 1.02",
+      "      : move === \"orbit\" ? 1.03",
       "      : 1.03;",
       "  return {",
       "    transform:",
-      "      \"translate3d(\" + Math.round(panX) + \"px,\" + Math.round(panY) + \"px,0) scale(\" + scale.toFixed(4) + \")\",",
+      "      \"translate3d(\" + Math.round(panX + slide + orbitX) + \"px,\" + Math.round(panY) + \"px,0) rotate(\" + rotate.toFixed(3) + \"deg) scale(\" + scale.toFixed(4) + \")\",",
+      "    transformOrigin: \"50% 50%\",",
+      "  };",
+      "};",
+      "",
+      "/* 2.5D 分层：同一页的每张卡片按 depth 分层位移（层越靠前动得越多），随页内进度走完一个来回。",
+      "   其余档 PARALLAX = 0 → 返回空对象（版式一个字都不变）。 */",
+      "export const parallaxStyle = (depth: number, progress: number, k: number): CSSProperties => {",
+      "  if (!PARALLAX) return {};",
+      "  const d = Math.max(0, Math.min(5, Number(depth) || 0));",
+      "  const p = Math.max(0, Math.min(1, progress));",
+      "  const shift = PARALLAX * (0.4 + (d / 5) * 0.6) * (p - 0.5) * 2;",
+      "  return {",
+      "    transform:",
+      "      \"translate3d(\" + Math.round(shift * k) + \"px,\" + Math.round(shift * 0.35 * k) + \"px,0)\",",
       "    transformOrigin: \"50% 50%\",",
       "  };",
       "};",
@@ -468,10 +673,11 @@
   function backdropSrc() {
     return [
       "/* 背景：纸色 + 两团缓慢漂移的光斑 + BG 遮罩 + 暗角；depth 越大越虚（景深由 Camera 算）。",
-      "   光斑只用 T.accent / T.primary 两色，透明度压到 0.1–0.16，绝不抢正文。 */",
+      "   光斑只用 T.accent / T.primary 两色，透明度压到 0.1–0.16，绝不抢正文。",
+      "   光斑与颗粒的强度再乘 DECOR（学术 0.45 = 几乎不加装饰，Motion 1 = 网格底 + 满强度）。 */",
       "import React from \"react\";",
       "import { AbsoluteFill, useCurrentFrame } from \"remotion\";",
-      "import { BG } from \"./motion\";",
+      "import { BG, DECOR } from \"./motion\";",
       "import { T } from \"./theme\";",
       "",
       "export const Backdrop: React.FC<{ depth?: number }> = ({ depth }) => {",
@@ -487,13 +693,14 @@
       "    <AbsoluteFill",
       "      style={{ backgroundColor: T.paper, filter: blur ? \"blur(\" + blur + \"px)\" : undefined }}",
       "    >",
-      "      <AbsoluteFill style={{ background: glowA, opacity: 0.14 }} />",
-      "      <AbsoluteFill style={{ background: glowB, opacity: 0.1 }} />",
+      "      <AbsoluteFill style={{ background: glowA, opacity: 0.14 * DECOR }} />",
+      "      <AbsoluteFill style={{ background: glowB, opacity: 0.1 * DECOR }} />",
       "      {BG === \"grain\" ? (",
       "        <AbsoluteFill",
       "          style={{",
       "            backgroundImage:",
       "              \"repeating-linear-gradient(0deg, rgba(0,0,0,0.035) 0px, rgba(0,0,0,0.035) 1px, rgba(0,0,0,0) 1px, rgba(0,0,0,0) 3px)\",",
+      "            opacity: DECOR,",
       "          }}",
       "        />",
       "      ) : null}",
@@ -503,6 +710,7 @@
       "            backgroundImage:",
       "              \"linear-gradient(rgba(0,0,0,0.05) 1px, rgba(0,0,0,0) 1px), linear-gradient(90deg, rgba(0,0,0,0.05) 1px, rgba(0,0,0,0) 1px)\",",
       "            backgroundSize: \"64px 64px\",",
+      "            opacity: DECOR,",
       "          }}",
       "        />",
       "      ) : null}",
@@ -519,21 +727,49 @@
   function bulletsSrc() {
     return [
       "/* 要点逐条入场：起帧由生成期算好（字速与 stagger 在 motion.ts），这里只做插值。",
-      "   focus = 当前镜头聚焦的那一条（正文页的细节镜头会用）：那一条起、其余压暗。 */",
+      "   focus / spot = 当前镜头特写的那一条（正文页的细节镜头会用）：那一条起、其余压暗；",
+      "   tag = numeric / compare 时把这条里的数字做大做亮（Motion Graphics 的「数字当主角」）；",
+      "   cards = 2.5D 档：每条要点是一张卡片，按层（depth = i + 1）做分层位移。 */",
       "import React from \"react\";",
+      "import type { CSSProperties } from \"react\";",
       "import { interpolate, useCurrentFrame } from \"remotion\";",
-      "import { EASE, ENTER_FRAMES, enterStyle, useScale } from \"./motion\";",
+      "import { EASE, ENTER_FRAMES, enterStyle, parallaxStyle, useScale } from \"./motion\";",
       "import { T } from \"./theme\";",
       "import type { Bullet } from \"./types\";",
       "",
-      "export const Bullets: React.FC<{ bullets: Bullet[]; size: number; numbered?: boolean; focus?: number }> = ({",
-      "  bullets,",
-      "  size,",
-      "  numbered,",
-      "  focus,",
-      "}) => {",
+      "const STAT_PARTS = /([0-9]+(?:[.,][0-9]+)?\\s*(?:%|％|倍|ms|s)?)/g;",
+      "",
+      "/* 数字当主角：只把这几个字符放大加色，其余原样（不改文本、不加字） */",
+      "const StatText: React.FC<{ text: string }> = ({ text }) => (",
+      "  <>",
+      "    {String(text).split(STAT_PARTS).map((part, i) =>",
+      "      part && /[0-9]/.test(part) ? (",
+      "        <span",
+      "          key={i}",
+      "          style={{ color: T.accent, fontSize: \"1.14em\", fontWeight: 800, fontVariantNumeric: \"tabular-nums\" }}",
+      "        >",
+      "          {part}",
+      "        </span>",
+      "      ) : (",
+      "        <React.Fragment key={i}>{part}</React.Fragment>",
+      "      ),",
+      "    )}",
+      "  </>",
+      ");",
+      "",
+      "export const Bullets: React.FC<{",
+      "  bullets: Bullet[];",
+      "  size: number;",
+      "  numbered?: boolean;",
+      "  focus?: number;",
+      "  tag?: string;",
+      "  cards?: boolean;",
+      "  progress?: number;",
+      "}> = ({ bullets, size, numbered, focus, tag, cards, progress }) => {",
       "  const frame = useCurrentFrame();",
       "  const k = useScale();",
+      "  const prog = typeof progress === \"number\" ? progress : 0;",
+      "  const statOn = tag === \"numeric\" || tag === \"compare\";",
       "  return (",
       "    <div style={{ display: \"flex\", flexDirection: \"column\", gap: Math.round(22 * k) }}>",
       "      {bullets.map((b, i) => {",
@@ -545,17 +781,29 @@
       "        const enter = enterStyle(p, k);",
       "        const active = typeof focus === \"number\" && focus === i;",
       "        const dim = typeof focus === \"number\" && focus >= 0 && !active ? 0.34 : 1;",
+      "        const layer: CSSProperties = cards ? parallaxStyle(i + 1, prog, k) : {};",
+      "        const cardStyle: CSSProperties = cards",
+      "          ? {",
+      "              background: T.paper2,",
+      "              borderRadius: T.radius,",
+      "              boxShadow: T.shadow,",
+      "              padding: Math.round(18 * k) + \"px \" + Math.round(22 * k) + \"px\",",
+      "            }",
+      "          : {};",
       "        return (",
       "          <div",
       "            key={i}",
       "            style={{",
+      "              ...cardStyle,",
       "              display: \"flex\",",
       "              flexDirection: \"row\",",
       "              alignItems: \"flex-start\",",
       "              ...enter,",
       "              opacity: (enter.opacity == null ? 1 : Number(enter.opacity)) * dim,",
       "              transform:",
-      "                (enter.transform ? enter.transform + \" \" : \"\") + \"translateX(\" + (active ? Math.round(8 * k) : 0) + \"px)\",",
+      "                (enter.transform ? enter.transform + \" \" : \"\") +",
+      "                (layer.transform ? layer.transform + \" \" : \"\") +",
+      "                \"translateX(\" + (active ? Math.round(8 * k) : 0) + \"px)\",",
       "            }}",
       "          >",
       "            {numbered ? (",
@@ -584,7 +832,9 @@
       "                }}",
       "              />",
       "            )}",
-      "            <span style={{ flex: \"1 1 auto\", color: T.ink, fontSize: size, lineHeight: 1.42 }}>{b.text}</span>",
+      "            <span style={{ flex: \"1 1 auto\", color: T.ink, fontSize: size, lineHeight: 1.42 }}>",
+      "              {statOn && active ? <StatText text={b.text} /> : b.text}",
+      "            </span>",
       "          </div>",
       "        );",
       "      })}",
@@ -598,18 +848,27 @@
   function pageBodySrc() {
     return [
       "/* 单页版式：封面 / 大纲 / 正文 / 精读 / 术语 / 公式 / 文献 / 结语；未知 kind 退化成正文。",
-      "   有 scene 的页走两栏：左边讲字，右边真 3D（Scene3D，three.js）；没有就整页文字。 */",
+      "   有 scene 的页走两栏：左边讲字，右边真 3D（Scene3D，three.js）；没有就整页文字。",
+      "   展示风格在这一层落三件事：字号乘 TYPE_SCALE（motion 更大）、2.5D 的卡片按层位移、",
+      "   以及 spot 指向的那一样东西（formula / quote / scene / bullet）被点亮、其余压暗。 */",
       "import React from \"react\";",
       "import { AbsoluteFill, interpolate, useCurrentFrame } from \"remotion\";",
       "import { Bullets } from \"./Bullets\";",
       "import { Scene3D } from \"./Scene3D\";",
-      "import { EASE, ENTER_FRAMES, enterStyle, useScale } from \"./motion\";",
+      "import { EASE, ENTER_FRAMES, enterStyle, PARALLAX, parallaxStyle, TYPE_SCALE, useScale } from \"./motion\";",
       "import { T } from \"./theme\";",
       "import type { SlidePage } from \"./types\";",
       "",
-      "export const PageBody: React.FC<{ page: SlidePage; focus?: number }> = ({ page, focus }) => {",
+      "export const PageBody: React.FC<{ page: SlidePage; focus?: number; spot?: string; tag?: string }> = ({",
+      "  page,",
+      "  focus,",
+      "  spot,",
+      "  tag,",
+      "}) => {",
       "  const k = useScale();",
       "  const frame = useCurrentFrame();",
+      "  /* 页内进度（0 → 1）：2.5D 的分层位移按它走完一个来回 */",
+      "  const prog = Math.max(0, Math.min(1, frame / Math.max(1, page.frames)));",
       "  const titleP = interpolate(frame, [2, 2 + ENTER_FRAMES], [0, 1], {",
       "    extrapolateLeft: \"clamp\",",
       "    extrapolateRight: \"clamp\",",
@@ -620,10 +879,21 @@
       "  const isEnd = page.kind === \"end\";",
       "  const isFormula = page.kind === \"formula\";",
       "  const withScene = !!page.scene;",
+      "  const spotFormula = spot === \"formula\";",
+      "  const spotQuote = spot === \"quote\";",
+      "  const spotScene = spot === \"scene\";",
+      "  const spotBullet = spot === \"bullet\";",
+      "  /* 没被点亮的块压暗（建立镜 spot = none 时一页都是亮的） */",
+      "  const dimOthers = spot != null && spot !== \"none\";",
+      "  const cards = PARALLAX > 0;",
+      "  /* 2.5D 的三层（标题 / 图注 / 公式）各自一个景深，随页内进度位移；其余档是空对象 */",
+      "  const titleLayer = parallaxStyle(1, prog, k);",
+      "  const quoteLayer = parallaxStyle(2, prog, k);",
+      "  const formulaLayer = parallaxStyle(3, prog, k);",
       "  const pad = Math.round((isCover || isEnd ? 120 : 96) * k);",
-      "  const titleSize = Math.round((isCover ? 104 : isEnd ? 88 : isFormula ? 40 : withScene ? 56 : 72) * k);",
-      "  const metaSize = Math.round(26 * k);",
-      "  const listSize = Math.round((withScene ? 32 : page.kind === \"toc\" || isEnd ? 34 : 42) * k);",
+      "  const titleSize = Math.round((isCover ? 104 : isEnd ? 88 : isFormula ? 40 : withScene ? 56 : 72) * k * TYPE_SCALE);",
+      "  const metaSize = Math.round(26 * k * TYPE_SCALE);",
+      "  const listSize = Math.round((withScene ? 32 : page.kind === \"toc\" || isEnd ? 34 : 42) * k * TYPE_SCALE);",
       "  const textCol = (",
       "    <div",
       "      style={{",
@@ -652,6 +922,9 @@
       "      <div",
       "        style={{",
       "          ...titleIn,",
+      "          ...titleLayer,",
+      "          /* 入场位移与分层位移叠在一起（2.5D 不再吃掉标题的入场） */",
+      "          transform: [titleIn.transform, titleLayer.transform].filter(Boolean).join(\" \") || undefined,",
       "          color: T.ink,",
       "          fontSize: titleSize,",
       "          fontWeight: 700,",
@@ -674,17 +947,20 @@
       "      {page.formula ? (",
       "        <div",
       "          style={{",
+      "            ...formulaLayer,",
       "            color: T.primary,",
       "            background: T.paper2,",
-      "            borderLeft: Math.round(6 * k) + \"px solid \" + T.accent,",
+      "            borderLeft: Math.round((spotFormula ? 12 : 6) * k) + \"px solid \" + T.accent,",
       "            borderRadius: T.radius,",
       "            boxShadow: T.shadow,",
-      "            fontSize: Math.round((isFormula ? 64 : 44) * k),",
+      "            /* 公式镜：把式子本身放大（学术档的「公式特写」就是这一下） */",
+      "            fontSize: Math.round((isFormula ? 64 : 44) * k * TYPE_SCALE * (spotFormula ? 1.16 : 1)),",
       "            lineHeight: 1.42,",
       "            alignSelf: isFormula ? \"center\" : undefined,",
       "            maxWidth: isFormula ? \"86%\" : undefined,",
       "            overflowWrap: \"anywhere\",",
       "            marginBottom: Math.round((isFormula ? 22 : 28) * k),",
+      "            opacity: dimOthers && !spotFormula ? 0.72 : 1,",
       "            padding: Math.round((isFormula ? 36 : 24) * k) + \"px \" + Math.round((isFormula ? 46 : 32) * k) + \"px\",",
       "          }}",
       "        >",
@@ -692,18 +968,21 @@
       "        </div>",
       "      ) : null}",
       "      {page.formula && isFormula ? (",
-      "        <div style={{ color: T.muted, fontSize: Math.round(22 * k), letterSpacing: Math.round(1.5 * k) + \"px\" }}>",
+      "        <div style={{ color: T.muted, fontSize: Math.round(22 * k * TYPE_SCALE), letterSpacing: Math.round(1.5 * k) + \"px\" }}>",
       "          {\"TeX 源码 · 视频版按源码显示（排版好的式子请走静态版 PDF）\"}",
       "        </div>",
       "      ) : null}",
       "      {page.quote ? (",
       "        <div",
       "          style={{",
-      "            color: T.muted,",
-      "            borderLeft: Math.round(5 * k) + \"px solid \" + T.rule,",
-      "            fontSize: Math.round(30 * k),",
+      "            ...quoteLayer,",
+      "            /* 图注镜：引文提亮、左边线加粗（学术档的第二号特写对象） */",
+      "            color: spotQuote ? T.ink : T.muted,",
+      "            borderLeft: Math.round((spotQuote ? 9 : 5) * k) + \"px solid \" + (spotQuote ? T.accent : T.rule),",
+      "            fontSize: Math.round(30 * k * TYPE_SCALE * (spotQuote ? 1.1 : 1)),",
       "            lineHeight: 1.5,",
       "            marginBottom: Math.round(26 * k),",
+      "            opacity: dimOthers && !spotQuote ? 0.72 : 1,",
       "            paddingLeft: Math.round(22 * k),",
       "          }}",
       "        >",
@@ -711,7 +990,15 @@
       "        </div>",
       "      ) : null}",
       "      {page.bullets.length ? (",
-      "        <Bullets bullets={page.bullets} size={listSize} numbered={page.kind === \"toc\"} focus={focus} />",
+      "        <Bullets",
+      "          bullets={page.bullets}",
+      "          size={listSize}",
+      "          numbered={page.kind === \"toc\"}",
+      "          focus={focus}",
+      "          tag={spotBullet ? tag : \"\"}",
+      "          cards={cards}",
+      "          progress={prog}",
+      "        />",
       "      ) : null}",
       "    </div>",
       "  );",
@@ -729,7 +1016,16 @@
       "    >",
       "      {textCol}",
       "      {withScene ? (",
-      "        <div style={{ position: \"relative\", flex: \"1 1 auto\", minWidth: 0 }}>",
+      "        <div",
+      "          style={{",
+      "            position: \"relative\",",
+      "            flex: \"1 1 auto\",",
+      "            minWidth: 0,",
+      "            /* 场景镜：三维画面收到正位、其余要素让开（轨道相机自己会转） */",
+      "            opacity: spotScene || !dimOthers ? 1 : 0.62,",
+      "            filter: spotScene ? undefined : \"saturate(0.86)\",",
+      "          }}",
+      "        >",
       "          <Scene3D scene={page.scene} />",
       "        </div>",
       "      ) : null}",
@@ -742,7 +1038,7 @@
       "          display: \"flex\",",
       "          justifyContent: \"space-between\",",
       "          color: T.muted,",
-      "          fontSize: Math.round(22 * k),",
+      "          fontSize: Math.round(22 * k * TYPE_SCALE),",
       "        }}",
       "      >",
       "        <span>{page.partLabel}</span>",
@@ -780,15 +1076,15 @@
 
   function cameraSrc() {
     return [
-      "/* 镜头：按页内时间挑当前镜头（establish / focus），算出运镜与聚焦要点，交给 PageBody。",
-      "   同一份 shots 既决定画面怎么动，也决定哪条要点被点亮 —— 两者不会错位。 */",
+      "/* 镜头：按页内时间挑当前镜头（establish / focus），算出运镜与特写对象，交给 PageBody。",
+      "   同一份 shots 既决定画面怎么动，也决定谁被点亮（focus = 要点下标，spot = 特写谁）—— 两者不会错位。 */",
       "import React from \"react\";",
       "import { AbsoluteFill, useCurrentFrame } from \"remotion\";",
       "import { PageBody } from \"./PageBody\";",
       "import { cameraStyle, useScale } from \"./motion\";",
       "import type { Shot, SlidePage } from \"./types\";",
       "",
-      "const FALLBACK: Shot = { kind: \"establish\", from: 0, frames: 1, move: \"pushIn\", focus: -1, depth: 3 };",
+      "const FALLBACK: Shot = { kind: \"establish\", from: 0, frames: 1, move: \"pushIn\", focus: -1, spot: \"none\", tag: \"\", depth: 3 };",
       "",
       "export const Camera: React.FC<{ page: SlidePage }> = ({ page }) => {",
       "  const frame = useCurrentFrame();",
@@ -800,7 +1096,7 @@
       "  const p = Math.max(0, Math.min(1, (frame - cur.from) / span));",
       "  return (",
       "    <AbsoluteFill style={{ overflow: \"hidden\", ...cameraStyle(cur.move, p, k) }}>",
-      "      <PageBody page={page} focus={cur.focus} />",
+      "      <PageBody page={page} focus={cur.focus} spot={cur.spot} tag={cur.tag} />",
       "    </AbsoluteFill>",
       "  );",
       "};",
@@ -1009,14 +1305,15 @@
   function captionsSrc() {
     return [
       "/* 逐词字幕：只在接了旁白音轨时才铺（无旁白不铺 —— 要点已经在画面上）",
-      "   一屏取「当前句起的 1.6s 内」的词，说到哪个词就亮哪个（数据是 ms 级真值） */",
+      "   一屏取「当前句起的 CAPTION_WINDOW 内」的词，说到哪个词就亮哪个（数据是 ms 级真值）；",
+      "   窗口与字号跟展示风格走（学术慢而少、Motion 快而大），不在这里再判一次风格。 */",
       "import React from \"react\";",
       "import { AbsoluteFill, useCurrentFrame, useVideoConfig } from \"remotion\";",
-      "import { useScale } from \"./motion\";",
+      "import { CAPTION_SIZE, CAPTION_WINDOW, useScale } from \"./motion\";",
       "import { T } from \"./theme\";",
       "import type { Caption } from \"./types\";",
       "",
-      "const WINDOW_MS = " + CAPTION_WINDOW_MS + ";",
+      "const WINDOW_MS = CAPTION_WINDOW;",
       "",
       "export const Captions: React.FC<{ captions: Caption[] }> = ({ captions }) => {",
       "  const frame = useCurrentFrame();",
@@ -1047,7 +1344,7 @@
       "          display: \"flex\",",
       "          flexDirection: \"row\",",
       "          flexWrap: \"wrap\",",
-      "          fontSize: Math.round(34 * k),",
+      "          fontSize: Math.round(CAPTION_SIZE * k),",
       "          fontWeight: 600,",
       "          gap: Math.round(6 * k) + \" \" + Math.round(12 * k),",
       "          justifyContent: \"center\",",
@@ -1159,7 +1456,17 @@
     }
     const tokens = RS.styleTokens(brief, theme, visible);
     const motion = tokens.motion;
+    /* 展示风格：styleTokens 已经判好（auto → 具体档），meta 与 warnings 都写这一个值，
+       界面上的「风格：X」与派单指示读的是同一份，不会各判一次。 */
+    const style = str(tokens.style) || str(RS.DEFAULT_STYLE) || "scholarly";
+    const styleLabel = str(tokens.styleLabel) || style;
+    const stylePicked = str(brief.style) === "auto" || !str(brief.style);
     const transition = RS.TRANSITIONS.indexOf(str(tokens.transition)) >= 0 ? str(tokens.transition) : "fade";
+    /* 展示风格的演法参数（镜头 / 运镜 / 字号 / 遮罩转场 / 字幕节奏 / 装饰）：只在这里取一份，
+       镜头编排、工程源码、meta 与 warnings 全读它，不会各判一次。 */
+    const play = stylePlayOf(style);
+    const typeScale = Number(play.typeScale) || 1;
+    const captionWindowMs = Math.max(600, roundInt(play.captionWindowMs) || CAPTION_WINDOW_MS);
     const pace = Number(motion.pace) > 0 ? Number(motion.pace) : 1;
     const plan = tokens.plan || { keep: visible.map((pg) => str(pg.id)), drop: [], note: "" };
     const keep = new Set((Array.isArray(plan.keep) ? plan.keep : []).map((id) => str(id)));
@@ -1210,9 +1517,9 @@
     const pages = [];
     const chapters = [];
     const segments = [];
-    /* 3D 场景页上限：每个 ThreeCanvas 一个 WebGL context（Chromium 上限约 16），
-       超出的页降级成纯文字页，并在 warnings 里点名（不静默丢场景）。 */
-    const SCENE_MAX = 6;
+    /* 3D 场景页预算按展示风格给（内核 STYLE_SCENE_MAX：3D 6 页 / 学术 1 页 / Motion 0 页 / 2.5D 2 页）；
+       每个 ThreeCanvas 一个 WebGL context（Chromium 上限约 16），超预算的页降级成纯文字页并点名（不静默丢场景）。 */
+    const SCENE_MAX = Number.isFinite(Number(tokens.sceneMax)) ? Math.max(0, Math.round(Number(tokens.sceneMax))) : 6;
     let sceneCount = 0;
     const sceneDropped = [];
     for (const it of items) {
@@ -1249,25 +1556,32 @@
         frames: it.frames,
         sec: it.sec,
         scene: scene,
-        /* 镜头必须铺满 it.frames（含尾部交叠），否则最后一镜会提前收尾 */
+        /* 镜头必须铺满 it.frames（含尾部交叠），否则最后一镜会提前收尾；
+           怎么切按展示风格（学术：建立镜 + 图注 / 公式特写、慢推；motion：数字与对比镜；2.5D / 3D：分层与场景镜） */
         shots: planShots(
           Object.assign({}, pg, { scene: scene, bullets: bullets.map((b) => b.text) }),
           motion,
           it.frames,
           fps,
+          style,
         ),
       });
       segments.push({ id: str(pg.id), kind: "page", from: it.from, frames: it.frames });
     }
 
-    /* ⑤ 旁白：notes 逐句 → 页内时间窗 → 逐词字幕（无 notes = 空数组，不铺字幕） */
+    /* ⑤ 旁白：notes 逐句 → 页内时间窗 → 逐词字幕（无 notes = 空数组，不铺字幕）
+       节奏跟展示风格走：学术留的白多（起 500ms 收 380ms），Motion 贴着画面走（260 / 200）。
+       两个留白都夹在本页时间窗的比例内 —— 页再短也不会把字幕挤到窗外。 */
     const captions = [];
     const narration = [];
     for (const pg of pages) {
       const sentences = sentencesOf(pg.note);
       if (!sentences.length) continue;
-      const startMs = Math.round((pg.from / fps) * 1000) + 400;
-      const endMs = Math.round(((pg.from + roundInt(pg.sec * fps)) / fps) * 1000) - 300;
+      const winStart = Math.round((pg.from / fps) * 1000);
+      const winEnd = Math.round(((pg.from + roundInt(pg.sec * fps)) / fps) * 1000);
+      const winLen = Math.max(1, winEnd - winStart);
+      const startMs = winStart + Math.max(0, Math.min(roundInt(play.captionLeadMs) || 0, Math.round(winLen * 0.25)));
+      const endMs = winEnd - Math.max(0, Math.min(roundInt(play.captionTailMs) || 0, Math.round(winLen * 0.2)));
       const span = Math.max(600, endMs - startMs);
       const totalChars = sentences.reduce((n, s) => n + Math.max(1, charLen(s)), 0);
       let cursor = startMs;
@@ -1302,7 +1616,7 @@
     const files = {
       "types.ts": typesSrc(),
       "theme.ts": themeSrc(themeTable),
-      "motion.ts": motionSrc(motion, transition, dims, totalFrames),
+      "motion.ts": motionSrc(motion, transition, dims, totalFrames, style, play),
       "data.ts": dataSrc({
         deck: { title: str(deck.title), date: str(deck.date) },
         pages: pages,
@@ -1328,8 +1642,9 @@
       if (/^#[0-9a-fA-F]{3,8}$/.test(v)) colors.push(v.toLowerCase());
     }
 
-    /* buildKey = hash(页 id 序列 + 每页 title/bullets/quote + theme + brief + aspect + fps)：
-       改任意一样就变 → 编辑器据此把「已生成」置灰（spec §6 补充口径），放不出旧片。 */
+    /* buildKey = hash(页 id 序列 + 每页 title/bullets/quote + 镜头编排 + theme + brief + aspect + fps)：
+       改任意一样就变（换展示风格会让镜头 / 字号 / 转场一起变，所以 style 与 shots 都在里面）→
+       编辑器据此把「已生成」置灰（spec §6 补充口径），放不出旧片。 */
     const buildKey = RS.hashString(
       JSON.stringify({
         ver: VER,
@@ -1341,8 +1656,9 @@
           pg.formula,
           pg.scene,
           pg.bullets.map((b) => b.text),
-          pg.shots.map((s) => [s.kind, s.from, s.frames, s.move, s.focus]),
+          pg.shots.map((s) => [s.kind, s.from, s.frames, s.move, s.focus, s.spot, s.tag]),
         ]),
+        style: style,
         theme: tokens.theme,
         motion: motion,
         brief: brief,
@@ -1367,6 +1683,22 @@
       shotCount: pages.reduce((n, pg) => n + (pg.shots ? pg.shots.length : 0), 0),
       sceneCount: sceneCount,
       briefMode: brief.mode,
+      /* 展示风格（怎么演）：meta.style = 具体档（auto 已判成具体那一种），stylePicked = 是不是自动判的 */
+      style: style,
+      styleLabel: styleLabel,
+      stylePicked: stylePicked,
+      styleSceneMax: Math.max(0, Math.round(Number(tokens.sceneMax) || 0)),
+      /* 这一档的演法（镜头 / 字号 / 转场 / 字幕 / 装饰）：界面与日志读这一份，不在别处再判一次 */
+      shotFocusMax: Math.max(0, roundInt(play.focusMax)),
+      cameraEstablish: str(play.moves && play.moves.establish),
+      cameraFocus: str(play.moves && play.moves.focus),
+      typeScale: typeScale,
+      decor: Number(play.decor) || 0,
+      maskTransition: !!play.mask,
+      layeredCards: !!play.cards,
+      captionWindowMs: captionWindowMs,
+      captionSize: Math.max(20, roundInt(play.captionSize) || 34),
+      sceneMax: SCENE_MAX,
       pace: pace,
       transition: transition,
       ease: str(motion.ease),
@@ -1377,6 +1709,44 @@
       buildKey: buildKey,
     };
 
+    /* 展示风格记一行：界面 / 日志一眼能看出这条片按哪种风格演（auto 也写明是自动判的） */
+    warnings.push(
+      "展示风格：" +
+        styleLabel +
+        "（" +
+        (stylePicked ? "按内容自动判定" : "初始化卡上选定") +
+        "）—— 缓动 " +
+        str(motion.ease) +
+        " / 入场 " +
+        str(motion.enter) +
+        " " +
+        Math.max(1, roundInt(motion.enterFrames)) +
+        " 帧 / 节拍 " +
+        Math.max(1, roundInt(motion.bpm)) +
+        " · 背景 " +
+        str(motion.bg) +
+        "；每页秒数按这套字速与节拍算",
+    );
+    /* 这一档怎么演：镜头 / 转场 / 字号 / 字幕 / 3D 预算，与上面那行同一个 style（不另判一次） */
+    warnings.push(
+      "这一档的演法：" +
+        play.moves.establish +
+        " 建立镜 + 最多 " +
+        Math.max(0, roundInt(play.focusMax)) +
+        " 个 " +
+        str(play.moves.focus) +
+        " 细节镜（学术特写图注与公式 / Motion 特写数字与对比 / 2.5D 分层卡片 / 3D 场景镜）· " +
+        (play.mask ? "遮罩转场" : "淡入淡出") +
+        " · 字号 × " +
+        typeScale +
+        " · 字幕一屏 " +
+        captionWindowMs +
+        "ms · 装饰 " +
+        (Number(play.decor) || 0) +
+        " · 3D 场景预算 " +
+        SCENE_MAX +
+        " 页",
+    );
     /* ⑧ 如实记下没做进来的东西（不静默） */
     const dropped = Array.isArray(plan.drop) ? plan.drop : [];
     if (dropped.length) warnings.push("按目标时长裁掉了 " + dropped.length + " 页（文献 → 公式 → 术语，正文一页不砍）：" + dropped.join("、"));
@@ -1401,7 +1771,12 @@
     if (withMedia.length) warnings.push("视频版 v1 不铺叠加媒体 / 自由版面对象（" + withMedia.length + " 页）：先出字与式，图另行替换");
     if (sceneDropped.length) {
       warnings.push(
-        "3D 场景页上限 " + SCENE_MAX + " 页（每个 ThreeCanvas 一个 WebGL context），这几页降级成纯文字：" + sceneDropped.join("、"),
+        "3D 场景页上限 " +
+          SCENE_MAX +
+          " 页（" +
+          styleLabel +
+          "档预算；每个 ThreeCanvas 一个 WebGL context），这几页降级成纯文字：" +
+          sceneDropped.join("、"),
       );
     }
     if (sceneCount) {
@@ -1585,5 +1960,9 @@
     planShots: planShots,
     shotAt: shotAt,
     SHOT_MAX: SHOT_MAX,
+    /* 展示风格怎么演（镜头 / 运镜 / 字号 / 装饰 / 字幕节奏 / 3D 预算）：只此一份，宿主不再另编一套 */
+    STYLE_PLAY: STYLE_PLAY,
+    stylePlayOf: stylePlayOf,
+    spotTargetsOf: spotTargetsOf,
   };
 });

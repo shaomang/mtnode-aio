@@ -12,7 +12,7 @@ description: 在研究视图里以课题为核心建知识图谱：Markdown 笔�
 
 ```
 <画布工作目录>/research/
-  research.json              课题元信息（title / question / createdAt / verify 口径 / initSplit 投料台分栏比例）
+  research.json              课题元信息（title / question / createdAt / verify 口径 / initSplit 资料库分栏比例）
   init-queue.json            初始化队列（用户投的料；agent 逐项处理并回写状态）
   notes/*.md                 笔记（真源；子目录随意，id = note:<相对路径>）
   core/*.md                  核心文件转出的正文（主稿在这里，与 notes/ 同权：进图谱、可被 [[标题]] 指到）
@@ -123,7 +123,9 @@ node mtnode-agent-skills/mtnode/research/scripts/research-queue.mjs doctor <rese
 
 ## 初始化队列（用户投完料后你要做的事）
 
-用户在研究视图的整块投料台里写课题、往「核心文件」「参考资料」两栏投料（文件 / 网页链接 / 自由文本 / 检索式都行），点「开始处理」——那一刻 `research/` 才建起来，`init-queue.json` 落盘，本会话（工作区就是 `research/`）收到一句「按技能处理研究初始化」。你按下面的顺序**串行**做，一件做完再下一件。
+用户在研究视图的整块**资料库**（原投料台）里写课题、往「核心文件」「参考资料」两栏投料（文件 / 网页链接 / 自由文本 / 检索式都行），点「开始处理」——那一刻 `research/` 才建起来，`init-queue.json` 落盘，本会话（工作区就是 `research/`）收到一句「按技能处理研究初始化」。你按下面的顺序**串行**做，一件做完再下一件。
+
+已经初始化过的库再加料，底栏那颗按钮会变成「补充处理」：`init-queue.json` 里**只追加新条目**，旧的 `done` 项连状态都不重写。这时你**只跑 `status` 不是 `done` 的项**（含 `failed` 被重排成 `pending` 的），并且顺手把老库缺的术语页第一层 / 3-Pass 变体 / 节级三档补齐 —— 只补缺的，已有文件与已有小节一个字都不改。写术语 / 公式页前先扫 `terms/`，`slug` 或标题命中就**复用那一页**（只追加 `sources` / `derives` / `relates`），绝不新建重复页。
 
 初始化只生成**课题那一篇** `notes/00-课题.md`（标题 + 核心问题），没有预置的「术语 / 论断 / 文献笔记」骨架：需要哪篇就按上面的笔记规范自己新建，别假设它们已存在，也别把正文里的 `[[…]]` 指向并不存在的模板笔记。
 
@@ -249,12 +251,12 @@ node mtnode-agent-skills/mtnode/research/scripts/research-queue.mjs doctor <rese
   - attention · §2：定义与复杂度对比
 
   ## 还能引申
-  > [!question] 待展开
-  > - [[块稀疏]]
-  > - [[Top-k 选择]]
+  - [[块稀疏]]
+  - [[Top-k 选择]]
   ```
 - `## 直觉` 是必需节：没有一段简化解释，这页就只是抄词典。
-- `## 还能引申` 里列的是**下一层候选**（`[[…]]` 指向还不存在的页也允许）；用户点「引申」后你才生成那些页。
+- `## 还能引申` 里列的是**下一层候选**（`[[…]]` 指向还不存在的页也允许）；用户点「引申」后你才生成那些页。候选写成普通列表行，**不要**套 `> [!question] 待展开` —— 那个 callout 会进「问题清单」，而问题清单只放用户自己写的待解问题。
+- **问题清单只归用户**：`> [!question]` 块一律由用户自己写。初始化 / 补跑 / 引申都不新建、不追加 question 块（课题那一篇里的 `核心问题` 是用户填的，原样留着）。
 - `kind: formula` / `symbol` 的页：公式 / 记号原样抄进 `## 公式 / 记号`，一个符号一行写进 `## 符号`；不许改写符号含义。
 
 ### 3) 节级三档（写进折叠文件，不另起文件）
@@ -284,10 +286,18 @@ node mtnode-agent-skills/mtnode/research/scripts/research-queue.mjs doctor <rese
 
 结论口径：写「已验证」必须同时给出 `[@key locator]` 或可复现的实验描述；给不出就留在 `unverified`，别用「据研究」「普遍认为」这种无主陈述冒充验证。
 
-## 文献层三条腿（都用，别只挑一条）
+## 文献层三条腿（工具都在，默认不动手）
+
+**默认不检索、不下载。** 联网检索与全文下载都很贵（一篇 PDF 转 md 要逐页读，几万 token 起），所以：
+
+- 只有**用户点名**才做：他投了检索式（队列项 `source: "query"`）、贴了某篇的链接 / DOI / arXiv 编号，或在界面上点「获取文献」。
+- 你自己的判断（「这里该有一篇文献支撑」）**不是**用户点名：缺文献就在回执里写清缺什么、给一条建议检索式，由用户决定。**不许**自行扩库、自行下载 PDF、自行把全文转成 md。
+- 正文里的 `[@key]` 不在文献库时，别去检索补它（键照原文保留）。
+
+下面是「用户要的时候走哪条」，不是「每轮都要跑一遍」：
 
 1. **本地键**：BibTeX / CSL-JSON 导入 → `library.json`，`citeKey` 是引用键（重键自动补 `b/c`）。
-2. **在线元数据**：DOI → Crossref；标题检索 → Crossref / arXiv / Semantic Scholar。抓回来先落库再引用，**先取后引**。
+2. **在线元数据**：DOI → Crossref；标题检索 → Crossref / arXiv / Semantic Scholar。抓回来先落库再引用（先取后引）。
 3. **PDF 全文**：`literature/pdf/<key>.md`，抽出来的正文可直接 grep 定位原文页码/章节，用于「这句话出处是哪一段」。
 
 引用一律写 `[@key]`；引用别人的论断时把 locator 写上（页码 / 表格号 / 小节），这是「有据可查」的最低要求。
@@ -296,6 +306,7 @@ node mtnode-agent-skills/mtnode/research/scripts/research-queue.mjs doctor <rese
 
 - 只改 Markdown 正文（与 `library.json`、`init-queue.json` 的状态位）；`graph.json` 只由界面「转为图谱」或 `research-lit.mjs graph --write` 生成，**不要手写**；`changes.jsonl` 不要手写。
 - `init-queue.json` 只通过 `research-queue.mjs set` 改状态——手改容易漏 `phase`，界面会卡在「处理中」；`library.json` 只通过 `research-lit.mjs lib add`（或界面导入）写，别手抄 JSON。
+- **不自行补文献**：默认不联网检索、不下载全文（口径见「文献层三条腿」一节）；只有用户的检索式 / 链接 / 「获取文献」才触发联网。
 - 需要「体检 / 折叠 / 入库 / 建图」这类活，先用上面那两条命令（`research-lit.mjs` / `research-queue.mjs`），**不要另写临时脚本**：内核 `renderer/research-core.js` 是唯一真源，另写一套必然与界面口径不一致。
 - 新增论断 = 新增 `> [!claim]` callout，不要另起一个孤立 md 文件（孤立节点等于没写）。
 - 每条 `claim` 至少要有一条出边（引用 / 依赖 / 反驳），否则图谱上就是悬空断言。

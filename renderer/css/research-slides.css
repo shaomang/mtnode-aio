@@ -566,6 +566,9 @@
   font-size: 12.5px;
   outline: none;
   resize: vertical;
+  /* 控件自身的明暗口径也跟着演示主题（插入符 / 数字微调箭头 / 文本选中）：
+     base.css 把所有 input/textarea 钉成 color-scheme:dark，浅色主题下插入符是白的。 */
+  color-scheme: var(--rs-slide-scheme, dark);
 }
 .rs-deck-win input.rs-deck-input:focus,
 .rs-deck-win textarea.rs-deck-input:focus,
@@ -604,9 +607,10 @@
 .rs-deck-segb:hover {
   color: var(--rs-slide-primary, var(--cyan));
 }
+/* 选中态同样只描边不上色（研究界面口径：按钮不做实心填充） */
 .rs-deck-segb.is-on {
-  color: var(--rs-slide-paper, var(--panel));
-  background: var(--rs-slide-primary, var(--cyan));
+  color: var(--rs-slide-primary, var(--cyan));
+  background: color-mix(in srgb, var(--rs-slide-primary, var(--cyan)) 12%, transparent);
   border-color: var(--rs-slide-primary, var(--cyan));
 }
 
@@ -833,8 +837,8 @@
   align-items: center;
   justify-content: flex-end;
   gap: 3px;
-  height: 22px;
-  padding: 0 4px;
+  height: 30px;
+  padding: 0 5px;
   border: 1px solid var(--rs-slide-rule, var(--bd));
   border-radius: 5px;
 }
@@ -842,13 +846,6 @@
   width: 6px;
   height: 6px;
   border-radius: 50%;
-}
-.rs-deck-preset-t {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 11px;
-  color: var(--rs-slide-ink, var(--ink));
 }
 .rs-deck-crow {
   display: flex;
@@ -925,6 +922,65 @@
 }
 .rs-deck-vsec .rs-deck-hint {
   line-height: 1.5;
+}
+
+/* ── 右栏「成片」（视频块末尾）：封面帧 + 规格 + 播放 / 在文件夹中显示 ──────
+   渲染一完成就在这儿落一份交付（不再只有 toast 与状态行）；第一次出现闪一次边框，
+   之后重建（切风格 / 改页）不再闪。失败态同一块里给原因 + 宿主日志 + 重试。 */
+.rs-deck-vfilm {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--rs-slide-rule, var(--bd));
+  border-radius: 8px;
+}
+.rs-deck-vfilm.is-new {
+  animation: rs-deck-vfilm-flash 1.2s ease-out 1;
+}
+@keyframes rs-deck-vfilm-flash {
+  0% {
+    opacity: 0.4;
+    box-shadow: 0 0 0 0 transparent;
+  }
+  35% {
+    opacity: 1;
+    box-shadow: 0 0 0 2px var(--rs-slide-primary, var(--cyan));
+  }
+  100% {
+    opacity: 1;
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+.rs-deck-vshot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  border: 1px solid var(--rs-slide-rule, var(--bd2));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--rs-slide-ink, var(--ink)) 8%, transparent);
+}
+.rs-deck-vcover {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.rs-deck-vshot-ph {
+  font-size: 11px;
+  color: var(--rs-slide-muted, var(--muted));
+}
+.rs-deck-vfilm-btns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.rs-deck-vfilm-btns .rs-deck-btn {
+  padding: 2px 9px;
+  font-size: 11.5px;
 }
 
 /* ── 右栏：页面元素（哪些显示 / 哪些不显示）─────────────────────────────
@@ -1012,8 +1068,8 @@
 }
 .rs-deck-ob.is-on {
   border-color: var(--rs-slide-primary, var(--cyan));
-  color: var(--rs-slide-paper, var(--panel));
-  background: var(--rs-slide-primary, var(--cyan));
+  color: var(--rs-slide-primary, var(--cyan));
+  background: color-mix(in srgb, var(--rs-slide-primary, var(--cyan)) 12%, transparent);
 }
 /* 对象清单：一行一件，点它选中；眼睛 / 锁在右边 */
 .rs-deck-orows {
@@ -1116,8 +1172,8 @@
   border-color: var(--rs-slide-ink, var(--ink));
 }
 .rs-deck-colorchip.is-on {
-  color: var(--rs-slide-paper, var(--panel));
-  background: var(--rs-slide-primary, var(--cyan));
+  color: var(--rs-slide-primary, var(--cyan));
+  background: color-mix(in srgb, var(--rs-slide-primary, var(--cyan)) 12%, transparent);
   border-color: var(--rs-slide-primary, var(--cyan));
 }
 .rs-deck-colorpick {
@@ -1274,9 +1330,9 @@
 }
 
 /* ── 初始化卡（renderer/app-research-slides-init.js）──────────────────────
-   三块同屏：版本 / 风格（6 套 × 明暗缩略图）/ 额外指示；底部一句落盘提示与两个动作。
-   颜色只吃 --rs-slide-*（卡按选中的风格变量走，取不到回落到应用自己的 --panel / --ink / --bd），
-   尺寸 / 圆角 / 阴影同理 —— 选哪套风格，这张卡就长哪套，不会「卡是旧配色、演示是新配色」。
+   四块同屏：做法 / 版本 / 风格（展示风格 chips + 一行颜色主题色板）/ 额外指示；底部一句落盘提示与两个动作。
+   颜色只吃 --rs-slide-*（卡按选中的颜色主题变量走，取不到回落到应用自己的 --panel / --ink / --bd），
+   尺寸 / 圆角 / 阴影同理 —— 选哪套主题，这张卡就长哪套，不会「卡是旧配色、演示是新配色」。
    浮层是 persistent：幕布不接「点外面关」，关闭只走窗内 ✕ / 取消 / Esc（js 那边对应的）。 */
 .rs-deck-init-curtain {
   position: fixed;
@@ -1400,13 +1456,15 @@
   color: var(--rs-slide-muted, var(--muted));
 }
 
-/* ① 版本 */
+/* ①②③ 档位容器：做法 / 版本 / 展示风格都用这一行 flex */
 .rs-deck-init-modes {
   display: flex;
   gap: 8px;
 }
-/* ① 做法：档位按钮（与版本按钮同款，但类名分开 —— 版本档只数 .rs-deck-init-mode 那三个） */
-.rs-deck-init-tier {
+/* ① 做法 / ② 版本 / ③ 展示风格：同款档位按钮（类名分开 —— 各自只数自己那几颗） */
+.rs-deck-init-tier,
+.rs-deck-init-mode,
+.rs-deck-init-style {
   flex: 1 1 0;
   min-width: 0;
   display: flex;
@@ -1419,32 +1477,9 @@
   text-align: left;
   cursor: pointer;
 }
-.rs-deck-init-tier b {
-  font-size: 12.5px;
-  font-weight: 700;
-}
-.rs-deck-init-tier:hover {
-  border-color: var(--rs-slide-primary, var(--cyan));
-}
-.rs-deck-init-tier.is-on {
-  border-color: var(--rs-slide-primary, var(--cyan));
-  background: color-mix(in srgb, var(--rs-slide-primary, var(--cyan)) 10%, transparent);
-  box-shadow: inset 0 0 0 1px var(--rs-slide-primary, var(--cyan));
-}
-.rs-deck-init-mode {
-  flex: 1 1 0;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 8px 10px;
-  border: 1px solid var(--rs-slide-rule, var(--bd2));
-  border-radius: 9px;
-  background: transparent;
-  text-align: left;
-  cursor: pointer;
-}
-.rs-deck-init-mode b {
+.rs-deck-init-tier b,
+.rs-deck-init-mode b,
+.rs-deck-init-style b {
   font-size: 12.5px;
   font-weight: 700;
 }
@@ -1452,10 +1487,14 @@
   font-size: 11px;
   color: var(--rs-slide-muted, var(--muted));
 }
-.rs-deck-init-mode:hover {
+.rs-deck-init-tier:hover,
+.rs-deck-init-mode:hover,
+.rs-deck-init-style:hover {
   border-color: var(--rs-slide-primary, var(--cyan));
 }
-.rs-deck-init-mode.is-on {
+.rs-deck-init-tier.is-on,
+.rs-deck-init-mode.is-on,
+.rs-deck-init-style.is-on {
   border-color: var(--rs-slide-primary, var(--cyan));
   background: color-mix(in srgb, var(--rs-slide-primary, var(--cyan)) 10%, transparent);
   box-shadow: inset 0 0 0 1px var(--rs-slide-primary, var(--cyan));
@@ -1465,81 +1504,72 @@
   color: var(--rs-slide-muted, var(--muted));
 }
 
-/* ② 风格：6 列 × 明 / 暗两行（12 张缩略图） */
-.rs-deck-init-grid {
-  display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
-  gap: 8px;
-}
-@media (max-width: 900px) {
-  .rs-deck-init-grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-}
-.rs-deck-init-card {
-  min-width: 0;
+/* ③ 颜色主题：只占一行 —— 纸色圆底 + 主色点 + 点色点（名字在悬停 title 里），行尾两格 明 / 暗 */
+.rs-deck-init-palette {
   display: flex;
-  flex-direction: column;
-  gap: 3px;
-  padding: 5px;
-  border: 1px solid var(--rs-slide-rule, var(--bd2));
-  border-radius: 9px;
-  background: transparent;
-  text-align: left;
-  cursor: pointer;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
 }
-.rs-deck-init-card:hover {
-  border-color: var(--rs-slide-primary, var(--cyan));
-}
-.rs-deck-init-card.is-on {
-  border-color: var(--rs-slide-primary, var(--cyan));
-  box-shadow: inset 0 0 0 1px var(--rs-slide-primary, var(--cyan));
-}
-.rs-deck-init-thumb {
-  position: relative;
+.rs-deck-init-swatch {
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   justify-content: center;
-  height: 46px;
-  overflow: hidden;
-  border: 1px solid transparent;
-  border-radius: 6px;
+  gap: 3px;
+  min-width: 46px;
+  height: 26px;
+  padding: 0 7px;
+  border: 1px solid var(--rs-slide-rule, var(--bd2));
+  border-radius: 8px;
+  background: transparent;
+  cursor: pointer;
 }
-.rs-deck-init-aa {
-  font-size: 20px;
-  font-style: normal;
-  font-weight: 700;
+.rs-deck-init-swatch:hover {
+  border-color: var(--rs-slide-primary, var(--cyan));
+}
+.rs-deck-init-swatch.is-on {
+  border-color: var(--rs-slide-primary, var(--cyan));
+  box-shadow: inset 0 0 0 1px var(--rs-slide-primary, var(--cyan));
+}
+.rs-deck-init-dot {
+  flex: 0 0 auto;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+}
+.rs-deck-init-dot.is-accent {
+  width: 7px;
+  height: 7px;
+}
+/* 明 / 暗：色板行尾那两格 */
+.rs-deck-init-mm {
+  display: flex;
+  gap: 4px;
+  margin-left: auto;
+}
+.rs-deck-init-mcell {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--rs-slide-rule, var(--bd2));
+  border-radius: 8px;
+  background: transparent;
+  cursor: pointer;
   line-height: 1;
 }
-.rs-deck-init-bar {
-  position: absolute;
-  left: 0;
-  bottom: 0;
-  width: 66%;
-  height: 4px;
-  background: currentColor;
+.rs-deck-init-mcell:hover {
+  border-color: var(--rs-slide-primary, var(--cyan));
+  color: var(--rs-slide-primary, var(--cyan));
 }
-.rs-deck-init-bar.is-accent {
-  left: auto;
-  right: 0;
-  width: 34%;
-}
-.rs-deck-init-t {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 11.5px;
-  font-weight: 600;
-}
-.rs-deck-init-f {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 10.5px;
-  color: var(--rs-slide-muted, var(--muted));
+.rs-deck-init-mcell.is-on {
+  border-color: var(--rs-slide-primary, var(--cyan));
+  color: var(--rs-slide-primary, var(--cyan));
+  background: color-mix(in srgb, var(--rs-slide-primary, var(--cyan)) 12%, transparent);
+  box-shadow: inset 0 0 0 1px var(--rs-slide-primary, var(--cyan));
 }
 
-/* ③ 额外指示：一行一个字段，输入框下一排 chips */
+/* ④ 额外指示：一行一个字段，输入框下一排 chips */
 .rs-deck-init-rows {
   display: flex;
   flex-direction: column;
@@ -1623,34 +1653,24 @@
   resize: vertical;
   line-height: 1.6;
 }
-
-/* 边界那句：固定文案，视觉上要压得住，不能被当成又一条 hint */
-.rs-deck-init-note {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  padding: 8px 10px;
-  border-left: 3px solid var(--rs-slide-accent, var(--red));
-  border-radius: 0 8px 8px 0;
-  background: color-mix(in srgb, var(--rs-slide-accent, var(--red)) 8%, transparent);
+/* 卡里的文字框同样吃卡的主题：`css/base.css` 的 `input[type="text"]` / `input[type="number"]`
+   （0-1-1）把底色刷成 --code（近黑），而卡上「受众 / 场合 / 重点 / 时长」这几颗只有
+   .rs-deck-init-input（0-1-0）——底色被盖掉，字色又走卡自己的深色 ink，
+   浅色风格下就是「黑框里一行黑字」。这里按 0-2-1 起把底色 / 字色 / 边框整组收回 --rs-slide-*，
+   与 .rs-deck-win 的 .rs-deck-input 同一口径；选哪套风格 / 明暗，框就跟着换。 */
+.rs-deck-init-win input.rs-deck-init-input,
+.rs-deck-init-win input.rs-deck-init-num,
+.rs-deck-init-win textarea.rs-deck-init-extra {
+  background: var(--rs-slide-paper, var(--panel));
+  color: var(--rs-slide-ink, var(--ink));
+  border-color: var(--rs-slide-rule, var(--bd2));
+  color-scheme: var(--rs-slide-scheme, dark);
 }
-.rs-deck-init-note-i {
-  flex: 0 0 auto;
-  font-weight: 700;
-  color: var(--rs-slide-accent, var(--red));
-}
-.rs-deck-init-note-t {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  font-size: 12px;
-}
-.rs-deck-init-note-t b {
-  font-weight: 700;
-}
-.rs-deck-init-note-t span {
-  color: var(--rs-slide-muted, var(--muted));
-  font-size: 11.5px;
+.rs-deck-init-win input.rs-deck-init-input:focus,
+.rs-deck-init-win input.rs-deck-init-num:focus,
+.rs-deck-init-win textarea.rs-deck-init-extra:focus {
+  border-color: var(--rs-slide-primary, var(--cyan));
+  box-shadow: none;
 }
 
 /* 底部动作 */
@@ -1695,15 +1715,17 @@
   border-color: var(--rs-slide-primary, var(--cyan));
   color: var(--rs-slide-primary, var(--cyan));
 }
+/* 主按钮同样只描边不上色（研究界面口径：按钮不做实心填充） */
 .rs-deck-init-btn.primary {
   border-color: var(--rs-slide-primary, var(--cyan));
-  background: var(--rs-slide-primary, var(--cyan));
-  color: var(--rs-slide-paper, #fff);
+  background: transparent;
+  color: var(--rs-slide-primary, var(--cyan));
   font-weight: 600;
 }
 .rs-deck-init-btn.primary:hover:not(:disabled) {
-  color: var(--rs-slide-paper, #fff);
-  filter: brightness(1.06);
+  color: var(--rs-slide-primary, var(--cyan));
+  background: transparent;
+  filter: none;
 }
 .rs-deck-init-btn:disabled {
   opacity: 0.5;

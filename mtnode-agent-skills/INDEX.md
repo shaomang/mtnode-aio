@@ -115,7 +115,7 @@
   - 文件：`mtnode/grill-me/SKILL.md`
 - **mtnode-local-media** — 本地语音与视频分析：听音频 / 做字幕 / 看视频用本机 audio_subtitle、audio_transcribe、ffmpeg，别另装 ASR。
   - 文件：`mtnode/local-media/SKILL.md`
-- **mtnode-mcp-server** — MTNode MCP 服务端（第三方接进来操作）：从 MTNode 外面经 MCP 操作本机 MTNode：15 个工具、先读图拿 contentHash、权限与审计。
+- **mtnode-mcp-server** — MTNode MCP 服务端（第三方接进来操作）：从 MTNode 外面经 MCP 操作本机 MTNode：16 个工具、先读图拿 contentHash、权限与审计。
   - 文件：`mtnode/mcp-server/SKILL.md`
 - **mtnode-media-gen-nodes** — 音乐/语音/视频生成节点：music_gen / yue_gen / breeze_gen / video_gen：输出路径、抽卡、单任务互斥与媒体端子。
   - 文件：`mtnode/media-gen-nodes/SKILL.md`

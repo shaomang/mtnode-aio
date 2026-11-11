@@ -34,6 +34,11 @@
 /* 逐页识图的页数上限：识图是「一页一次模型调用」，页面极多的扫描件先截断并如实告知 */
 const PDF_VISION_MAX_PAGES = 60;
 
+/* 文本层里检测到这么多处疑似公式，就认为「公式没有被还原成 LaTeX」。
+   文本层只有字形与坐标、没有排版结构：`Kβ/√n` 抽出来是 `Kf3/ n`、`Xi` 是 `X1`，
+   公式多的 PDF 只有逐页识图能写成 $…$ / $$…$$。1–2 处多半是正文里零星的 ± ≈，不值得整篇识图。 */
+const PDF_MATH_VISION_MIN = 3;
+
 let _pdfRunSeq = 0;
 
 function pdfT(s, vars) {
@@ -285,7 +290,29 @@ async function pdfStructuredMarkdown(pdfPath, opts) {
   };
 }
 
-/** 文本层能不能直接交付：乱码 / 大半页没文字 → 一律降级去识图。
+/** 这次文本层里检测到多少处疑似公式（pdf-read.js 的 formulas[]；老结果没这个字段按 0 算） */
+function pdfFormulaCount(st) {
+  return st && Array.isArray(st.formulas) ? st.formulas.length : 0;
+}
+/** 文本层把公式丢了（够多，值得换逐页识图把公式还原成 LaTeX） */
+function pdfMathUnrestored(st) {
+  return pdfFormulaCount(st) >= PDF_MATH_VISION_MIN;
+}
+/** 识图没成时的兜底正文：文本层照给，但把「公式没有还原成 LaTeX」写在正文最前面（不静默降级） */
+function pdfWarnMathUnrestored(markdown, n) {
+  const cnt = Number(n) || 0;
+  return (
+    "> [!warning] " +
+    pdfT(
+      "这 {n} 处公式没有还原成 LaTeX：文本层只有字形、没有排版结构（`Kβ/√n` 会抽成 `Kf3/ n`）。要带 LaTeX 的原文，配一个能识图的模型后重跑一次。",
+      { n: cnt },
+    ) +
+    "\n\n" +
+    String(markdown || "")
+  );
+}
+
+/** 文本层能不能直接交付：乱码 / 大半页没文字 / 公式还原不出 LaTeX → 一律降级去识图。
     返回 { usable, reason }（reason 会写进进度窗，用户看得见为什么改道）。 */
 function pdfTextLayerUsable(st) {
   if (!st || !st.ok) return { usable: false, reason: "" };
@@ -300,6 +327,13 @@ function pdfTextLayerUsable(st) {
     return {
       usable: false,
       reason: pdfT("超过一半的页面抽不到文字（可能是扫描件），改走逐页识图"),
+    };
+  }
+  /* 公式：字抽得出来，排版结构抽不出来 —— 不改道的话原文里一个 LaTeX 都没有 */
+  if (pdfMathUnrestored(st)) {
+    return {
+      usable: false,
+      reason: pdfT("检测到 {n} 处公式：文本层还原不出 LaTeX，改走逐页识图", { n: pdfFormulaCount(st) }),
     };
   }
   return { usable: true, reason: "" };
@@ -950,6 +984,10 @@ async function pdfMaterializeFigures(markdown, parse, pdfPath, ctl, opts) {
   for (const [key, rel] of figOk) {
     text = pdfReplaceAnchorLine(text, new RegExp("\\{\\{\\s*FIG:" + pdfEscRe(key) + "(\\.png)?\\s*\\}\\}"), rel);
   }
+  /* 落了盘的图清单（name 不含扩展名，rel 相对 md 目录）：识图稿里没有 {{FIG}} 锚点，
+     研究投料拿它给识图稿补一份「原文图元」索引，图不至于躺在 assets/ 里没人引用 */
+  out.written = [];
+  for (const [key, rel] of figOk) out.written.push({ name: key, rel });
   for (const [key, msg] of figBad) {
     text = pdfReplaceAnchorLine(
       text,
@@ -994,6 +1032,7 @@ async function pdfMaterializeFigures(markdown, parse, pdfPath, ctl, opts) {
           const nm = await pdfFigureWrite(target, "p" + n + ".png", r.bytes);
           mark = target.rel + "/" + nm;
           out.pages++;
+          out.written.push({ name: "p" + n, rel: mark });
         } catch (e) {
           err = String((e && e.message) || e) || pdfT("写入失败");
         }
@@ -1134,6 +1173,20 @@ async function openPdfParse(pdfPath, opts) {
     return await pdfFinish(path, vs.markdown, Object.assign({}, vs, { tier: "vision" }), ctl, opts);
   }
 
+  /* 只为公式改道的（文本层本身干净、字也认得出）：识图没成（没配识图模型 / 没同意外传页面图 /
+     没有页面渲染通道）就把文本层照给 —— 别让一份能读的论文因为「公式要 LaTeX」整篇失败，
+     但必须把「公式没还原」写在正文最前面，不能静默。 */
+  if (st.ok && String(st.markdown || "").trim() && pdfMathUnrestored(st) && !(st.quality && st.quality.garbled)) {
+    ctl.note(pdfT("识图没成，退回文本层（公式未还原成 LaTeX）"));
+    return await pdfFinish(
+      path,
+      pdfWarnMathUnrestored(st.markdown, pdfFormulaCount(st)),
+      Object.assign({}, st, { tier: "structured" }),
+      ctl,
+      opts,
+    );
+  }
+
   /* ③ 可读错误 */
   const err = pdfReadableError(st, vs);
   if (ctl.ui) ctl.ui.fail(err);
@@ -1145,3 +1198,9 @@ async function openPdfParse(pdfPath, opts) {
 window.openPdfParse = openPdfParse;
 window.pdfStructuredMarkdown = pdfStructuredMarkdown;
 window.pdfIsPdfPath = pdfIsPdfPath;
+/* 研究投料（app-research-init.js）按同一份判据决定「要不要为公式改走识图」 */
+window.pdfFormulaCount = pdfFormulaCount;
+window.pdfMathUnrestored = pdfMathUnrestored;
+window.pdfWarnMathUnrestored = pdfWarnMathUnrestored;
+window.pdfVisionParse = pdfVisionParse;
+window.pdfRunNew = pdfRunNew;

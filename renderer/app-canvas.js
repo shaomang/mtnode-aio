@@ -10653,6 +10653,10 @@ function nodeElement(node) {
       p.style.display = "none";
     }
     const linkedIn = portLinkedNodes(node, "in", i);
+    /* 已挂线的端子加 .linked：样式把空槽画成「被插头插到底」的插芯（css/canvas.css）。
+       判据就是上面那份 portLinkedNodes（与 tooltip / 切断同一口径），只加视觉状态，
+       不动几何与命中区；落线 / 断线都走 renderCanvas 全量重绘，状态自然刷新。 */
+    if (linkedIn.length) p.classList.add("linked");
     /* 数组（批量）入参端子：徽标带「当前挂几条线」（如 参考图 ×3），tooltip 说清 JS 里拿到数组 */
     const fnInParam =
       isFnTNode && i > 0
@@ -10940,7 +10944,8 @@ function nodeElement(node) {
   if (typeof NParam === "object" && NParam && typeof NParam.eligible === "function" && NParam.eligible(node)) {
     const npWires = NParam.paramWires(node);
     const pp = document.createElement("div");
-    pp.className = "port in np-port" + (npWires.length ? "" : " spare");
+    pp.className =
+      "port in np-port" + (npWires.length ? " linked" : " spare");
     pp.dataset.node = node.id;
     pp.dataset.idx = String(PARAM_IN_INDEX);
     pp.title =
@@ -10976,7 +10981,8 @@ function nodeElement(node) {
       (w) => w.to === node.id && isGroupWire(w),
     );
     const gp = document.createElement("div");
-    gp.className = "port in grp-port" + (gWires.length ? "" : " spare");
+    gp.className =
+      "port in grp-port" + (gWires.length ? " linked" : " spare");
     gp.dataset.node = node.id;
     gp.dataset.idx = String(GROUP_IN_INDEX);
     gp.title =
@@ -11058,6 +11064,8 @@ function nodeElement(node) {
     p.dataset.node = node.id;
     p.dataset.fromIndex = String(oi);
     const linkedOut = portLinkedNodes(node, "out", oi);
+    /* 与输入端子同一口径：这颗输出端子上确实挂着线 → .linked（被线插入的样式） */
+    if (linkedOut.length) p.classList.add("linked");
     let outTitle = "";
     if (isFnTNode) {
       const pl = fnToolParamList(node, "out");
@@ -11171,7 +11179,7 @@ function nodeElement(node) {
       (w) => isGroupWire(w) && String(w.sup || "") === String(node.id),
     );
     const gp = document.createElement("div");
-    gp.className = "port out grp-out" + (sWires.length ? "" : " spare");
+    gp.className = "port out grp-out" + (sWires.length ? " linked" : " spare");
     gp.dataset.node = node.id;
     gp.dataset.fromIndex = String(GROUP_OUT_INDEX);
     gp.title =
@@ -17987,7 +17995,11 @@ function buildBody(node, body) {
         p.className =
           "port out super-port super-inner-bridge" +
           (info.ctrl ? " ctrl" : "") +
-          (info.img ? " img" : "");
+          (info.img ? " img" : "") +
+          /* 里侧桥接端子 = 本层外侧输入端子：挂上内部来线就画成「被线插入」 */
+          (portLinkedNodes(node, "out", pi, "inner-bridge").length
+            ? " linked"
+            : "");
         p.dataset.node = node.id;
         p.dataset.fromIndex = String(pi);
         p.title = info.title;
@@ -18010,7 +18022,11 @@ function buildBody(node, body) {
         p.className =
           "port in super-port super-inner-sink" +
           (info.ctrl ? " ctrl" : "") +
-          (info.img ? " img" : "");
+          (info.img ? " img" : "") +
+          /* 里侧汇流端子 = 本层外侧输出端子：挂上内部来线就画成「被线插入」 */
+          (portLinkedNodes(node, "in", poi, "inner-sink").length
+            ? " linked"
+            : "");
         p.dataset.node = node.id;
         p.dataset.idx = String(poi);
         p.title = info.title;

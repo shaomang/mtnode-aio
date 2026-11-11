@@ -2886,7 +2886,9 @@ function mountSuperFocusPorts(host) {
     p.className =
       "port out super-port super-inner-bridge super-focus-port" +
       (info.ctrl ? " ctrl" : "") +
-      (info.img ? " img" : "");
+      (info.img ? " img" : "") +
+      /* 与壳内桥接端子同一口径：内侧挂上线 → .linked（被线插入的样式） */
+      (portLinkedNodes(host, "out", pi, "inner-bridge").length ? " linked" : "");
     p.dataset.node = host.id;
     p.dataset.fromIndex = String(pi);
     p.title = info.title;
@@ -2907,7 +2909,9 @@ function mountSuperFocusPorts(host) {
     p.className =
       "port in super-port super-inner-sink super-focus-port" +
       (info.ctrl ? " ctrl" : "") +
-      (info.img ? " img" : "");
+      (info.img ? " img" : "") +
+      /* 与壳内汇流端子同一口径：内侧挂上线 → .linked（被线插入的样式） */
+      (portLinkedNodes(host, "in", poi, "inner-sink").length ? " linked" : "");
     p.dataset.node = host.id;
     p.dataset.idx = String(poi);
     p.title = info.title;
@@ -11844,6 +11848,23 @@ function confirmDialog(message, opts) {
       p.className = "mt-dialog-msg";
       p.textContent = String(message || "");
       body.appendChild(p);
+      /* opts.checkbox = { label, checked }：多一颗「不再提醒」勾选（返回值形状不变 ——
+         勾没勾只在点确认时经 opts.onCheckbox(v) 回给调用方，取消一律不回调）。 */
+      if (opts.checkbox && opts.checkbox.label) {
+        const wrap = document.createElement("label");
+        wrap.className = "mt-dialog-check";
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.checked = !!opts.checkbox.checked;
+        cb.onchange = () => {
+          try {
+            opts.onCheckbox && opts.onCheckbox(!!cb.checked);
+          } catch (_) {}
+        };
+        wrap.appendChild(cb);
+        wrap.appendChild(document.createTextNode(" " + String(opts.checkbox.label)));
+        body.appendChild(wrap);
+      }
     }
     if (foot) foot.innerHTML = "";
     let done = false;

@@ -1,4 +1,4 @@
-﻿# MTNode agent runtime — dsh 0.2 profile patch layer.
+# MTNode agent runtime — dsh 0.2 profile patch layer.
 #
 # 形态变更（0.2）：本文件不再是「完整运行时组合」，而是叠加在内置 `sdk` profile 之上的
 # 补丁层。sdk profile 由两层 bundle 组成 —— @deepseek-ai/dsh-base（核心脊柱）+
@@ -530,6 +530,15 @@
       name: './longtask-plugin.mjs'
       disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
 
+    # MTNode 截屏标注工具:mtnode_screenshot 让 Agent 请用户「截一块屏 + 标注两笔」,
+    # 拿回成品 PNG 的绝对路径 + 编号清单（坐标按裁剪图原点左上）。抢屏 / 浮层 / 落盘 /
+    # 剪贴板全在宿主（主进程 screenshot-overlay.js + 浮层页 renderer/screenshot.html）,
+    # 插件只经同一条桥转发;抢屏之前宿主会先弹询问窗,用户拒绝 = canceled,不是失败。
+    # 纯净模式（MTNODE_PURE）与 BongoChat 隔离态不挂:那两档没有宿主窗口。
+    - id: mtnode-screenshot
+      name: './screenshot-plugin.mjs'
+      disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
+
     # MTNode 素材库 / 截图工具:mtnode_assets 让「准备素材」类运行能列出素材库
     # （三视图等人设参考）、读出一条内容的绝对路径（交给 mtnode_vision 或交付端子），
     # 并把 MTNode 窗口当下拍成一张静帧 PNG 落到指定绝对路径。素材库根与交付目录都在
@@ -651,9 +660,10 @@
 
 # ── user plugins (managed from MTNode settings) ──
 
-- id: user-mcp-mw9hu6wl
+
+- id: user-mcp-mwbvvwlg
   name: '@deepseek-ai/dsh-mcp-client'
   config:
     serverName: 'mtnode-self'
     transport: 'streamable-http'
-    url: 'http://127.0.0.1:63739/mcp?token=ea09108fc02ad41157f3d55c310cc7c99ace02b3b4af4519'
+    url: 'http://127.0.0.1:51578/mcp?token=ccd9112000dd8426cf1a78291bcd85d496a4f3dd91525f6d'

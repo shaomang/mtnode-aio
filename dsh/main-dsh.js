@@ -117,6 +117,22 @@ function createDshAdapter(opts) {
   const { dataDir, errLog, log } = opts
   const appRoot = opts.appRoot || path.join(__dirname, '..')
   const dshHome = path.join(dataDir, 'dsh-home')
+  /* 内置技能树的源目录：有**可写源码根**就用它，否则退回 appRoot。
+     为什么不能直接用 appRoot：打包态 appRoot 在 app.asar 里，而作者（ms2308）跑的就是
+     dist\win-unpacked 那份 exe —— 他在设置里「覆盖到源码」写的是磁盘上的 SKILL.md，
+     若这里仍从 asar 拷贝，写回来的正文永远同步不进 dsh-home（症状：写了没生效）。
+     判定口径与 agent-prompts-lib 的 contentRoot 完全同一份。 */
+  const skillsSourceRoot = (() => {
+    try {
+      const r = require('../agent-prompts-lib.js').contentRoot({
+        appRoot,
+        execPath: process.execPath,
+      })
+      return r || appRoot
+    } catch {
+      return appRoot
+    }
+  })()
 
   let child = null
   let rl = null
@@ -691,7 +707,7 @@ function createDshAdapter(opts) {
 
     syncMtnodeAgentSkills() {
       try {
-        return syncMtnodeAgentSkills(dshHome, appRoot)
+        return syncMtnodeAgentSkills(dshHome, skillsSourceRoot, dataDir)
       } catch (err) {
         return { ok: false, error: (err && err.message) || String(err) }
       }
@@ -700,7 +716,7 @@ function createDshAdapter(opts) {
     mtnodeAgentSkillIndex() {
       try {
         this.syncMtnodeAgentSkills()
-        return mtnodeAgentSkillIndex(dshHome, appRoot)
+        return mtnodeAgentSkillIndex(dshHome, skillsSourceRoot, dataDir)
       } catch (err) {
         return { ok: false, error: (err && err.message) || String(err) }
       }
@@ -709,7 +725,7 @@ function createDshAdapter(opts) {
     mtnodeAgentSkillGet(name) {
       try {
         this.syncMtnodeAgentSkills()
-        return getMtnodeAgentSkill(dshHome, name)
+        return getMtnodeAgentSkill(dshHome, name, dataDir)
       } catch (err) {
         return { ok: false, error: (err && err.message) || String(err) }
       }

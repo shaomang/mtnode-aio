@@ -70,6 +70,11 @@ const procHost = require("./main-proc-host.js");
 const { createFnRuntime } = require("./fn-runtime.js");
 /* 桌面 / 窗口截图（函数节点的 mtnode.screenShot 走它；拍完落盘在数据目录下 captures/） */
 const { createDesktopCapture } = require("./desktop-capture.js");
+/* 截图标注工具（Ctrl+Alt+A）：拍屏 → 全屏浮层里框选 + 标注 → 成品落 captures/、
+   带编号备注的 Markdown 写进剪贴板。与 desktop-capture.js 是「上层工具 / 底层抓屏」的关系，
+   口径见 screenshot-overlay.js 文件头。 */
+const { createScreenshotTool } = require("./screenshot-overlay.js");
+let screenshotTool = null;
 const zlib = require("zlib");
 const http = require("http");
 const https = require("https");
@@ -964,6 +969,18 @@ let _desktopCapture = null;
 function desktopCapture() {
   if (!_desktopCapture) _desktopCapture = desktopCaptureOf();
   return _desktopCapture;
+}
+/* 截图标注工具的抓屏实例：它拍的是「冻结画面」这种中间产物（浮层关掉即删），
+   单独一个 captures/raw/ 子目录，不与用户要的成品混在一起。 */
+let _shotCapture = null;
+function shotCapture() {
+  if (!_shotCapture) {
+    _shotCapture = createDesktopCapture({
+      outDir: mk(join(CAPTURE_DIR(), "raw")),
+      platform: process.platform,
+    });
+  }
+  return _shotCapture;
 }
 
 /* ── 画布备份：每 5 分钟把 save/ 里各工作流 JSON 快照到独立的 save-backups/ 文件夹 ──
@@ -3331,7 +3348,10 @@ function normalizeRevealPath(p) {
   if (process.platform === "win32") s = s.replace(/\//g, "\\");
   return s;
 }
-ipcMain.handle("shell:showItem", async (e, p) => {
+ipcMain.handle("shell:showItem", (e, p) => revealInFolder(p));
+/* 上面那条 IPC 的实体：截图浮层的「打开文件夹」也走同一份（新增一条出口 = 多一处行为分叉，
+   路径规范化 / 目标没了退父目录这两件事只写一遍）。 */
+async function revealInFolder(p) {
   const target = normalizeRevealPath(p);
   if (!target) return { ok: false, error: "empty path" };
   let st = null;
@@ -3357,7 +3377,7 @@ ipcMain.handle("shell:showItem", async (e, p) => {
     } catch (_) {}
   }
   return { ok: false, error: "not found", path: target };
-});
+}
 ipcMain.handle("shell:openPath", async (e, p) => {
   try {
     const dir = String(p || "").trim();
@@ -9328,6 +9348,77 @@ ipcMain.handle("skill:add", (event, skill) => dsh().skillAdd(skill));
 
 ipcMain.handle("skill:remove", (event, name) => dsh().skillRemove(name));
 
+/* --------- 内置能力（Agent 指示 · 内置技能）：统一管理与「覆盖到源码」 ---------
+   真源内核在 agent-prompts-lib.js（三层取值：覆盖层 > agent-prompts/<id>.md > 代码内联默认）。
+   这里只做三件事：把运行环境（appRoot / exe 路径 / 数据目录 / 打包态 / 登录账号）交给内核、
+   暴露 IPC、把作者的写回限制在「ms2308 + 找得到可写源码根」。
+   · 源码根不能只看 app.getAppPath()：打包态它在 app.asar 里（不可写），而本机开发账号
+     ms2308 跑的就是 dist\win-unpacked 里的 exe —— 所以 exe 路径一起给内核，
+     由它按「含 main.js + mtnode-agent-skills/ 且可写」判定（见 agent-prompts-lib 的 candidateRoots）。
+   · 账号取自 authStore.state().user.username，和状态栏那套身份同源。 */
+const agentPromptsLib = require("./agent-prompts-lib.js");
+
+function builtinCapsOpts() {
+  let account = "";
+  try {
+    const st = authStore.state();
+    const u = (st && st.user) || null;
+    account = String((u && (u.username || u.nickname)) || "");
+  } catch {}
+  return {
+    appRoot: app.getAppPath(),
+    /* 打包态的 app.getAppPath() 在 app.asar 里（不可写），exe 上三级才是仓库根；
+       两条链一起交给内核推（与「重新编译并重启」的 selfRebuildDirs 同一口径） */
+    execPath: process.execPath,
+    dataDir: DATA(),
+    packaged: !!app.isPackaged,
+    account,
+  };
+}
+
+function builtinCapsCatalog() {
+  const o = builtinCapsOpts();
+  const c = agentPromptsLib.catalog(o);
+  const t = agentPromptsLib.texts(o);
+  const skills = agentPromptsLib.skillListOverrides(o.dataDir);
+  return Object.assign(c, {
+    author: agentPromptsLib.authorInfo(o),
+    texts: t.texts || {},
+    skillOverrides: skills.names || [],
+  });
+}
+
+ipcMain.handle("agentPrompts:list", () => builtinCapsCatalog());
+ipcMain.handle("agentPrompts:texts", () => agentPromptsLib.texts(builtinCapsOpts()));
+ipcMain.handle("agentPrompts:save", (event, p) =>
+  agentPromptsLib.setOverride(builtinCapsOpts(), p && p.id, p && p.text),
+);
+ipcMain.handle("agentPrompts:reset", (event, p) =>
+  agentPromptsLib.clearOverride(builtinCapsOpts(), p && p.id),
+);
+ipcMain.handle("agentPrompts:resetAll", () => agentPromptsLib.clearAllOverrides(builtinCapsOpts()));
+ipcMain.handle("agentPrompts:writeSource", (event, p) => {
+  const body = p || {};
+  const o = builtinCapsOpts();
+  if (body.all && body.texts) return agentPromptsLib.writeSourceAll(o, body.texts);
+  return agentPromptsLib.writeSource(o, body.id, body.text);
+});
+
+ipcMain.handle("builtinSkill:overrides", () => agentPromptsLib.skillListOverrides(DATA()));
+ipcMain.handle("builtinSkill:save", (event, p) =>
+  agentPromptsLib.skillSetOverride(DATA(), p && p.name, p && p.text),
+);
+ipcMain.handle("builtinSkill:reset", (event, p) =>
+  agentPromptsLib.skillClearOverride(DATA(), p && p.name),
+);
+/* 技能的「源码默认」正文：设置页拿它比差异、判「是否已与源码一致」 */
+ipcMain.handle("builtinSkill:source", (event, p) =>
+  agentPromptsLib.skillSourceBody(builtinCapsOpts(), p && p.name),
+);
+ipcMain.handle("builtinSkill:writeSource", (event, p) =>
+  agentPromptsLib.skillWriteSource(builtinCapsOpts(), p && p.name, p && p.text),
+);
+
 /* ---------------- MTNode 讨论区（UI 为可下载窗口插件，宿主 IPC 仍在此） ---------------- */
 const FORUM_IMG_MAX = 1080;
 const FORUM_IMG_BYTES = 3 * 1024 * 1024;
@@ -10033,6 +10124,111 @@ app.whenReady().then(() => {
     errLog("[minichat] 初始化失败：" + ((e && e.message) || e));
     miniChat = null;
   }
+  /* ── 截图标注工具（Ctrl + Alt + A）────────────────────────────────────────
+     拍屏 → 全屏置顶浮层里「像微信那样」框选关键区域 → 裁剪图上标注 + 写备注 →
+     成品 PNG 落 captures/、带编号清单的 Markdown 写进剪贴板（粘进 Agent 输入框即可）。
+     这几件事只有主进程能做：全局热键、置顶全屏窗、跨窗口抓屏、系统剪贴板。
+     注册失败（被别的程序占了）如实说明一次，绝不静默失效 —— 用户按了没反应最难查。 */
+  try {
+    screenshotTool = createScreenshotTool({
+      BrowserWindow,
+      screen,
+      ipcMain,
+      globalShortcut,
+      clipboard,
+      htmlPath: join(__dirname, "renderer", "screenshot.html"),
+      preloadPath: join(__dirname, "preload-screenshot.js"),
+      outDir: mk(CAPTURE_DIR()),
+      capture: (params) => shotCapture().capture(params || {}),
+      listWindows: () => shotCapture().listWindows(),
+      /* 「保存」= 系统另存为对话框；「打开文件夹」= 与文件树 / Markdown 阅读器同一条兜底出口 */
+      dialog: dialog,
+      reveal: (p) => revealInFolder(p),
+      /* Agent 要截屏时的询问窗（**兜底层**）：渲染层那只对话框（renderer/app-shot.js 的
+         askWhat：写一句话 + 可选本机图片路径）先问过用户，它点头点「开始截图…」才走到这里，
+         那时 payload 带 confirmed:true，这只原生窗就不再弹（见 shot:agent）。
+         只有老渲染层 / 没有对话框能力时才会落到这里 —— 抢屏之前仍然必须由用户点头。 */
+      confirm: async (reason) => {
+        const why = String(reason || "").trim();
+        try {
+          const r = await dialog.showMessageBox(
+            mainWin && !mainWin.isDestroyed() ? mainWin : undefined,
+            {
+              type: "question",
+              title: I18n.t("截图标注"),
+              message: I18n.t("Agent 想请你截一张图并标注"),
+              detail:
+                (why ? why + "\n\n" : "") +
+                I18n.t(
+                  "同意后会冻结鼠标所在那块屏幕：框选 → 标注 → 完成，图和你写的备注直接交回这次会话。",
+                ),
+              buttons: [I18n.t("开始标注"), I18n.t("暂不")],
+              defaultId: 0,
+              cancelId: 1,
+              noLink: true,
+            },
+          );
+          return !!(r && r.response === 0);
+        } catch (_) {
+          return false;
+        }
+      },
+      log: (msg) => {
+        try {
+          errLog(msg);
+        } catch (_) {}
+      },
+    });
+    screenshotTool.registerIpc();
+    /* Agent 侧的入口（renderer/app-shot.js → 这里）：一次性把「询问 → 冻结 → 标注 → 成品」
+       走成一次请求，回来的就是那张 PNG 的绝对路径 + 编号清单。 */
+    try {
+      ipcMain.removeHandler("shot:agent");
+    } catch (_) {}
+    ipcMain.handle("shot:agent", async (_e, payload) => {
+      if (!screenshotTool) return { ok: false, error: I18n.t("截图失败") };
+      /* confirmed = 渲染层那只对话框（写一句话 + 可选本机图片路径）已经问过用户，
+         主进程不再弹原生询问窗。老渲染层不带这个字段 → 照旧先问一句再抢屏。 */
+      return screenshotTool.request({ reason: String((payload && payload.reason) || "").slice(0, 300), confirmed: !!(payload && payload.confirmed) });
+    });
+    const hk = screenshotTool.registerHotkey();
+    if (!hk || hk.ok !== true) {
+      const msg = (hk && hk.error) || I18n.t("全局快捷键不可用");
+      errLog("[shot] " + msg);
+      try {
+        dialog
+          .showMessageBox({
+            type: "warning",
+            title: I18n.t("截图标注"),
+            message: I18n.t("截图快捷键没能注册上"),
+            detail: msg + "\n\n" + I18n.t("换个占用更少的键位，或先关掉占用它的软件。"),
+            buttons: [I18n.t("知道了")],
+            noLink: true,
+          })
+          .catch(() => {});
+      } catch (_) {}
+    } else {
+      /* 热进程预热：这台机上「裸起一只 PowerShell」就要 158ms，加载截图那段 C# 再加 246ms ——
+         用户按快捷键的第一下会白等这四百来毫秒（实测串起来 1.1~1.3s 才见画面）。
+         启动后先把常驻解释器拉起来并编译一次（约 380ms，一次性），之后每次抓屏就只剩
+         130~180ms。放后台跑，不挡启动；失败也不影响一次性路径（runScript 自己会退回）。 */
+      setTimeout(() => {
+        try {
+          if (_shotCapture && typeof _shotCapture.warm === "function")
+            _shotCapture
+              .warm()
+              .then((r) => {
+                if (r && r.ok === true) errLog("[shot] 常驻抓屏进程已就绪（" + (r.ms || 0) + "ms）");
+                else errLog("[shot] 常驻抓屏预热未成功（退回一次性进程）：" + ((r && r.error) || "?"));
+              })
+              .catch((e) => errLog("[shot] 常驻抓屏预热异常：" + ((e && e.message) || e)));
+        } catch (_) {}
+      }, 1500);
+    }
+  } catch (e) {
+    errLog("[shot] 初始化失败：" + ((e && e.message) || e));
+    screenshotTool = null;
+  }
   /* 快捷会话小窗：应用重新拿到前台就把它抬回最上层（本次修复 —— 用户报「微信 Alt+A 截图
      回来小窗整只不见了」）。为什么挂在「应用获得焦点」上：截图浮层在前台时去抢 Z 序会把
      小窗糊到浮层上面（截出来的图里带着小窗），等用户回到 MTNode 任一窗口才说明这一趟结束了。
@@ -10455,6 +10651,9 @@ app.on("before-quit", (ev) => {
   if (mcpHost) {
     try { mcpHost.dispose(); } catch {}
   }
+  /* 截图抓屏的常驻 PowerShell（热进程）：退出时连它的子进程一起收干净，别留 300MB 的
+     powershell.exe 挂在那儿等空闲超时。失败不拦退出。 */
+  try { if (_shotCapture && typeof _shotCapture.dispose === "function") _shotCapture.dispose(); } catch {}
   /* ② 插件后台进程：本地后端进程树（vramShutdownAll 逐个走宿主的 hard()）+ 还在跑的安装进程树
      + 宿主持有的 Paseo daemon。都有上限，任何一项失败 / 超时都不拦退出，做完自己再 app.quit()。 */
   const quitCleanup = (async () => {

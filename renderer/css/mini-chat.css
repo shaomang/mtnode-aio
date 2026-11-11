@@ -421,9 +421,13 @@ body.mc-body {
   background: rgba(255, 255, 255, 0.05);
   border: 1px solid #222a36;
   color: #8b97a8;
-  white-space: pre-wrap;
+  /* 正文与 AI 回复同一条 Markdown 管线（renderer/app-mini-chat.js 的 paintUserBody）：
+     换行由段落 / <br> 表达，不再靠 pre-wrap；只有渲染内核缺席的兜底形态才恢复 pre-wrap
+     （见下面的 .mc-user.is-plain）。 */
+  white-space: normal;
   word-break: break-word;
   font-size: 11.5px;
+  line-height: 1.55;
 }
 
 .mc-user[hidden] {
@@ -615,6 +619,180 @@ body.mc-body {
   font-size: 1.02em;
 }
 
+/* ── 用户气泡按 Markdown 排版（本次需求）────────────────────────────────────
+   「你的指令」与 AI 回复走同一条渲染管线（renderer/app-mini-chat.js 的 paintUserBody
+   → window.MTRender），这里补齐它在气泡里的排版：只覆盖小窗用得上的那几样，
+   颜色比回复压暗一档、字号小半级 —— 它是一句「我说过的话」，不该比回复更抢眼。 */
+.mc-user.is-plain {
+  /* 渲染内核缺席时的兜底：退回纯文本，换行靠 pre-wrap 保住（与改动前一致） */
+  white-space: pre-wrap;
+}
+
+.mc-user > :first-child {
+  margin-top: 0;
+}
+
+.mc-user > :last-child {
+  margin-bottom: 0;
+}
+
+.mc-user p {
+  margin: 0 0 6px;
+}
+
+.mc-user h1,
+.mc-user h2,
+.mc-user h3,
+.mc-user h4,
+.mc-user h5,
+.mc-user h6 {
+  margin: 8px 0 4px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: #c3cdda;
+  font-weight: 600;
+}
+
+.mc-user h1 {
+  font-size: 12.5px;
+}
+
+.mc-user h2 {
+  font-size: 12.2px;
+}
+
+.mc-user ul,
+.mc-user ol {
+  margin: 0 0 6px;
+  padding-left: 16px;
+}
+
+.mc-user li {
+  margin: 1px 0;
+}
+
+.mc-user li > p {
+  margin: 0 0 3px;
+}
+
+.mc-user blockquote {
+  margin: 0 0 6px;
+  padding: 3px 7px;
+  border-left: 2px solid #2b3442;
+  background: rgba(255, 255, 255, 0.03);
+  color: #9aa6b6;
+}
+
+.mc-user code {
+  padding: 0 3px;
+  border-radius: 3px;
+  background: #11161e;
+  border: 1px solid #232c39;
+  font-family: Consolas, "Cascadia Mono", "Courier New", monospace;
+  font-size: 10.8px;
+  color: #9fd6ff;
+  word-break: break-all;
+}
+
+.mc-user pre {
+  margin: 0 0 6px;
+  padding: 6px 8px;
+  overflow-x: auto;
+  background: #0b1017;
+  border: 1px solid #202836;
+  border-radius: 5px;
+}
+
+.mc-user pre code {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #cbd6e3;
+  font-size: 10.8px;
+  line-height: 1.5;
+  white-space: pre;
+  word-break: normal;
+}
+
+.mc-user strong {
+  color: #cdd7e4;
+  font-weight: 600;
+}
+
+.mc-user em {
+  color: #a9b5c5;
+}
+
+.mc-user del {
+  color: #6d7889;
+}
+
+.mc-user a {
+  color: #6cc6f0;
+  text-decoration: none;
+  border-bottom: 1px dotted rgba(108, 198, 240, 0.55);
+  cursor: pointer;
+}
+
+.mc-user a:hover {
+  color: #8fdfff;
+}
+
+.mc-user hr {
+  margin: 8px 0;
+  border: 0;
+  border-top: 1px solid #222a36;
+}
+
+.mc-user img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 4px;
+}
+
+/* 表格：窄窗里横滚，不把列挤成一列字 */
+.mc-user table {
+  display: block;
+  width: max-content;
+  max-width: 100%;
+  margin: 0 0 6px;
+  overflow-x: auto;
+  border-collapse: collapse;
+  font-size: 10.8px;
+}
+
+.mc-user th,
+.mc-user td {
+  padding: 2px 7px;
+  border: 1px solid #28313e;
+  text-align: left;
+  vertical-align: top;
+}
+
+.mc-user th {
+  background: #161d27;
+  color: #cfd8e5;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.mc-user .rv-math {
+  color: inherit;
+}
+
+.mc-user .rv-math-display {
+  display: block;
+  margin: 5px 0 6px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  text-align: center;
+}
+
+.mc-user .katex {
+  color: inherit;
+  font-size: 1.02em;
+}
+
 .mc-empty {
   color: #5f6a7a;
   font-size: 11.5px;
@@ -647,29 +825,82 @@ body.mc-body {
   background: #10151e;
 }
 
+/* 模式按钮的轮廓 = 终末地口径的「右上角 45° 切角」（共识 q1/q2）：
+   原来是 11px 圆角胶囊 + 青色亮态；现为石墨面 + 1px 发丝边，开启态信号黄。
+
+   切角为什么分两层：只给按钮本身加 clip-path，斜边会把 1px 边框一起剪断（斜边没有线，
+   看着像缺了个口）。这里让「按钮自身背景 = 边框色」被切一次，内层面（::before）内缩
+   1px 再按同一切角切一次 —— 两层之间露出的那 1px 就是斜边上的发丝线。
+   内层面的切角取 5.4px（= 6px 的内缩量），换算过来斜边正好留 1px。
+
+   范围只到这两枚（共识 q3）：发送 / 顶栏图标 / 会话项 / 输入框 / 外壳一律不动；
+   小窗不接主题通道（共识 q4），所以颜色是写死的终末地常量，不跟主窗主题走。 */
 .mc-mode {
+  position: relative;
+  isolation: isolate; /* 让 z-index:-1 的内层面留在本按钮的层叠上下文里，不落到父背景后面 */
   height: 22px;
-  padding: 0 9px;
-  background: #0b0f16;
-  color: #7b8698;
-  border: 1px solid #2a3341;
-  border-radius: 11px;
+  padding: 1px 9px;
+  background: #3b3b3b; /* = 边框色：内层面没盖住的那 1px 就是描边 */
+  color: #a1a1a1;
+  border: 0;
+  border-radius: 0;
   font: inherit;
   font-size: 11px;
   line-height: 20px;
   cursor: pointer;
   user-select: none;
+  clip-path: polygon(0 0, calc(100% - 6px) 0, 100% 6px, 100% 100%, 0 100%);
+  transition: background-color 0.12s, color 0.12s;
+}
+
+/* 内层面：石墨面（inset 1px = 让出描边），同切角内缩一档 */
+.mc-mode::before {
+  content: "";
+  position: absolute;
+  inset: 1px;
+  z-index: -1;
+  background: #141414;
+  clip-path: polygon(0 0, calc(100% - 5.4px) 0, 100% 5.4px, 100% 100%, 0 100%);
+  transition: background-color 0.12s, box-shadow 0.12s;
 }
 
 .mc-mode:hover {
-  border-color: #384454;
-  color: #b9c3d1;
+  background: #6a6a6a;
+  color: #e6e6e6;
 }
 
+.mc-mode:hover::before {
+  background: #1d1d1d;
+}
+
+/* 开启态（共识 q2）：描边与文字转信号黄，面压成带黄的深石墨 —— 与主界面「亮 = 信号黄」同口径 */
 .mc-mode.on {
-  background: #17313d;
-  border-color: rgba(56, 214, 255, 0.45);
-  color: #7fe4ff;
+  background: #fffa00;
+  color: #fffa00;
+}
+
+.mc-mode.on::before {
+  background: #1c1d10;
+}
+
+.mc-mode.on:hover {
+  color: #fff35c;
+}
+
+.mc-mode.on:hover::before {
+  background: #26270f;
+}
+
+/* 焦点环：clip-path 会把 outline 一起剪掉，所以焦点画在里面 —— 1px 信号黄描边
+   + 内层面再压一圈半透明的黄，键盘走到时比「只有 1px」更容易看见 */
+.mc-mode:focus-visible {
+  background: #fffa00;
+  color: #fffa00;
+  outline: none;
+}
+
+.mc-mode:focus-visible::before {
+  box-shadow: inset 0 0 0 1px rgba(255, 250, 0, 0.5);
 }
 
 .mc-compose {

@@ -40,6 +40,12 @@
  *                      onProgress({pct, message, done, error, cancelled}) 驱动顶栏进度条。
  *                      宿主给了才画「导出视频」这颗按钮（缺省不出现）
  *   onExportVideoCancel()  取消正在跑的那次视频导出（结束渲染进程树，成片不落盘）
+ *   coverUrl(deck)     成片封面帧的 file:// URL（右栏「成片」块的缩略图；空串 = 没有封面帧，
+ *                      画一块占位；不查盘，读不到时 <img> 自己退回占位）
+ *   onOpenVideo(path)  右栏「成片」的「播放」：path = deck.video.path（研究目录相对路径），
+ *                      宿主解析成绝对路径再交给系统默认程序；回 {ok, error?}
+ *   onRevealVideo(path)  「在文件夹中显示」：同上，宿主走 shellShowItem
+ *                      这两个回调宿主给了才画对应按钮（不摆点了没反应的按钮）
  *   onReset({deck, patch})  重置为自动生成之后（宿主可重跑内核）
  *   onRegeneratePage(id, {deck, patch})   单页重新生成之后，返回 {deck} 就采用宿主的页
  *   onSettings()       顶栏「初始化设置」：再开同一张初始化卡（版本 / 风格 / 额外指示）。
@@ -186,6 +192,8 @@
       /* 视频块的两个运行态：进度（宿主回调驱动，与顶栏那条同一个数）/ 上一次失败（成功或取消都清） */
       vprog: { pct: 0, text: "", running: false },
       videoErr: null,
+      /* 成片块高亮一次的标记：导出成功那一刻置上，由 videoFilm 画完消费掉（之后重建不再闪） */
+      vflash: false,
       /* 视频块里会变的那几个节点（进度条 / 文字 / 预计时长），免得每来一次进度就重建整栏 */
       vref: null,
       vdur: null,
@@ -3068,19 +3076,114 @@
       st.vref = { bar: bar, text: ptext };
       syncVideoProgress();
 
-      /* ④ 上一次失败（取消不算失败） */
-      const err = st.videoErr;
-      const rowE = mk("div", "rs-deck-crow");
-      rowE.appendChild(mk("span", "rs-deck-clabel", "上次失败"));
-      const etext = mk("span", "rs-deck-vtext" + (err && !err.cancelled ? " is-err" : ""));
-      if (!err) etext.textContent = "无";
-      else if (err.cancelled) etext.textContent = "已取消（不算失败）";
-      else etext.textContent = str(err.message || "未知原因");
-      if (err && !err.cancelled && str(err.message)) etext.title = str(err.message);
-      rowE.appendChild(etext);
-      sec.appendChild(rowE);
-      if (err && !err.cancelled && str(err.logPath)) sec.appendChild(mk("span", "rs-deck-hint", "宿主日志：" + str(err.logPath)));
+      /* ④ 成片（有片留一份交付：封面帧 + 规格 + 播放 / 在文件夹中显示；失败给原因 + 日志 + 重试） */
+      sec.appendChild(videoFilm(deck));
       return sec;
+    }
+
+    /* ── 右栏「成片」块（视频块末尾）─────────────────────────────────────────
+       渲染一完成就在这儿留一份交付（封面帧 + 时长 / 分辨率 / 帧率 + 播放 / 在文件夹中显示），
+       失败则在同一块里给原因 + 宿主日志 + 重试。文件路径 / 打开动作全在宿主那侧（三个薄回调：
+       o.coverUrl / o.onOpenVideo / o.onRevealVideo），这里不拼绝对路径、不新开 IPC。 */
+    /* 成片规格：时长 · 分辨率 · 帧率（缺哪样就不写哪样，不摆 0×0 / 0 fps） */
+    function filmMetaText(info) {
+      const bits = [];
+      if (Number(info && info.durationSec) > 0) bits.push(fmtSec(info.durationSec));
+      const w = Number(info && info.w) || 0;
+      const h = Number(info && info.h) || 0;
+      if (w && h) bits.push(w + "×" + h);
+      const fps = Number(info && info.fps) || 0;
+      if (fps) bits.push(Math.round(fps) + " fps");
+      return bits.length ? bits.join(" · ") : "—";
+    }
+    /* 成片那颗按钮：点一下递交给宿主（播放 / 在文件夹中显示），失败只写状态行 —— 不弹窗、不假装成功 */
+    function filmBtn(label, reveal, info) {
+      const b = mk("button", "rs-deck-btn", label);
+      b.type = "button";
+      b.addEventListener("click", () => {
+        void (async () => {
+          const fn = reveal ? o.onRevealVideo : o.onOpenVideo;
+          if (typeof fn !== "function") return;
+          try {
+            const r = await fn(str(info && info.path));
+            if (r && r.ok === false) {
+              setStatus((reveal ? "打开所在文件夹失败：" : "播放成片失败：") + str(r.error || "未知原因"));
+            }
+          } catch (e) {
+            setStatus((reveal ? "打开所在文件夹失败：" : "播放成片失败：") + str((e && e.message) || e));
+          }
+        })();
+      });
+      return b;
+    }
+    function videoFilm(deck) {
+      const box = mk("div", "rs-deck-vfilm");
+      box.appendChild(mk("div", "rs-deck-sectitle", "成片"));
+      /* 刚渲完那一次高亮（标记由 exportVideo 成功分支置上）：画完就消费掉，之后重建不再闪 */
+      if (st.vflash) {
+        box.classList.add("is-new");
+        st.vflash = false;
+      }
+      /* 成片信息：宿主回填并落盘（deck.video = { path, durationSec, w, h, fps }，path 相对研究目录） */
+      const info = (deck && deck.video) || (st.in && st.in.video) || null;
+      const hasFilm = !!(info && str(info.path));
+      if (hasFilm) {
+        const cover = typeof o.coverUrl === "function" ? str(o.coverUrl(deck)) : "";
+        const shot = mk("div", "rs-deck-vshot");
+        if (cover) {
+          const img = mk("img", "rs-deck-vcover");
+          img.alt = "";
+          img.draggable = false;
+          img.title = "成片封面帧";
+          /* 封面帧没抽出来 / 已被删掉：不摆破图，退回一句占位（成片本身照旧可播放） */
+          img.addEventListener("error", () => {
+            shot.innerHTML = "";
+            shot.appendChild(mk("span", "rs-deck-vshot-ph", "封面帧读不到"));
+          });
+          img.src = cover;
+          shot.appendChild(img);
+        } else {
+          shot.appendChild(mk("span", "rs-deck-vshot-ph", "没有封面帧"));
+        }
+        box.appendChild(shot);
+        const rowM = mk("div", "rs-deck-crow");
+        rowM.appendChild(mk("span", "rs-deck-clabel", "规格"));
+        const mv = mk("span", "rs-deck-vval", filmMetaText(info));
+        mv.title = str(info.path);
+        rowM.appendChild(mv);
+        box.appendChild(rowM);
+        box.appendChild(mk("span", "rs-deck-hint", baseNameOf(info.path)));
+        /* 两颗按钮：宿主没接对应回调就不摆（不摆一颗点了没反应的按钮） */
+        const rowB = mk("div", "rs-deck-vfilm-btns");
+        if (typeof o.onOpenVideo === "function") rowB.appendChild(filmBtn("播放", false, info));
+        if (typeof o.onRevealVideo === "function") rowB.appendChild(filmBtn("在文件夹中显示", true, info));
+        if (rowB.childNodes.length) box.appendChild(rowB);
+      }
+      /* 失败态（取消不算失败，但重试照样给）：原因 + 宿主日志 + 重试 —— 重试就是顶栏那颗同一入口 */
+      const err = st.videoErr;
+      if (err) {
+        const failed = !err.cancelled;
+        const rowE = mk("div", "rs-deck-crow");
+        rowE.appendChild(mk("span", "rs-deck-clabel", "上次失败"));
+        const etext = mk("span", "rs-deck-vtext" + (failed ? " is-err" : ""));
+        etext.textContent = err.cancelled ? "已取消（不算失败）" : str(err.message || "未知原因");
+        if (failed && str(err.message)) etext.title = str(err.message);
+        rowE.appendChild(etext);
+        const bRetry = mk("button", "rs-deck-btn", "重试");
+        bRetry.type = "button";
+        bRetry.title = "再走一次同一条导出（与顶栏「导出视频」是同一入口）";
+        bRetry.addEventListener("click", () => {
+          void exportVideo();
+        });
+        rowE.appendChild(bRetry);
+        box.appendChild(rowE);
+        if (failed && str(err.logPath)) box.appendChild(mk("span", "rs-deck-hint", "宿主日志：" + str(err.logPath)));
+      }
+      /* 既没有片、也没失败过：说清怎么拿到它（不摆一颗假按钮） */
+      if (!hasFilm && !err) {
+        box.appendChild(mk("span", "rs-deck-hint", "还没有成片：点顶栏「导出视频」，或等这一轮脚本落地自动出片。"));
+      }
+      return box;
     }
 
     /* ── 右栏：主题与配色（6 套预设 + 单色覆盖 + 明暗 + 字体档 + 转场） ── */
@@ -3101,9 +3204,12 @@
       const grid = mk("div", "rs-deck-presets");
       for (const p of presets) {
         const vars = (p && p[st.theme.mode]) || (p && p.light) || null;
+        const label = (p && p.label) || (p && p.id) || "";
         const b = mk("button", "rs-deck-preset" + (p && p.id === st.theme.preset ? " is-on" : ""));
         b.type = "button";
-        b.title = (p && p.desc) || (p && p.label) || "";
+        /* 只给色卡：名字不进界面，收进 title / aria-label（悬停与读屏仍然认得出是哪一套） */
+        b.title = (p && p.desc) || label;
+        b.setAttribute("aria-label", label);
         const sw = mk("span", "rs-deck-swatch");
         if (vars) {
           sw.style.background = str(vars["--rs-slide-paper"]);
@@ -3116,13 +3222,12 @@
           sw.appendChild(d2);
         }
         b.appendChild(sw);
-        b.appendChild(mk("span", "rs-deck-preset-t", (p && p.label) || (p && p.id) || ""));
         b.addEventListener("click", (ev) => {
           ev.preventDefault();
           /* 换预设 = 换整套底子：单独覆盖一并清掉（否则颜色会卡在上一套上） */
           st.theme.preset = str(p.id);
           st.theme.over = {};
-          setStatus("已换预设：" + ((p && p.label) || p.id));
+          setStatus("已换预设：" + label);
           commit("theme");
         });
         grid.appendChild(b);
@@ -3477,13 +3582,14 @@
       vprogText.textContent = text != null && str(text) ? str(text) : n + "%";
       syncVideoProgress();
     }
+    /* 返回宿主那份回执（宿主「一轮到底」也调这一颗，见 ctrl.exportVideo）：一次都没跑起来时给 {ok:false} */
     async function exportVideo() {
       if (typeof o.onExportVideo !== "function") {
         setStatus("宿主没接视频导出（只能在研究视图里用）");
-        return;
+        return { ok: false, error: "no_host" };
       }
       /* 渲染是重活：一次只跑一条，跑起来就把三颗导出按钮按住（导出中途改页会让成片对不上存档） */
-      if (st.exporting) return;
+      if (st.exporting) return { ok: false, error: "busy" };
       st.exporting = true;
       st.videoErr = null;
       btnExport.disabled = true;
@@ -3493,6 +3599,7 @@
       showVideoProgress(0, "准备…", true);
       /* 失败行清空、进度行进运行态（视频态才铺那块；静态版这里什么都不画） */
       renderTheme(deckNow());
+      let out = { ok: false, error: "unknown" };
       try {
         const res = await o.onExportVideo(deckNow(), (ev) => {
           if (!ev) return;
@@ -3517,6 +3624,9 @@
               (info.w && info.h ? " · " + info.w + "×" + info.h : ""),
           );
           showVideoProgress(100, "完成", false);
+          /* 成片块高亮一次：finally 那次 renderTheme 会把标记消费掉（右栏从此留着一份成片） */
+          st.vflash = true;
+          out = res;
         } else {
           st.videoErr = {
             message: str((res && (res.message || res.error)) || "导出失败"),
@@ -3528,11 +3638,18 @@
               (st.videoErr.logPath ? "（宿主日志：" + st.videoErr.logPath + "）" : ""),
           );
           showVideoProgress(0, "", false);
+          out = res || {
+            ok: false,
+            error: st.videoErr.message,
+            logPath: st.videoErr.logPath,
+            cancelled: st.videoErr.cancelled,
+          };
         }
       } catch (e) {
         st.videoErr = { message: str((e && e.message) || "未知原因"), cancelled: false, logPath: "" };
         setStatus("导出视频失败：" + st.videoErr.message);
         showVideoProgress(0, "", false);
+        out = { ok: false, error: st.videoErr.message, logPath: "", cancelled: false };
       } finally {
         st.exporting = false;
         btnExport.disabled = false;
@@ -3541,6 +3658,7 @@
         /* 视频块收口：进度归位、失败原因留在右栏（关掉编辑器也还能重现一次导出的结论） */
         renderTheme(deckNow());
       }
+      return out;
     }
     async function exportPrint() {
       if (!V || typeof V.toHtml !== "function") {
@@ -3703,6 +3821,22 @@
       if (ev.target === curtain) ev.stopPropagation();
     });
     function onKey(ev) {
+      const t = ev.target;
+      const inField =
+        (t && t.tagName && /^(INPUT|TEXTAREA|SELECT)$/.test(String(t.tagName))) || (t && t.isContentEditable);
+      const k = str(ev.key);
+      const cmd = !!(ev.ctrlKey || ev.metaKey);
+      /* 撤销 / 重做只认编辑器的栈：这一层盖在研究视图与画布之上，按键一旦漏下去，
+         研究视图会撤掉外面的笔记（app-research.js 的 Ctrl+Z）、画布会撤掉节点（app.js 的）。
+         所以这里无条件吃掉 —— 输入框里不 preventDefault（让浏览器撤那段文字），事件到此为止。 */
+      if (cmd && !ev.altKey && (k === "z" || k === "Z" || k === "y" || k === "Y")) {
+        ev.stopPropagation();
+        if (inField || st.preview) return;
+        ev.preventDefault();
+        if (k === "y" || k === "Y" || ev.shiftKey) redo();
+        else undo();
+        return;
+      }
       /* 放映器自己有整套键位；输入框 / 文本域里的按键归输入框 */
       if (st.preview) return;
       /* 「这次想怎么改」开着：Esc 先收掉它，别把整个编辑器关了 */
@@ -3712,25 +3846,7 @@
         memoClose(null);
         return;
       }
-      const t = ev.target;
-      const inField =
-        (t && t.tagName && /^(INPUT|TEXTAREA|SELECT)$/.test(String(t.tagName))) || (t && t.isContentEditable);
-      const k = str(ev.key);
-      const cmd = !!(ev.ctrlKey || ev.metaKey);
       if (!inField) {
-        if (cmd && (k === "z" || k === "Z")) {
-          ev.preventDefault();
-          ev.stopPropagation();
-          if (ev.shiftKey) redo();
-          else undo();
-          return;
-        }
-        if (cmd && (k === "y" || k === "Y")) {
-          ev.preventDefault();
-          ev.stopPropagation();
-          redo();
-          return;
-        }
         if (st.objSel && (k === "Delete" || k === "Backspace")) {
           ev.preventDefault();
           ev.stopPropagation();
@@ -3776,12 +3892,16 @@
       }
       close();
     }
-    D.addEventListener("keydown", onKey, true);
+    /* 挂 window 捕获（有 window 才退到 document）：先于 app-research.js 的 document 捕获
+       （Ctrl+Z = 撤研究笔记）与 app.js 的 window 冒泡（Ctrl+Z = 撤画布节点）拿到按键 ——
+       「在演示编辑器里撤销，外面跟着退一步」就是这么来的。 */
+    const KEY_HOST = (D && D.defaultView) || D;
+    KEY_HOST.addEventListener("keydown", onKey, true);
 
     /* ── 关闭 / 抬起 ── */
     function close() {
       closePreview();
-      D.removeEventListener("keydown", onKey, true);
+      KEY_HOST.removeEventListener("keydown", onKey, true);
       if (curtain.parentNode) curtain.remove();
       if (OPEN === ctrl) OPEN = null;
       if (typeof o.onClose === "function") {
@@ -3824,6 +3944,9 @@
       preview: openPreview,
       closePreview: closePreview,
       exportHtml: exportHtml,
+      /* 导出视频：顶栏那颗按钮就是它；宿主「一轮到底」（脚本落盘 / 直出档重算完自动出片）
+         也调这一颗 —— 同一入口 = 同一份进度条、状态行与失败行（原因 + 宿主日志），不另开第二条渲染路径。 */
+      exportVideo: exportVideo,
       /* 宿主重跑内核之后整份换掉（重置 / 外部重新生成用它） */
       setDeck: function (next) {
         if (!next || !Array.isArray(next.pages)) return null;

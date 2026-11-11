@@ -1159,8 +1159,10 @@ function planDshRunOnce(input, opts) {
     /* Token 台账逐轮明细的标题：计划任务标题优先（否则回落输入文本前 24 字） */
     tokTitle: opts.tokTitle || undefined,
     onEvent: typeof opts.onEvent === "function" ? opts.onEvent : undefined,
-    systemPrompt:
+    systemPrompt: PS(
+      "flow.plan_parallel_system",
       "回答简洁。你是异步并行子任务（subagent），只做本任务并用工作区文件交付结果，不要做计划外的事。",
+    ),
     onDone: (d) => {
       try {
         if (typeof recordDshMetrics === "function") recordDshMetrics(null, d.metrics);
@@ -2143,7 +2145,7 @@ async function planNodeRunRound(node, task, i, n) {
     model: task.model || node.model || undefined,
     effort: node.effort != null && node.effort !== "" ? node.effort : undefined,
     preset: node.preset || undefined,
-    systemPrompt: "回答简洁。用工作区文件交付结果，不要改画布。",
+    systemPrompt: PS("flow.plan_single_system", "回答简洁。用工作区文件交付结果，不要改画布。"),
     onEvent: (type, data) => {
       try {
         if (typeof onDshNodeEvent === "function") onDshNodeEvent(node, 0, type, data);

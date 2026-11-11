@@ -57,17 +57,158 @@
     return null;
   }
 
+  /* ── 正文里的图片：本机绝对路径 → 可显示的 file:/// URL；认不出的绝不摆断链图标 ──
+     真机现场：正文里写 `![名称](C:\x\y.png)`，marked 原样给出
+     `<img src="C:%5Cx%5Cy.png">` —— 那是**相对 URL**，浏览器按页面目录去取（再撞上
+     「C:」当协议名），取不到就画一枚断链图标，也就是用户看到的「找不到图像」。
+     图片管线只有这一个出口（主窗与小窗共用本文件），所以在这里收口：
+       · http(s) / data: / blob: / file: / mtnode-thumb: 原样放行；
+       · Windows 盘符 / UNC / 反斜杠开头的绝对路径 → 转成 file:/// URL（优先宿主给的
+         o.fileUrl 或媒体层同源的 global.mediaFileUrlOf，缺省按段 percent 编码）；
+       · 其余（相对路径 / 认不出的形态）→ 不产出 <img>，退成一行文字（alt 优先，其次原文），
+         宁可少一张图，也不摆一枚点了没反应的断链图标。 */
+  function urlDecodeSafe(s) {
+    try {
+      return decodeURIComponent(s);
+    } catch (_) {
+      return s;
+    }
+  }
+  function isLocalAbsPath(p) {
+    return /^(?:[a-zA-Z]:[\\/]|\\\\|\/)/.test(String(p || ""));
+  }
+  function localFileUrl(p, o) {
+    var s = String(p == null ? "" : p).trim();
+    if (!s) return "";
+    if (/^file:\/\//i.test(s)) return s;
+    var fn = o && typeof o.fileUrl === "function" ? o.fileUrl : null;
+    if (!fn && global && typeof global.mediaFileUrlOf === "function") fn = global.mediaFileUrlOf;
+    if (fn) {
+      try {
+        var u = String(fn(s) || "");
+        if (u) return u;
+      } catch (_) {}
+    }
+    var abs = s.replace(/\\/g, "/");
+    /* UNC：\\host\share\x → file://host/share/x */
+    if (/^\/\//.test(abs)) {
+      try {
+        return "file:" + encodeURI(abs);
+      } catch (_) {
+        return "file:" + abs;
+      }
+    }
+    var body = /^[a-zA-Z]:\//.test(abs) ? abs : abs.replace(/^\/+/, "");
+    var parts = body.split("/");
+    for (var i = 0; i < parts.length; i++) {
+      try {
+        parts[i] = encodeURIComponent(parts[i]).replace(/%3A/gi, ":");
+      } catch (_) {}
+    }
+    return "file:///" + parts.join("/");
+  }
+  /* ── 解析前先摘出「本机绝对路径的图片」（inline 那种也摘）─────────────────────
+     真机现场（用户报的「发送会话时截图显示断开链接的图标」）：正文写的是
+     `![截图](E:\dev\...\.mtnode-input\paste-x.png) 说明文字` —— 图与文字在同一行，
+     走的是 marked 而不是「整行图」那条兜底（见 app-assist.js 的 dshUserBodyHtml）。
+     marked 把路径里的 `\.`（以及 \_ \* \( 等一切可转义标点）当成 Markdown 转义序列吃掉，
+     `<img src>` 于是变成 `E:\dev\...\pipeline-console.mtnode-input\paste-x.png`
+     —— 少了一个反斜杠，文件根本不存在，画出来就是一枚断链图标。
+     本应用自己的粘贴目录恰好就叫 `.mtnode-input`，所以每一张内嵌截图都会中招。
+     口径：本机绝对路径 / file:// 的图片在**解析之前**整段换成 PUA 占位符（与公式、
+     整行图同一手法，marked 原样保留 PUA 字符），解析完再换回 <img> —— 路径原文一个
+     字节都不经过 marked。围栏代码里的图行是代码原文，不动。 */
+  /* 目标段按「到这一对括号的最后一个 )」收（惰性）—— 带空格的 Windows 路径
+     （C:\Users\John Doe\a.png）也认；`![图](x.png "标题")` 的标题段另剥掉。 */
+  var ABS_IMG_RE = /!\[([^\]\n]*)\]\(\s*(<[^>\n]+>|[^)\n]+?)\s*\)/g;
+  var ABS_IMG_TOK_RE = /\uE004(\d+)\uE005/g;
+  var FENCE_RE = /^ {0,3}[\u0060\u007E]{3,}/;
+  function splitAbsImages(mdText, o) {
+    var s = String(mdText == null ? "" : mdText);
+    var items = [];
+    if (s.indexOf("![") < 0) return { md: s, items: items };
+    var out = [];
+    var fence = "";
+    var lines = s.split("\n");
+    var one = function (all, alt, destRaw) {
+      var dest = String(destRaw).replace(/^<|>$/g, "").trim();
+      /* 去掉 Markdown 的标题段：![图](C:\a.png "看图") 的 destination 只有前面那段 */
+      var tm = /^(.*?)\s+"[^"]*"$/.exec(dest);
+      if (tm) dest = tm[1].trim();
+      if (!dest) return all;
+      if (!isLocalAbsPath(dest) && !/^file:\/\//i.test(dest)) return all;
+      var url = localFileUrl(dest, o);
+      if (!url) return all;
+      items.push({ alt: alt == null ? "" : String(alt), url: url });
+      return "\uE004" + (items.length - 1) + "\uE005";
+    };
+    /* 行内代码（`…`）里的图行是「示例原文」，不是图：按反引号切段，只动段外部分 */
+    var lineOut = function (line) {
+      var parts = line.split(/(`[^`\n]*`)/);
+      for (var k = 0; k < parts.length; k++) {
+        if (k % 2 === 1) continue;
+        if (parts[k].indexOf("![") < 0) continue;
+        parts[k] = parts[k].replace(ABS_IMG_RE, one);
+      }
+      return parts.join("");
+    };
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i];
+      var f = FENCE_RE.exec(line);
+      if (f) {
+        var ch = f[0].replace(/^\s+/, "").charAt(0);
+        if (!fence) fence = ch;
+        else if (fence === ch) fence = "";
+        out.push(line);
+        continue;
+      }
+      out.push(fence || line.indexOf("![") < 0 ? line : lineOut(line));
+    }
+    return { md: out.join("\n"), items: items };
+  }
+  function restoreAbsImages(html, items, esc) {
+    if (!items || !items.length) return html;
+    return String(html || "").replace(ABS_IMG_TOK_RE, function (_m, i) {
+      var it = items[Number(i)];
+      if (!it) return "";
+      var alt = esc(it.alt == null ? "" : it.alt).replace(/"/g, "&quot;");
+      return (
+        '<img src="' + String(it.url).replace(/"/g, "%22") + '" alt="' + alt + '">'
+      );
+    });
+  }
+
+  function fixImages(html, o) {
+    return String(html || "").replace(/<img\b[^>]*>/gi, function (tag) {
+      var m = /src="([^"]*)"/i.exec(tag);
+      if (!m) return tag;
+      var src = m[1];
+      if (/^(?:https?:|data:|blob:|file:|mtnode-thumb:)/i.test(src)) return tag;
+      var dec = urlDecodeSafe(src);
+      if (isLocalAbsPath(dec)) {
+        var u = localFileUrl(dec, o);
+        if (u) return tag.replace(m[0], 'src="' + u.replace(/"/g, "%22") + '"');
+      }
+      var am = /alt="([^"]*)"/i.exec(tag);
+      var txt = am ? String(am[1]).trim() : "";
+      if (!txt) return "";
+      return '<span class="md-img-missing">' + txt + "</span>";
+    });
+  }
+
   function toHtml(mdText, opts) {
     var o = opts || {};
     var esc = typeof o.escapeHtml === "function" ? o.escapeHtml : escapeHtml;
     var raw = mdText == null ? "" : String(mdText);
-    var escaped = esc(raw);
+    /* 本机绝对路径的图片先摘成占位符：marked 会吃掉路径里的 `\.`（见 splitAbsImages） */
+    var picked = splitAbsImages(raw, o);
+    var escaped = esc(picked.md);
     var parse = parseFnOf(o.marked || (global && global.marked));
     var M = o.math || (global && global.MTMathRender) || null;
     var html = "";
     try {
       if (M && typeof M.splitMath === "function" && typeof M.latexToHtml === "function" && parse) {
-        var r = M.splitMath(raw);
+        var r = M.splitMath(picked.md);
         html = parse(esc(r.md));
         if (r.items && r.items.length && M.TOKEN_RE) {
           html = html.replace(M.TOKEN_RE, function (_m, idx) {
@@ -81,10 +222,14 @@
     } catch (_) {
       html = "<pre>" + escaped + "</pre>";
     }
+    /* 占位符换回 <img>：这一步之后 marked 已经跑完，路径原文原样落到 src 上 */
+    html = restoreAbsImages(html, picked.items, esc);
     html = String(html).replace(/<a href="([^"]*)"/g, function (m, u) {
       if (/^(https?:|mailto:)/i.test(u) || u.charAt(0) === "#") return m;
       return BLOCKED_ANCHOR;
     });
+    /* 图片收口要在 linkify 之前：断链图标就是这一步之前漏出去的本机路径 */
+    html = fixImages(html, o);
     if (typeof o.linkify === "function") {
       try {
         html = o.linkify(html);

@@ -269,6 +269,30 @@
 .dsh-msg-bnote .dsh-role {
   color: var(--cyan2, #7ca2fe);
 }
+/* 研究初始化的过程行（app-assist.js 的 initProgressRowEl · 消息由 app-research-init.js
+   的 initNote 落盘）：会话里一条紧贴的过程行 —— 起跑 / 复制 / 转 PDF / 交棒，
+   「滚动行」就地换文字不堆屏；只给用户看，不进模型上下文。 */
+.dsh-msg-init {
+  margin: 3px 0;
+}
+.dsh-init-line {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 3px 8px;
+  border-left: 3px solid rgba(124, 162, 254, .45);
+  border-radius: 0 4px 4px 0;
+  background: rgba(124, 162, 254, .08);
+  font-size: 11.5px;
+  line-height: 1.6;
+  word-break: break-word;
+}
+.dsh-init-ico {
+  opacity: .9;
+}
+.dsh-init-txt {
+  color: var(--muted);
+}
 /* 「用户主动关闭会话」（本次需求 · app-assist.js 的 userClosedRowEl）：
    中性状态行 —— 灰字 + 虚线左边，既不红也不像告警；原始报文折叠在「详情」里。 */
 .dsh-msg-closed {

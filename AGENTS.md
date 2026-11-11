@@ -24,4 +24,5 @@ MTNode AI工作站 — Electron 桌面端 AI 工作流编排器。用户数据�
 - **插件封面图标 = 官方 logo + 透明底**：`plugins/icons/<id>.png`（1:1、≥256×256）必须取产品官方品牌资产 / 官方仓库原件，不自绘、不截图、不用第三方重绘版；优先带 alpha 的 PNG，不贴白底 / 黑底方块（卡片底色随主题变化）。细则见 `mtnode-agent-skills/plugins/plugin-dev/SKILL.md` 第五节。
 - **扩展能力（DSH 插件 / 技能 / MCP）统一在 `app-plugins.js` 的「扩展能力管理」对话框维护**，`app-settings.js` 只留入口。
 - **提示词单一真源**：节点参数机制写在 `dsh/gateway/canvas-plugin.mjs` / `db-plugin.mjs` 的工具描述里，完整硬规则只写在 `mtnode-agent-skills/mtnode/canvas-edit-rules/SKILL.md`；加规则先判归属层，只落一处。
+- **注入提示词必须登记**：凡注入给模型的固定文本（会话 / 助手人设、任务书、子代理派单、构建器身份）一律写成 `PS("<id>", 默认文本)`，并把 id 加进 `agent-prompts/index.json` —— 不登记就进不了「设置 → 内置能力」，用户改不到；`test/smoke-agent-prompts.js` 会逐条对账。没有覆盖时 `PS` 原样返回默认文本，包一层不改行为。
 - **两个「操窗口」的工具分工**：`mtnode_gui`（`mcp-gui-agent.js`）驱动**用户正在用的那只**窗口 —— 主进程 IPC 派发，覆盖面广；`mtnode_dev`（`dev-agent.js` + `dsh/gateway/dev-plugin.mjs`）只驱动**它自己 spawn 的那只隔离实例** —— CDP，能拿控制台 / 未捕获异常 / 网络，且改完代码能 reload 或 restart。前者随时可用，后者受「扩展能力管理 → 调试」总开关（`dsh.devTools`，默认关）与开发态限制；**默认数据目录 `%APPDATA%\pipeline-console` 在代码层硬拒**，谁也不许拿它去调试。自验流程见技能 `mtnode-verify-in-app`。

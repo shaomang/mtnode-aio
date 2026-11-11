@@ -2341,10 +2341,12 @@ async function assistSend(text, opts) {
   /* 拷问契约（本次需求 · 助手栏「先拷问需求」那一枚）：贴在人设尾部（不是单开一节）——
      节序表里没有这个 id 会被排到全表末尾，离「该不该开工」的判断点太远；
      贴在人设后面才有约束力。纯净模式开着时整段 system prompt 都置空（本就不注入）。 */
-  const assistGrillContract = assistGrillTurn && !assistPure ? GRILL_CONTRACT : "";
+  const assistGrillContract =
+    assistGrillTurn && !assistPure ? PS("contract.grill", GRILL_CONTRACT) : "";
   /* 「快速热修」（本轮需求）：与拷问互斥，两段里只有一段能进 system prompt ——
      热修优先（小窗保证不会同时开，这里再兜一层）。 */
-  const assistHotfixContract = assistHotfix && !assistPure ? HOTFIX_CONTRACT : "";
+  const assistHotfixContract =
+    assistHotfix && !assistPure ? PS("contract.hotfix", HOTFIX_CONTRACT) : "";
   const assistModeContract = assistHotfixContract || assistGrillContract;
   const visionMediaRules = assistCanvasFree
     ? /* 无画布档：整段画布 / 节点口径撤掉，只留「回执即事实」这条通用纪律 */
@@ -2402,16 +2404,38 @@ async function assistSend(text, opts) {
       : "";
   /* 无画布档下画布规则段全为空串：buildSections 丢空节，fallback 的 join("") 同样不占位，
      两条路径拼出来的结果一致。 */
+  /* 每一段都可被「设置 → 内置能力」覆盖（id 见 agent-prompts/index.json）：
+     没有覆盖时 PS 原样返回上面算好的那一段，拼接结果与拆分前逐字一致。 */
   const assistSections = {
-    persona_host: personaHost,
-    scope: scopeBlock,
-    canvas_rules: canvasEditRule,
-    superconnect_rules: superConnectRule,
-    devnode_rules: devNodeRule,
-    vision_media_rules: visionMediaRules,
-    layout_rules: layoutRules,
-    principle: principleBlock,
-    app_state: appStateBlock,
+    persona_host: PS(
+      assistCanvasFree ? "assist.persona.canvas_free" : "assist.persona.canvas",
+      personaHost,
+    ),
+    scope: PS(
+      assistCanvasFree
+        ? "assist.scope.canvas_free"
+        : scopeCurrent
+          ? "assist.scope.current"
+          : "assist.scope.global",
+      scopeBlock,
+    ),
+    canvas_rules: PS("assist.canvas_rules", canvasEditRule),
+    superconnect_rules: PS("assist.superconnect_rules", superConnectRule),
+    devnode_rules: PS("assist.devnode_rules", devNodeRule),
+    vision_media_rules: PS(
+      assistCanvasFree ? "assist.vision_media_rules.none" : "assist.vision_media_rules.full",
+      visionMediaRules,
+    ),
+    layout_rules: PS("assist.layout_rules", layoutRules),
+    principle: PS(
+      assistCanvasFree
+        ? "assist.principle.canvas_free"
+        : scopeCurrent
+          ? "assist.principle.current"
+          : "assist.principle.global",
+      principleBlock,
+    ),
+    app_state: PS("assist.app_state.heads", appStateHeads) + "当前应用状态 JSON：\n" + stateJson,
   };
   /* 节序（app-prompt-sections.js 规范表）+ join:"" ⇒ 拼出来与改造前的整串逐字节一致 */
   const systemPrompt = assistPure
@@ -2435,15 +2459,15 @@ async function assistSend(text, opts) {
       : /* 内核不在（老沙箱只抠单文件）：按同一节序直接串接，结果与分节渲染一致；
            拷问 / 热修契约按同一口径在**整段之后**追加（与会话侧 systemPrompt += GRILL_CONTRACT 同源）。 */
         [
-          personaHost,
-          scopeBlock,
-          canvasEditRule,
-          superConnectRule,
-          devNodeRule,
-          visionMediaRules,
-          layoutRules,
-          principleBlock,
-          appStateBlock,
+          assistSections.persona_host,
+          assistSections.scope,
+          assistSections.canvas_rules,
+          assistSections.superconnect_rules,
+          assistSections.devnode_rules,
+          assistSections.vision_media_rules,
+          assistSections.layout_rules,
+          assistSections.principle,
+          assistSections.app_state,
         ].join("") +
         assistModeContract;
   /* ── 这一轮的开轮参数与会话视图完全同构（本轮需求 · 会话为主体）───────────────
@@ -2457,9 +2481,9 @@ async function assistSend(text, opts) {
      补齐后，助手会话与普通会话在轨迹 / 台账 / 续跑 / 计划这几条线上是同一套行为。 */
   const planMode = !!(aidSt && aidSt.planNext);
   if (planMode && typeof PLAN_MODE_USER_DIRECTIVE === "string")
-    input = PLAN_MODE_USER_DIRECTIVE + input;
+    input = PS("flow.plan_mode_directive", PLAN_MODE_USER_DIRECTIVE) + input;
   /* 超频模式：思考档强制 Max + 注入极限测试提示词（与普通会话同一份判据与文案） */
-  if (assistOverclock) input = OVERCLOCK_DIRECTIVE + input;
+  if (assistOverclock) input = PS("flow.overclock_directive", OVERCLOCK_DIRECTIVE) + input;
   const resumeRound = !!String((opts && opts.resumeSession) || "").trim();
   /* 续跑轮不重发上下文里已有的图（与 agentSessionSend 同一条判据） */
   const roundImages =
@@ -7389,6 +7413,9 @@ function histCollectRows(list) {
   if (!list) return rows;
   for (const el of list.children) {
     if (!el.classList || !el.classList.contains("dsh-msg")) continue;
+    /* 研究初始化的过程行（dsh-msg-init，见 initProgressRowEl）不算一轮对话：
+       让它参与折叠 / 右轨轮次，只会在竖条上多出一串没意义的点 */
+    if (el.classList.contains("dsh-msg-init")) continue;
     rows.push(el);
   }
   return rows;
@@ -11427,6 +11454,27 @@ function openCompactSummaryPop(stOpt) {
   }
 }
 
+/* 研究初始化的过程行（消息由 renderer/app-research-init.js 的 initNote 落盘，
+   _src:'ix-init-progress'）：会话视图里按「一行过程」画 —— 图标 + 一句话，
+   不套 AI / 你的气泡头（这不是模型发言），也不进模型上下文（app-db.js 已过滤）。 */
+function initProgressRowEl(m, nodeId, idx) {
+  const row = document.createElement("div");
+  row.className = "dsh-msg dsh-msg-bnote dsh-msg-init";
+  if (idx != null) row.dataset.histKey = histMsgKey(nodeId || "chat", idx, m);
+  const line = document.createElement("div");
+  line.className = "dsh-init-line";
+  const icon = document.createElement("span");
+  icon.className = "dsh-init-ico";
+  icon.textContent = String((m && m._ico) || "⏳");
+  const txt = document.createElement("span");
+  txt.className = "dsh-init-txt";
+  txt.textContent = String((m && m.content) || "");
+  line.appendChild(icon);
+  line.appendChild(txt);
+  row.appendChild(line);
+  return row;
+}
+
 /* 「用户主动关闭会话」状态行（本次需求 · 消息由 app-db.js 的 userClosedTrace 落盘）：
    中性一行 —— 不是红字报错、也不套 AI / 你 的气泡头（这一轮既不是模型发言，
    也不是用户发言）。右侧一枚「详情」按需展开原始工程报文（exit code / stderr tail），
@@ -11500,6 +11548,8 @@ function dshMsgBlock(m, nodeId, idx, opts) {
   /* 「用户主动关闭会话」那一行单独画（见 userClosedRowEl）：它没有正文，走普通消息
      分支只会得到一个空气泡。 */
   if (m && m._src === "user-closed") return userClosedRowEl(m, nodeId, idx);
+  /* 研究初始化的过程行（app-research-init.js 的 initNote）：同上，一行过程、不套气泡头 */
+  if (m && m._src === "ix-init-progress") return initProgressRowEl(m, nodeId, idx);
   const row = document.createElement("div");
   row.className = "dsh-msg" + (m.role === "user" ? " dsh-user" : " dsh-ai");
   /* 「这一轮已经结束」痕迹（app-db.js 的 ixRoundEndTrace：轮次收尾时卡片收口后落的
@@ -15142,10 +15192,11 @@ async function agentSessionSend(text, opts) {
   /* 规划模式：本轮只出计划，不做任何改动（系统提示 + 用户指令双重约束，
      画布 / 应用改动另由宿主在 handleCanvasEvent 中硬性拒绝） */
   const planMode = !!st.planNext;
-  if (planMode) input = PLAN_MODE_USER_DIRECTIVE + input;
+  if (planMode)
+    input = PS("flow.plan_mode_directive", PLAN_MODE_USER_DIRECTIVE) + input;
   /* 超频模式（会话级开关 st.overclock）：思考档强制 Max，并注入极限测试提示词 */
   const overclockOn = !!st.overclock;
-  if (overclockOn) input = OVERCLOCK_DIRECTIVE + input;
+  if (overclockOn) input = PS("flow.overclock_directive", OVERCLOCK_DIRECTIVE) + input;
   /* 纯净模式：移除 system prompt，模型输入 = 纯粹的用户输入（避免 MTNode
      system prompt 的 token 开销）。systemPrompt 置空 + pure 标记下发网关：
      网关强制空预设文本，引擎侧 pure-prompt 插件按 MTNODE_PURE 移除人设段。
@@ -15190,10 +15241,19 @@ async function agentSessionSend(text, opts) {
         "你是 MTNode 画布上的智能会话助手。可读写文件、联网、执行命令；也可用 mtnode_canvas_get / mtnode_canvas_edit / mtnode_app 查看并修改本会话所属的画布（节点、连线、排版等）。\n" +
         "只访问本会话绑定的那张画布：会话建立时就已绑定，用户中途切去别的画布干活，你本轮的读写仍精准落在自己那张上。\n" +
         (canvasMode === "all"
-          ? "当前「画布修改确认」为全部允许：mtnode_canvas_edit 与危险操作 delete_workflow / install_dsh_plugin / remove_dsh_plugin / set_dsh_plugin 都直接生效，不再弹窗。\n"
+          ? PS(
+              "session.canvas_mode.all",
+              "当前「画布修改确认」为全部允许：mtnode_canvas_edit 与危险操作 delete_workflow / install_dsh_plugin / remove_dsh_plugin / set_dsh_plugin 都直接生效，不再弹窗。\n",
+            )
           : canvasMode === "approve"
-            ? "当前「画布修改确认」为批准：mtnode_canvas_edit 直接生效；危险操作 delete_workflow / install_dsh_plugin / remove_dsh_plugin / set_dsh_plugin 仍会弹窗确认。\n"
-            : "mtnode_canvas_edit 与危险操作 delete_workflow / install_dsh_plugin / remove_dsh_plugin / set_dsh_plugin 会弹窗请用户确认：必须等确认结果，勿臆造成功；用户拒绝即停止本次任务。\n") +
+            ? PS(
+                "session.canvas_mode.approve",
+                "当前「画布修改确认」为批准：mtnode_canvas_edit 直接生效；危险操作 delete_workflow / install_dsh_plugin / remove_dsh_plugin / set_dsh_plugin 仍会弹窗确认。\n",
+              )
+            : PS(
+                "session.canvas_mode.ask",
+                "mtnode_canvas_edit 与危险操作 delete_workflow / install_dsh_plugin / remove_dsh_plugin / set_dsh_plugin 会弹窗请用户确认：必须等确认结果，勿臆造成功；用户拒绝即停止本次任务。\n",
+              )) +
         "相关性：先自判本轮是否与画布有关 —— 无关就别读画布（不调 mtnode_canvas_get、不取快照），直接做完这件活；有关再读现状；判不准按「有关」处理。\n" +
         "改画布：动手前先 mtnode_canvas_get 看清现状；节点字段、端子与 alias 的口径以 mtnode_canvas_edit / canvas_get 的工具说明为唯一真源，跨节点层接线用 superConnect；DSH 插件经 mtnode_app 的 list_dsh_plugins / install_dsh_plugin 等管理。\n" +
         "要某个节点的内容时在 prompt/task 里写 @标题，不要把正文复制粘贴（三条件与语法见技能 mtnode-canvas-edit-rules）。\n" +
@@ -15201,22 +15261,34 @@ async function agentSessionSend(text, opts) {
         "建开发节点、批次 / 文生图、连线建图、排版、数据库副本、事实库之前，先用 skill 工具加载对应技能（mtnode-canvas-edit-rules / mtnode-dev-architect / mtnode-canvas-batch-safety / mtnode-canvas-layout-ux / mtnode-media-gen-nodes / mtnode-db-facts / mtnode-ai-facts）。\n" +
         "工具回执里没有的结果不要声称已完成；回答简洁（交流语言见文末「语言口味」），不要编造不存在的节点或画布。";
     }
+    /* 三档人设各自可被「设置 → 内置能力」覆盖（id 见 agent-prompts/index.json）：
+       没有覆盖时 PS 原样返回上面拼好的文本，所以拼接结果与拆分前逐字一致。 */
+    systemPrompt = PS(
+      canvasPersona === "none"
+        ? "session.persona.none"
+        : canvasPersona === "noRead"
+          ? "session.persona.noRead"
+          : "session.persona.canvas",
+      systemPrompt,
+    );
   }
   /* 自检与长时纪律（用户已确认：分阶段自检 + 交付前全检；发现错误先自行修复并重跑，
      修不好才告知；关键结论必须带证据；长任务不空转、跨重启的活建议提升为长周期任务图）。
      纯行为纪律，只写这一处（提示词单一真源：参数机制在工具描述、操作规范在技能，
      这里只留「把活做对」的纪律）。 */
-  if (!pureMode) systemPrompt += SELF_CHECK_DISCIPLINE;
+  if (!pureMode) systemPrompt += PS("session.self_check", SELF_CHECK_DISCIPLINE);
   /* 真机调试能力（mtnode_gui，仅限「属于某个应用」的会话：应用开发 / 版本合并）：这一档
      的运行时才注册 GUI 工具，所以人设必须说明它存在、怎么用、边界在哪 —— 否则拿到工具也
      不会用（旧行为：只能看代码，改完无法自验）。只在有 appId 时追加，其余会话一字不变。 */
   if (!pureMode && st.appId) {
-    systemPrompt +=
+    systemPrompt += PS(
+      "session.gui_debug",
       "\n\n真机调试（本会话专属能力）：本轮注册了 GUI 工具 mtnode_gui，你可以直接操作这个应用**自己的窗口**做真机验证 —— 不是读代码猜结果。\n" +
       "· 先 open-app（app = 本应用 id，取自它的 app.json）：开窗 / 重载并置前，回执带窗口标题与目录；之后所有动作都用 which = 那个标题的一段子串，别去动 MTNode 主窗口或用户别的窗口。\n" +
       "· 然后用 outline 看可点元素、text 读文字、click / type / set / key / scroll 操作、eval 读页面里的值、screenshot 截图留证（path 给本机绝对路径）。\n" +
       "· 改完代码就重开一次（open-app）再验证；每次声称「已经好了」必须有工具回执或截图支撑，读不到就如实说读不到。\n" +
-      "· 只在这个应用自己的窗口里操作：不点宿主菜单、不关用户窗口、不在别的应用界面里乱试；动作失败就把它当成失败如实报告，不要假装成功。";
+      "· 只在这个应用自己的窗口里操作：不点宿主菜单、不关用户窗口、不在别的应用界面里乱试；动作失败就把它当成失败如实报告，不要假装成功。",
+    );
   }
   /* 开发 / 细化绑定会话：任务书是会话契约，临时写入系统提示（不占用户消息位，
      会话里只显示用户填写的关键输入；后续追问也持续携带该契约） */
@@ -15236,10 +15308,14 @@ async function agentSessionSend(text, opts) {
       !!t &&
       t.charAt(0) !== "/";
     if (followUpRound) devContract = devContractForRound(devContract, t);
-    systemPrompt +=
+    /* 任务书骨架可覆盖：覆盖文本里写 {{devContract}} 即把上面算好的契约正文插进来 */
+    systemPrompt += PS(
+      "session.dev_contract",
       "\n\n【开发任务书 · 本会话模块契约（非用户消息，无需回复该段）】\n" +
-      devContract +
-      "\n【任务书结束】";
+        devContract +
+        "\n【任务书结束】",
+      { devContract },
+    );
   }
   /* 「先拷问需求（grill-me）」（本次需求 · 会话窗口「模式」菜单新增的那一枚）：
      会话级开关缺省开（st.grill，没点过 = 开），按轮注入契约 —— 是否真拷问由模型
@@ -15267,8 +15343,8 @@ async function agentSessionSend(text, opts) {
       /* 互斥兜底：热修那一段已经进去了，拷问这一段这一轮就不再进（热修优先） */
       grillOverride: hotfixTurn ? false : opts.grillOverride,
     });
-  if (grillTurn) systemPrompt += GRILL_CONTRACT;
-  if (hotfixTurn) systemPrompt += HOTFIX_CONTRACT;
+  if (grillTurn) systemPrompt += PS("session.grill_contract", GRILL_CONTRACT);
+  if (hotfixTurn) systemPrompt += PS("session.hotfix_contract", HOTFIX_CONTRACT);
   try {
     /* 本轮的图像附件（只发这一轮新增的图）：本轮正文里的内嵌图行 → 网关 attachImages
        → 用户消息的 image 内容块（模型这才真正「看见」那张图，而不是只读到一行路径）。

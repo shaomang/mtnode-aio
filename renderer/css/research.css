@@ -270,7 +270,16 @@
 .rs-btn:hover {
   border-color: var(--bd2);
 }
+/* 研究界面口径：按钮一律不上色（只描边 + 文字色），与全站按钮同形制。
+   必须显式写 background —— 否则 button.primary 的橙色渐变会透上来，
+   把「开始处理」这类主按钮填成一块棕色。 */
 .rs-btn.primary {
+  background: var(--panel2);
+  border-color: var(--cyan);
+  color: var(--cyan);
+}
+.rs-btn.primary:hover {
+  background: var(--panel2);
   border-color: var(--cyan);
   color: var(--cyan);
 }
@@ -357,6 +366,7 @@
   min-height: 0;
 }
 .rs-editor-wrap {
+  position: relative;
   flex: 1 1 auto;
   min-height: 0;
   display: flex;
@@ -364,6 +374,53 @@
 }
 .rs-center.is-graph .rs-editor-wrap {
   display: none;
+}
+
+/* ── 载入反馈（文献原文可能很长：读盘 + 渲染要一会儿）──
+ * 阅读区上盖一层极淡的纸色纱 + 一颗小转圈：只说「在读了」，不推挤布局、不挡滚动条、不吃点击。
+ * 为了不突兀：进出都只走 opacity 的 ease-in-out（不缩放、不位移、不弹）；
+ * 140ms 内载完的根本不出现，出现后至少留 240ms（见 app-research.js 的 rsBusyShow / rsBusyHide）。 */
+.rs-busy {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  pointer-events: none;
+  user-select: none;
+  opacity: 0;
+  transition: opacity 0.22s ease-in-out;
+  background: color-mix(in srgb, var(--bg, #222222) 62%, transparent);
+  color: var(--muted);
+  font-family: var(--sans);
+  font-size: 12.5px;
+  letter-spacing: 0.2px;
+}
+.rs-busy.on {
+  opacity: 1;
+}
+.rs-busy-spin {
+  width: 13px;
+  height: 13px;
+  border: 2px solid color-mix(in srgb, var(--muted) 26%, transparent);
+  border-top-color: var(--muted);
+  border-radius: 50%;
+  animation: rs-busy-spin 0.85s linear infinite;
+}
+@keyframes rs-busy-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .rs-busy {
+    transition: opacity 0.12s linear;
+  }
+  .rs-busy-spin {
+    animation-duration: 2.4s;
+  }
 }
 
 /* ── 返回边距（阅读区最左那一条）──
@@ -2128,6 +2185,141 @@
   color: inherit;
   outline: 1px solid color-mix(in srgb, var(--cyan) 55%, transparent);
 }
+/* 右栏正文：与正文（.rs-rich）**同一份渲染**，只是版心更窄 ——
+   外壳 .rg-side-text 原本是 pre-wrap 的纯文本块（会原样吐出 `- 列表` 与源码换行），
+   这里改成块级排版，并把标题 / 段落 / 引用的量收小一档，免得 300px 的栏里一段就占满屏。 */
+.rg-side-text.rg-side-md {
+  white-space: normal;
+  max-width: none;
+  min-height: 0;
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  font-size: 12.5px;
+  line-height: 1.78;
+  text-align: left;
+  overflow-x: auto;
+}
+.rg-side-md h1,
+.rg-side-md h2,
+.rg-side-md h3,
+.rg-side-md h4 {
+  margin: 0.9em 0 0.45em;
+  line-height: 1.4;
+  text-align: left;
+}
+.rg-side-md h1 {
+  font-size: 15px;
+}
+.rg-side-md h2 {
+  font-size: 13.5px;
+  padding-bottom: 3px;
+}
+.rg-side-md h3 {
+  font-size: 12.8px;
+}
+.rg-side-md h4 {
+  font-size: 12.2px;
+  color: var(--muted);
+}
+.rg-side-md > *:first-child {
+  margin-top: 0;
+}
+.rg-side-md p {
+  margin: 0.55em 0;
+}
+.rg-side-md ul,
+.rg-side-md ol {
+  margin: 0.5em 0;
+  padding-left: 1.5em;
+}
+.rg-side-md li {
+  margin: 0.2em 0;
+}
+.rg-side-md blockquote {
+  margin: 0.6em 0;
+  padding: 6px 9px;
+}
+.rg-side-md pre {
+  margin: 0.6em 0;
+  padding: 8px 10px;
+  font-size: 11.5px;
+}
+.rg-side-md code {
+  font-size: 11.5px;
+}
+.rg-side-md table {
+  display: block;
+  overflow-x: auto;
+  font-size: 11.5px;
+}
+.rg-side-md th,
+.rg-side-md td {
+  padding: 3px 6px;
+}
+.rg-side-md img,
+.rg-side-md .rs-pele svg {
+  max-width: 100%;
+  height: auto;
+}
+/* 窄栏里的引用块（`> [!term] 名称` / `> [!claim] 标题`）：抬头与正文都收一档，
+   300px 的栏里不能按正文那套量走，否则一张术语卡就把 8 行预览占满。 */
+.rg-side-md blockquote.rs-callout {
+  margin: 0.6em 0;
+  padding: 6px 9px;
+  font-size: 0.97em;
+}
+.rg-side-md .rs-callout-head {
+  margin: 0 0 0.35em;
+  gap: 0.45em;
+}
+.rg-side-md .rs-callout-kind {
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+}
+.rg-side-md .rs-callout-title {
+  font-size: 12.8px;
+}
+.rg-side-md .rs-term-name {
+  margin-bottom: 0.25em;
+  font-size: 12.5px;
+}
+/* 预览折叠：只露 8 行（高度按容器自身的 font-size / line-height 折算，padding 上下各 8px），
+   底边一道渐隐告诉人「下面还有」；展开后取消一切限制。 */
+.rg-side-text.rg-side-md.rg-side-fold {
+  position: relative;
+  max-height: calc(var(--rg-side-lines, 8) * 1.78em + 16px);
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 22px), transparent);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 22px), transparent);
+}
+.rg-side-text.rg-side-md.rg-side-fold.rg-side-open {
+  max-height: none;
+  overflow: visible;
+  -webkit-mask-image: none;
+  mask-image: none;
+}
+.rg-side-fold-toggle {
+  display: block;
+  margin: 0 0 8px;
+  padding: 2px 0;
+  border: 0;
+  background: none;
+  color: var(--cyan);
+  font: inherit;
+  font-size: 11.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.rg-side-fold-toggle:hover {
+  text-decoration: underline;
+}
+.rg-side-fold-toggle[hidden] {
+  display: none;
+}
+.rg-side-md .rv-math-display {
+  overflow-x: auto;
+  overflow-y: hidden;
+}
 .rg-side-empty {
   margin-top: 6px;
   color: var(--muted);
@@ -2364,6 +2556,16 @@ body.theme-light .rg-svg .rg-edge {
   font-size: 11px;
   color: var(--muted);
 }
+/* 知识水平：第三列（可选）单独窄一档，不跟课题名 / 核心问题抢宽度 */
+.rs-init-field-know {
+  flex: 0 0 150px;
+}
+.rs-init-fields-hint {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 4px;
+  line-height: 1.5;
+}
 .rs-init-input,
 .rs-init-textarea {
   width: 100%;
@@ -2393,6 +2595,86 @@ body.theme-light .rg-svg .rg-edge {
   width: 0;
   background: var(--cyan);
   transition: width 0.3s ease;
+}
+
+/* ── 实时进度（初始化跑的时候：进度 / 当前项 / agent 心跳） ──
+   位置在课题条之下、两栏之上，跨整块；内容由 app-research-init.js 的 paintLive 每秒就地改，
+   所以这里只用最简单的盒子，不要用会重排整页的样式。 */
+.rs-init-live {
+  flex: 0 0 auto;
+  padding: 7px 14px 8px;
+  border-bottom: 1px solid var(--bd);
+  background: var(--panel);
+  font-size: 11px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.rs-live-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.rs-live-bar {
+  flex: 1 1 auto;
+  min-width: 60px;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--panel2);
+  overflow: hidden;
+}
+.rs-live-bar-fill {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: var(--cyan);
+  transition: width 0.3s ease;
+}
+.rs-live-count {
+  flex: 0 0 auto;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+.rs-live-elapsed {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.rs-live-agent {
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding: 0 8px;
+  border-radius: 999px;
+  border: 1px solid var(--bd);
+  color: var(--cyan);
+  white-space: nowrap;
+}
+.rs-live-agent.bad {
+  color: var(--muted);
+}
+.rs-live-agent.warn {
+  color: var(--yellow);
+  border-color: var(--yellow);
+}
+.rs-live-cur,
+.rs-live-terms,
+.rs-live-beat {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink);
+}
+.rs-live-terms {
+  color: var(--cyan);
+}
+.rs-live-beat {
+  color: var(--muted);
+}
+.rs-live-cur.warn,
+.rs-live-beat.bad {
+  color: var(--yellow);
 }
 
 /* ── 主体：左右两栏 + 分隔条 ── */
@@ -3014,6 +3296,22 @@ body.theme-light .rg-svg .rg-edge {
   font-weight: 600;
 }
 
+/* ── 段首引导句提级（reader 把块首 `**贡献。**` 这类行内粗体提成独立块）──
+   它是「节内的一条小标题」，不是新的一节：比正文大一档、字重 600、上下留白，
+   **左侧不画竖线**（竖线是引用 / callout 的形制，标题靠字号与留白分层）。
+   只在阅读态出现：编辑面不走 decorate。 */
+.rs-rich .rs-h-lead {
+  font-size: 1.08em;
+  line-height: 1.5;
+  margin: 1.55em 0 0.5em;
+  padding: 0;
+  border: 0;
+  border-left: 0;
+  text-align: left;
+  font-weight: 600;
+  color: var(--ink);
+}
+
 /* ── 公式：行内不抢行高；显示式占满版心、右侧挂编号 ── */
 .rs-rich .rv-math {
   font-size: 1.02em;
@@ -3413,6 +3711,23 @@ body.theme-light .rg-svg .rg-edge {
 .rs-ncards.show {
   display: flex;
 }
+/* 一张卡一个色相，按**卡头种类**定（下面所有形制只吃 --rs-tone 这一个变量）：
+ *   术语 → 紫（--rs-tone-term，主题里没有紫槽位，这一节自带暗底浅紫 / 亮底深紫两档）
+ *   公式 → 墨色（与正文里公式同一档）
+ *   引用 → 绿   链接 → 青
+ * 亮暗不另写一遍：色相取的就是主题变量，.rs-light 那一档在下面「亮色皮肤」里换值。 */
+.rs-ncards {
+  --rs-tone: var(--rs-tone-term, #b09cff);
+}
+.rs-ncards.is-formula {
+  --rs-tone: color-mix(in srgb, var(--ink) 64%, var(--muted));
+}
+.rs-ncards.is-cite {
+  --rs-tone: var(--green);
+}
+.rs-ncards.is-link {
+  --rs-tone: var(--cyan);
+}
 .rs-ncards-head {
   display: flex;
   align-items: center;
@@ -3423,7 +3738,7 @@ body.theme-light .rg-svg .rg-edge {
   flex: 0 0 auto;
   font-size: 11px;
   letter-spacing: 0.04em;
-  color: var(--muted);
+  color: var(--rs-tone);
 }
 .rs-ncards-name {
   flex: 1 1 auto;
@@ -3432,7 +3747,7 @@ body.theme-light .rg-svg .rg-edge {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 13px;
-  color: var(--cyan);
+  color: var(--rs-tone);
 }
 .rs-ncards-ico,
 .rs-ncards-x {
@@ -3449,8 +3764,8 @@ body.theme-light .rg-svg .rg-edge {
 }
 .rs-ncards-ico:hover,
 .rs-ncards-x:hover {
-  color: var(--cyan);
-  border-color: var(--cyan);
+  color: var(--rs-tone);
+  border-color: color-mix(in srgb, var(--rs-tone) 62%, var(--bd));
 }
 /* 浮层里的原式：只在这里排一遍（长式子横向可滚），没有外框 */
 .rs-ncards-eq {
@@ -3473,25 +3788,81 @@ body.theme-light .rg-svg .rg-edge {
   color: var(--muted);
   font-size: 12px;
 }
-/* 一张卡就是一条笔记：常态就带一层很浅的底 + 边框，两条以上才分得清；
-   悬停再点亮一档（点它 = 打开出处，所以必须一眼看出「这块能点」）。 */
+/* 一张卡就是一条笔记 —— 形制与索引页的行同一套：**静默态就是一行正文**
+ * （无背景、无边框、字取正文色），悬停 / 当前展开的那一条才上类型色（--rs-tone）并在左侧露一道细色条。
+ * 色条用绝对定位的 ::before：静默态只占位不上色（宽度一直在），所以悬停不会把字挤动一行。
+ * 点它 = 展开这一条（点行本身不跳转），进笔记走展开后行尾那颗「打开」。 */
 .rs-ncard {
-  padding: 6px 8px;
-  background: color-mix(in srgb, var(--panel2) 55%, transparent);
-  border: 1px solid var(--bd);
-  border-radius: 8px;
+  position: relative;
+  padding: 5px 6px 5px 10px;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  color: var(--ink);
   cursor: pointer;
 }
-.rs-ncard:hover {
-  background: var(--panel2);
-  border-color: var(--bd2);
+.rs-ncard::before {
+  content: "";
+  position: absolute;
+  left: 2px;
+  top: 5px;
+  bottom: 5px;
+  width: 2px;
+  border-radius: 1px;
+  background: transparent;
+  transition: background 0.14s ease;
+}
+.rs-ncard:hover,
+.rs-ncard.is-open {
+  color: color-mix(in srgb, var(--rs-tone) 88%, var(--ink));
+}
+.rs-ncard:hover::before,
+.rs-ncard.is-open::before {
+  background: var(--rs-tone);
+}
+/* 一条卡的一行：方向（标题）+ 一行摘要 + 展开后行尾那颗「打开」，单行不换行 */
+.rs-ncard-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+.rs-ncard-sum {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--muted);
+}
+.rs-ncard:hover .rs-ncard-sum,
+.rs-ncard.is-open .rs-ncard-sum {
+  color: color-mix(in srgb, var(--rs-tone) 72%, var(--muted));
+}
+/* 进笔记的唯一入口：展开后才挂在行尾，形制与浮层头部那两颗小钮同一档 */
+.rs-ncard-open {
+  flex: 0 0 auto;
+  height: 18px;
+  margin-left: auto;
+  padding: 0 7px;
+  background: transparent;
+  border: 1px solid var(--bd);
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 16px;
+  cursor: pointer;
+}
+.rs-ncard-open:hover {
+  color: var(--rs-tone);
+  border-color: color-mix(in srgb, var(--rs-tone) 62%, var(--bd));
 }
 /* 双链卡的第一行 = 「这条链接指向的那一页」（点它才是进页面，其余卡是跳到写过它的那一行）：
    左侧一条竖标 + 底色亮一档，与「写过它」的笔记卡一眼分开。 */
 .rs-ncard.is-page {
-  background: color-mix(in srgb, var(--cyan) 10%, transparent);
-  border-color: color-mix(in srgb, var(--cyan) 38%, var(--bd));
-  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--cyan) 70%, transparent);
+  background: color-mix(in srgb, var(--rs-tone) 10%, transparent);
+  box-shadow: inset 2px 0 0 color-mix(in srgb, var(--rs-tone) 70%, transparent);
 }
 /* 3 行截断：方向标题与正文同属这一段流，所以整卡一起截 */
 .rs-ncard-body {
@@ -3502,9 +3873,10 @@ body.theme-light .rg-svg .rg-edge {
   overflow: hidden;
 }
 .rs-ncard-dir {
-  /* 只在页根上有一档的值，别在这儿再抄一份色值：浮层挂 body，靠 :root 兜底，
+  /* 静默态与正文同色（行式口径）；类型色只在悬停 / 展开时由 .rs-ncard 的 color 带下来。
+     色值只在页根上有一档，别在这儿再抄一份：浮层挂 body，靠 :root 兜底，
      亮纸那一档由 showNoteCards 把 .rs-light 拷到浮层上换掉。 */
-  color: var(--rs-tone-term);
+  color: inherit;
   font-weight: 700;
 }
 /* 卡片正文是「一段流」里的行内 Markdown（见 research-reader.js 的 cardInlineHtml）：
@@ -4380,6 +4752,12 @@ body.theme-light .rg-svg .rg-edge {
   font-size: 13px;
   color: color-mix(in srgb, var(--ink) 66%, var(--muted));
 }
+/* 段首小标题（.rs-h-lead）在大纲里比「节」再缩进一级：它是节内的引导句，不是新的一节 */
+.rs-outline-item.lv4 {
+  padding-left: 34px;
+  font-size: 12.5px;
+  color: color-mix(in srgb, var(--ink) 52%, var(--muted));
+}
 .rs-outline-item.on {
   color: var(--cyan);
   font-weight: 700;
@@ -5180,7 +5558,10 @@ input.rs-dv-addsel {
 /* 断链提醒（列表对话框）同理 */
 .rs-dead.rs-light,
 /* 选区右键菜单同理（挂在 body 上，亮色纸下由 JS 带 .rs-light） */
-.rs-ctxmenu.rs-light {
+.rs-ctxmenu.rs-light,
+/* 笔记浮空卡同理（挂在 body 上）：卡头色相与卡面底色都要吃这一页的变量，
+   否则强制亮纸（body 仍是暗主题）时卡里还是暗底那档青 / 绿 */
+.rs-ncards.rs-light {
   /* v8：纯白 / 近白压一档成冷灰（#ffffff → #f4f6f8，页面底 #f5f7fa → #eaedf1）：
      长读时白底反光太亮、与深色正文的对比过冲，抬灰之后读得住。 */
   --bg: #eaedf1;
@@ -5214,6 +5595,10 @@ input.rs-dv-addsel {
   background: var(--panel);
   color: var(--ink);
   box-shadow: 0 18px 48px rgba(0, 0, 0, 0.18);
+}
+/* 笔记浮空卡同理：卡面取 --panel（影子仍走 --shadow-pop，比候选面板飘一档） */
+.rs-ncards.rs-light {
+  background: var(--panel);
 }
 /* 正文底色：亮色下交给 .rs-pane 的 --bg，阅读区不再叠第二层底 */
 .rs-light .rs-editor-body,
@@ -5725,36 +6110,37 @@ body:not(.theme-light) .rs-pane:not(.rs-light) {
   text-decoration: none;
 }
 
-/* ── 双链 / 术语（`[[…]]`）：静默态也带一条浅灰虚线 ──
+/* ── 双链 / 术语（`[[…]]`）：静默态也带一条很浅的**同色**虚线 ──
  * 中文译稿里几乎每个术语都是一个 `[[译名]]`，它们**就是链接**；原来静默态与正文完全同色同形，
- * 读者看到的就是「一串普通文字」，术语等于没渲染。这里与外部链接同一口径：墨色 26% 的 1px 虚线，
- * 看得见、不打断阅读；悬停仍按本类色（青）加深那条线并露虚线框，不跳版。
+ * 读者看到的就是「一串普通文字」，术语等于没渲染。这里与外部链接同一口径：本类色（--rs-tone）30%
+ * 的 1px 虚线 —— 与字色同源，不是灰线，看得见、不打断阅读；悬停仍按本类色加深那条线并露虚线框，不跳版。
  * 位置放在上面的 hover 之后：那条里写了 `text-decoration: none`，这里要把它盖回来。 */
 .rs-rich .rs-wl {
   text-decoration: underline dashed;
   text-decoration-thickness: 1px;
-  text-decoration-color: color-mix(in srgb, var(--ink) 26%, transparent);
+  text-decoration-color: color-mix(in srgb, var(--rs-tone) 30%, transparent);
   text-underline-offset: 0.18em;
   text-decoration-skip-ink: auto;
 }
 .rs-rich .rs-wl:hover {
   text-decoration: underline dashed;
   text-decoration-thickness: 1px;
-  text-decoration-color: color-mix(in srgb, var(--ink) 52%, transparent);
+  text-decoration-color: color-mix(in srgb, var(--rs-tone) 70%, transparent);
   text-underline-offset: 0.18em;
 }
 
-/* ── 外部链接：静默态就带一条**浅灰虚线**下划线 ──
+/* ── 外部链接：静默态就带一条**很浅的同色**虚线下划线 ──
  * 双链 / 术语 / 引用 / 公式静默态就是纯正文（悬停才露虚线框），链接却得让人看出「这里能点」；
- * 但也不能喊 —— 取墨色 26% 的 1px 虚线（暗底亮底都跟着 --ink 走色），看得见、读起来不断行、
- * 不显色。悬停只把同一条线加深到 52%：不加粗、不换色相、不跳版。
- * 两条都写全 text-decoration 简写：它会把 thickness / color 一起重置，只写长属性会被前者吃掉。 */
+ * 但也不能喊 —— 取本类色（--rs-tone，链接是橙）30% 的 1px 虚线（暗底亮底都跟着本类色走），
+ * 看得见、读起来不断行、不抢正文。悬停只把同一条线按同色加深到 70%：不加粗、不换色相、不跳版。
+ * 两条都写全 text-decoration 简写：它会把 thickness / color 一起重置，只写长属性会被前者吃掉。
+ * 公式（.rv-math / .rs-eq）没有 text-decoration，也不在这两条选择器里，不受影响。 */
 .rs-rich a,
 .rs-rich.rs-read a,
 .rs-rich.rs-preview a {
   text-decoration: underline dashed;
   text-decoration-thickness: 1px;
-  text-decoration-color: color-mix(in srgb, var(--ink) 26%, transparent);
+  text-decoration-color: color-mix(in srgb, var(--rs-tone) 30%, transparent);
   text-underline-offset: 0.18em;
   text-decoration-skip-ink: auto;
 }
@@ -5763,8 +6149,25 @@ body:not(.theme-light) .rs-pane:not(.rs-light) {
 .rs-rich.rs-preview a:hover {
   text-decoration: underline dashed;
   text-decoration-thickness: 1px;
-  text-decoration-color: color-mix(in srgb, var(--ink) 52%, transparent);
+  text-decoration-color: color-mix(in srgb, var(--rs-tone) 70%, transparent);
   text-underline-offset: 0.18em;
+}
+
+/* ── 参考文献段落：整行可点 ──
+ * 判据是「行内含 `[@key]` 或 DOI / arXiv」（见 research-reader.js 的 decorateRefLines），
+ * 所以不给整行加下划线（那是链接的行内形制）—— 静默态与正文同形，
+ * 悬停才露一条极浅底色，点下去打开全文或派 agent 获取。 */
+.rs-rich .rs-refline {
+  cursor: pointer;
+  border-radius: 4px;
+  transition: background 0.14s ease;
+}
+.rs-rich .rs-refline:hover {
+  background: color-mix(in srgb, var(--green) 9%, transparent);
+}
+.rs-rich .rs-refline:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--green) 55%, transparent);
+  outline-offset: 1px;
 }
 
 /* ── ③ 显示式公式：与行内公式 / 术语 / 双链 / 引用**同一套形制**，只是尺寸不同 ──
@@ -5882,7 +6285,7 @@ body:not(.theme-light) .rs-pane:not(.rs-light) {
 /* ============ 索引页仪表盘（renderer/research-index.js · window.MTResearchIndex） ============
  * 索引页（research.json 的 corePath）不再是一篇 Markdown 长文，而是一张「原文在前」的仪表盘：
  *   页头（索引 · 原文 + 「原文」切换）→ 数字行（原文 / 论断 / 概念 / 方法 / 问题）
- *   → 一行筛选 → 原文卡（至少五行；只有一篇时占满整页）→ 最近改动。
+ *   → 问题清单 → 原文卡（至少五行；只有一篇时占满整页）。
  * 衍生物（译稿 / 摘要 / 节选）并进原文那张卡，只在点开之后的页面内切换 —— 页面上不再单列。
  * 配色只取主题变量（--ink / --muted / --bd / --panel2 / --cyan）：暗色 / 工业 / 亮色三套主题
  * 与「水滴 → 纸色」换肤都自动跟随，不新造一套颜色。 */
@@ -6020,47 +6423,47 @@ body:not(.theme-light) .rs-pane:not(.rs-light) {
   opacity: 0.75;
   pointer-events: none;
 }
-.rs-idx-topic-foot {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-  margin-top: 1px;
-}
-.rs-idx-topic-src {
-  flex: 1 1 auto;
-  min-width: 0;
-  font-size: 11px;
-  color: var(--muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.rs-idx-topic-add {
-  flex: 0 0 auto;
-  margin-left: auto;
-  font-size: 11.5px;
-  padding: 3px 9px;
-}
-
-/* ── 数字行：只要数字（不摆卡片），一排读完 ── */
+/* ── 标签页（原来的数字行）：原文 / 论断 / 概念 / 方法 / 问题，点一下换下方卡片区 ── */
 .rs-idx-nums {
   display: flex;
   flex-wrap: wrap;
-  align-items: baseline;
-  gap: 4px 22px;
-  margin: 0 0 10px;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 12px;
   padding: 0 0 10px;
   border-bottom: 1px solid var(--bd);
 }
+/* 每颗都是真按钮（button toggle）：数字 + 名字；不加底色填充，选中只描青边 */
 .rs-idx-num {
   display: inline-flex;
   align-items: baseline;
   gap: 5px;
   min-width: 0;
+  padding: 3px 11px;
+  font: inherit;
+  color: var(--ink);
+  background: var(--panel2);
+  border: 1px solid var(--bd);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: border-color 0.12s ease, color 0.12s ease;
+}
+.rs-idx-num:hover {
+  border-color: var(--bd2);
+}
+.rs-idx-num.is-on {
+  border-color: var(--cyan);
+}
+.rs-idx-num.is-on .rs-idx-num-v,
+.rs-idx-num.is-on .rs-idx-num-l {
+  color: var(--cyan);
+}
+.rs-idx-num:focus-visible {
+  outline: 2px solid var(--cyan);
+  outline-offset: 1px;
 }
 .rs-idx-num-v {
-  font-size: 17px;
+  font-size: 15px;
   font-weight: 600;
   line-height: 1.2;
   font-variant-numeric: tabular-nums;
@@ -6070,6 +6473,17 @@ body:not(.theme-light) .rs-pane:not(.rs-light) {
   font-style: normal;
   letter-spacing: 0.02em;
   color: var(--muted);
+}
+
+/* 问题清单并进课题头卡：与「核心问题」之间只隔一条细线，不再另起一区；
+   行底色抬一档（卡内是 --panel2，行用 --panel），一眼看出每一行是一张可编辑的条目 */
+.rs-idx-topic .rs-idx-qs {
+  margin: 3px 0 0;
+  padding-top: 8px;
+  border-top: 1px solid var(--bd);
+}
+.rs-idx-topic .rs-idx-qs-row {
+  background: var(--panel);
 }
 
 /* ── 问题清单：一行一条（内容就地改 / 状态 chip / 勾选 / 打开原文 / 删除） ── */
@@ -6466,7 +6880,7 @@ body:not(.theme-light) .rs-pane:not(.rs-light) {
   color: var(--muted);
 }
 
-/* ── 原文区：卡片在前，最近改动在后 ── */
+/* ── 原文区：索引页的最后一区（卡片在这里，下面不再接别的区块） ── */
 .rs-idx-orig {
   display: flex;
   flex-direction: column;
@@ -6483,7 +6897,7 @@ body:not(.theme-light) .rs-pane:not(.rs-light) {
   letter-spacing: 0.04em;
   color: var(--muted);
 }
-/* 组标题右侧一条细线：把原文与下面的最近改动分开，又不额外占纵向空间 */
+/* 组标题右侧一条细线：收住这一区的标题行，又不额外占纵向空间 */
 .rs-idx-orig-h::after {
   content: "";
   flex: 1 1 auto;
@@ -6501,6 +6915,7 @@ body:not(.theme-light) .rs-pane:not(.rs-light) {
   background: var(--panel2);
   border: 1px solid var(--bd);
 }
+/* 卡片区容器：原文页双列；那四个行式页面挂 .is-rows 收成一列（见上面行式一节） */
 .rs-idx-src-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -6511,7 +6926,93 @@ body:not(.theme-light) .rs-pane:not(.rs-light) {
     grid-template-columns: minmax(0, 1fr);
   }
 }
-/* 一张原文卡 = 标题 + 正文（至少五行）+ 路径；整张卡就是一个入口 */
+
+/* ── 论断 / 概念 / 方法 / 问题：一列一行一条（行式）──
+ * 这四页不再摆双列大卡（旧 .rs-idx-src 那一套形制因此只属于「原文」页，见下一节），
+ * 一屏能看的条数交给行距与单行省略。形制：**默认无背景、无边框、字取正文色**（读起来就是一张纸上的字），
+ * 悬停（以及卡里当前展开的那一条）才把文字转成本页类型色，并在左侧露一道细色条。
+ * 色条走绝对定位的 ::before：静默态只占位不上色（宽度一直在），悬停不挪字、不跳行。
+ * 色相沿用现有色版，一格一个：论断 青 / 概念 紫 / 方法 绿 / 问题 蓝；
+ * 按当前标签页（.rs-idx-num.is-on 的 data-key）落到 --rs-tone，亮暗不另写一遍 —— 取的就是主题变量。 */
+.rs-idx-src-grid.is-rows {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 2px;
+}
+.rs-idx-row {
+  --rs-tone: var(--rs-tone-term, #b09cff);
+  position: relative;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+  padding: 7px 8px 7px 11px;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  color: var(--ink);
+  font-size: 12.5px;
+  line-height: 1.6;
+  text-align: left;
+  cursor: pointer;
+}
+.rs-idx:has(.rs-idx-num.is-on[data-key="claim"]) .rs-idx-row {
+  --rs-tone: var(--cyan);
+}
+.rs-idx:has(.rs-idx-num.is-on[data-key="concept"]) .rs-idx-row {
+  --rs-tone: var(--rs-tone-term, #b09cff);
+}
+.rs-idx:has(.rs-idx-num.is-on[data-key="method"]) .rs-idx-row {
+  --rs-tone: var(--green);
+}
+.rs-idx:has(.rs-idx-num.is-on[data-key="question"]) .rs-idx-row {
+  --rs-tone: var(--blue);
+}
+.rs-idx-row::before {
+  content: "";
+  position: absolute;
+  left: 2px;
+  top: 6px;
+  bottom: 6px;
+  width: 2px;
+  border-radius: 1px;
+  background: transparent;
+  transition: background 0.14s ease;
+}
+/* 标题：吃余量、单行省略（长标题不进第二行，行高才齐） */
+.rs-idx-row-t {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+/* 一行摘要：余下全部宽度、单行省略、静默态取 muted */
+.rs-idx-row-sum {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+}
+.rs-idx-row:hover {
+  color: color-mix(in srgb, var(--rs-tone) 88%, var(--ink));
+}
+.rs-idx-row:hover .rs-idx-row-sum {
+  color: color-mix(in srgb, var(--rs-tone) 72%, var(--muted));
+}
+.rs-idx-row:hover::before {
+  background: var(--rs-tone);
+}
+/* 行是 div + role=button（要点得开、也读得出是入口）：键盘焦点自己画一圈 */
+.rs-idx-row:focus-visible {
+  outline: 2px solid var(--rs-tone);
+  outline-offset: 1px;
+}
+/* 一张原文卡 = 标题 + 正文（至少五行）+ 路径；整张卡就是一个入口。
+   **只属于「原文」页**：论断 / 概念 / 方法 / 问题 已改行式（见上面 .rs-idx-row 那一节），
+   那四页不再生成 .rs-idx-src，双列网格 / 悬停描边 / 五行正文预览 / 单篇铺满都不再落在它们身上。 */
 .rs-idx-src {
   display: flex;
   flex-direction: column;
@@ -6664,7 +7165,7 @@ body:not(.theme-light) .rs-pane:not(.rs-light) {
 }
 /* 只有一篇原文：这一张卡占满整页（标题在上、正文铺开、路径沉底）。
    flex-shrink 必须是 0：页头上面的内容多、窗口又矮时，这一块不许被压到比卡片还矮
-   （压下去就是卡片溢出到「最近改动」上，只盖住一半）。余量够就吃掉余量，
+   （压下去就是卡片溢出原文区，只露一半）。余量够就吃掉余量，
    余量不够就让整页滚动 —— 两种情形都不会把卡片挤变形。 */
 .rs-idx-orig.is-solo {
   flex: 1 0 auto;
@@ -6683,79 +7184,6 @@ body:not(.theme-light) .rs-pane:not(.rs-light) {
   flex: 1 1 auto;
   min-height: calc(5 * 1.65em);
   max-height: none; /* 单篇：正文有多长铺多长，截断交给卡的高度 */
-}
-
-/* ── 最近改动：一条一行的列表（不再两列 grid）；标题可换行、长串也不顶出页面 ── */
-.rs-idx-recent-box {
-  margin: 0 0 8px;
-  min-width: 0;
-}
-.rs-idx-side-h {
-  margin: 0 0 6px;
-  font-size: 11.5px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  color: var(--muted);
-}
-.rs-idx-recent-list {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  border-top: 1px solid var(--bd);
-}
-/* 列表行：标题吃掉剩余宽度、可换行；动作 · 时间靠右且不换行 */
-.rs-idx-recent {
-  display: flex;
-  flex-direction: row;
-  align-items: baseline;
-  gap: 10px;
-  width: 100%;
-  min-width: 0;
-  padding: 5px 7px;
-  text-align: left;
-  color: var(--ink);
-  background: transparent;
-  border: 0;
-  border-bottom: 1px solid var(--bd);
-  border-radius: 0;
-  cursor: pointer;
-}
-.rs-idx-recent:hover {
-  background: var(--panel2);
-}
-.rs-idx-recent-t {
-  flex: 1 1 auto;
-  min-width: 0;
-  font-size: 12.5px;
-  /* Markdown 标题允许长串（URL / 英文词 / 公式）：任意位置可断行，别把页面撑出横向滚动 */
-  white-space: normal;
-  overflow-wrap: anywhere;
-  word-break: break-word;
-}
-/* 标题里的行内 Markdown（**加粗** / `代码` / ~~删除~~）：只换样式，不换字号行高 */
-.rs-idx-recent-t strong {
-  font-weight: 600;
-}
-.rs-idx-recent-t code {
-  padding: 0 3px;
-  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
-  font-size: 0.94em;
-  background: var(--panel2);
-  border: 1px solid var(--bd);
-  border-radius: 4px;
-}
-.rs-idx-recent-t .rs-md-del {
-  text-decoration: line-through;
-  opacity: 0.75;
-}
-.rs-idx-recent-m {
-  flex: 0 0 auto;
-  max-width: 45%;
-  font-size: 10.5px;
-  color: var(--muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 /* ── 空状态 / 无匹配 ── */

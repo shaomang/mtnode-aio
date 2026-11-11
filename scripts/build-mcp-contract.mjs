@@ -40,6 +40,7 @@ export const MCP_PLUGIN_FILES = [
   'ai-facts-plugin.mjs',
   'longtask-plugin.mjs',
   'assets-plugin.mjs',
+  'screenshot-plugin.mjs',
   'gui-plugin.mjs',
   'dev-plugin.mjs',
   'mcp-extra-plugin.mjs',
@@ -60,6 +61,9 @@ export const TOOL_FAMILY = {
   mtnode_facts: 'facts',
   lt_state: 'lt',
   mtnode_assets: 'asset',
+  /* 截屏标注（mtnode_screenshot）：渲染层 app-shot.js 执行（转手给主进程的浮层），
+     抢屏之前先在主窗上问一句 —— 第三方客户端调它也一样要用户点头。 */
+  mtnode_screenshot: 'shot',
   mtnode_gui: 'gui',
   /* 开发调试（mtnode_dev）：同样是主进程执行（根目录 dev-agent.js），但作用域是
      「自己 spawn 的那只隔离调试实例 + CDP」，不是用户正在用的那只窗口。 */

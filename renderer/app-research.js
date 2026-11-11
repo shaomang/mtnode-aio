@@ -73,9 +73,6 @@
     /* 左栏「核心」「资料」两页顶上的搜索关键词（跟视图走，切页回来还在）：
        core = 内容树（标题 / 路径 / 章节标题），refs = 文献库 + 折叠参考资料 */
     sideFilter: { core: "", refs: "" },
-    /* changes.jsonl 的尾巴（最近几十条，去掉 before/after 正文）：索引页「最近改动」只读这一份缓存 ——
-       renderEditor 是同步的，不能在渲染途中去读盘。读盘时机见 rsLoadChangesTail。 */
-    changesTail: [],
     mode: "notes", // notes | graph
     graph: null,
     layout: "force",
@@ -292,34 +289,6 @@
       return null;
     }
   }
-  /* 索引页的「最近改动」只读这份缓存（最后 40 条，去掉了 before/after 正文 ——
-     整份日志里塞着每篇的全文，几十条就可能好几 MB，不能挂在状态上）。
-     时机：进研究视图装载 / 撤销重做后 / 每次落盘之后（后两种见调用点）。 */
-  const CHANGES_TAIL = 40;
-  /* 日志行 → 索引页要的那份尾巴（只留 ts / kind / path） */
-  function rsTailFromLines(lines) {
-    const tail = [];
-    for (const line of (lines || []).slice(-CHANGES_TAIL)) {
-      const rec = parseChange(line);
-      if (!rec || !rec.path) continue;
-      tail.push({ ts: Number(rec.ts) || 0, kind: String(rec.kind || ""), path: String(rec.path) });
-    }
-    return tail;
-  }
-  async function rsLoadChangesTail() {
-    if (!RS.root) {
-      RS.changesTail = [];
-      return RS.changesTail;
-    }
-    let lines = [];
-    try {
-      lines = changeLines(await readText(joinP(RS.root, CHANGES)));
-    } catch (_) {
-      lines = [];
-    }
-    RS.changesTail = rsTailFromLines(lines);
-    return RS.changesTail;
-  }
   async function writeChangeLines(lines) {
     const keep = lines.slice(-500); /* 只留最近 500 条，避免 jsonl 无限长 */
     await window.api.fileWriteText(
@@ -353,8 +322,6 @@
     /* 有新编辑就作废重做栈（与编辑器里的语义一致） */
     if (RS.redoStack) RS.redoStack.length = 0;
     await writeChangeLines(lines);
-    /* 索引页「最近改动」跟着这一次落盘走：直接用刚写完的那份内存行，不再多读一遍盘 */
-    RS.changesTail = rsTailFromLines(lines);
     /* 同步下游：每一次落盘（自动保存 / 就地编辑 / 新建笔记）都算一次「上游改动」。
        扫描是防抖的异步活儿，这里不等它 —— 保存不能因为下游扫得慢而卡住。 */
     rsSyncAfterSave(kind, relPath, before, after);
@@ -372,8 +339,6 @@
     await rsLoadNotes();
     await rsLoadFolds();
     await rsLoadLibrary();
-    /* 撤销摘掉的那一行已经不在盘上了：索引页「最近改动」要跟着退一条 */
-    await rsLoadChangesTail();
     const note = RS.notes.find((n) => n.path === RS.curPath);
     const fold = (RS.folds || []).find((f) => f.path === RS.curPath);
     if (note) {
@@ -724,8 +689,6 @@
     await rsLoadLibrary();
     await rsLoadNotes();
     await rsLoadFolds();
-    /* 索引页是默认打开的那一篇，它右边那列「最近改动」在第一次渲染时就要有内容 */
-    await rsLoadChangesTail();
     const cur = RS.notes.find((n) => n.path === meta.corePath) || RS.notes[0];
     RS.ready = true;
     if (cur) await rsOpenNote(cur.path, { silent: true });
@@ -1081,8 +1044,8 @@
        没有 research/ 目录时点它 = 首次初始化（openInitWizard 自己按盘上有没有选档）。 */
     const iniBtn = el("button", "rs-top-ico rs-init-open");
     iniBtn.appendChild(rsIcon("init"));
-    iniBtn.title = t("投料台：再投一批料 / 看处理队列 / 队列跑完后补跑一层");
-    iniBtn.setAttribute("aria-label", t("打开投料台"));
+    iniBtn.title = t("资料库：再投一批料 / 看处理队列 / 有新改动时点「补充处理」");
+    iniBtn.setAttribute("aria-label", t("打开资料库"));
     iniBtn.onclick = () => openInitWizard(!!(RS.root && RS.notes && RS.notes.length));
     tools.appendChild(iniBtn);
 
@@ -1130,19 +1093,27 @@
       const total = Number((s && s.total) || 0);
       const finished = Number((s && s.finished) || 0);
       const processed = Number((s && s.processed) || 0);
+      /* 正在处理的那一条：投料台关着时，顶栏这一行就是「agent 此刻在干什么」的窗口 */
+      let curTitle = "";
+      try {
+        const q = ini && typeof ini.queue === "function" ? ini.queue() : null;
+        const curIt = ((q && q.items) || []).find((x) => x && x.status === "running");
+        if (curIt) curTitle = String(curIt.title || curIt.id || "");
+      } catch (_) {}
       d.ready = total > 0;
       d.failed = (s && s.failed) || 0;
       d.allDone = d.ready && finished >= total;
       d.badge = d.ready && !d.allDone ? String(total - finished) : "";
       d.summary = d.allDone
         ? processed + t(" 篇已处理")
-        : finished + "/" + total + t(" 已处理") + (d.failed ? " · " + t("失败 ") + d.failed : "");
+        : finished + "/" + total + t(" 已处理") + (d.failed ? " · " + t("失败 ") + d.failed : "") +
+          (curTitle ? " · " + t("正在处理 ") + curTitle : "");
       d.action = t("查看");
       d.title = !d.ready
         ? t("初始化：还没有入队的内容")
         : d.allDone
           ? t("初始化已完成：查看已处理内容（只读清单）")
-          : t("研究初始化：逐项状态、失败重试");
+          : t("研究初始化：逐项状态、失败重试") + (curTitle ? " · " + t("正在处理 ") + curTitle : "");
     }
     return d;
   }
@@ -1322,85 +1293,389 @@
         };
       });
   }
+  /* ── 载入反馈（.rs-busy 那层淡纱 + 转圈，样式见 css/research.css）──
+     文献原文是 PDF 抽出来的 md，几千行很常见：读盘 + 渲染整篇的时候阅读区是空的，
+     几秒没有反馈就像点了没反应。这里只盖一层淡纱说一句「在读了」——不做进度条、不改布局、
+     不吃点击。三条「不突兀」的规矩：
+     ① 140ms 内载完的不出现（快的一次点击不该闪一下）；
+     ② 出现后至少留 240ms（刚淡入就淡出，看着像抖了一下）；
+     ③ 进出都交给 CSS 的 opacity transition（ease-in-out），JS 只切 class、不手搓动画。 */
+  const RS_BUSY_DELAY = 140;
+  const RS_BUSY_MIN = 240;
+  let rsBusyEl = null;
+  let rsBusyShowTimer = 0;
+  let rsBusyHideTimer = 0;
+  let rsBusyShownAt = 0;
+  function rsBusyNode() {
+    const wrap = RS.editorWrap;
+    if (!wrap) return null;
+    /* 视图重建过（换画布 / 重挂 pane）：旧那颗已经不在 DOM 里，按新 wrap 重造 */
+    if (!rsBusyEl || !rsBusyEl.isConnected || rsBusyEl.parentNode !== wrap) {
+      rsBusyEl = el("div", "rs-busy");
+      rsBusyEl.setAttribute("role", "status");
+      rsBusyEl.setAttribute("aria-live", "polite");
+      const sp = el("i", "rs-busy-spin");
+      sp.setAttribute("aria-hidden", "true");
+      rsBusyEl.appendChild(sp);
+      rsBusyEl.appendChild(el("span", "rs-busy-t"));
+      wrap.appendChild(rsBusyEl);
+    }
+    return rsBusyEl;
+  }
+  function rsBusyShow(text) {
+    const box = rsBusyNode();
+    if (!box) return;
+    const label = box.querySelector(".rs-busy-t");
+    if (label) label.textContent = String(text || t("正在载入…"));
+    /* 上一轮的收起还没走完：直接续上，别先淡出再淡入 */
+    if (rsBusyHideTimer) {
+      clearTimeout(rsBusyHideTimer);
+      rsBusyHideTimer = 0;
+    }
+    if (box.classList.contains("on")) return;
+    if (rsBusyShowTimer) clearTimeout(rsBusyShowTimer);
+    rsBusyShowTimer = setTimeout(() => {
+      rsBusyShowTimer = 0;
+      if (!box.isConnected) return;
+      box.classList.add("on");
+      rsBusyShownAt = Date.now();
+    }, RS_BUSY_DELAY);
+  }
+  function rsBusyHide() {
+    /* 还没亮起来就收工 = 这次够快：直接取消，一帧都不出 */
+    if (rsBusyShowTimer) {
+      clearTimeout(rsBusyShowTimer);
+      rsBusyShowTimer = 0;
+    }
+    const box = rsBusyEl;
+    if (!box || !box.classList.contains("on")) return;
+    const wait = Math.max(0, RS_BUSY_MIN - (Date.now() - rsBusyShownAt));
+    if (rsBusyHideTimer) clearTimeout(rsBusyHideTimer);
+    rsBusyHideTimer = setTimeout(() => {
+      rsBusyHideTimer = 0;
+      box.classList.remove("on");
+    }, wait);
+  }
+
+  /* 淡纱还亮着就直接走；没亮（这次载入够快）就等过那道 140ms 闸再继续 ——
+     长文的整篇渲染是**同步**的一大段，不等这一下，定时器会被同步代码一起憋住，
+     用户看到的还是一段空白。只在内容够长时叫它（见 rsOpenLitDoc）。 */
+  function rsBusyLetPaint() {
+    const box = rsBusyEl;
+    if (box && box.classList.contains("on")) return Promise.resolve();
+    return new Promise((r) => setTimeout(r, RS_BUSY_DELAY + 16));
+  }
+  /* 第一次点 `[@key]` 时还没扫过 literature/ 目录：那一次要把 sources / pdf 两个目录 readdir 完，
+     快慢看盘上有多少篇。同样盖一层淡纱（文案不同），扫完就收。 */
+  async function rsBusyScan(fn) {
+    rsBusyShow(t("正在读取文献目录…"));
+    try {
+      return await fn();
+    } finally {
+      rsBusyHide();
+    }
+  }
+
   /* 打开一篇文献正文（只读文档通道）：foldPath 留空 → 不出现折叠层级按钮，默认阅读态 */
   async function rsOpenLitDoc(doc) {
     if ((await rsSaveCurrent()) === false) return;
     const rec = doc || (RS.srcDocs || []).find((d) => d.path === RS.curPath);
     if (!rec) return;
-    /* 正文按需读：登记时只有路径（rsLoadFolds 不预读 PDF 全文），这里读一次并抓一级标题做名字 */
-    if (!rec.md) {
-      rec.md = await readText(joinP(RS.root, rec.path));
-      const h = /^#[ \t]+(.+)$/m.exec(String(rec.md || ""));
-      if (h) rec.title = String(h[1]).trim();
+    rsBusyShow(t("正在载入原文…"));
+    try {
+      /* 正文按需读：登记时只有路径（rsLoadFolds 不预读 PDF 全文），这里读一次并抓一级标题做名字 */
       if (!rec.md) {
-        toastSafe(t("读不到这篇的正文：") + rec.path, "warn");
-        return;
+        rec.md = await readText(joinP(RS.root, rec.path));
+        const h = /^#[ \t]+(.+)$/m.exec(String(rec.md || ""));
+        if (h) rec.title = String(h[1]).trim();
+        if (!rec.md) {
+          toastSafe(t("读不到这篇的正文：") + rec.path, "warn");
+          return;
+        }
       }
+      RS.curPath = rec.path;
+      RS.md = rec.md;
+      RS.dirty = false;
+      RS.foldPath = "";
+      RS.foldLevel = 1;
+      RS.srcDocPath = rec.path;
+      /* 窗口里正在就地编辑的是上一篇：收回编辑面，别把指针留在已换掉的 DOM 上 */
+      RS.inlineOn = false;
+      RS.inlineEl = null;
+      RS.editorMode = "read";
+      rsNavPush(rec.path, "reset");
+      renderSide();
+      if (String(rec.md || "").length > 40000) await rsBusyLetPaint();
+      renderEditor();
+      renderTop();
+      rsBackRail();
+      refreshChatFocus();
+    } finally {
+      rsBusyHide();
     }
-    RS.curPath = rec.path;
-    RS.md = rec.md;
-    RS.dirty = false;
-    RS.foldPath = "";
-    RS.foldLevel = 1;
-    RS.srcDocPath = rec.path;
-    /* 窗口里正在就地编辑的是上一篇：收回编辑面，别把指针留在已换掉的 DOM 上 */
-    RS.inlineOn = false;
-    RS.inlineEl = null;
-    RS.editorMode = "read";
-    rsNavPush(rec.path, "reset");
-    renderSide();
-    renderEditor();
-    renderTop();
-    rsBackRail();
-    refreshChatFocus();
     toastSafe(t("打开文献正文：") + rec.path, "ok");
   }
-  /* `[@key]` 点开后的那一步：本地有正文 → 导向文章；没有 → 问一句要不要搜索并入库 */
+  /* ── 获取文献 ──
+     口径（本轮共识）：默认不联网检索、不下载全文（很贵）；只有用户点了「获取文献」才做。
+     出口三处，走同一套：正文 `[@key]` 浮层顶上那颗「文献」行、参考文献段落里点整行、左栏文献行动作。
+     本地已有全文 → 打开文章；没有 → 派一条任务给当前研究会话（检索 → 下载 → 转 md → 入库 → 回执）。
+     花费提示只问一次（记进 config.json 的 research 段，研究视图全局一份）。 */
+  const RS_FETCH_NOTE_SRC = "ix-init-progress"; /* 与初始化过程行同一口径：只给用户看，不进模型上下文 */
+  function rsFetchConsentDone() {
+    try {
+      const c = typeof S !== "undefined" && S && S.config ? S.config : null;
+      const o = c && c.research && typeof c.research === "object" ? c.research : {};
+      return o.fetchLitConsent === true;
+    } catch (_) {
+      return false;
+    }
+  }
+  async function rsFetchConsentSave() {
+    try {
+      if (typeof S === "undefined" || !S || !S.config) return;
+      S.config.research = Object.assign(
+        {},
+        S.config.research && typeof S.config.research === "object" ? S.config.research : {},
+        { fetchLitConsent: true },
+      );
+      if (window.api && typeof window.api.configSave === "function") await window.api.configSave(S.config);
+    } catch (_) {}
+  }
+  /* 交给 agent 的那条任务书：只要这一篇，不要顺手扩库 */
+  function rsFetchTaskText(spec) {
+    const s = spec || {};
+    const k = String(s.key || "").trim().replace(/^@+/, "");
+    const title = String(s.title || k || "").trim();
+    const lines = [t("【获取文献】只取这一篇，不要顺带检索或下载别的文献。"), ""];
+    lines.push("- " + t("文献：") + (title || t("（无标题）")) + (k ? "（@" + k + "）" : ""));
+    if (s.doi) lines.push("- DOI：" + String(s.doi).trim());
+    if (s.arxiv) lines.push("- arXiv：" + String(s.arxiv).trim());
+    if (s.href) lines.push("- " + t("链接：") + String(s.href).trim());
+    if (k)
+      lines.push(
+        "- " +
+          t("全文写到 {path}（或 {path2}），文献库条目的 citeKey 用 @{key}。", {
+            path: "`literature/pdf/" + k + ".md`",
+            path2: "`literature/sources/" + k + ".md`",
+            key: k,
+          }),
+      );
+    lines.push(
+      "- " +
+        t("步骤：① 按 DOI / arXiv / 题名检索并确认是同一篇（认不出就用题名加作者再试一次）；② 抓取全文并转成 Markdown（PDF 走应用内内核，抓不到全文就退摘要并说明）；③ 用 `research-lit.mjs lib <research> add` 写进 `literature/library.json`；④ 需要时补 `literature/folds/<key>.md`；⑤ 回一句回执：拿到了什么、落在哪个路径，没拿到就写清卡在哪。"),
+    );
+    return lines.join("\n");
+  }
+  /* 往当前研究会话写一行只给用户看的过程行（_src 与初始化过程行同一份过滤口径）：
+     同一个 key 后续调用就地改文字 —— 「正在获取」变成「已获取」，不堆一屏。 */
+  function rsChatNote(sess, text, key) {
+    const st = sess;
+    const body = String(text || "").trim();
+    if (!st || !body) return;
+    st.messages = Array.isArray(st.messages) ? st.messages : [];
+    const k = String(key || "");
+    let msg = null;
+    if (k) {
+      for (let i = st.messages.length - 1; i >= 0; i--) {
+        const m = st.messages[i];
+        if (m && m._src === RS_FETCH_NOTE_SRC && String(m._noteKey || "") === k) {
+          msg = m;
+          break;
+        }
+      }
+    }
+    if (msg) {
+      msg.content = body;
+      msg.at = Date.now();
+    } else {
+      st.messages.push({
+        role: "assistant",
+        content: body,
+        at: Date.now(),
+        _src: RS_FETCH_NOTE_SRC,
+        _noteKey: k,
+        _ico: "📥",
+      });
+    }
+    st.updatedAt = Date.now();
+    try {
+      if (typeof agentMarkSessionDirty === "function") agentMarkSessionDirty(st.id);
+    } catch (_) {}
+    try {
+      if (typeof agentViewIs === "function" && agentViewIs(st) && typeof renderAgentSession === "function")
+        renderAgentSession();
+    } catch (_) {}
+    try {
+      setTimeout(renderChat, 50);
+    } catch (_) {}
+  }
+  /* 获取完成后把文献页刷成新状态（agent 落盘是异步的：先等一会儿，拿到全文就收工） */
+  function rsWatchFetchedLit(key, title) {
+    let tries = 0;
+    const step = async () => {
+      tries += 1;
+      let doc = null;
+      try {
+        await rsLoadFolds();
+        doc = key ? rsLitDocOf(key) : null;
+      } catch (_) {}
+      if (doc) {
+        try {
+          renderLit();
+        } catch (_) {}
+        try {
+          renderSide();
+        } catch (_) {}
+        /* 正文里那几颗 `[@key]` 也要跟着变（「获取文献」→「打开文章」）：
+           只在没有未保存改动时重画，别把正在写的一行冲掉 */
+        try {
+          if (!RS.dirty) renderEditor();
+        } catch (_) {}
+        try {
+          rsChatNote(ensureBoundSession(), "✅ " + t("已获取文献：") + (title || key) + " · " + doc.path, "fetch:" + (key || title));
+        } catch (_) {}
+        toastSafe(t("已获取文献：") + (title || key), "ok");
+        return;
+      }
+      if (tries < 20) setTimeout(step, 15000);
+    };
+    setTimeout(step, 15000);
+  }
+  async function rsFetchLit(spec) {
+    const s = spec || {};
+    if (!RS.root) return;
+    const k = String(s.key || "").trim().replace(/^@+/, "");
+    if (!(RS.srcDocs || []).length) await rsBusyScan(() => rsLoadFolds().catch(() => {}));
+    const doc = k ? rsLitDocOf(k) : null;
+    if (doc) {
+      await rsOpenLitDoc(doc);
+      return;
+    }
+    const item = k ? libFind(k) : null;
+    const title = String(s.title || (item && C().itemTitle(item)) || k || "").trim();
+    if (!rsFetchConsentDone()) {
+      const msg =
+        t("将让 agent 联网检索并下载这一篇的全文，再转成 Markdown 入库 —— 会花时间，也会消耗不少 token：") +
+        "\n\n" +
+        (title || k || t("（无标题）")) +
+        (s.doi ? "\nDOI: " + String(s.doi).trim() : "") +
+        (s.arxiv ? "\narXiv: " + String(s.arxiv).trim() : "");
+      let noAsk = false;
+      let ok = false;
+      try {
+        ok =
+          typeof confirmDialog === "function"
+            ? !!(await confirmDialog(msg, {
+                title: t("获取文献"),
+                okText: t("获取文献"),
+                cancelText: t("取消"),
+                checkbox: { label: t("不再提醒（我已知会联网检索并花 token）"), checked: false },
+                onCheckbox: (v) => {
+                  noAsk = !!v;
+                },
+              }))
+            : !!window.confirm(msg);
+      } catch (_) {
+        ok = false;
+      }
+      if (!ok) return;
+      if (noAsk) await rsFetchConsentSave();
+    }
+    const sess = ensureBoundSession();
+    if (!sess) {
+      toastSafe(t("会话不可用"), "err");
+      return;
+    }
+    /* 进度与回执都在那条会话里：先把视图切过去，别让用户在别处等 */
+    try {
+      if (RS.mode !== "notes") rsSetMode("notes");
+    } catch (_) {}
+    RS.chatCollapsed = false;
+    try {
+      renderChat();
+    } catch (_) {}
+    try {
+      if (typeof agentSessionSend === "function")
+        agentSessionSend(
+          rsFetchTaskText(
+            Object.assign(
+              { key: k, title },
+              {
+                doi: s.doi || (item && item.DOI) || "",
+                arxiv: s.arxiv || (item && item.arxiv) || "",
+                href: s.href || (item && item.URL) || "",
+              },
+            ),
+          ),
+          { sessionId: sess.id },
+        );
+      else {
+        toastSafe(t("会话发送入口不可用"), "err");
+        return;
+      }
+    } catch (e) {
+      toastSafe(String((e && e.message) || e), "err");
+      return;
+    }
+    rsChatNote(sess, "📥 " + t("正在获取文献：") + (title || k || t("这一篇")), "fetch:" + (k || title));
+    toastSafe(t("已交给 agent 获取：") + (title || k), "ok");
+    rsWatchFetchedLit(k, title);
+  }
+  /* `[@key]` 浮层顶上那颗「文献」行 / 左栏文献行的出口：
+     本地有正文 → 打开文章；没有 → 走「获取文献」。 */
   async function rsOpenCite(key) {
     const k = String(key || "").trim().replace(/^@+/, "");
     if (!k || !RS.root) return;
     /* 还没扫过目录（刚进视图 / 上一轮装的是别的画布）：先按盘上现状扫一遍再判有没有全文 */
-    if (!(RS.srcDocs || []).length) await rsLoadFolds().catch(() => {});
+    if (!(RS.srcDocs || []).length) await rsBusyScan(() => rsLoadFolds().catch(() => {}));
     const doc = rsLitDocOf(k);
     if (doc) {
       await rsOpenLitDoc(doc);
       return;
     }
     const item = libFind(k);
-    const title = (item && C().itemTitle(item)) || k;
-    const msg = item
-      ? t("这篇在本地还没有全文：") + title + t("。要按它的 DOI / 网址搜索并入库吗？")
-      : t("文献库里没有 @") + k + t("，本地也没有它的正文。要搜索这篇并入库吗？");
-    /* 花网络请求前先问一句（走宿主那只单例确认窗）；拿不到宿主就退化成 window.confirm，绝不放行 */
-    let ok = false;
-    try {
-      ok =
-        typeof confirmDialog === "function"
-          ? !!(await confirmDialog(msg, {
-              title: t("搜索并入库"),
-              okText: t("搜索并入库"),
-              cancelText: t("取消"),
-            }))
-          : !!window.confirm(msg);
-    } catch (_) {
-      ok = false;
-    }
-    if (!ok) return;
-    /* 入库交回既有的投料链路：按 DOI / 网址 / 题名检索式入队，由初始化把全文转进
-       literature/（入库后同一条键再点就是「打开文章」）。确认过一次就不再让用户
-       在「添加内容」窗里再点第二遍：直接灌进投料台，由用户点「开始处理」。 */
-    const rows = [];
-    const authors = Array.isArray(item && item.author) ? item.author : [];
-    const firstAuthor = String((authors[0] && (authors[0].family || authors[0].name)) || "");
-    if (item && item.DOI) rows.push({ source: "url", value: "https://doi.org/" + item.DOI, role: "ref", title });
-    else if (item && item.URL) rows.push({ source: "url", value: item.URL, role: "ref", title });
-    else rows.push({ source: "query", value: [title, firstAuthor].filter(Boolean).join(" "), role: "ref", title });
-    await rsAddHandoff({
-      rows,
-      instruction:
-        t("按引用键 @") + k + t(" 把这篇的全文入库（literature/sources/") + k + t(".md 或 literature/pdf/") + k + t(".md）—— 入库后正文里的 [@") + k + t("] 点开就是这篇文章。"),
+    return rsFetchLit({
+      key: k,
+      title: (item && C().itemTitle(item)) || k,
+      doi: (item && item.DOI) || "",
+      arxiv: (item && item.arxiv) || "",
+      href: (item && item.URL) || "",
     });
-    toastSafe(t("已加进投料台：点「开始处理」后会把 @") + k + t(" 的全文入库"), "ok");
+  }
+  /* 按 DOI / arXiv 在库里找同一条（参考文献整行没有 `[@key]` 时用） */
+  function rsLibFindByField(field, val) {
+    const norm = (x) =>
+      String(x || "")
+        .trim()
+        .toLowerCase()
+        .replace(/^https?:\/\/(dx\.)?doi\.org\//, "")
+        .replace(/^arxiv:\s*/, "");
+    const v = norm(val);
+    if (!v || v.length < 4) return null;
+    for (const it of RS.lib || []) {
+      const w = norm(it && it[field]);
+      if (w && (w === v || w.indexOf(v) >= 0 || v.indexOf(w) >= 0)) return it;
+    }
+    return null;
+  }
+  /* 参考文献段落里点整行：先认 `[@key]`，再认 DOI / arXiv 编号；本地有全文就打开，没有就获取 */
+  async function rsOpenRefLine(info) {
+    const o = info || {};
+    if (!RS.root) return;
+    const key = String(o.key || "").trim().replace(/^@+/, "");
+    const doi = String(o.doi || "").trim();
+    const arxiv = String(o.arxiv || "").trim();
+    if (!(RS.srcDocs || []).length) await rsBusyScan(() => rsLoadFolds().catch(() => {}));
+    if (key) {
+      await rsOpenCite(key);
+      return;
+    }
+    const item = (doi && rsLibFindByField("DOI", doi)) || (arxiv && rsLibFindByField("arxiv", arxiv)) || null;
+    if (item) {
+      await rsOpenCite(item.citeKey || item.id || "");
+      return;
+    }
+    return rsFetchLit({ key: "", title: String(o.title || doi || arxiv || ""), doi, arxiv });
   }
   async function rsOpenFold(path) {
     /* 换文档前先落盘；那一次被闸拒了（用户点取消）就留在原处，别把没保存的输入扔掉 */
@@ -1533,7 +1808,6 @@
     head.appendChild(el("b", null, t("已处理内容")));
     const x = el("button", "rs-ask-x", "✕");
     x.title = t("关闭");
-    x.onclick = () => box.remove();
     head.appendChild(x);
     box.appendChild(head);
     box.appendChild(
@@ -1558,6 +1832,20 @@
     }
     box.appendChild(rows);
     document.body.appendChild(box);
+    /* 只读清单 = 「看一眼」的浮层，不做 persistent：点面板外面（点正文继续读）就收掉；
+       ✕ 照旧。窗内点按（滚动清单）不算外面。 */
+    let offDown = null;
+    const close = () => {
+      if (offDown) document.removeEventListener("mousedown", offDown, true);
+      offDown = null;
+      box.remove();
+    };
+    offDown = (ev) => {
+      if (box.contains(ev.target)) return;
+      close();
+    };
+    document.addEventListener("mousedown", offDown, true);
+    x.onclick = close;
   }
 
   /* ── 衍生物：生成 / 批量 / 导入（实现在 renderer/research-derive.js · window.MTResearchDerive）──
@@ -1732,13 +2020,17 @@
       el,
       t,
       notes: RS.notes || [],
-      changes: RS.changesTail || [],
       groups: rsIndexGroups(),
       indexPath: rsIndexRel(),
       /* 头卡的标题 / 核心问题：笔记里读不到才退到 research.json 的 title / question */
       meta: RS.meta || null,
       /* 状态字典：默认四档 + research.json 的 questionStatus（渲染成 chip 的标签与颜色） */
       questionStatus: I && typeof I.qStatusDict === "function" ? I.qStatusDict(RS.meta || null) : [],
+      /* 概念查重的归一键：真源在 research-core.nameKey（图谱与索引同一套口径） */
+      nameKey: (s) => {
+        const Cc = C();
+        return Cc && typeof Cc.nameKey === "function" ? Cc.nameKey(s) : String(s == null ? "" : s).trim();
+      },
       mode: RS.indexMode === "raw" ? "raw" : "dash",
       keyword: RS.indexKeyword || "",
       renderMd: (md) => renderMarkdown(md),
@@ -1750,10 +2042,11 @@
       onChanged: () => rsIndexChanged(),
       onNew: () => rsNewNote(),
       toast: (msg, kind) => toastSafe(msg, kind),
-      now: () => Date.now(),
       /* 头卡两处的就地编辑与「＋ 新增问题」：写的都是那一篇真源（见 rsTopicWrite） */
       onTopicSave: (p) => rsTopicSave(p),
       onQuestionAdd: (p) => rsTopicAddQuestion(p),
+      /* 问题清单（现在在课题头卡内部）头行「＋ 新增问题」的就地输入：标题 + 正文一起落盘 */
+      onQuestionNew: (p) => rsQuestionNew(p),
       /* 问题清单：行内改内容 / 改状态、勾选批量改状态、删除（写回各自那一块，见 rsQuestionSave） */
       onQuestionSave: (p) => rsQuestionSave(p),
       onQuestionBulk: (p) => rsQuestionBulk(p),
@@ -1767,7 +2060,75 @@
         RS.indexMode = mode === "raw" ? "raw" : "dash";
         renderEditor();
       },
+      /* 浮空卡：与阅读区**同一份**（renderer/research-reader.js 的 cards / noteCardList）。
+         索引页只学会「点这一行 → 在这一行下面弹卡（卡里就这一篇一条）」；
+         卡的结构、锚点定位、点外面关 / Esc 全在阅读器那份能力里，索引页不复制第二份卡。
+         阅读器没加载（老页面）就整组不给，索引模块按老路「点行 = 打开笔记」退回。 */
+      noteCards: rsIndexNoteCards(),
     };
+  }
+  /* ── 索引页的浮空卡：把阅读器那份能力包成「hits + 锚点元素 + 选中项展开」三件事 ──
+     卡本体（list）、卡的去处（open）、摘要取法（summary）一并给出去：
+     索引页要自己拼一份卡时也吃同一份结构，不在第二处重写。
+     缺席（window.MTResearchReader 没加载）返回 null → rsIndexOpts 不下这一项。 */
+  function rsIndexNoteCards() {
+    /* 只在**真要弹卡**时才建阅读器（它同时是阅读态那一份实例，不另起第二只）：
+       描述能力这一步不该有副作用 */
+    if (!window.MTResearchReader || typeof window.MTResearchReader.create !== "function") return null;
+    return {
+      /* show(anchorEl, { hits, kind, kindLabel, title, keys, openSelected })
+         · hits        这一行对应的条目（索引页永远是一篇一条）
+         · anchorEl    这一行：卡在它下方 8px，出界自动翻到上方（阅读器那一套定位）
+         · kind        卡头种类（term / formula / cite / link），卡头色相档跟着它走
+         · kindLabel   卡头那颗种类字（索引页按行给「论断 / 概念 / 方法 / 问题」）
+         · openSelected=true（缺省）= 卡里那一条直接展开：点行即看全文，不必再点一次。
+           再点同一行 = 收起（阅读器那一套「同一条再点一次关」），这时不补展开。 */
+      show(anchorEl, o) {
+        const R = rsReader();
+        if (!R || typeof R.cards !== "function") return false;
+        const opts = o || {};
+        const hits = Array.isArray(opts.hits) ? opts.hits : [];
+        R.cards(anchorEl, {
+          kind: opts.kind || "term",
+          title: String(opts.title || (hits[0] && hits[0].dir) || ""),
+          keys: Array.isArray(opts.keys) ? opts.keys : [],
+          hits,
+        });
+        const box = R.state && R.state.cards;
+        if (!box || !box.classList.contains("show")) return true;
+        if (opts.kindLabel) {
+          const kindEl = box.querySelector(".rs-ncards-kind");
+          if (kindEl) kindEl.textContent = String(opts.kindLabel);
+        }
+        if (opts.openSelected !== false) {
+          const row = box.querySelector(".rs-ncards-list .rs-ncard");
+          if (row && !row.classList.contains("is-open") && typeof row.click === "function") row.click();
+        }
+        return true;
+      },
+      /* 收起：索引页重画 / 换标签页 / 改筛选时先收，展开态不记忆 */
+      hide() {
+        if (rsReaderInst && typeof rsReaderInst.hideCards === "function") rsReaderInst.hideCards();
+      },
+      list: (hits, o) => {
+        const R = rsReader();
+        return R && typeof R.noteCardList === "function" ? R.noteCardList(hits, o) : null;
+      },
+      open: (hit) => {
+        const R = rsReader();
+        return R && typeof R.openHit === "function" ? R.openHit(hit) : false;
+      },
+      summary: (text) => {
+        const R = rsReader();
+        return R && typeof R.summary === "function" ? R.summary(text) : String(text == null ? "" : text);
+      },
+    };
+  }
+  /* 索引页重画就收起那颗浮空卡：展开态是 DOM 上的临时状态，重画即回到干净态（不记忆）。
+     阅读器还没建（没打开过笔记）就无事可收 —— 别为了收一张卡去建一份阅读器。 */
+  function rsIndexCardsHide() {
+    if (!rsReaderInst) return;
+    if (typeof rsReaderInst.hideCards === "function") rsReaderInst.hideCards();
   }
   /* 索引页里任何一次落盘之后的统一重画：dash 态由 renderEditor 走仪表盘分支（不挂阅读态增强），
      原文态照旧是 Markdown 阅读态。落盘链路自己也算一次（见 rsTopicWrite / rsQStatusSave）。 */
@@ -1824,6 +2185,23 @@
     const before = String(rec.md || "");
     const ok = await rsTopicWrite(rel, before, I.appendQuestion(before, "", ""), t("新增问题"));
     if (ok) toastSafe(t("已在那一篇笔记里追加一条问题"), "ok");
+    return ok;
+  }
+  /* 问题清单头行「＋ 新增问题」的就地输入（标题 + 正文）：落在索引那一篇的末尾，
+     与 rsTopicAddQuestion 同一条写盘链，只是标题 / 正文由用户当场填。
+     （清单并进课题头卡之后，这是「新增问题」唯一那颗按钮。） */
+  async function rsQuestionNew(p) {
+    const I = window.MTResearchIndex;
+    if (!I || typeof I.appendQuestion !== "function") return false;
+    const title = String((p && p.title) || "").trim();
+    if (!title) return false;
+    const rel = rsNormRel((p && p.path) || rsIndexRel());
+    const rec = (RS.notes || []).find((n) => n.path === rel) || null;
+    if (!rec) return toastSafe(t("这一篇还没落盘，先在原文里写一行再改"), "warn");
+    const before = String(rec.md || "");
+    const next = I.appendQuestion(before, title, String((p && p.text) || "").trim());
+    const ok = await rsTopicWrite(rel, before, next, t("新增问题"));
+    if (ok) toastSafe(t("已新增一条问题"), "ok");
     return ok;
   }
   /* ── 问题清单：行内改内容 / 改状态、勾选批量改状态 ──
@@ -2912,6 +3290,19 @@
         const lang = typeof D.langOf === "function" ? D.langOf(k.id, wantLang, rules) : wantLang;
         const rel = typeof D.targetRel === "function" ? D.targetRel(original, k.id, lang, rules) : "";
         if (!rel) continue;
+        /* 译稿语言互斥（**只过滤这一条 chip 的显示**，规则表 / 盘上文件 / 判色 / 批量生成一概不动）：
+           英文原文只留中译、中文原文只留英译 —— 与原文同语言的那一稿就是原文本身，
+           再挂一颗「英译」只会让人以为还有第二份稿子。种类先问规则表（自定义规则也认），
+           语言用上面算好的 lang（与 targetRel 同一个值），口径同 D.langOf / noteMeta。 */
+        const rule = typeof D.kindOf === "function" ? D.kindOf(k.id, rules) : k;
+        const sameLang =
+          String(lang || "")
+            .trim()
+            .toLowerCase() ===
+          String(baseLang || "")
+            .trim()
+            .toLowerCase();
+        if (rule && rule.derived === "translate" && baseLang && sameLang) continue;
         chip(k.label, rel, k.id, false, lang);
       }
 
@@ -3768,10 +4159,13 @@
       return;
     }
     /* 索引页（corePath）默认**不是**一篇 Markdown 文档，而是一张原文在前的仪表盘：
-       顶端数字（原文 / 论断 / 概念 / 方法 / 问题）→ 一行筛选 → 原文卡（至少五行，单篇占满）
-       → 最近改动。衍生物并进原文那张卡，只在点开之后于页面内切换。
+       课题头卡（标题 + 核心问题 + 问题清单，三块一张卡）→ 标签页（原文 / 论断 / 概念 / 方法 /
+       问题，默认原文，点一下换下方卡片区）→ 卡片（至少五行，单张占满）。
+       衍生物并进原文那张卡，只在点开之后于页面内切换。
        「原文」只切这一篇的阅读形态（RS.indexMode），不动文件、不改 frontmatter。 */
     if (rsIsIndexPage(RS.curPath)) {
+      /* 索引页重画：先把这一页的浮空卡收起来（展开态不记忆，重画即回到干净态） */
+      rsIndexCardsHide();
       const I = rsIndexDash();
       if (I) {
         const host = el("div", "rs-idx");
@@ -7851,6 +8245,8 @@
         /* 引用梗浮层顶上那条「文献」行：有没有正文由宿主判；点了就导向文章或问一句搜索入库 */
         citeInfo: (keys) => rsCiteLitInfo(keys),
         onOpenCite: (key) => rsOpenCite(key),
+        /* 参考文献段落里点整行（含 `[@key]` 或 DOI / arXiv）：本地有全文就打开，没有就获取文献 */
+        openRef: (info) => rsOpenRefLine(info),
         /* 选区右键菜单里要动源码的两项：阅读器只回调，改 md 与落盘都在下面这两个函数里 */
         isEditing: () => RS.editorMode === "edit",
         wrapLink: (text) => rsWrapLinkText(text),
@@ -8361,7 +8757,8 @@
     };
     document.addEventListener("keydown", rsMissEsc, true);
     /* 点外部就关：这块浮层是「点一下看一眼」的只读面板，不做 persistent
-       （带输入的 .rs-ask / .rs-eqmodal 才 persistent）。点在术语 / 公式 / 引用 / 双链上不算外部 ——
+       （只有带输入的 .rs-ask 表单才 persistent；公式浮层与它同类，点幕布即收）。
+       点在术语 / 公式 / 引用 / 双链上不算外部 ——
        那颗 click 自己会换一块浮层，同一处再点一次也还要留成「关」。 */
     rsMissDown = (ev) => {
       if (rsMissEl !== box) return;
@@ -8738,11 +9135,13 @@
     return out.join("\n");
   }
   /* 候选 = 页面「还能引申」段里列过的 + 正文里 [[…]] 还没建页的。
-     已经在库里的名字不列（引申不许重复造页）。 */
+     已经在库里的名字不列（引申不许重复造页）—— 判重按 nameKey 归一：
+     大小写 / 全半角括号 / 空格不同也算同一件事，不能再长第二页。 */
   function rsTermCands(rec) {
     const Cc = C();
     const md = String((rec && rec.md) || "");
-    const known = new Set((RS.notes || []).map((n) => n.title));
+    const keyOf = (s) => (Cc && typeof Cc.nameKey === "function" ? Cc.nameKey(s) : String(s || "").trim());
+    const known = new Set((RS.notes || []).map((n) => keyOf(n.title)));
     const raw = rsTermSection(md, "还能引申")
       .replace(/^\s*>\s?/gm, "")
       .replace(/\[!question\][^\n]*/g, "");
@@ -8750,8 +9149,10 @@
     const seen = new Set();
     const add = (name, kind, why) => {
       const n = String(name || "").replace(/^\[\[|\]\]$/g, "").trim();
-      if (!n || known.has(n) || seen.has(n)) return;
-      seen.add(n);
+      if (!n) return;
+      const k = keyOf(n);
+      if (!k || k === keyOf(rec && rec.title) || known.has(k) || seen.has(k)) return;
+      seen.add(k);
       out.push({ name: n, kind: kind || "term", why: String(why || "").trim() });
     };
     for (const c of (Cc && Cc.parseTermCandidates ? Cc.parseTermCandidates(raw) : [])) add(c.name, c.kind, c.why);
@@ -8879,9 +9280,11 @@
     if (!missing.length) return;
     const lines = md.split(/\r?\n/);
     const i = lines.findIndex((l) => /^##\s*还能引申\s*$/.test(l));
-    const add = missing.map((n) => "> - [[" + n + "]]");
+    /* 候选写成普通列表行，不套 `> [!question] 待展开`：那个 callout 会进「问题清单」，
+       而问题清单只放用户自己填的问题。 */
+    const add = missing.map((n) => "- [[" + n + "]]");
     if (i < 0) {
-      lines.push("", "## 还能引申", "", "> [!question] 待展开", ...add, "");
+      lines.push("", "## 还能引申", "", ...add, "");
     } else {
       let at = i + 1;
       for (let k = i + 1; k < lines.length; k++) {
@@ -8913,10 +9316,18 @@
       return;
     }
     const Cc = C();
+    const keyOf = (s) => (Cc && typeof Cc.nameKey === "function" ? Cc.nameKey(s) : String(s || "").trim());
+    const haveKeys = new Set((RS.notes || []).map((n) => keyOf(n.title)));
     const targets = [];
+    let existed = 0;
     for (const p of picks) {
       const rel = Cc.TERM_DIR + "/" + Cc.termSlug(p.name) + ".md";
-      if ((RS.notes || []).some((n) => n.path === rel)) continue;
+      /* 判重两道：同一个 rel（同一个 slug），或同一件事换个写法已经有页了 ——
+         **已存在的不再添加**：那一页照旧在图谱里连着，不新建第二篇。 */
+      if ((RS.notes || []).some((n) => n.path === rel) || haveKeys.has(keyOf(p.name))) {
+        existed++;
+        continue;
+      }
       if (targets.some((x) => x.rel === rel)) continue;
       targets.push({ name: p.name, kind: p.kind, why: p.why, rel });
     }
@@ -8924,6 +9335,7 @@
       rsTermSay(t("勾选的这些都已经有页了"), true);
       return;
     }
+    if (existed) rsTermSay(t("跳过 ") + existed + t(" 个已有页（沿用那一页，不重新建）"));
     if (typeof confirmDialog === "function") {
       const ok = await confirmDialog(
         t("将派一条 Agent 会话，写出 ") +
@@ -8968,13 +9380,13 @@
     L.push("## 公式 / 记号   （只有公式 / 符号类才写，LaTeX 原样保留：行内 $…$、独立 $$…$$）");
     L.push("## 符号          （符号约定类才写）");
     L.push("## 在原文里      （父页 sources 那一条 + 一句它出现在哪一节、解决什么）");
-    L.push("## 还能引申      （写 `> [!question] 待展开` 再列 0–4 个 `> - [[下层术语]]`）");
+    L.push("## 还能引申      （**只有真的冒出 1–4 个下层候选才写这一节**，每个一行 `- [[下层术语]]`；没有候选就整节不写 —— 别留空标题、别写「暂无」、别写 `> [!question]` 块）");
     L.push("");
     L.push("硬性要求：");
     L.push("- 内容只许来自父页正文、父页「在原文里」指向的原文小节、以及这两处出现的定义；父页没写的不要编，写「父页没有展开」。");
     L.push("- 图上能画就用原文里的图（父页若有 `![…](…/assets/…)`，子页要引用同一张时照抄相对路径，不要生成新图）；要画流程才用 ```mermaid（≤12 个节点）。");
     L.push("- 只新建上面那几个文件；不改父页以外的任何文件、不写 changes.jsonl / graph.json、不跑测试、不装依赖。");
-    L.push("- 父页的「## 还能引申」里，把已建页的名字写成 `> - [[名字]]`（缺就补一行），其余不动。");
+    L.push("- 父页的「## 还能引申」里，把已建页的名字写成 `- [[名字]]`（缺就补一行），其余不动。");
     L.push("- 写完回一句话：写了哪几个文件。");
     return L.join("\n");
   }
@@ -9032,8 +9444,12 @@
   async function rsTermDone(rec, targets) {
     try {
       for (const x of targets) {
-        const body = await readText(joinP(RS.root, x.rel)).catch(() => "");
-        if (String(body || "").trim()) await logChange(t("新建术语页"), x.rel, "", body);
+        const raw = await readText(joinP(RS.root, x.rel)).catch(() => "");
+        if (!String(raw || "").trim()) continue;
+        /* 会话照着骨架常留一个空的「## 还能引申」标题：落盘前收掉（只删空节，真写了候选的一个字节不动） */
+        const body = (C() && C().stripEmptyNextSection) ? C().stripEmptyNextSection(raw) : raw;
+        if (body !== raw) await window.api.fileWriteText(joinP(RS.root, x.rel), body).catch(() => {});
+        await logChange(t("新建术语页"), x.rel, "", body);
       }
       await rsLoadNotes();
       rsStatusReset();
@@ -9221,6 +9637,40 @@
       /* 章节表换了 / 读到另一节：只刷面包屑末两级，整条不重建 */
       onActive: () => rsCrumbsTail(),
     });
+  }
+  /* 图谱右栏预览那一块的收尾：与阅读态同一批装饰器（`[!term]` / `[!claim]` 的抬头与术语卡、
+      `[[双链]]` → 条目梗、`[@key]` → 引用梗、机器写的「一句一行」合回段落流）。不跑整份 decorate
+     —— 它还要建大纲 / 进度 / 滚动侦听，那些只属于正文那一面。顺序照阅读态走。 */
+  function rsGraphPreviewDecorate(root) {
+    const R = rsReader();
+    if (!R || !root) return;
+    /* 1) 先挂引用块的类（`[!term]` → .rs-callout-term）：CSS 的形制、术语卡的选中都靠它 */
+    try {
+      decorateCallouts(root);
+    } catch (_) {}
+    /* 2) 再收标记：`[!term]` 名称 → 「术语 · 名称」抬头，`[!claim] 标题` → 抬头行 */
+    if (typeof R.decorateCalloutHeads === "function") {
+      try {
+        R.decorateCalloutHeads(root);
+      } catch (_) {}
+    }
+    if (typeof R.decorateWikilinks === "function") {
+      try {
+        R.decorateWikilinks(root);
+      } catch (_) {}
+    }
+    /* 3) 溯源行要在合软换行之前收：joinSoftBreaks 会跳过 .rs-meta-line */
+    if (typeof R.decorateMetaLines === "function") {
+      try {
+        R.decorateMetaLines(root);
+      } catch (_) {}
+    }
+    /* joinSoftBreaks 内部已先跑 decorateCitations（`[@key]` → 引用梗） */
+    if (typeof R.joinSoftBreaks === "function") {
+      try {
+        R.joinSoftBreaks(root);
+      } catch (_) {}
+    }
   }
   /* 就地编辑面里的双链：只做 `[[译名]]` → 链接这一层（术语浮层 / 公式编号仍不挂），
      回写靠 rsInlineMd 按 data-wl 还原，所以编辑面不再把 `[[…]]` 原样露给用户。 */
@@ -9631,7 +10081,7 @@
               rsOpenNote(n.path, { line: n.line || 1 });
             },
             /* 文献节点（paper）的出口：本地有全文就先回笔记态再打开它；
-               没有就交给 rsOpenCite 问一句「要不要搜索并入库」。 */
+               没有就走 rsOpenCite →「获取文献」（派 agent 检索 / 下载 / 入库）。 */
             onCite: (key) => {
               if (rsLitDocOf(key)) {
                 RS.mode = "notes";
@@ -9641,6 +10091,19 @@
             },
             /* 图谱里换了选中节点 → 会话框那颗「当前焦点」跟着换 */
             onSelect: () => refreshChatFocus(),
+            /* 右栏预览与正文同一套：整段 Markdown 走 renderMarkdown，
+                再补阅读器那层记号装饰（`[[双链]]` / `[@引用]` / 软换行合并） */
+            renderMd: (md) => renderMarkdown(md),
+            decorate: (root) => rsGraphPreviewDecorate(root),
+            /* 右栏预览要读整篇正文（图谱里笔记节点只带 120 字 excerpt）：
+               直接从已装载的 RS.notes 取那一篇的 Markdown 正文，找不到就回空串。 */
+            noteText: (p) => {
+              const rel = String(p || "").trim();
+              if (!rel) return "";
+              const item = (RS.notes || []).find((x) => x && x.path === rel);
+              if (!item) return "";
+              return String((item.parsed && item.parsed.body) || item.md || "");
+            },
           });
         }
         if (!window.__rsGraphApi) throw new Error(t("图谱容器挂载失败"));
@@ -9855,7 +10318,10 @@
       row.appendChild(b);
       list.appendChild(row);
     }
-    if (!tail.length) list.appendChild(el("div", "rs-chat-empty", t("还没有对话。可以让 agent 帮你补文献、找反例、把论断拆成子问题。")));
+    if (!tail.length)
+      list.appendChild(
+        el("div", "rs-chat-empty", t("还没有对话。可以让 agent 解释这一段、找反例、把论断拆成子问题。")),
+      );
     host.appendChild(list);
     list.scrollTop = list.scrollHeight;
 
@@ -9972,16 +10438,20 @@
       row.appendChild(el("div", "rs-lit-sub", sub));
       const acts = el("div", "rs-lit-acts");
       /* 这篇在本地有没有正文（literature/sources 或 literature/pdf）：有就「正文」直接打开，
-         没有就「入库」走同一条搜索并入库的问句 —— 文献行与正文里的 [@key] 是同一个出口。 */
+         没有就「获取文献」派 agent 去取 —— 文献行与正文里的 [@key] 是同一个出口。 */
       const doc = rsLitDocOf(key);
-      const docBtn = el("button", "rs-tool", doc ? t("正文") : t("入库"));
-      docBtn.title = doc ? t("打开这篇的正文：") + doc.path : t("本地还没有全文：搜索并入库这篇");
+      const docBtn = el("button", "rs-tool", doc ? t("正文") : t("获取文献"));
+      docBtn.title = doc ? t("打开这篇的正文：") + doc.path : t("本地还没有全文：让 agent 联网检索并下载这一篇");
       docBtn.onclick = () => void rsOpenCite(key);
       acts.appendChild(docBtn);
       if (doc) {
         titleEl.classList.add("is-link");
         titleEl.title = t("打开这篇的正文：") + doc.path;
         titleEl.onclick = () => void rsOpenLitDoc(doc);
+      } else {
+        titleEl.classList.add("is-link");
+        titleEl.title = t("本地还没有全文：点它获取这一篇");
+        titleEl.onclick = () => void rsOpenCite(key);
       }
       const copy = el("button", "rs-tool", t("插入引用"));
       copy.title = t("在正文光标处插入 Pandoc 式引用 [@key]");
@@ -10201,10 +10671,10 @@
         );
       }
       if (typeof I.render === "function") I.render();
-      toastSafe(t("已交给投料台：") + (files.length + rows.length) + t(" 项"));
+      toastSafe(t("已交给资料库：") + (files.length + rows.length) + t(" 项"));
       return true;
     } catch (e) {
-      toastSafe(t("交给投料台失败：") + String((e && e.message) || e), "err");
+      toastSafe(t("交给资料库失败：") + String((e && e.message) || e), "err");
       return false;
     }
   }
@@ -10497,6 +10967,8 @@
         wfName: String((curWf() || {}).name || ""),
         topic: (RS.meta && RS.meta.title) || "",
         question: (RS.meta && RS.meta.question) || "",
+        /* 读者水平跟着 research.json 走（老库没有这个字段 → null，投料台自己回到「不限」） */
+        knowledge: (RS.meta && RS.meta.knowledge) || null,
         split: RS.split,
         saveMeta: saveMetaPatch,
         onDone: async () => {
@@ -10504,6 +10976,9 @@
           renderTop();
         },
         onGraph: () => rsBuildGraph(true),
+        onIndex: async () => {
+          await rsShowIndexPage();
+        },
       });
     } catch (e) {
       toastSafe(String((e && e.message) || e), "err");
@@ -10635,6 +11110,8 @@
     RS.crumbsEl = null;
     RS.crumbsTailEl = null;
     rsStopSpy();
+    /* 上一轮「正在初始化」的观察一起收掉：要盯的话 showInitBusyGate 会重新起一支 */
+    rsInitWatchStop();
     /* 上一张画布留下的初始化告示一起收掉：切到已有内容的画布时它不该还盖在视图上。
        需要告门时 showInitGate / showNoWsGate 会在这之后再铺。 */
     if (RS.gate) {
@@ -10665,14 +11142,26 @@
     }
     if (!r.ok && r.code === "not_initialized") {
       /* 还没初始化：不给一份空壳目录，先把「要放什么」问清楚（共识：先初始化才建 research/）。
-         先清空视图再出闸门 —— 否则底图是上一张画布的笔记 / 图谱。 */
+         先清空视图再出闸门 —— 否则底图是上一张画布的笔记 / 图谱。
+         但这一轮初始化正跑在这份目录上时不能这么说（盘上还没 meta，其实后台正在准备）：
+         投料台的进度 / 一张「正在初始化」的卡片才是真话。 */
       rsClearPane();
-      showInitGate();
+      if (initRunningHere()) showInitBusyGate();
+      else showInitGate();
       return;
     }
     RS.gate.classList.remove("show");
     RS.gate.innerHTML = "";
     if (window.__rsInitGateBound) window.__rsInitGateBound = false;
+    /* 这一轮初始化还在准备（盘上只有 meta 先落的那一份，笔记还没落）：别把空库画成成品 ——
+       投料台开着就让它显示进度，关着就出一张「正在初始化」的卡片；收工后观察轮询自动装载。 */
+    if (initRunningHere() && !(RS.notes && RS.notes.length)) {
+      rsClearPane();
+      showInitBusyGate();
+      return;
+    }
+    /* 装载成功 = 「正在初始化」的观察到此为止（那一轮已经落盘） */
+    rsInitWatchStop();
     renderTop();
     renderSide();
     renderLit();
@@ -10708,7 +11197,7 @@
       '<div class="rs-gate-card"><b>' +
       esc(t("这个课题还没有初始化")) +
       "</b><p>" +
-      esc(t("初始化是一整块投料台：上面写课题，左边放核心文件，右边放参考资料（都能直接贴 arXiv / DOI / 网页链接、写笔记或检索式）。点「开始处理」才会创建 research/ 目录并交给 agent 处理。")) +
+      esc(t("初始化是一整块资料库：上面写课题，左边放核心文件，右边放参考资料（都能直接贴 arXiv / DOI / 网页链接、写笔记或检索式）。点「开始处理」才会创建 research/ 目录并交给 agent 处理；以后加了新资料，这颗按钮变成「补充处理」，只处理新内容。")) +
       '</p><button class="rs-btn" id="rsGateInit">' +
       esc(t("初始化研究")) +
       "</button></div>";
@@ -10720,6 +11209,88 @@
         openInitWizard(false);
       };
   }
+  /* 初始化是不是正在这一份 research/ 上跑（投料台从「开始处理」到队列落盘那一段：复制文件 /
+     转 PDF / 拉起会话）。判据只认投料台模块的 busy + 同一个目录 —— 不看盘上的 research.json：
+     meta 是条目备齐之后才写的，那之前盘上本来就还没有，拿它判就会把「正在初始化」说成「没初始化」。 */
+  function rsSamePath(a, b) {
+    const norm = (v) => String(v || "").replace(/[\\/]+$/, "").toLowerCase();
+    return !!a && !!b && norm(a) === norm(b);
+  }
+  function initRunningHere() {
+    try {
+      const I = window.MTResearchInit;
+      const st = I && I.state && typeof I.state === "object" ? I.state : null;
+      return !!(st && st.busy && rsSamePath(st.root, rootOf()));
+    } catch (_) {
+      return false;
+    }
+  }
+  /* 「正在初始化」闸门：这一轮还在后台准备时不许说「这个课题还没有初始化」（用户报的 bug）。
+     投料台本身开着就让它露出来（它自己画实时进度），关着就给一张带「查看进度」的卡片；
+     两种都把闸门停在一支小轮询上：meta 一落盘就自动装载，准备收工（busy 变 false）还没 meta
+     就退回正常的初始化入口。 */
+  function showInitBusyGate() {
+    if (!RS.gate) return;
+    const I = window.MTResearchInit;
+    const st = I && I.state && typeof I.state === "object" ? I.state : null;
+    if (st && st.open) {
+      /* 投料台 = 这一轮的进度面板：收掉闸门，别拿它盖住 */
+      RS.gate.classList.remove("show");
+      RS.gate.innerHTML = "";
+      try {
+        if (typeof I.render === "function") I.render();
+      } catch (_) {}
+    } else {
+      RS.gate.innerHTML =
+        '<div class="rs-gate-card"><b>' +
+        esc(t("这个课题正在初始化")) +
+        "</b><p>" +
+        esc(t("资料库正在复制文件 / 转 PDF / 拉起会话，跑完会自己进索引页。可以先去别的视图，回来进度还在。")) +
+        '</p><button class="rs-btn" id="rsGateInitBusy">' +
+        esc(t("查看进度")) +
+        "</button></div>";
+      RS.gate.classList.add("show");
+      const btn = qid("rsGateInitBusy");
+      if (btn)
+        btn.onclick = () => {
+          rsInitWatchStop();
+          RS.gate.classList.remove("show");
+          RS.gate.innerHTML = "";
+          try {
+            if (I && typeof I.openProgress === "function") I.openProgress();
+          } catch (_) {}
+        };
+    }
+    rsInitWatchStart();
+  }
+  /* 初始化进行中的小轮询：只在研究视图开着、且这一轮就落在这个目录上时跑 */
+  let rsInitWatchTimer = 0;
+  function rsInitWatchStop() {
+    if (rsInitWatchTimer) {
+      clearInterval(rsInitWatchTimer);
+      rsInitWatchTimer = 0;
+    }
+  }
+  function rsInitWatchStart() {
+    rsInitWatchStop();
+    const root = rootOf();
+    if (!root) return;
+    rsInitWatchTimer = setInterval(async () => {
+      try {
+        const pane = qid("researchPane");
+        /* 切走了 / 换了画布：这一支立刻收，回来由 enter() 重新铺 */
+        if (!pane || pane.style.display === "none" || !rsSamePath(root, rootOf())) return rsInitWatchStop();
+        /* 只等这一轮收工（成功 = meta + 队列 + 课题笔记都已落盘；失败 = 停在投料台上）：
+           中途 reload 出来的是一份「有 meta、还没笔记」的空库，画出来只会让人以为初始化丢了。 */
+        if (!initRunningHere()) {
+          rsInitWatchStop();
+          await rsReloadAll();
+        }
+      } catch (_) {
+        rsInitWatchStop();
+      }
+    }, 2000);
+  }
   async function rsReloadAll() {
     RS.ready = false;
     const r = await ensureInit();
@@ -10729,8 +11300,10 @@
     if (!r.ok) {
       rsClearPane();
       try {
-        if (r.code === "not_initialized") showInitGate();
-        else showNoWsGate();
+        if (r.code === "not_initialized") {
+          if (initRunningHere()) showInitBusyGate();
+          else showInitGate();
+        } else showNoWsGate();
       } catch (_) {}
       return;
     }
@@ -10740,12 +11313,36 @@
       RS.gate.innerHTML = "";
     }
     if (window.__rsInitGateBound) window.__rsInitGateBound = false;
+    /* 同 enter()：这一轮还在准备（只有 meta、没有笔记）就不画空库，先把进度亮出来 */
+    if (initRunningHere() && !(RS.notes && RS.notes.length)) {
+      rsClearPane();
+      showInitBusyGate();
+      return;
+    }
+    rsInitWatchStop();
     renderTop();
     renderSide();
     renderLit();
     renderEditor();
     renderChat();
     if (RS.mode === "graph") rsSetMode("graph");
+  }
+  /* 初始化跑完后的落点：研究视图的**索引页**（research.json 的 corePath，缺省 notes/00-课题.md）。
+     投料台一关就该看见「这个课题现在有什么」，而不是停在发起初始化的那一页：
+     先重读一遍盘（agent 刚写进来的原文 / 术语页 / 折叠 / 文献都在这一趟进树），
+     再把当前这篇切回索引页（等初始化时用户可能已经翻到别的笔记、或切到了图谱）。 */
+  async function rsShowIndexPage() {
+    await rsReloadAll();
+    if (!RS.ready) return;
+    if (RS.mode === "graph") rsSetMode("notes");
+    const rel = rsIndexRel();
+    const has = !!rel && (RS.notes || []).some((n) => n.path === rel);
+    if (has && RS.curPath !== rel) {
+      await rsOpenNote(rel);
+      return;
+    }
+    renderTop();
+    renderEditor();
   }
   function onCanvasChanged() {
     if (!qid("researchPane")) return;
@@ -11354,6 +11951,29 @@
     if (root && p.toLowerCase().indexOf(root.toLowerCase() + "/") === 0) return p.slice(root.length + 1);
     return p;
   }
+  /* 成片路径 → 绝对路径：存档里存的是研究目录相对路径（rsRootRel 的产物），绝对路径原样认。
+     右栏「成片」块的播放 / 在文件夹中显示都以它为唯一解析口（不猜、不改）。 */
+  function rsFilmAbs(p) {
+    const s = String(p || "").trim();
+    if (!s) return "";
+    if (/^([a-z]:[\\/]|\\\\)/i.test(s)) return s;
+    return RS.root ? joinP(RS.root, s) : "";
+  }
+  /* 封面帧 URL：成片与 HTML / PDF / PNG 同目录（exports/<slug>/），封面帧叫 <slug>-cover.png */
+  function rsFilmCoverUrl(deck) {
+    const Ck = rsSlidesCoreMod();
+    const api = window.api || {};
+    if (!Ck || !RS.root || typeof api.toFileUrl !== "function") return "";
+    const slug = String((deck && deck.slug) || "") || "slides";
+    const htmlRel = String(Ck.exportOf(slug) || "");
+    if (!htmlRel) return "";
+    const dirRel = htmlRel.replace(/\/[^/]*$/, "");
+    try {
+      return String(api.toFileUrl(joinP(RS.root, dirRel + "/" + slug + "-cover.png")) || "");
+    } catch (_) {
+      return "";
+    }
+  }
   /* 旁白音轨：deck.narration（绝对路径或研究目录相对路径）优先，否则认约定位置
      slides/media/<slug>/narration.<ext>。**存在才返回**（不存在 = 这次不混旁白、不铺字幕）。 */
   async function rsNarrationOf(deck, slug) {
@@ -11505,6 +12125,29 @@
       RS_VIDEO_JOB = "";
     }
   }
+  /* ── 一轮链路：脚本落地 / 直出档重算完 → 自动接一次出片 ────────────────────────
+     判据只看 brief.mode（版本）：slides = 只要静态版（不出片）；video / both = 出片。
+     出口只有编辑器那颗 exportVideo（就是顶栏「导出视频」）——它背后仍是宿主 onExportVideo →
+     rsDeckExportVideo 这**唯一**一条写盘 / 渲染路径：进度条、状态行、失败行（原因 + 宿主日志）
+     全在它那儿，宿主这边不另开一条。失败不打断链路：编辑器照常可用，重试还是点同一颗按钮。
+     返回 true = 真派出去了；false = 这一档不要片 / 编辑器没开 / 已经有一条在渲。 */
+  function rsSlidesAutoVideo(deck) {
+    const Ck = rsSlidesCoreMod();
+    const D = rsDeck();
+    const target = deck || D.deck || null;
+    if (!target || !Ck) return false;
+    const brief = Ck.briefOf(target);
+    if (String((brief && brief.mode) || "slides") === "slides") return false;
+    const ctrl = D.ctrl;
+    if (!ctrl || typeof ctrl.exportVideo !== "function") return false; /* 编辑器没开：不另开一条没有进度条的渲染路 */
+    if (RS_VIDEO_JOB) return false; /* 已经有一条在渲：不叠第二条（取消 / 重试仍归那一条） */
+    try {
+      void Promise.resolve(ctrl.exportVideo()).catch(() => {});
+    } catch (_) {
+      return false;
+    }
+    return true;
+  }
   /* 顶栏「取消」：结束这一次导出的渲染进程树（宿主不往报错总线写失败） */
   function rsDeckVideoCancel() {
     const api = window.api || {};
@@ -11641,19 +12284,25 @@
       } catch (_) {
         existing = "";
       }
-      /* 已有脚本：先按它重算一遍把界面顶上来（新 brief 的效果等重写落盘后再体现） */
+      /* 已有脚本：脚本就是成品 —— 按它重算一遍把界面顶上来，然后直接出片（见 rsSlidesAutoVideo）。
+         这一档**不再派单**：再派一轮只会把脚本重写一遍、把刚落的片重渲一遍（同一份 slug 两条渲染撞在一起）。 */
       if (existing.trim()) {
         D.deck = null;
         const cur = await rsDeckLoad(true);
         if (cur && D.ctrl && typeof D.ctrl.setDeck === "function") D.ctrl.setDeck(cur);
         else if (cur && !D.ctrl) await rsSlidesOpen();
-      } else {
-        deck.tier = "author";
-        D.deck = deck;
-        D.slug = slug;
-        /* 先把编辑器顶上来（这几页仍是内核直出的），脚本落盘后 rsSlidesScriptAdopt 再整体换掉 */
-        if (D.ctrl && typeof D.ctrl.setDeck === "function") D.ctrl.setDeck(deck);
-        else if (!D.ctrl) await rsSlidesOpen();
+        rsSlidesAutoVideo(cur || D.deck);
+        return { ok: true, rel: rel, deck: D.deck || cur, script: scriptRel };
+      }
+      deck.tier = "author";
+      D.deck = deck;
+      D.slug = slug;
+      /* 先把编辑器顶上来（这几页仍是内核直出的），脚本落盘后 rsSlidesScriptAdopt 再整体换掉 */
+      if (D.ctrl && typeof D.ctrl.setDeck === "function") D.ctrl.setDeck(deck);
+      else if (!D.ctrl) await rsSlidesOpen();
+      /* 已经有一轮脚本在等写盘：不重复派单（同一份文件派两轮，落盘后会重放出两条链） */
+      if (D.job && D.job.kind === "script") {
+        return { ok: true, rel: rel, deck: D.deck, pending: "script", script: scriptRel };
       }
       void rsSlidesScriptAsk(deck, brief, online, "");
       return { ok: true, rel: rel, deck: D.deck, pending: "script", script: scriptRel };
@@ -11672,6 +12321,8 @@
         rsSlidesGotoNote(to);
       }
     }
+    /* 直出档也一轮到底：重算完直接出片（不花 Token，也不再多点一次「导出视频」） */
+    rsSlidesAutoVideo(fresh);
     return { ok: true, rel: rel, deck: fresh };
   }
   function rsSlidesInitOpen(reason) {
@@ -11778,6 +12429,33 @@
          进度经 onProgress 驱动编辑器进度条；取消走 onExportVideoCancel（结束渲染进程树）。 */
       onExportVideo: (dk, onProgress) => rsDeckExportVideo(dk, onProgress),
       onExportVideoCancel: () => rsDeckVideoCancel(),
+      /* 右栏「成片」块的三个薄回调（不新开 IPC）：播放 / 在文件夹中显示 / 封面帧 URL。
+         deck.video.path 存的是研究目录相对路径，绝对路径原样认（见 rsFilmAbs）。 */
+      onOpenVideo: async (p) => {
+        const abs = rsFilmAbs(p);
+        const apiNow = window.api || {};
+        if (!abs) return { ok: false, error: t("没有成片可播放") };
+        if (typeof apiNow.shellOpenPath !== "function") return { ok: false, error: "no_api" };
+        try {
+          return await apiNow.shellOpenPath(abs);
+        } catch (e) {
+          return { ok: false, error: String((e && e.message) || e) };
+        }
+      },
+      onRevealVideo: async (p) => {
+        const abs = rsFilmAbs(p);
+        const apiNow = window.api || {};
+        if (!abs) return { ok: false, error: t("没有成片可定位") };
+        if (typeof apiNow.shellShowItem !== "function") return { ok: false, error: "no_api" };
+        try {
+          return await apiNow.shellShowItem(abs);
+        } catch (e) {
+          return { ok: false, error: String((e && e.message) || e) };
+        }
+      },
+      /* 封面帧：与成片同目录 research/exports/<slug>/<slug>-cover.png（主进程 ffmpeg 抽的一帧）；
+         只拼 URL 不查盘 —— 文件不在时编辑器那边 img.onerror 退回占位，不摆破图。 */
+      coverUrl: (dk) => rsFilmCoverUrl(dk),
       /* 演讲者第二屏（主进程开窗；之后每翻一页推进状态） */
       onPresenter: (state, html) => void rsSlidesPresenter(state, html),
       /* 退出放映：把第二屏那只窗关掉（再进一次放映会重新开） */
@@ -11857,7 +12535,34 @@
     const Ck = rsSlidesCoreMod();
     return String((Ck && Ck.STORE_DIR) || "slides") + "/" + (String(slug || "").trim() || "slides") + ".script.md";
   }
-  /* 派单提示词：做法（受众 / 场合 / 重点）、可联网的边界、脚本格式，一次说清。
+  /* 展示风格（brief.style）翻成「怎么写页」的执行指示 —— 与内核 STYLE_MOTION / STYLE_SCENE_MAX 同一套口径
+     （见 research-slides.js resolveStyle）：scholarly 慢推克制、motion 大字色块、d2_5 分层、d3 真三维轨道相机。
+     颜色 / 字体归 theme，这里只说「怎么演」；且风格服从内容，撑不起就退回学术那套讲法。 */
+  const RS_SLIDE_STYLE_BRIEF = {
+    scholarly: [
+      "克制：一页只讲一件事，要点 3–4 条、每条 ≤ 18 字，宁少不多；不要感叹号与营销腔。",
+      "公式与图注优先：材料里有写得出来的公式就单独一行 `$$ … $$`，要点退到解释它的位置。",
+      "慢推：先给问题、再给做法、最后给结论，页与页之间留出呼吸，不要堆并列短句。",
+      "三维场景最多 1 页，只在层级 / 系统非三维讲不清时才加。",
+    ],
+    motion: [
+      "大字与色块：标题一句话就够，要点写成短句（≤ 12 字）或对比的两头（A 对 B）。",
+      "数字当主角：关键数字直接写进要点，带单位与口径（「快了 3.2 倍」「从 31% 到 74%」）。",
+      "讲得出变化：用「提升 / 下降 / 倍 / 占比 / 前后」这类能动的说法，少用形容词。",
+      "不加三维场景页（这一档靠字与色块，`<!-- scene -->` 一律不写）；遮罩转场由内核做。",
+    ],
+    d2_5: [
+      "分层：一页讲清「一层套一层」的关系（大纲、子问题、步骤、分类），要点按层写，不要平铺三个并列结论。",
+      "每页都落到一个能分层的东西上；同一层最多 3 条，层间用「先 / 再 / 最后」或序数标出来。",
+      "三维场景最多 2 页，只给真正的层级结构。",
+    ],
+    d3: [
+      "空间优先：只把「位置、方向、距离、轨道、传播、维度、映射」这类内容做成三维页，全片最多 4 页。",
+      "三维页只讲空间关系（`<!-- scene: orbit|grid|signal -->`），结论仍写在要点里，别让每页都上场景。",
+      "旁白要说清镜头在看什么（「我们绕着这个系统转一圈」），不要只念要点。",
+    ],
+  };
+  /* 派单提示词：做法（受众 / 场合 / 重点 / 风格）、可联网的边界、脚本格式，一次说清。
      格式与内核 parseScript 一一对应 —— 改格式必须两边一起改，否则模型写的脚本编不成页。 */
   function rsSlidesScriptPrompt(deck, brief, online, memo) {
     const Ck = rsSlidesCoreMod();
@@ -11878,6 +12583,21 @@
     );
     L.push(t("用户已有的材料只是**参考资料**：不要照抄它的章节顺序，按「怎么讲最清楚」重新组织。"));
     L.push("");
+    L.push(t("开工顺序（第一步不许跳）："));
+    L.push(
+      "- " +
+        t(
+          "先读懂：读 `notes/` 里的核心稿件（连带 `notes/cites/*.md` 的引文）与 `literature/library.json`，把这份材料究竟在讲什么弄明白 —— 作者主张什么、凭什么、哪一步最容易讲错。",
+        ),
+    );
+    L.push(
+      "- " +
+        t(
+          "再定口径：用三五句话写下「这份内容必须讲清的点」，然后把这层意思直接落进脚本首页（`## 01`）的要点与旁白里 —— 不另开文件、不单独汇报、只写进脚本。",
+        ),
+    );
+    L.push("- " + t("最后才决定怎么演：拿这几句话去铺页（页数 / 顺序 / 哪页上公式、哪页上三维），没想清楚的那一页就别硬凑。"));
+    L.push("");
     L.push("- " + t("工作目录") + "：`" + root + "`");
     L.push("- " + t("要写的文件（唯一）") + "：`" + rel + "`");
     L.push("- " + t("演示名") + "：`" + slug + "`（" + String((deck && deck.title) || "") + "）");
@@ -11890,9 +12610,30 @@
       if (b.occasion) L.push("- " + t("场合") + "：" + b.occasion);
       if (b.tone) L.push("- " + t("语气") + "：" + b.tone);
       if (b.focus && b.focus.length) L.push("- " + t("重点讲透") + "：" + b.focus.join("、"));
-      if (b.avoid && b.avoid.length) L.push("- " + t("别出现") + "：" + b.avoid.join("、"));
       if (b.extra) L.push("- " + t("额外指示") + "：" + String(b.extra).replace(/\n/g, "\n  "));
     }
+    L.push("");
+    /* 展示风格：选定档给它的执行指示；auto 给内核 resolveStyle 的判定口径（按页上的字判，确定性） */
+    const styleId = String((b && b.style) || "auto");
+    const styleLabel = (Ck && Ck.SLIDE_STYLE_LABEL && Ck.SLIDE_STYLE_LABEL[styleId]) || styleId;
+    L.push(t("这份演示怎么「演」（展示风格：只管视觉动势与节奏，不改变要讲的内容）："));
+    if (styleId === "auto") {
+      L.push(
+        "- " +
+          t(
+            "用户没选（自动）：由内容定 —— 公式与术语多 → 学术；数字与对比多 → Motion Graphics；层级与续页多 → 2.5D；空间关系多 → 3D；拿不准就按学术写（最不会把内容演坏）。写的时候把对应的特征写足，别四种混着来。",
+          ),
+      );
+    } else {
+      L.push("- " + t("用户选的是") + "：" + styleLabel);
+      for (const line of RS_SLIDE_STYLE_BRIEF[styleId] || []) L.push("  - " + t(line));
+    }
+    L.push(
+      "- " +
+        t(
+          "风格服从内容，不是套模板：材料撑不起这套演法（比如没有可比数字却要 Motion Graphics）就按学术那套克制地讲 —— 绝不为了风格编数字、硬拆页或堆装饰。",
+        ),
+    );
     L.push("");
     L.push(t("用户这一轮的补充要求（原话，可能为空）："));
     L.push(want ? want.replace(/\n/g, "\n  ") : "- " + t("（空）按上面的 brief 自主创作。"));
@@ -11940,6 +12681,11 @@
     L.push("- " + t("不许编造：数字、结论、引文、文献都必须在材料里有出处；不确定的地方写成「材料没讲清」，不要补一个看起来合理的答案。"));
     L.push("");
     L.push(t("除了上面那个脚本文件与（联网时）那一份 explain 笔记，别的文件一律不写、不改、不新建。"));
+    L.push(
+      t("这一轮就是全部：脚本与（联网时）`notes/") +
+        slug +
+        t(".explain.md` 都在这一轮一次写完，写完就停手 —— 不要回问、不要等第二轮、不要把剩下几页留到下一轮。宿主会自动接着把脚本编成演示页并出视频。"),
+    );
     L.push(t("写完只回一句话：多少页、讲了哪几件事。"));
     return L.join("\n");
   }
@@ -11956,6 +12702,8 @@
       await rsSlidesOpen();
     }
     toastSafe(t("演示脚本已落盘（") + String((parsed && parsed.pages ? parsed.pages.length : 0)) + t(" 页）：") + rel);
+    /* 一轮到此收尾：脚本就是这一轮的终点，接着自动出片（brief.mode ≠ slides 才出，见 rsSlidesAutoVideo） */
+    rsSlidesAutoVideo(fresh);
     return fresh;
   }
   /* 盯脚本文件：两拍字节一样才算写完 → 内核 parseScript 过一遍 → 编成 deck。
@@ -12097,7 +12845,6 @@
       if (brief.occasion) L.push("- " + t("场合") + "：" + brief.occasion);
       if (brief.tone) L.push("- " + t("语气") + "：" + brief.tone);
       if (brief.focus && brief.focus.length) L.push("- " + t("重点讲透") + "：" + brief.focus.join("、"));
-      if (brief.avoid && brief.avoid.length) L.push("- " + t("别出现") + "：" + brief.avoid.join("、"));
       if (brief.extra) L.push("- " + t("额外指示") + "：" + brief.extra.replace(/\n/g, "\n  "));
     }
     L.push("");
