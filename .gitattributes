@@ -1,0 +1,26 @@
+# 仓库级二进制口径
+# 目的：安装包 / 原生库 / 发布产物一律按二进制对待 ——
+#   1) -diff  = 不展开「Binary files differ」之外的内容 diff（也避免被当文本逐行比较）
+#   2) -text  = 不做行尾转换（core.autocrlf / eol 均不作用于这些文件），字节原样进出
+# 与 .gitignore 的安装包规则配套：那边挡住误 add，这边挡住误 diff / 误改行尾。
+
+# 安装包 / 商店包
+*.msix        -diff -text
+*.msixbundle  -diff -text
+*.appx        -diff -text
+*.msi         -diff -text
+*.exe         -diff -text
+
+# 原生动态库
+*.dll         -diff -text
+
+# MTNode 网关树归档
+*.mtgw        -diff -text
+
+# 图片（仓库里的图标 / 截图资源）
+*.png         -diff -text
+*.jpg         -diff -text
+*.jpeg        -diff -text
+
+# 压缩包（源码包 / 素材归档）
+*.zip         -diff -text

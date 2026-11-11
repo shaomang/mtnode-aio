@@ -12,6 +12,28 @@ web/downloads/MTNodeAIO-Setup-1.5.6.exe
 *.blockmap
 *.nsis.7z
 
+# ===== 安装包 / 商店包 / 增量更新产物（体积大，一律不入库）=====
+# 判断标准：凡「能直接安装或分发出去」的二进制产物都不入库 —— 只由发版链产出。
+*.msix
+*.msixbundle
+*.msixupload
+*.appx
+*.appxbundle
+*.appxupload
+*.msi
+# NSIS 安装器（MTNodeAIO-Setup-1.7.0.exe 等；差分块 *.blockmap 见上）
+*-Setup-*.exe
+# 构建产物目录的变体（dist/、dist_check*/ 之外的 dist-*、dist-msix 之类）
+dist*/
+# web/downloads/ 是被上面的 web/ 整目录忽略掩盖的下载产物目录，这里显式列出，
+# 防止以后有人为了放开 web/ 站点源码而把整目录忽略改成 !web/ 之类时，
+# 把这堆几百 MB 的安装包 / 源码包带进库。
+web/downloads/*.exe
+web/downloads/*.zip
+web/downloads/*.zip.stamp
+web/downloads/*.msix
+web/downloads/*.blockmap
+
 # ===== 打包资源（不入库，避免误上传）=====
 # 注意：build/ 只放打包图标等本机资源；build.json（打包白名单）是版本真源之一，
 #       必须入库 —— 发布链 scripts/release-git.mjs 会审计这类漏传。
