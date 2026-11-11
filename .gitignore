@@ -8,6 +8,7 @@ release/
 test/
 tmp/
 web/
+web/downloads/MTNodeAIO-Setup-1.5.6.exe
 *.blockmap
 *.nsis.7z
 
