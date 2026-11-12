@@ -40,7 +40,8 @@
  *       note,                        讲者备注（生成时为空，供编辑器写）
  *       links: [{kind, title, target, page, hits:[{path,title,line,angle}], count}],
  *       layout: "body" | "two" | "image",
- *       media: [],                    叠加的图 / 视频（只有手改才有；{id,kind,src,x,y,w,h,fit,z}）
+ *       media: [],                    {id,kind,src,x,y,w,h,fit,z}：手改导入的图 / 视频，
+ *                                     或演示稿里一行 `<!-- figure: … -->`（见图示一节）
  *       boxes: null,                  文本框（lead / body 的 {x,y,w}；只有手改才有）
  *       part: 1,                     单节超长时的续页序号（1 = 首页，2、3… = 续页）
  *       hidden: false,               由 patch.hidden 决定，页仍然留在 pages 里（手改不丢）
@@ -59,7 +60,7 @@
  * 切页规则（顺序就是放映顺序，全部确定性，同输入同输出）：
  *   ① 封面     课题（meta.title）+ 主稿标题 + 日期
  *   ② 大纲     主稿的小节标题自动成条，每条链到那一页
- *   ③ 主稿     按 H2 切页；H3 另起一页（眉题 = 它的 H2）；单节超过 5 条要点按段落续页（最多 4 页）
+ *   ③ 主稿     按 H2 切页；H3 另起一页（眉题 = 它的 H2）；单节超过 8 条要点按段落续页（最多 4 页）
  *   ④ 3-Pass   每一次精读（略读 / 关键概念 / 技术细节）各 1–2 页，要点原样取，不臆造
  *   ⑤ 术语     正文与双链命中的术语，按「被引次数」取前 6 个，一页一个
  *   ⑥ 公式     主稿正文里的 $$…$$ / $…$，TeX 原样进页，一页一条（最多 4 条；同一条式子只出一页）
@@ -143,8 +144,10 @@
      主题色名在渲染时解析成 var(--rs-slide-*)，换主题就跟着换；hex 是用户的单件覆盖。 */
   const COLOR_NAMES = ["primary", "accent", "ink", "muted", "paper"];
 
-  /* 一页最多几条要点；超了就按段落续页（上限见 MAX_PART_PAGES） */
-  const MAX_BULLETS = 5;
+  /* 一页最多几条要点；超了就按段落续页（上限见 MAX_PART_PAGES）。
+     5 → 8：教学演示一页常要「为什么 / 怎么做 / 得到什么」，5 条把话说透的位置不够；
+     直出档的切页分组（每页 MAX_BULLETS 条）与 overlay / rewrite 的合并上限同一个数，一起变。 */
+  const MAX_BULLETS = 8;
   const MAX_PART_PAGES = 4;
   const MAX_BULLET_CHARS = 200;
   const TERM_MAX = 6;
@@ -596,7 +599,7 @@
   /* 单页时长的上下限（视频侧夹在中间；封顶后不靠拉长解决，而是这一页本来就该拆） */
   const MIN_PAGE_SEC = 2.4;
   const MAX_PAGE_SEC = 18;
-  /* 视频帧率：与 PDF 同一把尺子（144 dpi），帧数换算只认这一个值 */
+  /* 视频帧率：按 144 dpi 折算静态版尺寸（16:9 → 1920×1080），帧数换算只认这一个值 */
   const FPS = 30;
 
   /* 六套预设：id / 名称 / 一句说明 / 明 / 暗 两张变量表 + 一份 motion 表 */
@@ -992,6 +995,25 @@
     }
     return out;
   }
+  /* 演示稿里的一行 `<!-- figure: src | 说明 | 来源 | 许可 -->` → media 一件（只认研究目录里的相对路径）。
+     说明 / 来源 / 许可落进 media.note（编辑器备注，不上屏）；页上要讲什么仍写在要点里。
+     文件名写光秃秃的（x.png）就补成 slides/media/<slug>/x.png —— 模型少写半个路径不至于白丢一张图。
+     认不出的（外链 / 研究目录外的路径）返回 null，那一页就退回纯文字，绝不编一张图出来。 */
+  function figureMedia(raw, slug) {
+    const parts = str(raw).split("|").map((x) => str(x).trim());
+    let src = normRel(parts[0] || "").trim();
+    if (!src) return null;
+    if (src.indexOf("/") < 0) src = MEDIA_PREFIX + str(slug) + "/" + src;
+    if (src.indexOf(MEDIA_PREFIX) !== 0) return null;
+    if (src.split("/").indexOf("..") >= 0) return null;
+    const part = (v) => str(v).replace(/^(?:来源|出处|许可|版权)\s*[:：]\s*/, "").trim();
+    const note = [parts[1] || "", part(parts[2]) ? "来源：" + part(parts[2]) : "", part(parts[3]) ? "许可：" + part(parts[3]) : ""]
+      .filter(Boolean)
+      .join(" · ")
+      .slice(0, 200);
+    /* 默认落在右半页（与 layout "image" 的右栏同一块地方），左下留给要点 */
+    return { src: src, kind: "image", x: 56, y: 14, w: 38, h: 60, fit: "contain", note: note };
+  }
   /* boxes：只留 lead / body 两个盒子，各取 x / y / w（0–100 clamp）；一个都没给就是 null */
   function normalizeBoxes(src) {
     if (!src || typeof src !== "object" || Array.isArray(src)) return null;
@@ -1012,7 +1034,7 @@
   /* ── 自由版面的对象表（objects）─────────────────────────────────────────────
      Keynote 式的「自己排」：一页 = 一叠对象，**数组顺序就是层序**（越靠后越压在上面），
      没有 z 字段 —— 置前 / 置后 / 置顶 / 置底一律是挪数组，存档因此永远只有一种写法。
-     坐标仍是**页面百分比**（0–100），与 media / boxes 同一把尺子：换比例、放映、导出、PDF 全一致。
+     坐标仍是**页面百分比**（0–100），与 media / boxes 同一把尺子：换比例、放映、导出全一致。
      字号用 em（相对 --rs-slide-fs）：预览里缩一档、打印时放大都跟着走，不用换算像素。
      认不出的字段一律丢掉（手写 deck 也改不歪），缺的按对象种类给一个能看的默认位。 */
   function num(v, lo, hi, dflt) {
@@ -1192,9 +1214,18 @@
       const ch = normalizeChrome(src.chrome);
       if (CHROME_KEYS.some((k) => !ch[k])) out.chrome = ch;
     }
+    /* add 只在「真有后来加的页」时才出现（老存档形状不变）：这串 id 是改写时新开的页，
+       整份重做（replace）时宿主按它把上一轮加的页清掉 */
+    if (Array.isArray(src.add)) {
+      const add = src.add.map((x) => str(x).trim()).filter(Boolean);
+      if (add.length) out.add = add;
+    }
     return out;
   }
-  /* 把手改盖回一份 deck：返回**新** deck（不改入参，便于「重新生成」前后对比） */
+  /* 把手改盖回一份 deck：返回**新** deck（不改入参，便于「重新生成」前后对比）。
+     叠加层里对不上任何页的条目 = 后来加进来的页（改写时新增 / 换掉结构后剩下的页）：
+     按条目里的字段合成一页接在末尾，位置与显隐交给 order / hidden —— 「加页」不需要第二条
+     数据通道，重新生成时也从同一份 patch 长回来（页还是会自己回来）。 */
   function applyPatch(deck, patch) {
     const d = deck && typeof deck === "object" ? deck : { pages: [] };
     const p = normalizePatch(patch || d.patch);
@@ -1204,10 +1235,29 @@
       const ov = p.overlay[one.id];
       if (ov) {
         for (const k of EDIT_KEYS) if (Object.prototype.hasOwnProperty.call(ov, k)) one[k] = ov[k];
+        /* overlay 的正文是模型 / 手写塞进来的原文：同样过一道排版（幂等，干净的文本不变） */
+        typesetPageText(one);
       }
       one.hidden = hidden.has(one.id);
       return one;
     });
+    const have = new Set(pages.map((pg) => str(pg.id)));
+    for (const id of Object.keys(p.overlay)) {
+      if (!id || have.has(id)) continue;
+      const ov = p.overlay[id] || {};
+      /* 空条目（只剩个 id）不合成页：别的路径留下的脏数据不该凭空多一页 */
+      if (
+        !str(ov.title).trim() &&
+        !(Array.isArray(ov.bullets) && ov.bullets.length) &&
+        !str(ov.quote).trim() &&
+        !str(ov.note).trim()
+      )
+        continue;
+      const one = page(Object.assign({ id: id, kind: "section" }, ov));
+      one.hidden = hidden.has(id);
+      pages.push(one);
+      have.add(id);
+    }
     if (p.order.length) {
       const rank = new Map();
       p.order.forEach((id, i) => rank.set(id, i));
@@ -1364,7 +1414,7 @@
        · durationSec = 0（自动）→ 不裁页、pace = 1；
        · 有目标时长 → 目标页数区间 ±1，超上限按 cites → formula → term 砍页（focus 命中的保留），
          砍完再按「目标 / 实得」算 pace（夹在 0.75–1.35，只乘读的时间，不乘入场帧数）；
-       · **一个页都不从 deck 里删**：HTML / PDF / PNG 仍是全量，这份计划只喂视频时间轴；
+       · **一个页都不从 deck 里删**：HTML / 放映仍是全量，这份计划只喂视频时间轴；
        · 凑不齐就如实写在 note 里（不编过渡页、不编结论、不删事实）。 */
   function planBrief(brief, pages, theme) {
     const b = normalizeBrief(brief);
@@ -1467,6 +1517,273 @@
     };
   }
 
+  /* ── 上屏文字：TeX 源码一律不上面（排好版的样子才上屏）──────────────────────
+     为什么要有这一道：笔记（notes/*.md）里的公式写的是 LaTeX，模型改写演示页时很容易整段抄过来；
+     而 KaTeX 只活在编辑器那一侧（renderer/math-render.js）—— **放映页 / 视频都不引它**，
+     抄过来的 `$\zeta(s)$` 会原样印在投影上，整份演示当场作废。所以页上的字必须是「已经排好的文字」：
+     真上标（⁷ ˣ）、真下标（₁ ₙ）、√ 里的根号、分数写成 a/b、复合次幂写成人话「的 … 次方」。
+     typesetMath() 就把抄错的 LaTeX 就地翻成这一种；texLeftover() 报出翻不动的残渣（视频侧据此拒片）。
+     两条纪律（写在源码里，不是写在文档里）：
+       ① 只在文本里**真有 TeX 痕迹**时才动它 —— 纯中文 / 纯数字的页字节不变（老存档导出不变）；
+       ② 翻不动的 `\命令` 原样留着交给 texLeftover()，绝不猜、绝不静默丢掉一段式子。 */
+  const TEX_HINT = /\$|\\[a-zA-Z()[\]]|\^\{|_\{|\^[0-9]/;
+  const SUPER_MAP = {
+    "0": "⁰", "1": "¹", "2": "²", "3": "³", "4": "⁴", "5": "⁵", "6": "⁶", "7": "⁷", "8": "⁸", "9": "⁹",
+    "+": "⁺", "-": "⁻", "−": "⁻", "(": "⁽", ")": "⁾", "=": "⁼", "n": "ⁿ", "i": "ⁱ", "k": "ᵏ", "x": "ˣ",
+    "y": "ʸ", "a": "ᵃ", "b": "ᵇ", "c": "ᶜ", "d": "ᵈ", "e": "ᵉ", "f": "ᶠ", "g": "ᵍ", "h": "ʰ", "j": "ʲ",
+    "l": "ˡ", "m": "ᵐ", "o": "ᵒ", "p": "ᵖ", "r": "ʳ", "s": "ˢ", "t": "ᵗ", "u": "ᵘ", "v": "ᵛ", "w": "ʷ",
+    "z": "ᶻ", "T": "ᵀ", "N": "ᴺ", "E": "ᴱ",
+  };
+  const SUB_MAP = {
+    "0": "₀", "1": "₁", "2": "₂", "3": "₃", "4": "₄", "5": "₅", "6": "₆", "7": "₇", "8": "₈", "9": "₉",
+    "+": "₊", "-": "₋", "−": "₋", "=": "₌", "(": "₍", ")": "₎", "a": "ₐ", "e": "ₑ", "h": "ₕ", "i": "ᵢ",
+    "j": "ⱼ", "k": "ₖ", "l": "ₗ", "m": "ₘ", "n": "ₙ", "o": "ₒ", "p": "ₚ", "r": "ᵣ", "s": "ₛ", "t": "ₜ",
+    "u": "ᵤ", "v": "ᵥ", "x": "ₓ",
+  };
+  /* 常见命令 → Unicode（够 cover 数论 / 概率 / 分析这几类笔记；认不出的一律留着不猜） */
+  const TEX_SYM = {
+    alpha: "α", beta: "β", gamma: "γ", delta: "δ", epsilon: "ε", varepsilon: "ε", zeta: "ζ", eta: "η",
+    theta: "θ", vartheta: "ϑ", iota: "ι", kappa: "κ", lambda: "λ", mu: "μ", nu: "ν", xi: "ξ", pi: "π",
+    rho: "ρ", sigma: "σ", tau: "τ", upsilon: "υ", phi: "φ", varphi: "φ", chi: "χ", psi: "ψ", omega: "ω",
+    Gamma: "Γ", Delta: "Δ", Theta: "Θ", Lambda: "Λ", Xi: "Ξ", Pi: "Π", Sigma: "Σ", Phi: "Φ", Psi: "Ψ",
+    Omega: "Ω",
+    log: "log", ln: "ln", exp: "exp", sin: "sin", cos: "cos", tan: "tan", max: "max", min: "min",
+    sup: "sup", inf: "inf", lim: "lim", det: "det", gcd: "gcd", lcm: "lcm", dim: "dim", ker: "ker",
+    sum: "Σ", prod: "Π", int: "∫", oint: "∮", partial: "∂", nabla: "∇", infty: "∞", ell: "ℓ",
+    cdot: "·", times: "×", div: "÷", pm: "±", mp: "∓", ast: "∗", star: "⋆", circ: "∘", bullet: "·",
+    le: "≤", leq: "≤", ge: "≥", geq: "≥", ne: "≠", neq: "≠", approx: "≈", sim: "∼", simeq: "≃",
+    equiv: "≡", propto: "∝", to: "→", rightarrow: "→", leftarrow: "←", Rightarrow: "⇒",
+    Leftarrow: "⇐", leftrightarrow: "↔", mapsto: "↦", ll: "≪", gg: "≫", asymp: "≍",
+    in: "∈", notin: "∉", subset: "⊂", subseteq: "⊆", supset: "⊃", cup: "∪", cap: "∩", setminus: "∖",
+    forall: "∀", exists: "∃", nexists: "∄", emptyset: "∅", varnothing: "∅", therefore: "∴",
+    ldots: "…", dots: "…", cdots: "⋯", vdots: "⋮", ddots: "⋱", vert: "|", mid: "|", lvert: "|",
+    rvert: "|", langle: "⟨", rangle: "⟩", lfloor: "⌊", rfloor: "⌋", lceil: "⌈", rceil: "⌉",
+    aleph: "ℵ", hbar: "ℏ", prime: "′", degree: "°", angle: "∠", oplus: "⊕", otimes: "⊗",
+    perp: "⊥", parallel: "∥", cong: "≅", because: "∵", colon: ":", quad: " ", qquad: " ",
+    top: "⊤", bot: "⊥", limsup: "limsup", liminf: "liminf", argmax: "argmax", argmin: "argmin",
+    Re: "Re", Im: "Im", bmod: "mod", mod: "mod",
+  };
+  /* 取「内部文字」的命令（只留下里面的内容，不硬造修饰） */
+  const TEX_GROUP = {
+    text: 1, textrm: 1, textit: 1, textbf: 1, textsf: 1, texttt: 1, mbox: 1, hbox: 1,
+    mathrm: 1, mathbf: 1, mathit: 1, mathsf: 1, mathtt: 1, mathcal: 1, mathbb: 1, mathfrak: 1,
+    mathscr: 1, bm: 1, boldsymbol: 1, operatorname: 1, overline: 1, underline: 1, widehat: 1,
+    widetilde: 1, hat: 1, tilde: 1, bar: 1, vec: 1, dot: 1, ddot: 1, mathring: 1, boxed: 1,
+    ensuremath: 1,
+  };
+  /* 整条扔掉的命令（间距 / 定界符 / 样式切换 / 环境边界）：它们不带信息 */
+  const TEX_DROP = {
+    left: 1, right: 1, big: 1, Big: 1, bigg: 1, Bigg: 1, bigl: 1, bigr: 1, Bigl: 1, Bigr: 1,
+    displaystyle: 1, textstyle: 1, scriptstyle: 1, limits: 1, nolimits: 1,
+    nonumber: 1, notag: 1, hfill: 1, label: 1, tag: 1,
+    ",": 1, ";": 1, ":": 1, "!": 1, " ": 1, "\\": 1,
+  };
+  function texMapChars(s, table) {
+    let out = "";
+    for (const ch of str(s)) {
+      if (!Object.prototype.hasOwnProperty.call(table, ch)) return null;
+      out += table[ch];
+    }
+    return out;
+  }
+  /* 读一个参数：`{…}` 取括号内（嵌套配平），否则按次幂 / 下标的需要取一个记号 */
+  function texArg(s, i) {
+    if (s[i] !== "{") {
+      if (/[0-9]/.test(s[i] || "")) {
+        let j = i;
+        while (j < s.length && /[0-9]/.test(s[j])) j++;
+        return { text: s.slice(i, j), next: j };
+      }
+      /* `^\top` / `_p` 这种裸参数：反斜杠开头的按一整个命令读，别的按一个字符读 */
+      if (s[i] === "\\") {
+        const m = /^\\([a-zA-Z]+|.)/.exec(s.slice(i));
+        const len = m ? m[0].length : 1;
+        return { text: s.slice(i, i + len), next: i + len };
+      }
+      return { text: s[i] || "", next: i + 1 };
+    }
+    let depth = 0;
+    let j = i;
+    let out = "";
+    for (; j < s.length; j++) {
+      const ch = s[j];
+      if (ch === "{") {
+        depth++;
+        if (depth === 1) continue;
+      } else if (ch === "}") {
+        depth--;
+        if (depth === 0) {
+          j++;
+          break;
+        }
+      }
+      out += ch;
+    }
+    return { text: out, next: j };
+  }
+  /* 分子 / 分母 / 根号里的东西：带运算符就加括号（`(log N)/(log log N)`），单个词不加 */
+  function texWrap(inner) {
+    const t = str(inner).trim();
+    if (!t) return "";
+    if (!/[+−\-×÷·=<>≤≥±∓]/.test(t)) return t;
+    return "(" + t + ")";
+  }
+  function texSup(inner) {
+    const t = str(inner).trim();
+    if (!t) return "";
+    /* 单个符号（⊤ ⊥ ∗ ′ 这种）本身就是最好的上标写法：原样接上 */
+    if (Array.from(t).length === 1 && !/[A-Za-z0-9]/.test(t)) return t;
+    const up = texMapChars(t, SUPER_MAP);
+    if (up != null) return up;
+    /* 排不成上标的（带斜杠的分数次幂等）：写成人话 —— 页上都是中文，别为美观硬塞符号 */
+    return " 的 " + t + " 次方";
+  }
+  function texSub(inner) {
+    const t = str(inner).trim();
+    if (!t) return "";
+    const dn = texMapChars(t, SUB_MAP);
+    return dn != null ? dn : "(" + t + ")";
+  }
+  function texToPlain(raw, inMath) {
+    const s = str(raw);
+    let out = "";
+    let i = 0;
+    while (i < s.length) {
+      const ch = s[i];
+      if (ch === "\\") {
+        const m = /^\\([a-zA-Z]+|.)/.exec(s.slice(i));
+        const name = m ? m[1] : "";
+        const len = m ? m[0].length : 1;
+        if (TEX_DROP[name]) {
+          out += name === "\\" ? " " : "";
+          i += len;
+          continue;
+        }
+        if (name === "frac" || name === "dfrac" || name === "tfrac") {
+          const a = texArg(s, i + len);
+          const b = texArg(s, a.next);
+          out += texWrap(texToPlain(a.text, inMath)) + "/" + texWrap(texToPlain(b.text, inMath));
+          i = b.next;
+          continue;
+        }
+        if (name === "sqrt") {
+          let j = i + len;
+          let root = "√";
+          if (s[j] === "[") {
+            const k = s.indexOf("]", j);
+            const deg = str(s.slice(j + 1, k)).trim();
+            root = deg === "3" ? "∛" : deg === "4" ? "∜" : "√";
+            j = k < 0 ? j + 1 : k + 1;
+          }
+          const a = texArg(s, j);
+          out += root + texWrap(texToPlain(a.text, inMath));
+          i = a.next;
+          continue;
+        }
+        if (TEX_GROUP[name]) {
+          const star = s[i + len] === "*" ? 1 : 0;
+          const a = texArg(s, i + len + star);
+          out += texToPlain(a.text, inMath);
+          i = a.next;
+          continue;
+        }
+        if (TEX_SYM[name]) {
+          const sym = TEX_SYM[name];
+          /* 多字母算子（log / max / …）后面紧跟字母或另一个命令时补一个空格：`\log\log N` → `log log N` */
+          const nxtCh = s[i + len] || "";
+          out += /^[A-Za-z]{2,}$/.test(sym) && (/[A-Za-z]/.test(nxtCh) || /^\\[a-zA-Z]/.test(s.slice(i + len)))
+            ? sym + " "
+            : sym;
+          i += len;
+          continue;
+        }
+        if (name && name.length === 1 && !/[a-zA-Z]/.test(name)) {
+          /* \{ \} \% \& \_ \# \$：转义成字符本身 */
+          out += name;
+          i += len;
+          continue;
+        }
+        /* 认不出来的：连参数一起原样留着（texLeftover 会报出来），绝不猜它的意思 */
+        let keep = m ? m[0] : ch;
+        let j2 = i + len;
+        for (let g = 0; g < 2; g++) {
+          const sp = /^[ \t]*/.exec(s.slice(j2))[0];
+          if (s[j2 + sp.length] !== "{") break;
+          const a = texArg(s, j2 + sp.length);
+          keep += s.slice(j2, a.next);
+          j2 = a.next;
+        }
+        out += keep;
+        i = j2;
+        continue;
+      }
+      if (ch === "^" || ch === "_") {
+        /* `_` 只在明确是下标时动手（`_{…}` / `_1`，或 `$…$` 里面的 `_i`）：文件名里的下划线不许改 */
+        const nxt = s[i + 1] || "";
+        const isMath = ch === "^" || nxt === "{" || /[0-9]/.test(nxt) || (inMath && /[A-Za-z\u0370-\u03ff]/.test(nxt));
+        if (!isMath) {
+          out += ch;
+          i++;
+          continue;
+        }
+        const a = texArg(s, i + 1);
+        const inner = texToPlain(a.text, inMath);
+        out += ch === "^" ? texSup(inner) : texSub(inner);
+        i = a.next;
+        continue;
+      }
+      if (ch === "{" || ch === "}") {
+        i++;
+        continue;
+      }
+      out += ch;
+      i++;
+    }
+    return out;
+  }
+  /* 排好版的上屏文字：没有 TeX 痕迹就原样返回（老存档字节不变） */
+  function typesetMath(v) {
+    const src = str(v);
+    if (!src || !TEX_HINT.test(src)) return src;
+    let t = src;
+    t = t.replace(/\$\$([\s\S]+?)\$\$/g, (m, x) => " " + texToPlain(x, true) + " ");
+    t = t.replace(/\$([^$\n]+?)\$/g, (m, x) => texToPlain(x, true));
+    t = t.replace(/\\\[([\s\S]+?)\\\]/g, (m, x) => " " + texToPlain(x, true) + " ");
+    t = t.replace(/\\\(([\s\S]+?)\\\)/g, (m, x) => texToPlain(x, true));
+    t = texToPlain(t);
+    return t
+      .replace(/[ \t]*([≤≥≠≈∼≍≪≫∈∉⊂⊆→⇒↦<>])[ \t]*/g, " $1 ")
+      .replace(/[ \t]+(?=[的得地了是在把被和与次方])/g, "")
+      .replace(/[ \t]{2,}/g, " ")
+      .replace(/[ \t]+([，。；：、）】」』])/g, "$1")
+      .replace(/^[ \t]+|[ \t]+$/g, "");
+  }
+  /* 翻不动的残渣：返回 `\命令` / `$` / `^{` 这些还没被排版的痕迹（空数组 = 干净） */
+  function texLeftover(v) {
+    const s = str(v);
+    const out = [];
+    let m;
+    const re = /\\[a-zA-Z]+/g;
+    while ((m = re.exec(s))) {
+      const name = m[0].slice(1);
+      if (TEX_GROUP[name] || TEX_DROP[name] || name === "frac" || name === "dfrac" || name === "sqrt") continue;
+      if (Object.prototype.hasOwnProperty.call(TEX_SYM, name)) continue;
+      if (out.indexOf(m[0]) < 0) out.push(m[0]);
+    }
+    if (/\$/.test(s) && out.indexOf("$") < 0) out.push("$");
+    if (/\^\{|_\{/.test(s) && out.indexOf("^{…}") < 0) out.push("^{…}");
+    return out;
+  }
+  /* 一页里所有会**上屏**的字段：进来之前都一样过一道（标题 / 眉题 / 要点 / 引用 / 公式 / 备注） */
+  function typesetPageText(pg) {
+    if (!pg || typeof pg !== "object") return pg;
+    for (const k of ["title", "kicker", "quote", "formula", "note"]) {
+      if (typeof pg[k] === "string" && pg[k]) pg[k] = typesetMath(pg[k]);
+    }
+    if (Array.isArray(pg.bullets)) pg.bullets = pg.bullets.map((b) => (typeof b === "string" ? typesetMath(b) : b));
+    return pg;
+  }
+
   /* ── 页构造 ───────────────────────────────────────────────────────────── */
   function page(spec) {
     const s = spec || {};
@@ -1494,7 +1811,8 @@
     /* scene 只在真给了才出现：没有 3D 场景的页与老存档的页形状完全一致（导出字节不变） */
     const scene = SCENES.indexOf(str(s.scene)) > 0 ? str(s.scene) : "";
     if (scene) out.scene = scene;
-    return out;
+    /* 上屏文字一律先排版：LaTeX 抄进页里也在这里被翻成排好的样子（见 typesetMath） */
+    return typesetPageText(out);
   }
   /* 页 id：kind + 来源（路径 / 行号 / 标题）→ 稳定、可读，overlay 才认得住 */
   function makeId(kind, seed) {
@@ -1897,6 +2215,10 @@
        $$ E = mc^2 $$                        公式（也认单行 $…$）
        <!-- note: 旁白 -->                   旁白（也认「旁白：」开头的行）
        <!-- scene: orbit -->                 3D 场景（orbit / grid / signal）
+       <!-- figure: slides/media/<slug>/x.png | 一句说明 | 来源：… | 许可：… -->
+                                            图示：一段四截，| 分隔（说明 / 来源 / 许可可省）
+                                            只认研究目录里的 slides/media/… 相对路径；
+                                            文件名光秃秃的就补成 slides/media/<slug>/<文件名>
      解析不出来（没有 `## ` 分页）就返回 pages: []，调用方回落确定性直切，绝不假装成功。 */
   const SCRIPT_HEAD = /^<!--\s*mtnode-slides-script\b[^>]*-->\s*$/i;
   const SCRIPT_PAGE = /^##[ \t]+(.+?)[ \t]*$/;
@@ -1916,7 +2238,7 @@
     if (index === total - 1 && total >= 3) return { title: title, kind: "end", explicit: false };
     return { title: title, kind: "section", explicit: false };
   }
-  /* 演示稿 → { title, pages:[{kind,title,kicker,bullets,quote,formula,note,scene,line}] }（纯数据，不建页） */
+  /* 演示稿 → { title, pages:[{kind,title,kicker,bullets,quote,formula,note,scene,figure,line}] }（纯数据，不建页） */
   function parseScript(md, opts) {
     const o = opts || {};
     const doc = parseDoc(str(md));
@@ -1943,7 +2265,7 @@
       }
       if (SCRIPT_PAGE.test(t)) {
         pushCur();
-        cur = { title: "", kicker: "", bullets: [], quote: "", formula: "", note: "", scene: "", line: lineNo, raw: [] };
+        cur = { title: "", kicker: "", bullets: [], quote: "", formula: "", note: "", scene: "", figure: "", line: lineNo, raw: [] };
         cur.title = t.replace(/^##[ \t]+/, "");
         quoteUsed = false;
         continue;
@@ -1953,6 +2275,9 @@
       if (note) { cur.note = cur.note ? cur.note + " " + note : note; continue; }
       const scene = scriptMetaLine(t, "scene");
       if (scene) { if (SCENES.indexOf(scene.toLowerCase()) > 0) cur.scene = scene.toLowerCase(); continue; }
+      /* 图示：`src | 说明 | 来源 | 许可`，只留原文，怎么落成 media 由 buildFromScript 决定（要 slug） */
+      const figure = scriptMetaLine(t, "figure");
+      if (figure) { cur.figure = cur.figure || figure; continue; }
       if (/^<!--[\s\S]*-->$/.test(t)) continue; /* 其它注释：不进页 */
       /* 原文行留一份：links（双链 / 引用 / 术语）要从**未剥离标记**的文本里抽，
          要点本身走 inlineText（展示时不该露 [[ ]] 源码）。 */
@@ -2007,6 +2332,7 @@
         formula: str(it.formula),
         note: str(it.note),
         scene: str(it.scene),
+        figure: str(it.figure),
         text: (it.raw || []).join("\n"),
         line: it.line,
       };
@@ -2040,6 +2366,8 @@
     const pages = [];
     for (let i = 0; i < parsed.pages.length; i++) {
       const s = parsed.pages[i];
+      /* 图示：一行 `<!-- figure: … -->` 落成一件 media + 左右两栏版面；认不出就纯文字 */
+      const fig = figureMedia(s.figure, slug);
       const pg = page({
         id: uid(used, makeId("pg", String(i + 1).padStart(2, "0") + ":" + s.title)),
         kind: s.kind,
@@ -2050,6 +2378,8 @@
         formula: s.formula,
         note: s.note,
         scene: s.scene,
+        layout: fig ? "image" : "body",
+        media: fig ? [fig] : [],
         links: linksOfSections(
           (str(s.text) || [s.title, s.kicker, s.quote].concat(s.bullets).join("\n")),
           { notes: notes, terms: terms, termPages: {}, citesPage: "" },
@@ -2191,6 +2521,9 @@
     TEXT_ALIGNS: TEXT_ALIGNS,
     COLOR_NAMES: COLOR_NAMES,
     EDIT_KEYS: EDIT_KEYS,
+    /* 上屏文字：TeX 源码 → 排好版的文字（内核每个页字段都过这一道；视频侧用 texLeftover 拒片） */
+    typesetMath: typesetMath,
+    texLeftover: texLeftover,
     THEME_PRESETS: THEME_PRESETS,
     FONTS: FONTS,
     RADIUS: RADIUS,

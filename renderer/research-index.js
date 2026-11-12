@@ -16,8 +16,11 @@
  *            新增（头行「＋ 新增问题」：就地一行输入标题 + 正文，交宿主 onQuestionNew 落盘）、
  *            状态字典（默认四档 + 自定义名称 / 颜色，存 research.json 的 questionStatus；
  *            入口是每行状态下拉最下面的「＋ 新状态」）
- *   标签页   原文 / 论断 / 概念 / 方法 / 问题 —— 就是原来那排数字，现在每颗都能点
+ *   标签页   原文 / 论断 / 概念 / 方法 / 问题 / 制作 —— 就是原来那排数字，现在每颗都能点
  *            （button toggle）：默认「原文」，点一下下方卡片区跟着换成那一类
+ *            「制作」= 这一棵库做出来的演示与成片视频（清单由宿主扫研究目录的
+ *            slides/<slug>.json + exports/<slug>/ 给出，模块只摆卡与接动作：
+ *            预览 = 应用内放映，编辑 = 打开演示编辑器，HTML / 视频 = 系统默认程序打开）
  *   卡片区   当前标签页那几篇：
  *            原文 = core/*.md 原件（衍生物并进同一张卡），**双列大卡**（正文至少露五行 + 路径，
  *            只有一张卡时占满整页）；
@@ -990,6 +993,12 @@
       numbers.push({ key: k, label: KIND_LABEL[k], value: k === "question" ? counts.question + asks : counts[k] });
     }
 
+    /* ── 制作：这一棵库做出来的演示与视频（宿主扫盘给的清单，模块只查表不扫盘） ──
+       **给了 decks（哪怕是空数组）才多出这一页**；不给 = 老调用方（node 侧测试 / 别的宿主），
+       数字行仍是五项、tabCards 里也没有这一页，行为一个字节都不变。 */
+    const decksGiven = Array.isArray(o.decks);
+    const decks = decksGiven ? o.decks.filter(Boolean) : [];
+
     /* ── 标签页：原来的数字行就是切换器（原文 / 论断 / 概念 / 方法 / 问题），默认「原文」 ──
        原文 = core/*.md 原件（衍生物并进那一张卡，不单列）；
        论断 / 概念 / 方法 = 上面 kindNoteCards 归并后的卡（同题只留一张）；
@@ -1027,10 +1036,21 @@
       method: kindNoteCards("method").filter(matchCard),
       question: questionCards.filter(matchCard),
     };
+    /* 制作：按标题 / slug 过关键词（这一页没有正文可筛） */
+    if (decksGiven) {
+      tabCards.decks = decks.filter(
+        (d) =>
+          !keyword ||
+          str(d.title).toLowerCase().indexOf(keyword) >= 0 ||
+          str(d.slug).toLowerCase().indexOf(keyword) >= 0,
+      );
+    }
     /* 「问题」那一颗的数字以**这一页会摆出来的条数**为准：问题清单连索引那一篇里的块
        一起收（上面的纯计数不算索引那一篇），两套口径摆在同一颗按钮上会自相矛盾。 */
     const qNum = numbers.find((s) => s.key === "question");
     if (qNum) qNum.value = questionCards.length;
+    /* 制作那一颗：数字 = 这一页摆出来的份数（演示一份一张卡，成片视频挂在卡里） */
+    if (decksGiven) numbers.push({ key: "decks", label: "制作", value: tabCards.decks.length });
 
     return {
       topic: topic,
@@ -1038,8 +1058,10 @@
       /* 状态字典（默认四档 + 自定义）：清单每行的 chip 与批量下拉都按它出 */
       status: status,
       numbers: numbers,
-      /* 标签页的卡：键 = 标签 key（sources / claim / concept / method / question） */
+      /* 标签页的卡：键 = 标签 key（sources / claim / concept / method / question / decks） */
       tabCards: tabCards,
+      /* 制作：演示 / 视频清单（宿主扫盘给的，没给就是空数组） */
+      decks: tabCards.decks || [],
       sources: shown,
       total: sources.length,
       shown: shown.length,
@@ -1110,6 +1132,8 @@
         questionStatus: o.questionStatus || depOf(D.questionStatus, null),
         /* 概念查重的归一键：真源在 research-core 的 nameKey（图与索引同一套口径），宿主注入 */
         nameKey: o.nameKey || (typeof D.nameKey === "function" ? D.nameKey : null),
+        /* 制作（演示 / 成片视频）清单：宿主扫盘给的数组；没给 = 不摆这一页 */
+        decks: Array.isArray(o.decks) ? o.decks : Array.isArray(D.decks) ? D.decks : null,
       };
     }
 
@@ -1909,6 +1933,8 @@
           meta: data.meta,
           questionStatus: data.questionStatus,
           nameKey: data.nameKey,
+          /* 制作清单：宿主给了就有这一页，没给（null）就没有 */
+          decks: data.decks,
           keyword: state.keyword,
         });
 
@@ -1936,6 +1962,18 @@
       const hN = el("span", "rs-idx-orig-n", "");
       h.appendChild(hName);
       h.appendChild(hN);
+      /* 制作页页头那颗「＋ Agent 从头做一份」：只在制作页出现（别的页没有「演示」这件事），
+         点它开演示初始化卡（宿主那边档位固定 author，见 app-research.js 的 rsIndexDeckNew）。
+         宿主没给 onDeckNew（别的调用方 / node 侧）就整颗不露 —— 行为与今天一样。 */
+      const hNew = el("button", "rs-btn rs-idx-orig-new", "＋ " + t("Agent 从头做一份"));
+      hNew.type = "button";
+      hNew.title = t("开演示初始化卡，让 Agent 按你的指示从头做一份演示（档位固定「按指示创作」）");
+      hNew.onclick = (ev) => {
+        if (ev && ev.stopPropagation) ev.stopPropagation();
+        if (typeof D.onDeckNew === "function") D.onDeckNew();
+      };
+      hNew.hidden = true;
+      h.appendChild(hNew);
       sec.appendChild(h);
       const grid = el("div", "rs-idx-src-grid");
       sec.appendChild(grid);
@@ -1948,6 +1986,7 @@
         concept: "还没有概念：原文里写成一条概念，它会自动聚到这一页",
         method: "还没有方法：原文里写成一条方法，它会自动聚到这一页",
         question: "还没有问题：在原文里写 `> [!question]` 块，或用上面的「＋ 新增问题」",
+        decks: "还没有制作：顶栏「演示」里做一套（会写出 slides/<slug>.json），导出过的 HTML 与成片视频都会列在这里",
       };
       const tabOf = (key) =>
         model.numbers.find((s) => s.key === key) || model.numbers[0] || { key: "sources", label: "原文" };
@@ -2055,6 +2094,128 @@
         }
       };
 
+      /* ── 制作页：一份演示一张卡，成片视频挂在同一张卡里 ────────────────────────
+         清单是宿主扫研究目录给的（slides/<slug>.json + exports/<slug>/），这一层只摆与接动作，
+         不扫盘、不猜路径：动作全交给宿主（预览 = 应用内放映，编辑 = 演示编辑器，
+         HTML / 视频 = 系统默认程序打开）。 */
+      const fmtWhen = (ms) => {
+        const n = Number(ms) || 0;
+        if (!n) return "";
+        const d = new Date(n);
+        const p2 = (v) => (v < 10 ? "0" + v : String(v));
+        return p2(d.getMonth() + 1) + "-" + p2(d.getDate()) + " " + p2(d.getHours()) + ":" + p2(d.getMinutes());
+      };
+      const MODE_NAME = { slides: "静态", video: "视频", both: "两者" };
+      const paintDecks = (cards) => {
+        for (const dk of cards) {
+          const out = dk.out || {};
+          /* 两个状态位来自宿主扫盘（见 app-research.js 的 rsIdxDecksScan）：
+             legacy = 有存档、没有脚本的旧直出稿；producing = 正在派单 / 渲染（创作中…） */
+          const producing = !!dk.producing;
+          const card = el("div", "rs-idx-deck");
+          if (dk.current) card.classList.add("is-current");
+          if (dk.legacy) card.classList.add("is-legacy");
+          const head = el("div", "rs-idx-deck-h");
+          head.appendChild(el("span", "rs-idx-deck-kind", t("演示")));
+          if (dk.legacy) {
+            const lg = el("span", "rs-idx-deck-legacy", t("旧稿·直出"));
+            lg.title = dk.current
+              ? t("这是没有脚本的旧直出稿：点「重新制作」让 Agent 按指示从头做一份（旧稿照旧能预览 / 导出）")
+              : t("这是没有脚本的旧直出稿（不是当前这一份）：照旧能预览 / 导出；做新的一份用页头「＋ Agent 从头做一份」");
+            head.appendChild(lg);
+          }
+          head.appendChild(el("span", "rs-idx-deck-t", str(dk.title) || str(dk.slug)));
+          /* 正在派单 / 渲染：头行直接说「创作中…」，别让这张卡看起来是空的 / 死的 */
+          if (producing) {
+            const pg = el("span", "rs-idx-deck-prog", t("创作中…"));
+            pg.title =
+              dk.producing === "video"
+                ? t("这一份正在渲染成片：渲完会自己挂上视频")
+                : t("正在等会话写出演示脚本：写完会自动编页并出成品");
+            head.appendChild(pg);
+          }
+          const meta = [];
+          if (dk.aspect) meta.push(str(dk.aspect));
+          if (dk.mode && MODE_NAME[dk.mode]) meta.push(t(MODE_NAME[dk.mode]));
+          if (dk.savedAt) meta.push(fmtWhen(dk.savedAt));
+          if (dk.current) meta.push(t("当前"));
+          head.appendChild(el("span", "rs-idx-deck-m", meta.join(" · ")));
+          card.appendChild(head);
+
+          const act = el("div", "rs-idx-deck-act");
+          const mkBtn = (label, hint, fn, cls) => {
+            const b = el("button", "rs-btn rs-idx-deck-b" + (cls ? " " + cls : ""), label);
+            b.type = "button";
+            if (hint) b.title = hint;
+            b.onclick = (ev) => {
+              if (ev && ev.stopPropagation) ev.stopPropagation();
+              if (typeof fn === "function") fn();
+            };
+            return b;
+          };
+          act.appendChild(
+            mkBtn(
+              "▶ " + t("预览"),
+              t("在这里直接放映这套演示（← / → 翻页，Esc 退出）"),
+              () => typeof D.onDeckPreview === "function" && D.onDeckPreview(dk.slug),
+              "primary",
+            ),
+          );
+          if (dk.current) {
+            act.appendChild(
+              mkBtn(t("编辑"), t("打开演示编辑器：改页 / 主题 / 导出"), () => {
+                if (typeof D.onDeckEdit === "function") D.onDeckEdit(dk.slug);
+              }),
+            );
+          }
+          /* 旧直出稿：给一条「按新口径重做」的路（档位固定 author，见宿主的 rsIndexDeckRemake）。
+             只对**当前那一份**露这颗钮：脚本采纳按当前 slug 读盘，旧 slug 那一份重做出来的脚本
+             不会被采纳（宿主也会拦一句）。旧稿本身不删 —— 照旧能预览 / 打开导出物。 */
+          if (dk.legacy && dk.current) {
+            act.appendChild(
+              mkBtn(
+                "↻ " + t("重新制作"),
+                t("按新口径派一轮 Agent 脚本（旧稿留到脚本落盘为止，仍可预览）"),
+                () => {
+                  if (typeof D.onDeckRemake === "function") D.onDeckRemake(dk.slug);
+                },
+              ),
+            );
+          }
+          if (out.html) {
+            act.appendChild(
+              mkBtn("HTML", t("用系统默认程序打开导出的单文件 HTML"), () => {
+                if (typeof D.onDeckOpen === "function") D.onDeckOpen(dk.slug, "html");
+              }),
+            );
+          }
+          card.appendChild(act);
+
+          const v = dk.video || null;
+          if (v && (out.mp4 || v.path)) {
+            const row = el("div", "rs-idx-deck-video");
+            row.appendChild(el("span", "rs-idx-deck-vkind", t("视频")));
+            const vm = [];
+            if (Number(v.durationSec) > 0) vm.push(Number(v.durationSec).toFixed(1) + "s");
+            if (Number(v.w) && Number(v.h)) vm.push(Number(v.w) + "×" + Number(v.h));
+            if (!vm.length) vm.push(t("已导出"));
+            row.appendChild(el("span", "rs-idx-deck-vmeta", vm.join(" · ")));
+            row.appendChild(
+              mkBtn("▶ " + t("播放"), t("用系统默认播放器打开成片"), () => {
+                if (typeof D.onDeckOpen === "function") D.onDeckOpen(dk.slug, "mp4");
+              }),
+            );
+            row.appendChild(
+              mkBtn(t("在文件夹中显示"), t("打开成片所在的文件夹"), () => {
+                if (typeof D.onDeckReveal === "function") D.onDeckReveal(dk.slug);
+              }),
+            );
+            card.appendChild(row);
+          }
+          grid.appendChild(card);
+        }
+      };
+
       const buttons = [];
       const paintTabs = () => {
         const key = curKey();
@@ -2088,14 +2249,19 @@
         /* 换标签页 / 改筛选都是重画：浮空卡先收起，展开态不记忆（阅读器那一份 hideCards） */
         if (D.noteCards && typeof D.noteCards.hide === "function") D.noteCards.hide();
         const cards = (model.tabCards && model.tabCards[key]) || [];
-        /* 原文页保持双列大卡；论断 / 概念 / 方法 / 问题走行式（一列一行一条） */
-        const rows = key !== "sources";
+        /* 原文页保持双列大卡；论断 / 概念 / 方法 / 问题走行式（一列一行一条）；
+           制作页是「一份演示一张卡」（一列，卡里自带动作行） */
+        const decks = key === "decks";
+        const rows = !decks && key !== "sources";
         hName.textContent = t(tabOf(key).label);
         hN.textContent = String(cards.length);
+        /* 「＋ Agent 从头做一份」只在制作页露（宿主给了这条入口才露） */
+        hNew.hidden = !(decks && typeof D.onDeckNew === "function");
         grid.innerHTML = "";
         grid.classList.toggle("is-rows", rows);
+        grid.classList.toggle("is-decks", decks);
         /* 只有一张卡时占满余量（原文一篇走这条；行式那四页是一列，不铺开） */
-        sec.classList.toggle("is-solo", !rows && cards.length === 1);
+        sec.classList.toggle("is-solo", !rows && !decks && cards.length === 1);
 
         if (!data.notes.length) {
           /* 空库：给一条能走下去的路（投料台 / 新建笔记），不留一张空白面板 */
@@ -2123,6 +2289,11 @@
         /* 论断 / 概念 / 方法 / 问题：一列一行一条，点行弹同款浮空卡（见 paintRows） */
         if (rows) {
           paintRows(cards, key);
+          return;
+        }
+        /* 制作：一份演示一张卡（预览 / 编辑 / 打开导出物 / 成片视频） */
+        if (decks) {
+          paintDecks(cards);
           return;
         }
         for (const c of cards) {

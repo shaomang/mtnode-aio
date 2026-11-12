@@ -9,7 +9,8 @@
  * 与 app-research-slides.js 同一条纪律：界面不碰盘，落盘只有一个入口（rsDeckSave）。
  *
  * 四块（与 docs/research-slides-video-spec.md §4 / §9 对齐）：
- *   ① 做法  tier：按指示创作（Agent 先写演示稿 → 内核编页）/ 照原文直出（确定性切页）+ 联网补料开关
+ *   ① 做法  tier：按指示创作（默认档：Agent 先写演示稿 → 内核编页）
+ *                / 照原文直出（备选档：确定性切页，用户明确选了才走）+ 联网补料开关
  *   ② 版本  brief.mode：静态演示 / Remotion 视频 / 两个都要（白名单与文案都以内核为准）
  *   ③ 风格  两段：展示风格（brief.style，一行 chips，各带一句说明）/ 颜色主题（theme，一行色板：
  *            6 个色点 = 纸色圆底 + 主色点 + 点色点，悬停看名字；行尾两格 明 / 暗）
@@ -21,7 +22,7 @@
  * 依赖注入（opts）：
  *   brief     当前 brief（老存档没有就传 null → 归一成默认值）
  *   theme     当前主题（{ preset, mode } 或整张表；只取 preset / mode）
- *   tier      可选，"author"（缺省）/ "direct"：页从演示稿编来，还是原文确定性直切
+ *   tier      可选，"author"（默认档）/ "direct"（备选档，要用户明确选）：页从演示稿编来，还是原文确定性直切
  *   online    可选，联网补料开关（缺省 true；false = 只用本地资料）
  *   deck      可选，只为了标题（deck.title）
  *   title     可选，标题（没有 deck 时用）
@@ -47,7 +48,7 @@
   /* 版本：id 走内核 BRIEF_MODES（不另抄一份枚举），文案按本卡的说法 */
   const MODE_LABEL = { slides: "静态演示", video: "Remotion 视频", both: "两个都要" };
   const MODE_HINT = {
-    slides: "只出可翻页的静态版（HTML / PDF / PNG），内核直出、不花 Token",
+    slides: "只出可翻页的静态版（单文件 HTML），内核直出、不花 Token",
     video: "只出 Remotion 视频（mp4），按这套风格的运动参数排",
     both: "两版都出：同一份页、同一份颜色与字体，只有出口不同",
   };
@@ -152,10 +153,11 @@
       brief: brief0,
       /* 风格只存 preset + mode：整张变量表由内核按这两样现算（与编辑器同一口径） */
       theme: { preset: th0.preset, mode: th0.mode },
-      /* 做法：author = 按指示创作（Agent 先写演示稿，页由稿子编来）；direct = 照原文直出（确定性切页）。
-         缺省 author —— 「优先按用户要求制作」是这一版的默认口径；老存档没有这两个键时也是它。 */
+      /* 做法：author = 按指示创作（Agent 先写演示稿，页由稿子编来）= **默认档**；
+         direct = 照原文直出（确定性切页）= 用户明确勾选的**备选档**。
+         缺键 / 写歪一律 author —— 「优先按用户要求制作」是这一版的默认口径，绝不静默退回直出。 */
       tier: str(o.tier) === "direct" ? "direct" : "author",
-      /* 联网补料：默认开。关了就只有本地资料（快档也仍是零 Token 的确定性直出）。 */
+      /* 联网补料：默认开。关了就只有本地资料（直出档本身仍是零 Token 的确定性切页）。 */
       online: o.online === false ? false : true,
       reason: str(o.reason) === "settings" ? "settings" : "init",
       title: str(o.title) || str((o.deck && o.deck.title) || ""),
@@ -195,7 +197,7 @@
     function subtitle() {
       const parts = [];
       if (st.title) parts.push(st.title);
-      parts.push(st.reason === "settings" ? "改完立刻重排，手改与页序都保留" : "做法决定页从哪来：演示稿 / 原文直切");
+      parts.push(st.reason === "settings" ? "改完立刻重排，手改与页序都保留" : "做法决定页从哪来：默认按指示创作（演示稿编页），直出只是备选档");
       return parts.join(" · ");
     }
     subEl.textContent = subtitle();
@@ -226,12 +228,12 @@
       {
         id: "author",
         label: "按指示创作",
-        hint: "Agent 先写演示稿（每页一节 + 旁白 + 引用），内核再编成页；可联网补料，新内容写成研究笔记",
+        hint: "默认档：Agent 先写演示稿（每页一节 + 旁白 + 引用），内核再编成页；可联网补料，新内容写成研究笔记",
       },
       {
         id: "direct",
         label: "照原文直出",
-        hint: "确定性切页：核心原文 + 3-Pass 变体直接成页，不花 Token、不重写叙事",
+        hint: "备选档（要你明确选）：确定性切页，核心原文 + 3-Pass 变体直接成页，不花 Token、不重写叙事",
       },
     ];
     for (const t of TIERS) {
@@ -271,7 +273,9 @@
       for (const b of tierBtns) b.classList.toggle("is-on", b.dataset.val === st.tier);
       const one = TIERS.filter((t) => t.id === st.tier)[0] || TIERS[0];
       tierHint.textContent =
-        "当前：" + one.label + (st.tier === "author" ? "（首次生成会派 Agent 写演示稿，消耗 Token）" : "（零 Token、同输入同输出）");
+        "当前：" +
+        one.label +
+        (st.tier === "author" ? "（默认档：首次生成会派 Agent 写演示稿，消耗 Token）" : "（备选档：零 Token、同输入同输出，不重写叙事）");
       netBtn.textContent = "联网补料：" + (st.online ? "开" : "关");
       netBtn.classList.toggle("is-on", !!st.online);
     }

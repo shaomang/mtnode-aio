@@ -629,7 +629,8 @@
     const VARIANT_LABEL = { zh: "中译", en: "英译", skim: "略读", concept: "关键概念", tech: "技术细节" };
     /* 原文语言（译稿互斥按它判）：先看这篇 note 的 frontmatter lang —— 与阅读区平铺条
        （app-research.js 的 baseLang）同一口径；读不到就问版本组的原文成员；
-       都读不到返回 ""，此时不过滤（宁可多列一稿，也不凭猜藏掉用户的文件）。 */
+       再读不到就看正文语言（英文原文 → en、中文原文 → zh，research-versions.js 的 detectLang）；
+       全都判不出来返回 ""，此时不过滤（宁可多列一稿，也不凭猜藏掉用户的文件）。 */
     function baseLangOf(rel) {
       const want = normRel(rel);
       if (!want) return "";
@@ -656,6 +657,18 @@
         }
       } catch (_) {
         lang = "";
+      }
+      /* 盘上没写 lang（导入的英文论文通常都不写）：按正文语言兜一次 */
+      if (!lang) {
+        try {
+          if (V && typeof V.detectLang === "function") {
+            lang = String(V.detectLang(n && n.md) || "")
+              .trim()
+              .toLowerCase();
+          }
+        } catch (_) {
+          lang = "";
+        }
       }
       return lang;
     }

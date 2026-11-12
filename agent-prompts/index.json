@@ -11,7 +11,8 @@
     { "id": "longtask", "title": "长周期任务", "desc": "长任务 agent 环节的目标模板与审批 / 交付文案" },
     { "id": "devnode", "title": "开发节点", "desc": "开发 / 细化绑定会话的任务书骨架" },
     { "id": "app", "title": "应用派单", "desc": "应用开发 / 版本合并会话的派单与人设段" },
-    { "id": "node", "title": "智能节点", "desc": "agent_task / proc_text 等节点运行时垫在用户 task 外的固定壳" }
+    { "id": "node", "title": "智能节点", "desc": "agent_task / proc_text 等节点运行时垫在用户 task 外的固定壳" },
+    { "id": "research", "title": "研究演示", "desc": "演示稿派单：改写既有页（rewrite.json）与创作档一次成稿（script.md）" }
   ],
   "items": [
     {
@@ -353,6 +354,20 @@
       "group": "app",
       "where": "renderer/app-apps-dev.js · 合并任务书",
       "desc": "不自动上架、不改画布、不动备份、不改对方那一版这一条。"
+    },
+    {
+      "id": "research.slides.rewrite",
+      "title": "研究演示 · 改写既有页",
+      "group": "research",
+      "where": "renderer/app-research.js · rsSlidesRewritePrompt（RS_PROMPT_REWRITE）",
+      "desc": "按本轮「想怎么改」改写既有页的文案（不动页 id、不编事实、上限只留宿主那两条）；要加页 / 换结构就让它直说「需要整份重做」。含交稿前的十项可判定自检（承接 / 判断标题 / 交出 / 锚点 / 单句 40 字 / 括号 / 旁白 / 公式 / 禁用句式 / 版式预算）。占位符 {{root}} {{rel}} {{slug}} {{deckTitle}} {{brief}} {{want}} {{pages}} 要留着。"
+    },
+    {
+      "id": "research.slides.script",
+      "title": "研究演示 · 创作档（大纲 + 逐页）",
+      "group": "research",
+      "where": "renderer/app-research.js · rsSlidesScriptPrompt（RS_PROMPT_SCRIPT）",
+      "desc": "按 brief 与本轮原话写演示脚本：先写一页大纲（每页的主张链，不另交文件）再逐页写，每页只带自己的上下文；文件仍是一次交（没有第二轮）。注入 §15 叙事契约摘要、8 条禁用句式正负例与事实锚点台账路径（slides/<slug>.anchors.md）。占位符 {{root}} {{rel}} {{slug}} {{deckTitle}} {{brief}} {{style}} {{want}} {{online}} {{network}} {{explainBlock}} {{figure}} {{contract}} {{banned}} {{anchors}} 要留着。"
     }
   ]
 }

@@ -14910,8 +14910,8 @@
 
   /* ── 研究视图 · 演示（PPT）入口接线（renderer/app-research.js 的「演示」一段 +
      renderer/app-research-tree.js 的右键项）──
-     三处入口：顶栏那颗「演示」图标（打开菜单）/ 菜单里三条（打开编辑器 · 让 Agent 重写整份 ·
-     让 Agent 重写这一页）/ 树上右键「生成演示…」。落盘与派单都在宿主，
+     两处入口：顶栏那颗「演示」图标（点一下直接开编辑器，不弹菜单）/
+     树上右键「生成演示…」。落盘与派单都在宿主，
      编辑器自己的文案暂为中文常量（那一轮不做 i18n）。带前导 / 尾随空格的几条是拼接用的半句。 */
   Object.assign(EN, {
     "演示": "Slides",
@@ -14923,19 +14923,10 @@
       "No core note yet: run the intake sheet or create an original note before making slides",
     "演示模块没加载（research-slides.js / app-research-slides.js）":
       "The slides modules are not loaded (research-slides.js / app-research-slides.js)",
-    "打开演示编辑器": "Open the slides editor",
-    "内核直出 · 不花 Token": "Built from the notes · no tokens",
-    "让 Agent 重写整份…": "Have the agent rewrite the whole deck…",
-    "让 Agent 重写这一页…": "Have the agent rewrite this page…",
-    "先写一句想怎么改 · 会消耗 Token": "Say what to change first · spends tokens",
     "演示还没打开（先把初始化卡确认掉），再点一次这条":
       "The slides editor is not open yet (confirm the setup card first), then pick this again",
-    "正在读取演示…": "Reading the deck…",
-    "这一页：": "This page: ",
     "没有可重写的页": "No page to rewrite",
     " 页": " page(s)",
-    "隐藏 ": "hidden ",
-    "手改 ": "hand edits ",
     " 处": "",
     "演示存档没写进去：": "Could not write the deck store: ",
     "演示已导出：": "Slides exported: ",
@@ -15032,12 +15023,6 @@
     "读不出来": "could not be read",
     "这些媒体没能内联进单文件（超过 24MB 或读不出来）：":
       "These media files were not inlined into the single file (over 24 MB or unreadable): ",
-    /* 导出 PDF / PNG */
-    "主进程没接导出接口（slidesPrint）":
-      "The main process has no export channel (slidesPrint)",
-    "导出 PDF / PNG 失败：": "PDF / PNG export failed: ",
-    "已导出 PDF：": "PDF exported: ",
-    "，逐页 PNG ": ", page PNGs: ",
     /* 导出视频（Remotion） */
     "视频工程生成器没加载（research-slides-video.js）":
       "The video project generator is not loaded (research-slides-video.js)",

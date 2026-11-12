@@ -29,8 +29,8 @@
        已随自写解析器一并删除（无任何 require）。 */
     "pdf-read.js",
     "pdf-write.js",
-    /* 幻灯片导出（PDF / 逐页 PNG）与演讲者第二屏窗口：main.js 顶层 require 它，
-       漏进白名单 = 打包后演示的「导出 PDF / PNG / 讲者视图」整块失效（Cannot find module）。 */
+    /* 演讲者第二屏窗口（主窗禁止 window.open）：main.js 顶层 require 它，
+       漏进白名单 = 打包后演示的「讲者视图」整块失效（Cannot find module）。 */
     "slides-export.js",
     "preload.js",
     /* 助手侧三股流（会话流 / 活动流 / 文件树）的进程隔离（任务 8/8）：

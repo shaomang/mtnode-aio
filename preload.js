@@ -327,10 +327,8 @@ contextBridge.exposeInMainWorld('api', {
     return () => ipcRenderer.removeListener('fn:event', handler);
   },
   openInAppDialog: (opts) => ipcRenderer.invoke('shell:openInAppDialog', opts || {}),
-  /* 幻灯片导出（一页一张 PDF + 逐页 PNG）与演讲者第二屏：主窗的 window.open 被拒，
-     第二屏必须由主进程开窗（见 slides-export.js 与 main.js 的 research:slidesPrint*）。
-     slidesPrint({ html, pdfPath, pngDir, base, aspect }) → { ok, pdf, pngs } */
-  slidesPrint: (o) => ipcRenderer.invoke('research:slidesPrint', o || {}),
+  /* 演讲者第二屏：主窗的 window.open 被拒，第二屏必须由主进程开窗
+     （见 slides-export.js 与 main.js 的 research:slidesPresenter*）。 */
   slidesPresenter: (html) => ipcRenderer.invoke('research:slidesPresenter', { html: String(html || '') }),
   slidesPresenterPush: (id, state) =>
     ipcRenderer.invoke('research:slidesPresenterPush', { id: String(id || ''), state: state || null }),

@@ -1277,58 +1277,6 @@
   }
 }
 
-/* ── 顶栏「演示」图标的菜单（宿主 renderer/app-research.js 的 rsSlidesMenu）──
-   与 .rs-ask 同一套窗框（那份在 research.css 里，宽度 / padding / 阴影都对齐），
-   这里只补三件事：列表的排版、每条按钮的两行字（主标题 + 一行代价提示）、不可点时压暗。
-   只在顶栏那颗图标下沿展开，尺寸小、内容短 —— 不占画布可操作区。 */
-.rs-deck-menu {
-  width: 252px;
-  gap: 6px;
-}
-.rs-deck-menu-stat {
-  font-size: 11.5px;
-  color: var(--muted);
-  font-variant-numeric: tabular-nums;
-}
-.rs-deck-menu-list {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.rs-deck-menu-btn {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 1px;
-  width: 100%;
-  box-sizing: border-box;
-  padding: 7px 9px;
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: 8px;
-  color: var(--ink);
-  font-family: inherit;
-  font-size: 12.5px;
-  text-align: left;
-  cursor: pointer;
-  transition: background 0.14s ease, border-color 0.14s ease;
-}
-.rs-deck-menu-btn:hover:not(:disabled) {
-  background: var(--panel2);
-  border-color: var(--bd);
-}
-.rs-deck-menu-btn:disabled {
-  opacity: 0.45;
-  cursor: default;
-}
-.rs-deck-menu-lab {
-  font-weight: 600;
-}
-.rs-deck-menu-hint {
-  font-size: 11px;
-  color: var(--muted);
-}
-
 /* ── 初始化卡（renderer/app-research-slides-init.js）──────────────────────
    四块同屏：做法 / 版本 / 风格（展示风格 chips + 一行颜色主题色板）/ 额外指示；底部一句落盘提示与两个动作。
    颜色只吃 --rs-slide-*（卡按选中的颜色主题变量走，取不到回落到应用自己的 --panel / --ink / --bd），

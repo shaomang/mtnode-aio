@@ -143,6 +143,38 @@
     const k = str(id).trim().toLowerCase();
     return LANG_LABELS[k] || str(id).trim();
   }
+  /* ── 原文语言判定（「默认变体」按它走）──
+   * frontmatter 写了 lang 就以它为准（调用方先看 meta.lang）；没写才问这里 ——
+   * 导入的英文论文通常不带 lang，落到「中文库按中文算」就会给英文原文挂一颗「英译」、把「中译」藏起来，
+   * 恰好反了。判据是「汉字数 : 英文词数」：中文一个字约等于一个词，英文一个词 ≈ 5 个字母，
+   * 直接比字符数会被 long English words 带偏。代码块 / 行内码 / 公式 / 标签先摘掉 ——
+   * 技术笔记里成片的英文代码不属于正文语言。判不准（两边势均力敌 / 正文没有字）返回 ""，
+   * 让调用方各自兜底（阅读区按中文，左栏宁可不筛）。 */
+  const CJK_CHAR_RE = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/g;
+  const LATIN_WORD_RE = /[A-Za-z]+/g;
+  function detectLang(md) {
+    let s = str(md);
+    if (!s) return "";
+    s = s
+      .replace(/^---\r?\n[\s\S]*?\r?\n---[ \t]*\r?\n?/, " ")
+      .replace(/```[\s\S]*?```/g, " ")
+      .replace(/~~~[\s\S]*?~~~/g, " ")
+      .replace(/\$\$[\s\S]*?\$\$/g, " ")
+      .replace(/`[^`\r\n]*`/g, " ")
+      .replace(/<[^>\r\n]{1,200}>/g, " ");
+    const cjk = (s.match(CJK_CHAR_RE) || []).length;
+    const words = (s.match(LATIN_WORD_RE) || []).length;
+    if (!cjk || !words) {
+      if (cjk > 0) return "zh";
+      if (words >= 5) return "en";
+      return "";
+    }
+    const zhShare = cjk / (cjk + words);
+    if (zhShare >= 0.6) return "zh";
+    if (zhShare <= 0.25) return "en";
+    return "";
+  }
+
   const LANG_CODE_RE = /^[a-z]{2,3}(?:-[a-z0-9]{2,8})?$/i;
   function slugOf(v) {
     return str(v)
@@ -1285,6 +1317,7 @@
       knownRules: knownRules,
       languages: languages,
       langLabel: langLabel,
+      detectLang: detectLang,
       /* 给调试 / 复核用 */
       state: V,
       get KINDS() {
@@ -1329,6 +1362,8 @@
     knownRules: knownRules,
     languages: languages,
     langLabel: langLabel,
+    /* 原文语言判定：默认变体（中译 / 英译）按它挑，见 detectLang */
+    detectLang: detectLang,
     get KINDS() {
       return rules();
     },

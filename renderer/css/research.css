@@ -6153,6 +6153,30 @@ body:not(.theme-light) .rs-pane:not(.rs-light) {
   text-underline-offset: 0.18em;
 }
 
+/* ── 术语 / 文献引用：同一条「静默态很浅的同色虚线」──
+ * 双链与外链在静默态已经露一条本类色 30% 的虚线，术语与 `[@key]` 引用同样是可点的链接类记号，
+ * 只剩它们还是纯正文，读者看不出这一枚能点（悬停才知道）。这里补齐，并且比链接再淡一档（26%）：
+ * 中文稿里术语出现得比链接密，同一条 30% 会让整段泛出一层虚线底纹 —— 目标是看得见、不抢读。
+ * 悬停只把同一条线按本类色加深到 70%（上面那条 hover 里的 `text-decoration: none` 由这里盖回来），
+ * 不加粗、不换色相、不跳版；公式仍不在此列（出现最密，再上形制会把段落打成花斑）。 */
+.rs-rich .rs-term,
+.rs-rich .rs-cite {
+  text-decoration: underline dashed;
+  text-decoration-thickness: 1px;
+  text-decoration-color: color-mix(in srgb, var(--rs-tone) 26%, transparent);
+  text-underline-offset: 0.18em;
+  text-decoration-skip-ink: auto;
+}
+.rs-rich .rs-term:hover,
+.rs-rich .rs-cite:hover,
+.rs-rich .rs-term:focus-visible,
+.rs-rich .rs-cite:focus-visible {
+  text-decoration: underline dashed;
+  text-decoration-thickness: 1px;
+  text-decoration-color: color-mix(in srgb, var(--rs-tone) 70%, transparent);
+  text-underline-offset: 0.18em;
+}
+
 /* ── 参考文献段落：整行可点 ──
  * 判据是「行内含 `[@key]` 或 DOI / arXiv」（见 research-reader.js 的 decorateRefLines），
  * 所以不给整行加下划线（那是链接的行内形制）—— 静默态与正文同形，
@@ -6915,6 +6939,20 @@ body:not(.theme-light) .rs-pane:not(.rs-light) {
   background: var(--panel2);
   border: 1px solid var(--bd);
 }
+/* 制作页页头那颗「＋ Agent 从头做一份」：标题行右侧（order 把它排到那条细线之后，
+   细线 flex:1 吃余量，按钮就贴在右端）。别的页 hidden，见 research-index.js。 */
+.rs-idx-orig-new {
+  order: 1;
+  flex: 0 0 auto;
+  height: 22px;
+  padding: 0 8px;
+  font-size: 11.5px;
+  line-height: 20px;
+  white-space: nowrap;
+}
+.rs-idx-orig-new[hidden] {
+  display: none;
+}
 /* 卡片区容器：原文页双列；那四个行式页面挂 .is-rows 收成一列（见上面行式一节） */
 .rs-idx-src-grid {
   display: grid;
@@ -7009,6 +7047,185 @@ body:not(.theme-light) .rs-pane:not(.rs-light) {
 .rs-idx-row:focus-visible {
   outline: 2px solid var(--rs-tone);
   outline-offset: 1px;
+}
+
+/* ── 「制作」页：一份演示一张卡，成片视频挂在同一张卡里 ─────────────────────
+ * 形制与上面那几页不同：这里摆的是**产物**（演示 / 视频），所以要能一眼看出
+ * 「是什么（演示）」+「哪一份（标题）」+「什么时候、什么规格（元信息）」，
+ * 下面是动作行（预览 / 编辑 / HTML / 播放）。静默态与行式那几页同一取向：
+ * 不铺满底色，只把标题写成正文色、元信息与按钮压成 muted；悬停才把卡边与按钮点亮。
+ * 当前这一份（slug 与今天编出来的那份一致）额外露一道左侧细色条 = 可编辑。 */
+.rs-idx-src-grid.is-decks {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px;
+}
+.rs-idx-deck {
+  /* 这一页的色调（种类字 / 焦点圈 / 当前那一份的色条都取它，亮暗不另写一遍） */
+  --rs-tone: color-mix(in srgb, var(--green) 78%, var(--ink));
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  padding: 9px 10px 10px 12px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+}
+.rs-idx-deck + .rs-idx-deck {
+  border-top-color: color-mix(in srgb, var(--bd) 60%, transparent);
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+}
+.rs-idx-deck:hover {
+  border-color: var(--bd);
+  background: color-mix(in srgb, var(--panel2) 55%, transparent);
+}
+.rs-idx-deck::before {
+  content: "";
+  position: absolute;
+  left: 2px;
+  top: 10px;
+  bottom: 10px;
+  width: 2px;
+  border-radius: 1px;
+  background: transparent;
+}
+.rs-idx-deck.is-current::before {
+  background: color-mix(in srgb, var(--green) 55%, transparent);
+}
+/* 头行：种类 / 标题 / 元信息（标题吃余量、单行省略） */
+.rs-idx-deck-h {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+.rs-idx-deck-kind {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border: 1px solid color-mix(in srgb, var(--green) 34%, transparent);
+  border-radius: 999px;
+  color: color-mix(in srgb, var(--green) 76%, var(--ink));
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+.rs-idx-deck-vkind {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border: 1px solid color-mix(in srgb, var(--cyan) 34%, transparent);
+  border-radius: 999px;
+  color: color-mix(in srgb, var(--cyan) 76%, var(--ink));
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+/* 旧稿·直出：没有脚本的老成品（内核照原文切页那一代）——**灰标，不是错误**：
+ * 低调到不抢标题，但一眼能看出「这一份该重做了」；旁边就是「重新制作」。 */
+.rs-idx-deck-legacy {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border: 1px solid color-mix(in srgb, var(--bd) 90%, transparent);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 10.5px;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+/* 创作中…：正在派单 / 渲染（活状态，不在盘上）。轻一点，但要比元信息显眼。 */
+.rs-idx-deck-prog {
+  flex: 0 0 auto;
+  color: color-mix(in srgb, var(--green) 62%, var(--ink));
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.rs-idx-deck-t {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.rs-idx-deck-m,
+.rs-idx-deck-vmeta {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 11.5px;
+}
+/* 动作行：按钮不高、不抢眼（muted 描边，悬停才上色） */
+.rs-idx-deck-act,
+.rs-idx-deck-video {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.rs-idx-deck-video {
+  padding-top: 6px;
+  border-top: 1px dashed color-mix(in srgb, var(--bd) 70%, transparent);
+}
+.rs-idx-deck-b {
+  flex: 0 0 auto;
+  height: 22px;
+  padding: 0 8px;
+  font-size: 11.5px;
+  line-height: 20px;
+  color: var(--ink);
+  background: transparent;
+  border: 1px solid var(--bd);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.rs-idx-deck-b:hover {
+  border-color: color-mix(in srgb, var(--green) 58%, var(--bd));
+  color: color-mix(in srgb, var(--green) 50%, var(--ink));
+}
+/* 预览 = 这张卡的主入口：实心一点点，别让它混进那排小钮里 */
+.rs-idx-deck-b.primary {
+  border-color: color-mix(in srgb, var(--green) 52%, var(--bd));
+  color: color-mix(in srgb, var(--green) 62%, var(--ink));
+}
+.rs-idx-deck-b.primary:hover {
+  background: color-mix(in srgb, var(--green) 12%, transparent);
+}
+.rs-idx-deck-b:focus-visible {
+  outline: 2px solid var(--rs-tone);
+  outline-offset: 1px;
+}
+
+/* ── 「制作」页的应用内放映层：盖住研究视图，右下角一颗退出（Esc 也行）──
+ * 放映器自己画整块 .rs-slides（absolute 铺满宿主），退出钮必须压在它上面。 */
+.rs-idx-play {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  background: var(--bg);
+}
+.rs-idx-play-x {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  z-index: 8;
+  height: 24px;
+  padding: 0 10px;
+  font-size: 11.5px;
+  line-height: 22px;
+  color: var(--ink);
+  background: color-mix(in srgb, var(--panel) 82%, transparent);
+  border: 1px solid var(--bd);
+  border-radius: 6px;
+  cursor: pointer;
+  opacity: 0.72;
+}
+.rs-idx-play-x:hover {
+  opacity: 1;
 }
 /* 一张原文卡 = 标题 + 正文（至少五行）+ 路径；整张卡就是一个入口。
    **只属于「原文」页**：论断 / 概念 / 方法 / 问题 已改行式（见上面 .rs-idx-row 那一节），

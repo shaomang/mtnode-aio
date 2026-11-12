@@ -3161,6 +3161,14 @@ async function runRender(installDir, params, nodeId, written) {
     if (String(params.audioPath || "").trim()) {
       renderJson.inputProps.audioPath = String(params.audioPath).trim();
     }
+    /* 画质档与静音（契约见 remotion-pack/render.mjs）：
+       调用方（研究演示导出）要的是「字边不虚」的教研交付档 —— crf 17 + jpegQuality 100；
+       没有旁白音轨时显式 muted，别让 Remotion 白塞一条 -91 dB 的静音 AAC。 */
+    if (params.crf != null && Number.isFinite(Number(params.crf))) renderJson.crf = Number(params.crf);
+    if (params.jpegQuality != null && Number.isFinite(Number(params.jpegQuality))) {
+      renderJson.jpegQuality = Number(params.jpegQuality);
+    }
+    if (params.muted) renderJson.muted = true;
     /* ── 直传 inputProps（研究演示视频导出这条入口用）─────────────────
        调用方已经把「源码树 + props + 媒体二进制」算好，这里一个键都不再解析：
        与下面画布节点那两条通道（端子契约 / 自定义参数）互斥，绝不叠加。 */

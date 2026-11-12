@@ -2,7 +2,7 @@
  *
  * 一句话：三栏大浮层 —— 左栏页列表（拖排 / 显隐 / 删除 / 新增 / 单页重新生成 / 让 Agent 重写这一页）、
  * 中栏单页就地编辑 + 同页实时预览、右栏主题与配色（视频态再加一块「视频」）；
- * 顶部「版本（静态 / 视频）」+ 一排**图标按钮**（预览放映 / 导出 HTML / 导出 PDF·PNG / 导出视频 /
+ * 顶部「版本（静态 / 视频）」+ 一排**图标按钮**（预览放映 / 导出 HTML / 导出视频 /
  * 初始化设置 / 让 Agent 重写整份 / 撤销这次模型改写 / 重置 / 关闭）——文案只进 tooltip 与 aria-label，
  * 因为长条文字按钮会把顶栏撑爆、把标题挤成竖排。
  * Agent 改写前先开窗内那颗小输入框收「这次想怎么改」（可留空，第一次时兼作「会消耗 Token」的确认）；
@@ -75,7 +75,7 @@
   /* 版本（brief.mode）在顶栏的短标签与说明；枚举与文案真源在内核 BRIEF_MODES / BRIEF_MODE_LABEL */
   const BRIEF_SHORT = { slides: "静态", video: "视频", both: "两者" };
   const BRIEF_TITLE = {
-    slides: "静态演示：只出 HTML / PDF / PNG（视频工程不排页）",
+    slides: "静态演示：只出单文件 HTML（视频工程不排页）",
     video: "视频：导出视频按这套风格的动效与节奏排（顶栏「导出视频」出 mp4）",
     both: "两者都要：同一份页、同一份配色，静态版与视频版各出一个",
   };
@@ -228,11 +228,6 @@
         '<path d="M9.2 7.6 4.6 12l4.6 4.4"></path>' +
         '<path d="M14.8 7.6 19.4 12l-4.6 4.4"></path>' +
         '<path d="M13.4 5.6 10.6 18.4"></path>',
-      /* 导出 PDF / PNG：往下落进托盘（导出成文件） */
-      print:
-        '<path d="M12 3.6v10.2"></path>' +
-        '<path d="M8.2 10 12 13.8 15.8 10"></path>' +
-        '<path d="M4.6 16.4v2.4c0 .8.6 1.4 1.4 1.4h12c.8 0 1.4-.6 1.4-1.4v-2.4"></path>',
       /* 导出视频：摄像机 */
       video:
         '<rect x="2.5" y="6.4" width="12" height="11.2" rx="2.2"></rect>' +
@@ -356,7 +351,6 @@
     const statusEl = mk("span", "rs-deck-status");
     const btnPreview = headBtn("play", "预览放映");
     const btnExport = headBtn("html", "导出 HTML");
-    const btnPrint = headBtn("print", "导出 PDF / PNG");
     /* 导出视频：宿主给 onExportVideo 才出现（工程树现算 + Remotion 渲染都在宿主那侧） */
     const btnVideo = headBtn("video", "导出视频");
     /* 视频导出进度：渲染在主进程，进度经宿主回调回来驱动这一条（取消也在这里） */
@@ -380,7 +374,6 @@
     btnVideoCancel.type = "button";
     btnPreview.title = "在这里放映整套（←/→ 翻页，Esc 退出放映）";
     btnExport.title = "生成自包含单文件 HTML（零外链，离线双击可看）";
-    btnPrint.title = "一页一张的 PDF + 逐页 PNG（按当前页面比例，落在研究目录 exports/ 下）";
     btnVideo.title =
       "渲染成 MP4（Remotion）：落在研究目录 exports/<slug>/<slug>.mp4，旁白音轨存在才混，成功后把成片信息写回存档";
     btnVideoCancel.title = "停止这次渲染（宿主会结束渲染进程树，成片不落盘）";
@@ -394,7 +387,7 @@
     vprog.appendChild(vprogText);
     vprog.appendChild(btnVideoCancel);
     vprog.style.display = "none";
-    versBox.title = "版本 = 这份演示按哪种出口来：静态（HTML / PDF / PNG）或视频（Remotion → mp4）";
+    versBox.title = "版本 = 这份演示按哪种出口来：静态（单文件 HTML）或视频（Remotion → mp4）";
     versBox.appendChild(mk("span", "rs-deck-vlabel", "版本"));
     versBox.appendChild(versSeg);
     head.appendChild(titleEl);
@@ -405,7 +398,6 @@
     head.appendChild(vprog);
     head.appendChild(btnPreview);
     head.appendChild(btnExport);
-    head.appendChild(btnPrint);
     if (typeof o.onExportVideo === "function") head.appendChild(btnVideo);
     if (typeof o.onSettings === "function") {
       btnSettings.addEventListener("click", (ev) => {
@@ -3362,7 +3354,7 @@
       });
       sec.appendChild(reset);
       sec.appendChild(
-        mk("span", "rs-deck-hint", "预览 / 放映 / 演讲者视图 / 导出 HTML · PDF · PNG 一起变；页码关掉后其余页仍按实际页序编号。"),
+        mk("span", "rs-deck-hint", "预览 / 放映 / 演讲者视图 / 导出 HTML 一起变；页码关掉后其余页仍按实际页序编号。"),
       );
       chromeEl.appendChild(sec);
     }
@@ -3568,11 +3560,9 @@
       }
     }
 
-    /* 导出 PDF（一页一张）+ 逐页 PNG：与「导出 HTML」同一份单文件字节，只是改交给主进程渲染落盘
-       （渲染层没有 printToPDF / capturePage）。宿主没接口时明说，不做假动作。 */
     /* ── 导出视频（Remotion → MP4）：工程树 / 时间轴 / 字幕都在宿主那侧现算，
        这里只做三件事：把 deck 交出去、把进度画成一条进度条、把取消递进去。
-       口径（与导出 HTML / PDF 同一套）：只有宿主接了 onExportVideo 才出现这颗按钮。
+       口径（与导出 HTML 同一套）：只有宿主接了 onExportVideo 才出现这颗按钮。
        进度与失败同时写进 st.vprog / st.videoErr —— 顶栏那条与右栏「视频」块看同一份状态。 */
     function showVideoProgress(pct, text, running) {
       const n = Math.max(0, Math.min(100, Math.round(Number(pct) || 0)));
@@ -3593,7 +3583,6 @@
       st.exporting = true;
       st.videoErr = null;
       btnExport.disabled = true;
-      btnPrint.disabled = true;
       btnVideo.disabled = true;
       setStatus("正在生成视频工程…");
       showVideoProgress(0, "准备…", true);
@@ -3653,57 +3642,11 @@
       } finally {
         st.exporting = false;
         btnExport.disabled = false;
-        btnPrint.disabled = false;
         btnVideo.disabled = false;
         /* 视频块收口：进度归位、失败原因留在右栏（关掉编辑器也还能重现一次导出的结论） */
         renderTheme(deckNow());
       }
       return out;
-    }
-    async function exportPrint() {
-      if (!V || typeof V.toHtml !== "function") {
-        setStatus("导出不可用：放映器模块没接上");
-        return;
-      }
-      if (typeof o.onExportPrint !== "function") {
-        setStatus("宿主没接 PDF / PNG 导出（只能在研究视图里用）");
-        return;
-      }
-      if (st.exporting) return;
-      st.exporting = true;
-      btnExport.disabled = true;
-      btnPrint.disabled = true;
-      try {
-        setStatus("正在打包单文件（媒体内联）…");
-        let deck = deckNow();
-        if (o.media && typeof o.media.inline === "function") {
-          try {
-            deck = (await o.media.inline(deck)) || deck;
-          } catch (e) {
-            setStatus("媒体内联失败：" + (e && e.message ? e.message : "未知原因"));
-            return;
-          }
-        }
-        let html = "";
-        try {
-          html = V.toHtml(deck, { title: deck.title });
-        } catch (e) {
-          setStatus("导出失败：" + (e && e.message ? e.message : "未知原因"));
-          return;
-        }
-        setStatus("正在生成 PDF 与逐页 PNG…");
-        try {
-          o.onExportPrint(html, deck);
-        } catch (e) {
-          setStatus("导出失败：" + (e && e.message ? e.message : "未知原因"));
-          return;
-        }
-        setStatus("已交给主进程导出（PDF + 逐页 PNG）");
-      } finally {
-        st.exporting = false;
-        btnExport.disabled = false;
-        btnPrint.disabled = false;
-      }
     }
 
     /* ── 一处改动 → 重算 deck → 重画（typing / color 是「轻」档：不重建正在输入的表单） ── */
@@ -3758,10 +3701,6 @@
     btnExport.addEventListener("click", (ev) => {
       ev.preventDefault();
       exportHtml();
-    });
-    btnPrint.addEventListener("click", (ev) => {
-      ev.preventDefault();
-      void exportPrint();
     });
     if (typeof o.onExportVideo === "function") {
       btnVideo.addEventListener("click", (ev) => {

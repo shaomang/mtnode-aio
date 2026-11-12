@@ -198,8 +198,8 @@ const {
 const { patchProviders } = require("./config-providers.js");
 /* 文本 → PDF 落盘内核（隐藏窗口 + printToPDF，公式排版与画布预览同源，见 pdf-write.js） */
 const pdfWrite = require("./pdf-write.js");
-/* 幻灯片导出（PDF 一页一张 + 逐页 PNG）与演讲者第二屏窗口（主窗禁止 window.open），
-   见 slides-export.js（渲染层的 research:slidesPrint / research:slidesPresenter 走它） */
+/* 演讲者第二屏窗口（主窗禁止 window.open），见 slides-export.js
+   （渲染层的 research:slidesPresenter 走它） */
 const slidesExport = require("./slides-export.js");
 const { registerToolsIpc } = require("./tools-store.js");
 /* 工作流库（跨画布复用「一颗节点层」= 封装好的工作流，见 workflow-store.js） */
@@ -2972,16 +2972,6 @@ ipcMain.handle("pdf:render", async (e, arg) => {
 ipcMain.handle("pdf:writeText", async (e, arg) => {
   try {
     return await pdfWrite.writeTextPdf(arg || {});
-  } catch (err) {
-    return { ok: false, error: String((err && err.message) || err) };
-  }
-});
-/* research:slidesPrint：演示导出（一页一张 PDF + 逐页 PNG）。
-   渲染层把自包含 HTML 与目标绝对路径交过来；隐藏窗 + printToPDF / capturePage 全在主进程
-   （见 slides-export.js）。输出只在研究目录（调用方用内核 exportOf 拼），应用目录一律拒绝。 */
-ipcMain.handle("research:slidesPrint", async (e, arg) => {
-  try {
-    return await slidesExport.exportSlides(arg || {});
   } catch (err) {
     return { ok: false, error: String((err && err.message) || err) };
   }

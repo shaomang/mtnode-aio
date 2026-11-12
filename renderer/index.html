@@ -1389,6 +1389,8 @@
        ② research-slides-video.js     视频工程生成器（deck + styleTokens + brief → Remotion 源码树 / 时间轴 / 字幕；
                                       纯函数、只吃 ① 的归一出口，宿主渲染在 app-research.js）
        ③ research-slides-view.js      放映 + 单文件导出（零外链）
+       ③.5 research-slides-prose.js  叙事 lint（§15 契约的机判项：第几页 / 第几行 / 超了哪一条；
+                                      纯函数、只吃脚本文本，宿主在编页前调它，命中即走自动返修）
        ④ app-research-slides.js       三栏编辑器（UI 壳；调用期取 ① ③ 两个全局）
        ⑤ app-research-slides-init.js  初始化卡（版本 / 风格 / 额外指示；只吃 ① 的 brief / styleTokens，
                                       写盘与重算交给宿主 app-research.js 的 rsSlidesInitSubmit）
@@ -1398,6 +1400,10 @@
 <script src="research-slides.js"></script>
 <script src="research-slides-video.js"></script>
 <script src="research-slides-view.js"></script>
+<!-- 叙事 lint（§15 契约的机判项）：window.MTResearchSlidesProse，纯函数、node 可直接 require。
+     宿主在 rsSlidesWatchScript 编页**之前**调一次，命中就把「第几页 / 第几行 / 超了哪一条」回给会话。
+     必须排在 app-research.js 之前（那边在调用期按 typeof 取它；取不到就跳过这一步，不拦编页）。 -->
+<script src="research-slides-prose.js"></script>
 <script src="app-research.js"></script>
 <script src="app-research-init.js"></script>
 <script src="app-research-slides.js"></script>

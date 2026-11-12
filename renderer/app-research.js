@@ -1,4 +1,4 @@
-/* ===== 研究画布（research view）· 视图 / 编辑 / 批注 / 框选询问 / 文献层 / 会话 =====
+﻿/* ===== 研究画布（research view）· 视图 / 编辑 / 批注 / 框选询问 / 文献层 / 会话 =====
  *
  * 一句话：这是与画布并列的第 4 个顶层视图 —— 内容不是节点图，而是「以课题为核心的知识图谱」，
  * 默认形态是一间 Markdown 编辑窗 + 下方会话框，点「转为图谱」才把正文打散成关系图。
@@ -1006,9 +1006,6 @@
   function renderTop() {
     const top = RS.topEl;
     if (!top) return;
-    /* 顶栏重画 = 旧的那排图标节点全被换掉：贴在上面那颗「演示」上的浮层必须先收掉，
-       否则它挂在一个已经不在文档里的锚点上（和 renderReadTools 收字号菜单同一个道理）。 */
-    rsSlidesMenuClose();
     top.innerHTML = "";
 
     /* 面包屑：导航路径（索引 › … › 现在这一篇）—— 工具行左侧，占满余量。
@@ -2003,6 +2000,340 @@
       return null;
     }
   }
+  /* ── 索引页「制作」那一页：这一棵库做出来的演示与成片视频 ─────────────────────────
+     清单只从研究目录读，不另造第二份真源：
+       slides/<slug>.json     演示存档（标题 / 保存时间 / 版本 / 导出视频回填的成片信息）
+       exports/<slug>/        导出物（<slug>.html / .mp4 / -cover.png）
+     扫盘是异步的（fileReadDir，一次一个目录），结果缓存 30 秒；第一次拿不到就先按空列表画，
+     扫完若还停在索引页的卡片态就重画一次 —— 与上面 rsIndexGroups 同一套「先画后补」的做法。
+     动作全是用户点了才走：预览 = 应用内放映，编辑 = 演示编辑器，
+     打开 = 系统默认程序（与导出成功后 toast 里那条同一个口子），另给「在文件夹中显示」。 */
+  let rsIdxDecksCache = null;
+  let rsIdxDecksAt = 0;
+  let rsIdxDecksRoot = "";
+  let rsIdxDecksBusy = false;
+  const RS_IDX_DECKS_TTL = 30000;
+  /* 存档 / 导出物变了 → 下一次取清单重新扫（rsDeckSave 与三个导出收尾各调一次）。
+     只把时间戳打回 0，不丢旧的那一份：重扫回来之前这一页照旧显示上一次的清单，别闪一下没了。 */
+  function rsIdxDecksInvalidate() {
+    rsIdxDecksAt = 0;
+  }
+  /* 派单开跑 / 跑完 / 下载完这类「活状态」的转折点：让清单重扫，停在索引页就顺带重画一次 ——
+     否则「创作中…」只能等到用户下一次点别的东西才出现 / 才消失。 */
+  function rsIdxDecksRefresh() {
+    rsIdxDecksInvalidate();
+    if (RS.root && rsIsIndexPage(RS.curPath) && RS.indexMode !== "raw") renderEditor();
+  }
+  async function rsIdxDecksScan() {
+    const Ck = rsSlidesCoreMod();
+    const api = window.api || {};
+    const root = String(RS.root || "");
+    if (!Ck || !root || typeof api.fileReadDir !== "function") return [];
+    const list = async (abs) => {
+      try {
+        const r = await api.fileReadDir(abs);
+        return r && Array.isArray(r.entries) ? r.entries.filter(Boolean) : [];
+      } catch (_) {
+        return [];
+      }
+    };
+    /* 当前这一份：标题改了 slug 就换，旧稿还留在盘上 —— 一样列出来，只是不带「编辑」 */
+    let baseDeck = null;
+    try {
+      baseDeck = Ck.build(rsSlidesInput());
+    } catch (_) {
+      baseDeck = null;
+    }
+    const curSlug = String((baseDeck && baseDeck.slug) || "");
+    const curTitle = String((baseDeck && baseDeck.title) || "");
+    const storeName = String(Ck.STORE_DIR || "slides");
+    const rows = [];
+    const seen = Object.create(null);
+    /* 哪几份有脚本（slides/<slug>.script.md）= 有没有按新口径做过：没有脚本的存档算旧稿
+       （判据与 rsDeckLoad 的 deck.legacy 同一套：有存档 + 没脚本 + tier 是 direct 或缺键） */
+    const scriptSlugs = Object.create(null);
+    const push = (slug, saved) => {
+      const s = String(slug || "").trim();
+      if (!s || seen[s]) return;
+      seen[s] = true;
+      const patch = saved && saved.patch && typeof saved.patch === "object" ? saved.patch : null;
+      const video = saved && saved.video && typeof saved.video === "object" ? saved.video : null;
+      const title = String((saved && saved.title) || "") || (s === curSlug ? curTitle : "");
+      /* 旧直出稿（与 rsDeckLoad 同一口径）：有存档、没脚本、tier=direct 或整个键缺着。
+         卡片上就是一个灰标 + 一颗「重新制作」，不影响预览 / 打开导出物。 */
+      const tierKey = saved && saved.tier != null ? String(saved.tier).trim() : "";
+      const legacy = !!saved && !scriptSlugs[s] && (tierKey === "direct" || !tierKey);
+      rows.push({
+        slug: s,
+        title: title || s,
+        savedAt: Number(saved && saved.savedAt) || 0,
+        mode: String((saved && saved.brief && saved.brief.mode) || ""),
+        aspect: String((patch && patch.aspect) || ""),
+        current: s === curSlug,
+        legacy: legacy,
+        /* 正在派单 / 渲染：内存里的活状态，读清单时现算（见 rsIdxDecksProducing） */
+        producing: rsIdxDecksProducing(s),
+        video: video && video.path ? video : null,
+        out: { html: false, mp4: false },
+      });
+    };
+    /* ①-a 先认脚本：slides/<slug>.script.md **有内容**才算「按新口径做过」（与 rsDeckLoad 同一条判据：
+       派单刚把文件清空、脚本还没写出来的那一份是空文件，不能算「有脚本」）。 */
+    const storeEntries = await list(joinP(root, storeName));
+    for (const e of storeEntries) {
+      const name = String(e.name || "");
+      if (e.isDir || !/\.script\.md$/i.test(name)) continue;
+      const scriptSlug = name.replace(/\.script\.md$/i, "");
+      let txt = "";
+      try {
+        txt = String((await readText(joinP(root, storeName + "/" + name))) || "");
+      } catch (_) {
+        txt = "";
+      }
+      if (txt.trim()) scriptSlugs[scriptSlug] = true;
+    }
+    /* ①-b 存档：slides/*.json（-.rewrite.json 是交付物、.pre-agent-*.json 是快照，都不是存档） */
+    for (const e of storeEntries) {
+      const name = String(e.name || "");
+      if (e.isDir || !/\.json$/i.test(name)) continue;
+      if (/\.rewrite\.json$/i.test(name) || /\.pre-agent[^/]*\.json$/i.test(name)) continue;
+      let saved = null;
+      try {
+        const txt = String((await readText(joinP(root, storeName + "/" + name))) || "");
+        if (txt.trim()) saved = JSON.parse(txt);
+      } catch (_) {
+        saved = null;
+      }
+      push(name.replace(/\.json$/i, ""), saved);
+    }
+    /* ② 导出物：exports/<slug>/（存档被删、只剩导出物那一份也要能在这里点开） */
+    for (const e of await list(joinP(root, "exports"))) {
+      if (e && e.isDir) push(e.name, null);
+    }
+    /* ③ 每份具体有哪些产物：一次读一个 exports/<slug> 目录，不逐个 exists */
+    for (const row of rows) {
+      const base = row.slug;
+      const names = (await list(joinP(root, "exports/" + base)))
+        .filter((x) => !x.isDir)
+        .map((x) => String(x.name || "").toLowerCase());
+      const has = (n) => names.indexOf(String(n).toLowerCase()) >= 0;
+      row.out.html = has(base + ".html");
+      row.out.mp4 = has(base + ".mp4");
+      /* 盘上有成片就当有视频（成片信息没回填进存档的老稿也照样能播） */
+      if (row.out.mp4 && !row.video) row.video = { path: "exports/" + base + "/" + base + ".mp4" };
+    }
+    /* 当前那一份排最前，其余按保存时间倒序 */
+    rows.sort((a, b) => (b.current ? 1 : 0) - (a.current ? 1 : 0) || b.savedAt - a.savedAt);
+    return rows;
+  }
+  function rsIndexDecks() {
+    const root = String(RS.root || "");
+    if (!root) return null;
+    const fresh =
+      !!rsIdxDecksCache && rsIdxDecksRoot === root && Date.now() - rsIdxDecksAt < RS_IDX_DECKS_TTL;
+    if (!fresh && !rsIdxDecksBusy) {
+      rsIdxDecksBusy = true;
+      void rsIdxDecksScan()
+        .catch(() => [])
+        .then((rows) => {
+          rsIdxDecksCache = Array.isArray(rows) ? rows : [];
+          rsIdxDecksRoot = root;
+          rsIdxDecksAt = Date.now();
+          rsIdxDecksBusy = false;
+          /* 扫回来还停在索引页的卡片态：重画一次，别让「制作」一直停在 0 */
+          if (rsIsIndexPage(RS.curPath) && RS.indexMode !== "raw") renderEditor();
+        });
+    }
+    /* 第一次还没扫完 → null（这一页先不出现，免得先闪一个「0 份 + 空态」再变成真的）；
+       扫完就一律回数组（哪怕是空数组：那样才有一页能教人「怎么做出第一份」） */
+    const rows = rsIdxDecksCache && rsIdxDecksRoot === root ? rsIdxDecksCache : null;
+    if (!rows) return null;
+    /* producing 是内存里的活状态（派单 / 渲染），不跟 30 秒缓存一起变旧：每次取清单现算一遍，
+       「创作中…」结束就该消失（扫描时那一份只当兜底）。 */
+    return rows.map((r) => Object.assign({}, r, { producing: r && rsIdxDecksProducing(r.slug) }));
+  }
+  /* 预览 = 应用内放映：借放映器那份 mount 盖在研究视图上（Esc / 右上那颗退出）。
+     挂在 #researchPane 上而不是正文容器：正文重画（扫描回来 / 改问题）不会掀掉正在放的那一页。 */
+  let rsIdxPlay = null;
+  function rsIndexDeckClose() {
+    const p = rsIdxPlay;
+    rsIdxPlay = null;
+    if (!p) return;
+    try {
+      if (p.inst && typeof p.inst.destroy === "function") p.inst.destroy();
+    } catch (_) {}
+    try {
+      if (p.box && p.box.parentNode) p.box.parentNode.removeChild(p.box);
+    } catch (_) {}
+  }
+  async function rsIndexDeckPreview(slug) {
+    const V = window.MTResearchSlidesView;
+    const host = qid("researchPane");
+    if (!V || typeof V.mount !== "function") {
+      toastSafe(t("放映器模块没加载（research-slides-view.js）"), "err");
+      return;
+    }
+    if (!host) {
+      toastSafe(t("研究视图还没就绪"), "warn");
+      return;
+    }
+    const deck = await rsDeckLoad(false, String(slug || ""));
+    if (!deck) {
+      toastSafe(t("这一份演示没读出来（存档可能已删）"), "warn");
+      return;
+    }
+    rsIndexDeckClose();
+    const wrap = el("div", "rs-idx-play");
+    const x = el("button", "rs-btn rs-idx-play-x", "✕ " + t("退出预览"));
+    x.type = "button";
+    x.title = t("退出预览（Esc）");
+    x.onclick = () => rsIndexDeckClose();
+    wrap.appendChild(x);
+    host.appendChild(wrap);
+    let inst = null;
+    try {
+      inst = V.mount(wrap, deck, {
+        onExit: () => rsIndexDeckClose(),
+        /* 叠加媒体存的是 slides/media/… 相对路径，交给运行时前换成 file:// 绝对 URL */
+        mediaSrc: (src) => rsMediaUrl(src),
+      });
+    } catch (e) {
+      try {
+        host.removeChild(wrap);
+      } catch (_) {}
+      toastSafe(t("放映起不来：") + String((e && e.message) || e), "err");
+      return;
+    }
+    if (!inst) {
+      try {
+        host.removeChild(wrap);
+      } catch (_) {}
+      toastSafe(t("放映器没返回实例"), "err");
+      return;
+    }
+    rsIdxPlay = { box: wrap, inst: inst };
+  }
+  /* 打开导出物：系统默认程序（html 进浏览器、pdf 进阅读器、mp4 进播放器） */
+  function rsIndexDeckOpen(slug, kind) {
+    const Ck = rsSlidesCoreMod();
+    const api = window.api || {};
+    const s = String(slug || "").replace(/[\\/]/g, "");
+    if (!Ck || !RS.root || !s) return;
+    const ext = kind === "pdf" ? "pdf" : kind === "mp4" ? "mp4" : "html";
+    const rel = String(Ck.exportOf(s) || "").replace(/\.html$/i, "." + ext);
+    const abs = joinP(RS.root, rel);
+    if (typeof api.shellOpenPath !== "function") {
+      toastSafe(t("没有系统打开接口"), "err");
+      return;
+    }
+    void Promise.resolve(api.shellOpenPath(abs)).then(
+      (r) => {
+        if (r && r.ok === false) toastSafe(t("打开失败：") + String(r.error || abs), "err");
+      },
+      () => toastSafe(t("打开失败：") + abs, "err"),
+    );
+  }
+  /* 在文件夹中显示：exports/<slug>/（单文件 HTML 与成片都落在这里） */
+  function rsIndexDeckReveal(slug) {
+    const api = window.api || {};
+    const s = String(slug || "").replace(/[\\/]/g, "");
+    if (!RS.root || !s) return;
+    const dir = joinP(RS.root, "exports/" + s);
+    const open = api.shellShowItem || api.shellOpenPath;
+    if (typeof open !== "function") {
+      toastSafe(t("没有系统打开接口"), "err");
+      return;
+    }
+    void Promise.resolve(open(dir)).then(
+      (r) => {
+        if (r && r.ok === false) toastSafe(t("打开失败：") + String(r.error || dir), "err");
+      },
+      () => {},
+    );
+  }
+  /* 「制作」页那一位 producing = 这一份正在**派单或渲染**（内存里的活状态，盘上没有痕迹）：
+       · 脚本 / 重写那一轮还在等会话落盘（D.job 的交付文件就是 slides/<slug>.script.md 或 .rewrite.json）；
+       · 或者这一份正在渲 mp4（RS_VIDEO_JOB 的 jobId 按 slug 拼，见 rsDeckExportVideo）。
+     返回值是原因（script / rewrite / video），空串 = 没在忙；界面只用「忙不忙」这一位。 */
+  function rsIdxDecksProducing(slug) {
+    const s = String(slug || "").trim();
+    if (!s) return "";
+    const job = rsDeck().job;
+    if (job && job.rel) {
+      const rel = String(job.rel).replace(/\\/g, "/");
+      const m = /(?:^|\/)([^/]+)\.(?:script\.md|rewrite\.json)$/i.exec(rel);
+      if (m && m[1] === s) return job.kind === "script" ? "script" : "rewrite";
+    }
+    const id = "research-slides-" + (s.replace(/[^\w.-]/g, "") || "slides");
+    if (RS_VIDEO_JOB && RS_VIDEO_JOB === id) return "video";
+    return "";
+  }
+  /* 「重新制作」（制作页卡片上那颗，见 renderer/research-index.js）：
+     把**这一份**当成当前稿，按新口径派一轮 author 脚本（复用 rsSlidesScriptAsk，brief 原样带上）。
+     旧稿不被删：脚本落盘前它还在盘上、还能预览；落盘后 rsSlidesScriptAdopt 整体换掉。 */
+  async function rsIndexDeckRemake(slug) {
+    const Ck = rsSlidesCoreMod();
+    const D = rsDeck();
+    const s = String(slug || "").replace(/[\\/]/g, "");
+    if (!Ck || !RS.root || !s) return null;
+    if (D.job && D.job.kind === "script") {
+      toastSafe(t("已经有一轮脚本在写了：等它落盘（状态行会报进度）"), "warn");
+      return null;
+    }
+    /* 只重做「当前这一份」：脚本采纳（rsSlidesScriptAdopt）是按当前 slug 读盘的 ——
+       旧 slug 的稿子重做出来的脚本不会被那份 deck 采纳。与其派出一个落不了地的活，不如说清楚：
+       想要新的一份就点页头「＋ Agent 从头做一份」，旧稿照旧能预览 / 导出。 */
+    let curSlug = "";
+    try {
+      curSlug = String((Ck.build(rsSlidesInput()) || {}).slug || "");
+    } catch (_) {
+      curSlug = "";
+    }
+    if (curSlug && curSlug !== s) {
+      toastSafe(
+        t("这不是当前那一份演示（") +
+          s +
+          t("）：旧稿可以照旧预览 / 导出；要做新的一份，点页头「＋ Agent 从头做一份」"),
+        "warn",
+      );
+      return null;
+    }
+    /* onlySlug 读那一份（不污染编辑器缓存），读完认定成当前稿再派 —— 派单 / 落盘 / 采纳都按 slug 走 */
+    let deck = null;
+    try {
+      deck = await rsDeckLoad(true, s);
+    } catch (_) {
+      deck = null;
+    }
+    if (!deck) {
+      toastSafe(t("读不到这一份演示：") + s, "err");
+      return null;
+    }
+    D.deck = deck;
+    D.slug = String(deck.slug || s);
+    D.brief = Ck.briefOf(deck);
+    if (D.ctrl && typeof D.ctrl.setDeck === "function") D.ctrl.setDeck(deck);
+    /* 用户点的是「重新制作」：自动派过的那条限制也一并放开（这一轮就是他要的） */
+    rsLegacyAsked[D.slug] = true;
+    rsIdxDecksInvalidate();
+    return await rsSlidesScriptAsk(deck, D.brief, deck.online !== false, "");
+  }
+  /* 制作页页头那颗「＋ Agent 从头做一份」：开演示初始化卡，档位**固定 author** ——
+     这条入口就是「叫 Agent 照指示重做一份」，不给「照原文直出」那一档（见 rsSlidesInitOpen 的 opts.tier）。
+     卡本身没有「档位锁」这个选项，所以开卡时说一句：卡里那档直出在这条入口不生效。 */
+  function rsIndexDeckNew() {
+    if (!RS.root) {
+      toastSafe(t("研究目录还没就绪"), "warn");
+      return null;
+    }
+    if (!rsSlidesCoreNote()) {
+      toastSafe(t("还没有核心稿件：先投料或新建一篇原文，再做演示"), "warn");
+      return null;
+    }
+    const card = rsSlidesInitOpen("init", { tier: "author" });
+    if (card) toastSafe(t("这一份固定走「按指示创作」：卡里的「照原文直出」在这条入口不生效"));
+    return card;
+  }
   /* 索引页模块（renderer/research-index.js）的**唯一一份依赖包**：数据（每次重画现取）+ 全部动作回调。
      模块是 UMD 纯函数、不碰盘也不认识 RS —— 渲染、落盘、打开笔记、重画全从这里注入。
      计划里的几个名字对到实现上：
@@ -2065,6 +2396,18 @@
          卡的结构、锚点定位、点外面关 / Esc 全在阅读器那份能力里，索引页不复制第二份卡。
          阅读器没加载（老页面）就整组不给，索引模块按老路「点行 = 打开笔记」退回。 */
       noteCards: rsIndexNoteCards(),
+      /* 制作（演示 / 成片视频）：清单来自研究目录本身（见 rsIndexDecks），
+         三个动作都在宿主这一侧：预览 = 应用内放映，编辑 = 演示编辑器，
+         打开 = 系统默认程序（HTML / 视频），成片另有「在文件夹中显示」 */
+      decks: rsIndexDecks(),
+      onDeckPreview: (slug) => void rsIndexDeckPreview(slug),
+      onDeckEdit: () => void rsSlidesOpen(),
+      onDeckOpen: (slug, kind) => rsIndexDeckOpen(slug, kind),
+      onDeckReveal: (slug) => rsIndexDeckReveal(slug),
+      /* 旧直出稿卡片上那颗「重新制作」：按新口径派一轮 author 脚本（见 rsIndexDeckRemake） */
+      onDeckRemake: (slug) => void rsIndexDeckRemake(slug),
+      /* 页头「＋ Agent 从头做一份」：开初始化卡，档位固定 author（见 rsIndexDeckNew） */
+      onDeckNew: () => void rsIndexDeckNew(),
     };
   }
   /* ── 索引页的浮空卡：把阅读器那份能力包成「hits + 锚点元素 + 选中项展开」三件事 ──
@@ -3001,9 +3344,8 @@
     wrap.appendChild(gp);
 
     /* ④ 演示：核心稿 + 3-Pass 变体 → 一套可放映的页（PPT）。
-       没有核心稿件时按不下去（内核那时只出封面 + 结语，做出来没有意义）：
-       菜单里三件事 —— 打开编辑器（内核直出）/ 让 Agent 重写整份 / 让 Agent 重写这一页
-       （后两颗先开编辑器收一句「这次想怎么改」，与编辑器里的按钮同一套）。 */
+       没有核心稿件时按不下去（内核那时只出封面 + 结语，做出来没有意义）。
+       点一下**直接开演示编辑器**（不再先弹菜单）：重写整份 / 重写这一页都是编辑器里的按钮。 */
     const dk = el("button", "rs-top-ico rs-top-deck");
     dk.appendChild(rsIcon("deck"));
     const dkPaint = () => {
@@ -3021,7 +3363,9 @@
     RS_VIEW_PAINT.push({ el: dk, paint: dkPaint });
     dk.onclick = () => {
       if (dk.getAttribute("aria-disabled") === "true") return;
-      rsSlidesMenu(dk, dkPaint);
+      Promise.resolve()
+        .then(() => rsSlidesOpen())
+        .catch((e) => toastSafe(String((e && e.message) || e), "err"));
     };
     wrap.appendChild(dk);
     return wrap;
@@ -3180,7 +3524,19 @@
       for (const m of members) if (m && m.path) byPath[m.path] = m;
       const original = (g && g.original) || p;
       const origNote = (RS.notes || []).find((n) => n.path === original) || null;
-      const baseLang = String((origNote && origNote.meta && origNote.meta.lang) || "zh").trim() || "zh";
+      /* 原文语言：frontmatter 的 lang 优先；没写就看正文（英文原文 → en、中文原文 → zh），
+         两者都判不出来才按中文算。默认变体按它挑（英文原文给中译、中文原文给英译），
+         译稿互斥也按它 —— 只看 frontmatter 会把不带 lang 的英文论文当成中文，默认反成「英译」。 */
+      const baseLang =
+        String((origNote && origNote.meta && origNote.meta.lang) || "")
+          .trim()
+          .toLowerCase() ||
+        (V && typeof V.detectLang === "function"
+          ? String(V.detectLang(origNote && origNote.md) || "")
+              .trim()
+              .toLowerCase()
+          : "") ||
+        "zh";
       /* 这一页（原文那一页）自己的规则表：每页一份，互不影响 */
       const rules =
         D && typeof D.rulesFor === "function" ? D.rulesFor(original) : D && typeof D.rules === "function" ? D.rules() : [];
@@ -3315,7 +3671,10 @@
       const addBtn = el("button", "rs-dv-add", "＋ " + t("变体"));
       addBtn.title = t("往这一页的规则表里加一条变体（种类 + 语言）：只写入规则表，不立即生成");
       addBtn.onclick = () => {
-        rsAddVar = rsAddVar ? null : { kind: "translate", lang: "zh", code: "", err: "" };
+        /* 默认值跟着原文语言走：中文原文默认「英译」、英文原文默认「中译」——
+           与原文同语言的那一稿就是原文本身，摆成默认只会让人点出一份重复的稿子。 */
+        const defLang = String(baseLang || "").trim().toLowerCase() === "zh" ? "en" : "zh";
+        rsAddVar = rsAddVar ? null : { kind: "translate", lang: defLang, code: "", err: "" };
         renderReadTools();
       };
       strip.appendChild(addBtn);
@@ -4043,6 +4402,9 @@
 
   /* 查找条开着时，任何一次重渲染之后都要重新遍历正文并重新计数（换页 / 切模式 / 替换落盘） */
   function renderEditor() {
+    /* 索引「制作」页的放映层是临时浮层：一旦离开索引页的卡片态（换篇 / 切原文 / 换视图）
+       就收掉，否则它会一直盖在别的笔记上（退出键仍走 Esc / 右上那颗） */
+    if (rsIdxPlay && !(rsIsIndexPage(RS.curPath) && RS.indexMode !== "raw")) rsIndexDeckClose();
     /* 图点开大图的那一次绑定：整页共用一个委托，第一次渲染时装上就够（幂等） */
     rsBindPeleZoom();
     rsRenderEditor();
@@ -11429,7 +11791,7 @@
      三份变体稿，不花 Token）；**只有**「让 Agent 重写这一页 / 整份」才派现有 agent 会话，
      且**首次**派活一定先过「会消耗 Token」的确认：编辑器那颗小输入框在第一次时按钮上就写着它
      （编辑器的幕布层级高于 #mtDialog，宿主确认窗在幕布里看不见），宿主这张窗只留给不经编辑器的调用方。 */
-  const RS_SLIDES_WAIT_MS = 240000; /* 会话迟迟不写出 rewrite.json 也算失败，别一直挂着 */
+  const RS_SLIDES_WAIT_MS = 240000; /* 只用来「多久刷一次状态行」—— 等不到不算失败，不催、不收工 */
   /* 「会消耗 Token」那张确认只在**首次**派活时问一次：同一会话里后面的每一轮不再拦
      （多轮迭代本来就要来回好几次，每轮都弹一次窗只会挡住人）。 */
   let rsSlidesTokenAcked = false;
@@ -11443,29 +11805,105 @@
       D.ctrl.setAgentStatus(String(msg == null ? "" : msg));
     } catch (_) {}
   }
-  /* 「等第 N 轮写出 X」这半句：超时提示一起带上（点「继续等」就是再续一整个窗口） */
-  function rsSlidesWaitText(rel, round) {
-    const mins = Math.max(1, Math.round(RS_SLIDES_WAIT_MS / 60000));
+  /* 自动纠错预算：一轮里模型写回来的东西不合格（格式错 / 缺节 / 页 id 对不上），
+     宿主动用同一条会话自动回话让它修，最多 2 次；第 3 次仍不合格才落失败提示。 */
+  const RS_SLIDES_REPAIR_MAX = 2;
+  /* 「第 N 次自动返修」这半句：自动回话让它重写时挂在状态行上（N = 已回话次数） */
+  function rsSlidesRepairWaitText(rel, n) {
+    return "第 " + String(Math.max(1, Number(n) || 1)) + " 次自动返修：等它重写 " + String(rel);
+  }
+  /* 脚本文件哪里不对：尽量报到**行号 / 缺哪一节**（回话里带着它，模型才改得对） */
+  function rsSlidesScriptWhy(s, parsed) {
+    const lines = String(s == null ? "" : s)
+      .replace(/\r\n?/g, "\n")
+      .split("\n");
+    const bad = [];
+    let pageLines = 0;
+    for (let i = 0; i < lines.length; i++) {
+      const t0 = lines[i].trim();
+      if (/^#{3,6}/.test(t0)) continue; /* H3–H6 = 该页的一条要点（合法内容） */
+      if (/^#[ \t]+/.test(t0)) continue; /* H1 = 演示标题，不算分节 */
+      if (/^##[ \t]+\S/.test(t0)) {
+        pageLines += 1;
+        continue;
+      }
+      if (/^##/.test(t0)) bad.push({ no: i + 1, text: t0.slice(0, 40) }); /* `##标题` / `##` 空标题 */
+    }
+    if (!pageLines) {
+      if (bad.length) {
+        return (
+          "第 " +
+          String(bad[0].no) +
+          " 行「" +
+          bad[0].text +
+          "」不是分节标题（页标题要写成 `## 01 标题`，`##` 后面必须空一格）" +
+          (bad.length > 1 ? "（同样的还有 " + String(bad.length - 1) + " 处）" : "")
+        );
+      }
+      return "整份一页都没有：缺 `## ` 分节（一页一节，形如 `## 01 标题`）";
+    }
+    const err = String((parsed && (parsed.error || parsed.why)) || "");
+    return err || "有 " + String(pageLines) + " 行 `##` 分节但一页都编不出来（页标题为空？）";
+  }
+  /* 交回来的 JSON 哪里不对：报到**行号**（Markdown 围栏 / 多余解释 / 位置换算成本行列） */
+  function rsSlidesJsonWhy(txt, e) {
+    const s = String(txt == null ? "" : txt).replace(/\r\n?/g, "\n");
+    const msg = String((e && e.message) || "");
+    const lines = s.split("\n");
+    for (let i = 0; i < lines.length; i++) {
+      if (/^\s*```/.test(lines[i]))
+        return (
+          "第 " + String(i + 1) + " 行是 Markdown 围栏（```）—— 只要纯 JSON，围栏与解释文字一句都不要"
+        );
+    }
+    const mLine = /line (\d+) column (\d+)/i.exec(msg);
+    if (mLine) return "第 " + mLine[1] + " 行第 " + mLine[2] + " 列不是合法 JSON（" + msg + "）";
+    const mPos = /position (\d+)/i.exec(msg);
+    const pos = mPos ? Number(mPos[1]) : -1;
+    if (pos >= 0 && pos <= s.length) {
+      let line = 1;
+      let col = 1;
+      for (let i = 0; i < pos; i++) {
+        if (s[i] === "\n") {
+          line += 1;
+          col = 1;
+        } else col += 1;
+      }
+      return (
+        "第 " + String(line) + " 行第 " + String(col) + " 列不是合法 JSON（" + (msg || "解析失败") + "）"
+      );
+    }
+    let first = -1;
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i].trim()) {
+        first = i;
+        break;
+      }
+    }
     return (
-      "等第 " +
-      String(Math.max(1, Number(round) || 1)) +
-      " 轮写出 " +
-      String(rel) +
-      "（" +
-      mins +
-      " 分钟还没写出会问你要不要继续等）"
+      (first >= 0 ? "第 " + String(first + 1) + " 行起不是合法 JSON" : "整份不是合法 JSON") +
+      (msg ? "（" + msg + "）" : "") +
+      "；不要多余的解释或 Markdown 围栏"
+    );
+  }
+  /* 「等第 N 轮写出 X」这半句：等多久都不催（没有超时这回事，写出就自动合进来） */
+  function rsSlidesWaitText(rel, round) {
+    return (
+      "等第 " + String(Math.max(1, Number(round) || 1)) + " 轮写出 " + String(rel) + "（写出就自动合进来）"
     );
   }
   let rsDeckState = null; /* { deck, slug, brief, ctrl, job } —— 惰性实例，rsDeck() 建 */
-  let rsSlidesMenuEl = null;
-  let rsSlidesMenuAnchor = null;
-  let rsSlidesMenuPaint = null;
 
   function rsSlidesCoreMod() {
     return window.MTResearchSlides || null;
   }
   function rsSlidesEditorMod() {
     return window.MTResearchSlidesEditor || null;
+  }
+  /* 叙事 lint（renderer/research-slides-prose.js · window.MTResearchSlidesProse）：
+     §15 契约的机判侧，纯函数。没装载（老包 / 脚本侧）就返回 null —— 调用方当「这一步跳过」，不拦编页。 */
+  function rsSlidesProseMod() {
+    return (typeof window !== "undefined" && window.MTResearchSlidesProse) || null;
   }
   /* 「有 core 稿件」：与内核取主稿的顺序一致（索引页 → notes/*.md → core/*.md）。
      一份都拿不到就**不给演示**（那套页只剩封面 + 结语，做出来没有意义）。 */
@@ -11527,15 +11965,18 @@
   }
   /* 建 / 读一份 deck：内核算页 → 把 slides/<slug>.json 里的 brief、手改与主题盖回去。
      force = 丢掉内存里那份（盘上改了笔记 / 刚重置过）。
+     onlySlug = 只读盘上那一份（索引页「制作」里预览旧稿用）：不写 D.deck / D.slug 缓存，
+     编辑器打开的那一份不受影响；不给就是当前这一份。
      brief 与 theme / patch 同级存在存档顶层（初始化卡写的）；老存档没有这个键 → 归一成默认值，
      读进来与今天完全一样（内核 briefOf 就是这条兼容口径）。 */
-  async function rsDeckLoad(force) {
+  async function rsDeckLoad(force, onlySlug) {
     const Ck = rsSlidesCoreMod();
     const D = rsDeck();
     if (!Ck || !RS.root) return null;
-    if (D.deck && !force) return D.deck;
+    const want = String(onlySlug || "").trim();
+    if (!want && D.deck && !force) return D.deck;
     const base = Ck.build(rsSlidesInput());
-    const slug = String(base.slug || "");
+    const slug = want || String(base.slug || "");
     let saved = null;
     try {
       const txt = await readText(joinP(RS.root, Ck.fileOf(slug)));
@@ -11545,7 +11986,9 @@
     }
     const theme = saved && saved.theme && typeof saved.theme === "object" ? saved.theme : null;
     const brief = saved && saved.brief && typeof saved.brief === "object" ? saved.brief : null;
-    const savedTier = saved && typeof saved.tier === "string" ? String(saved.tier) : "";
+    /* 做法（tier）缺键 = 创作档 author：老存档没这个键、键值写歪了，都按默认档走 ——
+       只有盘上**明确**写着 direct 才是直出档，绝不「读不到就算直出」。 */
+    const savedTier = saved && String(saved.tier || "") === "direct" ? "direct" : "author";
     /* 联网补料的缺省是「开」：只有显式存过 online:false 才算关 */
     const savedOnline = !(saved && saved.online === false);
     const input = rsSlidesInput({
@@ -11558,16 +12001,17 @@
       online: savedOnline,
     });
     /* 创作档的真源是演示脚本（slides/<slug>.script.md）：在就用它编页；
-       没有这个文件 / 编不出页（格式写坏了）才退回内核直出 —— 绝不把人挡在门外。 */
+       没有这个文件 / 编不出页（格式写坏了）才退回内核直出 —— 绝不把人挡在门外。
+       脚本存不存在同时是「旧直出稿」的判据（见下面 legacy），所以不分档位一律先读一次。 */
+    const scriptRel = rsSlidesScriptRel(slug);
+    let scriptTxt = "";
+    try {
+      scriptTxt = String((await readText(joinP(RS.root, scriptRel))) || "");
+    } catch (_) {
+      scriptTxt = "";
+    }
     let deck = null;
     if (savedTier !== "direct") {
-      const scriptRel = rsSlidesScriptRel(slug);
-      let scriptTxt = "";
-      try {
-        scriptTxt = String((await readText(joinP(RS.root, scriptRel))) || "");
-      } catch (_) {
-        scriptTxt = "";
-      }
       if (scriptTxt.trim()) {
         const parsed = Ck.parseScript(scriptTxt, { path: scriptRel });
         if (parsed && parsed.ok && parsed.pages.length) {
@@ -11588,13 +12032,24 @@
       }
     }
     if (!deck) deck = Ck.build(input);
+    /* 旧直出稿：盘上有存档、却没有 slides/<slug>.script.md，且 tier 写着 direct 或整个键缺着
+       （新卡之前的老存档）。新口径里成品由脚本编来，这一份只能算「旧稿」：
+       打上 legacy，打开它 / 从「制作」页点编辑时先按新口径派一轮 author 脚本（见 rsSlidesOpen），
+       旧稿照旧能预览、能导出，不是错误状态。tier 真写着 author（只是脚本还没写出来）不算旧稿。 */
+    const savedTierKey = saved && saved.tier != null ? String(saved.tier).trim() : "";
+    if (saved && !scriptTxt.trim() && (savedTierKey === "direct" || !savedTierKey)) {
+      deck.legacy = true;
+    }
     /* 导出视频成功后回填的成片信息（见 rsDeckExportVideo）：没有这个键 = 还没导出过，形状不变 */
     if (saved && saved.video && typeof saved.video === "object" && saved.video.path) {
       deck.video = saved.video;
     }
-    D.deck = deck;
-    D.slug = String(deck.slug || slug);
-    D.brief = Ck.briefOf(deck);
+    /* onlySlug（索引页预览旧稿）只借这一份 deck 放映：不动编辑器手里那一份 */
+    if (!want) {
+      D.deck = deck;
+      D.slug = String(deck.slug || slug);
+      D.brief = Ck.briefOf(deck);
+    }
     return deck;
   }
   /* 存档里的主题只留「预设 + 明暗 + 转场 + 真被改过的覆盖」：
@@ -11637,8 +12092,9 @@
       savedAt: Date.now(),
     };
     if (!Ck.briefIsDefault(brief)) payload.brief = brief;
-    /* 做法与联网补料：只在**非缺省**时写键 —— 老存档读回再写回，形状不变。
-       缺省 = 创作档（页由 script.md 编出来）、联网开；所以只显式存 direct 与 online:false。 */
+    /* 做法与联网补料：联网只在**非缺省**时写键（缺省 = 开）；做法两档都写 ——
+       用户从「照原文直出」切回默认的创作档时，这个切换必须落下（只写 direct 就切不回来）。
+       缺键读回来一律按 author（见 rsDeckLoad），所以老存档不会静默变成直出。 */
     const tier = String((info && info.tier) || deck.tier || "");
     if (tier === "author" || tier === "direct") payload.tier = tier;
     const online = info && Object.prototype.hasOwnProperty.call(info, "online") ? info.online !== false : deck.online !== false;
@@ -11665,6 +12121,8 @@
     D.deck = deck;
     D.slug = slug;
     D.brief = brief;
+    /* 存档变了 = 索引「制作」那一页要重扫（标题 / 时间 / 版本 / 成片信息都在这一份里） */
+    rsIdxDecksInvalidate();
     return rel;
   }
   /* ── 演示叠加媒体：导入（复制进研究目录）/ 放映解析 / 导出内联 ──────────────────
@@ -11893,46 +12351,11 @@
       inline: (deck) => rsMediaInline(deck),
     };
   }
-  /* 导出 PDF（一页一张）+ 逐页 PNG：同一份自包含 HTML，落在 research/exports/<slug>/ 里
-     （<slug>.pdf + <slug>-p01.png…）。渲染与落盘都在主进程（隐藏窗 printToPDF / capturePage，
-     见 slides-export.js），这里只算路径、把 HTML 交过去。 */
-  async function rsDeckExportPrint(html, deck) {
-    const Ck = rsSlidesCoreMod();
-    if (!Ck || !RS.root || !html) return null;
-    if (!window.api || typeof window.api.slidesPrint !== "function") {
-      toastSafe(t("主进程没接导出接口（slidesPrint）"), "err");
-      return null;
-    }
-    const slug = String((deck && deck.slug) || rsDeck().slug || "slides");
-    const htmlRel = String(Ck.exportOf(slug) || "");
-    const dirRel = htmlRel.replace(/\/[^/]*$/, "");
-    const pdfPath = joinP(RS.root, htmlRel.replace(/\.html$/i, ".pdf"));
-    const pngDir = joinP(RS.root, dirRel);
-    let res = null;
-    try {
-      res = await window.api.slidesPrint({
-        html: String(html),
-        pdfPath: pdfPath,
-        pngDir: pngDir,
-        base: slug,
-        aspect: String((deck && deck.aspect) || "16:9"),
-      });
-    } catch (e) {
-      res = { ok: false, error: String((e && e.message) || e) };
-    }
-    if (!res || res.ok === false) {
-      toastSafe(t("导出 PDF / PNG 失败：") + String((res && res.error) || ""), "err");
-      return null;
-    }
-    const n = Array.isArray(res.pngs) ? res.pngs.length : 0;
-    toastSafe(t("已导出 PDF：") + String(res.pdf || pdfPath) + (n ? t("，逐页 PNG ") + n + t(" 张") : ""));
-    return res;
-  }
   /* ── 导出视频（Remotion → MP4）────────────────────────────────────────────────
-     分工与导出 HTML / PDF 同一条口径：渲染层只交数据，进程与落盘都在主进程。
+     分工与导出 HTML 同一条口径：渲染层只交数据，进程与落盘都在主进程。
        · 工程树 / 时间轴 / 字幕由 window.MTResearchSlidesVideo（纯函数）现算；
        · 宿主（remotion/main-remotion.js 的 renderProjectTree）只认「源码树 + props + 输出路径」，
-         **不依赖画布节点**；产物与 HTML / PDF / PNG 同一目录：research/exports/<slug>/<slug>.mp4；
+         **不依赖画布节点**；产物与 HTML 同一目录：research/exports/<slug>/<slug>.mp4；
        · 旁白音轨**存在才混**（deck.narration 或约定位置 slides/media/<slug>/narration.<ext>），
          没有就纯画面、也不铺字幕；
        · 封面帧宿主用 ffmpeg 抽一帧 <slug>-cover.png（失败只记 warning，不影响成片）；
@@ -11959,7 +12382,7 @@
     if (/^([a-z]:[\\/]|\\\\)/i.test(s)) return s;
     return RS.root ? joinP(RS.root, s) : "";
   }
-  /* 封面帧 URL：成片与 HTML / PDF / PNG 同目录（exports/<slug>/），封面帧叫 <slug>-cover.png */
+  /* 封面帧 URL：成片与 HTML 同目录（exports/<slug>/），封面帧叫 <slug>-cover.png */
   function rsFilmCoverUrl(deck) {
     const Ck = rsSlidesCoreMod();
     const api = window.api || {};
@@ -11999,7 +12422,9 @@
   }
   /* 当前那一次视频导出（同一时刻只跑一个；取消按它认 jobId） */
   let RS_VIDEO_JOB = "";
-  async function rsDeckExportVideo(deck, onProgress) {
+  /* opts.quiet = 失败文案交给调用方统一报（「一轮到底」要自动重试一次，中间那次不刷 toast）。 */
+  async function rsDeckExportVideo(deck, onProgress, opts) {
+    const quiet = !!(opts && opts.quiet);
     const Ck = rsSlidesCoreMod();
     const Vd = rsSlidesVideoMod();
     const api = window.api || {};
@@ -12038,7 +12463,24 @@
       return { ok: false, error: "audit_failed", message: msg };
     }
     const meta = built.meta || {};
-    /* ② 落点：与 HTML / PDF / PNG 同一目录（research/exports/<slug>/），封面帧同目录 */
+    /* ②-b 叠加图的字节：工程是代码、不带素材，图由这里读成 data URL 走 props.media 送进去。
+       读不出来的那张在 warnings 里点名（视频里会画占位框，不会静默少一张图）。 */
+    const mediaProps = {};
+    const mediaMissed = [];
+    for (const one of Array.isArray(meta.media) ? meta.media : []) {
+      const src = String((one && one.src) || "");
+      const name = String((one && one.name) || "");
+      if (!src || !name) continue;
+      const inlined = await rsMediaInlineOne(src, "image", mediaMissed);
+      if (inlined && inlined.hit && /^data:image\//i.test(String(inlined.src))) mediaProps[name] = String(inlined.src);
+      else mediaMissed.push(name);
+    }
+    if (mediaMissed.length) {
+      built.warnings = (Array.isArray(built.warnings) ? built.warnings : []).concat(
+        t("有图没读出来，视频里是占位框：") + mediaMissed.join("、"),
+      );
+    }
+    /* ② 落点：与 HTML 同一目录（research/exports/<slug>/），封面帧同目录 */
     const htmlRel = String(Ck.exportOf(slug) || "");
     const dirRel = htmlRel.replace(/\/[^/]*$/, "");
     const mp4Abs = joinP(RS.root, dirRel + "/" + slug + ".mp4");
@@ -12060,7 +12502,7 @@
       const res = await api.researchSlidesVideo({
         jobId: jobId,
         files: built.files,
-        props: {},
+        props: Object.keys(mediaProps).length ? { media: mediaProps } : {},
         narrationPath: narration,
         outputPath: mp4Abs,
         coverPath: coverAbs,
@@ -12070,16 +12512,24 @@
         durationSeconds: Number(meta.durationSec) || 0,
         durationInFrames: Number(meta.durationInFrames) || 0,
         compositionId: String(meta.id || "Main"),
+        /* 画质档：屏幕上的式子与小字是本体，按默认档压出来字边会发虚 ——
+           一律走教研交付档（与 remotion-pack/render.mjs 的 crf / jpegQuality 契约同一条）。 */
+        crf: 17,
+        jpegQuality: 100,
+        /* 没有旁白音轨就别塞静音 AAC（实测 383 秒白占 14 MB，响度 -91 dB）。 */
+        muted: !narration,
         timeoutSec: 20 * 60,
       });
       if (!res || res.ok === false) {
         const msg = String((res && (res.message || res.error)) || t("未知原因"));
-        toastSafe(
-          t("导出视频失败：") +
-            msg +
-            (res && res.cancelled ? "" : res && res.logPath ? t("（宿主日志：") + res.logPath + t("）") : ""),
-          "err",
-        );
+        if (!quiet) {
+          toastSafe(
+            t("导出视频失败：") +
+              msg +
+              (res && res.cancelled ? "" : res && res.logPath ? t("（宿主日志：") + res.logPath + t("）") : ""),
+            "err",
+          );
+        }
         return { ok: false, error: msg, logPath: (res && res.logPath) || "", cancelled: !!(res && res.cancelled) };
       }
       /* ③ 回填 deck.video 并落盘（slides/<slug>.json） */
@@ -12093,6 +12543,8 @@
       deck.video = info;
       D.deck = deck;
       await rsDeckSave({ deck: deck });
+      /* 盘上多了 mp4（+ 封面帧）= 索引「制作」那一页要重扫 */
+      rsIdxDecksInvalidate();
       toastSafe(
         t("视频已导出：") +
           joinP(RS.root, info.path) +
@@ -12125,28 +12577,85 @@
       RS_VIDEO_JOB = "";
     }
   }
-  /* ── 一轮链路：脚本落地 / 直出档重算完 → 自动接一次出片 ────────────────────────
-     判据只看 brief.mode（版本）：slides = 只要静态版（不出片）；video / both = 出片。
-     出口只有编辑器那颗 exportVideo（就是顶栏「导出视频」）——它背后仍是宿主 onExportVideo →
-     rsDeckExportVideo 这**唯一**一条写盘 / 渲染路径：进度条、状态行、失败行（原因 + 宿主日志）
-     全在它那儿，宿主这边不另开一条。失败不打断链路：编辑器照常可用，重试还是点同一颗按钮。
-     返回 true = 真派出去了；false = 这一档不要片 / 编辑器没开 / 已经有一条在渲。 */
-  function rsSlidesAutoVideo(deck) {
+  /* ── 一轮到底：脚本落地 / 直出档重算完 → 自动出成品（**不依赖编辑器开着**）──────────
+     判据只看 brief.mode（与编辑器那颗「导出视频」同一份版本口径）：
+       · slides        = 只要静态版：出一份单文件 HTML 就收尾（不出片）；
+       · video / both  = 先出一份 HTML（脚本落盘后盘上立刻有可打开的单文件），再出 mp4。
+     以前这一段交给 rsSlidesAutoVideo —— 它必须借编辑器那颗 exportVideo（D.ctrl）才渲，
+     编辑器没开就整条链断在「没有片」上。现在渲染直接走 rsDeckExportVideo 的 headless 分支：
+     进度只进状态行（编辑器开着顺带看到同一份）与关键节点 toast，不画编辑器进度条。
+     渲染失败自动重试 1 次（jobId 按 slug 固定 = 同一条工程目录 / 同一个落点，不新开一条），
+     再失败才写报错行。失败不打断链路：脚本 / 页 / HTML 都在盘上，重试仍是点那颗「导出视频」。 */
+  /* headless 出 HTML：与编辑器那颗「导出 HTML」同一份字节（媒体内联 → V.toHtml → rsDeckExport 落盘）。 */
+  async function rsSlidesAutoHtml(deck) {
+    const V = window.MTResearchSlidesView;
+    if (!V || typeof V.toHtml !== "function") {
+      toastSafe(t("放映器模块没加载（research-slides-view.js），HTML 没出"), "err");
+      return null;
+    }
+    let d = deck;
+    try {
+      d = (await rsMediaInline(deck)) || deck; /* 内联失败就按相对路径导出（与编辑器那条的兜底一致） */
+    } catch (_) {
+      d = deck;
+    }
+    let html = "";
+    try {
+      html = V.toHtml(d, { title: (d && d.title) || "" });
+    } catch (e) {
+      toastSafe(t("导出失败：") + String((e && e.message) || e), "err");
+      return null;
+    }
+    return await rsDeckExport(html, d || deck);
+  }
+  async function rsSlidesAutoExport(deck) {
     const Ck = rsSlidesCoreMod();
     const D = rsDeck();
     const target = deck || D.deck || null;
-    if (!target || !Ck) return false;
-    const brief = Ck.briefOf(target);
-    if (String((brief && brief.mode) || "slides") === "slides") return false;
-    const ctrl = D.ctrl;
-    if (!ctrl || typeof ctrl.exportVideo !== "function") return false; /* 编辑器没开：不另开一条没有进度条的渲染路 */
-    if (RS_VIDEO_JOB) return false; /* 已经有一条在渲：不叠第二条（取消 / 重试仍归那一条） */
-    try {
-      void Promise.resolve(ctrl.exportVideo()).catch(() => {});
-    } catch (_) {
-      return false;
+    if (!target || !Ck) return { ok: false, error: "no_deck" };
+    const mode = String((Ck.briefOf(target) || {}).mode || "slides");
+    const wantVideo = mode === "video" || mode === "both";
+    const slug = String(target.slug || D.slug || "slides") || "slides";
+    /* ① 静态版：两档都先出（slides 到这儿就收尾） */
+    rsSlidesAgentStatus("脚本已落盘：正在导出 HTML…");
+    const htmlPath = await rsSlidesAutoHtml(target);
+    if (!wantVideo) {
+      rsSlidesAgentStatus("");
+      return { ok: !!htmlPath, mode: mode, html: htmlPath || "" };
     }
-    return true;
+    /* ② 出片：headless 渲染，进度只进状态行（编辑器没开也照跑） */
+    if (RS_VIDEO_JOB) return { ok: false, error: "busy", mode: mode, html: htmlPath || "" };
+    const onProgress = (ev) => {
+      if (!ev || ev.done || ev.error) return;
+      const pct = Math.max(0, Math.min(100, Math.round(Number(ev.pct) || 0)));
+      const msg = String(ev.message || "");
+      rsSlidesAgentStatus("正在出片 " + pct + "%" + (msg ? "：" + msg : ""));
+    };
+    rsSlidesAgentStatus("正在出片：生成视频工程…");
+    /* quiet：中间的失败文案由这里统一报（重试过一次之后再报错行），宿主那侧不重复刷两条 */
+    let res = await rsDeckExportVideo(target, onProgress, { quiet: true });
+    if (res && res.ok !== true && !res.cancelled) {
+      rsSlidesAgentStatus("视频渲染失败，重试一次（同一 jobId）…");
+      toastSafe(t("导出视频失败，重试一次：") + String(res.message || res.error || ""), "warn");
+      res = await rsDeckExportVideo(target, onProgress, { quiet: true });
+    }
+    if (res && res.ok) {
+      rsSlidesAgentStatus("");
+      return { ok: true, mode: mode, html: htmlPath || "", video: res.video || null };
+    }
+    if (res && res.cancelled) {
+      rsSlidesAgentStatus("");
+      toastSafe(t("视频导出已取消：") + slug + ".mp4" + t(" 没生成"), "warn");
+      return { ok: false, cancelled: true, mode: mode, html: htmlPath || "" };
+    }
+    const msg = String((res && (res.message || res.error)) || t("未知原因"));
+    const line =
+      t("导出视频失败（已自动重试一次）：") +
+      msg +
+      (res && res.logPath ? t("（宿主日志：") + res.logPath + t("）") : "");
+    rsSlidesAgentStatus(line);
+    toastSafe(line, "err");
+    return { ok: false, error: msg, logPath: (res && res.logPath) || "", mode: mode, html: htmlPath || "" };
   }
   /* 顶栏「取消」：结束这一次导出的渲染进程树（宿主不往报错总线写失败） */
   function rsDeckVideoCancel() {
@@ -12205,6 +12714,8 @@
       return null;
     }
     toastSafe(t("演示已导出：") + abs);
+    /* 盘上多了单文件 HTML = 索引「制作」那一页要重扫（那颗 HTML 就是从这里出现的） */
+    rsIdxDecksInvalidate();
     try {
       const r = window.api && window.api.shellOpenPath ? await window.api.shellOpenPath(abs) : null;
       if (r && r.ok === false) toastSafe(t("打开失败：") + ((r && r.error) || abs), "err");
@@ -12235,6 +12746,9 @@
   }
   /* 初始化卡挡在编辑器前面时，那一篇要落到的页先记着：确认后编辑器一开就跳过去 */
   let rsSlidesInitRel = "";
+  /* 旧直出稿（deck.legacy）的自动重做在同一份 slug 上只派一次：关掉再开不再重复烧 Token。
+     手动「重新制作」不走这张表（用户点的就是「再来一轮」）。 */
+  const rsLegacyAsked = Object.create(null);
   async function rsSlidesInitSubmit(inf) {
     const Ck = rsSlidesCoreMod();
     const D = rsDeck();
@@ -12259,9 +12773,10 @@
       (p0.hidden || []).length > 0 ||
       !!p0.aspect ||
       Object.keys(p0.chrome || {}).length > 0;
-    /* ① 做法：creator = Agent 按指示写演示脚本（默认）；direct = 内核照原文直出（不花 Token）。
-       ② 联网补料：默认开；关掉 = 一个字节都不许上网，产物与今天完全一致。 */
-    const tier = inf && String(inf.tier || "") === "direct" ? "direct" : "author";
+    /* ① 做法：author = Agent 按指示写演示脚本（**默认档**）；direct = 内核照原文直出，
+       只是用户**明确勾选**的备选档（零 Token、不重写叙事）。没写 tier / 写歪了 = 走 author。 */
+    const tier = inf && String(inf.tier || "").trim() === "direct" ? "direct" : "author";
+    /* ② 联网补料：默认开；关掉 = 一个字节都不许上网，产物与今天完全一致。 */
     const online = !(inf && inf.online === false);
     const rel = await rsDeckSave({
       deck: deck,
@@ -12284,14 +12799,14 @@
       } catch (_) {
         existing = "";
       }
-      /* 已有脚本：脚本就是成品 —— 按它重算一遍把界面顶上来，然后直接出片（见 rsSlidesAutoVideo）。
+      /* 已有脚本：脚本就是成品 —— 按它重算一遍把界面顶上来，然后直接出成品（见 rsSlidesAutoExport）。
          这一档**不再派单**：再派一轮只会把脚本重写一遍、把刚落的片重渲一遍（同一份 slug 两条渲染撞在一起）。 */
       if (existing.trim()) {
         D.deck = null;
         const cur = await rsDeckLoad(true);
         if (cur && D.ctrl && typeof D.ctrl.setDeck === "function") D.ctrl.setDeck(cur);
         else if (cur && !D.ctrl) await rsSlidesOpen();
-        rsSlidesAutoVideo(cur || D.deck);
+        void rsSlidesAutoExport(cur || D.deck).catch(() => {});
         return { ok: true, rel: rel, deck: D.deck || cur, script: scriptRel };
       }
       deck.tier = "author";
@@ -12309,6 +12824,9 @@
     }
     /* 直出档：按盘上那份重算（brief 影响视频侧计划与派单，页本身仍由内核全量算） */
     D.deck = null;
+    /* 用户刚刚在卡里**明确**勾了直出：这一份就是他选的成品 —— 别把它当「旧直出稿」再自动派一轮
+       author 脚本（rsSlidesOpen 那条 legacy 分支）；以后真想要脚本，卡片的「重新制作」还能手动点。 */
+    rsLegacyAsked[slug] = true;
     const fresh = await rsDeckLoad(true);
     if (D.ctrl && typeof D.ctrl.setDeck === "function" && fresh) {
       D.ctrl.setDeck(fresh);
@@ -12321,11 +12839,14 @@
         rsSlidesGotoNote(to);
       }
     }
-    /* 直出档也一轮到底：重算完直接出片（不花 Token，也不再多点一次「导出视频」） */
-    rsSlidesAutoVideo(fresh);
+    /* 直出档也一轮到底：重算完直接出成品（不花 Token，也不再多点一次「导出视频」） */
+    void rsSlidesAutoExport(fresh).catch(() => {});
     return { ok: true, rel: rel, deck: fresh };
   }
-  function rsSlidesInitOpen(reason) {
+  /* 打开初始化卡。opts.tier === "author" = 「＋ Agent 从头做一份」那条入口（制作页页头）：
+     卡里照旧说明两档，但**确认时档位固定按 author 提交** —— 这条入口就是叫 Agent 照指示重做，
+     不给「照原文直出」；不给 opts = 今天的行为（档位由用户在卡里选，缺键一律 author）。 */
+  function rsSlidesInitOpen(reason, opts) {
     const Ck = rsSlidesCoreMod();
     const Init = rsSlidesInitMod();
     if (!Ck || !Init) {
@@ -12335,6 +12856,7 @@
     const D = rsDeck();
     const deck = D.deck;
     const slug = String((deck && deck.slug) || D.slug || "slides");
+    const lockTier = opts && String(opts.tier || "").trim() === "author" ? "author" : "";
     return Init.open({
       deck: deck || null,
       title: String((deck && deck.title) || (RS.meta && RS.meta.title) || ""),
@@ -12342,7 +12864,7 @@
       theme: (deck && deck.theme) || null,
       reason: reason === "settings" ? "settings" : "init",
       hint: Ck.fileOf(slug),
-      onSubmit: (info) => rsSlidesInitSubmit(info),
+      onSubmit: (info) => rsSlidesInitSubmit(lockTier ? Object.assign({}, info, { tier: lockTier }) : info),
     });
   }
   /* 编辑器那两颗（左栏当前页「A」/ 顶栏「让 Agent 重写整份」）→ 与顶栏菜单同一条：
@@ -12423,8 +12945,6 @@
         void rsDeckSave(inf);
       },
       onExport: (html, dk) => void rsDeckExport(html, dk),
-      /* 导出 PDF（一页一张）+ 逐页 PNG（同一份自包含 HTML，落 research/exports/<slug>/） */
-      onExportPrint: (html, dk) => void rsDeckExportPrint(html, dk),
       /* 导出视频：工程树现算 → 宿主渲染 MP4 → 回填 deck.video 并落盘（见 rsDeckExportVideo）。
          进度经 onProgress 驱动编辑器进度条；取消走 onExportVideoCancel（结束渲染进程树）。 */
       onExportVideo: (dk, onProgress) => rsDeckExportVideo(dk, onProgress),
@@ -12502,8 +13022,22 @@
       },
     });
     D.ctrl = ctrl || null;
-    /* 编辑器刚打开 / 刚重开：还有一路在等模型写出，就把「等第几轮」补回状态行 */
-    if (D.ctrl && D.job) rsSlidesAgentStatus(rsSlidesWaitText(D.job.rel, D.job.round + 1));
+    /* 旧直出稿（deck.legacy = 有存档、没有脚本文件、tier 是 direct 或缺键）：
+       新口径是 Agent 按指示从头做一份，所以打开它的同时就把那一轮 author 脚本派出去
+       （同一份 brief 原样带上）。编辑器里仍是那份旧稿，照旧能翻页 / 预览 / 导出 ——
+       脚本落盘后 rsSlidesScriptAdopt 才整体换掉。已有脚本在等写盘、或这份 slug 自动派过，就不再派。 */
+    const legacySlug = String(deck.slug || D.slug || "slides");
+    if (deck.legacy && !rsLegacyAsked[legacySlug] && !(D.job && D.job.kind === "script")) {
+      rsLegacyAsked[legacySlug] = true;
+      void rsSlidesScriptAsk(deck, Ck.briefOf(deck), deck.online !== false, "").catch(() => {});
+    }
+    /* 编辑器刚打开 / 刚重开：还有一路在等模型写出，就把「等第几轮 / 第几次自动返修」补回状态行 */
+    if (D.ctrl && D.job)
+      rsSlidesAgentStatus(
+        Number(D.job.retries) > 0
+          ? rsSlidesRepairWaitText(D.job.rel, D.job.retries)
+          : rsSlidesWaitText(D.job.rel, D.job.round + 1),
+      );
     if (ctrl && rel) rsSlidesGotoNote(rel);
     return ctrl;
   }
@@ -12535,35 +13069,149 @@
     const Ck = rsSlidesCoreMod();
     return String((Ck && Ck.STORE_DIR) || "slides") + "/" + (String(slug || "").trim() || "slides") + ".script.md";
   }
+  /* 事实锚点台账（scripts/anchors.mjs 生成的一份只读清单）：与脚本同目录同 slug。
+     写作时从里面**挑**具体物（年份 / 人名 / 定理编号 / 数字 / 原话），每条的 `文件:行号` 是回查坐标。
+     台账不在（老课题 / 还没生成）也照样把路径写进提示词 —— 提示词里说清了「不在就按六种锚点自己从材料里取」。 */
+  function rsSlidesAnchorsRel(slug) {
+    const Ck = rsSlidesCoreMod();
+    return String((Ck && Ck.STORE_DIR) || "slides") + "/" + (String(slug || "").trim() || "slides") + ".anchors.md";
+  }
   /* 展示风格（brief.style）翻成「怎么写页」的执行指示 —— 与内核 STYLE_MOTION / STYLE_SCENE_MAX 同一套口径
      （见 research-slides.js resolveStyle）：scholarly 慢推克制、motion 大字色块、d2_5 分层、d3 真三维轨道相机。
      颜色 / 字体归 theme，这里只说「怎么演」；且风格服从内容，撑不起就退回学术那套讲法。 */
   const RS_SLIDE_STYLE_BRIEF = {
     scholarly: [
-      "克制：一页只讲一件事，要点 3–4 条、每条 ≤ 18 字，宁少不多；不要感叹号与营销腔。",
+      "克制：一页讲一件事，要点宁少不多；每条把话说完，别为压字数砍掉「为什么」；不要感叹号与营销腔。",
       "公式与图注优先：材料里有写得出来的公式就单独一行 `$$ … $$`，要点退到解释它的位置。",
       "慢推：先给问题、再给做法、最后给结论，页与页之间留出呼吸，不要堆并列短句。",
-      "三维场景最多 1 页，只在层级 / 系统非三维讲不清时才加。",
+      "三维：这一档很少用得上，只在层级 / 系统非三维讲不清时才加（宿主这一档留给三维的额度很小）。",
     ],
     motion: [
-      "大字与色块：标题一句话就够，要点写成短句（≤ 12 字）或对比的两头（A 对 B）。",
+      "大字与色块：标题一句话就够，要点写成短句或对比的两头（A 对 B）—— 要短，但别短到只剩名词。",
       "数字当主角：关键数字直接写进要点，带单位与口径（「快了 3.2 倍」「从 31% 到 74%」）。",
       "讲得出变化：用「提升 / 下降 / 倍 / 占比 / 前后」这类能动的说法，少用形容词。",
-      "不加三维场景页（这一档靠字与色块，`<!-- scene -->` 一律不写）；遮罩转场由内核做。",
+      "这一档靠字与色块演，不加三维页（宿主这一档不留三维页）；遮罩转场由内核做。",
     ],
     d2_5: [
       "分层：一页讲清「一层套一层」的关系（大纲、子问题、步骤、分类），要点按层写，不要平铺三个并列结论。",
-      "每页都落到一个能分层的东西上；同一层最多 3 条，层间用「先 / 再 / 最后」或序数标出来。",
-      "三维场景最多 2 页，只给真正的层级结构。",
+      "每页都落到一个能分层的东西上；同一层别摊太多条，层间用「先 / 再 / 最后」或序数标出来。",
+      "三维页只给真正的层级结构（宿主这一档留的额度很少）。",
     ],
     d3: [
-      "空间优先：只把「位置、方向、距离、轨道、传播、维度、映射」这类内容做成三维页，全片最多 4 页。",
+      "空间优先：只把「位置、方向、距离、轨道、传播、维度、映射」这类内容做成三维页。",
       "三维页只讲空间关系（`<!-- scene: orbit|grid|signal -->`），结论仍写在要点里，别让每页都上场景。",
       "旁白要说清镜头在看什么（「我们绕着这个系统转一圈」），不要只念要点。",
     ],
   };
-  /* 派单提示词：做法（受众 / 场合 / 重点 / 风格）、可联网的边界、脚本格式，一次说清。
-     格式与内核 parseScript 一一对应 —— 改格式必须两边一起改，否则模型写的脚本编不成页。 */
+  /* 派单提示词：做法（受众 / 场合 / 重点 / 风格）、可联网的边界、图示的口径、脚本格式，一次说清。
+     格式与内核 parseScript 一一对应 —— 改格式（含 `<!-- figure: … -->`）必须两边一起改，否则模型写的脚本编不成页。 */
+  /* ── §15 叙事契约摘要（进 RS_PROMPT_SCRIPT 的 {{contract}}）──────────────────
+     docs/research-slides-video-spec.md §15 的**可执行**压缩版：只留阈值与动作，不搬论证。
+     三处必须同一口径，改一处要三处对账：§15 契约 / 这里 / renderer/research-slides-prose.js 的机判项。
+     为什么进提示词：契约层不设拒片闸（§15.8），模型拿不到的规矩等于不存在（基线审计：
+     21 页里 18 页无页间承接、元话语占禁用句式的 2/3）。 */
+  const RS_SLIDE_CONTRACT = [
+    "① 主张链（每页三步，缺一不合格）：副题或第一条要点的前半句**接住上一页交出的东西**（「上一页那个 O(log N) 是在均匀假设下拿到的」）；标题写成一句**能被否掉的判断**，不是话题名（「假设一破，界立刻退成 Θ(N)」，不是「复杂度分析」）；最后一条要点或旁白末句**交出具体物**（一个数 / 一个条件 / 一个反例 / 一个待答问题），不许「以上是本节内容」。",
+    "② 锚点（每页 ≥1 种、≤3 种，封面与末页同样要）：只认六种 —— 数字（带单位与量级）、定义或条件（「当且仅当…」「n > 10⁶」）、出处（`[@cite]` 或「作者 年份」）、同口径对照（两组数一个基准）、反例或边界（「n = 1 时退化成恒等映射」）、图或公式。末页不许只剩「谢谢」；形容词、无基准的百分比、「最近 / 现在」都不算锚点。",
+    "③ 可念性：单句 ≤40 字（与版式预算同一把尺）；括号每页 ≤1 处、不套娃；正文符号密度每 100 字 ≤3 个；公式一页 ≤1 条且 ≤40 字符；旁白 1–2 句、整段 ≤80 字、**一个符号都不念**（说「屏幕上那个三分之一次方」，别念 `\\sum`）。",
+    "④ 冲突裁决：事实与出处 > 锚点 > 承接与转折 > 可念性 > 风格。两条要求打架时按这个顺序让路，别反过来。",
+  ];
+  /* §15.2 的 20 条里挑模型最常犯的 8 条（全塞会把内容挤没；其余 12 条留在 §15.2 当人工改写卡）。
+     每条给「反例 → 正例」，正例只是示范改法，别照抄句子。 */
+  const RS_SLIDE_BANNED = [
+    ["元话语开场（接下来 / 这一页 / 不展开）", "「接下来我们来看实验部分。」", "「上一页的界只在均匀样本下成立；这一页看真实分布下它还剩多少。」"],
+    ["空转收束（综上所述 / 总而言之）", "「综上所述，该方法具有重要意义。」", "「所以 n < 10⁴ 用它，超过就该换分块。」"],
+    ["形容词抬升（显著 / 大幅 / 效果很好）", "「性能显著提升，效果很好。」", "「查询从 3.1 s 降到 0.4 s（同机、同数据集）。」"],
+    ["旁白念符号（σ 乘 W 再取 softmax）", "「旁白：这里 σ 乘 W 再取 softmax。」", "「旁白：先按重要性打分，再归一成权重。」"],
+    ["副题复述标题", "标题「注意力机制」+ 副题「本节介绍注意力机制」", "标题「注意力贵在内存，不在算力」+ 副题「上一页说它并行得好，代价在这里」"],
+    ["绕口双重否定（并非不能认为它无效）", "「并非不能认为它无效。」", "「它有效，代价是多一倍显存。」"],
+    ["无主语呼吁（需要进一步研究）", "「因此需要进一步研究。」", "「缺的是 n > 10⁶ 的实测，现有数据都停在 10⁴。」"],
+    ["术语裸奔（缩写不展开）", "「用 MoE 做稀疏化。」", "「用 MoE（每层只激活 2 个专家）做稀疏化。」"],
+  ];
+  function rsSlidesBannedLines() {
+    const out = RS_SLIDE_BANNED.map((it) => "- ✗ " + it[1] + " → ✓ " + it[2] + "（" + it[0] + "）");
+    out.push("- 这 8 条是最常犯的；同一类写法（导航句、空收束、形容词、念符号、复述、双否定、无主语、裸缩写）一律避开。");
+    return out.join("\n");
+  }
+  /* 创作档（tier = author）派单骨架（PS 登记 → 设置 · 内置能力里可改）。{{…}} 是这一轮现算的段落：
+     用户改这份文本时要把占位符留着，否则那一段整块消失（fillVars 认不出的占位符原样保留）。
+     口径：先按受众定水位（可能是普通本科生，不是同行），材料只供事实、不供措辞；
+     **文件一次交、页一页结**（§15.5）：先写一页大纲（每页的主张链），再逐页写、逐页念；
+     图示可选，但每张图都要带来源与许可。 */
+  const RS_PROMPT_SCRIPT = [
+    "你要把这份研究做成一支能直接讲给人听的演示：先写演示脚本（每页一节），宿主会用内核把它编成演示页与视频。脚本就是成品的唯一真源 —— 页标题、要点、公式、图示、口播旁白全从它来。",
+    "",
+    "谁说了算（从上往下）：",
+    "- ① 用户的演示需求是最高优先级：下面那份 brief（受众 / 场合 / 语气 / 重点 / 额外指示）与本轮原话说了算 —— 讲什么、先讲什么、讲到多细、用什么口吻，全按它们定；两者冲突时以本轮原话为准。受众若是普通学生（不是同行），就按「没学过这门课也能跟上」的水位讲，术语第一次出现给一句白话。",
+    "- ② 材料只是**参考资料**：`notes/`、`literature/library.json`、核心稿件提供事实、术语、公式与出处；章节顺序、页数、每页讲几件事、每一句措辞，都由你按「怎么讲清楚」自己定 —— 整段照搬原文没有意义，读者要的是讲法，不是重复。要沿用原文的说法就写成 `> ` 引文并标出处。",
+    "- ③ **文件一次交、页一页结**：宿主拿到文件就直接编页出片，没有第二轮 —— 所以整份脚本这一轮写完，别留「待补」；但**写的时候**不是一口气把页并排列出来：先写一页大纲（每页一行：承接什么 → 本页的转折是什么 → 交出什么），再按大纲**一页一页**往下写，每页只带它自己的上下文（上一页交出的那句 + 这一页的锚点 + 本页旁白），写完一页就念一遍、数一遍，合格再开下一页。",
+    "{{online}}",
+    "- ⑤ 档位：默认档是「按指示创作」—— 就是你现在这一档。「照原文直出」只是用户明确勾选的备选档（确定性切页、零 Token、不重写叙事），用户没选就与这一轮无关：不要因为原文已经有现成结构，就退回逐节照抄。",
+    "",
+    "开工顺序（照着走，别跳步）：",
+    "- 第一步 · 读懂：读 `notes/` 里的核心稿件（连带 `notes/cites/*.md` 的引文）与 `literature/library.json`，把这份材料究竟在讲什么弄明白 —— 作者主张什么、凭什么、哪一步最容易讲错。",
+    "- 第二步 · 写一页大纲（主张链）：每页一行，写清「承接上一页交出的什么 → 本页的转折是什么（一句能被否掉的判断）→ 本页交出什么（数 / 条件 / 反例 / 待答）」。大纲先在脑子（或草稿）里定死 —— **不另开文件、不写进脚本**（脚本里只放成品页），也别边写边改大纲。",
+    "- 第三步 · 逐页写：按大纲一页一页落到脚本上，每页只带它自己的上下文（上一页交出的那句 + 这一页的锚点 + 本页旁白），写完一页按下面「叙事契约」与「禁用句式」念一遍、数一遍，不合格就地改这一页，别回头重排前面的页。",
+    "",
+    "叙事契约（每页都要挣到它占的那十几秒；写完自己按这几条数一遍）：",
+    "{{contract}}",
+    "",
+    "禁用句式（写完扫一眼，命中的就地换；正例只是示范，别照抄句子）：",
+    "{{banned}}",
+    "",
+    "- 工作目录：`{{root}}`",
+    "- 要写的文件（唯一）：`{{rel}}`",
+    "- 演示名：`{{slug}}`（{{deckTitle}}）",
+    "",
+    "这份演示是讲给谁听的（用户填的 brief，原样照做，别自己另设一套）：",
+    "{{brief}}",
+    "",
+    "这份演示怎么「演」（展示风格：只管视觉动势与节奏，不改变要讲的内容）：",
+    "{{style}}",
+    "- 风格服从内容，不是套模板：材料撑不起这套演法（比如没有可比数字却要 Motion Graphics）就按学术那套克制地讲 —— 绝不为了风格编数字、硬拆页或堆装饰。",
+    "",
+    "用户这一轮的补充要求（原话，可能为空）：",
+    "{{want}}",
+    "",
+    "可以读的参考（只读）：",
+    "- `notes/*.md`（含三份 3-Pass 变体与 `notes/cites/*.md` 的引文）：事实、术语、公式与出处的第一来源 —— 只提供事实，不提供章节顺序与现成措辞。",
+    "- `literature/library.json`（CSL-JSON）：核对作者年份与引用键；只引用库里真有的条目。",
+    "- `{{anchors}}`（事实锚点台账，只读；有就用）：写作时从这里**挑**具体物（年份 / 人名 / 定理编号 / 数字 / 原话），每条的 `文件:行号` 就是回查坐标 —— 挑现成的，别另编一个像真的。台账不在（文件不存在）就按「叙事契约」里那六种锚点从材料里自己取，**绝不为了凑锚点编数字**。",
+    "{{network}}",
+    "",
+    "{{explainBlock}}",
+    "图示（想加就加，帮人看懂就加；版面一页只摆得下一张，多写的宿主只用第一张）：",
+    "{{figure}}",
+    "",
+    "脚本格式（宿主按这份格式逐行解析；写成别的样子它编不出页 —— 这是格式约定，不是内容限制）：",
+    "```",
+    "# 演示标题（只一行）",
+    "",
+    "## 01 这一页的标题",
+    "> 可选的副标题/眉题（一句话，紧跟在标题下面）",
+    "- 要点一（几条随内容，每条把话说清）",
+    "- 要点二",
+    "$$ \\mathrm{softmax}(QK^\\top/\\sqrt{d}) V $$",
+    "> 可选：一句引文 —— 作者，年份",
+    "旁白：这一页要讲的一到两句（念得出来就停）",
+    "<!-- scene: orbit -->",
+    "<!-- figure: slides/media/{{slug}}/softmax.svg | 一句话说明图里是什么 | 来源：… | 许可：… -->",
+    "```",
+    "逐条规矩（认格式用的，不是给你的内容加限制）：",
+    "- `#` 只有一行（整份演示的标题）；每页用 `## 序号 标题` 起一节，序号从 01 起。",
+    "- 副题 `> ` 只在页首出现一次；引文也写 `> `，但放在要点之后（宿主按位置判断哪个是哪个）。",
+    "- 公式用 `$$ … $$` 一行写完：宿主会把它翻成**排好版的文字**（真上标 / √ / a/b /「的 … 次方」），所以只写常见的符号与命令（希腊字母、`\\frac` `\\sqrt` `\\log` `\\sum` `\\le` 这类），别用矩阵 / cases / aligned 环境（排不出来，整页会被拒）。式子是给人看的，越短越好；一个式子讲不清就改写成一句人话。",
+    "- 旁白写 `旁白：` 开头，一到两句、整段 ≤80 字，念出来是人话，**不念符号也不念变量名**（说「屏幕上那个三分之一次方」；视频按字数排时间，太长自己会拖）。",
+    "- `<!-- scene: orbit -->` 可选，这一页适合用三维几何讲时才加：`orbit` = 层级/系统/围绕关系，`grid` = 空间/结构/高低对比，`signal` = 波/传播/序列（宿主按展示风格留三维额度，多写的会被忽略）。",
+    "- `<!-- figure: … -->` 可选，一页摆一张（多写的宿主只用第一行）：四截用 `|` 分隔（路径 | 一句说明 | 来源 | 许可）；路径只写文件名时自动补成 `slides/media/{{slug}}/<文件名>`。有图的那一页右半版面让给图。",
+    "- 页数按内容定：第一页封面（`## 01`），最后一页收束（结论 / 要记住的三件事）是常见做法；够讲清就停，别为凑页数拆页、也别硬压进几页。",
+    "- 要点条数与每条长短按内容定：够说清就停，别为凑短把「为什么」砍掉。但要守一条**版式预算**——视频版底部要留字幕带，正文区只剩约 700px 高，写得越密字号被压得越小：一页 3–4 条、单条 ≤ 40 字（有图那页 ≤ 4 条、≤ 34 字）最稳；超过 5 条或单条跨 3 行就拆两页，宁可多一页也别让字缩到看不清。标题一句、副题一句，公式单独一行且不超过约 40 个字符。",
+    "- 数字、结论、引文尽量指回材料或外部来源（带链接）；凭推断写的就说清是推断，别补一个看起来合理的答案。",
+    "",
+    "除了上面那个脚本文件、（联网时）那一份 explain 笔记、以及 `slides/media/{{slug}}/` 下的图，别的文件一律不写、不改、不新建。",
+    "这一轮就是全部：脚本与（联网时）`notes/{{slug}}.explain.md` 整份一次交（页是一页一页写的），写完就停手 —— 不要回问、不要等第二轮。宿主会先按上面的叙事契约机检一遍（单句字数 / 括号 / 旁白符号 / 锚点 / 页间承接 / 禁用句式），命中就把「第几页、第几行、超了哪一条」回给你，你就地改这几处、覆盖重写同一个文件（格式与页码不变）；最多两次，改完就编页出成品（HTML 必出，选了视频再出片）。",
+    "写完只回一句话：多少页、讲了哪几件事。",
+  ].join("\n");
   function rsSlidesScriptPrompt(deck, brief, online, memo) {
     const Ck = rsSlidesCoreMod();
     const D = rsDeck();
@@ -12575,119 +13223,87 @@
       .trim()
       .slice(0, 2000);
     const b = Ck ? Ck.normalizeBrief(brief) : {};
-    const L = [];
-    L.push(
-      t(
-        "你要把这份研究做成一支能直接讲给人听的演示：先写演示脚本（每页一节），宿主会用内核把它编成演示页与视频。脚本就是成品的唯一真源 —— 页标题、要点、公式、引文、口播旁白全从它来。",
-      ),
-    );
-    L.push(t("用户已有的材料只是**参考资料**：不要照抄它的章节顺序，按「怎么讲最清楚」重新组织。"));
-    L.push("");
-    L.push(t("开工顺序（第一步不许跳）："));
-    L.push(
-      "- " +
-        t(
-          "先读懂：读 `notes/` 里的核心稿件（连带 `notes/cites/*.md` 的引文）与 `literature/library.json`，把这份材料究竟在讲什么弄明白 —— 作者主张什么、凭什么、哪一步最容易讲错。",
-        ),
-    );
-    L.push(
-      "- " +
-        t(
-          "再定口径：用三五句话写下「这份内容必须讲清的点」，然后把这层意思直接落进脚本首页（`## 01`）的要点与旁白里 —— 不另开文件、不单独汇报、只写进脚本。",
-        ),
-    );
-    L.push("- " + t("最后才决定怎么演：拿这几句话去铺页（页数 / 顺序 / 哪页上公式、哪页上三维），没想清楚的那一页就别硬凑。"));
-    L.push("");
-    L.push("- " + t("工作目录") + "：`" + root + "`");
-    L.push("- " + t("要写的文件（唯一）") + "：`" + rel + "`");
-    L.push("- " + t("演示名") + "：`" + slug + "`（" + String((deck && deck.title) || "") + "）");
-    L.push("");
-    L.push(t("这份演示是讲给谁听的（用户填的 brief，原样照做，别自己另设一套）："));
+    /* brief：受众 / 场合 / 语气 / 重点 / 额外指示逐行写进去（模型得知道讲给谁听） */
+    const briefLines = [];
     if (!b || Ck.briefIsDefault(b)) {
-      L.push("- " + t("用户没填：按「第一次听这个课题的人也能跟上」的默认口径写，别堆术语与缩写。"));
+      briefLines.push("- 用户没填：按「第一次听这个课题的人也能跟上」的默认口径写，别堆术语与缩写。");
     } else {
-      if (b.audience) L.push("- " + t("受众") + "：" + b.audience);
-      if (b.occasion) L.push("- " + t("场合") + "：" + b.occasion);
-      if (b.tone) L.push("- " + t("语气") + "：" + b.tone);
-      if (b.focus && b.focus.length) L.push("- " + t("重点讲透") + "：" + b.focus.join("、"));
-      if (b.extra) L.push("- " + t("额外指示") + "：" + String(b.extra).replace(/\n/g, "\n  "));
+      if (b.audience) briefLines.push("- 受众：" + b.audience);
+      if (b.occasion) briefLines.push("- 场合：" + b.occasion);
+      if (b.tone) briefLines.push("- 语气：" + b.tone);
+      if (b.focus && b.focus.length) briefLines.push("- 重点讲透：" + b.focus.join("、"));
+      if (b.extra) briefLines.push("- 额外指示：" + String(b.extra).replace(/\n/g, "\n  "));
     }
-    L.push("");
     /* 展示风格：选定档给它的执行指示；auto 给内核 resolveStyle 的判定口径（按页上的字判，确定性） */
     const styleId = String((b && b.style) || "auto");
     const styleLabel = (Ck && Ck.SLIDE_STYLE_LABEL && Ck.SLIDE_STYLE_LABEL[styleId]) || styleId;
-    L.push(t("这份演示怎么「演」（展示风格：只管视觉动势与节奏，不改变要讲的内容）："));
+    const styleLines = [];
     if (styleId === "auto") {
-      L.push(
-        "- " +
-          t(
-            "用户没选（自动）：由内容定 —— 公式与术语多 → 学术；数字与对比多 → Motion Graphics；层级与续页多 → 2.5D；空间关系多 → 3D；拿不准就按学术写（最不会把内容演坏）。写的时候把对应的特征写足，别四种混着来。",
-          ),
+      styleLines.push(
+        "- 用户没选（自动）：由内容定 —— 公式与术语多 → 学术；数字与对比多 → Motion Graphics；层级与续页多 → 2.5D；空间关系多 → 3D；拿不准就按学术写（最不会把内容演坏）。写的时候把对应的特征写足，别四种混着来。",
       );
     } else {
-      L.push("- " + t("用户选的是") + "：" + styleLabel);
-      for (const line of RS_SLIDE_STYLE_BRIEF[styleId] || []) L.push("  - " + t(line));
+      styleLines.push("- 用户选的是：" + styleLabel);
+      for (const line of RS_SLIDE_STYLE_BRIEF[styleId] || []) styleLines.push("  - " + String(line));
     }
-    L.push(
-      "- " +
-        t(
-          "风格服从内容，不是套模板：材料撑不起这套演法（比如没有可比数字却要 Motion Graphics）就按学术那套克制地讲 —— 绝不为了风格编数字、硬拆页或堆装饰。",
-        ),
-    );
-    L.push("");
-    L.push(t("用户这一轮的补充要求（原话，可能为空）："));
-    L.push(want ? want.replace(/\n/g, "\n  ") : "- " + t("（空）按上面的 brief 自主创作。"));
-    L.push("");
-    L.push(t("可以读的参考（只读）："));
-    L.push("- " + t("`notes/*.md`（含三份 3-Pass 变体与 `notes/cites/*.md` 的引文）：事实、术语、公式的第一来源。"));
-    L.push("- " + t("`literature/library.json`（CSL-JSON）：核对作者年份与引用键；只引用库里真有的条目。"));
-    L.push(
-      "- " +
-        (online
-          ? t(
-              "允许联网查证与补料：遇到材料讲不清的术语、公式推导、最新进展可以查，但**每一条外部信息都要给出处**（标题 + 链接 + 访问日期）。",
-            )
-          : t("这一轮不联网：只用工作目录里已有的材料，查不到就不写。")),
-    );
-    L.push("");
-    if (online) {
-      L.push(t("联网补来的新内容不许混进笔记正文，按下面这样另存成衍生笔记（内核与图谱都按这个约定认）："));
-      L.push("- " + t("文件") + "：`notes/" + slug + ".explain.md`（术语解释 / 背景补充）");
-      L.push("- " + t("开头必须是 frontmatter：") + "`---`、" + "`title: …`、" + "`derived: true`、" + "`of: <被解释的笔记路径>`、" + "`sources:`（每行一条 `- 标题 | 链接 | YYYY-MM-DD`）、`---`");
-      L.push("- " + t("正文里每个外部事实后面带 `[@cite]`，与 sources 里的条目同名；没出处的句子一律不写。"));
-      L.push("- " + t("脚本页里引用这条新内容时，在要点末尾写 `[@cite]`，不要把链接塞进正文。"));
-      L.push("");
-    }
-    L.push(t("脚本格式（严格照此写，宿主按它逐行解析；写歪了就编不出页）："));
-    L.push("```");
-    L.push("# " + t("演示标题（只一行）"));
-    L.push("");
-    L.push("## 01 " + t("这一页的标题"));
-    L.push("> " + t("可选的副标题/眉题（一句话，紧跟在标题下面）"));
-    L.push("- " + t("要点一（≤ 22 字，3–5 条）"));
-    L.push("- " + t("要点二"));
-    L.push("$$ \\mathrm{softmax}(QK^\\top/\\sqrt{d}) V $$");
-    L.push("> " + t("可选：一句引文 —— 作者，年份"));
-    L.push(t("旁白：这一页要讲的一到两句（≤ 60 字，直接念得出来）"));
-    L.push("<!-- scene: orbit -->");
-    L.push("```");
-    L.push(t("逐条规矩："));
-    L.push("- " + t("`#` 只有一行（整份演示的标题）；每页用 `## 序号 标题` 起一节，序号从 01 起。"));
-    L.push("- " + t("副题 `> ` 只在页首出现一次；引文也写 `> `，但放在要点之后（宿主按位置判断哪个是哪个）。"));
-    L.push("- " + t("公式用 `$$ … $$` 一行写完，TeX 源码；不确定的就别写，宁可用文字说。"));
-    L.push("- " + t("旁白写 `旁白：` 开头，一到两句、≤ 60 字，念出来是人话（不要括号、不要破折号、不要缩写堆叠）。"));
-    L.push("- " + t("`<!-- scene: orbit -->` 可选，只有这一页真的适合用三维几何讲时才加：`orbit` = 层级/系统/围绕关系，`grid` = 空间/结构/高低对比，`signal` = 波/传播/序列。全片最多 4 页。"));
-    L.push("- " + t("页数 8–14 页：第一页封面（`## 01`），最后一页收束（结论 / 要记住的三件事）；中间每页只讲一件事。"));
-    L.push("- " + t("不许编造：数字、结论、引文、文献都必须在材料里有出处；不确定的地方写成「材料没讲清」，不要补一个看起来合理的答案。"));
-    L.push("");
-    L.push(t("除了上面那个脚本文件与（联网时）那一份 explain 笔记，别的文件一律不写、不改、不新建。"));
-    L.push(
-      t("这一轮就是全部：脚本与（联网时）`notes/") +
+    /* 联网：既决定 ④ 那一条、参考里那一条，也决定要不要那段「衍生笔记」；关掉就一条都不写 */
+    const onlineLine = online
+      ? "- ④ 联网补料可以（把材料讲不清的术语 / 公式 / 最新进展说清楚）：外部信息尽量带**标题 + 链接 + 访问日期**，并按下面「联网补来的新内容」那段另存成 `notes/" +
         slug +
-        t(".explain.md` 都在这一轮一次写完，写完就停手 —— 不要回问、不要等第二轮、不要把剩下几页留到下一轮。宿主会自动接着把脚本编成演示页并出视频。"),
-    );
-    L.push(t("写完只回一句话：多少页、讲了哪几件事。"));
-    return L.join("\n");
+        ".explain.md`，脚本里引到它的要点末尾带 `[@cite]` —— 这样讲的时候能指着出处说。"
+      : "- ④ 这一轮不联网：用工作目录里已有的材料；材料没讲的可以按常识讲，但要讲清是推断，别编来源。";
+    const networkLine = online
+      ? "- 允许联网查证与补料：材料讲不清的术语、公式推导、最新进展可以查，查到就带上出处（标题 + 链接 + 访问日期）。"
+      : "- 这一轮不联网：用工作目录里已有的材料与常识。";
+    const explainLines = online
+      ? [
+          "联网补来的新内容建议另存成衍生笔记（内核与图谱都按这个约定认，不写也不影响出片）：",
+          "- 文件：`notes/" + slug + ".explain.md`（术语解释 / 背景补充）",
+          "- 开头是 frontmatter：`---`、`title: …`、`derived: true`、`of: <被解释的笔记路径>`、`sources:`（每行一条 `- 标题 | 链接 | YYYY-MM-DD`）、`---`",
+          "- 正文里每个外部事实后面带 `[@cite]`，与 sources 里的条目同名。",
+          "- 脚本页里引用这条新内容时，在要点末尾写 `[@cite]`，不要把长链接塞进正文。",
+          "",
+        ]
+      : [];
+    /* 图示：从哪来随联网开关变；图只上静态版（视频版这一版不铺媒体，导出时会如实提示） */
+    const figureLines = online
+      ? [
+          "- 从哪来（按顺序挑）：① 材料里已有的图 —— 复制进 `slides/media/" +
+            slug +
+            "/` 再引它；② 材料没有、但值得看一眼的公开图 / 示意图 —— 这一轮允许联网取，写清来源链接与许可（许可不明的最好别用）；③ 都没有就自己画一张 `slides/media/" +
+            slug +
+            "/xxx.svg` 示意图，许可写「自绘」。",
+          "- 图上别堆材料里没有的数字与结论；图是示意就写清是示意（图上字越少越好，一句话标出该看哪里）。",
+          "- 有图的那一页把右半版面让给图，别再堆公式与引文（会被图压住）。",
+          "- 图只上静态版（HTML / 放映）；视频版这一版不铺图，导出时会如实提示。",
+        ]
+      : [
+          "- 这一轮不联网：用材料里已有的图（复制进 `slides/media/" +
+            slug +
+            "/`），或者自己画一张 `slides/media/" +
+            slug +
+            "/xxx.svg` 示意图（许可写「自绘」）。",
+          "- 图上别堆材料里没有的数字与结论；图是示意就写清是示意（图上字越少越好，一句话标出该看哪里）。",
+          "- 有图的那一页把右半版面让给图，别再堆公式与引文（会被图压住）。",
+          "- 图只上静态版（HTML / 放映）；视频版这一版不铺图，导出时会如实提示。",
+        ];
+    return rsPS("research.slides.script", RS_PROMPT_SCRIPT, {
+      root: root,
+      rel: rel,
+      slug: slug,
+      deckTitle: String((deck && deck.title) || ""),
+      brief: briefLines.join("\n"),
+      style: styleLines.join("\n"),
+      want: want ? want.replace(/\n/g, "\n  ") : "- （空）按上面的 brief 自主创作。",
+      online: onlineLine,
+      network: networkLine,
+      explainBlock: explainLines.join("\n"),
+      figure: figureLines.join("\n"),
+      /* §15 叙事契约摘要 / 禁用句式 8 条正负例 / 锚点台账路径（三份都由这一处现算，改口径只改上面那两张表） */
+      contract: RS_SLIDE_CONTRACT.map((line) => "- " + line).join("\n"),
+      banned: rsSlidesBannedLines(),
+      anchors: rsSlidesAnchorsRel(slug),
+    });
   }
   /* 采纳脚本：读盘重算 deck（rsDeckLoad 认 slides/<slug>.script.md），再把编辑器那块换掉 */
   async function rsSlidesScriptAdopt(slug, rel, parsed) {
@@ -12702,12 +13318,42 @@
       await rsSlidesOpen();
     }
     toastSafe(t("演示脚本已落盘（") + String((parsed && parsed.pages ? parsed.pages.length : 0)) + t(" 页）：") + rel);
-    /* 一轮到此收尾：脚本就是这一轮的终点，接着自动出片（brief.mode ≠ slides 才出，见 rsSlidesAutoVideo） */
-    rsSlidesAutoVideo(fresh);
+    /* 这一轮收尾：制作页那份不再是 producing（创作中…），清单重算 */
+    rsIdxDecksRefresh();
+    /* 一轮到此收尾：脚本就是这一轮的终点，接着自动出成品（HTML 必出；video / both 再出片，见 rsSlidesAutoExport） */
+    void rsSlidesAutoExport(fresh).catch(() => {});
     return fresh;
   }
+  /* 叙事 lint：编页**之前**的一次机检（§15 契约，纯函数在 renderer/research-slides-prose.js）。
+     返回 null = 模块没装载 / 自己抛错 —— 这一层是自检，不是拒片闸，出错就当没有这一步，绝不拦编页。 */
+  function rsSlidesProseLint(s, rel) {
+    const P = rsSlidesProseMod();
+    if (!P || typeof P.lintScript !== "function") return null;
+    try {
+      return P.lintScript(s, { path: rel });
+    } catch (_) {
+      return null;
+    }
+  }
+  /* lint 结果 → 回话正文（「第几页 / 第几行 / 哪个字段 / 超了哪一条」）。
+     maxHits 压条数不压页数：一轮改不完 21 页，先让它改前 12 处最要紧的。 */
+  function rsSlidesProseWhy(res) {
+    const P = rsSlidesProseMod();
+    if (!P || typeof P.formatHits !== "function") return "";
+    try {
+      return String(P.formatHits(res, { maxHits: 12 }) || "");
+    } catch (_) {
+      return "";
+    }
+  }
   /* 盯脚本文件：两拍字节一样才算写完 → 内核 parseScript 过一遍 → 编成 deck。
-     格式不对就用同一条会话回一句让它修（只一次），再不对才报错 —— 与 rewrite 那条同一套自救口径。 */
+     两道关，都在编页之前：
+       ① 格式：编不出来就用同一条会话回一句让它修（把行号 / 缺哪节写清楚），
+         一轮最多自动返修 RS_SLIDES_REPAIR_MAX（2）次，第 3 次仍不合格才落失败提示；
+       ② 叙事（§15 契约 · renderer/research-slides-prose.js）：格式过关但命中叙事问题（单句超长 /
+         括号 / 旁白念符号 / 无锚点 / 无承接 / 禁用句式）→ 同样回一句，把「第几页 / 第几行 / 超了哪一条」
+         写清楚，与①共用同一个预算；预算用满仍命中 → **照样编页**（§15.8 不设拒片闸），只把剩余命中项报出来。
+     —— 与 rewrite 那条同一套自救口径。 */
   function rsSlidesWatchScript(abs, rel, slug, sessionId) {
     const Ck = rsSlidesCoreMod();
     const D = rsDeck();
@@ -12721,7 +13367,7 @@
       rel: String(rel || ""),
       startedAt: Date.now(),
       sessionId: String(sessionId || ""),
-      retried: false,
+      retries: 0, /* 已自动返修的次数（上限 RS_SLIDES_REPAIR_MAX，不是布尔） */
       kind: "script",
     };
     D.job = job;
@@ -12738,10 +13384,15 @@
           if (D.job !== job) return;
           const s = String(txt || "");
           if (!s.trim()) {
+            /* 还没写盘：只把状态行的「已经等了 N 分钟」往下刷（不弹窗、不收工，写出就接上） */
             if (ticks * 1200 >= RS_SLIDES_WAIT_MS) {
-              stop();
-              rsSlidesAgentStatus("");
-              toastSafe(t("还没等到演示脚本：") + rel + t("（会话可能没写盘；想再来一次就再点一次「按指示创作」）"), "warn");
+              ticks = 0;
+              rsSlidesAgentStatus(
+                rsSlidesWaitText(rel, job.round + 1) +
+                  "（已经等了 " +
+                  String(Math.max(1, Math.round((Date.now() - job.startedAt) / 60000))) +
+                  " 分钟，写出就自动编页）",
+              );
             }
             return;
           }
@@ -12755,27 +13406,107 @@
           job.seen = s;
           const parsed = Ck && typeof Ck.parseScript === "function" ? Ck.parseScript(s, { path: rel }) : null;
           if (!parsed || !parsed.ok || !(parsed.pages || []).length) {
-            const why = (parsed && (parsed.error || "")) || t("没有解析出任何页（缺 `## 序号 标题` 分节？）");
+            const why = rsSlidesScriptWhy(s, parsed);
             const S = rsSessionApi();
-            if (!job.retried && job.sessionId && S && typeof S.send === "function") {
-              job.retried = true;
+            const used = Number(job.retries) || 0;
+            if (used < RS_SLIDES_REPAIR_MAX && job.sessionId && S && typeof S.send === "function") {
+              const n = used + 1;
+              let sent = true;
               try {
                 S.send(
                   t("上一轮写的 ") +
                     rel +
                     t(" 用不了：") +
                     why +
-                    t("。请按提示词里的格式重写这同一个文件（同一个路径、覆盖写），写完只回一句话。"),
+                    t("。这是第 ") +
+                    String(n) +
+                    t(" 次自动返修（上限 ") +
+                    String(RS_SLIDES_REPAIR_MAX) +
+                    t(" 次）：请按提示词里的格式重写这同一个文件（同一个路径、覆盖写），写完只回一句话。"),
                   job.sessionId,
                 );
-              } catch (_) {}
-              toastSafe(t("脚本格式对不上，已回它一句让它修（只重试这一次）"), "warn");
-              return;
+              } catch (_) {
+                sent = false;
+              }
+              if (sent) {
+                job.retries = n;
+                rsSlidesAgentStatus(rsSlidesRepairWaitText(rel, n));
+                toastSafe(
+                  t("脚本格式对不上（") +
+                    why +
+                    t("），已回它一句让它修：第 ") +
+                    String(n) +
+                    t(" 次自动返修"),
+                  "warn",
+                );
+                return;
+              }
             }
             stop();
             rsSlidesAgentStatus("");
-            toastSafe(t("演示脚本还是不能用：") + why, "err");
+            toastSafe(
+              t("演示脚本还是不能用（已自动返修 ") + String(used) + t(" 次）：") + why,
+              "err",
+            );
             return;
+          }
+          /* 格式过关 → 编页**之前**再过一遍叙事契约（§15 机判：renderer/research-slides-prose.js）。
+             命中就回同一条会话让它就地改（与格式错共用 RS_SLIDES_REPAIR_MAX 的预算）；
+             预算用满仍命中 → 照样编页出片（§15.8：这一层不设拒片闸），只把剩下的命中项报出来。
+             job.seen 在上面已经置成这一版：同一版文本不会被重复回话、也不会重复编页。 */
+          const prose = rsSlidesProseLint(s, rel);
+          const hits = (prose && prose.errors) || [];
+          if (hits.length) {
+            const S2 = rsSessionApi();
+            const used2 = Number(job.retries) || 0;
+            if (used2 < RS_SLIDES_REPAIR_MAX && job.sessionId && S2 && typeof S2.send === "function") {
+              const n2 = used2 + 1;
+              let sent2 = true;
+              try {
+                S2.send(
+                  t("上一轮写的 ") +
+                    rel +
+                    t(" 能编成页了，但有 ") +
+                    String(hits.length) +
+                    t(" 处叙事问题（按 §15 叙事契约数的，带行号）：\n") +
+                    rsSlidesProseWhy(prose) +
+                    t("\n这是第 ") +
+                    String(n2) +
+                    t(" 次自动返修（上限 ") +
+                    String(RS_SLIDES_REPAIR_MAX) +
+                    t(
+                      " 次）：请按上面的行号就地改这几处，重写这同一个文件（同一个路径、覆盖写；`## NN 标题` 与 `旁白：` 的格式、页码都不变），写完只回一句话。",
+                    ),
+                  job.sessionId,
+                );
+              } catch (_) {
+                sent2 = false;
+              }
+              if (sent2) {
+                job.retries = n2;
+                rsSlidesAgentStatus(rsSlidesRepairWaitText(rel, n2));
+                toastSafe(
+                  t("脚本能编页了，但有 ") +
+                    String(hits.length) +
+                    t(" 处叙事问题（如：") +
+                    String(hits[0].why || "") +
+                    t("），已回它一句让它就地改：第 ") +
+                    String(n2) +
+                    t(" 次自动返修"),
+                  "warn",
+                );
+                return;
+              }
+            }
+            /* 预算用满 / 没有会话：不拦出片 —— 这是契约自检，不是拒片闸（§15.8） */
+            toastSafe(
+              t("脚本还有 ") +
+                String(hits.length) +
+                t(" 处叙事问题（自动返修 ") +
+                String(used2) +
+                t(" 次后仍未清），按现稿编页"),
+              "warn",
+            );
           }
           stop();
           rsSlidesAgentStatus("");
@@ -12812,7 +13543,89 @@
     toastSafe(t("已派给会话，等它写出 ") + rel + "…");
     rsSlidesAgentStatus(rsSlidesWaitText(rel, 1));
     rsSlidesWatchScript(abs, rel, slug, sid);
+    /* 「制作」页那一份从这一刻起是 producing（创作中…）：清单重算，停在索引页就重画一次 */
+    rsIdxDecksRefresh();
     return rel;
+  }
+  /* 改写派单的骨架（PS 登记 → 设置 · 内置能力里可改）。{{…}} 都是这一轮现算的段落：
+     用户改这份文本时要把占位符留着，否则那一段整块消失（fillVars 认不出的占位符原样保留）。
+     口径：用户那句话压过一切；材料 / 当前这一版 / 已有素材**只是参考，不是限制** ——
+     页数、页序、每页几条、要不要加页 / 删页 / 加图，全由模型按「讲清楚」自己定。
+     宿主只认文件格式（JSON 的键），不设内容门槛。 */
+  const RS_PROMPT_REWRITE = [
+    "你要把一份研究演示（PPT）改到能当面讲：像上课，不像念论文。",
+    "这是一次可以反复来的改写：这一轮把用户要的那件事做完就停手，等下一轮。",
+    "",
+    "- 工作目录：`{{root}}`",
+    "- 要写的文件（唯一）：`{{rel}}`",
+    "- 演示名：`{{slug}}`（{{deckTitle}}）",
+    "",
+    "谁说了算：",
+    "- 用户这一轮的原话是最高优先级，其次是下面那份 brief（受众 / 场合 / 语气 / 重点）：讲什么、先讲什么、讲到多细、用什么口吻，全按它们定。",
+    "- 下面这些**都只是参考，不是限制**：`notes/` 与 `literature/library.json`（事实、术语、公式、出处的来源）、当前这一版演示、已有的素材与图示。它们帮你少说错、少重复，但一点都不约束你怎么写 —— 页数、页序、每页几条、新增 / 删除 / 合并页、加不加图，都按「怎么讲清楚」自己定。",
+    "- 用户的话与材料冲突时以用户的话为准；材料没讲的可以联网查证（带标题 + 链接 + 访问日期），实在查不到就写清是估计，别硬编一个像真的。",
+    "",
+    "这份演示是讲给谁听的（用户填的 brief）：",
+    "{{brief}}",
+    "",
+    "用户这一轮想怎么改（原话，可能为空）：",
+    "{{want}}",
+    "",
+    "可以读的参考（只读，别改它）：",
+    "- `notes/*.md`（含 `notes/cites/*.md` 里的引文）：核对原文、补上下文、确认一句话原本怎么说时读它。",
+    "- `literature/library.json`（CSL-JSON）：核对引文出处、作者年份、引用键时读它。",
+    "",
+    "这一版现在长这样（参考，别被它框住）：",
+    "{{pages}}",
+    "",
+    "怎么写（建议，不是规矩）：",
+    "1. 一页说清一件事：先说这一页要让人听懂什么，再把要点按「为什么 → 怎么做 → 得到什么」排。开头先说它**接住上一页交出的什么**，末尾说清这一页**交出什么**（一个数 / 一个条件 / 一个反例 / 一个待答问题）—— 两头都空着的页，观众看完接不住下一句。",
+    "2. 说人话：术语第一次出现给一句白话，缩写先展开一次，公式旁边写一句它凭什么成立。",
+    "3. 数字与结论尽量指回 notes 或文献库；指不回去又确实要讲，就说清是估计还是外部来源。",
+    "4. 讲者备注写「这一页怎么讲」：先说什么、哪里容易听岔 —— 不是复述要点。",
+    "",
+    "交稿前的十项自检（能数的都数一遍，数不过就地改；这十项宿主不拦，但下一轮评审就按这把尺看）：",
+    "1. 承接：这一页的副题或第一条要点前半句，接住上一页交出的那个东西（没接住 = 主张链少了「承接」这一环）。",
+    "2. 标题：一句能被否掉的判断，不是话题名（「实验结果」「复杂度分析」这类要换成判断句）。",
+    "3. 交出：最后一条要点或旁白末句给出数 / 条件 / 反例 / 待答，不许「以上是本节内容」。",
+    "4. 锚点：每页 ≥1 个、≤3 个 —— 只认六种（数字带单位 / 定义或条件 / 出处 / 同口径对照 / 反例或边界 / 图或公式）；封面页与末页同样要有，末页不许只剩「谢谢」。",
+    "5. 单句 ≤40 字：按 `。；：？！` 切句数一遍（数字串与拉丁词按 1 字计），超了拆两句。",
+    "6. 括号每页 ≤1 处、不套娃：括号里能独立成句的，升成一条要点；升不上去就删。",
+    "7. 旁白 1–2 句、整段 ≤80 字、**零符号**：不念 `\\sum`、不念变量名（说「屏幕上那个三分之一次方」）。",
+    "8. 公式一页 ≤1 条、≤40 字符，而且已经排成能上屏的样子（见下面两条硬规矩）。",
+    "9. 禁用句式零命中：元话语 / 空转收束 / 形容词抬升 / 旁白念符号 / 副题复述标题 / 双重否定 / 无主语呼吁 / 术语裸奔 —— 命中就照「反例 → 正例」的样子重写那一句。",
+    "10. 版式预算：一页 3–4 条、单条 ≤40 字（有图那页 ≤4 条、≤34 字）；超过就拆页，别压字号。",
+    "冲突裁决（两条要求打架时按这个顺序让路）：事实与出处 > 锚点 > 承接与转折 > 可念性 > 风格。",
+    "",
+    "两条硬规矩（放映版、视频都按这两条出，违反就是废稿）：",
+    "① **公式一律写成排好版的样子，一个 LaTeX 源码字符都不许上屏**：放映页 / 视频里没有 KaTeX，`$…$`、`\\frac`、`\\log`、`^{…}`、`_{…}`、`\\sqrt{}` 会原样印在投影上，整份演示当场作废。能翻的写法：",
+    "   · 上标用真上标字符或中文读法：`N⁻¹`、`xᵏ`、`(log N) 的 7/4+ε 次方`；",
+    "   · 根号 `√(log N)`；分数 `a/b` 或 `(log N)/(log log N)`；连乘 `f(1)·e(θ) + … + f(N)·e(Nθ)`；",
+    "   · 希腊字母与关系符直接写字符：`θ`、`ε`（不是 `\\varepsilon`）、`≪`、`≍`、`≤`（`\\ll \\asymp \\le` 都不要）。",
+    "   · 矩阵 / cases / aligned 这类排不出来的环境**别搬上页**：改写成一句人话或拆成两条要点。",
+    "② 台词（`note` 的「旁白：」段）不逐符号念公式：说它在讲什么、眼睛该看哪一块（「看图从下往上」「屏幕上那个三分之一次方」），不念 `\\sum` 也不念括号里的每一项。",
+    "",
+    "能改到什么程度（全凭你判断）：",
+    "- 只改几页：`pages` 里只放改到的那几页，`id` 照抄原 id 就覆盖那一页。",
+    "- 加页：新写一条，`id` 可以自己起（留空也行，宿主编号），宿主会把它当新页加进去。",
+    "- 删页：`drop` 里写页 id。",
+    "- 换顺序：`order` 里写整份页序（含新页的 id）。",
+    "- 整份重来：`replace: true` —— 以你这份 `pages` 为准，没写到的原页会被收起来。",
+    '- 加图：图先落到 `slides/media/{{slug}}/` 下（外链与别处的绝对路径不收），再在这一页写 media：`"media":[{"src":"slides/media/{{slug}}/x.png","note":"一句话说明 + 来源 + 许可"}]`；`layout` 可写 `body` / `two` / `image`。',
+    "",
+    '输出格式：UTF-8、合法 JSON、不要 Markdown 围栏 —— {"pages":[{"id":"…","title":"…","kicker":"…","bullets":["…"],"quote":"…","note":"…","layout":"body","media":[]}],"drop":[],"order":[],"replace":false}',
+    "`pages` 一定写（至少一条）；`drop` / `order` / `replace` 用不上就不写。",
+    "",
+    "这一轮就到这里：把该写的写进上面那个文件，然后停手。",
+    "写完后只回一句话：这一轮动了哪几页、做了什么。下一轮我会带新的「想怎么改」再来，改写同一个文件即可。",
+  ].join("\n");
+  /* PS 没加载（脚本侧 / 冒烟里没有 agent-prompts-client.js）时退回「默认文本 + 占位替换」，
+     产物与「用户没覆盖」时逐字一致。 */
+  function rsPS(id, def, vars) {
+    if (typeof window !== "undefined" && typeof window.PS === "function") return window.PS(id, def, vars);
+    let out = String(def == null ? "" : def);
+    for (const k of Object.keys(vars || {})) out = out.split("{{" + k + "}}").join(String(vars[k] == null ? "" : vars[k]));
+    return out;
   }
   function rsSlidesRewritePrompt(scope, page, rel, memo) {
     const Ck = rsSlidesCoreMod();
@@ -12829,78 +13642,37 @@
       .replace(/\r\n?/g, "\n")
       .trim()
       .slice(0, 2000);
-    const L = [];
-    L.push(t("你要把一份研究演示（PPT）的讲稿改写得更适合当面讲：一页只说一件事、每条要点一句话、去掉论文腔与朗读不出来的符号。"));
-    L.push(t("这是一次可以反复来的改写：每一轮只做这一轮要改的事，改完就停手等下一轮。"));
-    L.push("");
-    L.push("- " + t("工作目录") + "：`" + root + "`");
-    L.push("- " + t("要写的文件（唯一）") + "：`" + rel + "`");
-    L.push("- " + t("演示名") + "：`" + slug + "`（" + String(deck.title || "") + "）");
-    L.push("");
-    L.push(t("这份演示是讲给谁听的（用户填的 brief，原样照做，别自己另设一套）："));
+    const briefLines = [];
     if (Ck.briefIsDefault(brief)) {
-      L.push("- " + t("用户没填：按「第一次听这个课题的人也能跟上」的默认口径改，别堆术语与缩写。"));
+      briefLines.push("- 用户没填：按「第一次听这个课题的人也能跟上」的默认口径改，别堆术语与缩写。");
     } else {
-      if (brief.audience) L.push("- " + t("受众") + "：" + brief.audience);
-      if (brief.occasion) L.push("- " + t("场合") + "：" + brief.occasion);
-      if (brief.tone) L.push("- " + t("语气") + "：" + brief.tone);
-      if (brief.focus && brief.focus.length) L.push("- " + t("重点讲透") + "：" + brief.focus.join("、"));
-      if (brief.extra) L.push("- " + t("额外指示") + "：" + brief.extra.replace(/\n/g, "\n  "));
+      if (brief.audience) briefLines.push("- 受众：" + brief.audience);
+      if (brief.occasion) briefLines.push("- 场合：" + brief.occasion);
+      if (brief.tone) briefLines.push("- 语气：" + brief.tone);
+      if (brief.focus && brief.focus.length) briefLines.push("- 重点讲透：" + brief.focus.join("、"));
+      if (brief.extra) briefLines.push("- 额外指示：" + String(brief.extra).replace(/\n/g, "\n  "));
     }
-    L.push("");
-    L.push(t("用户这一轮想怎么改（原话，可能为空）："));
-    L.push(want ? want.replace(/\n/g, "\n  ") : "- " + t("（空）没有额外要求：按下面的原页把该改的改好。"));
-    L.push("");
-    L.push(t("可以读的参考（只读，一个字都不许改）："));
-    L.push(
-      "- " +
-        t(
-          "`notes/*.md`（含 `notes/cites/*.md` 里的引文）：需要核对原文、补上下文、确认一句话原本怎么说时读它。",
-        ),
-    );
-    L.push(
-      "- " +
-        t(
-          "`literature/library.json`（CSL-JSON 文献库）：需要核对引文出处、作者年份、引用键时读它；只引用库里真有的条目。",
-        ),
-    );
-    L.push("- " + t("除了上面那个要写的文件，别的文件一律不写、不改、不新建。"));
-    L.push("");
-    L.push(t("硬性要求："));
-    L.push(
-      "- " +
-        (scope === "page"
-          ? t("只重写下面列出来的这一页：文件里的 pages 只放这一页，其它页一个都不许出现。")
-          : want
-            ? t(
-                "这一轮按用户那句话改：文件里的 pages 只放这一轮真改过的页（宿主按页 id 合并，没写的页保持原样），别顺手把整份重写一遍。",
-              )
-            : t("整份都重写：文件里的 pages 覆盖下面列出的每一页，一页都不许漏、也不许新增。")),
-    );
-    L.push("- " + t("页 id 原样照抄，一个字都不许改（改了就对不上页，宿主管不了手改）。"));
-    L.push("- " + t("不许编：不新增数字、结论、引文与文献；只能压缩、重排、换更清楚的说法。原文没说的，一个字都别加。"));
-    L.push("- " + t("每条要点 ≤ 60 字、一页最多 5 条；标题 ≤ 24 字；讲者备注 2–3 句，写「这一页要讲什么」。"));
-    L.push(
-      "- " +
-        t(
-          '输出格式：UTF-8、合法 JSON、不要 Markdown 围栏 —— {"pages":[{"id":"原样照抄","title":"…","kicker":"…","bullets":["…"],"quote":"…","note":"…"}]}',
-        ),
-    );
-    L.push("");
-    L.push(t("需要改写的页（id / 现在的内容）："));
+    /* 页清单只当参考：列出来是为了让它知道「已经讲过什么、这一页现在怎么写」，
+       不是「只许动这些」—— 加页 / 删页 / 换序由它自己判断（宿主按 pages / drop / order / replace 落） */
+    const pageLines = [];
     for (const pg of pick) {
-      L.push("- id: " + String(pg.id || "") + " | " + String(pg.kind || "") + " | " + String(pg.title || ""));
-      if (pg.kicker) L.push("  眉题：" + String(pg.kicker));
+      pageLines.push("- id: " + String(pg.id || "") + " | " + String(pg.kind || "") + " | " + String(pg.title || ""));
+      if (pg.kicker) pageLines.push("  眉题：" + String(pg.kicker));
       const bs = Array.isArray(pg.bullets) ? pg.bullets : [];
-      for (const b of bs) L.push("  · " + String(b || ""));
-      if (pg.quote) L.push("  引用：" + String(pg.quote));
-      if (pg.note) L.push("  备注：" + String(pg.note));
-      if (pg.src && pg.src.path) L.push("  出处：" + String(pg.src.path) + ":" + String(pg.src.line || 1));
+      for (const b of bs) pageLines.push("  · " + String(b || ""));
+      if (pg.quote) pageLines.push("  引用：" + String(pg.quote));
+      if (pg.note) pageLines.push("  备注：" + String(pg.note));
+      if (pg.src && pg.src.path) pageLines.push("  出处：" + String(pg.src.path) + ":" + String(pg.src.line || 1));
     }
-    L.push("");
-    L.push(t("这一轮就到这里：把该写的写进上面那个文件，然后停手 —— 不要顺手改别的页、不要改页结构（新增 / 删页 / 换页序 / 显隐都不归你）。"));
-    L.push(t("写完后只回一句话：这一轮改了哪几页、每页改了什么。下一轮我会带新的「想怎么改」再来，改写同一个文件即可。"));
-    return L.join("\n");
+    return rsPS("research.slides.rewrite", RS_PROMPT_REWRITE, {
+      root: root,
+      rel: rel,
+      slug: slug,
+      deckTitle: String(deck.title || ""),
+      brief: briefLines.join("\n"),
+      want: want ? want.replace(/\n/g, "\n  ") : "- （空）没有额外要求：按下面这一版的原样，把说不清、讲不出口的地方改好。",
+      pages: pageLines.join("\n"),
+    });
   }
   /* 派活：复用研究目录里那一条「重写演示」会话（没有才新建），与 rsMissingOpen 同一套薄适配 */
   async function rsSlidesDispatch(prompt) {
@@ -12926,8 +13698,20 @@
     S.send(prompt, st.id);
     return st.id;
   }
+  /* 「这一轮要的是整份重做」的原话判定：只有明确说了重做 / 从头 / 完整演示这类才换路。
+     普通「改措辞 / 调语气」仍走 rewrite（不动页结构、不多花 Token 重编整份）。 */
+  const RS_SLIDES_REDO_RE = /(完整|整份|整体重|重做|重写一份|从头|从零|重新做|重新生成|再生成一份|教学演示|加页|新增页|拆成更多页)/;
+  function rsSlidesWantsRedo(memo) {
+    return RS_SLIDES_REDO_RE.test(String(memo == null ? "" : memo));
+  }
+  /* 旧稿 = 盘上有存档、没有 slides/<slug>.script.md（tier=direct 或整个键缺着，见 rsDeckLoad 的 legacy）。
+     旧稿的页是内核从笔记直切出来的封面 / 大纲 / 小节 / 结语，靠 rewrite 的按页合并**补不出新页**。
+     只认 deck.legacy 这一个标记：它就是 rsDeckLoad / rsIdxDecksScan 那条判据的产物，别再另算一套。 */
+  function rsSlidesLegacyDeck(deck) {
+    return !!(deck && deck.legacy);
+  }
   /* 模型重写（这一页 / 整份）：先确认「会消耗 Token」→ 清空交付文件 → 派会话 → 盯着它落盘。
-     memo = 用户这一轮「想怎么改」的原话（可空）：只进提示词，决定这一轮改哪些页。
+     memo = 用户这一轮「想怎么改」的原话（可空）：只进提示词，说明这一轮想怎么改（内容上不设限）。
      opts.acked = 调用方已经确认过 Token（编辑器那颗小输入框，第一次派活时按钮上就写着「会消耗 Token」）——
      这时不再叠一张宿主确认窗：编辑器的幕布 z-index（9995）高于 #mtDialog（2400），弹出来也看不见。 */
   async function rsSlidesRewrite(scope, pageHint, memo, opts) {
@@ -12959,6 +13743,24 @@
       rsSlidesTokenAcked = true;
     }
     const D = rsDeck();
+    /* 旧稿 + 这一轮要的是整份重做 → 改派创作档（脚本整份重编）。
+        理由：旧稿没有脚本，整份重来只有创作档那条路能留下可再编辑的脚本（图示、页序、页数都在脚本里）。
+        只说「改措辞 / 加几页」仍走 rewrite —— 改写通道本来就能加页删页换序。 */
+    if (scope !== "page" && rsSlidesLegacyDeck(deck) && rsSlidesWantsRedo(memo)) {
+      /* 打开旧稿时已经自动派过一轮创作档（rsSlidesOpen 那条）—— 别再派第二条，两条会互踩同一个脚本文件 */
+      if (D.job && D.job.kind === "script") {
+        toastSafe(t("这一份已经在按创作档重做，等它写出脚本就成稿；这一轮不再另派"));
+        return null;
+      }
+      rsSlidesTokenAcked = true; /* 上面那张确认窗 / 按钮已经算过 Token，别再叠一张 */
+      toastSafe(t("这份是旧直出稿，改走创作档整份重做：先写演示脚本，再一次编页出成品…"));
+      try {
+        return await rsSlidesScriptAsk(deck, D.brief || Ck.briefOf(deck), deck.online !== false, memo);
+      } catch (e) {
+        toastSafe(t("派活失败：") + String((e && e.message) || e), "err");
+        return null;
+      }
+    }
     const rel = String(Ck.STORE_DIR) + "/" + String(D.slug || deck.slug || "slides") + ".rewrite.json";
     const abs = joinP(RS.root, rel);
     let sid = "";
@@ -12979,32 +13781,55 @@
     return rel;
   }
   /* 模型交回来的东西不能用（不是合法 JSON / 没有 pages / 页 id 全对不上）时的自救：
-     用同一条会话自动回一句「按原样重写这个文件」；只额外给 1 次机会，再不行才报错。
-     返回 true = 已经把话递出去了（调用方就别再弹错了）。 */
+     用同一条会话自动回一句，把「上一轮哪里不对」写清楚（格式错报行号 / 缺哪一节）；
+     一轮里最多自动返修 RS_SLIDES_REPAIR_MAX（2）次，第 3 次仍不合格才落失败提示。
+     返回 true = 已经把话递出去了（调用方就别再弹错了）；false = 没递（没会话 / 预算用满）。 */
   function rsSlidesRepairAsk(job, rel, why) {
-    if (!job || job.retried) return false;
+    if (!job) return false;
+    const used = Number(job.retries) || 0;
+    if (used >= RS_SLIDES_REPAIR_MAX) {
+      job.repairDenied = true; /* 预算用满：调用方据此落失败提示、不再傻等 */
+      return false;
+    }
     const sid = String(job.sessionId || "");
     const S = rsSessionApi();
     if (!sid || typeof S.send !== "function") return false;
-    job.retried = true;
+    job.retries = used + 1;
+    job.repairDenied = false;
     try {
       S.send(
         t("上一轮写出的 ") +
           rel +
           t(" 用不了：") +
           why +
-          t("。请按提示词里的格式重写这同一个文件（同一个路径、覆盖写，页 id 原样照抄），写完只回一句话。"),
+          t("。这是第 ") +
+          String(job.retries) +
+          t(" 次自动返修（上限 ") +
+          String(RS_SLIDES_REPAIR_MAX) +
+          t(" 次）：请按提示词里的格式重写这同一个文件（同一个路径、覆盖写，页 id 原样照抄），写完只回一句话。"),
         sid,
       );
     } catch (_) {
+      job.retries = used;
       return false;
     }
-    toastSafe(t("模型写出的结果对不上，已回它一句让它修（只重试这一次）"), "warn");
+    rsSlidesAgentStatus(rsSlidesRepairWaitText(rel, job.retries));
+    toastSafe(
+      t("模型写出的结果对不上（") +
+        why +
+        t("），已回它一句让它修：第 ") +
+        String(job.retries) +
+        t(" 次自动返修（上限 ") +
+        String(RS_SLIDES_REPAIR_MAX) +
+        t(" 次）"),
+      "warn",
+    );
     return true;
   }
   /* 盯交付文件：会话是异步写盘的，连着两拍字节一样才算写完（与 rsMissWatch 同一口径）。
      合成之后**不停**：同一份文件继续盯下一轮写入（多轮迭代，用户下一句「想怎么改」会再写一次它）；
-     合过的那一版（job.seen）不再重复合；每合一轮重新计时，久等不来不直接判失败，问用户【继续等 / 放弃】。 */
+     合过的那一版（job.seen）不再重复合。等不到文件也不催、不收工、不弹窗 —— 只把状态行写成
+     「已经等了 N 分钟」，它写出来就自动合进来（想停就重开编辑器，或直接说下一句）。 */
   function rsSlidesWatch(abs, rel, scope, sessionId) {
     const D = rsDeck();
     if (D.job && D.job.timer) clearInterval(D.job.timer);
@@ -13016,8 +13841,10 @@
       round: 0, /* 已经合进来的轮次（状态行「等第 N 轮」= round + 1） */
       rel: String(rel || ""), /* 交付文件（编辑器重开时用它把状态行补回去） */
       startedAt: Date.now(),
+      notedAt: 0, /* 上次改写状态行的时间（只更新提示，不做任何决定） */
       busy: false,
-      retried: false,
+      retries: 0, /* 已自动返修的次数（上限 RS_SLIDES_REPAIR_MAX，不是布尔） */
+      repairDenied: false, /* 预算用满：这一版不合格就落失败提示，不再傻等 */
       sessionId: String(sessionId || ""),
     };
     D.job = job;
@@ -13026,39 +13853,15 @@
       job.timer = null;
       if (D.job === job) D.job = null;
     };
-    /* 超时：不再直接判失败，弹一次窗口问到底还等不等 */
-    const askMoreWait = async () => {
-      const mins = Math.max(1, Math.round(RS_SLIDES_WAIT_MS / 60000));
-      if (typeof confirmDialog !== "function") {
-        stop();
-        toastSafe(t("超时：会话没有写出 ") + rel + t("（去左栏那条「重写演示」会话看它卡在哪）"), "err");
-        return;
-      }
-      let more = false;
-      /* 弹窗前先把状态行改成「等你决定」，免得状态行还挂着「等第 N 轮」 */
-      rsSlidesAgentStatus("已经等了 " + mins + " 分钟：等你选【继续等 / 放弃】");
-      try {
-        more = await confirmDialog(
-          t("已经等了 ") +
-            mins +
-            t(" 分钟，会话还没写出 ") +
-            rel +
-            t("。要继续等吗？（选「放弃」就收工，去左栏那条「重写演示」会话看它卡在哪）"),
-          { title: t("还在等模型"), okText: t("继续等"), cancelText: t("放弃"), defaultCancel: false },
-        );
-      } catch (_) {
-        more = false;
-      }
-      if (D.job !== job) return;
-      if (more) {
-        job.startedAt = Date.now();
-        toastSafe(t("继续等 ") + rel + t("…"));
-        rsSlidesAgentStatus(rsSlidesWaitText(rel, job.round + 1));
-      } else {
-        stop();
-        toastSafe(t("已放弃：会话没有写出 ") + rel, "warn");
-        rsSlidesAgentStatus("已放弃：第 " + String(job.round + 1) + " 轮没写出 " + rel);
-      }
+    /* 等久了只改状态行：不问「还要不要等」，也不自己收工 —— 没有超时这回事 */
+    const noteStillWaiting = () => {
+      const mins = Math.max(1, Math.round((Date.now() - job.startedAt) / 60000));
+      rsSlidesAgentStatus(
+        (Number(job.retries) > 0
+          ? rsSlidesRepairWaitText(rel, job.retries)
+          : rsSlidesWaitText(rel, job.round + 1)) + "（已经等了 " + mins + " 分钟）",
+      );
+      job.notedAt = Date.now();
     };
     const tick = async () => {
       if (D.job !== job || job.busy) return;
@@ -13081,8 +13884,31 @@
             const ok = await rsSlidesApplyRewrite(txt, rel, scope, job);
             if (D.job !== job) return;
             if (ok === false) {
+              if (job.repairDenied) {
+                /* 自动返修预算用满（2 次都改不对）：这一版仍不合格 → 落失败提示，收工不傻等 */
+                stop();
+                rsSlidesAgentStatus(
+                  "已放弃：第 " +
+                    String(job.round + 1) +
+                    " 轮写出的这一版连 " +
+                    String(RS_SLIDES_REPAIR_MAX) +
+                    " 次自动返修都还不合格（去左栏那条「重写演示」会话看它卡在哪）",
+                );
+                toastSafe(
+                  t("演示改写还是不能用（已自动返修 ") +
+                    String(RS_SLIDES_REPAIR_MAX) +
+                    t(" 次）：") +
+                    rel,
+                  "err",
+                );
+                return;
+              }
               /* 这一版用不了（已自动回它一句让它修）：仍按同一轮继续等下一版，状态行说清楚 */
-              rsSlidesAgentStatus("等第 " + String(job.round + 1) + " 轮：上一版不能用，已让它重写同一份文件");
+              rsSlidesAgentStatus(
+                Number(job.retries) > 0
+                  ? rsSlidesRepairWaitText(rel, job.retries) + "（上一版不能用，已让它重写同一份文件）"
+                  : rsSlidesWaitText(rel, job.round + 1) + "（上一版不能用）",
+              );
             } else {
               job.round += 1;
               rsSlidesAgentStatus(
@@ -13097,7 +13923,12 @@
           }
           return;
         }
-        if (Date.now() - job.startedAt > RS_SLIDES_WAIT_MS) await askMoreWait();
+        /* 等久了只刷新状态行（不弹窗、不收工）：文件写出来就自动合进来 */
+        if (
+          Date.now() - job.startedAt > RS_SLIDES_WAIT_MS &&
+          Date.now() - (job.notedAt || 0) > RS_SLIDES_WAIT_MS
+        )
+          noteStillWaiting();
       } finally {
         job.busy = false;
       }
@@ -13209,8 +14040,9 @@
     return list[0];
   }
   /* 模型写回来的 {pages:[…]} → 合并进 patch.overlay（只认 deck 里真有的页 id）→ 落盘 → 编辑器换页。
-     用不了（不是 JSON / 没有 pages / 页 id 全对不上）先在同一条会话里回一句让它修，只重试 1 次。
-     返回 true = 这一轮合进去了；false = 这一版不能用（调用方据此报「等第几轮」）。 */
+     用不了（不是 JSON / 没有 pages / 页 id 全对不上）先在同一条会话里回一句、把行号与缺哪节写清楚，
+     一轮最多自动返修 2 次；第 3 次仍不合格才报错。
+     返回 true = 这一轮合进去了；false = 这一版不能用（调用方据此报「第几次自动返修」/ 收工）。 */
   async function rsSlidesApplyRewrite(txt, rel, scope, job) {
     const Ck = rsSlidesCoreMod();
     const D = rsDeck();
@@ -13218,14 +14050,20 @@
     let data = null;
     try {
       data = JSON.parse(String(txt || ""));
-    } catch (_) {
-      if (rsSlidesRepairAsk(job, rel, t("不是合法 JSON（多余的解释或 Markdown 围栏都不行）"))) return false;
-      toastSafe(t("模型写出的演示文稿不是合法 JSON：") + rel, "err");
+    } catch (e) {
+      const why = rsSlidesJsonWhy(txt, e);
+      if (rsSlidesRepairAsk(job, rel, why)) return false;
+      toastSafe(t("模型写出的演示文稿不是合法 JSON（") + why + t("）：") + rel, "err");
       return false;
     }
     const list = Array.isArray(data && data.pages) ? data.pages : Array.isArray(data) ? data : null;
     if (!list || !list.length) {
-      if (rsSlidesRepairAsk(job, rel, t("JSON 里没有 pages 数组"))) return false;
+      const keys =
+        data && typeof data === "object" && !Array.isArray(data) ? Object.keys(data).slice(0, 6) : [];
+      const why = keys.length
+        ? "缺 pages 这一节（顶层只有 " + keys.join(" / ") + "）"
+        : '缺 pages 这一节（顶层要写成 {"pages":[…]}）';
+      if (rsSlidesRepairAsk(job, rel, why)) return false;
       toastSafe(t("模型写出的演示文稿里没有 pages：") + rel, "err");
       return false;
     }
@@ -13237,151 +14075,113 @@
     } catch (_) {
       before = null;
     }
+    /* 内核那批页（重新生成时从头算的那批）—— 之外的 id 都是后来加进来的页 */
     const known = Object.create(null);
     for (const p of D.deck.pages || []) known[String(p.id)] = p;
-    let n = 0;
+    /* replace: true = 整份以模型这份为准 —— 先把上一轮加的页（patch.add）清掉 */
+    const replaceAll = !!(data && typeof data === "object" && (data.replace === true || data.replace === "true"));
+    const prevAdd = (Array.isArray(patch.add) ? patch.add : []).filter((id) => !!id);
+    if (replaceAll) for (const id of prevAdd) delete patch.overlay[id];
+    const used = new Set(Object.keys(known).concat(Object.keys(patch.overlay)));
+    const keys = Array.isArray(Ck.EDIT_KEYS) && Ck.EDIT_KEYS.length ? Ck.EDIT_KEYS : ["title", "kicker", "bullets", "quote", "note", "layout"];
+    /* 一页要点收到 16 条（与脚本同一口径）：再多的宿主版面也摆不开，但不能一上来就砍一半 */
+    const capBullets = Math.max(1, Number(Ck.MAX_BULLETS) || 8) * 2;
+    const outIds = [];
+    let added = 0;
     for (const it of list) {
-      const id = String((it && it.id) || "");
-      if (!id || !known[id]) continue;
+      if (!it || typeof it !== "object") continue;
+      let id = String(it.id == null ? "" : it.id).trim();
+      /* 没给 id 才由宿主编号；给了新 id 就照用它（= 新开一页，当前这一版不限制内容制作） */
+      if (!id) {
+        const seed = String(typeof Ck.slugify === "function" ? Ck.slugify(it.title || "") : "").slice(0, 40);
+        let cand = "add-" + (seed || String(added + 1));
+        let k = 2;
+        while (used.has(cand)) cand = "add-" + (seed || "page") + "-" + k++;
+        id = cand;
+      }
+      if (!known[id] && !patch.overlay[id]) added += 1;
+      used.add(id);
+      if (outIds.indexOf(id) < 0) outIds.push(id);
       const one = Object.assign({}, patch.overlay[id] || {});
-      const keys = Array.isArray(Ck.EDIT_KEYS) && Ck.EDIT_KEYS.length ? Ck.EDIT_KEYS : ["title", "kicker", "bullets", "quote", "note", "layout"];
       for (const k of keys) {
-        if (!it || it[k] == null) continue;
+        if (it[k] == null) continue;
         if (k === "bullets") {
           one.bullets = (Array.isArray(it.bullets) ? it.bullets : [it.bullets])
             .map((x) => String(x == null ? "" : x).trim())
             .filter(Boolean)
-            .slice(0, Number(Ck.MAX_BULLETS) || 5);
+            .slice(0, capBullets);
         } else if (k === "layout") {
           const l = String(it.layout || "").trim();
           if ((Ck.LAYOUTS || []).indexOf(l) >= 0) one.layout = l;
+        } else if (k === "media") {
+          if (Array.isArray(it.media)) one.media = it.media; /* normalizePatch 归一：只收 slides/media/ 下的 */
+        } else if (k === "boxes") {
+          if (Array.isArray(it.boxes)) one.boxes = it.boxes;
+        } else if (k === "objects") {
+          if (Array.isArray(it.objects)) one.objects = it.objects;
+        } else if (k === "free") {
+          one.free = !!it.free;
         } else one[k] = String(it[k] == null ? "" : it[k]);
       }
       patch.overlay[id] = one;
-      n++;
     }
+    /* 记下「哪些页是后来加的」（patch.add）：整份重做时靠它把上一轮加的页清掉，不会越攒越多 */
+    const addNow = prevAdd.filter((id) => !!patch.overlay[id]);
+    for (const id of outIds) if (!known[id] && addNow.indexOf(id) < 0) addNow.push(id);
+    if (addNow.length) patch.add = addNow;
+    else delete patch.add;
+    /* 删页 / 换序：模型说了就照办；id 认不出的那条当没写，不报错 */
+    const cleanIds = (v) =>
+      (Array.isArray(v) ? v : [])
+        .map((x) => String(x == null ? "" : x).trim())
+        .filter(Boolean);
+    const dropIds = cleanIds(data && data.drop);
+    const orderIds = cleanIds(data && data.order);
+    if (dropIds.length) patch.hidden = Array.from(new Set((patch.hidden || []).concat(dropIds)));
+    /* 整份重来时：上一轮加的页连页带 overlay 一起清掉（只删 overlay 不够 —— 当前 deck 里已经有这页了） */
+    let prunedIds = null;
+    if (replaceAll) {
+      /* 以这一份为准：页序 = 交回来的顺序，没交回来的页收起来 */
+      prunedIds = new Set(prevAdd);
+      patch.order = outIds.slice();
+      patch.hidden = (D.deck.pages || [])
+        .map((p) => String(p.id))
+        .filter((x) => outIds.indexOf(x) < 0 && !prunedIds.has(x));
+    } else if (orderIds.length) {
+      const rest = (D.deck.pages || []).map((p) => String(p.id)).filter((x) => orderIds.indexOf(x) < 0);
+      patch.order = orderIds.concat(rest.filter((x) => orderIds.indexOf(x) < 0));
+    } else if (added) {
+      /* 没给整份页序：新页接在当前顺序后面 */
+      const cur = patch.order && patch.order.length ? patch.order.slice() : (D.deck.pages || []).map((p) => String(p.id));
+      for (const x of outIds) if (cur.indexOf(x) < 0) cur.push(x);
+      patch.order = cur;
+    }
+    const n = outIds.length;
     if (!n) {
-      if (rsSlidesRepairAsk(job, rel, t("pages 里的页 id 一个都对不上，要原样照抄提示词里列出的那些 id")))
-        return false;
-      toastSafe(t("模型写出的页 id 一个都对不上：演示没有改动"), "warn");
+      const why = "pages 里没有一条能用的页（每条要是对象，带 title / bullets / quote / note 至少一样）";
+      if (rsSlidesRepairAsk(job, rel, why)) return false;
+      toastSafe(t("模型写出的 pages 里一条能用的页都没有：演示没有改动"), "warn");
       return false;
     }
     /* 真要覆盖了：先把当前 patch 存成快照（撤销这次模型改写就靠它） */
     await rsSlidesSnapshotPreAgent(D.slug || D.deck.slug || "slides", before);
     const next = Ck.applyPatch(D.deck, patch);
+    if (prunedIds && prunedIds.size) {
+      next.pages = (next.pages || []).filter((pg) => !prunedIds.has(String(pg.id)));
+      patch.hidden = (patch.hidden || []).filter((x) => !prunedIds.has(String(x)));
+      patch.order = (patch.order || []).filter((x) => !prunedIds.has(String(x)));
+    }
     D.deck = next;
     await rsDeckSave({ deck: next, patch: patch, theme: next.theme });
     if (D.ctrl && typeof D.ctrl.setDeck === "function") D.ctrl.setDeck(next);
-    if (job) job.retried = false; /* 这一轮合上了：下一轮又能重试一次 */
-    toastSafe(t("模型重写已合进演示：改了 ") + n + t(" 页"));
-    return true;
-  }
-  /* ── 顶栏「演示」那颗图标的菜单（persistent：只走窗内 ✕ / Esc / 再点同一颗）──
-     三件事都摆在同一处：打开编辑器（内核直出）、让 Agent 重写整份 / 这一页
-     （先开编辑器收一句「这次想怎么改」，首次派活才确认「会消耗 Token」）。 */
-  function rsSlidesMenuClose() {
-    if (!rsSlidesMenuEl) return;
-    document.removeEventListener("keydown", rsSlidesMenuEl._rsKey, true);
-    rsSlidesMenuEl.remove();
-    rsSlidesMenuEl = null;
-    rsSlidesMenuAnchor = null;
-    const p = rsSlidesMenuPaint;
-    rsSlidesMenuPaint = null;
-    if (p) p();
-  }
-  function rsSlidesMenu(anchor, paintBtn) {
-    if (rsSlidesMenuEl && rsSlidesMenuAnchor === anchor) return rsSlidesMenuClose();
-    rsSlidesMenuClose();
-    rsFsMenuClose();
-    if (typeof closeNodePopsExcept === "function") closeNodePopsExcept("");
-    const box = el("div", "rs-ask rs-deck-menu");
-    const host = pane();
-    if (host && host.classList.contains("rs-light")) box.classList.add("rs-light");
-    box.innerHTML =
-      '<div class="rs-ask-head"><b>' +
-      esc(t("演示")) +
-      '</b><button class="rs-ask-x" type="button" title="' +
-      esc(t("关闭")) +
-      '">✕</button></div>' +
-      '<div class="rs-deck-menu-stat"></div>' +
-      '<div class="rs-deck-menu-list"></div>';
-    document.body.appendChild(box);
-    const r = anchor.getBoundingClientRect();
-    const w = box.offsetWidth || 248;
-    box.style.left = Math.max(12, Math.min(window.innerWidth - w - 12, r.right - w)) + "px";
-    box.style.right = "auto";
-    box.style.top = Math.min(window.innerHeight - 60, r.bottom + 6) + "px";
-
-    const stat = box.querySelector(".rs-deck-menu-stat");
-    const list = box.querySelector(".rs-deck-menu-list");
-    const item = (label, hint, fn, disabled) => {
-      const b = el("button", "rs-deck-menu-btn");
-      b.type = "button";
-      b.appendChild(el("b", "rs-deck-menu-lab", label));
-      if (hint) b.appendChild(el("span", "rs-deck-menu-hint", hint));
-      b.disabled = !!disabled;
-      b.onclick = () => {
-        if (b.disabled) return;
-        rsSlidesMenuClose();
-        Promise.resolve()
-          .then(fn)
-          .catch((e) => toastSafe(String((e && e.message) || e), "err"));
-      };
-      list.appendChild(b);
-      return b;
-    };
-    const btnOpen = item(t("打开演示编辑器"), t("内核直出 · 不花 Token"), () => rsSlidesOpen());
-    /* 这两颗与编辑器里的按钮走同一套：开编辑器 → 收一句「这次想怎么改」→ 派活（首次才确认 Token） */
-    const btnAll = item(t("让 Agent 重写整份…"), t("先写一句想怎么改 · 会消耗 Token"), () => rsSlidesAgentAsk("all"));
-    const btnOne = item(
-      t("让 Agent 重写这一页…"),
-      t("先写一句想怎么改 · 会消耗 Token"),
-      () => rsSlidesAgentAsk("page"),
-      true,
+    if (job) {
+      job.retries = 0; /* 这一轮合上了：下一轮又有 2 次自动返修预算 */
+      job.repairDenied = false;
+    }
+    toastSafe(
+      t("模型改写已合进演示：动了 ") + n + t(" 页") + (added ? t("（新增 ") + added + t(" 页）") : ""),
     );
-
-    /* 摘要要等 deck 读进来：先画一版「读取中…」，读到再补一遍（按钮一直可点，别让面板空等） */
-    const paintStat = () => {
-      const D = rsDeck();
-      const deck = D.deck;
-      if (!deck) {
-        stat.textContent = t("正在读取演示…");
-        return;
-      }
-      const pages = deck.pages || [];
-      const hidden = pages.filter((p) => p.hidden).length;
-      let edits = 0;
-      const Ck = rsSlidesCoreMod();
-      try {
-        const patch = Ck ? Ck.normalizePatch(deck.patch) : null;
-        edits = patch ? Object.keys(patch.overlay || {}).length : 0;
-      } catch (_) {
-        edits = 0;
-      }
-      const page = rsSlidesPageTarget();
-      stat.textContent =
-        pages.length + t(" 页") + (hidden ? " · " + t("隐藏 ") + hidden : "") + " · " + t("手改 ") + edits + t(" 处");
-      btnOne.disabled = !page;
-      btnOne.title = page ? t("这一页：") + String(page.title || "") : t("没有可重写的页");
-    };
-    paintStat();
-    void rsSlidesEnsureDeck()
-      .then(() => paintStat())
-      .catch(() => {});
-
-    rsSlidesMenuEl = box;
-    rsSlidesMenuAnchor = anchor;
-    rsSlidesMenuPaint = paintBtn || null;
-    const onKey = (ev) => {
-      if (ev.key !== "Escape") return;
-      ev.stopPropagation();
-      rsSlidesMenuClose();
-    };
-    box._rsKey = onKey;
-    document.addEventListener("keydown", onKey, true);
-    box.querySelector(".rs-ask-x").onclick = () => rsSlidesMenuClose();
-    if (paintBtn) paintBtn();
-    return box;
+    return true;
   }
   /* 树上右键「生成演示…」：只在有 core 稿件时给（判据与顶栏那颗图标同一份） */
   function rsSlidesCanOpen() {

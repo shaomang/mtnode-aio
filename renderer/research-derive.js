@@ -832,10 +832,16 @@
       const base = String((parent && parent.title) || baseNoExt((parent && parent.path) || "")).trim();
       return base + " · " + k.label;
     }
-    /* 目标语言：父笔记声明过 lang 就用它，否则中文库按中文算 */
+    /* 目标语言：父笔记声明过 lang 就用它；没声明就看正文语言（英文原文 → en，中文原文 → zh），
+       两者都判不出来才按中文库算 —— 少了这一步，导入的英文论文（不带 lang）会被当成中文，
+       默认变体反成「英译」，中译反而要手动加。 */
     function parentLang(rec) {
-      const v = rec && rec.meta && rec.meta.lang;
-      return String(v || "").trim() || "zh";
+      const declared = String((rec && rec.meta && rec.meta.lang) || "").trim();
+      if (declared) return declared;
+      const V = kernel();
+      const guess =
+        V && typeof V.detectLang === "function" ? String(V.detectLang(rec && rec.md) || "").trim() : "";
+      return guess || "zh";
     }
 
     /* ── 生成一件：校验 → 调通道 → 落盘 → 补 derives → 刷树 ──

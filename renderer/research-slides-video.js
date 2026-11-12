@@ -16,7 +16,8 @@
  *   §5.1 单页秒数 = 字速算出来的读的时间，再乘 brief 的节奏系数 k（夹在 0.75–1.35，只乘读的时间）；
  *   §5.2 章节卡按可见页序列里 kicker 的首段（› 前那段）变化处插一张，不写进 deck.pages；
  *   §5.4 页间转场发生在上一页尾巴里（两页交叠，总时长不增加），要点按 stagger 逐条入场、最后一条留 0.6s；
- *   §5.5 旁白可选：notes 逐句 → 时间轴；工程里留一个可空的 audio 端子，空 = 不铺旁白也不铺字幕。
+ *   §5.5 旁白可选：notes 逐句 → 时间轴；工程里留一个可空的 audio 端子，空 = 不铺旁白音轨
+ *     （字幕仍按脚本「旁白：」逐句的时间轴照常铺 —— 字幕是脚本的时间轴，不依赖有没有录音）。
  *   §展示风格：styleTokens().style 决定**怎么演** —— 镜头编排（学术＝建立镜 + 图注 / 公式特写、慢推；
  *     Motion＝数字与对比动效镜 + 遮罩转场 + 更大字号；2.5D＝多层卡片分层位移 + 轻微视差；
  *     3D＝轨道相机 + 场景镜）、3D 场景页预算（用 tokens.sceneMax：3D 6 / 学术 1 / Motion 0 / 2.5D 2）、
@@ -25,7 +26,8 @@
  * 两条「纯函数拿不到」的事，如实写在返回值里而不是假装做到：
  *   · 旁白音频**时长**：本模块不读盘，量不到 TTS 有多长 —— 时间轴按 notes 文字排（narration 给出逐句 ms 窗口），
  *     宿主拿着这些窗口去裁 / 生成音频；音频比窗口长就由宿主决定加长页（这里只保证文字与帧对得上）。
- *   · 公式页：工程只允许 react / remotion，引不进 KaTeX → 按 TeX 源码显示（warnings 里明说，且建议走静态版 PDF）。
+ *   · 公式与叠加图：上屏的式子必须是**排好版的文字**（生成期由内核 typesetMath 翻好；翻不动的整支片子拒渲），
+ *     图由 props.media 传字节（导出侧读 slides/media 里的图），工程本身不带素材。
  *
  * 依赖白名单（renderer/app-nodes.js:8789 与 remotion/main-remotion.js:2437 同一份）：
  *   **只允许 react / remotion + 工程内相对文件** —— 所以：
@@ -46,7 +48,7 @@
  *   PageFrame.tsx     页级转场（fade / push，尾巴里交叠）
  *   Bullets.tsx       要点逐条入场（距上一页尾留 0.6s）
  *   ChapterCard.tsx   章节过场卡（序号 + 段标题）
- *   Captions.tsx      逐词字幕（只在接了旁白音轨时铺）
+ *   Captions.tsx      逐词字幕（按 notes 逐句时间轴铺：无音轨也铺，有音轨时与音轨同步）
  *
  * 产出（build 的返回）：
  *   { ok, files, entry, contract, meta, timeline, captions, narration, colors, buildKey, audit, warnings, error }
@@ -113,6 +115,37 @@
   function charLen(s) {
     return Array.from(str(s)).length;
   }
+  /* 一页上那张图的取图键：页号 + 文件名定死（换机器 / 换工程目录都一样，导出侧按同一个键传字节）。
+     只用 [a-z0-9-_]，撞名时加 -2、-3 —— 键要能用进 data URL 表，也要能一眼看出是哪一页的哪张图。 */
+  function mediaNameOf(index, no, src, used) {
+    const file = str(src).split("/").pop();
+    const ext = ((/\.([a-z0-9]+)$/i.exec(file) || [])[1] || "png").toLowerCase();
+    const base = file.replace(/\.[a-z0-9]+$/i, "").replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40);
+    const stem = "p" + String(index + 1).padStart(2, "0") + "-" + (base || "fig") + (no > 1 ? "-" + no : "");
+    let name = stem + "." + ext;
+    let i = 2;
+    while (used.has(name)) name = stem + "-" + i++ + "." + ext;
+    used.add(name);
+    return name;
+  }
+  /* 上屏文字的硬闸：TeX 源码一个都不许上屏（内核已把能翻的翻成排好的文字，翻不动的在这里拦住）。
+     返回 [{ page, field, text, leftover }] —— 空数组 = 全片干净。 */
+  function texOnScreenOf(pages, RS) {
+    const out = [];
+    if (!RS || typeof RS.texLeftover !== "function") return out;
+    const fields = ["title", "kicker", "quote", "formula"];
+    for (const pg of pages) {
+      for (const f of fields) {
+        const left = RS.texLeftover(pg[f]);
+        if (left.length) out.push({ page: pg.title || pg.id, field: f, text: str(pg[f]).slice(0, 80), leftover: left });
+      }
+      for (const b of pg.bullets || []) {
+        const left = RS.texLeftover(b.text);
+        if (left.length) out.push({ page: pg.title || pg.id, field: "bullets", text: str(b.text).slice(0, 80), leftover: left });
+      }
+    }
+    return out;
+  }
   function resolutionOf(aspect) {
     return RES[aspect] || RES["16:9"];
   }
@@ -136,26 +169,80 @@
       .map((s) => s.trim())
       .filter(Boolean);
   }
+  /* 一页的 note 里，「旁白：」之后是**要念出来的话**，「讲法 / 备注 / 提示：」之后是给讲者的
+     提示（板书怎么写、哪里别展开）—— 字幕只铺前者。没有「旁白：」标记就整段都算（老 deck
+     的 note 本来就是照读稿）。 */
+  function narrationTextOf(note) {
+    const s = str(note);
+    const m = /旁白\s*[:：]/.exec(s);
+    if (!m) return s;
+    let body = s.slice(m.index + m[0].length);
+    const cut = /(?:\n|｜)\s*(?:讲法|备注|提示)\s*[:：]/.exec(body);
+    if (cut) body = body.slice(0, cut.index);
+    return body.replace(/^[｜|\s]+/, "").trim();
+  }
+  /* 字幕切块：按短语成块（标点断块、最长 12 字），拉丁词 / 数字 / 希腊字母整体保留。
+     逐字切块（一汉字一块）在字幕窗口里只露出五六个字，读不成句；
+     四字硬切又会把「三件事」切成「秒说清三 | 件事」——所以块长按标点定、只在上限处兜底。 */
   function tokenize(text) {
     const s = str(text);
     const out = [];
+    const MAXC = 12;
+    let buf = "";
+    const flush = () => {
+      const t = buf.trim();
+      if (t) {
+        /* 纯标点的块并回前一块：字幕里不该单独闪一个「，」 */
+        if (out.length && !/[\u4e00-\u9fffA-Za-z0-9]/.test(t)) out[out.length - 1] += t;
+        else out.push(t);
+      }
+      buf = "";
+    };
+    const LATIN = /[A-Za-z0-9\u0370-\u03FF'’._√≥≤≍×·∞∑+\-*/^=()–]/;
+    const PUNCT = /[，。、；：！？…—－「」『』（）《》〈〉“”‘’"'·]/;
     let i = 0;
     while (i < s.length) {
       const c = s[i];
       if (/\s/.test(c)) {
+        /* 拉丁词之间的空格要留着：拆成两块再靠 flex gap 拼，人眼看到的是「SethHardy」
+           （中文块之间可以靠 gap，西文词之间必须是真空格）。只有两侧都是拉丁/数字时才并块。 */
+        const prevLatin = /[A-Za-z0-9]$/.test(buf);
+        const nextLatin = /[A-Za-z0-9\u0370-\u03FF]/.test(s[i + 1] || "");
+        if (prevLatin && nextLatin && charLen(buf) < MAXC) {
+          buf += " ";
+          i++;
+          continue;
+        }
+        flush();
         i++;
         continue;
       }
-      if (/[A-Za-z0-9]/.test(c)) {
+      if (LATIN.test(c)) {
         let j = i;
-        while (j < s.length && /[A-Za-z0-9'’._-]/.test(s[j])) j++;
-        out.push(s.slice(i, j));
+        while (j < s.length && LATIN.test(s[j]) && !/\s/.test(s[j])) j++;
+        const w = s.slice(i, j);
+        /* 长词（人名、公式片段）自己成块；短词（N、e(x)、≍）粘在中文里 */
+        if (charLen(w) >= 6) {
+          flush();
+          out.push(w);
+        } else {
+          buf += w;
+          if (charLen(buf) >= MAXC) flush();
+        }
         i = j;
         continue;
       }
-      out.push(c);
+      if (PUNCT.test(c)) {
+        buf += c;
+        flush();
+        i++;
+        continue;
+      }
+      buf += c;
+      if (charLen(buf) >= MAXC) flush();
       i++;
     }
+    flush();
     return out;
   }
 
@@ -229,7 +316,7 @@
       typeScale: 1.14,
       decor: 1,
       mask: true,
-      captionWindowMs: 1300,
+      captionWindowMs: 2400,
       captionSize: 38,
       captionLeadMs: 260,
       captionTailMs: 200,
@@ -293,6 +380,8 @@
     const quote = str(pg && pg.quote).trim();
     const scene = str(pg && pg.scene).trim();
     const bullets = Array.isArray(pg && pg.bullets) ? pg.bullets : [];
+    /* 图注镜排在最前：一页有图时，先让人看图，再讲字（学术档的图注镜 = 这张图） */
+    if (Array.isArray(pg && pg.media) && pg.media.length) out.push({ spot: "figure", focus: -1, tag: "" });
     if (play.spots.indexOf("scene") >= 0 && scene) out.push({ spot: "scene", focus: -1, tag: "" });
     if (play.spots.indexOf("formula") >= 0 && formula) out.push({ spot: "formula", focus: -1, tag: "" });
     if (play.spots.indexOf("quote") >= 0 && quote) out.push({ spot: "quote", focus: -1, tag: "" });
@@ -417,8 +506,24 @@
       "  frames: number;",
       "  sec: number;",
       "  scene: string;",
+      "  /* 叠加图（幻灯片上那张图）：视频侧按 media 表取字节，取不到就画占位，不会崩 */",
+      "  media: MediaItem[];",
       "  shots: Shot[];",
       "}",
+      "",
+      "/* 一页上的一张图：name = 取字节的键（由生成期按页号 + 文件名定死）；x/y/w/h 是静态版里的版面（视频没用到，留着对账） */",
+      "export interface MediaItem {",
+      "  name: string;",
+      "  src: string;",
+      "  x: number;",
+      "  y: number;",
+      "  w: number;",
+      "  h: number;",
+      "  fit: string;",
+      "}",
+      "",
+      "/* 图字节：name → data URL（由导出/渲染那一侧传进 props.media；空 = 这张图没随工程过来） */",
+      "export type MediaMap = { [name: string]: string };",
       "",
       "/* 一个镜头：页内的一段连续画面（from 相对页起点；move 是相机运动，focus = 高亮的要点下标，-1 = 无）",
       "   spot = 这一镜特写谁（none / formula / quote / bullet / scene），tag = 要不要把数字做大（numeric / compare / layer） */",
@@ -599,7 +704,7 @@
       "",
       "/* 镜头运镜：move × 镜头内进度 → CSS 变换（画面按中心缩放，位移按 k 缩）。",
       "   一镜只做一件事（叠加就是晃）：",
-      "     pushIn 慢推（学术档，0.035 一口气推完）· snapZoom 快推（motion 档，0.13 起跳）·",
+      "     pushIn 慢推（学术档，0.035 一口气推完）· snapZoom 快推（motion 档，0.065 起跳：再大就把 96px 页边距推出画外，标题首字会被切）·",
       "     pullOut / dolly 只动 scale · pan / tilt 只动位移 · parallax 轻微视差 · orbit 轨道相机（绕画心转一点）。 */",
       "export const cameraStyle = (move: string, progress: number, k: number): CSSProperties => {",
       "  const p = Math.max(0, Math.min(1, progress));",
@@ -614,9 +719,9 @@
       "  const rotate = move === \"orbit\" ? Math.sin(p * Math.PI * 2) * 3.2 : 0;",
       "  const scale =",
       "    move === \"pushIn\" ? 1 + 0.035 * e",
-      "      : move === \"snapZoom\" ? 1 + 0.13 * snap",
+      "      : move === \"snapZoom\" ? 1 + 0.065 * snap",
       "      : move === \"pullOut\" ? 1.06 - 0.06 * e",
-      "      : move === \"dolly\" ? 1 + 0.12 * e",
+      "      : move === \"dolly\" ? 1 + 0.065 * e",
       "      : move === \"parallax\" ? 1.02",
       "      : move === \"orbit\" ? 1.03",
       "      : 1.03;",
@@ -653,7 +758,8 @@
   function dataSrc(parts) {
     const out = [
       "/* 时间轴：由 deck + brief + styleTokens 在生成期算好（帧是落点，秒是预算）。",
-      "   页 id 序列 === 可见页 id 序列；章节卡只是时间轴上多出来的片段，不写进页模型。 */",
+      "   页 id 序列 === 可见页 id 序列；章节卡只是时间轴上多出来的片段，不写进页模型。",
+      "   CAPTIONS 是按 notes（「旁白：」逐句）排的逐词时间轴 —— 没有旁白音轨时同样有值、同样铺。 */",
       "import type { ChapterSeg, Caption, DeckInfo, Segment, SlidePage } from \"./types\";",
       "",
       "export const DECK: DeckInfo = " + JSON.stringify(parts.deck, null, 2) + ";",
@@ -848,19 +954,22 @@
   function pageBodySrc() {
     return [
       "/* 单页版式：封面 / 大纲 / 正文 / 精读 / 术语 / 公式 / 文献 / 结语；未知 kind 退化成正文。",
-      "   有 scene 的页走两栏：左边讲字，右边真 3D（Scene3D，three.js）；没有就整页文字。",
-      "   展示风格在这一层落三件事：字号乘 TYPE_SCALE（motion 更大）、2.5D 的卡片按层位移、",
-      "   以及 spot 指向的那一样东西（formula / quote / scene / bullet）被点亮、其余压暗。 */",
+      "   有 scene 的页走两栏：左边讲字，右边真 3D（Scene3D，three.js）；有叠加图的页也走两栏（右栏一张图）；",
+      "   都没有就整页文字。展示风格在这一层落三件事：字号乘 TYPE_SCALE（motion 更大）、2.5D 的卡片按层位移、",
+      "   以及 spot 指向的那一样东西（formula / quote / figure / scene / bullet）被点亮、其余压暗。",
+      "   页上的式子已经是排好版的文字（内核 typesetMath 翻过），这里**不做任何 TeX 解析**——视频里没有 KaTeX，",
+      "   也不该有：上屏的每一个字都必须是能直接看懂的排版结果。 */",
       "import React from \"react\";",
-      "import { AbsoluteFill, interpolate, useCurrentFrame } from \"remotion\";",
+      "import { AbsoluteFill, Img, interpolate, useCurrentFrame, useVideoConfig } from \"remotion\";",
       "import { Bullets } from \"./Bullets\";",
       "import { Scene3D } from \"./Scene3D\";",
       "import { EASE, ENTER_FRAMES, enterStyle, PARALLAX, parallaxStyle, TYPE_SCALE, useScale } from \"./motion\";",
       "import { T } from \"./theme\";",
-      "import type { SlidePage } from \"./types\";",
+      "import type { MediaMap, SlidePage } from \"./types\";",
       "",
-      "export const PageBody: React.FC<{ page: SlidePage; focus?: number; spot?: string; tag?: string }> = ({",
+      "export const PageBody: React.FC<{ page: SlidePage; media?: MediaMap; focus?: number; spot?: string; tag?: string }> = ({",
       "  page,",
+      "  media,",
       "  focus,",
       "  spot,",
       "  tag,",
@@ -879,9 +988,17 @@
       "  const isEnd = page.kind === \"end\";",
       "  const isFormula = page.kind === \"formula\";",
       "  const withScene = !!page.scene;",
+      "  /* 一页一张图：视频版先铺第一张（多张的页在 warnings 里点名，静态版仍然都铺） */",
+      "  const fig = page.media && page.media.length ? page.media[0] : null;",
+      "  const withFigure = !withScene && !!fig;",
+      "  const imgOf = (name: string) => {",
+      "    const map: MediaMap = media || {};",
+      "    return name ? map[name] || \"\" : \"\";",
+      "  };",
       "  const spotFormula = spot === \"formula\";",
       "  const spotQuote = spot === \"quote\";",
       "  const spotScene = spot === \"scene\";",
+      "  const spotFigure = spot === \"figure\";",
       "  const spotBullet = spot === \"bullet\";",
       "  /* 没被点亮的块压暗（建立镜 spot = none 时一页都是亮的） */",
       "  const dimOthers = spot != null && spot !== \"none\";",
@@ -891,20 +1008,57 @@
       "  const quoteLayer = parallaxStyle(2, prog, k);",
       "  const formulaLayer = parallaxStyle(3, prog, k);",
       "  const pad = Math.round((isCover || isEnd ? 120 : 96) * k);",
-      "  const titleSize = Math.round((isCover ? 104 : isEnd ? 88 : isFormula ? 40 : withScene ? 56 : 72) * k * TYPE_SCALE);",
-      "  const metaSize = Math.round(26 * k * TYPE_SCALE);",
-      "  const listSize = Math.round((withScene ? 32 : page.kind === \"toc\" || isEnd ? 34 : 42) * k * TYPE_SCALE);",
+      "  /* 底部字幕带：字幕条贴底 72k + 自身约 84k 高 —— 正文与页码都必须让开这条带，",
+      "     否则字幕会压住最后一条要点（这是上一版实拍里发现的硬伤）。 */",
+      "  const CAPTION_BAND = Math.round(186 * k);",
+      "  const titleSize0 = Math.round((isCover ? 104 : isEnd ? 88 : isFormula ? 40 : withScene ? 56 : 72) * k * TYPE_SCALE);",
+      "  const metaSize0 = Math.round(26 * k * TYPE_SCALE);",
+      "  const listSize0 = Math.round((withScene ? 32 : page.kind === \"toc\" || isEnd ? 34 : 42) * k * TYPE_SCALE);",
+      "  /* 自适应字号：一页字多就把字号收一档，保证要点**不会溢出到字幕带里**（宁可小一点，不许压字）。",
+      "     估算：可用高度 vs「每行能放几个字（中文字宽≈字号）× 每条折几行」，按倍率迭代三次收敛；",
+      "     有图的页文字只占半版，收得更多（半版还要给图让位）。 */",
+      "  const { width: VW, height: VH } = useVideoConfig();",
+      "  const availH = VH - pad - (pad + CAPTION_BAND);",
+      "  const textW = withScene || withFigure ? (VW - 2 * pad) * (withFigure ? 0.52 : 0.46) - 34 * k : VW - 2 * pad;",
+      "  const needOf = (s: number) => {",
+      "    const l = listSize0 * s;",
+      "    const t = titleSize0 * s;",
+      "    const m = metaSize0 * s;",
+      "    /* 行数用连续估算（len / 每行字数 + 0.4）：整数 ceil 会在折行边界上跳，迭代就收敛不回去 */",
+      "    const lines = (len: number, cpl: number) => len / Math.max(6, cpl) + 0.4;",
+      "    const cpl = textW / (l * 1.02);",
+      "    let need = 0;",
+      "    if (page.kicker) need += m * 1.9;",
+      "    need += lines(Array.from(page.title || \"\").length, textW / (t * 0.98)) * (t * 1.2) + 34 * k;",
+      "    if (page.formula) {",
+      "      const fw = (isFormula ? 0.86 : 1) * textW - 92 * k;",
+      "      const fsz = (isFormula ? 64 : 44) * k * TYPE_SCALE;",
+      "      need += lines(Array.from(page.formula).length, fw / (fsz * 0.62)) * fsz * 1.42 + 72 * k;",
+      "    }",
+      "    if (page.quote) need += lines(Array.from(page.quote).length, textW / (l * 0.72)) * l * 0.72 * 1.5 + 26 * k;",
+      "    for (const b of page.bullets || []) need += lines(Array.from(String(b)).length, cpl) * l * 1.5 + 26 * k;",
+      "    /* 实拍标定：这个估算系统性偏乐观约 25%（行首破折号、拉丁串、行内上标都会多折一行）——",
+      "       乘上去宁可小半档，也不要让最后一行掉进字幕里。 */",
+      "    return need * 1.26;",
+      "  };",
+      "  let fit = 1;",
+      "  for (let i = 0; i < 6; i++) fit = Math.max(0.58, Math.min(1, (fit * availH) / Math.max(1, needOf(fit))));",
+      "  /* 估算不是实测：收敛后再留 3% 余量（估计偏乐观时靠它兜住最后一行） */",
+      "  fit = Math.max(0.58, Math.min(1, fit * 0.97));",
+      "  const titleSize = Math.round(titleSize0 * fit);",
+      "  const metaSize = Math.round(metaSize0 * fit);",
+      "  const listSize = Math.round(listSize0 * fit);",
       "  const textCol = (",
       "    <div",
       "      style={{",
-      "        flex: withScene ? \"0 0 46%\" : \"1 1 auto\",",
+      "        flex: withScene ? \"0 0 46%\" : withFigure ? \"0 0 52%\" : \"1 1 auto\",",
       "        minWidth: 0,",
       "        display: \"flex\",",
       "        flexDirection: \"column\",",
       "        alignItems: isFormula ? \"center\" : undefined,",
       "        textAlign: isFormula ? \"center\" : undefined,",
       "        justifyContent: isCover || isEnd || isFormula ? \"center\" : \"flex-start\",",
-      "        paddingRight: withScene ? Math.round(28 * k) : 0,",
+      "        paddingRight: withScene || withFigure ? Math.round(34 * k) : 0,",
       "      }}",
       "    >",
       "      {page.kicker ? (",
@@ -967,11 +1121,6 @@
       "          {page.formula}",
       "        </div>",
       "      ) : null}",
-      "      {page.formula && isFormula ? (",
-      "        <div style={{ color: T.muted, fontSize: Math.round(22 * k * TYPE_SCALE), letterSpacing: Math.round(1.5 * k) + \"px\" }}>",
-      "          {\"TeX 源码 · 视频版按源码显示（排版好的式子请走静态版 PDF）\"}",
-      "        </div>",
-      "      ) : null}",
       "      {page.quote ? (",
       "        <div",
       "          style={{",
@@ -1005,7 +1154,12 @@
       "  return (",
       "    <AbsoluteFill",
       "      style={{",
+      "        /* AbsoluteFill 默认是 content-box：内边距会加在 100% 高度之外，正文直接被顶出画面。",
+      "           这里必须 border-box —— 有它 padding + 字幕带才算「画内可用高度」。 */",
+      "        boxSizing: \"border-box\",",
+      "        overflow: \"hidden\",",
       "        padding: pad,",
+      "        paddingBottom: pad + CAPTION_BAND,",
       "        display: \"flex\",",
       "        flexDirection: \"row\",",
       "        alignItems: \"stretch\",",
@@ -1015,6 +1169,55 @@
       "      }}",
       "    >",
       "      {textCol}",
+      "      {withFigure ? (",
+      "        <div",
+      "          style={{",
+      "            position: \"relative\",",
+      "            flex: \"1 1 auto\",",
+      "            minWidth: 0,",
+      "            display: \"flex\",",
+      "            alignItems: \"center\",",
+      "            justifyContent: \"center\",",
+      "            /* 图注镜：图点亮、轻推近一点，文字让开（其余镜里图仍在，只是压暗） */",
+      "            opacity: spotFigure || !dimOthers ? 1 : 0.6,",
+      "            transform: \"scale(\" + (spotFigure ? 1.04 : 1) + \")\",",
+      "          }}",
+      "        >",
+      "          <div",
+      "            style={{",
+      "              width: \"100%\",",
+      "              height: \"100%\",",
+      "              display: \"flex\",",
+      "              alignItems: \"center\",",
+      "              justifyContent: \"center\",",
+      "              background: T.paper2,",
+      "              border: Math.round((spotFigure ? 3 : 2) * k) + \"px solid \" + (spotFigure ? T.accent : T.rule),",
+      "              borderRadius: T.radius,",
+      "              boxShadow: T.shadow,",
+      "              padding: Math.round(16 * k) + \"px\",",
+      "              boxSizing: \"border-box\",",
+      "            }}",
+      "          >",
+      "            {imgOf(fig ? fig.name : \"\") ? (",
+      "              <Img",
+      "                src={imgOf(fig ? fig.name : \"\")}",
+      "                style={{",
+      "                  maxWidth: \"100%\",",
+      "                  maxHeight: \"100%\",",
+      "                  objectFit: \"contain\",",
+      "                  borderRadius: Math.round(6 * k) + \"px\",",
+      "                }}",
+      "              />",
+      "            ) : (",
+      "              <div style={{ color: T.muted, fontSize: Math.round(24 * k * TYPE_SCALE), lineHeight: 1.6, textAlign: \"center\" }}>",
+      "                {\"这一页有图：放映版里有；\"}",
+      "                <br />",
+      "                {\"视频工程没拿到图片字节（导出时会把 slides/media 里的图一起带上）\"}",
+      "              </div>",
+      "            )}",
+      "          </div>",
+      "        </div>",
+      "      ) : null}",
       "      {withScene ? (",
       "        <div",
       "          style={{",
@@ -1034,7 +1237,7 @@
       "          position: \"absolute\",",
       "          left: pad,",
       "          right: pad,",
-      "          bottom: Math.round(46 * k),",
+      "          bottom: Math.round(46 * k) + CAPTION_BAND,",
       "          display: \"flex\",",
       "          justifyContent: \"space-between\",",
       "          color: T.muted,",
@@ -1059,14 +1262,14 @@
       "import { Backdrop } from \"./Backdrop\";",
       "import { Camera } from \"./Camera\";",
       "import { useTransitionStyle } from \"./motion\";",
-      "import type { SlidePage } from \"./types\";",
+      "import type { MediaMap, SlidePage } from \"./types\";",
       "",
-      "export const PageFrame: React.FC<{ page: SlidePage }> = ({ page }) => {",
+      "export const PageFrame: React.FC<{ page: SlidePage; media?: MediaMap }> = ({ page, media }) => {",
       "  const style = useTransitionStyle(page.frames, page.index === page.total);",
       "  return (",
       "    <AbsoluteFill style={style}>",
       "      <Backdrop depth={4} />",
-      "      <Camera page={page} />",
+      "      <Camera page={page} media={media} />",
       "    </AbsoluteFill>",
       "  );",
       "};",
@@ -1082,11 +1285,11 @@
       "import { AbsoluteFill, useCurrentFrame } from \"remotion\";",
       "import { PageBody } from \"./PageBody\";",
       "import { cameraStyle, useScale } from \"./motion\";",
-      "import type { Shot, SlidePage } from \"./types\";",
+      "import type { MediaMap, Shot, SlidePage } from \"./types\";",
       "",
       "const FALLBACK: Shot = { kind: \"establish\", from: 0, frames: 1, move: \"pushIn\", focus: -1, spot: \"none\", tag: \"\", depth: 3 };",
       "",
-      "export const Camera: React.FC<{ page: SlidePage }> = ({ page }) => {",
+      "export const Camera: React.FC<{ page: SlidePage; media?: MediaMap }> = ({ page, media }) => {",
       "  const frame = useCurrentFrame();",
       "  const k = useScale();",
       "  const list = page.shots && page.shots.length ? page.shots : [FALLBACK];",
@@ -1096,7 +1299,7 @@
       "  const p = Math.max(0, Math.min(1, (frame - cur.from) / span));",
       "  return (",
       "    <AbsoluteFill style={{ overflow: \"hidden\", ...cameraStyle(cur.move, p, k) }}>",
-      "      <PageBody page={page} focus={cur.focus} spot={cur.spot} tag={cur.tag} />",
+      "      <PageBody page={page} media={media} focus={cur.focus} spot={cur.spot} tag={cur.tag} />",
       "    </AbsoluteFill>",
       "  );",
       "};",
@@ -1304,16 +1507,15 @@
 
   function captionsSrc() {
     return [
-      "/* 逐词字幕：只在接了旁白音轨时才铺（无旁白不铺 —— 要点已经在画面上）",
-      "   一屏取「当前句起的 CAPTION_WINDOW 内」的词，说到哪个词就亮哪个（数据是 ms 级真值）；",
-      "   窗口与字号跟展示风格走（学术慢而少、Motion 快而大），不在这里再判一次风格。 */",
+      "/* 逐词字幕：按脚本旁白（notes「旁白：」逐句）的时间轴铺 —— 没有旁白音轨也照常铺，",
+      "   有音轨时它就是音轨的逐词时间轴（两条路径不各算一份）。",
+      "   一屏显示当前整句（说到哪个词就亮哪个，数据是 ms 级真值）；",
+      "   字号跟展示风格走（学术小而稳、Motion 快而大），不在这里再判一次风格。 */",
       "import React from \"react\";",
       "import { AbsoluteFill, useCurrentFrame, useVideoConfig } from \"remotion\";",
-      "import { CAPTION_SIZE, CAPTION_WINDOW, useScale } from \"./motion\";",
+      "import { CAPTION_SIZE, useScale } from \"./motion\";",
       "import { T } from \"./theme\";",
       "import type { Caption } from \"./types\";",
-      "",
-      "const WINDOW_MS = CAPTION_WINDOW;",
       "",
       "export const Captions: React.FC<{ captions: Caption[] }> = ({ captions }) => {",
       "  const frame = useCurrentFrame();",
@@ -1326,12 +1528,37 @@
       "    else break;",
       "  }",
       "  if (cur < 0) return null;",
-      "  const startMs = captions[cur].startMs;",
-      "  const shown: Caption[] = [];",
-      "  for (let i = cur; i < captions.length; i++) {",
-      "    if (captions[i].startMs - startMs > WINDOW_MS) break;",
-      "    shown.push(captions[i]);",
+      "  /* 一屏显示「当前整句」：从上一个句末块之后起，到当前句的句末块止。",
+      "     按时间窗滚动的写法在中文里只露出五六个字，观众读不到上下文（旁白音轨可能根本没有）。",
+      "     句子太长就从句首往前裁（最多 MAXC 字，仍然一屏），句与句之间靠句末标点与时间空档断开。 */",
+      "  const GAP = 700;",
+      "  /* 分号也算断句：一屏只放一个分句，长句就不会被掐头成残句。 */",
+      "  const isEnd = (t: string) => /[。！？!?；;]$/.test((t || \"\").trim());",
+      "  let from = 0;",
+      "  for (let i = cur - 1; i >= 0; i--) {",
+      "    if (isEnd(captions[i].text) || captions[i + 1].startMs - captions[i].endMs > GAP) {",
+      "      from = i + 1;",
+      "      break;",
+      "    }",
       "  }",
+      "  let to = cur;",
+      "  for (let i = cur; i < captions.length; i++) {",
+      "    to = i;",
+      "    if (isEnd(captions[i].text)) break;",
+      "    if (i + 1 < captions.length && captions[i + 1].startMs - captions[i].endMs > GAP) break;",
+      "  }",
+      "  const MAXC = 34;",
+      "  const lenOf = (a: number, b: number) => {",
+      "    let n = 0;",
+      "    for (let i = a; i <= b; i++) n += (captions[i].text || \"\").length;",
+      "    return n;",
+      "  };",
+      "  while (from < cur && lenOf(from, to) > MAXC) from++;",
+      "  /* 掐头不许掐在拉丁／数字串中间：起点必须是中文或开括号，否则再往后挪一块",
+      "     （否则会出现「logN；而独立系数…」这种半截残句）。 */",
+      "  while (from < cur && !/^[\\u4e00-\\u9fff（(《「“]/.test((captions[from].text || \"\").trim())) from++;",
+      "  const shown = captions.slice(from, to + 1);",
+      "  const chars = lenOf(from, to);",
       "  return (",
       "    <AbsoluteFill style={{ alignItems: \"center\", justifyContent: \"flex-end\", paddingBottom: Math.round(72 * k) }}>",
       "      <div",
@@ -1344,7 +1571,7 @@
       "          display: \"flex\",",
       "          flexDirection: \"row\",",
       "          flexWrap: \"wrap\",",
-      "          fontSize: Math.round(CAPTION_SIZE * k),",
+      "          fontSize: Math.round(CAPTION_SIZE * k * (chars > 34 ? 0.85 : 1)),",
       "          fontWeight: 600,",
       "          gap: Math.round(6 * k) + \" \" + Math.round(12 * k),",
       "          justifyContent: \"center\",",
@@ -1372,7 +1599,7 @@
     return [
       "/* 研究演示 · 视频版合成入口：页 → 序列（片头 → 章节 → 要点逐条 → 结尾）。",
       "   数据全在 data.ts / theme.ts / motion.ts（生成期算好），这里只排时间轴与转场。",
-      "   端子：唯一可选的是旁白音轨（空 = 无旁白、也不铺字幕）。 */",
+      "   端子：唯一可选的是旁白音轨（空 = 不铺旁白音轨；字幕仍按脚本旁白逐句的时间轴铺）。 */",
       "import React from \"react\";",
       "import { AbsoluteFill, Audio, Sequence, staticFile } from \"remotion\";",
       "import { CHAPTERS, CAPTIONS, PAGES, SEGMENTS } from \"./data\";",
@@ -1382,12 +1609,14 @@
       "import { PageFrame } from \"./PageFrame\";",
       "import { DURATION_IN_FRAMES, FPS, HEIGHT, WIDTH } from \"./motion\";",
       "import { T } from \"./theme\";",
-      "import type { ChapterSeg, SlidePage } from \"./types\";",
+      "import type { ChapterSeg, MediaMap, SlidePage } from \"./types\";",
       "",
-      "/* 端子契约：旁白音轨（可空）—— 有它就铺 <Audio> 与逐词字幕，没有就纯画面 */",
+      "/* 端子契约：旁白音轨（可空）—— 有它就铺 <Audio>；逐词字幕不看它，有 CAPTIONS 就铺 */",
       "export const inputs = " + JSON.stringify(contract) + ";",
       "",
-      "export type MainProps = { narration?: string };",
+      "/* media：叠加图的字节（name → data URL）。工程本身不带图（那是可执行代码，不是素材包），",
+      "   由导出 / 渲染那一侧在 props 里给；没给的页画占位框，不会因为缺一张图整支片子渲不出来。 */",
+      "export type MainProps = { narration?: string; media?: MediaMap };",
       "",
       "const PAGES_BY_ID: { [key: string]: SlidePage } = {};",
       "for (const p of PAGES) PAGES_BY_ID[p.id] = p;",
@@ -1404,6 +1633,7 @@
       "",
       "export const Main: React.FC<MainProps> = (props) => {",
       "  const narration = props && props.narration ? String(props.narration) : \"\";",
+      "  const media: MediaMap = (props && props.media) || {};",
       "  const src = narration ? (narration.indexOf(\"http\") === 0 ? narration : staticFile(narration)) : \"\";",
       "  return (",
       "    <AbsoluteFill style={{ backgroundColor: T.paper, color: T.ink, fontFamily: T.font }}>",
@@ -1418,13 +1648,13 @@
       "                <ChapterCard seg={ch} />",
       "              ) : null",
       "            ) : pg ? (",
-      "              <PageFrame page={pg} />",
+      "              <PageFrame page={pg} media={media} />",
       "            ) : null}",
       "          </Sequence>",
       "        );",
       "      })}",
       "      {src ? <Audio src={src} /> : null}",
-      "      {src && CAPTIONS.length ? <Captions captions={CAPTIONS} /> : null}",
+      "      {CAPTIONS.length ? <Captions captions={CAPTIONS} /> : null}",
       "    </AbsoluteFill>",
       "  );",
       "};",
@@ -1522,6 +1752,12 @@
     const SCENE_MAX = Number.isFinite(Number(tokens.sceneMax)) ? Math.max(0, Math.round(Number(tokens.sceneMax))) : 6;
     let sceneCount = 0;
     const sceneDropped = [];
+    /* 叠加图清单：视频工程不带素材字节（它是可执行代码），只带「哪一页有哪张图」的键；
+       导出 / 渲染那一侧按 name 把 slides/media 里的图读成 data URL 塞进 props.media。 */
+    const mediaList = [];
+    const mediaNames = new Set();
+    const mediaMulti = [];
+    const mediaVideo = [];
     for (const it of items) {
       if (it.type === "chapter") {
         chapters.push({ id: it.id, label: it.label, no: it.no, from: it.from, frames: it.frames, sec: it.sec });
@@ -1540,6 +1776,30 @@
           scene = "";
         }
       }
+      const pageMedia = [];
+      const srcMedia = Array.isArray(pg.media) ? pg.media : [];
+      let figNo = 0;
+      for (const m of srcMedia) {
+        if (!m || !str(m.src)) continue;
+        if (str(m.kind) === "video") {
+          mediaVideo.push(str(pg.title));
+          continue;
+        }
+        figNo++;
+        const name = mediaNameOf(it.index, figNo, m.src, mediaNames);
+        const one = {
+          name: name,
+          src: str(m.src),
+          x: Number(m.x) || 0,
+          y: Number(m.y) || 0,
+          w: Number(m.w) || 0,
+          h: Number(m.h) || 0,
+          fit: str(m.fit) === "cover" ? "cover" : "contain",
+        };
+        pageMedia.push(one);
+        mediaList.push(Object.assign({ pageId: str(pg.id), page: it.index, title: str(pg.title) }, one));
+      }
+      if (pageMedia.length > 1) mediaMulti.push(str(pg.title) + "（" + pageMedia.length + " 张）");
       pages.push({
         id: str(pg.id),
         kind: str(pg.kind),
@@ -1556,10 +1816,12 @@
         frames: it.frames,
         sec: it.sec,
         scene: scene,
+        /* 叠加图（只认图片；视频叠加物在 warnings 里点名，不进这一版） */
+        media: pageMedia,
         /* 镜头必须铺满 it.frames（含尾部交叠），否则最后一镜会提前收尾；
            怎么切按展示风格（学术：建立镜 + 图注 / 公式特写、慢推；motion：数字与对比镜；2.5D / 3D：分层与场景镜） */
         shots: planShots(
-          Object.assign({}, pg, { scene: scene, bullets: bullets.map((b) => b.text) }),
+          Object.assign({}, pg, { scene: scene, media: pageMedia, bullets: bullets.map((b) => b.text) }),
           motion,
           it.frames,
           fps,
@@ -1570,12 +1832,14 @@
     }
 
     /* ⑤ 旁白：notes 逐句 → 页内时间窗 → 逐词字幕（无 notes = 空数组，不铺字幕）
+       这条时间轴是脚本自己的（「旁白：」写的那几句），与有没有旁白音轨无关 ——
+       无音轨时 data.ts 里同样有 CAPTIONS，Main 照常铺字幕。
        节奏跟展示风格走：学术留的白多（起 500ms 收 380ms），Motion 贴着画面走（260 / 200）。
        两个留白都夹在本页时间窗的比例内 —— 页再短也不会把字幕挤到窗外。 */
     const captions = [];
     const narration = [];
     for (const pg of pages) {
-      const sentences = sentencesOf(pg.note);
+      const sentences = sentencesOf(narrationTextOf(pg.note));
       if (!sentences.length) continue;
       const winStart = Math.round((pg.from / fps) * 1000);
       const winEnd = Math.round(((pg.from + roundInt(pg.sec * fps)) / fps) * 1000);
@@ -1655,6 +1919,7 @@
           pg.quote,
           pg.formula,
           pg.scene,
+          pg.media.map((m) => m.name),
           pg.bullets.map((b) => b.text),
           pg.shots.map((s) => [s.kind, s.from, s.frames, s.move, s.focus, s.spot, s.tag]),
         ]),
@@ -1682,6 +1947,9 @@
       narrationSentences: narration.length,
       shotCount: pages.reduce((n, pg) => n + (pg.shots ? pg.shots.length : 0), 0),
       sceneCount: sceneCount,
+      /* 叠加图清单（name / src / 页）：导出侧按 name 把图读成 data URL 传进 props.media */
+      mediaCount: mediaList.length,
+      media: mediaList,
       briefMode: brief.mode,
       /* 展示风格（怎么演）：meta.style = 具体档（auto 已判成具体那一种），stylePicked = 是不是自动判的 */
       style: style,
@@ -1768,7 +2036,22 @@
       const src = RS.pageById(deck, pg.id);
       return !!(src && ((src.media && src.media.length) || (src.objects && src.objects.length)));
     });
-    if (withMedia.length) warnings.push("视频版 v1 不铺叠加媒体 / 自由版面对象（" + withMedia.length + " 页）：先出字与式，图另行替换");
+    if (mediaList.length) {
+      warnings.push(
+        "叠加图 " +
+          mediaList.length +
+          " 张已铺进视频（" +
+          pages.filter((pg) => pg.media.length).length +
+          " 页）：" +
+          mediaList.map((m) => str(m.name)).join("、") +
+          " —— 图片字节经 props.media 传入（导出会自动带上 slides/media 里的图；工程本身不带素材）",
+      );
+    }
+    if (mediaMulti.length) warnings.push("这几页不止一张图，视频版先铺第一张（静态版仍然都铺）：" + mediaMulti.join("、"));
+    if (mediaVideo.length) warnings.push("这几页的叠加物是视频，不进视频版（先出图与字）：" + mediaVideo.join("、"));
+    if (!mediaList.length && withMedia.length) {
+      warnings.push("有 " + withMedia.length + " 页在静态版里带叠加媒体 / 自由版面对象，视频版没有可铺的图（objects 不进视频）");
+    }
     if (sceneDropped.length) {
       warnings.push(
         "3D 场景页上限 " +
@@ -1783,7 +2066,29 @@
       warnings.push("3D 场景 " + sceneCount + " 页：three.js 经 @remotion/three 渲染（依赖白名单已放行 three / @remotion/three / @react-three/fiber）");
     }
     if (pages.some((pg) => pg.formula)) {
-      warnings.push("公式页在视频里按 TeX 源码显示（工程只允许 react / remotion / three，引不进 KaTeX）：需要排版好的式子请走静态版 PDF");
+      warnings.push(
+        "公式页 " +
+          pages.filter((pg) => pg.formula).length +
+          " 页：式子在生成期已排成文字（真上标 / √ / a/b / 「的 … 次方」），视频里不做 TeX 解析 —— 上屏的每一个字都能直接看懂",
+      );
+    }
+    /* 硬闸：翻不动的 TeX（矩阵 / align 环境、不认识的宏）绝不带上屏 —— 宁可这一版不出片，也不出印着源码的片子 */
+    const texBad = texOnScreenOf(pages, RS);
+    if (texBad.length) {
+      return {
+        ok: false,
+        error:
+          "上屏文字里还有 LaTeX 源码（视频拒绝出片）：" +
+          texBad
+            .slice(0, 6)
+            .map((t) => "「" + t.page + "」" + t.field + " " + t.leftover.join(" ") + " ← " + t.text)
+            .join("；") +
+          "。改法：把式子写成排好的样子（真上标 / √ / a/b /「的 … 次方」），或改写成人话。",
+        files: null,
+        audit: { errors: ["latex_on_screen"], warnings: warnings },
+        warnings: warnings,
+        meta: meta,
+      };
     }
 
     const result = {
@@ -1911,6 +2216,17 @@
     if (entrySrc && !/export\s+(?:const|let|var)\s+inputs\b/.test(entrySrc)) {
       errors.push("入口没有导出 inputs 契约");
     }
+    /* 字幕：CAPTIONS 是「有就铺」的数据（时间轴按 notes 排，与有没有旁白音轨无关），
+       所以在 Main 里它参与渲染、不算未使用变量；反过来，若入口又把字幕绑回音轨
+       （src && CAPTIONS.length），那就是「没录音就不铺字幕」的旧口径，直接判错。 */
+    const dataFileSrc = str(tree["data.ts"]);
+    const hasCaptionData = /export\s+const\s+CAPTIONS\b[^=]*=\s*\[\s*\{/.test(dataFileSrc);
+    if (entrySrc && /src\s*&&\s*CAPTIONS\.length/.test(entrySrc)) {
+      errors.push("入口把字幕绑回了旁白音轨（src && CAPTIONS.length）：无音轨就不铺字幕，应只判 CAPTIONS.length");
+    }
+    if (hasCaptionData && entrySrc && entrySrc.indexOf("CAPTIONS") < 0) {
+      warnings.push("data.ts 里有字幕数据，但入口没用到 CAPTIONS（这一版不会铺字幕）");
+    }
     for (const name of names) {
       const src = str(tree[name]);
       const bad = [];
@@ -1966,3 +2282,5 @@
     spotTargetsOf: spotTargetsOf,
   };
 });
+
+

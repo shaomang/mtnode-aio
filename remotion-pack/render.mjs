@@ -220,8 +220,14 @@ const main = async () => {
     logLevel: cfg.logLevel,
     ...browserOpt,
     ...(cfg.concurrency ? {concurrency: cfg.concurrency} : {}),
+    /* 画质档：crf 越小越清楚（18 是高画质，16 接近无损的教研交付档）；
+       jpegQuality 只影响中间帧，成片清晰度由 crf 定 —— 两个都给，别只给一个。 */
+    ...(cfg.crf != null ? {crf: Number(cfg.crf)} : {}),
     ...(cfg.jpegQuality ? {jpegQuality: cfg.jpegQuality} : {}),
     ...(cfg.audioCodec ? {audioCodec: cfg.audioCodec} : {}),
+    /* 没有旁白音轨：显式 muted，别让 Remotion 顺手塞一条静音 AAC
+       （实测空音轨 383 秒白占 14 MB，响度 -91 dB，播放器还显示有声）。 */
+    ...(cfg.muted ? {muted: true} : {}),
     onProgress: ({progress}) => {
       const bucket = Math.floor(progress * 200); // 0.5% 步进，避免刷屏
       if (bucket !== lastBucket) {

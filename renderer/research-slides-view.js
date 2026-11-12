@@ -797,7 +797,7 @@
       pWin: null,
     };
     /* 页面元素开关：整份一份（deck.patch.chrome 由内核归一），出页时一并递进去 ——
-       预览 / 放映 / 演讲者屏 / 导出 HTML（再到 PDF / PNG）因此永远是同一份结果。 */
+       预览 / 放映 / 演讲者屏 / 导出 HTML 因此永远是同一份结果。 */
     function chromeNow() {
       return R.chromeOf ? R.chromeOf(S.deck && S.deck.patch && S.deck.patch.chrome) : {};
     }
@@ -1848,7 +1848,7 @@
       "<style>",
       ":root{" + cssTextOf(vars) + "--rs-slide-ar:" + arOf(d.aspect) + "}",
       "html,body{margin:0;height:100%;background:var(--rs-slide-paper);}",
-      /* 打印口径：每页一张，纸面尺寸跟着 deck 比例走（Electron 导出 PDF 时 preferCSSPageSize 认这条） */
+      /* 打印口径：每页一张，纸面尺寸跟着 deck 比例走（浏览器 / 系统打印窗认这条 @page） */
       "@page{size:" + pageSizeOf(d.aspect) + ";margin:0;}",
       CSS,
       "</style>",
