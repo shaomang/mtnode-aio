@@ -7535,20 +7535,57 @@ function snapDim(v, minV) {
 function gridMod(a, n) {
   return ((a % n) + n) % n;
 }
-/* 背景点阵间距 = snap×zoom；点径随 zoom 缩小，拉远时网格点不会显得过大 */
+/* 设备像素比（异常值一律当 1）与「量化到整设备像素」：repeat 背景的贴图尺寸 / 相位只要
+   带小数，Chromium 每帧都会按新的亚像素相位重采样 → 点阵整片闪。所有会随相机动的点阵
+   （主画布 / 壳内舞台 / 长任务图）都走这两个函数，口径只有这一处。 */
+function gridDpr() {
+  const d = window.devicePixelRatio;
+  return d > 0 && isFinite(d) ? d : 1;
+}
+function gridDevPx(v, dpr) {
+  const d = dpr > 0 && isFinite(dpr) ? dpr : gridDpr();
+  return Math.round(Number(v) * d) / d;
+}
+/* 背景点阵间距 = snap×zoom；点径随 zoom 缩小，拉远时网格点不会显得过大。
+   ── 为什么所有值都要量化到整设备像素 ─────────────────────────────────────────
+   CSS 的 repeat 背景在 Chromium 里是「按 background-size 栅格化一张贴图，再平铺」。
+   尺寸或位置只要带小数（相机一平移，--grid-x / -y 就是小数；滚轮缩放过一次，
+   --grid-size 也是小数），每张平铺贴图落在不同的亚像素相位上，点的抗锯齿覆盖率
+   逐帧变一点 —— 整片点阵就会以「呼吸」的样子闪，拖动画布时最明显。
+   把尺寸与相位都对齐到整设备像素（乘 dpr 取整再除回来），贴图与每张平铺的位置恒定，
+   点的形状不再随相机变化，闪烁从根上消失；点径（--grid-dot-r / -end）留在贴图内部，
+   只要贴图不被重采样它就不会抖，所以照旧随 zoom 连续变化，不额外量化。
+   副作用只有一个：贴图间距变成「最接近的整设备像素」（24×1.13=27.12 → 27），点阵与
+   节点落点会有 <0.5 设备像素的累积错位 —— 点阵只是底纹、没有任何参照线，肉眼不可见；
+   换来的是不再闪。壳内舞台（syncSuperInnerPanDom）与长任务图的点阵走同一口径 gridDevPx。
+   写值前比一次缓存：相机只动一个轴时另一轴（以及 zoom 不变时的尺寸 / 点径）不再重复写。 */
 function syncCanvasGrid() {
   const canvas = $("#canvas");
   if (!canvas || !S.cam) return;
   const g = grid();
   const z = S.cam.z > 0 && isFinite(S.cam.z) ? S.cam.z : 1;
-  const gs = g * z;
+  const dpr = gridDpr();
+  /* 贴图边长（整设备像素）；至少 1 设备像素，避免缩到极小后除出 0 */
+  const gsDev = Math.max(1, Math.round(g * z * dpr));
+  /* 相位同样在设备像素里取模：相机在 ±0.5 设备像素内的抖动不会改变点阵位置 */
+  const xDev = ((Math.round(S.cam.x * dpr) % gsDev) + gsDev) % gsDev;
+  const yDev = ((Math.round(S.cam.y * dpr) % gsDev) + gsDev) % gsDev;
+  /* 点径不量化：它只影响贴图**内部**的画法（同一帧里恒定），贴图不被重采样就不会抖；
+     留着原口径（随 zoom 连续变小、下限 0.3px），拉远时网格点不会显得过大。 */
   const dotR = Math.max(0.3, Math.min(1, z));
   const dotEnd = dotR * 1.5;
-  canvas.style.setProperty("--grid-size", gs + "px");
-  canvas.style.setProperty("--grid-x", gridMod(S.cam.x, gs) + "px");
-  canvas.style.setProperty("--grid-y", gridMod(S.cam.y, gs) + "px");
-  canvas.style.setProperty("--grid-dot-r", dotR + "px");
-  canvas.style.setProperty("--grid-dot-end", dotEnd + "px");
+  const size = gsDev / dpr + "px";
+  const px = xDev / dpr + "px";
+  const py = yDev / dpr + "px";
+  const ir = dotR + "px";
+  const ie = dotEnd + "px";
+  if (canvas._gridSig === size + "|" + px + "|" + py + "|" + ir + "|" + ie) return;
+  canvas._gridSig = size + "|" + px + "|" + py + "|" + ir + "|" + ie;
+  canvas.style.setProperty("--grid-size", size);
+  canvas.style.setProperty("--grid-x", px);
+  canvas.style.setProperty("--grid-y", py);
+  canvas.style.setProperty("--grid-dot-r", ir);
+  canvas.style.setProperty("--grid-dot-end", ie);
 }
 /* ── 画布坐标轴（横轴 / 纵轴边缘的灰色小数字）────────────────────────────────
    只是坐标提示：屏幕像素 → 世界坐标 = (屏幕像素 - 相机平移) / 缩放（与 toStage 同一份口径），
@@ -10761,6 +10798,39 @@ function runQueueTipOf(it) {
   return bits.join(" · ");
 }
 
+/* ── 运行队列贴画布内侧左下角 ────────────────────────────────────────────────
+   面板是 body 下的 fixed 浮层，位置按 #canvas 的实测矩形现算：left = 画布左边界，
+   bottom = 画布底边到窗口底的距离（画布底边就是状态栏上沿）→ 面板左下角与画布内侧
+   那个直角完全重合。不写死 px：侧栏开合、窗口缩放、视图切换都会挪动画布左边界。
+   ResizeObserver 只盯 #canvas 与状态栏这两只盒子，尺寸一变就重算（不是轮询）；
+   #canvas 在会话 / 团队视图下是隐藏的（矩形宽 0），那时退回窗口左下 + 状态栏上沿。 */
+let _rqAnchorRO = null;
+function positionRunQueue(el) {
+  const box = el || $("#runQueue");
+  if (!box) return;
+  const canvasEl = $("#canvas");
+  const footer = document.querySelector("footer.statusbar");
+  const r = canvasEl ? canvasEl.getBoundingClientRect() : null;
+  const fr = footer ? footer.getBoundingClientRect() : null;
+  const left = r && r.width > 0 ? Math.round(r.left) : 0;
+  const bottom = fr
+    ? Math.max(0, Math.round(window.innerHeight - fr.top))
+    : Math.max(0, Math.round(window.innerHeight - (r ? r.bottom : 0)));
+  box.style.left = left + "px";
+  box.style.bottom = bottom + "px";
+  /* 贴住左边界后宽度上限也要跟着让位：窄窗口下别从画布左边溢出去 */
+  box.style.maxWidth = "min(340px, calc(100vw - " + (left + 8) + "px))";
+}
+function bindRunQueueAnchor() {
+  if (_rqAnchorRO || typeof ResizeObserver !== "function") return;
+  const canvasEl = $("#canvas");
+  const footer = document.querySelector("footer.statusbar");
+  _rqAnchorRO = new ResizeObserver(() => positionRunQueue());
+  if (canvasEl) _rqAnchorRO.observe(canvasEl);
+  if (footer) _rqAnchorRO.observe(footer);
+  window.addEventListener("resize", () => positionRunQueue());
+}
+
 /* 左下角「运行队列」= 全应用运行总览：
    画布助手 → 智能会话 → 处理中（普通节点 + 开发块）→ 后端生成中 → 等待中。
    取数一律走 collectRunQueueAll()（跨画布节点 / 独立会话 / 助手 / 后端媒体 + 去重），
@@ -10849,6 +10919,9 @@ function updateRunQueuePanel() {
     }
   }
   if (!el) return;
+  /* 先绑观察者并算一次位置（收起 / 空队列时也算）：下次显示就已经贴在画布内角上 */
+  bindRunQueueAnchor();
+  positionRunQueue(el);
   if (!hasQueue) {
     el.hidden = true;
     el.innerHTML = "";
@@ -10873,8 +10946,10 @@ function updateRunQueuePanel() {
   const fold = document.createElement("button");
   fold.type = "button";
   fold.className = "rq-fold mini";
-  fold.textContent = "—";
+  /* 最小化 = 向下三角（与行内 ■ / ▶ 同一套实心字形，不用旧的那根横杠） */
+  fold.textContent = "▼";
   fold.title = I18n.t("收起为左下角条状按钮");
+  fold.setAttribute("aria-label", I18n.t("收起为左下角条状按钮"));
   fold.onclick = (ev) => {
     ev.stopPropagation();
     S._rqCollapsed = true;
@@ -19815,9 +19890,12 @@ function syncSuperInnerPanDom(host) {
   const py = Number(host.innerPanY) || 0;
   if (vp) vp.style.transform = "translate(" + px + "px," + py + "px)";
   if (!stage) return;
-  const gg = grid();
-  stage.style.setProperty("--super-grid-x", gridMod(px, gg) + "px");
-  stage.style.setProperty("--super-grid-y", gridMod(py, gg) + "px");
+  /* 壳内点阵同样量到整设备像素（理由见 syncCanvasGrid 上面那段）：innerPan 是小数，
+     直接当 background-position 用会让壳里那片点阵跟着内平移闪 */
+  const gg = Math.max(1, gridDevPx(grid() * gridDpr()));
+  stage.style.setProperty("--super-grid-size", gg + "px");
+  stage.style.setProperty("--super-grid-x", gridDevPx(gridMod(px, gg)) + "px");
+  stage.style.setProperty("--super-grid-y", gridDevPx(gridMod(py, gg)) + "px");
 }
 /** 当前的平移参照框：壳内没出界（或拿不到壳）→ null（不平移）；其余 → 画布矩形（主相机）。
     「壳里」按整颗壳的屏幕矩形算（标题栏 / 舞台都算），这样拖着线划过壳的任意位置都不滚。 */
@@ -23972,7 +24050,9 @@ function bindCanvas() {
      passive + 只记坐标，不拦任何默认行为，也不影响拖拽 / 框选那条 mousemove。 */
   canvas.addEventListener(
     "mousemove",
-    (ev) => noteCanvasPointer(ev.clientX, ev.clientY),
+    (ev) => {
+      noteCanvasPointer(ev.clientX, ev.clientY);
+    },
     { passive: true },
   );
   /* 右键端子的唯一入口（切断该端子上的连线）：命中不认 DOM 目标，按最近的端子算 ——

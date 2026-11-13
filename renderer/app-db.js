@@ -7165,7 +7165,9 @@ function renderIxPanel() {
 }
 
 /* ── 主题(industrial = 默认 MTNode, dsh = DSH, endfield = 终末地) ──
-   endfield 的颜色真源在 css/theme-endfield.css 的 body.theme-endfield 槽位里；
+   三档主题共用同一套皮肤（终末地那套：直角 / 45° 切角 / 发丝线 / 等宽读数 / 呼吸），
+   颜色真源在 css/theme-endfield.css 的 body.ef-skin 槽位里；applyTheme 给三档都挂
+   ef-skin，各主题只在那份 CSS 的「一·二」里换回自己的强调色（青 / 蓝 / 信号黄）。
    这里只给「切换瞬间就要用到」的几支强调色（#themeStyle 那一段 :root 覆盖）。
    亮色（white）主题暂时隐藏：从这张表里摘掉后，设置窗不再列出它，
    存档里若还是 light 会被下面 applyTheme 的回落改成 industrial（同时清掉 body.theme-light），
@@ -7192,7 +7194,13 @@ function applyTheme(name) {
   const theme = THEMES[name] ? name : "industrial";
   S.config.theme = theme;
   document.documentElement.dataset.theme = theme;
+  /* ef-skin = 共用皮肤：三档主题都挂（css/theme-endfield.css 第一节起头的那个类）。
+     皮肤只管形状 / 纹理 / 动效 / 底盘，强调色由 body.theme-* 那几支覆盖决定。 */
+  document.body.classList.add("ef-skin");
   document.body.classList.toggle("theme-industrial", theme === "industrial");
+  /* theme-dsh：DSH 档以前一个类都不挂（靠 base.css 的默认槽位 + 上面那段 :root 强调色），
+     皮肤要按主题换色就得有个可选的钩子 —— 挂上它，CSS 里 body.ef-skin.theme-dsh 才命中。 */
+  document.body.classList.toggle("theme-dsh", theme === "dsh");
   document.body.classList.toggle("theme-light", theme === "light");
   document.body.classList.toggle("theme-endfield", theme === "endfield");
   let el = $("#themeStyle");

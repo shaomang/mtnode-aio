@@ -2142,12 +2142,18 @@ function ltGraphGridSync(holder, svg, g) {
     : { x: 0, y: 0, w: fallback[2] || 900, h: fallback[3] || 240 };
   const sc = ltGraphScaleOf(view, svg && svg.getBoundingClientRect ? svg.getBoundingClientRect() : null);
   const k = sc.s;
-  const cell = Math.max(6, Math.round(grid * k));
+  /* 量到整设备像素：贴图尺寸或相位带小数时，repeat 背景会按亚像素相位逐帧重采样、
+     点阵整片闪（app.js 的 syncCanvasGrid 有同一条账）。dpr=1 时与原来的整像素取整一致。 */
+  const dpr = window.devicePixelRatio > 0 && isFinite(window.devicePixelRatio) ? window.devicePixelRatio : 1;
+  const cellDev = Math.max(Math.round(6 * dpr), Math.round(grid * k * dpr));
+  const cell = cellDev / dpr;
   holder.style.setProperty("--lt-grid", cell + "px");
   const ox = sc.offX - Number(view.x || 0) * k;
   const oy = sc.offY - Number(view.y || 0) * k;
-  holder.style.setProperty("--lt-grid-x", Math.round(((ox % cell) + cell) % cell) + "px");
-  holder.style.setProperty("--lt-grid-y", Math.round(((oy % cell) + cell) % cell) + "px");
+  const oxDev = ((Math.round(ox * dpr) % cellDev) + cellDev) % cellDev;
+  const oyDev = ((Math.round(oy * dpr) % cellDev) + cellDev) % cellDev;
+  holder.style.setProperty("--lt-grid-x", oxDev / dpr + "px");
+  holder.style.setProperty("--lt-grid-y", oyDev / dpr + "px");
 }
 function ltGraphViewBoxOf(svg, holderW) {
   const vb = (svg && svg.getAttribute("viewBox") ? svg.getAttribute("viewBox") : "0 0 1 1").split(" ").map(Number);

@@ -1261,10 +1261,16 @@ button.pk-badge.pk-btn:hover {
   }
 }
 
-/* ===== 运行队列（左下角悬浮） ===== */
+/* ===== 运行队列（贴画布内侧左下角） =====
+   位置：left / bottom 由 app.js 的 positionRunQueue() 按 #canvas 的实测矩形写死
+   （左 0 / 底 0 = 与画布内侧左下那个直角完全重合），窗口缩放 / 侧栏开合 / 视图切换
+   都重算一次。下面这两行只是 JS 跑起来之前的兜底值，别再当「真实位置」改。
+   形状：终末地口径的尖角板 —— 左边与下边是直角（要贴画布内角），只有右上角切 14px；
+   切角落在自由端，不破坏要贴边的那两个角。clip-path 会把轮廓外的投影整块剪掉，
+   所以不用外投影，改一条内描边给硬边。 */
 .run-queue {
   position: fixed;
-  left: 14px;
+  left: 0;
   bottom: 34px;
   z-index: 1150;
   min-width: 200px;
@@ -1274,8 +1280,9 @@ button.pk-badge.pk-btn:hover {
   flex-direction: column;
   background: linear-gradient(180deg, rgba(27, 34, 48, .96), rgba(18, 22, 31, .97));
   border: 1px solid var(--bd2);
-  border-radius: 4px;
-  box-shadow: 0 8px 28px rgba(0, 0, 0, .45), 0 0 0 1px rgba(56, 214, 255, .06);
+  border-radius: 0;
+  clip-path: polygon(0 0, calc(100% - 14px) 0, 100% 14px, 100% 100%, 0 100%);
+  box-shadow: inset 0 0 0 1px rgba(56, 214, 255, .05);
   backdrop-filter: blur(6px);
   overflow: hidden;
   pointer-events: auto;
@@ -1298,7 +1305,8 @@ button.pk-badge.pk-btn:hover {
   align-items: center;
   gap: 8px;
   flex: none;
-  padding: 7px 10px;
+  /* 右侧让出 18px：面板右上角切了 14px，头部的按钮不能压进那条斜边 */
+  padding: 7px 18px 7px 10px;
   border-bottom: 1px solid var(--bd);
   font-size: 11px;
   letter-spacing: .6px;
@@ -1321,6 +1329,8 @@ button.pk-badge.pk-btn:hover {
   white-space: nowrap
 }
 
+/* 「全部终止」= danger 警示件：浅色 45° 斜条纹底（常驻按钮不做成实心红，只给一层
+   压得很浅的斜纹；悬停时同一套条纹压深一档，不换底）。方块直角，跟面板的尖角同族。 */
 .rq-stop-all {
   flex: none;
   margin-left: 4px;
@@ -1328,14 +1338,22 @@ button.pk-badge.pk-btn:hover {
   font-size: 10px !important;
   letter-spacing: .3px;
   line-height: 1.4;
-  border-color: var(--red) !important;
-  color: #ff8a8a !important;
-  background: rgba(255, 80, 80, .1) !important;
+  border-radius: 0;
+  border-color: rgba(255, 90, 90, .55) !important;
+  color: #ff9c9c !important;
+  background:
+    repeating-linear-gradient(45deg,
+      rgba(255, 90, 90, .26) 0 4px,
+      rgba(255, 90, 90, .10) 4px 8px) !important;
 }
 
 .rq-stop-all:hover {
-  background: rgba(255, 80, 80, .22) !important;
+  background:
+    repeating-linear-gradient(45deg,
+      rgba(255, 90, 90, .44) 0 4px,
+      rgba(255, 90, 90, .18) 4px 8px) !important;
   border-color: #ff6b6b !important;
+  color: #ffdcdc !important;
 }
 
 /* 队列行内「只终止这一项」：藏在行右侧，悬停才显形 */
@@ -1347,7 +1365,7 @@ button.pk-badge.pk-btn:hover {
   height: 18px;
   margin-right: -2px;
   border: 1px solid transparent;
-  border-radius: 5px;
+  border-radius: 0;
   font-size: 9px;
   line-height: 1;
   color: var(--muted);
@@ -1394,6 +1412,7 @@ button.pk-badge.pk-btn:hover {
   font-size: 10px !important;
   letter-spacing: .3px;
   line-height: 1.4;
+  border-radius: 0;
   border-color: var(--bd2) !important;
   color: var(--muted) !important;
   background: transparent !important;
@@ -1428,7 +1447,7 @@ button.pk-badge.pk-btn:hover {
   min-width: 15px;
   padding: 0 4px;
   border: 1px solid rgba(124, 232, 255, .28);
-  border-radius: 8px;
+  border-radius: 0;
   font-size: 9px;
   line-height: 13px;
   letter-spacing: 0;

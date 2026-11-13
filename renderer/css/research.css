@@ -1529,18 +1529,6 @@
   flex: 1 1 auto;
   min-width: 0;
 }
-/* 初始化已处理徽标（左栏笔记 / 文献行共用；只读回显，不可点） */
-.rs-init-done {
-  flex: 0 0 auto;
-  font-size: 10px;
-  line-height: 16px;
-  padding: 0 5px;
-  border-radius: 999px;
-  border: 1px solid var(--bd);
-  background: var(--panel2);
-  color: var(--green);
-  white-space: nowrap;
-}
 .rs-lit-title {
   font-size: 12.5px;
   color: var(--ink);

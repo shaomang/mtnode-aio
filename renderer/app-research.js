@@ -1,4 +1,4 @@
-﻿/* ===== 研究画布（research view）· 视图 / 编辑 / 批注 / 框选询问 / 文献层 / 会话 =====
+/* ===== 研究画布（research view）· 视图 / 编辑 / 批注 / 框选询问 / 文献层 / 会话 =====
  *
  * 一句话：这是与画布并列的第 4 个顶层视图 —— 内容不是节点图，而是「以课题为核心的知识图谱」，
  * 默认形态是一间 Markdown 编辑窗 + 下方会话框，点「转为图谱」才把正文打散成关系图。
@@ -1744,39 +1744,6 @@
     } catch (_) {
       return null;
     }
-  }
-  function initDoneRels() {
-    const rels = new Set();
-    for (const it of C().processedList(initQueueNow())) {
-      for (const r of [it.noteRel, it.mdRel, it.foldsRel]) {
-        const k = C().normRel(r);
-        if (k) rels.add(k);
-      }
-    }
-    return rels;
-  }
-  function noteInitDone(n, rels) {
-    if (!n) return false;
-    if (C().noteProcessed(n.md)) return true;
-    return !!rels && rels.has(C().normRel(n.path));
-  }
-  function litInitDone(it, rels) {
-    if (!it || !rels) return false;
-    const key = it.citeKey || C().citeKeyOf(it);
-    if (!key) return false;
-    const noteRel = C().normRel("notes/40-" + key + ".md");
-    const note = RS.notes.find((n) => C().normRel(n.path) === noteRel);
-    if (note && C().noteProcessed(note.md)) return true;
-    return (
-      rels.has(noteRel) ||
-      rels.has(C().normRel("literature/sources/" + key + ".md")) ||
-      rels.has(C().normRel("literature/folds/" + key + ".md"))
-    );
-  }
-  function initDoneBadge() {
-    const b = el("span", "rs-init-done", t("✓ 已处理"));
-    b.title = t("初始化已处理：这篇内容已转成笔记与引用");
-    return b;
   }
   /* 处理时间：与投料台 fmtAt 同一口径 —— 当天 HH:MM，今年 M月D日，跨年补年份 */
   function fmtProcessedAt(at) {
@@ -3916,7 +3883,6 @@
           } catch (_) {}
         },
         logChange: (kind, rel, before, after) => logChange(kind, rel, before, after),
-        noteBadge: (n) => (noteInitDone(n, initDoneRels()) ? initDoneBadge() : null),
         reload: async () => {
           await rsLoadNotes();
           await rsLoadFolds();
@@ -10779,7 +10745,6 @@
     host.appendChild(tools);
 
     const list = el("div", "rs-lit-list");
-    const litRels = initDoneRels();
     let litEmpty = null;
     if (!RS.lib.length) {
       litEmpty = el("div", "rs-lit-empty", t("文献库是空的。导入 BibTeX 或按 DOI / 标题检索后加入。"));
@@ -10795,7 +10760,6 @@
       const titleEl = el("div", "rs-lit-title");
       titleEl.innerHTML = inlineHtml(title);
       head.appendChild(titleEl);
-      if (litInitDone(it, litRels)) head.appendChild(initDoneBadge());
       row.appendChild(head);
       row.appendChild(el("div", "rs-lit-sub", sub));
       const acts = el("div", "rs-lit-acts");

@@ -9289,13 +9289,51 @@ function nodeElement(node) {
     if (purpose) return truncated ? fullTitle + "\n" + purpose : purpose;
     return truncated ? fullTitle : "";
   });
-  if (!node.ro) {
-    title.onclick = (ev) => {
+  /* 标题：点一下（原地松开）才进编辑，按住拖动则整颗节点跟着走位移。
+     旧写法只认 click —— .n-title 在节点 mousedown 里是放行区，按住标题根本没有拖拽，
+     手指一松反而落进改名，等于把标题从「可拖的头部」里挖掉了一块。所以这里自己起一次手势：
+     ① 按下先不动（不选、不 preventDefault），节点 DOM 不会就地重建把手势打断；
+     ② 位移超过 3px 就把控制权交给 startNodeDrag（从当前这一点起算，节点不会弹一下）；
+     ③ 原地松开才进标题编辑。click 不再参与（拖完松手也可能冒出一只 click）。
+     只读节点同一条手势，只是不做第 ③ 步（标题不给改）。 */
+  title.addEventListener("mousedown", (ev) => {
+    if (ev.button !== 0) return;
+    if (ev.ctrlKey || ev.metaKey || ev.shiftKey) {
+      /* 多选手势照旧：按下即交给节点本体（切换该节点的多选状态） */
       ev.stopPropagation();
+      startNodeDrag(ev, node);
+      return;
+    }
+    const sx = ev.clientX,
+      sy = ev.clientY;
+    let live = true;
+    const cleanup = () => {
+      live = false;
+      window.removeEventListener("mousemove", onMove, true);
+      window.removeEventListener("mouseup", onUp, true);
+    };
+    const onMove = (e) => {
+      if (!live) return;
+      /* 左键已经不在按下（松手发生在窗口外，mouseup 丢了）：直接收摊，别留悬空监听 */
+      if (e.buttons !== undefined && (e.buttons & 1) === 0) {
+        cleanup();
+        return;
+      }
+      if (Math.abs(e.clientX - sx) + Math.abs(e.clientY - sy) <= 3) return;
+      cleanup();
+      hideNodeTitleTip();
+      startNodeDrag(e, node);
+    };
+    const onUp = (e) => {
+      if (!live) return;
+      cleanup();
+      if (e.button !== 0 || node.ro) return;
       hideNodeTitleTip();
       startTitleEdit(node, title);
     };
-  }
+    window.addEventListener("mousemove", onMove, true);
+    window.addEventListener("mouseup", onUp, true);
+  });
   head.appendChild(title);
   if (node.ro) {
     const chip = document.createElement("span");
@@ -17961,14 +17999,17 @@ function buildBody(node, body) {
       if (typeof applyNodeCoverToStage === "function") applyNodeCoverToStage(node, stage);
       const g = grid();
       const pan = superInnerPan(node);
-      stage.style.setProperty("--super-grid-size", g + "px");
+      /* 点阵量到整设备像素（口径见 app.js 的 syncCanvasGrid / gridDevPx）：间距与相位
+         带小数时，repeat 背景会按亚像素相位重采样，壳里那片点阵会闪 */
+      const gg = Math.max(1, gridDevPx(g * gridDpr()));
+      stage.style.setProperty("--super-grid-size", gg + "px");
       stage.style.setProperty(
         "--super-grid-x",
-        gridMod(pan.x, g) + "px",
+        gridDevPx(gridMod(pan.x, gg)) + "px",
       );
       stage.style.setProperty(
         "--super-grid-y",
-        gridMod(pan.y, g) + "px",
+        gridDevPx(gridMod(pan.y, gg)) + "px",
       );
       stage.title = I18n.t(
         "左键拖空白处平移 · 右键添加节点 · 滚轮缩放画布 · 端子右键移除连线",

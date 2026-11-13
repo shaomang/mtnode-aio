@@ -15,9 +15,11 @@
   display: flex;
   flex-direction: column;
   gap: 0;
-  /* 收窄细线与上下的空隙：条带用负外边距抵掉一部分 .wf-wrap 的 padding(10) / gap(8)，
-     线两侧只留约 4px / 2px，不再像悬在正中央。收起态面板 hidden，条带里只剩这根线。 */
-  margin: -6px 0 -6px;
+  /* 收窄细线与上下的空隙：条带用负外边距抵掉一部分 .wf-wrap 的 padding(10)，
+     线两侧只留约 4px / 2px，不再像悬在正中央。收起态面板 hidden，条带里只剩这根线。
+     注：.wf-wrap 的 gap 已归零（画布页签条与画布贴死），条带下沿那 2px 改由自己的
+     margin-bottom 给，与从前视觉一致。 */
+  margin: -6px 0 2px;
 }
 .lt-grip {
   flex: none;

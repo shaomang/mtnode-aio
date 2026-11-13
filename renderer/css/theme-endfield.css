@@ -5,15 +5,83 @@
      · 形状：直角 / 45° 切角 / 1px 发丝线 / 等宽数字 / 危险斜纹
      · 动效：back-out 弹入 cubic-bezier(.175,.885,.32,1.275)、方角辉光、呼吸灯（无全屏扫光/滚动虚线）
    落地口径：
-     · 一律以 body.theme-endfield 起头（applyTheme 会在 body 上挂这个类），
-       深色 / 工业 / 亮色三套主题一个字节都不受影响。
+      · 一律以 body.ef-skin 起头：applyTheme 给**三档主题**（终末地 / MTNode / DSH）
+        都挂这个类 —— 这套皮肤是三档共用的底子，各主题只在第一节末尾换回自己的强调色
+        （终末地信号黄 / MTNode 青 #38d6ff / DSH 蓝 #5686fe），底盘与几何完全相同。
      · 颜色先落到 base.css 的槽位（--bg / --panel / --ink / --cyan / --orange …），
        组件层只补「槽位管不到」的部分：写死的节点底色、切角、斜纹与动效。
      · 动效全部有 @media (prefers-reduced-motion: reduce) 兜底（base.css 的全局兜底之外
-       再单独关掉扫描线，避免它吃掉一整个合成层的 GPU）。 */
+        再把骨架屏的扫描线纹理置空）。 */
+
+/* ── 参考对齐：DDDuoDuo/EndfieldHUD（windows/ 的 Qt 移植 + docs/）─────────────
+   同一套「终末地 HUD」的另一份上游实现。这里只取**可迁移的数值与结构**，
+   C++ / Core Animation 的机制不照搬（末段列明）。数值出处：
+     · windows/modules/hud_design_tokens.hpp —— HUDColor / HUDTheme / HUDType /
+       HUDMetric / HUDLayerOrder / HUDDuration
+     · core/motion.hpp —— DesignEasing / DesignMotion / ModuleTransitionStyle
+     · windows/modules/hud_design_motion.hpp —— 时序模型、错峰、光标闪烁
+     · windows/modules/hud_design_overlay.hpp —— 确认带 / 调暗 / toast
+
+   一、切角模板（上游 rowChamfer 11 · buttonChamfer 9 · 列表卡 10，单位是 590px 内容盒 px）
+     · 换算到 100% 缩放 ≈ 本主题右上那颗 18px 的 45° 切角（第六节）；
+       同一元件族只许一档切角，输入 / 标签这类内层只切一角，不再套第二层切角。
+     · 切角与四边必须同色同粗：上游把框线独立成图层（"hairline.0" / "hairline.1"，
+       带身上下各 1px），本主题用 border + 斜边色带达成同等效果 —— 两处坑（内缩
+       导致斜边两端断口、内辉把斜边偷粗一档）已写在第六节，别回退。
+
+   二、三级层叠（上游内容盒 590×510；z 序 content 0 / dim 15 / confirmBar 20 /
+     toast 25 / bootLog 30 / menu 30 / bubble 40）
+     内容底（panel #1A1A1A · field #1D1D1D · control #212121）
+     → 板 / 卡（象牙板 D3D4CF · E4E5E0 · C6C7C2，板上墨色固定 #121212）
+     → 浮标（计数器底 #151515 + 括号 #8A8B86、微标签 #161616 + #E9E9E9）
+     上游「板」是浅色象牙板，靠明度反转分层次，不靠投影；本主题只留作者小窗
+     一支象牙板（--ef-plate #e9e7e4），其余卡片仍走深色，层次由明度差表达。
+
+   三、1px 发丝线
+     上游 ring 一族 #343434 ~ #444444、separator #333333，框线宽恒 1 内容 px
+     （另有注册线 .7px）；1px 线一律画在板的内沿，不与外框叠加。
+     本主题对应 --ef-line #3b3b3b / --ef-line-2 #565656（同一支线，只分两级）。
+
+   四、等宽读数
+     上游 numeral 64 / statValue 18 / readout 12 / ruleCounter 11 全部 tabular
+     （等宽数字），单位字号 = 主读数 × .34，计数器配 #8A8B86 的方括号。
+     本主题已对 .ver-tag / .statusbar / .port-badge / .n-stat / .lt-s-label
+     开 tabular-nums（见下），「主读数 + 缩号单位 + 括号」的组合留给读数任务。
+
+   五、信号黄强调
+     上游 authoredYellow FFFA00 / high FFFC6B / low E9CF12 / deep F1DD10，
+     默认强调色 FAD41F（自定义色走 HSB 位移）；黄只做三件事 —— 主按钮渐变、
+     选中条、计数与时间这类读数；状态色固定（绿 8CE03C / 蓝 22A6F2 /
+     橙 F97501 / 红 E5383B），不跟强调色走。
+     本主题 --ef-signal #fffa00 / --ef-olive #c6ca4c 已在用，分工照旧。
+
+   六、动效数值（动效令牌任务照抄这一列，别各写一套）
+     缓动 E     cubic-bezier(.2, .8, .2, 1)      默认
+          SNAP  cubic-bezier(.2, .9, .1, 1)       开关 / 确认带 / pop
+          out   cubic-bezier(0, 0, .58, 1)        in  cubic-bezier(.42, 0, 1, 1)
+          inOut cubic-bezier(.42, 0, .58, 1)      listSlide cubic-bezier(.2, .75, .3, 1)
+     时长 入 .38 · 出 .13 · 列表滑入 .18 · hover .22 · press .10 · pop .32
+          标题擦除 .45 · 分隔线擦除 .42（延后 .05）· 菜单擦除 .18 · tab 点亮 .20
+          确认带开 .30 / 收 .18 · 确认文字 .30（延后 .12）· 药丸 .16 起每颗 +.06
+          调暗 .22 · 调暗滤镜 .25 · toast 显 1.5 / 收 .24
+     错峰 delay = .06 + min(i, 14) × .036（秒）—— 上游只此一条公式
+     入场 透明度关键帧 [0, o, o] @ [0, .6, 1]（在已缓动的组时间内线性），
+          位移另走一次同族缓动 → 合成 E(E(t))；delay 期间保持起始位（fill backwards）
+     出场 位移只收 60%（−0.6 × offset）同时淡出，停在终态（fill forwards）
+     循环 呼吸 2.4s（上游仅充电脉冲一例；本主题窗口轮廓沿用 5.6s）
+          扫光 .70s 一次性、hover 才起，不常驻 · 光标 1.06s 方波 + 80ms 斜坡
+     减少动效 上游口径是「模型即终态，只跳过动画」→ 本主题对应 @media 兜底
+          （第十二节）与局部 animation:none，动画永不留下半途状态。
+
+   七、不照搬
+     · Core Animation 的 group/child 双层时间、fill 语义与 presentation/model 双值模型
+       —— CSS 只有一条时间轴，靠 animation-fill-mode 与关键帧近似；
+     · 模块切换的 shutter / registration 路径形变（6 条路径 × 5 关键帧）与 3D 平面矩阵
+       —— 与「画布 + 面板」这种平面层级无关；
+     · native/hud.hlsl 的着色器与艺术位图缓存 —— 本主题不引入外部图片资源。 */
 
 /* ── 一、主题槽位 ─────────────────────────────────────────────────────────── */
-body.theme-endfield {
+body.ef-skin {
   /* 终末地自己的色板（组件层取用，便于以后统一微调） */
   --ef-black: #0b0b0b;
   --ef-canvas: #101010;
@@ -26,14 +94,28 @@ body.theme-endfield {
   --ef-text: #f2f2f2;
   --ef-muted: #a1a1a1;
   --ef-signal: #fffa00;
+  /* 同一支强调色的 rgb 三元组：全文件的 rgba(...) 只从这里取，换主题只换这一行 */
+  --ef-signal-rgb: 255, 250, 0;
   --ef-signal-2: #f2f27a;
+  /* 强调色的「深一档」：主按钮渐变的下沿、进度条右端这些要收暗的地方用它 */
+  --ef-signal-deep: #d8d400;
   --ef-olive: #c6ca4c;
+  /* 状态色三支（十一·十二用）：灯怎么动只管节奏，灯什么颜色只从这三支取 */
+  --ef-ok: #b6d94a;
+  --ef-warn: #fffa00;
+  --ef-err: #ff4a3d;
   --ef-plate: #e9e7e4;
   /* 面板轮廓：整个窗口一圈（四边 + 切角斜边）只用这一支颜色，
      --ef-frame 是呼吸的谷值、--ef-frame-hi 是峰值，粗细恒 1px */
   --ef-frame: #b6b300;
   --ef-frame-hi: #fffa00;
   --ef-frame-plate: #b8b6b2;
+  /* 顶栏 logo 那圈外框（1px 边）与它的呼吸辉光：默认跟随本主题的强调色，
+     MTNode 主题在「一·二」里把这两支钉回本主题原来的橙 #ff8f2e（本轮需求：
+     恢复 logo 外圈的橙色 —— 皮肤统一走 --ef-signal 之后它一度被染成青）。
+     只影响这一圈边与它那圈晕，角点那两枚小方块不在这里。 */
+  --ef-logo-line: var(--ef-signal);
+  --ef-logo-rgb: var(--ef-signal-rgb);
   /* 切角斜边色带的宽度（沿切线法线方向）。四边那条 1px 边框在整数倍缩放下正好是
      1 个设备像素，但 1.25~1.75 倍缩放时 Chromium 会把它吸附成 1 个设备像素（不放大），
      而色带仍按 CSS px 跟着 dpr 放大 —— 斜边就成了 2~2.5 个设备像素，比四边粗一档。
@@ -63,71 +145,181 @@ body.theme-endfield {
   --focus-ring: color-mix(in srgb, var(--ef-signal) 82%, #ffffff);
   --focus-halo: color-mix(in srgb, var(--ef-signal) 20%, transparent);
   --shadow-pop: 0 2px 4px rgba(0, 0, 0, .5), 0 14px 34px -6px rgba(0, 0, 0, .62);
+
+  /* ── 动效令牌：只有这三档时长、三支缓动、一个错峰阶差 ────────────────────────
+     后续任何入场 / 呼吸 / 扫光都从这里取值；同一个交互里出现两档时长、或写出
+     一个不在表里的 cubic-bezier，就算违规（上游 EndfieldHUD 也是按这套档位收敛的）。
+     时长 —— 取上游「入 .38 / 出 .13」两端，中间一档留给面板入与 hover：
+       --ef-dur-1  .13s  出 / press（位移同时收到 60%）
+       --ef-dur-2  .26s  面板入 / hover / pop
+       --ef-dur-3  .38s  入场（整块出现）
+     缓动：
+       --ef-ease-out    上游的 E(.2,.8,.2,1)：进入与位移的主缓动（先快后缓）
+       --ef-ease-back   沿用本主题既有值（.175,.885,.32,1.275，带一点过冲）——
+                        第六节的 ef-panel-in 已经在吃它，改数值等于偷换现有手感，
+                        故只登记、不改值
+       --ef-ease-linear 只给等速循环（扫光 / 光标这类「匀着走」的动作）
+     错峰：第 i 项的延迟 = .06s + min(i, 14) × --ef-stagger（上游同口径，
+     超过 14 项就不再往后推，否则尾项会等到「卡住」）。 */
+  --ef-dur-1: .13s;
+  --ef-dur-2: .26s;
+  --ef-dur-3: .38s;
+  --ef-ease-out: cubic-bezier(.2, .8, .2, 1);
   --ef-ease-back: cubic-bezier(.175, .885, .32, 1.275);
+  --ef-ease-linear: linear;
+  --ef-stagger: .036s;
+
+  /* 扫描线纹理：2% 白的 1px 横线、4px 一循环（CRT 刷新质感）。
+     两处消费：画布背景最上面那一层（第五节 .fn-canvas::before）与骨架屏（十一·十二）。
+     曾被整层从画布里撤掉过，现已恢复（见第五节注）。
+     关灯档 / reduce / 打印三处仍把它置成 none —— 那时它只从这两处一起消失。 */
+  /* 线宽与周期拆成两支变量：周期恒 4px（各档 dpr 下都是整数设备像素：1.25→5、
+     1.5→6、1.75→7、2→8），线宽按 dpr 分档取整设备像素（见紧跟着的四条 media）——
+     一支 1px 线在 125%/150%/175% 上是 1.25/1.5/1.75 个设备像素，Chromium 只能摊成
+     「1 行 + 半行」，同屏不同横纹落到的余数不同，读出来就是粗细不匀、几道一组拼成斜块。
+     分档后每条横纹都是整 1 或整 2 个设备像素，整屏一个厚度。 */
+  --ef-scan-period: 4px;
+  --ef-scan-w: 1px;
+  --ef-scan: repeating-linear-gradient(180deg,
+      rgba(255, 255, 255, .02) 0 var(--ef-scan-w),
+      rgba(0, 0, 0, 0) var(--ef-scan-w) var(--ef-scan-period));
+}
+
+/* 扫描线线宽的 dpr 分档（每个值 × dpr 恰为整设备像素；浓度都取最接近原 1px/4px 的那一档）：
+     100%：1px      → 1 设备像素（1/4 周期）
+     125%：.8px     → 1 设备像素（1/5）
+     150%：1.3333px → 2 设备像素（2/6，最接近原来的 1.5）
+     175%：1.1429px → 2 设备像素（2/7）
+     200%：1px      → 2 设备像素（2/8）
+   只改线宽、不动周期与颜色，视觉浓度不变；改的是「每条线落几个设备像素」。 */
+@media (min-resolution: 1.2dppx) and (max-resolution: 1.45dppx) {
+  body.ef-skin {
+    --ef-scan-w: .8px;
+  }
+}
+
+@media (min-resolution: 1.45dppx) and (max-resolution: 1.65dppx) {
+  body.ef-skin {
+    --ef-scan-w: 1.3333px;
+  }
+}
+
+@media (min-resolution: 1.65dppx) and (max-resolution: 1.9dppx) {
+  body.ef-skin {
+    --ef-scan-w: 1.1429px;
+  }
+}
+
+@media (min-resolution: 1.9dppx) {
+  body.ef-skin {
+    --ef-scan-w: 1px;
+  }
+}
+
+/* ── 一·二、三档主题共用这一套皮肤，各自只换强调色 ────────────────────────────
+   applyTheme 会给 body 挂上 ef-skin（终末地 / MTNode / DSH 三档都挂）：下面各节的
+   形状（直角 / 45° 切角 / 1px 发丝线）、等宽读数与动效全三档一致，颜色只认第一节
+   那几支变量。这里按主题把**强调色那一族**换回本主题自己的色板 —— 终末地保持信号黄，
+   MTNode 用它原来的青 #38d6ff，DSH 用它原来的蓝 #5686fe；次要的橙 #ff8f2e 落到
+   --ef-olive（滚动条 hover / 次强调文字那一族）。
+   不变的是皮肤本身：石墨底盘、象牙板、发丝线、状态色（--ef-ok / --ef-err）三档同值。 */
+body.ef-skin.theme-industrial {
+  --ef-signal: #38d6ff;
+  --ef-signal-rgb: 56, 214, 255;
+  --ef-signal-2: #7ce8ff;
+  --ef-signal-deep: #1a7f96;
+  --ef-olive: #ff8f2e;
+  --ef-warn: #38d6ff;
+  --ef-frame: #1a7f96;
+  --ef-frame-hi: #38d6ff;
+  --orange: #38d6ff;
+  --orange2: #7ce8ff;
+  --cyan: #38d6ff;
+  --cyan2: #7ce8ff;
+  --blue: #4d9bff;
+  --yellow: #38d6ff;
+  /* logo 外圈恢复本主题的橙（#ff8f2e）：强调色换青之后这一圈不该跟着变，
+     它与 .logo-txt 的橙字、原 2px 橙框是同一支身份色。 */
+  --ef-logo-line: #ff8f2e;
+  --ef-logo-rgb: 255, 143, 46;
+}
+
+body.ef-skin.theme-dsh {
+  --ef-signal: #5686fe;
+  --ef-signal-rgb: 86, 134, 254;
+  --ef-signal-2: #7ca2fe;
+  --ef-signal-deep: #2f4fa8;
+  --ef-olive: #ff8f2e;
+  --ef-warn: #5686fe;
+  --ef-frame: #2f4fa8;
+  --ef-frame-hi: #5686fe;
+  --orange: #5686fe;
+  --orange2: #7ca2fe;
+  --cyan: #5686fe;
+  --cyan2: #7ca2fe;
+  --blue: #5686fe;
+  --yellow: #5686fe;
 }
 
 /* 数字 / 版本号 / 状态灯一律等宽：终末地 HUD 的读数质感 */
-body.theme-endfield .ver-tag,
-body.theme-endfield .statusbar,
-body.theme-endfield .port-badge,
-body.theme-endfield .n-stat,
-body.theme-endfield .lt-s-label {
+body.ef-skin .ver-tag,
+body.ef-skin .statusbar,
+body.ef-skin .port-badge,
+body.ef-skin .n-stat,
+body.ef-skin .lt-s-label {
   font-variant-numeric: tabular-nums;
 }
 
-body.theme-endfield ::selection {
+body.ef-skin ::selection {
   background: color-mix(in srgb, var(--ef-signal) 34%, transparent);
   color: #fff;
 }
 
-/* ── 二、全局底纹：细网格 + 扫描线 + 暗角 ────────────────────────────────────
-   一个固定定位的伪元素压在整窗之上（pointer-events:none，不吃点击）。
-   扫描线极淡（约 3% 白），暗角压住四角 → 画面有 CRT / 全息面板的层次，
-   但不会盖住文字对比度。 */
-body.theme-endfield::after {
-  content: "";
-  position: fixed;
-  inset: 0;
-  z-index: 9999;
-  pointer-events: none;
-  background:
-    repeating-linear-gradient(180deg,
-      rgba(255, 255, 255, .02) 0 1px,
-      rgba(0, 0, 0, 0) 1px 3px),
-    radial-gradient(ellipse at 50% 42%, rgba(0, 0, 0, 0) 62%, rgba(0, 0, 0, .2) 100%);
-  mix-blend-mode: normal;
-  opacity: .9;
-}
+/* ── 二、全局底纹：椭圆暗角已整层撤掉 ────────────────────────────────────────
+   这里原来是一层 position:fixed 的椭圆暗角（::after）：
+     radial-gradient(ellipse at 50% 42%, transparent 62%, rgba(0, 0, 0, .2) 100%)
+   它会在画布上留下几道椭圆痕迹，原因是 8bit 量化：62%→100% 这段渐变总共只有
+   约 3.6 级灰的落差（#121212 → 14.4），摊在整窗尺度上就是每 ~100px 才跳一级 ——
+   台阶被读成几条同心椭圆弧，面越大越深的底（画布）越明显。
+   整层撤掉：画布与窗口不再有任何椭圆形的软边界，也不再占一个整窗合成层。
+   底纹现在只剩各区域自己的线性底渐变（顶栏 / 侧栏 / 画布在第三节与第五节），
+   线性渐变在同样落差下是横向一条台阶、不会被读成「椭圆」。
+   画布那层 CRT 扫描线（--ef-scan）是另一件事：它留在 .fn-canvas::before 的 background 里
+   （第五节，2% 白的 1px 横线、4px 一循环），只随关灯档 / reduce / 打印三处置成 none。
+   本节撤掉的只有暗角这一层。
+   补记：画布自己那层**顶部椭圆光晕**后来按同一条理由也撤了（同一支量化台阶，
+   截图上的「瑕疵纹路」就是它那几道同心弧）—— 见第五节 .fn-canvas 的注释。
+   画布上现在只剩扫描线 + 点阵 + 一条竖向底渐变，没有第二处椭圆。 */
 
 /* 注：这里曾有一条循环下移的全屏扫光带（22vh 淡黄渐变，9s 一轮）——
-   用户反馈那层从上到下的光影波浪晃眼，已整段撤掉；扫描线 + 暗角（::after）保留。 */
+   用户反馈那层从上到下的光影波浪晃眼，已整段撤掉。 */
 
 /* 滚动条：直角、石墨、悬停转信号黄 */
-body.theme-endfield ::-webkit-scrollbar {
+body.ef-skin ::-webkit-scrollbar {
   width: 10px;
   height: 10px;
 }
 
-body.theme-endfield ::-webkit-scrollbar-track {
+body.ef-skin ::-webkit-scrollbar-track {
   background: #101010;
 }
 
-body.theme-endfield ::-webkit-scrollbar-thumb {
+body.ef-skin ::-webkit-scrollbar-thumb {
   background: #3b3b3b;
   border: 2px solid #101010;
   border-radius: 0;
 }
 
-body.theme-endfield ::-webkit-scrollbar-thumb:hover {
+body.ef-skin ::-webkit-scrollbar-thumb:hover {
   background: var(--ef-olive);
 }
 
-body.theme-endfield ::-webkit-scrollbar-corner {
+body.ef-skin ::-webkit-scrollbar-corner {
   background: #101010;
 }
 
 /* ── 三、顶栏：发丝底边 + 像素感 logo ─────────────────────────────────────── */
-body.theme-endfield .topbar {
+body.ef-skin .topbar {
   background: linear-gradient(180deg, #202020, #171717 62%, #141414);
   border-bottom: 1px solid var(--ef-line);
   box-shadow: 0 1px 0 rgba(255, 255, 255, .04), 0 6px 16px -8px rgba(0, 0, 0, .8);
@@ -136,64 +328,66 @@ body.theme-endfield .topbar {
 /* 注：顶栏底缘那条会流动的黄黑警示带（repeating-linear-gradient + ef-hazard 循环）
    用户反馈碍眼，已撤掉 —— 顶栏只留一条 1px 发丝线；面板里的静态斜纹不受影响。 */
 
-body.theme-endfield .logo-mark {
+body.ef-skin .logo-mark {
   background: linear-gradient(135deg, #242424, #0d0d0d);
-  border: 1px solid var(--ef-signal);
+  /* 外圈颜色走 --ef-logo-line（默认 = 强调色；MTNode 主题钉回橙 #ff8f2e，见一·二），
+     粗细仍是皮肤的 1px 发丝线。 */
+  border: 1px solid var(--ef-logo-line);
   border-radius: 0;
-  box-shadow: 0 0 0 3px rgba(255, 250, 0, .08), inset 0 0 10px rgba(255, 250, 0, .18);
+  box-shadow: 0 0 0 3px rgba(var(--ef-logo-rgb), .08), inset 0 0 10px rgba(var(--ef-logo-rgb), .18);
 }
 
-body.theme-endfield .logo-mark::before,
-body.theme-endfield .logo-mark::after {
+body.ef-skin .logo-mark::before,
+body.ef-skin .logo-mark::after {
   background: var(--ef-signal);
   width: 5px;
   height: 5px;
 }
 
-body.theme-endfield .logo-txt {
+body.ef-skin .logo-txt {
   color: var(--ef-plate);
   letter-spacing: 4px;
-  text-shadow: 0 0 12px rgba(255, 250, 0, .22);
+  text-shadow: 0 0 12px rgba(var(--ef-signal-rgb), .22);
 }
 
-body.theme-endfield .logo-sub {
+body.ef-skin .logo-sub {
   color: var(--ef-olive);
   letter-spacing: 1.6px;
 }
 
 /* 顶栏按钮：直角、发丝线、悬停时左缘亮一道信号黄 */
-body.theme-endfield .topbar button,
-body.theme-endfield .topbar .wf-select {
+body.ef-skin .topbar button,
+body.ef-skin .topbar .wf-select {
   border-radius: 0;
   border-width: 1px;
   background: linear-gradient(180deg, #232323, #1a1a1a);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, .045);
 }
 
-body.theme-endfield .topbar button:hover {
+body.ef-skin .topbar button:hover {
   border-color: var(--ef-olive);
   color: var(--ef-plate);
   background: linear-gradient(180deg, #2b2b2b, #1d1d1d);
   box-shadow: inset 2px 0 0 var(--ef-signal), inset 0 1px 0 rgba(255, 255, 255, .06);
 }
 
-body.theme-endfield .topbar .tb-view.on,
-body.theme-endfield .topbar .btn-plugins.on,
-body.theme-endfield .topbar .btn-tools.on,
-body.theme-endfield .topbar .btn-assets.on,
-body.theme-endfield .topbar .btn-perf.on {
+body.ef-skin .topbar .tb-view.on,
+body.ef-skin .topbar .btn-plugins.on,
+body.ef-skin .topbar .btn-tools.on,
+body.ef-skin .topbar .btn-assets.on,
+body.ef-skin .topbar .btn-perf.on {
   border-color: var(--ef-signal);
   color: #111;
-  background: linear-gradient(180deg, #fffa00, #d8d400);
-  box-shadow: 0 0 14px -2px rgba(255, 250, 0, .45);
+  background: linear-gradient(180deg, var(--ef-signal), var(--ef-signal-deep));
+  box-shadow: 0 0 14px -2px rgba(var(--ef-signal-rgb), .45);
 }
 
-body.theme-endfield .topbar .tb-view.on svg,
-body.theme-endfield .topbar .btn-tools.on svg {
+body.ef-skin .topbar .tb-view.on svg,
+body.ef-skin .topbar .btn-tools.on svg {
   stroke: #111;
 }
 
-body.theme-endfield .topbar .ver-tag {
+body.ef-skin .topbar .ver-tag {
   color: var(--ef-olive);
   border-color: var(--ef-line);
   border-radius: 0;
@@ -202,68 +396,171 @@ body.theme-endfield .topbar .ver-tag {
 }
 
 /* ── 四、左栏：直角标签页 + 选中态信号黄下划线 ────────────────────────────── */
-body.theme-endfield .sidebar {
+body.ef-skin .sidebar {
   background: linear-gradient(180deg, #1a1a1a, #141414);
   border-right: 1px solid var(--ef-line);
 }
 
-body.theme-endfield .side-tabs {
+body.ef-skin .side-tabs {
   border-bottom: 1px solid var(--ef-line);
 }
 
-body.theme-endfield .side-tab {
+body.ef-skin .side-tab {
   border-radius: 0;
   border: 1px solid transparent;
   color: var(--ef-muted);
   letter-spacing: 1px;
 }
 
-body.theme-endfield .side-tab:hover {
+body.ef-skin .side-tab:hover {
   color: var(--ef-plate);
   border-color: var(--ef-line);
 }
 
-body.theme-endfield .side-tab.on {
+body.ef-skin .side-tab.on {
   color: #111;
   background: var(--ef-signal);
   border-color: var(--ef-signal);
-  box-shadow: 0 0 16px -4px rgba(255, 250, 0, .55);
+  box-shadow: 0 0 16px -4px rgba(var(--ef-signal-rgb), .55);
 }
 
-body.theme-endfield .sidebar-search input {
+body.ef-skin .sidebar-search input {
   border-radius: 0;
   background: #141414;
   border-color: var(--ef-line);
 }
 
-body.theme-endfield .sidebar-tree .sess,
-body.theme-endfield .sidebar-tree .tree-row,
-body.theme-endfield .side-sess {
+body.ef-skin .sidebar-tree .sess,
+body.ef-skin .sidebar-tree .tree-row,
+body.ef-skin .side-sess {
   border-radius: 0;
 }
 
-body.theme-endfield .side-sess-btn {
+body.ef-skin .side-sess-btn {
   border-radius: 0;
 }
 
-body.theme-endfield .side-sess-btn:hover {
+body.ef-skin .side-sess-btn:hover {
   border-color: var(--ef-olive);
   color: var(--ef-plate);
   box-shadow: inset 2px 0 0 var(--ef-signal);
 }
 
-/* ── 五、画布：点阵 + 节点 ───────────────────────────────────────────────── */
-body.theme-endfield .fn-canvas {
-  background:
-    radial-gradient(circle at 1px 1px, rgba(233, 231, 228, .17) var(--grid-dot-r), transparent var(--grid-dot-end)) var(--grid-x) var(--grid-y) / var(--grid-size) var(--grid-size),
-    radial-gradient(ellipse at 50% 0%, rgba(255, 250, 0, .028), transparent 58%),
-    linear-gradient(180deg, #121212, #0c0c0c);
-  border: 1px solid var(--ef-line);
+/* ── 五、画布：扫描线 + 点阵 + 节点 ───────────────────────────────────────── */
+/* 画布背景分两层写（层序与从前单元素四层一致，最上面仍是扫描线）：
+     ① .fn-canvas::before（会重绘的那一层）：CRT 扫描线 --ef-scan（2% 白的发丝横线、
+        4px 一循环；线宽 --ef-scan-w 按 dpr 取整设备像素，见第一节末尾那四条 media ——
+        不取整就是「同样的横纹，几条厚几条薄」）+ 点阵 radial-gradient(circle at 1px 1px)，
+        点阵位置随相机 pan/zoom（--grid-*）
+     ② .fn-canvas 自己（静止层）：**只剩竖向底渐变**
+        linear-gradient(180deg, #121212, #0c0c0c)
+   为什么拆：点阵是唯一每帧变的层（--grid-x / -y 跟着相机走），而改了 background 的
+   元素会整份重绘 —— 四层挤在一起时，相机一动就得把扫描线、光晕、底渐变一起重画
+   （整屏、两次 radial）。拆到伪元素后静止层不再参与，既省重绘也让「点阵闪烁」只剩
+   亚像素相位一个来源，那个由 syncCanvasGrid 的设备像素量化解决。
+   【顶部椭圆光晕已撤掉（本轮需求）】这一层原来还有一道
+     radial-gradient(ellipse at 50% 0%, rgba(var(--ef-signal-rgb), .028), transparent 62%)
+   撤它的理由与第二节那只整窗椭圆暗角**是同一条**，不是观感之争，是 8bit 量化：
+   2.8% 的落差摊在整屏尺度上每几十像素才跳一级灰，椭圆边界被读成几道**同心弧**
+   —— 用户截图里那圈「瑕疵纹路」就是它（扫描线与点阵在静止期早已逐像素恒定，
+   能留下固定纹路的只剩这条椭圆）。线性渐变在同样落差下只是横向一条台阶，
+   不会被读成椭圆，也不会随相机 / 主题走形状。
+   现在画布上没有第二处软边界：扫描线 + 点阵 + 一条竖向底渐变，三样都是直线几何。
+   扫描线这层曾被整层撤掉过（当时的理由是「扫描线跟点阵互拍」），实测那正是用户要的
+   纹理，已按原参数保留。
+   【静止期零重绘】这一节还要保证：相机不动时这两层一个像素都不许重画 —— 画布上唯一的
+   常驻动画（边框呼吸）因此只许落在**合成层**上（只动 opacity，见 ::after），
+   不许再用 border-color / 自定义属性动画（上一版把呼吸挪到伪元素仍在整屏重绘，
+   原因写在 ::after 那段注释里）。 */
+body.ef-skin .fn-canvas {
+  /* 只有线性底渐变：一层 fill，无 radial、无椭圆、无第二道软边界 */
+  background: linear-gradient(180deg, #121212, #0c0c0c);
+  /* 边框在这里只占位（透明 1px 撑住 padding box）：可视的那条线由 ::before 的静态底边
+     + ::after 的亮色边叠出来 —— 为什么不画在本体上，见紧跟着的 ::after 注释。 */
+  border: 1px solid transparent;
   border-radius: 0;
 }
 
+/* 画布那圈 1px 边框 —— 两层叠出谷值与峰值，呼吸只动 opacity（合成层，零重绘）。
+   【三层结构，别再加第四层，也别把动画挪回 .fn-canvas 本体或改回 border-color】
+   ① .fn-canvas::before 的 border：恒定 #3b3b3b（--ef-line），就是这条线的**谷值**；
+   ② .fn-canvas::after（本条）：同位置再压一条 #4e4e4e 的 1px 边，opacity 0 → 1 呼吸 ——
+      opacity 由**合成器**插值（Chromium 会给它单独建一层，这里再用 will-change: opacity
+      明示），静止期主线程与光栅化完全不参与，一个像素都不重画；
+   ③ .fn-canvas 本体只有 1px 透明占位，不持有任何边框颜色。
+   【上一版为什么没修好】那一版把同一条呼吸挪到伪元素上、用 border-color 动 --ef-edge
+   （@property <color>），面积算错了：border-color 一变，Blink 记的失效区是**整个 border
+   box**（伪元素 inset:0 就是整屏），而伪元素、本体、::before 在同一个 paint layer 里 ——
+   于是整层重画：顶部椭圆光晕（现已按需求撤掉，见本节开口）、竖向底渐变、2% 白扫描线
+   全部重新栅格化，抗锯齿每次差一点
+   点，用户看到的就是「鼠标完全不动，背景横纹颜色却在 0.2s 一跳地一明一暗」
+   （5.6s / steps(14) 是**每段** 14 跳，一上一下两段合计 0.2s 一跳）。颜色对了、面积没
+   对上，所以那版在软件光栅化的离屏测试里量不出问题，真机 GPU 上照旧。
+   【节拍与幅度一个字节没改】5.6s、steps(14)、相位 -2.8s；谷值 #3b3b3b、峰值 #4e4e4e
+   （一跳差 1.5 级灰以内，肉眼是连续呼吸）。
+   inset 0 让这条线落在原 border 内侧 1px（四边均匀、不动布局，1px 内眼看不出差）。
+   关灯档 / reduce / 打印三处仍靠第十二节那条通配（*::after 的 animation:none）停播：
+   停播后 opacity 落回 0，露出的正是 ① 那条 #3b3b3b —— 等于原来的静态边框，零变化。 */
+body.ef-skin .fn-canvas::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border-radius: 0;
+  /* 恒定色，不进关键帧：整条呼吸只由 opacity 承担，取色路径只剩这一处，
+     也不可能顺带改粗细（边框恒 1px）。 */
+  border: 1px solid #4e4e4e;
+  opacity: 0;
+  /* 明示合成层（全文件第三处 will-change，账见第十三节 ②）：让这圈 1px 边自己一层，
+     绝不与画布背景层共用光栅化结果 —— 这才是「背景横纹不再跟着边框明暗」的物理保证。 */
+  will-change: opacity;
+  animation: ef-canvas-breath 5.6s steps(14, end) -2.8s infinite;
+}
+
+/* 会随相机重绘的那一层（扫描线 + 点阵，层序与原四层写法完全一致：扫描线压在点阵上）。
+   底色（那条竖向线性渐变）留在 .fn-canvas 自己身上，不再每帧跟着重画；
+   椭圆光晕已撤（本节开口那段），这一层就是画布上唯一的软纹理。
+   另外它自带**边框的底色**（#3b3b3b 那条 1px 边）：静态、取色不参与任何关键帧，
+   跟着这层重绘也永远同一个颜色，却给上面那条 opacity 呼吸钉了一个不动的谷值。 */
+body.ef-skin .fn-canvas::before {
+  border: 1px solid var(--ef-line);
+  /* 扫描线那一层显式钉死贴图尺寸（100% × 4px）：background-size:auto 时贴图高度 = 元素
+     高度，画布被 flex 分出小数高度（如 377.3333px）时整份背景按非整数 tile 重采样，
+     每条横纹落到的设备行余数不同 —— 这就是「横纹粗细不一致」的另一半来源。
+     钉成 4px 的整数 tile 后，平铺用的永远是同一张位图，厚度逐条相同。
+     点阵那层仍是 --grid-x / -y 与整设备像素量化的 --grid-size（见 syncCanvasGrid）。 */
+  background:
+    var(--ef-scan) 0 0 / 100% var(--ef-scan-period) repeat,
+    radial-gradient(circle at 1px 1px, rgba(233, 231, 228, .17) var(--grid-dot-r), transparent var(--grid-dot-end)) var(--grid-x) var(--grid-y) / var(--grid-size) var(--grid-size);
+  /* 有边框之后 background-origin 默认退到 padding-box，点阵会整体内移 1px；
+     钉回 border-box 就是「加边框之前那块面积」，点阵相位一个像素都不变。
+     必须写在 background 简写**之后** —— 简写会把 origin / clip 重置回初始值。 */
+  background-origin: border-box;
+}
+
+/* 画布边框的呼吸 —— **只动 opacity**，合成器插值，主线程零重绘、零重栅格化。
+   节拍沿用「校正节奏」那一项：面板的整圈轮廓是 5.6s 一个来回，画布边沿用同一条节拍、
+   相位错开半个来回（-2.8s）—— 两条边同时亮到峰值会读成「整屏闪一下」，错相之后是同一支
+   节拍器把光依次送到两条边上。
+   幅度比面板窄一档：面板是浮起来的窗，画布是常驻的底 —— 谷值就是 ::before 那条
+   --ef-line（#3b3b3b），峰值只到 #4e4e4e，全程仍是发丝灰，不会突然泛黄。
+   面板那条仍走 ef-panel-breath（--ef-edge，5.6s ease-in-out，连切角斜边一起呼吸，
+   见第六节）：它是浮层，面积按窗算，与画布这条常驻的底不是一件事。
+   切角斜边的 dpr 分段（--ef-cut-w）与画布无关，那三档一个字都没动。 */
+@keyframes ef-canvas-breath {
+
+  0%,
+  100% {
+    opacity: 0;
+  }
+
+  50% {
+    opacity: 1;
+  }
+}
+
 /* 节点底盘：石墨卡片 + 1px 发丝线 + 硬投影（终末地面板都是「贴上去的板子」） */
-body.theme-endfield .wf-node {
+body.ef-skin .wf-node {
   --n-accent: var(--ef-plate);
   border-radius: 0;
   border: 1px solid #555555;
@@ -275,115 +572,115 @@ body.theme-endfield .wf-node {
     inset 0 1px 0 rgba(255, 255, 255, .05);
 }
 
-body.theme-endfield .wf-node:hover {
+body.ef-skin .wf-node:hover {
   border-color: var(--ef-line-2);
 }
 
 /* 每类节点的强调色（只改强调，不改底盘）：颜色语义沿用原来的分类体系，
    但全部换成终末地里出现过的黄 / 橄榄 / 象牙 / 铁灰这几支 */
-body.theme-endfield .wf-node.in {
+body.ef-skin .wf-node.in {
   --n-accent: var(--ef-plate);
   border-color: #6f6f68;
 }
 
-body.theme-endfield .wf-node.proc,
-body.theme-endfield .wf-node.tool-node:not(.super-open) {
+body.ef-skin .wf-node.proc,
+body.ef-skin .wf-node.tool-node:not(.super-open) {
   --n-accent: var(--ef-signal);
   border-color: #7a7a2a;
 }
 
-body.theme-endfield .wf-node.proc-img {
+body.ef-skin .wf-node.proc-img {
   --n-accent: #ff9d5c;
   border-color: #6a4a55;
 }
 
-body.theme-endfield .wf-node.music {
+body.ef-skin .wf-node.music {
   --n-accent: #a9a2e0;
   border-color: #4d4468;
 }
 
-body.theme-endfield .wf-node.video {
+body.ef-skin .wf-node.video {
   --n-accent: #7fe0c8;
   border-color: #3f625c;
 }
 
-body.theme-endfield .wf-node.tts {
+body.ef-skin .wf-node.tts {
   --n-accent: var(--ef-olive);
   border-color: #6a6f30;
 }
 
-body.theme-endfield .wf-node.net {
+body.ef-skin .wf-node.net {
   --n-accent: #9aa8d8;
   border-color: #494f6a;
 }
 
-body.theme-endfield .wf-node.agent {
+body.ef-skin .wf-node.agent {
   --n-accent: #8ab4e8;
   border-color: #44526a;
 }
 
-body.theme-endfield .wf-node.db-tbl {
+body.ef-skin .wf-node.db-tbl {
   --n-accent: #7fd6b8;
   border-color: #3d6055;
 }
 
-body.theme-endfield .wf-node.sv {
+body.ef-skin .wf-node.sv {
   --n-accent: var(--ef-green);
   border-color: #55682c;
 }
 
-body.theme-endfield .wf-node.dlv {
+body.ef-skin .wf-node.dlv {
   --n-accent: #f0a63a;
   border-color: #6a5228;
 }
 
-body.theme-endfield .wf-node.task {
+body.ef-skin .wf-node.task {
   --n-accent: #7fd9d9;
   border-color: #3c5f5f;
-  --task-sel-rgb: 255, 250, 0;
+  --task-sel-rgb: var(--ef-signal-rgb);
 }
 
-body.theme-endfield .wf-node.super {
+body.ef-skin .wf-node.super {
   --n-accent: #c3c3bb;
   border-color: #4e4e4a;
   background:
-    linear-gradient(145deg, rgba(255, 250, 0, .05) 0%, transparent 40%),
+    linear-gradient(145deg, rgba(var(--ef-signal-rgb), .05) 0%, transparent 40%),
     linear-gradient(180deg, #1e1e1e, #161616 60%, #111 100%);
 }
 
-body.theme-endfield .wf-node.global {
+body.ef-skin .wf-node.global {
   --n-accent: var(--ef-plate);
 }
 
 /* 节点头：暗条 + 左侧一道强调色，像 HUD 上的项目条 */
-body.theme-endfield .n-head {
+body.ef-skin .n-head {
   background: linear-gradient(90deg, color-mix(in srgb, var(--n-accent, var(--ef-plate)) 16%, #101010), #131313 62%, #101010);
   border-bottom: 1px solid #0a0a0a;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, .06), inset 2px 0 0 var(--n-accent, var(--ef-plate));
 }
 
-body.theme-endfield .n-title {
+body.ef-skin .n-title {
   color: var(--ef-text);
   letter-spacing: 1.4px;
 }
 
 /* 选中：信号黄描边 + 外发光（终末地里「选中」永远是那支黄） */
-body.theme-endfield .wf-node.sel {
+body.ef-skin .wf-node.sel {
   border-color: var(--ef-signal);
   box-shadow:
     0 0 0 1px var(--ef-signal),
-    0 0 18px -2px rgba(255, 250, 0, .5),
+    0 0 18px -2px rgba(var(--ef-signal-rgb), .5),
     3px 3px 0 0 rgba(0, 0, 0, .5),
     4px 8px 14px -4px rgba(0, 0, 0, .55);
 }
 
-body.theme-endfield .wf-node.sel .n-head {
+body.ef-skin .wf-node.sel .n-head {
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, .08), inset 3px 0 0 var(--ef-signal);
 }
 
 /* 端子：终末地接插件 —— 10px 正方插口（石墨面 + 1px 类别色框，2D 平涂口径：
    只有一圈实心边框 + 纯黑方孔，不用内斜面高光） */
-body.theme-endfield .port {
+body.ef-skin .port {
   --port-ring: #6e6e6e;
   border-radius: 0;
   background: #131313;
@@ -393,34 +690,34 @@ body.theme-endfield .port {
 }
 
 /* 插孔芯：方角内凹（2px 让位 → 中心 6px 深色方孔） */
-body.theme-endfield .port::before {
+body.ef-skin .port::before {
   inset: 2px;
   border-radius: 0;
   background: #050505;
   box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .9);
 }
 
-body.theme-endfield .port.in {
+body.ef-skin .port.in {
   --port-ring: var(--ef-plate);
 }
 
-body.theme-endfield .port.out {
+body.ef-skin .port.out {
   --port-ring: var(--ef-signal);
 }
 
-body.theme-endfield .port.ctrl {
+body.ef-skin .port.ctrl {
   --port-ring: var(--ef-olive);
 }
 
-body.theme-endfield .port.img {
+body.ef-skin .port.img {
   --port-ring: #ff9d5c;
 }
 
-body.theme-endfield .port.aud {
+body.ef-skin .port.aud {
   --port-ring: #a9a2e0;
 }
 
-body.theme-endfield .port.vid {
+body.ef-skin .port.vid {
   --port-ring: #7fe0c8;
 }
 
@@ -428,25 +725,25 @@ body.theme-endfield .port.vid {
    终末地口径 = 方孔**原位**被类别色插芯填满（孔仍是 ::before 那个 2px 让位的 6px 方孔，
    只是不再是纯黑）+ 方孔外一圈细亮框 + 方角辉光，与空槽那颗「纯黑方孔」一眼可分；
    几何与命中区不动。 */
-body.theme-endfield .port.linked {
+body.ef-skin .port.linked {
   background: #131313;
   box-shadow:
     inset 0 0 0 1px color-mix(in srgb, var(--port-ring) 55%, #ffffff),
     0 0 6px -1px color-mix(in srgb, var(--port-ring) 62%, transparent);
 }
 
-body.theme-endfield .port.linked::before {
+body.ef-skin .port.linked::before {
   background: var(--port-ring);
   box-shadow: none;
 }
 
 /* 悬停（JS 的 .hover 类与原生 :hover 两条路都盖住）：方角亮框 + 方角辉光 */
-body.theme-endfield .port:hover,
-body.theme-endfield .port.hover,
-body.theme-endfield .port.ctrl.hover,
-body.theme-endfield .port.img.hover,
-body.theme-endfield .port.aud.hover,
-body.theme-endfield .port.vid.hover {
+body.ef-skin .port:hover,
+body.ef-skin .port.hover,
+body.ef-skin .port.ctrl.hover,
+body.ef-skin .port.img.hover,
+body.ef-skin .port.aud.hover,
+body.ef-skin .port.vid.hover {
   transform: scale(1.24);
   filter: brightness(1.12);
   box-shadow:
@@ -456,80 +753,80 @@ body.theme-endfield .port.vid.hover {
     0 1px 2px rgba(0, 0, 0, .7);
 }
 
-body.theme-endfield .port:hover::before,
-body.theme-endfield .port.hover::before,
-body.theme-endfield .port.ctrl.hover::before,
-body.theme-endfield .port.img.hover::before,
-body.theme-endfield .port.aud.hover::before,
-body.theme-endfield .port.vid.hover::before {
+body.ef-skin .port:hover::before,
+body.ef-skin .port.hover::before,
+body.ef-skin .port.ctrl.hover::before,
+body.ef-skin .port.img.hover::before,
+body.ef-skin .port.aud.hover::before,
+body.ef-skin .port.vid.hover::before {
   background: var(--port-ring);
   box-shadow: none;
 }
 
 /* 拖线悬停的「将替换」预告：红框红芯，排在上面几条之后才盖得住 */
-body.theme-endfield .port.will-replace {
+body.ef-skin .port.will-replace {
   box-shadow:
     inset 0 0 0 1px #ff4d4d,
     inset 0 0 0 2px rgba(0, 0, 0, .5),
     0 0 10px -1px rgba(255, 77, 77, .9);
 }
 
-body.theme-endfield .port.will-replace::before {
+body.ef-skin .port.will-replace::before {
   background: #ff4d4d;
 }
 
 /* 已接线端子的悬停：壳外那圈类别色辉光放大一号、亮框提亮（比空槽醒目）。
    必须写在上面几条悬停 / 将替换之后并带 :not(.will-replace) —— 它们同为
-   「body.theme-endfield + 3 个类」的优先级，靠本文件后加载才能压住
+   「body.ef-skin + 3 个类」的优先级，靠本文件后加载才能压住
    canvas.css 的 .port.linked:hover（拖线的红框仍归 .port.will-replace 管）。 */
-body.theme-endfield .port.linked:not(.will-replace):hover,
-body.theme-endfield .port.linked:not(.will-replace).hover {
+body.ef-skin .port.linked:not(.will-replace):hover,
+body.ef-skin .port.linked:not(.will-replace).hover {
   filter: brightness(1.12);
   box-shadow:
     inset 0 0 0 1px color-mix(in srgb, var(--port-ring) 45%, #ffffff),
     0 0 11px -1px color-mix(in srgb, var(--port-ring) 85%, transparent);
 }
 
-body.theme-endfield .port.linked:not(.will-replace):hover::before,
-body.theme-endfield .port.linked:not(.will-replace).hover::before {
+body.ef-skin .port.linked:not(.will-replace):hover::before,
+body.ef-skin .port.linked:not(.will-replace).hover::before {
   background: color-mix(in srgb, var(--port-ring) 80%, #ffffff);
   box-shadow: none;
 }
 
 /* 判定节点的 YES / NO 输出：保留语义色，但同样是方角框 */
-body.theme-endfield .port.out.yes {
+body.ef-skin .port.out.yes {
   --port-ring: var(--green);
 }
 
-body.theme-endfield .port.out.no {
+body.ef-skin .port.out.no {
   --port-ring: var(--red);
 }
 
 /* 节点层内侧端子（子画布左右缘的桥 / 汇端子）与全屏聚焦层：
    canvas.css 给它们单独写过 box-shadow（蓝色 / 青色晕圈），这里统一压回方角框 */
-body.theme-endfield .super-stage .port.out.super-inner-bridge,
-body.theme-endfield .super-stage .port.in.super-inner-sink,
-body.theme-endfield .super-focus-port-layer .port.out.super-inner-bridge,
-body.theme-endfield .super-focus-port-layer .port.in.super-inner-sink {
+body.ef-skin .super-stage .port.out.super-inner-bridge,
+body.ef-skin .super-stage .port.in.super-inner-sink,
+body.ef-skin .super-focus-port-layer .port.out.super-inner-bridge,
+body.ef-skin .super-focus-port-layer .port.in.super-inner-sink {
   box-shadow:
     inset 0 0 0 1px var(--port-ring),
     0 1px 1px rgba(0, 0, 0, .35);
 }
 
-/* 同一批端子的「已接线」版：上面那四条是 0,4,1，比 body.theme-endfield .port.linked
+/* 同一批端子的「已接线」版：上面那四条是 0,4,1，比 body.ef-skin .port.linked
    的 0,2,1 高，会把方角亮框 + 类别色辉光照样盖掉 —— 补一份 linked 版本（与 .port.linked
    同口径），内侧端子挂上线后壳上那圈亮框在子画布与全屏聚焦层里都还在。 */
-body.theme-endfield .super-stage .port.linked.out.super-inner-bridge,
-body.theme-endfield .super-stage .port.linked.in.super-inner-sink,
-body.theme-endfield .super-focus-port-layer .port.linked.out.super-inner-bridge,
-body.theme-endfield .super-focus-port-layer .port.linked.in.super-inner-sink {
+body.ef-skin .super-stage .port.linked.out.super-inner-bridge,
+body.ef-skin .super-stage .port.linked.in.super-inner-sink,
+body.ef-skin .super-focus-port-layer .port.linked.out.super-inner-bridge,
+body.ef-skin .super-focus-port-layer .port.linked.in.super-inner-sink {
   box-shadow:
     inset 0 0 0 1px color-mix(in srgb, var(--port-ring) 55%, #ffffff),
     0 0 6px -1px color-mix(in srgb, var(--port-ring) 62%, transparent);
 }
 
 /* 「参数」端子（node-params.css 给的是实心琥珀 + 琥珀晕圈）：改成琥珀方框，与其余端子同形 */
-body.theme-endfield .wf-node>.port.in.np-port {
+body.ef-skin .wf-node>.port.in.np-port {
   --port-ring: #d9a84a;
   background: #131313;
   box-shadow:
@@ -537,25 +834,25 @@ body.theme-endfield .wf-node>.port.in.np-port {
     0 1px 1px rgba(0, 0, 0, .35);
 }
 
-body.theme-endfield .wf-node>.port.in.np-port.spare {
+body.ef-skin .wf-node>.port.in.np-port.spare {
   --port-ring: #8a6c33;
   background: #131313;
   box-shadow: inset 0 0 0 1px var(--port-ring);
 }
 
 /* 组线端子（canvas.css 用紫色 --rim / 紫徽标）：换成橄榄，仍是方角 */
-body.theme-endfield .port.out.grp-out,
-body.theme-endfield .port.grp-port {
+body.ef-skin .port.out.grp-out,
+body.ef-skin .port.grp-port {
   --port-ring: var(--ef-olive);
 }
 
-body.theme-endfield .port.out.grp-out>.port-badge,
-body.theme-endfield .port.grp-port>.port-badge {
+body.ef-skin .port.out.grp-out>.port-badge,
+body.ef-skin .port.grp-port>.port-badge {
   border-color: var(--ef-olive);
   color: var(--ef-olive);
 }
 
-body.theme-endfield .port-badge {
+body.ef-skin .port-badge {
   border-radius: 0;
   font-family: var(--mono);
   letter-spacing: .4px;
@@ -564,15 +861,15 @@ body.theme-endfield .port-badge {
   color: var(--ef-muted);
 }
 
-body.theme-endfield .port-badge .pb-name {
+body.ef-skin .port-badge .pb-name {
   color: var(--ef-text);
 }
 
 /* 画布上的文字标注：等宽、带一点全息辉光 */
-body.theme-endfield .mk-text {
+body.ef-skin .mk-text {
   color: var(--ef-plate);
   letter-spacing: .6px;
-  text-shadow: 0 0 12px rgba(255, 250, 0, .18);
+  text-shadow: 0 0 12px rgba(var(--ef-signal-rgb), .18);
 }
 
 /* ── 六、对话框 / 面板：45° 切角 + 整窗一圈同色轮廓（会呼吸） ─────────────── */
@@ -604,43 +901,58 @@ body.theme-endfield .mk-text {
   initial-value: #b6b300;
 }
 
-body.theme-endfield .overlay-box,
-body.theme-endfield .mt-dialog-box {
+body.ef-skin .overlay-box,
+body.ef-skin .mt-dialog-box {
   border-radius: 0;
   /* 让弹窗自成一层：合成层会被吸附到整像素，四边（尤其上下两条水平边）不再被亚像素抗锯齿
      压暗 —— 否则同一支黄画出来上下暗一档、左右亮一档，看着仍旧是「颜色不一致」。
-     实测（离屏渲染、dpr 1.5）：不加时顶边 194,190,7、左边 255,250,0；加上后顶边也是 255,250,0。 */
+     实测（离屏渲染、dpr 1.5）：不加时顶边 194,190,7、左边 255,250,0；加上后顶边也是 255,250,0。
+     【预算】这是全文件仅有的两处 will-change（另一处在 .apps-modal-box）：它买的是
+     整像素吸附，不是动画加速，所以必须常驻、不能等动起来再挂（挂晚了那一帧已经画歪了）。
+     两处都只作用在「屏幕上最多一只」的浮层外壳上，元素级开销 ≤ 2 层 —— 第十三节有账。 */
   will-change: transform;
   /* 四边统一：与斜边同一支黄、同一粗细（1px），不再有「灰三边 + 黄一边」。
      边框与色带都只认 --ef-edge 这**一个**变量：颜色只有一处定义、一处插值，
      四边与斜边不可能各走一条取色路径（早先各自名一个颜色属性，中段会差出几个色阶）。 */
   border: 1px solid var(--ef-edge);
   --ef-edge: var(--ef-frame);
+  /* 四层，从上往下：斜边色带 / 顶边生长条 / 右边生长条 / 底渐变。
+     中间那两条是「切角描边从角向边生长」的入场（六·二 ①）：长度 0% → 100%，从右上角
+     沿顶边往左、沿右边往下拉。它们**只在入场那 .38s 里存在**（ef-frame-in 不带 fill），
+     静止态长度仍是 0 —— 也就是说终态一个像素都不多，四边仍是那条 1px border，
+     --ef-cut-w 的 dpr 分档与斜边的取色路径一个字节未动。 */
   background:
     linear-gradient(to top right,
       transparent calc(50% - var(--ef-cut-w)),
       var(--ef-edge) calc(50% - var(--ef-cut-w)),
       var(--ef-edge) 50%,
       transparent 50%) no-repeat right top / 18px 18px border-box,
+    linear-gradient(var(--ef-edge), var(--ef-edge)) no-repeat right top / 0% 1px border-box,
+    linear-gradient(var(--ef-edge), var(--ef-edge)) no-repeat right top / 1px 0% border-box,
     linear-gradient(180deg, #1d1d1d, #161616);
   /* 右上角 45° 切角：终末地面板的招牌轮廓 */
   clip-path: polygon(0 0, calc(100% - 18px) 0, 100% 18px, 100% 100%, 0 100%);
   animation: ef-panel-in .26s var(--ef-ease-back) both,
-    ef-panel-breath 5.6s ease-in-out .3s infinite;
+    ef-panel-breath 5.6s ease-in-out .3s infinite,
+    ef-frame-in var(--ef-dur-3) var(--ef-ease-out);
 }
 
 /* 深色确认 / 输入窗（#mtDialog）自带一条更「重」的弹入动画：
    base.css 的 .mt-dialog.on>.mt-dialog-box 是三个类的选择器，会把上面那条 animation 整条顶掉
    —— 呼吸灯于是根本没跑（用户反馈的「未实现呼吸灯」正是这一处）。
-   这里把弹入与呼吸两条一起写回来，呼吸才真正落在这个窗上。 */
-body.theme-endfield .mt-dialog.on > .mt-dialog-box {
+   这里把弹入与呼吸两条一起写回来，呼吸才真正落在这个窗上。
+   顺序不动：mtPopIn 仍是第一条（base.css 的弹入手感），后面才是呼吸与描边生长
+   （ef-frame-in，六·二 ①）。这三条只能写在这条**更高特异度**的规则里 ——
+   写回上面那条会被 base.css 的三个类顶掉。 */
+body.ef-skin .mt-dialog.on > .mt-dialog-box {
   animation: mtPopIn .22s var(--ease-out),
-    ef-panel-breath 5.6s ease-in-out .3s infinite;
+    ef-panel-breath 5.6s ease-in-out .3s infinite,
+    ef-frame-in var(--ef-dur-3) var(--ef-ease-out);
 }
 
 /* 作者小窗走象牙白那一支：四边 + 斜边同样只用一种颜色（否则黄框上顶一条白边，
    又是一处「颜色不一致」）。粗细照旧 1px（基础样式给的是 3px）。 */
-body.theme-endfield .overlay-box.author-box {
+body.ef-skin .overlay-box.author-box {
   border: 1px solid var(--ef-edge);
   --ef-edge: var(--ef-frame-plate);
   background:
@@ -649,9 +961,12 @@ body.theme-endfield .overlay-box.author-box {
       var(--ef-edge) calc(50% - var(--ef-cut-w)),
       var(--ef-edge) 50%,
       transparent 50%) no-repeat right top / 18px 18px border-box,
+    linear-gradient(var(--ef-edge), var(--ef-edge)) no-repeat right top / 0% 1px border-box,
+    linear-gradient(var(--ef-edge), var(--ef-edge)) no-repeat right top / 1px 0% border-box,
     linear-gradient(180deg, #1d1d1d, #161616);
   animation: ef-panel-in .26s var(--ef-ease-back) both,
-    ef-panel-breath-plate 5.6s ease-in-out .3s infinite;
+    ef-panel-breath-plate 5.6s ease-in-out .3s infinite,
+    ef-frame-in var(--ef-dur-3) var(--ef-ease-out);
 }
 
 /* 分数倍缩放（Windows 125% / 150% / 175%）：色带按设备像素分档收窄，斜边才不会比四边粗。
@@ -663,42 +978,42 @@ body.theme-endfield .overlay-box.author-box {
    吸附），所以每一档只有一个可选值 —— 上面这套是各档里离 1.00 最近的那个。
    验收：node test/verify-theme-endfield-frame.js [dpr] —— 五档都得 24/24 通过。 */
 @media (min-resolution: 1.2dppx) and (max-resolution: 1.45dppx) {
-  body.theme-endfield {
+  body.ef-skin {
     --ef-cut-w: 1.2px;
   }
 }
 
 @media (min-resolution: 1.45dppx) and (max-resolution: 1.65dppx) {
-  body.theme-endfield {
+  body.ef-skin {
     --ef-cut-w: .7px;
   }
 }
 
 @media (min-resolution: 1.65dppx) and (max-resolution: 1.9dppx) {
-  body.theme-endfield {
+  body.ef-skin {
     --ef-cut-w: .58px;
   }
 }
 
-body.theme-endfield .overlay-head,
-body.theme-endfield .mt-dialog-head {
+body.ef-skin .overlay-head,
+body.ef-skin .mt-dialog-head {
   border-bottom: 1px solid var(--ef-line);
-  background: linear-gradient(90deg, rgba(255, 250, 0, .07), transparent 58%);
+  background: linear-gradient(90deg, rgba(var(--ef-signal-rgb), .07), transparent 58%);
 }
 
 /* 窗脚按钮条的分隔线同理收成 1px（基础样式 2px，比外框还重） */
-body.theme-endfield .overlay-foot {
+body.ef-skin .overlay-foot {
   border-top: 1px solid var(--ef-line);
 }
 
-body.theme-endfield .overlay-head b,
-body.theme-endfield .mt-dialog-head b {
+body.ef-skin .overlay-head b,
+body.ef-skin .mt-dialog-head b {
   letter-spacing: 1.6px;
   color: var(--ef-plate);
 }
 
-body.theme-endfield .overlay-head .tag,
-body.theme-endfield .mt-dialog-head .tag {
+body.ef-skin .overlay-head .tag,
+body.ef-skin .mt-dialog-head .tag {
   border-radius: 0;
   border: 1px solid var(--ef-line-2);
   color: var(--ef-olive);
@@ -750,15 +1065,174 @@ body.theme-endfield .mt-dialog-head .tag {
   }
 }
 
+/* ── 六·二、浮层的入场 / 退场：描边从角生长 · 背板暗角 + 整窗模糊 · 关窗退场 ──────
+   本节只碰这两只整窗浮层：#overlay > .overlay-box（含作者小窗 .author-box）与
+   #mtDialog > .mt-dialog-box。边界照任务口径：
+     · persistent 面板的关闭路径**一个字节不动** —— 它们仍只从窗内按钮 / ✕ / Esc 关
+       （AGENTS.md「协作约定」）。本节不挂任何「点蒙层关闭」、也没有点击监听；
+       ③ 里那条 pointer-events:none 只在「已关闭」状态生效（退出过渡那 .13s 里
+       别误吃点击），它不构成任何关闭入口。
+     · 时长 / 缓动只取第一节那七颗令牌，本节不写第二个 cubic-bezier、不加第二档时长。
+     · base.css 的 .mt-dialog.on > .mt-dialog-box（三个类，specificity (0,3,0)）是
+       mtPopIn 的唯一来源，本节没有任何规则去顶它 —— 弹入仍在第六节那条**更高特异度**的
+       body.ef-skin .mt-dialog.on > .mt-dialog-box 里，顺序也仍是 mtPopIn 打头，
+       本节只在它后面追加关键帧。 */
+
+/* ① 切角描边从角向边生长。
+   框由两处画成：四边是 1px border，右上 45° 那条斜边是 background 里 18×18 的色带。
+   斜边天生就在角上（跟着面板一起淡入），所以「生长」只缺两条边 —— 顶边与右边各做成
+   一层 1px 的 background（粗细锁死、只有长度可变），锚在右上角：
+     顶边  0% 1px  →  100% 1px     从角沿顶边往左拉
+     右边  1px 0%  →  1px 100%     从角沿右边往下拉
+   长度全程由 background-size 驱动（色带本身始终 18×18，不跟着缩放 ——
+   缩尺寸会让斜边变成一条浮在角里的短线，跟着面板淡入才对齐 clip-path 的切线）。
+   **为什么这条动画不带 fill**（写 fill: both 才是这里最容易犯的错）：
+   ① 带 fill 的话两条生长条会永久停在满格，而 background 的 1px 色带在分数倍缩放
+      （125% / 150% / 175%）下会被吸附成 1~2 个设备像素，跟「1px border 只吸 1 个设备像素」
+      的口径对不上 —— 顶边与右边会凭空粗出半像素，正是第六节花了整轮才抹平的
+      「四边粗细不一致」。不带 fill，动画一结束生长条就回到 0 长度，静止态一个像素都不多。
+   ② test/verify-theme-endfield-frame.js 是把全部动画 pause 再 seek 到固定相位量的：
+      不带 fill 时它在 3000ms 那一档看不到任何生长条，第六节那套「四边与斜边等粗」
+      的验收口径与改动前逐像素一致。
+   生长条与四边同色（都取 --ef-edge，连呼吸都同步），所以拉满那一刻它退场也看不出来。
+   为什么不用 clip-path / outline 去画：clip-path 只剪元素自己，outline 不吃
+   border-box 定位，两者都会在斜边处跟第六节的取色路径打架。
+   坑位：background-size 是逗号列表，动它必须把**四层**尺寸一起写进关键帧 ——
+   只写两层的话，另外两层会退回 0，底渐变当场消失（面板变透明）。 */
+@keyframes ef-frame-in {
+  from {
+    background-size: 18px 18px, 0% 1px, 1px 0%, 100% 100%;
+  }
+
+  to {
+    background-size: 18px 18px, 100% 1px, 1px 100%, 100% 100%;
+  }
+}
+
+/* ② 背板：暗角 + 整窗模糊。原来是一块纯色 rgba(5,8,12,.8)；现在中心浅、四角深的暗角。
+   模糊是**静态值**（blur(2px) saturate(.92)）—— 早先它由入场动画从 0 拉到 2px，
+   本任务的性能护栏把那条插值撤了（见下面 ef-mask-in 的注释与第十三节 ③）：
+   模糊从第一帧就在，入场只退不透明度。
+   整窗滤镜只给这两只遮罩层：它们背后就是画布；组件里的小面板不吃整窗滤镜。
+   低端机 / 省电降级见 ④（关灯档与系统 reduce 两档都直接撤掉模糊、把暗角补深一档，
+   本主题不另造「低端机」类）。 */
+body.ef-skin #overlay,
+body.ef-skin .mt-dialog {
+  background:
+    radial-gradient(ellipse 118% 96% at 50% 44%,
+      rgba(6, 9, 13, .6) 0%,
+      rgba(4, 6, 10, .82) 66%,
+      rgba(2, 3, 6, .94) 100%);
+  backdrop-filter: blur(2px) saturate(.92);
+}
+
+/* 入场的关键帧只挂在「已打开」那一侧选择器上：#overlay 没有 .on 类（openOverlay 写内联
+   display:flex），判据就是那条内联样式本身；#mtDialog 走 .on。
+   这里把 base.css 的 mtFadeIn 换掉是**有意的**：ef-mask-in 的 0% 就是同一个
+   淡入（opacity 0），只是时长 / 缓动改走本主题的令牌；宿主上的那一条不参与
+   「三类的 mtPopIn」覆盖顺序（那条在 .mt-dialog-box 上，见本节开头）。
+   关键帧里不再插值 backdrop-filter（本任务的性能护栏，见下面的注释与第十三节）。 */
+body.ef-skin #overlay[style*="display: flex"],
+body.ef-skin .mt-dialog.on {
+  animation: ef-mask-in var(--ef-dur-2) var(--ef-ease-out) both;
+}
+
+/* 入场只退不透明度：backdrop-filter 从第一帧就是终值。
+   原来这里在 from / to 里插值 blur(0) → blur(2px)，等于打开浮层那 --ef-dur-2 里
+   每一帧都重算一次整屏模糊（本主题最贵的一种帧）。第十三节把「动画型 filter」归零，
+   这一条因此改成只动 opacity —— 入场时遮罩从 0 淡到 1，模糊在 opacity 还是 0 的
+   那一帧本来就看不见，观感差别只有「背景先清后退焦」还是一上来就退焦，
+   而后者省掉整段入场里的整屏重算。 */
+@keyframes ef-mask-in {
+  from {
+    opacity: 0
+  }
+
+  to {
+    opacity: 1
+  }
+}
+
+/* ③ 关闭时的退出过渡：壳先淡出 + 轻微下沉（--ef-dur-1 就是令牌表里「出 / press」那一档），
+   然后才真正 display:none。
+   怎么做到「style.display 已经是 none、还能看它退」：给这两只壳挂
+   transition: display ... allow-discrete —— 离散属性的这条标准行为让 display:none
+   在过渡结束时才生效，过渡期间元素仍按 flex 画，于是 .13s 的退场动画有地方播。
+   「已关闭」的判据仍交给各自既有状态，不新增任何 JS 状态：
+     · #mtDialog：closeMtDialog 摘掉 .on → :not(.on)
+     · #overlay：closeOverlay 写内联 display:none（它没有 .on 类）→ 属性选择器
+   为什么不改 JS 加一个 .ef-closing 类：closeOverlay 之后
+   test/smoke-dialog-persistence.js / smoke-dialog-minimize.js 是**同步**断言
+   overlay.style.display === "none" 的，延迟隐藏会把这批断言打断；allow-discrete 不改
+   style.display 的取值（它立刻就是 none），断言口径原样成立，也没有第二条收窗路径。
+   不支持 allow-discrete 的引擎：transition 不成立 → 当场 display:none，
+   与改动前完全一致（退化成「没有退场动画」，不是坏掉）。 */
+body.ef-skin #overlay,
+body.ef-skin .mt-dialog {
+  transition: display var(--ef-dur-1) allow-discrete;
+}
+
+body.ef-skin #overlay[style*="display: none"],
+body.ef-skin .mt-dialog:not(.on) {
+  animation: ef-mask-out var(--ef-dur-1) var(--ef-ease-out) both;
+  /* 退场这 .13s 里壳还画着，别再吃点击：它已经不是任何人的入口 */
+  pointer-events: none;
+}
+
+body.ef-skin #overlay[style*="display: none"] > .overlay-box,
+body.ef-skin .mt-dialog:not(.on) > .mt-dialog-box {
+  animation: ef-panel-out var(--ef-dur-1) var(--ef-ease-out) both;
+}
+
+@keyframes ef-panel-out {
+  to {
+    opacity: 0;
+    transform: translateY(6px) scale(.994);
+  }
+}
+
+@keyframes ef-mask-out {
+  to {
+    opacity: 0;
+  }
+}
+
+/* ④ 低端机 / 省电降级：背板模糊是本主题唯一一处「每帧要重算整屏」的开销，所以直接
+   挂在两档既有开关上 —— 关灯档（body.ef-skin.ef-motion-off）与系统
+   prefers-reduced-motion（第十二节同一组声明）。撤掉模糊后暗角补深一档，遮挡力不减；
+   引擎压根不支持 backdrop-filter 时（@supports 兜底）同口径。
+   注意关灯档里那条通配的 transition:none 也会让 ③ 的 display 过渡当场落定 ——
+   即「关灯 = 退场直接切」，与改动前一致。 */
+body.ef-skin.ef-motion-off #overlay,
+body.ef-skin.ef-motion-off .mt-dialog {
+  backdrop-filter: none;
+  background:
+    radial-gradient(ellipse 118% 96% at 50% 44%,
+      rgba(4, 6, 9, .72) 0%,
+      rgba(3, 4, 7, .9) 66%,
+      rgba(1, 2, 4, .96) 100%);
+}
+
+@supports not (backdrop-filter: blur(2px)) {
+  body.ef-skin #overlay,
+  body.ef-skin .mt-dialog {
+    background:
+      radial-gradient(ellipse 118% 96% at 50% 44%,
+        rgba(4, 6, 9, .72) 0%,
+        rgba(3, 4, 7, .9) 66%,
+        rgba(1, 2, 4, .96) 100%);
+  }
+}
+
 /* 面板里的小标题 / 分隔线：发丝线 + 短黄标 */
-body.theme-endfield .settings-sec-title {
+body.ef-skin .settings-sec-title {
   color: var(--ef-olive);
   letter-spacing: 1.4px;
   border-bottom: 1px solid var(--ef-line);
   padding-bottom: 4px;
 }
 
-body.theme-endfield .settings-sec-title::before {
+body.ef-skin .settings-sec-title::before {
   content: "";
   display: inline-block;
   width: 6px;
@@ -769,29 +1243,29 @@ body.theme-endfield .settings-sec-title::before {
 }
 
 /* ── 七、按钮 / 输入：直角 + 信号黄焦点 ───────────────────────────────────── */
-body.theme-endfield button {
+body.ef-skin button {
   border-radius: 0;
   border-width: 1px;
   letter-spacing: .6px;
 }
 
-body.theme-endfield button:hover {
+body.ef-skin button:hover {
   border-color: var(--ef-signal);
   color: var(--ef-signal-2);
   box-shadow: inset 2px 0 0 var(--ef-signal);
 }
 
-body.theme-endfield button:active {
+body.ef-skin button:active {
   transform: translateY(1px);
 }
 
-body.theme-endfield input[type="text"],
-body.theme-endfield input[type="number"],
-body.theme-endfield input[type="password"],
-body.theme-endfield input[type="search"],
-body.theme-endfield input:not([type]),
-body.theme-endfield textarea,
-body.theme-endfield select {
+body.ef-skin input[type="text"],
+body.ef-skin input[type="number"],
+body.ef-skin input[type="password"],
+body.ef-skin input[type="search"],
+body.ef-skin input:not([type]),
+body.ef-skin textarea,
+body.ef-skin select {
   border-radius: 0;
   background: #141414;
   border: 1px solid var(--ef-line);
@@ -799,31 +1273,31 @@ body.theme-endfield select {
   transition: border-color var(--dur-fast), box-shadow var(--dur-fast), background-color var(--dur-fast);
 }
 
-body.theme-endfield input[type="text"]:focus,
-body.theme-endfield input[type="number"]:focus,
-body.theme-endfield input[type="password"]:focus,
-body.theme-endfield input[type="search"]:focus,
-body.theme-endfield input:not([type]):focus,
-body.theme-endfield textarea:focus,
-body.theme-endfield select:focus {
+body.ef-skin input[type="text"]:focus,
+body.ef-skin input[type="number"]:focus,
+body.ef-skin input[type="password"]:focus,
+body.ef-skin input[type="search"]:focus,
+body.ef-skin input:not([type]):focus,
+body.ef-skin textarea:focus,
+body.ef-skin select:focus {
   border-color: var(--ef-signal);
   background: #171717;
-  box-shadow: 0 0 0 3px rgba(255, 250, 0, .16), inset 0 0 0 1px rgba(255, 250, 0, .25);
+  box-shadow: 0 0 0 3px rgba(var(--ef-signal-rgb), .16), inset 0 0 0 1px rgba(var(--ef-signal-rgb), .25);
   outline: none;
 }
 
-body.theme-endfield :where(button, a, summary, [tabindex], [role="button"], [role="tab"], [role="menuitem"]):focus-visible {
+body.ef-skin :where(button, a, summary, [tabindex], [role="button"], [role="tab"], [role="menuitem"]):focus-visible {
   outline: 2px solid var(--ef-signal);
   outline-offset: 2px;
 }
 
 /* 复选框 / 单选框：方形黄勾（原生控件跟 accent-color 走，这里把圆角掰直） */
-body.theme-endfield input[type="checkbox"] {
+body.ef-skin input[type="checkbox"] {
   border-radius: 0;
 }
 
 /* ── 八、状态栏：等宽读数 + 顶部发丝线 ────────────────────────────────────── */
-body.theme-endfield .statusbar {
+body.ef-skin .statusbar {
   background: linear-gradient(180deg, #1a1a1a, #121212);
   border-top: 1px solid var(--ef-line);
   font-family: var(--mono);
@@ -831,56 +1305,83 @@ body.theme-endfield .statusbar {
   letter-spacing: .4px;
 }
 
-body.theme-endfield .statusbar .ok {
-  color: var(--ef-green);
+/* 状态栏 ok 那一档取第一节的 --ef-ok（原来写的是 --ef-green，本主题没定义过这支变量，
+   落不到颜色上；三支状态色统一在十一·十二 收口） */
+body.ef-skin .statusbar .ok {
+  color: var(--ef-ok);
 }
 
-body.theme-endfield .statusbar button {
+body.ef-skin .statusbar button {
   border-radius: 0;
   background: transparent;
   border-color: transparent;
 }
 
-body.theme-endfield .statusbar button:hover {
+body.ef-skin .statusbar button:hover {
   border-color: var(--ef-line-2);
   background: #202020;
 }
 
 /* ── 九、会话 / 助手窗格：暗底 + 黄线分隔 ─────────────────────────────────── */
-body.theme-endfield .agent-pane,
-body.theme-endfield .agent-main,
-body.theme-endfield .assist-pane {
+body.ef-skin .agent-pane,
+body.ef-skin .agent-main,
+body.ef-skin .assist-pane {
   background: #131313;
 }
 
-body.theme-endfield .agent-side {
+body.ef-skin .agent-side {
   background: linear-gradient(180deg, #191919, #131313);
   border-right: 1px solid var(--ef-line);
 }
 
-body.theme-endfield .agent-side-new,
-body.theme-endfield .agent-side-search input {
+body.ef-skin .agent-side-new,
+body.ef-skin .agent-side-search input {
   border-radius: 0;
+}
+
+/* 会话行的选中态 / 运行态：dsh.css 里这三处写死的是 DSH 蓝（rgba(86,134,254,.16) 底、
+   rgb(86,134,254) 的字与转圈边框），不是 --cyan 变量 —— 换到本主题不会跟着变，
+   会话页截图第一眼就是一块蓝底（验收时读像素发现的漏网，十一·八 那份「只剩三处冷色」
+   的账因此多算这一族）。这里压成同族的「石墨底 + 左缘信号黄条」，
+   「运行中」文字与转圈一起走信号黄；转圈的旋转已由上面 ef-pulse 那条简写接管。 */
+body.ef-skin .side-sess.active {
+  background: #1f1f1f;
+  box-shadow: inset 2px 0 0 var(--ef-signal);
+}
+
+body.ef-skin .side-sess-status,
+body.ef-skin .side-sess-spinner {
+  color: var(--ef-signal);
+}
+
+body.ef-skin .side-sess-spinner {
+  border-color: rgba(var(--ef-signal-rgb), .22);
+  border-top-color: var(--ef-signal);
 }
 
 /* 消息卡片 / 输入框：直角、左侧发丝黄线 */
-body.theme-endfield .msg,
-body.theme-endfield .dsh-msg,
-body.theme-endfield .ix-card {
+body.ef-skin .msg,
+body.ef-skin .dsh-msg,
+body.ef-skin .ix-card {
   border-radius: 0;
 }
 
-body.theme-endfield .chat-input,
-body.theme-endfield .dsh-input,
-body.theme-endfield .assist-input {
+body.ef-skin .chat-input,
+body.ef-skin .dsh-input,
+body.ef-skin .assist-input {
   border-radius: 0;
   border: 1px solid var(--ef-line);
 }
 
-/* 正在运行 / 生成中的呼吸灯：黄，2 秒一次（终末地的「系统在工作」提示） */
-body.theme-endfield .side-sess-spinner,
-body.theme-endfield .dsh-spinner,
-body.theme-endfield .sb-live-dot {
+/* 正在运行 / 生成中的呼吸灯：黄，2 秒一次（终末地的「系统在工作」提示）。
+   辉光是**静态**的一层 box-shadow，关键帧只动 opacity —— 原来这里在关键帧里插值
+   filter: drop-shadow，等于每帧重算一遍小范围滤镜，是本主题唯一的「动画型 filter」，
+   第十三节（性能护栏）点名要清掉的就是它。opacity 走合成层，辉光随整体淡入淡出，
+   观感与改前一致：谷值 .35 时连辉光一起暗下去。 */
+body.ef-skin .side-sess-spinner,
+body.ef-skin .dsh-spinner,
+body.ef-skin .sb-live-dot {
+  box-shadow: 0 0 6px rgba(var(--ef-signal-rgb), .75);
   animation: ef-pulse 1.8s ease-in-out infinite;
 }
 
@@ -888,51 +1389,55 @@ body.theme-endfield .sb-live-dot {
 
   0%,
   100% {
-    opacity: .35;
-    filter: drop-shadow(0 0 0 rgba(255, 250, 0, 0))
+    opacity: .35
   }
 
   50% {
-    opacity: 1;
-    filter: drop-shadow(0 0 6px rgba(255, 250, 0, .75))
+    opacity: 1
   }
 }
 
 /* ── 十、Tab / 列表选中态统一成「黄底黑字」或「黄条」 ─────────────────────── */
-body.theme-endfield .tab.on,
-body.theme-endfield .tabbtn.on,
-body.theme-endfield .seg-btn.on {
+body.ef-skin .tab.on,
+body.ef-skin .tabbtn.on,
+body.ef-skin .seg-btn.on {
   border-color: var(--ef-signal);
   color: #111;
-  background: linear-gradient(180deg, #fffa00, #deda00);
+  background: linear-gradient(180deg, var(--ef-signal), var(--ef-signal-deep));
 }
 
-body.theme-endfield .apps-tab.on,
-body.theme-endfield .settings-tab.on {
+body.ef-skin .apps-tab.on,
+body.ef-skin .settings-tab.on {
   color: var(--ef-signal);
   border-bottom: 2px solid var(--ef-signal);
 }
 
 /* 长周期任务 / 任务节点的状态条：沿用语义色，但统一直角 + 等宽标签 */
-body.theme-endfield .lt-s-label,
-body.theme-endfield .lt-edge-label {
+body.ef-skin .lt-s-label,
+body.ef-skin .lt-edge-label {
   font-family: var(--mono);
   letter-spacing: .4px;
 }
 
 /* ── 十一、页面级弹入：整窗首次绘制时的一次「上电」 ───────────────────────── */
-body.theme-endfield .topbar,
-body.theme-endfield .sidebar,
-body.theme-endfield .statusbar {
-  animation: ef-boot .3s ease-out both;
+/* 阶梯入场（分组延迟）：外壳分三组，第 i 组的延迟 = .06s + i × --ef-stagger
+   —— 与令牌注释里那条上游错峰公式同一条，组内不再各写一个魔法数：
+     第 0 组 顶栏        .06s
+     第 1 组 侧栏        .06s + 1 × .036s ≈ .096s
+     第 2 组 状态栏读数  .06s + 2 × .036s ≈ .132s（读数之间再各推一档，见下）
+   时长与缓动同样走令牌：--ef-dur-3（入场）/ --ef-ease-out。
+   原先这三位是硬写的 .3s ease-out 加 .04s / .08s 两个手数。 */
+body.ef-skin .topbar,
+body.ef-skin .sidebar {
+  animation: ef-boot var(--ef-dur-3) var(--ef-ease-out) both;
 }
 
-body.theme-endfield .sidebar {
-  animation-delay: .04s;
+body.ef-skin .topbar {
+  animation-delay: calc(.06s + 0 * var(--ef-stagger));
 }
 
-body.theme-endfield .statusbar {
-  animation-delay: .08s;
+body.ef-skin .sidebar {
+  animation-delay: calc(.06s + 1 * var(--ef-stagger));
 }
 
 @keyframes ef-boot {
@@ -947,10 +1452,44 @@ body.theme-endfield .statusbar {
   }
 }
 
+/* 状态栏不整条滑入（它是常驻底边，整块位移比数字出现更容易被看成闪一下）：
+   入场的只是「读数」这一层，按从左到右的次序各推一档。
+   队列读数在左、缩放与版本号在右，所以 i 从 2 起算（外壳已用掉 0 / 1 两档）。
+   读数只用 opacity + 3px 位移，不吃布局 —— 状态栏高度全程不变。 */
+body.ef-skin .statusbar .sb-rq-txt,
+body.ef-skin .statusbar #statZoom,
+body.ef-skin .statusbar #authorLink {
+  animation: ef-readout-in var(--ef-dur-2) var(--ef-ease-out) both;
+}
+
+body.ef-skin .statusbar .sb-rq-txt {
+  animation-delay: calc(.06s + 2 * var(--ef-stagger));
+}
+
+body.ef-skin .statusbar #statZoom {
+  animation-delay: calc(.06s + 3 * var(--ef-stagger));
+}
+
+body.ef-skin .statusbar #authorLink {
+  animation-delay: calc(.06s + 4 * var(--ef-stagger));
+}
+
+@keyframes ef-readout-in {
+  from {
+    opacity: 0;
+    transform: translateY(3px)
+  }
+
+  to {
+    opacity: 1;
+    transform: none
+  }
+}
+
 /* 终端 / 日志块：等宽 + 黄绿光标色（dsh 工具输出与运行日志） */
-body.theme-endfield .dsh-tool-pre,
-body.theme-endfield .plg-repair-pre,
-body.theme-endfield .think-doc pre {
+body.ef-skin .dsh-tool-pre,
+body.ef-skin .plg-repair-pre,
+body.ef-skin .think-doc pre {
   border-radius: 0;
   border-left: 2px solid var(--ef-olive);
 }
@@ -959,119 +1498,120 @@ body.theme-endfield .think-doc pre {
    canvas.css 里这些节点各有写死的底色（棕 / 紫 / 蓝 / 青…），逐类只是「强调色不同」；
    这里把底盘统一成终末地的石墨板，只让标题条与描边带出类别色 —— 一眼能分家，
    又不会把画布调成调色盘。--n-accent 由下面的分组规则给出。 */
-body.theme-endfield .wf-node.ctrl,
-body.theme-endfield .wf-node.judge,
-body.theme-endfield .wf-node.wait,
-body.theme-endfield .wf-node.timer,
-body.theme-endfield .wf-node.delayer,
-body.theme-endfield .wf-node.sequencer,
-body.theme-endfield .wf-node.gate,
-body.theme-endfield .wf-node.splitter,
-body.theme-endfield .wf-node.counter,
-body.theme-endfield .wf-node.mutex,
-body.theme-endfield .wf-node.exec,
-body.theme-endfield .wf-node.appnode,
-body.theme-endfield .wf-node.db,
-body.theme-endfield .wf-node.dev-el {
+body.ef-skin .wf-node.ctrl,
+body.ef-skin .wf-node.judge,
+body.ef-skin .wf-node.wait,
+body.ef-skin .wf-node.timer,
+body.ef-skin .wf-node.delayer,
+body.ef-skin .wf-node.sequencer,
+body.ef-skin .wf-node.gate,
+body.ef-skin .wf-node.splitter,
+body.ef-skin .wf-node.counter,
+body.ef-skin .wf-node.mutex,
+body.ef-skin .wf-node.exec,
+body.ef-skin .wf-node.appnode,
+body.ef-skin .wf-node.db,
+body.ef-skin .wf-node.dev-el {
   background: linear-gradient(180deg,
       color-mix(in srgb, var(--n-accent) 8%, #242424),
       #1a1a1a 58%, #141414);
   border-color: color-mix(in srgb, var(--n-accent) 42%, #4a4a4a);
 }
 
-body.theme-endfield .wf-node.ctrl-start {
+body.ef-skin .wf-node.ctrl-start {
   --n-accent: #7fe0c8
 }
 
-body.theme-endfield .wf-node.ctrl-ok {
+body.ef-skin .wf-node.ctrl-ok {
   --n-accent: var(--ef-green)
 }
 
-body.theme-endfield .wf-node.ctrl-fail {
+body.ef-skin .wf-node.ctrl-fail {
   --n-accent: var(--ef-red)
 }
 
-body.theme-endfield .wf-node.judge,
-body.theme-endfield .wf-node.sequencer {
+body.ef-skin .wf-node.judge,
+body.ef-skin .wf-node.sequencer {
   --n-accent: #c3a6ec
 }
 
-body.theme-endfield .wf-node.wait,
-body.theme-endfield .wf-node.delayer {
+body.ef-skin .wf-node.wait,
+body.ef-skin .wf-node.delayer {
   --n-accent: #7fd6b8
 }
 
-body.theme-endfield .wf-node.timer,
-body.theme-endfield .wf-node.splitter {
+body.ef-skin .wf-node.timer,
+body.ef-skin .wf-node.splitter {
   --n-accent: #9ab4d8
 }
 
-body.theme-endfield .wf-node.gate {
+body.ef-skin .wf-node.gate {
   --n-accent: #f0d38a
 }
 
-body.theme-endfield .wf-node.counter {
+body.ef-skin .wf-node.counter {
   --n-accent: #f0b58a
 }
 
-body.theme-endfield .wf-node.mutex {
+body.ef-skin .wf-node.mutex {
   --n-accent: #d8a2cb
 }
 
-body.theme-endfield .wf-node.exec {
+body.ef-skin .wf-node.exec {
   --n-accent: var(--ef-olive)
 }
 
-body.theme-endfield .wf-node.db {
+body.ef-skin .wf-node.db {
   --n-accent: #7fd6b8
 }
 
 /* 节点里的图标按钮（? / 思考 / 运行）也换掉那层青色底：黄theme 里不留冷蓝 */
-body.theme-endfield .n-play.n-help-btn,
-body.theme-endfield .n-think {
-  background: rgba(255, 250, 0, .08);
+body.ef-skin .n-play.n-help-btn,
+body.ef-skin .n-think {
+  background: rgba(var(--ef-signal-rgb), .08);
   border-color: var(--ef-line);
   color: var(--ef-plate);
 }
 
-body.theme-endfield .n-play.n-help-btn:hover,
-body.theme-endfield .n-think:hover {
-  background: rgba(255, 250, 0, .16);
+body.ef-skin .n-play.n-help-btn:hover,
+body.ef-skin .n-think:hover {
+  background: rgba(var(--ef-signal-rgb), .16);
   border-color: var(--ef-signal);
 }
 /* ── 十一·六、收敛残留冷色 ───────────────────────────────────────────────────
    组件层有一批「功能入口专属色」写死的亮蓝（#6db4ff / #9ecdff）与青色半透底
    （应用中心导航、应用弹窗、画布页签激活态、顶栏「应用」按钮）。它们在别的主题里
    是分类色，放进黄黑配色里就成了整页唯一的冷色块 —— 这里统一收到信号黄 / 橄榄黄绿。 */
-body.theme-endfield .topbar .btn-apps {
+body.ef-skin .topbar .btn-apps {
   color: var(--ef-olive);
 }
 
-body.theme-endfield .topbar .btn-apps:hover,
-body.theme-endfield .topbar .btn-apps.on {
+body.ef-skin .topbar .btn-apps:hover,
+body.ef-skin .topbar .btn-apps.on {
   border-color: var(--ef-signal);
   color: #111;
-  background: linear-gradient(180deg, #fffa00, #d8d400);
+  background: linear-gradient(180deg, var(--ef-signal), var(--ef-signal-deep));
 }
 
-body.theme-endfield .apps-hub-brand {
+body.ef-skin .apps-hub-brand {
   color: var(--ef-olive);
   letter-spacing: 1.4px;
 }
 
-body.theme-endfield .apps-hub-navbtn.on {
+/* 选中态只留描边与底色：左侧那根黄条改由十一·十一 ② 的伪元素画（它要能动，
+   阴影动不了）—— 两处都写会叠成两根条。 */
+body.ef-skin .apps-hub-navbtn.on {
   border-color: var(--ef-signal);
   color: var(--ef-signal-2);
-  background: rgba(255, 250, 0, .09);
-  box-shadow: inset 2px 0 0 var(--ef-signal);
+  background: rgba(var(--ef-signal-rgb), .09);
 }
 
-body.theme-endfield .apps-tagchip:hover {
+body.ef-skin .apps-tagchip:hover {
   border-color: var(--ef-olive);
   color: var(--ef-plate);
 }
 
-body.theme-endfield .apps-modal-box {
+body.ef-skin .apps-modal-box {
   border-radius: 0;
   will-change: transform; /* 同上：吸附整像素，四条边一样亮 */
   /* 同一口径：四边与斜边一种颜色、1px，整圈一起呼吸（边框与色带共用 --ef-edge） */
@@ -1090,23 +1630,27 @@ body.theme-endfield .apps-modal-box {
 }
 
 /* 窗内分隔线跟外框同粗（基础样式给的是 2px，比 1px 外框还重） */
-body.theme-endfield .apps-modal-head {
+body.ef-skin .apps-modal-head {
   border-bottom: 1px solid var(--ef-line);
 }
 
-body.theme-endfield .apps-modal-foot {
+body.ef-skin .apps-modal-foot {
   border-top: 1px solid var(--ef-line);
 }
 
-body.theme-endfield .apps-modal-head {
+body.ef-skin .apps-modal-head {
   color: var(--ef-olive);
 }
 
-body.theme-endfield .wf-tab.active,
-body.theme-endfield .wf-tab.on {
-  background: rgba(255, 250, 0, .1);
+/* 选中页签：边框与那条斜切边同色（都读 --tab-edge，见 canvas.css 的 .wf-tab::after），
+   顶边强调线跟着主题强调色走 —— 终末地里也是「一排硬边档案页签」。 */
+body.ef-skin .wf-tab.active,
+body.ef-skin .wf-tab.on {
+  --tab-edge: var(--ef-olive);
+  background: rgba(var(--ef-signal-rgb), .1);
   border-color: var(--ef-olive);
   color: var(--ef-signal-2);
+  box-shadow: inset 0 2px 0 var(--ef-signal);
 }
 /* ── 十一·七、终末地的几处招牌细节 ──────────────────────────────────────────
    1) 顶栏 logo 的呼吸辉光
@@ -1114,7 +1658,7 @@ body.theme-endfield .wf-tab.on {
    注：原先这里还有一层「开机 / 换主题时的一次性全屏上电扫光」（html[data-theme]::after，
    0.6s 的黄色渐变从上往下扫）—— 与那条循环扫光带同批被用户否掉，整段删除。 */
 
-body.theme-endfield .logo-mark {
+body.ef-skin .logo-mark {
   animation: ef-logo 4.5s ease-in-out infinite;
 }
 
@@ -1122,21 +1666,21 @@ body.theme-endfield .logo-mark {
 
   0%,
   100% {
-    box-shadow: 0 0 0 3px rgba(255, 250, 0, .07), inset 0 0 10px rgba(255, 250, 0, .15)
+    box-shadow: 0 0 0 3px rgba(var(--ef-logo-rgb), .07), inset 0 0 10px rgba(var(--ef-logo-rgb), .15)
   }
 
   50% {
-    box-shadow: 0 0 0 3px rgba(255, 250, 0, .16), inset 0 0 16px rgba(255, 250, 0, .3), 0 0 14px -2px rgba(255, 250, 0, .35)
+    box-shadow: 0 0 0 3px rgba(var(--ef-logo-rgb), .16), inset 0 0 16px rgba(var(--ef-logo-rgb), .3), 0 0 14px -2px rgba(var(--ef-logo-rgb), .35)
   }
 }
 
-body.theme-endfield .overlay-head,
-body.theme-endfield .mt-dialog-head {
+body.ef-skin .overlay-head,
+body.ef-skin .mt-dialog-head {
   position: relative;
 }
 
-body.theme-endfield .overlay-head::after,
-body.theme-endfield .mt-dialog-head::after {
+body.ef-skin .overlay-head::after,
+body.ef-skin .mt-dialog-head::after {
   content: "";
   position: absolute;
   left: 0;
@@ -1146,68 +1690,917 @@ body.theme-endfield .mt-dialog-head::after {
   pointer-events: none;
   background: repeating-linear-gradient(115deg,
       var(--ef-signal) 0 6px,
-      rgba(255, 250, 0, 0) 6px 14px);
+      rgba(var(--ef-signal-rgb), 0) 6px 14px);
   opacity: .42;
 }
 /* ── 十一·八、零散冷色的收口 ────────────────────────────────────────────────
    全量扫过一遍计算样式，剩下的蓝色 / 紫色只有这三处：正文链接、工具钮图标、
-   节点拖拽把手与组端口徽标。统一压成象牙白 / 信号黄，hover 才亮。 */
-body.theme-endfield a[href] {
+   节点拖拽把手与组端口徽标。统一压成象牙白 / 信号黄，hover 才亮。
+   补记（本任务读像素复核时补的账）：会话页那三支冷色（.side-sess.active 的蓝底、
+   .side-sess-status / .side-sess-spinner 的蓝字第与蓝转圈）当时漏在清单外，
+   现已在第九节按「石墨底 + 左缘信号黄条」收口；CSS 里仍写着 DSH 蓝的还有
+   .agent-chip / .agent-tool-val / .agent-composer-card 边框与 .mini.on
+   —— 那些不在本任务的验收页面上，未动（见交付说明）。 */
+body.ef-skin a[href] {
   color: var(--ef-olive, #f2f27a);
-  text-decoration-color: rgba(255, 250, 0, .45);
+  text-decoration-color: rgba(var(--ef-signal-rgb), .45);
   text-underline-offset: 2px;
 }
 
-body.theme-endfield a[href]:hover {
+body.ef-skin a[href]:hover {
   color: var(--ef-signal);
   text-decoration-color: var(--ef-signal);
 }
 
-body.theme-endfield button.btn-tools,
-body.theme-endfield button.btn-tools .btn-ico-txt {
+body.ef-skin button.btn-tools,
+body.ef-skin button.btn-tools .btn-ico-txt {
   color: var(--ef-ink) !important;
 }
 
-body.theme-endfield button.btn-tools:hover {
+body.ef-skin button.btn-tools:hover {
   color: var(--ef-signal) !important;
 }
 
-body.theme-endfield .n-drag-handle,
-body.theme-endfield .n-drag-handle svg {
+body.ef-skin .n-drag-handle,
+body.ef-skin .n-drag-handle svg {
   color: var(--ef-muted) !important;
 }
 
-body.theme-endfield .n-drag-handle:hover,
-body.theme-endfield .n-drag-handle:hover svg {
+body.ef-skin .n-drag-handle:hover,
+body.ef-skin .n-drag-handle:hover svg {
   color: var(--ef-signal) !important;
 }
 
-body.theme-endfield .port-badge.grp-port-badge {
+body.ef-skin .port-badge.grp-port-badge {
   color: var(--ef-ink) !important;
   background: #2b2b2b;
   border: 1px solid var(--ef-line, #4a4a4a);
 }
-/* ── 十二、减少动效：扫描线与循环动效一律停掉 ─────────────────────────────── */
-@media (prefers-reduced-motion: reduce) {
-  body.theme-endfield .logo-mark {
-    animation: none !important;
+
+/* ── 十一·九、动效总开关：body.ef-skin.ef-motion-off ────────────────────
+   类名挂在 <body> 上，与 theme-endfield 同级（body.classList.toggle("ef-motion-off")），
+   不挂 <html> —— 本文件的规矩是所有选择器从 body.ef-skin 起头（三档主题都挂）。
+   给「关灯」一个确定的闸：类名一挂，本主题的入场、呼吸、脉冲、logo 辉光全部瞬切到
+   终态，扫描线纹理一并撤掉（它是静态纹理，但模拟的是 CRT 刷新，关灯档下也算「动的」）。
+   与第十二节（系统级 prefers-reduced-motion）同口径 —— 两条规则集必须同步增删，
+   否则会出现「系统关了灯、开关关了灯、行为却不一样」。
+   为什么用一条通配而不是逐个列举：本主题的动效散在六、九、十一、十一·七四节，组件层
+   （base / dsh / canvas / apps …）又各自挂了 animation / transition 简写，逐条列举
+   一定是「漏一个角落就还在动」；通配 + !important 才能真兜住。
+   为什么必须 !important：后加载的同特异度 animation 简写（如 base.css 的
+   .mt-dialog.on > .mt-dialog-box）会把这里整条顶掉，呼吸灯失效的老坑就是这么来的。
+   注：本主题现有的二十二族 @keyframes（ef-panel-in / ef-panel-breath /
+   ef-panel-breath-plate / ef-pulse / ef-boot / ef-logo / ef-canvas-breath /
+   ef-readout-in / ef-sel-ping / ef-port-seat /
+   ef-super-focus-in / ef-node-run / ef-frame-in / ef-mask-in /
+   ef-panel-out / ef-mask-out / ef-msg-in / ef-sec-in / ef-input-scan /
+   ef-readout-tick / ef-lamp-warn / ef-lamp-err）已全部带
+   ef- 前缀，没有无前缀的关键帧需要改名；这里也不复制关键帧，只切断播放。
+   关灯档下第六·二节的浮层那几条一并停：描边生长不播（两条生长条停在 0 长度，
+   面板直接淡入到位，静止态与改动前逐像素一致）、背板暗角直接到位、退场过渡当场落定
+   （transition:none 让 display:none 立刻生效，与改动前一致）；浮层背板的
+   backdrop-filter 也在那一节 ④ 里整块撤掉（本主题唯一的整窗滤镜）。
+   关灯档下第十一·十节新加的那几条一并停：
+   选中角标停在终端态（一块常亮三角，不再脉冲）、插芯不再回弹、
+   运行节点的 outline 停在中档（.22 那圈静态细环，不再明暗呼吸，
+   .n-status.run 的文字与进度照读）。
+   关灯档下第十一·十一节那几条同样当场落定：消息与设置分组直接出现在终态（不淡入、
+   不位移）、应用卡 hover 不抬升且角标不出现、左导航的指示条直接到位（不滑）、
+   输入框聚焦那道光不扫、按钮按下去不位移也不亮黄边 —— 静止态与改动前逐像素一致。
+   关灯档下第十一·十二节那几条：读数闪动不播（读数直接是可读的稳态）、
+   状态灯不再呼吸也不再方波 —— warn / err 回到自身的稳态（常亮，opacity 不写就是 1），
+   不会停在半明半暗的中间帧；灯的色与方点形状照旧；
+   进度条的宽度过渡当场落定（一格格跳，不再追）；骨架屏本来就是静态纹理，无需再停。 */
+/* 扫描线（--ef-scan）：静态纹理，但它模拟的是 CRT 刷新，关灯档下也算「动的」→ 置成
+   none，骨架屏与画布最上层那两道横线一起消失；画布的点阵 / 黄晕 / 底渐变原样留着。 */
+body.ef-skin.ef-motion-off {
+  --ef-scan: none;
+}
+
+body.ef-skin.ef-motion-off *,
+body.ef-skin.ef-motion-off *::before,
+body.ef-skin.ef-motion-off *::after {
+  animation: none !important;
+  transition: none !important;
+  scroll-behavior: auto !important;
+}
+
+/* ── 十一·十、节点 / 画布动效：选中一次脉冲 · 插芯微动 ·
+   super 展开过渡 · 运行呼吸 ──────────────────────────────────────────────────
+   口径（与前面各节同一条，别在这里另开范式）：
+     · 全部从 body.ef-skin 起头 —— 三档主题共用，只换强调色。
+     · 时长 / 缓动只从第一节那七颗动效令牌里取，不写第二个 cubic-bezier。
+     · 循环只留两条：⑤ 的运行呼吸（有 .n-status.run 才跑）与前面几节既有的呼吸灯；
+       其余都是「进一次就停」的单发动画 —— 画布上常驻循环越少，帧预算越稳。
+     · 不新增滚动虚线 / 跑马灯：本主题早先那条 22vh 循环扫光带与流动警示带都已被
+       用户否掉（见第二节 / 第三节 / 十一·七的注），这里同样不许用
+       repeating-linear-gradient + background-position 去「让边框动起来」；
+       节点头那条 border-bottom: dashed 是基础层（canvas.css）的静态刻度，原样留着。 */
+
+/* ① 节点 hover：不扫光（整段已删除）。
+   这里曾是一条挂在 .n-head::after 上的 45° 切角高光，hover 进来 0.38s 从标题条上
+   扫过去（ef-node-sheen）—— 鼠标一移上去就有一道影子快速掠过，用户明确否掉，
+   与那条 22vh 循环扫光带、开机全屏上电扫光同批移除。
+   节点 hover 的唯一反馈是边框色提到 --ef-line-2（第一节 .wf-node:hover），
+   选中反馈见下面的 ②。 */
+
+/* ② 选中态角标：节点右上角一块 45° 切角三角（与面板同族的斜口）。
+   **只在选中的那一下脉冲一次**，之后常亮不动 —— 一枚无限循环的角标等于整块画布
+   永远在眨眼，所以这里明确不用 infinite（fill: both 停在终态）。 */
+body.ef-skin .wf-node.sel .n-head::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 11px;
+  height: 11px;
+  pointer-events: none;
+  background: var(--ef-signal);
+  clip-path: polygon(0 0, 100% 0, 100% 100%);
+  animation: ef-sel-ping var(--ef-dur-3) var(--ef-ease-back) both;
+}
+
+@keyframes ef-sel-ping {
+  0% {
+    opacity: 0;
+    transform: scale(.35);
   }
 
-  body.theme-endfield .topbar,
-  body.theme-endfield .sidebar,
-  body.theme-endfield .statusbar,
-  body.theme-endfield .overlay-box,
-  body.theme-endfield .mt-dialog-box,
-  body.theme-endfield .apps-modal-box {
-    animation: none !important;
+  55% {
+    opacity: 1;
+    transform: scale(1.5);
+  }
+
+  100% {
+    opacity: .92;
+    transform: scale(1);
   }
 }
-/* ── 十三、打印 / 导出 PDF：底纹与扫描线不进纸 ────────────────────────────────
+
+/* ③ 端子接上线（canvas.css 的 .port.linked）的瞬间：插芯从「缩在孔里」落到孔底
+   并回弹一下 —— --ef-ease-back 那点过冲就是「插进去卡住」的手感。一次性，不循环。
+   只动 transform / opacity（插芯底色仍是 --port-ring，不换色），几何与命中区不动。
+   注：渲染层重建节点时这条单发会再放一次，所以幅度压得很小（.86 → 1.04），
+   重绘时不会被读成「一排端子在闪」。 */
+body.ef-skin .port.linked::before {
+  animation: ef-port-seat var(--ef-dur-2) var(--ef-ease-back) both;
+}
+
+@keyframes ef-port-seat {
+  0% {
+    opacity: .5;
+    transform: scale(.86);
+  }
+
+  62% {
+    opacity: 1;
+    transform: scale(1.04);
+  }
+
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* ④ super 展开 / 聚焦过渡：壳从「文件夹卡」展开成「子画布壳」时不再硬切。
+   只过渡真正能插值的那两项（描边与投影）—— 底色是分层渐变，CSS 插不动，
+   硬套 transition 只会得到一条永远不动的声明。时长走 --ef-dur-2（面板入那一档）。
+   全屏聚焦时钉在画布边缘的那两颗内侧端子淡入一次（.super-focus-port-layer 是新挂的层，
+   创建即播放，fill: both 停在终态；层里只有两颗端子，重绘代价可以忽略）。
+   注意：这里刻意不给 .super-stage 挂入场动画 —— 壳每次重绘都会重建这一层，
+   挂上去就成了「每动一下就闪一下」。 */
+body.ef-skin .wf-node.super {
+  transition:
+    border-color var(--ef-dur-2) var(--ef-ease-out),
+    box-shadow var(--ef-dur-2) var(--ef-ease-out);
+}
+
+body.ef-skin .super-focus-port-layer {
+  animation: ef-super-focus-in var(--ef-dur-2) var(--ef-ease-out) both;
+}
+
+@keyframes ef-super-focus-in {
+  0% {
+    opacity: 0;
+  }
+
+  100% {
+    opacity: 1;
+  }
+}
+
+/* ⑤ 批次 / 逐项运行时节点轻微呼吸：判据直接借运行态那一行 .n-status.run
+   （批量逐项跑时它写成「◉ 处理中 3/10」，与单次运行同一行，渲染层不需要新加类）。
+   画在 outline 上而不是 border-color / box-shadow：后者三处都在用 ——
+   类别色描边在 .wf-node.<kind>、选中环在 .wf-node.sel、开发节点的呼吸在
+   .dev-el.dev-running（canvas.css 的 devRunBreathe），动那里一定互相盖。
+   outline 不吃布局、不参与那几处的层叠竞争；选中态让位给黄色选择环（:not(.sel)）。
+   2.8s 一个来回、幅度只有一点点亮度：看得出「在走」，不抢画面注意力。
+   缓动用 ease-in-out（与第九节 ef-pulse 同档）—— 令牌表里的 linear 只给等速循环，
+   呼吸要的是两端的缓。 */
+body.ef-skin .wf-node:not(.super):not(.dev-el):not(.sel):has(.n-status.run) {
+  outline: 1px solid rgba(var(--ef-signal-rgb), .22);
+  outline-offset: 2px;
+  animation: ef-node-run 2.8s ease-in-out infinite;
+}
+
+@keyframes ef-node-run {
+
+  0%,
+  100% {
+    outline-color: rgba(var(--ef-signal-rgb), .1);
+  }
+
+  50% {
+    outline-color: rgba(var(--ef-signal-rgb), .42);
+  }
+}
+
+/* ── 十一·十一、会话区 / 应用中心 / 设置页：消息入场 · tab 指示条 · 卡片抬升 ·
+   分组入场 · 聚焦扫描 · 按钮压感 ──────────────────────────────────────────────
+   口径（与前面各节同一条，别在这里另开范式）：
+     · 全部从 body.ef-skin 起头 —— 三档主题共用，只换强调色。
+     · 时长 / 缓动只取第一节那七颗令牌（--ef-dur-1/2/3、--ef-ease-out/back/linear、
+       --ef-stagger），本节不写第二个 cubic-bezier，也不写表外的魔法时长；
+       错峰一律照令牌注释里那条公式：.06s + min(i, 14) × --ef-stagger。
+     · 位移走 transform / 独立的 translate 属性（两者都不改 width·height·left·top，
+       不触发布局重排；选 translate 而不是 transform 的理由见 ③ 的注）。
+       唯一走 background-position 的是 ⑤ 的输入框扫描 —— input / textarea 不能挂
+       伪元素，那是它唯一可插值的通道；扫的只是那一只输入框的内框，没有布局代价。
+     · 本节零循环：全是「进一次 / hover 一次 / 按一次」的单发动画。
+   关灯档（.ef-motion-off，见十一·九）与 reduce 档（见第十二节）的通配已经把本节
+   整条收口（animation / transition 全 none）—— 那两处各补了一句本节的停法。 */
+
+/* ① 会话区消息入场：淡入 + 3px 上浮，前 14 条按 --ef-stagger 错峰。
+   只挂在 #agentList（.agent-list）上：会话视图是**增量渲染**的（app-assist.js 的
+   agentRowsMapOf 按稳定 key 复用行，只有新增条目才建新元素），这条动画因此天然只在
+   新行上播一次，滚回去看老消息、运行中流式追加都不会重播。
+   刻意不挂助手面板（#assistList，.assist-list）：那个面板走的是整表重建
+   （renderAssistPanel 里的 list.innerHTML = ""，每次发送 / 切会话 / 清思考槽都调一次），
+   挂上去等于「发一条消息，整栏历史再淡入一遍」—— 同一条动效在两处的渲染方式不同，
+   这里按渲染方式取舍，不按类名铺。
+   选择器用直接子元素（> .dsh-msg）：折组（.agent-fold-body）里那些消息在展开时才
+   接进来，不在这条的直接子元素之列 —— 展开历史分组时不会整段重播淡入，正是想要的。
+   为什么只给前 14 条挂延迟：新消息是以「第 N 个子元素」的身份追加的，若每条都按序号
+   放大延迟，第 60 条消息要等 .06s + 14 × .036s ≈ .56s 才出现 —— 那是卡顿不是节奏。
+   第 15 条起延迟恒 0（不写延迟 = 进门即播），于是「一次铺出十几条历史」有节奏、
+   「运行中一条条追加」不被拖慢。
+   已知取舍：桌面端「显示更早内容」那颗按钮插到列表最前面时，前 14 条的行号各 +1、
+   animation-delay 随之变化，浏览器可能让它们重播一次（幅度只有 3px / .38s，
+   而那一刻它们基本都已滚出视口）。
+   fill 用 both：延迟期间停在起始位（不会先亮后跳），播完停在终态。 */
+body.ef-skin .agent-list > .dsh-msg {
+  animation: ef-msg-in var(--ef-dur-3) var(--ef-ease-out) both;
+}
+
+body.ef-skin .agent-list > .dsh-msg:nth-child(1) {
+  animation-delay: calc(.06s + 0 * var(--ef-stagger));
+}
+
+body.ef-skin .agent-list > .dsh-msg:nth-child(2) {
+  animation-delay: calc(.06s + 1 * var(--ef-stagger));
+}
+
+body.ef-skin .agent-list > .dsh-msg:nth-child(3) {
+  animation-delay: calc(.06s + 2 * var(--ef-stagger));
+}
+
+body.ef-skin .agent-list > .dsh-msg:nth-child(4) {
+  animation-delay: calc(.06s + 3 * var(--ef-stagger));
+}
+
+body.ef-skin .agent-list > .dsh-msg:nth-child(5) {
+  animation-delay: calc(.06s + 4 * var(--ef-stagger));
+}
+
+body.ef-skin .agent-list > .dsh-msg:nth-child(6) {
+  animation-delay: calc(.06s + 5 * var(--ef-stagger));
+}
+
+body.ef-skin .agent-list > .dsh-msg:nth-child(7) {
+  animation-delay: calc(.06s + 6 * var(--ef-stagger));
+}
+
+body.ef-skin .agent-list > .dsh-msg:nth-child(8) {
+  animation-delay: calc(.06s + 7 * var(--ef-stagger));
+}
+
+body.ef-skin .agent-list > .dsh-msg:nth-child(9) {
+  animation-delay: calc(.06s + 8 * var(--ef-stagger));
+}
+
+body.ef-skin .agent-list > .dsh-msg:nth-child(10) {
+  animation-delay: calc(.06s + 9 * var(--ef-stagger));
+}
+
+body.ef-skin .agent-list > .dsh-msg:nth-child(11) {
+  animation-delay: calc(.06s + 10 * var(--ef-stagger));
+}
+
+body.ef-skin .agent-list > .dsh-msg:nth-child(12) {
+  animation-delay: calc(.06s + 11 * var(--ef-stagger));
+}
+
+body.ef-skin .agent-list > .dsh-msg:nth-child(13) {
+  animation-delay: calc(.06s + 12 * var(--ef-stagger));
+}
+
+body.ef-skin .agent-list > .dsh-msg:nth-child(14) {
+  animation-delay: calc(.06s + 13 * var(--ef-stagger));
+}
+
+@keyframes ef-msg-in {
+  from {
+    opacity: 0;
+    translate: 0 3px;
+  }
+
+  to {
+    opacity: 1;
+    translate: none;
+  }
+}
+
+/* ② 应用中心左导航的选中指示条：黄条「滑」到位。
+   基础层（apps.css 的 .apps-hub-navbtn）只给 border-color 与文字色，本主题十一·六
+   原先用一条 inset 阴影当指示条 —— 阴影不可分离、也没法只动它，切换标签时只能硬闪。
+   这里把条子摊成一根 2px 的伪元素：未选中时缩成一小截停在左侧外面
+   （translateX(-6px) + scaleY(.35) + 透明），选中时 translateX(0) + scaleY(1) + 不透明。
+   切换标签 = 旧条往左退出、新条滑进来，全程只有合成层的位移与缩放，一次布局都不触发。
+   入场用 --ef-dur-2 配 --ef-ease-out（先快后缓），退场收到 --ef-dur-1（令牌表里
+   「出」那一档）；条子只画在 .on 上，没选中 = 缩回外面，不会留一截尾巴。 */
+body.ef-skin .apps-hub-navbtn {
+  position: relative;
+  transition: border-color var(--ef-dur-2) var(--ef-ease-out),
+    color var(--ef-dur-2) var(--ef-ease-out),
+    background-color var(--ef-dur-2) var(--ef-ease-out),
+    box-shadow var(--ef-dur-2) var(--ef-ease-out);
+}
+
+/* 已经选中的那一项 hover 时不再叠第七节那条 inset 2px 阴影：条子已经在原位，
+   再压一条就成了两根并排的黄条（只压选中项，其余项的 hover 反馈照旧）。 */
+body.ef-skin .apps-hub-navbtn.on:hover {
+  box-shadow: none;
+}
+
+body.ef-skin .apps-hub-navbtn::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  pointer-events: none;
+  background: var(--ef-signal);
+  opacity: 0;
+  transform: translateX(-6px) scaleY(.35);
+  transform-origin: 50% 50%;
+  transition: transform var(--ef-dur-1) var(--ef-ease-out),
+    opacity var(--ef-dur-1) var(--ef-ease-out);
+}
+
+body.ef-skin .apps-hub-navbtn.on::after {
+  opacity: 1;
+  transform: none;
+  transition: transform var(--ef-dur-2) var(--ef-ease-out),
+    opacity var(--ef-dur-2) var(--ef-ease-out);
+}
+
+/* ③ 应用卡片：hover / 键盘聚焦时抬升 2px + 右上角切角角标长出。
+   抬升必须写独立的 translate 属性，**不能**写 transform：应用页是窗口化网格
+   （apps.css 的 .apps-grid-abs .apps-tile），每张卡的格子位置由脚本写成内联的
+   transform: translate(x, y)（app-apps.js 的 appsVirtualGridMount）——
+   内联样式优先级高于本主题，写 transform 会被整条顶掉、卡片纹丝不动；
+   translate 是独立属性，与内联 transform 相乘而不是覆盖（顺序 translate → rotate
+   → scale → transform），格子位置保住，还能再抬 2px。
+   角标沿用画布节点选中态那块 45° 切角三角（十一·十 ②），尺寸收到 12px、原点钉在
+   右上角：hover 时从切角那个角长出来、移开缩回去，全程 transform + opacity。
+   卡片本身的 border-radius / 2px 描边一并收成直角 + 1px（与应用中心其余面板同口径）。 */
+body.ef-skin .apps-tile {
+  border-width: 1px;
+  border-radius: 0;
+  transition: translate var(--ef-dur-2) var(--ef-ease-out),
+    border-color var(--ef-dur-2) var(--ef-ease-out),
+    box-shadow var(--ef-dur-2) var(--ef-ease-out);
+}
+
+/* 封面块跟着一起收直角：卡片本身改直了、封面还留 10px 圆角，四角会露出两套弧线 */
+body.ef-skin .apps-tile .apps-cover {
+  border-radius: 0;
+}
+
+body.ef-skin .apps-tile::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 12px;
+  height: 12px;
+  pointer-events: none;
+  background: var(--ef-signal);
+  clip-path: polygon(0 0, 100% 0, 100% 100%);
+  transform-origin: 100% 0;
+  opacity: 0;
+  transform: scale(.35);
+  transition: transform var(--ef-dur-1) var(--ef-ease-out),
+    opacity var(--ef-dur-1) var(--ef-ease-out);
+}
+
+body.ef-skin .apps-tile:hover,
+body.ef-skin .apps-tile:focus-visible {
+  translate: 0 -2px;
+  border-color: var(--ef-signal);
+  box-shadow: 0 12px 24px -10px rgba(0, 0, 0, .72), 0 0 0 1px rgba(var(--ef-signal-rgb), .18);
+}
+
+body.ef-skin .apps-tile:hover::after,
+body.ef-skin .apps-tile:focus-visible::after {
+  opacity: 1;
+  transform: none;
+  transition: transform var(--ef-dur-2) var(--ef-ease-back),
+    opacity var(--ef-dur-2) var(--ef-ease-out);
+}
+
+/* ④ 设置页分组入场：每块 .settings-sec 淡入 + 6px 上浮，前 8 块按 --ef-stagger 错峰。
+   设置正文每次打开都由 app-settings.js 的 openSettingsBody() 重建（显式改配置后也会
+   原地重画一次），所以这条只在「开窗 / 重画」时播，点开关不会闪。
+   只错峰前 8 块：首屏之内就这 8 块，其余小节在折叠线以下或在页尾（tailOrder），
+   给它们挂延迟只会让「滚下去才发现要等」。
+   选择器用 #ovBody 的直接子元素：设置正文挂在 #ovBody 上，别的浮层（作者详情 /
+   应用详情）也复用同一只容器，但它们没有 .settings-sec，不会被这条扫到。 */
+body.ef-skin #ovBody > .settings-sec {
+  animation: ef-sec-in var(--ef-dur-2) var(--ef-ease-out) both;
+}
+
+body.ef-skin #ovBody > .settings-sec:nth-child(1) {
+  animation-delay: calc(.06s + 0 * var(--ef-stagger));
+}
+
+body.ef-skin #ovBody > .settings-sec:nth-child(2) {
+  animation-delay: calc(.06s + 1 * var(--ef-stagger));
+}
+
+body.ef-skin #ovBody > .settings-sec:nth-child(3) {
+  animation-delay: calc(.06s + 2 * var(--ef-stagger));
+}
+
+body.ef-skin #ovBody > .settings-sec:nth-child(4) {
+  animation-delay: calc(.06s + 3 * var(--ef-stagger));
+}
+
+body.ef-skin #ovBody > .settings-sec:nth-child(5) {
+  animation-delay: calc(.06s + 4 * var(--ef-stagger));
+}
+
+body.ef-skin #ovBody > .settings-sec:nth-child(6) {
+  animation-delay: calc(.06s + 5 * var(--ef-stagger));
+}
+
+body.ef-skin #ovBody > .settings-sec:nth-child(7) {
+  animation-delay: calc(.06s + 6 * var(--ef-stagger));
+}
+
+body.ef-skin #ovBody > .settings-sec:nth-child(8) {
+  animation-delay: calc(.06s + 7 * var(--ef-stagger));
+}
+
+@keyframes ef-sec-in {
+  from {
+    opacity: 0;
+    translate: 0 6px;
+  }
+
+  to {
+    opacity: 1;
+    translate: none;
+  }
+}
+
+/* ⑤ 输入框聚焦扫描：聚焦那一刻一道信号黄斜光从左扫到右，一次即停。
+   光带画在 background-image 上（input / textarea 生不了伪元素，这是唯一能插值的通道），
+   底色仍是第七节 :focus 那条 #171717，两者不冲突：这里只补 image / size / position。
+   起止位置刻意放到框外（-110% / 210%，自由行程 = 100% - 46%）：起手与收尾都不留在
+   可见区，静止态与不聚焦时逐像素一致。
+   只跟 input / textarea 走，select 不扫（下拉框展开时那道光没意义）。
+   时长走 --ef-dur-3（入场档）；fill 用 both 停在框外那一端。
+   那句静态的 background-position: -110% 0 是给关灯 / reduce 档留的底：那两档把
+   animation 整体置 none，动画的取值随之撤走，没有这句光带就会掉回 0%（一段常驻的
+   黄晕压在输入框左半边）—— 有了它，动画被关掉时位置与「没聚焦」一样在框外。 */
+body.ef-skin input[type="text"]:focus,
+body.ef-skin input[type="number"]:focus,
+body.ef-skin input[type="password"]:focus,
+body.ef-skin input[type="search"]:focus,
+body.ef-skin input:not([type]):focus,
+body.ef-skin textarea:focus {
+  background-image: linear-gradient(100deg,
+      rgba(var(--ef-signal-rgb), 0) 38%,
+      rgba(var(--ef-signal-rgb), .14) 50%,
+      rgba(var(--ef-signal-rgb), 0) 62%);
+  background-repeat: no-repeat;
+  background-size: 46% 100%;
+  background-position: -110% 0;
+  animation: ef-input-scan var(--ef-dur-3) var(--ef-ease-out) both;
+}
+
+@keyframes ef-input-scan {
+  from {
+    background-position: -110% 0;
+  }
+
+  to {
+    background-position: 210% 0;
+  }
+}
+
+/* ⑥ 按钮压感：按下时下沉 1px + 一圈信号黄描边（位移那条第七节已有，这里补描边、
+   并把它与 hover 的过渡一起收到令牌上 —— 原先这两下是硬切，鼠标扫过一排按钮时
+   就是一片闪）。时长一律 --ef-dur-1（令牌表里「出 / press」那一档），缓动 --ef-ease-out。
+   只过渡这五项：别的属性（布局、背景图）跟着组件层自己的声明走，不去动它。
+   :not(:disabled) 收在描边上：停用的按钮按下去不该亮。
+   注：这是一条通配 transition，会盖掉组件层给 button 写的同属性过渡 —— 被盖的
+   本来就是 transform / border-color / box-shadow / color / background-color 这五项，
+   时序换成令牌，行为不变。 */
+body.ef-skin button {
+  transition: transform var(--ef-dur-1) var(--ef-ease-out),
+    border-color var(--ef-dur-1) var(--ef-ease-out),
+    box-shadow var(--ef-dur-1) var(--ef-ease-out),
+    color var(--ef-dur-1) var(--ef-ease-out),
+    background-color var(--ef-dur-1) var(--ef-ease-out);
+}
+
+body.ef-skin button:active:not(:disabled) {
+  border-color: var(--ef-signal);
+  box-shadow: inset 2px 0 0 var(--ef-signal),
+    0 0 0 1px color-mix(in srgb, var(--ef-signal) 55%, transparent);
+}
+
+/* ── 十一·十二、读数与状态微交互：一次性读数闪动 · 状态灯三档节奏 ·
+   进度条 · 骨架屏 ────────────────────────────────────────────────────────────
+   口径（与前面各节同一条，别在这里另开范式）：
+     · 全部从 body.ef-skin 起头 —— 三档主题共用，只换强调色。
+     · 时长 / 缓动只从第一节那七颗动效令牌里取；循环周期也写成令牌的整数倍
+       （calc(6 * var(--ef-dur-3)) 这类），本节不新增第二个 cubic-bezier、不留魔法数。
+     · 纯 CSS：读数闪动靠「元素被重新插入时会重播动画」这条路，不引入 JS 观察者。
+     · 不新增常驻跑马灯 —— 骨架屏原来那条 1.1s 扫光正好是第十一·十节点名否掉的
+       「让底纹自己走」，这里改成静态纹理。
+   四件事各自的口径见 ① ② ③ ④ ⑤。 */
+
+/* ① 读数等宽：版本号 / 端口 / 计数。
+   第一节已给 .ver-tag / .statusbar / .port-badge / .n-stat / .lt-s-label 开过
+   tabular-nums（font-variant-numeric 是继承属性，它们的子元素一并受益）；这里补的是
+   不挂在那五支下面的计数 —— 端口徽标尾部的「×N」、进度文案、批量粘贴的行数、队列条数。
+   少开一支，读数一变整行就跟着左右抖一下。 */
+body.ef-skin .port-badge-count,
+body.ef-skin .apps-prog-txt,
+body.ef-skin .sf-progress-meta,
+body.ef-skin .sb-rq-txt {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ② 读数变化的那一下：一道 0.26s 的「刷新」闪动，一次即停。
+   机制说清楚，免得下一个人以为它坏了：CSS 动画只在元素**被重新插入文档**（或首次
+   匹配到这条规则）时重播，所以真正吃到它的是每次重渲染都会重建的那些读数 ——
+   节点左下角的 .n-stat（含批量「3/10」）、留痕面板的 .lt-s-label、安装进度文案；
+   状态类（.ok / .warn / .err）从无到有时也算「新匹配」，会再起一遍。
+   反例同样要说清楚：#statZoom、.ver-tag 这类原地 textContent 更新的读数，CSS 观察不到
+   文本变化（没有「内容变了」这种选择器）。本任务要求纯 CSS、不加 JS，这条边界就留在
+   这里：它们只有稳态的等宽读数，不会闪 —— 不是没生效，是这条路 CSS 走不过去。
+   只动 opacity 与 text-shadow，不碰 color：.n-stat / .lt-s-label 各有语义色，
+   写 color 进去会把它们的底色顶掉。
+   .port-badge-count（端子徽标尾部的「×N」）只吃①的等宽、不进这条动画：渲染层给它写了
+   内联 opacity:.85，而动画声明的优先级高于内联样式，填 fill 的终态 1 会把这层压暗
+   永久顶掉 —— 一个 10px 的计数不值得为它改观感。 */
+body.ef-skin .ver-tag,
+body.ef-skin .n-stat,
+body.ef-skin .lt-s-label,
+body.ef-skin .apps-prog-txt {
+  animation: ef-readout-tick var(--ef-dur-2) var(--ef-ease-out) both;
+}
+
+@keyframes ef-readout-tick {
+  from {
+    opacity: .45;
+    text-shadow: 0 0 6px color-mix(in srgb, var(--ef-signal) 70%, transparent)
+  }
+
+  60% {
+    opacity: 1;
+    text-shadow: 0 0 0 transparent
+  }
+
+  /* 末帧只写 opacity：text-shadow 由「60% 那支透明影」插值回元素自己的值，
+     不会把组件层写过的投影抹成 none（fill: both 会停在这一帧上）。 */
+  to {
+    opacity: 1
+  }
+}
+
+/* ③ 状态灯：三档节奏靠「灯怎么动」区分，颜色只做第二重区分（三支色在第一节槽位里）。
+   灯体统一成方点 —— 终末地没有圆角：6px 见方（.at-dot 是 9px，沿基础层）+ 1px 暗框，
+   与端子 / 插孔同一族。
+     ok   常亮不动 —— 「一切正常」不该抢注意力；
+     warn 慢呼吸 2.28s（= 6 × --ef-dur-3），提示但不催；
+     err  方波 1.04s（= 4 × --ef-dur-2）steps(1) 硬切 —— 上游 HUD 的告警光标就是 1.06s
+          方波（hud_design_motion.hpp 的 cursor），取同一支形状，不做渐亮渐暗的软闪。
+   只闪灯不闪字：#saveState.err 这类文字状态只跟色（layout.css 已按 --red 走），
+   整行文字打闪读不下去。 */
+body.ef-skin .br-dot,
+body.ef-skin .rs-tool-dot {
+  border-radius: 0;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .5);
+}
+
+body.ef-skin .at-dot::before {
+  border-radius: 0;
+}
+
+/* ok：常亮 */
+body.ef-skin .br-dot.on {
+  background: var(--ef-ok);
+}
+
+body.ef-skin .at-dot.m-done::before {
+  border: 1px solid var(--ef-ok);
+  background: var(--ef-ok);
+}
+
+@keyframes ef-lamp-warn {
+
+  0%,
+  100% {
+    opacity: .45
+  }
+
+  50% {
+    opacity: 1
+  }
+}
+
+/* warn：慢呼吸（.at-dot.m-unknown 那条虚线框一并收成实线的琥珀方点）。
+   辉光与 ef-pulse 同口径：静态一层 box-shadow，关键帧只动 opacity —— 原来在 50% 那帧里
+   插值 box-shadow，每帧都要重绘灯周围那一小圈。内嵌那圈暗框照旧带着（.br-dot 的基础
+   口径），不能只写外发光。 */
+body.ef-skin .br-dot.warn,
+body.ef-skin .at-dot.m-unknown::before {
+  border: 1px solid var(--ef-warn);
+  background: var(--ef-warn);
+  box-shadow:
+    inset 0 0 0 1px rgba(0, 0, 0, .5),
+    0 0 6px color-mix(in srgb, var(--ef-warn) 70%, transparent);
+  animation: ef-lamp-warn calc(6 * var(--ef-dur-3)) var(--ef-ease-out) infinite;
+}
+
+@keyframes ef-lamp-err {
+
+  0%,
+  49% {
+    opacity: 1
+  }
+
+  50%,
+  100% {
+    opacity: .2
+  }
+}
+
+/* err：方波（steps(1, end) 让两态之间是硬切，不是渐变） */
+body.ef-skin .br-dot.err,
+body.ef-skin .at-dot.m-failed::before {
+  border: 1px solid var(--ef-err);
+  background: var(--ef-err);
+  animation: ef-lamp-err calc(4 * var(--ef-dur-2)) steps(1, end) infinite;
+}
+
+/* 同时动画元素上限（第十三节那张预算表的闸门）：任务清单是全应用里唯一**没有分页、
+   也没有并发上限**的灯阵 —— 一张 30 条的长清单会让 30 盏灯同时呼吸 / 方波。
+   第 9 条起不再循环：色与方点形状照旧，只是不动（opacity 回到元素自己的 1）。
+   结构依据：app-assist.js 的清单是 `.at-list > .at-item > .at-dot` 直接子元素，
+   行号即条目号；后端徽标那一片（.br-card）本来就按 mkPagedBlock 分页（2 行 ×N），
+   天然不会超过这个数，不必再闸。
+   注：上面这段「闸门」的实际声明写在第十三节（性能护栏）里 —— 那一节是这条预算的
+   唯一出处，这里只留判据，别在两处各写一遍。 */
+
+/* ④ 进度条：直角 + 1px 发丝框 + 石墨轨道上一道静态刻度尺 + 信号黄填充。
+   四条来自四个模块（应用中心安装 .apps-prog / 文件批量粘贴 .sf-progress-bar /
+   节点后端探测 .n-backend-bar-track / 研究阅读 .rs-progress），原来各写一套蓝青渐变
+   与 2~3px 圆角，这里收成同一副「HUD 计量条」。
+   刻度是 repeating-linear-gradient 的**静态**纹理（8px 一格，不做 background-position
+   动画 —— 第十一·十的注里已否过「让底纹自己走」）。
+   宽度过渡收到 --ef-dur-1：进度按事件一格格跳，过渡再长就追不上真实进度。
+   只给前三条上轨道（直角 + 发丝框 + 刻度）：研究阅读那条本来就只有 2px 的通栏细线，
+   给它加框会把它压成 0 高度，只换填充与过渡。
+   .apps-prog.err 那条失败红必须在这里补写一遍：本节的填充选择器是 (0,2,2)，
+   比组件层那条 (0,2,1) 高，不补就会被黄填充吃掉。 */
+body.ef-skin .apps-prog,
+body.ef-skin .sf-progress-bar,
+body.ef-skin .n-backend-bar-track {
+  border-radius: 0;
+  border: 1px solid var(--ef-line);
+  background-color: #0d0d0d;
+  background-image: repeating-linear-gradient(90deg,
+      rgba(233, 231, 228, .12) 0 1px,
+      rgba(0, 0, 0, 0) 1px 8px);
+}
+
+body.ef-skin .apps-prog > i,
+body.ef-skin .sf-progress-bar i,
+body.ef-skin .rs-progress > i,
+body.ef-skin .wf-node .n-backend-bar-track > i {
+  border-radius: 0;
+  background: linear-gradient(90deg, var(--ef-signal-deep), var(--ef-signal));
+  transition: width var(--ef-dur-1) var(--ef-ease-out);
+}
+
+body.ef-skin .apps-prog.err > i {
+  background: var(--ef-err);
+}
+
+/* ⑤ 骨架屏：dsh.css 的 .tpl-thumb-skel 原来是一条 1.1s 循环的亮带扫过
+   （background-position 从 120% 跑到 -120%）。撤掉扫光，换成一块「无信号」的石墨板：
+   静态扫描线（--ef-scan，与画布同一支纹理）+ 1px 发丝框 —— 板子在、图没到，本身就是
+   载入态，不必再让底纹跑起来。
+   没有动画要停：这条规则自己就是 animation: none，reduce / 关灯两档不必再为它补一条；
+   --ef-scan 在那两档里是 none，板子退成纯底，静止态照样成立。 */
+body.ef-skin .tpl-thumb-skel {
+  animation: none;
+  background-color: #131313;
+  background-image: var(--ef-scan);
+  /* 与画布同一条 tile 口径（100% × 4px）：auto 时贴图高度 = 板子高度，缩略图格子高矮
+     不一时整份背景按非整数 tile 重采样，横纹就会时粗时细。 */
+  background-size: 100% var(--ef-scan-period);
+  background-repeat: repeat;
+  background-position: 0 0;
+  border: 1px solid var(--ef-line);
+}
+
+/* ── 十二、减少动效：扫描线与循环动效一律停掉 ─────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+
+  /* 扫描线：--ef-scan 一支同时喂骨架屏与画布最上层，这里置 none 让两处一起停；
+     画布的点阵 / 黄晕 / 底渐变原样留着（撤整块会把画面压平）。 */
+  body.ef-skin {
+    --ef-scan: none;
+  }
+
+  /* 二十二族关键帧动效（入场 ef-boot 与 ef-readout-in / 面板 ef-panel-in / 呼吸
+     ef-panel-breath 与 -plate / 画布边框 ef-canvas-breath / 脉冲 ef-pulse /
+     logo ef-logo / 选中 ef-sel-ping、
+     插芯 ef-port-seat、super 聚焦 ef-super-focus-in、运行呼吸 ef-node-run /
+     浮层描边生长 ef-frame-in、背板渐进 ef-mask-in、退场 ef-panel-out 与 ef-mask-out /
+     会话消息 ef-msg-in、设置分组 ef-sec-in、输入框扫描 ef-input-scan /
+     读数闪动 ef-readout-tick、状态灯 ef-lamp-warn 与 ef-lamp-err）
+     与组件层在本主题下的 transition、循环动画，一条通配一起收口 ——
+     与 .ef-motion-off 同口径，只是改由系统偏好触发。
+     呼吸灯停掉后 --ef-edge 退回静态轮廓色，四边与斜边仍同色同粗（它只动颜色）；
+     画布边框同理：opacity 呼吸停播后 ::after 落回 opacity 0，露出的就是 ::before 上
+     那条 #3b3b3b 的静态边（原本的发丝灰），零变化。
+     浮层那几条（六·二）：描边生长不播（两条生长条停在 0 长度，面板直接淡入到位，
+     静止态与改动前逐像素一致）、背板暗角直接到位、退场过渡当场落定；背板的
+     backdrop-filter 下面一并撤掉（reduce 档同时当省电档，模糊补深暗角代替）。
+     节点那几条：选中角标停在常亮三角、
+     插芯不再回弹、运行节点的 outline 停在中档（.22 那圈静态细环，不再明暗），
+     .n-status.run 的文字与批量进度照读。
+     会话 / 应用中心 / 设置页那几条（十一·十一）：消息与分组直接到位、卡片不抬升
+     也不出角标、tab 指示条直接停在选中项上、输入框那道扫描光不扫、按钮不位移不亮边。
+     读数与状态灯那几条（十一·十二）：读数闪动不播（直接是可读的稳态）、状态灯不再
+     呼吸也不再方波 —— warn / err 回到常亮，色与方点形状照旧；进度条的宽度过渡当场
+     落定；骨架屏本来就是静态纹理，不必再停。 */
+  body.ef-skin *,
+  body.ef-skin *::before,
+  body.ef-skin *::after {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+
+  /* 浮层背板的整窗模糊（六·二 ②）：reduce 档同时当省电档 —— 模糊撤掉、暗角补深一档，
+     遮挡力不减，也不再每帧重算整屏（与 .ef-motion-off 那一份逐字同口径）。 */
+  body.ef-skin #overlay,
+  body.ef-skin .mt-dialog {
+    backdrop-filter: none;
+    background:
+      radial-gradient(ellipse 118% 96% at 50% 44%,
+        rgba(4, 6, 9, .72) 0%,
+        rgba(3, 4, 7, .9) 66%,
+        rgba(1, 2, 4, .96) 100%);
+  }
+}
+/* ── 十三、性能护栏：合成层预算与它的闸门 ────────────────────────────────────
+   这一节不新增任何视觉，只把「本主题能同时动多少」写成可核对的账，并把唯一一处
+   会随数据无限增长的动效（任务清单的灯）钉上一个硬闸。预算四条，逐条有闸或实测：
+
+   ① 同时动画元素 ≤ 16（循环族）。一次性族只允许「进一次就停」，且只动 opacity /
+      transform / 颜色变量（--ef-edge），不触发布局；循环族实测（开发态实例，
+      1486×875 @ dpr 1.5，2~3s 采样，只算 playState=running）：
+        顶栏 + 画布页        2 个（logo 辉光 + 画布环呼吸）
+        会话页               1 个（logo 辉光）
+        应用中心页           1 个（logo 辉光）
+        设置浮层打开         3 个（+ 面板呼吸）
+        压力探针（12 条任务行 + 4 只转圈 + 20 个节点同屏）
+                            14 个（画布页）/ 13 个（应用中心页）；
+                            灯只有 8 盏在动 = 闸生效，第 9~12 条不动
+      四类页面与压力探针全部 59.6~59.8 fps、p95 ≤ 16.9ms、0 帧 > 20ms
+      —— 预算吃满时仍有整帧余量。
+   ② will-change 只在三处：.overlay-box / .mt-dialog-box、.apps-modal-box（见第六节与
+      十一·六）与 .fn-canvas::after（第五节）。它们都不是「等动起来再挂」的加速开关，
+      而是必须常驻的：前两处买的是「合成层吸附整像素」（不加时顶边会暗一档，挂晚了
+      那一帧已经画歪），第三处买的是「边框呼吸零重绘」（不加它就没有独立合成层，
+      opacity 动画会被拉回画布那一层、连带背景一起重画 ——「鼠标不动、背景横纹还在变」
+      那条 bug 就是这么来的）。命中元素恒 ≤ 3（画布 1 个常驻，浮层最多再 1 个）。
+      除此之外全文件不写 will-change。
+   ③ 动画型 filter = 0。原先有三处在关键帧里逐帧插值滤镜 / 投影：
+        · 第九节 ef-pulse 的 filter: drop-shadow —— 改成静态辉光 + 只动 opacity；
+        · 十一·十二 ③ ef-lamp-warn 的 box-shadow —— 同上；
+        · 六·二 ② ef-mask-in 的 backdrop-filter blur(0)→blur(2px) —— 改成只退 opacity，
+          模糊从第一帧就是终值（打开浮层那 --ef-dur-2 里不再每帧重算整屏模糊）。
+      还剩一处逐帧插值投影：顶栏 logo 的 ef-logo（4.5s 呼吸，box-shadow）。
+      保留它是有意的例外：元素只有 34×34（重绘面积 ≈ 66×66），而抠掉它要另开一层
+      伪元素 —— .logo-mark 的 ::before / ::after 已被两枚角点占用，换层的代价比这
+      一圈小投影大得多。
+      常驻 filter 只剩三处，且都不归本文件管或已随两档降级：
+        · #overlay / .mt-dialog 的 backdrop-filter（本主题唯一整窗滤镜，只在浮层打开时
+          存在，.ef-motion-off 与 reduce 两档里已撤，见六·二 ④）；
+        · canvas.css 给节点路径挂的三层 drop-shadow（组件层，静态，出本文件不碰）；
+        · dsh.css 给 .run-queue 的 blur(6px)（同上）。
+   ④ 每帧重绘面积：**画布边框呼吸是 0**。它走 opacity（5.6s / steps(14)，见第五节），
+       opacity 是合成器属性 —— 动画在 .fn-canvas::after 自己的合成层上插值，主线程不重绘、
+       GPU 不重栅格化，静止期画布背景（扫描线 + 点阵 + 底渐变）一个像素都不动。
+       这才是「鼠标不动、背景横纹颜色却一明一暗」的正解：上一版把 border-color 动画挪到
+       伪元素上并没有减面积 —— Blink 对 border-color 记的失效区是**整个 border box**
+       （伪元素 inset:0 就是整屏），而伪元素、本体、::before 同在一个 paint layer，于是
+       整层重画、2% 白扫描线的抗锯齿每次差一点点。别再改回 border-color / 自定义属性动画，
+       也别去掉 ::after 那条 will-change: opacity（没有它就没有独立合成层，动画又回到
+       画布那一层上）。
+      面板呼吸只动画布一圈 1px 轮廓的颜色变量，面积按浮层算，不铺整屏；进度条刻度、
+      骨架屏扫描线都是静态纹理；全文件没有 rAF 循环、没有 scroll 监听。
+      用到 background-position 的只剩十一·十一 ⑤ 输入框聚焦那道单发扫描（只扫那一只
+      输入框的内框，一处一次），没有第二条，也没有一条是循环。
+       相机平移时唯一重绘的是 .fn-canvas::before（扫描线 + 点阵那一层，第五节）：
+       点阵要跟着相机走，但尺寸与相位都由 syncCanvasGrid 量化到整设备像素，同一张
+       平铺贴图不再每帧按亚像素相位重采样 —— 不重采样就不会闪；底色（竖向线性渐变）
+       留在 .fn-canvas 自己身上，不参与这次重绘。
+
+   闸门只有一条，放在本节末尾（必须晚于十一·十二 ③ 的灯动画声明才压得住）：
+   列表族里第 9 个起的灯不再循环。判据与结构依据写在十一·十二 ③ 之后那条注释里。 */
+body.ef-skin .at-list > .at-item:nth-child(n+9) .at-dot::before {
+  animation: none;
+}
+
+/* ── 十四、打印 / 导出 PDF：底纹与扫描线不进纸 ────────────────────────────────
    应用内的 PDF 生成走隐藏打印窗 + printToPDF，用的是同一份渲染层样式；
-   全局覆盖层（细扫描线 + 暗角）在纸上只会变成一条条灰纹，这里整段撤掉。 */
+   骨架屏与画布最上层那道扫描线在纸上只会变成一条条灰纹，这里撤掉；画布的点阵 /
+   黄晕 / 底渐变留着（导出的画布图还有底子）。
+   （第二节那只整窗椭圆暗角已经整层撤了，这里不必再单独关它。） */
 @media print {
 
-  body.theme-endfield::after {
-    display: none !important;
+  body.ef-skin {
+    --ef-scan: none;
   }
+}
+
+/* ── 十五、左下角运行队列：终末地口径的尖锐板 ────────────────────────────────
+   几何（左边 / 下边直角贴画布内侧左下角、右上 14px 切角、全零圆角）在
+   css/components.css 的 .run-queue 与各 .rq-* 里定死，三档主题共用一份 —— 位置由
+   app.js 的 positionRunQueue 按 #canvas 实测矩形写入（左 0 / 底 0），与内侧直角重合。
+   这里只补终末地的质感：1px 硬边 + 切角斜边补线（clip-path 会把边框一起剪断，斜边
+   得单独补一条，口径同 .apps-modal-box）、头部底缘信号黄细斜纹、内部小件直角。 */
+body.ef-skin .run-queue {
+  border-color: var(--ef-frame);
+  background:
+    linear-gradient(to top right,
+      transparent calc(50% - var(--ef-cut-w)),
+      var(--ef-frame) calc(50% - var(--ef-cut-w)),
+      var(--ef-frame) 50%,
+      transparent 50%) no-repeat right top / 14px 14px border-box,
+    linear-gradient(180deg, var(--ef-panel), var(--ef-surface));
+}
+
+body.ef-skin .rq-head {
+  color: var(--ef-muted);
+  border-bottom-color: var(--ef-line);
+  background:
+    repeating-linear-gradient(115deg,
+      rgba(var(--ef-signal-rgb), .5) 0 6px,
+      transparent 6px 14px) left bottom / 100% 2px no-repeat;
+}
+
+body.ef-skin .rq-head b {
+  color: var(--ef-signal-2);
+  letter-spacing: 1.4px;
+}
+
+body.ef-skin .rq-head .rq-count {
+  color: var(--ef-olive);
+}
+
+/* 内部小件一律直角：终末地没有圆角（基础层 button / 徽标的 3~8px 圆角在这里压掉） */
+body.ef-skin .run-queue button,
+body.ef-skin .run-queue .rq-stop,
+body.ef-skin .run-queue .rq-sec-n {
+  border-radius: 0;
+}
+
+body.ef-skin .rq-item:hover {
+  background: rgba(var(--ef-signal-rgb), .07);
 }

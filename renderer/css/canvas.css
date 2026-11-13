@@ -4,7 +4,9 @@
   flex-direction: column;
   flex: 1;
   min-height: 0;
-  gap: 8px;
+  /* 画布页签条与画布之间不留缝（本轮需求）：两者直接贴死，由画布自己的 1px 上边框
+     充当分界线。其余兄弟（长任务条带 .lt-strip）的间距由它自己的外边距给。 */
+  gap: 0;
   padding: 10px
 }
 
@@ -18,7 +20,9 @@
   background: var(--panel2);
   border: 1px solid var(--bd);
   border-bottom: none;
-  border-radius: 4px 4px 0 0;
+  /* 页签条走直角（本轮需求：bevel / 档案风，不再用圆角）；左右两角也不圆，
+     与下方画布形成一条硬边矩形 */
+  border-radius: 0;
   height: 40px;
   min-height: 40px;
   overflow: hidden;
@@ -45,51 +49,100 @@
   border-color: var(--orange)
 }
 
-/* ── 画布 Tab 条(Edge 风格):空间不足时各标签等比变窄，禁止滚动 ── */
+/* ── 画布 Tab 条（bevel · 档案风，本轮需求）：空间不足时各标签等比变窄，禁止滚动 ──
+   口径：
+   ① **零圆角**：形状全部由 clip-path 切出右上 45° 斜切（bevel），高度吃满整条工具条，
+      底边不留任何缝（.wf-wrap 的 gap 已归零）；
+   ② clip-path 会把 border 一起切掉 → 斜切那条边用 ::after 在角上补一条 1px 斜线，
+      线色统一走 --tab-edge，常态 / 悬停 / 选中只换这一个变量，边与斜线永远同色；
+   ③ 「档案」的设计感 = 每枚标签前一枚等宽编号（01 / 02 …，CSS 计数器自增，不动 DOM、
+      也不动 app.js 的 renderWfTabs）、选中页一条压在顶边的强调细线、标签之间不留圆角
+      过渡，只有笔直的硬边 —— 读起来像一排档案夹的分页签。 */
 .wf-tabs {
   flex: 1;
   min-width: 0;
   align-self: stretch;
   display: flex;
-  align-items: flex-end;
-  gap: 2px;
+  align-items: stretch;
+  /* 页签彼此贴齐：切角处露出的是相邻页签的直角，正好连成一排锯齿状的分页签 */
+  gap: 0;
   overflow: hidden;
-  padding-left: 8px;
+  padding-left: 0;
+  counter-reset: wf-tab;
 }
 
 .wf-tab {
+  counter-increment: wf-tab;
+  --tab-edge: var(--bd2);
   flex: 1 1 0;
   height: 100%;
   box-sizing: border-box;
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
   min-width: 0;
   max-width: 220px;
   overflow: hidden;
-  padding: 0 8px;
+  padding: 0 11px 0 8px;
   font-size: 11.5px;
   color: var(--muted);
   cursor: pointer;
   background: rgba(0, 0, 0, .28);
-  border: 1px solid var(--bd2);
+  border: 1px solid var(--tab-edge);
   border-bottom: none;
-  border-radius: 8px 8px 0 0;
+  border-radius: 0;
+  clip-path: polygon(0 0, calc(100% - 11px) 0, 100% 11px, 100% 100%, 0 100%);
   user-select: none;
   position: relative;
 }
 
+/* 斜切那条边（右上 11×11 的角里画一条对角细线；两个 1px 硬停渐变，斜线不带毛边） */
+.wf-tab::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 11px;
+  height: 11px;
+  pointer-events: none;
+  background: linear-gradient(to top right,
+      transparent calc(50% - .5px),
+      var(--tab-edge) calc(50% - .5px),
+      var(--tab-edge) calc(50% + .5px),
+      transparent calc(50% + .5px));
+}
+
+/* 档案编号：01 / 02 …（等宽字体、跟着标签顺序自增） */
+.wf-tab::before {
+  content: counter(wf-tab, decimal-leading-zero);
+  flex: none;
+  font: 10px/1 var(--mono);
+  letter-spacing: .5px;
+  color: inherit;
+  opacity: .5;
+}
+
 .wf-tab:hover {
+  --tab-edge: var(--bd);
   color: var(--ink);
-  background: rgba(56, 214, 255, .06);
-  border-color: var(--bd)
+  background: rgba(56, 214, 255, .06)
+}
+
+.wf-tab:hover::before {
+  opacity: .8
 }
 
 .wf-tab.active {
+  --tab-edge: var(--cyan);
   color: var(--cyan2);
   background: rgba(56, 214, 255, .10);
-  border-color: var(--cyan);
-  box-shadow: 0 -2px 8px rgba(56, 214, 255, .12);
+  /* 顶边那条强调细线 = 档案页签上的「当前卷」记号线（clip-path 不会切掉 inset 阴影） */
+  box-shadow: inset 0 2px 0 var(--cyan);
+}
+
+.wf-tab.active::before {
+  color: var(--cyan);
+  opacity: .95
 }
 
 .wf-tab-name {
@@ -113,7 +166,8 @@
   justify-content: center;
   background: transparent;
   border: 1px solid transparent;
-  border-radius: 50%;
+  /* 直角（bevel / 档案风里不出现圆形） */
+  border-radius: 0;
   color: var(--muted);
 }
 
@@ -227,7 +281,9 @@
 }
 
 .fn-canvas {
-  /* --grid-* 由 JS 按 snap 间距与相机 pan/zoom 同步，保证节点落点与点阵对齐 */
+  /* --grid-* 由 syncCanvasGrid() 按 snap 间距与相机 pan/zoom 同步（值一律量化到整设备
+     像素，理由见 renderer/app.js 的 syncCanvasGrid 注释）。这里留一份默认值，
+     伪元素会继承过去 —— 点阵画在 .fn-canvas::before 上，见下一条规则。 */
   --grid-size: 24px;
   --grid-x: 0px;
   --grid-y: 0px;
@@ -239,12 +295,30 @@
   min-height: 360px;
   user-select: none;
   -webkit-user-select: none;
-  background:
-    radial-gradient(circle at 1px 1px, rgba(122, 138, 146, .16) var(--grid-dot-r), transparent var(--grid-dot-end)) var(--grid-x) var(--grid-y) / var(--grid-size) var(--grid-size),
-    linear-gradient(180deg, var(--bg), var(--bg2));
+  /* 底色（静止层）：相机平移 / 缩放时这一层不重绘 */
+  background: linear-gradient(180deg, var(--bg), var(--bg2));
   border: 1px solid var(--bd);
-  border-radius: 4px;
+  /* 上沿两角必须是直角：页签条已经贴死在画布顶上，圆角会在交界处留出两个缺口，
+     读起来就是「页签与画布之间还有缝」（本轮需求）。下沿保持原样。 */
+  border-radius: 0 0 4px 4px;
   cursor: grab;
+}
+
+/* 网格点阵单独一层（.fn-canvas::before），不跟底色 / 扫描线 / 光晕堆在同一个元素上。
+   原因：点阵是唯一随相机走的背景层（--grid-x / --grid-y 每帧变），它一改，Chromium
+   会重绘**所在元素的整份 background**；以前四层挤在 .fn-canvas 上，等于每帧重画
+   扫描线 + 光晕 + 底色（整屏几百万像素、两次 radial 渐变）。拆开之后相机一动只重绘这一层。
+   此外点是随亚像素相位重采样的（贴图尺寸 / 偏移带小数），看起来就是「点阵整片在闪」；
+   量化口径在 syncCanvasGrid 里做，这一层只负责画。
+   注意：伪元素排在最前面 → 天然压在 #stage（节点 / 连线）之下；pointer-events:none
+   保证不抢画布的命中测试（拖拽 / 框选 / 粘贴落点全走 .fn-canvas 自己）。 */
+.fn-canvas::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 1px 1px, rgba(122, 138, 146, .16) var(--grid-dot-r), transparent var(--grid-dot-end)) var(--grid-x) var(--grid-y) / var(--grid-size) var(--grid-size);
 }
 
 .fn-canvas .mk-text,
@@ -4590,6 +4664,12 @@ body.theme-light .n-chip.n-chip-lt {
   white-space: nowrap;
   cursor: text;
   min-width: 0;
+}
+
+/* 按住标题 = 拖节点（见 app-canvas.js 的标题 mousedown 手势）：拖动时光标跟节点本体一致，
+   别让 text 光标在拖动中误导成「要改名」 */
+.wf-node.node-dragging .n-title {
+  cursor: grabbing
 }
 
 .n-title-tip {
