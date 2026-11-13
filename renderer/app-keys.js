@@ -65,7 +65,7 @@
     var ov = document.getElementById("overlay");
     if (ov && (ov.style.display === "flex" || ov.classList.contains("on")))
       return true;
-    /* .mt-dialog 是全应用统一的模态宿主（素材库 / 审阅 / 益智窗 / 确认框…），.on = 打开 */
+    /* .mt-dialog 是全应用统一的模态宿主（素材库 / 审阅 / 确认框…），.on = 打开 */
     if (document.querySelector(".mt-dialog.on")) return true;
     var gs = document.getElementById("gsLayer");
     if (gs && gs.classList.contains("on")) return true;

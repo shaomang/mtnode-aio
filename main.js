@@ -1622,12 +1622,12 @@ ipcMain.handle("canvasdoc:edit", async (e, { id, params, runKey, snap } = {}) =>
   if (!wfIdOk(id)) return { ok: false, error: I18n.t("非法工作流 id") };
   /* 画布已被删（文件已进回收站）：服务的惰性装载会如实回「画布不存在」，不会把文件写回来 ——
      删除与编辑撞车时以磁盘为准，绝不复活一张已删的画布。 */
-  return canvasDocClient().call("edit", {
+  return takeNoteServiceEdit(id, canvasDocClient().call("edit", {
     id,
     params: params && typeof params === "object" ? params : {},
     runKey: String(runKey || ""),
     snap: Number(snap) || 0,
-  });
+  }));
 });
 ipcMain.handle("canvasdoc:invalidate", (e, { id } = {}) => {
   /* 没起过就不必叫醒它（叫醒一次 = 一个进程 + 装一遍渲染层） */
@@ -1760,6 +1760,222 @@ ipcMain.handle("workflow:save", (e, { id, data }) => {
     throw err;
   });
 });
+
+/* ── 画布 take（录制账本）──────────────────────────────────────────────────────────
+   一次画布操作 = 一条可重放的 take（文档时间轴 + 相机轨道 + UI 现场 + 光标）。契约与全部纯函数
+   在 canvas-doc/canvas-take.js，这里只做三件事：收渲染层的攒批、按「一条 take 一条串行队列」落盘、
+   把 Agent 侧编辑的回执记进**同一份账**。一份 take 两个写者（渲染层记 UI 那半、服务侧记 agent 那半），
+   但**只有主进程碰文件**：渲染层一个字节都不自己写。
+   落盘位置：<数据目录>\takes\<wfId>\<takeId>.json（DATA() 之下，进不了应用目录；默认数据目录是
+   %APPDATA%\pipeline-console\pipeline-console，用户改过数据文件夹时 take 跟着走）。
+   默认不录（渲染层 window.CanvasTake.start() 才开），没在录时这两个入口都不做事。
+   帧号只在这里换算（MTCanvasTake.frameOf）：两路时钟各自报 ms，落帧只有一个口径。 */
+const MTCanvasTake = require("./canvas-doc/canvas-take.js");
+/* 自包含 html（take:append 收尾时生成、take:openHtml 用系统浏览器打开）：纯生成器，不碰应用状态 */
+const TakeHtml = require("./canvas-doc/take-html.js");
+const TAKE_MAX_ENTRIES = 400; /* 一批条目上限（渲染层一批最多 400，这里是防护栏） */
+const takeBuckets = new Map(); /* "<wfId>::<takeId>" → { take, prevDoc, chain, at, … } */
+const activeTakeByWf = new Map(); /* wfId → bucket key（Agent 侧回执记进「正在录的那条」） */
+
+const takesRoot = () => join(DATA(), "takes");
+function takeFilePathOf(wfId, takeId) {
+  return join(takesRoot(), MTCanvasTake.safeId(wfId), MTCanvasTake.safeId(takeId) + ".json");
+}
+/* 惰性装载：同一 take 接着写（应用 / 主进程重启后账不能断），盘上那条接不上就重开一条 */
+function takeBucketOf(wfId, takeId, start) {
+  const T = MTCanvasTake;
+  const key = T.safeId(wfId) + "::" + T.safeId(takeId);
+  const hit = takeBuckets.get(key);
+  if (hit) return hit;
+  let take = null;
+  try {
+    const r = T.parse(fs.readFileSync(takeFilePathOf(wfId, takeId), "utf8"));
+    /* 半截 / 被改坏的账不接着写：宁可重开一条，也不拿坏轨道去重放 */
+    if (r && r.ok) take = r.take;
+    else if (r && r.error) errLog("[canvas-take] 盘上那条接不上，重开：" + r.error);
+  } catch (_) {
+    /* 没有就是新的 */
+  }
+  if (!take) take = T.newTake(Object.assign({ id: takeId, wfId }, start || {}));
+  const b = {
+    wfId: String(wfId),
+    takeId: String(takeId),
+    take,
+    /* prevDoc = 最后一份**结果态**：差量全靠它，缺了就只能存整份 keyframe */
+    prevDoc: T.docAt(take, Number.MAX_SAFE_INTEGER),
+    chain: Promise.resolve(),
+    at: Date.now(),
+  };
+  takeBuckets.set(key, b);
+  activeTakeByWf.set(String(wfId), key);
+  return b;
+}
+/* 一批条目 → 轨道（渲染层上送的就是「记什么」：doc / cam / ui / pointer / shell 五种） */
+function takeApplyEntries(b, entries) {
+  const T = MTCanvasTake;
+  let n = 0;
+  const list = Array.isArray(entries) ? entries.slice(0, TAKE_MAX_ENTRIES) : [];
+  for (const e of list) {
+    if (!e || typeof e !== "object") continue;
+    const f = T.frameOf(b.take, e.ms);
+    if (e.t === "doc") {
+      const pushed = T.pushDoc(b.take, f, e.doc, { prev: b.prevDoc, src: e.src || "ui" });
+      if (pushed) {
+        b.prevDoc = T.normalizeDoc(e.doc);
+        n++;
+      }
+    } else if (e.t === "cam") {
+      if (T.pushCam(b.take, f, { x: e.x, y: e.y, z: e.z }, { cut: !!e.cut })) n++;
+    } else if (e.t === "ui") {
+      if (T.pushUi(b.take, f, e.ui)) n++;
+    } else if (e.t === "pointer") {
+      if (T.pushPointer(b.take, f, e.pt)) n++;
+    } else if (e.t === "shell") {
+      /* 整窗壳快照：e.html 是采样侧裁好的 outerHTML（只记结果态，没有 op 可记） */
+      if (T.pushShell(b.take, f, e.html, { src: e.src || "ui" })) n++;
+    }
+  }
+  return n;
+}
+/* 落盘：紧凑 JSON + 临时文件 + rename（原子口径与画布落盘一致，但没有 2 空格缩进 ——
+   take 是机器读的数据产物，一条 keyframe 就是整份画布，缩进会让文件接近翻倍） */
+async function takeWrite(b) {
+  const p = takeFilePathOf(b.wfId, b.takeId);
+  const text = MTCanvasTake.serialize(b.take);
+  await fs.promises.mkdir(path.dirname(p), { recursive: true });
+  const tmp = p + ".tmp" + process.pid;
+  await fs.promises.writeFile(tmp, text, "utf8");
+  await fs.promises.rename(tmp, p);
+  b.at = Date.now();
+  return { ok: true, path: p, bytes: text.length };
+}
+/* 同一条 take 的写不许交叉：串成一条链（后到的那次写的是「那时」的累计状态，不会回退） */
+function takeQueueWrite(b) {
+  b.chain = b.chain.then(
+    () => takeWrite(b),
+    () => takeWrite(b),
+  );
+  return b.chain;
+}
+ipcMain.handle("take:append", async (e, arg) => {
+  const a = arg && typeof arg === "object" ? arg : {};
+  const wfId = String(a.wfId || "");
+  const takeId = String(a.takeId || "");
+  if (!wfIdOk(wfId)) return { ok: false, error: I18n.t("非法工作流 id") };
+  if (!MTCanvasTake.safeId(takeId)) return { ok: false, error: I18n.t("缺 take id") };
+  let b = null;
+  try {
+    b = takeBucketOf(wfId, takeId, a.start);
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+  const stopped = a.stop && typeof a.stop === "object" ? a.stop : null;
+  /* 已经收尾的 take 只读：再往里追加会破坏 finalHash 与末条结果态的对账（新录一条就是新 takeId）。
+     这道闸必须在记账**之前**：先把条目写进轨道再拒绝，轨道已经脏了。 */
+  if (b.take.final && !stopped) {
+    return { ok: false, error: I18n.t("take 已收尾，不能再追加"), final: true, path: takeFilePathOf(wfId, takeId) };
+  }
+  const added = takeApplyEntries(b, a.entries);
+  /* 收尾：定长 + 定 finalHash（末条结果态哈希，逐帧自检拿它跟 contentHash(S.wf) 对账） */
+  if (stopped) MTCanvasTake.finalize(b.take, { endedAtMs: stopped.endedAtMs });
+  if (!added && !stopped) {
+    return { ok: true, added: 0, path: "", durationFrames: b.take.durationFrames };
+  }
+  try {
+    const w = await takeQueueWrite(b);
+    /* 收尾那一笔顺手生成自包含 html（人可以直接看的那一份）：失败**不回滚 take**，
+       只把错误放进回执 —— 账已经落盘，缺的只是那只播放页。不设体积 / 时长上限，
+       回执里只报生成后的字节数。 */
+    let htmlPath = "";
+    let htmlBytes = 0;
+    let htmlError = "";
+    if (stopped) {
+      try {
+        const h = await TakeHtml.write(b.take, {
+          root: takesRoot(),
+          /* 与那份 .json 同一口径（takeWrite 用的就是 safeId）：两只文件并排同名 */
+          wfId: MTCanvasTake.safeId(wfId),
+          takeId: MTCanvasTake.safeId(takeId),
+        });
+        if (h && h.ok) {
+          htmlPath = h.path;
+          htmlBytes = h.bytes || 0;
+        } else htmlError = (h && h.error) || "take_html_failed";
+      } catch (err) {
+        htmlError = String((err && err.message) || err);
+      }
+      if (htmlError) errLog("[canvas-take] html 生成失败（take 已落盘）：" + htmlError);
+    }
+    return {
+      ok: true,
+      added,
+      path: w.path,
+      bytes: w.bytes,
+      htmlPath,
+      htmlBytes,
+      htmlError,
+      durationFrames: b.take.durationFrames,
+      finalHash: b.take.finalHash,
+      final: !!b.take.final,
+    };
+  } catch (err) {
+    errLog("[canvas-take] 落盘失败：" + String((err && err.message) || err));
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+});
+/* 用系统默认浏览器打开一条 take 的播放页（自包含 html）。
+   只认 <数据目录>\takes\ 之下的 .html：渲染层能传上来的就只有这一条路径，
+   别的路径一律拒（shell.openExternal 对 file: 不做协议白名单，这道闸得在这里）。 */
+ipcMain.handle("take:openHtml", async (e, p) => {
+  const target = String(p || "").trim();
+  if (!target) return { ok: false, error: I18n.t("缺 take html 路径") };
+  try {
+    const abs = path.resolve(target);
+    const root = path.resolve(takesRoot());
+    /* Windows 路径不分大小写：比较前先拉平，免得同一只文件换了大小写就被当成越界 */
+    const lowAbs = abs.toLowerCase();
+    const lowRoot = root.toLowerCase();
+    if (!/\.html$/i.test(abs) || !lowAbs.startsWith(lowRoot + path.sep))
+      return { ok: false, error: I18n.t("只能打开 takes 目录下的 take html") };
+    const st = await fs.promises.stat(abs).catch(() => null);
+    if (!st || !st.isFile()) return { ok: false, error: I18n.t("文件不存在") };
+    await shell.openExternal(pathToFileURL(abs).href);
+    return { ok: true, path: abs };
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+});
+/* Agent 那一半的账：服务侧编辑回执里就带着「这一刻改了什么」（diff），贴到上一份结果态上即为
+   新的结果态 —— 与渲染层那条旁路写的是同一条 take（一份账两个写者）。失败 / 没改动的回执不记。 */
+function takeRecordAgentDiff(wfId, r) {
+  if (!wfId || !r || !r.ok) return;
+  /* 空笔不记：回执说没改动（changed=false / effects.noChange）时，difference 也是空的，
+     贴上去只会多一条与上一条一模一样的条目 */
+  if (r.changed === false || (r.effects && r.effects.noChange)) return;
+  const key = activeTakeByWf.get(wfId);
+  if (!key) return; /* 没在录：一条都不记 */
+  const b = takeBuckets.get(key);
+  if (!b || b.take.final) return;
+  const T = MTCanvasTake;
+  const next = T.patchDoc(b.prevDoc, r.diff);
+  if (!next) return; /* 没有基础态（前端还没报过一份结果态）：这半笔记不上，不编造 */
+  const pushed = T.pushDoc(b.take, T.frameOf(b.take, Date.now()), next, { prev: b.prevDoc, src: "agent" });
+  if (!pushed) return;
+  b.prevDoc = T.normalizeDoc(next);
+  takeQueueWrite(b).catch((err) => errLog("[canvas-take] agent 编辑落盘失败：" + String((err && err.message) || err)));
+}
+/* canvasdoc:edit 的回执从这里过一手（写成一行包一层，不改那条 IPC 的字段与顺序） */
+function takeNoteServiceEdit(id, pending) {
+  return Promise.resolve(pending).then((r) => {
+    try {
+      takeRecordAgentDiff(String(id || ""), r);
+    } catch (err) {
+      errLog("[canvas-take] 记 agent 编辑失败：" + String((err && err.message) || err));
+    }
+    return r;
+  });
+}
+
 /* target 是否严格位于 parentDir 之下（parentDir 本身算越界）。
    一律用 path.resolve 后的绝对路径比较，防 .. / 大小写别名绕过。 */
 function pathStrictlyUnder(parentDir, target) {
@@ -4607,11 +4823,6 @@ function auditAppDirData() {
     );
   }
   if (!hits.length) return;
-  const items = hits.map((h) => "· " + h.label + "\n    " + h.path).join("\n");
-  const detail =
-    "下列数据保存在应用文件夹内，升级 / 卸载会带走或覆盖它们：\n\n" +
-    items +
-    "\n\n请把这些数据移到项目文件夹（如 <项目文件夹>\\团队事实库），改完后重启应用。";
   console.warn("[appdir-audit] 检测到 " + hits.length + " 处数据位于应用目录内：");
   for (const h of hits) console.warn("[appdir-audit]   " + h.label + " → " + h.path);
   /* 记日志：仅当数据目录本身不在应用目录内才写，避免体检自己又往应用目录写数据 */
@@ -4626,18 +4837,10 @@ function auditAppDirData() {
       );
     }
   } catch {}
-  try {
-    const opts = {
-      type: "warning",
-      title: "数据保存在应用文件夹内",
-      message: "检测到 " + hits.length + " 处数据位于应用文件夹内",
-      detail: detail,
-      buttons: ["知道了"],
-    };
-    const parent = mainWin && !mainWin.isDestroyed() ? mainWin : null;
-    const p = parent ? dialog.showMessageBox(parent, opts) : dialog.showMessageBox(opts);
-    Promise.resolve(p).catch(() => {});
-  } catch {}
+  /* 启动**不再弹窗**（用户口径：数据落在应用目录内这件事不要再拦在开机路径上）。
+     结论没丢：① 上面已 console.warn 逐条打印；② 数据目录不在应用目录内时写进 logs/error.log；
+     ③ 渲染层顶栏那条红色警示按需调 ipc "app:dataAudit"（每次调用都重新体检）拿同一份清单。
+     别把 showMessageBox 加回来 —— 它会让每次启动都卡一个模态框。 */
 }
 
 /* 只读查询：当前有哪些用户数据落在应用文件夹内（给顶栏那条红色警示用）。

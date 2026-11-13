@@ -471,223 +471,11 @@ const KIND_CLS = {
   db_replica: "db",
 };
 
-/* 节点标题栏拖动手柄图标（SVG，stroke=currentColor） */
-const KIND_ICON_SVG = {
-  /* 输入 · 文本：三行文字 */
-  input_text:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4.5h10M3 8h8M3 11.5h6" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>',
-  /* 输入 · 图像：相框风景 */
-  input_image:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.5" y="3.5" width="11" height="9" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="6" cy="7" r="1.1" fill="currentColor"/><path d="M3.5 11.2l3.2-3.2 2.1 2.1 1.6-1.6 2.1 2.7" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
-  /* 输入 · 文件：文档 + 折角 + 字符行 */
-  input_file:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.4 2.6h6.2l2.9 2.9v8a1 1 0 0 1-1 1H4.4a1 1 0 0 1-1-1V2.6z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/><path d="M9.4 2.8v2.7H12" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M5.4 8.2h5.2M5.4 10.3h5.2M5.4 12.4h3.4" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linecap="round"/></svg>',
-  /* 输入 · 泛用文件（上传任意文件 → 自动转为对应输入节点）：托盘 + 向上箭头 */
-  input_any:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.3v6.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M5.5 4.8L8 2.3l2.5 2.5" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/><path d="M2.6 9.2v3.1a1.2 1.2 0 0 0 1.2 1.2h8.4a1.2 1.2 0 0 0 1.2-1.2V9.2" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"/></svg>',
-  /* 输入 · 音频：喇叭 + 声波（选择本机文件 · 输出 URL） */
-  input_audio:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.2 6.2h2.1L8.4 3.6v8.8L5.3 9.8H3.2a.7.7 0 0 1-.7-.7V6.9a.7.7 0 0 1 .7-.7z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/><path d="M10.8 6.1c.8.9.8 3 0 3.9M12.7 4.4c1.5 1.7 1.5 5.5 0 7.2" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>',
-  /* 输入 · 视频：胶片框 + 播放三角（选择本机文件 · 输出 URL） */
-  input_video:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="3.6" width="12" height="8.8" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M2 6.1h12M2 9.9h12" fill="none" stroke="currentColor" stroke-width="1" opacity=".65"/><path d="M6.9 7.1l2.6 1.9-2.6 1.9V7.1z" fill="currentColor"/></svg>',
-  /* 输入 · 表单：表单框 + 勾选行（结构化 JSON · 可拖入素材 · 图像/视频带描述与注释） */
-  input_form:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.4" y="2.4" width="11.2" height="11.2" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M4.6 5.2h6.8" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/><path d="M4.6 8h3.4M4.6 10.8h3.4" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linecap="round"/><path d="M9.9 9.6l1.1 1.1 2.1-2.3" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/></svg>',
-  /* 素材节点（素材库打包）：托盘 + 三层内容（文本 / 图像 / 媒体） */
-  asset:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.2 6.1L8 3l5.8 3.1L8 9.2 2.2 6.1z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/><path d="M2.2 9.1L8 12.2l5.8-3.1" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" opacity=".85"/><path d="M2.2 11.9L8 15l5.8-3.1" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" opacity=".55"/></svg>',
-  /* 处理 · 表（建表）：表格框 + 表头行 */
-  db_table:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.4" y="2.8" width="11.2" height="10.4" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M2.4 5.6h11.2M6.6 5.6v7.6M10.8 5.6v7.6" fill="none" stroke="currentColor" stroke-width="1.1"/><path d="M4.2 4.2h1.6M8.4 4.2h1.6" fill="currentColor" stroke-linecap="round"/></svg>',
-  /* 处理 · 文本 LLM：文档 + 火花（生成） */
-  proc_text:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2.8h5.2L12 5.6V13a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V2.8z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/><path d="M9.1 2.9V5.5H11.8" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M5.8 8.2h4.4M5.8 10.4h3.2" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/><path d="M11.6 9.1l.55 1.35 1.4.35-1.15.9.35 1.4-1.15-.85-1.15.85.35-1.4-1.15-.9 1.4-.35z" fill="currentColor"/></svg>',
-  /* 处理 · 图像生成：画框 + 闪光笔触 */
-  proc_image:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.2" y="3.2" width="9.2" height="7.6" rx="1.1" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M3.4 9.4l2.4-2.5 1.6 1.5 1.3-1.2 1.5 2.2" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linecap="round" stroke-linejoin="round"/><path d="M11.2 10.2c.7-.15 1.35-.55 1.85-1.15.35.7.4 1.5.15 2.25-.55-.1-1.15 0-1.65.35-.15-.55-.2-1.05-.35-1.45z" fill="currentColor"/><path d="M13.6 6.2l.35.85.9.2-.75.55.2.9-.7-.55-.7.55.2-.9-.75-.55.9-.2z" fill="currentColor"/></svg>',
-  /* 保存 · 按输入自判文本/图像/音频/视频 */
-  save:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.5v7.2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M5.2 7.2L8 10l2.8-2.8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M3.5 12.5h9" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>',
-  save_text:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.5v7.2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M5.2 7.2L8 10l2.8-2.8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M3.5 12.5h9" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M5.5 4.2h1.8M5.5 6h2.6" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg>',
-  save_image:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.5v7.2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M5.2 7.2L8 10l2.8-2.8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M3.5 12.5h9" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><rect x="10.2" y="3" width="3.2" height="2.6" rx=".4" fill="none" stroke="currentColor" stroke-width="1.1"/></svg>',
-  /* PDF 生成：文档纸 + 折角 + 导出箭头（与保存族同色） */
-  save_pdf:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2.6h5.2L12 5.6V13a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V2.6z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/><path d="M9.1 2.9V5.5H11.8" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M8 7.3v3.5" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"/><path d="M6.5 9.4L8 10.9l1.5-1.5" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/></svg>',
-  /* 交付节点：收件箱 + 勾选（长周期任务的人工交付落点） */
-  deliver:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.4 9.2 4 3.4h8l1.6 5.8V12a1 1 0 0 1-1 1H3.4a1 1 0 0 1-1-1V9.2z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M2.4 9.2h3.2l.7 1.4h3.4l.7-1.4h3.2" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linejoin="round"/><path d="M6.3 6.1l1.3 1.3 2.4-2.5" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/></svg>',
-  /* 产出节点：文档纸 + 铅笔（长周期任务执行中产出的可编辑落点） */
-  ltout:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.6 2.6h5.4l3 3v7.8a1 1 0 0 1-1 1H4.6a1 1 0 0 1-1-1V2.6z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/><path d="M8.9 2.9v2.9h2.9" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M5.7 8.1h3.2M5.7 10.2h2.2" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linecap="round"/><path d="M12.9 8.2l1 1-2.7 2.7-1.3.3.3-1.3z" fill="currentColor" opacity=".85"/></svg>',
-  /* 任务 · 规划步骤 */
-  task:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.4" y="2.4" width="11.2" height="11.2" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M4.6 6.1l1.5 1.5 3.4-3.5" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/><path d="M4.6 10.6h6.8M4.6 12.4h4.4" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>',
-  /* 节点层 */
-  super:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.2" y="2.2" width="11.6" height="11.6" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.25"/><rect x="4.2" y="4.2" width="7.6" height="7.6" rx="1" fill="none" stroke="currentColor" stroke-width="1.15" opacity=".85"/><path d="M5.6 8h4.8M8 5.6v4.8" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>',
-  super_io:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M5.5 8h5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>',
-  /* 数据库副本 */
-  db_replica:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><ellipse cx="8" cy="3.4" rx="5" ry="1.7" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M3 3.4v9.2c0 .94 2.24 1.7 5 1.7s5-.76 5-1.7V3.4" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M3 8c0 .94 2.24 1.7 5 1.7s5-.76 5-1.7" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>',
-  /* 数据库（金色通用图标：库体 + 三层盘面） */
-  db:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><ellipse cx="8" cy="3.4" rx="5" ry="1.7" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M3 3.4v9.2c0 .94 2.24 1.7 5 1.7s5-.76 5-1.7V3.4" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M3 8c0 .94 2.24 1.7 5 1.7s5-.76 5-1.7" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M3 12.6c0 .94 2.24 1.7 5 1.7s5-.76 5-1.7" fill="none" stroke="currentColor" stroke-width="1.2" opacity=".7"/></svg>',
-  /* 开发节点（功能块）：立方体模块 + 顶面分界线 */
-  dev:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.1l5.5 2.95v5.9L8 13.9l-5.5-2.95v-5.9L8 2.1z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/><path d="M2.5 5.05L8 8l5.5-2.95M8 8v5.9" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linejoin="round" opacity=".9"/></svg>',
-  /* 函数节点：花括号 {} + 行（JS 计算） */
-  function:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.8 2.9h6.4a1 1 0 0 1 1 1v2.2c0 .6-.4 1-1 1-.3 0-.5.2-.5.5v.8c0 .3.2.5.5.5.6 0 1 .4 1 1v2.2a1 1 0 0 1-1 1H4.8a1 1 0 0 1-1-1V9.9c0-.6.4-1 1-1 .3 0 .5-.2.5-.5v-.8c0-.3-.2-.5-.5-.5-.6 0-1-.4-1-1V3.9a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M6.5 5.9h3M6.5 10.1h3" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linecap="round"/></svg>',
-  /* 工具节点（super + tool:true · Agent 可调用 · 参数即端子）：开口扳手 */
-  tool:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M14.1 5.7a3.4 3.4 0 0 1-5 3.1L3.6 14.3a1.5 1.5 0 0 1-2.1-2.1l5.5-5.5a3.4 3.4 0 0 1 3.1-5L8.3 3.5l1.9 1.9 2.3-2.2c.6.5 1.1 1.1 1.6 1.7z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M9.6 8.6l-1.4 1.4" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linecap="round"/></svg>',
-  /* 智能任务 */
-  agent_task:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.2l1.1 2.4 2.6.3-2 1.8.6 2.6L8 7.9 5.7 9.3l.6-2.6-2-1.8 2.6-.3L8 2.2z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><circle cx="8" cy="12.4" r="1.35" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M8 9.6v1.3" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>',
-  /* 控制 */
-  control:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.2" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M6.6 5.8l4.2 2.2-4.2 2.2V5.8z" fill="currentColor"/></svg>',
-  ctrl_start:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.2" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M6.5 5.6l4.4 2.4-4.4 2.4V5.6z" fill="currentColor"/></svg>',
-  ctrl_end_ok:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.2" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M5.2 8.2l1.8 1.8 3.8-4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>',
-  ctrl_end_fail:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.2" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M6 6l4 4M10 6l-4 4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>',
-  judge:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.4l5.4 5.6L8 13.6 2.6 8z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M8 6.2v2.2M8 10.4h.01" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>',
-  /* 质检节点（五种共用「对勾徽标」语汇：主体 = 被检对象的样子，右下角永远有一枚勾，
-     一眼分清「检的是什么」而不必读标题） */
-  qa_text:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.6 3.2h10.8M2.6 6.2h8.6M2.6 9.2h5.2" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M9.2 12.6l1.4 1.4 3-3.2" fill="none" stroke="currentColor" stroke-width="1.45" stroke-linecap="round" stroke-linejoin="round"/></svg>',
-  qa_image:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.2" y="2.8" width="11.6" height="8.2" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.25"/><circle cx="5.4" cy="5.6" r="1" fill="currentColor"/><path d="M3.2 9.7l2.6-2.6 1.7 1.6 1.4-1.3 1.7 2.3" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linecap="round" stroke-linejoin="round"/><path d="M9.2 12.6l1.4 1.4 3-3.2" fill="none" stroke="currentColor" stroke-width="1.45" stroke-linecap="round" stroke-linejoin="round"/></svg>',
-  qa_video:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.2" y="2.6" width="11.6" height="8.2" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M2.2 5.1h11.6M2.2 8.3h11.6" fill="none" stroke="currentColor" stroke-width="1" opacity=".6"/><path d="M6.9 5.9l2.6 1.8-2.6 1.8V5.9z" fill="currentColor"/><path d="M9.2 12.6l1.4 1.4 3-3.2" fill="none" stroke="currentColor" stroke-width="1.45" stroke-linecap="round" stroke-linejoin="round"/></svg>',
-  qa_audio:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.4 6.1h1.9L7 3.7v8.2L4.3 9.5H2.4a.6.6 0 0 1-.6-.6V6.7a.6.6 0 0 1 .6-.6z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M9 5.9c.8.9.8 2.8 0 3.7M10.8 4.3c1.5 1.7 1.5 5.2 0 6.9" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linecap="round"/><path d="M9.4 12.8l1.3 1.3 2.8-3" fill="none" stroke="currentColor" stroke-width="1.45" stroke-linecap="round" stroke-linejoin="round"/></svg>',
-  qa_file:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.4 2.4h5.6l2.8 2.8v6.4a1 1 0 0 1-1 1H4.4a1 1 0 0 1-1-1V2.4z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M8.8 2.6v2.5h2.5" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linejoin="round"/><path d="M5.2 7.2h4.2M5.2 9.2h2.8" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/><path d="M9.4 12.8l1.3 1.3 2.8-3" fill="none" stroke="currentColor" stroke-width="1.45" stroke-linecap="round" stroke-linejoin="round"/></svg>',
-  /* 需求等待 */
-  wait_file:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2.8h5.2L12 5.6V13a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V2.8z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/><path d="M9.1 2.9V5.5H11.8" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><circle cx="8" cy="9.2" r="2.1" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M8 8.1v1.4l.9.5" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linecap="round"/></svg>',
-  /* 定时触发器 */
-  timer:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.4" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M8 4.6v3.6l2.2 1.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M3.2 2.8l1.3 1.3M12.8 2.8l-1.3 1.3" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>',
-  /* 延时器 */
-  delayer:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8h4.2M8.8 8H13" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round"/><circle cx="8" cy="8" r="2.2" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M8 6.6v1.6l1.1.7" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linecap="round"/></svg>',
-  /* 弹窗节点：浮层窗 + 两行文字（控制流触发时弹出，内容可编辑） */
-  popup:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.2" y="2.6" width="11.6" height="8.6" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M4.4 2.8v1.9h7.2V2.8" fill="none" stroke="currentColor" stroke-width="1.1" opacity=".8"/><path d="M4.6 6.2h6.8M4.6 8.3h4.4" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/><path d="M5.4 11.2l-.6 2.2 2.6-2.2" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>',
-  /* 序列器 */
-  sequencer:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="3.2" cy="4.2" r="1.15" fill="currentColor"/><circle cx="3.2" cy="8" r="1.15" fill="currentColor"/><circle cx="3.2" cy="11.8" r="1.15" fill="currentColor"/><path d="M5.2 4.2h3.2L12 8 8.4 11.8H5.2" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M12 6.4V9.6" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>',
-  /* 闸门 AND */
-  gate:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.8 3.6v8.8" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round"/><path d="M2.8 8h3.2" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M6 4.2c3.2 0 5.6 1.7 5.6 3.8S9.2 11.8 6 11.8" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><circle cx="3.2" cy="4.4" r="1" fill="currentColor"/><circle cx="3.2" cy="8" r="1" fill="currentColor"/><circle cx="3.2" cy="11.6" r="1" fill="currentColor"/><circle cx="13" cy="8" r="1.15" fill="currentColor"/></svg>',
-  /* 分发 并行扇出 */
-  splitter:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="3.2" cy="8" r="1.2" fill="currentColor"/><path d="M4.6 8h3.2M7.8 8l3.4-3.4M7.8 8l3.4 3.4" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/><circle cx="12.4" cy="4.2" r="1.15" fill="currentColor"/><circle cx="12.4" cy="8" r="1.15" fill="currentColor"/><circle cx="12.4" cy="11.8" r="1.15" fill="currentColor"/></svg>',
-  /* 计数 */
-  counter:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3" y="2.8" width="10" height="10.4" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M5.4 10.2V5.8h1.7c1.15 0 1.85.55 1.85 1.45 0 .7-.4 1.2-1.05 1.4L9.8 10.2H8.3l-1.1-1.85H6.7v1.85H5.4z" fill="currentColor"/></svg>',
-  /* 互斥 */
-  mutex:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="3.2" cy="4.2" r="1.15" fill="currentColor"/><circle cx="3.2" cy="11.8" r="1.15" fill="currentColor"/><path d="M4.6 4.2h2.4L9.4 8 7 11.8H4.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><circle cx="12.2" cy="8" r="1.2" fill="currentColor"/><path d="M9.4 6.2l1.8 1.8-1.8 1.8" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/></svg>',
-  /* 节点指南 */
-  node_guide:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.4 2.6h7.4A1.4 1.4 0 0 1 12.2 4v9.2H4.6A1.2 1.2 0 0 1 3.4 12V2.6z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/><path d="M12.2 13.2h.8V4.4A1.4 1.4 0 0 0 11.6 3" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linecap="round"/><path d="M5.6 5.2h4.2M5.6 7.4h4.2M5.6 9.6h2.6" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linecap="round"/></svg>',
-  /* 拆分 */
-  split:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 8h4.2M7.7 8l3.3-3.2M7.7 8l3.3 3.2" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/><circle cx="3.2" cy="8" r="1.2" fill="currentColor"/><circle cx="12.3" cy="4.5" r="1.2" fill="currentColor"/><circle cx="12.3" cy="11.5" r="1.2" fill="currentColor"/></svg>',
-  /* 合并 */
-  merge:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M12.5 8H8.3M8.3 8L5 4.8M8.3 8L5 11.2" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/><circle cx="12.8" cy="8" r="1.2" fill="currentColor"/><circle cx="3.7" cy="4.5" r="1.2" fill="currentColor"/><circle cx="3.7" cy="11.5" r="1.2" fill="currentColor"/></svg>',
-  /* 全局 · 广播参考 */
-  global:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.3" fill="none" stroke="currentColor" stroke-width="1.3"/><ellipse cx="8" cy="8" rx="2.4" ry="5.3" fill="none" stroke="currentColor" stroke-width="1.15"/><path d="M2.8 8h10.4M3.6 5.2h8.8M3.6 10.8h8.8" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg>',
-  /* 音乐生成 */
-  music_gen:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6.2 11.2a1.8 1.8 0 1 1-1.6-1.78V4.4l7.2-1.4v6.9a1.8 1.8 0 1 1-1.6-1.78V5.1L6.2 6v5.2z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/></svg>',
-  /* YuE2 音乐生成：音符 + 下方 ABC 谱线（歌词 → 整曲 · 可编辑谱面） */
-  yue_gen:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M9.6 9.4a1.5 1.5 0 1 1-1.3-1.48V3.6l4.2-.85v4.9a1.5 1.5 0 1 1-1.3-1.48V4.15L9.6 4.55v4.85z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M2.2 12.4h11.6" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"/><path d="M2.2 14.2h11.6" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" opacity=".7"/><path d="M5.1 9.1V13M8 9.6V12.4" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg>',
-  /* Breeze 语音生成：麦克风 + 底座（音色克隆 / 设计 / 导演） */
-  breeze_gen:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="6.1" y="1.9" width="3.8" height="8" rx="1.9" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M3.4 7.4v.7a4.6 4.6 0 0 0 9.2 0v-.7M8 12.7v1.5M5.6 14.2h4.8" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"/><path d="M8 4.3v3.2" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" opacity=".75"/></svg>',
-  /* 视频生成 */
-  video_gen:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.2" y="3.4" width="11.6" height="9.2" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M6.4 6.2l4.2 2.2-4.2 2.2V6.2z" fill="currentColor"/></svg>',
-  /* Remotion 视频（React 动效合成 · 本地渲染）：播放框 + 右上生成星火 */
-  remotion:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.2" y="3.4" width="11.6" height="9.2" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M6.4 6.2l4.2 2.2-4.2 2.2V6.2z" fill="currentColor"/><path d="M12.5 2.3l.45 1.05.9.25-.9.25-.45 1.05-.45-1.05-.9-.25.9-.25z" fill="currentColor"/></svg>',
-  /* 视频超分（独立后处理）：画框 + 四角放大箭头 */
-  video_upscale:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3.4" y="3.4" width="9.2" height="9.2" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M6.6 6.6L3 3M6.6 6.6H4.4M6.6 6.6V4.4M9.4 9.4L13 13M9.4 9.4h2.2M9.4 9.4v2.2" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/></svg>',
-  /* 视频补帧（独立后处理）：两张叠帧 + 中间加号 */
-  video_interp:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.4" y="3" width="6.6" height="6.6" rx="1.1" fill="none" stroke="currentColor" stroke-width="1.2"/><rect x="7" y="6.4" width="6.6" height="6.6" rx="1.1" fill="none" stroke="currentColor" stroke-width="1.2" opacity=".85"/><path d="M11.6 3.2v3.2M10 4.8h3.2" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"/></svg>',
-  /* 网络 · 接收：圆节点 + 上方接收箭头 + 下横线 */
-  net_recv:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="2.3" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M8 5.7V2.4M8 2.4L5.9 4.5M8 2.4L10.1 4.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M3.2 11.6h9.6M5.2 13.4h5.6" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linecap="round"/></svg>',
-  /* 网络 · 发送：圆节点 + 下方发送箭头 + 上横线 */
-  net_send:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="2.3" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M8 10.3v3.3M8 13.6L5.9 11.5M8 13.6L10.1 11.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M3.2 2.6h9.6M5.2 4.4h5.6" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linecap="round"/></svg>',
-  /* 执行节点：圆角方框 + 播放键（一键启动绑定文件） */
-  execute:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.4" y="2.8" width="11.2" height="10.4" rx="2" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M6.3 5.6l4.4 2.4-4.4 2.4V5.6z" fill="currentColor"/></svg>',
-  /* 绘制 · 笔 + 画板 */
-  draw:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.2" y="2.8" width="8.6" height="7.4" rx="1.1" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M7.4 12.6l5.2-5.2 1.15 1.15-5.2 5.2H7.4v-1.15z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M11.5 8.5l1.15 1.15" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M4 5.2h5.2M4 7.2h3.6" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg>',
-  /* 其他节点 · 收纳盒（盒体 + 省略号） */
-  other:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.4 5.6h11.2v6.2a1 1 0 0 1-1 1H3.4a1 1 0 0 1-1-1V5.6z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/><path d="M4.6 5.6V4.2a1 1 0 0 1 1-1h4.8a1 1 0 0 1 1 1v1.4" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M5.2 9.1h.01M8 9.1h.01M10.8 9.1h.01" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>',
-  /* 构建工作流：左列节点 + 汇流线 + 生成星标 */
-  build_wf:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="1.6" y="2.2" width="4.4" height="3.4" rx="1" fill="none" stroke="currentColor" stroke-width="1.2"/><rect x="1.6" y="10.4" width="4.4" height="3.4" rx="1" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M6 3.9h1.9v4.1M6 12.1h1.9V8" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linecap="round" stroke-linejoin="round"/><path d="M12.2 3.2l.95 2.15L15.3 6.3l-2.15.95-.95 2.15-.95-2.15L9.1 6.3l2.15-.95z" fill="currentColor"/><path d="M11 11.2l.55 1.25 1.25.55-1.25.55L11 14.85l-.55-1.3-1.25-.55 1.25-.55z" fill="currentColor" opacity=".75"/></svg>',
-  /* 菜单操作 */
-  menu_copy:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5.2" y="4.2" width="7.2" height="8.4" rx="1.1" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M3.6 10.6V3.8A1.1 1.1 0 0 1 4.7 2.7h6" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"/></svg>',
-  menu_delete:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.4 4.6h9.2M6.2 4.6V3.5h3.6v1.1M5.2 4.6l.6 8h4.4l.6-8" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/></svg>',
-  menu_color:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.6c2.9 0 5.4 2.1 5.4 5.1 0 1.7-1.1 2.6-2.2 2.6-.7 0-1.1-.4-1.1-1.1 0-.3.1-.7.1-1 0-1.5-1.2-2.6-2.2-2.6S5.8 6.7 5.8 8.2c0 .3.1.7.1 1 0 .7-.4 1.1-1.1 1.1-1.1 0-2.2-.9-2.2-2.6C2.6 4.7 5.1 2.6 8 2.6z" fill="none" stroke="currentColor" stroke-width="1.25"/><circle cx="5.6" cy="6.4" r=".8" fill="currentColor"/><circle cx="8" cy="5.2" r=".8" fill="currentColor"/><circle cx="10.4" cy="6.4" r=".8" fill="currentColor"/></svg>',
-  menu_ungroup:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.6" y="3.4" width="6.4" height="5.2" rx="1" fill="none" stroke="currentColor" stroke-width="1.2" stroke-dasharray="2 1.4"/><rect x="7" y="7.2" width="6.4" height="5.4" rx="1" fill="none" stroke="currentColor" stroke-width="1.25"/></svg>',
-  menu_cut:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="4.2" cy="11.4" r="1.7" fill="none" stroke="currentColor" stroke-width="1.2"/><circle cx="11.8" cy="11.4" r="1.7" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M5.5 10.4L12.2 3.4M10.5 10.4L3.8 3.4" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"/></svg>',
-  menu_saveas:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.6v7.4M5.4 7.4L8 10.2 10.6 7.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M3.4 12.6h9.2" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>',
-  menu_preview:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.4 8c1.6-2.8 3.6-4.2 5.6-4.2S12 5.2 13.6 8c-1.6 2.8-3.6 4.2-5.6 4.2S4 10.8 2.4 8z" fill="none" stroke="currentColor" stroke-width="1.25"/><circle cx="8" cy="8" r="1.7" fill="none" stroke="currentColor" stroke-width="1.25"/></svg>',
-  mark_text:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 3.4h8M8 3.4v9.2M5.4 12.6h5.2" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round"/></svg>',
-  mark_box:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3" y="3.4" width="10" height="9.2" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>',
-  mark_arrow:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.8 8h9.2M9.2 4.8L13.2 8 9.2 11.2" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/></svg>',
-  /* 关系线（直线 · 双向箭头 · 仅表示关系） */
-  menu_link:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.6 11.4V7.2h6.8v-3" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M11.4 1.9l1.6 2.3-2.7.5z" fill="currentColor"/><path d="M4.6 14.1l-1.6-2.3 2.7-.5z" fill="currentColor"/></svg>',
-  /* 细化（洋葱层 · 展开一层） */
-  menu_refine:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.6" y="2.6" width="4.6" height="4.6" rx="1" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M7.2 4.9h3.2v3.2M10.4 8.1v3.3" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/><rect x="8.8" y="8.8" width="2.5" height="2.5" rx=".7" fill="none" stroke="currentColor" stroke-width="1.15"/><rect x="11.6" y="11.6" width="1.9" height="1.9" rx=".6" fill="none" stroke="currentColor" stroke-width="1.1"/></svg>',
-  /* 文件夹 */
-  folder:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.4 4.3h3.4l1.1 1.15h6.7c.44 0 .8.36.8.8v5.55c0 .44-.36.8-.8.8H2.4a.8.8 0 0 1-.8-.8V5.1c0-.44.36-.8.8-.8z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/></svg>',
-};
-/* InfiniteTalk 数字人：与视频生成节点同一枚图标（产物同为 mp4），不另画一套 */
-KIND_ICON_SVG.infinitetalk_gen = KIND_ICON_SVG.video_gen;
-/* SoulX-FlashHead Lite：同一枚视频图标 */
-KIND_ICON_SVG.soulxflashhead_gen = KIND_ICON_SVG.video_gen;
-KIND_ICON_SVG.flux3klein_gen = KIND_ICON_SVG.proc_image;
-KIND_ICON_SVG.qwenimage_gen = KIND_ICON_SVG.proc_image;
-/* MOSS-Music 音乐理解：与音乐生成节点同一枚音符图标（输入音频 / 视频，产出分析文本） */
-KIND_ICON_SVG.moss_music = KIND_ICON_SVG.music_gen;
+/* 节点标题栏拖动手柄图标（SVG，stroke=currentColor）：**真源在 canvas-doc/kind-icons.js**
+   （window.MTKindIcons.SVG，index.html 在本文件之前引入）—— take 单文件回放页与画布读侧内核
+   画的是同一批图标，两处引用同一份，不复制第二份。插件（app-nodeplugins.js）与内置应用
+   （app-appnode.js）仍按原口径往这个对象里加键，所以这里拿的是**同一个对象引用**。 */
+const KIND_ICON_SVG = (typeof MTKindIcons !== 'undefined' && MTKindIcons && MTKindIcons.SVG) || {};
 
 function nodeKindIconKey(node) {
   if (!node) return "proc_text";
@@ -7313,7 +7101,7 @@ function pushHistory(snap) {
   /* 后台写非当前画布时不污染当前画布的撤销栈 */
   if (S._canvasEditVisible === false) return;
   if (S._skipCanvasHistory) return;
-  S.undoStack.push(snap || snapshotState());
+  S.undoStack.push(takeHistorySnap(snap || snapshotState()));
   if (S.undoStack.length > 100) S.undoStack.shift();
   S.redoStack = [];
 }
@@ -11904,6 +11692,160 @@ function closeMtDialog() {
   if (host) host.classList.remove("on");
 }
 
+/* ── 可浮动弹窗：标题行能拖走 · 能「让开」（最小化）────────────────────────────
+   为什么要它（本次需求）：截图询问窗是「先把画面摆好、再按开始截图」用的 ——
+   它必须能让开，用户才能先去画布上滚动 / 展开节点 / 拖到合适位置，摆好再拍。
+   默认一只都不开：只有建窗时显式给 opts.floating:true 的窗（截图询问窗）才有这两颗能力，
+   其余弹窗的排版与行为一个像素都不动。
+   铁律不变：仍然 persistent（点蒙层 / 点窗外一律不关），关闭只走窗内按钮 / ✕ / Esc；
+   仍是单例宿主 —— 新窗起来时先 mtDlgResetPlacement()，上一只窗的拖动位置与让开状态
+   绝不串到下一只窗上（不然会出现「新窗一开就贴在角上、只剩一条标题」）。 */
+
+/* 复位：位置、让开态、标题行上的拖动 / 让开控件全部清掉（宿主是单例，必须每次都清） */
+function mtDlgResetPlacement() {
+  const host = document.getElementById("mtDialog");
+  if (!host) return;
+  host.classList.remove("peek");
+  const box = host.querySelector(".mt-dialog-box");
+  if (box) {
+    box.classList.remove("min");
+    box.style.position = "";
+    box.style.margin = "";
+    box.style.left = "";
+    box.style.top = "";
+  }
+  const head = host.querySelector(".mt-dialog-head");
+  if (head) {
+    /* 上一轮挂上的拖动 / 让开监听先摘干净（标题行始终是同一只元素） */
+    if (typeof head._mtDlgFloatOff === "function") {
+      try {
+        head._mtDlgFloatOff();
+      } catch (_) {}
+      head._mtDlgFloatOff = null;
+    }
+    head.classList.remove("mt-dlg-float", "mt-dlg-drag");
+    head.onclick = null;
+  }
+  host.querySelectorAll(".mt-dlg-tools").forEach((el) => el.remove());
+}
+
+/* 装式：拖动（按住标题行）+ 让开（收成一条标题窄条、蒙层同时透明且不吃鼠标）。
+   返回 { setCollapsed, collapsed }，调用方一般不用它 —— 让开态点标题条自己就回来。 */
+function mtDlgFloat(host, box, head, opts) {
+  const o = opts && typeof opts === "object" ? opts : {};
+  if (!host || !box || !head) return null;
+  /* 宿主是单例、标题行那只元素一直是同一只：上一轮挂过的监听先摘干净，
+     否则每开一次截图窗就多挂一套（拖一次会被好几套拖动逻辑同时改位置）。 */
+  if (typeof head._mtDlgFloatOff === "function") {
+    try {
+      head._mtDlgFloatOff();
+    } catch (_) {}
+  }
+  const offs = [];
+  const on = (target, type, fn, capture) => {
+    try {
+      target.addEventListener(type, fn, capture);
+      offs.push(() => {
+        try {
+          target.removeEventListener(type, fn, capture);
+        } catch (_) {}
+      });
+    } catch (_) {}
+  };
+  head._mtDlgFloatOff = () => {
+    for (const fn of offs.splice(0)) fn();
+  };
+  head.classList.add("mt-dlg-float");
+  let tools = head.querySelector(".mt-dlg-tools");
+  if (!tools) {
+    tools = document.createElement("div");
+    tools.className = "mt-dlg-tools";
+    head.appendChild(tools);
+  }
+  let collapsed = false;
+  const minBtn = document.createElement("button");
+  minBtn.type = "button";
+  minBtn.className = "mt-dlg-btn mt-dlg-min";
+  const setCollapsed = (on) => {
+    collapsed = !!on;
+    host.classList.toggle("peek", collapsed);
+    box.classList.toggle("min", collapsed);
+    const label = collapsed ? I18n.t("展开") : I18n.t("最小化（让开画面）");
+    minBtn.textContent = collapsed ? "▣" : "—";
+    minBtn.title = label;
+    try {
+      minBtn.setAttribute("aria-label", label);
+      minBtn.setAttribute("aria-expanded", collapsed ? "false" : "true");
+      /* 让开态下面没有蒙层了，它就不是「模态」——无障碍口径跟着变 */
+      box.setAttribute("aria-modal", collapsed ? "false" : "true");
+    } catch (_) {}
+  };
+  if (o.collapsible !== false) {
+    setCollapsed(false);
+    minBtn.onclick = (ev) => {
+      if (ev) {
+        ev.preventDefault();
+        ev.stopPropagation();
+      }
+      setCollapsed(!collapsed);
+    };
+    tools.appendChild(minBtn);
+  }
+  /* 让开态下点标题条 = 回来（内容一个字都没丢）；按钮自己 stopPropagation，不会打架 */
+  head.onclick = () => {
+    if (collapsed) setCollapsed(false);
+  };
+  /* 点标题行别把焦点从正在写的输入框上抢走（拖动走 pointerdown，不受这句影响） */
+  on(head, "mousedown", (ev) => {
+    const tag = String((ev.target && ev.target.tagName) || "").toUpperCase();
+    if (/BUTTON|INPUT|TEXTAREA|SELECT|A|LABEL/.test(tag)) return;
+    try {
+      ev.preventDefault();
+    } catch (_) {}
+  });
+  if (o.moveable) {
+    head.classList.add("mt-dlg-drag");
+    let drag = null;
+    /* 拖动过程中的 move / up 挂在 document 上（指针跑出标题行也要跟着走）；
+       只在拖起来的那一次生效（drag 为 null 时什么都不做），随本窗一起摘掉。 */
+    on(
+      document,
+      "pointermove",
+      (ev) => {
+        if (!drag || !ev) return;
+        const vw = Math.max(1, Number(window.innerWidth) || 0);
+        const vh = Math.max(1, Number(window.innerHeight) || 0);
+        const bw = box.offsetWidth || 0;
+        /* 夹在窗口内：标题行至少留 80px 在屏内 —— 拖出屏外就再也点不回来了 */
+        const nx = Math.min(Math.max(drag.ox + (ev.clientX - drag.sx), 80 - bw), vw - 80);
+        const ny = Math.min(Math.max(drag.oy + (ev.clientY - drag.sy), 0), Math.max(0, vh - 40));
+        box.style.left = Math.round(nx) + "px";
+        box.style.top = Math.round(ny) + "px";
+      },
+      true,
+    );
+    const onUp = () => {
+      drag = null;
+    };
+    on(document, "pointerup", onUp, true);
+    on(document, "pointercancel", onUp, true);
+    on(head, "pointerdown", (ev) => {
+      if (!ev || ev.button !== 0) return;
+      const tag = String((ev.target && ev.target.tagName) || "").toUpperCase();
+      if (/BUTTON|INPUT|TEXTAREA|SELECT|A|LABEL/.test(tag)) return;
+      const r = box.getBoundingClientRect();
+      /* 一拖就交给绝对定位（宿主是 inset:0 的 flex 居中，left/top 即窗口坐标），
+         否则 flex 居中会把刚写进去的 left/top 顶掉。 */
+      box.style.position = "absolute";
+      box.style.margin = "0";
+      box.style.left = Math.round(r.left) + "px";
+      box.style.top = Math.round(r.top) + "px";
+      drag = { sx: ev.clientX, sy: ev.clientY, ox: r.left, oy: r.top };
+    });
+  }
+  return { setCollapsed: setCollapsed, collapsed: () => collapsed };
+}
+
 function confirmDialog(message, opts) {
   opts = opts || {};
   /* defaultCancel：默认按钮是「取消」（Enter 与初始焦点都落在取消上）。
@@ -11913,6 +11855,7 @@ function confirmDialog(message, opts) {
     mtDlgSupersede(); /* 顶掉前一只窗：它当场以「取消」结算，别让它的调用方永久挂住 */
     const host = ensureMtDialog();
     const seq = ++_mtDialogSeq;
+    mtDlgResetPlacement(); /* 上一只窗可能刚被拖走 / 让开着：新窗一律回到居中全展开 */
     const titleEl = document.getElementById("mtDlgTitle");
     const body = document.getElementById("mtDlgBody");
     const foot = document.getElementById("mtDlgFoot");
@@ -12000,6 +11943,7 @@ function promptDialog(message, defaultValue, opts) {
     mtDlgSupersede(); /* 同上：单例宿主换窗，前一只窗内容被重建，它的等待当场结清 */
     const host = ensureMtDialog();
     const seq = ++_mtDialogSeq;
+    mtDlgResetPlacement(); /* 同上：拖动位置与让开态不串到下一只窗上 */
     const titleEl = document.getElementById("mtDlgTitle");
     const body = document.getElementById("mtDlgBody");
     const foot = document.getElementById("mtDlgFoot");
@@ -12092,6 +12036,7 @@ function mtDialogForm(opts) {
     mtDlgSupersede(); /* 同上：单例宿主换窗，前一只窗当场以「取消」结算（不欠调用方一个 resolve） */
     const host = ensureMtDialog();
     const seq = ++_mtDialogSeq;
+    mtDlgResetPlacement(); /* 同上：拖动位置与让开态不串到下一只窗上 */
     const box = host.querySelector(".mt-dialog-box");
     if (box) {
       box.classList.add("mt-form-box");
@@ -12346,6 +12291,7 @@ function mtDialogForm(opts) {
         box.classList.remove("mt-form-box");
         box.classList.remove("mt-form-wide");
       }
+      mtDlgResetPlacement(); /* 关窗即复位：让开态 / 拖动位置不留给下一只窗 */
     };
     const finish = (action, force) => {
       if (done || seq !== _mtDialogSeq) return;
@@ -12400,6 +12346,9 @@ function mtDialogForm(opts) {
     }
     host.classList.add("on");
     host.addEventListener("keydown", onKey);
+    /* 截图询问窗这类「先摆好画面再拍」的窗：标题行可拖、可让开（opts.floating）。
+       只在这里挂，别的窗一个像素都不动 —— 让开态点标题条自己回来，内容不丢。 */
+    if (opts.floating) mtDlgFloat(host, box, host.querySelector(".mt-dialog-head"), { moveable: true });
     /* 登记为「当前可被顶掉的那只窗」：下一次开窗（confirmDialog / promptDialog /
        mtDialogForm）会先把它以「取消」结算掉。必须排在 addEventListener 之后 ——
        顶掉它的那一步会连带清掉本窗的按键监听，注册早了新的监听就白挂。
@@ -15130,6 +15079,8 @@ function applyTransform() {
   if (!st) return;
   clampCam();
   st.style.transform = `translate(${S.cam.x}px, ${S.cam.y}px) scale(${S.cam.z})`;
+  /* 录制旁路：S.cam 的唯一汇聚点就在这一句之后（不录时是一句布尔判断，零开销） */
+  takeRecordCam();
   /* 缩略模式跟着相机走：高清总览图逐块挪相机时也走到这里，所以「拍出来的图跟当前
      缩放一致」是同一份判定，不用在拍图代码里另写一套 */
   syncNodeLod();
@@ -19826,6 +19777,8 @@ function bindPortWireCut() {
       const tgt = ev.target;
       if (!tgt || !tgt.closest) return;
       if (tgt.closest(".fn-arr-slots")) return;
+      /* 思考强度按钮：右键 = 降一档（app-canvas.js effortButtonEl），绝不当成「右键切端子」 */
+      if (tgt.closest(".n-effort")) return;
       let hit = tgt.closest(".port");
       let target = hit ? portCutTargetOfEl(hit) : null;
       if (!target) {
@@ -25400,14 +25353,17 @@ function appendCtxItem(parent, it) {
         sub.classList.add("open-left");
       const sh = sub.getBoundingClientRect().height || sr0.height;
       const maxH = Math.max(80, window.innerHeight - pad * 2);
-      /* 二级菜单向上展开：底部与一级选项底边对齐；上方空间不够时贴顶并限制高度 */
-      if (sh > maxH || fr.bottom - sh < pad) {
-        sub.style.bottom = "auto";
+      /* 二级菜单贴着这一行展开（底边对齐）；越出下边界就整体上移，只抬到刚好放得下。
+         以前「放不下就钉到窗口顶端」：窗口一矮，二级菜单离鼠标好几百像素，
+         移到一半 mouseleave 就把它收了，看着就像最后那一行「点不到」。 */
+      sub.style.bottom = "auto";
+      if (sh > maxH) {
+        /* 比窗口还高：只能贴顶 + 限高 */
         sub.style.top = pad - fr.top + "px";
         sub.style.maxHeight = maxH + "px";
       } else {
-        sub.style.top = "auto";
-        sub.style.bottom = "0px";
+        const pageTop = Math.max(pad, Math.min(fr.bottom - sh, window.innerHeight - pad - sh));
+        sub.style.top = pageTop - fr.top + "px";
       }
       if (!wasOpen) fly.classList.remove("open");
     };
@@ -38640,3 +38596,885 @@ function importWorkflowDialog() {
   }));
   foot.appendChild(mkMiniBtn(I18n.t("粘贴 Base64"), doImportBase64, true));
 }
+
+/* ============ 画布录制（take · 旁路记账）============
+
+   目的：把一次画布操作记成一条可重放的 take（文档时间轴 + 相机轨道 + UI 现场 + 光标 + 整窗壳），
+   之后由同一份渲染代码逐帧重绘（Remotion / web player），**不录屏幕像素**。
+   本段只做记账，不做渲染，也不碰文件：
+
+     · 文档：pushHistory 每笔操作前压入的那份「操作前状态」本来就是全量结果态，这里旁路抄
+       一份（takeHistorySnap 就挂在 pushHistory 的入栈那一行，不录时原样返回、零开销）；
+     · 相机：applyTransform 是 S.cam 的唯一汇聚点（applyTransformSoon 只是对同一来源的合并），
+       这一处采样就能拿到整条相机轨道；
+     · 指针 / UI 现场 / 文字关键点 / 整窗壳：由 takeHooksAttach 挂在 window / document 上
+       （开录才挂，暂停与收尾即摘），口径见本节「采样点」那一段；
+     · 时钟：只报 wall clock 毫秒，帧号一律由主进程按 take.startedAtMs 换算（唯一换算点，
+       见 canvas-doc/canvas-take.js 的 frameOf）—— 两路时钟各自的抖动不会把轨道写乱；
+     · 落盘：主进程 take:append（<数据目录>\takes\<wfId>\<takeId>.json），渲染层只上送「记什么」，
+       一个字节都不自己写。
+
+   默认不录：window.CanvasTake.start() 才打开（跑任务 2 的 runner / 将来的录制按钮从这里进）；
+   录到一半要停手用 pause() / resume()，暂停期间一条轨都不采。
+   硬约束：只记结果态，不记 op —— uid() 带 Date.now()+Math.random()，重放 create 会漂 id。 */
+function takeRec() {
+  if (!S._take)
+    S._take = {
+      on: false,
+      takeId: "",
+      wfId: "",
+      startedAtMs: 0,
+      fps: 30,
+      /* 视口：开录那一刻的真实窗口尺寸（CSS 像素）+ devicePixelRatio。播放器的帧盒按它铺，
+         壳里的布局也在同一把尺子上，两者才对得上（缺陷：以前不传，一律落到 1920×1080@2）。 */
+      viewport: null,
+      queue: [],
+      timer: 0,
+      pending: null,
+      sent: 0,
+      docs: 0,
+      cams: 0,
+      lastCam: null,
+      lastErr: "",
+      /* ── 采样侧（补的三段 + 壳快照）──
+         paused = 暂停中（一条轨都不采）；bytes = 主进程回执里的「已写字节」累计；
+         ptrs / uis / texts / shells = 各路采样条数（status 与收尾回执要报给人看） */
+      paused: false,
+      bytes: 0,
+      ptrs: 0,
+      uis: 0,
+      texts: 0,
+      shells: 0,
+      shellBytes: 0,
+      shellDropped: 0,
+      shellHash: "",
+      shellAt: 0,
+      shellTimer: 0,
+      uiTimer: 0,
+      uiPrev: { sel: [], hover: "", shells: [] },
+      textPrev: {},
+      textTimer: 0,
+      textEl: null,
+      ptrLast: null,
+      ptrScreen: null,
+      ptrDown: false,
+      obs: null,
+      hooks: false,
+      handlers: null,
+    };
+  return S._take;
+}
+
+function takeBridge() {
+  return typeof window !== "undefined" &&
+    window.api &&
+    typeof window.api.takeAppend === "function"
+    ? window.api
+    : null;
+}
+
+/* 视口口径：**开录那一刻**的真实窗口尺寸（CSS 像素）+ devicePixelRatio。
+   为什么必须记：播放器的帧盒 = take.width×height，壳快照里的布局也是按这个尺寸排的；
+   不记就落到 DEFAULT_VIEWPORT（1920×1080@2），壳与内核图层立刻不是一个尺度。
+   录制中改窗口大小不追：一条 take 只有一份视口，追就得加视口轨道（本轮不做）。 */
+function takeViewportNow() {
+  const w = Math.max(1, Math.round(Number(window.innerWidth) || 0));
+  const h = Math.max(1, Math.round(Number(window.innerHeight) || 0));
+  const dpr = Number(window.devicePixelRatio) || 1;
+  return { width: w, height: h, dpr: Math.round(dpr * 100) / 100 };
+}
+
+/* 上送时随批带的 start：主进程只在**第一次**见到这条 take 时用它建账，所以三个视口键
+   必须跟着一起走（否则主进程侧建的还是默认视口）。 */
+function takeStartPayload(rec) {
+  const vp = (rec && rec.viewport) || takeViewportNow();
+  return {
+    startedAtMs: rec.startedAtMs,
+    fps: rec.fps,
+    wfName: (S.wf && S.wf.name) || "",
+    width: vp.width,
+    height: vp.height,
+    dpr: vp.dpr,
+  };
+}
+
+/* 上送用的文档形状：只带真源五键（take 的文档轨道与 contentHash 覆盖面一致） */
+function takeDocPayload(doc) {
+  const d = doc || {};
+  const cur = S.wf || {};
+  return {
+    name: String((d.name != null ? d.name : cur.name) || ""),
+    nodes: d.nodes || [],
+    wires: d.wires || [],
+    groups: d.groups || [],
+    marks: d.marks || [],
+  };
+}
+
+/* pushHistory 的旁路：录的时候抄一份结果态，不录时原样返回（调用点写成一行，行为不变） */
+function takeHistorySnap(snap) {
+  const rec = takeRec();
+  if (rec.on && snap) takeQueueDoc(snap);
+  return snap;
+}
+
+/* 只认「正在录的那张画布」：录制中途切到别的画布时，那边的 pushHistory / 相机变换一律不记 ——
+   一份 take 只能有一条文档时间轴，混进第二张画布，重放出来就是两张图叠在一起。 */
+function takeOwnsCanvas(rec) {
+  const id = (S.wf && S.wf.id) || "";
+  return !rec.wfId || !id || id === rec.wfId;
+}
+
+function takeQueueDoc(doc) {
+  const rec = takeRec();
+  if (!rec.on || !doc || !takeOwnsCanvas(rec)) return;
+  rec.queue.push({ t: "doc", ms: Date.now(), doc: takeDocPayload(doc) });
+  rec.docs++;
+  /* 文档态**立刻上送**（不攒批）：Agent 侧的编辑回执也在往同一条账里写，这一份晚到就会被
+     排到它后面，重放会先看到「改后」再看到「改前」。相机采样才走攒批（一次拖动几十帧）。 */
+  takeFlush();
+}
+
+/* applyTransform 的旁路：值没变就一条都不记（平移时每帧都会走到这里） */
+function takeRecordCam() {
+  const rec = takeRec();
+  if (!rec.on || !takeOwnsCanvas(rec)) return;
+  const cam = S.cam || {};
+  const x = Number(cam.x) || 0;
+  const y = Number(cam.y) || 0;
+  const z = Number(cam.z) || 1;
+  const last = rec.lastCam;
+  if (last && last.x === x && last.y === y && last.z === z) return;
+  rec.lastCam = { x, y, z };
+  rec.queue.push({ t: "cam", ms: Date.now(), x, y, z });
+  rec.cams++;
+  takeScheduleFlush();
+}
+
+/* ── 采样点：指针 / UI 现场 / 文字关键点 / 整窗壳快照 ────────────────────────────
+   uiTrack / pointer / shellTrack 的契约（读回、同帧合并、裁剪）早就齐了，缺的是采样；
+   这一段按 canvas-take.js 的条目形状补齐，一条都不自己发明：
+
+     · pointer：**窗口像素是主口径**（clientX / clientY），落账时用 toStage
+       （applyTransform 的逆，含 canvas 边框与 translate+scale）反算世界坐标 —— 内核的
+       pointer 轨只认世界坐标（回放按相机把它画回画面）；窗口像素随条目一起上送
+       （sx / sy / inCanvas），内核只挑 x / y / down 三个键。
+       **只记关键事件（按下 / 抬起），移动不落账**：两次点击之间的轨迹谁也没录过，播放器按
+       时间线性补位（坐标算出来的，不是逐帧录出来的）。以前那套「≥4px 且 ≥60ms 抽稀 +
+       停顿补落点」一秒也能落十几条，等于把半个屏幕录像塞进 pointer 轨 —— 体积白花，
+       抽稀到底抽掉什么也说不清。最后一次指针位置仍记在 rec.ptrScreen（悬停命中的依据），
+       但它不是账。
+     · ui：选中 / 悬停 / 展开壳三项，只在真的变了时 push（250ms 轮询 + 指针事件后即时补）。
+       三个键恒为具体值（空数组 / 空串），**不用 undefined 表示「删除」**：跨 IPC 的
+       structured clone 会把 undefined 值的键整条抹掉，删除会变成静默丢失。
+     · 文字关键点：画布节点字段（标题 / 正文 / 参数框）与壳内输入框（含 #assistInput），
+       停笔（700ms 没有新输入）与失焦时记**整串值**；值没变不记。键名 text:<nid>:<tag>#<序号>
+       或 text:#<元素 id>，落在 uiTrack 上（内核只有五段轨，它本来就是「现场」那一轨）。
+     · 壳快照：document.body 整窗外壳。序列化前**先克隆**，后面所有裁剪都只动克隆；真 DOM
+       上只量几何（滚出可视区的条目正文、要换空位的媒体），一个字节都不改用户的界面。
+       MutationObserver 一有变化就标记，但**最短 1500ms 一份**，内容哈希一样的直接丢。
+       剔：滚出可视区的条目正文 →「…」、#canvas 内部所有 SVG（留容器与工具条）、
+       webview / video / live2d → 同尺寸空位、#stage 的内联 transform（相机走 camTrack，
+       留着的话平移期间每份快照都「不一样」，去重与体积都完蛋）、录制胶囊（#takeUi / #takeToast）。
+       字节上限与 canvas-take.js 的 SOFT_LIMITS.shellBytes 同口径（32MB）：超了不再采壳。
+
+   边界：不录时零开销 —— 监听只在开录时挂（takeHooksAttach），采样点统一走 takeLive() 早退。 */
+const TAKE_TEXT_IDLE_MS = 700; /* 停笔：这么久没有新输入就把整串值记下来 */
+const TAKE_UI_POLL_MS = 250; /* UI 现场轮询（选中 / 悬停 / 展开壳） */
+/* 壳快照最短间隔：录制胶囊上的秒数 / 字节数每 500ms 重绘一次，间隔太短就会被它带节奏
+   （400ms 时一分钟的账能录进五十多份壳，8MB 上限一分钟就顶）。1.5s 一份，面板切换照样跟得上。 */
+const TAKE_SHELL_MIN_MS = 1500;
+/* 与 canvas-take.js 的 shellBytes 软上限同口径（32MB） */
+const TAKE_SHELL_MAX_BYTES = 32 * 1024 * 1024;
+/* 录制器自己的键面不进壳快照（它是「正在录」这件事的读数，不是被录的画布现场；
+   而且它每半秒变一次，留着就是把壳快照的频率与体积一起毁掉）。 */
+const TAKE_SHELL_SELF_SEL = "#takeUi, #takeToast";
+const TAKE_SHELL_MAX_TRIM = 200; /* 一次最多换掉多少条「看不见的正文」 */
+
+/** 在录、没暂停、而且录的还是「正在看的那张画布」→ 返回 rec；否则 null（所有采样点的第一个门） */
+function takeLive() {
+  const rec = takeRec();
+  if (!rec.on || rec.paused) return null;
+  /* 录制中途切到别的画布：那边的指针 / 现场 / 壳一律不记（与 takeRecordCam 同一条纪律） */
+  return takeOwnsCanvas(rec) ? rec : null;
+}
+
+/* 世界坐标：toStage 就是 applyTransform 的逆。指针在画布外时同样算得出一个确定的世界点
+   （只是落在可视区之外），所以这里不另设分支，只用 inCanvas 把「在不在画布里」记下来。 */
+function takeWorldPoint(sx, sy) {
+  const cv = $("#canvas");
+  let inCanvas = false;
+  if (cv) {
+    const r = cv.getBoundingClientRect();
+    inCanvas = sx >= r.left && sx <= r.right && sy >= r.top && sy <= r.bottom;
+  }
+  const p = toStage(sx, sy);
+  return {
+    x: Math.round((Number(p.x) || 0) * 100) / 100,
+    y: Math.round((Number(p.y) || 0) * 100) / 100,
+    inCanvas,
+  };
+}
+
+/* 一个光标点落账：「窗口像素 → 世界坐标」只在这里做一次（只在按下 / 抬起时调） */
+function takePushPointer(sx, sy, ms, down) {
+  const rec = takeLive();
+  if (!rec) return;
+  const w = takeWorldPoint(sx, sy);
+  rec.queue.push({
+    t: "pointer",
+    ms,
+    pt: { x: w.x, y: w.y, down: !!down, sx, sy, inCanvas: w.inCanvas },
+  });
+  rec.ptrs++;
+  rec.ptrLast = { sx, sy, ms };
+  takeScheduleFlush();
+  /* 点击往往就是选中 / 展开壳发生的那一刻：落一个点就顺手看一眼现场（变了才记） */
+  takeSampleUi();
+}
+
+/** 指针采样：**只记关键事件** —— down（按下）/ up（抬起）；move 只更新「手现在在哪」，不落账。
+    移动的轨迹本来就没录过，播放器按时间线性补位（见 take-player.js 的 cursorAt）。 */
+function takeRecordPointer(ev, kind) {
+  const rec = takeLive();
+  if (!rec || !ev) return;
+  const sx = Number(ev.clientX);
+  const sy = Number(ev.clientY);
+  if (!isFinite(sx) || !isFinite(sy)) return;
+  rec.ptrScreen = { sx, sy };
+  if (kind !== "down" && kind !== "up") return;
+  const now = Date.now();
+  if (kind === "down") {
+    rec.ptrDown = true;
+    takePushPointer(sx, sy, now, true);
+    return;
+  }
+  /* up：这一条自己 down=false，落账后再把状态清掉 */
+  takePushPointer(sx, sy, now, false);
+  rec.ptrDown = false;
+}
+
+/* 悬停：按最后一次指针位置做 DOM 命中（比世界坐标命中更准 —— 壳层 / 端子 / 内容都算） */
+function takeHoverId(rec) {
+  const s = (rec || takeRec()).ptrScreen;
+  if (!s || typeof document.elementFromPoint !== "function") return "";
+  let el = null;
+  try {
+    el = document.elementFromPoint(s.sx, s.sy);
+  } catch (_) {
+    el = null;
+  }
+  const host = el && el.closest ? el.closest("[data-nid]") : null;
+  const id = host ? String(host.dataset.nid || "") : "";
+  return id && nodeById(id) ? id : "";
+}
+
+/** UI 现场：选中 / 悬停 / 展开壳（三项恒为具体值，见本节头注释） */
+function takeUiSnapshot(rec) {
+  const ids = [];
+  if (S.selSet && typeof S.selSet.forEach === "function" && S.selSet.size)
+    S.selSet.forEach((id) => ids.push(String(id)));
+  else if (S.sel) ids.push(String(S.sel));
+  ids.sort();
+  const shells = [];
+  for (const n of (S.wf && S.wf.nodes) || [])
+    if (n && n.kind === "super" && n.superOpen) shells.push(String(n.id));
+  shells.sort();
+  return { sel: ids, hover: takeHoverId(rec), shells };
+}
+
+/** 采一次 UI 现场：只把变了的键塞进一条 ui 条目（没变就一条都不记） */
+function takeSampleUi() {
+  const rec = takeLive();
+  if (!rec) return;
+  const snap = takeUiSnapshot(rec);
+  const prev = rec.uiPrev || { sel: [], hover: "", shells: [] };
+  const set = {};
+  let changed = false;
+  for (const k of ["sel", "hover", "shells"]) {
+    if (JSON.stringify(snap[k]) === JSON.stringify(prev[k])) continue;
+    set[k] = snap[k];
+    changed = true;
+  }
+  if (!changed) return;
+  rec.uiPrev = snap;
+  rec.queue.push({ t: "ui", ms: Date.now(), ui: set });
+  rec.uis++;
+  takeScheduleFlush();
+}
+
+/** 能不能当「文字关键点」采：输入控件 / 可选区（密码框一律不采，值不许进 take） */
+function takeIsField(el) {
+  if (!el || !el.tagName) return false;
+  const tag = String(el.tagName);
+  if (tag === "TEXTAREA" || tag === "SELECT") return true;
+  if (tag === "INPUT") return String(el.type || "") !== "password";
+  return !!el.isContentEditable;
+}
+
+function takeFieldValueOf(el) {
+  if (!el) return "";
+  if (typeof el.value === "string") return el.value;
+  return String(el.textContent || "");
+}
+
+/* 字段的稳定键：画布节点字段认「节点 id + 标签名 + 同标签序号」；壳内输入框认 id
+   （#assistInput 这类）。键要能从结果态复原出来，所以不用随机 id / 文案。 */
+function takeFieldKeyOf(el) {
+  if (!el || !el.tagName) return "";
+  const tag = String(el.tagName).toLowerCase();
+  const host = el.closest ? el.closest("[data-nid]") : null;
+  const nid = host ? String(host.dataset.nid || "") : "";
+  if (nid) {
+    const list = host.querySelectorAll(tag);
+    let idx = 0;
+    for (let i = 0; i < list.length; i++)
+      if (list[i] === el) {
+        idx = i;
+        break;
+      }
+    return "text:" + nid + ":" + tag + "#" + idx;
+  }
+  if (el.id) return "text:#" + String(el.id);
+  return "";
+}
+
+/** 文字关键点：记整串值（停笔 / 失焦时各调一次）；值没变不记 */
+function takeRecordText(el) {
+  const rec = takeLive();
+  if (!rec || !takeIsField(el)) return;
+  const key = takeFieldKeyOf(el);
+  if (!key) return;
+  const val = takeFieldValueOf(el);
+  if (rec.textPrev[key] === val) return;
+  rec.textPrev[key] = val;
+  /* 落 uiTrack：键名 text:… 与 sel / hover / shells 互不冲突 */
+  rec.queue.push({ t: "ui", ms: Date.now(), ui: { [key]: val } });
+  rec.texts++;
+  takeScheduleFlush();
+}
+
+/** 停笔计时：700ms 没有新输入就把那一格的值记下来（继续输入就重新计时） */
+function takeArmTextIdle(el) {
+  const rec = takeLive();
+  if (!rec) return;
+  if (rec.textTimer) clearTimeout(rec.textTimer);
+  rec.textEl = el;
+  rec.textTimer = setTimeout(() => {
+    rec.textTimer = 0;
+    const r = takeLive();
+    if (!r) return;
+    const el0 = r.textEl;
+    r.textEl = null;
+    takeRecordText(el0);
+  }, TAKE_TEXT_IDLE_MS);
+}
+
+/* FNV-1a（32 位）+ 长度：壳快照的内容哈希（只用于去重，不参与重放） */
+function takeHashOf(s) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = (h * 0x01000193) >>> 0;
+  }
+  return h.toString(16).padStart(8, "0") + "-" + s.length.toString(16);
+}
+
+/* 元素 → 「从 root 起算的子节点下标路径」（克隆照这条路径改，真 DOM 不动） */
+function takePathOf(root, el) {
+  const path = [];
+  let cur = el;
+  while (cur && cur !== root) {
+    const p = cur.parentElement;
+    if (!p) return null;
+    path.unshift(Array.prototype.indexOf.call(p.children, cur));
+    cur = p;
+  }
+  return cur === root ? path : null;
+}
+
+function takeByPath(root, path) {
+  let el = root;
+  for (let i = 0; i < path.length; i++) {
+    const kids = el && el.children;
+    if (!kids || !kids[path[i]]) return null;
+    el = kids[path[i]];
+  }
+  return el;
+}
+
+/* 真 DOM 上量一次：滚出可视区的叶子正文 + 要换空位的媒体，一律记路径（克隆之后照路径改） */
+function takeShellTrimTargets(root) {
+  const texts = [];
+  const media = [];
+  for (const el of root.querySelectorAll(
+    "video, webview, [data-live2d], #assistLive2d, #assistLive2d canvas",
+  )) {
+    const p = takePathOf(root, el);
+    if (!p) continue;
+    const r = el.getBoundingClientRect();
+    media.push({
+      path: p,
+      tag: String(el.tagName || "").toLowerCase(),
+      w: Math.round(r.width),
+      h: Math.round(r.height),
+    });
+  }
+  /* 条目正文：只在「真的能滚」的容器里找叶子 —— 不扫全树（一份快照几十毫秒就打不住） */
+  const hosts = [];
+  const cands = root.querySelectorAll("div, ul, ol, section, aside, main");
+  for (let i = 0; i < cands.length && i < 1500; i++) {
+    const el = cands[i];
+    if (!(el.scrollHeight > el.clientHeight + 4) || el.clientHeight < 1) continue;
+    const ov = getComputedStyle(el).overflowY;
+    if (ov === "auto" || ov === "scroll") hosts.push(el);
+  }
+  for (const host of hosts) {
+    const hr = host.getBoundingClientRect();
+    const leaves = host.querySelectorAll("*");
+    for (let i = 0; i < leaves.length && texts.length < TAKE_SHELL_MAX_TRIM; i++) {
+      const el = leaves[i];
+      if (el.children.length) continue; /* 只认叶子：换正文不能把结构一起换掉 */
+      if (String(el.textContent || "").trim().length < 20) continue;
+      const r = el.getBoundingClientRect();
+      if (!r.width && !r.height) continue;
+      if (r.bottom > hr.top + 1 && r.top < hr.bottom - 1) continue; /* 还看得见 */
+      const p = takePathOf(root, el);
+      if (p) texts.push(p);
+    }
+  }
+  return { texts, media };
+}
+
+/* 壳快照的根样式：**body 自己的排版与主题令牌都带不进 outerHTML** —— `body` 元素一进
+   innerHTML 就被解析器摘掉，壳退化成普通 block（#layout 的 flex:1 失效，画布面板塌成一条
+   细框），body.theme-* 上重定义的 --bg / --bd 一整套令牌也一起丢。这里把 body 的排版键与
+   **所有已算出的自定义属性**抄成一层 .take-shell-root 的内联样式，尺寸给 100%（壳多大它多大，
+   跟着帧盒走）。抄的是算出来的值，不是复制一份规则表。 */
+function takeShellRootCss() {
+  const b = document.body;
+  if (!b) return "";
+  const cs = getComputedStyle(b);
+  const box = [
+    "display",
+    "flex-direction",
+    "flex-wrap",
+    "align-items",
+    "justify-content",
+    "gap",
+    "padding",
+    "box-sizing",
+    "overflow",
+    "font-family",
+    "font-size",
+    "line-height",
+    "color",
+    "background-color",
+  ];
+  const out = ["position:absolute", "left:0", "top:0", "width:100%", "height:100%"];
+  for (const k of box) {
+    const v = cs.getPropertyValue(k);
+    if (v) out.push(k + ":" + v);
+  }
+  for (let i = 0; i < cs.length; i++) {
+    const p = cs[i];
+    if (p.slice(0, 2) === "--") out.push(p + ":" + cs.getPropertyValue(p));
+  }
+  return out.join(";");
+}
+
+/** 整窗壳快照（已裁过的 outerHTML）：只读、只量几何，改的全是克隆 */
+function takeShellHtml() {
+  const root = document.body;
+  if (!root) return "";
+  const trim = takeShellTrimTargets(root);
+  const clone = root.cloneNode(true); /* 先克隆：后面所有裁剪都只动这一份 */
+  /* ① 滚出可视区的条目正文 →「…」 */
+  for (const p of trim.texts) {
+    const el = takeByPath(clone, p);
+    if (el) el.textContent = "…";
+  }
+  /* ② 媒体 → 同尺寸空位（webview 带登录态、video 是解码器、live2d 是 GPU 画布，
+        这些东西在 outerHTML 里没有可重放的内容） */
+  for (const m of trim.media) {
+    const el = takeByPath(clone, m.path);
+    if (!el || !el.parentElement) continue;
+    const box = clone.ownerDocument.createElement("div");
+    box.className = "take-blank take-blank-" + m.tag;
+    box.setAttribute("data-take-empty", m.tag);
+    if (m.w || m.h) box.setAttribute("style", "width:" + m.w + "px;height:" + m.h + "px");
+    el.parentElement.replaceChild(box, el);
+  }
+  /* ③ #canvas 内部的 SVG 全剔（连线 / 端子 / 标注每帧重算；容器与工具条留着） */
+  const cv = clone.querySelector("#canvas");
+  if (cv) for (const s of cv.querySelectorAll("svg")) s.remove();
+  /* ④ #stage 的内联 transform 剔掉：相机走 camTrack，留着会让平移期间每份快照都「不一样」 */
+  const st = clone.querySelector("#stage");
+  if (st) st.removeAttribute("style");
+  /* ⑤ 录制器自己的键面剔掉（见 TAKE_SHELL_SELF_SEL 的注释）：它是「正在录」的读数，不是现场 */
+  for (const self of clone.querySelectorAll(TAKE_SHELL_SELF_SEL)) self.remove();
+  /* ⑥ 根换成一层 div：body 的排版 + 主题令牌（见 takeShellRootCss），class 跟着 body 走
+        （theme-* / 紧凑模式这类「挂在 body 上的钩子」在壳里照样生效） */
+  const cls = "take-shell-root" + (root.className ? " " + String(root.className) : "");
+  return '<div class="' + cls + '" style="' + takeShellRootCss() + '">' + clone.innerHTML + "</div>";
+}
+
+/** 采一份壳快照：内容哈希去重 + 字节软上限（与 canvas-take.js 同口径） */
+function takeSampleShell(src) {
+  const rec = takeLive();
+  if (!rec) return;
+  const html = takeShellHtml();
+  if (!html) return;
+  const h = takeHashOf(html);
+  if (rec.shellHash === h) return; /* 与上一份一样：一条都不记 */
+  if (rec.shellBytes + html.length > TAKE_SHELL_MAX_BYTES) {
+    rec.shellDropped++; /* 超软上限：不再往里塞（内核那侧也只 warn） */
+    return;
+  }
+  rec.shellHash = h;
+  rec.shellBytes += html.length;
+  rec.shellAt = Date.now();
+  rec.shells++;
+  rec.queue.push({ t: "shell", ms: Date.now(), html, src: src || "ui" });
+  takeScheduleFlush();
+}
+
+/* MutationObserver 的落点：抖得再凶也只按「最短 400ms 一份」走 */
+function takeMarkShellDirty() {
+  const rec = takeLive();
+  if (!rec || rec.shellTimer) return;
+  const wait = Math.max(0, TAKE_SHELL_MIN_MS - (Date.now() - (rec.shellAt || 0)));
+  rec.shellTimer = setTimeout(() => {
+    rec.shellTimer = 0;
+    takeSampleShell("mutation");
+  }, wait);
+}
+
+/** 挂采样：开录时一次（暂停 / 收尾时由 takeHooksDetach 摘干净） */
+function takeHooksAttach() {
+  const rec = takeRec();
+  if (rec.hooks) return;
+  rec.hooks = true;
+  const H =
+    rec.handlers ||
+    (rec.handlers = {
+      down: (ev) => takeRecordPointer(ev, "down"),
+      up: (ev) => takeRecordPointer(ev, "up"),
+      move: (ev) => takeRecordPointer(ev, "move"),
+      /* 输入 / 失焦：停笔记一次、失焦再记一次（同一格值没变就只落一条） */
+      input: (ev) => {
+        if (takeLive() && takeIsField(ev.target)) takeArmTextIdle(ev.target);
+      },
+      blur: (ev) => {
+        if (takeLive() && takeIsField(ev.target)) takeRecordText(ev.target);
+      },
+    });
+  window.addEventListener("pointerdown", H.down, true);
+  window.addEventListener("pointerup", H.up, true);
+  window.addEventListener("pointermove", H.move, { capture: true, passive: true });
+  document.addEventListener("input", H.input, true);
+  document.addEventListener("focusout", H.blur, true);
+  if (typeof MutationObserver === "function" && document.body) {
+    rec.obs = new MutationObserver((list) => {
+      /* 平移 / 缩放每帧都在改 #stage 的 transform：那条不算「壳变了」（见 takeShellHtml ④）。
+         录制胶囊（#takeUi / #takeToast）自己每半秒重绘一次：它不进快照（⑤），也不算壳变了 ——
+         少了这一条，观察器会被自家读数带着跑，白白克隆 + 序列化整窗。 */
+      const hit = list.some(
+        (m) =>
+          !(
+            (m.target && m.target.closest && m.target.closest(TAKE_SHELL_SELF_SEL)) ||
+            (m.type === "attributes" &&
+              m.attributeName === "style" &&
+              m.target &&
+              m.target.id === "stage")
+          ),
+      );
+      if (hit) takeMarkShellDirty();
+    });
+    rec.obs.observe(document.body, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      characterData: true,
+    });
+  }
+  rec.uiTimer = setInterval(takeSampleUi, TAKE_UI_POLL_MS);
+  takeSampleUi(); /* 起手那一份现场 */
+  takeSampleShell("start"); /* 起手那一份壳 */
+}
+
+/** 摘采样：暂停 / 收尾时调（监听、观察器、三个计时器一并清掉） */
+function takeHooksDetach() {
+  const rec = takeRec();
+  if (rec.uiTimer) {
+    clearInterval(rec.uiTimer);
+    rec.uiTimer = 0;
+  }
+  if (rec.shellTimer) {
+    clearTimeout(rec.shellTimer);
+    rec.shellTimer = 0;
+  }
+  if (rec.textTimer) {
+    clearTimeout(rec.textTimer);
+    rec.textTimer = 0;
+  }
+  rec.textEl = null;
+  rec.ptrScreen = null;
+  if (rec.obs) {
+    try {
+      rec.obs.disconnect();
+    } catch (_) {
+      /* 已经断开过 */
+    }
+    rec.obs = null;
+  }
+  if (!rec.hooks) return;
+  rec.hooks = false;
+  const H = rec.handlers;
+  if (!H) return;
+  window.removeEventListener("pointerdown", H.down, true);
+  window.removeEventListener("pointerup", H.up, true);
+  window.removeEventListener("pointermove", H.move, true);
+  document.removeEventListener("input", H.input, true);
+  document.removeEventListener("focusout", H.blur, true);
+}
+
+/* 攒批上送：相机采样一次一送会把 IPC 打成筛子 */
+function takeScheduleFlush() {
+  const rec = takeRec();
+  if (!rec.on || rec.timer) return;
+  rec.timer = setTimeout(() => {
+    rec.timer = 0;
+    takeFlush();
+  }, 700);
+}
+
+async function takeFlush() {
+  const rec = takeRec();
+  if (!rec.on) return { ok: false, error: "off" };
+  const api = takeBridge();
+  if (!api) return { ok: false, error: "no_bridge" };
+  if (rec.timer) {
+    clearTimeout(rec.timer);
+    rec.timer = 0;
+  }
+  /* 串行排队：文档态立刻上送、相机采样攒批，两条路都会叫到这里 —— 排进同一条链，
+     免得两批交叉上送（后到的那批反而先落盘，轨道顺序就乱了） */
+  const prev = rec.pending || Promise.resolve();
+  rec.pending = prev.then(
+    () => takeSendBatch(rec, api),
+    () => takeSendBatch(rec, api),
+  );
+  return rec.pending;
+}
+
+async function takeSendBatch(rec, api) {
+  if (!rec.on || !rec.queue.length) return { ok: true, sent: 0 };
+  const batch = rec.queue.splice(0, 400);
+  try {
+    const r = await api.takeAppend({
+      wfId: rec.wfId,
+      takeId: rec.takeId,
+      start: takeStartPayload(rec),
+      entries: batch,
+    });
+    if (r && r.ok) {
+      rec.sent += batch.length;
+      /* 已写字节：主进程每次落盘回的就是「当时那份 take 文件」的字节数，
+         取最后一次的值（同一份账累计覆盖写，不该把每次的字节加在一起） */
+      if (r.bytes) rec.bytes = Number(r.bytes) || rec.bytes;
+      rec.lastErr = "";
+    } else {
+      /* 上送失败：把这批退回队头（宁可下次重发，不许静默丢帧） */
+      rec.queue = batch.concat(rec.queue);
+      rec.lastErr = String((r && r.error) || "append_failed");
+    }
+  } catch (err) {
+    rec.queue = batch.concat(rec.queue);
+    rec.lastErr = String((err && err.message) || err);
+  }
+  if (rec.queue.length) takeScheduleFlush();
+  return { ok: !rec.lastErr, sent: batch.length, error: rec.lastErr };
+}
+
+/** 开录：先记一份「现在的画布」当基础态（没有它，后面所有差量都没有可贴的地方） */
+function canvasTakeStart(opts) {
+  const o = opts && typeof opts === "object" ? opts : {};
+  const rec = takeRec();
+  if (rec.on) return { ok: false, error: I18n.t("已经在录制：") + rec.takeId };
+  const T = typeof window !== "undefined" ? window.MTCanvasTake : null;
+  if (!T) return { ok: false, error: I18n.t("录制不可用：canvas-take.js 未加载") };
+  if (!takeBridge()) return { ok: false, error: I18n.t("录制不可用：主进程桥未就绪") };
+  const at = Date.now();
+  const vp = takeViewportNow();
+  const take = T.newTake({
+    id: o.takeId,
+    wfId: (S.wf && S.wf.id) || "",
+    wfName: (S.wf && S.wf.name) || "",
+    fps: o.fps || 30,
+    startedAtMs: at,
+    width: vp.width,
+    height: vp.height,
+    dpr: vp.dpr,
+  });
+  rec.on = true;
+  rec.takeId = take.id;
+  rec.wfId = take.wfId;
+  rec.startedAtMs = at;
+  rec.fps = take.fps;
+  rec.viewport = { width: take.width, height: take.height, dpr: take.dpr };
+  rec.queue = [];
+  rec.timer = 0;
+  rec.pending = null;
+  rec.sent = 0;
+  rec.bytes = 0;
+  rec.docs = 0;
+  rec.cams = 0;
+  rec.ptrs = 0;
+  rec.uis = 0;
+  rec.texts = 0;
+  rec.shells = 0;
+  rec.shellBytes = 0;
+  rec.shellDropped = 0;
+  rec.shellHash = "";
+  rec.shellAt = 0;
+  rec.paused = false;
+  rec.uiPrev = { sel: [], hover: "", shells: [] };
+  rec.textPrev = {};
+  rec.ptrLast = null;
+  rec.ptrScreen = null;
+  rec.ptrDown = false;
+  rec.lastCam = null;
+  rec.lastErr = "";
+  takeQueueDoc(S.wf);
+  takeRecordCam();
+  /* 采样从这里开始挂（指针 / UI / 文字 / 壳快照）：不录时一个监听都不挂 */
+  takeHooksAttach();
+  return { ok: true, takeId: take.id, wfId: take.wfId, fps: take.fps, paused: false };
+}
+
+/** 暂停：暂停期间一条轨都不采（监听一并摘下 = 真零开销）；已采的先落盘 */
+function canvasTakePause() {
+  const rec = takeRec();
+  if (!rec.on) return { ok: false, error: "not_recording" };
+  if (rec.paused) return { ok: true, paused: true, takeId: rec.takeId };
+  /* 还压在「停笔」计时里的那一格先补记，别把用户刚敲的字丢掉 */
+  if (rec.textTimer) {
+    clearTimeout(rec.textTimer);
+    rec.textTimer = 0;
+    const el = rec.textEl;
+    rec.textEl = null;
+    takeRecordText(el);
+  }
+  rec.paused = true;
+  takeHooksDetach();
+  takeFlush();
+  return { ok: true, paused: true, takeId: rec.takeId, bytes: rec.bytes, sent: rec.sent };
+}
+
+/** 继续：暂停期间画布可能已经变了，先补一份结果态与机位，再把采样挂回去 */
+function canvasTakeResume() {
+  const rec = takeRec();
+  if (!rec.on) return { ok: false, error: "not_recording" };
+  if (!rec.paused) return { ok: true, paused: false, takeId: rec.takeId };
+  rec.paused = false;
+  takeQueueDoc(S.wf);
+  takeRecordCam();
+  takeHooksAttach();
+  return { ok: true, paused: false, takeId: rec.takeId, bytes: rec.bytes, sent: rec.sent };
+}
+
+/** 收尾：补记最后一份结果态（否则最后一笔操作永远不在 take 里）→ 上送 → 定长 / 定校验和 */
+async function canvasTakeStop() {
+  const rec = takeRec();
+  if (!rec.on) return { ok: false, error: "not_recording" };
+  /* 先补那一格还压在「停笔」计时里的文字（摘监听之后就找不回那颗元素了），再停采样
+     （摘监听 → 收尾这一份不会被新采样插到前面） */
+  rec.paused = false; /* 收尾这一笔要能落账（监听马上就摘，不会再有新采样） */
+  if (rec.textTimer) {
+    clearTimeout(rec.textTimer);
+    rec.textTimer = 0;
+    const el = rec.textEl;
+    rec.textEl = null;
+    takeRecordText(el);
+  }
+  takeHooksDetach();
+  takeQueueDoc(S.wf);
+  await takeFlush();
+  const api = takeBridge();
+  const at = Date.now();
+  let r = null;
+  try {
+    r = api
+      ? await api.takeAppend({
+          wfId: rec.wfId,
+          takeId: rec.takeId,
+          start: takeStartPayload(rec),
+          entries: [],
+          stop: { endedAtMs: at },
+        })
+      : null;
+  } catch (err) {
+    rec.lastErr = String((err && err.message) || err);
+  }
+  rec.on = false;
+  rec.paused = false;
+  rec.lastCam = null;
+  const out = {
+    ok: !!(r && r.ok),
+    takeId: rec.takeId,
+    wfId: rec.wfId,
+    path: (r && r.path) || "",
+    /* 主进程在收尾那一笔顺手生成的自包含播放页（<数据目录>\takes\<wfId>\<takeId>.html）：
+       生成失败时是空串 + htmlError 说明，take 本身不受影响 */
+    htmlPath: (r && r.htmlPath) || "",
+    htmlBytes: (r && r.htmlBytes) || 0,
+    htmlError: (r && r.htmlError) || "",
+    bytes: (r && r.bytes) || rec.bytes,
+    durationFrames: (r && r.durationFrames) || 0,
+    finalHash: (r && r.finalHash) || "",
+    docs: rec.docs,
+    cams: rec.cams,
+    ptrs: rec.ptrs,
+    uis: rec.uis,
+    texts: rec.texts,
+    shells: rec.shells,
+    shellBytes: rec.shellBytes,
+    shellDropped: rec.shellDropped,
+    error: (r && r.error) || rec.lastErr || "",
+  };
+  return out;
+}
+
+function canvasTakeStatus() {
+  const rec = takeRec();
+  return {
+    recording: rec.on,
+    paused: !!rec.paused,
+    takeId: rec.takeId,
+    wfId: rec.wfId,
+    fps: rec.fps,
+    queued: rec.queue.length,
+    sent: rec.sent,
+    bytes: rec.bytes,
+    docs: rec.docs,
+    cams: rec.cams,
+    ptrs: rec.ptrs,
+    uis: rec.uis,
+    texts: rec.texts,
+    shells: rec.shells,
+    shellBytes: rec.shellBytes,
+    shellDropped: rec.shellDropped,
+    lastError: rec.lastErr,
+  };
+}
+
+window.CanvasTake = {
+  start: canvasTakeStart,
+  stop: canvasTakeStop,
+  pause: canvasTakePause,
+  resume: canvasTakeResume,
+  flush: () => takeFlush(),
+  status: canvasTakeStatus,
+};
+

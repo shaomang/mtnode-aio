@@ -190,6 +190,13 @@ contextBridge.exposeInMainWorld('api', {
       runKey: String((opts && opts.runKey) || ''),
       snap: Number((opts && opts.snap) || 0) || 0,
     }),
+  /* 画布录制账本（take）：只上送「记什么」（doc / cam / ui / pointer 四种条目 + 起手元数据），
+     怎么合、帧号怎么算、写到哪儿全在主进程（take:append 与 canvas-doc/canvas-take.js）。
+     默认不录：渲染层 window.CanvasTake.start() 才打开，没录时这条桥一次都不会被调用。 */
+  takeAppend: (arg) => ipcRenderer.invoke('take:append', arg || {}),
+  /* 用系统默认浏览器打开一条 take 的播放页（take:append 收尾时生成的自包含 html）。
+     这里只把路径原样交给主进程：目录 / 后缀的校验在 take:openHtml 那一侧做。 */
+  takeOpenHtml: (p) => ipcRenderer.invoke('take:openHtml', p),
   /* 删除画布：兼容旧调用（传 id 字符串）；新调用传 { id, expectId, expectName }，
      要连画布的项目文件夹（workspace）一起删再加 { deleteWorkspace:true, expectWorkspace }。
      由主进程双重校验后移入回收站（软删 / 文件夹进系统回收站），失败返回 { ok:false, code, error }。 */

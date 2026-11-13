@@ -3752,7 +3752,8 @@
     "输入 API Key（隐藏显示，仅存本机）": "Enter API Key (hidden; stored on this machine only)",
     "选择服务商后自动载入其模型列表与接口地址。": "Selecting a provider loads its model list and endpoint automatically.",
     "智能节点（读文件 / 联网 / 执行命令）": "Agent Node (read files / network / run commands)",
-    "」· 点击切换（无 / 低 / 中 / 高 / 最强）": "\" · Click to cycle (Off / Low / Medium / High / Max)",
+    "」· 左键加档 / 右键降档（无 / 低 / 中 / 高 / 最强）":
+      "\" · Left click to raise / right click to lower (Off / Low / Medium / High / Max)",
     "本次智能运行的统计（与 dsh 客户端一致）": "Stats for this agent run (same as the dsh client)",
     "复制该会话为新会话(参考 dsh fork)": "Duplicate this session as a new one (like dsh fork)",
     /* ── 会话行内删除（app-assist.js · 两下确认 + 悬停恢复） ── */
@@ -11612,32 +11613,10 @@
       "mtnode.image: the function node's image backend is not wired (main.js did not inject fnRuntime.imageCall)",
   });
 
-  /* ── Puzzle 益智小游戏（app-puzzle.js 框架与顶栏入口共用 UI 词条）── */
+  /* ── 通用词条（目标 / 结束 被节点与运行面板共用）── */
   Object.assign(EN, {
-    "游戏": "Game",
-    "益智小游戏：等待 AI 工作时玩几款小游戏打发时间":
-      "Puzzle games: play a few quick minigames while you wait for the AI",
-    "益智小游戏": "Puzzle Games",
-    "选择一款小游戏打发时间": "Pick a minigame to pass the time",
-    "难度": "Level",
     "目标": "Goal",
-    "已答": "Done",
-    "得分": "Score",
-    "连击": "Combo",
-    "计时": "Time",
     "结束": "End",
-    "关闭": "Close",
-    "返回列表": "All games",
-    "A · 计算 / 逻辑": "A · Arithmetic / Logic",
-    "B · 记忆 / 注意": "B · Memory / Attention",
-    "C · 知觉 / 空间": "C · Perception / Space",
-    "难度 {l} / 5": "Level {l} / 5",
-    "未实现 · 玩法将在后续接入": "Not implemented yet · coming soon",
-    "已全部接入玩法": "All games wired up",
-    "开始": "Play",
-    "没有可玩的小游戏": "Nothing to play yet",
-    "本轮结束": "Round over",
-    "再来一局": "Play again",
   });
 
   /* ── 统一账户与登录（renderer/app-auth.js / app-store.js / main.js 账户 IPC 共用）──
@@ -15136,6 +15115,10 @@
     "冻结画面加载失败：": "Could not load the frozen screen: ",
     "截图工具未接线（缺少 preload 桥）": "Screenshot tool not wired (missing preload bridge)",
     "截图工具未接线，无法保存": "Screenshot tool not wired — cannot save",
+    /* 截图询问窗可拖动 / 可让开（mtDlgFloat） */
+    "最小化（让开画面）": "Minimize (clear the way)",
+    "填了图片路径就点「交回」—— 那张图直接交给 Agent，不再冻结屏幕；要现场框选标注才点「开始截图…」。这只窗能拖着标题行挪开，也能点标题行的「—」让开画面：先去画布上把要看的内容摆好，再点「开始截图…」。":
+      "Enter an image path and click “Hand it back” — that image goes straight to the agent without freezing the screen; only “Start screenshot…” freezes it for framing and annotating. This window can be dragged by its title bar, or minimised with the “—” button: arrange the canvas first, then click “Start screenshot…”.",
     "写一句要怎么改（回车收笔 · Shift+回车换行）":
       "Say what should change (Enter commits · Shift+Enter for a new line)",
     "已保存，但剪贴板不可用": "Saved, but the clipboard is unavailable",
@@ -15161,6 +15144,33 @@
     "保存并在剪贴板里写好 Markdown (Enter)":
       "Save and put the Markdown on the clipboard (Enter)",
     "取消 (Esc)": "Cancel (Esc)",
+  });
+
+  /* ── 画布录制按钮（renderer/app-take-ui.js + css/take-ui.css）──
+     词条出现在：状态栏左下角那颗「● 录制」的键面与 tooltip、录制中的暂停 / 停止两枚
+     小按钮、停止后左下角那条提示条（已录制 … · 打开 · ✕）。
+     只补表里还没有的键：已存在的通用串（录制 / 暂停 / 已暂停 / 继续录制 / 停止并保存 /
+     打开 / 已保存到 … / 没有可打开的文件 / 这个环境不支持打开文件夹）一概不重复登记。 */
+  Object.assign(EN, {
+    "画布录制": "Canvas recording",
+    "开始录制画布操作（录成一条可重放的 take）":
+      "Start recording canvas actions as a replayable take",
+    "录制中：点 ⏸ 暂停，点 ■ 停止并保存":
+      "Recording: click ⏸ to pause, ■ to stop and save",
+    "暂停录制": "Pause recording",
+    "已录制 {t} · {s}": "Recorded {t} · {s}",
+    "打开这条 take 所在的文件夹": "Show this take in its folder",
+    "关掉这条提示": "Dismiss this notice",
+    "录制没能开始：": "Could not start recording: ",
+    "当前没有画布（先打开一张画布再录）":
+      "There is no canvas right now (open one before recording)",
+    "录制没能保存：": "Could not save the recording: ",
+    "录制不可用：window.CanvasTake 未就绪":
+      "Recording unavailable: window.CanvasTake is not ready",
+    "暂停失败": "Pause failed",
+    "继续失败": "Resume failed",
+    "打开失败": "Open failed",
+    "录制已保存，但没有拿到文件路径": "Saved, but no file path came back",
   });
 
   function listJoin(arr) {

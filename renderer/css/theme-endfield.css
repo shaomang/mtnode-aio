@@ -1078,6 +1078,14 @@ body.ef-skin .mt-dialog-head .tag {
        body.ef-skin .mt-dialog.on > .mt-dialog-box 里，顺序也仍是 mtPopIn 打头，
        本节只在它后面追加关键帧。 */
 
+/* 「让开」态（截图询问窗的最小化）：蒙层要真的让开 —— 用户得能看见并操作背后的画布。
+   所以这一态既不能压暗、也不能整窗模糊（base.css 的 .mt-dialog.peek 管布局与鼠标，
+   这里只按本主题的特异度把 background / backdrop-filter 一起撤掉）。 */
+body.ef-skin .mt-dialog.peek {
+  background: transparent;
+  backdrop-filter: none;
+}
+
 /* ① 切角描边从角向边生长。
    框由两处画成：四边是 1px border，右上 45° 那条斜边是 background 里 18×18 的色带。
    斜边天生就在角上（跟着面板一起淡入），所以「生长」只缺两条边 —— 顶边与右边各做成
@@ -1284,6 +1292,22 @@ body.ef-skin select:focus {
   background: #171717;
   box-shadow: 0 0 0 3px rgba(var(--ef-signal-rgb), .16), inset 0 0 0 1px rgba(var(--ef-signal-rgb), .25);
   outline: none;
+}
+
+/* ── 「镜面输入框」例外：上面那两条底色**不许**落到下面这两类框上 ────────────────
+   .n-text.n-text-layered（节点提示词 / 文本节点正文框，镜像层 .n-prompt-hl）
+   .js-edit-input（函数节点代码编辑器，镜像层 .js-edit-hl）
+   这两类 textarea 自己**不画字**（color / -webkit-text-fill-color 都是 transparent），
+   字是下面那层镜像画的，textarea 只留 caret-color 与选区。若给它刷上不透明底色，
+   镜像整块被盖掉 → 现象是「一点进去 / 一打字，框里就空了」（用户报的那条）。
+   所以它们恒定透明：边框、焦点环、扫描光带（background-image）都照旧，只撤 background-color。
+   specificity 必须压过上面 :focus 那条（body.ef-skin textarea.n-text-layered:focus = 0,3,2
+   > body.ef-skin textarea:focus = 0,2,2）—— 别改成 background 简写，否则连扫描光带一起刷掉。 */
+body.ef-skin textarea.n-text-layered,
+body.ef-skin textarea.js-edit-input,
+body.ef-skin textarea.n-text-layered:focus,
+body.ef-skin textarea.js-edit-input:focus {
+  background-color: transparent;
 }
 
 body.ef-skin :where(button, a, summary, [tabindex], [role="button"], [role="tab"], [role="menuitem"]):focus-visible {

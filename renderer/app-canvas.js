@@ -1851,7 +1851,7 @@ function apiPreviewButtons(node) {
   return [pv];
 }
 
-/* 思考强度按钮（proc_text 文本模型）：无 / 低 / 中 / 高 / 最强，点击切换，默认低
+/* 思考强度按钮（proc_text 文本模型）：无 / 低 / 中 / 高 / 最强，左键加一档、右键降一档，默认低
    「无」= 关闭思考（参考 dsh：thinking.type=disabled，不发送 reasoning_effort）；旧 none/minimal 归一为 low。
    「最强」(max) 直接进按钮环 → main.js applyTextThinkingEffort 原样下发 reasoning_effort=max；
    xhigh 不露出（默认路由会把它夹到 high，露出即静默降档），但归一成 high 而不是掉到 low。 */
@@ -1881,18 +1881,28 @@ function effortButtonEl(node) {
     effortBtn.title =
       I18n.t("思考强度：当前「") +
       I18n.t(EFFORT_LABELS[cur]) +
-      I18n.t("」· 点击切换（无 / 低 / 中 / 高 / 最强）");
+      I18n.t("」· 左键加档 / 右键降档（无 / 低 / 中 / 高 / 最强）");
   };
   paintEffort();
-  effortBtn.onclick = (ev) => {
-    ev.stopPropagation();
+  /* step：+1 = 左键升一档、-1 = 右键降一档（两头循环，与旧的左键循环一致） */
+  const stepEffort = (step) => {
     const cur = normalizeTextEffort(node.effort);
-    node.effort =
-      EFFORT_LEVELS[(EFFORT_LEVELS.indexOf(cur) + 1) % EFFORT_LEVELS.length];
+    const i = EFFORT_LEVELS.indexOf(cur);
+    const n = EFFORT_LEVELS.length;
+    node.effort = EFFORT_LEVELS[(((i < 0 ? 0 : i) + step) % n + n) % n];
     pushHistory();
     scheduleSave();
     paintEffort();
     toast(I18n.t("思考强度 → ") + I18n.t(EFFORT_LABELS[node.effort]), "ok");
+  };
+  effortBtn.onclick = (ev) => {
+    ev.stopPropagation();
+    stepEffort(1);
+  };
+  effortBtn.oncontextmenu = (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    stepEffort(-1);
   };
   return effortBtn;
 }

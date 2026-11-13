@@ -391,6 +391,81 @@ input[type="number"]::-webkit-outer-spin-button {
   max-height: min(88vh, 700px);
 }
 
+/* ── 可浮动弹窗（截图询问窗 · app.js 的 mtDlgFloat）────────────────────────────
+   只有显式要 floating 的窗才挂 .mt-dlg-float / .mt-dlg-drag（脚本挂类，别处不受影响）：
+   标题行能拖、能「让开」—— 用户先去画布上摆好画面，再回来点「开始截图…」。
+   让开（.peek）不是关闭：窗与内容原样留着，仍然 persistent，点窗外照样不关。 */
+.mt-dialog-head.mt-dlg-float {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.mt-dialog-head.mt-dlg-float>b {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mt-dialog-head.mt-dlg-float.mt-dlg-drag {
+  cursor: move;
+  touch-action: none;
+  user-select: none;
+}
+
+.mt-dlg-tools {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 6px;
+}
+
+.mt-dlg-btn {
+  width: 22px;
+  height: 20px;
+  padding: 0;
+  line-height: 16px;
+  font-size: 12px;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid var(--bd2);
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.mt-dlg-btn:hover {
+  color: var(--ink);
+  border-color: var(--orange);
+}
+
+/* 让开态：蒙层变透明且整层不吃鼠标（画布当场可点可拖），窗只剩一条标题窄条贴右下角；
+   点标题条 / 再点那颗按钮就回到原样。拖过位置就留在拖到的位置（绝对定位胜过 flex 对齐）。 */
+.mt-dialog.peek {
+  background: transparent;
+  pointer-events: none;
+  align-items: flex-end;
+  justify-content: flex-end;
+  padding: 0 20px 20px 0;
+}
+
+.mt-dialog.peek>.mt-dialog-box {
+  pointer-events: auto;
+  width: auto;
+  max-width: min(460px, 90vw);
+  max-height: none;
+  animation: none;
+}
+
+.mt-dialog.peek>.mt-dialog-box>.mt-dialog-body,
+.mt-dialog.peek>.mt-dialog-box>.mt-dialog-foot {
+  display: none;
+}
+
+.mt-dialog.peek>.mt-dialog-box>.mt-dialog-head {
+  border-bottom: 0;
+}
+
 .mt-form-rows {
   display: flex;
   flex-direction: column;

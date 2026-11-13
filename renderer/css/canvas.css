@@ -4245,10 +4245,18 @@ body.theme-light .n-chip.n-chip-lt {
   margin: 5px 0
 }
 
+/* 列表缩进用 em 而不是 px：编号是浏览器原生 list marker，它画在 ol 的 padding 区里、
+   右对齐到正文左缘 —— 缩进一旦小于 marker 本身宽度（多位数「10.」、或文本节点把字号
+   放大到 16–32px 时），marker 就会顶出盒子被外层 overflow:hidden 裁掉，只剩末尾那个点
+   （用户报的「编号被左侧截断」）。1.4em / 2.2em 随字号一起长，任何字号、任何位数都装得下。 */
 .md ul,
 .md ol {
   margin: 5px 0;
-  padding-left: 20px
+  padding-left: 1.4em
+}
+
+.md ol {
+  padding-left: 2.2em
 }
 
 .md li {
@@ -5517,11 +5525,15 @@ body.theme-light .n-chip.n-chip-lt {
   margin-top: 5px
 }
 
-/* 列表：左缩进 16px ≈ 10 个等宽字符（编辑态里 `1. ` 的缩进量就是这一档），列表项之间
-   不再额外撑开（每项之间的换行本来就是一行）。 */
+/* 列表：缩进用 em（编号 marker 画在 padding 区里，px 缩进在放大字号 / 多位数时会
+   把「1.」「10.」裁掉，只剩个点）。ul 的圆点窄，1.4em 够；ol 要容下 marker 全宽。 */
 .n-md-prev ul,
 .n-md-prev ol {
-  padding-left: 16px
+  padding-left: 1.4em
+}
+
+.n-md-prev ol {
+  padding-left: 2.2em
 }
 
 .n-md-prev li {
@@ -7306,10 +7318,16 @@ body.theme-light .n-chip.n-chip-lt {
   margin: 4px 0
 }
 
+/* 缩进口径同上面 .md 那条：em 随字号缩放，编号 marker 不会被 .n-view 的
+   overflow-x:hidden 裁掉。 */
 .wf-node.browse .md ul,
 .wf-node.browse .md ol {
   margin: 4px 0;
-  padding-left: 18px
+  padding-left: 1.4em
+}
+
+.wf-node.browse .md ol {
+  padding-left: 2.2em
 }
 
 .wf-node.browse .md li {
@@ -7454,7 +7472,14 @@ body.theme-light .n-chip.n-chip-lt {
 .wf-node.browse .md.n-md-browse ul,
 .wf-node.browse .md.n-md-browse ol {
   margin: 0;
-  padding-left: 16px
+  padding-left: 1.4em
+}
+
+/* 文本节点预览的编号列表：缩进必须随字号（node.fontSize 内联在 .n-md-browse 上，em 会
+   继承）一起放大。原来写死 16px，字号一放大 / 编到两位数，marker 就顶到 .n-view 的
+   overflow-x:hidden 边界外被裁掉 —— 用户报的「看不到数字编号」就是这个。 */
+.wf-node.browse .md.n-md-browse ol {
+  padding-left: 2.2em
 }
 
 .wf-node.browse .md.n-md-browse li {

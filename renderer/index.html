@@ -69,6 +69,11 @@
 <!-- 状态栏「重新编译并重启」按钮（renderer/app-self-rebuild.js）：与上面同一写法，
      独立成一份；只排版那颗 22×22 的图标按钮与它的悬停 / 禁用态。 -->
 <link rel="stylesheet" href="css/self-rebuild.css">
+<!-- 画布录制按钮（renderer/app-take-ui.js）：状态栏左下角四颗按钮之后那颗「● 录制」、
+     录制中的暂停 / 停止两枚小按钮，以及停止后左下角那条带「打开」的提示条。
+     与上面几份同一写法：独立成一份、用 <link> 跟在 style.css 之后，配色只取
+     base.css 的主题变量（亮色主题自动跟随）。 -->
+<link rel="stylesheet" href="css/take-ui.css">
 <link rel="stylesheet" href="css/tts.css">
 <!-- 任务完成的应用内卡片（renderer/app-notify.js）：右下角浮层，兜底系统通知
      （系统勿扰 / 开发态通知不弹时仍然看得见）。独立成一份，配色走 base.css 的变量。 -->
@@ -97,10 +102,6 @@
       <span class="logo-warn-txt" id="logoWarnTxt"></span>
     </button>
     <div class="tb-end">
-      <button type="button" id="btnPuzzle" class="corner mini btn-stack btn-puzzle" data-i18n-title="益智小游戏：等待 AI 工作时玩几款小游戏打发时间" title="益智小游戏：等待 AI 工作时玩几款小游戏打发时间" aria-label="益智小游戏">
-        <svg class="btn-stack-ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 12.5V4.6h3.1V2.4h2.8v2.2h3.1v3.1h-1.6a1.4 1.4 0 0 0 0 2.8h1.6v1.2H9.4v1.8H6.6V12.5H3.5z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/></svg>
-        <span class="btn-stack-txt" data-i18n="游戏">游戏</span>
-      </button>
       <!-- 「消息」= 打赏 / 评论 / 回复三类日志（renderer/app-messages.js 的 window.MtMessages +
             css/messages.css），位置**紧贴「应用」#btnApps 左边**。三态：
              未登录 / 未读数接口不可用 / 一条消息都没有 → 置灰不可点（title 说明原因，
@@ -766,6 +767,12 @@
        （上传 prompt 音频 / 引用 Breeze 角色 / 试听 / 打开数据目录）。实现见 app-tts.js。 -->
   <button type="button" id="btnTts" class="sb-tts" aria-pressed="false"
           data-i18n-title="语音播报（MOSS-TTS-Nano · F3）· 左键开关，右键换音色">🔇</button>
+  <!-- 画布录制入口（renderer/app-take-ui.js + css/take-ui.css）：
+       左下角那四颗按钮之后的「● 录制」，只有登录账号 ms2308 才由脚本显出来
+       （其余账号 / 未登录整颗不出现，与研究视图、自重建同一口径）。里面那颗状态牌与
+       暂停 / 停止两枚小按钮、以及停止后的提示条都由脚本建，这里只留挂载点。
+       位置：order 0（与 .sb-cam 同档）+ DOM 排在它之前 ⇒ 四颗之后、画布截图之前。 -->
+  <div id="takeUi" class="sb-take-wrap" hidden></div>
   <button type="button" id="btnCanvasShot" class="sb-cam" aria-label="生成当前画布的高清总览图">
     <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
       <path fill="currentColor" d="M9 3 7.17 5H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-3.17L15 3H9zm3 14.2A4.2 4.2 0 1 1 12 8.8a4.2 4.2 0 0 1 0 8.4zm0-1.7a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5zM4.8 7.3h1.7V6H4.8z"/>
@@ -870,6 +877,27 @@
      「改了哪些」并用 applyDocDiff 就地合进 S.wf（保对象身份：设置窗 / 选中项抓的还是同一颗）。
      必须在 app-nodes.js 之前装载；同一份代码主进程也 require（算差量的就是它）。 -->
 <script src="../canvas-doc/canvas-doc-diff.js"></script>
+<!-- 画布录制账本（canvas-doc/canvas-take.js → window.MTCanvasTake）：take 的契约与纯函数
+     （文档时间轴 keyframe/patch、相机轨道与补间、UI 现场、光标、裁剪、校验、序列化）的唯一真源。
+     录制钩子只在 app.js 里做旁路记账（pushHistory / applyTransform），落盘在主进程 take:append
+     （%APPDATA%\pipeline-console\takes\<wfId>\<takeId>.json），默认不录。同一份代码主进程也
+     require（它才是把轨道写进文件、把 Agent 侧编辑回执记进同一份账的那一侧）。 -->
+<script src="../canvas-doc/canvas-take.js"></script>
+<!-- 画布回放态（canvas-doc/canvas-replay.js → window.MTCanvasReplay）：把一条 take 按帧画成
+     确定性的 SVG（帧号 → 场景 → 图 → 帧 md5）+ 回放态注入（.replay-no-anim 禁动效）。
+     时钟只有 frame / fps、viewport 与 dpr 只从 take 读（缺省 2）、视频统一首帧封面、
+     字体清单写死 —— 同一份 take 连跑两次逐帧 md5 必须相等（test/smoke-canvas-replay-determinism.js）。 -->
+<script src="../canvas-doc/canvas-replay.js"></script>
+<!-- 节点标题栏的种类图标（canvas-doc/kind-icons.js → window.MTKindIcons）：**单一真源**。
+     app.js 的 KIND_ICON_SVG 就是这儿的同一个对象（不再自己抄一份），画布读侧内核的
+     nodeTree 也按它画 button.n-drag-handle —— 回放页里没有 app.js，只有这一份。
+     必须排在本文件之前（app.js 与 canvas-doc-render.js 都在加载期取它）。 -->
+<script src="../canvas-doc/kind-icons.js"></script>
+<!-- 画布渲染内核（canvas-doc/canvas-doc-render.js → window.MTCanvasRender）：路 B 的场景树
+     （doc + cam + viewport → 卡片 / 端子 / 连线 / 标注 / 组框 / 徽标 / 正文摘要的纯数据），
+     DOM 只是它的一个适配器（mountNodeEl = 一棵节点的场景 → 一个元素）。演示态子集，节点内
+     编辑器与播放器不进内核；与 renderer 同源由 test/smoke-canvas-render-parity.js 对账。 -->
+<script src="../canvas-doc/canvas-doc-render.js"></script>
 <script src="dsh-plugin-copy.js"></script>
 <!-- 内嵌图片共享模块（renderer/app-inline-img.js + css/inline-img.css）：粘贴 / 拖入 /
      落盘 / 引用登记 / 无引用回收一套 API（出口 window.MTInlineImg），供审阅编辑器
@@ -1328,8 +1356,6 @@
      放在 app-boot.js 之后：动作全部走按钮自己的 onclick（boot 已接线），
      本文件只在按键时转发一次 .click()，不重复实现入口逻辑。 -->
 <script src="app-keys.js"></script>
-<script src="app-puzzle.js"></script>
-<script src="app-puzzle-games.js"></script>
 <!-- LaTeX 公式渲染（出口 window.MTMathRender；调用期取上面已加载的 window.katex，
      故必须排在 vendor/katex/katex.min.js 之后）。
      必须排在用它的 renderer/app-review.js 之前；renderer/app.js 的 renderMarkdown
@@ -1486,6 +1512,10 @@
      登录用户名（与研究视图同一口径），确认窗复用 app.js 的 confirmDialog。
      排在 app.js / app-boot.js 之后（调用期按 typeof 取这些既有全局）。 -->
 <script src="app-self-rebuild.js"></script>
+<!-- 画布录制按钮（renderer/app-take-ui.js）：自包含，只经 window.CanvasTake（app.js 的 take 段）
+     与 window.MTNodeAuth（登录用户名）取用；显隐只看账号是否 ms2308（与自重建同一口径）。
+     排在 app.js / app-self-rebuild.js 之后（录制动作与 toast 都在调用期取）。 -->
+<script src="app-take-ui.js"></script>
 <!-- 应用节点（kind appnode）：画布区里的全屏应用界面 + 页面桥（canvas / agent / fs /
      tools / net / data 逐类白名单）。必须排在 app.js / app-canvas.js / app-assist.js 之后
      —— 它要在载入时补 NODE_DEFAULTS / KIND_CLS / KIND_TAGS / KIND_ICON_SVG 那几张表，

@@ -34,6 +34,9 @@ const CORE_FILES = [
   "canvas-doc/canvas-doc-core.js",
   "canvas-doc/canvas-doc-edit.js",
   "canvas-doc/canvas-doc-diff.js",
+  /* 录制账本（take）：纯函数、无宿主依赖，装载顺序与 index.html 一致（不装也能跑，
+     但「装载顺序 = index.html」这条口径要是不跟，下一处新增脚本就会照着错的那份抄） */
+  "canvas-doc/canvas-take.js",
   "renderer/app.js",
   "renderer/app-devnode.js",
   /* app-db.js 不是「数据库界面」，是画布纯逻辑的一层（procPromptForRun / dbHash /

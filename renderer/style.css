@@ -16,7 +16,6 @@
    所有规则都以 body.theme-endfield 起头，不参与另外三套主题。放在 theme-light 之后：
    两套主题互斥（applyTheme 只挂其中一个类），顺序只为可读性。 */
 @import url("./css/theme-endfield.css");
-@import url("./css/puzzle.css");
 /* 内嵌图片共享样式：粘贴 / 拖入 / 落盘 / 无引用回收那套能力的对话框与编辑器内图片
    （renderer/app-inline-img.js）；审阅 / 节点正文框 / 会话输入框三处共用。
    排在 review.css 之前：审阅侧若有更具体的覆盖，由其后的 review.css 决定。 */
