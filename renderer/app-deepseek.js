@@ -362,6 +362,66 @@
     if (panel.parentNode !== h) h.appendChild(panel);
   }
 
+  /* ── 建造条让位 ────────────────────────────────────────────────────────
+     F2 呼出的抽屉挂 #layout、铺满右半边到底边；画布建造条（#canvasDock，z-index 90）
+     压在抽屉（74）上面，抽屉底部那一截 —— 正好是 chat 的输入区 —— 就被条子挡住。
+     让位量写进 --ds-dock-h，CSS 拿它当 bottom（见 css/deepseek.css），抽屉收在条子
+     之上：两边都不被盖、条子仍可点。
+
+     量的是「抽屉容器（#layout）底边 − 建造条顶边」，**不是**条子自己的高度：条子贴的是
+     #canvas 的底边，而 #canvas 底下还留着约 10px 留白（实测 #canvas.bottom 比
+     #layout.bottom 高 10px，再加 0.67px 画布边框）。上一版只按条高 49px 让位，抽屉下沿
+     正好压进条子里那 10px —— 用户复报「没修好」就是这 10px。两条边现量，留白怎么变都对。
+
+     四种情况算 0（不让位）：条子没挂上 / 设置里关掉（hidden）/ 不在可视链上
+     （非画布视图，body 上没有 view-workflow 时 #wfWrap 被整体 display:none）/
+     收纳态（整条淡出，只剩左下角一枚按钮，抽屉右半边根本碰不到它）。 */
+  function dockInset() {
+    var dock = document.getElementById("canvasDock");
+    if (!dock || dock.hidden) return 0;
+    if (dock.offsetParent === null) return 0;
+    if (dock.getAttribute("data-state") === "mini") return 0;
+    var dr = dock.getBoundingClientRect();
+    if (!(dr.height > 0)) return 0;
+    var h = host();
+    var base = h ? h.getBoundingClientRect().bottom : window.innerHeight;
+    /* 向上取整：亚像素（1.25 / 1.5 缩放 + 0.67px 画布边框）下宁愿多让 1px，也别留一条缝 */
+    var inset = Math.ceil(base - dr.top);
+    return inset > 0 ? inset : 0;
+  }
+
+  /* 观察者：视图切换（body 上的 view-* 类）、条子自身展开 / 收纳 / 开关都会改变让位量；
+     条子被重建（换画布 / #canvas 重挂）时旧观察目标会失效，所以顺带盯一眼 #canvas 的子节点
+     变化，每次同步都把观察目标换成当前那只。 */
+  var mo = null;
+  var moCanvas = null;
+  var moDock = null;
+
+  function watchLayout() {
+    if (typeof MutationObserver !== "function" || !document.body) return;
+    if (!mo) {
+      mo = new MutationObserver(function () {
+        syncDockInset();
+      });
+      mo.observe(document.body, { attributes: true, attributeFilter: ["class"] });
+    }
+    var cv = document.getElementById("canvas");
+    if (cv && cv !== moCanvas) {
+      moCanvas = cv;
+      mo.observe(cv, { childList: true });
+    }
+    var dock = document.getElementById("canvasDock");
+    if (dock && dock !== moDock) {
+      moDock = dock;
+      mo.observe(dock, { attributes: true, attributeFilter: ["hidden", "data-state", "class", "style"] });
+    }
+  }
+
+  function syncDockInset() {
+    if (panel) panel.style.setProperty("--ds-dock-h", dockInset() + "px");
+    watchLayout();
+  }
+
   /* 单实例闸门：同一块面板里只认一只 <webview>。wv 引用仍挂在树上就直接用它；引用失真
      （面板被搬动 / 重绘过）时按 DOM 找回来，**绝不**再建第二只 —— 第二只 guest = 第二个
      页面、第二份登录态，还白烧一份渲染进程。 */
@@ -419,6 +479,13 @@
        免得两块浮层叠在一起抢焦点；助手栏菜单与顶栏瞬态菜单不算「同类」，不动。 */
     if (v && !open) closeNodePopsForDrawer();
     open = v;
+    if (v) {
+      /* 建造条让位：这一刻画布那边可能还没把条子挂进树（启动回填时尤其如此），
+         下一帧与半秒后再补两次，之后靠 resize / 视图切换 / 条子状态变化同步。 */
+      syncDockInset();
+      window.requestAnimationFrame(syncDockInset);
+      window.setTimeout(syncDockInset, 500);
+    }
     if (panel) {
       panel.classList.toggle("is-open", open);
       panel.setAttribute("aria-hidden", open ? "false" : "true");
@@ -578,6 +645,7 @@
       if (!panel) return;
       ensureMounted();
       syncWidth();
+      syncDockInset();
     });
     /* 窗口整体失焦（Alt+Tab / 点了别的程序）时指针捕获会断，pointerup 可能永远不来 ——
        这里收尾一次，免得 is-resizing / html.ds-resizing 留在页面上。 */

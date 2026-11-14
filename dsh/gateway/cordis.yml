@@ -682,9 +682,9 @@
 
 
 
-- id: user-mcp-mwgj0w9o
+- id: user-mcp-mwgnk0sc
   name: '@deepseek-ai/dsh-mcp-client'
   config:
     serverName: 'mtnode-self'
     transport: 'streamable-http'
-    url: 'http://127.0.0.1:64821/mcp?token=48e14ceb3cb3f02cb30a674c45a0583db3dabf1bb653fa9f'
+    url: 'http://127.0.0.1:53725/mcp?token=a5e3dbac5d17b0fbeb2b9041f384f4be36c73e04193c82b2'

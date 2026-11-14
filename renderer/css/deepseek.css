@@ -77,7 +77,10 @@
   position: absolute;
   top: 0;
   right: 0;
-  bottom: 0;
+  /* 下沿让开画布建造条（#canvasDock）：条子在 z-index 90 上、压在抽屉（74）上面，
+     以前抽屉底部那一截（chat 的输入区）正好被它盖住。--ds-dock-h 由 app-deepseek.js
+     的 syncDockInset() 按条子当前高度写；条子不在 / 收纳态（只剩左下角一枚按钮）时是 0。 */
+  bottom: var(--ds-dock-h, 0px);
   z-index: 74; /* 高于各 pane（4）与节点弹层（50~70），低于画布面包屑（80） */
   width: 50%; /* 兜底：JS 打开时会写具体像素（默认同样是窗口一半，拖过就按拖出来的宽度） */
   max-width: 1600px;
