@@ -1,4 +1,4 @@
-/* ===== 画布 ===== */
+﻿/* ===== 画布 ===== */
 .wf-wrap {
   display: flex;
   flex-direction: column;
@@ -1137,7 +1137,7 @@
 .wf-node.task {
   border-color: #3ecfcf66;
   background: linear-gradient(180deg, #122022, #0e1618);
-  /* 选中环颜色（亮色主题换主题蓝，见 theme-light.css）；状态灯色由下面各状态
+  /* 选中环颜色（亮色主题换主题蓝，见 theme-daylight.css）；状态灯色由下面各状态
      规则的 --task-glow-rgb 提供，两者一起决定「选中后状态灯仍在、并且更亮」 */
   --task-sel-rgb: 124, 232, 255;
 }
@@ -1579,11 +1579,11 @@
   border-color: rgba(232, 121, 185, .6);
 }
 
-body.theme-light .wf-node.super.lt-shell {
+body.ef-skin.theme-light .wf-node.super.lt-shell {
   border-color: rgba(198, 74, 148, .62);
 }
 
-body.theme-light .n-chip.n-chip-lt {
+body.ef-skin.theme-light .n-chip.n-chip-lt {
   color: #b03a7f;
   border-color: rgba(198, 74, 148, .45);
 }

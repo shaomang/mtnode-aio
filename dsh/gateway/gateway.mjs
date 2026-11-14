@@ -4045,6 +4045,26 @@ function catalogIdOf(p) {
   return best
 }
 
+/* OpenCode(含 Go 套餐)的推理端点:客户端不带会话 id 时直接回
+   400 MissingSessionID("Request is missing x-opencode-session ...")。实测同一端点
+   无头 400、带头 401 —— 这个头是准入条件,不是可选提示。
+   目录同源路由(opencode-go)由 pi-ai 自带的目录包逐请求按运行时 sessionId 补头;
+   但服务商卡里只要混进一个目录之外的模型 id,catalogIdOf 就不成立、退回通用
+   mtnode_ 路由,那一层也跟着没了。所以通用路由在这里兜一层:按服务商卡给一个
+   恒定 id(不随请求变化),先保证请求能被上游正常路由。 */
+function opencodeSessionHeaders(p) {
+  const base = String((p && p.baseUrl) || '').trim()
+  if (!base) return null
+  let host = ''
+  try {
+    host = new URL(base).hostname.toLowerCase()
+  } catch {
+    return null
+  }
+  if (host !== 'opencode.ai' && !host.endsWith('.opencode.ai')) return null
+  return { 'x-opencode-session': 'mtnode-' + String((p && p.id) || 'default') }
+}
+
 /* 渲染层下发的 provider 串 → 引擎路由:目录同源服务商映射回目录路由名
    (settings 与握手都按该名注册),其余保持 mtnode_<route> / deepseek-official。 */
 function routeOfProvider(provider, list) {
@@ -4313,7 +4333,7 @@ function applySettings(dshHome, effort, mtnodeProviders, permissionPreset, hostP
   /* 指纹末尾的 `rp1` 是「托管补丁内容版本号」：重试策略这类常量段不进上面任何一项，
      没有它就会出现「代码改了、盘上补丁文件还是旧的、热重载也不触发」。改这份托管
      配置的常量段时手动进一版（rp2 / rp3 …）。 */
-  const hash = eff + '|' + perm + '|' + JSON.stringify(list) + '|hp:' + persona + '|om:' + JSON.stringify(om) + '|rp3'
+  const hash = eff + '|' + perm + '|' + JSON.stringify(list) + '|hp:' + persona + '|om:' + JSON.stringify(om) + '|rp4'
   if (hash === lastSettingsHash && home === lastSettingsHome) return { envPatch, changed: false }
   try {
     const providers = {}
@@ -4329,6 +4349,10 @@ function applySettings(dshHome, effort, mtnodeProviders, permissionPreset, hostP
            MODEL_STREAM_RETRYABLE_CODES 注释) */
         retryPolicy: modelStreamRetryPolicy(),
       }
+      /* 通用路由(目录同源路由不在此列,那一层由 pi-ai 目录包按会话补头,
+         这里再写会把它的 per-session 头盖掉)补 OpenCode 的会话头。 */
+      const ocHeaders = cat ? null : opencodeSessionHeaders(p)
+      if (ocHeaders) entry.headers = ocHeaders
       /* 目录同源路由不写 api:模型级 api 以目录元数据为准(多协议目录如
          opencode-go 同时含 openai-completions 与 anthropic-messages);
          通用路由保留 api 声明(默认 openai-completions) */

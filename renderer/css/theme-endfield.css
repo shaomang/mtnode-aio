@@ -2335,7 +2335,8 @@ body.ef-skin .rs-tool-dot {
   box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .5);
 }
 
-body.ef-skin .at-dot::before {
+body.ef-skin .at-dot::before,
+body.ef-skin .at-dot::after {
   border-radius: 0;
 }
 
@@ -2344,8 +2345,12 @@ body.ef-skin .br-dot.on {
   background: var(--ef-ok);
 }
 
+/* 已完成：绿框 + 框内绿色填满（填充层在基础层的 .at-dot::after） */
 body.ef-skin .at-dot.m-done::before {
   border: 1px solid var(--ef-ok);
+}
+
+body.ef-skin .at-dot.m-done::after {
   background: var(--ef-ok);
 }
 
@@ -2361,17 +2366,27 @@ body.ef-skin .at-dot.m-done::before {
   }
 }
 
-/* warn：慢呼吸（.at-dot.m-unknown 那条虚线框一并收成实线的琥珀方点）。
-   辉光与 ef-pulse 同口径：静态一层 box-shadow，关键帧只动 opacity —— 原来在 50% 那帧里
-   插值 box-shadow，每帧都要重绘灯周围那一小圈。内嵌那圈暗框照旧带着（.br-dot 的基础
+/* warn：慢呼吸 —— 框收成实线琥珀描边，呼吸交给框内的填充块（辉光与 ef-pulse 同口径：
+   静态一层 box-shadow，关键帧只动 opacity）。内嵌那圈暗框照旧带着（.br-dot 的基础
    口径），不能只写外发光。 */
-body.ef-skin .br-dot.warn,
-body.ef-skin .at-dot.m-unknown::before {
+body.ef-skin .br-dot.warn {
   border: 1px solid var(--ef-warn);
   background: var(--ef-warn);
   box-shadow:
     inset 0 0 0 1px rgba(0, 0, 0, .5),
     0 0 6px color-mix(in srgb, var(--ef-warn) 70%, transparent);
+  animation: ef-lamp-warn calc(6 * var(--ef-dur-3)) var(--ef-ease-out) infinite;
+}
+
+body.ef-skin .at-dot.m-unknown::before {
+  border: 1px solid var(--ef-warn);
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .5);
+}
+
+body.ef-skin .at-dot.m-unknown::after {
+  background: var(--ef-warn);
+  opacity: .55;
+  box-shadow: 0 0 6px color-mix(in srgb, var(--ef-warn) 70%, transparent);
   animation: ef-lamp-warn calc(6 * var(--ef-dur-3)) var(--ef-ease-out) infinite;
 }
 
@@ -2388,11 +2403,20 @@ body.ef-skin .at-dot.m-unknown::before {
   }
 }
 
-/* err：方波（steps(1, end) 让两态之间是硬切，不是渐变） */
-body.ef-skin .br-dot.err,
-body.ef-skin .at-dot.m-failed::before {
+/* err：方波（steps(1, end) 让两态之间是硬切，不是渐变）—— 框常亮，方波落在填充层 */
+body.ef-skin .br-dot.err {
   border: 1px solid var(--ef-err);
   background: var(--ef-err);
+  animation: ef-lamp-err calc(4 * var(--ef-dur-2)) steps(1, end) infinite;
+}
+
+body.ef-skin .at-dot.m-failed::before {
+  border: 1px solid var(--ef-err);
+}
+
+body.ef-skin .at-dot.m-failed::after {
+  background: var(--ef-err);
+  opacity: 1;
   animation: ef-lamp-err calc(4 * var(--ef-dur-2)) steps(1, end) infinite;
 }
 
@@ -2566,8 +2590,9 @@ body.ef-skin .tpl-thumb-skel {
        留在 .fn-canvas 自己身上，不参与这次重绘。
 
    闸门只有一条，放在本节末尾（必须晚于十一·十二 ③ 的灯动画声明才压得住）：
-   列表族里第 9 个起的灯不再循环。判据与结构依据写在十一·十二 ③ 之后那条注释里。 */
-body.ef-skin .at-list > .at-item:nth-child(n+9) .at-dot::before {
+   列表族里第 9 个起的灯不再循环（灯现在动的是框内填充层 ::after，闸门跟着挪过去）。
+   判据与结构依据写在十一·十二 ③ 之后那条注释里。 */
+body.ef-skin .at-list > .at-item:nth-child(n+9) .at-dot::after {
   animation: none;
 }
 

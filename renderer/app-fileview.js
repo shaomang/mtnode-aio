@@ -20,7 +20,7 @@
  * 为什么不引 highlight.js / Monaco / CodeMirror：会话里真出现的文件类型有限，
  * js / py / css / html / yaml / md / sh / ini 这几个就覆盖九成。自研一份通用词法
  * 换来零包体、零额外 CSP 放通，配色还完全跟随主题 —— token class 直接复用
- * css/canvas.css 里 jsHighlightHtml 那一套 .jsl-*，亮色在 theme-light.css 已有逐条覆盖。
+ * css/canvas.css 里 jsHighlightHtml 那一套 .jsl-*，亮色在 theme-daylight.css 已有逐条覆盖。
  *
  * 同源优先：js / ts / json 交给 app-codeedit.js 的 jsHighlightHtml（与函数节点
  * 编辑器词法同源，同一个 .js 在节点里和在面板里长得一模一样），yaml 交给 app.js 的

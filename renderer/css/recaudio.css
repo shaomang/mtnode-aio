@@ -1,4 +1,4 @@
-/* 音频节点「现场录制」样式 —— renderer/app-recaudio.js 专用
+﻿/* 音频节点「现场录制」样式 —— renderer/app-recaudio.js 专用
    两块：① 居中录音面板（#ovBody 里的 .rec-*：实时声波 / 计时 / 落点 / 两个出口）；
         ② 画布上那张节点的录制态（操作行那枚 .n-rec-btn + body 尾部的 .n-rec-badge）。
    亮色覆盖在末尾。 */
@@ -79,11 +79,11 @@
 }
 
 /* ---- 亮色主题覆盖 ---- */
-body.theme-light .rec-wave {
+body.ef-skin.theme-light .rec-wave {
   border-color: rgba(0, 0, 0, 0.14);
   background: rgba(0, 0, 0, 0.05);
 }
-body.theme-light .n-rec-badge {
+body.ef-skin.theme-light .n-rec-badge {
   background: rgba(207, 34, 46, 0.12);
   color: #cf222e;
 }

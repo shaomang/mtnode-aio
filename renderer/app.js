@@ -16586,6 +16586,56 @@ function refCandidates(node) {
   return out;
 }
 
+/* ── 上游「内容指纹」（保存节点 ▶ 判上游是否已经过时）─────────────────────────
+   处理 / 智能节点的 output 是**当时那版内容**算出来的：用户改了提示词 / 正文 / 批量条目，
+   或者喂进去的上游值变了，那份 output 就不再代表当前内容 —— 但 nodeAlreadyProcessed 只认
+   「有没有 output」，于是保存节点 ▶ 会把旧输出重新排一遍版，PDF 里永远是旧内容（用户报的
+   「前面的内容已修改，重新执行 PDF 节点里面内容仍然未更新」）。
+   这里给一份便宜指纹（只看节点自己的文本类配置 + 直接输入值），节点起跑时记一次
+   （playProcNode 写 node._contentSig），保存节点 ▶ 时比对；不一致就作废旧输出、按新内容
+   补跑一次（见 app-nodes.js 的 invalidateChangedProcSources）。
+   只存摘要（FNV-1a + 长度）不存原文，几百节点的画布也不会因为这项多出几 MB。 */
+function sigDigestOf(text) {
+  let h = 2166136261;
+  const s = String(text == null ? "" : text);
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return (h >>> 0).toString(36) + ":" + s.length;
+}
+function nodeContentSig(node) {
+  if (!node) return "";
+  const parts = [
+    String(node.prompt || ""),
+    String(node.task || ""),
+    String(node.text || ""),
+    String(node.systemPrompt || ""),
+    String(node.model || ""),
+    String(node.providerId || ""),
+    String(node.batchMode || ""),
+  ];
+  try {
+    parts.push(JSON.stringify(node.entries || null));
+  } catch (_) {
+    parts.push("");
+  }
+  /* 直接输入值：上游正文变了，本节点那份输出同样是旧的 */
+  for (const w of wiresTo(node.id)) {
+    const src = nodeById(w.from);
+    if (!src || isControlKind(src)) continue;
+    const idx = src.kind === "super" ? Number(w.fromIndex || 0) : 0;
+    let v = null;
+    try {
+      v = valueForInput(src, idx, node);
+    } catch (_) {
+      v = null;
+    }
+    parts.push(v ? String(v.text != null ? v.text : v.path || "") : "");
+  }
+  return sigDigestOf(parts.join("\u0001"));
+}
+
 function valueForInput(src, idx, consumer, seen) {
   if (!src || isControlKind(src)) return null;
   if (isSuperLikeNode(src)) {
@@ -23520,26 +23570,14 @@ function canvasCreateMenuGroups(pt) {
             ),
           ],
         },
-        {
-          label: I18n.t("绘制"),
-          iconKey: "draw",
-          iconCls: "draw",
-          submenu: [
-            ctxAction(
-              I18n.t("文本"),
-              () => addMark("text", pt.x, pt.y),
-              "mark_text",
-              { iconCls: "draw" },
-            ),
-            /* 框体与箭头已移除：归类节点改用「组」，在习惯入口上给出替代方案指引 */
-            ctxAction(
-              I18n.t("【废弃】：框改为用「组」（选中节点后按 G）"),
-              null,
-              "menu_ungroup",
-              { iconCls: "group" },
-            ),
-          ],
-        },
+        /* 「绘制」二级菜单已撤（本轮需求）：一级菜单直接就是「文字」，点一下在落点加文本标注；
+           归类节点仍用「组」（选中节点后按 G）。 */
+        ctxAction(
+          I18n.t("文字"),
+          () => addMark("text", pt.x, pt.y),
+          "mark_text",
+          { iconCls: "draw" },
+        ),
       ],
     ],
   ];

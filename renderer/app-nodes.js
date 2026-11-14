@@ -9905,6 +9905,14 @@ async function playNodeBody(node, quiet, opts) {
   node.running = true;
   node.error = null;
   node._abKey = uid("ab");
+  /* 记下「这一跑用的是哪版内容」：保存节点 ▶ 靠它判上游是否已过时（nodeContentSig） */
+  if (
+    typeof nodeContentSig === "function" &&
+    (node.kind === "proc_text" ||
+      node.kind === "proc_image" ||
+      (typeof isQaKindNode === "function" && isQaKindNode(node)))
+  )
+    node._contentSig = nodeContentSig(node);
   beginNodeRun(node);
   node.attemptsDone = 0;
   node._pendingAnswer = "";
@@ -11392,6 +11400,12 @@ async function savePdfOnce(node, quiet) {
       continue;
     }
     paths.push(r.path);
+    /* 同名 PDF 刚被覆盖：应用内预览若缓存着这份文件，作废它（否则打开还是旧页面） */
+    if (typeof window.invalidatePdfPreview === "function") {
+      try {
+        window.invalidatePdfPreview(r.path);
+      } catch (_) {}
+    }
   }
   if (!paths.length) return false;
   node.savedPaths = paths;
@@ -11621,6 +11635,46 @@ async function saveNodeOnce(node, quiet, opts) {
   return saveMediaFileOnce(node, quiet, media);
 }
 
+/* 保存节点 ▶ 之前：上游处理节点若「内容已改、输出没重跑」，先把那份旧输出作废。
+   现场（用户报）：文本处理节点的提示词改成了新内容，点 PDF 生成节点的 ▶，盘上那份 PDF
+   照旧是旧正文 —— nodeAlreadyProcessed 只认「有没有 output」，ensureProcessedAll 见有输出
+   就跳过上游，于是保存节点把**旧输出**重新排了一遍版。
+   判据 = nodeContentSig（提示词 / 正文 / 批量条目 / 直接输入值的摘要）与起跑时记下的
+   node._contentSig 是否一致；老画布没有基线（升级前跑过的那一版）时按「已过时」处理并记下
+   基线 —— 用户点 ▶ 的语义本来就是「用当前内容重新产出一份」。
+   只管处理 / 图像 / 质检族：智能任务（agent_task）按会话累积上下文，不在此列。 */
+function dropProcRunResult(n) {
+  if (!n) return;
+  n.output = null;
+  n.batchOutputs = null;
+  n.attemptOutputs = null;
+  n.attemptsDone = 0;
+  n.attemptIdx = 0;
+  n.error = null;
+  n.ranAt = 0;
+  if (S.thinking && S.thinking[n.id]) S.thinking[n.id] = [];
+}
+function invalidateChangedProcSources(node) {
+  let changed = 0;
+  for (const src of procSourcesOf(node)) {
+    if (!src || src.running) continue;
+    if (
+      src.kind !== "proc_text" &&
+      src.kind !== "proc_image" &&
+      !(typeof isQaKindNode === "function" && isQaKindNode(src))
+    )
+      continue;
+    if (!nodeHasOutputContent(src)) continue; /* 本来就没有产物：下面照常补跑 */
+    const sig = typeof nodeContentSig === "function" ? nodeContentSig(src) : "";
+    if (!sig || src._contentSig === sig) continue;
+    dropProcRunResult(src);
+    /* 记下这次的基线：补跑（playProcNode）会再写一次同样的值，跑不了也不会反复判过时 */
+    src._contentSig = sig;
+    changed++;
+  }
+  return changed;
+}
+
 async function saveNodeAction(node, opts) {
   opts = opts || {};
   /* 保存节点不走 playNode（▶ / 控制流 / 级联都直接落到这里），所以「参数」端子的
@@ -11658,11 +11712,21 @@ async function saveNodeAction(node, opts) {
     toast(I18n.t("请先指定保存路径（可用「浏览」选择）"), "warn");
     return;
   }
-  const pathCheck = resolveSavePath(node.savePath, node);
-  if (!pathCheck.ok) {
-    toast(savePathResolveError(pathCheck.code), "warn");
-    return;
+  /* PDF 生成的落点由 saveDestBaseAbs 兜底（留空 = 输入节点标题.pdf），
+     不能再拿 savePath 原文判一次 resolveSavePath —— 留空时它是 {ok:false,code:"empty"}，
+     于是点 ▶ 直接 return，盘上那份旧 PDF 当然不会被覆盖（用户报的 bug）。
+     其余保存节点仍按显式路径判。 */
+  if (node.kind !== "save_pdf") {
+    const pathCheck = resolveSavePath(node.savePath, node);
+    if (!pathCheck.ok) {
+      toast(savePathResolveError(pathCheck.code), "warn");
+      return;
+    }
   }
+  /* 上游内容改过（提示词 / 正文 / 批量条目 / 输入值）→ 那份输出已经过时：先作废，
+     下面照常补跑；否则点 ▶ 只是把上游**旧输出**重新排一遍版（用户报的
+     「前面的内容已修改，重新执行 PDF 节点里面内容仍然未更新」）。 */
+  invalidateChangedProcSources(node);
   const pendingIds = new Set([node.id]);
   for (const w of wiresTo(node.id)) {
     const src = nodeById(w.from);

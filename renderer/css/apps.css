@@ -1,4 +1,4 @@
-/* renderer/app-apps.js — 应用中心（顶栏「应用」）的整屏浮层页 + 本机应用库 + 开发者面板
+﻿/* renderer/app-apps.js — 应用中心（顶栏「应用」）的整屏浮层页 + 本机应用库 + 开发者面板
    ─────────────────────────────────────────────────────────────────────────────
    #appsHub 挂在 document.body 上 · position:fixed inset:0，但**下沿抬到状态栏上沿**
    （bottom: var(--apps-hub-foot, 0px)，app-apps.js 实测 footer.statusbar 高度写入）：顶栏（菜单栏）
@@ -1966,7 +1966,7 @@ button.mini.apps-ico-info {
 }
 
 /* 亮色主题：封面与详情底的对比度（其余全靠变量自动跟随） */
-body.theme-light .apps-tile-ph {
+body.ef-skin.theme-light .apps-tile-ph {
   color: var(--cyan2);
 }
 /* ───────────────── 开发页（renderer/app-apps-dev.js） ─────────────────
@@ -2062,7 +2062,7 @@ body.theme-light .apps-tile-ph {
   letter-spacing: 0.4px;
 }
 
-body.theme-light .apps-dev-more-pop {
+body.ef-skin.theme-light .apps-dev-more-pop {
   box-shadow: 0 14px 30px rgba(20, 26, 40, 0.18);
 }
 

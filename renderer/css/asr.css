@@ -1,4 +1,4 @@
-/* 本地语音转写（官方本地 SenseVoice）转录块样式 —— renderer/app-asr.js 专用
+﻿/* 本地语音转写（官方本地 SenseVoice）转录块样式 —— renderer/app-asr.js 专用
    音频 / 视频节点自己的转录块（.n-asr-*，含操作行那枚 .n-asr-btn）
    +「语音模型」窗里的设置行与进度（.asr-set-* / .asr-prog*）；亮色覆盖在末尾。
    注：从前的安装对话框样式（.asr-kv* / .asr-log / 安装目录与热词输入）随 Qwen3-ASR 后端
@@ -608,13 +608,13 @@
 }
 
 /* ---- 亮色主题覆盖 ---- */
-body.theme-light .n-asr {
+body.ef-skin.theme-light .n-asr {
   border-top-color: rgba(0, 0, 0, 0.14);
 }
-body.theme-light .n-reftext-host-card {
+body.ef-skin.theme-light .n-reftext-host-card {
   border-top-color: rgba(0, 0, 0, 0.14);
 }
-body.theme-light .asr-set-row > select {
+body.ef-skin.theme-light .asr-set-row > select {
   background: #fff;
   border-color: rgba(0, 0, 0, 0.18);
 }

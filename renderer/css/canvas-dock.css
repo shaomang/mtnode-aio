@@ -1,0 +1,525 @@
+/* ── 画布底部「建造面板」（终末地 HUD 风 · 见 renderer/app-canvas-dock.js）────────
+   口径：
+     · 一条平铺面板贴在 #canvas 底边；方形按钮、上 icon 下文字，组间竖分隔线，溢出横滚。
+     · 二级 / 三级小面板从按钮上方浮出，只走 transform + opacity（不碰布局）。
+     · 收纳后只剩左下角那枚边栏按钮：底部条整体下滑淡出，指针事件留给画布。
+     · 颜色优先吃终末地皮肤槽位（--ef-*），三档主题下都有兜底值；全息幽灵恒为浅绿。
+   ─────────────────────────────────────────────────────────────────────────── */
+
+.cdock {
+  --cdock-panel: #191c1e;
+  --cdock-panel-2: #121416;
+  --cdock-line: rgba(255, 255, 255, 0.1);
+  --cdock-line-2: rgba(255, 255, 255, 0.16);
+  --cdock-accent: var(--ef-signal, #fffa00);
+  --cdock-olive: var(--ef-olive, #c6ca4c);
+  --cdock-holo: #9df0b4;
+  --cdock-txt: #e9ecec;
+  --cdock-mute: #8f979b;
+  /* 方形按钮边长（宽高同一处）：70 → 49 = 缩 30%。
+     底部条高度 = 同一个数（见下 height: var(--cdock-btn)）：按钮上下不再留空。 */
+  --cdock-btn: 49px;
+  --cdock-ease: var(--ef-ease-out, cubic-bezier(0.2, 0.8, 0.2, 1));
+  --cdock-dur: 0.2s;
+
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  /* 条高 = 按钮边长：按钮上下各 0px 空隙（原来 62 比 49 多出的 6.5+6.5 是纯留白） */
+  height: var(--cdock-btn);
+  z-index: 90;
+  pointer-events: none;
+  font-size: 12px;
+  color: var(--cdock-txt);
+}
+.cdock[hidden] {
+  display: none;
+}
+
+/* 底部条本体：背景单独一层，收纳时只把这一层淡掉（按钮还能留一枚在左下角） */
+.cdock-bar {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: stretch;
+  overflow: hidden;
+  pointer-events: none;
+}
+.cdock-bar::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(180deg, rgba(20, 23, 25, 0.92), rgba(10, 12, 13, 0.96)),
+    repeating-linear-gradient(180deg, rgba(255, 255, 255, 0.022) 0 1px, transparent 1px 3px);
+  border-top: 1px solid var(--cdock-line-2);
+  box-shadow: 0 -12px 28px rgba(0, 0, 0, 0.34);
+  backdrop-filter: blur(10px) saturate(1.05);
+  transition: opacity var(--cdock-dur) var(--cdock-ease);
+}
+/* 顶边不再画那截「通电」渐变亮线（用户要求：建造条上不出现渐变线） */
+
+/* ── 左下角边栏按钮（收纳开关）── */
+.cdock-tab {
+  position: relative;
+  z-index: 2;
+  flex: 0 0 41px;
+  width: 41px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 0;
+  border: 0;
+  border-right: 1px solid var(--cdock-line);
+  background: transparent;
+  color: var(--cdock-mute);
+  cursor: pointer;
+  pointer-events: auto;
+  transition:
+    color 0.14s var(--cdock-ease),
+    background 0.14s var(--cdock-ease);
+}
+.cdock-tab-lb {
+  font-size: 9px;
+  letter-spacing: 0.14em;
+  writing-mode: horizontal-tb;
+}
+.cdock-tab svg {
+  transition: transform var(--cdock-dur) var(--cdock-ease);
+}
+.cdock-tab:hover {
+  color: var(--cdock-accent);
+  background: rgba(255, 255, 255, 0.04);
+}
+.cdock-tab:focus-visible {
+  outline: 1px solid var(--cdock-accent);
+  outline-offset: -3px;
+}
+
+/* ── 按钮条 ── */
+.cdock-strip {
+  position: relative;
+  z-index: 2;
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 8px 0 5px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  pointer-events: auto;
+  transition:
+    transform var(--cdock-dur) var(--cdock-ease),
+    opacity calc(var(--cdock-dur) * 0.85) var(--cdock-ease);
+}
+.cdock-strip::-webkit-scrollbar {
+  height: 0;
+  display: none;
+}
+.cdock-empty {
+  padding: 0 12px;
+  color: var(--cdock-mute);
+  font-size: 12px;
+}
+
+/* 组与组之间的竖分隔线（中点一枚小菱形，读数更「仪表」） */
+.cdock-sep {
+  position: relative;
+  flex: 0 0 auto;
+  width: 1px;
+  height: 38px;
+  margin: 0 5px;
+  background: linear-gradient(180deg, transparent, var(--cdock-line-2) 16%, var(--cdock-line-2) 84%, transparent);
+}
+.cdock-sep::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 3px;
+  height: 3px;
+  margin: -1.5px 0 0 -1.5px;
+  background: var(--cdock-line-2);
+  transform: rotate(45deg);
+}
+
+/* 方形按钮：上 icon 下文字 */
+.cdock-btn {
+  position: relative;
+  flex: 0 0 auto;
+  /* 正方形：宽高同一个数（改一处就够） */
+  width: var(--cdock-btn, 49px);
+  height: var(--cdock-btn, 49px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  /* 高度只够图标 + 两行小字：上下内边距压到 2px，两行标签不会被挤出去 */
+  padding: 2px 3px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--cdock-mute);
+  cursor: pointer;
+  transition:
+    color 0.13s var(--cdock-ease),
+    background 0.13s var(--cdock-ease),
+    border-color 0.13s var(--cdock-ease),
+    transform 0.13s var(--cdock-ease);
+}
+/* 底边那截高亮：hover / 选中时从中间长出，动的是 transform，不抖布局 */
+.cdock-btn::after {
+  content: "";
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  bottom: 2px;
+  height: 2px;
+  background: var(--cdock-accent);
+  transform: scaleX(0);
+  transform-origin: 50% 50%;
+  transition: transform 0.16s var(--cdock-ease);
+}
+.cdock-btn:hover {
+  color: var(--cdock-txt);
+  background: rgba(255, 255, 255, 0.05);
+  border-color: var(--cdock-line);
+}
+.cdock-btn:hover::after {
+  transform: scaleX(0.5);
+}
+.cdock-btn:active {
+  transform: translateY(1px);
+}
+.cdock-btn.on {
+  color: var(--cdock-accent);
+  background: rgba(255, 255, 255, 0.07);
+  border-color: rgba(255, 255, 255, 0.22);
+}
+.cdock-btn.on::after {
+  transform: scaleX(1);
+}
+.cdock-btn:focus-visible {
+  outline: 1px solid var(--cdock-accent);
+  outline-offset: -3px;
+}
+.cdock-ic {
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+}
+.cdock-ic svg {
+  width: 15px;
+  height: 15px;
+  display: block;
+}
+/* 标签**一行到底**：放不下由 app-canvas-dock.js 的 cdockFitLabel() 缩字号，
+   绝不换行（换行会把一行按钮顶成两行，条子高度就乱了）。overflow 兜住缩到下限仍超长的。 */
+.cdock-lb {
+  display: block;
+  max-width: 100%;
+  font-size: 9.5px;
+  line-height: 1.12;
+  text-align: center;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  word-break: keep-all;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* 带子菜单的按钮：右上角一枚小三角（朝上 = 往上弹） */
+.cdock-caret {
+  position: absolute;
+  right: 3px;
+  top: 2px;
+  font-size: 7px;
+  line-height: 1;
+  opacity: 0.5;
+  transition: opacity 0.13s var(--cdock-ease);
+}
+.cdock-btn.has-sub:hover .cdock-caret,
+.cdock-btn.on .cdock-caret {
+  opacity: 1;
+}
+
+/* ── 二 / 三级小面板（从按钮上方浮出）── */
+.cdock-pop {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  z-index: 3;
+  pointer-events: auto;
+  padding: 9px 9px 8px;
+  border: 1px solid var(--cdock-line-2);
+  background: linear-gradient(180deg, rgba(30, 34, 37, 0.98), rgba(16, 18, 20, 0.99));
+  box-shadow:
+    0 14px 32px rgba(0, 0, 0, 0.5),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  opacity: 0;
+  transform: translateY(7px) scale(0.985);
+  transform-origin: bottom center;
+  transition:
+    opacity 0.15s var(--cdock-ease),
+    transform 0.18s var(--cdock-ease);
+  will-change: transform, opacity;
+}
+.cdock-pop.on {
+  opacity: 1;
+  transform: none;
+}
+.cdock-pop[hidden] {
+  display: none;
+}
+/* 面板顶边同样不画那截渐变亮线（与底部条口径一致） */
+.cdock-pop-in {
+  display: flex;
+  gap: 6px;
+  max-height: inherit;
+  overflow-x: auto;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+.cdock-pop-in::-webkit-scrollbar {
+  height: 0;
+  width: 0;
+}
+
+/* 小面板里的条目：图标 + 名称（说明走 tooltip） */
+.cdock-it {
+  position: relative;
+  flex: 0 0 auto;
+  width: 108px;
+  min-height: 62px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 9px;
+  border: 1px solid transparent;
+  background: rgba(255, 255, 255, 0.025);
+  color: var(--cdock-mute);
+  cursor: pointer;
+  transition:
+    color 0.13s var(--cdock-ease),
+    background 0.13s var(--cdock-ease),
+    border-color 0.13s var(--cdock-ease);
+}
+.cdock-it:hover {
+  color: var(--cdock-txt);
+  background: rgba(255, 255, 255, 0.07);
+  border-color: var(--cdock-line-2);
+}
+.cdock-it:focus-visible {
+  outline: 1px solid var(--cdock-accent);
+  outline-offset: -2px;
+}
+.cdock-it-ic {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+}
+.cdock-it-ic svg {
+  width: 18px;
+  height: 18px;
+  display: block;
+}
+/* 同一条口径：条目标签也只占一行，长了缩字号（cdockFitLabel） */
+.cdock-it-tx {
+  display: block;
+  max-width: 100%;
+  font-size: 11.5px;
+  line-height: 1.25;
+  text-align: left;
+  white-space: nowrap;
+  word-break: keep-all;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cdock-it-caret {
+  position: absolute;
+  right: 5px;
+  top: 4px;
+  font-size: 8px;
+  line-height: 1;
+  opacity: 0.45;
+}
+.cdock-it:hover .cdock-it-caret {
+  opacity: 1;
+}
+/* 三级面板压在二级上面：底色再深一档，层次看得出来 */
+.cdock-pop-sub {
+  background: linear-gradient(180deg, rgba(26, 30, 33, 0.99), rgba(12, 14, 16, 1));
+}
+
+/* ── 收纳态：底部条整体下滑淡出，只剩左下角那枚按钮 ── */
+.cdock[data-state="mini"] .cdock-bar::before {
+  opacity: 0;
+}
+.cdock[data-state="mini"] .cdock-strip {
+  transform: translateY(112%);
+  opacity: 0;
+  pointer-events: none;
+}
+/* 收纳后那枚按钮只换皮肤、不改几何：高度撑满条高（与展开态一致），
+   否则比条子矮一截、底下就露出缝。 */
+.cdock[data-state="mini"] .cdock-tab {
+  width: 41px;
+  flex-basis: 41px;
+  height: 100%;
+  margin: 0;
+  border: 1px solid var(--cdock-line-2);
+  border-bottom: 0;
+  background: linear-gradient(180deg, rgba(28, 32, 35, 0.96), rgba(12, 14, 16, 0.98));
+  color: var(--cdock-accent);
+  box-shadow: 0 -8px 20px rgba(0, 0, 0, 0.34);
+}
+.cdock[data-state="mini"] .cdock-tab svg {
+  transform: rotate(180deg);
+}
+.cdock[data-state="mini"] .cdock-tab:hover {
+  background: linear-gradient(180deg, rgba(38, 43, 46, 0.98), rgba(16, 18, 20, 1));
+}
+
+/* ── 全息投影幽灵（放置态）── */
+.cdock-ghost {
+  /* 幽灵是 #canvas 的直系子节点（不在 .cdock 里），--cdock-holo 必须在这里再声明一次：
+     否则四角准星的 `border: 0 solid var(--cdock-holo)` 在计算值阶段失效 → border-style:none
+     → 边框宽度按规范算成 0，准星就整颗看不见了。 */
+  --cdock-holo: #9df0b4;
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 88;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.14s var(--cdock-ease);
+  will-change: transform;
+}
+.cdock-ghost.on {
+  opacity: 1;
+}
+.cdock-ghost[hidden] {
+  display: none;
+}
+.cdock-ghost-box {
+  position: absolute;
+  inset: 0;
+  border: 1px solid rgba(157, 240, 180, 0.72);
+  background:
+    repeating-linear-gradient(180deg, rgba(157, 240, 180, 0.09) 0 1px, transparent 1px 4px),
+    linear-gradient(180deg, rgba(157, 240, 180, 0.12), rgba(157, 240, 180, 0.03));
+  box-shadow:
+    inset 0 0 22px rgba(157, 240, 180, 0.16),
+    0 0 18px rgba(157, 240, 180, 0.16);
+  clip-path: polygon(
+    0 0,
+    calc(100% - 10px) 0,
+    100% 10px,
+    100% 100%,
+    10px 100%,
+    0 calc(100% - 10px)
+  );
+  animation: cdock-holo 2.4s ease-in-out infinite;
+}
+/* 四角准星 */
+.cdock-ghost-box > i {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  border: 0 solid var(--cdock-holo);
+  filter: drop-shadow(0 0 4px rgba(157, 240, 180, 0.55));
+}
+.cdock-ghost-box > i:nth-child(1) {
+  left: -1px;
+  top: -1px;
+  border-left-width: 2px;
+  border-top-width: 2px;
+}
+.cdock-ghost-box > i:nth-child(2) {
+  right: -1px;
+  top: -1px;
+  border-right-width: 2px;
+  border-top-width: 2px;
+}
+.cdock-ghost-box > i:nth-child(3) {
+  left: -1px;
+  bottom: -1px;
+  border-left-width: 2px;
+  border-bottom-width: 2px;
+}
+.cdock-ghost-box > i:nth-child(4) {
+  right: -1px;
+  bottom: -1px;
+  border-right-width: 2px;
+  border-bottom-width: 2px;
+}
+.cdock-ghost-lb {
+  position: absolute;
+  left: 0;
+  bottom: 100%;
+  margin-bottom: 7px;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+  color: var(--cdock-holo);
+  text-shadow: 0 0 8px rgba(157, 240, 180, 0.6);
+}
+.cdock-ghost-hint {
+  position: absolute;
+  left: 0;
+  top: 100%;
+  margin-top: 7px;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  color: rgba(157, 240, 180, 0.8);
+  text-shadow: 0 0 6px rgba(0, 0, 0, 0.6);
+}
+@keyframes cdock-holo {
+  0%,
+  100% {
+    box-shadow:
+      inset 0 0 22px rgba(157, 240, 180, 0.14),
+      0 0 14px rgba(157, 240, 180, 0.12);
+  }
+  50% {
+    box-shadow:
+      inset 0 0 30px rgba(157, 240, 180, 0.24),
+      0 0 24px rgba(157, 240, 180, 0.26);
+  }
+}
+
+/* 放置态：整块画布换成十字准星光标（节点自己的 cursor 也压住） */
+#canvas.cdock-placing,
+#canvas.cdock-placing * {
+  cursor: crosshair !important;
+}
+
+/* 导出高清总览图（#canvas.is-snapshot 分块截图）时不能把面板拍进去 */
+.fn-canvas.is-snapshot .cdock,
+.fn-canvas.is-snapshot .cdock-ghost {
+  display: none !important;
+}
+
+/* 低缩放总览（lod-mini）不隐藏面板：它本来就是屏幕级 HUD，与相机无关 */
+
+@media (prefers-reduced-motion: reduce) {
+  .cdock-ghost-box {
+    animation: none;
+  }
+  .cdock-pop,
+  .cdock-strip,
+  .cdock-tab,
+  .cdock-btn,
+  .cdock-btn::after,
+  .cdock-ghost {
+    transition-duration: 1ms;
+  }
+}

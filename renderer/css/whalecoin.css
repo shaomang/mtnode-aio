@@ -1,4 +1,4 @@
-/* renderer/css/whalecoin.css — 鲸圆币的图标与金额元件
+﻿/* renderer/css/whalecoin.css — 鲸圆币的图标与金额元件
    结构见 renderer/app-whalecoin.js（window.MtCoin）；口径：
    1 币 = ¥0.02，只用于账户钱包与 MTNode 中转服务，官方 DeepSeek 金额仍是 ¥。
 
@@ -152,7 +152,7 @@
 
 /* ── 亮色主题：图标要压得住白底（外圈加深、高光收敛） ─────────
    （自绘 SVG 自带渐变与描边，这里的圆底只服务兜底路径与老图片路径） */
-body.theme-light .coin-ico {
+body.ef-skin.theme-light .coin-ico {
   background:
     radial-gradient(circle at 32% 28%, #fff8dd 0%, #f0bf52 40%, #bf8412 76%, #8d5c08 100%);
 }

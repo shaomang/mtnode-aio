@@ -3,7 +3,7 @@
  * 逻辑在 renderer/app-fileview.js 第二段（openFilePeek / closeFilePeek）。
  * 配色一律取主题变量（--code / --ink / --muted / --cyan / --orange），
  * 语法着色直接复用 css/canvas.css 里 jsHighlightHtml 那套 .jsl-*（亮色在
- * theme-light.css 已逐条覆盖），所以面板里的代码和函数节点编辑器长一个样。
+ * theme-daylight.css 已逐条覆盖），所以面板里的代码和函数节点编辑器长一个样。
  * 字体度量（--fp-fs / --fp-lh / --fp-gw / --fp-pad / --fp-cp）行号槽与代码层共用
  * 同一份，与 .js-edit 同一个思路：只写一次，两层不会错位。对齐还多一道保险：
  * 代码层一行一个块级 span.fp-l，行号槽的行数由拆出来的块数决定，两边同数同行高。

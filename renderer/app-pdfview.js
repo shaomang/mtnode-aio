@@ -81,6 +81,47 @@
   function keyOf(p, n) {
     return p + "#" + n;
   }
+  /* 文件戳（mtime:size）。PDF 生成节点是**同名覆盖**写的：只按路径缓存页数 / 页面图的话，
+     重新生成之后打开预览看到的还是旧那几页（用户报的「里面内容仍然未更新」）。
+     每次打开先取一次戳，戳变了就把这份 PDF 的缓存整份作废、重渲。 */
+  function stampOf(p) {
+    var a = api();
+    if (!a || typeof a.fileStat !== "function") return Promise.resolve("");
+    return Promise.resolve(a.fileStat(p))
+      .then(function (st) {
+        if (!st || st.ok === false) return "";
+        return (Number(st.mtime) || 0) + ":" + (Number(st.size) || 0);
+      })
+      .catch(function () {
+        return "";
+      });
+  }
+  function infoKeyOf(p, stamp) {
+    return p + "|" + (stamp || "");
+  }
+  /* 丢掉某份 PDF 的页数缓存（文件被重写过，见 invalidatePdfPreview） */
+  function forgetInfoOf(p) {
+    var pre = String(p || "") + "|";
+    var drop = [];
+    infoCache.forEach(function (_v, k) {
+      if (String(k).indexOf(pre) === 0) drop.push(k);
+    });
+    for (var i = 0; i < drop.length; i++) infoCache.delete(drop[i]);
+  }
+  /* 外部入口（保存节点落完盘后调，见 app-nodes.js savePdfOnce）：这份 PDF 刚被重写 ——
+     缓存作废；预览正开着就整页重挂，新内容立刻可见，不必手动关掉再开。 */
+  function invalidatePdfPreview(path) {
+    var p = String(path || "");
+    if (!p) return false;
+    forgetInfoOf(p);
+    if (cur && cur.path === p) {
+      var wasOpts = cur.opts || {};
+      var wasOpen = !!(el && el.classList.contains("on"));
+      cur = null;
+      if (wasOpen) openPdfPreview(p, wasOpts);
+    }
+    return true;
+  }
 
   /* ── 浮层骨架（只建一次，之后复用）────────────────────────────────────── */
   function ensureEl() {
@@ -525,10 +566,21 @@
       return null;
     }
     ensureEl();
-    var same = cur && cur.path === p;
+    /* 先取文件戳再挂：同一路径的旧页面图 / 旧页数不能拿来顶新文件 */
+    return stampOf(p).then(function (stamp) {
+      mountPdf(p, opts, stamp);
+      return null;
+    });
+  }
+
+  /* 挂载 / 复用阅读会话：stamp 变了（同名文件被重新生成）就整份重建 */
+  function mountPdf(p, opts, stamp) {
+    var a = api();
+    var same = !!(cur && cur.path === p && stamp && cur.stamp === stamp);
     if (!same) {
       cur = {
         path: p,
+        stamp: stamp || "",
         pages: 0,
         zoom: 1,
         current: 1,
@@ -546,13 +598,16 @@
       pagesEl.innerHTML = "";
       setMsg("");
       body.scrollTop = 0;
+    } else if (opts) {
+      cur.opts = opts;
     }
     /* 从 #mtDialog（z-index 2400）里开预览时临时抬一层，否则会被弹窗整片盖住 */
     el.classList.toggle("pdf-pv-top", !!(opts && opts.above));
     el.classList.add("on");
     applyWidths();
     syncChrome();
-    var ready = infoCache.get(p);
+    var ikey = infoKeyOf(p, stamp);
+    var ready = infoCache.get(ikey);
     if (ready) {
       applyInfo(p, ready);
       return null;
@@ -566,7 +621,7 @@
           warning: (info && info.warning) || "",
           renderable: !(info && info.encrypted),
         };
-        infoCache.set(p, rec);
+        infoCache.set(ikey, rec);
         if (!cur || cur.path !== p) return;
         applyInfo(p, rec);
       })
@@ -672,4 +727,6 @@
 
   window.openPdfPreview = openPdfPreview;
   window.closePdfPreview = closePdfPreview;
+  /* 同名 PDF 被重写过 → 作废缓存（保存节点落盘后调） */
+  window.invalidatePdfPreview = invalidatePdfPreview;
 })();

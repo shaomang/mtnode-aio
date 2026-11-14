@@ -2661,19 +2661,21 @@ button.mini.btn-sq.tpl-ico {
   border-color: rgb(86, 134, 254)
 }
 
-/* ── 任务清单的状态标记（本次需求 · 上游 Todo dock 的 idle / ongoing / done markers）──
-   形状：待处理空心圆、已完成实心圆、失败实心圆、未确认描边圆；
-   进行中是唯一「非圆点」的一档 —— 一枚旋转 loader（上游同一读法）。
-   上游依据（dsh-client-ui-primitives 0.2.0-rc.2 的 StateDot）：清单行用
-   appearance="dot"，done 只是 data-state 上色的实心圆点（solid states paint one
-   currentColor core）；带勾的 IconCheck 只出现在 appearance="step"（计划步骤）那一档。
-   所以已完成态是圆点，不再另画一枚 ✓ —— 这正是本次「✓ 左侧一个绿色块」的由来。 */
-/* 状态标记自带全部尺寸，**不要再叠 .at-icon**（app-assist.js 的 todo 行）
+/* ── 任务清单的状态标记 ──
+   形状：统一是**小方块**（2px 圆角），状态靠「框 + 框内填充」两件事区分：
+     待处理  空框（无填充）；
+     进行中  框内填充**呼吸**（opacity + scale 明暗往复，不再旋转），一眼看得出在跑；
+     已完成  框内**绿色填满**、静止；
+     失败    框内红色填满；
+     未确认  虚线琥珀框 + 半透琥珀填充。
+   框与填充分成两个伪元素：::before 是框（不参与动画，只换边框色），::after 是填充块
+   （只动 opacity / transform 两条合成属性，不逐帧重绘，也不再有 rotate 关键帧）。
+   标记自带全部尺寸，**不要再叠 .at-icon**（app-assist.js 的 todo 行）
    —— 那个类是给「用字符当图标」的计划面板行用的，它的 font-size:12px 与这里
-   font-size:0 同特异度、又写在文件后面，会把字形重新放出来：结果就是「绿色圆点
-   里还叠着一枚 ✓」，勾还不居中（标记左侧看着多出一个色块）。下面那条
+   font-size:0 同特异度、又写在文件后面，会把字形重新放出来。下面那条
    .at-icon.at-dot 是历史兜底：老 DOM / 外部样式若还叠着 .at-icon，标记照样赢。 */
 .at-dot {
+  position: relative;
   flex: none;
   display: inline-flex;
   align-items: center;
@@ -2686,6 +2688,7 @@ button.mini.btn-sq.tpl-ico {
 }
 
 .at-icon.at-dot {
+  position: relative;
   flex: none;
   display: inline-flex;
   align-items: center;
@@ -2696,62 +2699,91 @@ button.mini.btn-sq.tpl-ico {
   color: var(--dsh-ink-dim)
 }
 
+/* 框：10px 见方，框内留 1px 空隙 */
 .at-dot::before {
   content: "";
   display: block;
-  box-sizing: border-box
+  box-sizing: border-box;
+  width: 10px;
+  height: 10px;
+  border: 1px solid var(--dsh-ink-faint);
+  border-radius: 2px;
+  background: transparent
 }
 
-.at-dot.m-pending::before {
-  width: 9px;
-  height: 9px;
-  border: 1px solid var(--dsh-ink-faint);
-  border-radius: 50%
+/* 填充块：框内 6px 见方；默认不出现，由各状态点亮 */
+.at-dot::after {
+  content: "";
+  position: absolute;
+  inset: 3px;
+  border-radius: 1px;
+  background: currentColor;
+  opacity: 0;
+  transform: scale(.5);
+  transform-origin: 50% 50%;
+  will-change: opacity, transform;
+  transition: opacity .18s ease-out, transform .18s ease-out
 }
 
 .at-dot.m-done::before {
-  width: 9px;
-  height: 9px;
-  border: 1px solid var(--dsh-ok);
+  border-color: var(--dsh-ok)
+}
+
+.at-dot.m-done::after {
   background: var(--dsh-ok);
-  border-radius: 50%
+  opacity: 1;
+  transform: scale(1)
 }
 
 .at-dot.m-failed::before {
-  width: 9px;
-  height: 9px;
-  border: 1px solid var(--dsh-err);
+  border-color: var(--dsh-err)
+}
+
+.at-dot.m-failed::after {
   background: var(--dsh-err);
-  border-radius: 50%
+  opacity: 1;
+  transform: scale(1)
 }
 
 .at-dot.m-unknown::before {
-  width: 9px;
-  height: 9px;
-  border: 1px dashed var(--dsh-warn);
-  border-radius: 50%
+  border: 1px dashed var(--dsh-warn)
 }
 
-/* 进行中：旋转 loader（25% 透明轨道 + 呼吸弧），reduced-motion 下退化为静态圈 */
+.at-dot.m-unknown::after {
+  background: var(--dsh-warn);
+  opacity: .45;
+  transform: scale(.75)
+}
+
+/* 进行中：框亮起，框内填充做呼吸灯（reduced-motion 下退化为静态半亮填充） */
 .at-dot.m-active::before {
-  width: 12px;
-  height: 12px;
-  border: 1.5px solid var(--dsh-bd-strong);
-  border-top-color: var(--dsh-accent);
-  border-radius: 50%;
-  animation: at-dot-spin 1s linear infinite
+  border-color: var(--dsh-accent)
 }
 
-@keyframes at-dot-spin {
-  to {
-    transform: rotate(360deg)
+.at-dot.m-active::after {
+  background: var(--dsh-accent);
+  animation: at-dot-breathe 1.6s ease-in-out infinite
+}
+
+@keyframes at-dot-breathe {
+
+  0%,
+  100% {
+    opacity: .22;
+    transform: scale(.5)
+  }
+
+  50% {
+    opacity: 1;
+    transform: scale(1)
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .at-dot.m-active::before {
+  .at-dot.m-active::after {
     animation: none;
-    border-top-color: var(--dsh-bd-strong)
+    opacity: .8;
+    transform: scale(.9)
   }
 }
 
@@ -4422,7 +4454,7 @@ body.theme-industrial #ixPanel {
   background: color-mix(in srgb, var(--panel) 78%, transparent);
 }
 
-body.theme-light #ixPanel {
+body.ef-skin.theme-light #ixPanel {
   background: color-mix(in srgb, var(--panel) 90%, transparent);
   -webkit-backdrop-filter: blur(8px) saturate(120%);
   backdrop-filter: blur(8px) saturate(120%);
@@ -5453,7 +5485,7 @@ button.dsh-think-row {
   --think-bar-done-to: var(--red);
 }
 
-body.theme-light button.dsh-think-row {
+body.ef-skin.theme-light button.dsh-think-row {
   --think-bar-dim: rgba(0, 0, 0, .10);
 }
 
@@ -6225,7 +6257,7 @@ button.dsh-xlate-copy:hover {
    （renderer/app-trajectory.js 的 TOOL_FAMILIES → css/dsh-tokens.css 的 --dsh-fam-* 一族一条），
    轨迹轴上的块、图例、会话里的药丸与段轨因此同族同色，改一处三处一起变。
    族色一律引用令牌（或由令牌混出淡底），亮暗两套主题都不用另写分片 —— 只有悬停底色在
-   亮色主题下另给一档，见 css/theme-light.css。
+   亮色主题下另给一档，见 css/theme-daylight.css。
    `.dsh-fam-other` 单列：兜底族 = 「名字认不出」的那一档，取 --muted（灰），
    与轨迹上「其它」同一副气色。 */
 .dsh-tool-chip.dsh-fam-read,
@@ -6375,7 +6407,7 @@ button.dsh-xlate-copy:hover {
   padding: 0 2px;
 }
 
-/* 亮色主题的改色统一在 css/theme-light.css（与 .fp-* 同一归属）；这里只留暗色真源 */
+/* 亮色主题的改色统一在 css/theme-daylight.css（与 .fp-* 同一归属）；这里只留暗色真源 */
 
 /* 计划面板 live 行：与 .ap-tool-n 同色同字号，清单窄，别把结果摘要挤没 */
 .ap-live-tools .dsh-tool-file {
@@ -6985,11 +7017,11 @@ button.hist-proc-bar:focus-visible {
   white-space: nowrap
 }
 
-body.theme-light button.hist-proc-bar {
+body.ef-skin.theme-light button.hist-proc-bar {
   background: rgba(0, 0, 0, .03)
 }
 
-body.theme-light button.hist-proc-bar:hover {
+body.ef-skin.theme-light button.hist-proc-bar:hover {
   background: rgba(0, 0, 0, .06)
 }
 

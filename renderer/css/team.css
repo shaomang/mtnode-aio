@@ -1,7 +1,7 @@
-/* ============ 专家团（Team）样式 ============
+﻿/* ============ 专家团（Team）样式 ============
  * 归属 renderer/app-team.js 的界面：团队面板 / 项目分组 / 专家卡片 / 专家编辑 /
  * 招募草稿 / 专家对话。类名统一 .team-* 前缀，配色只取 base.css 的主题变量，
- * 因此暗色 / 工业 / 亮色三套主题自动跟随（亮色覆盖走 body.theme-light）。
+ * 因此暗色 / 工业 / 亮色三套主题自动跟随（亮色覆盖走 body.ef-skin.theme-light）。
  */
 
 /* ── 通用 ── */
@@ -870,10 +870,10 @@
 }
 
 /* ── 亮色主题微调 ── */
-body.theme-light .team-empty,
-body.theme-light .team-project,
-body.theme-light .team-section,
-body.theme-light .team-draft {
+body.ef-skin.theme-light .team-empty,
+body.ef-skin.theme-light .team-project,
+body.ef-skin.theme-light .team-section,
+body.ef-skin.theme-light .team-draft {
   background: var(--panel);
 }
 

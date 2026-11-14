@@ -176,7 +176,11 @@
       '<div class="mt-dialog-body ds-key-body">' +
       '<p class="ds-key-lead" id="dsKeyLead"></p>' +
       '<div class="ds-key-poster-wrap" id="dsKeyPosterWrap">' +
-      '<img class="ds-key-poster" id="dsKeyPoster" src="deepseek-guide.svg" alt="" />' +
+      /* 海报有深 / 亮两版（deepseek-guide.svg / -light.svg）：跟着当前主题选，
+       applyTheme 里也挂了同一条判定 —— 切主题时正在显示的这一张会当场换掉。 */
+      '<img class="ds-key-poster" id="dsKeyPoster" src="' +
+      (document.body.classList.contains("theme-light") ? "deepseek-guide-light.svg" : "deepseek-guide.svg") +
+      '" alt="" />' +
       "</div>" +
       '<div class="ds-key-links">' +
       '<button type="button" class="mini primary" id="dsKeyOpenPlatform"></button>' +

@@ -1,4 +1,4 @@
-/* ============ 输入框内查找（Ctrl+F · renderer/app-find.js） ============
+﻿/* ============ 输入框内查找（Ctrl+F · renderer/app-find.js） ============
  * 焦点在 input / textarea 里时按 Ctrl+F 呼出的框内查找条：贴右上角、不遮输入框本体
  * （用户要看着输入框里的命中逐条走）。persistent 浮层：只走 Esc / ✕ / 再按一次 Ctrl+F，
  * 不挂「点外部即关」。层级高于全局搜索（12000）—— 它是在搜索浮层的输入框里也能用的。
@@ -136,12 +136,12 @@
 }
 
 /* ─ 浅色主题 ── */
-body.theme-light .fd-bar {
+body.ef-skin.theme-light .fd-bar {
   background: var(--panel);
   border-color: var(--bd2);
   box-shadow: 0 14px 34px rgba(0, 0, 0, .22);
 }
 
-body.theme-light .fd-count.fd-empty {
+body.ef-skin.theme-light .fd-count.fd-empty {
   color: #b3403f;
 }

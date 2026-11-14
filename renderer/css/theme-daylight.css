@@ -1,0 +1,1893 @@
+/* ══════════════════════════════════════════════════════════════
+   亮色主题（Daylight）—— 第 4 档主题，中性冷灰底 + 深墨字
+   ──────────────────────────────────────────────────────────────
+   本文件是亮色的**唯一真源**：令牌层（一节）与逐部件覆盖层（二节起）。
+   旧 css/theme-light.css 已整份并入这里并删除（它当年被摘出设置窗，
+   原因是令牌被 body.ef-skin 同权重同序压成暗色 —— 见下面第 1 条）。
+
+   ── 色卡 v2 ────────────────────────────────────────────────────────────────
+   换新理由（都可量化）：旧底 --bg #e9edf4 偏蓝灰，整屏发闷发脏；旧描边
+   --bd #ccd6e4 白底 1.35:1、--bd2 #b3c0d2 1.9:1，两档都太浅，且控件与结构框
+   共用同一档 —— 白底上按钮 / 输入框 / 卡片「看不出边」就出在这里。
+   v2 把底改成中性冷灰、把描边拆成三级梯度（见一·一）。
+   v3 换色：强调从青绿族整族搬到蓝族（#0b7f9b → #155fb0），「运行中」那支品牌棕
+   （#a94f08）一并收进蓝族深档 —— 青绿与棕在浅底上都偏色，蓝是通用界面色。
+
+   色卡（对白底 #ffffff 的 WCAG 对比度）：
+
+     用途        令牌                             值         白底    旧值
+     ─────────   ───────────────────────────────  ─────────  ─────   ─────────
+     画布底      --bg / --ef-black / --ef-canvas   #f4f6f9   1.08    #e9edf4
+     次级底      --bg2 / --ef-surface              #eceff4   1.15    #e2e7f0 / #f5f7fa
+     卡片        --panel / --ef-panel / --ef-card  #ffffff   —       #ffffff
+     次级面板    --panel2 / --row-alt              #f7f9fb   1.06    #f3f6fa / #f7f9fc
+     正文        --ink / --ef-text / --pop-ink     #101828   18.4    #1d2a44
+     次要        --muted / --ef-muted              #475467   7.70    #4e5969
+     弱化        --field-ph                        #667085   4.97    #55606f
+     强调        --cyan / --ef-signal              #155fb0   6.45    #0b7f9b
+     强调 hover  --cyan2 / --ef-signal-2/-deep     #10457f   9.50    #0a6e86
+     运行中      --orange / --ef-logo-line         #10457f   9.50    #a94f08
+     强调淡底    --field-sel                       #e8f0fb   —       #e8f5f8
+     描边·内分隔 --line-hair                       #e4e8ee   1.23    新档
+     描边·外框   --line / --bd / --ef-line         #d0d5dd   1.47    #ccd6e4
+     描边·控件   --line-strong / --bd2             #7e8898   3.58    #b3c0d2
+
+   旧描边令牌一律映射到三级梯度，文件里不再留任何一个旧十六进制：
+     --bd       #ccd6e4 → var(--line)          （卡片 / 浮层外框）
+     --bd2      #b3c0d2 → var(--line-strong)   （控件可见边界）
+     --ef-line  #ccd6e4 → var(--line)
+     --ef-line-2 #b3c0d2 → var(--line-strong)
+     --ef-frame-plate #b9c4d4 → var(--line-strong)
+     --field-line #b3c0d2 → var(--line-strong)
+     --pop-line #ccd6e4  → var(--line)
+     --code-line #d3dcea → var(--line-hair)
+
+    二节起的覆盖层不再写 --bd / --bd2，一律直接取三档之一（这两个旧名只为
+    base.css / apps.css / app-publish.css 这些老文件留成别名）。铺描边的语义口径：
+      结构框（顶栏 / 状态栏 / 侧栏 / 卡片 / 浮层 / 区域）        → --line
+      控件可见边界（input / textarea / select / 按钮 / 复选框 /
+                    拖拽把手 / 滚动条滑块）                      → --line-strong
+      面板内区隔（表头下沿 / 行分隔 / 代码块框 / 组内竖线 / 列分隔） → --line-hair
+    唯一按宽度开的例外：>1px 的色条与轨（左侧引用轨、思考段轨）即便在面板内也取
+    --line —— 1.23:1 的发丝线当 2px 色条用会直接消失。
+
+    浮层 / 投影 / 蒙层 / 状态色的口径（本节定值，二节起逐部件引用）：
+
+      浮层外框      1px --line（经 --pop-line）—— 靠线立边界，不靠影子；
+      浮层投影      --shadow-pop：6% 接触影 + 16% 远距影，两层冷灰，没有黑投影；
+      蒙层          --pop-scrim：色卡自己的中性墨 #101828 取 34%（生成层原本把全屏蒙层
+                    压到 14%，白浮层与画布只有 1.41:1 = 糊成一片；34% 是 2.32:1，
+                    画布结构仍在）；
+      状态色        成功 / 警告 / 危险各深一档，取「压在自己那层 20% 淡底上仍 ≥4.5:1」：
+                      --green / --ef-ok   #0e5b33（白底 8.19，20% 淡底 5.89）
+                      --ef-warn           #7a4f00（7.13 / 5.23）
+                      --red / --ef-err    #96201a（8.34 / 5.83）
+                      --yellow            #6a4d00（7.85 / 5.70）
+                    旧的 --ef-warn #8a5a00 在自己的 20% 淡底上只有 4.44:1，是这一档的下限来源。
+
+   两条硬纪律，改这个文件前先读：
+
+   1) 选择器一律以 body.ef-skin.theme-light 起头，**不许只写 body.theme-light**。
+      applyTheme 给三档主题都挂 ef-skin，而 css/theme-endfield.css（第 18 行导入）
+      的 body.ef-skin 与本文件同权重、又排在后面 —— 只写 body.theme-light 会被
+      它整段压回石墨黑（这正是旧亮色主题被隐藏的原因）。多带一个 .ef-skin 类
+      让本文件稳赢，且不需要 !important。
+      同理，其它 css 文件里的亮色覆盖也已统一写成 body.ef-skin.theme-light。
+
+   2) 前景与底必须成对取自下面的令牌，**不许再出现「写死的底 + 继承来的字」**。
+      历史 bug 全是这一类：输入框 fill 白、字走 --ink 变白 → 白底白字。
+      控件底走 --field-*，浮层走 --pop-*，代码块走 --code-*，
+      表行/悬停走 --row-alt / --hover-bg。新增一个面板时先挑令牌，再写规则。
+      验收闸门：node test/verify-theme-light-contrast.js（令牌两两算 WCAG +
+      真机离屏渲染后逐元素量实际对比度，同色即失败）。
+   ══════════════════════════════════════════════════════════════ */
+
+/* ── 一、令牌层 ───────────────────────────────────────────────────────────────
+   色卡表与旧值→新值对照在文件头，二节起的每一处覆盖都只许从这里取令牌。
+   描边是三级梯度（旧版只有 --bd / --bd2 两档、且两档都太浅，白底上「没有边」就
+   出在这里）：--line-hair 面板内分隔 · --line 卡片 / 浮层外框 · --line-strong 控件边界。
+   所有强调色都按「白底上 ≥4.5:1」挑过一档，不要再往亮里调。 */
+body.ef-skin.theme-light {
+  /* 一·一 应用槽位（base.css 同名槽位的亮色值） */
+  --bg: #f4f6f9;
+  --bg2: #eceff4;
+  --panel: #ffffff;
+  --panel2: #f7f9fb;
+  /* 描边三级梯度：白底 1.23 / 1.47 / 3.58:1 —— 依次是「纯装饰」「外框立边界」
+     「控件可见边界（WCAG 1.4.11 要求 ≥3:1）」。控件档对画布底 #f4f6f9 是 3.31:1，
+     表单件坐在 --code / 画布底上也立得住（旧档 #8a94a3 在那一层只有 2.83）。 */
+  --line-hair: #e4e8ee;
+  --line: #d0d5dd;
+  /* 控件档原为 #8a94a3（白底 3.07）—— 但表单件有一半坐在 --code / 画布底 #f4f6f9 上，
+     那一档对 #f4f6f9 只有 2.83，正好卡在 WCAG 1.4.11 的 3:1 下面。压到 #7e8898：
+     白底 3.58、画布底 3.31，两种底都过。 */
+  --line-strong: #7e8898;
+  --bd: var(--line);            /* 旧 #ccd6e4：结构框 → 二级 */
+  --bd2: var(--line-strong);    /* 旧 #b3c0d2：控件边 → 三级 */
+  --ink: #101828;
+  --muted: #475467;
+  --code: #f4f6f9;
+  /* 强调与「运行中」都收在蓝族里（令牌名 --cyan / --orange 是历史遗留，值早已不是青与橙）：
+     主强调 #155fb0 白底 6.45:1、画布底 5.9:1，既能当字色也能当按钮底反白字；
+     深一档 #10457f 白底 9.5:1，给 hover / 选中态 / 运行中标识。
+     --blue 与 --cyan 合并成同一档 —— 亮色里不需要两套蓝。 */
+  --orange: #10457f;
+  --orange2: #0b3563;
+  --cyan: #155fb0;
+  --cyan2: #10457f;
+  --blue: var(--cyan);
+  /* 状态三档（成功 / 危险 / 警告·琥珀）：浅底上再深一档 —— 它们不只当字色，还会当徽标 /
+     提示条的淡底用，所以要按「压在自己那层 20% 淡底上仍 ≥4.5:1」定值（白底 → 20% 淡底）：
+     绿 8.19 → 5.89、红 8.34 → 5.83、黄 7.85 → 5.70、警告琥珀 7.13 → 5.23。
+     旧的 #8a5a00 在 20% 淡底上只有 4.44:1，这一档就是被它拖下来的。 */
+  --green: #0e5b33;
+  --red: #96201a;
+  --yellow: #6a4d00;
+  /* 强调色的 rgb 三元组：组件里 rgba(var(--…-rgb), .12) 这类半透明底只从这里取 */
+  --cyan-rgb: 21, 95, 176;
+  --orange-rgb: 16, 69, 127;
+  --blue-rgb: 21, 95, 176;
+  --green-rgb: 14, 91, 51;
+  --red-rgb: 150, 32, 26;
+
+  /* 一·二 输入件（input / textarea / select / 参数表单）：底与字成对给 */
+  --field-bg: #ffffff;
+  --field-ink: #101828;
+  --field-line: var(--line-strong); /* 旧 #b3c0d2 白底 1.9:1 → 3.58:1，一眼能看出框 */
+  --field-line-hi: var(--cyan);
+  --field-ph: #667085;          /* placeholder：比 --muted 弱一档，但白底仍 4.97:1（过 4.5） */
+  --field-sel: #e8f0fb;         /* 输入框内选中文字的底（蓝族淡底） */
+  --field-disabled-bg: #eceff4;
+  --field-disabled-ink: #7b8496;
+
+  /* 一·三 浮层 / 弹窗 / 菜单（设置窗、搜索、查找、灯箱、提示、右键菜单） */
+  --pop-bg: #ffffff;
+  --pop-ink: #101828;
+  --pop-line: var(--line);      /* 浮层外框：1px 线立边界，不靠影子 */
+  --pop-head: #f7f9fb;          /* 浮层标题条 / 表头 */
+  --pop-muted: #475467;
+  /* 蒙层浓度：暗色那层是 45~96% 的黑纱。生成层把近黑半透明底一律按「淡墨」翻，于是
+     #overlay / 设置窗 / 灯箱这些全屏蒙层都只剩 14% —— 浅底上等于没压，白浮层压在
+     #d6d9e0 的淡灰上只有 1.41:1，浮层与画布糊成一片。
+     这里取色卡自己的中性墨 #101828 的 34%：压暗一层、画布仍看得出结构（节点描边
+     1.57:1 可见），浮层与蒙层拉开到 2.32:1；边界再交给 1px --line（见二·○ 的浮层壳），
+     既不靠浓度，也不靠影子。 */
+  --pop-scrim: rgba(16, 24, 40, .34);
+
+  /* 一·四 代码块 / 表格 / 行 */
+  --code-bg: #f4f6f9;
+  --code-ink: #101828;
+  --code-line: var(--line-hair);
+  --row-alt: #f7f9fb;
+  --row-head: #f1f4f8;
+  --hover-bg: rgba(21, 95, 176, .10);
+  --sel-bg: rgba(21, 95, 176, .16);
+
+  /* 一·五 交互令牌（焦点环 / 投影 / 选区） */
+  --focus-ring: var(--cyan);
+  --focus-halo: rgba(21, 95, 176, .18);
+  /* 浮层投影：浅底上不能沿用暗色那层 12/32px 的黑影（在 #f4f6f9 上就是一圈灰雾）。
+     一层贴着边（1px 2px / 6%）定接触，一层远距（12px 28px -8px / 16%）给体积；
+     「浮层分得出来」靠的是外框那道 1px --line，影子只补厚度。 */
+  --shadow-pop: 0 1px 2px rgba(16, 24, 40, .06), 0 12px 28px -8px rgba(16, 24, 40, .16);
+
+  /* 一·六 共用皮肤（css/theme-endfield.css 的 --ef-* 槽位）的亮色重映射。
+     皮肤那 2600 行里凡是走变量的部件都随这里变色，不必逐条覆盖；
+     写死石墨色的部件由二节起的覆盖层处理（审计脚本会列出漏网的）。 */
+  --ef-black: #f4f6f9;
+  --ef-canvas: #f4f6f9;
+  --ef-surface: #eceff4;
+  --ef-panel: #ffffff;
+  --ef-card: #ffffff;
+  --ef-input: #ffffff;
+  --ef-line: var(--line);
+  --ef-line-2: var(--line-strong);
+  --ef-text: #101828;
+  --ef-muted: #475467;
+  --ef-signal: var(--cyan);
+  --ef-signal-rgb: 21, 95, 176;
+  --ef-signal-2: var(--cyan2);
+  --ef-signal-deep: var(--cyan2);
+  --ef-olive: #10457f;
+  --ef-ok: #0e5b33;
+  --ef-warn: #7a4f00;
+  --ef-err: #96201a;
+  /* --ef-plate 在皮肤里主要当「亮字 / 亮环」用（color: var(--ef-plate) 十几处），
+     亮色下它必须翻成深墨；它作为底色的唯一用法（节点标题条那道渐变）已由
+     theme-daylight-skin.css 覆盖成白底渐变。 */
+  --ef-plate: #101828;
+  --ef-frame: var(--cyan2);
+  --ef-frame-hi: var(--cyan);
+  --ef-frame-plate: var(--line-strong);
+  --ef-logo-line: #10457f;
+  --ef-logo-rgb: 16, 69, 127;
+  /* 扫描线：暗色那层是 2% 白，亮底上等于没有；换成 2% 墨，浓度一致地压在浅底上 */
+  --ef-scan: repeating-linear-gradient(180deg,
+      rgba(16, 24, 40, .02) 0 var(--ef-scan-w),
+      rgba(16, 24, 40, 0) var(--ef-scan-w) var(--ef-scan-period));
+
+  /* 一·七 节点板投影（浅底上换成冷灰、去掉厚重黑投影）
+     暗色那套是「1px 黑描边 + 右下黑厚度块 + 40% 黑影」，浅底上换成新色卡的一档浅描边
+     （--line）+ 两层冷灰软影，厚度只靠影子，不再有黑方块。 */
+  --nfloat:
+    0 0 0 1px var(--line),
+    0 2px 4px rgba(16, 24, 40, .06),
+    0 12px 26px -10px rgba(16, 24, 40, .16);
+}
+
+/* html 层的 color-scheme：原生控件（滚动条 / 下拉 / 勾选）跟着亮色走 */
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+
+/* ── 二·○·二 组件自带变量 / 选中态文字的补丁 ─────────────────────────────────
+   ① canvas-dock.css 自带一套 --cdock-* 变量（--cdock-mute #8f979b / --cdock-line
+      white .1 / --cdock-line-2 white .16）：亮底上灰字 2.6:1、白线等于没边，
+      必须跟着主题走，否则画布底部「建造」那条永远发灰、也永远没有边界。
+   ② 顶栏选中态：底色已翻成深青，文字若还走 --muted（我给常态定的 5.9:1 灰）就只剩 3.7:1；
+      选中态的字必须跟着翻白 —— 它比按钮本体低一层，要单独写。
+   ③ 节点上的 ▶ 播放键：底色是 rgba(绿,.08)，压在节点预览区上容易糊；亮色下给它实白底 + 描边。 */
+body.ef-skin.theme-light .cdock {
+  /* 原 #4e5969（旧 --muted）：底部条在亮色下是 14% 墨的灰洗底（#d6d9de），
+     9.5px 的 .cdock-lb / 7px 的 .cdock-caret 压在这层灰上只有 4.2~4.5:1。
+     压到 #3d4759：对灰洗底 6.4:1、对白 8.9:1，小字一眼可读。 */
+  --cdock-mute: #3d4759;
+  /* 两档 cdock 线（canvas-dock.css 里是 white .1 / .16）在亮底上等于没有边：
+     整条底部条的顶边、组间竖分隔、二级面板外框都吃这两个变量。
+     原来取「外框」档 --line（白底 1.47:1）—— 压在 14% 墨的灰洗底上只剩 1.36，
+     与面板底几乎同色，组与组之间数不出来。改取「控件」档 --line-strong（白底 3.58 /
+     灰洗底 3.3）：1px 结构线只有过 3:1 才立得住。
+     注意 --cdock-line-2 不只是边框：.cdock-sep / 分隔渐变拿它当 1px 底色，取同一档才对得上。 */
+  --cdock-line: var(--line-strong);
+  --cdock-line-2: var(--line-strong);
+  /* 悬停 / 选中的强调：canvas-dock.css 吃 --ef-signal（=--cyan #155fb0），
+     压在 14% 墨灰洗底上只有 5.9:1 且偏浅；这里取蓝族深一档（#10457f，灰洗底 8.7:1）。 */
+  --cdock-accent: var(--cyan2);
+}
+
+/* 建造条的按钮：canvas-dock.css 默认是「透明底 + 透明边」，只有 hover / 选中才显形 ——
+   亮色下整条建造条看上去就是一排没有边界的灰字，用户反馈「按钮不清晰」就是它。
+   这里默认态直接给白底（对灰洗底 1.47）+ 控件档描边（3.58），静止时也数得清有几颗；
+   hover / 选中换成蓝淡底 + 强调描边，与其它按钮的选中口径一致。 */
+body.ef-skin.theme-light .cdock-btn {
+  background: #ffffff;
+  border-color: var(--line-strong);
+}
+body.ef-skin.theme-light .cdock-btn:hover {
+  background: var(--field-sel);
+  border-color: var(--cyan);
+  color: var(--ink);
+}
+body.ef-skin.theme-light .cdock-btn.on {
+  background: var(--field-sel);
+  border-color: var(--cyan);
+  color: var(--cyan2);
+}
+
+/* 二级 / 三级小面板：生成层把它翻成「14% 墨叠 14% 墨」，与底部条同色糊成一片。
+   亮色下改白底 + 控件档描边，条目坐 --panel2、悬停转蓝淡底。 */
+body.ef-skin.theme-light .cdock-pop,
+body.ef-skin.theme-light .cdock-pop-sub {
+  background: #ffffff;
+  border-color: var(--line-strong);
+  box-shadow: var(--shadow-pop);
+}
+body.ef-skin.theme-light .cdock-it {
+  background: var(--panel2);
+  border-color: var(--line);
+  color: var(--muted);
+}
+body.ef-skin.theme-light .cdock-it:hover {
+  background: var(--field-sel);
+  border-color: var(--cyan);
+  color: var(--ink);
+}
+
+body.ef-skin.theme-light .n-title {
+  color: var(--ink);
+}
+
+/* 各类型节点的标题在 canvas.css 里是「亮色粉彩 + 2 个类」（.task .n-title / .ctrl .n-title…），
+   生成层把它们统一翻成 #5b6577 —— 亮卡 + 浅色标题条上只有 3.8:1，12px 标题掉出正文档。
+   这里按 3 个类把它拉回 --ink（对白卡 18.4:1）：节点类型已经由卡片描边与底色区分，
+   标题本身必须是正文级可读。 */
+body.ef-skin.theme-light .wf-node .n-title {
+  color: var(--ink);
+}
+
+body.ef-skin.theme-light .topbar .tb-view.on .tb-view-txt,
+body.ef-skin.theme-light .topbar .btn-ico.on .btn-ico-txt,
+body.ef-skin.theme-light .topbar .btn-stack.on .btn-stack-txt,
+body.ef-skin.theme-light .topbar .corner.on .btn-ico-txt {
+  color: #ffffff;
+}
+
+/* 选择器必须带上 .n-play：canvas.css 那条是 .n-play.n-help-btn（两个类），
+   只写 .n-help-btn 权重不够，会被它用半透明绿底盖回去（实测压出 2.4:1 的绿字灰底）。 */
+body.ef-skin.theme-light .n-play,
+body.ef-skin.theme-light .n-play.n-help-btn {
+  background: #ffffff;
+  border: 1px solid var(--line-strong);
+  color: var(--green);
+}
+
+/* 运行队列里那颗「■ 终止」：暗色皮肤给它半透明红底，压在队列条渐变上量出来只有 2.8:1。
+   亮色下给它实白底 + 描边，字走 --red（7:1）。 */
+body.ef-skin.theme-light .rq-item .rq-stop,
+body.ef-skin.theme-light .rq-stop {
+  background: #ffffff;
+  border: 1px solid var(--line-strong);
+  color: var(--red);
+}
+
+body.ef-skin.theme-light .rq-item .rq-stop:hover,
+body.ef-skin.theme-light .rq-stop:hover {
+  background: var(--hover-bg);
+  border-color: var(--red);
+}
+
+body.ef-skin.theme-light .wf-node.sel {
+  border-color: var(--cyan);
+}
+
+/* 节点卡片上的小字（底部状态行 / 端口徽标）：暗色皮肤给的是 10.5px 的弱化灰，
+   白卡上要再深一档才看得清；状态色按语义各自加深，别一起压成灰。 */
+body.ef-skin.theme-light .n-status {
+  color: var(--muted);
+}
+
+body.ef-skin.theme-light .n-status.run {
+  color: var(--orange);
+}
+
+body.ef-skin.theme-light .n-status.done {
+  color: var(--green);
+}
+
+body.ef-skin.theme-light .n-status.err {
+  color: var(--red);
+}
+
+body.ef-skin.theme-light .n-status.block {
+  color: var(--yellow);
+}
+
+body.ef-skin.theme-light .port-badge {
+  color: var(--muted);
+  background: #ffffff;
+  border-color: var(--line);
+}
+
+/* 禁用态：暗色靠 .55 透明度压暗就够了；白底上透明度会把字与底一起冲淡，
+   所以亮色改成「禁用底 + 禁用字」这一对实色（仍在 3:1 以上）。 */
+body.ef-skin.theme-light input:disabled,
+body.ef-skin.theme-light textarea:disabled,
+body.ef-skin.theme-light select:disabled {
+  opacity: 1;
+  background-color: var(--field-disabled-bg);
+  color: var(--field-disabled-ink);
+  border-color: var(--line);
+}
+
+/* 浮层壳：白浮层压在浅灰底上，**边界由 1px --line 立**（--pop-line 就是它那一档），
+   投影只补一层很淡的接触影（--shadow-pop）。搜索 / 查找 / 节点说明 / 指令菜单都走这一条，
+   别各自再写「0 18px 60px 黑」那种 —— 浅底上那不是投影，是一圈灰雾。 */
+body.ef-skin.theme-light .gs-box,
+body.ef-skin.theme-light .fd-bar,
+body.ef-skin.theme-light .node-help-tip,
+body.ef-skin.theme-light .agent-cmd-menu,
+body.ef-skin.theme-light .agent-model-menu,
+body.ef-skin.theme-light .agent-mode-menu,
+body.ef-skin.theme-light .agent-tools-menu,
+body.ef-skin.theme-light .agent-ws-menu,
+body.ef-skin.theme-light .assist-model-menu,
+body.ef-skin.theme-light .ctx-menu,
+body.ef-skin.theme-light .mt-plan-model-pop {
+  background: var(--pop-bg);
+  border: 1px solid var(--pop-line);
+  box-shadow: var(--shadow-pop);
+}
+
+/* 大浮层壳（设置窗 / 表单窗 / 蒙版窗 / 打赏窗）：同一条口径 —— 外框 1px --line、
+   投影只留 --shadow-pop，暗色那两档 0 18px 60px / 48px 的黑投影一并收掉。
+   .mt-dialog-box 顶上那道 3px 强调条要留住，所以只改 border-color，再单独点回 border-top。 */
+body.ef-skin.theme-light .mt-dialog-box {
+  border-color: var(--pop-line);
+  border-top-color: var(--orange);
+  box-shadow: var(--shadow-pop);
+}
+
+body.ef-skin.theme-light .mask-dlg,
+body.ef-skin.theme-light .mt-pop-box,
+body.ef-skin.theme-light .tts-menu,
+body.ef-skin.theme-light .tts-confirm-box {
+  border-color: var(--pop-line);
+  box-shadow: var(--shadow-pop);
+}
+
+body.ef-skin.theme-light .gs-scrim {
+  background: var(--pop-scrim);
+}
+
+/* 运行队列那条浮层：暗色皮肤用的是「96% 黑渐变 + 半透明」，亮色翻译过来就成了
+   「白 → 半透明深灰」的渐变 —— 下半截正好是灰底灰字（实测 2.8:1）。
+   亮色下浮层一律做实底：白底 + 描边 + pop 投影，不玩半透明。 */
+body.ef-skin.theme-light .run-queue {
+  background: #ffffff;
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow-pop);
+}
+
+body.ef-skin.theme-light .rq-head {
+  background: var(--pop-head);
+  border-bottom: 1px solid var(--line-hair);
+}
+
+body.ef-skin.theme-light .rq-title,
+body.ef-skin.theme-light .rq-sec {
+  color: var(--muted);
+}
+
+body.ef-skin.theme-light .rq-count {
+  color: var(--orange);
+}
+
+/* ── 二·○·一 壳体（顶栏 / 状态栏）：白底 + 可见的发丝线 ───────────────────────
+   共用的暗色皮肤把这两条画成石墨底 + 极弱的分隔，亮色下会整条「糊进画布」。
+   这里给它们白底与一条看得见的边线；按钮常态透明、hover / 选中才上色。 */
+body.ef-skin.theme-light .topbar {
+  background: #ffffff;
+  border-bottom: 1px solid var(--line);
+  box-shadow: 0 1px 2px rgba(29, 42, 68, .05);
+}
+
+body.ef-skin.theme-light .statusbar {
+  background: #ffffff;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+}
+
+body.ef-skin.theme-light .topbar .btn-ico,
+body.ef-skin.theme-light .topbar .tb-view,
+body.ef-skin.theme-light .topbar .btn-stack,
+body.ef-skin.theme-light .topbar .corner,
+body.ef-skin.theme-light .statusbar .sb-btn {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
+
+body.ef-skin.theme-light .topbar .btn-ico:hover,
+body.ef-skin.theme-light .topbar .tb-view:hover,
+body.ef-skin.theme-light .topbar .btn-stack:hover,
+body.ef-skin.theme-light .topbar .corner:hover,
+body.ef-skin.theme-light .statusbar .sb-btn:hover {
+  background: var(--hover-bg);
+  border-color: var(--line-strong);
+  color: var(--ink);
+}
+
+body.ef-skin.theme-light .topbar .btn-ico-txt,
+body.ef-skin.theme-light .topbar .btn-stack-txt,
+body.ef-skin.theme-light .topbar .tb-view-txt {
+  color: var(--muted);
+}
+
+body.ef-skin.theme-light .topbar .btn-ico:hover .btn-ico-txt,
+body.ef-skin.theme-light .topbar .btn-stack:hover .btn-stack-txt,
+body.ef-skin.theme-light .topbar .tb-view:hover .tb-view-txt,
+body.ef-skin.theme-light .topbar .btn-ico.on .btn-ico-txt,
+body.ef-skin.theme-light .topbar .btn-stack.on .btn-stack-txt {
+  color: var(--ink);
+}
+
+/* 状态栏那一排小字：白底上给到 --muted（5.9:1），别再跟暗色皮肤一起走半透明白 */
+body.ef-skin.theme-light .statusbar span,
+body.ef-skin.theme-light .statusbar button,
+body.ef-skin.theme-light .statusbar .sb-speak-text {
+  color: var(--muted);
+}
+
+/* ── 二·○ 强调色「实底」上的字一律翻白 ─────────────────────────────────────────
+   共用皮肤的选中态是「亮黄/亮青实底 + 深字」（终末地那套：黄底黑字，对比最强）。
+   亮色侧那支强调色是蓝族 #155fb0（白底 6.45:1，不压深就没法当文字色用），
+   再压深字就是 3.2:1 —— 同一处必须成对翻成白字。
+   这些规则的底色是 var(--ef-signal) 渐变，生成层认不出（它只看字面值），所以手写在这里。
+   SVG 图标另写一条 stroke：它的颜色不吃 color。 */
+body.ef-skin.theme-light .topbar .tb-view.on,
+body.ef-skin.theme-light .topbar .btn-plugins.on,
+body.ef-skin.theme-light .topbar .btn-tools.on,
+body.ef-skin.theme-light .topbar .btn-assets.on,
+body.ef-skin.theme-light .topbar .btn-perf.on,
+body.ef-skin.theme-light .topbar .btn-apps.on,
+body.ef-skin.theme-light .side-tab.on,
+body.ef-skin.theme-light .seg-btn.on {
+  color: #ffffff;
+  border-color: var(--ef-signal-deep);
+  background: linear-gradient(180deg, var(--ef-signal), var(--ef-signal-deep));
+  /* 亮色下不要那圈强调色辉光：白底上它就是一块半透明的青雾，
+     压住选中态那条实底、也把白字的实际对比拖到 3:1 边上。 */
+  box-shadow: none;
+}
+
+body.ef-skin.theme-light .topbar .tb-view.on svg,
+body.ef-skin.theme-light .topbar .btn-tools.on svg,
+body.ef-skin.theme-light .topbar .btn-plugins.on svg,
+body.ef-skin.theme-light .topbar .btn-assets.on svg,
+body.ef-skin.theme-light .topbar .btn-perf.on svg,
+body.ef-skin.theme-light .topbar .btn-apps.on svg,
+body.ef-skin.theme-light .side-tab.on svg {
+  stroke: #ffffff;
+  fill: none;
+}
+
+/* ── 节点标题条：去掉暗色半透明底与黑色虚线，改为浅色分隔条 ──
+   分隔线原来取发丝档 --line-hair（#e4e8ee）：压在节点渐变与画布底之间只有 1.14:1，
+   连「纯装饰线」的 1.2 地板都没过 —— 标题条与板身糊成一块。取结构档 --line（1.36:1）。 */
+body.ef-skin.theme-light .n-head {
+  background: rgba(0, 0, 0, .03);
+  border-bottom: 1px solid var(--line);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, .5);
+}
+
+/* ── 节点板通用基础 ── */
+body.ef-skin.theme-light .wf-node {
+  /* canvas.css 在 .wf-node 上自己写了一版黑色 --nfloat（1px 黑描边 + 4px 5px 黑厚度块），
+     继承不到 body 上那一档，所以这里必须按亮色档覆写一遍：浅描边（--line）+ 冷灰软影。 */
+  --nfloat:
+    0 0 0 1px var(--line),
+    0 2px 4px rgba(16, 24, 40, .06),
+    0 12px 26px -10px rgba(16, 24, 40, .16);
+  background: linear-gradient(180deg, #f7f8fa, #eef1f5);
+  border-color: var(--line);
+  box-shadow:
+    var(--nfloat),
+    inset 0 1px 0 rgba(255, 255, 255, .8);
+}
+
+/* 拖拽中：canvas.css 的 .node-dragging 又写回一版黑色 --nfloat（40~45% 的黑 + 黑厚度块），
+   浅底上一拖就跳回黑投影。这里按「上浮一档」重写：描边不动，软影加深一档、远距拉长。 */
+body.ef-skin.theme-light .wf-node.node-dragging {
+  --nfloat:
+    0 0 0 1px var(--line),
+    0 3px 6px rgba(16, 24, 40, .08),
+    0 16px 32px -10px rgba(16, 24, 40, .22);
+}
+
+body.ef-skin.theme-light .wf-node.super {
+  border-color: var(--line);
+  background:
+    linear-gradient(160deg, rgba(120, 140, 180, .08) 0%, transparent 42%),
+    linear-gradient(180deg, #f2f4f8, #e9edf3);
+}
+
+/* 工具节点（super + tool:true 变体）收起态：与处理节点同族的叶子卡片外观；
+   展开成壳层后回到上面的节点层底色（暗色主题同一口径，见 canvas.css）。 */
+body.ef-skin.theme-light .wf-node.tool-node:not(.super-open) {
+  border-color: #e8b884;
+  background: linear-gradient(180deg, #fdf2e4, #fef9f0);
+}
+
+/* 节点层 / 开发节点「包体」面板：浅色版（仅渐变 + 阴影） */
+body.ef-skin.theme-light .super-folder-body {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, .75) 0%, rgba(255, 255, 255, .2) 42%, rgba(120, 140, 180, .1) 100%),
+    linear-gradient(180deg, #eef2f8, #dee5ef);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, .9),
+    inset 0 2px 5px rgba(30, 45, 70, .07),
+    inset 0 -14px 22px rgba(120, 140, 180, .14);
+}
+
+body.ef-skin.theme-light .super-folder-title {
+  text-shadow: 0 1px 0 rgba(255, 255, 255, .8);
+}
+
+body.ef-skin.theme-light .n-super-note-btn {
+  border-color: var(--line-strong);
+  background: rgba(255, 255, 255, .5);
+  color: #5a6472;
+}
+
+body.ef-skin.theme-light .n-super-note-btn.on {
+  border-color: #7d97bd;
+  background: rgba(120, 150, 190, .16);
+  color: #1e222b;
+}
+
+/* ── 各类型节点：浅色渐变 + 柔和同类色描边（保留类型语义，去掉霓虹） ── */
+body.ef-skin.theme-light .wf-node.in {
+  border-color: #8fb6e6;
+  background: linear-gradient(180deg, #eef4fd, #f7fbfe);
+}
+
+/* 音频 / 视频输入：播放器底色在浅色下改成正白，「输出 URL」徽标改深青 */
+body.ef-skin.theme-light .wf-node.in-media .n-av-el {
+  background: #ffffff;
+}
+
+body.ef-skin.theme-light .wf-node.in-media .n-chip.av-chip {
+  color: #15508f;
+  border-color: rgba(32, 104, 184, .45);
+}
+
+body.ef-skin.theme-light .wf-node.proc {
+  border-color: #e8b884;
+  background: linear-gradient(180deg, #fdf2e4, #fef9f0);
+}
+
+body.ef-skin.theme-light .wf-node.proc-img {
+  border-color: #ec9bc0;
+  background: linear-gradient(180deg, #fceef4, #fef8fa);
+}
+
+body.ef-skin.theme-light .wf-node.music {
+  border-color: #9db6ec;
+  background: linear-gradient(180deg, #eff3fc, #f8fafe);
+}
+
+body.ef-skin.theme-light .wf-node.video {
+  border-color: #8ecdb6;
+  background: linear-gradient(180deg, #eef7f2, #f7fcf9);
+}
+
+body.ef-skin.theme-light .wf-node.tts {
+  border-color: #c5a8e8;
+  background: linear-gradient(180deg, #f6f0fc, #fbf8fe);
+}
+
+body.ef-skin.theme-light .wf-node.net {
+  border-color: #bda2ea;
+  background: linear-gradient(180deg, #f4effc, #faf8fe);
+}
+
+body.ef-skin.theme-light .wf-node.agent {
+  border-color: #9db0ec;
+  background: linear-gradient(180deg, #eef1fd, #f8fafe);
+}
+
+body.ef-skin.theme-light .wf-node.db-tbl,
+body.ef-skin.theme-light .wf-node.db {
+  border-color: #8bc9ab;
+  background: linear-gradient(180deg, #ecf7f0, #f6fbf8);
+}
+
+body.ef-skin.theme-light .wf-node.sv {
+  border-color: #93cfa5;
+  background: linear-gradient(180deg, #ecf7ee, #f6fbf7);
+}
+
+/* 交付节点（长周期任务）：浅色下同一条暖琥珀口径 */
+body.ef-skin.theme-light .wf-node.dlv {
+  border-color: #dbb073;
+  background: linear-gradient(180deg, #fdf5e8, #fefaf2);
+}
+
+body.ef-skin.theme-light .wf-node.task {
+  border-color: #8ccbc7;
+  background: linear-gradient(180deg, #ecf6f5, #f7fbfb);
+}
+
+body.ef-skin.theme-light .wf-node.ctrl {
+  border-color: #e3c184;
+  background: linear-gradient(180deg, #fbf3e2, #fdf9ef);
+}
+
+body.ef-skin.theme-light .wf-node.ctrl-start {
+  border-color: #dcae52;
+}
+
+body.ef-skin.theme-light .wf-node.ctrl-ok {
+  border-color: #8cc9a0;
+  background: linear-gradient(180deg, #eaf6ec, #f5fbf6);
+}
+
+body.ef-skin.theme-light .wf-node.ctrl-fail {
+  border-color: #e6a19a;
+  background: linear-gradient(180deg, #fbeeec, #fdf6f5);
+}
+
+body.ef-skin.theme-light .wf-node.judge {
+  border-color: #c3a6ec;
+  background: linear-gradient(180deg, #f4effc, #faf8fe);
+}
+
+body.ef-skin.theme-light .wf-node.wait {
+  border-color: #8bc9b4;
+  background: linear-gradient(180deg, #ecf7f2, #f6fbf9);
+}
+
+body.ef-skin.theme-light .wf-node.timer {
+  border-color: #97b1ec;
+  background: linear-gradient(180deg, #eff3fc, #f8fafe);
+}
+
+body.ef-skin.theme-light .wf-node.delayer {
+  border-color: #96c9b4;
+  background: linear-gradient(180deg, #edf7f3, #f7fbf9);
+}
+
+body.ef-skin.theme-light .wf-node.sequencer {
+  border-color: #c3a6ec;
+  background: linear-gradient(180deg, #f4effc, #faf8fe);
+}
+
+body.ef-skin.theme-light .wf-node.gate {
+  border-color: #e3c088;
+  background: linear-gradient(180deg, #fbf3e4, #fdf9f0);
+}
+
+body.ef-skin.theme-light .wf-node.splitter {
+  border-color: #93bae4;
+  background: linear-gradient(180deg, #eef4fb, #f8fbfe);
+}
+
+body.ef-skin.theme-light .wf-node.counter {
+  border-color: #e8b092;
+  background: linear-gradient(180deg, #fcf1ea, #fef9f6);
+}
+
+body.ef-skin.theme-light .wf-node.mutex {
+  border-color: #d6a8cb;
+  background: linear-gradient(180deg, #f9eff7, #fdf8fc);
+}
+
+/* 控制类金色外圈：降为柔和描边 */
+body.ef-skin.theme-light .wf-node.is-ctrl {
+  box-shadow: var(--nfloat), 0 0 0 1.5px rgba(216, 168, 74, .65);
+}
+
+body.ef-skin.theme-light .wf-node.ctrl-ok.is-ctrl {
+  box-shadow: var(--nfloat), 0 0 0 1.5px rgba(216, 168, 74, .65), 0 0 6px rgba(120, 200, 150, .35);
+}
+
+body.ef-skin.theme-light .wf-node.ctrl-fail.is-ctrl {
+  box-shadow: var(--nfloat), 0 0 0 1.5px rgba(216, 168, 74, .65), 0 0 6px rgba(220, 130, 120, .35);
+}
+
+/* 全局 / 智能超限：保留彩虹环，但内底改浅，避免刺眼 */
+body.ef-skin.theme-light .wf-node.global {
+  background:
+    linear-gradient(180deg, #f4f5f8, #eceff3) padding-box,
+    conic-gradient(from var(--g-ang), #ff7d8d, #ffcf6a, #7ce6a0, #7ec7f0, #b3a4f5, #ff7d8d) border-box;
+  background-origin: border-box;
+  background-clip: padding-box, border-box;
+}
+
+/* ── 选中高亮：去掉高亮霓虹光晕，改为清晰的浅色描边环 ── */
+body.ef-skin.theme-light .wf-node.sel {
+  border-color: #5b9fd8;
+  box-shadow:
+    0 0 0 1.5px rgba(91, 159, 216, .55),
+    0 0 6px rgba(91, 159, 216, .25),
+    var(--nfloat);
+}
+
+body.ef-skin.theme-light .wf-node:not(.global):not(.agent-super).sel {
+  outline: 1.5px solid rgba(91, 159, 216, .75);
+  outline-offset: 2px;
+}
+
+/* 开发节点运行中 + 选中：呼吸灯继续并且更亮。浅底上青色霓虹会发灰，
+   故选中环与动画里的青色光晕（--dev-sel-rgb）一起换成主题蓝。 */
+body.ef-skin.theme-light .wf-node.super.dev-el.dev-running.sel {
+  --dev-sel-rgb: 91, 159, 216;
+  outline: 2px solid rgba(91, 159, 216, .95);
+  outline-offset: 2px;
+}
+
+/* 建议调研中（sug）+ 选中：琥珀呼吸灯照旧，选中环同样换主题蓝（浅底不刺眼） */
+body.ef-skin.theme-light .wf-node.super.dev-el.dev-running-sug.sel {
+  --dev-sel-rgb: 91, 159, 216;
+  outline: 2px solid rgba(91, 159, 216, .95);
+  outline-offset: 2px;
+}
+
+/* 「运行本层」呼吸灯（canvas.css 的 .super-run-live / .super-run-focus）：
+   浅底上高饱和霓虹绿会发灰，换一套偏深的绿 + 自带一组 keyframes
+   （动画里的颜色是写死的，不能只改 outline-color 就生效）。 */
+body.ef-skin.theme-light .wf-node.super-run-focus {
+  outline-color: rgba(47, 158, 99, .85);
+  animation-name: superRunFocusBreatheLight;
+}
+
+body.ef-skin.theme-light .wf-node.super.super-run-live {
+  outline-color: rgba(47, 158, 99, .5);
+  animation-name: superRunShellBreatheLight;
+}
+
+@keyframes superRunFocusBreatheLight {
+  0%, 100% { outline-color: rgba(47, 158, 99, .32); }
+  50% { outline-color: rgba(47, 158, 99, 1); }
+}
+
+@keyframes superRunShellBreatheLight {
+  0%, 100% {
+    outline-color: rgba(47, 158, 99, .26);
+    outline-offset: 3px;
+  }
+  50% {
+    outline-color: rgba(47, 158, 99, 1);
+    outline-offset: 5px;
+  }
+}
+
+/* 选中 + 运行中：浅色主题的 .sel 描边同样会压掉环宽，按同权重的选择器拿回来 */
+body.ef-skin.theme-light .wf-node.super.super-run-live.sel {
+  outline-width: 2.5px;
+  outline-offset: 3px;
+}
+
+body.ef-skin.theme-light .wf-node.super-run-focus:not(.global):not(.agent-super).sel {
+  outline-width: 2px;
+  outline-offset: 2px;
+}
+
+body.ef-skin.theme-light .wf-node.agent-super {
+  background:
+    linear-gradient(180deg, #eef1fd, #f6f9fe) padding-box,
+    conic-gradient(from var(--g-ang), #ff7d8d, #ffcf6a, #7ce6a0, #7ec7f0, #b3a4f5, #ff7d8d) border-box;
+  background-origin: border-box;
+  background-clip: padding-box, border-box;
+}
+
+body.ef-skin.theme-light .wf-node.ctrl.sel { border-color: #dcae52; }
+body.ef-skin.theme-light .wf-node.wait.sel { border-color: #7ec7ae; }
+body.ef-skin.theme-light .wf-node.proc-img.sel { border-color: #ec88b4; }
+body.ef-skin.theme-light .wf-node.music.sel { border-color: #8aa8f0; }
+body.ef-skin.theme-light .wf-node.video.sel { border-color: #7cc7ac; }
+body.ef-skin.theme-light .wf-node.tts.sel { border-color: #c3a6ec; }
+body.ef-skin.theme-light .wf-node.agent.sel { border-color: #8aa8f0; }
+body.ef-skin.theme-light .wf-node.task.st-done { border-color: #7cc99a; }
+body.ef-skin.theme-light .wf-node.task.st-running,
+body.ef-skin.theme-light .wf-node.task.st-run { border-color: #e8a860; }
+body.ef-skin.theme-light .wf-node.task.st-failed { border-color: #e0899a; }
+
+/* 任务节点：状态灯 + 选中。浅底上高饱和霓虹会发灰，所以选中环换成主题蓝，
+   并把各状态灯的 RGB 三元组（--task-glow-rgb）换成上面这套浅底专用色 ——
+   选中后状态灯依旧保留（同一 hue，只是光晕更浓 + 一圈蓝色描边），不熄灭。
+   阻塞中的闪烁（task-block-blink-sel）读的就是这两个变量，跟着一起换色。 */
+body.ef-skin.theme-light .wf-node.task { --task-sel-rgb: 91, 159, 216; }
+body.ef-skin.theme-light .wf-node.task.st-done { --task-glow-rgb: 60, 150, 96; }
+body.ef-skin.theme-light .wf-node.task.st-running,
+body.ef-skin.theme-light .wf-node.task.st-run { --task-glow-rgb: 206, 128, 32; }
+body.ef-skin.theme-light .wf-node.task.st-failed { --task-glow-rgb: 198, 78, 104; }
+body.ef-skin.theme-light .wf-node.task.st-blocked,
+body.ef-skin.theme-light .wf-node.task.st-block { --task-glow-rgb: 176, 138, 24; }
+
+body.ef-skin.theme-light .wf-node.task.st-done.sel,
+body.ef-skin.theme-light .wf-node.task.st-running.sel,
+body.ef-skin.theme-light .wf-node.task.st-run.sel,
+body.ef-skin.theme-light .wf-node.task.st-failed.sel,
+body.ef-skin.theme-light .wf-node.task.st-blocked.sel,
+body.ef-skin.theme-light .wf-node.task.st-block.sel {
+  border-color: rgb(var(--task-glow-rgb, 60, 150, 96));
+  box-shadow:
+    0 0 0 1.5px rgba(var(--task-glow-rgb, 60, 150, 96), .5),
+    0 0 12px rgba(var(--task-glow-rgb, 60, 150, 96), .32),
+    0 0 8px rgba(var(--task-sel-rgb, 91, 159, 216), .26),
+    var(--nfloat);
+  outline: 2px solid rgba(var(--task-sel-rgb, 91, 159, 216), .95);
+  outline-offset: 2px;
+}
+
+body.ef-skin.theme-light .wf-node.judge.sel { border-color: #c3a6ec; }
+body.ef-skin.theme-light .wf-node.ctrl-ok.sel { border-color: #8cc9a0; }
+body.ef-skin.theme-light .wf-node.ctrl-fail.sel { border-color: #e6a19a; }
+body.ef-skin.theme-light .wf-node.timer.sel { border-color: #97b1ec; }
+body.ef-skin.theme-light .wf-node.delayer.sel { border-color: #96c9b4; }
+body.ef-skin.theme-light .wf-node.sequencer.sel { border-color: #c3a6ec; }
+body.ef-skin.theme-light .wf-node.gate.sel { border-color: #e3c088; }
+body.ef-skin.theme-light .wf-node.splitter.sel { border-color: #93bae4; }
+body.ef-skin.theme-light .wf-node.counter.sel { border-color: #e8b092; }
+body.ef-skin.theme-light .wf-node.mutex.sel { border-color: #d6a8cb; }
+
+/* ── 拖拽把手上过浅的浅色图标文字：加深以保证浅底可读 ── */
+body.ef-skin.theme-light .n-drag-handle {
+  background: rgba(0, 0, 0, .05);
+  color: #4a4e58;
+  border-color: var(--line-strong);
+}
+
+body.ef-skin.theme-light .n-drag-handle:hover {
+  background: rgba(31, 123, 212, .12);
+  border-color: var(--cyan);
+  color: var(--cyan2);
+}
+
+body.ef-skin.theme-light .wf-node.timer .n-drag-handle,
+body.ef-skin.theme-light .wf-node.delayer .n-drag-handle,
+body.ef-skin.theme-light .wf-node.sequencer .n-drag-handle,
+body.ef-skin.theme-light .wf-node.gate .n-drag-handle,
+body.ef-skin.theme-light .wf-node.splitter .n-drag-handle,
+body.ef-skin.theme-light .wf-node.counter .n-drag-handle,
+body.ef-skin.theme-light .wf-node.mutex .n-drag-handle,
+body.ef-skin.theme-light .wf-node.global .n-drag-handle {
+  color: #6b6f7a;
+  border-color: var(--line-strong);
+}
+
+body.ef-skin.theme-light .wf-node.proc-img .n-drag-handle,
+body.ef-skin.theme-light .wf-node.agent .n-drag-handle,
+body.ef-skin.theme-light .wf-node.video .n-drag-handle,
+body.ef-skin.theme-light .wf-node.music .n-drag-handle,
+body.ef-skin.theme-light .wf-node.tts .n-drag-handle {
+  color: #565b66;
+  border-color: var(--line-strong);
+}
+
+/* ── 展开节点层内的小画布端子排：内凹黑线降为浅灰凹线 ── */
+body.ef-skin.theme-light .super-stage::before {
+  box-shadow: inset -1px 0 0 rgba(0, 0, 0, .12), inset -2px 0 0 rgba(0, 0, 0, .06), inset -3px 0 0 rgba(255, 255, 255, .6)
+}
+body.ef-skin.theme-light .super-stage::after {
+  box-shadow: inset 1px 0 0 rgba(0, 0, 0, .12), inset 2px 0 0 rgba(0, 0, 0, .06), inset 3px 0 0 rgba(255, 255, 255, .6)
+}
+
+/* ── 端子徽标（画在节点外侧的参数名 / 序号）：浅色底改用白描边 ── */
+body.ef-skin.theme-light .port-badge {
+  text-shadow: 0 1px 2px rgba(255, 255, 255, .95), 0 0 4px rgba(255, 255, 255, .8)
+}
+
+/* ── 网络 / 调试等深色浮层：改浅 ── */
+/* （.n-api-panel 节点内联设置面板已废除 —— 设置统一走 #overlay 跳窗，浅色随 overlay 现成规则） */
+
+/* ══════════════════════════════════════════════════════════════
+   Light 主题：会话 / 智能聊天 覆盖层
+   agent 视图大量使用硬编码暗色，必须逐一改为浅色保证可读。
+   ══════════════════════════════════════════════════════════════ */
+
+/* ── 会话页骨架：侧栏与主区改浅色 ── */
+body.ef-skin.theme-light .agent-pane,
+body.ef-skin.theme-light .agent-main {
+  background: var(--bg);
+}
+
+body.ef-skin.theme-light .agent-side {
+  background: var(--panel);
+  border-right: 1px solid var(--line);
+}
+
+body.ef-skin.theme-light .agent-side-logo {
+  color: var(--ink);
+}
+body.ef-skin.theme-light .agent-side-logo:hover {
+  color: var(--cyan);
+}
+/* dsh 内核版本标签：深色主题是「半透明白字 + 白边」，浅色主题反过来 —— 深墨字 + 深边，
+   底色压到几乎透明（否则整枚标签在白底上看不见）。 */
+body.ef-skin.theme-light .agent-side-ver {
+  color: rgba(24, 26, 30, .72);
+  background: rgba(24, 26, 30, .05);
+  border-color: rgba(24, 26, 30, .16);
+}
+body.ef-skin.theme-light .agent-side-logo:hover .agent-side-ver {
+  color: rgba(24, 26, 30, .82);
+  border-color: rgba(24, 26, 30, .24);
+}
+
+body.ef-skin.theme-light .agent-side-new {
+  color: var(--ink);
+  border: 1px solid var(--line-strong);
+}
+body.ef-skin.theme-light .agent-side-new:hover {
+  background: rgba(0, 0, 0, .04);
+  border-color: var(--line-strong);
+}
+
+/* ── 会话行「删除」的二次确认态（浅色主题）──
+   口径改成**红空心**（与 dsh.css 同源：透明底 + 红描边 + 红字，不许亮色实心填色）。
+   这一条特异性高于本文件下面的 body.ef-skin.theme-light .side-sess-btn（3 类 > 2 类），
+   也高于同特异性的 .danger:hover 红描边，所以浅底上不会被基础态再刷回深灰底/灰字；
+   呼吸光环沿用同一份 @keyframes（红光在亮底上也看得清），不重复定义动画。 */
+body.ef-skin.theme-light .side-sess-btn.danger.confirm,
+body.ef-skin.theme-light .side-sess-btn.danger.confirm:hover {
+  color: var(--red);
+  background: transparent;
+  border-color: var(--red);
+}
+
+body.ef-skin.theme-light .agent-side-search input {
+  background: var(--bg2);
+  color: var(--ink);
+  border: 1px solid var(--line-strong);
+}
+body.ef-skin.theme-light .agent-side-search input:focus {
+  border-color: var(--cyan);
+}
+body.ef-skin.theme-light .agent-side-search input::placeholder {
+  color: var(--muted);
+}
+
+body.ef-skin.theme-light .agent-side-foot {
+  border-top: 1px solid var(--line);
+}
+body.ef-skin.theme-light .agent-side-region {
+  color: var(--muted);
+}
+
+body.ef-skin.theme-light .agent-head {
+  border-bottom: 1px solid var(--line);
+}
+
+/* ── 会话侧边栏条目 ── */
+body.ef-skin.theme-light .side-group {
+  color: var(--muted);
+}
+body.ef-skin.theme-light .side-sess {
+  color: var(--ink);
+}
+body.ef-skin.theme-light .side-sess:hover {
+  background: rgba(0, 0, 0, .05);
+}
+body.ef-skin.theme-light .side-sess.active {
+  background: rgba(32, 104, 184, .14);
+  color: var(--ink);
+}
+body.ef-skin.theme-light .side-sess-time {
+  color: var(--muted);
+  opacity: .9;
+}
+body.ef-skin.theme-light .side-sess-wf {
+  color: var(--muted);
+  opacity: .9;
+}
+body.ef-skin.theme-light .side-sess-btn {
+  background: var(--bg2);
+  border: 1px solid var(--line-strong);
+  color: var(--muted);
+}body.ef-skin.theme-light .side-sess-btn:hover {
+  border-color: var(--cyan);
+  color: var(--ink);
+}
+/* 开发页左栏应用行右端的「＋」（新开发会话）：与 .side-sess-btn 同一份浅色口径 */
+body.ef-skin.theme-light .side-apps-new {
+  border-color: var(--line-strong);
+  color: var(--muted);
+}
+body.ef-skin.theme-light .side-apps-new:hover {
+  border-color: var(--cyan);
+  color: var(--ink);
+}
+body.ef-skin.theme-light .side-archived {
+  border-top: 1px solid var(--line);
+}
+body.ef-skin.theme-light .side-archived summary {
+  color: var(--muted);
+}
+
+/* ── 会话「载入更早」按钮 ── */
+body.ef-skin.theme-light .agent-load-earlier button {
+  background: var(--bg2);
+  color: var(--muted);
+  border: 1px solid var(--line-strong);
+}
+body.ef-skin.theme-light .agent-load-earlier button:hover {
+  color: var(--ink);
+  border-color: var(--cyan);
+  background: var(--line);
+}
+
+/* ── 会话空状态 / 工作目录 ── */
+body.ef-skin.theme-light .agent-empty {
+  color: var(--muted);
+}
+body.ef-skin.theme-light .agent-ws-label {
+  color: var(--muted);
+}
+body.ef-skin.theme-light .agent-ws-line input {
+  background: var(--bg2);
+  color: var(--ink);
+  border: 1px solid var(--line-strong);
+}
+body.ef-skin.theme-light .agent-ws-line input:focus {
+  border-color: var(--cyan);
+}
+
+/* ── 消息文本：AI 消息用深色正文，用户气泡用浅蓝灰底深字 ── */
+body.ef-skin.theme-light .agent-list .dsh-msg-body {
+  color: var(--ink);
+}
+body.ef-skin.theme-light .agent-list .dsh-user .dsh-msg-body {
+  background: rgb(226, 233, 244);
+  color: var(--ink);
+}
+body.ef-skin.theme-light .agent-list .dsh-user .dsh-msg-body .md {
+  color: var(--ink);
+}
+body.ef-skin.theme-light .agent-list .dsh-msg-body .md a,
+body.ef-skin.theme-light .agent-list .dsh-user .mt-link {
+  color: var(--cyan);
+}
+body.ef-skin.theme-light .agent-list .dsh-think {
+  color: var(--muted);
+}
+body.ef-skin.theme-light .agent-list .dsh-think summary {
+  color: var(--orange2);
+}
+body.ef-skin.theme-light .agent-list .dsh-think summary:hover {
+  color: var(--orange);
+}
+body.ef-skin.theme-light .agent-list .dsh-think pre {
+  background: var(--bg2);
+  border: 1px solid var(--line-hair);
+  color: var(--muted);
+}
+body.ef-skin.theme-light .agent-list .dsh-stream {
+  color: var(--muted);
+}
+body.ef-skin.theme-light .agent-list .dsh-think-live {
+  color: var(--muted);
+}
+
+/* ── 分段渲染（.dsh-seg-*）浅色版：思考段淡灰底、正文段正常正文色 ──
+   本次需求：思考不再是 details 下拉（只留一行可点开的摘要条 + 弹窗），
+   所以 summary / pre 那几组只服务于旧下拉的规则一并删掉。 */
+body.ef-skin.theme-light .dsh-seg-think {
+  color: var(--muted);
+  background: rgba(90, 100, 114, .09);
+  border-left-color: var(--line);
+}
+body.ef-skin.theme-light button.dsh-think-row {
+  color: var(--muted);
+}
+body.ef-skin.theme-light button.dsh-think-row:hover {
+  color: var(--ink);
+}
+body.ef-skin.theme-light .dsh-seg-say,
+body.ef-skin.theme-light .dsh-stream>.dsh-seg-say {
+  color: var(--ink);
+}
+body.ef-skin.theme-light .dsh-seg-tool {
+  color: var(--cyan2);
+  background: rgba(32, 104, 184, .07);
+  border-left-color: var(--cyan);
+}
+/* 「思考」翻译：译文行淡青底 + 浅色下正文用正文色（深色下为 --ink） */
+body.ef-skin.theme-light .dsh-seg-xlate {
+  color: var(--ink);
+  background: rgba(32, 104, 184, .06);
+  border-left-color: var(--cyan);
+}
+body.ef-skin.theme-light .dsh-xlate-tag {
+  color: var(--cyan);
+}
+body.ef-skin.theme-light .dsh-seg-xlate pre {
+  background: var(--bg2);
+  border: 1px solid var(--line-hair);
+  color: var(--ink);
+}
+body.ef-skin.theme-light button.dsh-think-xlate {
+  color: var(--muted);
+  border-color: var(--line-strong);
+}
+body.ef-skin.theme-light .agent-list .dsh-seg-think {
+  color: var(--muted);
+  background: rgba(90, 100, 114, .07);
+}
+body.ef-skin.theme-light .agent-list button.dsh-think-row {
+  color: var(--muted);
+}
+body.ef-skin.theme-light .agent-list .dsh-seg-say {
+  color: var(--ink);
+}
+
+/* ── 消息内 Markdown 代码块：深底改浅 ── */
+body.ef-skin.theme-light .md code {
+  background: rgba(0, 0, 0, .06);
+  color: var(--cyan2);
+}
+body.ef-skin.theme-light .md pre {
+  background: var(--bg2);
+  border: 1px solid var(--line-hair);
+}
+body.ef-skin.theme-light .md pre code {
+  color: var(--ink);
+}
+body.ef-skin.theme-light .md a:hover,
+body.ef-skin.theme-light .mt-link:hover {
+  color: var(--cyan2);
+}
+body.ef-skin.theme-light .md blockquote {
+  background: rgba(217, 102, 10, .05);
+}
+
+/* ── 节点浏览态（未选中 = 浏览形态）：白板上与板身一体的只读视图 ── */
+body.ef-skin.theme-light .wf-node.browse .n-view {
+  color: var(--ink);
+}
+body.ef-skin.theme-light .wf-node.browse .n-view-plain,
+body.ef-skin.theme-light .wf-node.browse .n-view-md,
+body.ef-skin.theme-light .wf-node.browse .n-view-yaml,
+body.ef-skin.theme-light .wf-node.browse .md {
+  color: var(--ink);
+}
+/* 暗色里用的半透明黑块，浅底换成浅灰芯片 + 深一点的描边 */
+body.ef-skin.theme-light .wf-node.browse .md code {
+  background: rgba(20, 30, 45, .07);
+  border-color: rgba(20, 30, 45, .14);
+}
+body.ef-skin.theme-light .wf-node.browse .md pre {
+  background: rgba(255, 255, 255, .62);
+  border-color: var(--line-hair);
+}
+body.ef-skin.theme-light .wf-node.browse .md pre code {
+  color: var(--ink);
+}
+body.ef-skin.theme-light .wf-node.browse .md blockquote {
+  border-left-color: var(--line);
+  background: none;
+  color: var(--muted);
+}
+body.ef-skin.theme-light .wf-node.browse .n-view-entry+.n-view-entry {
+  border-top-color: var(--line-hair);
+}
+body.ef-skin.theme-light .wf-node.browse .n-view-entry-title {
+  color: var(--cyan2);
+}
+body.ef-skin.theme-light .wf-node.browse:hover .n-view {
+  scrollbar-color: var(--line-strong) transparent;
+}
+body.ef-skin.theme-light .wf-node.browse:hover .n-view::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+}
+body.ef-skin.theme-light .wf-node.browse:hover .n-view::-webkit-scrollbar-thumb:hover {
+  background: var(--orange);
+}
+
+/* ── 工具调用块 / 思考块 ── */
+body.ef-skin.theme-light .dsh-tool-chip:hover,
+body.ef-skin.theme-light .dsh-tool[open] .dsh-tool-chip {
+  background: rgba(32, 104, 184, .12);
+}
+/* 非 dsh 工具那一档（工具库紫）的悬停底色：亮色下改用浅一档的紫底，
+   否则暗色那支 alpha .24 的紫在浅底上偏脏；文字仍用 dsh.css 提亮后的 #d0a6ff。 */
+body.ef-skin.theme-light .dsh-tool-chip.t-custom:hover,
+body.ef-skin.theme-light .dsh-tool[open] .dsh-tool-chip.t-custom {
+  background: rgba(199, 146, 234, .18);
+}
+/* 工具族那档（本次需求 · 会话-对话里「不同工具不同色，与轨迹一致」）的悬停底色与段轨：
+   族色本身是主题槽位 / 由槽位混出（亮暗同源），故这里只把「底色浓度」按浅底调一档，
+   与上面 `.t-custom` 同一条理由（暗色那支 alpha 在浅底上偏脏）。族色那组写在 `.t-custom`
+   **之后**：0,2,0 打平（`.dsh-tool[open]` 那支更高一档，不影响），来源紫照旧压过族色。 */
+body.ef-skin.theme-light .dsh-tool-chip.dsh-fam-read:hover,
+body.ef-skin.theme-light .dsh-tool-chip.dsh-fam-write:hover,
+body.ef-skin.theme-light .dsh-tool-chip.dsh-fam-run:hover,
+body.ef-skin.theme-light .dsh-tool-chip.dsh-fam-web:hover,
+body.ef-skin.theme-light .dsh-tool-chip.dsh-fam-sub:hover,
+body.ef-skin.theme-light .dsh-tool-chip.dsh-fam-talk:hover,
+body.ef-skin.theme-light .dsh-tool-chip.dsh-fam-own:hover,
+body.ef-skin.theme-light .dsh-tool-chip.dsh-fam-browser:hover,
+body.ef-skin.theme-light .dsh-tool-chip.dsh-fam-job:hover,
+body.ef-skin.theme-light .dsh-tool-chip.dsh-fam-other:hover,
+body.ef-skin.theme-light .dsh-tool[open] .dsh-tool-chip.dsh-fam-read,
+body.ef-skin.theme-light .dsh-tool[open] .dsh-tool-chip.dsh-fam-write,
+body.ef-skin.theme-light .dsh-tool[open] .dsh-tool-chip.dsh-fam-run,
+body.ef-skin.theme-light .dsh-tool[open] .dsh-tool-chip.dsh-fam-web,
+body.ef-skin.theme-light .dsh-tool[open] .dsh-tool-chip.dsh-fam-sub,
+body.ef-skin.theme-light .dsh-tool[open] .dsh-tool-chip.dsh-fam-talk,
+body.ef-skin.theme-light .dsh-tool[open] .dsh-tool-chip.dsh-fam-own,
+body.ef-skin.theme-light .dsh-tool[open] .dsh-tool-chip.dsh-fam-browser,
+body.ef-skin.theme-light .dsh-tool[open] .dsh-tool-chip.dsh-fam-job,
+body.ef-skin.theme-light .dsh-tool[open] .dsh-tool-chip.dsh-fam-other {
+  background: color-mix(in srgb, var(--dsh-fam, var(--muted)) 18%, transparent);
+}
+body.ef-skin.theme-light .dsh-seg-tool.dsh-fam-read,
+body.ef-skin.theme-light .dsh-seg-tool.dsh-fam-write,
+body.ef-skin.theme-light .dsh-seg-tool.dsh-fam-run,
+body.ef-skin.theme-light .dsh-seg-tool.dsh-fam-web,
+body.ef-skin.theme-light .dsh-seg-tool.dsh-fam-sub,
+body.ef-skin.theme-light .dsh-seg-tool.dsh-fam-talk,
+body.ef-skin.theme-light .dsh-seg-tool.dsh-fam-own,
+body.ef-skin.theme-light .dsh-seg-tool.dsh-fam-browser,
+body.ef-skin.theme-light .dsh-seg-tool.dsh-fam-job {
+  background: color-mix(in srgb, var(--dsh-fam) 9%, transparent);
+}
+body.ef-skin.theme-light .dsh-tool-body pre {
+  background: var(--bg2);
+}
+body.ef-skin.theme-light .dsh-tool-body pre.term {
+  color: #1a8a4a;
+}
+body.ef-skin.theme-light .dsh-think pre,
+body.ef-skin.theme-light .dsh-think-live,
+body.ef-skin.theme-light #agent-think pre {
+  background: var(--bg2);
+  border: 1px solid var(--line-hair);
+  color: var(--muted);
+}
+/* 思考弹窗（本次需求）：浅底上的原文框与译文框各用一档浅底，别沿用暗色的 rgba(0,0,0,.22) */
+body.ef-skin.theme-light .dsh-think-pop-pane {
+  background: var(--bg2);
+  border-color: var(--line);
+}
+body.ef-skin.theme-light .dsh-think-pop .md-viewer-doc,
+body.ef-skin.theme-light .dsh-think-pop .md-viewer-doc h1,
+body.ef-skin.theme-light .dsh-think-pop .md-viewer-doc h2,
+body.ef-skin.theme-light .dsh-think-pop .md-viewer-doc h3,
+body.ef-skin.theme-light .dsh-think-pop .md-viewer-doc h4,
+body.ef-skin.theme-light .dsh-think-pop .md-viewer-doc h5,
+body.ef-skin.theme-light .dsh-think-pop .md-viewer-doc h6 {
+  color: var(--ink);
+}
+body.ef-skin.theme-light .dsh-think-pop .md-viewer-doc pre {
+  background: var(--bg);
+}
+body.ef-skin.theme-light .dsh-think-pop-pane .dsh-xlate-md,
+body.ef-skin.theme-light .dsh-think-pop-pane .dsh-xlate-md h1,
+body.ef-skin.theme-light .dsh-think-pop-pane .dsh-xlate-md h2,
+body.ef-skin.theme-light .dsh-think-pop-pane .dsh-xlate-md h3,
+body.ef-skin.theme-light .dsh-think-pop-pane .dsh-xlate-md h4,
+body.ef-skin.theme-light .dsh-think-pop-pane .dsh-xlate-md h5,
+body.ef-skin.theme-light .dsh-think-pop-pane .dsh-xlate-md h6 {
+  /* 本轮口径：译文正文也用正文色读（青调只在译文块的边轨与底上），浅色下即 --ink */
+  color: var(--ink);
+}
+/* 思考弹窗上方的 tabs（本次需求）：浅底上的悬停 / 选中底色别沿用暗色的白叠加 */
+body.ef-skin.theme-light button.dsh-think-pop-tab:hover {
+  background: rgba(0, 0, 0, .05);
+}
+body.ef-skin.theme-light button.dsh-think-pop-tab.on {
+  background: rgba(0, 0, 0, .07);
+  border-color: var(--line-strong);
+  border-bottom-color: transparent;
+}
+body.ef-skin.theme-light .dsh-msg-copy {
+  background: rgba(0, 0, 0, .05);
+  color: var(--muted);
+}
+body.ef-skin.theme-light .dsh-msg-copy:hover {
+  background: rgba(32, 104, 184, .10);
+  border-color: var(--cyan);
+  color: var(--cyan2);
+}
+body.ef-skin.theme-light .dsh-msg-tail .dsh-msg-tail-copy {
+  background: rgba(0, 0, 0, .05);
+  color: var(--muted);
+}
+body.ef-skin.theme-light .dsh-msg-tail .dsh-msg-tail-copy:hover {
+  background: rgba(32, 104, 184, .10);
+  border-color: var(--cyan);
+  color: var(--cyan2);
+}
+body.ef-skin.theme-light .dsh-msg-tail .dsh-msg-tail-copy.ok {
+  color: #1d7a4f;
+  border-color: rgb(62, 158, 110);
+  background: rgb(214, 240, 225);
+}
+/* 消息最下方「复制 / 保存」动作条（app-assist.js dshMsgActionBar）：浅色底要换掉深色半透明底 */
+body.ef-skin.theme-light .dsh-msg-actions .dsh-msg-act {
+  background: rgba(0, 0, 0, .05);
+  color: var(--muted);
+}
+body.ef-skin.theme-light .dsh-msg-actions .dsh-msg-act:hover {
+  background: rgba(32, 104, 184, .10);
+  border-color: var(--cyan);
+  color: var(--cyan2);
+}
+body.ef-skin.theme-light .dsh-msg-actions .dsh-msg-act.ok {
+  color: #1d7a4f;
+  border-color: rgb(62, 158, 110);
+  background: rgb(214, 240, 225);
+}
+
+/* ── 智能任务节点内的会话区 ── */
+body.ef-skin.theme-light .agent-conv {
+  background: var(--bg);
+  border-color: var(--line);
+}
+body.ef-skin.theme-light .agent-conv .dsh-msg-body {
+  color: var(--ink);
+}
+body.ef-skin.theme-light .agent-conv .dsh-seg-say {
+  color: var(--ink);
+}
+/* 节点内会话的思考（本次需求：一行摘要条 + 点开弹窗；旧的下拉规则已删） */
+body.ef-skin.theme-light .agent-conv button.dsh-think-row {
+  color: var(--muted);
+}
+body.ef-skin.theme-light .agent-conv .dsh-stream {
+  color: var(--muted);
+}
+body.ef-skin.theme-light .agent-conv .dsh-stream>.dsh-seg-say {
+  color: var(--ink);
+}
+
+/* ── 输入框与发送按钮 ── */
+/* ── 会话发送队列 / 任务清单：浅色主题下重涂（暗色版用的是白字 + 半透明白底） ── */
+body.ef-skin.theme-light .aq-head,
+body.ef-skin.theme-light .at-head {
+  border-color: var(--line);
+  background: rgba(0, 0, 0, .04);
+}
+body.ef-skin.theme-light .aq-head {
+  border-color: rgba(60, 120, 220, .3);
+  background: rgba(60, 120, 220, .08);
+}
+body.ef-skin.theme-light .aq-label {
+  color: var(--cyan);
+}
+body.ef-skin.theme-light .aq-list,
+body.ef-skin.theme-light .at-list {
+  border-color: var(--line);
+  background: rgba(0, 0, 0, .02);
+}
+body.ef-skin.theme-light .aq-text,
+body.ef-skin.theme-light .at-title {
+  color: var(--ink);
+}
+body.ef-skin.theme-light .aq-item b,
+body.ef-skin.theme-light .at-fold {
+  color: var(--muted);
+}
+body.ef-skin.theme-light .at-item.st-done .at-text {
+  color: var(--muted);
+}
+body.ef-skin.theme-light .at-item.st-failed .at-text {
+  color: #b3261e;
+}
+body.ef-skin.theme-light .at-bar {
+  background: rgba(0, 0, 0, .1);
+}
+/* 计划面板 live 观测（.ap-stat / .ap-live / .ap-tool）：随 .at-* 一起在浅色主题重涂 */
+body.ef-skin.theme-light .ap-stat {
+  border-color: rgba(60, 120, 220, .32);
+  background: rgba(60, 120, 220, .08);
+  color: var(--cyan2);
+}
+body.ef-skin.theme-light .ap-stat.ap-stat-err {
+  border-color: rgba(179, 38, 30, .3);
+  background: rgba(179, 38, 30, .07);
+  color: #b3261e;
+}
+body.ef-skin.theme-light .ap-live {
+  border-left-color: rgba(32, 104, 184, .45);
+}
+body.ef-skin.theme-light .ap-tool.st-ok .ap-tool-s {
+  color: var(--green);
+}
+body.ef-skin.theme-light .ap-tool.st-run .ap-tool-s {
+  color: var(--cyan);
+}
+body.ef-skin.theme-light .ap-tool.st-err .ap-tool-s,
+body.ef-skin.theme-light .ap-tool.st-err .ap-tool-r {
+  color: #b3261e;
+}
+body.ef-skin.theme-light .aq-del:hover,
+body.ef-skin.theme-light .at-del:hover {
+  background: rgba(0, 0, 0, .07);
+  color: #b3261e;
+}
+body.ef-skin.theme-light .agent-tools-menu,
+body.ef-skin.theme-light .agent-menu {
+  background: #fff;
+  border-color: var(--line);
+  color: var(--ink);
+}
+body.ef-skin.theme-light .agent-tools-head,
+body.ef-skin.theme-light .agent-tools-lab {
+  color: var(--ink);
+}
+body.ef-skin.theme-light .agent-tools-head {
+  background: #fff;
+}
+body.ef-skin.theme-light .agent-tools-preset-sel {
+  border-color: var(--line-strong);
+  background: #fff;
+  color: var(--ink);
+}
+body.ef-skin.theme-light .agent-tools-mode {
+  color: var(--muted);
+}
+body.ef-skin.theme-light .agent-tools-mode:hover {
+  color: var(--ink);
+}
+body.ef-skin.theme-light .agent-composer-card {
+  background: var(--panel);
+  border: 1px solid var(--line-strong);
+}
+body.ef-skin.theme-light .agent-composer-card:focus-within {
+  border-color: var(--cyan);
+}
+body.ef-skin.theme-light .agent-composer-card .chat-input {
+  color: var(--ink);
+}
+body.ef-skin.theme-light .agent-composer-card .chat-input::placeholder {
+  color: var(--muted);
+}
+body.ef-skin.theme-light .agent-send:hover {
+  background: linear-gradient(180deg, var(--line-hair) 0%, var(--line) 100%);
+  color: var(--ink);
+}
+body.ef-skin.theme-light .agent-send.danger {
+  background: var(--red);
+  color: #fff;
+}
+/* ── 轮内插话 / 暂停（⚡插话 · ⏸暂停 · 「已暂停」条 · 插话气泡标签） ──
+   暗色版用的是硬编码琥珀 #e8b24a（.agent-send.agent-steer / .apz-* / .dsh-steer-tag），
+   白底上几乎看不清 —— 浅色主题统一换成 var(--yellow)（#6a4d00 深琥珀；描边 / 淡底里
+   那几个 rgba(154,107,0,…) 是同族的旧琥珀，只当半透明底，不当字色）与
+   var(--orange)，hover 反白；口径与上面的 .aq-*（发送队列条）重涂一致。 */
+body.ef-skin.theme-light .agent-send.agent-steer {
+  border-color: rgba(154, 107, 0, .45);
+  background: rgba(154, 107, 0, .1);
+  color: var(--yellow);
+}
+body.ef-skin.theme-light .agent-send.agent-steer:hover {
+  background: var(--yellow);
+  color: #fff;
+}
+body.ef-skin.theme-light .agent-send.agent-pause {
+  border-color: rgba(217, 102, 10, .45);
+  background: rgba(217, 102, 10, .1);
+  color: var(--orange);
+}
+body.ef-skin.theme-light .agent-send.agent-pause:hover {
+  background: var(--orange);
+  color: #fff;
+}
+body.ef-skin.theme-light .apz-head {
+  border-color: rgba(154, 107, 0, .34);
+  background: rgba(154, 107, 0, .08);
+}
+body.ef-skin.theme-light .apz-label {
+  color: var(--yellow);
+}
+body.ef-skin.theme-light .apz-go {
+  border-color: rgba(154, 107, 0, .5);
+  background: rgba(154, 107, 0, .12);
+  color: var(--yellow);
+}
+body.ef-skin.theme-light .apz-go:hover {
+  background: var(--yellow);
+  color: #fff;
+}
+body.ef-skin.theme-light .dsh-steer-tag {
+  border-color: rgba(154, 107, 0, .42);
+  color: var(--yellow);
+}
+body.ef-skin.theme-light .dsh-steer-tag.is-in {
+  border-color: rgba(26, 138, 74, .42);
+  color: var(--green);
+}
+body.ef-skin.theme-light .dsh-msg-steer {
+  border-left-color: rgba(154, 107, 0, .42);
+}
+
+/* ── 指令/参数菜单 ── */
+body.ef-skin.theme-light .agent-menu {
+  background: var(--panel);
+  border-color: var(--line);
+  color: var(--ink);
+}
+body.ef-skin.theme-light .agent-menu-cell,
+body.ef-skin.theme-light .agent-menu-back,
+body.ef-skin.theme-light .agent-menu-option {
+  color: var(--ink);
+}
+body.ef-skin.theme-light .agent-menu-cell:hover,
+body.ef-skin.theme-light .agent-menu-back:hover,
+body.ef-skin.theme-light .agent-menu-option:hover {
+  background: rgba(0, 0, 0, .06);
+}
+body.ef-skin.theme-light .agent-menu-cell-value,
+body.ef-skin.theme-light .agent-menu-cell-chevron,
+body.ef-skin.theme-light .agent-menu-option-desc,
+body.ef-skin.theme-light .agent-menu-option-copy {
+  color: var(--muted);
+}
+body.ef-skin.theme-light .agent-menu-group-title {
+  background: var(--panel);
+  color: var(--muted);
+}
+body.ef-skin.theme-light .agent-menu-check {
+  color: var(--ink);
+}
+body.ef-skin.theme-light .agent-menu-empty {
+  color: var(--muted);
+}
+/* 技能三级分类菜单（亮色） */
+body.ef-skin.theme-light .skill-col-type,
+body.ef-skin.theme-light .skill-col-item {
+  border-left-color: var(--line-hair);
+}
+body.ef-skin.theme-light .skill-row-count {
+  background: rgba(0, 0, 0, .07);
+  color: var(--muted);
+}
+body.ef-skin.theme-light .skill-row-chev {
+  color: var(--muted);
+}
+body.ef-skin.theme-light .skill-cat,
+body.ef-skin.theme-light .skill-type,
+body.ef-skin.theme-light .skill-item {
+  color: var(--ink);
+}
+body.ef-skin.theme-light .skill-cat:hover,
+body.ef-skin.theme-light .skill-type:hover,
+body.ef-skin.theme-light .skill-item:hover {
+  background: rgba(0, 0, 0, .06);
+}
+body.ef-skin.theme-light .skill-cat.on,
+body.ef-skin.theme-light .skill-type.on {
+  background: rgba(0, 0, 0, .1);
+}
+body.ef-skin.theme-light .skill-item-desc {
+  color: var(--muted);
+}
+body.ef-skin.theme-light .agent-tools-head {
+  color: var(--ink);
+}
+body.ef-skin.theme-light .agent-tools-preset-sel {
+  border-color: var(--line-strong);
+  background: var(--panel);
+  color: var(--ink);
+}
+body.ef-skin.theme-light .agent-tools-row:hover {
+  background: rgba(0, 0, 0, .04);
+}
+body.ef-skin.theme-light .agent-tools-lab {
+  color: var(--ink);
+}
+body.ef-skin.theme-light .agent-tools-toggles {
+  border-color: var(--line-strong);
+}
+body.ef-skin.theme-light .agent-tools-mode {
+  border-right-color: var(--line-hair);
+  color: var(--muted);
+}
+body.ef-skin.theme-light .agent-tools-mode:hover {
+  color: var(--ink);
+}
+body.ef-skin.theme-light .agent-tools-status {
+  border-top-color: var(--line-hair);
+  color: var(--muted);
+}
+/* 「模式」菜单里的开关（槽 + 滑块）：暗色的半透明白槽在白底上几乎看不见，
+   浅色主题换成深一档的灰槽与深灰滑块；开启态沿用绿色语义（与 .on 三态一致）。 */
+body.ef-skin.theme-light .agent-tools-toggle .agent-mode-track {
+  background: rgba(0, 0, 0, .16);
+}
+body.ef-skin.theme-light .agent-tools-toggle:hover .agent-mode-track {
+  background: rgba(0, 0, 0, .26);
+}
+body.ef-skin.theme-light .agent-tools-toggle .agent-mode-track::after {
+  background: #6b7480;
+}
+body.ef-skin.theme-light .agent-tools-toggle.on .agent-mode-track {
+  background: rgba(26, 148, 79, .4);
+}
+body.ef-skin.theme-light .agent-tools-toggle.on .agent-mode-track::after {
+  background: #1a944f;
+}
+/* 浅色主题下的「超频模式」：background 简写会把渐变清掉，这里补回彩虹渐变与白滑块 */
+body.ef-skin.theme-light .agent-tools-toggle.boost.on .agent-mode-track {
+  background-image: linear-gradient(
+    90deg,
+    #ff4d4d, #ffb84d, #eaff4d, #4dff9e, #4dd8ff, #a44dff, #ff4d9e, #ff4d4d
+  );
+  background-size: 200% 100%;
+}
+body.ef-skin.theme-light .agent-tools-toggle.boost.on .agent-mode-track::after {
+  background: #fff;
+}
+
+/* ── 指令 chips ── */
+body.ef-skin.theme-light .agent-chip {
+  border: 1px solid var(--line-strong);
+  color: var(--ink);
+}
+body.ef-skin.theme-light .agent-chip:hover {
+  background: rgba(0, 0, 0, .05);
+}
+/* 选中态（.on）取强调色的深一档 --ef-signal-2：强调色 #155fb0 压在助手 / 会话的浅底
+   （#f4f6f9）上是 5.9:1，12px 的「模式」小字也够读，但选中态要比正文更「实」一档，
+   所以照旧走深档（#10457f：浅底 8.7:1、白底 9.5:1）。 */
+body.ef-skin.theme-light .agent-chip.on {
+  color: var(--ef-signal-2);
+}
+body.ef-skin.theme-light .agent-chip-icon,
+body.ef-skin.theme-light .agent-tool-caret {
+  color: var(--muted);
+}
+
+/* ── 右侧全局助手面板：去暗色底，改浅 ── */
+body.ef-skin.theme-light .assist-head {
+  background: rgba(0, 0, 0, .04);
+}
+body.ef-skin.theme-light .assist-ctrl {
+  background: rgba(0, 0, 0, .03);
+}
+body.ef-skin.theme-light .assist-input-row {
+  background: rgba(0, 0, 0, .03);
+}
+
+/* ── 右键 · 构建工作流：工具单选列表（浅色版） ── */
+body.ef-skin.theme-light .wfb-item:hover {
+  background: rgba(0, 0, 0, .04);
+}
+body.ef-skin.theme-light .wfb-item.on {
+  background: rgba(255, 143, 46, .14);
+}
+body.ef-skin.theme-light .wfb-list {
+  background: rgba(255, 255, 255, .6);
+}
+
+/* ── 函数节点 JS 代码编辑器（.js-edit 三层）：浅色底上的 token 与行号配色 ──
+   暗色那套（canvas.css，One Dark 系）在 #f6f8fa 底上对比不足，这里换成 One Light 系深字。
+   只改颜色，度量一条都不碰 —— 两层对齐靠的是同一份 font-size / line-height / padding。 */
+body.ef-skin.theme-light .js-edit-gutter {
+  background: #e9edf3;
+}
+body.ef-skin.theme-light .js-ln {
+  color: #7b8494;
+  opacity: 1;
+}
+body.ef-skin.theme-light .js-ln.cur {
+  color: var(--cyan);
+}
+body.ef-skin.theme-light .jsl-com {
+  color: #5c6773;
+}
+body.ef-skin.theme-light .jsl-str {
+  color: #2b7a35;
+}
+body.ef-skin.theme-light .jsl-num {
+  color: #8a5a00;
+}
+body.ef-skin.theme-light .jsl-punc {
+  color: #4b5563;
+}
+body.ef-skin.theme-light .jsl-kw {
+  color: #8f2bb3;
+}
+body.ef-skin.theme-light .jsl-bool {
+  color: #8a5a00;
+}
+body.ef-skin.theme-light .jsl-con {
+  color: #8a6100;
+}
+body.ef-skin.theme-light .jsl-fn {
+  color: #1a63a8;
+}
+body.ef-skin.theme-light .jsl-prop {
+  color: #01709c;
+}
+body.ef-skin.theme-light .js-edit-input::selection {
+  /* 暗色那层青色半透明选中底在白底上几乎看不见 */
+  background: rgba(32, 104, 184, .22);
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+}
+
+/* ── 文件查看面板（css/fileview.css）：白底上换掉暗色投影与半透明色块 ── */
+body.ef-skin.theme-light .fp-box {
+  box-shadow: -10px 0 28px rgba(30, 40, 60, .14);
+}
+body.ef-skin.theme-light .fp-btn.on,
+body.ef-skin.theme-light .fp-rchip.cur {
+  /* 暗色那层 .12 青色底在白底上偏脏，压深一档再降透明 */
+  background: rgba(32, 104, 184, .12);
+}
+body.ef-skin.theme-light .fp-note {
+  background: rgba(217, 102, 10, .1);
+  color: #8a4a05;
+}
+body.ef-skin.theme-light .fp-l.cur {
+  background: rgba(32, 104, 184, .13);
+  box-shadow: inset 2px 0 0 var(--cyan);
+}
+body.ef-skin.theme-light .fp-dir-row:hover {
+  background: var(--panel2);
+}
+body.ef-skin.theme-light .fp-img {
+  border-color: var(--line);
+}
+
+/* ── 工具按钮后方的文件名（css/dsh.css 的 .dsh-tool-file）：只显文字，白底上换成深字 ── */
+body.ef-skin.theme-light .dsh-tool-file,
+body.ef-skin.theme-light .dsh-tool-file.m-read {
+  color: #0e6f92;
+}
+body.ef-skin.theme-light .dsh-tool-file.m-write {
+  color: #a1560d;
+}
+body.ef-skin.theme-light .dsh-tool-file.m-dir,
+body.ef-skin.theme-light .dsh-tool-file.fv-more {
+  color: var(--muted);
+}
+
+/* ── 各分栏之间的拖拽分界线（整条边界可拖）在浅色底上的常态竖筋 ──
+   暗色那套用的是 rgba(255,255,255,.12)，白底上看不见；这里换成同档深色。
+   必须用 :not(:hover):not(.dragging) 把这条限定在「常态」：本选择器特异性（0,2,1）
+   高于各文件的 .x:hover（0,2,0），不加限定会把 hover / 拖动时那条整条加亮
+   （cyan / 蓝）也压成灰色，白底上就看不出「这条能被拖」。 */
+body.ef-skin.theme-light .agent-side-resize:not(:hover):not(.dragging),
+body.ef-skin.theme-light .assist-resize:not(:hover):not(.dragging),
+body.ef-skin.theme-light .ba-resize:not(:hover):not(.dragging),
+body.ef-skin.theme-light .apps-dev-resize:not(:hover):not(.dragging) {
+  background-image: linear-gradient(180deg, rgba(0, 0, 0, .2), rgba(0, 0, 0, .2));
+}
+
+/* ── base.css 的「原生下拉暗色基线」在亮色主题整段撤销 ──
+   base.css 给所有原生 select 上了不透明暗底 + !important（修暗色下弹出层白底白字），
+   那套在亮色主题下会把下拉拉成深色小方块。这里用亮色主题自己的变量对象撤销：
+   底色 / 字色仍取 --code / --ink（亮色主题下就是浅底深字），弹出的选项列表同理。
+   撤销对象写在 :root[data-theme="light"] 上（app 的 applyTheme 会给 html 打这个属性），
+   与 base.css 那条 :root:not([data-theme="light"]) 正好互补、互不越界。 */
+:root[data-theme="light"] select {
+  background: var(--code) !important;
+  color: var(--ink) !important;
+  color-scheme: light;
+}
+
+:root[data-theme="light"] select option,
+:root[data-theme="light"] select optgroup {
+  background: var(--code);
+  color: var(--ink);
+}
+
+/* ── 二·九 生成层里「极淡字面值」描边的令牌补齐 ─────────────────────────────────
+   css/theme-daylight-skin.css 是生成物（scripts/gen-theme-daylight-skin.mjs）：
+   它把暗色皮肤里写死的 rgba(255,255,255,.x) 线按浓度翻成 rgba(29,42,68,.02–.10)。
+   那组值压在 #ffffff 上只有 1.02–1.2:1 —— 用户说的「边框难辨识」就是它。
+   生成物不动（文件头写着勿手改），在本层用同权重、更晚加载的规则压过，
+   一律换成三档令牌。这里只补「画布 / 会话 / 节点参数」这三处常用面；
+   breeze-* / tts-* / asr-* / ba-* / ix-* / gv-* / lt-* / plg-* / rec-* 等独立面板
+   里同源的淡描边（约 40 处）留给后续任务，本轮不动。
+   另：`#canvas.lod-mini` 一族不在此列 —— 那一档的 --lod-bg 是深色霓虹底，
+   亮色主题下仍是深底，边线该跟着它的霓虹色走。 */
+
+/* 行 / 单元格：面板内的区隔 → 发丝档 */
+body.ef-skin.theme-light .np-sep {
+  border-top-color: var(--line-hair);
+}
+body.ef-skin.theme-light .db-tbl-table th,
+body.ef-skin.theme-light .db-tbl-table td {
+  border-color: var(--line-hair);
+}
+
+/* 块外框：白底上的区域边界 → 二级档（原 1.05:1，等于没有） */
+body.ef-skin.theme-light .dsh-mcp-res-row {
+  border-color: var(--line);
+}
+
+/* 控件：input / select / 按钮的可见边界 → 三级档（WCAG 1.4.11 要求 ≥3:1） */
+body.ef-skin.theme-light .agent-ctrl-item select,
+body.ef-skin.theme-light .agent-ctrl-item input {
+  border-color: var(--line-strong);
+}
+body.ef-skin.theme-light .exec-play,
+body.ef-skin.theme-light .exec-icon-item {
+  border-color: var(--line-strong);
+}
+body.ef-skin.theme-light .exec-color-item {
+  border-color: var(--line-strong);
+}
+
+/* ── 二·十 收尾：弱对比小字抬过 4.5 / 表单件边框立得住 ─────────────────────────
+   真机逐元素量下来还剩两类「差一点」：
+
+   ① 小字 3.0~4.5（12px 标题、11px 字段标签、9.5px 底栏标签）：
+      · .n-field 的字段标签（canvas.css 给的是 --muted #475467）：设置窗里这类 11px 标签
+        坐在浮层渐变上、又贴着一排分段控件，实际读下来只有 3.5:1 —— 字段名是「要读的字」，
+        不是装饰，亮色下统一取 --ink（白底 18.4:1）。
+      · .n-title（各类型节点标题）与 .cdock-*（底栏 9.5px / 7px）见上面各自的段落。
+   ② 表单件的框（input / textarea / select）：base.css 与生成层里大量走 --bd / --bd2，
+      亮色下等于结构档 --line（白底 1.47、坐在 --code 底 1.36）—— 输入框「看不出边」。
+      控件按 WCAG 1.4.11 取控件档 --line-strong（白底 3.58 / 画布底 3.31）。
+      复选框 / 单选 / 滑块不是「框」，各自皮肤规则管；.js-edit-input 是画布内就地编辑框，
+      它的透明边是刻意的（canvas.css），这里还回去。 */
+body.ef-skin.theme-light .n-field {
+  color: var(--ink);
+}
+
+body.ef-skin.theme-light input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+body.ef-skin.theme-light textarea,
+body.ef-skin.theme-light select {
+  border-color: var(--line-strong);
+}
+
+body.ef-skin.theme-light .js-edit-input {
+  border-color: transparent;
+}

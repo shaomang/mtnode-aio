@@ -1,4 +1,4 @@
-/* ===== 右键菜单 ===== */
+﻿/* ===== 右键菜单 ===== */
 .fn-ctx {
   position: fixed;
   z-index: 998;
@@ -2150,7 +2150,7 @@ button.pk-badge.pk-btn:hover {
 }
 
 /* 亮色主题下白虚线看不见：改用深色描边 */
-body.theme-light .n-rl-ico {
+body.ef-skin.theme-light .n-rl-ico {
   border-color: rgba(30, 34, 43, .42)
 }
 
@@ -2902,12 +2902,12 @@ body.theme-light .n-rl-ico {
   margin: .6em 0;
 }
 
-body.theme-light .think-doc {
+body.ef-skin.theme-light .think-doc {
   background: var(--bg2);
   border-color: var(--bd);
 }
 
-body.theme-light .think-doc.md-viewer-doc {
+body.ef-skin.theme-light .think-doc.md-viewer-doc {
   color: var(--ink);
 }
 

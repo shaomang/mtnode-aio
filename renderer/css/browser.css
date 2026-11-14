@@ -1,4 +1,4 @@
-/* ==========================================================================
+﻿/* ==========================================================================
    browser.css — 会话自己的浏览器（renderer/app-browser.js）
    · 会话主内容**右边栏**的活动流面板 .ba-col / .ba-*（第三栏：左栏会话列表 /
      中栏对话 / 本栏活动流）；没被调用时整条 hidden 且不占宽度 —— 旧界面不变
@@ -332,7 +332,7 @@
   background: rgba(0, 0, 0, .18);
   border-radius: 4px;
 }
-body.theme-light .dsh-closed-raw {
+body.ef-skin.theme-light .dsh-closed-raw {
   background: rgba(0, 0, 0, .05);
 }
 .ix-stall {
@@ -352,7 +352,7 @@ body.theme-light .dsh-closed-raw {
   gap: 6px;
   margin-top: 4px;
 }
-body.theme-light .ix-stall-txt { color: #7a3d05; }
+body.ef-skin.theme-light .ix-stall-txt { color: #7a3d05; }
 
 /* ── 「这一轮已经结束」的两处可见态（本次需求 · 拷问共识）─────────────────
    轮次收尾时卡片按族收口（app-db.js 的 ixEndRound / ixEndCardOnStale）：
@@ -380,9 +380,9 @@ body.theme-light .ix-stall-txt { color: #7a3d05; }
   max-height: 140px;
   overflow: auto;
 }
-body.theme-light .ix-stall.ix-roundend .ix-stall-txt { color: #14416f; }
-body.theme-light .ix-card.ix-ended .ix-ended-note { color: #9a6a12; }
-body.theme-light .ix-card.ix-ended .ix-ended-answer {
+body.ef-skin.theme-light .ix-stall.ix-roundend .ix-stall-txt { color: #14416f; }
+body.ef-skin.theme-light .ix-card.ix-ended .ix-ended-note { color: #9a6a12; }
+body.ef-skin.theme-light .ix-card.ix-ended .ix-ended-answer {
   color: #1d2a44;
   background: rgba(0, 0, 0, 0.03);
   border-color: rgba(0, 0, 0, 0.12);
@@ -420,23 +420,23 @@ body.theme-light .ix-card.ix-ended .ix-ended-answer {
 .ba-col.ba-live-on .ba-live-stage { height: 230px; }
 
 /* ── 亮色主题 ─────────────────────────────────────────────────────────── */
-body.theme-light .ba-col { background: #f7f9fc; border-left-color: rgba(0, 0, 0, 0.1); }
-body.theme-light .ba-head b { color: #1d2a44; }
-body.theme-light .ba-status { color: #66738c; background: rgba(0, 0, 0, 0.03); border-color: rgba(0, 0, 0, 0.08); }
-body.theme-light .ba-status.on { color: #1d7a45; border-color: rgba(29, 122, 69, 0.4); }
-body.theme-light .ba-list { background: #fbfcfe; border-color: rgba(0, 0, 0, 0.1); }
-body.theme-light .ba-row:nth-child(odd) { background: rgba(0, 0, 0, 0.025); }
-body.theme-light .ba-row .ba-t { color: #8592a8; }
-body.theme-light .ba-row .ba-k { color: #41506b; background: rgba(0, 0, 0, 0.06); }
-body.theme-light .ba-row .ba-x { color: #26324a; }
-body.theme-light .ba-filter input { background: #fff; color: #26324a; border-color: rgba(0, 0, 0, 0.14); }
-body.theme-light .ba-foot { color: #66738c; }
-body.theme-light .ba-live-head { color: #41506b; }
-body.theme-light .ba-live-head > span:first-child { color: #1d2a44; }
-body.theme-light .ba-live-head .ba-live-mode { color: #66738c; }
-body.theme-light .ba-live-stage { background: #eef2f8; border-color: rgba(0, 0, 0, 0.12); }
-body.theme-light .ba-live-mask { background: rgba(238, 242, 248, 0.92); color: #5d6b85; }
-body.theme-light .ba-live-note { color: #66738c; }
-body.theme-light .ba-live-note.warn { color: #9a6a12; }
-body.theme-light .ix-card .ix-help-msg { color: #1d2a44; background: rgba(56, 132, 255, 0.1); }
-body.theme-light .ix-card.ix-browser-help .ix-title { color: #14416f; }
+body.ef-skin.theme-light .ba-col { background: #f7f9fc; border-left-color: rgba(0, 0, 0, 0.1); }
+body.ef-skin.theme-light .ba-head b { color: #1d2a44; }
+body.ef-skin.theme-light .ba-status { color: #66738c; background: rgba(0, 0, 0, 0.03); border-color: rgba(0, 0, 0, 0.08); }
+body.ef-skin.theme-light .ba-status.on { color: #1d7a45; border-color: rgba(29, 122, 69, 0.4); }
+body.ef-skin.theme-light .ba-list { background: #fbfcfe; border-color: rgba(0, 0, 0, 0.1); }
+body.ef-skin.theme-light .ba-row:nth-child(odd) { background: rgba(0, 0, 0, 0.025); }
+body.ef-skin.theme-light .ba-row .ba-t { color: #8592a8; }
+body.ef-skin.theme-light .ba-row .ba-k { color: #41506b; background: rgba(0, 0, 0, 0.06); }
+body.ef-skin.theme-light .ba-row .ba-x { color: #26324a; }
+body.ef-skin.theme-light .ba-filter input { background: #fff; color: #26324a; border-color: rgba(0, 0, 0, 0.14); }
+body.ef-skin.theme-light .ba-foot { color: #66738c; }
+body.ef-skin.theme-light .ba-live-head { color: #41506b; }
+body.ef-skin.theme-light .ba-live-head > span:first-child { color: #1d2a44; }
+body.ef-skin.theme-light .ba-live-head .ba-live-mode { color: #66738c; }
+body.ef-skin.theme-light .ba-live-stage { background: #eef2f8; border-color: rgba(0, 0, 0, 0.12); }
+body.ef-skin.theme-light .ba-live-mask { background: rgba(238, 242, 248, 0.92); color: #5d6b85; }
+body.ef-skin.theme-light .ba-live-note { color: #66738c; }
+body.ef-skin.theme-light .ba-live-note.warn { color: #9a6a12; }
+body.ef-skin.theme-light .ix-card .ix-help-msg { color: #1d2a44; background: rgba(56, 132, 255, 0.1); }
+body.ef-skin.theme-light .ix-card.ix-browser-help .ix-title { color: #14416f; }

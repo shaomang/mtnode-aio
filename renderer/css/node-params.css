@@ -1,4 +1,4 @@
-/* ============ 节点「参数」端子 + 输入文本节点的 JSON 表单 ============
+﻿/* ============ 节点「参数」端子 + 输入文本节点的 JSON 表单 ============
    两个来源都在这一个文件里：
      · renderer/app-node-params.js —— 参数端子（.np-port / .np-chip / 设置窗明细表 .np-ovr-table）
        与 JSON 表单（.np-json-*）
@@ -97,7 +97,7 @@
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
   pointer-events: none;
 }
-body.theme-light .np-q-tip {
+body.ef-skin.theme-light .np-q-tip {
   border-color: rgba(0, 0, 0, 0.14);
   background: #fff;
   color: #24303c;
@@ -260,34 +260,34 @@ body.theme-light .np-q-tip {
 }
 
 /* 亮色主题：端子与表单的对比度按亮底重算 */
-body.theme-light .wf-node > .port.in.np-port {
+body.ef-skin.theme-light .wf-node > .port.in.np-port {
   background: #b07b12;
 }
-body.theme-light .wf-node .n-chip.np-chip {
+body.ef-skin.theme-light .wf-node .n-chip.np-chip {
   color: #8a5c00;
   border-color: rgba(176, 123, 18, 0.55);
   background: rgba(217, 168, 74, 0.18);
 }
-body.theme-light .np-row > .np-key {
+body.ef-skin.theme-light .np-row > .np-key {
   color: #6b5a35;
 }
-body.theme-light .np-q {
+body.ef-skin.theme-light .np-q {
   color: #5b6b7a;
   border-color: rgba(91, 107, 122, 0.5);
 }
-body.theme-light .np-doc-k {
+body.ef-skin.theme-light .np-doc-k {
   color: #8a5c00;
 }
-body.theme-light .np-doc-row {
+body.ef-skin.theme-light .np-doc-row {
   border-bottom-color: rgba(0, 0, 0, 0.08);
 }
-body.theme-light .np-json-scroll {
+body.ef-skin.theme-light .np-json-scroll {
   background: rgba(0, 0, 0, 0.03);
   border-color: rgba(0, 0, 0, 0.1);
 }
-body.theme-light .np-row input[type="text"],
-body.theme-light .np-row input[type="number"],
-body.theme-light .np-ops input[type="text"] {
+body.ef-skin.theme-light .np-row input[type="text"],
+body.ef-skin.theme-light .np-row input[type="number"],
+body.ef-skin.theme-light .np-ops input[type="text"] {
   background: #fff;
   border-color: rgba(0, 0, 0, 0.16);
 }

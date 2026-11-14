@@ -14622,6 +14622,19 @@
     "预览图长边像素：低 192 / 中 320 / 高 640（默认中）。画布节点、素材库与应用网格的预览都按这一档取图。":
       "Preview edge in pixels: low 192 / medium 320 / high 640 (default medium). Canvas nodes, asset library and app grid previews all use this setting.",
 
+    /* ── 设置 · 窗口（关闭主窗口的行为；真源 = config.json 的 window.closeAction，
+       主进程在 main.js 的 close 拦截里读它，第一次点 ✕ 问一次后记住）── */
+    "窗口": "Window",
+    "关闭主窗口时": "When closing the main window",
+    "每次询问": "Ask every time",
+    "最小化到任务栏": "Minimize to taskbar",
+    "直接退出程序": "Quit the app",
+    "关闭窗口行为说明": "About window close behavior",
+    "点主窗口右上角 ✕ 时的行为。第一次会问一次并记住你的选择，之后直接按它执行；这里随时可以改。":
+      "What happens when you click ✕ on the main window. The first time it asks once and remembers your choice, then follows it; you can change it here anytime.",
+    "最小化到任务栏：程序留在后台，正在跑的任务不受影响（托盘图标点回来）。直接退出程序：结束所有运行。":
+      "Minimize to taskbar: the app stays in the background and running tasks keep going (click the tray icon to come back). Quit: ends every run.",
+
 
     /* ── 「扩展能力管理 → 用户自建插件」面板（renderer/app-plugins.js：user-plugins 清单
        导入 / 重扫 / 试运行 / 诊断 / 修复那一套）──

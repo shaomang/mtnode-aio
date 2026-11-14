@@ -851,7 +851,7 @@ function openSettingsBody() {
     settingsSaved(0);
   };
 
-  /* 主题(3 款: MTNode / DSH / 终末地;默认 MTNode;选完立刻换肤并由 applyTheme 写盘) */
+  /* 主题(4 款: MTNode / DSH / 终末地 / 亮色;默认 MTNode;选完立刻换肤并由 applyTheme 写盘) */
   const themeRow = document.createElement("label");
   themeRow.className = "n-field";
   themeRow.style.flexDirection = "row";
@@ -1662,6 +1662,58 @@ function openSettingsBody() {
       "预览画质",
     );
     sec.appendChild(qRow);
+
+    body.appendChild(sec);
+  }
+
+  /* ── 窗口（关闭主窗口时怎么办）──
+     真源 = config.json 的 window.closeAction，**主进程**在 close 拦截里读它
+     （main.js 的 closeActionFromDisk / setCloseActionOnDisk）。第一次点 ✕ 会问一次并把
+     选择记进去；这里就是它的修改入口（缺省 "ask" = 每次都问）。 */
+  {
+    const sec = document.createElement("div");
+    sec.className = "settings-sec";
+    const secTitle = document.createElement("div");
+    secTitle.className = "settings-sec-title";
+    secTitle.textContent = I18n.t("窗口");
+    settingsTipBeside(
+      secTitle,
+      "点主窗口右上角 ✕ 时的行为。第一次会问一次并记住你的选择，之后直接按它执行；这里随时可以改。",
+      "关闭窗口行为说明",
+    );
+    sec.appendChild(secTitle);
+
+    const cRow = document.createElement("label");
+    cRow.className = "n-field";
+    cRow.appendChild(document.createTextNode(I18n.t("关闭主窗口时")));
+    const cSel = document.createElement("select");
+    for (const [v, label] of [
+      ["ask", "每次询问"],
+      ["minimize", "最小化到任务栏"],
+      ["quit", "直接退出程序"],
+    ]) {
+      const o = document.createElement("option");
+      o.value = v;
+      o.textContent = I18n.t(label);
+      cSel.appendChild(o);
+    }
+    const curClose = String((S.config.window && S.config.window.closeAction) || "");
+    cSel.value =
+      curClose === "minimize" || curClose === "quit" ? curClose : "ask";
+    cSel.onchange = () => {
+      if (!S.config) return;
+      if (!S.config.window) S.config.window = {};
+      S.config.window.closeAction =
+        cSel.value === "minimize" || cSel.value === "quit" ? cSel.value : "ask";
+      settingsSaved(0);
+    };
+    cRow.appendChild(cSel);
+    settingsTipBeside(
+      cRow,
+      "最小化到任务栏：程序留在后台，正在跑的任务不受影响（托盘图标点回来）。直接退出程序：结束所有运行。",
+      "关闭主窗口时",
+    );
+    sec.appendChild(cRow);
 
     body.appendChild(sec);
   }

@@ -1,4 +1,4 @@
-/* ============ 全局搜索浮层（Ctrl+F · renderer/app-search.js） ============
+﻿/* ============ 全局搜索浮层（Ctrl+F · renderer/app-search.js） ============
  * 居中命令面板式：盖在所有界面之上（z-index 高于素材库 2350 / 二级框 2400 /
  * 蒙版 2600 / 拖影 10055）。浮层 persistent：只走 Esc / ✕ / 点专注遮罩 /
  * 再按一次 Ctrl+F 关闭，不挂「点外部即关」。
@@ -317,30 +317,30 @@
 }
 
 /* ── 浅色主题 ── */
-body.theme-light .gs-scrim {
+body.ef-skin.theme-light .gs-scrim {
   background: rgba(30, 34, 43, .34);
   background: color-mix(in srgb, var(--bg) 66%, transparent);
 }
 
-body.theme-light .gs-box {
+body.ef-skin.theme-light .gs-box {
   background: var(--panel);
   border-color: var(--bd2);
   box-shadow: 0 18px 50px rgba(0, 0, 0, .28);
 }
 
-body.theme-light .gs-row:hover,
-body.theme-light .gs-row.on {
+body.ef-skin.theme-light .gs-row:hover,
+body.ef-skin.theme-light .gs-row.on {
   background: rgba(60, 140, 200, .14);
 }
 
-body.theme-light .gs-hit {
+body.ef-skin.theme-light .gs-hit {
   background: rgba(255, 190, 40, .38);
 }
 
-body.theme-light .gs-tab {
+body.ef-skin.theme-light .gs-tab {
   border-color: var(--bd2);
 }
 
-body.theme-light .gs-tab.on {
+body.ef-skin.theme-light .gs-tab.on {
   background: rgba(60, 140, 200, .16);
 }

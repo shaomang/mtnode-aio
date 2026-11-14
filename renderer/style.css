@@ -5,16 +5,14 @@
 @import url("./css/components.css");
 @import url("./css/dsh.css");
 /* dsh 会话令牌层（css/dsh-tokens.css）：会话 / 助手两个窗格共用的语义令牌
-   （--dsh-*），值引用 base.css 的主题槽位 → 暗色与亮色（body.theme-light）
+   （--dsh-*），值引用 base.css 的主题槽位 → 暗色与亮色（body.ef-skin.theme-light）
    自动同源，不再逐条补亮色覆盖。排在 dsh.css 之后、assist.css 之前：
    令牌先就位，两个窗格再取用。 */
 @import url("./css/dsh-tokens.css");
 @import url("./css/assist.css");
-@import url("./css/theme-light.css");
 /* 终末地（Endfield）主题：石墨黑底 + 信号黄，切角 / 扫描线 / 斜纹动效。
-   与 theme-light.css 同一口径 —— 槽位在 base.css 之外另起一份，组件层只补写死的底色；
-   所有规则都以 body.theme-endfield 起头，不参与另外三套主题。放在 theme-light 之后：
-   两套主题互斥（applyTheme 只挂其中一个类），顺序只为可读性。 */
+   槽位在 base.css 之外另起一份，组件层只补写死的底色；
+   所有规则都以 body.theme-endfield 起头，不参与另外几套主题。 */
 @import url("./css/theme-endfield.css");
 /* 内嵌图片共享样式：粘贴 / 拖入 / 落盘 / 无引用回收那套能力的对话框与编辑器内图片
    （renderer/app-inline-img.js）；审阅 / 节点正文框 / 会话输入框三处共用。
@@ -28,14 +26,14 @@
 /* 图像生成 · 蒙版局部重绘编辑器（renderer/app-mask.js） */
 @import url("./css/mask.css");
 /* 文件查看面板（会话工具条上的文件名 → 右侧只读预览）；
-   亮色覆盖走 body.theme-light .fp-* 的更高优先级，放最后即可。 */
+   亮色覆盖走 body.ef-skin.theme-light .fp-* 的更高优先级，放最后即可。 */
 @import url("./css/fileview.css");
 /* 统一账户：顶栏入口 / 账户菜单 / 登录与绑定对话框（renderer/app-auth.js） */
 @import url("./css/auth.css");
 /* 专家团：团队面板 / 项目分组 / 专家编辑 / 招募 / 对话（renderer/app-team.js） */
 @import url("./css/team.css");
 /* 画布左侧边栏「文件」页：Tabs / 目录选择器 / VSCode 式文件树 / 右键菜单
-   （renderer/app-sidebar-files.js）；亮色覆盖在文件末尾的 body.theme-light 段。 */
+   （renderer/app-sidebar-files.js）；亮色覆盖在文件末尾的 body.ef-skin.theme-light 段。 */
 @import url("./css/sidebar-files.css");
 /* 本地语音转写（官方本地 SenseVoice）：节点内转写区块 +「语音模型」窗（renderer/app-asr.js） */
 @import url("./css/asr.css");
@@ -94,3 +92,12 @@
    二/三级小面板 + 全息幽灵。放最后一份：只加自己那几个 .cdock-* 类，
    颜色优先吃终末地皮肤槽位（--ef-*），三档主题下都有兜底值。 */
 @import url("./css/canvas-dock.css");
+/* 亮色主题 · 皮肤层（**生成物**）：scripts/gen-theme-daylight-skin.mjs 按一张
+   显式的「字面值 → 令牌」映射表，把四档共用皮肤里写死的深色面 / 深色线 / 黑色阴影 /
+   亮字批量翻成亮色侧的值。必须排在 theme-daylight.css **之前**：手写层要压得住它。 */
+@import url("./css/theme-daylight-skin.css");
+/* 亮色主题（Daylight）：令牌层 + 逐部件覆盖层，唯一定义处。
+   必须放在**最后一个** —— 它要压掉 css/theme-endfield.css 那份三档共用的
+   body.ef-skin 皮肤里写死的石墨色（同权重时按导入顺序定胜负），
+   所以本行永远是新亮色的收尾，不要再往它后面加主题分片。 */
+@import url("./css/theme-daylight.css");

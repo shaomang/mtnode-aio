@@ -879,6 +879,33 @@ function mutateConfigFile(fp, fn) {
   return true;
 }
 
+/* ── 关闭主窗的行为（config.json 的 window.closeAction）────────────────────
+   "ask" = 还没选过（点 ✕ 问一次，选完记住）；"minimize" = 缩回任务栏；
+   "quit" = 直接退出。设置 · 窗口里可随时改（渲染层经 config:save 整份写回，
+   window 已进 CONFIG_DEEP_MERGE_KEYS，不会被别处的旧副本抹掉）。 */
+const CLOSE_ACTIONS = new Set(["ask", "minimize", "quit"]);
+function closeActionFromDisk() {
+  try {
+    const c = loadConfigText(join(DATA(), "config.json"));
+    const w = c && c.obj && c.obj.window;
+    const v = String((w && w.closeAction) || "").trim();
+    return CLOSE_ACTIONS.has(v) ? v : "ask";
+  } catch {
+    return "ask";
+  }
+}
+function setCloseActionOnDisk(v) {
+  const want = CLOSE_ACTIONS.has(String(v || "").trim()) ? String(v).trim() : "ask";
+  return queueCfgWrite(() => {
+    const fp = join(DATA(), "config.json");
+    mutateConfigFile(fp, (next) => {
+      const prev = cfgPlainObj(next.window) ? next.window : {};
+      next.window = Object.assign({}, prev, { closeAction: want });
+    });
+    return { ok: true, closeAction: want };
+  });
+}
+
 /* ── 会话转写（agentSessions）：从 config.json 拆到独立的 agent-sessions/ ──────
    背景与三条硬口径（懒加载 / 不写未加载的会话 / 写序先会话体后索引）写在
    agent-sessions-store.js 文件头。这里只负责把它接到 IPC 与启动链上。 */
@@ -1327,8 +1354,9 @@ function cfgPlainObj(v) {
  * 存会话……几十处调用点）都会用旧副本里那个 apps 对象把主进程刚写进去的键盖掉。
  * 本机现场：config-backups 里 23:34 那份快照还有 "projectDir": "<项目根>"，下一份起就没了，
  * 于是 rootPathOf("dev") 回退到下载根（空目录），应用开发页预览报「该应用不在本机」。
- * 深合并只针对 apps（providers 数组另有专门保护，见下面那段），其它顶层键维持原语义。 */
-const CONFIG_DEEP_MERGE_KEYS = ["apps"];
+ * 深合并只针对 apps 与 window（window.closeAction 由主进程在关窗时写，渲染层设置页也写；
+ * providers 数组另有专门保护，见下面那段），其它顶层键维持原语义。 */
+const CONFIG_DEEP_MERGE_KEYS = ["apps", "window"];
 /* 已废弃、只该从盘上消失的顶层键：顶层浅合并是「incoming 没有 = 沿用盘上那份」，
  * 于是渲染层启动时 delete 掉的这些键永远删不掉。旧版助手栏的正文/台账/两枚开关正好
  * 全是这种键（真源早已挪进会话），残留会让启动把旧正文当成「老历史」再迁一条助手会话
@@ -7751,6 +7779,20 @@ function effectiveProviderType(provider, kind) {
   return "image_openai";
 }
 
+/* 是不是 OpenCode（含 Go 套餐）的推理端点：只有这家要求客户端带 x-opencode-session，
+   缺了上游直接 400 MissingSessionID（实测：无头 400、带头 401，头是准入条件）。 */
+function isOpencodeEndpoint(provider) {
+  const base = String((provider && provider.baseUrl) || "").trim();
+  if (!base) return false;
+  let host = "";
+  try {
+    host = new URL(base).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  return host === "opencode.ai" || host.endsWith(".opencode.ai");
+}
+
 /* 构建完整请求描述（预览与真实调用共用，保证一致）
    matteAnchor：透明图差分抠图的**第 2 通道**（images[0] / refImage 就是第 1 通道基准图）。
    该通路两条口径：① 参考图不缩放、原尺寸下发；② size 钉成基准图实际像素对应的档位，
@@ -7778,6 +7820,11 @@ function buildRequestSpec(
     Authorization: "Bearer " + providerAuthKey(provider),
     "Content-Type": "application/json",
   };
+  /* OpenCode 端点缺 x-opencode-session 就 400。直连调用（节点 / 识图 / 应用宿主）手上
+     没有会话对象，按服务商给一个恒定 id：稳定不变，才不会打乱上游的路由与提示缓存。 */
+  if (isOpencodeEndpoint(provider)) {
+    auth["x-opencode-session"] = "mtnode-" + String(provider.id || "default");
+  }
   if (kind === "text") {
     const parts = [];
     /* 带图请求有两条路：节点侧给 images（下面自动拼多模态 parts，由 provider.vision 把关），
@@ -10249,14 +10296,39 @@ app.whenReady().then(() => {
       return { action: "deny" };
     });
   });
-  /* 关闭主窗 = 先问用户：最小化到任务栏，还是退出程序。
+  /* 关闭主窗 = 按用户选过的口径处理：最小化到任务栏，还是退出程序。
+     口径存 config.json 的 window.closeAction（"ask" = 还没选过）：
+       · 第一次点 ✕ → 问一次，并把这次的选择记下来，以后直接按它执行；
+       · 设置里（设置 · 窗口）可随时改成 每次询问 / 最小化 / 直接退出。
      最小化：不退出、不销毁渲染层，任务继续在后台跑（完成时仍由渲染层弹系统通知 + 应用内卡片）；
      退出：markQuitting 后 app.quit，走 before-quit 那套收尾。
      另外托盘菜单「退出」仍是直接退出（不弹这个询问）。 */
   let closeAsking = false;
+  const minimizeMainWin = () => {
+    try {
+      /* 托盘按需建（最好有：后台任务数、「全部终止运行」、直接退出都在托盘菜单里）；
+         建不出来也不影响最小化，任务栏图标点回来即可。 */
+      trayNotify.ensureTray();
+      if (mainWin && !mainWin.isDestroyed()) mainWin.minimize();
+    } catch (e) {
+      errLog("[close] 最小化失败：" + ((e && e.message) || e));
+    }
+  };
   mainWin.on("close", (ev) => {
     if (trayNotify.isQuitting()) return;
+    const pref = closeActionFromDisk();
+    /* 选过「直接退出」：这次就是真关，不拦 */
+    if (pref === "quit") {
+      trayNotify.markQuitting();
+      app.quit();
+      return;
+    }
     ev.preventDefault();
+    /* 选过「最小化」：不再问，直接缩回任务栏 */
+    if (pref === "minimize") {
+      minimizeMainWin();
+      return;
+    }
     if (closeAsking) return; /* 询问框还开着：重复点 ✕ 不再叠一层 */
     closeAsking = true;
     let choice = 0;
@@ -10264,8 +10336,10 @@ app.whenReady().then(() => {
       choice = dialog.showMessageBoxSync(mainWin, {
         type: "question",
         title: "关闭 MTNode",
-        message: "要最小化到任务栏，还是退出程序？",
-        detail: "最小化后程序继续在后台运行，正在跑的任务不受影响；退出会结束所有运行。",
+        message: "关闭主窗口时：最小化到任务栏，还是退出程序？",
+        detail:
+          "这个选择会被记住，以后点 ✕ 直接按它执行（随时可在「设置 · 窗口」里改）。\n" +
+          "最小化后程序继续在后台运行，正在跑的任务不受影响；退出会结束所有运行。",
         buttons: ["最小化到任务栏", "退出程序"],
         defaultId: 0,
         cancelId: 0, /* 关掉询问框（Esc / ✕）= 最小化，不误杀后台任务 */
@@ -10277,19 +10351,19 @@ app.whenReady().then(() => {
     } finally {
       closeAsking = false;
     }
-    if (choice === 1) {
+    const want = choice === 1 ? "quit" : "minimize";
+    /* 记住这次的选择（写不进去也不影响本次行为） */
+    try {
+      setCloseActionOnDisk(want);
+    } catch (e) {
+      errLog("[close] 记住关闭方式失败：" + ((e && e.message) || e));
+    }
+    if (want === "quit") {
       trayNotify.markQuitting();
       app.quit();
       return;
     }
-    try {
-      /* 托盘按需建（最好有：后台任务数、「全部终止运行」、直接退出都在托盘菜单里）；
-         建不出来也不影响最小化，任务栏图标点回来即可。 */
-      trayNotify.ensureTray();
-      if (mainWin && !mainWin.isDestroyed()) mainWin.minimize();
-    } catch (e) {
-      errLog("[close] 最小化失败：" + ((e && e.message) || e));
-    }
+    minimizeMainWin();
   });
   mainWin.on("closed", () => {
     closeContentViewWin();
@@ -10473,20 +10547,9 @@ app.whenReady().then(() => {
     });
     const hk = screenshotTool.registerHotkey();
     if (!hk || hk.ok !== true) {
-      const msg = (hk && hk.error) || I18n.t("全局快捷键不可用");
-      errLog("[shot] " + msg);
-      try {
-        dialog
-          .showMessageBox({
-            type: "warning",
-            title: I18n.t("截图标注"),
-            message: I18n.t("截图快捷键没能注册上"),
-            detail: msg + "\n\n" + I18n.t("换个占用更少的键位，或先关掉占用它的软件。"),
-            buttons: [I18n.t("知道了")],
-            noLink: true,
-          })
-          .catch(() => {});
-      } catch (_) {}
+      /* 注册不上（多半被别的软件占了）只记日志，**不再弹「快捷键冲突」警告窗**：
+         用户口径是开机路径上不要这种拦截；状态仍可从 screenshotTool.hotkey() 读到。 */
+      errLog("[shot] " + ((hk && hk.error) || I18n.t("全局快捷键不可用")));
     } else {
       /* 热进程预热：这台机上「裸起一只 PowerShell」就要 158ms，加载截图那段 C# 再加 246ms ——
          用户按快捷键的第一下会白等这四百来毫秒（实测串起来 1.1~1.3s 才见画面）。

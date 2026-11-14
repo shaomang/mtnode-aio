@@ -226,8 +226,7 @@ async function renderToPdf(o, text, outPath) {
     );
     if (!buf || !buf.length) return { ok: false, error: "打印引擎返回空 PDF" };
 
-    fs.mkdirSync(cachedirOf(outPath), { recursive: true });
-    fs.writeFileSync(outPath, buf);
+    writePdfFile(outPath, buf);
     return {
       ok: true,
       path: outPath,
@@ -242,6 +241,32 @@ async function renderToPdf(o, text, outPath) {
       if (win && !win.isDestroyed()) win.destroy();
     } catch {
       /* ignore */
+    }
+  }
+}
+
+/** 落盘：**总是覆盖**同名 PDF。
+ *  先写同目录临时文件再原子 rename（Windows 上 rename 走 MOVEFILE_REPLACE_EXISTING，
+ *  目标已存在也直接顶掉）；rename 失败（跨卷 / 目标被 PDF 阅读器锁着）退回直写，
+ *  两次都失败才把错误抛给调用方 —— 绝不出现「点 ▶ 之后盘上还是旧那份、也不报错」。 */
+function writePdfFile(outPath, buf) {
+  const dir = cachedirOf(outPath);
+  fs.mkdirSync(dir, { recursive: true });
+  const tmp = path.join(dir, "." + path.basename(outPath) + ".tmp" + process.pid);
+  try {
+    fs.writeFileSync(tmp, buf);
+    try {
+      fs.renameSync(tmp, outPath);
+      return;
+    } catch (_) {
+      /* 目标被占用 / 跨卷：直写覆盖（writeFileSync 对已存在文件即截断重写） */
+    }
+    fs.writeFileSync(outPath, buf);
+  } finally {
+    try {
+      if (fs.existsSync(tmp)) fs.unlinkSync(tmp);
+    } catch (_) {
+      /* 临时文件清不掉不影响成品 */
     }
   }
 }

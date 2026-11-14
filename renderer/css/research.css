@@ -1,4 +1,4 @@
-/* ============ 研究画布（research view）样式 ============
+﻿/* ============ 研究画布（research view）样式 ============
  * 归属 renderer/app-research.js / app-research-graph.js / app-pele.js。
  * 类名统一 .rs-* 与 .rg-* 前缀；配色只取 base.css 的主题变量，暗色 / 工业 / 亮色三套主题自动跟随。
  * 版式：顶栏（左：导航面包屑；右：笔记 / 图谱切换与背景色 / 刷新）→ 常驻 chip 行
@@ -2420,7 +2420,7 @@
 }
 
 /* 亮色主题下网格与连线稍加深，避免糊在白底上 */
-body.theme-light .rg-svg .rg-edge {
+body.ef-skin.theme-light .rg-svg .rg-edge {
   stroke: var(--bd2);
 }
 
@@ -5533,7 +5533,7 @@ input.rs-dv-addsel {
 
 /* ==================== 研究页亮色皮肤（.rs-light） ====================
  * 类由 app-research.js 的 applyViewSkin 挂在 #researchPane 上：**跟着全局主题走**
- * （body.theme-light 时挂上，不再有页面内的亮暗开关），也**不改** body.theme-light。
+ * （body.ef-skin.theme-light 时挂上，不再有页面内的亮暗开关），也**不改** body.ef-skin.theme-light。
  * 变量只覆盖这一页用得到的槽位
  * （bg / bg2 / panel / panel2 / bd / bd2 / ink / muted / code + 强调色），
  * 阅读区、左栏树、树上的折叠段、顶栏、平铺条、公式与代码块一起变亮。

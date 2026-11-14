@@ -1,0 +1,225 @@
+/* ============================================================================
+   状态栏左下角「● 录制」（renderer/app-take-ui.js）
+   ----------------------------------------------------------------------------
+   位置：footer 里紧跟左下角那四颗按钮（快捷会话 / DeepSeek / 语音播报 / 语音输入）之后、
+   画布截图按钮之前 —— 走 order 0（与 .sb-cam 同档），由 DOM 次序决定先后，
+   所以这里不改 layout.css / deepseek.css / tts.css / voice.css 里已有的那几个 order 值。
+   默认 hidden：只有登录账号 ms2308 才由脚本显出来（连 display 一起由脚本改），
+   所以这里不写兜底定位。配色只取 base.css 的主题变量（亮色主题自动跟随）。
+   尺寸口径与 .sb-cam / .sb-rebuild 一致：22px 高，不改变状态栏高度。
+   ========================================================================== */
+
+.statusbar .sb-take-wrap {
+  flex: none;
+  order: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.statusbar .sb-take-wrap[hidden] {
+  display: none !important;
+}
+
+/* 待机 = 一颗可点的胶囊「● 录制」；录制中它变成状态牌（秒数 + 已写字节），不可点 */
+.statusbar .sb-take {
+  flex: none;
+  height: 22px;
+  min-width: 0;
+  padding: 0 9px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: transparent;
+  border: 1px solid var(--bd2);
+  border-radius: 11px;
+  color: var(--muted);
+  font: 10.5px/1 var(--mono);
+  letter-spacing: .5px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color .12s, border-color .12s, background .12s;
+}
+
+.statusbar .sb-take:hover {
+  color: var(--ink);
+  border-color: var(--orange);
+  background: rgba(255, 143, 46, .08);
+}
+
+/* 录制中那颗不是按钮而是读数牌：disabled 只挡点击，不降透明度、不换光标 */
+.statusbar .sb-take:disabled {
+  opacity: 1;
+  cursor: default;
+}
+
+.statusbar .sb-take.is-rec {
+  color: var(--ink);
+  border-color: color-mix(in srgb, var(--red, #ff6b6b) 55%, transparent);
+  background: rgba(255, 107, 107, .1);
+}
+
+.statusbar .sb-take-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--red, #ff6b6b);
+  box-shadow: 0 0 6px rgba(255, 107, 107, .5);
+}
+
+.statusbar .sb-take.is-rec .sb-take-dot {
+  animation: sb-take-pulse 1.4s ease-in-out infinite;
+}
+
+/* 暂停中：点变灰、不再呼吸 —— 「在录但没在动」一眼可辨 */
+.statusbar .sb-take.is-paused .sb-take-dot {
+  background: var(--muted);
+  box-shadow: none;
+  animation: none;
+}
+
+@keyframes sb-take-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: .3;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .statusbar .sb-take.is-rec .sb-take-dot {
+    animation: none;
+  }
+}
+
+/* 暂停 / 继续 · 停止并保存：两枚 22×22 的图标小按钮，手感与 .sb-cam 一致 */
+.statusbar .sb-take-aux {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  color: var(--muted);
+  font: 11px/1 var(--mono);
+  cursor: pointer;
+}
+
+.statusbar .sb-take-aux[hidden] {
+  display: none !important;
+}
+
+.statusbar .sb-take-aux:hover {
+  color: var(--cyan2, #38d6ff);
+  border-color: var(--bd2);
+  background: rgba(56, 214, 255, .08);
+}
+
+.statusbar .sb-take-aux.sb-take-stop:hover {
+  color: var(--red, #ff6b6b);
+  border-color: color-mix(in srgb, var(--red, #ff6b6b) 50%, transparent);
+  background: rgba(255, 107, 107, .1);
+}
+
+.statusbar .sb-take-aux:focus-visible,
+.statusbar .sb-take:focus-visible {
+  outline: 2px solid var(--focus-ring, #38d6ff);
+  outline-offset: 1px;
+}
+
+/* 停止后的提示条：左下角浮层（与右下角的通知卡片对称），持久显示 ——
+   只有 ✕ 关它，点外部一律不关（持久面板纪律）。 */
+.sb-take-toast {
+  position: fixed;
+  left: 14px;
+  bottom: 34px;
+  z-index: 1160;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: min(440px, calc(100vw - 28px));
+  padding: 7px 8px 7px 10px;
+  background: linear-gradient(180deg, rgba(27, 34, 48, .97), rgba(18, 22, 31, .98));
+  border: 1px solid var(--bd2);
+  border-left: 3px solid var(--red, #ff6b6b);
+  border-radius: 4px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, .5);
+  color: var(--ink);
+  font: 12px/1.4 var(--sans);
+  animation: sb-take-toast-in .18s ease-out;
+}
+
+.sb-take-toast[hidden] {
+  display: none !important;
+}
+
+.sb-take-toast-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--red, #ff6b6b);
+}
+
+.sb-take-toast-txt {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sb-take-toast-btn {
+  flex: none;
+  height: 20px;
+  padding: 0 8px;
+  background: transparent;
+  border: 1px solid var(--bd2);
+  border-radius: 10px;
+  color: var(--ink);
+  font: 11px/1 var(--mono);
+  cursor: pointer;
+}
+
+.sb-take-toast-btn:hover {
+  color: var(--cyan2, #38d6ff);
+  border-color: var(--cyan2, #38d6ff);
+  background: rgba(56, 214, 255, .08);
+}
+
+.sb-take-toast-x {
+  flex: none;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font: 12px/1 var(--sans);
+  padding: 3px 4px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.sb-take-toast-x:hover {
+  color: var(--ink);
+  background: rgba(255, 255, 255, .08);
+}
+
+@keyframes sb-take-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sb-take-toast {
+    animation: none;
+  }
+}

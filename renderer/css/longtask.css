@@ -1,4 +1,4 @@
-/* ══════════════════════════════════════════════════════════════════════
+﻿/* ══════════════════════════════════════════════════════════════════════
  * 长周期任务（LangGraph 式状态机 · 人在环 · 长期记忆）
  * ----------------------------------------------------------------------
  * 收起态 = 菜单条与画布之间一根 6px 细线（hover 亮起 cyan），下拉展开后画布与
@@ -1161,7 +1161,7 @@ textarea.lt-in {
   color: var(--muted);
   word-break: break-word;
 }
-body.theme-light .lt-dlv-md {
+body.ef-skin.theme-light .lt-dlv-md {
   background: rgba(0, 0, 0, 0.04);
 }
 .lt-dlv-md table {
@@ -1204,7 +1204,7 @@ body.theme-light .lt-dlv-md {
   padding: 2px 0;
   border-top: 1px dashed rgba(255, 255, 255, 0.07);
 }
-body.theme-light .lt-dlv-t {
+body.ef-skin.theme-light .lt-dlv-t {
   border-top-color: rgba(0, 0, 0, 0.08);
 }
 .lt-dlv-t.done {
@@ -1309,7 +1309,7 @@ body.theme-light .lt-dlv-t {
   max-height: 220px;
   overflow: auto;
 }
-body.theme-light .lt-rel-miss {
+body.ef-skin.theme-light .lt-rel-miss {
   border-color: rgba(0, 0, 0, 0.1);
   background: rgba(0, 0, 0, 0.03);
 }
@@ -1375,7 +1375,7 @@ body.theme-light .lt-rel-miss {
   border-color: #8b7cf066;
   background: linear-gradient(180deg, #1a1730, #131022);
 }
-body.theme-light .wf-node.ltout {
+body.ef-skin.theme-light .wf-node.ltout {
   border-color: #a99cf0;
   background: linear-gradient(180deg, #f3f1fe, #faf9ff);
 }
@@ -1423,7 +1423,7 @@ body.theme-light .wf-node.ltout {
   border-color: #5aa9e666;
   background: linear-gradient(180deg, #12202e, #0e1824);
 }
-body.theme-light .wf-node.ltart {
+body.ef-skin.theme-light .wf-node.ltart {
   border-color: #7cb6e6;
   background: linear-gradient(180deg, #eef6fd, #f8fbff);
 }
@@ -1456,7 +1456,7 @@ body.theme-light .wf-node.ltart {
   border-radius: 6px;
   background: rgba(255, 255, 255, 0.03);
 }
-body.theme-light .n-ltart-stage {
+body.ef-skin.theme-light .n-ltart-stage {
   background: rgba(0, 0, 0, 0.04);
 }
 .n-ltart-stage img {
@@ -1691,16 +1691,16 @@ body.theme-light .n-ltart-stage {
 .n-ltart-text:has(>*) {
   white-space: normal;
 }
-body.theme-light .n-ltart-text th,
-body.theme-light .n-ltart-md th {
+body.ef-skin.theme-light .n-ltart-text th,
+body.ef-skin.theme-light .n-ltart-md th {
   background: rgba(0, 0, 0, .05);
 }
-body.theme-light .n-ltart-text code,
-body.theme-light .n-ltart-md code {
+body.ef-skin.theme-light .n-ltart-text code,
+body.ef-skin.theme-light .n-ltart-md code {
   background: rgba(0, 0, 0, .06);
 }
-body.theme-light .n-ltart-text pre,
-body.theme-light .n-ltart-md pre {
+body.ef-skin.theme-light .n-ltart-text pre,
+body.ef-skin.theme-light .n-ltart-md pre {
   background: rgba(0, 0, 0, .045);
 }
 
@@ -1722,31 +1722,31 @@ body.theme-light .n-ltart-md pre {
 }
 
 /* ── 亮色主题覆盖：只调底色，描边色自动跟随变量 ───────────────── */
-body.theme-light .lt-body {
+body.ef-skin.theme-light .lt-body {
   box-shadow: 0 8px 20px rgba(0, 0, 0, 0.12);
 }
-body.theme-light .lt-s-pending rect,
-body.theme-light .lt-s-skipped rect {
+body.ef-skin.theme-light .lt-s-pending rect,
+body.ef-skin.theme-light .lt-s-skipped rect {
   fill: #f2f2f3;
 }
-body.theme-light .lt-s-ready rect {
+body.ef-skin.theme-light .lt-s-ready rect {
   fill: #eaf4f8;
 }
-body.theme-light .lt-s-running rect {
+body.ef-skin.theme-light .lt-s-running rect {
   fill: #fdf1e3;
 }
-body.theme-light .lt-s-waiting_human rect,
-body.theme-light .lt-s-waiting_delivery rect {
+body.ef-skin.theme-light .lt-s-waiting_human rect,
+body.ef-skin.theme-light .lt-s-waiting_delivery rect {
   fill: #fff8e2;
 }
-body.theme-light .lt-s-blocked rect,
-body.theme-light .lt-s-failed rect {
+body.ef-skin.theme-light .lt-s-blocked rect,
+body.ef-skin.theme-light .lt-s-failed rect {
   fill: #ffeceb;
 }
-body.theme-light .lt-s-done rect {
+body.ef-skin.theme-light .lt-s-done rect {
   fill: #eaf8ef;
 }
-body.theme-light .lt-edge-label {
+body.ef-skin.theme-light .lt-edge-label {
   stroke: #f5f6f8;
 }
 

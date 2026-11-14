@@ -1,4 +1,4 @@
-/* 插件报错 → 自动修复（renderer/app-repair.js）：错误报告窗
+﻿/* 插件报错 → 自动修复（renderer/app-repair.js）：错误报告窗
    结构：说明 → 键值行（插件 / 错误码 / 节点 / 画布 / INSTALL_DIR / SCAFFOLD_REF / skill）
         → 错误正文 pre → 可折叠日志尾部 details */
 .plg-repair-hint {
@@ -63,11 +63,11 @@
 }
 
 /* ---- 亮色主题覆盖 ---- */
-body.theme-light .plg-repair-pre {
+body.ef-skin.theme-light .plg-repair-pre {
   background: rgba(0, 0, 0, 0.05);
   border-color: rgba(0, 0, 0, 0.14);
 }
-body.theme-light .plg-repair-err {
+body.ef-skin.theme-light .plg-repair-err {
   border-color: rgba(207, 42, 30, 0.4);
   color: #b8241a;
 }

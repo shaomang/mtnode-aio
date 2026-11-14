@@ -1,4 +1,4 @@
-﻿:root {
+:root {
   /* 默认主题 = dsh web 配色（ui-theme design-platform.css dark） */
   --bg: #151517;
   --bg2: #1b1b1c;
@@ -74,28 +74,10 @@ body.theme-industrial {
   --code: #0c0f15;
 }
 
-/* 亮色主题（Light）——以白色为背景，文字深色清晰可读 */
-body.theme-light {
-  --bg: #e6e9ee;
-  --bg2: #dbe0e7;
-  --panel: #f1f3f6;
-  --panel2: #e4e8ee;
-  --bd: #c6cdd6;
-  --bd2: #aab3bf;
-  --ink: #1e222b;
-  --muted: #5a6472;
-  --orange: #d9660a;
-  --orange2: #b54f04;
-  --cyan: #2068b8;
-  --cyan2: #15508f;
-  --blue: #1a63c8;
-  --green: #1a8a4a;
-  --red: #cf2a1e;
-  --yellow: #9a6b00;
-  --code: #f6f8fa;
-  /* 浮层投影（下方全局交互令牌的亮色版）：浅底上换成冷灰、压低浓度 */
-  --shadow-pop: 0 2px 6px rgba(30, 40, 60, .12), 0 12px 32px -6px rgba(30, 40, 60, .24);
-}
+/* 亮色主题（Daylight）的槽位与令牌层**不在这里**：全部在 css/theme-daylight.css
+   第一节（唯一定义处）。本文件只负责让公共控件「消费」那些令牌 —— 见下面
+   input / select / textarea / .mt-dialog 的 var(--field-* / --pop-*) 取值：
+   暗色三档没有定义这些令牌，var() 回落到原来的字面值，像素一个不变。 */
 
 * {
   box-sizing: border-box;
@@ -174,7 +156,7 @@ textarea {
    因此这一层只做一件事：给所有原生 select 一个**不透明**的暗色底 + 亮色字，
    并带上 !important —— 免得别处再写 color:inherit / 半透明底把弹出层拖白
    （设置 → 语音输入的「识别语言」就是这么坏的：asr.css 的 .asr-set-row > select）。
-   亮色主题在 theme-light.css 末尾用 :root[data-theme="light"] 整段撤销，肉眼不变。 */
+   亮色主题在 theme-daylight.css 里用 :root[data-theme="light"] 整段撤销，肉眼不变。 */
 :root:not([data-theme="light"]) select {
   background: var(--code) !important;
   color: var(--ink) !important;
@@ -195,9 +177,9 @@ input[type="time"],
 input[type="text"],
 input[type="password"],
 input:not([type]) {
-  background: var(--code);
-  color: var(--ink);
-  border: 1px solid var(--bd2);
+  background: var(--field-bg, var(--code));
+  color: var(--field-ink, var(--ink));
+  border: 1px solid var(--field-line, var(--bd2));
   border-radius: 3px;
   padding: 4px 6px;
   font-size: 12px;
@@ -219,7 +201,7 @@ input:not([type]):focus {
 /* 占位文字：与 --muted 同色（≥4.5:1），不吃浏览器默认的半透明灰 */
 input::placeholder,
 textarea::placeholder {
-  color: var(--muted);
+  color: var(--field-ph, var(--muted));
   opacity: 1
 }
 
@@ -253,9 +235,9 @@ input[type="number"]::-webkit-outer-spin-button {
 .overlay-body input[type="datetime-local"],
 .overlay-body textarea,
 .overlay-body select {
-  background: var(--code);
-  color: var(--ink);
-  border: 1px solid var(--bd2);
+  background: var(--field-bg, var(--code));
+  color: var(--field-ink, var(--ink));
+  border: 1px solid var(--field-line, var(--bd2));
   border-radius: 3px;
   padding: 6px 8px;
   font-size: 12px;
@@ -278,7 +260,7 @@ input[type="number"]::-webkit-outer-spin-button {
   align-items: center;
   justify-content: center;
   padding: 24px;
-  background: rgba(5, 8, 12, .72);
+  background: var(--pop-scrim, rgba(5, 8, 12, .72));
 }
 
 .mt-dialog.on {

@@ -7243,14 +7243,16 @@ function renderIxPanel() {
   ixFocusRestoreToDom();
 }
 
-/* ── 主题(industrial = 默认 MTNode, dsh = DSH, endfield = 终末地) ──
-   三档主题共用同一套皮肤（终末地那套：直角 / 45° 切角 / 发丝线 / 等宽读数 / 呼吸），
-   颜色真源在 css/theme-endfield.css 的 body.ef-skin 槽位里；applyTheme 给三档都挂
+/* ── 主题(industrial = 默认 MTNode, dsh = DSH, endfield = 终末地, light = 亮色) ──
+   四档主题共用同一套皮肤（终末地那套：直角 / 45° 切角 / 发丝线 / 等宽读数 / 呼吸），
+   颜色真源在 css/theme-endfield.css 的 body.ef-skin 槽位里；applyTheme 给四档都挂
    ef-skin，各主题只在那份 CSS 的「一·二」里换回自己的强调色（青 / 蓝 / 信号黄）。
    这里只给「切换瞬间就要用到」的几支强调色（#themeStyle 那一段 :root 覆盖）。
-   亮色（white）主题暂时隐藏：从这张表里摘掉后，设置窗不再列出它，
-   存档里若还是 light 会被下面 applyTheme 的回落改成 industrial（同时清掉 body.theme-light），
-   css/theme-light.css 原样保留，日后恢复只需把 light 这一条加回来。 */
+   亮色（light）：形状仍吃同一套皮肤，颜色由 css/theme-daylight.css 的令牌层
+   整段重映射（浅灰底 + 深墨字 + 青的深色版 #0b7f9b）。该文件的规则一律以
+   body.ef-skin.theme-light 起头，比 body.ef-skin 高一个类 —— 否则同权重同序
+   会被皮肤压回石墨黑（旧 theme-light.css 就是这么失效并被摘出设置窗的）。
+   验收闸门：node test/verify-theme-light-contrast.js。 */
 const THEMES = {
   dsh: {
     name: "DSH",
@@ -7266,6 +7268,12 @@ const THEMES = {
     name: "终末地",
     cyan: "#e2dfd2", cyan2: "#f6f4ea", orange: "#fffa00", orange2: "#f2f27a",
     green: "#b6d94a", red: "#ff4a3d",
+  },
+  light: {
+    /* 亮色：白底上的强调色按「白底 ≥4.5:1」各收深一档，别再往亮里调 */
+    name: "亮色",
+    cyan: "#0a7489", cyan2: "#08667a", orange: "#a94f08", orange2: "#8a3f03",
+    green: "#0e5b33", red: "#96201a",
   },
 };
 function applyTheme(name) {
@@ -7292,6 +7300,9 @@ function applyTheme(name) {
     ":root{--cyan:" + t.cyan + ";--cyan2:" + t.cyan2 +
     ";--orange:" + t.orange + ";--orange2:" + t.orange2 +
     ";--green:" + t.green + ";--red:" + t.red + "}";
+  /* DeepSeek 引导海报有深 / 亮两版：切主题时正在显示的那一张当场换掉，不留深色残留 */
+  const poster = document.getElementById("dsKeyPoster");
+  if (poster) poster.src = theme === "light" ? "deepseek-guide-light.svg" : "deepseek-guide.svg";
   window.api.configSave(S.config).catch(() => {});
   if (S.view === "agent") renderAgentSession();
 }

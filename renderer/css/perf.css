@@ -1,4 +1,4 @@
-/* ═══════════════════════════════════════════════════════════════════════════
+﻿/* ═══════════════════════════════════════════════════════════════════════════
    顶栏「性能」面板（renderer/app-perf.js · 主进程 perf-probe.js）
 
    本次需求：「显存」按钮改名「性能」，面板 = 性能总览 + 「显存与本地模型」（原内容）
@@ -218,10 +218,10 @@
 }
 
 /* ── 亮色主题 ───────────────────────────────────────────────────────────── */
-body.theme-light .perf-bar-track {
+body.ef-skin.theme-light .perf-bar-track {
   background: rgba(0, 0, 0, .12)
 }
 
-body.theme-light .perf-core {
+body.ef-skin.theme-light .perf-core {
   border-color: rgba(0, 0, 0, .14)
 }

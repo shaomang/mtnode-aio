@@ -1,9 +1,9 @@
-/* ============================================================
+﻿/* ============================================================
  * 画布左侧边栏「文件」页（renderer/app-sidebar-files.js）
  *   · 顶部 Tabs（节点 / 文件）
  *   · 目录选择器 + 工具条（搜索 / 类型筛选 / 刷新 / 粘贴）
  *   · VSCode explorer 式文件树（行内重命名、右键菜单、多选、预览字样）
- * 亮色主题的差异集中在文件末尾的 body.theme-light 段。
+ * 亮色主题的差异集中在文件末尾的 body.ef-skin.theme-light 段。
  * ============================================================ */
 
 /* ── 顶部 Tabs ── */
@@ -510,42 +510,42 @@ body.view-research #sideTree {
 }
 
 /* ── 亮色主题 ── */
-body.theme-light .sf-menu {
+body.ef-skin.theme-light .sf-menu {
   box-shadow: 0 8px 24px rgba(0, 0, 0, .18);
 }
 
-body.theme-light .sf-progress {
+body.ef-skin.theme-light .sf-progress {
   box-shadow: 0 8px 24px rgba(0, 0, 0, .18);
 }
 
-body.theme-light .sf-ico {
+body.ef-skin.theme-light .sf-ico {
   color: #6b7280;
 }
 
-body.theme-light .sf-ico-dir {
+body.ef-skin.theme-light .sf-ico-dir {
   color: #3b7cb8;
 }
 
-body.theme-light .sf-ico-md {
+body.ef-skin.theme-light .sf-ico-md {
   color: #1f6feb;
 }
 
-body.theme-light .sf-ico-code {
+body.ef-skin.theme-light .sf-ico-code {
   color: #8250df;
 }
 
-body.theme-light .sf-ico-image {
+body.ef-skin.theme-light .sf-ico-image {
   color: #b45309;
 }
 
-body.theme-light .sf-ico-media {
+body.ef-skin.theme-light .sf-ico-media {
   color: #0f766e;
 }
 
-body.theme-light .sf-ico-pdf {
+body.ef-skin.theme-light .sf-ico-pdf {
   color: #c0392b;
 }
 
-body.theme-light .sf-row.sel {
+body.ef-skin.theme-light .sf-row.sel {
   background: rgba(255, 152, 0, .22);
 }

@@ -7,7 +7,9 @@
  * 的几个对象（由 main.js 注入），因此可以单独在沙箱里跑单测桩。
  *
  * 口径（与用户共识一一对应）：
- *   · 主窗 ✕ = 先问「最小化到任务栏 / 退出程序」（询问在 main.js 的 close 拦截里）；
+ *   · 主窗 ✕ = 按 config.json 的 window.closeAction 处理（"ask" 时问一次并记住，
+ *     之后「最小化到任务栏 / 退出程序」直接照做；设置在「设置 · 窗口」里可改。
+ *     拦截与询问都在 main.js 的 close 监听里）；
  *     托盘菜单「退出」= 直接退出（markQuitting → app.quit），不再询问；
  *   · 托盘菜单 = 显示主窗口 / 运行中任务数（只读）/ 全部终止运行 / 退出；
  *   · 托盘图标固定用 build/icon.png，不随运行态换图；悬停提示写「MTNode · N 项任务运行中」；
@@ -120,7 +122,7 @@ function createTrayNotify(opts) {
       /* 左键单击 = 恢复主窗（双击同效：Windows 上单击与双击都会来，重复 show 无害） */
       tray.on("click", () => showMain());
       tray.on("double-click", () => showMain());
-      log("[tray] 托盘已创建（关闭主窗会询问：最小化到任务栏 / 退出程序）");
+      log("[tray] 托盘已创建（关闭主窗按 window.closeAction 处理：最小化 / 退出）");
       return true;
     } catch (e) {
       tray = null;
