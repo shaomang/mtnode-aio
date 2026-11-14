@@ -1,4 +1,4 @@
-:root {
+﻿:root {
   /* 默认主题 = dsh web 配色（ui-theme design-platform.css dark） */
   --bg: #151517;
   --bg2: #1b1b1c;
@@ -1806,7 +1806,7 @@ body.plan-resizing * {
   min-width: 0
 }
 
-.fn-ctx .ctx-kind-icon.kind-guide {
+.ctx-kind-icon.kind-guide {
   color: #f0c14d
 }
 

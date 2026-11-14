@@ -601,7 +601,7 @@ console.log(
     '',
     `发版 git 同步完成：v${ver} · 分支 ${branch}`,
     opt.push ? '远端：已 push（origin ' + branch + (opt.tag ? ` + tag v${ver}` : '') + '）' : '远端：未 push（--no-push）',
-    '提醒：安装包 / 更新通道仍由人工上传 OSS，Store 包仍由人工拖进 Partner Center。',
+    '提醒：安装包 / 更新通道仍由人工上传 OSS；Store 包用 npm run store:publish 自动上传（不接本链）。',
     '',
   ].join('\n'),
 );

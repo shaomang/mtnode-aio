@@ -24,6 +24,12 @@ import crypto from 'node:crypto'
    档位词汇、路由能力表与回退链的唯一真源,gateway 与运行时 mtnode-effort 插件共用。 */
 import { DEFAULT_EFFORT, effortForRoute, effortKeyOf } from './reasoning-effort.mjs'
 import { normalizeHiddenTools } from './tool-visibility.mjs'
+/* 联网搜索 / 阅读链接（DeepSeek 服务端工具）：声明形状、扩展块旁路与 fetch 包装的唯一真源，
+   零依赖纯函数（协议实测见 docs/deepseek-web-tools-probe.md）。网关只在这里**决定声明什么**：
+   buildServerTools 按「总开关 × 这家能不能吃」给出请求体里那两条声明，isDeepSeekWebToolsProvider
+   是同一份判据（宿主侧 app-agent.js 的 providerSupportsServerWebTools 与之同口径）。 */
+import { buildServerTools, extensionFrame } from './deepseek-web-tools.mjs'
+import { attachPromptSuffix } from './llm-attachments.mjs'
 import { messagesBaseUrl } from './messages-base-url.mjs'
 /* 会话自己的浏览器（用户已确认的底座：系统 Edge/Chrome + CDP 直驱 + 独立用户数据目录）。
    进程、CDP 连接、驱动串行锁、接管状态与动作留痕全在这一个模块里；网关只做两件事：
@@ -2386,7 +2392,7 @@ function onBridgeFrame(key, m, socket) {
     out({ event: { reqId: claim ? claim.reqId : '', type: 'ix-drop', data: { id: m.id, reason: 'dropped' } } })
     return
   }
-  if (m.t !== 'question' && m.t !== 'approval' && m.t !== 'canvas' && m.t !== 'db' && m.t !== 'facts' && m.t !== 'shot' && m.t !== 'tool' && m.t !== 'lt' && m.t !== 'asset' && m.t !== 'manifest' && m.t !== 'browser' && m.t !== 'gui' && m.t !== 'dev') return
+  if (m.t !== 'question' && m.t !== 'approval' && m.t !== 'canvas' && m.t !== 'db' && m.t !== 'facts' && m.t !== 'shot' && m.t !== 'tool' && m.t !== 'lt' && m.t !== 'asset' && m.t !== 'manifest' && m.t !== 'browser' && m.t !== 'gui' && m.t !== 'dev' && m.t !== 'web-tool') return
   const claim = claimOf(key)
   /* 归属校验:交互帧一律自带发起轮的 session id(question/approval 来自 bridge-plugin,
      canvas/db 来自 canvas-plugin/db-plugin、facts 来自 ai-facts-plugin(MTNode AI 事实库)、
@@ -2412,6 +2418,15 @@ function onBridgeFrame(key, m, socket) {
      直接驱动本机 Edge/Chrome（CDP），并把结果原路回给运行时插件。 */
   if (m.t === 'browser') {
     void handleBrowserFrame(key, m, socket)
+    return
+  }
+  /* 服务端工具扩展块（联网搜索 / 阅读链接）：上游 SSE 里旁路出来的块由**运行时插件**
+     经这条桥递上来，网关原样转成宿主帧（{event:{reqId,type:'deepseek-web-tool',data:ext}}）。
+     归属门控与其它交互帧一致（上面两道已过），只是不需要回执 —— 它是一个单向事件，
+     所以不进 bridgePending，也不写回 socket。老运行时不会发这类帧：没有它一切照旧。 */
+  if (m.t === 'web-tool') {
+    const ext = m.ext && typeof m.ext === 'object' ? m.ext : null
+    if (ext) out(extensionFrame(claim.reqId, ext))
     return
   }
   bridgePending.set(m.id, { socket, key, kind: m.t, reqId: claim.reqId, sessionId: sid })
@@ -2988,6 +3003,32 @@ function mapNotification(n, emit, resumeCtx) {
   }
 }
 
+/* 上一轮的工具账本落到「本轮专属」的一份文件里。为什么用文件：网关与运行时是两个进程，
+   文件是两者之间唯一不用改线协议的信道（运行时的适配器按 env MTNODE_WEB_TOOLS 里的
+   replayDir + 会话 id 取 <replayDir>/<sessionId>.json）。为什么不塞进 env：一份账本能到
+   64KB（单条 signature 约 1904 字符），env 装不下也不该装。空账本 = 删掉本会话那一份 ——
+   留着会让模型反复「看见」上一轮抓过的链接（回放是**本轮**的上下文，不是会话级缓存）。
+   落盘失败只留痕，绝不掐断这一轮。 */
+function stageWebToolReplay(home, sessionId, replay) {
+  const root = String(home || process.env.DSH_HOME || '').trim()
+  const sid = String(sessionId || '').trim()
+  if (!root || !sid) return ''
+  const dir = path.join(root, 'web-tool-replay')
+  const file = path.join(dir, sid.replace(/[^A-Za-z0-9_.-]/g, '_') + '.json')
+  const list = Array.isArray(replay) ? replay : []
+  try {
+    if (!list.length) {
+      if (existsSync(file)) unlinkSync(file)
+      return ''
+    }
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(file, JSON.stringify({ sessionId: sid, at: Date.now(), calls: list }))
+    return file
+  } catch (err) {
+    diag(`web-tool-replay write failed: ${err && err.message ? err.message : err}`)
+    return ''
+  }
+}
 async function handleRun(params) {
   const {
     reqId, workspace, input, model, maxTokens,
@@ -2995,6 +3036,10 @@ async function handleRun(params) {
     permissionPreset, webSearchApiKey, hostPersona, cancelTag, pure, tools,
     lean, noCanvas, hideTools, noBrowser, appDebug, devDebug,
     resumeSession, hostSessionId, officialModels: officialModelsRaw,
+    /* 联网搜索（DeepSeek 服务端工具）：{enabled} 总开关（宿主那枚设置项，默认开）；
+       webToolReplay = 上一轮的工具账本原文（含 deepseek_read_url 的 signature，原样回传用）。
+       老宿主不发这两个字段 → enabled 假值 / 无回放，行为与该能力接入前一致。 */
+    webTools, webToolReplay,
   } = params
   const emitOut = (type, data) => out({ event: { reqId, type, data } })
   /* 本轮在途登记的键(claimRuntime / emit('session') 按它建,finally 按它清);
@@ -3106,6 +3151,36 @@ async function handleRun(params) {
        能力再夹一次)。 */
     const rawEffort = String(effort ?? '').trim().toLowerCase()
     const runEffort = effortForRoute(rawEffort, route)
+    /* 联网搜索（DeepSeek 服务端工具）：宿主那枚全局开关（webTools.enabled）到这里再判一次
+       「这家能不能吃」，最终决定**本轮请求体声明不声明** deepseek_web_search /
+       deepseek_read_url（声明形状的唯一真源 = deepseek-web-tools.mjs；协议实测见
+       docs/deepseek-web-tools-probe.md —— type 写错上游直接 422，所以不支持的这家
+       一条都不加，绝不赌上游容错）。
+       为什么网关重判而不是全信宿主：route 在这一层才定形（deepseek-official /
+       mtnode_<route>），宿主的判据是它自己那份服务商类；两侧不一致时以真正发请求的
+       这一侧为准。思考档不参与声明 —— 开着思考时上游自己走 deep_search
+       （kind 由服务端决定），协议里没有对应的客户端参数。 */
+    /* 这一家在中转清单里的原卡（route 是宿主发的 mtnode_<route>，卡上有 source / baseUrl）：
+       中转卡的判据是 source，官方路由的判据是 id，自建代理退到 baseUrl —— 三个都交给同一个纯函数判。 */
+    const webToolsCard =
+      (Array.isArray(mtnodeProviders) ? mtnodeProviders : []).find(
+        (x) => x && 'mtnode_' + (x.route || 'p') === String(provider == null ? '' : provider),
+      ) || null
+    const serverTools = buildServerTools(
+      {
+        id: route,
+        source: webToolsCard ? String(webToolsCard.source == null ? '' : webToolsCard.source) : '',
+        baseUrl: (webToolsCard && webToolsCard.baseUrl) || baseUrl,
+      },
+      { enabled: !!(webTools && webTools.enabled) },
+    )
+    const webToolsOn = serverTools.length > 0
+    /* 声明了哪两条如实回给宿主（会话侧可据此显示「本轮联网搜索已开启」；老宿主忽略即无感） */
+    emit('web-tools', {
+      enabled: webToolsOn,
+      tools: serverTools.map((x) => String(x && x.name ? x.name : '')),
+      replay: Array.isArray(webToolReplay) ? webToolReplay.length : 0,
+    })
     const settings = applySettings(
       dshHome,
       runEffort,
@@ -3160,9 +3235,69 @@ async function handleRun(params) {
       const imgBlocks = await attachImages(dshHome || process.env.DSH_HOME || '', params.images)
       blocks.push(...imgBlocks)
     }
+    /* 会话附件（PDF / Word / 文本 / 表格）：照 DeepSeek「文件输入」的口径 —— 宿主上传
+       Files API 拿到 file_id，这里把标记写进正文尾巴，运行时插件在 fetch 层还原成服务商
+       原生附件部分（格式与自我保护的唯一真源在 llm-attachments.mjs）。
+       **file_id 只认创建它的那条通道**：把本轮真正发请求的主机名一并传下去，对不上的那条
+       由 attachPromptSuffix 改成本机路径（否则模型以为有附件、手里却没有 → 反复找文件）。
+       为什么不进 env：附件是每轮数据，写进 spawn env 会让每一轮都冷起一次运行时。 */
+    const attachHost = (() => {
+      if (route === 'deepseek-official') return 'api.deepseek.com'
+      const cards = Array.isArray(mtnodeProviders) ? mtnodeProviders : []
+      const card =
+        cards.find((x) => x && 'mtnode_' + (x.route || 'p') === String(provider == null ? '' : provider)) ||
+        cards.find((x) => x && String(x.route || '') === String(provider == null ? '' : provider).replace(/^mtnode_/, '')) ||
+        null
+      try {
+        return card && card.baseUrl ? new URL(String(card.baseUrl)).hostname.toLowerCase() : ''
+      } catch {
+        return ''
+      }
+    })()
+    const attachSuffix = attachPromptSuffix(params.files, { host: attachHost })
+    if (attachSuffix) {
+      const text = String(prompt || '') + attachSuffix
+      if (blocks[0] && blocks[0].type === 'text') blocks[0] = { type: 'text', text }
+      else blocks.unshift({ type: 'text', text })
+    }
     /* 用户工具描述子（工具节点 func call）：pure 会话不注入（纯净模式只留联网搜索） */
     const runTools = pureFlag ? [] : normRunTools(tools)
     const toolsJson = runTools.length ? JSON.stringify(runTools) : ''
+    /* 联网搜索（DeepSeek 服务端工具）：上一轮的工具账本（原样，含 deepseek_read_url 的
+       signature）落到本轮专属的一份文件里，再把「声明了哪两条 + 账本目录」交给运行时
+       （spawn env MTNODE_WEB_TOOLS）。没开 / 没账本时 stage 传空数组 —— 顺手删掉本会话
+       那份陈旧文件（见 stageWebToolReplay）。 */
+    const replayFile = stageWebToolReplay(
+      dshHome,
+      runSession,
+      webToolsOn ? webToolReplay : [],
+    )
+    const webToolsJson = webToolsOn
+      ? JSON.stringify({
+          enabled: true,
+          webSearch: true,
+          readUrl: true,
+          tools: serverTools.map((x) => String(x && x.name ? x.name : '')),
+          /* 运行时插件（web-tools-plugin.mjs）要在 fetch 层再判一次「这家的端点」——
+             provider 给的是宿主那份服务商身份（id + source），baseUrl 用来对主机名：
+             同一条运行时的 fetch 也会打到别的服务，认不出的主机一律原样放行。 */
+          provider: {
+            id: String(provider == null ? '' : provider),
+            source: String((webToolsCard && webToolsCard.source) || ''),
+            baseUrl: String((webToolsCard && webToolsCard.baseUrl) || baseUrl || ''),
+          },
+          baseUrl: String((webToolsCard && webToolsCard.baseUrl) || baseUrl || ''),
+          /* 给的是目录不是文件：env 与 runtime key 都按它算，必须与会话无关（同一个 home 下
+             所有会话同值），账本文件才是每会话一份（<replayDir>/<sessionId>.json）。 */
+          replayDir: replayFile ? path.dirname(replayFile) : undefined,
+        })
+      : ''
+    /* 走 envPatch 这条既有通道（applySettings 只投影服务商密钥，这里追加一枚）：
+       它既进 spawn env（getRuntime 的 Object.assign(env, envPatch)），又本来就在
+       runtime key 里（JSON.stringify(envPatch)）—— 换开关自动冷起新运行时，
+       不必再给 getRuntime 加位置参数。关掉要显式 delete。 */
+    if (webToolsJson) settings.envPatch.MTNODE_WEB_TOOLS = webToolsJson
+    else delete settings.envPatch.MTNODE_WEB_TOOLS
     const rt = await getRuntime(
       workspace, model, maxTokens, route, apiKey, baseUrl, dshHome, settings.envPatch, runEffort,
       webSearchApiKey, hostPersonaText, cancelTag, reqId, pureFlag, runSession, hostSessionId, toolsJson,

@@ -452,6 +452,9 @@ const KIND_CLS = {
   qwenimage_gen: "proc-img",
   /* Breeze 语音生成：文本 → 语音的**唯一**本机后端，复用 .wf-node.tts 样式族（紫调） */
   breeze_gen: "tts",
+  /* DeepSeek 云端语音（官方 API）：合成与识别同属语音族配色，一眼能看出是「声音」节点 */
+  deepseek_tts: "tts",
+  deepseek_asr: "tts",
   video_gen: "video",
   /* InfiniteTalk 数字人：产物是 mp4，复用视频族配色 */
   infinitetalk_gen: "video",
@@ -589,7 +592,7 @@ function sizeAspectLabel(size) {
 
 /* Agent 预设（对应 dsh/gateway/gateway.mjs 的 PRESETS）——渲染层唯一真源：
    会话模型菜单、右侧助手栏「预设」下拉（syncAssistPresetOptions）、智能节点面板「预设」、
-   设置「Agent 预设」下拉、开发节点 🧠 弹层与 agentPresetLabel() 都遍历此表，
+   设置「Agent 预设」下拉、开发节点模型弹层与 agentPresetLabel() 都遍历此表，
    任何一处自抄一份都会漏档（选不到 / 丢档）。
    labelKey：菜单与当前档回显用的短名；settingsLabelKey：设置里带括号说明的长名；
    hint：悬停说明（tooltip）。文本存 i18n key，取用时再 I18n.t（切语言即生效）。
@@ -1347,6 +1350,42 @@ const NODE_DEFAULTS = {
     boundSaveId: "",
     offload: true,
     musicStatus: "",
+    output: null,
+    error: null,
+    ranAt: 0,
+    running: false,
+  },
+  /* DeepSeek 云端语音合成（官方 API · POST /v1/tools/tts）：
+     输入 端口0=文本 · 端口1=控制输入；输出 端口0=音频 · 端口1=控制输出。
+     没有「换一家」的入口：服务商恒为官方 DeepSeek（见 renderer/app-ds-speech.js）。 */
+  deepseek_tts: {
+    w: 340,
+    h: 240,
+    title: "DeepSeek 语音合成",
+    text: "",
+    voiceId: "stella",
+    ttsFormat: "wav",
+    filterMarkdown: true,
+    streamMode: false,
+    outputPath: "",
+    timeoutSec: 120,
+    dsStatus: "",
+    output: null,
+    error: null,
+    ranAt: 0,
+    running: false,
+  },
+  /* DeepSeek 云端语音识别（官方 API · POST /v1/tools/asr）：
+     输入 端口0=音频 · 端口1=控制输入；输出 端口0=文本 · 端口1=控制输出。 */
+  deepseek_asr: {
+    w: 340,
+    h: 220,
+    title: "DeepSeek 语音识别",
+    pauseMs: 0,
+    outTxtPath: "",
+    timeoutSec: 120,
+    asrText: "",
+    dsStatus: "",
     output: null,
     error: null,
     ranAt: 0,
@@ -5136,6 +5175,8 @@ function outputCount(n) {
   if (n.kind === "moss_music") return 3;
   if (n.kind === "net_recv") return 2; /* 端口0=信息输出(数据) · 端口1=控制输出 */
   if (n.kind === "net_send") return 0; /* 发送无输出（末端） */
+  /* DeepSeek 云端语音：端口0=内容输出(数据) · 端口1=控制输出（跑完触发下游控制目标） */
+  if (n.kind === "deepseek_tts" || n.kind === "deepseek_asr") return 2;
   /* 音乐 / 语音 / 视频 / Remotion：端口0=内容输出(数据) · 端口1=控制输出（完成后触发下游控制目标） */
   if (
     n.kind === "music_gen" ||
@@ -7334,7 +7375,21 @@ function gridDevPx(v, dpr) {
   const d = dpr > 0 && isFinite(dpr) ? dpr : gridDpr();
   return Math.round(Number(v) * d) / d;
 }
-/* 背景点阵间距 = snap×zoom；点径随 zoom 缩小，拉远时网格点不会显得过大。
+/* ── 点阵抽稀（拉远时跳点）──────────────────────────────────────────────────
+   落屏一格 = grid()×zoom（CSS px）。缩得越小，格距就越小，每格一个点会密成一片糊。
+   这里按 1/2/4/8… 的倍数跳掉一部分网点：倍数取「让落屏格距不小于 GRID_MIN_CSS_PX
+   的最小 2 的幂」，于是格距始终落在 [GRID_MIN_CSS_PX, 2×) 之间 —— 越拉越疏，不会堆积。
+   只作用于底纹；吸附仍按 grid() 走（节点落点、坐标轴刻度都不变）。
+   倍数只取 2 的幂，间距因此仍是「基准格距的整数倍」，整设备像素量化口径不受影响。 */
+const GRID_MIN_CSS_PX = 12;
+function gridDotMul(cssStep) {
+  const step = Number(cssStep);
+  if (!(step > 0) || !isFinite(step)) return 1;
+  let m = 1;
+  while (step * m < GRID_MIN_CSS_PX && m < 4096) m *= 2;
+  return m;
+}
+/* 背景点阵间距 = snap×zoom×抽稀倍数；点径随 zoom 缩小，拉远时网格点不会显得过大。
    ── 为什么所有值都要量化到整设备像素 ─────────────────────────────────────────
    CSS 的 repeat 背景在 Chromium 里是「按 background-size 栅格化一张贴图，再平铺」。
    尺寸或位置只要带小数（相机一平移，--grid-x / -y 就是小数；滚轮缩放过一次，
@@ -7353,8 +7408,12 @@ function syncCanvasGrid() {
   const g = grid();
   const z = S.cam.z > 0 && isFinite(S.cam.z) ? S.cam.z : 1;
   const dpr = gridDpr();
-  /* 贴图边长（整设备像素）；至少 1 设备像素，避免缩到极小后除出 0 */
-  const gsDev = Math.max(1, Math.round(g * z * dpr));
+  /* 抽稀倍数：拉远到落屏格距 < GRID_MIN_CSS_PX 时按 2 的幂跳点（见 gridDotMul），
+     避免缩小时网点密成一片。倍数只取 2 的幂，格距仍是基准格距的整数倍。 */
+  const mul = gridDotMul(g * z);
+  /* 贴图边长（整设备像素）：先在设备像素里算「格距×抽稀倍数」再取整，极小 zoom 下
+     也不会被下限 1px 卡住后又被倍数放大成离谱的格子；至少 1 设备像素，避免除出 0 */
+  const gsDev = Math.max(1, Math.round(g * z * mul * dpr));
   /* 相位同样在设备像素里取模：相机在 ±0.5 设备像素内的抖动不会改变点阵位置 */
   const xDev = ((Math.round(S.cam.x * dpr) % gsDev) + gsDev) % gsDev;
   const yDev = ((Math.round(S.cam.y * dpr) % gsDev) + gsDev) % gsDev;
@@ -7605,6 +7664,8 @@ function inPortIsControl(node, idx) {
   /* MOSS-Music：0=音频/视频 · 1=自由提问 · 2=控制输入 */
   if (node.kind === "moss_music") return i === 2;
   if (node.kind === "breeze_gen") return i === 4; /* 端口4=控制输入 */
+  /* DeepSeek 云端语音：0=内容输入（文本 / 音频）· 1=控制输入 */
+  if (node.kind === "deepseek_tts" || node.kind === "deepseek_asr") return i === 1;
   /* InfiniteTalk 数字人：0=人物图 · 1=语音 · 2=源视频 · 3=提示词 · 4=控制输入（固定 5 颗端子） */
   if (node.kind === "infinitetalk_gen") return i === 4;
   /* SoulX-FlashHead Lite：0=人物图 · 1=语音 · 2=控制输入（固定 3 颗端子） */
@@ -7650,6 +7711,9 @@ const IN_PORT_DATA_KINDS = {
   yue_gen: ["text", "text", "text", "control"],
   /* MOSS-Music：0=音频/视频（任意路径）· 1=自由提问 · 2=控制输入 */
   moss_music: [null, "text", "control"],
+  /* DeepSeek 云端语音：合成 0=文本 · 1=控制；识别 0=音频 · 1=控制 */
+  deepseek_tts: ["text", "control"],
+  deepseek_asr: ["audio", "control"],
   /* Breeze 语音：0=待合成文本 · 1=参考音频（音频文件 URL）· 2=参考文稿 · 3=指令 · 4=控制输入 */
   breeze_gen: ["text", "audio", "text", "text", "control"],
   /* InfiniteTalk 数字人：0=人物图（图像路径）· 1=语音（音频文件 URL/路径）· 2=源视频（V2V）
@@ -9026,6 +9090,8 @@ function inputCount(node) {
   /* MOSS-Music：端口0=音频/视频 · 端口1=自由提问 · 端口2=控制输入（固定 3 颗） */
   if (node.kind === "moss_music") return 3;
   if (node.kind === "breeze_gen") return 5;
+  /* DeepSeek 云端语音：0=文本 / 音频 · 1=控制输入（固定 2 颗，不随连线增量） */
+  if (node.kind === "deepseek_tts" || node.kind === "deepseek_asr") return 2;
   /* InfiniteTalk 数字人：端口0=人物图 · 1=语音 · 2=源视频 · 3=提示词 · 4=控制输入（固定 5 颗，不随连线增量） */
   if (node.kind === "infinitetalk_gen") return 5;
   /* SoulX-FlashHead Lite：0=人物图 · 1=语音 · 2=控制输入（固定 3 颗，不随连线增量） */
@@ -9329,6 +9395,10 @@ function minWFor(n) {
     /* Breeze 语音：警示条 + 两行端子提示 + 摘要 + 后端面板 + 预览 + 状态行，要得比音乐节点高 */
     case "breeze_gen":
       return 340;
+    /* DeepSeek 云端语音：正文框 / 转写预览 + 摘要 + 状态行 */
+    case "deepseek_tts":
+    case "deepseek_asr":
+      return 340;
     case "video_gen":
       return 340;
     case "video_upscale":
@@ -9389,6 +9459,10 @@ function minHFor(n) {
       return 240;
     case "breeze_gen":
       return 250;
+    case "deepseek_tts":
+      return 260;
+    case "deepseek_asr":
+      return 240;
     case "video_gen":
       return 260;
     case "video_upscale":
@@ -9620,6 +9694,9 @@ function nodeKindLabel(node) {
     video_interp: "视频补帧",
     /* Breeze 语音生成（本机唯一的语音后端：Breeze TTS 2） */
     breeze_gen: "Breeze 语音",
+    /* DeepSeek 云端语音（官方 API · 官方提供商固化，不可切换） */
+    deepseek_tts: "DeepSeek 语音合成",
+    deepseek_asr: "DeepSeek 语音识别",
     remotion: "Remotion 视频",
     net_recv: "接收",
     net_send: "发送",
@@ -9683,6 +9760,10 @@ function nodeKindPurposeKey(node) {
     video_interp: "视频补帧（RIFE 补帧 · 独立后处理）",
     breeze_gen:
       "Breeze 语音生成（文本转语音 · Breeze TTS 2 · 音色克隆 / 设计 / 导演）",
+    deepseek_tts:
+      "DeepSeek 语音合成（云端 · 官方 TTS · stella / tide 双音色 · 整段或流式 · 10000 计费字符上限自动分段）",
+    deepseek_asr:
+      "DeepSeek 语音识别（云端 · 官方 ASR · 语种自动 · 逐句上传 · 单段 ≤8MiB / ≤120 秒自动切段）",
     remotion: "Remotion 视频（React 动效合成 · 本地渲染 mp4）",
     net_recv: "网络 · 接收（监听通道 · 异步转发收到的文本）",
     net_send: "网络 · 发送（把通道文本推送到远端）",
@@ -16670,7 +16751,8 @@ function valueForInput(src, idx, consumer, seen) {
   if (
     src.kind === "music_gen" ||
     src.kind === "yue_gen" ||
-    src.kind === "breeze_gen"
+    src.kind === "breeze_gen" ||
+    src.kind === "deepseek_tts"
   ) {
     const r = selResult(src);
     /* 没有本次运行结果时回落到「上一次生成的那份」（mediaGenProducedPath）——
@@ -17371,6 +17453,18 @@ function displayValueOf(src, consumer) {
     const v = valueForInput(src, idx, consumer || null);
     if (!v || v.kind !== "text") return null;
     return { text: String(v.text || ""), title: src.title };
+  }
+  /* DeepSeek 云端语音：合成出音频（显示文件路径）· 识别出文本（显示正文） */
+  if (src.kind === "deepseek_tts") {
+    const v = valueForInput(src, 0, consumer || null);
+    if (!v) return null;
+    const t = String(v.path || v.text || "");
+    return t ? { text: t, title: src.title } : null;
+  }
+  if (src.kind === "deepseek_asr") {
+    const r = selResult(src);
+    const t = (r && r.output && r.output.text) || src.asrText || "";
+    return t ? { text: String(t), title: src.title } : null;
   }
   /* MOSS-Music：显示与下游取值同口径（结果文本 / JSON / 产物路径三颗文本端子） */
   if (src.kind === "moss_music") {
@@ -19169,7 +19263,7 @@ async function resolveSkillByName(name) {
 
 function isCanvasBuildSkillName(name) {
   const n = String(name || "").toLowerCase();
-  return n === "generate-workflow" || n === "generate-task";
+  return n === "generate-workflow";
 }
 
 function isInstallOnlySkillName(name) {
@@ -19992,27 +20086,35 @@ function applyNodeDragVisual(d, dx, dy) {
     const ow = d.origWorld && d.origWorld[id];
     const o = d.orig && d.orig[id];
     if (!n || !ow) continue;
-    const wx = snap(ow.x + dx);
-    const wy = snap(ow.y + dy);
+    /* 拖动过程**不吸附**：节点严格跟手走（1:1 跟鼠标），网格取整只在松手落定那一下做
+       （见 snapDroppedNodes / playNodeDropSettle）。拖动中每帧取整会让人手感到「发黏」，
+       一格一格的跳动也吃掉了「拎起来移动」的手感。 */
+    const wx = ow.x + dx;
+    const wy = ow.y + dy;
     d.curWorld[id] = { x: wx, y: wy };
     const nestedShell = nodeIsNestedInOpenSuper(n);
     if (!nestedShell && o) {
-      n.x = snap(o.x + dx);
-      n.y = snap(o.y + dy);
+      n.x = o.x + dx;
+      n.y = o.y + dy;
     }
     let el = document.querySelector('.wf-node[data-nid="' + id + '"]');
     if (!el) continue;
     /* 拖拽中的“惯性倾斜”：按移动速度做仿射变换（轻微旋转+放大），
        方向跟随鼠标移动方向，形成卡片被拖拽的惯性感（替代原先的规则摇晃动画） */
-    if (!el.classList.contains("node-dragging"))
+    if (!el.classList.contains("node-dragging")) {
       el.classList.add("node-dragging");
+      /* 落定动画可能还没跑完就又被抓起：立刻摘掉，别让 left/top 的磁吸过渡拖慢跟手感 */
+      el.classList.remove("node-settling", "node-settling-flat");
+    }
     const zz = S.cam.z > 0 ? S.cam.z : 1;
     const vx = d._pdx == null ? 0 : (dx - d._pdx) * zz;
     d._pdx = dx;
     d._pdy = dy;
     const rot = Math.max(-7, Math.min(7, vx * 0.22));
+    /* 抬起感：拖动中整卡轻微上浮 2px + 放大 1.03（配合 .node-dragging 的加厚投影），
+       落定时由 .node-settling 的 keyframes 从这一姿态回落到原位。 */
     el.style.transform =
-      "rotate(" + rot.toFixed(2) + "deg) scale(1.03)";
+      "translateY(-2px) rotate(" + rot.toFixed(2) + "deg) scale(1.03)";
     if (nestedShell && stage && el.parentElement !== stage) {
       stage.appendChild(el);
       el.classList.add("super-drag-lift");
@@ -20021,6 +20123,74 @@ function applyNodeDragVisual(d, dx, dy) {
     el.style.left = (nestedShell ? wx : n.x) + "px";
     el.style.top = (nestedShell ? wy : n.y) + "px";
   }
+}
+/* 落定吸附 + 落定手感（拖动中不取整，只有松手这一下吸附网格）：
+   ① snapDroppedNodes 把模型与 curWorld 取整 —— finalizeNodeDragNest 按 curWorld 算壳内本地坐标，
+      所以壳内 / 壳外都在这里一次收口；
+   ② playNodeDropSettle 在 DOM 上把「跟手位置 → 吸附位置」这一小段演成磁吸落定，
+      并从节点中心放一圈一次性的呼吸波纹。 */
+function snapDroppedNodes(ids, curWorld) {
+  for (const id of ids || []) {
+    const n = nodeById(id);
+    if (!n) continue;
+    const w = curWorld && curWorld[id];
+    if (w) {
+      w.x = snap(w.x);
+      w.y = snap(w.y);
+    }
+    /* 壳内子节点的模型坐标是本地坐标，交给 finalizeNodeDragNest 按 curWorld 重算；
+       其余节点直接在这里取整，不依赖 finalize 是否命中落点宿主。 */
+    if (!nodeIsNestedInOpenSuper(n)) {
+      n.x = snap(n.x);
+      n.y = snap(n.y);
+    }
+  }
+}
+const NODE_SETTLE_MS = 240;
+let nodeSettleSeq = 0;
+function playNodeDropSettle(ids, opts) {
+  const o = opts || {};
+  const seen = new Set();
+  for (const id of ids || []) {
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const n = nodeById(id);
+    const el = document.querySelector('.wf-node[data-nid="' + id + '"]');
+    if (!n || !el) continue;
+    /* 先挂类再写坐标：transition 才捕得到「跟手位置 → 吸附位置」这一小段位移 */
+    el.classList.add("node-settling");
+    if (o.lift === false) el.classList.add("node-settling-flat");
+    el.style.left = (Number(n.x) || 0) + "px";
+    el.style.top = (Number(n.y) || 0) + "px";
+    /* 连续快速起落时只让最后一次的定时器摘类，别把新的落定动画提前掐掉 */
+    const token = String(++nodeSettleSeq);
+    el.dataset.settleToken = token;
+    window.setTimeout(() => {
+      if (el.dataset.settleToken !== token) return;
+      delete el.dataset.settleToken;
+      el.classList.remove("node-settling", "node-settling-flat");
+    }, NODE_SETTLE_MS + 60);
+    if (o.ripple !== false) spawnNodeDropRipple(n, el);
+  }
+}
+/* 一次性呼吸波纹：与节点同层（壳内节点落进壳的 viewport，坐标口径与节点一致），
+   画在卡片下层，扩一圈就自己散掉，不参与布局也不吃指针。 */
+function spawnNodeDropRipple(n, el) {
+  const parent = el.parentElement;
+  if (!parent) return;
+  const ring = document.createElement("div");
+  ring.className = "node-drop-ripple";
+  const w = Math.max(40, Number(n.w) || 0);
+  const h = Math.max(24, Number(n.h) || 0);
+  ring.style.width = w + 26 + "px";
+  ring.style.height = h + 26 + "px";
+  ring.style.left = (Number(n.x) || 0) - 13 + "px";
+  ring.style.top = (Number(n.y) || 0) - 13 + "px";
+  parent.appendChild(ring);
+  const drop = () => ring.remove();
+  ring.addEventListener("animationend", drop, { once: true });
+  /* 兜底：动画被系统「减少动态效果」等设置掐掉时，别把空节点留在画布上 */
+  window.setTimeout(drop, 1200);
 }
 /* 摘下「壳内子节点被拎到主舞台」的 .super-drag-lift（z65 + pointer-events:none），并把
    元素挂回它该在的那一层：还在展开壳里 → 那颗壳的 .super-stage-viewport（本地坐标，随壳内
@@ -22268,7 +22438,7 @@ function sideCatMatches(n, kinds) {
 const SIDE_CATS = [
   ["输入节点", ["input_text", "input_image", "input_audio", "input_video", "input_any", "input_form", "input_file", "db_table"]],
   ["全局节点", ["global"]],
-  ["处理节点", ["proc_text", "proc_image", "flux3klein_gen", "qwenimage_gen", "music_gen", "yue_gen", "moss_music", "breeze_gen", "video_gen", "infinitetalk_gen", "soulxflashhead_gen", "video_upscale", "video_interp", "remotion"]],
+  ["处理节点", ["proc_text", "proc_image", "flux3klein_gen", "qwenimage_gen", "music_gen", "yue_gen", "moss_music", "breeze_gen", "deepseek_tts", "deepseek_asr", "video_gen", "infinitetalk_gen", "soulxflashhead_gen", "video_upscale", "video_interp", "remotion"]],
   ["质检节点", ["qa_text", "qa_image", "qa_video", "qa_audio", "qa_file"]],
   ["保存节点", ["save", "save_pdf"]],
   ["工具节点", ["split", "merge", "function", "tool"]],
@@ -22302,6 +22472,9 @@ const KIND_TAGS = {
   yue_gen: "音乐",
   moss_music: "音乐理解",
   breeze_gen: "语音",
+  /* DeepSeek 云端语音：合成 / 识别分开打标签，侧栏筛选一眼能挑出来 */
+  deepseek_tts: "语音合成",
+  deepseek_asr: "语音识别",
   video_gen: "视频",
   infinitetalk_gen: "数字人",
   remotion: "视频",
@@ -23065,6 +23238,18 @@ function canvasCreateMenuGroups(pt) {
             I18n.t("Breeze 语音生成（文本转语音 · Breeze TTS 2）"),
             () => addNode("breeze_gen", pt.x, pt.y),
           ),
+          /* DeepSeek 云端语音：官方 API（TTS stella / tide 双音色 · ASR 语种自动）。
+             云端节点不参与显存门槛，所以没有 vramKind。 */
+          ctxKindItem(
+            "deepseek_tts",
+            I18n.t("DeepSeek 语音合成（云端 · 官方 API · stella / tide）"),
+            () => addNode("deepseek_tts", pt.x, pt.y),
+          ),
+          ctxKindItem(
+            "deepseek_asr",
+            I18n.t("DeepSeek 语音识别（云端 · 官方 API · 语种自动）"),
+            () => addNode("deepseek_asr", pt.x, pt.y),
+          ),
         ])),
       ],
     ],
@@ -23804,7 +23989,7 @@ async function promptBuildWorkflow(pt, retryState) {
   if (!groups.all.length) {
     toast(
       I18n.t(
-        "未找到可用的工作流生成技能：请先在 设置 → 技能 安装 generate-workflow / generate-task",
+        "未找到可用的工作流生成技能：请先在 设置 → 技能 安装 generate-workflow",
       ),
       "warn",
     );
@@ -24158,14 +24343,14 @@ function bindCanvas() {
       const dx = (ev.clientX - d.sx) / z,
         dy = (ev.clientY - d.sy) / z;
       applyNodeDragVisual(d, dx, dy);
-      /* 框选混合选区：一并移动已选绘制 */
+      /* 框选混合选区：一并移动已选绘制（同样只在落定时吸附） */
       if (d.origMarks) {
         for (const id of Object.keys(d.origMarks)) {
           const m = markById(id);
           const o = d.origMarks[id];
           if (!m || !o) continue;
-          m.x = snap(o.x + dx);
-          m.y = snap(o.y + dy);
+          m.x = o.x + dx;
+          m.y = o.y + dy;
           syncMarkDomPos(m);
         }
       }
@@ -24201,8 +24386,8 @@ function bindCanvas() {
       for (const id of Object.keys(d.orig || {})) {
         const n = nodeById(id);
         if (!n) continue;
-        n.x = snap(d.orig[id].x + dx);
-        n.y = snap(d.orig[id].y + dy);
+        n.x = d.orig[id].x + dx;
+        n.y = d.orig[id].y + dy;
         const el = document.querySelector('.wf-node[data-nid="' + id + '"]');
         if (el) {
           el.style.left = n.x + "px";
@@ -24213,8 +24398,8 @@ function bindCanvas() {
         const m = markById(id);
         const o = d.origMarks[id];
         if (!m || !o) continue;
-        m.x = snap(o.x + dx);
-        m.y = snap(o.y + dy);
+        m.x = o.x + dx;
+        m.y = o.y + dy;
         syncMarkDomPos(m);
       }
       updateGroupFrames();
@@ -24667,6 +24852,18 @@ function bindCanvas() {
       const curWorld = d.curWorld || null;
       const hadNested = !!d.hadNested;
       S.drag = null;
+      /* 松手才吸附：拖动中节点 1:1 跟手，落定这一下把自由坐标一次取整到网格
+         （壳内子节点的本地坐标由下面的 finalizeNodeDragNest 按取整后的 curWorld 重算） */
+      if (wasMoved) {
+        snapDroppedNodes(dragIds, curWorld);
+        for (const id of Object.keys(d.origMarks || {})) {
+          const m = markById(id);
+          if (!m) continue;
+          m.x = snap(m.x);
+          m.y = snap(m.y);
+          syncMarkDomPos(m);
+        }
+      }
       /* 拖拽结束：移除拖拽 class 并复位仿射变换（利用基础 transition 惯性回落） */
       document
         .querySelectorAll(".wf-node.node-dragging")
@@ -24712,11 +24909,31 @@ function bindCanvas() {
       } else {
         scheduleSave();
       }
+      /* 落定手感：磁吸到网格的短过渡 + 一次性呼吸波纹（重绘之后再做，元素才是新的） */
+      if (wasMoved) playNodeDropSettle(dragIds);
     } else if (d.mode === "group" || d.mode === "groupresize") {
       S.drag = null;
       if (d.moved && S.preDragSnap) {
         pushHistory(S.preDragSnap);
         S.preDragSnap = null;
+      }
+      if (d.mode === "group" && d.moved) {
+        /* 整组拖动同样「松手才吸附」：拖动中整组跟手，落定后一次取整 */
+        const gids = Object.keys(d.orig || {});
+        for (const id of gids) {
+          const n = nodeById(id);
+          if (!n) continue;
+          n.x = snap(n.x);
+          n.y = snap(n.y);
+        }
+        for (const id of Object.keys(d.origMarks || {})) {
+          const m = markById(id);
+          if (!m) continue;
+          m.x = snap(m.x);
+          m.y = snap(m.y);
+          syncMarkDomPos(m);
+        }
+        playNodeDropSettle(gids, { ripple: false, lift: false });
       }
       updateGroupFrames();
       scheduleSave();
@@ -25472,6 +25689,9 @@ const WIRE_DROP_TARGETS = [
   { kind: "yue_gen", g: "处理节点", vramKind: "yue_gen" },
   { kind: "moss_music", g: "处理节点", vramKind: "moss_music" },
   { kind: "breeze_gen", g: "处理节点" },
+  /* DeepSeek 云端语音：官方提供商固化，不挂 vramKind（云端不吃显存门槛） */
+  { kind: "deepseek_tts", g: "处理节点" },
+  { kind: "deepseek_asr", g: "处理节点" },
   { kind: "video_gen", g: "处理节点", vramKind: "video_gen" },
   { kind: "infinitetalk_gen", g: "处理节点" },
   { kind: "soulxflashhead_gen", g: "处理节点" },
@@ -33599,8 +33819,8 @@ function askAssistDecomposeTask(node) {
       : "请根据标题理解目标；必要时先更新该节点的 goal。",
   ].join("\n");
   /* 走助手栏的唯一发送入口（本轮需求 · 单一根源）：与会话视图发送同一条链 */
-  if (typeof assistPanelSend === "function") assistPanelSend("/generate-task " + arg);
-  else assistSend("/generate-task " + arg);
+  if (typeof assistPanelSend === "function") assistPanelSend(arg);
+  else assistSend(arg);
 }
 
 async function playTaskNode(node, quiet, opts) {
@@ -38698,13 +38918,18 @@ function takeStartPayload(rec) {
   };
 }
 
-/* 上送用的文档形状：只带真源五键（take 的文档轨道与 contentHash 覆盖面一致） */
+/* 上送用的文档形状：只带真源五键（take 的文档轨道与 contentHash 覆盖面一致）。
+   节点上的 data: URL（封面这类 base64 图片）在回放里一个像素都不画，落账前先剔掉 ——
+   口径只有一处（canvas-take.js 的 stripBinary，回放页生成也用同一份）。在这儿剔是为了
+   **过 IPC 之前就小掉**：一条 12.9s 的录制里它就占整页 40%。 */
 function takeDocPayload(doc) {
   const d = doc || {};
   const cur = S.wf || {};
+  const T = typeof window !== "undefined" ? window.MTCanvasTake : null;
+  const nodes = d.nodes || [];
   return {
     name: String((d.name != null ? d.name : cur.name) || ""),
-    nodes: d.nodes || [],
+    nodes: T && typeof T.stripBinary === "function" ? T.stripBinary(nodes) : nodes,
     wires: d.wires || [],
     groups: d.groups || [],
     marks: d.marks || [],
@@ -38759,23 +38984,32 @@ function takeRecordCam() {
        （applyTransform 的逆，含 canvas 边框与 translate+scale）反算世界坐标 —— 内核的
        pointer 轨只认世界坐标（回放按相机把它画回画面）；窗口像素随条目一起上送
        （sx / sy / inCanvas），内核只挑 x / y / down 三个键。
-       **只记关键事件（按下 / 抬起），移动不落账**：两次点击之间的轨迹谁也没录过，播放器按
-       时间线性补位（坐标算出来的，不是逐帧录出来的）。以前那套「≥4px 且 ≥60ms 抽稀 +
-       停顿补落点」一秒也能落十几条，等于把半个屏幕录像塞进 pointer 轨 —— 体积白花，
-       抽稀到底抽掉什么也说不清。最后一次指针位置仍记在 rec.ptrScreen（悬停命中的依据），
-       但它不是账。
-     · ui：选中 / 悬停 / 展开壳三项，只在真的变了时 push（250ms 轮询 + 指针事件后即时补）。
-       三个键恒为具体值（空数组 / 空串），**不用 undefined 表示「删除」**：跨 IPC 的
-       structured clone 会把 undefined 值的键整条抹掉，删除会变成静默丢失。
+       **只记点击事件（按下 / 抬起），移动不落账**：两次点击之间的轨迹谁也没录过，所以回放侧
+       也不补间 —— 一次点击就是一次「跳到这儿」，中间那段位移补出来只会是假动作（以前那套
+       「≥4px 且 ≥60ms 抽稀 + 停顿补落点」一秒能落十几条，等于把半个屏幕录像塞进 pointer 轨）。
+       最后一次指针位置仍记在 rec.ptrScreen（悬停命中的依据），但它不是账。
+     · ui：选中 / 悬停 / 展开壳 / 当前钻进的节点层 / 节点头部菜单条那排按钮，只在真的变了时
+       push（250ms 轮询 + 指针事件后即时补）。前几个键恒为具体值（空数组 / 空串），
+       **不用 undefined 表示「删除」**：跨 IPC 的 structured clone 会把 undefined 值的键整条
+       抹掉，删除会变成静默丢失。
+       layer = 当前钻进的那颗 super（空 = 根画布）：相机是**按层**存的（S.levelViews），
+       同一条 take 里镜头属于哪一层不看这个键根本对不上 —— 回放侧拿它筛该画哪批节点。
+       head = 每颗节点头部菜单条上**真实**的那排按钮（徽标 / ⚙ / ▶ / ■ / 批量 …），
+       记真值而不是在内核里按 kind 再猜一套：猜出来的那套迟早和真画布不一样。
      · 文字关键点：画布节点字段（标题 / 正文 / 参数框）与壳内输入框（含 #assistInput），
        停笔（700ms 没有新输入）与失焦时记**整串值**；值没变不记。键名 text:<nid>:<tag>#<序号>
        或 text:#<元素 id>，落在 uiTrack 上（内核只有五段轨，它本来就是「现场」那一轨）。
      · 壳快照：document.body 整窗外壳。序列化前**先克隆**，后面所有裁剪都只动克隆；真 DOM
-       上只量几何（滚出可视区的条目正文、要换空位的媒体），一个字节都不改用户的界面。
-       MutationObserver 一有变化就标记，但**最短 1500ms 一份**，内容哈希一样的直接丢。
-       剔：滚出可视区的条目正文 →「…」、#canvas 内部所有 SVG（留容器与工具条）、
-       webview / video / live2d → 同尺寸空位、#stage 的内联 transform（相机走 camTrack，
-       留着的话平移期间每份快照都「不一样」，去重与体积都完蛋）、录制胶囊（#takeUi / #takeToast）。
+       上只量几何（不可见子树、滚出可视区的条目正文、要换空位的媒体），一个字节都不改用户的界面。
+       MutationObserver 一有变化就标记，但**最短 1.5s 一份**（账攒到 8MB / 16MB 就放稀到
+       4s / 8s），内容哈希一样的直接丢。
+       **只录界面上看得见的东西**：不可见子树（display:none / hidden / 零几何）整棵换成一只
+       占位元素、滚出可视区的条目正文 →「…」、webview / video / live2d → 同尺寸空位、
+       #canvas 内部整个清空（画布内容由文档轨道逐帧重画，R.mount 反正会先清宿主）、
+       #stage 的内联 transform（相机走 camTrack，留着的话平移期间每份快照都「不一样」，
+       去重与体积都完蛋）、录制胶囊（#takeUi / #takeToast）。
+       可见内容本身也可能很大（会话正文摊在屏上就是几百 KB）：一份超 320KB 的保底动作是
+       把最大的可滚内容区折成同尺寸空位（面板位置 / 尺寸不变）。
        字节上限与 canvas-take.js 的 SOFT_LIMITS.shellBytes 同口径（32MB）：超了不再采壳。
 
    边界：不录时零开销 —— 监听只在开录时挂（takeHooksAttach），采样点统一走 takeLive() 早退。 */
@@ -38790,6 +39024,12 @@ const TAKE_SHELL_MAX_BYTES = 32 * 1024 * 1024;
    而且它每半秒变一次，留着就是把壳快照的频率与体积一起毁掉）。 */
 const TAKE_SHELL_SELF_SEL = "#takeUi, #takeToast";
 const TAKE_SHELL_MAX_TRIM = 200; /* 一次最多换掉多少条「看不见的正文」 */
+/* 快照走查上限：不可见子树的判据要逐个量布局，一次录制里 1.5s 走一遍，给个硬上限免得
+   超大 DOM 把录制卡住（走不完的部分照旧进快照，只是少裁一点）。 */
+const TAKE_SHELL_WALK_MAX = 8000;
+/* 一份壳快照的目标上限（只对**可见内容**超标的场景生效）：可见的会话正文在屏上时一份就几百 KB，
+   超预算就把最大的可滚内容区折成同尺寸空位（面板位置 / 尺寸不变），折到预算以内为止。 */
+const TAKE_SHELL_BUDGET = 320 * 1024;
 
 /** 在录、没暂停、而且录的还是「正在看的那张画布」→ 返回 rec；否则 null（所有采样点的第一个门） */
 function takeLive() {
@@ -38833,8 +39073,9 @@ function takePushPointer(sx, sy, ms, down) {
   takeSampleUi();
 }
 
-/** 指针采样：**只记关键事件** —— down（按下）/ up（抬起）；move 只更新「手现在在哪」，不落账。
-    移动的轨迹本来就没录过，播放器按时间线性补位（见 take-player.js 的 cursorAt）。 */
+/** 指针采样：**只记点击事件** —— down（按下）/ up（抬起，带坐标）；move 只更新「手现在在哪」，
+    不落账（它只给悬停命中用）。两次事件之间那段位移从来没录过，所以回放侧也**不补间**：
+    停在上一次点击处，到点直接跳过去（见 take-player.js 的 cursorAt）。 */
 function takeRecordPointer(ev, kind) {
   const rec = takeLive();
   if (!rec || !ev) return;
@@ -38869,7 +39110,39 @@ function takeHoverId(rec) {
   return id && nodeById(id) ? id : "";
 }
 
-/** UI 现场：选中 / 悬停 / 展开壳（三项恒为具体值，见本节头注释） */
+/** 节点头部菜单条上那排按钮的真值：种类图标 / 标题 / ? / ✕ 由渲染内核自己画，
+    这里只收它们中间那段（徽标 / ⚙ 设置 / ▶ 运行 / ■ 停止 / 批量 …）。
+    形状：[tag, class, text, innerHTML?]（最后一项只在没有文字时给，图标按钮靠它还原）。 */
+function takeHeadButtons() {
+  const stage = typeof $ === "function" ? $("#stage") : null;
+  if (!stage || typeof stage.querySelectorAll !== "function") return {};
+  const out = {};
+  for (const el of stage.querySelectorAll(".wf-node[data-nid]")) {
+    const nid = String((el.dataset && el.dataset.nid) || "");
+    if (!nid) continue;
+    let head = null;
+    for (const c of el.children) if (c.classList && c.classList.contains("n-head")) head = c;
+    if (!head) continue;
+    const list = [];
+    for (const b of head.children) {
+      const cls = String(b.getAttribute("class") || "");
+      if (!cls) continue;
+      if (/(^|\s)n-drag-handle(\s|$)/.test(cls) || /(^|\s)n-title(\s|$)/.test(cls)) continue;
+      if (/(^|\s)n-help-btn(\s|$)/.test(cls) || /(^|\s)n-del(\s|$)/.test(cls)) continue;
+      const text = String(b.textContent || "").replace(/\s+/g, " ").trim();
+      const row = [String(b.tagName || "SPAN").toLowerCase(), cls, text];
+      if (!text) {
+        const inner = String(b.innerHTML || "");
+        if (inner && inner.length <= 600) row.push(inner);
+      }
+      list.push(row);
+    }
+    if (list.length) out[nid] = list;
+  }
+  return out;
+}
+
+/** UI 现场：选中 / 悬停 / 展开壳 / 当前层 / 头部按钮（值恒为具体值，见本节头注释） */
 function takeUiSnapshot(rec) {
   const ids = [];
   if (S.selSet && typeof S.selSet.forEach === "function" && S.selSet.size)
@@ -38880,7 +39153,13 @@ function takeUiSnapshot(rec) {
   for (const n of (S.wf && S.wf.nodes) || [])
     if (n && n.kind === "super" && n.superOpen) shells.push(String(n.id));
   shells.sort();
-  return { sel: ids, hover: takeHoverId(rec), shells };
+  return {
+    sel: ids,
+    hover: takeHoverId(rec),
+    shells,
+    layer: String((typeof currentSuperFocus === "function" && currentSuperFocus()) || ""),
+    head: takeHeadButtons(),
+  };
 }
 
 /** 采一次 UI 现场：只把变了的键塞进一条 ui 条目（没变就一条都不记） */
@@ -38888,10 +39167,10 @@ function takeSampleUi() {
   const rec = takeLive();
   if (!rec) return;
   const snap = takeUiSnapshot(rec);
-  const prev = rec.uiPrev || { sel: [], hover: "", shells: [] };
+  const prev = rec.uiPrev || { sel: [], hover: "", shells: [], layer: "", head: {} };
   const set = {};
   let changed = false;
-  for (const k of ["sel", "hover", "shells"]) {
+  for (const k of ["sel", "hover", "shells", "layer", "head"]) {
     if (JSON.stringify(snap[k]) === JSON.stringify(prev[k])) continue;
     set[k] = snap[k];
     changed = true;
@@ -39003,8 +39282,47 @@ function takeByPath(root, path) {
   return el;
 }
 
-/* 真 DOM 上量一次：滚出可视区的叶子正文 + 要换空位的媒体，一律记路径（克隆之后照路径改） */
+/* 真 DOM 上量一次：不可见子树 / 滚出可视区的叶子正文 / 要换空位的媒体 / 可滚内容区，
+   一律记路径（克隆之后照路径改，真 DOM 一个字节都不动） */
 function takeShellTrimTargets(root) {
+  /* ① 不可见子树：**回放里它本来就不占一个像素**，一个字节都不该进 take（实测一次 36 秒的
+     录制里，藏在 display:none 里的助手会话正文独占整窗快照的 646KB / 835KB）。
+     判据用布局真值（不渲染 / hidden / 零几何），不看 class 名 —— 类名会变，布局不会。
+     只收「有内容」的那种（有子节点或有正文）：空壳删了对画面没有任何影响，不值一次走查。 */
+  const hidden = [];
+  let walks = TAKE_SHELL_WALK_MAX;
+  const walkHidden = (el) => {
+    for (let i = 0; i < el.children.length && walks > 0; i++) {
+      const c = el.children[i];
+      walks--;
+      let shown = true;
+      try {
+        if (typeof c.checkVisibility === "function")
+          shown = c.checkVisibility({ checkVisibilityCSS: true, checkOpacity: false });
+        else shown = c.getClientRects().length > 0;
+      } catch (_) {
+        shown = true;
+      }
+      /* display:contents 这类：自己没盒子、子节点照渲染 —— 子节点有几何就不许整棵删 */
+      if (!shown && c.children.length) {
+        for (const k of c.children) {
+          if (k.getClientRects().length) {
+            shown = true;
+            break;
+          }
+        }
+      }
+      if (!shown) {
+        if (c.children.length || String(c.textContent || "").trim()) {
+          const p = takePathOf(root, c);
+          if (p) hidden.push(p);
+        }
+        continue; /* 整棵都不再往下走 */
+      }
+      walkHidden(c);
+    }
+  };
+  walkHidden(root);
   const texts = [];
   const media = [];
   for (const el of root.querySelectorAll(
@@ -39043,7 +39361,14 @@ function takeShellTrimTargets(root) {
       if (p) texts.push(p);
     }
   }
-  return { texts, media };
+  /* 可滚内容区（超预算时的保底折点）：按克隆后的字节数从大到小排，只要几条，现量。
+     #canvas 里面的不算：那一片马上要整个清空，清空会改它内部的下标路径。 */
+  const collapses = hosts
+    .filter((el) => !(el.closest && el.closest("#canvas")))
+    .map((el) => ({ path: takePathOf(root, el), bytes: String(el.innerHTML || "").length }))
+    .filter((h) => h.path && h.bytes > 8 * 1024)
+    .sort((a, b) => b.bytes - a.bytes);
+  return { hidden, texts, media, collapses };
 }
 
 /* 壳快照的根样式：**body 自己的排版与主题令牌都带不进 outerHTML** —— `body` 元素一进
@@ -39089,6 +39414,17 @@ function takeShellHtml() {
   if (!root) return "";
   const trim = takeShellTrimTargets(root);
   const clone = root.cloneNode(true); /* 先克隆：后面所有裁剪都只动这一份 */
+  /* ⓪ 不可见子树整棵换掉（display:none / hidden / 零几何）：回放里它本来就不占一个像素。
+        换成一只 <div hidden> 而不是删节点 —— 删节点会让后面兄弟的元素下标整体前移，
+        后面那些按「子节点下标路径」量好的裁剪目标（正文 / 媒体 / 可滚区）就会指到别人身上；
+        占位元素带 hidden，同样不占布局、也不占几十字节以上。 */
+  for (let i = trim.hidden.length - 1; i >= 0; i--) {
+    const el = takeByPath(clone, trim.hidden[i]);
+    if (!el || !el.parentElement) continue;
+    const stub = clone.ownerDocument.createElement("div");
+    stub.setAttribute("hidden", "");
+    el.parentElement.replaceChild(stub, el);
+  }
   /* ① 滚出可视区的条目正文 →「…」 */
   for (const p of trim.texts) {
     const el = takeByPath(clone, p);
@@ -39105,18 +39441,46 @@ function takeShellHtml() {
     if (m.w || m.h) box.setAttribute("style", "width:" + m.w + "px;height:" + m.h + "px");
     el.parentElement.replaceChild(box, el);
   }
-  /* ③ #canvas 内部的 SVG 全剔（连线 / 端子 / 标注每帧重算；容器与工具条留着） */
+  /* ③ #canvas 内部全清空（连线 / 端子 / 标注每帧由文档轨道重算，容器与工具条留着）：
+        回放侧 take-player 的 R.mount 是先 removeChild 掉宿主的所有子节点再贴新场景的 ——
+        壳里那份节点卡片 / 连线 / 坐标轴一帧都不会显示，留着只是每份快照多几十 KB，
+        而且它们一改就换一份壳（去重直接失效）。 */
   const cv = clone.querySelector("#canvas");
-  if (cv) for (const s of cv.querySelectorAll("svg")) s.remove();
+  if (cv) while (cv.firstChild) cv.removeChild(cv.firstChild);
   /* ④ #stage 的内联 transform 剔掉：相机走 camTrack，留着会让平移期间每份快照都「不一样」 */
   const st = clone.querySelector("#stage");
   if (st) st.removeAttribute("style");
   /* ⑤ 录制器自己的键面剔掉（见 TAKE_SHELL_SELF_SEL 的注释）：它是「正在录」的读数，不是现场 */
   for (const self of clone.querySelectorAll(TAKE_SHELL_SELF_SEL)) self.remove();
-  /* ⑥ 根换成一层 div：body 的排版 + 主题令牌（见 takeShellRootCss），class 跟着 body 走
-        （theme-* / 紧凑模式这类「挂在 body 上的钩子」在壳里照样生效） */
-  const cls = "take-shell-root" + (root.className ? " " + String(root.className) : "");
-  return '<div class="' + cls + '" style="' + takeShellRootCss() + '">' + clone.innerHTML + "</div>";
+  /* ⑥ 体积闸（保底）：可见内容也可能很大（会话正文摊在屏上时一份快照就是几百 KB）。
+        超预算就按「最大的可滚内容区」依次折成同尺寸空位 —— 面板位置 / 尺寸不变，只把里面
+        成百上千条正文换成空位；折到预算以内就停手（没超就一条都不折，画面与录制时一致）。
+    ⑦ 根换成一层 div：body 的排版 + 主题令牌（见 takeShellRootCss）+ 录制时 body 的那串 class。
+        注意 class **不能只挂在这层 div 上**：应用 CSS 里的皮肤 / 视图规则一律以 body.X 起头
+        （body.ef-skin / body.view-workflow …），挂在 div 上一条都不命中，回放页会整窗退回旧
+        皮肤。所以另写一份 data-take-body-class —— 回放侧（canvas-take.shellBodyClassOf →
+        take-html / take-player）原样把这串类写到真正的 <body> 上。class 里那份留着，老的
+        take 只认它（同一串类，两种读法）。 */
+  const bodyCls = root.className ? String(root.className) : "";
+  const cls = "take-shell-root" + (bodyCls ? " " + bodyCls : "");
+  const rootCss = takeShellRootCss();
+  const wrap = (inner) =>
+    '<div class="' + cls + '"' +
+    (bodyCls ? ' data-take-body-class="' + bodyCls.replace(/"/g, "&quot;") + '"' : "") +
+    ' style="' + rootCss + '">' + inner + "</div>";
+  let html = wrap(clone.innerHTML);
+  for (let i = 0; i < trim.collapses.length && html.length > TAKE_SHELL_BUDGET; i++) {
+    const host = takeByPath(clone, trim.collapses[i].path);
+    /* 只认真元素：那一格要是已经被换成注释（不可见子树）或干脆没了，就跳过这一条 */
+    if (!host || host.nodeType !== 1 || host === cv) continue;
+    const box = clone.ownerDocument.createElement("div");
+    box.setAttribute("data-take-collapsed", "scroll");
+    box.setAttribute("style", "width:100%;height:100%");
+    while (host.firstChild) host.removeChild(host.firstChild);
+    host.appendChild(box);
+    html = wrap(clone.innerHTML);
+  }
+  return html;
 }
 
 /** 采一份壳快照：内容哈希去重 + 字节软上限（与 canvas-take.js 同口径） */
@@ -39139,11 +39503,21 @@ function takeSampleShell(src) {
   takeScheduleFlush();
 }
 
-/* MutationObserver 的落点：抖得再凶也只按「最短 400ms 一份」走 */
+/* 壳采样间隔：账小的时候照 1.5s 走；账已经攒到 8MB / 16MB 就放稀到 4s / 8s。
+   长录制不该因为「界面一直在动」就把账录成几百 MB —— 内容那半已经靠「只录可见 + 体积闸」
+   压过了，剩下能省的只有重复的壳。 */
+function takeShellIntervalMs(rec) {
+  const mb = rec.shellBytes / (1024 * 1024);
+  if (mb > 16) return 8000;
+  if (mb > 8) return 4000;
+  return TAKE_SHELL_MIN_MS;
+}
+
+/* MutationObserver 的落点：抖得再凶也只按「当前档位的最短间隔」走 */
 function takeMarkShellDirty() {
   const rec = takeLive();
   if (!rec || rec.shellTimer) return;
-  const wait = Math.max(0, TAKE_SHELL_MIN_MS - (Date.now() - (rec.shellAt || 0)));
+  const wait = Math.max(0, takeShellIntervalMs(rec) - (Date.now() - (rec.shellAt || 0)));
   rec.shellTimer = setTimeout(() => {
     rec.shellTimer = 0;
     takeSampleShell("mutation");
@@ -39339,7 +39713,7 @@ function canvasTakeStart(opts) {
   rec.shellHash = "";
   rec.shellAt = 0;
   rec.paused = false;
-  rec.uiPrev = { sel: [], hover: "", shells: [] };
+  rec.uiPrev = { sel: [], hover: "", shells: [], layer: "", head: {} };
   rec.textPrev = {};
   rec.ptrLast = null;
   rec.ptrScreen = null;

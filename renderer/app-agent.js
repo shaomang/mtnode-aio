@@ -1016,6 +1016,44 @@ function dshRunMaxTokens() {
   );
 }
 
+/* ── 联网搜索（DeepSeek 服务端工具）：宿主侧唯一判据 ──────────────────────────
+   协议与事件形状的唯一依据是 docs/deepseek-web-tools-probe.md（真 key 实测）：
+   deepseek_web_search / deepseek_read_url 只在 OpenAI 兼容的 /chat/completions 面
+   被验过，type 写错上游直接 422。所以「这一家能不能吃」必须在宿主侧判死，不能指望
+   上游容错 —— 第三方 OpenAI 兼容服务商 / Anthropic 面 / 本地模型一律不声明。
+
+   设置里只有**一枚全局开关**（默认开，只有显式存过 false 才算关，见 app-settings.js
+   的「联网搜索」小节）；会话下发（app-db.js 的 runParams.webTools）与设置面板的
+   置灰说明共用本文件的这两枚函数，避免两处各写一条 if 各漂各的。 */
+
+/* 全局开关：默认开 */
+function dshWebSearchOn() {
+  const d = (S.config && S.config.dsh) || {};
+  return d.webSearch !== false;
+}
+
+/* 这条智能路由能不能吃 DeepSeek 服务端工具（与网关 deepseek-web-tools.mjs 的
+   isDeepSeekWebToolsProvider 同口径）：
+   · deepseek-official（网关官方路由名）；
+   · 中转卡（source === "mtnode-relay"：实测原样透传这两条声明）；
+   · baseUrl 主机名含 deepseek 的文本服务商（自建 / 代理到官方端点）。 */
+function providerSupportsServerWebTools(route) {
+  const r = String(route || "").trim();
+  if (!r) return false;
+  if (r === "deepseek-official" || r === "deepseek") return true;
+  const p =
+    typeof providerForAgentRoute === "function" ? providerForAgentRoute(r) : null;
+  if (!p) return false;
+  if (String(p.source || "") === "mtnode-relay") return true;
+  const base = String(p.baseUrl || "").trim();
+  if (!base) return false;
+  try {
+    return new URL(base).hostname.toLowerCase().includes("deepseek");
+  } catch (_) {
+    return base.toLowerCase().includes("deepseek");
+  }
+}
+
 /* ══════════════ 会话 Token 消耗累积报告（报告 Badge）══════════════
  * 每次智能运行结束（会话 / 绑定节点 / 画布助手），把网关回传的 metrics 按
  * 「服务商 · 模型」并入所属会话的累计台账 st.tokenReport；运行中则由逐次 usage

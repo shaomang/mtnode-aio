@@ -136,7 +136,7 @@
       mtnode-unattended:
         sandbox: workspace-write
         approval: ask
-    defaultPreset: mtnode-unattended
+    defaultPreset: danger-full-access
 
 - id: tool-bash
   disabled: !!js process.platform === 'win32' || process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
@@ -610,6 +610,18 @@
     - id: mtnode-reasoning-replay-trim
       name: './plugins/reasoning-replay-trim-plugin.mjs'
 
+    # 联网搜索 / 阅读链接的服务端工具接线（mtnode-web-tools）：两条适配器都不给外部注入
+    # HTTP 层的机会（llm-pi-ai 自己拼 streamSimple 的 options、llm-deepseek 直接用全局
+    # fetch），所以本插件在运行时进程内替换 globalThis.fetch —— 只认 `…/chat/completions`
+    # 与 `…/messages` 两个端点、只在本轮服务商且带会话作用域时生效：请求体并两条服务端
+    # 工具声明，响应把扩展块旁路成 {kind, choiceIndex, data} 帧经桥递回网关（Messages 面
+    # 还要把 server_tool_use / web_search_tool_result / web_fetch_tool_result 三类块整块摘掉，
+    # 官方适配器对它们没有分支）。开关是 gateway 在 spawn 时注入的 env MTNODE_WEB_TOOLS
+    # （缺席 / enabled!=true / 声明为空 = 插件整体 no-op，行为与未接入时一字不变）。
+    # 契约见 dsh/DESIGN.md「联网搜索契约」、协议实测见 docs/deepseek-web-tools-probe.md。
+    - id: mtnode-web-tools
+      name: './web-tools-plugin.mjs'
+
     # router-standard（实验性路由预设）：默认不加载；需要时可在设置中挂载，也可完整卸载。
     - id: dsh-router-standard
       name: './plugins/router-standard/router-bootstrap.mjs'
@@ -669,9 +681,10 @@
 # ── user plugins (managed from MTNode settings) ──
 
 
-- id: user-mcp-mwf1pir2
+
+- id: user-mcp-mwgj0w9o
   name: '@deepseek-ai/dsh-mcp-client'
   config:
     serverName: 'mtnode-self'
     transport: 'streamable-http'
-    url: 'http://127.0.0.1:56476/mcp?token=31f452ffe62d2d2dd93cd089b1840e29afc44f9c797e7b0c'
+    url: 'http://127.0.0.1:64821/mcp?token=48e14ceb3cb3f02cb30a674c45a0583db3dabf1bb653fa9f'

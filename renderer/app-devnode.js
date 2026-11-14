@@ -3665,9 +3665,9 @@ function devModelButtonEl(node) {
   btn.type = "button";
   const eff = devAgentModelOf(node);
   btn.className = devModelButtonClass(node, eff);
-  const ico = devDlgEl("span", "ico", "🧠");
+  /* 不带图标：按钮只显示当前生效的模型名（大脑 icon 已按需求移除），
+     窄节点上也能多留几个字给模型名。 */
   const lbl = devDlgEl("span", "lbl", devModelButtonLabel(node));
-  btn.appendChild(ico);
   btn.appendChild(lbl);
   btn.title = devModelButtonTitle(node, eff);
   if (typeof btn.setAttribute === "function")

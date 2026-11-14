@@ -10,8 +10,9 @@ REM                      always called with --no-push: the Store chain commits a
 REM                      locally but never pushes to origin (pass --no-git by hand if
 REM                      you do not even want the local commit)
 REM    - packer        : scripts\msix\make-msix.mjs  (SDK probe, build, makeappx pack, self-check)
-REM  Change behavior in those two scripts. Uploading is still manual (drag into
-REM  Partner Center; this chain never auto-uploads).
+REM  Change behavior in those two scripts. This chain only packs; uploading is a
+REM  separate command: npm run store:publish (scripts\msix\store-publish.mjs) - it
+REM  uploads the .msix and commits the Store submission, and is NOT part of this chain.
 REM  Manual: docs\msix-store-publish.md
 REM
 REM  Console output is QUIET by default: the full output of node / electron-builder
@@ -40,7 +41,7 @@ REM    release-msix.cmd help            show this help
 REM
 REM  Requires Windows 10/11 SDK (makeappx.exe); fill scripts\msix\msix.config.json first.
 REM  Output lands in dist\msix-publish\ as a .msix named after identityName and version;
-REM  drag that file into the Partner Center upload box.
+REM  upload it with: npm run store:publish   (or drag it into the Partner Center box)
 REM  Closes automatically on success; pauses on failure to keep the error visible
 REM  (set MTNODE_MSIX_NOPAUSE=1 to skip that pause when running unattended).
 REM  Quiet-mode log file: %TEMP%\mtnode-msix-last.log
@@ -299,7 +300,7 @@ echo Git: this chain never pushes - release.mjs runs with --no-push ^(local comm
 echo      Add --no-git to skip the git step completely ^(no audit / commit / tag^).
 echo.
 echo Requires Windows 10/11 SDK (makeappx.exe); fill scripts\msix\msix.config.json first.
-echo Output: a .msix in dist\msix-publish\ - drag it into the Partner Center upload box.
+echo Output: a .msix in dist\msix-publish\ - upload it with: npm run store:publish
 echo Manual: docs\msix-store-publish.md
 echo.
 endlocal

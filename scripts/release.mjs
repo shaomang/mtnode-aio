@@ -13,8 +13,8 @@
      ③ node scripts/msix/make-msix.mjs --skip-build
         复用同一份 win-unpacked 封成 dist\<identityName>-<ver>.0-x64.msix（与 NSIS 包版本永远一致）
      ④ node scripts/stage-updates.mjs —— 整理 dist\updates-publish\（latest.yml + Setup + blockmap）
-     ⑤ 把 .msix 另存进 dist\msix-publish\ 并打印 Partner Center 上传指引
-        （MSIX 只能人工拖进上传框，本链不做自动上传）
+     ⑤ 把 .msix 另存进 dist\msix-publish\ 并打印上传指引（自动上传是单独一条 npm run store:publish）
+        （本链只出包不自动上传：上传必须人工敲命令，避免每次构建都往商店提审）
      ⑥ node scripts/release-git.mjs —— 源码完整入库（本步是为修「release 时未完整更新 git」加的）
         审计「随包发版却不在 Git 里」的文件（.gitignore 曾整目录忽略 scripts/ docs/ test/ build.json，
         `git add -A` 会静默跳过它们）→ add -A → 复查暂存区无敏感内容 → commit「发布 vX.Y.Z（源码同步…）」
@@ -28,7 +28,7 @@
    边界：
    - 零依赖：只用 Node 内置模块；不新增任何 npm 包。
    - 不改 scripts/msix/make-msix.mjs 的既有开关语义与自检逻辑（只是按既定开关调用）。
-   - 不做自动上传：MSIX 进 Partner Center、NSIS 进 OSS updates/ 都由人工执行（脚本打印指引）。
+   - 本链不自动上传：MSIX 由独立的 `npm run store:publish`（scripts/msix/store-publish.mjs）调提交 API 上传提审，NSIS 进 OSS updates/ 仍人工执行；本链只出包并打印指引。
    - git 同步只做「本地提交 + push origin」：不改版本号、不碰 OSS / Partner Center；push 失败即非零退出。
    - 版本号真源仍是根 version 文件，升版用 node version.js bump，不要手改 package.json。 */
 
@@ -247,7 +247,7 @@ function stepGitSync(push) {
 }
 
 /* ⑤ 找到刚产出的 .msix（dist\<identityName>-<ver>.0-x64.msix），另存进 dist\msix-publish\，
-   并打印 Partner Center 上传指引。 */
+   并打印上传指引（自动上传走 scripts/msix/store-publish.mjs，不在本链里跑）。 */
 function stepPublishMsix(ver) {
   const pv = `${ver}.0`;
   if (!fs.existsSync(DIST)) die(`缺少 ${DIST} —— 请先完成打包`);
@@ -282,15 +282,16 @@ function stepPublishMsix(ver) {
       ` 包版本  ：${pv}（根 version ${ver} 换算，第 4 段固定 0 —— Store 保留 revision 位）`,
       ` NSIS 包 ：dist\\${nsix}（同源同版本）`,
       '------------------------------------------------------------',
-      ' 1. 打开 Partner Center → 你的应用 → 包（Packages）',
-      ' 2. 点「添加新包」，把上面的 .msix 直接拖进上传框',
-      '    （Drag your packages here …）或点 browse your files 选中它',
-      '    —— 不需要改名、不需要压缩、不需要自己签名',
-      ' 3. 核对「属性 → 包标识」的 Name / Publisher 与 scripts/msix/msix.config.json',
-      '    逐字符一致，否则上传会报「无效的软件包标识名称 / 系列名称 / 发布者名称」',
-      ' 4. 提交后回「包」页看云端认证报告；版本号只能升不能降',
+      ' 自动上传（推荐，需先在 %APPDATA%\\pipeline-console\\store-credentials.json 填凭据）：',
+      '   npm run store:publish                       # 上传 + 自动提交审核 + 轮询到已发布',
+      '   node scripts/msix/store-publish.mjs --dry-run   # 只做离线校验，不联网',
       '------------------------------------------------------------',
-      ' MSIX 只能人工拖进上传框（本链不做自动上传）。',
+      ' 手工兜底：Partner Center → 你的应用 → 包（Packages）→「添加新包」',
+      '   把上面的 .msix 直接拖进上传框（Drag your packages here …）',
+      '   核对「属性 → 包标识」的 Name / Publisher 与 scripts/msix/msix.config.json 逐字符一致',
+      '   提交后回「包」页看云端认证报告；版本号只能升不能降',
+      '------------------------------------------------------------',
+      ' 本链（release）只出包不自动上传：上传要单独敲一条 npm run store:publish。',
       ` 每次发版必须同时出 Store 包；两包版本号必须一致（均为 ${ver}）。`,
       '════════════════════════════════════════════════════════════',
       '',
@@ -341,7 +342,7 @@ if (opt.dryRun) {
         ? '  ② node scripts/msix/make-msix.mjs --skip-build（复用现有 win-unpacked → .msix）'
         : '  ② node scripts/msix/make-msix.mjs（自建 win-unpacked → .msix）',
     );
-    console.log('  ③ 另存 dist\\msix-publish\\ + 打印 Partner Center 上传指引');
+    console.log('  ③ 另存 dist\\msix-publish\\ + 打印上传指引（自动上传：npm run store:publish）');
     console.log(
       opt.git
         ? `  ④ node scripts/release-git.mjs（审计漏传 → commit「发布 v${ver}（源码同步…）」→ tag v${ver}${opt.push ? ' → push origin' : '；--no-push'}）`
@@ -354,7 +355,7 @@ if (opt.dryRun) {
     console.log('  ②b 校验 dist/latest.yml 版本 ↔ 根 version（两包同源）');
     console.log('  ③ node scripts/msix/make-msix.mjs --skip-build（复用同一份 win-unpacked → .msix）');
     console.log('  ④ node scripts/stage-updates.mjs（整理 dist\\updates-publish\\）');
-    console.log('  ⑤ 另存 .msix 进 dist\\msix-publish\\ + 打印上传指引（MSIX 人工拖进上传框）');
+    console.log('  ⑤ 另存 .msix 进 dist\\msix-publish\\ + 打印上传指引（自动上传是单独一条 npm run store:publish）');
     console.log(
       opt.git
         ? `  ⑥ node scripts/release-git.mjs（审计漏传 → commit「发布 v${ver}（源码同步…）」→ tag v${ver}${opt.push ? ' → push origin' : '；--no-push'}）`
@@ -413,7 +414,7 @@ console.log(
     opt.git
       ? `源码：已同步入库并 push（release-git.mjs；--no-git 可跳过、--no-push 只本地提交）`
       : `源码：本次未做 git 同步（--no-git）—— 别忘了自己提交，否则又会出现「release 未完整更新 git」`,
-    '提醒：两包版本号一致（同源于根 version 文件）；Store 包需人工拖进 Partner Center 上传框',
+    '提醒：两包版本号一致（同源于根 version 文件）；Store 包上传用 npm run store:publish 或手工拖进 Partner Center',
   ]
     .filter(Boolean)
     .join('\n'),

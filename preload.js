@@ -264,6 +264,16 @@ contextBridge.exposeInMainWorld('api', {
   /* 文本 → PDF（见 main.js pdf:writeText / pdf-write.js）：Markdown 渲染 + 公式排版 +
      分页打印，落盘到 outPath；入参见 pdf-write.js writeTextPdf */
   fileWritePdf: (arg) => ipcRenderer.invoke('pdf:writeText', arg),
+  /* ── 官方 Files API 上传（见 files-upload.js 文件头，IPC 在 main.js 的 files:*）──
+     filesPlan: 一张附件卡片要的类型 / 可选 purpose / 缺省 purpose（规则只在主进程，
+                渲染层照着画下拉，不抄第二份）。
+     filesUpload: { path, name?, purpose?, providerRoute, sessionId? } → { fileId, … }；
+                **apiKey 不在这条通道上**：主进程按 providerRoute 现取，回执里没有 Key。
+                404 回 { code:'files_api_unsupported', fallback:'local' }，调用方转本地解析。
+     filesSessionFiles: 这条会话上传过哪些文件（主进程侧账本，写回来的 file_id 在这里）。 */
+  filesPlan: (payload) => ipcRenderer.invoke('files:plan', payload || {}),
+  filesUpload: (payload) => ipcRenderer.invoke('files:upload', payload || {}),
+  filesSessionFiles: (sessionId) => ipcRenderer.invoke('files:sessionFiles', sessionId || ''),
   /* 左侧边栏「文件」页：一层列举 + 重命名 / 复制 / 移动 / 删除（删除走系统回收站） */
   fileReadDir: (p) => ipcRenderer.invoke('file:readDir', p),
   fileRename: (p, name) => ipcRenderer.invoke('file:rename', { path: p, name }),
@@ -1301,6 +1311,25 @@ contextBridge.exposeInMainWorld('api', {
   speechCacheList: () => ipcRenderer.invoke('speechCache:list'),
   /* 语音准备状态订阅（下载进度 / 就绪 / 失败；reqId 为空的全局通道）：返回退订函数。 */
   onSpeechState: (cb) => dshSubAdd(dshTypeSubs, 'speech-state', dshSubEntry(cb, 'onSpeechState')),
+  /* ── DeepSeek 云端语音（官方 /v1/tools/tts 与 /v1/tools/asr，见 ds-speech/main-ds-speech.js）──
+     节点 deepseek_tts / deepseek_asr 与状态栏那两颗按钮的云端档共用这三条：
+       dsSpeechTts       整段合成（POST，服务端回 wav 或裸 pcm；主进程直接落盘回绝对路径）
+       dsSpeechTtsStream 流式合成（WSS；PCM 帧经 onDsSpeechTtsChunk 回流，边收边播）
+       dsSpeechAsr       整段识别（multipart，audio 由渲染层给 16k 单声道 WAV 的 base64）
+     提供商对象 {baseUrl, apiKey} 一律由渲染层从**官方 DeepSeek 那条**带下来。 */
+  dsSpeechTts: (opts) => ipcRenderer.invoke('dsSpeech:tts', opts || {}),
+  /* 节点走这条：整段 / 流式都由主进程合成，并按段落合并成**一份** wav 落盘（回绝对路径） */
+  dsSpeechTtsFile: (opts) => ipcRenderer.invoke('dsSpeech:ttsFile', opts || {}),
+  dsSpeechTtsStream: (opts) => ipcRenderer.invoke('dsSpeech:ttsStream', opts || {}),
+  dsSpeechTtsCancel: (session) => ipcRenderer.invoke('dsSpeech:ttsCancel', { session: session || '' }),
+  dsSpeechAsr: (opts) => ipcRenderer.invoke('dsSpeech:asr', opts || {}),
+  /* 流式 PCM 帧订阅（{ session, seq, pcm(base64) }）：返回退订函数。 */
+  onDsSpeechTtsChunk: (cb) => {
+    if (typeof cb !== 'function') return () => {};
+    const h = (_e, payload) => cb(payload);
+    ipcRenderer.on('dsSpeech:ttsChunk', h);
+    return () => ipcRenderer.removeListener('dsSpeech:ttsChunk', h);
+  },
   /* ── 会话右边栏「实况」区（浏览器默认 dock 在会话主内容右栏，可提出来变独立窗口）──
      帧通路：网关 → main-dsh.js → main.js（dsh:event）→ 这里 onBrowserFrame。
      帧只在内存/界面里走：**不落库（activityPush 那条路不经过它）、不进模型上下文**。

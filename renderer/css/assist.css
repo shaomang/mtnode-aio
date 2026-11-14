@@ -1,4 +1,4 @@
-/* ===== 右侧全局 AI 助手 ===== */
+﻿/* ===== 右侧全局 AI 助手 ===== */
 .assist-pane {
   display: none;
   flex: none;
@@ -1017,7 +1017,7 @@
   color: #f0c14d
 }
 
-.fn-ctx .ctx-kind-icon.kind-db {
+.ctx-kind-icon.kind-db {
   color: #f0c14d
 }
 
@@ -1030,7 +1030,7 @@
   color: #6fe3a5
 }
 
-.fn-ctx .ctx-kind-icon.kind-dev {
+.ctx-kind-icon.kind-dev {
   color: #6fe3a5
 }
 

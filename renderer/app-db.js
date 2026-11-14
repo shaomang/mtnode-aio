@@ -2235,6 +2235,50 @@ function dshRunSigOf(p) {
   );
 }
 
+/* 上一轮的服务端工具账本（msg.webTools 里 kind === "server-tool-calls" 的原样 data）：
+   「阅读链接」的 call 带 signature —— 下一轮必须原样回传，否则那次抓取的正文会被上游
+   静默丢掉且不报错（探针文档 §5 的 G1/G2 对照：带 signature 331 字符逐字命中，删掉只剩
+   61 字的「我无法逐字引用」）。这里只做「取最近若干条 / 条数与字节双重封顶」，
+   **一个字段都不改写**（不裁 signature、不扁平化、不排序）。
+   三重上限的理由：signature 一条约 1904 字符，整份历史带上会白白撑爆每轮请求。 */
+function dshWebToolReplayOf(st, opts) {
+  const o = opts || {};
+  const maxMsgs = Number(o.maxMsgs) || 8;
+  const maxBlocks = Number(o.maxBlocks) || 24;
+  const maxBytes = Number(o.maxBytes) || 64 * 1024;
+  const msgs = st && Array.isArray(st.messages) ? st.messages : [];
+  const pick = [];
+  let seen = 0;
+  for (let i = msgs.length - 1; i >= 0 && seen < maxMsgs; i--) {
+    const m = msgs[i];
+    if (!m || m.role !== "assistant" || !Array.isArray(m.webTools)) continue;
+    let hit = 0;
+    for (const b of m.webTools) {
+      if (!b || b.kind !== "server-tool-calls" || !b.data) continue;
+      pick.push(b.data);
+      hit++;
+    }
+    /* 只算真带账本的那几条消息：空 webTools 不该占名额 —— 否则最近 8 条里挤进几条
+       开着网却没搜的轮次，真正该回放的签名反而被挤出上限 */
+    if (hit) seen++;
+  }
+  /* 从最近往前取，超上限就丢最老的（更早那几轮的 signature 已经不在上下文窗口里） */
+  const out = [];
+  let bytes = 0;
+  for (let i = pick.length - 1; i >= 0; i--) {
+    const d = pick[i];
+    let size = 0;
+    try {
+      size = JSON.stringify(d).length;
+    } catch (_) {
+      size = 0;
+    }
+    if (out.length >= maxBlocks || (out.length && bytes + size > maxBytes)) break;
+    out.unshift(d);
+    bytes += size;
+  }
+  return out.length ? out : null;
+}
 /* 设置里的「精简工具负载」开关（默认关 → 行为与此前逐字一致）。唯一读点在
    dshRunOnce 拼 runParams.lean 处。开了它，运行时干脆不注册 mtnode_app /
    mtnode_vision（两者合计 ~4.9K 字符，每一步都随固定前缀重发一遍）。 */
@@ -3793,6 +3837,26 @@ function dshRunOnce(input, opts) {
     opts.effort,
     !!(opts.node && opts.node.kind === "proc_text"),
   );
+  /* 联网搜索（DeepSeek 服务端工具）：设置里那枚全局开关（默认开）× 本路由能不能吃这套
+     协议（判据真源 = app-agent.js 的 dshWebSearchOn / providerSupportsServerWebTools）。
+     两项都成立才下发 —— 网关据此决定请求体里声明不声明 deepseek_web_search /
+     deepseek_read_url，并把它折进 runtime key（wt: 指纹；换档 = 换 runtime）。
+     思考档不另传：网关按本轮 effort 自己判（开着思考时上游走 deep_search —— kind 由服务端
+     决定，协议里没有「强制深度搜索」的客户端参数，见 docs/deepseek-web-tools-probe.md §2.2）。 */
+  const runWebSearch =
+    typeof dshWebSearchOn === "function" &&
+    typeof providerSupportsServerWebTools === "function" &&
+    dshWebSearchOn() &&
+    providerSupportsServerWebTools(provider);
+  /* 跨轮回放：上一轮抓过的链接要把原始扩展块（deepseek_read_url 的 signature）原样带回去，
+     否则下一轮那次抓取的正文会被上游静默丢掉且不报错（探针文档 §5）。数据源 = 本会话
+     已落盘的助手消息里的 msg.webTools（见 app-assist.js 的 agentRoundMsgTail）。 */
+  const runWebToolReplay = runWebSearch
+    ? dshWebToolReplayOf(
+        typeof agentSessionOfRun === "function" ? agentSessionOfRun(opts) : null,
+      )
+    : null;
+
   /* runtimeKey 同源成分的宿主侧取值（网关 getRuntime 的指纹输入，见 dshRunSigOf）：
      · apiKey / baseUrl / webSearchApiKey 上面已按路由定好（本路由密钥、端点、联网搜索 Key）；
      · persona = 本轮下发的宿主人设（主链路恒空，桌宠类独立进程由 main 直传 hostPersona）；
@@ -3878,6 +3942,9 @@ function dshRunOnce(input, opts) {
     /* 官方可吃图模型清单也进签名（口径同 envPatch 的服务商密钥表）：清单漂移 =
        网关换 runtime 冷起，此时握手恢复出来的只是旧配置的上下文，必须判整轮重发。 */
     officialModels: runOfficialModelsJson,
+    /* 联网搜索总开关也进签名：它决定网关 runtime key 的 wt: 成分（换档 = 换一台 runtime）。
+       不把回放内容算进来 —— 那是每轮变化的数据，不是 runtime 配置。 */
+    webTools: runWebSearch ? 1 : 0,
   });
   /* 本轮下发的 systemPrompt 不是完整一节时（pure 轮整段置空；续跑轮的宿主人设已经落在
      那份 session 里，见 dshRunTask 的 systemPrompt:""），一律作废快照并走全量旁路 ——
@@ -3975,6 +4042,12 @@ function dshRunOnce(input, opts) {
     preset: runPreset,
     effort: runEffort,
     provider,
+    /* 联网搜索（DeepSeek 服务端工具）总开关：true = 本轮请求体声明 deepseek_web_search /
+       deepseek_read_url。老网关忽略未知字段 = 一条都不声明（联网搜索不可用，其余行为不变）。 */
+    webTools: { enabled: runWebSearch },
+    /* 上一轮的工具账本原文（含 signature）：给适配器拼回 assistant 消息用；空 = 不下发。
+       只在开关打开时带 —— 关掉就没有「回放」这回事。 */
+    webToolReplay: runWebToolReplay || undefined,
     mtnodeProviders: piProvs,
     /* 官方可吃图模型清单（仅 deepseek-official 路由带，见 runOfficialModels）：
        网关据它判「本轮这条官方路由有哪些模型能吃图」。纯追加 —— 老网关忽略该字段。 */
@@ -3988,6 +4061,12 @@ function dshRunOnce(input, opts) {
       Array.isArray(opts.images) && opts.images.length
         ? opts.images.slice()
         : undefined,
+    /* 会话附件（PDF / Word / 文本 / 表格）：每项 {fileId, name, kind, size, purpose, host, at,
+       path}（上传失败那条只有 path，网关退化成把本机路径交给模型）。网关把 file_id 写进
+       用户消息末尾的附件标记，运行时在 fetch 层还原成服务商原生的附件部分 ——
+       标记格式与自我保护见 dsh/gateway/llm-attachments.mjs。 */
+    files:
+      Array.isArray(opts.files) && opts.files.length ? opts.files.slice() : undefined,
     /* 断点续跑（重发闸的「优先续跑」分支）：点名沿用上一轮那条 dsh 会话，
        运行时带着原上下文继续，而不是新铸一个空会话。网关判它在本机不可续跑时
        以 RESUME_UNAVAILABLE 报错收轮、绝不静默新铸，由 dshRunTask 退回整轮重发。 */

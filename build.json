@@ -29,6 +29,10 @@
        已随自写解析器一并删除（无任何 require）。 */
     "pdf-read.js",
     "pdf-write.js",
+    /* 本地文档解析内核（PDF / docx / pptx / xlsx / 纯文本 → Markdown）：主进程 require 它
+       （PDF 复用 pdf-read.js，docx 走 mammoth，pptx / xlsx 自写 zip+xml）。漏进白名单 =
+       打包后 Cannot find module './doc-parse.js'（文档进上下文整块失效）。 */
+    "doc-parse.js",
     /* 演讲者第二屏窗口（主窗禁止 window.open）：main.js 顶层 require 它，
        漏进白名单 = 打包后演示的「讲者视图」整块失效（Cannot find module）。 */
     "slides-export.js",
@@ -54,6 +58,10 @@
     "dsh-node.js",
     "auth-store.js",
     "tools-store.js",
+    /* 官方 Files API 上传通道（会话附件 → {baseUrl}/files，见 files-upload.js 文件头）：
+       main.js 顶层 require 它，漏进白名单 = 打包后 Cannot find module
+       './files-upload.js'（附件上传整块失效，且窗口起不来）。 */
+    "files-upload.js",
     /* 工作流库（一颗节点层的封装）：main.js require 它，漏进白名单就是打包后
        Cannot find module './workflow-store.js'（「工作流库」按钮与工坊工作流下载全失效）。 */
     "workflow-store.js",
@@ -208,6 +216,10 @@
        漏掉本条 = 打包后 require("./moss-tts/main-moss-tts.js") 直接
        Cannot find module，应用起不来。 */
     "moss-tts/**",
+    /* DeepSeek 云端语音（节点 deepseek_tts / deepseek_asr + 状态栏两颗按钮的云端档）：
+       主进程宿主 ds-speech/main-ds-speech.js（HTTPS 与 WSS 全在里面，无脚手架、无端口）。
+       漏掉本条 = 打包后 require("./ds-speech/main-ds-speech.js") 直接 Cannot find module。 */
+    "ds-speech/**",
     "llama/**",
     "breeze/**",
     "infinitetalk/**",

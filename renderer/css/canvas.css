@@ -282,7 +282,8 @@
 
 .fn-canvas {
   /* --grid-* 由 syncCanvasGrid() 按 snap 间距与相机 pan/zoom 同步（值一律量化到整设备
-     像素，理由见 renderer/app.js 的 syncCanvasGrid 注释）。这里留一份默认值，
+     像素，理由见 renderer/app.js 的 syncCanvasGrid 注释）。拉远时 JS 会按 2 的幂跳点
+     （gridDotMul），--grid-size 因而是「snap×zoom×倍数」，网点不会密成一片。这里留一份默认值，
      伪元素会继承过去 —— 点阵画在 .fn-canvas::before 上，见下一条规则。 */
   --grid-size: 24px;
   --grid-x: 0px;
@@ -385,17 +386,21 @@
 /* ── 画布坐标轴（横轴 / 纵轴边缘的灰色小数字）────────────────────────────────
    只做「提示坐标」用：覆盖层铺满画布，数字由 app.js 的 syncCanvasAxis 按世界坐标
    换算到屏幕位置（相机平移 / 缩放时同步重排）。挂 #stage 外面 —— stage 带相机
-   transform，挂进去数字会跟着缩放。pointer-events:none，不挡画布任何交互。 */
+   transform，挂进去数字会跟着缩放。pointer-events:none，不挡画布任何交互。
+   层级：**和画布背景同一层**（z-index:0，排在 #stage 之前）—— 刻度只是底纹式的坐标
+   提示，不是浮层：早先 z-index:70 压在节点 / 连线 / 展开壳之上，节点拖到画布边缘时
+   刻度数字会盖在卡片和线上（用户报的「刻度挡住东西」）。给 0 之后它只压过画布底色与
+   点阵，节点 z2 / 连线 z3 / 壳 z50 / 拖起 z60 全在它上面。 */
 .canvas-axis {
   position: absolute;
   inset: 0;
-  z-index: 70;
+  z-index: 0;
   pointer-events: none;
   overflow: hidden;
   font-family: var(--mono);
   font-size: 10px;
   line-height: 1;
-  /* 深色主题下压一层画布底色的描边，数字压在节点 / 连线上也读得出来 */
+  /* 压在点阵上时要读得出来：一层画布底色的柔描边（节点现在压在它上面，不靠这层） */
   text-shadow: 0 0 3px var(--bg);
 }
 
@@ -997,7 +1002,80 @@
     5px 14px 22px -4px rgba(0, 0, 0, 0.35),
     0 -3px 0 inset rgba(0, 0, 0, 0.2);
   box-shadow: var(--nfloat), inset 0 1px 0 rgba(255, 255, 255, .1);
-  transition: transform .06s linear, box-shadow .12s ease;
+  transition: transform .12s cubic-bezier(.22, 1, .36, 1), box-shadow .12s ease;
+}
+
+/* 落定态（松手那一刻挂上，约 240ms 后由 JS 摘掉）：
+   ① left/top 用短过渡把「跟手位置 → 吸附网格位置」演成磁吸落定，而不是硬跳一格；
+   ② keyframes 从拖拽中的「上浮 2px + 放大 1.03」回落到原位（轻微回弹），与落下时的抬起感对位。 */
+.wf-node.node-settling {
+  transition:
+    left .18s cubic-bezier(.22, 1, .36, 1),
+    top .18s cubic-bezier(.22, 1, .36, 1),
+    transform .2s cubic-bezier(.22, 1, .36, 1),
+    box-shadow .18s ease;
+  animation: node-drop-settle .24s cubic-bezier(.22, 1, .36, 1) both;
+}
+
+@keyframes node-drop-settle {
+  0% {
+    transform: translateY(-2px) scale(1.028);
+  }
+  55% {
+    transform: translateY(0) scale(.997);
+  }
+  100% {
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* 整组拖动没有「抬起」姿态（成员卡没上浮），只留磁吸位移，不要再补一次缩放回弹 */
+.wf-node.node-settling.node-settling-flat {
+  animation: none;
+}
+
+/* 一次性呼吸波纹：落在卡片下层、扩一圈就散掉（不参与布局、不吃指针）。
+   用极低的描边与光晕，只为给「放下」一点空气感，不能抢节点本身的注意力。 */
+.node-drop-ripple {
+  position: absolute;
+  z-index: 1;
+  pointer-events: none;
+  border: 1px solid rgba(120, 220, 255, .42);
+  border-radius: 8px;
+  box-shadow:
+    0 0 0 1px rgba(120, 220, 255, .1),
+    0 0 18px rgba(120, 220, 255, .14);
+  opacity: 0;
+  animation: node-drop-ripple .62s cubic-bezier(.22, 1, .36, 1) both;
+}
+
+@keyframes node-drop-ripple {
+  0% {
+    opacity: 0;
+    transform: scale(.9);
+  }
+  32% {
+    opacity: .46;
+    transform: scale(1.02);
+  }
+  68% {
+    opacity: .18;
+    transform: scale(1.07);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .node-drop-ripple {
+    display: none;
+  }
+
+  .wf-node.node-settling {
+    animation: none;
+  }
 }
 
 .wf-node.in {
@@ -2003,7 +2081,7 @@ body.theme-light .n-chip.n-chip-lt {
     0 0 0 2px var(--ink);
 }
 
-/* 菜单栏 Agent 模型小按钮：🧠 + 当前生效模型（未选 = 自动 · 虚线 = 继承上层） */
+/* 菜单栏 Agent 模型小按钮：只显示当前生效模型（未选 = 自动 · 虚线 = 继承上层） */
 .n-dev-model {
   flex: none;
   max-width: 112px;
@@ -2024,11 +2102,6 @@ body.theme-light .n-chip.n-chip-lt {
 .n-dev-model:hover {
   border-color: rgba(56, 214, 255, .7);
   color: #e6f7ff;
-}
-
-.n-dev-model .ico {
-  flex: none;
-  font-size: 10px;
 }
 
 .n-dev-model .lbl {
@@ -4070,124 +4143,124 @@ body.theme-light .n-chip.n-chip-lt {
   display: block
 }
 
-.fn-ctx .ctx-kind-icon.kind-in {
+.ctx-kind-icon.kind-in {
   color: #38d6ff
 }
 
-.fn-ctx .ctx-kind-icon.kind-proc {
+.ctx-kind-icon.kind-proc {
   color: #ff8f2e
 }
 
-.fn-ctx .ctx-kind-icon.kind-proc-img {
+.ctx-kind-icon.kind-proc-img {
   color: #ff5ea8
 }
 
-.fn-ctx .ctx-kind-icon.kind-sv {
+.ctx-kind-icon.kind-sv {
   color: #5fd68a
 }
 
-.fn-ctx .ctx-kind-icon.kind-task {
+.ctx-kind-icon.kind-task {
   color: #3ecfcf
 }
 
-.fn-ctx .ctx-kind-icon.kind-agent {
+.ctx-kind-icon.kind-agent {
   color: #4d8cff
 }
 
-.fn-ctx .ctx-kind-icon.kind-ctrl,
-.fn-ctx .ctx-kind-icon.kind-ctrl-start {
+.ctx-kind-icon.kind-ctrl,
+.ctx-kind-icon.kind-ctrl-start {
   color: #f0c14d
 }
 
-.fn-ctx .ctx-kind-icon.kind-wait {
+.ctx-kind-icon.kind-wait {
   color: #5ec8b0
 }
 
-.fn-ctx .ctx-kind-icon.kind-timer {
+.ctx-kind-icon.kind-timer {
   color: #7eb8ff
 }
 
-.fn-ctx .ctx-kind-icon.kind-delayer {
+.ctx-kind-icon.kind-delayer {
   color: #9ad0c0
 }
 
-.fn-ctx .ctx-kind-icon.kind-sequencer {
+.ctx-kind-icon.kind-sequencer {
   color: #c9a0ff
 }
 
-.fn-ctx .ctx-kind-icon.kind-gate {
+.ctx-kind-icon.kind-gate {
   color: #e8b86a
 }
 
-.fn-ctx .ctx-kind-icon.kind-splitter {
+.ctx-kind-icon.kind-splitter {
   color: #7ec8e8
 }
 
-.fn-ctx .ctx-kind-icon.kind-counter {
+.ctx-kind-icon.kind-counter {
   color: #e8a07a
 }
 
-.fn-ctx .ctx-kind-icon.kind-mutex {
+.ctx-kind-icon.kind-mutex {
   color: #d0a0c8
 }
 
-.fn-ctx .ctx-kind-icon.kind-judge {
+.ctx-kind-icon.kind-judge {
   color: #c9a0ff
 }
 
-.fn-ctx .ctx-kind-icon.kind-global {
+.ctx-kind-icon.kind-global {
   color: #c9a0ff
 }
 
-.fn-ctx .ctx-kind-icon.kind-ctrl-ok {
+.ctx-kind-icon.kind-ctrl-ok {
   color: #5fd68a
 }
 
-.fn-ctx .ctx-kind-icon.kind-ctrl-fail {
+.ctx-kind-icon.kind-ctrl-fail {
   color: #ff6b6b
 }
 
-.fn-ctx .ctx-kind-icon.kind-draw {
+.ctx-kind-icon.kind-draw {
   color: #b8c9dc
 }
 
-.fn-ctx .ctx-kind-icon.kind-other {
+.ctx-kind-icon.kind-other {
   color: #9aa7b8
 }
 
-.fn-ctx .ctx-kind-icon.kind-net {
+.ctx-kind-icon.kind-net {
   color: #6fd8ff
 }
 
-.fn-ctx .ctx-kind-icon.kind-wf {
+.ctx-kind-icon.kind-wf {
   color: #ff8f2e
 }
 
-.fn-ctx .ctx-kind-icon.kind-guide {
+.ctx-kind-icon.kind-guide {
   color: #f0c14d
 }
 
-.fn-ctx .ctx-kind-icon.kind-copy {
+.ctx-kind-icon.kind-copy {
   color: #7ce8ff
 }
 
-.fn-ctx .ctx-kind-icon.kind-danger {
+.ctx-kind-icon.kind-danger {
   color: #ff6b6b
 }
 
-.fn-ctx .ctx-kind-icon.kind-explode {
+.ctx-kind-icon.kind-explode {
   color: #ff8f2e
 }
 
-.fn-ctx .ctx-kind-icon.kind-color {
+.ctx-kind-icon.kind-color {
   color: #fbbf24
 }
 
-.fn-ctx .ctx-kind-icon.kind-group {
+.ctx-kind-icon.kind-group {
   color: #b8c9dc
 }
 
-.fn-ctx .ctx-kind-icon.kind-muted {
+.ctx-kind-icon.kind-muted {
   color: #6a7380
 }
 
@@ -4652,6 +4725,12 @@ body.theme-light .n-chip.n-chip-lt {
   display: flex;
   flex-wrap: nowrap;
   align-items: center;
+  /* 整排贴右：节点被拖窄、按钮总宽超过节点宽时，先由 .n-title 收缩让位，
+     再不够就整排按末端对齐、从左端溢出被下面的 overflow:hidden 裁掉 ——
+     最右边的 ✕ 删除键永远完整可见（不能让它被裁掉）。
+     注意必须用 unsafe 的 flex-end（默认值）：safe 会退化成 flex-start，
+     那就又变回「右端按钮被裁掉」的老毛病。 */
+  justify-content: flex-end;
   gap: 6px;
   padding: 0 8px;
   min-width: 0;
@@ -8294,9 +8373,20 @@ body.theme-light .n-chip.n-chip-lt {
   border-bottom: 1px solid #242838;
 }
 .appnode-picker-title { flex: 1 1 auto; font-size: 13px; font-weight: 600; color: #e6e9f5; }
+/* 24×24 方钮：**必须自己把内边距清零并居中**。全局 button 是 padding: 6px 12px
+   （layout.css），box-sizing: border-box 下 24×24 的内容盒会被压成 0 宽 × 10 高，
+   字符「✕」于是整块溢到方框外、只剩一个空框 + 一枚错位的 ✕（用户报的
+   「应用节点选择应用时右上角关闭按钮渲染错误」）。与 .ov-close-btn / .dev-model-close
+   同一条口径：padding: 0 + flex 居中 + line-height: 1。 */
 .appnode-picker-x {
   width: 24px;
   height: 24px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  line-height: 1;
   border-radius: 6px;
   border: 1px solid #2a2f45;
   background: #1a1e2e;

@@ -9595,6 +9595,19 @@ async function playNodeBody(node, quiet, opts) {
     renderCanvas();
     return;
   }
+  /* DeepSeek 云端语音（官方 API）：纯云端调用，**不进**本地媒体串行链、不吃显存锁，
+     也没有输出路径预检（输出路径空 = 落到系统临时目录，主进程回绝对路径）。
+     执行体在 renderer/app-ds-speech.js（调用期按 typeof 取，模块没加载就明确报）。 */
+  if (node.kind === "deepseek_tts") {
+    if (typeof playDsTtsNode === "function") return playDsTtsNode(node, quiet);
+    if (typeof toast === "function") toast(I18n.t("语音模块未加载（renderer/app-ds-speech.js）"), "err");
+    return;
+  }
+  if (node.kind === "deepseek_asr") {
+    if (typeof playDsAsrNode === "function") return playDsAsrNode(node, quiet);
+    if (typeof toast === "function") toast(I18n.t("语音模块未加载（renderer/app-ds-speech.js）"), "err");
+    return;
+  }
   if (node.kind === "moss_music") {
     return runMediaGenSerial(node, () => playMossMusicNode(node, quiet));
   }

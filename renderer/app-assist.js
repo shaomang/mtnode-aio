@@ -4281,8 +4281,11 @@ function newAgentSession() {
   const st = {
     id: uid("as"),
     title: I18n.t("新会话"),
-    /* 工作目录不继承「当前会话」那一份（它可能在别的画布上）：下面
-       agentFreezeSessionWorkspace 按**此刻所属画布**解析一次并冻结，此后不再变。 */
+    /* 工作目录 = **当前所选画布的工作目录**（本次修复 · 用户口径）：一律从空目录起算，
+       由下面那句 agentFreezeSessionWorkspace 按这一刻所属画布（canvasWfId = 前台画布）
+       解析并冻结 —— 落点 = 画布项目根 > 画布工作目录 > 应用默认目录，与运行期同一真源。
+       不再沿用上一条会话的生效目录（旧行为：上一条会话手选过别的项目时，点 ＋ 的新会话
+       就落进那个项目里 —— 用户报的 bug）。 */
     workspace: "",
     /* 手动「新会话」= 用户此刻正在看的这张图 */
     canvasWfId: currentVisibleWfId(),
@@ -5539,7 +5542,6 @@ const SKILL_MENU_CATS = [
 /* 已知内置技能的归类 [大类 id, 类型]；未知技能走关键词兜底 */
 const SKILL_MENU_TAX = {
   "generate-workflow": ["workflow", "画布搭建"],
-  "generate-task": ["workflow", "画布搭建"],
   "decompose-novel-plot": ["workflow", "画布搭建"],
   "mtnode-canvas-batch-safety": ["workflow", "画布规范"],
   "mtnode-canvas-edit-rules": ["workflow", "画布规范"],
@@ -8865,6 +8867,11 @@ function agentRoundMsgTail(st, msg, runKey) {
   if (String(rsn).trim()) msg.reasoning = rsn;
   if (st && Array.isArray(st._liveTools) && st._liveTools.length)
     msg.tools = st._liveTools.slice();
+  /* 本轮服务端工具（联网搜索 / 阅读链接）的原始扩展块：**原样**落盘，一条都不改写 ——
+      deepseek_read_url 收尾账本里那份 signature 下一轮要原样回传（缺了那次抓取的正文会被上游
+      静默丢掉），所以这里不做裁剪、不扁平化，只在渲染时另算摘要与引用来源（见 dshWebToolBlocks）。 */
+  if (st && Array.isArray(st._webTools) && st._webTools.length)
+    msg.webTools = st._webTools.slice();
   /* 段快照先算（下面的每步 token 要借它的轮号补号，见 dshUsageStepsStampRound）：
      段与明细同源，都出自本轮的 traceReset.round。 */
   let usageSegs = null;
@@ -10650,6 +10657,653 @@ function agentLiveSegsEl(row, st, live, items) {
       }
     }
   }
+  /* 服务端工具块（联网搜索 / 阅读链接）：挂在 live 行**最末尾**（历史消息那一支挂在正文之后）。
+     段对账只认 _dshSegEls 里的元素，这一块不在其中，所以每次走这里都「先摘旧的、再挂新的」，
+     重绘多少次都只有一条（每帧都会重走本函数）。 */
+  let oldWt = null;
+  for (const kid of row.children)
+    if (kid && kid.classList && kid.classList.contains("dsh-webtool-live")) oldWt = kid;
+  if (oldWt && oldWt.parentNode === row) row.removeChild(oldWt);
+  const wtEl = agentWebToolLiveEl(st);
+  if (wtEl) row.appendChild(wtEl);
+}
+/* ==================== 服务端工具块（联网搜索 / 阅读链接）的渲染 ====================
+   数据源：msg.webTools = 上游扩展块**原样**数组，每项 {kind, choiceIndex, data, at}
+   （onEvent 攒进 st._webTools → agentRoundMsgTail 带进消息 → 随会话落盘 → 下一轮原样回传）。
+   kind 三档，真源是 dsh/gateway/deepseek-web-tools.mjs 的 EXTENSION_KINDS：
+     · server-tool-progress：单条进度事件
+       {type:"call_started"|"call_completed"|"step_reasoning_done", step,
+        call:{type, kind, action, status, sources|page}}；
+     · server-tool-calls：收尾账本（一帧一组）
+       [{index, reasoning_content, calls:[{type, kind, status, action, sources|page, signature?}]}]
+       —— deepseek_read_url 的 call 带 signature：**回传要用，这里只读**；
+     · annotations：行内引用区间
+       [{type:"url_citation", url_citation:{url, title, start_index, end_index}}]。
+   本段只**读**这份数据：摘要、参考来源、逐次调用全部现算，一个字节都不回写（signature 不动）。 */
+function dshWebToolFacts(blocks) {
+  const out = {
+    searches: 0,
+    reads: 0,
+    deep: false,
+    pending: 0,
+    sources: [],
+  };
+  const addSource = (s) => {
+    if (!s || !s.url) return;
+    const url = String(s.url);
+    if (out.sources.some((x) => x.url === url)) return;
+    out.sources.push({
+      url,
+      title: String(s.title || ""),
+      site: String(s.site_name || ""),
+    });
+  };
+  /* 逐次调用按 call.id 合并后再数（dshWebToolCards 就是那份合并结果）：上游会把同一次调用
+     投递好几帧（started / completed / 收尾账本），一帧一条地数会把「搜索 2 次」说成
+     「搜索 4 次」—— 与下面卡片里的张数自相矛盾。 */
+  for (const c of dshWebToolCards(blocks)) {
+    if (c.read) out.reads++;
+    else out.searches++;
+    if (c.deep) out.deep = true;
+    if (c.pending) out.pending++;
+    if (c.url) addSource({ url: c.url, title: c.title });
+    for (const r of c.results) addSource({ url: r.url, title: r.title, site_name: r.site });
+  }
+  for (const b of Array.isArray(blocks) ? blocks : []) {
+    if (!b || b.kind !== "annotations") continue;
+    for (const a of Array.isArray(b.data) ? b.data : []) {
+      const uc = a && a.url_citation;
+      /* 行内引用（url_citation）就是「回答里这段话出自哪一条结果」：来源清单按它补一份 */
+      if (uc && uc.url) addSource(uc);
+    }
+  }
+  out.total = out.searches + out.reads;
+  return out;
+}
+/* 一行摘要文案：搜索 N 次 · 阅读链接 M 次 · 深度搜索（思考模式） */
+function dshWebToolSummaryText(f) {
+  const parts = [];
+  if (f.searches) parts.push(I18n.t("搜索 {n} 次", { n: f.searches }));
+  if (f.reads) parts.push(I18n.t("阅读链接 {n} 次", { n: f.reads }));
+  if (f.deep) parts.push(I18n.t("深度搜索（思考模式）"));
+  if (!parts.length) parts.push(I18n.t("联网搜索"));
+  return I18n.t("联网搜索") + " · " + parts.join(" · ");
+}
+/* 参考来源那一行：最多 8 条，多出来的折成「+N」。外链一律交宿主系统浏览器打开
+   （与应用里其它外链同一口径，见 app-auth.js / app-deepseek.js 的 openExternal）。
+   numOf：url → 编号（行内角标用的同一份编号，见 dshWebToolCiteIndex）。有号就带上
+   「[n]」，让「正文里第 n 条」与「这里第 n 条」对得上；没有号（老会话 / 无 annotations）
+   就照旧只写标题。 */
+function dshWebToolSourcesEl(f, numOf) {
+  const all = Array.isArray(f && f.sources) ? f.sources : [];
+  if (!all.length) return null;
+  const row = document.createElement("div");
+  row.className = "dsh-webtool-src";
+  const cap = document.createElement("span");
+  cap.className = "dsh-webtool-src-cap";
+  cap.textContent = I18n.t("参考来源");
+  row.appendChild(cap);
+  const list = all.slice(0, 8);
+  list.forEach((s, i) => {
+    if (i) row.appendChild(document.createTextNode("　"));
+    const a = document.createElement("a");
+    a.className = "dsh-webtool-link";
+    a.href = s.url;
+    /* 标题为空就退回主机名（不写整条 URL：一排链接挤在一起会没法读） */
+    let label = String(s.title || "").trim();
+    if (!label) {
+      try {
+        label = new URL(s.url).hostname;
+      } catch (_) {
+        label = s.url;
+      }
+    }
+    /* 编号：与正文里的行内角标同一份（见 dshWebToolCiteIndex） */
+    const num = numOf && typeof numOf.get === "function" ? numOf.get(s.url) : 0;
+    const full = (num ? "[" + num + "] " : "") + label;
+    a.textContent = full.length > 42 ? full.slice(0, 41) + "…" : full;
+    a.title = s.url;
+    a.onclick = (e) => {
+      e.preventDefault();
+      try {
+        if (window.api && typeof window.api.openExternal === "function")
+          window.api.openExternal(s.url);
+      } catch (_) {}
+    };
+    row.appendChild(a);
+  });
+  if (all.length > list.length) {
+    const more = document.createElement("span");
+    more.className = "dsh-webtool-more";
+    more.textContent = I18n.t("+{n} 条", { n: all.length - list.length });
+    row.appendChild(document.createTextNode("　"));
+    row.appendChild(more);
+  }
+  return row;
+}
+/* ── 搜索 / 抓取卡片 ────────────────────────────────────────────────────────
+   一次服务端工具调用 = 一张卡，全部由 msg.webTools（上游原始扩展块）现算：
+     · 搜索卡：查询词 + 命中结果（站点名 / 标题 / 链接），失败态写出 error_code；
+     · 抓取卡：URL + 页面标题。
+   卡片只是把同一份数据换个读法 —— 一个字段都不写回（signature 还在原处，见上一段注释）。 */
+/* 短串：卡片一行只放得下这么多，余下的进 title（悬停看全） */
+function dshWtClip(s, n) {
+  const t = String(s == null ? "" : s);
+  const lim = n > 0 ? n : 42;
+  return t.length > lim ? t.slice(0, lim - 1) + "…" : t;
+}
+/* URL 的主机名：标题 / 站点名都缺时拿它当可见文字（一排链接写整条 URL 没法读） */
+function dshWtHostOf(url) {
+  try {
+    return new URL(String(url)).hostname;
+  } catch (_) {
+    return String(url == null ? "" : url);
+  }
+}
+/* 失败态：error_code 优先，其次 error.message，最后退回 status。
+   实测样本里只有 completed 的帧（docs/deepseek-web-tools-probe.md §2.2），没有失败帧的
+   真实形状 —— 所以这里「字段在就显示、不在就不显示」，不猜上游结构。 */
+const DSH_WT_FAIL_STATUS = {
+  failed: 1,
+  error: 1,
+  errored: 1,
+  incomplete: 1,
+  canceled: 1,
+  cancelled: 1,
+};
+function dshWtErrOf(call) {
+  if (!call) return null;
+  const code = String(
+    call.error_code ||
+      call.errorCode ||
+      (call.error && (call.error.code || call.error.error_code || call.error.type)) ||
+      "",
+  ).trim();
+  const msg = String(
+    (call.error && (call.error.message || call.error.msg)) || call.error_message || "",
+  ).trim();
+  const status = String(call.status || "").trim();
+  const bad = !!code || !!msg || !!DSH_WT_FAIL_STATUS[status.toLowerCase()];
+  if (!bad) return null;
+  return { code: code || status || "unknown", msg };
+}
+/* 一次调用 → 一张卡的数据（纯派生）。判据看数据本身：type 是 deepseek_read_url，或者这次
+   调用只带 page、没有 sources —— 搜索里顺带打开的页面就是「读了一页」。 */
+function dshWtCardOf(call) {
+  if (!call) return null;
+  const type = String(call.type || "");
+  const page = call.page && call.page.url ? call.page : null;
+  const sources = (Array.isArray(call.sources) ? call.sources : []).filter(
+    (s) => s && s.url,
+  );
+  const read = type === "deepseek_read_url" || (!!page && !sources.length);
+  const queries = (call.action && Array.isArray(call.action.queries)
+    ? call.action.queries
+    : []
+  )
+    .map((q) => String(q == null ? "" : q).trim())
+    .filter(Boolean);
+  const err = dshWtErrOf(call);
+  return {
+    id: String(call.id || ""),
+    read,
+    deep: String(call.kind || "") === "deep_search",
+    queries,
+    url: read
+      ? String((page && page.url) || (call.action && call.action.url) || "")
+      : "",
+    title: read ? String((page && page.title) || "") : "",
+    results: read
+      ? []
+      : sources.map((s) => ({
+          url: String(s.url),
+          title: String(s.title || ""),
+          site: String(s.site_name || ""),
+        })),
+    err,
+    /* 还没回来：没完成也没失败（进度里 call_started 到了、call_completed 还没到） */
+    pending: !err && String(call.status || "").toLowerCase() !== "completed",
+  };
+}
+/* 整份扩展块 → 卡片列表。同一次调用会被投递多帧（started / completed / 收尾账本），
+   按 call.id 合并：后到的字段覆盖先到的，卡片顺序保持首次出现的位置。 */
+function dshWebToolCards(blocks) {
+  const list = [];
+  const byKey = new Map();
+  const put = (call) => {
+    const next = dshWtCardOf(call);
+    if (!next) return;
+    const key = next.id || "@" + String(call.index == null ? list.length : call.index);
+    const cur = byKey.get(key);
+    if (!cur) {
+      byKey.set(key, next);
+      list.push(next);
+      return;
+    }
+    if (next.queries.length) cur.queries = next.queries;
+    if (next.results.length) cur.results = next.results;
+    if (next.url) cur.url = next.url;
+    if (next.title) cur.title = next.title;
+    if (next.err) cur.err = next.err;
+    if (next.read) cur.read = true;
+    if (next.deep) cur.deep = true;
+    if (!next.pending) cur.pending = false;
+  };
+  for (const b of Array.isArray(blocks) ? blocks : []) {
+    if (!b) continue;
+    const d = b.data;
+    if (b.kind === "server-tool-progress") put(d && d.call);
+    else if (b.kind === "server-tool-calls")
+      for (const g of Array.isArray(d) ? d : [])
+        for (const c of g && Array.isArray(g.calls) ? g.calls : []) put(c);
+  }
+  return list;
+}
+/* 卡片里的外链：与「参考来源」同一口径，一律交系统浏览器打开 */
+function dshWtLinkEl(url, label) {
+  const a = document.createElement("a");
+  a.className = "dsh-wt-link";
+  a.href = url;
+  a.textContent = label;
+  a.title = url;
+  a.onclick = (e) => {
+    e.preventDefault();
+    try {
+      if (window.api && typeof window.api.openExternal === "function")
+        window.api.openExternal(url);
+    } catch (_) {}
+  };
+  return a;
+}
+function dshWtErrEl(err) {
+  const d = document.createElement("div");
+  d.className = "dsh-wt-err";
+  d.textContent =
+    I18n.t("失败") + " · error_code: " + err.code + (err.msg ? " · " + err.msg : "");
+  d.title = err.msg || err.code;
+  return d;
+}
+function dshWtCardHeadEl(kindText) {
+  const hd = document.createElement("div");
+  hd.className = "dsh-wt-hd";
+  const kind = document.createElement("span");
+  kind.className = "dsh-wt-kind";
+  kind.textContent = kindText;
+  hd.appendChild(kind);
+  return hd;
+}
+function dshWtStateEl(card) {
+  const st = document.createElement("span");
+  st.className = "dsh-wt-state";
+  st.textContent = I18n.t("执行中…");
+  return st;
+}
+function dshWtSearchCardEl(card) {
+  const box = document.createElement("div");
+  box.className =
+    "dsh-wt-card is-search" + (card.err ? " is-fail" : "") + (card.pending ? " is-run" : "");
+  const hd = dshWtCardHeadEl(card.deep ? I18n.t("深度搜索") : I18n.t("搜索"));
+  const q = document.createElement("span");
+  q.className = "dsh-wt-q";
+  q.textContent = card.queries.length
+    ? card.queries.join(" · ")
+    : I18n.t("（未记录查询词）");
+  q.title = card.queries.join("\n");
+  hd.appendChild(q);
+  if (card.pending) hd.appendChild(dshWtStateEl(card));
+  box.appendChild(hd);
+  if (card.results.length) {
+    const list = document.createElement("div");
+    list.className = "dsh-wt-results";
+    /* 一条卡最多摊 6 条命中：再多就把整块压成「结果清单」，反而读不动正文 */
+    const show = card.results.slice(0, 6);
+    for (const r of show) {
+      const line = document.createElement("div");
+      line.className = "dsh-wt-res";
+      if (r.site) {
+        const site = document.createElement("span");
+        site.className = "dsh-wt-site";
+        site.textContent = r.site;
+        line.appendChild(site);
+      }
+      line.appendChild(dshWtLinkEl(r.url, dshWtClip(r.title || dshWtHostOf(r.url), 64)));
+      list.appendChild(line);
+    }
+    if (card.results.length > show.length) {
+      const more = document.createElement("div");
+      more.className = "dsh-wt-res dsh-wt-res-more";
+      more.textContent = I18n.t("+{n} 条", { n: card.results.length - show.length });
+      list.appendChild(more);
+    }
+    box.appendChild(list);
+  }
+  if (card.err) box.appendChild(dshWtErrEl(card.err));
+  return box;
+}
+function dshWtReadCardEl(card) {
+  const box = document.createElement("div");
+  box.className =
+    "dsh-wt-card is-read" + (card.err ? " is-fail" : "") + (card.pending ? " is-run" : "");
+  const hd = dshWtCardHeadEl(I18n.t("阅读"));
+  const url = card.url || "";
+  if (url) hd.appendChild(dshWtLinkEl(url, dshWtClip(url, 72)));
+  else hd.appendChild(document.createTextNode(I18n.t("（未记录 URL）")));
+  if (card.pending) hd.appendChild(dshWtStateEl(card));
+  box.appendChild(hd);
+  const title = document.createElement("div");
+  title.className = "dsh-wt-title";
+  title.textContent = card.title || I18n.t("（上游未给页面标题）");
+  title.title = card.title || "";
+  box.appendChild(title);
+  if (card.err) box.appendChild(dshWtErrEl(card.err));
+  return box;
+}
+function dshWtCardEl(card) {
+  return card && card.read ? dshWtReadCardEl(card) : dshWtSearchCardEl(card);
+}
+
+/* ── 行内引用角标（url_citation）───────────────────────────────────────────
+   数据：annotations 块 [{type:"url_citation", url_citation:{url,title,start_index,end_index}}]，
+   start/end 是**最终答案正文的字符区间**（不是 token，见 docs/deepseek-web-tools-probe.md §2.2），
+   一段话可以叠多条。同一条 URL 只给一个编号（按起点排序），正文里的角标与「参考来源」
+   那一排用同一份编号；点角标在它旁边弹一张来源卡（标题 / 站点 / URL / 打开）。
+   渲染只读这份数据，一个字节都不改。 */
+function dshWebToolCiteIndex(blocks) {
+  const out = [];
+  const seen = new Map();
+  for (const b of Array.isArray(blocks) ? blocks : []) {
+    if (!b || b.kind !== "annotations") continue;
+    for (const a of Array.isArray(b.data) ? b.data : []) {
+      const uc = a && a.url_citation;
+      if (!uc || !uc.url) continue;
+      const url = String(uc.url);
+      const s = Number(uc.start_index);
+      const e = Number(uc.end_index);
+      const start = Number.isFinite(s) ? Math.max(0, s) : 0;
+      const end = Number.isFinite(e) ? Math.max(e, start) : start;
+      const hit = seen.get(url);
+      if (hit) {
+        /* 同一来源的第二段区间：起点保留最早的（角标落在首次引用处），终点取最远的 */
+        if (start < hit.start) hit.start = start;
+        if (end > hit.end) hit.end = end;
+        if (!hit.title && uc.title) hit.title = String(uc.title);
+        if (!hit.site && uc.site_name) hit.site = String(uc.site_name);
+        continue;
+      }
+      const row = {
+        url,
+        title: String(uc.title || ""),
+        site: String(uc.site_name || ""),
+        start,
+        end,
+        n: 0,
+      };
+      seen.set(url, row);
+      out.push(row);
+    }
+  }
+  out.sort((x, y) => x.start - y.start || x.end - y.end);
+  out.forEach((c, i) => {
+    c.n = i + 1;
+  });
+  return out;
+}
+function dshWebToolCiteNumOf(blocks) {
+  const map = new Map();
+  for (const c of dshWebToolCiteIndex(blocks)) map.set(c.url, c.n);
+  return map;
+}
+/* 一段正文里的文字节点（跳过代码块 / 链接 / 已插的角标）：角标不许插进 `code` 里 ——
+   那是原文，插进去就改了它；链接里的文字同理（点角标会与点链接打架）。 */
+function dshCiteTextNodes(root) {
+  const out = [];
+  if (!root || typeof root.childNodes === "undefined") return out;
+  const walk = (node) => {
+    for (let n = node.firstChild; n; n = n.nextSibling) {
+      if (n.nodeType === 3) {
+        if (n.nodeValue) out.push(n);
+        continue;
+      }
+      if (n.nodeType !== 1) continue;
+      const tag = String(n.tagName || "").toUpperCase();
+      if (tag === "PRE" || tag === "CODE" || tag === "SUP" || tag === "A") continue;
+      if (n.classList && n.classList.contains("dsh-cite-wrap")) continue;
+      walk(n);
+    }
+  };
+  walk(root);
+  return out;
+}
+/* 把一组引用角标插进一段已经渲染好的正文（el 可以是 .md 本身，也可以是含 .md 的段元素）。
+   base = 这段正文在整份答案里的字符起点；区间按**渲染后的可见文字**近似落点（markdown
+   记号会被渲染吃掉，原文偏移比渲染结果略长），越界的按长度夹到段末，绝不往外溢。 */
+function dshCiteMarksInto(el, cites, base) {
+  const md =
+    el && el.classList && el.classList.contains("md")
+      ? el
+      : el && el.querySelector
+        ? el.querySelector(".md")
+        : null;
+  if (!md || !cites || !cites.length) return;
+  const nodes = dshCiteTextNodes(md);
+  if (!nodes.length) return;
+  const ranges = [];
+  let acc = 0;
+  for (const n of nodes) {
+    const s = acc;
+    acc += n.nodeValue.length;
+    ranges.push({ n, s, e: acc });
+  }
+  const total = acc;
+  if (!total) return;
+  /* 先算「每个文字节点、在哪个字符位插哪几条」——插完再算会被自己插进去的角标字数带偏 */
+  const plan = new Map();
+  for (const c of cites) {
+    const pos = Math.max(0, Math.min((Number(c.end) || 0) - base, total));
+    let rg = ranges[ranges.length - 1];
+    for (const r of ranges)
+      if (pos >= r.s && pos <= r.e) {
+        rg = r;
+        break;
+      }
+    if (!rg) continue;
+    const at = Math.max(0, Math.min(pos - rg.s, rg.n.nodeValue.length));
+    const list = plan.get(rg.n) || [];
+    plan.set(rg.n, list);
+    list.push({ at, cite: c });
+  }
+  for (const [node, items] of plan) {
+    /* 同一位置的多条合成一枚角标组（[1][2] 挨着放）；按位置从大到小切，
+       切开的左半段仍然保留原前缀，后面的插入点不会错位 */
+    const groups = new Map();
+    for (const it of items) {
+      const g = groups.get(it.at) || [];
+      g.push(it.cite);
+      groups.set(it.at, g);
+    }
+    const ats = Array.from(groups.keys()).sort((a, b) => b - a);
+    for (const at of ats) {
+      const sup = document.createElement("sup");
+      sup.className = "dsh-cite dsh-cite-wrap";
+      for (const c of groups.get(at)) sup.appendChild(dshCiteBadgeEl(c));
+      const tail = at < node.nodeValue.length ? node.splitText(at) : null;
+      const parent = node.parentNode;
+      if (!parent) continue;
+      parent.insertBefore(sup, tail || node.nextSibling);
+    }
+  }
+}
+/* targets：[{ base, el }]（按正文段顺序；base = 该段正文在整份答案里的字符起点）。
+   角标落在**区间末尾**那一枚字后面（引用标注的常规位置），所以按 end 认段：
+   区间跨段时就近挂到它结束的那一段，段内位置再夹进该段长度。 */
+function dshWebToolCitesPaint(targets, cites) {
+  if (!targets || !targets.length || !cites || !cites.length) return;
+  const bin = new Map();
+  for (const t of targets) bin.set(t, []);
+  for (const c of cites) {
+    let pick = targets[0];
+    for (const t of targets) if (t.base <= c.end) pick = t;
+    const list = bin.get(pick);
+    if (list) list.push(c);
+  }
+  for (const [t, list] of bin) if (list.length) dshCiteMarksInto(t.el, list, t.base);
+}
+/* 角标本体：一枚可点的小按钮（不跳转 —— 点开先看来源，跳转在卡里另给一枚「打开链接」） */
+function dshCiteBadgeEl(c) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "dsh-cite-badge";
+  b.textContent = "[" + c.n + "]";
+  b.title = (c.title || c.url) + (c.site ? " · " + c.site : "");
+  b.onclick = (e) => {
+    if (e && e.preventDefault) e.preventDefault();
+    if (e && e.stopPropagation) e.stopPropagation();
+    dshCitePopShow(b, c);
+  };
+  return b;
+}
+/* ── 来源卡（点角标弹出来的那一张）────────────────────────────────────────
+   瞬时信息卡（没有输入、没有设置，不属于 AGENTS.md 那条「带输入或设置的浮层一律
+   persistent」）：再点同一枚角标 / 点卡外 / Esc / 窗口尺寸变化都收起，一次性看完即走。 */
+let _dshCitePopEl = null;
+let _dshCitePopFor = null;
+let _dshCitePopBound = false;
+function dshCitePopClose() {
+  if (_dshCitePopEl && _dshCitePopEl.parentNode)
+    _dshCitePopEl.parentNode.removeChild(_dshCitePopEl);
+  if (_dshCitePopFor && _dshCitePopFor.classList)
+    _dshCitePopFor.classList.remove("is-open");
+  _dshCitePopEl = null;
+  _dshCitePopFor = null;
+}
+function dshCitePopBind() {
+  if (_dshCitePopBound) return;
+  _dshCitePopBound = true;
+  document.addEventListener(
+    "mousedown",
+    (e) => {
+      if (!_dshCitePopEl) return;
+      const t = e && e.target;
+      if (t && _dshCitePopEl.contains(t)) return;
+      if (t && t.closest && t.closest(".dsh-cite-badge")) return;
+      dshCitePopClose();
+    },
+    true,
+  );
+  document.addEventListener("keydown", (e) => {
+    if (!e || (e.key !== "Escape" && e.key !== "Esc")) return;
+    dshCitePopClose();
+  });
+  window.addEventListener("resize", () => dshCitePopClose());
+}
+function dshCitePopShow(anchor, c) {
+  dshCitePopBind();
+  /* 再点同一枚 = 收起（与「点别的角标换一张」同一入口） */
+  if (_dshCitePopEl && _dshCitePopFor === anchor) {
+    dshCitePopClose();
+    return;
+  }
+  dshCitePopClose();
+  const pop = document.createElement("div");
+  pop.className = "dsh-cite-pop";
+  const head = document.createElement("div");
+  head.className = "dsh-cite-pop-hd";
+  const num = document.createElement("span");
+  num.className = "dsh-cite-pop-n";
+  num.textContent = "[" + c.n + "]";
+  head.appendChild(num);
+  const site = document.createElement("span");
+  site.className = "dsh-cite-pop-site";
+  site.textContent = c.site || dshWtHostOf(c.url);
+  head.appendChild(site);
+  pop.appendChild(head);
+  const title = document.createElement("div");
+  title.className = "dsh-cite-pop-title";
+  title.textContent = c.title || I18n.t("（上游未给标题）");
+  pop.appendChild(title);
+  const url = document.createElement("div");
+  url.className = "dsh-cite-pop-url";
+  url.textContent = c.url;
+  url.title = c.url;
+  pop.appendChild(url);
+  const bar = document.createElement("div");
+  bar.className = "dsh-cite-pop-bar";
+  const open = document.createElement("button");
+  open.type = "button";
+  open.className = "mini";
+  open.textContent = I18n.t("打开链接");
+  open.onclick = () => {
+    try {
+      if (window.api && typeof window.api.openExternal === "function")
+        window.api.openExternal(c.url);
+    } catch (_) {}
+  };
+  bar.appendChild(open);
+  const close = document.createElement("button");
+  close.type = "button";
+  close.className = "mini";
+  close.textContent = I18n.t("关闭");
+  close.onclick = () => dshCitePopClose();
+  bar.appendChild(close);
+  pop.appendChild(bar);
+  document.body.appendChild(pop);
+  /* 落点：角标正下方居中；下方装不下就上翻，左右夹进视口（窗口很窄时不溢出） */
+  const r = anchor && anchor.getBoundingClientRect ? anchor.getBoundingClientRect() : null;
+  const w = pop.offsetWidth || 300;
+  const h = pop.offsetHeight || 120;
+  const vw = window.innerWidth || 1200;
+  const vh = window.innerHeight || 800;
+  const left = Math.max(
+    8,
+    Math.min(r ? r.left + r.width / 2 - w / 2 : 20, vw - w - 8),
+  );
+  let top = r ? r.bottom + 6 : 40;
+  if (r && top + h > vh - 8) top = Math.max(8, r.top - h - 6);
+  pop.style.left = Math.round(left) + "px";
+  pop.style.top = Math.round(top) + "px";
+  _dshCitePopEl = pop;
+  _dshCitePopFor = anchor;
+  if (anchor && anchor.classList) anchor.classList.add("is-open");
+}
+
+/* 历史消息里的那一块：一行摘要（点开看每一次搜索 / 每一次抓取的卡片）+ 参考来源 */
+function dshWebToolBlockEl(blocks) {
+  const cards = dshWebToolCards(blocks);
+  const f = dshWebToolFacts(blocks);
+  if (!cards.length && !f.total && !f.sources.length) return null;
+  const box = document.createElement("details");
+  box.className = "dsh-webtool";
+  const sum = document.createElement("summary");
+  sum.className = "dsh-webtool-sum";
+  sum.textContent = dshWebToolSummaryText(f);
+  box.appendChild(sum);
+  if (cards.length) {
+    const body = document.createElement("div");
+    body.className = "dsh-webtool-body";
+    for (const c of cards) body.appendChild(dshWtCardEl(c));
+    box.appendChild(body);
+  }
+  /* 参考来源常显在摘要下面（不展开也看得见）：联网搜索的价值就在这一排链接上 */
+  const src = dshWebToolSourcesEl(f, dshWebToolCiteNumOf(blocks));
+  if (src) box.appendChild(src);
+  return box;
+}
+/* 运行中那一行：只一条状态行（不展开、不挂来源链接 —— 收尾后由历史那一块接管） */
+function agentWebToolLiveEl(st) {
+  const blocks = Array.isArray(st && st._webTools) ? st._webTools : [];
+  if (!blocks.length) return null;
+  const f = dshWebToolFacts(blocks);
+  if (!f.total && !f.sources.length && !f.pending) return null;
+  const box = document.createElement("div");
+  box.className = "dsh-webtool dsh-webtool-live" + (f.pending > 0 ? " is-live" : "");
+  const line = document.createElement("div");
+  line.className = "dsh-webtool-sum";
+  line.textContent =
+    dshWebToolSummaryText(f) + (f.pending > 0 ? " · " + I18n.t("执行中…") : "");
+  box.appendChild(line);
+  const src = dshWebToolSourcesEl(f, dshWebToolCiteNumOf(blocks));
+  if (src) box.appendChild(src);
+  return box;
 }
 /* 流式事件就地更新的公共判定：目标段还是不是尾段、DOM 元素对不对得上段序，
    对不上（刚从别的段类型切换过来）→ 整表重绘一次，之后继续在原地追加 */
@@ -11675,9 +12329,29 @@ function dshMsgBlock(m, nodeId, idx, opts) {
     } catch (_) {
       tokOfIdx = null;
     }
+    /* 行内引用角标（url_citation）按「正文段序号 × 段内字符」落点，所以这里顺手记下每段
+       正文在整份答案里的字符起点。content = 各段非空 say 用 "\n\n" 拼起来（口径见
+       dshMsgSegsViewable），空段不参与、分隔符算进起点 —— 少算这两笔，多段正文的角标
+       就会整体偏前。窗口把更早的段挡掉时起点照样从 0 累加，角标不会因为
+       「显示更早内容」而错位。 */
+    const sayLen = (sg) =>
+      sg && sg.k === "say" && String(sg.text || "").trim()
+        ? String(sg.text || "").length
+        : 0;
+    let sayBase = 0;
+    let sayJoined = false;
+    for (let n = 0; n < from; n++) {
+      const len = sayLen(m.segments[n]);
+      if (!len) continue;
+      if (sayJoined) sayBase += 2;
+      sayJoined = true;
+      sayBase += len;
+    }
+    const sayTargets = [];
     for (let n = from; n < m.segments.length; n++) {
+      const seg = m.segments[n];
       const el = dshHistSegEl(
-        m.segments[n],
+        seg,
         pool,
         nodeId,
         idx,
@@ -11688,6 +12362,12 @@ function dshMsgBlock(m, nodeId, idx, opts) {
         tokOfIdx ? tokOfIdx[n] || null : null,
       );
       if (el) body.appendChild(el);
+      const len = sayLen(seg);
+      if (!len) continue;
+      if (sayJoined) sayBase += 2;
+      sayJoined = true;
+      if (el) sayTargets.push({ base: sayBase, el });
+      sayBase += len;
     }
     /* 时间线上没配到段、剩下的工具（重发 / 老数据等边角）挂消息**最前面**，
        绝不追加到时间线尾部：追加在尾部 = 工具 chips 压在最终回复下方，用户第一眼
@@ -11698,6 +12378,15 @@ function dshMsgBlock(m, nodeId, idx, opts) {
       for (const t of pool)
         chips.appendChild(dshToolDetailsEl(t, false, nodeId));
       body.insertBefore(chips, body.firstChild);
+    }
+    /* 正文定稿后套行内引用角标（只改 DOM，m.webTools 一个字节都不动） */
+    try {
+      const cites = dshWebToolCiteIndex(m.webTools);
+      if (cites.length && sayTargets.length) dshWebToolCitesPaint(sayTargets, cites);
+    } catch (e) {
+      try {
+        console.error("行内引用角标渲染失败", e);
+      } catch (_) {}
     }
     row.appendChild(body);
   } else {
@@ -11716,10 +12405,39 @@ function dshMsgBlock(m, nodeId, idx, opts) {
          不再重解析一遍 markdown */
       body.innerHTML = dshUserBodyHtml(m.content, m);
       bindDshUserImgOpen(body);
+      /* 这一轮带的附件（PDF / Word / 文本 / 表格）：正文下面一行只读卡片，数据就是
+         发出去时那份 msg.files（网关也照它写的消息标记），历史消息照旧能看见 */
+      try {
+        const strip = window.Attach && window.Attach.stripEl ? window.Attach.stripEl(m.files) : null;
+        if (strip) body.appendChild(strip);
+      } catch (_) {}
     } else
       body.innerHTML =
         '<div class="md">' + dshMdHtmlCached(m) + "</div>";
+    /* 无分段轨迹的消息：整条正文就是答案，区间起点自然对齐（同样只改 DOM） */
+    if (m.role === "assistant") {
+      try {
+        const cites = dshWebToolCiteIndex(m.webTools);
+        if (cites.length) dshWebToolCitesPaint([{ base: 0, el: body }], cites);
+      } catch (e) {
+        try {
+          console.error("行内引用角标渲染失败", e);
+        } catch (_) {}
+      }
+    }
     row.appendChild(body);
+  }
+  /* 服务端工具块（联网搜索 / 阅读链接）：挂在正文之后、动作条之前。数据是消息里那份
+     原始扩展块（m.webTools，见 agentRoundMsgTail），这里只渲染，一个字节都不改。 */
+  if (m.role === "assistant" && Array.isArray(m.webTools) && m.webTools.length) {
+    try {
+      const wtEl = dshWebToolBlockEl(m.webTools);
+      if (wtEl) row.appendChild(wtEl);
+    } catch (e) {
+      try {
+        console.error("联网搜索块渲染失败", e);
+      } catch (_) {}
+    }
   }
   /* 正文含代码块 / Markdown 结构 → 消息最下方补「复制 / 保存」动作条
      （口径见 dshMsgActionBar 上方注释；坏了也不拖垮整条消息） */
@@ -12575,6 +13293,11 @@ function renderAgentSessionRaw(opts) {
        运行中能不能发由发送按钮自己表达（忙 = 排队 / 终止），不另写「只读」这类话。 */
     const staleNote = composer.querySelector(".agent-assist-note");
     if (staleNote) staleNote.remove();
+    /* 输入区上方的附件条（renderer/app-attach.js）：会话切了 / 重绘了就按当前会话重画一遍
+       （数据按会话 id 分开存，切换会话不会把上一条的附件带过来）。 */
+    try {
+      if (window.Attach) window.Attach.paint();
+    } catch (_) {}
   }
   const presetSel = $("#agentPresetSel");
   if (presetSel) presetSel.value = st.preset || AGENT_PRESET_DEFAULT;
@@ -15027,9 +15750,15 @@ async function agentSessionSend(text, opts) {
         planStalePendingOffers(st, "userRound");
     } catch (_) {}
   }
+  /* 这一轮的附件（PDF / Word / 文本 / 表格）：输入区上方附件条里「已就绪」的那几条
+     （renderer/app-attach.js 取走即清空）。这里就取走 —— 早于它的每条返回（排队 / 斜杠命令 /
+     不支持）都还没真正开轮，附件条原样留在输入区，用户不必重选。续跑轮不再重复带
+     （那份会话里附件已经在上下文里，与图像同一条口径）。 */
+  const roundFiles = resumeRound || !window.Attach ? [] : window.Attach.take();
   /* 合并模式不追加消息：任务书消息（_src:"dev-node"）已在会话里，直接发它 */
   if (!devContractMsg) {
     const um = { role: "user", content: t, at: Date.now() };
+    if (roundFiles.length) um.files = roundFiles.slice();
     if (planExecMsg) um._src = "plan-exec";
     else if (opts._planFix) um._src = "plan-fix";
     st.messages.push(um);
@@ -15079,6 +15808,10 @@ async function agentSessionSend(text, opts) {
   st._liveSid = "";
   st._pending = "";
   st._liveTools = [];
+  /* 联网搜索的服务端工具扩展块（本轮）：与 _liveTools 同一节奏开轮清空，收尾时整份进
+     助手消息的 msg.webTools（原始块原样落盘，含 deepseek_read_url 的 signature —— 下一轮
+     要原样回传给上游，否则那次抓取的正文会被静默丢掉，见 docs/deepseek-web-tools-probe.md）。*/
+  st._webTools = [];
   /* 新一轮：live 段的 DOM 缓存作废（本轮 items 数组是新的，对账本来就认不过去，
      这里主动放开是免得把上一轮那棵 DOM 树一直挂在会话对象上）。 */
   st._liveBox = null;
@@ -15362,6 +16095,7 @@ async function agentSessionSend(text, opts) {
          这一轮只说「继续」时，前一轮提到的浏览器 / 音视频仍算提到。 */
       roundHistory: turnUserHistory,
       images: roundImages.length ? roundImages : undefined,
+      files: roundFiles.length ? roundFiles : undefined,
       /* 暂停后「继续」：点名被暂停那条 dsh 会话走断点续跑通道（网关 session/resume）。
          拿不到 sid 时这里就是 undefined —— 与旧版一样整轮重发，行为不劣化。 */
       resumeSession: String(opts.resumeSession || "") || undefined,
@@ -15438,6 +16172,28 @@ async function agentSessionSend(text, opts) {
           /* 分段模式刷尾部思考段；非分段（节点绑定运行等）退回旧整段更新。
              30fps 合并：思考也是逐 token 到达，每帧一次摘要字数 + 正文写入同样是布局开销。 */
           if (mine) agentUiSoon("think", () => updateAgentLiveThink(st));
+        } else if (type === "deepseek-web-tool" && data) {
+          /* 服务端工具扩展块（联网搜索 / 阅读链接）：上游 SSE 里旁路出来的**原始块**
+             {kind, choiceIndex, data}（网关 createSseExtensionSplitter → extensionFrame，
+             见 dsh/gateway/deepseek-web-tools.mjs）。这里只做两件事：
+             ① 原样攒进本轮槽位 st._webTools —— 收轮时整份进助手消息的 msg.webTools、
+                随会话落盘，下一轮再原样回传（deepseek_read_url 的 signature 缺一个字节，
+                那次抓取的正文就会被上游静默丢掉，探针文档 §5）；
+             ② 增量刷新 live 行尾那一条状态行（不重建整表）。 */
+          st._webTools = Array.isArray(st._webTools) ? st._webTools : [];
+          const ext = {
+            kind: String((data && data.kind) || ""),
+            choiceIndex: (data && data.choiceIndex) != null ? data.choiceIndex : null,
+            data: data && data.data !== undefined ? data.data : null,
+            at: Date.now(),
+          };
+          if (ext.kind) {
+            st._webTools.push(ext);
+            /* 上限只防病态情况（一次会话几十次搜索 × 每次若干块）：正常一轮远不到 200 块 */
+            if (st._webTools.length > 200)
+              st._webTools.splice(0, st._webTools.length - 200);
+            if (mine) agentUiSoon("tools", () => agentLiveRepaint(st));
+          }
         } else if (type === "tool-preparing" && data && data.callId) {
           /* 工具准备态（本次需求 · 对齐上游 preparing 阶段）：参数还在流进来时，
              先在 st._liveTools 里立一条只带字节数的记录 —— 会话流里那一行卡片随即出现，
@@ -15819,6 +16575,8 @@ async function agentSessionSend(text, opts) {
     /* 轮中增量落盘的定时器随之收掉（正本结果在上面已 push 进 messages，下一次落盘就是完整那份） */
     agentLiveWatchEnd(st);
     st._liveTools = [];
+    /* 扩展块已随助手消息进历史（上面 push 时由 agentRoundMsgTail 带走），槽位清空 */
+    st._webTools = [];
     /* 本轮收尾：live 段的 DOM 缓存一并放开（段已随消息进历史，缓存留着只是占用）。 */
     st._liveBox = null;
     /* 本轮收尾先把界面落定：st.running 一置 false，live 行就不再算「流式尾段」，

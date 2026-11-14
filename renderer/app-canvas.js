@@ -1285,6 +1285,13 @@ function renderCanvas() {
   /* 焦点自愈（app.js）：这一层被删掉了就退到还活着的祖先层 / 根画布，
      别把相机留在已经不存在的层上（那是「回不到根画布」的起点）。 */
   if (typeof healLayerFocus === "function") healLayerFocus();
+  /* 画布底部「建造面板」（renderer/app-canvas-dock.js）跟着上下文走：换画布 / 进出节点层 /
+     进出数据库层时菜单内容变了才重建（签名没变时这里只是一次字符串比较，不碰 DOM）。 */
+  if (window.CanvasDock && typeof CanvasDock.tick === "function") {
+    try {
+      CanvasDock.tick();
+    } catch (_) {}
+  }
   /* 未运行态还挂着的「全局锁被占」红字 = 上一次尝试的残影，画之前先扫掉（见 app.js 的
      sweepStaleMediaBusyErrors：锁改为活性判定后真冲突只发生在点 ▶ 的那一拍） */
   if (typeof sweepStaleMediaBusyErrors === "function") sweepStaleMediaBusyErrors();
@@ -10266,6 +10273,38 @@ function nodeElement(node) {
       stopTitle: "取消后处理请求",
     });
   }
+  /* DeepSeek 云端语音（官方 API 固定）：chip + ▶。
+     ▶ 直接调节点自己的执行体（playDsTtsNode / playDsAsrNode），不走 playUserNode 的工作目录闸 ——
+     云端节点默认把 wav 落在系统临时目录，没有「必须先设工作目录」这条约束；
+     没有本地媒体队列，所以也不用 appendMediaPlayBtns（它会给排队态发 ■）。 */
+  if (node.kind === "deepseek_tts" || node.kind === "deepseek_asr") {
+    const isTts = node.kind === "deepseek_tts";
+    const chip = document.createElement("span");
+    chip.className = "n-chip" + (node.running ? " on" : "");
+    chip.textContent = I18n.t(isTts ? "语音合成" : "语音识别");
+    chip.title = I18n.t(
+      isTts
+        ? "DeepSeek 官方 TTS（云端）· 端子 0=文本 · 服务商固定，不可切换"
+        : "DeepSeek 官方 ASR（云端）· 端子 0=音频 · 服务商固定，不可切换",
+    );
+    head.appendChild(chip);
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "n-play" + (node.running ? " running" : node.error ? " error" : "");
+    b.textContent = node.running ? "…" : "▶";
+    b.title = I18n.t(
+      isTts ? "调用 DeepSeek 官方 TTS 合成语音" : "调用 DeepSeek 官方 ASR 转写音频",
+    );
+    b.onclick = (ev) => {
+      ev.stopPropagation();
+      if (node.running) return;
+      if (isTts) {
+        if (typeof playDsTtsNode === "function") playDsTtsNode(node, false);
+      } else if (typeof playDsAsrNode === "function") playDsAsrNode(node, false);
+    };
+    b.disabled = !!node.running;
+    head.appendChild(b);
+  }
   if (node.kind === "breeze_gen") {
     const chip = document.createElement("span");
     chip.className = "n-chip" + (node.running ? " on" : "");
@@ -17858,7 +17897,7 @@ function buildBody(node, body) {
       }
       /* 开发节点：body 保持精简——只放动作按钮组与上次建议摘要。
          项目根目录 / 状态字样 / 生效模型行不再常驻 body（避免无用信息占用空间）：
-         路径与状态见「开发 / 细化」对话框，生效模型见头部 🧠 按钮悬浮提示。
+         路径与状态见「开发 / 细化」对话框，生效模型见头部模型按钮的悬浮提示。
          按钮顺序：开发 → 细化 → 打开（文件节点）→ 文件 N（核心文件 · 顶层块不插入）→ 会话 N（有历史时）。
          「建议」「问询」两个卡片按钮已移除：建议只留右键菜单入口，问询不再有 UI 入口。 */
       if (node.dev && !node.db) {
@@ -18584,6 +18623,13 @@ function buildBody(node, body) {
       stt.textContent = node.error || (isQwen ? node.qwenimageStatus : node.flux3kleinStatus);
       body.appendChild(stt);
     }
+  } else if (node.kind === "deepseek_tts" || node.kind === "deepseek_asr") {
+    /* DeepSeek 云端语音（renderer/app-ds-speech.js）：body = 正文框 / 转写预览 + 摘要行（⚙）
+       + 状态行；参数全在 ⚙ 设置窗（音色 / 格式 / 通道 / 去 Markdown / 路径 / 超时）。
+       这两颗是纯云端调用，没有后端面板 / 显存探活 / 媒体锁，所以 body 里不挂 panel。 */
+    if (node.kind === "deepseek_tts") {
+      if (typeof dsTtsAppendBody === "function") dsTtsAppendBody(node, body);
+    } else if (typeof dsAsrAppendBody === "function") dsAsrAppendBody(node, body);
   } else if (node.kind === "breeze_gen") {
     /* 「角色 + 组名」同一行（先定谁的声音，再写要念的文本）；下面才是摘要与文本框 */
     breezePresetPullOnce();

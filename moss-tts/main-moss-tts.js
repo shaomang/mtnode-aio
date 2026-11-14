@@ -19,6 +19,9 @@
  *   voices/       用户上传的参考音频（原样拷贝，播放时再交给 worker）
  *   合成产物不落盘：worker 把每句 wav 编成 base64 直接经 stdout 给宿主，宿主转给渲染层
  *   用 Blob 播（临时 wav 文件已取消，见 chunk.data）。
+ *   cache/        固定文字的语音缓存：同一段话 + 同一音色 + 同一套采样参数只合成一次，
+ *                 落成 <sha1>.wav，之后同一把钥匙直接读盘回放（不进 worker、不占显存）。
+ *                 见下方「固定文字语音缓存」。容量有上限，超了按最久没用的先删。
  *   console.log   worker stderr / 安装链日志
  *
  * 流式：worker 每合成完一句就吐一条 {type:"chunk", data}（wav base64），宿主立刻转发给
@@ -29,6 +32,7 @@ const { app, ipcMain, dialog, shell } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const https = require("https");
+const crypto = require("crypto");
 const { spawn } = require("child_process");
 const { quietPython, silentEnv } = require("../backend-python.js");
 const mirrors = require("../cn-mirrors.js");
@@ -131,6 +135,7 @@ function paths() {
     pythonReal: path.join(r, "venv", "Scripts", "python.exe"),
     models: path.join(r, "models"),
     voices: path.join(r, "voices"),
+    cache: path.join(r, "cache"),
     out: path.join(r, "out"),
     config: path.join(r, "config.json"),
     log: path.join(r, "console.log"),
@@ -310,6 +315,150 @@ function resolveVoice(cfg) {
     return Object.assign({ fallback: true }, builtinVoice());
   }
   return builtinVoice();
+}
+
+/* ── 固定文字语音缓存（同一段话只合成一次）────────────────────────────────
+ * 播报里有一批**文字固定**的话（「有新的询问等你回应」「画布运行完成」「出错了：…」、
+ * 右键试听那句样例、同一轮摘要的重播…）。合成参数里的 seed 是固定的（见 PARAM_SPECS.seed），
+ * 所以「同一段文字 + 同一音色 + 同一套参数」出来的音频是确定的 —— 第一次合成完就把整段
+ * wav 存进 cache/<key>.wav，之后同一把钥匙（key）直接读盘回放：不拉 worker、不加载模型、
+ * 不占显存，几乎零延迟。换音色 / 改参数 / 换参考音频 / 改文字都是另一把钥匙。
+ * 容量有上限（文件数 + 总字节），超了先删最久没用过的（读盘时会刷新 mtime）。 */
+const CACHE_MAX_FILES = 300;
+const CACHE_MAX_BYTES = 256 * 1024 * 1024;
+const synthCache = new Map(); /* id → { key, parts: [Buffer] }：正在合成、等 done 落盘的那一份 */
+
+/** 一把钥匙 = 文字 + 音色（含参考音频的路径 / 大小 / 修改时间）+ 采样参数 + 分段字数。 */
+function cacheKey(text, voice, params, maxChars) {
+  let stamp = "";
+  try {
+    const ap = (voice && voice.audioPath) || "";
+    if (ap) {
+      const s = fs.statSync(ap);
+      stamp = path.resolve(ap) + "|" + s.size + "|" + Math.round(s.mtimeMs);
+    }
+  } catch {}
+  const h = crypto.createHash("sha1");
+  h.update(
+    JSON.stringify({
+      v: 1,
+      text: String(text || ""),
+      voice: ((voice && voice.kind) || "") + "|" + stamp,
+      params: params || {},
+      maxChars: Number(maxChars) || 0,
+    })
+  );
+  return h.digest("hex");
+}
+function cacheFile(key) {
+  return path.join(ensureDir(paths().cache), key + ".wav");
+}
+/** 命中就返回 { file, data }（Buffer）；顺手刷 mtime，LRU 淘汰时它就不是「最久没用」的。 */
+function cacheLookup(key) {
+  const file = cacheFile(key);
+  try {
+    const data = fs.readFileSync(file);
+    if (data.length <= 44) return null;
+    const now = new Date();
+    try {
+      fs.utimesSync(file, now, now);
+    } catch {}
+    return { file, data };
+  } catch {
+    return null;
+  }
+}
+/** 原子落盘（先写 .tmp 再改名）：中途退出不会留半截 wav 被下次当成命中。 */
+function cacheStore(key, buf) {
+  if (!buf || buf.length <= 44) return "";
+  const file = cacheFile(key);
+  const tmp = file + "." + process.pid + ".tmp";
+  try {
+    fs.writeFileSync(tmp, buf);
+    fs.renameSync(tmp, file);
+  } catch (e) {
+    try {
+      fs.unlinkSync(tmp);
+    } catch {}
+    logLine("语音缓存写入失败：" + ((e && e.message) || e));
+    return "";
+  }
+  cachePrune();
+  return file;
+}
+function cachePrune() {
+  const dir = paths().cache;
+  let list = [];
+  try {
+    for (const f of fs.readdirSync(dir)) {
+      if (!/\.wav$/i.test(f)) continue;
+      const p = path.join(dir, f);
+      try {
+        const s = fs.statSync(p);
+        list.push({ p, size: s.size, at: s.mtimeMs });
+      } catch {}
+    }
+  } catch {
+    return;
+  }
+  let total = list.reduce((a, x) => a + x.size, 0);
+  let count = list.length;
+  if (count <= CACHE_MAX_FILES && total <= CACHE_MAX_BYTES) return;
+  list.sort((a, b) => a.at - b.at);
+  for (const x of list) {
+    if (count <= CACHE_MAX_FILES && total <= CACHE_MAX_BYTES) break;
+    try {
+      fs.unlinkSync(x.p);
+      count -= 1;
+      total -= x.size;
+    } catch {}
+  }
+}
+
+/** 拆一份 wav：返回 { fmt: Buffer, pcm: Buffer }（不是合法 RIFF 就 null）。 */
+function wavPieces(buf) {
+  if (!buf || buf.length < 44) return null;
+  if (buf.toString("ascii", 0, 4) !== "RIFF" || buf.toString("ascii", 8, 12) !== "WAVE") return null;
+  let off = 12;
+  let fmt = null;
+  let pcm = null;
+  while (off + 8 <= buf.length) {
+    const id = buf.toString("ascii", off, off + 4);
+    const size = buf.readUInt32LE(off + 4);
+    const body = off + 8;
+    if (id === "fmt ") fmt = buf.subarray(body, body + size);
+    else if (id === "data") {
+      pcm = buf.subarray(body, Math.min(body + size, buf.length));
+      break;
+    }
+    off = body + size + (size % 2);
+  }
+  if (!fmt || !pcm) return null;
+  return { fmt, pcm };
+}
+/** 把 worker 逐句吐的 wav（每句一个完整 RIFF）拼成一份连续 wav，落盘缓存用。 */
+function wavMerge(buffers) {
+  const parts = [];
+  let fmt = null;
+  for (const b of buffers || []) {
+    const p = wavPieces(b);
+    if (!p) continue;
+    if (!fmt) fmt = p.fmt;
+    if (p.pcm.length) parts.push(p.pcm);
+  }
+  if (!fmt || !parts.length) return null;
+  const dataLen = parts.reduce((a, x) => a + x.length, 0);
+  const head = Buffer.alloc(20 + fmt.length + 8);
+  head.write("RIFF", 0, "ascii");
+  head.writeUInt32LE(head.length - 8 + dataLen, 4);
+  head.write("WAVE", 8, "ascii");
+  head.write("fmt ", 12, "ascii");
+  head.writeUInt32LE(fmt.length, 16);
+  fmt.copy(head, 20);
+  const off = 20 + fmt.length;
+  head.write("data", off, "ascii");
+  head.writeUInt32LE(dataLen, off + 4);
+  return Buffer.concat([head, ...parts]);
 }
 
 /* ── 安装：脚手架 / venv / 依赖 / 权重 ───────────────────────────────── */
@@ -963,6 +1112,7 @@ function startWorker() {
     if (worker === w) {
       worker = null;
       workerDevice = null;
+      synthCache.clear(); /* 这只进程手里的合成再也不会回 done：别留半截待落盘记录 */
     }
   });
   return true;
@@ -996,6 +1146,34 @@ function onWorkerMessage(msg) { /* 设备决策：先落日志与 config（窗�
     if (w && !w.isDestroyed()) w.webContents.send("mosstts:event", msg);
     return;
   }
+  /* 合成回执先记账：窗口关着（或不在这只窗口上）也要把这次说完的话落盘缓存，
+     下次同一段文字直接读盘播，见「固定文字语音缓存」。 */
+  if (
+    msg &&
+    msg.id &&
+    (msg.type === "chunk" || msg.type === "done" || msg.type === "error" || msg.type === "cancelled")
+  ) {
+    const id = String(msg.id);
+    const rec = synthCache.get(id);
+    if (rec) {
+      if (msg.type === "chunk" && msg.data) {
+        try {
+          rec.parts.push(Buffer.from(String(msg.data), "base64"));
+        } catch {}
+      } else if (msg.type === "done") {
+        synthCache.delete(id);
+        /* 整段给完了才落盘：半截音频下次播出来就是话说一半 */
+        try {
+          const merged = wavMerge(rec.parts);
+          if (merged) cacheStore(rec.key, merged);
+        } catch (e) {
+          logLine("语音缓存合并失败：" + ((e && e.message) || e));
+        }
+      } else {
+        synthCache.delete(id);
+      }
+    }
+  }
   const win = getMainWin && getMainWin();
   if (!win || win.isDestroyed()) return;
   if (msg.type === "ready") {
@@ -1008,6 +1186,8 @@ function onWorkerMessage(msg) { /* 设备决策：先落日志与 config（窗�
   }
 }
 function stopWorker() {
+  /* 还没等到 done 的那几段再也不会说完：别让它们在 synthCache 里悬着 */
+  synthCache.clear();
   const w = worker;
   if (!w || !w.proc || w.proc.killed) {
     worker = null;
@@ -1111,7 +1291,8 @@ function registerMossTtsIpc(opts) {
     return { ok: r.ok, error: r.error || "", state: state() };
   });
 
-  /* 合成：渲染层每次播报一个 reqId，宿主按句转发 chunk */
+  /* 合成：渲染层每次播报一个 reqId，宿主按句转发 chunk。
+     先查固定文字缓存：命中就直接把那份 wav 当一条 chunk 回给渲染层（不进 worker）。 */
   ipcMain.handle("mosstts:speak", async (e, payload) => {
     const o2 = payload || {};
     const text = String(o2.text || "").trim();
@@ -1119,12 +1300,35 @@ function registerMossTtsIpc(opts) {
     if (!text) return { ok: false, error: "empty" };
     const cfg = readConfig();
     if (!cfg.enabled) return { ok: false, error: "disabled" };
+    const voice = resolveVoice(cfg);
+    if (!voice.audioPath) return { ok: false, error: "voice_missing" };
+    const maxChars = Number(o2.maxChars) || cfg.maxChars || 42;
+    const key = cacheKey(text, voice, cfg.params, maxChars);
+    const hit = cacheLookup(key);
+    if (hit) {
+      lastSpeakAt = Date.now();
+      const win = getMainWin && getMainWin();
+      if (win && !win.isDestroyed()) {
+        /* 形状与 worker 的 chunk / done 一致：渲染层不必知道这段是合成的还是读盘的 */
+        win.webContents.send("mosstts:event", {
+          type: "chunk",
+          id,
+          index: 0,
+          data: hit.data.toString("base64"),
+          text,
+          ms: 0,
+          cached: true,
+        });
+        win.webContents.send("mosstts:event", { type: "done", id, chunks: 1, ms: 0, cached: true });
+      }
+      return { ok: true, id, voice: voice.name, cached: true };
+    }
     if (!startWorker()) return { ok: false, error: "worker_unavailable" };
     const w = worker;
     if (!w || !w.proc) return { ok: false, error: "worker_unavailable" };
-    const voice = resolveVoice(cfg);
-    if (!voice.audioPath) return { ok: false, error: "voice_missing" };
     lastSpeakAt = Date.now();
+    /* 这次说完（worker 回 done）就把整段 wav 落进缓存，下次同一段话直接读盘 */
+    synthCache.set(id, { key, parts: [] });
     try {
       w.proc.stdin.write(
         JSON.stringify({
@@ -1132,11 +1336,12 @@ function registerMossTtsIpc(opts) {
           id,
           text,
           promptAudio: voice.audioPath,
-          maxChars: Number(o2.maxChars) || cfg.maxChars || 42,
+          maxChars,
           params: cfg.params,
         }) + "\n"
       );
     } catch (err) {
+      synthCache.delete(id);
       return { ok: false, error: (err && err.message) || "write_failed" };
     }
     return { ok: true, id, voice: voice.name };

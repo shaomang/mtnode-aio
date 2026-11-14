@@ -184,6 +184,9 @@
   /* ── 状态 ──────────────────────────────────────────────────────────────── */
   const state = {
     mode: MODE_OFF,
+    /* 识别引擎：local = 本机 SenseVoice（默认）· cloud = DeepSeek 官方云端 ASR。
+       真值保存在 localStorage（mtnode.voice.engine），这里首次运行时按需读入（见 engineOf）。 */
+    engine: "",
     btn: null,
     /** AI 增强（话筒右侧那枚 ✨）的按钮元素 */
     enhBtn: null,
@@ -1435,8 +1438,52 @@
   }
 
   /* ── 转写队列：串行提交，按片序合并 ───────────────────────────────────── */
+  /* ── 识别引擎（本机 / 云端）────────────────────────────────────────────
+     默认本机 SenseVoice（离线、权重已在数据目录里）。云端档走 DeepSeek 官方 ASR：
+     每片（一句话）按 16 位 PCM WAV 上传，单段 ≤8MiB / ≤120 秒由
+     renderer/app-ds-speech.js 自己守；选项只记在 localStorage（不动主进程那套语音配置）。 */
+  const VOICE_ENGINE_KEY = "mtnode.voice.engine";
+  function engineOf() {
+    if (state.engine !== "cloud" && state.engine !== "local") {
+      let v = "local";
+      try {
+        if (localStorage.getItem(VOICE_ENGINE_KEY) === "cloud") v = "cloud";
+      } catch (_) {}
+      state.engine = v;
+    }
+    return state.engine;
+  }
+  function setEngine(v) {
+    state.engine = v === "cloud" ? "cloud" : "local";
+    try {
+      localStorage.setItem(VOICE_ENGINE_KEY, state.engine);
+    } catch (_) {}
+  }
+
+  function transcribeCloud(pcm) {
+    if (typeof window.dsSpeechTranscribeSamples !== "function")
+      return Promise.reject(new Error(T("云端语音模块未加载（renderer/app-ds-speech.js）")));
+    const pe = typeof window.dsSpeechOfficialProvider === "function" ? window.dsSpeechOfficialProvider() : null;
+    if (!pe || !pe.apiKey)
+      return Promise.reject(
+        new Error(T("云端识别不可用：官方 DeepSeek 提供商没有 API Key（设置 · 模型服务 · DeepSeek）")),
+      );
+    /* 话筒这一路给的是 Float32（-1..1）；云端要 16 位 PCM，用语音模块同一把转换 */
+    const pcm16 = typeof spFloatToPcm16 === "function" ? spFloatToPcm16(pcm) : null;
+    if (!pcm16 || !pcm16.length) return Promise.resolve({ text: "" });
+    return window.dsSpeechTranscribeSamples(pcm16, { timeoutMs: 120000 }).then((r) => {
+      if (r && r.ok) return { ok: true, text: r.text };
+      const msg =
+        typeof window.dsSpeechErrorText === "function"
+          ? window.dsSpeechErrorText(r && r.code, r && r.message)
+          : String((r && r.message) || T("转写失败"));
+      throw new Error(msg);
+    });
+  }
+
   function transcribe(pcm) {
     if (INJ && INJ.speech) return INJ.speech(pcm, cfg());
+    if (engineOf() === "cloud") return transcribeCloud(pcm);
     const wav = encodeWav16kMono(pcm);
     /* 首帧通道 / 服务商还没挂上时按 400ms 退避重试（片子在内存里，重发不丢字） */
     return callReady("transcribe", {
@@ -2486,7 +2533,9 @@
     for (const b of state.menu.querySelectorAll("button[data-k]")) {
       const k = b.getAttribute("data-k");
       const v = b.getAttribute("data-v");
-      b.classList.toggle("on", String(c[k]) === String(v));
+      /* engine 不在主进程那套语音配置里（切引擎不该改全局设置），单独按运行期状态高亮 */
+      const cur = k === "engine" ? engineOf() : c[k];
+      b.classList.toggle("on", String(cur) === String(v));
     }
   }
 
@@ -2526,6 +2575,30 @@
       return b;
     };
     const c = cfg();
+    /* 识别引擎：本机 SenseVoice（默认，离线）/ DeepSeek 云端（官方 API）。
+       云端档的语种由官方 ASR 自己判，不跟随下面那行「识别语言」—— 切了引擎就以云端为准。 */
+    const engRow = addRow(T("识别引擎"));
+    for (const [v, lab] of [
+      ["local", T("本机 SenseVoice（离线 · 默认）")],
+      ["cloud", T("DeepSeek 云端（官方 API）")],
+    ]) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "gv-menu-opt";
+      b.setAttribute("data-k", "engine");
+      b.setAttribute("data-v", v);
+      b.textContent = lab;
+      b.onclick = () => {
+        setEngine(v);
+        paintMenuState();
+        paintAll();
+        say(
+          v === "cloud" ? T("识别引擎：DeepSeek 云端（官方 API）") : T("识别引擎：本机 SenseVoice"),
+          "ok",
+        );
+      };
+      engRow.appendChild(b);
+    }
     const langRow = addRow(T("识别语言"));
     for (const [v, lab] of [["auto", "自动"], ["zh", "中文"], ["en", "English"], ["yue", "粤语"], ["ja", "日本語"], ["ko", "한국어"]]) {
       addOpt(langRow, "language", v, T(lab));

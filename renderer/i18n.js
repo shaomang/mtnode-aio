@@ -2956,6 +2956,13 @@
     "拖动分界线调整会话列表宽度（整条边界都可拖，双击复位）": "Drag the divider to resize the session list (the whole border is draggable · double-click to reset)",
     "尚无对话": "No messages yet",
     "已添加节点：": "Added node: ",
+    /* 画布底部建造面板（renderer/app-canvas-dock.js） */
+    "收纳建造面板": "Collapse build panel",
+    "展开建造面板": "Expand build panel",
+    "建造": "Build",
+    "画布底部「建造面板」": "Bottom build panel",
+    "当前没有可创建的节点": "No nodes can be created here",
+    "左键放置 · 右键 / Esc 取消": "Left-click to place · Right-click / Esc to cancel",
     "已移除技能 ": "Removed skill ",
     "暂无思考内容": "No thinking content",
     "找不到节点：": "Node not found: ",
@@ -3569,7 +3576,7 @@
       "When a save node receives an image, it crops → scales → re-encodes by these settings before writing to your path; the default “as-is + PNG” matches the old behavior exactly. Multi-image / batch saves apply the same settings to every file; aggregate mode still writes only the first image of the first entry.",
     "拖拽移动节点（按住手柄拖动）": "Drag to move node (hold the handle)",
     "无可复制的文本（输出为图像）": "No text to copy (output is an image)",
-    "新建会话(沿用当前工作目录)": "New session (keep current working directory)",
+    "新建会话(工作目录=当前画布)": "New session (working directory = current canvas)",
     "用法:/rename 新标题": "Usage: /rename new-title",
     "Industrial（默认）": "Industrial (Default)",
     "（空）— 输入中不存在所选项目": "(empty) — selected item does not exist in the input",
@@ -3938,6 +3945,20 @@
     "剩下的上文都在保留量之内，没有可压缩的内容": "The remaining context is all within the kept transcript, so there is nothing to compact",
     /* 设置 · 智能能力：精简工具负载（工具可见集裁剪，见 docs/codex-agent-benchmark.md） */
     "精简工具负载（不注册「应用操作 / 识图子代理」等可选工具，每步少发约 4.7K 字符；下一轮运行生效）": "Lean tool payload (do not register optional tools such as app control / vision subagent; about 4.7K fewer characters per step; takes effect on the next run)",
+    /* 设置 · 智能能力：联网搜索（DeepSeek 服务端工具，见 docs/deepseek-web-tools-probe.md） */
+    "联网搜索（DeepSeek 服务端工具）": "Web search (DeepSeek server-side tools)",
+    "当前服务商「{name}」不走 DeepSeek 官方协议，声明这两条工具会被上游拒绝，所以这里不可用；换成 DeepSeek 官方或 MTNode 中转即恢复。": "\"{name}\" does not speak the official DeepSeek protocol and would reject these two tool declarations, so this is unavailable here; switch back to DeepSeek official or the MTNode relay to enable it.",
+    "（未选择）": "(none selected)",
+    /* 会话 · 助手消息的服务端工具扩展块（联网搜索 / 阅读链接的执行账本与引用来源） */
+    "联网搜索": "Web search",
+    "搜索 {n} 次": "{n} searches",
+    "阅读链接 {n} 次": "{n} pages read",
+    "深度搜索（思考模式）": "Deep search (thinking mode)",
+    "执行中…": "running…",
+    "搜索词：": "Queries: ",
+    "阅读链接：": "Pages: ",
+    "参考来源": "Sources",
+    "+{n} 条": "+{n} more",
     /* 设置 · 智能能力：开发者工具（会话右栏「运行轨迹」View · renderer/app-trajectory.js） */
     "开发者工具（会话右栏「运行轨迹」视图：逐步看思考 / 正文 / 工具调用，工具调用可展开详情）": "Developer tools (a Run trajectory view in the session's right column: step through thinking / reply / tool calls, with expandable tool details)",
     "输入消息…（Enter 换行，Ctrl+Enter 发送）": "Enter a message… (Enter newline, Ctrl+Enter send)",
@@ -7051,6 +7072,151 @@
     /* breeze_gen：Breeze 语音生成（Breeze TTS 2 本机后端 · 音色克隆 / 设计 / 导演）
        —— 类型骨架（菜单名 / 默认标题 / 端子） + 节点体 UI（音色 / 能力 / 指令 / cfg_scale / 格式 / 状态）
        + 执行链与错误码（管理服务 8772 · 推理引擎 8773 按需拉起；错误文案与后端 code 一一对应）。 */
+    /* ── DeepSeek 云端语音（renderer/app-ds-speech.js + 左下角两颗按钮）────────────────
+       TTS：POST /v1/tools/tts（整段）/ WSS 同名端点（流式）· voice_id = stella|tide ·
+            format = wav|pcm · filter_markdown · ≤10000 计费字符自动分段
+       ASR：POST /v1/tools/asr（16 位 PCM WAV / Ogg Opus · ≤8MiB · ≤120 秒，逐句上传）
+       两颗节点的 ⚙ 设置窗、节点体、执行回执与错误码，以及状态栏「播报 / 听写」两个引擎开关的文案。
+       服务商恒为官方 DeepSeek（id = deepseek），窗里没有服务商行 —— 这是刻意的。 */
+    "DeepSeek 语音合成（云端 · 官方 TTS · stella / tide 双音色 · 整段或流式 · 10000 计费字符上限自动分段）":
+      "DeepSeek speech synthesis (cloud · official TTS · stella / tide voices · whole or streaming · auto-splits above 10000 billed characters)",
+    "DeepSeek 语音识别（云端 · 官方 ASR · 语种自动 · 逐句上传 · 单段 ≤8MiB / ≤120 秒自动切段）":
+      "DeepSeek speech recognition (cloud · official ASR · auto language · per-sentence upload · auto-splits beyond 8 MiB / 120 s)",
+    "语音识别": "Speech recognition",
+    "DeepSeek 官方 TTS（云端）· 端子 0=文本 · 服务商固定，不可切换":
+      "DeepSeek official TTS (cloud) · port 0 = text · provider fixed, not switchable",
+    "DeepSeek 官方 ASR（云端）· 端子 0=音频 · 服务商固定，不可切换":
+      "DeepSeek official ASR (cloud) · port 0 = audio · provider fixed, not switchable",
+    "调用 DeepSeek 官方 TTS 合成语音": "Synthesize speech with the official DeepSeek TTS",
+    "调用 DeepSeek 官方 ASR 转写音频": "Transcribe audio with the official DeepSeek ASR",    "tide（英文男声）": "tide (English male)",
+    "stella（英文女声 · 默认）": "stella (English female · default)",
+    "引擎：": "Engine: ",
+    "语音播报已开（声音：": "Read-aloud on (voice: ",
+    "）· 左键关闭，右键换引擎 / 音色": ") · left-click to turn off, right-click to change engine / voice",
+    "语音播报已关 · 左键开启（DeepSeek 云端，无需下载模型），右键换引擎 / 音色":
+      "Read-aloud off · left-click to turn on (DeepSeek cloud, no model download), right-click to change engine / voice",    "语音播报已开启（": "Read-aloud turned on (",
+    "语音播报已关 · 左键开启": "Read-aloud off · left-click to turn on",    "DeepSeek 语音合成 · ": "DeepSeek speech synthesis · ",
+    "DeepSeek 语音识别 · ": "DeepSeek speech recognition · ",
+    "DeepSeek ASR": "DeepSeek ASR",
+    "音色 / 格式 / 通道 / 输出路径": "Voice / format / mode / output path",
+    "断句 / 另存 / 超时": "Sentences / save-as / timeout",
+    "音色（voice_id）": "Voice (voice_id)",
+    "格式（format）": "Format (format)",
+    "整段（POST，推荐）": "Whole (POST, recommended)",
+    "流式（WSS，边合成边收）": "Streaming (WSS, synthesized as it plays)",
+    "整段": "Whole",
+    "流式": "Streaming",
+    "过滤 Markdown（filter_markdown）": "Filter Markdown (filter_markdown)",
+    "文档默认 true：合成前把 Markdown 记号去掉，避免念出「井号」「星号」":
+      "The documented default is true: strips Markdown marks so “hash” and “asterisk” are not read out loud",
+    "输出路径（.wav，留空 = 临时目录）": "Output path (.wav; empty = temp folder)",
+    "超时（秒）": "Timeout (s)",
+    "超时（秒，每段）": "Timeout (s, per segment)",
+    "断句停顿（毫秒，0 = 跟随全局设置）": "Sentence pause (ms; 0 = follow the global setting)",
+    "另存 txt（留空 = 只出文本端子）": "Also save as .txt (empty = text port only)",
+    "断句：跟随全局": "Sentences: follow global",
+    "断句 ": "Sentence ",
+    "临时目录": "Temp folder",
+    "只出文本": "Text only",
+    "去 Markdown": "Markdown stripped",
+    "保留 Markdown": "Markdown kept",
+    "上传口径：逐句 16 位 PCM WAV · 单段 ≤8MiB / ≤120 秒（自动切段）":
+      "Upload: one 16-bit PCM WAV per sentence · ≤8 MiB / ≤120 s each (auto-split)",
+    "计费：3 元 / 万字符（按计费字符，不足 1 千按 1 千算）。合成产物是 24kHz / 16bit / 单声道 wav。":
+      "Billing: CNY 3 per 10k characters (billed characters, rounded up to 1k). Output is 24 kHz / 16-bit / mono wav.",
+    "计费：0.78 元 / 小时音频（限时 5 折 0.39 元，按秒计）。语种自动识别，没有语种参数。":
+      "Billing: CNY 0.78 per hour of audio (limited-time 50% off, CNY 0.39, billed per second). Language is auto-detected; there is no language parameter.",
+    "提供商：官方 DeepSeek（固定，不可切换）· TTS 文档：POST /v1/tools/tts（≤10000 计费字符）":
+      "Provider: official DeepSeek (fixed, not switchable) · TTS docs: POST /v1/tools/tts (≤10000 billed characters)",
+    "提供商：官方 DeepSeek（固定）· ASR 文档：POST /v1/tools/asr（16 位 PCM WAV，≤8MiB / ≤120 秒）":
+      "Provider: official DeepSeek (fixed) · ASR docs: POST /v1/tools/asr (16-bit PCM WAV, ≤8 MiB / ≤120 s)",
+    "官方 TTS 单次上限 10000 个计费字符；更长的文本会按句末标点自动分段合成再拼成一份 wav":
+      "The official TTS caps one request at 10000 billed characters; longer text is split at sentence ends and joined into one wav",
+    "要合成的文本（也可从端口 0 接入文本）": "Text to synthesize (or wire a text source into port 0)",
+    "绝对路径，或先设工作目录后用相对路径…": "Absolute path, or a relative path once a working folder is set…",
+    "（还没有转写结果）": "(no transcript yet)",
+    "音频：等待端口 0 接入": "Audio: waiting for port 0",
+    "音频：": "Audio: ",
+    "已合成：": "Synthesized: ",
+    "已转写：": "Transcribed: ",
+    "语音已合成（": "Speech synthesized (",
+    "语音已转写": "Speech transcribed",
+    "待运行": "Idle",
+    "已取消": "Cancelled",
+    " 句 / ": " sentences / ",
+    " 秒": " s",
+    " 段": " segments",
+    "云端合成中…": "Synthesizing in the cloud…",
+    "云端识别中…": "Recognizing in the cloud…",
+    "云端合成失败": "Cloud synthesis failed",
+    "云端语音失败": "Cloud speech failed",
+    "待合成文本为空：请在节点里填写，或从端口 0 接上文本来源":
+      "Nothing to synthesize: type text into the node or wire a text source into port 0",
+    "没有音频输入：请从端口 0 接入音频（音频输入节点 / 语音合成 / 保存节点均可）":
+      "No audio input: wire audio into port 0 (audio input, speech synthesis or save node all work)",
+    "没有可朗读的文本：请填写正文或从端口 0 接入文本":
+      "Nothing to speak: fill in the text or wire one into port 0",
+    "没有可识别的音频": "No recognizable audio",
+    "没有音频路径": "No audio path",
+    "音频解码失败": "Audio decoding failed",
+    "音频解码模块未加载（app-speech.js）": "Audio decoding module not loaded (app-speech.js)",
+    "官方 DeepSeek 提供商没有 API Key：请在「设置 · 模型服务 · DeepSeek」里填写":
+      "The official DeepSeek provider has no API key: fill it in Settings · Model services · DeepSeek",
+    "找不到官方 DeepSeek 提供商：请在「设置 · 模型服务」里恢复它":
+      "Official DeepSeek provider not found: restore it in Settings · Model services",
+    "云端语音只允许官方 DeepSeek 提供商": "Cloud speech only accepts the official DeepSeek provider",
+    "API Key 无效或已过期：请在「设置 · 模型服务 · DeepSeek」里重新填写":
+      "API key invalid or expired: re-enter it in Settings · Model services · DeepSeek",
+    "内容审核未通过（Content Exists Risk）：这段文本不能合成":
+      "Blocked by content moderation (Content Exists Risk): this text cannot be synthesized",
+    "文本太长：单次上限 10000 个计费字符，请拆成多个节点":
+      "Text too long: 10000 billed characters per request — split it across several nodes",
+    "并发超限（每账号同时最多 50 个请求）：稍等再试":
+      "Too many concurrent requests (max 50 per account): wait a moment and retry",
+    "服务繁忙（503）：稍后重试": "Service busy (503): retry later",
+    "请求超时（504）：服务端合成 / 识别超时，请稍后重试":
+      "Request timed out (504): the server timed out synthesizing / recognizing; retry later",
+    "上传超时（408）：网络太慢，音频没在 10 分钟内传完":
+      "Upload timed out (408): the network was too slow to finish within 10 minutes",
+    "请求被拒绝（400）：检查文本 / 音频格式": "Request rejected (400): check the text / audio format",
+    "网络错误：检查网络连接 / 代理后再试": "Network error: check the connection / proxy and retry",
+    "写不了输出文件：换个输出路径再试": "Cannot write the output file: try another output path",
+    "音频超过 8MiB 上限：请缩短音频（本节点会自动切段，仍报这个说明单段就超了）":
+      "Audio exceeds the 8 MiB limit: shorten it (this node already splits automatically, so a single segment is over the limit)",
+    "音频格式不对：官方 ASR 只收 16 位 PCM WAV / Ogg Opus":
+      "Unsupported audio format: the official ASR accepts 16-bit PCM WAV / Ogg Opus only",
+    "服务端没有返回音频数据": "The server returned no audio data",
+    "合成中途断开：服务端返回的音频不完整，请重试":
+      "The stream broke mid-way: the returned audio is incomplete, please retry",
+    "本机 Electron 没有内置 WebSocket：请升级应用后再用流式合成":
+      "This Electron build has no built-in WebSocket: upgrade the app to use streaming synthesis",
+    "本机不支持 WebAudio 播放": "WebAudio playback is unavailable in this build",
+    "宿主桥未就绪（dsSpeechTtsFile）": "Host bridge not ready (dsSpeechTtsFile)",
+    "宿主桥未就绪（dsSpeechTtsFile）：请重启应用": "Host bridge not ready (dsSpeechTtsFile): restart the app",
+    "宿主桥未就绪（dsSpeechTtsStream）": "Host bridge not ready (dsSpeechTtsStream)",
+    "宿主桥未就绪（dsSpeechAsr）": "Host bridge not ready (dsSpeechAsr)",
+    "宿主桥未就绪（dsSpeechAsr）：请重启应用": "Host bridge not ready (dsSpeechAsr): restart the app",
+    /* 状态栏两颗按钮的引擎开关（app-tts.js / app-voice.js） */
+    "播报引擎": "Read-aloud engine",
+    "本机 MOSS-TTS-Nano（离线 · 默认）": "Local MOSS-TTS-Nano (offline · default)",
+    "本机 MOSS-TTS-Nano": "Local MOSS-TTS-Nano",
+    "DeepSeek 云端（官方 API · 边合成边播）": "DeepSeek cloud (official API · plays as it synthesizes)",
+    "DeepSeek 云端": "DeepSeek cloud",
+    "云端音色（voice_id）": "Cloud voice (voice_id)",
+    "播报引擎已切换：": "Read-aloud engine switched: ",
+    "云端音色已切换：": "Cloud voice switched: ",
+    "云端语音播报失败：": "Cloud read-aloud failed: ",
+    "云端语音不可用：官方 DeepSeek 提供商没有 API Key（设置 · 模型服务 · DeepSeek）":
+      "Cloud speech unavailable: the official DeepSeek provider has no API key (Settings · Model services · DeepSeek)",
+    "云端语音模块未加载（renderer/app-ds-speech.js）": "Cloud speech module not loaded (renderer/app-ds-speech.js)",
+    "识别引擎": "Dictation engine",
+    "本机 SenseVoice（离线 · 默认）": "Local SenseVoice (offline · default)",
+    "DeepSeek 云端（官方 API）": "DeepSeek cloud (official API)",
+    "识别引擎：DeepSeek 云端（官方 API）": "Dictation engine: DeepSeek cloud (official API)",
+    "识别引擎：本机 SenseVoice": "Dictation engine: local SenseVoice",
+    "云端识别不可用：官方 DeepSeek 提供商没有 API Key（设置 · 模型服务 · DeepSeek）":
+      "Cloud dictation unavailable: the official DeepSeek provider has no API key (Settings · Model services · DeepSeek)",
+
     "Breeze 语音": "Breeze voice",
     "Breeze 语音节点": "Breeze Voice Node",
     "Breeze 语音生成（文本转语音 · Breeze TTS 2）":
@@ -8857,8 +9023,8 @@
     "构建会话启动失败：": "Failed to start the build session: ",
     "该画布的构建会话正在执行中：请等待完成或先终止，再发起构建":
       "This canvas already has a build session running — wait for it to finish or stop it before building again",
-    "未找到可用的工作流生成技能：请先在 设置 → 技能 安装 generate-workflow / generate-task":
-      "No workflow-generation skill found: install generate-workflow / generate-task in Settings → Skills first",
+    "未找到可用的工作流生成技能：请先在 设置 → 技能 安装 generate-workflow":
+      "No workflow-generation skill found: install generate-workflow in Settings → Skills first",
     "例如：读取「素材清单」里的条目，逐条生成商品文案与主图提示词，输出 YAML 并保存；输入节点放上方，再给一个控制节点一键重跑……":
       "e.g. read items from “Asset list”, generate copy + a main-image prompt per item, save as YAML; put inputs on top and add a control node for one-click re-run…",
     "Ctrl+Enter 开始构建 · Esc 取消 · 要求写得越具体（输入来源 / 处理步骤 / 输出格式），生成结果越接近预期":

@@ -17,7 +17,10 @@
 > 只出 Store 包用 `npm run release:store`（跳过 NSIS 打包与 stage-updates，但同样跑源码入库）。
 > 发版前可先干跑 `node scripts/release.mjs --dry-run`：只做版本一致性校验并打印六步顺序，不构建 / 不打包 / 不上传 / 不提交；
 > 只审源码是否漏传用 `node scripts/release-git.mjs --dry-run`（不改 git 状态）。
-> **MSIX 只能人工拖进 Partner Center 上传框，不做自动上传**；Store 链细节见 `docs/msix-store-publish.md`。
+> **Store 包的上传走独立一条命令 `npm run store:publish`（`scripts/msix/store-publish.mjs`）**：
+> 上传 `.msix` → 自动提交审核 → 轮询到已发布；它**不**挂在 `build*.cmd` / `release` 链上（构建只出包，
+> 上传要显式敲命令，避免每次构建都往商店提审）。凭据只在 `%APPDATA%\pipeline-console\store-credentials.json`，
+> 申请步骤与 `--dry-run` / `--no-commit` / `--no-poll` 开关见 `docs/msix-store-publish.md` §3.1 / §3.2。
 > 下面的 `build*.cmd` / `release.cmd` 是旧的 OSS 手工程序，仍可用，但不含 Store 包，也不做源码入库。
 
 ### 源码入库（release-git.mjs）

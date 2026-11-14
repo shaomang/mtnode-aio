@@ -39,6 +39,15 @@ TARGETS = [
     ("proxy_read_timeout", "600s"),
     ("proxy_send_timeout", "600s"),
 ]
+# 中转站有自己的 location（`location ^~ /mtnode/store-api/relay/`，比 store-api 更具体、优先级更高），
+# 它一直留着 `client_max_body_size 40m`：于是 /relay/v1/files 在**入口**就被 nginx 掐掉，
+# 服务端把上限放宽到 100MiB 也没用（客户端只看到 nginx 那张 413 HTML 页）。
+# 这里与 relay.mjs 的 RELAY_FILES_MAX_BODY（100MiB）对齐：留 5m 余量给 multipart 信封
+#（boundary + 表单头），这样「文件本身超 100MB」时是服务端回一条可读的 413 JSON，而不是 nginx 的裸页。
+RELAY_SCOPE_HEAD = "location ^~ /mtnode/store-api/relay/ {"
+RELAY_TARGETS = [
+    ("client_max_body_size", "105m"),
+]
 # 这些指令允许在缺失时自动插入（插在块首行之后，缩进沿用块内已有指令）
 INSERT_AFTER_OPEN = {"client_body_timeout", "proxy_request_buffering", "proxy_send_timeout"}
 
@@ -138,13 +147,17 @@ def main():
         raise SystemExit("找不到 nginx 配置：" + str(path))
     lines = read_conf(path).split("\n")
     new_lines, changes = patch_scope(lines, SCOPE_HEAD, TARGETS)
+    # 中转站那段（relay/）单独对齐：文件上传的上限跟着 relay.mjs 走（见 RELAY_TARGETS 的注释）。
+    new_lines, relay_changes = patch_scope(new_lines, RELAY_SCOPE_HEAD, RELAY_TARGETS)
+    changes = changes + ["[relay] " + c for c in relay_changes]
     if not changes:
         print("nginx 限位已与 server.mjs 同口径，无需改动：" + str(path))
         return
     # 找不到目标块（本站点还没接入 store-api）时**绝不写文件**：没有可改的东西，
     # 写下去只会留下一个无意义的备份（上一版就在这里把「找不到」当成一次改动写盘了）。
-    if len(changes) == 1 and changes[0].startswith("找不到"):
-        print(changes[0])
+    if all(c.replace("[relay] ", "").startswith("找不到") for c in changes):
+        for c in changes:
+            print(c)
         return
     print("改动明细：")
     for c in changes:

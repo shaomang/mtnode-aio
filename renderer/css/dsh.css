@@ -154,6 +154,46 @@
   justify-content: flex-end
 }
 
+/* 设置 · 默认模型 · 联网搜索（DeepSeek 服务端工具）那一行：勾选 + 一句置灰说明。
+   不适用的服务商整行压暗并写清原因（置灰 ≠ 隐藏：换回官方 / 中转就恢复）。 */
+.dsh-websearch-row {
+  gap: 2px;
+  user-select: none
+}
+
+.dsh-websearch-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer
+}
+
+/* .n-field input 的通用盒子样式是给文本框 / 下拉用的，复选框要还原成原生小方块 */
+.dsh-websearch-row input[type="checkbox"] {
+  width: 13px;
+  height: 13px;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--bd2);
+  background: none;
+  accent-color: var(--cyan)
+}
+
+.dsh-websearch-row.is-off {
+  opacity: .55
+}
+
+.dsh-websearch-row.is-off .dsh-websearch-line {
+  cursor: default
+}
+
+.dsh-websearch-note {
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--muted);
+  user-select: text
+}
+
 .dsh-plugin-fold {
   margin-top: 4px
 }
@@ -3430,6 +3470,104 @@ button.mini.btn-sq.tpl-ico {
   border-color: rgb(86, 134, 254)
 }
 
+/* ── 附件条（PDF / Word / 文本 / 表格）：自己占一整行，正文与按钮留在下一行 ──
+   .agent-composer-card 是 flex 行（align-items:flex-end），条子插在 textarea 前面，
+   所以这里让它 width:100% 并把卡片改成可换行 —— 没有附件时（hidden）一行都不占。 */
+.agent-composer-card {
+  flex-wrap: wrap
+}
+
+.agent-attach {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  width: 100%;
+  min-width: 0
+}
+
+.agent-attach[hidden] {
+  display: none
+}
+
+.agent-attach-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 4px 6px 4px 8px;
+  border: 1px solid var(--bd2);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, .04);
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.35
+}
+
+.agent-attach-chip.is-uploading,
+.agent-attach-chip.is-queued {
+  color: var(--muted)
+}
+
+.agent-attach-chip.is-failed {
+  border-color: rgba(242, 90, 90, .55);
+  color: rgb(242, 140, 140)
+}
+
+.agent-attach-chip.is-sent {
+  padding-right: 8px
+}
+
+.agent-attach-ico {
+  flex: none;
+  font-size: 12px;
+  opacity: .85
+}
+
+.agent-attach-name {
+  min-width: 0;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap
+}
+
+.agent-attach-note {
+  flex: none;
+  color: var(--muted);
+  font-size: 11px
+}
+
+.agent-attach-x {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer
+}
+
+.agent-attach-x:hover {
+  background: rgba(255, 255, 255, .1);
+  color: var(--ink)
+}
+
+.agent-send.agent-attach-btn {
+  font-size: 18px
+}
+
+/* 消息里的附件行（只读）：用户那条消息正文下面一行 */
+.dsh-attach-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px
+}
+
 .agent-composer-card .chat-input {
   flex: 1;
   min-height: 52px;
@@ -4889,6 +5027,302 @@ body.theme-light #ixPanel {
   display: none
 }
 
+/* ── 服务端工具块（联网搜索 / 阅读链接）─────────────────────────────────────
+   两处用它：历史消息里一条折叠卡（details，展开看这一次次调用：搜索卡 / 抓取卡，
+   见下面「搜索 / 抓取卡片」段）、运行中一条状态行（.dsh-webtool-live，不展开、只报进度）。
+   配色用青调（--cyan）：与工具段的青轨同族 —— 这条内容来自网页，不是模型自己说的；
+   但整块压成 10.5px 一行，它只是回答的注脚，不该抢正文。 */
+.dsh-webtool {
+  margin: 6px 0 2px;
+  font-size: 10.5px;
+  color: var(--muted)
+}
+
+.dsh-webtool-sum {
+  cursor: pointer;
+  user-select: none;
+  color: var(--cyan);
+  font-family: var(--mono);
+  letter-spacing: .3px;
+  line-height: 1.6
+}
+
+.dsh-webtool-sum:hover {
+  filter: brightness(1.15)
+}
+
+/* 运行中那一行不是折叠卡：收起光标，执行中轻轻呼吸（不闪动，避免干扰读正文） */
+.dsh-webtool-live .dsh-webtool-sum {
+  cursor: default
+}
+
+.dsh-webtool-live.is-live .dsh-webtool-sum {
+  animation: dsh-webtool-pulse 1.6s ease-in-out infinite
+}
+
+@keyframes dsh-webtool-pulse {
+  50% {
+    opacity: .5
+  }
+}
+
+.dsh-webtool-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 4px 0 0;
+  padding-left: 8px;
+  border-left: 1px solid var(--bd2)
+}
+
+/* 参考来源常显在摘要下面（不展开也看得见）：联网搜索的价值就在这一排链接上 */
+.dsh-webtool-src {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  margin: 3px 0 0;
+  font-size: 10px;
+  line-height: 1.8
+}
+
+.dsh-webtool-src-cap {
+  color: var(--muted);
+  margin-right: 4px;
+  flex: 0 0 auto
+}
+
+.dsh-webtool-link {
+  color: var(--cyan);
+  text-decoration: none;
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap
+}
+
+.dsh-webtool-link:hover {
+  text-decoration: underline
+}
+
+.dsh-webtool-more {
+  color: var(--muted)
+}
+
+/* ── 搜索 / 抓取卡片（联网搜索的「块」形态）───────────────────────────────
+   一次服务端工具调用一张卡：搜索卡 = 查询词 + 命中结果（站点名 / 标题 / 链接），
+   抓取卡 = URL + 页面标题；失败态把 error_code 单列一行（.dsh-wt-err）。
+   与上一段同族：它仍然是「回答的注脚」—— 10.5px、青调、2px 左轨，不抢正文；
+   卡片只在 details 展开后才出现（收起时还是那条摘要 + 参考来源）。 */
+.dsh-wt-card {
+  margin: 4px 0 0;
+  padding: 3px 6px 4px;
+  border-left: 2px solid var(--cyan);
+  border-radius: 0 3px 3px 0;
+  background: color-mix(in srgb, var(--cyan) 4%, transparent);
+  font-size: 10.5px;
+  line-height: 1.65;
+  color: var(--muted);
+  min-width: 0;
+}
+
+.dsh-wt-card:first-child {
+  margin-top: 0
+}
+
+/* 抓取卡没有命中清单，整块更薄：轨换成灰调，与「搜了一把」一眼可分 */
+.dsh-wt-card.is-read {
+  border-left-color: var(--bd2);
+  background: rgba(128, 128, 128, .05);
+}
+
+.dsh-wt-card.is-fail {
+  border-left-color: var(--red);
+  background: color-mix(in srgb, var(--red) 5%, transparent);
+}
+
+.dsh-wt-hd {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.dsh-wt-kind {
+  flex: 0 0 auto;
+  color: var(--cyan);
+  font-family: var(--mono);
+  letter-spacing: .3px;
+}
+
+.dsh-wt-card.is-read .dsh-wt-kind {
+  color: var(--muted)
+}
+
+.dsh-wt-card.is-fail .dsh-wt-kind {
+  color: var(--red)
+}
+
+/* 查询词 / 页面标题：单行省略（长 query 不把卡片撑成两行） */
+.dsh-wt-q,
+.dsh-wt-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink);
+}
+
+.dsh-wt-title {
+  margin: 2px 0 0
+}
+
+.dsh-wt-state {
+  flex: 0 0 auto;
+  color: var(--cyan2);
+  animation: dsh-webtool-pulse 1.6s ease-in-out infinite;
+}
+
+.dsh-wt-results {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 3px 0 0;
+  padding-left: 2px;
+}
+
+.dsh-wt-res {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  min-width: 0;
+}
+
+/* 站点名：命中结果的第一列（站点名 / 标题 / 链接三件都要看得见） */
+.dsh-wt-site {
+  flex: 0 0 auto;
+  max-width: 96px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
+.dsh-wt-link {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--cyan2);
+  text-decoration: none;
+}
+
+.dsh-wt-link:hover {
+  text-decoration: underline
+}
+
+.dsh-wt-res-more {
+  color: var(--muted)
+}
+
+/* 失败态：error_code 原样写出来（上游给的码，不翻译、不改写） */
+.dsh-wt-err {
+  margin: 3px 0 0;
+  color: var(--red);
+  font-family: var(--mono);
+  font-size: 10px;
+  line-height: 1.6;
+  word-break: break-all;
+}
+
+/* ── 行内引用角标（url_citation）────────────────────────────────────────────
+   正文里一枚 [n] 上标，n 与「参考来源」那一排同一份编号。角标只是入口 ——
+   点开弹一张来源卡（.dsh-cite-pop），跳转在卡里另给按钮，点角标本身不离开会话。 */
+.dsh-cite-wrap {
+  margin: 0 1px;
+  line-height: 0;
+  vertical-align: super;
+}
+
+.dsh-cite-badge {
+  display: inline-block;
+  margin: 0 1px;
+  padding: 0 2px;
+  border: 0;
+  border-radius: 2px;
+  background: transparent;
+  color: var(--cyan);
+  font: inherit;
+  font-size: 9.5px;
+  line-height: 1.3;
+  vertical-align: super;
+  cursor: pointer;
+}
+
+.dsh-cite-badge:hover,
+.dsh-cite-badge.is-open {
+  background: color-mix(in srgb, var(--cyan) 16%, transparent);
+  color: var(--cyan2);
+}
+
+/* 来源卡：贴着角标的一张小卡（fixed 落点由 app-assist.js 的 dshCitePopShow 现算，
+   z-index 压在会话区菜单之上、整屏浮层之下） */
+.dsh-cite-pop {
+  position: fixed;
+  z-index: 2700;
+  width: 320px;
+  max-width: calc(100vw - 16px);
+  padding: 8px 10px;
+  border: 1px solid var(--bd2);
+  border-radius: 6px;
+  background: var(--bg2);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .38);
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+
+.dsh-cite-pop-hd {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.dsh-cite-pop-n {
+  color: var(--cyan);
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
+.dsh-cite-pop-site {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.dsh-cite-pop-title {
+  margin: 3px 0 0;
+  color: var(--ink);
+  word-break: break-word;
+}
+
+.dsh-cite-pop-url {
+  margin: 2px 0 0;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10px;
+  word-break: break-all;
+}
+
+.dsh-cite-pop-bar {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin: 8px 0 0;
+}
 /* ── 分段渲染（段 = seg）：一次运行里的「思考 / 正文输出 / 工具调用」各成一段 ──
    类名固定：.dsh-seg + .dsh-seg-think / .dsh-seg-say / .dsh-seg-tool。
    设计：思考段灰调低对比 + 左侧灰轨（弱化、可折叠、限高自滚）；

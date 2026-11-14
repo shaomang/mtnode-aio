@@ -366,7 +366,7 @@
                字段填进 #agentDshVer（主进程读 @deepseek-ai/dsh 的 manifest，读不到就留空、
                整枚标签不占位）。仍是「点标题 = 新建会话」，与版本标签无关。 -->
           <span class="agent-side-logo" id="agentLogo" data-i18n-title="新建会话" title="新建会话"><span class="agent-side-name">DeepSeek Harness</span><span class="agent-side-ver" id="agentDshVer" data-i18n-title="dsh 内核版本" title="dsh 内核版本" hidden></span></span>
-          <button id="agentNew" class="agent-side-new" data-i18n-title="新建会话(沿用当前工作目录)" title="新建会话(沿用当前工作目录)">＋ <span data-i18n="新会话">新会话</span></button>
+          <button id="agentNew" class="agent-side-new" data-i18n-title="新建会话(工作目录=当前画布)" title="新建会话(工作目录=当前画布)">＋ <span data-i18n="新会话">新会话</span></button>
         </div>
         <div class="agent-side-search">
           <input id="agentSideFilter" type="text" data-i18n-placeholder="搜索会话…" placeholder="搜索会话…">
@@ -441,6 +441,9 @@
                    计给你看（用户已确认「自己盯」）。 -->
             </div>
             <div class="agent-composer-card">
+              <!-- 这一轮的附件条（PDF / Word / 文本 / 表格）：选文件或拖入后出现在这里，
+                   发送时随这一轮下发（见 renderer/app-attach.js）。空 = 隐藏。 -->
+              <div class="agent-attach" id="agentAttach" hidden></div>
               <textarea id="agentInput" class="chat-input" rows="2" data-i18n-placeholder="选择一个工作区开始" placeholder="选择一个工作区开始"></textarea>
               <div class="agent-composer-actions">
                 <!-- 运行中的两枚实时键（app-assist.js paintAgentInflightButtons 全权接管键面与提示）：
@@ -452,6 +455,7 @@
                      与 #agentSend 同属「JS 说话」的活控件，静态文案只兜住 JS 来不及画的第一帧。 -->
                 <button type="button" class="agent-send agent-steer" id="agentSteer" style="display:none" title="插话：本轮下一步就听见（不打断当前这一步）">⚡ 插话</button>
                 <button type="button" class="agent-send agent-pause" id="agentPause" style="display:none" title="暂停本轮（保留上下文，可继续）">⏸ 暂停</button>
+                <button type="button" class="agent-send agent-attach-btn" id="agentAttachBtn" data-i18n-title="添加文件（PDF / Word / 文本 / 表格，随这条消息发给模型）" title="添加文件（PDF / Word / 文本 / 表格，随这条消息发给模型）">＋</button>
                 <button type="button" class="agent-send" id="agentSend" data-i18n-title="发送" title="发送">↑</button>
               </div>
             </div>
@@ -907,6 +911,14 @@
      无加载期依赖（window.api / I18n / mtDialogForm 全在调用期取），故只要排在用它的
      app.js 之前即可；审阅侧同样按调用期取用。 -->
 <script src="app-inline-img.js"></script>
+<!-- 会话附件（renderer/app-attach.js，出口 window.Attach）：输入区上方的附件条 +
+     「＋」/ 拖入两个入口，上传走主进程的 files:plan / files:upload（Files API），
+     发送时由 app-assist.js 取走并随这一轮下发，网关写进消息标记、运行时在 fetch 层
+     还原成服务商原生的附件部分（标记真源 dsh/gateway/llm-attachments.mjs）。
+     与内嵌图同一口径：本文件不碰 <textarea>.value，所以草稿 / 队列 / 斜杠命令全走老路；
+     加载期只取 window.api / I18n / agentSessionState（都在调用期取），排在 app-assist.js
+     之前即可。 -->
+<script src="app-attach.js"></script>
 <!-- 剪贴板「写」的唯一出口（renderer/app-clipboard.js）：三级链路
      ① navigator.clipboard.writeText → ② preload 桥 window.api.clipboardWriteText
      → ③ execCommand 兜底，返回 { ok, via, error }。所有复制按钮都调它，不许裸调原生 API。
@@ -1068,6 +1080,16 @@
      执行体由 app-nodes.js 的 playNodeBody 在调用期取 playQwenImageNode；
      设置表单在 app-qwenimage.js 末尾注册（registerNodeSettingsForm 已在 app.js 定义）。 -->
 <script src="app-qwenimage.js"></script>
+<!-- DeepSeek 云端语音（官方 API）：两颗节点（deepseek_tts 合成 / deepseek_asr 识别）+ 状态栏
+     两颗按钮的云端档都在这一个文件里（renderer/app-ds-speech.js）。
+     服务商恒为官方 DeepSeek（从 S.config.providers 取 id=deepseek 那条，没有「换一家」入口）；
+     HTTP / WSS 全部在主进程 ds-speech/main-ds-speech.js（preload 白名单 dsSpeech*），
+     这里只做取值 / 播放 / 摘要。执行体由 app-nodes.js 的 playNodeBody 在调用期取
+     playDsTtsNode / playDsAsrNode；body 由 app-canvas.js 的 buildBody 取
+     dsTtsAppendBody / dsAsrAppendBody；设置表单在文件末尾注册。
+     装载位置：必须在 app-canvas.js 之后（registerNodeSettingsForm / nsSelect 等要先定义），
+     且在 app-node-params.js 之前（「参数」端子靠登记表认节点，先登记才能自动包上覆写面板）。 -->
+<script src="app-ds-speech.js"></script>
 <!-- 质检节点族（qa_text / qa_image / qa_video / qa_audio / qa_file · 缺口文档 P0-4）：
      执行体 + 门禁（未过只置需干涉并走未过出 · 人工裁决按需打开）+ ⚙ 设置表单（评分标准 JSON 模板 /
      质检模型）+ body 里可直接改的 JSON 标准（存 qaTemplateJson，入 1 接线即只读）。
@@ -1349,6 +1371,13 @@
      测试期入口只对白名单账号显示（app-wallet.js 的 VISIBLE_USERS，与云端
      MTNODE_RECHARGE_USERS 同口径），服务端另有 403 RECHARGE_NOT_OPEN 兜底。 -->
 <script src="app-wallet.js"></script>
+<!-- 画布底部「建造面板」（renderer/app-canvas-dock.js · 样式在 css/canvas-dock.css）：
+     终末地 HUD 风的面板条，内容完全继承画布右键菜单（调用期读 canvasCreateMenuGroups），
+     点条目走全息幽灵放置、右键 / Esc 取消，左下角边栏按钮收纳。
+     必须排在 app.js / app-settings.js 之后、app-boot.js 之前：
+     app-boot.js 的 init() 末尾调 CanvasDock.mount()，app-settings.js 的开关调 CanvasDock.apply()，
+     而它自己要按 typeof 取 $ / S / toStage / NODE_DEFAULTS / canvasCreateMenuGroups 等既有全局。 -->
+<script src="app-canvas-dock.js"></script>
 <script src="app-boot.js"></script>
 <!-- 顶栏入口的全局快捷键（Space 居中 / D 隐藏线 / J 插件 / K 工具库 / L 素材库；
      原先切视图的 1 画布 / 2 会话 / 3 专家团 三键已移除，这三颗视图按钮不再挂

@@ -114,6 +114,9 @@ const { registerPetIpc, shutdownPet } = require("./pet/main-pet.js");
 /* MOSS-TTS-Nano 内置语音后端（随包、首次启用自动下载，状态栏那枚 TTS 开关）：
    退出时 shutdownMossTts 收掉常驻工作进程，不留后台 python。 */
 const { registerMossTtsIpc, shutdownMossTts } = require("./moss-tts/main-moss-tts.js");
+/* DeepSeek 云端语音（官方 TTS / ASR）：无后端进程，只有两条 HTTPS 与一条 WSS 通道，
+   提供商 Key 由渲染层从官方那条提供商带下来（节点与按钮都不允许换别家）。 */
+const { registerDsSpeechIpc } = require("./ds-speech/main-ds-speech.js");
 const { registerAppPluginsIpc, shutdownAppPlugins, openWindowPlugin, pluginBackendSnapshot } = require("./plugins/main-app-plugins.js");
 /* 用户自建插件（声明式 · <数据目录>/user-plugins + mtnode-plugin.json）：扫目录即出画布节点 /
    MCP / 技能，不碰源码、升级不失效；一键修复与诊断导出也在这里（见 plugins/user-plugins.js） */
@@ -1468,6 +1471,85 @@ ipcMain.handle("session:patch", (e, payload) =>
   ),
 );
 
+/* ── 官方 Files API 上传通道（files:plan / files:upload / files:sessionFiles）─────
+   规则、字段顺序、超时与降级码全部在 files-upload.js 的文件头里（单一真源），
+   这里只做三件事：
+     ① **服务商解析**：渲染层只传 route（不传 Key）→ 按 config.json 里那张卡现取
+        baseUrl，中转服务走 providerAuthKey 的同一份真票（含缺票自愈）；
+     ② 复用聊天那条 preflight（checkProvider）：没 Key / 中转余额耗尽与发消息同一句错；
+     ③ 把 file_id 交回去，并写进主进程侧的会话附件账本。
+   密钥只在本进程里过一手：渲染层拿到的回执里没有任何 Key 字段，日志里也没有。 */
+const { createFilesUpload } = require("./files-upload.js");
+let _filesUpload = null;
+function filesUpload() {
+  if (!_filesUpload) {
+    _filesUpload = createFilesUpload({
+      dataDir: () => DATA(),
+      log: (m) => errLog(String(m)),
+    });
+  }
+  return _filesUpload;
+}
+/* 服务商解析：会话里存的是 route（renderer/app-agent.js 的 providerForAgentRoute 口径）——
+   "deepseek-official" = 官方 DeepSeek 那条，"mtnode_<id>" = 设置里某张卡。
+   认不出来**不回落到别家**：把用户的文件悄悄传到另一条通道比报错糟得多，
+   所以只有 route 为空（老版本 / 没选服务商）时才按官方 DeepSeek 兜底。 */
+function filesProviderOf(ref) {
+  const raw = String(ref || "").trim();
+  const want = raw === "deepseek-official" ? "" : raw.replace(/^mtnode_/, "");
+  const cfg = readJson(join(DATA(), "config.json"), {}) || {};
+  const list = (Array.isArray(cfg.providers) ? cfg.providers : []).filter(
+    (p) => p && typeof p === "object",
+  );
+  const official = () => list.find((p) => isOfficialDeepseekProvider(p)) || null;
+  if (raw === "deepseek-official") return official();
+  if (!want) return official();
+  return (
+    list.find(
+      (p) =>
+        String(p.id || "") === want ||
+        String(p.route || "") === want ||
+        String(p.name || "") === want ||
+        String(p.source || "") === want,
+    ) || null
+  );
+}
+/* 卡片用：类型 → 可选 purpose（规则只在 files-upload.js 里一份，渲染层不再抄） */
+ipcMain.handle("files:plan", (e, payload) => {
+  try {
+    return filesUpload().plan(payload || {});
+  } catch (err) {
+    return { ok: false, code: "files_bad_request", error: String((err && err.message) || err) };
+  }
+});
+ipcMain.handle("files:upload", async (e, payload) => {
+  const p = payload || {};
+  const provider = filesProviderOf(p.providerRoute || p.provider);
+  if (!provider) return { ok: false, code: "files_no_provider", error: I18n.t("未配置服务商") };
+  try {
+    /* 中转服务：本机有登录态却没票时先补一张（与 apiCall 的请求前自愈同一口径） */
+    await ensureRelayCredential({ provider });
+    checkProvider(provider);
+  } catch (err) {
+    return { ok: false, code: "files_no_key", error: String((err && err.message) || err) };
+  }
+  return filesUpload().upload({
+    path: p.path,
+    name: p.name,
+    purpose: p.purpose,
+    sessionId: p.sessionId,
+    baseUrl: provider.baseUrl,
+    /* 中转卡上是占位串：providerAuthKey 取真票（含本机凭据档 / 盘上卡片兜底） */
+    apiKey: providerAuthKey(provider),
+    timeoutMs: p.timeoutMs,
+  });
+});
+/* 会话附件账本（主进程侧留痕）：刷新 / 切会话 / 重启后读回这条会话传过哪些文件 */
+ipcMain.handle("files:sessionFiles", (e, sessionId) => ({
+  ok: true,
+  files: filesUpload().readSessionFiles(sessionId),
+}));
+
 
 /* save/<id>.json 的「列表元数据」缓存：workflow:list 只需要 id / name / 节点数三个字段，
    原本每次调用都把每张画布整读 + JSON.parse 一遍（本机实测 32 张 / 6.3 MB，最大一张
@@ -1771,7 +1853,7 @@ ipcMain.handle("workflow:save", (e, { id, data }) => {
    默认不录（渲染层 window.CanvasTake.start() 才开），没在录时这两个入口都不做事。
    帧号只在这里换算（MTCanvasTake.frameOf）：两路时钟各自报 ms，落帧只有一个口径。 */
 const MTCanvasTake = require("./canvas-doc/canvas-take.js");
-/* 自包含 html（take:append 收尾时生成、take:openHtml 用系统浏览器打开）：纯生成器，不碰应用状态 */
+/* 回放页（take:append 收尾时生成、take:openHtml 用系统浏览器打开）：页 + 复用库，纯生成器，不碰状态 */
 const TakeHtml = require("./canvas-doc/take-html.js");
 const TAKE_MAX_ENTRIES = 400; /* 一批条目上限（渲染层一批最多 400，这里是防护栏） */
 const takeBuckets = new Map(); /* "<wfId>::<takeId>" → { take, prevDoc, chain, at, … } */
@@ -1883,9 +1965,9 @@ ipcMain.handle("take:append", async (e, arg) => {
   }
   try {
     const w = await takeQueueWrite(b);
-    /* 收尾那一笔顺手生成自包含 html（人可以直接看的那一份）：失败**不回滚 take**，
-       只把错误放进回执 —— 账已经落盘，缺的只是那只播放页。不设体积 / 时长上限，
-       回执里只报生成后的字节数。 */
+    /* 收尾那一笔顺手生成回放页（人可以直接看的那一份；播放器与样式走 _take-lib 复用库）：
+       失败**不回滚 take**，只把错误放进回执 —— 账已经落盘，缺的只是那只播放页。不设体积 /
+       时长上限，回执里只报生成后的字节数（页面只带自己那份数据，库只放一份）。 */
     let htmlPath = "";
     let htmlBytes = 0;
     let htmlError = "";
@@ -1923,7 +2005,7 @@ ipcMain.handle("take:append", async (e, arg) => {
     return { ok: false, error: String((err && err.message) || err) };
   }
 });
-/* 用系统默认浏览器打开一条 take 的播放页（自包含 html）。
+/* 用系统默认浏览器打开一条 take 的播放页（页面 + 同根 _take-lib 复用库）。
    只认 <数据目录>\takes\ 之下的 .html：渲染层能传上来的就只有这一条路径，
    别的路径一律拒（shell.openExternal 对 file: 不做协议白名单，这道闸得在这里）。 */
 ipcMain.handle("take:openHtml", async (e, p) => {
@@ -1939,8 +2021,13 @@ ipcMain.handle("take:openHtml", async (e, p) => {
       return { ok: false, error: I18n.t("只能打开 takes 目录下的 take html") };
     const st = await fs.promises.stat(abs).catch(() => null);
     if (!st || !st.isFile()) return { ok: false, error: I18n.t("文件不存在") };
+    /* 打开前顺手升级一次：旧生成器出的页面皮肤类只挂在壳那层 div 上，整窗会退回旧样式。
+       take 的 .json 才是真源 —— 同目录同名 json 在就按当前生成器重写这一只；失败只记日志，
+       旧页面照开（宁可样式旧，不能打不开）。 */
+    const up = await TakeHtml.upgradeAt(abs, { root: takesRoot() });
+    if (!up.ok && up.error) errLog("[canvas-take] 回放页升级失败（照原样打开）：" + up.error);
     await shell.openExternal(pathToFileURL(abs).href);
-    return { ok: true, path: abs };
+    return { ok: true, path: abs, upgraded: !!up.upgraded };
   } catch (err) {
     return { ok: false, error: String((err && err.message) || err) };
   }
@@ -10600,6 +10687,9 @@ app.whenReady().then(() => {
   /* 本地语音转写（官方本地 SenseVoice）：识别在 dsh 运行时里跑，主进程这一层只有
      「转写缓存 + 音频读盘」（见 speech-store.js）；不再有需要起停的 ASR 后端进程 */
   registerSpeechIpc({ getDataDir: DATA });
+  /* DeepSeek 云端语音：TTS 整段 / 流式（WSS）+ ASR 整段上传。没有常驻进程，注册即用；
+     官方那条提供商被删掉时渲染层会给出「去设置里补 Key」的提示，这里不做兜底换家。 */
+  registerDsSpeechIpc({ getDataDir: DATA, getMainWin: () => mainWin });
   /* InfiniteTalk 数字人（Wan2.1 I2V 14B）：独立 ComfyUI（默认 8199）/ 安装 / 出片。
      产物落画布资产目录（与 proc_image / H3 同一去处）；音频按 81 帧分块由宿主续写。 */
   registerInfinitetalkIpc({

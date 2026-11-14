@@ -1793,6 +1793,15 @@ async function init() {
      只在真的查到命中时才亮红字；失败静默不显示（见本文件 paintAppDirWarn）。 */
   bindAppDirWarnClick();
   checkAppDirWarn();
+  /* 画布底部「建造面板」（renderer/app-canvas-dock.js）：首帧之后再挂 —— 它要按 toStage
+     量画布矩形来建菜单快照，此时 #stage / #canvas 的布局已经落定。总开关在 S.config.canvasDock。 */
+  if (window.CanvasDock && typeof CanvasDock.mount === "function") {
+    try {
+      CanvasDock.mount();
+    } catch (e) {
+      console.warn("[canvas-dock] mount failed", e);
+    }
+  }
 }
 
 init();

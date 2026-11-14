@@ -25,6 +25,8 @@
     "yue_gen",
     "breeze_gen",
     "moss_music",
+    "deepseek_tts",
+    "deepseek_asr",
     "video_gen",
     "infinitetalk_gen",
     "soulxflashhead_gen",

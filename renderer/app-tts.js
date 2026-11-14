@@ -46,7 +46,30 @@
     breeze: [],
     busy: false, /* 安装 / 下载中 */
     synth: false, /* 正在合成第一句（按钮亮成 …） */
+    /* 播报引擎：local = 本机 MOSS-TTS-Nano（默认）· cloud = DeepSeek 官方云端 TTS
+       （renderer/app-ds-speech.js 的 dsSpeechSpeak：WSS 边合成边播，另留一份 wav）。
+       选择记在 localStorage（跨会话保留），不进 config.json。 */
+    engine: "local",
+    cloudVoice: "stella",
+    /* 主进程记的「本机档开没开」：切到云端再切回来时用它的值，别把两边搅在一起 */
+    mainEnabled: false,
   };
+
+  /* 云端档的播放句柄（{stop()}）：打断 / 重播时由 interrupt() 一起收掉 */
+  let cloudPlay = null;
+  const ENGINE_KEY = "mtnode.tts.engine";
+  const CLOUD_VOICE_KEY = "mtnode.tts.cloudVoice";
+  /* 云端档的开关：本机档的「开」= 装模型 + 起 worker（主进程记状态），
+     云端档没有可装的东西，开关只是一个偏好位 —— 记在 localStorage，别去动主进程的
+     mossTtsEnable（那会弹出「首次启用要下载 MOSS-TTS-Nano」的安装窗）。 */
+  const CLOUD_ON_KEY = "mtnode.tts.cloudOn";
+  try {
+    const e = localStorage.getItem(ENGINE_KEY);
+    if (e === "cloud" || e === "local") st.engine = e;
+    const v = localStorage.getItem(CLOUD_VOICE_KEY);
+    if (v === "stella" || v === "tide") st.cloudVoice = v;
+    if (st.engine === "cloud") st.enabled = localStorage.getItem(CLOUD_ON_KEY) === "1";
+  } catch (_) {}
 
   /* ── 播放队列 ────────────────────────────────────────────────────────
      一次播报 = 一个 session（reqId 前缀），句子的每一段各有自己的 reqId
@@ -82,6 +105,13 @@
 
   function interrupt() {
     stopAudio();
+    /* 云端档：WebAudio 排播的 PCM 与主进程那条 WS 一起停（模块没加载就是空函数） */
+    if (cloudPlay) {
+      try {
+        cloudPlay.stop();
+      } catch (_) {}
+      cloudPlay = null;
+    }
     if (window.api && api.mossTtsCancel) {
       for (const id of play.ids) {
         try {
@@ -413,6 +443,17 @@
     else if (!st.enabled) face = "🔇";
     b.textContent = face;
     const name = (st.voice && st.voice.name) || "Deepseek";
+    if (engineIsCloud()) {
+      /* 云端：没有模型下载、没有推理设备 —— 标题里只写引擎与音色，
+         否则「首次会下载模型 / 推理设备：CPU」会让人以为关掉云端就等于装了本机模型。 */
+      const v = st.cloudVoice === "tide" ? T("tide（英文男声）") : T("stella（英文女声 · 默认）");
+      b.title = st.enabled
+        ? T("语音播报已开（声音：") + v + T("）· 左键关闭，右键换引擎 / 音色")
+        : T("语音播报已关 · 左键开启（DeepSeek 云端，无需下载模型），右键换引擎 / 音色");
+      b.title += " · " + T("引擎：") + T("DeepSeek 云端");
+      b.setAttribute("aria-pressed", st.enabled ? "true" : "false");
+      return;
+    }
     const dev = T("推理设备：") + deviceLabel();
     b.title = st.enabled
       ? T("语音播报已开（声音：" + name + "）· 左键关闭，右键换音色") + " · " + dev
@@ -442,6 +483,7 @@
   function applyState(s) {
     if (!s || !s.ok) return;
     st.enabled = !!s.enabled;
+    st.mainEnabled = !!s.enabled;
     st.installed = !!s.installed;
     st.running = !!s.running;
     st.voice = s.voice || st.voice;
@@ -462,6 +504,8 @@
       applyState(await api.mossTtsState());
     } catch (_) {}
     st.loaded = true;
+    /* 云端档不看主进程的 enabled（那是本机 worker 的开关） */
+    if (engineIsCloud()) st.enabled = cloudOn();
     paint();
   }
 
@@ -555,8 +599,32 @@
   }
 
   function toggle() {
-    if (st.enabled) disable();
+    if (st.enabled) {
+      if (engineIsCloud()) disableCloud();
+      else disable();
+      return;
+    }
+    if (engineIsCloud()) enableCloud();
     else enable();
+  }
+
+  /* 云端档的开 / 关：不装模型、不起 worker，只翻一个偏好位（见 CLOUD_ON_KEY 的注释） */
+  function enableCloud() {
+    st.enabled = true;
+    try {
+      localStorage.setItem(CLOUD_ON_KEY, "1");
+    } catch (_) {}
+    paint();
+    bubble(T("语音播报已开启（") + T("DeepSeek 云端") + T("）"));
+  }
+  function disableCloud() {
+    try {
+      localStorage.setItem(CLOUD_ON_KEY, "0");
+    } catch (_) {}
+    interrupt();
+    st.enabled = false;
+    paint();
+    bubble(T("语音播报已关 · 左键开启"));
   }
 
   /* ── 右键菜单 ──────────────────────────────────────────────────────── */
@@ -862,60 +930,107 @@
     const m = document.createElement("div");
     m.id = "ttsMenu";
     m.className = "tts-menu";
-    m.appendChild(menuItem(T("当前音色：") + ((st.voice && st.voice.name) || "Deepseek"), "", () => {}, true));
-    if (st.voice && st.voice.fallback)
-      m.appendChild(menuItem(T("（Breeze 角色已失效，已回落内置默认）"), "", () => {}, true));
-    m.appendChild(menuItem(T("上传 / 更换 prompt 音频…"), "", pickAudio));
-    m.appendChild(menuItem(T("恢复内置默认音色（Deepseek）"), "", async () => {
-      await api.mossTtsSetVoice({ kind: "builtin" });
-      await refresh();
-    }));
-    if (!st.breeze.length) {
-      m.appendChild(menuItem(T("引用 Breeze 角色：未检测到 Breeze 角色"), "", () => {}, true));
-    } else {
-      for (const p of st.breeze) {
-        for (const g of p.groups || []) {
-          const label = "Breeze · " + p.name + (g.name ? " · " + g.name : "");
-          const active =
-            st.voice && st.voice.kind === "breeze" && st.voice.presetId === p.id && st.voice.groupId === g.id;
-          m.appendChild(
-            menuItem((active ? "● " : "") + label, "", async () => {
-              await api.mossTtsSetVoice({ kind: "breeze", presetId: p.id, groupId: g.id });
-              await refresh();
-            })
-          );
-        }
-      }
-    }
-    /* 推理设备分组：只改偏好（装哪版 onnxruntime 仍由探测决定），当前项打勾 */
-    m.appendChild(menuItem(T("推理设备"), deviceLabel(), () => {}, true));
-    const providers = [
-      { val: "auto", label: T("自动 · GPU 优先（失败回落 CPU）") },
-      { val: "cpu", label: T("强制 CPU（不试 CUDA，最稳）") },
-    ];
-    for (const p of providers) {
-      const active = (st.provider === "cpu" ? "cpu" : "auto") === p.val;
+    /* 播报引擎（本机 / 云端二选一）：同一颗 🔊 按钮，切了就整条链换后端。
+       云端档下面紧跟云端音色（官方文档只有 stella / tide 两种）。 */
+    m.appendChild(
+      menuItem(
+        T("播报引擎"),
+        engineIsCloud() ? T("DeepSeek 云端") : T("本机 MOSS-TTS-Nano"),
+        () => {},
+        true
+      )
+    );
+    for (const e of [
+      { val: "local", label: T("本机 MOSS-TTS-Nano（离线 · 默认）") },
+      { val: "cloud", label: T("DeepSeek 云端（官方 API · 边合成边播）") },
+    ]) {
+      const active = (engineIsCloud() ? "cloud" : "local") === e.val;
       m.appendChild(
-        menuItem((active ? "● " : "○ ") + p.label, "", async () => {
-          if (!window.api || !api.mossTtsSetProvider) return;
-          try {
-            const r = await api.mossTtsSetProvider(p.val);
-            if (r && r.state) applyState(r.state);
-            else await refresh();
-            paint();
-            bubble(T("推理设备已切换：") + deviceLabel());
-          } catch (e) {
-            if (typeof toast === "function")
-              toast(T("切换推理设备失败：") + String((e && e.message) || e), "err");
-          }
+        menuItem((active ? "● " : "○ ") + e.label, "", () => {
+          setEngine(e.val);
+          bubble(T("播报引擎已切换：") + (e.val === "cloud" ? T("DeepSeek 云端") : T("本机 MOSS-TTS-Nano")));
         })
       );
     }
+    if (engineIsCloud()) {
+      m.appendChild(menuItem(T("云端音色（voice_id）"), st.cloudVoice, () => {}, true));
+      for (const v of [
+        ["stella", T("stella（英文女声 · 默认）")],
+        ["tide", T("tide（英文男声）")],
+      ]) {
+        const active = st.cloudVoice === v[0];
+        m.appendChild(
+          menuItem((active ? "● " : "○ ") + v[1], "", () => {
+            setCloudVoice(v[0]);
+            bubble(T("云端音色已切换：") + v[0]);
+          })
+        );
+      }
+    }
+    /* 以下这一整块是「本机 MOSS-TTS-Nano」专属：音色文件、Breeze 角色、onnxruntime 推理设备。
+       云端引擎下这些东西一个都不生效（音色只有 voice_id 两个），留着只会让人以为能选。 */
+    if (!engineIsCloud()) {
+      m.appendChild(menuItem(T("当前音色：") + ((st.voice && st.voice.name) || "Deepseek"), "", () => {}, true));
+      if (st.voice && st.voice.fallback)
+        m.appendChild(menuItem(T("（Breeze 角色已失效，已回落内置默认）"), "", () => {}, true));
+      m.appendChild(menuItem(T("上传 / 更换 prompt 音频…"), "", pickAudio));
+      m.appendChild(menuItem(T("恢复内置默认音色（Deepseek）"), "", async () => {
+        await api.mossTtsSetVoice({ kind: "builtin" });
+        await refresh();
+      }));
+      if (!st.breeze.length) {
+        m.appendChild(menuItem(T("引用 Breeze 角色：未检测到 Breeze 角色"), "", () => {}, true));
+      } else {
+        for (const p of st.breeze) {
+          for (const g of p.groups || []) {
+            const label = "Breeze · " + p.name + (g.name ? " · " + g.name : "");
+            const active =
+              st.voice && st.voice.kind === "breeze" && st.voice.presetId === p.id && st.voice.groupId === g.id;
+            m.appendChild(
+              menuItem((active ? "● " : "") + label, "", async () => {
+                await api.mossTtsSetVoice({ kind: "breeze", presetId: p.id, groupId: g.id });
+                await refresh();
+              })
+            );
+          }
+        }
+      }
+      /* 推理设备分组：只改偏好（装哪版 onnxruntime 仍由探测决定），当前项打勾 */
+      m.appendChild(menuItem(T("推理设备"), deviceLabel(), () => {}, true));
+      const providers = [
+        { val: "auto", label: T("自动 · GPU 优先（失败回落 CPU）") },
+        { val: "cpu", label: T("强制 CPU（不试 CUDA，最稳）") },
+      ];
+      for (const p of providers) {
+        const active = (st.provider === "cpu" ? "cpu" : "auto") === p.val;
+        m.appendChild(
+          menuItem((active ? "● " : "○ ") + p.label, "", async () => {
+            if (!window.api || !api.mossTtsSetProvider) return;
+            try {
+              const r = await api.mossTtsSetProvider(p.val);
+              if (r && r.state) applyState(r.state);
+              else await refresh();
+              paint();
+              bubble(T("推理设备已切换：") + deviceLabel());
+            } catch (e) {
+              if (typeof toast === "function")
+                toast(T("切换推理设备失败：") + String((e && e.message) || e), "err");
+            }
+          })
+        );
+      }
+    }
     m.appendChild(menuItem(T("试听当前音色"), "", async () => {
+      /* 云端档不需要先「开」（那只是自动播报的开关）；试听永远直接合成一句 */
+      if (engineIsCloud()) {
+        speakCloud(T("这是当前的语音播报音色，听起来还可以吗？"));
+        return;
+      }
       if (!st.enabled) await enable();
       speak(T("这是当前的语音播报音色，听起来还可以吗？"));
     }));
-    m.appendChild(menuItem(T("语音参数微调（temperature 等）…"), "", () => openParamsDialog()));
+    if (!engineIsCloud())
+      m.appendChild(menuItem(T("语音参数微调（temperature 等）…"), "", () => openParamsDialog()));
     m.appendChild(menuItem(T("朗读任意内容（测试）…"), "", () => openSpeakDialog()));
     m.appendChild(menuItem(T("打开数据目录（权重 / 日志）"), "", () => api.mossTtsOpenRoot()));
     document.body.appendChild(m);
@@ -1040,9 +1155,86 @@
   function speak(text) {
     const body = String(text || "").trim();
     if (!body || !st.enabled) return;
+    if (engineIsCloud()) {
+      speakCloud(body);
+      return;
+    }
     const s = beginSpeech();
     s.feed(body);
     s.end();
+  }
+
+  /* ── 云端档（DeepSeek 官方 TTS）─────────────────────────────────────────
+     与本地档同一套「摘要 → 气泡 → 播报」外观，区别只在合成在哪：本地走
+     MOSS-TTS-Nano worker（按句合成 + 队列播放），云端走官方 WSS（24kHz PCM
+     帧边收边播，主进程同时落一份 wav 可回放）。
+     失败直接说清原因（**不**静默回退本机 —— 与需求一致）。 */
+  function engineIsCloud() {
+    return st.engine === "cloud";
+  }
+  function setEngine(v) {
+    st.engine = v === "cloud" ? "cloud" : "local";
+    try {
+      localStorage.setItem(ENGINE_KEY, st.engine);
+    } catch (_) {}
+    /* 两个引擎各有自己的开关：切过去就按那边的值显示（云端 = 偏好位，本机 = 主进程状态） */
+    st.enabled = engineIsCloud() ? cloudOn() : !!st.mainEnabled;
+    paint();
+  }
+  function cloudOn() {
+    try {
+      return localStorage.getItem(CLOUD_ON_KEY) === "1";
+    } catch (_) {
+      return false;
+    }
+  }
+  function setCloudVoice(v) {
+    st.cloudVoice = v === "tide" ? "tide" : "stella";
+    try {
+      localStorage.setItem(CLOUD_VOICE_KEY, st.cloudVoice);
+    } catch (_) {}
+    paint();
+  }
+  function speakCloud(text) {
+    const body = String(text || "").trim();
+    if (!body) return;
+    if (typeof window.dsSpeechSpeak !== "function") {
+      if (typeof toast === "function") toast(T("云端语音模块未加载（renderer/app-ds-speech.js）"), "err");
+      return;
+    }
+    interrupt();
+    const pe = typeof window.dsSpeechOfficialProvider === "function" ? window.dsSpeechOfficialProvider() : null;
+    if (!pe || !pe.apiKey) {
+      const msg = T("云端语音不可用：官方 DeepSeek 提供商没有 API Key（设置 · 模型服务 · DeepSeek）");
+      bubble(msg);
+      if (typeof toast === "function") toast(msg, "warn");
+      return;
+    }
+    bubble(body);
+    play.spoken = body;
+    st.synth = true;
+    paint();
+    const handle = window.dsSpeechSpeak(body, { voiceId: st.cloudVoice || "stella" });
+    cloudPlay = handle;
+    handle.promise
+      .then((res) => {
+        if (cloudPlay === handle) cloudPlay = null;
+        st.synth = false;
+        paint();
+        if (!res || res.ok) return;
+        if (res.code === "cancelled") return;
+        const msg =
+          typeof window.dsSpeechErrorText === "function"
+            ? window.dsSpeechErrorText(res.code, res.message)
+            : String(res.message || res.code || "");
+        if (typeof toast === "function") toast(T("云端语音播报失败：") + msg, "err");
+      })
+      .catch((e) => {
+        if (cloudPlay === handle) cloudPlay = null;
+        st.synth = false;
+        paint();
+        if (typeof toast === "function") toast(T("云端语音播报失败：") + String((e && e.message) || e), "err");
+      });
   }
 
   /* ── 悬浮摘要气泡（会自动消失；点一下复制并立刻收起）────────────────── */

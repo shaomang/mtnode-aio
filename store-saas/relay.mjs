@@ -9,6 +9,8 @@ import { hotAppendRows } from "./hot-store.mjs";
  *   POST /relay/v1/chat/completions          → 文本 / 识图（支持 stream，SSE 原样转发）
  *   POST /relay/v1/images/generations        → 文生图（JSON）
  *   POST /relay/v1/images/edits              → 图生图 / 蒙版局部重绘（multipart，整包转发）
+ *   POST /relay/v1/files                     → 文件上传（multipart，整包转发；上限 100MiB）
+ *   GET  /relay/v1/files/{id}                → 取回 / 查单个文件（原样透传上游）
  *   GET  /relay/v1/usage                     → 本账号用量自查（余额 + 最近调用明细）
  *
  * 本轮共识（内部测试口径）：
@@ -121,6 +123,13 @@ const USAGE_KEEP = 5000; // relayUsage 全局保留条数（明细只用于自�
 const AUDIT_KEEP = 500; // relayAudit 保留条数（谁 / 何时 / 改了哪项）
 const TEST_KEY_TTL_MS = 30 * 60 * 1000; // 管理台会话测试的临时 Key 有效期（30 分钟）
 const TEST_KEY_PREFIX = "mtr_test_"; // 前缀便于日志里一眼认出是测试流量
+/* 文件路由（/relay/v1/files）的请求体上限 = 100MiB：上游文件接口的文档上限就是这个数。
+   server.mjs 的 readBody 默认 40MB（MAX_BODY），这里**只给这两条文件路由**单独放宽
+   （readBody 支持第二参数 maxBytes，其它端点一个字节不动），超限时由 readBody 回 413。
+   入口还有一道 nginx：`location ^~ /mtnode/store-api/relay/` 的 client_max_body_size
+   由 store-saas/patch-nginx.py 跟着这个常量对齐（105m，留 multipart 信封余量）——
+   只改这里不改 nginx，稍大的文件会在入口就被掐成 nginx 的 413 HTML 页。 */
+const RELAY_FILES_MAX_BODY = 100 * 1024 * 1024;
 
 function envName(v) {
   return String(process.env[v] == null ? "" : process.env[v]).trim();
@@ -1359,6 +1368,100 @@ export function createRelay(deps) {
     }
   }
 
+  /* ---------- 端点：文件（OpenAI Files 兼容：POST /files 上传、GET /files/{id} 取回） ----------
+     为什么要有它：客户端把整份文件交给模型（对话附件 / 批量任务）时走的是 Files 接口，
+     中转站不补这一层，用户就得自己去填一个能上传文件的 Key。
+     口径：
+       · 鉴权 / 余额门禁 / 限流 / 错误体 = 与对话路由完全一致（都在 handle 的公共段里做完）；
+       · 转发 = **整包透传**（Content-Type 连 boundary 一起照抄、body 一个字节不改，
+         与 /relay/v1/images/edits 同一写法），所以文件既不被解析也不落盘；
+       · 用量记账 = 与对话路由同一口径：上游不回 usage 就**不扣费**，成功那次只记服务端日志
+         （文件接口没有 token / 张数可计，硬写一条 0 元用量会把「文本调用数」统计带偏）；
+       · 路由体的上限单独放宽到 100MiB（RELAY_FILES_MAX_BODY），其余端点仍旧 40MB。
+     上游选择：文件本身不绑模型 → 缺省走文本通道那一路（与对话路由同一上游），
+     需要时用 ?channel=image 或 ?model=<已上架模型 id> 指定；都不是就回 503，不猜。 */
+
+  /** 文件路由走哪条上游（见上面的口径注释）；找不到可用上游时回 null。 */
+  function filesUpstream(ctx) {
+    const q = ctx && ctx.url && ctx.url.searchParams ? ctx.url.searchParams : null;
+    const wantModel = String((q && q.get("model")) || "").trim();
+    if (wantModel) {
+      const m = modelBy.get(wantModel);
+      const up = m && m.enabled !== false ? upstreamOf(m) : null;
+      if (up && up.enabled !== false) return up;
+    }
+    const kind = String((q && q.get("channel")) || "").trim() === "image" ? "image" : "text";
+    const m = (cfg.models || []).find((x) => x.upstream === kind && x.enabled !== false && upstreamOf(x) && upstreamOf(x).enabled !== false);
+    return m ? upstreamOf(m) : null;
+  }
+
+  async function handleFiles(ctx, fileId) {
+    const up = filesUpstream(ctx);
+    if (!up) {
+      return sendError(ctx.res, 503, "中转站没有可用的文件上游：请在管理台「中转服务」里绑定一个上游（缺省走文本通道）", "relay_not_configured", "api_error");
+    }
+    if (!up.key) return notConfigured(ctx.res, null, up);
+
+    const started = Date.now();
+    let raw = null;
+    let upres;
+    try {
+      if (fileId) {
+        // 取回 / 查单个文件：GET /files/{id}（id 原样进路径，不解析、不校验形状）
+        upres = await callUpstream(ctx, up, "/files/" + encodeURIComponent(fileId), {
+          method: "GET",
+          headers: { Authorization: "Bearer " + up.key, Accept: String(ctx.req.headers["accept"] || "application/json") },
+        }, up.timeoutMs);
+      } else {
+        /* multipart 整包读：上限 100MiB。超限时 readBody 回 413（报文自带「上限多少 / 收到多少」），
+           这里换成本路由自己的文案，别把「减小应用包或截图数量」那句带给调文件接口的人。 */
+        try {
+          raw = await readBody(ctx.req, RELAY_FILES_MAX_BODY);
+        } catch (e) {
+          const tooBig = Number(e && e.status) === 413;
+          return sendError(
+            ctx.res,
+            tooBig ? 413 : 400,
+            tooBig
+              ? "文件太大：单次上传上限 " + Math.round(RELAY_FILES_MAX_BODY / 1024 / 1024) + "MB（上游文件接口的文档上限），请压缩或切分后再传"
+              : "读取上传内容失败：" + ((e && e.message) || e),
+            tooBig ? "file_too_large" : "invalid_request",
+            tooBig ? "invalid_request_error" : "api_error",
+          );
+        }
+        if (!raw.length) return sendError(ctx.res, 400, "请求体为空：文件上传要用 multipart/form-data 带 file 字段", "invalid_request");
+        upres = await callUpstream(ctx, up, "/files", {
+          method: "POST",
+          headers: {
+            /* Content-Type 必须连 boundary 一起照抄，否则上游解不出 multipart */
+            "Content-Type": ctx.req.headers["content-type"] || "multipart/form-data",
+            Authorization: "Bearer " + up.key,
+            Accept: "application/json",
+          },
+          body: raw,
+        }, up.timeoutMs);
+      }
+    } catch (e) {
+      return sendError(ctx.res, 502, "上游请求失败：" + ((e && e.message) || e), "upstream_error", "api_error");
+    }
+
+    const { res: ur } = upres;
+    const buf = Buffer.from(await ur.arrayBuffer());
+    if (ur.ok) {
+      /* 不扣费（上游文件接口不回 usage）——与对话路由「无 usage 不扣只记日志」同一口径：
+         成功那次只留一行服务端日志，不写用量明细（写进去会让「文本调用数」虚高）。 */
+      console.log(
+        "[relay] 文件" + (fileId ? "取回" : "上传") + "成功，按「无 usage 不扣费」口径只记日志："
+          + "user=" + (ctx.user.username || ctx.user.id) + " upstream=" + up.id
+          + (fileId ? " file=" + fileId : " bytes=" + (raw ? raw.length : 0)) + " ms=" + (Date.now() - started),
+      );
+    }
+    const headers = Object.assign({ "Content-Type": ur.headers.get("content-type") || "application/json; charset=utf-8", "Content-Length": buf.length, "Cache-Control": "no-store" }, corsHeaders());
+    if (ctx.res.destroyed) return undefined;
+    if (!ctx.res.headersSent) ctx.res.writeHead(ur.status, headers);
+    return ctx.res.end(buf);
+  }
+
   /* ---------- 鉴权 / 门禁 / 白名单 ---------- */
 
   function pickModel(ctx, model, kind) {
@@ -1441,13 +1544,17 @@ export function createRelay(deps) {
     if (method === "POST" && p === "/relay/v1/chat/completions") return handleChat(ctx);
     if (method === "POST" && p === "/relay/v1/images/generations") return handleImages(ctx, "generations");
     if (method === "POST" && p === "/relay/v1/images/edits") return handleImages(ctx, "edits");
+    /* 文件（Files 兼容）：POST /relay/v1/files 上传（multipart 整包透传）、
+       GET /relay/v1/files/{id} 取回 / 查状态。该路由体量上限放宽到 100MiB（RELAY_FILES_MAX_BODY）。 */
+    if (method === "POST" && p === "/relay/v1/files") return handleFiles(ctx, "");
+    if (method === "GET" && p.startsWith("/relay/v1/files/")) return handleFiles(ctx, p.slice("/relay/v1/files/".length));
     return sendError(res, 404, "中转站没有这个端点：" + p, "not_found");
   }
 
   /** 启动日志用：一眼看出上游凭据是否就位（不含任何 Key 材料）。 */
   function describe() {
     return {
-      endpoints: ["/relay/v1/models", "/relay/v1/usage", "/relay/v1/chat/completions", "/relay/v1/images/generations", "/relay/v1/images/edits"],
+      endpoints: ["/relay/v1/models", "/relay/v1/usage", "/relay/v1/chat/completions", "/relay/v1/images/generations", "/relay/v1/images/edits", "/relay/v1/files", "/relay/v1/files/{id}"],
       upstreams: (cfg.upstreams || []).map((u) => ({
         id: u.id,
         label: u.name,

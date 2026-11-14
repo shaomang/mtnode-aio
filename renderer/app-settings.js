@@ -562,6 +562,8 @@ function openSettingsBody() {
       S.assistProvider = S.config.dsh.provider;
       S.assistModel = "";
       paintModelOptions(S.config.dsh.provider, "");
+      /* 换服务商 = 换「能不能吃 DeepSeek 服务端工具」：联网搜索那格的置灰与说明立刻重画 */
+      paintWebRow();
       settingsSaved(0);
       /* 助手栏此刻可能开着：它的两格读的就是这一份，顺手回刷 */
       if (typeof fillAssistModelControls === "function") {
@@ -585,6 +587,62 @@ function openSettingsBody() {
       }
     };
 
+    /* ── ⑤ 联网搜索（DeepSeek 服务端工具，默认开）──
+       只有两类服务商吃这套协议（OpenAI 兼容 /chat/completions + 服务端工具声明，实测见
+       docs/deepseek-web-tools-probe.md）：DeepSeek 官方与 MTNode 中转。其它服务商声明
+       这两条会被上游拒，所以这里不是隐藏而是**置灰 + 写明原因** —— 换回官方 / 中转立刻
+       恢复可点（paintWebRow 在换服务商时重画）。
+       思考档开着时上游自动走深度搜索（kind="deep_search" 由服务端决定，协议里没有对应的
+       客户端参数），所以这一项不需要第二枚 UI。 */
+    const webRow = document.createElement("label");
+    webRow.className = "n-field dsh-websearch-row";
+    const webLine = document.createElement("span");
+    webLine.className = "dsh-websearch-line";
+    const webCb = document.createElement("input");
+    webCb.type = "checkbox";
+    webCb.checked = dshWebSearchOn();
+    webLine.appendChild(webCb);
+    webLine.appendChild(
+      document.createTextNode(I18n.t("联网搜索（DeepSeek 服务端工具）")),
+    );
+    webRow.appendChild(webLine);
+    const webNote = document.createElement("span");
+    webNote.className = "dsh-websearch-note";
+    webRow.appendChild(webNote);
+    settingsTipBeside(
+      webRow,
+      "联网搜索（DeepSeek 服务端工具）",
+      "开着时每一轮都随请求声明 deepseek_web_search / deepseek_read_url，由上游执行搜索与抓取；" +
+        "关掉则一条都不声明（省 token、不再产生联网调用）。只对 DeepSeek 官方与 MTNode 中转生效。",
+    );
+    /* 置灰口径 = 当前选中的服务商能不能吃这套协议（判据真源在 app-agent.js：
+       providerSupportsServerWebTools，与会话下发用的是同一枚函数） */
+    const paintWebRow = () => {
+      const route = String(provSel.value || "");
+      const ok =
+        typeof providerSupportsServerWebTools === "function"
+          ? providerSupportsServerWebTools(route)
+          : false;
+      webCb.disabled = !ok;
+      webRow.classList.toggle("is-off", !ok);
+      if (ok) {
+        webNote.textContent = "";
+        webNote.style.display = "none";
+        return;
+      }
+      const g = defaultProviderGroups().filter((x) => x.id === route)[0];
+      webNote.textContent = I18n.t(
+        "当前服务商「{name}」不走 DeepSeek 官方协议，声明这两条工具会被上游拒绝，所以这里不可用；换成 DeepSeek 官方或 MTNode 中转即恢复。",
+        { name: (g && g.name) || route || I18n.t("（未选择）") },
+      );
+      webNote.style.display = "";
+    };
+    webCb.onchange = () => {
+      S.config.dsh.webSearch = !!webCb.checked;
+      settingsSaved(0);
+    };
+    sec.appendChild(webRow);
+    paintWebRow();
 
     body.appendChild(sec);
   }
@@ -735,6 +793,35 @@ function openSettingsBody() {
     "节点说明按钮",
   );
   body.appendChild(helpRow);
+
+  /* 画布底部「建造面板」（renderer/app-canvas-dock.js）：终末地 HUD 风的面板条，
+     内容完全继承画布右键菜单（方形按钮 + 上 icon 下文字、竖分隔线、点条目出全息幽灵放置）。
+     默认开；取消勾选后整条面板不渲染、不占画布底部，右键菜单照旧。 */
+  const dockRow = document.createElement("label");
+  dockRow.className = "n-field";
+  dockRow.style.flexDirection = "row";
+  dockRow.style.alignItems = "center";
+  const dockCb = document.createElement("input");
+  dockCb.type = "checkbox";
+  dockCb.checked = !(S.config && S.config.canvasDock === false);
+  /* 即时生效：勾 / 取消后马上 apply（模块自己负责挂载与显隐），不必重开设置 */
+  dockCb.onchange = () => {
+    S.config.canvasDock = !!dockCb.checked;
+    settingsSaved(0);
+    if (window.CanvasDock && typeof CanvasDock.apply === "function") {
+      try {
+        CanvasDock.apply();
+      } catch (_) {}
+    }
+  };
+  dockRow.appendChild(dockCb);
+  dockRow.appendChild(document.createTextNode(I18n.t("画布底部「建造面板」")));
+  settingsTipBeside(
+    dockRow,
+    "画布底部「建造面板」（终末地风格的面板条：方形按钮 + 上 icon 下文字，组间竖分隔线，内容继承右键菜单；点条目后在按钮上方展开小面板，选中节点类型后出浅绿全息幽灵，左键在该处创建、右键 / Esc 取消；左下角按钮可收纳到画布左下角，默认打开）",
+    "建造面板",
+  );
+  body.appendChild(dockRow);
 
   /* 对话发送行为(迁移自 dsh 的 Enter 行为设置) */
   const enterRow = document.createElement("label");

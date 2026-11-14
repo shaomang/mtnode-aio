@@ -57,9 +57,10 @@ npm run compile       # 只编译 dist/win-unpacked（不打安装包）
 npm run dist          # electron-builder 构建 NSIS 安装包（需要 node_modules 完整依赖）
 npm run release       # 发版主链：一次同时出 NSIS 安装包 + Microsoft Store（MSIX）包
 npm run release:store # 只出 Store 包（跳过 NSIS 打包与 stage-updates）
+npm run store:publish # 把 Store 包自动上传并提交审核（要开关时改跑 node scripts/msix/store-publish.mjs）
 ```
 
-- **发版必须同时出两包，且两包版本号必须一致**：`npm run release`（[`scripts/release.mjs`](scripts/release.mjs)）先校验根 `version` 文件与 `package.json` / `dist/latest.yml` 版本一致（不一致直接报错退出），再依次跑 `npm run dist`、`make-msix.mjs --skip-build`（复用同一份 `win-unpacked`）、`stage-updates.mjs`，最后把 `.msix` 另存到 `dist\msix-publish\` 并打印 Partner Center 上传指引；MSIX 只能人工拖进上传框。
+- **发版必须同时出两包，且两包版本号必须一致**：`npm run release`（[`scripts/release.mjs`](scripts/release.mjs)）先校验根 `version` 文件与 `package.json` / `dist/latest.yml` 版本一致（不一致直接报错退出），再依次跑 `npm run dist`、`make-msix.mjs --skip-build`（复用同一份 `win-unpacked`）、`stage-updates.mjs`，最后把 `.msix` 另存到 `dist\msix-publish\` 并打印上传指引；Store 包的上传是独立一条 `npm run store:publish`（上传 + 自动提交审核 + 轮询到已发布，见 [docs/msix-store-publish.md](docs/msix-store-publish.md) §3.1），不接在构建链上。
 - 单跑 MSIX 用 `npm run dist:msix`；Store 链细节见 [`docs/msix-store-publish.md`](docs/msix-store-publish.md)。
 - 版本号唯一真源是根目录 `version` 文件（格式 `x.y.z`），统一用 `node version.js bump` 递增，不要手改 `version` / `package.json`。
 - 构建、发布与更新器细节见 [`scripts/UPDATES.md`](scripts/UPDATES.md)。

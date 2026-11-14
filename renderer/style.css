@@ -90,3 +90,7 @@
    大面板 .if-panel / .if-card / .if-media-* / 标注浮层 .if-anno-*，动效 120~200ms 并
     在 prefers-reduced-motion 下降级。放最后一份：只加自己那几个类（亮色直接用主题变量）。 */
 @import url("./css/input-form.css");
+/* 画布底部「建造面板」（renderer/app-canvas-dock.js）：终末地 HUD 风的面板条 +
+   二/三级小面板 + 全息幽灵。放最后一份：只加自己那几个 .cdock-* 类，
+   颜色优先吃终末地皮肤槽位（--ef-*），三档主题下都有兜底值。 */
+@import url("./css/canvas-dock.css");

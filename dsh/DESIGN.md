@@ -557,6 +557,192 @@ sessionTag, at, status?, stopReason?}` —— 来自运行时的**顶层通知**
   永远满足不了的条件,反而更费 token。`str_replace_editor` 与 read/edit/write 的重叠留待
   后续单独评估。
 
+## 联网搜索契约(gateway ↔ 运行时 ↔ 宿主):服务端工具声明 + 扩展块回传
+
+> **一句话**:联网搜索 / 阅读链接不是 MTNode 自己抓网页,而是 DeepSeek 的**服务端工具** ——
+> 客户端只在请求体 `tools` 段里声明两条,搜索与抓取全在上游执行,结果以**扩展块**旁路回来:
+> `choices[].server_tool_event`(进度)、`delta.server_tool_calls`(收尾账本,含 `signature`)、
+> `delta.annotations`(行内引用)。协议实测与逐帧样本见 `docs/deepseek-web-tools-probe.md`,
+> 声明形状、SSE 拆分与 fetch 包装的**唯一真源**是 `dsh/gateway/deepseek-web-tools.mjs`。
+
+**四层职责**
+
+| 层 | 干什么 | 读点 |
+| --- | --- | --- |
+| 宿主设置 | 一枚全局开关(`config.dsh.webSearch`,默认开),只对 DeepSeek 官方 / MTNode 中转可点,其它服务商置灰并写明原因 | `renderer/app-settings.js` ⑤ 行 + `providerSupportsServerWebTools()`(`renderer/app-agent.js`) |
+| 宿主下发 | run 参数 `webTools: {enabled}` + `webToolReplay`(上一轮账本原文) | `renderer/app-db.js` 的 `dshRunTask`(sig 里带 `webTools`,不带 `webToolReplay`) |
+| 网关裁决 | 按 route 重判「这家能不能吃」→ 决定声明哪两条 → `wt:` 进 runtime key、计划进 env、账本落盘、桥帧转宿主帧 | `gateway.mjs` 的 `handleRun` / `getRuntime` / `stageWebToolReplay` / `onBridgeFrame` |
+| 运行时 | 按 env 声明工具、把扩展块经桥递回宿主、把上一轮账本拼回 `assistant` 消息 | `dsh/gateway/web-tools-plugin.mjs`(fetch 层挂载点)+ `deepseek-web-tools.mjs`(纯函数真源) |
+
+**声明与开关**
+
+- 两种声明:`{"type":"deepseek_web_search","name":"deepseek_web_search"}` 与
+  `{"type":"deepseek_read_url","name":"deepseek_read_url"}`。**`type` 写错上游直接 422**,
+  所以不支持的那家一条都不加 —— `isDeepSeekWebToolsProvider()` 是唯一判据(route
+  `deepseek-official`,或 provider 卡 `source === "mtnode-relay"`,或 baseUrl 主机名含
+  `deepseek`);宿主侧 `providerSupportsServerWebTools()` 与之同口径,两侧不一致时以网关为准。
+- **思考档不参与声明**:开着思考时上游自己走深度搜索(`kind: "deep_search"` 由服务端决定),
+  协议里没有对应的客户端参数 —— 所以界面上没有第二枚 UI。
+- 声明计划走**既有的 `envPatch` 通道**(`applySettings` 只投影服务商密钥,网关在 `handleRun`
+  里追加一枚 `MTNODE_WEB_TOOLS`),不扩 `getRuntime` 的位置参数:`envPatch` 本来就进 spawn env,
+  也本来就在 runtime key 里(`JSON.stringify(envPatch)`)—— 换开关自动冷起新运行时,与
+  `lean:` / `hx:` 同一效果。它改的是请求 `tools` 段本身,不进 key 就会出现「刚打开开关的
+  会话仍复用没声明工具的那台」。`webToolReplay` **不进 env / 不进 key** —— 它是每轮数据,
+  不在 env 里,写进 key 会让每一轮都冷起。
+- 网关回一帧 `web-tools`(`{enabled, tools, replay}`)如实报告本轮声明了什么(诊断用;老宿主忽略无副作用)。
+
+**扩展块回传(跨轮才不失灵)**
+
+- 会话落盘时 `msg.webTools` 原样保存 `server-tool-calls` 的 `data`(含 `deepseek_read_url` 的
+  `signature`,约 1904 字符)。**签名缺失 = 阅读链接跨轮失效,且是静默失败**:实测同一条
+  assistant 消息带签名回放能逐字命中,删掉签名后模型只会回一句"我无法逐字引用",不报错
+  (见探针文档 §5 的 G1 / G2)。
+- 下一轮 `dshWebToolReplayOf()`(宿主)只挑 `kind === "server-tool-calls"` 的块、原文不动,
+  上限 8 条消息 / 24 块 / 64KB,留最新;网关写到 `<DSH_HOME>/web-tool-replay/<sessionId>.json`
+  (为什么用文件:网关与运行时是两个进程,一份账本能到 64KB,env 装不下也不该装),
+  env 里只给**目录**(`MTNODE_WEB_TOOLS.replayDir`,同一个 home 下所有会话同值 —— 给文件路径
+  会按会话分裂 runtime);空账本 = 删掉本会话那份(回放是本轮上下文,不是会话级缓存)。
+- 扩展块从运行时到宿主的通道 = 桥帧 `{t:'web-tool', sessionId, id?, ext}` → 归属门控与其它
+  交互帧一致 → `extensionFrame(reqId, ext)` → 宿主帧 `deepseek-web-tool`,会话侧落成
+  `st._webTools` → `msg.webTools` → 历史消息里那一块摘要 / 参考来源。
+
+**降级**
+
+- 老宿主不发 `webTools` → `enabled` 假值、不落盘、envPatch 里没有这一枚(于是也不进 key),声明一条都不加,
+  行为与该能力接入前一字不差;老运行时不发桥帧 → 宿主一条扩展块也收不到,会话照常。
+- 落盘失败只留痕不掐断这一轮(回放是增强,不是前提)。
+
+**两条协议面(2026-11-14 都实测过)**
+
+| 面 | 谁在用 | 声明 | 回来的扩展 | 交给适配器之前要做什么 |
+| --- | --- | --- | --- | --- |
+| `/chat/completions`(OpenAI 兼容) | 中转卡、自建 OpenAI 兼容卡(`llm-pi-ai`) | 同一份 `{type,name}` | `choices[].server_tool_event` · `delta.server_tool_calls`(含 `signature`) · `delta.annotations`(带 `start_index`/`end_index`) | 摘掉这三个**旁路键**,其余逐字透传 |
+| `/anthropic/v1/messages`(Messages 面) | 官方 `deepseek-official`(`llm-deepseek`) | 同一份 `{type,name}`(**与函数工具并存实测 200**) | `content_block_start` 的 `server_tool_use` / `web_search_tool_result` / `web_fetch_tool_result` · `content_block_delta` 的 `citations_delta`(带 `cited_text`,**没有** index) | 这几类块**整块丢掉**(start/delta/stop 一起,按 wire index 记账);`citations_delta` 挂在从未 start 的 index 上,也必须丢 |
+
+Messages 面为什么必须丢块:官方适配器 `startBlock()` 的 default 分支对未知块直接
+`UNSUPPORTED_CONTENT`,而 `content_block_delta` / `stop` 找不到已开的块就是
+`delta/stop without an open block` —— 一条都不留才不会「一开联网就整轮失败」。
+行内引用那面拿不到 `start_index`,由改写器在收尾时把 `cited_text` 在**本轮答案正文**里
+定位成区间,定位不到就整条跳过(不猜)。
+
+**运行时挂载点(`dsh/gateway/web-tools-plugin.mjs`)**
+
+- 两条适配器都不给外部注入 HTTP 层的机会:`llm-pi-ai` 在 `lib/index.js:1934` 自己拼
+  `streamSimple` 的 options(无 `fetch` 透传口),`llm-deepseek` 直接用全局 `fetch`。
+  于是插件在运行时进程内替换 `globalThis.fetch`(只装一次,`Symbol.for` 打标):
+  **只认** `…/chat/completions` 与 `…/messages` 两个端点、只在本轮这家服务商的主机
+  (env 里的 `provider.baseUrl` / 主机含 `deepseek`)、且**只在带会话作用域时**生效;
+  其余任何请求原样放行(不读、不改、不重发)。
+- 会话作用域:`llm/stream` 瀑布上把 `options.sessionId` 记进 `AsyncLocalStorage`,并把返回
+  的流逐次 `next()` 都放在那个作用域里跑 —— 适配器内部的 fetch 因此知道「这是哪个会话」;
+  网关的归属门控(`claim.sessions`)就是按这枚 id 判的。`options.purpose` 非空(压缩 / 标题
+  这类辅助调用)不注入、不发帧。
+- 失败面:env 缺席 / `enabled !== true` / 声明为空 / 桥没连上 / 注入或改写抛错 —— 一律退化成
+  「照常发原始请求」,绝不因为联网搜索把会话跑挂。
+
+**现状与缺口(诚实记录)**
+
+- 已打通:两条协议面的**声明注入 + 扩展块旁路 + 桥帧回传**(`web-tool` 帧在白名单里,
+  `extensionFrame()` → 宿主 `deepseek-web-tool` → `st._webTools` → `msg.webTools`)。
+- **未接**:账本回放。`webToolReplay` 已落盘到 `<DSH_HOME>/web-tool-replay/<sessionId>.json`,
+  但运行时还没有把它拼回 `assistant` 消息(`server_tool_calls` + `signature`),所以
+  `deepseek_read_url` 抓到的正文**跨轮不保真**(本轮卡片与引用不受影响)。OpenAI 面的回放
+  形状已在探针 §5.4 验证,Messages 面没有等价字段(只有块里的 `encrypted_content`,且块被丢弃)
+  —— 补这一层要先定「Messages 面怎么回放」,单独一轮做。
+- **未验证**:真机会话里**没有触发过** `citations_delta`(四轮,含明确要求「逐字引用并标来源」
+  的那一轮,上游只给纯文本链接)。角标链路本身是通的:拿真实上游样本(`messages-face.raw.txt`,
+  含 5 条 `citations_delta`)回放 → 1 帧 `annotations`(2 条 `url_citation`,带 `start_index` /
+  `end_index`)→ 注入同一帧后会话里渲染出 `[1]` `[2]` 两枚行内角标 + 来源弹层。所以缺口在
+  「上游什么时候发引用」,不在改写与渲染。
+
+## 会话附件契约(宿主 ↔ gateway ↔ 运行时):正文里的文件标记
+
+> **一句话**:用户随一条消息上传的文档,走的是**消息正文里的一枚标记**,不是 env、也不是
+> harness 的 `file` 内容块 —— 标记由运行时插件在 fetch 层换成服务商**原生的附件部分**
+> (`file_id`),形状与自我保护的唯一真源是 `dsh/gateway/llm-attachments.mjs`。
+
+**四层职责**
+
+| 层 | 干什么 | 读点 |
+| --- | --- | --- |
+| 宿主渲染层 | 「＋」选文件 / 拖进输入框 → per-session 队列 → 逐份上传到服务商 Files API → 输入框上方的附件卡片;发送时把 hash + 本机路径 + 主机 + 过期时刻交给 run | `renderer/app-attach.js`(`window.Attach`) |
+| 宿主参数 | run 参数 `files: [{id, name, kind, size, purpose, host, at, path, unsupported?}]` | `renderer/app-assist.js`(取队列)/ `renderer/app-db.js`(`runParams.files`) |
+| 网关 | 把 `files` 拼成一条正文尾巴(`attachPromptSuffix(files, {host})`),unshift 进首个 text 块 | `gateway.mjs` 的 `handleRun` |
+| 运行时 | 认出标记 → 按面(hash)换成服务商原生附件部分 + 补 beta 头;换不掉的标记一律抹掉 | `web-tools-plugin.mjs`(fetch 层)+ `llm-attachments.mjs`(纯函数) |
+
+**file_id 只认创建它的那条通道(2026-11-14 修的真实事故)**
+
+`file_id` 是**某一家服务商账号下的资源**:上传走中转、对话走官方(或反过来)时,对面根本查
+不到这个 id。上一版在正文里照样写「内容已由服务商解析并按文件随消息提供」,而 `markerUsable`
+按主机名把标记丢掉 —— 模型于是收到一句「有文件」的假话、手里却什么都没有,反复找文件直到整
+轮卡死。实测现场:test.pdf(273KB / 4 页)13:40:12 传到中转(`host=www.mt-agent.com`),那一轮
+对话走官方(`api.deepseek.com`),网关日志只有 `step=1 frames=231` / `step=2 frames=11`,56 秒
+无输出,会话里只留一条「用户主动关闭」。
+
+现在网关在拼尾巴前先算出**本轮真正发请求的主机名**(官方路由 = `api.deepseek.com`,其它路由取
+配置卡 `baseUrl` 的 hostname),交给 `attachPromptSuffix` 三档判定:
+
+| 情况 | 正文里写什么 |
+| --- | --- |
+| `fileId` 且 host 一致 | 标记(运行时还原成原生附件部分) |
+| `fileId` 但 host 对不上 | **不写标记**,写本机绝对路径 + 一句实话(「当初传到了另一条通道,当前通道取不到」) |
+| 没有 `fileId` | 本机绝对路径 |
+
+host 取不到(老调用方)时按老口径发标记 —— 少一个参数不该丢附件。
+
+**上传成功的附件不再本地解析(2026-11-15 用户口径)**
+
+标记那一支的正文尾巴除了「已上传并由服务商解析」,还写死一句:**直接读正文,不要再用本地
+PDF 解析通道(`mtnode_tool_pdf_markdown` / `pdf:parse`)把同一份文件解析一遍**。
+
+- 为什么:上传成功时服务端已经把文档解析成正文随消息下发,模型手里就有全文;再调本地解析
+  等于白花一轮(一份 4 页 PDF 本地抽文本 + 多一次工具往返),而本地文本层与服务端版面解析
+  对不上时,模型会拿本地那份去否认附件里的内容。这条是用户 2026-11-15 明确要的口径。
+- **只约束这一支**:上传失败 / 没有 `file_id` / 换了通道(上面表格后两行)仍按本机路径交给
+  模型,允许它用本地工具读 —— 「优先上传」不等于「禁止兜底」。
+- **不摘工具**:`mtnode_tool_pdf_markdown`、`pdf:parse` 照常注册(本机路径那一支、研究应用、
+  画布节点都要用),这条规矩是提示词层的用法约束,不进 `hideTools` / `runTools` 白名单。
+- 判定不按服务商名字卡:凡拿到 `file_id` 的都算(官方与中转同一条口径),因为「服务端已经
+  解析好了」这件事与谁家无关。
+
+**为什么是正文标记**
+
+- **不能进 env**:附件是每轮数据,写进 spawn env 会让每一轮都冷起一次运行时(`envPatch` 进
+  runtime key)。
+- **不能用 harness 的 `file` 内容块**:它只被投影成一句只读本机路径(`projectFilesToText`),
+  二进制 PDF 到不了服务商;模型只能自己去读本机文件(实测正是如此:第一轮它拿
+  `mtnode_tool_pdf_markdown` 读路径,而不是「看附件」)。
+- 标记形如 `[[mtnode-attach:<base64url(JSON)>]]`,负载 `{id, n, k, h, x}`:`h` 是上传时的
+  服务商主机,`x` 是过期时刻(Files API 的 id 约 7 天失效)。**主机 / 过期任一不符就只抹标记
+  不注入**,避免把别家的 id 发给这家而整轮 400。
+
+**两条协议面的形状(2026-11-14 都实测过)**
+
+| 面 | 附件部分 | 还要做什么 |
+| --- | --- | --- |
+| `/chat/completions` | `{type:'file', file_id}` | 无(`type:'document'` 实测 422 `unknown variant`) |
+| `/anthropic/v1/messages` | `{type:'document', source:{type:'file', file_id}}` | **必须**带 `anthropic-beta: files-api-2025-04-14`(缺了整轮 400);已有该头则合并 |
+
+改写器保证请求里**至少留一个 text 部分**(全抹掉时补一句「本轮附件已失效,未随这条消息提供」),
+并删掉旧的 `content-length`。
+
+**降级**
+
+- 上传失败(Files API 不存在 / 服务商不支持):该条只带本机路径进正文,提示模型用本地读文件
+  工具读 —— 附件能力退化成「告诉模型文件在哪」,不报错、不掐轮。
+- 任何异常(标记解析失败、body 不是 JSON、面认不出)一律**原样放行**;补丁装在「联网搜索关着」
+  时也照装(附件还原与联网开关无关)。
+- 插件 `apply()` 在 plan 为空(冷起的公共运行时)时也不提前返回 —— 那条运行时可能被后来的
+  轮次复用,提前返回会让附件在这一进程里整段失效。
+
+**实证与缺口(诚实记录)**
+
+- 已打通:官方 Messages 面(逐字读出 `probe.pdf` 的原文,零工具调用)与中转 OpenAI 面
+  (`changed=true injected=1`,200,逐字读出)—— 两轮都在真窗口里跑通,附件卡片 / 消息内
+  卡片 / 发送后清空都截了图。
+- **未验证**:原生「选择文件」对话框与拖拽投放没有被驱动过(自验时直接调
+  `window.Attach.addPaths([...])` 注入路径);无文本层的扫描件 PDF 未测。
+
 ## 流式增量帧契约(gateway ↔ 运行时 ↔ 宿主) —— dsh 0.2 的 `assistant/chunk` 缺席
 
 > **一句话**:宿主协议的 `reasoning` / `text` / `say-end` / `tool-preparing` 四类帧只有一个出口
