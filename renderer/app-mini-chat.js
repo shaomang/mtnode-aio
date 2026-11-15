@@ -58,6 +58,8 @@
     $("mcInput").placeholder = T("placeholder", "输入指令…（Enter 发送，Shift+Enter 换行）");
     $("mcModeGrill").textContent = T("grill", "拷问需求");
     $("mcModeHotfix").textContent = T("hotfix", "热修");
+    /* 上方条的模型选择（本轮需求）：键面由 renderModelSel 填，这里只落 tooltip */
+    if ($("mcModelSel")) $("mcModelSel").title = T("modelTip", "模型：这条会话用哪只模型（只改这一条会话）");
     /* 末尾那块「你的指令」小字（常显）：只在有自己那句话时随整块一起出现 */
     if ($("mcUserTag")) $("mcUserTag").textContent = T("yourMsg", "你的指令");
     paintModes();
@@ -116,6 +118,127 @@
           function () {},
         );
     } catch (_) {}
+  }
+
+  /* ── 模型选择（本轮需求 · 上方条）─────────────────────────────────────────
+     口径：清单与真源都在主窗 —— state.modelGroups 是 agentRouteGroupsNow() 的投影
+     （[{id, name, models:[...]}]，与「设置 · 默认模型」/ 会话「模型」菜单同一批服务商），
+     当前值 = 这条会话自己的 provider + model（宿主按运行期口径补成"生效值"）。
+     这里只画 <optgroup> 与回显；选完只递一个 setModel 请求 —— 写会话字段、落盘、重绘
+     全在主窗那一侧，小窗不猜任何存储口径。 */
+  var modelSig = "";
+  /* 选项的值 = 「服务商|模型」（一个 <select> 里同时带两个字段）。分隔符只用普通竖线：
+     服务商路由与模型 id 里都不含它，也不会像 NUL 那样被 DOM 悄悄换掉。 */
+  var MODEL_SEP = "|";
+  function modelValue(prov, model) {
+    var p = String(prov || "").trim();
+    var m = String(model || "").trim();
+    return p && m ? p + MODEL_SEP + m : "";
+  }
+  function renderModelSel(sel) {
+    var box = $("mcModelSel");
+    if (!box) return;
+    var groups = (state && state.modelGroups) || [];
+    var cur = modelValue(sel && sel.provider, sel && sel.model);
+    /* 清单变了才重建：800ms 一拍里回复正文一直在长，重建会把用户正拉开的下拉收掉 */
+    var sig = "";
+    try {
+      sig = JSON.stringify(groups);
+    } catch (_) {
+      sig = String(groups.length);
+    }
+    if (sig !== modelSig) {
+      modelSig = sig;
+      box.innerHTML = "";
+      var any = 0;
+      for (var i = 0; i < groups.length; i++) {
+        var g = groups[i] || {};
+        var models = (g && g.models) || [];
+        if (!models.length) continue;
+        var og = document.createElement("optgroup");
+        og.label = String(g.name || g.id || "");
+        for (var j = 0; j < models.length; j++) {
+          var o = document.createElement("option");
+          o.value = modelValue(g.id, models[j]);
+          o.textContent = String(models[j]);
+          og.appendChild(o);
+          any++;
+        }
+        box.appendChild(og);
+      }
+      if (!any) {
+        var none = document.createElement("option");
+        none.value = "";
+        none.textContent = T("noModel", "（无可用模型）");
+        box.appendChild(none);
+      }
+    }
+    /* 回显：会话存的那一只不在清单里（老配置 / 服务商被删 / 没有可用清单）就照实补一条，
+       绝不静默换成别家第一只 —— 用户看到的必须是「它现在到底用哪只」。 */
+    var has = false;
+    if (box.options)
+      for (var k = 0; k < box.options.length; k++)
+        if (box.options[k].value === cur) {
+          has = true;
+          break;
+        }
+    var extra = box.querySelector ? box.querySelector('option[data-mc-extra="1"]') : null;
+    if (extra && (has || !cur)) {
+      if (extra.parentNode) extra.parentNode.removeChild(extra);
+      extra = null;
+    }
+    if (cur && !has) {
+      if (!extra) {
+        extra = document.createElement("option");
+        extra.setAttribute("data-mc-extra", "1");
+        box.appendChild(extra);
+      }
+      extra.value = cur;
+      extra.textContent = [String(sel.providerName || ""), String(sel.model || "")]
+        .filter(Boolean)
+        .join(" · ");
+    }
+    var want = cur || (box.options && box.options.length ? box.options[0].value : "");
+    if (String(box.value || "") !== String(want || "")) box.value = want;
+    box.disabled = !groups.length;
+    box.title =
+      T("modelTip", "模型：这条会话用哪只模型（只改这一条会话）") +
+      (sel && sel.providerName ? "\n" + String(sel.providerName) : "");
+  }
+  /* 选完只递请求：主窗写 st.provider / st.model 并落盘，回一份最新快照 */
+  function setModel() {
+    var box = $("mcModelSel");
+    if (!box) return;
+    var raw = String(box.value || "");
+    var at = raw.indexOf(MODEL_SEP);
+    var prov = at < 0 ? "" : raw.slice(0, at).trim();
+    var model = at < 0 ? "" : raw.slice(at + MODEL_SEP.length).trim();
+    var sid = sessionIdNow();
+    if (!sid || !prov) return;
+    /* 乐观回显：主窗那一拍推送回来之前，先把这次选择留住（否则会跳回旧值） */
+    if (state && state.selected) {
+      state.selected.provider = prov;
+      state.selected.model = model;
+    }
+    if (!api || typeof api.setModel !== "function") {
+      note(T("failed", "操作失败"), true);
+      return;
+    }
+    api
+      .setModel({ sessionId: sid, provider: prov, model: model })
+      .then(function (r) {
+        if (!r || r.ok === false) {
+          note(errText(r), true);
+          return;
+        }
+        if (r.data && acceptState(r.data)) {
+          state = r.data;
+          render();
+        }
+      })
+      .catch(function () {
+        note(T("failed", "操作失败"), true);
+      });
   }
 
   /* 回复正文 → HTML：**与主窗口同一份内核**（renderer/md-render.js 的 window.MTRender，
@@ -806,6 +929,8 @@
       }
     }
     paintPill(sel);
+    /* 上方条的模型选择：跟着选中的那条会话走（它没有会话时清空并禁用） */
+    renderModelSel(sel);
     var replyEl = $("mcReply");
     var userEl = $("mcUser");
     /* 自己那句连同「你的指令」小字一起藏在同一块里：常显（用户共识 q5），
@@ -1106,6 +1231,8 @@
     $("mcGotoBtn").onclick = gotoSession;
     /* 删除这条会话（本轮需求）：两段式确认，见上面的 deleteSession */
     if ($("mcDelBtn")) $("mcDelBtn").onclick = deleteSession;
+    /* 上方条的模型选择（本轮需求）：选完只递请求，写会话与落盘在主窗 */
+    if ($("mcModelSel")) $("mcModelSel").onchange = setModel;
     /* 两枚模式开关：点一枚 = 打开它并关掉另一枚（互斥），随即落盘 */
     if ($("mcModeGrill"))
       $("mcModeGrill").onclick = function () {

@@ -7,9 +7,11 @@
        按钮顶出条外；缩到下限还放不下的，交给 CSS 的 overflow + ellipsis 收尾。
      · 点一级按钮 → 按钮上方浮出横向小面板（该按钮的子菜单成员）；小面板里本身带子菜单的
        条目（开发节点 / 控制节点 / 文本生成 / 插件…）→ 悬停时它上方再浮一层横向小面板。
-       只有一条的一级项（保存 / 智能 / 全局 / 素材 / 应用）点击直接进入放置态，不多弹一层。
+       只有一条的一级项（保存 / 智能 / 全局 / 素材 / 应用 / 文字）点击直接进入放置态，不多弹一层。
      · 放置态 = 浅绿全息幽灵（半透明轮廓 + 四角准星 + 节点名，按节点真实尺寸随缩放，
        光标压在节点中心）；左键在点击处创建，右键 / Esc 取消。
+     · 「文字」这类**绘制标注**条目（item.mark，无 kind）与节点条目同一套放置态，
+       尺寸取 MARK_DEFAULTS（app-canvas.js）—— 不另写一份标注尺寸。
      · 点画布其它地方收小面板（底部条留着）；左下角边栏按钮收纳，收起后停在画布左下角。
      · 收纳状态 / 底部条滚动位置写进 S.config（全局记忆）；总开关 S.config.canvasDock。
 
@@ -506,11 +508,12 @@ function cdockClickPanelItem(key) {
   cdockTrigger(hit.item);
 }
 
-/* 一个条目到底怎么走：带子菜单 = 展开；有 kind = 进放置态；都没有 = 直接跑（构建工作流） */
+/* 一个条目到底怎么走：带子菜单 = 展开；有 kind（节点）或 mark（绘制标注）= 进放置态；
+   都没有 = 直接跑（构建工作流）。 */
 function cdockTrigger(it) {
   if (!it || cdockHasSub(it)) return;
   const kind = String(it.kind || "");
-  if (!kind) {
+  if (!kind && !cdockItemMark(it)) {
     cdockRun(it);
     return;
   }
@@ -546,14 +549,18 @@ function cdockNodeSize(kind) {
 }
 
 function cdockStartPlacing(it) {
-  const kind = String((it && it.kind) || "");
-  if (!kind) return;
-  const size = cdockNodeSize(kind);
+  /* 节点条目带 kind；绘制标注条目（「文字」）带 mark —— 两者都走同一套幽灵放置，
+     只是尺寸来源不同：节点取 NODE_DEFAULTS，标注取 MARK_DEFAULTS。 */
+  const mark = cdockItemMark(it);
+  const kind = mark ? "" : String((it && it.kind) || "");
+  if (!kind && !mark) return;
+  const size = mark ? cdockMarkSize(mark) : cdockNodeSize(kind);
   cdockClosePanels();
   /* 直接持有条目对象：它的 run 闭包共享 cdockSt.pt，落点由那个对象决定 */
   cdockSt.placing = {
     item: it,
     kind: kind,
+    mark: mark,
     label: cdockShort(it.label),
     w: size.w,
     h: size.h,
@@ -561,6 +568,17 @@ function cdockStartPlacing(it) {
   const cv = cdockCanvas();
   if (cv) cv.classList.add("cdock-placing");
   cdockGhostShow();
+}
+
+/* 绘制标注的 kind（MARK_DEFAULTS 的键，「文字」= "text"）；空串 = 这不是标注条目 */
+function cdockItemMark(it) {
+  return String((it && it.mark) || "");
+}
+
+/* 标注的尺寸：幽灵与落点半格都按它算，看到多大就放多大（MARK_DEFAULTS 与 addMark 同源） */
+function cdockMarkSize(mark) {
+  const d = typeof MARK_DEFAULTS === "object" && MARK_DEFAULTS ? MARK_DEFAULTS[mark] : null;
+  return { w: (d && Number(d.w)) || 200, h: (d && Number(d.h)) || 44 };
 }
 
 function cdockGhostShow() {
@@ -654,9 +672,14 @@ function cdockCommitAt(cx, cy) {
 }
 
 function cdockFallbackCreate(pl) {
-  if (!pl || !pl.kind || typeof addNode !== "function") return;
+  if (!pl) return;
   try {
-    addNode(pl.kind, cdockSt.pt.x, cdockSt.pt.y);
+    /* 标注条目没有 kind：兜底改走 addMark（同样落在已经退过半格的 cdockSt.pt 上） */
+    if (pl.mark) {
+      if (typeof addMark === "function") addMark(pl.mark, cdockSt.pt.x, cdockSt.pt.y);
+      return;
+    }
+    if (pl.kind && typeof addNode === "function") addNode(pl.kind, cdockSt.pt.x, cdockSt.pt.y);
   } catch (e) {
     cdockToast(String((e && e.message) || e), "err");
   }
@@ -948,7 +971,7 @@ window.CanvasDock = {
     mounted: cdockSt.mounted,
     mini: cdockMini(),
     openKey: cdockSt.openKey,
-    placing: cdockSt.placing ? cdockSt.placing.kind : "",
+    placing: cdockSt.placing ? cdockSt.placing.kind || cdockSt.placing.mark : "",
     buttons: cdockBarEntries(cdockSt.groups).length,
   }),
 };

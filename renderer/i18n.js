@@ -302,6 +302,9 @@
     "折叠这一组": "Collapse this group",
     "展开这一组": "Expand this group",
     "在这个文件夹里新建会话": "New session in this folder",
+    /* 上方条的模型选择（本轮需求）：select 的 tooltip（清单为空时的占位项复用「（无可用模型）」） */
+    "模型：这条会话用哪只模型（只改这一条会话）":
+      "Model: which model this session uses (changes this session only)",
     "点击定位到正文里的这一行": "Click to jump to this line in the message",
     "持续转录已开启：说话即写入当前输入框": "Continuous dictation on — speak and it is typed into the focused input",
     "按键转录已开启：按住 F4 说话": "Push-to-talk on — hold F4 to speak",

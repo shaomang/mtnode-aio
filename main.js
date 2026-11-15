@@ -10466,6 +10466,10 @@ app.whenReady().then(() => {
         foldGroup: I18n.t("折叠这一组"),
         unfoldGroup: I18n.t("展开这一组"),
         groupNew: I18n.t("在这个文件夹里新建会话"),
+        /* 上方条的模型选择（本轮需求）：tooltip + 清单为空时的占位项 */
+        model: I18n.t("模型"),
+        modelTip: I18n.t("模型：这条会话用哪只模型（只改这一条会话）"),
+        noModel: I18n.t("（无可用模型）"),
       }),
       log: (msg) => {
         try {

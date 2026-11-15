@@ -23570,13 +23570,13 @@ function canvasCreateMenuGroups(pt) {
             ),
           ],
         },
-        /* 「绘制」二级菜单已撤（本轮需求）：一级菜单直接就是「文字」，点一下在落点加文本标注；
-           归类节点仍用「组」（选中节点后按 G）。 */
+        /* 「绘制」二级菜单已撤（本轮需求）：一级菜单直接就是「文字」，点一下进全息放置态、
+           在落点放下文本标注（与节点条目同一套幽灵放置）；归类节点仍用「组」（选中节点后按 G）。 */
         ctxAction(
           I18n.t("文字"),
           () => addMark("text", pt.x, pt.y),
           "mark_text",
-          { iconCls: "draw" },
+          { iconCls: "draw", mark: "text" },
         ),
       ],
     ],
@@ -25698,6 +25698,10 @@ function ctxAction(label, run, iconKey, extra) {
     iconKey: key,
     iconCls: extra.iconCls || key,
     cls: extra.cls,
+    /* mark = 这一项放的不是节点而是绘制标注（kind 是 MARK_DEFAULTS 的键）。
+       建造面板（app-canvas-dock.js）靠它把条目送进全息放置态 —— 与节点条目同一套：
+       先出浅绿幽灵，左键落点才建。没有这个字段的一级条目（如「构建工作流」）仍旧直接跑。 */
+    mark: extra.mark || "",
   };
 }
 

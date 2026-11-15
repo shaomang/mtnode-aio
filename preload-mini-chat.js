@@ -19,6 +19,8 @@ contextBridge.exposeInMainWorld("miniChat", {
   /* newSession 可带 { ws } —— 左栏某一组标题右边的 ＋ 就在那一组文件夹里新建；不带即沿用「接当前选中会话」 */
   newSession: (payload) => ipcRenderer.invoke("minichat:newSession", payload || {}),
   send: (payload) => ipcRenderer.invoke("minichat:send", payload || {}),
+  /* 上方条的模型选择（本轮需求）：只递 provider + model，改哪条会话的哪个字段由主窗决定 */
+  setModel: (payload) => ipcRenderer.invoke("minichat:setModel", payload || {}),
   stop: (id) => ipcRenderer.invoke("minichat:stop", String(id || "")),
   gotoSession: (id) => ipcRenderer.invoke("minichat:gotoSession", String(id || "")),
   /* 删除这条会话（本轮需求）：真删由主窗那条 deleteAgentSession 做，这里只递 id */

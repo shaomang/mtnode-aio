@@ -11,6 +11,7 @@
  *   newSession    {ws?}                     新建一条（不带 ws 接当前选中会话；带 ws 就落这一组文件夹）
  *   send          {sessionId, text}        走 agentSessionSend（忙则自动进发送队列，与主界面同源）
  *   attachImage   {sessionId, base64, ext} 粘贴的截图落成真文件（会话工作区 .mtnode-input/），回绝对路径
+ *   setModel      {sessionId, provider, model} 改这条会话的模型（会话字段唯一真源，只改这一条）
  *   stop          {id}                     stopSessionRuns（助手会话再补 assistStop）
  *   goto          {id}                     主窗切到会话视图并选中该条（主进程负责还原窗口与关小窗）
  *
@@ -222,6 +223,51 @@
     return "";
   }
 
+  /* ── 模型选择（本轮需求 · 小窗上方条）──────────────────────────────────
+     清单不另拼一份：真源是 app-agent.js 的 agentRouteGroupsNow()（与「设置 · 默认模型」、
+     会话「模型」菜单、开发节点同一批服务商）。当前值 = 这条会话的 provider + model，
+     空的时候按运行期口径补成「生效值」（默认路由 → 该家第一只），**只回显不写回** ——
+     用户真选了一只才走 setModel 把字段落到这条会话上。 */
+  function modelGroupsForUi() {
+    var out = [];
+    try {
+      if (typeof agentRouteGroupsNow !== "function") return out;
+      var arr = agentRouteGroupsNow() || [];
+      for (var i = 0; i < arr.length; i++) {
+        var g = arr[i] || {};
+        var id = String(g.id || "");
+        var models = (g.models || []).map(String).filter(Boolean);
+        if (!id || !models.length) continue;
+        out.push({ id: id, name: String(g.name || id), models: models });
+      }
+    } catch (_) {}
+    return out;
+  }
+  /** 这条会话的生效模型：{provider, providerName, model} */
+  function effModelOf(st, groups) {
+    var prov = "";
+    try {
+      if (typeof agentSessionProviderRoute === "function")
+        prov = String(agentSessionProviderRoute(st) || "");
+    } catch (_) {}
+    if (!prov) prov = "deepseek-official";
+    var g = null;
+    for (var i = 0; i < groups.length; i++)
+      if (groups[i].id === prov) {
+        g = groups[i];
+        break;
+      }
+    var model = String((st && st.model) || "");
+    if (!model && g) model = String(g.models[0] || "");
+    var pname = g ? g.name : "";
+    if (!pname) {
+      try {
+        if (typeof agentProviderNameNow === "function") pname = String(agentProviderNameNow(prov) || "");
+      } catch (_) {}
+    }
+    return { provider: prov, providerName: pname || prov, model: model };
+  }
+
   /** 组一份小窗要的状态（只含它要画的东西） */
   async function buildState() {
     /* 取号在对齐任何 await 之前：先起跑的 buildState 必然拿到更小的号 */
@@ -229,6 +275,7 @@
     var top = topSessions();
     var sid = pickId(top);
     selectedId = sid;
+    var groups = modelGroupsForUi();
     /* 落在哪一条就记下来（下次开窗 / 重启后还落这一条）；只写一个 id，不写会话内容 */
     rememberSession(sid, false);
     var sessions = top.map(function (s) {
@@ -252,6 +299,8 @@
         } catch (_) {}
       }
       var wsel = wsOf(st);
+      /* 生效模型（只回显；选完由 setModel 落到这条会话上） */
+      var em = effModelOf(st, groups);
       /* 排队中的那句还没进正文（在会话的 outbox 里，等前面这一轮跑完才发）：
          不把它当「最后一句用户话」，小窗就会在自己发出去之后把刚写的那句抹掉，
          再配一条上轮的回复 —— 同样读成「agent 没收到我说的」。排队条目永远比起
@@ -275,12 +324,22 @@
         paused: !!st.paused,
         ws: wsel.ws,
         wsSrc: wsel.wsSrc,
+        provider: em.provider,
+        providerName: em.providerName,
+        model: em.model,
         lastReply:
           lastNonEmptyRole(st) === "assistant" ? lastOfRole(st, "assistant", REPLY_MAX) : "",
         lastUser: queuedText || lastOfRole(st, "user", 4000),
       };
     }
-    return { rev: rev, sessions: sessions, selectedId: sid, selected: selected };
+    return {
+      rev: rev,
+      sessions: sessions,
+      selectedId: sid,
+      selected: selected,
+      /* 模型选择的上方条清单（小窗只画它，不再自己拼名单） */
+      modelGroups: groups,
+    };
   }
 
   function pushNow() {
@@ -463,6 +522,31 @@
       rememberSession(selectedId, true);
       try {
         if (typeof agentFlushSessionSaveQuiet === "function") await agentFlushSessionSaveQuiet();
+      } catch (_) {}
+      try {
+        if (typeof renderAgentSessionSidebar === "function") renderAgentSessionSidebar();
+      } catch (_) {}
+      lastSig = "";
+      return { ok: true, data: await buildState() };
+    }
+
+    /* ── 模型选择（本轮需求 · 小窗上方条）─────────────────────────────────
+       只改**这一条会话**的 st.provider / st.model（与主窗会话「模型」菜单同一条写回链：
+       改字段 → agentTouchSession 落盘 → 重绘会话栏），不动「设置 · 默认模型」，
+       也不影响别的会话 —— 小窗里换模型不该把全局默认改掉。 */
+    if (op === "setModel") {
+      var sm = findSession(a.sessionId);
+      if (!sm) return { ok: false, error: "missing" };
+      var sProv = String(a.provider || "").trim();
+      var sModel = String(a.model || "").trim();
+      if (!sProv) return { ok: false, error: "empty" };
+      sm.provider = sProv;
+      sm.model = sModel;
+      try {
+        if (typeof agentTouchSession === "function") agentTouchSession(sm);
+      } catch (_) {}
+      try {
+        if (typeof renderAgentSession === "function") renderAgentSession();
       } catch (_) {}
       try {
         if (typeof renderAgentSessionSidebar === "function") renderAgentSessionSidebar();

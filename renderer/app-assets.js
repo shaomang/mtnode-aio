@@ -2889,6 +2889,32 @@ function assetViewRerenderSoon() {
     if (typeof renderCanvas === "function") renderCanvas();
   }, 60);
 }
+/* 条目内容读到了，**编辑态**素材节点的 body 得就地重建一次。
+   为什么不能只靠上面那次 renderCanvas：画布复用通道按结构签名（canvasNodeSig）保留旧
+   DOM，签名里没有条目内容 —— 素材节点刚插进画布（还处于选中 / 编辑态）时 body 里那批
+   「读取中…」占位会一直挂着，点空白再点回来（形态切换触发重建）内容才出来。
+   浏览态的占位由 assetBrowseThumbEl / assetBrowseTextEl 自己原地替换，这里不碰（免得白拆一遍
+   缩略图）。按 assetId 合流成一次，一趟只重建相关节点各一次。 */
+const _assetViewRefreshPend = new Set();
+let _assetViewRefresh = 0;
+function assetItemsViewRefreshSoon(aid) {
+  const id = String(aid || "");
+  if (!id) return;
+  _assetViewRefreshPend.add(id);
+  if (_assetViewRefresh) return;
+  _assetViewRefresh = setTimeout(() => {
+    _assetViewRefresh = 0;
+    const ids = Array.from(_assetViewRefreshPend);
+    _assetViewRefreshPend.clear();
+    if (typeof refreshNodeBody !== "function") return;
+    if (!S.wf || !Array.isArray(S.wf.nodes)) return;
+    for (const node of S.wf.nodes) {
+      if (!isAssetNode(node) || ids.indexOf(String(node.assetId || "")) < 0) continue;
+      if (typeof nodeBrowseMode === "function" && nodeBrowseMode(node)) continue;
+      refreshNodeBody(node);
+    }
+  }, 40);
+}
 /** 单条目的异步读取（同一 key 只飞一次） */
 function assetItemViewLoad(aid, iid) {
   const k = assetViewKey(aid, iid);
@@ -2938,6 +2964,7 @@ function assetItemViewLoad(aid, iid) {
       ASSET_ITEM_BUSY.delete(k);
       ASSET_ITEM_LOAD.delete(k);
       assetViewRerenderSoon();
+      assetItemsViewRefreshSoon(aid);
     });
   ASSET_ITEM_LOAD.set(k, p);
   return p;

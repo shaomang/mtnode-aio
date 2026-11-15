@@ -55,6 +55,48 @@ body.mc-body {
   flex: 1;
 }
 
+/* 模型选择（本轮需求 · 上方条）：窄窗里压成一颗小胶囊，长模型名靠省略号收。
+   no-drag 是必须的 —— 整条标题栏是窗口拖动区，不写这一行点它就成了拖窗口。 */
+.mc-model {
+  -webkit-app-region: no-drag;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 46%;
+  height: 22px;
+  padding: 0 4px;
+  background: #161d28;
+  color: #b9c3d1;
+  border: 1px solid #2a3341;
+  border-radius: 4px;
+  font: inherit;
+  font-size: 10.5px;
+  line-height: 20px;
+  text-overflow: ellipsis;
+  outline: none;
+  cursor: pointer;
+}
+
+.mc-model:hover {
+  border-color: #384454;
+  color: #e6eef8;
+}
+
+.mc-model:focus-visible {
+  border-color: rgba(56, 214, 255, 0.5);
+}
+
+.mc-model:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* 下拉面板（Windows 上由系统画）：面与字跟着暗色走，别弹一块白底出来 */
+.mc-model option,
+.mc-model optgroup {
+  background: #121722;
+  color: #d7dde6;
+}
+
 .mc-icon {
   -webkit-app-region: no-drag;
   flex: none;

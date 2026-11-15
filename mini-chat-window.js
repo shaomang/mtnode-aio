@@ -651,6 +651,16 @@ function createMiniChat(opts) {
       return relay("send", out);
     });
     ipcMain.handle("minichat:stop", (e, id) => relay("stop", { id: String(id || "") }));
+    /* 上方条的模型选择（本轮需求）：三个字符串中继给主窗渲染层 —— 写会话字段、落盘、
+       重绘都在那边（见 renderer/app-mini-chat-host.js 的 setModel），本层不碰任何存储。 */
+    ipcMain.handle("minichat:setModel", (e, payload) => {
+      const p = payload || {};
+      return relay("setModel", {
+        sessionId: String(p.sessionId || ""),
+        provider: String(p.provider || ""),
+        model: String(p.model || ""),
+      });
+    });
     /* 删除会话（本轮需求）：中继给主窗渲染层的 deleteAgentSession ——
        会话文件 + 索引条目一起下掉，小窗不自己碰磁盘。 */
     ipcMain.handle("minichat:delete", (e, id) => relay("delete", { id: String(id || "") }));

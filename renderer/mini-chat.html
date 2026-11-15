@@ -23,6 +23,10 @@
         <button type="button" class="mc-icon mc-burger" id="mcListBtn" aria-pressed="false">☰</button>
         <span class="mc-title" id="mcTitle">快捷会话</span>
         <span class="mc-gap"></span>
+        <!-- 模型选择（本轮需求）：上方条里直接换「这条会话用哪只模型」。
+             清单来自主窗 agentRouteGroupsNow()（与设置 · 默认模型 / 会话菜单同一批服务商），
+             选完只递一个 setModel 请求，写会话与落盘都在主窗那一侧（见 app-mini-chat-host.js）。 -->
+        <select class="mc-model" id="mcModelSel" title="模型" aria-label="模型"></select>
         <button type="button" class="mc-icon" id="mcNewBtn" title="新建会话（Ctrl + N）" aria-keyshortcuts="Control+N">＋</button>
         <button type="button" class="mc-icon mc-close" id="mcCloseBtn">✕</button>
       </header>
