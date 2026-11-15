@@ -6399,7 +6399,7 @@ function setView(view) {
     setAssistOpen(false, false);
     if (typeof renderTeamPane === "function") renderTeamPane();
   } else if (view === "research") {
-    /* 研究视图（第 4 个视图，测试用，仅账号 ms2308 可见）：右栏同样收起 ——
+    /* 研究视图（第 4 个视图，对所有用户开放）：右栏同样收起 ——
        它自己的正文 + 会话框已经占了整块工作区；进入时由 app-research.js 按当前画布
        与工作目录装载 research/ 目录（没工作目录就出设置闸门）。 */
     setAssistOpen(false, false);

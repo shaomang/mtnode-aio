@@ -11,7 +11,7 @@
  *   · agent 可直接写入，但每次写入都进 research/changes.jsonl（可撤销）；
  *   · 文献：CSL-JSON 为真源，BibTeX 可导入；联网只走 window.api.netFetch（主进程 GET 代理，
  *     规避 CSP 的 connect-src 'self'）；
- *   · 入口仅对 ms2308 露出（显隐在 app-boot.js 的 researchSyncEntry）。
+ *   · 入口对所有用户开放（显隐由 researchSyncEntry 同步，不再按账号白名单）。
  *
  * 目录结构：
  *   research/research.json     项目元信息（课题标题 / 核心笔记 / 布局偏好）
@@ -11449,14 +11449,6 @@
 
   /* ── 对外：进入 / 离开 / 监听 ── */
   async function enter() {
-    /* 门禁第二道：即使有人绕过按钮直接调 setView("research") / MTResearch.enter()，
-       非白名单账号也进不来（第一道在 researchSyncEntry 的显隐 + 点击守卫）。 */
-    if (!userIsOwner()) {
-      try {
-        if (typeof setView === "function") setView("workflow");
-      } catch (_) {}
-      return;
-    }
     buildShell();
     const r = await ensureInit();
     /* 进来就恢复：盘上有队列文件就认标记，目录不在就清掉（与重载同一口径） */
@@ -11697,35 +11689,16 @@
       researchSyncEntry();
     } catch (_) {}
   }
-  /* 入口显隐：登录用户名精确等于 ms2308 才显示（测试用功能，其它账号一律隐藏） */
-  const RESEARCH_OWNER = "ms2308";
+  /* 入口显隐：研究视图对所有用户开放（原「仅账号 ms2308 可见」的白名单已取消）。
+     userIsOwner 保留为老接口（app-boot 的点击守卫 / 启动恢复仍按它判），恒为 true。 */
   function userIsOwner() {
-    try {
-      const A = window.MTNodeAuth;
-      if (!A) return false;
-      const snap = typeof A.state === "function" ? A.state() : A.state;
-      const u = snap && snap.user;
-      if (!u) return false;
-      const name = String(u.username || "").trim().toLowerCase();
-      return name === RESEARCH_OWNER;
-    } catch (_) {
-      return false;
-    }
+    return true;
   }
   function researchSyncEntry() {
     const btn = qid("btnResearch");
     if (!btn) return;
-    const on = userIsOwner();
-    btn.hidden = !on;
-    btn.style.display = on ? "" : "none";
-    /* 权限收回时把研究视图顶掉：否则视图还开着、人已经不是白名单账号了。
-       判据看面板本身而不是 window.S（app.js 的 S 是脚本级 const，不在 window 上）。 */
-    const p = qid("researchPane");
-    if (!on && p && p.style.display !== "none") {
-      try {
-        if (typeof setView === "function") setView("workflow");
-      } catch (_) {}
-    }
+    btn.hidden = false;
+    btn.style.display = "";
   }
   window.researchSyncEntry = researchSyncEntry;
   /* 左栏切页入口：app-sidebar-files.js 的 sfSetTab 切到「核心 / 资料」时调这里。

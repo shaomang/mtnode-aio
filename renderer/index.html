@@ -184,10 +184,9 @@
       <svg class="tb-view-ico" viewBox="0 0 16 16" aria-hidden="true"><circle cx="5.8" cy="5.4" r="2.2" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M1.9 13.2c0-2.2 1.7-3.8 3.9-3.8s3.9 1.6 3.9 3.8" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"/><path d="M10.8 3.6a2.2 2.2 0 0 1 0 4.3" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"/><path d="M11.5 9.7c1.6.5 2.6 1.8 2.6 3.5" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"/></svg>
       <span class="tb-view-txt" data-i18n="专家团">专家团</span>
     </button>
-    <!-- 研究（第 4 个视图 · 测试用）：只对登录账号 ms2308 露出 —— 默认 hidden，
-         由 renderer/app-research.js 的 researchSyncEntry 按登录态同步显隐（口径同应用中心
-         的 APPS_USER_WHITELIST：用户名精确匹配，未登录 / 离线 / 其它账号一律隐藏）。 -->
-    <button id="btnResearch" class="corner tb-view" hidden data-i18n-title="研究：以课题为核心的知识图谱（Markdown 笔记 + 会话，测试用）" title="研究：以课题为核心的知识图谱（Markdown 笔记 + 会话，测试用）">
+    <!-- 研究（第 4 个视图）：对所有用户开放（原先的 ms2308 账号白名单已取消）——
+          显隐由 renderer/app-research.js 的 researchSyncEntry 同步，默认可见。 -->
+    <button id="btnResearch" class="corner tb-view" data-i18n-title="研究：以课题为核心的知识图谱（Markdown 笔记 + 会话）" title="研究：以课题为核心的知识图谱（Markdown 笔记 + 会话）">
       <svg class="tb-view-ico" viewBox="0 0 16 16" aria-hidden="true"><circle cx="4" cy="4" r="1.9" fill="none" stroke="currentColor" stroke-width="1.25"/><circle cx="12" cy="5.6" r="1.7" fill="none" stroke="currentColor" stroke-width="1.25"/><circle cx="7.4" cy="12" r="1.7" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M5.6 4.7l4.6.6M4.9 5.7l1.9 4.7M10.9 7l-2.6 3.6" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
       <span class="tb-view-txt" data-i18n="研究">研究</span>
     </button>
@@ -576,7 +575,7 @@
     <!-- ===== 研究画布（第 4 个顶层视图 · renderer/app-research.js）=====
          与画布并列、共用同一套顶栏（logo / 原有 tabs / 画布下拉窗都在原位，随时切回去），
          但内容与画布节点完全不同：以课题为核心的知识图谱 + Markdown 编辑窗 + 会话框。
-         入口按钮 #btnResearch 只对登录账号 ms2308 露出（app-research.js 的 researchSyncEntry）；
+         入口按钮 #btnResearch 对所有用户露出（app-research.js 的 researchSyncEntry）；
          整块由 JS 构建（buildShell），这里只留容器，避免静态结构与动态状态两处维护。 -->
     <div class="research-pane" id="researchPane" style="display:none"></div>
   </section>
@@ -1408,7 +1407,7 @@
      排在 app-review.js 之后：正文 ⇄ Markdown 转换（mdToRichHtml / richToMarkdown /
      buildRevisionPrompt）与互斥判据都在调用期取它；插图走 app-inline-img.js（更早加载）。 -->
 <script src="app-textedit.js"></script>
-<!-- 研究画布（第 4 个顶层视图 · 测试用，仅账号 ms2308 露出）：
+<!-- 研究画布（第 4 个顶层视图，对所有用户开放）：
      三个文件按依赖顺序 ——
        ① research-core.js  = 纯内核（UMD）：frontmatter / callout / wikilink / [@citekey] 解析，
           笔记 → 知识图谱，图查询与三套布局，BibTeX ⇄ CSL-JSON。零依赖、不碰 DOM 与网络，

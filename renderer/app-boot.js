@@ -1154,11 +1154,10 @@ async function init() {
   $("#btnToolWf").onclick = () => setView("workflow");
   $("#btnToolAgent").onclick = () => setView("agent");
   if ($("#btnTeam")) $("#btnTeam").onclick = () => setView("team");
-  /* 研究（第 4 个视图，测试用）：入口只对账号 ms2308 露出（显隐在 app-research.js 的
-     researchSyncEntry），这里再守一道 —— 即使有人手动把按钮 display 改回来，非本人也进不去。 */
+  /* 研究（第 4 个视图）：入口对所有用户开放（显隐在 app-research.js 的 researchSyncEntry，
+     已取消账号白名单）。 */
   if ($("#btnResearch"))
     $("#btnResearch").onclick = () => {
-      if (window.MTResearch && !window.MTResearch.userIsOwner()) return;
       setView("research");
     };
   /* 顶栏画布下拉（自绘菜单，见 app.js 的 wfPickToggle）：点按钮开合，点外部 / Esc 收起 */
@@ -1751,8 +1750,8 @@ async function init() {
     renderTeamPane();
   else if (bootView === "research") {
     /* 研究视图（第 4 个视图）：首绘之后按当前画布装载 research/ 目录。
-       权限收口在 app-research.js 的 researchSyncEntry（用户名 ms2308 才显示入口）；
-       不是本人却带着 view=research 的旧配置启动时，那边会把它顶回画布视图。 */
+       研究视图已对所有用户开放（入口显隐在 app-research.js 的 researchSyncEntry），
+       带 view=research 的旧配置启动时直接装载即可。 */
     try {
       if (window.MTResearch && typeof window.MTResearch.enter === "function")
         window.MTResearch.enter();
