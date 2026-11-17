@@ -1463,6 +1463,103 @@ function tokRoundRec(owner, metrics, opts) {
   r.roundSeq = tokNum(r.roundSeq) + 1;
   return rec;
 }
+/* ── 台账自愈：tokenReport 丢了就从消息里的 usageSteps 重建（真机 bug · 重启后统计丢失）──
+   累计台账 tokenReport 只是**派生值**，它的原始事实（每一步的 token 出入）随每条助手消息
+   落盘（m.usageSteps，见 app-assist.js 的收尾落盘），所以丢账能原样重建、不用猜：
+     · 逐模型桶 / 合计：按步的 provider|model 累加 input/output/cacheRead/cacheWrite/reasoning，
+       calls 取该步记的调用次数，steps = 步数；
+     · 逐轮明细：按 usageSteps 的 round 分组，时刻取该轮首末消息的 at。
+   只重建「token 事实」：wallMs / llmMs / toolMs / ttft 这些运行期性能量上游本就没落盘，
+   一律留 0（展示层见 0 不显示那一行），绝不编一个数出来。
+   返回 true = 真建出了一份；没有 usageSteps 的会话返回 false（不留空台账）。 */
+function tokReportRebuild(st) {
+  if (!st || st.tokenReport) return false;
+  const msgs = Array.isArray(st.messages) ? st.messages : [];
+  const byModel = {};
+  const rounds = new Map();
+  let steps = 0;
+  let at0 = 0;
+  let at1 = 0;
+  for (const m of msgs) {
+    const list = m && Array.isArray(m.usageSteps) ? m.usageSteps : null;
+    if (!list || !list.length) continue;
+    const at = tokNum(m.at || m.createdAt || m.ts);
+    for (const s of list) {
+      if (!s || typeof s !== "object") continue;
+      const provider = String(s.provider || "");
+      const model = String(s.model || "");
+      const key = tokKey(provider, model);
+      const add = (bucket) => {
+        bucket.inputTokens = tokNum(bucket.inputTokens) + tokNum(s.input);
+        bucket.outputTokens = tokNum(bucket.outputTokens) + tokNum(s.output);
+        bucket.cacheReadTokens = tokNum(bucket.cacheReadTokens) + tokNum(s.cacheRead);
+        bucket.cacheWriteTokens = tokNum(bucket.cacheWriteTokens) + tokNum(s.cacheWrite);
+        bucket.reasoningTokens = tokNum(bucket.reasoningTokens) + tokNum(s.reasoning);
+        bucket.calls = tokNum(bucket.calls) + (tokNum(s.calls) || 1);
+        bucket.steps = tokNum(bucket.steps) + 1;
+        if (at && !bucket.at) bucket.at = at;
+      };
+      const b = byModel[key] || (byModel[key] = tokBucketNew(provider, model));
+      add(b);
+      const rk = String(s.round == null ? "" : s.round);
+      let rr = rounds.get(rk);
+      if (!rr) {
+        rr = { at: at, endedAt: at, turns: new Set(), steps: 0, byModel: {} };
+        rounds.set(rk, rr);
+      }
+      if (at) {
+        if (!rr.at || at < rr.at) rr.at = at;
+        if (at > rr.endedAt) rr.endedAt = at;
+      }
+      rr.steps += 1;
+      rr.turns.add(String(s.turn == null ? rk : s.turn));
+      const rb = rr.byModel[key] || (rr.byModel[key] = tokBucketNew(provider, model));
+      add(rb);
+      steps++;
+      if (at) {
+        if (!at0 || at < at0) at0 = at;
+        if (at > at1) at1 = at;
+      }
+    }
+  }
+  if (!Object.keys(byModel).length) return false;
+  const r = tokReportNew();
+  r.byModel = byModel;
+  r.rounds = rounds.size;
+  r.steps = steps;
+  let turns = 0;
+  const roundList = [];
+  for (const [rk, rr] of rounds) {
+    turns += rr.turns.size;
+    let sum = 0;
+    for (const k of Object.keys(rr.byModel)) sum += tokNum(rr.byModel[k].calls);
+    roundList.push({
+      rid: "rebuild:" + rk + ":" + tokNum(rr.endedAt),
+      runKey: "rebuild",
+      title: "",
+      titleFrom: "",
+      at: tokNum(rr.at),
+      endedAt: tokNum(rr.endedAt),
+      turns: rr.turns.size,
+      steps: rr.steps,
+      subagents: 0,
+      jobs: 0,
+      wallMs: 0,
+      llmMs: 0,
+      toolMs: 0,
+      maxCtx: 0,
+      byModel: rr.byModel,
+    });
+  }
+  r.turns = turns;
+  r.roundSeq = roundList.length;
+  r.roundList = roundList;
+  r.startedAt = at0;
+  r.lastAt = at1;
+  st.tokenReport = r;
+  return true;
+}
+
 /* 轮次标题（纯函数）：优先调用方给的「计划任务标题」(opts.tokTitle)，否则取输入文本
  * 前 n 个字符（默认 24）。清洗口径：折掉 \r、去行首块头噪声（【…】标记 / Markdown
  * 标题与引用符）、把换行与连续空白折成单空格、去首尾空白。
@@ -3312,6 +3409,12 @@ let _mtnodeSkillIndexPending = null;
 let _mtnodeSkillIndexTrimCache = { src: "", hash: "", text: "", at: 0 };
 /* 档位名：无读画布档（开发绑定会话 / 「与画布无关」会话） */
 const MTNODE_SKILL_INDEX_TRIM = "noCanvas";
+/* 档位名：快速热修轮（会话 st.hotfix / 小窗这一轮 hotfixOverride）——
+   热修契约里明写「不加载内置技能 mtnode-grill-me、不走整轮前沿拷问」，
+   索引里再挂一条「需求拷问：动手前用 ask_user_question 按轮问完整个决策前沿」，
+   同一轮就是两份相反的指令（用户实报：选了热修的会话仍像被塞了 grill 指示）。
+   档位可以叠加（热修 + 与画布无关）→ 组合档名 "noCanvas+hotfix"。 */
+const MTNODE_SKILL_INDEX_HOTFIX = "hotfix";
 /* 该档位要裁掉的内置技能：条目全是「怎么在画布上建块 / 排版 / 接线 / 生成」的操作规范。
    本轮没有读画布工具，留着只会诱导模型去调不存在的工具，还白占前缀。
    与画布无关的条目（数据库事实 mtnode-db-facts、需求拷问 mtnode-grill-me 等）照常下发。 */
@@ -3322,15 +3425,23 @@ const MTNODE_SKILL_CANVAS_ONLY = [
   "mtnode-dev-architect",
   "mtnode-media-gen-nodes",
 ];
+/* 快速热修档要裁掉的内置技能：热修契约与之互斥，留着只会让模型两头为难 */
+const MTNODE_SKILL_HOTFIX_OFF = ["mtnode-grill-me"];
 
-/* 从紧凑索引里摘掉画布类技能行；整类目被摘空 → 连类目标题一起丢 */
-function mtnodeSkillIndexTrimmed(text) {
+/* 从紧凑索引里摘掉本档位不该出现的技能行；整类目被摘空 → 连类目标题一起丢。
+   tier 缺省 = 老口径（只裁画布类），供需要「无读画布」变体的调用方沿用。 */
+function mtnodeSkillIndexTrimmed(text, tier) {
   const src = String(text == null ? "" : text);
   if (!src) return "";
+  const t = String(tier == null ? MTNODE_SKILL_INDEX_TRIM : tier);
+  const hidden =
+    t.indexOf(MTNODE_SKILL_INDEX_TRIM) >= 0 ? MTNODE_SKILL_CANVAS_ONLY.slice() : [];
+  if (t.indexOf(MTNODE_SKILL_INDEX_HOTFIX) >= 0)
+    hidden.push.apply(hidden, MTNODE_SKILL_HOTFIX_OFF);
   const isHead = (l) => /^\[[^\]]*\]\s*$/.test(l);
   const isSkill = (l) => /^\s*-\s*[^|]+\|/.test(l);
   const skillName = (l) => String(l).replace(/^\s*-\s*/, "").split("|")[0].trim();
-  const cut = (l) => MTNODE_SKILL_CANVAS_ONLY.indexOf(skillName(l)) >= 0;
+  const cut = (l) => hidden.indexOf(skillName(l)) >= 0;
   const out = [];
   let buf = null;
   const flush = () => {
@@ -3367,7 +3478,8 @@ function skillIndexContentHash(text) {
 }
 
 /* 整档索引的内容哈希（未缓存 = ""）：供分节内核做同轮去重。
-   裁剪变体另有一份哈希（_mtnodeSkillIndexTrimCache.hash），本轮实际下发哪一份由调用点档位决定。 */
+   裁剪变体按档位各有一份（_mtnodeSkillIndexTrimCache.bytier[档位].hash），
+   本轮实际下发哪一份由调用点档位决定。 */
 function mtnodeInternalSkillIndexHash() {
   return _mtnodeSkillIndexCache.hash || "";
 }
@@ -3375,7 +3487,7 @@ function mtnodeInternalSkillIndexHash() {
 /* 技能库更新后点名失效（清哈希缓存 + 丢弃在途请求），下一次运行重读 */
 function mtnodeInternalSkillIndexInvalidate() {
   _mtnodeSkillIndexCache = { hash: "", text: "", at: 0 };
-  _mtnodeSkillIndexTrimCache = { src: "", hash: "", text: "", at: 0 };
+  _mtnodeSkillIndexTrimCache = { src: "", bytier: {} };
   _mtnodeSkillIndexPending = null;
 }
 
@@ -3411,24 +3523,26 @@ function mtnodeInternalSkillIndexFull() {
   return req;
 }
 
-/* 注入系统提示的技能索引块。tier = "noCanvas" 时下发裁掉画布类条目的变体
-   （无读画布档位：开发绑定会话 / 「与画布无关」会话），默认整份。
-   裁剪变体是纯字符串派生，不再走第二次 IPC；按「源哈希 → 变体」长期缓存，
-   同一份技能库两种档位各自只构造一次，且同档位每轮字节一致（不破提示缓存）。 */
+/* 注入系统提示的技能索引块。tier 为空 = 整份；"noCanvas" = 裁掉画布类条目
+   （无读画布档位：开发绑定会话 / 「与画布无关」会话）；"hotfix" = 再裁掉需求拷问
+   （快速热修轮的契约与之互斥，见 MTNODE_SKILL_INDEX_HOTFIX）；两者可叠加
+   （"noCanvas+hotfix"）。
+   裁剪变体是纯字符串派生，不再走第二次 IPC；按「源哈希 → 档位」长期缓存，
+   同一份技能库每个档位各自只构造一次，且同档位每轮字节一致（不破提示缓存）。 */
 async function mtnodeInternalSkillIndexBlock(tier) {
   const full = await mtnodeInternalSkillIndexFull();
   if (!full) return "";
-  if (tier !== MTNODE_SKILL_INDEX_TRIM) return full;
-  if (
-    _mtnodeSkillIndexTrimCache.src === _mtnodeSkillIndexCache.hash &&
-    _mtnodeSkillIndexTrimCache.text
-  ) {
-    _mtnodeSkillIndexTrimCache.at = Date.now();
-    return _mtnodeSkillIndexTrimCache.text;
+  const key = String(tier == null ? "" : tier).trim();
+  if (!key) return full;
+  if (_mtnodeSkillIndexTrimCache.src !== _mtnodeSkillIndexCache.hash)
+    _mtnodeSkillIndexTrimCache = { src: _mtnodeSkillIndexCache.hash, bytier: {} };
+  const hit = _mtnodeSkillIndexTrimCache.bytier[key];
+  if (hit && hit.text) {
+    hit.at = Date.now();
+    return hit.text;
   }
-  const text = mtnodeSkillIndexTrimmed(full);
-  _mtnodeSkillIndexTrimCache = {
-    src: _mtnodeSkillIndexCache.hash,
+  const text = mtnodeSkillIndexTrimmed(full, key);
+  _mtnodeSkillIndexTrimCache.bytier[key] = {
     hash: skillIndexContentHash(text),
     text,
     at: Date.now(),

@@ -1659,12 +1659,13 @@ button.mini.btn-sq.tpl-ico {
   color: var(--muted)
 }
 
+/* 状态色只取 kit 的语义色（--green / --red），不另调一组「偏灰的绿 / 偏粉的红」 */
 .dsh-mcp-res-status.ok {
-  color: rgb(140, 214, 186)
+  color: var(--green)
 }
 
 .dsh-mcp-res-status.err {
-  color: rgb(240, 130, 130)
+  color: var(--red)
 }
 
 .dsh-mcp-res-list {
@@ -1677,15 +1678,16 @@ button.mini.btn-sq.tpl-ico {
 }
 
 .dsh-mcp-res-row {
-  border: 1px solid rgba(255, 255, 255, .08);
-  border-radius: 6px;
+  border: 1px solid var(--bd);
+  border-radius: 4px;
   padding: 6px 8px;
   background: rgba(255, 255, 255, .02)
 }
 
 .dsh-mcp-res-name {
   font-size: 12px;
-  color: var(--fg);
+  /* 原来写 var(--fg) —— 全仓没有这个变量，等于没设色（跟随继承）；统一用正文色 --ink */
+  color: var(--ink);
   word-break: break-all
 }
 
@@ -1711,9 +1713,9 @@ button.mini.btn-sq.tpl-ico {
   line-height: 1.5;
   white-space: pre-wrap;
   word-break: break-word;
-  border-radius: 6px;
+  border-radius: 4px;
   background: rgba(0, 0, 0, .25);
-  color: var(--fg)
+  color: var(--ink)
 }
 
 .dsh-mcp-res-tpl .dsh-mcp-res-name {
@@ -1755,6 +1757,12 @@ button.mini.btn-sq.tpl-ico {
 
 .dsh-plugin-card.off {
   opacity: .55
+}
+
+/* 卡片整行可点（.dsh-plugin-card-row / summary 都是 cursor:pointer），但此前没有任何
+   hover 反馈；照主界面卡片的既有口径补一条：悬停走青色边框，选中（.sel）再叠底色。 */
+.dsh-plugin-card:hover {
+  border-color: var(--cyan)
 }
 
 .dsh-plugin-card.sel {
@@ -2141,7 +2149,8 @@ button.mini.btn-sq.tpl-ico {
    在 280 里塞不下一行（实测名称只剩 ~10 个字母就被省略号吃了）—— 所以这一行允许换行：
    宽度够时版本紧跟在名称后面，不够时它自己掉到名称下面一行（左对齐），名称始终完整。
    名称自己吃省略号（.agent-side-name），版本标签 flex:none 永不被截断；
-   读不到版本时标签 hidden，标题与旧界面一字不差。 */
+   读不到版本时标签 hidden，标题与旧界面一字不差。
+   这一行是**纯文字**（点了不新建会话）：没有 cursor:pointer、也没有 hover 变色。 */
 .agent-side-logo {
   flex: 1;
   min-width: 0;
@@ -2154,7 +2163,6 @@ button.mini.btn-sq.tpl-ico {
   font-weight: 600;
   letter-spacing: .5px;
   color: #ebedf2;
-  cursor: pointer;
   white-space: nowrap;
 }
 
@@ -2175,15 +2183,6 @@ button.mini.btn-sq.tpl-ico {
   border: 1px solid rgba(255, 255, 255, .1);
   border-radius: 6px;
   padding: 0 5px;
-}
-
-.agent-side-logo:hover .agent-side-ver {
-  color: rgba(235, 237, 242, .75);
-  border-color: rgba(255, 255, 255, .18)
-}
-
-.agent-side-logo:hover {
-  color: rgb(86, 134, 254)
 }
 
 .agent-side-new {
@@ -2435,34 +2434,18 @@ button.mini.btn-sq.tpl-ico {
   color: #ebedf2
 }
 
+/* 会话行首的运行标记（本次统一）：与「计划」「任务清单」同一枚 .at-dot，
+   由 app-assist.js 直接挂 .at-dot.m-active —— 这里只管显隐，形状 / 呼吸 / 配色
+   全部走 dsh.css 那套状态标记，三处不再各画一套。行内不写「运行中」字样。 */
 .side-sess-status {
   flex: none;
   display: none;
   align-items: center;
-  gap: 4px;
-  font-size: 10px;
   color: rgb(86, 134, 254);
-  white-space: nowrap
 }
 
 .side-sess.running .side-sess-status {
   display: inline-flex
-}
-
-.side-sess-spinner {
-  width: 10px;
-  height: 10px;
-  flex: none;
-  border-radius: 50%;
-  border: 2px solid rgba(86, 134, 254, .22);
-  border-top-color: rgb(86, 134, 254);
-  animation: side-sess-spin .8s linear infinite
-}
-
-@keyframes side-sess-spin {
-  to {
-    transform: rotate(360deg)
-  }
 }
 
 .side-sess-name {
@@ -2753,6 +2736,12 @@ button.mini.btn-sq.tpl-ico {
   background: var(--dsh-warn);
   opacity: .45;
   transform: scale(.75)
+}
+
+/* 已跳过（计划面板专用）：虚线灰框、不填充 —— 与「未确认」的琥珀虚线区分开，
+   它说的是「这步不用做」，不是「这步要你管」。 */
+.at-dot.m-skipped::before {
+  border: 1px dashed var(--dsh-ink-faint)
 }
 
 /* 进行中：框亮起，框内填充做呼吸灯（reduced-motion 下退化为静态半亮填充） */

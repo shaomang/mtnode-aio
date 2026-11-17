@@ -249,6 +249,9 @@ SVG.deepseek_tts =
 /* DeepSeek 云端语音识别：声波 + 云端小云朵 */
 SVG.deepseek_asr =
   '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1.6 8h1.3M4.2 5.6v4.8M6.8 3.4v9.2M9.4 6.2v3.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M10.2 12.6a2.1 2.1 0 0 1 .4-4.15 2.7 2.7 0 0 1 5.1.75 1.85 1.85 0 0 1-.5 3.4z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>';
+/* MT 音频频谱分析：频谱柱（高低不一的竖条）+ 底部时间轴，一眼看出是「看声音」而不是「出声」 */
+SVG.audio_spectrum =
+  '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 10.4V6.2M4.4 12.4V3.2M6.8 9.2V5.6M9.2 13V2.6M11.6 10V4.4M14 8.2V6.6" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round"/><path d="M1.4 14.6h13.2" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" opacity=".65"/></svg>';
 
   /** 按图标键取 SVG；查不到就落到「文本处理」那枚（与 app.js fillNodeKindIcon 的兜底同口径） */
   function get(key) {

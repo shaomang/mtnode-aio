@@ -805,10 +805,12 @@ contextBridge.exposeInMainWorld('api', {
   h3CancelGenerate: (nodeId) => ipcRenderer.invoke('h3:cancelGenerate', nodeId),
   /* 独立后处理（超分 / 补帧）：不再随 h3:generate 内联跑，画布后处理节点单独调用 */
   h3PostProcess: (params) => ipcRenderer.invoke('h3:postProcess', params || {}),
-  h3WorkflowList: () => ipcRenderer.invoke('h3:wfList'),
+  h3WorkflowList: (opts) => ipcRenderer.invoke('h3:wfList', opts || {}),
   h3WorkflowGet: (id) => ipcRenderer.invoke('h3:wfGet', id),
   h3WorkflowValidate: (id) => ipcRenderer.invoke('h3:wfValidate', id),
   h3WorkflowSyncParams: (opts) => ipcRenderer.invoke('h3:wfSyncParams', opts || {}),
+  /* 只读条目（内置模板 / ComfyUI 目录）另存一份到「我的工作流」 */
+  h3WorkflowClone: (opts) => ipcRenderer.invoke('h3:wfClone', opts || {}),
   h3WorkflowTemplateExport: (mode) => ipcRenderer.invoke('h3:wfTemplateExport', mode),
   h3ForceKillBackend: () => ipcRenderer.invoke('h3:forceKillBackend'),
   h3GetLock: () => ipcRenderer.invoke('h3:getLock'),
@@ -1329,6 +1331,28 @@ contextBridge.exposeInMainWorld('api', {
     const h = (_e, payload) => cb(payload);
     ipcRenderer.on('dsSpeech:ttsChunk', h);
     return () => ipcRenderer.removeListener('dsSpeech:ttsChunk', h);
+  },
+  /* ── 音频分析后端（内置 · 无插件卡，见 audio/main-audio.js）──────────────────
+     节点 audio_spectrum（MT 音频频谱分析）用这三条：
+       audioState    读状态（是否就绪 / 端口 / 首次准备进度 / 日志路径）
+       audioEnsure   按需准备并拉起（同步脚手架 → venv → numpy → 起服务），返回最新状态
+       audioAnalyze  { audioPath, options } → { ok, body } 或 { ok:false, error:{code,message,detail} }
+     端口 / key / 退避重试全在这一层，画布侧只认这三条。 */
+  audioState: () => ipcRenderer.invoke('audio:state'),
+  audioEnsure: () => ipcRenderer.invoke('audio:ensure'),
+  audioAnalyze: (opts) => ipcRenderer.invoke('audio:analyze', opts || {}),
+  audioLog: (n) => ipcRenderer.invoke('audio:log', n),
+  audioOpenRoot: () => ipcRenderer.invoke('audio:openRoot'),
+  /* 首次准备（venv / numpy / 起服务）的进度推送：返回退订函数。 */
+  onAudioProgress: (cb) => {
+    if (typeof cb !== 'function') return () => {};
+    const h = (_e, payload) => {
+      try {
+        cb(payload || {});
+      } catch (_) {}
+    };
+    ipcRenderer.on('audio:progress', h);
+    return () => ipcRenderer.removeListener('audio:progress', h);
   },
   /* ── 会话右边栏「实况」区（浏览器默认 dock 在会话主内容右栏，可提出来变独立窗口）──
      帧通路：网关 → main-dsh.js → main.js（dsh:event）→ 这里 onBrowserFrame。

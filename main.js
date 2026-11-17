@@ -117,6 +117,9 @@ const { registerMossTtsIpc, shutdownMossTts } = require("./moss-tts/main-moss-tt
 /* DeepSeek 云端语音（官方 TTS / ASR）：无后端进程，只有两条 HTTPS 与一条 WSS 通道，
    提供商 Key 由渲染层从官方那条提供商带下来（节点与按钮都不允许换别家）。 */
 const { registerDsSpeechIpc } = require("./ds-speech/main-ds-speech.js");
+/* 音频分析后端（内置 · 只依赖 numpy · 无插件卡）：画布节点 audio_spectrum 的拍点 / 段落 / 频谱。
+   首次按需建 venv 并起本机服务（8774 起顺延），退出时 shutdownAudio 调 /shutdown 再 kill。 */
+const { registerAudioIpc, shutdownAudio } = require("./audio/main-audio.js");
 const { registerAppPluginsIpc, shutdownAppPlugins, openWindowPlugin, pluginBackendSnapshot } = require("./plugins/main-app-plugins.js");
 /* 用户自建插件（声明式 · <数据目录>/user-plugins + mtnode-plugin.json）：扫目录即出画布节点 /
    MCP / 技能，不碰源码、升级不失效；一键修复与诊断导出也在这里（见 plugins/user-plugins.js） */
@@ -10757,6 +10760,9 @@ app.whenReady().then(() => {
   /* DeepSeek 云端语音：TTS 整段 / 流式（WSS）+ ASR 整段上传。没有常驻进程，注册即用；
      官方那条提供商被删掉时渲染层会给出「去设置里补 Key」的提示，这里不做兜底换家。 */
   registerDsSpeechIpc({ getDataDir: DATA, getMainWin: () => mainWin });
+  /* 音频分析后端（内置 · 无插件卡）：同步脚手架 / venv + numpy / 起本机服务 / POST /analyze。
+     没有重后端，也不进媒体生成锁 —— 它是 CPU 上的 numpy FFT，与出图 / 出片互不抢显存。 */
+  registerAudioIpc({ getDataDir: DATA, getMainWin: () => mainWin, appRoot: __dirname });
   /* InfiniteTalk 数字人（Wan2.1 I2V 14B）：独立 ComfyUI（默认 8199）/ 安装 / 出片。
      产物落画布资产目录（与 proc_image / H3 同一去处）；音频按 81 帧分块由宿主续写。 */
   registerInfinitetalkIpc({
@@ -10970,6 +10976,8 @@ app.on("before-quit", (ev) => {
   try { shutdownMossMusicUiOnly(); } catch {}
   /* 内置 TTS：渲染层关窗 / 应用退出就把 worker（含已加载的模型）收掉，下次启用再拉起 */
   try { shutdownMossTts(); } catch {}
+  /* 音频分析服务：先调 /shutdown 让它自己退，2 s 不退就 kill（绝不残留 python 进程） */
+  try { shutdownAudio(); } catch {}
   try { shutdownYueUiOnly(); } catch {}
   try { shutdownH3UiOnly(); } catch {}
   try { shutdownLlamaUiOnly(); } catch {}

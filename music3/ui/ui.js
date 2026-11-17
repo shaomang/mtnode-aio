@@ -26,7 +26,7 @@
     const st = await api.getStatus();
     const running = !!st.running || !!st.gradioUp;
     svcBadge.textContent = running ? "服务运行中" : "服务关闭";
-    svcBadge.className = "badge " + (running ? "on" : "off");
+    svcBadge.className = "pk-pill " + (running ? "is-ok" : "");
 
     $("btnStart").disabled = !st.installDir || running;
     $("btnStop").disabled = !running;

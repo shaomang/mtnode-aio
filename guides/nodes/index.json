@@ -25,6 +25,7 @@
     "yue_gen",
     "breeze_gen",
     "moss_music",
+    "audio_spectrum",
     "deepseek_tts",
     "deepseek_asr",
     "video_gen",

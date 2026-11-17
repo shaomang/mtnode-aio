@@ -1,4 +1,4 @@
-﻿/* ===== 画布 ===== */
+/* ===== 画布 ===== */
 .wf-wrap {
   display: flex;
   flex-direction: column;
@@ -25,7 +25,12 @@
   border-radius: 0;
   height: 40px;
   min-height: 40px;
-  overflow: hidden;
+  /* overflow:hidden 改 visible + 自成一层：选中页签要往下多铺 1px 盖住画布上沿那条
+     分割线（Edge 那种「当前页签与页面连成一片」），这一 1px 必须能溢出工具条底边，
+     且工具条的子树要整体压在画布之上（画布是后面的兄弟元素，不抬层就会被它画在上面）。 */
+  overflow: visible;
+  position: relative;
+  z-index: 1;
 }
 
 .fn-toolbar .btn-sq {
@@ -53,11 +58,14 @@
    口径：
    ① **零圆角**：形状全部由 clip-path 切出右上 45° 斜切（bevel），高度吃满整条工具条，
       底边不留任何缝（.wf-wrap 的 gap 已归零）；
-   ② clip-path 会把 border 一起切掉 → 斜切那条边用 ::after 在角上补一条 1px 斜线，
-      线色统一走 --tab-edge，常态 / 悬停 / 选中只换这一个变量，边与斜线永远同色；
+   ② clip-path 会把 border 一起切掉 → 斜切那条边用 background 里的一层 11×11 斜色带补一条
+      1px 斜线（背景画在边框盒上，不会被 overflow 裁、也不会偏位），线色统一走 --tab-edge，
+      常态 / 悬停 / 选中只换这一个变量，边与斜线永远同色；
    ③ 「档案」的设计感 = 每枚标签前一枚等宽编号（01 / 02 …，CSS 计数器自增，不动 DOM、
       也不动 app.js 的 renderWfTabs）、选中页一条压在顶边的强调细线、标签之间不留圆角
       过渡，只有笔直的硬边 —— 读起来像一排档案夹的分页签。 */
+/* 拖动排序（Edge 那种拖页签挪位置）在 app.js 的 renderWfTabs 里，这里只画两样：
+   被拖起的那一枚淡下去（.dragging）、落点处一条 2px 竖线（.drop-before / .drop-after）。 */
 .wf-tabs {
   flex: 1;
   min-width: 0;
@@ -66,14 +74,21 @@
   align-items: stretch;
   /* 页签彼此贴齐：切角处露出的是相邻页签的直角，正好连成一排锯齿状的分页签 */
   gap: 0;
-  overflow: hidden;
+  /* 选中页签要越出条的下沿 1px 去盖画布上沿的分割线，这里不能再裁 */
+  overflow: visible;
   padding-left: 0;
-  counter-reset: wf-tab;
 }
 
 .wf-tab {
-  counter-increment: wf-tab;
   --tab-edge: var(--bd2);
+  /* 页签自己的那层压暗 / 着色（常态 / 悬停 / 选中只换这一个变量）。
+     它是一层**背景图**而不是 background-color：底色得留给下面那层不透明的 --panel2，
+     选中页签要靠这份不透明底色去盖住画布上沿的分割线（半透明底盖不住下面的线）。 */
+  --tab-fill: rgba(0, 0, 0, .28);
+  /* 斜边色带的宽度（沿切线法线方向）：四边那条 1px 边框在整数倍缩放下是 1 个设备像素，
+     分数倍缩放时 Chromium 把它吸附成 1 个设备像素、不再放大，色带若按 CSS px 跟着 dpr 走
+     就会比四边粗一档 —— 所以直接复用终末地主题按 dpr 分档的那支变量（别的主题没有它时退 1px）。 */
+  --tab-cut-w: var(--ef-cut-w, 1px);
   flex: 1 1 0;
   height: 100%;
   box-sizing: border-box;
@@ -87,7 +102,28 @@
   font-size: 11.5px;
   color: var(--muted);
   cursor: pointer;
-  background: rgba(0, 0, 0, .28);
+  /* 实底 = 工具条底色（原来这层底是靠父元素透上来的，视觉一模一样）：页签不透明，
+     叠在上面的那层 --tab-fill 与斜边色带照旧。 */
+  background-color: var(--panel2);
+  /* 斜切那条边：11×11 的角里画一条「切线往里 1px」的色带（与弹窗 / 运行队列的斜边同一取法）。
+     三个坑，都在离屏渲染里逐像素看过：
+     ① 不能再用 ::after —— 它挂在 padding 盒上（比边框盒内缩 1px），且 overflow:hidden 就把它
+        裁在 padding 盒里，画出来的斜线整条往内掉，切线边上留一道缝、两端还各缺一截；
+     ② 色带要向外多铺 1px（切到 50% + 1px）：只铺到切线上时，切线那个像素只有里半边被色带盖住、
+        另外半边露的是页签自己的深色底，裁切抗锯齿一混，斜边外侧就挂一个半暗像素 —— 看上去发虚；
+        多铺的那截本来就在 clip-path 外面，只会被裁掉，换来的是干净的红/底色 AA 过渡；
+     ③ 宽度不能写死 1px，见上面的 --tab-cut-w。
+     层序（先画的在上）：斜边色带 → 压暗 / 着色层 → 实底色。 */
+  background-image: linear-gradient(to top right,
+      transparent calc(50% - var(--tab-cut-w)),
+      var(--tab-edge) calc(50% - var(--tab-cut-w)),
+      var(--tab-edge) calc(50% + 1px),
+      transparent calc(50% + 1px)),
+    linear-gradient(var(--tab-fill), var(--tab-fill));
+  background-repeat: no-repeat, no-repeat;
+  background-position: right top, 0 0;
+  background-size: 11px 11px, 100% 100%;
+  background-origin: border-box;
   border: 1px solid var(--tab-edge);
   border-bottom: none;
   border-radius: 0;
@@ -96,53 +132,51 @@
   position: relative;
 }
 
-/* 斜切那条边（右上 11×11 的角里画一条对角细线；两个 1px 硬停渐变，斜线不带毛边） */
-.wf-tab::after {
+/* 拖动排序的落点指示：贴着目标页签左 / 右缘的一条竖线（伪元素在 clip-path 内侧，不会被切飞） */
+.wf-tab::before {
   content: "";
   position: absolute;
   top: 0;
-  right: 0;
-  width: 11px;
-  height: 11px;
+  bottom: 0;
+  width: 2px;
+  background: var(--cyan);
+  opacity: 0;
   pointer-events: none;
-  background: linear-gradient(to top right,
-      transparent calc(50% - .5px),
-      var(--tab-edge) calc(50% - .5px),
-      var(--tab-edge) calc(50% + .5px),
-      transparent calc(50% + .5px));
 }
 
-/* 档案编号：01 / 02 …（等宽字体、跟着标签顺序自增） */
-.wf-tab::before {
-  content: counter(wf-tab, decimal-leading-zero);
-  flex: none;
-  font: 10px/1 var(--mono);
-  letter-spacing: .5px;
-  color: inherit;
-  opacity: .5;
+.wf-tab.drop-before::before {
+  left: 0;
+  opacity: 1;
 }
+
+.wf-tab.drop-after::before {
+  right: 0;
+  opacity: 1;
+}
+
+/* 被拖起的那一枚：留在原位淡下去（拖影由系统生成） */
+.wf-tab.dragging {
+  opacity: .42;
+}
+
+/* 标签上不再有档案编号（01 / 02 …，已按需求整体移除）：只剩名称与关闭按钮。 */
 
 .wf-tab:hover {
   --tab-edge: var(--bd);
+  --tab-fill: rgba(56, 214, 255, .06);
   color: var(--ink);
-  background: rgba(56, 214, 255, .06)
-}
-
-.wf-tab:hover::before {
-  opacity: .8
 }
 
 .wf-tab.active {
   --tab-edge: var(--cyan);
+  --tab-fill: rgba(56, 214, 255, .10);
   color: var(--cyan2);
-  background: rgba(56, 214, 255, .10);
   /* 顶边那条强调细线 = 档案页签上的「当前卷」记号线（clip-path 不会切掉 inset 阴影） */
   box-shadow: inset 0 2px 0 var(--cyan);
-}
-
-.wf-tab.active::before {
-  color: var(--cyan);
-  opacity: .95
+  /* 选中页签往下多铺 1px，用自己不透明的底色盖掉画布上沿那条 1px 分割线 ——
+     Edge 里当前标签与页面是连成一片的（负外边距把多出来的 1px 从布局里扣掉，其他页签不动）。 */
+  height: calc(100% + 1px);
+  margin-bottom: -1px;
 }
 
 .wf-tab-name {
@@ -7084,13 +7118,24 @@ body.ef-skin.theme-light .n-chip.n-chip-lt {
   outline: none;
   white-space: pre-wrap;
   word-break: break-word;
+  /* 文字一律截断在标注框内，不许溢出（横 / 纵都不出框）：
+     要看全就自己拖右下角把手把框拉大 / 拉高，不自动撑开。
+     overflow:hidden 仍可被脚本 / 光标滚动，编辑时插在末尾的字照样看得见。 */
+  overflow: hidden;
+  overflow-wrap: anywhere;
   line-height: 1.35;
   font-weight: 600;
   letter-spacing: .3px;
-  cursor: text;
+  /* 拖动优先：未进编辑时整块文字就是一份拖动面（光标给 move），
+     原地单击进编辑之后才回到文本光标（见下方 :focus 那条）。 */
+  cursor: move;
   user-select: text;
   -webkit-user-select: text;
   pointer-events: auto;
+}
+
+.wf-mark .mk-text:focus {
+  cursor: text;
 }
 
 .wf-mark .mk-tools {

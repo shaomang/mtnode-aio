@@ -1539,6 +1539,16 @@ const PLAN_STEP_LABEL = {
   failed: "失败",
   skipped: "已跳过",
 };
+/* 面板行首的状态标记：与「任务清单」同一套 .at-dot（方框 + 框内填充，进行中填充呼吸）。
+   字符图标 PLAN_STEP_ICON 只用于计划正文的摘要串（如 "[✓] 标题"），不再画在行首 ——
+   两处形状不一致正是这次要统一的东西；skipped 多一档（虚线灰框、无填充）。 */
+const PLAN_MARK_CLASS = {
+  done: "done",
+  active: "active",
+  pending: "pending",
+  failed: "failed",
+  skipped: "skipped",
+};
 const PLAN_GOAL_MAX = 300;
 const PLAN_DETAIL_MAX = 3000;
 
@@ -3076,7 +3086,12 @@ function renderAgentPlanPanel(st, root) {
   bar.appendChild(fill);
   head.appendChild(bar);
   if (executing) {
-    head.appendChild(planPanelEl("span", "ap-running", I18n.t("执行中…")));
+    /* 执行中：一枚与清单行同源的呼吸标记 + 文字（原先只有一行蓝字，形状与清单 /
+       会话行各说各话；现在三处都是 .at-dot.m-active） */
+    const run = planPanelEl("span", "ap-running");
+    run.appendChild(planPanelEl("i", "at-dot m-active"));
+    run.appendChild(document.createTextNode(I18n.t("执行中…")));
+    head.appendChild(run);
   } else if (!planHasOpen(st)) {
     head.appendChild(planPanelEl("span", "ap-done", I18n.t("已完成")));
   } else {
@@ -3121,7 +3136,11 @@ function renderAgentPlanPanel(st, root) {
       if (next === i) st._planJustOpen = i;
       renderAgentPlanPanel(st);
     };
-    const ic = planPanelEl("span", "at-icon", PLAN_STEP_ICON[stt]);
+    const ic = planPanelEl(
+      "span",
+      "at-dot m-" + (PLAN_MARK_CLASS[stt] || "pending"),
+    );
+    ic.setAttribute("aria-label", I18n.t(PLAN_STEP_LABEL[stt]));
     ic.title = I18n.t(PLAN_STEP_LABEL[stt]);
     row.appendChild(ic);
     row.appendChild(planPanelEl("i", "ap-n", String(s.n || i + 1)));

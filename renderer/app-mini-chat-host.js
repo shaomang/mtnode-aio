@@ -486,6 +486,17 @@
       if (base && st) {
         var baseCanvas = String(base.canvasWfId || "");
         if (baseCanvas) st.canvasWfId = baseCanvas;
+        /* 模型设置也接**小窗里选中的这条**（用户口径：快捷会话新建不重置成官方
+           DeepSeek）。newAgentSession 只按主窗那条播种，选中的是别条时要盖掉它；
+           选中那条没选过服务商 / 模型时 seed 自己回落到「设置 · 默认模型」。 */
+        try {
+          if (typeof agentSeedModelFromSession === "function") {
+            var seed = agentSeedModelFromSession(base);
+            st.provider = seed.provider;
+            st.model = seed.model;
+            if (typeof agentMarkSessionDirty === "function") agentMarkSessionDirty(st.id);
+          }
+        } catch (_) {}
         var baseWs = "";
         try {
           if (typeof agentRunWorkspace === "function")

@@ -412,7 +412,20 @@
   position: absolute;
   inset: 0;
   border: 1px solid rgba(157, 240, 180, 0.72);
+  /* 两处 10px 斜切（右上 / 左下）各补一条色带：clip-path 会把 1px 边框一起剪断，
+     斜边否则是空的。带子画在 border-box 上、往外多铺 1px，多出来的由 clip-path 剪掉
+     （口径同 .wf-tab）。 */
   background:
+    linear-gradient(to top right,
+      transparent calc(50% - 1px),
+      rgba(157, 240, 180, 0.72) calc(50% - 1px),
+      rgba(157, 240, 180, 0.72) calc(50% + 1px),
+      transparent calc(50% + 1px)) no-repeat right top / 10px 10px border-box,
+    linear-gradient(to bottom left,
+      transparent calc(50% - 1px),
+      rgba(157, 240, 180, 0.72) calc(50% - 1px),
+      rgba(157, 240, 180, 0.72) calc(50% + 1px),
+      transparent calc(50% + 1px)) no-repeat left bottom / 10px 10px border-box,
     repeating-linear-gradient(180deg, rgba(157, 240, 180, 0.09) 0 1px, transparent 1px 4px),
     linear-gradient(180deg, rgba(157, 240, 180, 0.12), rgba(157, 240, 180, 0.03));
   box-shadow:

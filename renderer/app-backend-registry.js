@@ -176,29 +176,21 @@ function brEl(tag, cls, text) {
 function buildBackendRegistryBlock(opts) {
   const o = opts || {};
   let items = [];
-  let plugins = [];
   let pager = null;
   let pop = null;
   const sec = brEl("section", "br-sec");
   const head = brEl("div", "br-head");
   const title = brEl("h4", null, I18n.t("重后端注册中心"));
   const count = brEl("span", "br-count", "");
-  const note = brEl(
-    "div",
-    "br-note",
-    I18n.t("全局共享：Agent 在任务里装完会自动登记，下一次任务直接复用（会话 / 智能节点 / 画布助手都能查到）。这里只负责安装 / 启停 / 调用 / 卸载与留痕；插件里的本机后端（视频 / 音乐 / 语音 / 渲染 / 数字人 / 出图）也在本节只读列出，启停仍在上面插件卡片。"),
-  );
   const addBtn = brEl("button", "mini", I18n.t("＋ 登记工具"));
+  addBtn.style.marginLeft = "auto";
   addBtn.title = I18n.t("手动登记一个本机工具（也可以让 Agent 自己登记）");
   addBtn.onclick = () => openForm(null);
   const refreshBtn = brEl("button", "mini", I18n.t("刷新"));
   refreshBtn.onclick = () => void refresh();
-  head.append(title, count, note, addBtn, refreshBtn);
+  head.append(title, count, addBtn, refreshBtn);
   const body = brEl("div");
-  /* 插件后端（只读镜像）：items 是 Agent 现场登记的，plugins 是插件宿主管的 —— 两处
-     一起看才是本机全貌（Agent 侧 br_admin list 收到的是同一份数据）。 */
-  const pluginLine = brEl("div", "br-note br-plugins", "");
-  sec.append(head, body, pluginLine);
+  sec.append(head, body);
 
   function getPop() {
     if (pop && pop.isConnected) return pop;
@@ -582,38 +574,12 @@ function buildBackendRegistryBlock(opts) {
   async function refresh() {
     const r = await window.api.backendRegistryList();
     items = (r && r.ok && r.items) || [];
-    plugins = (r && Array.isArray(r.plugins) && r.plugins) || [];
     count.textContent = items.length ? items.length + " " + I18n.t("个") : I18n.t("空");
-    /* 插件后端那一行：只读镜像（装没装 + 目录），一个都没有就整行不占地方 */
-    if (!plugins.length) {
-      pluginLine.textContent = "";
-      pluginLine.style.display = "none";
-    } else {
-      const installed = plugins.filter((p) => p.installed).length;
-      pluginLine.style.display = "";
-      pluginLine.textContent =
-        I18n.t("插件后端") +
-        "（" +
-        I18n.t("只读 · 启停在插件卡片") +
-        "）：" +
-        I18n.t("已安装") +
-        " " +
-        installed +
-        "/" +
-        plugins.length +
-        " · " +
-        plugins
-          .map((p) => p.name + "：" + (p.installed ? I18n.t("已安装") : I18n.t("未安装")))
-          .join(" · ");
-      pluginLine.title = plugins
-        .map((p) => p.name + "（" + p.id + "）" + (p.installDir ? "\n" + p.installDir : ""))
-        .join("\n\n");
-    }
     body.replaceChildren();
     if (!items.length) {
       const empty = brEl("div", "br-empty");
       empty.textContent = I18n.t(
-        "还没有登记任何工具。Agent 在任务里需要什么就装什么，装完会登记到这里（全程留痕）；你也可以点右上角「＋ 登记工具」手动加入一个。这一栏为 0 是正常的 —— 它只放 Agent 现场登记的额外后端，插件里的后端看下面那一行。",
+        "还没有登记任何工具。Agent 在任务里需要什么就装什么，装完会登记到这里（全程留痕）；你也可以点右上角「＋ 登记工具」手动加入一个。这一栏为 0 是正常的 —— 它只放 Agent 现场登记的额外后端。",
       );
       body.append(empty);
       if (pager) {

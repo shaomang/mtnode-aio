@@ -1013,6 +1013,9 @@ button:disabled:active {
   /* relative：卡片封面左上角的「已装且自检通过」勾角标（.plugin-tile-done）按它定位 */
   position: relative;
   border: 1px solid var(--bd2);
+  /* 圆角：与工坊卡片（.tpl-card）、扩展能力卡片（.dsh-plugin-card）同一个 4px 口径，
+     此前这里没有圆角，是插件页里唯一一张直角卡 */
+  border-radius: 4px;
   background: linear-gradient(180deg, var(--panel2), var(--panel));
   padding: 6px;
   display: flex;
@@ -1040,9 +1043,9 @@ button:disabled:active {
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #4dd0c4;
+  color: var(--green);
   background: rgba(8, 12, 18, .82);
-  border: 1px solid rgba(77, 208, 196, .55);
+  border: 1px solid color-mix(in srgb, var(--green) 55%, transparent);
   border-radius: 3px;
   pointer-events: none;
   z-index: 2;
@@ -1053,6 +1056,7 @@ button:disabled:active {
   height: 11px;
   display: block;
 }
+
 .plugin-tile:hover {
   border-color: var(--cyan)
 }
@@ -1071,6 +1075,8 @@ button:disabled:active {
   flex: none;
   background: #0a0d12;
   border: 1px solid var(--bd);
+  /* 封面圆角 3px：与工坊卡片封面（.tpl-thumb-wrap）同一口径，卡片本体 4px */
+  border-radius: 3px;
   overflow: hidden;
 }
 
@@ -1089,7 +1095,7 @@ button:disabled:active {
   justify-content: center;
   color: var(--cyan);
   background: rgba(8, 12, 18, .82);
-  border: 1px solid rgba(120, 200, 255, .45);
+  border: 1px solid color-mix(in srgb, var(--cyan) 45%, transparent);
   border-radius: 3px;
   cursor: pointer;
   opacity: .55;
@@ -1162,9 +1168,11 @@ button:disabled:active {
   align-items: center;
 }
 
+/* 卡片动作行：20×20 小方框（button.mini.btn-sq.tpl-ico）+ 14px 图标 —— 与应用中心
+   button.mini.apps-ico-btn 的 20px 方框 / 14px 图标同一口径，此前这里是 13px。 */
 .plugin-tile-actions .plugin-act svg {
-  width: 13px;
-  height: 13px;
+  width: 14px;
+  height: 14px;
   display: block
 }
 
@@ -2831,9 +2839,11 @@ button.mini.btn-sq.ws-browse svg {
 
 /* ══════════ 用户自建插件卡片与详情面板（renderer/app-plugins.js · .np-*） ══════════
    与商店插件卡片同一个壳（.plugin-tile / #overlay > .plugin-pop），这里只加四态徽标、
-   摘要行、字段说明与动作区。配色沿用页面既有的 --ok/--warn/--red 变量，不新造色板。 */
+   摘要行、字段说明与动作区。四态一律取 kit 的语义色（--green / --muted / --yellow / --red），
+   不再用自造的青绿 / 琥珀 / 粉红三个硬编码色。 */
 .plugin-tile.np-tile .np-cover {
-  color: #4dd0c4;
+  /* 自建插件的封面底色是**装饰**（不是状态）：用 kit 的信息青，别跟「已启用」的绿撞色 */
+  color: var(--cyan2);
   opacity: .95
 }
 
@@ -2859,27 +2869,27 @@ button.mini.btn-sq.ws-browse svg {
 }
 
 .plugin-tile.np-tile .np-state.np-ok {
-  color: #4dd0c4;
-  border-color: rgba(77, 208, 196, .45);
-  background: rgba(77, 208, 196, .10)
+  color: var(--green);
+  border-color: color-mix(in srgb, var(--green) 45%, transparent);
+  background: color-mix(in srgb, var(--green) 10%, transparent)
 }
 
 .plugin-tile.np-tile .np-state.np-off {
-  color: #9aa4b2;
-  border-color: rgba(154, 164, 178, .4);
-  background: rgba(154, 164, 178, .10)
+  color: var(--muted);
+  border-color: color-mix(in srgb, var(--muted) 40%, transparent);
+  background: color-mix(in srgb, var(--muted) 10%, transparent)
 }
 
 .plugin-tile.np-tile .np-state.np-warn {
-  color: #e2b33c;
-  border-color: rgba(226, 179, 60, .45);
-  background: rgba(226, 179, 60, .12)
+  color: var(--yellow);
+  border-color: color-mix(in srgb, var(--yellow) 45%, transparent);
+  background: color-mix(in srgb, var(--yellow) 12%, transparent)
 }
 
 .plugin-tile.np-tile .np-state.np-err {
-  color: var(--red, #ff6b6b);
-  border-color: rgba(255, 107, 107, .5);
-  background: rgba(255, 107, 107, .12)
+  color: var(--red);
+  border-color: color-mix(in srgb, var(--red) 50%, transparent);
+  background: color-mix(in srgb, var(--red) 12%, transparent)
 }
 
 .np-sep {
@@ -2897,10 +2907,10 @@ button.mini.btn-sq.ws-browse svg {
   border: 1px solid transparent
 }
 
-.plugin-pop .np-badge.np-ok { color: #4dd0c4; border-color: rgba(77, 208, 196, .45) }
-.plugin-pop .np-badge.np-off { color: #9aa4b2; border-color: rgba(154, 164, 178, .4) }
-.plugin-pop .np-badge.np-warn { color: #e2b33c; border-color: rgba(226, 179, 60, .45) }
-.plugin-pop .np-badge.np-err { color: var(--red, #ff6b6b); border-color: rgba(255, 107, 107, .5) }
+.plugin-pop .np-badge.np-ok { color: var(--green); border-color: color-mix(in srgb, var(--green) 45%, transparent) }
+.plugin-pop .np-badge.np-off { color: var(--muted); border-color: color-mix(in srgb, var(--muted) 40%, transparent) }
+.plugin-pop .np-badge.np-warn { color: var(--yellow); border-color: color-mix(in srgb, var(--yellow) 45%, transparent) }
+.plugin-pop .np-badge.np-err { color: var(--red); border-color: color-mix(in srgb, var(--red) 50%, transparent) }
 
 .plugin-pop .np-row {
   display: flex;
@@ -2925,14 +2935,14 @@ button.mini.btn-sq.ws-browse svg {
 .plugin-pop .np-warn-line {
   margin-top: 6px;
   font-size: 11.5px;
-  color: #e2b33c;
+  color: var(--yellow);
   line-height: 1.5
 }
 
 .plugin-pop .np-err-line {
   margin-top: 6px;
   font-size: 11.5px;
-  color: var(--red, #ff6b6b);
+  color: var(--red);
   line-height: 1.5
 }
 
@@ -3121,13 +3131,6 @@ button.mini.btn-sq.ws-browse svg {
   color: var(--muted);
 }
 
-.br-head .br-note {
-  flex: 1;
-  min-width: 160px;
-  font-size: 11px;
-  color: var(--muted);
-}
-
 .br-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(196px, 1fr));
@@ -3231,15 +3234,6 @@ button.mini.btn-sq.ws-browse svg {
   font-size: 12px;
   color: var(--muted);
   line-height: 1.7;
-}
-
-/* 注册中心区块底部的「插件后端」只读行（插件里的本机后端，启停仍在插件卡片） */
-.br-plugins {
-  margin-top: 8px;
-  font-size: 11px;
-  line-height: 1.7;
-  color: var(--muted);
-  word-break: break-word;
 }
 
 .br-pop {

@@ -36,6 +36,9 @@ const installKill = require("../plugins/install-cancel.js");
 /* 插件安装后自检内核（结果落盘 / 等全局媒体锁 / 产物目录 / 进度上报全在它那儿，见 plugins/plugin-selfcheck.js）：
    本模块只在 require 期登记自己的 check（selfcheckMotion），不自己写盘、不自己发事件 */
 const { registerPluginSelfcheck } = require("../plugins/plugin-selfcheck.js");
+/* 控制台窗共享样式表（plugin-kit.css）的运行时同步：ui/ 复制到数据目录后，
+   页面里的 ../../plugins/plugin-kit.css 落点也跟着变，必须把它一起补上（见该文件头） */
+const { ensureKitForUiDir } = require("../plugins/plugin-kit-sync.js");
 /* 一次性 TCP 探测（npm 源可达性）：环境自检里只用它，不下载任何东西 */
 const net = require("net");
 const {
@@ -1589,6 +1592,9 @@ function ensureUiRuntime() {
   const destUi = join(remotionRoot(), "ui");
   if (!fs.existsSync(srcUi)) return;
   copyDirRecursive(srcUi, destUi, []);
+  /* 数据目录副本里的页面，../../plugins/plugin-kit.css 指向 <数据目录>/plugins/ ：
+     少了这一份，整窗样式全丢（白底 + 原生灰白控件）。见 plugins/plugin-kit-sync.js。 */
+  ensureKitForUiDir(destUi);
 }
 
 /* ── 产物 take 编号：目标文件已存在时固定用 #1、#2 … 标「第几个 take」 ──

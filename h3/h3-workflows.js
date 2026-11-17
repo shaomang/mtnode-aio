@@ -375,7 +375,7 @@ function looksLikeUiGraph(obj) {
   if (!isPlainObject(obj)) return false;
   if (!Array.isArray(obj.nodes) || !obj.nodes.length) return false;
   if (!obj.nodes.every((n) => isPlainObject(n) && (n.type || n.class_type))) return false;
-  return Array.isArray(obj.links) || obj.links === null || obj.links === undefined;
+  return Array.isArray(obj.links) || isPlainObject(obj.links) || obj.links === null || obj.links === undefined;
 }
 
 /**
@@ -452,15 +452,46 @@ function uiToApiGraph(doc) {
     if (byId.has(id)) throw new Error("UI 工作流中存在重复节点 id：" + id);
     byId.set(id, n);
   }
-  /** links: [link_id, origin_id, origin_slot, target_id, target_slot, type] */
+  /** links 兼容三种编码：
+   *  ① 数组 [link_id, origin_id, origin_slot, target_id, target_slot, type]（前端 version 0.4 及更老）
+   *  ② 对象 {id, origin_id, origin_slot, target_id, target_slot, type}（新版前端保存的格式）
+   *  ③ 以 link_id 为键的对象表 { "1": {...} }
+   */
   const linkById = new Map();
-  for (const l of Array.isArray(doc.links) ? doc.links : []) {
-    if (!Array.isArray(l) || l.length < 5) continue;
-    linkById.set(Number(l[0]), {
-      from: String(l[1]),
-      fromSlot: Number(l[2]) || 0,
-      to: String(l[3]),
-      toSlot: Number(l[4]) || 0,
+  const rawLinks = Array.isArray(doc.links)
+    ? doc.links
+    : isPlainObject(doc.links)
+      ? Object.values(doc.links)
+      : [];
+  for (const l of rawLinks) {
+    let linkId;
+    let from;
+    let fromSlot;
+    let to;
+    let toSlot;
+    if (Array.isArray(l)) {
+      if (l.length < 5) continue;
+      linkId = Number(l[0]);
+      from = l[1];
+      fromSlot = l[2];
+      to = l[3];
+      toSlot = l[4];
+    } else if (isPlainObject(l)) {
+      if (l.id == null) continue;
+      linkId = Number(l.id);
+      from = l.origin_id;
+      fromSlot = l.origin_slot;
+      to = l.target_id;
+      toSlot = l.target_slot;
+    } else {
+      continue;
+    }
+    if (!Number.isFinite(linkId) || from == null || to == null) continue;
+    linkById.set(linkId, {
+      from: String(from),
+      fromSlot: Number(fromSlot) || 0,
+      to: String(to),
+      toSlot: Number(toSlot) || 0,
     });
   }
 
@@ -785,16 +816,19 @@ function apiToUiGraph(graph) {
     }
   }
 
-  // 排布：同一依赖层放同一纵列，层内纵向错开，简单网格
+  /* 排布：按依赖层顺序（uiNodes 已按层排好）蛇形折列 —— 一条 19 节点的链如果按层横向铺开，
+     会拉成六米长的一条横线，前端只好缩到 9% 才看得全；折成每列 6 个之后是一块能看清的画布。 */
   const colWidth = 340;
-  const rowHeight = 170;
-  const colCounter = new Map();
-  for (const { key, node } of uiNodes) {
-    const lyr = layer.get(key) ?? 0;
-    const row = colCounter.get(lyr) || 0;
-    colCounter.set(lyr, row + 1);
-    node.pos = [lyr * colWidth + 40, row * rowHeight + 40];
-    node.order = row;
+  const rowHeight = 250;
+  const ROWS_PER_COL = 6;
+  let placed = 0;
+  for (const { node } of uiNodes) {
+    const col = Math.floor(placed / ROWS_PER_COL);
+    const slot = placed % ROWS_PER_COL;
+    const row = col % 2 === 0 ? slot : ROWS_PER_COL - 1 - slot;
+    node.pos = [col * colWidth + 40, row * rowHeight + 40];
+    node.order = slot;
+    placed++;
   }
 
   const idMap = Object.fromEntries([...idOf.entries()].map(([k, v]) => [k, String(v)]));
@@ -810,10 +844,45 @@ function recordToUiWorkflowText(rec) {
   if (!isPlainObject(rec) || !isPlainObject(rec.graph)) return { ok: false, error: "记录缺失或没有 API 图。" };
   try {
     const conv = apiToUiGraph(rec.graph);
-    return { ok: true, text: JSON.stringify({ nodes: conv.nodes, links: conv.links }, null, 2), warnings: conv.warnings };
+    const doc = uiWorkflowDoc(conv.nodes, conv.links);
+    return { ok: true, text: JSON.stringify(doc, null, 2), warnings: conv.warnings };
   } catch (e) {
     return { ok: false, error: readableError(e) };
   }
+}
+
+/**
+ * 组一份前端能真正读出连线的 UI 工作流文档。
+ * 关键：新版前端（comfyui-frontend 1.5x）的 LGraph.configure 只有在 `version === 0.4` 时
+ * 才按数组 [link_id, origin_id, origin_slot, target_id, target_slot, type] 建 LLink，
+ * 否则一律走对象分支（LLink.create(link) 读 link.id / link.origin_id …）。少了 version，
+ * 22 条线会被压成 links Map 里一个 id=undefined 的残条 —— 画布上就是「19 个孤立节点、一根线都没有」。
+ * 写 0.4 + 数组编码：老前端只认数组，新前端在这一档也认数组，两边通吃。
+ */
+function uiWorkflowDoc(nodes, links) {
+  const list = Array.isArray(nodes) ? nodes : [];
+  const ls = Array.isArray(links) ? links : [];
+  let lastNodeId = 0;
+  for (const n of list) {
+    const v = Number(n && n.id);
+    if (Number.isFinite(v) && v > lastNodeId) lastNodeId = v;
+  }
+  let lastLinkId = 0;
+  for (const l of ls) {
+    const v = Number(Array.isArray(l) ? l[0] : l && l.id);
+    if (Number.isFinite(v) && v > lastLinkId) lastLinkId = v;
+  }
+  return {
+    last_node_id: lastNodeId,
+    last_link_id: lastLinkId,
+    nodes: list,
+    links: ls,
+    groups: [],
+    config: {},
+    extra: {},
+    version: 0.4,
+    state: { lastGroupId: 0, lastNodeId, lastLinkId, lastRerouteId: 0 },
+  };
 }
 
 
@@ -1756,6 +1825,484 @@ function readableError(e) {
   return msg;
 }
 
+/* ───────────── 三区工作流目录：内置模板（只读）/ ComfyUI 工作流（只读镜像）/ 我的工作流 ─────────────
+ *
+ * 分工：H3WorkflowStore（<dataDir>/h3-workflows）只装「用户自己创建 / 导入 / 另存」的条目；
+ * 内置模板由随包代码现算（永远跟当前版本一致，不依赖库里可能过期的旧副本）；
+ * ComfyUI 的 user/default/workflows 是别人的文件，只扫成只读镜像。
+ * 只读性在这一层硬拒（rename / remove / 覆盖 / 校验写盘），UI 只负责把原因说清楚。
+ */
+
+const WF_GROUP_BUILTIN = "builtin";
+const WF_GROUP_COMFY = "comfy";
+const WF_GROUP_MINE = "mine";
+const BUILTIN_ID_PREFIX = "builtin:";
+const MIRROR_ID_PREFIX = "comfy:";
+
+/** 三区的展示文案（h3/ui 库列表与 video_gen 节点下拉共用这一份，别在两边各写一遍） */
+const WF_GROUPS = [
+  {
+    key: WF_GROUP_BUILTIN,
+    title: "内置模板",
+    readOnly: true,
+    hint: "随应用内置的两条 H3 链。可以打开查看、可以「另存为我的副本」，不能改名 / 删除 / 覆盖。",
+  },
+  {
+    key: WF_GROUP_COMFY,
+    title: "ComfyUI 工作流",
+    readOnly: true,
+    hint: "ComfyUI 自己的 user/default/workflows 里已有的工作流。可以打开查看、也能在节点里直接选中执行；想改请「导入副本」。",
+  },
+  {
+    key: WF_GROUP_MINE,
+    title: "我的工作流",
+    readOnly: false,
+    hint: "自己导入 / 另存的工作流。可改名、删除、导出，也可以在执行节点里选。",
+  },
+];
+
+const READONLY_REFUSAL = "只读条目不能改：内置模板随应用发布，ComfyUI 工作流属于 ComfyUI 自己。想改请先「另存为我的副本」/「导入副本」。";
+
+function isReadOnlyWorkflowId(id) {
+  const s = String(id || "");
+  return s.indexOf(BUILTIN_ID_PREFIX) === 0 || s.indexOf(MIRROR_ID_PREFIX) === 0;
+}
+
+function workflowGroupOf(id) {
+  const s = String(id || "");
+  if (s.indexOf(BUILTIN_ID_PREFIX) === 0) return WF_GROUP_BUILTIN;
+  if (s.indexOf(MIRROR_ID_PREFIX) === 0) return WF_GROUP_COMFY;
+  return WF_GROUP_MINE;
+}
+
+/**
+ * 三类来源的统一目录。只读条目的校验结果只留内存（真源永远是模板代码 / 磁盘文件）。
+ */
+class H3WorkflowLibrary {
+  /**
+   * @param {{store?:H3WorkflowStore, builtins?:Array, comfyDir?:string, mirrorTtlMs?:number}} [opts]
+   */
+  constructor(opts) {
+    const o = isPlainObject(opts) ? opts : {};
+    this.store = o.store instanceof H3WorkflowStore ? o.store : o.store || new H3WorkflowStore({});
+    this.mirrorTtlMs = Number(o.mirrorTtlMs) > 0 ? Number(o.mirrorTtlMs) : 15000;
+    this.builtins = [];
+    this.comfyDir = "";
+    this._mirror = { dir: "", at: 0, items: [], warnings: [], scanned: false };
+    this._validation = new Map();
+    this.setBuiltins(o.builtins);
+    this.setComfyDir(o.comfyDir);
+  }
+
+  /* —— 来源配置 —— */
+
+  /** 内置模板（由宿主用随包代码现算后喂进来）：id 统一加 builtin: 前缀 */
+  setBuiltins(list) {
+    const arr = Array.isArray(list) ? list : [];
+    this.builtins = arr
+      .filter(isPlainObject)
+      .map((b) => {
+        const mode = normalizeTitle(b.mode || "");
+        const rawId = String(b.id || "").trim();
+        const id =
+          rawId.indexOf(BUILTIN_ID_PREFIX) === 0
+            ? rawId
+            : BUILTIN_ID_PREFIX + sanitizeForFs(mode || rawId || "template", "template");
+        return {
+          id,
+          title: normalizeTitle(b.title) || id,
+          mode,
+          notes: normalizeTitle(b.notes) || "",
+          graph: isPlainObject(b.graph) ? b.graph : null,
+        };
+      })
+      .filter((b) => b.graph && Object.keys(b.graph).length);
+    return this.builtins.length;
+  }
+
+  /** 指向 ComfyUI 的用户工作流目录；变了就立刻作废镜像快照（下次 list 重扫） */
+  setComfyDir(dir) {
+    const next = String(dir || "").trim();
+    if (next !== this.comfyDir) {
+      this.comfyDir = next;
+      this._mirror = { dir: "", at: 0, items: [], warnings: [], scanned: false };
+    }
+    return this.comfyDir;
+  }
+
+  /* —— 只读镜像扫描 —— */
+
+  /** 重扫 <ComfyUI>/user/default/workflows（失效或 force 时真读盘，否则用快照） */
+  refreshMirror(force) {
+    const fresh =
+      !!force || this._mirror.scanned !== true || this._mirror.dir !== this.comfyDir || Date.now() - this._mirror.at > this.mirrorTtlMs;
+    if (fresh) this._mirror = this._scanMirror();
+    return this._mirror;
+  }
+
+  /** @private 读目录 → 每条给出「能不能直接执行」的明确结论（不能执行也照样列出） */
+  _scanMirror() {
+    const dir = String(this.comfyDir || "");
+    const out = { dir, at: Date.now(), items: [], warnings: [], scanned: true };
+    if (!dir) return out;
+    let entries = [];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch (e) {
+      if (e && e.code !== "ENOENT") out.warnings.push("读不到 ComfyUI 工作流目录：" + readableError(e));
+      return out;
+    }
+    const names = entries
+      .filter((ent) => ent.isFile() && /\.json$/i.test(ent.name))
+      .map((ent) => ent.name)
+      .sort((a, b) => String(a).localeCompare(String(b), "zh-Hans-CN"));
+    for (const name of names) {
+      const abs = path.join(dir, name);
+      const base = {
+        id: MIRROR_ID_PREFIX + stableHash(name.toLowerCase(), 10),
+        title: stripExt(name) || name,
+        group: WF_GROUP_COMFY,
+        readOnly: true,
+        file: abs,
+        relPath: name,
+        format: "unknown",
+        graph: null,
+        executable: false,
+        reason: "",
+        notes: "",
+        createdAt: "",
+        updatedAt: "",
+        size: 0,
+      };
+      let stat = null;
+      try {
+        stat = fs.statSync(abs);
+      } catch {
+        continue;
+      }
+      base.size = Number(stat.size) || 0;
+      base.updatedAt = new Date(stat.mtimeMs || Date.now()).toISOString();
+      base.createdAt = base.updatedAt;
+      if (base.size > MAX_IMPORT_BYTES) {
+        base.reason = "文件超过 " + Math.round(MAX_IMPORT_BYTES / 1024 / 1024) + "MB，暂不解析，也不能在节点里直接选。";
+        out.items.push(base);
+        continue;
+      }
+      let parsed = null;
+      try {
+        parsed = JSON.parse(fs.readFileSync(abs, "utf8"));
+      } catch (e) {
+        base.reason = "JSON 解析失败：" + readableError(e);
+        out.items.push(base);
+        continue;
+      }
+      const det = detectFormat(parsed);
+      base.format = det.format;
+      if (det.format === "unknown") {
+        base.reason = det.reason;
+        out.items.push(base);
+        continue;
+      }
+      /* 新前端格式（含子图 / 子图实例）当前转不成可执行图：照样列出，标明原因 */
+      const subgraphs = parsed && parsed.definitions && Array.isArray(parsed.definitions.subgraphs) ? parsed.definitions.subgraphs : [];
+      const hasSubgraphNode =
+        Array.isArray(parsed && parsed.nodes) &&
+        parsed.nodes.some((n) => n && /^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(String(n.type || "")));
+      if (subgraphs.length || hasSubgraphNode) {
+        base.reason = "含子图（subgraph）的新前端格式，当前转不成可执行图；可以在编辑器里打开查看，要执行请另存一份单图工作流。";
+        out.items.push(base);
+        continue;
+      }
+      let graph = null;
+      let warnings = [];
+      try {
+        if (det.format === "api") {
+          graph = det.graph;
+          warnings = [];
+        } else {
+          const conv = uiToApiGraph(parsed);
+          graph = conv.graph;
+          warnings = conv.warnings || [];
+        }
+      } catch (e) {
+        base.reason = "转不成可执行图：" + readableError(e);
+        out.items.push(base);
+        continue;
+      }
+      const shape = validateApiGraphShape(graph);
+      if (!shape.ok) {
+        base.reason = "图结构不完整：" + shape.errors.slice(0, 3).join("；");
+        out.items.push(base);
+        continue;
+      }
+      const scan = scanGraph(graph);
+      base.graph = graph;
+      base.scan = scan;
+      if (!scan.outputs.length) {
+        base.reason = "图里没有产物节点（Save*），无法作为生成结果，不能在节点里直接选。";
+      } else {
+        base.executable = true;
+        base.reason = "";
+      }
+      base.notes = warnings.length ? warnings.slice(0, 2).join("；") : "";
+      out.items.push(base);
+    }
+    return out;
+  }
+
+  /** @private 只读条目的校验结果（内存；不写盘） */
+  _validationOf(entry) {
+    if (entry.group === WF_GROUP_MINE) {
+      return isPlainObject(entry.validation) ? entry.validation : { status: "unchecked", checkedAt: "" };
+    }
+    const v = this._validation.get(String(entry.id));
+    return isPlainObject(v) ? v : { status: "unchecked", checkedAt: "" };
+  }
+
+  /** @private 一条只读条目 / 库条目的对外摘要（不含 graph） */
+  _summary(entry) {
+    const graph = isPlainObject(entry.graph) ? entry.graph : {};
+    const ids = Object.keys(graph);
+    const outputs = entry.group === WF_GROUP_COMFY && entry.scan ? entry.scan.outputs : ids.length ? scanGraph(graph).outputs : [];
+    const executable = entry.group === WF_GROUP_MINE ? ids.length > 0 : !!entry.executable;
+    return {
+      id: String(entry.id),
+      title: normalizeTitle(entry.title),
+      group: entry.group || workflowGroupOf(entry.id),
+      readOnly: entry.group !== WF_GROUP_MINE,
+      executable,
+      executableReason: executable ? "" : String(entry.reason || "这条工作流没有可执行的图。"),
+      format: entry.format || "api",
+      nodeCount: ids.length,
+      classCount: new Set(ids.map((k) => String(graph[k] && graph[k].class_type))).size,
+      outputs,
+      validation: this._validationOf(entry),
+      source: isPlainObject(entry.source)
+        ? entry.source
+        : { kind: entry.group === WF_GROUP_COMFY ? "comfy" : "builtin", name: String(entry.relPath || entry.mode || ""), template: entry.group === WF_GROUP_BUILTIN },
+      createdAt: entry.createdAt || "",
+      updatedAt: entry.updatedAt || "",
+      file: entry.file || "",
+      notes: entry.notes || "",
+      missing: false,
+    };
+  }
+
+  /**
+   * 整库列表（三区一次给全）。
+   * @param {{force?:boolean}} [opts] force = 打开库 / 点刷新时重扫 ComfyUI 目录
+   */
+  list(opts) {
+    const o = isPlainObject(opts) ? opts : {};
+    const mirror = this.refreshMirror(!!o.force);
+    const items = [];
+    /* 库里旧的 source.template 记录不再展示（内置模板已经由随包代码现算），磁盘文件保留不删 */
+    const mine = this.store.listDetailed().filter((it) => !(it.source && it.source.template));
+    /* 母本标题（内置 + 我的）：ComfyUI 目录里同名的那条就是「打开进编辑器」时我们自己导出的副本
+       （导出文件名 = 条目标题，见 comfyWorkflowFileName），只列母本，别同名重复出现两次 */
+    const ownTitles = new Set();
+    for (const b of this.builtins) ownTitles.add(titleKey(b.title));
+    for (const it of mine) if (it.title) ownTitles.add(titleKey(it.title));
+
+    for (const b of this.builtins) {
+      items.push(this._summary({ ...b, group: WF_GROUP_BUILTIN, readOnly: true, executable: true, format: "api" }));
+    }
+    for (const m of mirror.items) {
+      if (ownTitles.has(titleKey(stripExt(m.relPath) || m.title))) continue;
+      items.push(this._summary(m));
+    }
+    for (const it of mine) {
+      items.push({ ...it, group: WF_GROUP_MINE, readOnly: false, executable: !it.missing, executableReason: it.missing ? "库里的文件缺失。" : "" });
+    }
+    return { items, groups: WF_GROUPS, warnings: mirror.warnings.slice(), stats: this.statsOf(items) };
+  }
+
+  /** 一条完整记录（含 API graph），找不到返回 null。只读条目同样可执行 / 可打开。 */
+  get(id) {
+    const key = String(id || "").trim();
+    if (!key) return null;
+    const group = workflowGroupOf(key);
+    if (group === WF_GROUP_BUILTIN) {
+      const b = this.builtins.find((x) => String(x.id) === key);
+      if (!b) return null;
+      return {
+        ...this._summary({ ...b, group: WF_GROUP_BUILTIN, executable: true, format: "api" }),
+        graph: b.graph,
+      };
+    }
+    if (group === WF_GROUP_COMFY) {
+      this.refreshMirror(false);
+      let hit = this._mirror.items.find((x) => String(x.id) === key);
+      if (!hit) {
+        this.refreshMirror(true);
+        hit = this._mirror.items.find((x) => String(x.id) === key);
+      }
+      if (!hit) return null;
+      return { ...this._summary(hit), graph: hit.graph || null };
+    }
+    const rec = this.store.get(key);
+    if (!rec) return null;
+    return { ...rec, group: WF_GROUP_MINE, readOnly: false, executable: Object.keys(rec.graph || {}).length > 0, executableReason: "" };
+  }
+
+  /** 节点面板用：一条工作流的扫描结果 + 建议参数（只读条目也给，选了就能执行） */
+  scan(id) {
+    const rec = this.get(id);
+    if (!rec) return null;
+    const graph = isPlainObject(rec.graph) ? rec.graph : {};
+    const s = scanGraph(graph);
+    return {
+      id: rec.id,
+      title: rec.title,
+      group: rec.group,
+      readOnly: rec.readOnly,
+      executable: rec.executable !== false,
+      executableReason: rec.executableReason || "",
+      format: rec.format,
+      validation: rec.validation || { status: "unchecked" },
+      scan: s,
+      suggestedParams: normalizeParams(s.suggested, graph).params,
+    };
+  }
+
+  /** 写回 /object_info 校验结果（只读条目只留内存） */
+  setValidation(id, validation) {
+    const key = String(id || "").trim();
+    if (workflowGroupOf(key) !== WF_GROUP_MINE) {
+      const v = isPlainObject(validation) ? validation : {};
+      this._validation.set(key, {
+        status: v.status === "ok" || v.status === "missing_nodes" || v.status === "skipped" || v.status === "error" ? v.status : "unchecked",
+        checkedAt: v.checkedAt || (v.status ? new Date().toISOString() : ""),
+        missing: Array.isArray(v.missing) ? v.missing.filter(isPlainObject) : [],
+        error: normalizeTitle(v.error) || "",
+      });
+      return { ok: true, validation: this._validation.get(key), readOnly: true };
+    }
+    return this.store.setValidation(key, validation);
+  }
+
+  remove(id) {
+    const key = String(id || "").trim();
+    if (workflowGroupOf(key) !== WF_GROUP_MINE) {
+      return { ok: false, readOnly: true, error: READONLY_REFUSAL };
+    }
+    return this.store.remove(key);
+  }
+
+  rename(id, nextTitle) {
+    const key = String(id || "").trim();
+    if (workflowGroupOf(key) !== WF_GROUP_MINE) {
+      return { ok: false, readOnly: true, error: READONLY_REFUSAL };
+    }
+    const t = normalizeTitle(nextTitle);
+    if (t && this._readOnlyTitles().has(titleKey(t))) {
+      return { ok: false, error: "「" + t + "」是只读条目的名字，请换一个。" };
+    }
+    return this.store.rename(key, nextTitle);
+  }
+
+  /** 导出为 JSON 文本：内置给 API 图，ComfyUI 给原文件文本，我的给库里的 API 图 */
+  exportText(id) {
+    const key = String(id || "").trim();
+    const group = workflowGroupOf(key);
+    if (group === WF_GROUP_COMFY) {
+      this.refreshMirror(false);
+      const hit = this._mirror.items.find((x) => String(x.id) === key);
+      if (!hit) return { ok: false, error: "工作流不存在：" + key };
+      try {
+        return { ok: true, filename: hit.relPath || hit.title + ".json", text: fs.readFileSync(hit.file, "utf8") };
+      } catch (e) {
+        return { ok: false, error: readableError(e) };
+      }
+    }
+    if (group === WF_GROUP_BUILTIN) {
+      const rec = this.get(key);
+      if (!rec) return { ok: false, error: "工作流不存在：" + key };
+      return { ok: true, filename: sanitizeForFs(rec.title, key) + ".json", text: JSON.stringify(rec.graph, null, 2) };
+    }
+    return this.store.exportText(key);
+  }
+
+  /** 另存为我的副本 / 导入副本：唯一从只读区往「我的」区搬的入口 */
+  duplicateToMine(id, nextTitle) {
+    const rec = this.get(id);
+    if (!rec) return { ok: false, error: "工作流不存在：" + String(id || "") };
+    if (!rec.executable && !isPlainObject(rec.graph)) {
+      return { ok: false, error: rec.executableReason || "这条工作流没有可保存的图。" };
+    }
+    if (!rec.readOnly) return this.store.duplicate(rec.id, nextTitle);
+    return this.store.createFromGraph({
+      title: normalizeTitle(nextTitle) || rec.title + " 副本",
+      graph: rec.graph,
+      format: "api",
+      sourceName: (rec.source && rec.source.name) || rec.title,
+      source: "duplicate",
+      overwrite: false,
+    });
+  }
+
+  /**
+   * 导入到我区。与只读条目同名时自动改名（绝不覆盖只读条目，也不让列表出现两个同名）。
+   * @param {{text?:string,filePath?:string,title?:string,overwrite?:boolean}} input
+   */
+  importWorkflow(input) {
+    const o = isPlainObject(input) ? input : {};
+    const r = this.store.importWorkflow(o);
+    if (!r || !r.ok) return r;
+    const reserved = this._readOnlyTitles();
+    const title = normalizeTitle(r.record && r.record.title);
+    if (title && reserved.has(titleKey(title))) {
+      const taken = [...this.store.list().map((it) => it.title), ...reserved];
+      const next = uniqueTitle(title, taken.map((t) => ({ title: t })));
+      const renamed = this.store.rename(r.record.id, next);
+      if (renamed && renamed.ok) {
+        return {
+          ...r,
+          record: renamed.record,
+          summary: summarizeRecord(renamed.record),
+          renamed: true,
+          notice: "与只读条目同名的「" + title + "」已另存为「" + next + "」（只读条目不会被覆盖）。",
+        };
+      }
+    }
+    return r;
+  }
+
+  /** 库里现有条目 + 三区的统计（管理窗卡片头） */
+  stats() {
+    return this.list({ force: false }).stats;
+  }
+
+  /** @private 统计（list 顺手算，避免二次扫目录） */
+  statsOf(items) {
+    const arr = Array.isArray(items) ? items : [];
+    const byGroup = {
+      [WF_GROUP_BUILTIN]: arr.filter((i) => i.group === WF_GROUP_BUILTIN).length,
+      [WF_GROUP_COMFY]: arr.filter((i) => i.group === WF_GROUP_COMFY).length,
+      [WF_GROUP_MINE]: arr.filter((i) => i.group === WF_GROUP_MINE).length,
+    };
+    return {
+      root: this.store.root,
+      comfyDir: this.comfyDir,
+      count: arr.length,
+      byGroup,
+      executable: arr.filter((i) => i.executable).length,
+      blocked: arr.filter((i) => !i.executable).length,
+      validated: arr.filter((i) => i.validation && i.validation.status === "ok").length,
+      warn: arr.filter((i) => i.validation && i.validation.status === "missing_nodes").length,
+    };
+  }
+
+  /** @private 只读条目的标题集合（导入 / 改名时防重名） */
+  _readOnlyTitles() {
+    const set = new Set();
+    for (const b of this.builtins) set.add(titleKey(b.title));
+    this.refreshMirror(false);
+    for (const m of this._mirror.items) set.add(titleKey(m.title));
+    return set;
+  }
+}
+
 let _sharedStore = null;
 /** 应用内共享实例（main-h3.js 注入 dataDir 后使用） */
 function sharedStore(dataDir) {
@@ -1779,6 +2326,15 @@ module.exports = {
   defaultDataDir,
   sharedStore,
   H3WorkflowStore,
+  /* 三区目录（内置只读 / ComfyUI 只读镜像 / 我的） */
+  H3WorkflowLibrary,
+  WF_GROUPS,
+  WF_GROUP_BUILTIN,
+  WF_GROUP_COMFY,
+  WF_GROUP_MINE,
+  READONLY_REFUSAL,
+  isReadOnlyWorkflowId,
+  workflowGroupOf,
   /* 格式判定与转换 */
   looksLikeApiGraph,
   looksLikeUiGraph,

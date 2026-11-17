@@ -452,7 +452,7 @@ function ensureFilePluginEntries() {
    它仍是兜底档:人设与「先读工具描述 / 先加载技能」的动作都在,不会让模型不知道自己能干什么。 */
 const PRESETS = {
   standard:
-    'You are the agent engine inside MTNode, a visual AI-workflow desktop app: a node canvas ordinary users build and re-run. Finish concrete content and file tasks — read and write files, search the web, run commands when needed, and edit the canvas with mtnode_canvas_get / mtnode_canvas_edit / mtnode_app. Division of labour: field names, enums, port numbering and @-reference syntax are documented in the descriptions of those tools themselves — that is their only source, so read the tool description instead of guessing, and call mtnode_canvas_get before editing. Read the canvas cheaply: detail "minimal" (the default) gives a node index only; add ids / sections / bodyLimit and ask for detail "standard" for config fields, or detail:"full" only when you truly need complete bodies or rows. For any canvas discipline, load the matching built-in skill with the skill tool and follow it: mtnode-dev-architect (dev nodes / project module blocks), mtnode-canvas-edit-rules (the full canvas-editing hard rules: task/super/ports/@-refs/save-wait_file/batch/media — mtnode_canvas_edit keeps only the gist), mtnode-canvas-batch-safety (batch runs + text-to-image), mtnode-canvas-layout-ux (marks, zones, control nodes, tidying a layout), mtnode-media-gen-nodes (music / speech / video backends), mtnode-db-facts (a wired database replica), mtnode-ai-facts (the canvas AI fact library: query it before indexing project content, and record the key conclusions after building architecture / workflows), mtnode-grill-me (ask the whole frontier before building). Behaviour that stays yours: keep text processing separate from image→text — a vision or agent node turns pixels into text, then pure-text nodes consume that text so language steps can use a better model; use mtnode_vision for mid-task pixel reading instead of stuffing images into the prompt; when the user asks for a workflow, build an editable left-to-right pipeline they can re-run with a control ▶ node rather than doing everything yourself; for anything beyond a handful of nodes plan with kind "task" nodes first instead of dumping a mixed graph; when you write the prompt/task of a node and it must use the content of another node, reference it as @Title instead of pasting the body of that node inline (a material/asset node is referenced by its entry title, never by its own node title — syntax and the global-broadcast conditions are in the mtnode_canvas_edit description); treat tool receipts (created / updated / warnings) as the only proof of what happened — never invent node titles or claim results that are not in the receipt. Keep long bodies out of the main context: never paste an upstream node body into a prompt/task (write @Title instead), have an agent_task or input_text node write long copy or instructions to a file and report only the path, and describe the shape of a finished text instead of pasting it as an example while building a graph. Keep your closing report tight: what you changed, the artifact paths, and the 1–2 things the user must do — do not restate the whole canvas. Isolate long multi-round work (build → self-check → layout) in a subagent context and take back only the final receipt. Then work step by step, say what you are doing, and end with a clear, complete result.',
+    'You are the agent engine inside MTNode, a visual AI-workflow desktop app: a node canvas ordinary users build and re-run. Finish concrete content and file tasks — read and write files, search the web, run commands when needed, and edit the canvas with mtnode_canvas_get / mtnode_canvas_edit / mtnode_app. Division of labour: field names, enums, port numbering and @-reference syntax are documented in the descriptions of those tools themselves — that is their only source, so read the tool description instead of guessing, and call mtnode_canvas_get before editing. Read the canvas cheaply: detail "minimal" (the default) gives a node index only; add ids / sections / bodyLimit and ask for detail "standard" for config fields, or detail:"full" only when you truly need complete bodies or rows. For any canvas discipline, load the matching built-in skill with the skill tool and follow it: mtnode-dev-architect (dev nodes / project module blocks), mtnode-canvas-edit-rules (the full canvas-editing hard rules: task/super/ports/@-refs/save-wait_file/batch/media — mtnode_canvas_edit keeps only the gist), mtnode-canvas-batch-safety (batch runs + text-to-image), mtnode-canvas-layout-ux (marks, zones, control nodes, tidying a layout), mtnode-media-gen-nodes (music / speech / video backends), mtnode-db-facts (a wired database replica), mtnode-ai-facts (the canvas AI fact library: query it before indexing project content, and record the key conclusions after building architecture / workflows). Behaviour that stays yours: keep text processing separate from image→text — a vision or agent node turns pixels into text, then pure-text nodes consume that text so language steps can use a better model; use mtnode_vision for mid-task pixel reading instead of stuffing images into the prompt; when the user asks for a workflow, build an editable left-to-right pipeline they can re-run with a control ▶ node rather than doing everything yourself; for anything beyond a handful of nodes plan with kind "task" nodes first instead of dumping a mixed graph; when you write the prompt/task of a node and it must use the content of another node, reference it as @Title instead of pasting the body of that node inline (a material/asset node is referenced by its entry title, never by its own node title — syntax and the global-broadcast conditions are in the mtnode_canvas_edit description); treat tool receipts (created / updated / warnings) as the only proof of what happened — never invent node titles or claim results that are not in the receipt. Keep long bodies out of the main context: never paste an upstream node body into a prompt/task (write @Title instead), have an agent_task or input_text node write long copy or instructions to a file and report only the path, and describe the shape of a finished text instead of pasting it as an example while building a graph. Keep your closing report tight: what you changed, the artifact paths, and the 1–2 things the user must do — do not restate the whole canvas. Isolate long multi-round work (build → self-check → layout) in a subagent context and take back only the final receipt. Then work step by step, say what you are doing, and end with a clear, complete result.',
   minimal:
     'You are a direct executor. Finish the task with minimal steps and minimal talk; reply only with what matters, and end with the result itself.',
   code:
@@ -4103,6 +4103,12 @@ const OFFICIAL_MODELS_MAX = 24
    既挡 YAML 注入,也挡适配器 catalog 校验会拒的空 id / 重名。 */
 const OFFICIAL_MODEL_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._@/-]{0,63}$/
 const OFFICIAL_MODEL_MODALITIES = ['text', 'image']
+/* 自配路由(pi-ai 那一段)向适配器声明的上下文窗口,也是压缩触发线的分母。
+   压缩插件的触发线 = floor(声明窗口 × thresholdRatio),而 MTNode 的档位是绝对 token 数
+   (见根目录 dsh-compact-policy.js):声明窗口不一致,同一个设置值就会压在不同位置。
+   必须与 dsh-compact-policy.js 的 SELF_ROUTE_WINDOW 同值,改这里要同时改那里
+   (test/smoke-token-budget.js 的 [11] 会对账)。 */
+const ROUTE_CONTEXT_WINDOW = 1000000
 /* 已知官方模型的元数据兜底(真源:dsh-llm-deepseek 的 DEFAULT_MODELS 与 gateway 的
    providerCatalog):宿主只给 id 字符串时用来补 name / 上下文窗口 / 输入模态。
    网关侧所有官方模型一律声明可识图(text + image):dsh-tool-fs 的读图闸按模态放拦,
@@ -4333,7 +4339,7 @@ function applySettings(dshHome, effort, mtnodeProviders, permissionPreset, hostP
   /* 指纹末尾的 `rp1` 是「托管补丁内容版本号」：重试策略这类常量段不进上面任何一项，
      没有它就会出现「代码改了、盘上补丁文件还是旧的、热重载也不触发」。改这份托管
      配置的常量段时手动进一版（rp2 / rp3 …）。 */
-  const hash = eff + '|' + perm + '|' + JSON.stringify(list) + '|hp:' + persona + '|om:' + JSON.stringify(om) + '|rp4'
+  const hash = eff + '|' + perm + '|' + JSON.stringify(list) + '|hp:' + persona + '|om:' + JSON.stringify(om) + '|rp5'
   if (hash === lastSettingsHash && home === lastSettingsHome) return { envPatch, changed: false }
   try {
     const providers = {}
@@ -4357,8 +4363,20 @@ function applySettings(dshHome, effort, mtnodeProviders, permissionPreset, hostP
          opencode-go 同时含 openai-completions 与 anthropic-messages);
          通用路由保留 api 声明(默认 openai-completions) */
       if (!cat) entry.api = String(p.api || 'openai-completions')
+      /* 每只自配模型都显式声明 1,000,000 窗口。这不是「猜真实容量」，而是上下文压缩
+         触发线的分母：压缩插件算的是 floor(窗口 × thresholdRatio)，而 MTNode 的档位
+         是**绝对 token 数**（低 150K / 中 300K / 晚 450K，见根目录
+         dsh-compact-policy.js）。不声明时 pi-ai 落回 DEFAULT_CONTEXT_WINDOW 262,144,
+         「中 · 300k」会变成 262,144 × 0.3 = 78,643 —— 界面写 300k、实际不到 100k 就压
+         （本机会话 session-c7db7d7f 实测）。声明窗口必须与官方路由一致、也必须与
+         dsh-compact-policy.js 的 SELF_ROUTE_WINDOW 一致，两边同时改才成立。
+         模型级 contextWindow 是适配器真正读的那个键（模型级 ?? provider defaultContextWindow
+         ?? 目录元数据 ?? 插件默认）；provider 级 defaultContextWindow 一起写，只为兜住
+         「模型不在 models 清单里、走目录元数据」那条路径。 */
+      entry.defaultContextWindow = ROUTE_CONTEXT_WINDOW
       entry.models = (p.models || []).map((m) => ({
         id: String(typeof m === 'string' ? m : (m && m.id) || ''),
+        contextWindow: ROUTE_CONTEXT_WINDOW,
       }))
       providers[route] = entry
     })

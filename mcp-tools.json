@@ -188,6 +188,7 @@
                     "qa_video",
                     "qa_audio",
                     "qa_file",
+                    "audio_spectrum",
                     "save",
                     "save_text",
                     "save_image",

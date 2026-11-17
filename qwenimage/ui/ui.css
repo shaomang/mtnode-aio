@@ -1,80 +1,62 @@
-:root {
-  --bg: #12151b;
-  --panel: #1a1f28;
-  --panel2: #202734;
-  --line: #2b3444;
-  --text: #dbe3ef;
-  --muted: #8d9bb0;
-  --accent: #7aa2ff;
-  --ok: #4fc08d;
-  --bad: #e06666;
-}
+/* 只留布局：配色 / 按钮 / 输入 / 状态胶囊 / 日志观感全部来自
+   plugins/plugin-kit.css 的共享令牌与控件类（本文件不写色值、不重定义控件）。 */
 * { box-sizing: border-box; }
+
 body {
   margin: 0;
   height: 100vh;
   display: flex;
   flex-direction: column;
   background: var(--bg);
-  color: var(--text);
-  font: 13px/1.5 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  color: var(--ink);
+  font: 13px/1.5 var(--sans);
 }
+
+/* ── 窗顶：状态点 + 标题 + 状态胶囊 + 动作 ───────────────────────────────── */
 .bar {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 10px 14px;
+  gap: 10px;
+  padding: 8px 14px;
   background: var(--panel);
-  border-bottom: 1px solid var(--line);
+  border-bottom: 1px solid var(--bd);
 }
-.id { display: flex; align-items: center; gap: 8px; }
-.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
-.dot.ok { background: var(--ok); }
-.dot.bad { background: var(--bad); }
-.sub { color: var(--muted); font-size: 12px; }
-.acts { margin-left: auto; display: flex; gap: 8px; }
-button {
-  background: var(--panel2);
-  color: var(--text);
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  padding: 6px 10px;
-  cursor: pointer;
-  font-size: 12px;
-}
-button:hover { border-color: #3d4a60; }
-button.primary { background: #2b4a8a; border-color: #3a5ea6; }
-button:disabled { opacity: 0.5; cursor: not-allowed; }
+.id { display: flex; align-items: center; gap: 8px; min-width: 0; }
+/* #dot 的 className 由 ui.js 写成 "dot ok|bad|"（脚本不动），颜色走语义令牌 */
+.dot { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); flex: none; }
+.dot.ok { background: var(--green); }
+.dot.bad { background: var(--red); }
+/* 状态文本较长（就绪 / 安装中… ），胶囊内省略，别把标题与按钮挤掉 */
+.bar .pk-pill { min-width: 0; max-width: 42ch; }
+.bar .pk-pill > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.acts { margin-left: auto; display: flex; gap: 8px; flex: none; }
+
+/* ── 两栏：运行环境 / 试生成 ─────────────────────────────────────────────── */
 .grid {
   display: grid;
   grid-template-columns: minmax(320px, 420px) 1fr;
   gap: 12px;
   padding: 12px 14px 0;
+  align-items: start;
 }
-.card {
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  padding: 12px;
-}
-.card h3 { margin: 0 0 10px; font-size: 13px; color: var(--muted); font-weight: 600; }
-dl { display: grid; grid-template-columns: 84px 1fr; gap: 6px 10px; margin: 0 0 10px; }
+.body { display: flex; flex-direction: column; gap: 10px; }
+
+dl { display: grid; grid-template-columns: 84px 1fr; gap: 6px 10px; margin: 0; font-size: 12px; }
 dt { color: var(--muted); }
 dd { margin: 0; word-break: break-all; }
-.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
-label { color: var(--muted); display: inline-flex; gap: 6px; align-items: center; }
+/* 安装目录是会被截断的路径（省略号在左侧） */
+dd.pk-path { display: block; color: var(--ink); }
+
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+label { display: inline-flex; gap: 6px; align-items: center; color: var(--muted); font-size: 11px; }
 label.stack { display: flex; flex-direction: column; align-items: stretch; gap: 4px; }
-select, input, textarea {
-  background: var(--panel2);
-  color: var(--text);
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  padding: 5px 7px;
-  font: inherit;
-}
-textarea { resize: vertical; }
-input[type="number"] { width: 84px; }
-.hint { color: var(--muted); font-size: 12px; margin-top: 8px; word-break: break-all; }
+.pk-input.num { width: 84px; }
+/* 输入控件与 .pk-btn 同高（28px），同一行不错位 */
+.row .pk-input, .row .pk-select { height: 28px; }
+
+.hint { color: var(--muted); font-size: 11px; word-break: break-all; min-height: 16px; }
+
+/* ── 日志区：整块卡片，日志本体取 .pk-log（去掉自己的描边与圆角） ──────────── */
 .logwrap {
   margin: 12px 14px 14px;
   flex: 1;
@@ -82,25 +64,10 @@ input[type="number"] { width: 84px; }
   display: flex;
   flex-direction: column;
   background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 10px;
+  border: 1px solid var(--bd);
+  border-radius: var(--r-md);
   overflow: hidden;
 }
-.logbar {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--line);
-  background: var(--panel2);
-}
+.logbar { gap: 10px; }
+.logwrap > .pk-log { flex: 1; border: 0; border-radius: 0; }
 .spacer { flex: 1; }
-#log {
-  margin: 0;
-  padding: 10px 12px;
-  flex: 1;
-  overflow: auto;
-  font: 12px/1.5 Consolas, "Cascadia Mono", monospace;
-  white-space: pre-wrap;
-  color: #c7d3e6;
-}

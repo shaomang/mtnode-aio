@@ -2507,6 +2507,9 @@ async function assistSend(text, opts) {
       /* 纯净模式（助手栏「模式」菜单里那一枚 · 本次需求）：与会话窗口同一条链 ——
          systemPrompt 置空 + pure 标记下发网关（网关强制空预设文本、引擎按 MTNODE_PURE 移除人设）。 */
       pure: assistPure,
+      /* 快速热修轮（助手栏这一枚，见 assistHotfixContract）：与需求拷问互斥 ——
+         技能索引里一并摘掉 mtnode-grill-me，免得同一轮两份相反指令。 */
+      hotfix: !!assistHotfixContract,
       /* Gate B（助手侧）：与画布无关 → 走 MTNODE_NO_CANVAS 整档闸，画布三件套
          （get / edit / app 合计约 26.0K 字符/步）整个不注册；快照也已换成轻量摘要。 */
       noCanvas: assistCanvasFree,
@@ -3213,6 +3216,22 @@ async function agentEnsureSessionBody(st) {
         agentMarkSessionDirty(String(id));
       }
       st._lcLoaded = true;
+      /* 台账自愈（真机 bug · 重启后下方 token 统计丢失）：老存档 / 被那条丢账链抹过的会话
+         盘上 tokenReport 是 null，而每一步的真实用量随消息落盘（m.usageSteps）——
+         就地从消息重建一份，界面与状态栏的累计统计立刻回来（见 app-agent.js 的 tokReportRebuild）。
+         一轮正在跑时不重建：那一轮的步数还在长，收尾时 tokMergeRun 会整轮并进台账，
+         先建一份再并一次就是双计。 */
+      if (
+        !st.tokenReport &&
+        typeof tokReportRebuild === "function" &&
+        !(typeof sessionIsRunning === "function" && sessionIsRunning(st)) &&
+        !(st._tokLive && Object.keys(st._tokLive).length)
+      ) {
+        try {
+          /* 不强制落盘：这份账能从消息原样重建，下一次自然保存会把 meta 里的它带回索引 */
+          tokReportRebuild(st);
+        } catch (_) {}
+      }
       /* 盘上已知条数 = 刚读回来的 messages 条数：增量落盘的起点（之后只送新增 / 尾部增长） */
       agentSessionDiskLenSet(id, Array.isArray(st.messages) ? st.messages.length : 0);
     } else {
@@ -4167,7 +4186,14 @@ function agentLiveWatchEnd(st) {
   if (st && st.id) agentQueueSessionCompact(st.id);
 }
 /* 这一轮「到此刻为止」的正文快照（从轨迹取，不碰 messages）：
-   没有产出就返回 null（不落空壳）。段快照一并带上，轨迹 / 改动两栏重启后也读得出来。 */
+   没有产出就返回 null（不落空壳）。段快照一并带上，轨迹 / 改动两栏重启后也读得出来。
+
+   **工具记录也必须带上（本轮修复 · 用户报「重启后会话里的 agent 行为全丢」）**：
+   段快照里的 tool 段只有 callId / step，名字 / 参数 / 结果全在工具记录（st._liveTools）里；
+   过去这一份只收思考与正文，于是「跑一轮中途关掉 / 重启」落盘的那条消息里有 60 多条
+   tool 段、却一条工具记录都没有 —— 重启读回来时每一段都配不上记录，会话里所有工具卡
+   整块消失（只剩一行行思考）。段与记录同源，必须一起落盘。
+   同理带上联网工具的原始块（webTools），否则重启后引用来源也一起没了。 */
 function agentLivePartialMsg(st) {
   if (!st || !st.id || !st.running) return null;
   let segs = [];
@@ -4178,19 +4204,38 @@ function agentLivePartialMsg(st) {
   }
   const sayParts = [];
   const thinkParts = [];
+  let toolSegs = 0;
   for (const s of segs) {
     if (!s) continue;
     if (s.k === "say") sayParts.push(String(s.text || ""));
     else if (s.k === "think") thinkParts.push(String(s.text || ""));
+    else if (s.k === "tool") toolSegs++;
   }
   const say = sayParts.join("");
   const think = thinkParts.join("\n");
-  if (!String(say).trim() && !String(think).trim()) return null;
+  /* 只有工具调用、还没吐思考 / 正文的那半步也算产出：不落就等于这半步没有过 */
+  const liveTools = Array.isArray(st._liveTools) ? st._liveTools : [];
+  if (!String(say).trim() && !String(think).trim() && !toolSegs && !liveTools.length)
+    return null;
   const m = { role: "assistant", content: say, at: Date.now(), _partial: true };
   if (String(think).trim()) m.reasoning = think;
   try {
     const snap = agentSegsForDisk(segs);
     if (snap && snap.length) m.segments = snap;
+  } catch (_) {}
+  /* 工具记录（与 agentRoundMsgTail 收尾那一份同源同形）：段靠 callId 配它，缺一条就少一张卡 */
+  try {
+    if (liveTools.length) m.tools = liveTools.slice();
+  } catch (_) {}
+  try {
+    if (Array.isArray(st._webTools) && st._webTools.length) m.webTools = st._webTools.slice();
+  } catch (_) {}
+  /* 每步 token 明细同样随快照落盘（只**复制**不清采集缓冲 —— 清是收尾时 tokUsageStepsTake
+     的事）：不带的话，中途重启回来的那条消息每步 token 一行都没有，轨迹 / 对话里
+     「这一步用了多少 token」整轮变成未记到。 */
+  try {
+    if (Array.isArray(st._usageSteps) && st._usageSteps.length)
+      m.usageSteps = st._usageSteps.slice();
   } catch (_) {}
   return m;
 }
@@ -4274,10 +4319,70 @@ function agentTouchSession(owner) {
 function agentFlushSessionSaveQuiet() {
   return persistAgentSession().catch(() => {});
 }
+/* 新建会话的「模型设置」从哪来（用户口径）：**沿用上一条会话**。上一条在会话菜单里
+   换过服务商 / 模型，点 ＋（或快捷会话小窗的 ＋）起来的新会话就还是那一家那一只，
+   不会被重置回官方 DeepSeek。只有上一条压根没选过（服务商与模型都空）、或它那家
+   已不在可选清单里，才回落到「设置 · 默认模型」（dshDefaultProviderRoute /
+   dshDefaultModelValue）。返回 { provider, model }；模型不在该家清单里就留空，
+   由运行期取该家第一只 —— 不硬塞一个跑不了的名字。 */
+function agentSeedModelFromSession(base) {
+  const fallback = {
+    provider: dshDefaultProviderRoute() || "deepseek-official",
+    model: dshDefaultModelValue(),
+  };
+  if (!base) return fallback;
+  const hasProvider = String(base.provider || "").trim();
+  const hasModel = String(base.model || "").trim();
+  if (!hasProvider && !hasModel) return fallback;
+  let route = hasProvider;
+  if (!route) {
+    /* 老会话没记服务商（空 = 沿用本机默认智能路由，与运行期同一口径） */
+    try {
+      route = String(preferredAgentProviderRoute() || "") || "deepseek-official";
+    } catch (_) {
+      route = "deepseek-official";
+    }
+  }
+  let routeOk = false;
+  try {
+    routeOk = agentRouteOptions().has(route);
+  } catch (_) {
+    routeOk = false;
+  }
+  if (!routeOk) return fallback;
+  let model = hasModel;
+  if (model && typeof dshModelFitsRouteNow === "function") {
+    try {
+      if (!dshModelFitsRouteNow(route, model)) model = "";
+    } catch (_) {}
+  }
+  return { provider: route, model: model };
+}
+/* 「上一条会话」= 用户此刻正在看的那条（会话页选中的；开发页覆盖态取本页那条），
+   取不到才回落到助手栏绑着的那条 —— 都是「刚才在用的那条」，不是全新建的空壳。 */
+function agentSeedBaseSession() {
+  try {
+    const id = agentViewId();
+    const hit = id ? agentSessionById(id) : null;
+    if (hit) return hit;
+  } catch (_) {}
+  try {
+    const as = typeof assistBoundSession === "function" ? assistBoundSession() : null;
+    if (as && as.id) return as;
+  } catch (_) {}
+  try {
+    return agentSessionById(activeAgentId());
+  } catch (_) {
+    return null;
+  }
+}
 function newAgentSession() {
   /* 老行为保留：没有活动会话时，这里顺手把默认会话补出来（agentSessionState 的副作用） */
   agentSessionState();
   const list = agentSessions();
+  /* 模型设置沿用上一条会话（见 agentSeedModelFromSession）；先取基准再建新会话，
+     以免读到刚 unshift 进去的那条自己 */
+  const modelSeed = agentSeedModelFromSession(agentSeedBaseSession());
   const st = {
     id: uid("as"),
     title: I18n.t("新会话"),
@@ -4289,12 +4394,12 @@ function newAgentSession() {
     workspace: "",
     /* 手动「新会话」= 用户此刻正在看的这张图 */
     canvasWfId: currentVisibleWfId(),
-    /* 预设 / 提供商 / 模型 / 思考强度 = 「设置 · 默认模型」那几格（本次共识）：
-       新建会话按设置播种，不再沿用「当前会话」的临时选择 —— 否则设置里的默认模型
-       只是摆设（旧行为：新会话继承当前会话，空模型再被运行期取成该家第一只）。 */
+    /* 预设 / 思考强度 = 「设置 · 默认模型」那几格；提供商 / 模型 = **沿用上一条会话**
+       （用户口径：快捷会话与普通会话都一样 —— 上一条换过模型，新会话不许重置成
+       官方 DeepSeek）；上一条没选过 / 那家已不可用才回落到设置。 */
     preset: dshDefaultPresetValue() || AGENT_PRESET_DEFAULT,
-    provider: dshDefaultProviderRoute() || "deepseek-official",
-    model: dshDefaultModelValue(),
+    provider: modelSeed.provider,
+    model: modelSeed.model,
     effort: dshDefaultEffortValue(),
     /* 手动新建的会话照常读画布：「不读画布」是开发绑定会话专属（createDevSessionForNode 置位） */
     noCanvasRead: false,
@@ -5465,7 +5570,7 @@ function buildAgentModelMenu() {
     tinp.max = String(COMPACT_CUSTOM_MAX);
     tinp.step = "1000";
     tinp.value = String(cur.customTriggerTokens);
-    tinp.title = I18n.t("（单位：token，可填 100k – 500k；只对大窗口路由生效）");
+    tinp.title = I18n.t("（单位：token，可填 100k – 500k；到这个数就压，与窗口大小无关）");
     tinp.onchange = () => {
       if (!applyAssistCompactTrigger(tinp.value)) syncCompactCustomInput(tinp);
     };
@@ -8645,6 +8750,11 @@ function tokUsageStepNote(st, runKey, data) {
     return Number.isFinite(n) && n > 0 ? n : 0;
   };
   const u = {
+    /* 这条 usage 的真实到达时刻（网关帧自带 at，没有就取本地此刻）：**同一轮里步号会重号**
+       —— 上下文压缩后续跑 / 并发子代理各自从 1 计数，而宿主轮号（用户第几次发送）不变，
+       于是 (轮号, 步号) 这把键在同一条助手消息里会撞上好几条**相隔十几分钟**的不同调用。
+       取数时必须靠 at 把「这一次调用」与同号的另一次分开（见 dshTokPickAt）。 */
+    at: Number(data.at) || Date.now(),
     turn: traceNum(tr.turn, 0),
     /* 会话轮号（本次需求 · 老轮次 token 回填）：明细**自己带轮号**才能按 (轮号, 步号)
        与被回填的历史明细同键取数 —— 少了这一位，明细只能按「当前在跑的那一轮」认领，
@@ -8726,6 +8836,31 @@ function dshUsageStepsStampRound(steps, segs) {
   }
   return steps;
 }
+/* 一条消息里每个 (轮号, 步号) 出现过的**段实例时刻**（一个实例 = 连续同一个键的一段序列，
+   取实例第一段的 at）。同一步重号时（压缩后续跑 / 并发子代理），实例数与明细条数常常相等，
+   老存档的明细没有 at，就按顺序把这些时刻补回去 —— 不补就永远只能把几次调用加成一个大数。 */
+function dshUsageSegAtsOf(m) {
+  const segs = Array.isArray(m && m.segments)
+    ? m.segments
+    : Array.isArray(m && m._segs)
+      ? m._segs
+      : null;
+  if (!segs || !segs.length) return null;
+  const map = new Map();
+  let lastKey = "";
+  for (const s of segs) {
+    const r = Number(s && s.round) || 0;
+    const step = Number(s && s.step);
+    const at = Number(s && s.at) || 0;
+    if (!(r > 0) || !Number.isFinite(step) || !at) continue;
+    const k = dshTokStepKeyOf(r, step);
+    if (k === lastKey) continue;
+    lastKey = k;
+    if (!map.has(k)) map.set(k, []);
+    map.get(k).push(at);
+  }
+  return map;
+}
 /* 合成明细表：本轮内存那份 + 各条助手消息落盘那份（顺序 = 先历史后本轮，取数只按键，
    与顺序无关）。返回**新数组**，调用方随便读，不会改到会话对象。 */
 function dshUsageDetailsOf(st) {
@@ -8737,13 +8872,50 @@ function dshUsageDetailsOf(st) {
     const list = Array.isArray(m.usageSteps) ? m.usageSteps : null;
     if (!list || !list.length) continue;
     const round = dshUsageRoundOfMsg(m);
-    for (const d of list) {
+    /* 老明细的 at 回填：同一步重号时，段的**实例时刻**按时间升序，明细按计费输入升序
+       （同一轮里上下文只增不减）——把最大的那几条与实例一一对应，多出来的（并发子代理
+       混进来的错位账）不回填。条数少于实例数就不配（认不出是哪几个实例）。 */
+    const segAts = list.some((d) => d && !(Number(d.at) > 0)) ? dshUsageSegAtsOf(m) : null;
+    const atFill = new Map();
+    if (segAts) {
+      const byKey = new Map();
+      list.forEach((d, idx) => {
+        if (!d) return;
+        const r = Number(d.round) > 0 ? Number(d.round) : round;
+        if (!(r > 0) || !Number.isFinite(Number(d.step))) return;
+        if (Number(d.at) > 0) return;
+        const k = dshTokStepKeyOf(r, d.step);
+        if (!byKey.has(k)) byKey.set(k, []);
+        byKey.get(k).push(idx);
+      });
+      const costOf = (d) =>
+        (Number(d && d.input) || 0) +
+        (Number(d && d.cacheRead) || 0) +
+        (Number(d && d.cacheWrite) || 0);
+      for (const [k, idxs] of byKey) {
+        const ats = segAts.get(k);
+        if (!ats || !ats.length || ats.length > idxs.length) continue;
+        const sorted = idxs.slice().sort((x, y) => costOf(list[x]) - costOf(list[y]));
+        const pick = sorted.slice(sorted.length - ats.length);
+        for (let n = 0; n < pick.length; n++) if (ats[n] > 0) atFill.set(pick[n], ats[n]);
+      }
+    }
+    for (let i = 0; i < list.length; i++) {
+      const d = list[i];
       if (!d) continue;
-      if (Number(d.round) > 0 || !(round > 0)) {
+      let at = Number(d.at) || 0;
+      if (!at && atFill.has(i)) at = atFill.get(i);
+      if (Number(d.round) > 0 && !(at > 0)) {
         out.push(d);
         continue;
       }
-      out.push(Object.assign({}, d, { round: round }));
+      if (Number(d.round) > 0 && at === (Number(d.at) || 0)) {
+        out.push(d);
+        continue;
+      }
+      out.push(
+        Object.assign({}, d, Number(d.round) > 0 ? {} : { round: round }, at > 0 ? { at: at } : {}),
+      );
     }
   }
   const live = Array.isArray(st._usageSteps) ? st._usageSteps : null;
@@ -8768,8 +8940,84 @@ function dshTokStepSigOf(st) {
 function dshTokStepKeyOf(round, step) {
   return String(round) + ":" + String(step);
 }
+/* ── (轮号, 步号) 为什么会重号，以及为什么必须靠 at 分开 ─────────────────────────
+   宿主轮号 = 用户第几次发送；网关步号 = 那一次运行内部的步。同一轮里**可以跑多次网关运行**
+   （上下文压缩后接着跑、并发子代理、续跑），它们的步号各自从 1 起，撞在同一个 (轮, 步) 键上。
+   实测：同一条助手消息里 step166 出现两次，相隔 15 分钟（275k 与 288k 计费输入），
+   相加后行内显示 ↑565.3k —— 用户看到的「一步比上下文大一倍」就是这么来的。
+   所以桶里**保留每一条明细自己的到达时刻**，取数时按段的 at 只取「同一次调用」那一簇；
+   老存档的明细没有 at（那时不记）→ 整桶相加，行为与改动前一致。 */
+const TOK_SAME_CALL_GAP_MS = 30000;
+function dshTokPartOf(d) {
+  return {
+    at: Number(d && d.at) || 0,
+    in:
+      (Number(d && d.input) || 0) +
+      (Number(d && d.cacheRead) || 0) +
+      (Number(d && d.cacheWrite) || 0),
+    out: Number(d && d.output) || 0,
+    calls: Math.max(1, Number(d && d.calls) || 1),
+    cacheRead: Number(d && d.cacheRead) || 0,
+    cacheWrite: Number(d && d.cacheWrite) || 0,
+    reasoning: Number(d && d.reasoning) || 0,
+    provider: String((d && d.provider) || ""),
+    model: String((d && d.model) || ""),
+  };
+}
+/* 从桶里取「at 这一次调用」：以最接近 at 的那条为锚，把与它相隔 ≤30s 的相邻条目一起相加
+   （同一步里的并发调用 / 同一次调用的多帧都落在这个窗口里）。 */
+function dshTokPickAt(bucket, at) {
+  if (!bucket) return null;
+  const parts = Array.isArray(bucket.parts) ? bucket.parts : null;
+  const t = Number(at) || 0;
+  if (!parts || !parts.length || !t) return bucket;
+  let best = -1;
+  let bestGap = Infinity;
+  for (let i = 0; i < parts.length; i++) {
+    const a = parts[i].at;
+    if (!a) continue;
+    const g = Math.abs(a - t);
+    if (g < bestGap) {
+      bestGap = g;
+      best = i;
+    }
+  }
+  if (best < 0) return bucket;
+  const anchor = parts[best].at;
+  const out = {
+    in: 0,
+    out: 0,
+    calls: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    reasoning: 0,
+    provider: "",
+    model: "",
+  };
+  const add = (p) => {
+    out.in += p.in;
+    out.out += p.out;
+    out.calls += p.calls;
+    out.cacheRead += p.cacheRead;
+    out.cacheWrite += p.cacheWrite;
+    out.reasoning += p.reasoning;
+    if (p.provider) out.provider = p.provider;
+    if (p.model) out.model = p.model;
+  };
+  add(parts[best]);
+  for (let i = best - 1; i >= 0; i--) {
+    if (Math.abs(anchor - parts[i].at) > TOK_SAME_CALL_GAP_MS) break;
+    add(parts[i]);
+  }
+  for (let i = best + 1; i < parts.length; i++) {
+    if (Math.abs(parts[i].at - anchor) > TOK_SAME_CALL_GAP_MS) break;
+    add(parts[i]);
+  }
+  return out;
+}
 /* 会话的每步 token 表：Map("轮:步" → {in, out, calls, cacheRead, cacheWrite, reasoning,
-   provider, model})。in = 计费输入；两个数都是 0 的桶照样留在表里（由展示层判断写不写）。
+   provider, model, parts:[…]})。in = 计费输入；两个数都是 0 的桶照样留在表里（由展示层判断写不写）。
+   顶层那几个字段是**整桶合计**（老存档 / 没有段时刻时直接用），带时刻的取数走 dshTokPickAt。
    一次算好挂会话上（签名不变就直接复用）—— 整表重绘时逐条消息问一次也只是读缓存。 */
 function dshTokStepMapOf(st) {
   if (!st) return null;
@@ -8792,20 +9040,24 @@ function dshTokStepMapOf(st) {
         reasoning: 0,
         provider: "",
         model: "",
+        parts: [],
       };
       map.set(k, cur);
     }
-    cur.calls += Math.max(1, Number(d.calls) || 1);
-    cur.cacheRead += Number(d.cacheRead) || 0;
-    cur.cacheWrite += Number(d.cacheWrite) || 0;
-    cur.reasoning += Number(d.reasoning) || 0;
-    cur.out += Number(d.output) || 0;
+    const p = dshTokPartOf(d);
+    cur.parts.push(p);
+    cur.calls += p.calls;
+    cur.cacheRead += p.cacheRead;
+    cur.cacheWrite += p.cacheWrite;
+    cur.reasoning += p.reasoning;
+    cur.out += p.out;
     /* 计费输入 = 非缓存输入 + 缓存读 + 缓存写（与轨迹、与上游账单同一口径） */
-    cur.in +=
-      (Number(d.input) || 0) + (Number(d.cacheRead) || 0) + (Number(d.cacheWrite) || 0);
-    if (d.provider) cur.provider = String(d.provider);
-    if (d.model) cur.model = String(d.model);
+    cur.in += p.in;
+    if (p.provider) cur.provider = p.provider;
+    if (p.model) cur.model = p.model;
   }
+  /* parts 按时刻升序：取簇时只往两边走，不排序也行，但落盘顺序不保证，排一次更稳 */
+  for (const b of map.values()) b.parts.sort((x, y) => x.at - y.at);
   st._tokStepMap = map;
   st._tokStepMapSig = sig;
   return map;
@@ -8828,7 +9080,10 @@ function dshStepTokAt(segs, i, defRound, tokMap) {
   if (!(round > 0) || !Number.isFinite(step)) return null;
   const nx = segs[i + 1];
   if (nx && dshSegRoundNum(nx, defRound) === round && Number(nx.step) === step) return null;
-  return tokMap.get(dshTokStepKeyOf(round, step)) || null;
+  const bucket = tokMap.get(dshTokStepKeyOf(round, step));
+  /* 同号步可能来自另一次运行（相隔十几分钟）：按这一段自己的时刻只取同一簇，
+     不把两条不同调用的输入加在一起（见 dshTokPickAt / TOK_SAME_CALL_GAP_MS）。 */
+  return bucket ? dshTokPickAt(bucket, Number(seg.at) || 0) : null;
 }
 /* 整条段列表的「哪一段写 token」表（下标对齐；不在 = null）：一次算完，
    渲染循环里只按下标取，别在循环里逐段扫明细。 */
@@ -10411,8 +10666,24 @@ function dshHistSegEl(seg, pool, nodeId, idx, n, showThink, msgAt, policy, tok) 
   }
   if (seg.k === "tool") {
     const at = dshSegToolAt(pool, seg);
-    if (at < 0) return null;
-    const t = pool.splice(at, 1)[0];
+    /* 配不上记录也**绝不丢这一项**（本轮修复 · 用户报的「重启后 agent 行为整块消失」）：
+       段快照与工具记录是两个来源，老存档 / 轮中快照里存在「有 tool 段、没有记录」的形态，
+       过去这里直接 return null —— 于是那些轮次的工具卡全部消失，只剩思考行。
+       现在按段自己的 callId / step / 时刻补一条占位记录：卡片照常出现在时间线上，
+       名字标「记录缺失」（参数 / 结果本来就没有，不编）。 */
+    const t =
+      at >= 0
+        ? pool.splice(at, 1)[0]
+        : {
+            callId: seg.callId || "",
+            step: seg.step != null ? seg.step : null,
+            name: I18n.t("工具调用（记录缺失）"),
+            args: "",
+            result: null,
+            error: null,
+            at: Number(seg.at) || 0,
+            _noRec: true,
+          };
     /* 两层（与思考段**同一口径**，见上方 dshSegTimeAttach 的说明）：
          外层 .dsh-seg-tool-wrap = 时刻栏宿主，**自己不上色**（透明、只让出左侧时刻栏）；
          内层 .dsh-seg-tool      = 视觉盒（2px 青轨 + 淡青底 + 内边距）。
@@ -13729,15 +14000,20 @@ function renderAgentSessionSidebar() {
         "这条助手会话还没有绑定画布：下一次发送时绑定当时的画布，此后固定不变",
       );
     }
-    /* 运行状态指示:转圈动效 + 「运行中」(仅运行中的会话显示) */
+    /* 运行状态指示（与任务清单同一套呼吸标记）：行首一枚方点，框内填充呼吸
+       （.at-dot.m-active，见 dsh.css）。**不写「运行中」字样、不再转圈** ——
+       左栏一行宽度要让给标题，运行态由这枚标记 + 悬浮说明表达；它的形状 / 节奏 /
+       配色与「计划」「任务清单」三处完全同源（同一个 .at-dot）。 */
     const stt = document.createElement("span");
     stt.className = "side-sess-status";
-    const sp = document.createElement("span");
-    sp.className = "side-sess-spinner";
+    const sp = document.createElement("i");
+    sp.className = "at-dot m-active";
+    sp.setAttribute("aria-label", I18n.t("运行中"));
     stt.appendChild(sp);
-    stt.appendChild(document.createTextNode(I18n.t("运行中")));
-    /* 并行组在跑而会话自己那轮已让位：说清楚条目为什么也在转圈（不影响改口） */
-    if (parOnly) stt.title = I18n.t("计划并行任务运行中（不打断你继续发消息）");
+    /* 并行组在跑而会话自己那轮已让位：说清楚条目为什么也在呼吸（不影响改口） */
+    stt.title = parOnly
+      ? I18n.t("计划并行任务运行中（不打断你继续发消息）")
+      : I18n.t("运行中");
     const btns = document.createElement("div");
     btns.className = "side-sess-btns";
     const rn = document.createElement("button");
@@ -16114,6 +16390,9 @@ async function agentSessionSend(text, opts) {
          dsh 会话里，再下发一遍只会污染上下文 —— 与 dshRunTask 内部断点续跑同一口径。 */
       systemPrompt: resumeRound ? "" : systemPrompt,
       pure: pureMode,
+      /* 快速热修轮：让提示词分节层把「需求拷问」技能条目也从内置技能索引里摘掉
+         （契约与 mtnode-grill-me 互斥，见 app-db.js / app-agent.js 的 hotfix 档）。 */
+      hotfix: hotfixTurn,
       /* Gate A：开发绑定会话不注册读画布工具（判据与落盘同源，见 createDevSessionForNode）。
          dshRunTask 的 baseOpts 原样透传到 dshRunOnce，这一位随每次开轮重新生效，
          轮内不变 → 同一档每步前缀一致。 */

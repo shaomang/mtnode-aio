@@ -38,8 +38,9 @@
  *
  * 纪律：
  *   · sceneOf 纯函数：只读 doc / cam / viewport / opts，不碰 DOM、不读时钟、不写状态。
- *   · 文案不归内核：端子徽标默认只给「输入N / 输出N」，宿主用 opts.labels(node, dir, i)
- *     注入自己的 i18n 口径（renderer 的 portBadgeText 就这么接，见对账闸）。
+ *   · 文案不归内核：端子徽标默认只给「输入N / 输出N」，控制端子恒写「控制」（与 renderer 的
+ *     portBadgeText 同一句话）；宿主可用 opts.labels(node, dir, i) 注入自己的 i18n 口径
+ *     （renderer 的 portBadgeText 就这么接，见对账闸）。
  *   · 覆盖范围外的 kind 一律不画，但进 scene.stats.skippedKinds 记账 —— 绝不猜端子数。
  *   · 与 renderer 的漂移由 test/smoke-canvas-render-parity.js 逐项对账（类名 / 几何 /
  *     端子号 / 连线 d / 标注 / 组框 / 徽标）；任一侧改了都要让那只闸重新绿。
@@ -109,6 +110,8 @@
     music_gen: "music",
     yue_gen: "music",
     moss_music: "music",
+    /* MT 音频频谱分析（产物是分析 JSON + 频谱图）：与音乐理解同族配色 */
+    audio_spectrum: "music",
     breeze_gen: "tts",
     /* DeepSeek 云端语音（合成 / 识别）：与本地语音同族配色 */
     deepseek_tts: "tts",
@@ -147,6 +150,22 @@
     "input_video",
     "input_file",
   ];
+  /* 处理类节点的「末位控制出」端子号（= 数据口数）：值抄自 app.js 的 procNodeDataOutCount /
+     procNodeControlOutPort —— proc_text / proc_image / agent_task 数据口 1 颗 + 控制出（号 1）·
+     moss_music 3 颗数据口 + 控制出（号 3）。改那边必须同步这里，对账闸（旧路 outputCount）
+     会逐颗端子盯。以前这张表没有，内核把这几类的出端子按「只剩数据口」画（proc 族 1 颗、
+     moss_music 3 颗），末位控制出整颗消失，端子数与真画布对不上。 */
+  const PROC_CONTROL_OUT = {
+    proc_text: 1,
+    proc_image: 1,
+    agent_task: 1,
+    moss_music: 3,
+  };
+  function procControlOut(n) {
+    if (!n) return -1;
+    const v = PROC_CONTROL_OUT[n.kind];
+    return typeof v === "number" ? v : -1;
+  }
   /* 未选中 = 浏览态（app-canvas.js 的 NODE_BROWSE_KINDS；save 的两种别名归一成 save） */
   const BROWSE_KINDS = ["input_text", "input_image", "proc_text", "proc_image", "agent_task", "save"];
 
@@ -316,6 +335,8 @@
     if (isControlKind(from)) return true;
     if (from.kind === "net_recv" && num(w.fromIndex, 0) >= 1) return true;
     if (from.kind === "breeze_gen" && num(w.fromIndex, 0) >= 1) return true;
+    /* MT 音频频谱分析：0=JSON · 1=频谱图 · 2=控制 → 控制口从 2 起 */
+    if (from.kind === "audio_spectrum" && num(w.fromIndex, 0) >= 2) return true;
     if ((from.kind === "deepseek_tts" || from.kind === "deepseek_asr") && num(w.fromIndex, 0) >= 1)
       return true;
     if (
@@ -328,6 +349,9 @@
       num(w.fromIndex, 0) >= 1
     )
       return true;
+    /* 处理类节点：末位是控制出（app.js wireFromIsControl 的 procNodeControlOutPort 一支）——
+       从这颗口出去的线是控制线，画成 .fn-edge.ctrl，不按数据线画。 */
+    if (procControlOut(from) >= 0 && num(w.fromIndex, 0) >= procControlOut(from)) return true;
     return false;
   }
   function nodeById(D, id) {
@@ -360,6 +384,8 @@
     if (n.kind === "net_recv") return num(i, 0) >= 1;
     if (n.kind === "breeze_gen") return num(i, 0) >= 1;
     if (n.kind === "deepseek_tts" || n.kind === "deepseek_asr") return num(i, 0) >= 1;
+    /* MT 音频频谱分析：0=JSON · 1=频谱图 → 控制口从 2 起 */
+    if (n.kind === "audio_spectrum") return num(i, 0) >= 2;
     if (
       n.kind === "music_gen" ||
       n.kind === "yue_gen" ||
@@ -369,6 +395,10 @@
       n.kind === "soulxflashhead_gen"
     )
       return num(i, 0) >= 1;
+    /* 处理类节点（proc_text / proc_image / agent_task / moss_music）：数据口之后那颗是
+       控制出（app.js nodeEmitsControlOnPort 的 procNodeControlOutPort 一支）——
+       徽标写「控制」、端子带 .ctrl 配色，与真画布同一口径。 */
+    if (procControlOut(n) >= 0) return num(i, 0) >= procControlOut(n);
     return false;
   }
 
@@ -420,6 +450,8 @@
     else if (kind === "moss_music") ic = 3;
     else if (kind === "breeze_gen") ic = 5;
     else if (kind === "deepseek_tts" || kind === "deepseek_asr") ic = 2;
+    /* MT 音频频谱分析：只有一颗数据端子（音频或视频），没有控制输入 */
+    else if (kind === "audio_spectrum") ic = 1;
     else if (kind === "infinitetalk_gen") ic = 5;
     else if (kind === "soulxflashhead_gen") ic = 3;
     else if (kind === "flux3klein_gen" || kind === "qwenimage_gen") ic = 3;
@@ -433,7 +465,11 @@
     else if (kind === "input_audio" || kind === "input_video") oc = 2;
     else if (kind === "task" || kind === "judge") oc = 2;
     else if (isQaKind(n)) oc = 3;
-    else if (kind === "moss_music") oc = 3;
+    /* 处理类节点：数据口 0..N-1 之后恒有末位控制出（proc 族 2 颗 · moss_music 4 颗）——
+       不把这一颗算进来，端子数与旧路 outputCount 差一颗，控制线也没处可接。 */
+    else if (procControlOut(n) >= 0) oc = procControlOut(n) + 1;
+    /* MT 音频频谱分析：0=分析 JSON · 1=频谱图 · 2=控制出 */
+    else if (kind === "audio_spectrum") oc = 3;
     else if (
       kind === "music_gen" ||
       kind === "yue_gen" ||
@@ -576,11 +612,15 @@
     if (Array.isArray(v)) v = v.join(" · ");
     return clip(String(v == null ? "" : v).replace(/\s+/g, " ").trim(), 120);
   }
-  function labelOf(opts, n, dir, i) {
+  function labelOf(opts, n, dir, i, ctrl) {
     if (opts && typeof opts.labels === "function") {
       const s = opts.labels(n, dir, i);
       if (s != null && String(s) !== "") return String(s);
     }
+    /* 控制端子不做「输入N / 输出N」：徽标直接写「控制」—— 与 renderer 的 portBadgeText
+       （ctrlIsPort 为真时恒写「控制」）同一句话。不这么写，未注入 labels 的宿主
+       （回放 / 场景快照 / 第三方复用）会把末位控制出标成「输出2」，读了也不知道该连哪。 */
+    if (ctrl) return "控制";
     return (dir === "in" ? "输入" : "输出") + (i + 1);
   }
 
@@ -603,7 +643,7 @@
         cls: cls.join(" "),
         linked,
         ctrl,
-        badge: labelOf(opts, n, "in", i),
+        badge: labelOf(opts, n, "in", i, ctrl),
       });
     }
     return out;
@@ -614,10 +654,11 @@
       const linked = (D.wires || []).some(
         (w) => isObj(w) && !w.rel && !isGroupWire(w) && w.from === n.id && num(w.fromIndex, 0) === i,
       );
+      const ctrl = outPortIsControl(n, i);
       const cls = ["port", "out"];
       if (n.kind === "judge" || n.kind === "task") cls.push(i === 0 ? "yes" : "no");
       else if ((n.kind === "flux3klein_gen" || n.kind === "qwenimage_gen") && i === 0) cls.push("img");
-      else if (outPortIsControl(n, i)) cls.push("ctrl");
+      else if (ctrl) cls.push("ctrl");
       if (linked) cls.push("linked");
       const y = outPortY(n, i, oc);
       out.push({
@@ -628,8 +669,8 @@
         right: GEOM.portOff - GEOM.portR,
         cls: cls.join(" "),
         linked,
-        ctrl: outPortIsControl(n, i),
-        badge: labelOf(opts, n, "out", i),
+        ctrl,
+        badge: labelOf(opts, n, "out", i, ctrl),
       });
     }
     return out;

@@ -3758,7 +3758,16 @@ function dshRunOnce(input, opts) {
      免得测试沙箱缺这个跨文件常量）。nodeLock（画布智能节点）本轮不改（它的人设另有出处，
      行为照旧）。 */
   const indexBlock = await mtnodeInternalSkillIndexBlock(
-    noReadOn || canvasFreeOn ? "noCanvas" : "",
+    /* 「快速热修」轮（opts.hotfix，由调用方按 hotfixTurn / assistHotfix 下发）：
+       热修契约明说「不加载内置技能 mtnode-grill-me、不走整轮前沿拷问」，
+       索引里再挂一条需求拷问就是同一轮两份相反指令（用户实报的 agent 困惑）。
+       与无画布档可叠加 → 组合档名。 */
+    [
+      noReadOn || canvasFreeOn ? "noCanvas" : "",
+      !!opts.hotfix && !pureOn ? "hotfix" : "",
+    ]
+      .filter(Boolean)
+      .join("+") || "",
   );
   /* 数据库接地注记：非空 = 本轮真接入了数据库副本（连线进来的副本 + prompt 里的
      !@数据库标题）。先算出来，两处共用同一判据 —— 注记与 mtnode_db 的存在性必须

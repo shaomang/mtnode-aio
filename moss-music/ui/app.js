@@ -124,13 +124,13 @@
     el.verText.textContent = "v" + (st.version || "1.0.0");
 
     el.svcBadge.textContent = ready ? "服务就绪" : running ? "服务运行中" : "服务关闭";
-    el.svcBadge.className = "badge " + (ready ? "on" : running ? "warn" : "off");
+    el.svcBadge.className = "pk-pill " + (ready ? "is-ok" : running ? "is-run" : "");
     el.loadBadge.textContent = ready
       ? `${st.quant}`
       : st.loading
         ? "装载中…"
         : "未装载模型";
-    el.loadBadge.className = "badge " + (ready ? "on" : st.loading ? "warn" : "off");
+    el.loadBadge.className = "pk-pill " + (ready ? "is-ok" : st.loading ? "is-run" : "");
 
     el.dirText.textContent = "安装目录：" + (st.installDir || "未选择");
     el.installDirText.textContent = st.installDir || "未选择安装目录";
@@ -153,7 +153,7 @@
     el.btnStart.disabled = !!state.busy || installing || !st.installed || (running && ready);
 
     for (const b of document.querySelectorAll("button[data-quant]")) {
-      b.classList.toggle("active", b.dataset.quant === (st.configuredQuant || "int8"));
+      b.classList.toggle("is-on", b.dataset.quant === (st.configuredQuant || "int8"));
       b.disabled = !!state.busy || installing || !st.installed;
     }
     el.switchHint.textContent = ready

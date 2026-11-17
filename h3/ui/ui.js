@@ -59,7 +59,7 @@
     if (paneOpen === want) return;
     paneOpen = want;
     if (paneEl) paneEl.hidden = !want;
-    if (paneBtn) paneBtn.classList.toggle("on", want);
+    if (paneBtn) paneBtn.classList.toggle("is-on", want);
     if (want) {
       paneUnread = 0;
       renderBadge();
@@ -127,7 +127,7 @@
     const st = await api.getStatus();
     const running = !!st.running || !!st.comfyUp;
     svcBadge.textContent = running ? "服务运行中" : "服务关闭";
-    svcBadge.className = "badge " + (running ? "on" : "off");
+    svcBadge.className = "pk-pill " + (running ? "is-ok" : "");
     /* 标题行：把 ComfyUI 地址常驻亮出来（一键打开时用户知道会开到哪儿）。
        地址跟着标题行走（#comfyHint 在 h1 里），不再放在按钮条 —— 窄窗不会被两个按钮挤掉。 */
     const port = Number(st.port) || 8188;
@@ -151,7 +151,7 @@
         : running
           ? "在浏览器打开 " + url
           : "后端未运行 · 点了会先问你是否启动 " + url;
-      comfyBtn.classList.toggle("on", running);
+      comfyBtn.classList.toggle("is-on", running);
     }
 
     $("btnStart").disabled = !st.installDir || running;
@@ -177,12 +177,12 @@
     const d = st.postDeps || {};
     if (!st.project || !st.project.venv) {
       el.textContent = "后处理依赖（流式超分 / 补帧）：待后端装好后自检";
-      el.classList.remove("danger");
+      el.classList.remove("is-fail");
       return;
     }
     if (!d.probed) {
       el.textContent = "后处理依赖（流式超分 / 补帧）：自检中…";
-      el.classList.remove("danger");
+      el.classList.remove("is-fail");
       return;
     }
     const missing = Array.isArray(d.missing) ? d.missing : [];
@@ -191,17 +191,17 @@
         "后处理依赖未就绪（缺 " +
         missing.join(" / ") +
         "）：流式超分 / 补帧跑不了，会退回更吃内存的图路径。重跑一次安装即可补齐。";
-      el.classList.add("danger");
+      el.classList.add("is-fail");
       return;
     }
     if (d.cv2Missing) {
       el.textContent =
         "后处理依赖：缺 cv2（opencv）—— 流式超分 / 补帧会用 torch 缩放照常出片，但其它用到 cv2 的节点会缺依赖；重跑一次安装即可补上。";
-      el.classList.remove("danger");
+      el.classList.remove("is-fail");
       return;
     }
     el.textContent = "后处理依赖 ✓ 已就绪（torch / av / numpy / kornia / cv2）";
-    el.classList.remove("danger");
+    el.classList.remove("is-fail");
   }
 
   /* ── Sage Attention（注意力加速）状态 ─────────────────────────────
@@ -221,8 +221,8 @@
     const btn = $("btnSage");
     if (btn) {
       btn.disabled = !hasVenv || !!st.installing;
-      btn.classList.toggle("on", ready);
-      btn.classList.toggle("danger", !ready && !waived);
+      btn.classList.toggle("is-on", ready);
+      btn.classList.toggle("pk-btn-danger", !ready && !waived);
       btn.title = ready
         ? "已就绪：sageattention " + info.sage + " + triton " + info.triton + "（再点一次只复核，不重装）"
         : waived
@@ -531,7 +531,7 @@
 
   /* ───── 工作流编辑器视图（管理窗内嵌 ComfyUI）─────
    * 状态真源在宿主（open / url / id / title / file / loaded / hint，见 main-h3.js 的 wfEditorView），
-   * 本页面只当容器：宿主把窗口撑大、把这条模板推给 ComfyUI 前端，这里负责挂摘浮层、
+   * 本页面只当容器：宿主把窗口撑大、把这条工作流推给 ComfyUI 前端，这里负责挂摘浮层、
    * 给 iframe 换 src、把「没能自动载入」的中文提示常驻亮出来。
    * persistent 面板：关闭只走浮层上那个 ✕，不挂「点外部 / 失焦即关」（Esc 也在上面让开了）。
    * 关浮层时不摘 iframe 的 src —— 用户正在 ComfyUI 里编辑的图不能被我们刷没，
@@ -555,13 +555,13 @@
     if (wfEditorSrcEl) {
       wfEditorSrcEl.textContent =
         url +
-        (view.loading ? " · 正在载入这条模板…" : view.loaded ? " · 已载入这条模板" : "");
+        (view.loading ? " · 正在载入这条工作流…" : view.loaded ? " · 已载入这条工作流" : "");
       wfEditorSrcEl.title = "编辑发生在 ComfyUI 自己的现场里，不会写回插件库；收回库的唯一入口是「导入 JSON」";
     }
     /* 没自动灌进画布时，宿主的提示（含要在 Workflow › Open 里选的文件名）必须亮着，别让人对着空画布猜；
        注入还在后台跑时先亮一句「正在载入…」（不是失败提示，所以换中性配色，见 .ed-note.loading） */
     const note = view.loading
-      ? "正在把这条模板载入编辑器…（ComfyUI 前端还在加载，通常几秒到十几秒）"
+      ? "正在把这条工作流载入编辑器…（ComfyUI 前端还在加载，通常几秒到十几秒）"
       : view.loaded
         ? ""
         : String(view.hint || view.error || "");
@@ -572,7 +572,7 @@
     }
   }
 
-  /** 「打开」库里这条模板：start=true 表示用户已确认可以顺手把后端拉起来。 */
+  /** 「打开」库里这条工作流：start=true 表示用户已确认可以顺手把后端拉起来。 */
   async function openWfInEditor(it, start) {
     if (!api.wfOpenInEditor) {
       logLine("当前宿主不支持在工作流库里打开模板（缺 wfOpenInEditor）");
@@ -585,7 +585,7 @@
           (r.loading
             ? " · 正在把模板载入编辑器…"
             : r.loaded
-              ? " · 已自动载入这条模板"
+              ? " · 已自动载入这条工作流"
               : " · 需在工作流列表里手动选文件"),
       );
       if (r.hint) logLine("[wf-editor] " + r.hint);
@@ -609,7 +609,7 @@
         return;
       }
       /* 与右上角「ComfyUI 编辑界面」同一口径：后端没跑就先问用户要不要顺手启动 */
-      if (!confirm("ComfyUI 后端现在没在运行，" + ((r && r.url) || "") + " 打不开。\n\n现在启动后端并打开这条模板吗？\n（首次加载模型可能要几分钟，期间可继续用其它功能）"))
+      if (!confirm("ComfyUI 后端现在没在运行，" + ((r && r.url) || "") + " 打不开。\n\n现在启动后端并打开这条工作流吗？\n（首次加载模型可能要几分钟，期间可继续用其它功能）"))
         return;
       logLine("[wf-editor] 启动后端并打开「" + (it.title || "") + "」…");
       logLine("[wf-editor] 后端首次启动要加载模型，可能要几分钟；就绪后编辑器会自己出现");
@@ -642,17 +642,24 @@
   function wfValBadge(v) {
     if (!v || !v.status || v.status === "unchecked")
       return { cls: "", text: "未校验" };
-    if (v.status === "ok") return { cls: "ok", text: "校验通过" };
+    if (v.status === "ok") return { cls: "is-ok", text: "校验通过" };
     if (v.status === "missing_nodes") {
       const m = Array.isArray(v.missing) ? v.missing : [];
       const names = m.slice(0, 3).map((x) => x.class_type).filter(Boolean).join("、");
       return {
-        cls: "warn",
+        cls: "is-warn",
         text: "缺 " + m.length + " 个节点包" + (names ? "（" + names + (m.length > 3 ? "…" : "") + "）" : ""),
       };
     }
     if (v.status === "skipped") return { cls: "", text: "未校验（后端未运行）" };
-    return { cls: "warn", text: (v.error || "校验异常") };
+    return { cls: "is-warn", text: (v.error || "校验异常") };
+  }
+
+  /* 三区标签：内置模板 / ComfyUI 工作流（只读镜像）/ 我的工作流 */
+  function wfGroupLabel(group) {
+    if (group === "builtin") return "内置 · 只读";
+    if (group === "comfy") return "ComfyUI · 只读";
+    return "我的";
   }
 
   function renderWfItem(it) {
@@ -664,28 +671,61 @@
     title.className = "title";
     title.textContent = it.title || "未命名";
     head.appendChild(title);
+    const gb = document.createElement("span");
+    gb.className = "pk-pill";
+    gb.textContent = wfGroupLabel(it.group);
+    gb.title =
+      it.group === "builtin"
+        ? "内置模板：由程序按当前版本生成，不能改名 / 删除 / 覆盖；想改就另存为我的副本。"
+        : it.group === "comfy"
+          ? "ComfyUI 自己的工作流目录里的文件（只读镜像）：能打开、能在画布节点里直接选中执行；想改图请「导入副本」。"
+          : "你自己导入 / 另存的工作流，可以改名、删除、导出。";
+    head.appendChild(gb);
     const fmt = document.createElement("span");
-    fmt.className = "badge";
+    fmt.className = "pk-pill pk-mono";
     fmt.textContent = it.format === "ui" ? "UI" : "API";
-    fmt.title = it.source && it.source.template ? "内置模板" : "来源：" + ((it.source && it.source.name) || "");
-    if (it.source && it.source.template) fmt.textContent += " 模板";
+    fmt.title = "来源：" + ((it.source && it.source.name) || "本机");
     head.appendChild(fmt);
-    const vb = wfValBadge(it.validation);
-    const badge = document.createElement("span");
-    badge.className = "badge " + vb.cls;
-    badge.textContent = vb.text;
-    head.appendChild(badge);
+    if (!it.executable) {
+      const nb = document.createElement("span");
+      nb.className = "pk-pill is-warn";
+      nb.textContent = "不可直接执行";
+      nb.title = it.executableReason || "转不成可执行的 API 图";
+      head.appendChild(nb);
+    } else {
+      const vb = wfValBadge(it.validation);
+      const badge = document.createElement("span");
+      badge.className = "pk-pill " + vb.cls;
+      badge.textContent = vb.text;
+      head.appendChild(badge);
+    }
     const src = document.createElement("span");
-    src.className = "meta";
+    src.className = "meta pk-sub";
     src.style.marginLeft = "auto";
     src.textContent = "节点 " + (it.nodeCount || 0);
     head.appendChild(src);
     box.appendChild(head);
 
+    /* 不可直接执行的那条：把原因直接摊在卡片上，别让人点进节点才发现选不了 */
+    if (!it.executable && it.executableReason) {
+      const why = document.createElement("div");
+      why.className = "meta pk-sub";
+      why.style.color = "var(--yellow)";
+      why.textContent = "为什么不能执行：" + it.executableReason;
+      box.appendChild(why);
+    }
+    if (it.group === "comfy" && it.file) {
+      const f = document.createElement("div");
+      f.className = "meta pk-sub";
+      f.textContent = "文件：" + it.file;
+      f.title = it.file;
+      box.appendChild(f);
+    }
+
     const outs = Array.isArray(it.outputs) ? it.outputs : [];
     if (outs.length) {
       const meta = document.createElement("div");
-      meta.className = "meta";
+      meta.className = "meta pk-sub";
       meta.textContent =
         "输出：" +
         outs
@@ -701,7 +741,7 @@
     const mkBtn = (label, fn, cls) => {
       const b = document.createElement("button");
       b.textContent = label;
-      if (cls) b.className = cls;
+      b.className = "pk-btn pk-btn-sm" + (cls ? " " + cls : "");
       b.onclick = async (ev) => {
         ev.stopPropagation();
         await fn();
@@ -711,20 +751,50 @@
       return b;
     };
     /* 每条模板的「打开」：进管理窗内嵌的 ComfyUI 编辑这一条。
-       单向 —— 库里这条记录一点不动，改完想回库只能「导出 JSON → 导入 JSON」。 */
-    const openBtn = mkBtn("打开", async () => {
+       单向 —— 库里这条记录一点不动，改完想回库只能「导出 JSON → 导入 JSON」。
+       format === "unknown"（读不懂 / 超限）的镜像文件连编辑器也灌不进去，就不给这颗按钮。 */
+    const canOpen = it.format !== "unknown";
+    const openBtn = canOpen ? mkBtn("打开", async () => {
       openBtn.disabled = true; /* 后端冷启动可能要几分钟，期间别让人重复点 */
       try {
         await openWfInEditor(it, false);
       } finally {
         openBtn.disabled = false;
       }
-    }, "primary");
-    openBtn.title = "在 ComfyUI 编辑器里打开「" + (it.title || "") + "」进行修改（后端没跑会先问你是否启动）。编辑不会覆盖库里这条模板，收回库请导入 JSON。";
-    mkBtn("重新校验", async () => {
-      const r = await api.wfValidate(it.id);
-      logLine(r && r.message ? "[校验] " + r.message : "[校验] 失败: " + ((r && r.error) || ""));
-    });
+    }, "pk-btn-primary") : null;
+    if (openBtn) {
+      openBtn.title =
+        "在 ComfyUI 编辑器里打开「" + (it.title || "") + "」进行修改（后端没跑会先问你是否启动）。编辑不会覆盖库里这条，收回库请导入 JSON。";
+    }
+    if (it.readOnly) {
+      /* 只读条目唯一往「我的」区搬的入口：另存一份可编辑的副本 */
+      const cloneLabel = it.group === "comfy" ? "导入副本" : "另存为我的副本";
+      const cb = mkBtn(cloneLabel, async () => {
+        cb.disabled = true;
+        try {
+          const r = await api.wfClone({ id: it.id });
+          if (r && r.ok) {
+            logLine(
+              "已复制到「我的工作流」：" + ((r.summary && r.summary.title) || (r.title || "")) +
+                " —— 现在可以改图、改名、删除了。",
+            );
+          } else {
+            alert("复制失败：" + ((r && r.error) || "未知错误"));
+          }
+        } finally {
+          cb.disabled = false;
+        }
+      });
+      cb.title =
+        it.group === "comfy"
+          ? "把这份 ComfyUI 工作流复制成「我的工作流」里可编辑的一份（原文件不动）"
+          : "把这份内置模板复制成「我的工作流」里可编辑的一份（内置图本身不变）";
+    } else if (it.executable) {
+      mkBtn("重新校验", async () => {
+        const r = await api.wfValidate(it.id);
+        logLine(r && r.message ? "[校验] " + r.message : "[校验] 失败: " + ((r && r.error) || ""));
+      });
+    }
     mkBtn("导出 JSON", () => wfExport(it.id));
     mkBtn("复制 JSON", async () => {
       const r = await api.wfExport(it.id);
@@ -739,19 +809,21 @@
         alert("复制失败：" + String((e && e.message) || e));
       }
     });
-    mkBtn("重命名", async () => {
-      const next = prompt("新名称：", it.title || "");
-      if (next == null || !String(next).trim()) return;
-      const r = await api.wfRename(it.id, String(next).trim());
-      if (!r || !r.ok) alert("重命名失败：" + ((r && r.error) || "未知错误"));
-      else logLine("已重命名 → " + (r.title || ""));
-    });
-    mkBtn("删除", async () => {
-      if (!confirm('删除工作流「' + (it.title || "") + '」？此操作不可恢复。')) return;
-      const r = await api.wfDelete(it.id);
-      if (r && r.ok) logLine("已删除 " + (r.title || it.title));
-      else alert("删除失败：" + ((r && r.error) || "未知错误"));
-    }, "danger");
+    if (!it.readOnly) {
+      mkBtn("重命名", async () => {
+        const next = prompt("新名称：", it.title || "");
+        if (next == null || !String(next).trim()) return;
+        const r = await api.wfRename(it.id, String(next).trim());
+        if (!r || !r.ok) alert("重命名失败：" + ((r && r.error) || "未知错误"));
+        else logLine("已重命名 → " + (r.title || ""));
+      });
+      mkBtn("删除", async () => {
+        if (!confirm('删除工作流「' + (it.title || "") + '」？此操作不可恢复。')) return;
+        const r = await api.wfDelete(it.id);
+        if (r && r.ok) logLine("已删除 " + (r.title || it.title));
+        else alert("删除失败：" + ((r && r.error) || "未知错误"));
+      }, "pk-btn-danger");
+    }
     box.appendChild(ops);
     return box;
   }
@@ -760,22 +832,82 @@
     return /(SaveVideo|SaveWebM|SaveMP4|VideoCombine|SaveAnimated|VHS_VideoCombine|SaveVideoFFmpeg|StoreVideo)/i.test(String(cls || ""));
   }
 
-  async function refreshWf() {
+  async function refreshWf(opts) {
+    const force = !!(opts && opts.force);
     try {
-      const r = await api.wfList();
+      const r = await api.wfList(force ? { force: true } : {});
       if (!r || !r.ok) throw new Error((r && r.error) || "wfList failed");
-      wfStatsTxt.textContent =
-        r.stats ? "· 共 " + r.stats.count + " 条（校验通过 " + r.stats.validated + "，缺节点 " + r.stats.warn + "，未校验 " + r.stats.unchecked + "）" : "";
+      const st = r.stats || null;
+      const groups = st && st.byGroup ? st.byGroup : null;
+      wfStatsTxt.textContent = st
+        ? "· 共 " + st.count + " 条（内置 " + ((groups && groups.builtin) || 0) +
+          " · ComfyUI " + ((groups && groups.comfy) || 0) +
+          " · 我的 " + ((groups && groups.mine) || 0) +
+          (st.blocked ? " · 不可执行 " + st.blocked : "") +
+          "）"
+        : "";
+      if (st && st.comfyDir) wfStatsTxt.title = "我的工作流目录：" + st.root + "\nComfyUI 目录：" + st.comfyDir;
       wfListEl.innerHTML = "";
       const items = Array.isArray(r.items) ? r.items : [];
+      const groupList = Array.isArray(r.groups) && r.groups.length
+        ? r.groups
+        : [
+            { key: "builtin", title: "内置模板", readOnly: true, hint: "" },
+            { key: "comfy", title: "ComfyUI 工作流", readOnly: true, hint: "" },
+            { key: "mine", title: "我的工作流", readOnly: false, hint: "" },
+          ];
       if (!items.length) {
         const empty = document.createElement("div");
-        empty.className = "wf-empty";
-        empty.textContent = "还没有自定义工作流。导入 ComfyUI 导出的 JSON，或用「内置图另存」起步。";
+        empty.className = "wf-empty pk-sub";
+        empty.textContent = "没有可用的工作流。导入 ComfyUI 导出的 JSON，或把内置模板另存为我的副本。";
         wfListEl.appendChild(empty);
         return;
       }
-      for (const it of items) wfListEl.appendChild(renderWfItem(it));
+      for (const g of groupList) {
+        const inGroup = items.filter((it) => (it.group || "mine") === g.key);
+        const sec = document.createElement("div");
+        sec.className = "wf-section";
+        const h = document.createElement("div");
+        h.className = "wf-section-head";
+        const name = document.createElement("span");
+        name.textContent = (g.title || g.key) + "（" + inGroup.length + "）";
+        h.appendChild(name);
+        if (g.readOnly) {
+          const ro = document.createElement("span");
+          ro.className = "pk-pill";
+          ro.textContent = "只读";
+          h.appendChild(ro);
+        }
+        if (g.hint) {
+          const hint = document.createElement("span");
+          hint.className = "meta pk-sub";
+          hint.textContent = g.hint;
+          hint.title = g.hint;
+          h.appendChild(hint);
+        }
+        sec.appendChild(h);
+        if (!inGroup.length) {
+          const e = document.createElement("div");
+          e.className = "wf-empty pk-sub";
+          e.textContent =
+            g.key === "comfy"
+              ? "ComfyUI 的 user/default/workflows 目录里没有可识别的工作流（点「刷新」重扫）。"
+              : g.key === "builtin"
+                ? "没有内置模板。"
+                : "还没有我的工作流：导入 JSON，或从上面两个只读区另存副本。";
+          sec.appendChild(e);
+        }
+        for (const it of inGroup) sec.appendChild(renderWfItem(it));
+        wfListEl.appendChild(sec);
+      }
+      const warns = Array.isArray(r.warnings) ? r.warnings.filter(Boolean) : [];
+      if (warns.length) {
+        const w = document.createElement("div");
+        w.className = "wf-empty pk-sub";
+        w.style.color = "var(--yellow)";
+        w.textContent = "扫描提示：" + warns.join("；");
+        wfListEl.appendChild(w);
+      }
     } catch (e) {
       logLine("[wf] 列表加载失败: " + String((e && e.message) || e));
     }
@@ -790,6 +922,7 @@
           (r.replaced ? "（已覆盖同名旧版本）" : "") +
           ((r.warnings && r.warnings.length) ? " · 提示：" + r.warnings.join("；") : ""),
       );
+      if (r.notice) logLine(r.notice);
     } else {
       alert("导入失败：" + ((r && r.error) || "未知错误"));
     }
@@ -855,21 +988,10 @@
       if ((ev.ctrlKey || ev.metaKey) && ev.key === "Enter") $("btnWfPasteOk").click();
     });
   }
-  if ($("btnWfTemplate")) {
-    $("btnWfTemplate").onclick = async () => {
-      const doOne = async (mode) => {
-        const label = mode === "r2v" ? "R2V（参考图/视频/音频）" : "FL2VA（首末帧）";
-        if (!confirm("把内置 " + label + " 工作流另存为库里的自定义工作流？\n保存后可自由编辑与复制，内置链本身不受影响。")) return false;
-        const r = await api.wfTemplateExport(mode);
-        if (r && r.ok) {
-          logLine("内置模板已入库：" + ((r.summary && r.summary.title) || ""));
-          refreshWf();
-          return true;
-        }
-        alert("另存失败：" + ((r && r.error) || "未知错误"));
-        return false;
-      };
-      if (await doOne("fl2va")) await doOne("r2v");
+  if ($("btnWfRefresh")) {
+    $("btnWfRefresh").onclick = async () => {
+      logLine("重扫工作流库（含 ComfyUI 的 user/default/workflows）…");
+      await refreshWf({ force: true });
     };
   }
 
@@ -911,7 +1033,7 @@
     if (tail && tail.text) consoleEl.textContent = tail.text;
     consoleEl.scrollTop = consoleEl.scrollHeight;
     await refresh();
-    refreshWf();
+    refreshWf({ force: true }); /* 打开管理窗就重扫一次 ComfyUI 目录，之后点「刷新」再扫 */
     setInterval(refresh, 4000);
   })();
 })();

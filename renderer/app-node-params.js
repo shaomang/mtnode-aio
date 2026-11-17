@@ -1523,27 +1523,39 @@ function npJsonEditorSub(value, onChange, opts) {
   return box;
 }
 
-/** 文本节点正文的 JSON 表单视图（可编辑）。返回 true = 本函数接管了正文。
-    挂载点：app-canvas.js 的 buildBody（input_text 分支）。 */
+/** 文本节点**当前看得见的正文**：自己写的 / 只读节点的 / 从上游继承来的。
+ *  返回 { text, editable, roText }；拿不到正文（继承态上游还没出值）返回 null。
+ *  JSON 表单与头部那颗「JSON」芯片都读这一处，两边的判定不会漂。 */
+function npJsonVisible(node) {
+  if (!node || node.kind !== "input_text" || node.batch) return null;
+  if (node.ro)
+    return {
+      text: String(node.text || ""),
+      editable: false,
+      roText: I18n.t("只读节点（拆分出来的那一颗）"),
+    };
+  if (typeof inputInherited === "function" && inputInherited(node)) {
+    const disp =
+      typeof displayValueOf === "function" ? displayValueOf(firstSource(node), node) : null;
+    if (!disp || disp.text == null) return null;
+    return {
+      text: String(disp.text),
+      editable: false,
+      roText: I18n.t("只读（内容来自上游，改就在上游改）"),
+    };
+  }
+  return { text: String(node.text || ""), editable: true, roText: "" };
+}
+
+/** 文本节点正文的 JSON 视图：默认表单，可切源码（可编辑节点源码 = 正文框可改；
+ *  只读 / 继承节点源码 = 一块只读源码，照样能逐行看）。返回 true = 本函数接管了正文。
+ *  挂载点：app-canvas.js 的 buildBody 与 NODE_BROWSE_BODY.input_text（input_text 分支）。 */
 function npJsonBodyFor(node, body) {
   if (!node || node.kind !== "input_text" || !body) return false;
-  if (node.batch) return false; /* 批量条目形态：条目各自的内容不转表单 */
-  let text = "";
-  let editable = false;
-  if (node.ro) {
-    text = String(node.text || "");
-    editable = false;
-  } else if (typeof inputInherited === "function" && inputInherited(node)) {
-    const disp = typeof displayValueOf === "function" ? displayValueOf(firstSource(node), node) : null;
-    if (!disp || disp.text == null) return false;
-    text = String(disp.text);
-    editable = false;
-  } else {
-    /* 用户手动切到源码视图：交回原有的 Markdown / 文本渲染 */
-    if (NP_JSON_SRC_VIEW.has(node.id)) return false;
-    text = String(node.text || "");
-    editable = true;
-  }
+  const vis = npJsonVisible(node);
+  if (!vis) return false; /* 批量条目形态 / 继承态上游还没值：不接管 */
+  const text = vis.text;
+  const editable = vis.editable;
   const det = npDetectJson(text);
   if (!det.ok) {
     if (editable && det.reason === "tooBig")
@@ -1561,18 +1573,44 @@ function npJsonBodyFor(node, body) {
     }
     return false;
   }
+  const srcView = NP_JSON_SRC_VIEW.has(node.id);
+  /* 可编辑节点的源码档就是它自己的正文框（Markdown 高亮 / @ 引用 / 粘贴截图全套都在那儿），
+     这里交回调用方去画；只读节点（ro / 继承）没有可交的正文框，源码档由本函数自己画。 */
+  if (srcView && editable) return false;
   const wrap = npEl("div", "np-json-body");
   const bar = npEl("div", "np-json-bar");
-  bar.appendChild(npEl("span", "n-chip on", I18n.t("JSON 表单")));
-  if (editable) {
+  if (srcView) {
+    /* 只读源码档：同一份正文，只是换「源码」这一面看（一眼看全原文，不必逐键认表单） */
+    bar.appendChild(npEl("span", "n-chip on", I18n.t("源码")));
     bar.appendChild(
-      npBtn(I18n.t("源码"), I18n.t("切回源码视图（表单改动已写回正文）"), () => {
-        NP_JSON_SRC_VIEW.add(node.id);
-        /* 只改 body 内部视图 → applyNodeForm 会早退，得就地重建 body（见 refreshNodeBody） */
+      npBtn(I18n.t("表单"), I18n.t("切回 JSON 表单（逐键查看这份只读内容）"), () => {
+        NP_JSON_SRC_VIEW.delete(node.id);
         if (typeof refreshNodeBody === "function" && refreshNodeBody(node)) return;
         if (typeof renderCanvas === "function") renderCanvas();
       }),
     );
+    if (vis.roText) bar.appendChild(npEl("span", "np-json-ro", vis.roText));
+    wrap.appendChild(bar);
+    const src = document.createElement("textarea");
+    src.className = "n-text";
+    src.readOnly = true;
+    src.spellcheck = false;
+    src.value = text;
+    if (typeof applyTextNodeFontSize === "function") applyTextNodeFontSize(node, src);
+    wrap.appendChild(src);
+    body.appendChild(wrap);
+    return true;
+  }
+  bar.appendChild(npEl("span", "n-chip on", I18n.t("JSON 表单")));
+  bar.appendChild(
+    npBtn(I18n.t("源码"), I18n.t("切回源码视图（表单改动已写回正文）"), () => {
+      NP_JSON_SRC_VIEW.add(node.id);
+      /* 只改 body 内部视图 → applyNodeForm 会早退，得就地重建 body（见 refreshNodeBody） */
+      if (typeof refreshNodeBody === "function" && refreshNodeBody(node)) return;
+      if (typeof renderCanvas === "function") renderCanvas();
+    }),
+  );
+  if (editable) {
     const arr = Array.isArray(det.value);
     bar.appendChild(
       npBtn(
@@ -1601,7 +1639,9 @@ function npJsonBodyFor(node, body) {
       ),
     );
   } else {
-    bar.appendChild(npEl("span", "np-json-ro", I18n.t("只读（内容来自上游，改就在上游改）")));
+    bar.appendChild(
+      npEl("span", "np-json-ro", vis.roText || I18n.t("只读（内容来自上游，改就在上游改）")),
+    );
   }
   wrap.appendChild(bar);
   const editor = npEl("div", "np-json-scroll");
@@ -1622,22 +1662,25 @@ function npJsonBodyFor(node, body) {
 }
 
 /* 文本节点右上角：本来 YAML 的「批量」开关对纯 JSON 会误判 —— 这里给一颗「表单」切换，
-   让用户随时在 JSON 表单 / 源码之间来回切（与 NP_JSON_SRC_VIEW 同源）。 */
+   让用户随时在 JSON 表单 / 源码之间来回切（与 NP_JSON_SRC_VIEW 同源）。
+   只读 / 继承节点也给这一颗：那些节点没有正文框，芯片是它们看源码的唯一入口。 */
 function npJsonSwitchChip(node) {
-  if (!node || node.kind !== "input_text" || node.ro || node.batch) return null;
-  if (typeof inputInherited === "function" && inputInherited(node)) return null;
-  const det = npDetectJson(node.text || "");
+  const vis = npJsonVisible(node);
+  if (!vis) return null;
+  const det = npDetectJson(vis.text);
   if (!det.ok) return null;
+  const src = NP_JSON_SRC_VIEW.has(node.id);
   const b = document.createElement("button");
   b.type = "button";
-  b.className = "yaml-chip" + (NP_JSON_SRC_VIEW.has(node.id) ? " off" : "");
+  b.className = "yaml-chip" + (src ? " off" : "");
   b.textContent = "JSON";
-  b.title = NP_JSON_SRC_VIEW.has(node.id)
+  b.title = src
     ? I18n.t("当前是源码视图 · 点击换成 JSON 表单")
-    : I18n.t("这段正文是纯 JSON，已换成表单视图 · 点击切回源码");
+    : I18n.t("这段正文是纯 JSON，已换成表单视图 · 点击切回源码") +
+      (vis.editable ? "" : I18n.t("（只读内容：源码可看，改要在上游改）"));
   b.addEventListener("click", (ev) => {
     ev.stopPropagation();
-    if (NP_JSON_SRC_VIEW.has(node.id)) NP_JSON_SRC_VIEW.delete(node.id);
+    if (src) NP_JSON_SRC_VIEW.delete(node.id);
     else NP_JSON_SRC_VIEW.add(node.id);
     /* 同上：body 内部视图开关，走就地重建；没有元素时回落整幅重绘 */
     if (typeof refreshNodeBody === "function" && refreshNodeBody(node)) return;
@@ -1710,6 +1753,8 @@ const NParam = {
   jsonToEntries: npJsonToEntries,
   jsonBodyFor: npJsonBodyFor,
   jsonSwitchChip: npJsonSwitchChip,
+  /* 这颗文本节点当前是不是用户选中的「源码」档（浏览态据此显示源码而不是 Markdown 预览） */
+  jsonSrcView: (node) => !!node && !!node.id && NP_JSON_SRC_VIEW.has(node.id),
   jsonText: npJsonText,
   activeFor: (id) => NP_ACTIVE.get(id) || null,
   editParamsRejection: npEditParamsRejection,

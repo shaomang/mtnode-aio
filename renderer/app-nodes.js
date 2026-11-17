@@ -1031,6 +1031,9 @@ function isAutoProcKind(n) {
       n.kind === "video_gen" ||
       /* 质检节点：跑完（通过 / 未过）同样要自动级联下游门禁分支 */
       (typeof isQaKindNode === "function" && isQaKindNode(n)) ||
+      /* MT 音频频谱分析：下游（保存 / 智能节点）来取数时若还没分析过，先把它补跑一遍 ——
+         它没有控制输入，不能靠控制线驱动，这条「按需补跑」就是它的自动触发路径 */
+      n.kind === "audio_spectrum" ||
       (typeof isVideoPostKind === "function" && isVideoPostKind(n)) ||
       n.kind === "remotion" ||
       n.kind === "wait_file" ||
@@ -1885,6 +1888,28 @@ async function playNode(node, quiet, opts) {
         await runDownstreamCascade(cascadeAfter);
       } catch (e) {
         toast(I18n.t("下游执行失败：") + (e.message || String(e)), "err");
+      }
+    }
+    /* ── 处理完毕 → 触发控制输出端子（本轮需求）──
+       处理类节点（proc_text / proc_image / agent_task）的末位端子是**控制出**（口径见
+       app.js 的 procNodeControlOutPort，数据口 0 原样不动）。成功收尾后从这一颗端子点火，
+       驱动下游控制目标；数据线只供值、不再承担「去执行」这件事
+       （collectDownstreamCascade 已按 wireFromIsControl 剔除控制线，自动级联默认关）。
+       边界：失败（node.error）／被终止（_aborted）／本批已作废（runBatchStopped）都不点火；
+       这里在 playNode 的收尾路径上，一轮运行只走到一次 → 同一节点一次运行只触发一次。
+       媒体族（moss_music 等）在自己的生成器 finally 里点火，不在这里。 */
+    const procCtrlOut =
+      node.kind === "proc_text" || node.kind === "proc_image" || node.kind === "agent_task"
+        ? typeof procNodeControlOutPort === "function"
+          ? procNodeControlOutPort(node)
+          : 1
+        : -1;
+    if (procCtrlOut >= 0 && nodePlaySucceeded(node) && !runBatchStopped(node)) {
+      try {
+        await fireControlOutgoing(node, procCtrlOut, new Set([node.id]));
+      } catch (e) {
+        /* 下游控制目标起跑失败不反写本节点结果：本节点已经成功收尾 */
+        console.warn("[control-out] 触发下游失败：", (e && e.message) || e);
       }
     }
   } finally {
@@ -3707,6 +3732,9 @@ function breezeModeLabel(mode) {
 }
 /* body 上的只读摘要：角色（或能力 · 音色）· cfg · 种子 · 格式 */
 function appendBreezeGenSummaryBody(node, body, media) {
+  /* 这几行（角色 / 能力 / 音色 / 输出 / 文本框）只属于 Breeze 语音节点：
+     别的节点走错分支调进来时整块不画，别把「角色」贴到无关的节点 body 上 */
+  if (!node || node.kind !== "breeze_gen" || !body) return;
   const presetId = breezePresetIdOf(node);
   const slots = presetId
     ? [
@@ -3916,26 +3944,43 @@ const H3_WF_VALIDATION_TEXT = {
   skipped: "跳过校验（后端未运行）",
   unchecked: "未校验",
 };
-/** 库列表缓存：面板每次 renderCanvas 都会重建 DOM，不能每次都打 IPC */
-let _h3WfLib = { items: [], at: 0, error: "" };
+/** 库列表缓存：面板每次 renderCanvas 都会重建 DOM，不能每次都打 IPC。
+ *  items 是三区合一（内置模板 / ComfyUI 镜像 / 我的），每条带 group / readOnly / executable。 */
+let _h3WfLib = { items: [], groups: [], warnings: [], stats: null, at: 0, error: "" };
 let _h3WfLibPending = null;
 const _h3WfMetaLoading = new Set();
+
+/** 工作流库三区的显示名（先认宿主给的 groups，旧宿主退回本地表） */
+const H3_WF_GROUP_FALLBACK = [
+  { key: "builtin", title: "内置模板" },
+  { key: "comfy", title: "ComfyUI 工作流" },
+  { key: "mine", title: "我的工作流" },
+];
+function h3WfGroupTitle(key) {
+  const hit = (_h3WfLib.groups || []).find((g) => String(g.key) === String(key));
+  const t = (hit && hit.title) || (H3_WF_GROUP_FALLBACK.find((g) => g.key === key) || {}).title;
+  return I18n.t(t || key);
+}
 
 function h3WfLibFresh() {
   return Date.now() - _h3WfLib.at < H3_WF_LIB_TTL_MS;
 }
 
-/** 取 H3 全局自建工作流库（force = 忽略缓存重拉）；并发共用同一个 in-flight 请求 */
+/** 取 H3 全局工作流库（force = 忽略缓存重拉，并让宿主重扫 ComfyUI 目录）；
+ *  并发共用同一个 in-flight 请求。返回值仍是扁平 items 数组（老调用点不变）。 */
 function loadH3WorkflowLibrary(force) {
   if (!window.api || !window.api.h3WorkflowList) return Promise.resolve([]);
   if (!force && h3WfLibFresh()) return Promise.resolve(_h3WfLib.items);
   if (_h3WfLibPending) return _h3WfLibPending;
   _h3WfLibPending = window.api
-    .h3WorkflowList()
+    .h3WorkflowList(force ? { force: true } : {})
     .then((r) => {
       if (r && r.ok) {
         _h3WfLib = {
           items: Array.isArray(r.items) ? r.items : [],
+          groups: Array.isArray(r.groups) ? r.groups : [],
+          warnings: Array.isArray(r.warnings) ? r.warnings : [],
+          stats: r.stats || null,
           at: Date.now(),
           error: "",
         };
@@ -3998,8 +4043,22 @@ function h3WfUniqueKey(node, base) {
 }
 /** 切换 / 清空自建工作流：wfId 空 = 回到内置链（清掉全部映射，零回归） */
 async function setVideoGenWorkflow(node, wfId) {
-  pushHistory();
   const id = String(wfId || "").trim();
+  /* 库里有「不可直接执行」的条目（新前端格式 / 子图 / 无 Save* 产物）：下拉里已禁用，
+     这里再拦一道 —— 画布不该出现一条选中就跑不出东西的工作流。 */
+  if (id) {
+    const hit = (_h3WfLib.items || []).find((it) => String(it.id) === id);
+    if (hit && hit.executable === false) {
+      toast(
+        I18n.t("这条工作流不能直接执行：") + String(hit.executableReason || "") +
+          I18n.t("（可以「打开」进编辑器查看，或先另存 / 导入副本再改）"),
+        "warn",
+      );
+      renderCanvas();
+      return;
+    }
+  }
+  pushHistory();
   node.workflowId = id;
   node.wfParams = [];
   node.wfParamValues = {};
@@ -4027,16 +4086,28 @@ async function loadVideoGenWfMeta(node, id) {
   }
   const rec = r.record || {};
   const scan = r.scan || {};
+  const executable = rec.executable !== false;
   node.wfMeta = {
     id: String(rec.id || id),
     title: String(rec.title || id),
     format: String(rec.format || "api"),
+    group: String(rec.group || ""),
+    readOnly: !!rec.readOnly,
+    executable,
+    executableReason: executable ? "" : String(rec.executableReason || ""),
     validation: rec.validation || { status: "unchecked", checkedAt: "" },
     nodeCount: Number(scan.nodeCount) || 0,
     candidates: Array.isArray(scan.candidates) ? scan.candidates : [],
     outputs: Array.isArray(scan.outputs) ? scan.outputs : [],
     seedFields: Array.isArray(scan.seedFields) ? scan.seedFields : [],
   };
+  if (!executable) {
+    toast(
+      I18n.t("这条工作流不能直接执行：") + String(rec.executableReason || "") +
+        I18n.t("（可以「打开」进编辑器查看，或先在库里另存 / 导入副本再改）"),
+      "warn",
+    );
+  }
   /* 新选工作流 = 直接用主进程算好的建议映射（用户之后在面板上增删改） */
   node.wfParams = (Array.isArray(r.suggestedParams) ? r.suggestedParams : []).map(
     (p) => Object.assign({}, p),
@@ -4055,12 +4126,27 @@ async function refreshVideoGenWorkflow(node, opts) {
       .h3WorkflowSyncParams({ id, params: h3WfParamList(node) })
       .catch((e) => ({ ok: false, error: String((e && e.message) || e) }));
     if (!r || !r.ok) {
+      /* 不可直接执行的条目：不是「刷新失败」，把原因留在 wfMeta 上让面板照着说 */
+      if (r && r.executable === false) {
+        node.wfMeta = Object.assign({}, node.wfMeta || {}, {
+          id,
+          executable: false,
+          executableReason: String(r.error || ""),
+        });
+        scheduleSave();
+        renderCanvas();
+        return;
+      }
       toast(I18n.t("刷新工作流失败：") + String((r && r.error) || ""), "err");
       return;
     }
     node.wfMeta = Object.assign({}, node.wfMeta || {}, {
       id,
       title: String(r.title || (node.wfMeta && node.wfMeta.title) || id),
+      group: String(r.group || (node.wfMeta && node.wfMeta.group) || ""),
+      readOnly: r.readOnly != null ? !!r.readOnly : !!(node.wfMeta && node.wfMeta.readOnly),
+      executable: true,
+      executableReason: "",
       candidates: Array.isArray(r.candidates) ? r.candidates : [],
       outputs: Array.isArray(r.outputs) ? r.outputs : [],
       seedFields: Array.isArray(r.seedFields) ? r.seedFields : [],
@@ -4121,13 +4207,20 @@ function appendVideoGenWorkflowControls(panel, node, addField) {
       return;
     }
     const items = apiReady ? await loadH3WorkflowLibrary(true) : [];
-    if (!items.length) {
+    /* 只把「能直接执行」的挑出来：库里可能只有几条不可执行的镜像 */
+    const usable = items.filter((it) => it && it.executable !== false);
+    if (!usable.length) {
       srcSel.value = "";
-      toast(I18n.t("自建工作流库为空 · 请先在 H3 管理窗口导入"), "warn");
+      toast(
+        items.length
+          ? I18n.t("库里的工作流都不能直接执行 · 请先在 H3 管理窗口另存 / 导入一份")
+          : I18n.t("自建工作流库为空 · 请先在 H3 管理窗口导入"),
+        "warn",
+      );
       if (window.api.h3Open) window.api.h3Open();
       return;
     }
-    await setVideoGenWorkflow(node, items[0].id);
+    await setVideoGenWorkflow(node, usable[0].id);
   });
   addField(I18n.t("工作流来源"), srcSel);
   if (!isCustomVideoGen(node)) return;
@@ -4154,21 +4247,48 @@ function appendVideoGenWorkflowControls(panel, node, addField) {
       wfSel.appendChild(o);
       return;
     }
+    /* 三区按组列出：内置模板（只读）/ ComfyUI 工作流（只读镜像）/ 我的工作流。
+       只读条目可以直接选中执行 —— 想改图才需要另存 / 导入副本。
+       不可直接执行的条目照样列出（否则用户以为丢了），但禁用并把原因写进 title。 */
     let found = false;
+    const keys = ["builtin", "comfy", "mine"];
+    /* 宿主将来若加组，排在已知三区后面，别把条目漏掉 */
     for (const it of items) {
-      const o = document.createElement("option");
-      o.value = it.id;
-      o.textContent =
-        (it.title || it.id) +
-        " · " +
-        (Number(it.nodeCount) || 0) +
-        " " +
-        I18n.t("节点");
-      if (String(it.id) === cur) {
-        o.selected = true;
-        found = true;
+      const g = String(it.group || "mine");
+      if (keys.indexOf(g) < 0) keys.push(g);
+    }
+    for (const key of keys) {
+      const inGroup = items.filter((it) => String(it.group || "mine") === key);
+      if (!inGroup.length) continue;
+      const og = document.createElement("optgroup");
+      og.label = h3WfGroupTitle(key) + "（" + inGroup.length + "）";
+      for (const it of inGroup) {
+        const o = document.createElement("option");
+        o.value = it.id;
+        const ro = it.readOnly ? I18n.t(" · 只读") : "";
+        o.textContent =
+          (it.title || it.id) +
+          ro +
+          " · " +
+          (Number(it.nodeCount) || 0) +
+          " " +
+          I18n.t("节点");
+        if (it.executable === false) {
+          o.disabled = true;
+          o.textContent = "⊘ " + o.textContent + I18n.t(" · 不可直接执行");
+          o.title = String(it.executableReason || "");
+        } else if (it.group === "comfy") {
+          o.title = I18n.t("来自 ComfyUI 的 user/default/workflows（只读）：选中即按这条跑；要改图请先在管理窗「导入副本」");
+        } else if (it.group === "builtin") {
+          o.title = I18n.t("内置模板（只读）：选中即按这条跑；要改图请先在管理窗「另存为我的副本」");
+        }
+        if (String(it.id) === cur) {
+          o.selected = true;
+          found = true;
+        }
+        og.appendChild(o);
       }
-      wfSel.appendChild(o);
+      wfSel.appendChild(og);
     }
     if (!found && cur) {
       const o = document.createElement("option");
@@ -4213,7 +4333,18 @@ function appendVideoGenWorkflowControls(panel, node, addField) {
 
   const info = document.createElement("div");
   info.className = "n-backend-hint";
+  if (meta.executable === false) {
+    info.textContent =
+      I18n.t("不可直接执行：") + String(meta.executableReason || "") +
+      I18n.t(" · 可以「打开」进编辑器查看，或先在管理窗另存 / 导入副本再改");
+    info.style.color = "var(--warn, #d8a13a)";
+    panel.appendChild(info);
+    return;
+  }
   info.textContent =
+    (meta.readOnly
+      ? (String(meta.group) === "comfy" ? I18n.t("ComfyUI 目录 · 只读") : I18n.t("内置模板 · 只读")) + " · "
+      : "") +
     (meta.nodeCount || 0) +
     I18n.t(" 节点 · ") +
     (String(meta.format || "api").toUpperCase() === "API" ? I18n.t("API 格式") : meta.format) +
@@ -4980,11 +5111,20 @@ async function playMossMusicNode(node, quiet) {
       if (!quiet) toast(node.error, "err");
     }
   } finally {
+    /* 被用户终止（单独停止 / 全部终止）时不再驱动下游控制线，
+       否则「已全部终止」之后队列里又会长出新的生成任务。 */
+    const wasStopped = mediaRunStopped(node);
     node.running = false;
     node._aborted = false;
     stopMediaBackendRunWatcher(node.id);
     renderCanvas();
     scheduleSave();
+    /* 分析成功：触发控制输出端子（端口 3 = 结果文本 / JSON / 产物路径之后那颗控制出）
+       驱动下游控制目标。失败 / 被终止 / 本批已作废一律不点火（与 music_gen 端口 1 同一口径）。 */
+    const ctrlOut =
+      typeof procNodeControlOutPort === "function" ? procNodeControlOutPort(node) : 3;
+    if (!wasStopped && ctrlOut >= 0 && nodePlaySucceeded(node))
+      await fireControlOutgoing(node, ctrlOut, new Set([node.id]));
   }
 }
 
@@ -9608,6 +9748,14 @@ async function playNodeBody(node, quiet, opts) {
     if (typeof toast === "function") toast(I18n.t("语音模块未加载（renderer/app-ds-speech.js）"), "err");
     return;
   }
+  /* MT 音频频谱分析（audio_spectrum）：本机 numpy 后端，纯 CPU，不进媒体串行链 / 不吃显存锁。
+     执行体在 renderer/app-audioanalysis.js（调用期按 typeof 取，模块没加载就明确报）。 */
+  if (node.kind === "audio_spectrum") {
+    if (typeof playAudioAnalysisNode === "function") return playAudioAnalysisNode(node, quiet);
+    if (typeof toast === "function")
+      toast(I18n.t("频谱分析模块未加载（renderer/app-audioanalysis.js）"), "err");
+    return;
+  }
   if (node.kind === "moss_music") {
     return runMediaGenSerial(node, () => playMossMusicNode(node, quiet));
   }
@@ -13201,6 +13349,24 @@ function fileWireSupportError(from, fi, to) {
 }
 
 
+/* ── 线的「来源端子发不发控制」的单一判据 ────────────────────────────────────
+   控制语义属于**端子**，不属于整颗节点：处理类节点（proc_text / proc_image / agent_task /
+   moss_music）的 0 号口发内容、末位那颗发控制（app.js procNodeControlOutPort）；生成类节点
+   （music_gen / video_gen / breeze_gen …）、函数 / 工具节点的控制口同理 —— 同一个节点上
+   两种端子并存。判定真源是 app.js 的 nodeEmitsControlOnPort（读侧 wireFromIsControl 用的
+   就是它），这里只补一层空值兜底。
+   历史写法一律 isControlKind(整节点)，于是「处理完毕的控制出」在落点与校验里都被当成数据线：
+   控制线落进下游的数据槽（被当作内容取值 → 取到空）、或者干脆被拒。
+   落点（addWire）、校验（connectError）、替换（dropWiresForReplace / connect）、逐层桥接
+   （applyBoundaryBridgePlan）共用这一处，与读侧 wiresTo 按 wireFromIsControl 过滤的口径一致。
+   切片沙箱（smoke 只抽函数源码）里没有这个函数 → 各调用点都带 typeof 兜底回 isControlKind。 */
+function wireSourceIsControl(node, fromIndex) {
+  if (!node) return false;
+  if (isControlKind(node)) return true;
+  if (typeof nodeEmitsControlOnPort !== "function") return false;
+  return !!nodeEmitsControlOnPort(node, Number(fromIndex || 0), undefined, new Set());
+}
+
 /* 普通（动态端子）目标节点的**控制输入端子** = 数据端子之后那颗：
    端子数由 inputCount 按已挂数据线顺延（max(1, 数据线数 + 1)），所以没接线时它还不存在
    → 返回 null（调用方回落既有占用判定）。数据端子 = inPortKindOf 有声明（text / image /
@@ -13250,7 +13416,14 @@ function dataInPortIndexForWire(to, from, fromIndex, toIndex) {
      常量在 app.js 定义；冒烟会单独切出本函数跑，所以这里带一份同值的兜底。 */
   const paramIdx = typeof PARAM_IN_INDEX === "number" ? PARAM_IN_INDEX : 9001;
   if (Number(toIndex) === paramIdx) return paramIdx;
-  if (isControlKind(from)) return toIndex; /* 控制线走自己的落点（dataNodeControlInPort) */
+  /* 控制线走自己的落点（dataNodeControlInPort），绝不被归一进数据槽。判据按**端子**问
+     （wireSourceIsControl）：处理类节点的末位控制出不是 isControlKind(整节点) 能认出来的。 */
+  if (
+    typeof wireSourceIsControl === "function"
+      ? wireSourceIsControl(from, fromIndex)
+      : isControlKind(from)
+  )
+    return toIndex;
   const want = Number(toIndex);
   if (!isFinite(want) || want < 0) return toIndex;
   if (hasFixedInPorts(to) || isAssetNode(to) || isFnToolNode(to)) return want;
@@ -13331,7 +13504,14 @@ function inPortOccupancy(to, toIndex, fromCtrl) {
     }
     return { wires: hit, replaceable: true };
   }
-  const same = fromCtrl
+  /* 控制端子上的旧线恒按控制线论（控制端子只收控制线，数据线早在 connectError 就被拦下）：
+     入参 fromCtrl 只说明「这条新线是不是控制线」，而节点层 / MCP 那条写字路径
+     （canvas-doc-edit）现在仍按整节点判控（isControlKind）→ 处理类节点末位控制出会被当成
+     数据线。少了这一步，控制口上的旧控制线顶不掉，新控制线会叠在同一个口上。 */
+  const ctrlPort =
+    (typeof inPortIsControl === "function" && !!inPortIsControl(to, idx)) ||
+    (typeof inPortKindOf === "function" && inPortKindOf(to, idx) === "control");
+  const same = fromCtrl || ctrlPort
     ? hit.filter((w) => wireFromIsControl(w))
     : hit.filter((w) => !wireFromIsControl(w));
   return { wires: same, replaceable: same.length > 0 };
@@ -13345,7 +13525,10 @@ function inPortReplaceable(to, toIndex, fromCtrl) {
 /** 落线前顶掉旧线（唯一落点）。返回被顶掉的旧线摘要（供 toast / agent 回执点名）。
     调用方必须先 pushHistory：整次替换（含多段桥接）= 一步撤销。
     这里**不做端子号左移补位**：新线马上落到同一颗端子，端子始终是占用的，
-    补位只会把别的线挪错号（固定端子节点更是绝不许重排）。 */
+    补位只会把别的线挪错号（固定端子节点更是绝不许重排）。
+    fromCtrl = 「这条新线是不是控制线」：控制线只顶控制线、数据线只顶数据线；
+    落点本身是控制端子时（inPortOccupancy 的 ctrlPort）恒按控制线论 —— 处理类节点的
+    末位控制出据此才能接管下游控制口，而不是与旧控制线叠在同一颗端子上。 */
 function dropWiresForReplace(to, toIndex, fromCtrl) {
   const occ = inPortOccupancy(to, toIndex, fromCtrl);
   if (!occ.replaceable || !occ.wires.length) return [];
@@ -13450,7 +13633,12 @@ function connectError(fromId, toId, toIndex, fromIndex) {
     if (!hasOutput(from)) return I18n.t("该节点没有输出端子");
     const fiParam = Number(fromIndex || 0);
     if (fiParam < 0 || fiParam >= outputCount(from)) return I18n.t("该节点没有输出端子");
-    if (isControlKind(from)) return I18n.t("参数端子只接数据线（文本 JSON），不接控制线");
+    /* 控制线不占参数端子：判据按**来源端子**（wireSourceIsControl），处理类节点的末位
+       控制出与生成节点的控制口都算控制线；沙箱里没有这个函数时兜底回整节点判据 */
+    const srcIsControl =
+      isControlKind(from) ||
+      (typeof wireSourceIsControl === "function" && wireSourceIsControl(from, fiParam));
+    if (srcIsControl) return I18n.t("参数端子只接数据线（文本 JSON），不接控制线");
     const okText =
       typeof wireActsAsText === "function" ? wireActsAsText(from, fiParam, to) : isTextSource(from);
     if (!okText) return I18n.t("参数端子需要文本来源（正文是一份 JSON 对象）");
@@ -13468,7 +13656,13 @@ function connectError(fromId, toId, toIndex, fromIndex) {
   )
     return I18n.t("该节点不接受输入");
   if (inputCount(to) === 0) return I18n.t("该节点不接受输入");
-  const fromCtrl = isControlKind(from);
+  /* 来源是不是「控制线」按**端子**判（wireSourceIsControl → app.js nodeEmitsControlOnPort）：
+     处理类节点（proc_text / proc_image / agent_task / moss_music）的 0 号口发内容、末位那颗
+     发控制 —— 按整节点判（isControlKind）会把控制出当成数据线，于是它既能占下游数据槽
+     （被当作内容取值，取到空），又接不进下游的专用控制入。后面各分支的 fromCtrl 全用这一份。 */
+  const fromCtrl =
+    isControlKind(from) ||
+    (typeof wireSourceIsControl === "function" && wireSourceIsControl(from, fi));
   if (to.kind === "global" && (fromCtrl || !isRefableSource(from)))
     return I18n.t("全局节点仅接受文本或图像来源");
   if (fromId === toId || wouldCycle(fromId, toId, toIndex, fromIndex))
@@ -14202,10 +14396,16 @@ function addWire(fromId, toId, toIndex, opts) {
   const toN = nodeById(toId);
   const fromN = nodeById(fromId);
   const fromIdx = Number(opts.fromIndex || 0);
+  /* 这条线的**来源端子**发不发控制（同一节点上数据口与控制口并存，见 wireSourceIsControl）：
+     下面每一处「控制线 / 数据线」分流都用它，不再用 isControlKind(整节点) —— 否则处理类节点的
+     末位控制出会被当成数据线落到下游的数据槽里。沙箱里没有该函数时兜底回整节点判据。 */
+  const isCtrlFrom = (n, i) =>
+    !!(n && isControlKind(n)) ||
+    (typeof wireSourceIsControl === "function" && wireSourceIsControl(n, i));
   /* 交付节点：落点 = 第一个「没接线且对应一个待交付文件」的端子（端子号 = 未交文件项顺序，
      交掉的项不再占端子）。用入线总数当落点会落到「被已交文件空出来的错位端子号」上，
      线接到一个不存在的端子上（页面上看不见、也永远取不到文件）。 */
-  if (toIndex == null && toN && toN.kind === "deliver" && !(fromN && isControlKind(fromN))) {
+  if (toIndex == null && toN && toN.kind === "deliver" && !isCtrlFrom(fromN, fromIdx)) {
     const pending = window.LT && window.LT.deliverPendingItems ? window.LT.deliverPendingItems(toN) : [];
     for (let s = 0; s < pending.length; s++) {
       if (inPortWireCount(toN, s) === 0) {
@@ -14216,7 +14416,7 @@ function addWire(fromId, toId, toIndex, opts) {
   }
   /* Remotion 固化端子：数据线按契约类型挑口，控制线落末位专用控制端子 */
   if (toIndex == null && toN && toN.kind === "remotion" && remotionContractOf(toN).length) {
-    if (fromN && isControlKind(fromN)) idx = remotionContractOf(toN).length;
+    if (isCtrlFrom(fromN, fromIdx)) idx = remotionContractOf(toN).length;
     else {
       const free = remotionFreeContractPort(toN, fromN, fromIdx);
       if (free != null) idx = free;
@@ -14229,7 +14429,7 @@ function addWire(fromId, toId, toIndex, opts) {
     toIndex == null &&
     toN &&
     fromN &&
-    !isControlKind(fromN) &&
+    !isCtrlFrom(fromN, fromIdx) &&
     typeof inPortMultiWireIndexes === "function" &&
     inPortMultiWireIndexes(toN).length &&
     wireActsAsImage(fromN, fromIdx, toN)
@@ -14243,7 +14443,7 @@ function addWire(fromId, toId, toIndex, opts) {
        而不是把线堆到空洞之后 —— 否则空洞那颗端子永远接不上。
        控制线例外：控制端子只与控制端子相连 → 落「数据端子之后那颗」控制端子
        （dataNodeControlInPort，与 connectError 同一份判定），绝不占端口 0 的提示词入口。 */
-    if (fromN && isControlKind(fromN)) {
+    if (isCtrlFrom(fromN, fromIdx)) {
       const ctrlPort = typeof dataNodeControlInPort === "function" ? dataNodeControlInPort(toN) : null;
       if (ctrlPort != null) idx = ctrlPort;
     } else {
@@ -14265,7 +14465,7 @@ function addWire(fromId, toId, toIndex, opts) {
       toN.kind === "moss_music" ||
       isVideoPostKind(toN))
   ) {
-    if (fromN && isControlKind(fromN)) {
+    if (isCtrlFrom(fromN, fromIdx)) {
       /* 控制线：video_gen 固定落到端口 0 的控制输入（第一个端子）；
          music_gen 落到端口2；yue_gen 落到端口3。
          （此前漏了后处理两支：控制线按「入线总数」顺延 → 第二根线落到端口 1 被 connectError
@@ -14299,7 +14499,7 @@ function addWire(fromId, toId, toIndex, opts) {
      from 若是本节点的内部子节点，这条线是「内侧汇流」→ 找的是输出端子。 */
   if (toIndex == null && toN && isFnToolNode(toN)) {
     const innerSide = !!(fromN && nodeParentSuperId(fromN) === toN.id);
-    const wantCtrl = !!(fromN && isControlKind(fromN));
+    const wantCtrl = isCtrlFrom(fromN, fromIdx);
     /* 内侧汇流（子节点 → 宿主）落的是输出端子，仍按参数顺序找空闲输出；
        外侧数据线走 fnToolInPortIndex —— 与 connectError 校验的端子必须是同一个。 */
     const free = innerSide
@@ -14340,7 +14540,8 @@ function addWire(fromId, toId, toIndex, opts) {
      交付文件自动从连线取（本次需求本体）：连线是控制/数据都有的动作，改图不走引擎主循环，
      所以在这里显式叫；节流 + 重入闸在 LT 侧，连一次线只干一次活。 */
   if (toN && toN.kind === "deliver" && window.LT && typeof window.LT.autoCollectSoon === "function") window.LT.autoCollectSoon();
-  if (!isControlKind(nodeById(fromId))) clearDownstream(toId);
+  /* 控制线不改下游内容（只「去执行」）→ 不作废下游缓存；数据线照旧作废 */
+  if (!isCtrlFrom(fromN, fromIdx)) clearDownstream(toId);
   /* 文本处理节点接到图像：自动切到视觉服务商/模型 */
   const to = nodeById(toId);
   const from = nodeById(fromId);
@@ -14362,14 +14563,15 @@ function addWire(fromId, toId, toIndex, opts) {
     to &&
     (isSaveNode(to)) &&
     from &&
-    !isControlKind(from) &&
+    !isCtrlFrom(from, fromIdx) &&
     !isSaveNode(from)
   ) {
     /* PDF 生成只有「点 ▶ 才生成」一种口径：接线不打开自动保存、不因此落盘 */
     if (to.kind !== "save_pdf") to.auto = true;
     applySavePathExt(to);
   }
-  if (to && to.kind === "global" && from && !isControlKind(from)) {
+  /* 全局节点只吃内容：控制线（含处理类节点末位控制出）不参与 @ 打标 */
+  if (to && to.kind === "global" && from && !isCtrlFrom(from, fromIdx)) {
     const filters = normalizeGlobalTagFilter(to);
     if (filters.length) stampTagsOntoGlobalWired(to, filters);
   }
@@ -14491,8 +14693,14 @@ function connect(fromId, toId, toIndex, fromIndex) {
     return;
   }
   pushHistory();
-  /* 已占用的端子 → 先顶掉旧的同类线（与落线同一步撤销，不删任何节点） */
-  const replaced = dropWiresForReplace(toNode, ti, isControlKind(fromNode));
+  /* 已占用的端子 → 先顶掉旧的同类线（与落线同一步撤销，不删任何节点）。
+     控制线 / 数据线按**来源端子**分（wireSourceIsControl）：处理类节点的末位控制出
+     只顶控制线，数据口 0 只顶数据线。 */
+  const fromIsCtrl =
+    isControlKind(fromNode) ||
+    (typeof wireSourceIsControl === "function" &&
+      wireSourceIsControl(fromNode, fromIndex || 0));
+  const replaced = dropWiresForReplace(toNode, ti, fromIsCtrl);
   addWire(fromId, toId, ti, { notify: true, save: false, fromIndex: fromIndex || 0 });
   renderCanvas();
   scheduleSave(true);
@@ -14925,9 +15133,15 @@ function applyBoundaryBridgePlan(segs) {
       rollback();
       return { created: 0, replaced: [], error: err };
     }
-    /* 已占用的边界端子 → 先顶掉旧的同类线（与手拖同一口径、同一步撤销） */
+    /* 已占用的边界端子 → 先顶掉旧的同类线（与手拖同一口径、同一步撤销）。
+       控制 / 数据按**来源端子**分（wireSourceIsControl）：处理类节点的末位控制出
+       经边界端子桥接时也只顶控制线。 */
     const toSeg = nodeById(seg.to);
-    const ctrl = isControlKind(nodeById(seg.from));
+    const segFrom = nodeById(seg.from);
+    const ctrl =
+      isControlKind(segFrom) ||
+      (typeof wireSourceIsControl === "function" &&
+        wireSourceIsControl(segFrom, seg.fromIndex));
     for (const info of dropWiresForReplace(toSeg, seg.toIndex, ctrl)) replaced.push(info);
     const n0 = (S.wf.wires || []).length;
     if (addWire(seg.from, seg.to, seg.toIndex, { fromIndex: seg.fromIndex }) === false) {
@@ -21300,9 +21514,14 @@ async function importImagePathsForNode(node, paths, warnings) {
           makeImageBatchEntry(copied.path, copied.sourceName),
         );
       } else {
+        const oldName =
+          String(node.sourceName || "").trim() || imageStem(node.imageAsset || "");
         if (node.imageAsset) invalidateImageMeta(node.imageAsset);
         node.imageAsset = copied.path;
         node.sourceName = copied.sourceName;
+        /* 标题若是「按文件名自动起的」，换图后跟着改名（用户自己起的名字不动） */
+        if (oldName && oldName !== node.sourceName && typeof syncAutoNodeTitle === "function")
+          syncAutoNodeTitle(node, node.sourceName, oldName);
       }
       ok++;
     } catch (e) {
@@ -21476,6 +21695,8 @@ function editPortNameOf(node, dir, i, isFnT) {
     if (k === "mutex") return I18n.t("互斥输入 ") + (i + 1);
     if (k === "task") return I18n.t("控制");
     if (k === "net_send") return i === 0 ? I18n.t("信息") : I18n.t("控制");
+    /* MT 音频频谱分析：唯一一颗输入端子 = 音频（音频或视频，视频只取音轨） */
+    if (k === "audio_spectrum") return I18n.t("音频");
     return I18n.t("输入端子 ") + (i + 1);
   }
   if (k === "task") return i === 0 ? I18n.t("成功") : I18n.t("失败");
@@ -21492,12 +21713,18 @@ function editPortNameOf(node, dir, i, isFnT) {
     k === "remotion"
   )
     return i === 0 ? I18n.t("内容") : I18n.t("控制");
-  /* MOSS-Music：0=结果文本 · 1=JSON 文本 · 2=md 产物路径 */
+  /* MOSS-Music：0=结果文本 · 1=JSON 文本 · 2=md 产物路径 · 3=控制出（处理完毕激活） */
   if (k === "moss_music")
     return (
-      [I18n.t("结果文本"), I18n.t("JSON"), I18n.t("产物路径")][i] ||
+      [I18n.t("结果文本"), I18n.t("JSON"), I18n.t("产物路径"), I18n.t("控制")][i] ||
       I18n.t("输出端子 ") + (i + 1)
     );
+  /* 处理类节点（proc_text / proc_image / agent_task）：0=内容 · 末位=控制出（数据口编号不变） */
+  if (k === "proc_text" || k === "proc_image" || k === "agent_task")
+    return i ===
+      (typeof procNodeControlOutPort === "function" ? procNodeControlOutPort(node) : 1)
+      ? I18n.t("控制")
+      : I18n.t("内容");
   if (k === "judge") return i === 0 ? "YES" : "NO";
   /* 质检节点的输出：0 报告 · 1 通过 · 2 未过（输入侧在上面 dir==="in" 段） */
   if (typeof isQaKindNode === "function" && isQaKindNode(node))
@@ -21511,6 +21738,9 @@ function editPortNameOf(node, dir, i, isFnT) {
      与画布端子徽标（app-canvas.js portBadgeText）同一口径：徽标就写清是哪两个输出。 */
   if (k === "input_audio" || k === "input_video")
     return i === 0 ? I18n.t(k === "input_audio" ? "音频输出" : "视频输出") : I18n.t("转写输出");
+  /* MT 音频频谱分析：0=分析结果（JSON）· 1=频谱图（PNG 图像值）· 2=控制输出 */
+  if (k === "audio_spectrum")
+    return i === 0 ? I18n.t("分析结果") : i === 1 ? I18n.t("频谱图") : I18n.t("控制输出");
   return I18n.t("输出端子 ") + (i + 1);
 }
 
@@ -21605,7 +21835,15 @@ function editPortKindOf(node, dir, i, isFnT) {
   /* 质检节点：0 报告（JSON 文本）· 1 / 2 控制（通过 / 未过）—— 判定口已撤掉 */
   if (typeof isQaKindNode === "function" && isQaKindNode(node)) return i >= 1 ? "control" : "text";
   if (k === "net_recv") return i === 0 ? "text" : "control";
-  if (k === "moss_music") return "text";
+  /* 处理类节点：数据口 0..N-1 仍是内容（编号不变）· 末位 = 控制出
+     （真源 = app.js 的 procNodeControlOutPort） */
+  if (k === "proc_text" || k === "proc_image" || k === "agent_task") {
+    const pc = typeof procNodeControlOutPort === "function" ? procNodeControlOutPort(node) : 1;
+    if (i >= pc) return "control";
+    return k === "proc_image" ? "image" : "any";
+  }
+  /* MOSS-Music：0 / 1 / 2 是文本数据口 · 3 = 控制出 */
+  if (k === "moss_music") return i === 3 ? "control" : "text";
   if (k === "music_gen" || k === "yue_gen" || k === "breeze_gen")
     return i === 0 ? "audio" : "control";
   if (k === "flux3klein_gen") return i === 0 ? "image" : "control";

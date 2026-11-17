@@ -728,6 +728,43 @@ function waveSyncOwnState(el) {
   waveSetPlaying(el, !eng.paused);
 }
 
+/* ── 旁挂 UI 的两个只读口径（频谱播放头 / 卡点高亮等「跟着声音走」的面板用）────────
+   为什么要有这两个函数：播放引擎是全局私有的，旁挂面板不该自己去摸 waveEngineEl
+   （摸错对象就画在「别人的进度」上）。这里把「这只外壳当前放到第几秒 / 是不是它在放」
+   收成唯一出口：外壳没持有引擎时一律回 0 / false，与波形上的播放头**同一份判定**
+   （见 waveDraw 里的 mine / cur）。 */
+function wavePreviewTimeOf(el) {
+  const st = el ? wavePreviewState.get(el) : null;
+  const eng = waveEngineEl;
+  if (!st || !eng || st.own !== el) return 0;
+  const t = Number(eng.currentTime);
+  return isFinite(t) && t > 0 ? t : 0;
+}
+function wavePreviewPlayingOf(el) {
+  const st = el ? wavePreviewState.get(el) : null;
+  const eng = waveEngineEl;
+  if (!st || !eng || st.own !== el) return false;
+  return !eng.paused && !!st.playing;
+}
+/** 旁挂面板定位：按秒 seek（频谱上点一下就从那一秒开始听）。
+    「谁在用引擎」仍由本文件的 waveEngineClaim / waveEngineSetSource 决定，别处不许直接写 currentTime。 */
+function wavePreviewSeekTo(el, sec) {
+  const st = el ? wavePreviewState.get(el) : null;
+  const eng = waveEngineEnsure();
+  if (!st || !eng) return;
+  if (st.own !== el) {
+    waveEngineSetSource(el, st.srcUrl || "");
+    waveEngineClaim(el);
+  }
+  const total = st.dur || (st.own === el && isFinite(eng.duration) ? eng.duration : 0);
+  const t = Math.max(0, Math.min(total > 0 ? total : Infinity, Number(sec) || 0));
+  try {
+    eng.currentTime = t;
+  } catch (_) {}
+  if (eng.paused) waveEngineKick(el);
+  waveDraw(el);
+}
+
 /* 换源：外部也可能直接 el.src = "file:///…"（既有同步逻辑就是这样），
    统一在 wavePreviewAttachSrcBridge 的 setter 里接住并落到这里。 */
 function wavePreviewSetSource(el, path, bust) {

@@ -39,6 +39,9 @@ const KINDS = [
   /* 质检节点（五类同构 · 按 JSON 评分标准打分 · 通过 / 未过两个控制出口）：
      端口与工具口径见 mtnode-canvas-edit-rules */
   'qa_text', 'qa_image', 'qa_video', 'qa_audio', 'qa_file',
+  /* MT 音频频谱分析（本机 numpy 后端 · 单一音频/视频入端子 → 分析 JSON + 频谱图 + 控制出）：
+     端口见 mtnode-canvas-edit-rules；输出 JSON 自带 fieldGuide，自带这条就不必再让 agent 猜字段 */
+  'audio_spectrum',
   'save', 'save_text', 'save_image', 'save_pdf', 'split', 'merge', 'global', 'wait_file', 'timer',
   'delayer', 'sequencer', 'gate', 'splitter', 'counter', 'mutex',
   /* 弹窗节点：控制流触发时弹出浮层，正文可填写（建议只由用户在画布上建，agent 少用） */

@@ -3,58 +3,65 @@
 <head>
 <meta charset="utf-8" />
 <title>Breeze TTS 2 本地 TTS</title>
+<link rel="stylesheet" href="../../plugins/plugin-kit.css" />
 <style>
-:root{--bg:#14161c;--card:#1b1e26;--card2:#20242e;--line:#2c3140;--fg:#e6e9f2;--dim:#9aa3b8;--accent:#7ee0c0;--accent2:#3aa88a;--danger:#e0605f;--warn:#e0b25f;--ok:#63c98a}
+/* 配色与控件一律取 plugins/plugin-kit.css 的令牌（--bg / --panel / --panel2 /
+   --ink / --muted / --bd / --orange / --cyan / --green / --red / --yellow），
+   本文件只留布局：蓝紫-青绿调色板已全部换成 kit 的橙（动作）+ 青（信息 / 选中）。 */
 *{box-sizing:border-box}
 html,body{margin:0;height:100%}
-body{background:var(--bg);color:var(--fg);font:13px/1.55 "Microsoft YaHei",system-ui,sans-serif;overflow-y:auto}
+body{font:13px/1.5 var(--sans);overflow-y:auto}
 .wrap{display:flex;flex-direction:column;gap:10px;padding:12px}
 .top{display:flex;align-items:center;gap:8px}
-.top h1{font-size:15px;margin:0;font-weight:600}
+.top h1{font-size:15px;margin:0;font-weight:600;color:var(--ink)}
 .spacer{flex:1}
-button{background:var(--card2);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:5px 10px;cursor:pointer;font:inherit}
-button:hover:not(:disabled){border-color:var(--accent2);color:#fff}
-button:disabled{opacity:.45;cursor:default}
-button.primary{background:var(--accent2);border-color:var(--accent2);color:#08110e;font-weight:600}
-button.primary:hover:not(:disabled){background:var(--accent);border-color:var(--accent)}
-button.danger{border-color:#5a2f2f;color:#f0b3b3}
-button.danger:hover:not(:disabled){background:#3a1f1f;border-color:var(--danger)}
+button{background:var(--panel2);color:var(--ink);border:1px solid var(--bd2);border-radius:var(--r-sm);padding:5px 10px;cursor:pointer;font:inherit;
+  transition:background var(--dur-fast),border-color var(--dur-fast),color var(--dur-fast)}
+button:hover:not(:disabled){border-color:var(--bd2);background:color-mix(in srgb,var(--panel2) 70%,var(--ink) 8%)}
+button:disabled{opacity:.45;cursor:not-allowed}
+button.primary{border-color:color-mix(in srgb,var(--orange) 55%,var(--bd2));background:color-mix(in srgb,var(--orange) 18%,var(--panel2));color:var(--orange2);font-weight:600}
+button.primary:hover:not(:disabled){border-color:var(--orange);background:color-mix(in srgb,var(--orange) 26%,var(--panel2));color:var(--orange2)}
+button.danger{border-color:color-mix(in srgb,var(--red) 45%,var(--bd2));background:transparent;color:color-mix(in srgb,var(--red) 78%,var(--ink))}
+button.danger:hover:not(:disabled){border-color:var(--red);background:var(--tint-red);color:color-mix(in srgb,var(--red) 88%,var(--ink))}
 button.mini{padding:3px 8px;font-size:12px}
-.card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:10px;display:flex;flex-direction:column;gap:8px}
-.card h2{font-size:12px;margin:0;color:var(--dim);font-weight:600;letter-spacing:.3px;text-transform:uppercase}
+.card{background:var(--panel);border:1px solid var(--bd);border-radius:var(--r-md);padding:10px;display:flex;flex-direction:column;gap:8px}
+.card h2{font-size:12px;margin:0;color:var(--muted);font-weight:600;letter-spacing:.3px;text-transform:uppercase}
 .row{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
-.path{font-family:Consolas,monospace;font-size:11px;color:var(--dim);word-break:break-all;flex:1;min-width:0}
-input[type=text],input[type=number],textarea,select{background:#12141a;color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:5px 7px;font:inherit;min-width:0}
-input[type=text]:focus,textarea:focus,select:focus{outline:none;border-color:var(--accent2)}
+.path{font-family:var(--mono);font-size:11px;color:var(--muted);word-break:break-all;flex:1;min-width:0}
+input[type=text],input[type=number],textarea,select{background:var(--code);color:var(--ink);border:1px solid var(--bd2);border-radius:var(--r-sm);padding:5px 7px;font:inherit;min-width:0}
+input[type=text]:focus,textarea:focus,select:focus{outline:none;border-color:var(--orange);box-shadow:0 0 0 3px color-mix(in srgb,var(--orange) 18%,transparent)}
 textarea{resize:vertical;font-family:inherit}
-.badge{font-size:11px;padding:2px 8px;border-radius:99px;border:1px solid var(--line);color:var(--dim)}
-.badge.on{border-color:var(--ok);color:var(--ok)}
-.badge.off{border-color:#4a3a3a;color:#c8938f}
-.badge.load{border-color:var(--warn);color:var(--warn)}
-.meta{font-size:11px;color:var(--dim)}
+.badge{font-size:11px;padding:2px 8px;border-radius:99px;border:1px solid var(--bd2);background:var(--panel2);color:var(--muted)}
+.badge.on{border-color:color-mix(in srgb,var(--green) 40%,var(--bd));background:var(--tint-green);color:var(--green)}
+.badge.off{color:var(--muted)}
+.badge.load{border-color:color-mix(in srgb,var(--yellow) 40%,var(--bd));background:var(--tint-yellow);color:var(--yellow)}
+.meta{font-size:11px;color:var(--muted)}
 .list{display:flex;flex-direction:column;gap:5px;overflow-y:auto}
-.item{display:flex;align-items:center;gap:6px;background:var(--card2);border:1px solid var(--line);border-radius:6px;padding:5px 7px}
-.item.sel{border-color:var(--accent2)}
+.item{display:flex;align-items:center;gap:6px;background:var(--panel2);border:1px solid var(--bd);border-radius:var(--r-sm);padding:5px 7px}
+.item.sel{border-color:var(--cyan);background:var(--tint-cyan)}
 .item .name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.item .sub{font-size:11px;color:var(--dim);max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.empty{font-size:11px;color:var(--dim);padding:6px 0}
+.item .sub{font-size:11px;color:var(--muted);max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.empty{font-size:11px;color:var(--muted);padding:6px 0}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:6px}
 .grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px}
 /* 角色预设的界面在画布节点里（三步向导），控制台只留状态 / 日志 / 手写指令试听 */
-label.f{display:flex;flex-direction:column;gap:3px;font-size:11px;color:var(--dim)}
+label.f{display:flex;flex-direction:column;gap:3px;font-size:11px;color:var(--muted)}
 audio{width:100%;height:32px}
-#log,#engLog{font-family:Consolas,monospace;font-size:11px;color:#b9c2d6;background:#0f1116;border:1px solid var(--line);border-radius:6px;padding:6px;height:150px;overflow-y:auto;white-space:pre-wrap;word-break:break-all}
+/* 日志区 = kit 的日志窗口径（.pk-log）：深底 + 等宽 + 自动换行 */
+#log,#engLog{font-family:var(--mono);font-size:12px;line-height:1.55;color:color-mix(in srgb,var(--ink) 86%,var(--muted));
+  background:var(--code);border:1px solid var(--bd);border-radius:var(--r-md);padding:8px 10px;
+  height:150px;overflow-y:auto;white-space:pre-wrap;word-break:break-all;tab-size:2}
 #engLog{height:120px}
-.spin{display:inline-block;width:11px;height:11px;border:2px solid var(--accent2);border-top-color:transparent;border-radius:50%;animation:sp .8s linear infinite}
+.spin{display:inline-block;width:11px;height:11px;border:2px solid var(--bd2);border-top-color:var(--orange);border-radius:50%;animation:sp .8s linear infinite}
 @keyframes sp{to{transform:rotate(360deg)}}
 .hide{display:none !important}
 .kv{display:flex;gap:6px;font-size:11px}
-.kv b{color:var(--dim);font-weight:400;min-width:64px}
-.kv span{font-family:Consolas,monospace;word-break:break-all}
-.toast{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);background:#2a2f3d;border:1px solid var(--line);border-radius:8px;padding:7px 14px;font-size:12px;box-shadow:0 6px 22px rgba(0,0,0,.5);z-index:99;max-width:90%}
-.toast.err{border-color:var(--danger);color:#ffc9c7}
-.toast.ok{border-color:var(--ok);color:#bdf0cf}
-.toast.warn{border-color:var(--warn);color:#ffe3b3}
+.kv b{color:var(--muted);font-weight:400;min-width:64px}
+.kv span{font-family:var(--mono);word-break:break-all}
+.toast{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);background:var(--panel2);border:1px solid var(--bd2);border-radius:var(--r-md);padding:7px 14px;font-size:12px;box-shadow:var(--shadow-pop);z-index:99;max-width:90%}
+.toast.err{border-color:var(--red);background:var(--tint-red);color:color-mix(in srgb,var(--red) 85%,var(--ink))}
+.toast.ok{border-color:var(--green);background:var(--tint-green);color:var(--green)}
+.toast.warn{border-color:var(--yellow);background:var(--tint-yellow);color:var(--yellow)}
 </style>
 </head>
 <body>

@@ -34,6 +34,9 @@ const installKill = require("../plugins/install-cancel.js");
 /* 安装后自检内核：结果落盘 / 等全局媒体锁 / 产物目录 / 进度推给安装窗都在它里面实现
    （见 plugins/plugin-selfcheck.js 头部契约）。本文件只登记「Breeze 语音怎么算装好了能用」。 */
 const { registerPluginSelfcheck } = require("../plugins/plugin-selfcheck.js");
+/* 控制台窗共享样式表（plugin-kit.css）的运行时同步：ui/ 复制到数据目录后，
+   页面里的 ../../plugins/plugin-kit.css 落点也跟着变，必须把它一起补上（见该文件头） */
+const { ensureKitForUiDir } = require("../plugins/plugin-kit-sync.js");
 const { quietPython, pythonHealth, silentEnv } = require("../backend-python.js");
 /* 国内镜像源单一真源（pip / torch / 权重 / npm / git 代理）：见根目录 cn-mirrors.js */
 const mirrors = require("../cn-mirrors.js");
@@ -296,6 +299,9 @@ function ensureUiRuntime() {
   const destUi = join(breezeRoot(), "ui");
   if (!fs.existsSync(srcUi)) return;
   copyDirRecursive(srcUi, destUi, []);
+  /* 数据目录副本里的页面，../../plugins/plugin-kit.css 指向 <数据目录>/plugins/ ：
+     少了这一份，整窗样式全丢（白底 + 原生灰白控件）。见 plugins/plugin-kit-sync.js。 */
+  ensureKitForUiDir(destUi);
 }
 
 function syncPackToInstall(installDir) {

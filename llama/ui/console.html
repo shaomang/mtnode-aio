@@ -4,18 +4,14 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>llama.cpp Console</title>
+  <link rel="stylesheet" href="../../plugins/plugin-kit.css" />
   <style>
-    :root {
-      --bg: #0f1218;
-      --border: #2a3140;
-      --text: #c5d0e6;
-      --muted: #9aa3b5;
-    }
+    /* 纯日志窗：配色与日志区一律取 plugins/plugin-kit.css 的令牌与日志窗口径
+       （.pk-log-head 的小字标题条 + .pk-log 的深底等宽滚动区）。只在本地留布局。 */
     * { box-sizing: border-box; }
     html, body {
       margin: 0; height: 100%;
-      background: var(--bg); color: var(--text);
-      font: 11px/1.4 ui-monospace, Consolas, monospace;
+      font: 12px/1.5 var(--sans);
     }
     .wrap {
       display: flex; flex-direction: column; height: 100%;
@@ -23,18 +19,23 @@
     }
     .head {
       display: flex; align-items: center; gap: 8px;
-      font: 12px/1.4 system-ui, "Segoe UI", sans-serif;
-      color: var(--muted); flex-shrink: 0;
+      padding: 4px 2px;
+      font-size: 11px; color: var(--muted); flex-shrink: 0;
     }
     .head button {
       margin-left: auto;
-      border: 1px solid var(--border); background: #222836; color: var(--text);
-      border-radius: 6px; padding: 4px 8px; cursor: pointer; font-size: 11px;
+      border: 1px solid transparent; background: transparent; color: var(--muted);
+      border-radius: var(--r-sm); padding: 4px 8px; cursor: pointer;
+      font: 11px/1 var(--sans);
+      transition: background var(--dur-fast), border-color var(--dur-fast), color var(--dur-fast);
     }
+    .head button:hover { border-color: var(--bd); background: var(--panel2); color: var(--ink); }
     #console {
-      flex: 1; overflow: auto; white-space: pre-wrap;
-      background: #0c0f14; border: 1px solid var(--border);
-      border-radius: 8px; padding: 8px;
+      flex: 1; min-height: 0; overflow: auto; white-space: pre-wrap; word-break: break-all;
+      background: var(--code); border: 1px solid var(--bd); border-radius: var(--r-md);
+      padding: 8px 10px; tab-size: 2;
+      color: color-mix(in srgb, var(--ink) 86%, var(--muted));
+      font: 12px/1.55 var(--mono);
     }
   </style>
 </head>

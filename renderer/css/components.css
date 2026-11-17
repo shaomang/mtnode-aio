@@ -1,4 +1,4 @@
-﻿/* ===== 右键菜单 ===== */
+/* ===== 右键菜单 ===== */
 .fn-ctx {
   position: fixed;
   z-index: 998;
@@ -1278,7 +1278,17 @@ button.pk-badge.pk-btn:hover {
   max-height: min(42vh, 360px);
   display: flex;
   flex-direction: column;
-  background: linear-gradient(180deg, rgba(27, 34, 48, .96), rgba(18, 22, 31, .97));
+  --rq-cut-w: var(--ef-cut-w, 1px);
+  /* 斜切那条边得单独补：clip-path 连着 1px 边框一起剪断，右上角的斜边否则是空的
+     （口径同 .wf-tab：带子画在 border-box 上，往外多铺 1px 让 AA 的那半个像素也是线的色，
+     多出来的部分由 clip-path 自己剪掉）。宽 14px = 切角尺寸。 */
+  background:
+    linear-gradient(to top right,
+      transparent calc(50% - var(--rq-cut-w)),
+      var(--bd2) calc(50% - var(--rq-cut-w)),
+      var(--bd2) calc(50% + 1px),
+      transparent calc(50% + 1px)) no-repeat right top / 14px 14px border-box,
+    linear-gradient(180deg, rgba(27, 34, 48, .96), rgba(18, 22, 31, .97));
   border: 1px solid var(--bd2);
   border-radius: 0;
   clip-path: polygon(0 0, calc(100% - 14px) 0, 100% 14px, 100% 100%, 0 100%);
@@ -5745,4 +5755,647 @@ textarea.asset-form-input {
 
 .overlay-head .ov-title-sel + .ov-close-btn {
   margin-left: 8px
+}
+
+/* ══════════ MT 音频频谱分析（节点 audio_spectrum · renderer/app-audioanalysis.js）══════════
+   板身从上到下：波形播放器（.n-wave，见本文件上方）→ 频谱（.n-aa-spec）→ 分析报告入口。
+   .n-aa-spec 自己两段：频谱图 + 播放头 + 事件叠加层（.n-aa-plot，叠加层就铺在图上）
+   → 图例 / 开关（.n-aa-evbar）。方角、无圆角，与播放器同一形状语言。 */
+.n-aa-spec {
+  --aa-pos: 0%;
+  flex: none;
+  position: relative;
+  width: 100%;
+  margin-top: 4px;
+  border: 1px solid var(--bd2);
+  background: var(--code);
+  line-height: 0;
+  overflow: hidden;
+  cursor: pointer;
+}
+
+/* 频谱图 + 播放头 + 事件叠加层：三者共用这一块坐标系，拍点与播放头天然对齐 */
+.n-aa-plot {
+  position: relative;
+  line-height: 0
+}
+
+.n-aa-spec img {
+  display: block;
+  width: 100%;
+  /* 频谱按 3:1 画（服务端 1024×384 起），这里让它自适应宽度、高度随内容，最长不超过 150px */
+  max-height: 150px;
+  object-fit: fill;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+/* 事件叠加层（aaPaintEventOverlay）：canvas 铺满频谱图（就叠在热力图上，不是上方另开一条带），
+   不挡指针（点频谱试听照旧）；三条轨道分带：能量直方图（每小节一根柱 + 顶端亮轮廓）在底边重拍齿之上、
+   重拍齿贴底边、强击点菱形贴顶边，中间热力区让出来。
+   隐藏时由 JS 置 hidden（频谱尺寸不变，节点不跳）。 */
+.n-aa-events {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.n-aa-events[hidden] {
+  display: none
+}
+
+/* 图例：每一层一颗按钮 —— 色块 / 形状 + 名称 + 数量，点一下只切这一层（aria-pressed 表状态）。
+   右侧是「事件」总开关。隐藏后仍能再打开，图例本身也始终在。 */
+.n-aa-evbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 1px 10px;
+  padding: 3px 5px;
+  border-top: 1px solid var(--bd2);
+  background: var(--code);
+  line-height: 1;
+  cursor: default
+}
+
+.n-aa-lg {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 15px;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 9.5px;
+  color: var(--muted);
+  white-space: nowrap;
+  cursor: pointer;
+  pointer-events: auto
+}
+
+.n-aa-lg:hover:not(:disabled) b {
+  color: var(--cyan2);
+  opacity: 1
+}
+
+.n-aa-lg:disabled {
+  cursor: default
+}
+
+.n-aa-lg b {
+  font-weight: 500;
+  color: var(--ink);
+  opacity: .85
+}
+
+.n-aa-lg em {
+  font-style: normal;
+  font-size: 9px;
+  color: var(--muted);
+  opacity: .85;
+  font-variant-numeric: tabular-nums
+}
+
+.n-aa-lg-sw {
+  position: relative;
+  flex: none;
+  display: inline-block;
+  background: var(--c, var(--muted))
+}
+
+/* 重拍：高一点的竖齿 + 顶端小方块 */
+.n-aa-lg-sw.is-tick {
+  width: 2px;
+  height: 9px
+}
+
+.n-aa-lg-sw.is-tick::before {
+  content: "";
+  position: absolute;
+  left: -1px;
+  top: 0;
+  width: 4px;
+  height: 2px;
+  background: var(--c, var(--muted))
+}
+
+/* 能量直方图：两根矮柱（一高一低，像一对方柱） */
+.n-aa-lg-sw.is-bars {
+  width: 2px;
+  height: 4px;
+  margin-right: 3px;
+  box-shadow: 3px 0 0 0 var(--c, var(--muted))
+}
+
+.n-aa-lg-sw.is-bars::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  bottom: 100%;
+  width: 2px;
+  height: 2px;
+  background: var(--c, var(--muted));
+  box-shadow: 3px 0 0 0 var(--c, var(--muted))
+}
+
+/* 强击点：菱形 */
+.n-aa-lg-sw.is-diamond {
+  width: 5px;
+  height: 5px;
+  transform: rotate(45deg)
+}
+
+/* 关掉这一层 / 这一层没有数据：压暗（数量仍在，随时能对着看） */
+.n-aa-lg.off,
+.n-aa-lg.is-empty {
+  opacity: .38
+}
+
+/* 卡点参数行：拍长 / 小节长 / 帧数 / 闪拍帧数（做卡点闪拍时对着排的那几个数） */
+.n-aa-evp {
+  padding: 3px 5px;
+  border-top: 1px dashed var(--bd2);
+  background: var(--code);
+  color: var(--muted);
+  font-size: 9.5px;
+  line-height: 1.35;
+  cursor: default;
+  font-variant-numeric: tabular-nums
+}
+
+.n-aa-evp.is-empty {
+  opacity: .6
+}
+
+.n-aa-ev-toggle {
+  display: inline-flex;
+  align-items: center;
+  margin-left: auto;
+  height: 15px;
+  padding: 0 5px;
+  border: 1px solid var(--bd2);
+  background: rgba(0, 0, 0, .35);
+  color: var(--muted);
+  font: inherit;
+  font-size: 9.5px;
+  line-height: 13px;
+  cursor: pointer;
+  pointer-events: auto;
+  opacity: .85;
+}
+
+.n-aa-ev-toggle::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  margin-right: 4px;
+  background: currentColor;
+  opacity: .5;
+}
+
+.n-aa-ev-toggle.on {
+  color: var(--cyan2);
+  border-color: var(--cyan);
+  opacity: 1;
+}
+
+.n-aa-ev-toggle.on::before {
+  background: var(--cyan);
+  opacity: 1;
+}
+
+.n-aa-ev-toggle:hover:not(:disabled) {
+  color: var(--ink);
+  border-color: var(--cyan);
+}
+
+.n-aa-ev-toggle:disabled {
+  cursor: default;
+  opacity: .45;
+}
+
+/* 播放头：1px 竖线（居中钉在 --aa-pos 上）+ 顶端小三角，静止时是主题绿（与波形播放头同色）。
+   跨过拍点 / 重拍时 JS 写三个内联变量：--aa-pulse（0→1→0 的一次呼吸）、
+   --aa-pulse-w（这一下要粗到几像素）、--aa-pulse-c（该轨颜色：重拍青 / 拍点墨）。
+   宽度按呼吸值插值，transform 居中 —— 变粗时竖线不会往右偏，拍点对得上才看得出对不对。 */
+.n-aa-head {
+  --aa-pulse: 0;
+  --aa-pulse-w: 2.2px;
+  --aa-pulse-c: var(--green);
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: var(--aa-pos);
+  width: calc(1px + (var(--aa-pulse-w) - 1px) * var(--aa-pulse));
+  transform: translateX(-50%);
+  background: var(--aa-pulse-c);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, .45), 0 0 calc(3px + 6px * var(--aa-pulse)) var(--aa-pulse-c);
+  pointer-events: none;
+}
+
+.n-aa-head::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 50%;
+  width: 7px;
+  height: 5px;
+  transform: translateX(-50%);
+  background: var(--aa-pulse-c);
+  clip-path: polygon(0 0, 100% 0, 50% 100%);
+}
+
+/* 时间读数：跟在图例行里（压在图里会盖住底边的拍点齿），数字等宽 */
+.n-aa-time {
+  flex: none;
+  padding: 0 4px;
+  font-size: 9.5px;
+  line-height: 15px;
+  color: var(--ink);
+  opacity: .8;
+  pointer-events: none;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 板身上的「分析报告」入口：body 里唯一的一行（用户口径：下方文字全部移除）。
+   一行方角条，左侧 ▤、右侧 ›；没结果时虚线禁用，失败时整条转红。 */
+.n-aa-report {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  margin-top: 6px;
+  padding: 0 8px;
+  height: 26px;
+  border: 1px solid var(--bd2);
+  background: var(--code);
+  color: var(--ink);
+  font: inherit;
+  font-size: 11.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.n-aa-report:hover:not(:disabled) {
+  border-color: var(--cyan);
+  color: var(--cyan2);
+}
+
+.n-aa-report .aa-rp-ic {
+  flex: none;
+  color: var(--cyan);
+  font-size: 12px;
+  line-height: 1;
+}
+
+.n-aa-report .aa-rp-t {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.n-aa-report .aa-rp-go {
+  flex: none;
+  color: var(--muted);
+}
+
+.n-aa-report:disabled {
+  cursor: default;
+  border-style: dashed;
+  color: var(--muted);
+}
+
+.n-aa-report:disabled .aa-rp-ic {
+  color: var(--muted);
+}
+
+.n-aa-report.err {
+  border-color: var(--red);
+  color: var(--red);
+}
+
+.n-aa-report.err .aa-rp-ic {
+  color: var(--red);
+}
+
+/* ══════════ 分析报告 dialogue（#overlay · renderer/app-audioanalysis.js）══════════
+   结构：KPI 六宫格 + 来源信息 → 段落结构条 + 段落表 → 两列卡片（节奏 / 事件 / 产物 ‖
+   能量 / 诊断）。全部用主题令牌，亮色主题自动跟；表格数字一律 tabular-nums。 */
+.aa-rep {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.aa-rep-err {
+  margin-bottom: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--red);
+  border-left-width: 3px;
+  background: color-mix(in srgb, var(--red) 12%, transparent);
+  color: var(--red);
+  font-size: 11.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.aa-rep-empty {
+  padding: 30px 12px;
+  text-align: center;
+}
+
+.aa-rep-empty-t {
+  font-size: 13px;
+  color: var(--ink);
+}
+
+.aa-rep-empty-s {
+  margin-top: 6px;
+  font-size: 11.5px;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.aa-rep-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1.65fr) minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+}
+
+.aa-kpis {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.aa-kpi {
+  padding: 8px 10px;
+  border: 1px solid var(--bd);
+  border-left: 2px solid var(--cyan);
+  background: var(--code);
+}
+
+.aa-kpi-l {
+  font-size: 11px;
+  color: var(--muted);
+  letter-spacing: .3px;
+}
+
+.aa-kpi-v {
+  margin-top: 2px;
+  font-family: var(--mono);
+  font-size: 18px;
+  line-height: 1.2;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.aa-kpi-s {
+  margin-top: 3px;
+  font-size: 10.5px;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.aa-dl {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--bd);
+  background: var(--code);
+}
+
+.aa-dl-row {
+  display: grid;
+  grid-template-columns: 84px minmax(0, 1fr);
+  gap: 8px;
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.aa-dl-k {
+  color: var(--muted);
+}
+
+.aa-dl-v {
+  color: var(--ink);
+  font-family: var(--mono);
+  word-break: break-all;
+  overflow-wrap: anywhere;
+}
+
+.aa-card {
+  border: 1px solid var(--bd);
+  background: var(--panel2);
+  padding-bottom: 9px;
+}
+
+.aa-card-h {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--bd);
+  background: var(--code);
+}
+
+.aa-card-h h4 {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--orange2);
+  letter-spacing: .3px;
+}
+
+.aa-card-hint {
+  font-size: 10.5px;
+  color: var(--muted);
+}
+
+.aa-card > * + * {
+  margin-top: 8px;
+}
+
+.aa-card > .aa-dl,
+.aa-card > .aa-tbl-wrap,
+.aa-card > .aa-chips,
+.aa-card > .aa-sub,
+.aa-card > .aa-warns,
+.aa-card > .aa-ok,
+.aa-card > .aa-viz-grid {
+  margin-left: 10px;
+  margin-right: 10px;
+}
+
+.aa-card > .aa-dl {
+  border: 0;
+  background: none;
+  padding: 0;
+}
+
+.aa-sub {
+  font-size: 11px;
+  color: var(--muted);
+  letter-spacing: .2px;
+}
+
+.aa-tbl-wrap {
+  overflow-x: auto;
+}
+
+.aa-tbl {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.aa-tbl th {
+  padding: 4px 6px;
+  text-align: left;
+  font-weight: 600;
+  color: var(--muted);
+  border-bottom: 1px solid var(--bd2);
+  white-space: nowrap;
+}
+
+.aa-tbl td {
+  padding: 3px 6px;
+  color: var(--ink);
+  border-bottom: 1px solid var(--bd);
+  white-space: nowrap;
+}
+
+.aa-tbl tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.aa-tbl tbody tr:hover td {
+  background: color-mix(in srgb, var(--cyan) 8%, transparent);
+}
+
+.aa-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.aa-chip {
+  padding: 1px 7px;
+  border: 1px solid var(--bd2);
+  border-radius: 9px;
+  background: var(--code);
+  color: var(--ink);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.aa-chip.warn {
+  border-color: var(--red);
+  color: var(--red);
+}
+
+.aa-warns {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.aa-warn {
+  display: grid;
+  grid-template-columns: minmax(0, 132px) minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: baseline;
+  padding: 5px 8px;
+  border-left: 2px solid var(--yellow);
+  background: var(--code);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.aa-warn-code {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--yellow);
+}
+
+.aa-warn-msg {
+  color: var(--ink);
+}
+
+.aa-warn-t {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.aa-ok {
+  font-size: 11.5px;
+  color: var(--green);
+}
+
+.aa-viz-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.aa-viz {
+  padding: 6px;
+  border: 1px solid var(--bd);
+  background: var(--code);
+}
+
+.aa-viz img {
+  display: block;
+  width: 100%;
+  max-height: 120px;
+  object-fit: contain;
+  background: #000;
+}
+
+.aa-viz-cap {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  margin-top: 5px;
+  font-size: 11px;
+  color: var(--ink);
+}
+
+.aa-viz-path {
+  margin-top: 2px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--muted);
+  word-break: break-all;
+}
+
+.aa-cols {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  align-items: start;
+}
+
+.aa-col {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+@media (max-width: 980px) {
+  .aa-rep-hero { grid-template-columns: minmax(0, 1fr); }
+  .aa-cols { grid-template-columns: minmax(0, 1fr); }
+  .aa-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }

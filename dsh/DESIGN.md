@@ -132,14 +132,19 @@ dsh 自带压缩（`@deepseek-ai/dsh-compaction-basic` + `token-meter` + `tool-r
   `deepseek-v4-*` 系列声明的是 `contextWindow: 1000000` → 要跑到 **800k token** 才压，
   本机 14 天里最长的会话是 335 步、每步均 218K token，离触发线差得远。
 
-**不能靠改声明的窗口来压**：`contextWindow` 同时是适配器向模型声明的真实容量，
-用它当压缩触发线会连带影响图片预算与溢出判定。正确的旋钮是压缩插件自己的 config：
+**口径：设置里那个数就是绝对触发线**（低 150K / 中 300K / 晚 450K / 自定义 100K–500K），
+与「官方路由 / 自配路由」无关，也不按百分比讲。插件算的是
+`floor(声明窗口 × thresholdRatio)`，所以「绝对」的前提只有一个：**所有路由声明的窗口一致**。
+本轮把它钉成 1,000,000 —— 官方路由本来就是（`dsh-llm-deepseek` 的 `DEFAULT_CONTEXT_WINDOW`），
+自配路由由网关逐只模型写 `contextWindow`（`gateway.mjs` 的 `ROUTE_CONTEXT_WINDOW`）。
+少写这一处，那条路由上「中 · 300k」就变成 262,144 × 0.3 = **78,643** —— 本机
+`session-c7db7d7f4f134e8ca0ae9ef25ffbabd7` 实测的正是这个（用户选 300k，不到 100k 就压了）。
 
 | 键 | 值 | 为什么 |
 |---|---|---|
-| `thresholdRatio` | `0.3` | 「中」档的有效窗口 ≈ 300k token（声明窗口 × 0.3）。dsh 的默认 0.8 在本机等价于不触发 |
-| `retainRatio` | `0.04` | 未点名路由的比例兜底：窗口越小留得越少（1M → 约 37k；128k → 约 4.6k） |
-| `modelPolicies[]` | `deepseek-official/<该路由可能跑到的每个模型 id>` → `retainTokens: 32768` | 这条路由的窗口是网关自己声明的 1M，纯比例会「留 160k 原文」，压缩几乎白压 → 必须给**绝对**保留尾部。**必须点名一族 id 而不是一个名字**：插件按 provider + model 逐字精确匹配，而这条路由跑的 id 是用户服务商清单里那一个（本机实测 `deepseek-v4-flash`）—— 只点 `deepseek-flash` 时整份 modelPolicies 静默落空（触发线退回 ≈678k，「选 150k 档却没在 150k 压」） |
+| `thresholdRatio` | `0.15` / `0.3` / `0.45` / `触发线 ÷ 1,000,000` | 唯一决定触发线的键。dsh 的默认 0.8 在本机等价于不触发 |
+| `retainRatio` | `0.04` | 未点名路由的比例兜底：窗口越小留得越少（1M → 约 37k） |
+| `modelPolicies[]` | `provider + 每个 model id` → `retainTokens` + `maxTokens` | 这条路由的窗口是 1M，纯比例会「留 160k 原文」，压缩几乎白压 → 保留尾部给**绝对**量。**必须点名一族 id 而不是一个名字**：插件按 provider + model 逐字精确匹配，而这条路由跑的 id 是用户服务商清单里那一个（本机实测 `deepseek-v4-flash`）—— 只点 `deepseek-flash` 时整份 modelPolicies 静默落空（保留量退回 `retainRatio` ≈ 40k，「选 300k 档却只留 40k 原文」） |
 | `auto` | `true` | 自动压缩；置 false 只停自动触发，provider 确认的上下文溢出恢复仍在 |
 
 - **配置值真源 = `dsh-compact-policy.js`**（与 `dsh-agent-policy.js` 同一个模式）：
@@ -148,40 +153,55 @@ dsh 自带压缩（`@deepseek-ai/dsh-compaction-basic` + `token-meter` + `tool-r
   下一个新会话生效，正在跑的会话沿用原值。
 - **四档**（设置界面只给档位与一条触发线，不摊原始百分比）：
 
-  | 档（tier） | 落到主力路由的触发线 | 保留尾部 | 实现 |
+  | 档（tier） | 触发线（绝对 token） | 保留尾部 | 实现 |
   |---|---|---|---|
-  | 低 `frugal` | 约 150k token（绝对量） | 16,384 | 走路由级 `headroomTokens: 594000`（= 1M 窗口 − 256K 预留输出 − 150K），`thresholdRatio 0.9` 只用来保证 `min()` 的第二支胜出 |
-  | 中 `mid`（默认） | 约 300k | 32,768 | `thresholdRatio 0.3` |
-  | 晚 `late` | 约 450k | 65,536 | `thresholdRatio 0.45` |
-  | 自定义 `custom` | 用户填 100k – 500k | 16,384 | 触发线换算成 `headroomTokens`（744,000 − 触发线），越界回落 100k |
+  | 低 `frugal` | 150,000 | 16,384 | `thresholdRatio 0.15` |
+  | 中 `mid`（默认） | 300,000 | 32,768 | `thresholdRatio 0.3` |
+  | 晚 `late` | 450,000 | 65,536 | `thresholdRatio 0.45` |
+  | 自定义 `custom` | 用户填 100k – 500k | 16,384 | `thresholdRatio = 触发线 ÷ 1M`，越界回落 100k |
 
-  为什么要固定 headroom 而不是固定比例：插件的实际触发线 =
+  **不再写 `headroomTokens`**：插件的实际触发线 =
   `min(窗口 × thresholdRatio, 窗口 − 预留输出 − headroomTokens)`（真源
-  `@deepseek-ai/dsh-compaction-basic/lib/index.js` 的 `resolveCompactSpec`），
-  「绝对 N token 触发」只能靠第二支把线压下来。预留输出取适配器自己的默认单次输出上限：
-  主力路由的 deepseek 适配器是 256,000（`dsh-llm-deepseek` 的 `DEFAULT_MAX_TOKENS`），
-  自配服务商的 pi-ai 是 32768（`dsh-llm-pi-ai`）—— 所以同一个 headroom 在两类路由上
-  落点略有差异，这是固定 headroom 方案的既定代价。
-  每条 policy 还要显式写 `maxTokens: 256000`：插件有一条兜底 —— 路由 policy 只给了
-  `headroomTokens` 时会把 `policy.maxTokens` 填成 `headroomTokens`（同文件 :71），
-  而 `maxTokens` 是**写摘要那一次请求**的输出上限；低档的 594,000 那样发出去就是向
-  模型要 59 万输出 token，所以钉成主力路由真正在用的那个 256,000。
+  `@deepseek-ai/dsh-compaction-basic/lib/index.js` 的 `resolveCompactSpec`）——
+  窗口统一 1M 后第二支在任何档位都不会胜出（官方路由 1M − 256K = 678,400、
+  自配路由 1M − 32,768 = 901,696，都高于自定义档上限 500K），所以触发线只由比例决定，
+  `min()` 不会把用户填的数改掉。解析函数仍读旧文件里的 `headroomTokens`（兼容现场配置），
+  但不再写出。
+  每条 policy 显式写 `maxTokens`（官方 256,000 / 自配 32,768）：插件有一条兜底 ——
+  路由 policy 只给了 `headroomTokens` 时会把 `policy.maxTokens` 填成 `headroomTokens`
+  （同文件 :71），而 `maxTokens` 是**写摘要那一次请求**的输出上限；不写 headroom 之后这条
+  兜底不会启动，显式写只是把「主力路由真正在用的输出上限」钉死。
 - **点名清单从哪来**：兜底那一族 = 网关认得的官方模型 id（`gateway.mjs` 的
   `OFFICIAL_MODEL_KNOWN` + 别名组，含已下线的 `deepseek-v4-flash` 这类老 id），
   ∪ 配置里官方服务商列的模型 id —— 判据与渲染层同一句（`renderer/app-agent.js` 的
   `dshProvider()`：`text_openai` 且 `baseUrl` 主机名含 `deepseek`）。
   这些 id 在网关侧一律声明 1,000,000 窗口（`dsh-llm-deepseek` 的 `DEFAULT_CONTEXT_WINDOW`），
-  固定 headroom 的算式对它们逐条成立。回归见 `test/smoke-token-budget.js` `[11]`
-  （兜底表必须覆盖 `OFFICIAL_MODEL_KNOWN` 的每个 id；配置里新出现的官方 id 必须被追加点名）。
-- **小窗口路由不点名**：低 / 自定义两档的 `headroomTokens` 只写进官方路由；
-  声明窗口过小（算不出合法 headroom）的自配路由继续走 `retainRatio` 比例兜底，
-  本轮不动它们（dsh 的 `auto` 是全局单个布尔，做不到只给小窗口关）。
+  与「触发线 ÷ 1M」的分母逐条对齐。回归见 `test/smoke-token-budget.js` `[11]`
+  （兜底表必须覆盖 `OFFICIAL_MODEL_KNOWN` 的每个 id；配置里新出现的官方 id 必须被追加点名；
+  网关的 `ROUTE_CONTEXT_WINDOW` 必须等于策略模块的 `SELF_ROUTE_WINDOW`）。
+- **自配路由也点名，窗口也声明 1M**：路由名是 `mtnode_<route>`（用户填的 route）、
+  模型名是用户填的，所以清单从 `config.providers` 现算（`selfTargetsOf`），
+  网关对它们逐只模型写 `contextWindow: 1000000` + provider 级 `defaultContextWindow`
+  （模型级优先，provider 级只兜「模型不在清单里、走目录元数据」那条路径）。
+  窗口既然也是 1M，保留量就不必再按 128K 小窗口夹，只夹两件事：用户填的值 ≤
+  `触发线 − 1`（插件硬校验 `retainTokens < thresholdTokens`）、≤ 消息预算的 20%
+  （`(1M − 32,768) × 0.2 = 193,446`，对 100K–500K 档永不生效，留作对上游改动的护栏）；
+  摘要上限夹 `32,768`（pi-ai 适配器的默认单次输出上限）。
+- **官方路由的 1M 是它自带的，不是我们写的**：`llm-deepseek` 的
+  `DEFAULT_CONTEXT_WINDOW = 1e6`，模型目录（`deepseek-flash` / `deepseek-v4-pro`）
+  与 provider 兜底（`defaultContextWindow ?? 1e6`）都落在这个值上；
+  宿主的官方模型清单只下发 `id / name / image`（`renderer/app-db.js` 的
+  `runOfficialModels`），不带 `contextWindow`，所以官方路由的窗口恒为 1M、
+  `0.3 × 1M = 300,000` 与档位一字不差。自配那两条路径
+  （`mtnode_<route>` 与目录同源路由，如 `ant-ling`）的托管补丁实测都写出了
+  `defaultContextWindow: 1000000` + `models[].contextWindow: 1000000`。
+- **已知代价（用户确认接受）**：声明窗口按用户设定的触发线口径统一为 1M 之后，
+  真实窗口小于 1M 的模型不再「提前压缩」——超了由 provider 报错 + dsh 既有的溢出恢复
+  （`maxOverflowRetries`）兜住；助手栏那个上下文百分比也按 1M 算，不按各家真实窗口。
+  改动只对新会话生效（已在跑的会话沿用启动时那份组合）。
 - **幂等**：设置缺省（开 · 中档）与出货组合逐字一致，`applyCompactPolicy` 因此
   每次启动零字节改动；中↔低、关↔开往返都能逐字回到出货原文。旧值 `tier:"early"`
   （早档已下线）一律归一到「中」。
-- **不点名 `mtnode_<route>`**：自配服务商的路由名是 `mtnode_` + 用户自己填的 route
-  （`gateway.mjs` 的 `routeOfProvider` / `applySettings`），模型名也是用户填的 ——
-  没有固定组合可点名，点名必落空。那类路由统一走 `retainRatio` 兜底。
 - 回归见 `test/smoke-token-budget.js` `[11][12]`（组合行取值 + 策略模块幂等/往返/档位算法 +
   三处入口同源 + i18n + build.json 白名单）、`test/smoke-assist-compact.js`（助手栏真跑）、
   `test/smoke-agent-compact-menu.js`（会话 ⚙ 菜单）。

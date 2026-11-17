@@ -61,6 +61,9 @@ const installKill = require("../plugins/install-cancel.js");
    本文件按音乐类登记 selfcheckMusic（登记语句在生成区末尾，require 期执行），
    宿主自己不写结果文件 —— 否则安装窗里的结论与主窗口卡片上的勾会变成两份真相。 */
 const { registerPluginSelfcheck } = require("../plugins/plugin-selfcheck.js");
+/* 控制台窗共享样式表（plugin-kit.css）的运行时同步：ui/ 复制到数据目录后，
+   页面里的 ../../plugins/plugin-kit.css 落点也跟着变，必须把它一起补上（见该文件头） */
+const { ensureKitForUiDir } = require("../plugins/plugin-kit-sync.js");
 const { quietPython, pythonHealth, silentEnv, syncShims } = require("../backend-python.js");
 /* 国内镜像源单一真源（pip / torch / 权重 / npm / git 代理）：见根目录 cn-mirrors.js */
 const mirrors = require("../cn-mirrors.js");
@@ -526,6 +529,9 @@ function ensureUiRuntime() {
   const destUi = join(yueRoot(), "ui");
   if (!fs.existsSync(srcUi)) return;
   copyDirRecursive(srcUi, destUi, []);
+  /* 数据目录副本里的页面，../../plugins/plugin-kit.css 指向 <数据目录>/plugins/ ：
+     少了这一份，整窗样式全丢（白底 + 原生灰白控件）。见 plugins/plugin-kit-sync.js。 */
+  ensureKitForUiDir(destUi);
 }
 
 /** 单文件 sha256：同步回执与「内容相同即跳过」判据（读失败返回 ""，退化成必拷） */

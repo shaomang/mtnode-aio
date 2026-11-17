@@ -431,16 +431,41 @@
     return snap;
   }
 
+  /* 处理类节点（proc_text / proc_image / agent_task / moss_music）的「末位控制出」：
+     数据口 0..N-1 的编号一个都不动，控制出恒挂在数据口之后那一位 —— 与 music_gen / video_gen
+     端口 1 同一语义（处理完毕 = 该口激活，驱动下游控制目标；控制线永不参与数据取值）。
+     值 = 控制出的端子号（= 数据口数），只读投影自 app.js procNodeDataOutCount /
+     procNodeControlOutPort（改那边要同步这张表）。
+     为什么必须进 ports：这颗口以前只写在 portRule.output 的文字里（「末位 = 控制输出」），
+     ports 数组里没有它 —— Agent 读图只看得见数据口，接控制线只能试连一次再看 warnings 反推。 */
+  const PROC_CONTROL_OUT_PORT = {
+    proc_text: 1,
+    proc_image: 1,
+    agent_task: 1,
+    moss_music: 3,
+  };
+  function snapshotProcControlOutPort(node) {
+    if (!node) return -1;
+    const v = PROC_CONTROL_OUT_PORT[node.kind];
+    return typeof v === "number" ? v : -1;
+  }
+
   /* ── 端子表（快照 / 回执 / 连线预检共用同一份推导）─────────────────────────────
      数量 inputCount / outputCount、名称 editPortNameOf、类型 editPortKindOf（工具 /
      函数节点按参数表）、占用按 wf.wires —— 与连线校验 connectError 同一套原语，
      这里只做搬运，不另立第二份端子口径。 */
   function nodePortList(H, node, dir) {
     const S = H.state;
-    const { nodeById, isFnToolNode, inputCount, outputCount, editPortNameOf, editPortKindOf } = H;
+    const { nodeById, isFnToolNode, inputCount, outputCount, editPortNameOf, editPortKindOf, i18n } = H;
     if (!node || !S.wf) return [];
     const isFnT = isFnToolNode(node);
-    const count = dir === "in" ? inputCount(node) : outputCount(node);
+    /* 处理类节点的末位控制出恒在 ports 里：宿主端子数跟不上（旧桩 / 旧快照）时用端子表兜住，
+       否则这一颗口整颗消失，ports 与实际画布对不上。 */
+    const ctrlOut = dir === "out" ? snapshotProcControlOutPort(node) : -1;
+    const count =
+      dir === "in"
+        ? inputCount(node)
+        : Math.max(Number(outputCount(node)) || 0, ctrlOut + 1);
     const wires = S.wf.wires || [];
     const out = [];
     for (let i = 0; i < Math.max(0, count); i++) {
@@ -457,11 +482,14 @@
           links.push({ node: other ? other.title : "", port: Number(w.toIndex || 0) });
         }
       }
+      /* 末位控制出：名字与类型一律报「控制 / control」（端口徽标与画布上那颗端子同一句话），
+         其余端子照旧问宿主的 editPortNameOf / editPortKindOf。 */
+      const isCtrlOut = dir === "out" && i === ctrlOut;
       out.push({
         dir,
         index: i,
-        name: editPortNameOf(node, dir, i, isFnT),
-        kind: editPortKindOf(node, dir, i, isFnT),
+        name: isCtrlOut ? i18n.t("控制") : editPortNameOf(node, dir, i, isFnT),
+        kind: isCtrlOut ? "control" : editPortKindOf(node, dir, i, isFnT),
         connectedTo: links.length ? links : null,
       });
     }
@@ -489,6 +517,10 @@
        类型 / 占用全要等 connect 报错才知道。条目是可增删的固定端子，必须一起预检。 */
     if (isAssetNode(node)) return true;
     if (isFnToolNode(node)) return true;
+    /* 处理类节点（proc_text / agent_task / moss_music）：末位那一颗**控制出**是真端子，
+       端口表必须把它算进去 —— 否则读图只从 portRule 的文字知道「末位 = 控制输出」，
+       ports 里却找不到它，Agent 连控制线只能试连反推。proc_image 本来就在下面的名单里。 */
+    if (snapshotProcControlOutPort(node) >= 0) return true;
     return SNAPSHOT_PORT_KINDS.indexOf(node.kind) >= 0;
   }
   /* 「输入端子随连线增量长出来」的节点（= app.js inputCount 落到泛用增量公式
@@ -1191,10 +1223,12 @@
         taskStatus: n.kind === "task" ? n.taskStatus || "pending" : undefined,
         };
         /* 带端口表的节点（proc_image / video_gen / remotion / judge / 工具 · 函数 /
-           super 边界 / 素材节点）：standard 与 full 档直接带端口表（index / name /
-           kind / connectedTo），模型接线前就看得见占用情况；minimal 档不带。
+           super 边界 / 素材节点 / 有末位控制出的处理类节点）：standard 与 full 档直接带
+           端口表（index / name / kind / connectedTo），模型接线前就看得见占用情况；minimal 档不带。
            remotion 的输入是增量端子（与 proc_text 同族），端口表随 ports.rule 一起说明
            「连一条长一条、控制线与数据线共用」—— 否则模型会以为它只有一个描述口。
+           处理类节点（proc_text / agent_task / moss_music）的末位控制出也在这张表里：
+           名字「控制」、类型 control —— 接控制线看 ports 就够，不必试连反推。
            素材节点的端子名 = 内容条目标题，与 assetItems.items[].title 同一份口径。 */
         if (o.detail !== "minimal" && snapshotHasFixedPorts(H, n)) {
           const ports = snapshotPortsOf(H, n);

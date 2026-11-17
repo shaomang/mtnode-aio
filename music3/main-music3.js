@@ -47,6 +47,9 @@ const mirrors = require("../cn-mirrors.js");
 /* 插件「安装后自检」内核：只做注册表 / 结果落盘 / 等全局锁 / 产物目录 / 事件上报，
    音乐侧真正怎么出片由本文件的 selfcheckMusic 提供（见该函数注释） */
 const { registerPluginSelfcheck } = require("../plugins/plugin-selfcheck.js");
+/* 控制台窗共享样式表（plugin-kit.css）的运行时同步：ui/ 复制到数据目录后，
+   页面里的 ../../plugins/plugin-kit.css 落点也跟着变，必须把它一起补上（见该文件头） */
+const { ensureKitForUiDir } = require("../plugins/plugin-kit-sync.js");
 
 const PLUGIN_ID = "minimax-music3";
 const MUSIC3_FEED =
@@ -379,6 +382,9 @@ function ensureUiRuntime() {
   const destUi = join(music3Root(), "ui");
   if (!fs.existsSync(srcUi)) return;
   copyDirRecursive(srcUi, destUi, []);
+  /* 数据目录副本里的页面，../../plugins/plugin-kit.css 指向 <数据目录>/plugins/ ：
+     少了这一份，整窗样式全丢（白底 + 原生灰白控件）。见 plugins/plugin-kit-sync.js。 */
+  ensureKitForUiDir(destUi);
 }
 
 /** Copy pack app/*.py into installDir so Gradio picks up prompt/lyrics logging fixes. */

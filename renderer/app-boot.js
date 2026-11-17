@@ -1454,8 +1454,15 @@ async function init() {
         renderAgentSession();
         toast(I18n.t("已新建会话"), "ok");
       };
+    /* 左栏标题「DeepSeek Harness + 版本」是纯文字：点了**不**新建会话
+       （新建只走旁边的 ＋ #agentNew）。早前这里把 newBtn.onclick 挂到标题上，
+       用户点标题本意是选文字 / 无动作，却凭空开出一个新会话。 */
     const logoEl = $("#agentLogo");
-    if (logoEl) logoEl.onclick = newBtn ? newBtn.onclick : null;
+    if (logoEl) {
+      logoEl.onclick = null;
+      logoEl.removeAttribute("title");
+      logoEl.removeAttribute("data-i18n-title");
+    }
     const inp = $("#agentInput");
     const doSend = () => {
       const st = agentSessionState();

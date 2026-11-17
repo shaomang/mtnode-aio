@@ -447,6 +447,8 @@ const KIND_CLS = {
   yue_gen: "music",
   /* MOSS-Music 音乐理解：复用音乐族配色（产物是分析文本，不是音频） */
   moss_music: "music",
+  /* MT 音频频谱分析（audio_spectrum）：产物是结构化分析 JSON + 频谱图，复用音乐族配色 */
+  audio_spectrum: "music",
   flux3klein_gen: "proc-img",
   /* Qwen Image 2.1 本机出图：与 FLUX 3 Klein 同族配色（图像类） */
   qwenimage_gen: "proc-img",
@@ -1411,6 +1413,34 @@ const NODE_DEFAULTS = {
     ranAt: 0,
     running: false,
   },
+  /* MT 音频频谱分析（audio_spectrum · 本机音频分析后端）：
+     输入 端口0=音频（**单个端子**，音频或视频，视频只取音轨）；输出 端口0=分析结果 ·
+     端口1=频谱图 · 端口2=控制输出。参数（分析档位 / 事件上限 / 可视化 /
+     缓存）在 ⚙ 设置里，执行体与板身见 renderer/app-audioanalysis.js。 */
+  audio_spectrum: {
+    w: 380,
+    /* 板身只剩波形 + 频谱 + 一枚报告入口（摘要 / 提示 / 状态行已移除），520 → 380 */
+    h: 380,
+    title: "MT 音频频谱分析",
+    aaDetail: false,
+    aaOnsetsLimit: 2000,
+    /* 默认出「频谱（板身要显示）+ 拍点叠加（验收网格）」两张 */
+    aaVizKinds: ["spectrogram", "beatOverlay"],
+    aaLoudness: false,
+    aaCache: "auto",
+    /* 给 Agent 的字段字典详略：compact（只给摘要里出现的）/ full / off */
+    aaGuide: "compact",
+    aaStatus: "",
+    aaSummary: null,
+    aaDurationSec: 0,
+    aaSpectrogram: "",
+    aaOverlay: "",
+    aaJsonPath: "",
+    output: null,
+    error: null,
+    ranAt: 0,
+    running: false,
+  },
   /* YuE2 音乐生成（本地 YuE2 后端 · 歌词 → 整曲 · 可编辑 ABC 谱面）：
      端子见 inputCount / outputCount —— 输入 端口0=风格提示词 · 端口1=歌词 · 端口2=ABC 谱（可选）
      · 端口3=控制输入；输出 端口0=音频内容 · 端口1=控制输出。 */
@@ -2137,6 +2167,30 @@ function superInternalBridgeWires(superNode, wf) {
     (x) => !superInPortIsControl(superNode, x.fromIndex, wf),
   );
 }
+/* ── 处理类节点的「末位控制出」 ───────────────────────────────────────────────
+   proc_text / proc_image / agent_task / moss_music：**数据口一个号都不动**（旧档里的
+   连线不位移），控制出恒挂在数据口之后那一位 —— 与 music_gen / video_gen 端口 1 同一
+   语义（处理完毕 = 该口激活，驱动下游控制目标；控制线永不参与数据取值）。
+   数据口数只在这里定义一次：outputCount / nodeEmitsControlOnPort / wireFromIsControl
+   （app.js）、端子配色与徽标（app-canvas.js）、端口表（app-nodes.js 的 editPort*）都问它。 */
+function procNodeDataOutCount(node) {
+  if (!node) return 0;
+  /* MOSS-Music：0=结果文本 · 1=JSON 文本 · 2=md 产物路径（三颗数据口原样保留） */
+  if (node.kind === "moss_music") return 3;
+  /* 处理文本 / 处理图像 / 智能任务：0 = 内容 */
+  if (
+    node.kind === "proc_text" ||
+    node.kind === "proc_image" ||
+    node.kind === "agent_task"
+  )
+    return 1;
+  return 0;
+}
+/** 处理类节点的控制出端子号（= 数据口数，数据口 0..n-1 不变）；不是这一类回 -1 */
+function procNodeControlOutPort(node) {
+  const n = procNodeDataOutCount(node);
+  return n > 0 ? n : -1;
+}
 /** 来源是否为控制（含上游节点层的控制输出） */
 function nodeEmitsControlOnPort(node, portIndex, wf, seen) {
   wf = wf || S.wf;
@@ -2145,6 +2199,8 @@ function nodeEmitsControlOnPort(node, portIndex, wf, seen) {
   /* 质检节点：输出 1 / 2 是控制出（通过 / 未过），0 是数据出（报告）。
      原来的「判定」数据出与通过 / 未过两条控制出重复，已撤掉。 */
   if (typeof isQaKindNode === "function" && isQaKindNode(node)) return Number(portIndex || 0) >= 1;
+  /* MT 音频频谱分析：0=JSON · 1=频谱图 → 控制口从 2 起 */
+  if (node.kind === "audio_spectrum") return Number(portIndex || 0) >= 2;
   /* 网络·接收：端口1 为控制输出（收到消息时触发控制信号） */
   if (node.kind === "net_recv") return Number(portIndex || 0) >= 1;
   /* Breeze 语音：输出 0=音频 · 1=控制 → 控制口从 1 起（端口 1 与端口 2+ 都是控制语义） */
@@ -2163,6 +2219,10 @@ function nodeEmitsControlOnPort(node, portIndex, wf, seen) {
     return Number(portIndex || 0) >= 1;
   /* 函数 / 工具节点：输出末位固定为控制出（参数即端子，不随连线推断） */
   if (isFnToolNode(node)) return fnToolOutPortIsControl(node, portIndex);
+  /* 处理类节点（proc_text / proc_image / agent_task / moss_music）：数据口之后那颗
+     是控制出 —— 处理完毕后激活它驱动下游（数据口是内容，不参与「去执行」） */
+  if (procNodeControlOutPort(node) >= 0)
+    return Number(portIndex || 0) >= procNodeControlOutPort(node);
   if (node.kind === "super")
     return superOutPortIsControl(node, portIndex, wf, seen);
   return false;
@@ -5171,12 +5231,16 @@ function outputCount(n) {
   if (n.kind === "judge" || n.kind === "task") return 2;
   /* 质检节点：0=报告 JSON · 1=控制·通过 · 2=控制·未过（门禁分流）—— 判定口已撤掉 */
   if (typeof isQaKindNode === "function" && isQaKindNode(n)) return 3;
-  /* MOSS-Music：0=结果文本 · 1=JSON 文本 · 2=md 产物路径（三颗纯数据口，无控制出） */
-  if (n.kind === "moss_music") return 3;
+  /* 处理类节点（proc_text / proc_image / agent_task / moss_music）：数据口 0..N-1 的
+     编号一个都不变（旧档连线不位移）+ 末位一颗控制出（处理完毕后激活，驱动下游控制目标） */
+  const procOuts = procNodeDataOutCount(n);
+  if (procOuts > 0) return procOuts + 1;
   if (n.kind === "net_recv") return 2; /* 端口0=信息输出(数据) · 端口1=控制输出 */
   if (n.kind === "net_send") return 0; /* 发送无输出（末端） */
   /* DeepSeek 云端语音：端口0=内容输出(数据) · 端口1=控制输出（跑完触发下游控制目标） */
   if (n.kind === "deepseek_tts" || n.kind === "deepseek_asr") return 2;
+  /* MT 音频频谱分析：0=分析结果 JSON · 1=频谱图 PNG · 2=控制输出（分析完成后触发下游） */
+  if (n.kind === "audio_spectrum") return 3;
   /* 音乐 / 语音 / 视频 / Remotion：端口0=内容输出(数据) · 端口1=控制输出（完成后触发下游控制目标） */
   if (
     n.kind === "music_gen" ||
@@ -7716,6 +7780,9 @@ const IN_PORT_DATA_KINDS = {
   deepseek_asr: ["audio", "control"],
   /* Breeze 语音：0=待合成文本 · 1=参考音频（音频文件 URL）· 2=参考文稿 · 3=指令 · 4=控制输入 */
   breeze_gen: ["text", "audio", "text", "text", "control"],
+  /* MT 音频频谱分析：0=音频或视频（任意路径 / file:/// URL；视频只取音轨）。
+     null = 「任意媒体路径」，音频与视频两条线都能接进来 —— 这就是「单个输入端子」的实现 */
+  audio_spectrum: [null],
   /* InfiniteTalk 数字人：0=人物图（图像路径）· 1=语音（音频文件 URL/路径）· 2=源视频（V2V）
      · 3=提示词 · 4=控制输入 */
   infinitetalk_gen: ["image", "audio", "video", "text", "control"],
@@ -7896,6 +7963,8 @@ function wireFromIsControl(w, wf) {
   if (from.kind === "net_recv" && Number(w.fromIndex || 0) >= 1) return true;
   /* Breeze 语音：输出 0=音频 · 1=控制 → 控制口从 1 起 */
   if (from.kind === "breeze_gen" && Number(w.fromIndex || 0) >= 1) return true;
+  /* MT 音频频谱分析：0=JSON · 1=频谱图 · 2=控制 → 控制口从 2 起 */
+  if (from.kind === "audio_spectrum" && Number(w.fromIndex || 0) >= 2) return true;
   /* 音乐 / 视频 / 语音 / Remotion：端口1 为控制输出（生成完成后触发下游控制目标） */
   if (
     (from.kind === "music_gen" ||
@@ -7906,6 +7975,12 @@ function wireFromIsControl(w, wf) {
       isVideoPostKind(from) ||
       from.kind === "remotion") &&
     Number(w.fromIndex || 0) >= 1
+  )
+    return true;
+  /* 处理类节点：末位是控制出（数据口 0..N-1 仍是内容，编号与旧线一律不动） */
+  if (
+    procNodeControlOutPort(from) >= 0 &&
+    Number(w.fromIndex || 0) >= procNodeControlOutPort(from)
   )
     return true;
   const to = nodeByIdIn(w.to, wf);
@@ -9090,6 +9165,9 @@ function inputCount(node) {
   /* MOSS-Music：端口0=音频/视频 · 端口1=自由提问 · 端口2=控制输入（固定 3 颗） */
   if (node.kind === "moss_music") return 3;
   if (node.kind === "breeze_gen") return 5;
+  /* MT 音频频谱分析：**只有一颗**数据端子（音频或视频，视频只取音轨），不随连线增量；
+     没有控制输入 —— 触发靠 ▶ / 上游数据流 / Agent 调用，避免第二颗端子破坏「单个输入」 */
+  if (node.kind === "audio_spectrum") return 1;
   /* DeepSeek 云端语音：0=文本 / 音频 · 1=控制输入（固定 2 颗，不随连线增量） */
   if (node.kind === "deepseek_tts" || node.kind === "deepseek_asr") return 2;
   /* InfiniteTalk 数字人：端口0=人物图 · 1=语音 · 2=源视频 · 3=提示词 · 4=控制输入（固定 5 颗，不随连线增量） */
@@ -9399,6 +9477,9 @@ function minWFor(n) {
     case "deepseek_tts":
     case "deepseek_asr":
       return 340;
+    /* MT 音频频谱分析：波形播放器（44）+ 频谱图（≤150）+ 报告入口（26） */
+    case "audio_spectrum":
+      return 380;
     case "video_gen":
       return 340;
     case "video_upscale":
@@ -9463,6 +9544,9 @@ function minHFor(n) {
       return 260;
     case "deepseek_asr":
       return 240;
+    /* MT 音频频谱分析：波形 + 频谱图是主体，最小高度给够，别让频谱被压成一条线 */
+    case "audio_spectrum":
+      return 280;
     case "video_gen":
       return 260;
     case "video_upscale":
@@ -9697,6 +9781,8 @@ function nodeKindLabel(node) {
     /* DeepSeek 云端语音（官方 API · 官方提供商固化，不可切换） */
     deepseek_tts: "DeepSeek 语音合成",
     deepseek_asr: "DeepSeek 语音识别",
+    /* MT 音频频谱分析（本机 · 拍点 / 小节 / 频谱） */
+    audio_spectrum: "MT 音频频谱分析",
     remotion: "Remotion 视频",
     net_recv: "接收",
     net_send: "发送",
@@ -9764,6 +9850,8 @@ function nodeKindPurposeKey(node) {
       "DeepSeek 语音合成（云端 · 官方 TTS · stella / tide 双音色 · 整段或流式 · 10000 计费字符上限自动分段）",
     deepseek_asr:
       "DeepSeek 语音识别（云端 · 官方 ASR · 语种自动 · 逐句上传 · 单段 ≤8MiB / ≤120 秒自动切段）",
+    audio_spectrum:
+      "MT 音频频谱分析（本机 · 音频或视频 → 拍点 / BPM / 小节 / onset / 能量 + 热力图频谱 · JSON 自带字段字典给 Agent 读）",
     remotion: "Remotion 视频（React 动效合成 · 本地渲染 mp4）",
     net_recv: "网络 · 接收（监听通道 · 异步转发收到的文本）",
     net_send: "网络 · 发送（把通道文本推送到远端）",
@@ -14473,7 +14561,11 @@ async function pickExecForNode(node) {
   });
   if (!r || !r.path) return;
   pushHistory();
+  const oldName = fileName(node.execPath || "");
   node.execPath = r.path;
+  /* 执行节点标题 = 带扩展名的文件名（见 createNodesFromDroppedFiles）；自动起的跟着换 */
+  if (oldName && oldName !== fileName(r.path))
+    syncAutoNodeTitle(node, fileName(r.path), oldName);
   node.error = null;
   node.execStatus = "";
   scheduleSave();
@@ -16798,6 +16890,19 @@ function valueForInput(src, idx, consumer, seen) {
       };
     return { kind: "text", text: String(o.text || "") };
   }
+  /* MT 音频频谱分析：0 号 = 分析结果 JSON 文本（自带 fieldGuide）· 1 号 = 频谱图 PNG（图像值）。
+     没有本次结果时回 null（「这个端子还没有值」），绝不编一份空 JSON 给下游。 */
+  if (src.kind === "audio_spectrum") {
+    const r = selResult(src);
+    const o = (r && r.output) || src.output || null;
+    const text = o && o.kind === "text" ? String(o.text || "") : "";
+    if (Number(idx || 0) === 1) {
+      const p = String(src.aaSpectrogram || "").trim();
+      return p ? { kind: "image", path: p, url: mediaFileUrlOf(p), text: p } : null;
+    }
+    if (Number(idx || 0) > 1) return null;
+    return text ? { kind: "text", text } : null;
+  }
   if (
     src.kind === "music_gen" ||
     src.kind === "yue_gen" ||
@@ -17515,6 +17620,20 @@ function displayValueOf(src, consumer) {
     const r = selResult(src);
     const t = (r && r.output && r.output.text) || src.asrText || "";
     return t ? { text: String(t), title: src.title } : null;
+  }
+  /* MT 音频频谱分析：显示 = 分析摘要（与 0 号端子同一份 JSON 的前几行，节点上不留全文） */
+  if (src.kind === "audio_spectrum") {
+    let idx = 0;
+    if (consumer) {
+      const link = (S.wf.wires || []).find(
+        (x) => !x.rel && !x.ctrl && x.from === src.id && x.to === consumer.id,
+      );
+      if (link) idx = Math.max(0, Number(link.fromIndex) || 0);
+    }
+    const v = valueForInput(src, idx, consumer || null);
+    if (!v) return null;
+    if (v.kind === "image") return { image: String(v.path || "") };
+    return { text: String(v.text || ""), title: src.title };
   }
   /* MOSS-Music：显示与下游取值同口径（结果文本 / JSON / 产物路径三颗文本端子） */
   if (src.kind === "moss_music") {
@@ -22488,7 +22607,7 @@ function sideCatMatches(n, kinds) {
 const SIDE_CATS = [
   ["输入节点", ["input_text", "input_image", "input_audio", "input_video", "input_any", "input_form", "input_file", "db_table"]],
   ["全局节点", ["global"]],
-  ["处理节点", ["proc_text", "proc_image", "flux3klein_gen", "qwenimage_gen", "music_gen", "yue_gen", "moss_music", "breeze_gen", "deepseek_tts", "deepseek_asr", "video_gen", "infinitetalk_gen", "soulxflashhead_gen", "video_upscale", "video_interp", "remotion"]],
+  ["处理节点", ["proc_text", "proc_image", "flux3klein_gen", "qwenimage_gen", "music_gen", "yue_gen", "moss_music", "audio_spectrum", "breeze_gen", "deepseek_tts", "deepseek_asr", "video_gen", "infinitetalk_gen", "soulxflashhead_gen", "video_upscale", "video_interp", "remotion"]],
   ["质检节点", ["qa_text", "qa_image", "qa_video", "qa_audio", "qa_file"]],
   ["保存节点", ["save", "save_pdf"]],
   ["工具节点", ["split", "merge", "function", "tool"]],
@@ -22521,6 +22640,8 @@ const KIND_TAGS = {
   music_gen: "音乐",
   yue_gen: "音乐",
   moss_music: "音乐理解",
+  /* MT 音频频谱分析：侧栏 / 节点徽标上的短名 */
+  audio_spectrum: "频谱分析",
   breeze_gen: "语音",
   /* DeepSeek 云端语音：合成 / 识别分开打标签，侧栏筛选一眼能挑出来 */
   deepseek_tts: "语音合成",
@@ -23287,6 +23408,12 @@ function canvasCreateMenuGroups(pt) {
             "breeze_gen",
             I18n.t("Breeze 语音生成（文本转语音 · Breeze TTS 2）"),
             () => addNode("breeze_gen", pt.x, pt.y),
+          ),
+          /* MT 音频频谱分析：音频 / 视频 → 拍点 / BPM / 小节 / 频谱（本机 numpy 后端，首次自动准备） */
+          ctxKindItem(
+            "audio_spectrum",
+            I18n.t("MT 音频频谱分析（拍点 / BPM / 小节 / 热力图频谱 · JSON 给 Agent）"),
+            () => addNode("audio_spectrum", pt.x, pt.y),
           ),
           /* DeepSeek 云端语音：官方 API（TTS stella / tide 双音色 · ASR 语种自动）。
              云端节点不参与显存门槛，所以没有 vramKind。 */
@@ -25730,6 +25857,8 @@ const WIRE_DROP_TARGETS = [
   { kind: "music_gen", g: "处理节点", vramKind: "music_gen" },
   { kind: "yue_gen", g: "处理节点", vramKind: "yue_gen" },
   { kind: "moss_music", g: "处理节点", vramKind: "moss_music" },
+  /* MT 音频频谱分析：纯 CPU（numpy FFT），不挂 vramKind、不进媒体生成锁 */
+  { kind: "audio_spectrum", g: "处理节点" },
   { kind: "breeze_gen", g: "处理节点" },
   /* DeepSeek 云端语音：官方提供商固化，不挂 vramKind（云端不吃显存门槛） */
   { kind: "deepseek_tts", g: "处理节点" },
@@ -26685,6 +26814,38 @@ function dropNodeTitle(p, keepExt) {
   const name = String(fileName(p) || "").trim() || I18n.t("文件");
   if (keepExt) return name;
   return name.replace(/\.[^.]+$/, "").trim() || name;
+}
+
+/* 节点标题是不是「按文件名自动起的」（拖入画布 / 上传转换时自动生成的那种）。
+   自动起的才在换文件后跟着改名，用户亲手改过的标题一律不碰 —— 与图像批量条目
+   「e.title === oldSn 才跟着换」同一口径。name = 换文件**之前**那个文件的名字
+   （sourceName 或带后缀的文件名；空串 = 这个节点身上还没有过文件）。 */
+function nodeTitleAutoFromName(node, name) {
+  const t = String((node && node.title) || "").trim();
+  if (!t) return true;
+  const n = String(name || "").trim();
+  if (!n) return false;
+  if (t === n) return true;
+  /* 输入节点的自动标题 = 去扩展名的文件名；执行节点 = 保留扩展名（上面那行已覆盖） */
+  const stem = n.replace(/\.[^.]+$/, "").trim();
+  if (stem && t === stem) return true;
+  /* 重名时 uniqueNodeTitle 会补 " 2" / " 3"：同一口径也算自动生成 */
+  if (stem && new RegExp("^" + stem.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + " \\d+$").test(t))
+    return true;
+  return false;
+}
+
+/* 换文件后把「自动生成」的标题跟着换成新文件名（用户自己起的名字不动）。
+   返回 true = 标题确实变了。oldKey = 换之前那个文件的名字（sourceName / 文件名）。 */
+function syncAutoNodeTitle(node, newName, oldKey) {
+  if (!node || !S.wf) return false;
+  const want = String(newName || "").trim();
+  if (!want) return false;
+  if (!nodeTitleAutoFromName(node, oldKey)) return false;
+  const next = uniqueNodeTitle(want, node.id);
+  if (next === node.title) return false;
+  node.title = next;
+  return true;
 }
 
 /* 字节数 → 可读文案（真源是 app-canvas.js 的 formatBytes，它在本文件之后加载，故做存在性兜底） */
@@ -34161,14 +34322,21 @@ function convertAnyNodeTo(node, targetKind) {
   return nn;
 }
 
-/* 标题跟着文件走（与拖文件进画布同一口径）；用户自己改过的标题保留 */
-function anyNodeTitleAfterUpload(node, absPath) {
+/* 标题跟着文件走（与拖文件进画布同一口径）；用户自己改过的标题保留。
+   prevPath = 换文件**之前**本节点挂着的那份文件（换了另一个文件时，自动生成的标题也一起换）。 */
+function anyNodeTitleAfterUpload(node, absPath, prevPath) {
   const base = I18n.t(NODE_DEFAULTS.input_any.title) + I18n.t("节点");
   const raw = String((node && node.title) || "").trim();
   const stillDefault =
     !raw || raw === base || raw === I18n.t(NODE_DEFAULTS.input_any.title) ||
     (raw.indexOf(base + " ") === 0 && /^[\d\s]+$/.test(raw.slice(base.length + 1)));
-  if (!stillDefault) return node.title;
+  if (!stillDefault) {
+    /* 标题是「按上一个文件名自动起的」→ 跟着新文件改名；用户亲手起的名字不动 */
+    const prevName = fileName(String(prevPath || "").trim());
+    if (prevName && nodeTitleAutoFromName(node, prevName))
+      return uniqueNodeTitle(dropNodeTitle(absPath, false), node.id);
+    return node.title;
+  }
   return uniqueNodeTitle(dropNodeTitle(absPath, false), node.id);
 }
 
@@ -34196,6 +34364,8 @@ async function uploadIntoAnyNode(node, pathOverride) {
     return;
   }
   let p = pathOverride;
+  /* 换文件之前本节点挂着的那份文件（只给「自动生成的标题跟着换」判据用） */
+  const prevPath = String(node.anyFile || "").trim();
   if (!p) {
     const r = await window.api.fileOpenDialog({
       title: I18n.t("上传文件（任意类型 · 自动转为对应节点）"),
@@ -34269,7 +34439,7 @@ async function uploadIntoAnyNode(node, pathOverride) {
   if (pathOnly) {
     pushHistory();
     if (!setInputAnyFilePath(node, p)) return;
-    node.title = uniqueNodeTitle(anyNodeTitleAfterUpload(node, p), node.id);
+    node.title = uniqueNodeTitle(anyNodeTitleAfterUpload(node, p, prevPath), node.id);
     clearDownstream(node.id);
     renderCanvas();
     scheduleSave(true);
@@ -34285,7 +34455,7 @@ async function uploadIntoAnyNode(node, pathOverride) {
   pushHistory();
   const nn = convertAnyNodeTo(node, target.kind);
   if (!nn) return;
-  nn.title = uniqueNodeTitle(anyNodeTitleAfterUpload(node, p), nn.id);
+  nn.title = uniqueNodeTitle(anyNodeTitleAfterUpload(node, p, prevPath), nn.id);
   if (payload) for (const [k, v] of Object.entries(payload)) nn[k] = v;
   if (target.type === "audio" || target.type === "video") setNodeMedia(nn, p);
   clearDownstream(nn.id);
@@ -34391,9 +34561,13 @@ async function pickImage(node) {
   });
   if (!r.path) return;
   const copied = await copyImageFromPath(r.path, node.id);
+  const oldName = String(node.sourceName || "").trim() || imageStem(node.imageAsset || "");
   if (node.imageAsset) invalidateImageMeta(node.imageAsset);
   node.imageAsset = copied.path;
   node.sourceName = copied.sourceName;
+  /* 标题若是「按文件名自动起的」，换图后跟着改名（用户自己起的名字不动） */
+  if (oldName && oldName !== node.sourceName)
+    syncAutoNodeTitle(node, node.sourceName, oldName);
   clearDownstream(node.id);
   scheduleSave();
   renderCanvas();
@@ -34425,8 +34599,12 @@ function setNodeMedia(node, absPath) {
     return false;
   const p = String(absPath || "").trim();
   if (!p) return false;
+  const oldName = String(node.sourceName || "").trim() || imageStem(node.mediaAsset || "");
   node.mediaAsset = p;
   node.sourceName = imageStem(p) || fileName(p);
+  /* 换的是另一份文件时，标题若本来就是「按文件名自动起的」，跟着改（用户自己起的名字不动） */
+  if (oldName && oldName !== node.sourceName)
+    syncAutoNodeTitle(node, node.sourceName, oldName);
   clearDownstream(node.id);
   scheduleSave();
   return true;
@@ -36136,15 +36314,115 @@ function trackWorkflow(id, name) {
   if (list.length > 12) list.splice(0, list.length - 12);
   renderWfTabs();
 }
+/* 拖动排序（参考 Edge 的页签）：被拖起的标签 id + 落点高亮。
+   画布标签顺序就存在 S.config.visitedWorkflows 里，改顺序 = 改这个数组再落盘 ——
+   它同时也是「关掉 / 删掉当前画布后落到哪一枚」的依据（同浏览器：落回相邻的那一枚）。 */
+let wfTabDragId = null;
+function wfTabClearDropUi() {
+  const bar = $("#wfTabs");
+  if (!bar) return;
+  bar
+    .querySelectorAll(".wf-tab.drop-before,.wf-tab.drop-after")
+    .forEach((el) => el.classList.remove("drop-before", "drop-after"));
+}
+/* 光标位置 → 落点：命中某枚标签的左半 / 右半（整条都没铺满时，最右一枚之后算「追加」） */
+function wfTabDropTarget(ev) {
+  const bar = $("#wfTabs");
+  if (!bar) return null;
+  const tabs = Array.from(bar.querySelectorAll(".wf-tab"));
+  if (!tabs.length) return null;
+  let hit = null;
+  for (const el of tabs) {
+    const r = el.getBoundingClientRect();
+    if (ev.clientX < r.left + r.width / 2) {
+      hit = { el, before: true };
+      break;
+    }
+    hit = { el, before: false };
+  }
+  return hit;
+}
 function renderWfTabs() {
   const bar = $("#wfTabs");
   if (!bar) return;
   const list = S.config.visitedWorkflows || [];
   const cur = S.wf ? S.wf.id : null;
   bar.innerHTML = "";
+  /* 落点监听挂在条上（只挂一次，用 on* 属性，重复渲染不会叠加）：
+     一次算落点，标签本身只管 draggable 与拖起。 */
+  bar.ondragover = (ev) => {
+    if (!wfTabDragId) return;
+    const hit = wfTabDropTarget(ev);
+    if (!hit || hit.el.dataset.wfId === wfTabDragId) {
+      ev.preventDefault();
+      wfTabClearDropUi();
+      return;
+    }
+    ev.preventDefault();
+    if (ev.dataTransfer) ev.dataTransfer.dropEffect = "move";
+    wfTabClearDropUi();
+    hit.el.classList.add(hit.before ? "drop-before" : "drop-after");
+  };
+  bar.ondragleave = (ev) => {
+    /* 只有真离开整条标签条才清高亮（在标签之间移动时 relatedTarget 还在条内） */
+    if (ev.relatedTarget && bar.contains(ev.relatedTarget)) return;
+    wfTabClearDropUi();
+  };
+  bar.ondrop = (ev) => {
+    if (!wfTabDragId) return;
+    const hit = wfTabDropTarget(ev);
+    const from = wfTabDragId;
+    wfTabDragId = null;
+    wfTabClearDropUi();
+    if (!hit) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    const arr = S.config.visitedWorkflows || [];
+    const fi = arr.findIndex((w) => String(w.id) === String(from));
+    const ti = arr.findIndex((w) => String(w.id) === String(hit.el.dataset.wfId));
+    if (fi < 0 || ti < 0) return;
+    let to = hit.before ? ti : ti + 1;
+    if (fi < to) to -= 1;
+    if (to === fi) return;
+    const item = arr.splice(fi, 1)[0];
+    arr.splice(to, 0, item);
+    renderWfTabs();
+    /* 顺序就是用户数据（下次启动照这个顺序铺标签），落盘失败不该弹窗打断拖拽 */
+    try {
+      Promise.resolve(window.api.configSave(S.config)).catch(() => {});
+    } catch (_) {}
+  };
+  bar.ondragend = () => {
+    wfTabDragId = null;
+    wfTabClearDropUi();
+  };
   for (const w of list) {
     const tab = document.createElement("div");
     tab.className = "wf-tab" + (w.id === cur ? " active" : "");
+    tab.dataset.wfId = String(w.id);
+    tab.draggable = true;
+    tab.addEventListener("dragstart", (ev) => {
+      /* 从关闭按钮上按下不拖（那是点击，不是拖页签） */
+      if (ev.target && ev.target.closest && ev.target.closest(".wf-tab-close")) {
+        ev.preventDefault();
+        return;
+      }
+      wfTabDragId = String(w.id);
+      tab.classList.add("dragging");
+      if (ev.dataTransfer) {
+        ev.dataTransfer.effectAllowed = "move";
+        try {
+          ev.dataTransfer.setData("text/plain", String(w.id));
+        } catch (_) {
+          /* 个别平台不允许 setData 时仍可拖动 */
+        }
+      }
+    });
+    tab.addEventListener("dragend", () => {
+      tab.classList.remove("dragging");
+      wfTabDragId = null;
+      wfTabClearDropUi();
+    });
     tab.title = I18n.t("切换到画布：") + wfNameLabel(w.name);
     const nm = document.createElement("span");
     nm.className = "wf-tab-name";

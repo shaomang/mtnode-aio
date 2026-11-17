@@ -36,13 +36,15 @@ const api = {
   setLaunchOpts: (opts) => ipcRenderer.invoke("h3:setLaunchOpts", opts || {}),
   /* 独立后处理（超分 / 补帧）：与生成解耦，管理窗 / 画布后处理节点单独调用 */
   postProcess: (params) => ipcRenderer.invoke("h3:postProcess", params || {}),
-  wfList: () => ipcRenderer.invoke("h3:wfList"),
+  wfList: (opts) => ipcRenderer.invoke("h3:wfList", opts || {}),
   wfImport: (input) => ipcRenderer.invoke("h3:wfImport", input || {}),
   wfDelete: (id) => ipcRenderer.invoke("h3:wfDelete", id),
   wfRename: (id, title) => ipcRenderer.invoke("h3:wfRename", { id, title }),
   wfExport: (id) => ipcRenderer.invoke("h3:wfExport", id),
   wfValidate: (id) => ipcRenderer.invoke("h3:wfValidate", id),
   wfGet: (id) => ipcRenderer.invoke("h3:wfGet", id),
+  /* 只读条目（内置模板 / ComfyUI 目录）另存为「我的工作流」 */
+  wfClone: (opts) => ipcRenderer.invoke("h3:wfClone", opts || {}),
   wfTemplateExport: (mode) => ipcRenderer.invoke("h3:wfTemplateExport", mode),
   /* 「工作流编辑器」视图：把库里某条模板打开进内嵌 ComfyUI 编辑。
      单向（库 → ComfyUI 现场）：宿主不提供任何写回库的通道，收回库只能走「导入 JSON」。 */

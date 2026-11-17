@@ -793,6 +793,40 @@ function applyMarkStyle(el, m) {
     }
   }
 }
+/* 把光标送进绘制文字的按下那一点（原地单击才走这里，拖动不走）。
+   聚焦一律推迟到这一拍事件走完之后再做：在 preventDefault 过的 mousedown / mouseup 里
+   聚焦 contentEditable，中日文输入法（TSF）挂不上来 —— 同 app.js 里 S._inNodeMouseDown 那条。 */
+function enterMarkTextEdit(t, x, y) {
+  if (!t || !t.isConnected) return;
+  let rng = null;
+  try {
+    if (typeof document.caretRangeFromPoint === "function") {
+      rng = document.caretRangeFromPoint(x, y);
+    } else if (typeof document.caretPositionFromPoint === "function") {
+      const p = document.caretPositionFromPoint(x, y);
+      if (p) {
+        rng = document.createRange();
+        rng.setStart(p.offsetNode, p.offset);
+        rng.collapse(true);
+      }
+    }
+  } catch (_) {
+    rng = null;
+  }
+  try {
+    t.focus({ preventScroll: true });
+  } catch (_) {
+    try {
+      t.focus();
+    } catch (_) {}
+  }
+  if (!rng || !t.contains(rng.startContainer)) return;
+  try {
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(rng);
+  } catch (_) {}
+}
 function markElement(m) {
   const el = document.createElement("div");
   const selected =
@@ -811,7 +845,7 @@ function markElement(m) {
   t.textContent = m.text || "";
   t.style.color = m.color;
   t.style.fontSize = (m.fontSize || 16) + "px";
-  t.title = I18n.t("单击编辑文字 · 用 ✥ 拖动移动");
+  t.title = I18n.t("按住拖动移动 · 原地单击编辑文字");
   let composing = false;
   t.addEventListener("compositionstart", () => {
     composing = true;
@@ -821,7 +855,11 @@ function markElement(m) {
     m.text = t.innerText || t.textContent || "";
     scheduleSave();
   });
-  /* 阻止冒泡到画布拖拽；聚焦时清掉节点选中，避免 Delete 误删节点 */
+  /* 拖动优先、原地单击才进编辑（与节点标题同一套手势）：
+     ① 未在编辑时按下先不聚焦（preventDefault 挡掉原生插入光标与选字），只记起点；
+     ② 位移过 3px 就把这次手势交给 startMarkDrag（从当前位置起算，标注不会弹一下）；
+     ③ 原地松开才把光标送进文字（见 enterMarkTextEdit，落在按下的那一点）；
+     ④ 已经在编辑（activeElement 就是这段文字）时一律让给浏览器：移光标 / 选词是编辑里该做的事。 */
   t.addEventListener("mousedown", (ev) => {
     ev.stopPropagation();
     const multi = ev.ctrlKey || ev.metaKey || ev.shiftKey;
@@ -840,6 +878,40 @@ function markElement(m) {
       return;
     }
     selectMark(m.id, { soft: true });
+    if (ev.button !== 0) return;
+    if (document.activeElement === t) return;
+    ev.preventDefault();
+    const sx = ev.clientX,
+      sy = ev.clientY;
+    let live = true;
+    const cleanup = () => {
+      if (!live) return;
+      live = false;
+      window.removeEventListener("mousemove", onMove, true);
+      window.removeEventListener("mouseup", onUp, true);
+    };
+    const onMove = (e) => {
+      if (!live) return;
+      if (e.buttons !== undefined && (e.buttons & 1) === 0) {
+        cleanup();
+        return;
+      }
+      if (Math.abs(e.clientX - sx) + Math.abs(e.clientY - sy) <= 3) return;
+      cleanup();
+      startMarkDrag(m, e);
+    };
+    const onUp = (e) => {
+      if (!live) return;
+      cleanup();
+      if (e.button !== 0) return;
+      /* 按住后甩到别处再松手不算原地单击：那一下不该把人拖进编辑态 */
+      if (e.target !== t && !t.contains(e.target)) return;
+      const x = e.clientX,
+        y = e.clientY;
+      setTimeout(() => enterMarkTextEdit(t, x, y), 0);
+    };
+    window.addEventListener("mousemove", onMove, true);
+    window.addEventListener("mouseup", onUp, true);
   });
   t.addEventListener("focus", () => {
     selectMark(m.id, { soft: true });
@@ -1034,7 +1106,41 @@ function canvasNodeSig(n) {
     n.kind === "proc_image"
       ? (n.maskPath ? 1 : 0) + ":" + (n.maskOn === false ? 0 : 1)
       : "",
+    /* 文件类节点「身上挂的是哪份文件」：body 里的文件名 / 路径 / 波形 / 首帧 / 缩略图
+       全部由这几个字段派生，而换文件只换文字与媒体源、形状与标题都不变 ——
+       不收进签名就会命中复用快速通道，换完文件节点上还挂着旧文件名
+       （本次 bug：换音频后节点显示的文件名仍是旧的）。 */
+    nodeFileSig(n),
   ].join(":");
+}
+/** 文件类节点的「文件身份」签名（只给 canvasNodeSig 用）：换文件 / 换绑定路径即变。 */
+function nodeFileSig(n) {
+  if (!n) return "";
+  const join = (list, pick) =>
+    (list || []).map((x) => String((x && pick(x)) || "")).join(",");
+  switch (n.kind) {
+    case "input_audio":
+    case "input_video":
+      return String(n.mediaAsset || "") + "|" + String(n.sourceName || "");
+    case "input_image":
+      /* 单图 + 批量条目：换图 / 换条目文件都要重画（缩略图与文件名都在 body 里） */
+      return (
+        String(n.imageAsset || "") +
+        "|" +
+        String(n.sourceName || "") +
+        "|" +
+        join(n.entries, (e) => e.path || e.title)
+      );
+    case "input_any":
+      return String(n.anyFile || "");
+    case "input_file":
+    case "deliver":
+      return join(n.files, (f) => f.path || f.name);
+    case "execute":
+      return String(n.execPath || "");
+    default:
+      return "";
+  }
 }
 /** 节点层头部显示的文件夹路径（与 nodeElement 里那一格同一口径：最外层开发块取项目根
     devPathOf，其余取 subFolder）—— 只给 canvasNodeSig 用。 */
@@ -6046,8 +6152,11 @@ function breezePickSelect(kind, node, opts) {
   });
   return sel;
 }
-/** body 里的「角色 + 组名」一行（同一行两枚下拉，见需求） */
+/** body 里的「角色 + 组名」一行（同一行两枚下拉，见需求）。
+ *  **只有语音节点（breeze_gen）有「角色」**：别的节点调进来一律返回空盒 ——
+ *  这颗节点跟角色 / 音色预设没有任何关系，绝不能把这一行画到别人的 body 上。 */
 function breezePickRow(node) {
+  if (!node || node.kind !== "breeze_gen") return document.createElement("div");
   const row = document.createElement("div");
   row.className = "breeze-pick-row";
   const role = document.createElement("label");
@@ -6069,6 +6178,7 @@ function breezePickRow(node) {
    播放器与角色窗的组卡同源（wavePreviewCreate / wavePreviewSetSource），点 / 拖波形行为一致。
    没选角色、该角色没有样本组、或这一组缺参考音频 → 整块不出现（不占位，节点也就不会空一截）。 */
 function breezeRefWaveEl(node) {
+  if (!node || node.kind !== "breeze_gen") return null; /* 参考音试听条只属于语音节点 */
   if (typeof wavePreviewCreate !== "function") return null;
   const groups = breezeChoiceGroupsOf(breezePresetIdOf(node));
   if (!groups.length) return null;
@@ -8924,6 +9034,14 @@ function portBadgeText(node, dir, idx, opt) {
       }
       case "net_send":
         return { badge: i === 0 ? I18n.t("信息") : I18n.t("控制"), title: "", zh: true };
+      /* MT 音频频谱分析（端口口径 = app.js 的 IN_PORT_DATA_KINDS.audio_spectrum）：
+         唯一一颗输入端子 = 音频（音频或视频，视频只取音轨） */
+      case "audio_spectrum":
+        return {
+          badge: I18n.t("音频"),
+          title: I18n.t("（音频或视频，视频只取音轨）"),
+          zh: true,
+        };
       default:
         break;
     }
@@ -8989,10 +9107,16 @@ function portBadgeText(node, dir, idx, opt) {
     case "net_recv":
       return { badge: i === 0 ? I18n.t("信息") : I18n.t("控制"), title: "", zh: true };
     case "moss_music":
-      /* 0=结果文本 · 1=JSON 文本 · 2=md 产物路径（全数据口，没有控制出） */
+      /* 0=结果文本 · 1=JSON 文本 · 2=md 产物路径 · 末位=控制出（处理完毕激活下游） */
       return {
         badge:
-          i === 0 ? I18n.t("结果文本") : i === 1 ? I18n.t("JSON") : I18n.t("产物路径"),
+          i === 0
+            ? I18n.t("结果文本")
+            : i === 1
+              ? I18n.t("JSON")
+              : i === 2
+                ? I18n.t("产物路径")
+                : I18n.t("控制"),
         title: "",
         zh: true,
       };
@@ -9024,6 +9148,14 @@ function portBadgeText(node, dir, idx, opt) {
     case "infinitetalk_gen":
       /* 0 号出的是生成的数字人视频 mp4 · 1 号是控制出 */
       return { badge: i === 0 ? I18n.t("视频") : I18n.t("控制"), title: "", zh: true };
+    /* MT 音频频谱分析：0=分析结果（JSON）· 1=频谱图（PNG 图像值）· 2=控制输出 */
+    case "audio_spectrum":
+      return {
+        badge:
+          i === 0 ? I18n.t("分析结果") : i === 1 ? I18n.t("频谱图") : I18n.t("控制输出"),
+        title: "",
+        zh: true,
+      };
     default:
       break;
   }
@@ -9036,6 +9168,10 @@ function portBadgeText(node, dir, idx, opt) {
     node.kind === "infinitetalk_gen" ||
     node.kind === "soulxflashhead_gen" ||
     node.kind === "remotion" ||
+    /* 处理类节点（proc_text / proc_image / agent_task）：0=内容 · 末位=控制出 */
+    node.kind === "proc_text" ||
+    node.kind === "proc_image" ||
+    node.kind === "agent_task" ||
     (typeof isVideoPostKind === "function" && isVideoPostKind(node))
   )
     return { badge: i === 0 ? I18n.t("内容") : I18n.t("控制"), title: "", zh: true };
@@ -9070,6 +9206,11 @@ function portBadgeIsControlOut(node, idx) {
     return !!superOutPortIsControl(node, i);
   /* 质检节点：输出 1 / 2 是控制出（通过 / 未过），与 app.js 的 nodeEmitsControlOnPort 同口径 */
   if (typeof isQaKindNode === "function" && isQaKindNode(node)) return i >= 1;
+  /* 处理类节点（proc_text / proc_image / agent_task / moss_music）：末位那颗是控制出，
+     数据口 0..N-1 仍是内容（与 music_gen 端口 1 同一语义，真源 = app.js 的
+     procNodeControlOutPort）。配色走 nodeEmitsControlOnPort，这里只喂「控制」标签。 */
+  if (typeof procNodeControlOutPort === "function")
+    return i === procNodeControlOutPort(node);
   return false;
 }
 
@@ -9466,13 +9607,16 @@ function nodeElement(node) {
       }
     }
   }
-  if (node.kind === "input_text" && !node.ro && !inputInherited(node) && !node.batch) {
-    /* 纯 JSON：给一颗「JSON」切换（表单 ⇄ 源码），与 YAML 那颗批量芯片同一套长相。
-       JSON 优先于 YAML 批量：纯 JSON 一律走表单视图，不再被 YAML 解析误判。 */
+  /* 纯 JSON：给一颗「JSON」切换（表单 ⇄ 源码），与 YAML 那颗批量芯片同一套长相。
+     JSON 优先于 YAML 批量：纯 JSON 一律走表单视图，不再被 YAML 解析误判。
+     位置在「可编辑」判断之外：只读 / 继承的 JSON 节点没有正文框，这颗芯片是它们看源码的唯一入口。 */
+  if (node.kind === "input_text" && !node.batch) {
     if (typeof NParam === "object" && NParam && typeof NParam.jsonSwitchChip === "function") {
       const jc = NParam.jsonSwitchChip(node);
       if (jc) head.appendChild(jc);
     }
+  }
+  if (node.kind === "input_text" && !node.ro && !inputInherited(node) && !node.batch) {
     /* Markdown 编辑器：像 WPS 一样写正文（所见即所得 + 全套 Markdown 工具栏 + 批注 /
        AI 逐轮修订）。实现自包含在 renderer/app-textedit.js（openTextNodeEditor），
        本处只给入口按钮；节点板身那个 textarea 原样保留，小改小修不必开大窗。 */
@@ -10305,6 +10449,44 @@ function nodeElement(node) {
     b.disabled = !!node.running;
     head.appendChild(b);
   }
+  /* MT 音频频谱分析（audio_spectrum）：chip + ▶（直接调本节点的执行体）。
+     与云端语音同一口径：不走 playUserNode 的工作目录闸（产物归缓存，不需要输出路径），
+     也不进媒体生成串行链 —— 它是 CPU 上的 numpy FFT，与出图 / 出片互不抢显存。 */
+  if (node.kind === "audio_spectrum") {
+    const chip = document.createElement("span");
+    chip.className = "n-chip" + (node.running ? " on" : "");
+    chip.textContent = I18n.t("频谱");
+    chip.title = I18n.t(
+      "MT 音频频谱分析（本机）· 端子 0=音频或视频（只取音轨）· 输出 JSON + 频谱图 · 首次使用自动准备 numpy 后端",
+    );
+    head.appendChild(chip);
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "n-play" + (node.running ? " running" : node.error ? " error" : "");
+    b.textContent = node.running ? "…" : "▶";
+    b.title = I18n.t("分析这段音频（拍点 / BPM / 段落 / 频谱）");
+    b.onclick = (ev) => {
+      ev.stopPropagation();
+      if (node.running) return;
+      if (typeof playAudioAnalysisNode === "function") playAudioAnalysisNode(node, false);
+    };
+    b.disabled = !!node.running;
+    head.appendChild(b);
+    /* 后端日志入口：首次准备失败时用户要能看到 console.log 在哪 */
+    const logBtn = document.createElement("button");
+    logBtn.type = "button";
+    logBtn.className = "n-play";
+    logBtn.textContent = "▤";
+    logBtn.title = I18n.t("打开音频分析后端目录（console.log / cache / artifacts）");
+    logBtn.onclick = (ev) => {
+      ev.stopPropagation();
+      try {
+        if (window.api && typeof window.api.audioOpenRoot === "function") window.api.audioOpenRoot();
+        else if (typeof toast === "function") toast(I18n.t("宿主桥未就绪（audioOpenRoot）"), "warn");
+      } catch (_) {}
+    };
+    head.appendChild(logBtn);
+  }
   if (node.kind === "breeze_gen") {
     const chip = document.createElement("span");
     chip.className = "n-chip" + (node.running ? " on" : "");
@@ -10836,6 +11018,11 @@ function nodeElement(node) {
               : i === 3
                 ? I18n.t("指令（风格 / 情绪 / 语速等要求）")
                 : I18n.t("控制输入（触发生成）");
+    else if (node.kind === "audio_spectrum")
+      /* MT 音频频谱分析（端口口径 = app.js 的 IN_PORT_DATA_KINDS.audio_spectrum）：
+         只有 0 号一颗数据端子，音频与视频都接这里，视频只取音轨。
+         端子名按用户口径就叫「音频」（细节在节点指南与 ⚙ 里，不塞进端子标题）。 */
+      inTitle = I18n.t("音频");
     else if (node.kind === "flux3klein_gen")
       /* FLUX 3 Image Klein（端口口径 = app.js 的 IN_PORT_DATA_KINDS.flux3klein_gen）：
          0 提示词 · 1 参考图（可多接，最多 10 张）· 2 控制输入 */
@@ -11177,6 +11364,18 @@ function nodeElement(node) {
       outTitle = I18n.t("分发输出 ") + (oi + 1);
     else if (node.kind === "net_recv")
       outTitle = oi === 0 ? I18n.t("信息输出（收到的文本）") : I18n.t("控制输出（收到消息时触发）");
+    else if (
+      node.kind === "proc_text" ||
+      node.kind === "proc_image" ||
+      node.kind === "agent_task" ||
+      node.kind === "moss_music"
+    )
+      /* 处理类节点：数据口 0..N-1 = 内容（编号不变）· 末位 = 控制输出（处理完毕激活） */
+      outTitle =
+        typeof procNodeControlOutPort === "function" &&
+        oi === procNodeControlOutPort(node)
+          ? I18n.t("控制输出（处理完成后触发下游控制目标）")
+          : I18n.t("输出端子（输出本节点内容）");
     else if (node.kind === "music_gen" || node.kind === "yue_gen" || node.kind === "flux3klein_gen" || node.kind === "qwenimage_gen" || node.kind === "video_gen" || node.kind === "infinitetalk_gen" || node.kind === "soulxflashhead_gen" || isVideoPostKind(node) || node.kind === "remotion")
       outTitle =
         oi === 0
@@ -11196,6 +11395,16 @@ function nodeElement(node) {
           : I18n.t("控制输出（生成完成后触发下游控制目标）");
     /* 素材节点：输出端子标题 = 内容条目标题；值按类型给（文本 → 字符串，
        图像 / 音频 / 视频 → 该条目的 file:/// URL，与 input_audio / video 同一口径） */
+    else if (node.kind === "audio_spectrum")
+      /* MT 音频频谱分析：0=分析结果（JSON，自带字段字典，给 Agent / 下游函数节点读）
+         1=频谱图（PNG 图像值，接保存图像即落盘）· 2=控制输出。
+         端子名按用户口径只写「它是什么内容」，长解释在节点指南 / ⚙ 里。 */
+      outTitle =
+        oi === 0
+          ? I18n.t("分析结果")
+          : oi === 1
+            ? I18n.t("频谱图")
+            : I18n.t("控制输出");
     else if (isANode)
       outTitle =
         I18n.t("输出内容「") +
@@ -12848,6 +13057,26 @@ NODE_BROWSE_BODY.input_text = function (node, body) {
       took = false;
     }
     if (took) return;
+  }
+  /* 源码档（用户在表单上点了「源码」）：浏览态也要看到源码本身 —— JSON 不是 Markdown，
+     走 Markdown 渲染会把缩进 / 引号这些结构吃掉，看源码就得是原文（等宽、可滚）。
+     只读 / 继承节点的源码档另有一份实现（app-node-params.js 的 npJsonBodyFor 自己画）。 */
+  if (
+    !node.ro &&
+    !inputInherited(node) &&
+    typeof NParam === "object" &&
+    NParam &&
+    typeof NParam.jsonSrcView === "function" &&
+    NParam.jsonSrcView(node) &&
+    typeof jsonContainerOf === "function" &&
+    jsonContainerOf(node.text)
+  ) {
+    const src = browseTextEl(node.text, node, { lang: "plain" });
+    if (src) {
+      applyTextNodeFontSize(node, src);
+      body.appendChild(src);
+      return;
+    }
   }
   if (node.ro) {
     const v = browseTextEl(node.text, node);
@@ -18630,6 +18859,15 @@ function buildBody(node, body) {
     if (node.kind === "deepseek_tts") {
       if (typeof dsTtsAppendBody === "function") dsTtsAppendBody(node, body);
     } else if (typeof dsAsrAppendBody === "function") dsAsrAppendBody(node, body);
+  } else if (node.kind === "audio_spectrum") {
+    /* MT 音频频谱分析（renderer/app-audioanalysis.js）：body = 波形播放器 + 热力图频谱
+       （播放头跟同一只全局播放引擎同步）+ 一枚「查看分析报告」入口 —— 别的一个都不挂
+       （摘要 / 输入提示 / 参数摘要 / 状态行已按用户口径移除，报告在大窗里看）。
+       频谱 / 波形都是本机文件路径，走 mediaFileUrlOf 那一路显示。 */
+    if (typeof aaAppendBody === "function") aaAppendBody(node, body);
+    else if (typeof window !== "undefined" && window.AudioAnalysis)
+      window.AudioAnalysis.appendBody(node, body);
+    else body.appendChild(document.createTextNode(I18n.t("频谱分析模块未加载（renderer/app-audioanalysis.js）")));
   } else if (node.kind === "breeze_gen") {
     /* 「角色 + 组名」同一行（先定谁的声音，再写要念的文本）；下面才是摘要与文本框 */
     breezePresetPullOnce();

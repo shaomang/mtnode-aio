@@ -20,7 +20,7 @@
 
     const ready = !!st.runtimeReady;
     svcBadge.textContent = st.rendering ? "渲染中…" : ready ? "就绪" : st.installed ? "已安装（未就绪）" : "未安装";
-    svcBadge.className = "badge " + (st.rendering ? "work" : ready ? "on" : "off");
+    svcBadge.className = "pk-pill " + (st.rendering ? "is-run" : ready ? "is-ok" : "");
 
     $("stRuntime").textContent = ready ? "✓ node_modules/remotion" : st.installDir ? "未检测到" : "—";
     $("stVersion").textContent = st.version || "—";

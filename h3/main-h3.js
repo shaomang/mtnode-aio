@@ -12,6 +12,7 @@ const {
   screen,
   app,
   shell,
+  session,
 } = require("electron");
 const path = require("path");
 const fs = require("fs");
@@ -49,6 +50,9 @@ const installKill = require("../plugins/install-cancel.js");
    唯一一处见 plugins/plugin-selfcheck.js）：本宿主只实现「视频类」那一步 —— 真出一次
    最低档视频，并在本文件（require 期）登记进它的注册表 */
 const { registerPluginSelfcheck } = require("../plugins/plugin-selfcheck.js");
+/* 控制台窗共享样式表（plugin-kit.css）的运行时同步：ui/ 复制到数据目录后，
+   页面里的 ../../plugins/plugin-kit.css 落点也跟着变，必须把它一起补上（见该文件头） */
+const { ensureKitForUiDir } = require("../plugins/plugin-kit-sync.js");
 const { quietPython, pythonHealth, silentEnv, syncShims } = require("../backend-python.js");
 /* 国内镜像源单一真源（pip / torch / 权重 / npm / git 代理）：见根目录 cn-mirrors.js */
 const mirrors = require("../cn-mirrors.js");
@@ -2088,7 +2092,11 @@ function ensureUiRuntime() {
       changed = true;
     } catch {}
   }
-  return { changed, files: rels.length };
+  /* 数据目录副本里的页面，../../plugins/plugin-kit.css 指向 <数据目录>/plugins/ ：
+     少了这一份，整窗样式全丢（白底 + 原生灰白控件）。见 plugins/plugin-kit-sync.js。 */
+  const kit = ensureKitForUiDir(destUi);
+  if (kit && kit.changed) changed = true;
+  return { changed, files: rels.length, kit };
 }
 
 function sleep(ms) {
@@ -6425,7 +6433,7 @@ function resolveCustomWorkflowId(params) {
   const legacy = String(o.workflowId || "").trim();
   if (!legacy) return "";
   try {
-    return workflowStore().get(legacy) ? legacy : "";
+    return workflowLibrary().get(legacy) ? legacy : "";
   } catch {
     return "";
   }
@@ -6437,10 +6445,9 @@ function customWorkflowMissingMessage(wfId) {
   if (!id) return "未选择自建工作流（id 为空），请在 video_gen 节点设置窗里重新选择。";
   let titles = [];
   try {
-    titles = workflowStore()
-      .list()
-      .map((it) => String((it && it.title) || ""))
-      .filter(Boolean);
+    const listed = workflowLibrary().list();
+    const arr = Array.isArray(listed) ? listed : (listed && listed.items) || [];
+    titles = arr.map((it) => String((it && it.title) || "")).filter(Boolean);
   } catch {}
   return (
     "自建工作流不存在（id=" +
@@ -6465,7 +6472,7 @@ async function generateVideo(params) {
   if (customWfId) {
     let known = true;
     try {
-      known = !!workflowStore().get(customWfId);
+      known = !!workflowLibrary().get(customWfId);
     } catch {
       known = true; /* 库读取出错交给执行分支报真实原因，别在这里误判 */
     }
@@ -7029,6 +7036,39 @@ function workflowStore() {
   return h3wf.sharedStore(getDataDir());
 }
 
+/** 内置模板清单：由随包代码现算（不读库里可能过期的副本），只读 */
+function builtinTemplateList() {
+  return [
+    {
+      id: "builtin:fl2va",
+      mode: "fl2va",
+      title: "内置 FL2VA（模板）",
+      notes: "首尾帧：给一张首帧（可选末帧）生成视频。",
+      graph: builtinTemplateGraph("fl2va"),
+    },
+    {
+      id: "builtin:r2v",
+      mode: "r2v",
+      title: "内置 R2V（模板）",
+      notes: "多参考：用若干参考图生成视频。",
+      graph: builtinTemplateGraph("r2v"),
+    },
+  ];
+}
+
+/** 三区目录（内置只读 / ComfyUI 只读镜像 / 我的）：库列表与 video_gen 节点共用这一份 */
+let _wfLibrary = null;
+function workflowLibrary() {
+  const store = workflowStore();
+  const comfyDir = comfyUserWorkflowsDir() || "";
+  if (_wfLibrary && _wfLibrary.store === store) {
+    _wfLibrary.setComfyDir(comfyDir);
+    return _wfLibrary;
+  }
+  _wfLibrary = new h3wf.H3WorkflowLibrary({ store, builtins: builtinTemplateList(), comfyDir });
+  return _wfLibrary;
+}
+
 let _objectInfoCache = { port: 0, data: null, at: 0 };
 /** 拉取 ComfyUI /object_info（2 分钟缓存；后端未启动返回 null 而非失败） */
 async function fetchObjectInfo(port) {
@@ -7127,15 +7167,25 @@ function healEmptyComboInputs(graph, objectInfo) {
 
 /** /object_info 节点包校验：缺自定义节点 → 警告但不阻断（写入库条目 validation） */
 async function validateWorkflowRecord(id) {
-  const store = workflowStore();
-  const rec = store.get(String(id || ""));
+  const lib = workflowLibrary();
+  const rec = lib.get(String(id || ""));
   if (!rec) return { ok: false, error: "工作流不存在：" + String(id || "") };
+  if (!rec.graph) {
+    return {
+      ok: true,
+      status: "skipped",
+      message:
+        "这条工作流没有可校验的 API 图" +
+        (rec.executableReason ? "（" + rec.executableReason + "）" : "") +
+        "，跳过节点校验。",
+    };
+  }
   const cfg = loadConfig();
   const port = Number(cfg.port) || DEFAULT_PORT;
   const info = await fetchObjectInfo(port);
   const checkedAt = new Date().toISOString();
   if (!info) {
-    store.setValidation(rec.id, { status: "skipped", checkedAt, error: "后端未运行，跳过校验" });
+    lib.setValidation(rec.id, { status: "skipped", checkedAt, error: "后端未运行，跳过校验" });
     return { ok: true, status: "skipped", message: "后端未运行，跳过校验（警告不阻断）" };
   }
   const graph = rec.graph || {};
@@ -7150,7 +7200,7 @@ async function validateWorkflowRecord(id) {
   }
   const missing = [...missingMap.entries()].map(([class_type, nodeIds]) => ({ class_type, nodeIds }));
   const status = missing.length ? "missing_nodes" : "ok";
-  store.setValidation(rec.id, { status, checkedAt, missing });
+  lib.setValidation(rec.id, { status, checkedAt, missing });
   return {
     ok: true,
     status,
@@ -7167,10 +7217,15 @@ async function validateWorkflowRecord(id) {
 async function runCustomWorkflow(ctx) {
   const { params, port, installDir, comfy } = ctx;
   const nodeId = String(params.nodeId || "");
-  const store = workflowStore();
+  const lib = workflowLibrary();
   const wfId = String(ctx.wfId || resolveCustomWorkflowId(params) || "").trim();
-  const rec = store.get(wfId);
+  const rec = lib.get(wfId);
   if (!rec) throw new Error(customWorkflowMissingMessage(wfId));
+  if (!rec.graph) {
+    throw new Error(
+      "这条工作流不能直接执行：" + (rec.executableReason || "转不成可执行图") + "请在节点里换一条，或先在库管理窗口「导入副本」后编辑。",
+    );
+  }
   const graph = rec.graph || {};
   const scan = h3wf.scanGraph(graph);
   const wfTitle = rec.title || wfId;
@@ -7307,19 +7362,11 @@ function builtinTemplateGraph(mode) {
   return buildH3Workflow(params, {});
 }
 
+/** 「内置模板 → 我的工作流」：现算的只读模板另存一份可编辑副本（不再往库里写 template 记录） */
 async function templateToWorkflow(mode) {
   const raw = String(mode || "").trim().toLowerCase();
   const m = raw === "r2v" ? "r2v" : "fl2va";
-  const title = "内置 " + (m === "r2v" ? "R2V" : "FL2VA") + "（模板）";
-  const graph = builtinTemplateGraph(m);
-  return workflowStore().createFromGraph({
-    title,
-    graph,
-    format: "api",
-    sourceName: "builtin:" + m,
-    template: true,
-    overwrite: true,
-  });
+  return workflowLibrary().duplicateToMine("builtin:" + m);
 }
 
 async function forceKillBackend(reason) {
@@ -7730,11 +7777,21 @@ async function runInComfyFrame(port, script, opts) {
 }
 
 /** 生成「把一条 UI 工作流载入 ComfyUI 编辑器」的页面内脚本。
- *  只调前端自己的 window.app.loadGraphData（前端自己加载模板用的同一个入口），
- *  不碰 ComfyUI 安装目录里的任何产物，也不写回 h3-workflows 库。
+ *  两条路，优先第一条（真机取证：只走 loadGraphData 会得到一张「Unsaved Workflow」空标签页，
+ *  用户看到的就是「标题 untitled、也不像自己选的那条」）：
+ *   ① 按**工作流文件**打开：app.extensionManager.workflow 的 getWorkflowByPath + openWorkflow，
+ *      标签标题就是文件名，ComfyUI 自己认得这份工作流（等同用户在 Workflow › Open 里点它）；
+ *      前端本地存着上次的标签页状态时它可能只切页不重画，所以再核对画布上的图确实是这一份；
+ *   ② 兜底：app.loadGraphData（图能进去，但只是临时工作流），仍给一个带名字的临时标签页。
+ *  另外前端启动时会把上次开着的工作流自己重放一遍 —— 早灌进去的图会被它盖掉，
+ *  所以先等它落定（activeWorkflow 就绪且不忙），打开后还要核对 activeWorkflow 真的是这条。
+ *  只调前端自己的接口，不碰 ComfyUI 安装目录里的任何产物，也不写回 h3-workflows 库。
  *  JSON 文本以字符串字面量下发、页面内再 JSON.parse，避免把内容当代码执行。 */
-function comfyLoadScript(uiText, waitMs) {
+function comfyLoadScript(uiText, waitMs, opts) {
   const lit = JSON.stringify(String(uiText || ""));
+  const o = opts && typeof opts === "object" ? opts : {};
+  const wfPath = JSON.stringify(String(o.path || ""));
+  const wfTitle = JSON.stringify(String(o.title || ""));
   const budget = Math.max(5000, Number(waitMs) || 90000);
   return (
     "(async () => {" +
@@ -7742,36 +7799,162 @@ function comfyLoadScript(uiText, waitMs) {
     "try { doc = JSON.parse(" +
     lit +
     "); } catch (e) { return { ok:false, error:'bad_payload', message:String((e&&e.message)||e) }; }" +
+    "const wfPath = " +
+    wfPath +
+    ";" +
+    "const wfTitle = " +
+    wfTitle +
+    ";" +
+    "const docNodes = (doc && doc.nodes) || [];" +
+    "const docLinks = Array.isArray(doc && doc.links) ? doc.links : [];" +
+    /* link 在文档里可能是 6 元数组（version 0.4）或对象（新版前端存盘），统一成 origin>oslot>target>tslot */
+    "const linkKey = (l) => (Array.isArray(l) ? [l[1], l[2], l[3], l[4]] : [l && l.origin_id, l && l.origin_slot, l && l.target_id, l && l.target_slot]).join('>');" +
+    "const docSig = docNodes.map((n) => n.id + ':' + n.type).join('|');" +
+    "const docLinkSig = docLinks.map(linkKey).sort().join('|');" +
     "const until = Date.now() + " +
     budget +
     ";" +
     "const nap = (ms) => new Promise((r) => setTimeout(r, ms));" +
-    "while (Date.now() < until) {" +
-    "const app = window.app;" +
-    "if (app && typeof app.loadGraphData === 'function') {" +
-    "try { await app.loadGraphData(doc, true, true, null, {}); return { ok:true, nodes:(doc.nodes||[]).length };" +
-    "} catch (e) { return { ok:false, error:'load_failed', message:String((e&&e.message)||e) }; }" +
+    "const msg = (e) => String((e&&e.message)||e);" +
+    /* 画布上现在这张图是不是要打开的那一份：节点 id+类型 + 每条连线的两端（只对节点类型不看连线的话，
+       前端复用同一张页面时「同一路径换了内容」会被当成已经打开，看到的是上一次的旧图） */
+    "const canvasLinks = () => {" +
+    "const g = window.app && window.app.graph;" +
+    "const m = g && g.links;" +
+    "if (!m) return [];" +
+    "if (typeof m.forEach === 'function') { const out = []; m.forEach((l) => out.push(l)); return out; }" +
+    "return Object.values(m);" +
+    "};" +
+    "const canvasMatches = () => {" +
+    "const g = window.app && window.app.graph;" +
+    "const ns = (g && g._nodes) || [];" +
+    "if (ns.map((n) => n.id + ':' + n.type).join('|') !== docSig) return false;" +
+    "return canvasLinks().map((l) => [l.origin_id, l.origin_slot, l.target_id, l.target_slot].join('>')).sort().join('|') === docLinkSig;" +
+    "};" +
+    /* 控件值（提示词 / 尺寸这类）也要对：库里的参数改过再打开，画布上还是旧的就得重灌。
+       前端会按真实控件表重排 widgets_values，长度对不上就放过（不算不一致，交给结构判定）。 */
+    "const widgetsDiffer = () => {" +
+    "try {" +
+    "const ns = (window.app.graph && window.app.graph._nodes) || [];" +
+    "const byId = new Map(ns.map((n) => [String(n.id), n]));" +
+    "for (const d of docNodes) {" +
+    "const c = byId.get(String(d.id));" +
+    "if (!c) return true;" +
+    "const a = Array.isArray(d.widgets_values) ? d.widgets_values : [];" +
+    "const b = Array.isArray(c.widgets_values) ? c.widgets_values : [];" +
+    "if (a.length !== b.length) continue;" +
+    "for (let i = 0; i < a.length; i++) {" +
+    "const x = a[i], y = b[i];" +
+    "if (x && typeof x === 'object') continue;" +
+    "if (y && typeof y === 'object') continue;" +
+    "if (String(x) !== String(y)) return true;" +
     "}" +
+    "}" +
+    "return false;" +
+    "} catch (e) { return false; }" +
+    "};" +
+    /* 前端启动自带一张空的「Unsaved Workflow」临时页：打开真工作流后把它收掉，
+       只有确认是空的、没被改过的临时页才动（用户改过的一律留着）。 */
+    "const closeStaleBlank = (m) => {" +
+    "try {" +
+    "const list = (m.openWorkflows || []).slice();" +
+    "for (const w of list) {" +
+    "if (!w) continue;" +
+    "const p = String(w.path || '');" +
+    "if (p === wfPath) continue;" +
+    "if (!/Unsaved Workflow/i.test(p) && !/Unsaved Workflow/i.test(String(w.key || ''))) continue;" +
+    "if (w.isModified) continue;" +
+    "Promise.resolve(m.closeWorkflow(w, { warnIfUnsaved: false })).catch(() => {});" +
+    "}" +
+    "} catch (e) {}" +
+    "};" +
+    "let app = null, mgr = null, note = '';" +
+    "while (Date.now() < until) {" +
+    "app = window.app;" +
+    "mgr = app && app.extensionManager && app.extensionManager.workflow;" +
+    "if (app && typeof app.loadGraphData === 'function' && (!wfPath || (mgr && typeof mgr.openWorkflow === 'function'))) break;" +
+    "app = null;" +
     "await nap(250);" +
     "}" +
-    "return { ok:false, error:'frontend_not_ready' };" +
+    "if (!app) return { ok:false, error:'frontend_not_ready' };" +
+    /* 等前端自己的启动恢复落定：它会把上次开着的工作流重放一遍，早灌进去的图会被盖掉 */
+    "const settleUntil = Math.min(until, Date.now() + 15000);" +
+    "while (mgr && Date.now() < settleUntil) {" +
+    "if (mgr.activeWorkflow && !mgr.isBusy && !mgr.isSyncLoading) break;" +
+    "await nap(200);" +
+    "}" +
+    "if (mgr && wfPath && typeof mgr.openWorkflow === 'function' && typeof mgr.getWorkflowByPath === 'function') {" +
+    "for (let attempt = 0; attempt < 3; attempt++) {" +
+    "try {" +
+    "let wf = mgr.getWorkflowByPath(wfPath);" +
+    /* 文件可能刚写进 user/default/workflows：前端列表是缓存过的，同步一次才认得 */
+    "if (!wf && typeof mgr.syncWorkflows === 'function') {" +
+    "try { await mgr.syncWorkflows(); } catch (e) {}" +
+    "wf = mgr.getWorkflowByPath(wfPath);" +
+    "}" +
+    "if (!wf) { note = 'workflow_file_not_listed'; }" +
+    "else {" +
+    "await mgr.openWorkflow(wf);" +
+    "await nap(150);" +
+    "if (!canvasMatches() || widgetsDiffer()) {" +
+    "await app.loadGraphData(doc, true, true, wf, {});" +
+    "await nap(150);" +
+    "}" +
+    /* 图就是从这份文件来的（调用方给的就是文件正文），别挂一个改过的星号 */
+    "try { wf.isModified = false; } catch (e) {}" +
+    "const act = mgr.activeWorkflow;" +
+    "if (act && String(act.path || '') === wfPath && canvasMatches()) {" +
+    "closeStaleBlank(mgr);" +
+    "return { ok:true, mode:'workflow_file', path: wfPath, nodes: docNodes.length, title: document.title };" +
+    "}" +
+    "note = 'open_not_active';" +
+    "}" +
+    "} catch (e) { note = 'open_failed:' + msg(e); }" +
+    "await nap(600);" +
+    "}" +
+    "}" +
+    "try {" +
+    "let temp = null;" +
+    "if (mgr && wfTitle && typeof mgr.createTemporary === 'function') { try { temp = mgr.createTemporary(wfTitle); } catch (e) {} }" +
+    "await app.loadGraphData(doc, true, true, temp, {});" +
+    "try { if (temp) temp.isModified = false; } catch (e) {}" +
+    "return { ok:true, mode:'graph', note, nodes: docNodes.length, title: document.title };" +
+    "} catch (e) { return { ok:false, error:'load_failed', message: msg(e), note }; }" +
     "})()"
   );
 }
 
-/** 「打开」这条模板进 ComfyUI 编辑：确保后端在跑 → 库里的模板落成 UI 工作流文件 →
+/** 「打开」这条工作流进 ComfyUI 编辑：确保后端在跑 → 落成 UI 工作流文件 →
  *  管理窗切到内嵌编辑器视图 → 驱动前端载入这一条。
  *  全程单向（库 → ComfyUI 现场）：任何一步都不把 ComfyUI 里的编辑结果写回库，
- *  收回来的唯一入口仍是既有的「导入 JSON」。 */
+ *  收回来的唯一入口仍是既有的「导入 JSON」。内置模板 / ComfyUI 只读条目同样走这里。 */
 async function openWorkflowInComfyEditor(opts) {
   const o = opts && typeof opts === "object" ? opts : {};
   const cfg = loadConfig();
   const port = Number(cfg.port) || DEFAULT_PORT;
-  const store = workflowStore();
-  const rec = store.get(String(o.id || ""));
+  const lib = workflowLibrary();
+  const rec = lib.get(String(o.id || ""));
   if (!rec) return { ok: false, error: "工作流不存在：" + String(o.id || ""), url: comfyUiUrl(port) };
 
-  const ui = h3wf.recordToUiWorkflowText(rec);
+  /* ComfyUI 目录里的条目本身就是一份工作流文件：UI 格式原样喂给前端，
+     API 格式现场转成 UI 图；缺图（子图 / 解析失败）也允许打开，只是不自动载入。 */
+  let ui = null;
+  if (rec.group === h3wf.WF_GROUP_COMFY) {
+    if (rec.format === "ui") {
+      try {
+        const raw = fs.readFileSync(String(rec.file || ""), "utf8");
+        ui = { ok: true, text: raw };
+      } catch (e) {
+        ui = { ok: false, error: h3wf.readableError ? h3wf.readableError(e) : String((e && e.message) || e) };
+      }
+    } else if (rec.graph) {
+      ui = h3wf.recordToUiWorkflowText(rec);
+    } else {
+      ui = { ok: false, error: rec.executableReason || "这条工作流暂时转不成可载入的图。" };
+    }
+  } else {
+    ui = h3wf.recordToUiWorkflowText(rec);
+  }
   if (!ui || !ui.ok) return { ok: false, error: (ui && ui.error) || "模板转换失败", url: comfyUiUrl(port) };
 
   let p = port;
@@ -7788,17 +7971,26 @@ async function openWorkflowInComfyEditor(opts) {
   }
   const editorUrl = comfyUiUrl(p);
 
-  /* 1) 先把这条模板写成 ComfyUI 用户工作流目录里的 UI 文件：前端「Workflow › Open」能列出来，
-        注入失败时用户也能手动选它。写不进（没装 / 目录不可写）不阻断下面的注入。 */
+  /* 1) 内置 / 我的：先把这条写成 ComfyUI 用户工作流目录里的 UI 文件，前端「Workflow › Open」能列出来，
+        注入失败时用户也能手动选它。ComfyUI 只读条目已经在那个目录里，不必再写一份。 */
   let file = "";
   const dir = comfyUserWorkflowsDir();
-  if (dir) {
-    const ex = store.exportComfyUiFile(rec.id, dir);
+  if (rec.group === h3wf.WF_GROUP_COMFY) {
+    file = String(rec.source && rec.source.name ? rec.source.name : rec.title || "");
+  } else if (dir) {
+    const ex = lib.store.exportComfyUiFile(rec.id, dir);
     if (ex && ex.ok) file = String(ex.filename || "");
     else appendConsole("[wf-editor] export warn: " + ((ex && ex.error) || "unknown"));
   } else {
     appendConsole("[wf-editor] export skip: 找不到 ComfyUI 用户工作流目录");
   }
+
+  /* 前端能「按工作流文件打开」的前提：磁盘上那份文件本身就是 UI 图。
+     ComfyUI 目录里 API 格式的条目（file 是 API JSON）不能按文件打开，
+     否则前端拿到的是 API 图 —— 这类仍走「直接灌 UI 图」的兜底。 */
+  const wfPath = file && (rec.group === h3wf.WF_GROUP_COMFY ? rec.format === "ui" : true)
+    ? "workflows/" + file
+    : "";
 
   /* 2) 管理窗切进编辑器视图（浮层 persistent：只有显式关闭才收，宿主任何路径都不替用户关它） */
   const enter = enterWfEditorView(editorUrl, { id: rec.id, title: rec.title || "", file: file });
@@ -7809,7 +8001,7 @@ async function openWorkflowInComfyEditor(opts) {
         「点了很久才进得去」，而且按钮一直处于等待态。 */
   setWfEditorView({ loading: true, loaded: false, hint: "", error: "" });
   const injectId = rec.id;
-  runInComfyFrame(p, comfyLoadScript(ui.text, 90000), { timeoutMs: 20000 })
+  runInComfyFrame(p, comfyLoadScript(ui.text, 90000, { path: wfPath, title: rec.title || "" }), { timeoutMs: 120000 })
     .then((inj) => {
       /* 期间用户可能已经换了另一条模板 / 关掉浮层：过期结果一律丢掉，别把旧状态盖回去 */
       if (!wfEditorView.open || String(wfEditorView.id || "") !== injectId) return;
@@ -7848,6 +8040,57 @@ async function openWorkflowInComfyEditor(opts) {
   };
 }
 
+/* ───────────── 内嵌 ComfyUI 编辑器：为什么需要一条专用的 session ─────────────
+ *
+ * 症状（真机取证）：控制台窗是 file:// 页面，把 http://127.0.0.1:<port>/ 塞进 <iframe> 后是空白的，
+ * iframe 里没有 window.app，注入超时报 frontend_not_ready。
+ * 根因在 ComfyUI 自己的 server.py：它对任何带 `Sec-Fetch-Site: cross-site` 的请求直接 403
+ * （create_origin_only_middleware，0.34 起的行为）。Chromium 对 file:// 页面里嵌的 http 子帧
+ * 正好发这个头 —— 顶层打开（地址栏导航）发的是 `none`，所以「单独开个窗口」能载入，「内嵌」不行。
+ * 修法：只给控制台窗单独一个 partition，只对回环地址的请求去掉这个头。
+ * 不动 ComfyUI 的 Host/Origin 一致性检查（那才是它真正防跨站的东西），也不污染应用全局 session。
+ * 用 persist: 前缀，ComfyUI 自己的 localStorage / IndexedDB 设置照旧留存。 */
+const H3_CONSOLE_PARTITION = "persist:h3-console";
+let comfyFrameSessionReady = false;
+
+function isLoopbackHost(host) {
+  const h = String(host || "").toLowerCase().replace(/^\[|\]$/g, "");
+  return h === "127.0.0.1" || h === "localhost" || h === "::1";
+}
+
+/** 让内嵌的 ComfyUI 帧发出去的请求不带 cross-site 标记（只对回环地址生效，幂等） */
+function ensureComfyFrameSession() {
+  if (comfyFrameSessionReady) return true;
+  let ses = null;
+  try {
+    ses = session.fromPartition(H3_CONSOLE_PARTITION);
+  } catch (e) {
+    appendConsole("[wf-editor] 取不到控制台 session：" + String((e && e.message) || e));
+    return false;
+  }
+  try {
+    ses.webRequest.onBeforeSendHeaders({ urls: ["http://*/*", "https://*/*"] }, (details, callback) => {
+      const req = details.requestHeaders || {};
+      let host = "";
+      try {
+        host = new URL(details.url).hostname;
+      } catch {}
+      if (isLoopbackHost(host)) {
+        /* header 名大小写不固定，两种写法都清掉 */
+        for (const k of Object.keys(req)) {
+          if (k.toLowerCase() === "sec-fetch-site") delete req[k];
+        }
+      }
+      callback({ requestHeaders: req });
+    });
+    comfyFrameSessionReady = true;
+  } catch (e) {
+    appendConsole("[wf-editor] 装 session 头改写失败：" + String((e && e.message) || e));
+    return false;
+  }
+  return true;
+}
+
 function openConsoleWindow() {
   const ui = ensureUiRuntime();
   const stamp = uiRuntimeStamp(join(h3Root(), "ui"));
@@ -7872,6 +8115,8 @@ function openConsoleWindow() {
   if (!fs.existsSync(entry)) return { ok: false, error: "ui_missing" };
 
   const wa = screen.getPrimaryDisplay().workArea;
+  /* 内嵌 ComfyUI 编辑器要能真的载入：给这只窗单独一个 session（见 ensureComfyFrameSession 注释） */
+  ensureComfyFrameSession();
   consoleWin = new BrowserWindow({
     width: 420,
     height: 640,
@@ -7882,6 +8127,7 @@ function openConsoleWindow() {
     show: true,
     title: "Minimax H3 · 插件测试中",
     webPreferences: {
+      partition: H3_CONSOLE_PARTITION,
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
@@ -8097,24 +8343,29 @@ function registerH3Ipc(opts) {
   /* 独立后处理：超分 / 补帧各自一条，与生成解耦（video_upscale / video_interp 节点） */
   ipcMain.handle("h3:postProcess", async (e, params) => postProcessVideo(params || {}));
   ipcMain.handle("h3:cancelGenerate", async (e, nodeId) => cancelGenerate(nodeId));
-  /* 自建工作流库（h3/ui 管理 + 主窗口 video_gen 面板共用） */
-  ipcMain.handle("h3:wfList", async () => {
+  /* 自建工作流库（h3/ui 管理 + 主窗口 video_gen 面板共用）。
+     三区一次给全：内置只读模板 / ComfyUI 目录只读镜像 / 我的工作流。
+     `force:true`（打开库 / 点刷新）会重扫 ComfyUI 的 user/default/workflows。 */
+  ipcMain.handle("h3:wfList", async (e, opts) => {
     try {
-      return { ok: true, items: workflowStore().listDetailed(), stats: workflowStore().stats() };
+      const o = h3wf.isPlainObject(opts) ? opts : {};
+      const lib = workflowLibrary();
+      const r = lib.list({ force: !!o.force });
+      return { ok: true, items: r.items, groups: r.groups, warnings: r.warnings, stats: r.stats };
     } catch (e) {
       return { ok: false, error: String((e && e.message) || e) };
     }
   });
   ipcMain.handle("h3:wfImport", async (e, input) => {
     try {
-      return workflowStore().importWorkflow(input || {});
+      return workflowLibrary().importWorkflow(input || {});
     } catch (e) {
       return { ok: false, error: String((e && e.message) || e) };
     }
   });
   ipcMain.handle("h3:wfDelete", async (e, id) => {
     try {
-      return workflowStore().remove(String(id || ""));
+      return workflowLibrary().remove(String(id || ""));
     } catch (e) {
       return { ok: false, error: String((e && e.message) || e) };
     }
@@ -8122,14 +8373,23 @@ function registerH3Ipc(opts) {
   ipcMain.handle("h3:wfRename", async (e, opts) => {
     try {
       const o = opts || {};
-      return workflowStore().rename(String(o.id || ""), String(o.title || ""));
+      return workflowLibrary().rename(String(o.id || ""), String(o.title || ""));
     } catch (e) {
       return { ok: false, error: String((e && e.message) || e) };
     }
   });
   ipcMain.handle("h3:wfExport", async (e, id) => {
     try {
-      return workflowStore().exportText(String(id || ""));
+      return workflowLibrary().exportText(String(id || ""));
+    } catch (e) {
+      return { ok: false, error: String((e && e.message) || e) };
+    }
+  });
+  /* 另存为我的副本 / 导入副本：只读条目唯一往「我的」区搬的入口 */
+  ipcMain.handle("h3:wfClone", async (e, opts) => {
+    try {
+      const o = h3wf.isPlainObject(opts) ? opts : {};
+      return workflowLibrary().duplicateToMine(String(o.id || ""), String(o.title || ""));
     } catch (e) {
       return { ok: false, error: String((e && e.message) || e) };
     }
@@ -8143,22 +8403,27 @@ function registerH3Ipc(opts) {
   });
   ipcMain.handle("h3:wfGet", async (e, id) => {
     try {
-      const store = workflowStore();
-      const rec = store.get(String(id || ""));
+      const lib = workflowLibrary();
+      const rec = lib.get(String(id || ""));
       if (!rec) return { ok: false, error: "工作流不存在：" + String(id || "") };
-      const s = store.scan(rec.id);
+      const s = lib.scan(rec.id);
+      const executable = !!(rec.executable !== false && rec.graph);
       return {
         ok: true,
         record: {
           id: rec.id,
           title: rec.title,
           format: rec.format,
+          group: rec.group,
+          readOnly: !!rec.readOnly,
+          executable,
+          executableReason: executable ? "" : rec.executableReason || "这条工作流转不成可执行的图。",
           validation: rec.validation || { status: "unchecked", checkedAt: "" },
           notes: rec.notes || "",
           source: rec.source || {},
         },
-        scan: s ? s.scan : null,
-        suggestedParams: s ? s.suggestedParams : [],
+        scan: executable && s ? s.scan : null,
+        suggestedParams: executable && s ? s.suggestedParams : [],
       };
     } catch (e) {
       return { ok: false, error: String((e && e.message) || e) };
@@ -8166,13 +8431,22 @@ function registerH3Ipc(opts) {
   });
   /* 画布 video_gen 节点面板用：把节点上已存的「提升为节点参数」表与该图最新扫描合并
      （保留用户改过的 key / label / type；图上已消失的落点标 stale 不直接删；
-     新扫出的建议参数按落点去重追加）。合并逻辑真源只在 h3-workflows.js，渲染层不复制一份。 */
+     新扫出的建议参数按落点去重追加）。合并逻辑真源只在 h3-workflows.js，渲染层不复制一份。
+     只读条目（内置 / ComfyUI 目录）同样走这里 —— 它们在节点里可以直接选中执行。 */
   ipcMain.handle("h3:wfSyncParams", async (e, opts) => {
     try {
       const o = h3wf.isPlainObject(opts) ? opts : {};
-      const store = workflowStore();
-      const rec = store.get(String(o.id || ""));
+      const lib = workflowLibrary();
+      const rec = lib.get(String(o.id || ""));
       if (!rec) return { ok: false, error: "工作流不存在：" + String(o.id || "") };
+      if (!rec.graph) {
+        return {
+          ok: false,
+          executable: false,
+          error:
+            "这条工作流不能直接执行：" + (rec.executableReason || "转不成可执行图"),
+        };
+      }
       const graph = rec.graph || {};
       const scan = h3wf.scanGraph(graph);
       const merged = h3wf.syncParamsWithScan(
@@ -8183,6 +8457,9 @@ function registerH3Ipc(opts) {
       return {
         ok: true,
         title: rec.title || String(o.id || ""),
+        group: rec.group,
+        readOnly: !!rec.readOnly,
+        executable: true,
         params: merged.params,
         added: merged.added,
         stale: merged.stale,

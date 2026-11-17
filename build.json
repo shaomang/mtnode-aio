@@ -220,6 +220,11 @@
        主进程宿主 ds-speech/main-ds-speech.js（HTTPS 与 WSS 全在里面，无脚手架、无端口）。
        漏掉本条 = 打包后 require("./ds-speech/main-ds-speech.js") 直接 Cannot find module。 */
     "ds-speech/**",
+    /* 音频分析后端（节点 audio_spectrum · MT 音频频谱分析）：主进程宿主 audio/main-audio.js
+       （脚手架同步 / venv + numpy / 本机服务起停 / POST /analyze）。随包脚手架
+       audio-pack/app 走下面的 extraResources。
+       漏掉本条 = 打包后 require("./audio/main-audio.js") 直接 Cannot find module，应用起不来。 */
+    "audio/**",
     "llama/**",
     "breeze/**",
     "infinitetalk/**",
@@ -598,6 +603,19 @@
         "README.md",
         "!**/__pycache__/**",
         "!**/out/**"
+      ]
+    },
+    {
+      /* 音频分析脚手架（节点 audio_spectrum）：纯 Python + 只依赖 numpy，无权重、无 GPU。
+         首次点 ▶ 时由主进程整包同步到 <数据目录>/audio-analysis/app 再起服务，
+         filter 是正向白名单，漏带 app/** 的后果是宿主找不到 __main__.py、准备链直接失败。 */
+      "from": "audio-pack",
+      "to": "audio-pack",
+      "filter": [
+        "app/**",
+        "scripts/**",
+        "README.md",
+        "!**/__pycache__/**"
       ]
     }
   ],

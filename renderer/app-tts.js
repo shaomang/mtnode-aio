@@ -1280,8 +1280,42 @@
      纪律（需求原话）：不整篇朗读 Agent 回复，代码片段 / 路径 / 文件名 / 命令 /
      表格 / 链接一律不进语音。这里是确定性抽取（不依赖模型也能用），模型摘要只是
      在它之上做进一步压缩。 */
-  function stripCodeish(raw) {
+  /* 计划块 / 标记物不是要念的内容：复杂任务那一轮，agent 会把 JSON 计划放在消息末尾，
+     用 <!--MTNODE-PLAN--> … <!--/MTNODE-PLAN--> 包裹。整块连同标记一起剔掉 ——
+     否则 compactRawSpeech 从结尾往回挑「结论」，正好挑到计划 JSON 的字段（goal / tasks
+     里的中文）当结论念出来，用户听到的就是「最后的尾部那些标记物」。 */
+  const PLAN_MARK_RE = /<!--\s*\/?\s*MTNODE[\s\-–—_]*PLAN\s*-->/gi;
+  /* 写坏的标记物：`<!` 被吞掉 / 被空格拆开（< !--MTNODE-PLAN-->）、结束符写成 `-- >`、
+     只剩尾部碎片（--/MTNODE-PLAN-->）。这类碎片在切句后噪声比很低，会被当成「人话」
+     念出来，所以按「裸标记」再扫一遍 —— 抓手是 MTNODE…PLAN 这串字面，不会误伤正文。 */
+  const PLAN_MARK_BROKEN_RE = /<?\s*!?\s*<?\s*-{0,2}\s*\/?\s*MTNODE[\s\-–—_]*PLAN\s*-{0,2}\s*>?/gi;
+  function stripPlanBlocks(raw) {
     let s = String(raw || "").replace(/\r\n?/g, "\n");
+    /* ① 成对块（开标记 → 闭标记，中间是 JSON）整块删掉 */
+    s = s.replace(/<!--\s*MTNODE[\s\-–—_]*PLAN\s*-->[\s\S]*?<!--\s*\/\s*MTNODE[\s\-–—_]*PLAN\s*-->/gi, "\n");
+    /* ② 只开了没闭 / 标记重复：从开标记起到结尾一起删 */
+    s = s.replace(/<!--\s*MTNODE[\s\-–—_]*PLAN\s*-->[\s\S]*$/i, "\n");
+    /* ③ 落单的闭标记或长短不一的标记串 */
+    s = s.replace(PLAN_MARK_RE, " ");
+    /* ③b 写坏的标记物：裸标记 / 尾部碎片（< !--MTNODE-PLAN-->、--/MTNODE-PLAN-->、-- > 收尾） */
+    s = s.replace(PLAN_MARK_BROKEN_RE, " ");
+    /* ④ 其它注释（HTML 注释、注释里谈论的内容）与未闭合注释：同样不进语音稿 */
+    s = s.replace(/<!--[\s\S]*?-->/g, " ");
+    s = s.replace(/<!--[\s\S]*$/, " ");
+    /* ⑤ 没有包裹标记、直接把计划 JSON 甩在末尾：从那个对象起到结尾一起删 */
+    const re = /\{\s*"(?:goal|excludes|tasks)"\s*:/g;
+    let m;
+    let at = -1;
+    while ((m = re.exec(s))) at = m.index;
+    if (at >= 0) {
+      const tail = s.slice(at).replace(/\s+$/, "");
+      if (/"tasks"\s*:\s*\[/.test(tail) && tail.endsWith("}")) s = s.slice(0, at);
+    }
+    return s;
+  }
+
+  function stripCodeish(raw) {
+    let s = stripPlanBlocks(raw);
     /* 代码块 / 行内代码 / diff / 日志块 */
     s = s.replace(/```[\s\S]*?(?:```|$)/g, " ");
     s = s.replace(/~~~[\s\S]*?(?:~~~|$)/g, " ");
@@ -1730,10 +1764,12 @@
   function onTurnEnd(rawText, onSpoken) {
     if (!st.enabled) return;
     const raw = String(rawText || "");
-    const script = stripCodeish(raw);
+    /* 计划块 / 标记物先剔掉：它既不该念，也不该喂给摘要模型（模型会把 JSON 当结论） */
+    const body = stripPlanBlocks(raw);
+    const script = stripCodeish(body);
     if (!raw.trim() || !script) return;
     const fallback =
-      compactRawSpeech(raw, 160) || compactRawSpeech(script, 160) || compactSpeech(script, 160);
+      compactRawSpeech(body, 160) || compactRawSpeech(script, 160) || compactSpeech(script, 160);
     if (!fallback) return;
     const told = (t) => {
       try {
@@ -1779,7 +1815,7 @@
       done();
       return;
     }
-    summarizeStream(speechInput(raw), (sentence) => sess.feed(sentence)).then(done, done);
+    summarizeStream(speechInput(body), (sentence) => sess.feed(sentence)).then(done, done);
   }
 
   /** 重播某一轮（会话每条 AI 回复末尾那枚「🔊 重播」）：

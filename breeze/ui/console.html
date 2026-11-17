@@ -3,17 +3,25 @@
 <head>
 <meta charset="utf-8" />
 <title>Console · Breeze TTS 2</title>
+<link rel="stylesheet" href="../../plugins/plugin-kit.css" />
 <style>
-html,body{margin:0;height:100%;background:#0f1116;color:#b9c2d6;
-  font:11.5px/1.55 Consolas,"Microsoft YaHei",monospace}
-#log{padding:8px;white-space:pre-wrap;word-break:break-all}
-#bar{position:sticky;top:0;background:#171a21;border-bottom:1px solid #2c3140;padding:5px 8px;display:flex;gap:8px;align-items:center}
-#bar span{color:#9aa3b8;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-button{background:#20242e;color:#e6e9f2;border:1px solid #2c3140;border-radius:6px;padding:2px 8px;cursor:pointer;font:inherit}
-button:hover{border-color:#3aa88a}
-.err{color:#ef9f9d}
-.warn{color:#e8cd93}
-.ok{color:#8fdcae}
+/* 纯日志窗：配色与日志区一律取 plugins/plugin-kit.css 的令牌与日志窗口径
+   （.pk-log-head 的小字标题条 + .pk-log 的深底等宽滚动区）；只在本地留布局。 */
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;font:12px/1.5 var(--sans)}
+body{display:flex;flex-direction:column;padding:8px;gap:6px;overflow:hidden}
+#bar{padding:4px 2px;display:flex;gap:8px;align-items:center;flex:0 0 auto;font-size:11px;color:var(--muted)}
+#bar span{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--mono)}
+#log{flex:1;min-height:0;overflow:auto;white-space:pre-wrap;word-break:break-all;tab-size:2;
+  background:var(--code);border:1px solid var(--bd);border-radius:var(--r-md);padding:8px 10px;
+  color:color-mix(in srgb,var(--ink) 86%,var(--muted));font:12px/1.55 var(--mono)}
+button{border:1px solid transparent;background:transparent;color:var(--muted);border-radius:var(--r-sm);
+  padding:4px 8px;cursor:pointer;font:11px/1 var(--sans);
+  transition:background var(--dur-fast),border-color var(--dur-fast),color var(--dur-fast)}
+button:hover{border-color:var(--bd);background:var(--panel2);color:var(--ink)}
+.err{color:color-mix(in srgb,var(--red) 85%,var(--ink))}
+.warn{color:var(--yellow)}
+.ok{color:var(--green)}
 </style>
 </head>
 <body>

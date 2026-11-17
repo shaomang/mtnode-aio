@@ -2,197 +2,179 @@
 <html lang="zh-CN">
   <head>
     <meta charset="utf-8" />
-    <title>SoulX-FlashHead Lite</title>
+    <title>SoulX-FlashHead Lite 数字人</title>
+    <!-- 配色 / 按钮 / 输入 / 状态胶囊 / 进度条 / 日志一律取插件控制台共享样式表（plugin-kit）；
+         本地 <style> 只留布局（尺寸、间距、栅格）。 -->
+    <link rel="stylesheet" href="../../plugins/plugin-kit.css" />
     <style>
-      :root {
-        --bg: #0f1115;
-        --panel: #171a21;
-        --line: #262b36;
-        --text: #e6e8ee;
-        --muted: #8b93a3;
-        --accent: #4d9ef7;
-        --ok: #4bbd7a;
-        --err: #e05d5d;
-        --warn: #e0b05d;
-      }
-      * { box-sizing: border-box; }
-      body {
-        margin: 0;
-        background: var(--bg);
-        color: var(--text);
-        font: 13px/1.55 "Microsoft YaHei", system-ui, sans-serif;
-      }
       header {
         display: flex;
         align-items: center;
-        gap: 12px;
-        padding: 14px 18px;
-        border-bottom: 1px solid var(--line);
+        gap: 10px;
+        padding: 8px 14px;
+        border-bottom: 1px solid var(--bd);
         background: var(--panel);
       }
-      header h1 { font-size: 15px; margin: 0; font-weight: 600; }
-      .badge {
-        font-size: 12px;
-        padding: 2px 8px;
-        border-radius: 999px;
-        border: 1px solid var(--line);
-        color: var(--muted);
-      }
-      .badge.ok { color: var(--ok); border-color: #26543a; }
-      .badge.warn { color: var(--warn); border-color: #5a4a2a; }
-      .badge.err { color: var(--err); border-color: #5a2a2a; }
-      main { padding: 16px 18px 40px; display: grid; gap: 14px; }
-      section {
-        background: var(--panel);
-        border: 1px solid var(--line);
-        border-radius: 10px;
-        padding: 12px 14px;
-      }
-      h2 { font-size: 13px; margin: 0 0 10px; font-weight: 600; color: var(--muted); }
-      .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-      label.field { display: flex; align-items: center; gap: 6px; color: var(--muted); }
-      input[type="text"], input[type="number"], select {
-        background: #0d1016;
-        color: var(--text);
-        border: 1px solid var(--line);
-        border-radius: 6px;
-        padding: 5px 8px;
-        font: inherit;
-      }
-      input[type="text"] { min-width: 280px; }
-      button {
-        background: #202634;
-        color: var(--text);
-        border: 1px solid var(--line);
-        border-radius: 6px;
-        padding: 5px 12px;
-        font: inherit;
-        cursor: pointer;
-      }
-      button:hover { border-color: #3a4357; }
-      button:disabled { opacity: 0.45; cursor: default; }
-      button.primary { background: #1d4d80; border-color: #2a6aa8; }
-      button.danger { background: #5a2222; border-color: #7a2e2e; }
-      .muted { color: var(--muted); }
-      #log {
-        font: 12px/1.45 Consolas, "Cascadia Mono", monospace;
-        background: #0b0e13;
-        border: 1px solid var(--line);
-        border-radius: 8px;
-        padding: 8px 10px;
-        height: 240px;
-        overflow: auto;
-        white-space: pre-wrap;
-        word-break: break-all;
-      }
-      .bar {
-        height: 6px;
-        background: #0b0e13;
-        border-radius: 999px;
-        overflow: hidden;
-        border: 1px solid var(--line);
-        margin: 8px 0;
-      }
-      .bar > i { display: block; height: 100%; width: 0; background: var(--accent); transition: width 0.2s; }
+      header .grow { flex: 1 1 auto; }
+      main { display: grid; gap: 10px; padding: 12px 14px 24px; }
+      .body { display: grid; gap: 8px; }
+      .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
       .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+      .field { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); }
+      .field .pk-select, .field .pk-input { width: auto; }
+      .field .pk-input.num { width: 78px; }
+      /* 输入控件与 .pk-btn 同高（28px），同一行不错位 */
+      .path-row .pk-input, .field .pk-input, .field .pk-select { height: 28px; }
+      /* 路径输入行：等宽 + 撑满，和右侧按钮同高 */
+      .path-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+      .path-row .pk-input { flex: 1 1 240px; min-width: 200px; font: 12px/1.5 var(--mono); }
+      /* 进度条只补外边距（配色与过渡在 kit 的 .pk-progress 里） */
+      .pk-progress { margin: 2px 0 0; }
+      /* 实时指标：数值走等宽 + 青色令牌，标签走次要文字 */
+      .kpi { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; font-size: 11px; color: var(--muted); }
+      .kpi b { font: 600 12px/1 var(--mono); color: var(--cyan2); }
+      /* 拖放位：观感取 kit 令牌，不写死色值；.set = 拖拽悬停 / 已填入路径 */
       .drop {
-        border: 1px dashed #2f3746;
-        border-radius: 8px;
-        padding: 8px 10px;
+        padding: 6px 9px;
+        min-height: 32px;
+        border: 1px dashed var(--bd2);
+        border-radius: var(--r-md);
         color: var(--muted);
-        min-height: 34px;
+        font: 12px/1.5 var(--mono);
         word-break: break-all;
       }
-      .drop.set { border-color: #2a6aa8; color: var(--text); }
-      .kpi { display: flex; gap: 18px; flex-wrap: wrap; }
-      .kpi b { font-size: 16px; color: var(--accent); font-weight: 600; }
+      .drop.set {
+        border-color: color-mix(in srgb, var(--cyan) 60%, var(--bd2));
+        background: var(--tint-cyan);
+        color: var(--ink);
+      }
+      #log { height: 240px; flex: none; }
+      /* #phase 的 className 由 ui.js 写成 "badge ok|warn|err|"（本任务不动脚本），
+         这里按 .pk-pill 的几何 + kit 的语义令牌复刻一份，不另写色值。 */
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        height: 20px;
+        padding: 0 8px;
+        border: 1px solid var(--bd2);
+        border-radius: 999px;
+        background: var(--panel2);
+        color: var(--muted);
+        font-size: 11px;
+        line-height: 1;
+        white-space: nowrap;
+      }
+      .badge.ok {
+        border-color: color-mix(in srgb, var(--green) 40%, var(--bd));
+        background: var(--tint-green);
+        color: var(--green);
+      }
+      .badge.warn {
+        border-color: color-mix(in srgb, var(--orange) 40%, var(--bd));
+        background: var(--tint-orange);
+        color: var(--orange2);
+      }
+      .badge.err {
+        border-color: color-mix(in srgb, var(--red) 40%, var(--bd));
+        background: var(--tint-red);
+        color: color-mix(in srgb, var(--red) 85%, var(--ink));
+      }
     </style>
   </head>
   <body>
     <header>
-      <h1>SoulX-FlashHead Lite</h1>
+      <span class="pk-h1">SoulX-FlashHead Lite</span>
       <span class="badge" id="phase">…</span>
-      <span class="muted" id="ver"></span>
-      <span class="muted" id="progressText"></span>
-      <span style="flex:1"></span>
-      <button id="btnClose">关闭窗口</button>
+      <span class="pk-sub" id="ver"></span>
+      <span class="pk-sub" id="progressText"></span>
+      <span class="grow"></span>
+      <button id="btnClose" class="pk-btn pk-btn-ghost pk-btn-sm">关闭窗口</button>
     </header>
 
     <main>
-      <section>
-        <h2>安装</h2>
-        <div class="row">
-          <input type="text" id="installDir" placeholder="安装目录（独立盘，约 18GB）" />
-          <button id="btnPickDir">选择目录</button>
-          <button id="btnInstall" class="primary">安装 / 重装</button>
-          <button id="btnCancelInstall" class="danger">取消安装</button>
-        </div>
-        <div class="row" style="margin-top:10px">
-          <label class="field">采样步数
-            <input type="number" id="steps" min="1" max="40" step="1" style="width:70px" />
-          </label>
-          <label class="field">种子
-            <input type="number" id="seed" step="1" style="width:90px" />
-          </label>
-          <label class="field">
-            <input type="checkbox" id="compile" /> torch.compile（关掉更稳，会慢一些）
-          </label>
-        </div>
-        <div class="bar"><i id="bar"></i></div>
-        <div class="muted" id="installHint">
-          默认全开：flash-attn（必装）+ SageAttention（尽力）+ torch.compile；模型 Model_Lite（1.3B），输出固定 512×512 @25fps，长音频整段流式一次跑完。
-        </div>
-      </section>
-
-      <section>
-        <h2>后端 / 实时指标</h2>
-        <div class="row">
-          <button id="btnStart">启动后端</button>
-          <button id="btnStop">停止后端</button>
-          <button id="btnHealth">健康检查</button>
-          <span class="muted" id="backendText"></span>
-        </div>
-        <div class="kpi" style="margin-top:10px">
-          <span>上次基准：<b id="kpiFps">—</b> FPS</span>
-          <span>RTF：<b id="kpiRtf">—</b></span>
-          <span>单块耗时：<b id="kpiMs">—</b> ms</span>
-          <span class="muted" id="kpiAccel"></span>
-        </div>
-        <div class="muted" id="benchHint" style="margin-top:6px">
-          实时口径：单张 4090 单路 ≥25FPS（25fps 目标）。安装收尾会自动跑一次 4 块基准（首块含预热，后 3 块取中位数），结果写在这里。
-        </div>
-      </section>
-
-      <section>
-        <h2>试生成（人物图 + 语音 → mp4）</h2>
-        <div class="grid2">
-          <div>
-            <div class="muted">人物图（端口 0）</div>
-            <div class="drop" id="dropImage" data-kind="image">把人物图拖进来</div>
+      <section class="pk-card">
+        <div class="pk-card-head"><span class="pk-h2">安装</span></div>
+        <div class="pk-card-body body">
+          <div class="path-row">
+            <input type="text" class="pk-input" id="installDir" placeholder="安装目录（独立盘，约 18GB）" />
+            <button id="btnPickDir" class="pk-btn">选择目录</button>
+            <button id="btnInstall" class="pk-btn pk-btn-primary">安装 / 重装</button>
+            <button id="btnCancelInstall" class="pk-btn pk-btn-danger">取消安装</button>
           </div>
-          <div>
-            <div class="muted">语音（端口 1）</div>
-            <div class="drop" id="dropAudio" data-kind="audio">把音频拖进来（wav / mp3 / m4a）</div>
+          <div class="row">
+            <label class="field">采样步数
+              <input type="number" id="steps" class="pk-input num" min="1" max="40" step="1" />
+            </label>
+            <label class="field">种子
+              <input type="number" id="seed" class="pk-input" step="1" style="width: 90px" />
+            </label>
+            <label class="pk-check">
+              <input type="checkbox" id="compile" /> torch.compile（关掉更稳，会慢一些）
+            </label>
+          </div>
+          <div class="pk-progress pk-progress-lg"><i id="bar"></i></div>
+          <div class="pk-sub" id="installHint">
+            默认全开：flash-attn（必装）+ SageAttention（尽力）+ torch.compile；模型 Model_Lite（1.3B），输出固定 512×512 @25fps，长音频整段流式一次跑完。
           </div>
         </div>
-        <div class="row" style="margin-top:8px">
-          <button id="btnGen" class="primary">开始试生成</button>
-          <button id="btnBench">只跑基准（4 块）</button>
-          <button id="btnCancelGen" class="danger">取消</button>
-          <span class="muted" id="genText"></span>
-        </div>
-        <div class="muted" id="genResult" style="margin-top:6px; word-break:break-all"></div>
       </section>
 
-      <section>
-        <h2>日志</h2>
-        <div class="row" style="margin-bottom:8px">
-          <button id="btnLogRefresh">刷新</button>
-          <button id="btnLogClear">清空</button>
-          <button id="btnOpenOut">打开输出目录</button>
-          <span class="muted" id="gpuText"></span>
+      <section class="pk-card">
+        <div class="pk-card-head"><span class="pk-h2">后端 / 实时指标</span></div>
+        <div class="pk-card-body body">
+          <div class="row">
+            <button id="btnStart" class="pk-btn">启动后端</button>
+            <button id="btnStop" class="pk-btn pk-btn-danger">停止后端</button>
+            <button id="btnHealth" class="pk-btn pk-btn-ghost">健康检查</button>
+            <span class="pk-sub" id="backendText"></span>
+          </div>
+          <div class="kpi">
+            <span>上次基准：<b id="kpiFps">—</b> FPS</span>
+            <span>RTF：<b id="kpiRtf">—</b></span>
+            <span>单块耗时：<b id="kpiMs">—</b> ms</span>
+            <span class="pk-sub" id="kpiAccel"></span>
+          </div>
+          <div class="pk-sub" id="benchHint">
+            实时口径：单张 4090 单路 ≥25FPS（25fps 目标）。安装收尾会自动跑一次 4 块基准（首块含预热，后 3 块取中位数），结果写在这里。
+          </div>
         </div>
-        <div id="log"></div>
+      </section>
+
+      <section class="pk-card">
+        <div class="pk-card-head"><span class="pk-h2">试生成（人物图 + 语音 → mp4）</span></div>
+        <div class="pk-card-body body">
+          <div class="grid2">
+            <div>
+              <div class="pk-sub">人物图（端口 0）</div>
+              <div class="drop" id="dropImage" data-kind="image">把人物图拖进来</div>
+            </div>
+            <div>
+              <div class="pk-sub">语音（端口 1）</div>
+              <div class="drop" id="dropAudio" data-kind="audio">把音频拖进来（wav / mp3 / m4a）</div>
+            </div>
+          </div>
+          <div class="row">
+            <button id="btnGen" class="pk-btn pk-btn-primary">开始试生成</button>
+            <button id="btnBench" class="pk-btn">只跑基准（4 块）</button>
+            <button id="btnCancelGen" class="pk-btn">取消</button>
+            <span class="pk-sub" id="genText"></span>
+          </div>
+          <div class="pk-sub" id="genResult" style="word-break: break-all"></div>
+        </div>
+      </section>
+
+      <section class="pk-card">
+        <div class="pk-card-head">
+          <span class="pk-h2">日志</span>
+          <span class="pk-grow"></span>
+          <button id="btnLogRefresh" class="pk-btn pk-btn-sm">刷新</button>
+          <button id="btnLogClear" class="pk-btn pk-btn-sm">清空</button>
+          <button id="btnOpenOut" class="pk-btn pk-btn-sm">打开输出目录</button>
+        </div>
+        <div class="pk-card-body body">
+          <div class="pk-sub" id="gpuText"></div>
+          <div id="log" class="pk-log"></div>
+        </div>
       </section>
     </main>
 

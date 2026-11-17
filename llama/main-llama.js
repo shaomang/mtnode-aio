@@ -31,6 +31,9 @@ const { quietPython, pythonHealth, silentEnv } = require("../backend-python.js")
 /* 国内镜像源单一真源（pip / torch / 权重 / npm / git 代理）：见根目录 cn-mirrors.js */
 const mirrors = require("../cn-mirrors.js");
 const uiBridge = require("./ui-bridge.js");
+/* 控制台窗共享样式表（plugin-kit.css）的运行时同步：ui/ 复制到数据目录后，
+   页面里的 ../../plugins/plugin-kit.css 落点也跟着变，必须把它一起补上（见该文件头） */
+const { ensureKitForUiDir } = require("../plugins/plugin-kit-sync.js");
 
 const { mergeManagedProvider } = require("../config-providers.js");
 /* 登记链的单一真源（清单来源 / 模型行状态 / 托盘信号）：见 llama/provider-sync.js 头部口径。
@@ -191,6 +194,9 @@ function ensureUiRuntime() {
   const destUi = join(llamaRoot(), "ui");
   if (!fs.existsSync(srcUi)) return;
   copyDirRecursive(srcUi, destUi, []);
+  /* 数据目录副本里的页面，../../plugins/plugin-kit.css 指向 <数据目录>/plugins/ ：
+     少了这一份，整窗样式全丢（白底 + 原生灰白控件）。见 plugins/plugin-kit-sync.js。 */
+  ensureKitForUiDir(destUi);
 }
 
 function syncPackToInstall(installDir) {

@@ -220,6 +220,21 @@ body.ef-skin.theme-light {
   color-scheme: light;
 }
 
+/* ── 二·○·一 画布页签的着色层（--tab-fill）─────────────────────────────────
+   canvas.css 的 .wf-tab 把「压暗 / 着色」做成一层背景图 --tab-fill，底色是**不透明**的
+   --panel2（选中页签要往下多铺 1px 盖掉画布上沿那条分割线，半透明底盖不住下面的线）。
+   暗色那支是 rgba(0,0,0,.28)；亮底上它会把白底压成一片深灰页签，这里换成墨 / 青的低浓度，
+   与四档主题的选中色同源。skin 层（生成物）不再为 .wf-tab 生成后台色 —— 它在这里手写。 */
+body.ef-skin.theme-light .wf-tab {
+  --tab-fill: rgba(29, 42, 68, 0.14);
+}
+body.ef-skin.theme-light .wf-tab:hover {
+  --tab-fill: rgba(10, 116, 137, 0.06);
+}
+body.ef-skin.theme-light .wf-tab.active {
+  --tab-fill: rgba(10, 116, 137, 0.1);
+}
+
 /* ── 二·○·二 组件自带变量 / 选中态文字的补丁 ─────────────────────────────────
    ① canvas-dock.css 自带一套 --cdock-* 变量（--cdock-mute #8f979b / --cdock-line
       white .1 / --cdock-line-2 white .16）：亮底上灰字 2.6:1、白线等于没边，
@@ -413,13 +428,30 @@ body.ef-skin.theme-light .gs-scrim {
    「白 → 半透明深灰」的渐变 —— 下半截正好是灰底灰字（实测 2.8:1）。
    亮色下浮层一律做实底：白底 + 描边 + pop 投影，不玩半透明。 */
 body.ef-skin.theme-light .run-queue {
-  background: #ffffff;
+  /* 实底只换最下面那一层：这条 background 简写若只写颜色，#rq 右上角的
+     斜边色带（components.css 里补的那条）会被整条抹掉，斜边就成了缺口。 */
+  background:
+    linear-gradient(to top right,
+      transparent calc(50% - var(--rq-cut-w)),
+      var(--line) calc(50% - var(--rq-cut-w)),
+      var(--line) calc(50% + 1px),
+      transparent calc(50% + 1px)) no-repeat right top / 14px 14px border-box,
+    #ffffff;
   border: 1px solid var(--line);
   box-shadow: var(--shadow-pop);
 }
 
 body.ef-skin.theme-light .rq-head {
-  background: var(--pop-head);
+  /* 头部在亮色下是实底，整条斜边都被它盖住（暗色头部是半透明的，父级那条色带能透出来）。
+     头部左上角正好是面板内 1px，所以「头部自己的 right/top 14px 方块」的对角线
+     与面板那条斜切线是同一条线（都是 x + y = 面板右沿），色带画在头部就重新接上。 */
+  background:
+    linear-gradient(to top right,
+      transparent calc(50% - var(--rq-cut-w)),
+      var(--line) calc(50% - var(--rq-cut-w)),
+      var(--line) calc(50% + 1px),
+      transparent calc(50% + 1px)) no-repeat right top / 14px 14px border-box,
+    var(--pop-head);
   border-bottom: 1px solid var(--line-hair);
 }
 
@@ -951,19 +983,12 @@ body.ef-skin.theme-light .agent-side {
 body.ef-skin.theme-light .agent-side-logo {
   color: var(--ink);
 }
-body.ef-skin.theme-light .agent-side-logo:hover {
-  color: var(--cyan);
-}
 /* dsh 内核版本标签：深色主题是「半透明白字 + 白边」，浅色主题反过来 —— 深墨字 + 深边，
    底色压到几乎透明（否则整枚标签在白底上看不见）。 */
 body.ef-skin.theme-light .agent-side-ver {
   color: rgba(24, 26, 30, .72);
   background: rgba(24, 26, 30, .05);
   border-color: rgba(24, 26, 30, .16);
-}
-body.ef-skin.theme-light .agent-side-logo:hover .agent-side-ver {
-  color: rgba(24, 26, 30, .82);
-  border-color: rgba(24, 26, 30, .24);
 }
 
 body.ef-skin.theme-light .agent-side-new {

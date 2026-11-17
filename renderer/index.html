@@ -361,10 +361,10 @@
 <div class="agent-pane" id="agentPane" style="display:none">
       <aside class="agent-side">
         <div class="agent-side-head">
-          <!-- 左栏标题带上 dsh 内核版本（本次需求）：版本号由启动时 app:version 的 dsh
+          <!-- 左栏标题带上 dsh 内核版本：版本号由启动时 app:version 的 dsh
                字段填进 #agentDshVer（主进程读 @deepseek-ai/dsh 的 manifest，读不到就留空、
-               整枚标签不占位）。仍是「点标题 = 新建会话」，与版本标签无关。 -->
-          <span class="agent-side-logo" id="agentLogo" data-i18n-title="新建会话" title="新建会话"><span class="agent-side-name">DeepSeek Harness</span><span class="agent-side-ver" id="agentDshVer" data-i18n-title="dsh 内核版本" title="dsh 内核版本" hidden></span></span>
+               整枚标签不占位）。这一行是**纯文字**，点了不新建会话（新建只走旁边的 ＋ 按钮）。 -->
+          <span class="agent-side-logo" id="agentLogo"><span class="agent-side-name">DeepSeek Harness</span><span class="agent-side-ver" id="agentDshVer" data-i18n-title="dsh 内核版本" title="dsh 内核版本" hidden></span></span>
           <button id="agentNew" class="agent-side-new" data-i18n-title="新建会话(工作目录=当前画布)" title="新建会话(工作目录=当前画布)">＋ <span data-i18n="新会话">新会话</span></button>
         </div>
         <div class="agent-side-search">
@@ -647,13 +647,13 @@
            app-assist.js 的 syncAssistCompactOptions 按当前语言现算（故这里不写死 option，
            也不挂 data-i18n，免得切语言时被 applyDom 写掉）。 -->
       <label class="assist-ctrl-item"><span data-i18n="上下文压缩">上下文压缩</span>
-        <select id="assistCompactSel" data-i18n-title="上下文压缩时机：接近上限时把较早的对话收成摘要，保留最近一段原文；「关闭」= 不自动压缩（仍保留额度报满时的自动恢复）" title="上下文压缩时机：接近上限时把较早的对话收成摘要，保留最近一段原文；「关闭」= 不自动压缩（仍保留额度报满时的自动恢复）"></select>
+        <select id="assistCompactSel" data-i18n-title="上下文压缩时机：上下文涨到设定的 token 数时，把较早的对话收成摘要，保留最近一段原文；「关闭」= 不自动压缩（仍保留额度报满时的自动恢复）" title="上下文压缩时机：上下文涨到设定的 token 数时，把较早的对话收成摘要，保留最近一段原文；「关闭」= 不自动压缩（仍保留额度报满时的自动恢复）"></select>
       </label>
       <!-- 自定义档的触发线（本次需求）：只选了「开着 + 自定义」才露出（app-assist.js 的
            syncCompactSideControls 切换 hidden + disabled，值由 syncCompactCustomInput 回填）。
            单位 token，界内 100k – 500k，越界由 applyAssistCompactTrigger 拒绝并提示。 -->
       <label class="assist-ctrl-item" id="assistCompactCustom" hidden><span data-i18n="自定义触发线">自定义触发线</span>
-        <input id="assistCompactCustomInput" type="number" min="100000" max="500000" step="1000" data-i18n-title="（单位：token，可填 100k – 500k；只对大窗口路由生效）" title="（单位：token，可填 100k – 500k；只对大窗口路由生效）">
+        <input id="assistCompactCustomInput" type="number" min="100000" max="500000" step="1000" data-i18n-title="（单位：token，可填 100k – 500k；到这个数就压，与窗口大小无关）" title="（单位：token，可填 100k – 500k；到这个数就压，与窗口大小无关）">
       </label>
       <!-- 压缩后的大小（本次需求）：保留的最近原文 / 摘要输出上限（单位 token）。留空 = 跟随
            档位默认（占位符由 app-assist.js 的 syncCompactLimitInputs 写成当前档位默认值），
@@ -1089,6 +1089,13 @@
      装载位置：必须在 app-canvas.js 之后（registerNodeSettingsForm / nsSelect 等要先定义），
      且在 app-node-params.js 之前（「参数」端子靠登记表认节点，先登记才能自动包上覆写面板）。 -->
 <script src="app-ds-speech.js"></script>
+<!-- 音频分析节点（audio_spectrum · MT 音频频谱分析）：一个音频 / 视频入端子 → JSON 分析结果
+     + 频谱 PNG。执行体 / 板身（波形播放器 + 频谱播放头同步）/ ⚙ 设置表单都在
+     renderer/app-audioanalysis.js；服务在主进程 audio/main-audio.js（preload 白名单 audio*）。
+     装载位置与 app-ds-speech.js 同口径：在 app-canvas.js 之后（registerNodeSettingsForm /
+     appendNodeSettingsSummary / nsSelect 要先定义）、app-node-params.js 之前（参数端子靠
+     登记表认节点）。板身波形复用 app-audioview.js 的 wavePreviewCreate（已在更早处装载）。 -->
+<script src="app-audioanalysis.js"></script>
 <!-- 质检节点族（qa_text / qa_image / qa_video / qa_audio / qa_file · 缺口文档 P0-4）：
      执行体 + 门禁（未过只置需干涉并走未过出 · 人工裁决按需打开）+ ⚙ 设置表单（评分标准 JSON 模板 /
      质检模型）+ body 里可直接改的 JSON 标准（存 qaTemplateJson，入 1 接线即只读）。

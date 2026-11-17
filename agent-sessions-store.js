@@ -330,6 +330,27 @@ function createAgentSessionsStore(opts) {
     return out;
   }
 
+  /* ── Token 台账（tokenReport）谁更新（真机 bug：重启后下方 token 统计丢失）──────────
+     索引**每次保存**都从内存整份重写 meta，而会话文件基线只在「整份正文写」时才刷顶层
+     字段 —— 日常落盘走追加段（<id>.jsonl 只追加消息），所以文件里那份 tokenReport 会永远
+     停在第一次整份落盘时的 null。于是形成一条丢账链：
+       ① 读回正文（loadSessions 只读基线 + 追加段，不读索引）拿到 null；
+       ② 渲染层 Object.assign 一盖，内存里的累计台账没了 → 界面上统计整份消失；
+       ③ 下一次保存再把 null 写回索引 —— 索引那份备份也跟着被抹掉（重启一次丢一次）。
+     判据：先比最近入账时刻 lastAt，再比轮数 rounds，都相同才取索引那份（它更新）。 */
+  function newerTokenReport(a, b) {
+    const ok = (r) => !!r && typeof r === "object";
+    if (!ok(a)) return ok(b) ? b : null;
+    if (!ok(b)) return a;
+    const la = Number(a.lastAt) || 0;
+    const lb = Number(b.lastAt) || 0;
+    if (la !== lb) return la > lb ? a : b;
+    const ra = Number(a.rounds) || 0;
+    const rb = Number(b.rounds) || 0;
+    if (ra !== rb) return ra > rb ? a : b;
+    return a;
+  }
+
   /* ── 快照：按时间节流 + 只留最近 BACKUP_KEEP 份 ── */
   let lastBackupAt = 0;
   function backupIndex(force) {
@@ -923,6 +944,10 @@ function createAgentSessionsStore(opts) {
           "[sessions] 会话 " + id + " 的标题以索引为准回写文件：" + keepTitle.title,
         );
       }
+      /* 台账也按「新的那一份」补齐（见 newerTokenReport）：对账紧接着会把 body 整份写回文件，
+         不补这一下，文件里那份旧的 null 就会顺着 entryFromBody 把索引里的累计抹掉。 */
+      const keepReport = newerTokenReport(e && e.tokenReport, body.tokenReport);
+      if (keepReport && keepReport !== body.tokenReport) body.tokenReport = keepReport;
       try {
         writeAtomicSync(sessionPath(id), compactJson(body));
         if (dltOk && dlt.records.length) {
@@ -1187,6 +1212,14 @@ function createAgentSessionsStore(opts) {
     const out = [];
     const bad = [];
     const gone = [];
+    /* 索引里那份 tokenReport 是「每次保存都刷新」的最新版；文件基线里那份可能停在很久以前
+       （见 newerTokenReport）。读正文时按新的那一份补齐，别让重启后的第一份正文把台账冲掉。 */
+    const idx = readIndex();
+    const reportById = new Map();
+    for (const e of idx.sessions) {
+      const sid = e && String(e.id || "");
+      if (sid) reportById.set(sid, e.tokenReport || null);
+    }
     for (const id of want) {
       const merged = mergedSessionBody(id);
       if (!merged.body) {
@@ -1201,6 +1234,12 @@ function createAgentSessionsStore(opts) {
       const body = merged.body;
       body.id = id;
       delete body[DELTA_VER_KEY];
+      /* 台账按「新的那一份」补齐（索引 vs 文件基线）—— 这一步就是重启后统计不丢的落点 */
+      if (reportById.has(id)) {
+        const keep = reportById.get(id);
+        const pick = newerTokenReport(keep, body.tokenReport);
+        if (pick) body.tokenReport = pick;
+      }
       out.push(body);
     }
     return { ok: true, sessions: out, bad, gone };
@@ -1249,6 +1288,9 @@ function createAgentSessionsStore(opts) {
       }
       const prev = byId.get(id) || {};
       const entry = Object.assign({}, prev, metaOf(item), { id, loaded: true });
+      /* 台账只许「换成更新的那一份」：null / 更旧的明细一律不许盖掉索引里已有的累计
+         （渲染层刚从文件基线读回的 null 就是这条链的起点，见 newerTokenReport）。 */
+      if (prev.tokenReport) entry.tokenReport = newerTokenReport(entry.tokenReport, prev.tokenReport);
       if (prev.sig) entry.sig = prev.sig;
       delete entry.missing;
       /* ★ 硬口径 ②：既没有正文、也没有追加段（懒加载下未读回的会话）只更新索引，

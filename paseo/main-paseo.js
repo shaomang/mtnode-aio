@@ -55,6 +55,9 @@ const dshNode = require("../dsh-node.js");
 const installHost = require("../plugins/main-install.js");
 const installKill = require("../plugins/install-cancel.js");
 const stepReporter = require("../plugins/install-step-reporter.js");
+/* 控制台窗共享样式表（plugin-kit.css）的运行时同步：数据目录里的入口副本会让
+   页面里的 ../../plugins/plugin-kit.css 落点变到 <数据目录>/plugins/（见该文件头） */
+const { ensureKitForUiDir } = require("../plugins/plugin-kit-sync.js");
 
 const PLUGIN_ID = "paseo-remote";
 const KIND = "paseo";
@@ -2697,6 +2700,10 @@ function openConsoleWindow() {
   }
   const entry = uiEntry();
   if (!exists(entry)) return { ok: false, error: "ui_missing" };
+  /* 载的是数据目录里的入口副本（云端下载的插件包 / 老的 <数据目录>\paseo\ui）时，
+     页面里的 ../../plugins/plugin-kit.css 落点也跟着变，必须把那份样式表补上 ——
+     否则整窗白底 + 原生灰白控件。直接读仓库副本时这一步是空转（见 plugins/plugin-kit-sync.js）。 */
+  ensureKitForUiDir(path.dirname(entry));
   const wa = screen.getPrimaryDisplay().workArea;
   consoleWin = new BrowserWindow({
     width: 520,

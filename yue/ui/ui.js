@@ -54,15 +54,15 @@
 
     const running = !!st.running || !!st.gradioUp;
     svcBadge.textContent = running ? "服务运行中" : "服务关闭";
-    svcBadge.className = "badge " + (running ? "on" : "off");
+    svcBadge.className = "pk-pill " + (running ? "is-ok" : "");
 
     const lock = st.lock;
     if (lock && lock.nodeId) {
       lockBadge.textContent = "全局锁：" + (lock.kind === "yue_gen" ? "音乐" : lock.kind || "任务") + " 进行中";
-      lockBadge.className = "badge lock";
+      lockBadge.className = "pk-pill is-run";
     } else {
       lockBadge.textContent = "全局锁空闲";
-      lockBadge.className = "badge off";
+      lockBadge.className = "pk-pill";
     }
 
     /* 注意力档位：显示**实际生效**的档位与来源（本版默认 cudnn，不自动降级；
@@ -79,7 +79,7 @@
               ? "默认"
               : src || "";
       attBadge.textContent = att ? "注意力 " + att + (srcTxt ? "（" + srcTxt + "）" : "") : "注意力 —";
-      attBadge.className = "badge " + (att ? "on" : "off");
+      attBadge.className = "pk-pill " + (att ? "is-info" : "");
       attBadge.title =
         "注意力档位：本版默认 cudnn（Windows 轮子里没编 flash kernel，永不自动选 flash）；" +
         "不自动降级 —— 要换档请设 YUE2_ATTENTION_BACKEND，或在安装目录 .attention-backend 里写单行 sdpa / flash";

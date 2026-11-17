@@ -583,7 +583,7 @@
       lastGiSeg,
       /* 按 (轮号, 步号) 精确取明细（检查器用：选中那一行自己的轮号）——
          同一个步号在不同轮次里都会出现，行模型按组遍历时可退化就近取。 */
-      detailInRound: (round, step) => detailOf(round, step, round),
+      detailInRound: (round, step, at) => detailOf(round, step, round, at),
       hasLine: false,
     };
     if (!groups.length) return out;
@@ -627,7 +627,7 @@
        逐组 some() 就是 O(组数 × 明细数)）。明细数组在这次渲染里不变 —— 采集发生在运行时，
        渲染拿到的是当时那一份快照。 */
     const anyDetailHasRound = details.some((d) => Number(d && d.round) > 0);
-    function detailOf(round, step, roundFilter) {
+    function detailOf(round, step, roundFilter, at) {
       if (step == null || !details.length) return null;
       /* 轮号那一半的键怎么认（明细自带 round 时最准，采集点就是这么写的）：
          · 明细带了 round → 用段自己的 round 与它**等值匹配**（同一会话里第 1 轮的 step 1
@@ -644,28 +644,32 @@
          同一步里可以有 N 条 —— 并发子代理 / 续跑 / 同一步内多轮流式）：入/出/缓存/
          思考各自相加，calls 相加 —— 用户口径「行内显示该步合计并标 N 次调用」。
          采集侧（tokUsageStepNote）现在**不再**把同一步压成一条（那时后到的调用会被抹掉），
-         所以这里的合并是显示口径的唯一收敛点，一条明细都不会因此消失。 */
-      let hit = null;
+         所以这里的合并是显示口径的唯一收敛点，一条明细都不会因此消失。
+         但同一条助手消息里**步号会重号**（上下文压缩后续跑 / 并发子代理各自从 1 数步，
+         而宿主轮号不变）：那时两条明细相隔十几分钟、各是独立一次调用，整桶相加会把
+         ↑ 做成两次调用之和（实测 275k + 288k = 565.3k，用户报的就是这个）。
+         所以有段时刻（at）时按它只取「同一次调用」那一簇（dshTokPickAt，30s 窗口）；
+         老存档明细没有 at → 整桶相加，与改动前一致。 */
+      const hit = {
+        turn: 0,
+        round: Number(round) || 0,
+        step: Number(step) || 0,
+        calls: 0,
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        reasoning: 0,
+        provider: "",
+        model: "",
+        parts: [],
+      };
       for (let i = 0; i < details.length; i++) {
         const d = details[i];
         if (!d || Number(d.step) !== Number(step)) continue;
         if (Number(d.round) > 0 && Number.isFinite(wantRound) && Number(d.round) !== wantRound)
           continue;
-        if (!hit) {
-          hit = {
-            turn: Number(d.turn) || 0,
-            round: Number(d.round) || 0,
-            step: Number(d.step) || 0,
-            calls: 0,
-            input: 0,
-            output: 0,
-            cacheRead: 0,
-            cacheWrite: 0,
-            reasoning: 0,
-            provider: String(d.provider || ""),
-            model: String(d.model || ""),
-          };
-        }
+        if (!hit.turn) hit.turn = Number(d.turn) || 0;
         hit.calls += Math.max(1, Number(d.calls) || 1);
         hit.input += Number(d.input) || 0;
         hit.output += Number(d.output) || 0;
@@ -674,14 +678,50 @@
         hit.reasoning += Number(d.reasoning) || 0;
         if (d.provider) hit.provider = String(d.provider);
         if (d.model) hit.model = String(d.model);
+        hit.parts.push({
+          at: Number(d.at) || 0,
+          in:
+            (Number(d.input) || 0) +
+            (Number(d.cacheRead) || 0) +
+            (Number(d.cacheWrite) || 0),
+          out: Number(d.output) || 0,
+          calls: Math.max(1, Number(d.calls) || 1),
+          cacheRead: Number(d.cacheRead) || 0,
+          cacheWrite: Number(d.cacheWrite) || 0,
+          reasoning: Number(d.reasoning) || 0,
+          provider: String(d.provider || ""),
+          model: String(d.model || ""),
+        });
       }
+      if (!hit.calls) return null;
+      const t = Number(at) || 0;
+      if (t && typeof dshTokPickAt === "function") {
+        hit.parts.sort((a, b) => a.at - b.at);
+        const picked = dshTokPickAt(hit, t);
+        if (picked && picked !== hit) {
+          return {
+            turn: hit.turn,
+            round: hit.round,
+            step: hit.step,
+            calls: picked.calls,
+            input: picked.in,
+            output: picked.out,
+            cacheRead: picked.cacheRead,
+            cacheWrite: picked.cacheWrite,
+            reasoning: picked.reasoning,
+            provider: picked.provider || hit.provider,
+            model: picked.model || hit.model,
+          };
+        }
+      }
+      delete hit.parts;
       return hit;
     }
     for (const [gi, g] of groups.entries()) {
       const seg = segs[g.idxs[0]] || {};
       /* 按组遍历：组键就是 (轮号, 步号) 里的步号那一半，轮号由段自己带着 ——
          与检查器同一口径，按段自己的 round 精确取。 */
-      const d = detailOf(seg.round, seg.step, seg.round);
+      const d = detailOf(seg.round, seg.step, seg.round, seg.at);
       if (!d) continue;
       out.hasLine = true;
       add(gi, {
@@ -2693,7 +2733,7 @@
     const tokPlan = tokenPlan(st, lastSegs);
     /* 按**选中的这一行的轮号**取明细（同一会话里第 1 轮的 step 1 与第 2 轮的 step 1
        不能串台）：明细取到就用它，否则退回该步在计划表里的累计（内存时间线口径）。 */
-    const tokDetail = tokPlan.detailInRound(seg.round, seg.step);
+    const tokDetail = tokPlan.detailInRound(seg.round, seg.step, seg.at);
     const tok = tokDetail
       ? {
           input: Number(tokDetail.input) || 0,
@@ -4047,7 +4087,7 @@
           const gi = plan.giOfSeg.get(segIdx);
           return gi == null ? null : plan.byGi.get(gi) || null;
         },
-        detailInRound: (round, step) => plan.detailInRound(round, step),
+        detailInRound: (round, step, at) => plan.detailInRound(round, step, at),
       };
     },
     /** 按段下标取已挂的那一行（不在已挂切片里 → null）。冒烟 / 诊断用。 */

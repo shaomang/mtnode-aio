@@ -1,34 +1,36 @@
 /* Blender 本地插件 · 控制台样式
    与其它插件控制台同一口径：无框架、深色、小字密集信息面板。
-   控制台窗是独立文档（不加载 renderer/css），所以本文件自带全部必需样式。 */
+   配色与控件一律取 plugins/plugin-kit.css 的令牌（--bg / --panel / --panel2 /
+   --ink / --muted / --bd / --bd2 / --orange / --cyan / --green / --red / --yellow）；
+   本文件只留本窗自己的排版，不再写死任何色值。
+   控制台窗是独立文档（不加载 renderer/css），所以 kit 与布局都在这里引齐。 */
+@import url("../../plugins/plugin-kit.css");
+
 :root {
-  --bg: #1b1d21;
-  --bg2: #23262b;
-  --bg3: #2b2f36;
-  --fg: #e6e8ec;
-  --fg2: #9aa2ad;
-  --line: #3a3f47;
-  --acc: #6ea8fe;
-  --ok: #57c98b;
-  --warn: #e0a33e;
-  --err: #e06c6c;
+  /* 旧名映射：规则里仍用 --bg2 / --fg 这类短名，取值全部来自 kit 令牌 */
+  --bg2: var(--panel);
+  --bg3: var(--panel2);
+  --fg: var(--ink);
+  --fg2: var(--muted);
+  --line: var(--bd);
+  --ok: var(--green);
+  --warn: var(--yellow);
+  --err: var(--red);
 }
 * { box-sizing: border-box; }
 html, body {
   margin: 0;
   height: 100%;
-  background: var(--bg);
-  color: var(--fg);
-  font: 12px/1.5 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  font: 12px/1.5 var(--sans);
 }
 body { display: flex; flex-direction: column; overflow: hidden; }
 header {
   padding: 10px 12px 8px;
-  border-bottom: 1px solid var(--line);
+  border-bottom: 1px solid var(--bd);
   background: var(--bg2);
   flex: 0 0 auto;
 }
-header .ttl { font-size: 14px; font-weight: 600; }
+header .ttl { font-size: 14px; font-weight: 600; color: var(--ink); }
 header .hdrow { display: flex; align-items: center; gap: 8px; }
 header .hdrow .ttl { flex: 1 1 auto; }
 header .sub { margin-top: 4px; color: var(--fg2); font-size: 11px; }
@@ -47,69 +49,86 @@ h2 .sp { flex: 1 1 auto; }
 .body {
   background: var(--bg2);
   border: 1px solid var(--line);
-  border-radius: 6px;
+  border-radius: var(--r-sm);
   padding: 8px 10px;
 }
 .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 4px 0; }
 .row.wrap { align-items: flex-start; }
 .k { color: var(--fg2); min-width: 92px; flex: 0 0 auto; }
 .v { word-break: break-all; }
-.path { font-family: Consolas, "Courier New", monospace; font-size: 11px; color: #cfd6e0; }
+.path { font-family: var(--mono); font-size: 11px; color: var(--fg2); }
 .mini {
   background: var(--bg3);
   color: var(--fg);
-  border: 1px solid var(--line);
-  border-radius: 4px;
+  border: 1px solid var(--bd2);
+  border-radius: var(--r-sm);
   padding: 3px 8px;
   font-size: 11px;
   cursor: pointer;
+  transition: background var(--dur-fast), border-color var(--dur-fast), color var(--dur-fast);
 }
-.mini:hover { border-color: var(--acc); }
-.mini:disabled { opacity: 0.45; cursor: default; }
-.mini.primary { background: #2b4a7d; border-color: #3f6ba8; }
-.mini.danger { background: #5a2b2b; border-color: #8a4444; }
+.mini:hover { border-color: var(--bd2); background: color-mix(in srgb, var(--panel2) 70%, var(--ink) 8%); }
+.mini:disabled { opacity: 0.45; cursor: not-allowed; }
+.mini.primary {
+  background: color-mix(in srgb, var(--orange) 18%, var(--panel2));
+  border-color: color-mix(in srgb, var(--orange) 55%, var(--bd2));
+  color: var(--orange2);
+  font-weight: 600;
+}
+.mini.primary:hover { border-color: var(--orange); background: color-mix(in srgb, var(--orange) 26%, var(--panel2)); }
+.mini.danger {
+  background: transparent;
+  border-color: color-mix(in srgb, var(--red) 45%, var(--bd2));
+  color: color-mix(in srgb, var(--red) 78%, var(--ink));
+}
+.mini.danger:hover { border-color: var(--red); background: var(--tint-red); color: color-mix(in srgb, var(--red) 88%, var(--ink)); }
 .pill {
   display: inline-block;
   padding: 1px 6px;
-  border-radius: 8px;
+  border-radius: 999px;
   font-size: 11px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--bd2);
   background: var(--bg3);
+  color: var(--fg2);
 }
-.pill.ok { color: var(--ok); border-color: #2f5a41; }
-.pill.warn { color: var(--warn); border-color: #5a4a2b; }
-.pill.err { color: var(--err); border-color: #5a2f2f; }
+.pill.ok { color: var(--ok); border-color: color-mix(in srgb, var(--green) 40%, var(--bd)); background: var(--tint-green); }
+.pill.warn { color: var(--warn); border-color: color-mix(in srgb, var(--yellow) 40%, var(--bd)); background: var(--tint-yellow); }
+.pill.err { color: color-mix(in srgb, var(--red) 85%, var(--ink)); border-color: color-mix(in srgb, var(--red) 40%, var(--bd)); background: var(--tint-red); }
 .tip { color: var(--fg2); font-size: 11px; margin: 6px 0 0; }
 .tip.warn { color: var(--warn); }
-.tip.err { color: var(--err); }
+.tip.err { color: color-mix(in srgb, var(--red) 85%, var(--ink)); }
 .hr { height: 1px; background: var(--line); margin: 8px 0; }
 .btnrow { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+/* 日志区 = kit 的日志窗口径（.pk-log）：深底 + 等宽 + 自动换行 */
 pre#log {
   margin: 0;
   max-height: 220px;
   overflow: auto;
-  background: #14161a;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  padding: 6px 8px;
-  font-family: Consolas, "Courier New", monospace;
-  font-size: 11px;
-  color: #c8d0da;
+  background: var(--code);
+  border: 1px solid var(--bd);
+  border-radius: var(--r-md);
+  padding: 8px 10px;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.55;
+  color: color-mix(in srgb, var(--ink) 86%, var(--muted));
   white-space: pre-wrap;
   word-break: break-all;
+  tab-size: 2;
 }
 .toast {
   position: fixed;
   left: 50%;
   bottom: 14px;
   transform: translateX(-50%);
-  background: #33383f;
-  border: 1px solid var(--line);
+  background: var(--panel2);
+  border: 1px solid var(--bd2);
   color: var(--fg);
   padding: 6px 12px;
-  border-radius: 6px;
+  border-radius: var(--r-md);
   font-size: 12px;
   max-width: 90%;
+  box-shadow: var(--shadow-pop);
 }
-.toast.ok { border-color: #2f5a41; }
-.toast.err { border-color: #5a2f2f; }
+.toast.ok { border-color: color-mix(in srgb, var(--green) 55%, var(--bd2)); background: var(--tint-green); color: var(--green); }
+.toast.err { border-color: color-mix(in srgb, var(--red) 55%, var(--bd2)); background: var(--tint-red); color: color-mix(in srgb, var(--red) 85%, var(--ink)); }

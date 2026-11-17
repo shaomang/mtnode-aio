@@ -925,8 +925,8 @@ body.ef-skin .mt-dialog-box {
     linear-gradient(to top right,
       transparent calc(50% - var(--ef-cut-w)),
       var(--ef-edge) calc(50% - var(--ef-cut-w)),
-      var(--ef-edge) 50%,
-      transparent 50%) no-repeat right top / 18px 18px border-box,
+      var(--ef-edge) calc(50% + 1px),
+      transparent calc(50% + 1px)) no-repeat right top / 18px 18px border-box,
     linear-gradient(var(--ef-edge), var(--ef-edge)) no-repeat right top / 0% 1px border-box,
     linear-gradient(var(--ef-edge), var(--ef-edge)) no-repeat right top / 1px 0% border-box,
     linear-gradient(180deg, #1d1d1d, #161616);
@@ -959,8 +959,8 @@ body.ef-skin .overlay-box.author-box {
     linear-gradient(to top right,
       transparent calc(50% - var(--ef-cut-w)),
       var(--ef-edge) calc(50% - var(--ef-cut-w)),
-      var(--ef-edge) 50%,
-      transparent 50%) no-repeat right top / 18px 18px border-box,
+      var(--ef-edge) calc(50% + 1px),
+      transparent calc(50% + 1px)) no-repeat right top / 18px 18px border-box,
     linear-gradient(var(--ef-edge), var(--ef-edge)) no-repeat right top / 0% 1px border-box,
     linear-gradient(var(--ef-edge), var(--ef-edge)) no-repeat right top / 1px 0% border-box,
     linear-gradient(180deg, #1d1d1d, #161616);
@@ -1646,8 +1646,8 @@ body.ef-skin .apps-modal-box {
     linear-gradient(to top right,
       transparent calc(50% - var(--ef-cut-w)),
       var(--ef-edge) calc(50% - var(--ef-cut-w)),
-      var(--ef-edge) 50%,
-      transparent 50%) no-repeat right top / 16px 16px border-box,
+      var(--ef-edge) calc(50% + 1px),
+      transparent calc(50% + 1px)) no-repeat right top / 16px 16px border-box,
     linear-gradient(180deg, var(--panel2), var(--panel));
   clip-path: polygon(0 0, calc(100% - 16px) 0, 100% 16px, 100% 100%, 0 100%);
   animation: ef-panel-breath 5.6s ease-in-out .3s infinite;
@@ -1666,13 +1666,18 @@ body.ef-skin .apps-modal-head {
   color: var(--ef-olive);
 }
 
-/* 选中页签：边框与那条斜切边同色（都读 --tab-edge，见 canvas.css 的 .wf-tab::after），
-   顶边强调线跟着主题强调色走 —— 终末地里也是「一排硬边档案页签」。 */
+/* 选中页签：边框与那条斜切边同色（都读 --tab-edge，见 canvas.css 的 .wf-tab 背景色带），
+   顶边强调线跟着主题强调色走 —— 终末地里也是「一排硬边档案页签」。
+   边框 / 斜切线一律跟顶边同色（--ef-signal）：原先取 --ef-olive，在青 / 蓝两档主题里
+   那支变量是橙 #ff8f2e，选中页签就挂了一圈与主题无关的橘黄边。 */
 body.ef-skin .wf-tab.active,
 body.ef-skin .wf-tab.on {
-  --tab-edge: var(--ef-olive);
-  background: rgba(var(--ef-signal-rgb), .1);
-  border-color: var(--ef-olive);
+  --tab-edge: var(--ef-signal);
+  /* 只换那层着色（--tab-fill），别用 background / background-color 简写 ——
+     前者会把 canvas.css 里那条斜边色带一起抹掉（斜边又断线），后者会把页签那层
+     不透明实底换成半透明（选中页就盖不住画布上沿的分割线了，见 .wf-tab）。 */
+  --tab-fill: rgba(var(--ef-signal-rgb), .1);
+  border-color: var(--ef-signal);
   color: var(--ef-signal-2);
   box-shadow: inset 0 2px 0 var(--ef-signal);
 }
@@ -2620,8 +2625,8 @@ body.ef-skin .run-queue {
     linear-gradient(to top right,
       transparent calc(50% - var(--ef-cut-w)),
       var(--ef-frame) calc(50% - var(--ef-cut-w)),
-      var(--ef-frame) 50%,
-      transparent 50%) no-repeat right top / 14px 14px border-box,
+      var(--ef-frame) calc(50% + 1px),
+      transparent calc(50% + 1px)) no-repeat right top / 14px 14px border-box,
     linear-gradient(180deg, var(--ef-panel), var(--ef-surface));
 }
 

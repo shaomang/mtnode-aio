@@ -1,32 +1,12 @@
-:root {
-  --bg: #0e1117;
-  --bg-soft: #12161f;
-  --panel: #171c26;
-  --panel-2: #1d2331;
-  --text: #e9edf5;
-  --muted: #98a2b6;
-  --faint: #6f7a8f;
-  --accent: #7c9cff;
-  --accent-2: #59d3b0;
-  --ok: #46d39a;
-  --warn: #f0b429;
-  --danger: #ff6b6b;
-  --border: #2a3243;
-  --border-soft: #232a38;
-  --mono: ui-monospace, "Cascadia Mono", Consolas, "Courier New", monospace;
-}
+/* MOSS-Music 控制台窗 · 只放布局
+   配色 / 按钮 / 输入 / 状态胶囊 / 日志一律来自插件共享样式表 ../../plugins/plugin-kit.css
+   （令牌 --bg / --panel / --ink / --muted / --bd / --cyan / --green / --yellow / --red …）。
+   本文件不定义调色板：下面出现的颜色全部引用 kit 的令牌或由令牌派生的 color-mix。 */
 
-* { box-sizing: border-box; }
-html, body {
-  margin: 0;
-  padding: 0;
-  height: 100%;
-  background: var(--bg);
-  color: var(--text);
-  font: 13px/1.5 system-ui, "Segoe UI", "Microsoft YaHei", sans-serif;
-}
+html, body { height: 100%; }
 
 body { overflow: hidden; }
+
 .app {
   display: flex;
   flex-direction: column;
@@ -41,63 +21,25 @@ header {
   flex-direction: column;
   gap: 4px;
 }
+
 .title-row {
   display: flex;
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
 }
-h1 {
-  margin: 0;
-  font-size: 15px;
-  font-weight: 650;
-  letter-spacing: 0.2px;
-}
+
 .sub {
   color: var(--muted);
   font-size: 12px;
   word-break: break-all;
 }
 
-.badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 2px 8px;
-  border-radius: 999px;
-  border: 1px solid var(--border);
-  font-size: 11px;
-  color: var(--muted);
-  white-space: nowrap;
-}
-.badge::before {
-  content: "";
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: currentColor;
-}
-.badge.on { color: var(--ok); border-color: #2d6a52; }
-.badge.warn { color: var(--warn); border-color: #6b5418; }
-.badge.off { color: var(--faint); }
-
 .card {
-  background: var(--panel);
-  border: 1px solid var(--border-soft);
-  border-radius: 12px;
   padding: 11px 12px;
-  display: flex;
-  flex-direction: column;
   gap: 9px;
 }
-.card > h2 {
-  margin: 0;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--muted);
-  letter-spacing: 0.4px;
-  text-transform: uppercase;
-}
+
 .row {
   display: flex;
   gap: 8px;
@@ -107,107 +49,59 @@ h1 {
 .row.tight { gap: 6px; }
 .spacer { flex: 1; }
 
-button {
-  border: 1px solid var(--border);
-  background: var(--panel-2);
-  color: var(--text);
-  border-radius: 8px;
-  padding: 7px 12px;
-  font: inherit;
-  font-size: 12px;
-  cursor: pointer;
-  transition: border-color 0.15s ease, background 0.15s ease, opacity 0.15s ease;
-}
-button:hover:not(:disabled) { border-color: var(--accent); }
-button.primary {
-  background: linear-gradient(180deg, #2c3f6b, #243352);
-  border-color: #3c5c96;
-}
-button.ghost { background: transparent; }
-button.danger { background: #3a2228; border-color: #7e3a45; color: #ffc9c9; }
-button:disabled { opacity: 0.42; cursor: not-allowed; }
+/* 量化档 / 提问预设这类「胶囊按钮」：kit 的 .pk-btn 打底，这里只把圆角做圆 */
 button.chip { padding: 5px 10px; border-radius: 999px; }
-button.chip.active {
-  border-color: var(--accent-2);
-  color: #bff8e7;
-  background: #1d3a33;
-}
-
-input[type="text"], textarea, select {
-  width: 100%;
-  border: 1px solid var(--border);
-  background: var(--bg-soft);
-  color: var(--text);
-  border-radius: 8px;
-  padding: 8px 10px;
-  font: inherit;
-  outline: none;
-}
-input[type="text"]:focus, textarea:focus, select:focus { border-color: var(--accent); }
-textarea { resize: vertical; min-height: 68px; line-height: 1.5; }
-select { cursor: pointer; }
 
 .path {
   flex: 1;
   min-width: 120px;
   color: var(--muted);
-  font-size: 12px;
   word-break: break-all;
 }
-.meta { color: var(--muted); font-size: 12px; }
-.faint { color: var(--faint); font-size: 12px; }
-.warn { color: var(--warn); }
-.danger { color: var(--danger); }
-.ok { color: var(--ok); }
 
+.meta { color: var(--muted); font-size: 12px; }
+
+/* 文案语气：只用 kit 的语义令牌，不写自有色值 */
+.faint { color: var(--muted); font-size: 12px; }
+.warn { color: var(--yellow); }
+.danger { color: var(--red); }
+.ok { color: var(--green); }
+
+/* 提示条：默认警示（黄），info = 中性信息（青），err = 失败（红） */
 .notice {
-  border-radius: 10px;
-  border: 1px solid #6b5418;
-  background: #2a2414;
-  color: #f0d27a;
+  border-radius: var(--r-md);
+  border: 1px solid color-mix(in srgb, var(--yellow) 45%, var(--bd));
+  background: var(--tint-yellow);
+  color: var(--yellow);
   padding: 8px 10px;
   font-size: 12px;
   line-height: 1.5;
 }
 .notice.info {
-  border-color: #2c4a6b;
-  background: #141f2c;
-  color: #a8c8f0;
+  border-color: color-mix(in srgb, var(--cyan) 45%, var(--bd));
+  background: var(--tint-cyan);
+  color: var(--cyan2);
 }
 .notice.err {
-  border-color: #6b2a2a;
-  background: #2a1717;
-  color: #ffb4b4;
+  border-color: color-mix(in srgb, var(--red) 45%, var(--bd));
+  background: var(--tint-red);
+  color: color-mix(in srgb, var(--red) 85%, var(--ink));
 }
 .notice.hidden, .hidden { display: none !important; }
 
-.bar {
-  height: 8px;
-  border-radius: 999px;
-  background: #0a0d13;
-  border: 1px solid var(--border-soft);
-  overflow: hidden;
-}
-.bar > i {
-  display: block;
-  width: 0;
-  height: 100%;
-  background: linear-gradient(90deg, #2f6fd0, var(--accent));
-  transition: width 0.25s ease;
-}
-.bar.vram > i { background: linear-gradient(90deg, #2f9e6b, var(--accent-2)); }
-.bar.util > i { background: linear-gradient(90deg, #a97710, var(--warn)); }
+/* 显存 / 利用率两根条：进度条本体用 kit 的 .pk-progress，这里只排「标题 + 条」的间距 */
 .bar-row { display: flex; flex-direction: column; gap: 4px; }
 
+/* 拖放区（虚线框 + hover 高亮，颜色取 kit 令牌） */
 .drop {
-  border: 1px dashed var(--border);
-  border-radius: 10px;
+  border: 1px dashed var(--bd2);
+  border-radius: var(--r-md);
   padding: 8px 10px;
-  color: var(--faint);
+  color: var(--muted);
   font-size: 12px;
   text-align: center;
 }
-.drop.hover { border-color: var(--accent-2); color: var(--accent-2); }
+.drop.hover { border-color: var(--cyan); color: var(--cyan); }
 
 audio {
   width: 100%;
@@ -215,50 +109,33 @@ audio {
   filter: invert(0.88) hue-rotate(180deg);
 }
 
+/* 回答正文与日志窗都是 kit 的 .pk-log（等宽 + 深底 + 换行），这里只加高度上限 */
 #answer {
-  margin: 0;
+  flex: 0 0 auto;
   max-height: 220px;
-  overflow: auto;
-  white-space: pre-wrap;
   word-break: break-word;
-  background: var(--bg-soft);
-  border: 1px solid var(--border-soft);
-  border-radius: 8px;
-  padding: 9px 10px;
-  font: 12px/1.6 var(--mono);
 }
 
 .cues {
   max-height: 170px;
   overflow: auto;
-  border: 1px solid var(--border-soft);
-  border-radius: 8px;
+  border: 1px solid var(--bd);
+  border-radius: var(--r-sm);
 }
 .cues table { width: 100%; border-collapse: collapse; font-size: 12px; }
 .cues td {
   padding: 4px 8px;
-  border-bottom: 1px solid var(--border-soft);
+  border-bottom: 1px solid var(--bd);
   vertical-align: top;
 }
-.cues td.time { width: 92px; color: var(--accent-2); font-family: var(--mono); white-space: nowrap; }
+.cues td.time { width: 92px; color: var(--cyan2); font-family: var(--mono); white-space: nowrap; }
 .cues tr:last-child td { border-bottom: 0; }
 
 .files { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--muted); }
-.files code { color: #c6d2e8; font-family: var(--mono); word-break: break-all; }
+.files code { color: var(--ink); font-family: var(--mono); word-break: break-all; }
 
-#console {
-  height: 170px;
-  overflow: auto;
-  white-space: pre-wrap;
-  word-break: break-all;
-  background: #0a0d13;
-  border: 1px solid var(--border-soft);
-  border-radius: 8px;
-  padding: 8px;
-  font: 11px/1.45 var(--mono);
-  color: #c3cfe5;
-}
-#console:empty::before { content: "（暂无日志）"; color: var(--faint); }
+#console { flex: 0 0 auto; height: 170px; }
+#console:empty::before { content: "（暂无日志）"; color: var(--muted); }
 
 @media (max-width: 480px) {
   .app { padding: 9px; }
