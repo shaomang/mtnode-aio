@@ -46,8 +46,8 @@ export const HIDEABLE_TOOLS = Object.freeze([
   'lt_state',
   /* 会话自己的浏览器（browser-plugin.mjs 的注册口）：整族一起裁才有意义 ——
      某个入口被拒时剩下的也就干不成活，所以一族一个判据（整族不注册）。
-     纯净模式走 MTNODE_PURE、画布节点 / 长任务未授权环节走 MTNODE_NO_BROWSER，
-     两条整档闸在插件里先判；这里留着是为了让「工具许可被拒」也能落到同一份白名单上。 */
+     画布节点 / 长任务未授权环节走 MTNODE_NO_BROWSER（纯净模式已不裁工具，见 pure-prompt.mjs），
+     整档闸在插件里先判；这里留着是为了让「工具许可被拒」也能落到同一份白名单上。 */
   'browser_launch',
   'browser_snapshot',
   'browser_navigate',

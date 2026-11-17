@@ -136,25 +136,25 @@
       mtnode-unattended:
         sandbox: workspace-write
         approval: ask
-    defaultPreset: mtnode-unattended
+    defaultPreset: danger-full-access
 
 - id: tool-bash
-  disabled: !!js process.platform === 'win32' || process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
+  disabled: !!js process.platform === 'win32' || process.env.MTNODE_CHAT_ISOLATE === '1'
 
 - id: tool-pwsh
-  disabled: !!js process.platform !== 'win32' || process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
+  disabled: !!js process.platform !== 'win32' || process.env.MTNODE_CHAT_ISOLATE === '1'
 
 - id: tool-jobs
-  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
+  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1'
 
 - id: fs-observation-policy
-  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
+  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1'
 
 - id: tool-fs
-  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
+  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1'
 
 - id: tool-fs-search
-  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
+  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1'
   config:
     sampleOverCapGlobResults: false
 
@@ -164,13 +164,13 @@
     maxBytes: 65536
 
 - id: skill
-  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
+  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1'
 
 - id: skill-filesystem
-  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
+  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1'
 
 - id: tool-skill
-  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
+  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1'
 
 - id: plan-mode
   disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
@@ -178,35 +178,35 @@
     section: |
           You are in plan mode. Stay in plan mode until exit_plan_mode succeeds or the user switches the session mode. Imperative language to implement changes means plan the implementation, not execute it.
 
-- id: subagent  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
+- id: subagent  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1'
 
-- id: subagent-spawn-in-process  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
+- id: subagent-spawn-in-process  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1'
   config:
     providerName: spawn
 
-- id: subagent-fork-in-process  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
+- id: subagent-fork-in-process  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1'
   config:
     providerName: fork
 
-- id: tool-subagent-control  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
+- id: tool-subagent-control  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1'
 
-- id: tool-subagent-list-agents  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
+- id: tool-subagent-list-agents  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1'
 
-- id: tool-subagent  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
+- id: tool-subagent  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1'
   config:
     provider: spawn
     toolName: subagent
     backgroundMode: continuable
     # 委派嵌套上限:0 禁止委派,dsh 自身默认 3。MTNode 默认收紧到 1(与 OpenCode 的
     # subagent_depth 默认一致);用户在「设置 · 智能能力 · 子代理」改了之后,由宿主
-    # dsh-agent-policy.js 改写本值(main.js 启动时与每次保存配置后)。    maxDepth: 1
+    # dsh-agent-policy.js 改写本值(main.js 启动时与每次保存配置后)。    maxDepth: 2
 
-- id: tool-subagent-fork  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
+- id: tool-subagent-fork  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1'
   config:
     provider: fork
     toolName: subagent_fork
     backgroundMode: one-shot
-    # 同 tool-subagent:默认收紧到 1 层嵌套,由 dsh-agent-policy.js 按用户设置改写。    maxDepth: 1
+    # 同 tool-subagent:默认收紧到 1 层嵌套,由 dsh-agent-policy.js 按用户设置改写。    maxDepth: 2
 
 - id: spill-policy
   config:
@@ -269,6 +269,186 @@
         model: deepseek-v4-pro
         maxTokens: 256000
         retainTokens: 32768
+      - provider: mtnode_p1
+        model: cat-jam-free
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p1
+        model: deepseek-v4-pro
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p1
+        model: deepseek-v4.1-flash
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p1
+        model: glm-5.2
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p1
+        model: glm-5.3
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p1
+        model: glm-5.3-flash
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p1
+        model: hy3
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p1
+        model: hy4-preview
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p1
+        model: kimi-k2.7-code
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p1
+        model: kimi-k3
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p1
+        model: longcat-2.0
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p1
+        model: longcat-2.5-preview-free
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p1
+        model: mimo-v2.5
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p1
+        model: mimo-v2.5-pro
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p1
+        model: mimo-v2.6-flash
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p1
+        model: mimo-v2.6-pro
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p1
+        model: space-bunny
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p1
+        model: step-5-preview-free
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p1
+        model: grok-4.7
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p1
+        model: muse-spark-1.2-contributor
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p1
+        model: muse-spark-1.3-contributor
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p1
+        model: gpt-5.6-luna
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p1
+        model: gpt-6-luna
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p1
+        model: claude-haiku-5-5
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p1
+        model: minimax-m3
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p1
+        model: minimax-m3.1-flash
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p1
+        model: step-5-preview
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p1
+        model: beam-free
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p1
+        model: qwen3.8-max
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p1
+        model: qwen3.8-flash
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p1
+        model: qwen3.7-plus
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p1
+        model: kimi-k3.1-pro
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p1
+        model: iceman-contributor-free
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p1
+        model: gemini-4-argon
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p1
+        model: hy4
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p1
+        model: longcat-2.5-free
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p4
+        model: aoi
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p4
+        model: Deepseek
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p4
+        model: gpt-sovits
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p4
+        model: "123"
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p5
+        model: claude-opus-5-5-thinking
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p5
+        model: claude-opus-5-5
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p5
+        model: gpt-6-luna
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p6
+        model: deepseek-v4-flash
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p6
+        model: gpt-image-2.5-all
+        maxTokens: 32768
+        retainTokens: 32768
 
 # 工具呈现（PTC）：本行已被回滚，MTNode 现跑 dsh-tools 的默认 native。
 # 为什么不留在树上：实测 both 能生效（run_code 进工具负载 +2.1K 字符），但 run_code
@@ -284,12 +464,12 @@
 # 表达式写成 && / || 而非三元：!!js 是 YAML 纯量，` : ` 会被当成映射切断。
 
 - id: tool-todo
-  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
+  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1'
   config:
     allowParallelInProgress: true
 
 - id: tool-goal
-  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
+  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1'
 
 - id: repeat-tool-reminder
   config:
@@ -444,7 +624,7 @@
     # 精确字符串替换编辑工具（宿主工作区内的文件改写走它，沙箱收紧到 workspace-write）。
     - id: tool-str-replace-editor
       name: '@deepseek-ai/dsh-tool-str-replace-editor'
-      disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
+      disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1'
       config:
         maxOutputChars: 16000
 
@@ -486,7 +666,7 @@
     # MTNode 画布工具:模型可在当前工作流中创建/改标题/连线/@引用/自动排版节点。
     - id: mtnode-canvas
       name: './canvas-plugin.mjs'
-      disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
+      disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1'
 
     # MTNode GUI 工具（mtnode_gui）：**只有应用开发会话这一档注册**（网关按 run 参数 appDebug
     # 下发 env MTNODE_APP_DEBUG=1，见 gateway.mjs 的 getRuntime / runtimeKey 的 ad: 成分）。
@@ -495,7 +675,7 @@
     # 结果按 kind:'gui' 原路回给运行时。其余会话 / 节点一律不注册（插件 register 口自己判 env）。
     - id: mtnode-gui
       name: './gui-plugin.mjs'
-      disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
+      disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1'
 
     # MTNode 开发调试工具（mtnode_dev）：**只有「开发调试」总开关打开的那一轮注册**
     # （网关按 run 参数 devDebug 下发 env MTNODE_DEV_DEBUG=1，见 gateway.mjs 的 getRuntime /
@@ -504,13 +684,13 @@
     # dsh:dev → 主进程，结果按 kind:'dev' 原路回）。默认关 = 其余会话一步都不发它的定义。
     - id: mtnode-dev
       name: './dev-plugin.mjs'
-      disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
+      disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1'
 
     # MTNode 数据库工具:接入数据库副本节点的任务经 mtnode_db 查询事实
     # （list/query/get/calc，只读、确定性检索，宿主按接入关系放行或拒绝）。
     - id: mtnode-db
       name: './db-plugin.mjs'
-      disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
+      disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1'
 
     # MTNode 项目 manifest 工具（mtnode_manifest）：资产登记 / asset_id@rev / 依赖图 /
     # 增量重建计划（stale_plan）/ 引用校验。文件是 <工程根>/manifest.json，由主进程
@@ -518,14 +698,14 @@
     # （会话不中断，与 db / facts 同一口径）。缺口文档 P0-2 的 G2+G3。
     - id: mtnode-manifest
       name: './manifest-plugin.mjs'
-      disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
+      disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1'
 
     # MTNode AI 事实库工具:任何 Agent 会话 / 专家 / 节点默认可用 mtnode_facts 索引本画布的
     # AI 事实库（每张画布一份极简条例库,list/query/get/write/delete/pin;宿主按绑定画布放行,
     # 没有绑定画布则回错误文本,会话不中断）。
     - id: mtnode-ai-facts
       name: './ai-facts-plugin.mjs'
-      disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
+      disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1'
 
     # MTNode 长周期任务工具:属于某个长任务运行的节点经 lt_state 读共享状态、写自己
     # 声明的输出键。长期结论的沉淀改走 mtnode_facts（本画布 AI 事实库）;原 lt_memory 已下线
@@ -533,16 +713,16 @@
     # 非长任务轮一律拒绝(同 mtnode_db 口径)。
     - id: mtnode-longtask
       name: './longtask-plugin.mjs'
-      disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
+      disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1'
 
     # MTNode 截屏标注工具:mtnode_screenshot 让 Agent 请用户「截一块屏 + 标注两笔」,
     # 拿回成品 PNG 的绝对路径 + 编号清单（坐标按裁剪图原点左上）。抢屏 / 浮层 / 落盘 /
     # 剪贴板全在宿主（主进程 screenshot-overlay.js + 浮层页 renderer/screenshot.html）,
     # 插件只经同一条桥转发;抢屏之前宿主会先弹询问窗,用户拒绝 = canceled,不是失败。
-    # 纯净模式（MTNODE_PURE）与 BongoChat 隔离态不挂:那两档没有宿主窗口。
+    # BongoChat 隔离态不挂:那一档没有宿主窗口（纯净模式照挂:它只裁提示词，不动工具）。
     - id: mtnode-screenshot
       name: './screenshot-plugin.mjs'
-      disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
+      disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1'
 
     # MTNode 素材库 / 截图工具:mtnode_assets 让「准备素材」类运行能列出素材库
     # （三视图等人设参考）、读出一条内容的绝对路径（交给 mtnode_vision 或交付端子），
@@ -551,26 +731,26 @@
     # 插件只经同一条桥转发。被「素材库与截图」许可拒掉时整只不注册。
     - id: mtnode-assets
       name: './assets-plugin.mjs'
-      disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
+      disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1'
 
     # MTNode 本地媒体工具（audio_transcribe / ffmpeg）：Agent 需要「听音频、看视频」时直接用
     # 本机能力 —— 转写走运行时里的官方本地 SenseVoice（与录音听写同一份权重），
     # ffmpeg 走本机可执行文件（PATH → Remotion 安装目录 → 其它后端便携），
     # 都不要去另装 whisper / Qwen-ASR / 在线 ASR 或自己下载 ffmpeg（工具描述与技能里写死）。
     # 找不到 ffmpeg 时工具报错并提示去插件里安装 Remotion（应用本身不打包 ffmpeg）。
-    # 纯净模式（MTNODE_PURE）与 BongoChat 隔离态不挂：那两档没有宿主桥 / 语音服务。
+    # BongoChat 隔离态不挂：那一档没有宿主桥 / 语音服务（纯净模式照挂，同上）。
     - id: mtnode-media
       name: './media-plugin.mjs'
-      disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
+      disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1'
 
     # MTNode 会话自己的浏览器（browser_* 工具面）：给会话一台常驻的 Edge/Chrome
     # （独立用户数据目录＝跨会话保持登录态，窗口可见＝用户能实时看它在干什么）。
     # 进程与 CDP 驱动全在网关侧（browser-host.mjs，零新依赖：Node≥22 内置 WebSocket），
-    # 插件只经同一条桥转发帧。纯净模式（MTNODE_PURE）与画布智能节点 / 长任务未授权的
-    # 环节（MTNODE_NO_BROWSER）整只不注册 —— 会话专属能力，节点侧一律不注册。
+    # 插件只经同一条桥转发帧。画布智能节点 / 长任务未授权的环节（MTNODE_NO_BROWSER）
+    # 整只不注册 —— 会话专属能力，节点侧一律不注册（纯净模式照挂：它就是会话）。
     - id: mtnode-browser
       name: './browser-plugin.mjs'
-      disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
+      disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1'
 
     # MTNode 用户工具节点:把画布中的工具节点 / 库中「随时可调用」的工具注册成
     # 会话可见的函数调用工具(func call)。描述子由宿主在每次 run 前经
@@ -578,7 +758,7 @@
     # 模型发起调用 → 桥帧回宿主执行节点内部图 → 结果回传(失败回错误文本)。
     - id: mtnode-tools
       name: './tools-plugin.mjs'
-      disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
+      disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1'
 
     # 按运行裁剪可见工具集：引擎自带工具（目标 / 任务清单 / 子代理 / 后台任务 / 提问）注册在
     # @deepseek-ai 的包里，我们改不到注册，就在 agent 创建窗口用 ctx.tools.restrict({deny})
@@ -589,7 +769,6 @@
     # 真源是 dsh/gateway/tool-visibility.mjs。契约见 dsh/DESIGN.md「按运行裁剪可见工具集」。
     - id: mtnode-tool-visibility
       name: './plugins/tool-restrict-plugin.mjs'
-      disabled: !!js process.env.MTNODE_PURE === '1'
 
     # 思考强度按 run 下发（mtnode-effort）：gateway 把每轮生效档（经 reasoning-effort.mjs
     # 按路由能力表归一）经 env MTNODE_EFFORT 注入运行时，本插件在 agent/request waterfall
@@ -628,7 +807,10 @@
     - id: bongochat-prompt
       name: './plugins/bongochat-prompt.mjs'
 
-    # 纯净模式：MTNODE_PURE=1 时移除 deployment:persona（会话「纯净模式」按钮开启）
+    # 纯净模式：MTNODE_PURE=1 时清空 system prompt 的 sections / contexts（会话「纯净模式」
+    # 按钮开启）。**它只管提示词，不动工具注册** —— 纯净轮照样拿得到全部工具
+    # （用户口径：纯净模式只省 token，不许把工具也一起裁掉；本文件里凡是有工具面的插件行
+    # 一律不再按 MTNODE_PURE 禁用，只有纯注入提示词的 agent-instructions / plan-mode 仍按它禁用）。
     - id: pure-prompt
       name: './plugins/pure-prompt.mjs'
 
@@ -676,3 +858,11 @@
 
 
 # ── user plugins (managed from MTNode settings) ──
+
+
+- id: user-mcp-mwl4irbc
+  name: '@deepseek-ai/dsh-mcp-client'
+  config:
+    serverName: 'mtnode-self'
+    transport: 'streamable-http'
+    url: 'http://127.0.0.1:63225/mcp?token=9ccc694d6c7fafd91c575bbee4c88b6551c448605d8ecde7'

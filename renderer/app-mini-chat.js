@@ -1112,6 +1112,10 @@
           return;
         }
         input.value = "";
+        /* 清空即收高度（app-grow-input.js：发送后回到基线，不等模块那条 250ms 兜底） */
+        try {
+          if (window.MTGrowInput && MTGrowInput.refresh) MTGrowInput.refresh(input);
+        } catch (_) {}
         /* 发出去了 = 草稿使命结束（这是唯一会清草稿的地方；Esc / ✕ / F1 关窗都不清） */
         clearDraft();
         /* 乐观回显：主窗那一拍推送回来之前，先把用户这句显示出来（灰气泡）。
@@ -1253,6 +1257,12 @@
     });
     /* 粘贴截图（本轮需求）：这里只接「图」，纯文本粘贴照旧交给 textarea 自己 */
     input.addEventListener("paste", onPaste);
+    /* 输入框自适应高度 + 上边框可拖（renderer/app-grow-input.js，与主窗四只同一套口径）：
+       这只不记忆高度（每次开窗都是最低两行），宿主 = 整个小窗（正文区 .mc-scroll 自己让位）。 */
+    try {
+      if (window.MTGrowInput && MTGrowInput.attach)
+        MTGrowInput.attach(input, { hosts: [".mc-shell"] });
+    } catch (_) {}
     /* 正文变了就重画胶囊条（删图 / 手改图行 / 撤销都要跟上），并跟着刷新草稿 */
     input.addEventListener("input", function () {
       renderImgChips();

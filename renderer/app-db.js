@@ -3716,9 +3716,16 @@ function dshRunOnce(input, opts) {
   const nodeScoped = isCanvasScopedAgentNode(opts.node);
   const nodeLock = nodeScoped && !ltCanvasRead;
   const canvasReadOnly = nodeScoped && ltCanvasRead;
-  /* 纯净模式（会话输入区「纯净模式」按钮）：整段 system prompt 置空，
-     不含技能索引 / 数据库接地 / 工具策略 / 语言口味 —— 模型输入 = 纯粹的用户输入。
-     网关侧 preset 强制走空文本档（pure），引擎人设由 MTNODE_PURE 标记移除。 */
+  /* 纯净模式（会话输入区「纯净模式」按钮；新会话默认开，见 app-assist.js newAgentSession）：
+     **不再等于「整段 system prompt 置空」**，而是「只按本轮用户原话命中才注入分节」——
+     命中表真源是 renderer/app-prompt-sections.js 的 purePromptSections（会话侧 agentSessionSend
+     用的是同一个函数，不许出现第二套 pure 语义）。一类都没命中 → 分节表为空 → systemPrompt
+     空串，行为与旧的纯净模式逐字一致；用户手动关掉纯净开关 = 全量注入。
+     工具侧口径（用户口径）：**纯净模式不影响工具可见集** —— pure 位只让网关强制空预设文本、
+     并让 pure-prompt 插件清空提示段；画布 / 数据库 / 文件 / 子代理 / 浏览器等插件照常注册
+     （dsh/gateway/cordis.yml 里的 MTNODE_PURE 门控已全部摘掉），网关也不再因 pure 清空
+     用户工具描述子。下面 leanOn / canvasFreeOn / noReadOn 这些「pure 归零」的判据保留：
+     它们只减不加（纯净轮由宿主侧先把这几位归零），不影响本口径。 */
   const pureOn = !!opts.pure;
   /* 按运行裁剪可见工具集（下发网关 → spawn env → canvas-plugin 的 register()）：
      · leanOn = 设置「精简工具负载」：整个不注册 mtnode_app / mtnode_vision；
@@ -3817,9 +3824,9 @@ function dshRunOnce(input, opts) {
      上的工具节点 + 工具库中开启「随时可调用」的工具。pure 会话不下发（网关不注入运行时，
      纯净模式只留联网搜索）。用 boundWf 而不是 S.wf：画布看着 A、工具与库接地按 B 的
      串台从此不可能 —— 描述子来自哪张图，tool-run 帧就只在那张图上找执行目标。 */
-  const agentTools = pureOn
-    ? { descs: [], byKey: {} }
-    : await agentUserToolsSnapshot(boundWf);
+  /* 纯净模式也照常下发（用户口径：纯净只裁提示词，工具照给 —— 以前这里 pureOn 给空表，
+     纯净轮的工具节点一个都调不到；网关侧 runTools 的旧口径一并改掉）。 */
+  const agentTools = await agentUserToolsSnapshot(boundWf);
   /* 分节装配要先有配置指纹（快照的准入条件），而 dshRunSigOf 先读基础七项
      （workspace/model/provider/preset/effort/pure/maxTokens）再读网关 runtimeKey
      同源成分 —— 先把它们全定成局部量，探针与 runParams 共用同一份取值：
@@ -3955,54 +3962,87 @@ function dshRunOnce(input, opts) {
        不把回放内容算进来 —— 那是每轮变化的数据，不是 runtime 配置。 */
     webTools: runWebSearch ? 1 : 0,
   });
-  /* 本轮下发的 systemPrompt 不是完整一节时（pure 轮整段置空；续跑轮的宿主人设已经落在
-     那份 session 里，见 dshRunTask 的 systemPrompt:""），一律作废快照并走全量旁路 ——
+  /* 命中不到完整一节的情况（续跑轮的宿主人设已经落在被 resumed 的 session 里，见 dshRunTask
+     的 systemPrompt:""；纯净轮只发命中的那几节）一律作废快照并走全量旁路 ——
      绝不允许「上一轮发过」被当成本轮可以省的依据。 */
   const resumeRound = !!String(opts.resumeSession || "").trim();
   if (pureOn || resumeRound) invalidatePromptSections(runKey);
+  /* 纯净轮的命中表（真源 = app-prompt-sections.js 的 purePromptSections，会话侧 agentSessionSend
+     用的是同一个函数）：输入 = **这一轮用户自己说的那句话**（opts.userText —— 调用方在拼
+     【系统注入 · 本轮流程指令】之前就把它交进来）。一节都没命中 → 空表 → 下面出空串 =
+     与旧的纯净模式逐字一致。
+     为什么不能拿 input / roundText 算（真机现场 · 纯闲聊也下发 2849 字符）：会话侧 input =
+     「用户(最新)：<原话>」+「【系统注入 · 本轮流程指令】…」，而那段指令文本自己就带
+     「Skill」「画布」「节点」这些字（见 app-plan.js 的 planFlowDirective）—— 拿整条 input
+     去算命中，命中表恒为真，纯净模式等于永远不生效。roundText 仍留给工具族按需注册
+     （那边的判据本来就该看整轮输入），分节命中只看 userText。 */
+  const pureInput =
+    opts.userText == null
+      ? String(opts.roundText == null ? (typeof input === "string" ? input : "") : opts.roundText)
+      : String(opts.userText);
+  const pureSections =
+    pureOn && typeof purePromptSections === "function"
+      ? purePromptSections(pureInput, { planMode: !!opts.planMode })
+      : null;
   /* 七段片段来源与改造前一字不差，只把「顺序 + 丢空节 + 拼接」交给内核：
      节序即历史顺序（语言口味放最后，紧贴上下文尾部模型最容易照做），nodeLock 决定
      要不要 node_capability 节；diff 出厂关闭 → text 与旧的 join("\n\n") 逐字节等价。 */
-  const promptSections = pureOn
-    ? []
-    : buildSections([
-        {
-          id: PROMPT_SECTION_IDS.persona_host,
-          text: opts.systemPrompt || "",
-        },
-        { id: PROMPT_SECTION_IDS.skill_index, text: indexBlock },
-        {
-          id: PROMPT_SECTION_IDS.db_grounding,
-          text: dbGrounding,
-        },
-        {
-          id: PROMPT_SECTION_IDS.tool_policy,
-          /* 「本轮不注册读画布工具」那句只在 Gate A 单独生效时说：一旦走整档闸
-             （用户声明与画布无关），连 mtnode_canvas_edit 都没注册，那句「收尾用 edit
-             改本节点」就成了假指令 —— 此时改由人设说明整档口径。 */
-          text: agentToolPolicySystemNote({
-            nodeLock,
-            noCanvasRead: noReadOn && !noCanvasOn,
-            runKey,
-            /* 只读画布档（长任务环节勾了 canvasRead）：就地从伪节点标记算一遍，不引切片外的
-               局部量 —— 分节装配段被 smoke-systemprompt-sections 原样抠出来单独求值。 */
-            canvasReadOnly: !!(opts.node && opts.node._lt && opts.node._lt.canvasRead),
-          }),
-        },
-        {
-          id: PROMPT_SECTION_IDS.node_capability,
-          text: nodeLock ? agentNodeCapabilityNote() : "",
-        },
-        {
-          id: PROMPT_SECTION_IDS.plan_mode,
-          text: opts.planMode ? planModeSystemNote() : "",
-        },
-        /* 语言口味放最后（节序表把它钉在末位）：紧贴上下文尾部，模型最容易照做 */
-        { id: PROMPT_SECTION_IDS.lang_taste, text: agentLangTasteNote() },
-      ]);
-  const promptRender = pureOn
-    ? null
-    : renderSections(runKey, promptSections, { sig: runSig, full: resumeRound });
+  const promptSectionParts = [
+    {
+      id: PROMPT_SECTION_IDS.persona_host,
+      text: opts.systemPrompt || "",
+    },
+    { id: PROMPT_SECTION_IDS.skill_index, text: indexBlock },
+    {
+      id: PROMPT_SECTION_IDS.db_grounding,
+      text: dbGrounding,
+    },
+    {
+      id: PROMPT_SECTION_IDS.tool_policy,
+      /* 「本轮不注册读画布工具」那句只在 Gate A 单独生效时说：一旦走整档闸
+         （用户声明与画布无关），连 mtnode_canvas_edit 都没注册，那句「收尾用 edit
+         改本节点」就成了假指令 —— 此时改由人设说明整档口径。 */
+      text: agentToolPolicySystemNote({
+        nodeLock,
+        noCanvasRead: noReadOn && !noCanvasOn,
+        runKey,
+        /* 只读画布档（长任务环节勾了 canvasRead）：就地从伪节点标记算一遍，不引切片外的
+           局部量 —— 分节装配段被 smoke-systemprompt-sections 原样抠出来单独求值。 */
+        canvasReadOnly: !!(opts.node && opts.node._lt && opts.node._lt.canvasRead),
+      }),
+    },
+    {
+      id: PROMPT_SECTION_IDS.node_capability,
+      text: nodeLock ? agentNodeCapabilityNote() : "",
+    },
+    {
+      id: PROMPT_SECTION_IDS.plan_mode,
+      text: opts.planMode ? planModeSystemNote() : "",
+    },
+    /* 语言口味放最后（节序表把它钉在末位）：紧贴上下文尾部，模型最容易照做 */
+    { id: PROMPT_SECTION_IDS.lang_taste, text: agentLangTasteNote() },
+  ];
+  /* 纯净轮：只留本轮原话命中的那几节（persona_host 由调用方按同一份命中表裁过，原样透传，
+     它也可能是空串 → buildSections 照旧丢空节）；一节都没命中 → 空表 → systemPrompt 空串。 */
+  const promptSections = buildSections(
+    pureOn
+      ? !pureSections
+        ? /* 命中表函数不在（老沙箱只抠单文件）：退回旧的纯净模式 = 整段置空 */
+          []
+        : promptSectionParts.filter(
+            (p) =>
+              p.id === PROMPT_SECTION_IDS.persona_host ||
+              pureSections.has(p.id),
+          )
+      : promptSectionParts,
+  );
+  const promptRender = renderSections(runKey, promptSections, {
+    sig: runSig,
+    full: resumeRound,
+    /* 纯净轮每轮现算（命中表随本轮原话变），不留快照 —— 绝不让「上一轮发过」成为下一轮
+       可以省的依据（与上面那句 invalidate 同一口径：纯净轮进出都不带跨轮状态）。 */
+    record: !pureOn,
+  });
   const runParams = {
     workspace,
     input: String(input || ""),
@@ -4013,10 +4053,12 @@ function dshRunOnce(input, opts) {
     webSearchApiKey,
     /* 工具节点函数调用清单：网关按指纹分池并注入运行时 tools-plugin.mjs */
     tools: agentTools.descs,
-    systemPrompt: pureOn ? "" : promptRender.text,
+    /* 纯净轮不再是空串：命中哪几节就发哪几节，一节都没命中时 promptRender.text 自然是空串
+       （= 旧的纯净模式）。*/
+    systemPrompt: promptRender.text,
     /* 跨轮注入预留的出参（runKey + sig + 每节哈希）：老网关忽略即降级保底，
        等 dsh 线协议支持 session 常驻后据此只重注变化分节 */
-    sectionCache: pureOn ? undefined : promptRender.sectionCache,
+    sectionCache: promptRender.sectionCache,
     /* pure 标记必须原样下发网关：gateway 据此强制空预设文本，并给运行时进程
        注入 MTNODE_PURE（引擎侧 pure-prompt 插件与 cordis 门控全看这个环境变量）。
        此前 runParams 漏掉该字段 → 网关 pureFlag 恒为 false，纯净分支沦为死代码，

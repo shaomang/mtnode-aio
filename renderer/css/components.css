@@ -430,11 +430,23 @@
   color: var(--muted);
 }
 
-/* ── DeepSeek 官方 API Key 首次使用引导窗（renderer/app-deepseek-onboard.js）──
-   persistent：点蒙层 / 点外部不关；关窗只走窗内「稍后配置」/ ✕ / Esc。
-   内容 = 一张图文海报（renderer/deepseek-guide.svg）+ 两个官方入口 + Key 输入框。
-   海报点一下就放大到视口内（同一个宿主加 .zoom，不另开窗）。 */
+/* ── DeepSeek 官方 API Key 首次使用引导（renderer/app-deepseek-onboard.js）──
+   两层，都 persistent：点蒙层 / 点外部不关；关窗只走窗内按钮 / ✕ / Esc。
+   第一层 .ds-key-*    = 极简填 Key 窗（一行说明 + Key 输入 + 验证并保存 + 说明 + 稍后配置）；
+   第二层 .ds-poster-* = 图文海报窗（5 步海报 + 两个官方入口 + 说明文案），叠在第一层之上；
+   海报点一下就放大到视口内（海报宿主加 .zoom，不另开窗）。 */
 .ds-key-dlg .mt-dialog-box.ds-key-box {
+  width: min(480px, 96vw);
+  max-height: min(92vh, 900px);
+  border-top-color: #4D6BFE;
+}
+
+/* 海报窗压在上面一层（两层同在 .mt-dialog 的 2400 档，靠 z-index 定先后，不赌 DOM 顺序） */
+.ds-poster-dlg {
+  z-index: 2410;
+}
+
+.ds-poster-dlg .mt-dialog-box.ds-poster-box {
   width: min(720px, 96vw);
   max-height: min(92vh, 900px);
   border-top-color: #4D6BFE;
@@ -499,7 +511,7 @@
   border-radius: 4px;
 }
 
-.ds-key-dlg.zoom .ds-key-poster-wrap {
+.ds-poster-dlg.zoom .ds-key-poster-wrap {
   position: fixed;
   inset: 12px;
   z-index: 5;
@@ -508,11 +520,33 @@
   background: #111319;
 }
 
-.ds-key-dlg.zoom .ds-key-poster-wrap .ds-key-poster {
+.ds-poster-dlg.zoom .ds-key-poster-wrap .ds-key-poster {
   width: auto;
   max-width: 100%;
   max-height: calc(100vh - 48px);
   margin: 0 auto;
+}
+
+/* 极简窗底部那一行：「说明」—— 文字按钮（开第二层图文海报），不抢 Key 输入的目光 */
+.ds-key-help {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ds-key-guide {
+  background: none;
+  border: 0;
+  padding: 0;
+  font-size: 12px;
+  letter-spacing: .3px;
+  color: var(--orange2);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.ds-key-guide:hover {
+  color: var(--fg, #e8e8e8);
 }
 
 .ds-key-links {
@@ -5791,8 +5825,8 @@ textarea.asset-form-input {
 }
 
 /* 事件叠加层（aaPaintEventOverlay）：canvas 铺满频谱图（就叠在热力图上，不是上方另开一条带），
-   不挡指针（点频谱试听照旧）；三条轨道分带：能量直方图（每小节一根柱 + 顶端亮轮廓）在底边重拍齿之上、
-   重拍齿贴底边、强击点菱形贴顶边，中间热力区让出来。
+   不挡指针（点频谱试听照旧）；两条轨道分带：能量直方图（每小节一根柱 + 顶端亮轮廓）在底边重拍齿之上、
+   重拍齿贴底边，中间热力区让出来。
    隐藏时由 JS 置 hidden（频谱尺寸不变，节点不跳）。 */
 .n-aa-events {
   position: absolute;
@@ -5899,13 +5933,6 @@ textarea.asset-form-input {
   height: 2px;
   background: var(--c, var(--muted));
   box-shadow: 3px 0 0 0 var(--c, var(--muted))
-}
-
-/* 强击点：菱形 */
-.n-aa-lg-sw.is-diamond {
-  width: 5px;
-  height: 5px;
-  transform: rotate(45deg)
 }
 
 /* 关掉这一层 / 这一层没有数据：压暗（数量仍在，随时能对着看） */

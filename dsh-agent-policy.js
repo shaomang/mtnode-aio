@@ -47,9 +47,9 @@ const SUBAGENT_ROWS = {
 const SUBAGENT_IDS = Object.keys(SUBAGENT_ROWS);
 
 /* 平台条件行的原始取值（本仓 cordis.yml 里 8 行逐字如此）：
-   关掉再打开时必须还原成这一行，否则「隔离模式 / 纯模式」的平台闸会被我们的策略抹掉。 */
-const PLATFORM_DISABLED =
-  "!!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'";
+   关掉再打开时必须还原成这一行，否则「隔离模式」的平台闸会被我们的策略抹掉。
+   纯净模式（MTNODE_PURE）已不再进这几行 —— 它只裁 system prompt，不动工具注册。 */
+const PLATFORM_DISABLED = "!!js process.env.MTNODE_CHAT_ISOLATE === '1'";
 
 const DEPTHS = [0, 1, 2];
 const DEFAULT_DEPTH = 1;

@@ -10662,6 +10662,13 @@
       RS.chatDraft = ta.value;
     });
     ta.placeholder = t("对 agent 说：帮我核实这条论断 / 把这段文献入库 / 补三条反例…");
+    /* 输入框自适应高度 + 上边框可拖（renderer/app-grow-input.js，与会话 / 助手同一套口径）：
+       研究框每次整页重绘都会新建，所以挂在这里（幂等，新节点挂一次就够）；不记忆高度，
+       宿主 = 会话框本身（.rs-chat 是 42% 高的 flex 列，正文列表自己让位）。 */
+    try {
+      if (window.MTGrowInput && MTGrowInput.attach)
+        MTGrowInput.attach(ta, { hosts: [".rs-chat", ".rs-main"] });
+    } catch (_) {}
     const send = el("button", "rs-chat-send", "↑");
     send.title = t("发送");
     box.appendChild(ta);
@@ -10674,6 +10681,10 @@
       if (!sess) return toastSafe(t("会话不可用"), "err");
       ta.value = "";
       RS.chatDraft = "";
+      /* 清空即收高度（app-grow-input.js：发送后回到基线，不等模块那条 250ms 兜底） */
+      try {
+        if (window.MTGrowInput && MTGrowInput.refresh) MTGrowInput.refresh(ta);
+      } catch (_) {}
       /* 焦点必须在清空输入框之前取：它描述的是「发送那一刻用户在做什么」 */
       let msg = raw;
       try {

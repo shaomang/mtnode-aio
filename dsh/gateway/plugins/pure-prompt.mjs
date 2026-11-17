@@ -1,7 +1,11 @@
 /**
  * 会话「纯净模式」（renderer 会话输入区的按钮开启）：
  * 当 MTNODE_PURE=1 时，把系统提示清成「只剩引擎机制 + 纯粹的用户输入」——
- * sections / contexts 全空、工具只保留联网搜索类，省 token 且结果确定。
+ * sections / contexts 全空，省 token 且结果确定。
+ *
+ * **工具一个都不裁**（用户口径）：纯净模式是「提示词档」，不是「能力档」。
+ * 纯净轮照样拿得到全部工具，要读文件、改画布、跑命令都行。以前这里按名字白名单
+ * （只留联网搜索）过滤 tools —— 模型看着「全部工具」的说明却调不到它们，用户实报。
  * 环境变量由 gateway.mjs 的 getRuntime 按 run 参数 pure 注入；
  * runtime key 已含 pure 标记，纯净 / 非纯净运行不会复用同一台运行时，
  * 因此本插件的 apply 阶段只对 pure 运行时生效。
@@ -12,20 +16,6 @@ export const inject = ['systemPrompt']
 
 function pureOn() {
   return String(process.env.MTNODE_PURE || '') === '1'
-}
-
-/** 与 bongochat-prompt 同口径：只认联网搜索类工具名。 */
-function isWebTool(name) {
-  const n = String(name || '').toLowerCase()
-  if (!n) return false
-  return (
-    n === 'web_search' ||
-    n === 'web_fetch' ||
-    n.includes('web_search') ||
-    n.includes('web-search') ||
-    n.includes('web_fetch') ||
-    n.includes('web-fetch')
-  )
 }
 
 export function apply(ctx) {
@@ -54,7 +44,9 @@ export function apply(ctx) {
       ...assembled,
       sections: [],
       contexts: [],
-      tools: (assembled.tools || []).filter((t) => t && isWebTool(t.name)),
+      /* tools 原样透传（纯净模式不裁工具，见文件头）。这里刻意不写
+         `tools: [...]`：任何按名字过滤都会在引擎加工具 / 改工具名之后静默
+         变成「纯净轮少一批工具」，而这正是用户报的那个问题。 */
     }
   }, { prepend: true })
 }

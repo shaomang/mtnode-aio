@@ -1,0 +1,58 @@
+/* math-zoom.css — 点公式放大预览（交互与浮层 DOM 在 renderer/math-render.js 的
+ * openMathZoom / bindMathZoom，主窗口与 mini-chat 挂同一份）。
+ *
+ * 只做两件事：
+ *   ① 公式上的「可放大」光标提示（覆盖审阅编辑器 / 阅读器里原本的 default）；
+ *   ② 浮层版式：整屏半透明遮罩 + 居中卡片，卡片里是公式节点的克隆（只读，可拖选复制）。
+ * 配色只取 base.css 的主题变量，取不到（mini-chat 这类独立小窗）才回落暗色值。 */
+
+.rv-math,
+.review-editor .rv-math,
+.review-editor .rv-math[contenteditable="false"],
+.md-viewer-rich .rv-math,
+.rs-rich .rv-math {
+  cursor: zoom-in;
+}
+
+.mt-math-zoom {
+  position: fixed;
+  inset: 0;
+  z-index: 9200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(6, 10, 18, 0.68);
+  backdrop-filter: blur(3px);
+  cursor: zoom-out;
+}
+
+.mt-math-zoom-card {
+  max-width: 94%;
+  max-height: 94%;
+  overflow: auto;
+  padding: 22px 26px;
+  border: 1px solid var(--bd, #2a3341);
+  border-radius: 12px;
+  background: var(--panel, #161b25);
+  color: var(--ink, #d7dde6);
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.6);
+  cursor: default;
+  user-select: text;
+}
+
+.mt-math-zoom-body {
+  text-align: center;
+  line-height: 1.3;
+}
+
+/* 卡片里的式子不该再带编辑器态的背景 / 悬停底色（克隆自源节点） */
+.mt-math-zoom-body .rv-math {
+  cursor: text;
+  background: none;
+}
+
+.mt-math-zoom-body .rv-math-display {
+  margin: 0;
+  overflow: visible;
+}

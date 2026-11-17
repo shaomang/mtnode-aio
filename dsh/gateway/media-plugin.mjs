@@ -461,7 +461,7 @@ async function ensureSpeechReady(ctx, deadlineMs) {
   const stt = typeof ctx.get === 'function' ? ctx.get('speechToText') : null
   if (!stt) {
     throw new Error(
-      '本轮没有注册本地语音识别（SenseVoice）。纯净模式 / 桌宠隔离态下语音服务是关闭的；' +
+      '本轮没有注册本地语音识别（SenseVoice）。桌宠隔离态下语音服务是关闭的；' +
         '普通会话或智能节点里请重试，不要改用其它转写方案。',
     )
   }

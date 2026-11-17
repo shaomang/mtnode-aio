@@ -1,12 +1,15 @@
 "use strict";
 /**
  * 内置版本更新（electron-updater + NSIS blockmap 差分下载）。
- * 流程：
- *   1. 用户确认 → 差分下载（应用不退出，可继续使用）；差分不可用 / 失败时走全量：
+ * 流程（全自动，不需要用户点任何确认）：
+ *   1. 检查到新版本 → 立即差分下载（应用不退出，可继续使用）；差分不可用 / 失败时走全量：
  *      全量下载是自研的多连接分段下载器（4–8 段 Range 并发 + 断点续传，
  *      MTNODE_UPDATE_SEGMENTS=1 可回退 electron-updater 原生的单连接下载）
- *   2. 下载完毕 → 提示将后台静默安装，完成后自动重新打开
- *   3. 用户确认或之后退出 → 静默 NSIS 安装并自动拉起新版本
+ *   2. 下载过程发 update:progress，渲染层右下角进度条实时显示百分比 / 速度
+ *   3. 下载完毕 → 发 update:installing，进度条切成「正在安装」，等待 AUTO_INSTALL_DELAY_MS
+ *      后静默 NSIS 安装并自动拉起新版本（用户点「稍后」可跳过这一次，下次退出应用时装上）
+ *
+ * 不再完全静默：全过程都有可见的进度条（update:* 事件驱动），只是无需用户操作。
  *
  * 说明：Windows 下正在运行的 exe 会锁住安装目录，覆盖安装前需短暂退出进程；
  * 对用户表现为「后台静默安装，完成后自动重新打开」。
@@ -22,7 +25,7 @@
  * 不下载、不安装、不发 update:available（见 statusPayload 的 latestVersion / storeUpdateAvailable）。
  * 因为商店包要等审核，线上（OSS）版本通常比商店早几天，提示文案必须写明「可能延后最多 3 天」。
  */
-const { app, ipcMain, dialog } = require("electron");
+const { app, ipcMain } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const fsp = fs.promises;
@@ -86,10 +89,16 @@ let started = false;
     下载与静默安装链完全复用（见 patchSameVersionGate / update:reinstallSame）。
     只在本条链里短暂置位，常规检查与后台检查一律仍按「版本号更新才可用」判定。 */
 let forceSameVersion = false;
-/** 用户已主动点过「下载更新」，下载完后弹重启提示 */
-let promptRestartAfterDownload = false;
-/** 正在展示「请重启」对话框，避免重复弹 */
-let restartPromptOpen = false;
+/* ── 自动更新（全自动：发现即下载、下载完自动静默安装）────────────────────────
+   用户不需要点任何确认框；唯一的交互是进度条上的「稍后」（取消这一次自动安装，
+   autoInstallOnAppQuit 仍会在退出应用时把已下载的包装上）。 */
+const AUTO_INSTALL_DELAY_MS = 6000;
+/** 已排定的自动安装定时器（null = 没排） */
+let autoInstallTimer = null;
+/** 用户点过「稍后」：这一次不要自动装 */
+let autoInstallCancelled = false;
+/** 已下载、正在等自动安装（statusPayload 与进度条都读它） */
+let installing = false;
 
 /* ── 商店包（MSIX）只读版本探测的运行态 ─────────────────────────────────────
    商店包不能自更新，但用户仍需要知道「商店里可能有新版」：只读更新源 latest.yml
@@ -324,6 +333,8 @@ function statusPayload() {
     releaseNotes: (latestInfo && latestInfo.releaseNotes) || "",
     downloading,
     downloaded,
+    /** 已下载、正在等自动安装（渲染层进度条切「正在安装」） */
+    installing,
     readyToRestart: !!(downloaded && latestInfo),
     error: lastError || "",
     currentVersion: cur,
@@ -510,6 +521,60 @@ function installSegmentedFullDownload() {
   segmentedInstalled = true;
 }
 
+/**
+ * 自动开始下载：检查到新版本后立刻调（不需要用户点「开始下载」）。
+ * 幂等：已在下载 / 已下载 / 商店包 / 没有 updateInfo 时直接返回。
+ */
+function autoStartDownload() {
+  if (isStorePackage() || !autoUpdater || !latestInfo) return;
+  if (downloading || downloaded) return;
+  downloadUpdate().catch(() => {});
+}
+
+/**
+ * 排定自动安装：下载完成后调用（幂等，重复调用不会重置已排定的倒计时）。
+ * 先把「正在安装」发给渲染层（进度条切成安装相位），AUTO_INSTALL_DELAY_MS 后
+ * 静默安装 + 自动拉起新版本；安装失败则回到 error 状态，不影响继续使用。
+ */
+function scheduleAutoInstall(ver) {
+  if (autoInstallCancelled || !downloaded || !autoUpdater) return;
+  installing = true;
+  send("update:installing", {
+    version: ver || (latestInfo && latestInfo.version) || "",
+    delayMs: AUTO_INSTALL_DELAY_MS,
+  });
+  send("update:status", statusPayload());
+  if (autoInstallTimer) return; /* 已排定：不重置倒计时 */
+  autoInstallTimer = setTimeout(() => {
+    autoInstallTimer = null;
+    if (autoInstallCancelled) return;
+    const r = quitAndInstall();
+    if (!r.ok) {
+      installing = false;
+      lastError = r.error || lastError;
+      send("update:error", { error: lastError });
+      send("update:status", statusPayload());
+    }
+  }, AUTO_INSTALL_DELAY_MS);
+}
+
+/** 取消这一次自动安装（进度条「稍后」）：已下载的包留着，退出应用时仍会装上 */
+function cancelAutoInstall() {
+  autoInstallCancelled = true;
+  installing = false;
+  if (autoInstallTimer) {
+    clearTimeout(autoInstallTimer);
+    autoInstallTimer = null;
+  }
+  const ver = (latestInfo && latestInfo.version) || "";
+  if (downloaded) {
+    /* 包已下好：告诉渲染层「已就绪但这次不装」，顶栏按钮仍可点了立即装 */
+    send("update:readyToRestart", { version: ver, message: "restart_later" });
+  }
+  send("update:status", statusPayload());
+  return { ok: true, later: true, downloading, downloaded, version: ver };
+}
+
 function setupAutoUpdater() {
   if (started) return;
   started = true;
@@ -544,6 +609,9 @@ function setupAutoUpdater() {
   autoUpdater.on("update-available", (info) => {
     latestInfo = info || null;
     downloaded = false;
+    /* 新一轮更新：用户上一轮点过的「稍后」不应挡住这一次 */
+    autoInstallCancelled = false;
+    installing = false;
     lastError = "";
     send("update:available", {
       version: info && info.version,
@@ -551,6 +619,10 @@ function setupAutoUpdater() {
       releaseNotes: info && info.releaseNotes,
     });
     send("update:status", statusPayload());
+    /* 全自动：发现新版本就开始下载（进度经 update:progress 推给进度条）。
+       延后一拍再起下载：update-available 是在 checkForUpdates 的 await 返回前发出的，
+       等它彻底结束再 downloadUpdate，避免两条链同时拉 latest.yml。 */
+    setTimeout(autoStartDownload, 300);
   });
   autoUpdater.on("update-not-available", () => {
     latestInfo = null;
@@ -576,15 +648,16 @@ function setupAutoUpdater() {
       (info && info.version) || (latestInfo && latestInfo.version) || "";
     send("update:downloaded", { version: ver });
     send("update:status", statusPayload());
-    if (promptRestartAfterDownload) {
-      promptRestartAfterDownload = false;
-      setTimeout(() => {
-        promptRestartToFinish(ver).catch(() => {});
-      }, 400);
-    }
+    /* 全自动：下载完直接排定静默安装（进度条切「正在安装」），不再弹「立即安装 / 稍后」对话框 */
+    scheduleAutoInstall(ver);
   });
   autoUpdater.on("error", (err) => {
     downloading = false;
+    installing = false;
+    if (autoInstallTimer) {
+      clearTimeout(autoInstallTimer);
+      autoInstallTimer = null;
+    }
     lastError = String((err && err.message) || err || "update error");
     send("update:error", { error: lastError });
     send("update:status", statusPayload());
@@ -662,10 +735,11 @@ async function reinstallSameVersion() {
   }
   if (downloading) return { ok: true, downloading: true, version: app.getVersion() };
   if (downloaded && latestInfo) {
-    /* 已经下好一份包且知道是哪个版本：直接走既有的重启提示，不再重复下载 */
+    /* 已经下好一份包且知道是哪个版本：直接排定自动安装，不再重复下载 */
     const ver = latestInfo.version || app.getVersion();
-    await promptRestartToFinish(ver);
-    return { ok: true, downloaded: true, readyToRestart: true, version: ver };
+    autoInstallCancelled = false;
+    scheduleAutoInstall(ver);
+    return { ok: true, downloaded: true, readyToRestart: true, installing: true, version: ver };
   }
   /* 走一趟「放行同版本」的检查：拿到更新源上的版本号与 updateInfo 才能下载 */
   const cur = app.getVersion();
@@ -682,23 +756,17 @@ async function reinstallSameVersion() {
     };
   }
   const ver = latestInfo.version || cur;
-  /* 与顶栏「检查更新」同一条提示口径：下完弹「立即安装并重启 / 稍后」 */
-  promptRestartAfterDownload = true;
+  /* 全自动：下载完由 update-downloaded 事件排定静默安装（进度条显示「正在安装」） */
+  autoInstallCancelled = false;
   const dl = await downloadUpdate();
-  if (!dl.ok) {
-    promptRestartAfterDownload = false;
-    return dl;
-  }
-  /* downloadUpdate 在事件回调里也会弹窗；若已同步完成则这里再兜底一次 */
-  if (downloaded && promptRestartAfterDownload) {
-    promptRestartAfterDownload = false;
-    await promptRestartToFinish(ver);
-  }
+  if (!dl.ok) return dl;
+  if (downloaded) scheduleAutoInstall(ver); /* 同步完成时事件可能已过，这里幂等兜底 */
   return {
     ok: true,
     downloading: !downloaded,
     downloaded: !!downloaded,
     readyToRestart: !!downloaded,
+    installing: !!installing,
     version: ver,
     currentVersion: cur,
   };
@@ -735,6 +803,10 @@ function quitAndInstall() {
   if (!autoUpdater || !downloaded) {
     return { ok: false, error: "update not downloaded" };
   }
+  if (autoInstallTimer) {
+    clearTimeout(autoInstallTimer);
+    autoInstallTimer = null;
+  }
   try {
     bindInstallDirectory();
     /* isSilent=true → NSIS /S；isForceRunAfter=true → 装完拉起新版本 */
@@ -746,39 +818,9 @@ function quitAndInstall() {
   }
 }
 
-async function promptRestartToFinish(ver) {
-  if (restartPromptOpen) return { ok: true, skipped: true };
-  restartPromptOpen = true;
-  try {
-    const win = mainWinRef;
-    const v = ver || (latestInfo && latestInfo.version) || "";
-    const choice = await dialog.showMessageBox(win || undefined, {
-      type: "info",
-      buttons: [I18nSafe("立即安装并重启"), I18nSafe("稍后")],
-      defaultId: 0,
-      cancelId: 1,
-      title: I18nSafe("更新已就绪"),
-      message: I18nSafe("更新包已下载完毕（v") + v + I18nSafe("）"),
-      detail: I18nSafe(
-        "安装会在后台静默进行（不弹出安装向导），安装完毕后会自动重新打开应用。选择「稍后」则下次退出应用时再安装。当前版本：v",
-      ) + app.getVersion(),
-    });
-    if (choice.response === 0) {
-      const r = quitAndInstall();
-      if (!r.ok) {
-        send("update:error", { error: r.error || lastError });
-      }
-      return r;
-    }
-    send("update:readyToRestart", {
-      version: v,
-      message: "restart_later",
-    });
-    return { ok: true, later: true };
-  } finally {
-    restartPromptOpen = false;
-  }
-}
+/* 重启提示对话框（promptRestartToFinish）已下线：更新改为全自动 —— 下载完由
+   scheduleAutoInstall 静默安装并自动重开，用户不需要在对话框里做选择；
+   进度条上的「稍后」= update:cancelAutoInstall。 */
 
 function registerUpdateIpc(getWin) {
   mainWinRef = typeof getWin === "function" ? getWin() : getWin;
@@ -816,14 +858,15 @@ function registerUpdateIpc(getWin) {
     mainWinRef = typeof getWin === "function" ? getWin() : getWin;
     /* Store（MSIX）版：不弹任何对话框、不下发任何检查/下载，直接回执让渲染层提示走商店 */
     if (isStorePackage()) return storeBlocked();
-    const win = mainWinRef;
     const st = statusPayload();
 
-    /* 已下载：直接问是否重启完成安装 */
+    /* 已下载：重排一次自动安装（进度条切「正在安装」）。用户主动点了「安装更新」
+       = 这一次的「稍后」作废，所以先清掉取消标记 */
     if (downloaded) {
+      autoInstallCancelled = false;
       const ver = (latestInfo && latestInfo.version) || st.version || "";
-      await promptRestartToFinish(ver);
-      return { ok: true, downloaded: true, readyToRestart: true };
+      scheduleAutoInstall(ver);
+      return { ok: true, downloaded: true, readyToRestart: true, installing: true };
     }
 
     if (!st.available && !latestInfo) {
@@ -833,36 +876,25 @@ function registerUpdateIpc(getWin) {
       }
     }
     const ver = (latestInfo && latestInfo.version) || st.version || "";
-    const choice = await dialog.showMessageBox(win || undefined, {
-      type: "question",
-      buttons: [I18nSafe("开始下载"), I18nSafe("取消")],
-      defaultId: 0,
-      cancelId: 1,
-      title: I18nSafe("发现新版本"),
-      message: I18nSafe("发现新版本 v") + ver + I18nSafe("，是否下载更新？"),
-      detail: I18nSafe(
-        "将差分下载更新包（仅变更部分），下载期间可继续使用。下载完成后会后台静默安装，安装完毕后自动重新打开应用。当前版本：v",
-      ) + app.getVersion(),
-    });
-    if (choice.response !== 0) return { ok: true, cancelled: true };
-
-    promptRestartAfterDownload = true;
+    /* 全自动：不再弹「开始下载 / 取消」确认框，直接后台下载，进度条显示进度 */
+    autoInstallCancelled = false;
     const dl = await downloadUpdate();
-    if (!dl.ok) {
-      promptRestartAfterDownload = false;
-      return dl;
-    }
-    /* downloadUpdate 在事件回调里也会弹窗；若已同步完成则这里再兜底一次 */
-    if (downloaded && promptRestartAfterDownload) {
-      promptRestartAfterDownload = false;
-      await promptRestartToFinish(ver);
-    }
+    if (!dl.ok) return dl;
+    if (downloaded) scheduleAutoInstall(ver);
     return {
       ok: true,
       downloading: !downloaded,
       downloaded: !!downloaded,
       readyToRestart: !!downloaded,
+      installing: !!installing,
+      version: ver,
     };
+  });
+  /* 进度条「稍后」：取消这一次自动安装，已下载的包留到退出应用时再装 */
+  ipcMain.handle("update:cancelAutoInstall", async () => {
+    mainWinRef = typeof getWin === "function" ? getWin() : getWin;
+    if (isStorePackage()) return storeBlocked();
+    return cancelAutoInstall();
   });
 }
 
@@ -873,8 +905,12 @@ function __testResetState() {
   latestInfo = null;
   lastError = "";
   forceSameVersion = false;
-  promptRestartAfterDownload = false;
-  restartPromptOpen = false;
+  if (autoInstallTimer) {
+    clearTimeout(autoInstallTimer);
+    autoInstallTimer = null;
+  }
+  autoInstallCancelled = false;
+  installing = false;
   /* 商店包只读探测的运行态也要复位，否则同一进程里多个场景会互相污染 */
   storeLatest = "";
   storeProbing = false;

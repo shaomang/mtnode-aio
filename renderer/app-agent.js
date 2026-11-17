@@ -246,6 +246,21 @@ function agentRouteOptions() {
       : true;
   if (dsOk) routes.add("deepseek-official");
   for (const p of mtnodePiProviders()) routes.add("mtnode_" + p.route);
+  /* 余额中转兜底：官方没 Key 且中转可用 → 把中转路由排到最前（本 Set 的顺序 =
+     候选优先级，取首个路由的调用点因此缺省落到中转，而不是官方）。
+     判据只写在 renderer/app-deepseek-onboard.js 的 relayDefaultRoute。 */
+  let relayRoute = "";
+  try {
+    relayRoute =
+      typeof relayDefaultRoute === "function" ? String(relayDefaultRoute() || "") : "";
+  } catch (_) {
+    relayRoute = "";
+  }
+  if (relayRoute && routes.has(relayRoute)) {
+    const ordered = new Set([relayRoute]);
+    routes.forEach((r) => ordered.add(r));
+    return ordered;
+  }
   return routes;
 }
 

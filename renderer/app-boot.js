@@ -436,6 +436,101 @@ function paintUpdateBtn(st) {
     if (bar) bar.classList.remove("has-update");
   }
 }
+/* ── 版本更新进度条（右下角 #updateBanner）─────────────────────────────────
+   主进程全自动（发现新版本即差分下载 → 下载完静默安装并自动重开），这里只把进度画出来，
+   让「更新在跑」这件事不再完全静默。相位：
+     download → 真实百分比 + 已下载 / 总量 + 速度
+     install  → 进度条走满并脉动，说明正在安装、应用会自动重开
+     later    → 用户点了「稍后」：这次不自动装，退出应用时装上
+     error    → 失败原因，几秒后自动收起（顶栏按钮仍可重试）
+   「✕」= 稍后（update:cancelAutoInstall），不打断下载；已下好的包留到下次退出应用时安装。 */
+let _ubPct = 0;
+let _ubPhase = "";
+let _ubHideTimer = null;
+/** 用户点过「稍后」：本次更新不再自动把进度条摆回来（新一轮 update:available 会复位） */
+let _ubDismissed = false;
+
+/** 字节数 → 人类可读（进度条副行用，不翻译单位） */
+function ubBytes(n) {
+  const v = Number(n) || 0;
+  if (v <= 0) return "";
+  if (v >= 1024 * 1024 * 1024) return (v / 1024 / 1024 / 1024).toFixed(2) + " GB";
+  if (v >= 1024 * 1024) return (v / 1024 / 1024).toFixed(1) + " MB";
+  if (v >= 1024) return Math.round(v / 1024) + " KB";
+  return Math.round(v) + " B";
+}
+
+/**
+ * 画更新进度条。
+ * paintUpdateBanner({ phase, pct, version, sub }) / paintUpdateBanner({ hide:true })。
+ * 相位缺省沿用上一次（status 事件只补版本号时不至于把安装相位打回下载相位）。
+ */
+function paintUpdateBanner(opt) {
+  const box = $("#updateBanner");
+  if (!box) return;
+  const o = opt || {};
+  if (_ubHideTimer) {
+    clearTimeout(_ubHideTimer);
+    _ubHideTimer = null;
+  }
+  if (o.hide) {
+    box.hidden = true;
+    box.classList.remove("installing", "error");
+    _ubPhase = "";
+    return;
+  }
+  const phase = o.phase || _ubPhase || "download";
+  _ubPhase = phase;
+  if (o.pct != null) _ubPct = Math.max(0, Math.min(100, Number(o.pct) || 0));
+  box.hidden = false;
+  box.classList.toggle("installing", phase === "install");
+  box.classList.toggle("error", phase === "error");
+  const titleEl = $("#ubTitle");
+  const pctEl = $("#ubPct");
+  const fillEl = $("#ubFill");
+  const subEl = $("#ubSub");
+  const ver = o.version || (_updateInfo && _updateInfo.version) || "";
+  if (titleEl) {
+    titleEl.textContent =
+      I18n.t("正在更新 MTNode") + (ver ? " v" + ver : "");
+  }
+  if (fillEl) {
+    fillEl.style.width =
+      phase === "install" || phase === "error" ? "100%" : _ubPct + "%";
+  }
+  if (pctEl) {
+    pctEl.textContent =
+      phase === "install"
+        ? I18n.t("安装中")
+        : phase === "error"
+          ? I18n.t("失败")
+          : phase === "later"
+            ? I18n.t("稍后")
+            : Math.round(_ubPct) + "%";
+  }
+  if (subEl) subEl.textContent = o.sub || "";
+}
+
+/** 「稍后」：取消这一次自动安装（下载继续，已下好的包留到退出应用时装上） */
+function bindUpdateBanner() {
+  const btn = $("#ubClose");
+  if (!btn || btn.__ubBound || !window.api) return;
+  if (typeof window.api.updateCancelAutoInstall !== "function") return;
+  btn.__ubBound = true;
+  btn.onclick = async () => {
+    _ubDismissed = true;
+    try {
+      await window.api.updateCancelAutoInstall();
+    } catch (_) {}
+    paintUpdateBanner({
+      phase: "later",
+      sub: I18n.t("退出应用时会自动安装这次更新"),
+    });
+    toast(I18n.t("已稍后：退出应用时会自动安装这次更新"), "ok");
+    _ubHideTimer = setTimeout(() => paintUpdateBanner({ hide: true }), 4000);
+  };
+}
+
 function bindUpdateUi() {
   const btn = $("#btnUpdate");
   if (!btn || !window.api || !window.api.updateConfirmAndStart) return;
@@ -452,12 +547,13 @@ function bindUpdateUi() {
      保证两处入口行为一字不差（同一句确认框、同一套 toast、同一份状态） */
   window.runUpdateAction = runUpdateAction;
   window.authorUpdateState = () => _updateState;
+  bindUpdateBanner();
   bindUpdateEvents(btn);
 }
 
 /**
  * 顶栏「更新」按钮与应用详情弹窗里那颗按钮的**唯一实现**（用户口径：两处一致）。
- * 走主进程 update:confirmAndStart（发现新版本确认框 → 差分下载 → 静默安装），
+ * 走主进程 update:confirmAndStart（没有确认框：直接差分下载 → 下载完自动静默安装），
  * 商店包在这里只会拿到 store_package 回执，改走「去商店更新」的明确提示。
  */
 async function runUpdateAction() {
@@ -509,6 +605,13 @@ async function runUpdateAction() {
         version: (_updateInfo && _updateInfo.version) || "",
         downloading: false,
       });
+      /* 已下好：把进度条切到安装相位（主进程随后会自动静默安装并重开） */
+      _ubDismissed = false;
+      paintUpdateBanner({
+        phase: "install",
+        version: (_updateInfo && _updateInfo.version) || (r && r.version) || "",
+        sub: I18n.t("更新包已就绪，正在静默安装；应用会自动重新打开"),
+      });
     }
   } catch (e) {
     toast(I18n.t("更新失败：") + ((e && e.message) || String(e)), "err");
@@ -521,11 +624,19 @@ function bindUpdateEvents(btn) {
     _updateOff = window.api.onUpdateEvent((channel, data) => {
       if (channel === "update:available") {
         _updateInfo = data || null;
+        _ubDismissed = false; /* 新一轮更新：上一轮点过的「稍后」不再挡进度条 */
         paintUpdateBtn({
           available: true,
           version: data && data.version,
           downloading: false,
           readyToRestart: false,
+        });
+        /* 自动下载马上开始：先把进度条摆出来（0%），不然用户以为没反应 */
+        paintUpdateBanner({
+          phase: "download",
+          pct: 0,
+          version: (data && data.version) || "",
+          sub: I18n.t("正在下载更新包…（完成后自动安装并重启，无需操作）"),
         });
       } else if (channel === "update:progress") {
         /* 下载中也是「有事要你做」：右下角版本号保持蓝色（与顶栏按钮 show 同步） */
@@ -541,8 +652,36 @@ function bindUpdateEvents(btn) {
         btn.hidden = false;
         const bar = $(".topbar");
         if (bar) bar.classList.add("has-update");
+        /* 进度条：真实百分比 + 已下载 / 总量 + 速度（用户点过「稍后」就不再摆回来） */
+        const done = ubBytes(data && data.transferred);
+        const total = ubBytes(data && data.total);
+        const speed = ubBytes(data && data.bytesPerSecond);
+        const parts = [];
+        if (done && total) parts.push(done + " / " + total);
+        if (speed) parts.push(speed + "/s");
+        if (!_ubDismissed) {
+          paintUpdateBanner({
+            phase: "download",
+            pct,
+            sub:
+              parts.join(" · ") ||
+              I18n.t("正在下载更新包…（完成后自动安装并重启，无需操作）"),
+          });
+        }
+      } else if (channel === "update:installing") {
+        /* 下载完、等自动安装：进度条走满并脉动，明说会自动重开 */
+        if (!_ubDismissed) {
+          paintUpdateBanner({
+            phase: "install",
+            version: (data && data.version) || (_updateInfo && _updateInfo.version),
+            sub: I18n.t("更新包已就绪，正在静默安装；应用会自动重新打开"),
+          });
+        }
       } else if (channel === "update:downloaded") {
-        toast(I18n.t("更新已下载完毕：将后台静默安装，完成后自动重新打开应用"), "ok");
+        toast(
+          I18n.t("更新已下载完毕：正在后台静默安装，完成后会自动重新打开应用"),
+          "ok",
+        );
         paintUpdateBtn({
           available: true,
           readyToRestart: true,
@@ -563,12 +702,55 @@ function bindUpdateEvents(btn) {
         paintAuthorUpdate();
         if (data && data.error)
           toast(I18n.t("更新失败：") + data.error, "err");
+        /* 进度条不再停在某个百分比上骗人：切失败相位，6 秒后收起 */
+        paintUpdateBanner({
+          phase: "error",
+          sub: (data && data.error) || I18n.t("更新失败，可点顶栏「更新」重试"),
+        });
+        _ubHideTimer = setTimeout(() => paintUpdateBanner({ hide: true }), 6000);
       } else if (channel === "update:status") {
         paintUpdateBtn(data);
+        /* 窗口重载 / 迟到订阅：按状态补一次进度条（已有相位就不打断它） */
+        if (!_ubPhase && !_ubDismissed && data) {
+          if (data.downloading) {
+            paintUpdateBanner({
+              phase: "download",
+              pct: 0,
+              version: data.version,
+              sub: I18n.t("正在下载更新包…（完成后自动安装并重启，无需操作）"),
+            });
+          } else if (data.installing) {
+            paintUpdateBanner({
+              phase: "install",
+              version: data.version,
+              sub: I18n.t("更新包已就绪，正在静默安装；应用会自动重新打开"),
+            });
+          }
+        }
       }
     });
   }
-  window.api.updateStatus().then((st) => paintUpdateBtn(st)).catch(() => {});
+  window.api
+    .updateStatus()
+    .then((st) => {
+      paintUpdateBtn(st);
+      /* 窗口重载时更新可能已在跑：按状态把进度条摆回来 */
+      if (st && st.downloading) {
+        paintUpdateBanner({
+          phase: "download",
+          pct: 0,
+          version: st.version,
+          sub: I18n.t("正在下载更新包…（完成后自动安装并重启，无需操作）"),
+        });
+      } else if (st && st.installing) {
+        paintUpdateBanner({
+          phase: "install",
+          version: st.version,
+          sub: I18n.t("更新包已就绪，正在静默安装；应用会自动重新打开"),
+        });
+      }
+    })
+    .catch(() => {});
 }
 
 function applyLocale(locale, persist) {
@@ -1464,11 +1646,27 @@ async function init() {
       logoEl.removeAttribute("data-i18n-title");
     }
     const inp = $("#agentInput");
+    /* 输入框清空后立刻把高度收回来（renderer/app-grow-input.js 的「发送后回落到基线」）。
+       模块自己有一条 250ms 兜底比对，但发送是用户最在意的一瞬，不等那一拍。 */
+    const growTick = (el) => {
+      try {
+        if (el && window.MTGrowInput && MTGrowInput.refresh) MTGrowInput.refresh(el);
+      } catch (_) {}
+    };
     const doSend = () => {
       const st = agentSessionState();
       const live = liveNodeForSession(st);
       const raw = inp ? String(inp.value || "") : "";
       const t = raw.trim();
+      /* 输入框留空也能发出去的唯一情形：这一条会话里已经有写好字的批注（用户口径 ·
+         本次需求「当存在批注时，输入框可以为空并发送」）。批注只在发送那一瞬由
+         app-annotate.js 的 takeForSend 拼进消息，所以这里只问「有没有待发的批注」，
+         一个字都不往输入框里插。运行中同理：空框 + 有批注 = 排队，而不是「终止」。 */
+      const annoPending =
+        !!st &&
+        !!window.SessionAnnotate &&
+        typeof SessionAnnotate.pendingCount === "function" &&
+        SessionAnnotate.pendingCount(st) > 0;
       /* 开发页（renderer/app-apps-dev.js）的首轮优先：它的输入框就是这一只，首轮输入
          等同「在该应用的开发节点上点开发并提交」（新建绑定会话 + 契约注入），由开发页
          接管这一发 —— 不受「当前活动会话正忙 → 进它的发送队列」影响（那会话可能压根
@@ -1480,12 +1678,14 @@ async function init() {
       ) {
         if (inp) inp.value = "";
         st._draft = "";
+        growTick(inp);
         return;
       }
       if (st.running || live) {
         /* 会话未结束又发消息 → 进「发送队列」，绝不打断前面的任务。
-           只有输入框为空时点 ■ 才是「终止本轮」（节点绑定则终止该节点）。 */
-        if (!t) {
+           只有输入框为空时点 ■ 才是「终止本轮」（节点绑定则终止该节点）；
+           空框但还有待发批注时不算空 —— 那一发是排队发送。 */
+        if (!t && !annoPending) {
           if (live) {
             stopNode(live);
             return;
@@ -1502,13 +1702,16 @@ async function init() {
         }
         if (inp) inp.value = "";
         st._draft = "";
+        growTick(inp);
         agentSessionSend(raw);
         paintAgentSendState();
         return;
       }
-      if (!t) return;
-      inp.value = "";
+      if (!t && !annoPending) return;
+      /* 与上面那条分支同口径（inp 可能取不到：视图搬家 / 首帧之前） */
+      if (inp) inp.value = "";
       st._draft = "";
+      growTick(inp);
       agentSessionSend(raw);
     };
     if (inp) {
@@ -1550,6 +1753,11 @@ async function init() {
     bindAgentSideResize();
     /* 会话窗：滚轮落在主会话列两侧的空白也能上下滚动会话（app-assist.js） */
     bindAgentPaneWheelScroll();
+    /* 会话正文字号档位：Ctrl（⌘）+ 滚轮调档 + 右下角档位提示 + 滚动锚点（app-assist.js） */
+    bindConvFontWheel();
+    /* 会话正文字号档位（真源 = config.json 的 convFontLevel，0–9）：首绘前就把
+       --conv-scale 写到 <html>，否则会话会先按旧字号排一遍再跳（app-assist.js） */
+    applyConvFontLevel(S.config.convFontLevel, false);
     /* 会话「计划」清单最小高度：把夹好的值写进 #agentPlan 的 --ap-h（把手在 app-plan.js 渲染） */
     applyAgentPlanH(S.agentPlanH, false);
     bindOpenableContentClicks();
@@ -1684,8 +1892,19 @@ async function init() {
         return;
       }
       const t = aInp ? aInp.value : "";
-      if (!String(t).trim()) return;
+      /* 与 #agentInput 同一口径：输入区上方已有写好字的批注时，输入框可以留空照样发
+         （用户口径 · 本次需求）。批注正文由发送链里的 takeForSend 拼进消息。 */
+      const annoPending =
+        !!bst &&
+        !!window.SessionAnnotate &&
+        typeof SessionAnnotate.pendingCount === "function" &&
+        SessionAnnotate.pendingCount(bst) > 0;
+      if (!String(t).trim() && !annoPending) return;
       if (aInp) aInp.value = "";
+      /* 清空即收高度（与 #agentInput 同一口径：发送后回落到基线，见 app-grow-input.js） */
+      try {
+        if (aInp && window.MTGrowInput && MTGrowInput.refresh) MTGrowInput.refresh(aInp);
+      } catch (_) {}
       /* 助手栏的发送走会话那条链（本轮需求 · 单一根源，见 assistPanelSend） */
       if (typeof assistPanelSend === "function") assistPanelSend(t);
       else assistSend(t);
@@ -1774,7 +1993,12 @@ async function init() {
     const bootHasTextKey = bootProvs.some(
       (p) => p && p.type === "text_openai" && String(p.apiKey || "").trim(),
     );
-    if (!bootHasTextKey && typeof dsOpenBootGuide === "function") dsOpenBootGuide();
+    /* 余额中转兜底：中转可用（已登录 + 余额 > 0 + 没被 blocked）就不弹这张海报
+       （判据见 renderer/app-deepseek-onboard.js 的 relayUsableNow，与调用路径同一口径） */
+    const bootRelayOk =
+      typeof relayUsableNow === "function" && relayUsableNow();
+    if (!bootHasTextKey && !bootRelayOk && typeof dsOpenBootGuide === "function")
+      dsOpenBootGuide();
   } catch (_) {}
   ensureTimerScheduler();
   /* 会话正文的后台空闲补读（懒加载的第二条腿，见 app-assist.js agentWireBodyBackfill）：

@@ -37,6 +37,7 @@
  *   inlineToHtml(text)                 -> 一行字里的公式 HTML（标题 / 大纲 / 题名等标签用）
  *   splitMath(markdown)                -> { md, items:[{tex,display,delim}] } 占位符化
  *   texAttrsOf(el)                     -> { tex, display, delim } | null（序列化用）
+ *   openZoom(el) / closeZoom()         -> 公式放大浮层（document 级点击委托在加载时自动挂）
  *   TOKEN_RE                           -> 占位符正则（需要自己替换时用）
  *
  * 定界符四件套都认（delim 记录原文用哪一种，回写时按原样还原，不擅自改写用户源码）：
@@ -1066,6 +1067,114 @@
     });
   }
 
+  /* ============================ 5. 点公式 → 放大预览 ============================ */
+
+  /* 会话 / 审阅 / 阅读器 / 快捷会话里渲染出来的公式都带 `.rv-math`（data-rv-tex 存原文），
+     这里挂一条 document 级委托：点一下就抹开一层浮层把这条式子放大（只读预览，不动 Markdown）。
+     口径：
+       · 上游已拦过的那一下（`ev.defaultPrevented`）放行 —— 研究阅读器点公式有自己的浮层
+         （带编号 / 改 LaTeX / 放大），不叠第二层；
+       · 拖选公式（选区非空）不弹：那是在复制，不是在看；
+       · 索引页整卡可点的正文（`.rs-idx-src`）不抢：那一下要打开笔记；
+       · 点空白 / Esc 关闭，Esc 不再往下传（免得把会话里的其它浮层一起关掉）。 */
+  const MATH_ZOOM_ID = "mt-math-zoom";
+  let mathZoomHost = null;
+
+  function closeMathZoom() {
+    if (!mathZoomHost) return false;
+    if (mathZoomHost.parentNode) mathZoomHost.parentNode.removeChild(mathZoomHost);
+    mathZoomHost = null;
+    return true;
+  }
+
+  function buildMathZoom() {
+    if (mathZoomHost && mathZoomHost.isConnected) return mathZoomHost;
+    const host = document.createElement("div");
+    host.id = MATH_ZOOM_ID;
+    host.className = "mt-math-zoom";
+    host.setAttribute("role", "dialog");
+    host.setAttribute("aria-label", "公式预览");
+    const card = document.createElement("div");
+    card.className = "mt-math-zoom-card";
+    const body = document.createElement("div");
+    body.className = "mt-math-zoom-body";
+    card.appendChild(body);
+    host.appendChild(card);
+    /* 点卡片外的空白关；卡片里的式子留着拖选复制，点正文不关 */
+    host.addEventListener("mousedown", function (ev) {
+      if (ev.target === host) closeMathZoom();
+    });
+    (document.body || document.documentElement).appendChild(host);
+    mathZoomHost = host;
+    return host;
+  }
+
+  function openMathZoom(srcEl) {
+    if (!srcEl || !srcEl.cloneNode || typeof document === "undefined") return null;
+    const host = buildMathZoom();
+    const card = host.firstChild;
+    const body = card.firstChild;
+    body.textContent = "";
+    /* 放的是源节点的克隆：KaTeX / 回退字形两套排版原样带过来，不重算、不丢字形 */
+    const clone = srcEl.cloneNode(true);
+    clone.removeAttribute("contenteditable");
+    clone.removeAttribute("role");
+    clone.style.fontSize = "1em";
+    body.appendChild(clone);
+
+    /* 量「自然尺寸」再定字号：先解除卡片宽度约束、按 32px 排一次，再按浮层可用区等比缩
+       （KaTeX 与回退字形全是 em，缩字号 = 等比缩宽高，不变形）。
+       隐藏着量，用户看不到中间那一次跳字。 */
+    host.style.visibility = "hidden";
+    card.style.maxWidth = "none";
+    card.style.maxHeight = "none";
+    card.style.width = "max-content";
+    body.style.fontSize = "32px";
+    const rect = clone.getBoundingClientRect();
+    const natW = Math.max(1, rect.width);
+    const natH = Math.max(1, rect.height);
+    const availW = Math.max(160, window.innerWidth * 0.92 - 96);
+    const availH = Math.max(120, window.innerHeight * 0.88 - 96);
+    const k = Math.min(1, availW / natW, availH / natH);
+    body.style.fontSize = Math.max(13, Math.round(32 * k)) + "px";
+    card.style.width = "";
+    card.style.maxWidth = "";
+    card.style.maxHeight = "";
+    host.style.visibility = "";
+    return host;
+  }
+
+  /* 只在有 DOM 的页面里挂（Node 侧 pdf 生成也会 require 本文件，那里没有 document） */
+  function bindMathZoom() {
+    if (typeof document === "undefined" || typeof window === "undefined") return;
+    if (!document.addEventListener) return;
+    document.addEventListener("click", function (ev) {
+      if (ev.defaultPrevented) return;
+      const tgt = ev.target;
+      if (!tgt || !tgt.closest) return;
+      if (mathZoomHost && mathZoomHost.contains(tgt)) return;
+      const m = tgt.closest(".rv-math");
+      if (!m) return;
+      if (tgt.closest(".rs-idx-src")) return;
+      const sel = window.getSelection ? window.getSelection() : null;
+      if (sel && String(sel.toString() || "").trim()) return;
+      ev.preventDefault();
+      openMathZoom(m);
+    }, false);
+    document.addEventListener("keydown", function (ev) {
+      if (!mathZoomHost) return;
+      if (ev.key !== "Escape" && ev.key !== "Esc") return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      closeMathZoom();
+    }, true);
+    window.addEventListener("resize", function () {
+      if (mathZoomHost) closeMathZoom();
+    }, true);
+  }
+
+  bindMathZoom();
+
   /* 序列化辅助：从渲染根节点读回原始 LaTeX / 是否显示式 / 原定界符 */
   function texAttrsOf(el) {
     if (!el || !el.getAttribute) return null;
@@ -1086,6 +1195,8 @@
     splitMath: splitMath,
     texAttrsOf: texAttrsOf,
     TOKEN_RE: TOKEN_RE,
+    openZoom: openMathZoom,
+    closeZoom: closeMathZoom,
     GREEK: GREEK,
     OP_SYMBOLS: OP_SYMBOLS,
     BIG_OP_SYMBOLS: BIG_OP_SYMBOLS,

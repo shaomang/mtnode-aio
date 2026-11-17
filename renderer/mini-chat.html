@@ -8,9 +8,14 @@
     <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' file: data:; font-src 'self'" />
     <title>快捷会话</title>
     <link rel="stylesheet" href="css/mini-chat.css" />
+    <!-- 输入框自适应高度 + 拖上边框（renderer/app-grow-input.js）：与主窗四只输入框同一份口径，
+         放在 mini-chat.css 之后才压得过它写死的 #mcInput{max-height:120px;resize:none}。 -->
+    <link rel="stylesheet" href="css/grow-input.css" />
     <!-- KaTeX 公式排版样式：与 vendor/katex/katex.min.js 成对出现（缺了它公式字形位置会错乱）。
          与主窗口 index.html / pdf-print.html 同一份挂载口径。 -->
     <link rel="stylesheet" href="vendor/katex/katex.min.css" />
+    <!-- 点公式放大预览的浮层（renderer/math-render.js 的 openMathZoom），与主窗口同一份。 -->
+    <link rel="stylesheet" href="css/math-zoom.css" />
   </head>
   <!-- 快捷会话小窗（独立窗口 · 唯一）：见 mini-chat-window.js 与 renderer/app-mini-chat.js。
        它只做「下发指令 + 看最后一条 AI 回复」，不显示思考、不显示工具调用、不显示历史。
@@ -95,6 +100,9 @@
     <script src="vendor/katex/katex.min.js"></script>
     <script src="math-render.js"></script>
     <script src="md-render.js"></script>
+    <!-- 输入框自适应高度 + 上边框拖动（共享模块，出口 window.MTGrowInput）：必须在
+         app-mini-chat.js 之前，它在绑输入框那一处会调 MTGrowInput.attach(#mcInput)。 -->
+    <script src="app-grow-input.js"></script>
     <script src="app-mini-chat.js"></script>
   </body>
 </html>

@@ -2040,8 +2040,9 @@ async function getRuntime(workspace, model, maxTokens, provider, apiKey, baseUrl
     delete env.MTNODE_HOST_PERSONA
   }
   /* 纯净模式：注入 MTNODE_PURE=1 给运行时。pure-prompt 插件据此在系统提示装配时
-     清空全部 system prompt 段与运行时上下文、工具只保留联网搜索；cordis.yml 用同一
-     标记门控禁用画布 / 数据库 / 回滚 / 文件 / 命令 / 技能等 MTNode 工具插件。 */
+     清空全部 system prompt 段与运行时上下文。**工具一个都不裁**（用户口径：纯净模式
+     只省提示词，工具照样全给）—— cordis.yml 里凡有工具面的插件行都不再按这个标记禁用，
+     只有纯注入提示词的 agent-instructions / plan-mode 仍按它禁用。 */
   if (pureOn) env.MTNODE_PURE = '1'
   else delete env.MTNODE_PURE
   /* 按运行裁剪工具负载的三个标记 → env（读点：canvas-plugin.mjs 的 register()、
@@ -3124,19 +3125,21 @@ async function handleRun(params) {
     /* 按运行裁剪工具负载（与 getRuntime 的 lean: / nc: 同源，同一轮同一台运行时）：
        lean = 设置里的「精简工具负载」；noCanvas = 用户声明「与画布无关」的运行，
        由渲染层按节点类型 / 会话开关决议后随 run 参数下发（见 renderer/app-db.js 的 dshRunOnce）。
-       pure 轮画布 / 数据库等工具插件本就被 cordis 整体禁用，两个标记无意义 → 归零。 */
+       两个标记只「减」不「加」：纯净模式在宿主侧本就不打它们（app-db.js 的 !pureOn 兜底），
+       这里再压一次，保证同一档在两处结论一致 —— 纯净模式对工具可见集零影响。 */
     const leanFlag = !!lean && !pureFlag
     const noCanvasFlag = !!noCanvas && !pureFlag
     /* 浏览器工具整档闸（与 getRuntime 的 nb: 同源）：仅会话可用 —— 画布智能节点 /
        用户声明「与画布无关」的会话 / 长任务未授权环节由宿主打这一位，
-       运行时整只不注册 browser-plugin.mjs（含它的 12 个工具 schema）。 */
+       运行时整只不注册 browser-plugin.mjs（含它的 12 个工具 schema）。
+       纯净模式不参与（纯会话照拿浏览器工具）。 */
     const noBrowserFlag = !!noBrowser && !pureFlag
     /* 真机调试整档闸（与 getRuntime 的 ad: 同源）：只有应用开发会话由宿主打这一位
        （renderer/app-assist.js 按会话的 appId 下发 appDebug）→ 运行时才注册 mtnode_gui。
-       pure / 其它运行一律归零：纯净模式只有联网搜索，节点与长任务不该点用户窗口。 */
+       纯净轮归零：纯净档不注册这类「操用户窗口」的调试工具（用户口径：纯净模式保持安静）。 */
     const appDebugFlag = !!appDebug && !pureFlag
     /* 开发调试整档闸（与 getRuntime 的 dd: 同源）：宿主按「扩展能力管理 → 开发调试」总开关
-       每轮下发 devDebug → 运行时才注册 mtnode_dev。pure 轮归零（纯净模式只留联网搜索）。 */
+       每轮下发 devDebug → 运行时才注册 mtnode_dev。纯净轮同样归零（同上）。 */
     const devDebugFlag = !!devDebug && !pureFlag
     /* 旧 id 归一(sketch → lean):预设文本按现名查表,否则历史会话会静默回落 standard */
     const presetId = normalizePresetId(preset)
@@ -3213,7 +3216,7 @@ async function handleRun(params) {
     /* 名单通道（hideTools）同样补一句：这些工具整份 schema 都不下发（MTNode 自有的不
        注册、引擎自带的由 restrict 摘除），而人设 / 技能里可能还写着它们。名单已由网关
        归一成规范串，同一档每轮逐字相同 → 这句话照样进得了稳定前缀，不会打爆缓存。 */
-    const hiddenNames = pureFlag ? [] : normalizeHiddenTools(hideTools)
+    const hiddenNames = normalizeHiddenTools(hideTools)
     const hiddenText =
       presetBase && hiddenNames.length
         ? '\n\n【本轮不注册的工具】' + hiddenNames.join(' / ') +
@@ -3260,8 +3263,9 @@ async function handleRun(params) {
       if (blocks[0] && blocks[0].type === 'text') blocks[0] = { type: 'text', text }
       else blocks.unshift({ type: 'text', text })
     }
-    /* 用户工具描述子（工具节点 func call）：pure 会话不注入（纯净模式只留联网搜索） */
-    const runTools = pureFlag ? [] : normRunTools(tools)
+    /* 用户工具描述子（工具节点 func call）：纯净模式照常注入 —— 纯净只裁提示词，
+       不裁工具（用户口径）。以前这里 pure 会话传空数组，纯净轮的工具节点全调不到。 */
+    const runTools = normRunTools(tools)
     const toolsJson = runTools.length ? JSON.stringify(runTools) : ''
     /* 联网搜索（DeepSeek 服务端工具）：上一轮的工具账本（原样，含 deepseek_read_url 的
        signature）落到本轮专属的一份文件里，再把「声明了哪两条 + 账本目录」交给运行时

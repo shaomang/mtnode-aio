@@ -51,6 +51,7 @@
     /* 会话转写（agentSessions）从 config.json 拆出后的独立存储：main.js 会 require 它，
        漏进白名单就是打包后 Cannot find module './agent-sessions-store.js'。 */
     "agent-sessions-store.js",
+    "session-annos-store.js",
     "dsh-agent-policy.js",
     /* 上下文压缩策略（开关 / 早中晚三档 → cordis.yml 的 compaction-basic 行）：同样由
        main.js require，漏进白名单就是打包后 Cannot find module './dsh-compact-policy.js'。 */

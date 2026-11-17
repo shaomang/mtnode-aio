@@ -6375,6 +6375,20 @@ function agentRouteOptions() {
       : true;
   if (dsOk) routes.add("deepseek-official");
   for (const p of mtnodePiProviders()) routes.add("mtnode_" + p.route);
+  /* 余额中转兜底：官方没 Key 且中转可用 → 中转路由排到最前（顺序 = 候选优先级，
+     与 app-agent.js 的同名函数同一份口径；判据见 app-deepseek-onboard.js 的 relayDefaultRoute） */
+  let relayRoute = "";
+  try {
+    relayRoute =
+      typeof relayDefaultRoute === "function" ? String(relayDefaultRoute() || "") : "";
+  } catch (_) {
+    relayRoute = "";
+  }
+  if (relayRoute && routes.has(relayRoute)) {
+    const ordered = new Set([relayRoute]);
+    routes.forEach((r) => ordered.add(r));
+    return ordered;
+  }
   return routes;
 }
 
@@ -24652,6 +24666,10 @@ function bindCanvas() {
         const out = el.querySelector(".n-out");
         if (out) out.style.width = n.outW + "px";
         refreshPorts(el, n);
+        /* 面板拖宽会把节点总宽一起顶宽（n.w 变大 → 右缘那排输出端子整体右移），
+           线是按 n.w 算端点的：这里不重画，输出侧线头就停在新端子左边（横向错开
+           十几像素，用户报的「缩放节点之后接线没对准」）。 */
+        updateWires(new Set([n.id]));
       }
       /* 输出宽度变化后，节点高度随之自适应 */
       autoFitOutputHeight(n);
@@ -25059,6 +25077,12 @@ function bindCanvas() {
       liftedAny = releaseSuperDragLift();
       clearSuperDropHot(!!nested);
       updateGroupFrames();
+      /* 松手这一拍模型坐标刚被吸附取整（snapDroppedNodes / finalizeNodeDragNest），
+         而拖动中画的线停在「跟手」的未取整坐标上 —— 必须按最终坐标重画一次。
+         不补这一下，松手后线头与端子就错开最多半个网格（横向几像素，肉眼明显
+         「接线没对准」），一直留到下一次整幅重绘才复原（用户报的「拖动节点之后
+         输入/输出端子接线偶尔没对准」）。整组拖动与输出面板拖宽同样要补，见下面两处。 */
+      if (wasMoved && dragIds.length) updateWires(new Set(dragIds));
       const skipToggle =
         ev.ctrlKey || ev.metaKey || ev.shiftKey || ev.button !== 0;
       if (
@@ -25099,6 +25123,9 @@ function bindCanvas() {
           syncMarkDomPos(m);
         }
         playNodeDropSettle(gids, { ripple: false, lift: false });
+        /* 同上（单颗节点那一条）：整组也只在松手这一拍吸附，拖动中的线是跟手坐标，
+           不按取整后的最终坐标重画就会与端子错开半个网格。 */
+        if (gids.length) updateWires(new Set(gids));
       }
       updateGroupFrames();
       scheduleSave();
@@ -31746,6 +31773,25 @@ function agentConvListEl(node) {
     body.id = "agent-node-stream-" + node.id;
     body.textContent = traceSayDisplay(node.id, node._pendingAnswer);
     row.appendChild(body);
+    /* 尾部运行指示（本次需求）：与助手栏 / 会话视图同一份组件，只追加在行尾，
+       上面既有的思考 / 工具 / 正文结构一字不动。秒数起点按「这一跑」记在节点上：
+       运行键 node._abKey 每跑一个新值，它一变就重记起点，节点重绘不会把秒数打回 0。 */
+    const abKey = String(node._abKey || node.id);
+    if (node._liveThinkKey !== abKey) {
+      node._liveThinkKey = abKey;
+      node._liveThinkAt = Date.now();
+    }
+    dshLiveThinkSync(
+      row,
+      {
+        id: node.id,
+        running: true,
+        _liveThinkAt: node._liveThinkAt,
+        _liveTools: liveTools,
+      },
+      null,
+      dshLiveItemsOf(liveTools, think.textContent, body.textContent),
+    );
     conv.appendChild(row);
   }
   /* 节点内会话**不再挂 Token 报告徽章**（本轮需求：智能任务节点不必带下方 token 预算栏）：

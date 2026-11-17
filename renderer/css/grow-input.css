@@ -1,0 +1,67 @@
+/* ===== 输入框自适应高度 + 拖上边框调高（renderer/app-grow-input.js） =====
+ *
+ * 一处定义、五只输入框共用（会话 #agentInput / 助手 #assistInput / 团队 #teamChatInput /
+ * 研究 .rs-chat-input / 迷你聊天 #mcInput）。三条口径：
+ *   · 默认还是各自原来的最低值（min-height 留在各输入框自己的 CSS 里，模块按实测读）；
+ *   · 文字变多自动增高，封顶 = min(宿主可视高 × 60%, 宿主可视高 − 120px)，再高就框内滚动；
+ *   · 上边框整条可拖（6px 感应区，光标 ns-resize），双击 / Home 回到最低。
+ *
+ * 各输入框原有 max-height（.chat-input 140 / .assist-input-row 120 / 团队 200 / 迷你 120）
+ * 会夹住 scrollHeight 的读数，由 .ta-grow 统一解除 —— 真正的封顶改由模块按宿主高度算，
+ * 所以这里用 !important 压过各文件里那些写死的值（否则「最高到整屏」根本做不到）。 */
+.ta-grow {
+  max-height: none !important;
+  resize: none !important;
+  overflow-y: auto;
+}
+
+/* 抓手要绝对定位到输入框上边框：宿主不是定位元素时由模块补这一个类（不改原有布局） */
+.ta-grow-host {
+  position: relative;
+}
+
+/* 拖拽感应条：整条输入框上边框（宽 = 输入框宽，高 6px，压在上边框上各 3px）。
+   观感对齐 .ap-grip（细条 + hover 高亮），配色全走主题变量，浅色主题自动跟随。
+   touch-action:none 让指针事件不被滚动吞掉；不设背景色 = 不遮住输入框自己的边框。 */
+.ta-grow-grip {
+  position: absolute;
+  left: 0;
+  width: 0;
+  height: 6px;
+  z-index: 6;
+  cursor: ns-resize;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  border-radius: 3px;
+  background: transparent;
+  transition: background-color .12s ease;
+}
+
+.ta-grow-grip::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 26px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--muted);
+  opacity: .5;
+  transition: opacity .12s ease, background-color .12s ease;
+}
+
+.ta-grow-grip:hover,
+.ta-grow-grip.dragging,
+.ta-grow-grip:focus-visible {
+  background: rgba(128, 128, 128, .12);
+  outline: none;
+}
+
+.ta-grow-grip:hover::after,
+.ta-grow-grip.dragging::after,
+.ta-grow-grip:focus-visible::after {
+  opacity: 1;
+  background: var(--cyan);
+}

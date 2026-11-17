@@ -1,0 +1,407 @@
+/* ============ 会话局部批注（renderer/app-annotate.js）============
+   四块东西：
+     ① 卡片层 #saLayer —— position:fixed 的整屏叠层（不放进滚动容器，见 app-annotate.js
+        文件头要点 1）：里面是 SVG 虚线（.sa-wire）、被批注段的虚线框（.sa-marks）、
+        左侧批注边栏（.sa-rail：收起 = 窄条 + 编号点；展开 = 面板 + 批注卡）；
+     ② 两枚拖选手柄（.sa-h）—— 正文里**不再包 span / 不加 class**，被批注那一段全靠
+        叠层里的虚线框（.sa-mark）描出来，正文保持只读；
+     ③ 输入框上方的批注胶囊（.sa-line-chips，与 .ii-line-chips 同排、同族外观）；
+     ④ 边栏里的批注卡（.sa-card）—— 只挂在 .sa-rail-body 里，位置由边栏决定，
+        不再按正文坐标飘（旧口径会盖住正文）。
+   配色一律走主题变量（base.css），深浅主题都不另写一套。 */
+
+/* ── 叠层 ── */
+.sa-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  overflow: hidden;
+  pointer-events: none;
+  /* 「当前这一条」的金色（第四轮）：选中正文那段 / 鼠标停在它的卡片上 / 正在卡片里写字时，
+     虚线框、连线、卡片左边框一律走它 —— 呼吸灯 + 跑马灯见下方的 keyframes。 */
+  --sa-gold: #f5c451;
+}
+.sa-wires {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+/* 金色呼吸灯虚线框（当前这一条）：svg 独立一层，压在 .sa-marks 之上 */
+.sa-glow {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+.sa-glow-box {
+  fill: none;
+  stroke: var(--sa-gold);
+  stroke-width: 1.2;
+  stroke-dasharray: 5 4;
+  stroke-linecap: round;
+  filter: drop-shadow(0 0 3px color-mix(in srgb, var(--sa-gold) 60%, transparent));
+  animation: saDashRun 1.1s linear infinite, saGoldBreath 1.6s ease-in-out infinite;
+}
+@keyframes saDashRun {
+  to { stroke-dashoffset: -18; }
+}
+@keyframes saGoldBreath {
+  0%, 100% { stroke-opacity: .48; }
+  50% { stroke-opacity: 1; }
+}
+.sa-wire {
+  fill: none;
+  stroke: var(--cyan, #38d6ff);
+  stroke-width: 1.3;
+  stroke-dasharray: 4 3;
+  opacity: .5;
+  transition: opacity .15s;
+}
+.sa-wire.on {
+  stroke: var(--sa-gold);
+  stroke-dasharray: 5 4;
+  opacity: .95;
+  filter: drop-shadow(0 0 3px color-mix(in srgb, var(--sa-gold) 55%, transparent));
+  animation: saDashRun 1.1s linear infinite, saGoldBreath 1.6s ease-in-out infinite;
+}
+
+/* ── 左侧批注边栏（用户口径 · 第三轮）：落在会话区左侧的空白里 ──
+   落点由 app-annotate.js 的 railLayout 每帧算（边栏右缘贴着消息列左缘），
+   左边留白不够时它会先给会话区补 padding-left —— 所以这条边栏永远不压正文。
+   收起 = 22px 窄条 + 编号点（不显示内容）；展开 = 252px 面板 + 批注卡。 */
+.sa-rail {
+  position: absolute;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border: 1px solid var(--bd2);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--panel2, #24262b) 90%, transparent);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, .22);
+  pointer-events: auto;
+  overflow: hidden;
+}
+.sa-rail[hidden] { display: none; }
+.sa-rail-head {
+  flex: none;
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 9px 3px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 10.5px;
+  line-height: 1.2;
+  letter-spacing: .5px;
+  text-align: center;
+  cursor: pointer;
+  /* 收起态没有内容可显示：把「批注 N ›」竖排成一条 22px 的窄条，整条都能点开 */
+  writing-mode: vertical-rl;
+}
+.sa-rail-head:hover { color: var(--cyan2, #7fe3ff); }
+.sa-rail.is-open .sa-rail-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 9px;
+  border-bottom: 1px solid var(--bd);
+  writing-mode: horizontal-tb;
+  text-align: left;
+}
+.sa-rail-t { flex: none; }
+.sa-rail-n {
+  flex: none;
+  font-weight: 600;
+  color: var(--cyan2, #7fe3ff);
+}
+.sa-rail-arrow {
+  flex: none;
+  margin-left: auto;
+  color: var(--muted);
+}
+.sa-rail.is-open .sa-rail-arrow { margin-left: auto; }
+/* 收起态：每条批注一枚编号点，纵向对齐它那段正文 */
+.sa-rail-marks {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.sa-rail.is-open .sa-rail-marks { display: none; }
+.sa-rail-dot {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 1px solid var(--cyan);
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--panel, #1b1c1f) 70%, transparent);
+  color: var(--cyan2, #7fe3ff);
+  font: inherit;
+  font-size: 9.5px;
+  line-height: 1;
+  cursor: pointer;
+}
+.sa-rail-dot:hover {
+  background: var(--cyan);
+  color: #08222a;
+}
+/* 当前这一条的编号点：与正文那段 / 连线同一个金色呼吸灯 */
+.sa-rail-dot.on {
+  background: var(--sa-gold, #f5c451);
+  border-color: var(--sa-gold, #f5c451);
+  color: #2a1f00;
+  animation: saMarkBreath 1.6s ease-in-out infinite;
+}
+/* 展开态：批注卡竖排（面板自己滚） */
+.sa-rail-body {
+  display: none;
+  flex: 1 1 auto;
+  min-height: 0;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+.sa-rail.is-open .sa-rail-body { display: flex; }
+
+/* ── 批注卡（只挂在边栏面板里；位置由边栏决定，不按正文坐标飘） ── */
+.sa-card {
+  position: relative;
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: auto;
+  padding: 0 0 6px 7px;
+  border: 0;
+  border-left: 2px solid var(--cyan, #38d6ff);
+  border-radius: 0;
+  background: transparent;
+  font-size: 11px;
+  color: var(--ink);
+  line-height: 1.45;
+}
+.sa-card.is-dead { border-left-color: var(--orange, #ff8f2e); }
+/* 当前这一条（选中正文那段 / 鼠标在它上面 / 正在这里写字）：左边框与正文那段、连线
+   一起走金色呼吸灯（与 .sa-glow-box / .sa-wire.on 同一套 keyframes） */
+.sa-card.is-active {
+  border-left-color: var(--sa-gold, #f5c451);
+  animation: saCardBreath 1.6s ease-in-out infinite;
+}
+.sa-card.is-active .sa-card-who { color: var(--sa-gold, #f5c451); }
+@keyframes saCardBreath {
+  0%, 100% { box-shadow: -2px 0 5px -3px color-mix(in srgb, var(--sa-gold, #f5c451) 35%, transparent); }
+  50% { box-shadow: -2px 0 12px -1px color-mix(in srgb, var(--sa-gold, #f5c451) 70%, transparent); }
+}
+.sa-card-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.sa-card-who {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .3px;
+  color: var(--cyan2, #7fe3ff);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sa-card-tag {
+  flex: none;
+  font-size: 9px;
+  padding: 1px 5px;
+  border-radius: 999px;
+  border: 1px solid var(--bd2);
+  color: var(--muted);
+}
+.sa-card-tag.is-on { border-color: var(--cyan); color: var(--cyan2, #7fe3ff); }
+.sa-card-tag.is-used { border-color: var(--green, #3e9e6e); color: var(--green, #4fd39a); }
+.sa-card-quote {
+  font-size: 10px;
+  color: var(--muted);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.sa-card-dead {
+  font-size: 10px;
+  color: var(--orange, #ff8f2e);
+}
+.sa-card-ta {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 46px;
+  max-height: 160px;
+  resize: vertical;
+  padding: 5px 6px;
+  border: 1px solid var(--bd2);
+  border-radius: 6px;
+  background: var(--panel, #1b1c1f);
+  color: var(--ink);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.5;
+  outline: none;
+}
+.sa-card-ta:focus { border-color: var(--cyan); }
+.sa-card-foot {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+.sa-btn {
+  font: inherit;
+  font-size: 10px;
+  line-height: 1;
+  padding: 4px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--bd2);
+  background: rgba(0, 0, 0, .18);
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+}
+.sa-btn:hover { color: var(--cyan2, #7fe3ff); border-color: var(--cyan); }
+.sa-btn.sa-go:hover { color: var(--cyan2, #7fe3ff); border-color: var(--cyan); }
+.sa-btn.sa-del:hover { color: var(--orange, #ff8f2e); border-color: var(--orange, #ff8f2e); }
+
+/* ── 被批注的那一段 / 那一块：叠层里的虚线框（正文只读，一个字符都不动）──
+   不填充（用户口径「内容可以不 filled」），只靠一圈醒目的虚线包裹；
+   pointer-events:none —— 底下的文字照样能选中 / 复制。 */
+.sa-marks {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.sa-mark {
+  position: fixed;
+  pointer-events: none;
+  border: 1.5px dashed color-mix(in srgb, var(--cyan) 78%, transparent);
+  border-radius: 5px;
+  background: transparent;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--cyan) 12%, transparent);
+  transition: border-color .12s;
+}
+.sa-mark.on {
+  border-color: var(--sa-gold, #f5c451);
+  border-width: 1.5px;
+  animation: saMarkBreath 1.6s ease-in-out infinite;
+}
+.sa-mark.is-drag { border-color: var(--sa-gold, #f5c451); }
+@keyframes saMarkBreath {
+  0%, 100% { opacity: .5; box-shadow: 0 0 0 0 transparent; }
+  50% { opacity: 1; box-shadow: 0 0 9px 0 color-mix(in srgb, var(--sa-gold, #f5c451) 55%, transparent); }
+}
+
+/* ── 两枚拖选手柄（iOS 拖选那种小圆点；字符级增减选区）── */
+.sa-h {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--cyan, #38d6ff);
+  border: 1px solid rgba(0, 0, 0, .45);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--cyan) 25%, transparent);
+  pointer-events: auto;
+  cursor: ew-resize;
+  z-index: 2;
+}
+
+/* ── 选区旁边的小「批注」键 / 复杂块右上角的「批注」键 ── */
+.sa-sel-btn,
+.sa-hover-btn {
+  position: fixed;
+  display: none;
+  z-index: 31;
+  font: inherit;
+  font-size: 10.5px;
+  line-height: 1;
+  padding: 4px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--cyan);
+  background: color-mix(in srgb, var(--panel2, #24262b) 88%, transparent);
+  color: var(--cyan2, #7fe3ff);
+  cursor: pointer;
+  box-shadow: 0 3px 10px rgba(0, 0, 0, .3);
+}
+.sa-sel-btn:hover,
+.sa-hover-btn:hover { color: var(--ink); }
+
+/* ── 输入框上方的批注胶囊（与 .ii-line-chips 同排、同族） ── */
+.sa-line-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  flex: none;
+  padding: 0 4px 8px;
+}
+.sa-line-chips[hidden] { display: none; }
+.sa-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 4px 6px;
+  border: 1px solid var(--bd2);
+  border-left: 2px solid var(--cyan, #38d6ff);
+  border-radius: 8px;
+  background: var(--panel2);
+  cursor: pointer;
+}
+.sa-chip:hover { border-color: var(--cyan); }
+.sa-chip-id {
+  flex: none;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .2px;
+  color: var(--cyan2);
+}
+.sa-chip-t {
+  flex: none;
+  font-size: 10px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.sa-chip-q {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sa-chip-x {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  line-height: 1;
+  font-size: 11px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted);
+}
+.sa-chip-x:hover {
+  border-color: var(--bd2);
+  color: var(--ink);
+  background: var(--panel);
+}

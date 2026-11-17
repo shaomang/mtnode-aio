@@ -13,9 +13,9 @@
    session 的 id）。网关按占用表门控，拿不到章 / 轮次对不上的一律 abort（fail closed）。
 
    注册口是唯一的裁剪点（用户已确认「仅会话可用」）：
-     · MTNODE_PURE=1（纯净模式）→ 整个不注册；
      · MTNODE_NO_BROWSER=1（画布智能节点 / 长任务未授权的环节）→ 整个不注册；
      · MTNODE_HIDE_TOOLS 点名的工具 → 不注册（真源 tool-visibility.mjs）。
+   纯净模式（MTNODE_PURE）不在此列：它只裁 system prompt，工具照样全给。
    这些标记都由网关在 spawn 时注入并进 runtime key：同一台运行时只可能有一种可见集，
    提示缓存不会因为「轮内改可见集」而整段失效。
    ========================================================================== */
@@ -134,8 +134,9 @@ const QUESTIONS_SPEC = {
 export function apply(ctx) {
   const port = Number(process.env.MTNODE_BRIDGE_PORT || 0)
   if (!Number.isInteger(port) || port <= 0) return
-  /* 纯净模式 / 画布节点 / 长任务未授权的环节：整个不注册（用户已确认「仅会话可用」）。 */
-  const off = envFlagOn('MTNODE_PURE') || envFlagOn('MTNODE_NO_BROWSER')
+  /* 画布节点 / 长任务未授权的环节：整个不注册（用户已确认「仅会话可用」）。
+     纯净模式不参与：它只裁提示词，浏览器工具照注册。 */
+  const off = envFlagOn('MTNODE_NO_BROWSER')
   if (off) return
 
   let socket = null

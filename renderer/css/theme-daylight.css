@@ -1483,6 +1483,21 @@ body.ef-skin.theme-light .at-del:hover {
   background: rgba(0, 0, 0, .07);
   color: #b3261e;
 }
+/* ── 运行中指示（css/dsh.css 的 .dsh-live-*：方点 + 呼吸 + 「已等 N 秒」）──
+   浅色主题只需要改两件事，其余（容器无边框无底色 / 字号三档 / reduced-motion 退化）
+   都靠 dsh.css 那层直接取主题槽位，一行都不用重写：
+   ① **工具相位的点色**：暗色是「思考=青 / 工具=橙」两族分得很开，但浅色主题把 --orange
+      收进了蓝族（#10457f，与 --cyan #155fb0 同族），两相位看着都是蓝、扫一眼分不出来 ——
+      工具相位改走 --yellow（深琥珀 #6a4d00，白底 7.85:1），蓝色一族只留给「思考 / 等待」。
+   ② **点的框**：dsh.css 里框是 currentColor 45% 混出来的发丝线，白底上淡到几乎看不见
+      （深底上有对比衬着还行），抬到 62% 才立得住；呼吸段（.22→1 的填充）不动，
+      它本来就该忽明忽暗。 */
+body.ef-skin.theme-light .dsh-live-think[data-phase="tool"] .dsh-live-dot {
+  color: var(--yellow);
+}
+body.ef-skin.theme-light .dsh-live-dot::before {
+  border-color: color-mix(in srgb, currentColor 62%, transparent);
+}
 body.ef-skin.theme-light .agent-tools-menu,
 body.ef-skin.theme-light .agent-menu {
   background: #fff;

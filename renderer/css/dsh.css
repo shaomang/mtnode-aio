@@ -4856,6 +4856,125 @@ body.ef-skin.theme-light #ixPanel {
   animation: blink 1.2s infinite
 }
 
+/* ── 运行中指示：一行「相位 + 已等 N 秒」的过程注脚 ───────────────────────────
+   DOM 与显隐判据全在 renderer/app-assist.js（dshLiveThink* 一族，判据写在那边长注释里）：
+     <div class="dsh-live-think" data-phase="think|tool|wait">
+       <span class="dsh-live-dot"></span>
+       <span class="dsh-live-text"></span>      ← role=status，相位文案（每轮只变 2–3 次）
+       <span class="dsh-live-elapsed"></span>   ← aria-hidden，秒数（0 秒时是空串）
+   分工：徽标（.dsh-role.live）答「谁在跑」，这里答「跑到哪 + 等了多久」，两处不重复。
+   形状**照 .at-dot（任务清单那枚状态标记）复刻**：方点 + 框内填充呼吸，关键帧直接复用
+   at-dot-breathe（1.6s / opacity .22→1 / scale .5→1），两处同一手感，不为它新造一套时长。
+   容器无边框无底色 —— 它是正文下方的一条注脚，不是卡片；相位只改**点的颜色**：
+     思考 = --dsh-accent（暗色青 / 浅色主题蓝）、工具 = --dsh-tool（橙）、等待 = 弱化灰。
+   秒数：--dsh-ink-dim + tabular-nums（等宽数字，每秒只换字形不换宽度，否则
+   「已等 9 秒 → 已等 10 秒」整行横向抖一下；与 .dsh-msg-time / .dsh-seg-time 同口径）。
+   字号三档跟各自容器**既有**档位走（dsh.css / canvas.css / conv-font.css 三处）：
+     · .agent-list（全屏会话）正文 15 / 思考 13 / 工具段 12 → 这里 11.5px，
+       并乘 var(--conv-scale)（Ctrl+滚轮那只字号旋钮，见 conv-font.css）；
+     · .assist-list（320px 右栏）正文 12.5 / 思考 11 / 工具段 10 → 这里 10.5px；
+     · .agent-conv（节点内会话）正文 12 / 思考 10.5 / 工具段 10 → 这里 10px。
+   都压在「工具段」那一档附近：比思考正文再次要一点，但不至于小到看不见。 */
+.dsh-live-think {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+  max-width: 100%;
+  margin-top: 1px;
+  font-size: 11.5px;
+  line-height: 1.4;
+  letter-spacing: .2px;
+  color: var(--dsh-ink-dim);
+  /* 只是读数：不参与文本选择，免得复制正文时把它一起带走 */
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* 点：10px 见方（.at-dot 的框同尺寸，但这里没有 12px 的字符占位壳），
+   框常显、填充由 at-dot-breathe 呼吸；颜色取 currentColor —— 相位只换这里的 color */
+.dsh-live-dot {
+  position: relative;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 10px;
+  height: 10px;
+  color: var(--dsh-accent);
+}
+
+.dsh-live-dot::before {
+  content: "";
+  display: block;
+  box-sizing: border-box;
+  width: 10px;
+  height: 10px;
+  border: 1px solid color-mix(in srgb, currentColor 45%, transparent);
+  border-radius: 2px;
+  background: transparent;
+}
+
+.dsh-live-dot::after {
+  content: "";
+  position: absolute;
+  inset: 3px;
+  border-radius: 1px;
+  background: currentColor;
+  transform-origin: 50% 50%;
+  will-change: opacity, transform;
+  animation: at-dot-breathe 1.6s ease-in-out infinite;
+}
+
+/* 相位色：与「工具卡橙 / 正文青」同一套语义；等待只是没东西在动，压回弱化灰 */
+.dsh-live-think[data-phase="tool"] .dsh-live-dot {
+  color: var(--dsh-tool);
+}
+
+.dsh-live-think[data-phase="wait"] .dsh-live-dot {
+  color: var(--dsh-ink-dim);
+}
+
+/* 秒数：0 秒时 textContent 是空串 —— 空元素仍会吃掉一个 gap，直接收掉 */
+.dsh-live-elapsed {
+  flex: none;
+  color: var(--dsh-ink-dim);
+  font-variant-numeric: tabular-nums;
+  opacity: .72;
+  white-space: nowrap;
+  /* 「已等 59 分 59 秒」在 10px 下约 90px；超出就省略，绝不把正文挤窄 */
+  max-width: 11em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dsh-live-elapsed:empty {
+  display: none;
+}
+
+/* 三档字号（容器既有档位见上方注释）：会话列跟字号旋钮走，两个窄容器各收一档。 */
+.agent-list .dsh-live-think {
+  font-size: calc(11.5px * var(--conv-scale, 1));
+}
+
+.assist-list .dsh-live-think {
+  font-size: 10.5px;
+}
+
+.agent-conv .dsh-live-think {
+  font-size: 10px;
+}
+
+/* 系统关掉动效：退化成静态半亮（口径与 .at-dot.m-active / .dsh-tool.st-running
+   那两处的 reduced-motion 一致 —— 同一份 .8 不透明度 / .9 缩放的「亮着但不动」） */
+@media (prefers-reduced-motion: reduce) {
+  .dsh-live-dot::after {
+    animation: none;
+    opacity: .8;
+    transform: scale(.9);
+  }
+}
+
 .dsh-msg-time {
   font-size: 10px;
   color: var(--muted);

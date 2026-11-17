@@ -125,6 +125,8 @@ contextBridge.exposeInMainWorld('api', {
   updateDownload: () => ipcRenderer.invoke('update:download'),
   updateInstall: () => ipcRenderer.invoke('update:install'),
   updateConfirmAndStart: () => ipcRenderer.invoke('update:confirmAndStart'),
+  /* 进度条「稍后」：取消这一次自动安装（已下载的包留到退出应用时装上） */
+  updateCancelAutoInstall: () => ipcRenderer.invoke('update:cancelAutoInstall'),
   /* 设置最底部「手动更新」：同版本号也照装一次（极小更新 / 测试用；安装链与正常更新一致） */
   updateReinstallSame: () => ipcRenderer.invoke('update:reinstallSame'),
   /* 商店包「打开 Microsoft Store」：无参命令，深链与协议白名单都在主进程（updater.js 的 openStorePage） */
@@ -134,6 +136,8 @@ contextBridge.exposeInMainWorld('api', {
       'update:available',
       'update:progress',
       'update:downloaded',
+      /* 已下载、正在等自动安装：进度条切「正在安装」相位 */
+      'update:installing',
       'update:readyToRestart',
       'update:error',
       'update:status',
@@ -171,6 +175,13 @@ contextBridge.exposeInMainWorld('api', {
   sessionSave: (payload) => ipcRenderer.invoke('session:save', payload),
   sessionBody: (ids) => ipcRenderer.invoke('session:body', ids),
   sessionPatch: (payload) => ipcRenderer.invoke('session:patch', payload || {}),
+  /* 会话局部批注（批注卡 / 发送栏胶囊的数据源）：按会话 id 整表读写一份小 JSON，
+     不走会话正文（口径见主进程 session-annos-store.js 文件头）。
+     load → { ok, id, annos:[{id,msgKey,aiIdx,quote,occ,body,at,applied,used,usedAt}] }；
+     save({id, annos}) → { ok, count }；remove(id) → { ok, removed }。 */
+  sessionAnnosLoad: (id) => ipcRenderer.invoke('sessionAnnos:load', String(id || '')),
+  sessionAnnosSave: (payload) => ipcRenderer.invoke('sessionAnnos:save', payload || {}),
+  sessionAnnosRemove: (id) => ipcRenderer.invoke('sessionAnnos:remove', String(id || '')),
 
   wfList: () => ipcRenderer.invoke('workflow:list'),
   wfLoad: (id) => ipcRenderer.invoke('workflow:load', id),

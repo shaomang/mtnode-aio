@@ -3352,3 +3352,162 @@ button.mini.btn-sq.ws-browse svg {
   margin: 4px 0;
   word-break: break-all;
 }
+
+/* ===== 版本更新进度条（右下角 · 状态栏上方）=====
+   本轮需求：更新不再完全静默 —— 下载 / 安装全过程都要看得见，但仍全自动（无需点任何确认）。
+   位置：fixed 右下角、压在状态栏上方（bottom 92px 让开 #toastBox 的 bottom 34px，
+   两者同时出现时不会互相压住）。配色固定走暖橙（与顶栏「更新」按钮同一套），
+   三套主题下都保持「这是一件要留意的事」的醒目度，不吃主题变量。 */
+.ub {
+  position: fixed;
+  right: 16px;
+  bottom: 92px;
+  z-index: 1180;
+  box-sizing: border-box;
+  width: 322px;
+  max-width: calc(100vw - 32px);
+  padding: 9px 10px 10px;
+  border: 1px solid rgba(255, 176, 102, .8);
+  border-radius: 5px;
+  background: linear-gradient(180deg, rgba(32, 26, 19, .97), rgba(19, 16, 13, .98));
+  box-shadow: 0 10px 28px -12px rgba(0, 0, 0, .8), 0 0 0 1px rgba(255, 176, 102, .16);
+  color: #f6e9d8;
+  font-size: 11.5px;
+  backdrop-filter: blur(6px);
+  animation: ubIn .2s ease-out;
+}
+
+.ub[hidden] {
+  display: none !important
+}
+
+.ub-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0
+}
+
+.ub-ico {
+  flex: none;
+  display: flex;
+  color: #ffb066
+}
+
+.ub-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 700;
+  letter-spacing: .3px
+}
+
+.ub-pct {
+  flex: none;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: .3px;
+  color: #ffc878
+}
+
+.ub-close {
+  flex: none;
+  width: 17px;
+  height: 17px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  line-height: 1;
+  color: #b8a58f;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  cursor: pointer
+}
+
+.ub-close:hover {
+  color: #fff;
+  border-color: rgba(255, 176, 102, .45);
+  background: rgba(255, 176, 102, .14)
+}
+
+.ub-track {
+  margin: 7px 0 5px;
+  height: 5px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, .09);
+  overflow: hidden
+}
+
+/* 下载相位走真实百分比（transition 让分段下载的跳变更顺） */
+.ub-fill {
+  display: block;
+  width: 0;
+  height: 100%;
+  border-radius: 3px;
+  background: linear-gradient(90deg, #ff8f2e, #ffc878);
+  transition: width .25s ease-out
+}
+
+/* 安装相位：进度条走满 + 流光扫过（NSIS 静默安装没有可读的百分比，
+   这里表达「在装、快好了」，不假装知道具体数字） */
+.ub.installing .ub-fill {
+  width: 100% !important;
+  background-image: linear-gradient(90deg, #ff8f2e, #ffc878, #ff8f2e);
+  background-size: 200% 100%;
+  animation: ubSweep 1.15s linear infinite
+}
+
+.ub.installing .ub-pct {
+  color: #ffd9a6
+}
+
+.ub.error {
+  border-color: rgba(224, 93, 93, .85)
+}
+
+.ub.error .ub-title,
+.ub.error .ub-pct {
+  color: #ff9a9a
+}
+
+.ub.error .ub-fill {
+  width: 100% !important;
+  background: #e05d5d;
+  animation: none
+}
+
+.ub-sub {
+  color: #a89a89;
+  font-size: 10.5px;
+  line-height: 1.45;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap
+}
+
+@keyframes ubSweep {
+  from {
+    background-position: 0 0
+  }
+
+  to {
+    background-position: -200% 0
+  }
+}
+
+@keyframes ubIn {
+  from {
+    transform: translateY(8px);
+    opacity: 0
+  }
+
+  to {
+    transform: none;
+    opacity: 1
+  }
+}

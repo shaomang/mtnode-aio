@@ -1502,6 +1502,29 @@ ipcMain.handle("session:patch", (e, payload) =>
   ),
 );
 
+/* ── 会话局部批注（session-annos-store.js）：按会话 id 单独存一份小 JSON ──────────
+   为什么不塞进会话正文：会话正文走「基线 + 追加段」，appendDelta 只追加 messages，
+   基线顶层字段一个字节都不动 —— 只改顶层字段的编辑（批注就是这一类）走 session:save
+   落不了盘（见 agent-sessions-store.js 的追加段说明）。批注按会话一份小文件更稳：
+      sessionAnnos:load = 读该会话全部批注（文件不在 = 空表）；
+      sessionAnnos:save = 整表覆盖（空表 = 删文件）；remove = 会话删掉时回收。 */
+const { createSessionAnnosStore } = require("./session-annos-store.js");
+let _annosStore = null;
+function annosStore() {
+  if (!_annosStore) {
+    _annosStore = createSessionAnnosStore({
+      dataDir: () => DATA(),
+      log: (m) => errLog(String(m)),
+    });
+  }
+  return _annosStore;
+}
+ipcMain.handle("sessionAnnos:load", (e, id) => annosStore().load(id || ""));
+ipcMain.handle("sessionAnnos:save", (e, payload) =>
+  annosStore().save((payload && payload.id) || "", (payload && payload.annos) || []),
+);
+ipcMain.handle("sessionAnnos:remove", (e, id) => annosStore().remove(id || ""));
+
 /* ── 官方 Files API 上传通道（files:plan / files:upload / files:sessionFiles）─────
    规则、字段顺序、超时与降级码全部在 files-upload.js 的文件头里（单一真源），
    这里只做三件事：
@@ -8159,6 +8182,23 @@ function defaultOfficialDeepseekProvider() {
   };
 }
 
+/* 中转此刻能不能顶上（与渲染层 renderer/app-deepseek-onboard.js 的 relayUsableNow 同口径）：
+   盘上有那张中转卡 + 已登录且票在手（relayKeyStateNow）+ 余额 > 0 + 云端没置 blocked。
+   checkProvider 的「去配 DeepSeek Key」广播据此让路：有可用中转的用户不该被引导窗挡住。 */
+function relayUsableNow() {
+  const card = relayCardOfDisk();
+  if (!card) return false;
+  const snap = card.relay && typeof card.relay === "object" ? card.relay : {};
+  if (snap.blocked === true) return false;
+  if (!(Number(snap.balanceYuan) > 0)) return false;
+  try {
+    const st = relayKeyStateNow();
+    return !!(st && st.signedIn && st.has);
+  } catch {
+    return false;
+  }
+}
+
 /* 「还没配 DeepSeek API Key」：渲染层据此弹图文引导窗（renderer/app-deepseek-onboard.js）。
    只广播一个 reason，绝不带任何 Key 内容；窗口不在 / 已销毁时静默返回。 */
 function notifyDsKeyNeeded(reason) {
@@ -8191,8 +8231,10 @@ function checkProvider(provider) {
   }
   if (!String(provider.apiKey || "").trim()) {
     /* 官方 DeepSeek 没 Key 是最常见的第一次：除了照旧报错，还广播一次「去配 Key」，
-       渲染层会弹那张图文引导窗（注册 / 充值 / 拿 Key / 验证后写入供应商）。 */
-    if (isOfficialDeepseekProvider(provider)) notifyDsKeyNeeded("no-api-key");
+       渲染层会弹那张图文引导窗（注册 / 充值 / 拿 Key / 验证后写入供应商）。
+       余额中转可用时**不播**：这类用户已经有能跑的中转通道，别拿官方引导窗误弹。 */
+    if (isOfficialDeepseekProvider(provider) && !relayUsableNow())
+      notifyDsKeyNeeded("no-api-key");
     throw new Error(I18n.t("未配置 API Key（请在「设置 · API/配置」中填写）"));
   }
 }

@@ -17,6 +17,6 @@
   <rect x="352" y="86" width="148" height="36" rx="6" fill="#12151b" stroke="#8b97a8" stroke-width="1.6"/>
   <text x="426" y="108" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">独立用户数据目录</text>
   <text x="260" y="142" text-anchor="middle" fill="#5a6472" font-size="10" font-family="Segoe UI,sans-serif">登录态单独一份 · 登录类求助由网关自动接管</text>
-  <text x="260" y="170" text-anchor="middle" fill="#5a6472" font-size="10" font-family="Segoe UI,sans-serif">只在会话里注册 · 智能节点不注册 · 纯净模式也不注册</text>
+  <text x="260" y="170" text-anchor="middle" fill="#5a6472" font-size="10" font-family="Segoe UI,sans-serif">只在会话里注册 · 智能节点不注册</text>
   <text x="512" y="14" text-anchor="end" fill="#3b4452" font-size="9" font-family="Segoe UI,sans-serif">browser</text>
 </svg>

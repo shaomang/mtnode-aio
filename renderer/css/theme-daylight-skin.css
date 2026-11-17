@@ -1361,16 +1361,20 @@ body.ef-skin.theme-light .ds-topup-text b {
 body.ef-skin.theme-light .ds-topup-link:hover {
   color: #1d2a44;
 }
-body.ef-skin.theme-light .ds-key-dlg .mt-dialog-box.ds-key-box {
+body.ef-skin.theme-light .ds-key-dlg .mt-dialog-box.ds-key-box,
+body.ef-skin.theme-light .ds-poster-dlg .mt-dialog-box.ds-poster-box {
   border-top-color: var(--line);
 }
 body.ef-skin.theme-light .ds-key-x:hover {
   color: var(--fg, #1d2a44);
 }
+body.ef-skin.theme-light .ds-key-guide:hover {
+  color: var(--fg, #1d2a44);
+}
 body.ef-skin.theme-light .ds-key-poster-wrap {
   background: #ffffff;
 }
-body.ef-skin.theme-light .ds-key-dlg.zoom .ds-key-poster-wrap {
+body.ef-skin.theme-light .ds-poster-dlg.zoom .ds-key-poster-wrap {
   background: #ffffff;
 }
 body.ef-skin.theme-light .prov-tile-off {

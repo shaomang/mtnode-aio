@@ -1672,6 +1672,28 @@ function teamViewLiveRow(chat, stream) {
   var body = teamViewEl("div", "dsh-msg-body dsh-stream");
   body.textContent = s.pending || "";
   row.appendChild(body);
+  /* 尾部运行指示（本次需求）：与会话视图 / 助手栏 / 节点内会话同一份组件，只追加在行尾，
+     上面既有的思考 / 工具 / 正文结构一字不动。文案按**这一路自己的相位**（该 stream 的
+     思考 / 工具 / 正文），秒数起点记在 stream 上 —— 行每帧重建，绝不从 DOM 读时间戳。 */
+  if (typeof dshLiveThinkSync === "function") {
+    var lvTools = s.tools || [];
+    if (!s._liveThinkAt) s._liveThinkAt = Date.now();
+    try {
+      dshLiveThinkSync(
+        row,
+        {
+          id: chat && chat.id,
+          running: true,
+          _liveThinkAt: s._liveThinkAt,
+          _liveTools: lvTools,
+        },
+        null,
+        typeof dshLiveItemsOf === "function"
+          ? dshLiveItemsOf(lvTools, s.reasoning, s.pending)
+          : null,
+      );
+    } catch (_) {}
+  }
   return row;
 }
 
@@ -2297,6 +2319,10 @@ async function teamChatSend() {
     inp = document.getElementById("teamChatInput") || inp;
   }
   if (inp) inp.value = "";
+  /* 清空即收高度（app-grow-input.js：发送后回到基线，不等模块那条 250ms 兜底） */
+  try {
+    if (inp && window.MTGrowInput && MTGrowInput.refresh) MTGrowInput.refresh(inp);
+  } catch (_) {}
   var msgs = (chat.messages || []).slice();
   msgs.push({ role: "user", content: text });
   teamUpdateChat(chat.id, { messages: msgs });
@@ -2656,6 +2682,12 @@ function renderTeamPane() {
     inp.placeholder = dead
       ? teamViewT("专家已删除，只能回看历史")
       : teamViewT("给专家发消息…（Enter 发送，Shift+Enter 换行）");
+    /* 输入框自适应高度 + 上边框可拖（renderer/app-grow-input.js，与会话 / 助手同一套口径）：
+       团队这只不记忆高度（重新进视图回到最低两行），宿主 = 右栏正文区。幂等，重绘多少次都只挂一次。 */
+    try {
+      if (window.MTGrowInput && MTGrowInput.attach)
+        MTGrowInput.attach(inp, { hosts: [".team-main-body", ".team-pane"] });
+    } catch (_) {}
   }
   /* 错位体检：库若还落在应用 / 项目源码目录，先问用户是否迁到画布文件夹 ——
      否则专家会话仍会顺着配置里的旧路径，把新文档继续写进开发项目目录。

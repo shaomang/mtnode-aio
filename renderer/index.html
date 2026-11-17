@@ -82,6 +82,12 @@
      与上面几份同一写法 —— 独立成一份、用 <link> 跟在 style.css 之后（晚于 style.css 生效，
      同优先级时以本文件为准）；配色一律用 base.css 的主题变量（亮色主题自动跟随）。 -->
 <link rel="stylesheet" href="css/deepseek.css">
+<!-- 点公式放大预览的浮层样式（renderer/math-render.js 的 openMathZoom）：放在最后一份，
+     才盖得住审阅编辑器 / 阅读器里给 .rv-math 的 cursor 规则。 -->
+<link rel="stylesheet" href="css/math-zoom.css">
+<!-- 输入框自适应高度 + 拖上边框（renderer/app-grow-input.js，五只输入框共用一份）：
+     放在这一组最后，才压得过各输入框自己写死的 max-height / resize。 -->
+<link rel="stylesheet" href="css/grow-input.css">
 </head>
 <body>
 
@@ -417,7 +423,7 @@
               <!-- 「模式」chip：会话级开关收纳口（与「工具」chip 同款下拉）。
                    本轮把原来平铺的两枚 chip（纯净模式 / 自动续跑）收进这一只菜单，
                    输入区只留一枚入口，状态仍逐项回显（chip 摘要 + 菜单行 开/关）。
-                   纯净模式：移除全部 system prompt 与运行时上下文，仅保留联网搜索；
+                   纯净模式：移除全部 system prompt 与运行时上下文（工具照常全部可用）；与「先拷问需求 / 快速热修」互斥：采用那两档时纯净模式自动失效；
                    自动续跑：本轮完成且目标未达成、还有下一步时自动接着跑（默认关，自己打开）。 -->
               <!-- 本轮需求：chip 键面**只有「模式」两个字**，不再往里写「纯净模式 · 自动续跑」
                    摘要（那会把这一枚顶宽，把右边几枚挤出界）。开着的开关只由 chip 变色
@@ -837,6 +843,26 @@
 <div id="refMenu" class="fn-ctx ref-menu" style="display:none"></div>
 <div id="portTip" class="port-tip" hidden></div>
 <div id="runQueue" class="run-queue" hidden aria-live="polite"></div>
+<!-- 版本更新进度条（本轮需求：更新不再完全静默）：右下角小卡片，贴在状态栏上方。
+     全自动（主进程发现新版本即下载、下载完自动静默安装并重开），这里只把进度显示出来：
+     下载相位走真实百分比 + 速度，安装相位进度条走满并脉动；「✕」= 这一次稍后装
+     （update:cancelAutoInstall，退出应用时仍会自动装上）。绘制见 app-boot.js 的
+     paintUpdateBanner；样式见 css/layout.css 末尾的 .ub-* 段。 -->
+<div id="updateBanner" class="ub" hidden aria-live="polite">
+  <div class="ub-row">
+    <span class="ub-ico" aria-hidden="true">
+      <svg viewBox="0 0 16 16" width="13" height="13">
+        <path d="M8 1.5v8.2M8 9.7l-2.6-2.6M8 9.7l2.6-2.6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M2.5 11.5v1.2c0 .7.6 1.3 1.3 1.3h8.4c.7 0 1.3-.6 1.3-1.3v-1.2" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round"/>
+      </svg>
+    </span>
+    <span class="ub-title" id="ubTitle" data-i18n="正在更新 MTNode">正在更新 MTNode</span>
+    <span class="ub-pct" id="ubPct">0%</span>
+    <button type="button" class="ub-close" id="ubClose" data-i18n-title="稍后安装（退出应用时会自动安装）" title="稍后安装（退出应用时会自动安装）" aria-label="稍后安装">✕</button>
+  </div>
+  <div class="ub-track"><i class="ub-fill" id="ubFill"></i></div>
+  <div class="ub-sub" id="ubSub" data-i18n="正在下载更新包…">正在下载更新包…</div>
+</div>
 <div id="toastBox"></div>
 
 
@@ -1282,7 +1308,18 @@
       renderer/app-ws-temp.js，样式 css/ws-temp.css，主进程 workspace-temp.js）：
       两个入口都按 window.openWorkspaceTempPanel 调用，故排在哪都行。 -->
 <script src="app-ws-temp.js"></script>
+<!-- 输入框自适应高度 + 拖上边框调高（renderer/app-grow-input.js，出口 window.MTGrowInput）：
+     五只输入框（会话 / 助手 / 团队 / 研究 / 迷你聊天）共用同一份口径；必须排在
+     app-assist.js 之前（它对两只聊天输入框的挂载就写在 app-assist.js 末尾的接线区）。 -->
+<script src="app-grow-input.js"></script>
 <script src="app-assist.js"></script>
+<!-- 会话局部批注（renderer/app-annotate.js · 出口 window.SessionAnnotate，样式 css/annotate.css）：
+     AI 回复正文拖选 / 整块（表格·代码·图片）hover 批注 → 左侧留白批注卡 + 虚线 +
+     发送栏三行注入块 + 胶囊；数据按会话存在主进程 session-annos-store.js。
+     必须排在这里：它调用期取 I18n / agentSessionState / assistBoundSession /
+     openImageLightbox（app.js），并 wrap 两个输入框的胶囊条 —— 全部是运行期取，
+     排在其后就够（app-assist.js 里的三处钩子都用 typeof 兜住，加载顺序不影响首帧）。 -->
+<script src="app-annotate.js"></script>
 <!-- 会话长时自治：自动续跑开关 + 累计状态小字 + 自检判停（renderer/app-longrun.js）。
      必须排在 app-assist.js 之后：它在调用期取 agentSessionState / agentSessionSend /
      toast / I18n，并 wrap renderAgentSession 刷新输入区那枚 chip；轮末钩子由

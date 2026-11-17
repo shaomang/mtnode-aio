@@ -1,0 +1,9 @@
+# audio-pack 随包脚手架：这里只放源码。
+# 运行期数据（缓存 / 图 / api-key）与 Python 字节码一律不进仓库。
+__pycache__/
+*.pyc
+cache/
+artifacts/
+api-key.txt
+runtime.json
+*.log

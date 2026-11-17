@@ -101,3 +101,12 @@
    body.ef-skin 皮肤里写死的石墨色（同权重时按导入顺序定胜负），
    所以本行永远是新亮色的收尾，不要再往它后面加主题分片。 */
 @import url("./css/theme-daylight.css");
+/* 会话局部批注（renderer/app-annotate.js）：卡片层 / 正文高亮 / 拖选手柄 / 发送栏胶囊。
+   只用主题变量，不另写配色；排在这里（主题之后）是因为它的 z-index 与浮层顺序
+   要与最终生效的主题一起看，且不与任何主题分片互相覆盖。 */
+/* 会话正文字号旋钮（renderer/css/conv-font.css）：--conv-scale 一处驱动会话列
+   全部字号（消息正文 / 思考 / 工具段 / markdown 的 .md 基准），逐条 calc(原值 * scale)。
+   必须排在主题层（theme-daylight.css）之后 —— 同权重时压得住主题分片；
+   又排在 annotate.css 之前，批注层若要改正文外观仍站在它后面。 */
+@import url("./css/conv-font.css");
+@import url("./css/annotate.css");

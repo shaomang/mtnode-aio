@@ -24,7 +24,9 @@
  * 缺失按空串计）为准入条件；sig 变了 = 这一轮与快照并非同一套配置跑出来的 → 快照作废、
  * 整段全量重发。runtimeKey 同源成分必须入指纹的原因：它们漂移时网关会另起新 runtime，
  * 点名续跑旧会话必撞 id collision —— 宿主侧必须把它判成「配置变了、整轮重发」。
- * pure 轮与 retry 轮由调用方传 full:true 走全量旁路（保持既有 systemPrompt:"" 语义不动）。 */
+ * pure 轮与 retry 轮由调用方传 full:true 走全量旁路；纯净轮更进一步——它是「只按本轮原话
+ * 命中的分节」现算出来的（见下方 purePromptSections），未命中时就是空串，不留快照。
+ */
 
 /* 规范节序（= 今天的拼接顺序，逐字节等价的依据）。
  * 前 12 节是任务书对齐 Codex 语义的核心表；后 3 节是助手宿主长文里的规则段与动态大头，插在它们
@@ -307,6 +309,96 @@ function renderSections(runKey, sections, opts) {
   };
 }
 
+/* ── 纯净模式（pure）的分节命中表 ───────────────────────────────────────────────
+ * 纯净模式过去 = 整段 systemPrompt 置空。现在统一成「只按本轮用户原话命中才注入」：
+ * 命中哪一类，就只注入这一类对应的分节；一类都没命中 → 分节表为空 → 下发空 systemPrompt，
+ * 行为与旧的纯净模式逐字一致。用户手动关掉纯净开关 = 全量注入（本函数完全不参与）。
+ *
+ * 纪律：
+ *   1. **一个真源**：会话侧（app-assist.js agentSessionSend）、节点 / 会话运行链
+ *      （app-db.js dshRunOnce 的 pureOn 分支）都只问本函数，不许各写一套 pure 判据。
+ *   2. **id 只用 PROMPT_SECTION_ORDER 里的**，不新增词：纯净轮不引入未登记的新节。
+ *   3. **只回答「命中了没有」**，不替调用点决定文案：各调用点只拼自己手上真有的那段。
+ *      纯净轮**工具照常全给**（用户口径：MTNODE_PURE 只管提示词，cordis.yml 里凡有工具面的
+ *      插件行都不再按它禁用），所以命中放行的段与当前真实工具集一致 —— 命中什么就拼什么，
+ *      不再有「工具其实没有、人设却承诺了」的错位。
+ */
+const PURE_PROMPT_HIT_RULES = [
+  {
+    label: "画布 / 节点",
+    ids: [
+      "canvas_rules",
+      "superconnect_rules",
+      "layout_rules",
+      "node_capability",
+      "tool_policy",
+      "app_state",
+    ],
+    re: /画布|节点|连线|端口|端子|排版|分区|分组|工作流|流程图|智能任务|canvas|node|superConnect/i,
+  },
+  {
+    label: "开发节点 / 架构",
+    ids: ["devnode_rules"],
+    re: /开发节点|架构|模块|类图|细化|接口|devnode|interface/i,
+  },
+  {
+    label: "文件读写 / 命令 / 媒体",
+    ids: ["persona_host", "vision_media_rules"],
+    re: /文件|目录|文件夹|路径|读写|读取|写入|保存|新建|删除|重命名|脚本|命令|终端|shell|cmd|powershell|代码|源码|项目|仓库|日志|配置|附件|表格|文档|csv|json|markdown|readme|md|txt|log|yaml|yml|ini|pdf|docx|xlsx|下载|联网|网页|链接|搜索|截图|图片|视频|音频|媒体/i,
+  },
+  {
+    label: "内置技能索引",
+    ids: ["skill_index"],
+    re: /技能|skill/i,
+  },
+  {
+    label: "应用 / 窗口 / 插件",
+    ids: ["app_state"],
+    re: /应用|插件|窗口|页面|界面|\bapp\b|plugin/i,
+  },
+  {
+    label: "自检与交付纪律",
+    ids: ["principle"],
+    re: /自检|验收|质检|检查|核对|测试|交付|长任务|长周期|做完|收尾|复盘/i,
+  },
+];
+
+/* 本轮该注入哪些分节。
+ *   userText: 这一轮真正发给模型的原话（技能轮 = 展开后的任务书正文；空串 = 什么都不命中）
+ *   opts.planMode: 计划模式是会话状态而不是关键词 → 为真时补上 plan_mode 一节
+ * 返回：{ ids: [...按规范节序...], hit, has(id) } —— 一节都没命中时 ids 为空、hit=false，
+ * 调用点据此下发空 systemPrompt（= 旧的纯净模式）。 */
+function purePromptSections(userText, opts) {
+  opts = opts || {};
+  var text = String(userText == null ? "" : userText);
+  var hit = {};
+  if (text.trim()) {
+    for (var r = 0; r < PURE_PROMPT_HIT_RULES.length; r++) {
+      var rule = PURE_PROMPT_HIT_RULES[r] || {};
+      if (!rule.re || !rule.re.test(text)) continue;
+      var ids = rule.ids || [];
+      for (var i = 0; i < ids.length; i++) hit[ids[i]] = 1;
+    }
+  }
+  /* 计划模式（用户点了「本轮只出计划」）：与关键词无关，命中表里补一节 */
+  if (opts.planMode) hit.plan_mode = 1;
+  var out = [];
+  for (var k = 0; k < PROMPT_SECTION_ORDER.length; k++) {
+    if (hit[PROMPT_SECTION_ORDER[k]]) out.push(PROMPT_SECTION_ORDER[k]);
+  }
+  /* 有命中才带语言口味（节序表把它钉在末位：紧贴上下文尾部最容易被照做） */
+  if (out.length && !hit.lang_taste) out.push("lang_taste");
+  var set = {};
+  for (var j = 0; j < out.length; j++) set[out[j]] = 1;
+  return {
+    ids: out,
+    hit: out.length > 0,
+    has: function (id) {
+      return !!set[String(id == null ? "" : id)];
+    },
+  };
+}
+
 /* 调试与文档便利：规范节序的可读拷贝 */
 function promptSectionCatalog() {
   return PROMPT_SECTION_ORDER.slice();
@@ -325,4 +417,7 @@ if (typeof window !== "undefined") {
   window.invalidatePromptSections = invalidatePromptSections;
   window.setPromptSectionDiff = setPromptSectionDiff;
   window.promptSectionDiffEnabled = promptSectionDiffEnabled;
+  /* 纯净模式命中表：会话链（app-assist.js）与运行链（app-db.js）共用这一份 */
+  window.PURE_PROMPT_HIT_RULES = PURE_PROMPT_HIT_RULES;
+  window.purePromptSections = purePromptSections;
 }

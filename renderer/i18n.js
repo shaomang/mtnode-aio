@@ -4057,6 +4057,9 @@
     "纯净模式": "Pure mode",
     "纯净": "Pure",
     "纯净模式：移除全部 system prompt 与运行时上下文，仅保留联网搜索；该会话不再读写文件 / 改画布，省 token": "Pure mode: drops every system prompt section and the runtime context, keeping only web search — this session no longer reads/writes files or edits the canvas; saves tokens",
+    /* 本轮口径：纯净模式只裁提示词，工具照常全给（见 dsh/gateway/plugins/pure-prompt.mjs） */
+    "纯净模式：移除全部 system prompt 与运行时上下文（工具照常全部可用）；省 token、结果确定": "Pure mode: drops every system prompt section and the runtime context (all tools stay available); saves tokens, deterministic results",
+    "纯净模式：开启中，点击关闭（工具照常可用）": "Pure mode: ON — click to turn off (all tools stay available)",
     "纯净模式：开启中，点击关闭": "Pure mode: ON — click to turn off",
     /* 助手栏那一枚纯净模式的词条：会话侧那份说的是「该会话」，这一份说「助手这条」 */
     "纯净模式：开启中，点击关闭（助手栏这条不再读写文件 / 改画布）": "Pure mode: ON — click to turn off (this assistant no longer reads/writes files or edits the canvas)",
@@ -4365,6 +4368,16 @@
     "自动切真窗口没成功：可以在右栏实况里操作，或再点一次「用真窗口打开」。": "Auto-switching to a real window failed: operate it in the right panel live view, or click “Open a real window” again.",
     "浏览器此刻由另一条会话驱动，没有抢过来：点「用真窗口打开」可以把这只换成带窗口的。": "Another session is driving the browser right now, so it was not taken over: click “Open a real window” to replace it with a windowed one.",
     "⏳ 模型正在等你的回应 · 已等 {n} 秒（不会超时自动跳过）": "⏳ The model is waiting for you · {n}s elapsed (no timeout, it will not skip ahead)",
+    /* 运行中指示（css/dsh.css 的 .dsh-live-think / app-assist.js 的 dshLiveThink*）：
+       三档相位文案 + 「已等多久」。与上面那条「⏳ 模型正在等你的回应 · 已等 {n} 秒」同口径，
+       秒数只显示整数（0 秒整段不显示），不新造词。 */
+    "模型思考中…": "Model is thinking…",
+    "执行工具中…": "Running a tool…",
+    "等待模型响应…": "Waiting for the model…",
+    "模型正在处理，已等 {n} 秒": "The model is working · {n}s elapsed",
+    "已等 {n} 秒": "{n}s elapsed",
+    "已等 {m} 分 {s} 秒": "{m}m {s}s elapsed",
+    "已等 {m} 分": "{m}m elapsed",
     "当前外壳没有浏览器桥（老版本）": "This shell has no browser bridge (older build)",
     "没能把真实窗口摆出来：先在右栏实况里操作，或再点一次。": "Could not bring the real window up: operate it in the right panel live view, or click again.",
     "实况": "Live view",
@@ -8090,6 +8103,15 @@
     "把这段写成 note 块（写回 md）": "Write this passage as a note block (back into the md)",
     "把选区写成待解决问题": "Turn the selection into an open question",
     "批注": "Annotate",
+    /* ── 会话局部批注的左侧边栏（renderer/app-annotate.js）── */
+    "写你的批注 / 质疑 / 想展开的点…（写完自动随下一条消息发出）":
+      "Write your annotation / doubt / point to expand… (sent with your next message automatically)",
+    "随本条消息发出": "Goes out with this message",
+    "已随消息发出": "Sent with a message",
+    "待填写": "Empty",
+    "展开批注边栏": "Expand the annotation sidebar",
+    "收起批注边栏": "Collapse the annotation sidebar",
+    " 条批注：点一下展开边栏": " annotations: click to expand the sidebar",
     "问 AI": "Ask AI",
     "改成论断": "Make claim",
     "就这段提问": "Ask about this",
@@ -14895,6 +14917,11 @@
       "The official DeepSeek provider cannot be deleted; models can still be added, removed and reordered (add new official models under Add model)",
     "DeepSeek 官方 API Key": "DeepSeek official API key",
     "首次使用引导": "first-run guide",
+    "填入 DeepSeek 官方 API Key 就能使用模型能力（只需要填一次）。":
+      "Paste your DeepSeek official API key to unlock model capabilities — you only do this once.",
+    "如何获取 DeepSeek API Key": "How to get a DeepSeek API key",
+    "图文 5 步": "5 illustrated steps",
+    "返回填 Key": "Back to the key",
     "使用模型能力前，需要先配置 DeepSeek 官方 API Key。按下面这张海报 5 步就能拿到：":
       "Before any model capability works you need a DeepSeek official API key. The poster below shows the five steps:",
     "海报：如何获取 DeepSeek API Key（注册 / 充值 / 创建 Key / 填进 MTNode）":
@@ -15405,7 +15432,7 @@
     " s）：": " s): ",
     "波形播放器未加载（renderer/app-audioview.js）": "Waveform player not loaded (renderer/app-audioview.js)",
     "频谱分析模块未加载（renderer/app-audioanalysis.js）": "Spectrum module not loaded (renderer/app-audioanalysis.js)",
-    "热力图频谱：横轴时间、纵轴频率、亮处=能量强。播放时竖线跟着走。图上叠了事件层：黄色柱=能量直方图（每小节一根）、青色齿=重拍、红色菱形=强击点，颜色与形状见下方图例（每一项都能单独关）；播放头的呼吸由相位连续驱动（每拍一次 0→1→0 的正弦），跨过重拍时再额外变色变粗强调一下。": "Spectrogram: time on X, frequency on Y, bright = loud. The playhead follows playback. Event layers are drawn on the image: yellow bars = energy histogram (one per bar), cyan ticks = downbeats, red diamonds = hits — see the legend below for colours and shapes (each layer toggles on its own). The playhead breathes continuously off the beat phase (one 0→1→0 sine per beat), with an extra colour/thickness accent when it crosses a downbeat.",
+    "热力图频谱：横轴时间、纵轴频率、亮处=能量强。播放时竖线跟着走。图上叠了事件层：黄色柱=能量直方图（每小节一根）、青色齿=重拍，颜色与形状见下方图例（每一项都能单独关）；播放头的呼吸由相位连续驱动（每拍一次 0→1→0 的正弦），跨过重拍时再额外变色变粗强调一下。": "Spectrogram: time on X, frequency on Y, bright = loud. The playhead follows playback. Event layers are drawn on the image: yellow bars = energy histogram (one per bar), cyan ticks = downbeats — see the legend below for colours and shapes (each layer toggles on its own). The playhead breathes continuously off the beat phase (one 0→1→0 sine per beat), with an extra colour/thickness accent when it crosses a downbeat.",
     "跑一次 ▶ 后这里显示热力图频谱（与波形播放器同步）": "Run ▶ once to see the spectrogram here (synced with the player)",
     "频谱图": "Spectrogram",
     "逐拍明细：开": "Per-beat detail: on",
@@ -15477,7 +15504,6 @@
     " 条 · 这里列前 20）": " total · first 20 shown)",
     "网格位": "Grid slot",
     "强度": "Strength",
-    "重音（前 8 条）": "Accents (first 8)",
     "镜头时长档（按拍数换算）": "Shot length tiers (by beat count)",
     "档位": "Tier",
     "秒数": "Seconds",
@@ -15518,8 +15544,6 @@
     "剪辑台 / 编码链比音频晚几帧时填这里：报告里的帧号一律是「实际触发帧 = round((t + 视觉偏移) × fps)」，填 0 就是纯 round(t × fps)。只挪帧号，不改分析结果；相邻切点间隔不足 4 帧时报告会标黄，建议改 60 fps 再排。": "Fill this in when the editor / encoder chain lags the audio by a couple of frames: every frame number in the report is round((t + visual offset) × fps); 0 means plain round(t × fps). It only shifts frame numbers, never the analysis. When adjacent cut points are less than 4 frames apart the report marks them in yellow and suggests re-planning at 60 fps.",
         "能量与相位": "Energy & phases",
     "低频占比": "Low-band share",
-"强击点（强度 ≥0.5 · 共 ": "Hits (strength ≥0.5 · ",
-    " 条 · 这里列前 12）": " total · first 12 listed here)",
     "鼓型": "Drum",
     "警告与诊断": "Warnings & diagnostics",
     "无警告": "No warnings",
@@ -15581,10 +15605,8 @@
     "事件": "Events",
     "重拍": "Downbeats",
     "能量直方图": "Energy histogram",
-    "强击点": "Hits",
     "小节第一拍（强拍）：贴频谱底边的高齿 + 顶端小方块。卡点闪拍就闪这里": "First beat of a bar (the strong beat): tall tick on the bottom edge of the spectrogram with a small cap — flash here for beat-synced cuts",
-    "每小节一根柱（柱高 = 该小节 RMS 电平，沿时间轴排开）：哪段响、哪段留白一眼看清，闪拍强度与切点照它挑": "One bar per musical bar (height = that bar's RMS level, laid out along the timeline): see at a glance which parts are loud and which are sparse — pick flash strength and cut points from it",
-    "检测到的强击（底鼓 / 军鼓等，强度 ≥0.5）：贴顶边的菱形，一下一下都很实，可直接当闪白 / 切镜 / 震屏的触发点": "Detected strong hits (kick / snare … strength ≥0.5): diamonds along the top edge, each one a real accent — use them to trigger flashes, cuts or screen shake",
+    "每小节一根柱（柱高 = 该小节感知能量：近似 K 加权 + 稳健归一，不是裸 RMS）：哪段满、哪段留白一眼看清，闪拍强度与切点照它挑": "One bar per musical bar (height = that bar's perceptual energy: K-weighted and robustly normalised, not raw RMS): see at a glance which parts are full and which are sparse — pick flash strength and cut points from it",
     "点一下只隐藏 / 显示这一层": "Click to hide or show just this layer",
     "这次没有这类数据": "no data of this kind in this run",
     "事件叠加层的总开关：一次全关 / 全开；单层请点左侧图例的每一项。默认显示。": "Master switch for the event overlay: all off / all on at once; use the legend items on the left for a single layer. Shown by default.",
@@ -15601,7 +15623,7 @@
     /* ⚙ 设置窗：事件层四项 + 帧率 */
     "频谱图上的事件层": "Event layers on the spectrogram",
     "总开关：显示事件层": "Master switch: show event layers",
-    "板身频谱图上那一整层（下面四项的合计）。关掉后频谱不变、图例还在，随时能再打开；每一项也能在图例上单独点": "The whole overlay on the node's spectrogram (the four items below together). Turning it off keeps the spectrogram and the legend — it can be re-opened any time, and each layer can also be toggled from the legend",
+    "板身频谱图上那一整层（下面各项的合计）。关掉后频谱不变、图例还在，随时能再打开；每一项也能在图例上单独点": "The whole overlay on the node's spectrogram (all items below together). Turning it off keeps the spectrogram and the legend — it can be re-opened any time, and each layer can also be toggled from the legend",
     "只控这一层": "controls this layer only",
     "卡点参数按哪个帧率换算": "Frame rate used for the cut-sync parameters",
     "板身那行「卡点参数」与报告里的帧数 / 闪拍帧数都按这个帧率算": "The “Cut-sync” line on the node and the frame / flash counts in the report are all computed at this frame rate",
@@ -15627,6 +15649,32 @@
     "完整 JSON": "Full JSON",
     "输出 0": "Output 0",
     "MT 音频频谱分析（本机 · 音频或视频 → 拍点 / BPM / 小节 / onset / 能量 + 热力图频谱 · JSON 自带字段字典给 Agent 读）": "MT Audio Spectrum Analysis (local · audio or video → beats / BPM / bars / onsets / energy + spectrogram · the JSON carries its own field guide for agents)",
+    /* ── 会话正文字号档位（renderer/app-assist.js：Ctrl（⌘）+ 滚轮调档 · 10 档 · HUD 回显）──
+       键 = 中文原文；{n} 走 I18n.t(key, { n }) 替换（第 1 档显示 1/10）。 */
+    "会话正文字号": "Chat body font size",
+    "字号 {n}/10": "Font size {n}/10",
+    "字号 {n}/10（Ctrl + 滚轮调整）":
+      "Font size {n}/10 (Ctrl + wheel to change)",
+    "Ctrl + 滚轮调整会话正文大小":
+      "Ctrl + wheel to resize the chat body text",
+    "Ctrl + 滚轮调整会话正文字号":
+      "Ctrl + wheel to change the chat body font size",
+    /* ── 版本更新进度条（全自动更新：下载 / 安装全过程可见）── */
+    "正在更新 MTNode": "Updating MTNode",
+    "安装中": "Installing",
+    "稍后安装（退出应用时会自动安装）": "Install later (installs automatically when you quit)",
+    "正在下载更新包…（完成后自动安装并重启，无需操作）":
+      "Downloading the update… (it installs and restarts automatically, no action needed)",
+    "更新包已就绪，正在静默安装；应用会自动重新打开":
+      "The update is ready and installing silently; the app reopens automatically",
+    "更新已下载完毕：正在后台静默安装，完成后会自动重新打开应用":
+      "Update downloaded: installing silently in the background, the app reopens automatically",
+    "退出应用时会自动安装这次更新":
+      "This update installs automatically when you quit the app",
+    "已稍后：退出应用时会自动安装这次更新":
+      "Later: this update installs automatically when you quit the app",
+    "更新失败，可点顶栏「更新」重试":
+      "Update failed; click Update in the top bar to retry",
   });
 
   function listJoin(arr) {

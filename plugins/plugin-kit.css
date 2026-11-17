@@ -1,0 +1,524 @@
+/* ── 插件控制台共享样式表（plugin-kit）───────────────────────────────────────
+   用途：plugins/ 下各后端插件的控制台窗（music3 / yue / h3 / remotion / moss-music /
+   llama / breeze / paseo / blender / infinitetalk / soulxflashhead / flux3klein /
+   qwenimage）与安装窗共用一套设计令牌与控件，观感与主界面一致。
+
+   怎么用：控制台窗在 <head> 里加载
+     <link rel="stylesheet" href="../../plugins/plugin-kit.css">
+   本地 <style> / ui.css 只留布局（尺寸、栅格、间距特例），配色与控件一律取这里的
+   令牌与 .pk-* 类。kit 里的元素级规则都包在 :where() 里（特异度 0），本地规则
+   总能覆盖它 —— 迁移可以一窗一窗来，不会打架。
+
+   令牌来源：renderer/css/base.css 的暗色口径（dsh 设计令牌）。改这里之前先看那边，
+   两边不许各写一套色。用户自建窗口插件（zig / window 自带 HTML）不加载本文件。
+
+   当前控制台窗恒暗色；html[data-theme=light] 一组只留口，不启用。
+   ────────────────────────────────────────────────────────────────────────── */
+
+:root {
+  /* 底色与面板：三层（窗底 / 面板 / 浮起） */
+  --bg: #151517;
+  --bg2: #1b1b1c;
+  --panel: #1b1b1c;
+  --panel2: #232324;
+  --bd: #2a2a2d;
+  --bd2: #3a3a3e;
+  /* 文字：正文 / 次要 */
+  --ink: #ebedf2;
+  --muted: #818590;
+  /* 强调：橙 = 动作与主强调，青 = 信息、链接与可点 */
+  --orange: #ff8f2e;
+  --orange2: #ffb066;
+  --cyan: #38d6ff;
+  --cyan2: #7ce8ff;
+  /* 语义色 */
+  --green: #5fd68a;
+  --red: #ff5f56;
+  --yellow: #ffd166;
+  --blue: #4d9bff;
+  /* 代码 / 日志底 */
+  --code: #111113;
+  /* 字族与圆角 */
+  --mono: 'Cascadia Code', 'Consolas', 'JetBrains Mono', monospace;
+  --sans: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
+  --r-sm: 6px;
+  --r-md: 8px;
+  --r-lg: 10px;
+  /* 焦点 / 浮层 / 节奏 */
+  --focus-ring: color-mix(in srgb, var(--cyan) 70%, var(--ink));
+  --focus-halo: color-mix(in srgb, var(--cyan) 22%, transparent);
+  --shadow-pop: 0 2px 6px rgba(0, 0, 0, .28), 0 12px 32px -6px rgba(0, 0, 0, .5);
+  --ease-out: cubic-bezier(.16, 1, .3, 1);
+  --dur-fast: .16s;
+  /* 状态胶囊 / 日志分级用的半透明底色 */
+  --tint-orange: color-mix(in srgb, var(--orange) 14%, transparent);
+  --tint-cyan: color-mix(in srgb, var(--cyan) 14%, transparent);
+  --tint-green: color-mix(in srgb, var(--green) 14%, transparent);
+  --tint-red: color-mix(in srgb, var(--red) 14%, transparent);
+  --tint-yellow: color-mix(in srgb, var(--yellow) 14%, transparent);
+}
+
+/* 亮色令牌组：留口不启用（控制台窗当前恒暗）。要用时在 <html data-theme="light">
+   上开，并把 color-scheme 一起切过去。 */
+html[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f6f6f7;
+  --bg2: #ffffff;
+  --panel: #ffffff;
+  --panel2: #f0f0f2;
+  --bd: #e1e1e5;
+  --bd2: #cfcfd6;
+  --ink: #1d1d20;
+  --muted: #6b6f7a;
+  --orange: #e2761a;
+  --orange2: #b85c0c;
+  --cyan: #0d93bd;
+  --cyan2: #067495;
+  --green: #1f9d5b;
+  --red: #d13b33;
+  --yellow: #a8760a;
+  --blue: #2b6ed6;
+  --code: #f2f2f4;
+  --focus-ring: color-mix(in srgb, var(--cyan) 70%, var(--ink));
+  --focus-halo: color-mix(in srgb, var(--cyan) 18%, transparent);
+  --shadow-pop: 0 2px 6px rgba(0, 0, 0, .08), 0 12px 32px -6px rgba(0, 0, 0, .18);
+}
+
+/* ── 页面底座（只管观感，不管布局）───────────────────────────────────────── */
+:where(html) { color-scheme: dark; }
+
+:where(html, body) {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+:where(*, *::before, *::after) { box-sizing: inherit; }
+
+:where(body) {
+  background: var(--bg);
+  color: var(--ink);
+  font: 13px/1.5 var(--sans);
+  -webkit-font-smoothing: antialiased;
+  caret-color: var(--orange);
+  accent-color: var(--orange);
+}
+
+:where(::selection) {
+  background: color-mix(in srgb, var(--orange) 35%, transparent);
+}
+
+/* ── 标题层级 ─────────────────────────────────────────────────────────────
+   .pk-h1 窗内一级标题（14px 半粗）· .pk-h2 分区标题（12px，字距略宽）·
+   .pk-sub 次要说明（11px，--muted）。控制台窗没有大标题，不做 20px 以上字号。 */
+:where(.pk-h1) {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--ink);
+}
+
+:where(.pk-h2) {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  line-height: 1.3;
+  color: var(--muted);
+  text-transform: uppercase;
+}
+
+:where(.pk-sub, .pk-dim) {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+:where(.pk-mono) { font-family: var(--mono); }
+
+/* 路径 / 命令这类会被 rtl 截断的等宽文本（省略号留在左侧） */
+:where(.pk-path) {
+  font: 11px/1.5 var(--mono);
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  direction: rtl;
+  text-align: left;
+}
+
+/* ── 按钮 ─────────────────────────────────────────────────────────────────
+   默认 = 次级（面板底 + --bd2 描边）；.pk-btn-primary = 主动作（橙）；
+   .pk-btn-ghost = 无底透明（工具条密集处）；.pk-btn-danger = 停止 / 卸载（红）。
+   尺寸：默认 28px 高，.pk-btn-sm 24px，.pk-btn-icon 方形 26px。 */
+:where(.pk-btn) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 12px;
+  border: 1px solid var(--bd2);
+  border-radius: var(--r-sm);
+  background: var(--panel2);
+  color: var(--ink);
+  font: 12px/1 var(--sans);
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+  transition: background var(--dur-fast), border-color var(--dur-fast),
+    color var(--dur-fast), box-shadow var(--dur-fast);
+}
+
+:where(.pk-btn:hover) {
+  border-color: var(--bd2);
+  background: color-mix(in srgb, var(--panel2) 70%, var(--ink) 8%);
+  color: var(--ink);
+}
+
+:where(.pk-btn:active) { transform: translateY(.5px); }
+
+:where(.pk-btn:disabled, .pk-btn[aria-disabled="true"], .pk-btn.is-disabled) {
+  opacity: .45;
+  cursor: not-allowed;
+  transform: none;
+}
+
+:where(.pk-btn-primary) {
+  border-color: color-mix(in srgb, var(--orange) 55%, var(--bd2));
+  background: color-mix(in srgb, var(--orange) 18%, var(--panel2));
+  color: var(--orange2);
+  font-weight: 600;
+}
+
+:where(.pk-btn-primary:hover) {
+  border-color: var(--orange);
+  background: color-mix(in srgb, var(--orange) 26%, var(--panel2));
+  color: var(--orange2);
+}
+
+:where(.pk-btn-ghost) {
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+}
+
+:where(.pk-btn-ghost:hover) {
+  border-color: var(--bd);
+  background: var(--panel2);
+  color: var(--ink);
+}
+
+:where(.pk-btn-danger) {
+  border-color: color-mix(in srgb, var(--red) 45%, var(--bd2));
+  background: transparent;
+  color: color-mix(in srgb, var(--red) 78%, var(--ink));
+}
+
+:where(.pk-btn-danger:hover) {
+  border-color: var(--red);
+  background: var(--tint-red);
+  color: color-mix(in srgb, var(--red) 88%, var(--ink));
+}
+
+/* 危险动作的二次确认块（卸载清单 / 删除范围）：红边 + 比面板稍暗的底 */
+:where(.pk-danger-box) {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--red) 40%, var(--bd));
+  border-radius: var(--r-md);
+  background: color-mix(in srgb, var(--red) 6%, var(--panel));
+}
+
+:where(.pk-danger-box > b) {
+  font-size: 12px;
+  color: color-mix(in srgb, var(--red) 80%, var(--ink));
+}
+
+:where(.pk-btn-sm) { height: 24px; padding: 0 8px; font-size: 11px; border-radius: var(--r-sm); }
+
+:where(.pk-btn-icon) { width: 26px; height: 26px; padding: 0; }
+
+:where(.pk-btn.is-on) {
+  border-color: var(--cyan);
+  color: var(--cyan2);
+  background: var(--tint-cyan);
+}
+
+/* ── 表单：输入 / 下拉 / 多行 / 勾选 ──────────────────────────────────────── */
+:where(.pk-label) {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+:where(.pk-input, .pk-select, .pk-textarea) {
+  width: 100%;
+  min-width: 0;
+  padding: 5px 8px;
+  border: 1px solid var(--bd2);
+  border-radius: var(--r-sm);
+  background: var(--code);
+  color: var(--ink);
+  font: 12px/1.5 var(--sans);
+  transition: border-color var(--dur-fast), box-shadow var(--dur-fast);
+}
+
+:where(.pk-textarea) { min-height: 64px; resize: vertical; font-family: var(--mono); }
+
+:where(.pk-input::placeholder, .pk-textarea::placeholder) { color: var(--muted); }
+
+:where(.pk-input:hover, .pk-select:hover, .pk-textarea:hover) { border-color: var(--bd2); }
+
+:where(.pk-input:focus, .pk-select:focus, .pk-textarea:focus) {
+  outline: none;
+  border-color: var(--orange);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--orange) 18%, transparent);
+}
+
+:where(.pk-input:disabled, .pk-select:disabled, .pk-textarea:disabled) {
+  opacity: .55;
+  cursor: not-allowed;
+}
+
+:where(.pk-select) {
+  appearance: none;
+  padding-right: 26px;
+  background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%),
+    linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+  background-position: calc(100% - 14px) 50%, calc(100% - 9px) 50%;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+}
+
+:where(.pk-check) {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+:where(.pk-check input) {
+  margin: 0;
+  accent-color: var(--orange);
+}
+
+/* 表单行：标签在左、控件在右；.pk-form 是竖排的字段列表 */
+:where(.pk-form) { display: flex; flex-direction: column; gap: 10px; }
+
+:where(.pk-row) {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+:where(.pk-row > .pk-grow, .pk-grow) { flex: 1; min-width: 0; }
+
+/* ── 卡片 / 面板 ──────────────────────────────────────────────────────────
+   .pk-card 是窗内的功能块（安装状态、生成表单、日志容器），不是浮层。 */
+:where(.pk-card) {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border: 1px solid var(--bd);
+  border-radius: var(--r-md);
+  background: var(--panel);
+}
+
+:where(.pk-card-head) {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--bd);
+  font-size: 12px;
+  color: var(--muted);
+}
+
+:where(.pk-card-head > .pk-grow) { flex: 1; min-width: 0; }
+
+:where(.pk-card-body) { padding: 10px; }
+
+:where(.pk-card-foot) {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-top: 1px solid var(--bd);
+}
+
+/* ── 状态胶囊 ─────────────────────────────────────────────────────────────
+   .pk-pill 默认 = 中性（未运行 / 未安装）；语义色：is-ok / is-run / is-fail /
+   is-warn / is-info / is-muted。颜色只走语义令牌，不在各窗写死色值。 */
+:where(.pk-pill) {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 20px;
+  padding: 0 8px;
+  border: 1px solid var(--bd2);
+  border-radius: 999px;
+  background: var(--panel2);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+:where(.pk-pill.is-ok) { border-color: color-mix(in srgb, var(--green) 40%, var(--bd)); background: var(--tint-green); color: var(--green); }
+:where(.pk-pill.is-run) { border-color: color-mix(in srgb, var(--yellow) 40%, var(--bd)); background: var(--tint-yellow); color: var(--yellow); }
+:where(.pk-pill.is-fail) { border-color: color-mix(in srgb, var(--red) 40%, var(--bd)); background: var(--tint-red); color: color-mix(in srgb, var(--red) 85%, var(--ink)); }
+:where(.pk-pill.is-warn) { border-color: color-mix(in srgb, var(--orange) 40%, var(--bd)); background: var(--tint-orange); color: var(--orange2); }
+:where(.pk-pill.is-info) { border-color: color-mix(in srgb, var(--cyan) 40%, var(--bd)); background: var(--tint-cyan); color: var(--cyan2); }
+:where(.pk-pill.is-muted) { opacity: .8; }
+
+/* 胶囊里的状态点（不加也用，加了更醒目） */
+:where(.pk-dot) {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: none;
+}
+
+:where(.pk-pill.is-run) .pk-dot { animation: pkPulse 1.4s ease-in-out infinite; }
+
+@keyframes pkPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .28; }
+}
+
+/* ── 进度条 ───────────────────────────────────────────────────────────────
+   用法：<div class="pk-progress"><i style="width:42%"></i></div>
+   细条（3px）用于窗顶的总体进度，.pk-progress-lg（6px）用于步骤内的进度。 */
+:where(.pk-progress) {
+  position: relative;
+  height: 3px;
+  border-radius: 999px;
+  background: var(--panel2);
+  overflow: hidden;
+}
+
+:where(.pk-progress > i) {
+  display: block;
+  height: 100%;
+  width: 0;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--orange), var(--orange2));
+  transition: width .25s var(--ease-out);
+}
+
+:where(.pk-progress.is-info > i) { background: linear-gradient(90deg, var(--cyan), var(--cyan2)); }
+:where(.pk-progress.is-done > i) { background: var(--green); }
+:where(.pk-progress.is-fail > i) { background: var(--red); }
+:where(.pk-progress-lg) { height: 6px; }
+
+:where(.pk-progress.is-indeterminate > i) {
+  width: 35% !important;
+  animation: pkSlide 1.1s ease-in-out infinite;
+}
+
+@keyframes pkSlide {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(320%); }
+}
+
+/* ── 日志窗 ───────────────────────────────────────────────────────────────
+   两种用法都吃这套样式：
+   1) 纯文本日志（宿主整段 textContent 写入，如 llama console-panel.js）——
+      .pk-log 直接当 <pre> / <div> 用，等宽 + 深底 + 自动换行。
+   2) 分级日志（一行一条 .pk-log-line）—— is-info / is-ok / is-warn / is-fail /
+      is-dim 给行着色；时间戳用 .pk-log-time。 */
+:where(.pk-log) {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--bd);
+  border-radius: var(--r-md);
+  background: var(--code);
+  color: color-mix(in srgb, var(--ink) 86%, var(--muted));
+  font: 12px/1.55 var(--mono);
+  white-space: pre-wrap;
+  word-break: break-all;
+  overflow: auto;
+  tab-size: 2;
+}
+
+:where(.pk-log-line) { display: block; white-space: pre-wrap; word-break: break-all; }
+:where(.pk-log-line.is-info) { color: var(--cyan2); }
+:where(.pk-log-line.is-ok) { color: var(--green); }
+:where(.pk-log-line.is-warn) { color: var(--yellow); }
+:where(.pk-log-line.is-fail) { color: color-mix(in srgb, var(--red) 85%, var(--ink)); }
+:where(.pk-log-line.is-dim) { color: var(--muted); }
+
+:where(.pk-log-time) {
+  color: var(--muted);
+  margin-right: 8px;
+  user-select: none;
+}
+
+/* 日志区标题条（窗名 + 清空 / 自动滚动这类小按钮） */
+:where(.pk-log-head) {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 2px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+:where(.pk-log-head > .pk-grow) { flex: 1; min-width: 0; }
+
+/* ── 滚动条（与主界面同款细条）───────────────────────────────────────────── */
+:where(*) {
+  scrollbar-width: thin;
+  scrollbar-color: var(--bd2) transparent;
+}
+
+:where(::-webkit-scrollbar) { width: 10px; height: 10px; }
+
+:where(::-webkit-scrollbar-track) { background: transparent; }
+
+:where(::-webkit-scrollbar-thumb) {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: var(--bd2);
+  background-clip: padding-box;
+}
+
+:where(::-webkit-scrollbar-thumb:hover) { background: color-mix(in srgb, var(--bd2) 70%, var(--ink)); background-clip: padding-box; }
+
+:where(::-webkit-scrollbar-corner) { background: transparent; }
+
+/* 深底容器里的滚动条跟着面板走，别在日志窗里亮一条灰边 */
+:where(.pk-log::-webkit-scrollbar-thumb) { background: color-mix(in srgb, var(--bd2) 80%, var(--code)); background-clip: padding-box; }
+
+/* ── 键盘焦点环 ───────────────────────────────────────────────────────────
+   只对 :focus-visible 画，鼠标点击不出环；输入框另走「描边变色 + 光晕」（上面）。
+   用 :where() 保证各窗已有的焦点规则优先。 */
+:where(button, a, summary, select, [tabindex], [role="button"], [role="tab"], [role="menuitem"]):focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+:where(.pk-btn):focus-visible { box-shadow: 0 0 0 3px var(--focus-halo); }
+
+/* ── 减少动效：系统开了「减少动画」时，过渡与循环动画只留终态 ──────────────── */
+@media (prefers-reduced-motion: reduce) {
+  :where(*) {
+    animation-duration: .001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .001ms !important;
+  }
+
+  :where(.pk-progress.is-indeterminate > i) { width: 100% !important; transform: none; }
+}

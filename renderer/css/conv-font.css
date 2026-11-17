@@ -1,0 +1,158 @@
+/* 会话正文字号旋钮（css/conv-font.css）
+   ─────────────────────────────────────────────────────────────────────────────
+   一句话：会话列（.agent-list）里**所有**正文字号 = 原基准 × var(--conv-scale, 1)，
+   改一个数就整列一起缩放。
+
+   为什么单独一片：这些字号散在三处 —— css/dsh.css 的 .agent-list 覆盖层
+   （15/16/13/12.5/12px）、css/dsh.css 的基础层（.dsh-tool-chip 9.5px）、
+   以及 css/canvas.css 的 .md 基准（12px + h1–h4 / code / table）——
+   其中 .md 一族**不是**从 .dsh-msg-body 继承，而是自己写死 12px，
+   所以只改容器字号改不动它，必须在这里逐条重述。
+
+   写法纪律：
+   · 全部选择器以 .agent-list 起头 —— 只作用于会话正文列，画布节点 / 审阅窗 /
+     思考弹窗里的同名 .md / .doc 一概不碰。
+   · 每条都带 var(--conv-scale, 1) 的 fallback：旋钮未设时算式退化成原值，
+     视觉与今天逐像素一致（--conv-scale: 1 时 calc(15px * 1) 就等于 15px）。
+   · 只加不减：本文件只覆写 font-size / px 行高，颜色、间距、结构一条都不动；
+     无单位行高（.md 的 1.7 / h1–h4 的 1.4 / 工具段的 1.6）随字号自动跟着长，
+     因此保持原样，不再乘算。
+   · 排在 theme-daylight.css 之后、annotate.css 之前：同权重时压得住主题层
+     （主题层目前没有会话字号覆盖，位置仍按「主题之后」留对）。
+
+   旋钮取值：1 = 今天的样子；1.1 / 1.15 一类是「会话字小一点」的常用档。
+   想局部调（比如只在某个窗格里），在祖先元素上写 --conv-scale 即可，不必改这里。 */
+
+:root {
+  --conv-scale: 1;
+}
+
+/* ── 消息正文 / 流式正文 ───────────────────────────────────────────────── */
+
+/* 助手消息正文（纯文本路径；渲染成 markdown 的部分见下面的 .md 一族） */
+.agent-list .dsh-msg-body {
+  font-size: calc(15px * var(--conv-scale, 1));
+  line-height: calc(24px * var(--conv-scale, 1));
+}
+
+/* 用户气泡：比助手正文大一档（16/24） */
+.agent-list .dsh-user .dsh-msg-body {
+  font-size: calc(16px * var(--conv-scale, 1));
+  line-height: calc(24px * var(--conv-scale, 1));
+}
+
+/* 流式输出中的正文 */
+.agent-list .dsh-stream {
+  font-size: calc(15px * var(--conv-scale, 1));
+  line-height: calc(24px * var(--conv-scale, 1));
+}
+
+/* 全屏会话视图的分段正文（.dsh-seg-say） */
+.agent-list .dsh-seg-say {
+  font-size: calc(15px * var(--conv-scale, 1));
+  line-height: calc(24px * var(--conv-scale, 1));
+}
+
+/* ── 思考 / 工具段（灰调小字） ─────────────────────────────────────────── */
+
+.agent-list .dsh-think {
+  font-size: calc(13px * var(--conv-scale, 1));
+  line-height: calc(20px * var(--conv-scale, 1));
+}
+
+.agent-list .dsh-think-live {
+  font-size: calc(13px * var(--conv-scale, 1));
+}
+
+.agent-list .dsh-seg-think {
+  font-size: calc(13px * var(--conv-scale, 1));
+  line-height: calc(20px * var(--conv-scale, 1));
+}
+
+/* 一行思考摘要条（button.dsh-think-row）：比思考正文再小一档 */
+.agent-list button.dsh-think-row {
+  font-size: calc(12.5px * var(--conv-scale, 1));
+}
+
+/* 工具段皮肤盒（青轨 + 淡底那一层）：盒内文字基准 */
+.agent-list .dsh-seg-tool {
+  font-size: calc(12px * var(--conv-scale, 1));
+}
+
+/* 工具药丸（工具名小字）：自带 9.5px，不跟 .dsh-seg-tool 的 12px 走，故单列 */
+.agent-list .dsh-tool-chip {
+  font-size: calc(9.5px * var(--conv-scale, 1));
+}
+
+/* ── markdown 正文（css/canvas.css 的 .md 基准，只在本列内覆写） ────────── */
+
+/* 基准 12px；行高 1.7 是无单位值，不乘算 */
+.agent-list .md {
+  font-size: calc(12px * var(--conv-scale, 1));
+}
+
+/* 标题逐档：16 / 14.5 / 13 / 12.5（行高 1.4 无单位，不乘算） */
+.agent-list .md h1 {
+  font-size: calc(16px * var(--conv-scale, 1));
+}
+
+.agent-list .md h2 {
+  font-size: calc(14.5px * var(--conv-scale, 1));
+}
+
+.agent-list .md h3 {
+  font-size: calc(13px * var(--conv-scale, 1));
+}
+
+.agent-list .md h4 {
+  font-size: calc(12.5px * var(--conv-scale, 1));
+}
+
+/* 行内代码 */
+.agent-list .md code {
+  font-size: calc(11px * var(--conv-scale, 1));
+}
+
+/* 表格 */
+.agent-list .md table {
+  font-size: calc(11.5px * var(--conv-scale, 1));
+}
+
+/* ── 调档时的右下角读数 pill（Ctrl（⌘）+ 滚轮 · 900ms 自动消失） ────────────────
+   DOM 由 renderer/app-assist.js 的 convFontHudShow() 现建（全站只一枚，重复调档复用），
+   fixed 坐标也由它按「会话列右下角」现算（写 left / top），这里只管外观与淡入淡出。
+   字号写死 12px：它自己**不跟 --conv-scale 走** —— 提示的是档位读数，不是被调的字。
+   配色全走主题变量（--panel2 / --ink / --bd2 / --shadow-pop），三套皮肤不必各写一份。 */
+.conv-font-hud {
+  position: fixed;
+  /* 压住会话列与右下角提示（#toastBox 是 1200），低于节点弹层（1500+） */
+  z-index: 1210;
+  /* left / top 由 JS 写成会话列的右下角，再把自己整体左移上移一格 = 贴住那个角 */
+  transform: translate(-100%, -100%);
+  padding: 5px 11px;
+  border: 1px solid var(--bd2);
+  border-radius: 999px;
+  background: var(--panel2);
+  color: var(--ink);
+  box-shadow: var(--shadow-pop);
+  font: 12px/1.4 var(--sans);
+  letter-spacing: .3px;
+  white-space: nowrap;
+  opacity: 0;
+  transition: opacity .12s ease-out;
+  /* 只是读数：不吃指针事件，输入区 / 发送键在提示的这 900ms 里照常可点 */
+  pointer-events: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.conv-font-hud.is-on {
+  opacity: .96;
+}
+
+/* 系统关掉动效时不做渐隐（与全站的 prefers-reduced-motion 口径一致） */
+@media (prefers-reduced-motion: reduce) {
+  .conv-font-hud {
+    transition: none;
+  }
+}

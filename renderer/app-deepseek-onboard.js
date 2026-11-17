@@ -7,8 +7,10 @@
  *      默认模型 = deepseek-flash（第一只）+ deepseek-v4-pro（第二只，同为官方清单里的可选项）；
  *   ② 官方 DeepSeek 供应商**不允许删除**（模型仍可手动增删 / 排序，方便以后官方上新模型）；
  *   ③ 用户一旦要用任何模型能力（会话、节点、识图、预览、团队……），而官方 DeepSeek 的
- *      API Key 还没配置 → 弹这张引导窗：图文海报教怎么注册 / 充值 / 拿 Key，并预留 Key
- *      输入框；**验证成功后才写入供应商配置**（验证走主进程 GET /models，零 Token 消耗）；
+ *      API Key 还没配置 → 弹**极简填 Key 窗**：一行说明 + Key 输入 + 验证并保存；
+ *      想看「怎么注册 / 充值 / 拿 Key」就点窗里的「说明」，打开**图文海报窗**（5 步图 +
+ *      平台 / API Keys 链接 + 说明文案）。**验证成功后才写入供应商配置**（验证走主进程
+ *      GET /models，零 Token 消耗）；
  *   ④ 已经改用别家服务商（mtnode_xxx 且有 Key）的用户不被这条闸拦住 —— 闸只拦「这一轮
  *      实际要跑的路由就是 DeepSeek 官方 / 还没选过路由（默认官方）」。
  *
@@ -78,6 +80,55 @@
     return !!(p && dsKeyOf(p));
   }
 
+  /* ── 余额中转兜底（余额中转可用时，这张引导窗一律不弹、请求一律放行）────────────
+     判据读的是配置里那张中转卡（source="mtnode-relay"，见 renderer/app-relay.js 的
+     meta 口径）：卡在 + 已登录 + balanceYuan > 0 + 云端没置 blocked。
+     实现细节别处不再各写一份 —— 会话默认路由（app.js / app-agent.js 的
+     agentRouteOptions、app-assist.js 的 agentSeedModelFromSession）与启动期引导闸
+     （app-boot.js）都调这里的 relayUsableNow / relayDefaultRoute。 */
+  function relayCardHit() {
+    const list =
+      S && S.config && Array.isArray(S.config.providers) ? S.config.providers : [];
+    const card =
+      list.find((p) => p && String(p.source || "") === "mtnode-relay") || null;
+    if (!card) return null;
+    const snap =
+      card.relay && typeof card.relay === "object" ? card.relay : {};
+    return { card: card, snap: snap };
+  }
+
+  /* 登录态（app-auth.js 的 MTNodeAuth.state）：只认「已经问过主进程且明确未登录」这一种否定，
+     还没就绪（ready=false）或模块缺席时不判负，交给卡上的快照说话。 */
+  function relaySignedInNow() {
+    try {
+      const st =
+        window.MTNodeAuth && typeof window.MTNodeAuth.state === "function"
+          ? window.MTNodeAuth.state()
+          : null;
+      if (st && st.ready && !st.signedIn) return false;
+    } catch (_) {}
+    return true;
+  }
+
+  /* 中转此刻能不能顶上：卡在（登录过、快照还在）+ 已登录 + 余额 > 0 + 未被云端置 blocked */
+  function relayUsableNow() {
+    const hit = relayCardHit();
+    if (!hit) return false;
+    if (hit.snap.blocked === true) return false;
+    if (!(Number(hit.snap.balanceYuan) > 0)) return false;
+    return relaySignedInNow();
+  }
+
+  /* 「官方没 Key 且中转可用」时该缺省落到哪条智能路由（"" = 不接管，照旧走官方）：
+     路由串与 app.js 的 mtnodePiProviders 同口径 = "mtnode_" + 卡 id */
+  function relayDefaultRoute() {
+    if (dsKeyReady()) return "";
+    if (!relayUsableNow()) return "";
+    const hit = relayCardHit();
+    if (!hit) return "";
+    return "mtnode_" + String(hit.card.id || "mtnode-relay");
+  }
+
   /* 把官方供应商补齐到配置里（用户把整份列表清空 / 老配置里丢了 id 时用）。
      模型清单一律以用户现有那份为准：只在**空清单**时补默认的 flash + pro。 */
   function dsEnsureProvider() {
@@ -120,7 +171,8 @@
      参数可以是路由字符串（"deepseek-official" / "mtnode_xxx" / ""）或服务商对象。
      返回 true = 放行；false = 已弹引导窗，调用方应中止本次请求。
      · 路由是别家（mtnode_xxx）→ 放行（那是另一家的 Key，主进程 checkProvider 会照常校验）；
-     · 路由是官方 / 未选 → 官方有 Key 就放行；没有就弹窗。 */
+     · 路由是官方 / 未选 → 官方有 Key 就放行；官方没 Key 但**余额中转让可用**也放行
+       （不动这张窗、也不拦请求）；两样都没有才弹窗。 */
   function dsEnsureModelReady(target) {
     let official = true;
     if (target && typeof target === "object") {
@@ -130,6 +182,7 @@
     }
     if (!official) return true;
     if (dsKeyReady()) return true;
+    if (relayUsableNow()) return true;
     try {
       dsOpenOnboard();
     } catch (_) {}
@@ -156,8 +209,14 @@
     } catch (_) {}
   }
 
-  /* ── 引导窗（persistent：点蒙层不关，关闭只走窗内按钮 / ✕ / Esc）────────────── */
+  /* ── 两层引导窗（persistent：点蒙层不关，关闭只走窗内按钮 / ✕ / Esc）──────────
+     第一层「极简窗」= dsOpenOnboard（入口名不变，现有全部调用点照旧复用）：
+       一行说明 + Key 输入 + 验证并保存 + 「说明」+ 稍后配置；
+     第二层「图文海报窗」= dsOpenOnboardPoster（由极简窗的「说明」按钮打开，也单独可开）：
+       5 步海报 + 平台 / API Keys 链接 + 说明文案。
+     两层都 persistent：Esc / ✕ 只关最上面那一层，海报关掉后落回极简窗。 */
   let dsDlgEl = null;
+  let dsPosterEl = null;
   let dsEscHandler = null;
 
   function dsEnsureDlg() {
@@ -175,17 +234,6 @@
       "</div>" +
       '<div class="mt-dialog-body ds-key-body">' +
       '<p class="ds-key-lead" id="dsKeyLead"></p>' +
-      '<div class="ds-key-poster-wrap" id="dsKeyPosterWrap">' +
-      /* 海报有深 / 亮两版（deepseek-guide.svg / -light.svg）：跟着当前主题选，
-       applyTheme 里也挂了同一条判定 —— 切主题时正在显示的这一张会当场换掉。 */
-      '<img class="ds-key-poster" id="dsKeyPoster" src="' +
-      (document.body.classList.contains("theme-light") ? "deepseek-guide-light.svg" : "deepseek-guide.svg") +
-      '" alt="" />' +
-      "</div>" +
-      '<div class="ds-key-links">' +
-      '<button type="button" class="mini primary" id="dsKeyOpenPlatform"></button>' +
-      '<button type="button" class="mini" id="dsKeyOpenKeys"></button>' +
-      "</div>" +
       '<div class="ds-key-form">' +
       '<label class="ds-key-label" for="dsKeyInput" id="dsKeyInputLabel"></label>' +
       '<div class="ds-key-form-row">' +
@@ -194,7 +242,7 @@
       "</div>" +
       '<div class="ds-key-status" id="dsKeyStatus" role="status" aria-live="polite"></div>' +
       "</div>" +
-      '<div class="ds-key-note" id="dsKeyNote"></div>' +
+      '<div class="ds-key-help"><button type="button" class="ds-key-guide" id="dsKeyGuide"></button></div>' +
       "</div>" +
       '<div class="mt-dialog-foot"><button type="button" class="mini" id="dsKeyLater"></button></div>' +
       "</div>";
@@ -205,36 +253,19 @@
     $id("dsKeyDlgTitle").textContent = dsT("DeepSeek 官方 API Key");
     $id("dsKeyHeadNote").textContent = dsT("首次使用引导");
     $id("dsKeyLead").textContent = dsT(
-      "使用模型能力前，需要先配置 DeepSeek 官方 API Key。按下面这张海报 5 步就能拿到：",
+      "填入 DeepSeek 官方 API Key 就能使用模型能力（只需要填一次）。",
     );
-    $id("dsKeyPoster").alt = dsT(
-      "海报：如何获取 DeepSeek API Key（注册 / 充值 / 创建 Key / 填进 MTNode）",
-    );
-    $id("dsKeyOpenPlatform").textContent = dsT(
-      "打开 DeepSeek 开放平台（注册 / 充值）↗",
-    );
-    $id("dsKeyOpenKeys").textContent = dsT("API Keys 页面 ↗");
     $id("dsKeyInputLabel").textContent = dsT("API Key（粘贴后自动验证，也可点按钮重试）");
     $id("dsKeyInput").placeholder = "sk-…";
     $id("dsKeySave").textContent = dsT("验证并保存");
-    $id("dsKeyNote").textContent = dsT(
-      "只在验证通过后写入「设置 · 模型服务」里的 DeepSeek 供应商；验证请求只读取模型列表，不消耗 Token。",
-    );
+    $id("dsKeyGuide").textContent = dsT("说明");
     $id("dsKeyLater").textContent = dsT("稍后配置");
 
     $id("dsKeyClose").onclick = dsCloseOnboard;
     $id("dsKeyLater").onclick = dsCloseOnboard;
-    $id("dsKeyOpenPlatform").onclick = (ev) => {
+    $id("dsKeyGuide").onclick = (ev) => {
       ev.preventDefault();
-      dsOpenUrl(DS_PLATFORM_URL);
-    };
-    $id("dsKeyOpenKeys").onclick = (ev) => {
-      ev.preventDefault();
-      dsOpenUrl(DS_KEYS_URL);
-    };
-    $id("dsKeyPosterWrap").onclick = (ev) => {
-      ev.preventDefault();
-      host.classList.toggle("zoom");
+      dsOpenOnboardPoster();
     };
     $id("dsKeySave").onclick = (ev) => {
       ev.preventDefault();
@@ -257,12 +288,77 @@
         dsSubmitKey();
       }, 120);
     });
-    dsDlgEl.addEventListener("keydown", (ev) => {
-      if (ev.key === "Escape") {
-        ev.preventDefault();
-        dsCloseOnboard();
-      }
-    });
+    dsBindEsc();
+    return host;
+  }
+
+  /* 极简窗以外的第二层：图文海报（原来那张 436 行窗的下半截）。同一个宿主套路，
+     persistent；关掉后落回仍在的极简窗（「返回填 Key」/ ✕ / Esc 三条路都如此）。 */
+  function dsEnsurePoster() {
+    if (dsPosterEl && document.body.contains(dsPosterEl)) return dsPosterEl;
+    const host = document.createElement("div");
+    host.id = "dsPosterDlg";
+    host.className = "mt-dialog ds-poster-dlg";
+    host.tabIndex = -1;
+    host.innerHTML =
+      '<div class="mt-dialog-box ds-poster-box" role="dialog" aria-modal="true" aria-labelledby="dsPosterTitle">' +
+      '<div class="mt-dialog-head ds-key-head">' +
+      '<b id="dsPosterTitle"></b>' +
+      '<span class="ds-key-head-note" id="dsPosterHeadNote"></span>' +
+      '<button type="button" class="ds-key-x" id="dsPosterClose" aria-label="close">✕</button>' +
+      "</div>" +
+      '<div class="mt-dialog-body ds-key-body">' +
+      '<p class="ds-key-lead" id="dsPosterLead"></p>' +
+      '<div class="ds-key-poster-wrap" id="dsKeyPosterWrap">' +
+      /* 海报有深 / 亮两版（deepseek-guide.svg / -light.svg）：跟着当前主题选，
+       applyTheme 里也挂了同一条判定（按 #dsKeyPoster 找这张图）—— 切主题时当场换掉。 */
+      '<img class="ds-key-poster" id="dsKeyPoster" src="' +
+      (document.body.classList.contains("theme-light") ? "deepseek-guide-light.svg" : "deepseek-guide.svg") +
+      '" alt="" />' +
+      "</div>" +
+      '<div class="ds-key-links">' +
+      '<button type="button" class="mini primary" id="dsPosterOpenPlatform"></button>' +
+      '<button type="button" class="mini" id="dsPosterOpenKeys"></button>' +
+      "</div>" +
+      '<div class="ds-key-note" id="dsPosterNote"></div>' +
+      "</div>" +
+      '<div class="mt-dialog-foot"><button type="button" class="mini" id="dsPosterBack"></button></div>' +
+      "</div>";
+    document.body.appendChild(host);
+    dsPosterEl = host;
+
+    const $id = (id) => host.querySelector("#" + id);
+    $id("dsPosterTitle").textContent = dsT("如何获取 DeepSeek API Key");
+    $id("dsPosterHeadNote").textContent = dsT("图文 5 步");
+    $id("dsPosterLead").textContent = dsT(
+      "使用模型能力前，需要先配置 DeepSeek 官方 API Key。按下面这张海报 5 步就能拿到：",
+    );
+    $id("dsKeyPoster").alt = dsT(
+      "海报：如何获取 DeepSeek API Key（注册 / 充值 / 创建 Key / 填进 MTNode）",
+    );
+    $id("dsPosterOpenPlatform").textContent = dsT(
+      "打开 DeepSeek 开放平台（注册 / 充值）↗",
+    );
+    $id("dsPosterOpenKeys").textContent = dsT("API Keys 页面 ↗");
+    $id("dsPosterNote").textContent = dsT(
+      "只在验证通过后写入「设置 · 模型服务」里的 DeepSeek 供应商；验证请求只读取模型列表，不消耗 Token。",
+    );
+    $id("dsPosterBack").textContent = dsT("返回填 Key");
+
+    $id("dsPosterClose").onclick = dsClosePoster;
+    $id("dsPosterBack").onclick = dsClosePoster;
+    $id("dsPosterOpenPlatform").onclick = (ev) => {
+      ev.preventDefault();
+      dsOpenUrl(DS_PLATFORM_URL);
+    };
+    $id("dsPosterOpenKeys").onclick = (ev) => {
+      ev.preventDefault();
+      dsOpenUrl(DS_KEYS_URL);
+    };
+    $id("dsKeyPosterWrap").onclick = (ev) => {
+      ev.preventDefault();
+      host.classList.toggle("zoom");
+    };
     return host;
   }
 
@@ -273,24 +369,35 @@
     el.className = "ds-key-status" + (kind ? " is-" + kind : "");
   }
 
+  /* Esc 只关最上面那一层：海报开着就关海报（落回极简窗），否则关极简窗。 */
+  function dsBindEsc() {
+    if (dsEscHandler) return;
+    dsEscHandler = (ev) => {
+      if (ev.key !== "Escape") return;
+      if (dsPosterEl && dsPosterEl.classList.contains("on")) {
+        ev.preventDefault();
+        dsClosePoster();
+        return;
+      }
+      if (dsDlgEl && dsDlgEl.classList.contains("on")) {
+        ev.preventDefault();
+        dsCloseOnboard();
+      }
+    };
+    document.addEventListener("keydown", dsEscHandler, true);
+  }
+
   function dsOpenOnboard() {
     const host = dsEnsureDlg();
     const p = dsEnsureProvider();
     const input = host.querySelector("#dsKeyInput");
     if (input && p && dsKeyOf(p)) input.value = dsKeyOf(p);
     dsSetStatus("", "");
-    host.classList.remove("zoom");
     host.classList.add("on");
-    if (!dsEscHandler) {
-      dsEscHandler = (ev) => {
-        if (ev.key !== "Escape") return;
-        if (!host.classList.contains("on")) return;
-        ev.preventDefault();
-        dsCloseOnboard();
-      };
-      document.addEventListener("keydown", dsEscHandler, true);
-    }
+    dsBindEsc();
     setTimeout(() => {
+      /* 海报开着时不抢焦点（仍留在海报上读图） */
+      if (dsPosterEl && dsPosterEl.classList.contains("on")) return;
       try {
         if (input) input.focus();
       } catch (_) {}
@@ -298,9 +405,33 @@
     return host;
   }
 
+  /* 打开图文海报：底下那只极简窗照样在（关掉海报就落回它）。 */
+  function dsOpenOnboardPoster() {
+    dsOpenOnboard();
+    const host = dsEnsurePoster();
+    host.classList.remove("zoom");
+    host.classList.add("on");
+    dsBindEsc();
+    return host;
+  }
+
+  function dsClosePoster() {
+    if (!dsPosterEl) return;
+    dsPosterEl.classList.remove("on", "zoom");
+    const input = dsDlgEl && dsDlgEl.querySelector("#dsKeyInput");
+    if (dsDlgEl && dsDlgEl.classList.contains("on") && input) {
+      setTimeout(() => {
+        try {
+          input.focus();
+        } catch (_) {}
+      }, 30);
+    }
+  }
+
+  /* 关整条引导（成功保存 / 「稍后配置」/ ✕）：两层一起收，Esc 监听一并摘掉。 */
   function dsCloseOnboard() {
-    if (!dsDlgEl) return;
-    dsDlgEl.classList.remove("on", "zoom");
+    if (dsPosterEl) dsPosterEl.classList.remove("on", "zoom");
+    if (dsDlgEl) dsDlgEl.classList.remove("on");
     if (dsEscHandler) {
       try {
         document.removeEventListener("keydown", dsEscHandler, true);
@@ -392,9 +523,11 @@
      口径（需求）：进应用时只显示第一次，之后每次开机不再自动弹；但「调用官方 DeepSeek
      API 且没设 Key」那条闸（dsEnsureModelReady / 主进程 ds:needKey 广播）照旧每次都弹 ——
      这里只管启动期这一次，别拿它去拦调用路径。
-     标记落在 config.dsGuideSeen（config:save 顶层浅合并，不会丢）。 */
+     标记落在 config.dsGuideSeen（config:save 顶层浅合并，不会丢）。
+     **余额中转可用时整块跳过**：这类用户不缺「去配官方 Key」，别拿海报挡他。 */
   function dsOpenBootGuide() {
     if (!S || !S.config) return false;
+    if (relayUsableNow()) return false;
     if (S.config.dsGuideSeen) return false;
     S.config.dsGuideSeen = true;
     try {
@@ -412,6 +545,9 @@
       if (!window.api || typeof window.api.onDsNeedKey !== "function") return;
       window.api.onDsNeedKey(() => {
         if (dsKeyReady()) return;
+        /* 中转可用时主进程也不该播这条（那边 checkProvider 已加同一判据）；
+            这里再挡一次，防老版本主进程 / 竞态下误弹 */
+        if (relayUsableNow()) return;
         dsOpenOnboard();
       });
     } catch (_) {}
@@ -421,10 +557,13 @@
   window.dsOfficialProvider = dsOfficialProvider;
   window.dsIsOfficialProvider = dsIsOfficialProvider;
   window.dsKeyReady = dsKeyReady;
+  window.relayUsableNow = relayUsableNow;
+  window.relayDefaultRoute = relayDefaultRoute;
   window.dsEnsureProvider = dsEnsureProvider;
   window.dsEnsureModelReady = dsEnsureModelReady;
   window.dsMissingKeyError = dsMissingKeyError;
   window.dsOpenOnboard = dsOpenOnboard;
+  window.dsOpenOnboardPoster = dsOpenOnboardPoster;
   window.dsOpenBootGuide = dsOpenBootGuide;
   window.dsCloseOnboard = dsCloseOnboard;
 
