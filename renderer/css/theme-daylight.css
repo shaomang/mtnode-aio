@@ -13,24 +13,54 @@
    v3 换色：强调从青绿族整族搬到蓝族（#0b7f9b → #155fb0），「运行中」那支品牌棕
    （#a94f08）一并收进蓝族深档 —— 青绿与棕在浅底上都偏色，蓝是通用界面色。
 
-   色卡（对白底 #ffffff 的 WCAG 对比度）：
+   ── v4：灰壳白面（底再压一档，描边跟着重算）─────────────────────────────────
+   v2/v3 的底 --bg #f4f6f9 只有 1.08（≈白），而顶栏那一排按钮又是无边框的 ——
+   「壳灰」与「描边」两项都省，整屏就平在 1.08 上，观感就是「太白」。
+   横向取样（GitHub / Vercel / Linear / Radix Themes / Stripe 的 light theme，取法与
+   逐条数字记在 docs/theme-light-evidence/README.md 的「灰壳白面那一轮 · 取值依据」）：
+   四家靠「近白壳 + 到处都有描边」，只有 Stripe 把壳压到 #f0f3f5（1.11）。
+   我们两侧都薄，所以走 Stripe 那一端 **并且** 保住三档描边 —— 双保险：
+     · 壳 --bg #f4f6f9 → #eef1f5（1.08 → 1.13），次级底 --bg2 → #e7ecf2（1.19），
+       卡片仍纯白：#ffffff 1.00 > panel2 1.06 > 壳 1.13 > bg2 1.19，四步单调。
+     · 灰底会**直接吃掉描边对比度**（#7e8898 压到新壳上只剩 3.16，太贴 3:1 的边），
+       所以控件档跟着压深：#7e8898 → #79838f（白 3.85 / 新壳 3.40 / bg2 3.24）。
+     · 发丝档跟着换 #e3e8ef（白 1.23 / 新壳 1.09）—— **只许画在白面上**，
+       画在新壳或 --bg2 上就是「画了看不见」；外框档 #d0d5dd 不动（白 1.47 / 壳 1.30，
+       1px 框架线靠 at1 记 1.5）。
+     · 联动铁律：**壳越深，--line-strong 必须越深。** 若把壳再压到备用值 #e9edf2（1.18），
+       这组要一起降档：--line-strong #737d8c（白 4.17 / 壳 3.54）、--line #ccd3dd（1.51）、
+       --line-hair #dfe5ec（1.27）—— 只改壳不改描边就是本条最容易翻的车。
 
-     用途        令牌                             值         白底    旧值
-     ─────────   ───────────────────────────────  ─────────  ─────   ─────────
-     画布底      --bg / --ef-black / --ef-canvas   #f4f6f9   1.08    #e9edf4
-     次级底      --bg2 / --ef-surface              #eceff4   1.15    #e2e7f0 / #f5f7fa
-     卡片        --panel / --ef-panel / --ef-card  #ffffff   —       #ffffff
-     次级面板    --panel2 / --row-alt              #f7f9fb   1.06    #f3f6fa / #f7f9fc
-     正文        --ink / --ef-text / --pop-ink     #101828   18.4    #1d2a44
-     次要        --muted / --ef-muted              #475467   7.70    #4e5969
-     弱化        --field-ph                        #667085   4.97    #55606f
-     强调        --cyan / --ef-signal              #155fb0   6.45    #0b7f9b
-     强调 hover  --cyan2 / --ef-signal-2/-deep     #10457f   9.50    #0a6e86
-     运行中      --orange / --ef-logo-line         #10457f   9.50    #a94f08
-     强调淡底    --field-sel                       #e8f0fb   —       #e8f5f8
-     描边·内分隔 --line-hair                       #e4e8ee   1.23    新档
-     描边·外框   --line / --bd / --ef-line         #d0d5dd   1.47    #ccd6e4
-     描边·控件   --line-strong / --bd2             #7e8898   3.58    #b3c0d2
+   色卡（WCAG 对比度；「白底」= #ffffff，「新壳」= #eef1f5。本节数字一律按闸门脚本
+   test/verify-theme-light-contrast.js 的同一套公式重算 —— v2/v3 那版手写的 18.4 / 6.45
+   实为 17.75 / 6.37（差 0.1~0.7），以本节为准）：
+
+     用途        令牌                             值         白底    新壳    旧值
+     ─────────   ───────────────────────────────  ─────────  ─────   ─────   ─────────
+     画布底      --bg / --ef-black / --ef-canvas   #eef1f5   1.13    1.00    #f4f6f9
+     次级底      --bg2 / --ef-surface              #e7ecf2   1.19    1.05    #eceff4
+     卡片        --panel / --ef-panel / --ef-card  #ffffff   —       1.13    #ffffff
+     次级面板    --panel2 / --row-alt              #f6f8fb   1.06    1.07    #f7f9fb
+     表头        --row-head                       #ecf0f6   1.14    1.01    #f1f4f8
+     浮层标题条  --pop-head                        #f2f5fa   1.09    1.04    #f7f9fb
+     代码块      --code-bg                        #eef1f5   1.13    1.00    #f4f6f9
+     正文        --ink / --ef-text / --pop-ink     #101828   17.75   15.66   #1d2a44
+     次要        --muted / --ef-muted              #475467   7.69    6.79    #4e5969
+     弱化        --field-ph                        #667085   4.97    4.39    #55606f
+     强调        --cyan / --ef-signal              #155fb0   6.37    5.62    #0b7f9b
+     强调 hover  --cyan2 / --ef-signal-2/-deep     #10457f   9.63    8.50    #0a6e86
+     运行中      --orange / --ef-logo-line         #10457f   9.63    8.50    #a94f08
+     强调淡底    --field-sel                       #e8f0fb   —       1.01    #e8f5f8
+     悬停底      --hover-bg（合成后）              #e8eff7   1.16    1.13    新档
+     选中底      --sel-bg（合成后）                #dee9f4   1.23    1.19    新档
+     描边·内分隔 --line-hair                       #e3e8ef   1.23    1.09    新档
+     描边·外框   --line / --bd / --ef-line         #d0d5dd   1.47    1.30    #ccd6e4
+     描边·控件   --line-strong / --bd2             #79838f   3.85    3.40    #b3c0d2
+
+   悬停 / 选中故意保留 **半透明**（rgba 合成，不落实色）：--hover-bg 的主要消费者是
+   顶栏 / 状态栏那排按钮，它们的底是壳色而不是白色 —— 任务 1 建议的实色 #e9f0fa 压在新壳
+   #eef1f5 上只有 1.01（等于没有 hover）。保留 .10 / .14 的蓝，合成后对白 1.16 / 1.23，
+   对任意浅底都自动成立（对白壳 1.13 / 1.19）。要改浓度就改 alpha，别改成实色。
 
    旧描边令牌一律映射到三级梯度，文件里不再留任何一个旧十六进制：
      --bd       #ccd6e4 → var(--line)          （卡片 / 浮层外框）
@@ -88,28 +118,32 @@
    出在这里）：--line-hair 面板内分隔 · --line 卡片 / 浮层外框 · --line-strong 控件边界。
    所有强调色都按「白底上 ≥4.5:1」挑过一档，不要再往亮里调。 */
 body.ef-skin.theme-light {
-  /* 一·一 应用槽位（base.css 同名槽位的亮色值） */
-  --bg: #f4f6f9;
-  --bg2: #eceff4;
+  /* 一·一 应用槽位（base.css 同名槽位的亮色值）
+     层次四步（对白）：卡片 1.00 > 次级面板 1.06 > 画布底 1.13 > 次级底 1.19 ——
+     「灰壳 + 白面」就是靠这四步立起来的，底与底之间不靠描边也分得开。 */
+  --bg: #eef1f5;
+  --bg2: #e7ecf2;
   --panel: #ffffff;
-  --panel2: #f7f9fb;
-  /* 描边三级梯度：白底 1.23 / 1.47 / 3.58:1 —— 依次是「纯装饰」「外框立边界」
-     「控件可见边界（WCAG 1.4.11 要求 ≥3:1）」。控件档对画布底 #f4f6f9 是 3.31:1，
-     表单件坐在 --code / 画布底上也立得住（旧档 #8a94a3 在那一层只有 2.83）。 */
-  --line-hair: #e4e8ee;
+  --panel2: #f6f8fb;
+  /* 描边三级梯度：白底 1.23 / 1.47 / 3.85:1 —— 依次是「纯装饰」「外框立边界」
+     「控件可见边界（WCAG 1.4.11 要求 ≥3:1）」。控件档对画布底 #eef1f5 是 3.40:1、
+     对次级底 #e7ecf2 是 3.24:1，表单件坐在 --code / 画布底上也立得住
+     （旧档 #8a94a3 在那一层只有 2.83）。 */
+  --line-hair: #e3e8ef;
   --line: #d0d5dd;
-  /* 控件档原为 #8a94a3（白底 3.07）—— 但表单件有一半坐在 --code / 画布底 #f4f6f9 上，
-     那一档对 #f4f6f9 只有 2.83，正好卡在 WCAG 1.4.11 的 3:1 下面。压到 #7e8898：
-     白底 3.58、画布底 3.31，两种底都过。 */
-  --line-strong: #7e8898;
+  /* 控件档原为 #8a94a3（白底 3.07）→ #7e8898（白底 3.58，但压到新壳 #eef1f5 上只剩 3.16，
+     太贴 3:1 那条线）→ 现值 #79838f：白底 3.85、新壳 3.40、次级底 3.24，三种底都留出余量。
+     这条联动是硬约束：**壳再往深里改，这一档必须跟着往深里走**（文件头 v4 一节给了备用壳
+     的整组值），否则新壳会把控件边吃到 3.0 以下。 */
+  --line-strong: #79838f;
   --bd: var(--line);            /* 旧 #ccd6e4：结构框 → 二级 */
   --bd2: var(--line-strong);    /* 旧 #b3c0d2：控件边 → 三级 */
   --ink: #101828;
   --muted: #475467;
-  --code: #f4f6f9;
+  --code: #eef1f5;
   /* 强调与「运行中」都收在蓝族里（令牌名 --cyan / --orange 是历史遗留，值早已不是青与橙）：
-     主强调 #155fb0 白底 6.45:1、画布底 5.9:1，既能当字色也能当按钮底反白字；
-     深一档 #10457f 白底 9.5:1，给 hover / 选中态 / 运行中标识。
+     主强调 #155fb0 白底 6.37:1、新壳 5.62:1，既能当字色也能当按钮底反白字；
+     深一档 #10457f 白底 9.63:1、新壳 8.50:1，给 hover / 选中态 / 运行中标识。
      --blue 与 --cyan 合并成同一档 —— 亮色里不需要两套蓝。 */
   --orange: #10457f;
   --orange2: #0b3563;
@@ -133,50 +167,59 @@ body.ef-skin.theme-light {
   /* 一·二 输入件（input / textarea / select / 参数表单）：底与字成对给 */
   --field-bg: #ffffff;
   --field-ink: #101828;
-  --field-line: var(--line-strong); /* 旧 #b3c0d2 白底 1.9:1 → 3.58:1，一眼能看出框 */
+  --field-line: var(--line-strong); /* 旧 #b3c0d2 白底 1.9:1 → 3.85:1，一眼能看出框 */
   --field-line-hi: var(--cyan);
-  --field-ph: #667085;          /* placeholder：比 --muted 弱一档，但白底仍 4.97:1（过 4.5） */
+  --field-ph: #667085;          /* placeholder：比 --muted 弱一档，白底仍 4.97:1（过 4.5）。
+                                   它只坐白面 --field-bg：压在新壳 #eef1f5 上只有 4.39，
+                                   所以不许拿它当壳上的字色 —— 壳上要弱化字用 --muted（6.79）。 */
   --field-sel: #e8f0fb;         /* 输入框内选中文字的底（蓝族淡底） */
-  --field-disabled-bg: #eceff4;
+  --field-disabled-bg: #eceff4; /* 本档不跟随新壳：它只出现在白面表单里（1.15 vs 白），禁用字 3.26 过图形档 */
   --field-disabled-ink: #7b8496;
 
   /* 一·三 浮层 / 弹窗 / 菜单（设置窗、搜索、查找、灯箱、提示、右键菜单） */
   --pop-bg: #ffffff;
   --pop-ink: #101828;
   --pop-line: var(--line);      /* 浮层外框：1px 线立边界，不靠影子 */
-  --pop-head: #f7f9fb;          /* 浮层标题条 / 表头 */
+  /* 浮层标题条从 1.06 提到 1.09：壳压到 1.13 之后，标题条若还停在 1.055 就成了全屏最白的
+     一层，浮层头与体分不开。取 #f2f5fa：对白 1.09，字压上去 ink 16.24 / muted 7.03。 */
+  --pop-head: #f2f5fa;
   --pop-muted: #475467;
   /* 蒙层浓度：暗色那层是 45~96% 的黑纱。生成层把近黑半透明底一律按「淡墨」翻，于是
      #overlay / 设置窗 / 灯箱这些全屏蒙层都只剩 14% —— 浅底上等于没压，白浮层压在
      #d6d9e0 的淡灰上只有 1.41:1，浮层与画布糊成一片。
      这里取色卡自己的中性墨 #101828 的 34%：压暗一层、画布仍看得出结构（节点描边
-     1.57:1 可见），浮层与蒙层拉开到 2.32:1；边界再交给 1px --line（见二·○ 的浮层壳），
-     既不靠浓度，也不靠影子。 */
+     1.60:1 可见），浮层与蒙层拉开到 2.35:1；边界再交给 1px --line（见二·○ 的浮层壳），
+     既不靠浓度，也不靠影子。（新壳比旧壳深一档，这两个数比 v3 那版各高 0.03。） */
   --pop-scrim: rgba(16, 24, 40, .34);
 
   /* 一·四 代码块 / 表格 / 行 */
-  --code-bg: #f4f6f9;
+  --code-bg: #eef1f5;           /* 跟随画布底：代码块是在白卡里挖出的「凹陷面」，1.13 一眼看得出 */
   --code-ink: #101828;
   --code-line: var(--line-hair);
-  --row-alt: #f7f9fb;
-  --row-head: #f1f4f8;
+  --row-alt: #f6f8fb;           /* 与 --panel2 同档：1.06，比表头浅一步 */
+  --row-head: #ecf0f6;          /* 表头压到 1.14 —— 隔行与表头要分得开（1.06 → 1.14） */
+  /* 悬停 / 选中保留半透明（合成而不是实色）：这两个值的主要消费者是顶栏 / 状态栏那排
+     按钮，底是**壳色**不是白色。任务 1 建议的实色 #e9f0fa 压在新壳 #eef1f5 上只有 1.01，
+     等于没有 hover；.10 / .14 的蓝合成后对白 1.16 / 1.23、对新壳 1.13 / 1.19，任何浅底
+     都成立。要调就调 alpha（对白 1.16 是这一档的期望值），别改成实色。 */
   --hover-bg: rgba(21, 95, 176, .10);
-  --sel-bg: rgba(21, 95, 176, .16);
+  --sel-bg: rgba(21, 95, 176, .14);
 
   /* 一·五 交互令牌（焦点环 / 投影 / 选区） */
   --focus-ring: var(--cyan);
   --focus-halo: rgba(21, 95, 176, .18);
-  /* 浮层投影：浅底上不能沿用暗色那层 12/32px 的黑影（在 #f4f6f9 上就是一圈灰雾）。
-     一层贴着边（1px 2px / 6%）定接触，一层远距（12px 28px -8px / 16%）给体积；
+  /* 浮层投影：浅底上不能沿用暗色那层 12/32px 的黑影（在新壳 #eef1f5 上就是一圈灰雾）。
+     一层贴着边（1px 2px / 5%）定接触，一层远距（12px 28px -8px / 13%）给体积 ——
+     底比旧卡深了一档，两层各减一档浓度（v3 是 6% / 16%），免得浮层看着发脏。
      「浮层分得出来」靠的是外框那道 1px --line，影子只补厚度。 */
-  --shadow-pop: 0 1px 2px rgba(16, 24, 40, .06), 0 12px 28px -8px rgba(16, 24, 40, .16);
+  --shadow-pop: 0 1px 2px rgba(16, 24, 40, .05), 0 12px 28px -8px rgba(16, 24, 40, .13);
 
   /* 一·六 共用皮肤（css/theme-endfield.css 的 --ef-* 槽位）的亮色重映射。
      皮肤那 2600 行里凡是走变量的部件都随这里变色，不必逐条覆盖；
      写死石墨色的部件由二节起的覆盖层处理（审计脚本会列出漏网的）。 */
-  --ef-black: #f4f6f9;
-  --ef-canvas: #f4f6f9;
-  --ef-surface: #eceff4;
+  --ef-black: #eef1f5;
+  --ef-canvas: #eef1f5;
+  --ef-surface: #e7ecf2;
   --ef-panel: #ffffff;
   --ef-card: #ffffff;
   --ef-input: #ffffff;
@@ -243,48 +286,62 @@ body.ef-skin.theme-light .wf-tab.active {
       选中态的字必须跟着翻白 —— 它比按钮本体低一层，要单独写。
    ③ 节点上的 ▶ 播放键：底色是 rgba(绿,.08)，压在节点预览区上容易糊；亮色下给它实白底 + 描边。 */
 body.ef-skin.theme-light .cdock {
-  /* 原 #4e5969（旧 --muted）：底部条在亮色下是 14% 墨的灰洗底（#d6d9de），
-     9.5px 的 .cdock-lb / 7px 的 .cdock-caret 压在这层灰上只有 4.2~4.5:1。
-     压到 #3d4759：对灰洗底 6.4:1、对白 8.9:1，小字一眼可读。 */
+  /* 静止态的字：底条现在是 --panel2（#f6f8fb），9.5px 的 .cdock-lb / 7px 的 .cdock-caret
+     压在这层上要 ≥4.5:1 才读得出。压到 #3d4759：对 --panel2 8.8:1、对白 9.4:1。 */
   --cdock-mute: #3d4759;
-  /* 两档 cdock 线（canvas-dock.css 里是 white .1 / .16）在亮底上等于没有边：
-     整条底部条的顶边、组间竖分隔、二级面板外框都吃这两个变量。
-     原来取「外框」档 --line（白底 1.47:1）—— 压在 14% 墨的灰洗底上只剩 1.36，
-     与面板底几乎同色，组与组之间数不出来。改取「控件」档 --line-strong（白底 3.58 /
-     灰洗底 3.3）：1px 结构线只有过 3:1 才立得住。
+  /* 分组线取「结构档」--line（不是控件档 --line-strong）：底部条靠 1px 分组线分区，
+     不再给每颗按钮挨个画外框；顶沿与组间竖分隔都吃这一档，1px 框架线靠 at1 记 1.5。
      注意 --cdock-line-2 不只是边框：.cdock-sep / 分隔渐变拿它当 1px 底色，取同一档才对得上。 */
-  --cdock-line: var(--line-strong);
-  --cdock-line-2: var(--line-strong);
-  /* 悬停 / 选中的强调：canvas-dock.css 吃 --ef-signal（=--cyan #155fb0），
-     压在 14% 墨灰洗底上只有 5.9:1 且偏浅；这里取蓝族深一档（#10457f，灰洗底 8.7:1）。 */
+  --cdock-line: var(--line);
+  --cdock-line-2: var(--line);
+  /* 悬停 / 选中的强调：canvas-dock.css 吃 --ef-signal（=--cyan #155fb0）压在浅底上偏浅；
+     这里取蓝族深一档（#10457f，白底 9.6:1 / 淡蓝选中底上 8.5:1），选中字与下划线都用它。 */
   --cdock-accent: var(--cyan2);
 }
 
-/* 建造条的按钮：canvas-dock.css 默认是「透明底 + 透明边」，只有 hover / 选中才显形 ——
-   亮色下整条建造条看上去就是一排没有边界的灰字，用户反馈「按钮不清晰」就是它。
-   这里默认态直接给白底（对灰洗底 1.47）+ 控件档描边（3.58），静止时也数得清有几颗；
-   hover / 选中换成蓝淡底 + 强调描边，与其它按钮的选中口径一致。 */
-body.ef-skin.theme-light .cdock-btn {
-  background: #ffffff;
-  border-color: var(--line-strong);
+/* 底条表面：暗色那层是「近黑渐变 + 扫描线 + 40% 黑影」，亮底上一压就是一条黑边。
+   换成干净的 --panel2 + 上沿 1px --line（影子只留一层极淡的接触影）：
+   分区交给组间那条 1px 分组线与表面本身，而不是每颗按钮自己的框 ——
+   上一版「白底 + #7e8898 1px 边」的 14 颗小方块就是这么挤成棋盘的。 */
+body.ef-skin.theme-light .cdock-bar::before {
+  background: var(--panel2);
+  border-top: 1px solid var(--line);
+  box-shadow: 0 -8px 20px -12px rgba(16, 24, 40, 0.18);
+  backdrop-filter: none;
 }
+/* 组间竖线中点那枚 3×3 菱形吃的是 --cdock-line-2（现为结构档 --line）：
+   亮面上它只有 1.3:1，等于没有 —— 只把这一枚小标记提到控件档，竖线本身仍走结构档。 */
+body.ef-skin.theme-light .cdock-sep::after {
+  background: var(--line-strong);
+}
+/* 底条是白面之后，收纳按钮那层 4% 白的 hover 底色等于没有，换主题悬停底 */
+body.ef-skin.theme-light .cdock-tab:hover {
+  background: var(--hover-bg);
+}
+
+/* 建造条的按钮：静止 = 透明底 + 透明边（沿用 canvas-dock.css 的默认口径，这里不加白底、
+   不画外框 —— 分区靠分组线，静止时也能数清有几颗）；
+   hover = 淡蓝填充 + 控件档边，on = 选中淡底 + 强调描边 + --cyan2 字。
+   .cdock-btn::after 那截 2px 强调下划线（从中间长出）原样保留：暗色那套的「手感」主要来自它，
+   亮色下同样成立，所以这一条不覆盖。 */
 body.ef-skin.theme-light .cdock-btn:hover {
-  background: var(--field-sel);
-  border-color: var(--cyan);
+  background: var(--hover-bg);
+  border-color: var(--line-strong);
   color: var(--ink);
 }
 body.ef-skin.theme-light .cdock-btn.on {
-  background: var(--field-sel);
+  background: var(--sel-bg);
   border-color: var(--cyan);
   color: var(--cyan2);
 }
 
 /* 二级 / 三级小面板：生成层把它翻成「14% 墨叠 14% 墨」，与底部条同色糊成一片。
-   亮色下改白底 + 控件档描边，条目坐 --panel2、悬停转蓝淡底。 */
+   亮色下改白面 + 结构档外框 + --shadow-pop（浮层靠 1px 线立边界，影子只补厚度）；
+   条目坐 --panel2、外框 --line，悬停转淡蓝。 */
 body.ef-skin.theme-light .cdock-pop,
 body.ef-skin.theme-light .cdock-pop-sub {
-  background: #ffffff;
-  border-color: var(--line-strong);
+  background: var(--panel);
+  border-color: var(--line);
   box-shadow: var(--shadow-pop);
 }
 body.ef-skin.theme-light .cdock-it {
@@ -293,9 +350,22 @@ body.ef-skin.theme-light .cdock-it {
   color: var(--muted);
 }
 body.ef-skin.theme-light .cdock-it:hover {
-  background: var(--field-sel);
-  border-color: var(--cyan);
+  background: var(--hover-bg);
+  border-color: var(--line-strong);
   color: var(--ink);
+}
+
+/* caret 只有 7~8px、还带 .45~.5 的透明度：亮底上再打个对折就没了。
+   静止态补到 .8（读得出「这一颗有子面板」），hover / 选中仍是满值 ——
+   这里把这两态一并写死，免得被上面的 .8 压住。 */
+body.ef-skin.theme-light .cdock-btn .cdock-caret,
+body.ef-skin.theme-light .cdock-it .cdock-it-caret {
+  opacity: 0.8;
+}
+body.ef-skin.theme-light .cdock-btn.has-sub:hover .cdock-caret,
+body.ef-skin.theme-light .cdock-btn.on .cdock-caret,
+body.ef-skin.theme-light .cdock-it:hover .cdock-it-caret {
+  opacity: 1;
 }
 
 body.ef-skin.theme-light .n-title {
@@ -308,13 +378,6 @@ body.ef-skin.theme-light .n-title {
    标题本身必须是正文级可读。 */
 body.ef-skin.theme-light .wf-node .n-title {
   color: var(--ink);
-}
-
-body.ef-skin.theme-light .topbar .tb-view.on .tb-view-txt,
-body.ef-skin.theme-light .topbar .btn-ico.on .btn-ico-txt,
-body.ef-skin.theme-light .topbar .btn-stack.on .btn-stack-txt,
-body.ef-skin.theme-light .topbar .corner.on .btn-ico-txt {
-  color: #ffffff;
 }
 
 /* 选择器必须带上 .n-play：canvas.css 那条是 .n-play.n-help-btn（两个类），
@@ -466,7 +529,17 @@ body.ef-skin.theme-light .rq-count {
 
 /* ── 二·○·一 壳体（顶栏 / 状态栏）：白底 + 可见的发丝线 ───────────────────────
    共用的暗色皮肤把这两条画成石墨底 + 极弱的分隔，亮色下会整条「糊进画布」。
-   这里给它们白底与一条看得见的边线；按钮常态透明、hover / 选中才上色。 */
+   这里给它们白底与一条看得见的边线：顶栏取**纯白 + 下沿 --line**，画布底是 #eef1f5
+   （对白 1.13），纯白壳压在上面才分得出「壳」与「面」这两层。
+   按钮三态（顶栏 / 状态栏走同一条口径，别一边有壳、另一边还是一片裸字）：
+     resting   = 浅灰面 --panel2 + 1px --line + --muted 字。白顶栏上必须给出一个真实
+                 表面 —— 旧版把这一排写成「background / border-color 都 transparent」，
+                 特异性（0-4-1）又高于生成层的 .btn-update（0-3-1），而 #btnUpdate 的
+                 class 正是 "corner mini btn-update"：联排按钮与更新按钮一起失去底与边，
+                 更新按钮只剩一团看不见的纯白字；
+     hover     = 淡蓝填充 --hover-bg + --line-strong 边 + --ink 字；
+     on / 选中 = 强调实底（--ef-signal 渐变）+ 白字，见下方二·○；
+     disabled  = --field-disabled 那对实色（底 / 字），不叠透明度。 */
 body.ef-skin.theme-light .topbar {
   background: #ffffff;
   border-bottom: 1px solid var(--line);
@@ -479,13 +552,22 @@ body.ef-skin.theme-light .statusbar {
   color: var(--muted);
 }
 
+/* resting：浅灰面 + 1px **控件档**边（--line-strong）。边框宽度本来就由皮肤那条
+   （border-width: 1px）撑着，这里只换颜色，外框尺寸不变。
+   为什么用控件档而不是 --line：这一组是按钮（.btn-ico / .tb-view / .btn-stack /
+   .corner / .sb-btn），闸门按 WCAG 1.4.11 要求「能点的东西边界 ≥3:1」，--line
+   对白只有 1.47（1px 线在浅底上等于没画），--line-strong 对白 3.85 才立得住。
+   hover 因此不再靠「边加深」提示，只换填色与字色（见下一条）。
+   **只给底与边、不设 color**：字色仍由下面的 .btn-ico-txt / .btn-stack-txt /
+   .tb-view-txt 那条给 --muted，而 .btn-perf 这类自带图标色的按钮要保住它在皮肤里
+   那一档强调色（写死 color 会把它一起压灰）。 */
 body.ef-skin.theme-light .topbar .btn-ico,
 body.ef-skin.theme-light .topbar .tb-view,
 body.ef-skin.theme-light .topbar .btn-stack,
 body.ef-skin.theme-light .topbar .corner,
 body.ef-skin.theme-light .statusbar .sb-btn {
-  background: transparent;
-  border-color: transparent;
+  background: var(--panel2);
+  border: 1px solid var(--line-strong);
   box-shadow: none;
 }
 
@@ -499,17 +581,78 @@ body.ef-skin.theme-light .statusbar .sb-btn:hover {
   color: var(--ink);
 }
 
+/* 禁用：不吃按钮基类那条 opacity .45（浅底上会把底与字一起冲淡），改用实色对。
+   特异性与 resting 同档但排在它后面，未登录的「消息」这类按钮才真的落到禁用底上。 */
+body.ef-skin.theme-light .topbar .btn-ico:disabled,
+body.ef-skin.theme-light .topbar .tb-view:disabled,
+body.ef-skin.theme-light .topbar .btn-stack:disabled,
+body.ef-skin.theme-light .topbar .corner:disabled,
+body.ef-skin.theme-light .statusbar .sb-btn:disabled {
+  opacity: 1;
+  background: var(--field-disabled-bg);
+  border-color: var(--line);
+  color: var(--field-disabled-ink);
+}
+
+/* 禁用态的标签也落到同一个禁用字（否则 span 自己那条 --muted 会盖掉按钮上的禁用字，
+   未登录的「消息」看着仍像可点）。 */
+body.ef-skin.theme-light .topbar .btn-ico:disabled .btn-ico-txt,
+body.ef-skin.theme-light .topbar .tb-view:disabled .tb-view-txt,
+body.ef-skin.theme-light .topbar .btn-stack:disabled .btn-stack-txt {
+  color: var(--field-disabled-ink);
+}
+
+/* 更新按钮（#btnUpdate = corner mini btn-update）：必须高过上面那条 resting 的
+   .topbar .corner（0-4-1）与 hover 的 .topbar .corner:hover（0-5-1），所以写
+   .corner.btn-update（0-6-1）。填色用与 on / 选中同一组强调渐变 + 白字：
+   它是「有更新」这一状态的实底入口，不是普通联排按钮。 */
+body.ef-skin.theme-light .topbar .corner.btn-update {
+  color: #ffffff;
+  border-color: var(--ef-signal-deep);
+  background: linear-gradient(180deg, var(--ef-signal), var(--ef-signal-deep));
+  /* 呼吸灯留住，但把皮肤那版「橙色实底 + 橙色辉光」换成强调色的淡影：
+     亮底上橙色辉光是刺眼的一圈雾，也与蓝色选中态打架。 */
+  box-shadow: 0 0 0 1px rgba(var(--ef-signal-rgb), .18);
+  animation: updatePulseLight 2.6s ease-in-out infinite;
+}
+
+body.ef-skin.theme-light .topbar .corner.btn-update:hover {
+  color: #ffffff;
+  border-color: var(--ef-signal-deep);
+  background: linear-gradient(180deg, var(--ef-signal), var(--ef-signal-deep));
+  filter: brightness(1.08);
+}
+
+/* layout.css 的 .btn-update.busy（0-2-0）压不过上面那条 0-6-1 的动画，这里补一次 */
+body.ef-skin.theme-light .topbar .corner.btn-update.busy {
+  animation: none;
+  opacity: 1;
+}
+
+/* 更新按钮的呼吸：与 layout.css 的 updatePulse 同节拍，幅度减到强调色淡影一档 */
+@keyframes updatePulseLight {
+
+  0%,
+  100% {
+    box-shadow: 0 0 0 1px rgba(var(--ef-signal-rgb), .18), 0 0 6px rgba(var(--ef-signal-rgb), .10)
+  }
+
+  50% {
+    box-shadow: 0 0 0 2px rgba(var(--ef-signal-rgb), .26), 0 0 10px rgba(var(--ef-signal-rgb), .18)
+  }
+}
+
 body.ef-skin.theme-light .topbar .btn-ico-txt,
 body.ef-skin.theme-light .topbar .btn-stack-txt,
 body.ef-skin.theme-light .topbar .tb-view-txt {
   color: var(--muted);
 }
 
+/* 标签字色：常态 --muted、hover 提到 --ink；.on 不在这里定 —— 实底上的白字
+   统一在下一条「强调色实底」段里给（终末地皮肤给的是深字，亮色侧必须成对翻白）。 */
 body.ef-skin.theme-light .topbar .btn-ico:hover .btn-ico-txt,
 body.ef-skin.theme-light .topbar .btn-stack:hover .btn-stack-txt,
-body.ef-skin.theme-light .topbar .tb-view:hover .tb-view-txt,
-body.ef-skin.theme-light .topbar .btn-ico.on .btn-ico-txt,
-body.ef-skin.theme-light .topbar .btn-stack.on .btn-stack-txt {
+body.ef-skin.theme-light .topbar .tb-view:hover .tb-view-txt {
   color: var(--ink);
 }
 
@@ -526,12 +669,16 @@ body.ef-skin.theme-light .statusbar .sb-speak-text {
    再压深字就是 3.2:1 —— 同一处必须成对翻成白字。
    这些规则的底色是 var(--ef-signal) 渐变，生成层认不出（它只看字面值），所以手写在这里。
    SVG 图标另写一条 stroke：它的颜色不吃 color。 */
+/* 顶栏其余联排按钮的选中态（「隐藏线」、菜单打开中的账户 / 消息 / 审批…）也一律走这条
+   「强调实底」，不要只有上面那几颗是实底、其余只剩一条蓝边示意（.corner 是顶栏每一颗
+   按钮的公共类，含 .tb-view / .btn-ico / .btn-stack）。 */
 body.ef-skin.theme-light .topbar .tb-view.on,
 body.ef-skin.theme-light .topbar .btn-plugins.on,
 body.ef-skin.theme-light .topbar .btn-tools.on,
 body.ef-skin.theme-light .topbar .btn-assets.on,
 body.ef-skin.theme-light .topbar .btn-perf.on,
 body.ef-skin.theme-light .topbar .btn-apps.on,
+body.ef-skin.theme-light .topbar .corner.on,
 body.ef-skin.theme-light .side-tab.on,
 body.ef-skin.theme-light .seg-btn.on {
   color: #ffffff;
@@ -548,9 +695,18 @@ body.ef-skin.theme-light .topbar .btn-plugins.on svg,
 body.ef-skin.theme-light .topbar .btn-assets.on svg,
 body.ef-skin.theme-light .topbar .btn-perf.on svg,
 body.ef-skin.theme-light .topbar .btn-apps.on svg,
+body.ef-skin.theme-light .topbar .corner.on svg,
 body.ef-skin.theme-light .side-tab.on svg {
   stroke: #ffffff;
   fill: none;
+}
+
+/* 实底上的标签翻白：上面那条 `.btn-ico-txt / .btn-stack-txt / .tb-view-txt`
+   给的是 --muted，权重低于这里（多一层 .on），所以选中态一定落到白字。 */
+body.ef-skin.theme-light .topbar .btn-ico.on .btn-ico-txt,
+body.ef-skin.theme-light .topbar .btn-stack.on .btn-stack-txt,
+body.ef-skin.theme-light .topbar .tb-view.on .tb-view-txt {
+  color: #ffffff;
 }
 
 /* ── 节点标题条：去掉暗色半透明底与黑色虚线，改为浅色分隔条 ──
@@ -1043,11 +1199,17 @@ body.ef-skin.theme-light .side-sess {
   color: var(--ink);
 }
 body.ef-skin.theme-light .side-sess:hover {
-  background: rgba(0, 0, 0, .05);
+  background: var(--hover-bg);
 }
 body.ef-skin.theme-light .side-sess.active {
-  background: rgba(32, 104, 184, .14);
+  background: var(--sel-bg);
   color: var(--ink);
+  /* 选中态边界：.side-sess 本身不画边框（暗色也不画），原来选中只有一层 14% 的淡底
+     （白底 1.23:1）—— 在 232px 的窄栏里认不出「现在挂在哪条会话上」。
+     这里补一道 1px 内环，用 inset box-shadow 而不是 border：加 border 会让选中那一行
+     比邻居高 2px、整列跟着跳一下。颜色取强调色（白底 6.37:1 / 压在自己的淡底上 5.2:1），
+     与顶栏选中、.cdock-btn.on 存的是同一支。 */
+  box-shadow: inset 0 0 0 1px var(--cyan);
 }
 body.ef-skin.theme-light .side-sess-time {
   color: var(--muted);
@@ -1509,17 +1671,37 @@ body.ef-skin.theme-light .agent-tools-lab {
   color: var(--ink);
 }
 body.ef-skin.theme-light .agent-tools-head {
-  background: #fff;
+  background: var(--panel);
+  /* 全站补漏 · 清单 ⑨：标题条是 sticky 的，滚动时会与下面的行叠在一起 ——
+     补一条发丝档分区线（面板内区隔，白面 1.23:1）把「头」与「体」断开。 */
+  border-bottom: 1px solid var(--line-hair);
+}
+body.ef-skin.theme-light .agent-tools-preset {
+  /* 清单 ⑨：预设行（下拉 + 「全部允许」）是第二个分区，同样只给发丝档 ——
+     它负责「断开」，不负责「立边界」，所以不占结构档。 */
+  border-bottom: 1px solid var(--line-hair);
 }
 body.ef-skin.theme-light .agent-tools-preset-sel {
   border-color: var(--line-strong);
   background: #fff;
   color: var(--ink);
 }
+body.ef-skin.theme-light .agent-tools-toggles {
+  /* 清单 ⑨：未选中的「批准 / 询问 / 拒绝」三段小按钮，整组的外框就是唯一的可点边界 ——
+     控件档 --line-strong（白面 3.85:1）；组内分隔用结构档，比外框轻一档（同 .cdock 分组线）。 */
+  border-color: var(--line-strong);
+}
 body.ef-skin.theme-light .agent-tools-mode {
+  border-right: 1px solid var(--line);
   color: var(--muted);
 }
+body.ef-skin.theme-light .agent-tools-mode:last-child {
+  /* 末段那条右边线压在组框内侧会看着像双线，显式消掉（要写，否则上面那条按特异性压过
+     dsh.css 的 :last-child 规则） */
+  border-right: 0;
+}
 body.ef-skin.theme-light .agent-tools-mode:hover {
+  background: var(--hover-bg);
   color: var(--ink);
 }
 body.ef-skin.theme-light .agent-composer-card {
@@ -1535,8 +1717,20 @@ body.ef-skin.theme-light .agent-composer-card .chat-input {
 body.ef-skin.theme-light .agent-composer-card .chat-input::placeholder {
   color: var(--muted);
 }
+/* 输入区右下那两枚「＋ / ↑」（以及同基底的插话 / 暂停 / 终止键）：
+   边早就在控件档（dsh.css 写的是 --bd2 → --line-strong），可底是 panel2→panel 的渐变
+   （1.06 → 1.00）＝「面」这一项等于没有，浅底上一颗键只剩一根线。
+   补法是把底换成一块**平的真实表面** --panel2：与顶栏 / 状态栏 / 建造条那排同一份口径
+   （面 + 1px 边，靠这两项区分，不靠加粗边框）；线既不降档（--line 1.47 在白面上仍然
+   「一眼看不出」），也不升到 2px（加粗是暗色皮肤的手段）。 */
+body.ef-skin.theme-light .agent-send {
+  background: var(--panel2);
+  border: 1px solid var(--line-strong);
+  color: var(--muted);
+}
 body.ef-skin.theme-light .agent-send:hover {
-  background: linear-gradient(180deg, var(--line-hair) 0%, var(--line) 100%);
+  background: var(--hover-bg);
+  border-color: var(--cyan);
   color: var(--ink);
 }
 body.ef-skin.theme-light .agent-send.danger {
@@ -1712,18 +1906,26 @@ body.ef-skin.theme-light .agent-tools-toggle.boost.on .agent-mode-track::after {
   background: #fff;
 }
 
-/* ── 指令 chips ── */
+/* ── 指令 chips ──
+   全站补漏 · 清单 ②：这里原来只有一根 1px 控件档边，底是 transparent、又坐在壳色上 ——
+   一颗 chip 只剩一根线，勾不出「这是能点的胶囊」。补白面 --panel（对壳 1.13）把它垫起来，
+   hover 走 --hover-bg（原来那支 rgba(0,0,0,.05) 合成后 1.13:1，等于没有反馈）。
+   口径与顶栏 / 状态栏 / 建造条那排一致：面 + 1px 边，两边都不加粗。 */
 body.ef-skin.theme-light .agent-chip {
+  background: var(--panel);
   border: 1px solid var(--line-strong);
   color: var(--ink);
 }
 body.ef-skin.theme-light .agent-chip:hover {
-  background: rgba(0, 0, 0, .05);
+  background: var(--hover-bg);
 }
-/* 选中态（.on）取强调色的深一档 --ef-signal-2：强调色 #155fb0 压在助手 / 会话的浅底
-   （#f4f6f9）上是 5.9:1，12px 的「模式」小字也够读，但选中态要比正文更「实」一档，
-   所以照旧走深档（#10457f：浅底 8.7:1、白底 9.5:1）。 */
+/* 选中态（.on）：字取强调色的深一档 --ef-signal-2 —— 强调色 #155fb0 压在助手 / 会话的浅底
+   （#eef1f5）上是 5.62:1，12px 的「模式」小字也够读，但选中态要比正文更「实」一档，
+   所以照旧走深档（#10457f：白底 9.63:1）；底与边按三态口径补上强调淡底 + 强调描边
+   （与 .cdock-btn.on 同一份），原来只有字变蓝，浅底上几乎认不出「这个 chip 是开着的」。 */
 body.ef-skin.theme-light .agent-chip.on {
+  background: var(--sel-bg);
+  border-color: var(--cyan);
   color: var(--ef-signal-2);
 }
 body.ef-skin.theme-light .agent-chip-icon,
@@ -1930,4 +2132,252 @@ body.ef-skin.theme-light select {
 
 body.ef-skin.theme-light .js-edit-input {
   border-color: transparent;
+}
+
+/* ── 二·十一 全站补漏：把「边界不一眼可辨」的面逐个补到三档上 ─────────────────────
+   来源是 docs/theme-light-evidence/README.md 那张「图 ↔ 面」现状清单。**编号与那张清单一一对应**，
+   逐条走查后补的一轮；口径不新开：结构框 → --line，控件边界 → --line-strong，
+   面板内区隔 → --line-hair。
+
+   ① 会话输入框与右下「＋ / ↑」、③ 左栏搜索框与选中态 —— 这两条改在上面各自那段
+      （「输入框与发送按钮」与「会话侧边栏条目」），就地改是为了别把同一个部件的规则拆成两处；
+      本节只放剩下的 ② ④ ⑤ ⑥ ⑦ ⑧ ⑨。
+
+   先说**走查时确认已达标、本轮不动**的部分（记下依据，免得下次又补一遍）：
+     · 会话输入框本体 .agent-composer-card：白面 + 1px --line-strong（白底 3.85:1），达标。
+     · 会话左栏搜索框 .agent-side-search input：--bg2 底（1.19）+ --line-strong 边
+       （对 --bg2 3.24:1），达标；缺的只是选中态，见 ③。
+     · 应用中心搜索框 .apps-hub-search：白字段坐在 --bg 壳上（1.13）+ --line-strong 边
+       （3.85:1）—— 二·十 那条 input 收口规则已经把它管住了，不改成灰底（字段恒白面）。
+     · 专家团左栏 .team-side 的右缘分隔线：layout.css 走 --bd → --line（白对白 1.47、
+       对壳 1.30），档位本来就对；两侧底色不同（白栏 vs 壳 --bg，1.13）已经承担了层次，
+       再抬到控件档就成了「两栏之间一根 3.85 的深线」，既不好看也不符合结构框的语义。
+     · 所有 input / textarea / select 的框、生成层里 1.02~1.2:1 的淡描边：
+       二·九 / 二·十 已经收口，见那两节。
+
+   本轮补的只有两类：已经**压根没有边界**（透明底 + border:0 / 一条分隔线都没有），
+   或者**档位选错**（该控件档的给了结构档、该结构档的给了 1.0x:1 的淡墨）。 */
+
+/* ② 输入区上方的 chip（工具 / 模式 / 权限 / 技能 / 运行计划 …）
+   改在上面的「指令 chips」那段（面 + 边 + 三态），不在这里重复一份。 */
+
+/* ④ 全局搜索（Ctrl+F）的结果行
+   现状：行与行之间什么都没有，全靠留白与分组标题分开（README 记的「没有分隔线」）。
+   补发丝档 —— --line-hair 画在白浮层上是 1.23:1，正好是装饰档（下限 1.2）这一档：
+   看得见「这是两行」，又不至于把结果列表切成表格。只加在**相邻两行之间**
+   （+ 选择器），首行与各分组标题下方仍留白。 */
+body.ef-skin.theme-light .gs-row + .gs-row {
+  border-top: 1px solid var(--line-hair);
+}
+
+/* ⑤ 输入框内查找条（Ctrl+F 呼出的小浮条）
+   两处都不到位：外框走的是浮层那一档 --line（1.47:1）—— 可它不铺蒙层、直接压在输入卡片
+   上（白对白，全屏最不利的一对底色），而「浮层靠 1px --line 立边界」那条的前提是
+   底下有蒙层帮着分；内部输入框在 find.css 里是 `border: 0`，二·十 只改 border-color、
+   画不出线，于是「输入框与白底融为一体」。
+   于是：外框抬到控件档（它整条就是一个控件容器，读数也按控件算），内部输入框真给一条
+   1px 控件档边 + --panel2 底 —— 这一格是「你现在打字的地方」，必须一眼看得出。 */
+body.ef-skin.theme-light .fd-bar {
+  border-color: var(--line-strong);
+}
+body.ef-skin.theme-light .fd-input {
+  background: var(--panel2);
+  border: 1px solid var(--line-strong);
+  border-radius: 5px;
+  padding: 1px 6px;
+}
+
+/* ⑥ 应用中心的卡片
+   外框在生成层里是 1px --line（结构档，白对壳 1.30）—— 档位对，缺的是「卡里」与「卡下」：
+     · 缩略图与卡身之间没有交界 → 发丝档（面板内区隔，白面 1.23），封面不再与卡身边缘糊在一起；
+     · 卡片自身的厚度 → 一层 5% 接触影（与节点板 --nfloat 的第一层同值）。
+       浅底上「卡片浮在页面上」靠的就是这一点点影，不靠把外框加粗成 2px。 */
+body.ef-skin.theme-light .apps-cover {
+  border-bottom: 1px solid var(--line-hair);
+}
+body.ef-skin.theme-light .apps-tile {
+  box-shadow: 0 1px 2px rgba(16, 24, 40, .05);
+}
+
+/* ⑦ 专家团左栏的两枚密集图标键（「＋ 新建专家」「👥 新建群聊」「🔐 权限」「复制团队」）
+   现状是 border: 0 + transparent（layout.css 的 .team-sec-add / .team-side-copy）——
+   浅底上等于没有键面，README 记的「密集图标按钮无显式边框」就是它。
+   补真实表面 --panel2 + 结构档 1px 边：与顶栏 / 状态栏那排同一份口径（面 + 边，不加粗）。
+   为什么不给控件档 --line-strong：它们是**无填充的纯图标键**，闸门 10-borders 也把它们
+   判成 soft（无框按钮，可点性交给图标与文字），控件档要留给真表单件。 */
+body.ef-skin.theme-light .team-sec-add,
+body.ef-skin.theme-light .team-side-copy {
+  background: var(--panel2);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--muted);
+}
+body.ef-skin.theme-light .team-sec-add:hover,
+body.ef-skin.theme-light .team-side-copy:hover {
+  background: var(--hover-bg);
+  border-color: var(--line-strong);
+  color: var(--ink);
+}
+
+/* ⑧ 会话右栏「浏览器活动」（browser.css 末尾那批亮色覆盖是旧色卡）
+   三处都停在装饰档的地板上下：分栏线 rgba(0,0,0,.1)＝1.25、状态标边 rgba(0,0,0,.08)＝1.19、
+   活动列表框 rgba(0,0,0,.1)＝1.25（压在白面上算），而它们要承担的是「栏 / 区域」的边界
+   ——那是结构档的活（--line 1.47 / 对栏底 1.30）。按三档重铺：
+     · 分栏线是「栏与栏之间的一条边界」→ 结构档 --line（对白 1.47 / 对栏底 1.30）；
+     · 状态标与活动列表是白面上的区域 → 结构档 --line，并把底垫成 --panel（原来它们
+       直接坐在栏底上，界线本来就少一道参照）；
+     · 筛选框是控件，边由二·十 收到 --line-strong，这里只把它被旧覆盖改掉的白底写回 --panel。
+   栏底从 #f7f9fc 换成 --panel2（1.06）：与卡片同一套表面令牌，不再留一个写死的近白。 */
+body.ef-skin.theme-light .ba-col {
+  background: var(--panel2);
+  border-left: 1px solid var(--line);
+}
+body.ef-skin.theme-light .ba-status {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  color: var(--muted);
+}
+body.ef-skin.theme-light .ba-list {
+  background: var(--panel);
+  border: 1px solid var(--line);
+}
+body.ef-skin.theme-light .ba-filter input {
+  background: var(--panel);
+}
+
+/* ⑨ 会话输入区的「工具」权限弹层（浮层里的分区边界与未选中的三段小按钮）
+   改在上面的「指令/参数菜单」那段（分区发丝线 + 组框控件档 + 段间结构档），不在这里重复。 */
+
+/* ── 二·十二 设置窗白框、画布浮层、右键菜单与小字 ─────────────────────────────
+   这四条面是同一条口径的四个落点：**白面上「面」与「线」至少给一项**，
+   上下层靠「半步的表面差」+ 一层接触影分开；面板外框一律 --line，
+   --line-strong 只留给输入件与真按钮（它表示「这里能输入 / 能点」）。 */
+
+/* ① 设置窗里嵌在白色浮层上的那几块白框
+   现状（README 的 03-settings 记录）：余额行 / 中转状态行只有一条 1px --line（白对白
+   1.47:1）、没有底；DeepSeek 充值条的边框是旧色卡的 rgba(90,200,250,.45)（1.35:1）、
+   底色 7% 青（1.06:1）—— 白框里再套白框，边界只能靠猜。
+   按「发丝线 + 灰面」这一组收口：面 --panel2（对白 1.06）+ 线 --line-hair（压在灰面上 1.16、
+   压在白面上 1.23）。两者叠加才是「框内框」，且都不占控件档。 */
+body.ef-skin.theme-light .relay-sync {
+  background: var(--panel2);
+  border: 1px solid var(--line-hair);
+}
+body.ef-skin.theme-light .relay-sync.bad {
+  /* 警告态：底给 6% 黄、边回到警告档 —— 生成层原来把这个态也写成 --line-strong，
+     于是「余额不足」看上去和正常态是同一个框，警告色只剩文字。 */
+  background: rgba(122, 79, 0, .06);
+  border-color: var(--ef-warn);
+}
+body.ef-skin.theme-light .relay-sync.bad b {
+  border-color: var(--ef-warn);
+}
+body.ef-skin.theme-light .ds-topup {
+  /* 充值条的品牌色留在左侧那道 3px 强调条上（宽度由 components.css 给，这里只改色），
+     其余三边降成发丝线、底色换成 --panel2：一眼是「一块框」，而不是一张白纸上的荧光边。 */
+  background: var(--panel2);
+  border-color: var(--line-hair);
+  border-left-color: var(--cyan);
+}
+
+/* ② 画布浮层
+   · 三级建造面板（.cdock-pop-sub）压在二级（.cdock-pop）上时，亮色下两者都是白面 ——
+     上下层分不开。给三级半步灰 --pop-head（对白 1.09），再叠 --shadow-pop：
+     层次由「半步表面差 + 影子」承担，不加边框、不加粗线。
+   · 节点说明浮层（.node-help-tip）：标题条与正文之间原来只有留白，补半步灰底 + 发丝分区线；
+     悬停小提示（.np-q-tip）的边还停在旧覆盖的 rgba(0,0,0,.14)（1.35:1）与黑影上，
+     换成 --line + --shadow-pop（浮层靠线立边界，影子只补厚度）。 */
+body.ef-skin.theme-light .cdock-pop-sub {
+  background: var(--pop-head);
+}
+body.ef-skin.theme-light .node-help-tip .node-help-tip-title {
+  background: var(--pop-head);
+  border-bottom: 1px solid var(--line-hair);
+}
+body.ef-skin.theme-light .np-q-tip {
+  border-color: var(--line);
+  box-shadow: var(--shadow-pop);
+}
+
+/* ③ 画布右键「建造」菜单（canvas 的 .fn-ctx，不是浮层壳那一族的 .ctx-menu）
+   外框与分组线本来就在档上（1px --bd2 → --line-strong 3.85:1；.ctx-sep 与 .ctx-title 下沿
+   走 --bd → --line 1.47:1），缺的是两处：
+     · 菜单项悬停拿 --bd 当底色（1.47:1 的一整块灰）→ 换成 --hover-bg 的淡蓝 + --ink 字；
+     · 类型图标 20 来支全是暗色皮肤的亮色（#38d6ff / #c9a0ff / #ff8f2e / #9fb6d4 …），
+       压在浅色菜单上只有 1.4~2.6:1。图标是这些菜单项**唯一的**图形提示，
+       按图形档（≥3:1）归到色卡的深一档 —— 每族一支，白底都 ≥4.5，留足余量。 */
+body.ef-skin.theme-light .fn-ctx button:hover,
+body.ef-skin.theme-light .fn-ctx button:focus-visible,
+body.ef-skin.theme-light .fn-ctx .ctx-fly:hover > .ctx-fly-btn,
+body.ef-skin.theme-light .fn-ctx .ctx-fly.open > .ctx-fly-btn {
+  background: var(--hover-bg);
+  color: var(--ink);
+}
+/* 危险项（删除节点 / 断线 …）的悬停要留住红色：上面那条悬停特异性高于
+   components.css 的 .fn-ctx button.ctx-danger:hover（0,3,1），不显式点回来就会把红洗成淡蓝。 */
+body.ef-skin.theme-light .fn-ctx button.ctx-danger:hover {
+  background: rgba(150, 32, 26, .1);
+  color: var(--red);
+}
+/* 中性族（关系 / 绘制 / 其他 / 进出端口徽标）→ --muted */
+body.ef-skin.theme-light .fn-ctx .ctx-kind-icon,
+body.ef-skin.theme-light .fn-ctx .ctx-kind-icon.kind-other,
+body.ef-skin.theme-light .fn-ctx .ctx-kind-icon.kind-draw,
+body.ef-skin.theme-light .fn-ctx .ctx-kind-icon.kind-rel {
+  color: var(--muted);
+}
+/* 蓝族（输入 / 智能体 / 计时 / 分线 / 网络 / 执行）→ --cyan */
+body.ef-skin.theme-light .fn-ctx .ctx-kind-icon.kind-in,
+body.ef-skin.theme-light .fn-ctx .ctx-kind-icon.kind-agent,
+body.ef-skin.theme-light .fn-ctx .ctx-kind-icon.kind-timer,
+body.ef-skin.theme-light .fn-ctx .ctx-kind-icon.kind-splitter,
+body.ef-skin.theme-light .fn-ctx .ctx-kind-icon.kind-net,
+body.ef-skin.theme-light .fn-ctx .ctx-kind-icon.kind-exec,
+body.ef-skin.theme-light .fn-ctx .ctx-kind-icon.kind-dk-file {
+  color: var(--cyan);
+}
+/* 绿族（服务 / 等待 / 延迟 / 控制出边）→ --green */
+body.ef-skin.theme-light .fn-ctx .ctx-kind-icon.kind-sv,
+body.ef-skin.theme-light .fn-ctx .ctx-kind-icon.kind-wait,
+body.ef-skin.theme-light .fn-ctx .ctx-kind-icon.kind-delayer,
+body.ef-skin.theme-light .fn-ctx .ctx-kind-icon.kind-ctrl-ok {
+  color: var(--green);
+}
+/* 青族（任务）：色卡里没有青令牌，沿用生成层那一支青的深档 #0a7489（白底 6.0:1） */
+body.ef-skin.theme-light .fn-ctx .ctx-kind-icon.kind-task {
+  color: #0a7489;
+}
+/* 橙 / 琥珀族（处理 / 工作流 / 闸门 / 控制 / 引导 / 计数器 / 类节点）→ --ef-warn */
+body.ef-skin.theme-light .fn-ctx .ctx-kind-icon.kind-proc,
+body.ef-skin.theme-light .fn-ctx .ctx-kind-icon.kind-wf,
+body.ef-skin.theme-light .fn-ctx .ctx-kind-icon.kind-gate,
+body.ef-skin.theme-light .fn-ctx .ctx-kind-icon.kind-ctrl,
+body.ef-skin.theme-light .fn-ctx .ctx-kind-icon.kind-ctrl-start,
+body.ef-skin.theme-light .fn-ctx .ctx-kind-icon.kind-guide,
+body.ef-skin.theme-light .fn-ctx .ctx-kind-icon.kind-counter,
+body.ef-skin.theme-light .fn-ctx .ctx-kind-icon.kind-dk-class {
+  color: var(--ef-warn);
+}
+/* 红族（图像处理 / 失败 / 枚举）→ --red */
+body.ef-skin.theme-light .fn-ctx .ctx-kind-icon.kind-proc-img,
+body.ef-skin.theme-light .fn-ctx .ctx-kind-icon.kind-ctrl-fail,
+body.ef-skin.theme-light .fn-ctx .ctx-kind-icon.kind-dk-enum {
+  color: var(--red);
+}
+/* 紫族（序列 / 判断 / 全局 / 互斥 / 接口）→ #5b3a8c（与生成层里那一族紫同值） */
+body.ef-skin.theme-light .fn-ctx .ctx-kind-icon.kind-sequencer,
+body.ef-skin.theme-light .fn-ctx .ctx-kind-icon.kind-judge,
+body.ef-skin.theme-light .fn-ctx .ctx-kind-icon.kind-global,
+body.ef-skin.theme-light .fn-ctx .ctx-kind-icon.kind-mutex,
+body.ef-skin.theme-light .fn-ctx .ctx-kind-icon.kind-dk-interface {
+  color: #5b3a8c;
+}
+
+/* ④ 小字按 4.5:1 复核（12px 及以下）
+   逐个量过：类型页签 .gs-tab、底部提示 .gs-foot、状态标 .ba-status、chip 文字 .agent-chip
+   现在是 --muted 7.69 / --muted 7.69 / --muted 7.69 / --ink 18.4，全部过关（白底）。
+   把生成层扫了一遍，只剩一处仍在 4.5 以下：.breeze-preset-item.draft 的 62% 墨（≈4.2:1），
+   抬到 --muted（压在它自己那层 5% 灰上 6.9:1）；.draft.on 的 80% 墨本就在 7:1，不动。 */
+body.ef-skin.theme-light .breeze-preset-item.draft {
+  color: var(--muted);
 }

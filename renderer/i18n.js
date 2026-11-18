@@ -5158,6 +5158,14 @@
     "正在检查并下载…": "Checking and downloading…",
     "已开始手动更新，将后台静默安装":
       "Manual update started — it will install silently in the background",
+    /* 手动更新：本次安装会弹出可见的安装向导（installWizard）时的说法 ——
+       文案要指向「安装窗口里看进度」，不再说「静默」。 */
+    "已开始手动更新：下载完会弹出安装向导，装完自动重新打开":
+      "Manual update started — the installer wizard opens when the download finishes and the app reopens automatically after it",
+    "）。下载完成后会弹出安装向导（窗口里显示进度），装完自动重新打开应用；期间请先保存当前工作。":
+      "). When the download finishes the installer wizard opens (it shows progress in its window) and the app reopens automatically afterwards — save your work first.",
+    "普通更新只在线上版本号更高时才可用。这里不比对版本号：直接用更新源里那份安装包重装一遍，适合极小更新与测试。下载过程与正常更新完全一致，装的时候会弹出安装向导、窗口里显示进度，装完自动重新打开应用。":
+      "Regular updates only work when the online version number is higher. This one skips the version comparison and reinstalls the package already on the update server — handy for tiny patches and testing. Downloading behaves exactly like a normal update; when it installs, the installer wizard opens (it shows progress in its window) and the app reopens automatically afterwards.",
     "当前版本不支持手动更新": "This build does not support manual updates",
     "Microsoft Store（MSIX）版不支持应用内更新，请在 Microsoft Store 中获取更新":
       "The Microsoft Store (MSIX) build does not support in-app updates — get updates from the Microsoft Store",
@@ -15667,6 +15675,16 @@
       "Downloading the update… (it installs and restarts automatically, no action needed)",
     "更新包已就绪，正在静默安装；应用会自动重新打开":
       "The update is ready and installing silently; the app reopens automatically",
+    /* installWizard=true（默认档：安装时弹出可见的安装向导）：三处文案都说「看安装窗口」，
+       与下面这些「静默安装」的旧说法严格分档，静默回退时才用旧文案。 */
+    "安装向导即将启动：安装窗口会显示进度，装完自动重新打开（无需点击）":
+      "The installer wizard is starting: watch its window for progress — the app reopens automatically when it finishes (no clicks needed)",
+    "更新已下载完毕：马上会弹出安装向导，窗口里显示进度，装完自动重新打开（无需点击）":
+      "Update downloaded: the installer wizard opens right away and shows progress — the app reopens automatically when it finishes (no clicks needed)",
+    "更新已就绪：点击后会弹出安装向导，窗口里显示进度，装完自动重新打开（无需在向导里点）":
+      "Update ready — click and the installer wizard opens with progress in its window; the app reopens automatically afterwards (nothing to click in the wizard)",
+    "已选择稍后：这次不弹出安装向导，退出应用时仍会后台安装并自动重新打开":
+      "Later selected: no installer wizard this time — the update still installs in the background when you quit, and the app reopens automatically",
     "更新已下载完毕：正在后台静默安装，完成后会自动重新打开应用":
       "Update downloaded: installing silently in the background, the app reopens automatically",
     "退出应用时会自动安装这次更新":

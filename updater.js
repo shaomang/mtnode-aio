@@ -7,12 +7,19 @@
  *      MTNODE_UPDATE_SEGMENTS=1 可回退 electron-updater 原生的单连接下载）
  *   2. 下载过程发 update:progress，渲染层右下角进度条实时显示百分比 / 速度
  *   3. 下载完毕 → 发 update:installing，进度条切成「正在安装」，等待 AUTO_INSTALL_DELAY_MS
- *      后静默 NSIS 安装并自动拉起新版本（用户点「稍后」可跳过这一次，下次退出应用时装上）
+ *      后安装并自动拉起新版本（用户点「稍后」可跳过这一次，下次退出应用时装上）
  *
- * 不再完全静默：全过程都有可见的进度条（update:* 事件驱动），只是无需用户操作。
+ * 安装分两档（默认可见向导，静默只是开关）：
+ *   · 安装阶段默认走可见向导 —— quitAndInstall() 传 isSilent=false（NSIS 不带 /S），
+ *     用户能看见安装界面与进度；installWizard:true 随 update:installing / statusPayload 下发，
+ *     渲染层据此选文案。
+ *   · MTNODE_UPDATE_SILENT_INSTALL=1 才静默（NSIS 带 /S）—— 留给 CI / 无人值守安装，
+ *     或向导在本机出问题时回退用（见 installSilentMode()）。
+ *   · 退出应用时的保底安装（autoInstallOnAppQuit=true）仍走静默：那时没有窗口可让用户看向导，
+ *     这是有意的两档分工，不是漏配。
  *
  * 说明：Windows 下正在运行的 exe 会锁住安装目录，覆盖安装前需短暂退出进程；
- * 对用户表现为「后台静默安装，完成后自动重新打开」。
+ * 走向导时用户看到的是标准 NSIS 安装界面，装完自动重新打开新版本。
  *
  * 例外：Microsoft Store（MSIX）版禁用应用内自更新 —— 包安装目录（Program Files\WindowsApps\）
  * 只读，electron-updater 下载 NSIS 包再静默安装必然失败；且商店政策禁止应用自行分发可执行更新。
@@ -89,9 +96,9 @@ let started = false;
     下载与静默安装链完全复用（见 patchSameVersionGate / update:reinstallSame）。
     只在本条链里短暂置位，常规检查与后台检查一律仍按「版本号更新才可用」判定。 */
 let forceSameVersion = false;
-/* ── 自动更新（全自动：发现即下载、下载完自动静默安装）────────────────────────
+/* ── 自动更新（全自动：发现即下载、下载完自动安装；安装默认走向导）────────────
    用户不需要点任何确认框；唯一的交互是进度条上的「稍后」（取消这一次自动安装，
-   autoInstallOnAppQuit 仍会在退出应用时把已下载的包装上）。 */
+   autoInstallOnAppQuit 仍会在退出应用时把已下载的包装上，那一档保持静默）。 */
 const AUTO_INSTALL_DELAY_MS = 6000;
 /** 已排定的自动安装定时器（null = 没排） */
 let autoInstallTimer = null;
@@ -99,6 +106,20 @@ let autoInstallTimer = null;
 let autoInstallCancelled = false;
 /** 已下载、正在等自动安装（statusPayload 与进度条都读它） */
 let installing = false;
+
+/**
+ * 安装阶段是否静默（只读环境变量 MTNODE_UPDATE_SILENT_INSTALL，不落盘）。
+ * 默认 false = 可见向导：NSIS 不带 /S（见 electron-updater 的 NsisUpdater.doInstall args 拼装）。
+ * =1 → 静默安装：留给 CI / 无人值守安装，或向导在本机出问题时的回退开关。
+ */
+function installSilentMode() {
+  return String(process.env.MTNODE_UPDATE_SILENT_INSTALL || "").trim() === "1";
+}
+
+/** 本次安装是否走可见向导（渲染层据此选文案：installWizard:true） */
+function installWizardMode() {
+  return !installSilentMode();
+}
 
 /* ── 商店包（MSIX）只读版本探测的运行态 ─────────────────────────────────────
    商店包不能自更新，但用户仍需要知道「商店里可能有新版」：只读更新源 latest.yml
@@ -335,6 +356,8 @@ function statusPayload() {
     downloaded,
     /** 已下载、正在等自动安装（渲染层进度条切「正在安装」） */
     installing,
+    /** true = 这次安装走可见向导（默认）；false = 静默（MTNODE_UPDATE_SILENT_INSTALL=1），渲染层据此选文案 */
+    installWizard: installWizardMode(),
     readyToRestart: !!(downloaded && latestInfo),
     error: lastError || "",
     currentVersion: cur,
@@ -347,7 +370,7 @@ function statusPayload() {
  * —— 线上版本号与当前版本相同时（极小更新 / 测试包）连「有更新」都判不出来，
  * allowDowngrade 也只放行「线上更旧」，管不了「完全相同」。
  * 这里只包一层：forceSameVersion 置位期间直接判为可用，让 check → download → quitAndInstall
- * 这条既有链原样跑完（安装过程与正常更新完全一致：差分下载 + 静默 NSIS 安装 + 装完自动重开）。
+ * 这条既有链原样跑完（安装过程与正常更新完全一致：差分下载 + NSIS 安装 + 装完自动重开）。
  * 未置位时原样调用原实现，常规检查 / 后台检查的行为一字不变。
  */
 function patchSameVersionGate() {
@@ -534,7 +557,8 @@ function autoStartDownload() {
 /**
  * 排定自动安装：下载完成后调用（幂等，重复调用不会重置已排定的倒计时）。
  * 先把「正在安装」发给渲染层（进度条切成安装相位），AUTO_INSTALL_DELAY_MS 后
- * 静默安装 + 自动拉起新版本；安装失败则回到 error 状态，不影响继续使用。
+ * 安装（默认可见向导，MTNODE_UPDATE_SILENT_INSTALL=1 才静默）+ 自动拉起新版本；
+ * 安装失败则回到 error 状态，不影响继续使用。
  */
 function scheduleAutoInstall(ver) {
   if (autoInstallCancelled || !downloaded || !autoUpdater) return;
@@ -542,6 +566,8 @@ function scheduleAutoInstall(ver) {
   send("update:installing", {
     version: ver || (latestInfo && latestInfo.version) || "",
     delayMs: AUTO_INSTALL_DELAY_MS,
+    /* 渲染层选文案：true = 弹出安装向导（默认），false = 静默安装 */
+    installWizard: installWizardMode(),
   });
   send("update:status", statusPayload());
   if (autoInstallTimer) return; /* 已排定：不重置倒计时 */
@@ -590,8 +616,13 @@ function setupAutoUpdater() {
     return;
   }
   autoUpdater.autoDownload = false;
-  /* 用户稍后退出时也会装上已下载的包 */
+  /* 退出应用时的保底安装：已下载的包直接静默装上（这一档有意保持静默 —— 主窗已关，
+     没有界面让用户看向导；交互中的安装默认走向导，见 installSilentMode()） */
   autoUpdater.autoInstallOnAppQuit = true;
+  /* 非静默安装时 electron-updater 用的是 autoRunAppAfterInstall（BaseUpdater.quitAndInstall →
+     install(isSilent=false 时取 autoRunAppAfterInstall)），不设就可能拿不到 --force-run。
+     显式置 true：走向导的安装装完也一定拉起新版本。 */
+  autoUpdater.autoRunAppAfterInstall = true;
   autoUpdater.allowDowngrade = false;
   /* 同版本号重装开关（默认关；只在 update:reinstallSame 里短暂打开） */
   patchSameVersionGate();
@@ -648,7 +679,7 @@ function setupAutoUpdater() {
       (info && info.version) || (latestInfo && latestInfo.version) || "";
     send("update:downloaded", { version: ver });
     send("update:status", statusPayload());
-    /* 全自动：下载完直接排定静默安装（进度条切「正在安装」），不再弹「立即安装 / 稍后」对话框 */
+    /* 全自动：下载完直接排定安装（进度条切「正在安装」），不再弹「立即安装 / 稍后」对话框 */
     scheduleAutoInstall(ver);
   });
   autoUpdater.on("error", (err) => {
@@ -723,7 +754,7 @@ async function checkForUpdates(quiet, opts) {
 
 /**
  * 手动「同版本号重装」：不比对版本号，直接用当前更新源里那份包重装一遍。
- * 与正常更新的唯一差别就是跳过版本比较；下载（差分包）→ 静默安装 → 装完自动重开
+ * 与正常更新的唯一差别就是跳过版本比较；下载（差分包）→ 安装（默认可见向导）→ 装完自动重开
  * 全部走 downloadUpdate / quitAndInstall 同一份实现。
  */
 async function reinstallSameVersion() {
@@ -756,7 +787,7 @@ async function reinstallSameVersion() {
     };
   }
   const ver = latestInfo.version || cur;
-  /* 全自动：下载完由 update-downloaded 事件排定静默安装（进度条显示「正在安装」） */
+  /* 全自动：下载完由 update-downloaded 事件排定安装（进度条显示「正在安装」，默认可见向导） */
   autoInstallCancelled = false;
   const dl = await downloadUpdate();
   if (!dl.ok) return dl;
@@ -797,7 +828,7 @@ async function downloadUpdate() {
 }
 
 function quitAndInstall() {
-  /* Store（MSIX）版：绝不执行静默安装（包目录只读，且违反商店政策） */
+  /* Store（MSIX）版：绝不执行应用内安装（包目录只读，且违反商店政策） */
   if (isStorePackage()) return storeBlocked();
   setupAutoUpdater();
   if (!autoUpdater || !downloaded) {
@@ -809,8 +840,11 @@ function quitAndInstall() {
   }
   try {
     bindInstallDirectory();
-    /* isSilent=true → NSIS /S；isForceRunAfter=true → 装完拉起新版本 */
-    autoUpdater.quitAndInstall(true, true);
+    /* 安装阶段默认可见向导（isSilent=false → NSIS 不带 /S，用户看得见安装界面）；
+       MTNODE_UPDATE_SILENT_INSTALL=1 才静默（CI / 无人值守 / 向导出问题回退）。
+       第二参 isForceRunAfter 在非静默时不被采用（走 autoRunAppAfterInstall，见 setupAutoUpdater）。 */
+    const silent = installSilentMode();
+    autoUpdater.quitAndInstall(silent, true);
     return { ok: true };
   } catch (e) {
     lastError = String((e && e.message) || e);
@@ -819,7 +853,7 @@ function quitAndInstall() {
 }
 
 /* 重启提示对话框（promptRestartToFinish）已下线：更新改为全自动 —— 下载完由
-   scheduleAutoInstall 静默安装并自动重开，用户不需要在对话框里做选择；
+   scheduleAutoInstall 安装（默认可见向导）并自动重开，用户不需要在对话框里做选择；
    进度条上的「稍后」= update:cancelAutoInstall。 */
 
 function registerUpdateIpc(getWin) {

@@ -35274,7 +35274,14 @@ function ownerWfOfNode(node) {
 function refreshNodeUi(node) {
   const owner = ownerWfOfNode(node);
   if (owner && S.wf && owner.id === S.wf.id) {
-    renderCanvas();
+    /* 智能任务节点：上方会话区就是它的「结果区」——这一轮收尾（去掉运行中、把成品落成
+      正式一条）也属于用户当场要看的东西。焦点若还握着它自己的输入框（用户在等结果时
+      顺手打下一句），守卫闸会把整幅重建推迟到失焦，现场就是「跑完了上面还挂着运行中」。
+      与发送同一口径：焦点在该节点里就当场画，别处照旧走渲染队列（见 app-canvas.js 的
+      renderCanvasForNodeAction / renderCanvasNow）。 */
+    if (node && node.kind === "agent_task" && typeof renderCanvasForNodeAction === "function")
+      renderCanvasForNodeAction(node);
+    else renderCanvas();
     renderStatus();
     if (S.sidebarOpen) renderSidebar();
   }

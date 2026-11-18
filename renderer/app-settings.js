@@ -2290,9 +2290,21 @@ function openSettingsBody() {
   /* ── 手动更新（设置最底部，整页最后一项）──
      正常更新只在线上版本号比本机新时才可用；极小更新 / 测试包常常是同一个版本号，
      版本比较这一步会把它们整条挡掉。这里给一条手动通道：不比对版本号，直接用当前
-     更新源里那份包重装一遍 —— 下载（差分包）→ 后台静默安装 → 装完自动重开，
+     更新源里那份包重装一遍 —— 下载（差分包）→ 自动安装（默认弹出安装向导，用户能看见
+     进度；主进程静默回退时才是后台装）→ 装完自动重开，
      与正常更新完全同一条链（主进程 updater.js 的 update:reinstallSame）。 */
   {
+    /* 文案分档：本次安装是否弹出可见的安装向导（installWizard）。与 app-boot.js 的更新
+       进度条共用同一份判断（window.isUpdateInstallWizard）；取不到按常态（向导）算。
+       静默回退时一个「向导」字都不许提，否则就是骗人。 */
+    const updateWizardOn = (res) => {
+      if (res && typeof res.installWizard === "boolean") return res.installWizard;
+      try {
+        if (typeof window.isUpdateInstallWizard === "function")
+          return !!window.isUpdateInstallWizard();
+      } catch (e) {}
+      return true;
+    };
     const sec = document.createElement("div");
     sec.className = "settings-sec";
     const secTitle = document.createElement("div");
@@ -2300,7 +2312,9 @@ function openSettingsBody() {
     secTitle.textContent = I18n.t("手动更新（同版本号重装）");
     settingsTipBeside(
       secTitle,
-      "普通更新只在线上版本号更高时才可用。这里不比对版本号：直接用更新源里那份安装包重装一遍，适合极小更新与测试。下载与静默安装过程与正常更新完全一致，安装时应用会短暂重启。",
+      updateWizardOn(null)
+        ? I18n.t("普通更新只在线上版本号更高时才可用。这里不比对版本号：直接用更新源里那份安装包重装一遍，适合极小更新与测试。下载过程与正常更新完全一致，装的时候会弹出安装向导、窗口里显示进度，装完自动重新打开应用。")
+        : I18n.t("普通更新只在线上版本号更高时才可用。这里不比对版本号：直接用更新源里那份安装包重装一遍，适合极小更新与测试。下载与静默安装过程与正常更新完全一致，安装时应用会短暂重启。"),
       "手动更新说明",
     );
     sec.appendChild(secTitle);
@@ -2329,6 +2343,7 @@ function openSettingsBody() {
         return;
       }
       const ver = S.appVersion || "";
+      const wizardOn = updateWizardOn(null);
       const yes = await confirmDialog(
         I18n.t("确定手动更新？") +
           "\n" +
@@ -2336,9 +2351,13 @@ function openSettingsBody() {
             "将不比对版本号，直接用更新源里那份安装包重装一次（可能是同一个版本号 v",
           ) +
           ver +
-          I18n.t(
-            "）。下载完成后会在后台静默安装并自动重新打开应用；期间请先保存当前工作。",
-          ),
+          (wizardOn
+            ? I18n.t(
+                "）。下载完成后会弹出安装向导（窗口里显示进度），装完自动重新打开应用；期间请先保存当前工作。",
+              )
+            : I18n.t(
+                "）。下载完成后会在后台静默安装并自动重新打开应用；期间请先保存当前工作。",
+              )),
         { title: I18n.t("手动更新"), okText: I18n.t("开始更新") },
       );
       if (!yes) return;
@@ -2365,10 +2384,20 @@ function openSettingsBody() {
           return;
         }
         if (r && r.readyToRestart) {
-          toast(I18n.t("更新已下载完毕：将后台静默安装，完成后自动重新打开应用"), "ok");
+          toast(
+            updateWizardOn(r)
+              ? I18n.t("更新已下载完毕：马上会弹出安装向导，窗口里显示进度，装完自动重新打开（无需点击）")
+              : I18n.t("更新已下载完毕：将后台静默安装，完成后自动重新打开应用"),
+            "ok",
+          );
           return;
         }
-        toast(I18n.t("已开始手动更新，将后台静默安装"), "ok");
+        toast(
+          updateWizardOn(r)
+            ? I18n.t("已开始手动更新：下载完会弹出安装向导，装完自动重新打开")
+            : I18n.t("已开始手动更新，将后台静默安装"),
+          "ok",
+        );
       } catch (e) {
         toast(I18n.t("更新失败：") + ((e && e.message) || String(e)), "err");
       } finally {

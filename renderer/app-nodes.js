@@ -10089,7 +10089,13 @@ async function playNodeBody(node, quiet, opts) {
     }
   }
   if (node.kind === "agent_task") node._convNearBottom = true;
-  renderCanvas();
+  /* 起跑这一拍：焦点若正握着本节点的输入框（用户刚在这儿回车 / 点 ▶），必须当场画。
+     被焦点守卫闸推迟的话，智能任务节点上方那片会话区连「刚发出去的那一条 + AI · 运行中」
+     都画不出来，下面整轮流式就没有落点（#agent-node-stream-<id> 还不存在）——
+     现场正是「发送后上方一动不动，点一下别处才刷出来」。判据与放行口径见
+     app-canvas.js 的 renderCanvasForNodeAction / renderCanvasNow。 */
+  if (typeof renderCanvasForNodeAction === "function") renderCanvasForNodeAction(node);
+  else renderCanvas();
   renderStatus();
   if (S.view === "agent") renderAgentSession({ forceStick: true });
   const runP = (async () => {

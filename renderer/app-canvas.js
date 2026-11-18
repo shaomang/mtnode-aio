@@ -597,6 +597,45 @@ function flushDeferredCanvasFocus() {
     S._resumeCanvasFocus = false;
   }
 }
+/* ── 「用户刚在输入框里交出这一句」的那一拍：不许被焦点守卫闸推迟 ────────────────
+   现场（bug）：智能任务节点在下方输入框里按回车（或点发送）之后，**上方会话区一动不动**，
+   点一下别处（失焦）它才整段刷出来。
+   成因：发送把 node.running 由 0 变 1、把用户这一句推进 node.messages，两者都会改变
+   canvasNodeSig ⇒ 复用快速通道判为「不可复用」，必须整幅重建才画得出「刚发出去的那一条 +
+   AI · 运行中」这一行；而这一刻焦点还握在这颗节点的输入框里（Enter 是 preventDefault，
+   焦点根本不会自己走），守卫闸于是把这一拍记进 _deferCanvasForFieldEdit、等失焦再补。
+   等出来的就是上面那句现场 —— 更糟的是整轮流式都在往 #agent-node-stream-<节点id> /
+   #agent-node-think-<节点id> 里写，而这两颗元素压根还没被建出来：正文一个字都不显示，
+   用户只能靠「点出去再点回来」把它逼出来。
+   发送 / 收尾 ≠ 打字：这一拍必须当场画。放行口径与补拍（flushDeferredCanvasFocus）
+   完全一致 —— S._resumeCanvasFocus 是「这一拍必须画」的放行旗，跳过守卫闸，
+   重建后按 fieldFocus 把焦点 / 光标 / 选区原位恢复，所以用户不会被踢出输入框。
+   输入法组合中仍然让路：那一刻拆 DOM 会把正在拼的那个字弄丢 → 按老口径推迟，由组合结束补拍。 */
+function renderCanvasNow() {
+  if (S._renderingCanvas || S._canvasImeComposing) {
+    renderCanvas();
+    return;
+  }
+  const prev = S._resumeCanvasFocus;
+  S._resumeCanvasFocus = true;
+  try {
+    renderCanvas();
+  } finally {
+    S._resumeCanvasFocus = prev;
+  }
+}
+/* 这一拍是不是「用户刚在这颗节点上下达了动作」——判据 = 焦点正握着这颗节点的输入框
+   （刚在这儿敲回车 / 点它的按钮，mousedown 普遍 preventDefault，焦点还留在原地）。
+   是就当场画（见 renderCanvasNow），不是就照旧走渲染队列：
+   别的节点正在打字时（级联 / 批次的起跑与收尾）不许拆 DOM，那条老口径一个字都不动。 */
+function renderCanvasForNodeAction(node) {
+  const el =
+    node && node.id
+      ? document.querySelector('.wf-node[data-nid="' + node.id + '"]')
+      : null;
+  if (el && canvasFieldIn(el)) return renderCanvasNow();
+  return renderCanvas();
+}
 /* 节点级重建的「编辑中不拆」账本：refreshNodeEl / 形态切换在用户正打字时先记账，
    等焦点真的离开（focusout / 组合结束，走 flushDeferredCanvasFocus）再补做。 */
 function deferNodeRefresh(id) {

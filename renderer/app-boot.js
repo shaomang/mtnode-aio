@@ -356,6 +356,24 @@ let _updateState = {
   version: "",
   latestVersion: "",
 };
+/* 安装相位文案分档（主进程 statusPayload / 事件的 installWizard）：
+   true  = 默认档，安装时弹出可见的安装向导（NSIS 界面），用户能看见进度 → 文案必须说「看安装窗口」；
+   false = 静默回退（MTNODE_UPDATE_SILENT_INSTALL=1，或退出应用时 autoInstallOnAppQuit 的保底安装）
+           → 沿用「正在静默安装」的旧文案，不许说谎。
+   缺省按 true（常态即走向导）；只在负载里真的带了布尔值时改写。 */
+let _installWizard = true;
+function noteInstallWizard(src) {
+  if (src && typeof src.installWizard === "boolean") _installWizard = src.installWizard;
+  return _installWizard;
+}
+/** install 相位的副行文案：向导档 / 静默档各一句 */
+function ubInstallSub() {
+  return _installWizard
+    ? I18n.t("安装向导即将启动：安装窗口会显示进度，装完自动重新打开（无需点击）")
+    : I18n.t("更新包已就绪，正在静默安装；应用会自动重新打开");
+}
+/* 设置页（app-settings.js 的手动更新）与这里共用同一份判断，文案口径不许分叉 */
+window.isUpdateInstallWizard = () => _installWizard;
 
 /* 右下角版本号高亮（本轮需求）：有新版 / 下载中 / 已下载待安装都算「有事要你做」→ 蓝色。
    商店版的「有新版」来自 statusPayload.storeUpdateAvailable（只读比对，不下载不安装），
@@ -384,6 +402,7 @@ function paintUpdateBtn(st) {
   const bar = $(".topbar");
   if (!btn) return;
   if (st && st.store) _updateStore = true;
+  if (st) noteInstallWizard(st);
   if (st) {
     _updateState = {
       store: !!_updateStore,
@@ -414,7 +433,9 @@ function paintUpdateBtn(st) {
     if (bar) bar.classList.add("has-update");
     const ver = st.version || (_updateInfo && _updateInfo.version) || "";
     if (ready && !busy) {
-      btn.title = I18n.t("更新已就绪：点击后将后台静默安装，完成后自动重新打开");
+      btn.title = _installWizard
+        ? I18n.t("更新已就绪：点击后会弹出安装向导，窗口里显示进度，装完自动重新打开（无需在向导里点）")
+        : I18n.t("更新已就绪：点击后将后台静默安装，完成后自动重新打开");
       if (txt) txt.textContent = I18n.t("安装更新");
       btn.classList.remove("busy");
       btn.classList.add("ready");
@@ -437,7 +458,8 @@ function paintUpdateBtn(st) {
   }
 }
 /* ── 版本更新进度条（右下角 #updateBanner）─────────────────────────────────
-   主进程全自动（发现新版本即差分下载 → 下载完静默安装并自动重开），这里只把进度画出来，
+   主进程全自动（发现新版本即差分下载 → 下载完自动安装并自动重开；默认会弹出安装向导），
+   这里只把进度画出来，
    让「更新在跑」这件事不再完全静默。相位：
      download → 真实百分比 + 已下载 / 总量 + 速度
      install  → 进度条走满并脉动，说明正在安装、应用会自动重开
@@ -553,7 +575,8 @@ function bindUpdateUi() {
 
 /**
  * 顶栏「更新」按钮与应用详情弹窗里那颗按钮的**唯一实现**（用户口径：两处一致）。
- * 走主进程 update:confirmAndStart（没有确认框：直接差分下载 → 下载完自动静默安装），
+ * 走主进程 update:confirmAndStart（没有确认框：直接差分下载 → 下载完自动安装，
+ * 默认弹安装向导、静默回退时才是后台装），
  * 商店包在这里只会拿到 store_package 回执，改走「去商店更新」的明确提示。
  */
 async function runUpdateAction() {
@@ -571,6 +594,7 @@ async function runUpdateAction() {
   }
   try {
     const r = await window.api.updateConfirmAndStart();
+    noteInstallWizard(r);
     if (r && r.store) {
       _updateStore = true;
       paintUpdateBtn({ store: true });
@@ -605,12 +629,12 @@ async function runUpdateAction() {
         version: (_updateInfo && _updateInfo.version) || "",
         downloading: false,
       });
-      /* 已下好：把进度条切到安装相位（主进程随后会自动静默安装并重开） */
+      /* 已下好：把进度条切到安装相位（主进程随后会自动安装并重开；默认会弹出安装向导） */
       _ubDismissed = false;
       paintUpdateBanner({
         phase: "install",
         version: (_updateInfo && _updateInfo.version) || (r && r.version) || "",
-        sub: I18n.t("更新包已就绪，正在静默安装；应用会自动重新打开"),
+        sub: ubInstallSub(),
       });
     }
   } catch (e) {
@@ -622,6 +646,8 @@ async function runUpdateAction() {
 function bindUpdateEvents(btn) {
   if (window.api.onUpdateEvent) {
     _updateOff = window.api.onUpdateEvent((channel, data) => {
+      /* 安装相位文案分档（installWizard）随事件下发：先记下来，后面的文案才说得准 */
+      noteInstallWizard(data);
       if (channel === "update:available") {
         _updateInfo = data || null;
         _ubDismissed = false; /* 新一轮更新：上一轮点过的「稍后」不再挡进度条 */
@@ -669,17 +695,19 @@ function bindUpdateEvents(btn) {
           });
         }
       } else if (channel === "update:installing") {
-        /* 下载完、等自动安装：进度条走满并脉动，明说会自动重开 */
+        /* 下载完、等自动安装：进度条走满并脉动，按 installWizard 说清「看向装窗口」还是「静默装」 */
         if (!_ubDismissed) {
           paintUpdateBanner({
             phase: "install",
             version: (data && data.version) || (_updateInfo && _updateInfo.version),
-            sub: I18n.t("更新包已就绪，正在静默安装；应用会自动重新打开"),
+            sub: ubInstallSub(),
           });
         }
       } else if (channel === "update:downloaded") {
         toast(
-          I18n.t("更新已下载完毕：正在后台静默安装，完成后会自动重新打开应用"),
+          _installWizard
+            ? I18n.t("更新已下载完毕：马上会弹出安装向导，窗口里显示进度，装完自动重新打开（无需点击）")
+            : I18n.t("更新已下载完毕：正在后台静默安装，完成后会自动重新打开应用"),
           "ok",
         );
         paintUpdateBtn({
@@ -689,7 +717,14 @@ function bindUpdateEvents(btn) {
           downloading: false,
         });
       } else if (channel === "update:readyToRestart") {
-        toast(I18n.t("已选择稍后；退出应用时将后台静默安装并自动重新打开"), "ok");
+        /* 点了「稍后」：本次不装。向导档要明说「这次不弹向导，退出时后台装」，
+           静默档沿用旧文案（本来就没向导） */
+        toast(
+          _installWizard
+            ? I18n.t("已选择稍后：这次不弹出安装向导，退出应用时仍会后台安装并自动重新打开")
+            : I18n.t("已选择稍后；退出应用时将后台静默安装并自动重新打开"),
+          "ok",
+        );
         paintUpdateBtn({
           available: true,
           readyToRestart: true,
@@ -723,7 +758,7 @@ function bindUpdateEvents(btn) {
             paintUpdateBanner({
               phase: "install",
               version: data.version,
-              sub: I18n.t("更新包已就绪，正在静默安装；应用会自动重新打开"),
+              sub: ubInstallSub(),
             });
           }
         }
@@ -746,7 +781,7 @@ function bindUpdateEvents(btn) {
         paintUpdateBanner({
           phase: "install",
           version: st.version,
-          sub: I18n.t("更新包已就绪，正在静默安装；应用会自动重新打开"),
+          sub: ubInstallSub(),
         });
       }
     })
