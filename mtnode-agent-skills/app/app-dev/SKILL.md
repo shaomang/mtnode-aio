@@ -98,12 +98,12 @@ user = 这一句 + 极短上下文（约 400 字符）；失败 / 超时 / 没�
 | 选图 / 压图 / 缓存 | — | `pickImage()` / `compressImage()` / `cacheImage(id,base64)` / `readCachedImage(id)` |
 | 模型能力（可选） | `textGenStream(opts, cb)`（**文字 + 图像多模态**；**默认关思考**，`opts.thinking` 认 `off / on(=high) / low / high / max`，非法值回 `bad_thinking`；回执带 `finishReason` / `truncated` / `reasoningChars`）。宿主注入的**听写条「AI 增强」就是它的标准用法**：`{ messages:[{role:"system",…},{role:"user",…}], thinking:"off", temperature:0.2 }` —— **不带 `model`**（跟随该应用的选择 / 宿主默认）、**不传 `maxTokens`**，失败 / 超时回落原文（见第七节坑表）· 脚手架另有 `AppHost.json(opts)`（要 JSON 就用它）· `imageGen(opts)` / `imageEdit(opts)`（出图 / 图生图，见第六节） · `hostModels()` / `hostModel()` / `hostSetModel(id)`（模型从 MTNode 继承）· `pickImage()` 系统选图。**服务商与 Key 只留主进程**，应用只能给 prompt / messages / model(清单内 id) / 温度 / 图像路径或 dataURL；**maxTokens 别随手设**（它是思考+正文共用预算，见第七节） | —（插件窗口这套没有模型桥：见第六节的正路 —— `pickImage` + 自己的后端，或升级为本地后端插件） |
 | **生命周期** | `close()`（关自己窗口）· `quit()`（连 MTNode 一起退）· **`onWillClose(cb)`**（关窗前收尾，见第三节） | `close()` · `onShown(cb)` · `onAuthChanged(cb)` |
-| **画布读写**（重能力，需声明 + 授权） | `canvas.info()` / `list()` / `pick()`（用户重选绑定画布）· `graph()` / `nodes()` / `node(id)` / `form(id)`（表单带 `byLabel`）· `updateForm(id, values)` / `addNode(opts)` / `updateNode(id, patch)` / `removeNode(id)` / `connect({from,to})` / `disconnect(id)` / `save()` · **`runNode(id, {attempts})` / `nodeOutput(id)` / `cancelNode(id)`**（执行画布节点 / 读最近一次产物 / 等同画布「终止」，见 2.1.2）· `select(ids)` / `view()` / `setView(v)`（**只对用户眼前那张画布有效**，后台回 `not_foreground`） | `pluginApi.canvas.*`（同名同形；目标 = 用户当前打开的那张，插件没有绑定画布） |
-| **Agent 会话**（重能力，需声明 + 授权） | `agent.bound()` / `sessions()` / `create(opts)` / `bind(sessionId)` / `send(text,{sessionId?})` / `cancel(sessionId)` / `onEvent(cb)`（收 `{type:"agent",sessionId,frame}`；`frame.type` = text / tool / approval / question / done / error…） | `pluginApi.agent.*` |
+| **画布读写**（重能力，需声明 canvasHost） | `canvas.info()` / `list()` / `pick()`（用户重选绑定画布）· `graph()` / `nodes()` / `node(id)` / `form(id)`（表单带 `byLabel`）· `updateForm(id, values)` / `addNode(opts)` / `updateNode(id, patch)` / `removeNode(id)` / `connect({from,to})` / `disconnect(id)` / `save()` · **`runNode(id, {attempts})` / `nodeOutput(id)` / `cancelNode(id)`**（执行画布节点 / 读最近一次产物 / 等同画布「终止」，见 2.1.2）· `select(ids)` / `view()` / `setView(v)`（**只对用户眼前那张画布有效**，后台回 `not_foreground`） | `pluginApi.canvas.*`（同名同形；目标 = 用户当前打开的那张，插件没有绑定画布） |
+| **Agent 会话**（重能力，需声明 canvasHost） | `agent.bound()` / `sessions()` / `create(opts)` / `bind(sessionId)` / `send(text,{sessionId?})` / `cancel(sessionId)` / `onEvent(cb)`（收 `{type:"agent",sessionId,frame}`；`frame.type` = text / tool / approval / question / done / error…） | `pluginApi.agent.*` |
 | 画布工作目录文件 | `fs.root()` / `readText(rel)` / `writeText(rel, content)` / `list(rel)` / `mkdir` / `remove` / `exists`（根 = 那张画布的工作目录，越界回 `outside`，单文件 ≤ 8MB） | `pluginApi.fs.*` |
 | 本机后端工具 | `tools.list()` / `tools.call(id, args)`（「重后端」面板里已登记的工具） | `pluginApi.tools.*` |
-| **语音合成**（重能力，需声明 `canvasHost` + 授权） | `audio.synth(opts)` → `{ok, path, bytes}`（`appHost.tts(opts)` 是它的薄别名，两种写法都认）；`audio.presets()` → `{ok, dir, presets}`；`audio.status()` → `{ok, backend, running, busy}`；`audio.cancel()`。**产物写盘并回 path**（不回 base64 —— 应用没有二进制写口），`opts.outputPath` **必填**且只能落在画布工作目录内（越界 `outside`），同一后端忙时回 `busy` | —（插件窗口没有这条：合成能力用本机后端插件自己提供） |
-| **素材库**（重能力，需声明 `assetHost` + 授权） | `assets.root()` / `scan()` / `readItem({id,itemId?,index?,withDataUrl?})` / `create({catRel?,displayName,desc?})` / `addItem({id,type,title?,content?,srcPath?,base64?})` / `importFile({paths,name?,category?,desc?})` / `importFiles({id,paths})` / `updateText({id,itemId,content,title?})` / `updateMeta({id,displayName?,desc?,catRel?})` / `removeItem({id,itemId})` / `deleteAsset({id})`；`canvas.addAssetNode({id|rel,x?,y?})` 在应用画布上建一颗绑定该素材的节点。**归属硬口径：应用只能改删自己创建的素材与条目**（别人的回 `{ok:false,code:"forbidden"}`）；删除进回收站、改文本留 `.versions/` | —（插件窗口一律 `not_supported`） |
+| **语音合成**（重能力，需声明 `canvasHost`） | `audio.synth(opts)` → `{ok, path, bytes}`（`appHost.tts(opts)` 是它的薄别名，两种写法都认）；`audio.presets()` → `{ok, dir, presets}`；`audio.status()` → `{ok, backend, running, busy}`；`audio.cancel()`。**产物写盘并回 path**（不回 base64 —— 应用没有二进制写口），`opts.outputPath` **必填**且只能落在画布工作目录内（越界 `outside`），同一后端忙时回 `busy` | —（插件窗口没有这条：合成能力用本机后端插件自己提供） |
+| **素材库**（重能力，需声明 `assetHost`） | `assets.root()` / `scan()` / `readItem({id,itemId?,index?,withDataUrl?})` / `create({catRel?,displayName,desc?})` / `addItem({id,type,title?,content?,srcPath?,base64?})` / `importFile({paths,name?,category?,desc?})` / `importFiles({id,paths})` / `updateText({id,itemId,content,title?})` / `updateMeta({id,displayName?,desc?,catRel?})` / `removeItem({id,itemId})` / `deleteAsset({id})`；`canvas.addAssetNode({id|rel,x?,y?})` 在应用画布上建一颗绑定该素材的节点。**归属硬口径：应用只能改删自己创建的素材与条目**（别人的回 `{ok:false,code:"forbidden"}`）；删除进回收站、改文本留 `.versions/` | —（插件窗口一律 `not_supported`） |
 | 联网 | `net.fetch(url)`（经宿主取 http(s)；应用页自己的 fetch 仍受 CSP / 跨域约束） | `pluginApi.net.fetch(url)` |
 
 调用前一律先探测：`typeof host.dataWrite === "function"`，缺就走降级分支。**脚手架的 `window.AppHost` 把两套桥统一成一套名字**
@@ -140,9 +140,9 @@ const line = await H.accountText();         // "未登录" / 昵称 / "未接入
 
 1. **目标画布 = 这个应用对应的那张**，不是用户此刻打开的那张。默认是与应用同 id 的画布（新建应用时后台建好的）；
    不存在时宿主弹窗让用户选一次并记住，`canvas.pick()` 可主动重选。目标画布没打开时宿主**后台加载**它，不动用户视图。
-2. **声明 + 一次授权**：`app.json` 的 `capabilities.canvasHost`（管 `canvas` / `fs` / `audio` / `tools` / `net`）、
-   `agentHost`（管 `agent`）与 `assetHost`（管 `assets`）要为真，否则回 `not_declared`；首次调用宿主弹一次窗，一次授权全部七类，
-   在「应用设置」里取消勾选 = 撤销。**主窗口关着时一律回 `not_ready`**（画布真源与 agent 运行态只在主窗口渲染层）。
+2. **声明即放行（永久允许）**：`app.json` 的 `capabilities.canvasHost`（管 `canvas` / `fs` / `audio` / `tools` / `net`）、
+   `agentHost`（管 `agent`）与 `assetHost`（管 `assets`）要为真，否则回 `not_declared`；勾上就是永久允许，
+   **没有「首次调用弹一次授权窗」这一步**；在「应用设置」里取消勾选 = 当场收回。**主窗口关着时一律回 `not_ready`**（画布真源与 agent 运行态只在主窗口渲染层）。
 3. **写画布 = 走同一套写入口**（撤销栈 / 落盘 / 表单归一化同源）。前台画布的改动进用户撤销栈，后台画布**不进**
    （`pushHistory` 在后台模式下早退）。写完用回执 `ok` 判断，别假设「一定写进去了」。
 
@@ -467,11 +467,11 @@ else use(j.data);                              // 已经解析好的对象
 | 以为窗口就是 `app.json` 里的尺寸 | 实际生效的是云端 catalog 词条（app.json 只是自描述） | 发版时同步 catalog 词条的 `entry` / `version` / `window` |
 | 以为 `canvas.*` 改的是用户眼前那张画布 | 它改的是**这个应用绑定的那张**；用户可能正看着另一张（改对了但「看不见变化」） | 用 `canvas.info()` 的 `id` / `foreground` 判断；要用户眼前那张就 `canvas.select` / `view` / `setView`（后台画布会回 `not_foreground`） |
 | 以为应用写画布一定能 Ctrl+Z 撤回 | 后台画布的写入**不进**用户撤销栈（`pushHistory` 在后台模式早退），前台画布的才进 | 别用「撤销」兜底正确性：写完 `canvas.save()` 并检查回执 |
-| 没声明 `canvasHost` / `agentHost` / `assetHost` 就调 `canvas` / `agent` / `assets` | 一律 `not_declared`（用户即便授权了也调不到） | 在「应用设置 → 应用能力」勾上那几位；新建应用默认开 |
+| 没声明 `canvasHost` / `agentHost` / `assetHost` 就调 `canvas` / `agent` / `assets` | 一律 `not_declared`（声明是唯一的开关，勾上即永久允许） | 在「应用设置 → 应用能力」勾上那几位；新建应用默认开 |
 | 以为 `assets.*` 能改用户自己建的素材 | 归属按**条目**判：应用只能改删它自己创建的，用户那份（及用户后加进应用素材的条目）回 `forbidden` | 要改用户素材就让用户在界面上动手，或把产出建成**自己的**新素材 |
 | 以为应用建了素材画布上就会出现 | `assets.create` 只写库，不碰画布 | 需要节点就显式 `canvas.addAssetNode({ id })`，别指望自动摆 |
 | 主窗口最小化 / 关着时调 `canvas` / `agent` | 回 `not_ready`（画布真源与 agent 运行态只在主窗口渲染层） | 如实提示「请先打开 MTNode 主窗口」；把 `not_ready` 当可重试状态，不当作崩溃 |
-| 把 `denied` / `timeout` 当成功 | 用户看到「已写入」但其实什么都没发生 | 这几个码逐一处理并显示人话（`denied` = 用户拒绝授权，`timeout` = 主窗口没回执） |
+| 把 `timeout` / `not_ready` 当成功 | 用户看到「已写入」但其实什么都没发生 | 这两个码逐一处理并显示人话（`timeout` = 主窗口没回执，`not_ready` = 主窗口没开） |
 | app 目录没进打包白名单 | 打包后目录为空 | `build.json` 的 `files` 里加 `app/**`（或实际目录名）；仓库新增顶层目录必查 |
 | 回答「应用桥只支持文本、模型看不见图」 | 写出的应用白白没有识图能力（桥其实早就支持多模态） | 按第六节：`textGenStream` 的 `messages[].content` 收多模态分片，配 `hostModels()` 选视觉模型 |
 | 应用里没有选模型的位置 | 用户没配服务商时无处自救，只能改代码 | 保留脚手架的 `#modelBtn` + `app-model.js`（模型从 MTNode 继承）；无可用模型时置灰并写明去设置哪里配 |

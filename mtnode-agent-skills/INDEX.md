@@ -17,6 +17,17 @@
 - **story2video-workflow** — story2video 工作流搭建：给 story2video 应用的八步（创意 / 剧本 / 分镜 / 素材图 / 分镜图 / 视频 / 成片 / 导出）在画布上建节点层与链：层与标题口径、场景图零参考图、参考图怎么接（@ + 节点名）、画布提示词一律英文、产物写哪、回执按什么契约回。真源是应用仓库的 AGENTS.md。
   - 文件：`app/story2video-workflow/SKILL.md`
 
+## 编码准则与代码评审
+
+- **ponytail** — 编码准则（最懒的资深工程师）：写 / 修 / 重构 / 选依赖时默认按「最懒的资深工程师」办事：先求能完全解决问题的最小改动（仓库已有 → 标准库 / 平台 → 已装依赖 → 最后才写新代码），删除优于新增，不写没人要的抽象与「以后再说」的代码，收尾如实交代跳过了什么、有什么风险。三档强度 lite / full（默认）/ ultra。用户说「ponytail」「偷懒点」「最简方案」「yagni」，或抱怨过度设计与代码膨胀时用。
+  - 文件：`coding/ponytail/SKILL.md`
+- **ponytail-audit** — 全仓体检（一次出报告）：整仓一次性体检、只出报告不改码：先摸清入口 / 部署 / 依赖 / 测试并写出负载假定，再沿主要数据流按「正确 → 安全 → 扛得住负载 → 有测试 → 够快 → 够省」找问题，发现分三级四段式，最多 20 条（砍掉的要说还剩多少），收尾给结论、可省的代码与依赖数、以及没读到的范围。用户说「体检一下这个仓库」「review the whole repo」「找找有多少赘肉」「什么能删」时用。
+  - 文件：`coding/ponytail-audit/SKILL.md`
+- **ponytail-debt** — 技术债台账（shortcut 标记扫集）：把仓库里所有 `shortcut:` 注释（老代码可能是 `ponytail:`）扫成一张技术债台账，一次只读、不改码：每条按「文件:行号、简化了什么、ceiling、upgrade」一行，按文件分组；没写升级触发条件的那几条打 `no-trigger` 标记（这类才会悄悄烂掉），收尾报「N 条标记，M 条无触发条件」。用户说「ponytail 欠了多少债」「列一下哪些捷径」「技术债台账」时用。
+  - 文件：`coding/ponytail-debt/SKILL.md`
+- **ponytail-review** — 改动评审（只出报告不改码）：只出报告、不改一行代码的改动评审：先读改动碰到的代码与全部调用方，按「正确 → 安全 → 扛得住负载 → 有测试 → 够快 → 够省」排序，发现分三级（必须改 / 应当改 / 可选），每条都写成四段式（这是什么 / 问题 / 最小修法 / 不修会怎样），收尾给结论、可省的行数与被漏掉的范围。用户说「评审一下」「code review」「review 这个 PR」「review 上一笔提交」「这是不是过度设计」时用。
+  - 文件：`coding/ponytail-review/SKILL.md`
+
 ## AI 影视创作
 
 ### 角色与场景资产
@@ -115,7 +126,7 @@
   - 文件：`mtnode/grill-me/SKILL.md`
 - **mtnode-local-media** — 本地语音与视频分析：听音频 / 做字幕 / 看视频用本机 audio_subtitle、audio_transcribe、ffmpeg，别另装 ASR。
   - 文件：`mtnode/local-media/SKILL.md`
-- **mtnode-mcp-server** — MTNode MCP 服务端（第三方接进来操作）：从 MTNode 外面经 MCP 操作本机 MTNode：16 个工具、先读图拿 contentHash、权限与审计。
+- **mtnode-mcp-server** — MTNode MCP 服务端（第三方接进来操作）：从 MTNode 外面经 MCP 操作本机 MTNode：17 个工具、先读图拿 contentHash、权限与审计。
   - 文件：`mtnode/mcp-server/SKILL.md`
 - **mtnode-media-gen-nodes** — 音乐/语音/视频生成节点：music_gen / yue_gen / breeze_gen / video_gen：输出路径、抽卡、单任务互斥与媒体端子。
   - 文件：`mtnode/media-gen-nodes/SKILL.md`

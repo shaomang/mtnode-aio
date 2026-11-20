@@ -355,6 +355,7 @@ const catalog = {
         { id: "moss-music", title: { zh: "MOSS-Music：听懂一首歌", en: "MOSS-Music: understanding a track" } },
         { id: "ai-review", title: { zh: "AI 审阅：批注与修订", en: "AI review: notes & revisions" } },
         { id: "md-editing", title: { zh: "Markdown 编辑：换行与 Tab 缩进", en: "Markdown editing: line breaks & Tab indent" } },
+        { id: "fim", title: { zh: "FIM 补全：打字时的后续预测", en: "FIM completion: hints while you type" } },
         { id: "image-edit", title: { zh: "图像编辑与蒙版", en: "Image editing & masks" } },
       ],
     },

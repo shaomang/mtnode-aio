@@ -2743,10 +2743,10 @@ button.mini.btn-sq.ws-browse svg {
   visibility: hidden !important
 }
 
-/* 快捷会话小窗入口（renderer/app-mini-chat-host.js）：状态栏最左第一颗。
-   左下角五颗按钮的 order 链（本轮定稿，全仓只有这五处）：
-   快捷会话 -5 · DeepSeek -4（css/deepseek.css）· 语音播报 -3（css/tts.css）·
-   语音输入 -2 与 AI 增强 -1（css/voice.css）· 画布截图 0。
+/* 快捷会话小窗入口（renderer/app-mini-chat-host.js）：状态栏第二颗。
+   左下角按钮的 order 链（本轮定稿，全仓只有这几处）：
+   输入补全 -6（css/fim.css）· 快捷会话 -5 · DeepSeek -4（css/deepseek.css）·
+   语音播报 -3（css/tts.css）· 语音输入 -2 与 AI 增强 -1（css/voice.css）· 画布截图 0。
    想再挪位置只改对应文件里那一个数，DOM 次序不影响结果。 */
 .sb-minichat {
   flex: none;
@@ -3488,6 +3488,43 @@ button.mini.btn-sq.ws-browse svg {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap
+}
+
+/* 第三态（旁路已预装好、等重启）那颗「立即重启并更新」——
+   只在 staged 相位显示（其余相位由 JS 设 hidden；`.ub.staged` 这个类是相位状态钩子，
+   进度条本身不需要额外样式：它已经满格且不脉动）。填色与顶栏「更新」按钮同一套暖橙 + 深字，
+   三套主题下都读得清，因此不吃主题变量、也不需要在主题皮肤里再覆一次。 */
+.ub-acts {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 7px
+}
+
+.ub-acts[hidden] {
+  display: none !important
+}
+
+.ub-act {
+  box-sizing: border-box;
+  height: 24px;
+  padding: 0 10px;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: .5px;
+  color: #1a1208;
+  border: 1px solid rgba(255, 176, 102, .8);
+  border-radius: 4px;
+  background: linear-gradient(180deg, #ffc878, #ff8f2e);
+  cursor: pointer
+}
+
+.ub-act:hover {
+  filter: brightness(1.06)
+}
+
+.ub-act:disabled {
+  opacity: .7;
+  cursor: default
 }
 
 @keyframes ubSweep {

@@ -211,6 +211,79 @@
     }, SAVE_MS);
   }
 
+  /* ── 引用登记：批注正文里的图（并进 app-assist.js 的无引用回收判据）────────────
+     批注卡里可以插图（「插图」键 → 正文里一行 ![](C:\…\paste-xxx.png)），落盘复用输入框
+     那条路（app-assist.js 的 chatImgWriteBase64：<工作区>/.mtnode-input/，没有工作目录时
+     退数据目录 chat-input，命名 paste-<时间戳36进制>.<ext>）—— 也就是说批注图与输入框的
+     图同目录、同命名，本来就落在「可回收候选」那一类里。而回收判据（chatImgGc 的
+     orphanImages）只看「现存的每一处引用」：会话消息 / 草稿 / 画布节点 / 输入框正文。
+     批注正文不在这几处里，于是「只有批注在用」的那张图会被判成无人引用而删盘 ——
+     这一节就是把它登记出去（收集口径不另写一套：走 MTInlineImg.imgRefsIn）：
+
+       · imgRefs()      全部会话批注正文里的图（引用侧：app-assist.js 的 chatImgRefs 并入）；
+       · imgRefs(sid)   某一会话的批注正文（候选侧：删会话时 chatImgSessionCandidates 并入
+                        它 —— 那条会话一删，这些图就失去这一处引用，别处还引用就保留）；
+       · imgRefsReady() 批注表按会话懒加载（loadAnnos），**没打开过的会话在内存里还是空表**，
+                        盘上那份却可能引着图。所以第一次要引用时发起一轮预取（每会话一次
+                        sessionAnnos:load，只发起一次），它兑现之后 imgRefs() 才是全集；
+                        没兑现之前调用方应当这一轮不删（宁可留一张孤儿图，也绝不误删别人
+                        还在引用的图）。
+
+     删除批注 / 删掉卡片里的一行图，这里都**不**触发回收（不调 chatImgGcSoon）：那一瞬
+     正是判据最可能没查全的时候，而「批注里删掉一行图」并不等于那张图没人用（消息正文 /
+     别的批注 / 画布节点都可能还引用着）。孤儿统一交给工作目录清理面板（用户看得见清单
+     再清），本模块一次都不主动删图。 */
+  let _annosRefsPrefetch = null;
+  function annoBodiesOf(list) {
+    const out = [];
+    for (const a of list || []) if (a && a.body) out.push(String(a.body));
+    return out;
+  }
+  /* 一轮预取：把「盘上可能有批注、内存里还没读过」的会话各读一遍（只发起一次） */
+  function annosRefsPrefetch() {
+    const A = api();
+    if (!A || typeof A.sessionAnnosLoad !== "function") return Promise.resolve(true);
+    const ids = [];
+    try {
+      const list =
+        (typeof agentSessions === "function" ? agentSessions() : null) ||
+        (typeof S !== "undefined" && S && S.agentSessions) ||
+        [];
+      for (const s of list) if (s && s.id) ids.push(String(s.id));
+    } catch (_) {}
+    if (st.sid && ids.indexOf(st.sid) < 0) ids.push(st.sid);
+    const jobs = [];
+    for (const sid of ids) {
+      const b = st.cache.get(sid);
+      if (b && b.loaded) continue;
+      jobs.push(Promise.resolve(loadAnnos(sid)).catch(() => []));
+    }
+    return jobs.length ? Promise.all(jobs).then(() => true, () => true) : Promise.resolve(true);
+  }
+  function imgRefsReady() {
+    if (!_annosRefsPrefetch) _annosRefsPrefetch = annosRefsPrefetch();
+    return _annosRefsPrefetch;
+  }
+  /* 批注正文里的图引用；sid 省略 = 全部会话（已读进内存的那一份，见 imgRefsReady） */
+  function annosImgRefs(sid) {
+    /* 顺手把预取发起来（不阻塞本次调用）：下一次要判据时手上这份才是接近全集的 */
+    if (!_annosRefsPrefetch) imgRefsReady();
+    const m = imgMod();
+    if (!m || typeof m.imgRefsIn !== "function") return [];
+    const key = sid == null ? "" : String(sid || "");
+    const lists = [];
+    if (key) lists.push(st.cache.get(key) || null);
+    else for (const b of st.cache.values()) lists.push(b);
+    const out = [];
+    for (const b of lists) {
+      const bodies = annoBodiesOf(b && b.annos);
+      if (!bodies.length) continue;
+      const refs = m.imgRefsIn(bodies);
+      if (refs && refs.length) out.push(...refs);
+    }
+    return out;
+  }
+
   /* ── 当前该画哪一片：会话视图优先，其次智能助手栏（两处可能同时显示同一条会话） ── */
   function shown(node) {
     if (!node || !node.isConnected) return false;
@@ -915,6 +988,158 @@
     return "";
   }
 
+  /* ── 批注框里的截图 / 图片（本次需求）──────────────────────────────────
+     批注卡只是一只裸 <textarea>；「粘贴截图 / 拖入图片 / 选本机图片 → 落盘 → 正文里写一行
+     ![名称](绝对路径)」这套内核已经在 renderer/app-inline-img.js（window.MTInlineImg 的
+     textarea 版）里，会话 / 助手两只输入框用的就是它 —— 这里只接线，不另写一套。
+     落盘复用 app-assist.js 的 chatImgWriteBase64（会话工作目录的 .mtnode-input/，没有工作
+     目录时退数据目录 chat-input，命名 paste-*.png），所以「工作目录清理面板」一处就能看到
+     批注图与输入框的图。图行是**独占一行**的，发送拼块时 MTInlineImg.absImgPaths 才认得出
+     它是附件（网关 attachImages 只认真路径）。 */
+  function imgMod() {
+    return window.MTInlineImg || null;
+  }
+  /* saveBase64 钩子：落盘目录 = 这条批注所属会话的当前工作目录（切会话跟着换） */
+  function annoImgSaveBase64(picked) {
+    const fn = window.chatImgWriteBase64;
+    if (typeof fn !== "function") return null;
+    return fn(picked, () => {
+      try {
+        const s = sessionOfHost(st.mode);
+        return s && typeof agentRunWorkspace === "function" ? agentRunWorkspace(s) : "";
+      } catch (_) {
+        return "";
+      }
+    });
+  }
+  /* 「插图」键的取图 → 插行：有本机路径就整路径引用（不复制文件）；剪贴板截图 / 内存位图
+     交给 saveBase64 落成真文件再插。两条路都与两只输入框完全同一份实现。 */
+  function insertImgIntoCard(ta, opts) {
+    const m = imgMod();
+    if (!m || typeof m.pickImage !== "function") return;
+    Promise.resolve(m.pickImage(opts.target)).then(
+      (picked) => {
+        if (!picked) return;
+        const p = String(picked.srcPath || "").trim();
+        if (p) {
+          if (typeof m.insertFromPathLine === "function") m.insertFromPathLine(p, ta, opts);
+          return;
+        }
+        if (typeof m.saveImage !== "function" || typeof m.insertImgLine !== "function") return;
+        Promise.resolve(m.saveImage(picked, opts.target())).then((saved) => {
+          if (saved) m.insertImgLine(ta, saved, opts);
+        });
+      },
+      () => {},
+    );
+  }
+
+  /* ── 批注卡里的图行投影（缩略图 + 文件名 + ✕；窄版胶囊）───────────────────
+     卡片只有 252px 宽，正文里一行 `![截图](C:\…\paste-xxx.png)` 裸在 textarea 里既看不清
+     也不好操作。所以在 textarea 上方投影一排**窄版**胶囊（视觉沿用 inline-img.css 的胶囊
+     语言 —— 边框 / 圆角 / 悬停变青，但一处一枚、22px 缩略图，不搬 .ii-line-chips 进来）：
+       · 点缩略图 → 光标进正文那一行并整行选中；
+       · ✕ → 删掉整行（连同它独占的那个换行），派一次 input 让既有 commit 生效
+         （正文 hit.body / applied / 保存 / 状态标签 / 发送栏胶囊全挂在 commit 上）。
+     图行判据与下发同源：window.MTInlineImg.imgLines（整行只有一张图才算一张图）。渲染幂等
+     —— 按「正文里的图行签名」比对，签名没变就不动 DOM（paint 每帧都会走到这里）。 */
+  function imgFileNameOf(ref) {
+    const s = String(ref == null ? "" : ref).split(/[?#]/)[0];
+    const seg = s.split(/[\\/]/).pop() || "";
+    try {
+      return decodeURIComponent(seg);
+    } catch (_) {
+      return seg;
+    }
+  }
+  /* 点 / 删之前按当前正文重算这一行：投影是按 body 画的，正文若从别的路径变过，
+     拿旧偏移去选 / 去删就会动到别的行。找不到 = 那行已经没了。 */
+  function cardImgLineNow(ta, l) {
+    const m = imgMod();
+    if (!m || !ta || !l || typeof m.imgLines !== "function") return null;
+    const lines = m.imgLines(ta.value);
+    return (
+      lines.find((x) => x.start === l.start && x.ref === l.ref) ||
+      lines.find((x) => x.n === l.n && x.ref === l.ref) ||
+      lines.find((x) => x.ref === l.ref) ||
+      null
+    );
+  }
+  /* 点缩略图：光标落进正文那一行并整行选中 */
+  function cardImgFocus(c, l) {
+    if (!c || !c.ta) return;
+    const now = cardImgLineNow(c.ta, l);
+    if (!now) return;
+    try {
+      c.ta.focus();
+      c.ta.setSelectionRange(now.start, now.end);
+    } catch (_) {}
+  }
+  /* ✕：删掉整行 + 派 input（既有 commit 接住，不另加钩子） */
+  function cardImgRemove(c, l) {
+    if (!c || !c.ta) return;
+    const ta = c.ta;
+    const now = cardImgLineNow(ta, l);
+    if (!now) {
+      /* 正文已经不是画投影时那一帧了：按现正文重画，绝不按旧偏移乱删 */
+      renderCardImgs(c, annoById(c.id));
+      return;
+    }
+    const v = String(ta.value || "");
+    let s = now.start;
+    let e = now.end;
+    if (v.slice(e, e + 1) === "\n") e++;
+    else if (v.slice(s - 1, s) === "\n") s--;
+    ta.value = v.slice(0, s) + v.slice(e);
+    try {
+      ta.setSelectionRange(s, s);
+    } catch (_) {}
+    try {
+      ta.dispatchEvent(new Event("input", { bubbles: true }));
+    } catch (_) {}
+  }
+  function renderCardImgs(c, anno) {
+    const box = c && c.imgs;
+    if (!box) return;
+    const m = imgMod();
+    const lines = m && typeof m.imgLines === "function" ? m.imgLines(String((anno && anno.body) || "")) : [];
+    const sig = String((anno && anno.id) || "") + "|" + lines.map((l) => l.n + ":" + l.alt + ":" + l.ref).join("\n");
+    if (box._saImgSig === sig) return; /* 幂等：签名没变就不动 DOM */
+    box._saImgSig = sig;
+    box.innerHTML = "";
+    box.hidden = !lines.length;
+    if (!lines.length) return;
+    for (const l of lines) {
+      const row = el("div", "sa-card-img");
+      row.title = T("点击缩略图定位到正文里的这一行（整行选中）") + "\n" + l.ref;
+      /* 缩略图：本机绝对路径 / file:/// 直接显示；相对引用没有基准目录 → 退回图标，
+         但点击照样是「定位到正文那一行」。 */
+      const thumb = el(l.url ? "img" : "span", "sa-card-img-thumb");
+      if (l.url) {
+        thumb.src = l.url;
+        thumb.alt = l.alt || "";
+        thumb.loading = "lazy";
+      } else {
+        thumb.textContent = "🖼";
+      }
+      thumb.onclick = (ev) => {
+        ev.stopPropagation();
+        cardImgFocus(c, l);
+      };
+      row.appendChild(thumb);
+      row.appendChild(el("span", "sa-card-img-name", l.alt || imgFileNameOf(l.ref) || T("图片")));
+      const x = el("button", "sa-card-img-x", "✕");
+      x.type = "button";
+      x.title = T("从正文里删掉这一行");
+      x.onclick = (ev) => {
+        ev.stopPropagation();
+        cardImgRemove(c, l);
+      };
+      row.appendChild(x);
+      box.appendChild(row);
+    }
+  }
+
   function cardFor(anno) {
     const id = anno.id;
     let c = st.cards.get(id);
@@ -932,17 +1157,25 @@
     ta.className = "sa-card-ta";
     ta.rows = 3;
     ta.placeholder = T("写你的批注 / 质疑 / 想展开的点…（写完自动随下一条消息发出）");
+    /* 图行投影（缩略图 + 文件名 + ✕）：默认收起，正文里有图行时由 renderCardImgs 填 */
+    const imgs = el("div", "sa-card-imgs");
+    imgs.hidden = true;
     const foot = el("div", "sa-card-foot");
     /* 用户口径（第三轮）：不再有「加到这条消息」—— 写了字就等于「随消息发出」，
-       所以这里只剩「删除」「定位」两枚小键。 */
+       所以这里只剩「插图」「定位」「删除」三枚小键（插图 = 本次需求）。 */
+    const ins = el("button", "sa-btn sa-ins", T("插图"));
     const go = el("button", "sa-btn sa-go", T("定位"));
     const del = el("button", "sa-btn sa-del", T("删除"));
+    ins.type = "button";
     go.type = "button";
     del.type = "button";
+    ins.title = T("插入截图或本机图片（图会随这条批注一起发给模型）");
+    foot.appendChild(ins);
     foot.appendChild(go);
     foot.appendChild(del);
     root.appendChild(head);
     root.appendChild(quote);
+    root.appendChild(imgs);
     root.appendChild(ta);
     root.appendChild(foot);
     box.appendChild(root);
@@ -959,12 +1192,28 @@
       saveSoon(st.sid || "");
       paintTag(hit, tag);
       renderAllStrips();
+      /* 正文变了 → 图行投影跟着变（✕ 删行 / 插图 / 手打图行都走这一条） */
+      renderCardImgs(st.cards.get(id), hit);
     };
     ta.addEventListener("input", commit);
     ta.addEventListener("blur", commit);
     ta.addEventListener("focus", () => {
       st.activeId = id;
       schedule();
+    });
+    /* 粘贴截图 / 拖入图片：共享模块的 textarea 版（与两只输入框同一份内核）。
+       插进来的是独占一行的图行；插入是程序写 value（不派 input），所以收尾靠
+       onInserted 立刻 commit —— 批注正文始终以 hit.body 为准。 */
+    const imgOpts = {
+      target: () => ({ kind: "path", name: "", saveBase64: annoImgSaveBase64 }),
+      onInserted: commit,
+    };
+    const im = imgMod();
+    if (im && typeof im.bindTextarea === "function") im.bindTextarea(ta, imgOpts);
+    ins.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      insertImgIntoCard(ta, imgOpts);
     });
     go.addEventListener("click", (ev) => {
       ev.preventDefault();
@@ -992,7 +1241,7 @@
         }
       }, 160);
     });
-    c = { el: root, ta: ta, tag: tag, quoteEl: quote, who: who };
+    c = { id: id, el: root, ta: ta, tag: tag, quoteEl: quote, who: who, imgs: imgs };
     st.cards.set(id, c);
     return c;
   }
@@ -1008,12 +1257,30 @@
   }
 
   /* ── 发给模型的那段正文（只在发送那一瞬拼，绝不进输入框） ─────────────── */
+  /* body 里有没有「整行一张图」的图行 —— 判据与渲染 / 下发同源（共享模块的 imgLines，
+     整行只有 `![名称](引用)` 才算一张图）。模块缺席（切片冒烟）时退回同形整行正则。 */
+  function bodyHasImgLine(s) {
+    const m = typeof window !== "undefined" ? window.MTInlineImg : null;
+    if (m && typeof m.imgLines === "function") {
+      try {
+        if (m.imgLines(s).length) return true;
+      } catch (_) {}
+    }
+    return /^[ \t]*!\[[^\]]*\]\(.*\)[ \t]*$/m.test(String(s == null ? "" : s));
+  }
   function blockText(anno) {
     const q = String(anno.quote || "")
       .replace(/\s+/g, " ")
       .trim();
     const cut = q.length > MAX_QUOTE ? q.slice(0, MAX_QUOTE) + "…" : q;
     const n = anno.aiIdx >= 0 ? anno.aiIdx + 1 : 1;
+    const body = String(anno.body || "").trim();
+    /* 图行必须**独占一行**才被认成附件（共享模块 imgLines / absImgPaths 的口径：整行只有
+       一张图才算）。所以「批注：」后面直接接 body 只在 body 是单行纯文字时才对 ——
+       body 以图行开头会被拼成「批注：![截图](C:\…)」，那一行不再是「整行一张图」，图就
+       不会随消息下发；多行正文同理（首行会被「批注：」吞掉，粘成一行）。这两种情况另起
+       一行写，其余保持原来的行内写法（消息更紧凑）。 */
+    const ownLine = body.indexOf("\n") >= 0 || bodyHasImgLine(body);
     return (
       "【批注 #" +
       anno.id +
@@ -1022,7 +1289,8 @@
       " 条回复】\n> " +
       (cut || T("（整块内容）")) +
       "\n批注：" +
-      String(anno.body || "").trim()
+      (ownLine ? "\n" : "") +
+      body
     );
   }
   /* 发送那一刻取走要拼进消息的批注块 —— 用户口径（第四轮）：**发出去的那些随即消失**，
@@ -1303,6 +1571,8 @@
         c.quoteEl.textContent = q ? "「" + (q.length > 60 ? q.slice(0, 60) + "…" : q) + "」" : T("（整块内容）");
         if (c.ta !== document.activeElement && c.ta.value !== anno.body) c.ta.value = anno.body;
         paintTag(anno, c.tag);
+        /* textarea 上方那排图行投影（缩略图 + 文件名 + ✕）：与正文同步、渲染幂等 */
+        renderCardImgs(c, anno);
         /* 当前这一条：卡片左边框跟着走金色呼吸灯（与正文那段 / 连线同一个「高亮」） */
         c.el.classList.toggle("is-active", st.activeId === anno.id);
         c.el.classList.toggle("is-dead", st.dead.has(anno.id));
@@ -1928,6 +2198,9 @@
   SA.takeForSend = takeForSend;
   SA.pendingCount = pendingCount;
   SA.dropSession = dropSession;
+  /* 引用登记（本节见文件前段「引用登记」）：app-assist.js 把它并进内嵌图的回收判据 */
+  SA.imgRefs = annosImgRefs;
+  SA.imgRefsReady = imgRefsReady;
   SA.repaint = schedule;
   SA.open = function (sid) {
     if (sid && String(sid) !== st.sid) return loadAnnos(String(sid));

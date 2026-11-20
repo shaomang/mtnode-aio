@@ -19,6 +19,6 @@
 
 ## 注意
 - 界面是 `mtnode-preview://<应用id>/<入口页>?_host=1&_anode=1` 的 iframe，页面用注入的 `window.appHost`：`dataRead / dataWrite / storage* / dataDir*`、`canvas`（读写整张图、`runNode` 真跑一颗节点并等结果、`nodeOutput` 取上次产物、`cancelNode` 等同画布「终止」）、`agent`（会话）、`fs`（仅画布工作目录）、`tools`、`net`、`textGenStream / imageGen / imageEdit / transcribe …`。桥按命名空间**逐个方法白名单**开放，不是把 `window.api` 整包丢给页面。
-- `canvas.runNode` 与手点 ▶ 同一条路：上游自动补齐、级联、产物落画布资产目录；`attempts` 默认 1 张（1–10）；已在跑就等那一轮，不重复出图；没有工作目录回 `no_workspace` 且不弹窗；宿主不挂超时，长任务自己 `Promise.race` + `cancelNode` 收口。需要能力位 `capabilities.canvasHost`，首次调用弹一次授权。
+- `canvas.runNode` 与手点 ▶ 同一条路：上游自动补齐、级联、产物落画布资产目录；`attempts` 默认 1 张（1–10）；已在跑就等那一轮，不重复出图；没有工作目录回 `no_workspace` 且不弹窗；宿主不挂超时，长任务自己 `Promise.race` + `cancelNode` 收口。需要能力位 `capabilities.canvasHost`（在「应用设置 → 应用能力」勾上即永久允许，没有第二次确认）。
 - 数据在 `<画布工作目录>/apps-data/<应用id>/data.json`，跟着画布工作目录走，上限 2MB，写盘是 tmp + rename 原子写；卡片上能看到路径并可打开数据文件夹。
 - 界面同时只开一个，后台也同时只允许一个应用节点存活（开新的会停掉上一个）；存活到节点被删 / 切换画布 / 退出 MTNode / 点停止。页面只能读写画布工作目录里的文件，越界一律拒绝。

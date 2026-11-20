@@ -329,6 +329,15 @@ function openSettingsBody() {
   if (!S.config.dsh) S.config.dsh = {};
   const body = $("#ovBody");
   let enterSelEl = null;
+  /* 「运行中发送行为」下拉（本次需求）：建在发送行为那一行下面（与 Enter 行为同一组），
+     collect() 收口时要读它 —— 与 enterSelEl 一样提到函数顶部声明 */
+  let busySelEl = null;
+  /* busySend 档位归一：'ask'（每次询问，缺省）/ 'queue'（直接排队）/ 'steer'（直接插话）。
+     老 config.json 没这枚键、或被人手改成别的值，一律按 'ask' —— 行为与改动前一致。 */
+  const busySendNorm = (v) => {
+    const s = String(v || "");
+    return s === "queue" || s === "steer" ? s : "ask";
+  };
 
   /* 很少用的小节（网络 / 配置数据目录 / 画布备份 / 存储占用与清理 / 错误与崩溃日志）
      统一沉到最下方：这里先登记，函数末尾按 tailOrder 补挂，避免它们在正文里抢占视线。
@@ -850,6 +859,38 @@ function openSettingsBody() {
     S.config.dsh.chatEnter = enterSel.value;
     settingsSaved(0);
   };
+
+  /* 运行中发送行为（本次需求 · 紧接上面那一行）：会话还在跑的时候按发送怎么走 ——
+     每次询问（弹裁决卡）/ 直接排队（旧口径）/ 直接插话（趁本轮下一步塞进去）。
+     键 = config.dsh.busySend，取值 'ask' | 'queue' | 'steer'，缺省 'ask'；
+     读方是 renderer/app-assist.js 的 busySendAskMode()（忙时发送裁决卡的唯一真源）。
+     双向回显：卡片上「记住我的选择，以后不再问」写的也是这枚键（busyAskPick），
+     每次开设置都按 config 现值回显，所以勾过之后重开设置就能看到新的档位。 */
+  const busyRow = document.createElement("label");
+  busyRow.className = "n-field";
+  busyRow.style.flexDirection = "row";
+  busyRow.style.alignItems = "center";
+  busyRow.appendChild(document.createTextNode(I18n.t("运行中发送行为：")));
+  const busySel = document.createElement("select");
+  for (const [v, label] of [
+    ["ask", "每次询问"],
+    ["queue", "直接排队"],
+    ["steer", "直接插话"],
+  ]) {
+    const o = document.createElement("option");
+    o.value = v;
+    o.textContent = I18n.t(label);
+    busySel.appendChild(o);
+  }
+  busySel.value = busySendNorm(S.config.dsh && S.config.dsh.busySend);
+  /* 即时生效：下一次忙时发送就按新档位走（裁决卡每次现读 busySendAskMode） */
+  busySel.onchange = () => {
+    S.config.dsh.busySend = busySendNorm(busySel.value);
+    settingsSaved(0);
+  };
+  busyRow.appendChild(busySel);
+  body.appendChild(busyRow);
+  busySelEl = busySel;
 
   /* 主题(4 款: MTNode / DSH / 终末地 / 亮色;默认 MTNode;选完立刻换肤并由 applyTheme 写盘) */
   const themeRow = document.createElement("label");
@@ -2429,6 +2470,11 @@ function openSettingsBody() {
       ? dshEls.preset.value
       : String((S.config.dsh && S.config.dsh.preset) || AGENT_PRESET_DEFAULT),
     chatEnter: enterSelEl ? enterSelEl.value : "send",
+    /* 运行中发送行为（本次需求）：以下拉那一刻为准；那个框不在场（老窗）时保留现值，
+       缺省 'ask' = 每次询问。归一口径与 openSettingsBody 里同一个 busySendNorm。 */
+    busySend: busySelEl
+      ? busySendNorm(busySelEl.value)
+      : busySendNorm(S.config.dsh && S.config.dsh.busySend),
     permissionPreset: dshEls.permissionPreset.value,
     doneSound: dshEls.doneSound.checked,
     doneSoundFile: dshEls.doneSoundFile ? dshEls.doneSoundFile.value.trim() : (S.config.dsh && S.config.dsh.doneSoundFile) || "",
@@ -2488,6 +2534,9 @@ function openSettingsBody() {
         effort: "high",
         preset: AGENT_PRESET_DEFAULT,
         chatEnter: "send",
+        /* 运行中发送行为：缺省 'ask' = 每次询问（老 config.json 没这枚键就落到这里，
+           行为与改动前一致：忙时发送先问一句「排队 or 插话」） */
+        busySend: "ask",
         permissionPreset: "mtnode-unattended",
         doneSound: true,
         doneSoundVolume: 35,

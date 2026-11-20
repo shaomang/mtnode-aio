@@ -44,6 +44,9 @@ export const MCP_PLUGIN_FILES = [
   'gui-plugin.mjs',
   'dev-plugin.mjs',
   'mcp-extra-plugin.mjs',
+  /* 只读媒体通道（mtnode_media）：同样是「只做契约真源」的一份，执行方在主进程
+     （main.js 的 mcpMediaRead → ffprobe / ffmpeg / 本地 SenseVoice）。 */
+  'media-read-plugin.mjs',
 ]
 
 /** 每个工具归到哪一族（渲染层按族分派 op；见 renderer/mcp-bridge.js 的 MCP_TOOL_OPS）。
@@ -75,6 +78,9 @@ export const TOOL_FAMILY = {
   mtnode_run: 'run',
   mtnode_tools: 'tool',
   mtnode_session: 'session',
+  /* 只读媒体通道（mtnode_media）：主进程执行（main.js 的 mcpMediaRead），不进 cordis.yml ——
+     应用内 Agent 已有 audio_transcribe / ffmpeg / mtnode_vision，这一条只补给外部客户端。 */
+  mtnode_media: 'media',
 }
 
 /* ── 从插件源码里抽 defineTool 规格（真跑 register，不解析对象字面量）──────────── */

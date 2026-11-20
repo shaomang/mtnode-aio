@@ -347,12 +347,15 @@ let _updateInfo = null;
    「商店里可能有新版」只体现为右下角版本号蓝色高亮 + 应用详情弹窗里的提示与商店按钮。 */
 let _updateStore = false;
 /* 最近一次更新状态：顶栏按钮、右下角版本号高亮、应用详情弹窗（app-settings.js）共用这一份。
-   available 含商店版的 storeUpdateAvailable；latestVersion 是线上（更新源）版本号。 */
+   available 含商店版的 storeUpdateAvailable；latestVersion 是线上（更新源）版本号。
+   staging / staged 是旁路预装那两档（三态：下载中 → 后台准备 → 已就绪待重启）。 */
 let _updateState = {
   store: false,
   available: false,
   readyToRestart: false,
   downloading: false,
+  staging: false,
+  staged: false,
   version: "",
   latestVersion: "",
 };
@@ -372,6 +375,14 @@ function ubInstallSub() {
     ? I18n.t("安装向导即将启动：安装窗口会显示进度，装完自动重新打开（无需点击）")
     : I18n.t("更新包已就绪，正在静默安装；应用会自动重新打开");
 }
+/* 旁路预装两档的副行文案（相位 staging / staged）：这两档既没有安装向导、也不是
+   「正在静默安装」，所以一句都不沿用上面那套向导 / 静默文案（那时说「看安装窗口」是假的）。
+   装到旁路时应用照常在用，就绪后只等用户点「立即重启并更新」，或退出应用时自动完成。 */
+function ubStageSub(phase) {
+  return phase === "staged"
+    ? I18n.t("更新已就绪，重启完成")
+    : I18n.t("后台准备更新（可以继续用）");
+}
 /* 设置页（app-settings.js 的手动更新）与这里共用同一份判断，文案口径不许分叉 */
 window.isUpdateInstallWizard = () => _installWizard;
 
@@ -390,9 +401,14 @@ function paintAuthorUpdate() {
     return;
   }
   const ver = s.latestVersion || s.version || "";
-  const tip = s.downloading
-    ? I18n.t("正在下载更新…") + " · " + base
-    : (ver ? I18n.t("发现新版本 v") + ver : I18n.t("发现新版本")) + " · " + base;
+  /* 悬停文案也跟相位走（右下角版本号三种蓝法：下载中 / 后台准备 / 已就绪） */
+  const tip = s.staged
+    ? I18n.t("更新已就绪，重启完成") + " · " + base
+    : s.staging
+      ? I18n.t("后台准备更新（可以继续用）") + " · " + base
+      : s.downloading
+        ? I18n.t("正在下载更新…") + " · " + base
+        : (ver ? I18n.t("发现新版本 v") + ver : I18n.t("发现新版本")) + " · " + base;
   el.setAttribute("title", tip);
   el.setAttribute("aria-label", tip);
 }
@@ -406,9 +422,18 @@ function paintUpdateBtn(st) {
   if (st) {
     _updateState = {
       store: !!_updateStore,
-      available: !!(st.available || st.storeUpdateAvailable || st.readyToRestart),
+      available: !!(
+        st.available ||
+        st.storeUpdateAvailable ||
+        st.readyToRestart ||
+        st.staging ||
+        st.staged
+      ),
       readyToRestart: !!st.readyToRestart,
       downloading: !!st.downloading,
+      /* 旁路预装两档：后台准备 / 已就绪待重启 */
+      staging: !!st.staging,
+      staged: !!st.staged,
       version: st.version || (_updateInfo && _updateInfo.version) || "",
       latestVersion:
         st.latestVersion || st.version || (_updateInfo && _updateInfo.version) || "",
@@ -422,17 +447,41 @@ function paintUpdateBtn(st) {
     if (bar) bar.classList.remove("has-update");
     return;
   }
-  const avail = !!(st && (st.available || st.readyToRestart) && (st.version || st.readyToRestart));
+  const staged = !!(st && st.staged);
+  const staging = !!(st && st.staging && !staged);
   const ready = !!(st && st.readyToRestart);
   const busy = !!(st && st.downloading);
+  const avail = !!(
+    st &&
+    (st.available || st.readyToRestart || st.staging || st.staged) &&
+    (st.version || st.stageVersion || st.readyToRestart || st.staged)
+  );
   const txt = btn.querySelector(".btn-update-txt");
   if (avail || ready) {
     btn.hidden = false;
     btn.setAttribute("aria-hidden", "false");
     btn.classList.add("show");
     if (bar) bar.classList.add("has-update");
-    const ver = st.version || (_updateInfo && _updateInfo.version) || "";
-    if (ready && !busy) {
+    const ver =
+      st.version || st.stageVersion || (_updateInfo && _updateInfo.version) || "";
+    /* 三态（本轮需求）：已就绪待重启 → 后台准备 → 下载中 → 只有新版可下。
+       前两档是旁路预装，绝不提安装向导 / 安装窗口（那时没有向导）；只有回落旧路径
+       （就地覆盖安装，ready 且既非 staging 也非 staged）才沿用今天那套向导 / 静默文案。 */
+    if (staged) {
+      btn.title = I18n.t(
+        "更新已就绪：点这里立刻重启并换上；点「稍后」则退出应用时自动完成",
+      );
+      if (txt) txt.textContent = I18n.t("重启更新");
+      btn.classList.remove("busy");
+      btn.classList.add("ready");
+    } else if (staging) {
+      btn.title = I18n.t(
+        "正在后台准备更新（可以继续用）：装好会提示你重启，现在不用退出",
+      );
+      if (txt) txt.textContent = I18n.t("后台准备");
+      btn.classList.add("busy");
+      btn.classList.remove("ready");
+    } else if (ready && !busy) {
       btn.title = _installWizard
         ? I18n.t("更新已就绪：点击后会弹出安装向导，窗口里显示进度，装完自动重新打开（无需在向导里点）")
         : I18n.t("更新已就绪：点击后将后台静默安装，完成后自动重新打开");
@@ -460,12 +509,16 @@ function paintUpdateBtn(st) {
 /* ── 版本更新进度条（右下角 #updateBanner）─────────────────────────────────
    主进程全自动（发现新版本即差分下载 → 下载完自动安装并自动重开；默认会弹出安装向导），
    这里只把进度画出来，
-   让「更新在跑」这件事不再完全静默。相位：
+   让「更新在跑」这件事不再完全静默。相位（前四档是三态里的两个新档，
+   只有装到旁路那条路径才会出现）：
      download → 真实百分比 + 已下载 / 总量 + 速度
-     install  → 进度条走满并脉动，说明正在安装、应用会自动重开
-     later    → 用户点了「稍后」：这次不自动装，退出应用时装上
+     staging  → 后台准备更新（可以继续用）：脉动、不打百分比（装到旁路没有可读进度）
+     staged   → 更新已就绪，重启完成：进度条走满 + 一颗「立即重启并更新」
+     install  → 回落旧路径（就地覆盖安装）：进度条走满并脉动，说明正在安装、应用会自动重开
+     later    → 用户点了「稍后」：这次不自动装，退出应用时完成
      error    → 失败原因，几秒后自动收起（顶栏按钮仍可重试）
-   「✕」= 稍后（update:cancelAutoInstall），不打断下载；已下好的包留到下次退出应用时安装。 */
+   「✕」= 稍后（update:cancelAutoInstall），不打断下载也不打断预装；
+   已下好的包 / 已铺好的旁路都留到退出应用时完成。 */
 let _ubPct = 0;
 let _ubPhase = "";
 let _ubHideTimer = null;
@@ -486,6 +539,7 @@ function ubBytes(n) {
  * 画更新进度条。
  * paintUpdateBanner({ phase, pct, version, sub }) / paintUpdateBanner({ hide:true })。
  * 相位缺省沿用上一次（status 事件只补版本号时不至于把安装相位打回下载相位）。
+ * 副行文案缺省按相位取（staging / staged 走 ubStageSub，其余保持空 —— 老调用点都自带 sub）。
  */
 function paintUpdateBanner(opt) {
   const box = $("#updateBanner");
@@ -497,28 +551,41 @@ function paintUpdateBanner(opt) {
   }
   if (o.hide) {
     box.hidden = true;
-    box.classList.remove("installing", "error");
+    box.classList.remove("installing", "error", "staged");
+    const actsEl = $("#ubActs");
+    if (actsEl) actsEl.hidden = true;
     _ubPhase = "";
     return;
   }
   const phase = o.phase || _ubPhase || "download";
   _ubPhase = phase;
   if (o.pct != null) _ubPct = Math.max(0, Math.min(100, Number(o.pct) || 0));
+  const stagedHere = phase === "staged";
   box.hidden = false;
-  box.classList.toggle("installing", phase === "install");
+  /* installing = 脉动（装 / 正在准备，没有可读百分比）；staged = 已就绪（静态满格 + 动作按钮） */
+  box.classList.toggle("installing", phase === "install" || phase === "staging");
   box.classList.toggle("error", phase === "error");
+  box.classList.toggle("staged", stagedHere);
   const titleEl = $("#ubTitle");
   const pctEl = $("#ubPct");
   const fillEl = $("#ubFill");
   const subEl = $("#ubSub");
+  const actsEl = $("#ubActs");
   const ver = o.version || (_updateInfo && _updateInfo.version) || "";
   if (titleEl) {
+    /* 已就绪那一档标题不再说「正在更新」（它已经在等了），其余照旧 */
     titleEl.textContent =
-      I18n.t("正在更新 MTNode") + (ver ? " v" + ver : "");
+      (stagedHere ? I18n.t("更新已就绪") : I18n.t("正在更新 MTNode")) +
+      (ver ? " v" + ver : "");
   }
   if (fillEl) {
     fillEl.style.width =
-      phase === "install" || phase === "error" ? "100%" : _ubPct + "%";
+      phase === "install" ||
+      phase === "error" ||
+      phase === "staging" ||
+      stagedHere
+        ? "100%"
+        : _ubPct + "%";
   }
   if (pctEl) {
     pctEl.textContent =
@@ -528,27 +595,127 @@ function paintUpdateBanner(opt) {
           ? I18n.t("失败")
           : phase === "later"
             ? I18n.t("稍后")
-            : Math.round(_ubPct) + "%";
+            : stagedHere
+              ? I18n.t("已就绪")
+              : phase === "staging"
+                ? I18n.t("后台准备")
+                : Math.round(_ubPct) + "%";
   }
-  if (subEl) subEl.textContent = o.sub || "";
+  if (subEl) {
+    subEl.textContent =
+      o.sub || (stagedHere || phase === "staging" ? ubStageSub(phase) : "");
+  }
+  /* 「立即重启并更新」只在已就绪那一档出现（其余相位不给人点空按钮的机会） */
+  if (actsEl) actsEl.hidden = !stagedHere;
+  const applyBtn = $("#ubApply");
+  if (applyBtn && stagedHere) {
+    const applyTip = I18n.t(
+      "更新已就绪：点「立即重启并更新」现在就换上；点「稍后」则退出应用时自动完成",
+    );
+    applyBtn.title = applyTip;
+    applyBtn.setAttribute("aria-label", I18n.t("立即重启并更新"));
+  }
+  /* ✕（稍后）的悬停说明也跟相位走：预装两档说的是「退出应用时自动完成」 */
+  const closeBtn = $("#ubClose");
+  if (closeBtn) {
+    const laterTip =
+      stagedHere || phase === "staging"
+        ? I18n.t("稍后：这项更新会在退出应用时自动完成")
+        : I18n.t("稍后安装（退出应用时会自动安装）");
+    closeBtn.title = laterTip;
+    closeBtn.setAttribute("aria-label", laterTip);
+  }
 }
 
-/** 「稍后」：取消这一次自动安装（下载继续，已下好的包留到退出应用时装上） */
+/**
+ * 已就绪那一档的唯一动作：**立即重启并更新**（走主进程 update:restartToApply →
+ * 交换器在退出瞬间换上新版本）。三种收场都如实说，绝不假装：
+ *   · 起来了 → 应用随即退出（窗口消失，新版本由 helper 带 --updated 拉起）；
+ *   · 这台机器做不了退出瞬间交换 → 主进程已回落就地覆盖安装，这里按向导 / 静默档说今天那套话；
+ *   · 没起来 → 应用不退出，把原因交回去（可以再点一次，也可以直接退出应用时完成）。
+ */
+async function ubRestartNow() {
+  const apply = $("#ubApply");
+  if (apply && apply.disabled) return;
+  if (apply) apply.disabled = true;
+  try {
+    if (!window.api || typeof window.api.updateRestartToApply !== "function") {
+      throw new Error("no bridge");
+    }
+    const r = await window.api.updateRestartToApply();
+    if (r && r.unsupported) {
+      /* 回落旧路径：文案沿用今天那套（向导档 / 静默档），不许混着说 */
+      toast(ubInstallSub(), "ok");
+      return;
+    }
+    if (!r || r.ok === false) {
+      const err = (r && r.error) || "";
+      const why =
+        err === "staging"
+          ? I18n.t("还在后台准备更新，稍等片刻再试")
+          : err === "not_staged"
+            ? I18n.t("这次没有可应用的更新（预装的那份已经不在了）")
+            : err || I18n.t("未知错误");
+      toast(
+        I18n.t("还没能重启更新：") +
+          why +
+          I18n.t("；可以再点一次，也可以等退出应用时自动完成"),
+        "err",
+      );
+      return;
+    }
+    /* 正常：主进程已经拉起交换器并 app.quit()，界面马上消失，这里只把按钮状态说清 */
+    if (apply) apply.textContent = I18n.t("正在重启…");
+  } catch (e) {
+    toast(
+      I18n.t("还没能重启更新：") +
+        ((e && e.message) || String(e)) +
+        I18n.t("；可以再点一次，也可以等退出应用时自动完成"),
+      "err",
+    );
+  } finally {
+    if (apply) apply.disabled = false;
+  }
+}
+
+/** 「稍后」：取消这一次自动安装（下载继续，已下好的包 / 已铺好的旁路留到退出应用时完成） */
 function bindUpdateBanner() {
+  const applyBtn = $("#ubApply");
+  if (applyBtn && !applyBtn.__ubBound) {
+    applyBtn.__ubBound = true;
+    applyBtn.onclick = () => {
+      ubRestartNow();
+    };
+  }
   const btn = $("#ubClose");
   if (!btn || btn.__ubBound || !window.api) return;
   if (typeof window.api.updateCancelAutoInstall !== "function") return;
   btn.__ubBound = true;
   btn.onclick = async () => {
     _ubDismissed = true;
+    /* 点「稍后」那一刻的相位决定说法：预装两档明说「退出应用时自动完成」，
+       回落旧路径（就地安装）沿用今天这句「退出应用时会自动安装」 */
+    const wasStaged = _ubPhase === "staged";
+    const wasStaging = _ubPhase === "staging";
     try {
       await window.api.updateCancelAutoInstall();
     } catch (_) {}
     paintUpdateBanner({
       phase: "later",
-      sub: I18n.t("退出应用时会自动安装这次更新"),
+      sub: wasStaged
+        ? I18n.t("稍后：退出应用时自动完成，下次启动就是新版本")
+        : wasStaging
+          ? I18n.t("正在后台准备：装好会提示你重启，退出应用时也会自动完成")
+          : I18n.t("退出应用时会自动安装这次更新"),
     });
-    toast(I18n.t("已稍后：退出应用时会自动安装这次更新"), "ok");
+    toast(
+      wasStaged
+        ? I18n.t("已稍后：退出应用时会自动完成这次更新")
+        : wasStaging
+          ? I18n.t("已稍后：退出应用时也会自动完成这次更新")
+          : I18n.t("已稍后：退出应用时会自动安装这次更新"),
+      "ok",
+    );
     _ubHideTimer = setTimeout(() => paintUpdateBanner({ hide: true }), 4000);
   };
 }
@@ -592,6 +759,13 @@ async function runUpdateAction() {
     );
     return;
   }
+  /* 第三态（已就绪待重启）：这一档该做的事是「现在就换掉」，不是再下一遍 / 再装一遍 ——
+     走 update:restartToApply（交换器在退出瞬间两次 rename），不再打 confirmAndStart
+     （那条路在这一档只会回一句 staged，白点一次） */
+  if (_updateState.staged) {
+    await ubRestartNow();
+    return;
+  }
   try {
     const r = await window.api.updateConfirmAndStart();
     noteInstallWizard(r);
@@ -622,6 +796,20 @@ async function runUpdateAction() {
       _updateState.available = true;
       paintAuthorUpdate();
       toast(I18n.t("开始下载更新（差分包）…"), "ok");
+    } else if (r && (r.staged || r.staging)) {
+      /* 旁路预装两档回执（staged = 已就绪待重启 / staging = 后台准备中）：
+         不自动安装、不自动退出，把对应相位摆出来；这两档一个字都不提安装向导 */
+      _ubDismissed = false;
+      const v = (r && r.version) || (_updateInfo && _updateInfo.version) || "";
+      paintUpdateBtn({
+        available: true,
+        readyToRestart: true,
+        staged: !!r.staged,
+        staging: !r.staged,
+        version: v,
+        downloading: false,
+      });
+      paintUpdateBanner({ phase: r.staged ? "staged" : "staging", version: v });
     } else if (r && r.readyToRestart) {
       paintUpdateBtn({
         available: true,
@@ -704,10 +892,13 @@ function bindUpdateEvents(btn) {
           });
         }
       } else if (channel === "update:downloaded") {
+        /* 下载完这一刻还没决定走哪条路（能预装就预装，否则 6 秒后就地安装）：
+           这句话只说事实，不预设「向导」也不预设「静默」—— 具体哪一档由随后的
+           update:staging / update:installing 说清（④ 两套文案严格分档，不混着说） */
         toast(
-          _installWizard
-            ? I18n.t("更新已下载完毕：马上会弹出安装向导，窗口里显示进度，装完自动重新打开（无需点击）")
-            : I18n.t("更新已下载完毕：正在后台静默安装，完成后会自动重新打开应用"),
+          I18n.t(
+            "更新已下载完毕：正在准备安装，就绪后会提示你重启（也可以等退出应用时自动完成）",
+          ),
           "ok",
         );
         paintUpdateBtn({
@@ -717,17 +908,23 @@ function bindUpdateEvents(btn) {
           downloading: false,
         });
       } else if (channel === "update:readyToRestart") {
-        /* 点了「稍后」：本次不装。向导档要明说「这次不弹向导，退出时后台装」，
-           静默档沿用旧文案（本来就没向导） */
+        /* 点了「稍后」的回执。三档各说各的：已就绪 / 正在后台准备（这两档没有向导），
+           以及回落旧路径（就地安装）时才用今天那套向导 / 静默文案 */
         toast(
-          _installWizard
-            ? I18n.t("已选择稍后：这次不弹出安装向导，退出应用时仍会后台安装并自动重新打开")
-            : I18n.t("已选择稍后；退出应用时将后台静默安装并自动重新打开"),
+          data && data.staged
+            ? I18n.t("已稍后：更新已就绪，退出应用时自动完成")
+            : data && data.staging
+              ? I18n.t("已稍后：正在后台准备更新，装好会提示你重启；退出应用时也会自动完成")
+              : _installWizard
+                ? I18n.t("已选择稍后：这次不弹出安装向导，退出应用时仍会后台安装并自动重新打开")
+                : I18n.t("已选择稍后；退出应用时将后台静默安装并自动重新打开"),
           "ok",
         );
         paintUpdateBtn({
           available: true,
           readyToRestart: true,
+          staged: !!(data && data.staged),
+          staging: !!(data && data.staging && !(data && data.staged)),
           version: (data && data.version) || (_updateInfo && _updateInfo.version),
           downloading: false,
         });
@@ -745,22 +942,28 @@ function bindUpdateEvents(btn) {
         _ubHideTimer = setTimeout(() => paintUpdateBanner({ hide: true }), 6000);
       } else if (channel === "update:status") {
         paintUpdateBtn(data);
-        /* 窗口重载 / 迟到订阅：按状态补一次进度条（已有相位就不打断它） */
-        if (!_ubPhase && !_ubDismissed && data) {
-          if (data.downloading) {
-            paintUpdateBanner({
-              phase: "download",
-              pct: 0,
-              version: data.version,
-              sub: I18n.t("正在下载更新包…（完成后自动安装并重启，无需操作）"),
-            });
-          } else if (data.installing) {
-            paintUpdateBanner({
-              phase: "install",
-              version: data.version,
-              sub: ubInstallSub(),
-            });
-          }
+        /* 进度条按状态跟着相位走（窗口重载 / 迟到订阅 / 旁路预装的两档靠这里摆位）：
+           已就绪 > 后台准备 > （还没有相位时）下载中 / 安装中。
+           用户点过「稍后」就不再把进度条摆回来，顶栏那颗按钮仍留在对应档位上。 */
+        if (_ubDismissed || !data) return;
+        const ver = data.stageVersion || data.version || "";
+        if (data.staged) {
+          paintUpdateBanner({ phase: "staged", version: ver });
+        } else if (data.staging) {
+          paintUpdateBanner({ phase: "staging", version: ver });
+        } else if (!_ubPhase && data.downloading) {
+          paintUpdateBanner({
+            phase: "download",
+            pct: 0,
+            version: data.version,
+            sub: I18n.t("正在下载更新包…（完成后自动安装并重启，无需操作）"),
+          });
+        } else if (!_ubPhase && data.installing) {
+          paintUpdateBanner({
+            phase: "install",
+            version: data.version,
+            sub: ubInstallSub(),
+          });
         }
       }
     });
@@ -769,15 +972,21 @@ function bindUpdateEvents(btn) {
     .updateStatus()
     .then((st) => {
       paintUpdateBtn(st);
-      /* 窗口重载时更新可能已在跑：按状态把进度条摆回来 */
-      if (st && st.downloading) {
+      if (!st) return;
+      /* 窗口重载时更新可能已在跑 / 已预装好：按状态把进度条摆回正确档位 */
+      const ver = st.stageVersion || st.version || "";
+      if (st.staged) {
+        paintUpdateBanner({ phase: "staged", version: ver });
+      } else if (st.staging) {
+        paintUpdateBanner({ phase: "staging", version: ver });
+      } else if (st.downloading) {
         paintUpdateBanner({
           phase: "download",
           pct: 0,
           version: st.version,
           sub: I18n.t("正在下载更新包…（完成后自动安装并重启，无需操作）"),
         });
-      } else if (st && st.installing) {
+      } else if (st.installing) {
         paintUpdateBanner({
           phase: "install",
           version: st.version,
@@ -1688,11 +1897,14 @@ async function init() {
         if (el && window.MTGrowInput && MTGrowInput.refresh) MTGrowInput.refresh(el);
       } catch (_) {}
     };
-    const doSend = () => {
+    /* 真正干活的那一发（async：忙时要等用户在裁决卡上点一下）。
+       opts.steer = 这一发按「直接插话」走，跳过裁决卡（Alt+Enter / Alt+Ctrl+Enter）。 */
+    const doSendNow = async (opts) => {
       const st = agentSessionState();
       const live = liveNodeForSession(st);
       const raw = inp ? String(inp.value || "") : "";
       const t = raw.trim();
+      const forceSteer = !!(opts && opts.steer);
       /* 输入框留空也能发出去的唯一情形：这一条会话里已经有写好字的批注（用户口径 ·
          本次需求「当存在批注时，输入框可以为空并发送」）。批注只在发送那一瞬由
          app-annotate.js 的 takeForSend 拼进消息，所以这里只问「有没有待发的批注」，
@@ -1735,19 +1947,62 @@ async function init() {
           }
           return;
         }
+        /* 忙时发送不再静默入队，先问一句「排队 or 即时插话」
+           （卡片与裁决都在 renderer/app-assist.js 的 agentBusySendAsk / agentBusySendApply）。
+           两条免询问的快捷路径（其余一律弹卡）：
+             ① Alt+Enter（发送语义下）/ Alt+Ctrl+Enter → 直接插话；
+             ② 正文以 /btw 开头（大小写不敏感，含中文顿号「、btw」）→ 剥掉前缀后直接插话。
+           这样 /btw 那一段也不会被斜杠命令 / 技能解析吃掉（剥前缀在 agentSessionSend 里同源）。 */
+        const btw = busySendBtw(raw);
+        const body = btw.hit ? btw.body : raw;
+        /* "/btw" 后面一个字都没有、又没有待发批注 = 这一发没有内容：什么都不做，正文留在框里 */
+        if (!String(body || "").trim() && !annoPending) return;
+        let decision = "steer";
+        if (!forceSteer && !btw.hit) {
+          try {
+            decision = await agentBusySendAsk(st, body);
+          } catch (_) {
+            /* 卡片这一侧出任何岔子都不许把这句话卡在半路：退回旧口径（排队，本轮跑完再发） */
+            decision = "queue";
+          }
+        }
+        /* null = 用户取消：什么都不发，输入框正文与草稿原样留着（卡片从不碰 value） */
+        if (!decision) return;
         if (inp) inp.value = "";
         st._draft = "";
         growTick(inp);
-        agentSessionSend(raw);
+        await agentBusySendApply(st, body, decision, { sessionId: st.id });
         paintAgentSendState();
         return;
       }
       if (!t && !annoPending) return;
+      /* 空闲这一发就是普通一轮消息（Alt+Enter / /btw 在这里没有「本轮」可插，行为与
+         直接按发送一致；/btw 前缀由 agentSessionSend 在忙判据之前剥掉）。
+         唯一的例外照上面那条来："/btw" 后面一个字都没有、又没有批注 = 这一发没有内容，
+         什么都不做，正文留在框里。 */
+      const idleBtw = busySendBtw(raw);
+      if (idleBtw.hit && !idleBtw.body.trim() && !annoPending) return;
       /* 与上面那条分支同口径（inp 可能取不到：视图搬家 / 首帧之前） */
       if (inp) inp.value = "";
       st._draft = "";
       growTick(inp);
       agentSessionSend(raw);
+    };
+    /* 对外的 doSend：三个入口（Enter / Ctrl+Enter / ↑ #agentSend）共用这一只，行为不可能分叉。
+       内部是 async 的（忙时要等裁决卡），所以这里必须自己兜住异常 —— 否则一次卡片事故就是
+       一个没人接的 rejected Promise，输入区看着像卡死。 */
+    const doSend = (opts) => {
+      let p;
+      try {
+        p = doSendNow(opts);
+      } catch (e) {
+        p = Promise.reject(e);
+      }
+      return Promise.resolve(p).catch((e) => {
+        try {
+          toast(I18n.t("发送失败：") + String((e && e.message) || e), "err");
+        } catch (_) {}
+      });
     };
     if (inp) {
       inp.addEventListener("input", () => {
@@ -1764,14 +2019,17 @@ async function init() {
         if (slashKey(inp, ev)) return;
         const sendOnEnter =
           !S.config.dsh || S.config.dsh.chatEnter !== "newline";
+        /* Alt+Enter（发送语义下）/ Alt+Ctrl+Enter（回车换行语义下）= 跳过「排队 or 插话」
+           那张裁决卡，直接插话。这一发与 Enter 走的是同一个 doSend，只多带一个 steer 位。 */
+        const steer = !!ev.altKey;
         if (sendOnEnter) {
           if (ev.key === "Enter" && !ev.shiftKey) {
             ev.preventDefault();
-            doSend();
+            doSend({ steer });
           }
         } else if (ev.key === "Enter" && ev.ctrlKey) {
           ev.preventDefault();
-          doSend();
+          doSend({ steer });
         }
       });
     }

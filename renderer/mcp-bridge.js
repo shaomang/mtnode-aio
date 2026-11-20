@@ -85,28 +85,92 @@
 
   /* ── 画布目标解析 ─────────────────────────────────────────────────────── */
 
-  /** canvas 参数：空 = 当前画布（返回 null，交给既有口径）；否则解析成画布对象。
-   *  支持 id、精确名称、唯一前缀（与 mtnode_app 的 workflow 参数同一宽容度）。 */
-  function resolveWf(ref) {
-    const want = String(ref || "").trim();
-    if (!want || want === "current") return null;
-    const cur = typeof currentVisibleWf === "function" ? currentVisibleWf() : null;
-    if (cur && (String(cur.id) === want || String(cur.name || "") === want)) return cur;
-    const all = (S.wfs || []).concat(cur ? [cur] : []);
+  /** 「当前 / 前台画布」的显式写法：MCP 侧路由参数 canvas 用它们就是「不用解析」。
+   *  以前只认空串与 "current"，外部客户端想明说「就是前台那张」只能省略 —— 省略与
+   *  「名字恰好是空」分不开，也不好写进生成的调用参数里。 */
+  const FOCUS_ALIASES = { current: 1, focus: 1, active: 1, foreground: 1, "当前": 1, "前台": 1 };
+
+  /** 全部画布（id / 名字 / 节点数）：以主进程 workflow:list 为准。
+   *  为什么必须问主进程：以前只看 S.wfs —— 而 S.wfs 在渲染层根本不存在（全仓只有这里引用它），
+   *  于是清单恒等于「前台那一张」，外部客户端指第二张画布一律「找不到画布」（真机实测缺点）。
+   *  wfList 失败才回退到内存里已知的那张（宁可少列，也不谎称有）。 */
+  async function canvasIndex() {
+    const cur = typeof currentVisibleWf === "function" ? currentVisibleWf() : S.wf;
+    let list = [];
+    try {
+      list = (await window.api.wfList()) || [];
+    } catch (_) {
+      list = [];
+    }
+    const out = [];
     const seen = new Set();
-    const list = all.filter((w) => w && !seen.has(w.id) && seen.add(w.id));
-    let hit = list.find((w) => String(w.id) === want);
-    if (!hit) hit = list.find((w) => String(w.name || "") === want);
+    for (const w of list.concat(cur ? [cur] : [])) {
+      if (!w || !w.id || seen.has(w.id)) continue;
+      seen.add(w.id);
+      out.push(w);
+    }
+    return out;
+  }
+
+  /** 画布对象：内存里的活对象优先（前台 / 当前 / 袋中），否则按 id 从磁盘载入并入袋。
+   *  真源是 app.js 的 wfOfCanvasIdForRun（会话「所属画布」同一个入口）—— 换画布这件事
+   *  只有一份实现：直接拿 workflow:list 的元信息充数会把「节点数」当成节点数组用。
+   *  @param {object} hit workflow:list 里的一条（id / name / 节点数） */
+  async function wfObjectById(hit) {
+    const key = String((hit && hit.id) || "").trim();
+    if (!key) return null;
+    const cur = typeof currentVisibleWf === "function" ? currentVisibleWf() : S.wf;
+    if (cur && String(cur.id) === key) return cur;
+    if (S.wf && String(S.wf.id) === key) return S.wf;
+    const bag = S.wfBag && S.wfBag[key];
+    if (bag && String(bag.id) === key) return bag;
+    if (typeof wfOfCanvasIdForRun === "function") return await wfOfCanvasIdForRun(key);
+    /* 桥被单独加载（冒烟 / 测试桩）时没有载入器：退回清单里那一条本身，不硬造节点数组 */
+    return hit || null;
+  }
+
+  /** canvas 参数：空 / current / focus = 当前画布（返回 null，交给既有口径）；否则解析成
+   *  **画布对象**（带 nodes / wires）。支持 id、精确名称、唯一名称前缀。 */
+  async function resolveWf(ref) {
+    const raw = String(ref || "").trim();
+    if (!raw || FOCUS_ALIASES[raw.toLowerCase()]) return null;
+    const cur = typeof currentVisibleWf === "function" ? currentVisibleWf() : S.wf;
+    if (cur && (String(cur.id) === raw || String(cur.name || "") === raw)) return cur;
+    const list = await canvasIndex();
+    const brief = (w) => String(w.name || "") + "（" + String(w.id) + "）";
+    let hit = list.find((w) => String(w.id) === raw);
     if (!hit) {
-      const pre = list.filter((w) => String(w.name || "").indexOf(want) === 0);
+      const byName = list.filter((w) => String(w.name || "") === raw);
+      if (byName.length === 1) hit = byName[0];
+      else if (byName.length > 1)
+        throw new Error(
+          "画布名有歧义（" + raw + "）：" + byName.map(brief).join("、") +
+            "；请改用画布 id（资源 mtnode://canvases 或 mtnode_app 的 list_workflows 有清单）。",
+        );
+    }
+    if (!hit) {
+      const pre = list.filter((w) => String(w.name || "").indexOf(raw) === 0);
       if (pre.length === 1) hit = pre[0];
       else if (pre.length > 1)
         throw new Error(
-          "画布名有歧义（" + want + "）：" + pre.map((w) => w.name).join("、") + "；请用画布 id。",
+          "画布名前缀有歧义（" + raw + "）：" + pre.map(brief).join("、") +
+            "；请改用完整名称或画布 id。",
         );
     }
-    if (!hit) throw new Error("找不到画布：" + want + "（用 mtnode_app 的 list_workflows 或资源 mtnode://canvases 看清单）");
-    return hit;
+    if (!hit) {
+      const names = list.slice(0, 12).map(brief).join("、");
+      throw new Error(
+        "找不到画布：" + raw + "（本机现有 " + list.length + " 张：" + (names || "无") +
+          (list.length > 12 ? "…" : "") +
+          "；省略 canvas 或传 current 表示当前打开的那张；完整清单见资源 mtnode://canvases）",
+      );
+    }
+    const wf = await wfObjectById(hit);
+    if (!wf)
+      throw new Error(
+        "画布读不出来：" + brief(hit) + "（主进程没能载入这张图的节点数据；先把它切到前台或确认文件没被删）",
+      );
+    return wf;
   }
 
   /** 画布内容版本：读一次拿 contentHash（与自家 Agent 的乐观并发同一真源）。 */
@@ -119,14 +183,14 @@
 
   /* ── 各 op 的落地 ─────────────────────────────────────────────────────── */
 
-  function mcpHandleCanvas(frame, runKey) {
+  async function mcpHandleCanvas(frame, runKey) {
     const p = Object.assign({}, frame.params || {});
     const ref = String(p.canvas || "").trim();
     delete p.canvas;
     const baseHash = String(p.baseHash || "").trim();
     delete p.baseHash;
     const op = String(frame.op || "get");
-    const target = ref ? resolveWf(ref) : null;
+    const target = ref ? await resolveWf(ref) : null;
     const runKeyOfFrame = runKey;
     const run = () =>
       handleCanvasEvent(
@@ -156,11 +220,11 @@
     })();
   }
 
-  function mcpHandleDb(frame, runKey) {
+  async function mcpHandleDb(frame, runKey) {
     const p = Object.assign({}, frame.params || {});
     const ref = String(p.canvas || "").trim();
     delete p.canvas;
-    const target = ref ? resolveWf(ref) : null;
+    const target = ref ? await resolveWf(ref) : null;
     const wf = target || (typeof currentVisibleWf === "function" ? currentVisibleWf() : S.wf);
     const replyToMcp = (result, error) => reply(frame.id, result, error);
     return runAgainstWf(wf, () =>
@@ -178,13 +242,13 @@
     );
   }
 
-  function mcpHandleManifest(frame) {
+  async function mcpHandleManifest(frame) {
     /* 项目 manifest（mtnode_manifest）：与 db 同一条路 —— root 显式优先，否则取目标画布
        的工作目录（铁律：主进程不猜路径，渲染层定好后传进去）。 */
     const p = Object.assign({}, frame.params || {});
     const ref = String(p.canvas || "").trim();
     delete p.canvas;
-    const target = ref ? resolveWf(ref) : null;
+    const target = ref ? await resolveWf(ref) : null;
     const wf = target || (typeof currentVisibleWf === "function" ? currentVisibleWf() : S.wf);
     if (typeof handleManifestToolEvent !== "function") {
       const err = "manifest 执行桥未加载（renderer/app-manifest.js）";
@@ -195,11 +259,11 @@
     return handleManifestToolEvent({ id: frame.id, action: p.action, params: p }, null, wf, replyToMcp);
   }
 
-  function mcpHandleFacts(frame) {
+  async function mcpHandleFacts(frame) {
     const p = Object.assign({}, frame.params || {});
     const ref = String(p.canvas || "").trim();
     delete p.canvas;
-    const target = ref ? resolveWf(ref) : null;
+    const target = ref ? await resolveWf(ref) : null;
     const wf = target || (typeof currentVisibleWf === "function" ? currentVisibleWf() : S.wf);
     const replyToMcp = (result, error) => reply(frame.id, result, error);
     return handleAiFactsToolEvent({ id: frame.id, params: p, action: p.action }, wf, replyToMcp);
@@ -225,13 +289,13 @@
     return window.MTNodeShot.handleToolEvent({ id: frame.id, params: frame.params || {} }, replyToMcp);
   }
 
-  function mcpHandleLt(frame) {
+  async function mcpHandleLt(frame) {
     /* 只读：把长任务的定义与运行态（若在跑）交给客户端 —— 走既有的 LT 只读入口，
        不做任何状态写入（写入只在长任务 Agent 环节里有归属，见 LT_NOTE）。 */
     const p = Object.assign({}, frame.params || {});
     const ref = String(p.canvas || "").trim();
     delete p.canvas;
-    const target = ref ? resolveWf(ref) : null;
+    const target = ref ? await resolveWf(ref) : null;
     const wf = target || (typeof currentVisibleWf === "function" ? currentVisibleWf() : S.wf);
     if (!wf || !window.LT || typeof window.LT.stateRead !== "function") {
       reply(frame.id, { ok: false, error: LT_NOTE }, "lt_state 不可用");

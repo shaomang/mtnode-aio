@@ -5808,10 +5808,18 @@ textarea.asset-form-input {
   cursor: pointer;
 }
 
-/* 频谱图 + 播放头 + 事件叠加层：三者共用这一块坐标系，拍点与播放头天然对齐 */
+/* 频谱图 + 播放头 + 事件叠加层：三者共用这一块坐标系，拍点与播放头天然对齐。
+   **盒子高度先按图的比例预留**：后端一律出 1024×384（8:3）的热力图，这里用 aspect-ratio
+   把这块的高度在图片解码完成之前就算出来 —— 否则 <img> 未加载时高度是 0，图一到手节点
+   就从 0 拔高（还会连带触发一次 ResizeObserver 重绘），视觉上就是「撑开又收回」。
+   上限 max-height 与下方 .n-aa-spec img 的 max-height 同值（150px）：宽到比例高度超过 150 时
+   两处一起截住，**盒子高度恒等于图片实际高度**，叠加 canvas（inset:0）不会比热力图高一截，
+   点频谱定位（plot.getBoundingClientRect()）也仍然落在图上。 */
 .n-aa-plot {
   position: relative;
-  line-height: 0
+  line-height: 0;
+  aspect-ratio: 1024 / 384;
+  max-height: 150px
 }
 
 .n-aa-spec img {

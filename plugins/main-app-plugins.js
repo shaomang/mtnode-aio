@@ -1496,7 +1496,7 @@ function registerAppPluginsIpc(opts) {
      与 appHost 同一份中继（主进程 app-host-bridge.js → 主窗口渲染层执行）：
      插件没有 app.json，所以没有能力位声明这一道；目标画布 = **用户当前打开的那张**
      （插件窗口是「在画布旁边干活」的，不像应用那样有自己的绑定画布）。
-     首次调用同样弹一次授权窗，记录在 <数据目录>/apps-host.json 的 grants["plugin:<id>"]。 */
+     能力按 app-host-bridge.js 的 NS_METHODS 白名单放行（授权弹窗已取消，声明即放行）。 */
   ipcMain.handle("appPlugins:hostBridge", async (e, arg) => {
     const id = pluginIdOfSender(e);
     if (!id) return { ok: false, code: "not_plugin", error: "不是插件窗口" };

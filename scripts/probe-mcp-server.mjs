@@ -22,6 +22,9 @@ const require = createRequire(import.meta.url)
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(HERE, '..')
 const { createMcpHost } = require(path.join(ROOT, 'mcp-server.js'))
+/* tools/list 的真源是生成契约（mcp-tools.json）：期望值按它算，不写死个数 ——
+   早先写死 13 的断言从 v1.5.5 之后就一直过期（契约后来 16，现在 17）。 */
+const EXPECT_TOOLS = (JSON.parse(fs.readFileSync(path.join(ROOT, 'mcp-tools.json'), 'utf8')).tools || []).map((t) => t.name)
 
 const keep = process.argv.includes('--keep')
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mtnode-mcp-probe-'))
@@ -152,7 +155,9 @@ async function main() {
 
   const tools = await rpc(url, token, 'tools/list', {}, sid)
   const names = ((tools.body.result && tools.body.result.tools) || []).map((t) => t.name)
-  step('tools/list', names.length === 13, names.join(', '))
+  const missingTools = EXPECT_TOOLS.filter((n) => !names.includes(n))
+  step('tools/list', names.length === EXPECT_TOOLS.length && !missingTools.length,
+    names.length + ' 个（契约 ' + EXPECT_TOOLS.length + (missingTools.length ? '，缺 ' + missingTools.join(',') : '') + '）：' + names.join(', '))
 
   const res = await rpc(url, token, 'resources/list', {}, sid)
   const r = res.body.result || {}

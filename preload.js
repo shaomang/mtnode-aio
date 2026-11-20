@@ -127,6 +127,11 @@ contextBridge.exposeInMainWorld('api', {
   updateConfirmAndStart: () => ipcRenderer.invoke('update:confirmAndStart'),
   /* 进度条「稍后」：取消这一次自动安装（已下载的包留到退出应用时装上） */
   updateCancelAutoInstall: () => ipcRenderer.invoke('update:cancelAutoInstall'),
+  /* 进度条上的「立即重启并更新」（旁路已预装好的那一档）：拉起交换器 → 退出应用，
+     新版本由 helper 带 --updated 拉起来。主进程三种收场都会如实回报：
+     { ok:true, quitting:true } = 正在退出 / { unsupported:true, … } = 这台机器只能就地安装
+     （主进程已回落 quitAndInstall）/ { ok:false, error } = 没起来，应用不退出 */
+  updateRestartToApply: () => ipcRenderer.invoke('update:restartToApply'),
   /* 设置最底部「手动更新」：同版本号也照装一次（极小更新 / 测试用；安装链与正常更新一致） */
   updateReinstallSame: () => ipcRenderer.invoke('update:reinstallSame'),
   /* 商店包「打开 Microsoft Store」：无参命令，深链与协议白名单都在主进程（updater.js 的 openStorePage） */
@@ -258,6 +263,11 @@ contextBridge.exposeInMainWorld('api', {
      同名文件 = 失败（不覆盖），recursive 一次补齐整条路径 */
   fileMkdir: (p) => ipcRenderer.invoke('file:mkdir', p),
   fileStat: (p) => ipcRenderer.invoke('file:stat', p),
+  /* 媒体元信息（画布读取的媒体清册用）：传一批绝对路径，回每个的
+     { path, exists, bytes, mtime, type, width, height, durationSec, fps, … }。
+     只读、不解码内容（图像读文件头，音视频走 ffprobe，主进程按 mtime+size 缓存）。
+     与 MCP 的 mtnode_media probe 同一份实现（main.js 的 mediaMetaOf）。 */
+  mediaMeta: (paths) => ipcRenderer.invoke('media:meta', paths || []),
   /* 音频字节（波形预览器取峰值用，见 renderer/app-audioview.js）：只读，超上限只回体积 */
   fileReadAudio: (p, maxBytes) => ipcRenderer.invoke('file:readAudio', p, maxBytes),
   /* 音频字节（转写用，见 renderer/app-speech.js）：与 fileReadAudio 同源，但上限更宽
@@ -1806,6 +1816,14 @@ contextBridge.exposeInMainWorld('api', {
   appsAppDirPick: (id, kind, to) =>
     ipcRenderer.invoke('apps:appDirPick', { id, kind: kind || '', to: to || '' }),
   appsDataDirPick: (id, kind) => ipcRenderer.invoke('apps:dataDirPick', { id, kind: kind || '' }),
+  /* 改**应用 id**（「应用设置」窗里那一行「应用 id · 修改」）：id 就是应用文件夹名，
+     所以这一步在主进程里一次改到位 —— 目录改名 + app.json 的 id + 数据根（含 data.json）+
+     apps-models.json 的键 + 按 id 的缓存，任何一步失败都回滚，见 apps-store.js 的 changeAppId。
+     回 { ok, from, to, dir, root, kind, dataDir, canvasId, closed, leftover, movedData, warnings[] }；
+     失败按 code 分支：bad_id / exists / running / move_failed / manifest_failed / data_failed。
+     **画布与会话归属**不在主进程：调用方拿到 ok 后自己走 app-app-flow.js 的 appIdChangeFollow。 */
+  appsAppIdChange: (from, to, opts) =>
+    ipcRenderer.invoke('apps:appIdChange', Object.assign({}, opts || {}, { id: from, to: to })),
   /* 安装进度：{ id, phase:'start'|'download'|'extract'|'conflict'|'done'|'error', percent, got?, total?, version?, error? } */
   onAppsProgress: (cb) => {
     const handler = (_e, data) => {

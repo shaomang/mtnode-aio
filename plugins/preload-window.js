@@ -38,7 +38,7 @@ const api = {
   },
   storeRequest: (opts) => ipcRenderer.invoke("store:request", opts),
   /* ── 画布 / agent / 文件 / 工具 / 联网（与 appHost 同一份中继）─────────────────
-     目标画布 = **用户当前打开的那张**（插件没有绑定画布）；首次调用弹一次授权窗。
+     目标画布 = **用户当前打开的那张**（插件没有绑定画布）；能力按宿主白名单放行，不再弹授权窗。
      通用错误码：denied / not_ready / timeout / no_canvas / not_foreground。 */
   canvas: {
     info: () => hostCall("canvas", "info"),

@@ -4680,3 +4680,17 @@ body.ef-skin.theme-light .iso-row.dir .nm {
   color: #5b6577;
 }
 
+/* ── 源：css/fim.css ─────────────────────────────────────────────── */
+body.ef-skin.theme-light .statusbar .sb-fim:hover {
+  color: var(--cyan2, #0a7489);
+  background: rgba(10, 116, 137, 0.08);
+}
+body.ef-skin.theme-light .statusbar .sb-fim.is-open, body.ef-skin.theme-light .statusbar .sb-fim[aria-pressed="true"] {
+  color: var(--cyan2, #0a7489);
+  border-color: color-mix(in srgb, var(--cyan2, #0a7489) 45%, transparent);
+  background: rgba(10, 116, 137, 0.1);
+}
+body.ef-skin.theme-light .fim-pop {
+  box-shadow: 0 10px 30px rgba(29, 42, 68, 0.18);
+}
+

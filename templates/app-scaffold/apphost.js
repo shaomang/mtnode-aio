@@ -674,7 +674,7 @@
    * 口径（与宿主实现同源：apps-store.js 的 apps:hostBridge → app-host-bridge.js）：
    *   ① 目标画布 = **这个应用对应的那张**（默认与应用同 id 的那张），不是用户此刻打开的那张；
    *      canvas.pick() 让用户重选（记住）。目标画布没打开时宿主后台加载，不动用户视图。
-   *   ② 首次调用宿主弹一次授权窗；app.json 的 capabilities.canvasHost / agentHost 要勾上，
+   *   ② app.json 的 capabilities.canvasHost / agentHost 要勾上（勾上即永久允许，没有第二次确认），
    *      没勾回 code:"not_declared"；用户拒绝回 "denied"；主窗口关着回 "not_ready"；
    *      超时回 "timeout"；应用还没有画布回 "no_canvas"。
    *   ③ select / view / setView 只对**用户眼前那张**画布有效：后台画布回 "not_foreground"

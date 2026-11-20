@@ -201,7 +201,14 @@ function num(v) {
   return isFinite(n) ? n : 0;
 }
 
-async function probeMedia(file) {
+/**
+ * 探媒体硬指标。
+ * @param {string} file
+ * @param {{light?:boolean}} [opts] light:true = 只要元信息（跳过 blackdetect —— 那一步要整段
+ *   解码，画布读取 / MCP 的 mtnode_media probe 每读一次都付不起）。
+ */
+async function probeMedia(file, opts) {
+  const light = !!(opts && opts.light);
   const f = String(file || "").trim();
   if (!f) return { ok: false, error: "缺少媒体路径" };
   if (!exists(f)) return { ok: false, error: "文件不存在：" + f };
@@ -242,9 +249,10 @@ async function probeMedia(file) {
   let fps = 0;
   const mm = /^(\d+)\/(\d+)$/.exec(fpsRaw);
   if (mm && Number(mm[2])) fps = Number(mm[1]) / Number(mm[2]);
-  /* 黑帧段（technical 硬指标之一）：0.08 秒以上、像素阈值 10% 算黑 */
+  /* 黑帧段（technical 硬指标之一）：0.08 秒以上、像素阈值 10% 算黑。
+     light 档跳过（不回 0 冒充「没有黑帧」—— 用 blackChecked 说清这一趟没测）。 */
   let blackSpans = 0;
-  if (v) {
+  if (v && !light) {
     const b = await run(
       ff.ffmpeg,
       ["-hide_banner", "-nostats", "-i", f, "-vf", "blackdetect=d=0.08:pix_th=0.10", "-an", "-f", "null", "-"],
@@ -265,6 +273,7 @@ async function probeMedia(file) {
     hasVideo: !!v,
     hasAudio: !!a,
     blackSpans,
+    ...(light ? { blackChecked: false } : {}),
   };
 }
 

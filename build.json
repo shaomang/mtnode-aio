@@ -256,6 +256,13 @@
        顶层 require 它，漏进白名单 = 打包后 Cannot find module './update-segmented.js'
        （自更新链整条失效，用户只能手动重装）。 */
     "update-segmented.js",
+    /* 退出瞬间交换器（旁路目录 → 正式目录）：updater.js 顶层 require 它，漏进白名单 =
+       打包后 Cannot find module './update-swap.js'（应用起不来）。
+       配套的 helper 正文 update-swap-helper.ps1 也必须带上 —— 主进程退出前把它复制到
+       %LOCALAPPDATA%\MTNodeAIO-update\ 再用 `cmd /c powershell -File` 执行；缺了它前置闸判
+       helper_source_missing，更新只能退回就地覆盖安装（不再有「重启才生效」那一档）。 */
+    "update-swap.js",
+    "update-swap-helper.ps1",
     "crash-report.js",
     "!pet-pack/**",
     "!smoke.js",

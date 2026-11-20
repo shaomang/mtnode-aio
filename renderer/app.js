@@ -19698,6 +19698,14 @@ function positionSlashMenu(menu, pos) {
 
 async function slashTick(ta, scope, onChange) {
   const gen = ++_slashTickGen;
+  /* 「/btw …」是忙时发送的免询问前缀（直接插话，见 app-assist.js 的 busySendBtw），
+     不是斜杠命令 / 技能名：不给它开菜单 —— 否则菜单会一直挂在输入框上方，而且
+     slashKey 会把 Enter 全吃掉（用户会觉得 /btw 按了没反应）。gen 已经加过一拍，
+     在途的那次 tick 也就此作废，不会稍后把菜单又打开。 */
+  if (typeof busySendBtw === "function" && busySendBtw(ta && ta.value).hit) {
+    closeSlashMenu();
+    return;
+  }
   const tok = slashToken(ta);
   if (!tok) {
     closeSlashMenu();

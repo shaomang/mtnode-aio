@@ -14330,9 +14330,14 @@ function paintAgentSendState() {
   sendBtn.textContent = busy ? (canSend ? "↑" : "■") : "↑";
   sendBtn.classList.toggle("danger", stopMode);
   sendBtn.classList.toggle("queue-mode", busy && canSend);
+  /* 忙时的 tooltip（本次需求 · 顺带把两条免询问的快捷路径写在这里，用户唯一的可悬停入口）：
+     按发送不再静默入队，而是先问一句；Alt+Enter / 正文以 /btw 开头这两条直接插话、不问。
+     判位见 renderer/app-boot.js 的 #agentInput keydown 与 doSend。 */
   sendBtn.title = busy
     ? canSend
-      ? I18n.t("加入发送队列（不打断当前任务）")
+      ? I18n.t(
+          "运行中按发送会先问一句「排队 or 插话」；Alt+Enter 直接插话，正文以 /btw 开头也直接插话",
+        )
       : I18n.t("终止本会话当前运行（只停这一路）")
     : I18n.t("发送(Enter 发送,Shift+Enter 换行)");
   paintAgentInflightButtons(st, busy);
@@ -15703,6 +15708,303 @@ function agentMarkSteerInjected(st, data) {
   }
 }
 
+/* ══════════════ 忙时发送的裁决：排队，还是即时插话 ══════════════
+   用户口径：会话正在跑的时候按发送，过去是**静默入队**，而想插话必须先把字打进输入框、
+   再自己去点那枚 ⚡ 插话键 —— 等于要求用户先知道「有这枚键」。现在改成一次显式选择：
+   忙时发送先问一句「排队 or 即时插话」，另给两条免询问的快捷路径：
+     · Alt+Enter（回车换行语义下是 Alt+Ctrl+Enter）—— 判位在 renderer/app-boot.js 的
+       #agentInput keydown，doSend 带 {steer:true} 进来，跳过卡片直接插话；
+     · 正文以 /btw 开头 —— 前缀由本文件的 busySendBtw 认，doSend 剥掉后同样直接插话；
+       空闲时它只是一句普通消息（剥前缀在 agentSessionSend 的忙判据之前，见那里）。
+
+   ── 分工（改之前先读）─────────────────────────────────────────────
+   · agentBusySendAsk(st, body)  →  **只裁决**，Promise<'queue'|'steer'|null'>
+       'queue' = 排队（旧口径，本轮跑完再发）；'steer' = 塞进本轮下一步；
+       null = 用户取消（正文一个字都不动，仍在输入框里）。
+   · agentBusySendApply(st, body, decision) → 把裁决落成实际发送，**发送链只有这一处**：
+       排队交给 agentSessionSend（它忙时内部就是 agentEnqueueMessage），插话交给 agentSteerNow
+       （它自己会在「这一轮已经结束 / 引擎不支持」时回落成立即发送或排队，一字不丢）。
+   · doSend 的三个入口（Enter / Ctrl+Enter / ↑ 按钮）共用这一对，行为不可能分叉。
+
+   ── 不弹卡的四种情形（一律按旧口径排队，老运行时行为一字不变）──────────
+     ① st.ltBound（长任务绑定会话：那一轮由长任务驱动，插话没有意义）；
+     ② agentSteerCapable() 为假（老主进程 / preload 没有 dshSteer）；
+     ③ S._steerUnsupported（引擎已明确没有 session/steer，见 agentSteerNow）；
+     ④ 设置里记住了「直接排队 / 直接插话」（config.dsh.busySend，缺省 'ask' 才问）。
+
+   ── 卡片纪律 ───────────────────────────────────────────────────
+   · persistent 浮层（AGENTS.md）：没有蒙层，点外部 / 点输入框都不关，关闭只走窗内按钮 / Esc；
+   · 卡片开着期间这一轮自己跑完了 → **不特殊处理**：点插话时 agentSteerNow 自己会回落成
+     「立即发送」（那一句就在它开头），所以按钮下面只用一行灰字把这件事说清楚；
+   · 空框 + 待发批注也算「有话要说」（与发送栏同口径）：插话分支必须先 takeForSend 把批注
+     拼进正文，否则「空框 + 批注」插话会静默丢字（拼块顺序与 agentSessionSend 一致：批注在前）；
+   · 卡片从不碰输入框的 value —— 取消 / 回车之后正文都还在原处。 */
+
+/* 「/btw」= 免询问的插话前缀（用户口径：不想每次都被问一句，就直接说「顺便说一下」）。
+   认法：可选前导空白 + 一枚斜杠（/ 或全角 ／，以及中文输入法的行首顿号「、」—— 与
+   agentSessionSend 里那道「行首顿号视为斜杠命令前缀」同一口径）+ btw（大小写不敏感），
+   要求 btw 后面不是字母数字（`/btwfoo` 不算），随后可带一个分隔符（空白 / 冒号 / 逗号）。
+   返回 { hit, body }：hit = 走的是这条快捷路径；body = 剥掉前缀后的正文（没命中就是原文）。 */
+const BTW_PREFIX = /^[\s\u3000]*[/、／][\s\u3000]*btw(?![a-z0-9_])/i;
+function busySendBtw(text) {
+  const raw = String(text || "");
+  const m = BTW_PREFIX.exec(raw);
+  if (!m) return { hit: false, body: raw };
+  const body = raw.slice(m[0].length).replace(/^[\s\u3000:：,，、\-—]+/, "");
+  return { hit: true, body };
+}
+
+/* 卡片状态（同一刻只有一张）：open 期间 resolve 挂着 agentBusySendAsk 的 Promise */
+const busyAsk = { open: false, resolve: null, sel: 1, prevFocus: null, remember: false };
+
+/* 记住的档位（设置 → 智能能力 · 运行中发送行为）：缺省 'ask' = 每次都问 */
+function busySendAskMode() {
+  try {
+    const v = String((S.config && S.config.dsh && S.config.dsh.busySend) || "ask");
+    return v === "queue" || v === "steer" ? v : "ask";
+  } catch (_) {
+    return "ask";
+  }
+}
+
+/* 这一条会话为什么弹不出卡（返回空串 = 可以问）。四种情形见上面注释。 */
+function busySendAskWhyNoCard(st) {
+  if (!st) return "no-session";
+  if (st.ltBound) return "lt-bound";
+  if (!agentSteerCapable()) return "no-bridge";
+  if (S._steerUnsupported) return "unsupported";
+  return "";
+}
+
+function busyAskEl() {
+  return document.getElementById("agentAskSend");
+}
+
+/* 画 / 收卡片：内容全由 JS 现建（文案随语言变，index.html 里只留一只空容器）。 */
+function busyAskPaint(body, hasAnno) {
+  const el = busyAskEl();
+  if (!el) return null;
+  el.innerHTML = "";
+  const head = document.createElement("div");
+  head.className = "aas-head";
+  const title = document.createElement("span");
+  title.className = "aas-title";
+  title.textContent = I18n.t("这一轮还在跑 · 这条消息怎么发？");
+  head.appendChild(title);
+  const esc = document.createElement("span");
+  esc.className = "aas-esc";
+  esc.textContent = I18n.t("1 / 2 选择 · Enter 确定 · Esc 取消");
+  head.appendChild(esc);
+  el.appendChild(head);
+  /* 要发的内容预览：让用户在选之前就看清「插进去的 / 排队的」是哪一句话 */
+  const prev = document.createElement("div");
+  prev.className = "aas-prev";
+  prev.textContent =
+    String(body || "").trim() ||
+    (hasAnno ? I18n.t("输入框为空：这次发的是左侧那几条批注") : "");
+  prev.title = prev.textContent;
+  el.appendChild(prev);
+  const row = document.createElement("div");
+  row.className = "aas-row";
+  const mk = (val, key, label, tip, cls) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "aas-btn" + (cls ? " " + cls : "");
+    b.dataset.pick = val;
+    const k = document.createElement("b");
+    k.textContent = key;
+    const t = document.createElement("span");
+    t.textContent = label;
+    b.appendChild(k);
+    b.appendChild(t);
+    b.title = tip;
+    b.onclick = () => busyAskPick(val);
+    row.appendChild(b);
+    return b;
+  };
+  mk(
+    "queue",
+    "1",
+    I18n.t("加入发送队列"),
+    I18n.t("排队：本轮跑完再发，绝不打断当前任务"),
+    "aas-queue",
+  );
+  mk(
+    "steer",
+    "2",
+    I18n.t("⚡ 插话"),
+    I18n.t("插话：本轮下一步就听见（不打断当前这一步）"),
+    "aas-steer",
+  );
+  el.appendChild(row);
+  const note = document.createElement("div");
+  note.className = "aas-note";
+  note.textContent = I18n.t(
+    "插话 = 这一轮的下一步就带上它；排队 = 本轮结束再发。卡片还开着时本轮若自己跑完了，插话会自动改成直接发出。",
+  );
+  el.appendChild(note);
+  const rem = document.createElement("label");
+  rem.className = "aas-remember";
+  rem.title = I18n.t("勾上以后运行中发送不再询问，可在 设置 → 智能能力 改回「每次询问」");
+  const cb = document.createElement("input");
+  cb.type = "checkbox";
+  cb.checked = !!busyAsk.remember;
+  cb.onchange = () => {
+    busyAsk.remember = !!cb.checked;
+  };
+  const rt = document.createElement("span");
+  rt.textContent = I18n.t("记住我的选择，以后不再问");
+  rem.appendChild(cb);
+  rem.appendChild(rt);
+  el.appendChild(rem);
+  /* 空框 + 只有批注这一档：预览那一行已经写成「这次发的是左侧那几条批注」
+     （见上面的 prev.textContent），用户不会以为漏字了。 */
+  el.hidden = false;
+  busyAskSelect(busyAsk.sel);
+  return el;
+}
+
+/* 选中位（1 = 排队 / 2 = 插话）：只切 .on 高亮，Tab 不走浏览器默认焦点移动 ——
+   输入区的焦点语义留给输入框自己，键盘选择靠这三颗键（Tab / Shift+Tab）。 */
+function busyAskSelect(n) {
+  const el = busyAskEl();
+  busyAsk.sel = n === 2 ? 2 : 1;
+  if (!el) return;
+  for (const b of el.querySelectorAll(".aas-btn")) {
+    const v = b.dataset.pick === "steer" ? 2 : 1;
+    b.classList.toggle("on", v === busyAsk.sel);
+  }
+}
+
+/* 收卡并交付裁决（resolve 只交一次；焦点还给发话前那个元素，取不到就回输入框） */
+function busyAskClose(val) {
+  const el = busyAskEl();
+  if (el) {
+    el.hidden = true;
+    el.innerHTML = "";
+  }
+  const prev = busyAsk.prevFocus;
+  busyAsk.prevFocus = null;
+  busyAsk.open = false;
+  const r = busyAsk.resolve;
+  busyAsk.resolve = null;
+  const inp = document.getElementById("agentInput");
+  const back = prev && prev.focus && document.contains(prev) ? prev : inp;
+  if (back && back.focus) {
+    try {
+      back.focus();
+    } catch (_) {}
+  }
+  if (r) r(val);
+}
+
+/* 点 / 按数字键选定了一项：先办「记住我的选择」，再收卡交付 */
+function busyAskPick(val) {
+  if (!busyAsk.open) return;
+  const decision = val === "steer" ? "steer" : "queue";
+  if (busyAsk.remember) {
+    try {
+      if (S.config) {
+        if (!S.config.dsh) S.config.dsh = {};
+        S.config.dsh.busySend = decision;
+        if (typeof settingsSaveNow === "function") settingsSaveNow();
+      }
+    } catch (_) {}
+  }
+  busyAskClose(decision);
+}
+
+/* 裁决入口：不弹卡的情形直接回 'queue'（旧口径排队），其余弹卡等用户点。 */
+function agentBusySendAsk(st, body) {
+  const text = String(body || "").trim();
+  const hasAnno = annoPendingOf(st);
+  /* 空框又没批注：这一发本来就不是「发话」（忙时它是 ■ 终止，由调用方处置） */
+  if (!st || (!text && !hasAnno)) return Promise.resolve("queue");
+  const mode = busySendAskMode();
+  if (mode === "queue") return Promise.resolve("queue");
+  if (mode === "steer")
+    return Promise.resolve(busySendAskWhyNoCard(st) ? "queue" : "steer");
+  if (busySendAskWhyNoCard(st)) return Promise.resolve("queue");
+  const el = busyAskEl();
+  /* 卡片容器不在（会话视图没建 / 被搬走）：退回旧口径，绝不把消息卡在半路 */
+  if (!el) return Promise.resolve("queue");
+  /* 同一刻只留一张：上一张按「取消」收（它的调用方本来就等着 null） */
+  if (busyAsk.open) busyAskClose(null);
+  const active = document.activeElement;
+  busyAsk.prevFocus = active && active.focus ? active : null;
+  busyAsk.sel = 1;
+  const p = new Promise((res) => {
+    busyAsk.resolve = res;
+  });
+  busyAsk.open = true;
+  busyAskPaint(text, hasAnno);
+  /* 键位：1 / 2 直选、Tab / Shift+Tab 移动选中位、Enter 激活当前项、Esc 取消。
+     卡片自己拿焦点（tabindex 在容器上），所以打字不会漏进输入框。 */
+  el.onkeydown = (ev) => {
+    if (!busyAsk.open) return;
+    const k = ev.key;
+    if (k === "Escape") {
+      ev.preventDefault();
+      ev.stopPropagation();
+      busyAskClose(null);
+      return;
+    }
+    if (k === "Tab") {
+      ev.preventDefault();
+      ev.stopPropagation();
+      busyAskSelect(busyAsk.sel === 1 ? 2 : 1);
+      return;
+    }
+    if (k === "Enter") {
+      ev.preventDefault();
+      ev.stopPropagation();
+      busyAskPick(busyAsk.sel === 2 ? "steer" : "queue");
+      return;
+    }
+    if (k === "1" || k === "2") {
+      ev.preventDefault();
+      ev.stopPropagation();
+      busyAskPick(k === "1" ? "queue" : "steer");
+    }
+  };
+  /* 容器要能接键盘：index.html 里那只 div 没有 tabindex，这里补上再聚焦 */
+  el.setAttribute("tabindex", "-1");
+  try {
+    el.focus();
+  } catch (_) {}
+  return p;
+}
+
+/* 插话要发出去的正文 = 待发批注 + 用户原话（顺序与 agentSessionSend 一致：批注在前）。
+   取件即 purge（批注发出去就不再占版面）；没批注就是原文，一字不改。 */
+function agentSteerBodyWithAnno(st, body) {
+  let t = String(body || "").trim();
+  let anno = "";
+  try {
+    if (window.SessionAnnotate && typeof SessionAnnotate.takeForSend === "function")
+      anno = String(SessionAnnotate.takeForSend(st) || "").trim();
+  } catch (_) {}
+  if (!anno) return t;
+  return t ? anno + "\n\n" + t : anno;
+}
+
+/* 把裁决落成实际发送（发送链只有这一处，三个入口共用）：
+     · 'steer' → agentSteerNow（它自己会回落：本轮已结束 = 立即发送、引擎不支持 = 排队）；
+     · 'queue' → agentSessionSend（忙时它内部就是 agentEnqueueMessage，批注在入队那一刻拼）；
+     · null    → 取消：什么都不发，正文留在输入框（本函数从不碰输入框）。 */
+async function agentBusySendApply(st, body, decision, opts) {
+  if (!st || !decision) return false;
+  const raw = String(body || "");
+  if (decision === "steer") {
+    const t = agentSteerBodyWithAnno(st, raw);
+    if (!t) return false;
+    await agentSteerNow(st, t);
+    return true;
+  }
+  await agentSessionSend(raw, Object.assign({}, opts, { sessionId: st.id }));
+  return true;
+}
+
 /* 暂停：中止当前请求但保留 live 会话（≠ ■ 终止：终止会关掉那一轮，暂停留得住上下文）。
    成功下发后 UI 立刻进暂停态；本轮真正以 done{paused:true} 收尾时按现状定稿、绝不排水。 */
 async function agentPauseNow(st) {
@@ -16443,8 +16745,29 @@ function devContractForRound(contract, reqText) {
   );
 }
 
+/* 「开发 / 细化」绑定会话的判据 —— 只服务「编码准则常驻段」（devnode.coding_guideline）
+   这一个闸，不做别的判断。依据是会话契约的抬头：【开发任务书】由 app.js 的
+   devNodeContractText 唯一产出（细化会话走同一个 builder，再在后面拼细化任务书，所以两者
+   都带这个抬头），而问询 / 函数开发 / 工具开发 / 画布构建 / 长任务建图的任务书抬头各不相同，
+   不会被误判成开发会话。抬头在创建会话时按当时 UI 语言写入，故与 devContractHydrateSession
+   同口径：当前语言与中文原文两种都认。 */
+function isDevBriefContract(text) {
+  const c = String(text || "");
+  if (!c) return false;
+  const headers = [I18n.t("【开发任务书】"), "【开发任务书】"];
+  for (const h of headers) if (h && c.indexOf(h) >= 0) return true;
+  return false;
+}
+
 async function agentSessionSend(text, opts) {
   opts = opts || {};
+  /* 「/btw」免询问前缀在这里剥掉（与 doSend 里那条快捷路径同源，见 busySendBtw）。
+     位置有讲究：**必须早于**下面的「会话正忙」判据与斜杠命令解析 ——
+       · 忙：剥完的前缀不会再被当成技能名丢进 resolveSkillSlash（那会报「未知命令」）；
+       · 空闲：剩下的话就是普通一轮消息（doSend 空闲分支把原文交到这里，剥前缀在这里发生）；
+       · 剥完一个字都不剩（"/btw" 后面空着）→ 交给下面的老规矩：有批注发批注，没有就不发。 */
+  const btwHit = busySendBtw(text);
+  if (btwHit.hit) text = btwHit.body;
   /* 计划执行器的单轮任务消息：不注入「任务流程」指令、不入「最近一次要求」 */
   const planExecMsg = !!opts._planExec;
   /* 漏弹自愈轮（app-plan.js planFixDirective）：它自己绝不再触发自愈，防连环重发 */
@@ -17016,6 +17339,20 @@ async function agentSessionSend(text, opts) {
         "\n【任务书结束】",
       { devContract },
     );
+    /* 编码准则常驻段（可选 · **默认关**，id = devnode.coding_guideline）：
+       出厂正文是空串 —— 没有覆盖时一个字符都不追加，开发 / 细化会话的提示词与拆分前
+       逐字一致。用户在「设置 → 内置能力 → 开发节点」里给这一项填了正文（可粘
+       mtnode-agent-skills/coding/ponytail/SKILL.md 的核心原则），才会在这些会话每轮
+       追加这段；「恢复默认」（= 清空覆盖）即关闭。
+       为什么默认关：它会改变所有编码会话的默认风格（最少新代码 / 删优于增 / 收尾交代
+       跳过项与风险），必须由用户显式开启，且随时可被用户改写。
+       闸只放「开发 / 细化」会话：判据见 isDevBriefContract（问询、函数 / 工具开发、
+       长任务建图的任务书抬头不同，不受影响）。纯净模式照旧注入 —— 它是用户显式开启的
+       会话级口径，与上面的开发任务书同待遇。 */
+    if (isDevBriefContract(devContract)) {
+      const codingGuideline = String(PS("devnode.coding_guideline", "") || "").trim();
+      if (codingGuideline) systemPrompt += "\n\n" + codingGuideline;
+    }
   }
   /* 「先拷问需求（grill-me）」（本次需求 · 会话窗口「模式」菜单新增的那一枚）：
      会话级开关缺省开（st.grill，没点过 = 开），按轮注入契约 —— 是否真拷问由模型
@@ -17969,9 +18306,36 @@ function chatInlineImgTick() {
    候选 = 本功能自己落盘的那一类图（<工作区>/.mtnode-input/、数据目录 chat-input /
         devnode-input 下的 paste-<时间戳36进制>.<ext>，见共享模块 isChatInputImage）。
    引用 = 现存的每一处：全部会话的消息 / 草稿 / 发件箱、画布节点任何字段（登记表不算）、
-        两只输入框与开发草稿框的当前正文。
+        两只输入框与开发草稿框的当前正文、**全部会话的批注正文**（见下面 annosImgRefs）。
    从资源管理器拖进来的图是用户自己的文件（正文按绝对路径引用那条原文件），
    目录与命名两条都不合 → 从不进候选集，永不被本功能删。 */
+/* 批注正文里的图（真源 = renderer/app-annotate.js 的 SessionAnnotate.imgRefs）：
+   批注框插图与输入框插图落在同一个目录、同一套命名（app-annotate.js 的 annoImgSaveBase64
+   就复用 chatImgWriteBase64），所以回收判据必须把批注一起算成引用 —— 否则「只有批注里
+   用着」的那张图会被判成无人引用。
+     · sid 省略 = 全部会话批注（引用侧，chatImgRefs 并入它）；
+     · 给 sid    = 这条会话自己的批注（候选侧，删会话时那些图才有机会被回收）。 */
+function annosImgRefs(sid) {
+  const a = typeof window !== "undefined" ? window.SessionAnnotate : null;
+  if (!a || typeof a.imgRefs !== "function") return [];
+  try {
+    const out = sid == null ? a.imgRefs() : a.imgRefs(String(sid || ""));
+    return Array.isArray(out) ? out : [];
+  } catch (_) {
+    return [];
+  }
+}
+/* 批注表按会话懒加载：删盘前先等一轮预取把它读齐（SessionAnnotate.imgRefsReady）。
+   拿不到 / 没读齐 → false，这一轮一律不删 —— 宁可留一张孤儿图，也绝不误删别人还在
+   引用的图（没打开过的会话，它批注里引着的图在内存里还看不见）。 */
+function annosImgRefsReady() {
+  const a = typeof window !== "undefined" ? window.SessionAnnotate : null;
+  if (!a || typeof a.imgRefsReady !== "function") return Promise.resolve(true);
+  return Promise.resolve(a.imgRefsReady()).then(
+    (ok) => ok !== false,
+    () => false,
+  );
+}
 /* 全部会话（含归档）里出现过的内嵌图路径 */
 function chatImgSessionRefs(out) {
   const m = chatImgModule();
@@ -17989,17 +18353,22 @@ function chatImgSessionRefs(out) {
   }
   return out;
 }
-/* 一个会话里的内嵌图（删会话时拿它当候选：消息 + 未发的草稿） */
+/* 一个会话里的内嵌图（删会话时拿它当候选：消息 + 未发的草稿 + 它的批注正文）。
+   批注那一条必须在会话被摘掉之前取：一删，批注文件与内存里那份表都没了，
+   它引着的图就再也没人替它进候选集（别处还引用 → 由引用判据保命）。 */
 function chatImgSessionCandidates(st) {
   const m = chatImgModule();
   if (!st || !m || typeof m.imgRefsIn !== "function") return [];
-  return m.imgRefsIn({
-    messages: st.messages || [],
-    draft: st._draft || st.draft || "",
-    outbox: st.outbox || [],
-  });
+  return [
+    ...m.imgRefsIn({
+      messages: st.messages || [],
+      draft: st._draft || st.draft || "",
+      outbox: st.outbox || [],
+    }),
+    ...annosImgRefs(st.id),
+  ];
 }
-/* 现存的每一处引用（画布 + 全部会话 + 输入框 / 草稿框当前正文） */
+/* 现存的每一处引用（画布 + 全部会话 + 输入框 / 草稿框当前正文 + 全部会话的批注正文） */
 function chatImgRefs() {
   const m = chatImgModule();
   const out = [];
@@ -18017,6 +18386,11 @@ function chatImgRefs() {
   /* 画布节点（正文框引用同一张图时也算在用；登记表不算引用，与画布侧同一口径） */
   if (typeof S !== "undefined" && S.wf && Array.isArray(S.wf.nodes))
     out.push(...m.imgRefsIn({ nodes: S.wf.nodes }, { skipKeys: ["inlineImgs"] }));
+  /* 全部会话的批注正文（批注图与输入框的图同目录、同命名，必须算引用）。
+     这里是同步读的那一份：盘上还没读进内存的会话由 chatImgGc 先用
+     annosImgRefsReady 等齐；画布侧的 collectInlineImgRefs 只是顺手并一份近似集
+     （画布候选集是 assets/<wfId>/ 下的图，与这里的 .mtnode-input / chat-input 不重叠）。 */
+  out.push(...annosImgRefs());
   return chatImgSessionRefs(out);
 }
 /* 回收一批候选：只留本功能自己的图（目录 + 命名两条），再与全部引用比对，没引用才删盘。
@@ -18030,6 +18404,10 @@ async function chatImgGc(paths, opts) {
   if (!api || typeof api.chatInputDeleteImages !== "function") return empty;
   const cands = (paths || []).filter((p) => m.isChatInputImage(p));
   if (!cands.length) return empty;
+  /* 先等批注表读齐：没打开过的会话在内存里是空表，它批注里引着的图在引用集里还看不见，
+     这时候判「无人引用」就可能删掉别人还在用的图 → 读不齐就这一轮不删。 */
+  const annosOk = await annosImgRefsReady();
+  if (!annosOk) return empty;
   const orphans = m.orphanImages(cands, chatImgRefs());
   if (!orphans.length) return empty;
   let r = null;

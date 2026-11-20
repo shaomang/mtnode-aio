@@ -2066,6 +2066,69 @@
           }
         }
       }
+    },
+    {
+      "name": "mtnode_media",
+      "description": "Read the actual content of a local media file (image / audio / video) — the piece canvas_get cannot give you (it only returns paths and metadata).\n- action:\"probe\"（默认）：元信息 —— 存在性 / 字节数 / 像素尺寸（图像）/ 时长 / 帧率 / 有无音视频轨。只读，不写文件。\n- action:\"audio\"：本机官方 SenseVoice 逐句转写（与音频转字幕节点同一份权重、同一条静音切句），回 cues（起止秒 + 正文）、srt、vtt 与拍平后的 text。\n- action:\"frames\"：按时间点抽 PNG（默认 7 帧、均匀分布），回本机绝对路径 —— 要看画面就把每个路径交给 mtnode_vision（question 写你在找什么）。\n- 只看图像直接用 mtnode_vision；路径从哪来：canvas_get 回执的 media.files（每个媒体槽都带绝对路径）。\n- 读不到就说读不到（文件不存在 / 没有音轨 / 抽帧失败都会明确报错），不静默返回空结果。",
+      "family": "media",
+      "source": "dsh/gateway/media-read-plugin.mjs",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "description": "probe = 元信息；audio = 音频转写（SenseVoice，本地）；frames = 视频 / 音频抽帧成 PNG。",
+            "enum": [
+              "probe",
+              "audio",
+              "frames"
+            ]
+          },
+          "path": {
+            "type": "string",
+            "description": "媒体文件的本机绝对路径（画布上的路径见 canvas_get 的 media.files[].path）。"
+          },
+          "language": {
+            "type": "string",
+            "description": "audio：语言提示，默认 auto。",
+            "enum": [
+              "auto",
+              "zh",
+              "en",
+              "yue",
+              "ja",
+              "ko"
+            ]
+          },
+          "maxChars": {
+            "type": "number",
+            "description": "audio：单条字幕最大字数（省略 = 中文 18 / 英文 42）。"
+          },
+          "maxDurationSec": {
+            "type": "number",
+            "description": "audio：单条字幕最长秒数，默认 6（1–60）。"
+          },
+          "allowLarge": {
+            "type": "boolean",
+            "description": "audio：放宽时长 / 体积上限（默认 2 小时 / 1GB）。长文件会慢很多。"
+          },
+          "count": {
+            "type": "number",
+            "description": "frames：抽几帧（默认 7，上限 12）；给了 times 就忽略它。"
+          },
+          "times": {
+            "type": "array",
+            "description": "frames：按这些秒数抽帧（最多 12 个）。",
+            "items": {
+              "type": "number"
+            }
+          }
+        },
+        "required": [
+          "action",
+          "path"
+        ]
+      }
     }
   ],
   "resources": [

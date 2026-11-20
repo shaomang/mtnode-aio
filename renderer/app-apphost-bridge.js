@@ -8,7 +8,6 @@
  *   agent*       → renderer/app-session-bridge.js 的会话族（window.MTNodeSession）
  *   tools / net  → window.api 的既有主进程通道（backendRegistry* / netFetch）
  *   pickCanvas   → 主窗口里一张画布清单小窗（用户亲自选的那一张才生效）
- *   grantAsk     → 主窗口的确认框（与面板里那颗「确认」同一个 mtDialog）
  *
  * 三条纪律：
  *   1) **画布真源只在渲染层**：本文件不读画布文件、不另写一套执行器；
@@ -197,20 +196,6 @@
     );
   }
 
-  /* ── 授权窗（一次授权该应用的全部重能力）────────────────────────────────── */
-  async function grantAsk(p) {
-    const lines = Array.isArray(p.lines) ? p.lines.map(String) : [];
-    const msg = lines.join("\n");
-    if (typeof confirmDialog !== "function") return { ok: false, code: "no_ui", error: T("主窗口确认框不可用") };
-    const yes = await confirmDialog(msg, {
-      title: String(p.title || T("应用请求画布与 agent 能力")),
-      okText: T("允许"),
-      cancelText: T("拒绝"),
-    });
-    if (!yes) return { ok: false, code: "denied", error: T("用户拒绝了这次授权") };
-    return { ok: true };
-  }
-
   /* ── 帧分派 ───────────────────────────────────────────────────────────── */
   const HANDLERS = {
     canvasList: () => canvasList(),
@@ -286,7 +271,6 @@
         return { ok: false, code: "no_agent", error: T("会话桥渲染层未加载（renderer/app-session-bridge.js）") };
       return ses.handleFrame({ op: "sessionStop", params: { sessionId: String(p.sessionId || "") } });
     },
-    grantAsk: (p) => grantAsk(p),
     /* 工具清单 / 调用与应用节点**同一份实现**（renderer/app-appnode.js 的 MTNodeAppTools）：
        注册中心登记的工具 + 已安装的插件本机后端（breeze / qwen-image / flux3-klein…）。
        窗口应用以前只拿到 `items`，插件后端一个都看不见 —— 这就是应用侧「取不到 mtnode 能力」。 */

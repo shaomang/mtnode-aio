@@ -23,6 +23,10 @@
  *    过滤会话」这一处；总会话视图与 #agentSideList 的渲染逻辑一字未改。
  *    openAppCanvas 顺带补一刀老应用画布的空工作目录（见该函数里的注释）。
  *
+ * ③ 改应用 id 之后 appIdChangeFollow(from, to, receipt)
+ *    主进程 apps:appIdChange 只搬磁盘；画布 / 开发节点 / 会话归属 / 配置 / 开发页这几样归渲染层，
+ *    由这个函数一次搬完（明细见它自己的注释）。
+ *
  * 依赖都在调用期按 typeof 取（openOverlay / addNode / loadWorkflow / agentSessions…），
  * 所以本文件与它们的加载顺序无关；只需排在 window.api 就绪之后（index.html 的生态层）。
  */
@@ -500,8 +504,8 @@ async function appsCreateApp(name, id, style, capabilities) {
             voiceGen: true,
             /* 画布 / agent 两位（本轮新增）：新建应用默认**开**，与上面四位同一条口径。
                注意它们不是「注入 UI」的开关，而是能力的声明面：没勾上时 appHost.canvas /
-               agent 一族直接回 not_declared（见 apps-capabilities.js 顶部）。声明 ≠ 放行 ——
-               首次调用宿主仍会弹一次授权窗，用户随时能在「应用设置」里取消勾选撤销。 */
+               agent 一族直接回 not_declared（见 apps-capabilities.js 顶部）。**声明即放行**，
+               没有第二次授权弹窗；取消勾选就是当场收回。 */
             canvasHost: true,
             agentHost: true,
             /* 素材库（本轮新增）：同样默认开 —— 应用能列 / 读全库、把本机文件收进库、
@@ -856,24 +860,24 @@ function appsCapabilityChecks(value, onChange) {
     },
     /* 后两位（本轮新增）：**不是**「注入 UI」的开关，而是能力的声明面 ——
        没勾上时 appHost.canvas / fs / tools / net（canvasHost）与 appHost.agent（agentHost）
-       一律回 not_declared。声明 ≠ 放行：首次调用宿主还会弹一次授权窗，
-       取消勾选 = 撤销那次授权（apps-store.js 的 appCapabilitiesSet 会顺手 revoke）。 */
+       一律回 not_declared。**声明即放行**（没有第二次授权弹窗）：勾上就是永久允许，
+       取消勾选就是当场收回 —— 每次调用都现读清单（apps-store.js 的 appCapabilitiesSet 只写声明）。 */
     {
       id: "canvasHost",
       label: I18n.t("画布读写"),
-      hint: I18n.t("允许读写这个应用对应的那张画布（建/改/删节点、连线、改表单、存盘），以及画布工作目录里的文件、本机后端工具、联网；首次使用时宿主会弹窗让你确认一次"),
+      hint: I18n.t("允许读写这个应用对应的那张画布（建/改/删节点、连线、改表单、存盘），以及画布工作目录里的文件、本机后端工具、联网；勾上即永久允许，想收回就取消勾选"),
     },
     {
       id: "agentHost",
       label: I18n.t("Agent 调用"),
       hint: I18n.t("允许应用起一条 MTNode 会话（出现在左栏）对着自己的画布干活：发消息、看实时进度、随时叫停；会话你也能看、能打断、能接着聊"),
     },
-    /* 素材库（本轮新增）：与画布读写同一条纪律 —— 声明面 + 首次授权的硬闸。
+    /* 素材库（本轮新增）：与画布读写同一条纪律 —— 声明即放行的硬闸（没有第二次确认）。
        归属硬口径写在 assets-store.js 的 assetActorCall：应用只能改删自己创建的内容。 */
     {
       id: "assetHost",
       label: I18n.t("素材库读写"),
-      hint: I18n.t("允许应用列 / 读整个素材库、把本机文件收进库、新建自己的素材与内容条目，并删除自己创建的东西（进回收站）；你自己创建的素材与条目对它只读。首次使用时宿主会弹窗让你确认一次"),
+      hint: I18n.t("允许应用列 / 读整个素材库、把本机文件收进库、新建自己的素材与内容条目，并删除自己创建的东西（进回收站）；你自己创建的素材与条目对它只读。勾上即永久允许"),
     },
   ];
   for (const r of rows) {
@@ -1407,6 +1411,267 @@ async function appsRootHealAfterMove(moved) {
   return out;
 }
 
+/* ---------- ③ 改应用 id 之后：画布 / 开发节点 / 会话 / 配置 / 开发页跟着搬 ----------
+ *
+ * 主进程那一半（apps-store.js 的 changeAppId，桥名 apps:appIdChange）只管磁盘：应用文件夹改名 +
+ * app.json 的 id + 数据根 + 模型选择 + 缓存。**画布与会话归属全归渲染层**（画布 json 与开发会话
+ * 对象都在这里），所以拿到那边 ok 之后由调用方（「应用设置」窗里「应用 id · 修改」）接着调这里
+ * 一次搬完：
+ *   ① 画布：id / appId / workspace 换成新 id 与新目录，wfSave 到新 id，再 wfDeleteById 删旧画布
+ *      （**先写新、后删旧**：中途失败最多多留一份旧画布，绝不丢用户的图）；
+ *   ② 开发节点：node.appId 换成新 id，devPath / subFolder 重新指向新目录（节点其它配置一字不动）；
+ *   ③ 会话：会话对象上的 appId 标记换成新 id（开发页左栏按它过滤，见 appSessionsOf）并落盘；
+ *   ④ 配置：activeWorkflowId 与画布标签条索引（visitedWorkflows）跟着改并 configSave 落盘；
+ *   ⑤ 开发页：DEVD.appId 与中栏预览 iframe 换到新 id 重载。
+ *
+ * 纪律：每一步各自 try，**任何一步失败都不谎报成功** —— 回 { ok, canvas, node, sessions,
+ * config, dev, errors[] }，收尾用一次 toast 把「已经搬过去的是什么、哪几步没跟上」讲清楚。
+ * 依赖全部按 typeof 取（与同文件其它入口同一写法），缺哪个就跳过那一步并记进 errors。
+ */
+/* 旧目录 → 新目录的路径重指：只有「就是这个目录」或「在它下面」才改，别处的路径原样返回空串
+   （调用方据此决定要不要按「目录已不存在」再校准一次）。分隔符按原样保留。 */
+function appCanvasDirRepoint(cur, oldDir, newDir) {
+  const a = String(cur || "").trim();
+  const o = String(oldDir || "").trim().replace(/[\\/]+$/, "");
+  const n = String(newDir || "").trim();
+  if (!a || !o || !n) return "";
+  const cut = a.replace(/[\\/]+$/, "");
+  if (cut.toLowerCase() === o.toLowerCase()) return n;
+  for (const sep of ["\\", "/"]) {
+    if (cut.toLowerCase().indexOf((o + sep).toLowerCase()) === 0)
+      return n + a.slice(o.length);
+  }
+  return "";
+}
+async function appIdChangeFollow(from, to, receipt) {
+  const src = String(from || "").trim();
+  const dst = String(to || "").trim();
+  const out = {
+    ok: false,
+    canvas: false,
+    node: false,
+    sessions: 0,
+    config: false,
+    dev: false,
+    errors: [],
+  };
+  const done = [];
+  const fail = (what, why) => {
+    out.errors.push(String(what) + (why ? I18n.t("：") + String(why) : ""));
+  };
+  /* 没换（主进程回 unchanged）或 id 不合法：什么都不做，交给调用方的回执说话 */
+  if (!src || !dst || src === dst) return out;
+  if (!APP_WF_ID_RE.test(dst)) {
+    out.errors.push(I18n.t("新应用 id 不合法"));
+    toast(I18n.t("新应用 id 不合法：画布与会话没有跟着改"), "err");
+    return out;
+  }
+  const rc = receipt && typeof receipt === "object" ? receipt : {};
+  /* 新目录：先认主进程回执的 dir，回执没带就按本机应用名单（开发那一份优先）取一次 ——
+     拿不到就只改 id，路径留给 appCanvasPathHeal 下次打开画布时校准。 */
+  let newDir = String(rc.dir || "").trim();
+  if (!newDir) {
+    try {
+      const a =
+        typeof appsLocalById === "function"
+          ? appsLocalById(dst, "dev") || appsLocalById(dst)
+          : null;
+      newDir = String((a && a.dir) || "").trim();
+    } catch (_) {}
+  }
+  /* 旧目录 = 新目录的父目录 + 旧 id（主进程改名就是 <同一套根>/<旧 id> → <同一套根>/<新 id>） */
+  let oldDir = "";
+  if (newDir) {
+    const cut = newDir.replace(/[\\/]+$/, "");
+    const i = Math.max(cut.lastIndexOf("\\"), cut.lastIndexOf("/"));
+    if (i > 0) oldDir = cut.slice(0, i) + cut.charAt(i) + src;
+  }
+
+  /* ① 画布：搬到新 id。内存里那份（前台 / 袋里）比磁盘新，优先用它；没有才读旧 save/<旧 id>.json */
+  let wf = null;
+  try {
+    wf = typeof canvasWfByIdLoaded === "function" ? canvasWfByIdLoaded(src) : null;
+  } catch (_) {
+    wf = null;
+  }
+  if (!wf) {
+    try {
+      const r = await window.api.wfLoad(src);
+      if (r && r.ok && r.data) wf = r.data;
+    } catch (_) {
+      wf = null;
+    }
+  }
+  if (!wf) {
+    fail(I18n.t("这个应用的画布没搬"), I18n.t("读不到旧画布（可能在别处被删了）"));
+  } else {
+    /* ② 开发节点：先在「改之前」取这份名单 —— wf.appId 一换，appsDevNodeOfWf 的命中口径就变了 */
+    const nodes = Array.isArray(wf.nodes) ? wf.nodes : [];
+    /* 节点改动先记在本地：这份 wf 只有 wfSave 成功了才算数（存不下就一分没搬，回执不能说已成） */
+    let nodeTouched = false;
+    for (const n of nodes) {
+      if (!n || n.kind !== "super" || !n.dev || n.db) continue;
+      if (String(n.appId || "").trim() === src) {
+        n.appId = dst;
+        nodeTouched = true;
+      }
+      for (const key of ["devPath", "subFolder"]) {
+        const cur = String(n[key] || "").trim();
+        if (!cur) continue;
+        const rep = appCanvasDirRepoint(cur, oldDir, newDir);
+        if (rep) {
+          n[key] = rep;
+          nodeTouched = true;
+          continue;
+        }
+        /* 不指向旧目录、而且那个目录已经不在盘上：校准到新目录（与 appCanvasPathHeal 同一口径）。
+           桥探不动 / 目录还在的，一个字节都不动。 */
+        let gone = false;
+        try {
+          gone = !(await window.api.fileIsDir(cur));
+        } catch (_) {
+          gone = false;
+        }
+        if (gone && newDir) {
+          n[key] = newDir;
+          nodeTouched = true;
+        }
+      }
+    }
+    wf.id = dst;
+    wf.appId = dst;
+    if (newDir) wf.workspace = appCanvasWsPath(newDir);
+    /* 先写新 id：写成了才动旧画布（顺序反了会把用户的图弄丢） */
+    let saved = false;
+    try {
+      const r = await window.api.wfSave(dst, wf);
+      saved = !r || r.ok !== false;
+      if (!saved)
+        fail(I18n.t("画布保存到新 id 失败"), String((r && r.error) || I18n.t("未知错误")));
+    } catch (err) {
+      fail(I18n.t("画布保存到新 id 失败"), (err && err.message) || String(err));
+    }
+    if (saved) {
+      out.canvas = true;
+      /* 开发节点的改动随这次 wfSave 一起落的盘，到这里才算真的搬过去 */
+      out.node = nodeTouched;
+      done.push(I18n.t("画布已搬到新 id"));
+      /* 内存记账跟着换键：对象身份不变（前台 / 运行绑定栈里那只还是同一份），只换袋里的键与
+         节点归属表里的画布 id —— 不换的话下一次 persistWf 会写回旧 id，把旧画布复活。 */
+      try {
+        if (S.wfBag && S.wfBag[src] === wf) delete S.wfBag[src];
+      } catch (_) {}
+      try {
+        if (typeof rememberWf === "function") rememberWf(wf);
+      } catch (_) {}
+      try {
+        if (S.wf === wf && typeof setForegroundWf === "function") setForegroundWf(wf);
+      } catch (_) {}
+      try {
+        if (S.nodeWfId && typeof S.nodeWfId === "object") {
+          for (const nid of Object.keys(S.nodeWfId))
+            if (String(S.nodeWfId[nid]) === src) S.nodeWfId[nid] = dst;
+        }
+      } catch (_) {}
+      if (typeof window.wfDeleteById !== "function") {
+        fail(I18n.t("旧画布的删除"), I18n.t("画布删除能力未就绪"));
+      } else {
+        try {
+          const r2 = await window.wfDeleteById(src, { expectId: src });
+          if (r2 && r2.ok === false)
+            fail(I18n.t("旧画布的删除"), String(r2.error || I18n.t("未知错误")));
+        } catch (err) {
+          fail(I18n.t("旧画布的删除"), (err && err.message) || String(err));
+        }
+      }
+    }
+  }
+
+  /* ③ 会话：会话对象上的 appId 标记换成新 id（appSessionsOf 靠它过滤开发页左栏），并落盘 */
+  try {
+    const list = typeof agentSessions === "function" ? agentSessions() : [];
+    for (const s of list) {
+      if (!s || String(s.appId || "").trim() !== src) continue;
+      s.appId = dst;
+      out.sessions++;
+      try {
+        if (typeof agentMarkSessionDirty === "function")
+          agentMarkSessionDirty(String(s.id || ""));
+      } catch (_) {}
+    }
+    if (out.sessions) {
+      const flush =
+        typeof agentFlushSessionSave === "function"
+          ? agentFlushSessionSave
+          : typeof persistAgentSession === "function"
+            ? persistAgentSession
+            : null;
+      if (flush) await flush();
+      else fail(I18n.t("会话归属的落盘"), I18n.t("会话落盘能力未就绪"));
+      done.push(I18n.t("会话归属改了 ") + String(out.sessions) + I18n.t(" 条"));
+    }
+  } catch (err) {
+    fail(I18n.t("会话归属"), (err && err.message) || String(err));
+  }
+
+  /* ④ 配置：当前画布 id 与画布标签条索引跟着改，再落盘 */
+  try {
+    const cfg = S.config && typeof S.config === "object" ? S.config : null;
+    if (!cfg) fail(I18n.t("配置跟随"), I18n.t("配置未就绪"));
+    else {
+      if (String(cfg.activeWorkflowId || "") === src) cfg.activeWorkflowId = dst;
+      const tabs = Array.isArray(cfg.visitedWorkflows) ? cfg.visitedWorkflows : null;
+      if (tabs) {
+        for (const it of tabs)
+          if (it && String(it.id || "") === src) it.id = dst;
+      }
+      if (window.api && typeof window.api.configSave === "function") {
+        await window.api.configSave(cfg);
+        out.config = true;
+        done.push(I18n.t("配置与画布标签条已改"));
+      } else fail(I18n.t("配置跟随"), I18n.t("配置落盘能力未就绪"));
+    }
+  } catch (err) {
+    fail(I18n.t("配置跟随"), (err && err.message) || String(err));
+  }
+  /* 标签条重画（trackWorkflow 也做这件事，这里只求改了索引之后界面立刻对上） */
+  try {
+    if (typeof renderWfTabs === "function") renderWfTabs();
+  } catch (_) {}
+
+  /* ⑤ 开发页：DEVD.appId 与中栏预览换到新 id 重载 */
+  try {
+    if (typeof DEVD === "object" && DEVD && String(DEVD.appId || "") === src) {
+      DEVD.appId = dst;
+      DEVD.url = "";
+      DEVD.frameApp = "";
+      DEVD.snap = null;
+      DEVD.liveChangedAt = 0;
+      DEVD.wf = null;
+      DEVD.node = null;
+      DEVD.nodeFor = "";
+      out.dev = true;
+      done.push(I18n.t("开发页已切到新 id"));
+      if (typeof appsDevRetryPreview === "function") {
+        await appsDevRetryPreview(); /* 按新 id 重取预览 info 并重载 iframe（开发页没开时它自己跳过） */
+      }
+    }
+  } catch (err) {
+    fail(I18n.t("开发页预览"), (err && err.message) || String(err));
+  }
+
+  out.ok = out.errors.length === 0;
+  /* 收尾如实交代：已成的是什么、哪几步没跟上（一次 toast，不谎报成功） */
+  if (out.errors.length) {
+    toast(
+      (done.length ? I18n.t("应用 id 已改，") + done.join(I18n.t("、")) + I18n.t("；以下没跟上：") : I18n.t("应用 id 已改，但下面这些没跟上：")) +
+        out.errors.join(I18n.t("；")),
+      "err",
+    );
+  }
+  return out;
+}
+
 /* 库页 / 开发页顶部那一行「＋ 新建应用」：应用中心（renderer/app-apps.js）的
    appsPaintLibPage / appsPaintDevPage 调它插在「应用根目录」一行下面。
    行 / 按钮样式沿用应用中心自己的（apps-rootline + mini primary），不另造一套。 */
@@ -1435,6 +1700,9 @@ window.appsCreateButtonEl = appsCreateButtonEl;
 /* 换根后校准（目录设置窗调）：应用画布路径两件套 + 该应用开发会话工作区 */
 window.appCanvasPathHealById = appCanvasPathHealById;
 window.appsRootHealAfterMove = appsRootHealAfterMove;
+/* 改应用 id 之后渲染层这一半（画布 / 开发节点 / 会话 / 配置 / 开发页），见 appIdChangeFollow */
+window.appIdChangeFollow = appIdChangeFollow;
+window.appCanvasDirRepoint = appCanvasDirRepoint;
 window.openAppCanvas = openAppCanvas;
 window.appIdOfDevNode = appIdOfDevNode;
 window.appSessionsOf = appSessionsOf;

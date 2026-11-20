@@ -91,6 +91,10 @@ const TOOL_OPS = {
   mtnode_run: { op: "run", family: "run", write: true, job: true },
   mtnode_tools: { op: "tool", family: "tool", write: false },
   mtnode_session: { op: "sessionTask", family: "sessionTask", write: true },
+  /* 只读媒体通道（mtnode_media · 参数表真源 dsh/gateway/media-read-plugin.mjs）：
+     probe / audio / frames 三个动作全在主进程执行（ffprobe / ffmpeg / 语音运行时都在那边），
+     不推渲染层、不写盘、不进写队列 —— 所以 write:false（审计里标成只读）。 */
+  mtnode_media: { op: "media", family: "media", local: true, write: false },
 };
 
 /** 作业等待上限：与 TOOL_TIMEOUT_MS 同值（一次工具调用最多挂 15 分钟）。 */
@@ -208,6 +212,12 @@ function createMcpHost(o) {
    *   { run(kind, params, {jobId}), cancel(jobId) }。没注入时 mtnode_generate 明确报错。
    */
   const media = o.media && typeof o.media.run === "function" ? o.media : null;
+  /**
+   * 只读媒体通道执行器（可选，main.js 注入 mcpMediaRead）：(action, params) => Promise<any>。
+   * probe / audio / frames 全在主进程干（ffprobe / ffmpeg / 语音运行时只在那里）。没注入时
+   * mtnode_media 明确报错，其余工具不受影响。
+   */
+  const mediaRead = typeof o.mediaRead === "function" ? o.mediaRead : null;
   /** 会话桥（session-bridge.js）：会话族的读路径 + SSE 事件分发都交给它 */
   const sessionBridge = o.sessionBridge || null;
   /**
@@ -783,21 +793,24 @@ function createMcpHost(o) {
         return callRenderer(op.op, params, meta);
       }
       if (op.family === "sessionTask") return callRenderer(op.op, params, meta);
-      /* 主进程自执行的族（gui）：执行器是 main.js 注入的 mcp-gui-agent.js。
-         这里不做 canvas / baseHash 那套路由 —— GUI 动作的作用域是「哪只窗 + 哪个元素」。 */
+      /* 主进程自执行的族（gui / dev / media）：执行器都由 main.js 注入。
+         这里不做 canvas / baseHash 那套路由 —— 这几族的作用域不是「哪张画布」。 */
       if (op.local) {
-        /* 本地自执行的两族：gui（mcp-gui-agent.js）与 dev（dev-agent.js）。
-           两族的参数表都以网关插件为真源（gui-plugin.mjs / dev-plugin.mjs），
-           这里只按 family 选执行器，不重复解释参数。 */
-        const runner = op.family === "dev" ? devRun : guiRun;
-        if (op.family === "dev" && !runner) {
+        const isDev = op.family === "dev";
+        const isMedia = op.family === "media";
+        const runner = isDev ? devRun : isMedia ? mediaRead : guiRun;
+        if (isDev && !runner) {
           throw mcpFail(-32603, "开发调试执行器不可用（主进程没有注入 dev-agent）");
+        }
+        if (isMedia && !runner) {
+          throw mcpFail(-32603, "媒体读取执行器不可用（主进程没有注入 mcpMediaRead）");
         }
         if (!runner) throw mcpFail(-32603, "GUI 执行器不可用（主进程没有注入 mcp-gui-agent）");
         const action = String(params.action || "").trim();
         if (!action) {
-          throw mcpFail(-32602, op.family === "dev" ? "mtnode_dev 需要 action" : "mtnode_gui 需要 action");
+          throw mcpFail(-32602, isDev ? "mtnode_dev 需要 action" : isMedia ? "mtnode_media 需要 action" : "mtnode_gui 需要 action");
         }
+        const actionLabel = isDev ? "调试" : isMedia ? "媒体" : "GUI";
         const started = Date.now();
         const result = await Promise.race([
           runner(action, params),
@@ -806,7 +819,8 @@ function createMcpHost(o) {
               () =>
                 rej(
                   new Error(
-                    (op.family === "dev" ? "调试动作超时（" : "GUI 动作超时（") +
+                    actionLabel +
+                      "动作超时（" +
                       Math.round(TOOL_TIMEOUT_MS / 1000) +
                       "s）：" +
                       action,
@@ -817,7 +831,7 @@ function createMcpHost(o) {
             if (t && typeof t.unref === "function") t.unref();
           }),
         ]);
-        log("[mcp] " + (op.family === "dev" ? "dev " : "gui ") + action + " " + (Date.now() - started) + "ms");
+        log("[mcp] " + (isDev ? "dev " : isMedia ? "media " : "gui ") + action + " " + (Date.now() - started) + "ms");
         return result;
       }
       const result = await callRenderer(op.op, params, meta);
@@ -1102,6 +1116,7 @@ function createMcpHost(o) {
     "完整操作规范（建图 / 连线 / 批次的硬规则）在资源 mtnode://skill/mtnode-canvas-edit-rules；按需读，不要凭记忆建图。",
     "长任务：可用 lt_state 读写本轮共享状态，但「启动 / 推进运行」由应用侧的人在界面上操作，MCP 不做（见 guides/mcp-server.md）。",
     "要它自己去干活：mtnode_generate（图像 / 音乐 / 语音 / 视频）、mtnode_run（跑单个节点或整张图）、mtnode_tools（列 / 调当前画布的用户工具节点）、mtnode_session（新开一条会话跑任务）。前两个是异步作业：调用立刻回 jobId，结果用 {action:\"status\",jobId} 取（或 wait:true 就地等，上限 15 分钟）；作业只在内存里，应用重启后旧 id 一律 JOB_GONE。",
+    "媒体内容怎么读：canvas_get 的回执里有 media.files（每个媒体槽的 kind / 标题 / 绝对路径 / 存在性 / 字节数 / 时长或像素尺寸）。看图像帧用 mtnode_vision（给路径 + question）；音频转写用 mtnode_media（action:\"audio\"）；视频要画面用 mtnode_media（action:\"frames\"）拿到本机 PNG 路径，再逐帧交 mtnode_vision。",
     "调用全部写进本机审计日志（数据目录 mcp-audit/），应用「扩展能力管理 → MCP 服务端」里可查看与吊销令牌。",
   ].join("\n");
 

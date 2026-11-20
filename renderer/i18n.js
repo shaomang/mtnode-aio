@@ -2012,6 +2012,18 @@
     "从正文里删掉这一行": "Delete this line from the message",
     "已从磁盘删除 ": "Deleted from disk ",
     " 个无引用图片": " unreferenced image(s)",
+    /* ── 会话批注卡里的插图与图行投影（renderer/app-annotate.js 的批注卡）──
+       卡片只有「插图 / 定位 / 删除」三枚小键：插图键选截图或本机图片，正文里落一行图，
+       发送时那张图随这条批注一起交给模型；投影行是 textarea 上方那排窄版胶囊
+       （缩略图 + 文件名 + ✕），点缩略图 = 跳到正文那一行并整行选中。
+       删图行 / 删批注两颗 ✕ 的悬停文案与输入框那排胶囊共用上面那条
+       「从正文里删掉这一行」，不另写一份。 */
+    "插图": "Insert image",
+    "插入截图或本机图片（图会随这条批注一起发给模型）":
+      "Insert a screenshot or an image from this computer (it goes to the model with this annotation)",
+    "点击缩略图定位到正文里的这一行（整行选中）":
+      "Click the thumbnail to jump to this line in the text (the whole line gets selected)",
+    "图片": "Image",
     /* ── 提示词正文框的内嵌图像胶囊块（renderer/app.js 的 promptCapsule*） ── */
     "删除这张内嵌图片": "Remove this inline image",
     "已删除内嵌图片": "Inline image removed",
@@ -2182,6 +2194,34 @@
       "Pick up where it stopped (reuses this session's context; the task is not resent)",
     "继续该会话（从中断处接着跑）":
       "Continue this session (pick up where it stopped)",
+    /* ── 忙时发送的裁决卡 + 运行中发送行为设置（本次需求）──
+       会话还在跑的时候按发送：先问一句「排队 or 即时插话」，勾上「记住我的选择」后
+       写 config.dsh.busySend —— 与 设置 里「运行中发送行为」那个下拉同一枚键，三档
+       'ask' / 'queue' / 'steer'（「每次询问」的词条在本文件前面已有，这里不重复）。
+       两条免询问的快捷路径：Alt+Enter（回车换行语义下是 Alt+Ctrl+Enter）→ 直接插话；
+       正文以 /btw 开头 → 剥掉前缀后直接插话。 */
+    "这一轮还在跑 · 这条消息怎么发？":
+      "This run is still going — how should this message go out?",
+    "1 / 2 选择 · Enter 确定 · Esc 取消":
+      "1 / 2 to choose · Enter to confirm · Esc to cancel",
+    "输入框为空：这次发的是左侧那几条批注":
+      "The box is empty: this send carries the annotations on the left",
+    "加入发送队列": "Add to send queue",
+    "排队：本轮跑完再发，绝不打断当前任务":
+      "Queue: sent once this run finishes — the current task is never interrupted",
+    "记住我的选择，以后不再问": "Remember my choice and stop asking",
+    "勾上以后运行中发送不再询问，可在 设置 → 智能能力 改回「每次询问」":
+      "Once checked, sending during a run stops asking; switch it back to “Ask every time” under Settings → Smart capability",
+    "插话 = 这一轮的下一步就带上它；排队 = 本轮结束再发。卡片还开着时本轮若自己跑完了，插话会自动改成直接发出。":
+      "Steer = this run carries it from its next step on; Queue = send it after the run ends. If the run finishes while this card is open, steering turns into a direct send.",
+    "发送失败：": "Send failed: ",
+    /* 忙时发送键的 tooltip：两条免询问快捷路径的唯一可悬停入口（文案见 app-assist.js
+       的 paintAgentSendState） */
+    "运行中按发送会先问一句「排队 or 插话」；Alt+Enter 直接插话，正文以 /btw 开头也直接插话":
+      "Sending during a run first asks “queue or steer”; Alt+Enter steers right away, and so does starting the text with /btw",
+    "运行中发送行为：": "Sending while a run is in progress: ",
+    "直接排队": "Always queue",
+    "直接插话": "Always steer",
     /* ── 复杂任务计划确认 ── */
     "计划确认": "Plan confirmation",
     "明确不做": "Explicitly excluded",
@@ -15419,6 +15459,28 @@
     "录制已保存，但没有拿到文件路径": "Saved, but no file path came back",
   });
 
+  /* ── 输入补全（节点无关 · renderer/app-fim.js 的降级气泡「Tab 补全」
+     ＋ renderer/app-fim-settings.js 的设置面板 ＋ index.html 状态栏那颗 #btnFim）──
+     只补表里还没有的键；「关闭」「服务商」「模型」这些通用词上面早有。 */
+  Object.assign(EN, {
+    "输入补全": "Input completion",
+    "输入补全（点击开关设置面板）": "Input completion (click to open its settings)",
+    "启用输入补全（在输入框里按 Tab 采纳）": "Enable input completion (press Tab to accept)",
+    "触发延迟（毫秒）": "Trigger delay (ms)",
+    "最大补全长度（token）": "Max completion length (tokens)",
+    "本次统计": "This session",
+    "请求 ": "Requests ",
+    "采纳 ": "Accepted ",
+    "输入内容会发往所选服务商":
+      "What you type is sent to the provider you pick here",
+    "（没有可用的服务商）": "(no provider available)",
+    "（该服务商没有可用的模型）": "(this provider has no available model)",
+    "（该服务商没有 flash 模型）": "(this provider has no flash model)",
+    "（不支持补全）": " (completion not supported)",
+    "关闭（Esc）": "Close (Esc)",
+    "Tab 补全": "Tab to complete",
+  });
+
   /* ── MT 音频频谱分析（节点 kind = audio_spectrum · renderer/app-audioanalysis.js）──
      词条出现在：右键「音频生成」菜单项与「处理节点」拖线菜单、节点头部「频谱」徽标与 ▶/▤、
      板身的波形播放器 / 热力图 / 事件带与图例、⚙ 设置窗（分析档位 · 事件上限 ·
@@ -15693,6 +15755,48 @@
       "Later: this update installs automatically when you quit the app",
     "更新失败，可点顶栏「更新」重试":
       "Update failed; click Update in the top bar to retry",
+    /* ── 旁路预装两档（三态 = 下载中 → 后台准备 → 已就绪待重启）──
+       这两档一个「安装向导 / 安装窗口」都不许提：那会儿根本没有向导（也就没有窗口可看）。
+       回落旧路径（就地覆盖安装）仍旧用上面那批向导 / 静默文案，两套严格分档、不混着说。 */
+    "后台准备更新（可以继续用）": "Updating in the background (you can keep working)",
+    "更新已就绪，重启完成": "Update ready — restart to finish",
+    "后台准备": "Preparing",
+    "已就绪": "Ready",
+    "立即重启并更新": "Restart & update now",
+    /* 两档的悬停说明：按钮点了会发生什么、以及对「稍后」的交代 */
+    "正在后台准备更新（可以继续用）：装好会提示你重启，现在不用退出":
+      "Preparing the update in the background (you can keep working): you will be asked to restart when it is ready — no need to quit now",
+    "更新已就绪：点「立即重启并更新」现在就换上；点「稍后」则退出应用时自动完成":
+      "Update ready: click “Restart & update now” to switch right away, or “Later” and it finishes when you quit the app",
+    "更新已就绪：点这里立刻重启并换上；点「稍后」则退出应用时自动完成":
+      "Update ready: click to restart and switch right now, or “Later” and it finishes when you quit the app",
+    /* 「稍后」在两档里的说法（进度条副行 + toast + ✕ 的悬停提示） */
+    "稍后：退出应用时自动完成，下次启动就是新版本":
+      "Later: it finishes when you quit the app — the next launch is already the new version",
+    "正在后台准备：装好会提示你重启，退出应用时也会自动完成":
+      "Preparing in the background: you will be asked to restart when it is ready; quitting the app also finishes it",
+    "稍后：这项更新会在退出应用时自动完成":
+      "Later: this update finishes when you quit the app",
+    "已稍后：退出应用时会自动完成这次更新":
+      "Later: this update finishes when you quit the app",
+    "已稍后：退出应用时也会自动完成这次更新":
+      "Later: it also finishes when you quit the app",
+    "已稍后：更新已就绪，退出应用时自动完成":
+      "Later: the update is ready and finishes when you quit the app",
+    "已稍后：正在后台准备更新，装好会提示你重启；退出应用时也会自动完成":
+      "Later: still preparing in the background — you will be asked to restart when it is ready, and quitting also finishes it",
+    /* 下载完那一刻还不知道走不走预装：这一句只说事实，不预设向导 / 静默 */
+    "更新已下载完毕：正在准备安装，就绪后会提示你重启（也可以等退出应用时自动完成）":
+      "Update downloaded: preparing to install — you will be asked to restart when it is ready (quitting the app also finishes it)",
+    /* 就绪态那颗「立即重启并更新」的三种收场 */
+    "正在重启…": "Restarting…",
+    "还没能重启更新：": "Could not restart to update: ",
+    "；可以再点一次，也可以等退出应用时自动完成":
+      "; you can click again, or let it finish when you quit the app",
+    "还在后台准备更新，稍等片刻再试":
+      "still preparing the update in the background — try again in a moment",
+    "这次没有可应用的更新（预装的那份已经不在了）":
+      "there is no staged update to apply (the pre-installed copy is gone)",
   });
 
   function listJoin(arr) {

@@ -17,6 +17,8 @@ import { fileURLToPath } from 'node:url'
 const require = createRequire(import.meta.url)
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const { createMcpHost } = require(path.join(ROOT, 'mcp-server.js'))
+/* 期望工具集按契约真源算（同 probe-mcp-server.mjs）：不写死个数。 */
+const EXPECT_TOOLS = (JSON.parse(fs.readFileSync(path.join(ROOT, 'mcp-tools.json'), 'utf8')).tools || []).map((t) => t.name)
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mtnode-mcp-bridge-'))
 const results = []
@@ -87,7 +89,12 @@ send({ jsonrpc: '2.0', method: 'notifications/initialized', params: {} })
 send({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} })
 await waitFor(() => lines().some((l) => l.id === 2))
 const tools = lines().find((l) => l.id === 2)
-step('stdio tools/list', ((tools.result && tools.result.tools) || []).length === 13)
+{
+  const got = ((tools.result && tools.result.tools) || []).map((t) => t.name)
+  const miss = EXPECT_TOOLS.filter((n) => !got.includes(n))
+  step('stdio tools/list', got.length === EXPECT_TOOLS.length && !miss.length,
+    got.length + ' 个（契约 ' + EXPECT_TOOLS.length + (miss.length ? '，缺 ' + miss.join(',') : '') + '）')
+}
 
 send({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'mtnode_canvas_get', arguments: { detail: 'minimal' } } })
 await waitFor(() => lines().some((l) => l.id === 3))

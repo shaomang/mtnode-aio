@@ -3510,6 +3510,143 @@ button.mini.btn-sq.tpl-ico {
   display: none
 }
 
+/* ── 忙时发送的裁决卡（#agentAskSend · renderer/app-assist.js「忙时发送裁决」段）──
+   会话正在跑时按发送 → 先问一句「排队 or 即时插话」。落点与附件条同一行（整宽、
+   卡片内一级），配色沿用 .agent-send.agent-steer 的琥珀：它不是蓝（排队条）、
+   也不是红（终止），而是「这一句话现在就让我听见」。
+   容器是 persistent 浮层（AGENTS.md）：没有蒙层、点外部不关，只靠窗内按钮 / Esc 收；
+   JS 直接把 innerHTML 清空并 hidden，所以这里不需要 [open] 之类的状态类。 */
+.agent-ask-send {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  padding: 8px 10px;
+  box-sizing: border-box;
+  border: 1px solid rgba(232, 178, 74, .45);
+  border-radius: 8px;
+  background: rgba(232, 178, 74, .1);
+}
+
+.agent-ask-send[hidden] {
+  display: none
+}
+
+.agent-ask-send .aas-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.agent-ask-send .aas-title {
+  flex: 1;
+  min-width: 0;
+  color: rgb(232, 178, 74);
+  font-size: 12px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-ask-send .aas-esc {
+  flex: none;
+  color: rgba(232, 178, 74, .62);
+  font-size: 11px;
+}
+
+.agent-ask-send .aas-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* 两枚选项按钮：默认选中的那枚描边最亮（Enter 就激活它），其余压暗一档。
+   .on 不靠 :focus —— 键盘 Tab 只是移动选中位，不抢输入框以外的焦点语义。 */
+.agent-ask-send .aas-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  padding: 5px 10px;
+  border: 1px solid rgba(232, 178, 74, .36);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, .03);
+  color: rgb(214, 196, 160);
+  font-size: 12px;
+  line-height: 1.35;
+  cursor: pointer;
+}
+
+.agent-ask-send .aas-btn b {
+  flex: none;
+  min-width: 14px;
+  color: rgba(232, 178, 74, .7);
+  font-size: 11px;
+  font-weight: 500;
+  text-align: center;
+}
+
+.agent-ask-send .aas-btn:hover {
+  background: rgba(232, 178, 74, .2);
+  color: rgb(240, 224, 190);
+}
+
+.agent-ask-send .aas-btn.on {
+  border-color: rgb(232, 178, 74);
+  background: rgba(232, 178, 74, .22);
+  color: rgb(244, 230, 200);
+}
+
+.agent-ask-send .aas-btn.aas-steer {
+  border-color: rgba(232, 178, 74, .6);
+  color: rgb(232, 178, 74);
+}
+
+.agent-ask-send .aas-btn.aas-steer.on {
+  background: rgb(232, 178, 74);
+  color: rgb(28, 28, 30);
+}
+
+.agent-ask-send .aas-btn.aas-steer.on b {
+  color: rgba(28, 28, 30, .7);
+}
+
+.agent-ask-send .aas-note {
+  color: rgb(150, 144, 132);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.agent-ask-send .aas-prev {
+  min-width: 0;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, .18);
+  color: rgb(200, 194, 182);
+  font-size: 11px;
+  line-height: 16px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-ask-send .aas-remember {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: rgb(150, 144, 132);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.agent-ask-send .aas-remember input {
+  flex: none;
+  margin: 0;
+  accent-color: rgb(232, 178, 74);
+}
+
 .agent-attach-chip {
   display: inline-flex;
   align-items: center;

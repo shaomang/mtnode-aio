@@ -109,6 +109,9 @@ const { createCanvasDocClient } = require("./canvas-doc/canvas-doc-client.js");
 const {
   registerUpdateIpc,
   startBackgroundCheck,
+  /* 退出钩子唯一的交换入口（见下面 before-quit 那一段）：有 pending-swap.json 且旁路目录还在
+     才拉交换器，其余情况一个进程都不起；判据与拉起都在 updater.js 里，main.js 只负责「什么时候」。 */
+  swapOnQuit,
 } = require("./updater.js");
 const { registerPetIpc, shutdownPet } = require("./pet/main-pet.js");
 /* MOSS-TTS-Nano 内置语音后端（随包、首次启用自动下载，状态栏那枚 TTS 开关）：
@@ -570,6 +573,9 @@ function mcp() {
       /* 媒体生成执行体（mtnode_generate）：四个后端都在主进程，且共用同一把音视频互斥锁
          （media-gen-global-lock.js）—— 自用回环与画布节点排的是同一队。 */
       media: mediaAgent(),
+      /* 只读媒体通道（mtnode_media）：ffprobe / ffmpeg / 语音运行时都在主进程，
+         执行体就是上面那只 mcpMediaRead（与画布读取的媒体清册共用同一份探测缓存）。 */
+      mediaRead: (action, params) => mcpMediaRead(action, params),
       /* 自用回环（见 applySelfLoop）：自己调自己走的是同一套 MCP 契约 */
       selfLoop: (cfg) => applySelfLoop(cfg),
     });
@@ -580,7 +586,7 @@ function mcp() {
 /* ── appHost 重能力桥（画布 / agent / 文件 / 工具 / 联网）────────────────────────
  * 应用中心窗口（preload-app.js）与插件窗口（plugins/preload-window.js）共用这一份实例：
  *   ① 认发送方窗口（应用 id / 插件 id 由各自主进程模块的窗口表给出，页面自报的一律不认）；
- *   ② 认能力位声明 + 用户首次授权（app-host-bridge.js 的 grants，落在 <数据目录>/apps-host.json）；
+ *   ② 认能力位声明（勾上即永久允许，没有首次授权弹窗；清单缺这一位就回 not_declared）；
  *   ③ 画布与会话的活儿一律推给主窗口渲染层（renderer/app-apphost-bridge.js）——
  *      画布真源与 agent 运行态只在渲染层，主进程不另写一套执行器。
  * 主窗口不在线时回结构化 not_ready（不装成功、不悬挂）。 */
@@ -4068,8 +4074,132 @@ async function fnSubtitle(params) {
     return { ok: false, error: String((err && err.message) || err) };
   }
 }
+/* ═════ 媒体元信息 / 只读媒体通道 ═════════════════════════════════════════════
+   为什么需要（实测缺口）：画布上的媒体节点（图像 / 音频 / 视频输入、素材条目、生成与
+   保存节点的落盘目标）对外只露「名字」，外部 Agent 连文件在哪都不知道；知道了也读不到
+   内容（渲染层没有任何可读内容，音频 / 视频更得靠本机 ffmpeg 与语音运行时）。
+   这里只补两件，都不写任何文件：
+     ① mediaMetaOf(path) —— 存在性 / 字节数 / 像素尺寸 / 时长，按 mtime+size 缓存；
+        renderer 的画布读取（媒体清册）与 MCP 的 mtnode_media probe 共用这一份。
+     ② mcpMediaRead(action, params) —— MCP 的 mtnode_media：probe / audio（转写）/
+        frames（抽帧出 PNG 路径）。三个动作全复用既有内核（main-qa-media.js 的探针与
+        抽帧、media-subtitle.js 的 SenseVoice 转写），不另写一套解码 / 识别。
+   图像不在这里读像素：客户端拿路径调 mtnode_vision 即可（同机、同一台识图路由）。 */
+
+let mediaMetaCache = new Map(); /* path|mtime|bytes -> {width,height,durationSec,…} */
+async function mediaMetaOf(rawPath) {
+  const file = String(rawPath || "").trim();
+  if (!file) return { ok: false, path: "", exists: false, error: "缺少媒体路径" };
+  let st = null;
+  try {
+    st = fs.statSync(file);
+  } catch (_) {
+    st = null;
+  }
+  const base = {
+    ok: true,
+    path: file,
+    exists: !!st,
+    bytes: st ? st.size : 0,
+    mtime: st ? Math.floor(st.mtimeMs) : 0,
+  };
+  if (!st || !st.isFile()) return base;
+  const key = file + "|" + base.mtime + "|" + base.bytes;
+  const hit = mediaMetaCache.get(key);
+  if (hit) return Object.assign(base, hit, { cached: true });
+  let extra = {};
+  /* 图像先试 nativeImage（读文件头，不解码整张）；不是图像再交 ffprobe。 */
+  let isImage = false;
+  try {
+    const img = nativeImage.createFromPath(file);
+    if (img && !img.isEmpty()) {
+      const sz = img.getSize();
+      extra = { type: "image", width: sz.width || 0, height: sz.height || 0 };
+      isImage = true;
+    }
+  } catch (_) {}
+  if (!isImage) {
+    let r = null;
+    try {
+      r = await require("./main-qa-media.js").probeMedia(file, { light: true });
+    } catch (err) {
+      r = { ok: false, error: String((err && err.message) || err) };
+    }
+    if (r && r.ok) {
+      extra = {
+        type: r.hasVideo ? "video" : r.hasAudio ? "audio" : "other",
+        durationSec: r.durationSec || 0,
+        width: r.width || 0,
+        height: r.height || 0,
+        fps: r.fps || 0,
+        hasAudio: !!r.hasAudio,
+        hasVideo: !!r.hasVideo,
+        ffmpegSource: r.ffmpegSource || "",
+      };
+    } else {
+      extra = { type: "other", probeError: String((r && r.error) || "探测失败") };
+    }
+  }
+  if (mediaMetaCache.size > 500) mediaMetaCache = new Map();
+  mediaMetaCache.set(key, extra);
+  return Object.assign(base, extra);
+}
+/* 画布读取的媒体清册（renderer 一次问一批；只读、只回元信息） */
+ipcMain.handle("media:meta", async (_e, payload) => {
+  const list = Array.isArray(payload) ? payload : (payload && payload.paths) || [];
+  const out = [];
+  for (const p of list.slice(0, 64)) out.push(await mediaMetaOf(p));
+  return out;
+});
+/* MCP 的 mtnode_media（参数表真源：dsh/gateway/media-read-plugin.mjs）。
+   probe = 元信息；audio = SenseVoice 本地转写（带 cues / srt / vtt）；
+   frames = 按时间点抽 PNG，回绝对路径（要看画面就把路径交给 mtnode_vision）。
+   失败一律 { ok:false, error }（不抛），与 fnSubtitle / mtnode_generate 同一口径。 */
+async function mcpMediaRead(action, params) {
+  const p = params && typeof params === "object" ? params : {};
+  const pathIn = String(p.path || "").trim();
+  const act = String(action || "probe").trim();
+  try {
+    if (!pathIn) return { ok: false, error: "缺少 path（本机媒体文件绝对路径；画布上的路径见 canvas_get 的 media.files）" };
+    if (act === "probe") return await mediaMetaOf(pathIn);
+    if (act === "audio") {
+      const r = await fnSubtitle({
+        file: pathIn,
+        language: p.language,
+        maxChars: p.maxChars,
+        maxDurationSec: p.maxDurationSec,
+        allowLarge: p.allowLarge === true,
+      });
+      if (!r || r.ok === false) return { ok: false, error: String((r && r.error) || "转写失败"), file: pathIn };
+      const cues = Array.isArray(r.cues) ? r.cues : [];
+      return Object.assign({}, r, { text: cues.map((c) => String(c.text || "")).join("\n") });
+    }
+    if (act === "frames") {
+      const qa = require("./main-qa-media.js");
+      const meta = await mediaMetaOf(pathIn);
+      if (!meta.exists) return { ok: false, error: "文件不存在：" + pathIn };
+      const times = Array.isArray(p.times) && p.times.length
+        ? p.times.map((x) => Number(x)).filter((t) => t >= 0)
+        : qa.timePoints(Number(meta.durationSec) || 0, p.count).times;
+      const r = await qa.extractFrames({ path: pathIn, times: times, shotId: "mcp-media" });
+      if (!r || r.ok === false) return { ok: false, error: String((r && r.error) || "抽帧失败"), file: pathIn };
+      return {
+        ok: true,
+        file: pathIn,
+        durationSec: meta.durationSec || 0,
+        dir: r.dir,
+        frames: r.frames,
+        hint: "每帧都是一个本机 PNG 绝对路径：要看画面内容就把路径交给 mtnode_vision（question 写你要看什么）。",
+      };
+    }
+    return { ok: false, error: "未知 action：" + act + "（probe / audio / frames）" };
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+}
+
 /* 图像后端清单（主窗口渲染层用）：函数节点头部「图像后端」按钮列候选 / 把参考图能力写清楚。
-   与应用窗口的 apps:hostImageModels 同一份清单，只是没有「该应用选的是哪只」这一层。 */
+    与应用窗口的 apps:hostImageModels 同一份清单，只是没有「该应用选的是哪只」这一层。 */
 ipcMain.handle("image:backends", () => {
   try {
     return imageBackendsForUi();
@@ -6953,7 +7083,12 @@ ipcMain.handle("data:openRoot", () => {
   }
 });
 
+/* 这一轮退出是「重启应用」引起的：app.relaunch() 会在本进程退出前就把新实例拉起来，
+   而退出瞬间交换要 rename 的正是新实例刚打开的那个安装目录 —— 两条撞一起只会两边都失败，
+   所以 before-quit 里那一轮不交换（更新留给下一次真正的退出 / 「立即重启」）。 */
+let quitForRelaunch = false;
 ipcMain.handle("app:relaunch", () => {
+  quitForRelaunch = true;
   app.relaunch();
   app.quit();
   return { ok: true };
@@ -11054,6 +11189,15 @@ app.on("before-quit", (ev) => {
   /* 截图抓屏的常驻 PowerShell（热进程）：退出时连它的子进程一起收干净，别留 300MB 的
      powershell.exe 挂在那儿等空闲超时。失败不拦退出。 */
   try { if (_shotCapture && typeof _shotCapture.dispose === "function") _shotCapture.dispose(); } catch {}
+  /* 退出瞬间交换（唯一的钩子）：托盘「退出 MTNode」/ 主窗 ✕ 选「退出程序」/ window-all-closed /
+     app:relaunch / 应用窗口的 appHost.quit() / 更新里的「立即重启」，最后都是 app.quit()，
+     所以只会走到这里一次 —— 交换器只在这一处拉起（有 pending-swap.json 且旁路目录还在才拉）。
+     为什么**尽早**拉：helper 自己会等本进程真的退出才做那两次 rename，所以它跟下面的后端收尾
+     可以并行、不抢退出预算；而下面那批进程收干净 = 本进程退出时它们都不在了 = rename 的时候
+     没人占着安装目录里的文件（Windows 上只要有一个进程还开着那里面的 exe / dll，rename 就会被
+     顶回去）。三档结论（拉起来了 / 这台机器做不了 / 没起来）在 quitCleanup 末尾如实写日志。
+     唯一的例外是「重启应用」（app:relaunch）：新实例会在本进程退出前就起来，这一轮不交换。 */
+  const swapLaunch = swapOnQuit({ skip: quitForRelaunch ? "relaunch" : "" }).catch(() => null);
   /* ② 插件后台进程：本地后端进程树（vramShutdownAll 逐个走宿主的 hard()）+ 还在跑的安装进程树
      + 宿主持有的 Paseo daemon。都有上限，任何一项失败 / 超时都不拦退出，做完自己再 app.quit()。 */
   const quitCleanup = (async () => {
@@ -11087,6 +11231,23 @@ app.on("before-quit", (ev) => {
       jobs.push(Promise.resolve(shutdownBackendRegistry()).catch(() => ({ stopped: 0 })));
     } catch {}
     await Promise.all(jobs);
+    /* 后端子进程 / 安装进程树 / 插件后端都收干净了，才轮到「让 helper 有机会换」：它此刻正在等
+       本进程退出，这里要确认的就是「本进程退出时机器上已经不剩占着安装目录的进程」。
+       托盘图标也在这里收掉（destroy 幂等，will-quit 还会再收一次）。 */
+    try { trayNotify.destroy(); } catch {}
+    const sw = (await swapLaunch) || {};
+    try {
+      if (sw.ok && sw.launched) {
+        errLog("[quit] 已拉起交换器（runId=" + (sw.runId || "-") + "）：退出后由它完成两次 rename，结论写 " + (sw.resultFile || "-"));
+      } else if (sw.skipped) {
+        /* 「没有待交换的旁路」是常态（绝大多数退出都属于这一档），不写日志免得刷屏 */
+        if (sw.reason && sw.reason !== "no_pending_swap") errLog("[quit] 这次退出不交换：" + sw.reason);
+      } else if (sw.unsupported) {
+        errLog("[quit] 这台机器做不了退出瞬间交换（" + (sw.reason || "unsupported") + "）：安装目录未动，下次启动仍是「已预装，重启生效」，点「立即重启」走就地安装");
+      } else {
+        errLog("[quit] 交换器没起来（" + (sw.error || "unknown") + "）：退出照旧，下次启动自检会重试");
+      }
+    } catch (_) {}
   })().catch(() => {});
   const hardStop = new Promise((resolve) => {
     const t = setTimeout(resolve, 16000);

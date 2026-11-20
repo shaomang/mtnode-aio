@@ -7,9 +7,10 @@
 ## 1. 这是什么
 
 MTNode 原本只做 MCP **客户端**（`dsh/gateway/mcp-resources.mjs` 连别人的服务器，给自家 Agent 加工具）。
-本模块补上另一半：MTNode 自己作为 MCP **服务端**，对外暴露 16 个工具 ——
+本模块补上另一半：MTNode 自己作为 MCP **服务端**，对外暴露 17 个工具 ——
 画布 / 应用 / 数据库 / 事实库 / 长任务 / 素材 / 识图 / 窗口操作（`mtnode_gui`）/ 开发调试（`mtnode_dev`），
-以及**媒体生成**（图像 / 音乐 / 语音 / 视频）、**跑节点与整图**、**用户工具节点**、**会话**。
+以及**媒体生成**（图像 / 音乐 / 语音 / 视频）、**跑节点与整图**、**用户工具节点**、**会话**、
+**只读媒体通道**（`mtnode_media`：元信息 / 音频转写 / 视频抽帧）。
 
 **同一个服务端也给自己用**（§3.6 自用回环）：应用内的 Agent 经 MCP 调自己的生成能力，
 走的是与第三方客户端完全相同的入口 —— 不另开一条只有 agent 能走的后门。
@@ -32,8 +33,9 @@ handleCanvasEvent / handleDbToolEvent / handleAiFactsToolEvent / handleAssetTool
   ▲ 原路回执
 ```
 
-例外有两族（都不经渲染层）：`mtnode_gui`（主进程操作窗口）与 `mtnode_dev`（主进程起调试实例 + CDP）、
-`mtnode_generate`（主进程直连四个本机生成后端）。
+例外有三族（都不经渲染层）：`mtnode_gui`（主进程操作窗口）、`mtnode_dev`（主进程起调试实例 + CDP）、
+`mtnode_generate`（主进程直连四个本机生成后端）与 `mtnode_media`（主进程跑 ffprobe / ffmpeg /
+本地 SenseVoice 转写，只读、不写盘 —— 渲染层没有这些内核，也拿不到 / 读不出媒体内容）。
 
 于是「第三方调用」与「自家 Agent 调用」共用同一套准入、落盘、告警与回执口径。
 
@@ -60,7 +62,7 @@ handleCanvasEvent / handleDbToolEvent / handleAiFactsToolEvent / handleAssetTool
 - macOS / Linux 同上（`command` 换成实际的 MTNode 可执行文件或 `node`，路径换成实际安装位置；用应用可执行文件时同样要带 `ELECTRON_RUN_AS_NODE=1`）。
 - 桥脚本自己读数据目录里的 `mcp-server.json` 拿端口与令牌，所以**配置里不需要地址与令牌**；
   也可用环境变量显式覆盖（便携版 / 多用户）：`MTNODE_DATA_DIR`、`MTNODE_MCP_URL`、`MTNODE_MCP_TOKEN`。
-- 客户端重启一次即可看到全部 16 个工具（包含只在 MCP 这一侧提供的 `mtnode_gui` / `mtnode_dev` 与生成 / 跑图四件）。
+- 客户端重启一次即可看到全部 17 个工具（包含只在 MCP 这一侧提供的 `mtnode_gui` / `mtnode_dev` / `mtnode_media` 与生成 / 跑图四件）。
 
 ### 2.2 本机 HTTP（自研客户端 / 远程工具宿主）
 

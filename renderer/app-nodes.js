@@ -15461,6 +15461,138 @@ async function snapshotAssetContentOf(snap, opts) {
   return snap;
 }
 
+/* ── 媒体清册（canvas_get 的 media 块）───────────────────────────────────────
+   实测缺口：画布上的媒体节点对外只露「名字」（input_image 只有 imageName，input_audio /
+   input_video 连名字都没有），外部 Agent 看不到渲染层、也没有别的地方能问到「文件到底在哪」，
+   于是只能猜路径。这里把「谁的哪个槽、什么类型、绝对路径、在不在、多大、多宽多长」一次摊平。
+   只列图片 / 音频 / 视频（媒体），不解码内容 —— 看画面走 mtnode_vision，音频转写 /
+   视频抽帧走 mtnode_media。槽位按**字段名**取（imageAsset / entries[].path / mediaAsset /
+   files[] / 素材条目 / outputPath / savePath），不按 kind 枚举：以后新增同类节点不用改这里。 */
+function mediaSlotPathsOf(node) {
+  const out = [];
+  const push = (slot, role, p) => {
+    const s = String(p || "").trim();
+    if (s) out.push({ slot: slot, role: role, path: s });
+  };
+  if (!node) return out;
+  push("imageAsset", "input", node.imageAsset);
+  for (let i = 0; i < (Array.isArray(node.entries) ? node.entries.length : 0); i++) {
+    const e = node.entries[i];
+    if (e && e.path) push("entries[" + i + "]", "input", e.path);
+  }
+  push("mediaAsset", "input", node.mediaAsset);
+  for (let i = 0; i < (Array.isArray(node.files) ? node.files.length : 0); i++) {
+    const f = node.files[i];
+    push("files[" + i + "]", "input", typeof f === "string" ? f : f && (f.path || f.file));
+  }
+  if (typeof isAssetNode === "function" && isAssetNode(node)) {
+    for (const it of assetItems(node)) {
+      if (it.type === "text") continue;
+      push("item:" + it.id, "input", typeof assetItemAbsPath === "function" ? assetItemAbsPath(node, it) : "");
+    }
+  }
+  push("outputPath", "output", node.outputPath);
+  push("savePath", "output", node.savePath);
+  return out;
+}
+
+/* 主进程 media:meta 一轮最多回这么多个路径的元信息（与 main.js 的 slice 同值） */
+const MEDIA_META_MAX = 64;
+
+/** 媒体类型（只认图片 / 音频 / 视频；其它扩展名不进清册）。扩展名口径复用文件预览那一套。 */
+function mediaTypeOfPath(p) {
+  if (typeof fileviewIsVideoPath === "function" && fileviewIsVideoPath(p)) return "video";
+  if (typeof fileviewIsAudioPath === "function" && fileviewIsAudioPath(p)) return "audio";
+  if (typeof fileviewIsImagePath === "function" && fileviewIsImagePath(p)) return "image";
+  return "";
+}
+
+/** 把媒体清册挂到快照上（缺省就有：外部 Agent 不该为了「文件在哪」再猜一次）。
+ *  尺寸 / 时长由主进程给（图像读文件头、音视频 ffprobe，按 mtime+size 缓存），
+ *  拿不到就如实只给存在性与字节数。素材库条目的绝对路径是**异步**补的（渲染层视图），
+ *  首读还没到货的那些不瞎猜，只记进 pending 让客户端再读一次。 */
+async function snapshotMediaOf(snap, opts, wfIn) {
+  if (!snap || typeof snap !== "object") return snap;
+  const o = opts || {};
+  const wf = wfIn || S.wf;
+  const nodes = (wf && Array.isArray(wf.nodes) && wf.nodes) || [];
+  const only = Array.isArray(o.ids) && o.ids.length ? o.ids.map((x) => String(x)) : null;
+  const files = [];
+  const seen = new Set();
+  let pending = 0;
+  for (const n of nodes) {
+    if (!n) continue;
+    if (only && only.indexOf(String(n.id)) < 0 && only.indexOf(String(n.title || "")) < 0) continue;
+    const isAsset = typeof isAssetNode === "function" && isAssetNode(n);
+    if (isAsset) {
+      for (const it of assetItems(n)) {
+        if (it.type === "text") continue;
+        const p = typeof assetItemAbsPath === "function" ? assetItemAbsPath(n, it) : "";
+        if (!p) pending++;
+      }
+    }
+    for (const s of mediaSlotPathsOf(n)) {
+      const type = mediaTypeOfPath(s.path);
+      if (!type) continue;
+      const key = String(n.id || "") + "|" + s.slot;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      files.push({
+        nodeId: String(n.id || ""),
+        title: String(n.title || ""),
+        kind: String(n.kind || ""),
+        slot: s.slot,
+        role: s.role,
+        type: type,
+        path: s.path,
+      });
+    }
+  }
+  if (!files.length && !pending) return snap;
+  let meta = [];
+  try {
+    const paths = [];
+    for (const f of files) if (paths.indexOf(f.path) < 0) paths.push(f.path);
+    meta = (await window.api.mediaMeta(paths)) || [];
+  } catch (_) {
+    meta = [];
+  }
+  const byPath = new Map();
+  for (const m of meta) if (m && m.path) byPath.set(String(m.path), m);
+  let missing = 0;
+  for (const f of files) {
+    const m = byPath.get(f.path);
+    /* 主进程一轮最多探测 64 个（见 media:meta）：超出部分**不猜**，明说没探测 */
+    if (!m) {
+      f.note = "未探测（一轮最多 " + MEDIA_META_MAX + " 个媒体路径，用 mtnode_media probe 单独取）";
+      continue;
+    }
+    f.exists = m.exists !== false;
+    if (!f.exists) {
+      missing++;
+      continue;
+    }
+    f.bytes = Number(m.bytes) || 0;
+    if (m.width) f.width = m.width;
+    if (m.height) f.height = m.height;
+    if (m.durationSec) f.durationSec = m.durationSec;
+    if (m.fps) f.fps = m.fps;
+    if (m.probeError) f.note = "探测失败：" + m.probeError;
+  }
+  snap.media = {
+    count: files.length,
+    missing: missing,
+    note:
+      "画布上的媒体文件清册（只列图片 / 音频 / 视频；这里只有路径与元信息，不含内容）。" +
+      "看图像像素用 mtnode_vision（给 path + question）；音频转写 / 视频抽帧用 mtnode_media。",
+    files: files,
+  };
+  if (pending)
+    snap.media.pendingNote =
+      "另有 " + pending + " 个素材条目这一趟还没解析出绝对路径（素材库视图是异步补的）：再读一次就齐了，别按缺省路径猜。";
+  return snap;
+}
+
 /* Agent 侧透出「功能色卡」：唯一真源是 app-devnode.js 的 DEV_FUNC_COLORS 常量，
    这里只搬运 key / zh / en / hex（keywords 属内部推断细节，不塞进快照浪费 token）。
    mtnode_canvas_get 与助手快照都通过 devFuncColors 字段读到同一张表。 */
@@ -15732,6 +15864,9 @@ async function canvasSnapshotFull(opts, scopeOpts) {
      它仍能在 scopeNote 里说明「工作范围 = 本会话所属画布」，不必再带一份画布列表。 */
   if (minimal && !want("workflows")) delete snap.workflows;
   applySnapshotSectionFilter(snap, (opts || {}).sections);
+  /* 媒体清册挂在 section 过滤之后：它是「文件在哪」的唯一答案，不该被 sections 顺手裁掉
+     （sections 管的是重型块；这一块只有几个字段，且缺省没有媒体节点时根本不出现）。 */
+  await snapshotMediaOf(snap, opts || {});
   /* 哈希必须算在**画布真源**上，不能算在这个刚被 detail / sections / ids / scope 裁过的
      快照上（minimal 档的节点只剩 标题/描述/类别，与 standard 档算出两个哈希 → 客户端
      「读完立刻改」必被版本闸拒）。故显式交真源：S.wf 就是 canvasSnapshot 用的那张图。 */
@@ -18290,6 +18425,9 @@ async function canvasDocSnapshotViaService(opts, boundWf) {
      它仍能在 scopeNote 里说明「工作范围 = 本会话所属画布」，不必再带一份画布列表。 */
   if (o.detail === "minimal" && !want("workflows")) delete snap.workflows;
   applySnapshotSectionFilter(snap, (opts || {}).sections);
+  /* 媒体清册：与老路同一份口径（见 snapshotMediaOf）。主进程文档服务算不出它 ——
+     节点上的媒体槽与素材条目都在渲染层内存里，这里补挂一次。 */
+  await snapshotMediaOf(snap, opts || {}, boundWf || S.wf);
   return snap;
 }
 

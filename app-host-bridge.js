@@ -7,7 +7,7 @@
  * （preload-app.js）与插件窗口（plugins/preload-window.js）是两份**独立 BrowserWindow**，
  * 页面也不属于 MTNode 渲染层。所以能力只能这样走：
  *
- *   应用窗口 / 插件窗口 ──invoke──▶ 本模块（认发送方窗口、认能力位、认授权）
+ *   应用窗口 / 插件窗口 ──invoke──▶ 本模块（认发送方窗口、认能力位）
  *        ──webContents.send('appHost:event')──▶ 主窗口渲染层（renderer/app-apphost-bridge.js）
  *        ◀──window.api.appHostReply(frame)──  回执（本模块 settle）
  *
@@ -18,12 +18,14 @@
  *      后台加载（runAgainstWf，不动用户视图）；
  *   3) **主窗口不在线就回结构化 not_ready**：不装成功、不把调用挂死。
  *
- * 授权（本轮共识）：应用要在 app.json 的 capabilities 里声明 canvasHost / agentHost；
- * 声明 ≠ 放行 —— 首次调用弹一次窗，一次授权该应用的全部重能力（画布 / agent / fs / audio / tools / net），
- * 记录在 <数据目录>/apps-host.json（grants）。关掉能力位 = 撤销授权（见 apps-store.js）。
+ * 授权（用户共识：**永久允许**）：应用要在 app.json 的 capabilities 里声明
+ * canvasHost / agentHost / assetHost；**声明即放行** —— 不再有「首次调用弹一次授权窗」那一步，
+ * 也没有 grants 要攒。勾上能力位就是永久允许，取消勾选就是当场收回（每次调用都读清单，
+ * 见 ensureDeclared）。所以能不能用只看一件事：清单里那一位是不是 true。
  *
  * 状态文件：<数据目录>/apps-host.json
- *   { v:1, grants:{ "app:<id>": {at,name} }, bindings:{ "app:<id>": {canvasId, sessionId} } }
+ *   { v:2, bindings:{ "app:<id>": {canvasId, sessionId} } }
+ *   （v1 时代还有 grants：授权弹窗取消后不再读它，老文件里的那份读进来直接丢掉，下次落盘即清掉）
  * ─────────────────────────────────────────────────────────────────────── */
 
 const fs = require("fs");
@@ -36,7 +38,7 @@ const { IMAGE_MIME } = require("./preview-media.js");
 
 /* 单次调用的等待上限（与 MCP 同口径：画布整图跑 / 长会话都不会被这条误杀） */
 const CALL_TIMEOUT_MS = 15 * 60 * 1000;
-/* 用户选画布 / 点授权窗的等待上限：人在屏幕上，给足时间，但绝不永久挂着 */
+/* 用户选画布的等待上限：人在屏幕上，给足时间，但绝不永久挂着 */
 const USER_TIMEOUT_MS = 5 * 60 * 1000;
 /* 画布信息缓存（fs 的操作根要读它，别每个文件操作都回渲染层问一次） */
 const CANVAS_TTL_MS = 5000;
@@ -155,7 +157,7 @@ function createAppHostBridge(o) {
   const canvasCache = new Map();
   let stateCache = null;
 
-  /* ── 状态文件（grants / bindings）────────────────────────────────────── */
+  /* ── 状态文件（bindings：授权已取消，只剩画布 / 会话绑定）────────────────── */
 
   function statePath() {
     const dir = String(getDataDir() || "");
@@ -170,9 +172,9 @@ function createAppHostBridge(o) {
       raw = null;
     }
     const src = isObj(raw) ? raw : {};
+    /* grants 已经不要了（授权弹窗取消）：老文件里那份原样丢掉，下次 saveState 就只剩 bindings */
     stateCache = {
-      v: 1,
-      grants: isObj(src.grants) ? src.grants : {},
+      v: 2,
       bindings: isObj(src.bindings) ? src.bindings : {},
     };
     return stateCache;
@@ -253,51 +255,7 @@ function createAppHostBridge(o) {
     return { ok: true };
   }
 
-  /* ── 授权（声明 + 首次弹窗）────────────────────────────────────────── */
-
-  function granted(c) {
-    const g = state().grants[callerKey(c)];
-    return !!(g && g.at);
-  }
-
-  /** 撤销（关掉能力位时由 apps-store 调；也可从应用设置里手动撤） */
-  function revoke(kind, id) {
-    const k = String(kind || "app") + ":" + String(id || "");
-    const st = state();
-    if (!st.grants[k]) return { ok: true, revoked: false };
-    delete st.grants[k];
-    saveState();
-    return { ok: true, revoked: true };
-  }
-
-  async function ensureGrant(caller) {
-    if (granted(caller)) return { ok: true };
-    const isApp = caller.kind === "app";
-    const name = String(caller.name || caller.id || "");
-    const lines = isApp
-      ? [
-          t("应用：") + name,
-          t("申请的能力：读改画布（含撤销）· 执行画布节点（会花 Token / 占显存）· 调 agent 会话 · 画布工作目录文件 · 本机后端工具 · 联网 · 语音合成 · 素材库（读写删自己创建的内容）"),
-          t("只对「这个应用对应的那张画布」生效；当前主窗口关着时它拿不到任何东西。素材库里你自己创建的素材与条目对它只读。"),
-        ]
-      : [t("插件：") + name, t("申请的能力：读改当前画布 · 调 agent 会话 · 文件 · 本机后端工具 · 联网 · 语音合成")];
-    const r = await askRenderer(
-      "grantAsk",
-      { title: isApp ? t("应用请求画布与 agent 能力") : t("插件请求画布与 agent 能力"), lines: lines },
-      USER_TIMEOUT_MS,
-    );
-    if (!r || r.ok !== true) {
-      /* 主窗口不在线 / 超时 / 界面不可用：原样报回去（说成「用户拒绝」会把排障带偏） */
-      const code = String((r && r.code) || "");
-      if (code === "not_ready" || code === "timeout" || code === "no_ui")
-        return bad((r && r.error) || t("主窗口没有回应授权请求"), code);
-      return bad(t("用户没有授权（应用拿不到画布与 agent）"), "denied");
-    }
-    const st = state();
-    st.grants[callerKey(caller)] = { at: Date.now(), name: name };
-    saveState();
-    return { ok: true };
-  }
+  /* ── 能力位声明（勾上 = 永久允许；没有「第二次授权」这一步）──────────────── */
 
   /** 能力位声明：应用必须声明（插件没有 app.json，跳过这一道） */
   function ensureDeclared(caller, ns) {
@@ -634,7 +592,7 @@ function createAppHostBridge(o) {
   /* ── assets（素材库 · 应用侧唯一入口）──────────────────────────────────
    * 实现在 assets-store.js 的 assetActorCall：归属校验就在库里判 —— 应用只能改 / 删
    * 自己创建的素材与条目，用户自己那份一律只读（越权回 forbidden），不靠调用方自觉。
-   * 插件窗口本轮不开放（用户共识：只给应用），在这里就直说，不去弹授权窗。
+   * 插件窗口本轮不开放（用户共识：只给应用），在这里就直说，不去走一遍没用的能力位。
    *
    * readItem 带 withDataUrl:true 时顺手把图像读成 dataURL：应用页面（独立窗口 / 预览
    * iframe）的 <img> 只认 'self' / data: / blob:，磁盘绝对路径显示不出来。
@@ -809,13 +767,11 @@ function createAppHostBridge(o) {
     if (!table || table.indexOf(String(method || "")) < 0)
       return bad(t("这个宿主能力不存在：") + String(ns) + "." + String(method), "bad_method");
     if (typeof caller.push === "function") pushes.set(callerKey(caller), caller.push);
-    /* 素材库只给应用：插件窗口在这里就回绝，不去弹一次没用的授权窗 */
+    /* 素材库只给应用：插件窗口在这里就回绝，不去走一遍没用的能力位 */
     if (ns === "assets" && kind !== "app")
       return bad(t("素材库能力目前只对应用开放（插件窗口暂不提供）"), "not_supported");
     const decl = ensureDeclared(caller, String(ns));
     if (!decl.ok) return decl;
-    const g = await ensureGrant(caller);
-    if (!g.ok) return g;
     try {
       if (ns === "canvas") {
         /* 画布清单 / 重选 / 信息这三条不走绑定（它们是「绑定之前」要用的） */
@@ -869,9 +825,7 @@ function createAppHostBridge(o) {
     call: call,
     settle: settle,
     pushStream: pushStream,
-    revoke: revoke,
-    granted: granted,
-    /* 冒烟 / 排障用：当前授权与绑定（只读） */
+    /* 冒烟 / 排障用：当前画布绑定（只读；授权已取消，这里没有 grants 了） */
     snapshot: () => JSON.parse(JSON.stringify(state())),
     NS_METHODS: NS_METHODS,
   };

@@ -269,6 +269,13 @@
       "desc": "开发绑定会话不读也不改画布、收尾一句话汇报这一条。"
     },
     {
+      "id": "devnode.coding_guideline",
+      "title": "开发会话 · 编码准则常驻段（默认关）",
+      "group": "devnode",
+      "where": "renderer/app-assist.js · agentSessionSend（契约里带【开发任务书】的会话 = 开发 / 细化绑定会话 · 闸见 isDevBriefContract）",
+      "desc": "默认关闭：出厂正文是空串，没有覆盖时这段一个字符都不注入 —— 开发 / 细化会话的提示词与不加本项时逐字一致。开启方式：把紧凑版编码准则粘进本项并点「保存（本机覆盖）」，可抄 mtnode-agent-skills/coding/ponytail/SKILL.md 的「核心原则」六条（或原版紧凑规则 docs/skill-imports/DietrichGebert--ponytail/AGENTS.md）；点「恢复默认」或把正文清空保存 = 关闭。写进来的正文会被原文追加在系统提示的人设与开发任务书之后，可用 {{…}} 占位符但这种用法没有运行时变量可填，建议写纯文本。影响面：只作用于带【开发任务书】抬头的绑定会话（画布开发节点的「开发」与「细化」、应用开发会话），这些会话每一轮都带上；问询会话、函数 / 工具开发会话、长任务建图会话与普通会话不受影响。只改这一处的措辞不会自动加载 coding/ponytail 等技能（它们仍按需用 skill 工具加载），也不会新建斜杠命令。改动在下一轮生效，不需要重启应用。"
+    },
+    {
       "id": "subagent.db_extract_rows",
       "title": "子代理 · 数据库抽取派单",
       "group": "subagent",

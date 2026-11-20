@@ -100,6 +100,13 @@
     <script src="vendor/katex/katex.min.js"></script>
     <script src="math-render.js"></script>
     <script src="md-render.js"></script>
+    <!-- 内嵌图「拖选复制保住原路径」（共享模块 renderer/app-copy-img.js → window.MTCopyImg）：
+         与主窗（index.html）同一份文件 —— 小窗自己的用户消息缩略图（app-mini-chat.js 的
+         userThumb，alt 同样是「截图」）有同一个 bug：拖选后 Ctrl+C，Chromium 原生序列化的
+         纯文本只给 alt，原路径丢失。无加载期依赖（只取 window / document，I18n 之类全在
+         调用期取、本模块实际一个都不用），文件末尾自带 install() 挂 document 级 copy 监听，
+         排在这里即可。 -->
+    <script src="app-copy-img.js"></script>
     <!-- 输入框自适应高度 + 上边框拖动（共享模块，出口 window.MTGrowInput）：必须在
          app-mini-chat.js 之前，它在绑输入框那一处会调 MTGrowInput.attach(#mcInput)。 -->
     <script src="app-grow-input.js"></script>

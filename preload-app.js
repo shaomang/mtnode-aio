@@ -322,8 +322,8 @@ const appHost = {
    *   ① **目标画布 = 这个应用对应的那张**，不是用户此刻打开的那张：
    *      默认是与应用同 id 的画布（新建应用时后台建好的那张）；不存在时宿主弹窗让用户选一次
    *      并记住（canvas.pick() 可主动重选）。目标画布没被打开时由宿主后台加载，不动用户视图。
-   *   ② **声明 + 授权**：app.json 的 capabilities.canvasHost / agentHost 要勾上（否则回
-   *      not_declared）；首次调用宿主弹一次窗，一次授权全部五类，可在应用设置里关掉能力位撤销。
+   *   ② **声明即放行**：app.json 的 capabilities.canvasHost / agentHost 要勾上（否则回
+   *      not_declared）；勾上就是永久允许（没有第二次授权弹窗），取消勾选就是当场收回。
    *   ③ **主窗口不在线回 not_ready**：不装成功、不悬挂。
    *
    * 通用错误码：not_declared / denied / not_ready / timeout / no_canvas / not_foreground。
@@ -416,7 +416,7 @@ const appHost = {
    * 也能改删**自己创建的**素材与条目；用户自己那份对它只读（归属校验在主进程
    * assets-store.js 的 assetActorCall，越权回 code:"forbidden"）。
    *
-   * 需要 app.json 的 capabilities.assetHost（否则 not_declared）；首次调用宿主弹一次授权。
+   * 需要 app.json 的 capabilities.assetHost（否则 not_declared）；勾上即永久允许，没有第二次确认。
    * 插件窗口拿不到这一路（本轮共识：只给应用）。
    *
    * 方法：

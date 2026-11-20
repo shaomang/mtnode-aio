@@ -1,0 +1,195 @@
+/* fim.css — 状态栏「输入补全」入口（#btnFim）+ 补全设置面板（#fimPop）。
+   实现见 renderer/app-fim-settings.js；配色一律取 base.css 的主题变量
+   （暗色 / 工业 / 亮色三套自动跟随，亮色那一条在 theme-daylight-skin.css 里）。
+
+   位置纪律：状态栏 order 链本轮往前扩一格 ——
+   补全 -6 · 快捷会话 -5 · DeepSeek -4 · 语音播报 -3 · 语音输入 -2 · AI 增强 -1 · 画布截图 0。
+   想再挪位置只改下面这一个数，DOM 次序不影响结果。
+
+   面板纪律（AGENTS.md 的浮层口径）：persistent —— 点外部 / 点画布都不关，
+   只走窗内 ✕ / Esc / 再点一次这颗按钮。 */
+
+/* ── 状态栏入口按钮（左下角最左一颗）──────────────────────────────────── */
+.statusbar .sb-fim {
+  flex: none;
+  order: -6; /* 快捷会话（-5）左边；见本文件顶部那段 order 链 */
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1;
+  font-family: var(--mono, ui-monospace, monospace);
+}
+
+.statusbar .sb-fim:hover {
+  color: var(--cyan2, #38d6ff);
+  border-color: var(--bd2);
+  background: rgba(56, 214, 255, .08);
+}
+
+.statusbar .sb-fim:focus-visible {
+  outline: 1px solid var(--cyan2, #38d6ff);
+  outline-offset: 1px;
+}
+
+/* 面板开着时入口本身就是「亮着的开关」：点亮语言与 .statusbar .sb-tts.on、
+   #btnDeepSeek[aria-pressed="true"] 完全一致（青字 + 青边 + 青底）。 */
+.statusbar .sb-fim.is-open,
+.statusbar .sb-fim[aria-pressed="true"] {
+  color: var(--cyan2, #38d6ff);
+  border-color: color-mix(in srgb, var(--cyan2, #38d6ff) 45%, transparent);
+  background: rgba(56, 214, 255, .1);
+}
+
+/* ── 补全设置面板（从状态栏向上展开的 fixed 浮层）──────────────────────── */
+.fim-pop {
+  display: none;
+  position: fixed;
+  z-index: 1500;
+  width: 296px;
+  background: linear-gradient(180deg, var(--panel2), var(--panel));
+  border: 2px solid var(--bd2);
+  border-radius: 4px;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, .55);
+  padding: 0 0 10px;
+}
+
+.fim-pop.on {
+  display: block
+}
+
+.fim-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--bd);
+}
+
+.fim-head b {
+  flex: 1;
+  font-size: 12px;
+  color: var(--cyan2);
+  letter-spacing: .5px;
+}
+
+.fim-close {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.fim-close:hover {
+  color: var(--ink);
+  border-color: var(--bd2);
+  background: rgba(126, 231, 135, .06);
+}
+
+/* 总开关：整行可点，勾选框取强调色 */
+.fim-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px 4px;
+  font-size: 12px;
+  color: var(--ink);
+  cursor: pointer;
+  user-select: none;
+}
+
+.fim-row input {
+  accent-color: var(--cyan2, #38d6ff)
+}
+
+/* 服务商 / 模型两格外加两个数字格：与 bg-rm-pop 的字段同一口径 */
+.fim-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 10px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.fim-field select {
+  border: 1px solid var(--bd2);
+  border-radius: 3px;
+  padding: 4px 6px;
+  font-size: 12px;
+  outline: none;
+  max-width: 100%;
+}
+
+.fim-field select:focus,
+.fim-field input:focus {
+  border-color: var(--cyan)
+}
+
+.fim-field input[type="number"] {
+  background: var(--code);
+  color: var(--ink);
+  border: 1px solid var(--bd2);
+  border-radius: 3px;
+  padding: 4px 6px;
+  font-size: 12px;
+  outline: none;
+  width: 100%;
+}
+
+/* 触发延迟 + 最大补全长度：一行两格 */
+.fim-two {
+  display: flex;
+  gap: 0;
+}
+
+.fim-two .fim-field {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+/* 本次统计（只读一行） */
+.fim-stats {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 4px 10px 0;
+  padding: 6px 8px;
+  border: 1px solid var(--bd);
+  border-radius: 3px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.fim-stats b {
+  margin-left: auto;
+  font-weight: 400;
+  color: var(--ink);
+  letter-spacing: .5px;
+}
+
+/* 隐私提示：一行淡字，不抢眼但不能省 */
+.fim-privacy {
+  margin: 8px 10px 0;
+  font-size: 10.5px;
+  line-height: 1.45;
+  color: var(--muted);
+}

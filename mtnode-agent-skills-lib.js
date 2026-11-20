@@ -16,6 +16,7 @@ const CATEGORY_TITLES = {
   writing: "写作与润色",
   film: "AI 影视创作",
   remotion: "Remotion 视频制作",
+  coding: "编码准则与代码评审",
 };
 
 /* 二级分组标题：类目目录下再按阶段 / 主题分子目录（如 film/script/…、remotion/animation/…）。

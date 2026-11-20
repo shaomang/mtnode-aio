@@ -64,6 +64,9 @@
  *   · apps:appDirPick / apps:dataDirPick（「应用设置」窗里「应用文件夹 / 数据目录」两枚「修改」：
  *   前者把应用**搬到另一套根的根目录**下（应用只认 <根>\<id>，见 appDirMoveTo），后者与独立窗口里
  *   那条数据目录口径同源；两者都只回回执，渲染层不碰文件系统）
+ *   · apps:appIdChange（「应用设置」窗里「应用 id · 修改」：改 id = 改应用文件夹名，一次把
+ *   app.json 的 id / 数据根 / apps-models 的键 / 按 id 的缓存一起改到位，失败倒着回滚，见 changeAppId；
+ *   画布与会话归属那一半在渲染层，见 renderer/app-app-flow.js 的 appIdChangeFollow）
  *   · apps:delete（删除应用：应用文件夹与画布一起进系统回收站，见 deleteApp）
  *   apps:setMeta（本机状态字段 dev / author / forkOf / cloud 的唯一写入口，渲染层不碰文件系统）
  *   apps:probeChanges · apps:openWindow / closeWindow / isOpen
@@ -876,7 +879,7 @@ function registerPreviewProtocol() {
 let getDataDir = () => "";
 let getMainWin = () => null;
 /* 宿主桥（画布 / agent / 文件 / 工具 / 联网）：主进程 app-host-bridge.js 的实例，main.js 注入。
-   应用窗口的每一次重能力调用都经它（认发送方窗口 → 认能力位 → 认授权 → 中继到渲染层）。 */
+   应用窗口的每一次重能力调用都经它（认发送方窗口 → 认能力位 → 中继到渲染层）。 */
 let hostBridge = null;
 let getAppVersion = () => "";
 let t = (s) => String(s == null ? "" : s);
@@ -1523,6 +1526,312 @@ async function appDataDirPickFromMain(arg) {
   const r = await pickAppDataDir(id, { q: true });
   if (!r || !r.ok) return r || bad(t("选择数据文件夹失败"), "pick_failed");
   return Object.assign({}, r, { exists: fs.existsSync(r.dir) });
+}
+
+/* ── 「应用 id · 修改」的唯一写入口（开发页「应用设置」窗里那一行「修改」调它）──────────────
+ *
+ * 为什么不是「改个文件夹名」：应用 id 是贯穿各层的主键 —
+ *   目录名 <根>\<id>\、app.json 的 id、画布 id（<数据目录>/save/<id>.json）、
+ *   数据根 <数据目录>/apps-data/<dev|downloaded>/<id>/、apps-models.json 的 <id> 与 image.<id>、
+ *   以及按 id 记的缓存（轻表 / 变更快照 / 上架截图归属）。
+ * 所以改名必须一次把这几处一起改到位，否则界面表现是「应用消失了 / 数据空了 / 画布打不开」。
+ *
+ * 口径（与「应用文件夹 · 修改」moveAppDirInto 一脉相承，能复用就复用）：
+ *   · 新 id 走 appIdForCanvas（与新建应用同一口径：4–64 位字母数字下划线连字符，同时是画布 id），
+ *     旧 id 走 safeAppId（老应用的目录名只要合法就认）；同名 = 什么都不做；
+ *   · 新 id 不能和**两套根里任意一处**已有目录撞（不覆盖、不自动改名 —— 用户填的那个才是他想要的）；
+ *   · 改名会撞文件句柄：先请那只独立窗口退出（closeAppWindow + waitAppWindowClosed），
+ *     关不干净就中止并如实回 running，一个字节都不动；
+ *   · 物理改名优先 renameSync（同盘瞬间完成），跨盘 / 被占则整目录复制再删源（与 moveAppDirInto 同一搬法）；
+ *   · **任何一步失败都倒着回滚已经做过的步骤**（清单写回旧 id / 目录搬回去 / 数据根搬回去），
+ *     回执里写清哪一步没做成（code = move_failed / manifest_failed / data_failed）；
+ *   · app.json 只改 id 一位，name / version / dev / author / capabilities / cloud 等一字不动
+ *     （cloud 是「我上架过的那条」，仍记旧 id —— 回执里用 warning 说清，不替用户去动云端）；
+ *   · 数据根只搬**默认数据根下的那一份**（含 data.json 与 dataDir.json）；用户自己选过的数据文件夹
+ *     文件一个字节都不搬（指针里的绝对路径改名后照样指着它）；
+ *   · 缓存只为「先出字」，清不掉只记 warning，不影响改名结果。
+ *
+ * 回执：{ ok, from, to, dir, root, kind, dataDir, canvasId, closed, leftover, movedData, warnings[] }。
+ * 渲染层那一半（画布 / 会话归属 / 开发节点）不在这里 —— 画布与画布内节点归渲染层，
+ * 见 renderer/app-app-flow.js 的 appIdChangeFollow。
+ */
+async function changeAppId(arg) {
+  const a = isObj(arg) ? arg : {};
+  const from = safeAppId(a.id);
+  if (!from) return bad(t("应用 id 不合法"), "bad_id");
+  const to = appIdForCanvas(a.to);
+  if (!to)
+    return Object.assign(
+      bad(
+        t("新应用 id 不合法：") +
+          t("4–64 位字母 / 数字 / 下划线 / 连字符，不能含点、空格或中文（它同时是这张画布的 id）"),
+        "bad_id",
+      ),
+      { from: from, to: String(a.to == null ? "" : a.to) },
+    );
+  if (from === to) return { ok: true, from: from, to: to, unchanged: true, warnings: [] };
+
+  /* ① 找旧目录 + 反推它真实所在的那一套根（dirOfApp 会兜底回落，所以按目录反推才准） */
+  let kind = "";
+  let dir = "";
+  let root = "";
+  try {
+    dir = dirOfApp(from, a.kind ? kindOfRoot(a.kind) : "");
+    if (!dir || !fs.existsSync(dir))
+      return Object.assign(bad(t("该应用不在本机"), "missing"), { missing: true, id: from });
+    kind = rootKindOfDir(path.dirname(dir)) || (a.kind ? kindOfRoot(a.kind) : diskKindOf(from));
+    root = rootPathOf(kind).root;
+  } catch (err) {
+    return fail(err);
+  }
+  const target = path.join(root, to);
+  /* 守卫：源必须严格是 <该套根>/<旧 id>（不猜、不搬别处） */
+  if (path.resolve(dir) !== path.resolve(path.join(root, from)))
+    return Object.assign(bad(t("改名目标不是这个应用自己的目录，已拒绝"), "path_escape"), {
+      from: from,
+      to: to,
+      dir: dir,
+    });
+
+  /* ② 撞名：两套根里任意一处已经有这个 id 的目录就停下（绝不覆盖） */
+  const clashes = [];
+  for (const k of APP_KINDS) {
+    let d = "";
+    try {
+      d = dirOfKind(k, to);
+    } catch (_) {
+      d = "";
+    }
+    if (d && fs.existsSync(d) && clashes.indexOf(d) < 0) clashes.push(d);
+  }
+  if (clashes.length)
+    return Object.assign(
+      bad(t("那个应用 id 已经有文件夹了（库目录 / 开发目录里各看一眼）：换一个 id，这里不覆盖"), "exists"),
+      { from: from, to: to, dir: dir, conflicts: clashes },
+    );
+
+  const warnings = [];
+  const movedData = [];
+  const undos = [];
+  const rollback = () => {
+    for (let i = undos.length - 1; i >= 0; i--) {
+      try {
+        undos[i]();
+      } catch (_) {}
+    }
+  };
+
+  /* ③ 关窗：正跑着的窗口占着目录里的文件，改名 / 删除都可能失败 */
+  let closed = false;
+  if (isAppWindowOpen(from)) {
+    closeAppWindow(from);
+    const ok = await waitAppWindowClosed(from);
+    if (!ok)
+      return Object.assign(
+        bad(t("那个应用的独立窗口没能关掉（可能正在忙），已中止改名：请先手动关掉它再试"), "running"),
+        { from: from, to: to, dir: dir },
+      );
+    closed = true;
+  }
+
+  /* ④ 物理改名 */
+  let leftover = false;
+  try {
+    mk(root);
+    try {
+      fs.renameSync(dir, target);
+    } catch (_) {
+      /* 跨盘 / 被占：整目录复制再删源；复制中途失败就把半份清掉，源一个字节不动 */
+      try {
+        copyDirRecursive(dir, target);
+      } catch (err2) {
+        rmDirRecursive(target);
+        throw err2;
+      }
+      rmDirRecursive(dir);
+      leftover = fs.existsSync(dir);
+    }
+  } catch (err) {
+    return Object.assign(fail(err), { code: "move_failed", from: from, to: to, dir: dir, target: target });
+  }
+  undos.push(() => {
+    try {
+      fs.renameSync(target, dir);
+    } catch (_) {
+      copyDirRecursive(target, dir);
+      rmDirRecursive(target);
+    }
+  });
+  if (leftover) warnings.push(t("旧文件夹里还留着几个文件（被别的程序占着）：可以手动删掉 ") + dir);
+
+  /* ⑤ 写 app.json 的 id（其余字段一字不动；cloud 仍记旧 id，只提示不动云端） */
+  const raw = readManifest(target);
+  if (!raw) {
+    rollback();
+    return Object.assign(
+      bad(t("应用清单损坏（app.json 读不出来）：改名已回滚，一个字节都没变"), "manifest_failed"),
+      { from: from, to: to, dir: dir },
+    );
+  }
+  try {
+    writeJson(manifestPath(target), Object.assign({}, raw, { id: to }));
+  } catch (err) {
+    rollback();
+    return Object.assign(fail(err), { code: "manifest_failed", from: from, to: to, dir: dir });
+  }
+  undos.push(() => writeJson(manifestPath(target), raw));
+  if (isObj(raw.cloud) && String(raw.cloud.id || "") === from)
+    warnings.push(
+      t("云端那条条目仍记旧 id（") + from + t("）：本机改名不影响已上架的那一条，需要时请重新上架"),
+    );
+
+  /* ⑥ 数据根迁移：默认数据根 <dev|downloaded>/<id>/（含 data.json 与 dataDir.json），
+     外加升级前的老结构 apps-data/<id>/（readDataDirPointer 还在回落它，不搬就「数据空了」）。
+     用户自己选过的数据文件夹不搬（指针是绝对路径，改名后照样指着它）。 */
+  try {
+    const d = String(getDataDir() || "").trim();
+    /* 数据目录还没就绪 = 本机压根没有数据根可搬（不是失败）：跳过并留一句警告，绝不因此拦下改名 */
+    const pairs = [];
+    if (!d) warnings.push(t("数据目录还没就绪：数据根没有搬动（这个应用此刻也没有数据根）"));
+    for (const k of d ? APP_KINDS : [])
+      pairs.push({
+        what: k === APP_KIND_DEV ? t("默认数据根（开发）") : t("默认数据根（下载）"),
+        from: path.join(d, DATA_ROOT_DIR, DATA_SUB[k], from),
+        to: path.join(d, DATA_ROOT_DIR, DATA_SUB[k], to),
+      });
+    if (d)
+      pairs.push({
+        what: t("老结构数据根"),
+        from: path.join(d, DATA_ROOT_DIR, from),
+        to: path.join(d, DATA_ROOT_DIR, to),
+      });
+    for (const p of pairs) {
+      if (cmpPath(p.from) === cmpPath(p.to) || !fs.existsSync(p.from)) continue;
+      if (fs.existsSync(p.to)) {
+        warnings.push(t("数据文件夹已存在同名的新目录，未覆盖：") + p.to + t("（旧的那份还在 ") + p.from + "）");
+        continue;
+      }
+      try {
+        fs.renameSync(p.from, p.to);
+      } catch (_) {
+        try {
+          copyDirRecursive(p.from, p.to);
+        } catch (err2) {
+          rmDirRecursive(p.to);
+          throw err2;
+        }
+        rmDirRecursive(p.from);
+        if (fs.existsSync(p.from)) warnings.push(t("旧数据文件夹里还留着几个文件（被占着）：") + p.from);
+      }
+      movedData.push({ what: p.what, from: p.from, to: p.to });
+      undos.push(() => {
+        try {
+          fs.renameSync(p.to, p.from);
+        } catch (_) {
+          copyDirRecursive(p.to, p.from);
+          rmDirRecursive(p.to);
+        }
+      });
+    }
+  } catch (err) {
+    rollback();
+    return Object.assign(
+      Object.assign(fail(err), {
+        code: "data_failed",
+        error: t("数据根迁移失败，改名已回滚：") + String((err && err.message) || err),
+      }),
+      { from: from, to: to, dir: dir },
+    );
+  }
+  /* 自定义数据文件夹：文件原地不动，回执里说清它仍指着哪儿 */
+  let dataDir = "";
+  try {
+    dataDir = appDataDirOf(to, kind);
+    const ptr = readDataDirPointer(to, kind);
+    const dataRootBase = path.join(String(getDataDir() || ""), DATA_ROOT_DIR);
+    if (ptr && ptr.relative === false && ptr.dir && cmpPath(ptr.dir).indexOf(cmpPath(dataRootBase)) !== 0)
+      warnings.push(t("这个应用的数据文件夹是自定义位置（") + ptr.dir + t("）：文件原地未动，改名后仍指向它"));
+  } catch (_) {
+    dataDir = "";
+  }
+
+  /* ⑦ apps-models.json：<旧 id> 与 image.<旧 id> 两条选择跟着改名（模型选择不能因为改名丢掉） */
+  try {
+    const all = readModelSelections();
+    /* 回滚用的旧快照必须在改键**之前**取（否则回滚写回去的还是改过的版本） */
+    const before = JSON.parse(JSON.stringify(all));
+    let touched = false;
+    if (Object.prototype.hasOwnProperty.call(all, from)) {
+      all[to] = all[from];
+      delete all[from];
+      touched = true;
+    }
+    if (isObj(all.image) && Object.prototype.hasOwnProperty.call(all.image, from)) {
+      all.image[to] = all.image[from];
+      delete all.image[from];
+      touched = true;
+    }
+    if (touched) {
+      writeJson(modelsFilePath(), all);
+      undos.push(() => writeJson(modelsFilePath(), before));
+    }
+  } catch (err) {
+    rollback();
+    return Object.assign(
+      Object.assign(fail(err), {
+        code: "manifest_failed",
+        error: t("模型选择清单改名失败，改名已回滚：") + String((err && err.message) || err),
+      }),
+      { from: from, to: to, dir: dir },
+    );
+  }
+
+  /* ⑧ 按 id 的缓存清一清（只是「先出字」的便利，清不掉只记 warning） */
+  try {
+    const slim = slimCachePath();
+    if (fs.existsSync(slim)) fs.unlinkSync(slim);
+  } catch (_) {
+    warnings.push(t("轻表缓存没清掉（不影响使用，下次会自己重写）"));
+  }
+  try {
+    const snap = readJson(snapshotPath(), null);
+    if (isObj(snap) && isObj(snap.apps) && Object.prototype.hasOwnProperty.call(snap.apps, from)) {
+      delete snap.apps[from];
+      writeJson(snapshotPath(), snap);
+    }
+  } catch (_) {}
+  try {
+    const idxFile = path.join(String(getDataDir() || ""), "store-shots.json");
+    const idx = readJson(idxFile, null);
+    if (isObj(idx) && isObj(idx.items)) {
+      let touched = false;
+      for (const sha of Object.keys(idx.items)) {
+        const ent = idx.items[sha];
+        const apps = isObj(ent) && Array.isArray(ent.apps) ? ent.apps : null;
+        if (!apps || apps.indexOf(from) < 0) continue;
+        const next = apps.map((x) => (String(x) === from ? to : x));
+        ent.apps = next.filter((x, i) => next.indexOf(x) === i).slice(0, 50);
+        touched = true;
+      }
+      if (touched) writeJson(idxFile, idx);
+    }
+  } catch (_) {}
+
+  return {
+    ok: true,
+    from: from,
+    to: to,
+    dir: target,
+    root: root,
+    kind: kind,
+    /* 画布 id 与应用 id 同口径（新建应用就是按这个约定建的，见 appIdForCanvas 上方那段注释） */
+    canvasId: to,
+    dataDir: dataDir,
+    closed: closed,
+    leftover: leftover,
+    movedData: movedData,
+    warnings: warnings,
+  };
 }
 
 /* ---------------- 应用目录结构 ---------------- */
@@ -2191,7 +2500,7 @@ function scaffoldHtml(man) {
     "<h1>" + name.replace(/[<>&]/g, "") + "</h1>",
     "<p>这是应用入口页（index.html）的占位内容。把这里换成你的界面即可。</p>",
     "<p>宿主能力走 <code>window.appHost</code>：文本生成 <code>textGen / textGenStream</code>（默认关思考，要思考显式传 <code>thinking</code>；要 JSON 用脚手架 <code>AppHost.json()</code>）、图像生成 <code>imageGen</code>、本机存储 <code>storageGet / storageSet</code>、账号摘要 <code>account()</code>。</p>",
-    "<p>要在画布上跑图像节点（参考图 + 提示词 → 出图 → 拿产物）：<code>canvas.addNode</code> / <code>canvas.connect</code> 搭好，再 <code>canvas.runNode(id, { attempts })</code> 等到出图，用回执里的 <code>images</code> / <code>paths</code> 取本机绝对路径；<code>canvas.nodeOutput(id)</code> 读最近一次产物，<code>canvas.cancelNode(id)</code> 随时终止。需要 <code>capabilities.canvasHost</code>，首次调用宿主会让你授权一次。</p>",
+    "<p>要在画布上跑图像节点（参考图 + 提示词 → 出图 → 拿产物）：<code>canvas.addNode</code> / <code>canvas.connect</code> 搭好，再 <code>canvas.runNode(id, { attempts })</code> 等到出图，用回执里的 <code>images</code> / <code>paths</code> 取本机绝对路径；<code>canvas.nodeOutput(id)</code> 读最近一次产物，<code>canvas.cancelNode(id)</code> 随时终止。需要在「应用设置 → 应用能力」勾上 <code>capabilities.canvasHost</code>（勾上即永久允许，不需要再确认）。</p>",
     "</main>",
     "</body>",
     "</html>",
@@ -7475,18 +7784,9 @@ function appCapabilitiesSet(arg) {
   const prev = manifestOf(hit.dir, hit.id) || {};
   const caps = normCapabilities(a.capabilities);
   const man = writeManifest(hit.dir, { capabilities: caps }, prev);
-  /* 三个重能力位都关掉 = **撤销授权**（app-host-bridge.js 的 grants）：取消勾选就是撤回，
-     用户不必再去找第二个「撤销」按钮；只关一位时不撤（另一类能力还在合法使用）。 */
-  try {
-    if (
-      hostBridge &&
-      typeof hostBridge.revoke === "function" &&
-      caps.canvasHost !== true &&
-      caps.agentHost !== true &&
-      caps.voiceGen !== true
-    )
-      hostBridge.revoke("app", hit.id);
-  } catch (_) {}
+  /* 能力位是**永久允许**的唯一开关（授权弹窗已取消，见 app-host-bridge.js 文件头）：
+     勾上即放行，取消勾选即当场收回 —— 每次调用都现读清单（ensureDeclared），
+     所以这里不需要再通知宿主「撤销」什么。 */
   const out = { ok: true, id: hit.id, capabilities: caps, wroteFiles: [] };
   /* 语音模块两份文件：声明打开就补，关掉就撤（撤的是我们补的那两份，绝不碰别的文件） */
   out.wroteFiles = syncSpeechFiles(hit.dir, caps);
@@ -7497,7 +7797,7 @@ function appCapabilitiesSet(arg) {
   out.list = capabilitiesForUi(out.capabilities, appLocale());
   return out;
 }
-/* 一个应用的清单摘要（宿主桥用它判「这个应用声明了哪些能力」+ 授权窗上写哪个名字）：
+/* 一个应用的清单摘要（宿主桥用它判「这个应用声明了哪些能力」，以及没声明时报错里点名的应用）：
    只认本机真实存在的那一份（dirOfApp 按磁盘判根），读不到就按「未声明」处理 ——
    绝不用猜的清单去放行。main.js 把它注入 app-host-bridge.js 的 getApp。 */
 function appHostSummaryOf(id) {
@@ -8285,7 +8585,7 @@ function registerAppsIpc(opts) {
 
   /* ── appHost 重能力桥（画布 / agent / 文件 / 工具 / 联网）────────────────────────
      一条总入口：{ ns, method, args } → app-host-bridge.js（认发送方窗口 → 认能力位声明 →
-     认用户授权 → 中继到主窗口渲染层执行）。应用 id 只认**发送方窗口**（appIdOfSender 那张表），
+     认能力位 → 中继到主窗口渲染层执行）。应用 id 只认**发送方窗口**（appIdOfSender 那张表），
      页面自己传的 id 一律不认；认不出不是应用窗口就直接拒绝。 */
   ipcMain.handle("apps:hostBridge", async (e, arg) => {
     try {
@@ -8329,7 +8629,7 @@ function registerAppsIpc(opts) {
     const pvArg = Object.assign({}, isObj(val) ? val : { param: val }, { token: String(a.token || "") });
     try {
       /* 素材库：七条主力方法 + 读条目 / 改元数据 / 删条目 / 删素材，逐条走 assets 命名空间
-         （与独立窗口同一条 app-host-bridge，所以能力声明 assetHost 与首次授权也同一套） */
+         （与独立窗口同一条 app-host-bridge，所以能力声明 assetHost 也同一套） */
       if (PREVIEW_ASSET_METHODS[method]) {
         if (PREVIEW_ASSET_WRITE[method]) {
           const blocked = previewWriteBlock(e, a);
@@ -8461,6 +8761,18 @@ function registerAppsIpc(opts) {
       return fail(err);
     }
   });
+  /* 「应用 id · 修改」（「应用设置」窗里新增的那一行）：改 id = 改应用文件夹名 + 数据根 +
+     app.json 的 id + apps-models 的键 + 按 id 的缓存，全在主进程一次做完（见 changeAppId）。
+     渲染层只拿回执；画布 / 会话归属那一半由 app-app-flow.js 的 appIdChangeFollow 接着做。
+     注：这条通道注册在 apps-store.js（本文件是 apps:* 通道的唯一注册处，main.js 只调
+     registerAppsIpc），不另在 main.js 重复注册。 */
+  ipcMain.handle("apps:appIdChange", async (e, arg) => {
+    try {
+      return await changeAppId(arg);
+    } catch (err) {
+      return fail(err);
+    }
+  });
 }
 
 module.exports = {
@@ -8476,6 +8788,10 @@ module.exports = {
   rootKindOfRootDir,
   pathWithin,
   moveAppDirInto,
+  /* 应用 id「修改」（「应用设置」窗新增那一行）：真文件改名 + 清单 / 数据根 / 模型键 / 缓存一起搬，
+     冒烟直接真跑（临时数据目录 + 临时根，见 test/smoke-apps-id-change.js） */
+  changeAppId,
+  appIdForCanvas,
   /* 应用中心「轻表」（首帧）与按需补一件：冒烟直接真跑这几个（临时目录 + 真文件），
      不用起 Electron 窗口（见 test/smoke-apps-slim-list.js） */
   listAppsSlim,

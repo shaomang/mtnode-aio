@@ -243,6 +243,69 @@
   font-size: 10px;
   color: var(--orange, #ff8f2e);
 }
+/* ── 批注卡里的图行投影（窄版胶囊：一列一枚，22px 缩略图 + 文件名 + ✕）──
+   与 .ii-line-chips 同族的胶囊语言（边框 / 圆角 / 悬停变青），但卡片只有 252px 宽，
+   所以不换行、竖着排，缩略图与字号都收窄一档；点缩略图 = 定位并整行选中正文那一行。 */
+.sa-card-imgs {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.sa-card-imgs[hidden] { display: none; }
+.sa-card-img {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  padding: 2px 4px 2px 3px;
+  border: 1px solid var(--bd2);
+  border-radius: 6px;
+  background: var(--panel2);
+}
+.sa-card-img:hover { border-color: var(--cyan); }
+.sa-card-img-thumb {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--bd2);
+  border-radius: 4px;
+  background: var(--panel, #1b1c1f);
+  object-fit: cover;
+  font-size: 11px;
+  line-height: 20px;
+  text-align: center;
+  color: var(--muted);
+  cursor: pointer;
+}
+img.sa-card-img-thumb { cursor: zoom-in; }
+.sa-card-img-thumb:hover { border-color: var(--cyan); }
+.sa-card-img-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 10px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sa-card-img-x {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  line-height: 1;
+  font-size: 10px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+}
+.sa-card-img-x:hover {
+  border-color: var(--bd2);
+  color: var(--ink);
+  background: var(--panel, #1b1c1f);
+}
 .sa-card-ta {
   width: 100%;
   box-sizing: border-box;

@@ -579,14 +579,75 @@
     return text;
   }
 
-  /* ── 状态 / 重绘 ─────────────────────────────────────────────────────── */
+  /* ── 状态 / 重绘 ───────────────────────────────────────────────────────
+     两件事必须分开：
+       · **纯文本变化**（准备后端进度 / 状态 / 跑起来没有 / 失败原因）→ aaStatus 就地改元素；
+       · **结构真变**（首次拿到结果：频谱 img 从无到有；图种变化；跑完 / 失败）→ aaRepaint 重建。
+     以前每次进度回调都走 aaRepaint → refreshNodeEl → replaceWith 整颗 DOM：波形播放器、
+     叠加 canvas、频谱 img、ResizeObserver 全部销毁重建（分析期间正在放的音乐被打断，
+     进度一多就是连续的 DOM 重建）。 */
 
+  /** 写状态文本 + 就地刷新落点（不重建节点） */
   function aaStatus(node, msg) {
     if (!node) return;
     node.aaStatus = String(msg || "");
+    aaPaintStatus(node);
   }
 
-  /* 只重建这一颗（画布走签名复用，不这么调状态行会停在上一次） */
+  /* 状态文本的落点：body 下方那条状态行已按用户口径移除，现在真正承载状态的只有三处
+     **已存在的**元素（不新加任何文字块）：
+       ① 头部 chip「频谱」：运行中亮起，title = 状态 / 进度 / 失败原因；
+       ② 头部 ▶：运行中变「…」且禁用，失败变红（与 app-canvas.js 里那份口径一致）；
+       ③ body 里那枚「分析报告」入口 —— body 现在唯一的一行文字：没有结果时它的位置
+          就显示进度，失败时显示「上次运行失败」（原因在 title 与报告窗里）。
+     进度回调一秒可能来好几次，这里只改 textContent / class / title / disabled。 */
+  function aaPaintStatus(node) {
+    if (!node || !node.id || typeof document === "undefined") return false;
+    let el = null;
+    try {
+      el = document.querySelector('.wf-node[data-nid="' + node.id + '"]');
+    } catch (_) {
+      return false;
+    }
+    /* 没渲染出来（壳里收起 / 不在当前画布）：数据已写进 node，下一次重建自然带上 */
+    if (!el) return false;
+    const status = String(node.aaStatus || "").trim();
+    const running = !!node.running;
+    const head = el.querySelector(".n-head");
+    if (head) {
+      for (const c of head.querySelectorAll(".n-chip")) {
+        if (String(c.textContent || "") !== T("频谱")) continue;
+        c.classList.toggle("on", running);
+        if (status) c.title = status;
+        break;
+      }
+      for (const b of head.querySelectorAll(".n-play")) {
+        const t = String(b.textContent || "");
+        if (t !== "▶" && t !== "…") continue;
+        b.textContent = running ? "…" : "▶";
+        b.classList.toggle("running", running);
+        b.classList.toggle("error", !running && !!node.error);
+        b.disabled = running;
+        if (status) b.title = status;
+        break;
+      }
+    }
+    const row = el.querySelector(".n-aa-report");
+    if (row) {
+      const st = aaReportRowState(node);
+      row.className = "n-aa-report" + st.cls;
+      row.disabled = st.disabled;
+      row.title = st.title;
+      const txt = row.querySelector(".aa-rp-t");
+      if (txt) txt.textContent = st.text;
+      const go = row.querySelector(".aa-rp-go");
+      if (go) go.textContent = st.cls === " ready" ? "›" : "";
+    }
+    return true;
+  }
+
+  /* 只重建这一颗（画布走签名复用，不这么调状态行会停在上一次）。
+     **只在结构真变时调**：首次拿到结果 / 图种变化 / 跑完 / 失败 —— 纯文本变化走 aaStatus。 */
   function aaRepaint(node) {
     try {
       if (node && node.id && typeof refreshNodeEl === "function") {
@@ -614,26 +675,25 @@
     if (!audioPath) {
       const msg = T("没有音频输入：请从端口 0 接入音频或视频（音频 / 视频输入节点、生成节点、保存节点均可）");
       node.error = msg;
-      aaStatus(node, msg);
+      aaStatus(node, msg); /* 只变文本（失败原因 / ▶ 变红）：就地改，不重建节点 */
       if (!quiet) toast(msg, "warn");
-      aaRepaint(node);
       return;
     }
     node.running = true;
     node.error = null;
     node.ranAt = 0;
-    aaStatus(node, T("准备分析…"));
+    aaStatus(node, T("准备分析…")); /* 起跑：chip 亮 + ▶ 变「…」，仍然是就地改 */
     if (typeof beginNodeRun === "function") beginNodeRun(node);
-    aaRepaint(node);
-    /* 首次使用要先建 venv / 装 numpy / 起服务：把宿主那条进度转成人话写进状态行 */
+    /* 首次使用要先建 venv / 装 numpy / 起服务：把宿主那条进度转成人话写进状态落点 */
     let unsub = null;
     try {
       if (typeof api.onAudioProgress === "function") {
         unsub = api.onAudioProgress((p) => {
           if (!p || !p.label) return;
           if (!node.running) return;
+          /* 纯进度文本：绝不重建节点（旧写法每次都 refreshNodeEl → 整颗 DOM 换掉，
+             波形播放器 / 叠加 canvas / 频谱 img / ResizeObserver 全被销毁重建） */
           aaStatus(node, T("准备后端：") + p.label);
-          aaRepaint(node);
         });
       }
     } catch (_) {}
@@ -674,6 +734,8 @@
       try {
         if (typeof unsub === "function") unsub();
       } catch (_) {}
+      /* 跑完 / 失败 = 结构真变：频谱 img 可能首次出现、图种可能变、报告入口要换成「查看分析报告」
+         —— 这里重建**一次**（原先进度回调里每一次都重建） */
       aaRepaint(node);
       if (typeof scheduleSave === "function") scheduleSave();
       if (node.output && node.output.text && typeof fireControlOutgoing === "function")
@@ -683,19 +745,104 @@
 
   /* ── 板身：波形播放器 + 频谱图（播放头同步）────────────────────────────── */
 
-  /* 每颗节点的旁挂循环登记（重绘会重建 body：旧循环看到元素不在文档里就自己收） */
-  const aaLive = new Map(); /* node.id -> { spec, wave, timer, raf } */
+  /* ══ 全局播放头 ticker ══════════════════════════════════════════════════
+     以前**每颗节点各起一套**：一只 300 ms setInterval 轮询「播没在播」+ 播放期一只 rAF，
+     rAF 里还每帧 querySelector('.n-aa-time')。画布上 N 颗分析节点 = N 套，窗口缩放 /
+     多节点同屏时逐套排队。现在全文件只有这一只 ticker：
+       · 节点登记进 aaHeadLive（注销走 aaStopLive，掉出文档的在帧里顺手注销）；
+       · 静置时 **0 只定时器**（没有播放中的节点就整只停掉，不空转）；
+       · 播放时最多 **1 只 rAF**，与节点数无关（定时器常数级）。
+     起播怎么发现（app-audioview 没暴露播放事件，别再为此每颗节点开一只轮询定时器）：
+       · 外壳上的 pointerdown / click（**捕获阶段**：播放键与波形所在的 row 在冒泡阶段
+         stopPropagation，冒泡 listener 收不到）—— 点播放键、点 / 拖波形都走这条路；
+       · document 捕获阶段的 play / pause / ended —— 引擎 <audio> 上派发的媒体事件
+         （不冒泡，但捕获阶段会经过 document），覆盖「点频谱 seek 起播」这类不经过外壳的入口。
+     kick 之后 1 秒宽限窗口内即使还没读到 playing 也继续跑帧（引擎状态是异步翻的）；
+     窗口过了且没有任何节点在播 —— 整只停掉。 */
+  const aaHeadLive = new Map(); /* node.id -> item（见 aaBindPlayhead） */
+  let aaHeadRaf = 0;
+  let aaHeadGraceUntil = 0;
+  let aaHeadMediaBound = false;
 
-  function aaStopLive(nodeId) {
-    const cur = aaLive.get(nodeId);
-    if (!cur) return;
-    if (cur.timer) clearInterval(cur.timer);
-    if (cur.raf) {
+  function aaHeadNow() {
+    return typeof performance !== "undefined" && performance.now ? performance.now() : Date.now();
+  }
+
+  function aaHeadStopRaf() {
+    if (!aaHeadRaf) return;
+    try {
+      cancelAnimationFrame(aaHeadRaf);
+    } catch (_) {}
+    aaHeadRaf = 0;
+  }
+
+  function aaHeadUnbind(nodeId) {
+    const it = aaHeadLive.get(nodeId);
+    if (!it) return;
+    aaHeadLive.delete(nodeId);
+    try {
+      for (const host of [it.wave, it.spec]) {
+        if (!host || !host.removeEventListener) continue;
+        host.removeEventListener("pointerdown", it.kick, true);
+        host.removeEventListener("click", it.kick, true);
+      }
+    } catch (_) {}
+    if (!aaHeadLive.size) aaHeadStopRaf();
+  }
+
+  function aaHeadBindMedia() {
+    if (aaHeadMediaBound) return;
+    if (typeof document === "undefined" || !document.addEventListener) return;
+    aaHeadMediaBound = true;
+    for (const ev of ["play", "pause", "ended"]) {
       try {
-        cancelAnimationFrame(cur.raf);
+        /* capture = true 是必须的：媒体事件 bubbles 为 false，只有捕获阶段经过 document */
+        document.addEventListener(ev, () => aaHeadKick(), true);
       } catch (_) {}
     }
-    aaLive.delete(nodeId);
+  }
+
+  /** 该画一帧了（起播 / 停播 / 刚绑定）：同一帧内来几次都只排一帧 */
+  function aaHeadKick() {
+    aaHeadGraceUntil = aaHeadNow() + 1000;
+    if (aaHeadRaf || !aaHeadLive.size) return;
+    aaHeadRaf = requestAnimationFrame(aaHeadFrame);
+  }
+
+  /** 唯一那只帧循环：一次遍历所有登记节点（不是每节点一只 rAF） */
+  function aaHeadFrame() {
+    aaHeadRaf = 0;
+    const items = Array.from(aaHeadLive.values());
+    let live = 0;
+    let anyPlaying = false;
+    for (const it of items) {
+      if (!it.spec || !it.spec.isConnected) {
+        aaHeadUnbind(it.nodeId); /* 节点被删 / body 已重建：别留着对已脱离 DOM 的登记 */
+        continue;
+      }
+      live++;
+      const playing = typeof wavePreviewPlayingOf === "function" ? wavePreviewPlayingOf(it.wave) : false;
+      if (playing) {
+        anyPlaying = true;
+        it.playing = true;
+        paintItem(it, typeof wavePreviewTimeOf === "function" ? wavePreviewTimeOf(it.wave) : 0, true);
+      } else if (it.playing) {
+        /* 停下：这一帧把读数归位一次（与旧行为一致），之后不再画 */
+        it.playing = false;
+        paintItem(it, typeof wavePreviewTimeOf === "function" ? wavePreviewTimeOf(it.wave) : 0, false);
+        paintItem(it, 0, false);
+      }
+    }
+    if (!live) return;
+    /* 还有人在播、或刚 kick 过（宽限窗口内）就继续；否则整只停下 —— 静置时不留定时器 */
+    if (anyPlaying || aaHeadNow() < aaHeadGraceUntil) aaHeadRaf = requestAnimationFrame(aaHeadFrame);
+  }
+
+  function aaStopLive(nodeId) {
+    /* 叠加层的重绘控制器一并收掉：断掉 ResizeObserver，别留下对已脱离 DOM 节点的观察 */
+    aaOverlayStop(nodeId);
+    /* 播放头从全局 ticker 注销（原来是这里按节点 clearInterval + cancelAnimationFrame） */
+    aaHeadUnbind(nodeId);
   }
 
   /* 播放头呼吸：由**相位**连续驱动 —— 每拍走一个 0→1→0 的正弦（phase = 拍内位置），
@@ -741,46 +888,26 @@
     return raw - Math.floor(raw);
   }
 
-  /** 频谱上的播放头：跟着全局播放引擎走（引擎的口径只在 app-audioview.js 里判） */
-  function aaBindPlayhead(node, waveEl, specEl, durSec) {
-    const nodeId = node.id;
-    aaStopLive(nodeId);
-    const headEl = specEl && specEl.querySelector ? specEl.querySelector(".n-aa-head") : null;
-    const marks = aaMarkTimes(node);
-    const clock = aaBeatClock(node);
-    const st = { spec: specEl, wave: waveEl, timer: 0, raf: 0, last: -1, lastT: 0, pulse: null };
-    const nowMs = () => (typeof performance !== "undefined" && performance.now ? performance.now() : Date.now());
-
-    /* 三个内联变量写到播放头上：--aa-pulse（0..1，驱动粗细与光晕）/ --aa-pulse-w / --aa-pulse-c */
-    const writeHead = (k, w, color) => {
-      try {
-        headEl.style.setProperty("--aa-pulse", k.toFixed(3));
-        headEl.style.setProperty("--aa-pulse-w", w.toFixed(2) + "px");
-        headEl.style.setProperty("--aa-pulse-c", color);
-      } catch (_) {}
-    };
-    const clearHead = () => {
-      try {
+  /* 三个内联变量写到播放头上：--aa-pulse（0..1，驱动粗细与光晕）/ --aa-pulse-w / --aa-pulse-c。
+     headEl / timeEl 都是绑定时缓存的引用（建 DOM 时就传进来），帧里不查 DOM。 */
+  function paintHeadOf(it, t, playing) {
+    const headEl = it.headEl;
+    if (!headEl) return;
+    try {
+      if (!playing) {
         headEl.style.removeProperty("--aa-pulse");
         headEl.style.removeProperty("--aa-pulse-w");
         headEl.style.removeProperty("--aa-pulse-c");
-      } catch (_) {}
-    };
-
-    /* 这一帧的呼吸：相位正弦（基线，一直有）+ 跨拍强调（衰减的快闪，只加不减） */
-    const paintHead = (t, playing) => {
-      if (!headEl) return;
-      if (!playing) {
-        clearHead();
         return;
       }
-      let k = AA_BREATH.depth * (0.5 - 0.5 * Math.cos(2 * Math.PI * aaPhaseAt(clock, t)));
+      /* 这一帧的呼吸：相位正弦（基线，一直有）+ 跨拍强调（衰减的快闪，只加不减） */
+      let k = AA_BREATH.depth * (0.5 - 0.5 * Math.cos(2 * Math.PI * aaPhaseAt(it.clock, t)));
       let w = AA_BREATH.w;
       let color = "var(--green)";
-      const p = st.pulse;
+      const p = it.pulse;
       if (p) {
-        const age = nowMs() - p.at;
-        if (age >= p.ms) st.pulse = null;
+        const age = aaHeadNow() - p.at;
+        if (age >= p.ms) it.pulse = null;
         else {
           const e = Math.sin(Math.PI * (age / p.ms));
           if (e > k) {
@@ -790,81 +917,99 @@
           }
         }
       }
-      writeHead(k, w, color);
-    };
+      headEl.style.setProperty("--aa-pulse", k.toFixed(3));
+      headEl.style.setProperty("--aa-pulse-w", w.toFixed(2) + "px");
+      headEl.style.setProperty("--aa-pulse-c", color);
+    } catch (_) {}
+  }
 
-    const pulseTo = (kind) => {
-      const cfg = AA_PULSE[kind] || AA_PULSE.down;
-      st.pulse = { at: nowMs(), ms: cfg.ms, w: cfg.w, color: cfg.color };
-    };
-    /* 这一帧跨过了哪些重拍：取跨过的最后一个。两帧间隔过大（起播 / 拖动跳转）不算跨过 ——
-       否则跳转一次就会糊出一串乱闪。 */
-    const pulseIfCrossed = (prevT, t) => {
-      if (!marks.length) return;
-      if (!(t > prevT) || t - prevT > 0.5) return;
-      let lo = 0;
-      let hi = marks.length - 1;
-      let idx = -1;
-      while (lo <= hi) {
-        const mid = (lo + hi) >> 1;
-        if (marks[mid].t <= t) {
-          idx = mid;
-          lo = mid + 1;
-        } else hi = mid - 1;
-      }
-      let pick = null;
-      for (let i = idx; i >= 0; i--) {
-        const m = marks[i];
-        if (m.t <= prevT) break;
-        pick = m;
-      }
-      if (pick) pulseTo(pick.kind);
-    };
+  function pulseTo(item, kind) {
+    const cfg = AA_PULSE[kind] || AA_PULSE.down;
+    item.pulse = { at: aaHeadNow(), ms: cfg.ms, w: cfg.w, color: cfg.color };
+  }
 
-    const paint = (t, playing) => {
-      const total = Number(durSec) || 0;
-      const now = Math.max(0, Number(t) || 0);
-      if (playing) {
-        pulseIfCrossed(st.lastT, now);
-        st.lastT = now;
-      }
-      paintHead(now, playing);
-      const pct = total > 0 ? Math.max(0, Math.min(100, (now / total) * 100)) : 0;
-      if (Math.abs(pct - st.last) < 0.05) return;
-      st.last = pct;
-      try {
-        specEl.style.setProperty("--aa-pos", pct.toFixed(2) + "%");
-      } catch (_) {}
-      const lab = specEl.querySelector(".n-aa-time");
-      if (lab) lab.textContent = aaFmtTime(now) + " / " + aaFmtTime(total);
+  /* 这一帧跨过了哪些重拍：取跨过的最后一个。两帧间隔过大（起播 / 拖动跳转）不算跨过 ——
+     否则跳转一次就会糊出一串乱闪。 */
+  function pulseIfCrossed(item, prevT, t) {
+    const marks = item.marks;
+    if (!marks.length) return;
+    if (!(t > prevT) || t - prevT > 0.5) return;
+    let lo = 0;
+    let hi = marks.length - 1;
+    let idx = -1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (marks[mid].t <= t) {
+        idx = mid;
+        lo = mid + 1;
+      } else hi = mid - 1;
+    }
+    let pick = null;
+    for (let i = idx; i >= 0; i--) {
+      const m = marks[i];
+      if (m.t <= prevT) break;
+      pick = m;
+    }
+    if (pick) pulseTo(item, pick.kind);
+  }
+
+  /** 画一只节点的播放头 + 时间读数（ticker 的帧里 / 绑定时各调一次，不再各起循环） */
+  function paintItem(item, t, playing) {
+    const total = item.dur;
+    const now = Math.max(0, Number(t) || 0);
+    if (playing) {
+      pulseIfCrossed(item, item.lastT, now);
+      item.lastT = now;
+    }
+    paintHeadOf(item, now, playing);
+    const pct = total > 0 ? Math.max(0, Math.min(100, (now / total) * 100)) : 0;
+    if (Math.abs(pct - item.last) < 0.05) return;
+    item.last = pct;
+    try {
+      item.spec.style.setProperty("--aa-pos", pct.toFixed(2) + "%");
+    } catch (_) {}
+    if (item.timeEl) item.timeEl.textContent = aaFmtTime(now) + " / " + aaFmtTime(total);
+  }
+
+  /** 频谱上的播放头：跟着全局播放引擎走（引擎的口径只在 app-audioview.js 里判）。
+      这里只**登记**进全局 ticker，不自己起定时器 / rAF。
+      dom 是建 DOM 时缓存的 { headEl, timeEl }：给了就不查 DOM（不给才在这里查一次）。 */
+  function aaBindPlayhead(node, waveEl, specEl, durSec, dom) {
+    const nodeId = node.id;
+    aaStopLive(nodeId);
+    const pick = (sel) => (specEl && specEl.querySelector ? specEl.querySelector(sel) : null);
+    const it = {
+      nodeId,
+      spec: specEl,
+      wave: waveEl,
+      headEl: (dom && dom.headEl) || pick(".n-aa-head"),
+      timeEl: (dom && dom.timeEl) || pick(".n-aa-time"),
+      dur: Number(durSec) || 0,
+      marks: aaMarkTimes(node),
+      clock: aaBeatClock(node),
+      last: -1,
+      lastT: 0,
+      pulse: null,
+      playing: false,
+      kick: null,
     };
-    const loop = () => {
-      if (!specEl.isConnected) {
-        aaStopLive(nodeId);
-        return;
+    it.kick = () => aaHeadKick();
+    aaHeadLive.set(nodeId, it);
+    aaHeadBindMedia();
+    /* 起播意图 —— 一律挂**捕获阶段**（播放键 / 波形所在的 row 会在冒泡阶段 stopPropagation）：
+       · 波形外壳：点播放键、点 / 拖波形；
+       · 频谱块（spec 里含 plot）：点频谱 seek 起播，这条不经过外壳。 */
+    try {
+      for (const host of [waveEl, specEl]) {
+        if (!host || !host.addEventListener) continue;
+        host.addEventListener("pointerdown", it.kick, true);
+        host.addEventListener("click", it.kick, true);
       }
-      paint(typeof wavePreviewTimeOf === "function" ? wavePreviewTimeOf(waveEl) : 0, true);
-      st.raf = requestAnimationFrame(loop);
-    };
-    /* 300 ms 慢速哨兵：播放开始 / 结束时启停 rAF（不在不播的时候空转 60fps） */
-    st.timer = setInterval(() => {
-      if (!specEl.isConnected) {
-        aaStopLive(nodeId);
-        return;
-      }
-      const playing = typeof wavePreviewPlayingOf === "function" ? wavePreviewPlayingOf(waveEl) : false;
-      if (playing && !st.raf) st.raf = requestAnimationFrame(loop);
-      if (!playing && st.raf) {
-        try {
-          cancelAnimationFrame(st.raf);
-        } catch (_) {}
-        st.raf = 0;
-        paint(typeof wavePreviewTimeOf === "function" ? wavePreviewTimeOf(waveEl) : 0, false);
-      }
-      if (!playing) paint(0, false);
-    }, 300);
-    aaLive.set(nodeId, st);
-    paint(0, false);
+    } catch (_) {}
+    paintItem(it, 0, false);
+    /* 绑定那一刻就已经在播（重绘时播放不断 / 切参数后 body 重建）：直接让 ticker 起来画，
+       别等下一次点击或媒体事件 —— 否则这一路上头会僵在 0。 */
+    if (typeof wavePreviewPlayingOf === "function" && wavePreviewPlayingOf(waveEl)) aaHeadKick();
   }
 
   /* ── 频谱上的事件叠加（重拍 / 能量直方图）──────────────────────────────
@@ -906,28 +1051,61 @@
   }
 
   function aaEventLayers(node) {
+    const m = aaMemoOf(node);
+    /* 命中记忆就整份复用：重拍排序与小节归一都只在换键（新一次结果）时做一次 */
+    if (m && m.layers) return m.layers;
     const out = { downbeats: [], bars: [] };
     const num = (v) => {
       const n = Number(v);
       return isFinite(n) && n >= 0 ? n : null;
     };
-    const rep = aaReportOf(node);
-    if (!rep) return out;
-    const bg = rep.beatGrid || {};
-    out.downbeats = (Array.isArray(bg.downbeatsSec) ? bg.downbeatsSec : [])
-      .map(num)
-      .filter((v) => v != null)
-      .sort((a, b) => a - b);
-    /* 能量直方图：一条柱 = 一个小节。摘要里 bars 是
-       [startSec, endSec, beatCount, rmsDb, lowDb, energy01]（旧摘要是 5 元，完整 JSON 是对象）
-       —— 一律走 aaBarsOf 归一；柱高吃 energy01（感知能量），没有它才退回 rmsDb 分位归一 */
-    for (const b of aaBarsOf(bg.bars)) {
-      const t = num(b.startSec);
-      if (t == null) continue;
-      out.bars.push({ t, end: num(b.endSec) == null ? t : num(b.endSec), db: b.rmsDb, e: b.energy01 });
+    const rep = m ? m.rep : null;
+    if (rep) {
+      const bg = rep.beatGrid || {};
+      out.downbeats = (Array.isArray(bg.downbeatsSec) ? bg.downbeatsSec : [])
+        .map(num)
+        .filter((v) => v != null)
+        .sort((a, b) => a - b);
+      /* 能量直方图：一条柱 = 一个小节。摘要里 bars 是
+         [startSec, endSec, beatCount, rmsDb, lowDb, energy01]（旧摘要是 5 元，完整 JSON 是对象）
+         —— 一律走 aaBarsOf 归一；柱高吃 energy01（感知能量），没有它才退回 rmsDb 分位归一 */
+      for (const b of aaBarsOfRep(node, rep)) {
+        const t = num(b.startSec);
+        if (t == null) continue;
+        out.bars.push({ t, end: num(b.endSec) == null ? t : num(b.endSec), db: b.rmsDb, e: b.energy01 });
+      }
+      out.bars.sort((a, b) => a.t - b.t);
     }
-    out.bars.sort((a, b) => a.t - b.t);
+    if (m) m.layers = out;
     return out;
+  }
+
+  /** rmsDb 的稳健归一区间（p5–p95，线性插值）：旧报告没有 energy01 时柱高吃它。
+      叠加层每重绘一次就要用一次（窗口缩放 / 图片加载 / 切层都会重绘），
+      所以与事件层同源缓存 —— 不在每次重绘里重排序几百个小节的 dB。 */
+  function aaBuildBarsDbNorm(bars) {
+    /* 分位（线性插值）：旧报告只有 rmsDb 时用它做稳健归一，抗爆音 */
+    const pct = (arr, q) => {
+      const s = arr.slice().sort((a, b) => a - b);
+      if (!s.length) return 0;
+      const i = (s.length - 1) * q;
+      const lo = Math.floor(i);
+      const hi = Math.ceil(i);
+      return s[lo] + (s[hi] - s[lo]) * (i - lo);
+    };
+    const dbList = (Array.isArray(bars) ? bars : []).map((b) => Number(b.db)).filter((v) => isFinite(v));
+    const loDb = pct(dbList, 0.05);
+    const hiDb = pct(dbList, 0.95);
+    /* 全曲一条平线时给 1 dB 的假范围：柱高一样高，但不至于除以 0 */
+    return { loDb, span: hiDb - loDb > 0.5 ? hiDb - loDb : 1 };
+  }
+  function aaBarsDbNorm(node, layers) {
+    const m = aaMemoOf(node);
+    if (m && m.layers === layers) {
+      if (!m.dbNorm) m.dbNorm = aaBuildBarsDbNorm(layers.bars);
+      return m.dbNorm;
+    }
+    return aaBuildBarsDbNorm(layers && layers.bars);
   }
 
   function aaEventLayerCount(layers) {
@@ -935,11 +1113,87 @@
     return (l.downbeats || []).length + (l.bars || []).length;
   }
 
+  /* ── 叠加层的两张缓存（都挂在 canvas 元素上，WeakMap 里不留强引用）──────────────
+     这一层会被反复重画：窗口缩放、节点改宽、图片加载、切层开关都会再调一次
+     aaPaintEventOverlay。两样贵的东西都缓存，键就是 canvas 本身（节点扔掉时整格跟着
+     回收，也不往 node 上加字段、不混进落盘的 JSON）：
+       ① 像素列聚合（每小节 → 每个 CSS 像素列的最高柱）：只跟宽度 / 时长 / 小节表 /
+          分位区间有关、**与高度无关** —— 只算一次，缓存到宽度或那几样变了为止；
+       ② 画好的那一张位图（离屏 canvas）：像素宽高与全部输入都没变时只做一次 blit，
+          几万个路径指令一条也不重画。 */
+  const aaOvCacheMap = new WeakMap();
+  const aaOvIdMap = new WeakMap(); /* 对象 -> 稳定 id：只用来判断"还是不是同一份输入" */
+  let aaOvSeq = 0;
+  function aaOvId(obj) {
+    if (!obj || typeof obj !== "object") return 0;
+    let id = aaOvIdMap.get(obj);
+    if (!id) {
+      id = ++aaOvSeq;
+      aaOvIdMap.set(obj, id);
+    }
+    return id;
+  }
+  function aaOvCacheOf(canvas) {
+    let c = aaOvCacheMap.get(canvas);
+    if (!c) {
+      c = {
+        cols: null, /* Float32Array：每列最高的那个 k（−1 = 这列没有小节） */
+        colsW: 0,
+        colsTotal: 0,
+        colsLayers: null,
+        colsLo: 0,
+        colsSpan: 0,
+        bmp: null, /* 上一张位图（离屏 canvas） */
+        bmpSig: "", /* 位图对应的输入签名；一致就直接复用，不重画 */
+      };
+      aaOvCacheMap.set(canvas, c);
+    }
+    return c;
+  }
+
+  /** 每小节 → 每个 CSS 像素列的最高柱（存归一后的 k，−1 = 这一列没有小节）。
+      只跟宽度 / 时长 / 小节表 / 分位区间有关：高度变了照样复用，不重算。 */
+  function aaEventCols(cache, layers, w, total, loDb, span) {
+    if (
+      cache.cols &&
+      cache.cols.length === w &&
+      cache.colsTotal === total &&
+      cache.colsLayers === layers &&
+      cache.colsLo === loDb &&
+      cache.colsSpan === span
+    ) {
+      return cache.cols;
+    }
+    const cols = new Float32Array(w).fill(-1);
+    const xOf = (t) => Math.max(0, Math.min(w, (Number(t) / total) * w));
+    for (const b of layers.bars) {
+      let x0 = Math.floor(xOf(b.t));
+      let x1 = Math.ceil(xOf(b.end));
+      if (!(x1 > x0)) x1 = x0 + 1;
+      if (x0 > w - 1) x0 = w - 1;
+      if (x1 > w) x1 = w;
+      let k;
+      if (b.e != null && isFinite(Number(b.e))) k = Math.max(0, Math.min(1, Number(b.e)));
+      else if (isFinite(Number(b.db))) k = Math.max(0, Math.min(1, (Number(b.db) - loDb) / span));
+      else k = 0;
+      /* 一列里落了好几根小节：留最高的那根（与逐根比 cur 取最小等价，k 单调） */
+      for (let x = x0; x < x1; x++) if (k > cols[x]) cols[x] = k;
+    }
+    cache.cols = cols;
+    cache.colsW = w;
+    cache.colsTotal = total;
+    cache.colsLayers = layers;
+    cache.colsLo = loDb;
+    cache.colsSpan = span;
+    return cols;
+  }
+
   /** 画一次叠加层（返回 false = 尺寸还没算出来，调用方下一帧再试）。
       这层**就铺在频谱图上**（不是上方另开一条带）：两条轨道各占一角、谁也不压谁 ——
         ① 能量直方图：贴底边往上长的黄色柱（每小节一根）+ 顶端一条亮轮廓
         ② 重拍齿：贴底边往上长，1px 细齿 + 顶端小方块（青色）
-      中间那块热力区始终空着。每一层都能单独关（aaEvOn），全关就清干净不留残影。 */
+      中间那块热力区始终空着。每一层都能单独关（aaEvOn），全关就清干净不留残影。
+      真正画的是**离屏位图**：输入没变就把上一张位图 blit 过来（见 aaOvCacheOf）。 */
   function aaPaintEventOverlay(spec, canvas, node) {
     if (!spec || !canvas || !canvas.isConnected) return false;
     const w = Math.round(canvas.clientWidth || 0);
@@ -954,17 +1208,24 @@
       canvas.width = pw;
       canvas.height = ph;
     }
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.clearRect(0, 0, w, h);
+    const cache = aaOvCacheOf(canvas);
+    /* 这一帧什么都不该有（全关 / 没数据 / 时长没算出来）：擦干净再返回，不留上一帧的残影 */
+    const blank = () => {
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      return true;
+    };
     const on = aaEvOnOf(node);
     const all = node.aaShowEvents !== false;
     const layers = aaEventLayers(node);
-    /* 一层都没开（或者都没数据）就别画：清过之后直接返回，免得留上一帧的残影 */
-    if (!all || !AA_EV_KEYS.some((k) => on[k] && (layers[(AA_EV_TRACKS.find((t) => t.key === k) || {}).field] || []).length)) {
-      return true;
-    }
+    /* 一层都没开（或者都没数据）就别画 */
+    const live =
+      all &&
+      AA_EV_KEYS.some(
+        (k) => on[k] && (layers[(AA_EV_TRACKS.find((t) => t.key === k) || {}).field] || []).length
+      );
     const total = Number(node.aaDurationSec) || 0;
-    if (!(total > 0)) return true;
+    if (!live || !(total > 0)) return blank();
     const xOf = (t) => Math.max(0, Math.min(w, (Number(t) / total) * w));
     const css = (name, fallback) => {
       try {
@@ -979,105 +1240,251 @@
     /* 各轨道的高度按频谱本身的像素高换算（贴底各占一小条，中间留空）：
        高 150px 的频谱上重拍齿约 18px；窄高再小也不会细到看不见。 */
     const downH = Math.max(7, Math.min(20, Math.round(h * 0.17)));
+    const wantEng = !!on.energy && layers.bars.length > 0;
+    const wantDown = !!on.down && layers.downbeats.length > 0;
+    const norm = wantEng ? aaBarsDbNorm(node, layers) : null;
+    const loDb = norm ? norm.loDb : 0;
+    const span = norm ? norm.span : 1;
+    /* 输入签名：像素宽高 / CSS 宽高 / DPR / 时长 / 各层开关 / 事件层与分位区间（对象身份）
+       / 两个颜色。签名一致 = 上一张位图就是这一帧要的像素。
+       **仍然走一次 blit**（而不是直接 return）：图例那侧「全关」会把这块 canvas 擦掉，
+       再打开时必须能把同一张位图原样贴回来。 */
+    const sig = [
+      pw,
+      ph,
+      w,
+      h,
+      dpr,
+      total,
+      downH,
+      wantEng ? 1 : 0,
+      wantDown ? 1 : 0,
+      aaOvId(layers),
+      aaOvId(norm),
+      cDown,
+      cEng,
+    ].join("|");
+    let bmp = cache.bmp;
+    if (!(bmp && cache.bmpSig === sig)) {
+      /* —— 缓存没命中才真正画：全部画进离屏位图 —— */
+      if (!bmp || bmp.width !== pw || bmp.height !== ph) bmp = document.createElement("canvas");
+      if (bmp.width !== pw) bmp.width = pw;
+      if (bmp.height !== ph) bmp.height = ph;
+      const bctx = bmp.getContext ? bmp.getContext("2d") : null;
+      if (!bctx) return false;
+      bctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      bctx.clearRect(0, 0, w, h);
 
-    /* ① 能量直方图（先画、在最底下）：每小节一根柱。柱高吃 `energy01`（小节感知能量：
-       6 带近似 K 加权 + 全曲 p5–p95 稳健归一），再套 gamma 0.8 —— 安静段与副歌在小节
-       粒度上能一眼看出高低差。旧报告没有这一列时退回 rmsDb 的 **p5–p95 分位归一**；
-       旧的 min–max 线性拉伸正是「几乎全顶到同一高度、听感读不出来」的根源（逐小节 RMS
-       只差几 dB，而个别爆音又独占高端）。
-       基线压在重拍齿那一带**上面**（不叠在一起，否则底边那 18px 会糊成一片）。
-       小节比像素还密时**按像素列取最大值合绘**（不是隔几根丢一根）—— 长素材上依然是完整的
-       一条能量轮廓，不会变成稀疏虚线。
-       **底下先铺一块压暗的板**：热力图本身就是橙 / 紫 / 亮黄，黄柱直接压上去跟频谱融成一片
-       （用户实测："能量直方图无法看到"）。压暗板只铺直方图那一带、半透明，频谱仍透得出来，
-       柱子与顶端轮廓在亮区 / 暗区上都能一眼读出高低。 */
-    if (on.energy && layers.bars.length) {
-      /* 分位（线性插值）：旧报告只有 rmsDb 时用它做稳健归一，抗爆音 */
-      const pct = (arr, q) => {
-        const s = arr.slice().sort((a, b) => a - b);
-        if (!s.length) return 0;
-        const i = (s.length - 1) * q;
-        const lo = Math.floor(i);
-        const hi = Math.ceil(i);
-        return s[lo] + (s[hi] - s[lo]) * (i - lo);
-      };
-      const dbList = layers.bars.map((b) => Number(b.db)).filter((v) => isFinite(v));
-      const loDb = pct(dbList, 0.05);
-      const hiDb = pct(dbList, 0.95);
-      /* 全曲一条平线时给 1 dB 的假范围：柱高一样高，但不至于除以 0 */
-      const span = hiDb - loDb > 0.5 ? hiDb - loDb : 1;
-      const bottom = Math.max(4, h - downH - 2);
-      const maxH = Math.max(4, Math.round(h * 0.5));
-      const cols = new Float32Array(w);
-      for (const b of layers.bars) {
-        let x0 = Math.floor(xOf(b.t));
-        let x1 = Math.ceil(xOf(b.end));
-        if (!(x1 > x0)) x1 = x0 + 1;
-        if (x0 > w - 1) x0 = w - 1;
-        if (x1 > w) x1 = w;
-        let k;
-        if (b.e != null && isFinite(Number(b.e))) k = Math.max(0, Math.min(1, Number(b.e)));
-        else if (isFinite(Number(b.db))) k = Math.max(0, Math.min(1, (Number(b.db) - loDb) / span));
-        else k = 0;
-        /* gamma 0.8：把安静段的差别抬起来一点，副歌仍然顶到高位；4% 底高让近乎无声的小节
-           仍留一条可见的线（否则"留白"和"没数据"看起来一样） */
-        const hh = Math.max(1, Math.round(maxH * (0.04 + 0.96 * Math.pow(k, 0.8))));
-        const cur = bottom - hh;
-        for (let x = x0; x < x1; x++) if (cols[x] < 1 || cur < cols[x]) cols[x] = cur;
-      }
-      ctx.fillStyle = "rgba(4, 6, 11, .52)";
-      ctx.fillRect(0, bottom - maxH - 2, w, maxH + 2);
-      ctx.fillStyle = cEng;
-      ctx.globalAlpha = 0.55;
-      ctx.beginPath();
-      for (let x = 0; x < w; x++) {
-        if (cols[x] <= 0) continue;
-        const y = Math.round(cols[x]);
-        ctx.rect(x, y, 1, Math.max(1, bottom - y));
-      }
-      ctx.fill();
-      /* 顶端轮廓：一条 1px 的亮线，柱高再密也读得出起伏 */
-      ctx.globalAlpha = 1;
-      ctx.beginPath();
-      let pen = false;
-      for (let x = 0; x < w; x++) {
-        if (cols[x] <= 0) {
-          pen = false;
-          continue;
+      /* ① 能量直方图（先画、在最底下）：每小节一根柱。柱高吃 `energy01`（小节感知能量：
+         6 带近似 K 加权 + 全曲 p5–p95 稳健归一），再套 gamma 0.8 —— 安静段与副歌在小节
+         粒度上能一眼看出高低差。旧报告没有这一列时退回 rmsDb 的 **p5–p95 分位归一**；
+         旧的 min–max 线性拉伸正是「几乎全顶到同一高度、听感读不出来」的根源（逐小节 RMS
+         只差几 dB，而个别爆音又独占高端）。
+         基线压在重拍齿那一带**上面**（不叠在一起，否则底边那 18px 会糊成一片）。
+         小节比像素还密时**按像素列取最大值合绘**（不是隔几根丢一根）—— 长素材上依然是完整的
+         一条能量轮廓，不会变成稀疏虚线。像素列聚合本身走 aaEventCols：宽度没变就不重算。
+         **底下先铺一块压暗的板**：热力图本身就是橙 / 紫 / 亮黄，黄柱直接压上去跟频谱融成一片
+         （用户实测："能量直方图无法看到"）。压暗板只铺直方图那一带、半透明，频谱仍透得出来，
+         柱子与顶端轮廓在亮区 / 暗区上都能一眼读出高低。 */
+      if (wantEng) {
+        /* 分位区间与事件层同源缓存（见 aaBarsDbNorm）：每次重绘不再重排序一遍 dB */
+        const cols = aaEventCols(cache, layers, w, total, loDb, span);
+        const bottom = Math.max(4, h - downH - 2);
+        const maxH = Math.max(4, Math.round(h * 0.5));
+        /* 每列的柱顶 y（−1 = 这列没有小节）：柱与顶端轮廓共用一份，只算一次 */
+        const tops = new Int32Array(w);
+        for (let x = 0; x < w; x++) {
+          const k = cols[x];
+          /* gamma 0.8：把安静段的差别抬起来一点，副歌仍然顶到高位；4% 底高让近乎无声的小节
+             仍留一条可见的线（否则"留白"和"没数据"看起来一样） */
+          tops[x] = k >= 0 ? bottom - Math.max(1, Math.round(maxH * (0.04 + 0.96 * Math.pow(k, 0.8)))) : -1;
         }
-        const y = Math.round(cols[x]) + 0.5;
-        if (pen) ctx.lineTo(x + 0.5, y);
-        else ctx.moveTo(x + 0.5, y);
-        pen = true;
+        bctx.fillStyle = "rgba(4, 6, 11, .52)";
+        bctx.fillRect(0, bottom - maxH - 2, w, maxH + 2);
+        bctx.fillStyle = cEng;
+        bctx.globalAlpha = 0.55;
+        bctx.beginPath();
+        for (let x = 0; x < w; x++) {
+          const y = tops[x];
+          if (y < 0) continue;
+          bctx.rect(x, y, 1, Math.max(1, bottom - y));
+        }
+        bctx.fill();
+        /* 顶端轮廓：一条 1px 的亮线，柱高再密也读得出起伏 */
+        bctx.globalAlpha = 1;
+        bctx.beginPath();
+        let pen = false;
+        for (let x = 0; x < w; x++) {
+          const y = tops[x];
+          if (y < 0) {
+            pen = false;
+            continue;
+          }
+          if (pen) bctx.lineTo(x + 0.5, y + 0.5);
+          else bctx.moveTo(x + 0.5, y + 0.5);
+          pen = true;
+        }
+        bctx.lineWidth = 1;
+        bctx.strokeStyle = cEng;
+        bctx.stroke();
+        bctx.globalAlpha = 1;
       }
-      ctx.lineWidth = 1;
-      ctx.strokeStyle = cEng;
-      ctx.stroke();
-      ctx.globalAlpha = 1;
-    }
 
-    /* 频谱本身是亮的热力图：标记先打一层很淡的深色描边（shadowBlur），
-       压在亮区上也看得清，又不至于像一块黑边。**直方图不加**：几百根柱各自带阴影既慢，
-       又会把半透明的黄柱糊成脏褐色（视觉上也更像"盖住"了底下的齿）。 */
-    ctx.shadowColor = "rgba(0, 0, 0, .7)";
-    ctx.shadowBlur = 2;
-
-    /* ② 重拍轨：贴底边往上，1px 细齿 + 顶端 2×2 小方块；
-       齿挤到 3px 以内就抽稀 —— 长素材的小节数一多，不抽会连成一条实心带 */
-    if (on.down && layers.downbeats.length) {
-      ctx.fillStyle = cDown;
-      let lastDownX = -99;
-      for (const t of layers.downbeats) {
-        const x = Math.round(xOf(t));
-        if (x - lastDownX < 3) continue;
-        lastDownX = x;
-        ctx.fillRect(x, h - downH, 1, downH);
-        ctx.fillRect(x - 1, h - downH, 2, 2);
+      /* ② 重拍轨：贴底边往上，1px 细齿 + 顶端 2×2 小方块；
+         齿挤到 3px 以内就抽稀 —— 长素材的小节数一多，不抽会连成一条实心带。
+         **所有齿并成一条 path**：一次深色描边 + 一次填充。原来每根齿两发带
+         shadowBlur 的 fillRect（几百根齿 = 几百次模糊 pass），窗口缩放 / 拖动画布时
+         这一层就卡在这里。频谱本身是亮热力图，所以齿要先有一圈深色底才读得清；
+         这里用两遍描边（外圈 3.5px / 6%、内圈 1px / 22%）替掉原来 2px 的糊边 —— 对着
+         HEAD 版逐像素量过（见改前改后对照），平均差 0.03/255、RMSE 0.45，视觉等价，
+         但整层只剩一条路径。直方图不加描边（几百根柱各自带底边会把半透明的黄柱糊成脏褐色）。 */
+      if (wantDown) {
+        bctx.beginPath();
+        let lastDownX = -99;
+        for (const t of layers.downbeats) {
+          const x = Math.round(xOf(t));
+          if (x - lastDownX < 3) continue;
+          lastDownX = x;
+          bctx.rect(x, h - downH, 1, downH);
+          bctx.rect(x - 1, h - downH, 2, 2);
+        }
+        bctx.strokeStyle = "rgba(0, 0, 0, .06)";
+        bctx.lineWidth = 3.5;
+        bctx.stroke();
+        bctx.strokeStyle = "rgba(0, 0, 0, .22)";
+        bctx.lineWidth = 1;
+        bctx.stroke();
+        bctx.fillStyle = cDown;
+        bctx.fill();
       }
+      cache.bmp = bmp;
+      cache.bmpSig = sig;
     }
-
-    ctx.shadowBlur = 0;
+    /* 位图 → 可见 canvas（1:1，不做缩放）：命中缓存时只有这一发 blit */
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(bmp, 0, 0);
     return true;
+  }
+
+  /* ── 叠加层的**唯一重绘入口**（requestPaint）───────────────────────────────────
+     这一层原来有三条各自为政的触发：首帧的 12 帧重试环、img 的 load 回调、
+     ResizeObserver —— 每条都直接调 aaPaintEventOverlay 全量重画一遍。窗口拖大时
+     ResizeObserver 每帧来一次、load 再来一次，几次绘制就排在同一个帧里，等于白干。
+     现在全部收成一个控制器（每个 canvas 一个，按 node.id 登记在 aaOvLive 里）：
+       ① request() 只认**整数尺寸真变**（lastW / lastH）：0.4px 的抖动不重画；
+       ② 同一帧里来几次都只排一次 rAF —— 合并到**尾沿**，一帧最多画一次；
+       ③ 尺寸还没量出来（首帧 body 尚未挂上 DOM / 图未加载）就在下一帧再试，封顶 12 帧
+          （与原来同口径：约 200 ms 还不成就算了，不再空转）；
+       ④ imageLoaded() 对同一张图（src 相同）只触发一次 —— 重跑后 src 带新 ?t=，才会再来；
+       ⑤ 节点被拆掉（重绘 / 移除）时自己 kill()：断掉 ResizeObserver，不留下对已脱离
+          DOM 节点的观察；aaStopLive 也会一并把它清掉。
+     切层开关（图例 / 总开关）不走这儿：那是用户点一下要立刻见效的操作，直接画一次。 */
+  const aaOvLive = new Map(); /* node.id -> 控制器 */
+
+  function aaOverlayStop(nodeId) {
+    const st = aaOvLive.get(nodeId);
+    if (st) st.kill();
+  }
+
+  function aaOverlayPainter(spec, canvas, node, img) {
+    const nodeId = node.id;
+    /* 同一颗节点重建 body：上一轮的观察先收干净，绝不留两份观察盯同一个节点 */
+    aaOverlayStop(nodeId);
+    const st = {
+      w: 0, /* 上次真正画过的整数 CSS 尺寸（0 = 还没画成过） */
+      h: 0,
+      dpr: 0, /* 上次画时的 devicePixelRatio（换屏才变，见 paintNow） */
+      raf: 0, /* 已排队的 rAF（非 0 就不再排，合并成一帧一次） */
+      tries: 0, /* 尺寸没量出来时的重试次数 */
+      attached: false, /* 曾经挂上过 DOM */
+      imgSrc: "", /* 触发过重绘的图片地址（同一张图只触发一次） */
+      ro: null,
+      dead: false,
+    };
+    const kill = () => {
+      st.dead = true;
+      if (st.raf) {
+        try {
+          cancelAnimationFrame(st.raf);
+        } catch (_) {}
+        st.raf = 0;
+      }
+      if (st.ro) {
+        try {
+          st.ro.disconnect();
+        } catch (_) {}
+        st.ro = null;
+      }
+      if (aaOvLive.get(nodeId) === st) aaOvLive.delete(nodeId);
+    };
+    const paintNow = () => {
+      st.raf = 0;
+      if (st.dead) return;
+      if (!spec.isConnected || !canvas.isConnected) {
+        /* body 是先建后插：还没进文档就下一帧再看；挂上过又被拆掉 = 节点没了，断开观察 */
+        if (st.attached) {
+          kill();
+          /* 播放头也一并注销：否则「静置时删节点」没人发现 —— ticker 静置是 0 定时器，
+             只能靠这条已经存在的脱离检测（观察回调 / 这一帧）把登记收掉 */
+          aaHeadUnbind(nodeId);
+          return;
+        }
+        if (st.tries++ < 12) request();
+        return;
+      }
+      st.attached = true;
+      if (canvas.hidden) return;
+      const w = Math.round(canvas.clientWidth || 0);
+      const h = Math.round(canvas.clientHeight || 0);
+      if (!(w > 0) || !(h > 0)) {
+        /* 布局还没算出来（首帧 / 图未加载）：下一帧再试 */
+        if (st.tries++ < 12) request();
+        return;
+      }
+      st.tries = 0;
+      /* 整数尺寸没变就不用动（DPR 例外：换屏 / 缩放比例变了要按新像素比重画一次，
+         否则上面那张位图会被拉伸） */
+      const dpr = Math.max(1, Math.min(3, Number(window.devicePixelRatio) || 1));
+      if (w === st.w && h === st.h && dpr === st.dpr) return;
+      st.w = w;
+      st.h = h;
+      st.dpr = dpr;
+      aaPaintEventOverlay(spec, canvas, node);
+    };
+    function request() {
+      if (st.dead || st.raf) return;
+      st.raf = requestAnimationFrame(paintNow);
+    }
+    const imageLoaded = () => {
+      if (st.dead) return;
+      const src = img ? String(img.currentSrc || img.src || "") : "";
+      /* 同一张图只触发一次；换了图（重跑后 ?t= 变了）才再触发 */
+      if (src && src === st.imgSrc) return;
+      st.imgSrc = src;
+      st.tries = 0; /* 图加载会改布局高度：尺寸真变了才真画，没变就白跑一趟 rAF */
+      request();
+    };
+    const observe = (el) => {
+      if (st.dead || !el || typeof ResizeObserver !== "function") return;
+      try {
+        st.ro = new ResizeObserver(() => {
+          if (st.dead) return;
+          if (!spec.isConnected) {
+            kill();
+            aaHeadUnbind(nodeId); /* 同上：节点没了，播放头的登记一起收掉 */
+            return;
+          }
+          request(); /* 缩放 / 改宽：先记账，尺寸真变才画 */
+        });
+        st.ro.observe(el);
+      } catch (_) {
+        st.ro = null;
+      }
+    };
+    const ctl = { request, imageLoaded, observe, kill };
+    aaOvLive.set(nodeId, ctl);
+    return ctl;
   }
 
   /** 图例 +「事件」总开关（一行，在频谱下面）：**每一项都是一颗按钮**，点一下只切这一层；
@@ -1335,9 +1742,15 @@
       const plot = document.createElement("div");
       plot.className = "n-aa-plot";
       const img = document.createElement("img");
+      /* ?t= 只在 node.ranAt 真有值时才拼（= 这一轮跑完的时刻）：同一次 body 重建内 ranAt 不变，
+         所以重建多少次都得到同一个 URL，浏览器直接吃缓存位图，不额外发请求 / 不解码第二遍。
+         ranAt 只在这颗节点「成功跑完」时写、起跑时清 0（见 playAudioAnalysisNode），
+         中途的进度 / 状态更新一律就地改文本、不重建节点，所以不会凭空换 URL。 */
       img.src = aaMediaUrl(specPath) + (node.ranAt ? "?t=" + node.ranAt : "");
       img.alt = T("频谱图");
       img.draggable = false;
+      /* 解码异步化：不抢主线程、不阻塞节点首帧（盒子高度已由 .n-aa-plot 的 aspect-ratio 预留） */
+      img.decoding = "async";
       plot.appendChild(img);
       /* 叠加层铺在频谱图上（pointer-events:none，点穿到频谱，点哪试听照旧）；
          尺寸要等图片布局出来才算得准 —— 首帧量不到就下一帧再试（最多 12 帧，约 200 ms） */
@@ -1356,27 +1769,6 @@
       spec.appendChild(aaEventBar(node, spec, evCanvas, time));
       /* ③ 卡点参数（拍长 / 小节长 / 帧数 / 闪拍帧数）：做卡点闪拍时对着排的那几个数 */
       spec.appendChild(aaVideoParamsRow(node, aaReportOf(node)));
-      let evTries = 0;
-      const paintEvents = () => {
-        if (evCanvas.hidden) return;
-        if (aaPaintEventOverlay(spec, evCanvas, node)) return;
-        if (++evTries < 12) requestAnimationFrame(paintEvents);
-      };
-      requestAnimationFrame(paintEvents);
-      /* 宽度 / 高度变了（窗口缩放、节点改宽、图片加载完）就重画一次；节点被重建时自己收 */
-      img.addEventListener("load", () => aaPaintEventOverlay(spec, evCanvas, node));
-      if (typeof ResizeObserver === "function") {
-        try {
-          const ro = new ResizeObserver(() => {
-            if (!spec.isConnected) {
-              ro.disconnect();
-              return;
-            }
-            if (!evCanvas.hidden) aaPaintEventOverlay(spec, evCanvas, node);
-          });
-          ro.observe(plot);
-        } catch (_) {}
-      }
       /* 点频谱 = 从该处试听（按频谱自己的坐标算比例，别借波形盒的坐标 —— 两者左边不对齐）；
          只绑 plot，点图例 / 开关不跳播放位置 */
       plot.addEventListener("pointerdown", (ev) => {
@@ -1390,7 +1782,15 @@
       });
       plot.addEventListener("click", (ev) => ev.stopPropagation());
       body.appendChild(spec);
-      if (waveEl) aaBindPlayhead(node, waveEl, spec, node.aaDurationSec);
+      /* 播放头 / 时间读数的元素引用在这里（建 DOM 时）就传下去，播放期不再 querySelector */
+      if (waveEl) aaBindPlayhead(node, waveEl, spec, node.aaDurationSec, { headEl: head, timeEl: time });
+      /* 叠加层的重绘统一入口：首帧 / 图片加载 / 尺寸变化都走它（同一帧只画一次，整数尺寸
+         真变才画）。**放在 aaBindPlayhead 之后**：那是唯一会在这里 aaStopLive 的地方，
+         它会连带收掉上一轮的登记，先建会被自己清掉。 */
+      const evPaint = aaOverlayPainter(spec, evCanvas, node, img);
+      img.addEventListener("load", () => evPaint.imageLoaded());
+      evPaint.observe(plot);
+      evPaint.request();
     } else {
       const hint = document.createElement("div");
       hint.className = "n-empty";
@@ -1473,16 +1873,51 @@
     return (n / 1024 / 1024 / 1024).toFixed(2) + " GB";
   }
 
-  /** 报告的数据源：输出 0 的那份摘要 JSON（解析失败就当场重算一份摘要兜底） */
-  function aaReportOf(node) {
-    const t = node && node.output && node.output.kind === "text" ? String(node.output.text || "") : "";
-    if (t) {
+  /* ── 摘要 JSON 的节点级单槽记忆 ─────────────────────────────────────────
+     一次 body 构建里 aaEventLayers / aaMarkTimes / aaBeatClock / aaEventBar /
+     aaVideoParamsRow / aaPaintEventOverlay 读的都是**同一份**摘要 —— 原先每处各
+     JSON.parse 一遍整份摘要，还要各自重排小节表、重算 rmsDb 的 p5–p95 分位。
+     现在整份只解析一次，派生物（小节表 / 事件层 / 分位区间）存同一格、一起失效。
+
+     键 = 输出文本的字符串值 + node.ranAt（跑完一次、结果被改写都会换键）。
+     缓存挂在 WeakMap 上、键就是 node 本身：不在 node 之外持有任何强引用，节点被
+     丢掉时整格跟着回收；也不往 node 上加字段，所以不会混进落盘的 JSON。 */
+  const aaMemoMap = new WeakMap(); /* node -> { text, ranAt, rep, bars, layers, dbNorm } */
+
+  function aaMemoOf(node) {
+    if (!node || typeof node !== "object") return null;
+    const text = node.output && node.output.kind === "text" ? String(node.output.text || "") : "";
+    const ranAt = Number(node.ranAt) || 0;
+    const cur = aaMemoMap.get(node);
+    if (cur && cur.text === text && cur.ranAt === ranAt) return cur;
+    const m = { text, ranAt, rep: null, bars: null, layers: null, dbNorm: null };
+    if (text) {
       try {
-        const o = JSON.parse(t);
-        if (o && typeof o === "object") return o;
+        const o = JSON.parse(text);
+        if (o && typeof o === "object") m.rep = o;
       } catch (_) {}
     }
-    return null;
+    aaMemoMap.set(node, m);
+    return m;
+  }
+
+  /** 报告的数据源：输出 0 的那份摘要 JSON（解析失败 / 空文本 = 没有报告）。
+      走 aaMemoOf：同一份摘要只解析一次，多次调用拿到的是**同一个对象**。 */
+  function aaReportOf(node) {
+    const m = aaMemoOf(node);
+    return m ? m.rep : null;
+  }
+
+  /** 摘要里的小节表（aaBarsOf 归一后）：报告主体与事件层共用同一份，不再各归一一次。
+      rep 不是当前记忆的那一份（理论上不发生，防御性）就当场归一。 */
+  function aaBarsOfRep(node, rep) {
+    const m = aaMemoOf(node);
+    const r = rep || null;
+    if (m && m.rep && m.rep === r) {
+      if (!m.bars) m.bars = aaBarsOf((m.rep.beatGrid || {}).bars);
+      return m.bars;
+    }
+    return aaBarsOf((r && r.beatGrid ? r.beatGrid : {}).bars);
   }
 
   function aaKpi(label, value, sub) {
@@ -1558,7 +1993,7 @@
     const en = rep.energy || {};
     const diag = rep.diagnostics || {};
     const edit = rep.edit || {};
-    const bars = aaBarsOf(bg.bars);
+    const bars = aaBarsOfRep(node, rep);
     const dnb = Array.isArray(bg.downbeatsSec) ? bg.downbeatsSec : [];
     const dur = Number(src.durationSec) || 0;
     const ts = g.timeSignature || {};
@@ -1866,9 +2301,13 @@
         const tile = aaEl("div", "aa-viz");
         if (v && v.path) {
           const img = document.createElement("img");
+          /* 与节点里那张频谱同一条 bust 口径（同一个 ranAt → 同一个 URL，同一张图只解一次） */
           img.src = aaMediaUrl(v.path) + (node.ranAt ? "?t=" + node.ranAt : "");
           img.alt = AA_VIZ_CN[v.kind] ? T(AA_VIZ_CN[v.kind]) : String(v.kind || "");
+          /* 报告窗里的瓦片：**保持** loading="lazy"（滚到才拉），解码也异步 ——
+             别改成首屏全量解码，一张 1024×384 的热力图 ×4 会卡住开窗 */
           img.loading = "lazy";
+          img.decoding = "async";
           img.onerror = () => {
             img.style.display = "none";
           };
@@ -1919,27 +2358,55 @@
     return root;
   }
 
-  /** 板身上的入口（一行；没有结果时是「跑一次就有」的禁用态） */
-  function aaReportRow(node) {
+  /** 板身上的入口（一行；没有结果时是「跑一次就有」的禁用态）
+      文案与状态口径只写在这一份里：建成（aaReportRow）与就地刷新（aaPaintStatus）共用，
+      否则两处各写一套，就地刷新那一份迟早与重建后的样子对不上。 */
+  function aaReportRowState(node) {
     const ready = !!(node && node.output && node.output.kind === "text" && node.output.text);
-    const btn = aaEl("button", "n-aa-report" + (node.error ? " err" : ready ? " ready" : ""));
+    const status = String((node && node.aaStatus) || "").trim();
+    if (node && node.error) {
+      /* 失败：状态行已从 body 移除，错误原因只能在这只窗（与 title）里看 */
+      return {
+        cls: " err",
+        disabled: false,
+        text: T("分析报告 · 上次运行失败"),
+        title: String(node.error),
+      };
+    }
+    if (node && node.running) {
+      return {
+        cls: ready ? " ready" : "",
+        disabled: !ready,
+        /* 已有上一次结果时不动入口文案（免得跑一次入口就消失），进度放 title；
+           还没有结果时这一行本就没得点，直接把进度写上去 */
+        text: ready ? T("查看分析报告") : status || T("分析中…"),
+        title: status || T("正在分析…"),
+      };
+    }
+    if (ready)
+      return {
+        cls: " ready",
+        disabled: false,
+        text: T("查看分析报告"),
+        title: T("打开分析报告：概览 / 节奏 / 小节 / 事件 / 能量 / 诊断 / 产物"),
+      };
+    return {
+      cls: "",
+      disabled: true,
+      text: T("分析报告 · 跑一次 ▶ 后生成"),
+      title: T("还没有分析结果：点节点头部的 ▶ 跑一次"),
+    };
+  }
+
+  function aaReportRow(node) {
+    const st = aaReportRowState(node);
+    const btn = aaEl("button", "n-aa-report" + st.cls);
     btn.type = "button";
     btn.appendChild(aaEl("span", "aa-rp-ic", "▤"));
-    btn.appendChild(
-      aaEl(
-        "span",
-        "aa-rp-t",
-        ready ? T("查看分析报告") : node.error ? T("分析报告 · 上次运行失败") : T("分析报告 · 跑一次 ▶ 后生成"),
-      ),
-    );
-    btn.appendChild(aaEl("span", "aa-rp-go", ready ? "›" : ""));
-    /* 失败时也让它可点：状态行已从 body 移除，错误原因只能在这只窗里看 */
-    btn.disabled = !ready && !node.error;
-    btn.title = node.error
-      ? String(node.error)
-      : ready
-        ? T("打开分析报告：概览 / 节奏 / 小节 / 事件 / 能量 / 诊断 / 产物")
-        : T("还没有分析结果：点节点头部的 ▶ 跑一次");
+    btn.appendChild(aaEl("span", "aa-rp-t", st.text));
+    btn.appendChild(aaEl("span", "aa-rp-go", st.cls === " ready" ? "›" : ""));
+    btn.disabled = st.disabled;
+    btn.title = st.title;
     btn.onclick = (ev) => {
       ev.preventDefault();
       ev.stopPropagation();

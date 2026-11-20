@@ -1036,6 +1036,25 @@ PDF 解析通道(`mtnode_tool_pdf_markdown` / `pdf:parse`)把同一份文件解�
   从「已插话 · 将在下一步生效」升级为「已注入本轮」。这类帧**不参与** token / jobs 记账（token 只在
   `usage` 增量块累计，jobs 只数 `job/*started`；插话自身的用量在它所属调用的 `usage` 里正常出现）。
 
+### 宿主侧决策规则：忙时这一发问不问（纯宿主，不进协议）
+
+会话正在跑的时候再按发送（Enter / Ctrl+Enter / ↑ 按钮三个入口共用同一个 `doSend`），**先由宿主判一次
+「问不问」，网关与运行时都不参与这一判**——它们只认已经成形的 `steer` / `pause` 请求。判据与次序固定：
+
+1. **默认询问**：`config.dsh.busySend` 缺省 `'ask'` → 弹裁决卡「排队 or 即时插话」（键位 1 / 2 直选、
+   Enter 确定、Esc 取消；取消 = 什么都不发，正文原样留在输入框）。勾「记住我的选择」才把三档
+   （`ask` / `queue` / `steer`）写进配置，回到「每次都问」在 设置 → 智能能力 里改。
+2. **四种情形不问，直接排队**（`busySendAskWhyNoCard`，老运行时行为一字不变）：`st.ltBound`（长任务绑定
+   的会话，那一轮由长任务驱动，插话没有意义）、`agentSteerCapable()` 为假（老主进程 / preload 没有
+   `dshSteer`）、`S._steerUnsupported`（引擎已明确没有 `session/steer`，见后文「unknown-method 降级」）、档位本身记成
+   `'queue'` / `'steer'`。卡片容器取不到时同样退回排队——**消息绝不卡在半路**。
+3. **两条免询问的快捷路径**：正文以 `/btw` 开头（大小写不敏感，也认中文顿号「、btw」；前缀在这一发里
+   剥掉、不进正文、也不进斜杠命令与技能解析）与 `Alt+Enter`（回车换行语义下是 `Alt+Ctrl+Enter`）——
+   两者都跳过卡片，直接按 `steer` 走。
+4. 裁决一旦成立，**发送链只有一处**（`agentBusySendApply`）：`'steer'` → `agentSteerNow`（本轮已结束 =
+   立即发送、引擎不支持 = 排队，都由它自己回落，一字不丢）；`'queue'` → `agentSessionSend`（忙时它内部
+   就是入队）。插话前先 `takeForSend` 把待发批注拼进正文（批注在前），否则「空框 + 批注」插话会静默丢字。
+
 ### 暂停的收尾语义（最容易做错的一条）
 
 `pause` 落地后，运行时会把当前这一轮以 **aborted** 收流 —— 这在网关看来长得和失败一模一样。

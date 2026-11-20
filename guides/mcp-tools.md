@@ -40,6 +40,7 @@ node scripts/build-mcp-contract.mjs --check  # 只比对，不一致退码 1（�
 | `dsh/gateway/gui-plugin.mjs`（`mtnode_gui`，主进程执行） | 同上 |
 | `dsh/gateway/dev-plugin.mjs`（`mtnode_dev`，主进程执行：起隔离调试实例 + CDP） | 同上 |
 | `dsh/gateway/mcp-extra-plugin.mjs`（`mtnode_generate` / `mtnode_run` / `mtnode_tools` / `mtnode_session`，回环四件） | 同上 |
+| `dsh/gateway/media-read-plugin.mjs`（`mtnode_media`，主进程执行：ffprobe / ffmpeg / 本地 SenseVoice，只读） | 同上 |
 | 生成器内的 `MCP_RESOURCES` / `MCP_PROMPTS`（MCP 侧自有，无插件真源） | `resources[]` / `prompts[]` |
 
 **不在导出范围**的插件（有意的边界，见 `guides/mcp-server.md` §5）：

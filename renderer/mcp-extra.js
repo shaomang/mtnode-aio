@@ -99,7 +99,7 @@
 
   async function runOne(params) {
     const p = params || {};
-    const wf = p.canvasRef ? window.MTNodeMcp.resolveWf(p.canvasRef) : wfNow();
+    const wf = p.canvasRef ? await window.MTNodeMcp.resolveWf(p.canvasRef) : wfNow();
     if (!wf) return { ok: false, error: "NO_CANVAS", message: "没有可用的画布" };
     const hit = findNode(wf, p.nodeId, p.nodeTitle);
     if (hit.error) return { ok: false, error: "NO_NODE", message: hit.error };
@@ -125,7 +125,7 @@
 
   async function runGraph(params) {
     const p = params || {};
-    const wf = p.canvasRef ? window.MTNodeMcp.resolveWf(p.canvasRef) : wfNow();
+    const wf = p.canvasRef ? await window.MTNodeMcp.resolveWf(p.canvasRef) : wfNow();
     if (!wf) return { ok: false, error: "NO_CANVAS", message: "没有可用的画布" };
     const nodes = (wf && Array.isArray(wf.nodes) && wf.nodes) || [];
     const wantId = String(p.controlNodeId || "").trim();
@@ -194,7 +194,7 @@
 
   async function tools(params) {
     const p = params || {};
-    const wf = p.canvasRef ? window.MTNodeMcp.resolveWf(p.canvasRef) : wfNow();
+    const wf = p.canvasRef ? await window.MTNodeMcp.resolveWf(p.canvasRef) : wfNow();
     if (!wf) return { ok: false, error: "NO_CANVAS", message: "没有可用的画布" };
     const snap = await runAgainstWf(wf, () => agentUserToolsSnapshot(wf));
     const descs = (snap && snap.descs) || [];
@@ -409,7 +409,7 @@
 
   async function mediaNode(params) {
     const p = params || {};
-    const wf = p.canvasRef ? window.MTNodeMcp.resolveWf(p.canvasRef) : wfNow();
+    const wf = p.canvasRef ? await window.MTNodeMcp.resolveWf(p.canvasRef) : wfNow();
     if (!wf) return { ok: false, error: "NO_CANVAS", message: "没有可用的画布" };
     const file = String(p.path || "").trim();
     if (!file) return { ok: false, error: "NO_PATH", message: "建节点需要产物路径 path" };
