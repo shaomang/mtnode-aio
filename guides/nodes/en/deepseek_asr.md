@@ -31,4 +31,4 @@ Write a JSON object on a text node and wire it to the parameter port; a JSON wit
 - **Billing** follows the documented per-audio-duration rule; the number of segments is shown in the node status (“transcribed: N sentences / M seconds”).
 - **No local backend, no VRAM, no local model to install** — offline simply fails.
 - **Failure text is explicit**: no key / invalid key / no audio / too long or too large / upload timeout / busy / rate limited / content risk / txt write failure.
-- Want it **offline and free**? Use the built-in dictation (the microphone at the bottom left, local SenseVoice by default) or a local ASR backend instead of this node.
+- Want it **offline and free**? Use the built-in dictation (the mic in the status bar / the small mic in an app window footer, local SenseVoice by default) or a local ASR backend instead of this node.

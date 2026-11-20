@@ -1769,6 +1769,9 @@ contextBridge.exposeInMainWorld('api', {
   /* 关掉**发起这次调用**窗口所属的应用（应用窗口里的 appHost.close 走同一通道） */
   appsCloseWindow: () => ipcRenderer.invoke('apps:closeWindow'),
   appsIsOpen: (id) => ipcRenderer.invoke('apps:isOpen', { id }),
+  /* 同一时间只允许一个应用打开：把除 keep 以外的应用窗口全部收掉（keep 空 = 一个都不留）。
+     画布上的应用节点打开界面时调它，免得同一个应用在窗口与画布里各跑一份实例。 */
+  appsCloseOthers: (keep) => ipcRenderer.invoke('apps:closeOthers', { keep: keep || '' }),
   /* ── 预览态宿主桥（本轮需求：开发页中栏的预览 iframe 也能连入 MTNode）──
      预览页没有 preload（window.appHost 本来是 undefined），所以那座桥是**三层**：
      预览页里的注入小助手（apps-store.js 的 PREVIEW_BRIDGE）↔ 开发页中继 ↔ 这里这几条通道。

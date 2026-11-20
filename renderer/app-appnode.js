@@ -269,11 +269,16 @@ function appNodeBuildBody(node, body) {
   }
   const running = APPNODE.nodeId === node.id;
   const isOpen = running && APPNODE.host && !APPNODE.host.hidden;
+  /* appUndocked：上一次是点「在独立窗口打开」把它弹出去的（见 appNodeUndock）——
+     画布这一帧已经停了，卡片上要说清「应用在窗口里跑着」，而不是「点这里进界面」 */
+  const undocked = !running && node.appUndocked === true;
   stateEl.textContent = isOpen
     ? appNodeT("界面已打开（右上角可收起或停止）")
     : running
       ? appNodeT("后台运行中 · 点这里回到界面")
-      : appNodeT("点击进入应用界面");
+      : undocked
+        ? appNodeT("已在独立窗口运行 · 点卡片回到画布界面")
+        : appNodeT("点击进入应用界面");
   card.appendChild(stateEl);
   if (node.appDataDir) {
     const dirEl = appNodeEl("div", "appnode-dir");
@@ -439,6 +444,9 @@ const APPNODE_ICONS = {
     '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.2 4.6h4.1l1.2 1.5h6.3v6.3H2.2z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M2.2 6.1h11.6" fill="none" stroke="currentColor" stroke-width="1.1" opacity=".7"/></svg>',
   stop:
     '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="4.4" y="4.4" width="7.2" height="7.2" rx="1.2" fill="currentColor"/></svg>',
+  /* 弹出到独立窗口（undock）：一支箭头钻出小方框 */
+  undock:
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M12.6 9.4v2.9a1.2 1.2 0 0 1-1.2 1.2H3.9a1.2 1.2 0 0 1-1.2-1.2V4.8a1.2 1.2 0 0 1 1.2-1.2h2.9" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M9.6 2.6h3.8v3.8" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M13.2 2.8 8.4 7.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>',
   close:
     '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.4 4.4l7.2 7.2M11.6 4.4l-7.2 7.2" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>',
 };
@@ -477,6 +485,15 @@ function appNodeEnsureHost() {
     "appnode-bar-icon",
   );
   openDir.onclick = () => appNodeOpenDataDir();
+  /* 弹出到独立窗口（undock）：把这个应用交给 app 窗口，画布这一帧随即停掉
+     —— 同一时间只允许一个应用打开，两份同时活着就是两个实例。 */
+  const undock = appNodeBarBtn(
+    APPNODE_ICONS.undock,
+    "",
+    appNodeT("在独立窗口里打开（画布界面会收起）"),
+    "appnode-bar-icon appnode-bar-undock",
+  );
+  undock.onclick = () => appNodeUndock();
   /* 两颗钮的分工必须一眼看得出：停止 = 结束运行；收起 = 只是回后台。 */
   const stop = appNodeBarBtn(
     APPNODE_ICONS.stop,
@@ -497,6 +514,7 @@ function appNodeEnsureHost() {
   bar.appendChild(spacer);
   bar.appendChild(reload);
   bar.appendChild(openDir);
+  bar.appendChild(undock);
   bar.appendChild(stop);
   bar.appendChild(close);
   const bodyBox = appNodeEl("div", "appnode-body");
@@ -626,6 +644,13 @@ async function appNodeOpen(node) {
       return;
     }
   }
+  /* 同一时间只允许一个应用打开：这个应用已经在独立窗口里跑着（或别的应用窗口开着）时，
+     先把那些窗口按正常关闭链收掉，让画布这一份接管 —— 否则同一个应用会有两个实例。 */
+  if (typeof api.appsCloseOthers === "function") {
+    try {
+      api.appsCloseOthers("");
+    } catch (_) {}
+  }
   const workdir = appNodeWorkdir();
   if (APPNODE.nodeId && APPNODE.nodeId !== node.id) appNodeDestroyFrame();
   appNodeEnsureHost();
@@ -634,6 +659,11 @@ async function appNodeOpen(node) {
   APPNODE.wfId = appNodeNodeId();
   APPNODE.workdir = workdir;
   APPNODE.userClosed = false;
+  /* 回到画布界面 = 应用不再「只在独立窗口里」（上面已经把窗口收掉了），卡片文案跟着回到常态 */
+  if (node.appUndocked === true) {
+    node.appUndocked = false;
+    if (typeof scheduleSave === "function") scheduleSave(true);
+  }
   apnodeBarPaint(node);
   if (APPNODE.hintEl) APPNODE.hintEl.hidden = true;
   appNodeSync();
@@ -747,6 +777,52 @@ function appNodeCollapseForOther(appId) {
   if (!APPNODE.host || APPNODE.host.hidden) return false;
   if (appId && String(appId) === APPNODE.appId) return false;
   appNodeClose();
+  return true;
+}
+/* 弹出到独立窗口（undock）：把这个应用的界面交给 app 独立窗口，画布这一帧随即停掉。
+   为什么顺手停掉：同一时间只允许一个应用打开（两份实例一起活着就是两个应用在跑，会抢后端 / 抢数据）；
+   停掉之后浮层收起、看到的就是画布本身 —— 这就是用户要的「原窗口返回到画布状态」。 */
+async function appNodeUndock() {
+  const node = appNodeById(APPNODE.nodeId);
+  const appId = String((node && node.appId) || APPNODE.appId || "");
+  if (!appId) return;
+  const api = appNodeApi();
+  if (typeof api.appsOpenWindow !== "function") {
+    appNodeToast(appNodeT("这个宿主没有独立窗口能力"), "warn");
+    return;
+  }
+  let r = null;
+  try {
+    r = await api.appsOpenWindow(appId);
+  } catch (e) {
+    r = { ok: false, error: (e && e.message) || String(e) };
+  }
+  if (!r || r.ok === false) {
+    appNodeToast(appNodeT("弹出独立窗口失败：") + String((r && r.error) || ""), "err");
+    return;
+  }
+  const nodeId = APPNODE.nodeId;
+  /* 卡片上留一句「应用在独立窗口里跑着」（见 appNodeBuildBody 的 appUndocked 分支） */
+  const nd = appNodeById(nodeId);
+  if (nd) {
+    nd.appUndocked = true;
+    if (typeof scheduleSave === "function") scheduleSave(true);
+  }
+  appNodeDestroyFrame();
+  APPNODE.userClosed = true;
+  if (nodeId) appNodeRepaintCard(nodeId);
+  appNodeToast(appNodeT("已在独立窗口打开（画布界面已收起）"), "ok");
+}
+/* 别处（应用中心 / 库页）要开某个应用的独立窗口：画布里正在跑的这份先停掉 ——
+   **不是回后台**：后台的 iframe 仍是同一应用的一只活实例，正是要避免的「两个应用同时开着」。
+   回 true = 真停了一份。 */
+function appNodeStopRunning() {
+  if (!APPNODE.nodeId || !APPNODE.frame) return false;
+  const nodeId = APPNODE.nodeId;
+  appNodeDestroyFrame();
+  APPNODE.userClosed = true;
+  appNodePaintState(nodeId, appNodeT("已停止 · 点卡片重新启动"));
+  appNodeRepaintCard(nodeId);
   return true;
 }
 /* 完全停止：撤租约 + 落盘 + 拆 iframe（与「关闭」不是一回事）。 */
@@ -2091,6 +2167,7 @@ function appNodeEnsureKindTables() {
       appDataDir: "",
       appDataFile: "",
       appMissing: false,
+      appUndocked: false,
       appSessionId: "",
     };
   }
@@ -2126,6 +2203,8 @@ window.appNodeBuildBody = appNodeBuildBody;
 window.appNodeOpen = appNodeOpen;
 window.appNodeClose = appNodeClose;
 window.appNodeCollapseForOther = appNodeCollapseForOther;
+window.appNodeStopRunning = appNodeStopRunning;
+window.appNodeUndock = appNodeUndock;
 window.appNodeStop = appNodeStop;
 window.appNodeDestroyFrame = appNodeDestroyFrame;
 window.appNodePick = appNodeOpenPicker;

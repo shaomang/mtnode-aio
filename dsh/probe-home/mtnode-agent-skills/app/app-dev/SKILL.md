@@ -32,9 +32,9 @@ MTNode 里的「应用」＝一份**静态** HTML / JS / CSS，由宿主用独�
 `capabilities.showDictate` 决定**应用窗口底部那条宿主注入的听写条**显不显示：这一位为真，宿主才注入
 `renderer/app-speech-ui.js`，**注入进来即默认可见**（`markShown`，没有隐藏标记）；条尾「收起」/ `apSpeechHide()`
 只在本次窗口内藏它（不写回 `app.json`），`apSpeechReveal()` 唤回，`apSpeechHidden()` 问现状。
-这条条有**两种转录模式**（与画布那枚话筒同一套口径，2026-02 二轮）：点话筒 / 点左下角那枚常驻浮动话筒按
+这条条有**两种转录模式**（与画布那枚话筒同一套口径，2026-02 二轮）：点话筒 / 点 **footer 里那枚小话筒**按
 「关闭 → **持续转录** → **按键转录** → 关闭」循环 —— 持续转录按「说完一句的停顿」（默认 1500ms，`apSpeechSilenceMs(ms)` 可调）
-逐句转写；按键转录**按住 F1 说话、松开立刻识别**这一句（判键走 `ev.code`，前卷 240ms，浮动话筒按住同样能说）。
+逐句转写；按键转录**按住 F1 说话、松开立刻识别**这一句（判键走 `ev.code`，前卷 240ms，那枚小话筒按住同样能说）。
 **F2** 是持续转录的开 / 关（按键转录态下按它回关闭），`Esc` 与「收起」停止。
 每句定稿**落进采集开始时焦点所在的那个输入框**（`input`/`textarea`/`contenteditable`，原生 `execCommand("insertText")`，
 行尾补空格；焦点跑了先挂住、`focusin` 补写）—— 自己监听 `"mtnode-dictate"` 又自己写一遍的应用请调 `apSpeechInsert(false)`。
@@ -50,8 +50,8 @@ user = 这一句 + 极短上下文（约 400 字符）；失败 / 超时 / 没�
 说明 / 标签 / 数据目录，出口只有 ✕ 与 Esc —— 浮层不做「点外部即关」）。名字与版本由宿主给：
 `app.json` 的 `author` → 当前登录账号昵称（两级回落，系统占位名 `u_xxxxxxxx` 不算名字）；
 **两者缺任一个 / 未登录且没写过作者 → 这枚标签整枚不出现**（不写「未知作者」）。配色只取应用自己主题的
-`--bg/--fg/--muted/--accent/--line`（与听写条同一份 palette 口径），深浅底都不突兀；左下角那枚听写浮动话筒
-与它共用一个角落列（`#mtnode-dictate-zone`），此时标签排在**整列之上**（按容器实际顶边算）。
+`--bg/--fg/--muted/--accent/--line`（与听写条同一份 palette 口径），深浅底都不突兀；听写那枚小话筒
+**在 footer 里**（`#mtnode-dictate-zone`，不再浮在左下角压住应用内容），标签按它的顶边往上让一行。
 注入闸门只看 `capabilities.showAuthor`（`preload-app.js` 的 `maybeInjectAppUi` + `apps-store.js` 的 `hostCapabilities`），
 应用侧**不用写任何代码**；要在别处显示「谁做的、哪一版」，调 `appHost.authorTag()`（见第二节桥表）。
 `capabilities.imageGen` 只是声明，出图接口与文本接口一样始终可调。

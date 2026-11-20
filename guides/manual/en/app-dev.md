@@ -222,14 +222,14 @@ asks for the current state and `apSpeechReveal()` brings it back — all three a
 focused box + AI enhance**):
 
 - **Three states** (same scheme as the canvas mic): clicking **🎤 Dictate** on the bar or the **persistent
-  floating mic at the bottom-left** cycles "off → live → push-to-talk → off".
+  small mic in the footer** (it appears once the bar is hidden) cycles "off → live → push-to-talk → off".
   - **Live**: it keeps listening; each pause (default 1.5s, tunable with `apSpeechSilenceMs(ms)`) ends a sentence
     which is transcribed, and the result window grows one line at a time. Sentence length is not capped.
   - **Push-to-talk**: **hold F1 and release to recognize** that sentence immediately (no silence gate — voice
     commands want low latency); ~240ms of pre-roll is kept so the first word is not clipped. The key test uses
     `ev.code` (no character, layout/IME independent, never pollutes the input box) and Ctrl / Alt / Meta
     combinations pass through. The microphone stays open in this state (otherwise every press would re-open it
-    and the startup delay would eat the first word); holding the floating mic does the same with the mouse.
+    and the startup delay would eat the first word); holding that small mic does the same with the mouse.
 - Hotkeys: **F2** toggles live transcription (off ↔ live; in push-to-talk it goes back to off), **Esc** stops,
   and "Hide" hands over the half sentence still in hand before shutting down. Ctrl+Shift+D is an equivalent
   fallback.
@@ -259,9 +259,9 @@ focused box + AI enhance**):
 `version`. **If either is missing the whole tag stays away** (no “unknown author” placeholder). Clicking it
 opens a **read-only** app-details panel (icon / title / app id / author / version / description / tags / data
 folder; the only exits are ✕ and `Esc`). Colours come from the app's own theme variables (`--bg` / `--fg` /
-`--accent`…), so light and dark apps both look right; the dictate floating mic lives in the same bottom-left
-corner column (`#mtnode-dictate-zone`), and the tag is placed **above that column** (measured from the
-container's top edge, never overlapping).
+`--accent`…), so light and dark apps both look right; the dictate mic is a small button **in the footer**
+(`#mtnode-dictate-zone`, no longer floating over the bottom-left corner), and the tag is placed one row
+above it (never overlapping).
 
 **Changing a capability never touches the entry page**: only the declaration in `app.json` is written
 (toggling `textInput` also adds / removes `speech.js` / `speech.css` in the app folder), and `index.html`

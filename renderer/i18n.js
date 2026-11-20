@@ -5570,6 +5570,13 @@
     "界面已打开（右上角可收起或停止）": "Open (collapse or stop from the top right)",
     "后台运行中 · 点这里回到界面": "Running in background · click to reopen",
     "已停止 · 点卡片重新启动": "Stopped · click the card to start again",
+    /* undock：从画布上的应用节点弹到独立窗口（renderer/app-appnode.js 的 appNodeUndock） */
+    "在独立窗口里打开（画布界面会收起）": "Open in an app window (the canvas view collapses)",
+    "这个宿主没有独立窗口能力": "This host cannot open app windows",
+    "弹出独立窗口失败：": "Could not open the app window: ",
+    "已在独立窗口运行 · 点卡片回到画布界面":
+      "Running in its own window · click the card to bring it back to the canvas",
+    "已在独立窗口打开（画布界面已收起）": "Opened in its own window (the canvas view collapsed)",
     "完全停止应用": "Stop app completely",
     "结束这个应用的运行（释放内存，数据已保存）；下次点卡片重新启动":
       "End this app's run (frees memory; data is saved); click the card to start it again",
@@ -13158,6 +13165,11 @@
         /* 顶栏入口 / 页面骨架 */
         "应用：浏览云端应用目录，下载到本机后用独立窗口运行（已下载的应用在「库」里管理）":
           "Apps: browse the cloud app catalog, download to this computer and run in a separate window (downloaded apps are managed under Library)",
+        /* 库页卡片下方那条通栏「启动」（appsLaunchStripEl）+ 同一时间只开一个应用 */
+        "在独立窗口里启动这个应用（同一时间只开一个应用）":
+          "Launch this app in its own window (only one app can be open at a time)",
+        "已关闭另一个应用窗口（同一时间只允许一个应用打开）":
+          "Closed the app window that was already open (only one app can be open at a time)",
         "库": "Library",
         /* 本轮需求（用户共识）：左导航 应用 / 库 / 开发中应用 / 开发 —— 第 3 格由原「我的应用」
            改名，装两块：上 = 本机开发中的应用（只读清单）、下 = 我上架到云端的条目 */

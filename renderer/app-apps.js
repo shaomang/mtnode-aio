@@ -3955,10 +3955,12 @@ async function appsOpenApp(id, kind) {
     appsBridgeMissing();
     return;
   }
-  /* 从前台换成另一个应用：画布里开着的那个应用界面先收到后台去
-     （见 renderer/app-appnode.js 的 appNodeCollapseForOther；同一个应用不动） */
+  /* 同一时间只允许一个应用打开（用户口径：几个应用同时活着会抢后端 / 抢数据）：
+     画布里正在跑的应用界面**停掉**，不是「收到后台」—— 后台那只 iframe 仍是一份活实例。
+     老版本渲染层没有 appNodeStopRunning 时退回原来的收起口径。 */
   try {
-    if (typeof window.appNodeCollapseForOther === "function") window.appNodeCollapseForOther(id);
+    if (typeof window.appNodeStopRunning === "function") window.appNodeStopRunning();
+    else if (typeof window.appNodeCollapseForOther === "function") window.appNodeCollapseForOther(id);
   } catch (_) {}
   const k = kind ? String(kind) : appsOpenKindOf(id);
   let r = null;
@@ -3967,8 +3969,17 @@ async function appsOpenApp(id, kind) {
   } catch (e) {
     r = { ok: false, error: (e && e.message) || String(e) };
   }
-  if (!r || r.ok === false) appsToast(appsT("打开失败：") + appsErrText(r), "err");
-  else appsPaintCardState(id);
+  if (!r || r.ok === false) {
+    appsToast(appsT("打开失败：") + appsErrText(r), "err");
+    return;
+  }
+  /* 主进程开窗时会把别的应用窗口收掉（同一时间只开一个）：这里如实说一句，
+     免得用户以为自己的窗口「自己没了」。 */
+  const closedOthers = Array.isArray(r.closedOthers) ? r.closedOthers : [];
+  if (closedOthers.length) {
+    appsToast(appsT("已关闭另一个应用窗口（同一时间只允许一个应用打开）"), "warn");
+  }
+  appsPaintCardState(id);
 }
 
 /* ── 删除应用（本轮需求：内容与画布一同移入回收站）──────────────────────────────
@@ -4674,6 +4685,35 @@ function appsCoverActionsEl(spec, opts) {
   return null;
 }
 
+/* 库页卡片**下方那条通栏「启动」**（用户本轮口径：每个应用下面一条长条按钮，点它直接启动）。
+ *
+ * 与上面「封面上不出按钮」的老口径不冲突：那条老口径说的是封面上的图标 / 文字动作行
+ * （下载 / 更新 / 编辑 / 删除 …仍只走详情窗）；库里点得最多的动作 = 打开应用，
+ * 所以给它一条通栏长条，把「点卡片开详情 → 再点运行」这两步省成一步。
+ *
+ * 只有库页（appsTileEl 的 local 分支）会挂它；应用中心的远端目录卡片仍然是纯封面。
+ * 按钮自己 stopPropagation：点它只启动，不连带把详情窗一起打开。 */
+function appsLaunchStripEl(spec) {
+  const id = String((spec && spec.id) || "");
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "apps-launch";
+  btn.dataset.appLaunch = id;
+  btn.textContent = appsT("启动");
+  btn.title = appsT("在独立窗口里启动这个应用（同一时间只开一个应用）");
+  btn.setAttribute("aria-label", appsT("启动") + " " + String(appsSpecTitle(spec) || id));
+  btn.addEventListener("click", (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    if (id) appsOpenApp(id, appsOpenKindOf(id));
+  });
+  /* 卡片本身绑了 Enter / 空格开详情：按钮上的回车只该启动，不能顺带开详情 */
+  btn.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter" || ev.key === " ") ev.stopPropagation();
+  });
+  return btn;
+}
+
 function appsTileEl(spec, opts) {
   const o = opts || {};
   const id = spec.id;
@@ -4693,6 +4733,8 @@ function appsTileEl(spec, opts) {
   progTxt.hidden = true;
   card.appendChild(prog);
   card.appendChild(progTxt);
+  /* 库页：卡片下方那条通栏「启动」（见 appsLaunchStripEl 的注释） */
+  if (o.local) card.appendChild(appsLaunchStripEl(spec));
   /* 点封面空白处 = 打开应用详情窗（与微软商店一致）；图标按钮各自 stopPropagation，不误触。
      键盘也一样：卡片自己 tabindex=0，Enter / 空格即开。 */
   card.tabIndex = 0;
@@ -5464,6 +5506,16 @@ function appsVirtualGridMount(body, list, opts) {
 
   measure();
   render();
+  /* 首帧之后用**真实**行高校正一次：估算式是「封面 16:9 + 边框」，而库页卡片底下还有一条
+     30px 的通栏「启动」（appsLaunchStripEl）—— 不校正的话相邻行会叠在一起，
+     滚动时也永远按偏小的行高算。口径与 relayout 尾那段完全一致。 */
+  {
+    const probe = grid.querySelector(".apps-tile");
+    if (probe && probe.offsetHeight && Math.abs(probe.offsetHeight - rowH) > 1) {
+      rowH = probe.offsetHeight;
+      render();
+    }
+  }
   sc.addEventListener("scroll", schedule, { passive: true });
   window.addEventListener("resize", schedule);
   const ro = window.ResizeObserver ? new ResizeObserver(schedule) : null;

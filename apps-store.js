@@ -5525,6 +5525,26 @@ function closeAppWindow(id) {
   });
   return true;
 }
+/* 同一时间只允许一个应用打开（用户口径：几个应用同时活着会各自抢后端 / 抢同一份数据，
+ * 出问题时也说不清是谁的锅）。开窗（含复用）与画布应用节点打开界面前都先收拢：
+ * 把**其它**应用窗口按正常关闭链（先请应用收尾、再关）收掉。
+ * 返回被关掉的应用 id 列表 —— 回执带给渲染层，好给用户一句人话而不是悄悄关窗。 */
+function closeOtherAppWindows(keepId) {
+  const kept = String(keepId || "");
+  const closed = [];
+  for (const [id, w] of Array.from(appWins.entries())) {
+    if (id === kept) continue;
+    if (!w || w.isDestroyed()) {
+      appWins.delete(id);
+      continue;
+    }
+    closed.push(id);
+    try {
+      closeAppWindow(id);
+    } catch (_) {}
+  }
+  return closed;
+}
 /* 应用窗口侧的回包（preload-app.js 收到 apps:willClose → 跑完收尾 → invoke 这个通道） */
 function ackAppClose(e) {
   const id = wcToAppId.get(e.sender) || "";
@@ -5804,6 +5824,8 @@ function openAppWindow(id, kind) {
        得自己关窗重开才看得见改动。重载强制跳过缓存（file:// 也会吃资源缓存），
        口径与开发页预览的 no-store 一致：看代码就该看磁盘上刚写下的那一版。
        reload 失败（窗口正在关 / 替身窗口没有这个方法）绝不影响把窗口调到前台。 */
+    /* 同一时间只允许一个应用打开：把**别的**应用窗口按正常关闭链收掉（同一个应用不动） */
+    const closedOthers = closeOtherAppWindows(sid);
     let reloaded = false;
     try {
       const wc = existing.webContents;
@@ -5846,6 +5868,7 @@ function openAppWindow(id, kind) {
       })(),
       dir: rdir,
       kind: existing.__mtnodeAppKind || openAppDirKindOf(sid, kind, rdir),
+      closedOthers: closedOthers,
     };
   }
   /* 应用可能在哪一边（下载根 / 项目根）：点名了类型就取那一边，否则按本机实际所在的那一类取 */
@@ -5974,6 +5997,9 @@ function openAppWindow(id, kind) {
       });
     }
   }
+  /* 同一时间只允许一个应用打开（用户口径）：新窗口开起来之前，先把别的应用窗口按正常关闭链收掉。
+     放在**解析成功之后**才做 —— 应用不在本机 / 入口页缺失时提前 return，绝不能顺手关掉用户正开着的那个。 */
+  const closedOtherApps = closeOtherAppWindows(sid);
   w.loadFile(html);
   /* 启动留痕（用户报障：开发中启动却是旧版本，看不出看的是哪一份代码）：
      每一次开窗都在主进程日志留下一行「实际加载目录 + 这一份 app.json 的版本 + 来自哪套根」，
@@ -6015,6 +6041,7 @@ function openAppWindow(id, kind) {
     dir: dir,
     kind: dirKind,
     version: man.version,
+    closedOthers: closedOtherApps,
   };
 }
 
@@ -8490,6 +8517,12 @@ function registerAppsIpc(opts) {
     return { ok: true, id: id, closed: !!closed };
   }));
   ipcMain.handle("apps:closeWindow", guard((e) => closeSenderAppWindow(e)));
+  /* 收拢到「只剩一个」：把除 keepId 以外的应用窗口全部按正常关闭链收掉。
+     画布上的应用节点打开界面时调它（keepId 传空 = 一个都不留），保证同一时间只有一个应用活着。 */
+  ipcMain.handle("apps:closeOthers", guard((e, arg) => {
+    const keep = safeAppId(isObj(arg) ? arg.keep : arg);
+    return { ok: true, keep: keep, closed: closeOtherAppWindows(keep) };
+  }));
   ipcMain.handle("apps:isOpen", guard((e, arg) => {
     const id = safeAppId(isObj(arg) ? arg.id : arg);
     if (!id) return bad(t("应用 id 不合法"), "bad_id");

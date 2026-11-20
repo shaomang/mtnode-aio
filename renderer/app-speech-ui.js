@@ -1,6 +1,6 @@
 "use strict";
 /* ============================================================================
- * 应用窗口 · 语音听写条 + 左下角浮动话筒（renderer/app-speech-ui.js）
+ * 应用窗口 · 语音听写条 + footer 里那枚小话筒（renderer/app-speech-ui.js）
  * ----------------------------------------------------------------------------
  * 需求：「应用界面的 footer 也要能用内置 ASR」—— 应用是自己写的页面（下载来的应用
  * 只有一份 index.html，没人会回去改它），所以这条 footer 语音条由**宿主注入**：
@@ -17,7 +17,7 @@
  *   ① **三态模式**（照画布 renderer/app-voice.js 的 MODE_OFF / MODE_LIVE / MODE_PTT 同源）：
  *      **持续转录**（点一下一直听，按「说完一句的停顿」逐句交出去识别）与**按键转录**
  *      （按住 **F3** 说话、松开**立刻**交这一句，不等静音门 —— 语音指令要低延迟）。
- *      条上话筒 / 左下角浮动话筒点一下 = 三态循环（关闭 → 持续转录 → 按键转录 → 关闭）；
+ *      条上话筒 / footer 里那枚小话筒点一下 = 三态循环（关闭 → 持续转录 → 按键转录 → 关闭）；
  *      **F2** 是持续转录的总开关（关闭 ↔ 持续转录；在按键转录下按 F2 回关闭）—— 与旧版
  *      「F2 呼出并开始听写」的语义一致，老应用与老文档不受影响。Esc / 「收起」都停止。
  *      判键用 **ev.code === "F3"**（无字符、不污染输入框，与键盘布局无关）；keydown 起录
@@ -42,10 +42,12 @@
  *      当前输入框尾部，合计约 400 字符）。**增强失败 / 超时（8 秒）/ 没配文本模型一律原样交
  *      原始识别**（绝不吞话），状态行说清原因；结果小窗保留原文可查。开关状态按应用持久化
  *      （appHost.storageSet("dictateEnhance")），桥缺席退内存态。默认**关**（不替用户花模型调用）。
- *   ④ **左下角浮动话筒**：常驻在左下角（宿主自建的角落区 #mtnode-dictate-zone）；按键转录态下
- *      鼠标**按住它就是按住说话**（松开即交），给不方便按 F3 的场景留一条路。正在听时它变成
- *      红点脉冲的「录音中」状态。位置纪律：角落区是**一列**（浮动话筒在下、作者标签在上），
- *      听写条若落在宿主自建的固定底栏里会左让一块给这列，互不压盖。
+ *   ④ **footer 里的小话筒**（本轮需求：原来那枚**钉在左下角的浮动圆钮已移除**）：条的宿主里
+ *      一枚小按钮（容器 id 仍是 #mtnode-dictate-zone，落点 = 应用自己的 footer，没有 footer
+ *      就落在宿主自建的固定底栏），条收起后它就是恢复听写的入口 —— 位置纪律是**不压住应用内容**：
+ *      它只在条被「收起」时露面，条露着时条上那枚话筒已经是同一个动作，不必重复一颗。
+ *      按键转录态下鼠标**按住它就是按住说话**（松开即交），给不方便按 F3 的场景留一条路；
+ *      正在听时它变成红点脉冲的「录音中」状态。
  *
  * 界面（与画布状态栏那枚话筒同族）：
  *   🎤 听写 / ■ 持续转录 / F3 按键转录   点一下按三态循环 → 逐句转写 → 结果小窗累加
@@ -125,8 +127,8 @@
   var ENH_MIN_CHARS = 1;
 
   var root = null; /* 注入的那条听写条的根元素 */
-  var zone = null; /* 左下角角落区（浮动话筒 + 作者标签让位都认它） */
-  var zoneBtn = null; /* 左下角浮动话筒 */
+  var zone = null; /* footer 里那枚小话筒的容器（作者标签让位仍认这个 id） */
+  var zoneBtn = null; /* footer 里的小话筒按钮（原「左下角浮动话筒」，本轮已挪进 footer） */
   var host = null; /* window.appHost */
   var refs = {};
   var panel = null;
@@ -135,7 +137,7 @@
   var preparing = false; /* 模型准备 / 下载在跑（与 busy 分开：听不受它影响） */
   var listening = false; /* 是否正在采集（持续转录与按键转录都握着话筒；由 mode 决定交接口径） */
   var mode = MODE_OFF; /* 三态模式（MODE_OFF / MODE_LIVE / MODE_PTT） */
-  var pttOn = false; /* 按键转录：F3（或浮动话筒鼠标）正按着 */
+  var pttOn = false; /* 按键转录：F3（或那枚小话筒的鼠标按住）正按着 */
   var enhOn = false; /* AI 增强开关（默认关；按应用持久化） */
   var enhApplied = false; /* 本段里是否至少增强成功过一次（决定「原文 / 增强」切换显不显示） */
   var showRaw = false; /* 结果小窗当前看的是原文还是增强文本 */
@@ -227,23 +229,23 @@
          免得抢它的视线 */
       ".mtn-dict-btn.mtn-dict-hide{margin-left:auto;padding:2px 8px;opacity:.75;font-size:.92em}" +
       ".mtn-dict-btn.mtn-dict-hide:hover:not(:disabled){border-color:" + p.line + ";color:inherit;opacity:1}" +
-      /* 左下角角落区（本轮需求：浮动话筒 + 作者标签共用的**一列**）。
-         为什么要有这层容器：两个模块各自 position:fixed 钉在左下角，同一个角上必然压盖；
-         这里由角落区统一占位，听写条落进宿主底栏时按它的宽度左让一块。 */
-      ".mtn-dict-zone{position:fixed;left:10px;bottom:8px;z-index:12545;display:flex;flex-direction:column;" +
-      "align-items:flex-start;gap:6px;font:" + p.font + "}" +
-      ".mtn-dict-zone-btn{position:relative;display:inline-flex;align-items:center;justify-content:center;gap:6px;width:34px;height:34px;" +
-      "padding:0;border-radius:999px;border:1px solid " + p.line + ";background:" + p.bg + ";color:" + p.fg + ";" +
-      "font:inherit;font-size:16px;line-height:1;cursor:pointer;box-shadow:0 6px 18px rgba(0,0,0,.35);" +
-      "opacity:.82;transition:opacity .14s ease,border-color .14s ease,color .14s ease}" +
+      /* 底部小话筒（原「左下角浮空话筒」）：现在是 footer 里的一枚**小按钮**。
+         本轮需求：不再 position:fixed 钉在左下角 —— 那个位置上它必然压住应用自己的内容。
+         容器仍叫 #mtnode-dictate-zone（作者标签按它的顶边让位），但它只是宿主里的一行内联元素。 */
+      ".mtn-dict-zone{display:inline-flex;align-items:center;gap:6px;vertical-align:middle;font:" + p.font + "}" +
+      ".mtn-dict-zone[data-mtnode-hidden='1']{display:none !important}" +
+      ".mtn-dict-zone-btn{position:relative;display:inline-flex;align-items:center;justify-content:center;gap:6px;" +
+      "width:30px;height:24px;padding:0;border-radius:7px;border:1px solid " + p.line + ";background:transparent;" +
+      "color:inherit;font:inherit;font-size:13px;line-height:1;cursor:pointer;opacity:.78;" +
+      "transition:opacity .14s ease,border-color .14s ease,color .14s ease}" +
       ".mtn-dict-zone-btn:hover:not(:disabled){opacity:1;border-color:" + p.accent + ";color:" + p.accent + "}" +
-      ".mtn-dict-zone-btn:disabled{opacity:.45;cursor:default}" +
+      ".mtn-dict-zone-btn:disabled{opacity:.4;cursor:default}" +
       ".mtn-dict-zone-btn.is-rec{opacity:1;border-color:" + p.err + ";color:" + p.err + ";animation:mtn-dict-pulse 1.2s ease-in-out infinite}" +
-      /* 按键转录态：琥珀 + 更小的字号（"F3" 两个字要塞进 34px 的圆钮） */
+      /* 按键转录态：琥珀 + 更小的字号（"F3" 两个字要塞进这颗小按钮） */
       ".mtn-dict-zone-btn.is-ptt{opacity:.95;border-color:" + p.warn + ";color:" + p.warn + ";font-size:11px;font-weight:600}" +
       ".mtn-dict-zone-btn.is-ptt.is-rec{opacity:1;animation:mtn-dict-pulse 1.2s ease-in-out infinite}" +
       /* 录音中的小圆点：按钮保住话筒图标，只多一枚跳动红点（比整颗变方块更好认） */
-      ".mtn-dict-zone-btn .mtn-dict-dot{position:absolute;top:3px;right:3px;width:7px;height:7px;border-radius:50%;" +
+      ".mtn-dict-zone-btn .mtn-dict-dot{position:absolute;top:-2px;right:-2px;width:7px;height:7px;border-radius:50%;" +
       "background:" + p.err + ";box-shadow:0 0 0 2px " + p.bg + "}" +
       ".mtn-dict-zone-btn .mtn-dict-dot[hidden]{display:none}" +
       "@keyframes mtn-dict-pulse{0%,100%{box-shadow:0 0 0 0 rgba(255,90,90,.35)}50%{box-shadow:0 0 0 6px rgba(255,90,90,0)}}" +
@@ -259,7 +261,8 @@
       ".mtn-dict-pf{display:flex;gap:8px;justify-content:flex-end;padding:8px 10px;border-top:1px solid " + p.line + "}" +
       /* 隐藏态的 CSS 兜底（内联 style 是主路，标记是给脚本认的）：!important 挡住应用
          自己的 footer 样式把 display 又掰回来。只有「收起」/ apSpeechHide() 之后才会命中。
-         ⚠ 浮动话筒（#mtnode-dictate-zone）**不**在隐藏范围内：收起的是那条条，不是这枚呼出入口。 */
+         ⚠ footer 里那枚小话筒（#mtnode-dictate-zone）**不**在隐藏范围内：收起的是那条条，
+         不是这枚恢复入口（它的显隐由 paintZoneVis 单独管：条露着时它才隐藏）。 */
       "#mtnode-dictate[data-mtnode-hidden='1']{display:none !important}";
     (document.head || document.documentElement).appendChild(css);
   }
@@ -497,7 +500,7 @@
     preparing = !!on;
     if (label) say(label, "");
   }
-  /** 按钮与浮动话筒的状态（三态 + 录音中 + 在途转写）：一处画三处（条上话筒 / 浮动话筒 / 增强开关） */
+  /** 按钮与小话筒的状态（三态 + 录音中 + 在途转写）：一处画三处（条上话筒 / footer 小话筒 / 增强开关） */
   function paintMic() {
     var live = mode === MODE_LIVE;
     var ptt = mode === MODE_PTT;
@@ -1549,7 +1552,7 @@
     return t("语音输入已关闭", "Voice input is off");
   }
   function modeBanner() {
-    if (mode === MODE_PTT) return t("按键转录：按住 F3 说话（松开就识别；也可以按住左下角那枚话筒）", "Push-to-talk: hold F3 and release to recognize (or hold the bottom-left mic)");
+    if (mode === MODE_PTT) return t("按键转录：按住 F3 说话（松开就识别；也可以按住 footer 里那枚小话筒）", "Push-to-talk: hold F3 and release to recognize (or hold the mic in the footer)");
     return t("正在听…（说完一句自动识别；再点话筒切到按键转录 / 关闭）", "Listening… (each sentence is recognized; click the mic again for push-to-talk / off)");
   }
   /** 三态切换（照画布那枚话筒的口径）：关 → 持续转录 → 按键转录 → 关 */
@@ -1585,7 +1588,7 @@
       return false;
     }
     if (busy) return false;
-    show(); /* 收起状态下按快捷键 / 浮动话筒：先让它露面（否则「呼出了但看不见」） */
+    show(); /* 收起状态下按快捷键 / 点小话筒：先让它露面（否则「呼出了但看不见」） */
     resetLines();
     setMode(MODE_LIVE);
     return true;
@@ -1701,7 +1704,7 @@
     try {
       placeStrip({ allowReturn: true });
     } catch (_) {}
-    paintZoneGap();
+    placeZone(); /* 条回来了：footer 里那枚小话筒让位（同一动作不重复出两颗） */
     return true;
   }
   /** 把这条听写条收起来（「收起」按钮 / 应用自己调 apSpeechHide()；幂等）。
@@ -1714,7 +1717,7 @@
     else if (listening) stopLive();
     markHidden(root);
     missCount = 0; /* 隐藏态不算「装不下」：清掉计数，免得下次露面立刻被搬走 */
-    paintZoneGap();
+    placeZone(); /* 条收起来后，footer 里那枚小话筒露面 —— 它就是恢复入口 */
     return true;
   }
   /** 兼容既有名字：apSpeechReveal / reveal 是同一个动作 */
@@ -1787,38 +1790,95 @@
       barEl = null;
     }
   }
-  /** 左下角角落区的宽度：听写条落在固定底栏里时按它左让一块（浮动话筒才不会被压住） */
-  function zoneW() {
-    var r = rectOf(zone);
-    return r && r.width ? r.width : 0;
+  /** 底部小话筒的落点：与听写条**同一个宿主**（应用自己的 footer 优先，没有就用宿主自建的固定
+   *  底栏）。本轮需求：它以前是 position:fixed 钉在左下角的浮空圆钮 —— 那个位置上必然压住应用
+   *  自己的内容（有的应用左下角就是按钮 / 列表底部），所以改成 footer 里的一枚小按钮。 */
+  function zoneHost() {
+    var p = root && root.parentElement;
+    if (p && (p === footEl || p === barEl)) return p;
+    return footEl || barHost();
   }
-  /** 按角落区实际宽度给底栏内那一条让位；退出底栏时把让位清掉（不留下永久缩进） */
-  function paintZoneGap() {
-    if (!root || !root.style) return;
-    var gap = barEl && root.parentElement === barEl ? zoneW() : 0;
-    root.style.marginLeft = gap ? gap + "px" : "";
+  /** 把小话筒摆到与听写条同一个宿主里（紧跟在条后面，视觉上属于同一行 footer） */
+  function syncZoneHost() {
+    if (!zoneBtn || !zone) return false;
+    var hostEl = zoneHost();
+    try {
+      if (root && root.parentElement === hostEl) {
+        if (zone.parentElement !== hostEl || root.nextSibling !== zone) hostEl.insertBefore(zone, root.nextSibling);
+      } else if (zone.parentElement !== hostEl) {
+        hostEl.appendChild(zone);
+      }
+    } catch (_) {
+      try {
+        hostEl.appendChild(zone);
+      } catch (__) {}
+    }
+    paintBarMini();
+    return true;
   }
-  /** 把条放到它该在的地方（一次复核）。
+  /** 底栏里只剩这枚小话筒（条的宿主不是底栏，或条已收起）时把内边距收窄：
+   *  它只是一颗按钮，不该留一条宽底栏压着内容 */
+  function paintBarMini() {
+    if (!barEl || !barEl.style) return;
+    var stripInBar = root && root.parentElement === barEl && !hiddenNow(root);
+    var onlyMic = zone && zone.parentElement === barEl && !stripInBar;
+    barEl.style.padding = onlyMic ? "2px 8px" : "6px 12px";
+  }
+  /** 小话筒的显隐 + 落点（一处画）：条在本窗口里露着时不重复出第二颗话筒（条上那枚动作完全一样），
+   *  条被「收起」后它就是 footer 里唯一的恢复入口。 */
+  function paintZoneVis() {
+    if (!zoneBtn) return false;
+    var show = hiddenNow(root);
+    try {
+      if (zone) {
+        if (show) zone.removeAttribute(HIDDEN_ATTR);
+        else zone.setAttribute(HIDDEN_ATTR, "1");
+      }
+    } catch (_) {}
+    if (!show) {
+      paintBarMini();
+      return false;
+    }
+    syncZoneHost();
+    /* footer 里塞不下（被 overflow 裁掉 / 父级 display:none）：退到宿主自建的固定底栏，
+       绝不因为落点不合适就把恢复入口弄丢。 */
+    if (footEl && zone && zone.parentElement === footEl && !visibleNow(zone)) {
+      try {
+        barHost().appendChild(zone);
+      } catch (_) {}
+      paintBarMini();
+    }
+    return true;
+  }
+  /** 条 + 小话筒一起落位（原来只落条，另有一份「按角落区宽度让位」的逻辑，本轮已随浮动话筒一并去掉） */
+  function placeZone() {
+    syncZoneHost();
+    paintZoneVis();
+    return true;
+  }
+  /** 把听写条 + footer 里那枚小话筒一起落到该在的地方（一次复核）。
    *  opts.allowReturn=false（默认：应用页长高了 / 定时复核）只允许「footer → 固定底栏」这一个方向 ——
    *  搬动这条本身就会改页面高度（进 footer 会把页脚撑高一行），单向才不会自己触发自己来回弹；
    *  opts.allowReturn=true 只在窗口尺寸**真的**变了（用户拖窗口）时才用：搬回 footer 重量一次。 */
   function placeStrip(opts) {
     if (!root) return false;
-    /* 收起态：一动不动 —— 既不算「装不下」，也不进宿主自建的固定底栏 */
+    /* 收起态：条不搬 —— 既不算「装不下」，也不进宿主自建的固定底栏；
+       但这枚小话筒仍要在 footer 里落好（它是此刻唯一的入口） */
     if (hiddenNow(root)) {
       missCount = 0;
+      placeZone();
       return true;
     }
     var allowReturn = !!(opts && opts.allowReturn);
     if (!footEl) {
       if (root.parentElement !== barEl) barHost().appendChild(root);
-      paintZoneGap();
+      placeZone();
       return true;
     }
     if (root.parentElement !== footEl) {
       /* 现在在固定底栏里：默认复核不动它 */
       if (!allowReturn) {
-        paintZoneGap();
+        placeZone();
         return true;
       }
       footEl.appendChild(root); /* 窗口尺寸变了：回 footer 再量一次，装得下就留在这儿 */
@@ -1826,7 +1886,7 @@
     if (visibleNow(root)) {
       missCount = 0;
       dropEmptyBar();
-      paintZoneGap();
+      placeZone();
       return true;
     }
     /* 要连中两次才搬：应用页中途会有那么一瞬量出来在视口外（真机复现：ai-battle 只在某一次复核
@@ -1837,7 +1897,7 @@
       missCount = 0;
     }
     dropEmptyBar();
-    paintZoneGap();
+    placeZone();
     return true;
   }
   function hookResize() {
@@ -1873,21 +1933,21 @@
     } catch (_) {}
   }
 
-  /* ── 左下角角落区（浮动话筒）────────────────────────────────────────────
-   * 需求：听写条收下后，左下角那枚浮动话筒要能随时把它呼出来。它与作者标签共用同一个角落，
-   * 所以这里建一个**列容器**（id mtnode-dictate-zone）统一占位：
-   *   · 浮动话筒是本模块的元素（点一下 = 呼出 + 开始 / 停止听写，正在听时红点脉冲）；
+  /* ── footer 里的小话筒（原「左下角浮动话筒」，本轮需求已从浮空改为 footer 内联）──────
+   * 听写条收起后要能随时把它呼出来，所以留一枚小按钮；但它**不再钉在左下角**（那会压住应用
+   * 自己的内容），而是与听写条同一个 footer 里的一行内联元素（容器 id 仍是 mtnode-dictate-zone）：
+   *   · 小话筒是本模块的元素（点一下 = 呼出 + 开始 / 停止听写，正在听时红点脉冲）；
    *   · 作者标签（renderer/app-author-ui.js）是**另一个模块**的元素，它按本容器的顶边把自己
-   *     排到上面一行（见那边的 place()），因此这里变更（挂 / 挪 / 让位）要广播一次。 */
+   *     排到上面一行（见那边的 place()），因此这里变更（挂 / 挪）要广播一次。 */
   function zoneEl() {
-    if (zone && zone.parentElement) return zone;
+    if (zone) return zone;
     zone = document.createElement("div");
     zone.className = "mtn-dict-zone";
     zone.id = "mtnode-dictate-zone";
-    (document.body || document.documentElement).appendChild(zone);
+    zone.setAttribute(HIDDEN_ATTR, "1"); /* 先收着：落位与显隐交给 placeZone()（条露着时不必出第二颗话筒） */
     return zone;
   }
-  /** 角落区动了就喊一声：作者标签据此重新算「我该贴在哪一行」 */
+  /** 小话筒动了就喊一声：作者标签据此重新算「我该贴在哪一行」 */
   function tellZoneMoved() {
     try {
       window.dispatchEvent(new CustomEvent("mtnode-dictate-zone"));
@@ -1895,6 +1955,38 @@
     try {
       if (typeof window.apAuthorPlace === "function") window.apAuthorPlace();
     } catch (_) {}
+  }
+  /** 一枚话筒按钮的三种点法（条上那枚与 footer 里那枚**口径完全一致**）：
+   *  · 飞快点一下（或不在按键转录态）→ 三态循环；
+   *  · 按键转录态里按住（>=250ms）→ 这一次是「按住说话」，松开就交这一句，
+   *    点击回来那一下不再循环（否则进了按键转录态就再也点不出来了）。 */
+  function bindMicPress(btn) {
+    if (!btn || !btn.addEventListener) return false;
+    var pressAt = 0;
+    btn.addEventListener("click", function (ev) {
+      if (ev && ev.preventDefault) ev.preventDefault();
+      if (btn.dataset.mtnodePtt === "1") {
+        btn.dataset.mtnodePtt = "";
+        if (Date.now() - pressAt >= 250) return;
+      }
+      cycleMode();
+    });
+    ["pointerdown", "mousedown"].forEach(function (kind) {
+      btn.addEventListener(kind, function (ev) {
+        if (mode !== MODE_PTT) return;
+        if (ev && ev.button) return; /* 只认左键 */
+        if (ev && ev.preventDefault) ev.preventDefault();
+        pressAt = Date.now();
+        if (startPtt()) btn.dataset.mtnodePtt = "1";
+      });
+    });
+    ["pointerup", "pointercancel", "mouseup", "mouseleave"].forEach(function (kind) {
+      btn.addEventListener(kind, function () {
+        if (mode === MODE_PTT && pttOn) stopPtt("pointer");
+      });
+    });
+    noFocusSteal(btn); /* 鼠标点它不该把焦点从用户正在写的框里抢走 */
+    return true;
   }
   function mountZoneButton() {
     if (zoneBtn && zoneBtn.parentElement) return zoneBtn;
@@ -1905,35 +1997,10 @@
     zoneBtn.className = "mtn-dict-zone-btn";
     zoneBtn.innerHTML = "🎤";
     zoneBtn.setAttribute("aria-pressed", "false");
-    /* 点一下 = 三态循环（与条上话筒同一口径）；按键转录态下**按住它就是按住说话**。
-       两者靠按住时长区分：按住说了话（>=250ms）→ 这一次点击只算鼠标 PTT 的收尾；
-       飞快点一下（<250ms）→ 仍按「点一下」处理（否则进了按键转录态就再也点不出来了）。 */
-    var pressAt = 0;
-    zoneBtn.addEventListener("click", function (ev) {
-      if (ev && ev.preventDefault) ev.preventDefault();
-      if (zoneBtn.dataset.mtnodePtt === "1") {
-        zoneBtn.dataset.mtnodePtt = "";
-        if (Date.now() - pressAt >= 250) return;
-      }
-      cycleMode();
-    });
-    ["pointerdown", "mousedown"].forEach(function (kind) {
-      zoneBtn.addEventListener(kind, function (ev) {
-        if (mode !== MODE_PTT) return;
-        if (ev && ev.button) return; /* 只认左键 */
-        if (ev && ev.preventDefault) ev.preventDefault();
-        pressAt = Date.now();
-        if (startPtt()) zoneBtn.dataset.mtnodePtt = "1";
-      });
-    });
-    ["pointerup", "pointercancel", "mouseup", "mouseleave"].forEach(function (kind) {
-      zoneBtn.addEventListener(kind, function () {
-        if (mode === MODE_PTT && pttOn) stopPtt("pointer");
-      });
-    });
+    bindMicPress(zoneBtn);
     z.appendChild(zoneBtn);
-    noFocusSteal(zoneBtn); /* 鼠标点它不该把焦点从用户正在写的框里抢走 */
     paintMic();
+    placeZone(); /* 落点：与听写条同一个 footer（没有 footer 就宿主固定底栏） */
     tellZoneMoved();
     return zoneBtn;
   }
@@ -1968,7 +2035,7 @@
       '</span><i class="mtn-dict-enh-dot"></i></button>' +
       '<span class="mtn-dict-note"></span>' +
       '<button type="button" class="mtn-dict-btn mtn-dict-hide" id="mtn-dict-hide" data-act="hide" title="' +
-      esc(t("收起这条听写条（只影响本次窗口；下次打开应用窗口按声明重新出现）。左下角那枚浮动话筒仍在，点它或按 F2 就能呼出来", "Hide this dictate bar (this window only; it comes back the next time the app window opens). The floating mic at the bottom-left stays — click it or press F2 to bring the bar back")) +
+      esc(t("收起这条听写条（只影响本次窗口；下次打开应用窗口按声明重新出现）。footer 里那枚小话筒仍在，点它或按 F2 就能呼出来", "Hide this dictate bar (this window only; it comes back the next time the app window opens). The small mic in the footer stays — click it or press F2 to bring the bar back")) +
       '">' +
       esc(t("收起", "Hide")) +
       "</button>";
@@ -2016,7 +2083,7 @@
     else barHost().appendChild(root);
     placeStrip();
 
-    /* 左下角浮动话筒（本轮需求）：常驻，把条呼出来 / 停止听写的第二入口 */
+    /* footer 里那枚小话筒（本轮需求：从角落挪进 footer）：把条呼出来 / 停止听写的第二入口 */
     mountZoneButton();
     hookResize();
 
@@ -2025,18 +2092,17 @@
 
     /* 「收起」= 本窗口内把这条藏起来（markHidden → display:none），并停掉正在听的。
        **不写回 app.json 的能力位**：收起是这一次看着碍事的临时动作，下次打开应用窗口按声明重新
-       露面 —— 声明与界面不会变成两回事。要它回来：应用自己调 apSpeechReveal()、点左下角浮动
-       话筒、按 F2，或重开窗口。 */
+       露面 —— 声明与界面不会变成两回事。要它回来：应用自己调 apSpeechReveal()、点 footer 里那枚
+       小话筒、按 F2，或重开窗口。 */
     if (refs.hide) {
       refs.hide.addEventListener("click", function () {
         hide();
       });
     }
 
-    /* 话筒：点一下按三态循环（关闭 → 持续转录 → 按键转录 → 关闭） */
-    refs.mic.addEventListener("click", function () {
-      cycleMode();
-    });
+    /* 话筒（条上这枚 / footer 里那枚同一套点法）：点一下按三态循环（关闭 → 持续转录 → 按键转录
+       → 关闭），按键转录态里按住就是按住说话（松开即交） */
+    bindMicPress(refs.mic);
     /* AI 增强开关（话筒右侧那枚）：开关状态按应用持久化；桥缺席退内存态（本窗口内有效） */
     if (refs.enh) {
       refs.enh.addEventListener("click", function () {
@@ -2196,7 +2262,7 @@
     window.apSpeechReveal = reveal;
     window.apSpeechHide = hide;
     /* 转录的对外入口：toggle = 持续转录的开 / 关（旧语义不变），live = 是否在采集，
-       silence = 「说完一句」的停顿阈值（ms，不传 = 恢复默认），zone = 左下角那枚浮动话筒。 */
+       silence = 「说完一句」的停顿阈值（ms，不传 = 恢复默认），zone = footer 里那枚小话筒。 */
     window.apSpeechToggle = toggleLive;
     window.apSpeechLive = function () {
       return !!listening;
@@ -2220,7 +2286,7 @@
     window.apSpeechCycle = function () {
       return cycleMode();
     };
-    /* 按键转录的鼠标路（浮动话筒按住）：起 / 交，给不方便按 F3 的场景用 */
+    /* 按键转录的鼠标路（小话筒按住）：起 / 交，给不方便按 F3 的场景用 */
     window.apSpeechPtt = function (on) {
       if (on === false) return stopPtt("api");
       return startPtt();

@@ -268,14 +268,6 @@
         model: deepseek-v4-pro
         maxTokens: 256000
         retainTokens: 32768
-      - provider: mtnode_p1
-        model: deepseek-v4-flash
-        maxTokens: 32768
-        retainTokens: 32768
-      - provider: mtnode_p1
-        model: gpt-image-2.5-all
-        maxTokens: 32768
-        retainTokens: 32768
 
 # 工具呈现（PTC）：本行已被回滚，MTNode 现跑 dsh-tools 的默认 native。
 # 为什么不留在树上：实测 both 能生效（run_code 进工具负载 +2.1K 字符），但 run_code
@@ -687,9 +679,9 @@
 # ── user plugins (managed from MTNode settings) ──
 
 
-- id: user-mcp-mwoldmpg
+- id: user-mcp-mwplasti
   name: '@deepseek-ai/dsh-mcp-client'
   config:
     serverName: 'mtnode-self'
     transport: 'streamable-http'
-    url: 'http://127.0.0.1:52381/mcp?token=422cb10fcf53d7a21f31b8c77d5631c562220d5ec36accb8'
+    url: 'http://127.0.0.1:62128/mcp?token=052f8910fad020dfd2a6a139079ebfdee3d01aa9503aa7e0'
