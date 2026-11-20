@@ -139,7 +139,7 @@
       <button type="button" id="btnAccount" class="corner mini btn-stack btn-account" data-i18n-title="账户：登录 / 绑定 / 退出" title="账户：登录 / 绑定 / 退出" aria-label="账户">
         <span class="btn-stack-txt" id="acctName" data-i18n="登录">登录</span>
       </button>
-      <button type="button" id="btnUpdate" class="corner mini btn-update" hidden aria-hidden="true" data-i18n-title="发现新版本，点击下载更新" title="发现新版本，点击下载更新">
+      <button type="button" id="btnUpdate" class="corner mini btn-update" hidden aria-hidden="true" data-i18n-title="发现新版本，点此下载（下载完不会自动安装）" title="发现新版本，点此下载（下载完不会自动安装）">
         <svg class="btn-update-ico" viewBox="0 0 16 16" aria-hidden="true">
           <path d="M8 1.5v8.2M8 9.7l-2.6-2.6M8 9.7l2.6-2.6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
           <path d="M2.5 11.5v1.2c0 .7.6 1.3 1.3 1.3h8.4c.7 0 1.3-.6 1.3-1.3v-1.2" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round"/>
@@ -855,10 +855,11 @@
 <div id="portTip" class="port-tip" hidden></div>
 <div id="runQueue" class="run-queue" hidden aria-live="polite"></div>
 <!-- 版本更新进度条（本轮需求：更新不再完全静默）：右下角小卡片，贴在状态栏上方。
-     全自动（主进程发现新版本即下载、下载完自动静默安装并重开），这里只把进度显示出来：
-     下载相位走真实百分比 + 速度，安装相位进度条走满并脉动；「✕」= 这一次稍后装
-     （update:cancelAutoInstall，退出应用时仍会自动装上）。绘制见 app-boot.js 的
-     paintUpdateBanner；样式见 css/layout.css 末尾的 .ub-* 段。 -->
+     全自动那条链已下线（主进程下载完就停住，什么都不自动做），这里只把过程显示出来：
+     下载相位走真实百分比 + 速度；下载完停在「已就绪」档，给一颗「重启并更新」——
+     点它才装、才换，退出应用不装也不换。「✕」= 暂不安装（update:cancelAutoInstall）：
+     包留着，下次点按钮继续。绘制见 app-boot.js 的 paintUpdateBanner；
+     样式见 css/layout.css 末尾的 .ub-* 段。 -->
 <div id="updateBanner" class="ub" hidden aria-live="polite">
   <div class="ub-row">
     <span class="ub-ico" aria-hidden="true">
@@ -869,15 +870,15 @@
     </span>
     <span class="ub-title" id="ubTitle" data-i18n="正在更新 MTNode">正在更新 MTNode</span>
     <span class="ub-pct" id="ubPct">0%</span>
-    <button type="button" class="ub-close" id="ubClose" data-i18n-title="稍后安装（退出应用时会自动安装）" title="稍后安装（退出应用时会自动安装）" aria-label="稍后安装">✕</button>
+    <button type="button" class="ub-close" id="ubClose" data-i18n-title="暂不安装（已下载的包会保留，下次点按钮继续）" title="暂不安装（已下载的包会保留，下次点按钮继续）" aria-label="暂不安装">✕</button>
   </div>
   <div class="ub-track"><i class="ub-fill" id="ubFill"></i></div>
   <div class="ub-sub" id="ubSub" data-i18n="正在下载更新包…">正在下载更新包…</div>
-  <!-- 第三态（旁路已预装好、等重启）才出现的那一颗：点它立刻退出应用并换上预装的那一版
-       （update:restartToApply → 交换器）。其余相位一律 hidden，显隐与文案都由
-       app-boot.js 的 paintUpdateBanner 控制；「✕」在各相位都留着（＝稍后）。 -->
+  <!-- 已下载 / 已预装那一档才出现的那一颗：点它才装（update:install → 预装 → 交换器），
+       主进程不会再自己装任何东西。其余相位一律 hidden，显隐与文案都由
+       app-boot.js 的 paintUpdateBanner 控制；「✕」在各相位都留着（＝暂不安装）。 -->
   <div class="ub-acts" id="ubActs" hidden>
-    <button type="button" class="ub-act" id="ubApply" data-i18n="立即重启并更新">立即重启并更新</button>
+    <button type="button" class="ub-act" id="ubApply" data-i18n="重启并更新">重启并更新</button>
   </div>
 </div>
 <div id="toastBox"></div>

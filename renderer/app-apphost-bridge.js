@@ -296,6 +296,21 @@
         return { ok: false, code: "failed", error: (err && err.message) || String(err) };
       }
     },
+    /* 装应用自带的本地后端（tools.install）：铺盘 / 登记 / 起服务在主进程（注册中心），
+       应用只说「我要哪个工具」—— 页面没有 exec、没有注册表写权，见 app-backend-pack.js 文件头。 */
+    toolsInstall: async (p) => {
+      const appId = String((p && p.appId) || "");
+      const tool = String((p && p.tool) || "");
+      if (!appId) return { ok: false, code: "bad_arg", error: T("缺应用 id：不知道是哪个应用要装后端") };
+      try {
+        if (typeof api().backendRegistryInstall !== "function")
+          return { ok: false, code: "no_host", error: T("这一版宿主还没有安装后端的能力") };
+        const r = await api().backendRegistryInstall({ appId: appId, tool: tool });
+        return r && typeof r === "object" ? r : { ok: false, code: "failed", error: String(r) };
+      } catch (err) {
+        return { ok: false, code: "failed", error: (err && err.message) || String(err) };
+      }
+    },
     netFetch: async (p) => {
       const url = String(p.url || "");
       if (!/^https?:\/\//i.test(url)) return { ok: false, code: "bad_url", error: T("只支持 http(s) 地址") };

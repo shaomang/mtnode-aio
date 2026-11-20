@@ -120,14 +120,24 @@ contextBridge.exposeInMainWorld('api', {
   crashOpenLogs: () => ipcRenderer.invoke('crash:openLogs'),
   crashLogRenderer: (payload) => ipcRenderer.invoke('crash:logRenderer', payload || {}),
 
+  /* ── 更新（与 updater.js 的 IPC 契约一一对应，多一条都是错档来源）────────────────
+     · updateStatus    只读状态快照：available / downloading / downloaded / readyToRestart /
+                       staging / staged / installWizard / latestVersion / latestKnown / installing。
+                       latestKnown = 只读探测到的线上版本（只用来点亮按钮）；
+                       installing 只表示「用户刚点了安装、向导正在起」，不是「等自动安装」。
+     · updateCheck / updateDownload  只检查 / 只下载，不安装
+     · updateConfirmAndStart         固定「检查 + 下载」：回执 installing 恒 false，绝不安装
+     · updateInstall                 唯一的安装入口（要求已下载）；失败回 { ok:false, error }
+     · updateRestartToApply          已预装（staged）之后的唯一重启入口；未预装回
+                                     { ok:false, error:"not_staged" }，起不来如实回 { ok:false, error } */
   updateStatus: () => ipcRenderer.invoke('update:status'),
   updateCheck: (opts) => ipcRenderer.invoke('update:check', opts || {}),
   updateDownload: () => ipcRenderer.invoke('update:download'),
   updateInstall: () => ipcRenderer.invoke('update:install'),
   updateConfirmAndStart: () => ipcRenderer.invoke('update:confirmAndStart'),
-  /* 进度条「稍后」：取消这一次自动安装（已下载的包留到退出应用时装上） */
+  /* 进度条「暂不安装」：不取消任何东西、不排定任何安装（包与旁路都留着，退出也不装） */
   updateCancelAutoInstall: () => ipcRenderer.invoke('update:cancelAutoInstall'),
-  /* 进度条上的「立即重启并更新」（旁路已预装好的那一档）：拉起交换器 → 退出应用，
+  /* 进度条上的「重启并更新」（已下载 / 已预装好的那一档）：拉起交换器 → 退出应用，
      新版本由 helper 带 --updated 拉起来。主进程三种收场都会如实回报：
      { ok:true, quitting:true } = 正在退出 / { unsupported:true, … } = 这台机器只能就地安装
      （主进程已回落 quitAndInstall）/ { ok:false, error } = 没起来，应用不退出 */
@@ -141,7 +151,7 @@ contextBridge.exposeInMainWorld('api', {
       'update:available',
       'update:progress',
       'update:downloaded',
-      /* 已下载、正在等自动安装：进度条切「正在安装」相位 */
+      /* 用户刚点了安装、向导 / 就地安装正在起（不是「等自动安装」，没有这样的排队） */
       'update:installing',
       'update:readyToRestart',
       'update:error',
@@ -584,6 +594,9 @@ contextBridge.exposeInMainWorld('api', {
        · log/audit({id})     ：日志尾段 / 全程留痕（谁、何时、装了什么、从哪装）
        · admin({action,...}) ：Agent 侧统一入口（list / register / start / stop / call / remove） */
   backendRegistryList: () => ipcRenderer.invoke('backendRegistry:list'),
+  /* 装「应用自带的本地后端」（<appDir>/backend/backend.json）：铺盘 → 登记 → 起服务。
+     应用页没有 exec 与注册表写权，首次打开应用那条安装链经 appHost.tools.install 走到这里。 */
+  backendRegistryInstall: (payload) => ipcRenderer.invoke('backendRegistry:install', payload || {}),
   backendRegistryUpsert: (payload) => ipcRenderer.invoke('backendRegistry:upsert', payload || {}),
   backendRegistryRemove: (payload) => ipcRenderer.invoke('backendRegistry:remove', payload || {}),
   backendRegistryStart: (id) => ipcRenderer.invoke('backendRegistry:start', { id }),

@@ -304,7 +304,12 @@ async function startItem(id, opts) {
   try {
     child = spawn(argv[0], argv.slice(1), {
       cwd,
-      env: Object.assign({}, process.env, { PORT: String(port), MTNODE_BACKEND_PORT: String(port) }),
+      env: Object.assign(
+        {},
+        process.env,
+        (item.launch && item.launch.env) || {},
+        { PORT: String(port), MTNODE_BACKEND_PORT: String(port) },
+      ),
       windowsHide: true,
       stdio: ["ignore", "pipe", "pipe"],
       shell: !!item.launch.shell,
@@ -541,6 +546,77 @@ async function removeItem(payload) {
 
 /* ───────────────────────── IPC ───────────────────────── */
 
+/* ───────────────── 应用自带后端的安装（tools.install） ───────────────── */
+
+/**
+ * 装一个「应用自带的后端」：应用目录里的 `backend/backend.json` → 铺到
+ * `<数据目录>/backends/<id>` → 登记 → 起服务 → 等 /health。
+ *
+ * 为什么归这里：应用页没有 exec / 注册表写权（用户共识：这条通道做成通用的一条，
+ * 任何应用带 `backend/` 都能用），所以「下载/落盘/登记/起服务」全部由注册中心做完，
+ * 应用只说「我要哪个工具」。解释器一律用 MTNode 自带的 Electron node
+ * （process.execPath + ELECTRON_RUN_AS_NODE=1）—— 新用户机器上没有 C:\nvm4w\nodejs。
+ * 幂等：已在跑直接回 already；已登记未跑就只起服务。
+ */
+async function installFromApp(appId, wantTool) {
+  const aid = String(appId || "").trim();
+  if (!aid) return { ok: false, error: "缺应用 id（不知道是哪个应用要装后端）" };
+  const packMod = require("./app-backend-pack.js");
+  let appDir = "";
+  try {
+    const hit = require("./apps-store.js").appHostSummaryOf(aid);
+    appDir = (hit && hit.dir) || "";
+  } catch (err) {
+    return { ok: false, error: "找不到这个应用：" + ((err && err.message) || err) };
+  }
+  if (!appDir) return { ok: false, error: "找不到这个应用的安装目录：" + aid };
+  const dataDir = path.dirname(store.root());
+  const sync = packMod.syncPack(appDir, dataDir);
+  if (!sync.ok) {
+    store.audit({ action: "install", id: aid, actor: "app", ok: false, error: sync.error || "" });
+    return { ok: false, code: "no_pack", error: sync.error || "这个应用没有自带后端" };
+  }
+  const want = String(wantTool || "").trim();
+  if (want && want !== sync.id)
+    return { ok: false, code: "pack_mismatch", error: "这个应用自带的后端是 " + sync.id + "，不是 " + want };
+  const manifest = packMod.packManifest(sync, process.execPath);
+  const up = store.upsert(manifest, "app");
+  if (!up.ok) {
+    store.audit({ action: "install", id: sync.id, actor: "app", ok: false, error: up.error || "" });
+    return { ok: false, code: "register_failed", error: up.error || "登记失败" };
+  }
+  const running = procs.get(sync.id);
+  if (running)
+    return {
+      ok: true,
+      id: sync.id,
+      dir: sync.dir,
+      version: sync.version,
+      port: running.port,
+      already: true,
+      changed: sync.changed,
+    };
+  const started = await startItem(sync.id);
+  store.audit({
+    action: "install",
+    id: sync.id,
+    actor: "app",
+    ok: !!started.ok,
+    error: started.ok ? "" : started.error || "",
+    detail: "应用 " + aid + " 自带 → " + sync.dir,
+  });
+  if (!started.ok) return { ok: false, code: "start_failed", id: sync.id, dir: sync.dir, error: started.error };
+  return {
+    ok: true,
+    id: sync.id,
+    dir: sync.dir,
+    version: sync.version,
+    port: started.port,
+    started: true,
+    changed: sync.changed,
+  };
+}
+
 function registerBackendRegistryIpc(opts) {
   const o = opts || {};
   getMainWinFn = typeof o.getMainWin === "function" ? o.getMainWin : () => null;
@@ -580,6 +656,13 @@ function registerBackendRegistryIpc(opts) {
   });
 
   handle("remove", async (payload) => removeItem(payload));
+
+  /* 应用自带的后端：应用页只说「我要哪个工具」，铺盘 / 登记 / 起服务全在这里
+     （见 installFromApp；应用页没有 exec 与注册表写权，这是唯一可行的一段） */
+  handle("install", async (payload) => {
+    const p = payload && typeof payload === "object" ? payload : {};
+    return installFromApp(p.appId || p.id, p.tool || p.backendId);
+  });
 
   handle("start", async (payload) => {
     const r = await startItem(String((payload && payload.id) || ""));
@@ -699,4 +782,4 @@ async function shutdownBackendRegistry() {
   return { stopped: ids.length };
 }
 
-module.exports = { registerBackendRegistryIpc, shutdownBackendRegistry, isSafeDeleteTarget };
+module.exports = { registerBackendRegistryIpc, shutdownBackendRegistry, isSafeDeleteTarget, installFromApp };

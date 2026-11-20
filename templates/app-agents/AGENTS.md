@@ -36,6 +36,12 @@ assets/         图标 / 图片 / 字体 / 静态 json
 - **不要把凭据写进任何文件**：服务商、API Key、token 一律只留 MTNode 主进程，应用侧一个字节都不落。
 - **不要删掉模型选择位**（`#modelBtn` + `#modelMenu` + `app-model.js`）：换皮肤可以挪位置，但不能没有。
 - 不改 `app.json` 的 `id`（= 目录名 = 云端词条 id）；改它等于换一个应用。
+- **窗口顶栏由宿主按需注入**（`app.json` 的 `capabilities.windowChrome`，缺省**开**）：应用窗口没有系统
+  标题栏，宿主替它补一条顶栏（可拖动 + 右侧关闭 ✕），并**自动为它预留 30px**（把 `body` 的 `padding-top`
+  抬到 `max(页面原值, 30px)`，老页面自己让位过也不会翻倍）——**页面不要再自己加 `padding-top`**。页面自己
+  画了标题栏、或整页是定位满屏容器（`#root{position:fixed;inset:0}`）／自绘 sticky·fixed 贴顶 header 时，
+  浮层仍可能压住内容：这类页面就写 `windowChrome: false` 自绘标题栏（或调
+  `window.__mtnodeWindowChrome.hide()`），别让两套标题栏叠在一起。`window.frame` 宿主不读，应用窗口一律无框。
 - **`app.json` 的 `capabilities` 是能力声明**：`textInput` 为真才带语音模块（`speech.js` / `speech.css`），
   没声明就是「不携带语音转文字」；`showDictate` 为真才在**应用窗口底部**注入并**默认显示**那条宿主听写条
   （缺省 **false** = 宿主根本不注入；条尾有「收起」按钮，只藏本次窗口，不写回 `app.json`；程序化入口

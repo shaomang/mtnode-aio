@@ -5142,14 +5142,15 @@
     "审批": "Approvals",
     "更新": "Update",
     "下载中": "Downloading",
-    "重启更新": "Restart",
+    "重启并更新": "Restart & update",
     "安装更新": "Install update",
     "发现新版本": "Update available",
     "发现新版本 v": "Update available: v",
     "，是否下载并安装？": " — download and install?",
     "，是否下载更新？": " — download the update?",
     "，点击下载并安装": " — click to download & install",
-    "，点击下载更新": " — click to download",
+    "，点此下载（下载完不会自动安装）":
+      " — click to download (it will not install by itself)",
     "开始下载并更新": "Download & update",
     "开始下载": "Download",
     "稍后重启": "Later",
@@ -5174,8 +5175,8 @@
     "更新已下载完毕：将后台静默安装，完成后自动重新打开应用":
       "Update downloaded — silent background install, then the app reopens automatically",
     "更新已就绪，点击重启以完成安装": "Update ready — click to restart and finish installing",
-    "更新已就绪：点击后将后台静默安装，完成后自动重新打开":
-      "Update ready — click to install silently in the background; the app will reopen automatically",
+    "已下载，点「重启并更新」才会安装（这台机器走静默安装，装完自动重新打开）":
+      "Downloaded — click “Restart & update” to install (this machine installs silently; the app reopens automatically)",
     "已选择稍后重启；退出应用时将自动完成安装":
       "Will install when you quit the app",
     "已选择稍后；退出应用时将后台静默安装并自动重新打开":
@@ -5217,7 +5218,8 @@
     "没能打开 Microsoft Store，请从开始菜单打开":
       "Could not open the Microsoft Store — open it from the Start menu instead",
     "发现新版本，点击下载并安装": "New version available — click to download & install",
-    "发现新版本，点击下载更新": "New version available — click to download",
+    "发现新版本，点此下载（下载完不会自动安装）":
+      "New version available — click to download (it will not install by itself)",
     "立即重启安装": "Restart & install now",
     "更新已下载完成，将重启并安装 v": "Update downloaded — will restart and install v",
     "安装过程使用差分块更新，仅下载变更部分。请保存当前工作后继续。":
@@ -8557,8 +8559,10 @@
        不另设技能。 */
     "【快速热修模式·最快修完】该功能块已开启「快速热修」（小型 Bug 修复 / 少于 2 个故事点的功能 / 原型探索 / 紧急热修 / 提案后的补丁）：按最快路径把问题修好 —— 只在需求确有歧义时用 ask_user_question 只问卡住的那几点（不加载内置技能 mtnode-grill-me、不走整轮前沿拷问）；不写任何文档（changelog / DESIGN.md / guides / AGENTS.md 以及任何 .md 文件都不改）；不写、不跑 smoke test；只做必须做的验证（能直接说明改动正确的最小检查；拿不准就人工 Review）；收尾只一句话汇报改了什么，不列文件清单。":
       "[Quick hotfix mode · fix it fastest] This module block has “quick hotfix” switched on (small bug fixes / features under 2 story points / prototype exploration / urgent hotfixes / patches after a proposal): fix the problem by the fastest path — only when the requirement is genuinely ambiguous, use ask_user_question for just the blocked points (do not load the built-in skill mtnode-grill-me, do not run the full-frontier interrogation); write no documentation at all (never touch changelog / DESIGN.md / guides / AGENTS.md or any .md file); write and run no smoke test; do only the verification that is necessary (the minimal check that directly proves the change is right; if unsure, rely on manual review); close with a single sentence about what changed, with no file list.",
-    /* 对话框草稿：取消 / 跳出后再次打开，上次没提交的内容仍在（node.devDraft） */
-    "已恢复上次未提交的内容": "Your unsent text from last time was restored",
+    /* 快速热修轮：模型仍交了计划块 → 不弹确认窗、直接按清单开跑（app-plan.js planHotfixAutoStart） */
+    "（快速热修：本计划无需确认，已直接按清单执行）":
+      "(Quick hotfix: no confirmation needed — the checklist was executed directly)",
+    /* 对话框草稿：取消 / 跳出后再次打开，上次没提交的内容仍在（node.devDraft） */    "已恢复上次未提交的内容": "Your unsent text from last time was restored",
     "清空草稿": "Clear draft",
     "丢弃上次未提交的内容，重新填写": "Discard the unsent text and start fresh",
     "开发会话启动失败：": "Failed to start the dev session: ",
@@ -13797,6 +13801,10 @@
         /* 切应用的轻量加载提示（renderer/app-apps-dev.js 的 appsDevLoadingShow）：
            只在换应用那一下露一行，替掉过去那块整块黑幕。 */
         "正在加载…": "Loading…",
+        /* 画布丢了就补一张（app-app-flow.js 的 appsEnsureCanvasForApp）：两条入口共用同一句
+           —— 开发页发首轮需求（appsDevEnsureNode）、从应用中心直接发起合并
+           （appsDevStartMergeSession）。两条都只在**这次真的新建了画布**时才说这一句。 */
+        "已为这个应用新建画布": "Created a new canvas for this app",
       };
       var out = {};
       for (var k in add)
@@ -15729,70 +15737,57 @@
       "Ctrl + wheel to resize the chat body text",
     "Ctrl + 滚轮调整会话正文字号":
       "Ctrl + wheel to change the chat body font size",
-    /* ── 版本更新进度条（全自动更新：下载 / 安装全过程可见）── */
+    /* ── 版本更新进度条（主进程不自动做任何事：下载完就停住，装与不装由用户点）──
+       口径：下载完只停在「已就绪」，等用户点「重启并更新」才会安装；「✕」= 暂不安装
+       （包留着、下次点按钮继续）。任何「自动安装 / 退出应用时自动装」都不许再说。 */
     "正在更新 MTNode": "Updating MTNode",
     "安装中": "Installing",
-    "稍后安装（退出应用时会自动安装）": "Install later (installs automatically when you quit)",
-    "正在下载更新包…（完成后自动安装并重启，无需操作）":
-      "Downloading the update… (it installs and restarts automatically, no action needed)",
+    "暂不安装（已下载的包会保留，下次点按钮继续）":
+      "Not now (the downloaded package is kept — click the button again to continue)",
+    "正在下载更新包…（下载完不会自动安装，等你点「重启并更新」）":
+      "Downloading the update… (it will not install by itself — click “Restart & update” when it finishes)",
     "更新包已就绪，正在静默安装；应用会自动重新打开":
       "The update is ready and installing silently; the app reopens automatically",
-    /* installWizard=true（默认档：安装时弹出可见的安装向导）：三处文案都说「看安装窗口」，
-       与下面这些「静默安装」的旧说法严格分档，静默回退时才用旧文案。 */
-    "安装向导即将启动：安装窗口会显示进度，装完自动重新打开（无需点击）":
-      "The installer wizard is starting: watch its window for progress — the app reopens automatically when it finishes (no clicks needed)",
-    "更新已下载完毕：马上会弹出安装向导，窗口里显示进度，装完自动重新打开（无需点击）":
-      "Update downloaded: the installer wizard opens right away and shows progress — the app reopens automatically when it finishes (no clicks needed)",
-    "更新已就绪：点击后会弹出安装向导，窗口里显示进度，装完自动重新打开（无需在向导里点）":
-      "Update ready — click and the installer wizard opens with progress in its window; the app reopens automatically afterwards (nothing to click in the wizard)",
-    "已选择稍后：这次不弹出安装向导，退出应用时仍会后台安装并自动重新打开":
-      "Later selected: no installer wizard this time — the update still installs in the background when you quit, and the app reopens automatically",
-    "更新已下载完毕：正在后台静默安装，完成后会自动重新打开应用":
-      "Update downloaded: installing silently in the background, the app reopens automatically",
-    "退出应用时会自动安装这次更新":
-      "This update installs automatically when you quit the app",
-    "已稍后：退出应用时会自动安装这次更新":
-      "Later: this update installs automatically when you quit the app",
+    /* installWizard=true（默认档：安装时弹出可见的安装向导）：文案都说「在安装窗口里看进度」，
+       但不说「无需点击」——这一次安装本来就是用户点出来的。静默回退时才用静默那一句。 */
+    "正在安装：安装窗口里能看到进度，装完应用会自动重新打开":
+      "Installing: watch the installer window for progress — the app reopens automatically when it finishes",
+    "正在安装：马上弹出安装向导，窗口里显示进度，装完自动重新打开":
+      "Installing: the installer wizard opens now and shows progress — the app reopens automatically when it finishes",
+    "已下载，点「重启并更新」才会安装（装的时候弹出安装向导，窗口里显示进度，装完自动重新打开）":
+      "Downloaded — click “Restart & update” to install (the installer wizard opens with progress in its window; the app reopens automatically afterwards)",
+    "已暂不安装：更新包保留，下次点「重启并更新」继续":
+      "Not now — the package is kept; click “Restart & update” later to continue",
+    "正在静默安装：装完应用会自动重新打开":
+      "Installing silently — the app reopens automatically when it finishes",
     "更新失败，可点顶栏「更新」重试":
       "Update failed; click Update in the top bar to retry",
-    /* ── 旁路预装两档（三态 = 下载中 → 后台准备 → 已就绪待重启）──
-       这两档一个「安装向导 / 安装窗口」都不许提：那会儿根本没有向导（也就没有窗口可看）。
-       回落旧路径（就地覆盖安装）仍旧用上面那批向导 / 静默文案，两套严格分档、不混着说。 */
+    /* ── 已就绪那一档（已下载 / 已预装，等用户点「重启并更新」）──
+       这一档一个「安装向导 / 安装窗口」都不提（那时还没开始装），也绝不提退出应用时会怎样。 */
     "后台准备更新（可以继续用）": "Updating in the background (you can keep working)",
-    "更新已就绪，重启完成": "Update ready — restart to finish",
+    "已下载，点「重启并更新」才会安装":
+      "Downloaded — click “Restart & update” to install",
     "后台准备": "Preparing",
     "已就绪": "Ready",
-    "立即重启并更新": "Restart & update now",
-    /* 两档的悬停说明：按钮点了会发生什么、以及对「稍后」的交代 */
+    /* 悬停说明：点这一下会发生什么、以及「暂不安装」会怎样（包留着） */
     "正在后台准备更新（可以继续用）：装好会提示你重启，现在不用退出":
       "Preparing the update in the background (you can keep working): you will be asked to restart when it is ready — no need to quit now",
-    "更新已就绪：点「立即重启并更新」现在就换上；点「稍后」则退出应用时自动完成":
-      "Update ready: click “Restart & update now” to switch right away, or “Later” and it finishes when you quit the app",
-    "更新已就绪：点这里立刻重启并换上；点「稍后」则退出应用时自动完成":
-      "Update ready: click to restart and switch right now, or “Later” and it finishes when you quit the app",
-    /* 「稍后」在两档里的说法（进度条副行 + toast + ✕ 的悬停提示） */
-    "稍后：退出应用时自动完成，下次启动就是新版本":
-      "Later: it finishes when you quit the app — the next launch is already the new version",
-    "正在后台准备：装好会提示你重启，退出应用时也会自动完成":
-      "Preparing in the background: you will be asked to restart when it is ready; quitting the app also finishes it",
-    "稍后：这项更新会在退出应用时自动完成":
-      "Later: this update finishes when you quit the app",
-    "已稍后：退出应用时会自动完成这次更新":
-      "Later: this update finishes when you quit the app",
-    "已稍后：退出应用时也会自动完成这次更新":
-      "Later: it also finishes when you quit the app",
-    "已稍后：更新已就绪，退出应用时自动完成":
-      "Later: the update is ready and finishes when you quit the app",
-    "已稍后：正在后台准备更新，装好会提示你重启；退出应用时也会自动完成":
-      "Later: still preparing in the background — you will be asked to restart when it is ready, and quitting also finishes it",
-    /* 下载完那一刻还不知道走不走预装：这一句只说事实，不预设向导 / 静默 */
-    "更新已下载完毕：正在准备安装，就绪后会提示你重启（也可以等退出应用时自动完成）":
-      "Update downloaded: preparing to install — you will be asked to restart when it is ready (quitting the app also finishes it)",
-    /* 就绪态那颗「立即重启并更新」的三种收场 */
+    "已下载，点「重启并更新」才会安装；点「暂不安装」也不影响，下次点按钮继续":
+      "Downloaded — click “Restart & update” to install; “Not now” changes nothing and the button is still there later",
+    "已下载，点「重启并更新」才会安装；点「暂不安装」就先把包留着，下次点按钮继续":
+      "Downloaded — click “Restart & update” to install; “Not now” keeps the package for the next time",
+    /* 「暂不安装」的两句说法（进度条 ✕ 的悬停提示 + toast） */
+    "暂不安装：已下载的包会保留，下次点按钮继续":
+      "Not now: the downloaded package is kept — click the button again to continue",
+    "已暂不安装：更新包保留，下次点按钮继续":
+      "Not now — the package is kept; click the button again to continue",
+    /* 下载完那一刻：只说事实（点「重启并更新」才会装） */
+    "更新已下载完毕：点「重启并更新」才会安装（不会自动装）":
+      "Update downloaded — click “Restart & update” to install (nothing installs by itself)",
+    /* 就绪态那颗「重启并更新」的三种收场 */
     "正在重启…": "Restarting…",
     "还没能重启更新：": "Could not restart to update: ",
-    "；可以再点一次，也可以等退出应用时自动完成":
-      "; you can click again, or let it finish when you quit the app",
+    "；可以再点一次": "; you can click again",
     "还在后台准备更新，稍等片刻再试":
       "still preparing the update in the background — try again in a moment",
     "这次没有可应用的更新（预装的那份已经不在了）":

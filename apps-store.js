@@ -119,6 +119,10 @@ const { createBranchReplace } = require("./app-branch-replace.js");
    没有 preload 就没有 appHost.media.*，应用里「试听 / 播放成片」只能报 no_host。
    这里把宿主那条播放条 + 媒体路由补进 iframe（见 preview-media.js 的文件头）。 */
 const previewMedia = require("./preview-media.js");
+/* 应用自带的本地后端（<appDir>/backend/backend.json + 源码）：装应用 / 升级应用时由这里
+   铺到 <数据目录>/backends/<id>（只铺源码，work/ 与 runtime/ 保留），登记与起服务在
+   main-backend-registry.js 的 tools.install（见 app-backend-pack.js 的文件头）。 */
+const appBackendPack = require("./app-backend-pack.js");
 
 /* ---------------- 常量 ---------------- */
 
@@ -4482,6 +4486,21 @@ async function installApp(arg) {
         installedAt: now,
         versions: { cur: curSlot || null, prev: keepPrev || null },
       }));
+      /* 应用自带的后端（backend/backend.json）：装完就把源码铺到 <数据目录>/backends/<id>。
+         只铺源码、不登记不起服务 —— 首次打开应用点「安装编译后端」才登记起服务
+         （见 main-backend-registry.js 的 installFromApp）。铺失败不影响应用本身：
+         应用照旧能开，缺后端时它自己会报出来并给安装入口。 */
+      let backendPack = null;
+      try {
+        /* 绝大多数应用不带后端：没有这份清单就静默跳过（别给每次安装都刷一行日志） */
+        if (fs.existsSync(path.join(targetDir, appBackendPack.PACK_DIR, appBackendPack.PACK_FILE))) {
+          const bp = appBackendPack.syncPack(targetDir, String(getDataDir() || ""));
+          if (bp && bp.ok) backendPack = { id: bp.id, version: bp.version, changed: bp.changed };
+          else if (bp) console.log("[apps] 自带后端未铺：" + (bp.error || ""));
+        }
+      } catch (err) {
+        console.log("[apps] 自带后端铺盘异常：" + ((err && err.message) || err));
+      }
       sendProgress({ id: id, phase: "done", percent: 100, version: man.version });
       return {
         ok: true,
@@ -4495,6 +4514,7 @@ async function installApp(arg) {
         dir: targetDir,
         bytes: zipBuf.length,
         app: appSummary(root, targetId),
+        backendPack: backendPack,
       };
     } finally {
       rmDirRecursive(staging);
@@ -5917,10 +5937,13 @@ function openAppWindow(id, kind) {
   wcToAppKind.set(w.webContents, dirKind);
   appWins.set(sid, w);
   /* 窗口上记下**这一次真正加载的是哪一份**（目录 + 来自哪套根）：复用分支与回执都读它，
-     免得同 id 两边各有一份时按 id 重算成下载根、说错自己跑的是哪份代码。 */
+     免得同 id 两边各有一份时按 id 重算成下载根、说错自己跑的是哪份代码。
+     顺带记下**这一次开窗用的 frame 事实**（上面的 const frame）：preload 问「要不要注入顶栏」时
+     宿主只看这一份，不再重读目录条目 / 重算 winSpec。 */
   try {
     w.__mtnodeAppDir = dir;
     w.__mtnodeAppKind = dirKind;
+    w.__mtnodeAppFrame = frame;
   } catch (_) {}
   /* 麦克风权限（需求：应用里也能用内置 ASR 听写）：Electron 默认拒绝一切权限请求，
      而主窗口那条 handler 只挂在**主窗口自己的会话**上，应用窗口拿不到 —— 这里按窗口补一份。
@@ -6469,13 +6492,27 @@ function hostModelsPayload(e, arg) {
     defaultModel: fallback ? modelIdsOf(fallback)[0] || "" : "",
   };
 }
+/* 发送方那只窗口是不是无系统边框：只看**开窗时那一次**记下的 frame 事实（__mtnodeAppFrame，见
+ * openAppWindow），不重读目录条目、不重算 winSpec —— 目录条目后来改了也不该影响已经开着的这只窗口。
+ * 记不出这只窗口（预览态 = 主窗口代发，主窗口自己有系统边框）一律回 false。 */
+function senderWindowFrameless(e) {
+  try {
+    const w = e && e.sender ? BrowserWindow.fromWebContents(e.sender) : null;
+    return !!(w && w.__mtnodeAppFrame === false);
+  } catch (_) {
+    return false;
+  }
+}
 /* 应用自报能力位（读 app.json 的 capabilities）：preload 的**注入闸门**用它 ——
  * 只有声明了 showDictate / showAuthor 才注入对应的宿主 UI（能力位缺省 false = 不注入；声明为真则
  * 注入进来即生效）。
  * **不是权限闸**：桥上的语音 / 图像接口始终可调，这里只回答「这个应用声明的界面能力里有没有
- * 让他把听写条 / 作者标签显示出来」。
+ * 让他把听写条 / 作者标签 / 顶栏显示出来」。
  * author（本机清单摘要，见 authorTagOf）：作者标签要显示的就是那几个字段 —— 一次 IPC 全给它，
  * 免得注入脚本再问一趟；声明了 showAuthor 才带（没声明的应用连读盘都省了）。
+ * chrome（顶栏，见 renderer/app-chrome-ui.js）：真 = **这只窗口没有系统边框**（开窗时 winSpec.frame
+ * 的结果，串在窗口的 __mtnodeAppFrame 上）**且**应用没在 app.json 的 capabilities.windowChrome 里
+ * 显式关掉（这一位缺省 true = 允许注入）。preload 只认这一项，老版主进程不带它就是「不注入」。
  * 认不出应用回 ok:false。 */
 function hostCapabilities(e, arg) {
   const own = senderAppDir(e, arg);
@@ -6483,6 +6520,7 @@ function hostCapabilities(e, arg) {
   const man = manifestOf(own.dir || "", own.id) || {};
   const caps = normCapabilities(man.capabilities);
   const out = { ok: true, id: own.id, capabilities: caps };
+  out.chrome = senderWindowFrameless(e) && caps.windowChrome === true;
   if (caps.showAuthor === true) out.author = authorTagOf(own.dir || "", own.id, man);
   return out;
 }

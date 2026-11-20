@@ -100,7 +100,7 @@ const NS_METHODS = {
   agent: ["sessions", "create", "bind", "bound", "send", "cancel"],
   fs: ["root", "readText", "writeText", "list", "mkdir", "remove", "exists", "imageDataUrl"],
   audio: ["presets", "status", "synth", "cancel"],
-  tools: ["list", "call"],
+  tools: ["list", "call", "install"],
   /* 联网取素材（2026-12）：search = 带 header 的文本 GET（素材站搜索回调 JSON）；
      download = 二进制落盘（图 / 音效 / 视频）。应用页 CSP 是 connect-src 'none'，
      页面自己发不了请求，这两条是它与外网之间唯一的通道。 */
@@ -807,6 +807,15 @@ function createAppHostBridge(o) {
       if (ns === "audio") return await callAudio(caller, String(method), args);
       if (ns === "tools") {
         if (method === "list") return askRenderer("toolsList", {}, 60000);
+        /* 装应用自带的本地后端：铺盘 / 登记 / 起服务全在主进程（见 main-backend-registry.js 的
+           installFromApp）。应用只说「我要哪个工具」，appId 由这里按调用方补上 —— 应用改不了别人
+           的目录，也拿不到注册表写权。超时给足（起服务 + 健康检查最长 60s，下载另算）。 */
+        if (method === "install")
+          return askRenderer(
+            "toolsInstall",
+            { appId: String((caller && caller.id) || ""), tool: String((args && (args.id || args.tool)) || "") },
+            300000,
+          );
         return askRenderer("toolsCall", { id: String((args && (args.id || args.tool)) || ""), args: (args && args.args) || {} }, CALL_TIMEOUT_MS);
       }
       /* net：fetch 仍是老的「取一段网页文本」（走渲染层的既有通道）；

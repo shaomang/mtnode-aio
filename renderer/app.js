@@ -37447,6 +37447,12 @@ function createDevSessionForNode(node, mode, req, extra) {
        note / devStatus / devFiles（见 devNodeContractText 的完成收尾要求）。
        「细化 / 问询」要在图上建块与调研架构，照旧可读，故只在 mode === "dev" 时置位。 */
     noCanvasRead: mode === "dev",
+    /* 该功能块开着「快速热修」（node.devHotfix）→ 绑定会话也按热修走（与模式菜单的
+       st.hotfix 同一位，用户口径一致）：不注入「任务流程」指令、不弹计划确认窗。
+       任务书里那段【快速热修模式】仍是它的契约（devContract 轮不叠 HOTFIX_CONTRACT），
+       热修这一位在这里只用来关掉「复杂任务 → 交计划块 → 弹窗」那条线，
+       见 renderer/app-plan.js 的 planHotfixRound。 */
+    hotfix: node.devHotfix === true,
     messages: [],
     archived: false,
     updatedAt: Date.now(),

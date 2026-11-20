@@ -800,7 +800,7 @@ function startCustomStyleAsk(appId, appName, mode) {
  * 把勾选态回滚成磁盘上的真实值。不传 = 老口径（只改内存态，由调用方自己保存）。 */
 function appsCapabilityChecks(value, onChange) {
   const cur = Object.assign(
-    { textInput: false, showDictate: false, showAuthor: false, showMediaPlayer: false, imageGen: false, voiceGen: false, canvasHost: false, agentHost: false, assetHost: false },
+    { textInput: false, showDictate: false, showAuthor: false, showMediaPlayer: false, windowChrome: true, imageGen: false, voiceGen: false, canvasHost: false, agentHost: false, assetHost: false },
     value || {},
   );
   const box = document.createElement("div");
@@ -810,6 +810,8 @@ function appsCapabilityChecks(value, onChange) {
     showDictate: cur.showDictate === true,
     showAuthor: cur.showAuthor === true,
     showMediaPlayer: cur.showMediaPlayer === true,
+    /* 窗口顶栏：清单里唯一**缺省开**的一位 —— 只有显式 false 才算关掉（与主进程 normCapabilities 同一口径） */
+    windowChrome: cur.windowChrome !== false,
     imageGen: cur.imageGen === true,
     voiceGen: cur.voiceGen === true,
     canvasHost: cur.canvasHost === true,
@@ -821,6 +823,7 @@ function appsCapabilityChecks(value, onChange) {
     showDictate: state.showDictate === true,
     showAuthor: state.showAuthor === true,
     showMediaPlayer: state.showMediaPlayer === true,
+    windowChrome: state.windowChrome === true,
     imageGen: state.imageGen === true,
     voiceGen: state.voiceGen === true,
     canvasHost: state.canvasHost === true,
@@ -847,6 +850,11 @@ function appsCapabilityChecks(value, onChange) {
       id: "showMediaPlayer",
       label: I18n.t("显示底部播放条"),
       hint: I18n.t("在应用窗口底部显示宿主注入的播放条（音频画波形、视频带画面）：应用里的音频视频都走这一条，没点播时自动收起"),
+    },
+    {
+      id: "windowChrome",
+      label: I18n.t("窗口顶栏"),
+      hint: I18n.t("无框应用窗口由宿主补一条顶栏（可拖动 + 右侧关闭 ✕），页面自己已有可拖区时不会重复出现；取消勾选 = 不要这条顶栏，拖动与关闭由页面自己负责"),
     },
     {
       id: "imageGen",
@@ -918,6 +926,7 @@ function appsCapabilityChecks(value, onChange) {
       state.showDictate = nv.showDictate === true;
       state.showAuthor = nv.showAuthor === true;
       state.showMediaPlayer = nv.showMediaPlayer === true;
+      state.windowChrome = nv.windowChrome !== false;
       state.imageGen = nv.imageGen === true;
       state.voiceGen = nv.voiceGen === true;
       state.canvasHost = nv.canvasHost === true;
@@ -1215,6 +1224,127 @@ function appsCreateDevNode(app) {
       ? devCoreFilesNormalize(files, node)
       : files.slice(0, 10);
   return node;
+}
+
+/* ---------- ①c 兜底：这个应用没有画布时，按「新建应用」同一实现补一张 ----------
+ *
+ * 起因：开发页 / 开发会话解析「该应用的画布」一律走 wfOfCanvasIdForRun(应用 id)
+ * （画布 id = 应用 id，见 appCanvasWf）。用户删掉那张画布（或在别处删了、换了数据目录）之后
+ * 这条链拿不到东西，界面就停在「该应用的画布上没有开发节点」—— 应用本身还好好的，开发不下去。
+ *
+ * 所以这里给一条与「新建应用」**完全同源**的兜底（不新增文件格式、不动 app.json）：
+ *   ① 应用本体（name / dir / coreFiles）从本机名单取（开发那份优先）；拿不到目录就直接放弃，
+ *      **绝不建半张画布**（appCanvasWf 的 workspace 就靠它，空着建出来的是一张没用的图）；
+ *   ② 画布还在就复用（wfOfCanvasIdForRun：前台 / 内存袋 / 磁盘三处都认；它抛的
+ *      「画布已被删除」也按「找不到」处理）；
+ *   ③ 只有真的没有才走新建应用那三步：appCanvasWf(id, name, dir) → wfSave → appsCreateDevNode
+ *      （同一个构造函数、同一个建节点实现，出来的图与新建应用那张逐字同构）；
+ *   ④ 收尾：reviveWf 解墓碑 → rememberWf 入袋 → persistWf 把节点改动落盘 →
+ *      trackWorkflow / refreshWfSelect 让标签条与画布下拉能看见它。
+ *
+ * **全程不碰前台视图与 activeWorkflowId**：调用方多半正站在开发页 / 应用中心上，
+ * 把用户拽到画布视图是最糟的收场。改节点用 runAgainstWf 把目标画布临时挂上手
+ * （期间不重绘、不进用户的撤销栈，见 app.js 的 runAgainstWfInner / pushHistory）。
+ *
+ * 返回 { ok:true, wf, node, created }：created 只表示「这次新建了画布」，提示文案由调用方决定；
+ * 失败回 { ok:false, reason }，reason ∈ invalid-id / no-app / no-dir / save-failed / no-node。
+ */
+async function appsEnsureCanvasForApp(appId) {
+  const id = String(appId || "").trim();
+  if (!APP_WF_ID_RE.test(id)) return { ok: false, reason: "invalid-id" };
+  /* ① 应用本体：开发那份优先；老数据可能连 listKind 都没写，就按 id 随便取一条 */
+  let app = null;
+  try {
+    if (typeof appsLocalById === "function")
+      app = appsLocalById(id, "dev") || appsLocalById(id) || null;
+  } catch (_) {
+    app = null;
+  }
+  if (!app) return { ok: false, reason: "no-app" };
+  const dir = String(app.dir || "").trim();
+  /* 目录拿不到就不动手：画布的工作目录（workspace）就取它，空着建出来是一张没用的图 */
+  if (!dir) return { ok: false, reason: "no-dir" };
+  const name = String(app.name || "").trim() || id;
+
+  /* ② 画布：有就复用，没有才新建 —— 新建这一支就是「新建应用」那三步里的前两步。
+     画布被删过（wfOfCanvasIdForRun 抛「画布已被删除」）与「压根没有」同一处理：都是找不到。 */
+  let wf = null;
+  try {
+    wf = typeof wfOfCanvasIdForRun === "function" ? await wfOfCanvasIdForRun(id) : null;
+  } catch (_) {
+    wf = null;
+  }
+  const created = !wf;
+  if (created) {
+    wf = appCanvasWf(id, name, dir);
+    reviveWf(id); /* 同名画布曾被删过：这是一张全新画布，解禁它的 id */
+    try {
+      await window.api.wfSave(id, wf);
+    } catch (err) {
+      return {
+        ok: false,
+        reason: "save-failed",
+        error: (err && err.message) || String(err),
+      };
+    }
+  }
+
+  /* ③ 开发节点：有就拿来用，没有才补一个（appsCreateDevNode = 「新建应用」同一个实现） */
+  let node = typeof appsDevNodeOfWf === "function" ? appsDevNodeOfWf(wf) : null;
+  let nodeAdded = false;
+  if (!node || !node.dev) {
+    let appForNode = app;
+    try {
+      /* 轻表（apps:list 的 slim 那趟）不带 coreFiles：补一次详情再建节点，devFiles 才不是空的 */
+      if (app.detailPending && typeof appsLocalDetailEnsure === "function") {
+        appForNode = (await appsLocalDetailEnsure(id)) || app;
+      }
+    } catch (_) {}
+    const files = Array.isArray(appForNode && appForNode.coreFiles)
+      ? appForNode.coreFiles
+      : [];
+    const mk = () =>
+      appsCreateDevNode({ id: id, name: name, dir: dir, coreFiles: files });
+    /* appsCreateDevNode 认的是 S.wf（「新建应用」那条链就是先把画布摆成前台再建节点）：
+       这里用 runAgainstWf 临时把目标画布挂上手 —— 不换前台视图、不动 activeWorkflowId，
+       也不重绘 / 不进用户的撤销栈。runAgainstWf 缺席时退回同语义的临时换手。 */
+    const vis = typeof currentVisibleWf === "function" ? currentVisibleWf() : S.wf;
+    const selBefore = S.sel;
+    const wireBefore = S.selWire;
+    if (typeof runAgainstWf === "function") {
+      node = runAgainstWf(wf, mk);
+    } else {
+      const prev = S.wf;
+      S.wf = wf;
+      try {
+        node = mk();
+      } finally {
+        S.wf = prev;
+      }
+    }
+    if (!node || !node.dev) return { ok: false, reason: "no-node" };
+    nodeAdded = true;
+    /* 改的不是用户正看着的那张图：把他原来的选中态还回去（新节点已经在目标画布的
+       nodes 里，不影响下面的入袋 / 落盘；界面也不该莫名高亮另一张图上的节点） */
+    if (wf !== vis) {
+      S.sel = selBefore;
+      S.selWire = wireBefore;
+    }
+  }
+
+  /* ④ 收尾：入袋 + 落盘（persistWf 走对象自己的 id，与前台是谁无关；
+     后台建节点时 addNode 内部那次 scheduleSave 写的是**前台**那张图，不能指望它）。
+     标签条与画布下拉只在**新建画布**时才需要补，复用时不打扰用户已排好的顺序。 */
+  rememberWf(wf);
+  if (created || nodeAdded) persistWf(wf);
+  if (created) {
+    if (typeof trackWorkflow === "function")
+      trackWorkflow(id, String(wf.name || "").trim() || name);
+    try {
+      if (typeof refreshWfSelect === "function") await refreshWfSelect();
+    } catch (_) {}
+  }
+  return { ok: true, wf: wf, node: node, created: created };
 }
 
 /* ---------- ② 开发页：应用 ↔ 画布 / 开发节点 / 会话 ---------- */
@@ -1704,6 +1834,7 @@ window.appsRootHealAfterMove = appsRootHealAfterMove;
 window.appIdChangeFollow = appIdChangeFollow;
 window.appCanvasDirRepoint = appCanvasDirRepoint;
 window.openAppCanvas = openAppCanvas;
+window.appsEnsureCanvasForApp = appsEnsureCanvasForApp;
 window.appIdOfDevNode = appIdOfDevNode;
 window.appSessionsOf = appSessionsOf;
 /* 「自定义」风格那一步（新建 / 换风格都调它）：把用户领回开发页输入框问风格。

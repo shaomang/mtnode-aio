@@ -631,9 +631,31 @@ async function appsDevEnsureNode(force) {
   } catch (_) {
     wf = null;
   }
+  let node = null;
+  let created = false;
+  if (wf) {
+    node = typeof appsDevNodeOfWf === "function" ? appsDevNodeOfWf(wf) : null;
+  } else {
+    /* 兜底：解析不到画布（用户删了那张图 / 换了数据目录 / 压根没建过，以及
+       wfOfCanvasIdForRun 抛的「画布已被删除」，上面一律按找不到处理）→ 交给
+       app-app-flow.js 的 appsEnsureCanvasForApp，按「新建应用」同一实现补一张。
+       它全程不碰前台视图与 activeWorkflowId，站在开发页的调用方不会被拽去画布视图。
+       拿不到应用目录 / 落盘失败这类失败它自己回 {ok:false}：这里照旧回 null，
+       报错口径仍是调用方原来那两句（兜底不改文案）。 */
+    let res = null;
+    try {
+      if (typeof appsEnsureCanvasForApp === "function")
+        res = await appsEnsureCanvasForApp(id);
+    } catch (_) {
+      res = null;
+    }
+    if (res && res.ok && res.wf) {
+      wf = res.wf;
+      node = res.node || null;
+      created = !!res.created;
+    }
+  }
   if (!wf) return null;
-  const node =
-    typeof appsDevNodeOfWf === "function" ? appsDevNodeOfWf(wf) : null;
   DEVD.wf = wf;
   DEVD.node = node || null;
   if (node && typeof node.devGrill !== "boolean") {
@@ -641,6 +663,15 @@ async function appsDevEnsureNode(force) {
     try {
       if (typeof persistWf === "function") persistWf(wf);
     } catch (_) {}
+  }
+  /* 这一次真的把画布补出来了：说一声，再把「画布缺失」那条警告清掉
+     （后续警告由调用方按现况重画：appsDevRefreshHead / appsDevStartDevSession）。
+     kind 必须是 warn：app.js 的 TOAST_KINDS_SHOWN 只放行 err / warn / copy，默认的 ok
+     档一句都不弹（那样这句话等于没写）。这里说的是「刚给你补了一张图」，属引导性提示，
+     正落在 warn 那一档的用途里。 */
+  if (created) {
+    appsDevToast(appsDevT("已为这个应用新建画布"), "warn");
+    appsDevPaintWarn("");
   }
   return DEVD.node;
 }
@@ -1902,10 +1933,13 @@ async function appsDevStartMergeSession(pull, label) {
     version: ver,
   });
   const contract = appsMergeContractText(p, appDir);
-  /* 该应用的画布与开发节点：与 appsDevEnsureNode 同一条链，但**不动 DEVD 的选中态** ——
-     合并能从应用中心直接发起，此刻用户可能根本没停在开发页。 */
+  /* 该应用的画布与开发节点：与 appsDevEnsureNode 同一条链 —— 连「画布丢了就补一张」的兜底
+     也同一份实现（app-app-flow.js 的 appsEnsureCanvasForApp）：合并能从应用中心直接发起，
+     此刻那张图很可能已经被删了。依旧**不动 DEVD 的选中态** —— 用户可能根本没停在开发页。
+     兜底失败（拿不到应用目录 / 落盘失败 / 建不出节点）照旧回退无画布契约会话，不改报错口径。 */
   let wf = null;
   let node = null;
+  let created = false;
   try {
     if (typeof wfOfCanvasIdForRun === "function") wf = await wfOfCanvasIdForRun(appId);
     if (wf && typeof appsDevNodeOfWf === "function") node = appsDevNodeOfWf(wf);
@@ -1913,6 +1947,24 @@ async function appsDevStartMergeSession(pull, label) {
     wf = null;
     node = null;
   }
+  if (!wf) {
+    let res = null;
+    try {
+      if (typeof appsEnsureCanvasForApp === "function")
+        res = await appsEnsureCanvasForApp(appId);
+    } catch (_) {
+      res = null;
+    }
+    if (res && res.ok && res.wf) {
+      wf = res.wf;
+      node = res.node || null;
+      created = !!res.created;
+    }
+  }
+  /* 与开发页那条入口同一句话（画布是这次才补出来的才说），kind 同为 warn（同上：ok 档不弹）；
+     警告条不在这里动 ——
+     合并会话随后会把开发页摆到该应用上，appsDevRefreshHead 按现况重画。 */
+  if (created) appsDevToast(appsDevT("已为这个应用新建画布"), "warn");
   let sess = null;
   if (node && typeof createDevSessionForNode === "function") {
     /* agentWorkspace = 应用目录（dshWorkspaceOf 的 manual 分支优先）；建完再显式钉一次

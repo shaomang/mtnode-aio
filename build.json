@@ -83,6 +83,10 @@
     /* 联网抓取 / 下载（代理、超时、重定向）：app-host-bridge.js 顶层 require 它，
        漏进白名单 = 打包后 Cannot find module './net-download.js'。 */
     "net-download.js",
+    /* 应用自带的本地后端（<appDir>/backend/backend.json + 源码）：apps-store.js（装应用时铺盘）
+       与 main-backend-registry.js（tools.install 时补铺）都 require 它，漏进白名单 =
+       打包后 Cannot find module './app-backend-pack.js'（新用户装应用那条链直接断）。 */
+    "app-backend-pack.js",
     /* 应用分支合并（他人分支 → 我本机开发中的那一支）：apps-store.js require 它，
        漏进白名单 = 打包后 Cannot find module './app-branch-merge.js'
        （应用中心「选择版本…」里的「合并到我的分支」直接报错）。 */

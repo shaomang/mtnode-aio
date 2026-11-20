@@ -387,6 +387,53 @@ body.ef-skin .topbar .btn-tools.on svg {
   stroke: #111;
 }
 
+/* 更新按钮（#btnUpdate = corner mini btn-update）：它是「有新版本」这一状态的实底入口，
+   与上面 .on / 选中同一族 —— 吃本主题的强调色，而不是留在 layout.css 那套固定暖橙里。
+   缺了这一段会怎样（本轮修的就是它）：上面那条通用顶栏按钮规则（0-2-2）把它的橙底换成
+   石墨渐变，而 layout.css 的 .btn-update（0-1-0）只留得下「给橙底配的深字 #1a1208」、
+   橙边与橙色呼吸辉光 —— 石墨底 + 近黑字（实测约 1.1:1）等于图标与「更新」两个字都看不见
+   （只有 hover 被通用 :hover 改成亮字时才显形），剩下那圈橙还跟本主题的强调色
+   （青 / 蓝 / 信号黄）打架，看着就是「没跟随主题」。
+   选择器必须写 .corner.btn-update（0-4-1）才压得过通用规则（0-2-2）与它的 :hover（0-2-3）；
+   亮色主题那条同名规则（theme-daylight.css 的 0-5-1）排在本文件之后，仍以它为准。
+   填色取 signal-2 → signal（下沿停在强调色本体而不是深一档）：深字 #111（与 .on 同值）
+   压在下沿上 industrial 5.6:1 / dsh 5.5:1 / 终末地 11.8:1，都过 4.5:1；若照 .on 那样
+   收到 signal-deep，dsh 的下沿只剩约 2.5:1，11px 的字就糊了。 */
+body.ef-skin .topbar .corner.btn-update {
+  color: #111;
+  border-color: var(--ef-signal);
+  background: linear-gradient(180deg, var(--ef-signal-2), var(--ef-signal));
+  box-shadow: 0 0 0 1px rgba(var(--ef-signal-rgb), .30), 0 0 12px rgba(var(--ef-signal-rgb), .38);
+  animation: efUpdatePulse 1.6s ease-in-out infinite;
+}
+
+body.ef-skin .topbar .corner.btn-update:hover {
+  color: #111;
+  border-color: var(--ef-signal-2);
+  background: linear-gradient(180deg, var(--ef-signal-2), var(--ef-signal-2));
+  box-shadow: 0 0 0 1px rgba(var(--ef-signal-rgb), .42), 0 0 16px rgba(var(--ef-signal-rgb), .5);
+}
+
+/* 正在下载（.busy）：呼吸停掉，进度在下面的横幅上看 —— 与 .on 一族「亮着但不呼吸」同口径。
+   layout.css 的 .btn-update.busy（0-2-1）压不过上面那条 0-4-1 的 animation，这里补一次。 */
+body.ef-skin .topbar .corner.btn-update.busy {
+  animation: none;
+}
+
+/* 更新按钮的呼吸：振幅取强调色的淡影一档（与 layout.css 那版橙色 updatePulse 同节拍，
+   只把颜色换成 --ef-signal-rgb，三档暗色主题各自跟着自己的强调色走） */
+@keyframes efUpdatePulse {
+
+  0%,
+  100% {
+    box-shadow: 0 0 0 1px rgba(var(--ef-signal-rgb), .28), 0 0 10px rgba(var(--ef-signal-rgb), .32)
+  }
+
+  50% {
+    box-shadow: 0 0 0 2px rgba(var(--ef-signal-rgb), .42), 0 0 16px rgba(var(--ef-signal-rgb), .55)
+  }
+}
+
 body.ef-skin .topbar .ver-tag {
   color: var(--ef-olive);
   border-color: var(--ef-line);

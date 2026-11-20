@@ -105,6 +105,9 @@ function normalizeManifest(input, opts) {
         cwd: s(raw.launch && raw.launch.cwd).trim(),
         portRange: pr.length >= 2 ? [pr[0], pr[1]] : [17800, 17899],
         portFlag: s(raw.launch && raw.launch.portFlag).trim(),
+        /* 启动时额外注入的环境变量（应用自带的后端靠它跑 ELECTRON_RUN_AS_NODE=1，
+           用 MTNode 自带的 Electron node 起服务，新用户机器上不必另装 node） */
+        env: normEnv(raw.launch && raw.launch.env),
         health: {
           path: s(health.path).trim() || "/health",
           timeoutSec: Math.max(5, Math.min(900, Number(health.timeoutSec) || 60)),
@@ -181,6 +184,19 @@ function normLock(v) {
   const o = v && typeof v === "object" ? v : {};
   const cls = s(o.class || "cpu").toLowerCase();
   return { class: LOCK_CLASSES.has(cls) ? cls : "cpu", exclusive: o.exclusive !== false };
+}
+
+/** 启动命令的额外环境变量：只收「名字像环境变量、值是短字符串」的键，别的一律丢掉。 */
+function normEnv(v) {
+  const o = v && typeof v === "object" && !Array.isArray(v) ? v : {};
+  const out = {};
+  for (const k of Object.keys(o)) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(k)) continue;
+    const val = s(o[k]);
+    if (val.length > 4096) continue;
+    out[k] = val;
+  }
+  return out;
 }
 
 function normInstall(v) {

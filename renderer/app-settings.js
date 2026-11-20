@@ -2425,12 +2425,8 @@ function openSettingsBody() {
           return;
         }
         if (r && r.readyToRestart) {
-          toast(
-            updateWizardOn(r)
-              ? I18n.t("更新已下载完毕：马上会弹出安装向导，窗口里显示进度，装完自动重新打开（无需点击）")
-              : I18n.t("更新已下载完毕：将后台静默安装，完成后自动重新打开应用"),
-            "ok",
-          );
+          /* 下载完就停住（主进程不自动装）：这里只说「点「重启并更新」才会安装」 */
+          toast(I18n.t("更新已下载完毕：点「重启并更新」才会安装（不会自动装）"), "ok");
           return;
         }
         toast(
@@ -5442,8 +5438,8 @@ function authorUpdateBlockOf(upd) {
     btn.textContent = ver ? I18n.t("更新到 v") + ver : I18n.t("更新");
   }
   btn.title = ver
-    ? I18n.t("发现新版本 v") + ver + I18n.t("，点击下载更新")
-    : I18n.t("发现新版本，点击下载更新");
+    ? I18n.t("发现新版本 v") + ver + I18n.t("，点此下载（下载完不会自动安装）")
+    : I18n.t("发现新版本，点此下载（下载完不会自动安装）");
   btn.onclick = () => {
     if (typeof window.runUpdateAction === "function") window.runUpdateAction();
   };

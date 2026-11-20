@@ -109,8 +109,9 @@ const { createCanvasDocClient } = require("./canvas-doc/canvas-doc-client.js");
 const {
   registerUpdateIpc,
   startBackgroundCheck,
-  /* 退出钩子唯一的交换入口（见下面 before-quit 那一段）：有 pending-swap.json 且旁路目录还在
-     才拉交换器，其余情况一个进程都不起；判据与拉起都在 updater.js 里，main.js 只负责「什么时候」。 */
+  /* 退出钩子唯一的交换入口（见下面 before-quit 那一段）：**要用户点过「重启并更新」**（updater.js
+     里的进程内批准闸 swapApproved）且有 pending-swap.json 才拉交换器，其余情况一个进程都不起 ——
+     退出应用本身不算批准。判据与拉起都在 updater.js 里，main.js 只负责「什么时候」。 */
   swapOnQuit,
 } = require("./updater.js");
 const { registerPetIpc, shutdownPet } = require("./pet/main-pet.js");
@@ -7085,7 +7086,7 @@ ipcMain.handle("data:openRoot", () => {
 
 /* 这一轮退出是「重启应用」引起的：app.relaunch() 会在本进程退出前就把新实例拉起来，
    而退出瞬间交换要 rename 的正是新实例刚打开的那个安装目录 —— 两条撞一起只会两边都失败，
-   所以 before-quit 里那一轮不交换（更新留给下一次真正的退出 / 「立即重启」）。 */
+   所以 before-quit 里那一轮不交换（更新只留给用户点「立即重启」；本项这一轮退出从来不算批准）。 */
 let quitForRelaunch = false;
 ipcMain.handle("app:relaunch", () => {
   quitForRelaunch = true;
@@ -11191,7 +11192,10 @@ app.on("before-quit", (ev) => {
   try { if (_shotCapture && typeof _shotCapture.dispose === "function") _shotCapture.dispose(); } catch {}
   /* 退出瞬间交换（唯一的钩子）：托盘「退出 MTNode」/ 主窗 ✕ 选「退出程序」/ window-all-closed /
      app:relaunch / 应用窗口的 appHost.quit() / 更新里的「立即重启」，最后都是 app.quit()，
-     所以只会走到这里一次 —— 交换器只在这一处拉起（有 pending-swap.json 且旁路目录还在才拉）。
+     所以只会走到这里一次。**但它不是无条件交换**：updater.js 里有一道进程内批准闸（swapApproved），
+     只有用户点过「重启并更新」（update:restartToApply → 交换器）才置位 —— 没置位时这里一个进程
+     都不起，回 not_approved，退出就只是退出（pending-swap.json 与旁路目录原样留给下次启动 /
+     用户点击）。批准之后才按磁盘判据拉交换器（有 pending-swap.json 且旁路目录还在）。
      为什么**尽早**拉：helper 自己会等本进程真的退出才做那两次 rename，所以它跟下面的后端收尾
      可以并行、不抢退出预算；而下面那批进程收干净 = 本进程退出时它们都不在了 = rename 的时候
      没人占着安装目录里的文件（Windows 上只要有一个进程还开着那里面的 exe / dll，rename 就会被
@@ -11240,12 +11244,13 @@ app.on("before-quit", (ev) => {
       if (sw.ok && sw.launched) {
         errLog("[quit] 已拉起交换器（runId=" + (sw.runId || "-") + "）：退出后由它完成两次 rename，结论写 " + (sw.resultFile || "-"));
       } else if (sw.skipped) {
-        /* 「没有待交换的旁路」是常态（绝大多数退出都属于这一档），不写日志免得刷屏 */
-        if (sw.reason && sw.reason !== "no_pending_swap") errLog("[quit] 这次退出不交换：" + sw.reason);
+        /* 「没有待交换的旁路」与「用户没批准过交换」（not_approved）都是常态 —— 绝大多数退出
+           都属于这两档，不写日志免得刷屏 */
+        if (sw.reason && sw.reason !== "no_pending_swap" && sw.reason !== "not_approved") errLog("[quit] 这次退出不交换：" + sw.reason);
       } else if (sw.unsupported) {
         errLog("[quit] 这台机器做不了退出瞬间交换（" + (sw.reason || "unsupported") + "）：安装目录未动，下次启动仍是「已预装，重启生效」，点「立即重启」走就地安装");
       } else {
-        errLog("[quit] 交换器没起来（" + (sw.error || "unknown") + "）：退出照旧，下次启动自检会重试");
+        errLog("[quit] 交换器没起来（" + (sw.error || "unknown") + "）：退出照旧，下次启动仍是「已预装，重启生效」，点「立即重启」重试");
       }
     } catch (_) {}
   })().catch(() => {});

@@ -467,6 +467,9 @@ const appHost = {
   tools: {
     list: () => hostCall("tools", "list"),
     call: (id, args) => hostCall("tools", "call", { id: id, args: args || {} }),
+    /* 装「应用自带的本地后端」（应用目录里的 backend/backend.json）：宿主导铺盘 → 登记 →
+       起服务，回 { ok, id, dir, version, port, already? }。新用户首次打开应用那条链走它。 */
+    install: (id) => hostCall("tools", "install", { id: id }),
   },
   /* 语音合成（Breeze TTS 2）：应用窗口唯一能出声的出口。
      产物**写进画布工作目录**并回真实绝对路径（应用拿它 fs.exists 复核），绝不回 base64 ——
@@ -554,15 +557,15 @@ contextBridge.exposeInMainWorld("appHost", appHost);
  * 世界里本来就有），并在挂载失败时等宿主派发的 "mtnode-apphost" 事件兜底。
  *
  * 纪律（两条一模一样）：只在「DOM 就绪 + 页面世界真的拿到了 appHost + **这个应用声明了对应
- * 能力位**（app.json 的 capabilities.showDictate / showAuthor）」三条都满足时才注入 ——
+ * 能力位**（app.json 的 capabilities.showDictate / showAuthor / showChrome）」三条都满足时才注入 ——
  * **没声明一律不注入**（宿主侧也就没有那条 UI）；声明了的应用注入进来即生效（听写条默认可见，
  * 作者标签平时隐藏、hover 才露）。桥上的接口始终在，能力位不是权限闸。
  * 作者标签还多一道闸：清单里**名字与版本缺任一个**也不注入（authorTagOf 回 null）——
  * 标签上要写的字凑不齐就不显示这枚标签，不写「未知作者」。 */
-const capAnswer = { at: 0, dict: null, auth: null, player: false }; /* 主进程对「这个应用声明了什么」的答复（只问一次） */
+const capAnswer = { at: 0, dict: null, auth: null, player: false, chrome: false }; /* 主进程对「这个应用声明了什么」的答复（只问一次） */
 function askCapabilities() {
   if (capAnswer.at) return Promise.resolve(capAnswer);
-  const fallback = () => ({ dict: false, auth: null, player: false });
+  const fallback = () => ({ dict: false, auth: null, player: false, chrome: false });
   return Promise.resolve(ipcRenderer.invoke("apps:hostCapabilities"))
     .then((r) => {
       if (!r || !r.ok || !r.capabilities) return fallback();
@@ -572,6 +575,9 @@ function askCapabilities() {
       capAnswer.player = r.capabilities.showMediaPlayer === true;
       /* author 只在主进程判定「名字 + 版本齐」时才带；老版主进程不带这一项 = 不注入 */
       capAnswer.auth = r.author && typeof r.author === "object" ? r.author : null;
+      /* 窗口顶栏（renderer/app-chrome-ui.js）：主进程带 chrome 这一项才注入 —— 与 author 同一条兼容
+         口径，老版主进程不带 = 不注入。也认 app.json 的能力位 showChrome，两条任一为真即注入。 */
+      capAnswer.chrome = r.chrome === true || (r.capabilities && r.capabilities.showChrome === true);
       return capAnswer;
     })
     .catch(() => fallback());
@@ -621,6 +627,9 @@ function maybeInjectAppUi() {
     /* 底部播放条（appHost.media.* 的落点）：声明了 showMediaPlayer 才注入，没点播时整条收起 */
     if (ans.player) injectAppUiScript("app-media-ui.js", "media");
     if (ans.auth) injectAppUiScript("app-author-ui.js", "author");
+    /* 窗口顶栏（renderer/app-chrome-ui.js）：主进程答复里带 chrome 才注入，与作者标签同一处、
+       同一套失败静默（注入失败只 console.error，不阻断页面） */
+    if (ans.chrome) injectAppUiScript("app-chrome-ui.js", "chrome");
   });
 }
 if (typeof document !== "undefined") {

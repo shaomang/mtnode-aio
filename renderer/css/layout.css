@@ -871,6 +871,13 @@ button:disabled:active {
   display: none !important;
 }
 
+/* 顶栏「更新」入口（#btnUpdate）：这里只管**尺寸与排布**（高度 / 内距 / 图标与字的间距 /
+   显示开关）。填色、字色与呼吸辉光一律由主题层接管：
+     · 三档暗色主题 → css/theme-endfield.css 第三节的 body.ef-skin .topbar .corner.btn-update
+       （强调色实底 + 深字 + 跟着 --ef-signal-rgb 呼吸）
+     · 亮色主题        → css/theme-daylight.css 的 body.ef-skin.theme-light .topbar .corner.btn-update
+   下面那套暖橙 + 深字只是「body 上没挂 ef-skin」时的兜底（现在的四档主题都挂，正常跑不到）；
+   别只改这里就以为改了观感 —— 那正是「更新按钮不跟主题」那个 bug 的成因。 */
 .btn-update {
   box-sizing: border-box;
   min-width: 58px;
@@ -3492,8 +3499,11 @@ button.mini.btn-sq.ws-browse svg {
 
 /* 第三态（旁路已预装好、等重启）那颗「立即重启并更新」——
    只在 staged 相位显示（其余相位由 JS 设 hidden；`.ub.staged` 这个类是相位状态钩子，
-   进度条本身不需要额外样式：它已经满格且不脉动）。填色与顶栏「更新」按钮同一套暖橙 + 深字，
-   三套主题下都读得清，因此不吃主题变量、也不需要在主题皮肤里再覆一次。 */
+   进度条本身不需要额外样式：它已经满格且不脉动）。**它自己固定暖橙 + 深字**：这条横幅
+   是压在画布上的临时面板，两颗按钮一共只有一个动作，暖橙在四档主题下都读得清，
+   因此不吃主题变量、也不需要在主题皮肤里再覆一次。
+   （顶栏那颗「更新」入口不一样：它是常驻的顶栏按钮，跟随主题强调色，
+   见 css/theme-endfield.css 第三节的 .corner.btn-update —— 别把两处的口径搞混。） */
 .ub-acts {
   display: flex;
   justify-content: flex-end;

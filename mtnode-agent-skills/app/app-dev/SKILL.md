@@ -364,6 +364,16 @@ window.AppClose.on(() => Promise.all([store.flush(), Promise.resolve(H.offAll())
 
 窗口位置由宿主固定贴在**主窗口右侧**（`pluginRightBounds`，工作区右边距 16px、垂直居中），应用**不能**指定坐标。
 
+**`window.frame` 宿主不读**：应用窗口一律无框（没有系统标题栏），写 `frame: true` 不会变出标题栏。拖动与关闭只有两条路 ——
+页面自绘（`.drag` 拖动区 + 关闭按钮接 `close()`），或交给宿主顶栏（`app.json` 的 `capabilities.windowChrome`，缺省 **开** =
+宿主注入一条可拖动 + 关闭 ✕ 的顶栏；页面自己画了标题栏就写 `false` 关掉，别两套叠在一起）。
+
+**顶栏由宿主自动让位**：注入顶栏时宿主会把 `body` 的 `padding-top` 抬到 `max(页面原值, 30px)`
+（`<html>` 上挂 `--mtnode-chrome-h` = 30px 与量到的基线 `--mtnode-chrome-body-pt`，`max` 保护让老页面
+自己写过 30px 的不会变成 60px），所以**页面不要再自己加 `padding-top`**。残余限制：`#root{position:fixed;inset:0}`
+这类定位满屏容器、以及自绘 sticky / fixed 贴顶 header 的页面，`body` 的 padding 推不动它们，内容仍可能被压住 ——
+这类页面应自绘标题栏（写 `capabilities.windowChrome: false`，或调 `window.__mtnodeWindowChrome.hide()`）。
+
 ---
 
 ## 六、模型能力：从 MTNode 继承（三条硬线）
@@ -462,7 +472,10 @@ else use(j.data);                              // 已经解析好的对象
 | 把 token / 密钥写进 `data.json` | 明文落盘、便于泄露 | 凭据只走宿主的 `account` / `authGetState`（token 只留主进程），应用侧一个字节都不落 |
 | 把 localStorage 当存档 | 窗口 `file://` 下 localStorage 来源不稳（清缓存 / 换路径即丢） | 存档走 `store.js`（内部 `dataWrite` / `dataSet`） |
 | 假设窗口大小 / 位置可自定 | 被宿主夹到合法区间；插件窗口位置固定在主窗口右侧 | 用 `minWidth` / `minHeight` 声明下限，布局自适应 |
-| `frame:false` 却没做关闭按钮 | 用户关不掉应用（只能关主程序） | 画自己的关闭按钮 → `host.close()` |
+| `frame:false` 却没做关闭按钮 | 用户关不掉应用（只能关主程序） | 画自己的关闭按钮 → `host.close()`；或留着 `capabilities.windowChrome`（缺省开）让宿主补顶栏 |
+| 以为 `window.frame: true` 能给出系统标题栏 | 窗口其实仍是无框，拖动 / 关闭都没做，用户拖不动也关不掉 | `window.frame` 宿主不读：所有应用窗口都是无框，靠自绘拖动区 + 关闭按钮，或宿主顶栏（`capabilities.windowChrome`，自己画了标题栏就写 `false`） |
+| 页面又自己加了 `body{padding-top:30px}`（或把 `--mtnode-chrome-h` 当自己的间距用），想给顶栏让位 | 宿主现在**自动让位**：`padding-top` 被抬到 `max(页面原值, 30px)` —— 自己再加一层就是白留的空白 | 删掉自己那句 `padding-top`；页面另有固定间距需求就写在自己的内容容器上，别写在 `body` |
+| `#root{position:fixed;inset:0}` / 自绘 sticky·fixed 贴顶 header 的页面，顶栏压住了内容 | `body` 的 `padding-top` 推不动定位容器与固定定位元素 | 这类页面自绘标题栏：`capabilities.windowChrome: false`（或调 `window.__mtnodeWindowChrome.hide()`），别指望宿主让位 |
 | `onShown` / `onAuthChanged` 不退订 | 重开窗口重复绑定、回调叠加 | 保存返回的退订函数，收尾钩子里调（脚手架挂进 `AppClose.on`） |
 | 以为窗口就是 `app.json` 里的尺寸 | 实际生效的是云端 catalog 词条（app.json 只是自描述） | 发版时同步 catalog 词条的 `entry` / `version` / `window` |
 | 以为 `canvas.*` 改的是用户眼前那张画布 | 它改的是**这个应用绑定的那张**；用户可能正看着另一张（改对了但「看不见变化」） | 用 `canvas.info()` 的 `id` / `foreground` 判断；要用户眼前那张就 `canvas.select` / `view` / `setView`（后台画布会回 `not_foreground`） |

@@ -17124,6 +17124,9 @@ async function agentSessionSend(text, opts) {
      · 每一轮开跑前都把「待纠错」位清掉，避免上一轮的残留把这一轮也拖去重发。 */
   if (!planFixMsg) st._planFixRounds = 0;
   st._planFixAsk = false;
+  /* 快速热修的「待自动开跑」标记只属于本轮：上一轮残留（中途被终止 / 出错）不许带进来，
+     否则这一轮收尾会平白无故启动一份过期的清单（见 app-plan.js 的 planMaybeOffer） */
+  st._planHotfixGo = null;
   beginSaveNodeHold();
   if (!S.thinking) S.thinking = {};
   S.thinking["agent:" + st.id] = [""];
@@ -17968,6 +17971,23 @@ async function agentSessionSend(text, opts) {
         typeof planExecContinue === "function"
       )
         planExecContinue(st);
+    } catch (_) {}
+    /* 快速热修：模型本轮仍交了一份计划块（见 app-plan.js 的 planMaybeOffer —— 那里不弹窗，
+       只挂标记）→ 在这里直接按清单开跑。放在这一处是因为 st.running 刚在上面复位：
+       早一步启动，planExecContinue 会判「会话忙」把计划就地收掉。 */
+    try {
+      if (
+        st._planHotfixGo &&
+        !planExecMsg &&
+        !st._cancelled &&
+        !hasQueued &&
+        !holdQueue &&
+        typeof planHotfixAutoStart === "function"
+      ) {
+        const hotfixPlan = st._planHotfixGo;
+        st._planHotfixGo = null;
+        planHotfixAutoStart(st, hotfixPlan);
+      }
     } catch (_) {}
     /* ---------- 计划漏弹自愈（模型生成失误的自动纠错） ----------
        本轮按要求本该弹「计划确认」，却因为标记写坏 / 漏闭合 / 没包标记而没弹 →

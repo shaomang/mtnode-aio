@@ -1,28 +1,58 @@
 "use strict";
 /**
  * 内置版本更新（electron-updater + NSIS blockmap 差分下载）。
- * 流程（全自动，不需要用户点任何确认）：
- *   1. 检查到新版本 → 立即差分下载（应用不退出，可继续使用）；差分不可用 / 失败时走全量：
- *      全量下载是自研的多连接分段下载器（4–8 段 Range 并发 + 断点续传，
- *      MTNODE_UPDATE_SEGMENTS=1 可回退 electron-updater 原生的单连接下载）
- *   2. 下载过程发 update:progress，渲染层右下角进度条实时显示百分比 / 速度
- *   3. 下载完毕 → 先试着**旁路预装**（默认路径，见下）：把新版本装到正式目录的同卷兄弟目录
- *      `<安装目录>.stage`，应用继续可用；装好发 update:staged + 记 pending-swap.json，
- *      等用户点「立即重启」（update:restartToApply）或退出应用时由交换器换上去。
- *      前置闸不过 / 预装失败 / 超时 → 回落旧路径：发 update:installing，进度条切成「正在安装」，
- *      等 AUTO_INSTALL_DELAY_MS 后安装并自动拉起新版本（用户点「稍后」可跳过这一次，
- *      下次退出应用时装上）。
+ *
+ * ── 对外契约（渲染层只认这几个字段与回执，改之前先读这一段）────────────────
+ * 状态字段（statusPayload，见下方函数上方那张表）：
+ *   available / downloading / downloaded / readyToRestart / staging / staged /
+ *   installWizard / latestVersion / latestKnown / installing。
+ *   · latestKnown = **只读探测**（拉 latest.yml 比版本号）得到的线上版本，只用来点亮顶栏按钮；
+ *     它不代表「已检查过」、不代表有包可下。latestVersion = 已知线上最新版（完整检查优先，
+ *     没有时退回 latestKnown）。
+ *   · installing **只**表示「用户刚点了安装、向导（或就地安装）正在起」；
+ *     它不表示「已排队等自动安装」——既没有排队，也没有倒计时，别照旧语义读它。
+ *
+ * 四个 IPC 的分工（多一个入口就是多一条错档路径，别再加）：
+ *   · update:status / update:check           只读状态 / 检查（不下载不安装）
+ *   · update:confirmAndStart                 固定「检查 + 下载」：回执永远不含 installing:true，
+ *                                            绝不安装；不引入 approveInstall 之类的「顺手装」参数
+ *   · update:install                         **唯一安装入口**，要求 downloaded；先试旁路预装，
+ *                                            预装不成 / 不适用时就地覆盖安装（可见向导）
+ *   · update:restartToApply                  staged 之后的**唯一重启入口**；未 staged 直接
+ *                                            { ok:false, error:"not_staged" }
+ *   两者（install / restartToApply）失败都如实回 { ok:false, error }，绝不假装成功。
+ *
+ * 流程（**全程需要用户批准**：只读探测 → 点击批准下载 → 下载完停住 → 点击才安装 / 才重启）：
+ *   1. 后台只做「只读探测」（probeFeedLatestVersion）：拉一次更新源的 latest.yml 比版本号，
+ *      结果（feedLatest）只经 statusPayload.latestKnown 点亮按钮 —— **不**调
+ *      autoUpdater.checkForUpdates、**不**下载、**不**安装、**不**改任何运行态相位
+ *      （startBackgroundCheck 里 8 秒 + 每 6 小时那两条定时器只跑它）。
+ *   2. 用户点按钮 = 批准「检查 + 下载」（update:confirmAndStart / update:check / update:download）：
+ *      这时才真的检查并下载；差分不可用 / 失败时走全量：全量下载是自研的多连接分段下载器
+ *      （4–8 段 Range 并发 + 断点续传，MTNODE_UPDATE_SEGMENTS=1 可回退 electron-updater 单连接）
+ *   3. 下载过程发 update:progress，渲染层进度条实时显示百分比 / 速度
+ *   4. 下载完**就停住**：只置 downloaded / readyToRestart 并发 update:downloaded，
+ *      不预装、不排定安装、不倒计时。装与不装由用户下一次点击决定：
+ *      · update:install（唯一安装入口）：先试**旁路预装**（stageUpdate reason:"user"）——
+ *        把新版本装到正式目录的同卷兄弟目录 `<安装目录>.stage`，应用继续可用，等用户点「重启并更新」
+ *        （update:restartToApply → 交换器退出瞬间换上去）；前置闸不过 / 预装失败 →
+ *        回落就地覆盖安装（quitAndInstall，可见向导）。两种收场都是用户这一次点击批准的。
+ *   5. 退出应用**不安装任何东西、也不换任何东西**：autoUpdater.autoInstallOnAppQuit 恒为 false
+ *      （见 syncQuitInstallPolicy）；退出钩子 swapOnQuit 另有一道进程内批准闸 swapApproved ——
+ *      只有用户点过「重启并更新」（update:restartToApply）才置位，没置位时退出就只是退出
+ *      （回 { skipped:true, reason:"not_approved" }，一个进程都不起，预装的旁路原样留着）。
+ *      任何「没人点就下载 / 就安装 / 就交换 / 就重启」的路径都是 bug。
  *
  * 安装分两档（默认可见向导，静默只是开关）：
  *   · 安装阶段默认走可见向导 —— quitAndInstall() 传 isSilent=false（NSIS 不带 /S），
- *     用户能看见安装界面与进度；installWizard:true 随 update:installing / statusPayload 下发，
- *     渲染层据此选文案。
+ *     用户能看见安装界面与进度；installWizard:true 随 statusPayload 下发，渲染层据此选文案。
  *   · MTNODE_UPDATE_SILENT_INSTALL=1 才静默（NSIS 带 /S）—— 留给 CI / 无人值守安装，
  *     或向导在本机出问题时回退用（见 installSilentMode()）。
- *   · 退出应用时的保底安装（autoInstallOnAppQuit=true）仍走静默：那时没有窗口可让用户看向导，
- *     这是有意的两档分工，不是漏配。
+ *   · 唯一允许调 quitAndInstall 的两处都是用户动作：IPC update:install，以及
+ *     update:restartToApply 里「这台机器做不了交换」的那条回落分支（同一次用户点击，
+ *     不是第二个安装入口；见 quitAndInstall 的批准闸）。
  *   · 旁路预装这一段永远是静默的（NSIS 带 /S）：它跑在应用**正在使用**的时候，不给用户看安装界面。
- *     MTNODE_UPDATE_STAGE=0 可整条关掉，回到「下载完 6 秒后就地安装」的老行为。
+ *     MTNODE_UPDATE_STAGE=0 可整条关掉，用户点「安装更新」时直接就地覆盖安装。
  *
  * 说明：Windows 下正在运行的 exe 会锁住安装目录，覆盖安装前需短暂退出进程；
  * 走向导时用户看到的是标准 NSIS 安装界面，装完自动重新打开新版本。
@@ -30,12 +60,12 @@
  * 例外：Microsoft Store（MSIX）版禁用应用内自更新 —— 包安装目录（Program Files\WindowsApps\）
  * 只读，electron-updater 下载 NSIS 包再静默安装必然失败；且商店政策禁止应用自行分发可执行更新。
  * 该情形由 isStorePackage() 把整条链挡在门外：不加载 electron-updater、不设更新源、不起自更新定时检查、
- * 四个 IPC 入口（status / check / download / install / confirmAndStart）一律短路返回 store_package，
- * statusPayload 报 supported:false + store:true；渲染层据 store 隐藏顶栏更新入口并提示走商店更新。
+ * 六个 IPC 入口（status / check / download / install / confirmAndStart / restartToApply）一律短路返回
+ * store_package；statusPayload 报 supported:false + store:true；渲染层据 store 隐藏顶栏更新入口并提示走商店更新。
  *
  * 商店包唯一保留的能力是「只读版本探测」（probeStoreLatestVersion）：
  * 用同一更新源 latest.yml 的版本号与当前版本比较，只告诉用户「商店里可能有新版」，
- * 不下载、不安装、不发 update:available（见 statusPayload 的 latestVersion / storeUpdateAvailable）。
+ * 不下载、不安装、不发 update:available（见 statusPayload 的 latestVersion / latestKnown / storeUpdateAvailable）。
  * 因为商店包要等审核，线上（OSS）版本通常比商店早几天，提示文案必须写明「可能延后最多 3 天」。
  */
 const { app, ipcMain } = require("electron");
@@ -109,15 +139,11 @@ let started = false;
     下载与静默安装链完全复用（见 patchSameVersionGate / update:reinstallSame）。
     只在本条链里短暂置位，常规检查与后台检查一律仍按「版本号更新才可用」判定。 */
 let forceSameVersion = false;
-/* ── 自动更新（全自动：发现即下载、下载完自动安装；安装默认走向导）────────────
-   用户不需要点任何确认框；唯一的交互是进度条上的「稍后」（取消这一次自动安装，
-   autoInstallOnAppQuit 仍会在退出应用时把已下载的包装上，那一档保持静默）。 */
-const AUTO_INSTALL_DELAY_MS = 6000;
-/** 已排定的自动安装定时器（null = 没排） */
-let autoInstallTimer = null;
-/** 用户点过「稍后」：这一次不要自动装 */
-let autoInstallCancelled = false;
-/** 已下载、正在等自动安装（statusPayload 与进度条都读它） */
+/* ── 安装相位（只有用户点了才可能为 true）────────────────────────────────────
+   这里曾经有三样自动链的零件：AUTO_INSTALL_DELAY_MS（6 秒倒计时）、autoInstallTimer
+   （排定自动安装）、autoInstallCancelled（「稍后」把自动安装挡一次）。
+   现在下载完就停住、安装只由用户点击触发，三样全部移除 —— 别再对着这个文件找它们。 */
+/** 用户刚点了安装、向导 / 就地安装正在起（statusPayload 与进度条都读它） */
 let installing = false;
 
 /* ── 旁路预装（staging）的运行态 ──────────────────────────────────────────────
@@ -169,6 +195,14 @@ let storeProbing = false;
 let storeProbeError = "";
 /** 探测实现可被冒烟测试替换（生产永远是 fetchText），避免测试真的联网 */
 let storeProbeFetch = null;
+
+/* ── 非商店包的「只读探测」运行态 ────────────────────────────────────────────
+   后台只做版本号比对：拉一次更新源的 latest.yml（几行文本），结果**只用来点亮右上角按钮**。
+   它取代了原来的「后台 checkForUpdates」—— 那条链查完会接着自动下载，正是用户禁止的那件事。
+   这里绝不调 electron-updater、绝不下载、绝不安装。 */
+let feedLatest = ""; /* 更新源上的最新版本号（探测成功过才有值） */
+let feedProbing = false;
+let feedProbeError = "";
 
 function send(channel, data) {
   try {
@@ -343,6 +377,52 @@ async function probeStoreLatestVersion() {
 }
 
 /**
+ * 非商店包：**只读探测**更新源上的最新版本号（后台定时器与「点亮按钮」都只靠它）。
+ *
+ * 这是本轮改造的核心一件事：原来的 startBackgroundCheck 直接调 checkForUpdates ——
+ * 那条链查到新版本会接着自动下载、自动预装、自动安装、自动重启。现在后台只做这一份
+ * 「拉 latest.yml 比版本号」，结果进 feedLatest 供 statusPayload 点亮右上角按钮；
+ * **不**调 autoUpdater.checkForUpdates、**不**下载、**不**安装、**不**改任何运行态相位。
+ * 用户点了按钮之后（update:confirmAndStart）才走真正的检查 + 下载。
+ *
+ * 失败静默（只记 feedProbeError），由 6 小时后台定时器下一轮再试；
+ * 与商店包探测同一套源口径（https 失败且允许回退时切 http 再探一次）。
+ * 探测用的 HTTP 实现复用 storeProbeFetch 这个测试替换口（生产永远是 fetchText）。
+ */
+async function probeFeedLatestVersion() {
+  if (isStorePackage()) return storeLatest;
+  if (feedProbing) return feedLatest;
+  feedProbing = true;
+  try {
+    const base = String(currentFeedUrl() || "").replace(/\/+$/, "");
+    let txt = "";
+    try {
+      txt = await (storeProbeFetch || fetchText)(base + "/latest.yml");
+    } catch (e) {
+      if (!canFallbackToHttp() || feedFallbackActive) throw e;
+      feedFallbackActive = true;
+      const fallbackBase = String(currentFeedUrl() || "").replace(/\/+$/, "");
+      txt = await (storeProbeFetch || fetchText)(fallbackBase + "/latest.yml");
+    }
+    const v = parseLatestYmlVersion(txt);
+    if (v) {
+      const changed = v !== feedLatest;
+      feedLatest = v;
+      feedProbeError = "";
+      /* 版本号变了才补发一次状态：渲染层据此点亮 / 更新按钮上的版本号 */
+      if (changed) send("update:status", statusPayload());
+    } else {
+      feedProbeError = "no_version_in_feed";
+    }
+  } catch (e) {
+    feedProbeError = String((e && e.message) || e);
+  } finally {
+    feedProbing = false;
+  }
+  return feedLatest;
+}
+
+/**
  * 打开 Microsoft Store 里的 MTNode 页面（商店包专用；协议白名单留在主进程，
  * 渲染层只发一个无参命令，不能借它打开任意 URL）。
  * 深链失败（商店被禁用 / 精简系统）退回商店首页，两者都失败才回 ok:false。
@@ -374,30 +454,54 @@ async function openStorePage() {
   return { ok: false, error: lastError || "store open failed" };
 }
 
+/**
+ * 更新状态快照（update:status 的回执，渲染层的唯一状态来源）。
+ *
+ * 字段语义（逐一对应渲染层的判断，别按「另一个字段大概也是这个意思」去读）：
+ *   · available         有新版、可点按钮。来源可以只是只读探测，此时一个字节都还没下载
+ *   · latestKnown       只读探测（拉 latest.yml 比版本号）得到的线上版本，**不触发**检查 / 下载；
+ *                       仅用于点亮按钮与显示「线上 vX」。空串 = 还没探到 / 探测失败
+ *   · latestVersion     已知的线上最新版本：完整检查（latestInfo）的版本优先，没有时退回 latestKnown；
+ *                       商店包给商店探测值
+ *   · downloading       正在下载
+ *   · downloaded        包已落地，等用户点 update:install
+ *   · staging / staged  旁路预装正在跑 / 已铺好，等 update:restartToApply 交换
+ *   · installing        **只**表示「用户刚点了安装、向导（或就地安装）正在起」，
+ *                       不表示「已排队等自动安装」——没有排队，也没有倒计时
+ *   · readyToRestart    已下载、可以点安装 / 重启（= downloaded && latestInfo）
+ *   · installWizard     这次安装走可见向导（默认）；false = 静默（MTNODE_UPDATE_SILENT_INSTALL=1）
+ */
 function statusPayload() {
   const store = isStorePackage();
   const cur = app.getVersion();
   const storeNewer = store && isNewerVersion(storeLatest, cur);
+  /* 只读探测得到的线上版本（非商店包）：只在「这一次还没拿到完整 updateInfo」时用来点亮按钮 */
+  const probeNewer = !store && !!feedLatest && isNewerVersion(feedLatest, cur);
+  const knownVersion = (latestInfo && latestInfo.version) || (probeNewer ? feedLatest : "");
   return {
     ok: true,
     /* MSIX / 商店包：内部更新在设计上不启用，渲染层据此隐藏入口并提示走商店 */
     store,
     reason: store ? "store_package" : "",
     supported: !store && canCheckUpdates() && !!autoUpdater,
-    available: !!(latestInfo && latestInfo.version),
-    version: (latestInfo && latestInfo.version) || "",
-    /* 商店包：只读探测到的线上最新版本（含「比本机新」的判定）；非商店包留空 */
-    latestVersion: store ? storeLatest : (latestInfo && latestInfo.version) || "",
+    /* available = 「有新版，用户可以点按钮」：来源可能只是只读探测（还没下载任何东西） */
+    available: !store && !!knownVersion,
+    version: store ? "" : knownVersion,
+    /* 只读探测 / 完整检查得到的线上最新版本（含「比本机新」的判定）；商店包给商店探测值 */
+    latestVersion: store ? storeLatest : knownVersion,
+    /* 只有「只读探测」这一个来源的线上版本（不下载、不检查）：按钮点亮与「线上 vX」都只读它；
+       完整检查走完之后 latestVersion 可能更新，latestKnown 仍然是探测值本身 */
+    latestKnown: store ? storeLatest : feedLatest || "",
     storeUpdateAvailable: storeNewer,
     releaseDate: (latestInfo && latestInfo.releaseDate) || "",
     releaseNotes: (latestInfo && latestInfo.releaseNotes) || "",
     downloading,
     downloaded,
-    /** 已下载、正在等自动安装（渲染层进度条切「正在安装」） */
+    /** true = 用户刚点了安装、向导 / 就地安装正在起（**不再表示「等自动安装」**：没有这样的排队） */
     installing,
     /** 旁路预装：true = 正在把新版本装到旁路目录（应用可继续用，不再 6 秒自动退出） */
     staging,
-    /** 旁路已预装好，等「立即重启」（update:restartToApply）或退出应用时交换 */
+    /** 旁路已预装好，等用户点「立即重启」（update:restartToApply）才交换；退出应用不会换 */
     staged,
     /** 旁路里装的版本（空 = 没预装过） */
     stageVersion: (stageInfo && stageInfo.version) || "",
@@ -422,9 +526,9 @@ function statusPayload() {
  * electron-updater 的 isUpdateAvailable() 里有一句 `if (semver.eq(latest, current)) return false;`
  * —— 线上版本号与当前版本相同时（极小更新 / 测试包）连「有更新」都判不出来，
  * allowDowngrade 也只放行「线上更旧」，管不了「完全相同」。
- * 这里只包一层：forceSameVersion 置位期间直接判为可用，让 check → download → quitAndInstall
- * 这条既有链原样跑完（安装过程与正常更新完全一致：差分下载 + NSIS 安装 + 装完自动重开）。
- * 未置位时原样调用原实现，常规检查 / 后台检查的行为一字不变。
+ * 这里只包一层：forceSameVersion 置位期间直接判为可用，让「检查 → 下载」这条链原样跑完
+ * （装仍由用户点 update:install 触发，与正常更新完全一致：差分下载 + NSIS 安装）。
+ * 未置位时原样调用原实现；后台那条只读探测根本不走 electron-updater，不受影响。
  */
 function patchSameVersionGate() {
   if (!autoUpdater || typeof autoUpdater.isUpdateAvailable !== "function") return;
@@ -598,104 +702,52 @@ function installSegmentedFullDownload() {
 }
 
 /**
- * 自动开始下载：检查到新版本后立刻调（不需要用户点「开始下载」）。
- * 幂等：已在下载 / 已下载 / 商店包 / 没有 updateInfo 时直接返回。
- */
-function autoStartDownload() {
-  if (isStorePackage() || !autoUpdater || !latestInfo) return;
-  if (downloading || downloaded) return;
-  downloadUpdate().catch(() => {});
-}
-
-/**
- * 退出时保底动作的两档（与既有 autoInstallOnAppQuit 对齐，任务书 ③）：
- *   · 预装路径在生效（正在预装 / 已预装）→ `autoInstallOnAppQuit = false`：退出时由交换器
- *     把旁路目录换上去（见 swapOnQuit），**不再让 electron-updater 静默跑一遍 NSIS** ——
- *     两个安装同时动同一个安装目录必然是竞态（一个在 rename，一个在覆盖）。
- *   · 其余（回落路径 / 预装失败 / 用户点了「稍后」想退出时装）→ true，行为与改动前一致。
- * electron-updater 的 quit 钩子在**退出的那一刻**才读这个值（BaseUpdater.addQuitHandler 里
- * `if (!this.autoInstallOnAppQuit) return`），所以装卸时机只要求「本进程退出前写进去」，
- * 不必赶在下载完成之前。
- * 每次 staging / staged 变化后调一次，保持这个开关与真实运行态一致。
+ * 退出应用时的安装策略：**恒为「退出不装」**。
+ * 这里曾有两档（预装路径关掉、其余打开 autoInstallOnAppQuit=true），现在只剩一档：恒 false。
+ * 为什么要专门留一个函数而不是写一行：electron-updater 的 quit 钩子在**退出的那一刻**才读这个值
+ * （BaseUpdater.addQuitHandler 里 `if (!this.autoInstallOnAppQuit) return`），
+ * 而 electron-updater 内部还有几处会把它写回 true —— 于是每次运行态变化（下载完 / 预装 /
+ * 丢弃预装 / 启动收尾 / 测试复位）都来这里重新写一遍，保证「退出应用绝不安装」
+ * 这条硬口径不会被任何一条路径悄悄改回来。
+ * 已预装那一档的「退出瞬间交换」不走这里，走退出钩子 swapOnQuit（另一件事，另一道闸：
+ * 必须有用户批准的 swapApproved，退出应用本身不算批准）。
  */
 function syncQuitInstallPolicy() {
   if (!autoUpdater) return false;
-  const want = !(staging || staged);
   try {
-    autoUpdater.autoInstallOnAppQuit = want;
+    autoUpdater.autoInstallOnAppQuit = false;
   } catch (_) {}
-  return want;
+  return false;
 }
 
 /**
- * 排定自动安装：下载完成后调用（幂等，重复调用不会重置已排定的倒计时）。
- * 先把「正在安装」发给渲染层（进度条切成安装相位），AUTO_INSTALL_DELAY_MS 后
- * 安装（默认可见向导，MTNODE_UPDATE_SILENT_INSTALL=1 才静默）+ 自动拉起新版本；
- * 安装失败则回到 error 状态，不影响继续使用。
- */
-function scheduleAutoInstall(ver) {
-  /* 旁路预装这条路径下绝不自动退出：正在装 / 已装好都等用户点「立即重启」或直接退出应用，
-     6 秒倒计时只属于回落路径（quitAndInstall 就地覆盖安装）*/
-  if (staging || staged) return;
-  if (autoInstallCancelled || !downloaded || !autoUpdater) return;
-  installing = true;
-  send("update:installing", {
-    version: ver || (latestInfo && latestInfo.version) || "",
-    delayMs: AUTO_INSTALL_DELAY_MS,
-    /* 渲染层选文案：true = 弹出安装向导（默认），false = 静默安装 */
-    installWizard: installWizardMode(),
-  });
-  send("update:status", statusPayload());
-  if (autoInstallTimer) return; /* 已排定：不重置倒计时 */
-  autoInstallTimer = setTimeout(() => {
-    autoInstallTimer = null;
-    if (autoInstallCancelled) return;
-    const r = quitAndInstall();
-    if (!r.ok) {
-      installing = false;
-      lastError = r.error || lastError;
-      send("update:error", { error: lastError });
-      send("update:status", statusPayload());
-    }
-  }, AUTO_INSTALL_DELAY_MS);
-}
-
-/**
- * 取消这一次自动安装（进度条「稍后」）：已下载的包留着，退出应用时仍会装上。
- * 语义在旁路预装那条路径上扩了一档（见 docs 与 stageUpdate）：
- *   · 已预装好（staged）：**这次不重启**，退出应用时照样交换 —— 不在「稍后」里丢掉已经铺好的旁路目录；
- *   · 正在预装（staging）：不打断（打断会留下半成品旁路 + 被改到一半的注册表），等它装完再让用户决定；
- *   · 回落路径（就地安装）：与改动前一致 —— 这一次不装，退出应用时装上。
+ * 「暂不安装」（进度条上的 ✕，IPC update:cancelAutoInstall）：用户此刻不想装。
+ * 语义（与旧版「稍后，退出应用时装」**不同**）：
+ *   · 什么都不取消、什么都不排定 —— 已下载的包留在缓存里，已铺好的旁路目录留着，
+ *     下次点「安装更新 / 重启并更新」继续用它们；
+ *   · 退出应用**不会**安装任何东西（autoInstallOnAppQuit 恒 false，也没有交换之外的路径）；
+ *   · 不打断正在跑的预装（打断会留下半成品旁路 + 被改到一半的注册表）。
+ * 文案键：旧版 restart_later / staging_later（都带着「退出时自动完成」的承诺）改成
+ * deferred / deferred_staging / deferred_staged —— 渲染层按 staged / staging 两个布尔选姿势，
+ * message 只作语义标注。
  */
 function cancelAutoInstall() {
-  autoInstallCancelled = true;
   installing = false;
-  if (autoInstallTimer) {
-    clearTimeout(autoInstallTimer);
-    autoInstallTimer = null;
-  }
-  const ver = (latestInfo && latestInfo.version) || "";
-  if (staged) {
-    /* 旁路已就绪：退出应用时由交换器换上去（update:restartToApply 是「现在就换」） */
+  const ver =
+    (latestInfo && latestInfo.version) || (stageInfo && stageInfo.version) || "";
+  if (staged || staging || downloaded) {
     send("update:readyToRestart", {
       version: ver,
-      message: "restart_later",
-      staged: true,
+      message: staged ? "deferred_staged" : staging ? "deferred_staging" : "deferred",
+      staged: !!staged,
+      staging: !!staging,
+      deferred: true,
     });
-  } else if (staging) {
-    send("update:readyToRestart", {
-      version: ver,
-      message: "staging_later",
-      staging: true,
-    });
-  } else if (downloaded) {
-    /* 包已下好：告诉渲染层「已就绪但这次不装」，顶栏按钮仍可点了立即装 */
-    send("update:readyToRestart", { version: ver, message: "restart_later" });
   }
   send("update:status", statusPayload());
   return {
     ok: true,
-    later: true,
+    deferred: true,
     downloading,
     downloaded,
     version: ver,
@@ -1495,7 +1547,10 @@ function stageStatusPayload() {
 
 /**
  * 预装一次（幂等：正在装 / 已装好都直接回当前状态）。
- * 返回值形如 { ok, phase, version, stageDir, elapsedMs, … }，失败时 fallback:"quitAndInstall"。
+ * **只由用户动作发起**：IPC update:install 调 stageUpdate({ reason: "user" }) ——
+ * 这条链上没有任何自动触发的入口（旧版的 reason:"auto" 与 autoInstallOrStage 已删除）。
+ * 返回值形如 { ok, phase, version, stageDir, elapsedMs, … }，失败时 fallback:"quitAndInstall"
+ * （= 这一轮只能就地覆盖安装，由调用方在用户点的那一次里回落）。
  */
 async function stageUpdate(opts) {
   const o = opts || {};
@@ -1519,7 +1574,7 @@ async function stageUpdate(opts) {
 
 /**
  * 真正跑预装：快照 → 摘 UninstallString → 装到旁路 → 回写 → 记 pending-swap.json。
- * 失败 / 超时都不动主应用，只回落旧路径（scheduleAutoInstall → quitAndInstall）。
+ * 失败 / 超时都不动主应用、也不排定任何安装：把失败如实回报给调用它的那次用户点击。
  */
 async function runStage(pre, reason) {
   const startedAt = Date.now();
@@ -1529,14 +1584,9 @@ async function runStage(pre, reason) {
   stageError = "";
   stageFallback = null;
   installing = false;
-  /* 预装一开始就把「退出时静默跑 NSIS」这一档关掉：这之后退出应用该做的是交换，
-     不是让 electron-updater 也去动同一个安装目录（见 syncQuitInstallPolicy） */
+  /* 预装一开始就把「退出时静默跑 NSIS」这一档按恒 false 写死：这之后退出应用该做的是
+     用户点过的交换（update:restartToApply），不是让 electron-updater 也去动同一个安装目录 */
   syncQuitInstallPolicy();
-  /* 本路径下不再 6 秒自动退出：把可能已排定的倒计时撤掉 */
-  if (autoInstallTimer) {
-    clearTimeout(autoInstallTimer);
-    autoInstallTimer = null;
-  }
   stageInfo = {
     version: ver,
     appVersion: app.getVersion(),
@@ -1545,7 +1595,8 @@ async function runStage(pre, reason) {
     installerPath: pre.installerPath,
     startedAt: new Date(startedAt).toISOString(),
     elapsedMs: 0,
-    reason: reason || "auto",
+    /* 预装只可能由用户点击发起（reason:"user"）；留这个字段是排障用的证据 */
+    reason: reason || "user",
   };
   send("update:staging", {
     version: ver,
@@ -1603,16 +1654,15 @@ async function runStage(pre, reason) {
   if (failure) {
     stageError = failure;
     stageInfo.error = failure;
-    /* 预装失败 = 没有可交换的东西了：退出时的保底动作回到「静默装上已下载的包」那一档 */
+    /* 预装失败 = 没有可交换的东西了：退出时那一档仍恒为「退出不装」（见 syncQuitInstallPolicy） */
     syncQuitInstallPolicy();
     await cleanStageDir(pre.stageDir).catch(() => {});
     /* 没有任何可交换的东西了：清掉待交换信息（快照目录留着当排障证据） */
     await clearPendingSwap();
     send("update:staged", Object.assign({ ok: false, error: failure }, stageStatusPayload()));
     send("update:status", statusPayload());
-    /* 回落旧路径：6 秒后 quitAndInstall（就地覆盖安装，仍是可见向导）。
-       用户在这一轮里点过「稍后」就尊重他（那时走的是「退出应用时装上」那一档） */
-    scheduleAutoInstall(stageInfo.version);
+    /* 这里**不排定任何安装**（不再有 6 秒倒计时）。fallback:"quitAndInstall" 只是告诉调用方
+       「这台机器 / 这一轮只能就地覆盖安装」，由用户点到的那一次 update:install 自己去回落 */
     return {
       ok: false,
       error: failure,
@@ -1641,29 +1691,15 @@ async function dropStagedState(reason) {
   stageError = "";
   await cleanStageDir(dir).catch(() => {});
   await clearPendingSwap();
-  /* 没有可交换的东西了：退出时的保底动作回到改动前那一档（已下载的包退出时装） */
+  /* 没有可交换的东西了：退出时那一档恒为「退出不装」，这里写一遍只是为了让它保持恒 false */
   syncQuitInstallPolicy();
   send("update:status", statusPayload());
   return { dropped: true, reason: reason || "", stageDir: dir };
 }
 
-/**
- * 下载完了以后该走哪条路：能预装就预装（应用继续用、退出时才交换），
- * 前置闸不过就老老实实回落旧路径（6 秒后 quitAndInstall）。
- * 预装失败 / 超时也走回落 —— 由 runStage 自己排定，这里不再插手。
- */
-async function autoInstallOrStage(ver) {
-  if (autoInstallCancelled || !downloaded || !autoUpdater) return;
-  if (staging || staged) return;
-  const pre = await stagePreflight();
-  if (!pre.ok) {
-    stageFallback = pre;
-    send("update:status", statusPayload());
-    return scheduleAutoInstall(ver);
-  }
-  const r = await stageUpdate({ reason: "auto", preflight: pre });
-  return r;
-}
+/* 这里原本是 autoInstallOrStage：下载完的事件处理里「能预装就预装、否则 6 秒后就地安装」那一档。
+   它整条属于「没人点就装」，已删除 —— 预装与就地安装现在都只能由用户点击的 update:install 发起
+   （见 registerUpdateIpc）。downloadUpdate 的完成只剩「置 downloaded / 发 update:downloaded」。 */
 
 /**
  * 交换器注册口：交换本身（退出瞬间两次目录 rename）在 update-swap.js 里 ——
@@ -1707,6 +1743,22 @@ async function swapRequestInfo(version, pending) {
 let swapLaunchInFlight = null;
 /** 已经成功拉起 helper 的结论：一个进程里绝不起第二个 helper（两个会同时去 rename 同一个目录） */
 let swapLaunchedResult = null;
+/**
+ * 「换上新版本」这件事在本进程里**被用户点过**了没有 —— 交换的批准闸（进程内，不落盘）。
+ * 只有用户点「重启并更新」的那条路（update:restartToApply，含 update:install 的交换分支）会置 true；
+ * **退出应用本身从不置位**。所以退出钩子 swapOnQuit 没有这份批准就一个进程都不起 ——
+ * 此前它只要「有 pending-swap.json + 旁路目录在」就在退出瞬间 rename 换上新版本，
+ * 是整条自动更新里最隐形的一处（用户只是关个窗、托盘点个退出，版本就被换了）。
+ */
+let swapApproved = false;
+/** 批准来源（restartToApply / …）：只用于留痕与回执，判据只看 swapApproved */
+let swapApprovedVia = "";
+
+/** 记下「这次交换是用户批准的」（在拉起交换器之前调用；调用点只有用户点击路径） */
+function approveSwap(via) {
+  swapApproved = true;
+  swapApprovedVia = String(via || "user");
+}
 
 /**
  * 拉起交换器（**幂等**，「立即重启」与退出钩子都走这一处）。
@@ -1750,6 +1802,9 @@ async function restartToApply() {
   if (!staged) return { ok: false, error: "not_staged" };
   const ver = (stageInfo && stageInfo.version) || (latestInfo && latestInfo.version) || "";
   const pending = (await readPendingSwap()) || pendingSwapOf("staged", stageInfo);
+  /* 这里就是**用户点过「重启并更新」**那一下：批准交换。只有这条路径（以及它回落的
+     quitAndInstall({approved:true})）会置位，退出应用永远不会 —— 见 swapOnQuit 的批准闸。 */
+  approveSwap("restartToApply");
   await writePendingSwap(
     Object.assign({}, pending, {
       phase: "swap-requested",
@@ -1765,7 +1820,8 @@ async function restartToApply() {
        recoverStageState 捡成「已预装」，把一个已经装好的版本再交换一次（还会覆盖掉刚装的）。 */
     const reason = r.reason || "unsupported";
     await dropStagedState("swap_unsupported:" + reason);
-    const q = quitAndInstall();
+    /* 这一次就地安装是**用户点的**「立即重启」批准的：批准闸显式传进去（见 quitAndInstall） */
+    const q = quitAndInstall({ approved: true });
     return Object.assign(
       { unsupported: true, reason, fallback: "quitAndInstall", version: ver },
       q || {},
@@ -1773,7 +1829,8 @@ async function restartToApply() {
   }
   if (!r || !r.ok) {
     /* helper 没起来（执行策略 / cmd 起不来）：**不退出应用**，把原因如实交回去，
-       用户可以重试「立即重启」，也可以直接退出应用（那时由退出钩子那一档处理） */
+       用户可以重试「立即重启」。直接退出应用**不会**补救 —— 退出钩子有批准闸，
+       这一份预装会原样留到下次启动（recoverStageState 恢复成「已预装，重启生效」） */
     return {
       ok: false,
       error: (r && r.error) || "swap_failed",
@@ -1790,17 +1847,26 @@ async function restartToApply() {
 }
 
 /**
- * **退出钩子**（main.js 的 before-quit 里唯一那一处）调用的入口：把这次退出变成「退出瞬间交换」。
+ * **退出钩子**（main.js 的 before-quit 里唯一那一处）调用的入口：只在用户批准过交换时，
+ * 才把这次退出变成「退出瞬间交换」。
  *
- * 判据全在磁盘上（不依赖启动自检有没有跑完）：**有 pending-swap.json、相位是 staged /
- * swap-requested、旁路目录里真有 exe** 才拉交换器；其余情况一个进程都不起。
+ * 第一道闸是**批准闸**（swapApproved，进程内）：退出应用不是用户的安装批准 ——
+ * 没点过「重启并更新」就一个进程都不起，回 { ok:false, skipped:true, reason:"not_approved" }。
+ * 托盘「退出 MTNode」/ 关窗退出 / window-all-closed / 更新完先不重启直接退出，全都在这里被拦下。
+ * 被拦下时 pending-swap.json 与旁路目录**原样保留**：下次启动由 recoverStageState 收拾 ——
+ * 要么用户点「重启并更新」再换（restartToApply 先置批准、再拉起交换器），
+ * 要么版本变化时 dropStagedState 把这份预装作废。
+ *
+ * 批准之后剩下的判据全在磁盘上（不依赖启动自检有没有跑完）：**有 pending-swap.json、相位是
+ * staged / swap-requested、旁路目录里真有 exe** 才拉交换器；其余情况一个进程都不起。
  * 返回：
  *   · { ok:true, launched:true, … }        helper 已经起来 → 本进程可以退出，剩下的它做
- *   · { ok:false, skipped:true, reason }   没有可交换的东西（没预装 / 正在预装 / 旁路没了）
+ *   · { ok:false, skipped:true, reason }   没批准 / 没有可交换的东西（正在预装 / 旁路没了）
  *   · { ok:false, unsupported:true, … }    这台机器做不了交换：**不在退出途中跑 NSIS**
  *       （那时起安装向导只会两头打架），也不动机器状态 —— 下次启动仍是「已预装，重启生效」，
  *       用户点「立即重启」时走 restartToApply 的回落分支（就地面安装，可见向导）
- *   · { ok:false, error }                  交换器没起来：退出照旧，下次启动自检会重试
+ *   · { ok:false, error }                  交换器没起来：退出照旧；下次启动仍是「已预装，
+ *       重启生效」（recoverStageState 恢复），等用户点「立即重启」重试 —— 退出不会自己重试
  *
  * opts.skip 由调用方给一个理由（例如「这一轮是 app.relaunch」）：给了就一个进程都不起 ——
  * relaunch 会在本进程退出前就把新实例拉起来，和交换要 rename 的是同一个安装目录。
@@ -1808,6 +1874,16 @@ async function restartToApply() {
 async function swapOnQuit(opts) {
   const o = opts || {};
   if (o.skip) return { ok: false, skipped: true, reason: String(o.skip) };
+  /* 批准闸（最硬的一条）：没被用户点过，退出就只是退出 —— 不 rename、不起 helper、不碰机器状态。
+     relaunch 那一档（上面）本来也不起进程，两档判据互不替代。 */
+  if (!swapApproved) {
+    return {
+      ok: false,
+      skipped: true,
+      reason: "not_approved",
+      approved: false,
+    };
+  }
   if (isStorePackage()) return { ok: false, skipped: true, reason: "store_package" };
   /* 非打包态（开发目录直接跑）绝不动目录：预装本身要求打包态，这里再兜一层 ——
      否则一份旧的 pending-swap.json 会让开发态的退出去 rename 正在跑的那个目录 */
@@ -1843,7 +1919,13 @@ async function swapOnQuit(opts) {
     );
   }
   const r = await launchSwapOnce(ver, j);
-  if (r && r.ok) return Object.assign({ reason: "swapping_on_quit", version: ver }, r);
+  if (r && r.ok) {
+    /* approvedVia 让日志 / 回执说得清「这次退出为什么允许换」：一定是用户点过的那条路 */
+    return Object.assign(
+      { reason: "swapping_on_quit", version: ver, approvedVia: swapApprovedVia || "user" },
+      r,
+    );
+  }
   if (r && r.unsupported) {
     return {
       ok: false,
@@ -1877,8 +1959,9 @@ async function installerStillRunning(installerPath) {
  *  · phase = staged / swap-requested，**旁路目录还在**：先按版本比对 ——
  *      旁路那一版 == 现在跑的版本 → 上次退出其实已经换成功了，旁路只是一份没删掉的副本，
  *      清标记 + 删旁路（视为成功）；
- *      旁路那一版 != 现在跑的版本 → 上次交换没成，保留「已预装」，**下次退出时重试交换**
- *      （退出钩子 swapOnQuit），相位写回 staged 并把上次交换器的结论记进 pending-swap.json。
+ *      旁路那一版 != 现在跑的版本 → 上次交换没成，保留「已预装」，**等用户点「重启并更新」再换**
+ *      （退出应用不再自动换，见 swapOnQuit 的批准闸），相位写回 staged 并把上次交换器的结论记进
+ *      pending-swap.json；用户一直不点、版本又变了，由 dropStagedState 把这份预装作废。
  *  · phase = staged / swap-requested，**旁路目录没了**：交换过了或被手动删了 → 清标记，
  *    并按版本是否已是新版回报 versionMatched（视为成功）—— 不留骗人的状态。
  *  · phase = staging：上一次预装中途被打断（用户关掉应用 / 崩溃），注册表可能停在
@@ -1910,10 +1993,10 @@ async function recoverStageState() {
           version: curVersion,
         };
       }
-      /* ② 旁路还在、跑的还是旧版本 = 上次交换没成（崩溃 / 被杀 / 交换器没起来）→ 保留「已预装」，
-         重试放在**下次退出**（退出钩子那一档）。相位写回 staged：swap-requested 是「上次那个
-         请求」的标记，重试要重新起算；顺手把上次交换器的结论记进来当证据，
-         下次启动 / 界面解释「为什么还在等重启」时说得清。 */
+      /* ② 旁路还在、跑的还是旧版本 = 上次交换没成（崩溃 / 被杀 / 交换器没起来 / 用户根本没点）
+         → 保留「已预装」，重试只能由用户点「重启并更新」发起（退出应用有批准闸，不算重试）。
+         相位写回 staged：swap-requested 是「上次那个请求」的标记，重试要重新起算；
+         顺手把上次交换器的结论记进来当证据，下次启动 / 界面解释「为什么还在等重启」时说得清。 */
       staged = true;
       stageError = "";
       stageInfo = {
@@ -1942,7 +2025,9 @@ async function recoverStageState() {
         );
       }
       send("update:status", statusPayload());
-      return { phase: j.phase, restored: true, retryOnQuit: true };
+      /* retryOnUserApproval：重试只能由用户点「重启并更新」发起（退出应用有批准闸，不算重试；
+         字段名沿用旧值会骗人，这里改口径） */
+      return { phase: j.phase, restored: true, retryOnUserApproval: true };
     }
     /* ③ 旁路没了：交换过了（版本已是新版）或被手动删了 —— 两种都当作没预装，
        标记清掉，别留一个骗人的状态。版本一致时把「视为成功」如实回报。 */
@@ -1987,10 +2072,13 @@ function setupAutoUpdater() {
     return;
   }
   autoUpdater.autoDownload = false;
-  /* 退出应用时的保底安装：已下载的包直接静默装上（这一档有意保持静默 —— 主窗已关，
-     没有界面让用户看向导；交互中的安装默认走向导，见 installSilentMode()）。
-     预装路径在生效时这一档要关掉，改由退出钩子交换 —— 见 syncQuitInstallPolicy()。 */
-  autoUpdater.autoInstallOnAppQuit = true;
+  /* 退出应用时的安装：**恒 false**。用户没点头，退出应用就不许装、不许换、不许重启 ——
+     这一档曾为 true（退出时静默装上已下载的包），是「自动更新」里最隐形的一条，已删除。
+     唯一允许的例外是用户点过的「重启并更新」触发的旁路交换（update:restartToApply →
+     交换器），那件事由退出钩子 swapOnQuit 单独负责、并自带一道进程内批准闸（swapApproved），
+     退出应用本身不算批准 —— 与本开关无关。
+     写两遍（这里 + syncQuitInstallPolicy）是有意的：electron-updater 内部还会把它改回 true。 */
+  autoUpdater.autoInstallOnAppQuit = false;
   syncQuitInstallPolicy();
   /* 非静默安装时 electron-updater 用的是 autoRunAppAfterInstall（BaseUpdater.quitAndInstall →
      install(isSilent=false 时取 autoRunAppAfterInstall)），不设就可能拿不到 --force-run。
@@ -2013,8 +2101,6 @@ function setupAutoUpdater() {
   autoUpdater.on("update-available", (info) => {
     latestInfo = info || null;
     downloaded = false;
-    /* 新一轮更新：用户上一轮点过的「稍后」不应挡住这一次 */
-    autoInstallCancelled = false;
     installing = false;
     lastError = "";
     /* 上一份预装好的旁路如果是别的版本，就作废：否则 stageUpdate 会因「已预装」直接早返回，
@@ -2035,10 +2121,8 @@ function setupAutoUpdater() {
       releaseNotes: info && info.releaseNotes,
     });
     send("update:status", statusPayload());
-    /* 全自动：发现新版本就开始下载（进度经 update:progress 推给进度条）。
-       延后一拍再起下载：update-available 是在 checkForUpdates 的 await 返回前发出的，
-       等它彻底结束再 downloadUpdate，避免两条链同时拉 latest.yml。 */
-    setTimeout(autoStartDownload, 300);
+    /* 这里**不下载**（旧版是 setTimeout(autoStartDownload, 300)）。发现新版本只是一个事实，
+       下载要等用户点按钮（update:confirmAndStart / update:download）。 */
   });
   autoUpdater.on("update-not-available", () => {
     latestInfo = null;
@@ -2058,27 +2142,20 @@ function setupAutoUpdater() {
   autoUpdater.on("update-downloaded", (info) => {
     downloading = false;
     downloaded = true;
+    installing = false;
     if (info) latestInfo = info;
     lastError = "";
     const ver =
       (info && info.version) || (latestInfo && latestInfo.version) || "";
     send("update:downloaded", { version: ver });
     send("update:status", statusPayload());
-    /* 全自动：下载完先试着预装到旁路（应用继续用、退出时才交换）；
-       前置闸不过 / 预装失败都回落旧路径 —— 6 秒后 quitAndInstall（见 autoInstallOrStage） */
-    autoInstallOrStage(ver).catch((e) => {
-      lastError = String((e && e.message) || e);
-      send("update:error", { error: lastError });
-      send("update:status", statusPayload());
-    });
+    /* 到这儿**就停住**：不预装、不排定安装、不倒计时、不退出应用（旧版在这里调
+       autoInstallOrStage → 预装 / 6 秒后就地安装）。
+       接下来做什么，等用户点「重启并更新」：update:install（预装 → 交换 / 就地安装）。 */
   });
   autoUpdater.on("error", (err) => {
     downloading = false;
     installing = false;
-    if (autoInstallTimer) {
-      clearTimeout(autoInstallTimer);
-      autoInstallTimer = null;
-    }
     lastError = String((err && err.message) || err || "update error");
     send("update:error", { error: lastError });
     send("update:status", statusPayload());
@@ -2144,8 +2221,9 @@ async function checkForUpdates(quiet, opts) {
 
 /**
  * 手动「同版本号重装」：不比对版本号，直接用当前更新源里那份包重装一遍。
- * 与正常更新的唯一差别就是跳过版本比较；下载（差分包）→ 安装（默认可见向导）→ 装完自动重开
+ * 与正常更新的唯一差别就是跳过版本比较；下载（差分包）→ 用户点安装 → 安装（默认可见向导）
  * 全部走 downloadUpdate / quitAndInstall 同一份实现。
+ * 这里**只下载**：装不装由用户在界面上再点一次（与正常更新同一口径，不排定任何自动安装）。
  */
 async function reinstallSameVersion() {
   if (isStorePackage()) return storeBlocked();
@@ -2156,11 +2234,9 @@ async function reinstallSameVersion() {
   }
   if (downloading) return { ok: true, downloading: true, version: app.getVersion() };
   if (downloaded && latestInfo) {
-    /* 已经下好一份包且知道是哪个版本：直接排定自动安装，不再重复下载 */
+    /* 已经下好一份包且知道是哪个版本：不再重复下载，也不装 —— 等用户点「安装更新」 */
     const ver = latestInfo.version || app.getVersion();
-    autoInstallCancelled = false;
-    scheduleAutoInstall(ver);
-    return { ok: true, downloaded: true, readyToRestart: true, installing: true, version: ver };
+    return { ok: true, downloaded: true, readyToRestart: true, installing: false, version: ver };
   }
   /* 走一趟「放行同版本」的检查：拿到更新源上的版本号与 updateInfo 才能下载 */
   const cur = app.getVersion();
@@ -2177,17 +2253,14 @@ async function reinstallSameVersion() {
     };
   }
   const ver = latestInfo.version || cur;
-  /* 全自动：下载完由 update-downloaded 事件排定安装（进度条显示「正在安装」，默认可见向导） */
-  autoInstallCancelled = false;
   const dl = await downloadUpdate();
   if (!dl.ok) return dl;
-  if (downloaded) scheduleAutoInstall(ver); /* 同步完成时事件可能已过，这里幂等兜底 */
   return {
     ok: true,
     downloading: !downloaded,
     downloaded: !!downloaded,
     readyToRestart: !!downloaded,
-    installing: !!installing,
+    installing: false,
     version: ver,
     currentVersion: cur,
   };
@@ -2217,7 +2290,17 @@ async function downloadUpdate() {
   }
 }
 
-function quitAndInstall() {
+/**
+ * 就地覆盖安装（可见向导）。**只允许用户动作触发** —— 闸门是参数 approved:true：
+ *   · IPC update:install（唯一的安装入口：用户点「安装更新」，预装不成时落到这里）
+ *   · update:restartToApply 的 unsupported 回落分支（用户点了「立即重启」，这台机器只能就地装；
+ *     同一次用户点击的批准，不是第二个安装入口）
+ * 不挂定时器、不挂事件、不接受编程式调用：传不进 approved:true 一律回 not_approved，
+ * 一个安装器进程都不起。任何「没人点就走到这里」的路径都是 bug。
+ * 回执固定两种：{ ok:true } = 安装器已经起来 / { ok:false, error } = 没起来，如实回。
+ */
+function quitAndInstall(opts) {
+  if (!opts || opts.approved !== true) return { ok: false, error: "not_approved" };
   /* Store（MSIX）版：绝不执行应用内安装（包目录只读，且违反商店政策） */
   if (isStorePackage()) return storeBlocked();
   setupAutoUpdater();
@@ -2228,28 +2311,38 @@ function quitAndInstall() {
   if (!autoUpdater || !downloaded) {
     return { ok: false, error: "update not downloaded" };
   }
-  if (autoInstallTimer) {
-    clearTimeout(autoInstallTimer);
-    autoInstallTimer = null;
-  }
   try {
     bindInstallDirectory();
     /* 安装阶段默认可见向导（isSilent=false → NSIS 不带 /S，用户看得见安装界面）；
        MTNODE_UPDATE_SILENT_INSTALL=1 才静默（CI / 无人值守 / 向导出问题回退）。
        第二参 isForceRunAfter 在非静默时不被采用（走 autoRunAppAfterInstall，见 setupAutoUpdater）。 */
+    installing = true;
+    send("update:status", statusPayload());
     const silent = installSilentMode();
     autoUpdater.quitAndInstall(silent, true);
     return { ok: true };
   } catch (e) {
+    installing = false;
     lastError = String((e && e.message) || e);
     return { ok: false, error: lastError };
   }
 }
 
-/* 重启提示对话框（promptRestartToFinish）已下线：更新改为全自动 —— 下载完由
-   scheduleAutoInstall 安装（默认可见向导）并自动重开，用户不需要在对话框里做选择；
-   进度条上的「稍后」= update:cancelAutoInstall。 */
+/* 重启提示对话框（promptRestartToFinish）已下线；「下载完自动安装」那套也已下线：
+   下载完就停住，装与不装由用户点 update:install / update:restartToApply 决定；
+   进度条上的 ✕ = update:cancelAutoInstall（暂不安装，也不承诺任何退出时行为）。 */
 
+/**
+ * 更新相关 IPC 的注册处 —— 这里就是渲染层能对更新做的全部动作，契约固定为下面四条：
+ *   · update:status / update:check    只读：回 statusPayload / 发起一次完整检查，不下载不安装
+ *   · update:confirmAndStart          固定「检查 + 下载」：回执里 installing 恒为 false，
+ *                                     绝不返回 installing:true，也绝不安装
+ *   · update:install                  **唯一安装入口**，前置条件是 downloaded；
+ *                                     失败回 { ok:false, error }
+ *   · update:restartToApply           staged 之后的**唯一重启入口**，未 staged 回
+ *                                     { ok:false, error:"not_staged" }；失败一律如实回 { ok:false, error }
+ * 不加「顺手装一下」的参数（比如 approveInstall）：装与不装必须是两次独立点击。
+ */
 function registerUpdateIpc(getWin) {
   mainWinRef = typeof getWin === "function" ? getWin() : getWin;
   ipcMain.handle("update:status", () => {
@@ -2274,14 +2367,39 @@ function registerUpdateIpc(getWin) {
     mainWinRef = typeof getWin === "function" ? getWin() : getWin;
     return downloadUpdate();
   });
+  /* **唯一的安装入口**（用户点「安装更新 / 重启并更新」才走到这里；没有任何定时器 / 事件调它）：
+       · 前置条件：downloaded（没下载完就回 { ok:false, error:"update not downloaded" }，不自己补下载）；
+       · 已预装（staged）→ 这一次点击就是「现在就换」，交交换器（与 update:restartToApply 同一份实现）；
+       · 未预装 → 先试旁路预装（stageUpdate reason:"user"）：铺好旁路目录后应用继续可用，
+         回执是 staged，用户点「重启并更新」时走交换器换上去；
+       · 这台机器做不了预装 / 预装失败 → 就地覆盖安装（quitAndInstall，可见向导），
+         仍是用户这一次点击批准的那一次。
+       任何失败（含抛异常）都如实回 { ok:false, error }，不返回假成功。 */
   ipcMain.handle("update:install", async () => {
     mainWinRef = typeof getWin === "function" ? getWin() : getWin;
     if (isStorePackage()) return storeBlocked();
     if (!downloaded) {
       return { ok: false, error: "update not downloaded" };
     }
-    return quitAndInstall();
+    if (staging) return { ok: false, error: "staging" };
+    try {
+      if (staged) return restartToApply();
+      const stg = await stageUpdate({ reason: "user" });
+      if (stg && stg.ok && stg.phase === "staged") {
+        /* 旁路已铺好：安装本身完成了，换上去要用户点「重启并更新」（update:restartToApply） */
+        return Object.assign({ installed: false, staged: true }, stg);
+      }
+      /* 预装不可用 / 失败：就地覆盖安装（可见向导）—— 用户这一次点击批准的仍是「装」 */
+      return quitAndInstall({ approved: true });
+    } catch (e) {
+      const msg = String((e && e.message) || e || "install failed");
+      lastError = msg;
+      return { ok: false, error: msg };
+    }
   });
+  /* 用户点顶栏按钮 = 批准「检查 + 下载」：回执固定只描述这两件事，
+     installing 恒为 false —— 绝不返回 installing:true，也绝不在这里安装。
+     装是下一次点击（update:install），重启是再下一次（update:restartToApply）。 */
   ipcMain.handle("update:confirmAndStart", async () => {
     mainWinRef = typeof getWin === "function" ? getWin() : getWin;
     /* Store（MSIX）版：不弹任何对话框、不下发任何检查/下载，直接回执让渲染层提示走商店 */
@@ -2296,43 +2414,42 @@ function registerUpdateIpc(getWin) {
         downloaded: true,
         readyToRestart: true,
         staged: true,
+        installing: false,
         version: (stageInfo && stageInfo.version) || st.stageVersion || "",
       };
     }
 
-    /* 已下载：重排一次自动安装（进度条切「正在安装」）。用户主动点了「安装更新」
-       = 这一次的「稍后」作废，所以先清掉取消标记 */
+    /* 已下载：**停住**。这一次点击只批准「下载」，装要用户再点一次（update:install）；
+       没有任何排定安装 / 倒计时 —— 回执明确给 installing:false */
     if (downloaded) {
-      autoInstallCancelled = false;
       const ver = (latestInfo && latestInfo.version) || st.version || "";
-      /* 预装还在跑就别再排一次就地安装（同一把闸，见 scheduleAutoInstall 的守卫） */
-      if (staging) return { ok: true, downloaded: true, readyToRestart: true, staging: true, version: ver };
-      scheduleAutoInstall(ver);
-      return { ok: true, downloaded: true, readyToRestart: true, installing: true };
+      if (staging) return { ok: true, downloaded: true, readyToRestart: true, staging: true, installing: false, version: ver };
+      return { ok: true, downloaded: true, readyToRestart: true, installing: false, version: ver };
     }
 
-    if (!st.available && !latestInfo) {
-      const checked = await checkForUpdates(true);
-      if (!checked.available) {
+    /* 只读探测点亮过按钮（latestInfo 还空着）时，这一次点击才真的去检查一次 ——
+       用户点了 = 批准检查，这是「检查」可能发生的两处之一（另一处是 update:check） */
+    if (!latestInfo) {
+      await checkForUpdates(true);
+      if (!latestInfo) {
         return { ok: false, error: lastError || "no update" };
       }
     }
     const ver = (latestInfo && latestInfo.version) || st.version || "";
-    /* 全自动：不再弹「开始下载 / 取消」确认框，直接后台下载，进度条显示进度 */
-    autoInstallCancelled = false;
+    /* 用户点了 = 批准下载：这里只下载，下载完就停住（见 update-downloaded 事件） */
     const dl = await downloadUpdate();
     if (!dl.ok) return dl;
-    if (downloaded) scheduleAutoInstall(ver);
     return {
       ok: true,
       downloading: !downloaded,
       downloaded: !!downloaded,
       readyToRestart: !!downloaded,
-      installing: !!installing,
+      installing: false,
       version: ver,
     };
   });
-  /* 进度条「稍后」：取消这一次自动安装，已下载的包留到退出应用时再装 */
+  /* 进度条 ✕「暂不安装」：什么都不取消、什么都不排定 —— 包与旁路都留着，
+     下次点「安装更新 / 重启并更新」继续；退出应用也不会装（见 cancelAutoInstall） */
   ipcMain.handle("update:cancelAutoInstall", async () => {
     mainWinRef = typeof getWin === "function" ? getWin() : getWin;
     if (isStorePackage()) return storeBlocked();
@@ -2344,11 +2461,21 @@ function registerUpdateIpc(getWin) {
     mainWinRef = typeof getWin === "function" ? getWin() : getWin;
     return stageStatusPayload();
   });
-  /* 用户点「立即重启」：交交换器（退出瞬间两次目录 rename）→ 退出应用。
-     交换器没接上时如实回 swap_unavailable（只在 pending-swap.json 里标记 swap-requested），不假装重启 */
+  /* 用户点「立即重启」：**staged 之后的唯一重启入口**，交交换器（退出瞬间两次目录 rename）→ 退出应用。
+     **这是唯一会给交换置批准闸的用户入口**（restartToApply 里 approveSwap）——
+     没有它，退出应用永远不会换上新版本（见 swapOnQuit 的 not_approved）。
+     前置条件：staged（没预装就回 { ok:false, error:"not_staged" }）；
+     交换器没接上时如实回 { ok:false, error:"swap_unavailable" }（只在 pending-swap.json 里标记
+     swap-requested），不假装重启；抛异常同样回 { ok:false, error } */
   ipcMain.handle("update:restartToApply", async () => {
     mainWinRef = typeof getWin === "function" ? getWin() : getWin;
-    return restartToApply();
+    try {
+      return await restartToApply();
+    } catch (e) {
+      const msg = String((e && e.message) || e || "restart failed");
+      lastError = msg;
+      return { ok: false, error: msg };
+    }
   });
 }
 
@@ -2359,11 +2486,6 @@ function __testResetState() {
   latestInfo = null;
   lastError = "";
   forceSameVersion = false;
-  if (autoInstallTimer) {
-    clearTimeout(autoInstallTimer);
-    autoInstallTimer = null;
-  }
-  autoInstallCancelled = false;
   installing = false;
   /* 旁路预装的运行态同样要复位（预装中 / 已预装 / 失败原因 / 回落原因 / 探测缓存） */
   staging = false;
@@ -2379,6 +2501,9 @@ function __testResetState() {
   /* 交换器的拉起状态同样要复位：同进程里换场景时不能让上一次的「已拉起」结论挡住这一次 */
   swapLaunchInFlight = null;
   swapLaunchedResult = null;
+  /* 交换的批准闸也要复位：同进程换场景时不能带着上一次的「用户已批准」去测退出钩子 */
+  swapApproved = false;
+  swapApprovedVia = "";
   syncQuitInstallPolicy();
   psSafeCache = null;
   desktopPathCache = null;
@@ -2386,6 +2511,10 @@ function __testResetState() {
   storeLatest = "";
   storeProbing = false;
   storeProbeError = "";
+  /* 非商店包的「只读探测」（点亮按钮那一份）同样复位 */
+  feedLatest = "";
+  feedProbing = false;
+  feedProbeError = "";
   /* 回退生效后源变成 http：复位时一并切回默认 https 源 */
   feedFallbackActive = false;
   applyFeedUrl();
@@ -2435,11 +2564,14 @@ function startBackgroundCheck(getWin) {
   if (!app.isPackaged && process.env.MTNODE_FORCE_UPDATE !== "1") return;
   setupAutoUpdater();
   if (!autoUpdater) return;
+  /* 非商店包：后台只做**只读探测**（拉 latest.yml 比版本号，点亮右上角按钮）。
+     绝不在这里调 checkForUpdates —— 那条链查到新版本会接着自动下载 / 预装 / 安装 / 重启，
+     那正是用户明确禁止的事。真正的检查由用户点按钮触发（update:confirmAndStart / update:check）。 */
   setTimeout(() => {
-    checkForUpdates(true).catch(() => {});
+    probeFeedLatestVersion().catch(() => {});
   }, 8000);
   setInterval(() => {
-    checkForUpdates(true).catch(() => {});
+    probeFeedLatestVersion().catch(() => {});
   }, 6 * 3600 * 1000).unref?.();
 }
 
@@ -2454,8 +2586,10 @@ module.exports = {
   UPDATE_FEED_FALLBACK,
   /* 同版本号重装（设置最底部的手动更新入口）：供冒烟测试直接驱动同一条链 */
   reinstallSameVersion,
-  /* 商店包只读版本探测（不下载不安装）与其纯函数件：供冒烟测试直接驱动同一份实现 */
+  /* 只读版本探测（不下载不安装）：商店包那条与非商店包那条各一份，纯函数件一并导出 ——
+     供冒烟测试直接驱动同一份实现，断言「后台不再查 / 不再下载」 */
   probeStoreLatestVersion,
+  probeFeedLatestVersion,
   isNewerVersion,
   parseLatestYmlVersion,
   openStorePage,
@@ -2479,8 +2613,9 @@ module.exports = {
        restartToApply     「立即重启」的同一份实现（IPC update:restartToApply 走它）：
                           交换器 unsupported 时回落 quitAndInstall（就地覆盖安装，可见向导）
        recoverStageState  启动时收尾上一次预装留下的状态（幂等；带版本比对：已换成功就清掉，
-                          没换成就留到下次退出重试）
-       swapOnQuit         退出钩子的唯一入口（有 pending-swap.json 且旁路在才拉交换器）
+                          没换成就留成「已预装」，等用户点「重启并更新」才换）
+       swapOnQuit         退出钩子的唯一入口（有用户批准的 swapApproved + pending-swap.json
+                           且旁路在才拉交换器；退出应用本身不算批准，回 not_approved）
        setSwapRunner      交换器注册口（默认已在模块加载时接上 update-swap.js；传 null 可摘掉）*/
   stageUpdate,
   stageStatusPayload,

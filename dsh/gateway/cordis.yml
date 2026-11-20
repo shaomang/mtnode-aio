@@ -268,15 +268,11 @@
         model: deepseek-v4-pro
         maxTokens: 256000
         retainTokens: 32768
-      - provider: mtnode_p2
-        model: mock-small
-        maxTokens: 32768
-        retainTokens: 32768
-      - provider: mtnode_p4
+      - provider: mtnode_p1
         model: deepseek-v4-flash
         maxTokens: 32768
         retainTokens: 32768
-      - provider: mtnode_p4
+      - provider: mtnode_p1
         model: gpt-image-2.5-all
         maxTokens: 32768
         retainTokens: 32768
@@ -691,9 +687,9 @@
 # ── user plugins (managed from MTNode settings) ──
 
 
-- id: user-mcp-mwogym65
+- id: user-mcp-mwoldmpg
   name: '@deepseek-ai/dsh-mcp-client'
   config:
     serverName: 'mtnode-self'
     transport: 'streamable-http'
-    url: 'http://127.0.0.1:59148/mcp?token=9b8f03311e5ff18d900cccd553487cb97192f7c72bf935aa'
+    url: 'http://127.0.0.1:52381/mcp?token=422cb10fcf53d7a21f31b8c77d5631c562220d5ec36accb8'

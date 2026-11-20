@@ -205,11 +205,54 @@ function planDefaultProvider() {
 function planFlowExemptSession(st) {
   return !!(st && (st.noPlanFlow || st.ltGuide || st.ltBound));
 }
+/* ---------- 「快速热修」轮：不走「复杂任务 → 交计划块 → 弹窗确认」 ----------
+ * 用户实报（本次热修）：会话开着「快速热修」，仍然经常弹「计划确认」窗。
+ * 根因：热修契约只写在系统提示里，而同一轮还被注入了「任务流程」指令
+ *   （复杂任务 → 本轮只输出 <!--MTNODE-PLAN--> 计划块，应用据此弹窗）——
+ *   两段指令正好相反，模型按后者交了计划块，宿主照契约就弹窗。
+ * 现在的口径（用户原话：热修一般就是小问题，无需用户确认）：
+ *   ① 热修轮不注入 planFlowDirective()，换成 planHotfixDirective()（直接动手 · 禁止计划块）；
+ *   ② 万一它还是交了一份计划块：不弹窗，本轮收尾直接按清单开跑
+ *      （_planHotfixGo 由 app-assist.js 的收尾消费，那里 st.running 已复位）。
+ * 判据只有两处同源：会话「快速热修」开关 st.hotfix（开发节点 devHotfix 建绑定会话时由
+ * app.js 的 createDevSessionForNode 写进这一位）、小窗这一轮的 opts.hotfixOverride。 */
+function planHotfixRound(st, opts) {
+  opts = opts || {};
+  /* 小窗（快捷会话）这一轮的覆写优先，与 hotfixTurnOn 同口径：它写 false 就是这一轮不走热修 */
+  if (typeof opts.hotfixOverride === "boolean") return opts.hotfixOverride;
+  return !!(st && st.hotfix === true);
+}
+/* 热修轮替代「任务流程」的那段指令：直接执行、禁止计划块 */
+function planHotfixDirective() {
+  return (
+    "【任务流程 · 快速热修】这一轮开着「快速热修」：直接动手把问题修好 —— " +
+    "不要输出计划块（" +
+    PLAN_MARK_START +
+    " … " +
+    PLAN_MARK_END +
+    " 一律不写），不要用 todo_write 登记执行清单，也不要追问「是否可以执行」：" +
+    "热修是小改动，应用不会弹计划确认窗（确认那一步已被省掉）。" +
+    "收尾用一两句话说明改了什么、验证到哪一步即可。"
+  );
+}
+/* 热修轮要注入的流程文本（其余被跳过的轮次一律空串：计划执行轮 / 长任务会话 /
+   计划正在跑 / 确认窗挂起 / 调用方显式关闭流程注入） */
+function planHotfixFlowText(st, opts, planExecMsg) {
+  if (!st || planExecMsg) return "";
+  if (opts && opts.planFlow === false) return "";
+  if (planFlowExemptSession(st)) return "";
+  if (st._planExec || st._planDlgPending) return "";
+  if (!planHotfixRound(st, opts)) return "";
+  return typeof planHotfixDirective === "function" ? planHotfixDirective() : "";
+}
+
 /* 是否给该轮注入「任务流程」类指令（计划执行器消息 / Skill / 计划进行中 / 弹窗挂起时跳过）。
    具体注入哪一段（重新规划 / 沿用现有计划）由 planFlowInjectText 决定。 */
 function planFlowInjectNeeded(st, opts, planExecMsg) {
   if (!st || planExecMsg) return false;
   if (opts && opts.planFlow === false) return false;
+  /* 快速热修轮：绝不注入「交计划块」的指令（那正是计划窗的触发源，见 planHotfixRound） */
+  if (planHotfixRound(st, opts)) return false;
   /* 长任务世界的会话自带产出契约（状态机图），绝不注入「交计划块」的指令 */
   if (planFlowExemptSession(st)) return false;
   if (st._planExec || st._planDlgPending) return false;
@@ -218,11 +261,14 @@ function planFlowInjectNeeded(st, opts, planExecMsg) {
 /* 本轮注入的指令全文：会话里已有「确认过但还没跑完」的计划 → 注入沿用 / 续跑指令，
    而不是再逼模型规划一份新的（否则新旧计划互相覆盖、已执行项被重跑）；"" = 不注入 */
 function planFlowInjectText(st, opts, planExecMsg) {
-  if (!planFlowInjectNeeded(st, opts, planExecMsg)) return "";
-  try {
-    if (planCarryOpen(st)) return planFlowCarryDirective(st);
-  } catch (_) {}
-  return planFlowDirective();
+  if (planFlowInjectNeeded(st, opts, planExecMsg)) {
+    try {
+      if (planCarryOpen(st)) return planFlowCarryDirective(st);
+    } catch (_) {}
+    return planFlowDirective();
+  }
+  /* 热修轮：换成「直接执行 · 禁止计划块」那一段；其余情形仍是空串（不注入） */
+  return planHotfixFlowText(st, opts, planExecMsg);
 }
 
 /* ---------- 沿用现有计划（同功能块新绑定会话 / 中断后接着跑） ---------- */
@@ -2360,6 +2406,17 @@ function planMaybeOffer(st, plan) {
      正是「长任务创建入口建出来的变普通会话计划」这一 bug。图由
      app-longtask-guide.js 的兜底落库 / 自动纠偏接手（见 ltgSettle）。 */
   if (planFlowExemptSession(st)) return;
+  /* 快速热修会话：**绝不弹计划确认窗**（用户口径：热修都是小问题，无需确认）。
+     模型这一轮真交了计划块（说明它把活拆了却没动手）→ 挂一份待启动标记，
+     由本轮收尾（app-assist.js 里 st.running 已复位之后）直接按清单开跑；
+     不收下这份计划也不弹窗，等于这一轮白跑、用户还得再催一句。 */
+  if (planHotfixRound(st, {})) {
+    try {
+      plan.sessId = String(st.id || "");
+      st._planHotfixGo = plan;
+    } catch (_) {}
+    return;
+  }
   /* 弹窗与计划数据都钉上归属会话：确认后只可能开在这条会话上 */
   try {
     plan.sessId = String(st.id || "");
@@ -2391,6 +2448,44 @@ function planNodeOffer(node, text) {
   const plan = planParseFromText(String(text || ""));
   if (!plan) return Promise.resolve(null);
   return planOfferPush({ kind: "node", node, plan, owner: node });
+}
+
+/* ---------- 快速热修：把模型交上来的清单直接开跑（不弹确认窗） ----------
+ * 调用点只有一个：app-assist.js 的会话收尾（st.running 已复位、队列已空）。
+ * 返回是否真的开跑了（false = 会话已不可用 / 清单为空，调用方什么都不用做）。 */
+function planHotfixAutoStart(st, plan) {
+  if (!st || !plan) return false;
+  const tasks = (Array.isArray(plan.tasks) ? plan.tasks : [])
+    .map((t) => ({
+      title: String((t && t.title) || "").trim(),
+      detail: String((t && t.detail) || "").trim(),
+      model: String((t && t.model) || "").trim(),
+      parallel: String((t && t.parallel) || "").trim(),
+      status: "pending",
+    }))
+    .filter((t) => t.title);
+  if (!tasks.length) return false;
+  /* 先留一句说明：用户没点过任何确认，得知道这轮为什么自己接着跑起来了 */
+  try {
+    st.messages.push({
+      role: "user",
+      content: I18n.t("（快速热修：本计划无需确认，已直接按清单执行）"),
+      _src: "plan-exec",
+      at: Date.now(),
+    });
+  } catch (_) {}
+  try {
+    if (typeof planTouch === "function") planTouch(st);
+  } catch (_) {}
+  try {
+    if (typeof agentViewIs === "function" && agentViewIs(st)) renderAgentSession();
+    else if (typeof renderAgentSessionSidebar === "function") renderAgentSessionSidebar();
+  } catch (_) {}
+  return planStartExecution(st, tasks, {
+    goal: plan.goal,
+    excludes: plan.excludes,
+    source: "hotfix-auto",
+  });
 }
 
 /* ---------- 会话内「计划」面板（#agentPlan：复用任务清单卡样式与折叠交互） ----------

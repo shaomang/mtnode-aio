@@ -23,6 +23,6 @@
     "alwaysOnTop": true,
     "skipTaskbar": true
   },
-  "description": "复制本脚手架后：替换 id / title / subtitle / icon 占位符，实现在 app.js 里写。字段口径与云端 catalog.json 词条一致（id / kind / entry / version / minAppVersion / title / subtitle / icon / window）。permissions 里的 storage = 数据的读写落盘、dataDir = 数据文件夹（显示 / 更改 / 打开）、account = 账号摘要；脚手架三件基础设施（正确关闭 + 内容落盘 + 数据文件夹）默认都用到。",
+  "description": "复制本脚手架后：替换 id / title / subtitle / icon 占位符，实现在 app.js 里写。字段口径与云端 catalog.json 词条一致（id / kind / entry / version / minAppVersion / title / subtitle / icon / window）。permissions 里的 storage = 数据的读写落盘、dataDir = 数据文件夹（显示 / 更改 / 打开）、account = 账号摘要；脚手架三件基础设施（正确关闭 + 内容落盘 + 数据文件夹）默认都用到。capabilities 是静态能力声明（不是权限闸）：textInput / showDictate / showAuthor / showMediaPlayer / imageGen / voiceGen / assetHost / canvasHost / agentHost 缺省都关，只有 windowChrome 缺省开 —— 应用窗口没有系统标题栏，宿主替它补一条顶栏（可拖动 + 右侧关闭 ✕），并自动把 body 的 padding-top 抬到 max(页面原值, 30px) 给它让位（页面不要再自己加 padding-top）；应用自己画了标题栏、或整页是 position:fixed 满屏容器 / 自绘 sticky·fixed 贴顶 header，就写 capabilities.windowChrome: false 自绘标题栏。window 里的 frame 宿主不读（应用窗口一律无框），拖动与关闭要么页面自绘、要么交给宿主顶栏。",
   "permissions": ["storage", "dataDir", "account"]
 }

@@ -31,6 +31,13 @@
  *     与 showDictate 同一条纪律（新建应用默认开、存量应用不动），见本文件 APP_CAPABILITIES 的注释。
  *   · imageGen    缺省 false（同理）。
  *   · voiceGen    缺省 false（同理）：应用要出声得单独勾这一位（appHost.audio / appHost.tts）。
+ *   · windowChrome 缺省 **true**（本清单里唯一一位默认开）：无框应用窗口没有系统标题栏，不补一条顶栏
+ *     就拖不动、也关不掉 —— 缺省即「允许宿主注入顶栏」，只有应用**显式**写 false 才不注入。
+ *     注入即**自动让位**：宿主在 `<html>` 上挂 `--mtnode-chrome-h`（30px）与 mount 时量到的 body 基线
+ *     `--mtnode-chrome-body-pt`，把 body 的 padding-top 抬到 `max(基线, 30px)`（老页面自己写过让位也
+ *     不会变成 60px）；**页面不要再自己加 padding-top**。残余限制：`#root{position:fixed;inset:0}`
+ *     这类定位满屏容器、以及自绘 sticky / fixed 贴顶 header 的页面仍可能被压住 —— 这类页面应自绘
+ *     标题栏（写 windowChrome:false，或调 window.__mtnodeWindowChrome.hide()）。
  *   新建应用不走这几个缺省：`renderer/app-app-flow.js` 的 appsCreateApp 给的是**显式全开**
  *   （新建浮层里那段复选框已删，见那里的注释）；存量应用才按上面的 false 归一（一律不动）。
  *
@@ -82,6 +89,22 @@ const APP_CAPABILITIES = [
     hint: {
       zh: "在应用窗口底部显示宿主注入的播放条（音频画波形、视频带画面）：应用里的音频视频都走这一条。勾上就注入，没点播时自动收起",
       en: "Show the host-injected media bar at the bottom of the app window (waveform for audio, picture for video): all audio/video in the app plays through it. Collapsed until something is played",
+    },
+  },
+  {
+    id: "windowChrome",
+    label: { zh: "窗口顶栏", en: "Window top bar" },
+    /* 与 showDictate / showAuthor 同一套注入机制（宿主注入 renderer/app-chrome-ui.js），
+       但**缺省是 true**：无框窗口（目录条目 window.frame=false，绝大多数应用都是）没有系统标题栏，
+       不补一条顶栏就没法拖、也没法关。应用在 app.json 里**显式**写 false = 自己负责拖动与关闭，
+       宿主不注入。注入时宿主**自动让位**（body padding-top 抬到 max(页面原值, 30px)，max 保护不双倍），
+       所以页面不要再自己加 padding-top；自绘标题栏或满屏 fixed 容器的应用写 false。卡片小标不列这一位
+       （badge:false —— 它缺省就开，列出来只会让每张卡片都挂一枚没有信息的标）。 */
+    defaultOn: true,
+    badge: false,
+    hint: {
+      zh: "无框应用窗口由宿主补一条顶栏（可拖动 + 右侧关闭 ✕），并自动为它预留 30px（页面不用自己加 padding-top）；页面自己已有可拖区时不会重复出现。取消勾选 = 不要这条顶栏，拖动与关闭由页面自己负责",
+      en: "The host adds a top bar (drag + close ✕) to frameless app windows and reserves its 30px for you (don't add your own padding-top); it stays out of the way when the page already has a drag region. Uncheck = no top bar: the page handles dragging and closing itself",
     },
   },
   {
@@ -148,16 +171,20 @@ const CAP_FALSE = Object.freeze(
   }, {}),
 );
 
-/** 能力清单的缺省（全 false）：存量应用与云端包都按它归一 */
+/** 能力清单的缺省：一律 false，**除了声明 defaultOn 的那几位**（目前只有 windowChrome：
+ *  缺省允许宿主给无框窗口注入顶栏）。存量应用与云端包都按它归一。 */
 function defaultCapabilities() {
-  return Object.assign({}, CAP_FALSE);
+  const out = Object.assign({}, CAP_FALSE);
+  for (const c of APP_CAPABILITIES) if (c.defaultOn === true) out[c.id] = true;
+  return out;
 }
 
-/** 任意输入 → 合法能力清单（只留认识的键，值只认真布尔，其余按 false） */
+/** 任意输入 → 合法能力清单（只留认识的键；值只认真布尔，**别的值一律按缺省**：多数是 false，
+ *  windowChrome 是 true —— 写成 "true" / 1 这类脏值不算声明，但也绝不把缺省打开的那一位误关掉） */
 function normCapabilities(v) {
   const src = v && typeof v === "object" && !Array.isArray(v) ? v : {};
   const out = defaultCapabilities();
-  for (const k of APP_CAPABILITY_IDS) out[k] = src[k] === true;
+  for (const k of APP_CAPABILITY_IDS) out[k] = typeof src[k] === "boolean" ? src[k] : out[k];
   return out;
 }
 
@@ -196,11 +223,14 @@ function capabilitiesForUi(caps, locale) {
   }));
 }
 
-/** 卡片小标：只列**已声明为真**的能力（顺序 = 定义顺序） */
+/** 卡片小标：只列**已声明为真**的能力（顺序 = 定义顺序）；badge:false 的位不进小标
+ *  （windowChrome 缺省就开，列出来等于每张卡片都挂一枚没有信息的标） */
 function capabilityBadges(caps, locale) {
   const cur = effectiveCapabilities(caps);
   const zh = String(locale || "zh").toLowerCase().indexOf("en") !== 0;
-  return APP_CAPABILITIES.filter((c) => cur[c.id] === true).map((c) => (zh ? c.label.zh : c.label.en));
+  return APP_CAPABILITIES.filter((c) => c.badge !== false && cur[c.id] === true).map((c) =>
+    zh ? c.label.zh : c.label.en,
+  );
 }
 
 module.exports = {
