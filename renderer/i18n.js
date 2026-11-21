@@ -15774,11 +15774,44 @@
       "Installing silently — the app reopens automatically when it finishes",
     "更新失败，可点顶栏「更新」重试":
       "Update failed; click Update in the top bar to retry",
-    /* ── 已就绪那一档（已下载 / 已预装，等用户点「重启并更新」）──
-       这一档一个「安装向导 / 安装窗口」都不提（那时还没开始装），也绝不提退出应用时会怎样。 */
+    /* ── 已就绪那一档（已装好，等用户点「重启并更新」）──
+       自动链会把更新下好并**在后台静默装好**，所以这一档说的是「点重启即刻生效」，
+       并且明说「不会自己重启」——重启永远是用户点出来的那一下。 */
     "后台准备更新（可以继续用）": "Updating in the background (you can keep working)",
+    "后台静默安装中（可以继续用）":
+      "Installing in the background (you can keep working)",
     "已下载，点「重启并更新」才会安装":
       "Downloaded — click “Restart & update” to install",
+    "更新已装好，点「重启并更新」即刻生效（不会自己重启）":
+      "Installed — click “Restart & update” to apply it now (it will not restart by itself)",
+    "已装好，点「重启并更新」即刻生效；点「暂不安装」也不影响，下次点按钮继续":
+      "Installed — click “Restart & update” to apply it; “Not now” changes nothing and the button stays here",
+    "更新已装好": "Update installed",
+    /* 系统通知（主进程 notifyRestartReady）：标题 + 正文片段，正文 = 片段 + 「 vX」 + 片段 */
+    "MTNode 更新已就绪": "MTNode update ready",
+    "MTNode 更新已下载": "MTNode update downloaded",
+    "已在后台装好": "Installed in the background",
+    "：点顶栏「重启并更新」即刻生效（不会自己重启）":
+      ": click “Restart & update” in the top bar to apply it (it will not restart by itself)",
+    "：这台机器装不了后台预装，点「重启并更新」会静默安装并重启":
+      ": this machine cannot stage the update in the background — “Restart & update” installs silently and restarts",
+    "：点「重启并更新」即刻生效（不会自己重启）":
+      ": click “Restart & update” to apply it now (it will not restart by itself)",
+    "更新已下载：这台机器装不了后台预装，点「重启并更新」会静默安装并重启":
+      "Update downloaded — this machine cannot stage it in the background; “Restart & update” installs silently and restarts",
+    "：会自动在后台下载并静默安装，装好提示你重启":
+      ": it downloads and installs silently in the background — you will be asked to restart when it is ready",
+    "正在下载更新包…（下载完会自动后台静默安装，装好提示你重启）":
+      "Downloading the update… (it then installs silently in the background; you will be asked to restart)",
+    "更新已下载完毕：正在后台静默安装，装好后提示你重启（不会自己重启）":
+      "Update downloaded — installing silently in the background; you will be asked to restart (it will not restart by itself)",
+    "已下载，点「重启并更新」才会静默安装（不弹窗口，装完自动重新打开）":
+      "Downloaded — click “Restart & update” to install silently (no window; the app reopens automatically)",
+    "已下载，点「重启并更新」会静默安装并重启（不弹窗口）":
+      "Downloaded — “Restart & update” installs silently and restarts (no window opens)",
+    "正在后台静默安装（可以继续用）：装好会提示你重启，现在不用退出":
+      "Installing silently in the background (you can keep working): you will be asked to restart when it is ready — no need to quit now",
+    "后台安装": "Installing",
     "后台准备": "Preparing",
     "已就绪": "Ready",
     /* 悬停说明：点这一下会发生什么、以及「暂不安装」会怎样（包留着） */

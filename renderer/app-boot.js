@@ -348,8 +348,8 @@ let _updateInfo = null;
 let _updateStore = false;
 /* 最近一次更新状态：顶栏按钮、右下角版本号高亮、应用详情弹窗（app-settings.js）共用这一份。
    available 含商店版的 storeUpdateAvailable；latestVersion 是线上（更新源）版本号。
-   readyToRestart = 包已下好、正等用户点「重启并更新」（下载完就停在这一档）；
-   staging / staged 是旁路预装那两档（下载中 → 后台准备 → 已就绪待重启）。 */
+   readyToRestart = 包已下好 / 已装好，正等用户点「重启并更新」；
+   staging / staged 是后台静默安装那两档（下载中 → 后台安装 → 已装好待重启）。 */
 let _updateState = {
   store: false,
   available: false,
@@ -361,11 +361,10 @@ let _updateState = {
   latestVersion: "",
 };
 /* 安装相位文案分档（主进程 statusPayload / 事件的 installWizard）：
-   true  = 默认档，安装时弹出可见的安装向导（NSIS 界面），用户能看见进度 → 文案说清「看安装窗口」；
-   false = 静默回退（MTNODE_UPDATE_SILENT_INSTALL=1）→ 沿用「正在静默安装」的说法，不许说谎。
-   两种档都只在**用户点过「重启并更新」**之后才出现：主进程不会自己装任何东西。
-   缺省按 true（常态即走向导）；只在负载里真的带了布尔值时改写。 */
-let _installWizard = true;
+   false = 默认档：**静默安装**（不弹安装向导，也看不到任何窗口），装完自动重新打开 → 文案说「静默安装」；
+   true  = 只有排障时（MTNODE_UPDATE_SILENT_INSTALL=0）才会出现的可见向导档 → 文案说「看安装窗口」。
+   主进程不会自己重启：装完的提醒只说「点「重启并更新」」，一个字都不承诺自动重启。 */
+let _installWizard = false;
 function noteInstallWizard(src) {
   if (src && typeof src.installWizard === "boolean") _installWizard = src.installWizard;
   return _installWizard;
@@ -376,13 +375,13 @@ function ubInstallSub() {
     ? I18n.t("正在安装：安装窗口里能看到进度，装完应用会自动重新打开")
     : I18n.t("更新包已就绪，正在静默安装；应用会自动重新打开");
 }
-/* 已下载就绪那一档的副行文案（相位 staging / staged）：主进程下载完就停住，什么都不自动做，
-   所以这里只说「点「重启并更新」才会安装」，一个字都不提退出应用时会发生什么。
-   旁路预装两档既没有安装向导、也不是「正在静默安装」，上面那套向导 / 静默文案一句都不沿用。 */
+/* 已就绪那一档的副行文案（相位 staging / staged）：主进程下载完就**自动**接着后台静默安装，
+   所以 staged 现在表示「已经装进旁路目录、只等重启」，文案说「点重启即刻生效」，
+   同时明说「不会自己重启」；staging 表示后台正在静默装，可以继续用。 */
 function ubStageSub(phase) {
   return phase === "staged"
-    ? I18n.t("已下载，点「重启并更新」才会安装")
-    : I18n.t("后台准备更新（可以继续用）");
+    ? I18n.t("更新已装好，点「重启并更新」即刻生效（不会自己重启）")
+    : I18n.t("后台静默安装中（可以继续用）");
 }
 /* 设置页（app-settings.js 的手动更新）与这里共用同一份判断，文案口径不许分叉 */
 window.isUpdateInstallWizard = () => _installWizard;
@@ -402,12 +401,12 @@ function paintAuthorUpdate() {
     return;
   }
   const ver = s.latestVersion || s.version || "";
-  /* 悬停文案也跟相位走（右下角版本号几种蓝法：下载中 / 后台准备 / 已下载待你点重启） */
+  /* 悬停文案也跟相位走（右下角版本号几种蓝法：下载中 / 后台静默安装 / 装好待重启） */
   const tip =
     s.staged || s.readyToRestart
-      ? I18n.t("已下载，点「重启并更新」才会安装") + " · " + base
+      ? I18n.t("更新已装好，点「重启并更新」即刻生效（不会自己重启）") + " · " + base
       : s.staging
-        ? I18n.t("后台准备更新（可以继续用）") + " · " + base
+        ? I18n.t("后台静默安装中（可以继续用）") + " · " + base
         : s.downloading
           ? I18n.t("正在下载更新…") + " · " + base
           : (ver ? I18n.t("发现新版本 v") + ver : I18n.t("发现新版本")) + " · " + base;
@@ -466,36 +465,35 @@ function paintUpdateBtn(st) {
     if (bar) bar.classList.add("has-update");
     const ver =
       st.version || st.stageVersion || (_updateInfo && _updateInfo.version) || "";
-    /* 四档：已下载就绪（等用户点「重启并更新」）→ 后台准备 → 下载中 → 只有新版可下。
-       顶点是「下一步要你点」：已就绪只说「点「重启并更新」才会安装」，绝不说自动装 /
-       退出应用时装；只有新版可下时说清「下载完不会自动安装」。
-       前两档是旁路预装，绝不提安装向导 / 安装窗口（那时没有向导）。 */
+    /* 四档：已装好待重启（等用户点「重启并更新」）→ 后台静默安装中 → 下载中 → 只有新版可下。
+       顶点是「下一步要你点」：只差重启时说「点「重启并更新」即刻生效，不会自己重启」；
+       后台装 / 下载这两档说清「装好会提示你重启，现在不用退出」。 */
     if (staged) {
       btn.title = I18n.t(
-        "已下载，点「重启并更新」才会安装；点「暂不安装」就先把包留着，下次点按钮继续",
+        "已装好，点「重启并更新」即刻生效；点「暂不安装」也不影响，下次点按钮继续",
       );
       if (txt) txt.textContent = I18n.t("重启并更新");
       btn.classList.remove("busy");
       btn.classList.add("ready");
     } else if (staging) {
       btn.title = I18n.t(
-        "正在后台准备更新（可以继续用）：装好会提示你重启，现在不用退出",
+        "正在后台静默安装（可以继续用）：装好会提示你重启，现在不用退出",
       );
-      if (txt) txt.textContent = I18n.t("后台准备");
+      if (txt) txt.textContent = I18n.t("后台安装");
       btn.classList.add("busy");
       btn.classList.remove("ready");
     } else if (ready && !busy) {
-      /* 已下载（还没预装）：点下去才装 —— 这一点必须写在悬停说明里 */
+      /* 已下载但没预上（这台机器做不了旁路预装）：点下去才装 —— 这一点必须写在悬停说明里 */
       btn.title = _installWizard
         ? I18n.t("已下载，点「重启并更新」才会安装（装的时候弹出安装向导，窗口里显示进度，装完自动重新打开）")
-        : I18n.t("已下载，点「重启并更新」才会安装（这台机器走静默安装，装完自动重新打开）");
+        : I18n.t("已下载，点「重启并更新」才会静默安装（不弹窗口，装完自动重新打开）");
       if (txt) txt.textContent = I18n.t("重启并更新");
       btn.classList.remove("busy");
       btn.classList.add("ready");
     } else {
       btn.title = busy
         ? I18n.t("正在下载更新…")
-        : I18n.t("发现新版本 v") + ver + I18n.t("，点此下载（下载完不会自动安装）");
+        : I18n.t("发现新版本 v") + ver + I18n.t("：会自动在后台下载并静默安装，装好提示你重启");
       if (txt)
         txt.textContent = busy
           ? I18n.t("下载中")
@@ -511,14 +509,14 @@ function paintUpdateBtn(st) {
   }
 }
 /* ── 版本更新进度条（右下角 #updateBanner）─────────────────────────────────
-   主进程不自动做任何事：发现新版本只点亮按钮（不下载），用户点了才下载，下载完就停住。
-   这里把过程画出来，并说清「下一步要你点」。相位：
+   主进程自己会把更新走完：发现新版本 → 自动下载 → 后台静默安装 → 装好提醒你重启。
+   渲染层只负责把过程画出来，并把「下一步要你点」说清：只有「重启」这一下要用户点。相位：
      download → 真实百分比 + 已下载 / 总量 + 速度
-     staging  → 用户点过「重启并更新」后，正在把新版本装到旁路（可以继续用）：脉动、不打百分比
-     staged   → 已下载 / 已预装，等用户点「重启并更新」：进度条走满 + 那一颗动作按钮
-     install  → 用户批准后就地覆盖安装（可见向导）：进度条走满并脉动，装完应用会自动重开
+     staging  → 正在把新版本静默装到旁路目录（可以继续用）：脉动、不打百分比
+     staged   → 已经装好，只等用户点「重启并更新」：进度条走满 + 那一颗动作按钮
+     install  → 用户批准后就地安装（默认静默，不弹窗口）：进度条走满并脉动，装完自动重开
      error    → 失败原因，几秒后自动收起（顶栏按钮仍可重试）
-   「✕」= 暂不安装（update:cancelAutoInstall）：已下好的包 / 已铺好的旁路都留着，
+   「✕」= 暂不装（update:cancelAutoInstall）：已下好的包 / 已铺好的旁路都留着，
    下次点按钮继续；退出应用不装也不换，所以这里一个字都不承诺退出时的行为。 */
 let _ubPct = 0;
 let _ubPhase = "";
@@ -597,7 +595,7 @@ function paintUpdateBanner(opt) {
           : stagedHere
             ? I18n.t("已就绪")
             : phase === "staging"
-              ? I18n.t("后台准备")
+              ? I18n.t("后台安装")
               : Math.round(_ubPct) + "%";
   }
   if (subEl) {
@@ -609,7 +607,7 @@ function paintUpdateBanner(opt) {
   const applyBtn = $("#ubApply");
   if (applyBtn && stagedHere) {
     const applyTip = I18n.t(
-      "已下载，点「重启并更新」才会安装；点「暂不安装」也不影响，下次点按钮继续",
+      "已装好，点「重启并更新」即刻生效；点「暂不安装」也不影响，下次点按钮继续",
     );
     applyBtn.title = applyTip;
     applyBtn.setAttribute("aria-label", I18n.t("重启并更新"));
@@ -627,13 +625,13 @@ function paintUpdateBanner(opt) {
 }
 
 /**
- * 已就绪那一档的动作分两步，两步都由用户那一次点击发起（主进程不会自己做任何事）：
- *   1. ubApplyNow   → update:install：先试旁路预装（回 staged），这台机器做不了就可见向导就地安装；
- *   2. ubRestartNow → update:restartToApply：交换器在退出瞬间换上新版本。
+ * 已就绪那一档的动作（主进程已经把更新下好、装好了，这里只差「换上去」）：
+ *   1. ubRestartNow → update:restartToApply：交换器在退出瞬间换上新版本；
+ *   2. ubApplyNow   → update:install：这台机器做不了旁路预装时，那一下走就地**静默**安装。
  * 三种收场都如实说，绝不假装：
- *   · 起来了 → 应用随即退出（窗口消失，新版本由 helper 带 --updated 拉起）；
- *   · 这台机器做不了退出瞬间交换 → 主进程已回落就地覆盖安装，这里切安装相位说「看安装窗口」；
- *   · 没起来 → 应用不退出，把原因交回去（可以再点一次；不点就什么都不装、不换）。
+ *   · 起来了 → 应用随即退出（窗口消失，新版本由 helper 拉起，全程没有控制台窗口）；
+ *   · 这台机器做不了退出瞬间交换 → 主进程已回落静默就地安装，这里切安装相位；
+ *   · 没起来 → 应用不退出，把原因交回去（可以再点一次；不点就什么都不换）。
  */
 async function ubRestartNow() {
   const apply = $("#ubApply");
@@ -679,9 +677,11 @@ async function ubRestartNow() {
 }
 
 /**
- * 已就绪那一档的主按钮：**装**（update:install，只有用户点这一下才会装）。
- * 预装到旁路成功 → 立刻接着换（重启并更新）；旁路不可用 → 主进程走可见向导就地安装，
- * 这里把进度条留在安装相位。任何失败都如实回一句，不留「好像装好了」的错觉。
+ * 已就绪那一档的主按钮：**装 / 换**（update:install）。
+ * 主进程平时已经在下载完就自动铺好旁路（staged），这时展示层走 ubRestartNow；
+ * 走到这里的是「这台机器做不了旁路预装」的场景：那一下会走**静默**就地安装
+ * （不弹窗口，装完自动重开），这里把进度条留在安装相位。
+ * 任何失败都如实回一句，不留「好像装好了」的错觉。
  */
 async function ubApplyNow() {
   const apply = $("#ubApply");
@@ -723,7 +723,7 @@ async function ubApplyNow() {
       if (apply) apply.textContent = I18n.t("正在重启…");
       return;
     }
-    /* 其余收场都是「用户这一次点击批准的就地覆盖安装」（可见向导 / 静默档），进度条留在安装相位 */
+    /* 其余收场都是「用户这一次点击批准的就地覆盖安装」（默认静默，不弹窗口），进度条留在安装相位 */
     paintUpdateBanner({ phase: "install", version: ver, sub: ubInstallSub() });
   } catch (e) {
     toast(
@@ -783,9 +783,11 @@ function bindUpdateUi() {
 
 /**
  * 顶栏「更新」按钮与应用详情弹窗里那颗按钮的**唯一实现**（用户口径：两处一致）。
- * 两种点击语义，全部由用户主动发起：
- *   · 还没下载 → update:confirmAndStart 只下载，下载完就停住（装不装由下一次点击决定）；
- *   · 已下载 / 已预装 → ubApplyNow（update:install，预装成功再 restartToApply）。
+ * 主进程平时已经把更新走完了（自动下载 → 后台静默安装），这个按钮只是「用户想催一下 /
+ * 现在就重启」，所以两种点击语义：
+ *   · 已经装好（staged）→ ubRestartNow（update:restartToApply）：这一刻就换版本；
+ *   · 还没装好 → ubApplyNow（update:install）/ 没开始下载 → update:confirmAndStart 催一次下载
+ *     （下载完主进程会自己接着静默安装，不用再点）。
  * 商店包在这里只会拿到 store_package 回执，改走「去商店更新」的明确提示。
  */
 async function runUpdateAction() {
@@ -887,8 +889,8 @@ function bindUpdateEvents(btn) {
       if (channel === "update:available") {
         _updateInfo = data || null;
         _ubDismissed = false; /* 新一轮更新：上一轮点过的「暂不安装」不再挡进度条 */
-        /* 发现新版本只是一个事实：不下载、不摆进度条 —— 只把顶栏按钮点亮，
-           按钮悬停就写着「点此下载（下载完不会自动安装）」 */
+        /* 发现新版本：主进程会自己接着下载 + 后台静默安装（第一次不用确认），
+           所以这里只点亮按钮、不摆进度条；按钮悬停写着「会自动下载并静默安装」 */
         paintUpdateBtn({
           available: true,
           version: data && data.version,
@@ -922,7 +924,7 @@ function bindUpdateEvents(btn) {
             pct,
             sub:
               parts.join(" · ") ||
-              I18n.t("正在下载更新包…（下载完不会自动安装，等你点「重启并更新」）"),
+              I18n.t("正在下载更新包…（下载完会自动后台静默安装，装好提示你重启）"),
           });
         }
       } else if (channel === "update:installing") {
@@ -936,10 +938,10 @@ function bindUpdateEvents(btn) {
           });
         }
       } else if (channel === "update:downloaded") {
-        /* 下载完就停住：主进程不预装、不排定安装、不倒计时。
-           这里只把进度条切到「已就绪」那一档，并说清下一步要你点「重启并更新」 */
+        /* 下载完**不停**：主进程立刻接着后台静默安装（装到旁路目录，应用照常用）。
+           这里只把进度条切到「后台安装」那一档，并说清「装好会提示你重启、不会自己重启」 */
         toast(
-          I18n.t("更新已下载完毕：点「重启并更新」才会安装（不会自动装）"),
+          I18n.t("更新已下载完毕：正在后台静默安装，装好后提示你重启（不会自己重启）"),
           "ok",
         );
         const ver = (data && data.version) || (_updateInfo && _updateInfo.version);
@@ -950,11 +952,12 @@ function bindUpdateEvents(btn) {
           downloading: false,
         });
         if (!_ubDismissed) {
-          paintUpdateBanner({ phase: "staged", version: ver });
+          paintUpdateBanner({ phase: "staging", version: ver });
         }
       } else if (channel === "update:readyToRestart") {
-        /* 「暂不安装」的回执：只同步状态（顶栏按钮留在对应档位），
-           一个「退出应用时会自动装 / 自动完成」的字都不说 */
+        /* 主进程两条路都发这一条：auto:true = 后台静默安装完成、**整条链上唯一的提醒**
+           （系统通知同时由主进程发，窗口在托盘里也看得见）；否则是「暂不安装」的回执。
+           两种情况都只同步状态 + 说「点重启即刻生效」，绝不承诺自动重启。 */
         paintUpdateBtn({
           available: true,
           readyToRestart: true,
@@ -963,6 +966,24 @@ function bindUpdateEvents(btn) {
           version: (data && data.version) || (_updateInfo && _updateInfo.version),
           downloading: false,
         });
+        if (data && data.auto) {
+          const av = (data && data.version) || (_updateInfo && _updateInfo.version) || "";
+          if (data.staged) {
+            _ubDismissed = false;
+            toast(
+              I18n.t("更新已装好") +
+                (av ? " v" + av : "") +
+                I18n.t("：点「重启并更新」即刻生效（不会自己重启）"),
+              "ok",
+            );
+            paintUpdateBanner({ phase: "staged", version: av });
+          } else {
+            toast(
+              I18n.t("更新已下载：这台机器装不了后台预装，点「重启并更新」会静默安装并重启"),
+              "ok",
+            );
+          }
+        }
       } else if (channel === "update:error") {
         btn.classList.remove("busy");
         _updateState.downloading = false;
@@ -994,14 +1015,19 @@ function bindUpdateEvents(btn) {
             sub: ubInstallSub(),
           });
         } else if (data.readyToRestart || data.downloaded) {
-          /* 下好了就停在「已就绪」档：等用户点「重启并更新」，不再自己往下走 */
-          paintUpdateBanner({ phase: "staged", version: ver });
+          /* 已下载 / 已装好就停在「已就绪」档：等用户点「重启并更新」。
+             副行按主进程状态分两句（装好了 / 只是下好了），别把「还没装」说成「装好了」 */
+          paintUpdateBanner({
+            phase: "staged",
+            version: ver,
+            sub: I18n.t("已下载，点「重启并更新」会静默安装并重启（不弹窗口）"),
+          });
         } else if (!_ubPhase && data.downloading) {
           paintUpdateBanner({
             phase: "download",
             pct: 0,
             version: data.version,
-            sub: I18n.t("正在下载更新包…（下载完不会自动安装，等你点「重启并更新」）"),
+            sub: I18n.t("正在下载更新包…（下载完会自动后台静默安装，装好提示你重启）"),
           });
         }
       }
@@ -1025,14 +1051,22 @@ function bindUpdateEvents(btn) {
           sub: ubInstallSub(),
         });
       } else if (st.readyToRestart || st.downloaded) {
-        /* 已下载：停在「已就绪」档，等用户点「重启并更新」 */
-        paintUpdateBanner({ phase: "staged", version: ver });
+        /* 已下载 / 已装好：停在「已就绪」档，等用户点「重启并更新」。
+           副行按主进程的真实状态分两句：装好了说「点重启即刻生效」；只是下好了（这台机器做不了
+           后台预装）就明说「点重启会静默安装并重启」—— 不许把「还没装」说成「装好了」。 */
+        paintUpdateBanner({
+          phase: "staged",
+          version: ver,
+          sub: st.staged
+            ? ubStageSub("staged")
+            : I18n.t("已下载，点「重启并更新」会静默安装并重启（不弹窗口）"),
+        });
       } else if (st.downloading) {
         paintUpdateBanner({
           phase: "download",
           pct: 0,
           version: st.version,
-          sub: I18n.t("正在下载更新包…（下载完不会自动安装，等你点「重启并更新」）"),
+          sub: I18n.t("正在下载更新包…（下载完会自动后台静默安装，装好提示你重启）"),
         });
       }
     })

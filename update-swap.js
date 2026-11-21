@@ -8,7 +8,8 @@
  *   ① 主进程（退出前）把 helper 脚本复制到 `%LOCALAPPDATA%\MTNodeAIO-update\`
  *      —— 放在安装目录之外：那个目录马上要改名，脚本放里面等于拆自己脚下的地板；
  *   ② `cmd /c powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <脚本> …`
- *      以 windowsHide + detached + stdio ignore 拉起，参数带 pid / 安装目录 / 旁路目录 / 新版本号；
+ *      以 windowsHide + stdio ignore 拉起（**不带 detached**，见 launchSwapper 里那条实测），
+ *      参数带 pid / 安装目录 / 旁路目录 / 新版本号；
  *   ③ helper 先等那个 pid 退出（60s 超时即放弃并留痕），再做两次同卷 rename。
  * helper 用 PowerShell：系统自带、不受 asar 影响、不依赖主进程或安装目录里的任何文件。
  * 脚本正文在 update-swap-helper.ps1（构建白名单里必须带上，见 build.json）。
@@ -344,9 +345,25 @@ function buildCommand(info) {
 
 /**
  * 把 helper 脚本复制到 `%LOCALAPPDATA%\MTNodeAIO-update\` 并用 cmd /c 拉起（windowsHide +
- * detached + stdio ignore）。cwd 必须挪到 helper 目录：子进程继承主进程的工作目录，
+ * stdio ignore，**不带 detached**）。cwd 必须挪到 helper 目录：子进程继承主进程的工作目录，
  * 而主进程的工作目录**就是安装目录** —— 带着它去 rename 安装目录，等于自己把自己锁死。
  * 返回值只有「命令起来了 / 没起来」，交换成不成由 helper 写进 swap-result.json。
+ *
+ * ── 为什么**不带** detached（这一条是实测结论，别再改回去）────────────────────
+ * 「重启并更新」的时候用户屏幕上原本会弹一只黑终端窗口，还一直挂到交换结束 —— 根因就是
+ * spawn 上的 `detached: true`：Node/libuv 在 Windows 上为它加的是 DETACHED_PROCESS，而
+ * CREATE_NO_WINDOW（windowsHide 给的那个）与 DETACHED_PROCESS 同时出现时会被系统忽略，
+ * 于是 cmd.exe / powershell.exe 各自拿到**自己的一只可见控制台窗口**
+ * （powershell 的 -WindowStyle Hidden 也拦不住：窗口是 cmd 那只）。
+ * 同一台机器上量过四种组合（helper 里用 GetConsoleWindow + IsWindowVisible 自测并写文件）：
+ *   detached + windowsHide            → handle≠0 visible=True   ← 就是那只黑窗
+ *   detached + windowsHide + Hidden   → handle≠0 visible=True
+ *   windowsHide（不 detached）        → handle=0 visible=False  ← 现在用的这一档
+ *   什么都不加（不 detached）          → handle=0 visible=False
+ * 去掉 detached 会不会让 helper 活不过主进程退出？不会，也量过：父进程 spawn 出（不 detached 的）
+ * 子进程后立刻 exit，子进程 3 秒后照常写文件 —— Windows 上子进程本来就不随父进程退出而终止。
+ * 而「父进程在 kill-on-close 的 Job 里」这种真正危险的场景里 detached 也救不了：libuv 明确
+ * **不**设 CREATE_BREAKAWAY_FROM_JOB，所以 detached 对存活没有任何帮助，只换来一只可见的黑窗。
  */
 async function launchSwapper(info) {
   const i = info || {};
@@ -411,10 +428,11 @@ async function launchSwapper(info) {
     child = spawn("cmd.exe", ["/c", '"' + command + '"'], {
       /* cmd 的 cwd 挪到 helper 目录：见本函数开头那条注释（别让子进程继承安装目录当 CWD） */
       cwd: dir,
+      /* windowsHide ⇒ CREATE_NO_WINDOW：helper 整条链（cmd → powershell）一个控制台窗口都不建。
+         **这里绝不能加 detached** —— 加了系统就给它的每个进程发一只可见的黑终端，见函数头。 */
       windowsHide: true,
       /* 命令行由我们自己拼：Node 默认的加引号 / 转义规则是给 CreateProcess 的，cmd 不认 */
       windowsVerbatimArguments: true,
-      detached: true,
       stdio: "ignore",
     });
   } catch (e) {

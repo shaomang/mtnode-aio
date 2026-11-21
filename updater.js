@@ -14,48 +14,46 @@
  *
  * 四个 IPC 的分工（多一个入口就是多一条错档路径，别再加）：
  *   · update:status / update:check           只读状态 / 检查（不下载不安装）
- *   · update:confirmAndStart                 固定「检查 + 下载」：回执永远不含 installing:true，
- *                                            绝不安装；不引入 approveInstall 之类的「顺手装」参数
- *   · update:install                         **唯一安装入口**，要求 downloaded；先试旁路预装，
- *                                            预装不成 / 不适用时就地覆盖安装（可见向导）
+ *   · update:confirmAndStart                 「检查 + 下载」：自动链启动之后它主要是给
+ *                                            「用户手点一下，现在就开始」用（回执里 installing 恒为 false，
+ *                                            下载完由主进程自己接着静默预装；装仍不在这里发生）
+ *   · update:install                         **唯一的就地安装入口**，要求 downloaded；先试旁路预装，
+ *                                            预装不成 / 不适用时就地覆盖安装（静默，无向导窗）
  *   · update:restartToApply                  staged 之后的**唯一重启入口**；未 staged 直接
  *                                            { ok:false, error:"not_staged" }
  *   两者（install / restartToApply）失败都如实回 { ok:false, error }，绝不假装成功。
  *
- * 流程（**全程需要用户批准**：只读探测 → 点击批准下载 → 下载完停住 → 点击才安装 / 才重启）：
- *   1. 后台只做「只读探测」（probeFeedLatestVersion）：拉一次更新源的 latest.yml 比版本号，
- *      结果（feedLatest）只经 statusPayload.latestKnown 点亮按钮 —— **不**调
- *      autoUpdater.checkForUpdates、**不**下载、**不**安装、**不**改任何运行态相位
- *      （startBackgroundCheck 里 8 秒 + 每 6 小时那两条定时器只跑它）。
- *   2. 用户点按钮 = 批准「检查 + 下载」（update:confirmAndStart / update:check / update:download）：
- *      这时才真的检查并下载；差分不可用 / 失败时走全量：全量下载是自研的多连接分段下载器
- *      （4–8 段 Range 并发 + 断点续传，MTNODE_UPDATE_SEGMENTS=1 可回退 electron-updater 单连接）
- *   3. 下载过程发 update:progress，渲染层进度条实时显示百分比 / 速度
- *   4. 下载完**就停住**：只置 downloaded / readyToRestart 并发 update:downloaded，
- *      不预装、不排定安装、不倒计时。装与不装由用户下一次点击决定：
- *      · update:install（唯一安装入口）：先试**旁路预装**（stageUpdate reason:"user"）——
- *        把新版本装到正式目录的同卷兄弟目录 `<安装目录>.stage`，应用继续可用，等用户点「重启并更新」
- *        （update:restartToApply → 交换器退出瞬间换上去）；前置闸不过 / 预装失败 →
- *        回落就地覆盖安装（quitAndInstall，可见向导）。两种收场都是用户这一次点击批准的。
- *   5. 退出应用**不安装任何东西、也不换任何东西**：autoUpdater.autoInstallOnAppQuit 恒为 false
+ * 流程（**发现就不用问、安装全在后台静默做、只有重启要用户点**）：
+ *   1. 后台定时（启动后 8 秒 + 每 6 小时）跑自动链 runAutoUpdate：先拉一次更新源的 latest.yml
+ *      比版本号；没更新就到此为止（不惊动 electron-updater）。
+ *   2. 有新版 → 立刻 **自动检查 + 自动下载**（差分包；差分不可用 / 失败时走自研的多连接分段
+ *      全量下载器，MTNODE_UPDATE_SEGMENTS=1 可回退单连接）。不弹窗、不问「要不要更新」。
+ *   3. 下载完 → **自动静默预装**（stageUpdate reason:"auto"）：NSIS 带 /S 装到同卷兄弟目录
+ *      `<安装目录>.stage`，全程后台、不弹任何窗口，应用照常可用、不退出、不打扰。
+ *   4. 预装成功 → **这时才提醒用户**（系统通知 + 进度条「更新已就绪」）：
+ *      「装好了，点「重启并更新」即刻生效」。重启这一步仍然必须用户点
+ *      （update:restartToApply → 退出瞬间交换），**绝不自己重启、自己关窗口**。
+ *   5. 预装不可用（机器级安装 / 跨卷 / 低盘 / 前置闸不过）→ 包就停在「已下载」，
+ *      用户点「重启并更新」时走就地静默安装（quitAndInstall，/S，无向导窗）。
+ *   6. 退出应用**不安装任何东西、也不换任何东西**：autoUpdater.autoInstallOnAppQuit 恒为 false
  *      （见 syncQuitInstallPolicy）；退出钩子 swapOnQuit 另有一道进程内批准闸 swapApproved ——
  *      只有用户点过「重启并更新」（update:restartToApply）才置位，没置位时退出就只是退出
  *      （回 { skipped:true, reason:"not_approved" }，一个进程都不起，预装的旁路原样留着）。
- *      任何「没人点就下载 / 就安装 / 就交换 / 就重启」的路径都是 bug。
+ *      「没人点就重启 / 就换版本」的路径仍然是 bug。
  *
- * 安装分两档（默认可见向导，静默只是开关）：
- *   · 安装阶段默认走可见向导 —— quitAndInstall() 传 isSilent=false（NSIS 不带 /S），
- *     用户能看见安装界面与进度；installWizard:true 随 statusPayload 下发，渲染层据此选文案。
- *   · MTNODE_UPDATE_SILENT_INSTALL=1 才静默（NSIS 带 /S）—— 留给 CI / 无人值守安装，
- *     或向导在本机出问题时回退用（见 installSilentMode()）。
+ * 安装相位一律**静默**（没有任何安装窗口，也没有控制台窗口）：
+ *   · 旁路预装永远静默（NSIS 带 /S）：它跑在应用**正在使用**的时候，不给用户看安装界面。
+ *   · 就地覆盖安装也默认静默：quitAndInstall() 传 isSilent=true（NSIS 带 /S），装完 --force-run
+ *     自动重开新版本。MTNODE_UPDATE_SILENT_INSTALL=0 才退回可见向导（只给排障用）。
+ *   · 退出瞬间交换器（update-swap.js）以 windowsHide、**不带 detached** 拉起 —— 那条 spawn
+ *     早期带过 detached，Windows 会给 cmd / powershell 各发一只可见的终端窗口，已修（见该文件）。
  *   · 唯一允许调 quitAndInstall 的两处都是用户动作：IPC update:install，以及
  *     update:restartToApply 里「这台机器做不了交换」的那条回落分支（同一次用户点击，
  *     不是第二个安装入口；见 quitAndInstall 的批准闸）。
- *   · 旁路预装这一段永远是静默的（NSIS 带 /S）：它跑在应用**正在使用**的时候，不给用户看安装界面。
- *     MTNODE_UPDATE_STAGE=0 可整条关掉，用户点「安装更新」时直接就地覆盖安装。
+ *   · 旁路预装这一段可以整条关掉：MTNODE_UPDATE_STAGE=0，用户点「安装更新」时直接就地覆盖安装。
  *
  * 说明：Windows 下正在运行的 exe 会锁住安装目录，覆盖安装前需短暂退出进程；
- * 走向导时用户看到的是标准 NSIS 安装界面，装完自动重新打开新版本。
+ * 静默安装期间用户看不到任何窗口，装完自动重新打开新版本。
  *
  * 例外：Microsoft Store（MSIX）版禁用应用内自更新 —— 包安装目录（Program Files\WindowsApps\）
  * 只读，electron-updater 下载 NSIS 包再静默安装必然失败；且商店政策禁止应用自行分发可执行更新。
@@ -173,15 +171,23 @@ let desktopPathCache = null;
 let psSafeCache = null;
 
 /**
- * 安装阶段是否静默（只读环境变量 MTNODE_UPDATE_SILENT_INSTALL，不落盘）。
- * 默认 false = 可见向导：NSIS 不带 /S（见 electron-updater 的 NsisUpdater.doInstall args 拼装）。
- * =1 → 静默安装：留给 CI / 无人值守安装，或向导在本机出问题时的回退开关。
+ * 安装阶段是否静默。**默认静默**（= 任何安装都看不到窗口，也没有控制台）：
+ * quitAndInstall 传 isSilent=true → NSIS 带 /S，装完 --force-run 自动重开新版本。
+ * 用户口径：整条更新链上不该出现任何窗口（既没有安装向导，也没有黑终端），
+ * 后台装完只提醒「点重启」，所以这里默认档就是静默。
+ * 只读环境变量 MTNODE_UPDATE_SILENT_INSTALL（不落盘）：
+ *   · 未设置 / "1"  → 静默（常态）
+ *   · "0" / "false" → 可见向导（**只给排障用**：向导在本机出问题时看一眼到底卡在哪一步）
  */
 function installSilentMode() {
-  return String(process.env.MTNODE_UPDATE_SILENT_INSTALL || "").trim() === "1";
+  const v = String(process.env.MTNODE_UPDATE_SILENT_INSTALL == null
+    ? ""
+    : process.env.MTNODE_UPDATE_SILENT_INSTALL).trim().toLowerCase();
+  if (v === "0" || v === "false" || v === "off") return false;
+  return true;
 }
 
-/** 本次安装是否走可见向导（渲染层据此选文案：installWizard:true） */
+/** 本次安装是否走可见向导（渲染层据此选文案：installWizard；默认 false = 静默） */
 function installWizardMode() {
   return !installSilentMode();
 }
@@ -196,10 +202,10 @@ let storeProbeError = "";
 /** 探测实现可被冒烟测试替换（生产永远是 fetchText），避免测试真的联网 */
 let storeProbeFetch = null;
 
-/* ── 非商店包的「只读探测」运行态 ────────────────────────────────────────────
-   后台只做版本号比对：拉一次更新源的 latest.yml（几行文本），结果**只用来点亮右上角按钮**。
-   它取代了原来的「后台 checkForUpdates」—— 那条链查完会接着自动下载，正是用户禁止的那件事。
-   这里绝不调 electron-updater、绝不下载、绝不安装。 */
+/**
+ * 非商店包的「只读探测」运行态：后台只做版本号比对（拉更新源的 latest.yml，几行文本），
+ * 结果**只用来点亮右上角按钮**与给自动链判断「要不要开始更新」。
+ * 这一份探测本身绝不调 electron-updater、绝不下载、绝不安装。 */
 let feedLatest = ""; /* 更新源上的最新版本号（探测成功过才有值） */
 let feedProbing = false;
 let feedProbeError = "";
@@ -377,13 +383,12 @@ async function probeStoreLatestVersion() {
 }
 
 /**
- * 非商店包：**只读探测**更新源上的最新版本号（后台定时器与「点亮按钮」都只靠它）。
+ * 非商店包：**只读探测**更新源上的最新版本号（「点亮按钮」与自动链的第一步都靠它）。
  *
- * 这是本轮改造的核心一件事：原来的 startBackgroundCheck 直接调 checkForUpdates ——
- * 那条链查到新版本会接着自动下载、自动预装、自动安装、自动重启。现在后台只做这一份
- * 「拉 latest.yml 比版本号」，结果进 feedLatest 供 statusPayload 点亮右上角按钮；
+ * 它只做一份「拉 latest.yml 比版本号」：结果进 feedLatest 供 statusPayload 点亮右上角按钮；
  * **不**调 autoUpdater.checkForUpdates、**不**下载、**不**安装、**不**改任何运行态相位。
- * 用户点了按钮之后（update:confirmAndStart）才走真正的检查 + 下载。
+ * 有新版之后要不要接着下载 / 预装，由调用它的 runAutoUpdate 决定（那是自动链的事，
+ * 与这里这份只读探测分开，免得「探一下版本号」把整条安装链带起来）。
  *
  * 失败静默（只记 feedProbeError），由 6 小时后台定时器下一轮再试；
  * 与商店包探测同一套源口径（https 失败且允许回退时切 http 再探一次）。
@@ -420,6 +425,217 @@ async function probeFeedLatestVersion() {
     feedProbing = false;
   }
   return feedLatest;
+}
+
+/* ── 自动更新链（发现 → 下载 → 后台静默预装；只有「重启」要用户点）────────────────
+   用户口径（这一版改了口径，别再按旧注释读）：
+     · **第一次不用确认**：后台探测到新版就直接检查 + 下载 + 静默预装，不弹窗、不问。
+     · 预装（NSIS /S 装到同卷的 `<安装目录>.stage`）全程在后台跑：应用照常用，不退出、不打扰。
+     · **预装完成之后才提醒用户重启**（系统通知 + 进度条「更新已就绪」）；重启这一步
+       仍然必须用户点（update:restartToApply → 退出瞬间交换）—— 绝不自己重启、自己关窗口。
+   MTNODE_UPDATE_AUTO=0 关掉整条自动链，退回「只读探测 + 用户点按钮」的老口径（排障用）。 */
+let autoChainBusy = false;
+/** 失败退避：下一次允许再跑的时间戳（0 = 随时可以跑） */
+let autoChainNextAt = 0;
+let autoChainAttempts = 0;
+let autoChainLastError = "";
+/** 已经提醒过「装好了，重启生效」的版本号（同一个版本只提醒一次，别每轮定时器都弹） */
+let autoNotifiedVersion = "";
+/** 自动链失败后的重试间隔（成功一轮就清零；6 小时那轮定时器不受它影响） */
+const AUTO_RETRY_BACKOFF_MS = 30 * 60 * 1000;
+
+/** 自动更新链路是否启用（默认启用；MTNODE_UPDATE_AUTO=0/false/off 关掉） */
+function autoUpdateEnabled() {
+  const v = String(process.env.MTNODE_UPDATE_AUTO == null
+    ? ""
+    : process.env.MTNODE_UPDATE_AUTO).trim().toLowerCase();
+  return !(v === "0" || v === "false" || v === "off");
+}
+
+/**
+ * 后台那一步做完后**提醒用户**（整条链上唯一的用户触点）：
+ *   ① 渲染层：update:readyToRestart（顶栏按钮切成「重启并更新」）+ update:status（进度条归位）；
+ *   ② 系统通知：窗口收进托盘 / 最小化时也能看见，点一下唤起主窗（不点就什么都不发生）。
+ * 两种收场都提醒，正文不同：已预装 →「已在后台装好，点重启即刻生效」；
+ * 装不了后台预装 →「已下载，点重启会静默安装并重启」。
+ * 同一个版本只提醒一次（autoNotifiedVersion）。这里**不重启、不退出、不动安装目录**。
+ */
+function notifyRestartReady(version) {
+  const ver = String(version || (stageInfo && stageInfo.version) || "");
+  const isStaged = !!staged;
+  send("update:readyToRestart", {
+    version: ver,
+    staged: isStaged,
+    auto: true,
+  });
+  send("update:status", statusPayload());
+  if (ver && ver === autoNotifiedVersion) return { ok: true, notified: false, version: ver };
+  autoNotifiedVersion = ver;
+  try {
+    const { Notification } = require("electron");
+    if (!Notification) return { ok: false, error: "notification_unavailable" };
+    if (typeof Notification.isSupported === "function" && !Notification.isSupported()) {
+      return { ok: false, error: "unsupported" };
+    }
+    const n = new Notification({
+      /* 文案与渲染层同一口径：装好了 → 点重启才生效 → 不会自己重启。
+         正文按「整句 + 版本号」拼，静态片段都走 I18nSafe（词条缺了会原样回中文，不会拼出乱句）。 */
+      title: I18nSafe(isStaged ? "MTNode 更新已就绪" : "MTNode 更新已下载"),
+      body: isStaged
+        ? I18nSafe("已在后台装好") + (ver ? " v" + ver : "") +
+          I18nSafe("：点顶栏「重启并更新」即刻生效（不会自己重启）")
+        : I18nSafe("已下载") + (ver ? " v" + ver : "") +
+          I18nSafe("：这台机器装不了后台预装，点「重启并更新」会静默安装并重启"),
+      silent: true,
+    });
+    n.on("click", () => {
+      try {
+        const w = mainWinRef;
+        if (w && !w.isDestroyed()) {
+          if (typeof w.isMinimized === "function" && w.isMinimized()) w.restore();
+          w.show();
+          w.focus();
+        }
+      } catch (_) {}
+    });
+    n.show();
+    return { ok: true, notified: true, version: ver };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+}
+
+/* 同一条链只跑一次：下载完的「接着预装」在几条路径上都会触发（自动定时 / 用户点下载 /
+   同版本重装），并发两次预装会撞 NSIS 的 APP_GUID 互斥量 */
+let afterDownloadInstallInFlight = null;
+
+/**
+ * 下载完接着做的事：**静默预装到旁路目录**（就是「后台静默安装」那一步）。
+ * 幂等：已经在预装 / 已经预装好 / 没下载完都直接回当前状态（stageUpdate 自己判）。
+ * 结果就两种收场：
+ *   · { ok:true, staged:true }  → 已铺好旁路，提醒用户「点重启生效」（notifyRestartReady）；
+ *   · { ok:true, staged:false } → 这台机器做不了旁路预装（机器级安装 / 跨卷 / 低盘 / 前置闸不过）：
+ *     包留在「已下载」，用户点「重启并更新」时走**就地静默安装**（§quitAndInstall），
+ *     这里既不弹窗也不装、更不退出应用。
+ */
+async function autoInstallInBackground(trigger) {
+  if (afterDownloadInstallInFlight) return afterDownloadInstallInFlight;
+  const run = (async () => {
+    if (!downloaded) return { ok: false, error: "update not downloaded" };
+    const ver = (latestInfo && latestInfo.version) || "";
+    let stg = null;
+    try {
+      stg = await stageUpdate({ reason: "auto" });
+    } catch (e) {
+      stageError = String((e && e.message) || e || "stage_failed");
+      stg = { ok: false, error: stageError, fallback: "quitAndInstall" };
+    }
+    if (stg && stg.ok && stg.phase === "staged") {
+      const n = notifyRestartReady(ver || stg.version);
+      return { ok: true, staged: true, version: ver || stg.version, notify: n, trigger: trigger || "auto" };
+    }
+    /* 预装不可用：包留着，等用户点「重启并更新」（那一下会走就地静默安装）。
+       不在这里就地安装 —— 那要退出应用，等于替用户决定「现在就打断你」。
+       提醒照发（正文换成「点重启会静默安装并重启」），用户不会以为更新卡住了。 */
+    const n = notifyRestartReady(ver || stg && stg.version);
+    return {
+      ok: true,
+      staged: false,
+      downloaded: true,
+      version: ver,
+      notify: n,
+      stageError: (stg && stg.error) || stageError || "",
+      fallback: "quitAndInstall",
+      trigger: trigger || "auto",
+    };
+  })();
+  afterDownloadInstallInFlight = run;
+  try {
+    return await run;
+  } finally {
+    if (afterDownloadInstallInFlight === run) afterDownloadInstallInFlight = null;
+  }
+}
+
+/**
+ * 自动更新链的入口（后台定时器只调它）。
+ * 顺序：只读探测版本号 → 完整检查 → 下载 → 后台静默预装 → 提醒重启。
+ * 幂等且可重入安全：已有下载 / 已下载 / 预装中 / 已预装 / 安装中 / 上一条链还在跑
+ * 一律立刻返回（不重复下、不重复装）；失败退避 30 分钟，下次定时器再试。
+ * 返回 receipts 只用于日志与冒烟测试，界面状态一律经 update:status / update:staged 下发。
+ */
+async function runAutoUpdate(trigger) {
+  if (isStorePackage()) return { ok: false, skipped: true, reason: "store_package" };
+  if (!app.isPackaged && process.env.MTNODE_FORCE_UPDATE !== "1") {
+    return { ok: false, skipped: true, reason: "not_packaged" };
+  }
+  setupAutoUpdater();
+  if (!autoUpdater) return { ok: false, skipped: true, reason: lastError || "updater_unavailable" };
+  /* 自动链被关掉时仍保留只读探测：顶栏按钮与「线上 vX」还要亮，只是不下载不安装 */
+  if (!autoUpdateEnabled()) {
+    const v = await probeFeedLatestVersion();
+    return { ok: true, skipped: true, reason: "auto_disabled", latestKnown: v };
+  }
+  if (autoChainBusy) return { ok: true, skipped: true, reason: "running" };
+  if (downloading) return { ok: true, skipped: true, reason: "downloading" };
+  if (installing) return { ok: true, skipped: true, reason: "installing" };
+  if (staging) return { ok: true, skipped: true, reason: "staging" };
+  if (staged) return { ok: true, skipped: true, reason: "staged", version: (stageInfo && stageInfo.version) || "" };
+  if (downloaded) {
+    /* 已经下好只是没预上（上一轮预装不可用 / 刚下完就退出）：补一次后台预装，不重复下载 */
+    const r = await autoInstallInBackground(trigger || "auto:resume");
+    return Object.assign({ resumed: true }, r);
+  }
+  if (Date.now() < autoChainNextAt) {
+    return {
+      ok: true,
+      skipped: true,
+      reason: "backoff",
+      nextAt: new Date(autoChainNextAt).toISOString(),
+      attempts: autoChainAttempts,
+      lastError: autoChainLastError,
+    };
+  }
+  autoChainBusy = true;
+  try {
+    /* ① 只读探测：没更新就到此为止（不惊动 electron-updater，也不发任何事件） */
+    const feed = await probeFeedLatestVersion();
+    if (!feed) {
+      return { ok: false, skipped: true, reason: "probe_failed", error: feedProbeError || "" };
+    }
+    if (!isNewerVersion(feed, app.getVersion())) {
+      autoChainAttempts = 0;
+      autoChainLastError = "";
+      return { ok: true, skipped: true, reason: "up_to_date", current: app.getVersion(), latest: feed };
+    }
+    /* ② 完整检查：拿到 updateInfo（latestInfo）才能下载；这一步会发 update:available / update:status */
+    await checkForUpdates(true);
+    if (!latestInfo) {
+      autoChainLastError = lastError || "no_update_info";
+      return { ok: false, skipped: true, reason: "check_failed", error: autoChainLastError };
+    }
+    const ver = latestInfo.version || feed;
+    /* ③ 下载（进度照旧发 update:progress，界面能看到百分比；下载完 downloadUpdate 自己接预装） */
+    const dl = await downloadUpdate();
+    if (!dl.ok) {
+      autoChainLastError = dl.error || "download_failed";
+      autoChainAttempts++;
+      autoChainNextAt = Date.now() + AUTO_RETRY_BACKOFF_MS;
+      return { ok: false, error: autoChainLastError, attempts: autoChainAttempts, version: ver };
+    }
+    autoChainAttempts = 0;
+    autoChainLastError = "";
+    /* ④ 后台静默预装 + 装完提醒重启（downloadUpdate 已经踢了一次，这里等同一份结论） */
+    const st = await autoInstallInBackground(trigger || "auto");
+    return Object.assign({ version: ver }, st);
+  } catch (e) {
+    autoChainLastError = String((e && e.message) || e || "auto_update_failed");
+    autoChainAttempts++;
+    autoChainNextAt = Date.now() + AUTO_RETRY_BACKOFF_MS;
+    return { ok: false, error: autoChainLastError, attempts: autoChainAttempts };
+  } finally {
+    autoChainBusy = false;
+  }
 }
 
 /**
@@ -464,12 +680,13 @@ async function openStorePage() {
  *   · latestVersion     已知的线上最新版本：完整检查（latestInfo）的版本优先，没有时退回 latestKnown；
  *                       商店包给商店探测值
  *   · downloading       正在下载
- *   · downloaded        包已落地，等用户点 update:install
+ *   · downloaded        包已落地（自动链会立刻接着后台静默预装）
  *   · staging / staged  旁路预装正在跑 / 已铺好，等 update:restartToApply 交换
- *   · installing        **只**表示「用户刚点了安装、向导（或就地安装）正在起」，
+ *   · installing        **只**表示「用户刚点了安装、就地安装正在起」，
  *                       不表示「已排队等自动安装」——没有排队，也没有倒计时
  *   · readyToRestart    已下载、可以点安装 / 重启（= downloaded && latestInfo）
- *   · installWizard     这次安装走可见向导（默认）；false = 静默（MTNODE_UPDATE_SILENT_INSTALL=1）
+ *   · installWizard     这次安装是否走可见向导；默认 **false = 静默**（没有任何安装窗口），
+ *                       只有 MTNODE_UPDATE_SILENT_INSTALL=0（排障）才为 true
  */
 function statusPayload() {
   const store = isStorePackage();
@@ -497,11 +714,11 @@ function statusPayload() {
     releaseNotes: (latestInfo && latestInfo.releaseNotes) || "",
     downloading,
     downloaded,
-    /** true = 用户刚点了安装、向导 / 就地安装正在起（**不再表示「等自动安装」**：没有这样的排队） */
+    /** true = 用户刚点了安装、就地安装正在起（**不再表示「等自动安装」**：没有这样的排队） */
     installing,
-    /** 旁路预装：true = 正在把新版本装到旁路目录（应用可继续用，不再 6 秒自动退出） */
+    /** 旁路预装：true = 正在把新版本装到旁路目录（应用可继续用，不退出、不弹窗） */
     staging,
-    /** 旁路已预装好，等用户点「立即重启」（update:restartToApply）才交换；退出应用不会换 */
+    /** 旁路已预装好（= 后台静默安装完成），等用户点「重启并更新」交换；退出应用不会换 */
     staged,
     /** 旁路里装的版本（空 = 没预装过） */
     stageVersion: (stageInfo && stageInfo.version) || "",
@@ -513,7 +730,8 @@ function statusPayload() {
     stageError: stageError || "",
     /** 这次为什么没走旁路预装（前置闸 reason：disabled / store_package / machine_level_install / low_disk …） */
     stageFallback: (stageFallback && stageFallback.reason) || "",
-    /** true = 这次安装走可见向导（默认）；false = 静默（MTNODE_UPDATE_SILENT_INSTALL=1），渲染层据此选文案 */
+    /** true = 这次安装走可见向导（**只有排障时** MTNODE_UPDATE_SILENT_INSTALL=0 才会为 true）；
+     *  false = 静默（默认档，渲染层据此选文案），整条链上看不到安装窗口 */
     installWizard: installWizardMode(),
     readyToRestart: !!(downloaded && latestInfo),
     error: lastError || "",
@@ -1547,10 +1765,11 @@ function stageStatusPayload() {
 
 /**
  * 预装一次（幂等：正在装 / 已装好都直接回当前状态）。
- * **只由用户动作发起**：IPC update:install 调 stageUpdate({ reason: "user" }) ——
- * 这条链上没有任何自动触发的入口（旧版的 reason:"auto" 与 autoInstallOrStage 已删除）。
+ * 发起者有两处：**自动链**（downloadUpdate 下完就调 autoInstallInBackground → reason:"auto"，
+ * 用户不用点任何东西）与用户动作（IPC update:install，reason:"user"）。
+ * 预装本身永远静默（NSIS 带 /S），并且**不退出应用**：它是「后台静默安装」那一步。
  * 返回值形如 { ok, phase, version, stageDir, elapsedMs, … }，失败时 fallback:"quitAndInstall"
- * （= 这一轮只能就地覆盖安装，由调用方在用户点的那一次里回落）。
+ * （= 这台机器只能就地覆盖安装，由调用方在合适的那一次里回落 —— 自动链不回落，只留着包等用户点）。
  */
 async function stageUpdate(opts) {
   const o = opts || {};
@@ -1574,7 +1793,8 @@ async function stageUpdate(opts) {
 
 /**
  * 真正跑预装：快照 → 摘 UninstallString → 装到旁路 → 回写 → 记 pending-swap.json。
- * 失败 / 超时都不动主应用、也不排定任何安装：把失败如实回报给调用它的那次用户点击。
+ * 失败 / 超时都不动主应用、也不排定任何安装：把失败如实回报给调用方
+ * （自动链：留着包等用户点重启时就地静默装；用户点击：同一次点击里回落就地安装）。
  */
 async function runStage(pre, reason) {
   const startedAt = Date.now();
@@ -1595,8 +1815,8 @@ async function runStage(pre, reason) {
     installerPath: pre.installerPath,
     startedAt: new Date(startedAt).toISOString(),
     elapsedMs: 0,
-    /* 预装只可能由用户点击发起（reason:"user"）；留这个字段是排障用的证据 */
-    reason: reason || "user",
+    /* 谁发起的这次预装：auto = 下载完自己接着装（常态）/ user = 用户点了「安装更新」（排障证据） */
+    reason: reason || "auto",
   };
   send("update:staging", {
     version: ver,
@@ -2149,9 +2369,13 @@ function setupAutoUpdater() {
       (info && info.version) || (latestInfo && latestInfo.version) || "";
     send("update:downloaded", { version: ver });
     send("update:status", statusPayload());
-    /* 到这儿**就停住**：不预装、不排定安装、不倒计时、不退出应用（旧版在这里调
-       autoInstallOrStage → 预装 / 6 秒后就地安装）。
-       接下来做什么，等用户点「重启并更新」：update:install（预装 → 交换 / 就地安装）。 */
+    /* 到这儿**仍然不装、不退出**：接着做的是「后台静默预装」，那一步由 downloadUpdate 在
+       await 之后自己踢（autoInstallInBackground），不挂在这个事件上 —— 事件与 await 两条路
+       同时踢会撞 NSIS 的互斥量。预装完成后由 notifyRestartReady 提醒用户「点重启」。
+       顺手兜一层：这条事件先到、downloadUpdate 的 await 后到，两边都调同一个幂等入口。 */
+    if (autoUpdateEnabled()) {
+      autoInstallInBackground("downloaded-event").catch(() => {});
+    }
   });
   autoUpdater.on("error", (err) => {
     downloading = false;
@@ -2281,6 +2505,13 @@ async function downloadUpdate() {
     await autoUpdater.downloadUpdate();
     downloading = false;
     downloaded = true;
+    /* 下载完**立刻接着后台静默预装**（用户口径：开始更新后就不用再管，装好才提醒重启）。
+       不 await：这条链可能要跑十几秒（NSIS 装到旁路目录），别让「下载完成」的回执等它；
+       结论经 update:staged / update:readyToRestart 下发。并发重复调用由 afterDownloadInstallInFlight
+       与 stageUpdate 自己的幂等闸挡住。自动链被关掉（MTNODE_UPDATE_AUTO=0）时保持老口径：只停住。 */
+    if (autoUpdateEnabled()) {
+      autoInstallInBackground("download").catch(() => {});
+    }
     return { ok: true, downloaded: true };
   } catch (e) {
     downloading = false;
@@ -2291,12 +2522,15 @@ async function downloadUpdate() {
 }
 
 /**
- * 就地覆盖安装（可见向导）。**只允许用户动作触发** —— 闸门是参数 approved:true：
- *   · IPC update:install（唯一的安装入口：用户点「安装更新」，预装不成时落到这里）
+ * 就地覆盖安装（**默认静默，不弹任何窗口**）。触发者只有两处，都带 approved:true：
+ *   · IPC update:install（用户点「安装更新 / 重启并更新」，预装不成时落到这里）
  *   · update:restartToApply 的 unsupported 回落分支（用户点了「立即重启」，这台机器只能就地装；
  *     同一次用户点击的批准，不是第二个安装入口）
  * 不挂定时器、不挂事件、不接受编程式调用：传不进 approved:true 一律回 not_approved，
- * 一个安装器进程都不起。任何「没人点就走到这里」的路径都是 bug。
+ * 一个安装器进程都不起。任何「没人点就走到这里」的路径都是 bug —— 自动链预装不成时
+ * **不会**走到这里（它只把包留着，等用户自己点重启）。
+ * 静默是默认档（NSIS 带 /S，装完 --force-run 自动重开新版本）；MTNODE_UPDATE_SILENT_INSTALL=0
+ * 才退回可见向导（只给排障用，见 installSilentMode）。
  * 回执固定两种：{ ok:true } = 安装器已经起来 / { ok:false, error } = 没起来，如实回。
  */
 function quitAndInstall(opts) {
@@ -2313,9 +2547,9 @@ function quitAndInstall(opts) {
   }
   try {
     bindInstallDirectory();
-    /* 安装阶段默认可见向导（isSilent=false → NSIS 不带 /S，用户看得见安装界面）；
-       MTNODE_UPDATE_SILENT_INSTALL=1 才静默（CI / 无人值守 / 向导出问题回退）。
-       第二参 isForceRunAfter 在非静默时不被采用（走 autoRunAppAfterInstall，见 setupAutoUpdater）。 */
+    /* 安装阶段**默认静默**（isSilent=true → NSIS 带 /S）：装的时候一个窗口都不出现，
+       装完 --force-run 自动重开新版本。MTNODE_UPDATE_SILENT_INSTALL=0 才退回可见向导（排障用）。
+       第二参 isForceRunAfter 恒 true：静默装完必须自己把新版本拉起来（否则用户以为应用没了）。 */
     installing = true;
     send("update:status", statusPayload());
     const silent = installSilentMode();
@@ -2328,20 +2562,22 @@ function quitAndInstall(opts) {
   }
 }
 
-/* 重启提示对话框（promptRestartToFinish）已下线；「下载完自动安装」那套也已下线：
-   下载完就停住，装与不装由用户点 update:install / update:restartToApply 决定；
-   进度条上的 ✕ = update:cancelAutoInstall（暂不安装，也不承诺任何退出时行为）。 */
+/* 「下载完就停住、等用户点」那套已改成「下载完自动后台静默预装、装好提醒重启」：
+   预装与提示见 autoInstallInBackground / notifyRestartReady；进度条上的 ✕ =
+   update:cancelAutoInstall（暂不装，也不承诺任何退出时行为）。 */
 
 /**
  * 更新相关 IPC 的注册处 —— 这里就是渲染层能对更新做的全部动作，契约固定为下面四条：
  *   · update:status / update:check    只读：回 statusPayload / 发起一次完整检查，不下载不安装
- *   · update:confirmAndStart          固定「检查 + 下载」：回执里 installing 恒为 false，
- *                                     绝不返回 installing:true，也绝不安装
- *   · update:install                  **唯一安装入口**，前置条件是 downloaded；
+ *   · update:confirmAndStart          「检查 + 下载」：回执里 installing 恒为 false，绝不在这里安装
+ *                                     （下载完主进程自己接着后台静默预装，装好才提醒重启）
+ *   · update:install                  **唯一的就地安装入口**，前置条件是 downloaded；
  *                                     失败回 { ok:false, error }
  *   · update:restartToApply           staged 之后的**唯一重启入口**，未 staged 回
  *                                     { ok:false, error:"not_staged" }；失败一律如实回 { ok:false, error }
  * 不加「顺手装一下」的参数（比如 approveInstall）：装与不装必须是两次独立点击。
+ * 注意：这些入口的存在不代表「必须用户点才有更新」——发现新版后的下载与后台预装是自动链
+ * （runAutoUpdate）在做，IPC 只是「用户想手动催一下 / 现在就重启」用的。
  */
 function registerUpdateIpc(getWin) {
   mainWinRef = typeof getWin === "function" ? getWin() : getWin;
@@ -2367,14 +2603,10 @@ function registerUpdateIpc(getWin) {
     mainWinRef = typeof getWin === "function" ? getWin() : getWin;
     return downloadUpdate();
   });
-  /* **唯一的安装入口**（用户点「安装更新 / 重启并更新」才走到这里；没有任何定时器 / 事件调它）：
-       · 前置条件：downloaded（没下载完就回 { ok:false, error:"update not downloaded" }，不自己补下载）；
-       · 已预装（staged）→ 这一次点击就是「现在就换」，交交换器（与 update:restartToApply 同一份实现）；
-       · 未预装 → 先试旁路预装（stageUpdate reason:"user"）：铺好旁路目录后应用继续可用，
-         回执是 staged，用户点「重启并更新」时走交换器换上去；
-       · 这台机器做不了预装 / 预装失败 → 就地覆盖安装（quitAndInstall，可见向导），
-         仍是用户这一次点击批准的那一次。
-       任何失败（含抛异常）都如实回 { ok:false, error }，不返回假成功。 */
+  /* **唯一的就地安装入口**（用户点「安装更新 / 重启并更新」才走到这里；没有定时器 / 事件调它）。
+      自动链在下载完就已经试过后台静默预装（autoInstallInBackground）；点到这里通常是
+      「这台机器做不了旁路预装」的场景，于是这一下会走静默就地安装 → 应用退出 → 装完自动重开。
+      前置条件：downloaded（没下载完就回 { ok:false, error:"update not downloaded" }，不自己补下载）。 */
   ipcMain.handle("update:install", async () => {
     mainWinRef = typeof getWin === "function" ? getWin() : getWin;
     if (isStorePackage()) return storeBlocked();
@@ -2389,7 +2621,7 @@ function registerUpdateIpc(getWin) {
         /* 旁路已铺好：安装本身完成了，换上去要用户点「重启并更新」（update:restartToApply） */
         return Object.assign({ installed: false, staged: true }, stg);
       }
-      /* 预装不可用 / 失败：就地覆盖安装（可见向导）—— 用户这一次点击批准的仍是「装」 */
+      /* 预装不可用 / 失败：就地覆盖安装（**静默，不弹窗口**）—— 用户这一次点击批准的仍是「装」 */
       return quitAndInstall({ approved: true });
     } catch (e) {
       const msg = String((e && e.message) || e || "install failed");
@@ -2397,9 +2629,9 @@ function registerUpdateIpc(getWin) {
       return { ok: false, error: msg };
     }
   });
-  /* 用户点顶栏按钮 = 批准「检查 + 下载」：回执固定只描述这两件事，
-     installing 恒为 false —— 绝不返回 installing:true，也绝不在这里安装。
-     装是下一次点击（update:install），重启是再下一次（update:restartToApply）。 */
+  /* 用户点顶栏按钮 = 「检查 + 下载」（自动链平时已经在做，这一下等于手动催一次）：
+     installing 恒为 false —— 绝不在这里安装。下载完主进程自己接着后台静默预装
+     （autoInstallInBackground），装好后提醒用户「点重启」；重启只能由用户点。 */
   ipcMain.handle("update:confirmAndStart", async () => {
     mainWinRef = typeof getWin === "function" ? getWin() : getWin;
     /* Store（MSIX）版：不弹任何对话框、不下发任何检查/下载，直接回执让渲染层提示走商店 */
@@ -2419,8 +2651,8 @@ function registerUpdateIpc(getWin) {
       };
     }
 
-    /* 已下载：**停住**。这一次点击只批准「下载」，装要用户再点一次（update:install）；
-       没有任何排定安装 / 倒计时 —— 回执明确给 installing:false */
+    /* 已下载但还没预上（预装不可用 / 刚好下完）：不重复下载，直接回「已就绪」；
+       主进程已经在后台试过预装，装不上就等用户点「重启并更新」走就地静默安装 */
     if (downloaded) {
       const ver = (latestInfo && latestInfo.version) || st.version || "";
       if (staging) return { ok: true, downloaded: true, readyToRestart: true, staging: true, installing: false, version: ver };
@@ -2515,6 +2747,13 @@ function __testResetState() {
   feedLatest = "";
   feedProbing = false;
   feedProbeError = "";
+  /* 自动链的运行态：同进程换场景时不能带着上一次的「正在跑 / 退避中 / 已提醒」 */
+  autoChainBusy = false;
+  autoChainNextAt = 0;
+  autoChainAttempts = 0;
+  autoChainLastError = "";
+  autoNotifiedVersion = "";
+  afterDownloadInstallInFlight = null;
   /* 回退生效后源变成 http：复位时一并切回默认 https 源 */
   feedFallbackActive = false;
   applyFeedUrl();
@@ -2564,14 +2803,15 @@ function startBackgroundCheck(getWin) {
   if (!app.isPackaged && process.env.MTNODE_FORCE_UPDATE !== "1") return;
   setupAutoUpdater();
   if (!autoUpdater) return;
-  /* 非商店包：后台只做**只读探测**（拉 latest.yml 比版本号，点亮右上角按钮）。
-     绝不在这里调 checkForUpdates —— 那条链查到新版本会接着自动下载 / 预装 / 安装 / 重启，
-     那正是用户明确禁止的事。真正的检查由用户点按钮触发（update:confirmAndStart / update:check）。 */
+  /* 后台定时器 = 自动链入口 runAutoUpdate：它先做只读探测（拉 latest.yml 比版本号），
+     有新版就直接检查 + 下载 + 后台静默预装，装好才提醒用户「点重启」。整条链里
+     **没有任何一步会自己重启 / 自己关窗口**（重启只能由用户点 update:restartToApply）。
+     MTNODE_UPDATE_AUTO=0 时它退化成老的「只读探测、点亮按钮」口径。 */
   setTimeout(() => {
-    probeFeedLatestVersion().catch(() => {});
+    runAutoUpdate("startup").catch(() => {});
   }, 8000);
   setInterval(() => {
-    probeFeedLatestVersion().catch(() => {});
+    runAutoUpdate("timer").catch(() => {});
   }, 6 * 3600 * 1000).unref?.();
 }
 
@@ -2590,6 +2830,16 @@ module.exports = {
      供冒烟测试直接驱动同一份实现，断言「后台不再查 / 不再下载」 */
   probeStoreLatestVersion,
   probeFeedLatestVersion,
+  /* 自动更新链（发现 → 下载 → 后台静默预装 → 提醒重启；只有重启要用户点）：
+        runAutoUpdate              后台定时器只调它（先只读探测，没更新就到此为止）
+        autoUpdateEnabled          MTNODE_UPDATE_AUTO=0 时整条链退回「只读探测 + 用户点按钮」
+        autoInstallInBackground    下载完的「静默预装」那一步（幂等，几条路径共用）
+        notifyRestartReady         预装完成后的唯一提醒（系统通知 + 渲染层事件；同一版只提一次）
+     供冒烟测试直接驱动同一份实现，断言「不用点也会下、会装；但绝不自己重启」 */
+  runAutoUpdate,
+  autoUpdateEnabled,
+  autoInstallInBackground,
+  notifyRestartReady,
   isNewerVersion,
   parseLatestYmlVersion,
   openStorePage,
