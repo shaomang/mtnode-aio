@@ -6120,11 +6120,50 @@ function ixCommitAnswerToSession(it, answers) {
     } else if (typeof renderAgentSessionSidebar === "function") renderAgentSessionSidebar();
   } catch (_) {}
 }
+/* ── 会话历史段（每轮随输入重发的上文）的字符预算 ─────────────────────────────
+   唯一真源：会话视图（app-assist.js agentSessionSend 的 hist）与右侧助手栏
+   （assistSend 的 hist）共用这一份数。
+   沿革（本次修复）：过去调用方写死 maxChars: 4000 —— 多轮会话里一两条长回复就把它
+   填满，更早的轮次被整段挤掉。于是用户对**前几轮**的回复加批注时，批注块里的
+   「> 原文」在模型上下文里根本不存在，模型只能回「找不到这段内容」（用户实报）。
+   现在的口径 = **前面所有轮都进上下文**，只留一道防爆上限：
+     · 网关给每条路由声明的上下文窗口是 1,000,000 token（dsh/gateway/gateway.mjs 的
+       ROUTE_CONTEXT_WINDOW），压缩触发线最低一档是 150,000 token
+       （dsh-compact-policy.js 的 TRIGGER_TOKENS.frugal）；
+     · 1 token ≈ 2 字符（app-dsh-compact.js 的 COMPACT_CHARS_PER_TOKEN）；
+     · 200,000 字符 ≈ 100,000 token，落在最低触发线之下 —— 历史段自己不会把一次请求
+       顶到压缩线上，同时足够装下几十轮正常对话。
+   为什么仍要有上限而不是 Infinity：一条几百轮的极端长会话若整段重发，输入会超出模型
+   窗口直接 400（整轮报废）。真被砍时由调用方在段首写明「更早的 N 条已省略」——
+   砍掉的轮次模型是真看不见，不能让它以为自己看全了。 */
+const AGENT_HIST_MAX_CHARS = 200000;
+/* 按字符预算从**最早处**丢、始终保留最近的若干条（会话侧 / 助手侧共用一份实现）。
+   opts.textOf = 取该条正文的函数（默认元素本身就是字符串）。
+   返回 { rows, dropped, total }：dropped = 被丢掉的条数（0 = 一条没丢，全在上下文里）。 */
+function agentHistTrimTail(list, opts) {
+  opts = opts || {};
+  const arr = Array.isArray(list) ? list.slice() : [];
+  const textOf = typeof opts.textOf === "function" ? opts.textOf : (x) => x;
+  const cap = Math.max(0, Number(opts.maxChars) || AGENT_HIST_MAX_CHARS);
+  const sizeOf = (x) => String(textOf(x) == null ? "" : textOf(x)).length + 8;
+  let total = 0;
+  for (const x of arr) total += sizeOf(x);
+  let rows = arr;
+  let dropped = 0;
+  while (rows.length > 1 && total > cap) {
+    total -= sizeOf(rows[0]);
+    rows = rows.slice(1);
+    dropped++;
+  }
+  return { rows: rows, dropped: dropped, total: arr.length };
+}
 /* 会话历史段（每轮随输入重发的那一段，见 app-assist.js agentSessionSend 的 hist）：
    过去只用「m.content」，于是询问窗答案这类没有正文形态的记录进不去。这里统一构造：
      · 普通用户 / 助手消息按出现顺序保留，同文去重（用户手打重复也照实去重）；
      · 回答气泡按题 id 去重取最新（同一题重答只留最后一次）；
-     · 整段按字符数封顶，超出从最早的记录开始丢。
+     · 整段按字符数封顶（预算见 AGENT_HIST_MAX_CHARS），超出从最早的记录开始丢；
+     · opts.stats（可选出参）= 把 { dropped, total } 写回调用方给的那个对象，
+       调用方据此在段首写明省略了几条（口径变了但返回形状不变）。
    返回的每一条带 role，调用方自己决定前缀怎么写。 */
 function agentHistoryEntries(st, opts) {
   opts = opts || {};
@@ -6190,11 +6229,15 @@ function agentHistoryEntries(st, opts) {
        调用方不必自己再走一遍 _fold / _src 判据。默认不带，返回值形状不变。 */
     rows.push(opts.withMsg ? { role: m.role, text: txt, msg: m } : { role: m.role, text: txt });
   }
-  let out = rows;
-  const cap = Math.max(0, Number(opts.maxChars) || 4000);
-  const size = (list) => list.reduce((n, r) => n + r.text.length + 8, 0);
-  while (out.length > 1 && size(out) > cap) out = out.slice(1);
-  return out;
+  const trimmed = agentHistTrimTail(rows, {
+    maxChars: opts.maxChars,
+    textOf: (r) => r.text,
+  });
+  if (opts.stats && typeof opts.stats === "object") {
+    opts.stats.dropped = trimmed.dropped;
+    opts.stats.total = trimmed.total;
+  }
+  return trimmed.rows;
 }
 /* 「用户已确认过的东西」= 询问窗回答气泡 + 用户自己发的消息（不含 AI 回复）。
    续跑兜底专用（见 app-assist.js agentSessionSend 的续跑轮补段）：只带用户侧确认过的

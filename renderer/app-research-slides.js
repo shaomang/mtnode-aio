@@ -2321,7 +2321,7 @@
       }
       const bUndo = mk("button", "rs-deck-ob", "↶ 撤销");
       bUndo.type = "button";
-      bUndo.title = "撤销（Ctrl+Z）";
+      bUndo.title = "撤销这一步（键位见「帮助 · 快捷键」）";
       bUndo.disabled = !canUndo();
       bUndo.addEventListener("click", (ev) => {
         ev.preventDefault();
@@ -2329,7 +2329,7 @@
       });
       const bRedo = mk("button", "rs-deck-ob", "↷ 重做");
       bRedo.type = "button";
-      bRedo.title = "重做（Ctrl+Shift+Z）";
+      bRedo.title = "重做刚撤销的那一步（键位见「帮助 · 快捷键」）";
       bRedo.disabled = !canRedo();
       bRedo.addEventListener("click", (ev) => {
         ev.preventDefault();

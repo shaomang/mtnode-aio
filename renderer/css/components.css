@@ -5795,6 +5795,93 @@ textarea.asset-form-input {
    板身从上到下：波形播放器（.n-wave，见本文件上方）→ 频谱（.n-aa-spec）→ 分析报告入口。
    .n-aa-spec 自己两段：频谱图 + 播放头 + 事件叠加层（.n-aa-plot，叠加层就铺在图上）
    → 图例 / 开关（.n-aa-evbar）。方角、无圆角，与播放器同一形状语言。 */
+/* 视图折叠条（aaViewBar）：板身默认收纳 —— 波形播放器 / 热力图 / 事件叠加层一个都不建，
+   条本身压暗成灰（连结果都还没有时再灰一档 .is-empty），点开才画。方角、与播放器同一形状语言。 */
+.n-aa-fold {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+  width: 100%;
+  height: 20px;
+  margin-top: 2px;
+  padding: 0 6px;
+  border: 1px solid var(--bd2);
+  border-radius: 0;
+  background: var(--panel2);
+  font: inherit;
+  font-size: 10px;
+  line-height: 1;
+  color: var(--muted);
+  text-align: left;
+  overflow: hidden;
+  cursor: pointer
+}
+
+.n-aa-fold .aa-fl-c {
+  flex: none;
+  width: 8px;
+  font-size: 9px;
+  color: var(--muted)
+}
+
+.n-aa-fold .aa-fl-t {
+  flex: none;
+  font-weight: 500;
+  color: var(--ink);
+  opacity: .85
+}
+
+.n-aa-fold .aa-fl-s {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--muted);
+  opacity: .8
+}
+
+/* 收纳态：整条压暗（灰），不抢眼 */
+.n-aa-fold.is-off {
+  background: var(--code);
+  opacity: .82
+}
+
+.n-aa-fold.is-off .aa-fl-t {
+  opacity: .7
+}
+
+/* 连结果都还没有：再暗一档 */
+.n-aa-fold.is-empty {
+  opacity: .58
+}
+
+.n-aa-fold:hover {
+  border-color: var(--cyan2);
+  opacity: 1
+}
+
+.n-aa-fold:hover .aa-fl-c,
+.n-aa-fold:hover .aa-fl-t {
+  color: var(--cyan2)
+}
+
+/* 收纳态下的图像区空槽：一块纯色底 + 极淡虚线框，不画任何图像 —— 让节点不至于只剩一条
+   细线 + 一大片空 body，同时一眼看得出这是「收起来的占位」而不是没加载。
+   展开后这块被真正的波形 / 频谱取代。
+   **不用 repeating-linear-gradient**：45° 斜纹是一条要按节点面积光栅化的纹理，而 #stage
+   带 transform: scale，一屏叠几颗频谱节点就是几块大面积纹理重绘（拖动 / 缩放 / 拍总览图
+   最贵），而这层纹在收纳态唯一的作用只是「看得出这是占位」—— 纯色 + 虚线框一样看出来。 */
+.n-aa-pad {
+  flex: 1 1 auto;
+  min-height: 18px;
+  border: 1px dashed var(--bd2);
+  border-radius: 0;
+  background: var(--code);
+  opacity: .3
+}
+
 .n-aa-spec {
   --aa-pos: 0%;
   flex: none;

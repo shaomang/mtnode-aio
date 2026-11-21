@@ -93,16 +93,20 @@ function eolOf(text) {
 function setDisabled(block, off) {
   const want = "  disabled: " + (off ? "true" : PLATFORM_DISABLED);
   /* 行内容一律用 [^\r\n]* 匹配：`.` 会把行尾的 \r 一起吃进来，替换 / 插行后行尾
-     就变成裸 LF（CRLF 文件上不再幂等）。 */
-  if (/^\s*disabled:[^\r\n]*/m.test(block))
-    return block.replace(/^\s*disabled:[^\r\n]*/m, want);
-  return block.replace(/^(\s*name:[^\r\n]*)$/m, (m0) => m0 + eolOf(block) + want);
+     就变成裸 LF（CRLF 文件上不再幂等）。
+     **行首缩进只认 [ \t]***：JS 多行模式里 `^` 也认 `\r` 之后的那个位置，
+     `^\s*disabled:` 会从「上一行的 \r 之后」起匹配，把 `\n` 一并吃掉 ——
+     CRLF 文件改写一次就留下一个裸 CR（出货 cordis.yml 里那 10 个就是这么来的）。 */
+  if (/^[ \t]*disabled:[^\r\n]*/m.test(block))
+    return block.replace(/^[ \t]*disabled:[^\r\n]*/m, want);
+  return block.replace(/^([ \t]*name:[^\r\n]*)$/m, (m0) => m0 + eolOf(block) + want);
 }
 
 /** 改写 / 补写 config 块里的一个标量（有就替换整行，没有就插在已知锚点行之后）。 */
 function setConfigValue(block, key, value) {
   const line = "    " + key + ": " + value;
-  const re = new RegExp("^\\s*" + key + ":[^\\r\\n]*", "m");
+  /* 同上：`^\s*` 会跨 CRLF 吃掉 `\n`，缩进只认 [ \t] */
+  const re = new RegExp("^[ \\t]*" + key + ":[^\\r\\n]*", "m");
   if (re.test(block)) return block.replace(re, line);
   /* 插在 config 块内最后一个已知键之后；都不在就插在 `config:` 之后。
      锚点按「越靠后越优先」试，保证新键留在 config 块内部（不会被下一行的 - id 截走）。
@@ -113,7 +117,7 @@ function setConfigValue(block, key, value) {
     const ar = new RegExp("^([ \\t]*)" + anchors[i] + ":[^\\r\\n]*", "m");
     if (ar.test(block)) return block.replace(ar, (m0) => m0 + eol + line);
   }
-  return block.replace(/^(\s*config:[^\r\n]*)$/m, (m0) => m0 + eol + line);
+  return block.replace(/^([ \t]*config:[^\r\n]*)$/m, (m0) => m0 + eol + line);
 }
 
 /** 删掉 config 块里的一个标量行（连同换行），没有就原样返回 —— 用来把「默认值」还原成

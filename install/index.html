@@ -27,6 +27,9 @@
       <ol class="ins-list" id="insList"></ol>
     </section>
     <section class="ins-logpane">
+      <!-- 失败时那一句「接下来怎么做」（快照的 hint）：脚本卡死（宿主判卡强杀）这一档里
+           它就是「请点让 Agent 兜底修复」的说明 —— 提示只有被看见才有用。 -->
+      <div class="ins-hint" id="insHint" hidden></div>
       <div class="ins-loghead">
         <span id="insLogTitle">日志</span>
         <button class="ins-mini" id="btnLogFollow" title="切换是否自动滚到最新一行">跟随最新</button>

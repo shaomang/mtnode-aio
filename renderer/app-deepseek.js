@@ -237,8 +237,8 @@
     close.className = "ds-close";
     close.id = "dsClose";
     close.setAttribute("data-i18n-title", "关闭");
+    /* 只留 title 这一份文案：aria-label 与它逐字相同 = 读屏念两遍，气泡也没多给信息 */
     close.title = T("关闭");
-    close.setAttribute("aria-label", T("关闭"));
     close.textContent = "✕";
     close.addEventListener("click", function (ev) {
       ev.preventDefault();

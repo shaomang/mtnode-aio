@@ -8059,7 +8059,7 @@
        摆在这一块字段下面 —— 填完就能存，不用回头看顶上那颗「AI 起草」。 */
     const saveRow = el("div", "rs-ask-row");
     const save = el("button", "rs-btn primary", t("存为建议稿"));
-    save.title = t("把「建议 / 方案」落成一篇建议稿笔记，并建好与原文、这一条问题的链接（可 Ctrl+Z 撤回）");
+    save.title = t("把「建议 / 方案」落成一篇建议稿笔记，并建好与原文、这一条问题的链接（存完可撤销）");
     save.onclick = () => void saveNote();
     saveRow.appendChild(save);
     box.appendChild(saveRow);
@@ -8157,7 +8157,7 @@
       take.type = "button";
       /* 还在起草时不给点：半截输出写进原文是最坏的一种结果 */
       take.disabled = busy || applying;
-      take.title = t("只改这几处并写回问题所在的这一篇（可 Ctrl+Z 撤回）");
+      take.title = t("只改这几处并写回问题所在的这一篇（采纳后可撤销）");
       take.onclick = () => void adoptChange(got.pairs);
       foot2.appendChild(take);
       const drop = el("button", "rs-anno-btn is-danger", t("不采纳"));

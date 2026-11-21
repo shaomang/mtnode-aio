@@ -105,6 +105,12 @@ const SESSION_TOOLS = Object.freeze([
         model: { type: "string", description: "新建时用：模型 id" },
         effort: { type: "string", description: "新建时用：思考档（low/medium/high/xhigh/max）" },
         title: { type: "string", description: "新建时用：会话标题（留空 = 首轮自动命名）" },
+        workspace: {
+          type: "string",
+          description:
+            "新建时用：这条会话的工作目录（绝对路径，必须是已存在的文件夹）。给了就落成会话自己的 " +
+            "workspace（手机端在某个工作区里开会话时用它），不给 = 按当前画布/默认目录解析。",
+        },
       },
     },
   },
@@ -116,7 +122,8 @@ const SESSION_TOOLS = Object.freeze([
     local: true,
     description:
       "新建一条 MTNode 会话留给手机端用。默认：绑当前画布、workspace 继承当前、preset 默认、" +
-      "effort=high（与电脑上点「新会话」一致）。不发送任何消息。",
+      "effort=high（与电脑上点「新会话」一致）。给了 workspace 就用它当这条会话的工作目录" +
+      "（不存在则退回默认解析）。不发送任何消息。",
     inputSchema: {
       type: "object",
       properties: {
@@ -124,6 +131,10 @@ const SESSION_TOOLS = Object.freeze([
         model: { type: "string", description: "模型 id" },
         effort: { type: "string", description: "思考档" },
         title: { type: "string", description: "会话标题" },
+        workspace: {
+          type: "string",
+          description: "这条会话的工作目录（绝对路径、必须是已存在的文件夹）；不给 = 继承当前画布 / 默认目录",
+        },
       },
     },
   },

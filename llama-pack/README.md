@@ -1,4 +1,4 @@
-# llama.cpp 本地模型管理（MTNode 插件后端）
+﻿# llama.cpp 本地模型管理（MTNode 插件后端）
 
 基于 [llama.cpp](https://github.com/ggml-org/llama.cpp) 的 GGUF 模型下载、部署与 OpenAI 兼容 API 代理。
 
@@ -33,3 +33,12 @@ start_backend.cmd
 ```
 
 管理 API 默认 `http://127.0.0.1:8765`，推理端口从 `8100` 起分配。
+
+## 在线模型列表是「固化」的
+
+控制台「在线模型」第一次拉取时整页落盘冻结到 `.catalog-cache.json`（连同每个仓库的真实体积与
+GGUF 文件头架构 —— 这两项探测最慢）。之后每次打开 / 刷新只按时间（`sort=createdAt`）问一次
+「比已固化最新一条还新」的增量，其余条目一律沿用固化结果，镜像不可达时也照旧出列表。
+
+要整页重新拉一遍（例如换了镜像），删掉 `.catalog-cache.json` 再打开列表，或直接请求
+`GET /api/catalog?force=true`。

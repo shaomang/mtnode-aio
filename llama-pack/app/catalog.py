@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import time
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -49,6 +51,24 @@ _ARCH_CACHE_TTL = 24 * 3600.0      # 命中的架构（含「引擎不支持」�
 _ARCH_UNKNOWN_TTL = 600.0          # 没探出结果：短 TTL，别把一次网络抖动记成半天
 _ARCH_CACHE_MAX = 512
 _ARCH_CACHE: dict[str, tuple[float, str]] = {}
+
+# ── 在线模型列表「固化」表（.catalog-cache.json）────────────────────────────
+# 用户口径：拉取过模型菜单就把它固化下来；之后**再拉取只按时间拿最新的增量，其余一概不管**。
+# 背景：整页拉取要为 40~100 个仓库各补一次体积 + 探一次架构，慢且吃网络；
+# 而这些结果一旦拿到就不会变（仓库的体积与文件头架构是既成事实）。
+# 所以第一次整页拉到的条目连同体积 / 架构一起写盘冻结，之后：
+#   · 菜单打开 = 直接读固化表（离线也有内容），再用 **sort=createdAt 倒序** 只问
+#     「比固化表里最新一条还新」的那几页，逐条探完并入表；
+#   · 结果按时间并入（同 id 覆盖，绝不因为这次没返回就删掉已固化的条目）；
+#   · 想整页重新拉一遍，删掉 <安装目录>/.catalog-cache.json 即可（下一次重拉后重新固化）。
+CACHE_PATH = Path(__file__).resolve().parent.parent / ".catalog-cache.json"
+_STORE_VERSION = 1
+_STORE_MAX_ITEMS = 3000        # 固化表上限（按最近写入淘汰），别让文件无限长
+_STORE_NEWEST_PAGES = 3        # 增量最多追问几页（100 条/页）；再多留给下一次拉取
+_STORE_NEWEST_PAGE_LIMIT = 100
+_STORE_NEWEST_BUDGET = 15.0    # 增量整段预算（秒）：镜像挂着时也不能让菜单等半分钟才出来
+_STORE: dict[str, Any] | None = None          # 进程内副本（省掉每次搜索都读盘）
+_LAST_SYNC: dict[str, Any] = {"mode": "", "added": 0}
 
 # Curated boost list (shown first when matching)
 CURATED: list[dict[str, Any]] = [
@@ -424,6 +444,139 @@ def _probe_repo(item: dict[str, Any]) -> str:
     return str(item.get("id") or "").strip()
 
 
+# ── 固化表：读 / 写 / 并入 / 回填缓存 ─────────────────────────────────────────
+
+
+def _store_load() -> dict[str, Any]:
+    """读固化表（只读一次盘，之后走进程内副本）。坏文件一律当空表，绝不因此报错。"""
+    global _STORE
+    if _STORE is not None:
+        return _STORE
+    data: Any = {}
+    try:
+        if CACHE_PATH.exists():
+            data = json.loads(CACHE_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    items = data.get("items")
+    if not isinstance(items, dict):
+        items = {}
+    _STORE = {
+        "version": _STORE_VERSION,
+        "frozenAt": str(data.get("frozenAt") or ""),
+        "refreshedAt": str(data.get("refreshedAt") or ""),
+        # 已固化的最新条目时间（按 createdAt 的日期，YYYY-MM-DD）：增量口径的唯一切点。
+        "newestCreatedAt": str(data.get("newestCreatedAt") or ""),
+        "items": {str(k): v for k, v in items.items() if isinstance(v, dict) and v.get("id")},
+    }
+    return _STORE
+
+
+def _store_save(store: dict[str, Any]) -> None:
+    """落盘（先写临时文件再 replace，中断不会留下半个 JSON）。写不进去只影响下次省一次网络。"""
+    try:
+        items = store.get("items") or {}
+        if len(items) > _STORE_MAX_ITEMS:
+            keep = sorted(
+                items.items(),
+                key=lambda kv: str((kv[1] or {}).get("cachedAt") or ""),
+                reverse=True,
+            )[:_STORE_MAX_ITEMS]
+            store["items"] = dict(keep)
+        tmp = CACHE_PATH.with_name(CACHE_PATH.name + ".tmp")
+        tmp.write_text(json.dumps(store, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, CACHE_PATH)
+    except Exception:
+        pass
+
+
+def _store_items() -> list[dict[str, Any]]:
+    """固化表里的条目（对外形态与搜索结果一致：内部用的 cachedAt / sizeBytes 不外露）。"""
+    out: list[dict[str, Any]] = []
+    for _mid, rec in (_store_load().get("items") or {}).items():
+        if not isinstance(rec, dict):
+            continue
+        x = {k: v for k, v in rec.items() if k not in ("cachedAt", "sizeBytes")}
+        if x.get("id"):
+            out.append(x)
+    return out
+
+
+def _store_put(items: list[dict[str, Any]]) -> int:
+    """把条目并入固化表（同 id 覆盖，已有条目不会因为这次没返回而消失）。返回新增条数。"""
+    store = _store_load()
+    table = store["items"]
+    now = datetime.now(timezone.utc).isoformat()
+    newest = str(store.get("newestCreatedAt") or "")
+    added = 0
+    for x in items:
+        mid = str(x.get("id") or "").strip()
+        if not mid:
+            continue
+        prev = table.get(mid)
+        rec = dict(prev or {})
+        # None 不算信息：这次网络没拿到体积 / 架构时，别把上次固化下来的真值盖成空。
+        rec.update({k: v for k, v in x.items() if v is not None})
+        rec["id"] = mid
+        rec["cachedAt"] = now
+        gb = rec.get("sizeGb")
+        if gb is not None:
+            try:
+                rec["sizeBytes"] = int(round(float(gb) * (1024 ** 3)))
+            except Exception:
+                rec.pop("sizeBytes", None)
+        if prev is None:
+            added += 1
+        table[mid] = rec
+        created = str(rec.get("createdAt") or "")[:10]
+        if created > newest:
+            newest = created
+    store["newestCreatedAt"] = newest
+    store["refreshedAt"] = now
+    if not store.get("frozenAt"):
+        store["frozenAt"] = now
+    _store_save(store)
+    return added
+
+
+def _store_seed_caches() -> None:
+    """把固化表里的体积 / 架构灌进内存 TTL 缓存：已知条目于是不再发任何一个探测请求。"""
+    now = time.time()
+    for rec in (_store_load().get("items") or {}).values():
+        if not isinstance(rec, dict):
+            continue
+        repo = _probe_repo(rec)
+        if not repo:
+            continue
+        nbytes = rec.get("sizeBytes")
+        try:
+            n = int(nbytes) if nbytes is not None else None
+        except Exception:
+            n = None
+        if n:
+            _SIZE_CACHE[_cache_key(repo)] = (now + _SIZE_CACHE_TTL, n)
+        status = str(rec.get("archStatus") or "unconfirmed")
+        if status in ("confirmed", "unsupported", "non-llm"):
+            _ARCH_CACHE[repo] = (now + _ARCH_CACHE_TTL, (str(rec.get("arch") or ""), status))
+
+
+def store_info() -> dict[str, Any]:
+    """固化表状态（/api/catalog 回给控制台：界面据此说「已固化 · 本次新增 N 条」）。"""
+    store = _store_load()
+    return {
+        "path": str(CACHE_PATH),
+        "frozen": bool(store.get("items")),
+        "count": len(store.get("items") or {}),
+        "frozenAt": str(store.get("frozenAt") or ""),
+        "refreshedAt": str(store.get("refreshedAt") or ""),
+        "newestCreatedAt": str(store.get("newestCreatedAt") or ""),
+        "mode": str(_LAST_SYNC.get("mode") or ""),
+        "added": int(_LAST_SYNC.get("added") or 0),
+    }
+
+
 def _arch_cache_get(repo: str) -> tuple[bool, tuple[str, str]]:
     hit = _ARCH_CACHE.get(repo)
     if not hit:
@@ -788,6 +941,97 @@ def _merge_curated(
     return out
 
 
+async def _hf_search_newest(kind: str, cutoff: str) -> list[dict[str, Any]]:
+    """只按时间拉最新：sort=createdAt 倒序逐页取，遇到「不新于 cutoff」的条目就收手。
+
+    cutoff = 固化表里已固化的最新日期（YYYY-MM-DD）。这一步是「后续再拉取仅根据时间
+    拉取最新，其他忽略」的唯一实现：**不做**整页按下载量重搜，也不因为这次没返回
+    就把老条目从列表里拿掉（它们在固化表里）。任何一页失败都只影响这一页。
+    """
+    if not cutoff:
+        return []
+    out: list[dict[str, Any]] = []
+    cursor = ""
+    deadline = time.time() + _STORE_NEWEST_BUDGET
+    for page in range(_STORE_NEWEST_PAGES):
+        left = deadline - time.time()
+        if left <= 1.0:
+            break  # 预算用完：固化表本来就能出列表，剩下的留给下一次拉取
+        params: dict[str, Any] = {
+            "search": "gguf",
+            "filter": "gguf",
+            "limit": _STORE_NEWEST_PAGE_LIMIT,
+            "full": "true",
+            "config": "false",
+            "sort": "createdAt",
+            "direction": "-1",
+        }
+        if page > 0:
+            # HF 的分页游标（Link 头里的 next）；拿不到就到此为止，下一轮拉取再补。
+            if not cursor:
+                break
+            params["cursor"] = cursor
+        try:
+            async with httpx.AsyncClient(timeout=max(3.0, min(15.0, left))) as client:
+                r = await client.get(f"{HF_API}/models", params=params)
+                r.raise_for_status()
+                raw_list = r.json()
+                cursor = _next_cursor(r.headers.get("link") or "")
+        except Exception:
+            break
+        if not isinstance(raw_list, list) or not raw_list:
+            break
+        items = [_from_hf_item(x) for x in raw_list if x.get("id")]
+        fresh = _only_newer_than(items, cutoff)
+        out.extend(fresh)
+        if len(fresh) < len(items) or not cursor:
+            break  # 这一页已经跨过切点（或没有下一页）：增量取完了
+    return out
+
+
+def _next_cursor(link_header: str) -> str:
+    """从 Link: <...?cursor=xxx>; rel="next" 里抠出 cursor（没有返回空串）。"""
+    for part in str(link_header or "").split(","):
+        if 'rel="next"' not in part:
+            continue
+        seg = part.split("cursor=")
+        if len(seg) < 2:
+            continue
+        return seg[1].split(">")[0].split("&")[0].strip()
+    return ""
+
+
+def _only_newer_than(items: list[dict[str, Any]], cutoff: str) -> list[dict[str, Any]]:
+    """只留 createdAt 不早于 cutoff 的条目（同一天也算：那天的仓库可能上一轮还没上）。"""
+    if not cutoff:
+        return list(items)
+    out = []
+    for x in items:
+        created = str(x.get("createdAt") or "")[:10]
+        if created and created >= cutoff:
+            out.append(x)
+    return out
+
+
+def _store_frozen_items(kind: str) -> list[dict[str, Any]]:
+    """固化表整份列表 + 补齐漏掉的聚合推荐条目（老版本固化的表里可能没有它们）。
+
+    聚合推荐照样要过 kind 白名单：CURATED 里有 embedding 一类（bge / MiniLM），
+    不筛就会让固化口径比整页口径多出「已经不该出现在列表里」的条目。
+    """
+    items = _store_items()
+    have = {str(x.get("id") or "") for x in items}
+    for c in CURATED:
+        if c["id"] in have:
+            continue
+        y = dict(c)
+        y.setdefault("arch", None)
+        y.setdefault("archStatus", "unconfirmed")
+        y.setdefault("kindGuessed", False)
+        items.append(y)
+    return _filter_kind(items, kind)
+
+
 async def search_models(
     q: str = "",
     kind: str = "all",
@@ -795,20 +1039,46 @@ async def search_models(
     sort: str = "downloads",
     size_band: str = "",
     recent_only: bool = False,
+    force: bool = False,
 ) -> list[dict[str, Any]]:
     os.environ.setdefault("HF_ENDPOINT", HF_MIRROR)
     kind = (kind or "all").strip().lower()
     limit = max(1, min(int(limit or 50), 100))
+    query = (q or "").strip()
+    _store_seed_caches()
 
-    remote = await _hf_search(q, kind, limit, sort)
-    items = _merge_curated(remote, q, kind)
-    # 聚合推荐条目没经过 _hf_search，架构要在这里补（探到非 LLM 架构的在 _apply_arch_kind
-    # 里改判成 other，下面那轮 _filter_kind 就会把它们收掉）。
-    await _attach_arch(items)
-    for x in items:
-        _apply_arch_kind(x)
-    items = _filter_kind(items, kind)
-    items = _filter_arch(items)
+    if not query and _store_load().get("items") and not force:
+        # ── 固化了的口径 ────────────────────────────────────────────────
+        # 列表直接用固化表（离线也有内容、秒开），再按时间问一次「比已固化最新一条更新」
+        # 的增量；新增条目探完体积 / 架构后并入表。其余一律不动。
+        _LAST_SYNC["mode"] = "frozen"
+        fresh = await _hf_search_newest(kind, str(_store_load().get("newestCreatedAt") or ""))
+        fresh = _filter_kind(fresh, kind)
+        if fresh:
+            await _attach_sizes(fresh)
+            await _attach_arch(fresh)
+            fresh = _filter_kind(fresh, kind)
+            fresh = _filter_arch(fresh)
+            _LAST_SYNC["added"] = _store_put(fresh)
+            _store_seed_caches()
+        items = _store_frozen_items(kind)
+    else:
+        # ── 首拉 / 搜索 / 强制整页重拉 ────────────────────────────────────
+        _LAST_SYNC["mode"] = "full"
+        _LAST_SYNC["added"] = 0
+        remote = await _hf_search(q, kind, limit, sort)
+        items = _merge_curated(remote, q, kind)
+        # 聚合推荐条目没经过 _hf_search，架构要在这里补（探到非 LLM 架构的在 _apply_arch_kind
+        # 里改判成 other，下面那轮 _filter_kind 就会把它们收掉）。
+        await _attach_arch(items)
+        for x in items:
+            _apply_arch_kind(x)
+        items = _filter_kind(items, kind)
+        items = _filter_arch(items)
+        if not query:
+            # 整页拉到的这一份就此固化（体积 / 架构一并落盘，下次不再重探）。
+            _store_put(items)
+
     items = _filter_size(items, size_band)
     items = _filter_recent(items, recent_only)
 
@@ -818,7 +1088,7 @@ async def search_models(
         items.sort(key=lambda x: int(x.get("downloads") or 0), reverse=True)
 
     # Keep curated matches near top when query empty
-    if not (q or "").strip():
+    if not query:
         curated_ids = {x["id"] for x in CURATED}
         head = [x for x in items if x["id"] in curated_ids]
         tail = [x for x in items if x["id"] not in curated_ids]

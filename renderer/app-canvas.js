@@ -18899,10 +18899,11 @@ function buildBody(node, body) {
       if (typeof dsTtsAppendBody === "function") dsTtsAppendBody(node, body);
     } else if (typeof dsAsrAppendBody === "function") dsAsrAppendBody(node, body);
   } else if (node.kind === "audio_spectrum") {
-    /* MT 音频频谱分析（renderer/app-audioanalysis.js）：body = 波形播放器 + 热力图频谱
-       （播放头跟同一只全局播放引擎同步）+ 一枚「查看分析报告」入口 —— 别的一个都不挂
-       （摘要 / 输入提示 / 参数摘要 / 状态行已按用户口径移除，报告在大窗里看）。
-       频谱 / 波形都是本机文件路径，走 mediaFileUrlOf 那一路显示。 */
+    /* MT 音频频谱分析（renderer/app-audioanalysis.js）：body = 一条折叠条（默认收纳 →
+       波形 / 热力图 / 事件叠加层全都不建，免得一张画布几颗频谱节点就为解码位图卡住）
+       + 展开后的波形播放器 + 热力图频谱（播放头跟同一只全局播放引擎同步）+ 一枚
+       「查看分析报告」入口 —— 别的一个都不挂（摘要 / 输入提示 / 参数摘要 / 状态行已按
+       用户口径移除，报告在大窗里看）。频谱 / 波形都是本机文件路径，走 mediaFileUrlOf 那一路显示。 */
     if (typeof aaAppendBody === "function") aaAppendBody(node, body);
     else if (typeof window !== "undefined" && window.AudioAnalysis)
       window.AudioAnalysis.appendBody(node, body);

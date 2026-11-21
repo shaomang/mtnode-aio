@@ -333,12 +333,29 @@
 
   /* ── 帧执行（主进程会话族推来的 op）────────────────────────────────────── */
 
-  /** 新建会话：与电脑上点「新会话」同一套默认值（绑当前画布、继承 workspace / 预设，
-   *  effort 默认 high），但**不抢走用户当前的会话视图** —— 手机开一条会话不该把电脑上
-   *  正在看的会话切掉。 */
-  function sessionCreate(params) {
+  /** 新建会话：与电脑上点「新会话」同一套默认值（预设 / 思考档 / 模型沿用），但**不抢走
+   *  用户当前的会话视图** —— 手机开一条会话不该把电脑上正在看的会话切掉。
+   *
+   *  **工作目录 = 手机端选中的那个**（`params.workspace`，来自 ACP session/new 的 cwd）：
+   *  过去这里忽略它，`newAgentSession()` 于是按「当前那张画布的目录」冻结了 workspace ——
+   *  手机上明明选的是别的项目，Agent 却在客户端画布的目录里读写（用户报的 bug）。
+   *  给了就用它（必须是**存在的绝对目录**，否则退回画布/默认那套解析并把原因回给手机）。 */
+  async function sessionCreate(params) {
     const p = params || {};
     if (typeof newAgentSession !== "function") throw new Error("渲染层没有 newAgentSession");
+    const wantWs = String(p.workspace == null ? "" : p.workspace).trim();
+    let ws = "";
+    let wsRejected = "";
+    if (wantWs) {
+      let okDir = false;
+      try {
+        okDir = typeof pathIsExistingDir === "function" ? await pathIsExistingDir(wantWs) : false;
+      } catch (_) {
+        okDir = false;
+      }
+      if (okDir) ws = wantWs;
+      else wsRejected = wantWs;
+    }
     const prevActive = String((typeof activeAgentId === "function" ? activeAgentId() : "") || "");
     const st = newAgentSession();
     if (p.title != null && String(p.title).trim()) st.title = String(p.title).trim();
@@ -346,9 +363,17 @@
     if (p.model != null) st.model = String(p.model);
     if (p.effort) st.effort = String(p.effort);
     /* 会话归属（共识：手机端不暴露画布与工作目录）—— 新建时不绑任何画布：
-       手机开一条会话不该悄悄改「电脑上正在看的那张图」的绑定关系；
-       工作目录继承当前默认（与手动新会话一致）。 */
+       手机开一条会话不该悄悄改「电脑上正在看的那张图」的绑定关系。 */
     st.canvasWfId = "";
+    /* 手机端给了可用目录 → 落成这条会话的工作目录（与用户在输入区手填同一落点，
+       此后每轮都用它；画布怎么切都不动它）。 */
+    if (ws) {
+      st.workspace = ws;
+      st._wsInvalid = false;
+      try {
+        if (S && S._wsFixed && typeof S._wsFixed.set === "function") S._wsFixed.set(st.id, ws);
+      } catch (_) {}
+    }
     try {
       if (typeof agentMarkSessionDirty === "function") agentMarkSessionDirty(st.id);
       if (typeof agentFlushSessionSave === "function") agentFlushSessionSave();
@@ -364,7 +389,12 @@
       provider: String(st.provider || ""),
       model: String(st.model || ""),
       effort: String(st.effort || ""),
-      note: "已在 MTNode 左栏新建会话（没有抢走电脑上正在看的会话）。",
+      workspace: String(st.workspace || ""),
+      ...(wsRejected ? { workspaceRejected: wsRejected } : {}),
+      note:
+        wsRejected
+          ? "已在 MTNode 左栏新建会话，但手机端指定的工作目录不存在（" + wsRejected + "），已按画布/默认目录解析。"
+          : "已在 MTNode 左栏新建会话（没有抢走电脑上正在看的会话）。",
     };
   }
 
@@ -433,7 +463,13 @@
     let sid = String(p.sessionId || "").trim();
     let created = null;
     if (!sid) {
-      created = sessionCreate({ provider: p.provider, model: p.model, effort: p.effort, title: p.title });
+      created = await sessionCreate({
+        provider: p.provider,
+        model: p.model,
+        effort: p.effort,
+        title: p.title,
+        workspace: p.workspace,
+      });
       sid = created.sessionId;
     }
     const st = sessionOf(sid);

@@ -161,18 +161,36 @@ function isSafeInstallDir(dir) {
 
 function projectSignals(dir) {
   const root = String(dir || "").trim();
-  if (!root) return { exists: false, scaffold: false, venv: false, ready: false };
+  if (!root) return { exists: false, scaffold: false, venv: false, installed: false, ready: false };
   const scaffold = fs.existsSync(join(root, "app", "server.py"));
   const venv = fs.existsSync(join(root, ".venv", "Scripts", "python.exe"));
   const installed = fs.existsSync(join(root, ".install-ok"));
+  /* server = bin\llama-server.exe 在位。它不进 ready（那是「目录像不像装好的」的粗判，
+     别的地方在用），但它是安装自查的硬条件，一并回给调用方。 */
+  const server = fs.existsSync(join(root, "bin", "llama-server.exe"));
   return {
     exists: fs.existsSync(root),
     scaffold,
     venv,
     installed,
+    server,
     ready: scaffold && venv && installed,
   };
 }
+
+/* ── 安装结果自查（「安装需要自行验证安装成功」）─────────────────────────────
+   实现单独一份、可单测：llama/install-verify.js（纯 node，不依赖 electron）。
+   脚本 exit 0、Agent 写 ok=true、.install-ok 存在 —— 这些都只是**声明**；收尾真跑一遍
+   （venv 里 import fastapi + app.server、bin\llama-server.exe 在位且不是半截、
+   models\ 与 .api-key 齐）才算装好。不过就按失败收口，绝不写 installedMeta。 */
+const installVerify = require("./install-verify.js");
+
+/** 主进程这一侧只需注入日志出口（安装窗 / 控制台共用 appendConsole）。 */
+function verifyInstalled(installDir) {
+  return installVerify.verifyInstalled(installDir, { log: appendConsole });
+}
+
+const verifyFailureMessage = installVerify.verifyFailureMessage;
 
 function copyDirRecursive(src, dest, skipNames) {
   const skip = new Set(skipNames || [".venv", "models", "__pycache__", ".git"]);
@@ -352,6 +370,17 @@ function broadcast(channel, payload) {
 
 function emitProgress(ev) {
   broadcast("llama:progress", Object.assign({ id: PLUGIN_ID, ts: Date.now() }, ev || {}));
+}
+
+/**
+ * 往安装窗的步骤表里补一行（宿主自己判出来的步骤，如收尾自查）。
+ * 契约同 plugins/install-steps.js 的 applyStep：未知 id 会被追加成新行，所以
+ * steps.json 里没列这一项也能显示。永不抛 —— 上报只是旁路。
+ */
+function reportInstallStep(step) {
+  try {
+    installHost.reportPluginStep({ pluginId: PLUGIN_ID, kind: "step", step: step || {} });
+  } catch {}
 }
 
 /**
@@ -1116,8 +1145,38 @@ async function stopBackend() {
   return { ok: true, stopped: !(await probeApi(port)) };
 }
 
+/**
+ * 安装脚本「彻底失效」的判定阈值：这么久（默认 8 分钟）一个字节都没输出，就当它卡死。
+ *
+ * 为什么必须存在（用户现场）：llama 的下载那一步走 ghfast.top 之类的 gh 代理，某个镜像
+ * 不响应时 PowerShell 侧会一直等；脚本永远不退出 → runPs 的 promise 永远不落 →
+ * `installing` 一直是 true（之后每次点「重试 / 安装」都只回 `busy`）、安装窗永远停在
+ * run 那一步上：既看不到失败，也拿不到「交给 mtnode 会话修复」那个入口 —— 整条安装链
+ * 彻底卡死，而屏幕上没有任何一处能解释为什么。
+ * 现在：判卡 → 按进程树强杀 → 当失败收尾（失败文案带 install_stalled，安装窗据此把
+ * 「让 Agent 兜底修复」提到第一位）。
+ * 阈值可用 MTNODE_INSTALL_STALL_MS（毫秒，最小 60s）覆盖；脚本侧也在下载里加了
+ * 连接超时 / 读空闲超时并每 8MB 打一行进度，慢而活的下载不会被误杀。
+ */
+const INSTALL_STALL_MS = (() => {
+  const n = Number(process.env.MTNODE_INSTALL_STALL_MS);
+  return Number.isFinite(n) && n >= 60 * 1000 ? Math.floor(n) : 8 * 60 * 1000;
+})();
+
+/** 判卡时的失败文案（`install_stalled` 是给安装窗 / hint 表认的稳定前缀）。 */
+function installStallMessage(idleMs) {
+  const min = Math.max(1, Math.round(Number(idleMs) / 60000));
+  return (
+    "install_stalled: 安装脚本 " +
+    min +
+    " 分钟没有任何输出，已判定卡住并强杀进程树（脚本彻底失效，不是某一步报错；" +
+    "常见原因是下载源不响应、或在等一个永远不来的交互）"
+  );
+}
+
 function runPs(scriptPath, args, opts) {
   opts = opts || {};
+  const stallMs = Number(opts.stallMs) > 0 ? Number(opts.stallMs) : INSTALL_STALL_MS;
   return new Promise((resolve, reject) => {
     const psArgs = ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath, ...(args || [])];
     appendConsole("$ powershell " + psArgs.join(" "));
@@ -1135,8 +1194,57 @@ function runPs(scriptPath, args, opts) {
       onEvent: (ev) => installHost.reportPluginStep(ev),
     });
     let out = "";
+    /* 收尾只做一次：看门狗强杀后 close 事件可能照旧到，也可能一个都不来，两条路都要能落定 */
+    let settled = false;
+    let stallTimer = null;
+    let hardTimer = null;
+    let lastOutputAt = Date.now();
+    let stallIdleMs = 0;
+    const stopTimers = () => {
+      if (stallTimer) {
+        clearInterval(stallTimer);
+        stallTimer = null;
+      }
+      if (hardTimer) {
+        clearTimeout(hardTimer);
+        hardTimer = null;
+      }
+    };
+    const settle = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      stopTimers();
+      fn(value);
+    };
+    const onStall = () => {
+      if (stallIdleMs) return;
+      stallIdleMs = Date.now() - lastOutputAt;
+      const msg = installStallMessage(stallIdleMs);
+      appendConsole("[install] " + msg + " → taskkill pid=" + child.pid);
+      try {
+        rep.log("[host] " + msg + " → kill process tree pid=" + child.pid);
+      } catch {}
+      if (stallTimer) {
+        clearInterval(stallTimer);
+        stallTimer = null;
+      }
+      installKill.killTree(child.pid, { child }).catch(() => {});
+      /* 强杀之后 close 正常会到；万一没到（taskkill 被策略拦住 / 进程已成僵尸），
+         这里再兜一手 —— 绝不让 installing 永久为 true。 */
+      hardTimer = setTimeout(() => {
+        installKill.untrack(PLUGIN_ID);
+        rep.finish({ ok: false, error: msg });
+        settle(reject, new Error(msg));
+      }, 20000);
+      if (hardTimer.unref) hardTimer.unref();
+    };
+    stallTimer = setInterval(() => {
+      if (Date.now() - lastOutputAt >= stallMs) onStall();
+    }, Math.max(5000, Math.min(30000, Math.floor(stallMs / 4))));
+    if (stallTimer.unref) stallTimer.unref();
     child.stdout.on("data", (d) => {
       const s = d.toString();
+      lastOutputAt = Date.now();
       out += s;
       for (const line of s.split(/\r?\n/)) {
         if (line.trim()) appendConsole(line);
@@ -1148,6 +1256,7 @@ function runPs(scriptPath, args, opts) {
     });
     child.stderr.on("data", (d) => {
       const s = d.toString();
+      lastOutputAt = Date.now();
       out += s;
       for (const line of s.split(/\r?\n/)) {
         if (line.trim()) appendConsole("[err] " + line);
@@ -1156,19 +1265,29 @@ function runPs(scriptPath, args, opts) {
     child.on("error", (e) => {
       installKill.untrack(PLUGIN_ID);
       rep.finish({ ok: false, error: String((e && e.message) || e) });
-      reject(e);
+      settle(reject, e);
     });
     child.on("close", (code) => {
       installKill.untrack(PLUGIN_ID);
       const cancelled = !!installCancel;
-      rep.finish(
-        cancelled
-          ? { ok: false, cancelled: true, error: "cancelled" }
-          : { ok: code === 0, error: code === 0 ? "" : "exit " + code },
-      );
-      if (cancelled) return reject(new Error("cancelled"));
-      if (code !== 0) reject(new Error("exit " + code + ": " + out.slice(-800)));
-      else resolve(out);
+      const stallErr = stallIdleMs ? installStallMessage(stallIdleMs) : "";
+      if (cancelled) {
+        rep.finish({ ok: false, cancelled: true, error: "cancelled" });
+        return settle(reject, new Error("cancelled"));
+      }
+      if (stallErr) {
+        rep.finish({ ok: false, error: stallErr, hint: stepReporter.hintFor(stallErr + "\n" + out.slice(-4000)) });
+        return settle(reject, new Error(stallErr));
+      }
+      /* 脚本成功**不在这里收尾**：exit 0 只是脚本自己说完了，装没装好由 installProject
+         在脚本之后自查（verifyInstalled）再判终局。这里先收掉的话，安装窗已经是 done，
+         后面的自查失败再也改不动它（finishSnapshot 幂等）——「窗口说装好了、其实跑不起来」
+         就是这么来的。失败 / 卡住 / 取消三条路照旧在这里收。 */
+      if (code !== 0) {
+        rep.finish({ ok: false, error: "exit " + code });
+        return settle(reject, new Error("exit " + code + ": " + out.slice(-800)));
+      }
+      settle(resolve, out);
     });
   });
 }
@@ -1330,6 +1449,33 @@ async function agentInstallByAgent(opts) {
       subPct: sig.ready ? 100 : sig.venv ? 55 : 25,
     });
     if (sig.ready || marked) {
+      /* Agent 写 ok=true / .install-ok 同样只是**声明**：与脚本路径走同一道自查
+         （venv 里真 import 一次 + 二进制在位且不是半截 + models\ / .api-key 齐）。
+         不过就不写 installedMeta，按失败如实回报，让用户能接着修。 */
+      emitProgress({
+        phase: "install",
+        step: "verify",
+        stepLabel: "验证安装结果",
+        message: "Agent 已交付，正在自查安装结果…",
+        pct: 96,
+      });
+      const verify = await verifyInstalled(installDir);
+      if (!verify.ok) {
+        const why = verifyFailureMessage(verify);
+        dshEventHook = null;
+        installing = false;
+        appendConsole("[agent-install] 自查没通过：" + why);
+        emitProgress({
+          phase: "install",
+          step: "script_failed",
+          stepLabel: "安装自查没通过",
+          message: why,
+          pct: 18,
+          error: true,
+        });
+        reportErr(why, why, { phase: "install" });
+        return { ok: false, error: why };
+      }
       const man = readManifest();
       writeJson(installedMetaPath(), {
         ok: true,
@@ -1453,10 +1599,18 @@ async function installProject(opts) {
         }),
     });
 
-    const sig = projectSignals(installDir);
-    if (!sig.ready) {
-      throw new Error("install_incomplete_after_script");
+    /* 脚本退出码 0 只是「脚本自己说完了」。装没装好要自己验一遍（见 verifyInstalled）：
+       这一步同时把缺失的 models\ 与 .api-key 补上，并把每一项的结果写进安装窗日志。 */
+    emitProgress({ phase: "install", step: "verify", stepLabel: "验证安装结果", pct: 94, subPct: 0 });
+    reportInstallStep({ id: "verify", status: "run", title: "验证安装结果" });
+    const verify = await verifyInstalled(installDir);
+    if (!verify.ok) {
+      reportInstallStep({ id: "verify", status: "fail", message: verifyFailureMessage(verify) });
+      throw new Error(verifyFailureMessage(verify));
     }
+    reportInstallStep({ id: "verify", status: "ok" });
+    emitProgress({ phase: "install", step: "verify", stepLabel: "验证安装结果", pct: 99, subPct: 100 });
+    appendConsole("[install] 自查通过：" + verify.checks.length + " 项全过");
 
     const man = readManifest();
     writeJson(installedMetaPath(), {
@@ -1471,11 +1625,21 @@ async function installProject(opts) {
     return { ok: true, installDir };
   } catch (e) {
     const msg = String((e && e.message) || e);
+    /* 看门狗判卡（脚本彻底失效）：失败原因与建议都换成这一档的说法 —— 「重试」对这类
+       失败通常没用，真正有效的是让 Agent 按安装技能接手（安装窗里那颗按钮会因此变成 primary）。 */
+    const stalled = msg.indexOf("install_stalled") >= 0;
+    const verifyFail = msg.indexOf("install_verify_failed") >= 0;
     appendConsole("[install] script failed: " + msg);
+    if (stalled) {
+      appendConsole("[install] 脚本彻底失效 → 安装窗里改用「让 Agent 兜底修复」（新建可见会话，按 llama-local-install 技能修）");
+    }
+    if (verifyFail) {
+      appendConsole("[install] 自查没通过 → 不写「已安装」标记；按上面 FAIL 的那些项重跑，或让 Agent 补");
+    }
     emitProgress({
       phase: "install",
       step: "script_failed",
-      stepLabel: "安装脚本失败",
+      stepLabel: stalled ? "安装脚本卡住（已强杀）" : verifyFail ? "安装自查没通过" : "安装脚本失败",
       message: msg,
       pct: 18,
     });
@@ -1485,7 +1649,14 @@ async function installProject(opts) {
       id: PLUGIN_ID,
       ok: false,
       error: msg === "cancelled" ? "安装已取消" : msg,
-      hint: msg === "cancelled" ? "" : stepReporter.hintFor(msg + "\n" + String((consoleTail(8 * 1024) || {}).text || "")),
+      hint:
+        msg === "cancelled"
+          ? ""
+          : stalled
+            ? "安装脚本这次是彻底失效（长时间没有任何输出，已被强杀），不是某一步的报错 —— 直接重试大概率还卡在同一处。" +
+              "请点「让 Agent 兜底修复」：会新建一条看得见的会话，按 llama-local-install 技能按本机网络与驱动实际情况接手" +
+              "（换下载源 / 手工放 llama-server.exe / 修 venv）。"
+            : stepReporter.hintFor(msg + "\n" + String((consoleTail(8 * 1024) || {}).text || "")),
     });
     return { ok: false, error: msg };
   } finally {

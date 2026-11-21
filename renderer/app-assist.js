@@ -2127,6 +2127,10 @@ function assistSessionRecord(o) {
     pure: S.assistSeedPure === true,
     grill: S.assistSeedGrill !== false,
     overclock: S.assistSeedOverclock === true,
+    /* 「简报模式」播种值（本轮需求 · 粘性默认，与 newAgentSession 同一口径）：
+       助手会话也是一条会话，用户上次开过简报，它建的时候就默认开着。 */
+    brief: briefDefaultOn(),
+    briefTab: "",
     messages: Array.isArray(o.messages) ? o.messages : [],
     archived: false,
     createdAt: o.at || Date.now(),
@@ -2525,14 +2529,24 @@ async function assistSend(text, opts) {
   );
   /* 历史存档里曾被回滚的轮次消息不进上下文（activeSessionMessages 无标记时不复制数组） */
   const assistHist = activeSessionMessages(msgs);
-  const hist = assistHist
-    /* 界面痕迹（_src："user-closed" 的「用户主动关闭会话」状态行等）不进模型上下文：
-       它没有正文，混进去只会变成一条空的「用户：」 */
-    .filter((m) => !m._src)
-    .slice(0, -1)
-    .slice(-16)
-    .map((m) => (m.role === "user" ? "用户：" : "助手：") + m.content)
-    .join("\n\n");
+  /* 界面痕迹（_src："user-closed" 的「用户主动关闭会话」状态行等）不进模型上下文：
+     它没有正文，混进去只会变成一条空的「用户：」。
+     **前面所有轮都进上下文**（本次修复）：原先这里另截到最近 16 条 —— 多轮之后更早
+     的轮次整段消失，对前几轮的回复加批注时模型找不到那段原文。预算与会话侧同一份
+     （app-db.js 的 AGENT_HIST_MAX_CHARS），真被砍时段首写明省略了几条。 */
+  const assistHistTrim = agentHistTrimTail(
+    assistHist.filter((m) => !m._src).slice(0, -1),
+    { textOf: (m) => (m && m.content) || "" },
+  );
+  const hist =
+    (assistHistTrim.dropped
+      ? I18n.t("【本次上下文省略了更早的 {n} 条上文（会话太长，只带最近一部分）】", {
+          n: assistHistTrim.dropped,
+        }) + "\n\n"
+      : "") +
+    assistHistTrim.rows
+      .map((m) => (m.role === "user" ? "用户：" : "助手：") + m.content)
+      .join("\n\n");
   const scopeCurrent = assistScopeIsCurrent();
   /* 这一轮真正工作的那张图 = 本会话所属画布（不是用户此刻看着的那张，bug 修复）：
      提示词里的人设 / 工作范围都按它说，否则用户切图后模型会以为在改另一张。 */
@@ -3358,6 +3372,14 @@ function agentSessions() {
      （热修是用户显式打开的档，纯净与它互斥时纯净让位，与模式菜单的写入口同一口径）。 */
   for (const s of S.agentSessions)
     if (s && s.hotfix === true && s.pure === true) s.pure = false;
+  /* 「简报模式」水合（本任务）：会话级开关**缺省关** —— 老存档 / 没开过这一位的会话
+     一律归一成 false（每步都要多一次模型调用，没写过就当没开）。
+     注意别把它改成「按全局默认 briefOn 播种」：全局档只管**新建**会话（见 briefDefaultOn），
+     老会话各记各的 —— 用户口径是「关掉只影响之后的会话，之前开着的保持开启」。 */
+  for (const s of S.agentSessions) if (s && typeof s.brief !== "boolean") s.brief = false;
+  /* 「对话」视图子 Tab 的水合（本任务）：只有 "brief" 这一档有意义，其余（缺位 / 老存档 /
+     认不出的值）一律归成空串 = 「原始」，重启回来不会停在半不存在的档上。 */
+  for (const s of S.agentSessions) if (s && s.briefTab !== "brief") s.briefTab = "";
   /* 懒加载钩子：眼前这条会话若只有索引（正文还在盘上），就地发起一次读回 ——
      读回来会重画一帧。这是**唯一**的自动加载点，其余读正文的入口显式 ensure
      （轨迹·改动栏 / 全局搜索 / 续跑），所以「什么会被读进内存」是可预期的。
@@ -3429,6 +3451,183 @@ function sessionTitleIsPlaceholder(t) {
   } catch (_) {}
   return false;
 }
+/* ── 简报按轮存档（任务 4/8：简报随会话落盘，每轮一份，重启仍在）────────────────
+   存在哪：会话文件顶层的 roundBriefs —— 键 = **该轮末助手消息的时间戳**（就是对话里那一条
+   答复的 at），值 = 那一轮的定稿简报 { at, summary, items:[{text, stepIds, status}], stale }。
+   为什么要另开一份存档：简报只活在调度器内存里（renderer/app-brief-sched.js 从不落盘），
+   而会话正文日常走追加段（<id>.jsonl 只追加消息），基线文件顶层字段一个字节都不动 ——
+   光把 st.roundBriefs 摆在内存里，重启就没了（定义在这一段的最前面：读回正文要用它合并盘上
+   那一份，见下面 agentEnsureSessionBody）。
+   三条写入口径（缺一不可）：
+     ① 只写**定稿版**：中途那一版随时会被下一版顶掉，进存档只是噪声（调度器 state().final
+        标的就是它，见 app-brief-sched.js 的 s.finalBrief）；
+     ② 一轮只写一次，且只在定稿落地那一刻写：不与正文的追加段抢写序（那条通道管「消息变长」，
+        这条只管顶层一个键）；
+     ③ 走主进程既有的字段级通道 session:patch（PATCH_KEYS 里的 roundBriefs）：按 id 直写
+        会话文件顶层那个键，不另开写盘路径。
+   落盘失败降级为「本次内存可见」：st.roundBriefs 已经改好、界面照旧，只如实记一行、不抛不弹窗，
+   并标脏让下一次整份落盘（agentSessionMetaForDisk 里有这个键）把它带上。 */
+const ROUND_BRIEF_MAX = 24; /* 存档最多留最近 24 轮（键是毫秒时间戳，多的从最旧那头丢） */
+const ROUND_BRIEF_ITEM_CAP = 12; /* 单轮要点条数上限 */
+const ROUND_BRIEF_TEXT_CAP = 400; /* 单条要点正文上限（简报一条本来就只有一两句） */
+S._roundBriefKey = S._roundBriefKey instanceof Map ? S._roundBriefKey : new Map();
+/* id → Set<存档键>：已经写进会话文件的那几轮（同一个键只写一次，见 agentRoundBriefSavedOf） */
+S._roundBriefSaved = S._roundBriefSaved instanceof Map ? S._roundBriefSaved : new Map();
+/* 这一轮的存档键 = 本轮末助手消息的 at。必须在**轮末那一刻**取下来存进 S._roundBriefKey：
+   定稿版最长要等一次模型调用（20s），这期间用户可能已经发了下一句，messages 末尾就不再是
+   这一轮的答复了 —— 等到定稿落地再去翻 messages 就会记错轮。 */
+function agentRoundBriefKeyOf(st) {
+  const msgs = st && Array.isArray(st.messages) ? st.messages : [];
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const m = msgs[i];
+    if (!m || m.role !== "assistant") continue;
+    const at = Number(m.at) || 0;
+    if (at) return String(at);
+  }
+  return "";
+}
+/* 只留最近 ROUND_BRIEF_MAX 轮（返回**新对象**：写盘那一份与内存那一份各自独立，别互相带改） */
+function agentRoundBriefsTrim(v) {
+  const src = v && typeof v === "object" ? v : null;
+  if (!src) return {};
+  const out = {};
+  const keys = Object.keys(src).sort((a, b) => (Number(b) || 0) - (Number(a) || 0));
+  for (const k of keys.slice(0, ROUND_BRIEF_MAX)) {
+    const r = src[k];
+    if (r && typeof r === "object") out[k] = r;
+  }
+  return out;
+}
+/* 盘上那份与内存那份合并（读回正文时用）：同键以**内存**为准（本窗口刚落的那一份比盘上新），
+   盘上独有的轮次补进来 —— 重启后把它们读回内存就是靠这一步。 */
+function agentRoundBriefsMerge(disk, mem) {
+  const out = Object.assign({}, disk && typeof disk === "object" ? disk : {});
+  const m = mem && typeof mem === "object" ? mem : null;
+  if (m) for (const k of Object.keys(m)) out[k] = m[k];
+  return agentRoundBriefsTrim(out);
+}
+/* 调度器那一份 state() → 存档里的一条记录。形状归一与卡片同源（agentBriefNormShape），
+   再按上面三个上限夹一次 —— 存档是要跟着会话文件一直留着的，不能把整份简报原样塞进去。 */
+function agentRoundBriefRecordOf(x) {
+  const n =
+    typeof agentBriefNormShape === "function"
+      ? agentBriefNormShape({ summary: x && x.summary, items: x && x.items, stale: x && x.stale })
+      : null;
+  if (!n) return null;
+  const items = [];
+  for (const it of n.items.slice(0, ROUND_BRIEF_ITEM_CAP)) {
+    items.push({
+      text: String(it.text || "").slice(0, ROUND_BRIEF_TEXT_CAP),
+      stepIds: Array.isArray(it.stepIds) ? it.stepIds.slice(0, 12).map((v) => String(v)) : [],
+      status: String(it.status || ""),
+    });
+  }
+  return {
+    at: Number((x && x.at) || 0) || Date.now(),
+    summary: String(n.summary || "").slice(0, ROUND_BRIEF_TEXT_CAP * 2),
+    items: items,
+    stale: !!n.stale,
+  };
+}
+/* 定稿版落地 → 写一次存档（唯一写入口，调用点 = 简报画笔那一支，见 agentBriefPainterBind）。
+   keyOverride（任务 5/8）：回填某一旧轮时显式给那一段的存档键（该轮末助手消息 at）——
+   不给就按内存里记账的那一轮（T4 的口径，一字不改）。
+   返回 true / Promise<boolean>；失败一律降级，不抛。 */
+function agentRoundBriefPersist(sid, x, keyOverride) {
+  const id = String(sid || "");
+  if (!id || !x || x.final !== true) return false; /* ① 只认定稿版（回填那一份也标 final） */
+  const rec = agentRoundBriefRecordOf(x);
+  if (!rec) return false;
+  const st = typeof agentSessionById === "function" ? agentSessionById(id) : null;
+  if (!st) return false;
+  const key =
+    String(keyOverride || "") ||
+    (S._roundBriefKey.get(id) || "") ||
+    agentRoundBriefKeyOf(st) ||
+    String(Number(x.at) || 0);
+  if (!key) return false;
+  /* ② 一轮（键）只写一次：paint 会来好几帧，回填也会反复读到同一份补好的结论。
+     按 **id → 已写过的键集合** 记账（T4 的定稿与 T5 的回填共用这一份账，互不覆盖）。 */
+  const done = agentRoundBriefSavedOf(id);
+  if (done.has(key)) return true;
+  done.add(key);
+  const prev = st.roundBriefs && typeof st.roundBriefs === "object" ? st.roundBriefs : {};
+  const next = Object.assign({}, prev);
+  next[key] = rec;
+  st.roundBriefs = agentRoundBriefsTrim(next);
+  /* ③ 主进程字段级通道。没有通道（老宿主）→ 只留内存，下一次整份落盘带上 */
+  const api = window.api && window.api.sessionPatch;
+  if (!api) {
+    try {
+      agentMarkSessionDirty(id);
+    } catch (_) {}
+    return true;
+  }
+  return Promise.resolve(api({ id: id, patch: { roundBriefs: st.roundBriefs } })).then(
+    (r) => {
+      if (r && r.ok !== false) return true;
+      /* 失败 / 盘上还没有这份文件：降级为「本次内存可见」，如实记一行，不打扰用户 */
+      try {
+        console.error(
+          "[brief] 本轮简报没能写进会话文件（已保留在内存里）: " +
+            id +
+            " " +
+            String((r && r.error) || ""),
+        );
+      } catch (_) {}
+      try {
+        agentMarkSessionDirty(id); /* 下一次整份落盘会把这个键一起带上 */
+      } catch (_) {}
+      done.delete(key); /* 没写进盘：下一次整份落盘 / 再试时还可以重来 */
+      return false;
+    },
+    (e) => {
+      try {
+        console.error("[brief] 本轮简报写盘异常（已保留在内存里）: " + id, e);
+      } catch (_) {}
+      try {
+        agentMarkSessionDirty(id);
+      } catch (_) {}
+      done.delete(key);
+      return false;
+    },
+  );
+}
+/* 某一会话「已写过的存档键」那份账（id → Set<key>）。老值是单个字符串（T4 早期的形状）
+   一并收编成集合，免得换版那一刻把同一个键写第二遍。 */
+function agentRoundBriefSavedOf(id) {
+  const k = String(id || "");
+  let set = S._roundBriefSaved.get(k);
+  if (typeof set === "string") set = new Set(set ? [set] : []);
+  if (!(set instanceof Set)) set = new Set();
+  S._roundBriefSaved.set(k, set);
+  return set;
+}
+/* 回填的结果写回存档（任务 5/8 ③：与 T4 同一条通道 —— 同一个 session:patch、同一个键位）。
+   调度器补好的那几轮由这里按 key 显式写：写过的键记在同一份账上，所以这一句每帧跑
+   也只会写「刚补成的那几条」；补败 / 排着的不写（没有内容可写）。 */
+function agentRoundBriefFlushBackfill(sid, x) {
+  const bf = x && x.backfill;
+  if (!bf || typeof bf !== "object") return 0;
+  let n = 0;
+  for (const key of Object.keys(bf)) {
+    const e = bf[key];
+    if (!e || e.phase !== "ok" || !e.hasBrief) continue;
+    const r = agentRoundBriefPersist(
+      sid,
+      {
+        at: Number(e.at) || 0,
+        summary: String(e.summary || ""),
+        items: Array.isArray(e.items) ? e.items : [],
+        stale: !!e.stale,
+        final: true, /* 回填的那一份就是这一轮的定稿：走同一个写入口、同一套上限 */
+      },
+      key,
+    );
+    if (r !== false) n++;
+  }
+  return n;
+}
 /* 读回一条会话的正文并原地合并（保留数组里的对象引用：别处的 st 变量不会失效）。
    返回 true = 现在可以读 messages 了。 */
 async function agentEnsureSessionBody(st) {
@@ -3462,7 +3661,23 @@ async function agentEnsureSessionBody(st) {
       const keepTitle = String(st.title || "");
       const keepTitleLocked = !!st.titleLocked;
       const keepTitleAuto = !!st.titleAuto;
+      /* 同一类「盘上那份是旧快照」的还有三位（任务 4/8 ②：上一轮真机自验发现「重启后
+        简报开关与子 Tab 停留位置丢失」）：
+           · brief / briefTab（简报模式开关、上次停在哪个子 Tab）—— 它们与标题同一个根因：
+             日常落盘只走追加段，会话文件基线顶层那两位停在很久以前，而索引是最后写的那一份；
+             读回正文一盖，屏幕上就退回旧值（开关看着被关掉、子 Tab 跳回「原始」）。
+             索引那份**更新**，所以两位一律以内存为准，不许盘上那份盖回去；
+           · roundBriefs（按轮简报存档）反过来：索引里没有它这一格，内存可能是空的 ——
+             盘上那份要并进来（同键以内存为准，见 agentRoundBriefsMerge）。 */
+      const keepBrief = !!st.brief;
+      const keepBriefTab = String(st.briefTab || "");
+      const keepRoundBriefs =
+        st.roundBriefs && typeof st.roundBriefs === "object" ? st.roundBriefs : null;
       Object.assign(st, got);
+      if (!!st.brief !== keepBrief) st.brief = keepBrief;
+      if (String(st.briefTab || "") !== keepBriefTab) st.briefTab = keepBriefTab;
+      if (keepRoundBriefs) st.roundBriefs = agentRoundBriefsMerge(st.roundBriefs, keepRoundBriefs);
+      else if (st.roundBriefs) st.roundBriefs = agentRoundBriefsTrim(st.roundBriefs);
       /* 保留条件两条，任一成立就不许盘上那份盖回去：
          ① 用户亲口改过名（titleLocked）；
          ② 索引这份是真名，而盘上那份退化了 —— 是占位名（「新会话」），或者引擎已定名的
@@ -3683,6 +3898,9 @@ function agentViewBlankSt() {
     /* 纯净模式与真会话的播种值一致（新会话默认开，见 newAgentSession）：占位空会话也照这个
        显示，免得「首轮态 chip 显示关、发出第一条就变开」。 */
     pure: true,
+    /* 「简报模式」同理：按「之后新建会话的默认」显示（见 briefDefaultOn） */
+    brief: briefDefaultOn(),
+    briefTab: "",
     messages: [],
     archived: false,
     updatedAt: Date.now(),
@@ -3928,6 +4146,9 @@ function agentSessionState() {
       /* 纯净模式 = 新会话默认开（与 newAgentSession 同一播种值）：这个空壳收到第一条消息就
          成为真会话，不能让它的模式与会话默认对不上。 */
       pure: true,
+      /* 「简报模式」同一条道理：播种值跟着「之后新建会话的默认」走（见 briefDefaultOn） */
+      brief: briefDefaultOn(),
+      briefTab: "",
       messages: [],
       archived: false,
       updatedAt: Date.now(),
@@ -4314,7 +4535,7 @@ function agentScheduleSessionDropRetry() {
 }
 /* 索引条目 = 左栏要用的全部元数据（与主进程 META_KEYS 同步：漏一个键界面就少一块） */
 function agentSessionMetaForDisk(s) {
-  return {
+  const meta = {
     id: s.id,
     title: s.title || I18n.t("新会话"),
     /* 标题真源标记：titleAuto = 这条已被引擎首轮自动命名（节点改名不再刷回模块名）；
@@ -4340,6 +4561,11 @@ function agentSessionMetaForDisk(s) {
     hotfix: !!s.hotfix,
     /* 「显示思考」：只落这条会话自己点过的那一态（null = 跟随全局默认档） */
     showThink: typeof s.showThink === "boolean" ? s.showThink : null,
+    /* 「简报模式」会话级开关：缺省关（每步额外一次模型调用，消耗计入用量） */
+    brief: !!s.brief,
+    /* 上次停在哪个子 Tab（"" = 原始 / "brief" = 简报）：随会话走，重启回来还在那一片
+       （与 brief 同批进索引，主进程 META_KEYS 里有同名的两位） */
+    briefTab: s.briefTab === "brief" ? "brief" : "",
     trajView: s.trajView === "trace" || s.trajView === "changes" ? s.trajView : "",
     /* 开发绑定会话「不读画布」标记：必须随会话落盘（丢了可见集漂移 → 换 runtime 冷起） */
     noCanvasRead: !!s.noCanvasRead,
@@ -4434,6 +4660,15 @@ function agentSessionMetaForDisk(s) {
     /* 开发 / 细化绑定会话的任务书契约：随会话持久化，重启后仍按契约运行 */
     devContract: s._devContract || "",
   };
+  /* 简报按轮存档（任务 4/8）：主通道是 session:patch（一轮定稿版落地时写一次），
+     这里带上它是为了**整份正文落盘时不把它丢掉** —— 整份写的语义是「盘上那份 = 这一份」，
+     漏一个键就等于把已存的简报抹了。没有简报的会话不写这个键（空对象不进文件）。
+     注意：主进程的索引条目只取 META_KEYS，这个键不进索引（它是会话正文顶层的存档）。 */
+  {
+    const rb = agentRoundBriefsTrim(s && s.roundBriefs);
+    if (Object.keys(rb).length) meta.roundBriefs = rb;
+  }
+  return meta;
 }
 /* ── 轮中增量落盘（共识 q12 / q16：所有会话统一，会话运行链自己的落盘策略）──────────
    过去正文 / 思考只在这一轮**结束时**才进 messages 并写盘，一崩 / 一刷窗 / 一强制重启，
@@ -4748,6 +4983,10 @@ function newAgentSession() {
     noCanvasRead: false,
     /* 「与画布无关」是用户手动声明档：新建会话默认关（照常读画布） */
     canvasFree: false,
+    /* 「简报模式」播种值（本轮需求 · 粘性默认）：用户上次开过就默认开、关过就默认关
+       （真源 config.dsh.briefOn，缺位 = 关，见 briefDefaultOn）。这条会话此后各记各的。 */
+    brief: briefDefaultOn(),
+    briefTab: "",
     messages: [],
     archived: false,
     updatedAt: Date.now(),
@@ -5207,7 +5446,7 @@ function paintAssistChips() {
   if (mChip) {
     const val = assistModelChipLabel();
     if (mText) mText.textContent = val;
-    const tip = I18n.t("模型提供商 / 预设 / 模型 / 思考强度 / 上下文压缩") + "：" + val;
+    const tip = I18n.t("模型提供商 / 预设 / 模型 / 思考强度 / 上下文压缩 / 简报模型") + "：" + val;
     mChip.title = tip;
     mChip.dataset.i18nTitle = tip;
   }
@@ -5618,7 +5857,7 @@ function renderAgentComposer() {
       (st.pure ? I18n.t("纯净") + " · " : "") + agentPresetLabel(st.preset) + " · " + agentModelName(st);
   const mt = document.getElementById("agentModelTrigger");
   if (mt) {
-    mt.dataset.i18nTitle = "模型提供商 / 预设 / 模型 / 思考强度 / 上下文压缩";
+    mt.dataset.i18nTitle = "模型提供商 / 预设 / 模型 / 思考强度 / 上下文压缩 / 简报模型";
     mt.title = I18n.t(mt.dataset.i18nTitle);
   }
   const wv = document.getElementById("agentWsTriggerVal");
@@ -5762,6 +6001,15 @@ function buildAgentModelMenu() {
        值本身是**全局**的（main.js 的 syncCompactPolicy 把它写进 dsh 组合的 compaction-basic
        行），生效时机 = 下一个新会话：正在跑的会话沿用原值，与助手栏的口径一字一致。 */
     agentMenuItemCell(menu, "上下文压缩", agentCompactMenuValue(), "compact");
+    /* 「简报模型」一格（本轮需求）：紧挨「上下文压缩」—— 两者都是「智能能力」里的一次性 /
+       后台模型用途。真源 = S.config.dsh.brief（{ provider, model }），由 main.js 的
+       syncBriefModel 同步一份到主进程（手选那一档由主进程按快照补服务商与模型，
+       见 renderer/app-brief-model.js 的 briefModelOnce）。
+       **缺省不置灰**：provider 留空 = 跟随该会话当前 provider / model，本身就是可用档。
+       **只在简报模式开着时列出**（用户口径）：这一格管的是「简报那次一次性调用用哪只
+       模型」，模式没开就没有那次调用 —— 关着时这一格整行不出现。 */
+    if (st && st.brief === true)
+      agentMenuItemCell(menu, "简报模型", briefModelMenuValue(), "brief");
     return;
   }
   const bk = document.createElement("button");
@@ -5775,7 +6023,9 @@ function buildAgentModelMenu() {
           ? I18n.t("模型提供商")
           : pane === "compact"
             ? I18n.t("上下文压缩")
-            : I18n.t("思考强度");
+            : pane === "brief"
+              ? I18n.t("简报模型")
+              : I18n.t("思考强度");
   bk.textContent = "← " + backLabel;
   bk.onclick = back;
   menu.appendChild(bk);
@@ -5870,6 +6120,65 @@ function buildAgentModelMenu() {
       menu.appendChild(opt);
     }
     if (!any) {
+      const e = document.createElement("div");
+      e.className = "agent-menu-empty";
+      e.textContent = I18n.t("没有可用的模型");
+      menu.appendChild(e);
+    }
+  } else if (pane === "brief") {
+    /* 简报模型（本轮需求）：会话简报那次一次性调用用哪只模型 —— 口径与调用通道都在
+       renderer/app-brief-model.js（briefModelOf / briefModelOnce / setBriefModel）。
+       第一项 = 缺省档「跟随会话模型」（provider 留空，跑的时候用该会话当前那只），
+       其后按服务商分组列出本机可选的模型（清单与「模型提供商 / 模型」两格同一个
+       agentProviderGroupsNow，不另拼一份名单）。
+       写回只走 setBriefModel（S.config.dsh.brief → persistAssistUi 落盘 →
+       main.js 的 syncBriefModel 同步一份到主进程），这里不自己碰 config。
+       **这一页不置灰**：跟随会话模型本身就是可用档，只是会与主会话争并发、成本更高。 */
+    const cur = briefModelOf(S.config);
+    const follow = document.createElement("button");
+    follow.className = "agent-menu-option" + (cur.provider ? "" : " selected");
+    follow.innerHTML =
+      '<span class="agent-menu-option-copy"><span class="agent-menu-option-name"></span></span>' +
+      '<span class="agent-menu-check">' + (cur.provider ? "" : "✓") + "</span>";
+    follow.querySelector(".agent-menu-option-name").textContent = I18n.t("跟随会话模型");
+    follow.onclick = () => {
+      setBriefModel("", "");
+      closeAgentMenus();
+      renderAgentSession();
+    };
+    menu.appendChild(follow);
+    /* 缺省档的代价写在格的下面（用户看得见才叫「写明」）：与主会话共用同一只模型 →
+       并发争用、单价也就是主会话那只的单价。补一句「不带会话上下文」免得误会成摘要。 */
+    const note = document.createElement("div");
+    note.className = "agent-menu-empty";
+    note.textContent = I18n.t(
+      "跟随会话模型会与主会话争并发、成本更高（简报调用不带会话上下文，不影响会话历史）",
+    );
+    menu.appendChild(note);
+    const groups = agentProviderGroupsNow();
+    for (const g of groups) {
+      const gh = document.createElement("div");
+      gh.className = "agent-menu-group-title";
+      gh.textContent = g.name || g.id;
+      menu.appendChild(gh);
+      for (const m of g.models || []) {
+        const on = cur.provider === g.id && cur.model === m;
+        const opt = document.createElement("button");
+        opt.className = "agent-menu-option" + (on ? " selected" : "");
+        opt.innerHTML =
+          '<span class="agent-menu-option-copy"><span class="agent-menu-option-name"></span></span>' +
+          '<span class="agent-menu-check">' + (on ? "✓" : "") + "</span>";
+        opt.querySelector(".agent-menu-option-name").textContent = m;
+        opt.title = g.id;
+        opt.onclick = () => {
+          setBriefModel(g.id, m);
+          closeAgentMenus();
+          renderAgentSession();
+        };
+        menu.appendChild(opt);
+      }
+    }
+    if (!groups.length) {
       const e = document.createElement("div");
       e.className = "agent-menu-empty";
       e.textContent = I18n.t("没有可用的模型");
@@ -6349,6 +6658,36 @@ function agentModeSyncAssist(st) {
     if (typeof renderAssistPanel === "function") renderAssistPanel();
   } catch (_) {}
 }
+/* ── 「简报模式」的粘性默认（用户口径 · 本轮需求）───────────────────────────
+   用户在**任意一条会话**里开过简报，之后新建的会话就默认开着；关过一次，之后新建的会话
+   就默认关。真源 = config.dsh.briefOn（缺位 = 关，与老存档同一口径）。
+   两条边界（就是用户的原话）：
+     · 只播种**新建**会话：真源仍是每条会话自己的 st.brief，这里改全局档时一条老会话都
+       不动 —— 所以「关掉简报」不会把之前已经开着的会话一起关掉；
+     · 反过来也不成立：全局档开不会让一条 st.brief 为 false 的老会话自己跑起来 ——
+       调度器判据（app-brief-sched.js 的 briefSchedOn）只看会话自己那一份，不看这一档。 */
+function briefDefaultOn() {
+  try {
+    return !!(S && S.config && S.config.dsh && S.config.dsh.briefOn === true);
+  } catch (_) {
+    return false;
+  }
+}
+function briefDefaultSet(on) {
+  const next = !!on;
+  try {
+    if (!S || !S.config) return false;
+    /* 缺位按「关」算：要写的东西与现状一致就不落盘（写关时也不往 config.json 塞一个 false） */
+    if (((S.config.dsh && S.config.dsh.briefOn === true) === true) === next) return true;
+    if (!S.config.dsh) S.config.dsh = {};
+    S.config.dsh.briefOn = next;
+    /* 与「设置 · 默认模型」同一条落盘链：立刻写 config.json，重启后新会话仍按它播种 */
+    if (typeof settingsSaveNow === "function") settingsSaveNow();
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
 function agentModeEntryOf(key) {
   const st = agentSessionState();
   /* 「先拷问需求（grill-me）」（本次需求 · 会话窗口模式菜单新增的一枚）：
@@ -6499,6 +6838,63 @@ function agentModeEntryOf(key) {
       },
     };
   }
+  /* 「简报模式」（本任务）：会话级开关，**缺省关** —— 打开后每办完一步（工具结果落地 /
+     思考段定稿）就额外调一次模型，把这一轮的进展写成一版简报（节流 1.5s，见
+     renderer/app-brief-sched.js）；关了就没有任何额外调用。
+     开关只负责写会话字段 st.brief + 重绘：真跑不跑由调度器按同一字段判（briefSchedCancel
+     在这里一并收掉在途请求，回执丢弃，上一版简报原样留着）。
+     **粘性默认**（本轮需求 · 用户口径）：这一下开 / 关同时写进全局档 config.dsh.briefOn
+     （见 briefDefaultSet），于是往后新建的会话跟着走同一条默认；已经存在的会话各记各的
+     st.brief，关掉时一条都不会被连带关掉。 */
+  if (key === "brief") {
+    const on = !!(st && st.brief === true);
+    return {
+      key: "brief",
+      label: "简报模式",
+      /* 副标题必须明写成本（需求原话）：这一步是额外调用，不是白送的；
+         后半句是本轮补的粘性口径 —— 用户点完就知道「以后的新会话也按这一下默认」。 */
+      hint: "每步会额外调用模型（节流 1.5s），消耗计入用量；这一下也是之后新建会话的默认",
+      title: on
+        ? "简报模式：开启中，点击关闭（关闭后不再为每一步额外调用模型；之后的会话也默认关闭，已经开着的会话不受影响）"
+        : "简报模式：点击开启（每完成一步额外调用一次模型，节流 1.5s，消耗计入用量；之后新建的会话也默认开启）",
+      on,
+      /* 落点式写入（与「显示思考」同款）：按**点击那一刻**的会话态取反，
+         菜单点完不关，连点第二下必须真的翻回去。
+         开关与「原始 / 简报」的停留位置**彻底解耦**（本任务 · 用户报障「一开简报模式，
+         会话区就从原始跳到简报」）：这一枚只写 st.brief，决定两枚子 Tab 出不出现；
+         停留位置一律归位到「原始」（写空串，**绝不写 "brief"**）——
+         ① 开 = 只是让两枚子 Tab 出现，不替用户把正文切走；
+         ② 关 = 两片都不存在了，上次停在哪儿这件事一并作废，否则下次开启会直接落回简报
+            （这条就是报障的可复现路径：点过简报 → 关 → 再开 = 跳到简报）。
+         值真的翻转时才归位，重复点同一态不动字段、不白落盘。 */
+      set(next) {
+        const s = agentSessionState() || st;
+        const was = s.brief === true;
+        s.brief = !!next;
+        if (was !== s.brief) {
+          s.briefTab = "";
+          /* 粘性默认（本轮需求）：这一下开 / 关同时成为**之后新建会话**的默认
+             （config.dsh.briefOn）。只改全局档，眼前这条以外的会话一条都不动 ——
+             用户口径「关掉只影响之后的会话，之前开着的保持开启」。 */
+          briefDefaultSet(s.brief);
+        }
+        /* 关掉 = 在途的那次作废（不写状态、不落盘），排队定时器与 pending 一起清
+           —— 见 renderer/app-brief-sched.js 的 cancel(sid, "off")。 */
+        if (!s.brief && s.id && typeof briefSchedCancel === "function")
+          briefSchedCancel(String(s.id), "off");
+        agentTouchSession();
+        renderAgentComposer();
+        if (typeof renderAgentSession === "function") renderAgentSession();
+        agentModeSyncAssist(s);
+      },
+      toggle() {
+        this.set(!((agentSessionState() || st).brief === true));
+      },
+      onPick() {
+        this.set(!((agentSessionState() || st).brief === true));
+      },
+    };
+  }
   /* 助手栏的两枚开关（本轮需求 · 会话为主体）：真源与普通会话**完全同一套字段** ——
      st.grill / st.pure；助手栏这一份只是把它渲染在助手面板里（点一下就写会话字段）。
      还没有会话时写的是本次运行的播种值（agentAssistSwitchSet），不落盘、不建空会话。 */
@@ -6588,6 +6984,9 @@ function agentModeEntries() {
     agentModeEntryOf("pure"),
     agentModeEntryOf("auto"),
     agentModeEntryOf("think"),
+    /* 「简报模式」放在最后：它一开就是「每一步多一次模型调用」，是这一列里唯一
+       会自己花钱的开关，别把它摆在最常点的那几枚中间。 */
+    agentModeEntryOf("brief"),
   ];
 }
 /* 助手栏「模式」菜单的行（本轮需求 · 会话为主体）：与会话侧**同一套构件、同一份字段**
@@ -11083,8 +11482,18 @@ function dshHistSegEl(seg, pool, nodeId, idx, n, showThink, msgAt, policy, tok) 
   }
   return null;
 }
-/* live 行：按轨迹段序输出（think → details 折叠 / say → 正文 / tool → chips / err → ⚠） */
-function agentLiveSegsEl(row, st, live, items) {
+/* live 行：按轨迹段序输出（think → details 折叠 / say → 正文 / tool → chips / err → ⚠）
+   opts（可选，只有「次要渲染面」传，见简报区里运行中那一轮）：
+     · secondary === true → 这一面是**同一个会话的第二份**渲染（简报区里运行中那一轮）：
+       不挂 #agent-stream / #agent-think（那两个 id 是「就地更新落点」，全文档只能有一枚、
+       且永远属于原始子 Tab 那一份；次要面照旧写 dataset.segIdx，正文由 dshSegSetStreamText
+       按段序就地写 —— 同一个函数、同一段文本，不重渲 markdown）；
+       不写「本步 token」（次要面只喂 say / err 段，段序与「步」不对齐，算出来的数是错的）；
+       不挂服务端工具块（联网搜索那一条在原始子 Tab 里，搬过来就是第二份）。
+   对账口径一个字不变（row._dshItemsRef / row._dshRound / 未回来的工具卡回退起点）。 */
+function agentLiveSegsEl(row, st, live, items, opts) {
+  const secondary = !!(opts && opts.secondary === true);
+  const ownIds = !secondary;
   const tools = Array.isArray(st._liveTools) ? st._liveTools : [];
   const nodeId = live ? live.id : st.id;
   /* 会话「显示思考」开关：live 行与历史消息同一判据（关掉 = 思考段整块不渲染，
@@ -11105,7 +11514,8 @@ function agentLiveSegsEl(row, st, live, items) {
      —— 否则长任务里「每来一帧就把上千段重建一遍」正是卡死的来源。
      索引一律用 items 里的绝对序号：流式就地更新按 dataset.segIdx 找尾段，不能错位。 */
   const round = typeof agentTraceRound === "function" ? agentTraceRound("agent:" + st.id) : null;
-  const tokMap = typeof dshTokStepMapOf === "function" ? dshTokStepMapOf(st) : null;
+  const tokMap =
+    !secondary && typeof dshTokStepMapOf === "function" ? dshTokStepMapOf(st) : null;
   const built = Array.isArray(row._dshSegEls) ? row._dshSegEls : null;
   /* 对账（三条全中才敢复用）：
        · 同一份 items 数组（tracePush 就地追加 = 同一个引用；换轮 = traceReset 换新数组）；
@@ -11164,8 +11574,11 @@ function agentLiveSegsEl(row, st, live, items) {
   row._dshRound = round;
   for (let i = start; i < items.length; i++) {
     const seg = items[i];
-    /* 该步的 token（只有「这一步的最后一段」才有；拿不到轮号 / 明细 → null = 不写） */
-    const tok = typeof dshStepTokAt === "function" ? dshStepTokAt(items, i, round, tokMap) : null;
+    /* 该步的 token（只有「这一步的最后一段」才有；拿不到轮号 / 明细 / 次要面 → null = 不写） */
+    const tok =
+      !secondary && typeof dshStepTokAt === "function"
+        ? dshStepTokAt(items, i, round, tokMap)
+        : null;
     if (!seg) {
       segEls[i] = null;
       continue;
@@ -11201,7 +11614,8 @@ function agentLiveSegsEl(row, st, live, items) {
         continue;
       }
       if (streaming) {
-        btn.id = "agent-think";
+        /* 次要渲染面不挂 id（见函数头 opts）：照旧挂段序，就地更新按段序找它 */
+        if (ownIds) btn.id = "agent-think";
         btn.dataset.segIdx = String(i);
         /* 记下这一帧的 id 宿主：下一帧它若被复用（不再是尾段），先把 id 摘掉，
            免得两枚元素同时叫 #agent-think（就地更新会写到错的那一枚上）。 */
@@ -11224,8 +11638,9 @@ function agentLiveSegsEl(row, st, live, items) {
          没渲染 md」）。err 段不参与该判定（可能被后续同 step 的错误续写）。 */
       const stillStreaming = streaming && !(seg.k === "say" && seg.open === false);
       if (stillStreaming) {
-        /* 正在流的正文段：纯文本 + 旧 id，text 事件就地更新，避免每块重渲 markdown */
-        d.id = "agent-stream";
+        /* 正在流的正文段：纯文本 + 旧 id（次要面不挂 id，见函数头 opts），
+           text 事件就地更新，避免每块重渲 markdown */
+        if (ownIds) d.id = "agent-stream";
         d.dataset.segIdx = String(i);
         d.classList.add("dsh-stream");
         /* 同 #agent-think：记下 id 宿主，下一帧被复用时先摘 id（见上面那段说明） */
@@ -11303,12 +11718,13 @@ function agentLiveSegsEl(row, st, live, items) {
   }
   /* 服务端工具块（联网搜索 / 阅读链接）：挂在 live 行**最末尾**（历史消息那一支挂在正文之后）。
      段对账只认 _dshSegEls 里的元素，这一块不在其中，所以每次走这里都「先摘旧的、再挂新的」，
-     重绘多少次都只有一条（每帧都会重走本函数）。 */
+     重绘多少次都只有一条（每帧都会重走本函数）。次要渲染面不挂它（见函数头 opts）：
+     那一面只画这一轮的正文，联网搜索那一条留在原始子 Tab 里。 */
   let oldWt = null;
   for (const kid of row.children)
     if (kid && kid.classList && kid.classList.contains("dsh-webtool-live")) oldWt = kid;
   if (oldWt && oldWt.parentNode === row) row.removeChild(oldWt);
-  const wtEl = agentWebToolLiveEl(st);
+  const wtEl = secondary ? null : agentWebToolLiveEl(st);
   if (wtEl) row.appendChild(wtEl);
 }
 /* ==================== 服务端工具块（联网搜索 / 阅读链接）的渲染 ====================
@@ -12005,7 +12421,11 @@ function dshOnThinkClosed(runKey) {
   const id = k.slice("agent:".length);
   if (!id) return;
   const st = typeof agentSessionById === "function" ? agentSessionById(id) : null;
-  if (!st || !st.running) return;
+  if (!st) return;
+  /* 简报的另一个触发点：思考段定稿（= 这一段想完了，可以当一步报出去）。
+     与下面的增量落盘无关，所以放在落盘那几道闸之前（落盘只在轮中且有内容时才排队）。 */
+  if (typeof briefSchedTick === "function") briefSchedTick(st, "think-closed");
+  if (!st.running) return;
   try {
     if (!agentLivePartialMsg(st)) return;
     agentMarkSessionDirty(st.id);
@@ -13125,6 +13545,1041 @@ function dshMsgBlock(m, nodeId, idx, opts) {
   return row;
 }
 
+/* ═══════════ 简报子 Tab 的历史渲染（按轮渲染 + 行下就地展开原文）══════════════════
+   简报区（#agentBriefPane，骨架见 agentBriefTabsSync）里画什么，全在这一段：
+     · 按轮渲染：一轮 = 一条「真的提问」的用户消息 + 它之后、下一条提问之前的消息。
+       轮标题 = 这一轮的用户提问（markdown 原样，走 dshUserBodyHtml —— 与「原始」子 Tab
+       里同一条消息用同一份实现与同一份缓存，不另起一套）；
+       简报卡 = 现状一行 + 「发现」条目列表 + 可选的「产出 / 改动」「卡点 / 待定」两小节
+       （结论式三段式，见 agentBriefCardEl：卡片只摆结论，不再有「看步骤图」，stale 不上屏）；
+       卡下挂这一轮的最终答复（照常 markdown，走 dshMdCached 的同一份缓存）。
+     · 缺简报的轮**不是空白**（任务 5/8）：摆「原文摘录」—— 思考首句 + 工具结果首句 +
+       答复首句（2–3 行，可点开读完整原文），再摆补写状态；最近的几轮进页就自动补写
+       （串行、复用调度器那条超时与节流），更早的轮挂一枚「补一份」按钮按需补，一次一轮。
+     · 点某一行文字 → 紧邻下方就地展开那一段原文，再点收回；展开内容走现有
+       dshHistSegEl 分支逐段渲染（不写第二套）。
+   「原始」子 Tab 一个字都不改：这一段只在简报区里建 DOM，不碰 #agentList。 */
+
+/* 一条消息算不算「这一轮从这里开始」：真的要提问的用户消息。
+   插话（_kind === "steer"）不是新的一轮 —— 它顺着当前这一轮继续（与 dshMsgBlock 里
+   「⚡插话」气泡的口径一致）；界面痕迹行（_src 有值：user-closed / ix-init-progress /
+   ix-round-end …）也不是提问。 */
+function agentBriefRoundStartsAt(m) {
+  return !!(m && m.role === "user" && !m._src && m._kind !== "steer");
+}
+/* 整份消息表 → 轮（只读，不建 DOM）。每轮记：这一轮的用户提问（可空：会话开头那几条
+   没有提问的消息自成一轮）、这一轮的最终答复（最后一条有正文、又不是界面痕迹的助手消息）。 */
+function agentBriefRoundsOf(msgs) {
+  const list = Array.isArray(msgs) ? msgs : [];
+  const out = [];
+  let cur = null;
+  for (let i = 0; i < list.length; i++) {
+    const m = list[i];
+    if (!m) continue;
+    const starts = agentBriefRoundStartsAt(m);
+    if (starts || !cur) {
+      cur = {
+        idx: out.length,
+        user: starts ? m : null,
+        userIdx: starts ? i : -1,
+        last: null,
+        lastIdx: -1,
+      };
+      out.push(cur);
+    }
+    if (
+      m.role === "assistant" &&
+      !m._src &&
+      String(m.content == null ? "" : m.content).trim()
+    ) {
+      cur.last = m;
+      cur.lastIdx = i;
+    }
+  }
+  return out;
+}
+/* 一组「一句一条」的纯文本（「产出 / 改动」「卡点 / 待定」两节就是这种：只有句子、没有
+   步号可点）。对象形态也认（取 text），空串一律丢掉 —— 空条目就是空壳，不许上屏。 */
+function agentBriefLinesOf(v) {
+  const out = [];
+  for (const x of Array.isArray(v) ? v : []) {
+    const t = String(
+      x && typeof x === "object" ? (x.text == null ? "" : x.text) : x == null ? "" : x,
+    ).trim();
+    if (t) out.push(t);
+  }
+  return out;
+}
+/* 一份简报的形态归一成**四段**（任务 6/8 的卡片就按这四段画；内核自任务 3/8 起产出的
+   就是这个形状，见 renderer/app-brief.js 的 parse）：
+     { state, points:[{text, stepIds, status}], outputs:[], blockers:[] }
+   · state   = 现状一行（卡的主行）；points = 「发现」条目（每条一句结论）；
+   · outputs = 「产出 / 改动」· blockers = 「卡点 / 待定」（两节都可空，空了整节不画）；
+   · 旧存档 { summary, items } 照样读得懂（summary → state，items → points）；字符串形态
+     也认（走简报内核的 parse，步号对不上就是空 stepIds —— 该行不可点，但不丢这一行）；
+   · 另留 summary / items / stale 三份**旧名镜像**：按轮存档（agentRoundBriefRecordOf）
+     与各处指纹还按旧名取值，形状一个字节都不改，老读者不崩。stale 只留在数据里给上层
+     重算用 —— 卡片不画它（任务 6/8：stale 不再上屏）。 */
+function agentBriefNormShape(b) {
+  if (!b) return null;
+  if (typeof b === "string") {
+    try {
+      const B = window.MTBrief;
+      const p = B && typeof B.parse === "function" ? B.parse(b, []) : null;
+      if (!p) return null;
+      return agentBriefNormShape(p);
+    } catch (_) {
+      return null;
+    }
+  }
+  if (typeof b !== "object") return null;
+  /* 新名的 state 优先，没有才退回旧名 summary（旧存档 / 调度器那一份都是 summary） */
+  const rawState = String(b.state == null ? "" : b.state).trim() ? b.state : b.summary;
+  const state = String(rawState == null ? "" : rawState).trim();
+  const items = Array.isArray(b.points) ? b.points : Array.isArray(b.items) ? b.items : [];
+  const points = [];
+  for (const it of items) {
+    const o = it && typeof it === "object" ? it : { text: it };
+    const text = String(o.text == null ? "" : o.text).trim();
+    if (!text) continue;
+    const ids = Array.isArray(o.stepIds) ? o.stepIds : Array.isArray(o.refs) ? o.refs : [];
+    points.push({
+      text: text,
+      stepIds: ids.map((x) => String(x)),
+      status: String(o.status || ""),
+    });
+  }
+  const outputs = agentBriefLinesOf(b.outputs);
+  const blockers = agentBriefLinesOf(b.blockers);
+  if (!state && !points.length && !outputs.length && !blockers.length) return null;
+  return {
+    state: state,
+    points: points,
+    outputs: outputs,
+    blockers: blockers,
+    /* 旧名镜像（按轮存档与指纹按这两个名字取值，别删） */
+    summary: state,
+    items: points,
+    stale: !!b.stale,
+  };
+}
+/* 这一轮的存档键 = **该轮末助手消息的时间戳**（与 T4 落盘那一份 roundBriefs 的键同一个口径）。
+   没有落点时间戳的轮（连一条助手消息都没有）= 写不进存档，也就不值得补。 */
+function agentBriefRoundKeyOf(r) {
+  const at = Number(r && r.last && r.last.at) || 0;
+  return at ? String(at) : "";
+}
+/* 调度器手里这一份原始状态（含回填表）；读不到 = null。
+   一次绘制只读一次，别逐轮去问（state() 每次都要拷一份 items）。 */
+function agentBriefSchedRaw(st) {
+  try {
+    const S2 = window.MTBriefSched;
+    return S2 && typeof S2.state === "function" ? S2.state(st && st.id) : null;
+  } catch (_) {
+    return null;
+  }
+}
+/* 这一轮的简报从哪来（按优先级）：
+     ① 轮上带的（msg.brief，随那条消息一起落盘的那一份）；
+     ② 按轮存档 st.roundBriefs[该轮末助手消息 at]（T4 落盘的那一份，回填也写进这里）；
+     ③ 调度器手里补好的那一份（state().backfill[key]，刚补完、还没写回存档的那几帧）；
+     ④ 还是**最后那一轮** → 调度器手里这一份（正在跑 / 刚跑完，state()）。
+   都没有 = null → 卡片摆原文摘录 + 补写状态（不再是一行空白的「本轮未生成简报」）。 */
+function agentBriefOfRound(st, r, isLast, sched) {
+  const own =
+    agentBriefNormShape(r && r.last && r.last.brief) ||
+    agentBriefNormShape(r && r.user && r.user.brief);
+  if (own) return own;
+  const key = agentBriefRoundKeyOf(r);
+  const arch = agentBriefNormShape(
+    key && st && st.roundBriefs && typeof st.roundBriefs === "object"
+      ? st.roundBriefs[key]
+      : null,
+  );
+  if (arch) return arch;
+  const x = sched === undefined ? agentBriefSchedRaw(st) : sched;
+  const bf = x && x.backfill && key ? x.backfill[key] : null;
+  if (bf && bf.hasBrief) {
+    const n = agentBriefNormShape({ summary: bf.summary, items: bf.items, stale: bf.stale });
+    if (n) return n;
+  }
+  if (!isLast) return null;
+  try {
+    if (x && x.hasBrief) {
+      const n = agentBriefNormShape({ summary: x.summary, items: x.items, stale: x.stale });
+      if (n) return n;
+    }
+  } catch (_) {}
+  return null;
+}
+/* 缺简报的轮现在是哪一档：{ phase, ahead }。
+   phase："" 不需要（有简报）/ "idle" 还没补过 / "queued" 排着 / "running" 补写中 / "err" 没补上；
+   ahead：还排在这一件前面的件数（卡片上的进度读数）。一次读全，卡片与指纹用同一份读数。 */
+function agentBriefBackfillReadOf(r, sched) {
+  const key = agentBriefRoundKeyOf(r);
+  const bf = key && sched && sched.backfill ? sched.backfill[key] : null;
+  if (!bf) return { phase: "idle", ahead: 0 };
+  const phase =
+    bf.phase === "queued" || bf.phase === "running" || bf.phase === "err" ? bf.phase : "idle";
+  return { phase: phase, ahead: Number(bf.ahead) || 0 };
+}
+/* 回填一件活要的全部材料（交给调度器去问模型）：这一轮的段序列 + 工具账单 + 答复正文。
+   段序列走 agentBriefRoundSourceOf（这一轮自己落地的那条答复消息）：旧轮拿的是定稿后的
+   segments / tools，因此在简报里点 @步号 展开的就是同一段原文。 */
+function agentBriefBackfillJobOf(st, r) {
+  const key = agentBriefRoundKeyOf(r);
+  if (!key) return null;
+  const src = agentBriefRoundSourceOf(st, r);
+  if (!src || !Array.isArray(src.segs) || !src.segs.length) return null;
+  return {
+    key: key,
+    ask: String((r && r.user && r.user.content) || ""),
+    segs: src.segs,
+    pool: Array.isArray(src.pool) ? src.pool : [],
+    answer: String((r && r.last && r.last.content) || ""),
+  };
+}
+/* 进简报页就把**最近 AUTO_ROUNDS 轮**里缺简报的那些排进回填队列（串行、节流、幂等）：
+   调度器那边按 key 记账，同一轮不会被排第二次；更早的轮不在这里补 —— 它们交给
+   卡上的「补一份」按钮，一次一轮，开页不烧几十次调用。
+   两个「别抢」的闸：
+     · 已经在案（queued / running / ok / err）的轮直接跳过 —— 这一句每帧都会被叫到，
+       不能白采一遍原文；
+     · **主链路手里那一轮**（轮末定稿版，S._roundBriefKey 记的就是它）也不碰：那一轮的
+       简报归调度器主链路，同一轮问两遍 = 双倍调用，还可能让存档落到另一版上。 */
+function agentBriefBackfillAuto(st, rounds, briefs, liveR, sched) {
+  const S2 = window.MTBriefSched;
+  if (!S2 || typeof S2.backfill !== "function") return 0;
+  if (!st || st.brief !== true) return 0; /* 简报模式关着：一件都不补 */
+  const list = Array.isArray(rounds) ? rounds : [];
+  const n = Math.max(1, Number(S2.AUTO_ROUNDS) || 3);
+  const bf = sched && sched.backfill ? sched.backfill : null;
+  let ownKey = "";
+  try {
+    ownKey = S._roundBriefKey instanceof Map ? String(S._roundBriefKey.get(String(st.id)) || "") : "";
+  } catch (_) {
+    ownKey = "";
+  }
+  const jobs = [];
+  /* 从最后一轮往前数**已落地的** AUTO_ROUNDS 轮（运行中那一轮不算：它归调度器主链路），
+     这段区间里缺简报的才排 */
+  let seen = 0;
+  for (let i = list.length - 1; i >= 0 && seen < n; i--) {
+    const r = list[i];
+    if (!r || r === liveR) continue;
+    seen++;
+    if (briefs[i]) continue; /* 已有简报的不补 */
+    const key = agentBriefRoundKeyOf(r);
+    if (bf && bf[key]) continue; /* 排过 / 补过 / 补败过：不重复排 */
+    if (key && key === ownKey) continue; /* 主链路正管着这一轮 */
+    const job = agentBriefBackfillJobOf(st, r);
+    if (job) jobs.push(job);
+  }
+  if (!jobs.length) return 0;
+  try {
+    return Number(S2.backfill(st, jobs)) || 0;
+  } catch (_) {
+    return 0;
+  }
+}
+/* 这一轮的「步骤原文」池：简报里的步号 N ↔ 这一轮里第 N 个「思考 / 工具 / 出错」条目
+   （正文 / 上下文注入 / 压缩不算步 —— 与 app-brief-sched.js 的 briefStepsOf 同一个口径）。
+   两个来源：① 答复消息定稿后的分段（重启后也在，池 = m.tools）；
+             ② 这一轮还在跑、答复消息尚未落地 → 轨迹层这一轮的条目（池 = st._liveTools）。 */
+/* 这一轮**自己落地的那条答复消息**留下的原文（段 + 工具账单）；没有 = null。
+   旧轮（回填 / 摘录）只认这一份：绝不去读运行中那一轮的轨迹 —— 那会把别的轮的原文
+   摆到这一轮头上（张冠李戴比空白糟得多）。 */
+function agentBriefRoundSourceOf(st, r) {
+  const m = r && r.last;
+  if (!m || !Array.isArray(m.segments) || !m.segments.length) return null;
+  const segs = [];
+  for (const sg of m.segments) {
+    if (!sg) continue;
+    const k = String(sg.k || "");
+    if (k === "think" || k === "tool" || k === "err") segs.push(sg);
+  }
+  if (!segs.length) return null;
+  return {
+    segs: segs,
+    pool: Array.isArray(m.tools) ? m.tools.slice() : [],
+    at: m.at,
+    nodeId: String((st && st.id) || "agent"),
+    idx: r.lastIdx,
+  };
+}
+function agentBriefStepSource(st, r) {
+  const own = agentBriefRoundSourceOf(st, r);
+  if (own) return own;
+  const nodeId = String((st && st.id) || "agent");
+  const m = r && r.last;
+  if (m && Array.isArray(m.segments) && m.segments.length) {
+    const segs = [];
+    for (const sg of m.segments) {
+      if (!sg) continue;
+      const k = String(sg.k || "");
+      if (k === "think" || k === "tool" || k === "err") segs.push(sg);
+    }
+    if (segs.length)
+      return {
+        segs: segs,
+        pool: Array.isArray(m.tools) ? m.tools.slice() : [],
+        at: m.at,
+        nodeId: nodeId,
+        idx: r.lastIdx,
+      };
+  }
+  let items = null;
+  try {
+    items = typeof agentTraceItems === "function" ? agentTraceItems("agent:" + nodeId) : null;
+  } catch (_) {
+    items = null;
+  }
+  if (Array.isArray(items) && items.length) {
+    const segs = [];
+    for (const it of items) {
+      if (!it || !it.k) continue;
+      if (it.k === "say" || it.k === "ctx" || it.k === "compact") continue;
+      if (it.k === "think") segs.push({ k: "think", text: String(it.text || ""), at: it.at });
+      else if (it.k === "err") segs.push({ k: "err", text: String(it.text || ""), at: it.at });
+      else if (it.k === "tool")
+        segs.push({ k: "tool", callId: it.callId, step: it.step, at: it.at });
+    }
+    if (segs.length)
+      return {
+        segs: segs,
+        pool: Array.isArray(st && st._liveTools) ? st._liveTools.slice() : [],
+        at: 0,
+        nodeId: nodeId,
+        idx: null,
+      };
+  }
+  return null;
+}
+/* 行展开 / 图展开的展开态按会话记（st._briefOpen，**运行期字段**：不进 agentSessionMetaForDisk
+   落盘的那份元数据）。简报刷新 / 整表重建后重画这一块时，用户刚才摊开的那几行还摊着。 */
+function agentBriefOpenGet(st, key) {
+  try {
+    return !!(st && st._briefOpen && st._briefOpen[String(key)]);
+  } catch (_) {
+    return false;
+  }
+}
+function agentBriefOpenSet(st, key, on) {
+  try {
+    if (!st) return;
+    if (!st._briefOpen) st._briefOpen = Object.create(null);
+    if (on) st._briefOpen[String(key)] = 1;
+    else delete st._briefOpen[String(key)];
+  } catch (_) {}
+}
+/* 按步号取「原文」的 DOM：逐段交给 dshHistSegEl（历史消息那一支用的就是它，这里不写第二套）。
+   思考段一律按「显示」渲染：用户点了这一行就是要读那一段原文，不能被「显示思考」开关
+   在这块里悄悄压掉（该开关管的是对话正文那一片）。 */
+function agentBriefRawEls(src, stepIds) {
+  const out = [];
+  if (!src || !Array.isArray(src.segs) || !src.segs.length) return out;
+  const pol = dshPolicyOfView(dshTranscriptViewOfSessionId(src.nodeId));
+  for (const raw of stepIds) {
+    const n = Number(raw);
+    if (!(n >= 1) || n > src.segs.length) continue;
+    const i = n - 1;
+    /* 工具段会从池里取走自己那一条记录：每次都递一份新拷贝，几次展开互不影响 */
+    const pool = Array.isArray(src.pool) ? src.pool.slice() : [];
+    const el = dshHistSegEl(src.segs[i], pool, src.nodeId, src.idx, i, true, src.at, pol, null);
+    if (el) out.push(el);
+  }
+  return out;
+}
+/* 简报卡里的一行（一步一行）：未展开时就是普通样式的一行文字；能对上步号的那一行可点，
+   点开在**紧邻下方**就地展开那一段原文，再点收回。对不上步号（模型漏写 @步号 / 该轮
+   存档里没有那一段）= 不可点，绝不编一段原文出来。 */
+function agentBriefStepEl(st, src, it, key) {
+  const line = document.createElement("div");
+  line.className = "dsh-brief-step" + (it.status === "error" ? " is-err" : "");
+  const txt = document.createElement("span");
+  txt.className = "dsh-brief-step-txt";
+  txt.textContent = it.text;
+  line.appendChild(txt);
+  /* 可点开的依据是 refs（简报内核里 refs 与 stepIds 同一份步号；旧存档只留 stepIds）：
+     一个都对不上这一轮的段 → 这一行不可点，也不建空的展开块。 */
+  const stepIds = (it.stepIds || it.refs || []).filter(
+    (id) => /^\d+$/.test(String(id)) && src && Number(id) >= 1 && Number(id) <= src.segs.length,
+  );
+  if (!stepIds.length) return line;
+  let raw = null;
+  const toggle = (force) => {
+    const on = force === true ? true : !(raw && raw.hidden === false);
+    if (!raw) {
+      raw = document.createElement("div");
+      raw.className = "dsh-brief-raw";
+      const els = agentBriefRawEls(src, stepIds);
+      if (!els.length) {
+        const none = document.createElement("div");
+        none.className = "dsh-brief-miss";
+        none.textContent = I18n.t("这一步的原文已经不在存档里了");
+        raw.appendChild(none);
+      }
+      for (const el of els) raw.appendChild(el);
+      if (line.parentNode) line.parentNode.insertBefore(raw, line.nextSibling);
+    }
+    raw.hidden = !on;
+    line.classList.toggle("on", on);
+    line.setAttribute("aria-expanded", on ? "true" : "false");
+    agentBriefOpenSet(st, key, on);
+  };
+  line.classList.add("is-openable");
+  line.setAttribute("role", "button");
+  line.tabIndex = 0;
+  line.title = I18n.t("点开读这一步的原文；再点收起");
+  line.setAttribute("aria-expanded", "false");
+  line.onclick = () => toggle();
+  line.onkeydown = (ev) => {
+    if (ev && (ev.key === "Enter" || ev.key === " ")) {
+      ev.preventDefault();
+      toggle();
+    }
+  };
+  /* 展开态由调用方在**把这一行挂进 DOM 之后**再复原（见 agentBriefCardEl）：
+     原文块要插在这行自己的 nextSibling 上，那时它才有父节点。 */
+  line._dshBriefOpen = () => toggle(true);
+  return line;
+}
+/* ═══════════ 缺简报时的原文摘录（任务 5/8：旧会话回填 · 没简报也不许是空白）══════════
+   简报模式是后开的，之前的轮一份简报都没有。这里不再画一行干巴巴的「本轮未生成简报」，
+   而是把这一轮的**三处原文各截首句**摆出来（思考 / 工具结果 / 答复，最多 3 行）：
+   用户当场就能读到「这一轮做了什么、答了什么」，不必等补写，也不必切回「原始」翻。
+   每一行就是简报卡里那一种「一步一行」（agentBriefStepEl）：对得上步号的那两行照样可以
+   点开读**完整原文**（思考段 / 工具结果段，走 dshHistSegEl，与卡里的行同一份实现）；
+   答复整段本来就在下面渲染，所以它那一行不用点。 */
+function agentBriefOneSentence(v, cap) {
+  const s = String(v == null ? "" : v).replace(/\s+/g, " ").trim();
+  if (!s) return "";
+  const m = /^[\s\S]*?[。！？!?；;]/.exec(s);
+  const one = String(m ? m[0] : s).trim();
+  const n = cap || 140;
+  return one.length > n ? one.slice(0, n).trim() + "…" : one;
+}
+function agentBriefFirstLineOf(v) {
+  for (const l of String(v == null ? "" : v).replace(/\r\n?/g, "\n").split("\n")) {
+    const s = l.trim();
+    if (s) return s;
+  }
+  return "";
+}
+/* 摘录三行：思考首句 / 工具结果首句 / 答复首句（有哪几样给哪几样；一样都没有 = 空数组）。
+   步号口径与 agentBriefStepSource 的段序号一致（第 i 段的步号 = i + 1）。 */
+function agentBriefExcerptLines(src, answer) {
+  const lines = [];
+  const segs = src && Array.isArray(src.segs) ? src.segs : [];
+  const pool = src && Array.isArray(src.pool) ? src.pool : [];
+  const byCall = {};
+  for (const x of pool) if (x && x.callId) byCall[String(x.callId)] = x;
+  let think = "";
+  let thinkAt = -1;
+  let tool = "";
+  let toolAt = -1;
+  for (let i = 0; i < segs.length; i++) {
+    const sg = segs[i] || {};
+    if (thinkAt < 0 && sg.k === "think" && String(sg.text || "").trim()) {
+      think = String(sg.text);
+      thinkAt = i;
+    }
+    if (toolAt < 0 && sg.k === "tool") {
+      const rec = byCall[String(sg.callId || "")] || null;
+      const txt =
+        rec && typeof toolResultText === "function" ? String(toolResultText(rec) || "") : "";
+      if (txt.trim()) {
+        tool = txt;
+        toolAt = i;
+      }
+    }
+    if (thinkAt >= 0 && toolAt >= 0) break;
+  }
+  const th = agentBriefOneSentence(think);
+  const tl = agentBriefOneSentence(agentBriefFirstLineOf(tool));
+  const an = agentBriefOneSentence(answer);
+  if (th) lines.push({ text: I18n.t("思考：") + th, stepIds: [String(thinkAt + 1)], status: "" });
+  if (tl) lines.push({ text: I18n.t("工具：") + tl, stepIds: [String(toolAt + 1)], status: "" });
+  if (an) lines.push({ text: I18n.t("答复：") + an, stepIds: [], status: "" });
+  return lines;
+}
+/* 缺简报的轮摆在卡位上的那一块：原文摘录（2–3 行）+ 补写状态 + （更早的轮）「补一份」。
+   返回 null = 连一行原文、一句状态、一枚按钮都没有（真空白的一轮），调用方退回原来那一行提示。
+   canBackfill = 这一轮早于「最近 AUTO_ROUNDS 轮」：只有它们才挂按钮（进页自动补的那几轮不用）。 */
+function agentBriefFallbackEl(st, r, src, read, canBackfill) {
+  const phase = read && read.phase ? String(read.phase) : "idle";
+  const ahead = Number(read && read.ahead) || 0;
+  const lines = agentBriefExcerptLines(src, String((r.last && r.last.content) || ""));
+  let note = "";
+  if (phase === "running") note = I18n.t("正在补这一轮的简报…");
+  else if (phase === "queued")
+    note = ahead > 0
+      ? I18n.t("排队补这一轮的简报（前面还有 {n} 轮）", { n: ahead })
+      : I18n.t("排队补这一轮的简报…");
+  else if (phase === "err") note = I18n.t("这一轮的简报没能补上");
+  /* 「补一份」：更早的轮（进页不会自动补），一次一轮；没材料（连一段原文都没有）就不挂；
+     宿主没有回填通道（老壳 / 调度器缺席）也不挂 —— 不给一枚点了不动的按钮。 */
+  const canAsk =
+    typeof window.MTBriefSched === "object" &&
+    window.MTBriefSched &&
+    typeof window.MTBriefSched.backfill === "function";
+  const job =
+    canBackfill && canAsk && (phase === "idle" || phase === "err")
+      ? agentBriefBackfillJobOf(st, r)
+      : null;
+  if (!lines.length && !note && !job) return null;
+  const card = document.createElement("div");
+  card.className = "dsh-brief-card dsh-brief-excerpt";
+  const head = document.createElement("div");
+  head.className = "dsh-brief-card-head";
+  const title = document.createElement("span");
+  title.className = "dsh-brief-card-title";
+  /* 有摘录就明说「原文摘录」；一行原文都没有时这块只剩状态，别挂着个空标题 */
+  title.textContent = I18n.t(lines.length ? "原文摘录" : "简报");
+  head.appendChild(title);
+  if (job) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "mini dsh-brief-backfill-btn";
+    btn.textContent = I18n.t(phase === "err" ? "再补一次" : "补一份");
+    btn.title = I18n.t("按需为这一轮补写一份简报（一次只补一轮；不点就不调用模型）");
+    btn.onclick = () => {
+      const S2 = window.MTBriefSched;
+      if (!S2 || typeof S2.backfill !== "function") return;
+      try {
+        S2.backfill(st, [job]);
+      } catch (_) {}
+    };
+    head.appendChild(btn);
+  }
+  card.appendChild(head);
+  const body = document.createElement("div");
+  body.className = "dsh-brief-card-body";
+  for (let i = 0; i < lines.length; i++) {
+    const key = r.idx + ":ex:" + i;
+    const line = agentBriefStepEl(st, src, lines[i], key);
+    body.appendChild(line);
+    /* 刚才摊开过的那一行还摊着（展开块要在挂进 DOM 之后才复原，同 agentBriefCardEl） */
+    if (agentBriefOpenGet(st, key) && typeof line._dshBriefOpen === "function")
+      line._dshBriefOpen();
+  }
+  if (note) {
+    const n = document.createElement("div");
+    n.className = "dsh-brief-miss";
+    n.textContent = note;
+    body.appendChild(n);
+  }
+  card.appendChild(body);
+  return card;
+}
+/* 卡片里的一节（小标题 + 条目行）：lines 为空 → 整节不建（不留空壳、不画空标题）。
+   tag 只用来给展开态记账起键名（p = 发现 / o = 产出 / k = 卡点），不进样式口径。 */
+function agentBriefSecEl(st, r, body, src, label, lines, tag) {
+  const list = Array.isArray(lines) ? lines : [];
+  if (!body || !list.length) return null;
+  const sec = document.createElement("div");
+  sec.className = "dsh-brief-sec dsh-brief-sec-" + tag;
+  const h = document.createElement("div");
+  h.className = "dsh-brief-sec-h";
+  h.textContent = I18n.t(label);
+  sec.appendChild(h);
+  for (let i = 0; i < list.length; i++) {
+    const key = r.idx + ":" + tag + i;
+    const it = list[i] && typeof list[i] === "object" ? list[i] : { text: list[i], stepIds: [] };
+    const line = agentBriefStepEl(st, src, it, key);
+    sec.appendChild(line);
+    /* 刚才摊开过的那一行还摊着（展开块要插在这一行之后，所以在挂进 DOM 之后再复原） */
+    if (agentBriefOpenGet(st, key) && typeof line._dshBriefOpen === "function")
+      line._dshBriefOpen();
+  }
+  body.appendChild(sec);
+  return sec;
+}
+/* 简报卡（结论式三段式 · 任务 6/8）：
+     ① 现状一行 —— 卡的主行、字号略大（.dsh-brief-state）：这一轮「现在是什么状态」；
+     ② 「发现」条目列表 —— 每条一句结论；带 refs（= 步号）的那几条可点，点开在**紧邻下方**
+        就地展开那一刻的原文；refs 为空的行不可点，也不留空壳（展开块只在点开时才建）；
+     ③ 可选两条小节 ——「产出 / 改动」与「卡点 / 待定」，只在有内容时出现（空了连标题都不画）。
+   不再有「看步骤图」：结论式简报不需要流程节点图（把结论当流程标签反而增加噪音），
+   同时卸掉本文件里对 renderer/app-pele.js 的那条依赖；stale 也不上屏 ——
+   「这份简报跟当前轨迹对不上」是给上层重算用的判断，不是给用户读的一行。 */
+function agentBriefCardEl(st, r, brief) {
+  const card = document.createElement("div");
+  card.className = "dsh-brief-card";
+  const head = document.createElement("div");
+  head.className = "dsh-brief-card-head";
+  const title = document.createElement("span");
+  title.className = "dsh-brief-card-title";
+  title.textContent = I18n.t("简报");
+  head.appendChild(title);
+  card.appendChild(head);
+  const body = document.createElement("div");
+  body.className = "dsh-brief-card-body";
+  if (brief.state) {
+    const sum = document.createElement("div");
+    sum.className = "dsh-brief-state";
+    sum.textContent = brief.state;
+    body.appendChild(sum);
+  }
+  const src = agentBriefStepSource(st, r);
+  agentBriefSecEl(st, r, body, src, "发现", brief.points, "p");
+  agentBriefSecEl(st, r, body, src, "产出 / 改动", brief.outputs, "o");
+  agentBriefSecEl(st, r, body, src, "卡点 / 待定", brief.blockers, "k");
+  card.appendChild(body);
+  return card;
+}
+/* 一轮：轮标题（用户提问，markdown 原样）→ 简报卡 → 最终答复。
+   没有简报时（旧会话 / 还没补上 / 补失败了）卡位上摆的是**原文摘录**与补写状态，
+   不再是一行空白的「本轮未生成简报」；canBackfill = 这一轮早于最近几轮（挂「补一份」）。 */
+function agentBriefRoundEl(st, r, brief, canBackfill, sched) {
+  const box = document.createElement("div");
+  box.className = "dsh-brief-round";
+  const qtext = String((r.user && r.user.content) || "");
+  if (qtext.trim()) {
+    const q = document.createElement("div");
+    q.className = "dsh-brief-q";
+    /* 与「原始」子 Tab 里同一条用户消息同一份实现（图行 / markdown 口径一致），
+       同一份缓存 holder（m）—— 两边不会互相把对方的缓存挤掉。 */
+    q.innerHTML = dshUserBodyHtml(qtext, r.user);
+    box.appendChild(q);
+  }
+  if (brief) box.appendChild(agentBriefCardEl(st, r, brief));
+  else {
+    const read = agentBriefBackfillReadOf(r, sched === undefined ? agentBriefSchedRaw(st) : sched);
+    const fb = agentBriefFallbackEl(st, r, agentBriefRoundSourceOf(st, r), read, canBackfill);
+    if (fb) box.appendChild(fb);
+    else {
+      /* 连一行原文都没有（空轮 / 老存档里什么段都没留下）：如实说一句，但不假装「有简报」 */
+      const miss = document.createElement("div");
+      miss.className = "dsh-brief-miss";
+      miss.textContent = I18n.t("这一轮没有留下可摘的原文，也没有简报");
+      box.appendChild(miss);
+    }
+  }
+  if (r.last && String(r.last.content == null ? "" : r.last.content).trim()) {
+    const ans = document.createElement("div");
+    ans.className = "dsh-brief-answer";
+    ans.innerHTML = '<div class="md">' + dshMdHtmlCached(r.last) + "</div>";
+    box.appendChild(ans);
+  }
+  return box;
+}
+/* ── 运行中的那一轮（live 轮）：简报区里**当场**成为新的一轮 ─────────────────────────
+   以前简报区只画「已经落地的消息」：用户发完一句话，要等整轮跑完、答复消息进
+   st.messages 之后才多出一轮 —— 跑得越久，那一页越像是没反应。现在这一轮当场出现：
+     · 轮标题 = 这一轮的提问（与历史轮同一条 markdown 路径、同一份缓存）；
+     · 简报卡 = 调度器手里那一份（renderer/app-brief-sched.js），每办完一步重建一次卡身，
+       **sig 没变就一个节点都不碰**；
+     · 正文 = 这一轮已经吐出来的 say / err 段（思考与工具不搬过来：它们在「原始」里，
+       简报看的是「到哪儿了」）。尾段还是正在流式输出的正文段时，写它的是 paintAgentStream
+       那一句 dshSegSetStreamText —— 与 #agent-stream 那一支同一段文本、同一个就地增量口径，
+       不重渲 markdown、不重建节点。
+   四条纪律（别破）：
+     ① 正文块交给 agentLiveSegsEl 的对账（row._dshItemsRef / row._dshRound / 未回来的
+        工具卡回退起点原样成立），只喂 say / err 段 —— 每帧建的是「新增段 + 尾段」；
+     ② **不挂 #agent-stream / #agent-think**（opts.secondary = true）：那两个 id 的就地更新落点
+        永远留给原始子 Tab 那一份，两边同时挂着 id 就会写到错的元素上；
+     ③ 简报卡**不进** row._dshSegEls 那份账（它是正文容器外面的兄弟节点）：段对账整份
+        重建时不会把它当段删掉，它自己的重建只看卡身那个 sig；
+     ④ 轮一落地（答复消息进 st.messages）就整份走历史那一支，这一块一个节点都不留。 */
+function agentBriefLiveRoundOf(st, rounds) {
+  const last = Array.isArray(rounds) && rounds.length ? rounds[rounds.length - 1] : null;
+  if (!st || !last || last.last) return null;
+  const live = typeof liveNodeForSession === "function" ? liveNodeForSession(st) : null;
+  if (!st.running && !live) return null;
+  return last;
+}
+/* 卡身：调度器那一份；还没有就先摆一句「正在写这一轮的简报…」（失败时摆它那句 note） */
+function agentBriefLiveCardEl(st, r, brief, note) {
+  if (brief) return agentBriefCardEl(st, r, brief);
+  const card = document.createElement("div");
+  card.className = "dsh-brief-card";
+  const head = document.createElement("div");
+  head.className = "dsh-brief-card-head";
+  const title = document.createElement("span");
+  title.className = "dsh-brief-card-title";
+  title.textContent = I18n.t("简报");
+  head.appendChild(title);
+  card.appendChild(head);
+  const body = document.createElement("div");
+  body.className = "dsh-brief-card-body";
+  const line = document.createElement("div");
+  line.className = "dsh-brief-miss";
+  line.textContent = note || I18n.t("正在写这一轮的简报…");
+  body.appendChild(line);
+  card.appendChild(body);
+  return card;
+}
+/* 这一轮的壳：提问 + 卡位（.dsh-brief-live-card 只占位、不画皮）+ 正文块（段容器） */
+function agentBriefLiveRoundEl(st, r) {
+  const box = document.createElement("div");
+  box.className = "dsh-brief-round is-live";
+  const qtext = String((r.user && r.user.content) || "");
+  if (qtext.trim()) {
+    const q = document.createElement("div");
+    q.className = "dsh-brief-q";
+    /* 与历史轮 / 「原始」子 Tab 里同一条用户消息同一份实现与缓存 */
+    q.innerHTML = dshUserBodyHtml(qtext, r.user);
+    box.appendChild(q);
+  }
+  const card = document.createElement("div");
+  card.className = "dsh-brief-live-card";
+  box.appendChild(card);
+  const ans = document.createElement("div");
+  ans.className = "dsh-brief-answer dsh-brief-live-ans";
+  box.appendChild(ans);
+  box._dshBriefCardHost = card;
+  box._dshBriefAnsRow = ans;
+  return box;
+}
+/* 调度器手里这一份（简报 + 状态 + 降级那一句）；读不到 = 空（照旧画「正在写…」） */
+function agentBriefLiveCardStateOf(st) {
+  let x = null;
+  try {
+    const S2 = window.MTBriefSched;
+    if (S2 && typeof S2.state === "function") x = S2.state(st && st.id);
+  } catch (_) {}
+  return {
+    brief:
+      x && x.hasBrief
+        ? agentBriefNormShape({ summary: x.summary, items: x.items, stale: x.stale })
+        : null,
+    phase: x ? String(x.phase || "") : "",
+    note: x ? String(x.note || "") : "",
+  };
+}
+/* 卡身的指纹：轮号 + 简报正文（现状 / 发现 / 产出 / 卡点四段都要算 —— 只差「产出」那几行
+   也得重画）+ 状态 / 降级那一句 + 界面语言（卡里那几节的小标题一变，整张卡就得跟着变）。 */
+function agentBriefLiveCardSigOf(r, cs) {
+  const b = cs.brief;
+  const parts = [String(r ? r.idx : ""), cs.phase, cs.note, b ? "1" : "0"];
+  if (b) {
+    parts.push(
+      String(b.summary.length),
+      agentRowHash(b.summary),
+      String(b.items.length),
+      agentRowHash(
+        b.items
+          .map((it) => it.text + "\u0001" + it.status + "\u0001" + it.stepIds.join(","))
+          .join("\u0002"),
+      ),
+      agentRowHash(b.outputs.join("\u0002")),
+      agentRowHash(b.blockers.join("\u0002")),
+    );
+  }
+  try {
+    if (typeof I18n !== "undefined" && I18n && typeof I18n.getLocale === "function")
+      parts.push(String(I18n.getLocale() || ""));
+  } catch (_) {}
+  return parts.join("|");
+}
+/* 正文 = 这一轮的 say / err 段。按源数组缓存那份过滤结果：轨迹是就地追加的同一个数组，
+   长度与尾项都没变就复用上一次那份 —— 段对账才认得出「这一帧没有新段」。 */
+function agentBriefLiveSayItems(box, items) {
+  const src = Array.isArray(items) ? items : null;
+  if (!src || !src.length) return null;
+  const tail = src[src.length - 1];
+  const c = box._dshBriefSayCache;
+  if (c && c.src === src && c.len === src.length && c.tail === tail) return c.out;
+  const out = [];
+  for (const it of src) if (it && (it.k === "say" || it.k === "err")) out.push(it);
+  box._dshBriefSayCache = {
+    src: src,
+    len: src.length,
+    tail: tail,
+    out: out.length ? out : null,
+  };
+  return box._dshBriefSayCache.out;
+}
+/* 正文块的指纹：段数 + 尾段身份 + 尾段收口态 + 轮号。**不含正文字数** —— 逐 token 的增长
+   走 dshSegSetStreamText 就地写，不该让这一块重建。 */
+function agentBriefLiveRowSigOf(st, segs) {
+  const n = Array.isArray(segs) ? segs.length : 0;
+  const tail = n ? segs[n - 1] : null;
+  const round = typeof agentTraceRound === "function" ? agentTraceRound("agent:" + st.id) : null;
+  return [
+    String(n),
+    tail ? String(tail.k || "") : "",
+    tail ? String(tail.callId || "") : "",
+    tail && tail.step != null ? String(tail.step) : "",
+    tail && tail.open === false ? "c" : "o",
+    String(round || ""),
+  ].join("|");
+}
+/* 运行中那一轮的就地同步：卡身按自己的 sig 重建、正文按段对账（两个 sig 都没变 = 一个节点
+   都不碰）。只在这一轮仍然是「运行中那一轮」时被调用（见 agentBriefPanePaint）。 */
+function agentBriefLiveSync(st, box, r) {
+  if (!st || !box || !r) return;
+  const cs = agentBriefLiveCardStateOf(st);
+  const cardSig = agentBriefLiveCardSigOf(r, cs);
+  const host = box._dshBriefCardHost;
+  if (host && box._dshBriefCardSig !== cardSig) {
+    box._dshBriefCardSig = cardSig;
+    host.textContent = "";
+    host.appendChild(agentBriefLiveCardEl(st, r, cs.brief, cs.note));
+  }
+  const row = box._dshBriefAnsRow;
+  if (!row) return;
+  const items = typeof agentChatSegItems === "function" ? agentChatSegItems(st) : null;
+  const segs = agentBriefLiveSayItems(box, items);
+  /* 非分段老路径（拿不到轨迹）：正文只能按累积文本写，落点是一只普通段元素 ——
+     与 #agent-stream 那一支同一句 dshSegSetStreamText（有段可画时它就该退场）。 */
+  const pending = segs ? "" : String(st._pending || "").trim();
+  const rowSig =
+    agentBriefLiveRowSigOf(st, segs) + "|" + (segs ? "s" : pending ? "p" : "-");
+  if (box._dshBriefRowSig === rowSig) return;
+  box._dshBriefRowSig = rowSig;
+  if (!segs) {
+    row.textContent = "";
+    row._dshSegEls = [];
+    row._dshItemsRef = null;
+    row._dshRound = null;
+    row._dshHookEl = null;
+    box._dshBriefPlainEl = null;
+    if (pending) {
+      const plain = document.createElement("div");
+      plain.className = "dsh-seg dsh-seg-say dsh-stream";
+      plain.dataset.segIdx = "0";
+      plain.textContent = String(st._pending || "");
+      row.appendChild(plain);
+      box._dshBriefPlainEl = plain;
+    }
+    return;
+  }
+  box._dshBriefPlainEl = null;
+  try {
+    agentLiveSegsEl(row, st, null, segs, { secondary: true });
+  } catch (e) {
+    try {
+      console.error(e);
+    } catch (_) {}
+  }
+}
+/* 简报区是不是正摊在眼前（摊着才轮到「运行中那一轮」与它的就地写入） */
+function agentBriefPaneShown() {
+  const pane = document.getElementById("agentBriefPane");
+  if (!pane || pane.hidden) return null;
+  return pane;
+}
+/* 摊在眼前 + 运行中那一轮已经挂上（写正文 / 贴底才有落点） */
+function agentBriefLivePaneShown() {
+  const pane = agentBriefPaneShown();
+  return pane && pane._dshBriefLive ? pane : null;
+}
+/* 流式正文的就地写入：与 #agent-stream 那一支同一个函数、同一段文本。段序由
+   agentLiveSegsEl 写在 dataset.segIdx 上；对不上（这一段刚出现 / 刚换段 / 刚收口）→
+   排一帧对账，下一帧就有落点了。 */
+function agentBriefLiveStreamPaint(st, txt) {
+  const pane = agentBriefPaneShown();
+  if (!pane) return;
+  const box = pane._dshBriefLive;
+  if (!box) {
+    /* 运行中那一轮还没挂上（用户消息与它同一拍到）：补一帧，不在这里建 DOM */
+    agentBriefLiveSoon(st);
+    return;
+  }
+  const row = box._dshBriefAnsRow;
+  const segs = row && Array.isArray(row._dshSegEls) ? row._dshSegEls : null;
+  const tail = segs && segs.length ? segs[segs.length - 1] : null;
+  if (
+    tail &&
+    tail.classList &&
+    tail.classList.contains("dsh-stream") &&
+    String((tail.dataset && tail.dataset.segIdx) || "") === String(segs.length - 1)
+  ) {
+    dshSegSetStreamText(tail, txt);
+    return;
+  }
+  const plain = box._dshBriefPlainEl;
+  if (plain && plain.isConnected) {
+    dshSegSetStreamText(plain, txt);
+    return;
+  }
+  agentBriefLiveSoon(st);
+}
+/* 补一帧对账（合并帧，只排一次）：这一轮刚吐出第一段正文时，这一块还没有落点。
+   200ms 的自保险闸：对账之后仍然对不上时（调用方那一侧还在变）不连帧重排，等下一份
+   增量到了再说 —— 宁可晚一点，也不让这里变成一个每帧都在跑的循环。 */
+function agentBriefLiveSoon(st) {
+  if (!st || st._briefLiveQueued) return;
+  const now = Date.now();
+  if (now - (Number(st._briefLiveAt) || 0) < 200) return;
+  st._briefLiveAt = now;
+  st._briefLiveQueued = true;
+  const run = () => {
+    st._briefLiveQueued = false;
+    try {
+      const pane = agentBriefPaneShown();
+      const cur = typeof agentSessionState === "function" ? agentSessionState() : null;
+      if (pane && cur && String(cur.id) === String(st.id)) agentBriefPanePaint(cur, pane);
+    } catch (_) {}
+  };
+  if (typeof agentUiSoon === "function") agentUiSoon("brief-live", run);
+  else run();
+}
+/* 简报区这一帧要不要重画：会话 id / 消息条数与尾部两条正文 / 每一轮那份简报 /
+   每一轮缺简报时的补写状态（phases：排队 / 补写中 / 没补上 —— 进度变了就得重画）/
+   界面语言。没变就直接返回 —— 每帧都会走到这里，200 轮的 markdown 不能白重建一遍。 */
+function agentBriefPaneSigOf(st, rounds, briefs, phases) {
+  const msgs = Array.isArray(st && st.messages) ? st.messages : [];
+  const parts = [String((st && st.id) || ""), String(msgs.length), String(rounds.length)];
+  const tail = Math.max(0, msgs.length - 2);
+  for (let i = tail; i < msgs.length; i++) {
+    const t = String((msgs[i] && msgs[i].content) || "");
+    parts.push(t.length + ":" + agentRowHash(t));
+  }
+  for (let i = 0; i < briefs.length; i++) {
+    const b = briefs[i];
+    if (!b) {
+      parts.push("-");
+      continue;
+    }
+    parts.push(
+      b.summary.length +
+        ":" +
+        agentRowHash(b.summary) +
+        "/" +
+        b.items.length +
+        ":" +
+        agentRowHash(
+          b.items
+            .map((it) => it.text + "\u0001" + it.status + "\u0001" + it.stepIds.join(","))
+            .join("\u0002"),
+        ) +
+        /* 产出 / 卡点两节（任务 6/8）：它们也在卡上，变了同样得重画 */
+        "/" +
+        agentRowHash(b.outputs.join("\u0002")) +
+        "/" +
+        agentRowHash(b.blockers.join("\u0002")),
+    );
+  }
+  /* 补写状态（排队 / 补写中 / 没补上）+ 队列进度：不发请求也在变，必须进指纹 */
+  const ph = Array.isArray(phases) ? phases : [];
+  for (let i = 0; i < ph.length; i++) if (ph[i]) parts.push("~" + i + ":" + ph[i]);
+  try {
+    if (typeof I18n !== "undefined" && I18n && typeof I18n.getLocale === "function")
+      parts.push(String(I18n.getLocale() || ""));
+  } catch (_) {}
+  return parts.join("|");
+}
+/* 简报区整份重画（只在「停在简报这一片」时被调用，见 agentBriefTabsSync 与下面的画笔注册）。
+   运行中那一轮**不参与**整份重画的指纹：它由 agentBriefLiveSync 就地维护（卡身自己的 sig +
+   正文块自己的段对账），所以「一步落地」不会把整页（含前面每一轮的 markdown）重建一遍。
+   进到这一页就先给最近几轮缺简报的排上回填（任务 5/8，幂等）：补写状态变了指纹就变，
+   于是「排队 → 补写中 → 补好」这一路的进度会自己上屏，不用另立一条刷新链。 */
+function agentBriefPanePaint(st, pane) {
+  if (!pane) pane = document.getElementById("agentBriefPane");
+  if (!pane || !st) return;
+  const rounds = agentBriefRoundsOf(st.messages);
+  const liveR = agentBriefLiveRoundOf(st, rounds);
+  let sched = agentBriefSchedRaw(st);
+  const briefs = rounds.map((r, i) =>
+    r === liveR ? null : agentBriefOfRound(st, r, i === rounds.length - 1, sched),
+  );
+  /* 进页即补：只排最近 AUTO_ROUNDS 轮（更早的轮挂在卡上的「补一份」按钮上） */
+  const added = agentBriefBackfillAuto(st, rounds, briefs, liveR, sched);
+  if (added) sched = agentBriefSchedRaw(st); /* 刚排进去的那几轮要立刻上屏（排队 / 补写中） */
+  const phases = rounds.map((r, i) => {
+    if (r === liveR || briefs[i]) return "";
+    const read = agentBriefBackfillReadOf(r, sched);
+    if (read.phase === "idle") return "";
+    return read.phase + (read.ahead ? ":" + read.ahead : "");
+  });
+  const sig = agentBriefPaneSigOf(st, rounds, briefs, phases);
+  if (pane._dshBriefSig !== sig) {
+    pane._dshBriefSig = sig;
+    const keep = pane.scrollTop;
+    pane.textContent = "";
+    pane._dshBriefLive = null;
+    /* 「补一份」只挂在更早的轮上：最近 AutoRounds 个**已落地**的轮是进页自动补的，不必再给按钮 */
+    const autoN = Math.max(
+      1,
+      Number((window.MTBriefSched && window.MTBriefSched.AUTO_ROUNDS) || 3),
+    );
+    let autoFrom = rounds.length;
+    for (let i = rounds.length - 1, seen = 0; i >= 0 && seen < autoN; i--) {
+      if (rounds[i] === liveR) continue;
+      autoFrom = i;
+      seen++;
+    }
+    for (let i = 0; i < rounds.length; i++) {
+      if (rounds[i] === liveR) {
+        const box = agentBriefLiveRoundEl(st, rounds[i]);
+        pane._dshBriefLive = box;
+        pane.appendChild(box);
+      } else
+        pane.appendChild(
+          agentBriefRoundEl(st, rounds[i], briefs[i], i < autoFrom, sched),
+        );
+    }
+    if (keep) pane.scrollTop = keep;
+  } else if (liveR && (!pane._dshBriefLive || pane._dshBriefLive.parentNode !== pane)) {
+    /* 指纹没动但这一轮刚进入运行（消息与它的指纹恰好同一拍到）：补挂一次 */
+    const box = agentBriefLiveRoundEl(st, liveR);
+    pane._dshBriefLive = box;
+    pane.appendChild(box);
+  }
+  if (!liveR) {
+    /* 已经落地 / 不再运行：这一块整份撤掉（这一轮由历史那一支画） */
+    if (pane._dshBriefLive && pane._dshBriefLive.parentNode === pane)
+      pane.removeChild(pane._dshBriefLive);
+    pane._dshBriefLive = null;
+    return;
+  }
+  agentBriefLiveSync(st, pane._dshBriefLive, liveR);
+  /* 停在别处（原始子 Tab / 画布）时错过的那几帧正文：回到这一片时按当前段文本补一次。
+     就地写、不重建；尾段已经收口（say-end 到了）就不写 —— 那一段要按 markdown 渲染，
+     由上面 agentBriefLiveSync 的段对账负责。 */
+  const items = typeof agentChatSegItems === "function" ? agentChatSegItems(st) : null;
+  const tail = items && items.length ? items[items.length - 1] : null;
+  if (tail && tail.k === "say" && tail.open !== false)
+    agentBriefLiveStreamPaint(st, String(tail.text || ""));
+}
+/* 调度器把简报刷新好了 → 只重画简报区这一块（不触发整表重建）。注册的是
+   app-brief-sched.js 留给「卡片层」的那一个画笔；别的会话 / 没停在简报这一片时直接返回。
+   加载期先绑一次（index.html 里 app-brief-sched.js 排在 app-assist.js 之前），
+   agentBriefTabsSync 每帧再兜一次 —— 万一调度器是后到的，也照样能绑上（幂等）。 */
+let _dshBriefPainterBound = false;
+function agentBriefPainterBind() {
+  if (_dshBriefPainterBound) return;
+  try {
+    const S2 = window.MTBriefSched;
+    if (!S2 || typeof S2.setPainter !== "function") return;
+    S2.setPainter((sid, _state) => {
+      /* 定稿版落地 = 「按轮存档」的写时机（任务 4/8 ③）：调度器每次摆好状态都会经这枚画笔，
+         「定稿版落地」正是它最后一次摆状态的那一刻 —— 与下面那块画图**无关地**先跑一遍：
+         落盘不该被「眼前这条会话停在原始子 Tab / 简报区没显示」挡住。
+         只认定稿版、一轮只写一次、写盘失败降级为内存可见，口径见 agentRoundBriefPersist。 */
+      try {
+        agentRoundBriefPersist(sid, _state);
+      } catch (e) {
+        try {
+          console.error("[brief] 定稿存档失败", e);
+        } catch (_) {}
+      }
+      /* 回填（任务 5/8 ③）：调度器把旧轮补好的那几份，也在这同一处走同一通道写回存档 ——
+         写过的键记在同一份账上，所以每帧跑也只会写「刚补成的那几条」。 */
+      try {
+        agentRoundBriefFlushBackfill(sid, _state);
+      } catch (e) {
+        try {
+          console.error("[brief] 回填存档失败", e);
+        } catch (_) {}
+      }
+      try {
+        const st = typeof agentSessionById === "function" ? agentSessionById(sid) : null;
+        if (!st || st.id !== agentViewId()) return;
+        const pane = document.getElementById("agentBriefPane");
+        if (!pane || pane.hidden) return;
+        agentBriefPanePaint(st, pane);
+      } catch (_) {}
+    });
+    _dshBriefPainterBound = true;
+  } catch (_) {}
+}
+agentBriefPainterBind();
+
+
 /* ── 历史存档兼容：曾被「会话轮次回滚」回滚过的轮次消息不进上下文 ──────────
  * 会话轮次回滚功能已移除（旧入口挂在用户消息下方，账本 / 对象库 / journal 捕获
  * 四条链路一并删掉），这里只保留最小只读兼容：历史存档里可能还留着当时写下的
@@ -13427,13 +14882,24 @@ function paintAgentStream(st) {
   } else if (el) {
     dshStreamHintSet(el, false);
   }
-  if (seg) dshSegSetStreamText(el, String(seg.text || ""));
-  else if (items || !el) renderAgentSession();
-  else dshSegSetStreamText(el, st._pending);
+  if (seg) {
+    const txtSeg = String(seg.text || "");
+    dshSegSetStreamText(el, txtSeg);
+    /* 简报子 Tab 里「运行中那一轮」的正文：同一段文本、同一个就地增量（不重渲 markdown）。
+       那一片没摊着时它自己直接返回，原始子 Tab 的行为一个字都不变。 */
+    agentBriefLiveStreamPaint(st, txtSeg);
+  } else if (items || !el) renderAgentSession();
+  else {
+    dshSegSetStreamText(el, st._pending);
+    /* 非分段老路径同理：简报区那一份也按同一段文本就地写 */
+    agentBriefLiveStreamPaint(st, String(st._pending || ""));
+  }
   /* 贴底只在消息列**真的在屏上**时做：display:none 的会话（用户正看着画布）读
      scrollHeight 也一样要过一遍排版账，白白占住主线程；不可见时连这一次都省掉。 */
   const conv = $("#agentList");
   if (conv && conv.clientHeight > 0) scrollElToBottomIfStuck(conv);
+  const bpane = typeof agentBriefLivePaneShown === "function" ? agentBriefLivePaneShown() : null;
+  if (bpane && bpane.clientHeight > 0) scrollElToBottomIfStuck(bpane);
 }
 /* 工具事件的就地增量刷新：只重画「运行中那一行」里还没定稿的段（agentLiveSegsEl 的对账口径
    —— 尾段 + 最早那张未回来的工具卡），历史消息一条都不重建。
@@ -13492,6 +14958,139 @@ function agentPaintHeld() {
     return typeof window.assistIsoHold === "function" ? !!window.assistIsoHold() : false;
   } catch (_) {
     return false;
+  }
+}
+/* ── 「对话」视图内的「原始 / 简报」子 Tab ───────────────────────────────────────
+   两枚子 Tab 只在**该会话打开了简报模式**（st.brief === true）时出现：
+     · 原始 = 原来那块对话正文（#agentList，常被 ensureHistRail 包进 .hist-scroll-wrap），
+              一个字都不改；
+     · 简报 = 简报区（#agentBriefPane）。这里只负责**容器**（按会话、按视图撑满剩余高度）；
+              往里画什么在这一段之外，见下面「简报子 Tab 的历史渲染」那一整段
+              （agentBriefPanePaint：按轮渲染 + 卡 + 行下就地展开原文）。
+   切换**只换上方正文区**：输入框 / 附件条 / 发送队列 / 计划清单确认 / 停止按钮 / 权限卡
+   全是 .agent-composer 与它下面那几件面板，这里既不动它们的显隐、也不动它们的 DOM ——
+   只做两件事：给宿主挂一个类（正文区让位，见 css 的 .agent-brief-sub）与翻简报区的
+   hidden。
+   每条会话各记各的停留位置（st.briefTab，随会话落盘，与 st.brief 同一批）。 */
+const AGENT_BRIEF_TAB_BRIEF = "brief";
+function agentBriefTabOf(st) {
+  return st && st.briefTab === AGENT_BRIEF_TAB_BRIEF ? AGENT_BRIEF_TAB_BRIEF : "";
+}
+/* 正文区三件：宿主（.agent-body；开发页 / 助手栏借走会话时是 .apps-dev-conv / .assist-pane）、
+   壳（.hist-scroll-wrap，可能还没被套上）、消息列。子 Tab 与简报区都挂在**宿主**上，
+   紧贴正文区上下 —— 所以正文区被借到哪一栏，这两件就跟到哪一栏。 */
+function agentBriefHostOf() {
+  const list = document.getElementById("agentList");
+  if (!list || !list.parentNode) return null;
+  const wrap =
+    list.parentNode.classList && list.parentNode.classList.contains("hist-scroll-wrap")
+      ? list.parentNode
+      : list;
+  const host = wrap.parentNode;
+  if (!host) return null;
+  return { list: list, wrap: wrap, host: host };
+}
+function agentBriefTabBtn(kind) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "dsh-view-tab agent-brief-tab";
+  b.dataset.briefTab = kind;
+  b.setAttribute("role", "tab");
+  b.onclick = () => agentBriefTabSet(kind);
+  return b;
+}
+/* 切子 Tab：**只有用户亲手点这一下**才切（本任务 · briefTab 的唯一写入口）。
+   两道闸：
+     ① 简报模式没开（st.brief 不是 true）→ 这时压根没有子 Tab，任何人调都不许写字段；
+     ② 点的就是当前那一片 → 不写盘、不重绘（切一次落一次盘是白花钱）。
+   值只有两档："" = 原始 / "brief" = 简报 —— 别的值一律按「原始」。 */
+function agentBriefTabSet(kind) {
+  const st = agentSessionState();
+  if (!st || st.brief !== true) return;
+  const next = kind === AGENT_BRIEF_TAB_BRIEF ? AGENT_BRIEF_TAB_BRIEF : "";
+  if (agentBriefTabOf(st) === next) return;
+  st.briefTab = next;
+  /* 「只是换了一片看」：立刻落盘，但不盖最后对话时间（与切「轨迹 / 改动」同一口径，
+     见 agentFlushSessionSaveQuiet 的说明） */
+  agentFlushSessionSaveQuiet();
+  agentBriefTabsSync();
+}
+/* 每帧会话重绘后调一次（renderAgentSessionRaw 的收尾）：按当前会话的 st.brief / st.briefTab
+   把两件的显隐与位置校正过来。简报模式关着 = 两件都收起来、宿主类摘掉，界面与从前一字不差。 */
+function agentBriefTabsSync() {
+  const m = agentBriefHostOf();
+  if (!m) return;
+  /* 调度器（简报层）的画笔：加载期没绑上时在这里补绑一次（幂等，见 agentBriefPainterBind） */
+  agentBriefPainterBind();
+  const st = agentSessionState();
+  const on = !!(st && st.brief === true);
+  let tabs = document.getElementById("agentBriefTabs");
+  let pane = document.getElementById("agentBriefPane");
+  if (!on) {
+    if (tabs) tabs.hidden = true;
+    if (pane) pane.hidden = true;
+    m.host.classList.remove("agent-brief-sub");
+    /* 模式关着 = 两片都不存在，停留位置没有意义（本任务 · 开关与停留位置解耦）：
+       内存里残留的 "brief" 一律按「原始」处理掉 —— 否则它会在下一次开启时把会话区
+       直接带到简报（用户报障的「一开就跳」）。只归内存，不落盘、不标脏：
+       真正写回是下一次自然保存的事。 */
+    if (st && st.briefTab) st.briefTab = "";
+    return;
+  }
+  if (!tabs) {
+    tabs = document.createElement("div");
+    tabs.className = "dsh-view-tabs agent-brief-tabs";
+    tabs.id = "agentBriefTabs";
+    tabs.setAttribute("role", "tablist");
+    tabs.appendChild(agentBriefTabBtn(""));
+    tabs.appendChild(agentBriefTabBtn(AGENT_BRIEF_TAB_BRIEF));
+  }
+  if (!pane) {
+    pane = document.createElement("div");
+    pane.className = "agent-brief-pane";
+    pane.id = "agentBriefPane";
+    pane.hidden = true;
+  }
+  /* 落点：标签压在正文区之上、简报区接在正文区之下（两块只在这一块宿主里挪）。
+     renderAgentSession 会把消息列整个重排、壳也可能刚被 ensureHistRail 套上，所以每次都
+     按当前 DOM 位置核一次；已经在位就不搬（不白动 DOM）。 */
+  if (tabs.parentNode !== m.host || tabs.nextSibling !== m.wrap)
+    m.host.insertBefore(tabs, m.wrap);
+  if (pane.parentNode !== m.host || pane.previousSibling !== m.wrap)
+    m.host.insertBefore(pane, m.wrap.nextSibling);
+  tabs.hidden = false;
+  /* 停留位置 = **这条会话自己的字段**，而且只可能是「用户亲手点出来的那一档」：
+     开关打开只是让两枚子 Tab 出现（不动这个字段，见 agentModeEntryOf("brief")），
+     所以新会话 / 刚开的会话一律停在「原始」。字段缺位 / 认不出的值 = 空串 = 原始。 */
+  const cur = agentBriefTabOf(st);
+  for (const b of Array.from(tabs.children)) {
+    const isBrief = b.dataset.briefTab === AGENT_BRIEF_TAB_BRIEF;
+    b.textContent = I18n.t(isBrief ? "简报" : "原始");
+    b.title = I18n.t(
+      isBrief
+        ? "简报：每完成一步刷新一次的简报（卡片由简报层绘制）"
+        : "原始：这条会话完整的对话正文",
+    );
+    const sel = b.dataset.briefTab === cur;
+    b.classList.toggle("on", sel);
+    b.setAttribute("aria-selected", sel ? "true" : "false");
+  }
+  const brief = cur === AGENT_BRIEF_TAB_BRIEF;
+  pane.hidden = !brief;
+  /* 正文区让位交给 css（.agent-brief-sub > .hist-scroll-wrap / > .agent-list），
+     **不写行内 display**：renderAgentSession 每帧都会把 #agentList 的行内 display
+     抹回空串（见下面 list.style.display = ""），行内藏法会被那一帧放回来。 */
+  m.host.classList.toggle("agent-brief-sub", brief);
+  /* 简报区的内容（见下面「简报子 Tab 的历史渲染」那一段）：只在**停在简报这一片**时画；
+     停在「原始」时一个字都不建，切回来再按当帧数据重画一次。自带指纹闸，没变就返回。 */
+  if (brief) {
+    try {
+      agentBriefPanePaint(st, pane);
+    } catch (e) {
+      try {
+        console.error("简报区渲染失败", e);
+      } catch (_) {}
+    }
   }
 }
 /* 整表重建的诊断外壳（trace 关着时是一次直通调用）：重建已经只留给「必须整份对齐」的
@@ -13963,6 +15562,9 @@ function renderAgentSessionRaw(opts) {
   /* 右边栏（浏览器活动）跟着当前会话走：这一帧渲染的是哪条会话，那栏就显示哪条会话的
      活动；本会话没有浏览器就整条收起（见 app-browser.js 的 BA.setSession）。 */
   agentNotifyBrowserSession();
+  /* 简报跟着「眼前这条会话」走：视图一换，别的会话那一份在途增量请求立刻作废
+     （回执丢弃、不写状态），本会话的上一版简报原样留着 —— 见 renderer/app-brief-sched.js。 */
+  if (typeof briefSchedFocus === "function") briefSchedFocus(agentViewId());
   const list = $("#agentList");
   if (!list) return;
   /* 接管闸（assist.isolation = on）：对话区（含每条消息的 renderMarkdown）这一帧整块不画，
@@ -14146,6 +15748,13 @@ function renderAgentSessionRaw(opts) {
     requestAnimationFrame(() => restoreConvStick(list, stickCap));
   }
   } /* ← !bodyPending 的收口：正文没读回来时只跳过上面这段「画对话区」 */
+  /* 「原始 / 简报」子 Tab 与简报区的落点（本任务）：正文区这一帧刚被画过 / 重排过，
+     在收尾处按当前会话的 st.brief / st.briefTab 校正一次 —— 简报模式关着时它什么都不建
+     （两件都收起来），所以没开这一档的会话与从前一字不差。放在 !bodyPending 收口**之外**：
+     正文还在读回来时也要把子 Tab 摆对（那是视图骨架，不是正文内容）。 */
+  try {
+    agentBriefTabsSync();
+  } catch (_) {}
   const ws = $("#agentWsInput");
   /* 回填「生效工作区」（与运行同一真源），📂 打开的也就是文件真正落的目录 */
   if (ws && document.activeElement !== ws) ws.value = sessionWorkspaceShown(st) || "";
@@ -17139,9 +18748,22 @@ async function agentSessionSend(text, opts) {
      整段设字符上限 —— 询问窗答案因此能随每一轮的 hist 一起进上下文（它只是一条
      普通用户消息，见 ixCommitAnswerToSession）。 */
   const rbHistSrc = activeSessionMessages(st.messages);
-  const hist = agentHistoryEntries({ messages: rbHistSrc }, { maxChars: 4000 })
+  /* 历史段 = **前面所有轮**（本次修复）：过去这里写死 maxChars: 4000 —— 多轮会话里
+     一两条长回复就把预算填满，较早的轮次被整段砍掉；用户对前几轮的回复加批注时，
+     批注块里的「> 原文」在模型上下文里根本不存在，模型只能回「找不到那段内容」。
+     预算真源见 app-db.js 的 AGENT_HIST_MAX_CHARS（默认值就是那一份，这里不再写数）。
+     真被砍（几百轮的极端长会话）时在段首写明省略了几条 —— 模型得知道自己没看全。 */
+  const histStats = {};
+  const histBody = agentHistoryEntries({ messages: rbHistSrc }, { stats: histStats })
     .map((r) => (r.role === "user" ? I18n.t("用户：") : I18n.t("助手：")) + r.text)
     .join("\n\n");
+  const histNote =
+    Number(histStats.dropped) > 0
+      ? I18n.t("【本次上下文省略了更早的 {n} 条上文（会话太长，只带最近一部分）】", {
+          n: Number(histStats.dropped),
+        })
+      : "";
+  const hist = histNote ? histNote + (histBody ? "\n\n" + histBody : "") : histBody;
   /* 「任务流程」指令：会话里已有未跑完的计划时注入的是「沿用 / 续跑」那段，
      而不是逼模型再规划一份新的（新旧计划互相覆盖 · 已执行项被重跑） */
   let flowText = "";
@@ -17572,6 +19194,10 @@ async function agentSessionSend(text, opts) {
             t.doneAt = Date.now();
             if (mine) agentUiSoon("tools", () => agentLiveRepaint(st));
           }
+          /* 简报的触发点之一：工具结果落地 = 这一步办完了（renderer/app-brief-sched.js）。
+             放 `mine` 闸外面是有意的 —— 后台会话的那一份由调度器自己按「会话切走就取消」
+             挡掉（它在采事实之前先看视图），这里只负责把边界报给它。 */
+          if (typeof briefSchedTick === "function") briefSchedTick(st, "tool-result");
         } else if (type === "usage" && data) {
           /* 运行中实时 token 消耗（与网关 stats 相同的累加口径），完成后以 metrics 为准 */
           const u = (st._usageLive = st._usageLive || {
@@ -17661,7 +19287,11 @@ async function agentSessionSend(text, opts) {
               /* 错误已成 err 段：增量对账即可让 ⚠ 段落在时间线正确位置 */
               agentUiSoon("err", () => agentLiveRepaint(st));
             } else if (el) {
-              agentUiSoon("stream", () => dshSegSetStreamText(el, st._pending));
+              agentUiSoon("stream", () => {
+                dshSegSetStreamText(el, st._pending);
+                /* 简报区里运行中那一轮也吃这一句（非分段老路径的落点是它自己那只普通段元素） */
+                agentBriefLiveStreamPaint(st, String(st._pending || ""));
+              });
             }
             agentUiSoon("scroll", () => scrollElToBottomIfStuck($("#agentList")));
           }
@@ -17891,6 +19521,17 @@ async function agentSessionSend(text, opts) {
     st._cancelled = false;
     /* 轮中增量落盘的定时器随之收掉（正本结果在上面已 push 进 messages，下一次落盘就是完整那份） */
     agentLiveWatchEnd(st);
+    /* 简报的轮末定稿（renderer/app-brief-sched.js）：一轮到此定稿，调度器按**这一刻的
+       快照**必发一次定稿版（不受中途节流限制），并且只有定稿版写进存档。
+       必须在下面的 `st._liveTools = []` **之前**：事实采集要读这一轮的工具结果，
+       晚一步就只剩空壳。正常跑完 / 出错 / 用户终止都走这条 finally。
+       存档键（该轮末助手消息的时间戳）也在这里记下来：定稿版落地时（最长 20s 后）
+       messages 末尾可能已经不是这一轮的答复了，见 agentRoundBriefKeyOf 的说明。 */
+    try {
+      const rbk = agentRoundBriefKeyOf(st);
+      if (rbk) S._roundBriefKey.set(String(st.id), rbk);
+    } catch (_) {}
+    if (typeof briefSchedRoundDone === "function") briefSchedRoundDone(st, "round-done");
     st._liveTools = [];
     /* 扩展块已随助手消息进历史（上面 push 时由 agentRoundMsgTail 带走），槽位清空 */
     st._webTools = [];

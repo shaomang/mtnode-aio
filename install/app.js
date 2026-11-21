@@ -956,18 +956,27 @@
     /* 失败（或被取消）后：**手动重试**是第一位 —— 重跑该插件的安装脚本，
        已完成的步骤、已下好的文件由脚本自己跳过 / 续传，不重复下载。
        「交给 mtnode 会话修复」保留为次要入口（脚本仍过不去时才需要会话）；
-       被取消（cancelled）不列「交给会话修复」：用户自己停的不算故障现场。 */
-    if (snap.state === "failed" || snap.state === "cancelled") {
-      box.appendChild(mkBtn(T("重试", "Retry"), "primary", () => runInstall(), {
-        title: T("重跑该插件的安装（已完成的步骤与已就位的权重会被脚本跳过）", "re-run the install; finished steps and files already in place are skipped"),
-      }));
-    }
-    if (snap.state === "failed") {
-      box.appendChild(mkBtn(T("交给 mtnode 会话修复", "Hand to an MTNode session"), "", async () => {
+       被取消（cancelled）不列「交给会话修复」：用户自己停的不算故障现场。
+       例外（本轮新增）：脚本**彻底失效** —— 宿主看门狗判定「长时间没有任何输出」并强杀，
+       失败文案带 install_stalled。这种失败重试大概率还卡在同一处，所以把 Agent 兜底提到
+       第一位并给 primary，文案也直说「让 Agent 兜底修复」。 */
+    const stalledFail = !!(snap && snap.state === "failed" && /install_stalled/.test(String(snap.error || "")));
+    const handToSession = (label) =>
+      mkBtn(label, stalledFail ? "primary" : "", async () => {
         const r = await api.fix(id);
         if (!r || !r.ok) toast((r && (r.message || r.error)) || T("无法新建修复会话", "cannot open session"), "err");
         else toast(T("已新建修复会话（工作区 = 安装目录）", "repair session created (workspace = install dir)"));
-      }, { title: T("脚本重试仍不过时，才新建一条看得见的会话按安装技能修", "only when retry keeps failing: open a visible session that repairs by the install skill") }));
+      }, { title: T("新建一条看得见的会话，按该插件的安装技能修", "open a visible session that repairs by the install skill") });
+    if (stalledFail) {
+      box.appendChild(handToSession(T("让 Agent 兜底修复（推荐）", "Let an agent fix it (recommended)")));
+    }
+    if (snap.state === "failed" || snap.state === "cancelled") {
+      box.appendChild(mkBtn(T("重试", "Retry"), stalledFail ? "" : "primary", () => runInstall(), {
+        title: T("重跑该插件的安装（已完成的步骤与已就位的权重会被脚本跳过）", "re-run the install; finished steps and files already in place are skipped"),
+      }));
+    }
+    if (snap.state === "failed" && !stalledFail) {
+      box.appendChild(handToSession(T("交给 mtnode 会话修复", "Hand to an MTNode session")));
     }
     /* 安装目录：改由本窗统一选与显示（插件控制台窗不再显示安装目录） */
     const pickApi = installApiOf(id).pick;
@@ -1307,6 +1316,19 @@
   });
 
   /* ── 事件 ── */
+  /**
+   * 失败时那一句「接下来怎么做」（快照的 hint）。主进程早就在 finishPluginInstall 里给了
+   * hint（脚本卡死这一档写的是「请点让 Agent 兜底修复」），但窗体此前一个字都不显示 ——
+   * 提示只有被看见才算数，所以这里补一行。
+   */
+  function renderHint() {
+    const el = $("insHint");
+    if (!el) return;
+    const text = snap && snap.state === "failed" ? String(snap.hint || "") : "";
+    el.textContent = text;
+    el.hidden = !text;
+  }
+
   function adopt(next) {
     if (!next || next.empty) {
       snap = null;
@@ -1318,6 +1340,7 @@
       injErr = null;
       resetLogOrder();
       renderAll();
+      renderHint();
       return;
     }
     const prevId = adopt._id;
@@ -1349,6 +1372,7 @@
     }
     syncLogOrderFromSnap();
     renderAll();
+    renderHint();
     if (switched) {
       api.weights({ action: "info", id: snap.pluginId })
         .then((r) => {

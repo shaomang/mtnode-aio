@@ -389,7 +389,7 @@
               <button type="button" class="agent-chip" id="agentWsTrigger" data-i18n-title="选择工作区" title="选择工作区">
                 <span class="agent-chip-icon">🗂</span><span class="agent-tool-val" id="agentWsTriggerVal" data-i18n="选择工作区">选择工作区</span>
               </button>
-              <button type="button" class="agent-chip" id="agentModelTrigger" data-i18n-title="模型提供商 / 预设 / 模型 / 思考强度 / 上下文压缩" title="模型提供商 / 预设 / 模型 / 思考强度 / 上下文压缩">
+              <button type="button" class="agent-chip" id="agentModelTrigger" data-i18n-title="模型提供商 / 预设 / 模型 / 思考强度 / 上下文压缩 / 简报模型" title="模型提供商 / 预设 / 模型 / 思考强度 / 上下文压缩 / 简报模型">
                 <span class="agent-chip-icon">⚙</span><span class="agent-tool-val" id="agentModelTriggerVal">标准模式</span>
               </button>
               <button type="button" class="agent-chip" id="agentCmdTrigger" data-i18n-title="技能" title="技能"><span data-i18n="技能">技能</span></button>
@@ -613,7 +613,7 @@
     <div class="assist-ctrl" id="assistCtrl">
       <div class="assist-chips" id="assistChips">
         <button type="button" class="assist-chip" id="assistWsChip" data-i18n-title="工作区：生效工作目录（跟随所属画布）" title="工作区：生效工作目录（跟随所属画布）"><i class="ach-icon">🗂</i><span class="ach-text" id="assistWsChipText" data-i18n="工作区">工作区</span></button>
-        <button type="button" class="assist-chip" id="assistModelChip" data-i18n-title="模型提供商 / 预设 / 模型 / 思考强度 / 上下文压缩" title="模型提供商 / 预设 / 模型 / 思考强度 / 上下文压缩"><i class="ach-icon">⚙</i><span class="ach-text" id="assistModelChipText" data-i18n="模型">模型</span></button>
+        <button type="button" class="assist-chip" id="assistModelChip" data-i18n-title="模型提供商 / 预设 / 模型 / 思考强度 / 上下文压缩 / 简报模型" title="模型提供商 / 预设 / 模型 / 思考强度 / 上下文压缩 / 简报模型"><i class="ach-icon">⚙</i><span class="ach-text" id="assistModelChipText" data-i18n="模型">模型</span></button>
         <button type="button" class="assist-chip" id="assistToolsChip" data-i18n-title="工具：逐工具 允许 / 询问 / 禁止" title="工具：逐工具 允许 / 询问 / 禁止"><i class="ach-icon">🔧</i><span class="ach-text" id="assistToolsChipText" data-i18n="工具">工具</span></button>
         <!-- 「模式」入口沿用原 id（app-boot.js 的 openAssistModeMenu 与冒烟都认它） -->
         <button type="button" class="assist-chip assist-chip-mode" id="assistModeTrigger" data-i18n-title="模式" title="模式"><i class="ach-icon">☰</i><span class="ach-text" data-i18n="模式">模式</span></button>
@@ -1333,6 +1333,21 @@
      五只输入框（会话 / 助手 / 团队 / 研究 / 迷你聊天）共用同一份口径；必须排在
      app-assist.js 之前（它对两只聊天输入框的挂载就写在 app-assist.js 末尾的接线区）。 -->
 <script src="app-grow-input.js"></script>
+<!-- 会话简报内核（renderer/app-brief.js · 出口 window.MTBrief）：纯函数（提示词组装 /
+     模型输出解析 / 工具中文词表 / 节流签名），不碰 DOM、不碰 window.api。
+     必须排在 app-assist.js 之前：会话侧的简报节流与渲染都在 app-assist.js 里按
+     window.MTBrief 取用（运行期取，缺了只是不显示简报，不报错）。 -->
+<script src="app-brief.js"></script>
+<!-- 简报模型（renderer/app-brief-model.js）：一次性的简报调用走哪只模型 + 那次调用的用量
+     记账。与 app-brief.js 分开：那一份是纯函数内核（不碰 window.api / 不读盘），
+     这一份才碰通道。排在 app-assist.js 之前 —— 会话「模型」菜单那一格运行期取用。 -->
+<script src="app-brief-model.js"></script>
+<!-- 简报的增量调度器（renderer/app-brief-sched.js · 出口 window.MTBriefSched）：
+     每办完一步触发一次增量请求、1.5s 节流 + 在途合并（只保留最新一份事实集）、
+     失败降级（保留上一版简报 + 一句「简报暂不可用」），会话切走 / 关模式时取消在途。
+     不落盘、不弹框、不自动重试、不提供手动重算。排在 app-assist.js 之前 ——
+     会话侧的三个接线点（工具结果落地 / 思考段定稿 / 视图切换）在运行期按 typeof 取它。 -->
+<script src="app-brief-sched.js"></script>
 <script src="app-assist.js"></script>
 <!-- 会话局部批注（renderer/app-annotate.js · 出口 window.SessionAnnotate，样式 css/annotate.css）：
      AI 回复正文拖选 / 整块（表格·代码·图片）hover 批注 → 左侧留白批注卡 + 虚线 +

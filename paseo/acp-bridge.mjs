@@ -281,10 +281,21 @@ function createMtnodeClient(server) {
     let closed = false;
     let req = null;
     let backoff = 500;
+    /* **一律 replay=0：桥不要「补一屏」。**
+     *
+     *  MTNode 的 SSE 默认 replay=1（连上就把这条会话最近 50 条事件重发一遍，给重连用）。
+     *  对桥却是错的：桥每一轮都新开一条流，第二轮一上来就收到**上一轮那一屏** ——
+     *  手机上表现为「第二次对话返回的是第一次的内容」（MTNode 这边正文完全正常）；
+     *  更糟的是补发里含上一轮的 done / round-end，这一轮会被当场收尾。
+     *  而且上一轮结束时 MTNode 常会再补一两帧（done 之后紧跟 round-end），桥那时已经收流，
+     *  这些帧只留在服务端的环形缓冲里 —— 下次连上一补发，就冒充成新一轮的收尾。
+     *  代价：真的断线重连时可能漏掉中间几帧（本机回环，极少发生），
+     *  比「重复一整轮 + 提前收尾」轻得多。seqFloor（文件头那个 Map）再兜一道去重。 */
     const url =
       server.base +
       "/session/stream?sessionId=" + encodeURIComponent(sessionId) +
-      "&token=" + encodeURIComponent(server.token);
+      "&token=" + encodeURIComponent(server.token) +
+      "&replay=0";
     const start = () => {
       if (closed) return;
       req = http.get(url, { headers: { accept: "text/event-stream" }, agent: sseAgent }, (res) => {
@@ -387,6 +398,23 @@ function registerSession(sid, patch) {
   if (!(next.tools instanceof Set)) next.tools = new Set();
   sessions.set(String(sid), next);
   return next;
+}
+
+/** sessionId（MTNode 的 as…）→ 已经送到手机的最大事件 seq。
+ *
+ *  **为什么要有它**：桥每一轮都会新开一条 SSE（GET /session/stream），而 MTNode 的 SSE
+ *  默认会「补一屏」（replay=1，把这条会话最近最多 50 条事件重发一遍，供重连补齐）。
+ *  第二轮开流时补的就是**上一轮那一屏** —— 手机上表现为「第二次对话又把第一次的正文收了一遍」
+ *  （用户报的「第二次会话返回的是第一次的内容」，而 MTNode 这边正文完全正常）。
+ *  服务端的事件 seq 是**单调递增**的，所以这里按会话记住已经送到手机的最大 seq，
+ *  以后开流时把 seq 不大于它的帧直接丢掉：既挡住重放，也不影响断线补齐（新帧 seq 一定更大）。 */
+const seqFloor = new Map();
+
+/** ACP session/new 的 cwd（手机端选中的工作目录）→ MTNode 会话的 workspace。
+ *  只认绝对路径：空串 / 相对路径一律不带，让 MTNode 自己按画布解析（与电脑上新建会话同口径）。 */
+function phoneWorkspaceOf(v) {
+  const s = String(v == null ? "" : v).trim();
+  return s && path.isAbsolute(s) ? s : "";
 }
 
 /** 桥侧的临时会话 id：**不再借 MTNode 的 as… 当 ACP sessionId**（那正是空会话的来源）。 */
@@ -1302,7 +1330,16 @@ async function main() {
       const models = await modelsState(server);
       const { route, model } = decodeModelId(models.currentModelId);
       const sid = newPendingId();
-      pending.set(sid, { cwd: String(p.cwd || ""), provider: route, model, effort: "" });
+      pending.set(sid, {
+        cwd: String(p.cwd || ""),
+        /* 手机端在这个工作区里开的会话：**工作目录就是它**（ACP 的 session/new 带 cwd）。
+           过去这里只记不用 —— MTNode 那边按「当前客户端那张画布的目录」冻结，
+           于是手机上选的目录被无视（用户报的「工作目录被错选成客户端画布目录」）。 */
+        workspace: phoneWorkspaceOf(p.cwd),
+        provider: route,
+        model,
+        effort: "",
+      });
       registerSession(sid, { mode: "new", provider: route, model, mtnodeId: "" });
       let modes = null;
       try {
@@ -1519,6 +1556,9 @@ async function main() {
             ...(pend.provider ? { provider: pend.provider } : {}),
             ...(pend.model ? { model: pend.model } : {}),
             ...(pend.effort ? { effort: pend.effort } : {}),
+            /* 手机端选的目录随创建一起下发（渲染层把它写进会话自己的 workspace 字段，
+               此后这一轮与后续各轮的生效工作目录就是它，不再按客户端画布现算）。 */
+            ...(pend.workspace ? { workspace: pend.workspace } : {}),
           }
         : null;
       const targetId = String(rec.mtnodeId || (pend ? "" : sid) || "");
@@ -1584,9 +1624,18 @@ async function main() {
       const mid = turn.mtnodeId;
       let started = false;
       const pendingEv = [];
+      /* 注意 seqFloor（文件头附近那个 Map）：MTNode 的 SSE 会补一屏（replay=1），第二轮补的
+         正是上一轮那一屏 —— 不挡掉，手机上第二次对话会再收一遍第一次的正文（见下面 onEvent
+         开头的 GC 式判定）。 */
       turn.stream = client.stream(
         mid,
         (ev) => {
+          /* 已经送到过手机的帧（seq ≤ floor 的重放，或同一条流里的重复帧）直接丢弃 */
+          const sq = Number(ev && ev.seq) || 0;
+          if (sq) {
+            if (sq <= Number(seqFloor.get(mid) || 0)) return;
+            seqFloor.set(mid, sq);
+          }
           const t = String(ev.type || "");
           if (t === "round-end" || t === "done") {
             /* 一轮收尾：等 MTNode 的 done 到了才回 stopReason（不外泄内部帧）。

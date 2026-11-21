@@ -754,9 +754,27 @@ async function loadCatalog() {
     const r = await apiCall("/api/catalog?" + params.toString(), "GET", null, false);
     state.items = r.items || [];
     renderItems(state.items);
+    noteCatalogCache(r.cache, q);
   } catch (e) {
     logLine("搜索失败: " + e.message);
   }
+}
+
+/* 在线模型列表是「固化」口径（见 llama-pack/app/catalog.py 的 CACHE_PATH）：
+   首拉整页落盘冻结，之后只按时间拿最新的增量。这里只负责把这件事说清楚，
+   免得用户以为「列表里没有的模型就是拿不到」；同一次开会话里不重复刷屏。 */
+function noteCatalogCache(cache, q) {
+  if (!cache || !cache.frozen || q) return;
+  const at = String(cache.frozenAt || "").slice(0, 10) || "—";
+  const added = Number(cache.added || 0) || 0;
+  if (added > 0) {
+    state.catalogNoted = true;
+    logLine("在线模型列表已固化（" + at + "）·本次按时间新增 " + added + " 条");
+    return;
+  }
+  if (state.catalogNoted) return;
+  state.catalogNoted = true;
+  logLine("在线模型列表已固化（" + at + "）·之后只按时间拉取最新，其余沿用固化结果");
 }
 
 async function loadLocal() {

@@ -195,3 +195,20 @@ description: 在用户指定目录安装 llama.cpp 本地模型后端：创建 v
 - `.api-key` 存在
 - 写入 `.llama-agent-result`（`ok=true`）；失败写 `ok=false` + `reason=`
 - 回复：`install_ok=1`、`venv_ok=`、`llama_server=`、`model_gguf=`（若已下载）
+
+## 安装自查由宿主做，别用「标记写了」当结论
+
+插件在安装收尾（脚本 exit 0 之后、Agent 说完 ok 之后）会自己跑一遍
+`llama/install-verify.js`：venv 里**真** `import fastapi; from app import server`、
+`bin\llama-server.exe` 存在且 >1MB（下载被掐断的半截 exe 不算）、`models\` 与 `.api-key`
+在位（缺的两样它会就地补）。任一项不过就按失败收口，不写「已安装」标记。
+
+所以：`.install-ok` / `.llama-agent-result` 里的 `ok=true` 只是你的声明，宿主会复核 ——
+自查要真的能过再写它，写早了只会在安装窗里出现「自查没通过」。
+
+## 在线模型列表是固化的（.catalog-cache.json）
+
+`GET /api/catalog` 第一次整页拉取后把条目（含真实体积与 GGUF 文件头架构）冻结进
+`INSTALL_DIR\.catalog-cache.json`；之后只按 `sort=createdAt` 拉「比已固化最新一条还新」的增量，
+其余条目沿用固化结果（镜像不可达时也照旧出列表）。要整页重拉：删掉这个文件，或带
+`force=true` 请求一次。**不要**在修复安装时删它（它是用户的历史结果，不是缓存垃圾）。

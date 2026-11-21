@@ -113,6 +113,11 @@ const META_KEYS = [
      与这份索引元数据，否则重启后这一位就丢了 */
   "hotfix",
   "showThink",
+  /* 「简报模式」会话级开关 + 它上次停在哪个子 Tab（原始 / 简报）—— 两位必须与渲染层
+     agentSessionMetaForDisk 那份清单逐字对齐，否则重启后这一位就丢了（少了 briefTab，
+     重启回来会从「简报」跳回「原始」）。 */
+  "brief",
+  "briefTab",
   "trajView",
   "noCanvasRead",
   "canvasFree",
@@ -143,13 +148,38 @@ const META_KEYS = [
    改名在懒加载口径下只落索引、不碰会话文件（见 saveSessions 的硬口径②），于是盘上那份
    title 一直是旧值；重启后空闲补读把会话文件读回、Object.assign 一盖，索引里的新标题
    就退回旧值（用户看到的就是「改好的名字重启后变回新会话」）。所以标题必须有一条
-   独立的、按 id 直写会话文件的通道 —— 就是这三个键。 */
-const PATCH_KEYS = ["workspace", "title", "titleAuto", "titleLocked"];
+   独立的、按 id 直写会话文件的通道 —— 就是这三个键。
+   roundBriefs（任务 4/8：简报随会话落盘，每轮一份）：会话文件顶层的按轮简报存档，
+   键 = 该轮末助手消息的时间戳，值 = 那一轮的**定稿简报** { at, summary, items, stale }。
+   为什么也要走这条通道：简报只在渲染层的内存里产生（renderer/app-brief-sched.js 从不落盘），
+   而日常落盘走追加段（<id>.jsonl 只追加消息），基线文件的顶层字段一个字节都不动 ——
+   光把 st.roundBriefs 摆在内存里，重启就没了。写入口只有一个（一轮定稿版落地时写一次，
+   见 app-assist.js 的 agentRoundBriefPersist），**不进索引**：索引是左栏元数据（几十字节级），
+   按轮累积的简报不该挤进去（见下面 patchSessionMetaNow 的镜像口径）。 */
+const PATCH_KEYS = ["workspace", "title", "titleAuto", "titleLocked", "roundBriefs"];
 /* 这两个键在会话文件里是布尔：补丁通道不许把它们 String 化成 "true" / "false" */
 const PATCH_BOOL_KEYS = new Set(["titleAuto", "titleLocked"]);
+/* 这个键在会话文件里是**对象**：既不许 String 化成 "[object Object]"，比对也不能按字符串
+   （按 JSON 文本逐字比，同一份数据同一份序列化结果）；日志里只报轮数，不打印整份正文。 */
+const PATCH_JSON_KEYS = new Set(["roundBriefs"]);
 
 function compactJson(v) {
   return JSON.stringify(v);
+}
+/* 对象型补丁键（PATCH_JSON_KEYS）的两只小工具：
+   · jsonTextOf：比较口径 —— 逐字比 JSON 文本（同一份数据同一份序列化结果，键序稳定）；
+   · jsonCountLabel：日志口径 —— 只报轮数（简报一条就上百字，整份打进日志毫无用处）。 */
+function jsonTextOf(v) {
+  if (!v || typeof v !== "object") return "";
+  try {
+    return compactJson(v);
+  } catch {
+    return "";
+  }
+}
+function jsonCountLabel(v) {
+  if (!v || typeof v !== "object") return "无";
+  return Object.keys(v).length + " 轮";
 }
 function statOf(p) {
   try {
@@ -881,7 +911,7 @@ function createAgentSessionsStore(opts) {
     let rewritten = 0;
     let orphans = 0;
     let missing = 0;
-    let healed = 0; /* 标题以索引为准回写文件的会话数（见 titleFromIndex） */
+    let healed = 0; /* 按索引为准回写文件的会话数（标题三键 / 简报开关与子 Tab，见下） */
     for (const id of files) {
       const e = prev.get(id);
       /* 孤儿判据 = **本次对账开始前索引里没有它**：盘上有、索引没有 = 上一次写到一半
@@ -948,6 +978,20 @@ function createAgentSessionsStore(opts) {
          不补这一下，文件里那份旧的 null 就会顺着 entryFromBody 把索引里的累计抹掉。 */
       const keepReport = newerTokenReport(e && e.tokenReport, body.tokenReport);
       if (keepReport && keepReport !== body.tokenReport) body.tokenReport = keepReport;
+      /* 「简报模式」开关与它的子 Tab 停留位置（任务 4/8 ②）：与标题三键同一个根因 ——
+         日常落盘只走追加段，会话文件顶层这两位停在很久以前，而索引是最后写的那一份；
+         对账是「按文件重建索引条目」，照抄文件就等于把索引里的新值丢掉，随后文件里那份
+         旧值还会一路盖回界面（用户看到「重启后简报模式自己关了 / 子 Tab 跳回原始」）。
+         索引里有这一位就以索引为准，这行归一写盘顺手把文件也自愈了。 */
+      if (e && typeof e.brief === "boolean" && !!body.brief !== e.brief) {
+        body.brief = e.brief;
+        healed++;
+        log("[sessions] 会话 " + id + " 的简报模式开关以索引为准回写文件：" + String(e.brief));
+      }
+      if (e && typeof e.briefTab === "string" && String(body.briefTab || "") !== e.briefTab) {
+        body.briefTab = e.briefTab;
+        healed++;
+      }
       try {
         writeAtomicSync(sessionPath(id), compactJson(body));
         if (dltOk && dlt.records.length) {
@@ -1014,7 +1058,7 @@ function createAgentSessionsStore(opts) {
           orphans +
           " / 缺文件 " +
           missing +
-          " / 标题回写 " +
+          " / 元数据回写 " +
           healed +
           "（共 " +
           rows.length +
@@ -1462,7 +1506,9 @@ function createAgentSessionsStore(opts) {
      正文一个字节都不碰（不 parse messages，也不整份重写，省掉几 MB 的读写）。
      写序与硬口径 ③ 一致：先写会话体，再写索引。
      异步 + 进写串行队列（会话体动辄几 MB，整份重写不能占主进程同步段）；渲染层本来
-     就 await 这条通道（app-assist 的 agentSetSessionWorkspace），调用方无需改动。 */
+     就 await 这条通道（app-assist 的 agentSetSessionWorkspace），调用方无需改动。
+     现有调用方：工作目录（workspace）、标题三键、**简报按轮存档（roundBriefs，一轮写一次，
+     只在定稿版落地那一刻）** —— 都只碰顶层那一个键，键表见文件上方 PATCH_KEYS。 */
   function patchSessionMeta(id, patch) {
     const sid = String(id || "");
     if (!ID_OK.test(sid)) return Promise.resolve({ ok: false, error: "bad_id" });
@@ -1484,6 +1530,18 @@ function createAgentSessionsStore(opts) {
     const dver = merged.ver;
     const changed = [];
     for (const k of keys) {
+      /* 对象键（roundBriefs）：按 JSON 文本比、整份赋值；空 / 非法值 = 删掉这个键
+         （「没有任何一轮简报」这一态就该是文件里没有它，而不是 {"roundBriefs":null}）。 */
+      if (PATCH_JSON_KEYS.has(k)) {
+        const prevVal = body[k] && typeof body[k] === "object" ? body[k] : null;
+        const nextVal = src[k] && typeof src[k] === "object" ? src[k] : null;
+        const nextEmpty = !nextVal || !Object.keys(nextVal).length;
+        if (jsonTextOf(prevVal) === jsonTextOf(nextEmpty ? null : nextVal)) continue;
+        if (nextEmpty) delete body[k];
+        else body[k] = nextVal;
+        changed.push({ key: k, from: jsonCountLabel(prevVal), to: jsonCountLabel(nextVal) });
+        continue;
+      }
       const isBool = PATCH_BOOL_KEYS.has(k);
       const before = isBool ? !!body[k] : String(body[k] == null ? "" : body[k]);
       const next = isBool ? !!src[k] : String(src[k] == null ? "" : src[k]);
@@ -1508,7 +1566,10 @@ function createAgentSessionsStore(opts) {
     const hit = rows.find((e) => e && String(e.id || "") === sid);
     let indexOk = true;
     if (hit) {
-      for (const c of changed) hit[c.key] = body[c.key];
+      /* 只镜像索引**自己有**的那一份键（META_KEYS）：roundBriefs 是会话正文顶层的存档，
+         索引（左栏元数据）里没有它这一格 —— 把按轮累积的简报塞进索引只会让每次保存都变重，
+         而左栏一个字段都不用它。签名照旧刷新（文件确实变了，下次对账别把它当被外部改过）。 */
+      for (const c of changed) if (META_KEYS.indexOf(c.key) >= 0) hit[c.key] = body[c.key];
       if (st) hit.sig = { size: st.size, mtimeMs: st.mtimeMs };
       backupIndex(false);
       indexOk = await writeIndex(idx.activeId, rows);

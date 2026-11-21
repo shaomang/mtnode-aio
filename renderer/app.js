@@ -10919,8 +10919,8 @@ function updateRunQueuePanel() {
   fold.className = "rq-fold mini";
   /* 最小化 = 向下三角（与行内 ■ / ▶ 同一套实心字形，不用旧的那根横杠） */
   fold.textContent = "▼";
+  /* 只留 title 这一份文案：aria-label 与它逐字相同 = 读屏念两遍，气泡也没多给信息 */
   fold.title = I18n.t("收起为左下角条状按钮");
-  fold.setAttribute("aria-label", I18n.t("收起为左下角条状按钮"));
   fold.onclick = (ev) => {
     ev.stopPropagation();
     S._rqCollapsed = true;
@@ -15236,11 +15236,13 @@ function toStage(cx, cy) {
 /* ── 缩略模式（低缩放总览）──────────────────────────────────────────────────────
    相机缩到 25% 以下时，整张画布退化成「一块类型色 + 居中标题」的缩略图：
    body 内容与端子隐去，位置 / 尺寸 / 层级一概不动（所以拉回 100% 时不会跳）。
-   全部表现由 css/canvas.css 的 `#canvas.lod-mini` 一族规则承担，这里只做两件事：
+   全部表现由 css/canvas.css 的 `#canvas.lod-mini` 一族规则承担，这里做三件事：
    ① 按缩放切一个容器类名（带滞回，见 LOD_MINI_IN / LOD_MINI_OUT）；
-   ② 写一个 --lod-title-size 变量，把标题按 1/z 反向补偿到落屏约 11px。
+   ② 写一个 --lod-title-size 变量，把标题按 1/z 反向补偿到落屏约 11px；
+   ③ 切档那一帧在 document 上广播 mtnode:lod-mini（见下）。
    每帧只做一次 classList.toggle（状态没变时是一次布尔比较）与一次写变量，
-   不重建任何节点 —— 平移 / 缩放热路径扛得住。 */
+   不重建任何节点 —— 平移 / 缩放热路径扛得住；③只在类名真的翻转时发一次，
+   平移 / 缩放途中不发事件。 */
 function syncNodeLod() {
   const cv = $("#canvas"),
     st = $("#stage");
@@ -15253,6 +15255,18 @@ function syncNodeLod() {
     cv.classList.toggle("lod-mini", mini);
     /* 离开缩略模式时把变量撤掉，别把一个巨大的字号留在普通视图里 */
     if (!mini) st.style.removeProperty("--lod-title-size");
+    /* ③ 切档广播（document 上的 mtnode:lod-mini）：
+       缩略总览只是把 .n-body 设成 visibility: hidden —— DOM 一个没少、解码一次没省
+       （用 visibility 不用 display，是为了 fitCanvas / 自动排版在低缩放下仍量得到真矩形）。
+       所以「要不要把重内容收掉」得由各模块自己决定：音频分析（app-audioanalysis.js）
+       收到就把全部登记节点的重内容拆掉、只留折叠条，回到普通档再由它那套可见性观察器
+       自然重建。只在**类名真的翻转时**发一次，平移 / 缩放途中不发。
+       detail.mini / detail.z 只是方便接收方判断，权威值仍是 #canvas 上的 .lod-mini 类。 */
+    if (typeof document !== "undefined" && document.dispatchEvent) {
+      try {
+        document.dispatchEvent(new CustomEvent("mtnode:lod-mini", { detail: { mini: mini, z: zz } }));
+      } catch (_) {}
+    }
   }
   if (!mini) return;
   /* 落屏 ≈ LOD_TITLE_PX：世界字号 = 11 / z，乘回 scale(z) 正好是 11px。别在这里再按世界
@@ -15325,7 +15339,8 @@ function setCanvasPanning(on) {
   } catch (_) {}
 }
 
-/* 一键居中：重新定位到当前画布可见内容中心 */
+/* 一键居中：重新定位到当前画布可见内容中心。
+   画布没有可见内容时**不动视角**（没有可居中的对象，就不该把视野拉回原点）。 */
 function fitCanvas() {
   const bounds = canvasWorldBounds();
   if (!bounds) return;
@@ -34938,9 +34953,12 @@ function rememberLevelView(wf, force) {
   };
   return true;
 }
-/* 该层一个内容都没有（新建的空壳 / 空任务）：缩放不变，把相机居中到这一层的原点。
-   有内容时统一走 fitCanvas —— 与「一键居中」同一口径（节点 + 标注 + 分组、pad 60、
-   最大 1.2 倍），保证进层第一眼就能看全，而不是停在内容不在原点时的一角。 */
+/* 有内容时统一走 fitCanvas —— 与「一键居中」同一口径（节点 + 标注 + 分组、pad 60、
+   最大 1.2 倍），保证进层第一眼就能看全，而不是停在内容不在原点时的一角。
+   该层一个内容都没有（新建的空壳 / 空任务）时**不动视角**：没有东西可居中，就把镜头原样
+   留着。过去这里把相机设成 (vw/2, vh/2)，等于每次进空层都把世界原点摆到视口正中 ——
+   用户正看着的那片空白被平白挪走，看起来就是「空画布一点居中就跳回原点」。
+   （新建节点自己会居中到新节点，不靠这一刀找落点。） */
 function centerLayerView() {
   const canvas = $("#canvas");
   if (!canvas) return false;
@@ -34951,8 +34969,6 @@ function centerLayerView() {
     fitCanvas();
     return true;
   }
-  S.cam.x = vw / 2;
-  S.cam.y = vh / 2;
   applyTransform();
   updateWires();
   renderStatus();

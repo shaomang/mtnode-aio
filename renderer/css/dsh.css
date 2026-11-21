@@ -2354,6 +2354,293 @@ button.mini.btn-sq.tpl-ico {
   display: none
 }
 
+/* ── 子 Tab 条（.dsh-subtabs；会话正文区上方那一排「原始 / 简报」）───────────────
+   与上方 .dsh-view-tabs（对话 / 轨迹 / 改动）**两级分清**：这条更矮（26px vs 30px）、
+   不上面板底色（背景全透，只留一条底分隔线）、选中态是淡底药丸而不是底部下划线 ——
+   一眼看出它是上一条的下一级，而不是又一条平级的标签栏。
+   类名两套都认：容器 .dsh-subtabs / .agent-brief-tabs，条目 .dsh-subtab / .agent-brief-tab
+   （历史实现用的是 .dsh-view-tabs + .dsh-view-tab，见 app-assist.js 的 agentBriefTabsSync）。
+   颜色一律取 dsh-tokens 的 --dsh-* 令牌（令牌值引用 base.css 的槽位）：theme-daylight /
+   endfield 等皮肤重定义槽位后本块自动跟随，这里不写任何 rgb / hex 死色。 */
+.dsh-subtabs,
+.dsh-view-tabs.agent-brief-tabs,
+.agent-brief-tabs {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 26px;
+  padding: 0 22px;
+  border-bottom: 1px solid var(--dsh-bd);
+  background: none;
+  user-select: none
+}
+
+.dsh-subtabs .dsh-subtab,
+.dsh-subtabs .dsh-view-tab,
+.agent-brief-tabs .dsh-subtab,
+.agent-brief-tabs .dsh-view-tab,
+.dsh-view-tab.agent-brief-tab,
+.agent-brief-tab {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 20px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 999px;
+  background: none;
+  color: var(--dsh-tab-ink);
+  font: inherit;
+  font-size: 11.5px;
+  line-height: 20px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color .12s, background .12s
+}
+
+.dsh-subtabs .dsh-subtab:hover,
+.dsh-subtabs .dsh-view-tab:hover,
+.agent-brief-tabs .dsh-subtab:hover,
+.agent-brief-tabs .dsh-view-tab:hover,
+.dsh-view-tab.agent-brief-tab:hover,
+.agent-brief-tab:hover {
+  color: var(--dsh-tab-ink-on);
+  background: color-mix(in srgb, var(--dsh-ink) 7%, transparent)
+}
+
+/* 选中态：淡强调底 + 正文字色。**不用下划线** —— 那是上一级 .dsh-view-tab 的层级记号，
+   两级都画下划线就又变成一排平级标签了。 */
+.dsh-subtabs .dsh-subtab.on,
+.dsh-subtabs .dsh-view-tab.on,
+.agent-brief-tabs .dsh-subtab.on,
+.agent-brief-tabs .dsh-view-tab.on,
+.dsh-view-tab.agent-brief-tab.on,
+.agent-brief-tab.on {
+  color: var(--dsh-tab-ink-on);
+  background: var(--dsh-accent-soft)
+}
+
+.dsh-subtabs .dsh-view-tab.on::after,
+.agent-brief-tabs .dsh-view-tab.on::after,
+.agent-brief-tab.on::after {
+  display: none
+}
+
+.dsh-subtabs .dsh-subtab:focus-visible,
+.dsh-subtabs .dsh-view-tab:focus-visible,
+.agent-brief-tabs .dsh-subtab:focus-visible,
+.agent-brief-tabs .dsh-view-tab:focus-visible,
+.dsh-view-tab.agent-brief-tab:focus-visible,
+.agent-brief-tab:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px
+}
+
+/* 简报模式关着时两件都收起来（高度预算照旧：标签 flex:none、简报区与正文区抢同一份
+   flex:1，输入区与下面那几件面板一个像素都不挪）。 */
+.agent-brief-tabs {
+  flex: none
+}
+
+.agent-brief-pane {
+  flex: 1 1 0px;
+  min-height: 0;
+  overflow: auto
+}
+
+/* .dsh-view-tabs 自己的 display:flex 会盖掉浏览器默认的 [hidden]，必须自己压回去
+   （同 .agent-round[hidden] 那一条的写法）；简报区同理，显式写死省一份推理。 */
+.dsh-subtabs[hidden],
+.agent-brief-tabs[hidden],
+.agent-brief-pane[hidden] {
+  display: none
+}
+
+/* 停在「简报」那一片 = 正文区让位。走类不走行内 display：renderAgentSession 每帧都会把
+   #agentList 的行内 display 抹回空串（那一下会把行内藏法放出来）。壳与消息列两条都给上 ——
+   有壳时壳是宿主的直接子件，没套壳时消息列才是。 */
+.agent-brief-sub > .hist-scroll-wrap,
+.agent-brief-sub > .agent-list {
+  display: none !important
+}
+
+/* 轨迹 / 改动视图下会话主体整块让位（.dsh-trace-on 由 app-trajectory.js 的 applyViewChrome
+   挂在宿主上）：这两件也是「对话视图自己的」，一起收掉。 */
+.dsh-trace-on .dsh-subtabs,
+.dsh-trace-on .agent-brief-tabs,
+.dsh-trace-on .agent-brief-pane {
+  display: none !important
+}
+
+/* ── 简报区里的内容（按轮渲染 · 简报卡 · 行下就地展开的原文）──────────────────────
+   结构见 app-assist.js 的「简报子 Tab 的历史渲染」那一段；这里只管长相：一轮一块
+   （轮标题 / 简报卡 / 最终答复）。卡内是**结论式三段**（任务 6/8）：
+   ① 现状一行（.dsh-brief-state，主行 · 字号略大）→ ② 「发现」条目列表（每条紧凑一行）→
+   ③ 可选的「产出 / 改动」「卡点 / 待定」两小节（.dsh-brief-sec，空了整节不出现）。
+   可点的那一行鼠标变手，展开的原文压在**那一行正下方**、左边缩进一格（视觉上从属于这一行）。
+   皮肤与对话里的段同源（.dsh-seg-*）：左侧 2px 强调色轨 + 淡底 + 主题变量 ——
+   颜色全部走 dsh-tokens 的 --dsh-* 令牌，暗色 / 亮色 / 各皮肤同源，不再写死 rgb。 */
+.dsh-brief-round {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 22px 18px
+}
+
+.dsh-brief-round + .dsh-brief-round {
+  border-top: 1px solid var(--dsh-bd)
+}
+
+/* 轮标题 = 用户的提问，正文色（不是标题样式：一轮里最该被看见的是简报本身） */
+.dsh-brief-q {
+  font-size: 13px;
+  color: var(--dsh-ink)
+}
+
+/* 中性提示那一行（缺简报时的进度 / 兜底那句 / 「这一步的原文已经不在存档里了」）：
+   只是提示，不是报错 —— 所以走灰字，不挂错误色 */
+.dsh-brief-miss {
+  font-size: 12px;
+  color: var(--dsh-ink-dim);
+  padding: 2px 0 2px 2px
+}
+
+/* 简报卡：沿用 .dsh-seg 的那套皮 —— 左侧 2px 强调色轨 + 淡底 + 主题变量。
+   淡底由强调色与卡片底色混出（深色下是一层几乎看不见的冷调，亮色下是同族的淡蓝），
+   不写死 rgba(255,255,255,…) 那种「亮色主题下等于没有」的值。 */
+.dsh-brief-card {
+  border: 1px solid var(--dsh-bd);
+  border-left: 2px solid var(--dsh-accent);
+  border-radius: var(--dsh-r-md);
+  background: color-mix(in srgb, var(--dsh-accent) 5%, var(--dsh-card-bg));
+  padding: 8px 10px 10px
+}
+
+.dsh-brief-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px
+}
+
+/* 卡头那两个字：强调色往正文字色压一档，暗色下不至于刺眼、亮色下又足够辨认 */
+.dsh-brief-card-title {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .5px;
+  color: color-mix(in srgb, var(--dsh-accent) 68%, var(--dsh-ink))
+}
+
+/* 现状一行：卡的主行 —— 比条目行（12.5px）大一档、正文字色 + 中等字重，
+   一眼先读到「这一轮现在是什么状态」，再往下扫「发现」那几条结论。 */
+.dsh-brief-state {
+  font-size: 13.5px;
+  line-height: 1.5;
+  font-weight: 500;
+  color: var(--dsh-ink);
+  margin-bottom: 8px
+}
+
+.dsh-brief-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 1px
+}
+
+/* 卡里的一节（「发现」/「产出 / 改动」/「卡点 / 待定」）：小标题 + 条目行。
+   节内行距与卡身同一个紧凑口径（gap 1px），节与节之间留 8px 分界。 */
+.dsh-brief-sec {
+  display: flex;
+  flex-direction: column;
+  gap: 1px
+}
+
+.dsh-brief-sec + .dsh-brief-sec {
+  margin-top: 8px
+}
+
+/* 小节标题：比条目行小一档的灰字，不做大写变形（中英都读得顺）——
+   只在视觉上当分区标签，不跟条目的结论抢注意力。 */
+.dsh-brief-sec-h {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .3px;
+  color: var(--dsh-ink-dim);
+  padding: 0 6px 2px
+}
+
+/* 一条一行（紧凑）：行高压到 1.45、上下各 1px，一屏能多读几条；卡里的「发现」条目、
+   「产出 / 改动」「卡点 / 待定」两节的条目，以及缺简报时的原文摘录都用它。
+   未展开就是普通一行文字（可点的那几条另挂 .is-openable）。 */
+.dsh-brief-step {
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: color-mix(in srgb, var(--dsh-ink) 74%, var(--dsh-ink-dim));
+  padding: 1px 6px;
+  border-radius: var(--dsh-r-sm)
+}
+
+.dsh-brief-step.is-openable {
+  cursor: pointer
+}
+
+/* 默认只给一个极淡的底，让「这一行可以点」看得出来，又不是按钮 */
+.dsh-brief-step.is-openable:hover {
+  background: color-mix(in srgb, var(--dsh-ink) 7%, transparent);
+  color: var(--dsh-ink)
+}
+
+/* 展开中的那一行：与下方展开区同一个强调色（一眼对上是哪一步摊开的） */
+.dsh-brief-step.on {
+  color: var(--dsh-ink);
+  background: var(--dsh-accent-soft)
+}
+
+.dsh-brief-step.is-err {
+  color: var(--dsh-err)
+}
+
+/* 行下就地展开的那一段原文：左边一道强调色淡轨 + 细边框 + 极淡底 + 缩进，紧贴它上面那一行
+   （上边距只有 2px）—— 分界清楚，又不会被读成卡片里的第二张卡片。
+   里面装的就是现成的段（.dsh-seg-* / .dsh-seg-tool-wrap …），这里只给容器外观。 */
+.dsh-brief-raw {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 2px 0 7px 12px;
+  padding: 6px 8px 6px 9px;
+  border: 1px solid var(--dsh-bd);
+  border-left: 2px solid color-mix(in srgb, var(--dsh-accent) 55%, var(--dsh-bd));
+  border-radius: 0 var(--dsh-r-sm) var(--dsh-r-sm) 0;
+  background: color-mix(in srgb, var(--dsh-ink) 3.5%, transparent)
+}
+
+/* display:flex 会盖掉浏览器默认的 [hidden]，这里得自己压回去 */
+.dsh-brief-raw[hidden] {
+  display: none
+}
+
+.dsh-brief-answer {
+  font-size: 13px;
+  line-height: 1.62;
+  color: var(--dsh-ink)
+}
+
+/* ── 运行中那一轮（简报区里「当场成为新的一轮」，见 app-assist.js 的 agentBriefLiveRoundEl）──
+   卡位只占位不画皮（display:contents = 里面的 .dsh-brief-card 直接当这一轮的 flex 子件，
+   间距与历史轮一字不差）；正文块复用 .dsh-brief-answer 的字号行高，里面装的就是对话里
+   现成的段（.dsh-seg-*），所以时间栏 / 思考条 / 正文的皮肤与「原始」那张一模一样。
+   正文还没吐出来时整块不占位（:empty 收掉，免得 flex 的 gap 空出一道）。 */
+.dsh-brief-live-card {
+  display: contents
+}
+
+.dsh-brief-live-ans:empty {
+  display: none
+}
+
 .agent-list {
   flex: 1;
   min-height: 0;

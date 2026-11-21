@@ -131,6 +131,16 @@ function attach(opts) {
  * 绝不编造根因（错误码真源在各宿主与 plugin-error-repair.js，这里只补安装场景的说法）。
  */
 const HINTS = [
+  [
+    /install_verify_failed|verify_failed/i,
+    "安装脚本报了成功，但收尾自查没通过（日志里带 FAIL 的那几行就是原因：缺 llama-server.exe / venv 里 import 不了 / 没有 API Key）。" +
+      "这不代表装好了：按 FAIL 那一项重跑安装；反复不过就点「交给 mtnode 会话修复」，由 Agent 按该插件的安装技能补齐缺的那一块。",
+  ],
+  [
+    /install_stalled|没有任何输出|卡住/i,
+    "安装脚本这次是彻底失效（长时间没有任何输出、已被宿主强杀），不是哪一步的报错现场：直接重试大概率还卡在同一处。" +
+      "请点「让 Agent 兜底修复 / 交给 mtnode 会话修复」，由 Agent 按该插件的安装技能接手（换下载源、必要时手工放二进制、修 venv）。",
+  ],
   [/low_disk|磁盘剩余|not enough space|disk full|空间不够/i, "磁盘剩余空间不足。清理磁盘，或在插件控制台换一个剩余空间足够的安装目录后重装（脚本可重跑，已下载的部分会复用）。"],
   [/no_cuda|no_nvidia_gpu|未检测到.{0,8}(nvidia|显卡|gpu)|nvidia-smi/i, "没检测到可用的 NVIDIA 显卡 / 驱动。装的是 CUDA 版本依赖，缺卡装不上：换一台有 N 卡的机器，或在插件里显式选择 CPU 档（很慢）后重装。"],
   [/driver[_ ]?too[_ ]?old|驱动太旧|驱动过旧/i, "NVIDIA 驱动太旧，跑不了目标 CUDA 算子。请升级显卡驱动到支持该 CUDA 版本的版本后重装。"],

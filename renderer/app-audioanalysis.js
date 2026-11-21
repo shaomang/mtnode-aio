@@ -35,6 +35,120 @@
    **不做段落 / 曲式命名**（前奏 / 主歌 / 副歌这类判断不准确）：只给拍点、小节、
    onset、能量相位这些能直接从信号里量出来的东西。
    ========================================================================== */
+
+/* ============================================================================
+   【成本账】这颗节点在画布上还剩哪些开销（静态核对代码得出 · 后续几条改动的唯一依据）
+   ----------------------------------------------------------------------------
+   先记「已经做过的」，避免重复分析、也避免把已解决的事再改一遍：
+     · 收纳态（node.aaViewOpen !== true）不建波形播放器 / 热力图 img / 事件叠加 canvas /
+       ResizeObserver —— 见下面 aaAppendBody 的早退分支，节点上零图像。
+     · 播放头只有**一只全局 ticker**（aaHeadFrame）：静置时不再排 rAF，不按节点各起定时器。
+     · 叠加层有绘制控制器 aaOverlayPainter：同一帧只画一次、整数尺寸真变才画、
+       ResizeObserver 随节点脱离 DOM 自动 kill。
+     · 画布上所有 <img> / <video> 的「视口外摘 src」已由 renderer/app-preview-lazy.js
+       接管（IntersectionObserver，rootMargin ≈ 一屏；无 IO 的运行时它整个不接管）。
+
+   剩下的三类开销 —— 下面每条待办各消掉一类：
+
+   ① 展开态的「重内容」与**可见性完全脱钩**（真缺口 · 最大的一笔）
+      aaAppendBody 只要 node.aaViewOpen 为 true 就无条件做全套：
+        wavePreviewCreate + wavePreviewSetSource → app-audioview.js 的
+        wavePreviewSetSource → waveLoadData → waveDecode：主进程 file:readAudio 读全文件
+        字节 → new AudioContext + decodeAudioData **整段解码**（PCM 常驻内存：3 分钟
+        立体声 44.1kHz ≈ 1600 万个采样 × 4 字节 ≈ 60MB Float32，解码那一刻还有一次 CPU
+        峰值）→ 再线性扫一遍取 WAVE_BUCKETS = 900 桶峰值；
+        同时建频谱 <img>（1024×384 位图 = 一块 GPU 纹理，只有渲染进程销毁才归还）、
+        事件叠加 canvas 与其 ResizeObserver。
+      这些**不看远近也不看缩略态**：节点在一屏之外、画布已经进入 lod-mini 缩略总览，
+      照样全套照建。app-preview-lazy.js 只管 img/video 的 src，管不到解码与 canvas。
+      → 已落地（本文件 aaVisGate / aaVisMount / aaVisUnmount）：一屏之内才挂重内容，离开一屏拆掉、回来自动重建（无 IntersectionObserver 的运行时「挂上即建」，功能不缺）。
+      → 已落地（app-audioview.js 的全局 FIFO 队列 + wavePreviewSetSource 的 lazy 选项）：
+         展开时只挂音源与外壳（时间 / 时长先出占位），峰值等「空闲」才取、一次只解一件，
+         多颗节点同时展开不并发解码；点播放 / 点波形 / 点频谱把它提到队首。整段解码这笔
+         CPU 与内存仍在，只是不再「一展开就付」，也不再乘上同时展开的节点数。
+
+   ② 收纳态几何与绘制没收敛（每次重绘都在按面积光栅化）
+      收纳态 body 只剩 3 个元素（折叠条 + .n-aa-pad + 报告入口），但 .n-aa-pad
+      （css/components.css 的 .n-aa-pad）用 repeating-linear-gradient 45° 斜纹铺满整块
+      图像区，而节点默认 380×380（app.js 的 KIND_DEFAULT.audio_spectrum h: 380；最小高
+      minHFor(audio_spectrum) = 280）。#stage 带 transform + scale，那片斜纹是要按节点面积
+      光栅化的纹理，一屏上叠几颗就是几块大面积重绘（拖动 / 缩放 / 拍总览图时最贵）。
+      另：收纳态每次都 createElement 组 3 棵树，没有模板复用。
+      → 已落地（css/components.css 的 .n-aa-pad 换成纯色底 + 原虚线框：那片要按节点面积
+         光栅化的 45° 斜纹纹理没有了，占位照样一眼看出来是占位）。
+      → 高度：点「收起」把高度收到 minHFor(audio_spectrum) = 280，把展开高度记在
+         node.aaHOpen、展开时还回去（用户收起后又手拖改高则保留手拖值）。
+      → 已落地（本文件 aaFoldBarNode / aaReportRow + aaFoldHeightCollapse / aaFoldHeightOpen）：
+         折叠条与报告行各建一份 <template> 一次，之后每颗节点只 cloneNode(true) 一棵树，
+         文案 / 类名 / 属性都在克隆件上原地改 —— 不再「按节点数 × 元素数」createElement；
+         点「收起」只动本节点自己的 n.h（不碰 app.js 的 minHFor / clampNodeToMinSize / 手势
+         resize，也不碰组布局函数）。
+         评估结论：改高度**不会**在端子 / 连线 / 组框上造成回归 —— 手拖 resize 走的就是这条路
+         （app.js 的 d.mode === "resize"：n.h → refreshPorts → updateGroupFrames → updateWires）。
+         本次照同一条收尾做：refreshNodeEl 已含 refreshPorts + updateWires，另补一次
+         updateGroupFrames（组框跟着成员贴合是既有行为）；只改 n.h 而不重排端子，连线才会错位。
+
+   ③ lod-mini 缩略总览下内容照建
+      app.js 的 syncNodeLod 在 z ≤ 0.25 时只给 #canvas 加一个 .lod-mini 类，
+      css/canvas.css 那一族规则（缩略模式一节）把 .n-body 设成 visibility: hidden ——
+      **DOM 一个都没少、解码一次都没省**（用 visibility 不用 display 是为了让 fitCanvas /
+      自动排版在低缩放下仍量得到真矩形）。所以缩到总览时，展开态的节点依旧持有位图纹理、
+      解码后的 PCM 与叠加层观察器。叠加层的绘制入口只判 canvas.hidden 与 0 尺寸，
+      并不知道当前处于缩略总览。
+      → 已落地（本文件 aaLodBind / aaLodDropHeavy / aaLodRestore）：syncNodeLod 切档时在
+         document 上广播 mtnode:lod-mini（只在类名真的翻转时发一次）；进缩略总览 = 全部登记
+         节点 aaStopLive + aaVisUnmount 拆掉重内容（折叠条 / 报告入口这些轻元素原样留着），
+         回普通档不由本模块自己建，而是把占位重新 observe 一次交给 ① 的观察器重建。
+      → 已落地（aaOverlayPainter 的 paintNow 早退）：canvas.hidden / 处于缩略总览时直接跳过，
+         且**不再排下一帧** —— 原来 body 在 lod-mini 下尺寸照旧是真的，缓存判定永远命中，
+         看着「没画」其实一直在排 rAF。
+
+   ④ 运行期状态刷新不再查 DOM
+      aaPaintStatus 原来每步都 document.querySelector 找节点、再遍历 .n-chip / .n-play /
+      .n-aa-report —— 分析期间一秒数次回调 × N 颗节点，是现成的运行期热点。
+      → 已落地（本文件 aaStatusRefs / aaStatusBindRow / aaStatusResolve）：报告行由
+         aaReportRow 建它时把三只元素（button 本身 + .aa-rp-t + .aa-rp-go）直接登记进
+         WeakMap(node → refs)；头部 chip「频谱」与 ▶ 在每次 DOM 换代后**只解析一次**
+         （它们不归本模块建，且 appendBody 那一刻 body 还没进节点、够不到 .n-head，
+         见 app-canvas.js nodeElement 的时序），之后状态回调只改 textContent / class /
+         title / disabled。元素脱离文档（重绘 / 切画布 / body 换掉）即作废登记，下一次
+         刷新解析一次再继续吃缓存。
+         文案与状态口径仍是 aaReportRowState 唯一真源，这里不碰任何文案。
+   ========================================================================== */
+/* ============================================================================
+   【三条不变量】上面【成本账】那几条把板身拆成了「轻壳 + 按需重内容」，所以有三条
+   必须一直成立的东西 —— 以后动这块代码前先对着这三条读一遍，破了就是功能回归：
+   ----------------------------------------------------------------------------
+   ① 无 IO 退化：没有 IntersectionObserver 的运行时，功能一个都不少
+      aaVisGate 拿不到观察器就**当场** aaVisMount（挂上即建）；aaLodRestore 同理直接建；
+      aaLodMiniOn 读 #canvas 上的 .lod-mini 类作权威判定，事件漏发也不会判错档。
+      也就是说「省成本」永远只是优化：任何宿主 / 冒烟桩里都还必须看得见波形与频谱。
+      （观察器以窗口为根 + rootMargin ≈ 一屏，与 renderer/app-preview-lazy.js 同口径。）
+
+   ② 播放中断保护：外壳要拆，声音必须先停；等效换代不许断播
+      · 本模块自己拆的那一侧（aaVisUnmount 离开一屏 / aaLodDropHeavy 进缩略总览）：
+        先 aaStopLive（播放头从全局 ticker 注销 + aaOverlayStop 收叠加层 ResizeObserver 与
+        rAF），拆每个外壳前再判 wavePreviewPlayingOf(el) → waveStopPlayback(el) —— 只停
+        「这一个真在播的」，别的节点不受影响；音频绝不能在 UI 已经没了之后继续响。
+      · 收起（aaViewBar）只做 aaStopLive，随后 refreshNodeEl 走整画布重绘收尾：
+        app-canvas.js 的 afterCanvasRender 会调 app-audioview.js 的 wavePreviewStopAll(false)，
+        它只停「宿主外壳已经不在文档里」的那些 —— 收起 / 删节点 / 切画布都在这一条上收干净。
+      · 不该停的那一侧（aaVisForget：body 等效换代）：本模块**不碰播放**，「重绘不断播」靠
+        全局播放引擎复用（引擎挂在 body 上、与节点 DOM 无关，新外壳 waveEngineClaim 接过来
+        接着放）；这也是那条 wavePreviewStopAll(false) 只收 detached 的原因 ——
+        分界线只有「元素要不要离开文档」。
+
+   ③ 收纳展开状态记忆：用户点过一次，就一直是那个状态
+      node.aaViewOpen 只由折叠条上的点击翻转（aaNormalize 归一成布尔），重绘 / 重开画布都按它
+      决定建不建重内容，绝不自己缩回去；展开高度记在 node.aaHOpen（收起时写入、展开时还给
+      n.h；收起后又手拖改高则保留手拖值）。这两个都是**节点数据**，不进 WeakMap、不进
+      模块级状态 —— 换一份运行时也照样读得回来。
+
+   【口径免责】本轮的占用下降依据是**成本路径消除**（【成本账】① ~ ④ 一条条对应的解码 /
+   位图纹理 / 按面积光栅化 / 每帧 rAF / 每次回调的选择器解析），**未做帧率与内存实测**：
+   没跑 docs/audio-spectrum-perf-baseline.md 第 E 节那套 bench 复测，也没量堆内存与 GPU 纹理
+   占用。要数字就按第 E 节用同一套脚本与参数复测，再与噪音底表逐列比。
+   ========================================================================== */
 (function () {
   "use strict";
 
@@ -81,6 +195,10 @@
     if (typeof node.aaJsonPath !== "string") node.aaJsonPath = "";
     const d = Number(node.aaDurationSec);
     node.aaDurationSec = isFinite(d) && d > 0 ? d : 0;
+    /* 板身图像区（波形播放器 + 热力图 + 事件叠加层）的收纳状态：默认**收起**
+       （用户口径：默认不画图像，免得一屏几颗频谱节点就为解码位图卡住）。
+       展开后记在节点上，重绘 / 重开画布都维持展开。 */
+    node.aaViewOpen = node.aaViewOpen === true;
     /* 频谱上那层事件：总开关（aaShowEvents）+ 每一层各自的开关（aaEvOn）。
        用户口径：每种 legend 都能单独选显示 / 不显示；缺键按「显示」，旧节点直接兼容 */
     node.aaShowEvents = node.aaShowEvents !== false;
@@ -600,9 +718,44 @@
        ② 头部 ▶：运行中变「…」且禁用，失败变红（与 app-canvas.js 里那份口径一致）；
        ③ body 里那枚「分析报告」入口 —— body 现在唯一的一行文字：没有结果时它的位置
           就显示进度，失败时显示「上次运行失败」（原因在 title 与报告窗里）。
-     进度回调一秒可能来好几次，这里只改 textContent / class / title / disabled。 */
-  function aaPaintStatus(node) {
-    if (!node || !node.id || typeof document === "undefined") return false;
+     进度回调一秒可能来好几次，这里只改 textContent / class / title / disabled。
+
+     **落点登记（成本账 ④）**：node → { el, chip, play, row, txt, go }。
+     WeakMap 而不是挂到 node 上：节点被回收就自动消失，不往会落盘的数据里塞 DOM 引用。
+        · 报告行（.n-aa-report / .aa-rp-t / .aa-rp-go）在 aaReportRow 建它时登记 ——
+          元素引用当场就在手上，一个选择器都不用；
+        · 头部 chip「频谱」与 ▶ 不归本模块建（app-canvas.js 的 head 装配），而且
+          nodeElement 是**先**建 head、**再** buildBody(node, body)、**最后**才
+          el.appendChild(body)，所以 appendBody 那一刻 body 还没进节点、够不到 .n-head
+          （同一时序见 app-canvas.js 滚轮路由那段注释）。它们走 aaStatusResolve：每次
+          DOM 换代后只解析一次，之后一秒数次的进度回调都只碰缓存下来的引用。 */
+  const aaStatusRefs = new WeakMap();
+
+  function aaStatusRefsOf(node) {
+    let r = aaStatusRefs.get(node);
+    if (!r) {
+      r = { el: null, chip: null, play: null, row: null, txt: null, go: null };
+      aaStatusRefs.set(node, r);
+    }
+    return r;
+  }
+
+  /** body 换掉（重绘 / 收起 / 重开画布）时清登记：旧那几只元素已经不在文档里了 */
+  function aaStatusForget(node) {
+    if (node) aaStatusRefs.delete(node);
+  }
+
+  /** 报告行登记：建它就登记（文案 span / › span 的引用当场都在手上） */
+  function aaStatusBindRow(node, btn, txt, go) {
+    if (!node || !btn) return;
+    const r = aaStatusRefsOf(node);
+    r.row = btn;
+    r.txt = txt || null;
+    r.go = go || null;
+  }
+
+  /** 解析节点元素与头部 chip / ▶（只有 DOM 换代之后才走这里，不是热路径） */
+  function aaStatusResolve(node, r) {
     let el = null;
     try {
       el = document.querySelector('.wf-node[data-nid="' + node.id + '"]');
@@ -610,38 +763,70 @@
       return false;
     }
     /* 没渲染出来（壳里收起 / 不在当前画布）：数据已写进 node，下一次重建自然带上 */
-    if (!el) return false;
-    const status = String(node.aaStatus || "").trim();
-    const running = !!node.running;
+    if (!el) {
+      r.el = r.chip = r.play = r.row = r.txt = r.go = null;
+      return false;
+    }
+    r.el = el;
+    r.chip = null;
+    r.play = null;
     const head = el.querySelector(".n-head");
     if (head) {
+      /* 头栏里同类的徽标 / 按钮还有别的用途，仍按建时的文案认（chip = 「频谱」，
+         ▶ = 空闲的 ▶ 或运行中的 …）—— 这条口径只在换代时跑一次。 */
       for (const c of head.querySelectorAll(".n-chip")) {
         if (String(c.textContent || "") !== T("频谱")) continue;
-        c.classList.toggle("on", running);
-        if (status) c.title = status;
+        r.chip = c;
         break;
       }
       for (const b of head.querySelectorAll(".n-play")) {
         const t = String(b.textContent || "");
         if (t !== "▶" && t !== "…") continue;
-        b.textContent = running ? "…" : "▶";
-        b.classList.toggle("running", running);
-        b.classList.toggle("error", !running && !!node.error);
-        b.disabled = running;
-        if (status) b.title = status;
+        r.play = b;
         break;
       }
     }
-    const row = el.querySelector(".n-aa-report");
+    /* 报告行：appendBody 建它时已经登记过就是同一个元素，沿用它（body 此刻可能还没进
+       节点，别再解析一次把它冲掉）；真没有才在这里补一次 */
+    if (!r.row) {
+      r.row = el.querySelector(".n-aa-report");
+      r.txt = r.row ? r.row.querySelector(".aa-rp-t") : null;
+      r.go = r.row ? r.row.querySelector(".aa-rp-go") : null;
+    }
+    return true;
+  }
+
+  function aaPaintStatus(node) {
+    if (!node || !node.id || typeof document === "undefined") return false;
+    const r = aaStatusRefsOf(node);
+    /* 换代才解析（首次 / 重绘 / 切画布 / body 换掉）；平时的进度回调直接吃缓存 —
+       这是分析期间一秒数次的那条路，不再出现任何选择器。 */
+    if (!r.el || r.el.isConnected !== true) {
+      if (!aaStatusResolve(node, r)) return false;
+    }
+    const status = String(node.aaStatus || "").trim();
+    const running = !!node.running;
+    const c = r.chip;
+    if (c) {
+      c.classList.toggle("on", running);
+      if (status) c.title = status;
+    }
+    const b = r.play;
+    if (b) {
+      b.textContent = running ? "…" : "▶";
+      b.classList.toggle("running", running);
+      b.classList.toggle("error", !running && !!node.error);
+      b.disabled = running;
+      if (status) b.title = status;
+    }
+    const row = r.row;
     if (row) {
       const st = aaReportRowState(node);
       row.className = "n-aa-report" + st.cls;
       row.disabled = st.disabled;
       row.title = st.title;
-      const txt = row.querySelector(".aa-rp-t");
-      if (txt) txt.textContent = st.text;
-      const go = row.querySelector(".aa-rp-go");
-      if (go) go.textContent = st.cls === " ready" ? "›" : "";
+      if (r.txt) r.txt.textContent = st.text;
+      if (r.go) r.go.textContent = st.cls === " ready" ? "›" : "";
     }
     return true;
   }
@@ -1382,6 +1567,11 @@
      切层开关（图例 / 总开关）不走这儿：那是用户点一下要立刻见效的操作，直接画一次。 */
   const aaOvLive = new Map(); /* node.id -> 控制器 */
 
+  /* 当前是否处在画布缩略总览（app.js 的 syncNodeLod 切的那个 .lod-mini 档）。
+     权威值在 #canvas 的类上（见 aaLodMiniOn），这个变量只是事件回调里的去抖状态。 */
+  let aaLodMiniState = false;
+  let aaLodBound = false;
+
   function aaOverlayStop(nodeId) {
     const st = aaOvLive.get(nodeId);
     if (st) st.kill();
@@ -1434,12 +1624,18 @@
         return;
       }
       st.attached = true;
-      if (canvas.hidden) return;
+      /* 早退（成本账 ③）：图层被关掉、或画布已经缩到缩略总览 —— 这一发画了也没人看得见，
+         直接跳过并且**不排下一帧**。缩略总览下 .n-body 只是 visibility: hidden，尺寸照旧是
+         真的，所以旧行为在这里「缓存判定永远命中、看着没画其实一直在排 rAF」。
+         回到普通档不靠这里重排：重内容在切档时已被拆掉，重建时会新建一个绘制控制器
+         （aaOverlayPainter 自带首帧 request），ResizeObserver 也会在尺寸真变时 request。 */
+      if (canvas.hidden || aaLodMiniOn()) return;
       const w = Math.round(canvas.clientWidth || 0);
       const h = Math.round(canvas.clientHeight || 0);
       if (!(w > 0) || !(h > 0)) {
-        /* 布局还没算出来（首帧 / 图未加载）：下一帧再试 */
-        if (st.tries++ < 12) request();
+        /* 元素量不到尺寸（首帧布局还没算出来 / 节点被折叠）：有界重试 12 帧内再看，
+           缩略总览下不重试（那一档本来就该零 rAF） */
+        if (!aaLodMiniOn() && st.tries++ < 12) request();
         return;
       }
       st.tries = 0;
@@ -1708,27 +1904,439 @@
     return p;
   }
 
-  function aaAppendBody(node, body) {
-    aaNormalize(node);
+  /* ── 收纳态的两棵树：模板克隆（成本账 ② 的 DOM 部分）─────────────────────────
+     折叠条是「1 个 button + 3 个 span」、报告行是「1 个 button + 3 个 span」，原先每颗节点
+     每次重绘都要 createElement 组一遍（收纳态一屏几十颗就是几十 × 4 次建元素 + 挂子节点）。
+     现在结构只在**第一次**建一份塞进 <template>，之后每颗节点 cloneNode(true) 一次就够；
+     文案 / 类名 / 属性都在克隆件上原地改（用 children[i] 取固定槽位，模板结构是常量）。
+     模板里不留任何节点数据与监听：监听只在克隆件上挂，语言切换也不受影响（文案每次重写）。 */
+  let aaFoldTpl = null; /* <template> 里装着折叠条骨架 */
+  let aaRepTpl = null; /* <template> 里装着报告行骨架 */
+
+  /** 折叠条骨架：button.n-aa-fold > span.aa-fl-c + span.aa-fl-t + span.aa-fl-s */
+  function aaFoldTemplate() {
+    if (aaFoldTpl) return aaFoldTpl;
+    const t = document.createElement("template");
+    const b = aaEl("button", "n-aa-fold");
+    b.type = "button";
+    b.appendChild(aaEl("span", "aa-fl-c"));
+    b.appendChild(aaEl("span", "aa-fl-t"));
+    b.appendChild(aaEl("span", "aa-fl-s"));
+    t.content.appendChild(b);
+    aaFoldTpl = t;
+    return t;
+  }
+
+  /** 报告行骨架：button.n-aa-report > span.aa-rp-ic + span.aa-rp-t + span.aa-rp-go */
+  function aaRepTemplate() {
+    if (aaRepTpl) return aaRepTpl;
+    const t = document.createElement("template");
+    const b = aaEl("button", "n-aa-report");
+    b.type = "button";
+    b.appendChild(aaEl("span", "aa-rp-ic"));
+    b.appendChild(aaEl("span", "aa-rp-t"));
+    b.appendChild(aaEl("span", "aa-rp-go"));
+    t.content.appendChild(b);
+    aaRepTpl = t;
+    return t;
+  }
+
+  /* ── 收起 / 展开时的节点高度（成本账 ② 的第三件）──────────────────────────────
+     收纳态 body 只剩折叠条 + 空槽 + 报告行，minHFor(audio_spectrum) = 280 就装得下，
+     展开态多出来的高度（默认 380，用户手拖过的更高）在收纳时收掉、回到展开再还回去。
+     **只动本节点自己的 n.h**：不碰 app.js 的 minHFor / clampNodeToMinSize / 手势 resize，
+     也不碰组布局函数（组框跟着成员贴合是既有行为）。端子与连线按手拖 resize 的同一套收尾
+     重排（refreshPorts / updateWires / updateGroupFrames）—— 只改 n.h 而不重排端子，
+     连线才会错位，这也是「改高度安全」的评估结论依据。 */
+  function aaNodeH(node) {
+    const h = Math.round(Number(node && node.h) || 0);
+    return h > 0 ? h : 0;
+  }
+
+  /** 收纳态的基准高度 = app.js 的 minHFor(audio_spectrum)；宿主函数取不到时回落 280 */
+  function aaCollapsedH(node) {
+    try {
+      if (typeof minHFor === "function") {
+        const m = Math.round(Number(minHFor(node)) || 0);
+        if (m > 0) return m;
+      }
+    } catch (_) {}
+    return 280;
+  }
+
+  /** 收起：记下展开高度、把高度收到最小。返回 true = 高度真的变了（要让组框重新贴合） */
+  function aaFoldHeightCollapse(node) {
+    if (!node) return false;
+    const min = aaCollapsedH(node);
+    const cur = aaNodeH(node);
+    /* 已经不比最小高：不记（否则展开会把「本来就矮」的节点抬回去） */
+    if (!(cur > min)) {
+      node.aaHOpen = 0;
+      return false;
+    }
+    node.aaHOpen = cur;
+    node.h = min;
+    return true;
+  }
+
+  /** 展开：还给 node.aaHOpen。收起后又手拖改高（比记下的值更高）则保留手拖值 */
+  function aaFoldHeightOpen(node) {
+    if (!node) return false;
+    const want = Math.round(Number(node.aaHOpen) || 0);
+    node.aaHOpen = 0;
+    if (!(want > aaNodeH(node))) return false;
+    node.h = want;
+    return true;
+  }
+
+  /* ── 视图收纳（默认收起）────────────────────────────────────────────────
+     用户口径：板身**默认不摆任何图像**（波形播放器 / 热力图 / 事件叠加层一个都不建），
+     免得一张画布上放几颗频谱节点，就为了解码几张 1024×384 位图 + 跑一遍音频峰值而卡住；
+     点这条折叠条才展开，展开状态记在节点上（node.aaViewOpen），重绘 / 重开画布都维持
+     展开，不会自己缩回去。收纳时这条本身就是灰的（连结果都还没有时再灰一档）。 */
+  function aaViewBar(node) {
+    const open = node.aaViewOpen === true;
+    const hasSpec = !!String(node.aaSpectrogram || "").trim();
+    /* 一次 clone 拿整棵树（成本账 ②：不再 3 次 createElement 组树） */
+    const btn = aaFoldTemplate().content.firstElementChild.cloneNode(true);
+    btn.className =
+      "n-aa-fold" + (open ? " is-open" : " is-off") + (hasSpec ? "" : " is-empty");
+    btn.setAttribute("aria-expanded", open ? "true" : "false");
+    const sp = btn.children;
+    sp[0].textContent = open ? "▾" : "▸";
+    sp[1].textContent = T("波形与频谱");
+    sp[2].textContent = open
+      ? T("点一下收起")
+      : hasSpec
+        ? T("已收起 · 点开显示")
+        : T("无内容 · 跑一次 ▶ 后显示");
+    btn.title = open
+      ? T("收起波形与频谱图：节点上不再绘制任何图像（默认收纳，避免多节点卡顿）")
+      : T("展开波形播放器与频谱热力图（默认收纳：不绘制图像，省掉位图解码与叠加层重绘）");
+    btn.onclick = (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      node.aaViewOpen = !open;
+      /* 收起 = 整块 DOM 拆掉：播放头 / 叠加层的登记先收干净，别留下对已脱离节点的每帧操作 */
+      if (!node.aaViewOpen) {
+        try {
+          aaStopLive(node.id);
+        } catch (_) {}
+      }
+      /* 高度：收起收到最小、展开还回去（只动本节点 n.h，见上面 aaFoldHeight* 的口径） */
+      const hChanged = node.aaViewOpen
+        ? aaFoldHeightOpen(node)
+        : aaFoldHeightCollapse(node);
+      if (typeof refreshNodeEl === "function") refreshNodeEl(node.id);
+      /* refreshNodeEl 已重排端子与连线；组框不归它管，高度真变了才补一次（与手拖 resize 同一收尾） */
+      if (hChanged && typeof updateGroupFrames === "function") {
+        try {
+          updateGroupFrames();
+        } catch (_) {}
+      }
+    };
+    btn.addEventListener("pointerdown", (ev) => ev.stopPropagation());
+    return btn;
+  }
+
+  /* ── 展开态重内容的可见性门控（上面「成本账 ①」的落地）───────────────────────
+     展开分支不再「一展开就全套」：先只挂一块**轻占位**（纯 div，复用 .n-aa-spec /
+     .n-aa-plot 的 aspect-ratio 把高度预留好，不画任何东西、不解码任何音频），由一只
+     模块级 IntersectionObserver 判定 ——
+       · 进了一屏（视口外扩一屏，与 renderer/app-preview-lazy.js 的 previewLazyMargin
+         同口径：横竖各 max(320px, 窗口尺寸)）：才建波形播放器 / 频谱 img / 事件叠加
+         canvas / ResizeObserver；
+       · 离开一屏：aaStopLive + aaOverlayStop（复用收起时同一套收尾）后拆掉内容，
+         占位装回来。
+     node.aaViewOpen 的语义一动没动：它只决定「要不要这套东西」，回来了由观察器自动重建
+     （重建不重新读文件、不重新解码：app-audioview.js 的 waveDecodeCache 按
+     path|size|mtime 记着上次的峰值）。
+     没有 IntersectionObserver 的运行时（老运行时 / 冒烟桩）退化成「挂上即建」，功能不缺。
+     观察器以窗口为根（画布是 transform 平移，不是滚动容器 —— 与 preview-lazy 同一路判定），
+     rootMargin 随窗口尺寸变，下次建 body 时按新值重建；不另外挂 resize 监听。 */
+  const AA_VIS_MIN_MARGIN = 320; /* rootMargin 至少留这么多像素（同 previewLazyMargin） */
+  let aaVisIo = null; /* IntersectionObserver（窗口为根，rootMargin ≈ 一屏） */
+  let aaVisIoMargin = ""; /* 建它时用的 rootMargin：视口尺寸变了要重建 */
+  const aaVisRecs = new Map(); /* 占位元素 -> rec（断开即删，不留悬挂记录） */
+  const aaVisByNode = new Map(); /* node.id -> rec（body 换掉时按节点收干净） */
+
+  /** rootMargin ≈ 一屏（横竖各一屏，最小 320px）：与 app-preview-lazy.js 的 previewLazyMargin 同口径 */
+  function aaVisMargin() {
+    const h = Math.max(AA_VIS_MIN_MARGIN, Number(window.innerHeight) || 0);
+    const w = Math.max(AA_VIS_MIN_MARGIN, Number(window.innerWidth) || 0);
+    return h + "px " + w + "px";
+  }
+
+  /** 建（或按新视口尺寸重建）观察器；重建时把还在观察的占位一并接上 */
+  function aaVisEnsureIo() {
+    if (typeof IntersectionObserver !== "function") return null;
+    const margin = aaVisMargin();
+    if (aaVisIo && aaVisIoMargin === margin) return aaVisIo;
+    if (aaVisIo) {
+      try {
+        aaVisIo.disconnect();
+      } catch (_) {}
+    }
+    aaVisIo = new IntersectionObserver(aaVisOnIntersect, {
+      root: null,
+      rootMargin: margin,
+      threshold: 0,
+    });
+    aaVisIoMargin = margin;
+    for (const ph of aaVisRecs.keys()) {
+      try {
+        aaVisIo.observe(ph);
+      } catch (_) {}
+    }
+    return aaVisIo;
+  }
+
+  function aaVisOnIntersect(entries) {
+    for (const e of entries) {
+      const ph = e.target;
+      const rec = aaVisRecs.get(ph);
+      if (!rec || rec.dead) continue;
+      /* 占位已不在文档里（body 被换掉 / 节点被删）：当场解除观察，不留悬挂记录 */
+      if (!ph.isConnected) {
+        aaVisRecs.delete(ph);
+        if (aaVisIo) {
+          try {
+            aaVisIo.unobserve(ph);
+          } catch (_) {}
+        }
+        continue;
+      }
+      if (e.isIntersecting && !aaLodMiniOn()) aaVisMount(rec);
+      else aaVisUnmount(rec);
+    }
+  }
+
+  /** 扫掉「占位已经不在文档里」的登记：节点被删时观察器不会再有回调，只能靠这里收。
+      每次建 body 顺手扫一遍（表很小，成本可忽略），不额外挂 MutationObserver。 */
+  function aaVisPrune() {
+    if (!aaVisRecs.size) return;
+    for (const [ph, rec] of Array.from(aaVisRecs)) {
+      if (rec.dead || (ph.isConnected && ph.parentNode)) continue;
+      rec.dead = true;
+      rec.built = null;
+      aaVisRecs.delete(ph);
+      if (aaVisByNode.get(rec.node.id) === rec) aaVisByNode.delete(rec.node.id);
+      if (aaVisIo) {
+        try {
+          aaVisIo.unobserve(ph);
+        } catch (_) {}
+      }
+    }
+  }
+
+  /** body 被换掉 / 节点收起：把这一轮手上的观察与登记放掉。
+      这里**不动播放**（重绘不断播，与 aaViewBar 收起时的口径一致）；旧 body 里的节点
+      已经不在文档里，跟着那块 body 一起作废，不用逐个再摘。 */
+  function aaVisForget(nodeId) {
+    const rec = aaVisByNode.get(nodeId);
+    if (!rec) return;
+    rec.dead = true;
+    rec.built = null;
+    aaVisByNode.delete(nodeId);
+    aaVisRecs.delete(rec.ph);
+    if (aaVisIo) {
+      try {
+        aaVisIo.unobserve(rec.ph);
+      } catch (_) {}
+    }
+    /* 播放头 / 叠加层先收掉：新一轮建起来时会重新登记，不收就会留下指向已脱离 DOM 的登记 */
+    try {
+      aaStopLive(nodeId);
+    } catch (_) {}
+  }
+
+  /** 进了一屏：建真内容（插在占位之前），占位收起来但仍留在原地当锚点 */
+  function aaVisMount(rec) {
+    if (!rec || rec.dead || rec.built) return;
+    /* 缩略总览下不建（成本账 ③）：没有 IntersectionObserver 的运行时这里是唯一入口，
+       总览里建起来就是白付一次解码 / 一张位图纹理；回到普通档由 aaLodRestore 重新判可见性 */
+    if (aaLodMiniOn()) return;
+    const built = [];
+    const host = rec.ph.parentNode || rec.body;
+    const put = (el) => {
+      try {
+        host.insertBefore(el, rec.ph);
+      } catch (_) {
+        rec.body.appendChild(el);
+      }
+      built.push(el);
+    };
+    try {
+      aaBuildHeavy(rec.node, put);
+    } catch (_) {}
+    rec.built = built;
+    try {
+      rec.ph.style.display = "none"; /* 内容顶上来了：占位不再占高度 */
+    } catch (_) {}
+  }
+
+  /** 离开一屏：收干净再拆内容，占位装回来（高度按 aspect-ratio 立刻就有，节点不塌） */
+  function aaVisUnmount(rec) {
+    if (!rec || rec.dead || !rec.built) return;
+    const node = rec.node;
+    /* 复用既有收尾口径（与 aaViewBar 收起时同一套）：
+       aaStopLive = 播放头从全局 ticker 注销 + aaOverlayStop（断掉叠加层的 ResizeObserver / rAF） */
+    try {
+      aaStopLive(node.id);
+    } catch (_) {}
+    try {
+      aaOverlayStop(node.id);
+    } catch (_) {}
+    for (const el of rec.built) {
+      /* 正在播的那只：外壳马上要拆，先把引擎停下（否则音频还在响、UI 已经没了）。
+         只停「真在播」的这一只，别的节点不受影响（waveStopPlayback 只收自己持有的引擎）。 */
+      try {
+        if (typeof wavePreviewPlayingOf === "function" && wavePreviewPlayingOf(el)) {
+          if (typeof waveStopPlayback === "function") waveStopPlayback(el);
+        }
+      } catch (_) {}
+      try {
+        el.remove();
+      } catch (_) {}
+    }
+    rec.built = null;
+    try {
+      rec.ph.style.display = "";
+    } catch (_) {}
+  }
+
+  /** 展开态的轻占位：只把「频谱 + 波形」那几块的高度按 .n-aa-spec / .n-aa-plot 的
+      aspect-ratio 预留出来，纯 div、不画任何东西（真内容进了一屏才建） */
+  function aaVisPlaceholder() {
+    const ph = aaEl("div", "n-aa-ph");
+    ph.title = T("波形与频谱将在进入可见范围时载入（滚到一屏之内即显示）");
+    const spec = aaEl("div", "n-aa-spec");
+    spec.appendChild(aaEl("div", "n-aa-plot"));
+    ph.appendChild(spec);
+    return ph;
+  }
+
+  /** 挂轻占位并登记观察；没有 IntersectionObserver 就当场建真内容（功能不缺） */
+  function aaVisGate(node, body) {
+    aaVisPrune(); /* 顺手把「节点已被删」的旧登记扫掉 */
+    const ph = aaVisPlaceholder();
+    const rec = { node, body, ph, built: null, dead: false };
+    aaVisRecs.set(ph, rec);
+    aaVisByNode.set(node.id, rec);
+    body.appendChild(ph);
+    const io = aaVisEnsureIo();
+    if (!io) {
+      aaVisMount(rec);
+      return rec;
+    }
+    try {
+      io.observe(ph);
+    } catch (_) {}
+    return rec;
+  }
+
+  /* ── 缩略总览（lod-mini）下强制卸载（上面「成本账 ③」的落地）─────────────────
+     css/canvas.css 在 `#canvas.lod-mini` 下把 .n-body 设成 visibility: hidden —— 缩到总览时
+     DOM 一个没少，展开态节点照样握着频谱位图纹理、解码后的 PCM 与叠加层观察器。
+     app.js 的 syncNodeLod 切档时会在 document 上广播 mtnode:lod-mini（只在类名真的翻转时
+     发一次，平移 / 缩放途中不发），这里接住：
+       · 进缩略总览：全部登记节点走 aaStopLive（播放头注销 + 叠加层 ResizeObserver / rAF 收掉）
+         再 aaVisUnmount 拆掉重内容 —— 折叠条、空槽、报告入口这些轻元素原样留在 body 里，
+         节点的位置 / 尺寸 / 连线一概不动；
+       · 回普通档：**不自己建**，把还在等内容的占位重新 observe 一次，交回 ① 的
+         IntersectionObserver 判可见性（IO 对新观察的元素必发一次初始回调，等于当场判一遍）；
+         没有 IO 的运行时「挂上即建」，功能不缺。
+     没有这个事件（别的宿主 / 冒烟桩）时行为与改前一致：只由 ① 的观察器管。 */
+
+  /** 当前是否缩略总览：以 #canvas 上的类为权威（事件漏一次也不会判错） */
+  function aaLodMiniOn() {
+    try {
+      const cv = document.getElementById("canvas");
+      if (cv && cv.classList) return cv.classList.contains("lod-mini");
+    } catch (_) {}
+    return aaLodMiniState === true;
+  }
+
+  /** 进缩略总览：全部登记节点收掉重内容（折叠条这类轻元素不动） */
+  function aaLodDropHeavy() {
+    for (const rec of Array.from(aaVisByNode.values())) {
+      if (!rec || rec.dead) continue;
+      const node = rec.node;
+      /* 登记了播放头 / 叠加层的节点先收干净（aaVisUnmount 里也会收一次，这里覆盖
+         「还没建真内容但登记过」的那一类） */
+      try {
+        aaStopLive(node && node.id);
+      } catch (_) {}
+      if (rec.built) aaVisUnmount(rec);
+    }
+  }
+
+  /** 回普通档：把「还没有内容」的登记重新观察一次，可见性仍由观察器判 */
+  function aaLodRestore() {
+    const io = aaVisEnsureIo();
+    for (const rec of Array.from(aaVisByNode.values())) {
+      if (!rec || rec.dead || rec.built) continue;
+      if (!io) {
+        aaVisMount(rec); /* 没有 IO 的运行时：挂上即建 */
+        continue;
+      }
+      try {
+        io.unobserve(rec.ph); /* 先断开再连：强制 IO 重新发一次初始回调 */
+        io.observe(rec.ph);
+      } catch (_) {}
+    }
+  }
+
+  /** 切档落地（同一个档位重复来只做一次） */
+  function aaLodApply(mini) {
+    const on = mini === true;
+    if (on === aaLodMiniState) return;
+    aaLodMiniState = on;
+    if (on) aaLodDropHeavy();
+    else aaLodRestore();
+  }
+
+  /** 接 app.js 的切档广播（模块加载时绑一次） */
+  function aaLodBind() {
+    if (aaLodBound) return;
+    if (typeof document === "undefined" || !document.addEventListener) return;
+    aaLodBound = true;
+    try {
+      document.addEventListener("mtnode:lod-mini", (ev) => {
+        const d = (ev && ev.detail) || {};
+        aaLodApply(d.mini === true);
+      });
+    } catch (_) {}
+    /* 绑定时可能已经在缩略总览里（静默加载画布时缩放就已经很小）：按 DOM 判一次，
+       别把「事件来之前就建起来」的重内容留在总览下 */
+    if (aaLodMiniOn()) aaLodApply(true);
+  }
+
+  /** 建展开态的重内容：波形播放器 + 频谱（图 / 事件叠加层 / 播放头 / 图例 / 卡点参数）。
+      put(el) 决定挂到哪儿 —— 门控命中时插在占位之前，退化时就是直接 append。 */
+  function aaBuildHeavy(node, put) {
     const path = aaInputPath(node);
 
-    /* ① 波形播放器（点波形任意位置就能从那里试听；切节点 / 重绘不断播） */
+    /* 波形播放器（点波形任意位置就能从那里试听；切节点 / 重绘不断播）。
+       **只挂音源、不立刻读波形**（lazy）：外壳与时间 / 时长占位先出来，峰值交给
+       app-audioview.js 的全局 FIFO 队列 —— 一屏之内 + 空闲才取，多颗节点同时展开
+       不并发解码；用户点播放 / 点波形 / 点频谱时把它提到队首（不等空闲）。 */
     let waveEl = null;
     if (typeof wavePreviewCreate === "function") {
       waveEl = wavePreviewCreate("aa-wave-" + node.id);
       try {
-        if (path) wavePreviewSetSource(waveEl, path, "");
+        if (path) wavePreviewSetSource(waveEl, path, "", { lazy: true });
         else wavePreviewSetSource(waveEl, "");
       } catch (_) {}
-      body.appendChild(waveEl);
+      put(waveEl);
     } else {
       const hint = document.createElement("div");
       hint.className = "n-empty";
       hint.textContent = T("波形播放器未加载（renderer/app-audioview.js）");
-      body.appendChild(hint);
+      put(hint);
     }
 
-    /* ② 频谱：频谱图 + 播放头 → 图例（每层可单独开关）+ 卡点参数行
+    /* 频谱：频谱图 + 播放头 → 图例（每层可单独开关）+ 卡点参数行
        叠加层（重拍 / 能量直方图）就铺在频谱图上，不再单独占一条带
        （没有结果时给一句「跑一次就有了」） */
     const specPath = String(node.aaSpectrogram || "").trim();
@@ -1781,7 +2389,7 @@
         wavePreviewSeekTo(waveEl, (x / r.width) * node.aaDurationSec);
       });
       plot.addEventListener("click", (ev) => ev.stopPropagation());
-      body.appendChild(spec);
+      put(spec);
       /* 播放头 / 时间读数的元素引用在这里（建 DOM 时）就传下去，播放期不再 querySelector */
       if (waveEl) aaBindPlayhead(node, waveEl, spec, node.aaDurationSec, { headEl: head, timeEl: time });
       /* 叠加层的重绘统一入口：首帧 / 图片加载 / 尺寸变化都走它（同一帧只画一次，整数尺寸
@@ -1795,8 +2403,36 @@
       const hint = document.createElement("div");
       hint.className = "n-empty";
       hint.textContent = T("跑一次 ▶ 后这里显示热力图频谱（与波形播放器同步）");
-      body.appendChild(hint);
+      put(hint);
     }
+  }
+
+  function aaAppendBody(node, body) {
+    aaNormalize(node);
+
+    /* 上一轮 body 已经换掉（重绘 / 重开画布 / 切参数 / 收起）：先把观察与登记放干净。
+       状态落点的登记同理（成本账 ④）：旧 body 里那几只元素已经不在文档里，整份作废，
+       下面 aaReportRow 建新的时候会重新登记。 */
+    aaVisForget(node.id);
+    aaStatusForget(node);
+
+    /* ① 折叠条（永远在）。收纳 = 下面什么都不建：波形播放器 / 热力图 img / 事件叠加 canvas
+       / 内容观测器全都不创建，节点上零图像 → 零解码、零重排。
+       收纳时补一块**灰的空槽**占住图像区（纯 div，不画任何东西），这样 380 高的节点不会
+       只剩一条细线 + 一大片空 body，看着像坏了。 */
+    body.appendChild(aaViewBar(node));
+    if (node.aaViewOpen !== true) {
+      const pad = aaEl("div", "n-aa-pad");
+      pad.title = T("图像区已收纳（点上面的「波形与频谱」展开）");
+      body.appendChild(pad);
+      body.appendChild(aaReportRow(node));
+      return;
+    }
+
+    /* ② 展开态的「重内容」不再无条件建：先只挂轻占位（不建任何图像、不解码任何音频），
+       进了一屏才由观察器建波形播放器 / 频谱 / 叠加层（成本账 ① 见文件头）。
+       node.aaViewOpen 的语义不变：它只管「要不要这套东西」，回来自动重建。 */
+    aaVisGate(node, body);
 
     /* ③ 分析报告入口（body 里唯一的一行文字）：报告本身在大窗 dialogue 里看 ——
        摘要 / 输入提示 / ⚙ 参数摘要 / 状态行都已按用户口径从 body 移除。 */
@@ -2400,11 +3036,13 @@
 
   function aaReportRow(node) {
     const st = aaReportRowState(node);
-    const btn = aaEl("button", "n-aa-report" + st.cls);
-    btn.type = "button";
-    btn.appendChild(aaEl("span", "aa-rp-ic", "▤"));
-    btn.appendChild(aaEl("span", "aa-rp-t", st.text));
-    btn.appendChild(aaEl("span", "aa-rp-go", st.cls === " ready" ? "›" : ""));
+    /* 一次 clone 拿整棵树（成本账 ②：不再 3 次 createElement 组树；骨架见 aaRepTemplate） */
+    const btn = aaRepTemplate().content.firstElementChild.cloneNode(true);
+    btn.className = "n-aa-report" + st.cls;
+    const sp = btn.children;
+    sp[0].textContent = "▤";
+    sp[1].textContent = st.text;
+    sp[2].textContent = st.cls === " ready" ? "›" : "";
     btn.disabled = st.disabled;
     btn.title = st.title;
     btn.onclick = (ev) => {
@@ -2413,6 +3051,9 @@
       aaOpenReport(node);
     };
     btn.addEventListener("pointerdown", (ev) => ev.stopPropagation());
+    /* 状态刷新的落点就在这里登记（sp[1] = 文案、sp[2] = ›）：运行期一秒数次的回调
+       只改上面这几只元素，不再 document.querySelector（成本账 ④，见 aaPaintStatus） */
+    aaStatusBindRow(node, btn, sp[1], sp[2]);
     return btn;
   }
 
@@ -2457,12 +3098,10 @@
         toast(T("还没有可复制的结果"), "warn");
         return;
       }
-      if (typeof appClipboardCopy === "function") appClipboardCopy(txt, T("已复制分析 JSON"));
-      else if (navigator.clipboard)
-        navigator.clipboard.writeText(txt).then(
-          () => toast(T("已复制分析 JSON"), "ok"),
-          () => toast(T("复制失败"), "err"),
-        );
+      /* 剪贴板写入只走唯一出口 appClipboardCopy（renderer/app-clipboard.js：navigator → 桥
+         → execCommand 三级兜底）。本文件在 index.html 里排在它之后加载，这里再裸调
+         navigator.clipboard 等于绕开出口开第二条路（回归口径 test/smoke-settings-copy-key.js）。 */
+      appClipboardCopy(txt, T("已复制分析 JSON"));
     };
     const openJson = aaEl("button", "mini", T("打开完整 JSON"));
     openJson.type = "button";
@@ -2677,6 +3316,9 @@
   window.aaAppendBody = aaAppendBody;
   window.playAudioAnalysisNode = playAudioAnalysisNode;
   window.aaOpenReport = aaOpenReport;
+
+  /* 缩略总览切档广播先绑上（见「成本账 ③」）：节点在总览下建 body / 拉回 100% 都要靠它 */
+  aaLodBind();
 
   aaRegisterForm();
 })();

@@ -161,6 +161,58 @@ $downloaded = $false
 # so `foreach (`$u in `$urls)` runs once with all five URLs concatenated and Invoke-WebRequest answers
 # 404 (that is the "remote server returned (404) not found" line in the log). Declare the chain as
 # [string[]] with each element computed separately.
+#
+# WHY THIS IS HttpWebRequest AND NOT Invoke-WebRequest (a real failure: the install HUNG FOREVER):
+# on a machine where ghfast.top answered 403 and the next mirror simply never responded,
+# `Invoke-WebRequest` has NO timeout by default (-TimeoutSec 0 = infinite). The script then sat
+# inside one Read() forever: no stdout, no exit code, nothing to look at in the install window --
+# and because the host only learns "the script ended" from the child process exiting, the whole
+# install chain stayed busy forever (every later Retry answered `busy`). Two independent
+# timeouts below make a silent hang impossible:
+#   Timeout          = how long to wait for the connection / response headers
+#   ReadWriteTimeout = idle time allowed for ONE read; a mirror that stops sending data trips it
+# A slow-but-alive download is never cut short (each 8 MB chunk flowing resets the idle timer),
+# and every progress line doubles as a heartbeat for the host's stall watchdog.
+function Invoke-DownloadOnce {
+  param([string]$Url, [string]$Out)
+  $req = [System.Net.HttpWebRequest]::Create($Url)
+  $req.UserAgent = "mtnode-llama-install"
+  $req.Timeout = 20000
+  $req.ReadWriteTimeout = 60000
+  $resp = $null
+  $inStream = $null
+  $outStream = $null
+  try {
+    $resp = $req.GetResponse()
+    $total = $resp.ContentLength
+    $inStream = $resp.GetResponseStream()
+    $outStream = [System.IO.File]::Create($Out)
+    $buf = New-Object byte[] 262144
+    $done = 0
+    $nextReport = 8388608
+    while ($true) {
+      $n = $inStream.Read($buf, 0, $buf.Length)
+      if ($n -le 0) { break }
+      $outStream.Write($buf, 0, $n)
+      $done += $n
+      if ($done -ge $nextReport) {
+        $mb = [int]($done / 1MB)
+        if ($total -gt 0) {
+          Write-Host "[llama-install]   $mb / $([int]($total / 1MB)) MB"
+        } else {
+          Write-Host "[llama-install]   $mb MB"
+        }
+        $nextReport += 8388608
+      }
+    }
+    return $done
+  } finally {
+    if ($outStream) { $outStream.Dispose() }
+    if ($inStream) { $inStream.Dispose() }
+    if ($resp) { $resp.Dispose() }
+  }
+}
+
 function Invoke-Download {
   param([string]$Url, [string]$Out)
   [string[]]$urls = @(
@@ -172,7 +224,14 @@ function Invoke-Download {
   )
   foreach ($u in $urls) {
     try {
-      Invoke-WebRequest -Uri $u -OutFile $Out -UseBasicParsing
+      if (Test-Path $Out) { Remove-Item $Out -Force -ErrorAction SilentlyContinue }
+      $bytes = Invoke-DownloadOnce -Url $u -Out $Out
+      # A proxy error page / a truncated transfer is NOT a usable build: treat it as a failed mirror
+      # instead of unzipping garbage (zip is ~100 MB+; anything tiny is wrong).
+      if ($bytes -lt 10485760) {
+        Write-Host "[llama-install] $u returned only $bytes bytes; trying the next mirror..."
+        continue
+      }
       return $true
     } catch {
       Write-Host "[llama-install] $u failed ($($_.Exception.Message)); trying the next mirror..."
@@ -181,15 +240,24 @@ function Invoke-Download {
   return $false
 }
 
-foreach ($variant in $cudaVariants) {
-  $zipName = "llama-$release-bin-win-$variant-x64.zip"
-  $url = "https://github.com/ggml-org/llama.cpp/releases/download/$release/$zipName"
-  Write-Host "[llama-install] downloading llama.cpp $release ($variant)..."
-  Write-Host "[llama-install] progress: 65"
-  Step-Begin "server" "" 45 "release $release | $variant"
-  if (Invoke-Download -Url $url -Out $zipPath) {
-    $downloaded = $true
-    break
+# Already installed (a previous run got the binary, or the user dropped it in by hand): never
+# re-download a 100 MB+ zip just to reach the remaining steps -- that is also what makes the
+# retry path after a network failure cheap.
+$server = Join-Path $binDir "llama-server.exe"
+if (Test-Path $server) {
+  Write-Host "[llama-install] llama-server.exe already in bin\, skipping download"
+  Step-Skip "server" "llama-server.exe already present"
+} else {
+  foreach ($variant in $cudaVariants) {
+    $zipName = "llama-$release-bin-win-$variant-x64.zip"
+    $url = "https://github.com/ggml-org/llama.cpp/releases/download/$release/$zipName"
+    Write-Host "[llama-install] downloading llama.cpp $release ($variant)..."
+    Write-Host "[llama-install] progress: 65"
+    Step-Begin "server" "" 45 "release $release | $variant"
+    if (Invoke-Download -Url $url -Out $zipPath) {
+      $downloaded = $true
+      break
+    }
   }
 }
 
@@ -199,31 +267,34 @@ foreach ($variant in $cudaVariants) {
 # believes the local model is ready while it is unusably slow, and the UI cannot tell the
 # difference (a real incident). Now the install stops at this step with a fix the user can act on
 # (another mirror / drop the binary in by hand / upgrade the driver).
-if (-not $downloaded) {
+if (-not $downloaded -and -not (Test-Path $server)) {
   Write-Host "[llama-install] error: no CUDA llama.cpp build could be downloaded (variants: $($cudaVariants -join ' / '))."
   Write-Host "[llama-install]        NOT falling back to the CPU build: this plugin must run on the GPU."
   Write-Host "[llama-install]        how to fix:"
   Write-Host "[llama-install]          1) check that GitHub or a gh proxy is reachable from this machine (tried: ghfast.top / gh-proxy.com / ghproxy.net / ghproxy.com / github.com)"
   Write-Host "[llama-install]          2) or download $zipName by hand and unzip it into $binDir (llama-server.exe must end up in bin\\), then rerun"
   Write-Host "[llama-install]          3) if your driver is older than CUDA 12.4 support, upgrade the NVIDIA driver first"
+  Write-Host "[llama-install]          4) or click 'Let an agent fix it' in the install window: it opens a visible session that finishes this step by the llama-local-install skill"
   Write-Host "[llama-install]        the venv and the Python dependencies already installed are kept; rerun resumes at this step."
   Step-Fail "server" "llama.cpp CUDA binary download failed (direct GitHub and the gh proxy mirrors are all unreachable). Install a CUDA build by hand into bin\ and rerun -- no CPU fallback (this backend must use the GPU)."
   throw "llama.cpp CUDA binary download failed (direct + ghproxy); CPU fallback was removed on purpose (GPU only)."
 }
 
-Write-Host "[llama-install] extracting to bin/..."
-Write-Host "[llama-install] progress: 82"
-Expand-Archive -Path $zipPath -DestinationPath $binDir -Force
+if ($downloaded) {
+  Write-Host "[llama-install] extracting to bin/..."
+  Write-Host "[llama-install] progress: 82"
+  Expand-Archive -Path $zipPath -DestinationPath $binDir -Force
 
-# Flatten if nested
-Get-ChildItem $binDir -Recurse -Filter "llama-server.exe" | ForEach-Object {
-  $dest = Join-Path $binDir "llama-server.exe"
-  if ($_.FullName -ne $dest) {
-    Copy-Item $_.FullName $dest -Force
+  # Flatten if nested
+  Get-ChildItem $binDir -Recurse -Filter "llama-server.exe" | ForEach-Object {
+    $dest = Join-Path $binDir "llama-server.exe"
+    if ($_.FullName -ne $dest) {
+      Copy-Item $_.FullName $dest -Force
+    }
   }
+  Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
 }
 
-$server = Join-Path $binDir "llama-server.exe"
 if (-not (Test-Path $server)) {
   $found = Get-ChildItem $binDir -Recurse -Filter "llama-server.exe" | Select-Object -First 1
   if ($found) { Copy-Item $found.FullName $server -Force }
@@ -232,7 +303,7 @@ if (-not (Test-Path $server)) {
   Step-Fail "server" "llama-server.exe was not found after extracting (the release layout may have changed). Unzip that release into bin\ by hand and rerun, or pick another release."
   throw "llama-server.exe not found after extract"
 }
-Step-Ok "server" 82
+if ($downloaded) { Step-Ok "server" 82 }
 
 New-Item -ItemType Directory -Force -Path (Join-Path $InstallDir "models") | Out-Null
 

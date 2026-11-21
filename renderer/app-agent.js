@@ -1327,9 +1327,11 @@ function tokMergeRun(owner, metrics, opts) {
  * 与 tokMergeRun 的关键差别：**不碰 owner._tokLive / _tokLiveRound** —— 压缩常常发生在
  * 会话运行途中，tokMergeRun 收尾会把在途台账整份清空，踩掉正在跑那一轮的实时数字。
  * 这里只做三件事：合计（rounds / 起止时刻 / 墙钟）、按模型桶（provider / model + usage）、
- * roundList 一条明细（标题固定「上下文压缩」）。手动压缩传压缩轮 metrics（可带 models），
+ * roundList 一条明细（标题缺省「上下文压缩」）。手动压缩传压缩轮 metrics（可带 models），
  * 自动压缩传网关 summary 帧的 usage + provider / model。
- * opts：{ provider, model, usage, startedAt, endedAt, wallMs, rid }；rid 给定时幂等去重。 */
+ * opts：{ provider, model, usage, startedAt, endedAt, wallMs, rid, title, runKey }；
+ * rid 给定时幂等去重；title 给定时用它当轮次标题（「简报模型」的一次性调用就用这一条，
+ * 见 renderer/app-brief-model.js 的 briefAccountUsage —— 记账口径与压缩轮完全同一套）。 */
 function tokAddCompactionRound(owner, metrics, opts) {
   if (!owner) return null;
   opts = opts || {};
@@ -1386,7 +1388,8 @@ function tokAddCompactionRound(owner, metrics, opts) {
     sumTool += tokNum(m.toolMs);
   }
   const wallMs = tokNum(opts.wallMs) || tokNum(metrics && metrics.wallMs) || 0;
-  const title = I18n.t("上下文压缩");
+  /* 标题缺省「上下文压缩」；其它一次性调用（简报模型）传 opts.title 就用自己的标题 */
+  const title = I18n.t(String(opts.title || "上下文压缩"));
   const rec = {
     rid: rid,
     runKey: String(opts.runKey || "compact"),

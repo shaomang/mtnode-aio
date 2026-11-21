@@ -9,3 +9,4 @@ __pycache__/
 .want-deployed.json
 .console.log
 .install-ok
+.catalog-cache.json

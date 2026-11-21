@@ -354,6 +354,41 @@ function syncCompactPolicy(cfg) {
     return { ok: false, reason: (e && e.message) || String(e) };
   }
 }
+/* ── 「简报模型」：会话简报那次一次性调用用哪只模型（真源 config.dsh.brief）────────
+ * 与 compact 同一个位置、同一个时机同步一份到主进程（配置落盘时 + 启动时），因为**手选**
+ * 那一档的解析在主进程做：渲染层只下发 { brief:true }，提供商与模型由这里按快照补
+ * （见 applyBriefSpec）。缺省（provider 空）= 跟随该会话当前的 provider / model —— 那是
+ * 渲染层的会话状态，主进程不碰它，所以快照为空时原样放行，由渲染层显式带上会话那只。
+ * 字段口径：provider 是 route（"deepseek-official" / "mtnode_<卡 id>"），model 是模型 id。 */
+let briefModelSel = { provider: "", model: "" };
+function syncBriefModel(cfg) {
+  const b = (cfg && cfg.dsh && cfg.dsh.brief) || {};
+  const provider = String(b.provider || "").trim();
+  briefModelSel = {
+    provider: provider,
+    /* 跟随会话模型时 model 一并清空：留着上一个模型只会让人误会 */
+    model: provider ? String(b.model || "").trim() : "",
+  };
+  return briefModelSel;
+}
+/* 一次性调用的 spec 补全：spec.brief = true 时把 provider / model 换成快照里那一份。
+ * 服务商卡被删 / 停用认不出来时**不回落到别家**（与 filesProviderOf 同一纪律），
+ * 直接回一句可操作的错，由渲染层原样冒给用户。 */
+function applyBriefSpec(spec) {
+  if (!spec || typeof spec !== "object" || !spec.brief) return { spec: spec };
+  const out = Object.assign({}, spec);
+  delete out.brief;
+  if (!briefModelSel.provider) return { spec: out };
+  const provider = filesProviderOf(briefModelSel.provider);
+  if (!provider)
+    return {
+      error: I18n.t("「简报模型」所选的服务商已不可用，请在会话「模型」菜单里重选"),
+    };
+  out.provider = provider;
+  out.model = briefModelSel.model || "";
+  return { spec: out };
+}
+
 /* ── dsh 事件合批（16ms 一拍）───────────────────────────────────────────────
    网关把一次长回答拆成增量块下发（text / reasoning 各自逐块一帧，20k token ≈ 数千帧）。
    逐帧 webContents.send 的代价是每帧一次结构化克隆 + 渲染层一次 IPC 派发，
@@ -1469,6 +1504,8 @@ ipcMain.handle("config:save", (e, cfg) =>
   syncSubagentPolicy(next);
   /* 上下文压缩策略同源：写 compaction-basic 那一行的 config（开关 / 档位） */
   syncCompactPolicy(next);
+  /* 「简报模型」同源：同步一份到主进程（手选那一档的提供商 / 模型由主进程补） */
+  syncBriefModel(next);
   return { ok: true, bytes: Buffer.byteLength(text) };
   }),
 );
@@ -8846,9 +8883,14 @@ ipcMain.handle("api:deepseekBalance", async (e, provider) => {
 
 ipcMain.handle("api:call", async (e, spec) => {
   try {
-    const gate = await llamaPreflightFor(spec && spec.provider, spec && spec.model);
+    /* 「简报模型」的一次性调用（spec.brief = true）：渲染层不传 provider / model，
+       这里按 syncBriefModel 同步过来的同一份快照补，认不出服务商就回一句可操作的错 */
+    const brief = applyBriefSpec(spec);
+    if (brief.error) return { ok: false, error: brief.error };
+    const s = brief.spec;
+    const gate = await llamaPreflightFor(s && s.provider, s && s.model);
     if (gate && gate.ok === false) return { ok: false, error: gate.message };
-    return await apiCall(spec);
+    return await apiCall(s);
   } catch (err) {
     return { ok: false, error: err.message || String(err), relayAuth: !!err.relayAuth };
   }
@@ -10306,6 +10348,10 @@ app.whenReady().then(() => {
   try {
     syncCompactPolicy(readJson(path.join(DATA(), "config.json"), {}));
   } catch {}
+  /* 「简报模型」同一时机（配置读不到 = 快照为空 = 跟随会话模型，照常可用） */
+  try {
+    syncBriefModel(readJson(path.join(DATA(), "config.json"), {}));
+  } catch {}
   dsh().ensureStarted().catch(() => {});
   /* MCP 服务端随应用启动（幂等；失败只记日志，不阻塞应用）——
      第三方客户端接进来时才有服务端可连，stdio 桥也是靠这个端口发现主进程的。 */
@@ -10753,6 +10799,20 @@ app.whenReady().then(() => {
         } catch (_) {}
       }, 1500);
     }
+    /* 快捷键状态的只读出口：注册失败只在日志里说（开机路径不弹拦截），但界面得能如实
+       告诉用户「这颗键没生效」—— 截图对话框（renderer/app-shot.js）进来就读一次，
+       没注册上就在提示行里写明「用这只窗里的按钮照样能截」。 */
+    try {
+      ipcMain.removeHandler("shot:status");
+    } catch (_) {}
+    ipcMain.handle("shot:status", () => {
+      try {
+        const s = screenshotTool && typeof screenshotTool.hotkey === "function" ? screenshotTool.hotkey() : null;
+        return s || { ok: false, accel: "", error: I18n.t("截图工具没起来") };
+      } catch (e) {
+        return { ok: false, accel: "", error: String((e && e.message) || e) };
+      }
+    });
   } catch (e) {
     errLog("[shot] 初始化失败：" + ((e && e.message) || e));
     screenshotTool = null;

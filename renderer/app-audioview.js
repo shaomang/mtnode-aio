@@ -17,10 +17,16 @@
    波形数据：主进程 file:readAudio 读原始字节 → 渲染层 decodeAudioData 解码 →
    按固定桶数取峰值（只读原文件，不改动它）。全程 best-effort：文件过大 / 解码
    失败（例如本机解不开的编码）时退化为方角进度条，点定位试听仍然可用。
+   解码是全应用最重的单项 CPU / 内存开销，所以另有一条**全局 FIFO 队列**（见下面
+   「波形解码的全局 FIFO 队列」一节）：展开态的波形等空闲（requestIdleCallback，800ms
+   兜底）才取、一次只解一件；用户点播放 / 点波形时把它提到队首。音源与播放不受影响
+   （全局引擎照旧立刻可用）。
 
    对外接口（app-canvas.js 在调用期取，全局函数）：
      · wavePreviewCreate(id)                 → 建播放器（.n-wave 外壳，播放走全局引擎）
-     · wavePreviewSetSource(el, path, bust)  → 换源（path 为空 = 清空）
+     · wavePreviewSetSource(el, path, bust)  → 换源（path 为空 = 清空）；
+       第四个参数 { lazy: true } = 只挂音源、波形交给全局队列（空闲再取）——
+       展开态的音频节点走这条（外壳与时间 / 时长占位先出，峰值稍后到）。
      · wavePreviewRedraw(el)                 → 尺寸 / 主题变化后重画
      · wavePreviewStopAll()                  → 全局停播（清空所有播放态）
    播放器外壳的对外契约与 <audio> 相同：外部（app-canvas.js 既有同步逻辑）照常
@@ -595,6 +601,7 @@ function wavePreviewCreate(id) {
     error: "",
     hint: I18n.t("正在读取波形…"),
     dur: 0,
+    seekRatio: null, /* 点波形时总时长还没取到 → 记下点的比例，读完立刻补上（见 waveApplyPendingSeek） */
     playing: false,
     own: null,
     ver: 0,
@@ -752,6 +759,8 @@ function wavePreviewSeekTo(el, sec) {
   const st = el ? wavePreviewState.get(el) : null;
   const eng = waveEngineEnsure();
   if (!st || !eng) return;
+  /* 点频谱 = 「我现在就要听」：排队等空闲的那份波形提到队首，立刻取（不等空闲） */
+  waveDecodeBump(el);
   if (st.own !== el) {
     waveEngineSetSource(el, st.srcUrl || "");
     waveEngineClaim(el);
@@ -766,8 +775,10 @@ function wavePreviewSeekTo(el, sec) {
 }
 
 /* 换源：外部也可能直接 el.src = "file:///…"（既有同步逻辑就是这样），
-   统一在 wavePreviewAttachSrcBridge 的 setter 里接住并落到这里。 */
-function wavePreviewSetSource(el, path, bust) {
+   统一在 wavePreviewAttachSrcBridge 的 setter 里接住并落到这里。
+   opts.lazy = true 时**只挂音源、不立刻读波形**：外壳与时间 / 时长占位先出来，
+   峰值交给下面的全局 FIFO 队列（空闲才取）。不传 = 与以前完全一致（立即读）。 */
+function wavePreviewSetSource(el, path, bust, opts) {
   if (!el) return;
   if (!wavePreviewState.has(el)) {
     try {
@@ -799,28 +810,196 @@ function wavePreviewSetSource(el, path, bust) {
     waveStopPlayback(el);
     waveEngineSetSource(el, url);
   }
-  waveLoadData(el);
+  if (opts && opts.lazy === true && !waveDecodeCached(st.path)) waveDecodeEnqueue(el);
+  else waveLoadData(el);
 }
 
-/* 重新读取波形数据（同 path+size+mtime 走缓存）。异步期间节点被重绘则按 ver 丢弃。 */
-async function waveLoadData(el) {
+/* 这个路径的波形是不是已经解过了（waveDecodeCache 的键是 path|size|mtime）：
+   已解过就不必排队等空闲 —— 重新展开同一颗节点时波形立刻回来（只花一次 fileStat，
+   解码那笔大开销本来就由缓存挡住了）。 */
+function waveDecodeCached(path) {
+  if (!path) return false;
+  const head = path + "|";
+  for (const key of waveDecodeCache.keys()) {
+    if (key.indexOf(head) === 0) return true;
+  }
+  return false;
+}
+
+/* ═══════════ 波形解码的全局 FIFO 队列（展开态「惰性取波形」的执行器）═══════════
+   为什么要排队：解一遍波形 = 主进程读全文件字节 → new AudioContext + decodeAudioData
+   整段解码（PCM 常驻内存：3 分钟立体声 44.1kHz ≈ 60MB Float32，解码那一刻还有一次
+   CPU 峰值）→ 再线性扫一遍取 WAVE_BUCKETS 桶峰值。这是画布上最大的单项 CPU 与内存
+   开销，几颗音频节点同时展开时各解各的就会一起压在主线程上。这里把它收成**一条全局
+   队列**：同一时刻只跑一件，跑完再接下一件。
+
+   两个入口（都只在这条队列上走）：
+     · waveDecodeEnqueue(el)：展开态的正常路径 —— 先只建播放器外壳与时间 / 时长占位，
+       波形等「空闲」再取（requestIdleCallback；没有这个 API 的运行时 800ms 后兜底，
+       与 renderer/app-assist.js 的 agentWireBodyBackfill 同一写法）；
+     · waveDecodeBump(el)：用户点了播放 / 点了波形 / 点了频谱 —— 那是「我现在就要听」
+       的显式意图，把它提到队首，并且不再等空闲（让出一帧就开始）。
+   立即读的老路径（waveLoadData）一字未改：换文件 / 直赋 .src / 节点重绘仍走它，
+   两条路共用同一个 waveLoadRun —— 同一份 waveDecode 缓存、同一套 tooBig 保护与
+   失败降级提示（读不出来就退化成进度条，绝不留空白播放器）。 */
+const waveDecodeQueue = []; /* FIFO：[{ el, ver }]（同一只外壳只留最新一件） */
+let waveQRunning = null; /* 正在跑的那一件（串行化的唯一真源） */
+let waveQTimer = 0; /* 等空闲 / 等下一帧的句柄 */
+let waveQTimerKind = ""; /* "idle" | "timeout" | "now" */
+let waveQUrgent = false; /* 用户在等：下一件不等空闲，直接跑 */
+
+function waveQIndexOf(el) {
+  for (let i = 0; i < waveDecodeQueue.length; i++) {
+    if (waveDecodeQueue[i].el === el) return i;
+  }
+  return -1;
+}
+
+/* 撤掉「等空闲 / 等下一帧」那次等待（不碰正在跑的那一件） */
+function waveQClearTick() {
+  if (!waveQTimerKind) return;
+  const kind = waveQTimerKind;
+  const handle = waveQTimer;
+  waveQTimer = 0;
+  waveQTimerKind = "";
+  try {
+    if (kind === "idle") {
+      if (typeof window !== "undefined" && typeof window.cancelIdleCallback === "function")
+        window.cancelIdleCallback(handle);
+    } else if (typeof clearTimeout === "function") clearTimeout(handle);
+  } catch (_) {}
+}
+
+/* 到点：取队首一件**还有效**的来跑（排队期间换过源 / 外壳被拆掉的直接跳过，不白解一次码） */
+function waveQFire() {
+  waveQTimer = 0;
+  waveQTimerKind = "";
+  if (waveQRunning) return;
+  for (;;) {
+    const req = waveDecodeQueue.shift();
+    if (!req) return;
+    const st = wavePreviewState.get(req.el);
+    /* 作废的两种情况：排的是一份更老的音源（ver 变了），或者外壳已经被拆掉
+       （节点收起 / body 重绘 / 节点被删 —— 外壳不在文档里，解了也没人画） */
+    if (!st || st.ver !== req.ver) continue;
+    if (typeof req.el.isConnected === "boolean" && !req.el.isConnected) continue;
+    waveQRun(req);
+    return;
+  }
+}
+
+/* 让出一帧就取（先把按钮 / 波形状态画出来，再开始读文件） */
+function waveQFireSoon() {
+  if (typeof setTimeout !== "function") {
+    waveQFire();
+    return;
+  }
+  waveQTimerKind = "now";
+  waveQTimer = setTimeout(waveQFire, 0);
+}
+
+/* 空闲才取；没有 requestIdleCallback 的运行时 setTimeout 800ms 兜底（与 app-assist.js
+   同一写法）。timeout: 800 是给 rIC 的兜底 —— 一直不空闲也最多等这么久。 */
+function waveQFireIdle() {
+  try {
+    if (typeof window !== "undefined" && typeof window.requestIdleCallback === "function") {
+      waveQTimerKind = "idle";
+      waveQTimer = window.requestIdleCallback(waveQFire, { timeout: 800 });
+      return;
+    }
+  } catch (_) {}
+  if (typeof setTimeout !== "function") {
+    waveQFire();
+    return;
+  }
+  waveQTimerKind = "timeout";
+  waveQTimer = setTimeout(waveQFire, 800);
+}
+
+/* 排下一件：now = 不等空闲（用户点了播放 / 波形）；有一件在跑时由它的收尾接着排 */
+function waveQSchedule(now) {
+  if (waveQRunning || !waveDecodeQueue.length) return;
+  if (now) {
+    waveQClearTick(); /* 用户要听：把「等空闲」撤掉 */
+    waveQFireSoon();
+    return;
+  }
+  if (waveQTimerKind) return; /* 已经约好了一次，不重复挂 */
+  waveQFireIdle();
+}
+
+/* 跑一件：读文件 / 解码 / 扫峰值都在 waveLoadRun 里（与立即读同一条路） */
+function waveQRun(req) {
+  waveQRunning = req;
+  waveQUrgent = false;
+  const st = wavePreviewState.get(req.el);
+  if (st && !st.peaks) {
+    st.hint = I18n.t("正在读取波形…");
+    wavePaintState(req.el);
+  }
+  Promise.resolve()
+    .then(() => waveLoadRun(req.el, req.ver))
+    .catch(() => {})
+    .then(() => {
+      waveQRunning = null;
+      if (!waveDecodeQueue.length) {
+        waveQUrgent = false;
+        return;
+      }
+      waveQSchedule(waveQUrgent); /* 还有下一件：用户在等就直接跑，否则继续等空闲 */
+    });
+}
+
+/* 排队取波形（展开态）：复位状态 + 写「点播放或点波形后读取波形」，读文件与解码交给队列 */
+function waveDecodeEnqueue(el) {
+  const ver = waveLoadBegin(el, true);
+  if (ver < 0) return;
+  const i = waveQIndexOf(el);
+  if (i >= 0) waveDecodeQueue.splice(i, 1); /* 同一只外壳只留最新一件 */
+  waveDecodeQueue.push({ el, ver });
+  waveQSchedule(false);
+}
+
+/* 用户点播放 / 点波形 / 点频谱：把这只外壳提到队首，并叫醒调度器（不再等空闲） */
+function waveDecodeBump(el) {
+  if (!el) return;
+  const i = waveQIndexOf(el);
+  if (i < 0) return; /* 没在排队（已经读完 / 不是排队取的那只）：无事可做 */
+  if (i > 0) waveDecodeQueue.unshift(waveDecodeQueue.splice(i, 1)[0]);
+  waveQUrgent = true;
+  waveQSchedule(true);
+}
+
+/* 开始一轮读波形：先把状态复位（清掉上一份峰值与提示），返回这一轮的版本号。
+   lazy = 排队取（提示写「点播放或点波形后读取波形」）；否则 = 立即读（既有调用方
+   行为一字不变）。返回 <0 = 这一轮不用读（没有音源 / 外壳已不在册）。 */
+function waveLoadBegin(el, lazy) {
   const st = wavePreviewState.get(el);
-  if (!st) return;
-  const key = st.path;
+  if (!st) return -1;
   const ver = ++st.ver;
   st.peaks = null;
   st.tooBig = false;
   st.error = "";
   st.dur = 0;
   st.hint = "";
-  if (!key) {
+  st.seekRatio = null; /* 换源 / 重读：上一次「点波形」的待兑现定位作废 */
+  if (!st.path) {
     wavePaintState(el);
     waveDraw(el);
-    return;
+    return -1;
   }
-  st.hint = I18n.t("正在读取波形…");
+  st.hint = lazy ? I18n.t("点播放或点波形后读取波形") : I18n.t("正在读取波形…");
   wavePaintState(el);
   waveDraw(el);
+  return ver;
+}
+
+/* 真读一轮（fileStat → waveDecode（带缓存）→ 峰值）。异步期间节点被重绘 / 换源则按 ver 丢弃。 */
+async function waveLoadRun(el, ver) {
+  const st = wavePreviewState.get(el);
+  if (!st || st.ver !== ver) return;
+  const key = st.path;
+  if (!key) return;
   let size = 0;
   let mtime = 0;
   let sizeHuman = "";
@@ -852,6 +1031,15 @@ async function waveLoadData(el) {
   }
   wavePaintState(el);
   waveDraw(el);
+  /* 读完再兑现「点波形时还没时长」的那次定位 / 起播（第一次点就有反应） */
+  waveApplyPendingSeek(el);
+}
+
+/* 立即读（不排队）：换文件 / 直赋 .src / 节点重绘走这条 —— 与以前完全一致 */
+async function waveLoadData(el) {
+  const ver = waveLoadBegin(el, false);
+  if (ver < 0) return;
+  await waveLoadRun(el, ver);
 }
 
 /* 尺寸 / 主题变化后重画（app-canvas.js 在节点重绘路径上调用） */
@@ -867,6 +1055,8 @@ function wavePreviewRedraw(el) {
 function wavePlay(el) {
   const st = wavePreviewState.get(el);
   if (!st) return;
+  /* 点播放 = 「我现在就要听」：排队等空闲的那份波形提到队首，立刻取（不等空闲） */
+  waveDecodeBump(el);
   /* 借用全局引擎：src 已对上就直接放（重绘后点播放键 = 接着放，不重头） */
   waveEngineKick(el);
 }
@@ -952,6 +1142,8 @@ function wavePaintState(el) {
 function waveSeek(el, ev) {
   const st = wavePreviewState.get(el);
   if (!st) return;
+  /* 点波形 = 「我现在就要听」：排队等空闲的那份波形提到队首，立刻取（不等空闲） */
+  waveDecodeBump(el);
   const box = el.querySelector(".n-wave-box");
   const eng = waveEngineEnsure();
   if (!box || !eng) return;
@@ -962,12 +1154,42 @@ function waveSeek(el, ev) {
     waveEngineClaim(el);
   }
   const total = st.dur || (st.own === el && isFinite(eng.duration) ? eng.duration : 0);
-  if (!(total > 0)) return;
+  if (!(total > 0)) {
+    /* 波形（连同总时长）还没取到：先记住点在哪，读完立刻补这次定位 —— 惰性取波形
+       之后第一次点也有反应（见 waveApplyPendingSeek）。 */
+    const r0 = box.getBoundingClientRect();
+    if (r0.width > 0)
+      st.seekRatio = Math.max(0, Math.min(1, (Number(ev.clientX) - r0.left) / r0.width));
+    waveDraw(el);
+    return;
+  }
   const r = box.getBoundingClientRect();
   if (!(r.width > 0)) return;
   const x = Math.max(0, Math.min(r.width, Number(ev.clientX) - r.left));
   try {
     eng.currentTime = (x / r.width) * total;
+  } catch (_) {}
+  if (eng.paused) waveEngineKick(el);
+  waveDraw(el);
+}
+
+/* 读完波形后补上「点波形时还没取到总时长」的那次定位：
+   惰性取波形之后，用户第一次点波形时 st.dur 还是 0（读文件还没轮到），这里把那次点的
+   比例兑现 —— 从点的位置起播，与「读完了再点」完全同一结果。 */
+function waveApplyPendingSeek(el) {
+  const st = wavePreviewState.get(el);
+  if (!st) return;
+  const ratio = st.seekRatio;
+  if (ratio == null || !(st.dur > 0)) return;
+  st.seekRatio = null;
+  const eng = waveEngineEnsure();
+  if (!eng) return;
+  if (st.own !== el) {
+    waveEngineSetSource(el, st.srcUrl || "");
+    waveEngineClaim(el);
+  }
+  try {
+    eng.currentTime = ratio * st.dur;
   } catch (_) {}
   if (eng.paused) waveEngineKick(el);
   waveDraw(el);

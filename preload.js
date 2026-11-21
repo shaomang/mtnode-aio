@@ -266,6 +266,9 @@ contextBridge.exposeInMainWorld('api', {
      先弹询问窗，用户点头才冻结鼠标那块屏；回来是 { ok, path, markdown, notes, width, height }，
      或 { ok:false, canceled:true }（用户按 Esc / 选「暂不」）。见 renderer/app-shot.js。 */
   shotAgent: (payload) => ipcRenderer.invoke('shot:agent', payload || {}),
+  /* 全局快捷键现在注册上了没（{ ok, accel, error }）：被别的程序占用时主进程只记日志、
+     不弹窗，界面靠这条自己写一行「这颗键没生效，用按钮照样能截」。 */
+  shotStatus: () => ipcRenderer.invoke('shot:status'),
   fileCopyAssetTo: (a, d) => ipcRenderer.invoke('file:copyAssetTo', { assetPath: a, destPath: d }),
   fileExists: (p) => ipcRenderer.invoke('file:exists', p),
   fileIsDir: (p) => ipcRenderer.invoke('file:isDir', p),

@@ -194,6 +194,34 @@
           wrap.appendChild(lab);
           wrap.appendChild(row);
           wrap.appendChild(tip);
+          /* 全局快捷键没注册上（多半被别的软件占了）就在这里说一句：主进程那边只记日志、
+             不弹窗，界面不写这一行的话，用户按 Ctrl+Alt+A 没反应就查不出来了。
+             只读、不拦路 —— 这只窗里的「开始截图…」照样能把这一趟走完。 */
+          const hkHint = document.createElement("p");
+          hkHint.className = "mt-form-hint mt-shotask-hk";
+          hkHint.hidden = true;
+          wrap.appendChild(hkHint);
+          const showHotkeyState = async () => {
+            let st2 = null;
+            try {
+              st2 = typeof api.shotStatus === "function" ? await api.shotStatus() : null;
+            } catch (_) {
+              st2 = null;
+            }
+            const bad = !st2 || st2.ok !== true;
+            if (!bad) {
+              hkHint.hidden = true;
+              return;
+            }
+            const accel = String((st2 && st2.accel) || "");
+            hkHint.textContent = accel
+              ? T("全局快捷键 {k} 这会儿没生效（{why}）：用这只窗里的「开始截图…」照样能截。")
+                  .replace("{k}", accel)
+                  .replace("{why}", String((st2 && st2.error) || T("被别的程序占用")))
+              : T("全局快捷键这会儿没生效：用这只窗里的「开始截图…」照样能截。");
+            hkHint.hidden = false;
+          };
+          void showHotkeyState();
           box.appendChild(wrap);
           readPath = () => String(inp.value || "");
         },

@@ -140,9 +140,18 @@ async def model_catalog(
     sort: str = "downloads",
     sizeBand: str = "",
     recentOnly: bool = False,
+    force: bool = False,
 ):
-    items = await catalog.search_models(q, kind, limit, sort, sizeBand, recentOnly)
-    return {"ok": True, "items": items, "mirror": catalog.HF_MIRROR, "kinds": list(catalog._CATALOG_KINDS)}
+    # 在线模型列表是固化口径（见 app/catalog.py 的 CACHE_PATH）：首拉整页落盘冻结，
+    # 之后只按时间拿增量。force=true 才整页重拉（界面不暴露，需要时手工带这个参数）。
+    items = await catalog.search_models(q, kind, limit, sort, sizeBand, recentOnly, force)
+    return {
+        "ok": True,
+        "items": items,
+        "mirror": catalog.HF_MIRROR,
+        "kinds": list(catalog._CATALOG_KINDS),
+        "cache": catalog.store_info(),
+    }
 
 
 @app.get("/api/catalog/detail")

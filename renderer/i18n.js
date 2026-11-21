@@ -2459,12 +2459,84 @@
     "供应商": "Provider",
     "模型提供商": "Model provider",
     "模型提供商：": "Model provider: ",
-    /* 会话「模型」chip 的 tooltip（本轮起菜单多一格「上下文压缩」）：这一档是**全局**设置，
-       写在 dsh 组合的 compaction-basic 行上，下一个新会话生效。
+    /* 会话「模型」chip 的 tooltip（本轮起菜单多两格「上下文压缩」「简报模型」）：压缩这一档是
+       **全局**设置，写在 dsh 组合的 compaction-basic 行上，下一个新会话生效；简报模型决定
+       「简报那次一次性调用用哪只模型」，缺省跟随会话模型。
        （旧键「模型提供商 / 预设 / 模型 / 思考强度」已随之删除：全仓再无引用 —— 键面漏列
          「上下文压缩」会让用户以为这一档只在设置里。） */
-    "模型提供商 / 预设 / 模型 / 思考强度 / 上下文压缩":
-      "Model provider / preset / model / thinking effort / context compaction",
+    "模型提供商 / 预设 / 模型 / 思考强度 / 上下文压缩 / 简报模型":
+      "Model provider / preset / model / thinking effort / context compaction / brief model",
+    /* 简报模型（会话「模型」菜单那一格 · 真源 config.dsh.brief，见 renderer/app-brief-model.js） */
+    "简报模型": "Brief model",
+    "跟随会话模型": "Follow the session model",
+    "跟随会话模型会与主会话争并发、成本更高（简报调用不带会话上下文，不影响会话历史）":
+      "Following the session model competes with the main session for concurrency and costs more (the brief call carries no session context and leaves the session history untouched)",
+    "简报模型已更新": "Brief model updated",
+    "简报模型已改为跟随会话模型": "Brief model now follows the session model",
+    "简报调用缺少输入正文": "The brief call has no input text",
+    "简报调用失败": "The brief call failed",
+    "简报模型：当前会话的服务商不可用":
+      "Brief model: the provider of this session is unavailable",
+    "简报模型：当前没有可用的模型，请先在「简报模型」里选一只":
+      "Brief model: no model is available yet — pick one in “Brief model” first",
+    "模型调用通道不可用": "The model call channel is unavailable",
+    "「简报模型」所选的服务商已不可用，请在会话「模型」菜单里重选":
+      "The provider picked for the brief model is no longer available — pick another one in the session Model menu",
+    /* 简报降级那一句（renderer/app-brief-sched.js 失败时摆在卡片上）：保留上一版简报，
+       只把状态点出来 —— 不弹框、不自动重试。 */
+    "简报暂不可用": "Brief unavailable right now",
+    "简报调用超时": "The brief call timed out",
+    "简报调用被限流": "The brief call was rate limited",
+    "简报这次没有写出内容": "The brief came back empty",
+    /* 「简报模式」会话级开关（模式菜单那一格 · 真源 st.brief，见 app-assist.js 的
+       agentModeEntryOf("brief")）：副标题必须明写成本 —— 这一步是额外调用。 */
+    "简报模式": "Brief mode",
+    "每步会额外调用模型（节流 1.5s），消耗计入用量；这一下也是之后新建会话的默认":
+      "Each step makes an extra model call (throttled to 1.5s); the cost counts toward your usage. This also becomes the default for new sessions",
+    "简报模式：开启中，点击关闭（关闭后不再为每一步额外调用模型；之后的会话也默认关闭，已经开着的会话不受影响）":
+      "Brief mode: on — click to turn off (no more extra model calls per step; new sessions follow the off default, sessions already on stay on)",
+    "简报模式：点击开启（每完成一步额外调用一次模型，节流 1.5s，消耗计入用量；之后新建的会话也默认开启）":
+      "Brief mode: click to turn on (one extra model call per finished step, throttled to 1.5s, counted in your usage; new sessions start on too)",
+    /* 「对话」视图里的两枚子 Tab（原始 / 简报 · 见 app-assist.js 的 agentBriefTabsSync）。
+       「原始」表内已有（Original），这里只补「简报」与两枚的 tooltip。 */
+    "简报": "Brief",
+    "原始：这条会话完整的对话正文": "Original: the full conversation of this session",
+    "简报：每完成一步刷新一次的简报（卡片由简报层绘制）":
+      "Brief: refreshed once per finished step (rendered by the brief layer)",
+    /* 简报区里的内容（按轮渲染 · 见 app-assist.js 的「简报子 Tab 的历史渲染」那一段）：
+       卡头（简报 / 原文摘录）、结论式三段的两枚小节标题与主行、行点击提示、
+       展开时的兜底一句、缺简报时的空态与两种降级。 */
+    "原文摘录": "Source excerpt",
+    "发现": "Findings",
+    "产出 / 改动": "Output / changes",
+    "卡点 / 待定": "Blockers / open questions",
+    "点开读这一步的原文；再点收起":
+      "Click to read this step's original text; click again to collapse",
+    "这一步的原文已经不在存档里了":
+      "This step's original text is no longer in the archive",
+    /* 缺简报的轮（任务 5/8 的回填 · 摘录三行 + 补写状态 + 「补一份」按钮）：
+       一行原文都没留下时的空态也在这一组里 */
+    "思考：": "Thinking: ",
+    "答复：": "Answer: ",
+    "这一轮没有留下可摘的原文，也没有简报":
+      "This turn left no original text to excerpt, and no brief",
+    "正在补这一轮的简报…": "Backfilling this turn's brief…",
+    "排队补这一轮的简报…": "Queued to backfill this turn's brief…",
+    "排队补这一轮的简报（前面还有 {n} 轮）":
+      "Queued to backfill this turn's brief ({n} turns ahead)",
+    "这一轮的简报没能补上": "Could not backfill this turn's brief",
+    "补一份": "Write one",
+    "再补一次": "Try again",
+    "按需为这一轮补写一份简报（一次只补一轮；不点就不调用模型）":
+      "Write a brief for this turn on demand (one turn at a time; no model call unless you click)",
+    /* 子 Tab 那一行的运行态与「步数没列全」的收尾一行（同上，见 agentBriefTabsSync /
+       agentBriefCardEl）：开启时按钮上的短句是「简报模式：开启中…」，长 tooltip 见上面；
+       卡里步数超出上限时只在末尾补一行「另有若干步」，不再逐条铺开。 */
+    "简报模式：开启中…": "Brief mode: on…",
+    "另有若干步": "…and more steps",
+    /* 运行中那一轮（live 轮）还没有简报时卡里那一句（见 app-assist.js 的
+       agentBriefLiveCardEl）：这一步只是「还没写出来」，不是失败 —— 失败另有一句 note。 */
+    "正在写这一轮的简报…": "Writing this turn's brief…",
     "未选择：本功能块与子功能块跟随默认模型提供商。":
       "Not set: this block and its sub-blocks follow the default model provider.",
     "未选择：本节点需要借助 AI 时跟随默认模型提供商。":
@@ -2497,6 +2569,10 @@
     "（未作答）": "(not answered)",
     "【用户已确认的部分（续跑兜底 · 这些答案已生效，不要重复提问）】":
       "[Already confirmed by the user (resume fallback · these answers count — do not ask again)]",
+    /* 历史段被防爆上限砍过时写在段首的那一行（app-db.js 的 AGENT_HIST_MAX_CHARS）：
+       模型看不见被省略的轮次，必须当场知道，不能以为自己看全了。 */
+    "【本次上下文省略了更早的 {n} 条上文（会话太长，只带最近一部分）】":
+      "[This turn's context omits the {n} earlier entries (the session is too long, only the recent part is included)]",
     "子代理": "Sub-agent",
     "组 1": "Group 1",
     "组标题": "Group title",
@@ -8277,6 +8353,9 @@
     "音频预览": "Audio preview",
     "总时长": "Total duration",
     "正在读取波形…": "Reading waveform…",
+    /* 惰性取波形（展开态不立刻解码）：波形要等用户表示「我现在要听」或空闲时才读 */
+    "点播放或点波形后读取波形":
+      "The waveform is read once you press play or click the waveform",
     "点波形试听": "Click the waveform to preview",
     "点击或拖动波形任意位置，从该处试听":
       "Click or drag anywhere on the waveform to play from there",
@@ -15524,7 +15603,20 @@
     "频谱分析模块未加载（renderer/app-audioanalysis.js）": "Spectrum module not loaded (renderer/app-audioanalysis.js)",
     "热力图频谱：横轴时间、纵轴频率、亮处=能量强。播放时竖线跟着走。图上叠了事件层：黄色柱=能量直方图（每小节一根）、青色齿=重拍，颜色与形状见下方图例（每一项都能单独关）；播放头的呼吸由相位连续驱动（每拍一次 0→1→0 的正弦），跨过重拍时再额外变色变粗强调一下。": "Spectrogram: time on X, frequency on Y, bright = loud. The playhead follows playback. Event layers are drawn on the image: yellow bars = energy histogram (one per bar), cyan ticks = downbeats — see the legend below for colours and shapes (each layer toggles on its own). The playhead breathes continuously off the beat phase (one 0→1→0 sine per beat), with an extra colour/thickness accent when it crosses a downbeat.",
     "跑一次 ▶ 后这里显示热力图频谱（与波形播放器同步）": "Run ▶ once to see the spectrogram here (synced with the player)",
+    /* 板身视图折叠条（默认收纳：不画任何图像，省位图解码与叠加层重绘） */
+    "波形与频谱": "Waveform & spectrum",
+    "点一下收起": "click to collapse",
+    "已收起 · 点开显示": "collapsed · click to show",
+    "无内容 · 跑一次 ▶ 后显示": "nothing yet · run ▶ to show",
+    "收起波形与频谱图：节点上不再绘制任何图像（默认收纳，避免多节点卡顿）": "Collapse the waveform and spectrogram: nothing is drawn on the node (collapsed by default to keep many nodes smooth)",
+    "展开波形播放器与频谱热力图（默认收纳：不绘制图像，省掉位图解码与叠加层重绘）": "Expand the waveform player and spectrogram (collapsed by default: no image is drawn, so no bitmap decoding or overlay repaint)",
+    "图像区已收纳（点上面的「波形与频谱」展开）": "Image area collapsed (click Waveform & spectrum above to expand)",
+    /* 展开态还没有真内容时的轻占位（一屏之内才建波形 / 频谱，占位只按 aspect-ratio 预留高度） */
+    "波形与频谱将在进入可见范围时载入（滚到一屏之内即显示）": "The waveform and spectrogram load once the node enters view (scroll it onto screen to show them)",
     "频谱图": "Spectrogram",
+    /* 报告入口在「跑一次」期间的两种文案 */
+    "分析中…": "Analysing…",
+    "正在分析…": "Analysing…",
     "逐拍明细：开": "Per-beat detail: on",
     "逐拍明细：关": "Per-beat detail: off",
     "事件上限 ": "Event limit ",

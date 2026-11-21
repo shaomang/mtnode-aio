@@ -1357,6 +1357,26 @@ body.ef-skin textarea.js-edit-input:focus {
   background-color: transparent;
 }
 
+/* ── 「演示编辑器 / 演示设置卡」例外：上面那条全局深色底**不许**落到这两处的输入框上 ────
+   研究演示的编辑器与初始化卡自带一套纸色（research-slides.css 用 --rs-slide-paper / -ink
+   按「选中的风格 × 明暗」现算），浅色纸面（如 ink · 明 = #ffffff）上被这条 endfield 规则
+   刷成 #141414 + 浅字，就成了「白窗里嵌一排黑框、字还发白」。
+   这一层的 specificity 必须压过 body.ef-skin input[type="text"] / :focus（0,2,2）——
+   所以写成 body.ef-skin + 容器类 + 控件（0,3,2）。只撤底色与字色，边框 / 焦点环照旧。 */
+body.ef-skin .rs-deck-win input.rs-deck-input,
+body.ef-skin .rs-deck-win textarea.rs-deck-input,
+body.ef-skin .rs-deck-init-win input.rs-deck-init-input,
+body.ef-skin .rs-deck-init-win input.rs-deck-init-num,
+body.ef-skin .rs-deck-init-win textarea.rs-deck-init-extra,
+body.ef-skin .rs-deck-win input.rs-deck-input:focus,
+body.ef-skin .rs-deck-win textarea.rs-deck-input:focus,
+body.ef-skin .rs-deck-init-win input.rs-deck-init-input:focus,
+body.ef-skin .rs-deck-init-win input.rs-deck-init-num:focus,
+body.ef-skin .rs-deck-init-win textarea.rs-deck-init-extra:focus {
+  background-color: var(--rs-slide-paper, var(--panel));
+  color: var(--rs-slide-ink, var(--ink));
+}
+
 body.ef-skin :where(button, a, summary, [tabindex], [role="button"], [role="tab"], [role="menuitem"]):focus-visible {
   outline: 2px solid var(--ef-signal);
   outline-offset: 2px;

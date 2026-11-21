@@ -47,7 +47,7 @@
     document.title = T("title", "快捷会话");
     $("mcTitle").textContent = T("title", "快捷会话");
     $("mcListBtn").title = T("list", "会话列表");
-    $("mcNewBtn").title = T("newSessionHotkey", "新建会话（Ctrl + N）");
+    $("mcNewBtn").title = T("newSession", "新建会话");
     $("mcCloseBtn").title = T("close", "关闭");
     $("mcSideHead").textContent = T("sessions", "会话");
     $("mcGotoBtn").title = T("goto", "在主窗口打开该会话");
