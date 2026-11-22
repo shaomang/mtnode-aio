@@ -401,6 +401,96 @@ async function runDshOnce(node, spec, attemptT, images) {
   return { kind: "text", text: body };
 }
 
+/* ── AI 活动登记（renderer/app-ai-activity.js · 契约 docs/ai-activity.md §5.2）────
+   节点族的登记点就在**模型调用起止**处，不在别的地方另埋一份：
+     · runOnce 里发出请求那一刻 begin（同一节点的多次尝试 / 批量条目复用同一条活动，
+       键与运行队列同一把 node:<id>，所以尝试再多也只有一条）；
+     · 整轮运行收尾由 playNodeBody 的 finally 统一 end（谁 begin 谁 end 落在「一次运行」上）；
+     · 媒体族（音乐 / 语音 / 视频 / 渲染 / 后处理）在 runMediaGenSerial 里整段一条，含排队。
+   阶段文案沿用既有 stateText 口径（「在途生成」= 后端正在生成），不另造词。
+   模型 / 服务商取自 app-aicall.js 的 aiActivityMetaOf（与节点头部按钮同一份生效值）。 */
+function aiActApi() {
+  try {
+    return typeof window !== "undefined" && window.MTNodeAiActivity ? window.MTNodeAiActivity : null;
+  } catch (_) {
+    return null;
+  }
+}
+function aiNodeKey(node) {
+  const id = String((node && node.id) || "");
+  return id ? "node:" + id : "";
+}
+function aiNodeWfName(node) {
+  try {
+    const w = typeof runQueueOwnerOf === "function" ? runQueueOwnerOf(node) : null;
+    return String((w && (w.name || w.id)) || "");
+  } catch (_) {
+    return "";
+  }
+}
+function aiNodeBegin(node, kind, phases) {
+  const a = aiActApi();
+  const key = aiNodeKey(node);
+  if (!a || !key) return "";
+  try {
+    const meta =
+      typeof aiActivityMetaOf === "function" ? aiActivityMetaOf(node) || {} : {};
+    a.begin({
+      key: key,
+      source: "node",
+      kind: kind,
+      title: (node && node.title) || I18n.t("（未命名）"),
+      subtitle: aiNodeWfName(node),
+      model: meta.model || "",
+      provider: meta.provider || "",
+      phases: phases,
+      /* 跳转：与运行队列的节点行同一口径（跨画布先 loadWorkflow(wfId)） */
+      jump:
+        typeof a.jumpOfNode === "function"
+          ? a.jumpOfNode(node, (node && node.title) || "")
+          : { type: "node", id: String((node && node.id) || ""), wfId: "", label: (node && node.title) || "" },
+      /* 终止：一律转调既有的 stopNode，不在这里另写一套中断 */
+      stop: function () {
+        try {
+          if (typeof stopNode === "function") stopNode(node);
+        } catch (_) {}
+      },
+      stopHint: I18n.t("停止运行"),
+    });
+    return key;
+  } catch (_) {
+    return "";
+  }
+}
+function aiNodeStep(key, phase, text) {
+  const a = aiActApi();
+  if (!a || !key) return;
+  try {
+    a.step(key, { phase: phase, text: String(text || "") });
+  } catch (_) {}
+}
+/* 收尾：没登记过（保存 / 控制 / 定时这类没有模型调用的节点）就什么都不做 ——
+   end() 对不存在的键会打一条 warn，这里先 find 一次把它挡在外面。 */
+function aiNodeEnd(node, key, status, error) {
+  const a = aiActApi();
+  const k = key || aiNodeKey(node);
+  if (!a || !k) return;
+  try {
+    if (!a.find(k)) return;
+    a.end(k, { status: status, error: error || "" });
+  } catch (_) {}
+}
+/* 按节点当下的状态结算：被终止 → cancelled；有错误 → error；否则 ok */
+function aiNodeEndByState(node, key) {
+  if (!node) return;
+  aiNodeEnd(
+    node,
+    key,
+    node._aborted ? "cancelled" : node.error ? "error" : "ok",
+    node.error || "",
+  );
+}
+
 async function runOnce(node, prov, idx, itemTitle, attemptT) {
   /* 行首 /技能名：普通节点在这里展开进提示词（智能任务节点在 runDshOnce 内部同口径解析，
      此处不重复展开，避免二次包装） */
@@ -437,6 +527,9 @@ async function runOnce(node, prov, idx, itemTitle, attemptT) {
       }
     }
     /* 智能模式：提示词成为任务，agent 可读文件/联网/执行命令后完成 */
+    /* AI 活动登记：这一路是 dsh 轮次（逐帧步骤归会话族），这里只登记 + 起手一句 */
+    const dshAct = aiNodeBegin(node, "dsh");
+    aiNodeStep(dshAct, "connect", I18n.t("已发出请求"));
     return await runDshOnce(
       node,
       spec,
@@ -464,9 +557,18 @@ async function runOnce(node, prov, idx, itemTitle, attemptT) {
     });
   if (node.kind === "proc_text") ensureVision(prov, spec.images);
   if (node.kind === "proc_text") {
-    const r = await apiCallTextStream(spec, (t) =>
-      pushThinking(node.id, attemptT || 0, t),
-    );
+    /* AI 活动登记：流式文本的模型调用从这里起（收尾在 playNodeBody 的 finally） */
+    const txtAct = aiNodeBegin(node, "model-stream");
+    aiNodeStep(txtAct, "connect", I18n.t("已发出请求"));
+    let thinkSeen = false;
+    const r = await apiCallTextStream(spec, (t) => {
+      pushThinking(node.id, attemptT || 0, t);
+      /* 思考增量太密：只记第一段（合并成一条步骤，绝不每个 delta 一条） */
+      if (!thinkSeen && String(t || "").trim()) {
+        thinkSeen = true;
+        aiNodeStep(txtAct, "thinking", I18n.t("思考中"));
+      }
+    });
     if (!r.text) throw new Error(I18n.t("响应无文本内容"));
     return { kind: "text", text: r.text };
   }
@@ -475,6 +577,10 @@ async function runOnce(node, prov, idx, itemTitle, attemptT) {
     throw typeof dsMissingKeyError === "function"
       ? dsMissingKeyError()
       : new Error(I18n.t("未配置 API Key（请在「设置 · API/配置」中填写）"));
+  /* AI 活动登记：一次 api:call 就是「提交出图 → 出图完成」两步，
+     **没有中间帧**（契约 §6），不许假装有进度 */
+  const imgAct = aiNodeBegin(node, "model-once");
+  aiNodeStep(imgAct, "media", I18n.t("提交出图"));
   const rr = await window.api.apiCall(spec);
   if (!rr.ok) throw new Error(rr.error || I18n.t("调用失败"));
   const res = await window.api.assetWriteBase64(
@@ -770,9 +876,17 @@ async function runOnceAgg(node, prov, attemptT) {
     });
   if (node.kind === "proc_text") ensureVision(prov, spec.images);
   if (node.kind === "proc_text") {
-    const r = await apiCallTextStream(spec, (t) =>
-      pushThinking(node.id, attemptT || 0, t),
-    );
+    /* 聚合文本：与 runOnce 同一把键（node:<id>）→ 复用同一条活动，不另出一行 */
+    const aggAct = aiNodeBegin(node, "model-stream");
+    aiNodeStep(aggAct, "connect", I18n.t("已发出请求"));
+    let aggThink = false;
+    const r = await apiCallTextStream(spec, (t) => {
+      pushThinking(node.id, attemptT || 0, t);
+      if (!aggThink && String(t || "").trim()) {
+        aggThink = true;
+        aiNodeStep(aggAct, "thinking", I18n.t("思考中"));
+      }
+    });
     if (!r.text) throw new Error(I18n.t("响应无文本内容"));
     return { kind: "text", text: r.text };
   }
@@ -781,6 +895,9 @@ async function runOnceAgg(node, prov, attemptT) {
     throw typeof dsMissingKeyError === "function"
       ? dsMissingKeyError()
       : new Error(I18n.t("未配置 API Key（请在「设置 · API/配置」中填写）"));
+  /* 聚合出图：同一把键（node:<id>）→ 复用同一条活动，两步如实显示 */
+  const aggImgAct = aiNodeBegin(node, "model-once");
+  aiNodeStep(aggImgAct, "media", I18n.t("提交出图"));
   const rr = await window.api.apiCall(spec);
   if (!rr.ok) throw new Error(rr.error || I18n.t("调用失败"));
   const res = await window.api.assetWriteBase64(
@@ -9505,17 +9622,39 @@ function mediaRunPrestart(node) {
   } catch (_) {}
 }
 function runMediaGenSerial(node, fn) {
+  /* AI 活动登记（docs/ai-activity.md §5.2 媒体族）：整段（排队 → 在途生成 → 收尾）一条活动，
+     键与运行队列同一把 node:<id>。阶段文案就用既有 stateText 那句「在途生成」。
+     出队 / 被终止都不例外地收尾 —— 活动表只认一次 end，重复调用无害。 */
+  const actKey = aiNodeBegin(node, "model-once", ["queued", "media", "done"]);
+  aiNodeStep(actKey, "queued", I18n.t("排队生成"));
+  const actBody = function () {
+    aiNodeStep(actKey, "media", I18n.t("在途生成"));
+    return fn();
+  };
+  const settle = function (p) {
+    return Promise.resolve(p).then(
+      function (v) {
+        aiNodeEndByState(node, actKey);
+        return v;
+      },
+      function (e) {
+        aiNodeEndByState(node, actKey);
+        throw e;
+      },
+    );
+  };
   const hooked =
     typeof vramPreRunNode === "function" &&
     typeof vramPostRunNode === "function" &&
     !!vramBackendOfNode(node);
-  if (!hooked) return mediaGenQueueRun(node, fn);
+  if (!hooked) return settle(mediaGenQueueRun(node, actBody));
   /* 整段（出队 → 显存预释放 → 运行体 → 收尾释放）都登记成这个节点的运行体：
      后端在途 watcher 要等 play 里 ensureBackend 之后才起（冷启动时是好几秒），
      这之前节点一条「它还活着」的证据都没有，「假处理中」巡检（sweepGhostRunningNodes）
      就会把真在跑的媒体任务摘成「已完成 / 从未运行」—— 用户看到的正是
      「有历史输出时点 ▶ 立刻结束，且没有产出任何新内容」。见 trackNodeRunPromise。 */
-  return trackNodeRunPromise(node, () =>
+  return settle(
+    trackNodeRunPromise(node, () =>
     /* 排队期间不动手：出队那一刻（真的轮到它跑）才释放，避免给别人白放一遍 */
     mediaGenQueueRun(node, async () => {
       mediaRunPrestart(node);
@@ -9523,7 +9662,7 @@ function runMediaGenSerial(node, fn) {
         if (!vramHookSkipped(node)) await vramPreRunNode(node);
       } catch {}
       try {
-        return await fn();
+        return await actBody();
       } catch (e) {
         /* 运行体在它自己的 try / finally **之外**抛错（起跑前的取素材 / 预检这类 await
            最容易出）：错误必须落在节点上，不能让这一抛把收尾整段跳过。 */
@@ -9558,6 +9697,7 @@ function runMediaGenSerial(node, fn) {
         await mediaPostRunNote(node);
       }
     }),
+    ),
   );
 }
 /* 收尾：把本次运行释放了多少显存写回状态行后缀（只写事实，不覆盖完成 / 报错文案） */
@@ -10164,6 +10304,9 @@ async function playNodeBody(node, quiet, opts) {
         toast(I18n.t("处理失败：") + node.error, "err");
     } finally {
       node.running = false;
+      /* AI 活动收尾（起手在 runOnce 的模型调用处；谁 begin 谁 end 落在这一次运行上）：
+         没登记过的节点（保存 / 控制 / 定时这类不调模型）在这里是空操作 */
+      aiNodeEndByState(node, "");
       clearAgentTaskSent(node);
       /* 本节点挂上的 pending 一律清掉；下游覆盖批次另有自己的 pending 生命周期 */
       if (pendingIds) clearPendingRun(pendingIds);

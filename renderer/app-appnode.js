@@ -669,7 +669,12 @@ async function appNodeOpen(node) {
   appNodeSync();
   if (!APPNODE.frame) {
     const f = appNodeEl("iframe", "appnode-frame");
-    f.setAttribute("allow", "clipboard-read; clipboard-write");
+    /* allow 里的 microphone：宿主注入的听写条（apps-store.js 的 iframeAppUiSource 把
+       renderer/app-speech-ui.js 内联进预览页）要在这只 iframe 里调 getUserMedia。
+       主窗口那条权限闸（main.js 的 setPermissionRequestHandler）已放行 media，但 Chromium 的
+       Permissions-Policy 会**先**按 iframe 的 allow 属性判一次 —— iframe 的 origin 是
+       mtnode-preview://<appId>，与顶层页不同源，不给这一项就直接拒（条子出现却录不了音）。 */
+    f.setAttribute("allow", "clipboard-read; clipboard-write; microphone");
     f.setAttribute("spellcheck", "false");
     f.onload = () => {
       appNodePostReady();
@@ -681,6 +686,8 @@ async function appNodeOpen(node) {
   } else {
     appNodePostReady();
   }
+  /* 宿主注入的听写条要的语音准备态（见 appNodeSpeechRelayOn）：有帧了才值得订 */
+  appNodeSpeechRelayOn();
   appNodeStartWatcher();
   appNodePaintState(node.id, appNodeT("界面已打开（右上角 ✕ 收起）"));
   appNodeRepaintCard(node.id);
@@ -949,6 +956,31 @@ function appNodePost(msg) {
 }
 function appNodeEmit(name, data) {
   appNodePost({ [APPNODE_K]: 1, op: "node-event", name: String(name || ""), data: data || null });
+}
+/* ── 宿主语音准备态 → 内嵌页（宿主注入的听写条要用）────────────────────────────
+ * 为什么有这一段：iframe 里的听写条（apps-store.js 把 renderer/app-speech-ui.js 内联进
+ * 预览页）靠 appHost.onSpeechState 收「权重下载 / 就绪」的过场，而那座薄壳读的是本页转发给
+ * iframe 的 mtnode-preview-event 帧。开发页预览那条链早就转发了
+ * （renderer/app-apps-dev.js 的 api.onSpeechState → speech-state），应用节点这一形态整类缺席：
+ * 不补的话条子能出现、能录，但「首次要下 239MB 权重」那一段过程一片空白。
+ * 订阅只建一次，页面里没有 iframe 时转发是空操作（appNodePost 自己判帧）。 */
+let appNodeSpeechRelayOff = null;
+function appNodeSpeechRelayOn() {
+  if (appNodeSpeechRelayOff) return;
+  const api = appNodeApi();
+  if (!api || typeof api.onSpeechState !== "function") return;
+  try {
+    appNodeSpeechRelayOff =
+      api.onSpeechState((data) => {
+        appNodePost({
+          [APPNODE_PK]: 1,
+          op: "host-event",
+          event: { type: "speech-state", data: data || {} },
+        });
+      }) || true;
+  } catch (_) {
+    appNodeSpeechRelayOff = null;
+  }
 }
 /* appHost 那一批（模型 / 出图 / 转写 / 账号 / 选图）走既有预览租约通道，不重写一份 */
 async function appNodeHostCall(d) {
@@ -1876,14 +1908,34 @@ const APPNODE_ROUTES = {
       if (typeof agentSessionSend !== "function")
         return { ok: false, code: "no_agent", error: appNodeT("会话引擎不在这一版里") };
       appNodeEmit("agent", { phase: "start", sessionId: sid });
+      /* 逐帧转发（本轮需求：应用里跑 AI 时，过程条要出现在**应用界面的 footer** 上）。
+         宿主注入的 renderer/app-ai-work-app-ui.js 读 appHost.agent.onEvent，要的是与独立窗口
+         同形状的 { type:'agent', sessionId, frame }（见 preload-app.js 的 agent.onEvent）；
+         而这里以前只有 start/done/error 三条无帧事件 —— 条子看不到任何过程。
+         订阅走既有的 watchHost（renderer/app-session-bridge.js）：帧白名单、瘦身截断、runKey→
+         会话归属都用那一份实现，不另写一套。**不收尾时摘订阅**：那把键是「后到者接管」，
+         摘掉可能把别的观察者（独立窗口那条 agentSend）一起摘了；没有 iframe 时转发本身是空操作。 */
+      const sesAi = typeof window !== "undefined" ? window.MTNodeSession : null;
+      if (sesAi && typeof sesAi.watchHost === "function") {
+        try {
+          sesAi.watchHost(sid, (frame) => {
+            appNodeEmit("agent", { type: "agent", sessionId: sid, frame: frame || {} });
+          });
+        } catch (_) {}
+      }
       let out = null;
       try {
         out = await agentSessionSend(text, { sessionId: sid });
       } catch (e) {
-        appNodeEmit("agent", { phase: "error", sessionId: sid, error: String((e && e.message) || e) });
-        return { ok: false, code: "failed", error: String((e && e.message) || e) };
+        const msg = String((e && e.message) || e);
+        appNodeEmit("agent", { phase: "error", sessionId: sid, error: msg });
+        /* 帧一路：万一 watchHost 这一轮没送到收尾帧（订阅晚了一步），这里补一条，
+           免得过程条上的那一条永远停在「进行中」。已经收过尾的那次会被对方忽略。 */
+        appNodeEmit("agent", { type: "agent", sessionId: sid, frame: { type: "error", data: { error: msg } } });
+        return { ok: false, code: "failed", error: msg };
       }
       appNodeEmit("agent", { phase: "done", sessionId: sid });
+      appNodeEmit("agent", { type: "agent", sessionId: sid, frame: { type: "done", data: {} } });
       const txt =
         typeof out === "string" ? out : out && typeof out.text === "string" ? out.text : "";
       return { ok: true, sessionId: sid, text: txt };

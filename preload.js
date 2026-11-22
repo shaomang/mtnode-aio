@@ -1544,6 +1544,16 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.on('appHost:event', onEv);
     return () => ipcRenderer.removeListener('appHost:event', onEv);
   },
+  /* AI 活动上报帧（应用内 AI 调用 → 渲染层的活动表）：主进程 apps-store.js 在应用窗口的
+     模型代理调用处自动登记，app-host-bridge.js 的 ai.report 也推同一个帧。
+     单向、无回执：渲染层只读，收下就翻成 window.MTNodeAiActivity 的一条。 */
+  aiActivityOn: (cb) => {
+    const onEv = (_e, msg) => {
+      try { cb(msg); } catch (e) { console.error('aiActivityOn cb error:', e); }
+    };
+    ipcRenderer.on('ai:activity', onEv);
+    return () => ipcRenderer.removeListener('ai:activity', onEv);
+  },
   skillAdd: (skill) => ipcRenderer.invoke('skill:add', skill),
   skillRemove: (name) => ipcRenderer.invoke('skill:remove', name),
 

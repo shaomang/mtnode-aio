@@ -67,6 +67,12 @@
       description: "向模型暴露当前画布：创建/改标题/连线/@引用/自动排版节点。",
       purpose: "让助手直接搭或改你正在看的画布，而不是只在对话里描述流程。",
     },
+    "mtnode-session-recall": {
+      title: "会话原文反查",
+      description:
+        "模型可调用的 mtnode_recall：按轮次 / 关键词 / 索引取回本会话的早期原文（手动压缩、运行时自动压缩与历史段截断之后仍可查）。",
+      purpose: "上下文被压缩或看不全时，让模型查回早先的原话、数字、文件名与决定，而不是凭记忆编造。",
+    },
     agent: {
       title: "Agent 核心",
       description: "Agent 接口、注册表、发起范围与事件词汇，是 Harness 智能体的主干。",

@@ -8007,6 +8007,16 @@ body.ef-skin.theme-light button.hist-proc-bar:hover {
   font-weight: 600
 }
 
+/* 「（API 价）」标签：第三方服务商（opencode 等）转售 DeepSeek 时，费用是按 DeepSeek
+   官方 API 价目折算的（实际扣费在第三方那边）—— 金额后面挂这枚小字标注口径，
+   不给它上色（金额仍是 --green），只压低存在感、鼠标可悬停读完整说明。 */
+.tok-cost-api {
+  margin-left: 2px;
+  color: var(--muted);
+  font-size: 11px;
+  cursor: help
+}
+
 /* ── 会话统计 · 逐模型性能下钻（app-agent.js / app.js） ──
    模型明细行可点击 → 打开性能弹窗；只新增类，复用上面 .tok-badge-table 体系。 */
 .tok-badge-table tr.tok-model-row {

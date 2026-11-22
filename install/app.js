@@ -181,6 +181,10 @@
       music: T("自检会用最低档参数真生成一段最短音乐。", "The self-test really generates the shortest possible music clip."),
       video: T("自检会用最低档参数（最小分辨率 + 最短时长）真渲染一段视频，可能耗时分钟级。", "The self-test really renders a video at the lowest resolution and shortest duration; it may take minutes."),
       motion: T("自检会用最低档参数（1 帧）真渲染一次动效视频。", "The self-test really renders a single frame of the motion template."),
+      install: T(
+        "这类插件不产内容：自检会真验一遍装好的东西能不能用（文件要件齐不齐、venv / CLI 能不能真跑起来），不生成任何产物。",
+        "This kind of plugin produces no content: the self-test really verifies that what was installed actually works (files present, the venv / CLI really runs). Nothing is generated.",
+      ),
     };
     const bits = [];
     if (NOTE[selfPref.kind || ""]) bits.push(NOTE[selfPref.kind || ""]);

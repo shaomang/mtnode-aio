@@ -44,17 +44,35 @@ user = 这一句 + 极短上下文（约 400 字符）；失败 / 超时 / 没�
 **入口页里不再内联任何听写 UI**（`templates/app-default/dict.js` 与
 `apps-store.js` 的 `dictScriptTag()` 内联路径已随本轮改动删除）；老应用页面里那份旧内联段在打开
 「应用设置」时由 `clearLegacyDictInline()` 幂等清掉（只认我们自己的标记）。
-`capabilities.showAuthor` 决定**应用窗口左下角那枚宿主注入的作者标签**显不显示（本轮新增，与听写条同一条机制）：
-宿主注入 `renderer/app-author-ui.js`，平时 `opacity:0` 隐形、鼠标 hover（或键盘聚焦）才浮现
-`@作者 - v版本`（如 `@ms2308 - v1.0.1`），**点一下弹只读「应用详情」**（图标 / 标题 / 应用 id / 作者 / 版本 /
-说明 / 标签 / 数据目录，出口只有 ✕ 与 Esc —— 浮层不做「点外部即关」）。名字与版本由宿主给：
+`capabilities.showAuthor` 决定**应用 footer 里那枚宿主注入的作者 / 版本按钮**显不显示（与听写条同一条机制）：
+宿主注入 `renderer/app-author-ui.js`，它现在**常驻在 footer 里的一行**（不再贴视口左下角浮空、也不再
+`opacity:0` 藏起来等人 hover），写着 `@作者 - v版本`（如 `@ms2308 - v1.0.1`），**点一下弹只读「应用详情」**
+（图标 / 标题 / 应用 id / 作者 / 版本 / 说明 / 标签 / 数据目录，出口只有 ✕ 与 Esc —— 浮层不做「点外部即关」）。
+落点顺序：① 听写条落好的那个宿主（`#mtnode-dictate-zone` 的父元素 —— 两枚 footer 元信息同一行）
+② 应用自己的 `<footer>` / `.app-foot` / `.foot` / `#appFoot`（连中两次量到看不见才搬走）③ 宿主自建的
+固定底栏（听写条已经拉过一条就借它，绝不叠第二条）。名字与版本由宿主给：
 `app.json` 的 `author` → 当前登录账号昵称（两级回落，系统占位名 `u_xxxxxxxx` 不算名字）；
-**两者缺任一个 / 未登录且没写过作者 → 这枚标签整枚不出现**（不写「未知作者」）。配色只取应用自己主题的
-`--bg/--fg/--muted/--accent/--line`（与听写条同一份 palette 口径），深浅底都不突兀；听写那枚小话筒
-**在 footer 里**（`#mtnode-dictate-zone`，不再浮在左下角压住应用内容），标签按它的顶边往上让一行。
+版本取 `app.json` 的 `version`，**上架过的开发副本则取上架版本**（本机缓存里云端目录中「我这支」的
+`latestVersion`，查不到退回 `app.json` 的 `cloud.version`）——于是 footer 里的版号与应用中心里那个数字永远同一个；
+上架成功时渲染层会把上架版本写回 `app.json`（`apps:setMeta` 的 `version`，只收 `x.y.z`），两边不会各自漂。
+**名字与版本缺任一个 / 未登录且没写过作者 → 这枚按钮整枚不出现**（不写「未知作者」）。配色只取应用自己主题的
+`--bg/--fg/--muted/--accent/--line`（与听写条同一份 palette 口径），深浅底都不突兀。
 注入闸门只看 `capabilities.showAuthor`（`preload-app.js` 的 `maybeInjectAppUi` + `apps-store.js` 的 `hostCapabilities`），
-应用侧**不用写任何代码**；要在别处显示「谁做的、哪一版」，调 `appHost.authorTag()`（见第二节桥表）。
+**两套宿主同一条闸门**：独立窗口由 preload 注入，画布里的应用节点 / 开发页预览由 `iframeAppUiSource` 把同一份
+脚本连同清单（`window.__mtnodeAuthorTag`）内联进去 —— dock 与独立窗口一致（此前内嵌形态整块不注）。
+应用侧**不用写任何代码**；要在别处显示「谁做的、哪一版」，调 `appHost.authorTag()`（见第二节桥表，内嵌形态也有）。
 `capabilities.imageGen` 只是声明，出图接口与文本接口一样始终可调。
+`capabilities.showComplete` 决定**应用里的输入框带不带 AI 补全**（2026-11 用户需求：「补全应当作为一个基础功能
+打通，使得应用中可以默认开启实现自动补全」）：这一位为真，宿主把 `renderer/app-fim.js`（与主窗口同一份内核）
+注入应用页，应用里**每个 `input` / `textarea` 自动获得**两种补全 —— ① 自动：边打字边在光标后给出半透明建议；
+② 手动：按 **Tab** 现场要一次（第一下触发、第二下采纳），等模型时光标后转一圈「补全中 ⋯」，`Esc` 丢弃，
+`Shift/Ctrl/Alt + Tab` 仍归页面自己。注入前宿主把配置写成页面世界的纯值 `window.__mtnodeFimSettings`
+（`{ on, auto, manual, delayMs, maxTokens, model }`，读的是用户配置里的 `fim` 段，只读不写）；
+请求走 `appHost.textGenStream`（`temperature:0`、`thinking:"off"`、`messages` 用 `<prefix>…</prefix><suffix>…</suffix>`），
+**服务商与 Key 仍只在主进程**，应用拿不到。新建应用默认开；存量应用在「应用设置」里勾。
+两套宿主的闸门同一条：独立窗口 `preload-app.js` 的 `maybeInjectAppUi`（注入 `<script src>`），
+内嵌预览 `apps-store.js` 的 `iframeAppUiSource`（内联同一份源码 + `appUiFimPrelude`）。
+应用侧**不用写一行代码**；想自己接管就用属性 `data-fim="off"` 标记那些不该补全的输入框（敏感字段，如密码 / 金额）。
 新建应用的**默认欢迎页**在 `templates/app-default/index.html`（`apps-store.js` 的 `defaultPageHtml()` 读它），与脚手架同一套设计语言与同一段上手文案。
 
 **默认随应用生成 AGENTS.md（不必问用户）**：复制脚手架时，把 `templates/app-agents/AGENTS.md` 一并复制成**该应用根目录的 `AGENTS.md`**
@@ -93,7 +111,7 @@ user = 这一句 + 极短上下文（约 400 字符）；失败 / 超时 / 没�
 | **数据文件夹** | `dataDirGet()` → `{ok,dir,root,def,exists,file,allow}`；`dataDirPick()`（用户亲自选）；`dataDirOpen()`；`dataDirReset()`（回默认） | —（路径由宿主管，应用看不到） |
 | 键值存储（老写法） | `storageGet/Set/All/Remove`（内部走同一个 `data.json` 的 `kv`） | —（用 `dataGet`/`dataSet` 自己存对象） |
 | 账号摘要 | `account()` → `{ok,loggedIn,user,encryption}`（无 token） | `authGetState()` / `authMe()` / `authLoginPassword` / `authChangePassword` / `authLogout` / `onAuthChanged(cb)` |
-| **本机清单摘要（谁做的 / 哪一版）** | `authorTag()` → `{ok,name,version,id,title,description,tags,icon,dataDir}`（`icon` 是宿主读好的 data URL；名字版本凑不齐回 `{ok:false,code:"no_author_tag"}`）。**注入左下角那枚作者标签用的就是它**；应用自己想在别处显示也可以用（与语音 / 图像同一条纪律：能力位只管宿主注不注入，桥上接口始终在） | — |
+| **本机清单摘要（谁做的 / 哪一版）** | `authorTag()` → `{ok,name,version,id,title,description,tags,icon,dataDir}`（`icon` 是宿主读好的 data URL；名字版本凑不齐回 `{ok:false,code:"no_author_tag"}`）。**注入 footer 里那枚作者 / 版本按钮用的就是它**（内嵌形态也走它：`authorTag` 已在预览桥上）；应用自己想在别处显示也可以用（与语音 / 图像同一条纪律：能力位只管宿主注不注入，桥上接口始终在） | — |
 | 创意工坊请求 | —（应用中心窗口没有网络面） | `storeRequest({method,path,json,anon})`（主进程持 token） |
 | 选图 / 压图 / 缓存 | — | `pickImage()` / `compressImage()` / `cacheImage(id,base64)` / `readCachedImage(id)` |
 | 模型能力（可选） | `textGenStream(opts, cb)`（**文字 + 图像多模态**；**默认关思考**，`opts.thinking` 认 `off / on(=high) / low / high / max`，非法值回 `bad_thinking`；回执带 `finishReason` / `truncated` / `reasoningChars`）。宿主注入的**听写条「AI 增强」就是它的标准用法**：`{ messages:[{role:"system",…},{role:"user",…}], thinking:"off", temperature:0.2 }` —— **不带 `model`**（跟随该应用的选择 / 宿主默认）、**不传 `maxTokens`**，失败 / 超时回落原文（见第七节坑表）· 脚手架另有 `AppHost.json(opts)`（要 JSON 就用它）· `imageGen(opts)` / `imageEdit(opts)`（出图 / 图生图，见第六节） · `hostModels()` / `hostModel()` / `hostSetModel(id)`（模型从 MTNode 继承）· `pickImage()` 系统选图。**服务商与 Key 只留主进程**，应用只能给 prompt / messages / model(清单内 id) / 温度 / 图像路径或 dataURL；**maxTokens 别随手设**（它是思考+正文共用预算，见第七节） | —（插件窗口这套没有模型桥：见第六节的正路 —— `pickImage` + 自己的后端，或升级为本地后端插件） |

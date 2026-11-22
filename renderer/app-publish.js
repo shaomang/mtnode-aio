@@ -3667,18 +3667,30 @@ async function pubUpload() {
     if (typeof window.api.appsCatalog === "function") window.api.appsCatalog(true).catch(() => {});
   } catch (_) {}
 }
-/* 上架成功后把作者 / 二次开发来源 / 上架留痕写回本机 app.json（主进程 apps:setMeta，
+/* 上架成功后把作者 / 二次开发来源 / 上架留痕 / **版本号** 写回本机 app.json（主进程 apps:setMeta，
    渲染层不碰文件）。写失败不影响上架结果 —— 下次上架时表单照旧会带出来自目录的那一份，
    只是这次上架的云端 id 没落盘（下次开窗的默认锁定 id 会退回本机应用 id）。
-   publishedId / publishedVersion 省略时取表单里那一份（服务端已按它落库）。 */
+   publishedId / publishedVersion 省略时取表单里那一份（服务端已按它落库）。
+   **kind 必须一起传**：同一个 id 在库根与项目根各有一份时，主进程缺省口径先写下载根那一份
+   （见 apps-store.js 的 setAppMeta 注释），从开发页上架就会把回执写进库里那份、开发那一份
+   的版本永远不动 —— 那正是「窗口左下角版本与上架版本不一致」的来路。 */
 async function pubWriteLocalMeta(publishedId, publishedVersion) {
   const api = window.api || {};
   if (typeof api.appsSetMeta !== "function") return;
   const id = pubStr(PUB.appId);
   if (!id) return;
   const patch = {};
+  /* 被上架的那一份是哪一套根的（PUB.app 来自主进程 appsList，kind = dev / down） */
+  const kind = pubStr(PUB.app && PUB.app.kind);
+  if (kind) patch.kind = kind;
   const name = pubStr(PUB.user && PUB.user.username);
   if (name) patch.author = name;
+  /* 上架回流（本轮修的 bug）：app.json 的 version 就是「本机这一份的版本」，应用窗口左下角的
+     作者标签 / 应用详情 / 列表里的「本机版本」全读它 —— 不写回去的话，应用中心写着 v1.0.3、
+     窗口左下角还停在 v1.0.0。只写严格的 x.y.z（带后缀的版本号 app.json 不收，见主进程那条校验），
+     拿不到就整项不动（保留原有版本号，绝不写半截）。 */
+  const ver = pubStr(publishedVersion) || pubStr(PUB.form.version);
+  if (/^[0-9]+\.[0-9]+\.[0-9]+$/.test(ver)) patch.version = ver;
   const fork = PUB.form.forkOf || {};
   patch.forkOf = pubStr(fork.id)
     ? { id: pubStr(fork.id), ownerId: pubStr(fork.ownerId), owner: pubStr(fork.owner) }
@@ -3700,6 +3712,12 @@ async function pubWriteLocalMeta(publishedId, publishedVersion) {
   try {
     await api.appsSetMeta(id, patch);
   } catch (_) {}
+  /* 版本回流成功后，本机这份摘要也当场跟上（页脚那句「本机版本 v…」与下一次开窗的默认值
+     都读 PUB.app.version）—— 不跟的话同一窗里还写着旧号，看着就像没写成功。 */
+  if (patch.version && PUB.app && typeof PUB.app === "object") {
+    PUB.app.version = patch.version;
+    pubPaintFoot();
+  }
   /* 本机留痕也跟着更新（同一窗内接着传下一版 / 改 id 时判据要跟手，不等下一次开窗）：
      这一发成功后，云端那个 id 就是这个应用的身份了 —— 锁定值换成它，并**恢复锁定**
      （用户口径：改 id 只是这一次的显式动作，传完就该回到「默认锁定」的常态）。 */

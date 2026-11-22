@@ -9,7 +9,7 @@
     { "id": "python", "title": "检查 Python 3.10+", "hint": "脚本先找 py -3.10 / 3.11 / 3.12，再退到 PATH 里的 python。都没有就装一个 Python 后重跑。" },
     { "id": "venv", "title": "创建虚拟环境 .venv" },
     { "id": "pip", "title": "安装 Python 依赖（清华镜像）", "hint": "requirements.txt 走 pypi.tuna.tsinghua.edu.cn；网络抖动时重跑即可，已装好的不会重装。" },
-    { "id": "server", "title": "下载 llama.cpp llama-server 二进制", "hint": "从 GitHub Releases 拉 CUDA 版（cuda-12.4 / cuda-13.3），直连失败自动走 ghfast.top / gh-proxy.com / ghproxy.net 镜像；都不通用就把 llama-server.exe 手工放进 bin\\ 再重跑（bin\\ 里已有则跳过下载）。不会退回 CPU 版：这个后端必须用 GPU。脚本长时间没有任何输出会被宿主判为卡住并强杀，那时点「让 Agent 兜底修复」。" },
+    { "id": "server", "title": "下载 llama.cpp llama-server 二进制", "hint": "从 GitHub Releases 拉 CUDA 版（cuda-12.4 / cuda-13.3）。这一步先给各个下载源（直连 + ghfast.top / gh-proxy.com / ghproxy.net 等镜像）测速、按实测速度排序挑最快的，再把压缩包切成 8 MB 块、用 6–8 路连接（当前 7 路）分块并发下载，并且可断点续传：已下的块留在 bin\\.download\\ 里，中途卡住、报错或直接关掉重跑都从剩下的块接着下，不会从头开始（bin\\ 里已有 llama-server.exe 则整步跳过）。下载中每 ~8 MB 打一行进度「已下载/总大小 | 速度 | ETA」，这行也是心跳 —— 长时间一行输出都没有会被宿主判为卡住并强杀，那时点重试或「让 Agent 兜底修复」即可，重跑仍是续传。所有源都不通用就把 llama-server.exe 手工放进 bin\\ 再重跑。不会退回 CPU 版：这个后端必须用 GPU。" },
     { "id": "smoke", "title": "冒烟：导入 fastapi 与 app.server" }
   ]
 }

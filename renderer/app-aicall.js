@@ -1462,6 +1462,41 @@
     openAiCallPop(node, anchor);
   }
 
+  /* 节点族的 AI 活动登记只要「这一节点跑的什么模型 / 走哪家」这两项
+     （契约 docs/ai-activity.md §5.2 的登记字段）—— 本文件是参数面板，**不发起调用**，
+     真正的调用起止点在 app-nodes.js 的 runOnce / runMediaGenSerial。
+     取值与节点头部按钮同一份生效值：节点自选 → 就近继承 / 设置里的默认模型；
+     图像后端（工具 / 函数节点出图）另有一条 imgBackendResolved。 */
+  function aiActivityMetaOf(node) {
+    const out = { model: "", provider: "", label: "" };
+    if (!node) return out;
+    const own = String(node.model || "").trim();
+    if (own) {
+      out.model = own;
+      out.provider = String(node.providerId || node.provider || "");
+      out.label = own;
+      return out;
+    }
+    try {
+      const r = aiResolvedModelEffective(node);
+      if (r) {
+        out.model = String(r.model || "");
+        out.provider = String(r.provider || "");
+      }
+    } catch (_) {}
+    if (!out.model) {
+      try {
+        const img = imgBackendResolved(node);
+        if (img && img.model) {
+          out.model = String(img.model);
+          out.label = String(img.label || img.model);
+        }
+      } catch (_) {}
+    }
+    if (!out.label) out.label = out.model;
+    return out;
+  }
+
   /* ---------------- 对外出口 ---------------- */
 
   window.MTNodeAiCall = {
@@ -1473,6 +1508,8 @@
     resolvedOf: aiResolvedOf,
     resolvedModel: aiResolvedModel,
     resolvedModelEffective: aiResolvedModelEffective,
+    /* AI 活动登记要的「跑的是哪个模型」（app-nodes.js 取用） */
+    activityMetaOf: aiActivityMetaOf,
     modelOwn: aiModelOwn,
     presetOwn: aiPresetOwn,
     effortOwn: aiEffortOwn,
@@ -1515,6 +1552,7 @@
   window.aiResolvedOf = aiResolvedOf;
   window.aiResolvedModel = aiResolvedModel;
   window.aiResolvedModelEffective = aiResolvedModelEffective;
+  window.aiActivityMetaOf = aiActivityMetaOf;
   window.aiModelOwn = aiModelOwn;
   window.aiCallButtonEl = aiCallButtonEl;
   window.aiCallBodyButtonEl = aiCallBodyButtonEl;

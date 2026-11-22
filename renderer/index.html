@@ -743,8 +743,9 @@
   <!-- 输入补全入口（renderer/app-fim-settings.js + css/fim.css）：状态栏最左一颗
        （CSS order -6，排在快捷会话 -5 之前）。点一下开 / 关「补全设置」面板 ——
        persistent：点外部不关，只走窗内 ✕ / Esc / 再点一次这颗按钮。
-       面板里有总开关 / 服务商 / 模型（只列 flash）/ 触发延迟 / 最大补全长度 /
-       本次统计 / 隐私提示；设置写 S.config.fim。 -->
+       面板里有总开关 / 自动补全 · 按 Tab 手动补全两枚子开关 / 服务商 / 模型（全部模型，
+       flash 标「推荐」）/ 触发延迟 / 最大补全长度 / 状态行 / 本次统计 / 隐私提示；
+       设置写 S.config.fim（应用窗口里读的是 preload 注入的 window.__mtnodeFimSettings）。 -->
   <button type="button" id="btnFim" class="sb-fim" aria-pressed="false"
           data-i18n-title="输入补全（点击开关设置面板）" title="输入补全（点击开关设置面板）"
           aria-label="输入补全设置">
@@ -1080,6 +1081,14 @@
      requireAsset 闸门（playNode 调用期按 typeof 取 mfAssetGate，故本文件排在
      app-nodes.js 之前即可，顶层不引用任何后加载绑定）。 -->
 <script src="app-manifest.js"></script>
+<!-- 会话反查（renderer/app-session-recall.js · Agent 工具 mtnode_recall）：
+     上下文被手动压缩（_fold）/ 运行时自动压缩（compacts kind:'auto'）/ 200k 字符截断之后，
+     早期原文仍在会话存储里 —— 这里按「本轮绑定会话 > 显式 sessionId」把它取回来
+     （outline / search / read / context，全部只读、上限在宿主夹住），回执经
+     dshInteract kind:'recall' 回网关（dsh/gateway/session-recall-plugin.mjs）。
+     顶层不引用任何后加载绑定（agentSessionById / agentSessionOfRun /
+     agentEnsureSessionBody / agentHistoryEntries 都在调用期按 typeof 取用）。 -->
+<script src="app-session-recall.js"></script>
 <!-- PDF → Markdown 解析编排（renderer/pdf-markdown.js）：结构化解析（pdf:parse 文本层）→
      没有文本层则逐页识图 dshRunTask({images}) 还原 Markdown / LaTeX → 再失败给可读错误；
      一次进度窗 + 可取消。三处消费方共用 window.openPdfParse / pdfIsPdfPath /
@@ -1615,6 +1624,16 @@
      必须排在 app-assist.js / app-db.js / app.js 之后（调用期按 typeof 取既有全局）。 -->
 <script src="app-session-bridge.js"></script>
 <script src="app-footer-mascot.js"></script>
+<!-- AI 活动登记表（renderer/app-ai-activity.js）：各接入点（会话 / 节点 / 识图 / 变体 /
+     子代理 / 应用）登记过程的数据内核（window.MTNodeAiActivity = begin / step / end / fail /
+     snapshot / subscribe）。
+     状态栏那颗「AI 工作中」呼吸灯与 AI 工作台浮层已整块下线（2026-11 用户需求），
+     本表暂时只剩登记、没有主窗口界面读它（应用窗口那条过程条是另一份
+     renderer/app-ai-work-app-ui.js）。自包含、不碰任何 DOM、不写持久化；只把既有
+     window.MTNodeVisionRuns / MTNodeDeriveRuns 当步骤源只读搬进来，不新建第二套在途表。
+     谁在跑的汇总真源仍是 collectRunQueueAll()（本表只加过程与阶段）。
+     排在 app.js / app-db.js 之后（寄存器由任务 5～7 在既有事件点上调用，调用期取全局）。 -->
+<script src="app-ai-activity.js"></script>
 <!-- 状态栏「重新编译并重启」按钮（renderer/app-self-rebuild.js）：自包含，只经
      window.api.selfRebuildInfo / selfRebuild 与主进程对话；显隐取 MTNodeAuth 的
      登录用户名（与研究视图同一口径），确认窗复用 app.js 的 confirmDialog。

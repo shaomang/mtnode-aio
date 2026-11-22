@@ -8,6 +8,9 @@
  *   agent*       → renderer/app-session-bridge.js 的会话族（window.MTNodeSession）
  *   tools / net  → window.api 的既有主进程通道（backendRegistry* / netFetch）
  *   pickCanvas   → 主窗口里一张画布清单小窗（用户亲自选的那一张才生效）
+ *   ai:activity  → 应用内 AI 的活动帧（宿主在模型代理处自动登记 + 应用可选自报）→
+ *                  window.MTNodeAiActivity（Footer「AI 工作中」），见下方「AI 活动（只读上报帧）」
+ *                  一节与 docs/ai-activity.md §8。
  *
  * 三条纪律：
  *   1) **画布真源只在渲染层**：本文件不读画布文件、不另写一套执行器；
@@ -323,6 +326,68 @@
     },
   };
 
+  /* ── AI 活动（只读上报帧）→ window.MTNodeAiActivity ────────────────────────
+   * **本文件不再自动订阅**（规则改动见 docs/ai-activity.md §5.5 / §8）：应用族的 AI 过程属于
+   * 它自己那只应用窗口 —— 帧由主进程推给**发起调用的应用窗口**（apps-store.js 的
+   * aiActivityTrack → "ai:activity"，app-host-bridge.js 的 ai.report 同路），
+   * 画在应用界面底栏上（renderer/app-ai-work-app-ui.js）。主窗口那张登记表只收
+   * 会话 / 节点 / 识图 / 变体 / 修复，不再汇总应用族（否则同一次 AI 会在两个窗口各出一行）。
+   *
+   * aiActivityApply() 与 window.MTNodeAppHostBridge.aiActivityApply 保留：排障 / 自验时可以手动喂
+   * 一帧（形状见下），它照旧把帧翻成 MTNodeAiActivity 的 begin/step/end。
+   * 帧：{ op?, key, appId, appName, kind, title, model, phase, detail, status, error }
+   * 表没加载 = 静默丢弃；上报是旁路，绝不影响应用那次调用。 */
+  const AI_TERMINAL = { done: "ok", error: "error", cancelled: "cancelled" };
+
+  function aiStopHint(kind) {
+    /* 通道事实（docs/ai-activity.md §6）：文本流没有取消通道；出图的取消只在应用侧。 */
+    return kind === "app-image"
+      ? T("在应用界面里点取消（宿主只在应用侧有出图取消入口）")
+      : T("应用内文本生成没有取消通道：等它自己跑完");
+  }
+
+  function aiActivityApply(frame) {
+    const tbl = window.MTNodeAiActivity;
+    if (!tbl || typeof tbl.begin !== "function" || typeof tbl.step !== "function")
+      return { ok: false, code: "no_table" };
+    const f = frame && typeof frame === "object" ? frame : null;
+    if (!f) return { ok: false, code: "bad_frame" };
+    const appId = String(f.appId || "");
+    if (!appId) return { ok: false, code: "bad_app" };
+    const kind = String(f.kind || "app-text");
+    const phase = String(f.phase || "queued");
+    const detail = String(f.detail == null ? "" : f.detail);
+    const key = String(f.key || "") || "app:" + appId + ":" + String(f.reqId || f.title || "report");
+    const cur = typeof tbl.find === "function" ? tbl.find(key) : null;
+    const alive = !!(cur && (cur.status === "running" || cur.status === "stale"));
+    const term = AI_TERMINAL[phase] || "";
+    if (term) {
+      /* 收尾：没开始过的（应用只报了末帧）不补一条空活动 */
+      if (!alive) return { ok: true, ignored: true };
+      tbl.end(key, { status: term, error: term === "error" ? String(f.error || detail || "") : "" });
+      return { ok: true };
+    }
+    if (!alive) {
+      tbl.begin({
+        key: key,
+        source: "app",
+        kind: kind,
+        title:
+          String(f.title || "") ||
+          String(f.appName || appId) + " · " + (kind === "app-image" ? T("AI 出图") : T("AI 文本生成")),
+        model: String(f.model || ""),
+        appId: appId,
+        /* 应用族的跳转 = 既有的开窗入口（appsOpenApp；主窗口那套浮层已下线，只留数据） */
+        jump: { type: "app", id: appId, wfId: "", label: String(f.appName || "") },
+        stop: null,
+        stopHint: aiStopHint(kind),
+      });
+    }
+    /* 刚开始那条补上首个阶段；已在跑的只在有话说时补一步（主进程那边已按 300ms 节流） */
+    if (!alive || detail) tbl.step(key, { phase: phase, text: detail });
+    return { ok: true };
+  }
+
   async function handleFrame(frame) {
     const f = frame || {};
     const id = f.id;
@@ -345,9 +410,14 @@
     handleFrame: handleFrame,
     pickCanvas: pickCanvasModal,
     canvasList: canvasList,
+    /* 排障 / 自验专用：手动喂一帧 AI 活动（与主进程推给应用窗口的那一帧同形状）。
+       正式链路不经过这里 —— 应用族的帧只推给发起调用的应用窗口（见上方注释）。 */
+    aiActivityApply: aiActivityApply,
     ops: Object.keys(HANDLERS),
   };
   if (window.api && typeof window.api.appHostOnEvent === "function") {
     window.MTNodeAppHostBridge.off = window.api.appHostOnEvent((frame) => handleFrame(frame));
   }
+  /* 刻意**不**订阅 window.api.aiActivityOn：应用族活动不再登记进主窗口的登记表。
+     （preload.js 那条通道保留，供排障时手动接；上面 aiActivityApply 也仍可手喂。） */
 })();

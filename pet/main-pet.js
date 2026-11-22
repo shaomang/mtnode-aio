@@ -26,6 +26,8 @@ const { spawn } = require("child_process");
 const pluginErrors = require("../plugin-error-repair.js");
 /* 安装窗编排（主进程单例）：桌宠形象包下载也进那只窗，逐步骤可见（见 plugins/main-install.js） */
 const installHost = require("../plugins/main-install.js");
+/* 安装后自检内核：卡片封面左上角那个「已装勾」的唯一判据（见 plugins/plugin-selfcheck.js 头） */
+const selfcheck = require("../plugins/plugin-selfcheck.js");
 
 const PLUGIN_ID = "bongochat";
 const PET_FEED =
@@ -163,6 +165,63 @@ function isInstalled() {
   const meta = readJson(installedMetaPath(), null);
   if (!meta || !meta.version) return false;
   return fs.existsSync(join(runtimeDir(), "index.html"));
+}
+
+/**
+ * 安装后自检（卡片「已装勾」的唯一判据）。
+ * 桌宠不产内容：自检 = 真验一遍「形象包装齐了没」——
+ *   installed.json（有版本 + 装入时间）、运行时入口 runtime/index.html、
+ *   形象清单 runtime/manifest.json、以及至少一套可用形象（自带 skin.json 或 schemes/）。
+ * 与 isInstalled() 同一份判据并再加两项：只有 installed.json 不等于装好了（半截 zip 也会写它）。
+ */
+async function selfcheckPet(ctx) {
+  const c = ctx || {};
+  const steps = [];
+  const sig = c.signal || { aborted: false };
+  const step = (id, title, status, detail) => {
+    const s = { id: String(id || "step"), title: String(title || ""), status: String(status || "run"), detail: detail == null ? "" : String(detail) };
+    const at = steps.findIndex((x) => x.id === s.id);
+    if (at >= 0) steps[at] = s;
+    else steps.push(s);
+    try {
+      if (typeof c.step === "function") c.step({ title: s.title, status: s.status, detail: s.detail });
+    } catch {}
+    return s;
+  };
+  if (sig.aborted) return { ok: false, skipped: true, reason: "已取消", steps };
+
+  let meta = null;
+  try {
+    meta = readJson(installedMetaPath(), null);
+  } catch {
+    meta = null;
+  }
+  if (!meta || !meta.version) {
+    step("meta", "安装记录 installed.json", "skip", "还没装（没有安装记录）");
+    return { ok: false, skipped: true, reason: "还没装（没有安装记录）", steps };
+  }
+  step("meta", "安装记录 installed.json", "ok", "v" + String(meta.version || "") + (meta.installedAt ? " · " + new Date(meta.installedAt).toLocaleString() : ""));
+  let dir = "";
+  try {
+    dir = runtimeDir();
+  } catch {
+    dir = "";
+  }
+  if (!dir) {
+    step("dir", "运行时目录", "skip", "拿不到插件数据目录（数据目录没注入）");
+    return { ok: false, skipped: true, reason: "拿不到插件数据目录（数据目录没注入）", steps };
+  }
+  const entry = join(dir, "index.html");
+  const man = join(dir, "manifest.json");
+  step("dir", "运行时目录", fs.existsSync(dir) ? "ok" : "fail", dir);
+  step("entry", "运行时入口 index.html", fs.existsSync(entry) ? "ok" : "fail", entry);
+  step("manifest", "形象清单 manifest.json", fs.existsSync(man) ? "ok" : "fail", man);
+  /* 形象至少一套：自带 skin.json 或 schemes/ 目录（形象包结构见 pet-pack） */
+  const skinsOk = fs.existsSync(join(dir, "skin.json")) || fs.existsSync(join(dir, "schemes"));
+  step("skins", "至少一套可用形象", skinsOk ? "ok" : "fail", join(dir, "schemes"));
+  const bad = steps.filter((s) => s.status === "fail").map((s) => s.title);
+  if (bad.length) return { ok: false, error: "形象包不完整：" + bad.join(" / "), steps };
+  return { ok: true, steps };
 }
 
 function pickCover(root) {
@@ -1269,6 +1328,21 @@ function registerPetIpc(opts) {
     cancel: () => cancelPetInstall(),
   });
 
+  /* 安装后自检登记（卡片「已装勾」的唯一判据）：形象包装齐了没，见上面的 selfcheckPet。
+     kind="install" = 非内容生成类。漏这一句的话，桌宠装完那次自检不会启动，
+     卡片封面左上角那个「安装完毕」标识就永远触发不了。 */
+  try {
+    selfcheck.registerPluginSelfcheck({
+      id: PLUGIN_ID,
+      key: "pet",
+      label: "BongoChat 桌宠",
+      kind: "install",
+      check: (ctx) => selfcheckPet(ctx),
+    });
+  } catch (e) {
+    reportErr("selfcheck_register_failed", "[boot] 自检登记失败：" + String((e && e.message) || e));
+  }
+
   ipcMain.handle("pet:status", () => statusForUi());
   ipcMain.handle("pet:install", async () => installPet());
   /* 桌宠的下载中断（安装窗「取消安装」走 registerInstallTarget 的 cancel 口；这条给控制台直接调） */
@@ -1322,4 +1396,6 @@ module.exports = {
   shutdownPet,
   status,
   PET_FEED,
+  /* 安装后自检的实现（给纯 Node 冒烟直呼；生产侧由 registerPluginSelfcheck 登记） */
+  selfcheckPet,
 };

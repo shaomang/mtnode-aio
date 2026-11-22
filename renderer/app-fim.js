@@ -13,9 +13,18 @@
  *      去尾随空白。maxTokens 96（64~128），temperature 0，effort off。
  *   4) 调度：debounce 400ms、单飞（新请求前 abort 旧的）、同 prefix+suffix+model 命中缓存、
  *      3.2s 超时静默放弃；password / readonly / disabled / contenteditable / IME 组合期一律不发。
- *   5) 模型闸：只有 id 命中 /flash/i **且**属 deepseek 家族的模型才发；其余一律当作「不支持补全」。
- *   6) 请求只走既有桥 apiCall（provider 由 providerForAgentRoute 解析）：中转票自愈与 opencode 的
- *      x-opencode-session 头都在主进程里，所以主进程一行不改。
+ *   5) **两种触发方式**（用户 2026-11 需求，改这里之前先读 overlay 段的键位仲裁）：
+ *      · 自动（cfg.auto）：打字 / 进框即去抖补全，补全字以半透明 ghost 跟在光标后面；
+ *      · 手动（cfg.manual）：按 **Tab** 现场要一次（不等去抖），要的过程中在光标处转圈，
+ *        补全回来再按一次 Tab 采纳。光标处没有 ghost 时 Tab 才归手动触发。
+ *   6) 模型闸（**已放宽**）：以前要求「deepseek 家族 + 名字里带 flash」，用户现场大量是
+ *      中转 / 只配了 pro 档的服务商 —— 闸一卡就是「补全毫无反应」。现在的顺序是：
+ *      指名的模型 > flash 档（仍是首选，快且便宜）> 该服务商第一个模型；
+ *      只有「一整个服务商都没有模型」才回 no-model（面板上会写出来，不再静默）。
+ *   7) 请求走两座桥，按在场者自动挑：主窗口是既有 apiCall（provider 由 providerForAgentRoute
+ *      解析，中转票自愈 / opencode 头都在主进程）；应用窗口（renderer/app-fim.js 被
+ *      preload-app.js 注入到应用页）没有 apiCall，改走 appHost.textGenStream —— 应用侧
+ *      一切模型 / Key 仍只留主进程，本段只传 messages / temperature / maxTokens。
  */
 (function () {
   if (typeof window === "undefined" || window.MTFim) return;
@@ -24,8 +33,19 @@
   const MAX_HEAD = 500; /* suffix 上限（字符） */
   const DEBOUNCE_MS = 400; /* 300~500ms 之间的取值：够稳，也不至于卡手 */
   const TIMEOUT_MS = 3200; /* 2.5~4s：到点静默放弃，不打扰用户 */
+  /* 手动（Tab 触发）的看门狗比自动那条宽松：用户是**主动**要这一次，而且光标处有转圈动效，
+     等 6s 也好过 3.2s 就断在半路（自动补全断掉没人知道，手动断掉等于白按一下 Tab）。 */
+  const MANUAL_TIMEOUT_MS = 6000;
   const MAX_TOKENS = 96; /* 64~128：补全就一两行，给多了只会让模型开始解释 */
   const CACHE_MAX = 60; /* 缓存条数上限（先进先出淘汰） */
+  /* 缺省设置（面板 app-fim-settings.js 的 DEF 与之同口径；这里只做「没配置时」的兜底）：
+     2026-11 起补全默认**开着**且自动 + 手动两种方式都开 —— 需求「补全作为基础功能打通，
+     应用里也能默认开启」。用户关掉任意一位即按配置走。 */
+  const DEF_ON = true;
+  const DEF_AUTO = true;
+  const DEF_MANUAL = true;
+  const DEF_DELAY = 350;
+  const DEF_MAX_TOKENS = 128;
   const SYSTEM_PROMPT =
     "你是补全引擎，只输出光标处应插入的内容，不解释、不重复已有上下文、不加代码围栏";
 
@@ -138,8 +158,10 @@
     return s.replace(/[ \t\r\n]+$/, "");
   }
 
-  /* ── ⑤ 模型闸 ──────────────────────────────────────────────────────────
-     「flash」是能力位（补全这种短、快、要便宜的活只派给它），家族位保证不是别家同名模型。 */
+  /* ── ⑤ 模型闸（首选 flash，但不再把别的模型挡死）─────────────────────────
+     「flash」是**偏好**不是资格：它快、便宜，短补全最合适；但用户现场大量是只配了 pro
+     档的中转，或者服务商清单里根本没有 flash —— 以前那种硬闸的表现就是「补全毫无反应」。
+     现在的取舍顺序：指名的模型（清单里有就用它）> flash 档 > 该服务商第一个模型。 */
   function providerIsDeepseek(prov) {
     if (!prov) return false;
     const hay = [prov.id, prov.name, prov.label, prov.baseUrl]
@@ -166,8 +188,22 @@
     return "deepseek-official";
   }
 
-  /* {ok, provider, model} 或 {ok:false, reason:'no-provider'|'unsupported', provider, model} */
+  /* 应用窗口（appHost.textGenStream 那条路）：模型 / 服务商全在主进程里解析，
+     这里只把面板上选过的模型名当**偏好**带过去，解析不到就让宿主自己挑。
+     所以这条路上模型闸一律放行（不然应用里的补全永远 no-provider）。 */
+  function appHostNow() {
+    try {
+      const h = typeof window !== "undefined" ? window.appHost : null;
+      return h && typeof h.textGenStream === "function" ? h : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /* {ok, provider, model} 或 {ok:false, reason:'no-provider'|'no-model', provider, model} */
   function modelGate(route, model) {
+    const want = String(model || "").trim();
+    if (appHostNow()) return { ok: true, reason: "", provider: null, model: want };
     const r = resolveRoute(route);
     let prov = null;
     try {
@@ -177,13 +213,16 @@
     }
     if (!prov || !String(prov.baseUrl || "").trim())
       return { ok: false, reason: "no-provider", provider: null, model: "" };
-    const want = String(model || "").trim();
-    if (want && familyModel(want, prov))
-      return { ok: true, reason: "", provider: prov, model: want };
     const list = (Array.isArray(prov.models) ? prov.models : []).map((m) => String(m));
-    const pick = list.find((m) => familyModel(m, prov));
+    /* ① 指名的模型：清单里有它就照发（用户自己选的档位最优先） */
+    if (want && list.indexOf(want) >= 0)
+      return { ok: true, reason: "", provider: prov, model: want };
+    /* ② 没指名 / 指名的那个已经不在清单里：先找 flash 档，再退回第一个模型 */
+    const pick = list.find((m) => familyModel(m, prov)) || list[0];
     if (pick) return { ok: true, reason: "", provider: prov, model: pick };
-    return { ok: false, reason: "unsupported", provider: prov, model: want };
+    /* ③ 服务商清单是空的（没填模型）：指名过就信用户，否则 no-model */
+    if (want) return { ok: true, reason: "", provider: prov, model: want };
+    return { ok: false, reason: "no-model", provider: prov, model: "" };
   }
 
   /* ── ④ 调度 / 请求 ──────────────────────────────────────────────────── */
@@ -233,51 +272,102 @@
     cache.clear();
   }
 
-  /* 一次补全（不经 debounce）。永远 resolve，不抛：失败一律 {ok:false, reason} 交给上层静默处理 */
+  /* 本次统计（面板「本次统计」读它）：请求数 / 采纳数。
+     以前面板读 window.MTNodeFimEngine.stats()，而**没人写** —— 永远是 0 / 0，
+     用户看到的就是「补全没在工作」。现在由本内核在发请求 / 采纳时各加一次。 */
+  const stats = { requests: 0, accepted: 0 };
+  function statsBump(kind) {
+    if (kind === "requests") stats.requests++;
+    else if (kind === "accepted") stats.accepted++;
+    else return stats;
+    try {
+      window.fimStats = stats;
+    } catch (_) {}
+    try {
+      if (window.MTNodeFim && typeof window.MTNodeFim.setStats === "function")
+        window.MTNodeFim.setStats(stats);
+    } catch (_) {}
+    return stats;
+  }
+
+  /* 一次补全（不经 debounce）。永远 resolve，不抛：失败一律 {ok:false, reason} 交给上层静默处理。
+     opts.mode = "manual" 时用更长的看门狗（用户主动按的 Tab，不该 3.2s 就断）。 */
   async function request(opts) {
     const o = opts || {};
     const prefix = String(o.prefix == null ? "" : o.prefix);
     const suffix = String(o.suffix == null ? "" : o.suffix);
     const singleLine = !!o.singleLine;
+    const manual = o.mode === "manual";
+    const waitMs = manual ? MANUAL_TIMEOUT_MS : TIMEOUT_MS;
+    const maxTokens = (() => {
+      const n = Math.round(Number(o.maxTokens));
+      return Number.isFinite(n) && n >= 16 ? n : MAX_TOKENS;
+    })();
     if (!prefix && !suffix) return { ok: false, reason: "no-context" };
     const gate = modelGate(o.route, o.model);
     if (!gate.ok) return { ok: false, reason: gate.reason, model: gate.model };
     const key =
       gate.model + "\u0000" + (singleLine ? "1" : "0") + "\u0000" + prefix + "\u0000" + suffix;
-    if (cache.has(key)) return { ok: true, cached: true, model: gate.model, text: cache.get(key) };
+    if (cache.has(key))
+      return { ok: true, cached: true, model: gate.model, text: cache.get(key) };
     const api = bridge();
-    if (!api || typeof api.apiCall !== "function") return { ok: false, reason: "no-bridge" };
+    const appHost = appHostNow();
+    /* 两条传输通道，按在场者挑：主窗口 = apiCall（服务商 / Key 全在主进程）；
+       应用窗口 = appHost.textGenStream（同一套主进程解析，只是字段白名单不同）。 */
+    const viaApp = !(api && typeof api.apiCall === "function");
+    if (viaApp && !appHost) return { ok: false, reason: "no-bridge" };
 
     abortCurrent(); /* 单飞：新请求前把旧的掐掉 */
     const abKey = "fim-" + (++seq) + "-" + Date.now().toString(36);
     inflight = abKey;
-    const spec = {
-      provider: gate.provider,
-      kind: "text",
-      model: gate.model,
-      chatMessages: messages(prefix, suffix),
-      maxTokens: MAX_TOKENS,
-      temperature: 0,
-      effort: "off",
-      abKey: abKey,
-      /* 主进程三档看门狗同口径：到点就断，免得我们的 Promise 先放手、请求还挂着计费 */
-      timeoutConnect: TIMEOUT_MS,
-      timeoutHeader: TIMEOUT_MS,
-      timeoutChunk: TIMEOUT_MS,
-    };
+    statsBump("requests");
 
     let timer = null;
     const timeout = new Promise((resolve) => {
-      timer = setTimeout(() => resolve(TIMEOUT_HIT), TIMEOUT_MS);
+      timer = setTimeout(() => resolve(TIMEOUT_HIT), waitMs);
     });
     let call = null;
-    try {
-      call = Promise.resolve(api.apiCall(spec)).catch((e) => ({
-        ok: false,
-        error: (e && e.message) || String(e),
-      }));
-    } catch (e) {
-      call = Promise.resolve({ ok: false, error: (e && e.message) || String(e) });
+    if (viaApp) {
+      /* 应用侧只给 messages / temperature / maxTokens / model（白名单字段），
+         思考一律 off（补全不要思考链），provider 与 Key 不进应用世界。 */
+      const arg = {
+        messages: messages(prefix, suffix),
+        temperature: 0,
+        maxTokens: maxTokens,
+        thinking: "off",
+        model: gate.model || "",
+      };
+      try {
+        call = Promise.resolve(appHost.textGenStream(arg)).catch((e) => ({
+          ok: false,
+          error: (e && e.message) || String(e),
+        }));
+      } catch (e) {
+        call = Promise.resolve({ ok: false, error: (e && e.message) || String(e) });
+      }
+    } else {
+      const spec = {
+        provider: gate.provider,
+        kind: "text",
+        model: gate.model,
+        chatMessages: messages(prefix, suffix),
+        maxTokens: maxTokens,
+        temperature: 0,
+        effort: "off",
+        abKey: abKey,
+        /* 主进程三档看门狗同口径：到点就断，免得我们的 Promise 先放手、请求还挂着计费 */
+        timeoutConnect: waitMs,
+        timeoutHeader: waitMs,
+        timeoutChunk: waitMs,
+      };
+      try {
+        call = Promise.resolve(api.apiCall(spec)).catch((e) => ({
+          ok: false,
+          error: (e && e.message) || String(e),
+        }));
+      } catch (e) {
+        call = Promise.resolve({ ok: false, error: (e && e.message) || String(e) });
+      }
     }
     const r = await Promise.race([call, timeout]);
     clearTimeout(timer);
@@ -286,7 +376,8 @@
       abortRequest(abKey);
       return { ok: false, reason: "timeout" };
     }
-    if (!r || !r.ok) return { ok: false, reason: "http", error: String((r && r.error) || "") };
+    if (!r || !r.ok)
+      return { ok: false, reason: "http", error: String((r && (r.error || r.code)) || "") };
     const text = clean(r.text, { prefix: prefix, suffix: suffix, singleLine: singleLine });
     if (!text) return { ok: false, reason: "empty" };
     cachePut(key, text);
@@ -339,12 +430,35 @@
         request({
           route: o.route,
           model: o.model,
+          maxTokens: o.maxTokens,
           prefix: ctx.prefix,
           suffix: ctx.suffix,
           singleLine: ctx.singleLine,
         }).then(resolve, () => resolve({ ok: false, reason: "error" }));
       }, Number.isFinite(delay) && delay >= 0 ? delay : DEBOUNCE_MS);
       timers.set(el, { timer: timer, resolve: resolve });
+    });
+  }
+
+  /* 手动触发（Tab）：**不去抖**，当场发一次；手上待发的那次自动补全先作废
+     （否则它会在几毫秒后把刚发出去的这只掐掉 —— 单飞）。 */
+  function manual(el, opts) {
+    const o = opts || {};
+    if (!el) return Promise.resolve({ ok: false, reason: "no-element" });
+    bind(el);
+    const can = eligible(el);
+    if (!can.ok) return Promise.resolve({ ok: false, reason: can.reason });
+    if (cancel(el)) abortCurrent();
+    const ctx = contextOf(el);
+    if (!ctx.ok) return Promise.resolve({ ok: false, reason: ctx.reason });
+    return request({
+      route: o.route,
+      model: o.model,
+      maxTokens: o.maxTokens,
+      prefix: ctx.prefix,
+      suffix: ctx.suffix,
+      singleLine: ctx.singleLine,
+      mode: "manual",
     });
   }
 
@@ -359,11 +473,12 @@
   }
 
   window.MTFim = {
-    version: 1,
+    version: 2,
     MAX_TAIL: MAX_TAIL,
     MAX_HEAD: MAX_HEAD,
     DEBOUNCE_MS: DEBOUNCE_MS,
     TIMEOUT_MS: TIMEOUT_MS,
+    MANUAL_TIMEOUT_MS: MANUAL_TIMEOUT_MS,
     MAX_TOKENS: MAX_TOKENS,
     SYSTEM_PROMPT: SYSTEM_PROMPT,
     systemPrompt: SYSTEM_PROMPT,
@@ -376,10 +491,15 @@
     bind: bind,
     request: request,
     schedule: schedule,
+    manual: manual,
     cancel: cancel,
     abort: abortCurrent,
     cacheClear: cacheClear,
     cacheSize: () => cache.size,
+    stats: () => ({ requests: stats.requests, accepted: stats.accepted }),
+    statsBump: statsBump,
+    /* 应用窗口那条传输通道此刻在不在（面板 / 自验用） */
+    transport: () => (bridge() && typeof bridge().apiCall === "function" ? "apiCall" : appHostNow() ? "appHost" : "none"),
   };
 })();
 
@@ -400,20 +520,23 @@
  *   · 两者都先量「镜像排版 vs 真实控件」的偏差（高度差 / 光标越界 / ghost 塞不进可视区），
  *     超阈值就降级为光标下缘的小气泡「Tab 补全」—— 照样 Tab 采纳，只是不再假装能贴准。
  *
- * 键位仲裁（只认 ghost 在场）：
- *   · 有 ghost / 气泡时：Tab 在捕获期被吃掉并采纳、Esc 丢弃、其它任意键立刻收掉 ghost
+ * 键位仲裁（本轮改成两条触发路径，2026-11 用户需求）：
+ *   · **自动**：打字 / 进框即去抖补全（cfg.auto），ghost 跟着光标出现，Tab 采纳；
+ *   · **手动**：光标处没有 ghost 时按 Tab **现场要一次**（cfg.manual）—— 立刻在光标后面
+ *     出「补全中 ⋯」的动效（三点跳动 + 一小截脉冲块），补全回来换成 ghost 再按 Tab 采纳。
+ *   · 有 ghost / 正在等：Tab 吃掉（采纳 / 继续等）、Esc 丢弃、其它任意键立刻收掉
  *     （该键照常生效）；Shift/⌘/Ctrl/Alt + Tab 一律放行。
- *   · 没有 ghost 时一个键都不碰 —— app-mdedit / app-codeedit / app.js（@ 菜单）/
- *     app-assist / app-research 里既有的 Tab 缩进与菜单选择一条都不改。
- *
- * 收手时机：继续输入、失焦、切字段、元素被重绘替换、值被程序化改写（语音写入）、
- * 光标被挪走 —— 立刻隐藏并 abort（150ms 轻量复查 + 几何事件兜底）。
+ *   · 两位（auto / manual）都关掉或总开关关掉时，一个键都不碰 —— app-mdedit /
+ *     app-codeedit / app.js（@ 菜单）/ app-assist / app-research 里既有的 Tab 缩进与
+ *     菜单选择一条都不改。
  *
  * 与别人共存（硬约束）：
  *   · 只读几何与文本（getBoundingClientRect / getComputedStyle / value / selectionStart），
  *     **不写 value、不改高度**；只有采纳那一刻用 execCommand("insertText") 写一次
  *     （与 app-voice.js 同一条原生路径，撤销栈语义一致）。
- *   · 开关与参数读 S.config.fim（面板 #fimPop 写的那一份）；on 不为 true 时一律不发请求。
+ *   · 开关与参数：主窗口读 S.config.fim（面板 #fimPop 写的那一份），应用窗口读
+ *     window.__mtnodeFimSettings（preload-app.js 按 app.json 的 capabilities.showComplete 注入）。
+ *     动效样式表由本段自带（ensureFx），所以注入到没有 fim.css 的应用页里也一样会动。
  */
 (function () {
   if (typeof window === "undefined" || window.MTFimOverlay) return;
@@ -421,19 +544,40 @@
   if (!F || typeof F.schedule !== "function") return;
 
   const LABEL = "Tab 补全"; /* 降级气泡上的字（也是给用户的唯一提示） */
+  const LABEL_ACCEPT = "Tab 采纳"; /* ghost 刚出现时跟在它后面闪一下的牌子（2.2s 后自己淡出） */
+  const LABEL_BUSY = "补全中"; /* 手动触发 / 正在等模型时，光标旁那枚转圈牌 */
+  const LABEL_NONE = "无可补全"; /* 手动触发但模型什么都没给：闪一下就走，不占地方 */
   const TOL = 4; /* 镜像排版与真实控件的允许偏差（px），超过就降级成气泡 */
   const TICK_MS = 150; /* ghost 在场时的轻量复查间隔：元素被换掉 / 焦点走了 / 值被改写 */
   const Z = 1400; /* 兜底层级；实务上用 stackZ() 按所在弹窗的层叠上下文现算 */
   const GHOST_COLOR = "rgba(150,214,238,.62)"; /* 半透明预测字 */
   const GHOST_SHADOW = "0 0 7px rgba(56,214,255,.18)";
   const OK_TYPES = ["text", "search", "url", "tel", "email", ""]; /* 认光标的那几型 input */
+  /* 缺省（与 core 段的 DEF_* 同口径；两段是两个 IIFE，取不到对方的局部量）：
+     2026-11 起补全默认开，自动 + Tab 手动都开。 */
+  const DEF_ON = true;
+  const DEF_AUTO = true;
+  const DEF_MANUAL = true;
+  const DEF_DELAY = 350;
+  const DEF_MAX_TOKENS = 128;
+  /* 动效（用户 2026-11 需求：「补全时需要在后面增加一个动效，避免用户不知道」）：
+     全部走一张自带的 <style>（不是 css/fim.css）—— 这份脚本还会被 preload-app.js 注入到
+     应用窗口里，应用页没有我们的样式表，自带一份才在哪儿都动。 */
+  const FX_CSS =
+    "@keyframes mtFimCaret{0%,100%{opacity:.18}50%{opacity:1}}" +
+    "@keyframes mtFimDot{0%,80%,100%{opacity:.22;transform:translateY(0)}40%{opacity:1;transform:translateY(-2px)}}" +
+    "@keyframes mtFimIn{from{opacity:0;transform:translateY(1px)}to{opacity:1;transform:none}}" +
+    "@keyframes mtFimChipIn{from{opacity:0;transform:translateY(3px)}to{opacity:1;transform:none}}" +
+    "@keyframes mtFimChipOut{0%,72%{opacity:1}100%{opacity:0}}";
 
-  let cur = null; /* 当前展示的 ghost：{el, kind, ctx, text, snap, caret, mode, r, ...} */
+  let cur = null; /* 当前展示的 ghost：{el, kind, ctx, text, snap, caret, mode, phase, r, ...} */
   let pendingEl = null; /* 正在 debounce 的那只（切字段时要 cancel 掉） */
   let gen = 0; /* 过期保护：hide / 新一次 schedule 都会 ++，旧结果一律丢弃 */
   let tick = 0;
   let ro = null; /* 共享 ResizeObserver（自动增高 / 布局变化跟着走） */
   let observed = null;
+  let lastReason = ""; /* 最近一次失败原因（面板状态行读它，用户不用再猜为什么不生效） */
+  let fxDone = false;
 
   function T(s) {
     try {
@@ -451,28 +595,76 @@
     return typeof v === "number" && Number.isFinite(v) ? v : d;
   }
 
-  /* ── 设置：只读面板 #fimPop 写的那一份（S.config.fim） ──────────────────── */
+  /* ── 设置 ────────────────────────────────────────────────────────────────
+     两个来源，按在场者挑：
+       · 主窗口：S.config.fim（面板 #fimPop 写的那一份，主进程 config:save 落盘）；
+       · 应用窗口：window.__mtnodeFimSettings —— preload-app.js 按 app.json 的
+         capabilities.showComplete 写进来的**纯值**（应用页没有 S，也不该读宿主配置）。
+     缺字段一律就地补缺省（不写盘）：补全从 2026-11 起默认开着，自动 + 手动都开。 */
   function cfg() {
-    const out = { on: false, route: "", model: "", delayMs: 350 };
+    const out = {
+      on: DEF_ON,
+      auto: DEF_AUTO,
+      manual: DEF_MANUAL,
+      route: "",
+      model: "",
+      delayMs: DEF_DELAY,
+      maxTokens: DEF_MAX_TOKENS,
+      app: false,
+    };
     let c = null;
     try {
-      c = (typeof S !== "undefined" && S && S.config && S.config.fim) || null;
+      const injected = typeof window !== "undefined" ? window.__mtnodeFimSettings : null;
+      if (injected && typeof injected === "object") {
+        c = injected;
+        out.app = true;
+      }
     } catch (_) {
       c = null;
     }
+    if (!c) {
+      try {
+        c = (typeof S !== "undefined" && S && S.config && S.config.fim) || null;
+      } catch (_) {
+        c = null;
+      }
+    }
     if (!c || typeof c !== "object") return out;
-    out.on = c.on === true;
+    if (typeof c.on === "boolean") out.on = c.on;
+    if (typeof c.auto === "boolean") out.auto = c.auto;
+    if (typeof c.manual === "boolean") out.manual = c.manual;
     out.route = String(c.route == null ? "" : c.route);
     out.model = String(c.model == null ? "" : c.model);
     const d = Math.round(Number(c.delayMs));
-    out.delayMs = Number.isFinite(d) && d >= 0 ? d : 350;
+    out.delayMs = Number.isFinite(d) && d >= 0 ? d : DEF_DELAY;
+    const t = Math.round(Number(c.maxTokens));
+    out.maxTokens = Number.isFinite(t) && t >= 16 ? t : DEF_MAX_TOKENS;
     return out;
+  }
+
+  /* 动效样式表（懒注入一次；重复注入按 id 挡住） */
+  function ensureFx() {
+    if (fxDone || !document.head) return;
+    fxDone = true;
+    try {
+      if (document.getElementById("mtnodeFimFx")) return;
+      const st = document.createElement("style");
+      st.id = "mtnodeFimFx";
+      st.textContent = FX_CSS;
+      document.head.appendChild(st);
+    } catch (_) {}
   }
 
   /* 只有 textarea 与「认光标」的 input 才接补全：number / date / range / checkbox 这些
      读写 selectionStart 不可靠（面板自己的数字格就靠这条被排除掉）。 */
   function fieldOf(el) {
     if (!el || el.nodeType !== 1) return "";
+    /* 页面可以点名单只输入框不接补全：`<input data-fim="off">`，或祖先上带同一个属性
+       （敏感字段 —— 密码旁边那种、金额、验证码）。应用窗口里这是唯一的「我自己管」出口。 */
+    try {
+      if (el.getAttribute && String(el.getAttribute("data-fim") || "") === "off") return "";
+      if (el.closest && el.closest('[data-fim="off"]')) return "";
+    } catch (_) {}
     const tag = String(el.tagName || "").toUpperCase();
     if (tag === "TEXTAREA") return "textarea";
     if (tag !== "INPUT") return "";
@@ -501,7 +693,7 @@
   }
 
   /* ── 复用的浮层节点（懒建；pointer-events:none，绝不进焦点链） ───────────── */
-  const nodes = { mirror: null, probe: null, ghost: null, hint: null };
+  const nodes = { mirror: null, probe: null, ghost: null, hint: null, chip: null };
 
   function make(tag, cls, z) {
     if (!document.body) return null;
@@ -573,9 +765,93 @@
     return { padY: padT + padB, h: h };
   }
 
-  /* 镜像层里的 ghost 只要颜色（字体 / 换行全从镜像层继承，与真字完全同源） */
+  /* 镜像层里的 ghost 只要颜色（字体 / 换行全从镜像层继承，与真字完全同源）；
+     出现那一刻给一段 0.18s 的淡入 + 上移 —— 「补全来了」必须被看见，不能凭空多出一段字。 */
   function ghostInlineStyle() {
-    return "color:" + GHOST_COLOR + ";text-shadow:" + GHOST_SHADOW + ";background:transparent;";
+    return (
+      "color:" +
+      GHOST_COLOR +
+      ";text-shadow:" +
+      GHOST_SHADOW +
+      ";background:transparent;animation:mtFimIn .18s ease-out;"
+    );
+  }
+
+  /* 动效本体：跟在补全末尾（等模型时贴在光标处）那一小截脉冲块 */
+  function caretMarkStyle() {
+    return (
+      "display:inline-block;width:2px;height:1em;margin:0 0 0 1px;padding:0;border:0;" +
+      "vertical-align:-.14em;border-radius:1px;background:#38d6ff;" +
+      "box-shadow:0 0 6px rgba(56,214,255,.75);animation:mtFimCaret 1.05s ease-in-out infinite;"
+    );
+  }
+
+  /* 浮层小牌子：pending 时是「补全中 ⋯」（三点跳动），补全回来时是「Tab 采纳」（2.2s 自己淡出） */
+  function chipBox(code) {
+    const c = nodes.chip || (nodes.chip = make("div", "fim-ghost-chip", Z + 2));
+    if (!c) return null;
+    if (!c.__refs) {
+      const txt = document.createElement("span");
+      txt.setAttribute("data-part", "txt");
+      const dots = [];
+      for (let i = 0; i < 3; i++) {
+        const d = document.createElement("i");
+        d.setAttribute("data-part", "dot");
+        const s = d.style;
+        s.display = "inline-block";
+        s.width = "3px";
+        s.height = "3px";
+        s.margin = "0 0 0 2px";
+        s.borderRadius = "50%";
+        s.background = "currentColor";
+        s.animation = "mtFimDot .9s ease-in-out infinite";
+        s.animationDelay = i * 0.14 + "s";
+        dots.push(d);
+      }
+      c.appendChild(txt);
+      for (const d of dots) c.appendChild(d);
+      c.__refs = { txt: txt, dots: dots };
+    }
+    return c;
+  }
+
+  /* 摆一只牌子：text / dots / fade 三件事，位置与层高随所在输入框现算。
+     code 相同就只挪位置（不重启动画，滚动时不会闪）。 */
+  function chip(st, x, y, text, opts) {
+    const o = opts || {};
+    const c = chipBox();
+    if (!c) return null;
+    const z = numOr(st && st.z, Z) + 2;
+    const code = String(o.code || text || "");
+    const css =
+      "position:fixed;left:0px;top:0px;margin:0;padding:2px 7px;display:block;" +
+      "border:1px solid rgba(56,214,255,.45);border-radius:4px;" +
+      "background:rgba(10,16,22,.94);color:#8fd4ea;white-space:nowrap;pointer-events:none;" +
+      "font-family:var(--mono,ui-monospace,monospace);font-size:10.5px;line-height:1.5;" +
+      "box-shadow:0 2px 10px rgba(0,0,0,.45);z-index:" +
+      z +
+      ";" +
+      (o.fade
+        ? "animation:mtFimChipIn .16s ease-out,mtFimChipOut 2.2s ease forwards;"
+        : "animation:mtFimChipIn .16s ease-out;");
+    if (c.__code !== code) {
+      c.__code = code;
+      c.style.cssText = css;
+    }
+    c.__refs.txt.textContent = String(text == null ? "" : text);
+    for (const d of c.__refs.dots)
+      d.style.display = o.dots === false ? "none" : "inline-block";
+    const pad = 4;
+    const w = c.offsetWidth || 64;
+    const h = c.offsetHeight || 16;
+    let lx = Math.round(numOr(x, 0) - 2);
+    let ly = Math.round(numOr(y, 0) + 3);
+    lx = Math.min(Math.max(pad, lx), Math.max(pad, window.innerWidth - w - pad));
+    if (ly + h > window.innerHeight - pad) ly = Math.max(pad, Math.round(numOr(y, 0) - h - 6));
+    c.style.left = lx + "px";
+    c.style.top = ly + "px";
+    c.style.display = "block";
+    return c;
   }
 
   /* textarea：镜像层 + 光标处 ghost；偏差超阈值 → 气泡 */
@@ -584,6 +860,7 @@
     const box = nodes.mirror || (nodes.mirror = make("div", "fim-ghost-mirror", Z));
     if (!box) return bubbleOnly(st, r.left, r.bottom);
     const m = styleMirror(box, el, cs, r, st.z);
+    const ready = st.phase === "ready";
 
     /* 镜像用的是**真实 value 按光标切开**的两段，不是发给模型的那份裁剪上下文：
        裁剪只为了省 token，位置必须按全文算（长文里光标会跨行，剪掉前面就贴不准了）。 */
@@ -599,23 +876,36 @@
     const mirrorH = Math.max(box.scrollHeight, m.h);
     const deviated = Math.abs(mirrorH - realH) > TOL;
 
-    /* ② 把 ghost 插回光标处：前后两段仍透明，只有这一截半透明可见 */
+    /* ② 把 ghost 插回光标处：前后两段仍透明，只有这一截半透明可见；
+          ghost 一律跟一小截脉冲块（等模型时它就在光标处，补全来了就跑到补全末尾去）。 */
     box.textContent = "";
     box.appendChild(document.createTextNode(head));
     const g = document.createElement("span");
-    g.textContent = st.text;
-    g.setAttribute("style", ghostInlineStyle());
+    if (ready) {
+      g.textContent = st.text;
+      g.setAttribute("style", ghostInlineStyle());
+    } else {
+      g.textContent = "";
+      g.setAttribute("style", "color:transparent;background:transparent;");
+    }
     box.appendChild(g);
+    const mark = document.createElement("i");
+    mark.setAttribute("style", caretMarkStyle());
+    box.appendChild(mark);
     box.appendChild(document.createTextNode(tail));
     box.scrollTop = el.scrollTop;
     box.scrollLeft = el.scrollLeft;
     const gr = g.getBoundingClientRect();
+    const mr = mark.getBoundingClientRect();
+    const ax = numOr(mr.left, numOr(gr.left, r.left)) + numOr(mr.width, 0);
+    const ay = numOr(mr.bottom, numOr(gr.bottom, r.bottom));
 
     if (deviated) {
       box.style.display = "none";
-      return bubbleOnly(st, numOr(gr.left, r.left), numOr(gr.bottom, r.bottom));
+      return bubbleOnly(st, ax, ay);
     }
     st.mode = "ghost";
+    st.anchor = { x: ax, y: ay };
     return true;
   }
 
@@ -648,6 +938,7 @@
     const probe = nodes.probe || (nodes.probe = make("span", "fim-ghost-probe", Z));
     if (!probe) return bubbleOnly(st, r.left, r.bottom);
     styleProbe(probe, cs);
+    const ready = st.phase === "ready";
 
     /* 量的是**真实 value 里光标之前那一段**（不是发给模型的裁剪上下文）：
        单行字段的值本来就短，位置必须按全值算，否则长输入会把 ghost 摆到错的地方。 */
@@ -657,7 +948,7 @@
     const pr = probe.getBoundingClientRect();
     const pw = numOr(pr.width, 0);
     const ph = numOr(pr.height, 0) || px(cs.lineHeight, px(cs.fontSize, 14) * 1.5);
-    probe.textContent = raw.slice(0, caret) + st.text;
+    probe.textContent = raw.slice(0, caret) + (ready ? st.text : "");
     const gw = Math.max(0, numOr(probe.getBoundingClientRect().width, pw) - pw);
     probe.textContent = "";
     probe.style.display = "none";
@@ -671,20 +962,34 @@
     const x = r.left + bL + padL + pw - (el.scrollLeft || 0);
     const leftMin = r.left + bL;
     const rightMax = r.right - bR - 1;
-    if (x < leftMin - 1 || x > rightMax || x + gw > rightMax + 1)
+    /* 等模型时 gw = 0（没有 ghost 文本），只要光标本身在视野里就可以就近摆牌子；
+       补全来了才按「塞不塞得下」判降级。 */
+    if (x < leftMin - 1 || x > rightMax || (ready && x + gw > rightMax + 1))
       return bubbleOnly(st, Math.min(Math.max(x, leftMin), rightMax), r.bottom);
 
     const g = nodes.ghost || (nodes.ghost = make("div", "fim-ghost-line", Z + 1));
     if (!g) return bubbleOnly(st, Math.min(Math.max(x, leftMin), rightMax), r.bottom);
     const s = g.style;
-    g.textContent = st.text;
+    /* 内容 = ghost 文本（等模型时为空）+ 末尾那截脉冲块 */
+    g.textContent = "";
+    if (ready) {
+      g.appendChild(document.createTextNode(st.text));
+      s.color = GHOST_COLOR;
+      s.textShadow = GHOST_SHADOW;
+      s.animation = "mtFimIn .18s ease-out";
+    } else {
+      s.color = "transparent";
+      s.textShadow = "none";
+      s.animation = "none";
+    }
+    const mark = document.createElement("i");
+    mark.setAttribute("style", caretMarkStyle());
+    g.appendChild(mark);
     s.display = "block";
     s.margin = "0";
     s.padding = "0";
     s.border = "0";
     s.background = "transparent";
-    s.color = GHOST_COLOR;
-    s.textShadow = GHOST_SHADOW;
     s.whiteSpace = "pre";
     s.fontFamily = cs.fontFamily;
     s.fontSize = cs.fontSize;
@@ -701,15 +1006,17 @@
     const contentH = r.height - bT - bB - padT - px(cs.paddingBottom);
     s.top = Math.round(contentTop + Math.max(0, (contentH - ph) / 2)) + "px";
     st.mode = "ghost";
+    st.anchor = { x: x + gw, y: r.top + bT + padT + ph };
     return true;
   }
 
   /* 降级气泡：光标下缘一只小牌子（位置对不准时，至少告诉用户「按 Tab 能补」） */
   function bubbleOnly(st, x, y) {
     st.mode = "bubble";
+    st.anchor = { x: x, y: y };
     const b = nodes.hint || (nodes.hint = make("div", "fim-ghost-hint", Z + 1));
     if (!b) return false;
-    b.textContent = T(LABEL);
+    b.textContent = T(st.phase === "ready" ? LABEL : LABEL_BUSY);
     b.style.cssText =
       "position:fixed;left:0px;top:0px;margin:0;padding:2px 6px;" +
       "border:1px solid var(--bd2,#3a4048);border-radius:3px;" +
@@ -745,16 +1052,34 @@
     st.r = { left: r.left, top: r.top, width: r.width, height: r.height };
     st.scrollTop = el.scrollTop;
     st.scrollLeft = el.scrollLeft;
+    /* 光标旁的牌子（动效的第二半）：
+       · pending（等模型 / Tab 要了一次）：三点跳动的「补全中」，一直挂着；
+       · ready（补全回来）：跟在补全末尾闪一下「Tab 采纳」再自己淡出 —— 只闪第一次，
+         滚动 / 改窗口重排时不重复闪（重复闪会变成噪音）。
+       降级气泡已经自带「Tab 补全」字样，那种情况不再叠一只牌子。 */
+    if (st.mode === "ghost" && st.anchor) {
+      if (st.phase !== "ready") chip(st, st.anchor.x, st.anchor.y, T(LABEL_BUSY), { code: "busy" });
+      else if (st.chipUntil && Date.now() < st.chipUntil)
+        chip(st, st.anchor.x, st.anchor.y, T(LABEL_ACCEPT), { code: "accept", dots: false, fade: true });
+    }
     return true;
   }
 
   /* ── 展示 / 收手 ─────────────────────────────────────────────────────── */
-  function show(el, kind, ctx, text) {
+  /* phase = "pending"（等模型：光标处脉冲 + 转圈牌）| "ready"（有补全字：ghost + Tab 采纳） */
+  function show(el, kind, ctx, text, phase) {
+    const ready = phase === "ready";
     const st = {
       el: el,
       kind: kind,
       ctx: ctx,
       text: text,
+      phase: ready ? "ready" : "pending",
+      /* 「Tab 采纳」那块牌子只闪 2.2s（round(0) 之后 render / RO 重排都不会把它再叫回来）。
+         用时间戳而不是「闪过了」的布尔位：ResizeObserver 在 observe 的那一刻就会回调一次
+         → 立刻 render 一次 → 布尔位一置就把牌子永久藏掉了（真机自验发现过）。 */
+      chipUntil: ready ? Date.now() + 2200 : 0,
+      anchor: null,
       snap: String(el.value == null ? "" : el.value),
       caret: Number(ctx.caret),
       z: stackZ(el),
@@ -853,29 +1178,98 @@
     cur = null;
   }
 
-  /* 一次排程：开关 / 字段资格 / debounce 全交给 core，回来只认最新那一次。
+  /* 一次排程（**自动**补全那条路：打字 / 进框即去抖）。
+     开关 / 自动位 / 字段资格 / debounce 全交给 core，回来只认最新那一次。
      关着的时候只做「有没有东西要收」这一件事，不为每次敲键做无谓的 DOM 操作。 */
   function schedule(el) {
     const c = cfg();
-    if (!c.on) return cur || pendingEl ? hide() : undefined;
+    if (!c.on || !c.auto) return cur || pendingEl ? hide() : undefined;
     const kind = fieldOf(el);
     if (!kind) return cur || pendingEl ? hide() : undefined;
     if (!F.eligible(el).ok) return cur || pendingEl ? hide() : undefined;
     hide();
     pendingEl = el;
     const my = ++gen;
-    F.schedule(el, { route: c.route, model: c.model, delay: c.delayMs }).then(
+    F.schedule(el, {
+      route: c.route,
+      model: c.model,
+      maxTokens: c.maxTokens,
+      delay: c.delayMs,
+    }).then(
       function (res) {
         if (my !== gen) return;
         if (pendingEl === el) pendingEl = null;
-        if (!res || !res.ok || !res.text) return;
+        if (!res || !res.ok || !res.text) {
+          /* 自动那条路失败一律静默（用户没要，不该被打断）—— 只把原因记下来给面板看 */
+          if (res && res.reason) lastReason = String(res.reason);
+          return;
+        }
+        lastReason = "";
         if (!el.isConnected || document.activeElement !== el) return;
         const ctx = F.contextOf(el);
         if (!ctx.ok) return;
-        show(el, kind, ctx, res.text);
+        show(el, kind, ctx, res.text, "ready");
       },
       function () {},
     );
+  }
+
+  /* 一次**手动**补全（Tab 触发的第一下）：当场摆出 pending 动效 → 要一次 → 有就换成 ghost。
+     失败要说话（用户主动按的键，不能没反应）：牌子闪一句原因再自己消失。 */
+  function manualRun(el) {
+    const c = cfg();
+    const kind = fieldOf(el);
+    if (!c.on || !c.manual || !kind) return false;
+    if (!F.eligible(el).ok) return false;
+    hide();
+    const ctx0 = F.contextOf(el);
+    if (!ctx0.ok) return false;
+    const my = ++gen;
+    if (!show(el, kind, ctx0, "", "pending")) return false;
+    F.manual(el, {
+      route: c.route,
+      model: c.model,
+      maxTokens: c.maxTokens,
+    }).then(
+      function (res) {
+        if (my !== gen) return;
+        if (res && res.ok && res.text) {
+          lastReason = "";
+          const ctx = F.contextOf(el);
+          if (!ctx.ok || !el.isConnected || document.activeElement !== el) return hide();
+          /* 换成 ready：同一条链上重画（show 会重建 state，光标旁改挂「Tab 采纳」） */
+          return show(el, kind, ctx, res.text, "ready");
+        }
+        const reason = String((res && res.reason) || "empty");
+        lastReason = reason;
+        const st = cur;
+        const at = st && st.anchor ? st.anchor : { x: 0, y: 0 };
+        const z = st ? st.z : stackZ(el);
+        hide({ abort: false });
+        chip({ z: z }, at.x, at.y, T(reasonText(reason)), {
+          code: "fail:" + reason,
+          dots: false,
+          fade: true,
+        });
+      },
+      function () {
+        if (my !== gen) return;
+        lastReason = "error";
+        hide({ abort: false });
+      },
+    );
+    return true;
+  }
+
+  /* 失败原因 → 给人看的一句话（面板状态行与光标旁的牌子共用这一份） */
+  function reasonText(reason) {
+    const r = String(reason || "");
+    if (r === "no-provider") return "补全不可用：没有可用的服务商";
+    if (r === "no-model") return "补全不可用：当前服务商没有模型";
+    if (r === "no-bridge") return "补全不可用：宿主桥不在";
+    if (r === "timeout") return "补全超时";
+    if (r === "http") return "补全失败：请求出错";
+    return LABEL_NONE;
   }
 
   /* 采纳：原生插入（撤销栈语义与 app-voice.js 一致），失败才退回改值 + 派发 input */
@@ -904,14 +1298,16 @@
 
   function accept() {
     const st = cur;
-    if (!st) return false;
+    if (!st || st.phase !== "ready") return false;
     const el = st.el;
     const text = st.text;
     /* 采纳前再校验一次：光标 / 值过期就不落字（落下去也插在错的位置） */
     const okNow = alive(st);
     hide({ abort: false }); /* 先收手再落字：免得自己的 input 回调把这次采纳又当成「继续输入」 */
     if (!okNow) return false;
-    return insert(el, text);
+    const done = insert(el, text);
+    if (done) F.statsBump("accepted");
+    return done;
   }
 
   function eat(ev) {
@@ -939,19 +1335,75 @@
     schedule(el); /* 里面有 hide()：继续输入 → 旧 ghost 立刻收掉并 abort */
   }
 
+  /* 上层正开着一只「用 Tab 选条目」的菜单（会话输入框的 @ 引用菜单 / 「/」技能菜单）：
+     这种时候 Tab 是**选当前项**，绝不能拿去触发补全（真机口径：用户打了 @ 再按 Tab 是要选人，
+     不是要补全）。判据只认这两个既有状态位与它们那两个浮层，不新增任何全局约定。 */
+  function menuOwnsTab() {
+    try {
+      if (typeof S !== "undefined" && S && (S.refMenu || S.slashMenu)) return true;
+    } catch (_) {}
+    try {
+      for (const id of ["refMenu", "slashMenu"]) {
+        const n = document.getElementById(id);
+        if (!n) continue;
+        if (String(n.style && n.style.display) === "none") continue;
+        if (n.classList && n.classList.contains("hidden")) continue;
+        return true;
+      }
+    } catch (_) {}
+    return false;
+  }
+
+  /* Tab 仲裁（本轮的两模式口径，改之前先读完这段）：
+     · ghost 已就绪（phase=ready）        → 吃掉 Tab，**采纳**；
+     · 正在等模型（phase=pending）        → 吃掉 Tab，什么都不做（别连发请求）；
+     · 什么都没有，且 cfg.manual 为真     → 吃掉 Tab，**现场要一次**（光标处出转圈动效）；
+     · 什么都没有，manual 关着 / 不可用   → 一个键都不碰，原样放行给上层缩进与菜单选择；
+     · 上层菜单（@ / /）开着              → 一律放行（Tab 在那种上下文里是「选当前项」）；
+     · Shift / Ctrl / Alt / ⌘ + Tab       → 永远放行。
+     手动触发只认「没有 ghost」这一种情形 —— 有 ghost 时 Tab 一定是采纳，
+     这样「第一下 Tab 要、第二下 Tab 收」才不会互相打架。 */
   function onKeyDown(ev) {
     const st = cur;
-    if (!st) return; /* 没有 ghost：一个键都不碰，全部放行 */
-    const el = st.el;
-    if (ev.target !== el) return hide();
-    if (ev.isComposing || ev.keyCode === 229) return hide(); /* 输入法组词期不管键 */
     const key = String(ev.key || "");
-    if (key === "Escape" || key === "Esc") {
+    const isTab = key === "Tab" || ev.keyCode === 9;
+    const isEsc = key === "Escape" || key === "Esc";
+    const target = ev.target;
+    const kind = fieldOf(target);
+
+    /* 菜单开着：Tab 归菜单（不是补全）—— 顺手收掉 ghost，别让它跟菜单抢同一只输入框 */
+    if (isTab && menuOwnsTab()) {
+      if (st) hide();
+      return;
+    }
+
+    if (!st) {
+      /* 没有 ghost / 没有 pending：只有「Tab 手动触发」这一条会碰键 */
+      if (!isTab || !kind) return;
+      if (ev.isComposing || ev.keyCode === 229) return;
+      if (ev.shiftKey || ev.ctrlKey || ev.altKey || ev.metaKey) return;
+      const c0 = cfg();
+      if (!c0.on || !c0.manual) return;
+      if (!F.eligible(target).ok) return;
+      if (manualRun(target)) eat(ev);
+      return;
+    }
+
+    const el = st.el;
+    if (target !== el) return hide();
+    if (ev.isComposing || ev.keyCode === 229) return hide(); /* 输入法组词期不管键 */
+    if (isEsc) {
       eat(ev);
       return hide({ abort: true });
     }
-    if (key === "Tab" || ev.keyCode === 9) {
+    if (isTab) {
       if (ev.shiftKey || ev.ctrlKey || ev.altKey || ev.metaKey) return hide();
+      /* pending：这一次 Tab 归「等」—— 吃掉，免得又发一次请求或跑去缩进 */
+      if (st.phase !== "ready") {
+        if (!alive(st)) return hide({ pending: false });
+        eat(ev);
+        return;
+      }
       /* ghost 已经过期（光标 / 值变了）就当它不在场：Tab 原样放行给上层缩进 */
       if (!alive(st)) return hide({ pending: false });
       eat(ev);
@@ -968,6 +1420,7 @@
 
   function install() {
     if (typeof document === "undefined") return;
+    ensureFx();
     document.addEventListener("focusin", onFocusIn, true);
     document.addEventListener("input", onInput, true);
     document.addEventListener("keydown", onKeyDown, true);
@@ -984,22 +1437,44 @@
   }
 
   window.MTFimOverlay = {
-    version: 1,
+    version: 2,
     label: LABEL,
+    labelAccept: LABEL_ACCEPT,
+    labelBusy: LABEL_BUSY,
     hide: hide,
     settings: cfg,
     accept: accept,
+    manual: manualRun,
+    /* 最近一次失败原因（面板状态行读它；空串 = 上次是好的） */
+    lastReason: function () {
+      return lastReason;
+    },
+    reasonText: reasonText,
     refresh: function () {
       if (cur) render(cur);
     },
     state: function () {
       const st = cur;
       return st
-        ? { el: st.el, kind: st.kind, mode: st.mode, text: st.text, caret: st.caret }
+        ? {
+            el: st.el,
+            kind: st.kind,
+            mode: st.mode,
+            phase: st.phase,
+            text: st.text,
+            caret: st.caret,
+          }
         : null;
     },
     /* 排障 / 自验用的注入缝（正常运行时没人调） */
-    _test: { nodes: nodes, render: render, schedule: schedule, insert: insert, install: install },
+    _test: {
+      nodes: nodes,
+      render: render,
+      schedule: schedule,
+      manualRun: manualRun,
+      insert: insert,
+      install: install,
+    },
   };
 
   if (document.readyState === "loading")

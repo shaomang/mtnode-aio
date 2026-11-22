@@ -68,13 +68,28 @@ function torchIndexChain(cu) {
 }
 
 /**
+ * GitHub 代理前缀链（真源 GH_PROXIES；MTNODE_GH_PROXIES 显式设了就以它为准，
+ * 逗号 / 空格 / 分号分隔，用来调顺序或加自建代理）。
+ * 随包安装脚本也吃这一份：宿主经 installEnv() 下发 MTNODE_GH_PROXIES，脚本不再自带名单。
+ */
+function ghProxyList() {
+  const overridden = envOverride("MTNODE_GH_PROXIES", "")
+    .split(/[\s,;]+/)
+    .map((p) => p.trim().replace(/\/+$/, ""))
+    .filter(Boolean);
+  return overridden.length ? overridden : GH_PROXIES.slice();
+}
+
+/**
  * GitHub 直链的国内代理回退链（按顺序试，第一个成功即用）。
  * 只用于**下载归档 / release**；不改用户机器上的 git 全局配置。
  */
 function ghProxyUrls(url) {
   const u = String(url || "");
   if (!/^https?:\/\/(www\.)?github\.com\//i.test(u)) return [u];
-  return GH_PROXIES.map((p) => p.replace(/\/+$/, "") + "/" + u).concat([u]);
+  return ghProxyList()
+    .map((p) => p + "/" + u)
+    .concat([u]);
 }
 
 /** 用户级覆盖（显式设了才生效）：MTNODE_PIP_INDEX / MTNODE_NPM_REGISTRY / MTNODE_HF_ENDPOINT。 */
@@ -111,6 +126,8 @@ function installEnv(extra) {
       UV_PYTHON_INSTALL_MIRROR: PYTHON_STANDALONE_MIRROR,
       UV_DEFAULT_INDEX: pipIndex,
       ELECTRON_MIRROR: ELECTRON_MIRROR,
+      /* GitHub 代理链：安装脚本（install.ps1 / setup_env.ps1）读这一份，不再自己抄 host 名单 */
+      MTNODE_GH_PROXIES: ghProxyList().join(","),
     },
     extra || {},
   );
@@ -133,7 +150,7 @@ function banner(label) {
     " · npm=" +
     e.npm_config_registry +
     " · git 代理=" +
-    GH_PROXIES.join(" / ")
+    e.MTNODE_GH_PROXIES.split(",").join(" / ")
   );
 }
 
@@ -149,7 +166,7 @@ function summary() {
     npmRegistry: e.npm_config_registry,
     weightSources: [MODELSCOPE, e.HF_ENDPOINT, HF_OFFICIAL],
     hfEndpoint: HF_ENDPOINT,
-    ghProxies: GH_PROXIES.slice(),
+    ghProxies: ghProxyList(),
   };
 }
 
@@ -174,6 +191,7 @@ module.exports = {
   pipIndexChain,
   torchIndexChain,
   ghProxyUrls,
+  ghProxyList,
   installEnv,
   banner,
   summary,

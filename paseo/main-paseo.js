@@ -55,6 +55,8 @@ const dshNode = require("../dsh-node.js");
 const installHost = require("../plugins/main-install.js");
 const installKill = require("../plugins/install-cancel.js");
 const stepReporter = require("../plugins/install-step-reporter.js");
+/* 安装后自检内核（注册表 + 结果落盘 + 事件）：卡片「已装勾」的唯一判据 */
+const selfcheck = require("../plugins/plugin-selfcheck.js");
 /* 控制台窗共享样式表（plugin-kit.css）的运行时同步：数据目录里的入口副本会让
    页面里的 ../../plugins/plugin-kit.css 落点变到 <数据目录>/plugins/（见该文件头） */
 const { ensureKitForUiDir } = require("../plugins/plugin-kit-sync.js");
@@ -1073,6 +1075,84 @@ function probeCommand(cmd) {
   } catch {
     return "";
   }
+}
+
+/**
+ * 安装后自检（卡片「已装勾」的唯一判据）。
+ * 本插件不产内容：自检 = 真验一遍「这套接管能不能用」——
+ *   ① CLI 在且真能报版本（自建 = 装好了；复用 = 本机桌面端那份可用），判据与 statusForUi 的
+ *     installed 同源（detectBackend 的 ownVerify / cli）；
+ *   ② provider（agents.providers.mtnode）写进 Paseo 配置了没；
+ *   ③ daemon 在跑没、pair 能不能出码 —— 这两项只作为明细 / 警告：没「启用」时它们本来就不跑，
+ *     不该把「装完了」判成没装。
+ * 没装（CLI 都没有）→ skipped：不打勾，如实说原因。
+ */
+async function selfcheckPaseo(ctx) {
+  const c = ctx || {};
+  const steps = [];
+  const warnings = [];
+  const sig = c.signal || { aborted: false };
+  const step = (id, title, status, detail) => {
+    const s = { id: String(id || "step"), title: String(title || ""), status: String(status || "run"), detail: detail == null ? "" : String(detail) };
+    const at = steps.findIndex((x) => x.id === s.id);
+    if (at >= 0) steps[at] = s;
+    else steps.push(s);
+    try {
+      if (typeof c.step === "function") c.step({ title: s.title, status: s.status, detail: s.detail });
+    } catch {}
+    return s;
+  };
+  const log = (line) => {
+    try {
+      if (typeof c.log === "function") c.log(line);
+    } catch {}
+  };
+  if (sig.aborted) return { ok: false, skipped: true, reason: "已取消", steps };
+
+  const b = await detectBackend();
+  const installDir = String(c.installDir || "").trim() || String(b.installDir || "");
+  const cliOk = !!b.installed;
+  /* 后端来源：装好了才谈「自建 / 复用」；一份都没有就直接说没装（别写成「复用（空）」） */
+  if (b.cli) {
+    step(
+      "mode",
+      "后端来源",
+      "ok",
+      b.mode === "own" ? "自建（" + (b.installDir || "未记录目录") + "）" : "复用本机已装的 Paseo（" + String(b.cliSource || "") + "）",
+    );
+  }
+  step(
+    "cli",
+    "CLI 可用（能真报版本）",
+    cliOk ? "ok" : "fail",
+    cliOk ? (b.version ? "paseo " + b.version : "CLI 在：" + String(b.cli || "")) : "CLI 不可用" + (b.installCheck && b.installCheck.reason ? "：" + b.installCheck.reason : ""),
+  );
+  if (!cliOk && !b.cli) {
+    step("cli", "CLI 可用（能真报版本）", "skip", "还没装（本机没有可用的 Paseo CLI）");
+    return { ok: false, skipped: true, reason: "还没装（本机没有可用的 Paseo CLI）", steps };
+  }
+  if (sig.aborted) return { ok: false, skipped: true, reason: "已取消", steps };
+
+  const prov = providerState(b.home);
+  step("provider", "provider 已注册到 Paseo（agents.providers.mtnode）", prov.registered ? "ok" : "skip", prov.registered ? "已注册" : "还没注册（到控制台点「注册到 Paseo」）");
+  if (!prov.registered) warnings.push("provider 还没注册：手机上的会话建不起来，到控制台点「注册到 Paseo」");
+
+  const running = !!(b.daemon && b.daemon.running);
+  step("daemon", "daemon 探活（/api/status）", running ? "ok" : "skip", running ? "在跑：" + String(b.daemon.listen || "") : "没在跑（默认不启用；点卡片「启用」才会起）");
+  step("relay", "官方 relay 开关", b.relay ? "ok" : "skip", b.relay ? "已开" : "关着（配对码出不来时到控制台点「开启 relay」）");
+  if (!running) warnings.push("daemon 没在跑：点插件卡片的「启用」起后端后再配对");
+
+  log("[selfcheck] paseo-remote " + (cliOk ? "通过" : "未通过") + " · mode=" + b.mode + " version=" + String(b.version || ""));
+  if (!cliOk) {
+    return {
+      ok: false,
+      error: "CLI 装上了但跑不起来" + (b.installCheck && b.installCheck.reason ? "（" + b.installCheck.reason + "）" : ""),
+      steps,
+      warnings,
+      installDir,
+    };
+  }
+  return { ok: true, steps, warnings, installDir };
 }
 
 /** provider 现状：直接读 <home>/config.json（CLI 的 get 与它同一份真源，少一次进程开销） */
@@ -2791,6 +2871,20 @@ function registerPaseoRemoteIpc(opts) {
     },
   });
 
+  /* 安装后自检登记（卡片「已装勾」的唯一判据）：CLI 真能报版本 + provider 注册 + daemon 现状，
+     见上面的 selfcheckPaseo。kind="install" = 非内容生成类。 */
+  try {
+    selfcheck.registerPluginSelfcheck({
+      id: PLUGIN_ID,
+      key: KIND,
+      label: PLUGIN_NAME,
+      kind: "install",
+      check: (ctx) => selfcheckPaseo(ctx),
+    });
+  } catch (e) {
+    appendConsole("[boot] 自检登记失败：" + String((e && e.message) || e));
+  }
+
   /* 报错总线：注册宿主（现场目录 = 自建安装目录，日志 = 控制台日志尾部；
      修复入口由渲染层那条看得见的会话走，skill 名指向 paseo-remote-install）。 */
   pluginErrors.registerPluginHost({
@@ -2944,6 +3038,8 @@ module.exports = {
     nodeReadyOf,
     waitRealNode,
     detectBackend,
+    /* 安装后自检的实现（生产侧由 registerPluginSelfcheck 登记；纯 Node 冒烟直呼这一份） */
+    selfcheckPaseo,
     /* 本轮新增：「慢的半边」会话内缓存（CLI 版本探测 + 真 Node 解析）——smoke-paseo-status-cache.js 直呼它们 */
     clearPaseoProbeCache,
     realNode,

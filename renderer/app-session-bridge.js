@@ -270,6 +270,19 @@
     /* 宿主桥（应用中心窗口 / 插件窗口）的观察者与手机端那份名单互不影响：
        只要这条会话有人在窗口里看着，这一帧就不能在这里被丢掉。 */
     const hostSidEarly = sidOfRunKey(runKey);
+    /* AI 活动：会话轮的**逐帧步骤**（思考 / 工具调用 / 文本增量）在这里搬进面板那张表。
+       登记（开始 / 结束）在 renderer/app-assist.js 的轮次两端，两处用**同一把键**
+       sess:<会话id>（与运行队列的会话键同一个）且分工不重叠 —— 那边只写生命周期、
+       这里只写 step，所以同一件事绝不会记两遍（原有运行队列读数一条都没改）。
+       放在下面「没人观察就早退」之前是有意的：面板要的是过程，不是转发；没人观察时
+       这里只多两次查表。应用窗口经 agentSend 发起的会话也走这条链，因此一定看得见。 */
+    if (hostSidEarly) {
+      try {
+        const stAi = sessionOf(hostSidEarly);
+        if (stAi && typeof agentAiSessionStep === "function")
+          agentAiSessionStep(stAi, type, data);
+      } catch (_) {}
+    }
     const hostEarly = !!(hostSidEarly && hostWatched.has(hostSidEarly));
     if (!watched.size && !hostEarly) {
       dropped++;

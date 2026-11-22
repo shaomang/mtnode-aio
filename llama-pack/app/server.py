@@ -8,6 +8,8 @@ import secrets
 import sys
 import threading
 import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -31,7 +33,72 @@ DEFAULT_PORT = int(os.environ.get("LLAMA_API_PORT", "8765"))
 # 日志落点唯一真源在 app/console_log.py（启动横幅也写它）——服务器不再自己拼 .console.log 路径。
 _log = log_line
 
-app = FastAPI(title="llama.cpp Local Manager", version="2.0.0")
+# ── 后台增量（固化表自动补新）──────────────────────────────────────────────
+# 为什么要有它：固化表是「首拉整页落盘冻结 + 只按时间拿增量」，没人点刷新就永远停在
+# 上一次的日期，新模型要等用户手动刷新才看得到。这里在服务启动后延迟跑一轮增量，
+# 之后每 6h 一轮；失败退避 30min；距上次成功不足 10min 直接跳过（与 _STORE_MIN_INTERVAL 同闸）。
+# 硬约束：与 /health 完全解耦 —— 任务里任何异常只记日志，绝不冒泡（否则整个进程起不来）。
+_AUTOSYNC_INITIAL_DELAY = 15.0        # 启动后先让界面把固化表画出来，再开始联网
+_AUTOSYNC_INTERVAL = 6 * 3600.0       # 稳态间隔
+_AUTOSYNC_RETRY = 30 * 60.0           # 失败退避
+
+
+def _autosync_enabled() -> bool:
+    raw = str(os.environ.get("LLAMA_CATALOG_AUTOSYNC", "1")).strip().lower()
+    return raw not in ("0", "false", "off", "no")
+
+
+async def _autosync_loop() -> None:
+    delay = _AUTOSYNC_INITIAL_DELAY
+    while True:
+        await asyncio.sleep(delay)
+        delay = _AUTOSYNC_INTERVAL
+        try:
+            if _refresh_running():
+                continue
+            # 与 /api/catalog 的「10 分钟免费期」同一口径（catalog._interval_fresh）：
+            # 刚核过增量就不再打镜像。
+            if catalog._interval_fresh(catalog._store_load()):
+                _log("catalog autosync skipped (checked <10min ago)")
+                continue
+            await catalog.search_models(q="")
+            st = catalog.sync_state()
+            if st.get("phase") == "error":
+                delay = _AUTOSYNC_RETRY
+                _log("catalog autosync failed: " + str(st.get("error") or ""))
+            else:
+                _log(
+                    "catalog autosync done: added={} count={}".format(
+                        int(st.get("added") or 0), int(catalog.store_info().get("count") or 0)
+                    )
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # 只记录，绝不抛出（与 /health 解耦）
+            delay = _AUTOSYNC_RETRY
+            _log("catalog autosync error: " + str(e))
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    # Default idle: scan local registry only, do not auto-deploy.
+    try:
+        models.scan_existing_models()
+    except Exception as e:
+        _log("scan existing failed: " + str(e))
+    task: asyncio.Task | None = None
+    if _autosync_enabled():
+        task = asyncio.create_task(_autosync_loop(), name="catalog-autosync")
+    else:
+        _log("catalog autosync disabled (LLAMA_CATALOG_AUTOSYNC=0)")
+    try:
+        yield
+    finally:
+        if task is not None:
+            task.cancel()
+
+
+app = FastAPI(title="llama.cpp Local Manager", version="2.0.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -41,15 +108,6 @@ app.add_middleware(
 
 
 models.set_logger(_log)
-
-
-@app.on_event("startup")
-def _on_startup() -> None:
-    # Default idle: scan local registry only, do not auto-deploy.
-    try:
-        models.scan_existing_models()
-    except Exception as e:
-        _log("scan existing failed: " + str(e))
 
 
 
@@ -132,6 +190,43 @@ async def gpu_info():
     return {"ok": True, "gpu": query_gpu(), "allocatedVramGb": models._allocated_vram_gb()}
 
 
+def _frozen_catalog(
+    q: str,
+    kind: str,
+    limit: int,
+    sort: str,
+    size_band: str,
+    recent_only: bool,
+) -> list[dict[str, Any]]:
+    """只读固化表（零网络请求）：过滤 / 排序口径与 catalog.search_models 收尾那段一致。
+
+    为什么单独写这一段：菜单默认必须「无网秒回、离线可用」—— 原路径即便走固化口径
+    也会顺手问一次增量（页面挂住几秒到几十秒）。想让后台去补新，走 /api/catalog/refresh，
+    别让一次列表请求去碰网络。
+    """
+    items = catalog._store_frozen_items(kind)
+    query = (q or "").strip().lower()
+    if query:
+        items = [
+            x
+            for x in items
+            if query in str(x.get("id") or "").lower() or query in str(x.get("name") or "").lower()
+        ]
+    items = catalog._filter_size(items, size_band)
+    items = catalog._filter_recent(items, recent_only)
+    if sort == "likes":
+        items.sort(key=lambda x: int(x.get("likes") or 0), reverse=True)
+    else:
+        items.sort(key=lambda x: int(x.get("downloads") or 0), reverse=True)
+    if not query:
+        curated_ids = {x["id"] for x in catalog.CURATED}
+        head = [x for x in items if x["id"] in curated_ids]
+        tail = [x for x in items if x["id"] not in curated_ids]
+        items = head + tail
+    limit = max(1, min(int(limit or 50), 100))
+    return items[:limit]
+
+
 @app.get("/api/catalog")
 async def model_catalog(
     q: str = "",
@@ -141,10 +236,16 @@ async def model_catalog(
     sizeBand: str = "",
     recentOnly: bool = False,
     force: bool = False,
+    refresh: bool = False,
 ):
     # 在线模型列表是固化口径（见 app/catalog.py 的 CACHE_PATH）：首拉整页落盘冻结，
     # 之后只按时间拿增量。force=true 才整页重拉（界面不暴露，需要时手工带这个参数）。
-    items = await catalog.search_models(q, kind, limit, sort, sizeBand, recentOnly, force)
+    # 默认 refresh=false：只读固化表，一个网络请求都不发（无网秒回、离线可用）；
+    # refresh=true 才走原来那条同步路径（拉列表 + 补体积 + 探架构），旧行为原样保留。
+    if refresh or force:
+        items = await catalog.search_models(q, kind, limit, sort, sizeBand, recentOnly, force)
+    else:
+        items = _frozen_catalog(q, kind, limit, sort, sizeBand, recentOnly)
     return {
         "ok": True,
         "items": items,
@@ -152,6 +253,54 @@ async def model_catalog(
         "kinds": list(catalog._CATALOG_KINDS),
         "cache": catalog.store_info(),
     }
+
+
+@app.get("/api/catalog/sync")
+async def catalog_sync():
+    """这一轮拉取走到哪一步（界面轮询它画状态条：阶段 / 已用时间 / 已探数量 / 错误）。"""
+    st = catalog.sync_state()
+    return {
+        "phase": str(st.get("phase") or "idle"),
+        "elapsedMs": int(st.get("elapsedMs") or 0),
+        "page": int(st.get("page") or 0),
+        "candTotal": int(st.get("candTotal") or 0),
+        "probedSizes": int(st.get("probedSizes") or 0),
+        "probedArch": int(st.get("probedArch") or 0),
+        "added": int(st.get("added") or 0),
+        "error": str(st.get("error") or ""),
+        "cache": catalog.store_info(),
+    }
+
+
+# 单飞：一轮刷新在跑时再点刷新只回 running=true，不排队、不叠加。
+_REFRESH_TASK: asyncio.Task | None = None
+
+
+def _refresh_running() -> bool:
+    if _REFRESH_TASK is not None and not _REFRESH_TASK.done():
+        return True
+    return bool(catalog.sync_state().get("running"))
+
+
+async def _refresh_once() -> None:
+    try:
+        await catalog.search_models(q="")
+    except Exception as e:
+        _log("catalog refresh failed: " + str(e))
+
+
+@app.post("/api/catalog/refresh")
+async def catalog_refresh():
+    """起一轮增量（后台跑，立刻返回）。
+
+    绝不 await 在这里：search_models 要联网几十秒，同步等会把单进程 uvicorn 的事件循环
+    占死（同类教训见 download 里的 to_thread 注释），界面轮询 /api/catalog/sync 拿不到进度。
+    """
+    global _REFRESH_TASK
+    if _refresh_running():
+        return {"ok": True, "running": True}
+    _REFRESH_TASK = asyncio.create_task(_refresh_once(), name="catalog-refresh")
+    return {"ok": True, "running": False}
 
 
 @app.get("/api/catalog/detail")

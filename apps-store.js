@@ -526,6 +526,9 @@ const PREVIEW_BRIDGE = [
   "  dataRead:function(opts){ return call('dataRead',opts||{}); },",
   "  dataWrite:function(data,opts){ var o={}; for(var k in (opts||{})) o[k]=opts[k]; o.data=data; return call('dataWrite',o); },",
   "  account:function(){ return call('account'); },",
+  /* 作者 / 版本清单（appHost.authorTag）：与独立窗口同一份 authorTagOf —— 能力位只管
+     宿主注不注入 footer 里那枚按钮，这条接口与语音 / 图像一样随时可调 */
+  "  authorTag:function(){ return call('authorTag'); },",
   /* 文件只读两项（exists / 图片读成 dataURL）：与独立窗口走**同一个**宿主实现
      （apps:previewCall → previewHostCall → app-host-bridge 的 fs.*），不另开一条读图通道。
      有它，预览 iframe 里也能把磁盘上的图交给应用页（此前这里整类 fs 缺席，应用只能报
@@ -679,9 +682,138 @@ const APPNODE_BRIDGE = [
   "post({[K]:1,op:'node-ping'});",
   "})();",
 ].join("\n");
-/* 把两段注入合成一个 <script>（顺序：宿主桥在前、节点桥在后 —— 节点桥要改宿主桥的对象；
-   最后是 iframe 的播放条与它的桥，见 preview-media.js） */
-function injectAppNodeBridge(html) {
+/* ── 宿主注入的应用底部 UI（iframe 形态：开发页预览 / 画布应用节点）───────────────
+ *
+ * 需求（用户原话）：「画布中开启应用节点（覆盖画布）的模式下没有 footer，undock 之后才有」。
+ * 为什么会缺：宿主注入的那几条应用 UI（听写条 / 播放条 / 作者标签 / AI 过程条）一直是
+ * preload-app.js 往**独立应用窗口**里插 <script src> 的；而画布内嵌的应用是
+ * mtnode-preview:// 的一只 iframe —— 没有 preload、也没有 window.api，那几条 UI 在这里从来
+ * 不存在（undock 成独立窗口才出现，正是用户看到的那条差异）。
+ *
+ * 这里按预览 HTML 的**内联**注入把 footer 那一条补上：与 PREVIEW_BRIDGE 同一个 <script>、
+ * 同一处注入点（<head> 最前面，早于应用自己的 CSP meta，所以 inline 脚本不会被应用的
+ * script-src 'self' 挡掉 —— 与 preview-media.js 注入播放条同一条纪律）。主进程读文件内容再
+ * 拼进去：预览协议不服务 renderer/ 下的文件，所以不能用 file:// 的 <script src>。
+ *
+ * 逐份核对「这份脚本依赖的 appHost 方法在这座桥上齐不齐」，缺哪份就跳过那一份 ——
+ * 宁可不出现，也绝不留半截 UI：
+ *   · app-speech-ui.js（听写条）：asrStatus / asrPrepare / asrMic / transcribeWav /
+ *     onSpeechState / textGenStream / storageGet / storageSet —— 两座桥都齐；闸门与独立窗口
+ *     同一条：app.json 的 capabilities.showDictate（内嵌不该比独立窗口多出一条 UI）。
+ *     iframe 里录音还要宿主两处配合，缺一处就会「条子出现但录不了音」（那才叫半截 UI）：
+ *     主窗口那条权限闸已放行 media（main.js 的 setPermissionRequestHandler），iframe 的
+ *     allow="microphone" 由 renderer/app-appnode.js 与 renderer/app-apps-dev.js 补上 ——
+ *     少了它，Chromium 的 Permissions-Policy 会先于权限闸把 getUserMedia 拒掉。
+ *   · app-ai-work-app-ui.js（AI 工作过程条）：要 agent.onEvent 或 aiActivityOn —— 只有**应用
+ *     节点**那一座桥（APPNODE_BRIDGE 的 host.agent.onEvent）有；开发页预览那座既没有 agent、
+ *     也没有 aiActivityOn（宿主代理的模型调用帧按窗口 webContents 推，iframe 没有
+ *     webContents），注进去也只会自己判定「没通道」而整块不出现 —— 按「缺就跳过」不注。
+ *   · app-media-ui.js（播放条）：preview-media.js 已经把它注进同一只 iframe（同一份实现），
+ *     这里再注一次就是两条播放条 —— 明确跳过。
+ *   · app-author-ui.js（footer 里的作者 / 版本按钮）：要 authorTagOf 那份数据（名字 / 版本 /
+ *     图标）—— 桥上现在补了 authorTag（见 PREVIEW_BRIDGE），而且拼装时还会把那一份**纯值**
+ *     直接写成 window.__mtnodeAuthorTag（与独立窗口 preload-app.js 同一形状），所以不依赖任何
+ *     往返就能自挂。闸门与独立窗口同一条：app.json 的 capabilities.showAuthor。
+ *     为什么必须有这条：用户报的现场（2026-02）「应用在画布中打开（dock）应当与独立窗口一致，
+ *     现在左下角的作者按钮丢了」—— 内嵌形态此前整块不注，两套宿主就不一致。
+ *
+ * 注入失败（文件读不到 / 拼装出错）只 console.error，绝不让预览页因此打不开。 */
+const APP_UI_SRC_CACHE = new Map();
+/* 读一份 renderer/ 下的 UI 源码（读一次就缓存）：`</script` 一律转义，免得把注入的 <script>
+   提前闭合（与 preview-media.js 的 playerSource 同一条纪律） */
+function appUiInlineSource(fileName) {
+  const key = String(fileName || "");
+  if (!key) return "";
+  if (APP_UI_SRC_CACHE.has(key)) return APP_UI_SRC_CACHE.get(key);
+  let src = "";
+  try {
+    src = fs.readFileSync(path.join(__dirname, "renderer", key), "utf8");
+  } catch (err) {
+    try {
+      console.error(
+        "[apps] 预览注入 " + key + " 失败（这一份 UI 在 iframe 里不出现）：" + ((err && err.message) || err),
+      );
+    } catch {}
+    src = "";
+  }
+  const out = String(src).replace(/<\/script/gi, "<\\/script");
+  APP_UI_SRC_CACHE.set(key, out);
+  return out;
+}
+/* 这次预览要内联哪几份宿主 UI 源码（顺序：听写条在前 —— 作者按钮要跟着它落进同一个 footer，
+   所以排在它后面；播放条由 preview-media.js 注在更前面）。
+   isAppNode = 画布应用节点那一形态（APPNODE_BRIDGE 在场，才有 agent.onEvent）；
+   dir = 应用源码目录（作者清单要按它算，见 appUiAuthorPrelude）。 */
+function iframeAppUiSource(man, isAppNode, dir) {
+  const parts = [];
+  let caps = {};
+  try {
+    caps = normCapabilities(man && man.capabilities) || {};
+  } catch {
+    caps = {};
+  }
+  if (caps.showDictate === true) parts.push(appUiInlineSource("app-speech-ui.js"));
+  /* 输入补全（2026-11 本轮）：声明了 showComplete 才注 —— 闸门与独立窗口同一条
+     （preload-app.js 的 maybeInjectAppUi）。先给一份纯值设置，再注补全本体；
+     本体读 window.appHost.textGenStream（两座桥都有），所以内嵌形态与独立窗口行为一致。 */
+  if (caps.showComplete === true) {
+    const pre = appUiFimPrelude();
+    if (pre) parts.push(pre, appUiInlineSource("app-fim.js"));
+  }
+  if (isAppNode) parts.push(appUiInlineSource("app-ai-work-app-ui.js"));
+  /* 作者 / 版本按钮：闸门与独立窗口同一条（showAuthor），名字或版本凑不齐就整块不注
+     （authorTagOf 回 null = 与独立窗口一样不显示，不写「未知作者」） */
+  if (caps.showAuthor === true) {
+    const prelude = appUiAuthorPrelude(dir, man);
+    if (prelude) parts.push(prelude, appUiInlineSource("app-author-ui.js"));
+  }
+  return parts.filter(Boolean).join("\n");
+}
+/* 作者清单的纯值前奏：iframe 里没有 preload，作者 UI 读不到 window.__mtnodeAuthorTag，
+   桥上那条 authorTag 是异步的（首帧会闪过一次「没有作者」）—— 直接把主进程算好的那一份
+   写进页面世界，与 preload-app.js 的 `window.__mtnodeAuthorTag = ans.auth` 同一形状、
+   同一份 authorTagOf，所以两套宿主显示的名字与版号必然一致。
+   清单凑不齐（回 null）回空串 = 连脚本一起不注。 */
+function appUiAuthorPrelude(dir, man) {
+  let info = null;
+  try {
+    const d = String(dir || "");
+    const m = man && typeof man === "object" ? man : manifestOf(d, path.basename(d)) || {};
+    info = authorTagOf(d, String(m.id || path.basename(d) || ""), m);
+  } catch (_) {
+    info = null;
+  }
+  if (!info || !info.name || !info.version) return "";
+  let json = "";
+  try {
+    json = JSON.stringify(info);
+  } catch (_) {
+    return "";
+  }
+  /* `</script` 一律转义：清单里有说明文字 / 图标 data URL，绝不能把注入的 <script> 提前闭合 */
+  json = json.replace(/<\/script/gi, "<\\/script");
+  return "try{window.__mtnodeAuthorTag=" + json + ";}catch(e){}";
+}
+
+/* 补全设置的纯值前奏（iframe 形态）：与 preload-app.js 里 `window.__mtnodeFimSettings = ans.fim`
+   同一形状、同一份 fimSettingsOf() —— 内嵌与独立窗口读到的开关 / 延迟 / 上限必然一致。
+   拼不出一份合法 JSON 就回空串 = 连补全脚本一起不注（宁可没有，也不要半截）。 */
+function appUiFimPrelude() {
+  let json = "";
+  try {
+    json = JSON.stringify(fimSettingsOf());
+  } catch (_) {
+    return "";
+  }
+  if (!json) return "";
+  json = json.replace(/<\/script/gi, "<\\/script");
+  return "try{window.__mtnodeFimSettings=" + json + ";}catch(e){}";
+}
+
+/* 把几段注入合成一个 <script>（顺序：宿主桥在前、节点桥在后 —— 节点桥要改宿主桥的对象；
+   然后是 iframe 的播放条与它的桥（见 preview-media.js）；最后是宿主注入的底部 UI
+   （听写条 / AI 过程条，见上面那段注释 —— 它们读 window.appHost，所以必须排在桥后面）） */
+function injectAppNodeBridge(html, man, dir) {
   const src = String(html || "");
   const tag =
     '<script data-mtnode-appnode-bridge="1">' +
@@ -690,6 +822,8 @@ function injectAppNodeBridge(html) {
     APPNODE_BRIDGE +
     "\n" +
     previewMedia.inlineSource() +
+    "\n" +
+    iframeAppUiSource(man, true, dir) +
     "</scr" +
     "ipt>";
   if (/<head[^>]*>/i.test(src)) return src.replace(/<head[^>]*>/i, (m) => m + tag);
@@ -700,14 +834,18 @@ function injectAppNodeBridge(html) {
 /* 注入宿主桥小助手：**必须插在页面最前面**（在其他 <script> 之前），
    这样应用里的 window.AppHost 门面一跑就读到这座桥。
    播放条与媒体路由同批注入（preview-media.js）：iframe 的 origin 读不了 file://，
-   播放 URL 要走 mtnode-preview:// 的媒体路由。 */
-function injectPreviewBridge(html) {
+   播放 URL 要走 mtnode-preview:// 的媒体路由。
+   宿主注入的底部 UI（听写条）排在最后：它读 window.appHost，必须等桥先建好
+   （这一形态没有 agent 命名空间，所以 AI 过程条不注，见 iframeAppUiSource 的注释）。 */
+function injectPreviewBridge(html, man, dir) {
   const src = String(html || "");
   const tag =
     '<script data-mtnode-preview-bridge="1">' +
     PREVIEW_BRIDGE +
     "\n" +
     previewMedia.inlineSource() +
+    "\n" +
+    iframeAppUiSource(man, false, dir) +
     "</scr" +
     "ipt>";
   if (/<head[^>]*>/i.test(src)) return src.replace(/<head[^>]*>/i, (m) => m + tag);
@@ -790,8 +928,10 @@ function previewFileResponse(dir, rel, req, injectHost, injectNode) {
       let html = fs.readFileSync(abs, "utf8");
       /* 走到备用页（不是请求的那一页）= 请求的入口页缺失：顶上挂一条可读提示 */
       if (p !== rel) html = previewFallbackHtml(html, rel, p);
-      if (injectNode) html = injectAppNodeBridge(html);
-      else if (injectHost) html = injectPreviewBridge(html);
+      /* man 一起传进去：宿主注入的底部 UI（听写条）按 app.json 的 capabilities 决定要不要注 ——
+         与独立窗口 preload-app.js 那条链同一个闸门（见 iframeAppUiSource） */
+      if (injectNode) html = injectAppNodeBridge(html, man, dir);
+      else if (injectHost) html = injectPreviewBridge(html, man, dir);
       return new Response(injectPreviewAgent(html), { headers: headers });
     }
     return new Response(fs.readFileSync(abs), { headers: headers });
@@ -860,8 +1000,8 @@ function registerPreviewProtocol() {
             rel && rel !== entry ? rel : "",
             entry,
           );
-          if (appNodeId) html = injectAppNodeBridge(html);
-          else if (withHost) html = injectPreviewBridge(html);
+          if (appNodeId) html = injectAppNodeBridge(html, man, dir);
+          else if (withHost) html = injectPreviewBridge(html, man, dir);
           return new Response(injectPreviewAgent(html), {
             headers: {
               "content-type": "text/html; charset=utf-8",
@@ -2681,7 +2821,7 @@ function devBackfillOnce(root, id) {
   } catch (_) {}
 }
 /* 应用清单里那几个**本机状态字段**的唯一写入口（渲染层不碰文件系统）：
-   dev（开发中）/ author（作者）/ forkOf（二次开发来源）/ cloud（上架留痕）。
+   dev（开发中）/ author（作者）/ forkOf（二次开发来源）/ cloud（上架留痕）/ version（上架回流）。
    省略的键保持原样，绝不整份重写。 */
 function setAppMeta(arg) {
   const a = isObj(arg) ? arg : {};
@@ -2689,9 +2829,13 @@ function setAppMeta(arg) {
   if (!id) return bad(t("应用 id 不合法"), "bad_id");
   /* 类型：显式传了就用它，没传按本机实际所在的那一边（两套根都看一眼）。
      目录一律走 dirOfApp（按类型 + 两套根兜底）：**改 dev 标记本身不改目录**，
-     物理搬家由 apps:migrateLayout 那一处显式入口负责（见「二次开发」流程）。 */
+     物理搬家由 apps:migrateLayout 那一处显式入口负责（见「二次开发」流程）。
+     **这个 kind 必须一路传给 dirOfApp**：同一个 id 在库根与项目根各有一份时，缺省口径先拿
+     下载根那一份（见 dirOfApp 注释），于是「从开发页上架」写回来的是**库里那份的** app.json，
+     开发那一份的版本 / 留痕永远不动 —— 那正是「应用窗口左下角的版本跟应用版本对不上」的来路
+     （2026-11-22 用户报：应用中心里是 v1.0.3，窗口左下角还写着 v1.0.0）。 */
   const kind = a.kind ? kindOfRoot(a.kind) : diskKindOf(id);
-  const dir = dirOfApp(id);
+  const dir = dirOfApp(id, kind);
   if (!dir || !fs.existsSync(dir))
     return Object.assign(bad(t("该应用不在本机"), "missing"), { missing: true, id: id });
   const raw = readManifest(dir);
@@ -2702,6 +2846,19 @@ function setAppMeta(arg) {
   if (a.forkOf !== undefined) patch.forkOf = normForkOf(a.forkOf);
   /* 上架留痕（本轮需求）：传 null / 空对象 = 抹掉（留痕可以被清掉，绝不留半条脏数据） */
   if (a.cloud !== undefined) patch.cloud = normCloudPub(a.cloud);
+  /* 上架回流（本轮修的 bug）：上架成功后渲染层把**上架版本**写回 app.json。
+     为什么要有这一条：app.json 的 version 就是「本机这一份的版本」，而应用窗口左下角的
+     作者标签 / 应用详情 / 列表里的「本机版本」全读它；上架窗的版本号是按线上最新版自动 +1
+     的（pubLoadOnline → pubBumpPatch），从前不回流，于是同一份应用在应用中心写着 v1.0.3、
+     窗口左下角还停在 v1.0.0。写回之后两边永远同一个数。
+     只收 x.y.z（与根目录 version 文件 / appVersion() 同一口径）：带后缀的版本号写进 app.json
+     会让标签直接不显示（authorTagOf 视 0.0.0 之类为无效），所以那种一律不动。 */
+  if (a.version !== undefined) {
+    const ver = String(a.version == null ? "" : a.version).trim();
+    if (!/^[0-9]+\.[0-9]+\.[0-9]+$/.test(ver))
+      return bad(t("版本号不合法（要 x.y.z）"), "bad_version");
+    patch.version = ver;
+  }
   if (!Object.keys(patch).length) return bad(t("没有要写入的字段"), "no_fields");
   try {
     writeJson(manifestPath(dir), Object.assign({}, raw, patch));
@@ -5640,13 +5797,21 @@ function previewNoWindowError() {
 }
 /* 预览页的「重能力」调用（audio / canvas / tools…）：与独立窗口走**同一个** app-host-bridge，
    只换认应用的方式（主进程这边的预览租约 → app id）。push 是空转：预览没有独立的流式回推，
-   事件走开发页那条 postMessage 中继。查不到 hostBridge 时如实回 not_ready，不装成功。 */
+   事件走开发页那条 postMessage 中继。查不到 hostBridge 时如实回 not_ready，不装成功。
+   send 同样空转（回 false）：预览 / 应用节点内嵌 iframe 没有自己的窗口，
+   应用自报的 AI 活动帧在这两种形态下无处可推 —— 桥那边回 pushed:false，不报错。 */
 function previewHostCall(id, ns, method, args) {
   if (!hostBridge || typeof hostBridge.call !== "function")
     return bad(t("宿主桥未就绪（主进程组件没起来）"), "not_ready");
   const sid = String(id || "");
   const sum = appHostSummaryOf(sid);
-  const caller = { kind: "app", id: sid, name: String((sum && sum.name) || sid), push: () => {} };
+  const caller = {
+    kind: "app",
+    id: sid,
+    name: String((sum && sum.name) || sid),
+    push: () => {},
+    send: () => false,
+  };
   return hostBridge.call(caller, String(ns || ""), String(method || ""), isObj(args) ? args : {});
 }
 /* 预览页的素材库调用（预览桥方法名 → app-host-bridge 的 assets.*）：与独立窗口**逐条同源**。
@@ -6549,7 +6714,39 @@ function hostCapabilities(e, arg) {
   const out = { ok: true, id: own.id, capabilities: caps };
   out.chrome = senderWindowFrameless(e) && caps.windowChrome === true;
   if (caps.showAuthor === true) out.author = authorTagOf(own.dir || "", own.id, man);
+  /* 输入补全（2026-11 本轮）：声明了 showComplete 才把「补全设置」这一份**纯值**带回去 ——
+     preload 把它写成应用页的 window.__mtnodeFimSettings，注入的 renderer/app-fim.js 直接读它。
+     为什么走这条路而不是让应用页来问：补全在每个 input 上都要用，一次 IPC 换一份常驻配置最省；
+     而且配置里没有任何密钥（服务商 / Key 全在主进程），给页面也无妨。 */
+  if (caps.showComplete === true) {
+    out.complete = true;
+    out.fim = fimSettingsOf();
+  }
   return out;
+}
+/* 应用窗口里的补全设置：读的是用户自己的 config.json `fim` 段（与主窗口「输入补全」面板同一份）。
+   缺字段按主窗口同一套缺省补（开 / 自动 / Tab 手动都开），**绝不写盘** —— 应用只是读者。
+   maxTokens / delayMs 也带过去，免得应用里另立一套手感。 */
+function fimSettingsOf() {
+  let c = {};
+  try {
+    c = (readJson(configPath(), {}) || {}).fim || {};
+  } catch {
+    c = {};
+  }
+  const o = c && typeof c === "object" ? c : {};
+  const num = (v, d) => {
+    const n = Math.round(Number(v));
+    return Number.isFinite(n) && n >= 0 ? n : d;
+  };
+  return {
+    on: o.on !== false,
+    auto: o.auto !== false,
+    manual: o.manual !== false,
+    delayMs: num(o.delayMs, 350),
+    maxTokens: Math.max(16, num(o.maxTokens, 128)),
+    model: String(o.model == null ? "" : o.model),
+  };
 }
 /* ═══════════ 作者标签（应用窗口左下角那枚宿主注入的小标签 · 本轮需求）═══════════
  * 口径（用户共识，逐条落在这里，别再在别处各算一套）：
@@ -6598,14 +6795,47 @@ function authorIconDataUrl(dir, name) {
     return "";
   }
 }
+/* 上架版本（= 应用中心里写着的那一个版号），**只读本机缓存、不联网**：
+ * 开发副本（app.json dev:true）又上架过（有 cloud 留痕）时，标签上该显示的是「它上架到的版本」——
+ * 用户口径（2026-11-22 报的 bug）：窗口左下角的版本要和应用版本 / 上架版本一致。
+ * 为什么只查开发副本：下载到本机的那一份就是「跑在窗口里的那一版」，线上即便已经出了新版，
+ * 标签也该说这一份是 v1.0.2（不是 v1.0.3）；只有开发副本没有「自己这一版的编号」，
+ * 它的版号由上架决定（上架窗的默认版本也是按线上最新 +1 生成的）。
+ * 取数顺序：本机缓存里的云端目录（<数据目录>/apps-cache/catalog.json，与应用中心同一份数据）
+ * 里**我这支**（id + 上架账号 uid）的 latestVersion → 留痕里记的那一版（cloud.version）。
+ * 一条都取不到回空串，调用方退回 app.json 的 version（绝不编一个版本号出来）。 */
+function publishedVersionOf(m) {
+  const man = m || {};
+  /* 下载件不参与（见上）：它自己的 app.json 就是真版本 */
+  if (man.dev !== true) return "";
+  const trace = normCloudPub(man.cloud);
+  if (!trace || !trace.id) return "";
+  try {
+    const c = readCatalogCache();
+    const doc = c && isObj(c.doc) ? c.doc : null;
+    if (doc) {
+      const parsed = parseCatalogDoc(doc, c.sourceBase, c.sourceKind);
+      const apps = Array.isArray(parsed && parsed.apps) ? parsed.apps : [];
+      const mine =
+        apps.find((a) => a && String(a.id) === trace.id && trace.ownerId && String(a.ownerId) === trace.ownerId) ||
+        apps.find((a) => a && String(a.id) === trace.id && trace.owner && String(a.owner) === trace.owner) ||
+        null;
+      const latest = mine ? String(mine.latestVersion || mine.version || "").trim() : "";
+      if (/^[0-9]+\.[0-9]+\.[0-9]+$/.test(latest)) return latest;
+    }
+  } catch (_) {}
+  return /^[0-9]+\.[0-9]+\.[0-9]+$/.test(trace.version) ? trace.version : "";
+}
 /** 作者标签那一份数据（{name, version, id, title, description, tags, icon, dataDir}）；
  *  name / version 缺任一个回 null（= 不注入，调用方据此判定）。
  *  version 的判据带上 manifestOf 的兜底值 "0.0.0"：app.json 里版本为空时清单回的就是它，
- *  那不是真版本号 —— 标签上写「v0.0.0」等于编一个版本，宁可整枚不显示。 */
+ *  那不是真版本号 —— 标签上写「v0.0.0」等于编一个版本，宁可整枚不显示。
+ *  version 取值：上架过的开发副本用**上架版本**（见 publishedVersionOf），其余用 app.json 的
+ *  version —— 于是「窗口左下角的版本」与应用中心里那个版号永远是同一个数（本轮修的 bug）。 */
 function authorTagOf(dir, id, man) {
   const m = man || manifestOf(dir || "", id) || {};
   const name = authorNameOf(m);
-  const version = String(m.version || "").trim();
+  const version = publishedVersionOf(m) || String(m.version || "").trim();
   if (!name || !version || version === "0.0.0") return null;
   const aid = String(m.id || id || "");
   return {
@@ -7496,8 +7726,18 @@ async function hostImageStream(e, opts) {
   const o = isObj(opts) ? opts : {};
   const reqId = String(o.reqId || "");
   const ownerId = String(own.id || "");
+  /* 应用内 AI 活动（出图）：真开始跑（本地 / 云端定了后端）之后才 begin，参数错误一条都不推。
+     model 要等 resolveImagePick 之后才知道，所以句柄先占位、begin 前补上。 */
+  let act = null;
   const emit = (type, data) => {
     emitHostStreamFor(e, opts, Object.assign({ reqId: reqId, type: type }, data || {}));
+    if (!act) return;
+    try {
+      const d = isObj(data) ? data : {};
+      if (type === "progress") act.step("media", String(d.message || d.stage || ""));
+      else if (type === "done") act.end("ok");
+      else if (type === "error") act.end("error", d.error);
+    } catch (_) {}
   };
   /* 登记在飞（reqId 为空就不登记：老调用方没有 reqId 也就没法取消） */
   const inflight = reqId ? { appId: ownerId, local: false } : null;
@@ -7512,18 +7752,28 @@ async function hostImageStream(e, opts) {
       );
     if (pick.error) return bad(t("该图像模型不在 MTNode 已配置的清单里"), "bad_model");
     if (inflight && pick.local) inflight.local = true;
+    act = aiActivityTrack(own.id, opts, "app-image", String(pick.id || ""), aiActivityTargetOf(e));
     /* 本机出图后端（Qwen Image / FLUX 3 Klein…）：与画布节点同一条出口，
        产物读盘转 base64 / dataUrl 回给应用 —— 应用侧拿不到文件系统。 */
-    if (pick.local) return await generateLocalImage(own.id, pick, o, emit);
+    if (pick.local) {
+      act.begin("media", t("提交本机出图"));
+      const r = await generateLocalImage(own.id, pick, o, emit);
+      act.end(r && r.ok === false ? "error" : "ok", (r && r.error) || "");
+      return r;
+    }
     const img = imageRefDataUrls(o);
     const built = imageSpec(own.id, pick, o);
     if (built.error) return bad(t("未配置可用的图像服务商（请在「设置 · API/配置」中填写）"), built.error);
     /* outputDir 与本机出图同一语义：给了就把产物写进去并回 path（应用窗口没有二进制写口） */
-    return await generateCloudImage(pick, built, emit, o.outputDir);
+    act.begin("media", t("提交出图"));
+    const r = await generateCloudImage(pick, built, emit, o.outputDir);
+    act.end(r && r.ok === false ? "error" : "ok", (r && r.error) || "");
+    return r;
   } catch (err) {
     const msg = String((err && err.message) || err);
     const code = callErrCode(err);
     emit("error", { error: msg, code: code });
+    if (act) act.end("error", msg);
     return { ok: false, error: msg, code: code };
   } finally {
     if (inflight && imageInflight.get(reqId) === inflight) imageInflight.delete(reqId);
@@ -7605,6 +7855,120 @@ async function hostImageCancel(e, arg) {
   imageInflight.delete(reqId);
   return { ok: true, cancelled: true, local: hit.local === true, aborted: cancelled };
 }
+/* ---------------- AI 活动上报（应用内 AI → **发起调用的那只应用窗口**的「AI 工作中」条） --------
+ *
+ * 现场：mt-tex 这类窗口应用的「AI 编辑」走的是**宿主应用通道的模型代理**
+ * （apps:hostTextStream / apps:hostImageStream），既不进 agentHost 会话、也不建画布节点 ——
+ * 它跑起来时宿主的运行队列里什么都没有，用户得不到任何反馈。
+ *
+ * 口径（docs/ai-activity.md §5.5 / §8）：一次模型代理调用 = 一条活动，键 app:<appId>:<reqId>；
+ * 主进程只往**发起这次调用的那只应用窗口**推一条**只读帧**（"ai:activity"），
+ * 由 renderer/app-ai-work-app-ui.js 画成应用界面自己那条「AI 工作中」。
+ * **不再推主窗口**：用户看的「AI 工作」属于他正盯着的那只应用窗口，不是 MTNode 的画布窗口
+ * （主窗口那套 AI 工作台只收会话 / 节点 / 识图 / 变体 / 修复，见 renderer/app-ai-activity.js）。
+ * 这里不建第二套运行态、不改这次调用的任何行为：目标窗口不在 / 页面上没看这条通道，推帧直接失败，生成照旧。
+ *
+ * 帧形状（应用自报也用同一个，见 app-host-bridge.js 的 ai.report）：
+ *   { op:"begin"|"step"|"end", key, appId, appName, kind, title, model, phase, detail, status, error }
+ * 文本流没有取消通道（通道清单里只有 apps:hostImageCancel），所以这条活动在渲染层不带 stop()，
+ * 面板照实写「没有取消入口」——不画一颗点了没反应的 ■。
+ */
+const AI_ACTIVITY_CHANNEL = "ai:activity";
+const AI_ACTIVITY_STEP_MS = 300; /* 步骤节流：delta 比面板刷新还密（契约 §7 的 APP_STEP_THROTTLE_MS） */
+const AI_ACTIVITY_CLIP = 160; /* detail 预览：面板本来就单行省略，不必整段搬过去 */
+
+/** 这一帧该推给谁：**发起调用的那只应用窗口**的 webContents。
+ *  预览 / 应用节点内嵌 iframe 的调用都由主窗口代发（appIdOfSender 认不出窗口），
+ *  它们没有自己的 webContents → 回 null = 静默不推（内嵌形态的过程走 iframe 内 agent 那一路）。 */
+function aiActivityTargetOf(e) {
+  if (!e || !e.sender) return null;
+  try {
+    if (!appIdOfSender(e)) return null;
+    if (typeof e.sender.isDestroyed === "function" && e.sender.isDestroyed()) return null;
+  } catch (_) {
+    return null;
+  }
+  return e.sender;
+}
+
+/** 目标窗口在 → 推一帧；不在（没有目标 / 已销毁）就什么都不做（上报是旁路，绝不影响这次调用） */
+function aiActivityPush(frame, target) {
+  const wc = target && typeof target.send === "function" ? target : null;
+  if (!wc) return false;
+  try {
+    if (typeof wc.isDestroyed === "function" && wc.isDestroyed()) return false;
+  } catch (_) {
+    return false;
+  }
+  try {
+    wc.send(AI_ACTIVITY_CHANNEL, frame);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+/** 一次模型代理调用的活动句柄：begin / step / end 只推帧，且都是幂等的
+ *  （同一 reqId 从开始到结束只有一条；晚到的 end 覆盖不了早到的，重复 end 不再发帧）。
+ *  target = 发起这次调用的那只应用窗口的 webContents（见 aiActivityTargetOf）。 */
+function aiActivityTrack(appId, opts, kind, model, target) {
+  const o = isObj(opts) ? opts : {};
+  const owner = String(appId || "");
+  const reqId = String(o.reqId || "");
+  const appName = String((appHostSummaryOf(owner) || {}).name || owner);
+  const what = kind === "app-image" ? t("AI 出图") : t("AI 文本生成");
+  const key = "app:" + owner + ":" + (reqId || "auto-" + Date.now().toString(36));
+  const title = String(o.title || "") || (appName ? appName + " · " + what : what);
+  let started = false;
+  let ended = false;
+  let lastStepAt = 0;
+
+  function frame(op, phase, detail, extra) {
+    return Object.assign(
+      {
+        op: op,
+        key: key,
+        appId: owner,
+        appName: appName,
+        kind: kind,
+        title: title,
+        model: String(model || ""),
+        phase: String(phase || "queued"),
+        detail: String(detail || "").slice(0, AI_ACTIVITY_CLIP),
+      },
+      extra || {},
+    );
+  }
+
+  return {
+    key: key,
+    /** 真的开始跑了才推第一帧（参数错误的调用一条活动都不该进面板） */
+    begin(phase, detail) {
+      if (started || ended) return;
+      started = true;
+      lastStepAt = Date.now();
+      aiActivityPush(frame("begin", phase || "connect", detail), target);
+    },
+    step(phase, detail) {
+      if (!started || ended) return;
+      const now = Date.now();
+      if (now - lastStepAt < AI_ACTIVITY_STEP_MS) return;
+      lastStepAt = now;
+      aiActivityPush(frame("step", phase, detail), target);
+    },
+    end(status, error) {
+      if (ended) return;
+      ended = true;
+      if (!started) return;
+      const st = status === "error" ? "error" : status === "cancelled" ? "cancelled" : "ok";
+      aiActivityPush(
+        frame("end", st === "ok" ? "done" : st, "", { status: st, error: String(error || "").slice(0, 500) }),
+        target,
+      );
+    },
+  };
+}
+
 async function hostText(e, opts) {
   const own = senderAppDir(e);
   if (!own) return bad(t("不是应用窗口"), "not_app");
@@ -7625,10 +7989,29 @@ async function hostTextStream(e, opts) {
   if (built.error) return bad(built.error, built.code || "no_provider");
   const wc = e.sender;
   const reqId = String((isObj(opts) && opts.reqId) || "");
+  const model = String((built.spec && built.spec.model) || "");
+  /* 应用内 AI 活动：这次调用在**它自己那只应用窗口**的「AI 工作中」里显示成一条（只推帧，不改调用本身） */
+  const act = aiActivityTrack(own.id, opts, "app-text", model, aiActivityTargetOf(e));
+  let thought = "";
+  let wrote = "";
+  const actNote = (type, data) => {
+    const d = isObj(data) ? data : {};
+    if (type === "reasoning") {
+      thought += String(d.text || "");
+      act.step("thinking", thought);
+    } else if (type === "delta" || type === "text") {
+      wrote += String(d.text || "");
+      act.step("writing", wrote);
+    } else if (type === "done") act.end("ok");
+    else if (type === "error") act.end("error", d.error);
+  };
   const emit = (type, data) => {
     emitHostStreamFor(e, opts, Object.assign({ reqId: reqId, type: type }, data || {}));
+    try {
+      actNote(type, data);
+    } catch (_) {}
   };
-  const model = String((built.spec && built.spec.model) || "");
+  act.begin("connect", t("已发出请求"));
   if (typeof aiCallStream !== "function") {
     const r = await hostText(e, opts);
     emit(r.ok ? "done" : "error", r.ok ? { text: r.text, model: model } : { error: r.error, code: r.code || "" });
@@ -7636,11 +8019,14 @@ async function hostTextStream(e, opts) {
   }
   try {
     const r = await aiCallStream(built.spec, emit);
-    return textResult(r, model);
+    const out = textResult(r, model);
+    act.end(out && out.ok === false ? "error" : "ok", (out && out.error) || "");
+    return out;
   } catch (err) {
     const msg = String((err && err.message) || err);
     const code = callErrCode(err);
     emit("error", { error: msg, code: code });
+    act.end("error", msg);
     return { ok: false, error: msg, code: code };
   }
 }
@@ -8676,6 +9062,17 @@ function registerAppsIpc(opts) {
             if (win && !win.isDestroyed()) win.webContents.send("appHost:stream", ev);
           } catch (_) {}
         },
+        /* 任意通道回这只窗口：应用自报的 AI 活动帧（appHost.aiReport → "ai:activity"）
+           要走的就是它 —— 与自动登记那条帧一样，收件人是**发起调用的应用窗口**，不是主窗口。 */
+        send: (channel, payload) => {
+          try {
+            if (!win || win.isDestroyed()) return false;
+            win.webContents.send(String(channel || ""), payload);
+            return true;
+          } catch (_) {
+            return false;
+          }
+        },
       };
       return await hostBridge.call(caller, String(a.ns || ""), String(a.method || ""), isObj(a.args) ? a.args : {});
     } catch (err) {
@@ -8764,6 +9161,9 @@ function registerAppsIpc(opts) {
           return hostDataWrite(e, pvArg);
         case "account":
           return hostAccount(e, pvArg);
+        /* 作者 / 版本清单（appHost.authorTag）：与独立窗口的 apps:hostAuthorTag 同一条实现 */
+        case "authorTag":
+          return hostAuthorTag(e, pvArg);
         /* 文件只读两项：与独立窗口同一条宿主实现（fs.exists / fs.imageDataUrl），
            读图不必先有画布绑定，也不另开 base64 专用通道 */
         case "fsExists":

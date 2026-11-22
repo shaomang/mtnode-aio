@@ -693,9 +693,94 @@ function markResumeCandidate(key, reqId, message) {
 const RETRYABLE_FAILURE_RE =
   /(^|\D)429(\D|$)|rate\s*limit|too many requests|insufficient_quota|quota|(^|\D)5\d\d(\D|$)|econn|socket hang up|fetch failed|getaddrinfo|network error|request timed out|timed ?out|runtime is not running|transport closed|bad gateway|service unavailable|temporar|upstream|服务器繁忙|服务暂|稍后重试|请求过于频繁|限流|过载|上游|malformed|invalid json/i
 
+/* ── 服务端「输入容量」拒收（本次热修）────────────────────────────────────────
+   现场（用户报的那条 400 原文）：
+     {"message":"user input too long, 34238 tokens exceeds max 32768 tokens
+      (request id: 166e0829-…)", "type":"invalid_request_error", "param":null,
+      "code":"invalid_request_error"}
+   这不是鉴权 / 配置 / 参数错误，而是**服务端把这次请求的输入判为超过该入口的输入
+   上限**（本机用同一把 DeepSeek key 直连 api.deepseek.com 复现过同构的 4xx 体，
+   格式逐字一致）。MTNode 侧没有任何「输入预算」校验：
+     · 网关给每条路由的每只模型声明的窗口恒为 1,000,000（ROUTE_CONTEXT_WINDOW）；
+     · 压缩触发线是**绝对 token 数**（低 150K / 中 300K / 晚 450K，见根目录
+       dsh-compact-policy.js），换算成 thresholdRatio 时分母也是 1,000,000。
+   所以只要某条入口的真实上限低于触发线（32K 就是典型），**压缩永远等不到**，
+   请求必然一路涨到被服务端拒收为止。
+   而 dsh 的溢出分类器（@deepseek-ai/dsh-llm 的 isContextWindowExceededError）只认
+   context length/window、too long for (the) model context 这几类措辞，不认
+   `user input too long, N tokens exceeds max M tokens` → 400 被归一成
+   INVALID_REQUEST → compaction-basic 的「溢出 → 压缩 → 重试」恢复同样不会跑
+   （dsh 官方 troubleshooting 文档把这个缺口记为已知问题）。
+   自动恢复已下沉到运行时插件 mtnode-overflow-recovery（见 cordis.yml 与
+   plugins/overflow-recovery-plugin.mjs）：它把这两种措辞翻译成溢出语义，复用引擎现成的
+   工具结果截断 / 较早区间摘要 / 同轮重发。所以能跑到网关这条 emit 的容量拒收只剩两种
+   情形 —— 插件没开（env 缺席）、或**压过一整轮仍在墙外**。网关这一层因此只做三件事：
+   把裸 400 变成能照着做的中文（两种情形给不同出路）、把「本次用量 / 服务端上限 / 路由 /
+   是否已自动压过」写进诊断行（下次现场就能判定该入口真实窗口，不用再猜），以及把这类
+   失败排除出「可重发」判定。
+   报文里的 M **只当线索，不当真值**（同机同 Key 34K–102K 输入全部通过，「32768」属于
+   哪个入口仍没定位）。所以网关不会把 M 写进任何声明 / 设置：一旦据此把窗口压小，正常的
+   长上下文会话会被人为截短。恢复只发生在**本次会话内** —— 截断工具结果 + 把较早区间
+   摘要成一条 checkpoint + 同轮重发（见上面那个插件），不改任何后续设置。 */
+const CAPACITY_REJECT_RE =
+  /(?:user\s+input|input\s+tokens?|prompt\s+tokens?)[^,]{0,32}?too\s+(?:long|large)\s*,?\s*([\d,]+)\s*tokens?\s+(?:exceeds?|is\s+larger\s+than)\s+(?:the\s+)?(?:max|maximum)\s*([\d,]+)\s*tokens?/i
+/* DeepSeek 线上另一种同义措辞（见 dsh troubleshooting 文档）：
+   {"message":"Input token exceed the limit (request id: …)","type":"api_error"} */
+const CAPACITY_REJECT_TIGHT_RE = /input\s+tokens?\s+exceed\s+the\s+limit/i
+
+/** 从 provider 报文里取出「本次输入 / 服务端上限」两个数（取不到就是 0）。 */
+function capacityRejectOf(message) {
+  const s = String(message || '')
+  const m = s.match(CAPACITY_REJECT_RE)
+  if (m) {
+    return {
+      used: Number(String(m[1]).replace(/,/g, '')) || 0,
+      max: Number(String(m[2]).replace(/,/g, '')) || 0,
+    }
+  }
+  return CAPACITY_REJECT_TIGHT_RE.test(s) ? { used: 0, max: 0 } : null
+}
+
+/** 命中「输入容量拒收」就把报文换成可操作的中文（未命中原样返回）。
+ *  长度控制在 emit 的 500 字截断以内：原始报错只留前半段，够定位 request id。
+ *  @param cycles 本轮运行时已自行压缩过的次数（compaction/start 计数，见 handleRun）：
+ *    >0 = 自动压缩 + 同轮重发已经跑过、仍在同一堵墙外，文案就得给「换模型 / 新开会话」
+ *    而不是「发 /compact」—— 那一条它已经替你试过一次了。 */
+function capacityRejectMessageOf(message, provider, model, cycles) {
+  const raw = String(message || '')
+  const hit = capacityRejectOf(raw)
+  if (!hit) return raw
+  const where = [provider, model].filter(Boolean).join('/')
+  const nums = hit.max > 0
+    ? `本次输入 ${hit.used || '?'} tokens，该入口上限 ${hit.max} tokens`
+    : `本次输入超过了该入口的输入上限`
+  const retries = Math.max(0, Number(cycles) || 0)
+  const recovered = retries > 0
+  /* 留痕：这一行是「该入口真实窗口到底多大」的唯一现场证据；recovered / retries
+     再补一句「自动恢复跑没跑、跑了几趟」，免得下次还得靠猜。 */
+  diag(
+    `capacity-reject route=${where || '(未知)'} used=${hit.used} max=${hit.max} ` +
+    `recovered=${recovered ? 'true' : 'false'} retries=${retries} raw=${raw.slice(0, 160)}`,
+  )
+  const head = recovered
+    ? `上下文仍超出服务端上限（${nums}）。本轮已自动压缩并重试 ${retries} 次仍超出该入口上限，` +
+      '压缩后的历史还是比这个入口能收的输入大。建议：① 换一只窗口更大的模型 / 服务商；' +
+      '② 新开会话继续；③ 长文别贴进对话，让 agent 直接读写文件。'
+    : `上下文超出服务端上限（${nums}）。` +
+      '这不是 API Key / 参数问题，而是这条路由的真实输入上限比 MTNode 的压缩触发线小，' +
+      '历史还没到触发线就被服务端拒了。处理：① 会话里发 /compact 压缩历史，或新开会话继续；' +
+      '② 换一只窗口更大的模型 / 服务商；③ 长文别贴进对话，让 agent 直接读写文件。'
+  const tail = (where ? `路由：${where}。` : '') + `原始报错：${raw.slice(0, 180)}`
+  return (head + tail).slice(0, 480)
+}
+
 function isRetryableGatewayFailure(message) {
   const s = String(message || '').trim()
   if (!s) return false
+  /* 输入容量拒收不是「重发就能好」的失败：同一份历史的续跑必然再撞同一堵墙。
+     恢复已下沉到运行时插件 mtnode-overflow-recovery（压缩 + 同轮重发在运行时里做完），
+     网关这一层不再拿宿主的重发预算去试探 —— 所以这里恒 false，不要改。 */
+  if (capacityRejectOf(s)) return false
   /* 宿主不会自动重发的失败:取消 / 终止、配置类、会话不可续跑 —— 不保活 */
   if (
     /中止|取消|cancel|abort|aborted|已终止|已手动停止|已请求终止|已请求中断|resume_unavailable|未配置|api ?key|任务内容为空|工作范围为/i.test(s)
@@ -2074,6 +2159,13 @@ async function getRuntime(workspace, model, maxTokens, provider, apiKey, baseUrl
      pure 运行由 handleRun 预先裁空（toolsJson === ''），此处无需再判 pure。 */
   if (toolsJson) env.MTNODE_TOOLS_JSON = toolsJson
   else delete env.MTNODE_TOOLS_JSON
+  /* 上下文溢出自动恢复（运行时插件 mtnode-overflow-recovery，见 cordis.yml 该行的契约）：
+     值 = 允许的自动恢复次数，1 = 默认配额（**一次**压缩 + 同轮重发）。
+     为什么必须有这一行：插件的 apply() 首行就是「env 缺席 = 整链 no-op」，缺了它整套恢复
+     等于没装。父进程显式设成 0 / off 时仍然尊重（给排障留一个手动关闸）。
+     恢复只发生在**本次会话内**（截断工具结果 + 把较早区间摘要成 checkpoint + 原 step 重发），
+     不改任何声明窗口或压缩档位 —— 服务端报的那个 32768 只当线索，不当真值。 */
+  if (!env.MTNODE_OVERFLOW_RECOVERY) env.MTNODE_OVERFLOW_RECOVERY = '1'
   if (envPatch) Object.assign(env, envPatch)
 
   /* 占用登记:放在本函数第一个 await 之前(同步完成),否则并发 run 会挑中同一台
@@ -2393,10 +2485,11 @@ function onBridgeFrame(key, m, socket) {
     out({ event: { reqId: claim ? claim.reqId : '', type: 'ix-drop', data: { id: m.id, reason: 'dropped' } } })
     return
   }
-  if (m.t !== 'question' && m.t !== 'approval' && m.t !== 'canvas' && m.t !== 'db' && m.t !== 'facts' && m.t !== 'shot' && m.t !== 'tool' && m.t !== 'lt' && m.t !== 'asset' && m.t !== 'manifest' && m.t !== 'browser' && m.t !== 'gui' && m.t !== 'dev' && m.t !== 'web-tool') return
+  if (m.t !== 'question' && m.t !== 'approval' && m.t !== 'canvas' && m.t !== 'db' && m.t !== 'facts' && m.t !== 'recall' && m.t !== 'shot' && m.t !== 'tool' && m.t !== 'lt' && m.t !== 'asset' && m.t !== 'manifest' && m.t !== 'browser' && m.t !== 'gui' && m.t !== 'dev' && m.t !== 'web-tool') return
   const claim = claimOf(key)
   /* 归属校验:交互帧一律自带发起轮的 session id(question/approval 来自 bridge-plugin,
      canvas/db 来自 canvas-plugin/db-plugin、facts 来自 ai-facts-plugin(MTNode AI 事实库)、
+     recall 来自 session-recall-plugin(会话反查 → 宿主按会话存储取早期原文)、
      tool 来自 tools-plugin 的 exec agent),
      网关据此判定「这帧属不属于此刻在跑的这一轮」。与本轮对不上 = 预热轮('ok')在问话,
      或上一轮遗留的后台 job / 子代理现在才醒过来发起交互。这类帧一旦弹进当前会话就是
@@ -3055,6 +3148,13 @@ async function handleRun(params) {
      会把它报成 turn/end reason error —— 绝不能透给宿主(宿主的失败重发闸只看 error,
      会把一次「暂停」当 429 类失败连重发 5 次,见 pausedRuns),就地吞掉并留一行日志。 */
   let runErrorMsg = ''
+  /* 本轮「运行时自己压过几次」（compaction/start 计数，只数根会话）。
+     容量拒收文案要分两种情形：第一次撞墙（还留着 /compact 的人工出路）与自动压缩
+     重试过仍在墙外（那三条里已经有一条被自动做过）。为什么看压缩帧而不是插件那句
+     诊断行：插件跑在 runtime 子进程里，它的 stderr 被 SDK 客户端收进 stderrTail，
+     只用于进程死亡诊断，网关进程内拿不到；而插件唯一的动作就是调 compactIfNeeded ——
+     压缩会话事件是同一件事在网关这侧的可见形态（见 capacityRejectMessageOf）。 */
+  let compactionCycles = 0
   const emit = (type, data) => {
     if (type === 'error' && data && typeof data.message === 'string' && data.message) {
       if (runPaused()) {
@@ -3599,6 +3699,11 @@ async function handleRun(params) {
             if (d && d.provider) curProvider = String(d.provider)
             if (d && d.model) curModel = String(d.model)
             break
+          case 'compaction/start':
+            /* 自动压缩开始（压力触发或插件在溢出后触发，网关这侧看不出区别）。
+               只数根会话：子代理那棵树也会压缩，记进来会把「本轮压过几次」说大。 */
+            if (String(sid || '') === String(sessionOut || '')) compactionCycles++
+            break
           default:
             /* 其余事件(含 steer 的插话回流:agent/inbox/spliced / steering 相关、
                pause 的 turn/end reason aborted)一律不记账:token 只在上面的 usage 增量块
@@ -3685,7 +3790,12 @@ async function handleRun(params) {
        (等待宿主 ~5s 后的续跑轮点名复用同进程;取消 / 配置 / 会话不可续跑等
        宿主不会重发的报文在 markResumeCandidate 里被滤掉) */
     failForResume = rawMessage
-    emit('error', { message })
+    /* 输入容量拒收（`user input too long, N tokens exceeds max M tokens` /
+       `Input token exceed the limit`）在这里换成可操作的中文，并留一行诊断：
+       dsh 的溢出分类器不认这两种措辞（归一成 INVALID_REQUEST），自动压缩恢复已下沉到
+       运行时插件 mtnode-overflow-recovery；能走到这里的容量拒收 = 插件没开，或它压过
+       compactionCycles 趟仍在墙外 —— 两种情形的出路不同，见 capacityRejectMessageOf。 */
+    emit('error', { message: capacityRejectMessageOf(message, provider, model, compactionCycles) })
     /* 出错收场也要把本轮权威 session id 交出去:宿主正是靠这一轮失败后的 id 决定
        下轮能否点名续跑(拿不到就退化成整轮重发)。若这一轮在起 runtime 前就炸了,
        该 id 在磁盘上根本没有会话文件,下一次续跑会被判 RESUME_UNAVAILABLE 自动退回重发 */
@@ -4113,6 +4223,7 @@ const OFFICIAL_MODEL_MODALITIES = ['text', 'image']
    必须与 dsh-compact-policy.js 的 SELF_ROUTE_WINDOW 同值,改这里要同时改那里
    (test/smoke-token-budget.js 的 [11] 会对账)。 */
 const ROUTE_CONTEXT_WINDOW = 1000000
+
 /* 已知官方模型的元数据兜底(真源:dsh-llm-deepseek 的 DEFAULT_MODELS 与 gateway 的
    providerCatalog):宿主只给 id 字符串时用来补 name / 上下文窗口 / 输入模态。
    网关侧所有官方模型一律声明可识图(text + image):dsh-tool-fs 的读图闸按模态放拦,
@@ -4343,7 +4454,7 @@ function applySettings(dshHome, effort, mtnodeProviders, permissionPreset, hostP
   /* 指纹末尾的 `rp1` 是「托管补丁内容版本号」：重试策略这类常量段不进上面任何一项，
      没有它就会出现「代码改了、盘上补丁文件还是旧的、热重载也不触发」。改这份托管
      配置的常量段时手动进一版（rp2 / rp3 …）。 */
-  const hash = eff + '|' + perm + '|' + JSON.stringify(list) + '|hp:' + persona + '|om:' + JSON.stringify(om) + '|rp5'
+  const hash = eff + '|' + perm + '|' + JSON.stringify(list) + '|hp:' + persona + '|om:' + JSON.stringify(om) + '|rp6'
   if (hash === lastSettingsHash && home === lastSettingsHome) return { envPatch, changed: false }
   try {
     const providers = {}
@@ -5431,6 +5542,22 @@ rl.on('line', (line) => {
             try {
               pending.socket.write(JSON.stringify({
                 t: 'facts-result',
+                id: p.id,
+                ok: !err,
+                result: p.result == null ? null : p.result,
+                ...(err ? { error: err } : {}),
+              }) + '\n')
+            } catch {}
+          } else if (p.kind === 'recall') {
+            /* 会话反查工具（mtnode_recall）：宿主按「本轮绑定会话 > 显式 sessionId」读自己
+               的会话存储（早期原文在被压缩 / 被截断之后仍在盘上），四个动作都只读，
+               条数与字节上限由宿主夹住。与 facts / canvas 同一形状：宿主失败＝ok:false +
+               error 文本（例如该会话尚未加载 / 不存在、参数越界），运行时那一次调用以失败
+               收场，会话不中断。 */
+            const err = p.error != null ? String(p.error) : ''
+            try {
+              pending.socket.write(JSON.stringify({
+                t: 'recall-result',
                 id: p.id,
                 ok: !err,
                 result: p.result == null ? null : p.result,

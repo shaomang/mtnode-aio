@@ -903,11 +903,22 @@
     typeof window !== "undefined"
       ? (window.MTNodeVisionRuns = window.MTNodeVisionRuns || { rows: new Map() })
       : { rows: new Map() };
+  /* ── AI 活动登记（renderer/app-ai-activity.js · 契约 docs/ai-activity.md §5.3）──
+     起手 / 收尾都走内核那一份实现（visionOpen / visionClose）：登记键与桥接**同一把**
+     vision:<rowKey>，所以「显式登记 + 桥接各建一条」不会发生；同一节点自己正在跑时
+     识图折成它的一条步骤，不另起一行（与 collectRunQueueAll 的 byNodeId 同口径）。 */
+  function visionActApi() {
+    try {
+      return typeof window !== "undefined" && window.MTNodeAiActivity ? window.MTNodeAiActivity : null;
+    } catch (_) {
+      return null;
+    }
+  }
   function visionRunBegin(node, type) {
     if (!visionRuns || !visionRuns.rows) return "";
     try {
       const key = "v" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-      visionRuns.rows.set(key, {
+      const row = {
         key,
         nodeId: (node && node.id) || "",
         title: (node && node.title) || T("表单"),
@@ -916,7 +927,10 @@
         abKey: "vision:" + String((node && node.id) || ""),
         runKey: (node && node.id) || "vision",
         startedAt: Date.now(),
-      });
+      };
+      visionRuns.rows.set(key, row);
+      const act = visionActApi();
+      if (act && typeof act.visionOpen === "function") act.visionOpen(row);
       if (typeof updateRunQueuePanel === "function") updateRunQueuePanel();
       return key;
     } catch (_) {
@@ -927,6 +941,9 @@
     if (!key || !visionRuns || !visionRuns.rows) return;
     try {
       visionRuns.rows.delete(key);
+      const act = visionActApi();
+      /* 行先删再收尾：桥接那一拍看到的是「已收尾」，不会再多建一条 */
+      if (act && typeof act.visionClose === "function") act.visionClose(key);
       if (typeof updateRunQueuePanel === "function") updateRunQueuePanel();
     } catch (_) {}
   }

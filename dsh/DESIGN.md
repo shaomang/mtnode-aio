@@ -206,6 +206,55 @@ dsh 自带压缩（`@deepseek-ai/dsh-compaction-basic` + `token-meter` + `tool-r
   三处入口同源 + i18n + build.json 白名单）、`test/smoke-assist-compact.js`（助手栏真跑）、
   `test/smoke-agent-compact-menu.js`（会话 ⚙ 菜单）。
 
+### 上下文溢出自动恢复契约（运行时插件 `mtnode-overflow-recovery`）
+
+> 上一节「已知代价」里那句「超了由 provider 报错 + dsh 既有的溢出恢复（`maxOverflowRetries`）
+> 兜住」**对 DeepSeek 官方不成立**：dsh 的溢出恢复（`@deepseek-ai/dsh-compaction-basic` 监听
+> `agent/request-error`，命中 `failure.code === 'CONTEXT_WINDOW_EXCEEDED'` 就
+> `compactIfNeeded(agent, 'context-overflow', signal)`，代次增长才 `{kind:'retry'}` 在原 step 重发）
+> 判据是**错误码**，而官方输入容量拒收的两种措辞 —— `user input too long, 34238 tokens exceeds
+> max 32768 tokens`、`Input token exceed the limit` —— 不在 `@deepseek-ai/dsh-llm` 的
+> `isContextWindowExceededError` 词表里，裸 400 因此被归一成 `INVALID_REQUEST`，溢出分支直接
+> `next()`，压缩一次都不会跑（本机现场：`[ix-gate] resume-candidate … err=user input too long,
+> 40891 tokens exceeds max 32768 tokens`）。
+> 插件 `dsh/gateway/plugins/overflow-recovery-plugin.mjs`，cordis.yml 固定挂载行
+> `id: mtnode-overflow-recovery`；只 import node 内置（零 import）。
+
+- **不 patch 包，走运行时插件层**：`CompactionEngine extends Service`、注册名就是 `compaction`、
+  `compactIfNeeded` 是公开方法 —— 插件直接复用引擎现成的「工具结果截断 → 较早区间摘要成一条
+  checkpoint、保留系统提示 + 最近尾部 → 原 step 重发」全链路，`node_modules` 一行不改
+  （改了重装即丢，且 `@deepseek-ai` 的包随 dsh 版本一起升）。
+- **注入点 = `agent/request-error` 瀑布**（监听器签名 `(payload, next)`）：`payload =
+  { agent, turn, step, provider, failure, retryPolicy, signal }`，`agent` 由 dsh-agent 的
+  `agentEvents` 以 `fused(payload)` 注入，不需要 `inject`；`failure` 是 `LlmFailure =
+  { message, code, status?, providerRetryAfterMs?, requestId?, offloadImages? }`，插件只读
+  `message` / `code`。
+- **判定顺序（缺一步就会压错或压了不落地）**：① `code === 'CONTEXT_WINDOW_EXCEEDED'` → 直接
+  `next()`，那是 compaction-basic 的活，再压一次就是重复压缩；② 容量拒收正则不命中 → `next()`；
+  ③ 取引擎必须用 `ctx.get('compaction')` 而**不是** `inject: ['compaction']` —— 压缩行被卸载时
+  `inject` 会让插件永久等待、连无关请求错误都卡死；④ 落地判据复刻 compaction-basic 的 overflow
+  分支：`signal` 未取消**且** `agent.session.surface.replaceGeneration` 有增长，才
+  `{kind:'retry'}`；否则 `next()` 保留原始错误（压了没落地还重发，只会在同一堵墙上再撞一次）。
+- **只走一趟**：自持 `WeakMap` 按 agent 计数，默认配额 1 次（对齐 `maxOverflowRetries`，
+  硬顶 5 —— 每次压缩要花一次摘要模型的钱）；`agent/status` 的 `idle` 与 `session/event` 的
+  `assistant/message` 时清零（会话继续产出正文 = 已恢复正常，把配额还回去）。
+- **与 compaction-basic 不重复压**：本插件默认（非 `prepend`）注册 = 站在它**内侧** —— 它认得
+  的溢出它先处理，只有它 `next()` 放行的（含被 `INVALID_REQUEST` 化的容量拒收）才轮到本插件。
+- **词表双份，必须一起改**：插件不 import 网关文件（不同进程），容量拒收正则在
+  `gateway.mjs` 的 `CAPACITY_REJECT_RE`（给用户的中文文案与诊断行）与插件里各有一份，**逐字
+  相同**；改一处要两处一起改，否则会出现「网关认得出、运行时恢复不了」或反之。
+- **开关与降级保底**：gateway 在 spawn 时注入 env `MTNODE_OVERFLOW_RECOVERY`，值 = 允许的自动
+  恢复次数（`1/on/true/yes` = 默认 1）。**env 缺席 / 空 / `0|off|false|no` / 非法 → 插件不注册
+  任何监听器**，行为与未接入时一字不变；恢复过程中任何异常（取引擎、读代次、压缩本身）一律
+  `next()` —— 任何情况下不得因「恢复失败」改变原始错误的分类与文案。诊断向运行时 stderr 打一行
+  `[overflow-recovery] route=… used=… max=… recovered=true|false retries=N`（stdout 留给
+  JSON-RPC 帧），`max` 就是该入口真实窗口的现场证据。
+- **托管补丁指纹随行**：插件行本身在 `cordis.yml`（不进 `applySettings` 的托管补丁），但凡改动
+  `applySettings` 写出的常量段都要手动进一版指纹末尾的 `rpN`（当前 `rp6`），否则盘上补丁文件
+  不重写、热重载不触发。
+- **现状（本轮回填时的真实状态）**：env 尚无任何地方下发 → 挂载本身零副作用、纯 no-op；
+  网关文案里的 `recovered/retries` 联动与「学到的真实窗口反哺模型声明」不在本轮。
+
 ### Node 运行时（网关必须跑在真 Node 上）
 
 dsh 0.2 的内核在 boot 阶段要用原生插件 `node-addon-require-builtin` 去 hook ESM 内部模块，
@@ -459,6 +508,24 @@ sessionTag, at, status?, stopReason?}` —— 来自运行时的**顶层通知**
 > `tool` 事件的 `turn` / `step` 同源(`event.data`)。这三者与 `say-end` 都只是**增量字段 /
 > 新增事件**:既有事件名与语义一字未改,老渲染层忽略即可,不影响 `finalResponse`、`usage`
 > 与其余事件链路。渲染层据此 + `turn/start`、`step/start`(走 `session-event` 透传)按步切段。
+
+### 会话原文反查(帧 `recall` ↔ `recall-result`)
+
+- **工具面** `mtnode_recall`(动作 `outline` / `search` / `read` / `context`):运行时内插件
+  `dsh/gateway/session-recall-plugin.mjs`(cordis 组合行 `- id: mtnode-session-recall`)。
+- **帧**:插件发 `{t:'recall', id, sessionId, action, params}`(`sessionId` = `exec.agent.id`,
+  与 canvas / db / facts 同一盖章口径),网关在交互帧白名单里放行后转成 run 事件 `recall`;
+  宿主 `renderer/app-session-recall.js` 用自己的会话存储作答,回执走 `interact{kind:'recall'}`,
+  网关回 `{t:'recall-result', id, ok, result|error}`。超时 20s(与 `mtnode_facts` 同上限)。
+- **为什么可行**:手动压缩只给消息盖 `_fold`(唯一过滤点是 `renderer/app-db.js` 的
+  `agentHistoryEntries`)、运行时自动压缩只在 `st.compacts` 记一条 `kind:'auto'`、连压缩都没触发时
+  是 `AGENT_HIST_MAX_CHARS` 从最早处丢 —— 三条路都**不删任何消息**,所以原文按索引 / 关键词仍取得回,
+  不必去读 dsh 的 `session.jsonl`。
+- **归属与失败**:没盖章 / 本轮没有绑定会话 / 会话文件读不到 → 错误文本,只让这一次工具调用失败
+  (与 db / facts 同一口径,会话不中断)。**不回填上下文、不改压缩触发线与档位、不进可裁工具名单**
+  (反查没有「本轮用不上」的档位,永远注册)。
+- **全文契约**(四个动作的参数与返回形状、上限常量、错误清单、可发现性、打包与回归闸):
+  `docs/session-recall.md`。
 
 ### 图像附件(`run.images`)
 

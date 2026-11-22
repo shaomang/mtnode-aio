@@ -4,16 +4,24 @@
  *   · 入口是状态栏最左一颗（CSS order -6，见 css/fim.css），点一下开 / 关面板；
  *   · 面板 persistent（AGENTS.md 的浮层口径）：点外部 / 点画布都不关，
  *     只走窗内 ✕ / Esc / 再点一次这颗按钮；开面板前先 closeNodePopsExcept("") 与别的面板互斥；
- *   · 面板里只放设置：总开关 · 服务商 · 模型 · 触发延迟 · 最大补全长度 · 本次统计 · 隐私提示；
- *   · 设置落 S.config.fim = { on, route, model, delayMs, maxTokens }，
+ *   · 面板里只放设置：总开关 · 自动 / 手动两种触发 · 服务商 · 模型 · 触发延迟 ·
+ *     最大补全长度 · 状态行 · 本次统计 · 隐私提示；
+ *   · 设置落 S.config.fim = { on, auto, manual, route, model, delayMs, maxTokens }，
  *     走既有的 window.api.configSave(S.config)（providers 段有主进程保护，本文件不碰）。
+ *
+ * 本轮（2026-11 用户需求）改了三处：
+ *   ① **两种模式分开管**：auto（边打边补）/ manual（按 Tab 现场要一次，再按 Tab 采纳），
+ *      各一枚开关，总开关仍在最上面（关掉它 = 两种都不工作）；
+ *   ② 模型格不再只认 flash：**全部模型都可选**，flash 排在最前并标「推荐」——
+ *      以前只列 flash，只配了 pro / 中转的服务商就永远选不出模型，表现就是「补全没反应」；
+ *   ③ 加了一行**状态**：就绪 / 没有服务商 / 没有模型 / 上一次失败的原因。
+ *      用户以前只能看到「什么都不发生」，现在面板直接写清卡在哪一步。
  *
  * 服务商 / 模型清单不另拼一份：真源是 app.js 的 agentRouteGroupsNow()
  * （DeepSeek 官方 + 已配置的 mtnode 服务商，显示名自然覆盖中转 / opencode 这些卡）。
- * 补全只用 flash 档：同组其它模型列出来但灰显「不支持补全」，不让选。
  *
  * 本次统计（请求数 / 采纳数）由补全执行侧写进来，面板只读：
- *   window.MTNodeFim.setStats({ requests, accepted })；
+ *   window.MTNodeFim.setStats({ requests, accepted }) 或 window.MTFim.stats()；
  * 取数时依次认 window.fimStats / S.fimStats（对象里的 requests / accepted，
  * 也认 req / acc 这两个短名），都没有就是 0 / 0 —— 面板不会因此报错。
  *
@@ -27,8 +35,8 @@
     return typeof I18n !== "undefined" && I18n.t ? I18n.t(s) : s;
   }
 
-  /* 缺省值：开 = 关（用户自己点开），延迟 350ms，单次最多 128 token */
-  const DEF = { on: false, route: "", model: "", delayMs: 350, maxTokens: 128 };
+  /* 缺省值：**开**（2026-11 起补全是基础功能）、自动与手动都开、延迟 350ms、单次最多 128 token */
+  const DEF = { on: true, auto: true, manual: true, route: "", model: "", delayMs: 350, maxTokens: 128 };
   const DELAY_MIN = 0;
   const DELAY_MAX = 3000;
   const TOK_MIN = 16;
@@ -61,6 +69,8 @@
     if (!s.config.fim || typeof s.config.fim !== "object") s.config.fim = {};
     const c = s.config.fim;
     if (typeof c.on !== "boolean") c.on = DEF.on;
+    if (typeof c.auto !== "boolean") c.auto = DEF.auto;
+    if (typeof c.manual !== "boolean") c.manual = DEF.manual;
     if (typeof c.route !== "string") c.route = DEF.route;
     if (typeof c.model !== "string") c.model = DEF.model;
     c.delayMs = clampInt(c.delayMs, DELAY_MIN, DELAY_MAX, DEF.delayMs);
@@ -92,12 +102,25 @@
     return [];
   }
 
-  /* 补全只认 flash 档：一家里挑出所有名字里带 flash 的模型 */
+  /* 补全优先 flash 档：它快、便宜，短补全最合适；但**不再是唯一选项** ——
+     只配了 pro / 中转的服务商以前在面板里根本选不出模型（用户现场的「补全没反应」）。
+     现在的顺序 = flash 在前（标「推荐」）+ 其余全部可选。 */
   function flashModels(g) {
     const list = ((g && g.models) || []).map(String);
     return list.filter(function (m) {
       return /flash/i.test(m);
     });
+  }
+
+  function modelsOf(g) {
+    const list = ((g && g.models) || []).map(String);
+    const flash = list.filter(function (m) {
+      return /flash/i.test(m);
+    });
+    const rest = list.filter(function (m) {
+      return flash.indexOf(m) < 0;
+    });
+    return flash.concat(rest);
   }
 
   function routeNow(c, gs) {
@@ -109,12 +132,12 @@
         pref = String(preferredAgentProviderRoute() || "");
     } catch (_) {}
     if (pref && gs.some(function (g) { return g.id === pref; })) return pref;
-    const withFlash = gs.filter(function (g) { return flashModels(g).length; })[0];
-    return String(((withFlash || gs[0] || {}).id) || "");
+    const withModel = gs.filter(function (g) { return modelsOf(g).length; })[0];
+    return String(((withModel || gs[0] || {}).id) || "");
   }
 
   function modelNow(c, g) {
-    const list = flashModels(g);
+    const list = modelsOf(g);
     if (c.model && list.indexOf(c.model) >= 0) return c.model;
     return list[0] || "";
   }
@@ -162,6 +185,22 @@
     rowOn.appendChild(cbOn);
     rowOn.appendChild(lbOn);
 
+    /* 两种触发方式（本轮新增）：自动 = 边打边补；手动 = 按 Tab 现场要一次，再按 Tab 采纳。
+       两枚各自独立，总开关关掉时都不工作。 */
+    const rowAuto = el("label", "fim-row fim-row-sub");
+    const cbAuto = el("input");
+    cbAuto.type = "checkbox";
+    cbAuto.setAttribute("data-f", "auto");
+    rowAuto.appendChild(cbAuto);
+    rowAuto.appendChild(el("span", "", T("自动补全（边打字边给出补全）")));
+
+    const rowManual = el("label", "fim-row fim-row-sub");
+    const cbManual = el("input");
+    cbManual.type = "checkbox";
+    cbManual.setAttribute("data-f", "manual");
+    rowManual.appendChild(cbManual);
+    rowManual.appendChild(el("span", "", T("按 Tab 手动补全（第一下触发，第二下采纳）")));
+
     /* 服务商 */
     const fRoute = el("label", "fim-field");
     fRoute.appendChild(el("span", "", T("服务商")));
@@ -201,6 +240,13 @@
     two.appendChild(fDelay);
     two.appendChild(fTok);
 
+    /* 状态行（本轮新增）：就绪 / 卡在哪一步 / 上一次为什么失败 —— 只读两行小字 */
+    const statusLine = el("div", "fim-status");
+    statusLine.appendChild(el("span", "", T("状态")));
+    const statusVal = el("b", "");
+    statusVal.setAttribute("data-f", "status");
+    statusLine.appendChild(statusVal);
+
     /* 本次统计 */
     const statsLine = el("div", "fim-stats");
     statsLine.appendChild(el("span", "", T("本次统计")));
@@ -213,20 +259,26 @@
 
     pop.appendChild(head);
     pop.appendChild(rowOn);
+    pop.appendChild(rowAuto);
+    pop.appendChild(rowManual);
     pop.appendChild(fRoute);
     pop.appendChild(fModel);
     pop.appendChild(two);
+    pop.appendChild(statusLine);
     pop.appendChild(statsLine);
     pop.appendChild(privacy);
     document.body.appendChild(pop);
 
     const refs = {
       cbOn: cbOn,
+      cbAuto: cbAuto,
+      cbManual: cbManual,
       selRoute: selRoute,
       selModel: selModel,
       inDelay: inDelay,
       inTok: inTok,
       statsVal: statsVal,
+      statusVal: statusVal,
       selRouteWrap: fRoute,
       selModelWrap: fModel,
     };
@@ -236,6 +288,19 @@
     cbOn.addEventListener("change", function () {
       cfg().on = !!cbOn.checked;
       save();
+      renderStatus();
+    });
+
+    cbAuto.addEventListener("change", function () {
+      cfg().auto = !!cbAuto.checked;
+      save();
+      renderStatus();
+    });
+
+    cbManual.addEventListener("change", function () {
+      cfg().manual = !!cbManual.checked;
+      save();
+      renderStatus();
     });
 
     selRoute.addEventListener("change", function () {
@@ -335,14 +400,15 @@
     }
   }
 
-  /* 模型格：这一家的 flash 可选，其余模型在原位灰显「不支持补全」 */
+  /* 模型格：**全部模型都可选**，flash 排最前并标「推荐」（本轮放宽的判据见文件头 ②）。
+     以前非 flash 一律灰显「不支持补全」—— 只配了 pro 档的服务商就永远选不出模型。 */
   function renderModels() {
     const c = cfg();
     const gs = groups();
     const sel = pop._refs.selModel;
     sel.textContent = "";
     const g = gs.filter(function (x) { return x.id === c.route; })[0];
-    const all = ((g && g.models) || []).map(String);
+    const all = modelsOf(g);
     if (!all.length) {
       const o = el("option", "", T("（该服务商没有可用的模型）"));
       o.value = "";
@@ -355,30 +421,29 @@
     sel.disabled = false;
     const cur = modelNow(c, g);
     for (const m of all) {
-      const ok = /flash/i.test(m);
-      const o = el("option", "", ok ? m : m + T("（不支持补全）"));
+      const best = /flash/i.test(m);
+      const o = el("option", "", best ? m + T("（推荐）") : m);
       o.value = m;
-      o.disabled = !ok;
-      o.selected = ok && m === cur;
+      o.selected = m === cur;
       sel.appendChild(o);
-    }
-    /* 这一家一只 flash 都没有：给一条不落选择的说明位 */
-    if (!cur) {
-      const o = el("option", "", T("（该服务商没有 flash 模型）"));
-      o.value = "";
-      o.disabled = true;
-      o.selected = true;
-      sel.insertBefore(o, sel.firstChild);
     }
   }
 
   function statsNow() {
     let s = null;
+    /* 真源：补全执行侧（renderer/app-fim.js 的 core 段）自己维护的计数 */
     try {
-      if (window.MTNodeFimEngine && typeof window.MTNodeFimEngine.stats === "function")
-        s = window.MTNodeFimEngine.stats();
+      if (window.MTFim && typeof window.MTFim.stats === "function") s = window.MTFim.stats();
     } catch (_) {
       s = null;
+    }
+    if (!s) {
+      try {
+        if (window.MTNodeFimEngine && typeof window.MTNodeFimEngine.stats === "function")
+          s = window.MTNodeFimEngine.stats();
+      } catch (_) {
+        s = null;
+      }
     }
     if (!s) {
       try {
@@ -408,6 +473,62 @@
     stats = statsNow();
     pop._refs.statsVal.textContent =
       T("请求 ") + stats.requests + " · " + T("采纳 ") + stats.accepted;
+    renderStatus();
+  }
+
+  /* 状态行：把「为什么没反应」直接写出来（本轮新增的那一行）。
+     判据与执行侧同源：总开关 → 服务商 → 模型 → 上次失败原因（由 MTFimOverlay.lastReason 给）。 */
+  function renderStatus() {
+    if (!pop || !pop._refs || !pop._refs.statusVal) return;
+    const c = cfg();
+    const gs = groups();
+    const g = gs.filter(function (x) { return x.id === c.route; })[0];
+    const model = modelNow(c, g);
+    let text = "";
+    let bad = false;
+    if (!c.on) {
+      text = T("已关闭");
+    } else if (!gs.length) {
+      text = T("没有可用的服务商（去「设置 · 模型服务」配置）");
+      bad = true;
+    } else if (!model) {
+      text = T("当前服务商没有模型");
+      bad = true;
+    } else {
+      const modes = [];
+      if (c.auto) modes.push(T("自动"));
+      if (c.manual) modes.push(T("Tab 手动"));
+      text = modes.length
+        ? T("就绪：") + model + " · " + modes.join(" + ")
+        : T("就绪，但自动与手动都关着");
+      /* 上一次失败（自动那条路失败是静默的，只有这里能看到原因） */
+      const reason = lastReason();
+      if (reason) {
+        text += " · " + T("上次失败：") + T(reason);
+        bad = true;
+      }
+    }
+    pop._refs.statusVal.textContent = text;
+    pop._refs.statusVal.classList.toggle("is-bad", bad);
+  }
+
+  /* 执行侧报上来的失败原因（MTFimOverlay.reasonText 给译文；它不在时说原样） */
+  function lastReason() {
+    let raw = "";
+    try {
+      if (window.MTFimOverlay && typeof window.MTFimOverlay.lastReason === "function")
+        raw = String(window.MTFimOverlay.lastReason() || "");
+    } catch (_) {
+      raw = "";
+    }
+    if (!raw) return "";
+    try {
+      if (window.MTFimOverlay && typeof window.MTFimOverlay.reasonText === "function")
+        return String(window.MTFimOverlay.reasonText(raw) || raw);
+    } catch (_) {
+      /* 走下面原样返回 */
+    }
+    return raw;
   }
 
   function render() {
@@ -419,9 +540,12 @@
     c.model = modelNow(c, g);
     renderModels();
     pop._refs.cbOn.checked = !!c.on;
+    pop._refs.cbAuto.checked = !!c.auto;
+    pop._refs.cbManual.checked = !!c.manual;
     pop._refs.inDelay.value = String(c.delayMs);
     pop._refs.inTok.value = String(c.maxTokens);
     renderStats();
+    renderStatus();
   }
 
   /* ── 开关 ─────────────────────────────────────────────────────────── */

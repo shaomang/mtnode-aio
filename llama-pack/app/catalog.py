@@ -61,14 +61,139 @@ _ARCH_CACHE: dict[str, tuple[float, str]] = {}
 #     「比固化表里最新一条还新」的那几页，逐条探完并入表；
 #   · 结果按时间并入（同 id 覆盖，绝不因为这次没返回就删掉已固化的条目）；
 #   · 想整页重新拉一遍，删掉 <安装目录>/.catalog-cache.json 即可（下一次重拉后重新固化）。
+# 两个护栏（都是真机踩出来的）：
+#   · 整页拉取**空手而归**（镜像 503 / 超时）时绝不写 frozenAt / items，只把 fullOk 标成
+#     false —— 否则聚合推荐那几条会被当成「整份在线列表」冻结，从此永不再整页拉，
+#     列表就永远只有几个模型（真机现场：6 条 / newestCreatedAt=2026-04-01）；
+#   · 增量核对有 lastCheckedAt + 最小间隔，10 分钟内重复开菜单不再打镜像。
 CACHE_PATH = Path(__file__).resolve().parent.parent / ".catalog-cache.json"
 _STORE_VERSION = 1
-_STORE_MAX_ITEMS = 3000        # 固化表上限（按最近写入淘汰），别让文件无限长
+# 上限 1200 条（实测真机 59 条 / 30KB ≈ 510 B/条 ⇒ 满载约 0.6MB）。
+# 曾经写 3000：条目越多，「按 id 去重 + 每轮落盘」的线性成本越高，而列表根本翻不到那么远；
+# 今天实有 59 条，降到 1200 对现有用户没有任何淘汰。
+_STORE_MAX_ITEMS = 1200
 _STORE_NEWEST_PAGES = 3        # 增量最多追问几页（100 条/页）；再多留给下一次拉取
 _STORE_NEWEST_PAGE_LIMIT = 100
 _STORE_NEWEST_BUDGET = 15.0    # 增量整段预算（秒）：镜像挂着时也不能让菜单等半分钟才出来
+# 增量「握手」闸：上次**成功核过增量**的时刻（ISO UTC）与最小间隔（秒）。
+# 10 分钟内再开一次菜单 / 再点一次刷新，直接拿固化表回话，一个网络请求都不发（force 可越过）。
+# 没有这道闸时，界面上的「刷新」≈ 人肉重试撞镜像：每次 1~3 页请求 + 十几秒等待，
+# 换回来的通常还是「没有新增」。
+# 注意：整页拉取**不**重置这一格 —— 它记的是「增量核对」，这样刚整页拉完再开一次菜单
+# 仍能确认一遍最新（1 页，然后才进入 10 分钟免费期）。
+_STORE_MIN_INTERVAL = 600.0
 _STORE: dict[str, Any] | None = None          # 进程内副本（省掉每次搜索都读盘）
 _LAST_SYNC: dict[str, Any] = {"mode": "", "added": 0}
+
+# ── 拉取状态机（控制台状态条的唯一真源）─────────────────────────────────────
+# 为什么要有它：一次列表拉取是「拉列表 → 补体积 → 探架构 → 合并」四段串行，
+# 真机实测 12.2~28.5s；而旧实现全程只有最后一刻才吐一个 JSON，中途没有任何可查询的状态 ——
+# 于是「点刷新没反应」「镜像出错」「镜像没新东西」在界面上长得一模一样
+# （错误还只写进默认收起的那块 Console）。这里把四段各自的进度原地记在进程内，
+# 界面轮询 /api/catalog/sync 就能显示「正在补体积 12/40 · 已用 8s · 已固化 59 条」。
+# 只存内存、绝不落盘：它是「这一次拉取」的临时状态，进程重启就该重新开始。
+_SYNC: dict[str, Any] = {
+    "seq": 0,                  # 每开一轮 +1：界面据此认出「这是新的一轮」
+    "phase": "idle",           # idle | listing | sizes | arch | merge | done | error
+    "mode": "",                # full = 整页拉取 / frozen = 只按时间取增量
+    "startedAt": "",
+    "updatedAt": "",
+    "elapsedMs": 0,
+    "page": 0,                 # 当前在第几页（1 起）
+    "pagesFetched": 0,         # 本轮一共发了几页列表请求
+    "candTotal": 0,            # 本轮要探测的仓库数（界面「12/40」的分母）
+    "probedSizes": 0,          # 已补好体积的条数
+    "probedArch": 0,           # 已探好架构的条数
+    "added": 0,                # 本轮并入固化表的新条目数
+    "error": "",               # 人话文案（控制台状态条直接显示）
+    "errorKind": "",           # mirror_503 | mirror_http | timeout | empty | ""
+    "intervalSkipped": False,  # 这一轮被「10 分钟最小间隔」挡下（没发任何网络请求）
+}
+_SYNC_STARTED = 0.0
+
+
+def _iso_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _sync_reset(mode: str) -> None:
+    """开一轮新的拉取：清掉上一轮的进度（界面靠 seq 变化认出「新一轮」）。"""
+    global _SYNC_STARTED
+    _SYNC_STARTED = time.time()
+    _SYNC.update({
+        "seq": int(_SYNC.get("seq") or 0) + 1,
+        "phase": "listing",
+        "mode": str(mode or ""),
+        "startedAt": _iso_now(),
+        "updatedAt": _iso_now(),
+        "elapsedMs": 0,
+        "page": 0,
+        "pagesFetched": 0,
+        "candTotal": 0,
+        "probedSizes": 0,
+        "probedArch": 0,
+        "added": 0,
+        "error": "",
+        "errorKind": "",
+        "intervalSkipped": False,
+    })
+    _LAST_SYNC["mode"] = str(mode or "")
+    _LAST_SYNC["added"] = 0
+
+
+def _sync_set(**kw: Any) -> None:
+    """原地更新这一轮的部分字段（阶段转换 / 计数累加），并刷新已用时间。"""
+    _SYNC.update({k: v for k, v in kw.items()})
+    _SYNC["updatedAt"] = _iso_now()
+    if _SYNC_STARTED:
+        _SYNC["elapsedMs"] = int((time.time() - _SYNC_STARTED) * 1000)
+
+
+def sync_state() -> dict[str, Any]:
+    """这一轮拉取的进度（server 的 /api/catalog/sync 直接回它）。
+
+    running=True 表示四段还没走完：界面据此决定要不要继续轮询、以及状态条该不该收起。
+    """
+    st = dict(_SYNC)
+    if _SYNC_STARTED and st.get("phase") not in ("idle", "done", "error"):
+        st["elapsedMs"] = int((time.time() - _SYNC_STARTED) * 1000)
+    st["running"] = st.get("phase") not in ("idle", "done", "error")
+    return st
+
+
+def _note_error(kind: str, message: str, *, hard: bool = True) -> None:
+    """记一条本轮失败：kind 机器可辨，message 给人看（状态条直接显示）。
+
+    hard=True 表示「这一轮确实失败了」（连不上 / 5xx），状态机进 error；
+    hard=False 表示「请求通了但结果是空的」，列表还能用固化表，状态机照常收尾。
+    失败同时落进 store 的 lastError —— 进程重启后界面仍能说出「上次为什么没拉到」。
+    """
+    kw: dict[str, Any] = {"error": message, "errorKind": kind}
+    if hard:
+        kw["phase"] = "error"
+    _sync_set(**kw)
+    _store_note_error(kind, message)
+
+
+def _note_search_error(exc: BaseException, *, what: str = "列表") -> None:
+    """把一次 httpx 异常归成三类可读文案之一（不再静默 `return []`）。
+
+    三类是用户/界面真正能分辨的：镜像 5xx（上游挂了）、超时（网络 / 代理）、其它 HTTP 错。
+    """
+    if isinstance(exc, httpx.HTTPStatusError):
+        code = int(getattr(getattr(exc, "response", None), "status_code", 0) or 0)
+        if code >= 500 or code == 429:
+            _note_error("mirror_503", f"镜像返回 HTTP {code}（上游不可用，稍后重试）")
+        else:
+            _note_error("mirror_http", f"镜像返回 HTTP {code}")
+        return
+    if isinstance(exc, httpx.TimeoutException):
+        _note_error("timeout", f"镜像响应超时（{what}请求没在超时内回话）")
+        return
+    if isinstance(exc, (httpx.TransportError, OSError)):
+        _note_error("timeout", "连不上镜像（网络 / DNS / 代理）")
+        return
+    _note_error("mirror_http", f"{what}拉取失败：{exc}")
 
 # Curated boost list (shown first when matching)
 CURATED: list[dict[str, Any]] = [
@@ -367,7 +492,10 @@ async def _attach_sizes(items: list[dict[str, Any]]) -> None:
             repos.append(repo)
     if not repos:
         return
+    # 状态机：分母 = 这一轮真要探的仓库数（界面「补体积 12/40」）。
+    _sync_set(phase="sizes", candTotal=len(repos))
     sizes: dict[str, int | None] = {}
+    done_n = 0
     try:
         timeout = httpx.Timeout(_SIZE_TIMEOUT, connect=min(3.0, _SIZE_TIMEOUT))
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
@@ -382,11 +510,15 @@ async def _attach_sizes(items: list[dict[str, Any]]) -> None:
             for t in pending:
                 t.cancel()
             for t in done:
+                # 每回来一个就推进一格：界面显示的是真实进度，不是「整段预算走完才有数」。
+                done_n += 1
                 try:
                     repo, n = t.result()
                 except Exception:
-                    continue
-                sizes[repo] = n
+                    repo, n = "", None
+                if repo:
+                    sizes[repo] = n
+                _sync_set(probedSizes=done_n)
             if pending:
                 await asyncio.gather(*pending, return_exceptions=True)
     except Exception:
@@ -463,15 +595,84 @@ def _store_load() -> dict[str, Any]:
     items = data.get("items")
     if not isinstance(items, dict):
         items = {}
+    items = {str(k): v for k, v in items.items() if isinstance(v, dict) and v.get("id")}
+    full_ok = data.get("fullOk")
+    if full_ok is None:
+        # 老版本固化的表没有这一格。只有「一条远程条目都没有、全是聚合推荐」的才当整页失败 ——
+        # 真机现场就是它：镜像 503 时 _hf_search 返回 []，6 条 CURATED 被当成整份在线列表冻结，
+        # 之后 frozen=true 永远不再整页拉，列表从此只有 6 个模型。健康的表一律当 fullOk=true，
+        # 免得给所有老用户白跑一次整页重拉。
+        curated_ids = {c["id"] for c in CURATED}
+        full_ok = not (items and set(items) <= curated_ids)
     _STORE = {
         "version": _STORE_VERSION,
         "frozenAt": str(data.get("frozenAt") or ""),
         "refreshedAt": str(data.get("refreshedAt") or ""),
-        # 已固化的最新条目时间（按 createdAt 的日期，YYYY-MM-DD）：增量口径的唯一切点。
+        # 已固化的最新条目时间（按 createdAt 的日期，YYYY-MM-DD）：增量口径的切点之一。
         "newestCreatedAt": str(data.get("newestCreatedAt") or ""),
-        "items": {str(k): v for k, v in items.items() if isinstance(v, dict) and v.get("id")},
+        # 上次成功核过增量的时刻（ISO UTC）：_STORE_MIN_INTERVAL 那道闸就比它。
+        "lastCheckedAt": str(data.get("lastCheckedAt") or ""),
+        # 上一轮整页拉取是否成功（false = 镜像挂着；下一轮会自动补拉一次整页）。
+        "fullOk": bool(full_ok),
+        # 最近一次镜像失败（{kind, message, at}）：给控制台红条一行字，不参与任何逻辑。
+        "lastError": data.get("lastError") if isinstance(data.get("lastError"), dict) else {},
+        "items": items,
     }
     return _STORE
+
+
+def _interval_fresh(store: dict[str, Any]) -> bool:
+    """距上次成功核过增量是否还在 _STORE_MIN_INTERVAL 之内（在 → 这一轮不用联网）。"""
+    ts = _parse_dt(str(store.get("lastCheckedAt") or ""))
+    if ts is None:
+        return False
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - ts).total_seconds() < _STORE_MIN_INTERVAL
+
+
+def _store_note_error(kind: str, message: str) -> None:
+    """把最近一次镜像失败记进固化表（store_info()['lastError'] 回给控制台）。
+
+    同一句重复失败不重写盘；写不进去也不影响任何行为 —— 它只是给界面看的一行字。
+    """
+    store = _store_load()
+    prev = store.get("lastError") or {}
+    if str(prev.get("kind") or "") == str(kind) and str(prev.get("message") or "") == str(message):
+        return
+    store["lastError"] = {"kind": str(kind), "message": str(message), "at": _iso_now()}
+    _store_save(store)
+
+
+def _store_mark_checked() -> None:
+    """核过一次增量（拿到了真实响应）：记下时刻，10 分钟内不再打镜像。
+
+    **整页拉取不调用它**（见 _STORE_MIN_INTERVAL 的注释）：刚整页拉完再开一次菜单
+    仍会做一轮 1 页的增量确认，之后才进入免费期。
+    """
+    store = _store_load()
+    store["lastCheckedAt"] = _iso_now()
+    store["lastError"] = {}
+    _store_save(store)
+
+
+def _store_mark_full_ok() -> None:
+    """这一轮整页拉取成功（拿到了远程条目）：清掉失败标记。"""
+    store = _store_load()
+    store["fullOk"] = True
+    store["lastError"] = {}
+    _store_save(store)
+
+
+def _store_mark_full_bad() -> None:
+    """这一轮整页拉取空手而归（镜像 503 / 超时）：**不动** items / frozenAt，只标一次失败。
+
+    标记本身由调用方写（_note_error）；这里只负责把 fullOk 置 false，
+    让下一轮 search_models 把这个「不完整的表」当成需要补拉整页。
+    """
+    store = _store_load()
+    store["fullOk"] = False
+    _store_save(store)
 
 
 def _store_save(store: dict[str, Any]) -> None:
@@ -574,6 +775,13 @@ def store_info() -> dict[str, Any]:
         "newestCreatedAt": str(store.get("newestCreatedAt") or ""),
         "mode": str(_LAST_SYNC.get("mode") or ""),
         "added": int(_LAST_SYNC.get("added") or 0),
+        # 增量口径的两格（界面据此说「已固化 · 10 分钟内不再联网」/「上次整页没成功，下一轮补拉」）。
+        "fullOk": bool(store.get("fullOk", True)),
+        "lastCheckedAt": str(store.get("lastCheckedAt") or ""),
+        # 最近一次镜像失败：{kind, message, at}，没有失败时是空 dict。
+        "lastError": dict(store.get("lastError") or {}),
+        # 上一次拉取走到哪一步（与 /api/catalog/sync 同一份状态机；列表响应顺带带一份）。
+        "sync": sync_state(),
     }
 
 
@@ -727,7 +935,9 @@ async def _attach_arch(items: list[dict[str, Any]]) -> None:
             repos.append(repo)
     if not repos:
         return
+    _sync_set(phase="arch", candTotal=len(repos))
     archs: dict[str, Any] = {}
+    done_n = 0
     try:
         timeout = httpx.Timeout(_ARCH_PROBE_TIMEOUT, connect=min(3.0, _ARCH_PROBE_TIMEOUT))
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
@@ -742,11 +952,14 @@ async def _attach_arch(items: list[dict[str, Any]]) -> None:
             for t in pending:
                 t.cancel()
             for t in done:
+                done_n += 1
                 try:
                     repo, a = t.result()
                 except Exception:
-                    continue
-                archs[repo] = a
+                    repo, a = "", ("", "unconfirmed")
+                if repo:
+                    archs[repo] = a
+                _sync_set(probedArch=done_n)
             if pending:
                 await asyncio.gather(*pending, return_exceptions=True)
     except Exception:
@@ -865,15 +1078,22 @@ async def _hf_search(q: str, kind: str, limit: int, sort: str) -> list[dict[str,
     }
     params["sort"] = "likes" if sort == "likes" else "downloads"
 
+    _sync_set(phase="listing", page=1, pagesFetched=1)
     try:
         async with httpx.AsyncClient(timeout=45.0) as client:
             r = await client.get(f"{HF_API}/models", params=params)
             r.raise_for_status()
             raw_list = r.json()
-    except Exception:
+    except Exception as e:
+        # 不再静默吞掉：整页拉取失败（镜像 503 / 超时）必须让界面看得见，
+        # 否则「列表空」和「镜像挂了」在界面上是同一种样子（见 _SYNC 的注释）。
+        _note_search_error(e)
         return []
 
-    if not isinstance(raw_list, list):
+    if not isinstance(raw_list, list) or not raw_list:
+        # 请求通了但一条都没有：多半也是上游 503（真机实测 hf-mirror 会这样）。
+        # 这一轮**不能**据此固化（见 search_models 的 fullOk 分支）。
+        _note_error("empty", "镜像返回 0 条（可能上游 503，稍后重试）")
         return []
 
     items = [_from_hf_item(x) for x in raw_list if x.get("id")]
@@ -941,18 +1161,30 @@ def _merge_curated(
     return out
 
 
-async def _hf_search_newest(kind: str, cutoff: str) -> list[dict[str, Any]]:
-    """只按时间拉最新：sort=createdAt 倒序逐页取，遇到「不新于 cutoff」的条目就收手。
+async def _hf_search_newest(
+    kind: str,
+    cutoff: str,
+    known_ids: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    """只按时间拉最新：sort=createdAt 倒序逐页取，遇到「整页都已在固化表里」就收手。
 
-    cutoff = 固化表里已固化的最新日期（YYYY-MM-DD）。这一步是「后续再拉取仅根据时间
-    拉取最新，其他忽略」的唯一实现：**不做**整页按下载量重搜，也不因为这次没返回
-    就把老条目从列表里拿掉（它们在固化表里）。任何一页失败都只影响这一页。
+    cutoff = 固化表里已固化的最新日期（YYYY-MM-DD），known_ids = 固化表已有的 id 集合。
+    这一步是「后续再拉取仅根据时间拉取最新，其他忽略」的唯一实现：**不做**整页按下载量重搜，
+    也不因为这次没返回就把老条目从列表里拿掉（它们在固化表里）。任何一页失败都只影响这一页。
+
+    两处成本控制（真机实测每轮 3 页 / 12~17s 的来源）：
+      · 已知 id 一律丢掉：它们连体积 / 架构都不用再探（否则每轮都给老条目白跑一遍对齐）；
+      · 停页判据从「日期切点」换成「整页都是老 id」：HF 按 createdAt 倒序的第一页天天都
+        「比上次新」（今天新建的仓库本来就有上百条），日期切点于是永远停不下来。
+        日期 cut 仍然保留，作为镜像不认 sort=createdAt 时（返回顺序乱）的兜底。
     """
     if not cutoff:
         return []
+    known = {str(x) for x in (known_ids or ())}
     out: list[dict[str, Any]] = []
     cursor = ""
     deadline = time.time() + _STORE_NEWEST_BUDGET
+    pages = 0
     for page in range(_STORE_NEWEST_PAGES):
         left = deadline - time.time()
         if left <= 1.0:
@@ -971,21 +1203,36 @@ async def _hf_search_newest(kind: str, cutoff: str) -> list[dict[str, Any]]:
             if not cursor:
                 break
             params["cursor"] = cursor
+        pages += 1
+        _sync_set(phase="listing", page=pages, pagesFetched=pages)
         try:
             async with httpx.AsyncClient(timeout=max(3.0, min(15.0, left))) as client:
                 r = await client.get(f"{HF_API}/models", params=params)
                 r.raise_for_status()
                 raw_list = r.json()
                 cursor = _next_cursor(r.headers.get("link") or "")
-        except Exception:
+        except Exception as e:
+            _note_search_error(e, what="增量")
             break
         if not isinstance(raw_list, list) or not raw_list:
+            if not out:
+                # 通了但一条没有：多半上游 503。这一轮不算「核过」，10 分钟闸不会关上，
+                # 用户再点一次刷新照样会真的去问一次。
+                _note_error("empty", "镜像没有返回任何条目（可能上游 503）", hard=False)
             break
         items = [_from_hf_item(x) for x in raw_list if x.get("id")]
-        fresh = _only_newer_than(items, cutoff)
+        fresh = [
+            x for x in _only_newer_than(items, cutoff)
+            if str(x.get("id") or "") not in known
+        ]
         out.extend(fresh)
-        if len(fresh) < len(items) or not cursor:
-            break  # 这一页已经跨过切点（或没有下一页）：增量取完了
+        if known:
+            if not fresh:
+                break  # 整页都是已固化的 id：增量取完了（这页之后的只会更老）
+        elif len(fresh) < len(items):
+            break  # 没有固化表时退回日期切点：这一页已经跨过切点
+        if not cursor:
+            break
     return out
 
 
@@ -1041,43 +1288,84 @@ async def search_models(
     recent_only: bool = False,
     force: bool = False,
 ) -> list[dict[str, Any]]:
+    """在线模型列表：固化表 + 只按时间取增量。
+
+    四条口径（顺序即优先级，force 一律最优先）：
+      · 带搜索词 / force / 表是空的 / 上一轮整页没成功（fullOk=false）→ 整页拉取，
+        只有**真拿到远程条目**时才固化（空手而归不写 items，见 _store_mark_full_bad）；
+      · 表已固化且距上次成功核增量不到 _STORE_MIN_INTERVAL → 直接拿固化表，零请求；
+      · 其余 → 固化表 + 按 createdAt 只问「固化表里没有的 id」（稳态 ≤1 页），并入后落盘。
+    全程原地更新 _SYNC 状态机（见 sync_state），界面轮询即可显示阶段与进度。
+    """
     os.environ.setdefault("HF_ENDPOINT", HF_MIRROR)
     kind = (kind or "all").strip().lower()
     limit = max(1, min(int(limit or 50), 100))
     query = (q or "").strip()
     _store_seed_caches()
+    store = _store_load()
 
-    if not query and _store_load().get("items") and not force:
+    if not query and store.get("items") and not force and store.get("fullOk", True):
         # ── 固化了的口径 ────────────────────────────────────────────────
-        # 列表直接用固化表（离线也有内容、秒开），再按时间问一次「比已固化最新一条更新」
+        # 列表直接用固化表（离线也有内容、秒开），再按时间问一次「固化表里没有的 id」
         # 的增量；新增条目探完体积 / 架构后并入表。其余一律不动。
+        _sync_reset("frozen")
         _LAST_SYNC["mode"] = "frozen"
-        fresh = await _hf_search_newest(kind, str(_store_load().get("newestCreatedAt") or ""))
-        fresh = _filter_kind(fresh, kind)
-        if fresh:
-            await _attach_sizes(fresh)
-            await _attach_arch(fresh)
+        _LAST_SYNC["added"] = 0
+        if _interval_fresh(store):
+            # 刚核过增量：这一轮一个网络请求都不发（force 才越过这道闸）。
+            _sync_set(phase="done", intervalSkipped=True)
+        else:
+            known = {str(k) for k in (store.get("items") or {})}
+            known |= {str(v["id"]) for v in (store.get("items") or {}).values() if v.get("id")}
+            known.discard("")
+            fresh = await _hf_search_newest(
+                kind, str(store.get("newestCreatedAt") or ""), known
+            )
             fresh = _filter_kind(fresh, kind)
-            fresh = _filter_arch(fresh)
-            _LAST_SYNC["added"] = _store_put(fresh)
-            _store_seed_caches()
+            if fresh:
+                await _attach_sizes(fresh)
+                await _attach_arch(fresh)
+                fresh = _filter_kind(fresh, kind)
+                fresh = _filter_arch(fresh)
+                _sync_set(phase="merge")
+                _LAST_SYNC["added"] = _store_put(fresh)
+                _store_seed_caches()
+            # 拿到真实响应才算「核过」：空手而归就留给下一次，别把 10 分钟闸关上
+            # （否则镜像挂一次，用户再点刷新也只会拿固化表糊弄过去）。
+            if _SYNC.get("phase") != "error" and _SYNC.get("errorKind") != "empty":
+                _store_mark_checked()
         items = _store_frozen_items(kind)
     else:
-        # ── 首拉 / 搜索 / 强制整页重拉 ────────────────────────────────────
+        # ── 首拉 / 搜索 / 强制整页重拉 / 上一轮整页没成功 ─────────────────
+        _sync_reset("full")
         _LAST_SYNC["mode"] = "full"
         _LAST_SYNC["added"] = 0
         remote = await _hf_search(q, kind, limit, sort)
-        items = _merge_curated(remote, q, kind)
-        # 聚合推荐条目没经过 _hf_search，架构要在这里补（探到非 LLM 架构的在 _apply_arch_kind
-        # 里改判成 other，下面那轮 _filter_kind 就会把它们收掉）。
-        await _attach_arch(items)
-        for x in items:
-            _apply_arch_kind(x)
-        items = _filter_kind(items, kind)
-        items = _filter_arch(items)
-        if not query:
-            # 整页拉到的这一份就此固化（体积 / 架构一并落盘，下次不再重探）。
-            _store_put(items)
+        if not remote and not query:
+            # 整页空手（镜像 503 / 超时）：固化表一个字节都不动，列表回落到已固化条目。
+            # 否则就会像真机那样「6 条聚合推荐被当成整份在线列表冻结，从此不再整页拉」。
+            _store_mark_full_bad()
+            if _SYNC.get("phase") != "error":
+                _sync_set(
+                    phase="error",
+                    error="镜像没有返回任何条目（可能上游 503，稍后重试）",
+                    errorKind="empty",
+                )
+            items = _store_frozen_items(kind) if store.get("items") else _merge_curated([], q, kind)
+        else:
+            items = _merge_curated(remote, q, kind)
+            # 聚合推荐条目没经过 _hf_search，架构要在这里补（探到非 LLM 架构的在 _apply_arch_kind
+            # 里改判成 other，下面那轮 _filter_kind 就会把它们收掉）。
+            await _attach_arch(items)
+            for x in items:
+                _apply_arch_kind(x)
+            items = _filter_kind(items, kind)
+            items = _filter_arch(items)
+            _sync_set(phase="merge")
+            if not query:
+                # 整页拉到的这一份就此固化（体积 / 架构一并落盘，下次不再重探）。
+                _store_put(items)
+                _store_mark_full_ok()
 
     items = _filter_size(items, size_band)
     items = _filter_recent(items, recent_only)
@@ -1093,6 +1381,10 @@ async def search_models(
         head = [x for x in items if x["id"] in curated_ids]
         tail = [x for x in items if x["id"] not in curated_ids]
         items = head + tail
+
+    # 收尾：成功了就推到 done；失败保留 error —— 界面的红条与「重试」都要靠它。
+    if _SYNC.get("phase") != "error":
+        _sync_set(phase="done", added=int(_LAST_SYNC.get("added") or 0))
 
     return items[:limit]
 

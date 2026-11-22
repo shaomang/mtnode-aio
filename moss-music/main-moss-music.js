@@ -29,6 +29,8 @@ const pluginErrors = require("../plugin-error-repair.js");
 const installHost = require("../plugins/main-install.js");
 const stepReporter = require("../plugins/install-step-reporter.js");
 const installKill = require("../plugins/install-cancel.js");
+/* 安装后自检内核（注册表 + 结果落盘 + 事件）：卡片「已装勾」的唯一判据 */
+const selfcheck = require("../plugins/plugin-selfcheck.js");
 const { quietPython, pythonHealth, silentEnv, syncShims } = require("../backend-python.js");
 const mirrors = require("../cn-mirrors.js");
 const vramGate = require("../plugins/vram-gate.js");
@@ -346,6 +348,154 @@ function projectSignals(dir) {
     ready: server && venv && source && models && marked,
     runnable: server && venv,
   };
+}
+
+/* ------------------------------------------------------------------ */
+/* 安装后自检（卡片「已装勾」的唯一判据）                                */
+/* ------------------------------------------------------------------ */
+
+/** venv 冒烟的超时（只 import，不加载 18GB 权重；首次 import torch 慢一些） */
+const SMOKE_TIMEOUT_MS = 180000;
+
+/**
+ * 在 venv 里真跑一次 import（与安装脚本第 10 步同一段代码、同一套判据）：
+ *   · 0   = 通过；
+ *   · 3   = import 都没问题，但 venv 看不到 CUDA（这段后端只走 CUDA）；
+ *   · 其他 = import 失败（依赖没装全 / 环境坏了），输出尾部带回来。
+ */
+function runVenvSmoke(py, sourceDir, installDir, timeoutMs) {
+  const o = timeoutMs > 0 ? timeoutMs : SMOKE_TIMEOUT_MS;
+  const code = [
+    "import sys",
+    "sys.path.insert(0, " + JSON.stringify(String(sourceDir || "")) + ")",
+    "import torch, transformers",
+    "from src.hf_inference import MossMusicHFInference",
+    "print('torch', torch.__version__, 'cuda', torch.cuda.is_available())",
+    "print('transformers', transformers.__version__)",
+    "print('moss repo import ok')",
+    "if not torch.cuda.is_available():",
+    "    sys.exit(3)",
+  ].join("\n");
+  return new Promise((resolve) => {
+    let out = "";
+    let done = false;
+    let timer = null;
+    const finish = (v) => {
+      if (done) return;
+      done = true;
+      if (timer) clearTimeout(timer);
+      resolve(v);
+    };
+    let child = null;
+    try {
+      child = spawn(py, ["-c", code], {
+        cwd: sourceDir,
+        windowsHide: true,
+        env: silentEnv(installDir, { PYTHONIOENCODING: "utf-8" }),
+      });
+    } catch (e) {
+      return resolve({ ok: false, code: -1, text: "起不来 venv python：" + String((e && e.message) || e) });
+    }
+    timer = setTimeout(() => {
+      try {
+        child.kill();
+      } catch {}
+      finish({ ok: false, code: -1, text: "import 超时（" + Math.round(o / 1000) + " 秒没返回）" });
+    }, o);
+    if (timer && timer.unref) timer.unref();
+    child.stdout.on("data", (d) => {
+      out += d.toString();
+    });
+    child.stderr.on("data", (d) => {
+      out += d.toString();
+    });
+    child.on("error", (e) => finish({ ok: false, code: -1, text: "起不来 venv python：" + String((e && e.message) || e) }));
+    child.on("close", (rc) => {
+      if (rc === 0) return finish({ ok: true, code: 0, text: out.trim() });
+      finish({ ok: false, code: rc, text: out.trim().slice(-600) });
+    });
+  });
+}
+
+/**
+ * 自检：真验一遍「装齐全了没、venv 还能不能跑」。
+ * 权重只验文件在不在（大小判据见安装脚本 files 步），**不加载** —— 为了一张勾去加载 18GB 不划算。
+ * 没装（安装目录取不到 / 目录不存在）→ skipped：不打勾，如实说原因。
+ */
+async function selfcheckMossMusic(ctx) {
+  const c = ctx || {};
+  const steps = [];
+  const sig = c.signal || { aborted: false };
+  const step = (id, title, status, detail) => {
+    const s = { id: String(id || "step"), title: String(title || ""), status: String(status || "run"), detail: detail == null ? "" : String(detail) };
+    const at = steps.findIndex((x) => x.id === s.id);
+    if (at >= 0) steps[at] = s;
+    else steps.push(s);
+    try {
+      if (typeof c.step === "function") c.step({ title: s.title, status: s.status, detail: s.detail });
+    } catch {}
+    return s;
+  };
+  const log = (line) => {
+    try {
+      if (typeof c.log === "function") c.log(line);
+    } catch {}
+  };
+  if (sig.aborted) return { ok: false, skipped: true, reason: "已取消", steps };
+
+  const ctxDir = String(c.installDir || "").trim();
+  let installDir = ctxDir;
+  if (!installDir) {
+    try {
+      installDir = String(loadConfig().installDir || "").trim();
+    } catch {
+      installDir = "";
+    }
+  }
+  if (!installDir) {
+    step("dir", "安装目录", "skip", "还没设置安装目录（这个插件还没装）");
+    return { ok: false, skipped: true, reason: "还没设置安装目录（这个插件还没装）", steps };
+  }
+  const sig2 = projectSignals(installDir);
+  step("dir", "安装目录", sig2.exists ? "ok" : "fail", installDir);
+  if (!sig2.exists) {
+    return { ok: false, error: "安装目录不存在：" + installDir, steps, installDir };
+  }
+  step("server", "后端服务代码 app\\server.py", sig2.server ? "ok" : "fail", join(installDir, "app", "server.py"));
+  step("venv", ".venv 里的 python.exe", sig2.venv ? "ok" : "fail", join(installDir, ".venv", "Scripts", "python.exe"));
+  step("source", "推理源码 source\\MOSS-Music", sig2.source ? "ok" : "fail", join(installDir, "source", "MOSS-Music"));
+  step("models", "权重（" + MODEL_DIRS.instruct + "\\config.json）", sig2.models ? "ok" : "fail", join(installDir, "models"));
+  step("marker", ".install-ok 标记", sig2.marked ? "ok" : "fail", join(installDir, ".install-ok"));
+  if (sig.aborted) return { ok: false, skipped: true, reason: "已取消", steps, installDir };
+
+  if (sig2.runnable) {
+    const py = join(installDir, ".venv", "Scripts", "python.exe");
+    const sourceDir = join(installDir, "source", "MOSS-Music");
+    step("smoke", "venv 内真 import（torch / transformers / 推理源码，不加载权重）", "run");
+    log("[selfcheck] smoke: " + py);
+    const r = await runVenvSmoke(py, sourceDir, installDir);
+    if (r.ok) {
+      step("smoke", "venv 内真 import（torch / transformers / 推理源码，不加载权重）", "ok", String(r.text || "").split("\n").slice(-1)[0] || "");
+    } else if (r.code === 3) {
+      step("smoke", "venv 内真 import（torch / transformers / 推理源码，不加载权重）", "fail", "venv 看不到 CUDA：" + String(r.text || ""));
+    } else {
+      step("smoke", "venv 内真 import（torch / transformers / 推理源码，不加载权重）", "fail", String(r.text || "exit " + r.code));
+    }
+    if (!r.ok) {
+      const why =
+        r.code === 3
+          ? "venv 看不到 CUDA：这份后端只走 CUDA，先确认驱动 / 显卡，再重装 venv 里的 torch"
+          : "venv 内 import 失败（依赖没装全或环境坏了）";
+      return { ok: false, error: why, steps, installDir };
+    }
+  } else {
+    step("smoke", "venv 内真 import（torch / transformers / 推理源码，不加载权重）", "skip", "前置要件不齐，没跑");
+  }
+
+  const bad = sig2.ready && sig2.runnable ? [] : steps.filter((s) => s.status === "fail").map((s) => s.title);
+  if (bad.length) return { ok: false, error: "安装要件不齐：" + bad.join(" / "), steps, installDir };
+  log("[selfcheck] moss-music 通过 · " + installDir);
+  return { ok: true, steps, installDir };
 }
 
 function copyDirRecursive(src, dest, skipNames) {
@@ -1494,6 +1644,20 @@ function registerMossMusicIpc(opts) {
     },
   });
 
+  /* 安装后自检登记（卡片「已装勾」的唯一判据）：真验要件 + venv 内真 import，
+     见上面的 selfcheckMossMusic。kind="install" = 非内容生成类（不为了打勾跑一首歌）。 */
+  try {
+    selfcheck.registerPluginSelfcheck({
+      id: PLUGIN_ID,
+      key: "mossmusic",
+      label: "MOSS-Music",
+      kind: "install",
+      check: (ctx) => selfcheckMossMusic(ctx),
+    });
+  } catch (e) {
+    appendConsole("[boot] 自检登记失败：" + String((e && e.message) || e));
+  }
+
   refreshStaleLock();
   startConsoleWatch();
 
@@ -1551,4 +1715,6 @@ module.exports = {
   shutdownMossMusicUiOnly,
   PLUGIN_ID,
   DISK_HINT_GB,
+  /* 安装后自检的实现（给纯 Node 冒烟直呼；生产侧由 registerPluginSelfcheck 登记） */
+  selfcheckMossMusic,
 };

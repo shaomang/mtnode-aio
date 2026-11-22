@@ -4453,6 +4453,19 @@ function dshRunOnce(input, opts) {
             handleAiFactsToolEvent(msg.data || {}, boundWf);
             return;
           }
+          if (msg.type === "recall") {
+            /* 会话反查工具（mtnode_recall）：宿主按「本轮绑定会话 > 显式 sessionId」读自己
+               的会话存储 —— 上下文被手动压缩（_fold）、被运行时自动压缩（压缩记录里
+               kind:'auto' 那一类）、或被 AGENT_HIST_MAX_CHARS 从最早处截断之后，早期原文仍在盘上，
+               四个动作（outline / search / read / context）按索引 / 关键词 / 区间把它取回来，
+               全部只读、单次调用可重复。条数与字数上限一律由宿主夹住（见
+               app-session-recall.js 的常量），绝不把整份会话塞进回包。
+               结果经 dshInteract kind:'recall' 回传。没有绑定会话 / 读不到会话文件一律回
+               错误文本（这一次工具调用失败，会话不中断，与 db / facts / manifest 同一口径）。 */
+            if (typeof handleSessionRecallToolEvent === "function")
+              handleSessionRecallToolEvent(msg.data || {}, { runKey: runKey, node: opts.node });
+            return;
+          }
           if (msg.type === "asset") {
             /* 素材库 / 窗口截图工具（mtnode_assets）：宿主读库、读条目、拍窗口静帧，
                 结果经 dshInteract kind:'asset' 回传。许可闸在 assetToolEventReplied 里

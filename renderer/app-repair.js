@@ -1501,6 +1501,10 @@ async function pluginRepairRun(info) {
   /* 标题是本窗的固定口径：锁死，不让首轮自动命名把它改成日志前 24 字 */
   st.titleLocked = true;
   st.titleAuto = false;
+  /* AI 活动面板的来源标记：修复族**复用会话族那一条登记**（renderer/app-assist.js 的
+     agentAiSessionBegin / End，键 = sess:<会话id>），不另建活动 —— 这里只标一句来源，
+     标题就是上面那条「自动修复 · <插件名>」。 */
+  st.aiSource = "repair";
   /* 走统一入口（标脏 + session:patch）：全新会话盘上还没有文件，补丁回 missing 属正常 */
   await agentSetSessionWorkspace(st, info.installDir);
   /* 与画布无关档（Gate B）：修插件用不上读图 / 改图三件套，整档不注册省约 26K 字符/步 */
@@ -1693,6 +1697,8 @@ async function pluginInstallFixSession(info) {
   st.title = I18n.t("插件安装修复") + " · " + (info.name || info.id);
   st.titleLocked = true;
   st.titleAuto = false;
+  /* AI 活动面板的来源标记（同 pluginRepairRun）：复用会话族那一条登记，不另建活动。 */
+  st.aiSource = "repair";
   /* 走统一入口（标脏 + session:patch）：全新会话盘上还没有文件，补丁回 missing 属正常 */
   await agentSetSessionWorkspace(st, info.installDir);
   st.canvasFree = true;

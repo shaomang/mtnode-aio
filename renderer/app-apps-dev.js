@@ -2651,6 +2651,11 @@ function appsDevPagePaint(body, seq) {
   frame.id = "appsDevFrame";
   frame.className = "apps-dev-frame";
   frame.title = appsDevT("应用预览");
+  /* allow 里的 microphone：宿主注入的听写条（apps-store.js 的 iframeAppUiSource 把
+     renderer/app-speech-ui.js 内联进预览页）要在这只 iframe 里调 getUserMedia。
+     主窗口那条权限闸已放行 media，但 Permissions-Policy 会先按 iframe 的 allow 判一次 ——
+     这一帧的 origin 是 mtnode-preview://<appId>，与顶层页不同源，缺这一项就直接拒。 */
+  frame.setAttribute("allow", "microphone");
   /* 首帧就挂上兜底 url（appId + 默认入口 index.html）：中栏不再等异步 info 才有 src，
      拿不到目录 / 入口页时也不会只剩 about:blank —— 协议层按目录兜底发默认入口页。 */
   DEVD.url = appsDevUrlOf(cur);

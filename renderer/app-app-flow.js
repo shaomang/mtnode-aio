@@ -511,6 +511,9 @@ async function appsCreateApp(name, id, style, capabilities) {
             /* 素材库（本轮新增）：同样默认开 —— 应用能列 / 读全库、把本机文件收进库、
                新建自己的素材与条目；用户自己那份对它只读（归属校验在 assets-store.js）。 */
             assetHost: true,
+            /* 输入补全（2026-11 本轮）：新建应用默认开 —— 需求原话「补全应当作为一个基础功能
+               打通，使得应用中可以默认开启实现自动补全」。关掉它 = 应用窗口里不再注入补全脚本。 */
+            showComplete: true,
           },
     );
   } catch (err) {
@@ -800,7 +803,7 @@ function startCustomStyleAsk(appId, appName, mode) {
  * 把勾选态回滚成磁盘上的真实值。不传 = 老口径（只改内存态，由调用方自己保存）。 */
 function appsCapabilityChecks(value, onChange) {
   const cur = Object.assign(
-    { textInput: false, showDictate: false, showAuthor: false, showMediaPlayer: false, windowChrome: true, imageGen: false, voiceGen: false, canvasHost: false, agentHost: false, assetHost: false },
+    { textInput: false, showDictate: false, showAuthor: false, showMediaPlayer: false, windowChrome: true, imageGen: false, voiceGen: false, canvasHost: false, agentHost: false, assetHost: false, showComplete: false },
     value || {},
   );
   const box = document.createElement("div");
@@ -817,6 +820,7 @@ function appsCapabilityChecks(value, onChange) {
     canvasHost: cur.canvasHost === true,
     agentHost: cur.agentHost === true,
     assetHost: cur.assetHost === true,
+    showComplete: cur.showComplete === true,
   };
   const read = () => ({
     textInput: state.textInput === true,
@@ -829,6 +833,7 @@ function appsCapabilityChecks(value, onChange) {
     canvasHost: state.canvasHost === true,
     agentHost: state.agentHost === true,
     assetHost: state.assetHost === true,
+    showComplete: state.showComplete === true,
   });
   const rows = [
     {
@@ -887,6 +892,13 @@ function appsCapabilityChecks(value, onChange) {
       label: I18n.t("素材库读写"),
       hint: I18n.t("允许应用列 / 读整个素材库、把本机文件收进库、新建自己的素材与内容条目，并删除自己创建的东西（进回收站）；你自己创建的素材与条目对它只读。勾上即永久允许"),
     },
+    /* 输入补全（2026-11 本轮）：注入 renderer/app-fim.js，应用里每个输入框都带补全 ——
+       边打边补 + 按 Tab 现场要一次（再按一下采纳），请求走 appHost.textGenStream。 */
+    {
+      id: "showComplete",
+      label: I18n.t("输入补全"),
+      hint: I18n.t("应用里的输入框自动带 AI 补全：边打边补、按 Tab 现场要一次（再按一下采纳），补全时在光标后转圈；模型与服务商沿用 MTNode 的配置，应用拿不到 Key。勾上即生效"),
+    },
   ];
   for (const r of rows) {
     const lab = document.createElement("label");
@@ -932,6 +944,7 @@ function appsCapabilityChecks(value, onChange) {
       state.canvasHost = nv.canvasHost === true;
       state.agentHost = nv.agentHost === true;
       state.assetHost = nv.assetHost === true;
+      state.showComplete = nv.showComplete === true;
       const boxes = box.querySelectorAll("input[data-cap]");
       for (const b of boxes) b.checked = state[b.dataset.cap] === true;
     },

@@ -105,6 +105,10 @@ const NS_METHODS = {
      download = 二进制落盘（图 / 音效 / 视频）。应用页 CSP 是 connect-src 'none'，
      页面自己发不了请求，这两条是它与外网之间唯一的通道。 */
   net: ["fetch", "search", "download"],
+  /* AI 活动自报（可选）：应用自己知道「跑到哪一步」时报一句，主窗口的「AI 工作中」面板
+     就显示这一句。**只读旁路**：不返回任何宿主数据、不写任何文件；不报也照样工作
+     （宿主在模型代理处自动登记，见 apps-store.js 的 aiActivityTrack）。 */
+  ai: ["report"],
 };
 /* 需要声明能力位的命名空间（画布与 agent 两位；fs / tools / net 归在画布那一位的授权里，
    但**声明**也按它们各自的位算：没声明就整类不放行，见 ensureDeclared）。
@@ -753,6 +757,49 @@ function createAppHostBridge(o) {
     });
   }
 
+  /* ── ai：应用自报 AI 活动（可选 · 只读旁路）──────────────────────────────
+   * 应用页只有一条入口 appHost.aiReport({ phase, detail, title?, reqId?, kind? })：
+   * 应用 id 只认**发送方窗口**（页面自传的 appId 一律忽略），帧形状与宿主自动登记的那条
+   * （apps-store.js 的 aiActivityTrack）完全一致，收件人也一样 —— **发起调用的那只应用窗口**
+   * （caller.send → "ai:activity"），由 renderer/app-ai-work-app-ui.js 画在应用界面自己的底栏上。
+   * 不再推主窗口：主窗口那套 AI 工作台只收会话 / 节点 / 识图 / 变体 / 修复。
+   * 推不到（预览 / 应用节点内嵌 iframe 没有自己的窗口、插件窗口没有这条 UI、窗口已关）→
+   * 回 { ok:true, pushed:false }：上报是旁路，应用不该因为宿主没地方显示而失败。
+   */
+  function aiReport(caller, args) {
+    const a = isObj(args) ? args : {};
+    const appId = String((caller && caller.id) || "");
+    if (!appId) return bad(t("认不出是哪个窗口在调用"), "not_app");
+    const title = String(a.title || "");
+    const reqId = String(a.reqId || "");
+    const frame = {
+      key: String(a.key || "") || "app:" + appId + ":" + (reqId || title || "report"),
+      appId: appId,
+      appName: String((caller && caller.name) || appId),
+      kind: String(a.kind || "app-text"),
+      title: title,
+      model: String(a.model || ""),
+      phase: String(a.phase || "queued"),
+      detail: String(a.detail == null ? (a.text == null ? "" : a.text) : a.detail),
+    };
+    const send = caller && typeof caller.send === "function" ? caller.send : null;
+    let pushed = false;
+    try {
+      pushed = send ? send("ai:activity", frame) === true : false;
+    } catch (_) {
+      pushed = false;
+    }
+    if (!pushed)
+      return {
+        ok: true,
+        pushed: false,
+        code: "no_window",
+        key: frame.key,
+        note: t("这次上报没有显示（发起调用的窗口不可用；不影响应用自己继续跑）"),
+      };
+    return { ok: true, pushed: true, key: frame.key };
+  }
+
   /* ── 入口 ───────────────────────────────────────────────────────────── */
 
   /**
@@ -802,6 +849,7 @@ function createAppHostBridge(o) {
         return askRenderer("canvasCall", { canvasId: c.id, method: method, args: isObj(args) ? args : {} }, waitMs);
       }
       if (ns === "agent") return await callAgent(caller, String(method), args);
+      if (ns === "ai") return aiReport(caller, args);
       if (ns === "assets") return await callAssets(caller, String(method), args);
       if (ns === "fs") return await callFs(caller, String(method), args);
       if (ns === "audio") return await callAudio(caller, String(method), args);

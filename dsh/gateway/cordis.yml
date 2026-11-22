@@ -269,6 +269,19 @@
         maxTokens: 256000
         retainTokens: 32768
 
+      - provider: mtnode_p1
+        model: deepseek-v4-flash
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p1
+        model: gpt-image-2.5-all
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p4
+        model: fake-model
+        maxTokens: 32768
+        retainTokens: 32768
+
 # 工具呈现（PTC）：本行已被回滚，MTNode 现跑 dsh-tools 的默认 native。
 # 为什么不留在树上：实测 both 能生效（run_code 进工具负载 +2.1K 字符），但 run_code
 # 在本机 win32 起不来（控制通道 fd 7 被 noop-runner 的 stdio:'inherit' 吞掉 →
@@ -526,6 +539,16 @@
       name: './ai-facts-plugin.mjs'
       disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1'
 
+    # MTNode 会话反查工具:任何 Agent 会话默认可用 mtnode_recall 反查本会话早期原文
+    # （outline / search / read / context，只读 + 带上限截断）。对话被手动压缩(_fold)、
+    # 被运行时自动压缩(compacts kind:auto)或历史段按 20 万字上限截断之后,原文仍在会话
+    # 存储里 —— 谁答：宿主渲染层（renderer/app-session-recall.js，帧 recall 走同一条交互桥,
+    # 结果按 kind:'recall' 原路回）。没有绑定会话 / 会话文件读不到则回错误文本,会话不中断
+    # （与 facts / db 同一口径）。它不属可裁名单:反查没有「本轮用不上」的档位。
+    - id: mtnode-session-recall
+      name: './session-recall-plugin.mjs'
+      disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1'
+
     # MTNode 长周期任务工具:属于某个长任务运行的节点经 lt_state 读共享状态、写自己
     # 声明的输出键。长期结论的沉淀改走 mtnode_facts（本画布 AI 事实库）;原 lt_memory 已下线
     # （recall / list / write / propose 四个动作一并摘掉）。宿主持有 run,
@@ -605,6 +628,23 @@
     - id: mtnode-reasoning-replay-trim
       name: './plugins/reasoning-replay-trim-plugin.mjs'
 
+    # 上下文溢出自动恢复（mtnode-overflow-recovery）：dsh 自带的「溢出 → 压缩 → 同轮重发」
+    # 恢复到 0.2 是好的（dsh-compaction-basic 监听 agent/request-error，命中
+    # CONTEXT_WINDOW_EXCEEDED 就 compactIfNeeded(…, 'context-overflow')，代次增长才 retry），
+    # 但它的判据是**错误码**，而 DeepSeek 官方的输入容量拒收
+    # （`user input too long, N tokens exceeds max M tokens` / `Input token exceed the limit`）
+    # 不在 dsh-llm 的 isContextWindowExceededError 五个正则里 → 归一成 INVALID_REQUEST，
+    # 溢出分支直接 next()，压缩永远等不到。本插件把这两种措辞翻译成 dsh 认得的溢出语义，
+    # 复用引擎现成的工具结果截断 / 较早历史摘要 / 原 step 重发（不 patch 任何 @deepseek-ai 包）。
+    # 三条硬边界：① CONTEXT_WINDOW_EXCEEDED 一律直接 next() —— 那是 compaction-basic 的活，
+    # 绝不重复压；② 只走一趟（默认配额 1 次，对齐 maxOverflowRetries，agent 回到 idle 或
+    # 产出新的 assistant 消息即清零）；③ 压缩未落地（signal 已取消或 surface.replaceGeneration
+    # 没增长）一律 next() 保留原始错误。开关是 gateway 在 spawn 时注入的 env
+    # MTNODE_OVERFLOW_RECOVERY（值 = 允许次数；缺席 / 0 / 非法 = 插件不注册任何监听器，
+    # 行为与未接入时一字不变）。契约见 dsh/DESIGN.md「上下文溢出自动恢复契约」。
+    - id: mtnode-overflow-recovery
+      name: './plugins/overflow-recovery-plugin.mjs'
+
     # 联网搜索 / 阅读链接的服务端工具接线（mtnode-web-tools）：两条适配器都不给外部注入
     # HTTP 层的机会（llm-pi-ai 自己拼 streamSimple 的 options、llm-deepseek 直接用全局
     # fetch），所以本插件在运行时进程内替换 globalThis.fetch —— 只认 `…/chat/completions`
@@ -679,9 +719,3 @@
 # ── user plugins (managed from MTNode settings) ──
 
 
-- id: user-mcp-mwqhixhq
-  name: '@deepseek-ai/dsh-mcp-client'
-  config:
-    serverName: 'mtnode-self'
-    transport: 'streamable-http'
-    url: 'http://127.0.0.1:49584/mcp?token=1b887a17110e4a9a025ec7e00a95dae0f1ec5c05359f017a'

@@ -23,6 +23,7 @@ MTNode AI工作站 — Electron 桌面端 AI 工作流编排器。用户数据�
 - **带输入或设置的浮层一律 persistent**：禁止「点外部 / 点蒙层自动关闭」，关闭只走窗内按钮 / ✕ / Esc / 再点一次开关；开新面板要互斥（`closeNodePopsExcept`），节点级面板要跟随与回收（`nodePopAnchor` + `repositionNodePops`）；瞬时菜单与图片灯箱不算。回归口径 `test/smoke-dialog-persistence.js`、`test/smoke-dialog-minimize.js`。
 - **发版前必须补 `changelog/v<当前版本>.md`**（面向用户、条目最多两层、不含技术细节）并同步 `changelog/README.md` 索引；`scripts/release.mjs` 打包前硬校验。
 - **插件封面图标 = 官方 logo + 透明底**：`plugins/icons/<id>.png`（1:1、≥256×256）必须取产品官方品牌资产 / 官方仓库原件，不自绘、不截图、不用第三方重绘版；优先带 alpha 的 PNG，不贴白底 / 黑底方块（卡片底色随主题变化）。细则见 `mtnode-agent-skills/plugins/plugin-dev/SKILL.md` 第五节。
+- **走安装窗的插件必须登记安装后自检**：宿主里 `registerInstallTarget({...})` 的同一处注册块要再跟一句 `registerPluginSelfcheck({ id: PLUGIN_ID, kind, check })`（内核 `plugins/plugin-selfcheck.js`）—— 它是卡片封面左上角「已装勾」的唯一判据；漏登记 = 装完那次自检根本不会启动 = 那个标识永远触发不了（llama / MOSS-Music / Paseo / 桌宠这四个不产内容的插件就是这么漏掉的，已补）。不产内容的插件用 `kind: "install"`，check 真验安装要件与运行环境（范例 `llama/install-verify.js`）。`test/smoke-install-window.js` 的回归闸逐宿主对账，`test/smoke-plugin-selfcheck-install.js` 真跑这几条。
 - **扩展能力（DSH 插件 / 技能 / MCP）统一在 `app-plugins.js` 的「扩展能力管理」对话框维护**，`app-settings.js` 只留入口。
 - **提示词单一真源**：节点参数机制写在 `dsh/gateway/canvas-plugin.mjs` / `db-plugin.mjs` 的工具描述里，完整硬规则只写在 `mtnode-agent-skills/mtnode/canvas-edit-rules/SKILL.md`；加规则先判归属层，只落一处。
 - **注入提示词必须登记**：凡注入给模型的固定文本（会话 / 助手人设、任务书、子代理派单、构建器身份）一律写成 `PS("<id>", 默认文本)`，并把 id 加进 `agent-prompts/index.json` —— 不登记就进不了「设置 → 内置能力」，用户改不到；`test/smoke-agent-prompts.js` 会逐条对账。没有覆盖时 `PS` 原样返回默认文本，包一层不改行为。

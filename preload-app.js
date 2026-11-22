@@ -282,6 +282,18 @@ const appHost = {
     return () => ipcRenderer.removeListener("dsh:event", onEv);
   },
 
+  /* AI 活动自报（可选 · 只读旁路）：宿主在应用窗口的模型代理调用处（textGenStream /
+     imageGen / imageEdit）**已经自动登记**，所以不调这一条也能工作、也能看到过程。
+     应用自己知道「到哪一步了」（改稿 / 分段 / 等用户确认 / 换后端…）时才报一句：
+       aiReport({ phase, detail, title?, reqId?, kind? })
+       · phase  ：queued | connect | thinking | writing | tool | waiting | media | done | error | cancelled
+                  （done / error / cancelled = 收尾，面板上这条活动就结束）
+       · detail ：一行人话（长会被截到 160 字），例如 "改第 3 页的公式"
+       · reqId  ：与这次 textGenStream / imageGen 的 reqId 一致 → 并进那条活动（不另开一行）；
+                  省略就按 title 归并（同名的连续几次会接成一条）
+     回执 { ok, key } 或 { ok:false, code:"not_ready" }（主窗口没开：上报丢了，应用照常跑）。 */
+  aiReport: (info) => hostCall("ai", "report", info || {}),
+
   /* 本机存储：每应用一份（只在该应用自己的数据文件夹里读写），键为字符串、
      值任意可结构化克隆的 JSON 值（整份上限 2MB） */
   storageGet: (key) => ipcRenderer.invoke("apps:hostStorageGet", { key: key }),
@@ -410,6 +422,27 @@ const appHost = {
       ipcRenderer.on("appHost:stream", onEv);
       return () => ipcRenderer.removeListener("appHost:stream", onEv);
     },
+  },
+  /* 宿主代理的模型调用在做些什么（只读帧，单向、无回执）。
+     cb 收 { op:'begin'|'step'|'end', key, appId, appName, kind, title, model, phase, detail, status?, error? }
+     —— 这就是 preload.js 里主窗口那份 aiActivityOn 的同一条通道（"ai:activity"），
+     只是收件人换成了**发起这次调用的那只应用窗口**（窗口要的是「我这边的 AI 在干什么」，
+     主窗口要的是全局）。帧由两处产生：① 主进程在 apps:hostTextStream / apps:hostImageStream
+     里自动登记的（应用一行代码都不用写）；② 应用自己经 appHost.aiReport({phase,detail,…}) 上报的。
+     没有应用窗口能收到这条帧时（老宿主 / 内嵌 iframe 无 webContents）什么都不会发生 —— 它只是旁路。
+     返回退订函数（写法与 appHost.agent.onEvent 一致：ipcRenderer.on + removeListener）。 */
+  aiActivityOn: (cb) => {
+    if (typeof cb !== "function") return () => {};
+    const onEv = (_e, msg) => {
+      if (!msg || typeof msg !== "object") return;
+      try {
+        cb(msg);
+      } catch (err) {
+        console.error("appHost.aiActivityOn cb error:", err);
+      }
+    };
+    ipcRenderer.on("ai:activity", onEv);
+    return () => ipcRenderer.removeListener("ai:activity", onEv);
   },
   /* ── 素材库（2026-11 新增 · 用户共识）────────────────────────────────────
    * 应用 ↔ 素材库双向互通：应用能列 / 读整个库、把本机文件收进库、新建自己的素材与条目，
@@ -545,9 +578,12 @@ const appHost = {
 
 contextBridge.exposeInMainWorld("appHost", appHost);
 
-/* ── 宿主注入的应用窗口 UI（两条，同一套机制）─────────────────────────────────
- * ① footer 语音听写条（需求：应用界面的 footer 也要能用内置 ASR）
- * ② **左下角作者标签**（需求：平时隐藏、hover 出 `@作者 - v版本`、点击看应用详情）
+/* ── 宿主注入的应用窗口 UI（五条，同一套机制）─────────────────────────────────
+ * ① footer 语音听写条（需求：应用界面的 footer 也要能用内置 ASR）        app-speech-ui.js · dictate
+ * ② footer 音频 / 视频播放条（appHost.media.* 的落点）                    app-media-ui.js  · media
+ * ③ **左下角作者标签**（平时隐藏、hover 出 `@作者 - v版本`、点击看应用详情）app-author-ui.js · author
+ * ④ 窗口顶栏（宿主给应用画的那条统一标题栏）                              app-chrome-ui.js · chrome
+ * ⑤ **AI 工作中那条过程条**（应用窗口里正在跑的 AI，简要显示执行过程）    app-ai-work-app-ui.js · aiwork
  * 为什么由宿主注入、而不是等应用自己写：应用是**用户自己的页面**（下载来的只有一份
  * index.html，没人会回去改它），所以这些能力必须对任何应用都自动出现。
  *
@@ -556,16 +592,27 @@ contextBridge.exposeInMainWorld("appHost", appHost);
  * contextBridge 暴露的对象过不了 world 边界。所以那些脚本自己去读 window.appHost（页面
  * 世界里本来就有），并在挂载失败时等宿主派发的 "mtnode-apphost" 事件兜底。
  *
- * 纪律（两条一模一样）：只在「DOM 就绪 + 页面世界真的拿到了 appHost + **这个应用声明了对应
- * 能力位**（app.json 的 capabilities.showDictate / showAuthor / showChrome）」三条都满足时才注入 ——
- * **没声明一律不注入**（宿主侧也就没有那条 UI）；声明了的应用注入进来即生效（听写条默认可见，
- * 作者标签平时隐藏、hover 才露）。桥上的接口始终在，能力位不是权限闸。
- * 作者标签还多一道闸：清单里**名字与版本缺任一个**也不注入（authorTagOf 回 null）——
- * 标签上要写的字凑不齐就不显示这枚标签，不写「未知作者」。 */
-const capAnswer = { at: 0, dict: null, auth: null, player: false, chrome: false }; /* 主进程对「这个应用声明了什么」的答复（只问一次） */
+ * 纪律（①②③④ 四条一模一样）：只在「DOM 就绪 + 页面世界真的拿到了 appHost + **这个应用声明了
+ * 对应能力位**（app.json 的 capabilities.showDictate / showMediaPlayer / showAuthor / showChrome）」
+ * 都满足时才注入 —— **没声明一律不注入**（宿主侧也就没有那条 UI）；声明了的应用注入进来即生效
+ * （听写条默认可见，播放条没点播时整条收起，作者标签平时隐藏、hover 才露）。桥上的接口始终在，
+ * 能力位不是权限闸。作者标签还多一道闸：清单里**名字与版本缺任一个**也不注入（authorTagOf 回 null）——
+ * 标签上要写的字凑不齐就不显示这枚标签，不写「未知作者」。
+ *
+ * ⑤ 是唯一的例外：**所有应用窗口默认注入，不看能力位**。理由：这条 UI 反映的不是应用自己声明的
+ * 能力，而是**宿主自己代它做的事**（apps:hostTextStream / apps:hostImageStream 那次模型调用、
+ * 以及它经 agent.send 发起的那一轮），应用不声明也应该看得见「宿主正在替我干活」。它自己拿不到
+ * appHost（非应用窗口 / 老宿主）时整块不出现、console 不报错，所以「默认注入」不会给谁添乱。
+ *
+ * ⑥ **输入补全**（renderer/app-fim.js · complete）：闸门是 app.json 的 capabilities.showComplete
+ *    （2026-11 用户需求「补全应当作为一个基础功能打通，应用里也能默认开启」）。注入前先把主进程
+ *    算好的那份配置写成页面世界的纯值 window.__mtnodeFimSettings（与作者标签同一手法），脚本自己读；
+ *    请求走 appHost.textGenStream —— 应用侧没有 apiCall，服务商与 Key 仍只在主进程。
+ *    注入进去即生效：应用里每个 input / textarea 都带边打边补 + Tab 现场触发 + 光标动效。 */
+const capAnswer = { at: 0, dict: null, auth: null, player: false, chrome: false, complete: false, fim: null }; /* 主进程对「这个应用声明了什么」的答复（只问一次） */
 function askCapabilities() {
   if (capAnswer.at) return Promise.resolve(capAnswer);
-  const fallback = () => ({ dict: false, auth: null, player: false, chrome: false });
+  const fallback = () => ({ dict: false, auth: null, player: false, chrome: false, complete: false, fim: null });
   return Promise.resolve(ipcRenderer.invoke("apps:hostCapabilities"))
     .then((r) => {
       if (!r || !r.ok || !r.capabilities) return fallback();
@@ -578,6 +625,10 @@ function askCapabilities() {
       /* 窗口顶栏（renderer/app-chrome-ui.js）：主进程带 chrome 这一项才注入 —— 与 author 同一条兼容
          口径，老版主进程不带 = 不注入。也认 app.json 的能力位 showChrome，两条任一为真即注入。 */
       capAnswer.chrome = r.chrome === true || (r.capabilities && r.capabilities.showChrome === true);
+      /* 输入补全（renderer/app-fim.js）：声明了 showComplete 才注入；配置那份纯值由主进程
+         一起带回来（fimSettingsOf），preload 写到页面世界的 window.__mtnodeFimSettings。 */
+      capAnswer.complete = r.capabilities.showComplete === true;
+      capAnswer.fim = capAnswer.complete && r.fim && typeof r.fim === "object" ? r.fim : null;
       return capAnswer;
     })
     .catch(() => fallback());
@@ -611,12 +662,18 @@ function injectAppUiScript(fileName, marker) {
     } catch {}
   }
 }
-/* 注入时机：DOM 就绪 → 一次性问主进程「这个应用声明了哪些窗口 UI」→ 声明了才注入。
-   问不到（老版主进程 / 非应用窗口）按「没声明」处理：宁可不注入，也不给默认应用硬塞 UI。
+/* 注入时机：DOM 就绪 → 无条件注入 AI 过程条（⑤）→ 一次性问主进程「这个应用声明了哪些窗口 UI」
+   → ①～④ 声明了才注入。问不到（老版主进程 / 非应用窗口）按「没声明」处理：宁可不注入，
+   也不给默认应用硬塞 ①～④ 那几条；⑤ 不受这条口径约束（见文件头「五条」那段注释）。
    作者标签那一份数据顺手挂到 window.__mtnodeAuthorTag（同一世界，注入脚本直接读；
    它自己也会读 window.appHost.__authorTag 兜底）—— 注入脚本与 preload 是两个世界，
    事件 detail 里塞得进对象，但这份数据是**纯值**，挂在 window 上更省一次往返。 */
 function maybeInjectAppUi() {
+  /* ⑤ AI 工作过程条（renderer/app-ai-work-app-ui.js）：**不问能力位、所有应用窗口默认注入**。
+     理由见文件头「五条」那段注释 —— 它反映的是宿主自己代应用做的事，不需要应用声明。
+     放在 askCapabilities() 之前：老宿主答不上来（甚至答挂）也照样有这一条；
+     页面里拿不到 appHost 时它自己整块不出现，不会给应用添乱。 */
+  injectAppUiScript("app-ai-work-app-ui.js", "aiwork");
   askCapabilities().then((ans) => {
     if (ans.auth) {
       try {
@@ -627,6 +684,15 @@ function maybeInjectAppUi() {
     /* 底部播放条（appHost.media.* 的落点）：声明了 showMediaPlayer 才注入，没点播时整条收起 */
     if (ans.player) injectAppUiScript("app-media-ui.js", "media");
     if (ans.auth) injectAppUiScript("app-author-ui.js", "author");
+    /* 输入补全（renderer/app-fim.js）：声明了 capabilities.showComplete 才注入。
+       配置先落成页面世界的纯值（与 author 那一份同一手法），注入的脚本直接读它；
+       请求走 window.appHost.textGenStream（应用侧没有 apiCall，服务商与 Key 仍只在主进程）。 */
+    if (ans.complete) {
+      try {
+        window.__mtnodeFimSettings = ans.fim || null;
+      } catch {}
+      injectAppUiScript("app-fim.js", "complete");
+    }
     /* 窗口顶栏（renderer/app-chrome-ui.js）：主进程答复里带 chrome 才注入，与作者标签同一处、
        同一套失败静默（注入失败只 console.error，不阻断页面） */
     if (ans.chrome) injectAppUiScript("app-chrome-ui.js", "chrome");

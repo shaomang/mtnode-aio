@@ -92,6 +92,24 @@ const APP_CAPABILITIES = [
     },
   },
   {
+    id: "showComplete",
+    label: { zh: "输入补全", en: "Input completion" },
+    /* 应用窗口里的**输入补全**（2026-11 用户需求：「补全应当作为一个基础功能打通，使得应用中可以
+       默认开启实现自动补全」）：为真 = 宿主把 renderer/app-fim.js 注入应用页，并在页面世界里挂一份
+       window.__mtnodeFimSettings（总开关 / 自动 / Tab 手动 / 延迟 / 上限 / 模型）。
+       应用页的每个 <input>/<textarea> 自动获得：边打边补的 ghost、光标后的脉冲动效、
+       按 Tab 现场要一次（第一下触发、第二下采纳）。
+       **请求怎么走**：应用侧没有 apiCall，走 appHost.textGenStream → 主进程 apps-store 的
+       hostTextStream（服务商与 Key 仍只在主进程，应用拿不到）。
+       与听写条同一条纪律：能力位缺省 false（存量应用不动），新建应用默认开；声明即注入，
+       关掉这一位当场收回（下次开窗不再注入）。总开关仍在「输入补全」面板里 —— 那里关掉，
+       应用窗口里也一律不发请求。 */
+    hint: {
+      zh: "应用里的输入框自动带 AI 补全：边打边补、按 Tab 现场要一次（再按一下采纳），补全时在光标后转圈；模型与服务商沿用 MTNode 的配置，应用拿不到 Key。勾上即生效（存量应用默认不勾）",
+      en: "Inputs inside the app get AI completion: complete while typing, press Tab to ask on demand (press again to accept), with a spinner at the caret. Models and keys stay in MTNode. On by default for new apps",
+    },
+  },
+  {
     id: "windowChrome",
     label: { zh: "窗口顶栏", en: "Window top bar" },
     /* 与 showDictate / showAuthor 同一套注入机制（宿主注入 renderer/app-chrome-ui.js），

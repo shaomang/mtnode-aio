@@ -25,6 +25,9 @@ const pluginErrors = require("../plugin-error-repair.js");
    窗口里逐步骤显示；失败就地给「交给 mtnode 会话修复」，不再静默转 Agent 兜底 */
 const installHost = require("../plugins/main-install.js");
 const stepReporter = require("../plugins/install-step-reporter.js");
+/* 安装后自检内核（注册表 + 结果落盘 + 事件）：卡片「已装勾」的唯一判据，
+   见 plugins/plugin-selfcheck.js 头部契约 */
+const selfcheck = require("../plugins/plugin-selfcheck.js");
 /* 安装中断核心：取消 = 置 installCancel + 强杀当前安装脚本的进程树（见 plugins/install-cancel.js） */
 const installKill = require("../plugins/install-cancel.js");
 const { quietPython, pythonHealth, silentEnv } = require("../backend-python.js");
@@ -191,6 +194,62 @@ function verifyInstalled(installDir) {
 }
 
 const verifyFailureMessage = installVerify.verifyFailureMessage;
+
+/* ── 安装后自检（卡片「已装勾」的唯一判据）───────────────────────────────────
+   本插件不产内容（它是模型管理器），所以自检 = **真跑一遍安装要件核查**：
+   安装目录 / app\server.py / .install-ok / .venv 里的解释器 / bin\llama-server.exe 完整性 /
+   venv 内真 import fastapi + app.server / models\ 与 .api-key。
+   与安装收尾同一份 verifyInstalled（不另写一套），结论一致：安装收尾过了 → 这里也过。
+   没装（安装目录取不到）→ skipped：不打勾，如实说明原因。 */
+async function selfcheckLlama(ctx) {
+  const c = ctx || {};
+  const steps = [];
+  const sig = c.signal || { aborted: false };
+  const step = (id, title, status, detail) => {
+    const s = { id: String(id || "step"), title: String(title || ""), status: String(status || "run"), detail: detail == null ? "" : String(detail) };
+    const at = steps.findIndex((x) => x.id === s.id);
+    if (at >= 0) steps[at] = s;
+    else steps.push(s);
+    try {
+      if (typeof c.step === "function") c.step({ title: s.title, status: s.status, detail: s.detail });
+    } catch {}
+    return s;
+  };
+  const log = (line) => {
+    try {
+      if (typeof c.log === "function") c.log(line);
+    } catch {}
+  };
+  if (sig.aborted) return { ok: false, skipped: true, reason: "已取消", steps };
+
+  const ctxDir = String(c.installDir || "").trim();
+  let installDir = ctxDir;
+  if (!installDir) {
+    try {
+      installDir = String(loadConfig().installDir || "").trim();
+    } catch {
+      installDir = "";
+    }
+  }
+  if (!installDir) {
+    step("dir", "安装目录", "skip", "还没设置安装目录（这个插件还没装）");
+    return { ok: false, skipped: true, reason: "还没设置安装目录（这个插件还没装）", steps };
+  }
+  let v = null;
+  try {
+    v = await verifyInstalled(installDir);
+  } catch (e) {
+    const msg = "自查自身抛错：" + String((e && e.message) || e);
+    step("verify", "校对安装要件（文件 + venv 内真 import）", "fail", msg);
+    return { ok: false, error: msg, steps, installDir };
+  }
+  const list = (v && v.checks) || [];
+  for (const it of list) step("verify:" + String(it.id || ""), it.label, it.ok ? "ok" : "fail", it.detail);
+  step("verify", "校对安装要件（文件 + venv 内真 import）", v && v.ok ? "ok" : "fail", list.length + " 项");
+  log("[selfcheck] llama-local " + (v && v.ok ? "通过" : "未通过") + " · " + installDir);
+  if (!v || !v.ok) return { ok: false, error: verifyFailureMessage(v), steps, installDir };
+  return { ok: true, steps, installDir };
+}
 
 function copyDirRecursive(src, dest, skipNames) {
   const skip = new Set(skipNames || [".venv", "models", "__pycache__", ".git"]);
@@ -1588,7 +1647,8 @@ async function installProject(opts) {
     }
     await runPs(script, ["-InstallDir", installDir], {
       cwd: installDir,
-      /* 统一国内源（PIP_* 三件套压掉机器级 pip.ini 的不可达 extra-index）：见 ../cn-mirrors.js */
+      /* 统一国内源（PIP_* 三件套压掉机器级 pip.ini 的不可达 extra-index；MTNODE_GH_PROXIES
+         把 GitHub 代理链下发进脚本，脚本不再自带 host 名单）：见 ../cn-mirrors.js */
       env: mirrors.installEnv(),
       onPct: (pct) =>
         emitProgress({
@@ -2083,6 +2143,21 @@ function registerLlamaIpc(opts) {
     },
   });
 
+  /* 安装后自检登记（卡片「已装勾」的唯一判据）：本插件不产内容，check 走上面的
+     selfcheckLlama（真跑一遍 install-verify 的要件核查）。kind="install" = 非内容生成类，
+     安装窗里的说明按这一档写（见 install/app.js 的 NOTE 表）。 */
+  try {
+    selfcheck.registerPluginSelfcheck({
+      id: PLUGIN_ID,
+      key: "llama",
+      label: "llama.cpp 本地模型",
+      kind: "install",
+      check: (ctx) => selfcheckLlama(ctx),
+    });
+  } catch (e) {
+    appendConsole("[boot] 自检登记失败：" + String((e && e.message) || e));
+  }
+
   ensureUiRuntime();
   startConsoleLogWatch();
   startUiSignalWatch();
@@ -2191,4 +2266,6 @@ module.exports = {
   vramHooks,
   onLlamaDshEvent,
   PLUGIN_ID,
+  /* 安装后自检的实现（给纯 Node 冒烟直呼；生产侧由 registerPluginSelfcheck 登记，见 registerLlamaIpc） */
+  selfcheckLlama,
 };

@@ -2758,6 +2758,10 @@ async function assistSend(text, opts) {
   const roundImages =
     resumeRound || typeof dshRunImages !== "function" ? [] : dshRunImages(t);
   let assistHitMaxTokens = false;
+  /* AI 活动登记：助手栏这一轮也是**会话轮**（runKey = agent:<会话id>，与运行队列同一个
+     键 / 同一张面板），登记与收尾都走 session 族那一套函数。 */
+  agentAiSessionBegin(aidSt, { model: assistOpt("model"), provider: assistOpt("provider") });
+  let aiOutcome = "ok";
   try {
     const final = await dshRunTask(input, {
       runKey: rk,
@@ -3012,6 +3016,8 @@ async function assistSend(text, opts) {
       typeof dshIsUserClosedError === "function" && dshIsUserClosedError(e);
     const cancelled =
       S.assistStopRequested || isCancelishError(msg);
+    /* AI 活动：与上面两个分支的结局同一判据（用户关闭 / 按停都算 cancelled） */
+    aiOutcome = userClosed || cancelled ? "cancelled" : "error";
     if (userClosed) {
       /* 用户主动关闭（本次需求）：助手这一轮同样只落中性状态行，不弹红 toast */
       const body = stripStreamErrors(S.assistPending);
@@ -3057,6 +3063,8 @@ async function assistSend(text, opts) {
       toast(I18n.t("画布助手失败：") + msg, "err");
     }
   } finally {
+    /* AI 活动收尾：与上面 try / catch 的结局同源（ok / cancelled / error） */
+    agentAiSessionEnd(aidSt, aiOutcome);
     S.assistStopRequested = false;
     /* 本轮结果先按**正在跑的那条会话**落盘：不能用 assistPersistBound ——
        它按「当前前台画布的助手会话」取，用户跑的时候切走了画布就会取成 null，
@@ -7620,6 +7628,9 @@ const DSH_TOOL_TITLE_RULES = [
   [/^mtnode_app$/i, "画布应用"],
   [/^mtnode_canvas_edit$/i, "编辑画布"],
   [/^mtnode_facts$/i, "AI 事实库"],
+  /* 早期原文反查（本次需求 · 任务 3/6）：会话被压缩 / 截断后，按轮次、关键词或索引取回本
+     会话早期原文（gateway/session-recall-plugin.mjs 注册；紫色自定义族已由 ^mtnode_ 覆盖） */
+  [/^mtnode_recall$/i, "反查会话"],
   [/^mtnode_db$/i, "数据库查询"],
   [/^mtnode_assets$/i, "素材库"],
   /* 真机调试（只有应用开发会话注册它）：开应用窗口、点、读文字、截图 */
@@ -14486,9 +14497,28 @@ function agentBriefPanePaint(st, pane) {
     return read.phase + (read.ahead ? ":" + read.ahead : "");
   });
   const sig = agentBriefPaneSigOf(st, rounds, briefs, phases);
+  /* 滚动口径（用户报障：简报更新时显示位置会回弹）——
+     整份重画要把容器清空再逐轮重建，而运行中那一轮的正文是**最后**才由 agentBriefLiveSync
+     填回去的（在那之前只剩一块空壳）。所以「清空前记一笔、建完立刻还原」必然是把位置还原到
+     一个**变矮了的**容器上：还原值被浏览器夹小，正文填回来之后位置就停在半路 —— 每次简报
+     刷新都把用户正在看的地方弹走一次。现在的口径：**更新一律不动滚动条**：
+       · 重画前只记两个数：当前位置 keep、当时是不是贴底 wasBottom；
+       · 整份重建（含运行中那一轮的就地同步、尾段正文补写）全部做完之后，才还原一次位置 ——
+         当时贴底就还回底部（否则「贴底却在更新时往上跳」），否则按原像素位置还原；
+       · 之后滚不滚、滚到哪，全交给用户自己（这里不再追底、不做吸附）。
+     指纹没变的那一帧一个字节都不写。 */
+  let rebuilt = false;
+  let keepTop = 0;
+  let wasBottom = false;
   if (pane._dshBriefSig !== sig) {
     pane._dshBriefSig = sig;
-    const keep = pane.scrollTop;
+    rebuilt = true;
+    keepTop = Math.max(0, Number(pane.scrollTop) || 0);
+    try {
+      wasBottom = isScrollNearBottom(pane, CONV_STICK_SLACK);
+    } catch (_) {
+      wasBottom = false;
+    }
     pane.textContent = "";
     pane._dshBriefLive = null;
     /* 「补一份」只挂在更早的轮上：最近 AutoRounds 个**已落地**的轮是进页自动补的，不必再给按钮 */
@@ -14512,7 +14542,6 @@ function agentBriefPanePaint(st, pane) {
           agentBriefRoundEl(st, rounds[i], briefs[i], i < autoFrom, sched),
         );
     }
-    if (keep) pane.scrollTop = keep;
   } else if (liveR && (!pane._dshBriefLive || pane._dshBriefLive.parentNode !== pane)) {
     /* 指纹没动但这一轮刚进入运行（消息与它的指纹恰好同一拍到）：补挂一次 */
     const box = agentBriefLiveRoundEl(st, liveR);
@@ -14520,10 +14549,12 @@ function agentBriefPanePaint(st, pane) {
     pane.appendChild(box);
   }
   if (!liveR) {
-    /* 已经落地 / 不再运行：这一块整份撤掉（这一轮由历史那一支画） */
+    /* 已经落地 / 不再运行：这一块整份撤掉（这一轮由历史那一支画）。
+       撤掉最高的一块同样会让容器变矮 —— 位置按重建前的口径还原一次。 */
     if (pane._dshBriefLive && pane._dshBriefLive.parentNode === pane)
       pane.removeChild(pane._dshBriefLive);
     pane._dshBriefLive = null;
+    if (rebuilt) agentBriefPaneScrollRestore(pane, keepTop, wasBottom);
     return;
   }
   agentBriefLiveSync(st, pane._dshBriefLive, liveR);
@@ -14534,6 +14565,28 @@ function agentBriefPanePaint(st, pane) {
   const tail = items && items.length ? items[items.length - 1] : null;
   if (tail && tail.k === "say" && tail.open !== false)
     agentBriefLiveStreamPaint(st, String(tail.text || ""));
+  /* 位置的唯一还原点：内容（含运行中那一轮的正文）全部就位之后才写，见函数开头的口径 */
+  if (rebuilt) agentBriefPaneScrollRestore(pane, keepTop, wasBottom);
+}
+/* 整份重画之后的滚动还原（简报区里唯一写这只容器 scrollTop 的地方）：
+   只把用户重建前那一刻的位置放回去 —— 当时贴底就还回底部（内容在下面长了，不还回去
+   就会被甩在上面），否则按原像素位置还原并夹在合法范围内；值没变就不写，
+   不制造多余的 scroll 事件、也不去动「要不要跟随底部」那个用户意图标记。 */
+function agentBriefPaneScrollRestore(pane, keep, wasBottom) {
+  if (!pane) return;
+  const max = Math.max(
+    0,
+    (Number(pane.scrollHeight) || 0) - (Number(pane.clientHeight) || 0),
+  );
+  const want = wasBottom
+    ? max
+    : Math.min(Math.max(0, Number(keep) || 0), max);
+  const cur = Number(pane.scrollTop) || 0;
+  if (cur === want) return;
+  /* 走 setConvScrollTop（程序滚动带序号守卫）：这一笔是我们还原的，不能被当成
+     「用户自己滚了一下」，否则会顺手改写「是否跟随底部」那个用户意图标记。 */
+  if (typeof setConvScrollTop === "function") setConvScrollTop(pane, want);
+  else pane.scrollTop = want;
 }
 /* 调度器把简报刷新好了 → 只重画简报区这一块（不触发整表重建）。注册的是
    app-brief-sched.js 留给「卡片层」的那一个画笔；别的会话 / 没停在简报这一片时直接返回。
@@ -16656,9 +16709,17 @@ function agentCompactApply(st, info) {
   if (!count) return 0;
   const at = Number(info && info.at) || Date.now();
   const summary = String((info && info.summary) || "");
+  /* 摘要尾部固定带一行「出路」指针（本次需求 · 任务 3/6）：压缩落地的那一刻，模型的上下文
+     里只剩这份摘要，而早期原文其实一条都没删（都在会话存储里，只是盖了 _fold 退出上下文）。
+     这一行只写给模型看（行为指令，不是界面文案 —— 所以不走 I18n.t，也不进 st.compacts 的
+     summary：浮层与 chip 读的是记录，不是这条消息），随摘要一起每轮重发，约 60 字。
+     自动压缩的摘要来自运行时、宿主改不了，那条路径靠会话人设里的 session.recall_hint 覆盖。 */
   st.messages.push({
     role: "assistant",
-    content: I18n.t("（上文已压缩）\n\n") + summary,
+    content:
+      I18n.t("（上文已压缩）\n\n") +
+      summary +
+      "\n\n（被压掉的早期原文仍在本会话里：需要其中的原话 / 数字 / 文件名 / 决定时，用 mtnode_recall 反查，不要凭记忆编造。）",
     at: at,
     _compact: gid,
   });
@@ -18368,6 +18429,196 @@ function isDevBriefContract(text) {
   return false;
 }
 
+/* ── AI 活动登记 · 会话族（一轮 = 一条活动）──────────────────────────────────
+ * 面板真源 = window.MTNodeAiActivity（renderer/app-ai-activity.js），契约见
+ * docs/ai-activity.md §4（一条活动 / 一条步骤）与 §5.1 / §5.4（会话族、修复族）。
+ * 本族只把既有事件点搬进那张表，**不新建任何在途表、不改运行队列的读数**
+ * （collectRunQueueAll 一条都没动，所以队列条数 / 完成音 / 托盘计数都不受影响）：
+ *   · 轮次开始 / 结束 → 本文件两个 dshRunTask 调用点（会话 agentSessionSend、
+ *     助手 assistSend）里各调一次 agentAiSessionBegin / agentAiSessionEnd；
+ *   · 逐帧步骤（思考 / 正文 / 工具）→ renderer/app-session-bridge.js 的 onRunEvent 收口
+ *     调 agentAiSessionStep。两处**同一把键**（sess:<会话id>，与运行队列的会话键同一个），
+ *     且分工不重叠（那边只写 step，这里只写生命周期），所以同一件事不会记两遍。
+ * 修复族（自动修复 / 插件安装修复会话）不另开通道：同一个 begin，source 标 repair。
+ *
+ * **应用界面持有的会话不登记**（2026-11-22 用户纠正 + docs §5.5 / §8）：应用窗口
+ * （renderer/app-apphost-bridge.js 的 agentSend）与画布应用节点（renderer/app-appnode.js）
+ * 都会 watchHost 把这条会话的帧转给**应用自己的界面**，那条「AI 工作中」由
+ * renderer/app-ai-work-app-ui.js 画 —— 主窗口再登记一次就是同一次 AI 两个窗口各亮一次。
+ * 判据用既有的 window.MTNodeSession.isHostWatching(sid)，不新增状态。
+ */
+const AI_STEP_GAP_MS = 2000; /* 思考 / 正文是逐 token 的增量帧：一个阶段内最多 2 秒一条步骤 */
+const aiStepAt = new Map(); /* "sess:<id>|<phase>" → 上一次记步骤的时刻（合并增量帧用） */
+
+function aiActKernel() {
+  try {
+    return typeof window !== "undefined" && window.MTNodeAiActivity ? window.MTNodeAiActivity : null;
+  } catch (_) {
+    return null;
+  }
+}
+/** 这条会话是不是正被**应用界面**观察（独立应用窗口 / 画布应用节点都会 watchHost）：
+ *  是 = 它的 AI 过程显示在那只应用界面上，主窗口的活动表不再登记它。 */
+function aiSessHostOwned(st) {
+  try {
+    const sid = String((st && st.id) || "").trim();
+    const S = typeof window !== "undefined" ? window.MTNodeSession : null;
+    return !!(sid && S && typeof S.isHostWatching === "function" && S.isHostWatching(sid));
+  } catch (_) {
+    return false;
+  }
+}
+function aiSessKeyOf(st) {
+  const sid = String((st && st.id) || "").trim();
+  return sid ? "sess:" + sid : "";
+}
+/** 新一轮 / 收尾时把这条会话的阶段合并计时清掉（否则上一轮的时刻会把新一轮的
+ *  第一条思考 / 正文顶掉 —— 两轮之间可能只隔几十毫秒）。 */
+function aiSessStepDrop(key) {
+  const pre = key + "|";
+  aiStepAt.forEach((v, k) => {
+    if (k.indexOf(pre) === 0) aiStepAt.delete(k);
+  });
+}
+
+/* 修复族的标题抬头（中文原文 + 当前语言译文都认）：与 app-repair.js 建会话时写的那两个
+   标题（「自动修复 · X」/「插件安装修复 · X」）同源，不另立第二套命名。 */
+const AI_REPAIR_TITLE_HEADS = ["自动修复", "插件安装修复", "插件修复"];
+function aiTitleHasRepairHead(title) {
+  const s = String(title || "");
+  for (const p of AI_REPAIR_TITLE_HEADS) {
+    if (s.indexOf(p) === 0) return true;
+    const tr = I18n.t(p);
+    if (tr && s.indexOf(tr) === 0) return true;
+  }
+  return false;
+}
+/** 这一轮是不是「自动修复」会话：app-repair.js 显式打的标记优先（st.aiSource），
+ *  没有标记时按它既有口径兜底（titleLocked + 修复抬头）。 */
+function aiSessIsRepair(st) {
+  if (!st) return false;
+  if (String(st.aiSource || "") === "repair") return true;
+  return !!st.titleLocked && aiTitleHasRepairHead(st.title);
+}
+/** 活动标题：普通会话 = 会话标题；修复会话 = 「自动修复 · <插件名>」。
+ *  （修复会话的标题本来就是这么写的，只有没带抬头时才补一次，绝不重复拼。） */
+function aiSessTitleOf(st) {
+  const raw = String((st && st.title) || "").trim() || I18n.t("会话");
+  if (!aiSessIsRepair(st) || aiTitleHasRepairHead(raw)) return raw;
+  return I18n.t("自动修复") + " · " + raw;
+}
+/** 副行归属：这一轮改的是哪张画布（有绑定时才写；应用窗口经 agentSend 发起的会话
+ *  也会绑画布，跳过去前先让人知道是哪张图）。 */
+function aiSessCanvasNameOf(st) {
+  try {
+    const id = String((st && st.canvasWfId) || "");
+    if (!id) return "";
+    if (S && S.wf && String(S.wf.id) === id) return String(S.wf.name || "");
+    const wf = S && S.wfBag ? S.wfBag[id] : null;
+    return wf ? String(wf.name || "") : "";
+  } catch (_) {
+    return "";
+  }
+}
+/** 终止：转调**既有**中断入口（与界面上的会话 ■、会话桥 sessionStop 同一个
+ *  stopSessionRuns），这里一行中断逻辑都不写。 */
+function aiSessStopOf(st) {
+  return function () {
+    try {
+      const sid = String((st && st.id) || "");
+      const cur = (sid && typeof agentSessionById === "function" ? agentSessionById(sid) : null) || st;
+      if (cur && typeof stopSessionRuns === "function") stopSessionRuns(cur, true);
+    } catch (_) {}
+  };
+}
+
+/** 轮次开始：登记（或复用）这条会话的活动。标题 / 跳转 / 终止都按会话自己的来。
+ *  被应用界面观察的会话**不登记**（它的过程显示在那只应用窗口 / 应用节点的底栏上，见文件头）。 */
+function agentAiSessionBegin(st, opts) {
+  const K = aiActKernel();
+  const key = aiSessKeyOf(st);
+  if (!K || !key || typeof K.begin !== "function") return null;
+  aiSessStepDrop(key);
+  if (aiSessHostOwned(st)) return null;
+  const o = opts && typeof opts === "object" ? opts : {};
+  const title = aiSessTitleOf(st);
+  try {
+    return K.begin({
+      key: key,
+      source: aiSessIsRepair(st) ? "repair" : "session",
+      kind: "agent-session",
+      title: title,
+      subtitle: aiSessCanvasNameOf(st),
+      model: String(o.model || (st && st.model) || ""),
+      provider: String(o.provider || (st && st.provider) || ""),
+      /* 「跳过去」= 既有的会话跳转分支（jumpRunQueueItem 的 session：切会话视图 +
+         S.agentActiveId + 重绘），应用窗口发起的会话同样定位得到。 */
+      jump: { type: "session", id: String((st && st.id) || ""), wfId: "", label: title },
+      stop: typeof stopSessionRuns === "function" ? aiSessStopOf(st) : null,
+    });
+  } catch (_) {
+    return null;
+  }
+}
+
+/** 逐帧步骤：思考 / 正文 / 工具（由 renderer/app-session-bridge.js 的 onRunEvent 喂）。
+ *  其余帧不进步骤表 —— 中途 error 只由 end() 落一条终态步骤（契约 §4.3：终态 phase
+ *  必须与 status 一致）；工具耗时拿不到就不填（dur: 0，不估）。 */
+function agentAiSessionStep(st, type, data) {
+  const K = aiActKernel();
+  const key = aiSessKeyOf(st);
+  if (!K || !key || typeof K.find !== "function" || typeof K.step !== "function") return null;
+  const a = K.find(key);
+  if (!a || a.status !== "running") return null; /* 没登记 / 已收尾：这一帧不记 */
+  const d = data && typeof data === "object" ? data : {};
+  const ty = String(type || "");
+  const at = Number(d.at) > 0 ? Number(d.at) : Date.now();
+  let s = null;
+  if (ty === "reasoning") s = { phase: "thinking", text: "", tool: "" };
+  else if (ty === "text") s = { phase: "writing", text: "", tool: "" };
+  else if (ty === "tool" && d.name)
+    s = { phase: "tool", tool: String(d.name || ""), text: aiToolStepTextOf(d) };
+  if (!s) return null;
+  if (s.phase === "thinking" || s.phase === "writing") {
+    const tk = key + "|" + s.phase;
+    if (at - (aiStepAt.get(tk) || 0) < AI_STEP_GAP_MS) return null;
+    aiStepAt.set(tk, at);
+  }
+  try {
+    return K.step(key, { at: at, phase: s.phase, text: s.text, tool: s.tool, dur: 0, err: "" });
+  } catch (_) {
+    return null;
+  }
+}
+
+/** 工具步骤的一句话：参数的紧凑首行（正文本身不进面板，这里只让人认出这一步在干什么）。 */
+function aiToolStepTextOf(d) {
+  const raw = String((d && d.args) || "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return raw.length > 120 ? raw.slice(0, 120) + "…" : raw;
+}
+
+/** 收轮：ok / cancelled / error 三个出口同源（各自 finally 里一次定稿）。
+ *  没登记过的会话（应用界面持有的那条）直接跳过 —— 不制造「end 找不到活动」的告警。 */
+function agentAiSessionEnd(st, outcome, errText) {
+  const K = aiActKernel();
+  const key = aiSessKeyOf(st);
+  if (!K || !key || typeof K.end !== "function") return null;
+  aiSessStepDrop(key);
+  if (typeof K.find === "function" && !K.find(key)) return null;
+  const out = String(outcome || "ok");
+  const status = out === "cancelled" ? "cancelled" : out === "error" ? "error" : "ok";
+  try {
+    return K.end(key, {
+      status: status,
+      error: status === "error" ? String(errText || "") : "",
+    });
+  } catch (_) {
+    return null;
+  }
+}
+
 async function agentSessionSend(text, opts) {
   opts = opts || {};
   /* 「/btw」免询问前缀在这里剥掉（与 doSend 里那条快捷路径同源，见 busySendBtw）。
@@ -18923,6 +19174,16 @@ async function agentSessionSend(text, opts) {
      纯净轮不再一律不发：本轮原话命中「自检 / 交付 / 长任务」（principle）就照发。 */
   if (!pureMode || (pureSections && pureSections.has("principle")))
     systemPrompt += PS("session.self_check", SELF_CHECK_DISCIPLINE);
+  /* 早期原文反查（本次需求 · 任务 3/6）：上下文会因手动压缩（_fold）、运行时自动压缩
+     （compacts 一条 kind:'auto'）、或历史段 20 万字上限（AGENT_HIST_MAX_CHARS）而看不全
+     早先内容 —— 但原文一条都没删，都在会话存储里，mtnode_recall 能按轮次 / 关键词 / 索引
+     取回逐字原文。这里只给「有出路 + 不许凭记忆编」这一句，动作与上限在工具描述里，
+     机制在 docs/session-recall.md（提示词单一真源的口径同上）。 */
+  if (!pureMode)
+    systemPrompt += PS(
+      "session.recall_hint",
+      "\n\n【早期原文反查】历史被压缩、或上下文里看不全早先内容时，需要早先的原话 / 数字 / 文件名 / 决定就用 mtnode_recall 反查（outline 看轮次 → search 找关键词 → read 取原文），不得凭记忆编造；查不到就如实说查不到。",
+    );
   /* 真机调试能力（mtnode_gui，仅限「属于某个应用」的会话：应用开发 / 版本合并）：这一档
      的运行时才注册 GUI 工具，所以人设必须说明它存在、怎么用、边界在哪 —— 否则拿到工具也
      不会用（旧行为：只能看代码，改完无法自验）。只在有 appId 时追加，其余会话一字不变。 */
@@ -19007,6 +19268,11 @@ async function agentSessionSend(text, opts) {
     });
   if (grillTurn) systemPrompt += PS("session.grill_contract", GRILL_CONTRACT);
   if (hotfixTurn) systemPrompt += PS("session.hotfix_contract", HOTFIX_CONTRACT);
+  /* AI 活动登记：这一轮到此**真开跑了**（上面每道闸都放行了、消息已进消息流）——
+     登记表从这一刻起看得见它，收轮在下面的 finally 里一次定稿。自动修复会话走同一条
+     登记（source 由 aiSessIsRepair 标 repair，标题「自动修复 · <插件名>」就是会话
+     自己的标题）。 */
+  agentAiSessionBegin(st, { model: opts.model || st.model, provider: opts.provider || st.provider });
   try {
     /* 本轮的图像附件（只发这一轮新增的图）：本轮正文里的内嵌图行 → 网关 attachImages
        → 用户消息的 image 内容块（模型这才真正「看见」那张图，而不是只读到一行路径）。
@@ -19424,6 +19690,9 @@ async function agentSessionSend(text, opts) {
     }
   } catch (e) {
     const errMsg = (e && e.message) || String(e);
+    /* AI 活动收尾要的失败原文（finally 里 errMsg 已出作用域）：只在这里记一笔，
+       收尾时一并交给 agentAiSessionEnd。 */
+    st._aiRoundErr = errMsg;
     if (typeof dshIsUserClosedError === "function" && dshIsUserClosedError(e)) {
       /* 用户主动关闭（本次需求）：运行时是**干净退出**（exit code: 0），报文里那屏
          stderr 不是故障。已写出的正文照旧归档（用户看着的内容不会因关闭而消失），
@@ -19550,6 +19819,10 @@ async function agentSessionSend(text, opts) {
     /* 会话结束：开发节点从运行队列撤下 */
     updateRunQueuePanel();
     const outcome = st._roundOutcome || "ok";
+    /* AI 活动收尾：与运行队列看的是同一个结局（ok / cancelled / error），
+       放在这一处是为了让三个出口（正常收轮 / 用户终止 / 出错）都走同一条定稿。 */
+    agentAiSessionEnd(st, outcome, st._aiRoundErr);
+    st._aiRoundErr = "";
     const hasQueued = Array.isArray(st.outbox) && st.outbox.length > 0;
     /* 计划执行被打断：终止 = 用户明确不要这份计划 → 就地永久清除
        （不留 pending 项、不留「▶ 继续执行」，重启后也不会再冒出来） */

@@ -65,6 +65,13 @@
       "desc": "分阶段自检、交付前全检、先自修再问人、硬断言带证据这一整段。"
     },
     {
+      "id": "session.recall_hint",
+      "title": "早期原文反查指引",
+      "group": "session",
+      "where": "renderer/app-assist.js · agentSessionSend（session.self_check 之后，纯净轮不发）",
+      "desc": "历史被压缩 / 看不全时用 mtnode_recall 反查早期原话、数字、文件名与决定（outline → search → read）、不得凭记忆编造这一句。"
+    },
+    {
       "id": "session.gui_debug",
       "title": "真机调试能力段",
       "group": "session",

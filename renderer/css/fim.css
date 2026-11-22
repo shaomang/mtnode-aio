@@ -120,6 +120,45 @@
   accent-color: var(--cyan2, #38d6ff)
 }
 
+/* 两种触发方式（自动 / Tab 手动）：缩进一格，字号略小 —— 它们是总开关下面的子项 */
+.fim-row.fim-row-sub {
+  padding: 2px 10px 2px 24px;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.fim-row.fim-row-sub input {
+  accent-color: var(--cyan2, #38d6ff)
+}
+
+/* 状态行：就绪 / 卡在哪一步 / 上次失败原因（本轮新增，与统计同一套框） */
+.fim-status {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 6px 10px 0;
+  padding: 6px 8px;
+  border: 1px solid var(--bd);
+  border-radius: 3px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.fim-status b {
+  margin-left: auto;
+  max-width: 210px;
+  font-weight: 400;
+  text-align: right;
+  color: var(--ink);
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+/* 明确的坏状态（没有服务商 / 没有模型 / 上次失败）：用警示色，别让它看起来像「就绪」 */
+.fim-status b.is-bad {
+  color: var(--warn, #e8b23a);
+}
+
 /* 服务商 / 模型两格外加两个数字格：与 bg-rm-pop 的字段同一口径 */
 .fim-field {
   display: flex;

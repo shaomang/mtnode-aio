@@ -8,7 +8,7 @@
  * 冒烟脚本能直接切片喂给 vm 真跑：
  *   · DS_PRICE                    官方单价表（¥ / 百万 token）
  *   · costIsDeepseekOfficial(p)   p 是否走 DeepSeek 官方路由
- *   · costOfBucket(prov, model, bucket, atFallback)  单桶费用 → { currency, amount, offPeak, estimated } | null
+ *   · costOfBucket(prov, model, bucket, atFallback)  单桶费用 → { currency, amount, offPeak, estimated, apiPrice? } | null
  *   · costOfOwner(owner)          按 tokViewModels(owner) 汇总费用 → 同上 | null
  *     （渲染层会话合计走 app-agent.js 的 tokCostReduce：逐轮之和 + 未覆盖尾段，
  *      保证与「按轮次」逐轮费用一致；本函数是它算不出时的兜底）
@@ -36,6 +36,13 @@
  *     不是同一个串），所以 costIsRelay 会摘掉 `mtnode_` 前缀回查一次卡；
  *     台账本身存原始串、不改写，判据与展示同源。
  *   混合会话里两条路线各记各的（costOfOwner 的 byCur），展示层并列显示。
+ *
+ * **第三方服务商转售的 DeepSeek（opencode 等）**：照常出费用 —— 与官方路由同一张
+ *   DS_PRICE、同一套峰谷判定，差别只在返回值多一个 `apiPrice:true`：
+ *   这笔钱实际付给第三方，他们的单价 / 套餐与 DeepSeek 官方不一定相同，
+ *   所以界面上必须标出「按 API 价格计费」（app-agent.js 的 tokCostMarkEl / tokPeakTip）。
+ *   判据 = 不是中转、也不是官方路由，但模型 id 本身是 DeepSeek 的（表内命中 / 名字认得出）；
+ *   非 DeepSeek 模型（gpt-4o 这类）仍旧不猜价（null → 显示 —）。
  *
  * 后段才是 DOM：balanceGet(force) 取余额（模块级 60s 缓存 + 失败退避），
  * balanceChip() / balanceLine() 生成「金额 + 刷新按钮 + 取数时间」。
@@ -302,7 +309,8 @@ function costCoinText(coins) {
 }
 
 /* 统一的单价取用：中转 → **服务端快照价目**（缺席退回内置表；拿不到 → null）；
- * 其余 → 官方表 + 配置覆盖。
+ * 其余 → 官方表 + 配置覆盖（**第三方服务商转售的 DeepSeek 走的也是这张表**：
+ * 金额照常算，只在 costOfBucket 的返回值上带 apiPrice 让展示层标注口径）。
  * 两边都只回「每一百万 token 的元价」，峰谷判据由各自分支自己处理。 */
 function costPriceFor(provider, model) {
   const p = relayPriceOf(provider, model);
@@ -316,7 +324,8 @@ function costPriceFor(provider, model) {
     };
   }
   if (costIsRelay(provider)) return null; /* 中转但没内置价目：不猜价 */
-  if (!costIsDeepseekOfficial(provider)) return null;
+  /* 非中转：官方路由与第三方服务商共用这份价目表。
+     模型本身不是 DeepSeek 的（gpt-4o / vision-model 之类）costPriceOf 返回 null —— 仍旧不猜价。 */
   return costPriceOf(model);
 }
 
@@ -471,6 +480,8 @@ function costOffPeakRatio() {
  *     没有价目 → null）。
  *   · DeepSeek 官方：按 ¥，峰谷 = 桶自带时刻（或第 4 参 atFallback，如台账 lastAt）
  *     落在空闲时段 → ×半价（S.config.deepseekOffPeakRatio）。
+ *   · 第三方服务商（opencode 等）转售的 DeepSeek：同样按 ¥ / 同一套峰谷算，
+ *     但返回对象带 **apiPrice:true** —— 这笔只是「按 API 价格」的折算，展示层要标注。
  * 其余路由 / 未知单价（且不是 DeepSeek） → null（不猜价）。 */
 function costOfBucket(provider, model, bucket, atFallback) {
   if (!bucket) return null;
@@ -505,7 +516,6 @@ function costOfBucket(provider, model, bucket, atFallback) {
       estimated: false,
     };
   }
-  if (!costIsDeepseekOfficial(provider)) return null;
   if (!price) return null;
   const hit = costNum(bucket.cacheReadTokens);
   const miss = costNum(bucket.inputTokens) + costNum(bucket.cacheWriteTokens);
@@ -517,7 +527,18 @@ function costOfBucket(provider, model, bucket, atFallback) {
     ((hit * price.cacheHit + miss * price.cacheMiss + out * price.output) / 1e6) * ratio;
   /* peak 与 offPeak 都给全：调用方（tokCostFoldAux / tokRoundCost / 圆点）不必各自再判一次
      时段 —— 两档都能从费用对象上读出来，行与行之间也不会一个有一档、另一个什么都没有。 */
-  return { currency: "CNY", amount, peak: peakFlag, offPeak, estimated: !!price.estimated };
+  return {
+    currency: "CNY",
+    amount,
+    peak: peakFlag,
+    offPeak,
+    estimated: !!price.estimated,
+    /* **官方路由不标；第三方服务商（opencode 等）转售的 DeepSeek 标 apiPrice:true** ——
+       金额是拿 DeepSeek 官方 API 价目折算的（同一张 DS_PRICE + 同一套峰谷），但钱付给
+       第三方，他们的单价 / 套餐（比如订阅制）与官方不一定相同，所以界面必须写
+       「按 API 价格计费」（见 app-agent.js 的 tokCostMarkEl / tokPeakTip）。 */
+    apiPrice: !costIsDeepseekOfficial(provider),
+  };
 }
 
 /* 台账取数：优先 app-agent.js 的 tokViewModels；单独切片跑时退回等价实现
@@ -574,6 +595,8 @@ function costOfOwner(owner) {
   const out = { currency: main.currency, amount: main.amount, estimated: !!main.estimated };
   if (main.peak) out.peak = true;
   if (main.offPeak) out.offPeak = true;
+  /* 只要有第三方服务商的份量（按 API 价格折算的那笔），整笔就带上标注标记 */
+  if (main.apiPrice) out.apiPrice = true;
   if (keys.length > 1) out.byCur = byCur;
   return out;
 }
@@ -587,6 +610,7 @@ function costAddCur(byCur, c) {
   if (c.estimated) e.estimated = true;
   if (c.peak) e.peak = true;
   if (c.offPeak) e.offPeak = true;
+  if (c.apiPrice) e.apiPrice = true;
   return byCur;
 }
 

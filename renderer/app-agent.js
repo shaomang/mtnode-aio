@@ -1748,7 +1748,7 @@ function tokRoundPerfLine(rec) {
   return tokPerfLine(tokRoundPerfBucket(rec));
 }
 /* 一轮的费用：该轮各模型桶按该轮自身记账时刻（endedAt → at）判峰谷，
- * 与合计（tokCostOf）同源；非官方路由 / 未知单价 → null（UI 显示 —）。
+ * 与合计（tokCostOf）同源；第三方服务商转售的 DeepSeek 也照常算（带 apiPrice 标「API 价」），
  * 桶带 images（中转「按张」）时一并算进这一轮。
  * 注意不要再退到宿主台账 lastAt：那是整段会话的最近时刻，会把某一轮的峰谷判错。 */
 function tokRoundCost(owner, rec) {
@@ -1980,6 +1980,9 @@ function tokCostAdd(acc, b, at, opts) {
     if (c.estimated) acc.estimated = true;
     if (c.peak) acc.peak = true;
     if (c.offPeak) acc.offPeak = true;
+    /* 第三方服务商转售的 DeepSeek（opencode 等）：这笔是按 API 价格折算的，
+       标记沿着合计一路带上去，展示层才标得出「按 API 价格计费」（见 tokCostMarkEl）。 */
+    if (c.apiPrice) acc.apiPrice = true;
     if (opts && opts.byCur && typeof costAddCur === "function") costAddCur(opts.byCur, c);
   };
   if (typeof costOfBucket === "function") {
@@ -2020,7 +2023,7 @@ function tokCostOf(owner) {
  *   · 合计：逐轮之和 + 未覆盖尾段（老台账没有 roundList 时的兜底）
  *   · 逐模型：各模型分到的那部分（同理逐轮计价），累加起来 = 合计
  *   · 峰谷标记：这一遍里是否有未被折扣的（peak）/ 已被折扣的（offPeak）份量，
- *     供明细行标「峰 / 谷」—— 只在真算出费用时给，非官方路由不带标记。
+ *     供明细行标「峰 / 谷」—— 只在真算出费用时给，算不出费用的路由不带标记。
  * allAt / atOf 是同一趟里的两个视图：allAt = 合计，atOf[k] = 某个模型键，
  * 两者都由同一份成本曲线派生，所以「明细之和 = 合计」是本函数的恒等式。 */
 function tokCostCurve(owner, atOf) {
@@ -2057,6 +2060,7 @@ function tokCostCurve(owner, atOf) {
         if (part.estimated) acc.estimated = true;
         if (part.peak) acc.peak = true;
         if (part.offPeak) acc.offPeak = true;
+        if (part.apiPrice) acc.apiPrice = true;
       }
     }
   }
@@ -2108,6 +2112,7 @@ function tokCostCurve(owner, atOf) {
         if (part.estimated) acc.estimated = true;
         if (part.peak) acc.peak = true;
         if (part.offPeak) acc.offPeak = true;
+        if (part.apiPrice) acc.apiPrice = true;
       }
     }
   }
@@ -2137,14 +2142,20 @@ function tokCostCurve(owner, atOf) {
   const any = acc.amount !== 0 || !!acc.currency;
   if (!any) return { total: null, allAt: allAt, byCur: byCur };
   return {
-    total: { currency: acc.currency || "CNY", amount: acc.amount, estimated: acc.estimated },
+    total: {
+      currency: acc.currency || "CNY",
+      amount: acc.amount,
+      estimated: acc.estimated,
+      /* 第三方服务商转售的 DeepSeek 那一份（按 API 价格折算）→ 合计也要标口径 */
+      apiPrice: !!acc.apiPrice,
+    },
     byCur: byCur,
     allAt: allAt,
   };
 }
 /* 把一趟计价的结果折进辅助累加器（合计总额之外的那一份：某个模型键）：
  * 金额永远相加（同模型可能多笔拼出来 —— 多轮各一笔），峰谷与估算标记按「有过即真」
- * 合并，且只在**这一笔真算出费用**时记（非官方路由 / 未知单价是空账 → 不误标峰谷）。
+ * 合并，且只在**这一笔真算出费用**时记（算不出费用的路由 / 未知单价是空账 → 不误标峰谷）。
  * 峰谷档直接取 costOfBucket（app-cost.js）返回的 peak / offPeak —— 它按该笔自己的
  * 记账时刻判，官方与中转两条路都已给全；这里只在两者都缺（老口径 / 单独切片跑）
  * 时按时刻兜底一次，保证「算得出费用的行一定有档位」（圆点悬停据此上色）。 */
@@ -2154,6 +2165,8 @@ function tokCostFoldAux(part, aux, at) {
   aux.amount = (aux.amount || 0) + tokNum(part.amount);
   if (part.currency && !aux.currency) aux.currency = part.currency;
   if (part.estimated) aux.estimated = true;
+  /* 第三方服务商转售的 DeepSeek：这一行的钱是按 API 价格折算的（展示层标注口径） */
+  if (part.apiPrice) aux.apiPrice = true;
   /* 图像「按张」：金额之外把张数也留在这一行（明细表要显示「N 张」） */
   if (part.images) aux.images = tokNum(aux.images) + tokNum(part.images);
   if (part.peak || part.offPeak) {
@@ -2175,6 +2188,7 @@ function tokCostReduce(owner) {
   if (!curve) return null;
   if (!curve.total) return null;
   const out = { currency: curve.total.currency, amount: curve.total.amount, estimated: curve.total.estimated };
+  if (curve.total.apiPrice) out.apiPrice = true;
   if (curve.allAt && (curve.allAt.peak || curve.allAt.offPeak)) {
     out.peak = !!curve.allAt.peak;
     out.offPeak = !!curve.allAt.offPeak;
@@ -2200,6 +2214,8 @@ function tokModelCostOf(b, owner) {
       estimated: !!aux.estimated,
       peak: !!aux.peak,
       offPeak: !!aux.offPeak,
+      /* 这一行的钱是按 API 价格折算的（第三方服务商转售的 DeepSeek）→ 展示层标注 */
+      apiPrice: !!aux.apiPrice,
       images: tokNum(aux.images),
       /* 价目真源要「服务商 + 模型」两个字段：挂在费用对象上，展示层（圆点悬停的
          价位简要 / 金额格 title）才查得到单价，不必再各自回查一遍桶。 */
@@ -2259,10 +2275,12 @@ function tokMoneyMulti(c) {
   return out.join(" + ");
 }
 /* 费用展示值：单价是兜底猜的（价格表里没有的模型按 flash 价）→ 追加 * 标记。
+ * 第三方服务商（opencode 等）转售的 DeepSeek → 追加「（API 价）」：这笔是按 API 价目
+ * 折算出来的，实际扣费在第三方那边（用户口径：也正常计费，但要标注是按 API 价格计费）。
  * 混合会话（官方 ¥ + 中转币）经 tokMoneyMulti 并列显示成「¥1.23 + 61.5 币」。 */
 function tokCostMark(c) {
   if (!c) return "—";
-  return tokMoneyMulti(c) + (c.estimated ? "*" : "");
+  return tokMoneyMulti(c) + (c.estimated ? "*" : "") + (c.apiPrice ? I18n.t("（API 价）") : "");
 }
 /* ── 费用单元格的 **DOM 版**（表格 / 弹窗用；纯文本入口继续用 tokCostMark）────
  * 中转的币值要带金币图标（需求口径：与设置里中转余额同一套元件），而图标是节点、
@@ -2297,6 +2315,12 @@ function tokMoneyEl(c) {
   }
   return wrap;
 }
+/* 「按 API 价格计费」的完整口径（悬停 / title 用）：金额是拿 DeepSeek 官方价目折算的，
+ * 但服务的钱实际付给第三方（opencode 这类），其单价 / 套餐与官方不一定相同 ——
+ * 所以这一笔只能当参考，不等于第三方那边的真实账单。 */
+function tokApiPriceTip() {
+  return I18n.t("按 API 价格计费：第三方服务商的 DeepSeek 模型按其官方 API 价目折算，实际单价可能不同");
+}
 function tokCostMarkEl(c, owner) {
   const wrap = document.createElement("span");
   wrap.className = "tok-cost-mark";
@@ -2306,6 +2330,14 @@ function tokCostMarkEl(c, owner) {
   }
   wrap.appendChild(tokMoneyEl(c));
   if (c.estimated) wrap.appendChild(document.createTextNode("*"));
+  /* 第三方服务商那份费用：金额后面挂一枚「（API 价）」标签，悬停给完整口径 */
+  if (c.apiPrice) {
+    const tag = document.createElement("span");
+    tag.className = "tok-cost-api";
+    tag.textContent = I18n.t("（API 价）");
+    tag.title = tokApiPriceTip();
+    wrap.appendChild(tag);
+  }
   return wrap;
 }
 /* 峰谷位（口径沿用）：从计价那一趟按**各轮记账时刻**记下的 peak / offPeak 给出
@@ -2333,9 +2365,11 @@ function tokPeakBands(c) {
  * 按轮次表、轮次下钻的该轮按模型表）共用这一份判据。 */
 function tokPeakMark(c) {
   const g = tokPeakBands(c);
-  if (!g.peak && !g.offPeak) return { cls: "", tip: "" };
+  /* 第三方服务商的 DeepSeek：金额是按 API 价格折算的，必须有悬停口径（哪怕没有峰谷档） */
+  const api = !!(c && c.apiPrice);
+  if (!g.peak && !g.offPeak && !api) return { cls: "", tip: "" };
   return {
-    cls: g.peak ? "tok-peak-peak" : "tok-peak-off",
+    cls: g.peak ? "tok-peak-peak" : g.offPeak ? "tok-peak-off" : "",
     tip: tokPeakHoverText(c),
   };
 }
@@ -2421,17 +2455,19 @@ function tokPeakTip(c) {
   const coin = String(c.currency || "").toUpperCase() === "COIN";
   const peak = g.peak;
   const off = g.offPeak;
-  if (!peak && !off) return "";
+  let tip = "";
   if (coin) {
     if (peak)
-      return I18n.t("中转计费：高峰时段单价 × 高峰倍率（价目取中转站随快照下发的那份，缺席退回客户端内置表）");
-    if (off) return I18n.t("中转计费：当前为空闲时段，按价目原价（无高峰倍率）");
-    return "";
-  }
-  if (peak && off)
-    return I18n.t("该行含高峰（全价）与空闲（谷时半价）两个时段的用量：已按各轮各自的记账时刻分别计价");
-  if (off) return I18n.t("该行按空闲时段计价（谷时半价）");
-  return I18n.t("高峰时段全价（空闲时段半价）");
+      tip = I18n.t("中转计费：高峰时段单价 × 高峰倍率（价目取中转站随快照下发的那份，缺席退回客户端内置表）");
+    else if (off) tip = I18n.t("中转计费：当前为空闲时段，按价目原价（无高峰倍率）");
+  } else if (peak && off)
+    tip = I18n.t("该行含高峰（全价）与空闲（谷时半价）两个时段的用量：已按各轮各自的记账时刻分别计价");
+  else if (off) tip = I18n.t("该行按空闲时段计价（谷时半价）");
+  else if (peak) tip = I18n.t("高峰时段全价（空闲时段半价）");
+  /* 第三方服务商（opencode 等）转售的 DeepSeek：口径必须跟着金额走（用户需求：
+     也按正常计费，但要标注是按 API 价格计费）*/
+  if (c.apiPrice) return [tokApiPriceTip(), tip].filter(Boolean).join(" · ");
+  return tip;
 }
 /* 摘要里的费用片段：算不出费用时返回空串（不显示） */
 function tokCostText(owner) {

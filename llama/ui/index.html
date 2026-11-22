@@ -173,6 +173,25 @@
       display: inline-flex; align-items: center; gap: 5px;
       opacity: 1; cursor: wait;
     }
+    /* 在线列表状态条（唯一驱动器是 app.js 的 pollCatalogSync / /api/catalog/sync）：
+       拉取期间这一条显示阶段 + 计数 + 已用秒数 + 已固化条数；失败转红写原因并带「重试」。
+       只复用上面已有的 .spin / .meta 令牌，不另起一套视觉语言。 */
+    .catalog-status {
+      display: flex; align-items: center; gap: 6px; flex-shrink: 0;
+      padding: 4px 8px; border-radius: var(--r-sm); font-size: 11px; min-height: 26px;
+      background: var(--panel); border: 1px solid var(--bd); color: var(--muted);
+    }
+    .catalog-status[hidden] { display: none; }
+    .catalog-status .st-txt {
+      flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .catalog-status.bad {
+      color: color-mix(in srgb, var(--red) 85%, var(--ink));
+      border-color: color-mix(in srgb, var(--red) 45%, var(--bd));
+      background: var(--tint-red);
+    }
+    /* 拉取期间旧列表只淡化，绝不清空成「无结果」 */
+    .list.stale { opacity: 0.55; }
   </style>
 </head>
 <body>
@@ -237,6 +256,11 @@
           <label><input type="radio" name="sizeFilter" value="gt64" />&gt;64GB</label>
         </div>
         <label class="chk"><input type="checkbox" id="recentOnly" />仅半年内新模型</label>
+      </div>
+      <!-- 在线列表状态条（唯一驱动器是 app.js 的 pollCatalogSync → /api/catalog/sync）：
+           拉取四段（列表 / 补体积 / 探架构 / 合并）+ 已用秒数 + 已固化条数；失败转红并给「重试」。 -->
+      <div class="catalog-status" id="catalogStatus" hidden>
+        <span class="st-txt" id="catalogStatusText">—</span>
       </div>
       <div class="list" id="modelList"></div>
     </div>

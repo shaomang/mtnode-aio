@@ -2081,6 +2081,20 @@ body.ef-skin.theme-light .apps-dev-resize:not(:hover):not(.dragging) {
   color: var(--ink);
 }
 
+/* ── 二·八·二 插入符（caret）：亮色主题下光标永远是与底反差的深墨蓝 ────────────
+   症状：亮色主题里输入框的竖线光标「有时候是白色，底也是白色」→ 完全看不见。
+   来源不是 caret-color 没设，而是**控件的明暗口径**：base.css 早先把 input / textarea
+   无条件钉成 color-scheme: dark，Chromium 按暗色默认画插入符（白），压在 #ffffff 的
+   输入件上就是白底白光标；只有 select 被撤销过，所以它「有时候」好、有时候不好。
+   base.css 那条现在只在非亮色主题下钉 dark（见那里的注释），亮色主题的控件跟着 html 的
+   color-scheme: light 继承 —— 这里再把插入符色显式写一遍，双保险：
+   控件不论被谁改成暗色口径，光标的颜色都不会退回「按口径自动取色」那条路。
+   特异度用 :where() 压到 0：画布 / 文件视图那几处「字透明只留 caret」的镜像输入层
+   （canvas.css / fileview.css 的 caret-color: var(--ink)）仍然按自己的声明走。 */
+:where(:root[data-theme="light"]) :where(input, textarea, select, [contenteditable]:not([contenteditable="false"])) {
+  caret-color: var(--orange);
+}
+
 /* ── 二·九 生成层里「极淡字面值」描边的令牌补齐 ─────────────────────────────────
    css/theme-daylight-skin.css 是生成物（scripts/gen-theme-daylight-skin.mjs）：
    它把暗色皮肤里写死的 rgba(255,255,255,.x) 线按浓度翻成 rgba(29,42,68,.02–.10)。

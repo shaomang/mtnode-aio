@@ -142,7 +142,19 @@ button {
 input,
 select,
 textarea {
-  font-family: var(--sans);
+  font-family: var(--sans)
+}
+
+/* 控件自身的明暗口径（决定原生插入符 / 滚动条 / 数字微调箭头怎么画）：只在**非亮色主题**
+   钉 dark。以前这条是无条件钉死的，亮色主题下 input / textarea 就成了「暗色口径的控件」——
+   Chromium 按暗色默认画插入符，于是 #ffffff 的输入框里出现一条**白色插入符**，光标与底同色
+   = 看不见（research-slides.css 第 569 行在几张演示稿输入框上撞过一模一样的事，只能逐个打补丁
+   绕过）。亮色主题下现在什么都不声明，直接跟着 html 那条 color-scheme（theme-daylight.css
+   把 :root[data-theme="light"] 设成 light）继承下来；控件自己要改口径仍然说得上话
+   （.rs-deck-input 那几支暗纸输入件就是这么覆盖的）。 */
+:root:not([data-theme="light"]) input,
+:root:not([data-theme="light"]) select,
+:root:not([data-theme="light"]) textarea {
   color-scheme: dark
 }
 
@@ -212,8 +224,11 @@ select:disabled {
   cursor: not-allowed
 }
 
-input[type="number"]::-webkit-inner-spin-button,
-input[type="number"]::-webkit-outer-spin-button {
+/* 数字输入的上下箭头：暗色口径下 UA 画的是亮箭头，所以要 invert 一档压成深色；
+   亮色口径下 UA 已经画的是深箭头，再 invert 就成了白箭头压白底 = 看不见，
+   所以这一档只留给非亮色主题。 */
+:root:not([data-theme="light"]) input[type="number"]::-webkit-inner-spin-button,
+:root:not([data-theme="light"]) input[type="number"]::-webkit-outer-spin-button {
   opacity: .65;
   filter: invert(.85);
 }

@@ -155,6 +155,76 @@
     return row;
   }
 
+  /* ── AI 活动登记（renderer/app-ai-activity.js · 契约 docs/ai-activity.md §5.3）──
+     子代理**只有 start / end 两帧**：活动也就只有「起手 / 收尾」两步，如实显示，
+     绝不假装有中间进度。登记键与运行队列同一把 subagent:<childSessionId>；
+     「跳过去」= 打开它所在的那条会话（面板 session 分支，与队列行同口径）；
+     终止 = 既有的 interrupt()（session/interrupt-subagent），不另写一套中断。 */
+  function aiActApi() {
+    try {
+      return typeof window !== "undefined" && window.MTNodeAiActivity ? window.MTNodeAiActivity : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function aiOwnerSessionId(row) {
+    const owner = String((row && row.owner) || "");
+    if (owner.indexOf("agent:") === 0) return owner.slice(6);
+    return String((row && row.parentSessionId) || "");
+  }
+
+  function aiActivityBegin(row) {
+    const a = aiActApi();
+    if (!a || !row || !row.childSessionId) return "";
+    const key = "subagent:" + String(row.childSessionId);
+    const sid = aiOwnerSessionId(row);
+    let ownerTitle = "";
+    try {
+      const st =
+        sid && typeof agentSessionById === "function" ? agentSessionById(sid) : null;
+      ownerTitle = st ? String(st.title || "") : "";
+    } catch (_) {}
+    const title =
+      T("子代理 {n}", { n: row.seq || 1 }) + (ownerTitle ? " · " + ownerTitle : "");
+    try {
+      a.begin({
+        key: key,
+        source: "session",
+        kind: "subagent",
+        title: title,
+        subtitle: ownerTitle,
+        phases: ["queued", "writing", "done"],
+        startAt: row.startedAt,
+        jump:
+          typeof a.jumpOfSession === "function"
+            ? a.jumpOfSession(sid, title)
+            : { type: sid ? "session" : "none", id: sid, wfId: "", label: title },
+        stop: function () {
+          void interrupt(row.childSessionId);
+        },
+        stopHint: T("中断这只子代理（父会话那一轮已经收尾，停的只是后台子任务）"),
+      });
+      a.step(key, { at: row.startedAt, phase: "queued", text: labelOf(row) });
+    } catch (_) {}
+    return key;
+  }
+
+  function aiActivityEnd(row) {
+    const a = aiActApi();
+    if (!a || !row || !row.childSessionId) return;
+    const key = "subagent:" + String(row.childSessionId);
+    try {
+      if (!a.find(key)) return;
+      a.end(key, {
+        at: row.endedAt || Date.now(),
+        status: stateOf(row) === "error" ? "error" : "ok",
+        error: stateOf(row) === "error" ? String(row.stopReason || "") : "",
+        text: labelOf(row),
+      });
+    } catch (_) {}
+  }
+
   /* 收到一帧 subagent（start / end）。幂等：重复帧不会多出一行。 */
   function applyFrame(data) {
     const d = data || {};
@@ -162,7 +232,8 @@
     const id = String(d.childSessionId);
     if (d.phase === "start") {
       if (rows.has(id)) return;
-      ensureRow(d);
+      const row = ensureRow(d);
+      aiActivityBegin(row);
       startTicker();
       notify();
       return;
@@ -170,15 +241,21 @@
     /* 收尾帧：正常有对应行；没有（界面刚起 / started 帧丢了）就补一行已结束的，
        宁可只显示一句「已完成」，也不要让界面上凭空多出一条永远在跑的幻觉。 */
     let row = rows.get(id);
+    let fresh = false;
     if (!row) {
       row = ensureRow({ ...d, at: 0 });
       /* 开始时刻留空：不知道就别编，文案里也就不写「用时 …」 */
       if (row) row.startedAt = 0;
+      fresh = true;
     }
     if (!row) return;
     row.endedAt = Number(d.at) || Date.now();
     row.status = String(d.status || "");
     row.stopReason = String(d.stopReason || "");
+    /* 起手帧丢了（row 是这里刚补出来的）也要把它那条活动结掉：先 begin 再 end，
+       绝不留下一条没有起手的活动挂在表里；正常的那一条不再重复补起手步骤 */
+    if (fresh) aiActivityBegin(row);
+    aiActivityEnd(row);
     syncEls();
     if (!hasRunning()) stopTicker();
     notify();

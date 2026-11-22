@@ -288,8 +288,7 @@ function normalizeSelfTargets(raw) {
 }
 
 /* 静态点名表（兜底那一族 · 出货 cordis.yml 里就是它的落地值）：保留这个导出，
-   回归脚本拿它核对「组合里的政策条数 = 点名条数」与出货默认值。 */
-const KNOWN_TARGETS = Object.freeze(
+   回归脚本拿它核对「组合里的政策条数 = 点名条数」与出货默认值。 */const KNOWN_TARGETS = Object.freeze(
   OFFICIAL_MODELS_FALLBACK.map((model) => Object.freeze({ provider: OFFICIAL_PROVIDER, model })),
 );
 

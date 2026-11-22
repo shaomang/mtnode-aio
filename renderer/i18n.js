@@ -2694,6 +2694,12 @@
       "Relay billing: during peak hours the rate is multiplied by the peak multiplier (prices come from what the relay sends with the snapshot, falling back to the client's built-in table).",
     "中转计费：当前为空闲时段，按价目原价（无高峰倍率）":
       "Relay billing: off-peak right now, so the list rate applies (no peak multiplier).",
+    /* ── 会话统计 · 第三方服务商（opencode 等）转售的 DeepSeek ──
+       用户口径：也按正常计费，但要标注是按 API 价格计费（钱实际付给第三方，
+       单价 / 套餐与官方不一定相同，这一笔只是按 DeepSeek 官方 API 价目折算）。 */
+    "（API 价）": "(API price)",
+    "按 API 价格计费：第三方服务商的 DeepSeek 模型按其官方 API 价目折算，实际单价可能不同":
+      "Billed at API price: a third-party provider's DeepSeek model is converted with DeepSeek's official API price list; the provider's actual rate may differ.",
     /* ── 会话统计 · 逐模型性能下钻（app-agent.js / app.js） ── */
     "模型性能": "Model performance",
     "首 Token 延迟 (TTFT)": "Time to first token (TTFT)",
@@ -15578,6 +15584,29 @@
     "（不支持补全）": " (completion not supported)",
     "关闭（Esc）": "Close (Esc)",
     "Tab 补全": "Tab to complete",
+    /* ── 两种触发模式 + 动效 + 状态行（2026-11 本轮）────────────────────── */
+    "自动补全（边打字边给出补全）": "Auto completion (complete while you type)",
+    "按 Tab 手动补全（第一下触发，第二下采纳）":
+      "Tab to complete on demand (first press asks, second accepts)",
+    "（推荐）": " (recommended)",
+    "状态": "Status",
+    "已关闭": "Off",
+    "没有可用的服务商（去「设置 · 模型服务」配置）":
+      "No provider available (configure one in Settings · Models)",
+    "当前服务商没有模型": "This provider has no model",
+    "就绪：": "Ready: ",
+    "就绪，但自动与手动都关着": "Ready, but auto and Tab are both off",
+    "上次失败：": "last failure: ",
+    "自动": "Auto",
+    "Tab 手动": "Tab",
+    "Tab 采纳": "Tab to accept",
+    "补全中": "Completing",
+    "无可补全": "Nothing to complete",
+    "补全不可用：没有可用的服务商": "Completion unavailable: no provider",
+    "补全不可用：当前服务商没有模型": "Completion unavailable: this provider has no model",
+    "补全不可用：宿主桥不在": "Completion unavailable: host bridge missing",
+    "补全超时": "Completion timed out",
+    "补全失败：请求出错": "Completion failed: request error",
   });
 
   /* ── MT 音频频谱分析（节点 kind = audio_spectrum · renderer/app-audioanalysis.js）──
@@ -15929,6 +15958,86 @@
       "still preparing the update in the background — try again in a moment",
     "这次没有可应用的更新（预装的那份已经不在了）":
       "there is no staged update to apply (the pre-installed copy is gone)",
+  });
+
+  /* ── 状态栏「AI 工作中」呼吸灯 + AI 工作台 ────────────────────────────────
+     两个渲染层文件的全部中文都走这里：
+       · renderer/app-ai-work-btn.js —— 按钮三态的 title / aria-label；
+       · renderer/app-ai-activity.js —— 活动登记表的阶段名（phaseName：已发出 / 生成中
+         / 调用工具 / 等你回应 / 媒体处理 …）、来源名（sourceName：会话 / 节点 / 应用 /
+         修复 / 研究视图）与桥接在途表时那几句拼接文案。
+     阶段名里「排队中 / 思考中 / 失败 / 已完成 / 已终止」等既有键已在上面的字典里，
+     这里只补缺的那些，不重复定义（重复定义会悄悄盖掉上面的译文）。 */
+  Object.assign(EN, {
+    /* 按钮（三态标题；{n} = 条数，{parts} = 「会话 ×1 · 应用 ×1」） */
+    "AI 工作（点开看过程）": "AI activity (click to see what it is doing)",
+    "{n} 个 AI 任务进行中：{parts}": "{n} AI task(s) running: {parts}",
+    "AI 工作 · {n} 个任务进行中": "AI activity · {n} task(s) running",
+    "AI 工作 · 最近一次：{title}": "AI activity · last run: {title}",
+    /* 阶段名（app-ai-activity.js 的 PHASE_TEXT 缺的那几个） */
+    "已发出": "Sent",
+    "生成中": "Writing",
+    "调用工具": "Tool call",
+    "等你回应": "Waiting for you",
+    "媒体处理": "Media",
+    /* 来源名（SOURCE_TEXT 缺的那一个） */
+    "研究视图": "Research",
+    /* 活动内核里拼接用的短句（标题兜底 + 识图 / 变体两条桥接） */
+    "AI 任务": "AI task",
+    "识图在途": " · vision in flight",
+    "识图结束": "vision finished",
+    "按 abKey 中止这一次识图请求": "Abort this vision request via its abKey",
+    "生成变体": "Generate variants",
+    "开始生成变体": "Starting variant generation",
+    "变体生成结束": "Variant generation finished",
+    "按该批次的 stop() 收手，再按 abKey 中止在途请求":
+      "Call that batch's stop(), then abort the in-flight request via its abKey",
+    "超时未收尾（登记了没注销），已自动脱离":
+      "Timed out without being closed (registered but never unregistered) — detached automatically",
+    /* 浮层（renderer/app-ai-work-panel.js）：头部计数、两个动作、空态与提示。
+       「关闭 / 终止 / 刚刚 / 步 / 步骤 / 进行中」与「 分钟前 / 小时前 / 天前」都是既有键，
+       这里只补缺的，不重复定义（后写的 Object.assign 会悄悄盖掉上面的译文）。 */
+    "AI 工作台": "AI activity",
+    "{n} 个进行中": "{n} running",
+    "最近一次：{title}": "Last run: {title}",
+    "超时未收尾": "Timed out",
+    "跳过去": "Jump to it",
+    "跳过去：{label}": "Jump to it: {label}",
+    "跳到这条任务所在的位置": "Jump to where this task is",
+    "这条任务没有可跳转的位置": "This task has nowhere to jump to",
+    "终止这条 AI 任务（走既有的停止入口）": "Stop this AI task (through the existing stop entry)",
+    "这条已经结束了": "This one has finished",
+    "这条没有可用的终止入口": "This one has no usable stop entry",
+    "（还没有步骤：刚发出，等第一帧）": "(no steps yet: just sent, waiting for the first frame)",
+    "还没有 AI 任务在跑": "No AI task is running yet",
+    "等它开始跑，这里会一步步显示过程。": "Once one starts, its steps show up here one by one.",
+    "找不到可跳转的目标": "Cannot find the target to jump to",
+    /* 应用族（任务 7）：应用窗口发起的模型代理调用自动登记成一条活动（apps-store.js 的
+       aiActivityTrack）与它的两条降级文案；「应用」这个来源名上面已有。 */
+    "AI 文本生成": "AI text generation",
+    "AI 出图": "AI image generation",
+    "已发出请求": "Request sent",
+    "提交出图": "Submitting the image job",
+    "提交本机出图": "Submitting the local image job",
+    "应用内文本生成没有取消通道：等它自己跑完":
+      "In-app text generation has no cancel channel: let it finish",
+    "在应用界面里点取消（宿主只在应用侧有出图取消入口）":
+      "Cancel it inside the app (the image cancel entry only exists on the app side)",
+    "MTNode 主窗口当前不可用：这次 AI 活动上报没有显示（不影响应用自己继续跑）":
+      "The MTNode main window is unavailable: this AI activity report was not shown (the app itself keeps running)",
+  });
+
+  /* ── 应用界面里的「AI 工作中」过程条（renderer/app-ai-work-app-ui.js）─────────
+     这条 UI 跑在**应用窗口**里（独立窗口由 preload-app.js 注入，画布内嵌 iframe 由主进程
+     内联进 mtnode-preview:// 的 HTML），那边的 I18n 可能整个不存在 —— 缺它就原样回中文。
+     阶段名（排队中 / 已发出 / 思考中 / 生成中 / 调用工具 / 等你回应 / 媒体处理 / 已完成 /
+     失败 / 已终止）与「{n} 步」「步」「压缩上下文」「（还没有步骤：刚发出，等第一帧）」
+     都是上面的既有键，这里只补缺的四条，不重复定义（重复定义会悄悄盖掉已有译文）。 */
+  Object.assign(EN, {
+    "AI 工作中的过程": "AI activity in progress",
+    "应用 AI 任务": "App AI task",
+    "点一下看这条 AI 任务的每一步": "Click to see every step of this AI task",
+    "等你确认：{x}": "Waiting for your approval: {x}",
   });
 
   function listJoin(arr) {

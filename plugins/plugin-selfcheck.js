@@ -18,7 +18,9 @@
  * check(ctx) 契约（宿主侧）：
  *   ctx = {
  *     id,                       // 插件 id
- *     kind,                     // "image" | "speech" | "music" | "video" | "motion"
+ *     kind,                     // "image" | "speech" | "music" | "video" | "motion" | "blender" | "install"
+ *                               //   "install" = 不产内容的插件（llama 模型管理器 / MOSS-Music 配件核查 /
+ *                               //   Paseo 接管）：check 真验一遍「装好的东西能不能用」，不出产物。
  *     dataDir,                  // 数据目录绝对路径
  *     installDir,               // 该插件的安装目录（可能为空串）
  *     artifactDir,              // 本次自检的产物目录（已建好，宿主把产物写这里）

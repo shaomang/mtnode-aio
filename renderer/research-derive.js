@@ -573,6 +573,20 @@
           });
       } catch (_) {}
     }
+    /* ── AI 活动登记（renderer/app-ai-activity.js · 契约 docs/ai-activity.md §5.3）──
+     * 起手 / 进度 / 收尾都走内核那一份实现（deriveOpen / deriveNote / deriveClose）：
+     * 登记键与 app-ai-activity.js 的桥接**同一把** derive:<rowKey>，所以只有一条活动；
+     * 进度文案就是行上的 stateText（既有口径，如「衍生 3/10 · 英译」），不另造词。
+     * 跳转 = 研究视图里那一篇原文（jump 由内核按 parentPath 给）。 */
+    function deriveActApi() {
+      try {
+        return typeof window !== "undefined" && window.MTNodeAiActivity
+          ? window.MTNodeAiActivity
+          : null;
+      } catch (_) {
+        return null;
+      }
+    }
     function runBegin(o) {
       const opt = o || {};
       const key = "dv" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
@@ -594,6 +608,8 @@
         RUNS.rows.set(key, row);
       } catch (_) {}
       runPoke();
+      const act = deriveActApi();
+      if (act && typeof act.deriveOpen === "function") act.deriveOpen(row);
       actNote(row, opt.text || t("开始生成变体：") + row.title, "run");
       return { key: key, abKey: row.abKey };
     }
@@ -605,6 +621,9 @@
       if (opt.path) row.path = String(opt.path);
       if (opt.stop) row.stop = opt.stop;
       runPoke();
+      const act = deriveActApi();
+      if (act && typeof act.deriveNote === "function" && opt.stateText != null)
+        act.deriveNote(row.key, row.stateText);
       actNote(row, opt.text, opt.status);
     }
     function runEnd(run, text, status) {
@@ -614,6 +633,10 @@
         RUNS.rows.delete(run.key);
       } catch (_) {}
       runPoke();
+      /* 行先删再收尾（与识图同口径）：桥接那一拍看到的是已收尾，不会再多建一条 */
+      const act = deriveActApi();
+      if (act && typeof act.deriveClose === "function")
+        act.deriveClose(run.key, text || t("变体生成结束"), status || "ok");
       actNote(row, text || t("变体生成已结束"), status || "ok");
     }
     /* 用户点了停：先让队列收手（stop()），再按 abKey 中止此刻在途的那次模型请求。

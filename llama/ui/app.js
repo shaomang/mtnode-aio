@@ -16,6 +16,11 @@ let state = {
   deployIds: new Set(),
   downloadProgress: {},
   restoreOnce: false,
+  catalogPollTimer: null,
+  catalogSyncSupported: null,
+  catalogErrorLogged: "",
+  catalogReloadOnDone: false,
+  catalogStore: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -738,9 +743,17 @@ $("detailModal").onclick = (e) => {
   if (e.target === $("detailModal")) $("detailModal").classList.remove("show");
 };
 
-async function loadCatalog() {
-  const q = $("searchQ").value.trim();
-  const kind = $("kindFilter").value;
+/* ── 在线列表状态条 ────────────────────────────────────────────────────────
+   状态真源是后端的拉取状态机（llama-pack/app/catalog.py 的 sync_state / GET /api/catalog/sync）：
+   一次列表拉取是「拉列表 → 补体积 → 探架构 → 合并」四段串行（真机 12~28s）。旧实现中途一个字都不
+   显示，于是「点刷新没反应 / 镜像挂了 / 镜像没新东西」在界面上长得一模一样（错误还只写进默认收起
+   的 Console）。这里把这段过程搬到列表上方：阶段 + 计数 + 已用秒数 + 已固化条数 + 上次成功时间；
+   失败转红写具体原因并给「重试」。拉取期间旧列表只淡化，绝不清空成「无结果」。 */
+const CATALOG_POLL_MS = 500;
+
+function catalogQuery() {
+  const q = ($("searchQ") && $("searchQ").value.trim()) || "";
+  const kind = ($("kindFilter") && $("kindFilter").value) || "all";
   const sizeBand = getSizeFilter();
   const recentOnly = !!($("recentOnly") && $("recentOnly").checked);
   const params = new URLSearchParams({
@@ -750,13 +763,272 @@ async function loadCatalog() {
     sizeBand,
     recentOnly: recentOnly ? "true" : "false",
   });
+  // 有搜索词 / 非默认筛选 = 后端走整页口径的同步路径（见 catalog.search_models 的四条口径）
+  const searching = !!q || kind !== "all" || !!sizeBand || recentOnly;
+  return { q, kind, sizeBand, recentOnly, params, searching };
+}
+
+function setCatalogStatus(o) {
+  const box = $("catalogStatus");
+  if (!box) return;
+  if (!o) {
+    box.hidden = true;
+    box.className = "catalog-status";
+    box.innerHTML = "";
+    return;
+  }
+  box.hidden = false;
+  box.className = "catalog-status" + (o.bad ? " bad" : "");
+  box.innerHTML = "";
+  if (o.spin) {
+    const sp = document.createElement("span");
+    sp.className = "spin";
+    box.appendChild(sp);
+  }
+  const txt = document.createElement("span");
+  txt.className = "st-txt";
+  txt.textContent = o.text || "";
+  txt.title = o.title || o.text || "";
+  box.appendChild(txt);
+  if (o.retry) {
+    const b = document.createElement("button");
+    b.className = "mini";
+    b.textContent = "重试";
+    b.onclick = () => loadCatalog({ retry: true });
+    box.appendChild(b);
+  }
+}
+
+function setListStale(on) {
+  const list = $("modelList");
+  if (list) list.classList.toggle("stale", !!on);
+}
+
+function fmtSyncStamp(iso) {
+  const d = new Date(String(iso || ""));
+  if (Number.isNaN(d.getTime())) return "";
+  const p = (n) => String(n).padStart(2, "0");
+  return p(d.getMonth() + 1) + "-" + p(d.getDate()) + " " + p(d.getHours()) + ":" + p(d.getMinutes());
+}
+
+/* 已固化条数 / 上次成功时间：/api/catalog/sync 里 store_info 可能平铺、也可能嵌在 store / cache 下
+   （两处都认，免得后端换个包装整条状态条就变哑巴）；都没有就退到上一次 /api/catalog 回的 cache。 */
+function rememberCatalogStore(cache) {
+  if (!cache) return;
+  const count = Number(cache.count);
+  const at = String(cache.lastCheckedAt || cache.refreshedAt || cache.frozenAt || "");
+  const prev = state.catalogStore || {};
+  state.catalogStore = {
+    count: Number.isFinite(count) ? count : prev.count != null ? prev.count : null,
+    at: at || prev.at || "",
+  };
+}
+
+function catalogStoreMeta(s) {
+  const src = (s && (s.store || s.cache)) || s || {};
+  const raw = src.count != null ? src.count : s && s.frozenCount;
+  const count = Number(raw);
+  const at = String(
+    src.lastCheckedAt || src.refreshedAt || src.frozenAt || (s && s.lastSuccessAt) || "",
+  );
+  const fallback = state.catalogStore || {};
+  return {
+    count: Number.isFinite(count) ? count : fallback.count != null ? fallback.count : null,
+    at: at || fallback.at || "",
+  };
+}
+
+function catalogStatusLine(s) {
+  const { count, at } = catalogStoreMeta(s);
+  const phase = String((s && s.phase) || "");
+  const num = (v) => Math.max(0, Number(v) || 0) | 0;
+  const total = num(s && s.candTotal);
+  let head = "正在拉取列表";
+  if (phase === "sizes") head = "补体积 " + num(s.probedSizes) + "/" + total;
+  else if (phase === "arch") head = "探架构 " + num(s.probedArch) + "/" + total;
+  else if (phase === "merge") head = "合并固化表";
+  else if (phase === "listing" && num(s && s.page) > 0) head = "正在拉取列表 · 第 " + num(s.page) + " 页";
+  const parts = [head, "已用 " + Math.round(num(s && s.elapsedMs) / 1000) + "s"];
+  if (count) parts.push("已固化 " + count + " 条");
+  if (at) parts.push("上次成功 " + fmtSyncStamp(at));
+  return parts.join(" · ");
+}
+
+/* 失败原因必须是人能分辨的几类（镜像挂了 / 超时 / 通了但没新东西）：
+   后端 errorKind 已经分好，这里只翻成中文并附上它的原文。 */
+function catalogErrorLine(s) {
+  const kind = String((s && s.errorKind) || "");
+  const head =
+    {
+      mirror_503: "镜像 503（上游不可用）",
+      mirror_http: "镜像返回错误",
+      timeout: "镜像超时（网络 / 代理）",
+      empty: "镜像没有返回任何条目（本轮无新增）",
+    }[kind] || "这一轮没拉到在线列表";
+  if (kind === "empty") return head;
+  const msg = String((s && s.error) || "").trim();
+  return msg ? head + "：" + msg : head;
+}
+
+function stopCatalogPoll() {
+  if (state.catalogPollTimer) {
+    clearInterval(state.catalogPollTimer);
+    state.catalogPollTimer = null;
+  }
+}
+
+async function fetchSyncState() {
   try {
-    const r = await apiCall("/api/catalog?" + params.toString(), "GET", null, false);
-    state.items = r.items || [];
-    renderItems(state.items);
-    noteCatalogCache(r.cache, q);
+    const r = await apiCall("/api/catalog/sync", "GET", null, false);
+    const s = r && (r.sync || r);
+    return s && typeof s === "object" ? s : {};
   } catch (e) {
-    logLine("搜索失败: " + e.message);
+    if (/not\s*found|404/i.test(String((e && e.message) || ""))) state.catalogSyncSupported = false;
+    return null;
+  }
+}
+
+/* 老脚手架没有 /api/catalog/sync：探一次就记住，状态条不演假进度（行为回到改动前）。 */
+async function ensureCatalogSyncSupported() {
+  if (state.catalogSyncSupported !== null) return state.catalogSyncSupported;
+  const s = await fetchSyncState();
+  if (!s) return false;
+  state.catalogSyncSupported = true;
+  return true;
+}
+
+function startCatalogPoll(reloadWhenDone) {
+  stopCatalogPoll();
+  state.catalogReloadOnDone = !!reloadWhenDone;
+  setCatalogStatus({ spin: true, text: "正在拉取列表 · 已用 0s" });
+  state.catalogPollTimer = setInterval(() => {
+    pollCatalogSync();
+  }, CATALOG_POLL_MS);
+}
+
+async function pollCatalogSync() {
+  const s = await fetchSyncState();
+  if (!s) {
+    // 后端没有这条接口 / 连不上：收起状态条，别把假进度留在屏幕上。
+    stopCatalogPoll();
+    setListStale(false);
+    setCatalogStatus(null);
+    return;
+  }
+  const phase = String(s.phase || "");
+  const running = s.running != null ? !!s.running : !["idle", "done", "error"].includes(phase);
+  if (phase === "error") {
+    stopCatalogPoll();
+    setListStale(false);
+    const line = "在线列表拉取失败：" + catalogErrorLine(s);
+    setCatalogStatus({ bad: true, text: line, title: String(s.error || ""), retry: true });
+    if (state.catalogErrorLogged !== line) {
+      state.catalogErrorLogged = line;
+      logLine(line);
+    }
+    return;
+  }
+  if (!running) {
+    const reload = state.catalogReloadOnDone;
+    stopCatalogPoll();
+    state.catalogReloadOnDone = false;
+    setListStale(false);
+    setCatalogStatus(null);
+    // phase=done：把这一轮新并入的条目重取一遍（只读固化表，不再触发第二次拉取）。
+    if (phase === "done" && reload) await reloadCatalogFrozen();
+    return;
+  }
+  setCatalogStatus({ spin: true, text: catalogStatusLine(s) });
+}
+
+async function reloadCatalogFrozen() {
+  const { params, q } = catalogQuery();
+  try {
+    const r = await apiCall("/api/catalog?" + params.toString() + "&refresh=false", "GET", null, false);
+    if (r && Array.isArray(r.items)) {
+      state.items = r.items;
+      renderItems(state.items);
+    }
+    noteCatalogCache(r && r.cache, q);
+    rememberCatalogStore(r && r.cache);
+  } catch (e) {
+    logLine("重取在线列表失败: " + e.message);
+  }
+}
+
+/* 在线模型列表：两段式。
+   ① 先 /api/catalog?refresh=false 秒出固化表并立即渲染（离线也有内容；打字 / 换筛选马上见到结果）；
+   ② 再 POST /api/catalog/refresh 触发一次拉取，每 CATALOG_POLL_MS 轮询 /api/catalog/sync 把阶段 /
+      计数 / 秒数写进状态条，phase=done 后重取列表并收起状态条。
+   搜索词与筛选变化走后端同步路径（整页拉），但状态条照开 —— 否则「打字没反应」还是看不出来。 */
+async function loadCatalog(opts) {
+  const o = opts || {};
+  const { params, q, searching } = catalogQuery();
+  state.catalogErrorLogged = "";
+  const syncOk = await ensureCatalogSyncSupported();
+
+  if (!syncOk) {
+    // 老脚手架：维持改动前的单请求行为，不显示状态条。
+    try {
+      const r = await apiCall("/api/catalog?" + params.toString(), "GET", null, false);
+      state.items = r.items || [];
+      renderItems(state.items);
+      noteCatalogCache(r.cache, q);
+    } catch (e) {
+      logLine("搜索失败: " + e.message);
+    }
+    return;
+  }
+
+  if (searching) {
+    // 同步路径：请求在飞的时候状态条就已经在报阶段（后端 _sync 状态机照常走）。
+    setListStale(true);
+    startCatalogPoll(false);
+    try {
+      const r = await apiCall("/api/catalog?" + params.toString(), "GET", null, false);
+      state.items = r.items || [];
+      renderItems(state.items);
+      noteCatalogCache(r.cache, q);
+      rememberCatalogStore(r.cache);
+    } catch (e) {
+      stopCatalogPoll();
+      setListStale(false);
+      setCatalogStatus({ bad: true, text: "搜索失败：" + e.message, retry: true });
+      logLine("搜索失败: " + e.message);
+    }
+    return;
+  }
+
+  // ① 秒出固化表（refresh=false 不联网整页拉），旧内容立刻回到屏幕上
+  try {
+    const r = await apiCall("/api/catalog?" + params.toString() + "&refresh=false", "GET", null, false);
+    if (r && Array.isArray(r.items)) {
+      state.items = r.items;
+      renderItems(state.items);
+    }
+    noteCatalogCache(r && r.cache, q);
+    rememberCatalogStore(r && r.cache);
+  } catch (e) {
+    // 读不到就保留屏幕上的旧列表（只淡化），绝不清空成「无结果」
+    logLine("读取在线列表失败: " + e.message);
+  }
+
+  // ② 触发拉取 + 轮询状态条；拉取期间旧列表只淡化
+  setListStale(true);
+  startCatalogPoll(true);
+  try {
+    await apiCall("/api/catalog/refresh", "POST", {
+      q,
+      kind: $("kindFilter") ? $("kindFilter").value : "all",
+      sizeBand: getSizeFilter(),
+      recentOnly: !!($("recentOnly") && $("recentOnly").checked),
+      force: !!o.retry,
+    });
+  } catch (e) {
+    stopCatalogPoll();
+    setListStale(false);
+    setCatalogStatus(null);
+    logLine("触发列表刷新失败: " + e.message);
   }
 }
 

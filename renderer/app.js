@@ -36939,6 +36939,8 @@ function openMetricsDistribution(metrics) {
           currency: bc.currency,
           amount: (runCost ? runCost.amount : 0) + bc.amount,
           estimated: !!(runCost && runCost.estimated) || !!bc.estimated,
+          /* 第三方服务商（opencode 等）转售的 DeepSeek：钱按 API 价目折算，界面要标口径 */
+          apiPrice: !!(runCost && runCost.apiPrice) || !!bc.apiPrice,
         };
       const cells = [
         fmtTok(billed),
@@ -36950,7 +36952,7 @@ function openMetricsDistribution(metrics) {
         fmtDurLong(b.llmMs || 0),
         fmtDurLong(b.toolMs || 0),
         bc && typeof fmtMoney === "function"
-          ? fmtMoney(bc.amount, bc.currency) + (bc.estimated ? "*" : "")
+          ? fmtMoney(bc.amount, bc.currency) + (bc.estimated ? "*" : "") + (bc.apiPrice ? I18n.t("（API 价）") : "")
           : "—",
       ];
       for (let i = 0; i < cells.length; i++) {
@@ -36974,13 +36976,16 @@ function openMetricsDistribution(metrics) {
           I18n.t("本次费用") + ": ≈",
           costMoneyEl(runCost.amount, runCost.currency),
           runCost.estimated ? "*" : "",
+          /* 第三方服务商转售的 DeepSeek：这笔是按 API 价格折算的，标注口径 */
+          runCost.apiPrice ? I18n.t("（API 价）") : "",
         );
       else
         c.textContent =
           I18n.t("本次费用") +
           ": ≈" +
           (typeof fmtMoney === "function" ? fmtMoney(runCost.amount, runCost.currency) : "—") +
-          (runCost.estimated ? "*" : "");
+          (runCost.estimated ? "*" : "") +
+          (runCost.apiPrice ? I18n.t("（API 价）") : "");
       body.insertBefore(c, mt);
     }
     if (typeof balanceLine === "function") {
