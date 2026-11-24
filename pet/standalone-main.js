@@ -521,8 +521,13 @@ function clearCurrentSession() {
   bumpSlotClearGen(chatSessionIndex);
   persistSessions();
   try {
-    const dsh = ensurePetDsh();
-    void dsh.ensureStarted().then(() => dsh.cancel({ workspace: oldWs })).catch(() => {});
+    /* 只有在网关**已经在跑**时才叫停旧工作区那台 runtime：cancel 本身不产生新事实，
+       而 ensureStarted 会 spawn 整台 dsh 网关（node + cordis 全套插件），「清空会话」按下去
+       那一下的大额 CPU 消耗就是它白起的（网关只在第一条消息时才起，清空不该替它冷启动）。
+       没有 adapter / 网关没起 = 这个槽位根本没有在跑的会话，直接跳过。 */
+    if (petDshAdapter && petDshAdapter.isStarted && petDshAdapter.isStarted()) {
+      void petDshAdapter.cancel({ workspace: oldWs }).catch(() => {});
+    }
   } catch {}
   return { ok: true, sessions: sessionSummaries() };
 }
@@ -1247,8 +1252,18 @@ async function handleChatSend(text) {
   if (chatHistory.length > 24) chatHistory = chatHistory.slice(-24);
   persistSessions();
 
-  /* 只发最新一句：每个槽位有独立 dsh workspace，会话历史由该槽位引擎侧维护 */
-  const input = t;
+  /* 上文由宿主自己拼：网关每轮都新铸一条 session（gateway.mjs 的 runSession），
+     引擎侧不带上文 —— 原先这里只发最新一句，于是「每一轮都丢上一轮对话」。
+     与主程序智能会话同一口径（renderer/app-assist.js 的 agentUserTurnInput），
+     只取最近 20 条、跳过空内容，避免 token 随会话长度线性涨。 */
+  const prior = chatHistory
+    .slice(0, -1)
+    .slice(-20)
+    .filter((m) => m && String(m.content || "").trim());
+  const histText = prior
+    .map((m) => (m.role === "user" ? "用户：" : "助手：") + String(m.content || "").trim())
+    .join("\n\n");
+  const input = histText ? histText + "\n\n用户(最新)：" + t : t;
   /* 独立对话应用：系统提示只引用人设，不附带 MTNode 工作流说明 */
   const hostPersona = [
     "你的名字是「" + cfg.personaName + "」。",

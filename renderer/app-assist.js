@@ -17603,7 +17603,47 @@ function agentRoundSteers(st) {
   if (!Array.isArray(st._roundSteers)) st._roundSteers = [];
   return st._roundSteers;
 }
-/* 轮末收口：把这一轮攒下的插话按时间序 append 到消息流末尾（= 本轮答复之后），随后清空。
+/* 轨迹那条路没走成时（轨迹还没建 / 已被回收 / 老网关）的兜底落点：
+   把这句话按**它自己的时刻**插进本轮那条助手消息的段快照里（段序 = 时间序，渲染层
+   dshHistSegEl 的 steer 分支照原样画）—— 于是即便没赶上轨迹，它也落在「…过程 →
+   ⚡插话 → 之后的过程与答复」的中段，绝不会被甩到这一轮的末尾。
+   插不进去（这一轮没有段快照：只思考没成文 / 老存档）返回 false，调用方退回旧口径
+   （落成一条消息），一个字都不丢。 */
+function agentSteerIntoMsgSegs(msgs, steer) {
+  if (!Array.isArray(msgs) || !steer) return false;
+  const text = String(steer.content || "").trim();
+  if (!text) return false;
+  /* 从末尾往回找这一轮的段快照：碰到本轮的用户提问就停（越过去就插错轮了） */
+  let m = null;
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const x = msgs[i];
+    if (!x) continue;
+    if (x.role === "user") break;
+    if (x.role === "assistant" && Array.isArray(x.segments) && x.segments.length) {
+      m = x;
+      break;
+    }
+  }
+  if (!m) return false;
+  const at = Number(steer.at) || 0;
+  const seg = { k: "steer", step: null, callId: "", text, at };
+  let at2 = -1;
+  if (at) {
+    for (let i = 0; i < m.segments.length; i++) {
+      const t = Number(m.segments[i] && m.segments[i].at) || 0;
+      if (t && t > at) {
+        at2 = i;
+        break;
+      }
+    }
+  }
+  if (at2 < 0) m.segments.push(seg);
+  else m.segments.splice(at2, 0, seg);
+  return true;
+}
+/* 轮末收口：把这一轮攒下的插话按时间序落定，随后清空。
+   落点优先「本轮助手消息的段快照里、按时刻就位」（见 agentSteerIntoMsgSegs），
+   插不进去才退回旧口径 append 到消息流末尾（= 本轮答复之后）。
    幂等：没有就只把容器复位。开轮处也调它一次（兜住异常收尾留下的那一份，绝不带进下一轮）。 */
 function agentSteerFlushRound(st) {
   if (!st) return 0;
@@ -17613,7 +17653,16 @@ function agentSteerFlushRound(st) {
   const msgs = Array.isArray(st.messages) ? st.messages : (st.messages = []);
   /* 时间序：同一轮里连插两句也不许颠倒（sort 稳定，时刻相同就保持递交顺序） */
   mine.sort((a, b) => (Number(a && a.at) || 0) - (Number(b && b.at) || 0));
-  for (const m of mine) if (m) msgs.push(m);
+  for (const m of mine) {
+    if (!m) continue;
+    let placed = false;
+    try {
+      placed = agentSteerIntoMsgSegs(msgs, m);
+    } catch (_) {
+      placed = false;
+    }
+    if (!placed) msgs.push(m);
+  }
   return mine.length;
 }
 

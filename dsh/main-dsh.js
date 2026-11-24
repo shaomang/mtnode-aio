@@ -506,6 +506,13 @@ function createDshAdapter(opts) {
         })
     },
 
+    /* 只读探针：网关进程是否已经在跑。**绝不因为问一句就冷启动** ——
+       宿主用它挡掉「为了一条 cancel 而拉起整台网关」的纯浪费
+       （BongoChat 清空会话那一下的 CPU 尖峰就是它，见 pet/standalone-main.js 的 clearCurrentSession）。 */
+    isStarted() {
+      return !!(child && !child.killed && child.exitCode === null)
+    },
+
     status() {
       return request('status', undefined, 30000)
     },
