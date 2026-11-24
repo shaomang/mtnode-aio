@@ -4273,6 +4273,20 @@
     "重后端注册中心": "Backend registry",
     "本机后端工具": "Local backend tool",
     "用户工具节点": "User tool node",
+    /* 工具卡片标题 · 收尾补齐（本次热修 · 用户反馈药丸显示裸 skill / working_directory）：
+       DSH_TOOL_TITLE_RULES 里新补的那几条规则，label 全在这里给英文。
+       「工作目录」表内已有（Working directory），直接复用，不再登记以免覆盖旧译文。 */
+    "加载技能": "Load skill",
+    "运行工作流": "Run workflow",
+    "生成字幕": "Generate subtitles",
+    "开发态自验": "Dev-mode self-check",
+    "项目清单": "Project manifest",
+    "媒体生成": "Generate media",
+    "运行画布": "Run canvas",
+    "用户工具库": "User tool library",
+    "外部会话": "External session",
+    "读取媒体": "Read media",
+    "截屏标注": "Screenshot markup",
     /* ── 重后端注册中心 · 面板界面（本次需求 · renderer/app-backend-registry.js）──────
        面板标题「重后端注册中心」与工具名两键（重后端注册中心 / 本机后端工具）见上，这里补
        面板自身的状态标签、详情字段、表单与提示语：这批键此前只在代码里被 I18n.t 引用、

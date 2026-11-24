@@ -1541,8 +1541,11 @@ function broadcastFimOn(cfgObj) {
     } catch (_) {}
   }
 }
-ipcMain.handle("fim:setEnabled", (e, on) =>
-  queueCfgWrite(() => {
+/* 写盘 + 广播：一处实现，两个入口共用 ——
+ *   · "fim:setEnabled"(on)：老应用窗口（preload-app 的 __mtnodeFimSetEnabled）直接给目标值；
+ *   · "hostkey:run"("fim")：新注入的 renderer/app-hotkeys.js 只说要「翻」，这里读当前值取反。 */
+function setFimEnabled(on) {
+  return queueCfgWrite(() => {
     const fp = join(DATA(), "config.json");
     const want = on !== false;
     const c = loadConfigText(fp);
@@ -1562,8 +1565,9 @@ ipcMain.handle("fim:setEnabled", (e, on) =>
     rememberConfigWritten(fp, next, text);
     broadcastFimOn(next);
     return { ok: true, on: want };
-  }),
-);
+  });
+}
+ipcMain.handle("fim:setEnabled", (e, on) => setFimEnabled(on));
 
 /* ── 输入补全（FIM）用量台账 —— 面板「费用报告」的真源 ────────────────────────
  * 为什么账记在主进程、不记在渲染层：mt-tex 这类应用窗口里的补全在**它自己的页面世界**
@@ -11081,6 +11085,55 @@ app.whenReady().then(() => {
     errLog("[minichat] 初始化失败：" + ((e && e.message) || e));
     miniChat = null;
   }
+  /* ── 应用窗口里的宿主快捷键（F1–F4 / Ctrl+Tab）────────────────────────────
+     现场（用户报的 bug）：应用窗口（mt-tex 等）里按这几颗键毫无反应 —— 判键那两份脚本
+     （renderer/app-status-keys.js、renderer/app-fim.js）只加载在主窗 index.html，
+     而应用窗口是另一只 BrowserWindow，页面还是应用自己的 index.html。
+     preload-app.js 现在给每个应用窗口无条件注入 renderer/app-hotkeys.js（只判键、只转发），
+     键经 "__mtnodeHostKey" 走到这里，按**主窗同一套语义**执行：
+       · "fim"     → 翻输入补全总开关（与 fim:setEnabled 同一条写盘 + 广播，主窗那颗
+                     #btnFim 与别的应用窗口一起跟上）
+       · "F1"      → 快捷会话小窗开 / 关（mini-chat-window.js 的 toggle，主进程是唯一实现）
+       · "F2/3/4"  → 主窗亮出来 + 聚焦，再经 "status:hotkey" 交给主窗渲染层走
+                     renderer/app-status-keys.js 的同一个 press（动作不另抄一份） */
+  ipcMain.handle("hostkey:run", async (e, key) => {
+    const k = String(key || "");
+    if (k === "fim") {
+      let on = true;
+      try {
+        const c = loadConfigText(join(DATA(), "config.json"));
+        const f = c && c.obj && c.obj.fim;
+        on = !(f && f.on === false); /* 没写过 = 默认开，与 renderer/app-fim.js 同口径 */
+      } catch (_) {}
+      const r = await setFimEnabled(!on);
+      return Object.assign({ ok: true, key: k }, r || {});
+    }
+    if (k === "F1") {
+      if (miniChat) {
+        try {
+          return Object.assign({ ok: true, key: k }, miniChat.toggle() || {});
+        } catch (err) {
+          errLog("[hostkey] F1 失败：" + ((err && err.message) || err));
+        }
+      }
+      return { ok: false, key: k, error: "no_minichat" };
+    }
+    if (k === "F2" || k === "F3" || k === "F4") {
+      try {
+        if (mainWin && !mainWin.isDestroyed()) {
+          if (mainWin.isMinimized()) mainWin.restore();
+          mainWin.show();
+          mainWin.focus();
+          mainWin.webContents.send("status:hotkey", k);
+          return { ok: true, key: k };
+        }
+      } catch (err) {
+        errLog("[hostkey] 转发主窗失败：" + ((err && err.message) || err));
+      }
+      return { ok: false, key: k, error: "no_main" }; /* 主窗还没建：如实回失败，不假装成功 */
+    }
+    return { ok: false, key: k, error: "unknown" };
+  });
   /* ── 截图标注工具（Ctrl + Alt + A）────────────────────────────────────────
      拍屏 → 全屏置顶浮层里「像微信那样」框选关键区域 → 裁剪图上标注 + 写备注 →
      成品 PNG 落 captures/、带编号清单的 Markdown 写进剪贴板（粘进 Agent 输入框即可）。

@@ -115,6 +115,14 @@
   function styleTag() {
     if (styleEl && styleEl.parentElement) return styleEl;
     var p = palette();
+    /* 与听写条同一条纪律：颜色写成 CSS 变量引用（实算色值只当兜底）。应用常在宿主注入之后才换肤，
+       色值算死就会出现「浅档配深字 / 深档配浅字」，footer 里那枚标签糊在底上。 */
+    var vx = function (name, fallback) { return "var(" + name + ", " + fallback + ")"; };
+    var FG = vx("--fg", vx("--ink", p.fg));
+    var DIM = vx("--fg-dim", vx("--muted", vx("--ink-2", p.muted)));
+    var LINE = vx("--line", vx("--border", p.line));
+    var ACCENT = vx("--accent", vx("--accent-dim", p.accent));
+    var BG = vx("--bg", vx("--panel", p.bg));
     var css = document.createElement("style");
     css.id = "mtnode-author-css";
     css.textContent =
@@ -122,42 +130,42 @@
          默认就是可见的元信息（opacity .75），hover / 聚焦时提亮 —— 「不要浮空」
          的反面不是「藏起来」，藏起来的东西在 footer 里没人找得到。 */
       ".mtn-author{display:inline-flex;align-items:center;gap:6px;padding:1px 9px;margin:0 0 0 8px;" +
-      "border:1px solid " + p.line + ";border-radius:999px;background:transparent;color:" + p.muted + ";" +
+      "border:1px solid " + LINE + ";border-radius:999px;background:transparent;color:" + FG + ";" +
       "font:" + p.font + ";font-size:.88em;line-height:1.6;letter-spacing:.2px;cursor:pointer;" +
       "white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:min(60vw,420px);" +
       "flex:0 0 auto;vertical-align:middle;user-select:none;opacity:.75;" +
       "transition:opacity .14s ease,color .14s ease,border-color .14s ease}" +
       ".mtn-author:hover,.mtn-author:focus-visible,.mtn-author.is-on{opacity:1;" +
-      "border-color:" + p.accent + ";color:" + p.fg + "}" +
+      "border-color:" + ACCENT + ";color:" + FG + "}" +
       ".mtn-author:focus{outline:none}" +
       ".mtn-author::before{content:'';width:6px;height:6px;border-radius:50%;" +
-      "background:" + p.accent + ";opacity:.85;flex:0 0 auto}" +
+      "background:" + ACCENT + ";opacity:.85;flex:0 0 auto}" +
       /* 详情面板：只读清单；浮层不做「点外部即关」（本仓纪律），出口只有 ✕ 与 Esc。
          left / bottom 由 placePanel() 按按钮的实际位置写内联（贴着 footer 往上弹）。 */
       ".mtn-author-panel{position:fixed;left:" + PAD_X + "px;bottom:" + (PAD_Y + 30) + "px;z-index:12570;" +
       "width:min(360px,92vw);max-height:min(70vh,520px);display:flex;flex-direction:column;" +
-      "border:1px solid " + p.line + ";border-radius:12px;background:" + p.bg + ";color:" + p.fg + ";" +
+      "border:1px solid " + LINE + ";border-radius:12px;background:" + BG + ";color:" + FG + ";" +
       "box-shadow:0 14px 44px rgba(0,0,0,.45);font:" + p.font + "}" +
       ".mtn-author-panel[hidden]{display:none}" +
-      ".mtn-author-ph{display:flex;align-items:center;gap:8px;padding:9px 11px;border-bottom:1px solid " + p.line + "}" +
+      ".mtn-author-ph{display:flex;align-items:center;gap:8px;padding:9px 11px;border-bottom:1px solid " + LINE + "}" +
       ".mtn-author-ph b{font-weight:600}" +
       ".mtn-author-x{margin-left:auto;border:0;background:transparent;color:inherit;cursor:pointer;" +
       "font:inherit;opacity:.75;padding:2px 4px}" +
-      ".mtn-author-x:hover{opacity:1;color:" + p.accent + "}" +
+      ".mtn-author-x:hover{opacity:1;color:" + ACCENT + "}" +
       ".mtn-author-body{padding:10px 11px;overflow:auto;display:flex;flex-direction:column;gap:9px}" +
       ".mtn-author-id{display:flex;align-items:center;gap:10px}" +
       ".mtn-author-ico{width:38px;height:38px;border-radius:9px;object-fit:cover;flex:0 0 auto;" +
-      "border:1px solid " + p.line + "}" +
+      "border:1px solid " + LINE + "}" +
       ".mtn-author-ico.ph{display:flex;align-items:center;justify-content:center;font-size:17px;" +
-      "background:transparent;color:" + p.accent + "}" +
+      "background:transparent;color:" + ACCENT + "}" +
       ".mtn-author-name{font-weight:600;font-size:1.06em;word-break:break-word}" +
-      ".mtn-author-sub{color:" + p.muted + ";font-size:.9em;word-break:break-all}" +
+      ".mtn-author-sub{color:" + DIM + ";font-size:.9em;word-break:break-all}" +
       ".mtn-author-row{display:flex;gap:8px;font-size:.94em}" +
-      ".mtn-author-k{flex:0 0 62px;color:" + p.muted + "}" +
+      ".mtn-author-k{flex:0 0 62px;color:" + DIM + "}" +
       ".mtn-author-v{flex:1 1 auto;min-width:0;word-break:break-word;white-space:pre-wrap}" +
       ".mtn-author-tags{display:flex;flex-wrap:wrap;gap:5px}" +
-      ".mtn-author-tag{border:1px solid " + p.line + ";border-radius:999px;padding:1px 8px;" +
-      "font-size:.86em;color:" + p.muted + "}" +
+      ".mtn-author-tag{border:1px solid " + LINE + ";border-radius:999px;padding:1px 8px;" +
+      "font-size:.86em;color:" + DIM + "}" +
       /* 隐藏态兜底（只有应用自己调 apAuthorHide() 之后才会命中）：它现在是 footer 里的一行，
          藏起来就用 display:none（不像从前那个浮空标签还得留着 hover 的余地）。 */
       "#mtnode-author[data-mtnode-hidden='1']{display:none !important}";
@@ -252,11 +260,11 @@
     bar.style.cssText =
       "position:fixed;left:0;right:0;bottom:0;z-index:12550;display:flex;align-items:center;" +
       "justify-content:flex-end;gap:10px;padding:3px 12px;border-top:1px solid " +
-      p.line +
+      "var(--line, " + p.line + ")" +
       ";background:" +
-      p.bg +
+      "var(--bg, " + p.bg + ")" +
       ";color:" +
-      p.fg +
+      "var(--fg, " + p.fg + ")" +
       ";font:" +
       p.font;
     (document.body || document.documentElement).appendChild(bar);

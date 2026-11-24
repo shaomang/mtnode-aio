@@ -123,6 +123,17 @@
   function install() {
     if (typeof document === "undefined") return;
     document.addEventListener("keydown", onKeyDown, true);
+    /* 应用窗口里按的 F2 / F3 / F4：主进程 hostkey:run → "status:hotkey" 转过来
+       （preload.js 的 onStatusHotkey，判键在 renderer/app-hotkeys.js）。走同一个
+       onKeyDown，动作与「在主窗里自己按一次」完全一致 —— 应用窗口是另一只 BrowserWindow，
+       这份判键脚本不在里面，只能由宿主把键转过来。 */
+    try {
+      var a = window.api;
+      if (a && typeof a.onStatusHotkey === "function")
+        a.onStatusHotkey(function (key) {
+          if (window.MTStatusKeys) window.MTStatusKeys.press(key);
+        });
+    } catch (_) {}
   }
 
   /* 排障 / 冒烟入口（正常运行时没人调） */

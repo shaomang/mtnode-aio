@@ -1,4 +1,4 @@
-﻿/* ── dsh 会话令牌（dsh-tokens.css）──────────────────────────────────────────────
+/* ── dsh 会话令牌（dsh-tokens.css）──────────────────────────────────────────────
    会话（.assist-pane）与助手（.agent-*）两个窗格共用的语义令牌层。
 
    为什么要单独一层：这两个窗格历史上直接写 hex / rgba，暗色好看、亮色靠亮色主题分片
@@ -132,7 +132,12 @@ body {
      （css/layout.css 的 .btn-tools、css/dsh.css 的 .dsh-tool-chip.t-custom 同色），
      子代理用它：与「另有智能体在跑」这个语义一眼对得上。 */
   --dsh-fam-read: var(--cyan);
-  --dsh-fam-write: var(--orange);
+  /* 写入与编辑（write / edit / str_replace_editor / apply_patch）：**单独一支更烫的橙**，
+     不再复用 --orange(#ff8f2e) —— 那个橙在会话药丸 9% 淡底 + 78% 边框下偏灰，扫一眼不够醒目。
+     #ff6a00 比主橙更饱和更红一档，与同屏的「交互与计划」橙（--orange2 #ffb066 偏浅）和
+     「联网」黄（--yellow #ffd166）都拉得开；亮色主题下它的对比度也比 #ff8f2e 高。
+     族与色的唯一真源仍在 renderer/app-trajectory.js 的 TOOL_FAMILIES，这里只定色值。 */
+  --dsh-fam-write: #ff6a00;
   --dsh-fam-run: var(--green);
   --dsh-fam-web: var(--yellow);
   --dsh-fam-sub: #c792ea;

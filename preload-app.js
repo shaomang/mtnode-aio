@@ -662,6 +662,19 @@ function injectAppUiScript(fileName, marker) {
     } catch {}
   }
 }
+/* 把一个纯值 / 函数过界送到页面世界：contextIsolation 下走 contextBridge，
+   老宿主（contextIsolation:false）直接挂 window。失败一律静默（宿主 UI 缺一条不影响页面）。 */
+function exposeWorld(key, value) {
+  try {
+    if (contextBridge && typeof contextBridge.exposeInMainWorld === "function") {
+      try {
+        contextBridge.exposeInMainWorld(key, value);
+        return;
+      } catch {}
+    }
+    window[key] = value; /* 老宿主（contextIsolation:false）才走这条 */
+  } catch {}
+}
 /* ── 输入补全的页面世界桥（2026-11 修）────────────────────────────────────────
  * 应用窗口是 contextIsolation:true：preload 里的 `window` 是**隔离世界**的 window，
  * 直接 `window.__mtnodeFimSettings = …` 只落在隔离世界，页面世界读不到
@@ -678,17 +691,7 @@ function injectAppUiScript(fileName, marker) {
 let fimOnNow = true;
 function fimWorldBridge(fim) {
   fimOnNow = !(fim && fim.on === false);
-  const put = (key, value) => {
-    try {
-      if (contextBridge && typeof contextBridge.exposeInMainWorld === "function") {
-        try {
-          contextBridge.exposeInMainWorld(key, value);
-          return;
-        } catch {}
-      }
-      window[key] = value; /* 老宿主（contextIsolation:false）才走这条 */
-    } catch {}
-  };
+  const put = exposeWorld;
   put("__mtnodeFimSettings", fim && typeof fim === "object" ? fim : null);
   put("__mtnodeFimOn", () => fimOnNow === true);
   put("__mtnodeFimSetEnabled", (on) => {
@@ -715,6 +718,12 @@ function maybeInjectAppUi() {
      放在 askCapabilities() 之前：老宿主答不上来（甚至答挂）也照样有这一条；
      页面里拿不到 appHost 时它自己整块不出现，不会给应用添乱。 */
   injectAppUiScript("app-ai-work-app-ui.js", "aiwork");
+  /* ⑦ **宿主快捷键**（renderer/app-hotkeys.js）：同样**不看能力位、默认注入**。
+     用户在应用窗口里按 F1–F4 / Ctrl+Tab 没反应 —— 判键那两份脚本
+     （renderer/app-status-keys.js、renderer/app-fim.js）只加载在主窗 index.html，
+     应用窗口是另一只 BrowserWindow，页面还是用户自己的 index.html。
+     这一段只判键、只转发（主进程 hostkey:run），动作全部复用主窗那一套。 */
+  injectAppUiScript("app-hotkeys.js", "hotkeys");
   askCapabilities().then((ans) => {
     if (ans.auth) {
       try {
@@ -742,3 +751,17 @@ if (typeof document !== "undefined") {
     document.addEventListener("DOMContentLoaded", maybeInjectAppUi, { once: true });
   else maybeInjectAppUi();
 }
+
+/* ── 宿主快捷键的派发口（2026-11 修：应用窗口里 F1–F4 / Ctrl+Tab 没反应）────────
+ * renderer/app-hotkeys.js 判到键后调这里（页面世界），本函数经 IPC 走到主进程
+ * hostkey:run，再按主窗同一套语义执行（小窗开关 / 补全总开关 / 转给主窗那四颗按钮）。
+ * 与 __mtnodeFimSetEnabled 同一条失败静默口径：拿不到就什么也不做（绝不 throw 到应用页面）。 */
+exposeWorld("__mtnodeHostKey", function (key) {
+  try {
+    return Promise.resolve(ipcRenderer.invoke("hostkey:run", String(key || ""))).catch(() => ({
+      ok: false,
+    }));
+  } catch (_) {
+    return Promise.resolve({ ok: false });
+  }
+});

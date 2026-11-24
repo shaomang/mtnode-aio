@@ -208,57 +208,68 @@
     var id = "mtnode-dictate-css";
     if (document.getElementById(id)) return;
     var p = palette();
+    /* 颜色一律写成 CSS 变量引用（后面跟一份实算色值兜底）：应用自己的 footer 常在宿主注入之后才换肤
+       （mt-tex 的 data-style 要等 store.load 回来才切），色值算死写进这里，浅档 / 深档一错位就是
+       「底部按钮糊在底色上」。变量引用会跟着主题走，注入一次就够。 */
+    var vx = function (name, fallback) { return "var(" + name + ", " + fallback + ")"; };
+    var FG = vx("--fg", vx("--ink", p.fg));
+    var DIM = vx("--fg-dim", vx("--muted", vx("--ink-2", p.muted)));
+    var LINE = vx("--line", vx("--border", p.line));
+    var ACCENT = vx("--accent", vx("--accent-dim", p.accent));
+    var WARN = vx("--warn", p.warn);
+    var ERR = vx("--danger", vx("--err", p.err));
+    var BG = vx("--bg", vx("--panel", p.bg));
     var css = document.createElement("style");
     css.id = id;
     css.textContent =
-      ".mtn-dict{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:2px 0;color:" + p.fg + ";font:" + p.font + "}" +
-      ".mtn-dict-btn{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:8px;border:1px solid " + p.line + ";background:transparent;color:inherit;font:inherit;cursor:pointer}" +
-      ".mtn-dict-btn:hover:not(:disabled){border-color:" + p.accent + ";color:" + p.accent + "}" +
+      ".mtn-dict{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:2px 0;color:" + FG + ";font:" + p.font + "}" +
+      ".mtn-dict-btn{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:8px;border:1px solid " + LINE + ";background:transparent;color:inherit;font:inherit;cursor:pointer}" +
+      ".mtn-dict-btn:hover:not(:disabled){border-color:" + ACCENT + ";color:" + ACCENT + "}" +
       ".mtn-dict-btn:disabled{opacity:.5;cursor:default}" +
-      ".mtn-dict-btn.is-rec{border-color:" + p.err + ";color:" + p.err + "}" +
+      ".mtn-dict-btn.is-rec{border-color:" + ERR + ";color:" + ERR + "}" +
       /* 按键转录态（琥珀）与持续转录态（红）分开上色：一眼看出现在是哪一种（与画布的 is-live / is-ptt 同族） */
-      ".mtn-dict-btn.is-ptt{border-color:" + p.warn + ";color:" + p.warn + "}" +
+      ".mtn-dict-btn.is-ptt{border-color:" + WARN + ";color:" + WARN + "}" +
       /* AI 增强开关：打开时是「已启用」的实心感（与两个录音态区分开，走强调色而不是红/琥珀） */
-      ".mtn-dict-btn.mtn-dict-tog.on{border-color:" + p.accent + ";color:" + p.accent + ";box-shadow:inset 0 0 0 999px rgba(127,127,127,.14)}" +
+      ".mtn-dict-btn.mtn-dict-tog.on{border-color:" + ACCENT + ";color:" + ACCENT + ";box-shadow:inset 0 0 0 999px rgba(127,127,127,.14)}" +
       ".mtn-dict-btn.mtn-dict-tog .mtn-dict-enh-dot{width:7px;height:7px;border-radius:50%;background:currentColor;opacity:.35}" +
       ".mtn-dict-btn.mtn-dict-tog.on .mtn-dict-enh-dot{opacity:1}" +
-      ".mtn-dict-note{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;opacity:.8}" +
-      ".mtn-dict-note[data-kind=warn]{color:" + p.warn + "}" +
-      ".mtn-dict-note[data-kind=err]{color:" + p.err + "}" +
+      ".mtn-dict-note{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:" + DIM + ";opacity:.85}" +
+      ".mtn-dict-note[data-kind=warn]{color:" + WARN + "}" +
+      ".mtn-dict-note[data-kind=err]{color:" + ERR + "}" +
       /* 「收起」按钮：只是本窗口内把这条藏起来，不是关能力位 —— 靠右放，样式比主按钮轻，
          免得抢它的视线 */
       ".mtn-dict-btn.mtn-dict-hide{margin-left:auto;padding:2px 8px;opacity:.75;font-size:.92em}" +
-      ".mtn-dict-btn.mtn-dict-hide:hover:not(:disabled){border-color:" + p.line + ";color:inherit;opacity:1}" +
+      ".mtn-dict-btn.mtn-dict-hide:hover:not(:disabled){border-color:" + LINE + ";color:inherit;opacity:1}" +
       /* 底部小话筒（原「左下角浮空话筒」）：现在是 footer 里的一枚**小按钮**。
          本轮需求：不再 position:fixed 钉在左下角 —— 那个位置上它必然压住应用自己的内容。
          容器仍叫 #mtnode-dictate-zone（作者标签按它的顶边让位），但它只是宿主里的一行内联元素。 */
       ".mtn-dict-zone{display:inline-flex;align-items:center;gap:6px;vertical-align:middle;font:" + p.font + "}" +
       ".mtn-dict-zone[data-mtnode-hidden='1']{display:none !important}" +
       ".mtn-dict-zone-btn{position:relative;display:inline-flex;align-items:center;justify-content:center;gap:6px;" +
-      "width:30px;height:24px;padding:0;border-radius:7px;border:1px solid " + p.line + ";background:transparent;" +
-      "color:inherit;font:inherit;font-size:13px;line-height:1;cursor:pointer;opacity:.78;" +
+      "width:30px;height:24px;padding:0;border-radius:7px;border:1px solid " + LINE + ";background:transparent;" +
+      "color:" + FG + ";font:inherit;font-size:13px;line-height:1;cursor:pointer;opacity:1;" +
       "transition:opacity .14s ease,border-color .14s ease,color .14s ease}" +
-      ".mtn-dict-zone-btn:hover:not(:disabled){opacity:1;border-color:" + p.accent + ";color:" + p.accent + "}" +
+      ".mtn-dict-zone-btn:hover:not(:disabled){opacity:1;border-color:" + ACCENT + ";color:" + ACCENT + "}" +
       ".mtn-dict-zone-btn:disabled{opacity:.4;cursor:default}" +
-      ".mtn-dict-zone-btn.is-rec{opacity:1;border-color:" + p.err + ";color:" + p.err + ";animation:mtn-dict-pulse 1.2s ease-in-out infinite}" +
+      ".mtn-dict-zone-btn.is-rec{opacity:1;border-color:" + ERR + ";color:" + ERR + ";animation:mtn-dict-pulse 1.2s ease-in-out infinite}" +
       /* 按键转录态：琥珀 + 更小的字号（"F3" 两个字要塞进这颗小按钮） */
-      ".mtn-dict-zone-btn.is-ptt{opacity:.95;border-color:" + p.warn + ";color:" + p.warn + ";font-size:11px;font-weight:600}" +
+      ".mtn-dict-zone-btn.is-ptt{opacity:1;border-color:" + WARN + ";color:" + WARN + ";font-size:11px;font-weight:600}" +
       ".mtn-dict-zone-btn.is-ptt.is-rec{opacity:1;animation:mtn-dict-pulse 1.2s ease-in-out infinite}" +
       /* 录音中的小圆点：按钮保住话筒图标，只多一枚跳动红点（比整颗变方块更好认） */
       ".mtn-dict-zone-btn .mtn-dict-dot{position:absolute;top:-2px;right:-2px;width:7px;height:7px;border-radius:50%;" +
-      "background:" + p.err + ";box-shadow:0 0 0 2px " + p.bg + "}" +
+      "background:" + ERR + ";box-shadow:0 0 0 2px " + BG + "}" +
       ".mtn-dict-zone-btn .mtn-dict-dot[hidden]{display:none}" +
       "@keyframes mtn-dict-pulse{0%,100%{box-shadow:0 0 0 0 rgba(255,90,90,.35)}50%{box-shadow:0 0 0 6px rgba(255,90,90,0)}}" +
       ".mtn-dict-panel{position:fixed;left:50%;transform:translateX(-50%);z-index:12550;width:min(680px,92vw);" +
-      "max-height:46vh;display:flex;flex-direction:column;border:1px solid " + p.line + ";border-radius:10px;" +
-      "background:" + p.bg + ";color:" + p.fg + ";box-shadow:0 12px 40px rgba(0,0,0,.45);font:" + p.font + "}" +
+      "max-height:46vh;display:flex;flex-direction:column;border:1px solid " + LINE + ";border-radius:10px;" +
+      "background:" + BG + ";color:" + FG + ";box-shadow:0 12px 40px rgba(0,0,0,.45);font:" + p.font + "}" +
       ".mtn-dict-panel[hidden]{display:none}" +
-      ".mtn-dict-ph{display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid " + p.line + "}" +
+      ".mtn-dict-ph{display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid " + LINE + "}" +
       ".mtn-dict-ph b{font-weight:600}" +
       ".mtn-dict-meta{opacity:.7;font-size:.92em}" +
       ".mtn-dict-x{margin-left:auto;border:0;background:transparent;color:inherit;cursor:pointer;font:inherit;opacity:.75}" +
       ".mtn-dict-body{padding:10px;overflow:auto;white-space:pre-wrap;word-break:break-word;line-height:1.6}" +
-      ".mtn-dict-pf{display:flex;gap:8px;justify-content:flex-end;padding:8px 10px;border-top:1px solid " + p.line + "}" +
+      ".mtn-dict-pf{display:flex;gap:8px;justify-content:flex-end;padding:8px 10px;border-top:1px solid " + LINE + "}" +
       /* 隐藏态的 CSS 兜底（内联 style 是主路，标记是给脚本认的）：!important 挡住应用
          自己的 footer 样式把 display 又掰回来。只有「收起」/ apSpeechHide() 之后才会命中。
          ⚠ footer 里那枚小话筒（#mtnode-dictate-zone）**不**在隐藏范围内：收起的是那条条，
@@ -1772,11 +1783,11 @@
     bar.style.cssText =
       "position:fixed;left:0;right:0;bottom:0;z-index:12540;display:flex;align-items:center;gap:10px;" +
       "padding:6px 12px;border-top:1px solid " +
-      p.line +
+      "var(--line, " + p.line + ")" +
       ";background:" +
-      p.bg +
+      "var(--bg, " + p.bg + ")" +
       ";color:" +
-      p.fg +
+      "var(--fg, " + p.fg + ")" +
       ";font:" +
       p.font;
     (document.body || document.documentElement).appendChild(bar);

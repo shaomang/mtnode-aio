@@ -1996,6 +1996,22 @@ contextBridge.exposeInMainWorld('api', {
   webviewGetEnabled: () => ipcRenderer.invoke('webview:getEnabled'),
   webviewSetEnabled: (on) => ipcRenderer.invoke('webview:setEnabled', !!on),
 
+  /* ── 应用窗口转发过来的 F2 / F3 / F4 ──
+     在应用窗口（mt-tex 等）里按这几颗键，由 preload-app 注入的 renderer/app-hotkeys.js
+     判键 → 主进程 hostkey:run → 这里（"status:hotkey"）。主窗渲染层收到后走
+     renderer/app-status-keys.js 的同一个 press，动作与「在主窗里自己按一次」完全一致。
+     为什么要绕这一圈：应用窗口是另一只 BrowserWindow，主窗那份判键脚本不在里面。 */
+  onStatusHotkey: (cb) => {
+    const h = (_e, key) => {
+      try {
+        cb(String(key || ''));
+      } catch (err) {
+        console.error('api.onStatusHotkey cb error:', err);
+      }
+    };
+    ipcRenderer.on('status:hotkey', h);
+    return () => ipcRenderer.removeListener('status:hotkey', h);
+  },
   /* ── 内嵌页里的窗内热键（只一条：F2）──
      焦点在 chat.deepseek.com 那只 guest 里时，F1–F4 的判键拿不到键 ——
      主进程在 guest 的 before-input-event 上截下 F2 并从 'deepseek:hotkey' 转过来，

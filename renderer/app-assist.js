@@ -3101,6 +3101,10 @@ async function assistSend(text, opts) {
     /* 会话上的「运行中」一起收（st.running 是唯一真源：左栏徽标 / 会话视图的运行位 /
        运行队列 / 全部终止读的都是它） */
     if (aidSt) aidSt.running = false;
+    /* 助手栏这条发送链同样要收口插话（与 agentSessionSend 的 finally 同一口径） */
+    try {
+      if (aidSt) agentSteerSettleRound(aidSt);
+    } catch (_) {}
     agentLiveWatchEnd(aidSt);
     /* 本轮的结果已在上面按会话落盘 */
     persistAssistUi();
@@ -7665,9 +7669,15 @@ const DSH_TOOL_TITLE_RULES = [
   [/^(pwsh|powershell|bash|shell|sh|zsh|cmd)(\.exe)?$/i, "运行命令"],
   [/^(grep|rg|ripgrep)(\.exe)?$/i, "搜索文件内容"],
   [/^glob(\.exe)?$/i, "查找文件"],
-  [/^(web_search|websearch)$/i, "网页搜索"],
-  [/^(web_fetch|webfetch)$/i, "网页获取"],
+  [/^(web_search|websearch|deepseek_web_search)$/i, "网页搜索"],
+  [/^(web_fetch|webfetch|deepseek_read_url)$/i, "网页获取"],
   [/^todo_write$/i, "更新计划"],
+  /* 引擎侧的「会话行为」工具（本次热修 · 用户反馈药丸显示裸 skill / working_directory）：
+     skill = 加载一条技能说明、working_directory = 查 / 建 / 切工作目录、workflow = 跑编排脚本。
+     三条此前都落兜底，卡片上直接把 ASCII 工具名当标题显示。 */
+  [/^skill$/i, "加载技能"],
+  [/^working_directory$/i, "工作目录"],
+  [/^workflow$/i, "运行工作流"],
   /* 顺序即优先级：派生（fork）排在裸 subagent 之前，否则 subagent_fork 会被
      裸名那条正则挡住（非 dsh 表里的「派生子智能体」永远轮不到）。 */
   [/^(subagent_fork|agent_task)$/i, "派生子智能体"],
@@ -7675,6 +7685,7 @@ const DSH_TOOL_TITLE_RULES = [
   [/^mtnode_vision$/i, "读取图片"],
   /* 本地媒体（dsh/gateway/media-plugin.mjs）：转写走本地 SenseVoice，ffmpeg 做探测 / 抽音轨 / 抽帧 */
   [/^audio_transcribe$/i, "转写语音"],
+  [/^audio_subtitle$/i, "生成字幕"],
   [/^ffmpeg$/i, "ffmpeg 处理"],
   /* ── 运行时才算得出来的名字（宿主下发，代码里没有任何静态工具叫这些名字）────────
      三类，来源与命名规则见 renderer/app-tools.js 与主进程的 backend-registry-store.js：
@@ -7699,6 +7710,17 @@ const DSH_TOOL_TITLE_RULES = [
      现在一并给中文标签，并在卡片上换一个颜色（见 dshToolIsCustom）。
      顺序仍是从具体到一般：全文匹配的名字不会互相遮挡；兜底「工具调用」照旧。 */
   [/^ask_user_question$/i, "询问用户"],
+  /* 同一批里此前落兜底的几件（本次热修 · 用户反馈「行为标签没走 i18n」）：
+     dsh/gateway 下 dev-plugin / manifest-plugin / mcp-extra-plugin / media-read-plugin /
+     screenshot-plugin 注册的工具，卡片上原来直接显 ASCII 名。 */
+  [/^mtnode_dev$/i, "开发态自验"],
+  [/^mtnode_manifest$/i, "项目清单"],
+  [/^mtnode_generate$/i, "媒体生成"],
+  [/^mtnode_run$/i, "运行画布"],
+  [/^mtnode_tools$/i, "用户工具库"],
+  [/^mtnode_session$/i, "外部会话"],
+  [/^mtnode_media$/i, "读取媒体"],
+  [/^mtnode_screenshot$/i, "截屏标注"],
   [/^mtnode_canvas_get$/i, "读取画布"],
   [/^mtnode_app$/i, "画布应用"],
   [/^mtnode_canvas_edit$/i, "编辑画布"],
@@ -17507,6 +17529,22 @@ function agentMarkSteerInjected(st, data) {
   }
 }
 
+/* 轮末结算：插话只对「正在跑的这一轮」有意义 —— 本轮一收尾，任何还挂着 'sent' 的插话
+   都不可能再「下一步生效」（它要么已被本轮读进收件箱，只是那帧 agent/inbox/spliced
+   没到 / 到得比收尾还晚）。不结算的话，输入区上方那条「已插话 · 待本轮下一步生效」
+   会一直挂着 —— 用户看到的就是「明明已经插进去了、回答都出来了，怎么还等我下一步」。 */
+function agentSteerSettleRound(st) {
+  const msgs = (st && Array.isArray(st.messages) && st.messages) || [];
+  let n = 0;
+  for (const m of msgs) {
+    if (m && m._kind === "steer" && m._steerState !== "in") {
+      m._steerState = "in";
+      n++;
+    }
+  }
+  return n;
+}
+
 /* ══════════════ 忙时发送的裁决：排队，还是即时插话 ══════════════
    用户口径：会话正在跑的时候按发送，过去是**静默入队**，而想插话必须先把字打进输入框、
    再自己去点那枚 ⚡ 插话键 —— 等于要求用户先知道「有这枚键」。现在改成一次显式选择：
@@ -18044,6 +18082,10 @@ async function agentDrainQueue(st) {
    还在等它走到下一步边界；它们与「排队待发」是两件事，故在输入区上方分成两栏显示。 */
 function agentPendingSteers(st) {
   const out = [];
+  /* 没有在跑的轮次 = 没有「下一步」可等：这类残留一律不当作待生效。
+     正常路径已由轮末 agentSteerSettleRound 结算掉，这里兜住中断 / 重连 / 重启后
+     从存档里带回来的那一份 'sent'（否则它会永远挂在那条队列栏里）。 */
+  if (!(typeof sessionIsRunning === "function" && sessionIsRunning(st))) return out;
   for (const m of Array.isArray(st && st.messages) ? st.messages : []) {
     if (!m || m._kind !== "steer") continue;
     if (m._steerState === "in") continue;
@@ -19918,6 +19960,11 @@ async function agentSessionSend(text, opts) {
     st._pausePending = false;
     st._pauseVacated = false;
     st.running = false;
+    /* 插话的轮末结算（见 agentSteerSettleRound）：本轮既然收尾，「待本轮下一步生效」
+       就不可能再成立 —— 必须在下面那次重绘之前收口，队列条与气泡才会一起改口。 */
+    try {
+      agentSteerSettleRound(st);
+    } catch (_) {}
     /* 收轮：运行中指示的秒数起点一起清掉（running 一落，指示本来就不再显示了；
        留着它会让下一轮开跑前的任何一次 sync 拿上一轮的旧时刻算出离谱的秒数）。 */
     st._liveThinkAt = 0;
