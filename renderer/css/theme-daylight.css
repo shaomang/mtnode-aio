@@ -224,6 +224,15 @@ body.ef-skin.theme-light {
   --hover-bg: rgba(21, 95, 176, .10);
   --sel-bg: rgba(21, 95, 176, .14);
 
+  /* 一·四·补 透明补灰底（v6 用户口径：亮色下**所有透明都要补一层灰底**，否则看不清）
+     整个亮色层里有近两百处底色写成 `color-mix(in srgb, <色> N%, transparent)` —— 那是
+     暗色世界的「半透明白 / 半透明色纱」（压在深底上靠底亮出来）。transparent 在亮色里
+     等于没有底：6~18% 的深色压在淡灰面上前后差只有 1.02:1，chip / 段标 / 提示条整片发虚。
+     把 color-mix 的基色从 transparent 换成这一档灰：同一处就变成「灰底 + 一点点色相」，
+     对 --panel 1.15、对 --bg 1.06，小件在任何浅底上都看得出是一块面。
+     生成层（theme-daylight-skin.css）用同名令牌做同一件事，值只在这里定义一处。 */
+  --glass-base: #e6ebf3;
+
   /* 一·五 交互令牌（焦点环 / 投影 / 选区） */
   --focus-ring: var(--cyan);
   --focus-halo: rgba(21, 95, 176, .18);
@@ -1488,7 +1497,7 @@ body.ef-skin.theme-light .dsh-tool[open] .dsh-tool-chip.dsh-fam-own,
 body.ef-skin.theme-light .dsh-tool[open] .dsh-tool-chip.dsh-fam-browser,
 body.ef-skin.theme-light .dsh-tool[open] .dsh-tool-chip.dsh-fam-job,
 body.ef-skin.theme-light .dsh-tool[open] .dsh-tool-chip.dsh-fam-other {
-  background: color-mix(in srgb, var(--dsh-fam, var(--muted)) 18%, transparent);
+  background: color-mix(in srgb, var(--dsh-fam, var(--muted)) 18%, var(--glass-base));
 }
 body.ef-skin.theme-light .dsh-seg-tool.dsh-fam-read,
 body.ef-skin.theme-light .dsh-seg-tool.dsh-fam-write,
@@ -1499,7 +1508,7 @@ body.ef-skin.theme-light .dsh-seg-tool.dsh-fam-talk,
 body.ef-skin.theme-light .dsh-seg-tool.dsh-fam-own,
 body.ef-skin.theme-light .dsh-seg-tool.dsh-fam-browser,
 body.ef-skin.theme-light .dsh-seg-tool.dsh-fam-job {
-  background: color-mix(in srgb, var(--dsh-fam) 9%, transparent);
+  background: color-mix(in srgb, var(--dsh-fam) 9%, var(--glass-base));
 }
 body.ef-skin.theme-light .dsh-tool-body pre {
   background: var(--bg2);

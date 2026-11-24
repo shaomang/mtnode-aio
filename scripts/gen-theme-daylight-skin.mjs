@@ -325,6 +325,25 @@ function isScrimValue(value) {
   });
 }
 
+/* ── 透明补灰底（v6 用户口径：亮色下所有透明都要补一层灰底，否则看不清）────────
+   暗色世界把大量底色写成 `color-mix(in srgb, <色> N%, transparent)` —— 那是「半透明纱」，
+   压在深底上靠底把色亮出来。transparent 在亮色里等于没有底：6~18% 的深色压到淡灰面上
+   前后只差 1.02:1，chip / 段标 / 提示条 / 淡底徽标整片发虚，就是「看不清」那一类。
+   这里把 color-mix 的基色从 transparent 换成令牌 --glass-base（灰色，值定义在手写
+   theme-daylight.css 的令牌层），同一处变成「灰底 + 一点点色相」。
+   边界（很关键）：
+     · 只碰 background / background-color —— 描边、光晕、box-shadow 里的 transparent
+       是「渐隐」，补灰会变成一圈硬边；
+     · 值里带 gradient() / url() 的不碰 —— 那是渐隐纹理与图片，补灰就是一块硬色块；
+     · 只换独立的 transparent 操作数（不是 transparent-a 这类标识符的一部分）。 */
+const GLASS_BASE = "var(--glass-base, #e6ebf3)";
+function glassifyBg(value) {
+  if (!/color-mix\(/i.test(value) || /gradient\(|url\(/i.test(value)) return null;
+  if (!/(^|[\s,(])transparent([\s,)]|$)/i.test(value)) return null;
+  const out = value.replace(/(^|[\s,(])transparent(?=[\s,)])/gi, (m, pre) => pre + GLASS_BASE);
+  return out === value ? null : out;
+}
+
 /* 把一段值里的颜色字面值逐个替换（保留其它 token 原样） */
 function mapValue(value, kind, hint) {
   /* 蒙层：整份值换成一个令牌（只在 background / background-color 上，由调用方保证） */
@@ -470,7 +489,13 @@ function emit(nodes, out, indent = "") {
         ? hint
         : { strong: hint.strong, scrim: false };
       const mapped = mapValue(rawVal, kind, scrimHint);
-      if (mapped) decls.push("  " + prop + ": " + mapped + imp + ";");
+      /* 半透明淡底 → 灰底：mapValue 只认色值字面值，`color-mix(…, transparent)` 里的
+         transparent 是关键字，要在这之后单独补一层灰（映后值里同样含 transparent，
+         所以两支都过一遍，与色值映射可以叠加）。 */
+      const isBgSurface = prop === "background" || prop === "background-color";
+      const glass = isBgSurface ? glassifyBg(mapped || rawVal) : null;
+      const value2 = glass || mapped;
+      if (value2) decls.push("  " + prop + ": " + value2 + imp + ";");
     }
     if (!decls.length) continue;
     const sel = prefixSelector(n.prelude);
