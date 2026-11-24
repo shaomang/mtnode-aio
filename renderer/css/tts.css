@@ -325,7 +325,9 @@
   gap: 8px;
   max-width: min(74vw, 920px);
   padding: 7px 14px;
-  background: rgba(10, 12, 16, .84);
+  /* 播报条底色：原来 84% 的近黑纱，压在画布 / 节点正文上，字经常看不清（用户口径：
+     透明度过高）。改成中性灰、几乎不透明 —— 一条浮在内容上的条子自己得压住底下的像素。 */
+  background: rgba(35, 38, 44, .97);
   border: 1px solid color-mix(in srgb, var(--cyan2, #38d6ff) 34%, transparent);
   border-radius: 999px;
   box-shadow: 0 12px 30px rgba(0, 0, 0, .46), 0 0 0 1px rgba(0, 0, 0, .25) inset;
@@ -461,7 +463,10 @@
   height: 100%;
   margin: 0;
   padding: 2px 8px;
-  background: transparent;
+  /* 灰底而不是 transparent：普通状态下，一条纯文字的边框后面就是状态栏的底色，
+     滚动时长句在框里跑，字跟后面的状态栏糊成一片；铺一层很淡的中性灰，
+     这一格才看得出是一块面（亮色侧另在 css/theme-daylight.css 里换成灰面 + 深字）。 */
+  background: rgba(255, 255, 255, .06);
   /* 细框（本需求）：常态就有一圈细边框，内容像新闻条一样在框里滚动 */
   border: 1px solid var(--bd, rgba(255, 255, 255, .12));
   border-radius: 10px;

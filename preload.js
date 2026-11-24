@@ -1818,8 +1818,14 @@ contextBridge.exposeInMainWorld('api', {
      响应给 HTML 注入页面状态小助手，供重载预览时存 / 恢复页面状态）；
      快照（文件数 / 字节 / 最新 mtime）供每轮开发结束后判断要不要重载预览。 */
   appsDevPreview: (id) => ipcRenderer.invoke('apps:devPreview', { id }),
-  appsOpenWindow: (id, kind) =>
-    ipcRenderer.invoke('apps:openWindow', kind ? { id, kind } : { id }),
+  /* canvasId（可选）：画布应用节点点卡片时传**那颗节点所在的画布**——主进程据此把宿主桥的
+     画布绑定钉在这张上，应用调 agent / fs 时直接用，不再弹「选一张画布」。 */
+  appsOpenWindow: (id, kind, canvasId) => {
+    const arg = { id };
+    if (kind) arg.kind = kind;
+    if (canvasId) arg.canvasId = canvasId;
+    return ipcRenderer.invoke('apps:openWindow', arg);
+  },
   /* 按 id 关掉某个应用的独立窗口（主窗口侧也能关）：开发页在「预览因独立窗口已开而只读」
      时给一颗「关掉独立窗口」，走它（同一条「先请应用收尾、再关」的链）。 */
   appsCloseApp: (id) => ipcRenderer.invoke('apps:closeAppWindow', { id: id || '' }),

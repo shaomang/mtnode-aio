@@ -5995,10 +5995,24 @@ function openAppDirKindOf(id, kind, dir) {
 /* 应用窗口：preload-app.js（window.appHost）· loadFile 应用 index.html ·
    will-navigate 一律 preventDefault（外链交 shell.openExternal）· 新窗口一律 deny。
    kind（"dev" / "down"，可选）＝**开哪一套根下的那一份**：同 id 两边各有一份时，
-   开发页点「启动 / 打开」要的是项目根那份（源码在改的那份），不能按 id 猜。 */
-function openAppWindow(id, kind) {
+   开发页点「启动 / 打开」要的是项目根那份（源码在改的那份），不能按 id 猜。
+   canvasId（可选）＝**这张窗口属于哪张画布**：画布上的应用节点点卡片时由渲染层传进来，
+   开窗这一刻就写进宿主桥的画布绑定（app-host-bridge 的 bindCanvas），应用随后调 agent /
+   fs / audio / net 时直接用这张画布 —— 不再弹「选择这个应用对应的画布」。
+   应用中心（没有画布语境）那条路径不传，口径不变。 */
+function openAppWindow(id, kind, canvasId) {
   const sid = safeAppId(id);
   if (!sid) return bad(t("应用 id 不合法"), "bad_id");
+  /* 先钉画布再开窗：窗口一加载就可能调 agent，绑定必须早于它。
+     复用已开窗口这条也要钉（同一个应用可能从另一张画布的节点再点一次）。 */
+  const hostCanvasId = String(canvasId || "").trim();
+  if (hostCanvasId) {
+    try {
+      if (hostBridge && typeof hostBridge.bindCanvas === "function") hostBridge.bindCanvas(sid, hostCanvasId);
+    } catch (err) {
+      console.warn("[apps] 记住画布绑定失败：" + ((err && err.message) || err));
+    }
+  }
   const existing = appWins.get(sid);
   if (existing && !existing.isDestroyed()) {
     /* 复用已开的那只窗口（不叠窗口），但**先重载一次**：用户报障「改完代码点启动还是旧版本」
@@ -8915,7 +8929,9 @@ function registerAppsIpc(opts) {
   }
   ipcMain.handle("apps:devPreview", guard((e, arg) => devPreview(isObj(arg) ? arg.id : arg)));
 
-  ipcMain.handle("apps:openWindow", guard((e, arg) => openAppWindow(isObj(arg) ? arg.id : arg, isObj(arg) ? arg.kind : "")));
+  ipcMain.handle("apps:openWindow", guard((e, arg) =>
+    openAppWindow(isObj(arg) ? arg.id : arg, isObj(arg) ? arg.kind : "", isObj(arg) ? arg.canvasId : ""),
+  ));
   /* 按 id 关掉某个应用的独立窗口（主窗口侧也能关）：开发页那条「预览因独立窗口已开而只读」
      的提示旁边那颗「关掉独立窗口」用它 —— 不然用户得自己切到库页去找那个窗口。
      走的还是同一条「先请应用收尾、再关」的链（closeAppWindow）。 */

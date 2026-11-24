@@ -792,6 +792,22 @@ function appNodeCollapseForOther(appId) {
   appNodeClose();
   return true;
 }
+/* 这颗应用节点所在的画布 id（= 前台那张画布，应用开窗时要钉住的那一张）。
+   点卡片这件事只发生在用户眼前这张画布上，所以取前台真源 currentVisibleWf()
+   （app.js 的可判定锁：后台换画布编辑不会污染它），取不到再退回 S.wf。 */
+function appNodeCanvasId() {
+  try {
+    if (typeof currentVisibleWf === "function") {
+      const fg = currentVisibleWf();
+      if (fg && fg.id) return String(fg.id);
+    }
+  } catch (_) {}
+  try {
+    return String((S && S.wf && S.wf.id) || "");
+  } catch (_) {
+    return "";
+  }
+}
 /* 弹出到独立窗口：应用界面的唯一打开方式（画布不再内嵌 iframe 界面）。
    nodeArg 给了就开那一颗节点的应用（点卡片走这条）；不给则开画布当前开着的那一份。
    顺手停掉画布这一帧：同一时间只允许一个应用打开（两份实例一起活着会抢后端 / 抢数据）。 */
@@ -810,9 +826,12 @@ async function appNodeUndock(nodeArg) {
   }
   /* kind（dev / down）：开节点绑定的那**一份**，与应用中心「打开」同一条口径 */
   const kind = node && node.appKind ? String(node.appKind) : "";
+  /* 这张画布的 id：应用在窗口里调 agent / fs / audio 时要操作的就是**这颗节点所在的画布**，
+     开窗时带过去钉住，免得它反过来弹「选择这个应用对应的画布」问用户。 */
+  const canvasId = appNodeCanvasId();
   let r = null;
   try {
-    r = kind ? await api.appsOpenWindow(appId, kind) : await api.appsOpenWindow(appId);
+    r = await api.appsOpenWindow(appId, kind, canvasId);
   } catch (e) {
     r = { ok: false, error: (e && e.message) || String(e) };
   }

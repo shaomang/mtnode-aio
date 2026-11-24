@@ -418,6 +418,37 @@ function splitDecls(body) {
 
 const SKIP_SELECTOR = /^(:root|html|body\.theme-|body\.ef-skin\.theme-daylight)/;
 
+/* ── 节点子树整段不翻译（v7 用户口径：节点保留自己的颜色色调、继续沿用暗色那一套样式）──
+   规则里只要出现下列节点专用类名就跳过（**不是首段也算** —— `.task .n-title`、
+   `.wf-node.sel .n-head` 这类都是从节点类起画的）：
+   亮色层不往卡片上画面，暗色源码（canvas.css / theme-endfield.css 的逐 kind 渐变、
+   按 kind 取色相的标题条、端子环 …）原样生效；节点内部的前景由 theme-daylight.css
+   的「暗色孤岛令牌」（body.ef-skin.theme-light .wf-node 里那一组）负责变亮。
+
+   v8 口径（用户：节点内应当和深色一样）—— 名单从「点名的几个 n-*」放宽成 **整族**
+   `.n-*`：以前只列了 head/body/title/text/status/chip/play/view/wave，于是
+   .n-bgrm-ico / .n-asset-kind / .n-md-pill / .n-setsum* / .n-db-* / .n-agent-* 这些
+   仍然被翻成亮色（淡灰底压在暗色卡片上，字还是岛内 --muted → 花）。现在只要落在节点
+   命名空间里就一律保留暗色源码。
+
+   仍然**不跳**的只有 `.n-field` 一支：它同时出现在设置窗（亮色浮层 .node-settings-form）
+   与节点 body（.n-field.n-prompt 的提示词列）里，全局跳过会让设置窗整片变暗；节点内的
+   那一份由 theme-daylight.css 的「节点内表单件」一段按岛内令牌补回来。
+
+   另加：函数节点的画布（.fn-canvas / .fn-edge）、数据表节点里的 .db-tbl、节点模板
+   缩略图 .tpl-wf-node —— 它们都是「节点自己的面」，同样留在暗色侧。 */
+const NODE_SEL = new RegExp(
+  "\\." +
+  "(wf-node|tpl-wf-node|port|port-badge|pb-[\\w-]+|" +
+  "n-(?!field\\b)[a-z][\\w-]*|" +
+  "ntv-[\\w-]+|lt-?[\\w-]*|" +
+  "fn-(canvas|edge|dot|arrow|stage)[\\w-]*|" +
+  "np-[\\w-]+|mg-path[\\w-]*|db-tbl|" +
+  "super-(folder[\\w-]*|stage|io))" +
+  "\\b"
+);
+const isNodeRule = (prelude) => NODE_SEL.test(prelude);
+
 function prefixSelector(sel) {
   return sel
     .split(",")
@@ -436,7 +467,7 @@ function prefixSelector(sel) {
     .join(", ");
 }
 
-let stat = { files: 0, rules: 0, kept: 0, decls: 0 };
+let stat = { files: 0, rules: 0, kept: 0, decls: 0, nodeSkipped: 0 };
 function emit(nodes, out, indent = "") {
   for (const n of nodes) {
     if (n.kind === "at") {
@@ -450,6 +481,12 @@ function emit(nodes, out, indent = "") {
       continue;
     }
     stat.rules++;
+    /* 节点子树（卡片 / 板身 / 端子 / chip / 播放键 / 节点层内部 …）整段不翻译：
+       亮色下节点沿用暗色样式，由暗色源码 + 手写层的「暗色孤岛令牌」负责。 */
+    if (isNodeRule(n.prelude)) {
+      stat.nodeSkipped++;
+      continue;
+    }
     const decls = [];
     /* 这条规则是不是在画控件（输入件 / 按钮 / 色板）：是的话线一律落控件档；
        是不是一块蒙层（#overlay / .mt-dialog / 灯箱 …）：是的话底色整份落 --pop-scrim */
@@ -549,7 +586,7 @@ for (const name of SOURCES) {
 }
 
 const text = header + body.join("\n") + "\n";
-console.log("源文件 " + stat.files + " 个 / 扫到规则 " + stat.rules + " 条 / 保留 " + stat.kept + " 条 / 声明 " + stat.decls + " 条");
+console.log("源文件 " + stat.files + " 个 / 扫到规则 " + stat.rules + " 条 / 保留 " + stat.kept + " 条 / 声明 " + stat.decls + " 条 / 节点子树跳过 " + stat.nodeSkipped + " 条");
 console.log("输出 " + (text.length / 1024).toFixed(1) + " KB → " + path.relative(ROOT, OUT));
 if (!DRY) {
   fs.writeFileSync(OUT, text, "utf8");

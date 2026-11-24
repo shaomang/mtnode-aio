@@ -338,6 +338,23 @@ function createAppHostBridge(o) {
     return canvasInfo(String(picked.id), opts2);
   }
 
+  /* 开窗时由主进程写死这张画布（apps-store.js 的 openAppWindow 调）：画布上的应用节点
+     开出来的窗口，从第一刻起就知道自己属于**那颗节点所在的那张画布** —— 不再问用户。
+     之所以要走 bindings（而不是每次调用另带一份）：应用侧（agent / fs / audio / net）
+     全都是经 boundCanvas 找画布的，写进绑定这一条就同时管住了所有通道，应用代码不用改。 */
+  function bindCanvas(appId, canvasId) {
+    const id = String(appId || "");
+    const cid = String(canvasId || "").trim();
+    if (!id || !cid) return { ok: false, code: "bad_arg", error: "appId / canvasId 必填" };
+    const key = "app:" + id;
+    const st = state();
+    const cur = isObj(st.bindings[key]) ? st.bindings[key] : {};
+    if (String(cur.canvasId || "") === cid) return { ok: true, canvasId: cid, unchanged: true };
+    st.bindings[key] = Object.assign({}, cur, { canvasId: cid });
+    saveState();
+    return { ok: true, canvasId: cid };
+  }
+
   function canvasInfo(canvasId, o2) {
     const id = String(canvasId || "");
     const cached = id ? canvasCache.get(id) : null;
@@ -882,6 +899,8 @@ function createAppHostBridge(o) {
     call: call,
     settle: settle,
     pushStream: pushStream,
+    /* 开窗时钉住「这只应用窗口属于哪张画布」（画布应用节点那条打开路径） */
+    bindCanvas: bindCanvas,
     /* 冒烟 / 排障用：当前画布绑定（只读；授权已取消，这里没有 grants 了） */
     snapshot: () => JSON.parse(JSON.stringify(state())),
     NS_METHODS: NS_METHODS,
