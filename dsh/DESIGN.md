@@ -1347,7 +1347,7 @@ Edge 风格的画布 Tab 条:切换过的工作流显示为标签页(最多 12 �
   `$DSH_HOME/cordis-mount.json`）；用户插件安装到 `$DSH_HOME/plugins`，清单在
   `cordis-user.yml`。启动时以应用包组合为底合并配置目录用户段。全局助手可通过
   `mtnode_app` 的 `list_dsh_plugins` / `install_dsh_plugin` / `remove_dsh_plugin` /
-  `set_dsh_plugin` 管理（安装/移除/挂载需确认）。
+  `set_dsh_plugin` 管理（安装/移除/挂载需确认）。口径：确认链在渲染层 `canvasOpNeedsConfirm`，但**审批档「全部允许」与 MCP 连接下这两道会直接放行**（MCP 走首次连接授权）；工具描述因此只给调用纪律（只按用户点名的动作做、不许拿它当「准备运行时」的手段），不声称「一定会弹确认」——见 `canvas-plugin.mjs` 的 APP_DESC 注释。
 - 已内置 [dsh-router-standard](https://github.com/yjh051108/dsh-router-standard)
   (`./plugins/router-standard/router-bootstrap.mjs`):**默认不加载**(组合行静态
   `disabled: true`),assemble 永不抛错,保留 MTNode persona 与 `mtnode_*` 工具;

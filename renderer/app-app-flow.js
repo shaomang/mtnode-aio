@@ -803,7 +803,7 @@ function startCustomStyleAsk(appId, appName, mode) {
  * 把勾选态回滚成磁盘上的真实值。不传 = 老口径（只改内存态，由调用方自己保存）。 */
 function appsCapabilityChecks(value, onChange) {
   const cur = Object.assign(
-    { textInput: false, showDictate: false, showAuthor: false, showMediaPlayer: false, windowChrome: true, imageGen: false, voiceGen: false, canvasHost: false, agentHost: false, assetHost: false, showComplete: false },
+    { textInput: false, showDictate: false, showAuthor: false, showMediaPlayer: false, windowChrome: true, imageGen: false, voiceGen: false, canvasHost: false, agentHost: false, assetHost: false, showComplete: true },
     value || {},
   );
   const box = document.createElement("div");
@@ -820,7 +820,9 @@ function appsCapabilityChecks(value, onChange) {
     canvasHost: cur.canvasHost === true,
     agentHost: cur.agentHost === true,
     assetHost: cur.assetHost === true,
-    showComplete: cur.showComplete === true,
+    /* 输入补全：与 windowChrome 同一条读法 —— 缺省**开**，只有显式 false 才算关掉
+       （主进程 normCapabilities 的 showComplete 也是 defaultOn） */
+    showComplete: cur.showComplete !== false,
   };
   const read = () => ({
     textInput: state.textInput === true,
@@ -893,11 +895,12 @@ function appsCapabilityChecks(value, onChange) {
       hint: I18n.t("允许应用列 / 读整个素材库、把本机文件收进库、新建自己的素材与内容条目，并删除自己创建的东西（进回收站）；你自己创建的素材与条目对它只读。勾上即永久允许"),
     },
     /* 输入补全（2026-11 本轮）：注入 renderer/app-fim.js，应用里每个输入框都带补全 ——
-       边打边补 + 按 Tab 现场要一次（再按一下采纳），请求走 appHost.textGenStream。 */
+       边打边补 + 按 Tab 现场要一次（再按一下采纳），请求走 appHost.textGenStream。
+       缺省**开**（与主进程 defaultOn 同一条读法）：取消勾选才收回。 */
     {
       id: "showComplete",
       label: I18n.t("输入补全"),
-      hint: I18n.t("应用里的输入框自动带 AI 补全：边打边补、按 Tab 现场要一次（再按一下采纳），补全时在光标后转圈；模型与服务商沿用 MTNode 的配置，应用拿不到 Key。勾上即生效"),
+      hint: I18n.t("应用里的输入框自动带 AI 补全：边打边补、按 Tab 现场要一次（再按一下采纳），补全时在光标后转圈；模型与服务商沿用 MTNode 的配置，应用拿不到 Key。缺省即开，取消勾选才收回"),
     },
   ];
   for (const r of rows) {
@@ -944,7 +947,7 @@ function appsCapabilityChecks(value, onChange) {
       state.canvasHost = nv.canvasHost === true;
       state.agentHost = nv.agentHost === true;
       state.assetHost = nv.assetHost === true;
-      state.showComplete = nv.showComplete === true;
+      state.showComplete = nv.showComplete !== false;
       const boxes = box.querySelectorAll("input[data-cap]");
       for (const b of boxes) b.checked = state[b.dataset.cap] === true;
     },

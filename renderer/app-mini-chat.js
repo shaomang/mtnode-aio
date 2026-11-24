@@ -38,6 +38,68 @@
     return document.getElementById(id);
   }
 
+  /* ── 输入补全（本次修复）─────────────────────────────────────────────────
+     小窗以前完全没有补全：mini-chat.html 没引 renderer/app-fim.js，而且这只窗口既没有
+     api.apiCall 也没有 window.appHost，就算引了也发不出请求。现在两头都接上：
+       · mini-chat.html 引 app-fim.js（同一份内核 + 内联 ghost 覆盖层）；
+       · 这里挂 window.MTFimDelegate，把「要一次补全」转给主窗那份内核
+         （api.fim → minichat:fim → 主窗 renderer/app-mini-chat-host.js 的 MTFim.request），
+         服务商 / Key / 清洗 / 缓存 / 看门狗全在主窗那一侧，本页只画 ghost。
+     面板设置（on / auto / manual / delayMs）也从主窗读一份，塞进 app-fim.js 认的那个
+     window.__mtnodeFimSettings（应用窗口用的同一个口子），所以小窗里关掉补全一样生效。
+     窗口重新获得焦点时再读一次：主窗改完设置不用重开小窗。 */
+  function loadFimCfg() {
+    try {
+      if (!api || typeof api.fimCfg !== "function") return;
+      Promise.resolve(api.fimCfg())
+        .then(function (r) {
+          var d = (r && r.data) || null;
+          if (d && typeof d === "object") window.__mtnodeFimSettings = d;
+        })
+        .catch(function () {});
+    } catch (_) {}
+  }
+
+  function wireFim() {
+    try {
+      window.MTFimDelegate = {
+        request: function (o) {
+          var opts = o || {};
+          if (!api || typeof api.fim !== "function")
+            return Promise.resolve({ ok: false, reason: "no-bridge" });
+          return Promise.resolve(
+            api.fim({
+              prefix: String(opts.prefix == null ? "" : opts.prefix),
+              suffix: String(opts.suffix == null ? "" : opts.suffix),
+              singleLine: !!opts.singleLine,
+              maxTokens: Number(opts.maxTokens) || 0,
+              mode: opts.mode === "manual" ? "manual" : "auto",
+            }),
+          ).then(
+            function (r) {
+              var d = (r && r.data) || null;
+              if (!r || r.ok === false || !d || !d.text)
+                return { ok: false, error: String((r && r.error) || "empty") };
+              return { ok: true, text: String(d.text) };
+            },
+            function (e) {
+              return { ok: false, error: String((e && e.message) || e) };
+            },
+          );
+        },
+        abort: function () {
+          try {
+            if (api && typeof api.fimAbort === "function") api.fimAbort();
+          } catch (_) {}
+        },
+      };
+    } catch (_) {}
+    loadFimCfg();
+    try {
+      window.addEventListener("focus", loadFimCfg);
+    } catch (_) {}
+  }
+
   /* 词条：主进程用 I18n.t 现算好一整份下发（页面不做语言判断） */
   function applyDict(d) {
     dict = d && typeof d === "object" ? d : {};
@@ -1334,6 +1396,8 @@
     }
     /* 折叠记忆要先读回来：首次 render 就得按上次折的样子画（缺省全展开） */
     loadFolded();
+    /* 输入补全（本次修复）：先挂委托再绑输入框 —— 第一颗键就得有人接 */
+    wireFim();
     bind();
     /* 上次没发出去的草稿先回填（关窗不丢字 · 本次修复） */
     restoreDraft();

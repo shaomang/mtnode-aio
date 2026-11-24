@@ -913,7 +913,13 @@
         /^skill$/i,
       ],
     },
-    { id: "own", label: "画布与自家工具", res: [/^mtnode_/i, /^lt_/i] },
+    /* 「画布与自家工具」= 凡是 MTNode 自己造出来的工具：mtnode_ 内置工具、lt_ 长任务、
+       br_ 重后端注册中心（br_admin 管理入口 + br_<id> 已登记的本机后端）。
+       动态名 br_* / mtnode_tool_* 都是运行时生成的（见 docs/tool-names.md §4），
+       与 mtnode_ 同归这一族：它们都是「本机 / 自家」的工具，不另开一族
+       （另开一族要把 css/dsh-tokens.css、css/dsh.css 与两份主题里那几串族类选择器
+       全列一遍，收益还不如把色位留给真正的引擎族）。 */
+    { id: "own", label: "画布与自家工具", res: [/^mtnode_/i, /^lt_/i, /^br_/i] },
     { id: "browser", label: "浏览器", res: [/^browser_/i] },
     { id: "job", label: "后台任务", res: [/^(job_list|job_output|job_kill)$/i] },
   ];

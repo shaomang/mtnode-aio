@@ -50,13 +50,17 @@ const INSTALL_SKILL_SOURCES = {
      真实流式基准」这类现场；硬门槛（flash-attn 装不上即失败）与实时口径都写在 SKILL 里 */
   'soulx-flashhead-local-install': path.join(__dirname, '..', 'skills', 'soulx-flashhead-local-install', 'SKILL.md'),
   'office-local-install': path.join(__dirname, '..', 'skills', 'office-local-install', 'SKILL.md'),
-  /* 网关可选能力按需安装（browser-automation / cloud-native-llm / markdown-render / sharp-wasm
-     四组由 docs/app-deps-capability.json 剪掉，见 docs/app-size-audit.md §8）：装回的是
-     **网关树自己的 node_modules**（没有 office 引擎那种 cli 配置位），SKILL 里写明版本真源、
-     真 import 验证与「重装应用会覆盖」这条边界 */
-  'gateway-capability-install': path.join(__dirname, '..', 'skills', 'gateway-capability-install', 'SKILL.md'),
 }
 const INSTALL_SKILL_NAMES = new Set(Object.keys(INSTALL_SKILL_SOURCES))
+
+/* 已下线的「按需安装」技能：正文只留仓库（skills/<名>/SKILL.md 仍在，是维护者查的真源），
+   **不再随包、也不再同步进 DSH_HOME/skills** —— 模型那侧（引擎按 dsh-home/skills 发现技能）
+   因此看不到它。为什么下线：gateway-capability-install 教的是「按精确版本把剪掉的网关依赖
+   npm add 进网关树」，属仓库维护动作，且它引用的 docs/app-size-audit.md /
+   docs/app-deps-capability.json 都不随包（在用户机上是一条断链）；留在模型手边等于多一条
+   「往运行时的 node_modules 装代码」的现成配方。打包侧同步用 build.json 的
+   `!skills/gateway-capability-install/**` 取反。 */
+const RETIRED_INSTALL_SKILLS = ['gateway-capability-install']
 
 /** 技能正文内容指纹（十六进制 sha256，与 ext-repo/build.mjs 的目录字段同算法）。
  *  用途：在线目录 / 工坊按「已安装 vs 远端」判是否有更新 —— 只看 version 的旧口径
@@ -700,31 +704,43 @@ function createDshAdapter(opts) {
             if (fs.existsSync(builtinMark)) fs.unlinkSync(builtinMark)
           } catch {}
         }
+        /* 已下线技能的回收：只删**我们自己装出来的那一份**（带 .install-only 标记）。
+           为什么要主动删：老版本（≤1.7.10）把它同步进了 dsh-home/skills，而引擎的技能发现只看
+           那个目录 —— 不删掉，升级后模型那侧的技能目录里它照样还在。用户自建 / 工坊下载的
+           同名技能没有这个标记，一律不动。 */
+        for (const name of RETIRED_INSTALL_SKILLS) {
+          const destDir = path.join(destRoot, name)
+          if (!fs.existsSync(path.join(destDir, '.install-only'))) continue
+          fs.rmSync(destDir, { recursive: true, force: true })
+        }
       } catch (err) {
         try { log('syncInstallSkills: ' + ((err && err.message) || err)) } catch {}
       }
     },
 
-    syncMtnodeAgentSkills() {
+    /* opts（可选）＝内置技能索引的「开发态」判据（见 mtnode-agent-skills-lib 的 devSkillMode）：
+       { account, devMode? }。宿主把登录账号传进来，非开发态就不把「改 MTNode 自己」那几颗
+       内部开发纪律技能写进模型索引。四入口都收同一份 opts，免得同一台机器上两套结论互相覆盖。 */
+    syncMtnodeAgentSkills(opts) {
       try {
-        return syncMtnodeAgentSkills(dshHome, skillsSourceRoot, dataDir)
+        return syncMtnodeAgentSkills(dshHome, skillsSourceRoot, dataDir, opts)
       } catch (err) {
         return { ok: false, error: (err && err.message) || String(err) }
       }
     },
 
-    mtnodeAgentSkillIndex() {
+    mtnodeAgentSkillIndex(opts) {
       try {
-        this.syncMtnodeAgentSkills()
-        return mtnodeAgentSkillIndex(dshHome, skillsSourceRoot, dataDir)
+        this.syncMtnodeAgentSkills(opts)
+        return mtnodeAgentSkillIndex(dshHome, skillsSourceRoot, dataDir, opts)
       } catch (err) {
         return { ok: false, error: (err && err.message) || String(err) }
       }
     },
 
-    mtnodeAgentSkillGet(name) {
+    mtnodeAgentSkillGet(name, opts) {
       try {
-        this.syncMtnodeAgentSkills()
+        this.syncMtnodeAgentSkills(opts)
         return getMtnodeAgentSkill(dshHome, name, dataDir)
       } catch (err) {
         return { ok: false, error: (err && err.message) || String(err) }
@@ -780,10 +796,10 @@ function createDshAdapter(opts) {
       )
     },
 
-    skillList() {
+    skillList(opts) {
       try {
         this.syncInstallSkills()
-        this.syncMtnodeAgentSkills()
+        this.syncMtnodeAgentSkills(opts)
         const root = path.join(dshHome, 'skills')
         if (!fs.existsSync(root)) return { skills: [] }
         const out = []

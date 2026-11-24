@@ -245,10 +245,26 @@
        （启动即崩，网关目录根本解析不出来）。 */
     "dsh/gateway-archive.cjs",
     "dsh/mtnode-llm-creds.js",
-    "dsh/DESIGN.md",
-    "dsh/README.md",
+    /* 仓库内部设计 / 说明文档**不随包**（原先是白名单里的两条正选，本轮改成取反）：
+       · dsh/DESIGN.md（约 147KB）是网关与宿主的实现契约，全仓只有**注释**在引用它，
+         运行期没有任何 require / readFile 打开它；
+       · dsh/README.md 是仓库这一层的说明，应用内没有任何入口去打开它（用户看的是 guides/**）。
+       两份都给逆向者提供实现细节（打包方式、归档格式、能力裁剪口径），对终端用户零价值。
+       要改回随包：删掉下面两条 `!` 即可（electron-builder 的 files 取反对显式条目同样生效）。 */
+    "!dsh/DESIGN.md",
+    "!dsh/README.md",
     "guides/**",
+    /* 安装类技能随包：整目录同步到 DSH_HOME/skills，模型按名 skill 加载（见 dsh/main-dsh.js
+       的 INSTALL_SKILL_SOURCES）。下一行是唯一的例外。 */
     "skills/**",
+    /* gateway-capability-install **不随包**（只留在仓库里）：
+       它的正文教的是「按精确版本把剪掉的网关依赖 npm add 回网关树」，属于仓库维护动作
+       （docs/app-size-audit.md §8 与 docs/app-deps-capability.json 才是这条链的真源，而那两份
+       docs 本来就不随包 —— 随包只会给模型一条断链）。做成终端用户手上的现成提示词，等于
+       多一条「往运行时的 node_modules 装代码」的配方，且与 mtnode_app 的插件装卸面互相放大。
+       不随包的实际效果：dsh/main-dsh.js 的 syncInstallSkills 按 existsSync 自然跳过它；
+       老版本已经装进 DSH_HOME/skills 的那一份由同一文件的 RETIRED_INSTALL_SKILLS 在升级后回收。 */
+    "!skills/gateway-capability-install/**",
     /* 质检模板库（随包内置：文本质检 / 图像质检 / 视频质检 / 音频质检 / 文件质检）：
        节点下拉读的是 <appPath>/qa-templates/*.json，漏进白名单 = 打包后模板下拉是空的。 */
     "qa-templates/**",

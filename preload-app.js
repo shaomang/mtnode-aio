@@ -662,6 +662,47 @@ function injectAppUiScript(fileName, marker) {
     } catch {}
   }
 }
+/* ── 输入补全的页面世界桥（2026-11 修）────────────────────────────────────────
+ * 应用窗口是 contextIsolation:true：preload 里的 `window` 是**隔离世界**的 window，
+ * 直接 `window.__mtnodeFimSettings = …` 只落在隔离世界，页面世界读不到
+ * （真机实测 typeof window.__mtnodeFimSettings === "undefined"）。后果有两层：
+ *   ① 应用里的补全跑的是硬编码缺省（主窗面板里关掉的自动补全照旧开、延迟 / 上限 / 模型全不认）；
+ *   ② 应用窗口里按 Ctrl+Tab 翻不动总开关（没有可写的那份设置），主窗左下那颗 #btnFim
+ *      的勾选态与呼吸灯也就一直不变 —— 用户报的现场。
+ * 所以三件东西都经 contextBridge 过界：
+ *   · __mtnodeFimSettings  —— 设置那份纯值（快照，只读；没开 contextIsolation 的老宿主退回直接挂）；
+ *   · __mtnodeFimOn()      —— 「现在开没开」的**活读口**（读本 preload 的闭包，主进程广播时更新）；
+ *   · __mtnodeFimSetEnabled(on) —— Ctrl+Tab 的写口：主进程改 config.json 的 fim.on 再广播
+ *     fim:changed，主窗那颗按钮（与别的应用窗口）一起跟着变。
+ * 只在声明了 showComplete 的应用里露出（与注入同一条闸）。 */
+let fimOnNow = true;
+function fimWorldBridge(fim) {
+  fimOnNow = !(fim && fim.on === false);
+  const put = (key, value) => {
+    try {
+      if (contextBridge && typeof contextBridge.exposeInMainWorld === "function") {
+        try {
+          contextBridge.exposeInMainWorld(key, value);
+          return;
+        } catch {}
+      }
+      window[key] = value; /* 老宿主（contextIsolation:false）才走这条 */
+    } catch {}
+  };
+  put("__mtnodeFimSettings", fim && typeof fim === "object" ? fim : null);
+  put("__mtnodeFimOn", () => fimOnNow === true);
+  put("__mtnodeFimSetEnabled", (on) => {
+    const want = on !== false;
+    fimOnNow = want; /* 先本地生效：页面里的补全内核读 __mtnodeFimOn()，主进程慢一点也不碍事 */
+    return Promise.resolve(ipcRenderer.invoke("fim:setEnabled", want)).catch(() => ({ ok: false }));
+  });
+  /* 主窗那边改了总开关（面板勾选 / 主窗 Ctrl+Tab / 另一只应用窗口）：广播回来同步本窗 */
+  try {
+    ipcRenderer.on("fim:changed", (ev, d) => {
+      if (d && typeof d.on === "boolean") fimOnNow = d.on;
+    });
+  } catch {}
+}
 /* 注入时机：DOM 就绪 → 无条件注入 AI 过程条（⑤）→ 一次性问主进程「这个应用声明了哪些窗口 UI」
    → ①～④ 声明了才注入。问不到（老版主进程 / 非应用窗口）按「没声明」处理：宁可不注入，
    也不给默认应用硬塞 ①～④ 那几条；⑤ 不受这条口径约束（见文件头「五条」那段注释）。
@@ -685,12 +726,10 @@ function maybeInjectAppUi() {
     if (ans.player) injectAppUiScript("app-media-ui.js", "media");
     if (ans.auth) injectAppUiScript("app-author-ui.js", "author");
     /* 输入补全（renderer/app-fim.js）：声明了 capabilities.showComplete 才注入。
-       配置先落成页面世界的纯值（与 author 那一份同一手法），注入的脚本直接读它；
+       设置与「开没开」的读写口先过界（见 fimWorldBridge），注入的脚本直接读它；
        请求走 window.appHost.textGenStream（应用侧没有 apiCall，服务商与 Key 仍只在主进程）。 */
     if (ans.complete) {
-      try {
-        window.__mtnodeFimSettings = ans.fim || null;
-      } catch {}
+      fimWorldBridge(ans.fim);
       injectAppUiScript("app-fim.js", "complete");
     }
     /* 窗口顶栏（renderer/app-chrome-ui.js）：主进程答复里带 chrome 才注入，与作者标签同一处、

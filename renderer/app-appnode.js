@@ -422,6 +422,8 @@ async function appNodeBind(node, app) {
   node.appTitle = String(app.title || app.id || "");
   node.appEntry = String(app.entry || "index.html");
   node.appDir = String(app.dir || "");
+  /* dev / down：这一份躺在哪套根下（清单里开发中的排在前面，优先绑的就是它） */
+  node.appKind = String(app.kind || "");
   node.appMissing = false;
   node.appDataDir = String(root.dir || "");
   node.appDataFile = String(root.file || "");
@@ -643,6 +645,9 @@ async function appNodeOpen(node) {
       appNodeShowMissing(node);
       return;
     }
+    /* 主进程解析出来的是哪一份（开发中优先）：记回节点，登记预览租约时带上去，
+       宿主的清单与画布里真正跑的那一份才对得上 */
+    if (rr && rr.ok !== false && rr.kind) node.appKind = String(rr.kind);
   }
   /* 同一时间只允许一个应用打开：这个应用已经在独立窗口里跑着（或别的应用窗口开着）时，
      先把那些窗口按正常关闭链收掉，让画布这一份接管 —— 否则同一个应用会有两个实例。 */
@@ -730,8 +735,12 @@ async function appNodeRegisterLease(node) {
   if (typeof api.appsPreviewRegister !== "function") return;
   const token = "n" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
   APPNODE.token = token;
+  /* kind：这个应用在本机的那一份躺在开发根（dev）还是库里（down）。主进程按它取目录，
+     与 iframe 里跑的那一份同源 —— 不传就会按 id 猜根，同一 id 两份时猜到库里那份。 */
+  const arg = { appId: String(node.appId), token: token };
+  if (node.appKind) arg.kind = String(node.appKind);
   try {
-    await api.appsPreviewRegister({ appId: String(node.appId), token: token });
+    await api.appsPreviewRegister(arg);
   } catch (_) {}
 }
 function appNodeReleaseLease() {

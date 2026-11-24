@@ -2059,6 +2059,7 @@ body.ef-skin.theme-light .dsh-tool-file.fv-more {
 body.ef-skin.theme-light .agent-side-resize:not(:hover):not(.dragging),
 body.ef-skin.theme-light .assist-resize:not(:hover):not(.dragging),
 body.ef-skin.theme-light .ba-resize:not(:hover):not(.dragging),
+body.ef-skin.theme-light .ba-vresize:not(:hover):not(.dragging),
 body.ef-skin.theme-light .apps-dev-resize:not(:hover):not(.dragging) {
   background-image: linear-gradient(180deg, rgba(0, 0, 0, .2), rgba(0, 0, 0, .2));
 }

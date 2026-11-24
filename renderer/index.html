@@ -510,6 +510,10 @@
           </div>
           <div class="ba-live-note" id="baLiveNote"></div>
         </div>
+        <!-- 横向分界线（本次需求）：上下拖动 = 调整上面浏览器实况区的高度（高度写 CSS 变量
+             --ba-live-h 并落 localStorage，见 app-browser.js 的 BA.applyLiveHeight），活动列表
+             吃剩下的高度。只在活动区展开时有意义 —— 收起态实况本来就铺满右栏，它自己隐藏。 -->
+        <div class="ba-vresize" id="baVResize" data-i18n-title="拖动调整浏览器画面高度（上下拖动；活动列表占剩下的高度）" title="拖动调整浏览器画面高度（上下拖动；活动列表占剩下的高度）"></div>
         <div class="ba-filter"><input id="baFilter" type="text" data-i18n-placeholder="筛活动…" placeholder="筛活动…"></div>
         <div class="ba-list" id="baList"></div>
         <div class="ba-foot">
@@ -518,6 +522,7 @@
                （事件照旧收，但不再重画、也不落活动库，见 app-browser.js 的 BA.onEvent），
                腾出的高度全给上面的实况画面（.ba-col.ba-list-off .ba-live 铺满）。
                按钮自己留在原处，点回来即恢复列表与追踪；状态落 localStorage（mtnode.baListOn）。
+               默认是**收起态**（本次需求：默认不显示活动跟踪，见 app-browser.js 的 boot）。
                不挂 data-i18n* —— 文案随状态变，静态词条只兜住 JS 来不及画的第一帧。 -->
           <button type="button" class="mini" id="baListOn">只看浏览器</button>
           <!-- 默认只看**当前会话**的活动（app-browser.js 的 BA.reload 按会话查库）：
@@ -737,17 +742,19 @@
        输入补全 -6 · 快捷会话 -5 · DeepSeek -4 · 语音播报 -3 · 语音输入 -2 · AI 增强 -1 ·
        画布截图 0；
        四颗都带窗内快捷键（renderer/app-status-keys.js）：F1 快捷会话 · F2 DeepSeek ·
-       F3 语音播报 · F4 语音输入；AI 增强与输入补全没有快捷键，前者只在语音输入开启时
-       出现在 -1 位。 -->
+       F3 语音播报 · F4 语音输入；输入补全的开关是 **Ctrl + Tab**（不在 app-status-keys.js 里，
+       由 renderer/app-fim.js 的键位仲裁接管，因为它在应用窗口 / 小窗里也要生效）；
+       AI 增强没有快捷键，只在语音输入开启时出现在 -1 位。 -->
 
   <!-- 输入补全入口（renderer/app-fim-settings.js + css/fim.css）：状态栏最左一颗
        （CSS order -6，排在快捷会话 -5 之前）。点一下开 / 关「补全设置」面板 ——
        persistent：点外部不关，只走窗内 ✕ / Esc / 再点一次这颗按钮。
+       总开关是 **Ctrl + Tab**（补全开着时这颗按钮高亮呼吸，样式见 css/fim.css 的 is-on）。
        面板里有总开关 / 自动补全 · 按 Tab 手动补全两枚子开关 / 服务商 / 模型（全部模型，
        flash 标「推荐」）/ 触发延迟 / 最大补全长度 / 状态行 / 本次统计 / 隐私提示；
        设置写 S.config.fim（应用窗口里读的是 preload 注入的 window.__mtnodeFimSettings）。 -->
   <button type="button" id="btnFim" class="sb-fim" aria-pressed="false"
-          data-i18n-title="输入补全（点击开关设置面板）" title="输入补全（点击开关设置面板）"
+          data-i18n-title="输入补全（点击开关设置面板；Ctrl + Tab 开 / 关）" title="输入补全（点击开关设置面板；Ctrl + Tab 开 / 关）"
           aria-label="输入补全设置">
     <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" focusable="false">
       <path fill="currentColor" d="M3 5h9v2H3zM3 11h6v2H3zM3 17h9v2H3zM17 5h2v5h5v2h-5v5h-2v-5h-5v-2h5z"/>

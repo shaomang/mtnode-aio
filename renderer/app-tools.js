@@ -960,7 +960,20 @@ function backendToolDescriptor(it) {
 }
 
 /* 注册中心的管理入口（固定存在，不受登记表影响）：Agent 缺工具时先把工具装到本机，
-   再用 register 动作登记；本轮就能用 call 动作调它，下一轮起它就是一个独立工具。 */
+   再用 register 动作登记；本轮就能用 call 动作调它，下一轮起它就是一个独立工具。
+   ────────────────────────────────────────────────────────────────────────
+   ⚠ 边界（动手前先读 · 任务 5/8）：下面这份描述子的 name / description / example / limits /
+   inputs[*].description 全都是**模型面向**文字。它们的去向是 agentUserToolsSnapshot →
+   run 参数 → 网关注入 MTNODE_TOOLS_JSON → dsh/gateway/tools-plugin.mjs 拼成工具 descText
+   交给模型（name 还会作为运行时 tool.name 回传，用于不可用 / 报错回执）。
+   因此这里：
+   · 一律写中文原文，**不要**包 I18n.t，也不要换成英文 —— 否则切到 EN 界面时模型看到的工具
+     说明会跟着变，同一条工具换个界面语言就换一套说法，工具契约随界面漂移。
+   · 界面上的显示名不在这份描述子里：会话 / 轨迹里的工具药丸标题由 renderer/app-assist.js
+     的 DSH_TOOL_TITLE_RULES 决定（br_admin → 「重后端注册中心」），族与配色在
+     renderer/app-trajectory.js 的 TOOL_FAMILIES，译文在 renderer/i18n.js 的 EN 抽屉
+     （键「重后端注册中心」→ "Backend registry"）。改显示名去改那三处，别改这里。
+   · 用户登记项（backendToolDescriptor 的 name / desc）是用户数据，界面原样显示，同样不翻译。 */
 function backendAdminDescriptor() {
   return {
     key: "br:__admin__",
@@ -1349,7 +1362,9 @@ async function runLibToolShadowForAgent(desc, args, wf) {
 }
 
 /* 注册中心的工具调用：执行一律在主进程（http fetch / cli spawn），渲染层只中转。
-   「未安装 / 后端未就绪」不是异常，是把结构化结果原样回去 —— 模型据此自行决定装不装。 */
+   「未安装 / 后端未就绪」不是异常，是把结构化结果原样回去 —— 模型据此自行决定装不装。
+   注意这里的 error 文本与 backendAdminDescriptor 同一口径：**模型面向，保持中文**，
+   不要包 I18n.t（否则界面语言一变，模型拿到的报错也变，而工具本身没变）。 */
 async function runBackendToolForAgent(desc, args) {
   if (desc.origin === "backend-admin") {
     const payload = Object.assign({}, args || {});
@@ -1520,7 +1535,7 @@ function fnTestPortValueOfParam(p, raw) {
     .filter((v) => v != null);
 }
 
-/* 端子值 → 展示用一行文本 */
+/* 端子值 → 展示用一行文本（「试跑」台与函数节点测试输出面板的显示口径，属界面文字） */
 function fnTestValueText(v) {
   if (v == null) return "—";
   if (typeof v !== "object") return String(v);
@@ -1530,7 +1545,7 @@ function fnTestValueText(v) {
       : v.path != null
         ? String(v.path)
         : "";
-  return s === "" ? "（空）" : s;
+  return s === "" ? I18n.t("（空）") : s;
 }
 
 /* 「试跑」一个工具节点（只读口径见本段头注释）：入参按端子序号经 node._agentCallArgs

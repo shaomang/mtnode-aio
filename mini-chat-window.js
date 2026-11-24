@@ -651,6 +651,23 @@ function createMiniChat(opts) {
       return relay("send", out);
     });
     ipcMain.handle("minichat:stop", (e, id) => relay("stop", { id: String(id || "") }));
+    /* ── 输入补全（本次修复）───────────────────────────────────────────────
+       小窗这只 BrowserWindow 既没有 api.apiCall、也没有 window.appHost，补全的模型请求只能
+       借主窗渲染层那份内核（renderer/app-fim.js 的 MTFim.request）走 —— 所以这里只做三件事：
+       要一次（fim）/ 读面板设置（fimCfg）/ 掐掉在跑的那一次（fimAbort）。
+       服务商、Key、模型闸、清洗与看门狗全在主窗那一侧，小窗不碰配置与密钥。 */
+    ipcMain.handle("minichat:fimCfg", () => relay("fimCfg", {}));
+    ipcMain.handle("minichat:fim", (e, payload) => {
+      const p = payload || {};
+      return relay("fim", {
+        prefix: String(p.prefix == null ? "" : p.prefix).slice(-4000),
+        suffix: String(p.suffix == null ? "" : p.suffix).slice(0, 1000),
+        singleLine: !!p.singleLine,
+        maxTokens: Number(p.maxTokens) || 0,
+        mode: p.mode === "manual" ? "manual" : "auto",
+      });
+    });
+    ipcMain.handle("minichat:fimAbort", () => relay("fimAbort", {}));
     /* 上方条的模型选择（本轮需求）：三个字符串中继给主窗渲染层 —— 写会话字段、落盘、
        重绘都在那边（见 renderer/app-mini-chat-host.js 的 setModel），本层不碰任何存储。 */
     ipcMain.handle("minichat:setModel", (e, payload) => {

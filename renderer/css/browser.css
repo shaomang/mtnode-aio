@@ -1,4 +1,4 @@
-﻿/* ==========================================================================
+/* ==========================================================================
    browser.css — 会话自己的浏览器（renderer/app-browser.js）
    · 会话主内容**右边栏**的活动流面板 .ba-col / .ba-*（第三栏：左栏会话列表 /
      中栏对话 / 本栏活动流）；没被调用时整条 hidden 且不占宽度 —— 旧界面不变
@@ -175,7 +175,9 @@
 .ba-live-stage {
   position: relative;
   width: 100%;
-  height: 240px;
+  /* 高度由用户拖分界线决定（--ba-live-h，app-browser.js 的 BA.applyLiveHeight），
+     缺省 240px —— 没拖过 / 没记忆时与从前一致。 */
+  height: var(--ba-live-h, 240px);
   min-height: 140px;
   background: #101319;
   border: 1px solid rgba(255, 255, 255, 0.09);
@@ -417,7 +419,32 @@ body.ef-skin.theme-light .ix-card.ix-ended .ix-ended-answer {
 
 /* 浏览器在跑（实况区显示着）时把活动列表让一点高度出来：两块都要看得见 */
 .ba-col.ba-live-on .ba-list { min-height: 90px; }
-.ba-col.ba-live-on .ba-live-stage { height: 230px; }
+.ba-col.ba-live-on .ba-live-stage { height: var(--ba-live-h, 230px); }
+
+/* ── 实况区 ↔ 活动区之间的横向分界线（本次需求）──────────────────────────
+   上下拖动它 = 调整上面浏览器画面的高度（写 --ba-live-h），活动列表吃剩下的高度；
+   常态一根 1px 横筋，悬停 / 拖动整条加亮（与左边缘 .ba-resize 同款观感，方向镜像）。
+   收起态（.ba-list-off）实况本来就铺满右栏，没有可分的两块 —— 它整条隐藏。 */
+.ba-vresize {
+  flex: none;
+  height: 11px;
+  margin: 2px 8px 0;
+  cursor: row-resize;
+  touch-action: none;
+  background: linear-gradient(90deg, rgba(255, 255, 255, .12), rgba(255, 255, 255, .12));
+  background-position: 0 50%;
+  background-size: 100% 1px;
+  background-repeat: no-repeat;
+  opacity: .55;
+  transition: opacity .12s, background-size .12s, background-image .12s;
+}
+.ba-vresize:hover,
+.ba-vresize.dragging {
+  opacity: 1;
+  background-size: 100% 2px;
+  background-image: linear-gradient(90deg, transparent, var(--cyan) 8%, var(--cyan) 92%, transparent);
+}
+.ba-col.ba-list-off .ba-vresize { display: none; }
 
 /* ── 亮色主题 ─────────────────────────────────────────────────────────── */
 body.ef-skin.theme-light .ba-col { background: #f7f9fc; border-left-color: rgba(0, 0, 0, 0.1); }

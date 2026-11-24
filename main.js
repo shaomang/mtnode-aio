@@ -1506,9 +1506,334 @@ ipcMain.handle("config:save", (e, cfg) =>
   syncCompactPolicy(next);
   /* 「简报模型」同源：同步一份到主进程（手选那一档的提供商 / 模型由主进程补） */
   syncBriefModel(next);
+  /* 输入补全总开关变了（面板里勾 / 主窗按 Ctrl+Tab）：广播给所有窗口，应用窗口与
+     主窗那颗 #btnFim 一起跟上（见 broadcastFimOn 那段）。 */
+  broadcastFimOn(next);
   return { ok: true, bytes: Buffer.byteLength(text) };
   }),
 );
+
+/* ── 输入补全总开关的跨窗同步（用户 2026-11 需求）────────────────────────────
+ * 现场：在应用窗口（mt-tex 等）里按 Ctrl+Tab，补全其实翻了，但**主窗左下角那颗 #btnFim
+ * 的勾选态与呼吸灯一动不动** —— 应用窗口只有 apps:* 白名单（没有配置写口），
+ * 而主窗内存里那份补全配置也只能由主窗自己写。两条路都收口到这里：
+ *   · fim:setEnabled(on)：应用窗口的 Ctrl+Tab 走过来，改 config.json 的 fim.on
+ *     （与「输入补全」面板同一份、同一套字段），落盘后广播；
+ *   · config:save（面板里勾 / 主窗按 Ctrl+Tab）：写盘那一段末尾同一条广播。
+ * 广播 = 通道 "fim:changed" { on }：主窗 preload 的 onFimChanged 重画按钮（is-on 呼吸灯 +
+ * 勾选态），应用窗 preload 更新 __mtnodeFimOn()（页面里的补全内核按它判开关）
+ * 与 window.__mtnodeFimSettings 的活读值，于是两边永远同一个状态。 */
+let lastFimOnSent = null;
+function broadcastFimOn(cfgObj) {
+  let on = null;
+  try {
+    const f = cfgObj && cfgObj.fim;
+    if (f && typeof f.on === "boolean") on = f.on;
+  } catch (_) {
+    on = null;
+  }
+  if (on === null || on === lastFimOnSent) return;
+  lastFimOnSent = on;
+  const payload = { on: on };
+  for (const w of BrowserWindow.getAllWindows()) {
+    try {
+      if (!w.isDestroyed()) w.webContents.send("fim:changed", payload);
+    } catch (_) {}
+  }
+}
+ipcMain.handle("fim:setEnabled", (e, on) =>
+  queueCfgWrite(() => {
+    const fp = join(DATA(), "config.json");
+    const want = on !== false;
+    const c = loadConfigText(fp);
+    const cur = (c && c.obj) || {};
+    const fim = cur.fim && typeof cur.fim === "object" ? cur.fim : {};
+    if (fim.on === want) {
+      broadcastFimOn(cur); /* 没变也广播一次：刚开的应用窗口要一眼读到当前值 */
+      return { ok: true, on: want, unchanged: true };
+    }
+    const next = Object.assign({}, cur, { fim: Object.assign({}, fim, { on: want }) });
+    const text = JSON.stringify(next);
+    backupConfigFile(fp);
+    mk(path.dirname(fp));
+    const tmp = fp + ".tmp" + process.pid;
+    fs.writeFileSync(tmp, text, "utf8");
+    fs.renameSync(tmp, fp);
+    rememberConfigWritten(fp, next, text);
+    broadcastFimOn(next);
+    return { ok: true, on: want };
+  }),
+);
+
+/* ── 输入补全（FIM）用量台账 —— 面板「费用报告」的真源 ────────────────────────
+ * 为什么账记在主进程、不记在渲染层：mt-tex 这类应用窗口里的补全在**它自己的页面世界**
+ * 发请求（preload-app 的 appHost.textGenStream → appsAiCallStream），主窗那份面板读不到
+ * 那份账；主窗自己的补全走 api:call → apiCall。两条路在这里汇合，所以记账点恰好两处：
+ *   · apiCall 的文本分支：j.usage 在就用真值（prompt_tokens / completion_tokens，缓存命中取
+ *     prompt_tokens_details.cached_tokens 或 prompt_cache_hit_tokens，缺就当全未命中）；
+ *   · appsAiCallStream 的流式成功分支：SSE 一般不带 usage 帧（streamTextChat 的返回值里
+ *     只有 text / reasoning / finishReason），按字符估算（1 token ≈ 2 字符，与
+ *     renderer/app-brief-model.js 的 BRIEF_CHARS_PER_TOKEN 同口径），该行标 est:true。
+ * 只认 spec.purpose === "fim"（补全自己在 spec / appHost arg 上打这一位，见
+ * renderer/app-fim.js 的 request()）。键 = route + NUL + model：route 口径同
+ * renderer/app-agent.js 的 providerForAgentRoute（"deepseek-official" / "mtnode_<卡 id>"），
+ * 面板拿它反查服务商后交给 renderer/app-cost.js 的 costOfBucket 折价。
+ * token 三项与 costOfBucket 对齐：hit = cacheReadTokens，miss = inputTokens + cacheWriteTokens
+ * （所以 inputTokens 存**未命中**那部分，两者相加 = 上游的 prompt_tokens）。
+ * 落盘 userData/fim-usage.json：防抖 2s 写、上限 64 条按 lastAt 淘汰；有新账时节流 ≤1s
+ * 广播 "fim:usage:changed"（面板开着就重读）。savedAt = 最近一次落盘时间。 */
+const FIM_USAGE_MAX_ROWS = 64;
+const FIM_USAGE_SAVE_MS = 2000;
+const FIM_USAGE_BC_MS = 1000;
+/* 1 token ≈ 2 字符（与 renderer/app-brief-model.js 的 BRIEF_CHARS_PER_TOKEN 同口径） */
+const FIM_CHARS_PER_TOKEN = 2;
+let fimUsageRows = null; /* Map<key, row>；null = 还没读回磁盘那一份 */
+let fimUsageSavedAt = 0;
+let fimUsageSaveTimer = null;
+let fimUsageBcTimer = null;
+
+function fimUsagePath() {
+  return join(DATA(), "fim-usage.json");
+}
+function fimNum(v) {
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? Math.round(n) : 0;
+}
+/* 读回磁盘那一份（懒加载：第一次用到时读一次；文件坏了当空台账，不让面板打不开） */
+function fimUsageState() {
+  if (fimUsageRows) return fimUsageRows;
+  fimUsageRows = new Map();
+  const j = readJson(fimUsagePath(), null);
+  const rows = j && Array.isArray(j.rows) ? j.rows : [];
+  for (const r of rows) {
+    if (!r || typeof r !== "object") continue;
+    const route = String(r.route || "");
+    const model = String(r.model || "");
+    const key = route + "\u0000" + model;
+    if (fimUsageRows.has(key)) continue;
+    fimUsageRows.set(key, {
+      route: route,
+      model: model,
+      calls: fimNum(r.calls),
+      inTokens: fimNum(r.inTokens),
+      outTokens: fimNum(r.outTokens),
+      cacheReadTokens: fimNum(r.cacheReadTokens),
+      cacheWriteTokens: fimNum(r.cacheWriteTokens),
+      lastAt: fimNum(r.lastAt),
+      est: r.est === true,
+    });
+  }
+  fimUsageSavedAt = fimNum(j && j.savedAt);
+  return fimUsageRows;
+}
+/* 服务商对象 → route（与渲染层 providerForAgentRoute 的两种形态一一对应）：
+ * 服务商卡自带 route 就用它；官方 DeepSeek 那条是 "deepseek-official"；其余是 "mtnode_<卡 id>"。 */
+function fimRouteOf(provider) {
+  const p = provider && typeof provider === "object" ? provider : {};
+  const explicit = String(p.route || "").trim();
+  if (explicit) return explicit;
+  try {
+    if (isOfficialDeepseekProvider(p)) return "deepseek-official";
+  } catch (_) {}
+  const id = String(p.id || "").trim();
+  if (id) return "mtnode_" + id;
+  return String(p.source || "").trim();
+}
+/* 估算用的入参字符数（messages 的正文 + prompt）：只数字符，不算结构 */
+function fimCharsOf(chatMessages, prompt) {
+  let n = 0;
+  const take = (m) => {
+    if (m == null) return;
+    if (typeof m === "string") {
+      n += m.length;
+      return;
+    }
+    if (typeof m !== "object") return;
+    const c = m.content;
+    if (typeof c === "string") {
+      n += c.length;
+      return;
+    }
+    if (Array.isArray(c))
+      for (const part of c) if (part && typeof part.text === "string") n += part.text.length;
+  };
+  if (Array.isArray(chatMessages)) chatMessages.forEach(take);
+  if (typeof prompt === "string") n += prompt.length;
+  return n;
+}
+/* 上游 usage JSON → 台账四项（缺失的按 0：缓存细则缺 = 全未命中，与「不许猜」同一纪律） */
+function fimUsageOf(j) {
+  const u = j && j.usage && typeof j.usage === "object" ? j.usage : null;
+  if (!u) return null;
+  const det =
+    u.prompt_tokens_details && typeof u.prompt_tokens_details === "object"
+      ? u.prompt_tokens_details
+      : {};
+  const cacheReadTokens =
+    fimNum(det.cached_tokens) || fimNum(u.prompt_cache_hit_tokens) || fimNum(u.cached_tokens);
+  const promptTokens = fimNum(u.prompt_tokens);
+  /* 未命中那部分：DeepSeek 直接给 prompt_cache_miss_tokens 就用它；
+     只给 prompt_tokens + 命中量时相减（两者相加 = prompt_tokens，不多算也不少算） */
+  const miss =
+    fimNum(u.prompt_cache_miss_tokens) ||
+    (promptTokens > cacheReadTokens ? promptTokens - cacheReadTokens : 0);
+  return {
+    inTokens: miss,
+    outTokens: fimNum(u.completion_tokens) || fimNum(u.output_tokens),
+    cacheReadTokens: cacheReadTokens,
+    cacheWriteTokens: fimNum(u.prompt_cache_write_tokens) || fimNum(det.cache_write_tokens),
+  };
+}
+/* 每次入账后把行数压回上限：按 lastAt 淘汰最旧的那些（64 条对「按服务商 / 模型」足够了） */
+function fimUsageTrim() {
+  const rows = fimUsageRows;
+  if (!rows || rows.size <= FIM_USAGE_MAX_ROWS) return;
+  const sorted = [...rows.entries()].sort((a, b) => (a[1].lastAt || 0) - (b[1].lastAt || 0));
+  let over = rows.size - FIM_USAGE_MAX_ROWS;
+  for (const [k] of sorted) {
+    if (over <= 0) break;
+    rows.delete(k);
+    over -= 1;
+  }
+}
+function fimUsageSaveNow() {
+  if (fimUsageSaveTimer) {
+    clearTimeout(fimUsageSaveTimer);
+    fimUsageSaveTimer = null;
+  }
+  const rows = fimUsageState();
+  fimUsageSavedAt = Date.now();
+  try {
+    writeJson(fimUsagePath(), { savedAt: fimUsageSavedAt, rows: [...rows.values()] });
+  } catch (err) {
+    errLog("fim usage save failed: " + ((err && err.message) || String(err)));
+  }
+}
+function fimUsageScheduleSave() {
+  if (fimUsageSaveTimer) return;
+  fimUsageSaveTimer = setTimeout(() => {
+    fimUsageSaveTimer = null;
+    fimUsageSaveNow();
+  }, FIM_USAGE_SAVE_MS);
+  /* 定时器不掐住进程退出（退出前那份最多丢 2s 内的账） */
+  if (fimUsageSaveTimer && typeof fimUsageSaveTimer.unref === "function")
+    fimUsageSaveTimer.unref();
+}
+function fimUsageBroadcast() {
+  if (fimUsageBcTimer) return;
+  fimUsageBcTimer = setTimeout(() => {
+    fimUsageBcTimer = null;
+    const payload = { savedAt: fimUsageSavedAt };
+    for (const w of BrowserWindow.getAllWindows()) {
+      try {
+        if (!w.isDestroyed()) w.webContents.send("fim:usage:changed", payload);
+      } catch (_) {}
+    }
+  }, FIM_USAGE_BC_MS);
+  if (fimUsageBcTimer && typeof fimUsageBcTimer.unref === "function")
+    fimUsageBcTimer.unref();
+}
+/* 记一笔：usage 给了就用真值，没给（流式 / 上游不回 usage）就按字符估算并标 est。
+ * o = { provider, model, usage, chatMessages, prompt, outputText } */
+function fimUsageTrack(o) {
+  const opt = o && typeof o === "object" ? o : {};
+  const route = fimRouteOf(opt.provider);
+  const model = String(opt.model || "").trim();
+  if (!route && !model) return;
+  const rows = fimUsageState();
+  const key = route + "\u0000" + model;
+  let row = rows.get(key);
+  if (!row) {
+    row = {
+      route: route,
+      model: model,
+      calls: 0,
+      inTokens: 0,
+      outTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      lastAt: 0,
+      est: false,
+    };
+    rows.set(key, row);
+  }
+  const u = opt.usage && typeof opt.usage === "object" ? opt.usage : null;
+  row.calls += 1;
+  if (u) {
+    row.inTokens += fimNum(u.inTokens);
+    row.outTokens += fimNum(u.outTokens);
+    row.cacheReadTokens += fimNum(u.cacheReadTokens);
+    row.cacheWriteTokens += fimNum(u.cacheWriteTokens);
+  } else {
+    row.inTokens += Math.round(fimCharsOf(opt.chatMessages, opt.prompt) / FIM_CHARS_PER_TOKEN);
+    row.outTokens += Math.round(String(opt.outputText || "").length / FIM_CHARS_PER_TOKEN);
+    /* est = 这一行的 token 里**含估算**（粘住：一旦含过估算就一直标着，不谎报成真账） */
+    row.est = true;
+  }
+  row.lastAt = Date.now();
+  fimUsageTrim();
+  fimUsageScheduleSave();
+  fimUsageBroadcast();
+}
+/* 面板读数：rows 按 lastAt 新→旧，totals 是全部行的合计 */
+function fimUsageReport() {
+  const rows = [...fimUsageState().values()]
+    .sort((a, b) => (b.lastAt || 0) - (a.lastAt || 0))
+    .map((r) => ({
+      route: r.route,
+      model: r.model,
+      calls: r.calls,
+      inTokens: r.inTokens,
+      outTokens: r.outTokens,
+      cacheReadTokens: r.cacheReadTokens,
+      cacheWriteTokens: r.cacheWriteTokens,
+      lastAt: r.lastAt,
+      est: r.est === true,
+    }));
+  const totals = {
+    calls: 0,
+    inTokens: 0,
+    outTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+  };
+  for (const r of rows) {
+    totals.calls += r.calls;
+    totals.inTokens += r.inTokens;
+    totals.outTokens += r.outTokens;
+    totals.cacheReadTokens += r.cacheReadTokens;
+    totals.cacheWriteTokens += r.cacheWriteTokens;
+  }
+  return { ok: true, rows: rows, totals: totals, savedAt: fimUsageSavedAt };
+}
+ipcMain.handle("fim:report", () => {
+  try {
+    return fimUsageReport();
+  } catch (err) {
+    const m = (err && err.message) || String(err);
+    errLog("fim report failed: " + m);
+    return {
+      ok: false,
+      error: m,
+      rows: [],
+      totals: { calls: 0, inTokens: 0, outTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 },
+      savedAt: 0,
+    };
+  }
+});
+ipcMain.handle("fim:clear", () => {
+  try {
+    fimUsageRows = new Map();
+    fimUsageSaveNow(); /* 立刻落盘空台账（顺手掐掉还没写的防抖定时器） */
+    fimUsageBroadcast();
+    return { ok: true, savedAt: fimUsageSavedAt };
+  } catch (err) {
+    const m = (err && err.message) || String(err);
+    errLog("fim clear failed: " + m);
+    return { ok: false, error: m };
+  }
+});
+
 ipcMain.handle("config:patchProviders", (e, opts) =>
   queueCfgWrite(() => patchProviders(join(DATA(), "config.json"), opts || {})),
 );
@@ -8457,6 +8782,9 @@ async function apiCall({
   timeoutConnect,
   timeoutHeader,
   timeoutChunk,
+  /* purpose：调用方给这次请求打的用途标记（只认 "fim" = 输入补全 —— 主进程据此
+     给「费用报告」记账，见 fimUsageTrack 的文件头；其余值一概不记账）。 */
+  purpose,
 }) {
   /* 请求前的中转票自愈：本机有账号登录态却没有独立票时先补一张（一个进程一次），
      免得第一次请求白撞一次服务端 401。没有中转卡 / 没登录时它立刻返回 false。 */
@@ -8523,6 +8851,19 @@ async function apiCall({
         j.choices[0].message &&
         j.choices[0].message.content;
       if (content == null) throw new Error(I18n.t("响应无文本内容"));
+      /* 输入补全的用量在**主进程**这一层留账（见 fimUsageTrack 的文件头）：mt-tex 这类
+         应用窗口的补全走 appHost → appsAiCallStream → 同一个 apiCall，主窗那份面板只有
+         在这里才看得见它的账。j.usage 在就用真值，没有就按字符估算（该行标 est:true）。 */
+      if (purpose === "fim") {
+        fimUsageTrack({
+          provider: provider,
+          model: model || (req.body && req.body.model) || "",
+          usage: fimUsageOf(j),
+          chatMessages: chatMessages,
+          prompt: prompt,
+          outputText: String(content),
+        });
+      }
       /* finish_reason 一并回：应用宿主据此把「正文被输出上限截断」与「模型没给 JSON」分开 */
       return {
         ok: true,
@@ -9083,6 +9424,19 @@ async function appsAiCallStream(spec, emit) {
   try {
     const { text, reasoning, finishReason } = await streamTextChat(req, emit);
     const truncated = finishReason === "length";
+    /* 输入补全走流式时的用量：SSE 通常不吐 usage 帧（streamTextChat 只回 text / reasoning /
+       finishReason），按字符估算入账并标 est:true（见 fimUsageTrack 的文件头）。
+       下面 catch 里那条非流式回退不用在这里记 —— 它整份 spec 递给 apiCall，那边记真值。 */
+    if (spec.purpose === "fim") {
+      fimUsageTrack({
+        provider: spec.provider,
+        model: spec.model || (req.body && req.body.model) || "",
+        usage: null,
+        chatMessages: spec.chatMessages,
+        prompt: spec.prompt,
+        outputText: text,
+      });
+    }
     emit("done", { text, reasoning, finishReason, truncated: truncated });
     return { ok: true, text, reasoning, finishReason, truncated };
   } catch (err) {
@@ -9888,11 +10242,15 @@ ipcMain.handle("dsh:interruptSubagent", (event, params) =>
 
 ipcMain.handle("dsh:providerCatalog", () => dsh().providerCatalog());
 
-ipcMain.handle("skill:list", () => dsh().skillList());
+ipcMain.handle("skill:list", () => dsh().skillList({ account: currentAccount() }));
 
 ipcMain.handle("skill:get", (event, name) => dsh().skillGet(name));
-ipcMain.handle("mtnodeAgentSkill:index", () => dsh().mtnodeAgentSkillIndex());
-ipcMain.handle("mtnodeAgentSkill:get", (event, name) => dsh().mtnodeAgentSkillGet(name));
+/* 内置技能索引：把登录账号一并交给内核 —— 它和「可写源码根」一起决定 dev-only
+   （仓库内部开发纪律）技能进不进模型索引，见 mtnode-agent-skills-lib.js 的 devSkillMode。 */
+ipcMain.handle("mtnodeAgentSkill:index", () => dsh().mtnodeAgentSkillIndex({ account: currentAccount() }));
+ipcMain.handle("mtnodeAgentSkill:get", (event, name) =>
+  dsh().mtnodeAgentSkillGet(name, { account: currentAccount() }),
+);
 
 ipcMain.handle("skill:add", (event, skill) => dsh().skillAdd(skill));
 
@@ -9908,13 +10266,20 @@ ipcMain.handle("skill:remove", (event, name) => dsh().skillRemove(name));
    · 账号取自 authStore.state().user.username，和状态栏那套身份同源。 */
 const agentPromptsLib = require("./agent-prompts-lib.js");
 
-function builtinCapsOpts() {
-  let account = "";
+/* 当前登录账号（与状态栏 / 内置能力同一份 authStore，不新起来源）。
+   两处在用：作者态的「覆盖到源码」判据，以及内置技能索引的开发态判据
+   （内核对账号名，仓库里只认 agent-prompts-lib 的 AUTHOR_ACCOUNT 一处）。 */
+function currentAccount() {
   try {
     const st = authStore.state();
     const u = (st && st.user) || null;
-    account = String((u && (u.username || u.nickname)) || "");
-  } catch {}
+    return String((u && (u.username || u.nickname)) || "");
+  } catch {
+    return "";
+  }
+}
+
+function builtinCapsOpts() {
   return {
     appRoot: app.getAppPath(),
     /* 打包态的 app.getAppPath() 在 app.asar 里（不可写），exe 上三级才是仓库根；
@@ -9922,7 +10287,7 @@ function builtinCapsOpts() {
     execPath: process.execPath,
     dataDir: DATA(),
     packaged: !!app.isPackaged,
-    account,
+    account: currentAccount(),
   };
 }
 
@@ -10352,6 +10717,13 @@ app.whenReady().then(() => {
   try {
     syncBriefModel(readJson(path.join(DATA(), "config.json"), {}));
   } catch {}
+  /* 输入补全的费用台账同一时机读回（userData/fim-usage.json，见 fimUsageTrack 的文件头）：
+     放到第一批 IPC 之前读掉，面板一打开就是上次的账，不必等第一次补全。 */
+  try {
+    fimUsageState();
+  } catch (e) {
+    errLog("[fim-usage] 启动读回失败：" + String((e && e.message) || e));
+  }
   dsh().ensureStarted().catch(() => {});
   /* MCP 服务端随应用启动（幂等；失败只记日志，不阻塞应用）——
      第三方客户端接进来时才有服务端可连，stdio 桥也是靠这个端口发现主进程的。 */

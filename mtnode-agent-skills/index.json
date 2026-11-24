@@ -1,6 +1,6 @@
 {
-  "format": "mtnode-agent-skills-index-v1",
-  "updatedAt": "2026-11-18T17:49:31.977Z",
+  "format": "mtnode-agent-skills-index-v2",
+  "updatedAt": "2026-11-23T23:30:46.557Z",
   "libraryRoot": "mtnode-agent-skills",
   "usage": "MTNode 内置 Agent 技能库。默认只注入本索引；任务匹配时再读取完整 SKILL.md（skill 工具或 read）。",
   "categories": [
@@ -23,7 +23,8 @@
           "title": "MTNode 应用开发",
           "description": "开发 MTNode「应用」（应用中心 / 插件 kind=window）：静态页契约、两套宿主桥、能力位、数据落盘与常见坑。",
           "path": "app/app-dev/SKILL.md",
-          "version": ""
+          "version": "",
+          "devOnly": true
         },
         {
           "id": "app-merge",
@@ -670,7 +671,8 @@
           "title": "开发节点架构师",
           "description": "在画布上用开发节点（super + dev）搭建 / 分析项目架构（模式 A 扫描 / 模式 B 新建，含细化与总量护栏）；只在用户要求建架构时用。",
           "path": "mtnode/dev-architect/SKILL.md",
-          "version": ""
+          "version": "",
+          "devOnly": true
         },
         {
           "id": "grill-me",
@@ -694,7 +696,8 @@
           "title": "MTNode MCP 服务端（第三方接进来操作）",
           "description": "从 MTNode 外面经 MCP 操作本机 MTNode：17 个工具、先读图拿 contentHash、权限与审计。",
           "path": "mtnode/mcp-server/SKILL.md",
-          "version": ""
+          "version": "",
+          "devOnly": true
         },
         {
           "id": "media-gen-nodes",
@@ -726,7 +729,8 @@
           "title": "真机自验（改 MTNode 时怎么验）",
           "description": "改 MTNode 自身功能时起独立数据目录的开发态实例、用 MCP 驱动真实窗口截图自验。Use when developing MTNode itself (plugin / app window / renderer UI) and you must prove it really works. 做不到就如实写「未验证 + 原因」。",
           "path": "mtnode/verify-in-app/SKILL.md",
-          "version": ""
+          "version": "",
+          "devOnly": true
         },
         {
           "id": "workflow-design",
@@ -790,7 +794,8 @@
           "title": "MTNode 插件开发规范",
           "description": "MTNode 应用插件（catalog 窗口 / builtin / 本地后端）的开发规范：三层结构、接线点、打包与交付清单。",
           "path": "plugins/plugin-dev/SKILL.md",
-          "version": ""
+          "version": "",
+          "devOnly": true
         }
       ]
     },

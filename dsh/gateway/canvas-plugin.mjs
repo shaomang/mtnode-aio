@@ -155,7 +155,15 @@ const GET_DESC =
   'scopeInfo is always returned（这次读的是整图还是某一颗壳内部）; every result carries a sizeHint with its cost.\n\n' +
   'When the run is locked to its own canvas（会话所属画布）, workflows lists ONLY that canvas. 建图 / 连线 / 排版的完整硬规则（task 端点、super 边界端子、tool/function 参数即端子、@引用三条件、save 与 wait_file、批次与文生图）只写在技能 mtnode-canvas-edit-rules（按需加载），此处不重复。'
 
-const APP_DESC = `Control the MTNode desktop app beyond node graph edits (workflow status, rename, select nodes, undo/redo, delete with confirmation, DSH plugin install).
+/* mtnode_app 的描述只写「参数怎么给 + 哪些动作只能按用户明确要求做」。
+   本轮（隔离审计 #10/#11/#15）刻意**不**把插件装卸 / 删画布写成一对普通能力：
+   · 它们是不可逆动作（删画布进回收站、装插件要重启引擎，且来源可以是任意本地路径 / .tgz）；
+   · 「UI 会弹确认」这句在两种现场并不成立 —— 审批档为「全部允许」(all) 时
+     canvasOpNeedsConfirm 第一句就放行，MCP 连接下 S._mcpAuthorized 也直接放行；
+   所以描述里改成明确的调用纪律（只按用户点名做、不许拿它当「准备运行时」的手段、
+   不许自作主张给本地路径），并如实写出「调用成功 ≠ 用户同意」。工具本身不增删动作，
+   动作门仍走既有的确认链（renderer/app-nodes.js 的 canvasOpNeedsConfirm）。 */
+const APP_DESC = `Control the MTNode desktop app beyond node graph edits (workflow status, rename, select nodes, undo/redo, long-running-task graphs, canvas PNG, DSH plugin listing).
 
 Available actions:
 - status / list_workflows: inspect app + workflow catalog. When the run is locked to its own canvas（会话所属画布：agent_task nodes, agent session, assistant "current" scope）, the catalog contains ONLY that canvas — other workflows are omitted.
@@ -166,13 +174,11 @@ Available actions:
 - select_nodes: select nodes by id/title (optional; empty clears selection). Selection highlight only — it acts on the canvas on screen, so it is rejected when this run's own canvas is in the background.
 - undo / redo: undo or redo the last canvas edit — same foreground-only rule (the undo stack belongs to the canvas you see).
 - export_canvas_png: take a high-resolution PNG "photo" of the whole canvas this run belongs to — every node, wire and mark, tiled and stitched exactly like the app's footer camera button (生成高清总览图). Read-only: nothing on the canvas changes. Like select_nodes it acts on the canvas on screen, so it is rejected when this run's own canvas is in the background (switch to it first); the host briefly reveals the canvas and restores the view afterwards, so the user sees a short pan. Pass path to choose an absolute .png destination; omit it and the PNG is written into that canvas's asset folder. The receipt returns the file path — hand it to mtnode_vision when you actually need to READ the picture (OCR / layout / verifying what was built), or give it to the user as a deliverable.
-- list_dsh_plugins: list DSH agent plugins (id, package name, enabled/disabled, core/user). Does not restart the engine.
+- list_dsh_plugins: list DSH agent plugins (id, package, enabled/disabled, core/user). Read-only; no restart.
 
-Needs user confirmation (UI will prompt; may be rejected):
-- delete_workflow: permanently delete a workflow and its local assets (other canvases rejected when locked)
-- install_dsh_plugin: install a DSH plugin (npm package name, GitHub URL, local path, or .tgz). Pass pkg. Engine restarts after install. Packages are stored under the app config data directory (survive app updates).
-- remove_dsh_plugin: remove a user-installed DSH plugin. Pass pkg (package name). Bundled suites can only be unmounted via set_dsh_plugin.
-- set_dsh_plugin: mount or unmount a non-core plugin. Pass pkg and enabled (boolean); optional id when multiple rows share a name.
+Irreversible / admin actions — only when the user's own request names the action and its target; never as a diagnostic or to "prepare the runtime":
+- delete_workflow: permanently delete a workflow + its local assets (a locked run: own canvas only).
+- install_dsh_plugin / remove_dsh_plugin / set_dsh_plugin: change the DSH plugin set (pkg = an installed name, or an npm name / GitHub URL the user gave verbatim — never a path / .tgz they did not hand you; set_dsh_plugin also needs enabled). Install restarts the engine; packages live under the app config data dir, so they survive app updates. The host may confirm, refuse, or (全部允许 / MCP) apply them silently — treat them as needing the user's explicit words.
 
 For creating/editing/wiring/removing NODES or canvas drawings (marks) on the canvas this run belongs to（会话所属画布，不是用户此刻看到的这张）, use mtnode_canvas_edit instead (confirmed when called from the global assistant or the agent-session view; rejection stops the agent session).`
 
@@ -781,7 +787,7 @@ export function apply(ctx) {
       pkg: {
         type: 'string',
         description:
-          'For install_dsh_plugin / remove_dsh_plugin / set_dsh_plugin: npm package, GitHub URL, local path, .tgz, or installed package name.',
+          'For install_dsh_plugin / remove_dsh_plugin / set_dsh_plugin: an installed package name, or a name / URL / path / .tgz the user gave verbatim.',
       },
       path: {
         type: 'string',

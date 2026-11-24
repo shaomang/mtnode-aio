@@ -25,8 +25,9 @@ MTNode 里的「应用」＝一份**静态** HTML / JS / CSS，由宿主用独�
 `close.js`（关窗收尾注册）、`app.js`（业务示范：便签 + 文字/图像提问）。
 
 **按 `capabilities` 决定复制哪些文件**：目标应用 `app.json` 的 `capabilities.textInput` 为真才复制 `speech.js` /
-`speech.css`。**新建应用默认四位全开**（`textInput` / `showDictate` / `showAuthor` / `imageGen` 缺省 true，见 `renderer/app-app-flow.js` 的 `appsCreateApp`），
+`speech.css`。**新建应用默认全开**（`textInput` / `showDictate` / `showAuthor` / `imageGen` / `showComplete` 缺省 true，见 `renderer/app-app-flow.js` 的 `appsCreateApp`），
 所以新建出来的应用**带**这两个文件；只有用户在中栏「预览」条的 ⚙「应用设置」里把 `textInput` 关掉时才不带。
+`showComplete`（输入补全）**不涉及文件复制** —— 宿主注入的是 `renderer/app-fim.js` 自己，入口页一个字都不用加。
 **能力位改动只写 `app.json` 的声明，绝不重写入口页**（`apps-store.js` 的 `appCapabilitiesSet`）——
 `index.html` 一个字都不动，手改过的页面内容原样保留；听写条与作者标签都只由宿主按声明注入。
 `capabilities.showDictate` 决定**应用窗口底部那条宿主注入的听写条**显不显示：这一位为真，宿主才注入
@@ -69,10 +70,21 @@ user = 这一句 + 极短上下文（约 400 字符）；失败 / 超时 / 没�
 `Shift/Ctrl/Alt + Tab` 仍归页面自己。注入前宿主把配置写成页面世界的纯值 `window.__mtnodeFimSettings`
 （`{ on, auto, manual, delayMs, maxTokens, model }`，读的是用户配置里的 `fim` 段，只读不写）；
 请求走 `appHost.textGenStream`（`temperature:0`、`thinking:"off"`、`messages` 用 `<prefix>…</prefix><suffix>…</suffix>`），
-**服务商与 Key 仍只在主进程**，应用拿不到。新建应用默认开；存量应用在「应用设置」里勾。
+**服务商与 Key 仍只在主进程**，应用拿不到。
+**缺省是开**：`apps-capabilities.js` 给 `showComplete` 标了 `defaultOn: true`，所以**存量应用（含云端包）不写这一位也照样有补全** ——
+「应用里每个输入框都能补全」是**基础功能**，不是逐个应用去声明的东西。**想关只有显式 `false`**（写进 `app.json`，
+或在「应用设置」里取消勾选），单只输入框（密码 / 金额这类敏感字段）用 `data-fim="off"`。
 两套宿主的闸门同一条：独立窗口 `preload-app.js` 的 `maybeInjectAppUi`（注入 `<script src>`），
-内嵌预览 `apps-store.js` 的 `iframeAppUiSource`（内联同一份源码 + `appUiFimPrelude`）。
+内嵌预览 `apps-store.js` 的 `iframeAppUiSource`（内联同一份源码 + `appUiFimPrelude`）；
+两处读的都是**归一后**的值（`normCapabilities` / `effectiveCapabilities`），别在闸门里另写一份缺省。
 应用侧**不用写一行代码**；想自己接管就用属性 `data-fim="off"` 标记那些不该补全的输入框（敏感字段，如密码 / 金额）。
+**形态（写界面时按这个预期排布局）**：多行建议 = **光标行下方的实色不透明卡片**（`rgb(10,16,22)` + `Tab 采纳 · Esc 丢弃`，
+ghost 一个字都不进正文流、压不到下面的正文）；单行建议 = 光标后的**内联半透明** ghost；
+**正文由别的层画的控件**（`color` / `-webkit-text-fill-color` 透明，如 mt-tex 的 `#codeHl`）连单行也走卡片 ——
+所以**应用不要自己再画一套补全 UI**（会与宿主那份叠成两套字）。细节在 `renderer/app-fim.js` 的 overlay 段头注释。
+**要如实告诉用户费用口径**：这一位是「每个输入框边打边补全」= 会真的发模型请求（有 400ms 防抖、单飞、按
+`prefix+suffix+model` 命中缓存、没配服务商时静默不出），要省钱就分级关：单框 `data-fim="off"` → 应用设置里取消勾选 →
+主窗「输入补全」面板 / `Ctrl+Tab` 总开关。
 新建应用的**默认欢迎页**在 `templates/app-default/index.html`（`apps-store.js` 的 `defaultPageHtml()` 读它），与脚手架同一套设计语言与同一段上手文案。
 
 **默认随应用生成 AGENTS.md（不必问用户）**：复制脚手架时，把 `templates/app-agents/AGENTS.md` 一并复制成**该应用根目录的 `AGENTS.md`**
@@ -523,6 +535,8 @@ else use(j.data);                              // 已经解析好的对象
 | 以为 `cancelNode` 只停自己发起的那一次 | 它等同画布「终止」：用户手点 ▶ 的那次也会被停 | 这是用户共识（一个节点上一次只该有一个人在跑）；按钮文案写「终止」时讲清楚 |
 | 用 `canvas.runNode` 跑 `save` 节点却没有工作目录 | 回 `no_workspace`（宿主**不弹窗**，应用窗口里没人能替你选目录） | 先 `canvas.info()` 看 `workspace`，没有就让用户在主窗口顶栏选，或 `canvas.pick()` 换一张 |
 | 把 AI 增强当成「必过的一步」（失败就丢字） | 模型限流 / 超时 / 没配服务商时用户的话被吞掉 | 增强只做润色、**失败一律回落原始识别**（宿主听写条就是这么做的，见第二节 `textGenStream` 那行）；自己接线时也照这个口径 |
+| 应用自己给输入框加 Tab 处理，或自己画一套补全 UI | 与宿主的 Tab 仲裁打架（补全开着时裸 Tab 由宿主吃到底，第二下才是采纳），两套提示还会叠成「同一行两份字」 | 补全归宿主 `renderer/app-fim.js`（`showComplete` 缺省开）；那个框要自己用 Tab 就 `data-fim="off"`（此时裸 Tab 全归页面） |
+| 以为「不声明 `showComplete` 就没有补全」，于是逐个应用去补 `true` | 缺省本来就是开（`apps-capabilities.js` 的 `defaultOn: true`），补 `true` 是空转；真正会悄悄丢补全的是**显式 `false`** | 缺省只在一处定；要关就显式写 `false`（或「应用设置」里取消勾选），单框标 `data-fim="off"`；回归 `test/smoke-fim.js` 的 [12] 段 |
 
 ---
 
@@ -537,6 +551,11 @@ else use(j.data);                              // 已经解析好的对象
 - [ ] **正确关闭**：写盘 + 退订挂进 `AppClose.on(cb)`（宿主 `apps:willClose` 等它跑完，上限 1.5s）
 - [ ] **内容落盘**：数据只走 `store.js` / `dataWrite`（默认数据根 `apps-data/<id>/data.json`），不用 localStorage、不写应用目录
 - [ ] **数据文件夹**：窗口里能显示当前落点、能让用户改（`dataDirGet` / `dataDirPick` / `dataDirOpen`），换目录不搬数据
+- [ ] **输入补全（`showComplete`）不用写代码就已经有**：新建应用缺省开、存量应用缺省也开（`defaultOn: true`），
+      宿主把 `renderer/app-fim.js` 注进去，每个 `input` / `textarea` 自动带「自动 / Tab 手动」两种补全；
+      检查的是相反方向 —— ① **不要自己画补全 UI**、不要在输入框里抢裸 Tab（`Shift/Ctrl/Alt + Tab` 才让给页面）；
+      ② 敏感框（密码 / 金额）标了 `data-fim="off"`；③ 需要关整个应用时在「应用设置」取消勾选（写进 `app.json` 的 `false`），
+      不要靠删代码或改写入口页；④ 与用户交代过它会发模型请求（费用口径）
 - [ ] **模型能力**（需要模型时）：界面上有选模型的位置（`#modelBtn` + `app-model.js`）；模型只从 `hostModels()` 清单里挑；
       带图走 `AppHost.text(prompt, { images })`（本机路径或 dataURL）；错误码（`no_provider` / `no_vision` / `offline` /
       `bad_image` / `too_large` / `cancelled`…）都有可操作的界面提示，**没有任何降级路径**
@@ -554,4 +573,6 @@ else use(j.data);                              // 已经解析好的对象
 - [ ] **真机自验**（按技能 `mtnode-verify-in-app` 做，必做）：另起一只独立数据目录的开发态实例，用
       `tools/mtnode-gui.mjs` 真点一遍上面的手工验证（安装 / 更新 → 打开窗口 → 改内容 → 关掉再开 → 改数据文件夹 →
       拔掉 appHost），关键状态截图读像素确认并留证据；做不到就写明「未验证 + 原因」
-- [ ] 一行回归：`node test/run-all.mjs apps`（`test/smoke-apps.js` 的 [8] 段钉着数据根 / 指针 / 白名单 / 关窗握手）
+- [ ] 一行回归：`node test/run-all.mjs apps`（数据根 / 指针 / 白名单 / 关窗握手由 `smoke-apps-roots.js`、
+      `smoke-apps-dual-root.js`、`smoke-apps-root-change.js`、`smoke-apps-data-coalesce.js` 钉着；
+      能力位缺省与 FIM 注入口径由 `node test/smoke-fim.js` 的 [12] 段钉着）。注意仓库里**没有** `test/smoke-apps.js` 这一只

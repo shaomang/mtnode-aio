@@ -212,6 +212,41 @@
     }
   };
 
+  /* ── 实况区高度（本次需求）────────────────────────────────────────────────
+     用户口径：实况画面的大小要能自己调 —— 上下拖动实况区与活动区之间的横向分界线
+     （#baVResize），上面的浏览器画面变大 / 变小，下面的活动列表吃剩下的高度。
+     高度写 CSS 变量 --ba-live-h（css/browser.css 的 .ba-live-stage 用它）并落
+     localStorage，与右栏显隐 / 宽度 / 跟随同一口径。
+     只在活动区展开（没有 .ba-list-off）时有意义：收起态实况本来就铺满右栏。 */
+  const BA_LIVE_H_DEFAULT = 240;
+  const BA_LIVE_H_MIN = 140;   /* 与 .ba-live-stage 的 min-height 对齐 */
+  const BA_LIVE_H_ROOM = 220;  /* 面板里其它部件（头部 / 状态 / 筛选 / 列表最小高 / 底栏）占的高度 */
+
+  BA.liveHeight = function () {
+    let h = BA_LIVE_H_DEFAULT;
+    try {
+      const raw = Number(localStorage.getItem("mtnode.baLiveH"));
+      if (Number.isFinite(raw) && raw > 0) h = raw;
+    } catch (_) {}
+    return h;
+  };
+
+  BA.applyLiveHeight = function (h, persist) {
+    const box = $("#baPanel");
+    let px = Math.max(BA_LIVE_H_MIN, Math.round(Number(h) || BA_LIVE_H_DEFAULT));
+    /* 上限 = 面板高度减掉其它部件的余量（活动列表永远留得下）；面板还没显示
+       （clientHeight 0，启动时 hidden）时不做上限，免得把记忆值压到最小值。 */
+    if (box && box.clientHeight > BA_LIVE_H_ROOM + BA_LIVE_H_MIN) {
+      px = Math.min(px, box.clientHeight - BA_LIVE_H_ROOM);
+    }
+    BA.liveH = px;
+    if (box) box.style.setProperty("--ba-live-h", px + "px");
+    if (persist !== false) {
+      try { localStorage.setItem("mtnode.baLiveH", String(px)); } catch (_) {}
+    }
+    return px;
+  };
+
   /* ── 会话绑定：这条栏属于哪条会话 ─────────────────────────────────────────
      用户口径：活动与浏览器跟随当前会话 —— 切会话即切活动范围，当前会话没有浏览器
      就整条收起。会话 id 一律取渲染层那条（app-assist.js 的显示会话）：
@@ -1506,6 +1541,45 @@
     });
   }
 
+  /* 实况区 ↔ 活动区之间的横向分界线（本次需求）：上下拖动 = 调整上面浏览器画面的高度；
+     拖动中只改样式，松手才落盘（与上面 bindResize 同口径）。 */
+  function bindLiveResize() {
+    const handle = $("#baVResize");
+    if (!handle || handle._bound) return;
+    handle._bound = true;
+    let dragging = false;
+    let startY = 0;
+    let startH = 0;
+    const onMove = (ev) => {
+      if (!dragging) return;
+      BA.applyLiveHeight(startH + ((Number(ev.clientY) || 0) - startY), false);
+    };
+    const finish = () => {
+      if (!dragging) return;
+      dragging = false;
+      handle.classList.remove("dragging");
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", finish);
+      window.removeEventListener("pointercancel", finish);
+      BA.applyLiveHeight(BA.liveH, true);
+    };
+    handle.addEventListener("pointerdown", (ev) => {
+      if (ev.button !== 0) return;
+      ev.preventDefault();
+      dragging = true;
+      startY = Number(ev.clientY) || 0;
+      startH = BA.liveH || BA.liveHeight();
+      handle.classList.add("dragging");
+      document.body.style.cursor = "row-resize";
+      document.body.style.userSelect = "none";
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", finish);
+      window.addEventListener("pointercancel", finish);
+    });
+  }
+
   /* 记住的显隐只在「会话视图」里恢复：画布 / 团队视图下这条栏一律不显示
      （与 app-assist.js 的助手栏同口径），切回会话视图再按当前会话重算（见 setSession）。
      ⚠ 只认「display 真变了」这一次：下面那个 MutationObserver 盯的是 #agentPane 的
@@ -1551,12 +1625,13 @@
     let followOn = true;
     try { followOn = localStorage.getItem("mtnode.baFollow") !== "0"; } catch (_) {}
     BA.setFollow(followOn, false);
-    /* 「只看浏览器」开关（本次需求）：按记忆恢复（默认显示活动），点击即收起 / 展开
-       下方活动区并同步停止 / 恢复追踪（见 setListOn；persist=false = 恢复记忆不算用户动作）。 */
+    /* 「只看浏览器」开关（本次需求）：**默认收起**（默认不显示活动跟踪）—— 没记过记忆时
+       活动区整块不显示、也不追踪；点一下展开列表并恢复追踪（见 setListOn；
+       persist=false = 恢复记忆不算用户动作）。 */
     const listOnBtn = $("#baListOn");
     if (listOnBtn) listOnBtn.onclick = () => BA.toggleList();
-    let listOnMem = true;
-    try { listOnMem = localStorage.getItem("mtnode.baListOn") !== "0"; } catch (_) {}
+    let listOnMem = false;
+    try { listOnMem = localStorage.getItem("mtnode.baListOn") === "1"; } catch (_) {}
     BA.setListOn(listOnMem, false);
     const baList = $("#baList");
     if (baList) {
@@ -1568,6 +1643,9 @@
     /* 实况区：「收回」小键 · 暂停观察 · 画布上的指针 / 滚轮 / 键盘转发 */
     try { bindLive(); } catch (_) {}
     bindResize();
+    /* 实况区高度：按记忆恢复 + 接上横向分界线的拖拽（本次需求） */
+    BA.applyLiveHeight(BA.liveHeight(), false);
+    bindLiveResize();
     /* 视图切换（app-assist.js setView 改的是 #agentPane 的 display）时同步：
        进会话视图按记忆恢复右边栏，离开会话视图收起它。 */
     try {

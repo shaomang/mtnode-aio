@@ -2726,6 +2726,8 @@ function paintExtTabs(host) {
   if (!tabs) return;
   tabs.innerHTML = "";
   for (const k of EXT_KINDS) {
+    /* 「调试」页签只给本机开发账号（或已在开启态）—— 见 devPanelAllowed() */
+    if (k.key === "dev" && !devPanelAllowed()) continue;
     const b = document.createElement("button");
     b.type = "button";
     b.className = "dsh-ext-tab" + (EXT_UI.kind === k.key ? " on" : "");
@@ -3675,6 +3677,9 @@ function renderExtGrid(host, kind) {
 
 function paintExtManager() {
   if (!EXT_UI.open) return;
+  /* 「调试」这一档没有权限的人（见 devPanelAllowed）落回默认页签：
+     否则登录态在这一轮里变过（换号 / 退出）时会停在一页已经不存在的面板上。 */
+  if (EXT_UI.kind === "dev" && !devPanelAllowed()) EXT_UI.kind = "dsh";
   const host = ensureExtManagerDlg();
   paintExtTabs(host);
   paintExtToolbar(host);
@@ -3966,7 +3971,36 @@ function devDebugOn() {
   return !!(typeof S !== "undefined" && S.config && S.config.dsh && S.config.dsh.devTools);
 }
 
+/* ── 开发调试面板的可见门（隔离审计 #3：这一页是维护者功能，不该摆在普通用户的扩展管理里）──
+   mtnode_dev 让 Agent 自己起一只隔离的 MTNode、用 CDP 驱动它、改完代码 reload / restart 再复验，
+   这是给「改 MTNode 自己」用的；普通用户既用不上也看不懂，只多出一段内部实现说明（还能顺手
+   把调试能力打开）。判据与 renderer/app-self-rebuild.js 的 ownerOk、app-take-ui.js 同一口径：
+   登录用户名精确等于 ms2308（未登录 / 换号即隐藏）。
+   兜底一条：这一档**已经开着**时照样显示 —— 老版本上被打开过、或维护者手改了 config.json 的
+   dsh.devTools，如果不显示，那谁也关不掉它。两条都不成立 = 整个「调试」页签不渲染。 */
+const DEV_PANEL_OWNER = "ms2308";
+
+function devPanelOwnerOk() {
+  try {
+    const A = window.MTNodeAuth;
+    if (!A) return false;
+    const snap = typeof A.state === "function" ? A.state() : A.state;
+    const u = snap && snap.user;
+    if (!u) return false;
+    return String(u.username || "").trim().toLowerCase() === DEV_PANEL_OWNER;
+  } catch (_) {
+    return false;
+  }
+}
+
+function devPanelAllowed() {
+  return devPanelOwnerOk() || devDebugOn();
+}
+
 function paintDevDebugPanel(info) {
+  /* 兜底：页签已按 devPanelAllowed() 过滤、EXT_UI.kind 也在 paintExtManager 里归位，
+     这里再挡一次 —— 走到这儿就什么都不画（连说明也不给，避免把内部能力讲给普通用户）。 */
+  if (!devPanelAllowed()) return;
   const on = devDebugOn();
   extInfoHead(
     info,

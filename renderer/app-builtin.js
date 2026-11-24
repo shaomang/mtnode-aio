@@ -82,12 +82,8 @@
     sec.appendChild(title);
 
     const row = el("div", "dsh-plugin-manage-row");
-    const hint = el("div", "dsh-plugin-empty");
-    hint.textContent = T(
-      "统一管理注入给模型的固定提示词与内置 SKILL.md：可改、可恢复默认、可与默认比差异；作者账号（ms2308）在能找到源码树时可「覆盖到源码」—— 覆盖后这一条就变成默认。",
-    );
+    row.style.justifyContent = "flex-end";
     const manage = btn(T("管理…"), "primary", open);
-    row.appendChild(hint);
     row.appendChild(manage);
     sec.appendChild(row);
     return sec;

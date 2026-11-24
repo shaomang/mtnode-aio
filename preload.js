@@ -175,6 +175,40 @@ contextBridge.exposeInMainWorld('api', {
 
   configLoad: () => ipcRenderer.invoke('config:load'),
   configSave: (c) => ipcRenderer.invoke('config:save', c),
+  /* 输入补全总开关的跨窗广播（主进程 → 所有窗口，见 main.js 的 broadcastFimOn）：
+     应用窗口里按 Ctrl+Tab / 在应用那边改了开关时，主窗这颗 #btnFim 的勾选态与呼吸灯
+     要跟着变 —— 主窗只在"自己"按 Ctrl+Tab 时才知道，所以由主进程统一广播。 */
+  onFimChanged: (cb) => {
+    if (typeof cb !== 'function') return () => {};
+    const fn = (ev, d) => {
+      try {
+        cb(d || {});
+      } catch {}
+    };
+    ipcRenderer.on('fim:changed', fn);
+    return () => ipcRenderer.removeListener('fim:changed', fn);
+  },
+  /* 主窗自己的总开关写口（应用窗口走 preload-app 的 __mtnodeFimSetEnabled 那条） */
+  fimSetEnabled: (on) => ipcRenderer.invoke('fim:setEnabled', on !== false),
+  /* 输入补全的费用报告（真源在主进程，见 main.js 的 fimUsageTrack 文件头）：
+       fimReport()  → { ok, rows:[{route, model, calls, inTokens, outTokens,
+                      cacheReadTokens, cacheWriteTokens, lastAt, est}], totals, savedAt }
+       fimClear()   → 清空台账并立刻落盘
+       onFimUsage() → 有新账时主进程节流（≤1s）推 fim:usage:changed，面板开着就重读。
+     账在主进程记，是因为应用窗口（mt-tex 等）里的补全在它自己的页面世界发请求，
+     主窗拿不到那份账 —— 主进程是两条路唯一的汇合点。 */
+  fimReport: () => ipcRenderer.invoke('fim:report'),
+  fimClear: () => ipcRenderer.invoke('fim:clear'),
+  onFimUsage: (cb) => {
+    if (typeof cb !== 'function') return () => {};
+    const fn = (ev, d) => {
+      try {
+        cb(d || {});
+      } catch {}
+    };
+    ipcRenderer.on('fim:usage:changed', fn);
+    return () => ipcRenderer.removeListener('fim:usage:changed', fn);
+  },
 
   /* 会话转写（agentSessions）从 config.json 拆到 agent-sessions/ 之后的读写口：
      sessionLoad = 索引（左栏字段，绝不含正文）；sessionSave = 只写脏会话 + 刷索引；

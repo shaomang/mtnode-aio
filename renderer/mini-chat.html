@@ -110,6 +110,11 @@
     <!-- 输入框自适应高度 + 上边框拖动（共享模块，出口 window.MTGrowInput）：必须在
          app-mini-chat.js 之前，它在绑输入框那一处会调 MTGrowInput.attach(#mcInput)。 -->
     <script src="app-grow-input.js"></script>
+    <!-- 输入补全（本次修复）：这只小窗以前没引它，所以「快捷会话里补全不生效」。
+         与主窗 index.html 同一份内核 + 内联 ghost 覆盖层；本窗没有 apiCall，请求经
+         window.MTFimDelegate 转给主窗那份内核（见 app-mini-chat.js 的 wireFim）。
+         必须在 app-mini-chat.js 之前 —— 它先挂好覆盖层与键位仲裁，页面再挂委托。 -->
+    <script src="app-fim.js"></script>
     <script src="app-mini-chat.js"></script>
   </body>
 </html>

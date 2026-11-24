@@ -32,6 +32,15 @@ contextBridge.exposeInMainWorld("miniChat", {
   draft: () => ipcRenderer.invoke("minichat:draft"),
   setDraft: (payload) => ipcRenderer.invoke("minichat:setDraft", payload || {}),
   hotkey: () => ipcRenderer.invoke("minichat:hotkey"),
+  /* ── 输入补全（本次修复）──────────────────────────────────────────────
+     小窗里没有 api.apiCall / appHost，补全的模型请求借主窗那份内核走：
+       fimCfg   读主窗面板里那份补全设置（on / auto / manual / delayMs / maxTokens）
+       fim      要一次补全，回 { ok, data:{ text } }（服务商与 Key 全在主窗那一侧）
+       fimAbort 掐掉正在跑的那一次（光标动了 / 用户继续输入）
+     渲染层把这三条包成 window.MTFimDelegate，renderer/app-fim.js 认这个钩子。 */
+  fimCfg: () => ipcRenderer.invoke("minichat:fimCfg"),
+  fim: (payload) => ipcRenderer.invoke("minichat:fim", payload || {}),
+  fimAbort: () => ipcRenderer.invoke("minichat:fimAbort"),
   /* 正文里的链接：只有 http(s)/mailto 能被主进程放行（见 mini-chat-window.js 的同名 handler） */
   openExternal: (url) => ipcRenderer.invoke("minichat:openExternal", String(url || "")),
   /* ── 截图（本轮需求）────────────────────────────────────────────────────

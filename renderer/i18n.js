@@ -4259,6 +4259,91 @@
     "列出后台任务": "List jobs",
     "读取后台任务": "Read job output",
     "终止后台任务": "Kill job",
+    "调试应用窗口": "Debug app window",
+    "反查会话": "Recall session",
+    /* 工具卡片标题 · **运行时才生成的名字**（任务 3/8 · renderer/app-assist.js 的
+       DSH_TOOL_TITLE_RULES 尾巴那三条；取名规则与来源见 docs/tool-names.md）：
+       · 重后端注册中心 = br_admin，注册中心自己的管理入口（app-tools.js backendAdminDescriptor
+         key 固定 br:__admin__，恒存在，不属于任何登记项）；
+       · 本机后端工具 = br_<id>，注册中心里已登记的本机重后端（主进程 backend-registry-store.js
+         的 toolNameOf：br_ 前缀 = backend registry，id 里的非 ASCII 压成 _，故名字不可逆推）；
+       · 用户工具节点 = mtnode_tool_<base>_<hash>，画布工具节点与工具库 always 条目
+         （app-tools.js agentToolAsciiName：人写的工具名转 ASCII 截 24 字符 + djb2 后 5 位）。
+       原始 ASCII 工具名不进界面标题（只留在 hover 与 dataset.toolName 上供排查）。 */
+    "重后端注册中心": "Backend registry",
+    "本机后端工具": "Local backend tool",
+    "用户工具节点": "User tool node",
+    /* ── 重后端注册中心 · 面板界面（本次需求 · renderer/app-backend-registry.js）──────
+       面板标题「重后端注册中心」与工具名两键（重后端注册中心 / 本机后端工具）见上，这里补
+       面板自身的状态标签、详情字段、表单与提示语：这批键此前只在代码里被 I18n.t 引用、
+       EN 抽屉里没有译文，EN 界面整块回中文。
+       边界：**只翻界面文案**。登记项里的 name / desc / 命令 / 路径 / 时间 / 端口都是用户登记
+       的数据（或主进程回显），原样显示，不翻译 —— 别把 it.name 之类的值也塞进 I18n.t。
+       状态标签的取值见 BR_STATE_TXT / brStateLabel()（切语言后跟着变）。 */
+    "启动中": "Starting",
+    "异常": "Error",
+    "接管": "Adopted",
+    "免启动": "No launch needed",
+    "＋ 登记工具": "+ Register tool",
+    "手动登记一个本机工具（也可以让 Agent 自己登记）":
+      "Register a local tool by hand (an agent can register one too)",
+    "登记一个本机工具": "Register a local tool",
+    "保存登记": "Save registration",
+    "已登记：": "Registered: ",
+    "注册中心安装": "Installed by the registry",
+    "接管本机已有": "Adopted an existing local service",
+    "详情 / 调用 / 日志": "Details / call / log",
+    "编辑：": "Edit: ",
+    "卸载：": "Uninstall: ",
+    "确认卸载": "Uninstall",
+    "停服务 + 删登记；磁盘文件要勾选才删":
+      "Stops the service and removes the registration; files on disk are deleted only when you tick the box",
+    "默认只做两件事：停掉服务、删掉这条登记。磁盘文件不动 —— 有些工具装在共享目录里，删了会连累别的东西。":
+      "Only two things happen by default: the service is stopped and this registration is removed. Files on disk stay put — some tools live in shared folders, and deleting them would break other things.",
+    "同时删除磁盘目录：": "Also delete the disk folder: ",
+    "这条登记没有记录安装目录，磁盘文件不会被删":
+      "This registration has no install folder recorded, so nothing on disk will be deleted",
+    /* 注册中心详情浮层那一格叫「后端安装目录」——**不能**用裸词条「安装目录」：
+       那是插件详情浮层摘掉目录行时一并删掉的键（test/smoke-plugin-root.js 钉着它
+       不许再以键的形态出现，否则会被后来者当成活词条复用；注释里也不写那个键）。 */
+    "后端安装目录": "Backend install folder",
+    "登记": "Registered",
+    "调用方式": "Call",
+    /* 详情浮层 / 表单字段标签（「状态」「来源」「互斥」「端口」「更新」「启动」「命令」
+       「描述」等键表内已有，复用，不再重复登记以免覆盖旧译文） */
+    "形态": "Form",
+    "HTTP 常驻服务": "HTTP service (long-running)",
+    "一次性命令行": "One-shot CLI",
+    "none（不参与互斥）": "none (no mutual exclusion)",
+    "id（字母/数字/. _ -）": "id (letters/digits/. _ -)",
+    "WhisperX 词级对齐": "WhisperX word alignment",
+    "安装 / 工作目录": "Install / working folder",
+    "端口范围": "Port range",
+    "健康检查路径": "Health-check path",
+    "调用路径": "Call path",
+    "baseUrl（接管已在跑的服务时填）": "baseUrl (fill in when adopting an already-running service)",
+    "命令（一行一段；http 可用 {port} {dir}，cli 可用 {参数名}）":
+      "Command (one segment per line; HTTP may use {port} {dir}, CLI may use {argname})",
+    "工具描述（Agent 靠它判断什么时候用这个工具）":
+      "Tool description (the agent uses it to decide when to call this tool)",
+    "选择…": "Choose…",
+    "参数表（JSON 数组：名称 / 类型 / 是否必填 / 说明）":
+      "Parameter table (JSON array: name / kind / required / description)",
+    "参数表不是合法 JSON：": "Parameter table is not valid JSON: ",
+    "参数（JSON 对象，键与参数名一致）": "Arguments (JSON object; keys must match the parameter names)",
+    "调用参数（JSON 对象；http 会以 JSON body 发出）":
+      "Call arguments (JSON object; HTTP sends it as the JSON body)",
+    "调用参数 JSON（按登记的参数表填）": "Call arguments JSON (fill in per the registered parameter table)",
+    "调用一次": "Call once",
+    "调用中…": "Calling…",
+    "参数不是合法 JSON：": "Arguments are not valid JSON: ",
+    "看日志": "View log",
+    "（没有日志）": "(no log)",
+    "看留痕": "View audit trail",
+    "（没有留痕）": "(no audit trail)",
+    "已停止：": "Stopped: ",
+    "还没有登记任何工具。Agent 在任务里需要什么就装什么，装完会登记到这里（全程留痕）；你也可以点右上角「＋ 登记工具」手动加入一个。这一栏为 0 是正常的 —— 它只放 Agent 现场登记的额外后端。":
+      "No tools registered yet. An agent installs whatever a task needs and registers it here (fully audited); you can also click “+ Register tool” at the top right to add one by hand. Zero here is normal — this block only holds the extra backends an agent registered on the spot.",
     /* 工具卡片：准备态 / 停停止 / diff 统计 / diff 折叠（「失败」「编辑」「已完成」
        「工具调用」「标准」等键表内已有，直接复用，不再重登记一份以免覆盖旧译文） */
     "正在准备内容 {n} KB": "Preparing content {n} KB",
@@ -4464,6 +4549,7 @@
     "收起浏览器活动栏": "Collapse the browser-activity panel",
     "拖动边框中部调整活动栏宽度": "Drag the middle of the border to resize the activity panel",
     "拖动分界线调整活动栏宽度（整条边界都可拖）": "Drag the divider to resize the activity panel (the whole border is draggable)",
+    "拖动调整浏览器画面高度（上下拖动；活动列表占剩下的高度）": "Drag to resize the browser view (up/down; the activity list takes the rest)",
     "筛活动…": "Filter activity…",
     "含其它会话": "Include other chats",
     "清空": "Clear",
@@ -8637,20 +8723,20 @@
        原型探索 / 紧急热修 / 提案后补丁走最快路径。 */
     "快速热修": "Quick hotfix",
     /* 会话「模式」菜单里的那一枚（st.hotfix，与会话的 grill 互斥）+ 会话侧【快速热修模式】契约 */
-    "开启 = 这条会话走最快路径：只在需求确有歧义时问一句，不加载拷问技能、不写文档、不写不跑 smoke test，只做必须的验证；与「先拷问需求」互斥":
-      "On = this session takes the fastest path: ask one question only when the requirement is genuinely ambiguous, load no interrogation skill, write no docs, write and run no smoke tests, and verify only what is necessary; mutually exclusive with “ask me first”",
+    "开启 = 这条会话用最少的步骤修完：定位最小（不摸底全仓）、改动最小（只改必需）、验证最小（跑一次能证明它的检查），不加载拷问技能、不写文档、不写不跑 smoke test；与「先拷问需求」互斥":
+      "On = this session finishes in the fewest steps: locate minimally (no whole-repo survey), change minimally (only what is required), verify minimally (one run of the check that proves it); loads no interrogation skill, writes no docs, writes and runs no smoke tests; mutually exclusive with “ask me first”",
     "快速热修：开启中，点击关闭（关闭后回到普通节奏）":
       "Quick hotfix: ON — click to turn off (it goes back to the normal pace)",
     "快速热修：点击开启（只在真有歧义时问一句，不写文档、不写不跑 smoke test）":
       "Quick hotfix: click to turn on (ask one question only when genuinely ambiguous; no docs, no smoke tests)",
-    "\n\n【快速热修模式 · 最快修完】这条会话开着「快速热修」：按最快路径把问题修好 —— 只在需求确有歧义时用 ask_user_question 只问卡住的那几点（不加载内置技能 mtnode-grill-me、不走整轮前沿拷问）；不写任何文档（changelog / DESIGN.md / guides / AGENTS.md 以及任何 .md 文件都不改）；不写、不跑 smoke test；只做必须做的验证（能直接说明改动正确的最小检查；拿不准就人工 Review）；收尾只一句话汇报改了什么，不列文件清单。":
-      "\n\n[Quick hotfix mode · fix it fastest] This session has “quick hotfix” switched on: fix the problem by the fastest path — only when the requirement is genuinely ambiguous, use ask_user_question for just the blocked points (do not load the built-in skill mtnode-grill-me, do not run the full-frontier interrogation); write no documentation at all (never touch changelog / DESIGN.md / guides / AGENTS.md or any .md file); write and run no smoke test; do only the verification that is necessary (the minimal check that directly proves the change is right; if unsure, rely on manual review); close with a single sentence about what changed, with no file list.",
-    "开启 = 走最快路径：只在需求确有歧义时问一句，不写文档、不做 smoke test，只做必须做的验证。适合小型 Bug、少于 2 个故事点的功能、原型探索、紧急热修或提案后的补丁。":
-      "On = fastest path: ask only when the requirement is genuinely ambiguous, write no docs, run no smoke test, and verify only what is necessary. Suited to small bug fixes, features under 2 story points, prototype exploration, urgent hotfixes or patches after a proposal.",
+    "\n\n【快速热修模式 · 最快修完】这条会话开着「快速热修」：**用最少的步骤把问题修好** ——\n① 定位最小：按线索直取相关文件 / 搜关键词，不摸底全仓、不逐个模块试读；要读的同一轮并发取全。\n② 改动最小：只改必需的那几处，不顺手重构、不动无关文件、不新增依赖。\n③ 验证最小：只跑能直接证明这次改动的那一条命令或检查（跑一次够，拿不准就人工 Review），不跑全量回归 / 全仓 lint。\n④ 零文书：不写任何文档（changelog / DESIGN.md / guides / AGENTS.md 以及任何 .md 文件都不改）；不写、不跑 smoke test；不补单测。\n⑤ 不走计划：不交计划块、不用 todo_write 登记清单、不等确认，直接动手。\n⑥ 只在真卡在歧义时才用 ask_user_question 问卡住的那一点（不加载内置技能 mtnode-grill-me、不走整轮前沿拷问），其余按最合理默认直接做；收尾一句话汇报改了什么 + 验证到哪一步，不列文件清单。":
+      "\n\n[Quick hotfix mode · fix it fastest] This session has “quick hotfix” switched on: **fix the problem in the fewest steps** —\n① Locate minimally: go straight at the relevant files / grep for the keywords from the clues you were given; do not survey the whole repo, do not read module by module; fire the reads you need in parallel within one round.\n② Change minimally: touch only what is required — no opportunistic refactors, no unrelated files, no new dependencies.\n③ Verify minimally: run only the one command or check that directly proves this change (one run is enough; when unsure, rely on manual review); no full regression run, no repo-wide lint.\n④ Zero paperwork: write no documentation (never touch changelog / DESIGN.md / guides / AGENTS.md or any .md file); write and run no smoke test; add no unit tests.\n⑤ No plan ceremony: no plan block, no todo_write checklist, no waiting for confirmation — just do the work.\n⑥ Only when genuinely blocked by ambiguity, use ask_user_question for just the blocked point (do not load the built-in skill mtnode-grill-me, do not run the full-frontier interrogation); otherwise take the most reasonable default and finish; close with one sentence about what changed + how far you verified, no file list.",
+    "开启 = 用最少的步骤修完：定位最小（不摸底全仓）、改动最小（只改必需）、验证最小（跑一次能证明它的检查），不写文档、不做 smoke test。适合小型 Bug、少于 2 个故事点的功能、原型探索、紧急热修或提案后的补丁。":
+      "On = finish in the fewest steps: locate minimally (no whole-repo survey), change minimally (only what is required), verify minimally (one run of the check that proves it), write no docs, run no smoke test. Suited to small bug fixes, features under 2 story points, prototype exploration, urgent hotfixes or patches after a proposal.",
     /* 开发节点任务书的【快速热修模式】段（app.js devNodeContractText）：硬闸写死在这里，
        不另设技能。 */
-    "【快速热修模式·最快修完】该功能块已开启「快速热修」（小型 Bug 修复 / 少于 2 个故事点的功能 / 原型探索 / 紧急热修 / 提案后的补丁）：按最快路径把问题修好 —— 只在需求确有歧义时用 ask_user_question 只问卡住的那几点（不加载内置技能 mtnode-grill-me、不走整轮前沿拷问）；不写任何文档（changelog / DESIGN.md / guides / AGENTS.md 以及任何 .md 文件都不改）；不写、不跑 smoke test；只做必须做的验证（能直接说明改动正确的最小检查；拿不准就人工 Review）；收尾只一句话汇报改了什么，不列文件清单。":
-      "[Quick hotfix mode · fix it fastest] This module block has “quick hotfix” switched on (small bug fixes / features under 2 story points / prototype exploration / urgent hotfixes / patches after a proposal): fix the problem by the fastest path — only when the requirement is genuinely ambiguous, use ask_user_question for just the blocked points (do not load the built-in skill mtnode-grill-me, do not run the full-frontier interrogation); write no documentation at all (never touch changelog / DESIGN.md / guides / AGENTS.md or any .md file); write and run no smoke test; do only the verification that is necessary (the minimal check that directly proves the change is right; if unsure, rely on manual review); close with a single sentence about what changed, with no file list.",
+    "【快速热修模式·最快修完】该功能块已开启「快速热修」（小型 Bug 修复 / 少于 2 个故事点的功能 / 原型探索 / 紧急热修 / 提案后的补丁）：**用最少的步骤把问题修好** —— ① 定位最小（按线索直取相关文件 / 搜关键词，不摸底全仓、不逐个模块试读，要读的同一轮并发取全）；② 改动最小（只改必需的那几处，不顺手重构、不动无关文件、不新增依赖）；③ 验证最小（只跑能直接证明这次改动的那一条命令或检查，不跑全量回归 / 全仓 lint）；④ 零文书（不写任何文档，changelog / DESIGN.md / guides / AGENTS.md 及任何 .md 都不改；不写、不跑 smoke test；不补单测）；⑤ 不走计划（不交计划块、不用 todo_write 登记清单、不等确认，直接动手）；只在真卡在歧义时才用 ask_user_question 问卡住的那一点（不加载内置技能 mtnode-grill-me、不走整轮前沿拷问），其余按最合理默认直接做；收尾只一句话汇报改了什么 + 验证到哪一步，不列文件清单。":
+      "[Quick hotfix mode · fix it fastest] This module block has “quick hotfix” switched on (small bug fixes / features under 2 story points / prototype exploration / urgent hotfixes / patches after a proposal): **fix the problem in the fewest steps** — ① Locate minimally (go straight at the relevant files / grep from the clues you were given; no whole-repo survey, no module-by-module reading; fire the reads you need in parallel within one round); ② Change minimally (touch only what is required — no opportunistic refactors, no unrelated files, no new dependencies); ③ Verify minimally (run only the one command or check that directly proves this change; no full regression run, no repo-wide lint); ④ Zero paperwork (write no documentation — never touch changelog / DESIGN.md / guides / AGENTS.md or any .md file; write and run no smoke test; add no unit tests); ⑤ No plan ceremony (no plan block, no todo_write checklist, no waiting for confirmation — just do the work); only when genuinely blocked by ambiguity, use ask_user_question for just the blocked point (do not load the built-in skill mtnode-grill-me, do not run the full-frontier interrogation); otherwise take the most reasonable default; close with one sentence about what changed + how far you verified, no file list.",
     /* 快速热修轮：模型仍交了计划块 → 不弹确认窗、直接按清单开跑（app-plan.js planHotfixAutoStart） */
     "（快速热修：本计划无需确认，已直接按清单执行）":
       "(Quick hotfix: no confirmation needed — the checklist was executed directly)",
@@ -15566,16 +15652,21 @@
 
   /* ── 输入补全（节点无关 · renderer/app-fim.js 的降级气泡「Tab 补全」
      ＋ renderer/app-fim-settings.js 的设置面板 ＋ index.html 状态栏那颗 #btnFim）──
-     只补表里还没有的键；「关闭」「服务商」「模型」这些通用词上面早有。 */
+     只补表里还没有的键；「关闭」「服务商」「模型」这些通用词上面早有。
+     本段末尾一节是「费用报告 + 服务商 / 模型 合并下拉」那批新词条（面板重构后新增）。 */
   Object.assign(EN, {
     "输入补全": "Input completion",
     "输入补全（点击开关设置面板）": "Input completion (click to open its settings)",
     "启用输入补全（在输入框里按 Tab 采纳）": "Enable input completion (press Tab to accept)",
+    "启用输入补全（Ctrl + Tab 开 / 关，输入框里按 Tab 采纳）":
+      "Enable input completion (Ctrl+Tab toggles it; press Tab in a field to accept)",
+    "输入补全（点击开关设置面板；Ctrl + Tab 开 / 关）":
+      "Input completion (click to open its settings; Ctrl+Tab turns it on/off)",
     "触发延迟（毫秒）": "Trigger delay (ms)",
     "最大补全长度（token）": "Max completion length (tokens)",
-    "本次统计": "This session",
-    "请求 ": "Requests ",
-    "采纳 ": "Accepted ",
+    /* 「本次统计」/「请求 」/「采纳 」三条已随面板重构下线（那一行整行删除，
+       renderer/app-fim-settings.js 不再有 renderStats），词条一并删掉 —— 现在全仓没有
+       任何地方再取这三个键，留着只会是死字典条。 */
     "输入内容会发往所选服务商":
       "What you type is sent to the provider you pick here",
     "（没有可用的服务商）": "(no provider available)",
@@ -15589,7 +15680,8 @@
     "按 Tab 手动补全（第一下触发，第二下采纳）":
       "Tab to complete on demand (first press asks, second accepts)",
     "（推荐）": " (recommended)",
-    "状态": "Status",
+    /* 「状态」这一条本段不再登记：状态行已随面板重构下线，而「状态」是通用词，
+       上面（第 4848 / 8888 行那几段）早有 "Status"，这里再写一遍只会让本段覆盖别处。 */
     "已关闭": "Off",
     "没有可用的服务商（去「设置 · 模型服务」配置）":
       "No provider available (configure one in Settings · Models)",
@@ -15602,11 +15694,37 @@
     "Tab 采纳": "Tab to accept",
     "补全中": "Completing",
     "无可补全": "Nothing to complete",
+    "再多打几个字再补全": "Type a few more characters first",
+    /* 多行补全卡片右上角那行提示（app-fim.js 的 placeCard） */
+    "Tab 采纳 · Esc 丢弃": "Tab to accept · Esc to dismiss",
     "补全不可用：没有可用的服务商": "Completion unavailable: no provider",
     "补全不可用：当前服务商没有模型": "Completion unavailable: this provider has no model",
     "补全不可用：宿主桥不在": "Completion unavailable: host bridge missing",
     "补全超时": "Completion timed out",
     "补全失败：请求出错": "Completion failed: request error",
+    /* ── 费用报告 + 「服务商 / 模型」合并下拉（2026-11 本轮 · renderer/app-fim-settings.js）──
+       摘要行 / 报告表格 / 报告窗标题与两行口径说明用到的新词条。
+       「费用」（Cost）、「合计」（Total）、「服务商」（Provider）、「模型」（Model）、
+       「出」（Out）、「关闭」（Close）、「按模型」（By model）这些通用词上面早有，
+       这里不重复登记（`t()` 是精确查表，重复写只会互相覆盖）。
+       注意报告窗那两行说明在面板里各是一句：token 估算一句、记账范围一句 ——
+       「应用中心预览形态（iframe）不记账」是后一句分号之后那半句，没有第二个键。 */
+    "服务商 / 模型": "Provider / model",
+    "费用报告": "Cost report",
+    "输入补全 · 费用报告": "Input completion · Cost report",
+    "调用": "Calls",
+    "调用 ": "Calls ",
+    "入": "In",
+    "未命中 ": "Miss ",
+    "缓存写 ": "Cache write ",
+    "清空记录": "Clear records",
+    "还没有补全调用记录": "No completion calls recorded yet",
+    "按 API 价格计费": "Billed at API list price",
+    "价目表为估算": "Prices are estimates",
+    "（token 为估算，上游未回 usage 时按 1 token ≈ 2 字符折算）":
+      "(Tokens are estimated: when upstream returns no usage, 1 token ≈ 2 characters)",
+    "本机所有窗口的补全调用都记在这里（含应用窗口）；应用中心预览形态（iframe）不记账":
+      "Completion calls from every window on this machine are counted here (app windows included); the app-center preview form (iframe) is not counted",
   });
 
   /* ── MT 音频频谱分析（节点 kind = audio_spectrum · renderer/app-audioanalysis.js）──

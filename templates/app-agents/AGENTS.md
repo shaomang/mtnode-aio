@@ -47,6 +47,12 @@ assets/         图标 / 图片 / 字体 / 静态 json
   （缺省 **false** = 宿主根本不注入；条尾有「收起」按钮，只藏本次窗口，不写回 `app.json`；程序化入口
   `apSpeechHide()` / `apSpeechReveal()` / `apSpeechHidden()`）；`imageGen` 只是声明要出图。它是静态声明、
   不是权限闸 —— 桥上的接口始终可调，别拿它去拦代码。
+- **输入补全（`showComplete`）缺省就开**：宿主把 `renderer/app-fim.js`（与主窗口输入框同一份内核）注入
+  应用页，里面**每个 `input` / `textarea` 自动带 AI 补全** —— 边打边补、按 **Tab** 现场要一次（第二下采纳）、
+  `Esc` 丢弃，多行建议画成光标下方的**不透明卡片**（不压正文）。应用**一行代码都不用写**，也不要自己再
+  写一套补全 UI。要改的只有两件：① 敏感框（密码 / 金额等）给它或某个祖先加 **`data-fim="off"`**，那个框
+  不接补全；② 整个应用不要补全就在「应用设置 → 应用能力」取消勾选这一位（缺省开 = 不声明也会开，
+  **存量应用同样如此**，想关必须显式 `false`）。请求走 `appHost.textGenStream`，服务商与 Key 仍只在主进程。
 
 ## 三、能力桥用法（appHost / pluginApi → window.AppHost）
 

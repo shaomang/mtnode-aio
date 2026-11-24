@@ -53,6 +53,40 @@
     }
   }
 
+  /* 补全设置（本次修复）：真源是主窗面板 #fimPop 写的那份 S.config.fim，
+     缺字段就地补缺省 —— 与 renderer/app-fim.js 的 cfg() 同口径（on/auto/manual 全开、
+     去抖 350ms、128 tokens）。小窗拿它决定「要不要去抖要补全、Tab 归不归补全」，
+     但它不改这份配置，也不自己存一份。 */
+  var FIM_DEF = { on: true, auto: true, manual: true, delayMs: 350, maxTokens: 128 };
+  function fimCfgNow() {
+    var out = {
+      on: FIM_DEF.on,
+      auto: FIM_DEF.auto,
+      manual: FIM_DEF.manual,
+      delayMs: FIM_DEF.delayMs,
+      maxTokens: FIM_DEF.maxTokens,
+      route: "",
+      model: "",
+    };
+    var c = null;
+    try {
+      c = (typeof S !== "undefined" && S && S.config && S.config.fim) || null;
+    } catch (_) {
+      c = null;
+    }
+    if (!c || typeof c !== "object") return out;
+    if (typeof c.on === "boolean") out.on = c.on;
+    if (typeof c.auto === "boolean") out.auto = c.auto;
+    if (typeof c.manual === "boolean") out.manual = c.manual;
+    out.route = String(c.route == null ? "" : c.route);
+    out.model = String(c.model == null ? "" : c.model);
+    var d = Math.round(Number(c.delayMs));
+    out.delayMs = Number.isFinite(d) && d >= 0 ? d : FIM_DEF.delayMs;
+    var tk = Math.round(Number(c.maxTokens));
+    out.maxTokens = Number.isFinite(tk) && tk >= 16 ? tk : FIM_DEF.maxTokens;
+    return out;
+  }
+
   function sessionsArr() {
     try {
       return typeof agentSessions === "function" ? agentSessions() || [] : [];
@@ -665,6 +699,52 @@
         if (typeof setView === "function") setView("agent");
         if (typeof renderAgentSession === "function") renderAgentSession();
         if (typeof renderAgentSessionSidebar === "function") renderAgentSessionSidebar();
+      } catch (_) {}
+      return { ok: true };
+    }
+
+    /* ── 输入补全（本次修复）──────────────────────────────────────────────
+       小窗那一侧没有 apiCall，补全请求全在**这里**（主窗渲染层）走一遍既有内核
+       renderer/app-fim.js 的 MTFim.request —— 服务商解析、模型闸、清洗、缓存、
+       三档看门狗一条都不另写。小窗只递上下文，回来只带 text。
+       面板设置（on / auto / manual / delayMs / maxTokens）也由这里读 S.config.fim，
+       小窗按它决定要不要去抖、要不要吃 Tab。 */
+    if (op === "fimCfg") {
+      var cf = fimCfgNow();
+      return {
+        ok: true,
+        data: {
+          on: cf.on,
+          auto: cf.auto,
+          manual: cf.manual,
+          delayMs: cf.delayMs,
+          maxTokens: cf.maxTokens,
+        },
+      };
+    }
+
+    if (op === "fim") {
+      var F = typeof window !== "undefined" ? window.MTFim : null;
+      if (!F || typeof F.request !== "function") return { ok: false, error: "unsupported" };
+      var cf2 = fimCfgNow();
+      if (!cf2.on) return { ok: false, error: "off" };
+      var res = await F.request({
+        route: cf2.route,
+        model: cf2.model,
+        maxTokens: Number(a.maxTokens) >= 16 ? Number(a.maxTokens) : cf2.maxTokens,
+        prefix: String(a.prefix == null ? "" : a.prefix),
+        suffix: String(a.suffix == null ? "" : a.suffix),
+        singleLine: !!a.singleLine,
+        mode: a.mode === "manual" ? "manual" : "auto",
+      });
+      if (!res || !res.ok || !res.text)
+        return { ok: false, error: String((res && res.reason) || "empty") };
+      return { ok: true, data: { text: String(res.text) } };
+    }
+
+    if (op === "fimAbort") {
+      try {
+        if (window.MTFim && typeof window.MTFim.abort === "function") window.MTFim.abort();
       } catch (_) {}
       return { ok: true };
     }

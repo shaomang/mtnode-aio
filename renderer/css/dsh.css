@@ -2447,7 +2447,11 @@ button.mini.btn-sq.tpl-ico {
 .agent-brief-pane {
   flex: 1 1 0px;
   min-height: 0;
-  overflow: auto
+  overflow: auto;
+  /* 宽度口径与「原始」那一片对齐（用户报障：简报铺满整宽）——
+     那边是 .hist-scroll-wrap 的 18px 左右留白 + .agent-list 的 820px 居中定宽，
+     这里同一份留白 + 同一份定宽（见下面 .dsh-brief-round），两片切来切去正文列不跳。 */
+  padding: 0 18px
 }
 
 /* .dsh-view-tabs 自己的 display:flex 会盖掉浏览器默认的 [hidden]，必须自己压回去
@@ -2486,7 +2490,12 @@ button.mini.btn-sq.tpl-ico {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 12px 22px 18px
+  /* 列的宽度口径 = .agent-list（原始那一片）：820px 居中定宽、窄窗铺满
+     （左右留白由 .agent-brief-pane 的 18px 出，与 .hist-scroll-wrap 同一个数） */
+  width: 100%;
+  max-width: 820px;
+  margin: 0 auto;
+  padding: 12px 0 18px
 }
 
 .dsh-brief-round + .dsh-brief-round {

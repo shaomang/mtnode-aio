@@ -292,12 +292,19 @@ const GRILL_CONTRACT =
   "收尾那张确认卡按固定格式写：question 的第一行只放一句话题面（如「以上共识是否无误？」），空行之后才是整份共识总结、用 Markdown 写（小标题 + 要点列表，必要时表格），卡片会把它渲染进「📋 总结」区；选项只留两项：「确认无歧义，开始实施（推荐）」与「还要改，我补充」，措辞随交流语言。";
 /* 快速热修契约正文（本轮需求）：文案与开发节点任务书那张【快速热修模式】同一套硬闸，
    只把「该功能块」换成「这条会话 / 这一轮」—— 会话侧能改文件与画布，所以不禁只读查现状，
-   禁的是「写文档 / 自己加测试 / 铺开干活」。与 GRILL_CONTRACT 互斥，一轮只进其中一段。 */
+   禁的是「写文档 / 自己加测试 / 铺开干活」。与 GRILL_CONTRACT 互斥，一轮只进其中一段。
+   上一版只列了「不写文档 / 不跑 smoke / 只做必须的验证」这类**禁令**，没给节奏 ——
+   模型照样先摸底全仓、每步回头验收、把时间花在调查与汇报上。用户口径：热修要的是
+   **最快且最高效**完成，所以这里把节奏写成 ①定位 ②改动 ③验证 三条，禁令排在后面。 */
 const HOTFIX_CONTRACT =
-  "\n\n【快速热修模式 · 最快修完】这条会话开着「快速热修」：" +
-  "按最快路径把问题修好 —— 只在需求确有歧义时用 ask_user_question 只问卡住的那几点（不加载内置技能 mtnode-grill-me、不走整轮前沿拷问）；" +
-  "不写任何文档（changelog / DESIGN.md / guides / AGENTS.md 以及任何 .md 文件都不改）；不写、不跑 smoke test；" +
-  "只做必须做的验证（能直接说明改动正确的最小检查；拿不准就人工 Review）；收尾只一句话汇报改了什么，不列文件清单。";
+  "\n\n【快速热修模式 · 最快修完】这条会话开着「快速热修」：**用最少的步骤把问题修好** ——\n" +
+  "① 定位最小：按线索直取相关文件 / 搜关键词，不摸底全仓、不逐个模块试读；要读的同一轮并发取全。\n" +
+  "② 改动最小：只改必需的那几处，不顺手重构、不动无关文件、不新增依赖。\n" +
+  "③ 验证最小：只跑能直接证明这次改动的那一条命令或检查（跑一次够，拿不准就人工 Review），不跑全量回归 / 全仓 lint。\n" +
+  "④ 零文书：不写任何文档（changelog / DESIGN.md / guides / AGENTS.md 以及任何 .md 文件都不改）；不写、不跑 smoke test；不补单测。\n" +
+  "⑤ 不走计划：不交计划块、不用 todo_write 登记清单、不等确认，直接动手。\n" +
+  "⑥ 只在真卡在歧义时才用 ask_user_question 问卡住的那一点（不加载内置技能 mtnode-grill-me、不走整轮前沿拷问），其余按最合理默认直接做；" +
+  "收尾一句话汇报改了什么 + 验证到哪一步，不列文件清单。";
 
 function summarizeCanvasEdit(params) {
   params = params || {};
@@ -3311,6 +3318,17 @@ const SELF_CHECK_DISCIPLINE =
   "· 产出与原目标不符或缺证据时：先自己修好 / 补证据并重跑那一步，修不好才带「试过什么、卡在哪、需要什么」来问；硬断言必须给可复核依据（来源 URL / 命令输出摘要 / 文件或截图绝对路径），拿不到就说「未验证」，不用印象补全。\n" +
   "细则（自修口径、证据形态、不空转、长任务建图建议、浏览器留痕）见技能 mtnode-self-check。";
 
+/* 快速热修轮的「自检与硬闸」变体（用户口径：热修只求最快且高效地修完）：
+   上面那段里有两条正好在拖慢热修 —— 「每个阶段 / 大步骤后自检一次 + 交付前全检」
+   逼模型每步回头验收，「todo_write 清单随手收口」与热修的「不登记清单」直接相反。
+   变体只留两条不花时间、只防说错话的硬闸（问用户的入口、硬断言带证据），
+   并把验证口径收紧成「改完跑一次能证明它的检查即可」。 */
+const SELF_CHECK_HOTFIX =
+  "\n\n【自检与硬闸 · 快速热修】\n" +
+  "· 问用户只有两个入口：**与浏览器 / 当前页面有关的**用 browser_help；**其它一切询问**（歧义点、范围选择、补充信息）一律用 ask_user_question —— 网关会拒绝与浏览器无关的 browser_help。\n" +
+  "· 热修只求快：不登记 todo 清单、不做阶段自检与交付前全检；改完跑一次能直接证明这次改动的检查即可。\n" +
+  "· 硬断言必须给可复核依据（命令输出摘要 / 文件或截图绝对路径），拿不到就说「未验证」；改完发现不对先自己修一次，修不好才带「试过什么、卡在哪」来问。";
+
 /* 会话列表：**索引**从主进程 agent-sessions/index.json 载回（app-boot.js 的启动链），
    正文按需读回（懒加载，见下面 agentEnsureSessionBody 那一段）；活动会话由
    config.agentActiveId 指定（随设置文件走，与会话正文无关）。 */
@@ -3385,9 +3403,11 @@ function agentSessions() {
      注意别把它改成「按全局默认 briefOn 播种」：全局档只管**新建**会话（见 briefDefaultOn），
      老会话各记各的 —— 用户口径是「关掉只影响之后的会话，之前开着的保持开启」。 */
   for (const s of S.agentSessions) if (s && typeof s.brief !== "boolean") s.brief = false;
-  /* 「对话」视图子 Tab 的水合（本任务）：只有 "brief" 这一档有意义，其余（缺位 / 老存档 /
-     认不出的值）一律归成空串 = 「原始」，重启回来不会停在半不存在的档上。 */
-  for (const s of S.agentSessions) if (s && s.briefTab !== "brief") s.briefTab = "";
+  /* 「对话」视图子 Tab 的水合（本任务）：只有 "brief" / "raw" 两档有意义，其余（缺位 /
+     老存档 / 认不出的值）一律归成空串 = 「没选过」，打开会话时按简报模式取默认
+     （开着就停在简报 · 用户口径），重启回来不会停在半不存在的档上。 */
+  for (const s of S.agentSessions)
+    if (s && s.briefTab !== "brief" && s.briefTab !== "raw") s.briefTab = "";
   /* 懒加载钩子：眼前这条会话若只有索引（正文还在盘上），就地发起一次读回 ——
      读回来会重画一帧。这是**唯一**的自动加载点，其余读正文的入口显式 ensure
      （轨迹·改动栏 / 全局搜索 / 续跑），所以「什么会被读进内存」是可预期的。
@@ -3478,6 +3498,44 @@ function sessionTitleIsPlaceholder(t) {
 const ROUND_BRIEF_MAX = 24; /* 存档最多留最近 24 轮（键是毫秒时间戳，多的从最旧那头丢） */
 const ROUND_BRIEF_ITEM_CAP = 12; /* 单轮要点条数上限 */
 const ROUND_BRIEF_TEXT_CAP = 400; /* 单条要点正文上限（简报一条本来就只有一两句） */
+/* ── 这一窗里「已经给用户看过的那一版简报」（id → { 该轮存档键 → 简报 }）──────────
+   为什么要有这份内存副本（用户报障：上一轮的简报在下一轮被清空重置）：
+     · 调度器手里永远只有**一版**（state() = 当前那一版，下一轮一开始就被新版顶掉）；
+     · 按轮存档又要等「轮末定稿 + 写盘成功」；
+     · 于是新一轮一开始，上一轮的卡位既不是「最后那一轮」（不再读调度器），存档又可能
+       还没到位（定稿调用超时 / 失败 / 写盘失败 / 用户当时停在「原始」那一片），
+       卡位就退回「原文摘录」—— 用户看过的简报凭空消失。
+   这里按轮留一份：**上过屏的一版不许再被顶掉**（取值优先级见 agentBriefOfRound）。
+   只活在内存里（本窗可见），不落盘、不改存档口径；最多留最近 ROUND_BRIEF_MAX 轮。 */
+S._roundBriefSeen = S._roundBriefSeen instanceof Map ? S._roundBriefSeen : new Map();
+function agentRoundBriefSeenMap(id) {
+  const k = String(id || "");
+  let m = S._roundBriefSeen.get(k);
+  if (!(m instanceof Map)) {
+    m = new Map();
+    S._roundBriefSeen.set(k, m);
+  }
+  return m;
+}
+/* 记一版（key = 该轮末助手消息的时间戳，与存档同一个键）。空键不记：记错了会把别的轮盖掉。 */
+function agentRoundBriefRemember(id, key, b) {
+  const k = String(key || "");
+  if (!id || !k || !b) return;
+  const m = agentRoundBriefSeenMap(id);
+  m.delete(k);
+  m.set(k, b); /* 重新插入 = 记成最新一档，淘汰时先丢最旧的 */
+  while (m.size > ROUND_BRIEF_MAX) {
+    const first = m.keys().next();
+    if (first.done) break;
+    m.delete(first.value);
+  }
+}
+function agentRoundBriefSeenTry(id, key) {
+  const k = String(key || "");
+  if (!id || !k) return null;
+  const m = S._roundBriefSeen.get(String(id));
+  return m instanceof Map ? m.get(k) || null : null;
+}
 S._roundBriefKey = S._roundBriefKey instanceof Map ? S._roundBriefKey : new Map();
 /* id → Set<存档键>：已经写进会话文件的那几轮（同一个键只写一次，见 agentRoundBriefSavedOf） */
 S._roundBriefSaved = S._roundBriefSaved instanceof Map ? S._roundBriefSaved : new Map();
@@ -4571,9 +4629,10 @@ function agentSessionMetaForDisk(s) {
     showThink: typeof s.showThink === "boolean" ? s.showThink : null,
     /* 「简报模式」会话级开关：缺省关（每步额外一次模型调用，消耗计入用量） */
     brief: !!s.brief,
-    /* 上次停在哪个子 Tab（"" = 原始 / "brief" = 简报）：随会话走，重启回来还在那一片
-       （与 brief 同批进索引，主进程 META_KEYS 里有同名的两位） */
-    briefTab: s.briefTab === "brief" ? "brief" : "",
+    /* 上次停在哪个子 Tab（"" = 没选过 / "raw" = 原始 / "brief" = 简报）：随会话走，
+       重启回来还在那一片（与 brief 同批进索引，主进程 META_KEYS 里有同名的两位）。
+       "" 就是「没选过」—— 打开会话时按简报模式取默认（开着就停在简报，见 agentBriefTabOf）。 */
+    briefTab: s.briefTab === "brief" ? "brief" : s.briefTab === "raw" ? "raw" : "",
     trajView: s.trajView === "trace" || s.trajView === "changes" ? s.trajView : "",
     /* 开发绑定会话「不读画布」标记：必须随会话落盘（丢了可见集漂移 → 换 runtime 冷起） */
     noCanvasRead: !!s.noCanvasRead,
@@ -5413,10 +5472,9 @@ function syncAssistChipsCompact() {
   chips.classList.toggle("compact", w > 0 && w < 720);
 }
 
-/* 模型 chip 的摘要：与原生那枚 ⚙ 模型 chip 同口径（纯净 · 预设 · 模型） */
+/* 模型 chip 的摘要：只显示模型名（用户口径：不再拼「纯净 / 预设」这类档位字样，
+   档位进菜单看即可） */
 function assistModelChipLabel() {
-  const st = assistBoundSession();
-  const preset = agentPresetLabel(assistOpt("preset"));
   let name = "";
   try {
     const sel = document.getElementById("assistModelSel");
@@ -5424,8 +5482,7 @@ function assistModelChipLabel() {
     name = opt && opt.textContent ? String(opt.textContent).trim() : "";
   } catch (_) {}
   if (!name) name = String(assistOpt("model") || "");
-  const pure = st && st.pure ? I18n.t("纯净") + " · " : "";
-  return pure + preset + (name ? " · " + name : "");
+  return name;
 }
 
 /* chip 行的状态回显（每次面板重绘都刷一遍）：工作区目录名 / 模型摘要 / 压缩态 / 是否压过 /
@@ -5858,11 +5915,9 @@ function agentCompactMenuValue() {
 function renderAgentComposer() {
   const st = agentSessionState();
   const mv = document.getElementById("agentModelTriggerVal");
-  /* chip 只列「预设 · 模型」：思考强度不再被预设改写（历史上思维精简会自动降为 low），
-     预设是什么档、思考是什么档，进菜单看即可，不必在 chip 上追加「生效档」标注 */
-  if (mv)
-    mv.textContent =
-      (st.pure ? I18n.t("纯净") + " · " : "") + agentPresetLabel(st.preset) + " · " + agentModelName(st);
+  /* chip 只显示模型名（用户口径：纯净 / 预设这些字样不再上 chip）；
+     预设是什么档、思考是什么档，进菜单看即可 */
+  if (mv) mv.textContent = agentModelName(st);
   const mt = document.getElementById("agentModelTrigger");
   if (mt) {
     mt.dataset.i18nTitle = "模型提供商 / 预设 / 模型 / 思考强度 / 上下文压缩 / 简报模型";
@@ -6736,7 +6791,7 @@ function agentModeEntryOf(key) {
       key: "hotfix",
       label: "快速热修",
       hint:
-        "开启 = 这条会话走最快路径：只在需求确有歧义时问一句，不加载拷问技能、不写文档、不写不跑 smoke test，只做必须的验证；与「先拷问需求」互斥",
+        "开启 = 这条会话用最少的步骤修完：定位最小（不摸底全仓）、改动最小（只改必需）、验证最小（跑一次能证明它的检查），不加载拷问技能、不写文档、不写不跑 smoke test；与「先拷问需求」互斥",
       title: on
         ? "快速热修：开启中，点击关闭（关闭后回到普通节奏）"
         : "快速热修：点击开启（只在真有歧义时问一句，不写文档、不写不跑 smoke test）",
@@ -6870,17 +6925,22 @@ function agentModeEntryOf(key) {
          菜单点完不关，连点第二下必须真的翻回去。
          开关与「原始 / 简报」的停留位置**彻底解耦**（本任务 · 用户报障「一开简报模式，
          会话区就从原始跳到简报」）：这一枚只写 st.brief，决定两枚子 Tab 出不出现；
-         停留位置一律归位到「原始」（写空串，**绝不写 "brief"**）——
-         ① 开 = 只是让两枚子 Tab 出现，不替用户把正文切走；
-         ② 关 = 两片都不存在了，上次停在哪儿这件事一并作废，否则下次开启会直接落回简报
-            （这条就是报障的可复现路径：点过简报 → 关 → 再开 = 跳到简报）。
+         停留位置一律归位到「raw」（**绝不写 "brief"**）——
+         ① 开 = 只是让两枚子 Tab 出现，不替用户把正文切走（"raw" 是「用户此刻就在原始」
+            这一档显式值；不写它的话，默认值「开着简报就停在简报」会把正文当场切走 ——
+            正是报障的那一下）；
+         ② 关 = 两片都不存在了，上次停在哪儿这件事一并作废（空串 = 没选过），否则下次
+            开启会直接落回简报（这条就是报障的可复现路径：点过简报 → 关 → 再开 = 跳到简报）。
          值真的翻转时才归位，重复点同一态不动字段、不白落盘。 */
       set(next) {
         const s = agentSessionState() || st;
         const was = s.brief === true;
         s.brief = !!next;
         if (was !== s.brief) {
-          s.briefTab = "";
+          /* 写成字面量 "raw" 而不是 AGENT_BRIEF_TAB_RAW：这一段会被冒烟脚本
+             整段切出去单独跑（test/smoke-brief-sticky.js 的 grabFn），那个沙箱里没有
+             文件级常量。取值与 AGENT_BRIEF_TAB_RAW 同一档（见 agentBriefTabOf）。 */
+          s.briefTab = s.brief ? "raw" : "";
           /* 粘性默认（本轮需求）：这一下开 / 关同时成为**之后新建会话**的默认
              （config.dsh.briefOn）。只改全局档，眼前这条以外的会话一条都不动 ——
              用户口径「关掉只影响之后的会话，之前开着的保持开启」。 */
@@ -7616,6 +7676,21 @@ const DSH_TOOL_TITLE_RULES = [
   /* 本地媒体（dsh/gateway/media-plugin.mjs）：转写走本地 SenseVoice，ffmpeg 做探测 / 抽音轨 / 抽帧 */
   [/^audio_transcribe$/i, "转写语音"],
   [/^ffmpeg$/i, "ffmpeg 处理"],
+  /* ── 运行时才算得出来的名字（宿主下发，代码里没有任何静态工具叫这些名字）────────
+     三类，来源与命名规则见 renderer/app-tools.js 与主进程的 backend-registry-store.js：
+       · mtnode_tool_<base>_<hash>：画布工具节点 + 工具库里 always 条目（app-tools.js:812
+         agentToolAsciiName —— base 是人写的工具名转 ASCII 截 24 字符，hash 是 djb2 后 5 位）；
+       · br_admin：重后端注册中心的管理入口（app-tools.js:964 backendAdminDescriptor，
+         key 固定 br:__admin__，与登记表无关，恒存在）；
+       · br_<id>：注册中心里已登记的本机重后端（主进程 backend-registry-store.js:45
+         toolNameOf(id)：br_ = backend registry，id 里的非 ASCII 被压成 _，故名字不可逆推）。
+     顺序即纪律：br_admin 必须排在 ^br_ 之前（否则管理入口被显示成一条普通后端）；
+     ^mtnode_tool_ 排在下面那批 mtnode_ 具体规则之前（宽前缀不许抢在窄名前，后来者加
+     /^mtnode_/ 时必须往下排）。这几个名字只给「这是什么」，原始 ASCII 名留在 hover 与
+     dataset.toolName 上（见 dshToolDetailsEl 的药丸段），排查时仍读得到。 */
+  [/^br_admin$/i, "重后端注册中心"],
+  [/^mtnode_tool_/i, "用户工具节点"],
+  [/^br_/i, "本机后端工具"],
   /* ── 非 dsh 工具（本次需求）──────────────────────────────────────────────
      上面那些是 dsh 引擎自带的工具族；下面这批不是引擎自带的 —— MTNode 自有工具
      （画布 / 应用 / 识图 / 数据库 / 事实库 / 素材库 / 长任务状态 / 会话自己的浏览器，
@@ -13694,34 +13769,55 @@ function agentBriefSchedRaw(st) {
      ① 轮上带的（msg.brief，随那条消息一起落盘的那一份）；
      ② 按轮存档 st.roundBriefs[该轮末助手消息 at]（T4 落盘的那一份，回填也写进这里）；
      ③ 调度器手里补好的那一份（state().backfill[key]，刚补完、还没写回存档的那几帧）；
-     ④ 还是**最后那一轮** → 调度器手里这一份（正在跑 / 刚跑完，state()）。
+     ④ 还是**最后那一轮** → 调度器手里这一份（正在跑 / 刚跑完，state()）；
+     ⑤ 这一窗里**已经给用户看过**的那一版（_roundBriefSeen 的内存副本）。
+        ④ 排在 ⑤ 前面是有意的：正在跑的那一轮要读调度器手里最新那版；往前的轮读它自己那份。
    都没有 = null → 卡片摆原文摘录 + 补写状态（不再是一行空白的「本轮未生成简报」）。 */
 function agentBriefOfRound(st, r, isLast, sched) {
+  const sid = String((st && st.id) || "");
+  const key = agentBriefRoundKeyOf(r);
   const own =
     agentBriefNormShape(r && r.last && r.last.brief) ||
     agentBriefNormShape(r && r.user && r.user.brief);
-  if (own) return own;
-  const key = agentBriefRoundKeyOf(r);
+  if (own) {
+    agentRoundBriefRemember(sid, key, own);
+    return own;
+  }
   const arch = agentBriefNormShape(
     key && st && st.roundBriefs && typeof st.roundBriefs === "object"
       ? st.roundBriefs[key]
       : null,
   );
-  if (arch) return arch;
+  if (arch) {
+    agentRoundBriefRemember(sid, key, arch);
+    return arch;
+  }
   const x = sched === undefined ? agentBriefSchedRaw(st) : sched;
   const bf = x && x.backfill && key ? x.backfill[key] : null;
   if (bf && bf.hasBrief) {
     const n = agentBriefNormShape({ summary: bf.summary, items: bf.items, stale: bf.stale });
-    if (n) return n;
-  }
-  if (!isLast) return null;
-  try {
-    if (x && x.hasBrief) {
-      const n = agentBriefNormShape({ summary: x.summary, items: x.items, stale: x.stale });
-      if (n) return n;
+    if (n) {
+      agentRoundBriefRemember(sid, key, n);
+      return n;
     }
-  } catch (_) {}
-  return null;
+  }
+  if (isLast) {
+    let last = null;
+    try {
+      if (x && x.hasBrief)
+        last = agentBriefNormShape({ summary: x.summary, items: x.items, stale: x.stale });
+    } catch (_) {
+      last = null;
+    }
+    if (last) {
+      agentRoundBriefRemember(sid, key, last);
+      return last;
+    }
+  }
+  /* ⑤ 之前轮次：这一轮的简报**曾经**上过屏（那时它还是最后那一轮 / 刚定稿），
+     但存档没拿到（定稿失败 / 超时 / 写盘失败 / 当时停在「原始」那一片没画过）。
+     不许因为换了轮就把它清掉 —— 用户报障的就是这一下（上一轮被清空重置）。 */
+  return agentRoundBriefSeenTry(sid, key);
 }
 /* 缺简报的轮现在是哪一档：{ phase, ahead }。
    phase："" 不需要（有简报）/ "idle" 还没补过 / "queued" 排着 / "running" 补写中 / "err" 没补上；
@@ -14619,6 +14715,30 @@ function agentBriefPainterBind() {
           console.error("[brief] 回填存档失败", e);
         } catch (_) {}
       }
+      /* 定稿那一版同时留一份在内存里（按该轮的存档键，见 _roundBriefSeen 的说明）：
+         写盘失败 / 当时停在「原始」那一片没画过 / 下一轮一开始调度器就换成了新版 ——
+         这三种情形下，用户已经看过的那一版都不该消失。
+         只认定稿版：中途版对应的键还没轮到它（S._roundBriefKey 记的是**上一轮末**的答复），
+         照那个键记就会把上一轮的简报盖成这一轮的内容。 */
+      try {
+        if (_state && _state.final === true && _state.hasBrief) {
+          const key = String(
+            (S._roundBriefKey instanceof Map ? S._roundBriefKey.get(String(sid)) : "") || "",
+          );
+          const n = key
+            ? agentBriefNormShape({
+                summary: _state.summary,
+                items: _state.items,
+                stale: _state.stale,
+              })
+            : null;
+          if (n) agentRoundBriefRemember(sid, key, n);
+        }
+      } catch (e) {
+        try {
+          console.error("[brief] 定稿留内存副本失败", e);
+        } catch (_) {}
+      }
       try {
         const st = typeof agentSessionById === "function" ? agentSessionById(sid) : null;
         if (!st || st.id !== agentViewId()) return;
@@ -15026,8 +15146,16 @@ function agentPaintHeld() {
    hidden。
    每条会话各记各的停留位置（st.briefTab，随会话落盘，与 st.brief 同一批）。 */
 const AGENT_BRIEF_TAB_BRIEF = "brief";
+const AGENT_BRIEF_TAB_RAW = "raw";
+/* 开门见哪一片（用户口径 · 本任务）：**简报模式开着就默认停在简报**，不用手点一下。
+   字段三档："" = 没选过（默认跟着简报模式走 = 简报）/ "raw" = 用户亲手点了原始 /
+   "brief" = 用户亲手点了简报 —— 后两档是「用户的选择」，不会被默认值盖掉，
+   所以点过原始之后回来还停在原始。模式关着时两枚子 Tab 都不存在，值不参与判断。 */
 function agentBriefTabOf(st) {
-  return st && st.briefTab === AGENT_BRIEF_TAB_BRIEF ? AGENT_BRIEF_TAB_BRIEF : "";
+  const v = String((st && st.briefTab) || "");
+  if (v === AGENT_BRIEF_TAB_BRIEF) return AGENT_BRIEF_TAB_BRIEF;
+  if (v === AGENT_BRIEF_TAB_RAW) return AGENT_BRIEF_TAB_RAW;
+  return st && st.brief === true ? AGENT_BRIEF_TAB_BRIEF : AGENT_BRIEF_TAB_RAW;
 }
 /* 正文区三件：宿主（.agent-body；开发页 / 助手栏借走会话时是 .apps-dev-conv / .assist-pane）、
    壳（.hist-scroll-wrap，可能还没被套上）、消息列。子 Tab 与简报区都挂在**宿主**上，
@@ -15056,11 +15184,11 @@ function agentBriefTabBtn(kind) {
    两道闸：
      ① 简报模式没开（st.brief 不是 true）→ 这时压根没有子 Tab，任何人调都不许写字段；
      ② 点的就是当前那一片 → 不写盘、不重绘（切一次落一次盘是白花钱）。
-   值只有两档："" = 原始 / "brief" = 简报 —— 别的值一律按「原始」。 */
+   值只有两档："raw" = 原始 / "brief" = 简报 —— 别的值按「没选过」处理（见 agentBriefTabOf）。 */
 function agentBriefTabSet(kind) {
   const st = agentSessionState();
   if (!st || st.brief !== true) return;
-  const next = kind === AGENT_BRIEF_TAB_BRIEF ? AGENT_BRIEF_TAB_BRIEF : "";
+  const next = kind === AGENT_BRIEF_TAB_BRIEF ? AGENT_BRIEF_TAB_BRIEF : AGENT_BRIEF_TAB_RAW;
   if (agentBriefTabOf(st) === next) return;
   st.briefTab = next;
   /* 「只是换了一片看」：立刻落盘，但不盖最后对话时间（与切「轨迹 / 改动」同一口径，
@@ -15084,7 +15212,7 @@ function agentBriefTabsSync() {
     if (pane) pane.hidden = true;
     m.host.classList.remove("agent-brief-sub");
     /* 模式关着 = 两片都不存在，停留位置没有意义（本任务 · 开关与停留位置解耦）：
-       内存里残留的 "brief" 一律按「原始」处理掉 —— 否则它会在下一次开启时把会话区
+       内存里残留的 "brief" 一律归成「没选过」（空串）—— 不然它会在下一次开启时把会话区
        直接带到简报（用户报障的「一开就跳」）。只归内存，不落盘、不标脏：
        真正写回是下一次自然保存的事。 */
     if (st && st.briefTab) st.briefTab = "";
@@ -15095,7 +15223,7 @@ function agentBriefTabsSync() {
     tabs.className = "dsh-view-tabs agent-brief-tabs";
     tabs.id = "agentBriefTabs";
     tabs.setAttribute("role", "tablist");
-    tabs.appendChild(agentBriefTabBtn(""));
+    tabs.appendChild(agentBriefTabBtn(AGENT_BRIEF_TAB_RAW));
     tabs.appendChild(agentBriefTabBtn(AGENT_BRIEF_TAB_BRIEF));
   }
   if (!pane) {
@@ -15112,9 +15240,10 @@ function agentBriefTabsSync() {
   if (pane.parentNode !== m.host || pane.previousSibling !== m.wrap)
     m.host.insertBefore(pane, m.wrap.nextSibling);
   tabs.hidden = false;
-  /* 停留位置 = **这条会话自己的字段**，而且只可能是「用户亲手点出来的那一档」：
-     开关打开只是让两枚子 Tab 出现（不动这个字段，见 agentModeEntryOf("brief")），
-     所以新会话 / 刚开的会话一律停在「原始」。字段缺位 / 认不出的值 = 空串 = 原始。 */
+  /* 停留位置 = **这条会话自己的字段**，只有「用户亲手点出来的那一档」与「没选过」三态：
+     "" = 没选过 → 打开会话时按简报模式取默认（开着就停在简报 · 用户口径）；
+     "raw" / "brief" = 用户亲手点过的那一片，一直跟着这条会话。
+     开关本身只让两枚子 Tab 出现，不写这个字段（见 agentModeEntryOf("brief")）。 */
   const cur = agentBriefTabOf(st);
   for (const b of Array.from(tabs.children)) {
     const isBrief = b.dataset.briefTab === AGENT_BRIEF_TAB_BRIEF;
@@ -19171,9 +19300,14 @@ async function agentSessionSend(text, opts) {
      修不好才告知；关键结论必须带证据；长任务不空转、跨重启的活建议提升为长周期任务图）。
      纯行为纪律，只写这一处（提示词单一真源：参数机制在工具描述、操作规范在技能，
      这里只留「把活做对」的纪律）。
-     纯净轮不再一律不发：本轮原话命中「自检 / 交付 / 长任务」（principle）就照发。 */
+     纯净轮不再一律不发：本轮原话命中「自检 / 交付 / 长任务」（principle）就照发。
+     快速热修轮换变体（见 SELF_CHECK_HOTFIX）：判据与计划层同一个真源 planHotfixRound
+     （会话 st.hotfix / 小窗这一轮 hotfixOverride），不另立第二套判断。 */
   if (!pureMode || (pureSections && pureSections.has("principle")))
-    systemPrompt += PS("session.self_check", SELF_CHECK_DISCIPLINE);
+    systemPrompt +=
+      typeof planHotfixRound === "function" && planHotfixRound(st, opts)
+        ? PS("session.self_check.hotfix", SELF_CHECK_HOTFIX)
+        : PS("session.self_check", SELF_CHECK_DISCIPLINE);
   /* 早期原文反查（本次需求 · 任务 3/6）：上下文会因手动压缩（_fold）、运行时自动压缩
      （compacts 一条 kind:'auto'）、或历史段 20 万字上限（AGENT_HIST_MAX_CHARS）而看不全
      早先内容 —— 但原文一条都没删，都在会话存储里，mtnode_recall 能按轮次 / 关键词 / 索引

@@ -182,6 +182,17 @@ export function apply(ctx) {
       .filter((g) => Array.isArray(g) && g.length)
       .map((g) => g.join(' / '))
 
+    /* ⚠ 边界（动手前先读 · 任务 5/8）：descText 是**模型面向**文字 —— 它整体作为工具的
+       description 交给模型，参数 schema 的 description 同理。所以这一路上的文案（宿主侧
+       app-tools.js 的 name / description / example / limits / 参数说明，以及本文件拼出来的
+       这些固定前缀）一律保持中文：这里不接 I18n、也不按界面语言（zh / en）切换。
+       理由：工具契约不能随界面语言漂移 —— 同一条工具在两种界面下必须是同一份说明，否则
+       模型对同一个工具的判断会变，而画布上的工具图一个字都没改。
+       界面侧的显示名与译文**不在这条链路上**：会话 / 轨迹里的工具药丸标题走
+       renderer/app-assist.js 的 DSH_TOOL_TITLE_RULES（br_admin → 「重后端注册中心」、
+       br_<id> → 「本机后端工具」、mtnode_tool_* → 「用户工具节点」），族与配色走
+       renderer/app-trajectory.js 的 TOOL_FAMILIES，译文在 renderer/i18n.js 的 EN 抽屉。
+       要改「用户看到的名字」去改那三处；改本文件只等于改「模型看到的字」。 */
     const nameHuman = String(tool.name || tool.toolName || '')
     const descText =
       `用户工具节点「${nameHuman}」：${String(tool.description || '').slice(0, MAX_DESC)}` +

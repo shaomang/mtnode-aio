@@ -3,7 +3,26 @@
 const fs = require("fs");
 const path = require("path");
 
-const INDEX_FORMAT = "mtnode-agent-skills-index-v1";
+/* v2：条目多了 devOnly（仓库内部开发纪律技能，只在开发态进索引）。
+   格式变了就必须换版本号 —— readIndexAt 认不出的老 index.json 会整树重建一次，
+   否则盘上那份 v1 索引没有 devOnly 标记，普通用户照样在系统提示里看到开发技能。 */
+const INDEX_FORMAT = "mtnode-agent-skills-index-v2";
+
+/* ── dev-only：给「改 MTNode 自己」用的内部开发纪律技能 ────────────────────────
+   普通用户既用不到、也没法照做（要源码树 / 要 MCP 自服务 / 要往网关树补装依赖），
+   它们每轮在系统提示的技能索引里各占一行纯属噪声，用 agent 工具点开还会读到
+   「改 MTNode 自身功能时怎么验」这类与产品使用无关的指令。
+   名字取 front matter 的 name（不是目录名）。新加这一类技能，把 name 补进这张表。
+   gateway-capability-install 不在内置库里（随包已下线，见 build.json），列在这里是
+   表态：万一哪天又进库，它同样不许出现在普通用户的索引里。 */
+const DEV_ONLY_SKILLS = [
+  "mtnode-app-dev",
+  "mtnode-plugin-dev",
+  "mtnode-verify-in-app",
+  "mtnode-dev-architect",
+  "mtnode-mcp-server",
+  "gateway-capability-install",
+];
 const LIB_DIR = "mtnode-agent-skills";
 const CATEGORY_TITLES = {
   mtnode: "MTNode 产品与画布",
@@ -47,6 +66,60 @@ function bundledRoot(appRoot) {
 
 function dshLibRoot(dshHome) {
   return path.join(dshHome, LIB_DIR);
+}
+
+/* 开发态判据（决定 DEV_ONLY_SKILLS 进不进模型索引 / INDEX.md）。
+   三个信号任一成立即算，顺序＝便宜到贵：
+     ① 显式开关：调用方给 opts.devMode（true / false 都是确定性结论，冒烟靠它钉口径），
+        或环境变量 MTNODE_DEV_DEBUG=1（与 mtnode_dev 调试工具同一个开关，不新造一枚）。
+     ② 作者账号：opts.account 命中 agent-prompts-lib 的 AUTHOR_ACCOUNT
+        （账号字符串不在本文件抄第二份）。
+     ③ 可写源码根：agent-prompts-lib.findSourceRoot 找得到「有 main.js + mtnode-agent-skills/
+        且可写」的仓库根 —— 与「覆盖到源码」、技能源目录（main-dsh 的 skillsSourceRoot）
+        完全同一份口径。打包态 appRoot 在 app.asar 里、用户机上没有源码树，一律 false。
+   判不出真假一律当「非开发态」：宁可不展示，也不把内部开发纪律推给终端用户。 */
+function devSkillMode(opts) {
+  const o = opts || {};
+  if (o.devMode === true || o.devMode === false) return o.devMode;
+  if (String(process.env.MTNODE_DEV_DEBUG || "") === "1") return true;
+  let lib = null;
+  try {
+    lib = require("./agent-prompts-lib.js");
+  } catch {
+    lib = null; /* 老沙箱只抠本文件时缺这个模块也不至于整块炸（同 skillOverridesOf） */
+  }
+  const author = lib ? String(lib.AUTHOR_ACCOUNT || "").trim().toLowerCase() : "";
+  if (author && String(o.account || "").trim().toLowerCase() === author) return true;
+  try {
+    /* 没给 appRoot（冒烟 / 工具直接调渲染函数）时以**本文件所在目录**为准：
+       开发态它就是仓库根（有 main.js + mtnode-agent-skills/ 且可写）；打包态本文件在
+       app.asar 里，candidateRoots 的 isAsarPath 会把它整条排除，结论仍是 false。 */
+    if (
+      lib &&
+      lib.findSourceRoot({
+        appRoot: o.appRoot || __dirname,
+        execPath: o.execPath || process.execPath,
+      })
+    )
+      return true;
+  } catch {}
+  return false;
+}
+
+/* 给模型看的索引视图：非开发态滤掉 devOnly 的技能；整个类目被滤空则连同类目标题一起删
+   （否则会留下一个只有标题、下面空空的分组）。
+   只影响「渲染出来的文本」（compactIndexText → 系统提示；renderIndexMd → INDEX.md），
+   index.json 与 mtnodeAgentSkillIndex().index 仍是全量 —— 内置能力面板要能列全、能改全，
+   用户可见性的判据仍然是 menu: user（skillList 那条线一个字没动）。 */
+function modelVisibleIndex(index, opts) {
+  if (devSkillMode(opts)) return index;
+  const cats = [];
+  for (const cat of (index && index.categories) || []) {
+    const skills = (cat.skills || []).filter((s) => !s || !s.devOnly);
+    if (!skills.length) continue;
+    cats.push(Object.assign({}, cat, { skills }));
+  }
+  return Object.assign({}, index, { categories: cats });
 }
 
 function readJson(p, fb) {
@@ -188,6 +261,8 @@ function buildIndexFromTree(root) {
     /* front matter 写了 menu: user → 这条内置技能同时进用户的技能清单（标「内置」、只读、
        不可卸载 / 覆盖），「/」菜单与助手技能菜单都点得到；缺省 = 只进内置索引给模型看。 */
     if (meta.menu === "user") entry.menu = "user";
+    /* 仓库内部开发纪律技能：标注进索引条目，渲染时按开发态判据决定去留（见 devSkillMode） */
+    if (DEV_ONLY_SKILLS.indexOf(name) >= 0) entry.devOnly = true;
     if (!byCategory.has(category)) {
       byCategory.set(category, {
         id: category,
@@ -213,7 +288,13 @@ function buildIndexFromTree(root) {
   };
 }
 
-function renderIndexMd(index) {
+/* INDEX.md 的渲染。opts 同 compactIndexText：非开发态滤掉 devOnly 那几颗 ——
+   INDEX.md 就躺在 dsh-home/mtnode-agent-skills/ 里，模型按「read 工具：路径
+   $DSH_HOME/mtnode-agent-skills/<path>」是能读到它的，所以它也必须跟着开发态走。
+   仓库里那份（mtnode-agent-skills/INDEX.md）由 tools/build-mtnode-agent-skill-index.js
+   生成，固定传 devMode:true —— 它是文档源，永远列全。 */
+function renderIndexMd(index, opts) {
+  const vis = modelVisibleIndex(index, opts);
   const lines = [
     "# MTNode 内置 Agent 技能索引",
     "",
@@ -224,7 +305,7 @@ function renderIndexMd(index) {
     "2. `read` 工具：路径 `$DSH_HOME/mtnode-agent-skills/<path>`。",
     "",
   ];
-  for (const cat of index.categories || []) {
+  for (const cat of vis.categories || []) {
     lines.push("## " + (cat.title || cat.id));
     lines.push("");
     let lastGroup = "";
@@ -252,10 +333,10 @@ function renderIndexMd(index) {
   return lines.join("\n").trimEnd() + "\n";
 }
 
-function writeIndexArtifacts(root, index) {
+function writeIndexArtifacts(root, index, opts) {
   fs.mkdirSync(root, { recursive: true });
   fs.writeFileSync(path.join(root, "index.json"), JSON.stringify(index, null, 2) + "\n", "utf8");
-  fs.writeFileSync(path.join(root, "INDEX.md"), renderIndexMd(index), "utf8");
+  fs.writeFileSync(path.join(root, "INDEX.md"), renderIndexMd(index, opts), "utf8");
 }
 
 function readIndexAt(root) {
@@ -278,7 +359,9 @@ function skillIndexOneLiner(desc) {
   return one;
 }
 
-function compactIndexText(index, maxChars) {
+/* 系统提示里的紧凑索引。opts（devMode / account / appRoot）见 devSkillMode：
+   非开发态不出现 dev-only（仓库内部开发纪律）技能的条目，也不留下被滤空的类目标题。 */
+function compactIndexText(index, maxChars, opts) {
   const cap = Number(maxChars) > 0 ? Number(maxChars) : 6000;
   const lines = [
     "【MTNode 内置技能索引】仅摘要；匹配任务后再用 skill 工具（name 如下）或 read 读取完整 SKILL.md。",
@@ -287,7 +370,7 @@ function compactIndexText(index, maxChars) {
   /* 只给「名字 + 极短标签（title）」：技能描述本来就随引擎技能目录一起下发，
      这里再抄一遍一句话（每条约 60 字）只是同一份信息在系统提示里的第二份拷贝。
      按名 skill 调用靠 name，触发判断靠 title；完整描述 / 正文仍由 skill 工具给。 */
-  for (const cat of index.categories || []) {
+  for (const cat of modelVisibleIndex(index, opts).categories || []) {
     lines.push("[" + (cat.title || cat.id) + "]");
     for (const sk of cat.skills || []) {
       lines.push("- " + sk.name + " | " + (sk.title || sk.id));
@@ -313,8 +396,11 @@ function compactIndexText(index, maxChars) {
    缺文件 / 缺标记 / 多出一个该回收的内置目录，一律退回整树重建（升级自愈的口径不变）。 */
 const SYNC_STATE_FILE = ".mtnode-skills-sync.json";
 /* 3：多了一步「把覆盖层正文写进同步出来的技能树」（设置 →「内置能力」里改的 SKILL.md）。
+   4：INDEX.md 的内容开始随「开发态」变（非开发态滤掉 dev-only 技能），
+      开发态标志因此也进了指纹（见 syncMtnodeAgentSkills 里的 devMode）——
+      判据翻转时必须整树重建一次，否则盘上那份 INDEX.md 会停在旧口径。
    形态一变就 +1，老标记对不上即整树重建一次。 */
-const SYNC_FORMAT = 3;
+const SYNC_FORMAT = 4;
 
 function srcTreeFingerprint(src) {
   const parts = [];
@@ -427,7 +513,7 @@ function writeSyncState(dist, fingerprint, skills, count) {
   } catch {}
 }
 
-function syncMtnodeAgentSkills(dshHome, appRoot, dataDir) {
+function syncMtnodeAgentSkills(dshHome, appRoot, dataDir, opts) {
   const src = bundledRoot(appRoot);
   const dest = dshLibRoot(dshHome);
   if (!fs.existsSync(src)) return { ok: false, error: "bundled library missing: " + src };
@@ -439,19 +525,25 @@ function syncMtnodeAgentSkills(dshHome, appRoot, dataDir) {
     .sort()
     .map((k) => k + "≈" + shortHash(skillOverrides[k]))
     .join("|");
-  const fingerprint = srcTreeFingerprint(src) + "||ov:" + ovKey;
+  /* 开发态标志也参与指纹：INDEX.md 的正文随它变（非开发态滤掉 dev-only 技能），
+     判据翻转时必须重建一次，不能靠快路径把旧口径的 INDEX.md 一直留着。
+     一次同步只判一次，下面三处渲染都用这个结果（免得同一次同步里探两遍源码根、
+     也免得指纹与正文取自两个不同结论）。 */
+  const devMode = devSkillMode(Object.assign({ appRoot, execPath: process.execPath }, opts || {}));
+  const modeOpts = Object.assign({}, opts, { devMode });
+  const fingerprint = srcTreeFingerprint(src) + "||ov:" + ovKey + "||dev:" + (devMode ? "1" : "0");
   const prev = readJson(path.join(dest, SYNC_STATE_FILE), null);
   if (prev && prev.fingerprint === fingerprint && syncStateUsable(prev, dest, skillsRoot0)) {
     const index = readIndexAt(dest);
     const indexMd = fs.existsSync(path.join(dest, "INDEX.md"))
       ? fs.readFileSync(path.join(dest, "INDEX.md"), "utf8")
-      : renderIndexMd(index);
+      : renderIndexMd(index, modeOpts);
     return {
       ok: true,
       count: flattenIndex(index).length,
       index,
       indexMd,
-      compact: compactIndexText(index),
+      compact: compactIndexText(index, 0, modeOpts),
       libraryPath: dest,
       skipped: true,
     };
@@ -466,7 +558,7 @@ function syncMtnodeAgentSkills(dshHome, appRoot, dataDir) {
      就会把技能装到错名字下，并把原本正确命名的 .mtnode-internal 目录当「已下线」清掉，
      表现就是内置技能凭空消失。以 SKILL.md front matter 的 name 为准才不会丢。 */
   const index = buildIndexFromTree(dest);
-  writeIndexArtifacts(dest, index);
+  writeIndexArtifacts(dest, index, modeOpts);
   const skillsRoot = path.join(dshHome, "skills");
   fs.mkdirSync(skillsRoot, { recursive: true });
   const keepNames = new Set(flattenIndex(index).map((s) => s.name));
@@ -510,7 +602,7 @@ function syncMtnodeAgentSkills(dshHome, appRoot, dataDir) {
   } catch {}
   const indexMd = fs.existsSync(path.join(dest, "INDEX.md"))
     ? fs.readFileSync(path.join(dest, "INDEX.md"), "utf8")
-    : renderIndexMd(index);
+    : renderIndexMd(index, modeOpts);
   /* 落同步标记：下一次 skillList 只要源树没变就走快路径（见文件上方 SYNC_STATE_FILE 段） */
   const flat = flattenIndex(index);
   writeSyncState(
@@ -524,7 +616,7 @@ function syncMtnodeAgentSkills(dshHome, appRoot, dataDir) {
     count: flat.length,
     index,
     indexMd,
-    compact: compactIndexText(index),
+    compact: compactIndexText(index, 0, modeOpts),
     libraryPath: dest,
   };
 }
@@ -579,10 +671,16 @@ function getMtnodeAgentSkill(dshHome, name, dataDir) {
   };
 }
 
-function mtnodeAgentSkillIndex(dshHome, appRoot, dataDir) {
+/* opts（可选）= devSkillMode 的判据：{ devMode?, account?, appRoot?, execPath? }。
+   主进程按登录账号 + 可写源码根传一份进来，让「系统提示里的索引 / INDEX.md」与
+   「开发态」始终是同一个结论。一次调用只判一次，两处渲染共用（见 syncMtnodeAgentSkills）。 */
+function mtnodeAgentSkillIndex(dshHome, appRoot, dataDir, opts) {
+  const modeOpts = Object.assign({}, opts, {
+    devMode: devSkillMode(Object.assign({ appRoot, execPath: process.execPath }, opts || {})),
+  });
   const lib = dshLibRoot(dshHome);
   if (!fs.existsSync(path.join(lib, "index.json"))) {
-    const synced = syncMtnodeAgentSkills(dshHome, appRoot, dataDir);
+    const synced = syncMtnodeAgentSkills(dshHome, appRoot, dataDir, modeOpts);
     if (!synced.ok) return synced;
     return {
       ok: true,
@@ -596,12 +694,12 @@ function mtnodeAgentSkillIndex(dshHome, appRoot, dataDir) {
   const index = readIndexAt(lib);
   const indexMd = fs.existsSync(path.join(lib, "INDEX.md"))
     ? fs.readFileSync(path.join(lib, "INDEX.md"), "utf8")
-    : renderIndexMd(index);
+    : renderIndexMd(index, modeOpts);
   return {
     ok: true,
     index,
     indexMd,
-    compact: compactIndexText(index),
+    compact: compactIndexText(index, 0, modeOpts),
     count: flattenIndex(index).length,
     libraryPath: lib,
   };
@@ -610,9 +708,12 @@ function mtnodeAgentSkillIndex(dshHome, appRoot, dataDir) {
 module.exports = {
   LIB_DIR,
   INDEX_FORMAT,
+  DEV_ONLY_SKILLS,
   CATEGORY_TITLES,
   GROUP_TITLES,
   groupTitle,
+  devSkillMode,
+  modelVisibleIndex,
   normalizeTags,
   bundledRoot,
   dshLibRoot,

@@ -49,6 +49,35 @@
   background: rgba(56, 214, 255, .1);
 }
 
+/* 启用中（S.config.fim.on 为真）：这颗入口常亮一档并缓慢呼吸 ——
+   用户 2026-11 需求「启用时小按钮进行高亮呼吸灯状态」。关掉总开关（再按一次 Ctrl + Tab）
+   即恢复常态；面板开着时上面的 is-open 照旧生效，两条叠在一起也是同一套青色。 */
+@keyframes mtFimBreath {
+  0%, 100% {
+    opacity: .78;
+    box-shadow: 0 0 0 0 rgba(56, 214, 255, 0);
+  }
+  50% {
+    opacity: 1;
+    box-shadow: 0 0 7px 1px rgba(56, 214, 255, .55), inset 0 0 6px rgba(56, 214, 255, .26);
+  }
+}
+
+.statusbar .sb-fim.is-on {
+  color: var(--cyan2, #38d6ff);
+  border-color: color-mix(in srgb, var(--cyan2, #38d6ff) 55%, transparent);
+  background: rgba(56, 214, 255, .1);
+  animation: mtFimBreath 1.9s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .statusbar .sb-fim.is-on {
+    animation: none;
+    opacity: 1;
+    box-shadow: inset 0 0 6px rgba(56, 214, 255, .26);
+  }
+}
+
 /* ── 补全设置面板（从状态栏向上展开的 fixed 浮层）──────────────────────── */
 .fim-pop {
   display: none;
@@ -131,35 +160,7 @@
   accent-color: var(--cyan2, #38d6ff)
 }
 
-/* 状态行：就绪 / 卡在哪一步 / 上次失败原因（本轮新增，与统计同一套框） */
-.fim-status {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  margin: 6px 10px 0;
-  padding: 6px 8px;
-  border: 1px solid var(--bd);
-  border-radius: 3px;
-  font-size: 11px;
-  color: var(--muted);
-}
-
-.fim-status b {
-  margin-left: auto;
-  max-width: 210px;
-  font-weight: 400;
-  text-align: right;
-  color: var(--ink);
-  line-height: 1.45;
-  word-break: break-word;
-}
-
-/* 明确的坏状态（没有服务商 / 没有模型 / 上次失败）：用警示色，别让它看起来像「就绪」 */
-.fim-status b.is-bad {
-  color: var(--warn, #e8b23a);
-}
-
-/* 服务商 / 模型两格外加两个数字格：与 bg-rm-pop 的字段同一口径 */
+/* 服务商 / 模型合并成一格（本次需求）+ 两个数字格：与 bg-rm-pop 的字段同一口径 */
 .fim-field {
   display: flex;
   flex-direction: column;
@@ -205,12 +206,15 @@
   min-width: 0;
 }
 
-/* 本次统计（只读一行） */
-.fim-stats {
+/* ── 费用报告 ───────────────────────────────────────────────────────────
+   面板里那一行摘要（.fim-report = 调用 N · Σ X tok · 费用 + 📊 按钮），
+   以及点开后报告窗里的表（.fim-report-table）与合计行（.fim-report-foot）。
+   配色只取主题变量：暗色 / 工业 / 亮色三套（亮色在 theme-daylight-skin.css）自动跟随。 */
+.fim-report {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 8px;
-  margin: 4px 10px 0;
+  margin: 6px 10px 0;
   padding: 6px 8px;
   border: 1px solid var(--bd);
   border-radius: 3px;
@@ -218,11 +222,115 @@
   color: var(--muted);
 }
 
-.fim-stats b {
-  margin-left: auto;
-  font-weight: 400;
+.fim-report-sum {
+  flex: 1 1 auto;
+  min-width: 0;
   color: var(--ink);
-  letter-spacing: .5px;
+  line-height: 1.45;
+  font-variant-numeric: tabular-nums;
+  word-break: break-word;
+}
+
+.fim-report-btn {
+  flex: none;
+  padding: 3px 7px;
+  font-size: 11px;
+  line-height: 1.2;
+  white-space: nowrap;
+  color: var(--cyan2, #38d6ff);
+  background: rgba(56, 214, 255, .08);
+  border: 1px solid color-mix(in srgb, var(--cyan2, #38d6ff) 40%, transparent);
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.fim-report-btn:hover {
+  background: rgba(56, 214, 255, .16);
+}
+
+.fim-report-btn:focus-visible {
+  outline: 1px solid var(--cyan2, #38d6ff);
+  outline-offset: 1px;
+}
+
+/* 报告窗正文（塞在 #ovBody 里）：整块按主题字色，表格撑满 */
+.fim-report-win {
+  font-size: 12px;
+  color: var(--ink);
+}
+
+.fim-report-empty {
+  margin: 8px 0;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.fim-report-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.fim-report-table th,
+.fim-report-table td {
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--bd);
+  text-align: left;
+  vertical-align: baseline;
+}
+
+.fim-report-table th {
+  color: var(--muted);
+  font-weight: 400;
+  white-space: nowrap;
+  border-bottom: 1px solid var(--bd2);
+}
+
+.fim-report-table .fim-report-model {
+  font-family: var(--mono, ui-monospace, monospace);
+  color: var(--ink);
+}
+
+/* 调用数 / 入 / 出 / 费用：一律右对齐、等宽数字，竖着一列才对得上 */
+.fim-report-table .fim-report-num,
+.fim-report-table .fim-report-cost {
+  text-align: right;
+  white-space: nowrap;
+}
+
+/* 算不出价（非 DeepSeek 又没有价目的第三方）：淡色「—」，不猜价 */
+.fim-report-table .fim-report-cost.is-na {
+  color: var(--muted);
+}
+
+/* 第三方服务商按 API 价折算：星号 + title 说明（与 Token 报告同一口径） */
+.fim-report-table .fim-report-flag {
+  margin-left: 2px;
+  color: var(--warn, #e8b23a);
+}
+
+.fim-report-table tbody tr:hover {
+  background: rgba(56, 214, 255, .05);
+}
+
+/* 合计行：一条重线压住，字色回到正文 */
+.fim-report-table .fim-report-foot td {
+  border-top: 1px solid var(--bd2);
+  border-bottom: 0;
+  color: var(--ink);
+}
+
+.fim-report-table .fim-report-foot .fim-report-label {
+  color: var(--muted);
+}
+
+/* 口径说明：一行淡字（估算折算 / 记账范围），不抢眼但不能省 */
+.fim-report-note {
+  margin: 8px 0 0;
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--muted);
 }
 
 /* 隐私提示：一行淡字，不抢眼但不能省 */

@@ -141,7 +141,10 @@ function mkPagedBlock(items, buildCard, opts) {
 /* ── ② 重后端注册中心 ─────────────────────────────────────────────── */
 
 const BR_KIND_LABEL = { http: "HTTP", cli: "CLI" };
-const BR_STATE_LABEL = {
+/* 状态标签：表里存的是**中文原文键**（I18n 的口径 —— EN 抽屉按这个键取译文，zh 原样回显）。
+   取标签必须走 brStateLabel()，不能把 I18n.t 直接写进这张常量表：常量在脚本加载时就求值，
+   切语言后不会跟着变，界面重绘也救不回来（EN 下会永远停在中文）。 */
+const BR_STATE_TXT = {
   running: "运行中",
   starting: "启动中",
   error: "异常",
@@ -149,6 +152,10 @@ const BR_STATE_LABEL = {
   adopted: "接管",
   stateless: "免启动",
 };
+function brStateLabel(st) {
+  const k = BR_STATE_TXT[st];
+  return k ? I18n.t(k) : String(st || "");
+}
 function brStateCls(st) {
   if (st === "running" || st === "adopted") return "on";
   if (st === "starting" || st === "stateless") return "warn";
@@ -276,24 +283,50 @@ function buildBackendRegistryBlock(opts) {
     p.replaceChildren();
     popHead(p, it.name + " · " + (BR_KIND_LABEL[it.kind] || it.kind));
 
+    /* kv 行：**标签**一律走 I18n.t（键 = 中文原文），标签后面那截值是主进程回显的
+       登记数据（名称 / 描述 / 命令 / 路径 / 时间 / 端口），属用户数据，不翻译。 */
+    const kvRow = (labelKey, value) => brEl("div", null, I18n.t(labelKey) + ": " + value);
     const kv = brEl("div", "br-kv");
     kv.append(
       brEl("div", null, "id: " + it.id + " · tool: " + it.toolName),
-      brEl("div", null, "状态: " + (BR_STATE_LABEL[it.state] || it.state) + (it.port ? " · 端口 " + it.port : "") + (it.pid ? " · pid " + it.pid : "")),
-      brEl("div", null, "来源: " + (it.source === "adopted" ? I18n.t("接管本机已有") : I18n.t("注册中心安装")) + " · 互斥: " + ((it.lock && it.lock.class) || "cpu")),
-      brEl("div", null, "目录: " + ((it.install && it.install.dir) || "—")),
-      brEl("div", null, "登记: " + brTime(it.createdAt) + " · 更新: " + brTime(it.updatedAt)),
+      kvRow(
+        "状态",
+        brStateLabel(it.state) +
+          (it.port ? " · " + I18n.t("端口") + " " + it.port : "") +
+          (it.pid ? " · pid " + it.pid : ""),
+      ),
+      kvRow(
+        "来源",
+        (it.source === "adopted" ? I18n.t("接管本机已有") : I18n.t("注册中心安装")) +
+          " · " +
+          I18n.t("互斥") +
+          ": " +
+          ((it.lock && it.lock.class) || "cpu"),
+      ),
+      /* 键叫「后端安装目录」而不是裸词条「安装目录」：后者是插件详情浮层摘掉目录行时
+         一并删掉的词条（test/smoke-plugin-root.js 钉着它不许再出现），别无脑复用。 */
+      kvRow("后端安装目录", (it.install && it.install.dir) || "—"),
+      kvRow(
+        "登记",
+        brTime(it.createdAt) + " · " + I18n.t("更新") + ": " + brTime(it.updatedAt),
+      ),
     );
     if (it.source === "adopted") kv.append(brEl("div", null, "baseUrl: " + ((it.adopt && it.adopt.baseUrl) || "")));
-    if (it.launch) kv.append(brEl("div", null, "启动: " + (it.launch.cmd || []).join(" ")));
-    if (it.cli) kv.append(brEl("div", null, "命令: " + (it.cli.cmd || []).join(" ")));
-    if (it.kind === "http") kv.append(brEl("div", null, "调用: " + ((it.call && it.call.method) || "POST") + " " + ((it.call && it.call.path) || "/")));
-    kv.append(brEl("div", null, "描述: " + it.desc));
+    if (it.launch) kv.append(kvRow("启动", (it.launch.cmd || []).join(" ")));
+    if (it.cli) kv.append(kvRow("命令", (it.cli.cmd || []).join(" ")));
+    if (it.kind === "http")
+      kv.append(
+        kvRow(
+          "调用方式",
+          ((it.call && it.call.method) || "POST") + " " + ((it.call && it.call.path) || "/"),
+        ),
+      );
+    kv.append(kvRow("描述", it.desc));
     p.append(kv);
     if (it.lastError) p.append(brEl("div", "br-err", it.lastError));
 
     /* 调用测试：参数按 args 表拼 JSON，直接打到主进程 */
-    const argsBox = area("调用参数 JSON（按登记的参数表填）", "{}");
+    const argsBox = area(I18n.t("调用参数 JSON（按登记的参数表填）"), "{}");
     const out = brEl("pre", "br-log", "");
     if (it.kind === "cli") {
       field(p, I18n.t("参数（JSON 对象，键与参数名一致）"), argsBox);
@@ -418,14 +451,36 @@ function buildBackendRegistryBlock(opts) {
     popHead(p, it ? I18n.t("编辑：") + cur.name : I18n.t("登记一个本机工具"));
 
     const row1 = brEl("div", "br-row");
-    const fId = field(row1, "id（字母/数字/. _ -）", input("whisperx", cur.id));
+    const fId = field(row1, I18n.t("id（字母/数字/. _ -）"), input("whisperx", cur.id));
     const fName = field(row1, I18n.t("名称"), input(I18n.t("WhisperX 词级对齐"), cur.name));
     p.append(row1);
 
     const row2 = brEl("div", "br-row");
-    const fKind = field(row2, I18n.t("形态"), select([["http", "HTTP 常驻服务"], ["cli", "一次性命令行"]], cur.kind || "http"));
+    /* 下拉项的 value 是登记表的真实取值（http / cli / cpu / gpu / none），只有显示文字走 i18n */
+    const fKind = field(
+      row2,
+      I18n.t("形态"),
+      select(
+        [
+          ["http", I18n.t("HTTP 常驻服务")],
+          ["cli", I18n.t("一次性命令行")],
+        ],
+        cur.kind || "http",
+      ),
+    );
     const fSource = field(row2, I18n.t("来源"), select([["managed", I18n.t("注册中心安装")], ["adopted", I18n.t("接管本机已有")]], cur.source || "managed"));
-    const fLock = field(row2, "lock.class", select([["cpu", "cpu"], ["gpu", "gpu"], ["none", "none（不参与互斥）"]], (cur.lock && cur.lock.class) || "cpu"));
+    const fLock = field(
+      row2,
+      "lock.class",
+      select(
+        [
+          ["cpu", "cpu"],
+          ["gpu", "gpu"],
+          ["none", I18n.t("none（不参与互斥）")],
+        ],
+        (cur.lock && cur.lock.class) || "cpu",
+      ),
+    );
     p.append(row2);
 
     const fDesc = field(p, I18n.t("工具描述（Agent 靠它判断什么时候用这个工具）"), area("", cur.desc));
@@ -538,7 +593,7 @@ function buildBackendRegistryBlock(opts) {
     name.title = it.desc || "";
     const meta = brEl("div", "br-meta");
     const stSpan = brEl("span", "br-state");
-    stSpan.append(brEl("i", "br-dot " + brStateCls(it.state)), brEl("span", null, BR_STATE_LABEL[it.state] || it.state || ""));
+    stSpan.append(brEl("i", "br-dot " + brStateCls(it.state)), brEl("span", null, brStateLabel(it.state) || it.state || ""));
     meta.append(stSpan, brEl("span", null, BR_KIND_LABEL[it.kind] || it.kind));
     if (it.source === "adopted") meta.append(brEl("span", null, I18n.t("接管")));
     if (it.port) meta.append(brEl("span", null, ":" + it.port));

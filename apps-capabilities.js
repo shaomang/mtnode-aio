@@ -103,10 +103,15 @@ const APP_CAPABILITIES = [
        hostTextStream（服务商与 Key 仍只在主进程，应用拿不到）。
        与听写条同一条纪律：能力位缺省 false（存量应用不动），新建应用默认开；声明即注入，
        关掉这一位当场收回（下次开窗不再注入）。总开关仍在「输入补全」面板里 —— 那里关掉，
-       应用窗口里也一律不发请求。 */
+       应用窗口里也一律不发请求。
+       **2026-11 本轮改缺省为开**（用户需求「该功能应当在应用中（例如 mt-tex）也生效」）：
+       存量应用（含 mt-tex）的 app.json 里没有这一位，旧口径下永远不注入 = 应用里没有补全。
+       现在缺省 true，只有应用**显式**写 false 才不注入 —— 与 windowChrome 同一条读法。 */
+    defaultOn: true,
+    badge: false, /* 缺省就开，与 windowChrome 同理：不进卡片小标 */
     hint: {
-      zh: "应用里的输入框自动带 AI 补全：边打边补、按 Tab 现场要一次（再按一下采纳），补全时在光标后转圈；模型与服务商沿用 MTNode 的配置，应用拿不到 Key。勾上即生效（存量应用默认不勾）",
-      en: "Inputs inside the app get AI completion: complete while typing, press Tab to ask on demand (press again to accept), with a spinner at the caret. Models and keys stay in MTNode. On by default for new apps",
+      zh: "应用里的输入框自动带 AI 补全：边打边补、按 Tab 现场要一次（再按一下采纳），补全时在光标后转圈；模型与服务商沿用 MTNode 的配置，应用拿不到 Key。缺省即开，取消勾选才收回",
+      en: "Inputs inside the app get AI completion: complete while typing, press Tab to ask on demand (press again to accept), with a spinner at the caret. Models and keys stay in MTNode. On by default; uncheck to turn it off",
     },
   },
   {

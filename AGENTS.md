@@ -25,6 +25,15 @@ MTNode AI工作站 — Electron 桌面端 AI 工作流编排器。用户数据�
 - **插件封面图标 = 官方 logo + 透明底**：`plugins/icons/<id>.png`（1:1、≥256×256）必须取产品官方品牌资产 / 官方仓库原件，不自绘、不截图、不用第三方重绘版；优先带 alpha 的 PNG，不贴白底 / 黑底方块（卡片底色随主题变化）。细则见 `mtnode-agent-skills/plugins/plugin-dev/SKILL.md` 第五节。
 - **走安装窗的插件必须登记安装后自检**：宿主里 `registerInstallTarget({...})` 的同一处注册块要再跟一句 `registerPluginSelfcheck({ id: PLUGIN_ID, kind, check })`（内核 `plugins/plugin-selfcheck.js`）—— 它是卡片封面左上角「已装勾」的唯一判据；漏登记 = 装完那次自检根本不会启动 = 那个标识永远触发不了（llama / MOSS-Music / Paseo / 桌宠这四个不产内容的插件就是这么漏掉的，已补）。不产内容的插件用 `kind: "install"`，check 真验安装要件与运行环境（范例 `llama/install-verify.js`）。`test/smoke-install-window.js` 的回归闸逐宿主对账，`test/smoke-plugin-selfcheck-install.js` 真跑这几条。
 - **扩展能力（DSH 插件 / 技能 / MCP）统一在 `app-plugins.js` 的「扩展能力管理」对话框维护**，`app-settings.js` 只留入口。
+- **应用能力位的缺省只在一处定**：`apps-capabilities.js` 的 `APP_CAPABILITIES` —— 标了 `defaultOn: true` 的那几位就是「不声明也开」（目前 `windowChrome` 与 `showComplete`），其余缺省关。新建应用由 `renderer/app-app-flow.js` 的 `appsCreateApp` 写成**显式全开**；存量应用与云端包一律经 `normCapabilities` / `effectiveCapabilities` 归一，所以「应用里每个输入框都带 AI 补全（含多行不透明卡片 / Tab 采纳）」是**缺省行为**：不要再逐个应用去补 `showComplete: true`，想关只能显式写 `false`（单个输入框走 `data-fim="off"`）。两套注入闸门（`preload-app.js` 的 `maybeInjectAppUi`、`apps-store.js` 的 `iframeAppUiSource`）读的是同一份归一结果，改这一位先看 `test/smoke-fim.js` 的 [12] 段。
 - **提示词单一真源**：节点参数机制写在 `dsh/gateway/canvas-plugin.mjs` / `db-plugin.mjs` 的工具描述里，完整硬规则只写在 `mtnode-agent-skills/mtnode/canvas-edit-rules/SKILL.md`；加规则先判归属层，只落一处。
 - **注入提示词必须登记**：凡注入给模型的固定文本（会话 / 助手人设、任务书、子代理派单、构建器身份）一律写成 `PS("<id>", 默认文本)`，并把 id 加进 `agent-prompts/index.json` —— 不登记就进不了「设置 → 内置能力」，用户改不到；`test/smoke-agent-prompts.js` 会逐条对账。没有覆盖时 `PS` 原样返回默认文本，包一层不改行为。
 - **两个「操窗口」的工具分工**：`mtnode_gui`（`mcp-gui-agent.js`）驱动**用户正在用的那只**窗口 —— 主进程 IPC 派发，覆盖面广；`mtnode_dev`（`dev-agent.js` + `dsh/gateway/dev-plugin.mjs`）只驱动**它自己 spawn 的那只隔离实例** —— CDP，能拿控制台 / 未捕获异常 / 网络，且改完代码能 reload 或 restart。前者随时可用，后者受「扩展能力管理 → 调试」总开关（`dsh.devTools`，默认关）与开发态限制；**默认数据目录 `%APPDATA%\pipeline-console` 在代码层硬拒**，谁也不许拿它去调试。自验流程见技能 `mtnode-verify-in-app`。
+## 输入补全（FIM）的层叠与摆放
+- **真源只有一份**：`renderer/app-fim.js`（core 段 = 上下文 / 清洗 / 缓存 / 路由；overlay 段 = `document` 上的事件委托 + 摆放 + Tab/Esc 仲裁）与 `renderer/css/fim.css`。摆放口径写在 **overlay 段头注释**里，改之前先读它，别在别的文件另写一套。三种宿主（主窗口输入框、开发页 iframe 预览、独立应用窗口）走同一份代码，**不按宿主分叉**。
+- **多行补全 = 光标行下方的实色不透明卡片**（`placeCard()`）：ghost 一个字都不进正文流、不改控件排版，所以压不到下面的正文；底色是**实色 `rgb(10,16,22)`，不许调回半透明** —— 剩 6% 透明度就会把底下那几行字透出来（用户报的「看不清」就是这么回来的）；卡片里的字就是 `st.text` 原样，采纳落字与卡片逐字一致。
+- **单行 ghost = 内联半透明**（镜像层复刻字体 / 行高 / 换行，prefix 与 suffix 透明，只有 ghost 可见）；光标在文末优先内联。
+- **`mask()` 接管渲染只限「单行 ghost + 光标后面还有字」**：藏掉控件自己的字形、head/tail 按真色重画，ghost 的换行才真的把后文推下去。多行不接管（已走卡片），光标在文末也不接管。
+- **自己画不了字的控件**（`color` / `-webkit-text-fill-color` 透明，正文由别的层画 —— mt-tex 的 `#codeHl` 这类）：它接管不了渲染，所以「单行 + 这一行后面还有字」也走卡片。判据 `a < 0.25`；**别把「取不到文字色」当成透明**（假 DOM 会一路走卡片，smoke 会红）。
+- **卡片入场只动 transform、不动 opacity**：`opacity:0` 起手的动画在被判定不可见的窗口里不推进，整块卡片一个像素都不画（真机踩过）。
+- 应用侧一行代码都不用写（`capabilities.showComplete` 缺省开，见「协作约定」的能力位那条）；回归 `node test/smoke-fim.js`，真机自验按技能 `mtnode-verify-in-app`。

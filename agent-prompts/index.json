@@ -65,6 +65,13 @@
       "desc": "分阶段自检、交付前全检、先自修再问人、硬断言带证据这一整段。"
     },
     {
+      "id": "session.self_check.hotfix",
+      "title": "自检与交付纪律 · 快速热修档",
+      "group": "session",
+      "where": "renderer/app-assist.js · SELF_CHECK_HOTFIX（planHotfixRound 为真的轮次）",
+      "desc": "「快速热修」轮替换上一条的变体：去掉阶段自检 / 交付前全检与 todo 收口，只留问用户的入口与硬断言带证据。"
+    },
+    {
       "id": "session.recall_hint",
       "title": "早期原文反查指引",
       "group": "session",

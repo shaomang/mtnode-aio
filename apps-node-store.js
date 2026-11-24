@@ -62,11 +62,24 @@ function safeAppId(v) {
   const s = String(v == null ? "" : v).trim();
   return APP_ID_RE.test(s) ? s : "";
 }
-/* 应用在本机的目录（两套根都找，口径与 apps-store 一致） */
+/* 应用在本机的目录：**开发中那一份优先**（用户口径：应用节点直接用开发中的应用，
+   同一个 id 在库里也有副本时也不换成库那份）—— 先按 dev 根取，取不到再走缺省口径
+   （两套根按 apps-store 的仲裁取，库里的应用照旧能绑上）。 */
 function appDirOfId(id) {
   try {
+    const dev = appsStore.dirOfApp(id, "dev");
+    if (dev && fs.existsSync(dev)) return dev;
     const dir = appsStore.dirOfApp(id);
     return dir && fs.existsSync(dir) ? dir : "";
+  } catch {
+    return "";
+  }
+}
+/* 这个目录落在哪一套根下（dev / down / 空串）：渲染层登记预览租约时带回去，
+   宿主回答「这应用声明了什么」才与画布里真正跑的那一份对得上。 */
+function appKindOfDir(dir) {
+  try {
+    return appsStore.rootKindOfDir(dir) || "";
   } catch {
     return "";
   }
@@ -98,7 +111,8 @@ function titleOf(man, id) {
   }
   return String(id || "");
 }
-/* 本机可绑的应用清单：两套根各扫一遍目录，app.json 缺了也列出（标题回落目录名） */
+/* 本机可绑的应用清单：两套根各扫一遍目录，app.json 缺了也列出（标题回落目录名）。
+   **开发根先扫**：同一个 id 两边各有一份时留下开发中那一份（用户口径：开发中优先于库）。 */
 function listLocalApps() {
   const out = [];
   const seen = Object.create(null);
@@ -108,7 +122,8 @@ function listLocalApps() {
   } catch {
     roots = {};
   }
-  for (const kind of Object.keys(roots)) {
+  const kinds = Object.keys(roots).sort((a, b) => (a === "dev" ? -1 : b === "dev" ? 1 : 0));
+  for (const kind of kinds) {
     const root = String((roots[kind] && roots[kind].path) || "");
     if (!root) continue;
     let ents = [];
@@ -132,12 +147,20 @@ function listLocalApps() {
         entry: entryOf(man, dir),
         dir: dir,
         kind: String(kind || ""),
-        dev: !!(man && man.dev === true),
+        /* 开发中 = 目录躺在开发根，或清单写着 dev:true（与库页「开发中」同一口径） */
+        dev: String(kind || "") === "dev" || !!(man && man.dev === true),
         version: man && typeof man.version === "string" ? man.version : "",
       });
     }
   }
-  out.sort((a, b) => String(a.title).localeCompare(String(b.title), "zh"));
+  /* 开发中的排前面（同一个标题下也一样），其次按标题 */
+  out.sort((a, b) =>
+    a.dev === b.dev
+      ? String(a.title).localeCompare(String(b.title), "zh")
+      : a.dev
+        ? -1
+        : 1,
+  );
   return out;
 }
 /* 该应用的数据目录：<工作目录>/apps-data/<appId>（不存在就建） */
@@ -184,6 +207,8 @@ function registerAppsNodeIpc(opts) {
       ok: true,
       id: id,
       dir: dir,
+      /* dev / down：渲染层据此登记预览租约，宿主读到的清单与画布里跑的那一份一致 */
+      kind: appKindOfDir(dir),
       entry: entryOf(man, dir),
       title: titleOf(man, id),
       version: man && typeof man.version === "string" ? man.version : "",

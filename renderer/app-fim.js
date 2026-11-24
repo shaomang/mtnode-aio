@@ -21,10 +21,15 @@
  *      中转 / 只配了 pro 档的服务商 —— 闸一卡就是「补全毫无反应」。现在的顺序是：
  *      指名的模型 > flash 档（仍是首选，快且便宜）> 该服务商第一个模型；
  *      只有「一整个服务商都没有模型」才回 no-model（面板上会写出来，不再静默）。
- *   7) 请求走两座桥，按在场者自动挑：主窗口是既有 apiCall（provider 由 providerForAgentRoute
+ *   7) 请求走三座桥，按在场者自动挑：主窗口是既有 apiCall（provider 由 providerForAgentRoute
  *      解析，中转票自愈 / opencode 头都在主进程）；应用窗口（renderer/app-fim.js 被
  *      preload-app.js 注入到应用页）没有 apiCall，改走 appHost.textGenStream —— 应用侧
- *      一切模型 / Key 仍只留主进程，本段只传 messages / temperature / maxTokens。
+ *      一切模型 / Key 仍只留主进程，本段只传 messages / temperature / maxTokens；
+ *      快捷会话小窗（renderer/mini-chat.html）两样都没有，用页面自己挂的
+ *      window.MTFimDelegate 把整次补全转给主窗那份内核（见 delegateNow）。
+ *      前两条路都在请求上打 purpose:"fim"（协议常量见 PURPOSE_FIM）：主进程只对带这一位的
+ *      调用记进输入补全的费用台账（main.js 的 fimUsageTrack）。委托那条不用自己打 ——
+ *      它转给的就是主窗这份内核，标由这里补上。
  */
 (function () {
   if (typeof window === "undefined" || window.MTFim) return;
@@ -200,10 +205,34 @@
     }
   }
 
+  /* ③ 委托传输（renderer/mini-chat.html 那只「快捷会话」小窗）：
+     小窗是独立 BrowserWindow，既没有 api.apiCall、也没有 appHost，它只有一条到主窗渲染层的
+     relay 桥（preload-mini-chat.js 的 fim / fimAbort）。于是它自己挂一只
+     window.MTFimDelegate = { request(opts), abort(key) }，把「要一次补全」整个转给主窗那份
+     内核（服务商 / Key / 清洗 / 缓存 / 看门狗全在那边，这边只画 ghost）。
+     判据只认这一个全局钩子，别在别处另立一套。 */
+  function delegateNow() {
+    try {
+      const d = typeof window !== "undefined" ? window.MTFimDelegate : null;
+      return d && typeof d.request === "function" ? d : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /* 本次请求的「用途标记」：主进程的输入补全用量台账只认这一位（main.js 的
+     apiCall 文本分支 + appsAiCallStream 流式分支，两侧都按 purpose === "fim" 记账）。
+     两条桥都要带：主窗走 apiCall 的 spec.purpose，应用窗走 appHost.textGenStream 的
+     opts.purpose（由 apps-store.js 的 hostSpec 原样透传到同一份内核）。
+     同一个值也挂在 MTFim.ledgerHint 上，供自验断言「这条请求确实打了标」。 */
+  const PURPOSE_FIM = "fim";
+
   /* {ok, provider, model} 或 {ok:false, reason:'no-provider'|'no-model', provider, model} */
   function modelGate(route, model) {
     const want = String(model || "").trim();
-    if (appHostNow()) return { ok: true, reason: "", provider: null, model: want };
+    /* 委托给别人的两条路（应用窗口 / 快捷会话小窗）都不做模型闸：
+       服务商与 Key 在对方那一侧解析，这边一卡就是「补全毫无反应」。 */
+    if (appHostNow() || delegateNow()) return { ok: true, reason: "", provider: null, model: want };
     const r = resolveRoute(route);
     let prov = null;
     try {
@@ -241,6 +270,14 @@
   /* 中止一只请求：桥上的名字是 apiAbort（历史命名），这里两种都认，主进程一行不改 */
   function abortRequest(key) {
     if (!key) return;
+    const del = delegateNow();
+    if (del && typeof del.abort === "function") {
+      try {
+        const r = del.abort(key);
+        if (r && typeof r.catch === "function") r.catch(() => {});
+      } catch (_) {}
+      return;
+    }
     const api = bridge();
     if (!api) return;
     const fn = typeof api.abort === "function" ? api.abort : api.apiAbort;
@@ -312,10 +349,12 @@
       return { ok: true, cached: true, model: gate.model, text: cache.get(key) };
     const api = bridge();
     const appHost = appHostNow();
-    /* 两条传输通道，按在场者挑：主窗口 = apiCall（服务商 / Key 全在主进程）；
-       应用窗口 = appHost.textGenStream（同一套主进程解析，只是字段白名单不同）。 */
-    const viaApp = !(api && typeof api.apiCall === "function");
-    if (viaApp && !appHost) return { ok: false, reason: "no-bridge" };
+    const del = delegateNow();
+    /* 三条传输通道，按在场者挑：主窗口 = apiCall（服务商 / Key 全在主进程）；
+       应用窗口 = appHost.textGenStream（同一套主进程解析，只是字段白名单不同）；
+       快捷会话小窗 = window.MTFimDelegate（整个转给主窗那份内核，见 delegateNow 注释）。 */
+    const viaApp = !del && !(api && typeof api.apiCall === "function");
+    if (!del && viaApp && !appHost) return { ok: false, reason: "no-bridge" };
 
     abortCurrent(); /* 单飞：新请求前把旧的掐掉 */
     const abKey = "fim-" + (++seq) + "-" + Date.now().toString(36);
@@ -327,15 +366,36 @@
       timer = setTimeout(() => resolve(TIMEOUT_HIT), waitMs);
     });
     let call = null;
-    if (viaApp) {
+    if (del) {
+      /* 委托方自己带着服务商解析与看门狗，这里只递上下文与额度 */
+      const arg = {
+        prefix: prefix,
+        suffix: suffix,
+        singleLine: singleLine,
+        maxTokens: maxTokens,
+        mode: manual ? "manual" : "auto",
+        abKey: abKey,
+      };
+      try {
+        call = Promise.resolve(del.request(arg)).catch((e) => ({
+          ok: false,
+          error: (e && e.message) || String(e),
+        }));
+      } catch (e) {
+        call = Promise.resolve({ ok: false, error: (e && e.message) || String(e) });
+      }
+    } else if (viaApp) {
       /* 应用侧只给 messages / temperature / maxTokens / model（白名单字段），
-         思考一律 off（补全不要思考链），provider 与 Key 不进应用世界。 */
+         思考一律 off（补全不要思考链），provider 与 Key 不进应用世界。
+         purpose 是这条白名单里的用途标记（apps-store.js 的 hostSpec 透传），
+         主进程据此把这次调用记进输入补全的用量台账。 */
       const arg = {
         messages: messages(prefix, suffix),
         temperature: 0,
         maxTokens: maxTokens,
         thinking: "off",
         model: gate.model || "",
+        purpose: PURPOSE_FIM,
       };
       try {
         call = Promise.resolve(appHost.textGenStream(arg)).catch((e) => ({
@@ -359,6 +419,8 @@
         timeoutConnect: waitMs,
         timeoutHeader: waitMs,
         timeoutChunk: waitMs,
+        /* 用途标记：主进程 apiCall 只对 purpose === "fim" 的那笔记进补全用量台账 */
+        purpose: PURPOSE_FIM,
       };
       try {
         call = Promise.resolve(api.apiCall(spec)).catch((e) => ({
@@ -498,8 +560,18 @@
     cacheSize: () => cache.size,
     stats: () => ({ requests: stats.requests, accepted: stats.accepted }),
     statsBump: statsBump,
-    /* 应用窗口那条传输通道此刻在不在（面板 / 自验用） */
-    transport: () => (bridge() && typeof bridge().apiCall === "function" ? "apiCall" : appHostNow() ? "appHost" : "none"),
+    /* 当前这条传输通道（面板 / 自验用）：apiCall / appHost / delegate / none */
+    transport: () =>
+      delegateNow()
+        ? "delegate"
+        : bridge() && typeof bridge().apiCall === "function"
+          ? "apiCall"
+          : appHostNow()
+            ? "appHost"
+            : "none",
+    /* 本条请求的用途标记（自验用）：开着补全即等于主进程台账认的那个值。
+       两条桥都是这个常量打的标，断言 ledgerHint === purpose 就说明标记没走样。 */
+    ledgerHint: PURPOSE_FIM,
   };
 })();
 
@@ -513,22 +585,34 @@
  * ResizeObserver 只管「跟着几何走」，不参与挂载判断。
  *
  * 摆放口径：
- *   · textarea：同尺寸镜像层复刻 font / line-height / white-space / 换行相关参数，
+ *   · textarea **单行** ghost：同尺寸镜像层复刻 font / line-height / white-space / 换行相关参数，
  *     prefix 与 suffix 全部画成透明（真字仍由输入框自己显示），只有 ghost 半透明；
- *     镜像随 el.scrollTop / scrollLeft 位移。
+ *     镜像随 el.scrollTop / scrollLeft 位移。**光标后面还有字时**例外：ghost 插在镜像流里
+ *     不会把真字挤开，所以那一刻由镜像层接管渲染（见 mask()：输入框字形藏起来、
+ *     head/ghost/tail 全按真色画，后文被 ghost 真的推下去）—— 这条**只留给单行 ghost**。
+ *   · textarea **多行** ghost（含换行 / 过长 / 会折行 / 文末也塞不下）→ 光标行下方的
+ *     **不透明卡片**（见 placeCard()）：ghost 一个字都不进正文流，压不到下面的正文；
+ *     卡片自带不透明底色（rgb(10,16,22)，实色），多行内容看得清（用户 2026-11 需求）。
+ *   · **自己画不了字**的控件（color / -webkit-text-fill-color 透明，正文由别的层画 —— mt-tex 的
+ *     #codeHl 这类）：连单行 ghost 也走上面那张卡片，只要光标后面这一行还有字。它接管不了渲染，
+ *     内联 ghost 会直接压在同一行剩下的正文上（2026-11 真机复现）。
  *   · 单行 input：隐藏镜像 span 量出光标前那段文字的像素宽 → 绝对定位 ghost。
  *   · 两者都先量「镜像排版 vs 真实控件」的偏差（高度差 / 光标越界 / ghost 塞不进可视区），
  *     超阈值就降级为光标下缘的小气泡「Tab 补全」—— 照样 Tab 采纳，只是不再假装能贴准。
  *
  * 键位仲裁（本轮改成两条触发路径，2026-11 用户需求）：
  *   · **自动**：打字 / 进框即去抖补全（cfg.auto），ghost 跟着光标出现，Tab 采纳；
+ *     **字数门槛**：光标前那段不足 5 个字（MIN_CHARS）一律不发 —— 短上下文的补全
+ *     只会把刚打的几个字抄一遍（用户 2026-11 报的现场）。
  *   · **手动**：光标处没有 ghost 时按 Tab **现场要一次**（cfg.manual）—— 立刻在光标后面
  *     出「补全中 ⋯」的动效（三点跳动 + 一小截脉冲块），补全回来换成 ghost 再按 Tab 采纳。
  *   · 有 ghost / 正在等：Tab 吃掉（采纳 / 继续等）、Esc 丢弃、其它任意键立刻收掉
  *     （该键照常生效）；Shift/⌘/Ctrl/Alt + Tab 一律放行。
- *   · 两位（auto / manual）都关掉或总开关关掉时，一个键都不碰 —— app-mdedit /
- *     app-codeedit / app.js（@ 菜单）/ app-assist / app-research 里既有的 Tab 缩进与
- *     菜单选择一条都不改。
+ *   · **Tab 不再切换 focus 目标、也不给上层缩进**：补全开着（cfg.on）时，这只输入框里的裸 Tab
+ *     由本段负责到底（preventDefault + stopPropagation）—— 采纳不了（字数不够 / ghost 过期 /
+ *     manual 关着）也照样吃掉；要原生 Tab 就按 **Ctrl + Tab** 把总开关关掉。
+ *   · 总开关关掉时，一个键都不碰 —— app-mdedit / app-codeedit / app.js（@ 菜单）/
+ *     app-assist / app-research 里既有的 Tab 缩进与菜单选择一条都不改。
  *
  * 与别人共存（硬约束）：
  *   · 只读几何与文本（getBoundingClientRect / getComputedStyle / value / selectionStart），
@@ -547,6 +631,18 @@
   const LABEL_ACCEPT = "Tab 采纳"; /* ghost 刚出现时跟在它后面闪一下的牌子（2.2s 后自己淡出） */
   const LABEL_BUSY = "补全中"; /* 手动触发 / 正在等模型时，光标旁那枚转圈牌 */
   const LABEL_NONE = "无可补全"; /* 手动触发但模型什么都没给：闪一下就走，不占地方 */
+  /* 字数门槛（用户 2026-11 需求，同月复议后收紧）：「自动补全当仅有几个字符时会自动复制
+     前面的字」→ 门槛降到 **5 个字**（原来 10，短句 / 术语刚起个头就被拦住）。判的是光标前
+     那段 prefix trim 后的长度：**不到 5 个字**才不发请求。 */
+  const MIN_CHARS = 5;
+  const LABEL_SHORT = "再多打几个字再补全"; /* 字数不够时按 Tab 的回执（别让 Tab 看起来死了） */
+  /* 多行补全 = 不透明卡片（用户 2026-11 需求：「多行时直接下方变为类似 tooltips 的模式，
+     不为全透明，而是增加一个不透明底色，让用户可以看清内容」）。实现见 placeCard()。 */
+  const CARD_HINT = "Tab 采纳 · Esc 丢弃"; /* 卡片右上角那一行提示 */
+  const CARD_MIN_CHARS = 48; /* 单行 ghost 超过这么多字也走卡片（折行 / 被裁，内联看不清） */
+  const CARD_W_MAX = 520; /* 卡片最大宽度（再宽就把编辑区压没了） */
+  const CARD_H_MAX = 260; /* 卡片最大高度（超了内部滚动） */
+  const CARD_GAP = 6; /* 卡片与光标所在那一行之间的间距（绝不压住这一行） */
   const TOL = 4; /* 镜像排版与真实控件的允许偏差（px），超过就降级成气泡 */
   const TICK_MS = 150; /* ghost 在场时的轻量复查间隔：元素被换掉 / 焦点走了 / 值被改写 */
   const Z = 1400; /* 兜底层级；实务上用 stackZ() 按所在弹窗的层叠上下文现算 */
@@ -568,7 +664,12 @@
     "@keyframes mtFimDot{0%,80%,100%{opacity:.22;transform:translateY(0)}40%{opacity:1;transform:translateY(-2px)}}" +
     "@keyframes mtFimIn{from{opacity:0;transform:translateY(1px)}to{opacity:1;transform:none}}" +
     "@keyframes mtFimChipIn{from{opacity:0;transform:translateY(3px)}to{opacity:1;transform:none}}" +
-    "@keyframes mtFimChipOut{0%,72%{opacity:1}100%{opacity:0}}";
+    "@keyframes mtFimChipOut{0%,72%{opacity:1}100%{opacity:0}}" +
+    /* 多行卡片的入场**只动 transform、不动 opacity**：真机自验踩过 —— 动画在「被判定不可见的窗口」
+       里不推进时，卡片会一直停在 `from{opacity:0}`，整块卡片一个像素都不画（DOM 里 display:block、
+       getBoundingClientRect 也正常，截图里却是空的）。补全内容必须「无论如何都看得见」，
+       所以入场效果一律不许拿可见性当动画量。 */
+    "@keyframes mtFimCardIn{from{transform:translateY(-3px)}to{transform:none}}";
 
   let cur = null; /* 当前展示的 ghost：{el, kind, ctx, text, snap, caret, mode, phase, r, ...} */
   let pendingEl = null; /* 正在 debounce 的那只（切字段时要 cancel 掉） */
@@ -629,7 +730,17 @@
         c = null;
       }
     }
-    if (!c || typeof c !== "object") return out;
+    /* 本窗内的 Ctrl + Tab 覆盖（应用窗口 / 小窗没有配置写口，见 toggleOn）：
+       在本窗按过 Ctrl+Tab 之后就以那份为准 —— 小窗每次重新获得焦点都会重读主窗配置，
+       不认这一份的话「关掉又自己开回来」。 */
+    const applyOverride = () => {
+      try {
+        const ov = window.__mtnodeFimOnOverride;
+        if (typeof ov === "boolean") out.on = ov;
+      } catch (_) {}
+      return out;
+    };
+    if (!c || typeof c !== "object") return applyOverride();
     if (typeof c.on === "boolean") out.on = c.on;
     if (typeof c.auto === "boolean") out.auto = c.auto;
     if (typeof c.manual === "boolean") out.manual = c.manual;
@@ -639,7 +750,16 @@
     out.delayMs = Number.isFinite(d) && d >= 0 ? d : DEF_DELAY;
     const t = Math.round(Number(c.maxTokens));
     out.maxTokens = Number.isFinite(t) && t >= 16 ? t : DEF_MAX_TOKENS;
-    return out;
+    /* 应用窗口（mt-tex 这类）：上面那份纯值是**跨世界的只读快照**（contextIsolation 下
+       exposeInMainWorld 过来的对象是冻结的），主窗里按 Ctrl+Tab / 在面板里改，本窗永远看不到。
+       preload-app 另挂了一个活读口 __mtnodeFimOn()，读的是隔离世界里的当前值 ——
+       有它就以它为准（主进程广播 fim:changed 时它跟着变）。 */
+    try {
+      const live = window.__mtnodeFimOn;
+      const v = typeof live === "function" ? live() : undefined;
+      if (typeof v === "boolean") out.on = v;
+    } catch (_) {}
+    return applyOverride();
   }
 
   /* 动效样式表（懒注入一次；重复注入按 id 挡住） */
@@ -693,7 +813,7 @@
   }
 
   /* ── 复用的浮层节点（懒建；pointer-events:none，绝不进焦点链） ───────────── */
-  const nodes = { mirror: null, probe: null, ghost: null, hint: null, chip: null };
+  const nodes = { mirror: null, probe: null, ghost: null, hint: null, chip: null, card: null };
 
   function make(tag, cls, z) {
     if (!document.body) return null;
@@ -760,29 +880,98 @@
     s.pointerEvents = "none";
     s.zIndex = String(numOr(z, Z));
     s.contain = "layout style";
-    s.left = Math.round(r.left + px(cs.borderLeftWidth) + padL) + "px";
-    s.top = Math.round(r.top + px(cs.borderTopWidth) + padT) + "px";
-    return { padY: padT + padB, h: h };
+    const left = Math.round(r.left + px(cs.borderLeftWidth) + padL);
+    const top = Math.round(r.top + px(cs.borderTopWidth) + padT);
+    s.left = left + "px";
+    s.top = top + "px";
+    /* 内容框在**视口**里的位置与尺寸（多行卡片落位要用：横向不越出编辑区、纵向不压光标行） */
+    return { padY: padT + padB, h: h, w: w, left: left, top: top };
+  }
+
+  /* 镜像层「接管渲染」：ghost 是插在镜像流里画的，输入框里的真字不会被它挤开 ——
+     光标后面还有字时，ghost 会一行行压在下面的正文上（用户 2026-11 报的多行重叠现场）。
+     接管 = 把输入框自己的字形藏起来（`-webkit-text-fill-color:transparent`；`caret-color`
+     不受它影响，原生光标照样在），由镜像层把 head / ghost / tail 全按真色画一遍：
+     ghost 的换行于是把后文**真的推下去**，看到的就是「采纳之后长什么样」。
+     只在 takeover 那一刻用（paintTextarea 判定），收手立刻还回去。 */
+  let maskedEl = null;
+  function unmask() {
+    const el = maskedEl;
+    maskedEl = null;
+    if (!el) return;
+    try {
+      el.style.removeProperty("-webkit-text-fill-color");
+    } catch (_) {}
+  }
+  function mask(el) {
+    if (maskedEl === el) return true;
+    unmask();
+    try {
+      el.style.setProperty("-webkit-text-fill-color", "transparent");
+    } catch (_) {
+      return false;
+    }
+    maskedEl = el;
+    return true;
+  }
+
+  /* 半透明预测字的颜色：跟着**这只输入框自己的文字颜色**走，不再写死浅青。
+     写死 `GHOST_COLOR` 时，浅色主题的应用页里 ghost 与底色的对比度只有 1.2 上下
+     （mt-tex 暖色实测 1.23:1，同一处正文是 12.3:1）—— 用户看到的现场就是
+     「补全内容未显示，但 Tab 能把字打出来」。取 cs.color 的 RGB 换个半透明，
+     深底浅字 / 浅底深字两边都看得见，也不改变原来暗色主窗的观感。
+     文字本身是透明的（代码编辑器那只「透明 textarea + 高亮层」）就往上找一层真颜色，
+     还是找不到才退回原来的浅青。 */
+  function ghostRgbOf(cs) {
+    const m = /rgba?\(([^)]+)\)/i.exec(String((cs && cs.color) || ""));
+    if (!m) return null;
+    const p = m[1]
+      .split(/[,\s/]+/)
+      .filter(Boolean)
+      .map(Number);
+    if (p.length < 3 || !p.slice(0, 3).every(function (v) { return Number.isFinite(v); }))
+      return null;
+    return { rgb: p.slice(0, 3), a: p.length > 3 ? p[3] : 1 };
+  }
+
+  function ghostColorOf(cs, alpha, el) {
+    const a = alpha == null ? 0.58 : alpha;
+    let c = ghostRgbOf(cs);
+    if (!c || c.a < 0.25) {
+      let n = el && el.parentElement;
+      for (let i = 0; n && n.nodeType === 1 && i < 8; i++, n = n.parentElement) {
+        const up = ghostRgbOf(getComputedStyle(n));
+        if (up && up.a >= 0.25) {
+          c = up;
+          break;
+        }
+      }
+    }
+    if (!c || c.a < 0.25) return GHOST_COLOR;
+    return "rgba(" + c.rgb[0] + "," + c.rgb[1] + "," + c.rgb[2] + "," + a + ")";
   }
 
   /* 镜像层里的 ghost 只要颜色（字体 / 换行全从镜像层继承，与真字完全同源）；
      出现那一刻给一段 0.18s 的淡入 + 上移 —— 「补全来了」必须被看见，不能凭空多出一段字。 */
-  function ghostInlineStyle() {
+  function ghostInlineStyle(color) {
+    /* 那点青色辉光只配深底浅字（不传 color = 老口径）；跟着正文上色后不再叠，浅底上只会发虚 */
     return (
       "color:" +
-      GHOST_COLOR +
-      ";text-shadow:" +
-      GHOST_SHADOW +
+      (color || GHOST_COLOR) +
+      (color ? "" : ";text-shadow:" + GHOST_SHADOW) +
       ";background:transparent;animation:mtFimIn .18s ease-out;"
     );
   }
 
   /* 动效本体：跟在补全末尾（等模型时贴在光标处）那一小截脉冲块 */
-  function caretMarkStyle() {
+  function caretMarkStyle(color) {
     return (
       "display:inline-block;width:2px;height:1em;margin:0 0 0 1px;padding:0;border:0;" +
-      "vertical-align:-.14em;border-radius:1px;background:#38d6ff;" +
-      "box-shadow:0 0 6px rgba(56,214,255,.75);animation:mtFimCaret 1.05s ease-in-out infinite;"
+      "vertical-align:-.14em;border-radius:1px;background:" +
+      (color || "#38d6ff") +
+      ";" +
+      (color ? "" : "box-shadow:0 0 6px rgba(56,214,255,.75);") +
+      "animation:mtFimCaret 1.05s ease-in-out infinite;"
     );
   }
 
@@ -854,6 +1043,143 @@
     return c;
   }
 
+  /* ── 多行补全的不透明卡片（tooltip 式，用户 2026-11 需求） ───────────────────
+     为什么必须换形态：镜像层把多行 ghost 插进正文流时，透明字体的编辑器（高亮画在别的层，
+     如 mt-tex 的 #codeHl）没法接管渲染 —— mask() 藏掉输入框自己的字形也没用，正文是那一层
+     在画，于是 ghost 一行行压在下面已有的正文上（用户 2026-11 报的「ghost 与下行重叠」现场）。
+     卡片是**浮层**：一个字都不进正文流、不改 textarea 排版，所以压不到任何字；不透明底色
+     （复用 chip 的 rgba(10,16,22,.94)）保证多行内容看得清 —— 这正是「不为全透明」那条需求。
+     结构：右上角一行提示（Tab 采纳 · Esc 丢弃）+ 与正文同源字号/行高的 ghost 正文块。
+     卡片里的字 = st.text 原样（采纳时 insert() 落的就是这一份，逐字一致，防「看到 A 打进 B」）。
+     复用的节点只有一只，滚动 / 改窗口 / resize 一律由 render() 重走 placeCard 重算位置。 */
+  function cardBox() {
+    const c = nodes.card || (nodes.card = make("div", "fim-ghost-card", Z + 3));
+    if (!c) return null;
+    if (!c.__refs) {
+      const hint = document.createElement("div");
+      hint.setAttribute("data-part", "hint");
+      const body = document.createElement("div");
+      body.setAttribute("data-part", "body");
+      c.appendChild(hint);
+      c.appendChild(body);
+      /* 卡片在「内容滚得动」时才接指针（见 placeCard 末尾），接上也不许抢焦点、不许挪光标：
+         按下就 preventDefault，焦点仍在输入框里（否则 150ms 的复查会把它当「焦点走了」收掉）。 */
+      c.addEventListener("mousedown", function (ev) {
+        try {
+          ev.preventDefault();
+        } catch (_) {}
+      });
+      c.__refs = { hint: hint, body: body };
+    }
+    return c;
+  }
+
+  /* 摆卡片：位置只从「光标所在行」与「编辑区内容框」两个几何量算，不读任何写死坐标。
+       · 默认贴光标行**下方** CARD_GAP 处，绝不压住光标那一行（用户正在看的那一行）；
+         下方塞不下就先翻到光标行上方（同样不压它），再不行才收进视口；
+       · 横向跟着光标走，但不越出编辑区内容框、不越出视口；
+       · 正文块 max-height + 内部滚动（CARD_H_MAX / 可用空间两者取小）。 */
+  function placeCard(st, el, cs, geo, caret) {
+    const c = cardBox();
+    if (!c) return null;
+    const hint = c.__refs.hint;
+    const body = c.__refs.body;
+    const lineH = Math.max(10, numOr(caret && caret.lineH, 0) || 18);
+    const vw = window.innerWidth || 1024;
+    const vh = window.innerHeight || 768;
+    const vp = 8; /* 视口内边距 */
+    hint.textContent = T(CARD_HINT);
+    body.textContent = String(st.text == null ? "" : st.text);
+    const w = Math.min(CARD_W_MAX, Math.max(140, numOr(geo.w, 0) || 140));
+    c.style.cssText =
+      "position:fixed;left:0px;top:0px;margin:0;padding:5px 8px 6px;display:block;" +
+      "box-sizing:border-box;width:" +
+      w +
+      "px;text-align:left;overflow:visible;cursor:default;pointer-events:none;opacity:1;" +
+      "border:1px solid rgba(56,214,255,.45);border-radius:5px;" +
+      /* 底色与 chip 同源（rgba(10,16,22)），但**不透明度收到 100%**：chip 那 .94 的小牌子
+         面积小无所谓，卡片是一整块盖在正文上的，留 6% 透明度就会把底下那几行字透出来 ——
+         识图复核的原话是「卡片内隐约透出底层文字残影」，那就还是「看不清」。 */
+      "background:rgb(10,16,22);color:#d7e7f0;" +
+      "font-family:" +
+      (cs.fontFamily || "inherit") +
+      ";font-size:" +
+      (cs.fontSize || "13px") +
+      ";line-height:" +
+      lineH +
+      "px;white-space:pre-wrap;word-break:" +
+      (cs.wordBreak || "normal") +
+      ";tab-size:" +
+      (cs.tabSize || "8") +
+      ";" +
+      "box-shadow:0 6px 22px rgba(0,0,0,.55);z-index:" +
+      (numOr(st.z, Z) + 3) +
+      ";animation:mtFimCardIn .14s ease-out;";
+    hint.style.cssText =
+      "margin:0 0 3px;padding:0;text-align:right;white-space:nowrap;" +
+      "font-family:var(--mono,ui-monospace,monospace);font-size:10.5px;line-height:1.5;" +
+      "color:#8fd4ea;";
+    body.style.cssText = "margin:0;padding:0;max-height:none;overflow:hidden;color:#d7e7f0;";
+    /* 先按「不限高」量一次自然高度，把卡片外壳（提示行 + 内边距 + 描边）占掉的纵向尺寸摘出来 */
+    const bodyNatural = body.offsetHeight || lineH * 3;
+    const chromeH = Math.max(0, (c.offsetHeight || 0) - bodyNatural);
+    const caretBottom = numOr(caret && caret.bottom, numOr(geo.top, 0) + lineH);
+    const belowTop = Math.round(caretBottom + CARD_GAP);
+    const caretTop = Math.max(numOr(geo.top, 0), caretBottom - lineH);
+    const roomBelow = vh - vp - belowTop;
+    const roomAbove = caretTop - CARD_GAP - vp;
+    const want = Math.min(CARD_H_MAX, lineH * 3); /* 至少想给三行，给不到才翻到上面去 */
+    const useBelow = roomBelow >= want || roomBelow >= roomAbove;
+    const room = Math.max(lineH * 1.2, useBelow ? roomBelow : roomAbove);
+    const bodyMax = Math.max(lineH, Math.min(CARD_H_MAX, room - chromeH));
+    body.style.maxHeight = bodyMax + "px";
+    const h = Math.max(lineH, c.offsetHeight || 0);
+    const cw = Math.max(1, c.offsetWidth || w);
+    let top = useBelow ? belowTop : Math.round(caretTop - CARD_GAP - h);
+    top = Math.min(Math.max(vp, top), Math.max(vp, vh - vp - h));
+    let left = Math.round(numOr(caret && caret.x, numOr(geo.left, vp)));
+    const geoLeft = numOr(geo.left, left);
+    const geoRight = geoLeft + numOr(geo.w, cw);
+    if (left + cw > geoRight) left = Math.round(geoRight - cw);
+    if (left < geoLeft) left = Math.round(geoLeft);
+    left = Math.min(Math.max(vp, left), Math.max(vp, vw - vp - cw));
+    c.style.left = left + "px";
+    c.style.top = top + "px";
+    /* 只有内容真的滚得动时才把指针还给卡片（轮子滚它、按下不抢焦点）；否则整块穿透编辑区 ——
+       点哪儿都还是编辑区，光标照常挪，ghost 由 150ms 的那次复查收掉。 */
+    const scrollable = body.scrollHeight > bodyMax + 1;
+    body.style.overflow = scrollable ? "auto" : "hidden";
+    c.style.pointerEvents = scrollable ? "auto" : "none";
+    c.style.display = "block";
+    c.__text = String(st.text == null ? "" : st.text);
+    return c;
+  }
+
+  /* 光标所在那一行的矩形（**兜底**用）：取 head 那段文字末尾折叠 Range 的矩形。
+      首选不是它 —— paintTextarea 里优先用 ghost 自己那只 span 的上沿（ghost 就是从光标处开始排的）；
+      只有在没有 ghost 文本（ghost 没有盒子）时才退回这里。
+      两条坑都踩过（别删）：
+        · 那颗行内脉冲 <i> 不能当锚：多行 ghost 在场时它被顶到 ghost 末尾（差好几行），
+          卡片会落到光标下方 75px 处；
+        · 折叠 Range 在 head 以换行收尾时会指到**上一行的行尾**（mt-tex 实测），
+          卡片因此正好压住光标行 —— 所以它只当兜底。 */
+  function caretLineRect(headNode) {
+    try {
+      const rng = document.createRange();
+      const t = headNode && headNode.firstChild;
+      if (t && t.nodeType === 3) rng.setStart(t, t.length);
+      else rng.setStart(headNode, 0);
+      rng.collapse(true);
+      const r = rng.getBoundingClientRect();
+      if (r && (r.height || r.width || r.top || r.left)) return r;
+    } catch (_) {}
+    try {
+      const b = headNode && headNode.getBoundingClientRect();
+      if (b) return { left: b.right, top: b.top, bottom: b.bottom, height: b.height };
+    } catch (_) {}
+    return null;
+  }
+
   /* textarea：镜像层 + 光标处 ghost；偏差超阈值 → 气泡 */
   function paintTextarea(st, el, r) {
     const cs = getComputedStyle(el);
@@ -870,39 +1196,123 @@
     const tail = raw.slice(caret);
 
     /* ① 先放「纯文本镜像」（整份 value，全部透明）量一次排版：
-          镜像内容高 vs 真实控件内容高 —— 差得远说明字体 / 换行没复刻上，别硬贴。 */
-    box.textContent = raw;
+          镜像内容高 vs 真实控件内容高 —— 差得远说明字体 / 换行没复刻上，别硬贴。
+          **末尾必须补一枚零宽字符再量**：textarea 的 scrollHeight 把结尾的换行算成一个行盒，
+          而 div 的 white-space:pre 不会（结尾换行不产生新行）—— 不补它，凡是以换行收尾的文档
+          两边就差一整行（mt-tex 的 876 行 .tex 实测差 20px > TOL 4px），直接判成「排版对不上」
+          降级成气泡：ghost 一个字都不画，而 Tab 仍然能把补全打进去 —— 用户报的就是这个现场。 */
+    box.textContent = raw + "\u200b";
     const realH = Math.max(el.scrollHeight - m.padY, m.h);
     const mirrorH = Math.max(box.scrollHeight, m.h);
     const deviated = Math.abs(mirrorH - realH) > TOL;
 
     /* ② 把 ghost 插回光标处：前后两段仍透明，只有这一截半透明可见；
-          ghost 一律跟一小截脉冲块（等模型时它就在光标处，补全来了就跑到补全末尾去）。 */
+          ghost 一律跟一小截脉冲块（等模型时它就在光标处，补全来了就跑到补全末尾去）。
+          头尾两段先一律画成透明，等下面量完几何、定了「卡片 / 接管 / 内联」再回头上色。 */
     box.textContent = "";
-    box.appendChild(document.createTextNode(head));
+    /* ghost 与脉冲块的色：按这只 textarea 自己的文字颜色现算（见 ghostColorOf） */
+    const gcol = ghostColorOf(cs, 0.58, el);
+    const plainHidden = "color:transparent;";
+    const headNode = document.createElement("span");
+    headNode.textContent = head;
+    headNode.setAttribute("style", plainHidden);
+    const tailNode = document.createElement("span");
+    tailNode.textContent = tail;
+    tailNode.setAttribute("style", plainHidden);
+    box.appendChild(headNode);
     const g = document.createElement("span");
     if (ready) {
       g.textContent = st.text;
-      g.setAttribute("style", ghostInlineStyle());
+      g.setAttribute("style", ghostInlineStyle(gcol));
     } else {
       g.textContent = "";
       g.setAttribute("style", "color:transparent;background:transparent;");
     }
     box.appendChild(g);
     const mark = document.createElement("i");
-    mark.setAttribute("style", caretMarkStyle());
+    mark.setAttribute("style", caretMarkStyle(gcol));
     box.appendChild(mark);
-    box.appendChild(document.createTextNode(tail));
+    box.appendChild(tailNode);
     box.scrollTop = el.scrollTop;
     box.scrollLeft = el.scrollLeft;
     const gr = g.getBoundingClientRect();
     const mr = mark.getBoundingClientRect();
+    /* 光标行的兜底几何（首选见下面 caretPoint：ghost 盒）—— 那颗 <i> 在多行 ghost 在场时会被顶到 ghost 末尾 */
+    const caretRect = caretLineRect(headNode);
     const ax = numOr(mr.left, numOr(gr.left, r.left)) + numOr(mr.width, 0);
     const ay = numOr(mr.bottom, numOr(gr.bottom, r.bottom));
+    /* 正文字号 / 行高（卡片正文与它同源；光标行的上下沿也按它算） */
+    const lineH = px(cs.lineHeight, 0) || Math.round(px(cs.fontSize, 14) * 1.5);
+
+    /* 光标所在那一行的几何（多行卡片就贴在它下面 / 上面）：
+       多行 ghost 是**从光标位置开始排**的，所以 ghost 自己那只 span 的上沿与左沿就是
+       「光标行的上沿」与「光标所在的列」—— 这是最可靠的一份，不依赖 Range 的边界行为
+       （head 以换行收尾时，折叠 Range 会指到上一行的行尾：真机自验在 mt-tex 上踩到过，
+       卡片因此正好压住了光标行）。ghost 没有盒子（没有 ghost 文本）时退回 Range 量的那份。 */
+    const hasGhostBox = ready && (numOr(gr.width, 0) > 0 || numOr(gr.height, 0) > 0);
+    const caretPoint = hasGhostBox
+      ? { x: numOr(gr.left, ax), top: numOr(gr.top, ay - lineH), bottom: numOr(gr.top, ay - lineH) + lineH }
+      : caretRect
+        ? {
+            x: numOr(caretRect.left, ax),
+            top: numOr(caretRect.top, ay - lineH),
+            bottom: numOr(caretRect.bottom, ay),
+          }
+        : { x: ax, top: ay - lineH, bottom: ay };
 
     if (deviated) {
       box.style.display = "none";
       return bubbleOnly(st, ax, ay);
+    }
+
+    /* ③ 定形态（判据与 placeCard() 那段注释同一个口径，三条任一成立就走不透明卡片）：
+          ① 自带换行（多行建议）；② 超过 CARD_MIN_CHARS 个字（内联会折行或被裁掉，看不清）；
+          ③ 在镜像里排出来高过一行（会折行）—— 折行的 ghost 一样压到下面那几行。
+         再一条底线：光标在文末时优先内联，但这一段已经超出可视区（内联根本看不见）才走卡片。
+         `gr.height` 是「ghost 插在光标处」量出来的真实行盒高，不是按字数猜的。 */
+    const ghostText = String(st.text == null ? "" : st.text);
+    const multi =
+      /[\r\n]/.test(ghostText) ||
+      ghostText.length > CARD_MIN_CHARS ||
+      numOr(gr.height, 0) > lineH * 1.4;
+    const fitsVisible = numOr(gr.bottom, 0) <= numOr(m.top, 0) + numOr(m.h, 0) + 1;
+    /* ④ 这只控件自己画不画字：color / -webkit-text-fill-color 透明 = 正文由**别的层**在画
+       （mt-tex 的 #codeHl，以及一切「透明 textarea + 外部高亮层」的编辑器）。这种控件既接管不了
+       渲染（藏掉它自己的字形也挡不住那一层），内联 ghost 就直接压在同一行剩下的正文上 ——
+       单行也一样。真机 2026-11 在 mt-tex 上复现过：\item 第四项 那行被单行 ghost 压住发糊。
+       所以「自己画不了字 + 光标后面这一行还有字」= 走卡片，与多行同一个形态。 */
+    const self = ghostRgbOf(cs);
+    const cantSelfPaint = !!ghostText && !!self && self.a < 0.25;
+    const restOfLine = tail.split("\n")[0];
+    const cardMode =
+      ready &&
+      (multi
+        ? !!tail.length || !fitsVisible
+        : cantSelfPaint && restOfLine.length > 0);
+
+    /* ⑤ 镜像层接管渲染（见 mask() 旁那段）只留给**单行** ghost + 光标后面还有字：
+         head / tail 按真色画出来、输入框自己的字形藏掉，ghost 的换行才会把后文推下去。
+       光标在文末（tail 为空）不接管：那时 ghost 落在空行上，压不到任何字，
+       没理由让整个控件换一套渲染。
+       自己画不了字的控件也接管不了（见 ④，那类已走卡片）；多行 ghost 压根不进正文流。 */
+    const takeover = ready && !cardMode && !!tail.length && !!self && self.a >= 0.25;
+    if (takeover) {
+      const plain = "color:" + cs.color + ";";
+      headNode.setAttribute("style", plain);
+      tailNode.setAttribute("style", plain);
+      mask(el);
+    } else {
+      unmask();
+    }
+    if (cardMode) {
+      /* 卡片模式：ghost 一个字都不留在正文流里（它的位置只用来量出「光标所在那一行」），
+         字全部搬进不透明卡片（placeCard 里放的就是 st.text 原样）。 */
+      g.textContent = "";
+      g.setAttribute("style", "color:transparent;background:transparent;");
+      st.mode = "card";
+      st.anchor = { x: ax, y: ay };
+      placeCard(st, el, cs, m, { x: caretPoint.x, bottom: caretPoint.bottom, lineH: lineH });
+      return true;
     }
     st.mode = "ghost";
     st.anchor = { x: ax, y: ay };
@@ -970,12 +1380,14 @@
     const g = nodes.ghost || (nodes.ghost = make("div", "fim-ghost-line", Z + 1));
     if (!g) return bubbleOnly(st, Math.min(Math.max(x, leftMin), rightMax), r.bottom);
     const s = g.style;
+    /* 颜色同 textarea 那条：按这只 input 自己的文字颜色现算（浅底深字也看得见） */
+    const gcol = ghostColorOf(cs, 0.6, el);
     /* 内容 = ghost 文本（等模型时为空）+ 末尾那截脉冲块 */
     g.textContent = "";
     if (ready) {
       g.appendChild(document.createTextNode(st.text));
-      s.color = GHOST_COLOR;
-      s.textShadow = GHOST_SHADOW;
+      s.color = gcol;
+      s.textShadow = gcol === GHOST_COLOR ? GHOST_SHADOW : "none";
       s.animation = "mtFimIn .18s ease-out";
     } else {
       s.color = "transparent";
@@ -983,7 +1395,7 @@
       s.animation = "none";
     }
     const mark = document.createElement("i");
-    mark.setAttribute("style", caretMarkStyle());
+    mark.setAttribute("style", caretMarkStyle(gcol));
     g.appendChild(mark);
     s.display = "block";
     s.margin = "0";
@@ -1012,6 +1424,7 @@
 
   /* 降级气泡：光标下缘一只小牌子（位置对不准时，至少告诉用户「按 Tab 能补」） */
   function bubbleOnly(st, x, y) {
+    unmask(); /* 降级 = 不画内联 ghost，输入框自己的字形还回去 */
     st.mode = "bubble";
     st.anchor = { x: x, y: y };
     const b = nodes.hint || (nodes.hint = make("div", "fim-ghost-hint", Z + 1));
@@ -1175,6 +1588,7 @@
       } catch (_) {}
     }
     hideNodes();
+    unmask(); /* 收手一律把输入框自己的字形还回去（接管期间被藏起来的那一只） */
     cur = null;
   }
 
@@ -1187,6 +1601,12 @@
     const kind = fieldOf(el);
     if (!kind) return cur || pendingEl ? hide() : undefined;
     if (!F.eligible(el).ok) return cur || pendingEl ? hide() : undefined;
+    /* 字数门槛：光标前那段 trim 后**不到 MIN_CHARS（5）个字**就不发（见 MIN_CHARS 旁的说明）。
+        判的是 **prefix** 而不是整只输入框：模型看到的就是光标前面这一段，
+        前面几乎没字时它只会把刚打的那几个字抄回来。 */
+    const ctxNow = F.contextOf(el);
+    if (!ctxNow.ok || ctxNow.prefix.trim().length < MIN_CHARS)
+      return cur || pendingEl ? hide() : undefined;
     hide();
     pendingEl = el;
     const my = ++gen;
@@ -1224,6 +1644,17 @@
     hide();
     const ctx0 = F.contextOf(el);
     if (!ctx0.ok) return false;
+    /* 字数门槛同自动那条：不到 5 个字就不发（否则拿回来的就是替你抄一遍刚打的几个字）。
+       但 Tab 是用户**主动**按的，不能像没按过一样 —— 闪一句回执，并把键吃掉（返回 true）。 */
+    if (ctx0.prefix.trim().length < MIN_CHARS) {
+      const rb = el.getBoundingClientRect();
+      chip({ z: stackZ(el) }, rb.left + 6, rb.bottom, T(LABEL_SHORT), {
+        code: "short",
+        dots: false,
+        fade: true,
+      });
+      return true;
+    }
     const my = ++gen;
     if (!show(el, kind, ctx0, "", "pending")) return false;
     F.manual(el, {
@@ -1354,15 +1785,72 @@
     return false;
   }
 
+  /* 总开关（Ctrl + Tab）：四条路按在场者挑，返回 true = 这次确实翻成了。
+     ① 主窗：window.MTNodeFim.setEnabled（app-fim-settings.js）—— 落盘 + 呼吸灯；
+     ② 应用窗口：window.__mtnodeFimSetEnabled（preload-app 经 contextBridge 露出）——
+     主进程改 config.json 的 fim.on 再广播 fim:changed，**主窗左下那颗 #btnFim 的呼吸灯
+     与勾选状态跟着变**，别的应用窗口也一起跟上；
+     ③ 应用窗口 / 小窗的老口径：window.__mtnodeFimSettings 就地改 on（跨世界后是冻结对象，
+     这里写不动，仅当没开 contextIsolation 的老宿主才有效）；
+     ④ 兜底：S.config.fim（面板脚本不在时的老宿主；只改内存，落盘交给下一次面板保存）。 */
+  function toggleOn(next) {
+    const on = next !== false;
+    let done = false;
+    try {
+      const m = window.MTNodeFim;
+      if (m && typeof m.setEnabled === "function") done = m.setEnabled(on) !== false;
+    } catch (_) {
+      done = false;
+    }
+    if (!done) {
+      try {
+        const set = window.__mtnodeFimSetEnabled;
+        if (typeof set === "function") {
+          set(on); /* 主进程落盘 + 广播；本窗的活读口 __mtnodeFimOn 同时更新 */
+          window.__mtnodeFimOnOverride = on;
+          done = true;
+        }
+      } catch (_) {}
+    }
+    if (!done) {
+      try {
+        const inj = window.__mtnodeFimSettings;
+        if (inj && typeof inj === "object") {
+          inj.on = on;
+          /* 小窗 / 应用窗口还会重读宿主配置（小窗每获得一次焦点就读一次），
+             记一份本窗覆盖，免得刚关掉又自己开回来（见 cfg 的 applyOverride）。 */
+          window.__mtnodeFimOnOverride = on;
+          done = true;
+        }
+      } catch (_) {}
+    }
+    if (!done) {
+      try {
+        if (typeof S !== "undefined" && S && S.config && S.config.fim) {
+          S.config.fim.on = on; /* 老宿主没有面板脚本：只改内存，落盘交给下一次面板保存 */
+          done = true;
+        }
+      } catch (_) {}
+    }
+    if (!on) hide(); /* 关掉总开关：正在显示的 ghost 立刻收 */
+    return done;
+  }
+
   /* Tab 仲裁（本轮的两模式口径，改之前先读完这段）：
+     · **Ctrl + Tab**                       → 吃掉，翻总开关（见 toggleOn；与焦点在哪个框无关）；
      · ghost 已就绪（phase=ready）        → 吃掉 Tab，**采纳**；
      · 正在等模型（phase=pending）        → 吃掉 Tab，什么都不做（别连发请求）；
      · 什么都没有，且 cfg.manual 为真     → 吃掉 Tab，**现场要一次**（光标处出转圈动效）；
-     · 什么都没有，manual 关着 / 不可用   → 一个键都不碰，原样放行给上层缩进与菜单选择；
-     · 上层菜单（@ / /）开着              → 一律放行（Tab 在那种上下文里是「选当前项」）；
-     · Shift / Ctrl / Alt / ⌘ + Tab       → 永远放行。
+     · 什么都没有 / 字数不够 / ghost 已过期 → **同样吃掉这颗 Tab**（默认的焦点前移没有了，
+       上层自己的 Tab 缩进也不再收到这颗键）；
+     · 总开关关掉（cfg.on 为假）           → 一个键都不碰，退回浏览器原生 Tab；
+     · 上层菜单（@ / /）开着               → 一律放行（Tab 在那种上下文里是「选当前项」）；
+     · Shift / Alt / ⌘ + Tab              → 永远放行。
      手动触发只认「没有 ghost」这一种情形 —— 有 ghost 时 Tab 一定是采纳，
-     这样「第一下 Tab 要、第二下 Tab 收」才不会互相打架。 */
+     这样「第一下 Tab 要、第二下 Tab 收」才不会互相打架。
+     **开启时 Tab 覆盖原文本编辑里的 Tab 功能**（用户 2026-11 需求）：补全开着时，这只输入框里的
+     裸 Tab 由本段负责到底（preventDefault + stopPropagation），焦点前移与上层缩进一律不跑；
+     需要原生 Tab 就 Ctrl + Tab 把总开关关掉。 */
   function onKeyDown(ev) {
     const st = cur;
     const key = String(ev.key || "");
@@ -1370,6 +1858,24 @@
     const isEsc = key === "Escape" || key === "Esc";
     const target = ev.target;
     const kind = fieldOf(target);
+    /* 裸 Tab（无修饰键、非输入法组词期）才是补全的键位 */
+    const plainTab =
+      isTab &&
+      !ev.shiftKey &&
+      !ev.ctrlKey &&
+      !ev.altKey &&
+      !ev.metaKey &&
+      !(ev.isComposing || ev.keyCode === 229);
+
+    /* **Ctrl + Tab = 总开关**（用户 2026-11 需求：启用 / 关闭输入补全的快捷键改成 Ctrl+Tab；
+       状态栏那颗 #btnFim 的呼吸灯由主窗 app-fim-settings.js 的 syncBtn() 跟着画）。
+       这一颗在**任何**页面都归补全：主窗有 window.MTNodeFim.setEnabled（落 S.config.fim 并点亮按钮）；
+       应用窗口（如 mt-tex）/ 快捷会话小窗没有配置写口，就地翻 window.__mtnodeFimSettings.on，
+       本窗立刻生效。不吃菜单：Ctrl+Tab 不是「选当前项」。 */
+    if (isTab && ev.ctrlKey && !ev.shiftKey && !ev.altKey && !ev.metaKey) {
+      eat(ev);
+      return toggleOn(!cfg().on);
+    }
 
     /* 菜单开着：Tab 归菜单（不是补全）—— 顺手收掉 ghost，别让它跟菜单抢同一只输入框 */
     if (isTab && menuOwnsTab()) {
@@ -1377,20 +1883,20 @@
       return;
     }
 
-    if (!st) {
-      /* 没有 ghost / 没有 pending：只有「Tab 手动触发」这一条会碰键 */
-      if (!isTab || !kind) return;
-      if (ev.isComposing || ev.keyCode === 229) return;
-      if (ev.shiftKey || ev.ctrlKey || ev.altKey || ev.metaKey) return;
+    if (!st || target !== st.el) {
+      if (st) hide();
+      /* 没有 ghost / ghost 不属于这只输入框：只有裸 Tab 会碰键 */
+      if (!plainTab || !kind) return;
       const c0 = cfg();
-      if (!c0.on || !c0.manual) return;
-      if (!F.eligible(target).ok) return;
-      if (manualRun(target)) eat(ev);
-      return;
+      if (!c0.on) return; /* 总开关关掉：退回浏览器原生 Tab（含切焦点） */
+      if (c0.manual && F.eligible(target).ok && manualRun(target)) return eat(ev);
+      /* 总开关开着：这颗 Tab 归补全到底 —— 连上层自己的 Tab 缩进也不许跑
+         （用户 2026-11 需求「开启时 Tab 覆盖原本文本编辑中的 Tab 功能」；
+         要缩进就 Ctrl + Tab 关掉总开关，或改走自动补全那条路）。 */
+      return eat(ev);
     }
 
     const el = st.el;
-    if (target !== el) return hide();
     if (ev.isComposing || ev.keyCode === 229) return hide(); /* 输入法组词期不管键 */
     if (isEsc) {
       eat(ev);
@@ -1400,12 +1906,21 @@
       if (ev.shiftKey || ev.ctrlKey || ev.altKey || ev.metaKey) return hide();
       /* pending：这一次 Tab 归「等」—— 吃掉，免得又发一次请求或跑去缩进 */
       if (st.phase !== "ready") {
-        if (!alive(st)) return hide({ pending: false });
+        if (!alive(st)) {
+          hide({ pending: false });
+          /* ghost 已经过期：这颗 Tab 不归补全，但也不许挪焦点、不许给上层缩进 */
+          eat(ev);
+          return;
+        }
         eat(ev);
         return;
       }
-      /* ghost 已经过期（光标 / 值变了）就当它不在场：Tab 原样放行给上层缩进 */
-      if (!alive(st)) return hide({ pending: false });
+      /* ghost 已经过期（光标 / 值变了）就当它不在场：不采纳，Tab 也不再落到别处 */
+      if (!alive(st)) {
+        hide({ pending: false });
+        eat(ev);
+        return;
+      }
       eat(ev);
       return accept();
     }
@@ -1437,10 +1952,13 @@
   }
 
   window.MTFimOverlay = {
-    version: 2,
+    version: 5, /* v5：自己画不了字的控件连单行 ghost 也走卡片；v4 起多行一律卡片，mask 接管只留给单行 */
     label: LABEL,
     labelAccept: LABEL_ACCEPT,
     labelBusy: LABEL_BUSY,
+    labelShort: LABEL_SHORT,
+    /* 字数门槛（面板 / 自验读它；自动与手动两条路都按这一份判） */
+    minChars: MIN_CHARS,
     hide: hide,
     settings: cfg,
     accept: accept,

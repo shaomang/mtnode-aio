@@ -445,6 +445,24 @@ async function findBrowserByProfileDir(profileDir) {
   return null
 }
 
+/** 这个调试端口上那只浏览器，命令行里写的是**我们这份 profile** 吗（= 是不是我们账上那只）。
+ *
+ *  为什么必须核对（用户报的「浏览器活动时偶尔把本机浏览器全杀了」就是这么来的）：
+ *  浏览器异常退出后 state.port 还留着旧值，下一次「干净重起」的 stopBrowser 会拿这个旧端口去
+ *  fetch /json/version —— 而那个端口此刻可能已被**别人的**调试浏览器占着（另一个应用实例的
+ *  无窗口那只、别的工具的调试 Edge / Chrome、用户自己带 --remote-debugging-port 起的那只）。
+ *  一旦连上，Browser.close 一发就把对方**整个浏览器**关掉（连带它所有窗口），观感就是
+ *  「会话一动浏览器，屏幕上所有浏览器全没了」。所以关之前先核命令行：核不过一律不关。
+ *  代价：仅「没有子进程句柄」的那条路（接管来的 / 旧那只已退）会多一次 PowerShell 查询。 */
+async function portIsOurProfileBrowser(port, profileDir) {
+  const n = Number(port)
+  if (!n || !String(profileDir || '').trim()) return false
+  try {
+    const hit = await findBrowserByProfileDir(profileDir)
+    return !!(hit && Number(hit.port) === n)
+  } catch { return false }
+}
+
 /** 探活复用：profile 里的账（marker）优先，其次按命令行精确扫。
  *  返回 {port,pid,headless,how}；返回「有 pid 但没端口」= 有人拿着我们的 profile 却没开调试
  *  端口（调用方据此报一句能照着做的错）；其余情况回 null（= 真没在跑）。 */
@@ -676,6 +694,10 @@ export async function ensureBrowser(opts) {
     }
     clearMarker(profileDir, proc.pid)
     state.proc = null
+    /* 端口不能留：那只已经没了，留着这个旧端口的下一次 stopBrowser / 实况调用会去打一个
+       **可能已经被别人占上**的调试端点（Browser.close 一发就把别人的浏览器关掉）。
+       端口只跟「我们手里这只活着」绑定，退出就清零。 */
+    state.port = 0
     state.cdp = null
     state.targetId = ''
     state.driver = ''
@@ -1310,6 +1332,8 @@ export async function viewInput(params) {
 /** 停掉这只浏览器（本轮修：**先温和关、等真退出**，不再 kill 完就走）。
  *
  *  顺序（每一步都有实测依据，见文件头）：
+ *   ⓪ **先核对端口归属**：端口上那只不是我们这份 profile 的浏览器 → 当它不存在，一个字节都
+ *      不发也不清锁（否则 Browser.close 会把别人的整个浏览器关掉，见 portIsOurProfileBrowser）；
  *   ① 温和关：CDP Browser.close（接管来的那只也能这么关 —— 我们没它的进程句柄）；
  *   ② 等真退出：进程 exit 事件 + 「调试端口不再答话」两条一起看；
  *   ③ 超时还没走 → kill（**只杀我们自己 spawn 的那只**：接管来的不是我们的子进程，不碰它）；
@@ -1324,11 +1348,25 @@ export async function stopBrowser(opts) {
   if (v.off) { try { v.off() } catch {} v.off = null }
   v.on = false
   const proc = state.proc
-  const port = state.port
+  const port0 = Number(state.port) || 0
   const profileDir = state.profileDir
   const pid = (proc && proc.pid) || state.attachedPid || 0
   /* 主动关：出口处理器据此不把这一趟算成「异常退出」 */
   state.stopping = true
+  /* ⓪ 端口归属核对：句柄在手（我们 spawn 的那只还活着）→ 这个端口按构造就是它的；
+     没有句柄（接管来的 / 旧那只已经退了只剩旧端口）→ 按命令行核对 profile 与端口。
+     核不过就令 port=0：后面的 close / 等端口 / kill / 清锁**全部跳过**。 */
+  let port = port0
+  let foreign = 0
+  try {
+    if (port0) {
+      const childAlive = !!(proc && proc.exitCode === null && !proc.killed)
+      if (!childAlive && !(await portIsOurProfileBrowser(port0, profileDir))) { port = 0; foreign = port0 }
+    }
+  } catch { /* 核对本身出错：按「不是我们的」处理，宁可不关 */ port = 0; foreign = port0 }
+  if (foreign) {
+    note('browser', '端口 ' + foreign + ' 上那个调试端不是我们这份 profile 的浏览器：没有去关它（关它会连带它全部窗口），只清自己这边的账')
+  }
   let portDead = true
   try {
     if (port) { try { await closeBrowserGracefully(port, CLOSE_CDP_MS) } catch { /* 连不上就是已经没了 */ } }
@@ -1339,7 +1377,8 @@ export async function stopBrowser(opts) {
       await waitProcExit(proc, 3000)
       portDead = await waitPortGone(port, 2500)
     }
-    if (portDead && profileDir) {
+    /* 清锁只在我们核对过所有权（foreign=0）时做：核不过说明可能还有一只活口拿着这份 profile */
+    if (portDead && !foreign && profileDir) {
       const cleared = cleanStaleProfileLocks(profileDir)
       if (cleared.length) note('browser', '清掉残留锁：' + cleared.join(' / '))
     }

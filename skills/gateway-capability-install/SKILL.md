@@ -1,14 +1,22 @@
 ---
 name: gateway-capability-install
 title: 网关可选能力按需安装（浏览器自动化 / 原生协议 SDK / Markdown 渲染链 / sharp wasm）
-description: 安装包按能力组剪掉了四簇「本部署用不到」的网关依赖（browser-automation 68.75MB、cloud-native-llm 30.75MB、markdown-render、sharp-wasm，见 docs/app-size-audit.md §8 与 docs/app-deps-capability.json）。当 Agent 遇到 `Cannot find package '@anthropic-ai/sdk' / '@google/genai' / 'playwright' / '@img/sharp-wasm32' / '@shikijs/*'`，或用户要启用 dsh 浏览器自动化、要选 Anthropic / Google 原生协议时用本 skill：按 pi-ai / sharp 声明的**精确版本**把包装回**网关树自己的 node_modules**，真 import 一次验证，并说清「重装应用会覆盖」这条边界。含自我修复与回滚口径。
+description: 安装包按能力组剪掉了四簇「本部署用不到」的网关依赖（browser-automation 68.75MB、cloud-native-llm 30.75MB、markdown-render、sharp-wasm；清单真源是**仓库内**的 docs/app-deps-capability.json 与 docs/app-size-audit.md §8，两者都不随安装包分发）。当 Agent 遇到 `Cannot find package '@anthropic-ai/sdk' / '@google/genai' / 'playwright' / '@img/sharp-wasm32' / '@shikijs/*'`，或用户要启用 dsh 浏览器自动化、要选 Anthropic / Google 原生协议时用本 skill：按 pi-ai / sharp 声明的**精确版本**把包装回**网关树自己的 node_modules**，真 import 一次验证，并说清「重装应用会覆盖」这条边界。含自我修复与回滚口径。
 ---
+
+> **这条技能只存在于仓库里，不随安装包分发**（打包白名单里有 `!skills/gateway-capability-install/**`，
+> `dsh/main-dsh.js` 也不再把它同步进 DSH_HOME/skills —— 终端用户的模型看不到它）。
+> 因此下文提到的**仓库内文件**在用户机器上一律不存在，不要去找：
+> `docs/app-size-audit.md`、`docs/app-deps-capability.json`、`docs/mirror-sources.md`、
+> `cn-mirrors.js`、`scripts/app-deps-usage.mjs`、`dsh/smoke-gateway.mjs`。
+> 在用户机器上只能按「网关目录里的现场」判断（包在不在、import 通不通、网关能不能起），
+> 需要改默认口径的动作（删能力组 / 重打包）一律回到仓库做。
 
 # 网关可选能力 — 按需安装 / 修复
 
-安装包为了体积，把四簇「本部署从不加载」的网关依赖按**能力组**剪掉了（判定与清单见
-`docs/app-size-audit.md` §8 与 `docs/app-deps-capability.json`，剪枝在打包时由
-`dsh/after-pack.cjs` 经 `scripts/app-deps-rules.cjs` 按组执行）。
+安装包为了体积，把四簇「本部署从不加载」的网关依赖按**能力组**剪掉了（判定与清单只在仓库内：
+`docs/app-size-audit.md` §8 与 `docs/app-deps-capability.json`；剪枝在打包时由
+`dsh/after-pack.cjs` 经 `scripts/app-deps-rules.cjs` 按组执行 —— 这四份都不在安装包里）。
 
 | 组 key | 是什么 | 剪掉的体积 | 缺它时的现场 |
 | --- | --- | --- | --- |
@@ -54,8 +62,9 @@ description: 安装包按能力组剪掉了四簇「本部署用不到」的网�
    npm install --prefix "%GW%" --no-save --no-audit --no-fund --registry=https://registry.npmmirror.com @anthropic-ai/sdk@0.129.0
    ```
    - `--no-save`：**不要**改网关树的 `package.json` / 锁文件（那是 dsh 的，改了下次升级会冲突）。
-   - 国内镜像优先（口径见 `docs/mirror-sources.md` 与仓库根 `cn-mirrors.js`）；只有镜像站本身挂了才回退
-     `https://registry.npmjs.org`，不要改用户机器上的 `.npmrc`。
+   - 国内镜像优先：显式带 `--registry=https://registry.npmmirror.com`（口径真源是**仓库内**的
+     `docs/mirror-sources.md` 与根 `cn-mirrors.js`，两者都不随包，用户机上找不到）；只有镜像站本身挂了
+     才回退 `https://registry.npmjs.org`，不要改用户机器上的 `.npmrc`。
    - 装在 `Program Files` 下需要管理员权限；没有权限就说明「装不进安装目录」，走第 2 条前提里的仓库改法。
    - `playwright` 装完**不要**跑 `npx playwright install`（那会往磁盘再下几百 MB 浏览器内核）；
      dsh 的这几个插件用的是本机已装的 Edge/Chrome。确实需要内核时先问用户。
@@ -71,10 +80,12 @@ description: 安装包按能力组剪掉了四簇「本部署用不到」的网�
    node --input-type=module -e "import('@anthropic-ai/sdk').then(m=>console.log('ok',Object.keys(m).length)).catch(e=>{console.error('FAIL',e.message);process.exit(1)})"
    ```
    把 `@anthropic-ai/sdk` 换成实际装的那个包名，逐个跑一遍。
-6. **网关冒烟**：真起一次网关确认没被弄坏（比 import 更硬）——在仓库里跑 `node dsh/smoke-gateway.mjs`
-   （打包态就先把它拷到 `resources/dsh/` 旁边，再在那个目录里跑）。
-   期望 `exit 0`，status / pluginList / run / shutdown 全通。
-7. **收尾回报**：装了哪些包与版本、`%GW%` 绝对路径、每条的 import 结果、冒烟退出码；
+6. **网关冒烟**：真起一次网关确认没被弄坏（比 import 更硬）。`dsh/smoke-gateway.mjs` **只在仓库里**
+   （不随包，用户机上没有），所以分两种现场：
+   - 仓库 / 开发态：`node dsh/smoke-gateway.mjs`，期望 `exit 0`，status / pluginList / run / shutdown 全通；
+   - 用户机器（打包态）：无法跑它 —— 改为「关掉再开一次应用，看会话能不能正常起（引擎连接状态正常、
+     一轮对话能跑通）」，并在回报里写明这一步用的是人工冒烟而不是脚本。
+7. **收尾回报**：装了哪些包与版本、`%GW%` 绝对路径、每条的 import 结果、冒烟用的是脚本还是人工；
    并明确写一句「重装应用会覆盖，持久启用要改能力组重打包」。
 
 ## 自我修复

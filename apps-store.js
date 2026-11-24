@@ -970,9 +970,10 @@ function registerPreviewProtocol() {
       /* 带 _host=1 = 开发页中栏那只 iframe（见 previewWantsHost）：**开发页预览的永远是项目根
          那一份**（用户在改的就是它）—— 同 id 在下载根也有一份时，按 id 猜会预览到下载副本。 */
       const withHost = previewWantsHost(u);
-      /* 应用节点那一路（_anode=1，见 renderer/app-appnode.js）：应用可能在开发根、也可能在
-         下载根，所以**两套根都找**（previewDirOf 不带 kind 的口径），并把节点桥与宿主桥
-         一起注入（injectAppNodeBridge）。 */
+      /* 应用节点那一路（_anode=1，见 renderer/app-appnode.js）：**开发中那一份优先**
+          （用户口径：应用节点直接用开发中的应用，同一个 id 库里有副本时也用开发那份）；
+          dev 根没有这份时 previewDirOf 自己会回落到库里那一份，并把节点桥与宿主桥一起注入
+          （injectAppNodeBridge）。 */
       /* _anode 里放的是应用 id（应用节点自己写的）；老形态 _anode=1 只当开关，id 退回 host */
       const anodeRaw = String(u.searchParams.get("_anode") || "").trim();
       const appNodeId = anodeRaw
@@ -981,7 +982,7 @@ function registerPreviewProtocol() {
       /* URL 的 host 会被规范成小写，所以按大小写不敏感找目录 */
       const dir = previewDirOf(
         decodeURIComponent(String(u.hostname || "")) || appNodeId,
-        appNodeId ? "" : withHost ? APP_KIND_DEV : "",
+        appNodeId || withHost ? APP_KIND_DEV : "",
       );
       if (!dir) return plain(t("应用目录不存在"), 404);
       const rel = decodeURIComponent(String(u.pathname || "")).replace(/^\/+/, "");
@@ -5890,7 +5891,9 @@ function registerPreviewLease(e, arg) {
     id: sid,
     token: token,
     at: Date.now(),
-    kind: openAppDirKindOf(sid, wantKind, dir),
+    /* kind 以**实际解析出来的目录**为准：wantKind 只是偏好（应用节点要开发中那份），
+       开发那份被删 / 被搬走时 previewDirOf 会回落到库里那份，租约不能还举着 dev。 */
+    kind: rootKindOfDir(dir) || openAppDirKindOf(sid, wantKind, dir),
   };
   previewLeases.active = lease;
   previewLeases.byToken.set(token, lease);
@@ -7204,6 +7207,11 @@ function hostSpec(id, kind, opts) {
       /* 输出上限：应用显式给值才下发（不传 = 不限；不给应用设默认上限 —— 上限会把正文截断，
          而应用多半只会把它当成「模型不会用 JSON」）。 */
       maxTokens: Number(o.maxTokens) > 0 ? Math.round(Number(o.maxTokens)) : 0,
+      /* 用途标记（应用侧 opts.purpose 原样透传）：只认 "fim" = 输入补全 —— 主进程的
+         apiCall 据此给「输入补全 · 费用报告」记账（见 main.js 的 fimUsageTrack）。
+         注意 aiCall → main.js 的 apiCall 是**同一份内核**，所以这里透传一次就够了，
+         不需要第二套记账。 */
+      purpose: String(o.purpose || ""),
     },
   };
 }
