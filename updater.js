@@ -14,27 +14,26 @@
  *
  * 四个 IPC 的分工（多一个入口就是多一条错档路径，别再加）：
  *   · update:status / update:check           只读状态 / 检查（不下载不安装）
- *   · update:confirmAndStart                 「检查 + 下载」：自动链启动之后它主要是给
- *                                            「用户手点一下，现在就开始」用（回执里 installing 恒为 false，
- *                                            下载完由主进程自己接着静默预装；装仍不在这里发生）
+ *   · update:confirmAndStart                 用户点「更新」的入口：「检查 + 下载」（回执里 installing
+ *                                            恒为 false；默认档下载完**不再自动预装**，装是下一颗按钮的事）
  *   · update:install                         **唯一的就地安装入口**，要求 downloaded；先试旁路预装，
  *                                            预装不成 / 不适用时就地覆盖安装（静默，无向导窗）
  *   · update:restartToApply                  staged 之后的**唯一重启入口**；未 staged 直接
  *                                            { ok:false, error:"not_staged" }
  *   两者（install / restartToApply）失败都如实回 { ok:false, error }，绝不假装成功。
  *
- * 流程（**发现就不用问、安装全在后台静默做、只有重启要用户点**）：
- *   1. 后台定时（启动后 8 秒 + 每 6 小时）跑自动链 runAutoUpdate：先拉一次更新源的 latest.yml
- *      比版本号；没更新就到此为止（不惊动 electron-updater）。
- *   2. 有新版 → 立刻 **自动检查 + 自动下载**（差分包；差分不可用 / 失败时走自研的多连接分段
- *      全量下载器，MTNODE_UPDATE_SEGMENTS=1 可回退单连接）。不弹窗、不问「要不要更新」。
- *   3. 下载完 → **自动静默预装**（stageUpdate reason:"auto"）：NSIS 带 /S 装到同卷兄弟目录
- *      `<安装目录>.stage`，全程后台、不弹任何窗口，应用照常可用、不退出、不打扰。
- *   4. 预装成功 → **这时才提醒用户**（系统通知 + 进度条「更新已就绪」）：
- *      「装好了，点「重启并更新」即刻生效」。重启这一步仍然必须用户点
- *      （update:restartToApply → 退出瞬间交换），**绝不自己重启、自己关窗口**。
- *   5. 预装不可用（机器级安装 / 跨卷 / 低盘 / 前置闸不过）→ 包就停在「已下载」，
- *      用户点「重启并更新」时走就地静默安装（quitAndInstall，/S，无向导窗）。
+ * 流程（**开启应用不开始更新；用户点了按钮才开始，装与重启也都是用户点**）：
+ *   1. 后台定时（启动后 8 秒 + 每 6 小时）跑 runAutoUpdate，默认档下它只做**只读探测**：
+ *      拉一次更新源的 latest.yml 比版本号，只用来点亮按钮「线上 vX」；没更新就到此为止，
+ *      有更新也只是点亮，**不检查、不下载、不预装、不发 update:available**。
+ *   2. 用户点顶栏「更新」（update:confirmAndStart）= 批准检查 + 下载（差分包；差分不可用 / 失败时
+ *      走自研的多连接分段全量下载器，MTNODE_UPDATE_SEGMENTS=1 可回退单连接）。
+ *   3. 用户点「安装更新」（update:install）才装：先试旁路预装（stageUpdate reason:"user"），
+ *      预装不成 / 不适用时静默就地覆盖安装（quitAndInstall，/S，无向导窗）。
+ *   4. **重启也必须用户点**（update:restartToApply → 退出瞬间交换），
+ *      **绝不自己重启、自己关窗口**。
+ *   5. 全自动老口径（发现即下载 → 后台静默预装 → 提醒重启；只有重启要用户点）需要显式
+ *      MTNODE_UPDATE_AUTO=1 打开，默认不开。
  *   6. 退出应用**不安装任何东西、也不换任何东西**：autoUpdater.autoInstallOnAppQuit 恒为 false
  *      （见 syncQuitInstallPolicy）；退出钩子 swapOnQuit 另有一道进程内批准闸 swapApproved ——
  *      只有用户点过「重启并更新」（update:restartToApply）才置位，没置位时退出就只是退出
@@ -428,12 +427,11 @@ async function probeFeedLatestVersion() {
 }
 
 /* ── 自动更新链（发现 → 下载 → 后台静默预装；只有「重启」要用户点）────────────────
-   用户口径（这一版改了口径，别再按旧注释读）：
-     · **第一次不用确认**：后台探测到新版就直接检查 + 下载 + 静默预装，不弹窗、不问。
-     · 预装（NSIS /S 装到同卷的 `<安装目录>.stage`）全程在后台跑：应用照常用，不退出、不打扰。
-     · **预装完成之后才提醒用户重启**（系统通知 + 进度条「更新已就绪」）；重启这一步
-       仍然必须用户点（update:restartToApply → 退出瞬间交换）—— 绝不自己重启、自己关窗口。
-   MTNODE_UPDATE_AUTO=0 关掉整条自动链，退回「只读探测 + 用户点按钮」的老口径（排障用）。 */
+   默认**关闭**：这一档只做只读探测，绝不下载、绝不预装（用户口径 —— 开启应用不许自己开始更新）。
+     · 后台只拉 latest.yml 比版本号，用来点亮顶栏按钮；有新版也不检查、不下载、不发事件。
+     · 下载 / 预装 / 重启全部由用户点击驱动：update:confirmAndStart → update:install
+       → update:restartToApply。
+   MTNODE_UPDATE_AUTO=1 才打开全自动老口径（发现即检查 + 下载 + 静默预装，装好提醒重启）。 */
 let autoChainBusy = false;
 /** 失败退避：下一次允许再跑的时间戳（0 = 随时可以跑） */
 let autoChainNextAt = 0;
@@ -444,12 +442,17 @@ let autoNotifiedVersion = "";
 /** 自动链失败后的重试间隔（成功一轮就清零；6 小时那轮定时器不受它影响） */
 const AUTO_RETRY_BACKOFF_MS = 30 * 60 * 1000;
 
-/** 自动更新链路是否启用（默认启用；MTNODE_UPDATE_AUTO=0/false/off 关掉） */
+/**
+ * 后台「自动下载 + 自动预装」这条链是否启用。
+ * **默认关**（用户口径：开启应用不许自己开始更新，下载 / 预装必须等用户点「更新」按钮）。
+ * 关着的时候启动后仍会做一次**只读探测**（拉 latest.yml 比版本号，只点亮顶栏按钮的「线上 vX」），
+ * 不检查、不下载、不预装、不发 update:available。要恢复全自动老口径：MTNODE_UPDATE_AUTO=1。
+ */
 function autoUpdateEnabled() {
   const v = String(process.env.MTNODE_UPDATE_AUTO == null
     ? ""
     : process.env.MTNODE_UPDATE_AUTO).trim().toLowerCase();
-  return !(v === "0" || v === "false" || v === "off");
+  return v === "1" || v === "true" || v === "on" || v === "yes";
 }
 
 /**
@@ -559,7 +562,10 @@ async function autoInstallInBackground(trigger) {
 
 /**
  * 自动更新链的入口（后台定时器只调它）。
- * 顺序：只读探测版本号 → 完整检查 → 下载 → 后台静默预装 → 提醒重启。
+ * 默认档（MTNODE_UPDATE_AUTO 未设）下它**只做只读探测**：比完版本号就返回
+ * { ok:true, skipped:true, reason:"auto_disabled" } —— 应用启动 / 定时器都不会开始更新，
+ * 下载与预装一律等用户点按钮。显式 MTNODE_UPDATE_AUTO=1 才跑完整链：
+ * 只读探测版本号 → 完整检查 → 下载 → 后台静默预装 → 提醒重启。
  * 幂等且可重入安全：已有下载 / 已下载 / 预装中 / 已预装 / 安装中 / 上一条链还在跑
  * 一律立刻返回（不重复下、不重复装）；失败退避 30 分钟，下次定时器再试。
  * 返回 receipts 只用于日志与冒烟测试，界面状态一律经 update:status / update:staged 下发。
@@ -571,7 +577,7 @@ async function runAutoUpdate(trigger) {
   }
   setupAutoUpdater();
   if (!autoUpdater) return { ok: false, skipped: true, reason: lastError || "updater_unavailable" };
-  /* 自动链被关掉时仍保留只读探测：顶栏按钮与「线上 vX」还要亮，只是不下载不安装 */
+  /* 默认档（自动链关着）只读探测：顶栏按钮与「线上 vX」还要亮，但不下载不安装 */
   if (!autoUpdateEnabled()) {
     const v = await probeFeedLatestVersion();
     return { ok: true, skipped: true, reason: "auto_disabled", latestKnown: v };
@@ -2505,10 +2511,11 @@ async function downloadUpdate() {
     await autoUpdater.downloadUpdate();
     downloading = false;
     downloaded = true;
-    /* 下载完**立刻接着后台静默预装**（用户口径：开始更新后就不用再管，装好才提醒重启）。
+    /* 全自动老口径（MTNODE_UPDATE_AUTO=1）下：下载完**立刻接着后台静默预装**，装好才提醒重启。
        不 await：这条链可能要跑十几秒（NSIS 装到旁路目录），别让「下载完成」的回执等它；
        结论经 update:staged / update:readyToRestart 下发。并发重复调用由 afterDownloadInstallInFlight
-       与 stageUpdate 自己的幂等闸挡住。自动链被关掉（MTNODE_UPDATE_AUTO=0）时保持老口径：只停住。 */
+       与 stageUpdate 自己的幂等闸挡住。
+       默认档（自动链关着）**只停住**：包落地就等用户点「安装更新」，绝不在后台自己装。 */
     if (autoUpdateEnabled()) {
       autoInstallInBackground("download").catch(() => {});
     }
@@ -2803,10 +2810,11 @@ function startBackgroundCheck(getWin) {
   if (!app.isPackaged && process.env.MTNODE_FORCE_UPDATE !== "1") return;
   setupAutoUpdater();
   if (!autoUpdater) return;
-  /* 后台定时器 = 自动链入口 runAutoUpdate：它先做只读探测（拉 latest.yml 比版本号），
-     有新版就直接检查 + 下载 + 后台静默预装，装好才提醒用户「点重启」。整条链里
-     **没有任何一步会自己重启 / 自己关窗口**（重启只能由用户点 update:restartToApply）。
-     MTNODE_UPDATE_AUTO=0 时它退化成老的「只读探测、点亮按钮」口径。 */
+  /* 后台定时器 = 自动链入口 runAutoUpdate。**默认档它只做只读探测**（拉 latest.yml 比版本号，
+     点亮顶栏「线上 vX」），绝不检查 / 下载 / 预装 —— 开启应用不会自己开始更新。
+     下载与预装只由用户点击触发（update:confirmAndStart → update:install），
+     整条链里**没有任何一步会自己重启 / 自己关窗口**（重启只能由用户点 update:restartToApply）。
+     显式 MTNODE_UPDATE_AUTO=1 时这两个定时器才跑全自动老口径（发现即下载 + 后台静默预装）。 */
   setTimeout(() => {
     runAutoUpdate("startup").catch(() => {});
   }, 8000);
@@ -2830,12 +2838,12 @@ module.exports = {
      供冒烟测试直接驱动同一份实现，断言「后台不再查 / 不再下载」 */
   probeStoreLatestVersion,
   probeFeedLatestVersion,
-  /* 自动更新链（发现 → 下载 → 后台静默预装 → 提醒重启；只有重启要用户点）：
-        runAutoUpdate              后台定时器只调它（先只读探测，没更新就到此为止）
-        autoUpdateEnabled          MTNODE_UPDATE_AUTO=0 时整条链退回「只读探测 + 用户点按钮」
+  /* 自动更新链（**默认关**：只读探测；显式 MTNODE_UPDATE_AUTO=1 才有「发现 → 下载 → 预装」）：
+        runAutoUpdate              后台定时器只调它（默认档只做只读探测就返回）
+        autoUpdateEnabled          默认 false；MTNODE_UPDATE_AUTO=1/true/on 才打开全自动链
         autoInstallInBackground    下载完的「静默预装」那一步（幂等，几条路径共用）
         notifyRestartReady         预装完成后的唯一提醒（系统通知 + 渲染层事件；同一版只提一次）
-     供冒烟测试直接驱动同一份实现，断言「不用点也会下、会装；但绝不自己重启」 */
+     供冒烟测试直接驱动同一份实现，断言「默认不点就不下不装；开了自动链也绝不自己重启」 */
   runAutoUpdate,
   autoUpdateEnabled,
   autoInstallInBackground,

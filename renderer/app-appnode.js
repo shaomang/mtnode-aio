@@ -1241,6 +1241,13 @@ async function appNodeToolCall(id, args) {
   const api = appNodeApi();
   const tool = String(id || "");
   const a = args && typeof args === "object" ? args : {};
+  /* 画布应用节点里的一切落盘（上传 / 源码 / 产物）都归**这张画布的文件夹**（用户口径，
+     对 mtnode 所有应用同一条规则）：后端工具自己不知道画布在哪，所以在这里把工作目录一并带上。
+     认得这个键的后端（如 mt-tex-latex 的 workdir）就把自己的 work\<docId>\ 挪到
+     <工作目录>\mt-tex\<docId>\；不认识的后端忽略它，行为与以前一字不差。
+     没有工作目录的节点（用户还没给画布选文件夹）不塞这个键，后端照旧落自己的工具目录。 */
+  const toolWorkdir = appNodeWorkdir();
+  if (toolWorkdir && a.workdir == null) a.workdir = toolWorkdir;
   if (tool === "qwen-image-local" || tool === "flux3-klein-local") {
     const fn = tool === "qwen-image-local" ? api.qwenimageGenerate : api.flux3kleinGenerate;
     if (typeof fn !== "function")

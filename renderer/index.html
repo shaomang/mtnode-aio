@@ -90,6 +90,14 @@
 </head>
 <body>
 
+<!-- 主题首绘（renderer/theme-boot.js）：**必须是 <body> 的第一个子元素**、同步执行 ——
+     把主题类（body.ef-skin / theme-*）、<html data-theme> 与强调色 #themeStyle 在首帧之前
+     就落定，开机不再先闪一秒「没挂皮肤」的旧样式。取值：主进程 additionalArguments 注入的
+     --mtnode-theme（preload 暴露成 window.__MTNODE_BOOT_THEME__）→ localStorage 镜像 →
+     industrial。这份脚本同时定义全局 THEMES（设置页主题下拉与 app-db 的 applyTheme 都取它），
+     所以别挪到 body 末尾、也别挪进异步分支。 -->
+<script src="theme-boot.js"></script>
+
 <header class="topbar">
   <div class="tb-row tb-row-1">
     <div class="logo">

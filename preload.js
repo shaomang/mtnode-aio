@@ -46,6 +46,16 @@ function dshEventDispatch(_e, msg) {
 }
 ipcRenderer.on('dsh:event', dshEventDispatch);
 
+/* 首绘主题：主进程建主窗时用 additionalArguments 传 --mtnode-theme=<config.json 的 theme>，
+   这里原样交给渲染层 —— renderer/theme-boot.js 在 <body> 第一个子元素处就读它挂皮肤类，
+   不必等 config:load 回来再换肤（那是开机头一秒「旧样式」的来源）。
+   取不到就交空串，渲染层回落 localStorage 镜像 → industrial。 */
+const bootThemeArg = process.argv.find((a) => a.startsWith('--mtnode-theme='));
+contextBridge.exposeInMainWorld(
+  '__MTNODE_BOOT_THEME__',
+  bootThemeArg ? bootThemeArg.slice('--mtnode-theme='.length) : ''
+);
+
 contextBridge.exposeInMainWorld('api', {
   toFileUrl: (p) => pathToFileURL(p).href,
   getPathForFile: (f) => webUtils.getPathForFile(f),

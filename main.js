@@ -10734,6 +10734,19 @@ app.whenReady().then(() => {
   mcp()
     .start()
     .catch(() => {});
+  /* 首绘主题：把 config.json 里的 theme 提前交给渲染层（additionalArguments → preload 暴露成
+     window.__MTNODE_BOOT_THEME__ → renderer/theme-boot.js 在 <body> 第一个子元素处就挂上
+     皮肤类），窗口底色也按它取 —— 否则亮色档开机先是主窗 backgroundColor 那屏深石墨，
+     一秒后才翻成浅灰（「旧样式残留」的另一半）。读盘走与 config:load 同一份缓存，零额外 I/O。 */
+  const bootThemeName = (() => {
+    try {
+      const c = loadConfigText(join(DATA(), "config.json"));
+      const t = c && c.obj && c.obj.theme;
+      return t === "light" || t === "dsh" || t === "endfield" ? t : "industrial";
+    } catch (_) {
+      return "industrial";
+    }
+  })();
   mainWin = new BrowserWindow({
     width: 1500,
     height: 940,
@@ -10741,13 +10754,16 @@ app.whenReady().then(() => {
     minHeight: 640,
     title: I18n.t("MTNode AI工作站 · MTNode AI Orchestrator"),
     icon: join(__dirname, "build", "icon.png"),
-    backgroundColor: "#0d1016",
+    /* 底色 = 主题底（亮色 #eef1f5 对齐 css/theme-daylight.css 的 --bg；其余四档暗底同值） */
+    backgroundColor: bootThemeName === "light" ? "#eef1f5" : "#0d1016",
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
       webviewTag: true,
       preload: join(__dirname, "preload.js"),
+      /* 首绘主题（见上面 bootThemeName；preload.js 与 renderer/theme-boot.js 认这个前缀） */
+      additionalArguments: ["--mtnode-theme=" + bootThemeName],
       /* 主窗永不按「后台」对待：后台节流会把「任务跑完该响的那一拍」推迟到用户切回来。
          （实测见上面四个命令行开关那段注释：有这一条时最小化 / 被盖住都照响）。
          完成音与提问音只走渲染层 WebAudio，故「判定时机」另有一条主进程心跳兜底

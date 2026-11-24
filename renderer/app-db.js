@@ -7352,61 +7352,20 @@ function renderIxPanel() {
 
 /* ── 主题(industrial = 默认 MTNode, dsh = DSH, endfield = 终末地, light = 亮色) ──
    四档主题共用同一套皮肤（终末地那套：直角 / 45° 切角 / 发丝线 / 等宽读数 / 呼吸），
-   颜色真源在 css/theme-endfield.css 的 body.ef-skin 槽位里；applyTheme 给四档都挂
-   ef-skin，各主题只在那份 CSS 的「一·二」里换回自己的强调色（青 / 蓝 / 信号黄）。
-   这里只给「切换瞬间就要用到」的几支强调色（#themeStyle 那一段 :root 覆盖）。
-   亮色（light）：形状仍吃同一套皮肤，颜色由 css/theme-daylight.css 的令牌层
-   整段重映射（浅灰底 + 深墨字 + 青的深色版 #0b7f9b）。该文件的规则一律以
-   body.ef-skin.theme-light 起头，比 body.ef-skin 高一个类 —— 否则同权重同序
-   会被皮肤压回石墨黑（旧 theme-light.css 就是这么失效并被摘出设置窗的）。
-   验收闸门：node test/verify-theme-light-contrast.js。 */
-const THEMES = {
-  dsh: {
-    name: "DSH",
-    cyan: "#5686fe", cyan2: "#7ca2fe", orange: "#ff8f2e", orange2: "#ffb066",
-    green: "#5fd68a", red: "#ff5f56",
-  },
-  industrial: {
-    name: "MTNode",
-    cyan: "#38d6ff", cyan2: "#7ce8ff", orange: "#ff8f2e", orange2: "#ffb066",
-    green: "#5fd68a", red: "#ff5f56",
-  },
-  endfield: {
-    name: "终末地",
-    cyan: "#e2dfd2", cyan2: "#f6f4ea", orange: "#fffa00", orange2: "#f2f27a",
-    green: "#b6d94a", red: "#ff4a3d",
-  },
-  light: {
-    /* 亮色：白底上的强调色按「白底 ≥4.5:1」各收深一档，别再往亮里调 */
-    name: "亮色",
-    cyan: "#0a7489", cyan2: "#08667a", orange: "#a94f08", orange2: "#8a3f03",
-    green: "#0e5b33", red: "#96201a",
-  },
-};
+   颜色真源在 css/theme-endfield.css 的 body.ef-skin 槽位里；四档都挂 ef-skin，
+   各主题只在那份 CSS 的「一·二」里换回自己的强调色（青 / 蓝 / 信号黄）。
+   亮色（light）：形状仍吃同一套皮肤，颜色由 css/theme-daylight.css 的令牌层整段重映射。
+   验收闸门：node test/verify-theme-light-contrast.js。
+
+   **THEMES 表与「挂 ef-skin / theme-* 类 + 注入 #themeStyle 强调色」这套 DOM 活都不在这里**：
+   它们在 renderer/theme-boot.js（全仓唯一真源）—— 那份脚本是 <body> 的第一个子元素，
+   首帧之前就把主题落定；以前这里要等 config:load 回来才调 applyTheme，开机头一秒是没挂
+   皮肤的旧样式。本函数只负责「写配置 + 联动别的东西」，切换时照样立即换肤。 */
 function applyTheme(name) {
-  const t = THEMES[name] || THEMES.industrial;
-  const theme = THEMES[name] ? name : "industrial";
+  /* theme-boot.js 是 <body> 第一个子元素，正常一定已装载；万一没装载（单独引用本文件的页面）
+     就退回一个能用的名字，别让换肤把后续写盘 / 联动全带崩。 */
+  const theme = window.MTTheme ? window.MTTheme.apply(name) : (THEMES[name] ? name : "industrial");
   S.config.theme = theme;
-  document.documentElement.dataset.theme = theme;
-  /* ef-skin = 共用皮肤：三档主题都挂（css/theme-endfield.css 第一节起头的那个类）。
-     皮肤只管形状 / 纹理 / 动效 / 底盘，强调色由 body.theme-* 那几支覆盖决定。 */
-  document.body.classList.add("ef-skin");
-  document.body.classList.toggle("theme-industrial", theme === "industrial");
-  /* theme-dsh：DSH 档以前一个类都不挂（靠 base.css 的默认槽位 + 上面那段 :root 强调色），
-     皮肤要按主题换色就得有个可选的钩子 —— 挂上它，CSS 里 body.ef-skin.theme-dsh 才命中。 */
-  document.body.classList.toggle("theme-dsh", theme === "dsh");
-  document.body.classList.toggle("theme-light", theme === "light");
-  document.body.classList.toggle("theme-endfield", theme === "endfield");
-  let el = $("#themeStyle");
-  if (!el) {
-    el = document.createElement("style");
-    el.id = "themeStyle";
-    document.head.appendChild(el);
-  }
-  el.textContent =
-    ":root{--cyan:" + t.cyan + ";--cyan2:" + t.cyan2 +
-    ";--orange:" + t.orange + ";--orange2:" + t.orange2 +
-    ";--green:" + t.green + ";--red:" + t.red + "}";
   /* DeepSeek 引导海报有深 / 亮两版：切主题时正在显示的那一张当场换掉，不留深色残留 */
   const poster = document.getElementById("dsKeyPoster");
   if (poster) poster.src = theme === "light" ? "deepseek-guide-light.svg" : "deepseek-guide.svg";
