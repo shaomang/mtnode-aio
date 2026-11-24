@@ -16941,8 +16941,8 @@ function buildRemovedPluginBody(node, body) {
 }
 
 function buildBody(node, body) {
-  /* 应用节点（kind appnode）：卡片 = 应用名 + 状态（点 body 进全屏应用界面），
-     界面的浮层与页面桥都在 renderer/app-appnode.js（未载入时照旧渲染空卡片）。 */
+  /* 应用节点（kind appnode）：卡片 = 应用名 + 状态（点 body **弹出独立窗口**跑这个应用），
+     卡片与窗口那条链都在 renderer/app-appnode.js（未载入时照旧渲染空卡片）。 */
   if (node.kind === "appnode" && typeof appNodeBuildBody === "function") {
     appNodeBuildBody(node, body);
     return;

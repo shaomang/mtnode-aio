@@ -5741,13 +5741,13 @@
     "应用": "App",
     /* 应用节点（kind appnode · renderer/app-appnode.js）*/
     "应用节点": "App node",
-    "应用节点（钉一个应用 · 点开全屏界面）": "App node (pin an app · open full screen)",
-    "应用节点（绑定应用 · 点开全屏应用界面）": "App node (bind an app · open its full-screen UI)",
+    "应用节点（钉一个应用 · 点开弹出独立窗口）": "App node (pin an app · opens its own window)",
+    "应用节点（绑定应用 · 点开弹出独立窗口）": "App node (bind an app · opens its own window)",
     "选择应用": "Pick an app",
     "选择应用（一次性）": "Pick an app (one-time)",
-    "选一次即固定：之后点卡片进入应用界面":
-      "Chosen once and fixed: afterwards click the card to open the app",
-    "点击进入应用界面": "Click to open the app",
+    "选一次即固定：之后点卡片弹出独立窗口":
+      "Chosen once and fixed: afterwards click the card to open its window",
+    "点击弹出独立窗口": "Click to open in its own window",
     "界面已打开（右上角 ✕ 收起）": "Open (close with ✕ at top right)",
     "界面已打开（右上角可收起或停止）": "Open (collapse or stop from the top right)",
     "后台运行中 · 点这里回到界面": "Running in background · click to reopen",
@@ -5759,6 +5759,7 @@
     "已在独立窗口运行 · 点卡片回到画布界面":
       "Running in its own window · click the card to bring it back to the canvas",
     "已在独立窗口打开（画布界面已收起）": "Opened in its own window (the canvas view collapsed)",
+    "已在独立窗口打开": "Opened in its own window",
     "完全停止应用": "Stop app completely",
     "结束这个应用的运行（释放内存，数据已保存）；下次点卡片重新启动":
       "End this app's run (frees memory; data is saved); click the card to start it again",

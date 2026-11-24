@@ -1262,7 +1262,7 @@ const NODE_DEFAULTS = {
     running: false,
   },
   /* 应用节点（kind appnode）：一颗节点钉一个应用。**纯启动器** —— 无端子、不参与运行，
-     点卡片 body 就在画布区里开全屏应用界面（iframe），关掉只是收起、应用继续后台跑。
+     点卡片 body 就**弹出独立窗口**跑这个应用（apps:openWindow + preload-app.js）。
      appId = 绑定的应用（选一次即固定，仅「应用不可用」时可重新绑定）；appTitle / appEntry /
      appDir 只作显示与加载；appDataDir / appDataFile 是它的数据落点
      （<画布工作目录>/apps-data/<appId>/data.json）。界面与桥见 renderer/app-appnode.js。 */
@@ -9870,7 +9870,7 @@ function nodeKindPurposeKey(node) {
     net_recv: "网络 · 接收（监听通道 · 异步转发收到的文本）",
     net_send: "网络 · 发送（把通道文本推送到远端）",
     execute: "执行节点（绑定可执行文件 · 一键启动）",
-    appnode: "应用节点（点开全屏应用界面 · 页面经桥读写画布 / 调 agent）",
+    appnode: "应用节点（点开弹出独立窗口 · 页面经桥读写画布 / 调 agent）",
     function: "函数节点（JS 计算 · 参数即端子）",
     save: "保存（按输入自判文本 / 图像 / 音频 / 视频）",
     save_text: "保存（按输入自判文本 / 图像 / 音频 / 视频）",
@@ -23516,11 +23516,11 @@ function canvasCreateMenuGroups(pt) {
     /* 应用节点：与左侧栏「应用节点」分类同一口径，**单独占一组**。
        不挂在「控制节点」二级菜单里 —— 那层默认收着，用户完全找不到（本轮实测反馈）。 */
     [
-      I18n.t("应用节点（钉一个应用 · 点开全屏界面）"),
+      I18n.t("应用节点（钉一个应用 · 点开弹出独立窗口）"),
       [
         ctxKindItem(
           "appnode",
-          I18n.t("应用节点（绑定应用 · 点开全屏应用界面）"),
+          I18n.t("应用节点（绑定应用 · 点开弹出独立窗口）"),
           () => addNode("appnode", pt.x, pt.y),
         ),
       ],

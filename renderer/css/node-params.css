@@ -1,4 +1,4 @@
-﻿/* ============ 节点「参数」端子 + 输入文本节点的 JSON 表单 ============
+/* ============ 节点「参数」端子 + 输入文本节点的 JSON 表单 ============
    两个来源都在这一个文件里：
      · renderer/app-node-params.js —— 参数端子（.np-port / .np-chip / 设置窗明细表 .np-ovr-table）
        与 JSON 表单（.np-json-*）
@@ -99,7 +99,7 @@
 }
 body.ef-skin.theme-light .np-q-tip {
   border-color: rgba(0, 0, 0, 0.14);
-  background: #fff;
+  background: var(--pop-bg);
   color: #24303c;
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.16);
 }
@@ -288,6 +288,6 @@ body.ef-skin.theme-light .np-json-scroll {
 body.ef-skin.theme-light .np-row input[type="text"],
 body.ef-skin.theme-light .np-row input[type="number"],
 body.ef-skin.theme-light .np-ops input[type="text"] {
-  background: #fff;
+  background: var(--field-bg);
   border-color: rgba(0, 0, 0, 0.16);
 }

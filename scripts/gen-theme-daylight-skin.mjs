@@ -138,13 +138,17 @@ const ACCENTS = [
 ];
 const ACCENT_MAP = new Map(ACCENTS.map(([a, b]) => [a, b]));
 
-/* ── 二、面（background*）分档：源越暗 → 亮色侧越白，保持「谁在谁上面」的层序 ── */
+/* ── 二、面（background*）分档：源越暗 → 亮色侧越亮，保持「谁在谁上面」的层序 ──
+   v5（用户口径「亮色不许出现纯白背景」）：整条阶梯下一档，#ffffff 换成最亮的淡灰
+   #f7f9fb（= 手写层 --panel）。生成层里几百条写死的白底就是第一档来的，改这里一处即可。
+   分档与 theme-daylight.css 令牌层同步：0.035→--panel / 0.075→--panel2 / 0.23→--bg /
+   0.45→--bg2，任意相邻两档仍保持 ≥1.03 的层次，不会糊成一片。 */
 const BG_BUCKETS = [
-  [0.035, "#ffffff"],
-  [0.075, "#fbfcfe"],
-  [0.13, "#f5f7fa"],
-  [0.23, "#eef2f7"],
-  [0.45, "#e6ebf2"],
+  [0.035, "#f7f9fb"],
+  [0.075, "#f2f5fa"],
+  [0.13, "#edf1f7"],
+  [0.23, "#e8ecf3"],
+  [0.45, "#e1e6ef"],
 ];
 /* ── 三、线（border* / outline* / fill / stroke）→ 亮色侧三级梯度 ────────
    亮色的描边只有三档，全部取 css/theme-daylight.css 的令牌，不再各造一支灰：

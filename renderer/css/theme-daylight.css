@@ -31,6 +31,23 @@
        这组要一起降档：--line-strong #737d8c（白 4.17 / 壳 3.54）、--line #ccd3dd（1.51）、
        --line-hair #dfe5ec（1.27）—— 只改壳不改描边就是本条最容易翻的车。
 
+   ── v5：不许出现纯白面（全站压成淡灰）────────────────────────────────────────
+   用户口径：亮色主题下面向用户的整块底**不能是 #ffffff**（满屏纯白刺眼），一律换灰 / 淡灰。
+   做法是「整条层序下一档」，而不是把面板单独涂灰（那样面板与壳只差 1.02，层次就没了）：
+     卡片 --panel #ffffff → #f7f9fb（最亮面，1.00）
+     次级面板 --panel2 #f6f8fb → #f0f4f9（1.05）
+     画布底 / 壳 --bg #eef1f5 → #e8ecf3（1.12）
+     次级底 --bg2 #e7ecf2 → #e1e6ef（1.19）
+     输入件 --field-bg / 皮肤 --ef-input #ffffff → #f4f7fb；浮层 --pop-bg → #f8fafc；
+     代码块 / 皮肤画布 --code-bg / --ef-canvas → #e8ecf3；行 / 表头 --row-alt、--row-head 同步下一档。
+   联动（必守）：面一深，描边必须跟着深 ——
+     --line-hair #e3e8ef → #dde3ec（对新面 1.22，仍过装饰档 1.2）
+     --line #d0d5dd → #c6ccd6（1.53，仍过外框档 1.5）
+     --line-strong #79838f 不动（3.70，控件档 3.0 有富余）
+   生成层（theme-daylight-skin.css）里那几百条写死 #ffffff 的底由 scripts/gen-theme-daylight-skin.mjs
+   的 BG_BUCKETS 第一档统一换成淡灰，改那里再重跑，别手改生成物。
+   下面「色卡」表的底 / 面板 / 浮层 / 输入几行是 v4 值，v5 以本节为准（字色与强调色的数字没变）。
+
    色卡（WCAG 对比度；「白底」= #ffffff，「新壳」= #eef1f5。本节数字一律按闸门脚本
    test/verify-theme-light-contrast.js 的同一套公式重算 —— v2/v3 那版手写的 18.4 / 6.45
    实为 17.75 / 6.37（差 0.1~0.7），以本节为准）：
@@ -119,28 +136,30 @@
    所有强调色都按「白底上 ≥4.5:1」挑过一档，不要再往亮里调。 */
 body.ef-skin.theme-light {
   /* 一·一 应用槽位（base.css 同名槽位的亮色值）
-     层次四步（对白）：卡片 1.00 > 次级面板 1.06 > 画布底 1.13 > 次级底 1.19 ——
-     「灰壳 + 白面」就是靠这四步立起来的，底与底之间不靠描边也分得开。 */
-  --bg: #eef1f5;
-  --bg2: #e7ecf2;
-  --panel: #ffffff;
-  --panel2: #f6f8fb;
-  /* 描边三级梯度：白底 1.23 / 1.47 / 3.85:1 —— 依次是「纯装饰」「外框立边界」
-     「控件可见边界（WCAG 1.4.11 要求 ≥3:1）」。控件档对画布底 #eef1f5 是 3.40:1、
-     对次级底 #e7ecf2 是 3.24:1，表单件坐在 --code / 画布底上也立得住
-     （旧档 #8a94a3 在那一层只有 2.83）。 */
-  --line-hair: #e3e8ef;
-  --line: #d0d5dd;
-  /* 控件档原为 #8a94a3（白底 3.07）→ #7e8898（白底 3.58，但压到新壳 #eef1f5 上只剩 3.16，
-     太贴 3:1 那条线）→ 现值 #79838f：白底 3.85、新壳 3.40、次级底 3.24，三种底都留出余量。
-     这条联动是硬约束：**壳再往深里改，这一档必须跟着往深里走**（文件头 v4 一节给了备用壳
-     的整组值），否则新壳会把控件边吃到 3.0 以下。 */
+     v5：**亮色下不再出现纯白面**（用户口径：满屏 #ffffff 刺眼，底一律用灰 / 淡灰）。
+     四步层序跟着整体下一档（对最亮的面 --panel 计）：
+       卡片 1.00 > 次级面板 1.05 > 画布底 1.12 > 次级底 1.19 —— 仍是四步单调，
+     只是最亮那一步从 #ffffff(1.00) 换成淡灰 #f7f9fb，白面不再出现在任何整块底上。 */
+  --bg: #e8ecf3;
+  --bg2: #e1e6ef;
+  --panel: #f7f9fb;
+  --panel2: #f0f4f9;
+  /* 描边三级梯度：对最亮面 --panel(#f7f9fb) 1.22 / 1.53 / 3.70:1 —— 依次是「纯装饰」
+     「外框立边界」「控件可见边界（WCAG 1.4.11 要求 ≥3:1）」。v5 底整体压深一档后
+     描边跟着压深，否则发丝线与外框档会被灰面吃掉（v4 的 #e3e8ef / #d0d5dd 压在新面上
+     只剩 1.19 / 1.40，双双掉到闸门以下）。控件档对画布底 #e8ecf3 是 3.32:1、
+     对次级底 #e1e6ef 是 3.16:1，够用不必再动。 */
+  --line-hair: #dde3ec;
+  --line: #c6ccd6;
+  /* 控件档原为 #8a94a3（白底 3.07）→ #7e8898（白底 3.58，但压到新壳上只剩 3.16，
+     太贴 3:1 那条线）→ 现值 #79838f：对 --panel 3.70、画布底 3.32、次级底 3.16。
+     这条联动是硬约束：**面再往深里改，这一档必须跟着往深里走**，否则控件边会掉到 3.0 以下。 */
   --line-strong: #79838f;
   --bd: var(--line);            /* 旧 #ccd6e4：结构框 → 二级 */
   --bd2: var(--line-strong);    /* 旧 #b3c0d2：控件边 → 三级 */
   --ink: #101828;
   --muted: #475467;
-  --code: #eef1f5;
+  --code: #e8ecf3;
   /* 强调与「运行中」都收在蓝族里（令牌名 --cyan / --orange 是历史遗留，值早已不是青与橙）：
      主强调 #155fb0 白底 6.37:1、新壳 5.62:1，既能当字色也能当按钮底反白字；
      深一档 #10457f 白底 9.63:1、新壳 8.50:1，给 hover / 选中态 / 运行中标识。
@@ -165,7 +184,7 @@ body.ef-skin.theme-light {
   --red-rgb: 150, 32, 26;
 
   /* 一·二 输入件（input / textarea / select / 参数表单）：底与字成对给 */
-  --field-bg: #ffffff;
+  --field-bg: #f4f7fb;          /* v5：输入件不再是纯白面，取比卡片(1.00)浅一档的淡灰(1.03) */
   --field-ink: #101828;
   --field-line: var(--line-strong); /* 旧 #b3c0d2 白底 1.9:1 → 3.85:1，一眼能看出框 */
   --field-line-hi: var(--cyan);
@@ -173,16 +192,16 @@ body.ef-skin.theme-light {
                                    它只坐白面 --field-bg：压在新壳 #eef1f5 上只有 4.39，
                                    所以不许拿它当壳上的字色 —— 壳上要弱化字用 --muted（6.79）。 */
   --field-sel: #e8f0fb;         /* 输入框内选中文字的底（蓝族淡底） */
-  --field-disabled-bg: #eceff4; /* 本档不跟随新壳：它只出现在白面表单里（1.15 vs 白），禁用字 3.26 过图形档 */
+  --field-disabled-bg: #e4e9f0; /* 禁用底（v5 跟面同步压深一档），禁用字 3.08 过图形档 */
   --field-disabled-ink: #7b8496;
 
   /* 一·三 浮层 / 弹窗 / 菜单（设置窗、搜索、查找、灯箱、提示、右键菜单） */
-  --pop-bg: #ffffff;
+  --pop-bg: #f8fafc;            /* v5：浮层也不给纯白，取全站最亮的一档淡灰 */
   --pop-ink: #101828;
   --pop-line: var(--line);      /* 浮层外框：1px 线立边界，不靠影子 */
   /* 浮层标题条从 1.06 提到 1.09：壳压到 1.13 之后，标题条若还停在 1.055 就成了全屏最白的
      一层，浮层头与体分不开。取 #f2f5fa：对白 1.09，字压上去 ink 16.24 / muted 7.03。 */
-  --pop-head: #f2f5fa;
+  --pop-head: #eef2f8;
   --pop-muted: #475467;
   /* 蒙层浓度：暗色那层是 45~96% 的黑纱。生成层把近黑半透明底一律按「淡墨」翻，于是
      #overlay / 设置窗 / 灯箱这些全屏蒙层都只剩 14% —— 浅底上等于没压，白浮层压在
@@ -193,11 +212,11 @@ body.ef-skin.theme-light {
   --pop-scrim: rgba(16, 24, 40, .34);
 
   /* 一·四 代码块 / 表格 / 行 */
-  --code-bg: #eef1f5;           /* 跟随画布底：代码块是在白卡里挖出的「凹陷面」，1.13 一眼看得出 */
+  --code-bg: #e8ecf3;           /* 跟随画布底：代码块是在卡片里挖出的「凹陷面」，1.12 一眼看得出 */
   --code-ink: #101828;
   --code-line: var(--line-hair);
-  --row-alt: #f6f8fb;           /* 与 --panel2 同档：1.06，比表头浅一步 */
-  --row-head: #ecf0f6;          /* 表头压到 1.14 —— 隔行与表头要分得开（1.06 → 1.14） */
+  --row-alt: #eff3f8;           /* 与 --panel2 同档：1.05，比表头浅一步 */
+  --row-head: #e6ebf3;          /* 表头压到 1.12 —— 隔行与表头要分得开（1.05 → 1.12） */
   /* 悬停 / 选中保留半透明（合成而不是实色）：这两个值的主要消费者是顶栏 / 状态栏那排
      按钮，底是**壳色**不是白色。任务 1 建议的实色 #e9f0fa 压在新壳 #eef1f5 上只有 1.01，
      等于没有 hover；.10 / .14 的蓝合成后对白 1.16 / 1.23、对新壳 1.13 / 1.19，任何浅底
@@ -217,12 +236,12 @@ body.ef-skin.theme-light {
   /* 一·六 共用皮肤（css/theme-endfield.css 的 --ef-* 槽位）的亮色重映射。
      皮肤那 2600 行里凡是走变量的部件都随这里变色，不必逐条覆盖；
      写死石墨色的部件由二节起的覆盖层处理（审计脚本会列出漏网的）。 */
-  --ef-black: #eef1f5;
-  --ef-canvas: #eef1f5;
-  --ef-surface: #e7ecf2;
-  --ef-panel: #ffffff;
-  --ef-card: #ffffff;
-  --ef-input: #ffffff;
+  --ef-black: #e8ecf3;
+  --ef-canvas: #e8ecf3;
+  --ef-surface: #e1e6ef;
+  --ef-panel: #f7f9fb;
+  --ef-card: #f7f9fb;
+  --ef-input: #f4f7fb;
   --ef-line: var(--line);
   --ef-line-2: var(--line-strong);
   --ef-text: #101828;
@@ -396,7 +415,7 @@ body.ef-skin.theme-light .wf-node .n-title {
    只写 .n-help-btn 权重不够，会被它用半透明绿底盖回去（实测压出 2.4:1 的绿字灰底）。 */
 body.ef-skin.theme-light .n-play,
 body.ef-skin.theme-light .n-play.n-help-btn {
-  background: #ffffff;
+  background: var(--panel);
   border: 1px solid var(--line-strong);
   color: var(--green);
 }
@@ -405,7 +424,7 @@ body.ef-skin.theme-light .n-play.n-help-btn {
    亮色下给它实白底 + 描边，字走 --red（7:1）。 */
 body.ef-skin.theme-light .rq-item .rq-stop,
 body.ef-skin.theme-light .rq-stop {
-  background: #ffffff;
+  background: var(--panel);
   border: 1px solid var(--line-strong);
   color: var(--red);
 }
@@ -444,7 +463,7 @@ body.ef-skin.theme-light .n-status.block {
 
 body.ef-skin.theme-light .port-badge {
   color: var(--muted);
-  background: #ffffff;
+  background: var(--panel);
   border-color: var(--line);
 }
 
@@ -511,7 +530,7 @@ body.ef-skin.theme-light .run-queue {
       var(--line) calc(50% - var(--rq-cut-w)),
       var(--line) calc(50% + 1px),
       transparent calc(50% + 1px)) no-repeat right top / 14px 14px border-box,
-    #ffffff;
+    var(--pop-bg);
   border: 1px solid var(--line);
   box-shadow: var(--shadow-pop);
 }
@@ -553,13 +572,13 @@ body.ef-skin.theme-light .rq-count {
      on / 选中 = 强调实底（--ef-signal 渐变）+ 白字，见下方二·○；
      disabled  = --field-disabled 那对实色（底 / 字），不叠透明度。 */
 body.ef-skin.theme-light .topbar {
-  background: #ffffff;
+  background: var(--panel);
   border-bottom: 1px solid var(--line);
   box-shadow: 0 1px 2px rgba(29, 42, 68, .05);
 }
 
 body.ef-skin.theme-light .statusbar {
-  background: #ffffff;
+  background: var(--panel);
   border-top: 1px solid var(--line);
   color: var(--muted);
 }
@@ -771,8 +790,8 @@ body.ef-skin.theme-light .wf-node.tool-node:not(.super-open) {
 /* 节点层 / 开发节点「包体」面板：浅色版（仅渐变 + 阴影） */
 body.ef-skin.theme-light .super-folder-body {
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, .75) 0%, rgba(255, 255, 255, .2) 42%, rgba(120, 140, 180, .1) 100%),
-    linear-gradient(180deg, #eef2f8, #dee5ef);
+    linear-gradient(180deg, rgba(255, 255, 255, .5) 0%, rgba(255, 255, 255, .12) 42%, rgba(120, 140, 180, .1) 100%),
+    linear-gradient(180deg, #e9eef6, #dde4ee);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, .9),
     inset 0 2px 5px rgba(30, 45, 70, .07),
@@ -785,12 +804,12 @@ body.ef-skin.theme-light .super-folder-title {
 
 body.ef-skin.theme-light .n-super-note-btn {
   border-color: var(--line-strong);
-  background: rgba(255, 255, 255, .5);
+  background: var(--panel2);
   color: #5a6472;
 }
 
 body.ef-skin.theme-light .n-super-note-btn.on {
-  border-color: #7d97bd;
+  border-color: #6a84ab;
   background: rgba(120, 150, 190, .16);
   color: #1e222b;
 }
@@ -801,9 +820,9 @@ body.ef-skin.theme-light .wf-node.in {
   background: linear-gradient(180deg, #eef4fd, #f7fbfe);
 }
 
-/* 音频 / 视频输入：播放器底色在浅色下改成正白，「输出 URL」徽标改深青 */
+/* 音频 / 视频输入：播放器底色在浅色下改成淡灰面（v5 不再用纯白），「输出 URL」徽标改深青 */
 body.ef-skin.theme-light .wf-node.in-media .n-av-el {
-  background: #ffffff;
+  background: var(--panel);
 }
 
 body.ef-skin.theme-light .wf-node.in-media .n-chip.av-chip {
@@ -1407,7 +1426,7 @@ body.ef-skin.theme-light .wf-node.browse .md code {
   border-color: rgba(20, 30, 45, .14);
 }
 body.ef-skin.theme-light .wf-node.browse .md pre {
-  background: rgba(255, 255, 255, .62);
+  background: var(--code-bg);
   border-color: var(--line-hair);
 }
 body.ef-skin.theme-light .wf-node.browse .md pre code {
@@ -1674,7 +1693,7 @@ body.ef-skin.theme-light .dsh-live-dot::before {
 }
 body.ef-skin.theme-light .agent-tools-menu,
 body.ef-skin.theme-light .agent-menu {
-  background: #fff;
+  background: var(--pop-bg);
   border-color: var(--line);
   color: var(--ink);
 }
@@ -1695,7 +1714,7 @@ body.ef-skin.theme-light .agent-tools-preset {
 }
 body.ef-skin.theme-light .agent-tools-preset-sel {
   border-color: var(--line-strong);
-  background: #fff;
+  background: var(--field-bg);
   color: var(--ink);
 }
 body.ef-skin.theme-light .agent-tools-toggles {
@@ -1964,7 +1983,7 @@ body.ef-skin.theme-light .wfb-item.on {
   background: rgba(255, 143, 46, .14);
 }
 body.ef-skin.theme-light .wfb-list {
-  background: rgba(255, 255, 255, .6);
+  background: var(--panel2);
 }
 
 /* ── 函数节点 JS 代码编辑器（.js-edit 三层）：浅色底上的 token 与行号配色 ──
@@ -2407,4 +2426,24 @@ body.ef-skin.theme-light .fn-ctx .ctx-kind-icon.kind-dk-interface {
    抬到 --muted（压在它自己那层 5% 灰上 6.9:1）；.draft.on 的 80% 墨本就在 7:1，不动。 */
 body.ef-skin.theme-light .breeze-preset-item.draft {
   color: var(--muted);
+}
+
+/* ── 六·○ 顶栏 Logo：亮色下**保住身份色**（橙框 + 蓝点 + 黑芯）─────────────────
+   皮肤层把 .logo-mark 的深底一律翻成近白渐变（生成层 BG_BUCKETS 第一档），于是亮色下
+   左上角那枚 Logo 变成「浅块 + 蓝描边 + 蓝角点」，只剩形状、没有身份色。用户口径：
+   Logo 保持橙 + 蓝，中间是黑的。这里用字面值把三支身份色钉回来 —— 不能走 --orange /
+   --cyan：这两个令牌在亮色里整族搬到了深蓝族，跟着走 Logo 就永远没有橙与蓝。
+     外框 = 品牌橙 #ff8f2e（暗色档 layout.css 那圈 2px 橙框是同一支）
+     角点 = 品牌青蓝 #38d6ff（暗色档的 var(--cyan)）
+     芯   = 近黑 #1b1f27 → #05070c（「中间是黑色的设计」）
+   字标 .logo-txt 仍走 --ef-plate（深墨 #101828，压在灰壳上 ~15:1），随主题走不受影响。 */
+body.ef-skin.theme-light .logo-mark {
+  background: linear-gradient(135deg, #1b1f27, #05070c);
+  border: 1px solid #ff8f2e;
+  box-shadow: 0 0 0 3px rgba(255, 143, 46, .14), inset 0 0 10px rgba(255, 143, 46, .2);
+}
+
+body.ef-skin.theme-light .logo-mark::before,
+body.ef-skin.theme-light .logo-mark::after {
+  background: #38d6ff;
 }

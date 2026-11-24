@@ -456,7 +456,7 @@ body.ef-skin.theme-light .ba-row:nth-child(odd) { background: rgba(0, 0, 0, 0.02
 body.ef-skin.theme-light .ba-row .ba-t { color: #8592a8; }
 body.ef-skin.theme-light .ba-row .ba-k { color: #41506b; background: rgba(0, 0, 0, 0.06); }
 body.ef-skin.theme-light .ba-row .ba-x { color: #26324a; }
-body.ef-skin.theme-light .ba-filter input { background: #fff; color: #26324a; border-color: rgba(0, 0, 0, 0.14); }
+body.ef-skin.theme-light .ba-filter input { background: var(--field-bg); color: #26324a; border-color: rgba(0, 0, 0, 0.14); }
 body.ef-skin.theme-light .ba-foot { color: #66738c; }
 body.ef-skin.theme-light .ba-live-head { color: #41506b; }
 body.ef-skin.theme-light .ba-live-head > span:first-child { color: #1d2a44; }

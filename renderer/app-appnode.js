@@ -1,16 +1,16 @@
 "use strict";
 /* renderer/app-appnode.js — 应用节点（kind appnode）
  * ============================================================================
- * 一颗节点 = 一个钉在画布上的应用：卡片上点一下，就在**画布区**里展开一块可关闭的
- * 全屏界面（#canvas 的矩形内、不盖顶栏），界面正文是 mtnode-preview:// 的一只 iframe
- * —— 也就是应用中心里那个应用的静态页（index.html + 相对路径资源原样照跑）。
+ * 一颗节点 = 一个钉在画布上的应用：卡片上点一下，**弹出独立窗口**跑这个应用
+ * （主进程 apps:openWindow → BrowserWindow + preload-app.js，与应用中心「打开」同一条链）。
  *
  * 与用户敲定的共识逐条对应（改之前先看这里，别自作主张）：
  *   ① 页面来源：绑应用中心里已有的应用，节点只存 appId（appTitle / appEntry 只作显示）；
- *   ② 全屏形态：主窗口内的画布区浮层 + iframe，不是独立窗口、也不盖顶栏；
+ *   ② 打开形态：**独立窗口**（用户口径：应用不再嵌在画布中）。下面那套画布内 iframe 浮层
+ *      机制（appNodeOpen / appNodeEnsureHost / 预览租约）保留未删，但卡片已不再走它；
  *   ③ 可绑范围：本机全部应用（开发根 + 下载根），清单由 apps-node-store.js 给；
  *   ④ 选择一次性：卡片上一个按钮，选完即不可改（只有应用不可用时才露出「重新绑定」）；
- *   ⑤ 打开方式：点卡片 body 进界面；应用不可用时打开的是提示页；
+ *   ⑤ 打开方式：点卡片 body **弹出独立窗口**（appNodeUndock）；应用不可用时只提示，不开窗；
  *   ⑥ 桥：沿用 window.appHost，新增 canvas / agent / fs / tools / net 子命名空间；
  *   ⑦ 粒度：**逐类白名单**（见 APPNODE_METHODS），绝不代理整个 window.api；
  *   ⑧ 写画布：全量读写，每次写入先 pushHistory（并入撤销栈）；
@@ -230,7 +230,7 @@ function appNodeBuildBody(node, body) {
     };
     card.appendChild(btn);
     const hint = appNodeEl("div", "appnode-hint");
-    hint.textContent = appNodeT("选一次即固定：之后点卡片进入应用界面");
+    hint.textContent = appNodeT("选一次即固定：之后点卡片弹出独立窗口");
     card.appendChild(hint);
     body.appendChild(card);
     return;
@@ -269,16 +269,13 @@ function appNodeBuildBody(node, body) {
   }
   const running = APPNODE.nodeId === node.id;
   const isOpen = running && APPNODE.host && !APPNODE.host.hidden;
-  /* appUndocked：上一次是点「在独立窗口打开」把它弹出去的（见 appNodeUndock）——
-     画布这一帧已经停了，卡片上要说清「应用在窗口里跑着」，而不是「点这里进界面」 */
-  const undocked = !running && node.appUndocked === true;
+  /* 应用**不再嵌在画布里**（用户口径，改之前先看这里）：卡片点下去直接弹独立窗口，
+     画布区不再挂 iframe 浮层。appUndocked 只留作「上一次是弹出去的」这句文案。 */
   stateEl.textContent = isOpen
     ? appNodeT("界面已打开（右上角可收起或停止）")
     : running
       ? appNodeT("后台运行中 · 点这里回到界面")
-      : undocked
-        ? appNodeT("已在独立窗口运行 · 点卡片回到画布界面")
-        : appNodeT("点击进入应用界面");
+      : appNodeT("点击弹出独立窗口");
   card.appendChild(stateEl);
   if (node.appDataDir) {
     const dirEl = appNodeEl("div", "appnode-dir");
@@ -303,11 +300,11 @@ function appNodeBuildBody(node, body) {
   /* 绑定后整块卡片就是「进入应用」的按钮：加个类让 CSS 给出按钮底 + hover / 按下动效，
      用户一眼能看出这里可点（整块可点，不只是那行状态文字）。 */
   card.classList.add("appnode-card--cta");
-  /* 点卡片 = 打开（界面开着时卡片在浮层底下，本来就点不到）；
-     关闭只走浮层右上角 ✕ / Esc —— 连点两下也只是重复打开，不会开了又关。 */
+  /* 点卡片 = 弹出**独立窗口**（应用不再嵌在画布里）。窗口那条链与应用中心「打开」同一条：
+     主进程 apps:openWindow → BrowserWindow + preload-app.js。开新的前会把旧窗口收掉。 */
   card.onclick = (ev) => {
     ev.stopPropagation();
-    appNodeOpen(node);
+    appNodeUndock(node);
   };
   body.appendChild(card);
 }
@@ -795,21 +792,27 @@ function appNodeCollapseForOther(appId) {
   appNodeClose();
   return true;
 }
-/* 弹出到独立窗口（undock）：把这个应用的界面交给 app 独立窗口，画布这一帧随即停掉。
-   为什么顺手停掉：同一时间只允许一个应用打开（两份实例一起活着就是两个应用在跑，会抢后端 / 抢数据）；
-   停掉之后浮层收起、看到的就是画布本身 —— 这就是用户要的「原窗口返回到画布状态」。 */
-async function appNodeUndock() {
-  const node = appNodeById(APPNODE.nodeId);
+/* 弹出到独立窗口：应用界面的唯一打开方式（画布不再内嵌 iframe 界面）。
+   nodeArg 给了就开那一颗节点的应用（点卡片走这条）；不给则开画布当前开着的那一份。
+   顺手停掉画布这一帧：同一时间只允许一个应用打开（两份实例一起活着会抢后端 / 抢数据）。 */
+async function appNodeUndock(nodeArg) {
+  const node = nodeArg && nodeArg.appId ? nodeArg : appNodeById(APPNODE.nodeId);
   const appId = String((node && node.appId) || APPNODE.appId || "");
   if (!appId) return;
+  if (node && node.appMissing) {
+    appNodeToast(appNodeT("应用不可用（目录已不在本机）"), "err");
+    return;
+  }
   const api = appNodeApi();
   if (typeof api.appsOpenWindow !== "function") {
     appNodeToast(appNodeT("这个宿主没有独立窗口能力"), "warn");
     return;
   }
+  /* kind（dev / down）：开节点绑定的那**一份**，与应用中心「打开」同一条口径 */
+  const kind = node && node.appKind ? String(node.appKind) : "";
   let r = null;
   try {
-    r = await api.appsOpenWindow(appId);
+    r = kind ? await api.appsOpenWindow(appId, kind) : await api.appsOpenWindow(appId);
   } catch (e) {
     r = { ok: false, error: (e && e.message) || String(e) };
   }
@@ -817,17 +820,19 @@ async function appNodeUndock() {
     appNodeToast(appNodeT("弹出独立窗口失败：") + String((r && r.error) || ""), "err");
     return;
   }
-  const nodeId = APPNODE.nodeId;
+  const nodeId = (node && node.id) || APPNODE.nodeId;
   /* 卡片上留一句「应用在独立窗口里跑着」（见 appNodeBuildBody 的 appUndocked 分支） */
   const nd = appNodeById(nodeId);
-  if (nd) {
+  if (nd && nd.appUndocked !== true) {
     nd.appUndocked = true;
     if (typeof scheduleSave === "function") scheduleSave(true);
   }
-  appNodeDestroyFrame();
-  APPNODE.userClosed = true;
+  if (APPNODE.nodeId && (!node || APPNODE.nodeId === node.id)) {
+    appNodeDestroyFrame();
+    APPNODE.userClosed = true;
+  }
   if (nodeId) appNodeRepaintCard(nodeId);
-  appNodeToast(appNodeT("已在独立窗口打开（画布界面已收起）"), "ok");
+  appNodeToast(appNodeT("已在独立窗口打开"), "ok");
 }
 /* 别处（应用中心 / 库页）要开某个应用的独立窗口：画布里正在跑的这份先停掉 ——
    **不是回后台**：后台的 iframe 仍是同一应用的一只活实例，正是要避免的「两个应用同时开着」。
