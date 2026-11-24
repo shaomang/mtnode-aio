@@ -1937,6 +1937,24 @@ function renderAssistPanel(opts) {
     );
     list.appendChild(row);
   }
+  /* 轮内插话（与会话视图同一口径，见 agentRoundSteers）：只追加在 live 行**之后** ——
+     这一栏每帧整表重建，所以不需要键，直接按轮作用域里的顺序补在末尾；轮末它随 messages
+     落进历史（两边同一份数据、同一个出口，见 agentSteerFlushRound）。 */
+  if (bst) {
+    const roundSteers = agentRoundSteers(bst);
+    for (let i = 0; i < roundSteers.length; i++) {
+      const m = roundSteers[i];
+      if (!m) continue;
+      try {
+        /* idx 传 null：它还不是历史消息（历史键等轮末落进 messages 之后自然会有） */
+        list.appendChild(dshMsgBlock(m, bst.id || "assist", null, {}));
+      } catch (e) {
+        try {
+          console.error("插话气泡渲染失败: idx=" + i, e);
+        } catch (_) {}
+      }
+    }
+  }
   /* 助手栏这一帧画完了 → 局部批注按锚点重画（与会话视图同一套引擎，见
      renderer/app-annotate.js；它会自己判断这两处哪一片是当前可见的那一片）。 */
   try {
@@ -2132,6 +2150,9 @@ function assistSessionRecord(o) {
        带进这条新会话 —— 否则「先开超频、再发第一条」那一下就丢（新会话没这一位，
        开关当场回到关、这一轮也不会固定 Max 档）。缺省值与 agentAssistSwitchOn 一致。 */
     pure: S.assistSeedPure === true,
+    /* 新会话都是「语义已迁移」之后的：打标，别再被老存档迁移按回去（用户可能正是
+       在空白态点了纯净再发第一条，播种值必须留得住） */
+    pureV2: true,
     grill: S.assistSeedGrill !== false,
     overclock: S.assistSeedOverclock === true,
     /* 「简报模式」播种值（本轮需求 · 粘性默认，与 newAgentSession 同一口径）：
@@ -2197,9 +2218,11 @@ function assistRunKeyOf(st) {
    现在只留会话字段：助手栏那两枚写的就是当前助手会话的 st.pure / st.grill ——
    与普通会话完全同一套字段、同一份落盘（agentSessionMetaForDisk 已含这两键）。
    还没有助手会话（空白态）时退回**本次运行内存**里的播种值：不落盘、不建空会话，
-   重启回缺省（pure = 关，grill = 开，与老全局键的缺省一致）。 */
+   重启回缺省（pure = 关 / grill = 关 = 命中表基线条；真纯净或拷问都得用户自己点）。 */
 S.assistSeedPure = S.assistSeedPure === true;
-S.assistSeedGrill = S.assistSeedGrill !== false;
+/* 「先拷问需求」播种值同样**缺省关**（用户口径 · 本轮）：默认档 = 非纯净 + 不开其它模式
+   （= 命中表基线条）。以前这里缺省开，空白态第一轮就会带上拷问契约。 */
+S.assistSeedGrill = S.assistSeedGrill === true;
 S.assistSeedOverclock = S.assistSeedOverclock === true;
 /* 纯净模式与「先拷问需求 / 快速热修」互斥（用户口径）：**采用拷问或热修时，纯净模式当场失效**。
    理由：那两档都得把契约贴进 system prompt，而纯净模式恰好把 system prompt 整段裁掉 ——
@@ -2227,7 +2250,16 @@ function agentAssistSwitchSet(key, on) {
       if (st.grill) agentPureOffByMode(st);
     }
     else if (key === "overclock") st.overclock = !!on;
-    else st.pure = !!on;
+    else {
+      st.pure = !!on;
+      /* 亲手点过 → 打上「语义已迁移」标记（否则 agentSessions() 的老存档迁移下次读列表
+         又把 pure 按回 false：bug，toggle 点了不亮），并当场关掉与它互斥的那两档 */
+      st.pureV2 = true;
+      if (st.pure) {
+        st.grill = false;
+        st.hotfix = false;
+      }
+    }
     if (typeof agentMarkSessionDirty === "function") agentMarkSessionDirty(st.id);
     else if (typeof agentTouchSession === "function") agentTouchSession();
   } else if (key === "grill") {
@@ -2238,6 +2270,8 @@ function agentAssistSwitchSet(key, on) {
     S.assistSeedOverclock = !!on;
   } else {
     S.assistSeedPure = !!on;
+    /* 空白态反向同理：开纯净就把播种的「先拷问需求」关掉（三档互斥） */
+    if (S.assistSeedPure) S.assistSeedGrill = false;
   }
   renderAssistPanel();
   /* 会话视图正看着这条会话时同步重绘（同一份字段，两边不能各说各的） */
@@ -2461,6 +2495,10 @@ async function assistSend(text, opts) {
   /* 空手进来的（输入框是空的、只有批注）：拼完还是空 = 那几条批注在这之间被删掉了，
      这一轮没有内容可发 → 收手，别把一条空消息推进会话。 */
   if (!t) return;
+  /* 助手栏这条发送链的开轮段同样先收口插话（见 agentSteerOpenRound）：与 agentSessionSend
+     一个口径 —— 上一轮遗留的 'sent' 在这里结算，轮作用域里没落进消息流的那几句按原序补
+     到末尾，绝不带成这一轮开头的「待生效」。位置在用户消息 push **之前**。 */
+  agentSteerOpenRound(aidSt);
   const assistUm = { role: "user", content: t, at: Date.now() };
   msgs.push(assistUm);
   /* 不裁条数：这是会话正文（与其它会话同一口径「token 出入量全部保留」）。
@@ -2514,7 +2552,7 @@ async function assistSend(text, opts) {
   /* 助手栏「纯净模式」与「先拷问需求」（本轮需求 · 会话为主体）：
      与会话窗口完全一致 —— 真源是当前助手会话的 st.pure / st.grill（空白态才是
      本次运行的播种值，见 agentAssistSwitchOn）。纯净 = system prompt 整段置空
-     （工具照常全部可用，见 dsh/gateway/plugins/pure-prompt.mjs）；拷问 / 热修契约
+     （工具只留读 / 写 / 命令 / 联网搜索，见 dsh/gateway/tool-visibility.mjs）；拷问 / 热修契约
      按轮贴在人设尾部，是否真拷问由模型自判（见下方 personaHostFull）。 */
   const assistGrill = agentAssistSwitchOn("grill", aidSt);
   /* 快捷会话小窗那一轮的覆写（本轮需求 · 共识 q3 / q7）：小窗的两枚开关只作用于
@@ -2713,7 +2751,10 @@ async function assistSend(text, opts) {
     ),
     app_state: PS("assist.app_state.heads", appStateHeads) + "当前应用状态 JSON：\n" + stateJson,
   };
-  /* 节序（app-prompt-sections.js 规范表）+ join:"" ⇒ 拼出来与改造前的整串逐字节一致 */
+  /* 节序（app-prompt-sections.js 规范表）+ join:"" ⇒ 拼出来与改造前的整串逐字节一致。
+     档位（与会话侧同一套含义）：assistPure（真·纯净）→ 整段空串 = 真正的无 prompt；
+     非纯净 → 全量九段（助手这条链没有「基线命中表」这一档：它的人设就是它全部的
+     工具说明，用户口径里的「非纯净」在这里等于照旧全量）。 */
   const systemPrompt = assistPure
     ? ""
     : typeof renderSections === "function"
@@ -3101,9 +3142,13 @@ async function assistSend(text, opts) {
     /* 会话上的「运行中」一起收（st.running 是唯一真源：左栏徽标 / 会话视图的运行位 /
        运行队列 / 全部终止读的都是它） */
     if (aidSt) aidSt.running = false;
-    /* 助手栏这条发送链同样要收口插话（与 agentSessionSend 的 finally 同一口径） */
+    /* 助手栏这条发送链同样要收口插话（与 agentSessionSend 的 finally 同一口径：
+       先结算、再把本轮攒着的那一份落进消息流末尾） */
     try {
       if (aidSt) agentSteerSettleRound(aidSt);
+    } catch (_) {}
+    try {
+      if (aidSt) agentSteerFlushRound(aidSt);
     } catch (_) {}
     agentLiveWatchEnd(aidSt);
     /* 本轮的结果已在上面按会话落盘 */
@@ -3402,6 +3447,23 @@ function agentSessions() {
      （热修是用户显式打开的档，纯净与它互斥时纯净让位，与模式菜单的写入口同一口径）。 */
   for (const s of S.agentSessions)
     if (s && s.hotfix === true && s.pure === true) s.pure = false;
+  /* 纯净模式语义迁移（用户口径 · 上一轮）：纯净模式过去是**默认档**（新会话缺省开），语义是
+     「只按本轮原话命中注入分节」；现在它改成「真正的无 prompt」，而那份命中表成为
+     **非纯净 + 不开其它模式**时的默认档。于是老存档里那些默认开着的纯净会话就地归一：
+     纯净关掉、拷问也一并关掉（它在纯净开着的时候本来就没注入过契约）—— 两者合起来，
+     这条会话的提示词与迁移前逐字一致；用户此后点纯净才是「一个字都不发」。
+     **只迁一次**：判据是会话自己的 pureV2 标记（随会话落盘，见 agentSessionMetaForDisk）。
+     本函数是读列表的热路径（每次落盘、每次重绘都会调），无标记地「见 pure 就按回 false」
+     会把用户刚点开的纯净模式当场改回去 —— 表现就是「纯净模式 toggle 点了不亮」。
+     迁完打标，此后 pure 只由用户自己点（两处写入口都会打这个标）。 */
+  for (const s of S.agentSessions)
+    if (s && s.pureV2 !== true) {
+      if (s.pure === true) {
+        s.pure = false;
+        if (s.grill !== false) s.grill = false;
+      }
+      s.pureV2 = true;
+    }
   /* 「简报模式」水合（本任务）：会话级开关**缺省关** —— 老存档 / 没开过这一位的会话
      一律归一成 false（每步都要多一次模型调用，没写过就当没开）。
      注意别把它改成「按全局默认 briefOn 播种」：全局档只管**新建**会话（见 briefDefaultOn），
@@ -3741,11 +3803,17 @@ async function agentEnsureSessionBody(st) {
              盘上那份要并进来（同键以内存为准，见 agentRoundBriefsMerge）。 */
       const keepBrief = !!st.brief;
       const keepBriefTab = String(st.briefTab || "");
+      /* 纯净模式那两位同理（同一个根因：点一下只落索引，盘上正文基线还停在旧值）：
+         pure 与「语义已迁移」标记都以内存为准，否则读回正文就把开关自己按回去。 */
+      const keepPure = !!st.pure;
+      const keepPureV2 = !!st.pureV2;
       const keepRoundBriefs =
         st.roundBriefs && typeof st.roundBriefs === "object" ? st.roundBriefs : null;
       Object.assign(st, got);
       if (!!st.brief !== keepBrief) st.brief = keepBrief;
       if (String(st.briefTab || "") !== keepBriefTab) st.briefTab = keepBriefTab;
+      st.pure = keepPure;
+      st.pureV2 = keepPureV2;
       if (keepRoundBriefs) st.roundBriefs = agentRoundBriefsMerge(st.roundBriefs, keepRoundBriefs);
       else if (st.roundBriefs) st.roundBriefs = agentRoundBriefsTrim(st.roundBriefs);
       /* 保留条件两条，任一成立就不许盘上那份盖回去：
@@ -3965,9 +4033,13 @@ function agentViewBlankSt() {
     provider: "deepseek-official",
     model: "",
     effort: "high",
-    /* 纯净模式与真会话的播种值一致（新会话默认开，见 newAgentSession）：占位空会话也照这个
+    /* 纯净模式与真会话的播种值一致（新会话默认关，见 newAgentSession）：占位空会话也照这个
        显示，免得「首轮态 chip 显示关、发出第一条就变开」。 */
-    pure: true,
+    pure: false,
+    /* 新会话 / 空壳都在迁移之后：打标，pure 此后只由用户自己点（见 agentSessions 的迁移） */
+    pureV2: true,
+    /* 「先拷问需求」同理（新会话默认关）：占位会话的「模式」菜单必须与首轮真跑的档一致。 */
+    grill: false,
     /* 「简报模式」同理：按「之后新建会话的默认」显示（见 briefDefaultOn） */
     brief: briefDefaultOn(),
     briefTab: "",
@@ -4213,9 +4285,11 @@ function agentSessionState() {
       provider: dshDefaultProviderRoute() || "deepseek-official",
       model: dshDefaultModelValue(),
       effort: dshDefaultEffortValue(),
-      /* 纯净模式 = 新会话默认开（与 newAgentSession 同一播种值）：这个空壳收到第一条消息就
+      /* 纯净模式 = 新会话默认关（与 newAgentSession 同一播种值）：这个空壳收到第一条消息就
          成为真会话，不能让它的模式与会话默认对不上。 */
-      pure: true,
+      pure: false,
+      pureV2: true,
+      grill: false,
       /* 「简报模式」同一条道理：播种值跟着「之后新建会话的默认」走（见 briefDefaultOn） */
       brief: briefDefaultOn(),
       briefTab: "",
@@ -4623,6 +4697,10 @@ function agentSessionMetaForDisk(s) {
     model: s.model || "",
     effort: s.effort || "high",
     pure: !!s.pure,
+    /* 「纯净模式语义已迁移」标记（用户口径 · 上一轮那份迁移只做一次）：老存档里
+       pure 缺省开 = 旧语义，agentSessions() 见到这位不是 true 才迁一次。
+       必须随会话落盘 —— 不落盘就每次重启都重迁，用户点开的纯净模式会被再次按回去。 */
+    pureV2: !!s.pureV2,
     /* 「超频模式」会话级开关：思考档固定 Max + 注入极限测试提示词 */
     overclock: !!s.overclock,
     /* 「先拷问需求（grill-me）」会话级开关：缺省开 —— 只有用户亲口关掉才落 false */
@@ -5044,12 +5122,18 @@ function newAgentSession() {
     provider: modelSeed.provider,
     model: modelSeed.model,
     effort: dshDefaultEffortValue(),
-    /* 纯净模式 = **默认开**（本次需求 · 与 dsh 行为一致）：会话页 ＋ / /new / 快捷会话 /
-       分支会话起来的新会话不再背整段宿主提示。它已不等于「整段 system prompt 置空」——
-       装配改成「只按本轮用户原话命中的分节注入」（真源 = app-prompt-sections.js 的
-       purePromptSections，见 agentSessionSend 与 app-db.js 的 pureOn 分支）。
-       用户手动关掉这一枚 = 恢复全量注入。 */
-    pure: true,
+    /* 纯净模式 = **默认关**（用户口径 · 本轮）：纯净模式现在指的是「真正的无 prompt」，
+       不再当默认档用。默认档 = **非纯净 + 其它模式也不开** = 命中表基线条（只发本轮原话
+       命中的那几节，真源 = renderer/app-prompt-sections.js 的 promptTrimSections，
+       见 agentSessionSend 的三档判定与 app-db.js 的 trim 分支）—— 与旧默认（那时纯净模式
+       就是这条命中表）逐字一致。用户手动点开纯净 = 整段提示词一个字都不发。 */
+    pure: false,
+    /* 新建的会话在「纯净语义迁移」之后：打标，此后 pure 只由用户自己点
+       （否则下一次 agentSessions() 会把它当老存档再按回 false） */
+    pureV2: true,
+    /* 其它模式（「先拷问需求」）同样默认关：基线条要的正是「没开任何模式」。
+       以前它是缺省开，那会让每一轮都回落到全量注入 + 拷问契约，与用户的默认档不符。 */
+    grill: false,
     /* 手动新建的会话照常读画布：「不读画布」是开发绑定会话专属（createDevSessionForNode 置位） */
     noCanvasRead: false,
     /* 「与画布无关」是用户手动声明档：新建会话默认关（照常读画布） */
@@ -6709,10 +6793,14 @@ function paintAgentToolsChip() {
 /* ── 「模式」chip 菜单：会话级开关的收纳口（与「工具」chip 同款下拉） ──
    本轮需求：原来平铺在输入区的两枚 chip（纯净模式 / 自动续跑）收进这一只菜单，
    输入区只留一枚「模式」入口；两个开关的语义与持久化口径一字未改：
-   · 纯净模式 = st.pure（会话态，persistAgentSession 落盘；缺省开 = 新会话不背整段宿主提示，
-     只按本轮原话命中注入分节，见 app-prompt-sections.js 的 purePromptSections）。
-     **它只管提示词**：工具照常全部可用（见 dsh/gateway/plugins/pure-prompt.mjs）。
+   · 纯净模式 = st.pure（会话态，persistAgentSession 落盘；**缺省关**，「真正的无 prompt」——
+     整段 system prompt 置空、网关强制空预设文本 + 运行时清 sections/contexts）。
+     缺省档（纯净关 + 其它模式也关）= 命中表基线条：只发本轮原话命中的分节，
+     见 app-prompt-sections.js 的 promptTrimSections。
+     **提示词清零 + 工具白名单**：system prompt 全空，工具只留读 / 写 / 命令 / 联网搜索
+     （网关 restrict({ allow: PURE_KEEP_TOOLS })，见 dsh/gateway/tool-visibility.mjs）。
      与「先拷问需求 / 快速热修」互斥：采用那两档时纯净模式被写 false（agentPureOffByMode）；
+     反过来开纯净也当场关掉那两档（三档互斥，见下面 toggle）；
    · 自动续跑 = window.LongRun.autoOn(sid)（app-longrun.js 的会话级开关，缺省关）。
    状态回显（唯一真源）：chip 摘要看着两个开关算，菜单行「开 / 关」按同一份判据画。 */
 /* 会话视图里改的这两枚（纯净 / 先拷问）也是**助手栏那两枚**的同一份字段：
@@ -6848,15 +6936,25 @@ function agentModeEntryOf(key) {
     return {
       key: "pure",
       label: "纯净模式",
-      hint: "纯净模式：移除全部 system prompt 与运行时上下文（工具照常全部可用）；省 token、结果确定",
+      hint: "纯净模式：移除全部 system prompt 与运行时上下文，只保留读 / 写 / 命令 / 联网搜索四类工具；省 token、结果确定",
       on: !!st.pure,
       /* 开关 tooltip 复用已有整句词条（中英成对），不另造碎片键 */
       title: st.pure
-        ? "纯净模式：开启中，点击关闭（工具照常可用）"
-        : "纯净模式：移除全部 system prompt 与运行时上下文（工具照常全部可用）；省 token、结果确定",
+        ? "纯净模式：开启中，点击关闭（只保留读 / 写 / 命令 / 联网搜索工具）"
+        : "纯净模式：移除全部 system prompt 与运行时上下文，只保留读 / 写 / 命令 / 联网搜索四类工具；省 token、结果确定",
       toggle: () => {
-        st.pure = !st.pure;
-  agentTouchSession();
+        st.pure = st.pure !== true;
+        /* 用户亲手点过 → 打上「语义已迁移」标记：否则 agentSessions() 的老存档迁移下一次
+           读列表就把这一位按回 false（bug：纯净模式 toggle 点了不亮，永远开不起来） */
+        st.pureV2 = true;
+        /* 三档互斥（纯净 / 命中表 / 拷问·热修）：开纯净就当场关掉那两档 —— 它们都要把契约
+           贴进 system prompt，与「一个字都不发」直接冲突；而且互斥兜底（hotfix + pure）会在
+           下一次读列表时把 pure 按回去，那开关看着还是没反应。关掉它们不回补（要用户自己再点） */
+        if (st.pure) {
+          st.grill = false;
+          st.hotfix = false;
+        }
+        agentTouchSession();
         renderAgentComposer();
         if (typeof updateRunQueuePanel === "function") updateRunQueuePanel();
         agentModeSyncAssist(st);
@@ -7014,10 +7112,10 @@ function agentModeEntryOf(key) {
       key: "assistPure",
       label: "纯净模式",
       hint:
-        "纯净模式：移除全部 system prompt 与运行时上下文（工具照常全部可用）；省 token、结果确定",
+        "纯净模式：移除全部 system prompt 与运行时上下文，只保留读 / 写 / 命令 / 联网搜索四类工具；省 token、结果确定",
       title: on
-        ? "纯净模式：开启中，点击关闭（工具照常可用）"
-        : "纯净模式：移除全部 system prompt 与运行时上下文（工具照常全部可用）；省 token、结果确定",
+        ? "纯净模式：开启中，点击关闭（只保留读 / 写 / 命令 / 联网搜索工具）"
+        : "纯净模式：移除全部 system prompt 与运行时上下文，只保留读 / 写 / 命令 / 联网搜索四类工具；省 token、结果确定",
       on,
       onPick() {
         agentAssistSwitchSet("pure", !agentAssistSwitchOn("pure"));
@@ -7173,8 +7271,16 @@ function buildAgentModeMenu(menuId, entries, chipPainter) {
          entry 上没这一项（老页面 / 外部构件）就退回 toggle，行为与从前一致。 */
       if (typeof entry.onPick === "function") entry.onPick();
       else entry.toggle();
-      /* 重画用的条目必须是**切换后**的：旧快照的 on / title 还停在点击前 */
-      const fresh = agentModeEntryByKey(entry.key, rows) || entry;
+      /* 重画用的条目必须是**切换后**的：旧快照的 on / title 还停在点击前。
+         这里按 key **现建**一份（agentModeEntryOf 读的是会话字段 / 播种值这些实时量）——
+         以前是从 rows 快照里筛，筛回来的还是同一个对象、同一份旧 on，于是「开关面点完
+         一动不动」，看着就像 toggle 开不起来（与纯净模式被水合按回去那半个 bug 一起报的）。 */
+      const rebuilt =
+        typeof agentModeEntryOf === "function" ? agentModeEntryOf(entry.key) : null;
+      const fresh =
+        rebuilt && rebuilt.key === entry.key
+          ? rebuilt
+          : agentModeEntryByKey(entry.key, rows) || entry;
       /* 提示文案带「开启中 / 已关闭」这类随状态变的字，就地按刷新后的条目重挂一份。
          顺序：先让两枚开关 / 键面的重画各写各的，最后再落这一份提示 —— 反过来的话
          paintAgentModeToggleBtn / paintChip 会把这里刚写的开关 title 覆盖掉。 */
@@ -8798,6 +8904,9 @@ function histProcSplitOf(row, body) {
     const proc = [];
     for (const c of kids) {
       if (c === last) break;
+      /* 插话项不折进「过程」里（本次需求 · 用户口径「插话应当插入会话中」）：
+         它本身就是用户说的话，折进过程就等于看不见了 —— 留在时间线上的原位 */
+      if (c && c.classList && c.classList.contains("dsh-seg-steer")) continue;
       proc.push(c);
     }
     return proc;
@@ -11490,9 +11599,41 @@ function dshCompactRowEl(seg) {
   return btn;
 }
 
+/* ── 时间线里的「⚡插话」项（本次需求）──────────────────────────────────────
+   用户口径：插话应当**插入会话中**，而不是排在整段会话的前面或后面。
+   做法：插话在它发生的那一刻由 app-db.js 的 tracePush(kind='steer') 落成时间线上的一段，
+   段序就是时间序 —— 之前已写出的思考 / 正文就地定稿，之后产生的思考 / 工具 / 正文都排在
+   它下面（历史与运行中两条渲染路径共用本函数，见 dshHistSegEl / agentLiveSegsEl）。
+   形态：琥珀左轨 + 「⚡插话」小标签 + 用户原话（纯文本、保留换行），配色与消息级 ⚡ 气泡
+   （.dsh-msg-steer / .dsh-steer-tag）同一套。
+   注意：它是**用户的发言**，所以不折进历史「过程」折叠里（见 histProcSplitOf）。 */
+function dshSteerSegEl(seg) {
+  const txt = String((seg && seg.text) || "");
+  if (!txt.trim()) return null;
+  const box = document.createElement("div");
+  box.className = "dsh-seg dsh-seg-steer";
+  const tag = document.createElement("span");
+  tag.className = "dsh-steer-tag";
+  tag.textContent = "⚡ " + I18n.t("插话");
+  tag.title = I18n.t(
+    "这一句是你趁本轮还在跑时插进去的：它按发生的那一刻留在会话里（不是新一轮，也没有被挪到会话首尾）",
+  );
+  box.appendChild(tag);
+  const body = document.createElement("div");
+  body.className = "dsh-seg-steer-text";
+  body.textContent = txt;
+  box.appendChild(body);
+  return box;
+}
 function dshHistSegEl(seg, pool, nodeId, idx, n, showThink, msgAt, policy, tok) {
   if (!seg || !seg.k) return null;
   const pol = policy || null;
+  /* 轮内插话：按段序就位（左侧照旧挂它自己的时刻） */
+  if (seg.k === "steer") {
+    const c = dshSteerSegEl(seg);
+    if (c) dshSegTimeAttach(c, seg.at, 0, msgAt, 0);
+    return c;
+  }
   /* 自动压缩段：按 phase 画三态，左侧同样挂它自己的时刻（与其它段同一口径） */
   if (seg.k === "compact") {
     const c = dshCompactRowEl(seg);
@@ -11820,6 +11961,15 @@ function agentLiveSegsEl(row, st, live, items, opts) {
       segEls[i] = c || null;
       if (c) {
         dshSegTimeAttach(c, seg.at, 0, 0, tok);
+        row.appendChild(c);
+      }
+    } else if (seg.k === "steer") {
+      /* 轮内插话（本次需求）：运行中就按段序落在它发生的那一刻 —— 之后来的思考 / 工具 /
+         正文都排在它下面，不再被挂到 live 行之后（那正是「插话跑到整段会话后面」的成因） */
+      const c = dshSteerSegEl(seg);
+      segEls[i] = c || null;
+      if (c) {
+        dshSegTimeAttach(c, seg.at, 0, 0, 0);
         row.appendChild(c);
       }
     }
@@ -15931,6 +16081,26 @@ function renderAgentSessionRaw(opts) {
       rowEntries.push(entry);
     }
   }
+  /* 轮内插话（兜底口径，见 agentRoundSteers）：轨迹取不到时攒下的那几句排成 live 行
+     之后的行（键 '@steer:i'），轮末随消息一起落进历史。正常路径下它们已经是本轮时间线
+     里的一段（dshSteerSegEl），这里为空。 */
+  const roundSteers = agentRoundSteers(st);
+  for (let i = 0; i < roundSteers.length; i++) {
+    const m = roundSteers[i];
+    if (!m) continue;
+    try {
+      /* idx 传 null：它还不是历史消息（历史键等轮末落进 messages 之后自然会有） */
+      const entry = takeRow("@steer:" + i, agentMsgRowSig(m), () =>
+        dshMsgBlock(m, st.id || "agent", null, {}),
+      );
+      if (entry.el) rowEntries.push(entry);
+    } catch (e) {
+      /* 单条坏数据不拖垮整表（与上面消息行同一口径） */
+      try {
+        console.error("插话气泡渲染失败: idx=" + i, e);
+      } catch (_) {}
+    }
+  }
   /* 对账落盘：复用的行原样留着，只动新增 / 换了内容 / 挪了位 / 这一帧不该有的 */
   agentRowsCommit(list, rowEntries);
   /* 会话局部批注（renderer/app-annotate.js）：消息行换过一轮就按锚点重画高亮 /
@@ -17420,6 +17590,53 @@ function agentCapabilityMissing(r) {
   );
 }
 
+/* ── 轮内插话：现在按**时间线的一项**落在它发生的那一刻（本次需求）─────────────
+   用户口径：插话应当插入会话中，而不是排在整段会话的前面或后面。
+   做法：agentSteerNow 拿到 ok 就把这句话 push 进本轮轨迹（app-db.js 的 tracePush
+   kind='steer'），历史与运行中两条渲染路径（dshHistSegEl / agentLiveSegsEl）都用
+   dshSteerSegEl 按段序画出它 —— 之前的过程定稿、之后的过程与正文都排在它下面，
+   刷新后位置不变（段随本轮快照落盘）。
+   下面这份轮作用域容器（st._roundSteers）只剩**兜底**用途：轨迹取不到时仍然攒在这里，
+   轮末 append 进消息流末尾，一句话都不会丢。 */
+function agentRoundSteers(st) {
+  if (!st) return [];
+  if (!Array.isArray(st._roundSteers)) st._roundSteers = [];
+  return st._roundSteers;
+}
+/* 轮末收口：把这一轮攒下的插话按时间序 append 到消息流末尾（= 本轮答复之后），随后清空。
+   幂等：没有就只把容器复位。开轮处也调它一次（兜住异常收尾留下的那一份，绝不带进下一轮）。 */
+function agentSteerFlushRound(st) {
+  if (!st) return 0;
+  const mine = Array.isArray(st._roundSteers) ? st._roundSteers.slice() : [];
+  st._roundSteers = [];
+  if (!mine.length) return 0;
+  const msgs = Array.isArray(st.messages) ? st.messages : (st.messages = []);
+  /* 时间序：同一轮里连插两句也不许颠倒（sort 稳定，时刻相同就保持递交顺序） */
+  mine.sort((a, b) => (Number(a && a.at) || 0) - (Number(b && b.at) || 0));
+  for (const m of mine) if (m) msgs.push(m);
+  return mine.length;
+}
+
+/* 开轮收口：上一轮遗留的插话一律在这里了结（见 agentRoundSteers）。
+   两个开轮点（agentSessionSend / assistSend）都只调这一句，口径不分叉：
+     · 先**结算**：还挂着 'sent' 的（异常收尾 / 从存档读回的残留）属于**过去**那一轮，本轮
+       没有「下一步」给它生效 —— 不结算的话气泡会一直写着「已插话 · 将在下一步生效」，
+       下一轮一开跑看着就像那句话又回来了一次（用户报的「第二轮开头又闪一下」）；
+     · 再把轮作用域里还没落进消息流的那几句按原序补到末尾（一个字都不丢），绝不带成新开
+       这一轮的「待生效」。
+   放在用户消息 push **之前**：补进来的那几句才排在上一轮末尾、本轮提问之前。 */
+function agentSteerOpenRound(st) {
+  if (!st) return 0;
+  try {
+    agentSteerSettleRound(st);
+  } catch (_) {}
+  try {
+    return agentSteerFlushRound(st);
+  } catch (_) {
+    return 0;
+  }
+}
+
 /* 插话：把这句话塞进正在跑的那一轮。返回 true = 本轮已收到（该清空输入框）。 */
 async function agentSteerNow(st, text) {
   const body = String(text || "").trim();
@@ -17438,6 +17655,10 @@ async function agentSteerNow(st, text) {
     } catch (_) {}
     return true;
   }
+  /* 这一枪打的是**哪一轮**：开轮时记的秒数起点就是这一轮的身份证（收轮清 0、下一轮换新值）。
+     IPC 往返期间那一轮可能已经收尾（甚至连下一轮都开了），回来时必须认这一位，
+     否则那句插话会被挂到不属于它的轮次上（用户报的「下一轮开头又闪一下」就是这个残留）。 */
+  const roundAt = Number(st._liveThinkAt) || 0;
   let r = null;
   try {
     r = await window.api.dshSteer({
@@ -17451,13 +17672,36 @@ async function agentSteerNow(st, text) {
   if (r && r.ok) {
     /* 气泡先按「已插话 · 将在下一步生效」落地；运行时真把它塞进收件箱时会吐一帧
        agent/inbox/spliced（网关原样透传成 session-event），届时升级为「已注入」。 */
-    st.messages.push({
+    const steer = {
       role: "user",
       content: body,
       at: Date.now(),
       _kind: "steer",
       _steerState: "sent",
-    });
+    };
+    if (
+      sessionIsRunning(st) &&
+      (!roundAt || (Number(st._liveThinkAt) || 0) === roundAt)
+    ) {
+      /* 本轮还在跑：这句插话**按时间线的一项**插进当前这一轮**它发生的这一刻**
+         （见 app-db.js tracePush 的 "steer" 分支与 dshSteerSegEl）—— 之后产生的思考 /
+         工具 / 正文都排在它下面，刷新后位置不变（段随本轮快照落盘）。
+         绝不攒到轮末再 append 进消息流末尾：那正是用户报的「插话跑到整段会话的后面」。
+         轨迹取不到（老路径 / 已被回收）才退回旧口径，一个字都不丢。 */
+      let seg = null;
+      try {
+        if (typeof tracePush === "function")
+          seg = tracePush("agent:" + st.id, "steer", body, {});
+      } catch (_) {
+        seg = null;
+      }
+      if (!seg) agentRoundSteers(st).push(steer);
+    } else {
+      /* 这一轮在 IPC 往返期间已经收尾：它已经没有「下一步」可等 —— 按**已了结**的
+         历史记录落到消息流末尾（= 那一条答复之后），绝不挂成下一轮开头的「待生效」。 */
+      steer._steerState = "in";
+      st.messages.push(steer);
+    }
     st.updatedAt = Date.now();
     await agentTouchSession();
     if (agentViewIs(st)) renderAgentSession();
@@ -17505,8 +17749,10 @@ function agentMarkSteerInjected(st, data) {
     else if (typeof c === "string") texts.push(c.trim());
   }
   let hit = null;
-  for (let i = msgs.length - 1; i >= 0; i--) {
-    const m = msgs[i];
+  /* 同一份数据的两个落点（见 agentRoundSteers）：本轮攒着的在前、历史里的在后，
+     两边都用「从后往前找第一条待注入」的同一口径 —— 不各写一套判据。 */
+  const scan = agentRoundSteers(st).slice().reverse().concat(msgs.slice().reverse());
+  for (const m of scan) {
     if (!m || m._kind !== "steer" || m._steerState === "in") continue;
     const want = String(m.content || "").trim();
     if (texts.length && texts.indexOf(want) < 0) continue;
@@ -17514,7 +17760,7 @@ function agentMarkSteerInjected(st, data) {
     break;
   }
   if (!hit) {
-    for (const m of msgs)
+    for (const m of scan)
       if (m && m._kind === "steer" && m._steerState !== "in") {
         hit = m;
         break;
@@ -17532,14 +17778,21 @@ function agentMarkSteerInjected(st, data) {
 /* 轮末结算：插话只对「正在跑的这一轮」有意义 —— 本轮一收尾，任何还挂着 'sent' 的插话
    都不可能再「下一步生效」（它要么已被本轮读进收件箱，只是那帧 agent/inbox/spliced
    没到 / 到得比收尾还晚）。不结算的话，输入区上方那条「已插话 · 待本轮下一步生效」
-   会一直挂着 —— 用户看到的就是「明明已经插进去了、回答都出来了，怎么还等我下一步」。 */
+   会一直挂着 —— 用户看到的就是「明明已经插进去了、回答都出来了，怎么还等我下一步」。
+   **两处都结**（见 agentRoundSteers）：本轮攒着的那一份 + 历史里从存档带回的残留；
+   紧跟它之后由 agentSteerFlushRound 把本轮那一份落进消息流（轮末两件事，缺一不可）。 */
 function agentSteerSettleRound(st) {
-  const msgs = (st && Array.isArray(st.messages) && st.messages) || [];
+  if (!st) return 0;
+  const buckets = [];
+  if (Array.isArray(st._roundSteers)) buckets.push(st._roundSteers);
+  if (Array.isArray(st.messages)) buckets.push(st.messages);
   let n = 0;
-  for (const m of msgs) {
-    if (m && m._kind === "steer" && m._steerState !== "in") {
-      m._steerState = "in";
-      n++;
+  for (const arr of buckets) {
+    for (const m of arr) {
+      if (m && m._kind === "steer" && m._steerState !== "in") {
+        m._steerState = "in";
+        n++;
+      }
     }
   }
   return n;
@@ -18078,15 +18331,18 @@ async function agentDrainQueue(st) {
 
 /* 输入区上方的队列条：N 条待发送 + 逐条删除 + 清空 */
 /* 还没生效的插话（本次需求 · 上游的 pending-steering 区）：
-   _kind==="steer" 且 _steerState !== "in" 的用户消息 = 已递交给正在跑的这一轮、
-   还在等它走到下一步边界；它们与「排队待发」是两件事，故在输入区上方分成两栏显示。 */
+   只认**这一轮**攒下的那几条（见 agentRoundSteers）—— 已递交给正在跑的这一轮、还在等它
+   走到下一步边界；它们与「排队待发」是两件事，故在输入区上方分成两栏显示。
+   为什么不再回扫 st.messages：历史里的 'sent' 属于**过去**的轮次，本轮没有「下一步」可以
+   给它生效；回扫正是用户报的「下一轮一开跑，上一轮那句插话又闪一下」的来源
+   （轮末结算与时序赛跑留下一条 'sent'，下一轮 running=true 一成立就被捡起来）。
+   现在插话运行期只活在轮作用域里，轮末由 agentSteerSettleRound + agentSteerFlushRound
+   一起收口 —— 结构上就不存在「上一轮的残留」。 */
 function agentPendingSteers(st) {
   const out = [];
-  /* 没有在跑的轮次 = 没有「下一步」可等：这类残留一律不当作待生效。
-     正常路径已由轮末 agentSteerSettleRound 结算掉，这里兜住中断 / 重连 / 重启后
-     从存档里带回来的那一份 'sent'（否则它会永远挂在那条队列栏里）。 */
+  /* 没有在跑的轮次 = 没有「下一步」可等（正常路径轮末已经收口，这里兜住中断 / 重连）。 */
   if (!(typeof sessionIsRunning === "function" && sessionIsRunning(st))) return out;
-  for (const m of Array.isArray(st && st.messages) ? st.messages : []) {
+  for (const m of agentRoundSteers(st)) {
     if (!m || m._kind !== "steer") continue;
     if (m._steerState === "in") continue;
     const txt = String(m.content || "").trim();
@@ -19052,6 +19308,10 @@ async function agentSessionSend(text, opts) {
   /* 空手进来的（输入框空、只有批注）：拼完仍是空串 = 那几条批注在这之间被删掉了，
      这一轮没内容可发 → 收手（别推一条空消息进会话，也别白开一轮）。 */
   if (!t) return;
+  /* 开轮先把插话收口（见 agentSteerOpenRound）：结算上一轮遗留的 'sent' + 把轮作用域里
+     没落进消息流的那几句按原序补上。放在用户消息 push **之前**，补进来的那几句才排在
+     上一轮末尾、本轮提问之前 —— 本轮首帧不可能出现任何「待本轮下一步生效」的旧插话。 */
+  agentSteerOpenRound(st);
   /* 合并模式不追加消息：任务书消息（_src:"dev-node"）已在会话里，直接发它 */
   if (!devContractMsg) {
     const um = { role: "user", content: t, at: Date.now() };
@@ -19251,20 +19511,46 @@ async function agentSessionSend(text, opts) {
   /* 超频模式（会话级开关 st.overclock）：思考档强制 Max，并注入极限测试提示词 */
   const overclockOn = !!st.overclock;
   if (overclockOn) input = PS("flow.overclock_directive", OVERCLOCK_DIRECTIVE) + input;
-  /* 纯净模式（新会话默认开，见 newAgentSession）：**不再等于「整段 system prompt 置空」**，
-     而是「只按本轮用户原话命中才注入分节」—— 命中表真源 = renderer/app-prompt-sections.js 的
-     purePromptSections，app-db.js 的 pureOn 分支用的是同一份函数（不许出现第二套 pure 语义）。
-     一条都没命中 → 本节一律不拼 → 下发空 systemPrompt，行为与旧的纯净模式逐字一致；
-     用户手动关掉纯净开关 = 恢复全量注入。
-     **工具侧口径（用户口径）**：纯净模式只裁提示词，工具一个都不裁 —— 网关照旧注入用户工具
-     描述子，运行时照旧注册画布 / 数据库 / 文件 / 子代理 / 浏览器等全部插件（cordis.yml 已按
-     MTNODE_PURE 的门控全部摘掉），所以本节只影响要拼哪些文字，不影响模型能不能调工具。
-     与「快速热修」互斥：热修轮按关处理（见 agentPureOffByMode 那一族写入口）。 */
-  const pureMode = !!st.pure && st.hotfix !== true;
+  /* 提示词档位（用户口径 · 三档互斥，判据只在这里定一次）：
+     · "none" 纯 净 模 式（st.pure）= **真正的无 prompt**：整段 systemPrompt 置空 —— 人设 /
+       自检 / 反查 / 真机调试 / 开发任务书 / 拷问与热修契约一个都不拼；网关侧按 pure 标记
+       强制空预设文本，运行时 pure-prompt 插件再把 sections / contexts 清空。
+     · "trim" 基 线 档（纯净关、其它模式也关）= 命中表（renderer/app-prompt-sections.js 的
+       promptTrimSections）：只发本轮原话命中的分节，一节都没命中就什么都不发 ——
+       这正是「纯净模式」改语义之前的那份设置，现在成了普通轮的默认。
+     · "full" 全 量 档（开着「先拷问需求 / 快速热修」）= 那两段契约必须贴进 system prompt，
+       所以这一轮回落到全量注入。
+     **工具侧口径（用户口径 · 本轮修正）**：纯净轮裁工具 —— 网关按 pure 位注入
+     MTNODE_PURE_TOOLS，运行时装 restrict({ allow: PURE_KEEP_TOOLS })，只留读 / 写 / 命令 /
+     联网搜索（真源 dsh/gateway/tool-visibility.mjs）。理由：提示词清零之后，纯净轮 36,341
+     token 的首步里 23,739 全是工具定义（比普通轮还多 7.3K）。基线条与全量档照旧全量注册，
+     所以本节主要影响「拼哪些文字」，纯净档额外影响「模型看得见哪些工具」。 */
+  const pureMode = !!st.pure;
+  /* 其它模式（拷问 / 热修）在这一轮到底在不在：判据与下面注入契约用的是同一份函数、
+     同一批入参（只提前算，不另立第二套）。纯粹净轮一律不算（那两段契约本就不该进）。 */
+  const modeDevContract = !!String(st._devContract || "").trim();
+  const hotfixTurn =
+    !pureMode &&
+    hotfixTurnOn(st, {
+      autoContinue: !!opts._autoContinue,
+      resumeRound,
+      devContract: !!modeDevContract,
+      hotfixOverride: opts.hotfixOverride,
+    });
+  const grillTurn =
+    !pureMode &&
+    grillTurnOn(st, {
+      autoContinue: !!opts._autoContinue,
+      resumeRound,
+      devContract: !!modeDevContract,
+      /* 互斥兜底：热修那一段要进去了，拷问这一段这一轮就不再进（热修优先） */
+      grillOverride: hotfixTurn ? false : opts.grillOverride,
+    });
+  const trimMode = !pureMode && !hotfixTurn && !grillTurn;
   /* 命中判据的输入 = 这一轮真正发给模型的原话（技能轮用展开后的任务书正文，不是那句 /skill） */
   const pureSections =
-    pureMode && typeof purePromptSections === "function"
-      ? purePromptSections(String(latest || ""), { planMode })
+    trimMode && typeof promptTrimSections === "function"
+      ? promptTrimSections(String(latest || ""), { planMode })
       : null;
   /* 人设的画布档位（与工具注册同一判据，真源见 app-db.js dshRunOnce）：
      · ""       全量 —— get / edit / app 三件套都在，照旧要求先读图再动手
@@ -19274,7 +19560,7 @@ async function agentSessionSend(text, opts) {
      · "none"   本轮被自动判定「与画布无关」（turnCanvasFree · Gate B）—— 三件套全不注册
    裁掉工具就必须同时裁掉「动手前先 mtnode_canvas_get 看清现状」这句指令和画布类技能名
    （同档位的技能索引也已经裁了），否则模型会去调不存在的工具、白白浪费一整步。 */
-  const canvasPersona = pureMode
+  const canvasPersona = pureMode || trimMode
     ? ""
     : turnCanvasFree
       ? "none"
@@ -19284,9 +19570,9 @@ async function agentSessionSend(text, opts) {
   /* 画布修改确认档：真源 = app-nodes.js 的 canvasEditMode（ask / approve / all） */
   const canvasMode = canvasEditMode();
   let systemPrompt = "";
-  /* 人设三档：纯净轮一律不拼（`pure-prompt` 插件在运行时把 sections 整段清空，
-     工具照常可用；人设只是「省 token」被裁的那部分文字，不是把工具停掉）。 */
-  if (!pureMode) {
+  /* 人设三档：纯净轮（真·无 prompt）与基线条一律不拼（人设只是「省 token」
+     被裁的那部分文字，不是把工具停掉）。 */
+  if (!pureMode && !trimMode) {
     /* 人设瘦身口径（用户已确认）：三档都压成「身份 + 硬闸 + 一句指向」——
        硬闸 = 不改画布 / 工具存在性 / 不编造节点；字段与端子的机制指向工具描述，
        操作规范指向内置技能。删掉的是解释性长句与重复的后半段。 */
@@ -19342,10 +19628,11 @@ async function agentSessionSend(text, opts) {
      修不好才告知；关键结论必须带证据；长任务不空转、跨重启的活建议提升为长周期任务图）。
      纯行为纪律，只写这一处（提示词单一真源：参数机制在工具描述、操作规范在技能，
      这里只留「把活做对」的纪律）。
-     纯净轮不再一律不发：本轮原话命中「自检 / 交付 / 长任务」（principle）就照发。
+     纯净轮（真·无 prompt）一节都不发；基线条本轮原话命中「自检 / 交付 / 长任务」（principle）
+     才照发；全量档一律发。
      快速热修轮换变体（见 SELF_CHECK_HOTFIX）：判据与计划层同一个真源 planHotfixRound
      （会话 st.hotfix / 小窗这一轮 hotfixOverride），不另立第二套判断。 */
-  if (!pureMode || (pureSections && pureSections.has("principle")))
+  if (!pureMode && (!trimMode || (pureSections && pureSections.has("principle"))))
     systemPrompt +=
       typeof planHotfixRound === "function" && planHotfixRound(st, opts)
         ? PS("session.self_check.hotfix", SELF_CHECK_HOTFIX)
@@ -19355,7 +19642,7 @@ async function agentSessionSend(text, opts) {
      早先内容 —— 但原文一条都没删，都在会话存储里，mtnode_recall 能按轮次 / 关键词 / 索引
      取回逐字原文。这里只给「有出路 + 不许凭记忆编」这一句，动作与上限在工具描述里，
      机制在 docs/session-recall.md（提示词单一真源的口径同上）。 */
-  if (!pureMode)
+  if (!pureMode && !trimMode)
     systemPrompt += PS(
       "session.recall_hint",
       "\n\n【早期原文反查】历史被压缩、或上下文里看不全早先内容时，需要早先的原话 / 数字 / 文件名 / 决定就用 mtnode_recall 反查（outline 看轮次 → search 找关键词 → read 取原文），不得凭记忆编造；查不到就如实说查不到。",
@@ -19363,7 +19650,7 @@ async function agentSessionSend(text, opts) {
   /* 真机调试能力（mtnode_gui，仅限「属于某个应用」的会话：应用开发 / 版本合并）：这一档
      的运行时才注册 GUI 工具，所以人设必须说明它存在、怎么用、边界在哪 —— 否则拿到工具也
      不会用（旧行为：只能看代码，改完无法自验）。只在有 appId 时追加，其余会话一字不变。 */
-  if (!pureMode && st.appId) {
+  if (!pureMode && !trimMode && st.appId) {
     systemPrompt += PS(
       "session.gui_debug",
       "\n\n真机调试（本会话专属能力）：本轮注册了 GUI 工具 mtnode_gui，你可以直接操作这个应用**自己的窗口**做真机验证 —— 不是读代码猜结果。\n" +
@@ -19375,9 +19662,9 @@ async function agentSessionSend(text, opts) {
   }
   /* 开发 / 细化绑定会话：任务书是会话契约，临时写入系统提示（不占用户消息位，
      会话里只显示用户填写的关键输入；后续追问也持续携带该契约）。
-     纯净开关不影响这一段（本次需求）：契约是这些会话唯一的工作说明，纯净模式关掉它就是
-     「会话不知道该干什么」——所以它照旧按契约注入。 */
-  let devContract = String(st._devContract || "").trim();
+     基线条与全量档照旧注入（契约是这些会话唯一的工作说明，裁掉它就是「会话不知道该干什么」）；
+     只有真·纯净轮（用户显式要求「一个字都不发」）整份不拼。 */
+  let devContract = pureMode ? "" : String(st._devContract || "").trim();
   if (devContract) {
     /* 追问轮（用户亲口发的新一轮要求）：契约里那句「本次开发需求」是第一轮的，
        原样注入会让模型把上一轮当成这一轮的任务（真机现场见 devContractForRound）。
@@ -19416,32 +19703,12 @@ async function agentSessionSend(text, opts) {
       if (codingGuideline) systemPrompt += "\n\n" + codingGuideline;
     }
   }
-  /* 「先拷问需求（grill-me）」（本次需求 · 会话窗口「模式」菜单新增的那一枚）：
-     会话级开关缺省开（st.grill，没点过 = 开），按轮注入契约 —— 是否真拷问由模型
-     自己判「这轮像不像需求」（判据写在契约里，与「本轮要不要开工」同一处判断）。
-     四种轮次不带契约：纯净模式（整段 system 本就置空）、自动续跑轮（不该由模型自己
-     追问自己）、断点续跑轮（那份 dsh 会话里 system 已落定，重发只会污染上下文）、
-     开发 / 细化任务书会话（任务书自己那一段【拷问模式】才是它的契约，不叠第二份）。 */
-  /* 「快速热修」（本轮需求 · 共识 q6）：与「先拷问需求」互斥的另一段契约，真源 st.hotfix
-     （缺省关）；轮次闸与 grill 完全同源。小窗那一轮可按 opts.hotfixOverride 覆写。
-     先算它：两段互斥 → 热修开着时把 grillTurn 的覆写按 false 传下去，绝不两段都注入。 */
-  const hotfixTurn =
-    !pureMode &&
-    hotfixTurnOn(st, {
-      autoContinue: !!opts._autoContinue,
-      resumeRound,
-      devContract: !!devContract,
-      hotfixOverride: opts.hotfixOverride,
-    });
-  const grillTurn =
-    !pureMode &&
-    grillTurnOn(st, {
-      autoContinue: !!opts._autoContinue,
-      resumeRound,
-      devContract: !!devContract,
-      /* 互斥兜底：热修那一段已经进去了，拷问这一段这一轮就不再进（热修优先） */
-      grillOverride: hotfixTurn ? false : opts.grillOverride,
-    });
+  /* 「先拷问需求（grill-me）」与「快速热修」两段契约（互斥，热修优先）：
+     轮次闸（hotfixTurn / grillTurn）在上面的**档位判定**里已经算过一次 —— 它们决定这一轮
+     是走基线命中表还是全量注入，所以必须在拼人设之前定型；这里只按那两位追加契约正文，
+     绝不重算（同一个判断两处算，迟早会漂）。四种轮次不带契约：纯净模式（真·无 prompt）、
+     自动续跑轮（不该由模型自己追问自己）、断点续跑轮（那份 dsh 会话里 system 已落定，
+     重发只会污染上下文）、开发 / 细化任务书会话（任务书自己那一段【拷问模式】才是它的契约）。 */
   if (grillTurn) systemPrompt += PS("session.grill_contract", GRILL_CONTRACT);
   if (hotfixTurn) systemPrompt += PS("session.hotfix_contract", HOTFIX_CONTRACT);
   /* AI 活动登记：这一轮到此**真开跑了**（上面每道闸都放行了、消息已进消息流）——
@@ -19488,7 +19755,12 @@ async function agentSessionSend(text, opts) {
       /* 续跑轮（暂停后点「继续」）不再重复注人设：那份 system 已经落在被暂停的
          dsh 会话里，再下发一遍只会污染上下文 —— 与 dshRunTask 内部断点续跑同一口径。 */
       systemPrompt: resumeRound ? "" : systemPrompt,
+      /* 真·纯净（st.pure）：网关据此强制空预设文本 + 给运行时注入 MTNODE_PURE，
+         引擎侧 pure-prompt 插件把 sections / contexts 整段清空。 */
       pure: pureMode,
+      /* 基线条（纯净关、其它模式也关）：分节层只发本轮原话命中的那几节（真源
+         = app-prompt-sections.js 的 promptTrimSections，见 app-db.js 的 trim 分支）。 */
+      trim: trimMode,
       /* 快速热修轮：让提示词分节层把「需求拷问」技能条目也从内置技能索引里摘掉
          （契约与 mtnode-grill-me 互斥，见 app-db.js / app-agent.js 的 hotfix 档）。 */
       hotfix: hotfixTurn,
@@ -19502,8 +19774,9 @@ async function agentSessionSend(text, opts) {
       noCanvas: turnCanvasFree,
       /* 真机调试（mtnode_gui）：这条会话「属于某个应用」（st.appId）就带上这一位 →
          网关注入 MTNODE_APP_DEBUG，运行时才注册 GUI 工具，会话能在应用自己的窗口里
-         点一遍 / 读文字 / 截图自验。纯净模式与普通会话一律不带（只有联网搜索）。 */
-      appDebug: !!st.appId && !pureMode,
+         点一遍 / 读文字 / 截图自验。它的用法说明在上面那段人设里，所以只有「真机调试
+         说明真的拼进去了」的档位（全量档）才带上这一位，免得工具在、说明不在。 */
+      appDebug: !!st.appId && !pureMode && !trimMode,
       onEvent: (type, data) => {
         /* 并行会话:仅当本会话正是当前查看的会话时才更新共享视图,避免后台会话
            重绘/滚动打扰用户正在看的其他会话 */
@@ -19961,9 +20234,15 @@ async function agentSessionSend(text, opts) {
     st._pauseVacated = false;
     st.running = false;
     /* 插话的轮末结算（见 agentSteerSettleRound）：本轮既然收尾，「待本轮下一步生效」
-       就不可能再成立 —— 必须在下面那次重绘之前收口，队列条与气泡才会一起改口。 */
+       就不可能再成立 —— 必须在下面那次重绘之前收口，队列条与气泡才会一起改口。
+       紧跟其后把本轮攒着的插话**一次性落进消息流末尾**（= 本轮答复之后）：
+       本轮答复已在上面 push 好，所以它们按时间序排在它后面，落在历史上也不会跑到
+       上一段内容中间；随后清空轮作用域，下一次重绘自然把气泡画到历史里的位置。 */
     try {
       agentSteerSettleRound(st);
+    } catch (_) {}
+    try {
+      agentSteerFlushRound(st);
     } catch (_) {}
     /* 收轮：运行中指示的秒数起点一起清掉（running 一落，指示本来就不再显示了；
        留着它会让下一轮开跑前的任何一次 sync 拿上一轮的旧时刻算出离谱的秒数）。 */

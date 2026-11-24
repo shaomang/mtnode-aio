@@ -11,9 +11,10 @@
  * 几次：页面自己晚一步长出可拖区，就把自己收掉。
  *
  * 界面：position:fixed 贴顶的一条（BAR_H = 30px），条体 drag；左侧写应用标题
- * （window.__mtnodeAuthorTag.title，缺则 document.title），右侧 ✕ 是 no-drag、调
- * window.appHost.close()。**桥缺席 / 预览态（mtnode-preview:// 里没有 preload）不画 ✕** ——
- * 不假装能关。
+ * （window.__mtnodeAuthorTag.title，缺则 document.title），右侧三颗 no-drag 的窗口按钮：
+ * —  最小化（appHost.minimize）· □/❐ 最大化与还原（appHost.toggleMaximize，图标随状态换）
+ * · ✕ 关闭（window.appHost.close）。后两颗与关闭同一道闸：桥上没有对应方法
+ * （桥缺席 / 预览态 mtnode-preview:// 里没有 preload）就不画 —— 不假装能点。
  *
  * 自动让位：条体是浮层（半透明 + 轻微模糊），顶栏那 30px 由**宿主**替页面让出来 —— 挂上时往
  * documentElement 加 `.mtnode-chrome`、`--mtnode-chrome-h`，以及 mount 那一刻量到的 body 基线
@@ -41,6 +42,8 @@
 
   var bar = null;
   var styleEl = null;
+  var maxBtn = null; /* 最大化 / 还原那颗（图标随窗口状态换） */
+  var maxHooked = false; /* resize → 同步图标 只挂一次 */
 
   /* ── 语言与文案（跟宿主界面语言：preload 把 lang 写在 documentElement 上）── */
   function zh() {
@@ -165,12 +168,12 @@
       "-webkit-app-region:drag;user-select:none;-webkit-user-select:none}" +
       "#" + ID + " .mtn-chrome-t{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;" +
       "white-space:nowrap;letter-spacing:.2px;opacity:.82;-webkit-app-region:drag}" +
-      "#" + ID + " .mtn-chrome-x{flex:0 0 auto;display:flex;align-items:center;justify-content:center;" +
+      "#" + ID + " .mtn-chrome-b{flex:0 0 auto;display:flex;align-items:center;justify-content:center;" +
       "width:22px;height:22px;padding:0;border:0;border-radius:6px;background:transparent;" +
       "color:inherit;font:inherit;line-height:1;cursor:pointer;opacity:.62;" +
       "-webkit-app-region:no-drag}" +
-      "#" + ID + " .mtn-chrome-x:hover{opacity:1;background:" + alpha(tone.fg, 0.14) + "}" +
-      "#" + ID + " .mtn-chrome-x:focus-visible{outline:2px solid " + alpha(tone.fg, 0.5) + ";outline-offset:-1px}" +
+      "#" + ID + " .mtn-chrome-b:hover{opacity:1;background:" + alpha(tone.fg, 0.14) + "}" +
+      "#" + ID + " .mtn-chrome-b:focus-visible{outline:2px solid " + alpha(tone.fg, 0.5) + ";outline-offset:-1px}" +
       /* 让位规则：只在挂了 .mtnode-chrome 时生效，页面自己的 padding-top 一句话都不动 */
       "html." + CLASS + " body{padding-top:max(var(--mtnode-chrome-body-pt,0px),var(--mtnode-chrome-h))!important;" +
       "box-sizing:border-box}";
@@ -234,13 +237,17 @@
   }
   /* 桥上的 close 在不在：不在（页面自己打开的 / 预览态 mtnode-preview:// 没有 preload）
      就不画 ✕ —— 不假装能关 */
-  function closable() {
+  function bridge() {
     try {
       var h = window.appHost;
-      return !!(h && typeof h.close === "function");
+      return h && typeof h === "object" ? h : null;
     } catch (_) {
-      return false;
+      return null;
     }
+  }
+  function closable() {
+    var h = bridge();
+    return !!(h && typeof h.close === "function");
   }
   function closeApp() {
     try {
@@ -252,6 +259,58 @@
     } catch (_) {}
     return false;
   }
+  /* ── 最小化 / 最大化还原（本轮需求：应用独立窗口补这两颗）──────────────────
+   * 无框应用窗口（frame:false）本来没有系统按钮，只有宿主这条顶栏那枚 ✕；现在补两颗：
+   *   —  最小化（appHost.minimize）
+   *   □  最大化 / ❐ 还原（appHost.toggleMaximize，图标随窗口状态换）
+   * 桥上没有这两个方法（老宿主 / 预览态）就不画 —— 不假装能点。图标状态在 window resize 时
+   * 与点完之后各同步一次（最大化 / 还原必然伴随一次 resize）。 */
+  function mkWbtn(cls, glyph, label, onClick) {
+    var b = document.createElement("button");
+    b.type = "button";
+    b.className = "mtn-chrome-b" + (cls ? " " + cls : "");
+    b.textContent = glyph;
+    b.setAttribute("aria-label", label);
+    b.setAttribute("title", label);
+    b.addEventListener("click", function (ev) {
+      if (ev && ev.preventDefault) ev.preventDefault();
+      if (ev && ev.stopPropagation) ev.stopPropagation();
+      onClick();
+    });
+    return b;
+  }
+  function setMaxGlyph(on) {
+    if (!maxBtn) return;
+    maxBtn.textContent = on ? "❐" : "□";
+    var lbl = on ? t("还原窗口", "Restore window") : t("最大化窗口", "Maximize window");
+    maxBtn.setAttribute("aria-label", lbl);
+    maxBtn.setAttribute("title", lbl);
+  }
+  function syncMax() {
+    var h = bridge();
+    if (!maxBtn || !h || typeof h.isMaximized !== "function") return;
+    try {
+      Promise.resolve(h.isMaximized())
+        .then(function (r) {
+          setMaxGlyph(!!(r && r.maximized));
+        })
+        .catch(function () {});
+    } catch (_) {}
+  }
+  function toggleMax() {
+    var h = bridge();
+    if (!h || typeof h.toggleMaximize !== "function") return;
+    try {
+      Promise.resolve(h.toggleMaximize())
+        .then(function (r) {
+          if (r && typeof r.maximized === "boolean") setMaxGlyph(r.maximized);
+          else syncMax();
+        })
+        .catch(syncMax);
+    } catch (_) {
+      syncMax();
+    }
+  }
 
   /* ── 挂 / 收 ─────────────────────────────────────────────────────────── */
   function unmount() {
@@ -259,6 +318,13 @@
       if (bar && bar.parentElement) bar.parentElement.removeChild(bar);
     } catch (_) {}
     bar = null;
+    maxBtn = null;
+    if (maxHooked) {
+      try {
+        window.removeEventListener("resize", syncMax);
+      } catch (_) {}
+      maxHooked = false;
+    }
     try {
       document.documentElement.classList.remove(CLASS);
       document.documentElement.style.removeProperty("--mtnode-chrome-h");
@@ -283,21 +349,34 @@
     head.setAttribute("title", head.textContent);
     bar.appendChild(head);
 
+    var h = bridge();
+    if (h && typeof h.minimize === "function") {
+      bar.appendChild(mkWbtn("", "—", t("最小化窗口", "Minimize window"), function () {
+        try {
+          h.minimize();
+        } catch (_) {}
+      }));
+    }
+    if (h && typeof h.toggleMaximize === "function") {
+      maxBtn = mkWbtn("", "□", t("最大化窗口", "Maximize window"), toggleMax);
+      bar.appendChild(maxBtn);
+    }
     if (closable()) {
-      var x = document.createElement("button");
-      x.type = "button";
-      x.className = "mtn-chrome-x";
-      x.setAttribute("aria-label", t("关闭窗口", "Close window"));
-      x.setAttribute("title", t("关闭窗口", "Close window"));
-      x.textContent = "✕";
-      x.addEventListener("click", function (ev) {
-        if (ev && ev.preventDefault) ev.preventDefault();
-        closeApp();
-      });
-      bar.appendChild(x);
+      bar.appendChild(
+        mkWbtn("mtn-chrome-x", "✕", t("关闭窗口", "Close window"), closeApp),
+      );
     }
 
     (document.body || document.documentElement).appendChild(bar);
+    if (maxBtn) {
+      syncMax();
+      if (!maxHooked) {
+        maxHooked = true;
+        try {
+          window.addEventListener("resize", syncMax);
+        } catch (_) {}
+      }
+    }
     /* 基线量在加 class 之前（此刻上面的让位规则还不生效，量到的是页面自己的 padding-top），
        每次 mount 都重算一次：hide → show 不会沿用旧值 */
     var basePt = bodyPaddingTop();

@@ -4,7 +4,8 @@
  *
  * 负责三件事（数据层在 backend-registry-store.js）：
  *   ① 进程生命周期：起进程 / 停进程 / 健康轮询 / 端口分配 / 崩溃重启 / 退出收尾；
- *   ② 互斥：按 manifest.lock.class 分组（gpu / cpu / none），同类默认只允许 1 个常驻；
+ *   ② 并发：注册表里不做任何互斥 —— 重后端（mt-tex / markdown 等）一般不吃显存，可多个同时常驻
+ *      （用户口径）；真正高显存的插件后端（minimax h3 / music / 语音 / 出图）走 media-gen-global-lock，与这里无关；
  *   ③ 调用：http 走 fetch（没起就自动拉起），cli 走 spawn（{参数名} 占位替换）。
  *
  * 与插件体系并存：插件仍是官方功能入口，这里管 Agent 在任务里现场装出来的工具。
@@ -130,7 +131,6 @@ function publicItem(item, extra) {
     args: item.args,
     returns: item.returns,
     source: item.source,
-    lock: item.lock,
     install: item.install,
     launch: item.launch,
     adopt: item.adopt,
@@ -195,19 +195,6 @@ const REGISTRY_NOTE =
 
 /* ───────────────────────── 生命周期 ───────────────────────── */
 
-function lockHolders(item) {
-  const cls = (item.lock && item.lock.class) || "cpu";
-  if (cls === "none" || (item.lock && item.lock.exclusive === false)) return [];
-  const out = [];
-  for (const other of store.list()) {
-    if (other.id === item.id) continue;
-    const ocls = (other.lock && other.lock.class) || "cpu";
-    if (ocls !== cls || (other.lock && other.lock.exclusive === false)) continue;
-    if (procs.has(other.id)) out.push(other);
-  }
-  return out;
-}
-
 async function probeHealth(item, rt, timeoutMs) {
   const base = baseUrlOf(item, rt);
   if (!base) return { ok: false, error: "no_base_url" };
@@ -268,21 +255,6 @@ async function startItem(id, opts) {
       return { ok: false, error: "接管的后端没在跑（" + (item.adopt && item.adopt.baseUrl) + "）：请先按它自己的方式启动" };
     }
     return { ok: true, adopted: true };
-  }
-  const holders = lockHolders(item);
-  if (holders.length) {
-    const names = holders.map((h) => h.name + "（" + ((h.lock && h.lock.class) || "cpu") + "）").join("、");
-    store.audit({ action: "start", id, actor: "agent", ok: false, error: "互斥锁被占用", detail: names });
-    return {
-      ok: false,
-      error:
-        "同类后端互斥（lock.class = " +
-        ((item.lock && item.lock.class) || "cpu") +
-        "）：" +
-        names +
-        " 正在运行，先停掉它再启动 " +
-        item.name,
-    };
   }
   const port = await pickPort(item.launch.portRange);
   if (!port) return { ok: false, error: "端口区段 " + JSON.stringify(item.launch.portRange) + " 里没有空闲端口" };

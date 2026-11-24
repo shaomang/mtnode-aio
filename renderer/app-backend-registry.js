@@ -297,11 +297,7 @@ function buildBackendRegistryBlock(opts) {
       ),
       kvRow(
         "来源",
-        (it.source === "adopted" ? I18n.t("接管本机已有") : I18n.t("注册中心安装")) +
-          " · " +
-          I18n.t("互斥") +
-          ": " +
-          ((it.lock && it.lock.class) || "cpu"),
+        it.source === "adopted" ? I18n.t("接管本机已有") : I18n.t("注册中心安装"),
       ),
       /* 键叫「后端安装目录」而不是裸词条「安装目录」：后者是插件详情浮层摘掉目录行时
          一并删掉的词条（test/smoke-plugin-root.js 钉着它不许再出现），别无脑复用。 */
@@ -469,18 +465,6 @@ function buildBackendRegistryBlock(opts) {
       ),
     );
     const fSource = field(row2, I18n.t("来源"), select([["managed", I18n.t("注册中心安装")], ["adopted", I18n.t("接管本机已有")]], cur.source || "managed"));
-    const fLock = field(
-      row2,
-      "lock.class",
-      select(
-        [
-          ["cpu", "cpu"],
-          ["gpu", "gpu"],
-          ["none", I18n.t("none（不参与互斥）")],
-        ],
-        (cur.lock && cur.lock.class) || "cpu",
-      ),
-    );
     p.append(row2);
 
     const fDesc = field(p, I18n.t("工具描述（Agent 靠它判断什么时候用这个工具）"), area("", cur.desc));
@@ -555,7 +539,6 @@ function buildBackendRegistryBlock(opts) {
         desc: fDesc.value.trim(),
         args,
         source: fSource.value,
-        lock: { class: fLock.value },
         install: { dir: fDir.value.trim() },
       };
       if (kind === "cli") item.cli = { cmd };

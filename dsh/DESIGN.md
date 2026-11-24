@@ -1,4 +1,4 @@
-# MTNode × DeepSeek Harness 集成设计
+﻿# MTNode × DeepSeek Harness 集成设计
 
 > 本文件是 dsh 集成的架构契约。修改集成代码前先读这里。
 > 面向普通用户的说明见 [README.md](README.md)。
@@ -456,7 +456,7 @@ dsh 0.2 的 `llm-deepseek` 把 `config.baseURL` / `DEEPSEEK_BASE_URL` 当 **Mess
 | method | params | 语义 |
 |---|---|---|
 | `status` | — | `{gateway, node, runtimes, runtimeBin, configPath}` 健康与版本 |
-| `run` | `{workspace, input, model?, maxTokens?, apiKey?, baseUrl?, webSearchApiKey?, systemPrompt?, hostPersona?, preset?, effort?, provider?, mtnodeProviders?, permissionPreset?, pure?, resumeSession?, images?, hostSessionId?, officialModels?}` | 排队一条提示,流式事件直至整轮 idle。`hostSessionId`(**活动流归属**,可缺省)= 宿主(渲染层)那条会话的 id(`as…`):本轮的浏览器动作 / 命令 / 文件摘要进活动流(`browser-act`)时按它盖章(`BrowserCtl.push` + `hostSessionTagOf`),活动流面板据此只显示当前会话的活动、切会话即切换;非会话轮(助手 / 未绑定节点)不带 = 那些条目不算进任何会话。它只影响留痕归属,不参与归属门控与断点续跑。`resumeSession`(**断点续跑**,可缺省)= 宿主点名沿用上一轮(崩溃 / 断线 / 超额失败)那次的 dsh session id:网关先按本机会话日志判「盘上有没有这份会话」(第一道闸),续跑轮还会先经 `session/resume` 握手让运行时把旧日志恢复为 live —— 同进程复用 / 跨进程恢复 / `RESUME_UNAVAILABLE` 三态详见「断点续跑契约」;只有**盘上无日志**(状态 C 第 1 条)才"不起 runtime、不消耗任何 token"地只回 `error`(带固定标记 `RESUME_UNAVAILABLE: …`)。`webSearchApiKey` 专供联网搜索。`hostPersona` 经环境变量 `MTNODE_HOST_PERSONA` + `MTNODE_CHAT_ISOLATE` 注入运行时（**不是** settings.yaml：`dsh-system-prompt` 不读 settings），由 `bongochat-prompt` 覆盖 `deployment:persona` 并裁剪工具；同时 cordis 在隔离态禁用画布/文件/路由等 MTNode 插件。`pure`（会话「纯净模式」，渲染层按钮开启）= **双清空 + 引擎侧裁剪**：网关强制空预设文本，并要求宿主同轮把 `systemPrompt` 置空（见 `app-assist.js` / `app-db.js` 的 pure 分支）——两段都空时 `sys` 为空，用户消息**原样**下发，不拼 `【系统设定】` 前缀；同时以 `MTNODE_PURE=1` 注入运行时，`pure-prompt` 插件（在 `system-prompt/assemble` 上 `prepend` 站到 waterfall 最外层）清空**全部** system prompt 段与运行时上下文（`suppressRuntimeContext()`）。**工具一个都不裁**（用户口径：纯净模式是提示词档，不是能力档）：`pure-prompt` 原样透传 `tools`，`cordis.yml` 里凡有工具面的插件行都不再按该标记禁用（只有纯注入提示词的 `agent-instructions` / `plan-mode` 仍按它禁用），网关也不再因 `pure` 清空用户工具描述子或 `hideTools` 名单。另：宿主在「采用拷问 / 热修」时把 `pure` 写成 false（`agentPureOffByMode`），两者互斥。runtime key 含 pure 标记，纯净 / 非纯净**不共用进程**；fresh runtime 的预热轮（`harness.run('ok')`）与真实消息分属两个 session，不进纯净会话上下文。真实轮的 session id 由**网关铸造**并显式经 `RunOptions.sessionId` 下发（预热轮另铸一个），据此门控交互桥的提问 / 审批归属——见「交互桥的归属契约」。`officialModels`（**官方模型清单**,可缺省）= 宿主按设置勾选的 DeepSeek 官方模型列表（`[{id, name, contextWindow, maxTokens, inputModalities}]`,也接受纯 id 字符串）：网关归一（id 白名单字符 / 去重保序 / 上限 24 条 / 补已知别名映射）后写进 settings.yaml 的 `llm-deepseek.models`,**空清单 = 不写该键**（适配器回落自身 `DEFAULT_MODELS`,行为与接入前一字不变）；该段本就由宿主托管（与 `reasoningEffort` 同段,适配器每次操作重读 settings）,故**不进 runtime key**、不改续跑签名成分 |
+| `run` | `{workspace, input, model?, maxTokens?, apiKey?, baseUrl?, webSearchApiKey?, systemPrompt?, hostPersona?, preset?, effort?, provider?, mtnodeProviders?, permissionPreset?, pure?, resumeSession?, images?, hostSessionId?, officialModels?}` | 排队一条提示,流式事件直至整轮 idle。`hostSessionId`(**活动流归属**,可缺省)= 宿主(渲染层)那条会话的 id(`as…`):本轮的浏览器动作 / 命令 / 文件摘要进活动流(`browser-act`)时按它盖章(`BrowserCtl.push` + `hostSessionTagOf`),活动流面板据此只显示当前会话的活动、切会话即切换;非会话轮(助手 / 未绑定节点)不带 = 那些条目不算进任何会话。它只影响留痕归属,不参与归属门控与断点续跑。`resumeSession`(**断点续跑**,可缺省)= 宿主点名沿用上一轮(崩溃 / 断线 / 超额失败)那次的 dsh session id:网关先按本机会话日志判「盘上有没有这份会话」(第一道闸),续跑轮还会先经 `session/resume` 握手让运行时把旧日志恢复为 live —— 同进程复用 / 跨进程恢复 / `RESUME_UNAVAILABLE` 三态详见「断点续跑契约」;只有**盘上无日志**(状态 C 第 1 条)才"不起 runtime、不消耗任何 token"地只回 `error`(带固定标记 `RESUME_UNAVAILABLE: …`)。`webSearchApiKey` 专供联网搜索。`hostPersona` 经环境变量 `MTNODE_HOST_PERSONA` + `MTNODE_CHAT_ISOLATE` 注入运行时（**不是** settings.yaml：`dsh-system-prompt` 不读 settings），由 `bongochat-prompt` 覆盖 `deployment:persona` 并裁剪工具；同时 cordis 在隔离态禁用画布/文件/路由等 MTNode 插件。`pure`（会话「纯净模式」，渲染层按钮开启）= **双清空 + 引擎侧裁剪**：网关强制空预设文本，并要求宿主同轮把 `systemPrompt` 置空（见 `app-assist.js` / `app-db.js` 的 pure 分支）——两段都空时 `sys` 为空，用户消息**原样**下发，不拼 `【系统设定】` 前缀；同时以 `MTNODE_PURE=1` 注入运行时，`pure-prompt` 插件（在 `system-prompt/assemble` 上 `prepend` 站到 waterfall 最外层）清空**全部** system prompt 段与运行时上下文（`suppressRuntimeContext()`）。**工具面收到最小白名单**（用户口径 · 本轮修正）：`pure-prompt` 原样透传 `tools`，清空提示词那半；工具那半由 `MTNODE_PURE_TOOLS` 交 `mtnode-tool-visibility` 装 `restrict({ allow: PURE_KEEP_TOOLS })`，只留读 / 写 / 命令 / 联网搜索（详见「按运行裁剪可见工具集契约」）。`cordis.yml` 里凡有工具面的插件行仍不按该标记禁用（只有纯注入提示词的 `agent-instructions` / `plan-mode` 按它禁用）—— 可见集由 allow 一处收口，不在插件注册口再分一遍。另：宿主在「采用拷问 / 热修」时把 `pure` 写成 false（`agentPureOffByMode`），两者互斥。runtime key 含 pure 标记，纯净 / 非纯净**不共用进程**；fresh runtime 的预热轮（`harness.run('ok')`）与真实消息分属两个 session，不进纯净会话上下文。真实轮的 session id 由**网关铸造**并显式经 `RunOptions.sessionId` 下发（预热轮另铸一个），据此门控交互桥的提问 / 审批归属——见「交互桥的归属契约」。`officialModels`（**官方模型清单**,可缺省）= 宿主按设置勾选的 DeepSeek 官方模型列表（`[{id, name, contextWindow, maxTokens, inputModalities}]`,也接受纯 id 字符串）：网关归一（id 白名单字符 / 去重保序 / 上限 24 条 / 补已知别名映射）后写进 settings.yaml 的 `llm-deepseek.models`,**空清单 = 不写该键**（适配器回落自身 `DEFAULT_MODELS`,行为与接入前一字不变）；该段本就由宿主托管（与 `reasoningEffort` 同段,适配器每次操作重读 settings）,故**不进 runtime key**、不改续跑签名成分 |
 | `cancel` | `{workspace}` | 关闭该 workspace 的全部运行时(在途 run 以错误收束) |
 | `steer` | `{reqId\|cancelTag, sessionId?, text?\|contentBlocks?}` | **轮内插话**:往**正在跑的这一轮**的下一步边界投一句话(运行时侧 `agent.steer`),不重开轮、不等本轮结束。网关按在途表(`reqId → {runKey, cancelTag, sessionId}`)定位那一轮那台 runtime 的 client,同步下发 `session/steer`(10s)。送达 → `{ok:true, reqId, sessionId, steered:true, reqIds}`;没有在途这一轮 / 那台 runtime 已回收 / **老运行时没有该方法** / 下达超时 → `{ok:false, reason:'unsupported', detail}`,宿主据此回落成普通排队消息。详见「运行中插话与暂停契约」 |
 | `pause` | `{reqId\|cancelTag, sessionId?}` | **轮内暂停**:中止当前请求但**保留 live 会话与收件箱**(运行时侧 `agent.cancel({kind:'user'},{keepInbox:true})`,**不关 runtime**),之后可点名 `run.resumeSession` 从中断处接下去。回执与降级口径同 `steer`(`{ok:true, paused:true}` / `{ok:false, reason:'unsupported'}`)。成功后本轮以 `done{paused:true}` 收尾,**该轮不会有 `error` 事件**(否则宿主的失败重发闸会把一次暂停当 429 类失败连重发 5 次) |
@@ -596,13 +596,23 @@ sessionTag, at, status?, stopReason?}` —— 来自运行时的**顶层通知**
 > 空会话首步 32K token,且**每一步**都付)。所以「这一轮根本不可能用的工具」应当整个不下发,
 > 而不是留着让模型去撞 —— 撞一次是白烧一轮,留着是每步白烧 7K token。
 
-**三条通道,一份规范名单**
+**四条通道,一份规范名单**
 
 | 通道 | run 参数 → env | 形状 | 生效点 |
 | --- | --- | --- | --- |
 | 精简工具负载 | `lean` → `MTNODE_LEAN_TOOLS` | 整档(布尔):`mtnode_app` / `mtnode_vision` | `canvas-plugin.mjs` 的 `register()` |
 | 智能节点锁画布 | `noCanvas` → `MTNODE_NO_CANVAS` | 整档(布尔):画布主干三件 | 同上 |
 | 按名字裁剪 | `hideTools` → `MTNODE_HIDE_TOOLS` | 名单(数组/逗号串):数据库、预设拒项、goal/子代理/后台任务档、工具族按需注册(browser_* / 素材 / 音视频:本轮原话没提到就整族裁) | MTNode 自有 → 各自插件注册口;引擎自带 → `mtnode-tool-visibility` 插件 |
+| **纯净模式白名单** | `pure` → `MTNODE_PURE_TOOLS` | 反向保留(`restrict({allow})`):`PURE_KEEP_TOOLS` = 读 / 写 / 命令 / 联网搜索(11 个名字) | 同 `mtnode-tool-visibility` 插件(`agent/created`) |
+
+- **纯净模式为什么要裁工具**:纯净轮的系统提示早已清成 0 token,但工具定义每次请求都整份重发
+  —— 实测(dsh 的 `contextBreakdown`)纯净轮 `tools: 23,739`、消息 3,619,首步 36,341 token,
+  比普通轮(`tools: 16,430`)还多 7.3K(纯净轮把 lean / 按需裁一并关掉了)。所以「纯净」必须在
+  工具面上也收到最小集,否则用户体感就是「纯净模式没生效」。白名单真源同为
+  `tool-visibility.mjs` 的 `PURE_KEEP_TOOLS`;`restrict({allow})` 是「只保留这些全局工具」,
+  被排除的整份 schema 不进请求。装之前逐名探测存在性(平台没有 `bash` 之类),并且**核心工具
+  (read / write / 一只命令工具)探测不到时整条不装** —— allow 是反向白名单,漏一个名字等于把
+  那个工具裁掉,宁可退回全量也不能让纯净会话读不了文件。
 
 - **名单真源**:`dsh/gateway/tool-visibility.mjs`(纯模块、零依赖,网关进程与运行时进程共用)。
   `HIDEABLE_TOOLS` 是**唯一白名单**,`normalizeHiddenTools()` 负责丢未知名 + 去重 + 字典序排序;
@@ -1102,6 +1112,9 @@ PDF 解析通道(`mtnode_tool_pdf_markdown` / `pdf:parse`)把同一份文件解�
   的 default 分支原样透传成 `session-event`；宿主按 `data.inserted` 里的文本认回那句插话，把气泡
   从「已插话 · 将在下一步生效」升级为「已注入本轮」。这类帧**不参与** token / jobs 记账（token 只在
   `usage` 增量块累计，jobs 只数 `job/*started`；插话自身的用量在它所属调用的 `usage` 里正常出现）。
+- **气泡落在轮末（纯宿主口径，不进协议）**：运行中那句插话只攒在**轮作用域**里、排成 live 行之后的行，
+  本轮收尾时才按时间序追加进消息流末尾（= 本轮答复之后）—— 它既不夹在上一段内容与本轮答复之间，
+  也不会在下一轮开头又出现一次（回归见 `test/smoke-session-steer-pause.js` 的 [7] 段）。
 
 ### 宿主侧决策规则：忙时这一发问不问（纯宿主，不进协议）
 

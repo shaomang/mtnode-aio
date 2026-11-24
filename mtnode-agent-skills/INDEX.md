@@ -10,6 +10,8 @@
 
 - **impeccable** — Impeccable（前端设计规范）：前端界面设计 / 改版 / 评审：视觉层级、排版、动效、可访问性与设计系统。
   - 文件：`app/impeccable/SKILL.md`
+- **modern-web-guidance** — Modern Web Guidance（现代 Web 开发规范）：现代 Web 平台最佳实践检索（Chrome / Edge / Firefox / MDN 共同维护）。动手写或改任何 HTML、CSS、客户端 JS 之前先搜一次官方 guide：模态框与 popover、表格、暗色模式、anchor positioning、container queries、View Transitions、滚动驱动动画、表单与校验、自动填充、可访问性、自定义下拉、滚动条、LCP/INP/CLS、图片与脚本优先级、安全与 passkey、Web Components、日期与时区、内置 AI、WebAssembly。MTNode 自身迭代（renderer 原生 HTML/CSS/JS）、应用开发（iframe 静态页）、其它 web 相关 Agent 工作都适用；后端、CI / 构建工具类任务不用。
+  - 文件：`app/modern-web-guidance/SKILL.md`
 - **mtnode-app-dev** — MTNode 应用开发：开发 MTNode「应用」（应用中心 / 插件 kind=window）：静态页契约、两套宿主桥、能力位、数据落盘与常见坑。
   - 文件：`app/app-dev/SKILL.md`
 - **mtnode-app-merge** — MTNode 应用版本合并：把云端「对方那一版」按用户逐项确认合进本机应用目录的合并会话流程（不改版本号、不自动上架）。

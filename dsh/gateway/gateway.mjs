@@ -2125,11 +2125,16 @@ async function getRuntime(workspace, model, maxTokens, provider, apiKey, baseUrl
     delete env.MTNODE_HOST_PERSONA
   }
   /* 纯净模式：注入 MTNODE_PURE=1 给运行时。pure-prompt 插件据此在系统提示装配时
-     清空全部 system prompt 段与运行时上下文。**工具一个都不裁**（用户口径：纯净模式
-     只省提示词，工具照样全给）—— cordis.yml 里凡有工具面的插件行都不再按这个标记禁用，
-     只有纯注入提示词的 agent-instructions / plan-mode 仍按它禁用。 */
+     清空全部 system prompt 段与运行时上下文；MTNODE_PURE_TOOLS 再让
+     mtnode-tool-visibility 按 PURE_KEEP_TOOLS（读 / 写 / 命令 / 联网搜索）装
+     restrict({ allow }) —— 其余工具整份 schema 都不进请求。
+     为什么工具也要裁：宿主侧 systemPrompt 早已是空串、引擎段也清成 0 token，实测纯净轮
+     首步 36,341 token 里 23,739 全是工具定义（而且纯净轮把 lean / 按需裁都关掉了，
+     比普通轮还多 7.3K）。「纯净」只剩提示词为零、工具照给，用户体感就是「没生效」。 */
   if (pureOn) env.MTNODE_PURE = '1'
   else delete env.MTNODE_PURE
+  if (pureOn) env.MTNODE_PURE_TOOLS = '1'
+  else delete env.MTNODE_PURE_TOOLS
   /* 按运行裁剪工具负载的三个标记 → env（读点：canvas-plugin.mjs 的 register()、
      db-plugin.mjs 的注册口、以及按名字裁剪的 mtnode-tool-visibility 插件）。
      缺席 / 空 = 全量注册，行为与未接入本能力时一字不差。 */
@@ -3225,14 +3230,15 @@ async function handleRun(params) {
     /* 按运行裁剪工具负载（与 getRuntime 的 lean: / nc: 同源，同一轮同一台运行时）：
        lean = 设置里的「精简工具负载」；noCanvas = 用户声明「与画布无关」的运行，
        由渲染层按节点类型 / 会话开关决议后随 run 参数下发（见 renderer/app-db.js 的 dshRunOnce）。
-       两个标记只「减」不「加」：纯净模式在宿主侧本就不打它们（app-db.js 的 !pureOn 兜底），
-       这里再压一次，保证同一档在两处结论一致 —— 纯净模式对工具可见集零影响。 */
+       纯净模式不靠这两个标记：它有更强的一档（getRuntime 的 MTNODE_PURE_TOOLS →
+       restrict({ allow: 读/写/命令/联网搜索 })），除白名单外一个工具都不发，所以这里
+       照旧把它们压回 0（两处结论一致，免得同一份可见集在宿主与网关两侧算法不同）。 */
     const leanFlag = !!lean && !pureFlag
     const noCanvasFlag = !!noCanvas && !pureFlag
     /* 浏览器工具整档闸（与 getRuntime 的 nb: 同源）：仅会话可用 —— 画布智能节点 /
        用户声明「与画布无关」的会话 / 长任务未授权环节由宿主打这一位，
        运行时整只不注册 browser-plugin.mjs（含它的 12 个工具 schema）。
-       纯净模式不参与（纯会话照拿浏览器工具）。 */
+       纯净模式不参与：它的白名单本来就不含 browser_*，整档闸装在不在都一样。 */
     const noBrowserFlag = !!noBrowser && !pureFlag
     /* 真机调试整档闸（与 getRuntime 的 ad: 同源）：只有应用开发会话由宿主打这一位
        （renderer/app-assist.js 按会话的 appId 下发 appDebug）→ 运行时才注册 mtnode_gui。
@@ -3363,8 +3369,10 @@ async function handleRun(params) {
       if (blocks[0] && blocks[0].type === 'text') blocks[0] = { type: 'text', text }
       else blocks.unshift({ type: 'text', text })
     }
-    /* 用户工具描述子（工具节点 func call）：纯净模式照常注入 —— 纯净只裁提示词，
-       不裁工具（用户口径）。以前这里 pure 会话传空数组，纯净轮的工具节点全调不到。 */
+    /* 用户工具描述子（工具节点 func call）：照常注入运行时（tools-plugin.mjs），
+       但纯净轮的 allow 白名单只保留读 / 写 / 命令 / 联网，所以这一档里它们不会出现在
+       模型可见集上 —— 这是「纯净 = 最小工具集」的应有含义，不是漏发。
+       以前这里是 pure 会话传空数组，非纯净轮的工具节点全调不到，那一版才是错的。 */
     const runTools = normRunTools(tools)
     const toolsJson = runTools.length ? JSON.stringify(runTools) : ''
     /* 联网搜索（DeepSeek 服务端工具）：上一轮的工具账本（原样，含 deepseek_read_url 的

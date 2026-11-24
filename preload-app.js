@@ -39,7 +39,9 @@
  *   dataDirGet / dataDirPick / dataDirOpen / dataRead / dataWrite
  *                                                           数据文件夹与整份数据落盘（原子写）
  *   account()                     → { ok, loggedIn, user }  当前账号摘要（**无 token**）
- *   close() / quit() / onWillClose(cb)                      关自己窗口 / 退出 MTNode / 关窗前的收尾钩子
+ *   close() / minimize() / toggleMaximize() / isMaximized() / quit() / onWillClose(cb)
+ *                                                          关自己窗口 / 最小化 / 最大化还原 /
+ *                                                          读最大化状态 / 退出 MTNode / 关窗前的收尾钩子
  *
  *   语音转写那一组（官方本地 SenseVoice，识别跑在 dsh 运行时里）算一项能力「语音转写」：
  *   pickAudio / transcribe（本机音频或应用自录的 base64 WAV）/ asrStatus / asrPrepare /
@@ -572,6 +574,12 @@ const appHost = {
 
   /* 关掉本应用窗口（窗口自身动作，不是宿主能力） */
   close: () => ipcRenderer.invoke("apps:closeWindow"),
+  /* 窗口自身的另外两颗按钮（本轮需求：应用独立窗口要能最小化 / 最大化）：
+     与 close() 同一条口径 —— 只作用于**自己这只窗口**，认不出就回 no_window。
+     toggleMaximize 与 isMaximized 都回 { ok, maximized }：宿主顶栏用它画「最大化 / 还原」图标。 */
+  minimize: () => ipcRenderer.invoke("apps:minimizeWindow"),
+  toggleMaximize: () => ipcRenderer.invoke("apps:toggleMaximize"),
+  isMaximized: () => ipcRenderer.invoke("apps:isMaximized"),
   /* 退出 MTNode 本身（先让本应用收尾）：给「应用里带一个退出按钮」的场景用 */
   quit: () => ipcRenderer.invoke("apps:quit"),
 };
@@ -713,6 +721,11 @@ function fimWorldBridge(fim) {
    它自己也会读 window.appHost.__authorTag 兜底）—— 注入脚本与 preload 是两个世界，
    事件 detail 里塞得进对象，但这份数据是**纯值**，挂在 window 上更省一次往返。 */
 function maybeInjectAppUi() {
+  /* ⑧ **宿主 footer 的让位**（renderer/app-foot.js）：底部那几条宿主 UI 都是 position:fixed 浮层，
+     会压住应用最后那几十像素；应用不知道有这条 footer，不可能自己留位，所以由这个脚本把浮层高度
+     写进 --mtnode-foot-h 并给 body 补 padding-bottom（见文件头）。**不问能力位、默认注入**：
+     它只在真出现宿主 fixed 底栏时才动作，没有浮层时页面一个字节都不改。 */
+  injectAppUiScript("app-foot.js", "foot");
   /* ⑤ AI 工作过程条（renderer/app-ai-work-app-ui.js）：**不问能力位、所有应用窗口默认注入**。
      理由见文件头「五条」那段注释 —— 它反映的是宿主自己代应用做的事，不需要应用声明。
      放在 askCapabilities() 之前：老宿主答不上来（甚至答挂）也照样有这一条；

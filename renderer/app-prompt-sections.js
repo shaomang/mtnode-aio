@@ -24,8 +24,10 @@
  * 缺失按空串计）为准入条件；sig 变了 = 这一轮与快照并非同一套配置跑出来的 → 快照作废、
  * 整段全量重发。runtimeKey 同源成分必须入指纹的原因：它们漂移时网关会另起新 runtime，
  * 点名续跑旧会话必撞 id collision —— 宿主侧必须把它判成「配置变了、整轮重发」。
- * pure 轮与 retry 轮由调用方传 full:true 走全量旁路；纯净轮更进一步——它是「只按本轮原话
- * 命中的分节」现算出来的（见下方 purePromptSections），未命中时就是空串，不留快照。
+ * 基线档（纯净模式关、也没开「先拷问需求 / 快速热修」）与 retry 轮由调用方传 full:true 走
+ * 全量旁路；基线档更进一步 —— 它是「只按本轮原话命中的分节」现算出来的（见下方
+ * promptTrimSections），未命中时就是空串，不留快照。真正的纯净模式（st.pure）不查表：
+ * 一节都不发。
  */
 
 /* 规范节序（= 今天的拼接顺序，逐字节等价的依据）。
@@ -309,19 +311,21 @@ function renderSections(runKey, sections, opts) {
   };
 }
 
-/* ── 纯净模式（pure）的分节命中表 ───────────────────────────────────────────────
- * 纯净模式过去 = 整段 systemPrompt 置空。现在统一成「只按本轮用户原话命中才注入」：
- * 命中哪一类，就只注入这一类对应的分节；一类都没命中 → 分节表为空 → 下发空 systemPrompt，
- * 行为与旧的纯净模式逐字一致。用户手动关掉纯净开关 = 全量注入（本函数完全不参与）。
+/* ── 基线档（纯净模式关、其它模式也关）的分节命中表 ─────────────────────────────
+ * 用户口径（本轮）：**普通轮就是原来那一档纯净模式的设置**，而纯净模式本身改成「真正的
+ * 无 prompt」。于是这张表成了默认档：命中哪一类，就只注入这一类对应的分节；一类都没命中 →
+ * 分节表为空 → 下发空 systemPrompt。
+ * 纯 净 模 式（st.pure）不再查表：它一节都不发（宿主 systemPrompt 空串 + 网关强制空预设文本 +
+ * 运行时 pure-prompt 插件清空 sections / contexts）。
+ * 全量注入只留给「先拷问需求 / 快速热修」那两档 —— 它们的契约必须贴进 system prompt。
  *
  * 纪律：
  *   1. **一个真源**：会话侧（app-assist.js agentSessionSend）、节点 / 会话运行链
- *      （app-db.js dshRunOnce 的 pureOn 分支）都只问本函数，不许各写一套 pure 判据。
- *   2. **id 只用 PROMPT_SECTION_ORDER 里的**，不新增词：纯净轮不引入未登记的新节。
+ *      （app-db.js dshRunOnce 的 trim 分支）都只问本函数，不许各写一套判据。
+ *   2. **id 只用 PROMPT_SECTION_ORDER 里的**，不新增词：基线轮不引入未登记的新节。
  *   3. **只回答「命中了没有」**，不替调用点决定文案：各调用点只拼自己手上真有的那段。
- *      纯净轮**工具照常全给**（用户口径：MTNODE_PURE 只管提示词，cordis.yml 里凡有工具面的
- *      插件行都不再按它禁用），所以命中放行的段与当前真实工具集一致 —— 命中什么就拼什么，
- *      不再有「工具其实没有、人设却承诺了」的错位。
+ *      基线轮**工具照常全给**（基线只裁提示词，不裁能力），所以命中放行的段与当前真实
+ *      工具集一致 —— 命中什么就拼什么，不再有「工具其实没有、人设却承诺了」的错位。
  */
 const PURE_PROMPT_HIT_RULES = [
   {
@@ -363,12 +367,12 @@ const PURE_PROMPT_HIT_RULES = [
   },
 ];
 
-/* 本轮该注入哪些分节。
+/* 本轮该注入哪些分节（基线档；旧名 purePromptSections 保留为别名）。
  *   userText: 这一轮真正发给模型的原话（技能轮 = 展开后的任务书正文；空串 = 什么都不命中）
  *   opts.planMode: 计划模式是会话状态而不是关键词 → 为真时补上 plan_mode 一节
  * 返回：{ ids: [...按规范节序...], hit, has(id) } —— 一节都没命中时 ids 为空、hit=false，
- * 调用点据此下发空 systemPrompt（= 旧的纯净模式）。 */
-function purePromptSections(userText, opts) {
+ * 调用点据此下发空 systemPrompt。 */
+function promptTrimSections(userText, opts) {
   opts = opts || {};
   var text = String(userText == null ? "" : userText);
   var hit = {};
@@ -399,6 +403,10 @@ function purePromptSections(userText, opts) {
   };
 }
 
+/* 旧名别名（历史叫法：这张表当初只服务纯净模式）。两个名字指向同一份实现 —— 调哪个都行，
+ * 但只许有一份判据。 */
+const purePromptSections = promptTrimSections;
+
 /* 调试与文档便利：规范节序的可读拷贝 */
 function promptSectionCatalog() {
   return PROMPT_SECTION_ORDER.slice();
@@ -417,7 +425,8 @@ if (typeof window !== "undefined") {
   window.invalidatePromptSections = invalidatePromptSections;
   window.setPromptSectionDiff = setPromptSectionDiff;
   window.promptSectionDiffEnabled = promptSectionDiffEnabled;
-  /* 纯净模式命中表：会话链（app-assist.js）与运行链（app-db.js）共用这一份 */
+  /* 基线档命中表：会话链（app-assist.js）与运行链（app-db.js）共用这一份 */
   window.PURE_PROMPT_HIT_RULES = PURE_PROMPT_HIT_RULES;
+  window.promptTrimSections = promptTrimSections;
   window.purePromptSections = purePromptSections;
 }

@@ -752,6 +752,11 @@ function iframeAppUiSource(man, isAppNode, dir) {
   } catch {
     caps = {};
   }
+  /* 宿主 footer 的让位（renderer/app-foot.js，与独立窗口同一条实现）：底部那几条宿主 UI 都是
+     position:fixed 浮层，会压住应用最后那几十像素 —— 由它把浮层高度写进 --mtnode-foot-h 并给
+     body 补 padding-bottom。**不设闸、一律注**：它只在真出现宿主 fixed 底栏时才动作，
+     没有浮层时页面一个字节都不改（所以不必按能力位逐个对齐）。 */
+  parts.push(appUiInlineSource("app-foot.js"));
   if (caps.showDictate === true) parts.push(appUiInlineSource("app-speech-ui.js"));
   /* 输入补全（2026-11 本轮）：声明了 showComplete 才注 —— 闸门与独立窗口同一条
      （preload-app.js 的 maybeInjectAppUi）。先给一份纯值设置，再注补全本体；
@@ -6268,6 +6273,50 @@ function noteAppRun(id, kind) {
     return 0;
   }
 }
+/* ── 窗口自身的三颗按钮（本轮需求：应用独立窗口要能最小化 / 最大化）──────────────
+ * 与 closeSenderAppWindow 同一条口径：**按发送方窗口认**（e.sender → 那只 BrowserWindow），
+ * 认不出 / 已销毁就回 no_window，绝不拿主窗口或别的窗口开刀。frame:false 的无框应用窗口
+ * 本来没有系统按钮，宿主顶栏（renderer/app-chrome-ui.js）那两颗调的就是这里。 */
+function senderAppWindowOf(e) {
+  try {
+    if (!e || !e.sender) return null;
+    if (typeof BrowserWindow.fromWebContents !== "function") return null;
+    const w = BrowserWindow.fromWebContents(e.sender);
+    return w && !w.isDestroyed() ? w : null;
+  } catch (_) {
+    return null;
+  }
+}
+function minimizeSenderAppWindow(e) {
+  const w = senderAppWindowOf(e);
+  if (!w) return bad(t("找不到这个应用窗口"), "no_window");
+  try {
+    w.minimize();
+    return { ok: true, minimized: true };
+  } catch (err) {
+    return fail(err);
+  }
+}
+function toggleMaximizeSenderAppWindow(e) {
+  const w = senderAppWindowOf(e);
+  if (!w) return bad(t("找不到这个应用窗口"), "no_window");
+  try {
+    if (w.isMaximized()) w.unmaximize();
+    else w.maximize();
+    return { ok: true, maximized: !!w.isMaximized() };
+  } catch (err) {
+    return fail(err);
+  }
+}
+function senderAppWindowMaximized(e) {
+  const w = senderAppWindowOf(e);
+  if (!w) return bad(t("找不到这个应用窗口"), "no_window");
+  try {
+    return { ok: true, maximized: !!w.isMaximized() };
+  } catch (err) {
+    return fail(err);
+  }
+}
 function closeSenderAppWindow(e) {
   const id = wcToAppId.get(e.sender) || "";
   if (id) closeAppWindow(id);
@@ -8942,6 +8991,10 @@ function registerAppsIpc(opts) {
     return { ok: true, id: id, closed: !!closed };
   }));
   ipcMain.handle("apps:closeWindow", guard((e) => closeSenderAppWindow(e)));
+  /* 无框应用窗口的最小化 / 最大化还原（宿主顶栏那两颗按钮 → preload-app.js 的 appHost） */
+  ipcMain.handle("apps:minimizeWindow", guard((e) => minimizeSenderAppWindow(e)));
+  ipcMain.handle("apps:toggleMaximize", guard((e) => toggleMaximizeSenderAppWindow(e)));
+  ipcMain.handle("apps:isMaximized", guard((e) => senderAppWindowMaximized(e)));
   /* 收拢到「只剩一个」：把除 keepId 以外的应用窗口全部按正常关闭链收掉。
      画布上的应用节点打开界面时调它（keepId 传空 = 一个都不留），保证同一时间只有一个应用活着。 */
   ipcMain.handle("apps:closeOthers", guard((e, arg) => {

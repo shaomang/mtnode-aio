@@ -129,7 +129,8 @@ const { registerAppPluginsIpc, shutdownAppPlugins, openWindowPlugin, pluginBacke
    MCP / 技能，不碰源码、升级不失效；一键修复与诊断导出也在这里（见 plugins/user-plugins.js） */
 const { registerUserPluginsIpc, runStartupHealth: runUserPluginsHealth, backendSnapshot: userPluginBackendSnapshot } = require("./plugins/user-plugins.js");
 /* 重后端注册中心（与插件体系并存）：Agent 在任务里现场装出来的工具装完登记 → 之后任何会话 /
-   画布都能查到并复用；生命周期（进程 / 端口 / 健康 / lock.class 互斥）在这里管，
+   画布都能查到并复用；生命周期（进程 / 端口 / 健康）在这里管，**不做互斥**（注册表里的重后端
+   一般不吃显存，可多个同时常驻；吃显存的插件后端另走 media-gen-global-lock），
    数据层在 backend-registry-store.js。退出时由 before-quit 统一停掉它拉起的进程。 */
 const { registerBackendRegistryIpc, shutdownBackendRegistry } = require("./main-backend-registry.js");
 /* 项目 manifest（<工程根>/manifest.json）：资产登记 / 版本 / 依赖图 / 增量重建。

@@ -70,7 +70,9 @@
 const PUB_DECLARATION =
   "本人保证该应用符合中华人民共和国法律法规，不含违法有害内容，不侵犯他人知识产权；因该应用产生的全部责任由上传者承担。";
 
-const PUB_MAX_SHOTS = 8; /* 截图最多 8 张 */
+/* 截图张数与「这一轮要传多少字节」都**不在客户端设死限**（用户口径：云端可能会放宽限额，
+   依靠云端拦截 —— 服务端仍按自己的 MAX_APP_SHOTS / MAX_BODY_APP_UPLOAD 拒，报错原样显示）。
+   客户端只做压缩，不因为数量 / 总体积把用户挡在上传之前。 */
 const PUB_ICON_MAX_BYTES = 500 * 1024; /* 图标上限（契约 §一：png/jpeg/webp ≤500KB） */
 /* 截图（大图）口径 —— 与服务端 MAX_APP_SHOT_BYTES / APP_SHOT_MAX_EDGE / APP_SHOT_LIST_EDGE 同源：
    · 单张 ≤5MB（原来是 500KB）：允许超过 1MB 的高清界面图；
@@ -86,12 +88,8 @@ const PUB_TITLE_MAX = 80;
 const PUB_DESC_MAX = 2000;
 const PUB_NOTE_MAX = 200;
 const PUB_TAGS_MAX = 200;
-/* 上架链路「一次请求最多能带多少字节」的兜底值（真源在服务端：storage.uploadLimitBytes，
-   见 server.mjs 的 MAX_BODY_APP_UPLOAD=96MB）。客户端只用它做**上传前预检** ——
-   超了就在本地停下并说清，不让用户盯着「上传中」等网关拒掉。 */
-const PUB_UPLOAD_LIMIT_FALLBACK = 96 * 1024 * 1024;
-const PUB_QUOTA_BYTES = 50 * 1024 * 1024; /* 契约 §7.5：MAX_ACCOUNT_APP_BYTES */
-const PUB_QUOTA_APPS = 5; /* 契约 §7.5：MAX_ACCOUNT_APPS */
+/* 上架请求体量 / 账号配额的数字一律只取服务端回执（storage.uploadLimitBytes、limitBytes、appsLimit），
+   客户端**不再保留兜底默认值**：云端放宽限额时这里不该还拿老数字拦人或判「已超限」。 */
 const PUB_ID_RE = /^[a-z0-9][a-z0-9._-]{1,63}$/; /* 2-64 位、不以符号开头 */
 /* 自动拍窗口截图的重试（本轮需求：不必再回开发页点「启动」）：
    主进程 apps:openWindow 是 show 之后才画的（ready-to-show 才 show），刚开就拍会拿到空图 /
@@ -536,33 +534,88 @@ async function pubServerHasShots(allShas) {
   pubShaSeenAdd(ok);
   return ok.length;
 }
-/* ── 上架体积预检（本轮需求：不再「上传中卡住半天才失败」）─────────────────────────
- * 上架请求是一条 JSON：zipBase64 + iconBase64 + shotsBase64[]，base64 后约是原始体积的 1.34 倍。
- * 服务端给出的那条上架链路上限（storage.uploadLimitBytes，默认 96MB）是**真源** ——
- * 客户端拿它当闸门，超了就在本地停下并说清「包多大 / 上限多少 / 怎么办」，
- * 绝不再让用户盯着「上传中」等网关把我们拒掉。
- * 估算里对包宽放一档（已知体积 24MB 上限的旧服务端也走同一条路）：拿不到精确 zip 体积时
- * 用 max(已知本机应用体积, 上一次打包体积) 兜。返回 { tooBig, text, estimate, limit }。 */
-function pubUploadLimitBytes() {
-  const n = Number(PUB.online && PUB.online.uploadLimitBytes);
-  return Number.isFinite(n) && n >= 1024 * 1024 ? n : PUB_UPLOAD_LIMIT_FALLBACK;
+/* ── 上架信息草稿（关闭后不丢 · 用户报的「写的内容丢了」）───────────────────────────
+ * 上架窗一关，标题 / 说明 / 版本说明 / 标签 / 版本号 / 图标 / 声明勾选原本全丢。这里按应用 id
+ * 把这几格写进 localStorage（渲染层存储落在用户数据目录，关窗、重启都还在），下次开窗先带出来；
+ * 上传成功也不清 —— 再传一版往往就是基于刚写的那份。
+ * 截图不入草稿（一张几 MB，另有 app 截图缓存那条路）：草稿只装用户**手写**的内容。 */
+const PUB_DRAFT_PREFIX = "mtnode.pubDraft:";
+function pubDraftKey(appId) {
+  return PUB_DRAFT_PREFIX + pubStr(appId);
 }
-function pubPreflightSize(shotBytes, iconBytes) {
-  const est = (Number(shotBytes) || 0) + (Number(iconBytes) || 0);
-  if (!est) return { tooBig: false, estimate: 0, limit: pubUploadLimitBytes() };
-  const limit = pubUploadLimitBytes();
-  const projected = Math.round(est * 1.34) + Math.round(((Number(PUB.app && PUB.app.bytes) || 0) * 1.34));
-  /* 只对「明显超限」的情况拦（留 10% 余量）：不因为估算误差把本来能传的包挡回去 */
-  const tooBig = projected > limit * 0.9;
-  return {
-    tooBig: tooBig,
-    estimate: projected,
-    limit: limit,
-    text: tooBig
-      ? pubT("这一轮要传的内容约 ") + pubBytes(projected) + pubT("，超过上架链路的上限 ") + pubBytes(limit) +
-        pubT("：请先删掉几张截图、或把素材（图片 / 音频）压小后再上传。")
-      : "",
+function pubDraftLoad(appId) {
+  const id = pubStr(appId);
+  if (!id || !window.localStorage) return null;
+  try {
+    const raw = window.localStorage.getItem(pubDraftKey(id));
+    const o = raw ? JSON.parse(raw) : null;
+    return o && typeof o === "object" ? o : null;
+  } catch (_) {
+    return null;
+  }
+}
+/* 写草稿：本地存储满了（图标很大）/ 隐私模式写不进去都不许弄坏上架流程，静默失败即可。 */
+function pubDraftSave() {
+  const id = pubStr(PUB.appId);
+  if (!id || !PUB.form || !window.localStorage) return false;
+  const f = PUB.form;
+  const ic = f.icon || {};
+  const d = {
+    appId: id,
+    at: Date.now(),
+    title: pubStr(f.title),
+    description: pubStr(f.description),
+    note: pubStr(f.note),
+    tags: pubStr(f.tags),
+    version: pubStr(f.version),
+    decl: !!f.decl,
+    icon: ic.dataUrl
+      ? { dataUrl: pubStr(ic.dataUrl), bytes: Number(ic.bytes) || 0, name: pubStr(ic.name) }
+      : null,
   };
+  try {
+    window.localStorage.setItem(pubDraftKey(id), JSON.stringify(d));
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+/* 把草稿套回表单（开窗时、建界面前调用）：只覆盖用户能写的那几格，id / 来源 / 截图不动。
+   带出过版本号就标 verTouched —— 否则线上状态回来时会按「+1」把它改掉（用户写的不该被覆盖）。 */
+function pubDraftApply(draft) {
+  const d = draft && typeof draft === "object" ? draft : null;
+  if (!d) return false;
+  const f = PUB.form;
+  if (pubStr(d.title)) f.title = pubStr(d.title).slice(0, PUB_TITLE_MAX);
+  if (pubStr(d.description)) f.description = pubStr(d.description).slice(0, PUB_DESC_MAX);
+  if (pubStr(d.note)) f.note = pubStr(d.note).slice(0, PUB_NOTE_MAX);
+  if (pubStr(d.tags)) {
+    f.tags = pubStr(d.tags).slice(0, PUB_TAGS_MAX);
+    PUB.tagsTouched = true;
+  }
+  if (pubStr(d.version) && PUB_VERSION_RE.test(pubStr(d.version))) {
+    f.version = pubStr(d.version);
+    PUB.verTouched = true;
+  }
+  if (d.icon && pubStr(d.icon.dataUrl)) {
+    f.icon = {
+      dataUrl: pubStr(d.icon.dataUrl),
+      bytes: Number(d.icon.bytes) || pubDataUrlBytes(d.icon.dataUrl),
+      name: pubStr(d.icon.name),
+    };
+  }
+  f.decl = !!d.decl;
+  return true;
+}
+function pubDraftDrop(appId) {
+  const id = pubStr(appId);
+  if (!id || !window.localStorage) return false;
+  try {
+    window.localStorage.removeItem(pubDraftKey(id));
+    return true;
+  } catch (_) {
+    return false;
+  }
 }
 
 /* 给同窗其它模块用（renderer/app-apps.js 的「编辑」窗提交截图时走同一套压缩 + 指纹口径）：
@@ -913,12 +966,17 @@ async function openAppPublish(appId) {
     note: "",
     tags: "",
     icon: { dataUrl: "", bytes: 0, name: "" },
+    decl: false, /* 声明勾选（草稿里一起落盘，见 pubDraftSave） */
     /* 二次开发来源（fork，可选；契约见 docs/apps-market.md §八）：自动带出 + 可改 + 可清空 */
     forkOf: pubForkInit(app),
   };
   /* 应用 id：默认锁定，锁定值 = 留痕里的云端 id（有上架留痕时）否则本机应用 id；
      本机目录名另存一份，两者不同时界面明说（见 pubIdEnsure / pubPaintId）。 */
   pubIdEnsure(id, app);
+  /* 上一次关窗时写的内容先带出来（草稿按应用 id 落盘，见 pubDraftSave）：本机 app.json 带出的
+     标题 / 说明只是底稿，用户自己改过的那一份优先。 */
+  const draft = pubDraftLoad(id);
+  if (draft) pubDraftApply(draft);
   /* 关键桥探测（缺 storeRequest / appsReadZipBase64 时页脚直接说清楚，别等点了才炸） */
   pubCheckBridges();
 
@@ -947,6 +1005,9 @@ async function openAppPublish(appId) {
   pubPaintOnline();
   pubPaintQuota();
   pubPaintFoot();
+  /* 草稿带出来的图标预览 + 一句「已恢复」：用户得知道自己写的东西还在这儿 */
+  pubPaintIcon();
+  if (draft) pubToast(pubT("已恢复上次填写的内容") + "（" + pubTime(draft.at) + "）", "ok");
 
   /* 异步：登录态（主进程账户契约）→ 线上状态 + 版本树 → 配额（按顺序，后一步要知道账号名）。
      这一串挂到 PUB.load 上：调用方（开发页按钮）照旧不等它，测试 / 自查可以 await 它。 */
@@ -978,6 +1039,8 @@ function pubAlive(seq) {
 }
 /* 显式关闭：窗内「取消」/ Esc。内联尺寸随 closeOverlay 的 cssText="" 一起清，类在这里清。 */
 function pubClose() {
+  /* 关窗这一刻再落一次草稿：用户写的内容下次开窗要还在（见 pubDraftSave） */
+  pubDraftSave();
   pubBoxCleanup();
   PUB.seq++;
   if (typeof closeOverlay === "function") closeOverlay();
@@ -1359,10 +1422,15 @@ function pubBuildDeclSec(host) {
   const cb = pubEl("input");
   cb.type = "checkbox";
   cb.id = "pubDecl";
+  /* 草稿里勾过就带出来（见 pubDraftApply）：关窗再开不必重勾一遍 */
+  cb.checked = !!PUB.form.decl;
   PUB.dom.declCb = cb;
   lab.appendChild(cb);
   lab.appendChild(document.createTextNode(pubT("我已阅读并同意，责任由我承担")));
-  cb.addEventListener("change", () => pubEdit());
+  cb.addEventListener("change", () => {
+    PUB.form.decl = !!cb.checked;
+    pubEdit();
+  });
   sec.appendChild(lab);
   host.appendChild(sec);
 }
@@ -1384,7 +1452,7 @@ function pubBuildShotSec(host) {
   /* 常驻说明单独一行：pubShotStatus 会覆盖掉 PUB.dom.shotStatus 里的文字（状态行），
      而「第 1 张就是商店封面」这条口径不该被状态消息顶掉 —— 它是本轮修的那个 bug 的唯一提示。 */
   sec.appendChild(
-    pubEl("div", "pub-hint", pubT("最多 8 张，第 1 张同时当商店封面（卡片与详情头部都用它）与图标（没单独选图标时）。开窗不会自动启动这个应用、也不会自动拍：点「拍应用窗口」才启动它并拍（窗口没开或最小化时会自动帮你启动）；一张都不加就上传的话，商店卡片会没有封面。")),
+    pubEl("div", "pub-hint", pubT("第 1 张同时当商店封面（卡片与详情头部都用它）与图标（没单独选图标时）。开窗不会自动启动这个应用、也不会自动拍：点「拍应用窗口」才启动它并拍（窗口没开或最小化时会自动帮你启动）；一张都不加就上传的话，商店卡片会没有封面。")),
   );
   const st = pubEl("div", "pub-hint", pubT("加一张截图：第 1 张就是商店里这张卡的封面。"));
   PUB.dom.shotStatus = st;
@@ -1521,7 +1589,7 @@ function pubPaintShots() {
   if (!wrap) return;
   wrap.innerHTML = "";
   const list = PUB.shots;
-  if (PUB.dom.shotCount) PUB.dom.shotCount.textContent = list.length + "/" + PUB_MAX_SHOTS;
+  if (PUB.dom.shotCount) PUB.dom.shotCount.textContent = String(list.length);
   if (!list.length) {
     wrap.appendChild(pubEl("div", "pub-hint", pubT("还没有截图。")));
   }
@@ -1599,9 +1667,9 @@ function pubCloudShotsOf(item, stay, local) {
   const urls =
     typeof appsShotsUrlsOf === "function" ? appsShotsUrlsOf(it) : [];
   const shas = Array.isArray(it.shotsSha) ? it.shotsSha : [];
-  const keep = Array.isArray(stay) ? stay : [];
   const loc = local && typeof local === "object" ? local : Object.create(null);
-  const room = Math.max(0, PUB_MAX_SHOTS - keep.length);
+  /* 张数不设客户端上限（云端可能放宽，超过服务端限额时由服务端拒并回中文原因） */
+  const room = rels.length;
   const out = [];
   for (let i = 0; i < rels.length && out.length < room; i++) {
     const url = pubStr(urls[i]);
@@ -1763,10 +1831,8 @@ function pubRemoveShot(i) {
   pubPaintShots();
 }
 function pubAddShot(item) {
-  if (PUB.shots.length >= PUB_MAX_SHOTS) {
-    pubToast(pubT("截图最多 8 张：先删掉一张再加"), "warn");
-    return false;
-  }
+  /* 不在这里数张数：云端限额由服务端按自己的 MAX_APP_SHOTS 判（放宽时客户端不该还挡着），
+     超了会原样回「截图最多 N 张」。 */
   PUB.shots.push(item);
   pubPaintShots();
   return true;
@@ -2113,32 +2179,38 @@ function pubPaintQuota() {
   }
   const used = Number(q.bytes) || 0;
   const n = Number(q.apps) || 0;
-  /* 上限：服务端回执里的那一份优先（管理员可以在后台给单个用户调，客户端不能拿默认值硬顶），
-     拿不到（老服务端 / 还没上传过）才退回契约里的默认值。null = 服务端说不限。 */
-  const limB = q.limitBytes === null && q.limitBytes !== undefined ? -1 : Number(q.limitBytes) > 0 ? Number(q.limitBytes) : PUB_QUOTA_BYTES;
-  const limA = q.appsLimit === null && q.appsLimit !== undefined ? -1 : Number(q.appsLimit) > 0 ? Number(q.appsLimit) : PUB_QUOTA_APPS;
-  const overB = limB >= 0 && used > limB;
-  const overA = limA >= 0 && n >= limA;
+  /* 上限**只认服务端这一份**（管理员可以在后台给单个用户调、也可能整站放宽）：
+     · 有数字 → 显示成「已用 / 上限」，到了也不在客户端拦（上传仍会发出去，服务端以
+       QUOTA_BYTES / QUOTA_APPS 判并回中文原因，见 pubErrText）；
+     · null = 服务端说不限；没给（老服务端 / 还没读到）就只显示已用，绝不拿老默认值硬顶。 */
+  const limB = q.limitBytes === null ? -1 : Number(q.limitBytes) > 0 ? Number(q.limitBytes) : 0;
+  const limA = q.appsLimit === null ? -1 : Number(q.appsLimit) > 0 ? Number(q.appsLimit) : 0;
+  const overB = limB > 0 && used > limB;
+  const overA = limA > 0 && n >= limA;
   const line = pubEl("div", "pub-quota-line");
   line.appendChild(
     pubEl(
       "span",
       "pub-quota-k",
-      pubT("云端已用") + " " + pubBytes(used) + " / " + (limB < 0 ? pubT("不限") : pubBytes(limB)),
+      pubT("云端已用") + " " + pubBytes(used) + (limB ? " / " + (limB < 0 ? pubT("不限") : pubBytes(limB)) : ""),
     ),
   );
   line.appendChild(
-    pubEl("span", "pub-quota-k", pubT("应用") + " " + n + " / " + (limA < 0 ? pubT("不限") : String(limA))),
+    pubEl(
+      "span",
+      "pub-quota-k",
+      pubT("应用") + " " + n + (limA ? " / " + (limA < 0 ? pubT("不限") : String(limA)) : ""),
+    ),
   );
   wrap.appendChild(line);
   if (overB) {
     wrap.appendChild(
-      pubEl("div", "pub-hint pub-err", pubT("云端存储已超上限：服务端会以 QUOTA_BYTES 拒绝，先在上面删掉旧版或多余的截图（已存的内容不会被删，只是不能再新增）。")),
+      pubEl("div", "pub-hint pub-warn", pubT("云端存储已超上限：服务端会以 QUOTA_BYTES 拒绝，先在上面删掉旧版或多余的截图（已存的内容不会被删，只是不能再新增）。")),
     );
   }
   if (overA) {
     wrap.appendChild(
-      pubEl("div", "pub-hint pub-err", pubT("应用数量已达上限（追加版本不计入）：服务端会以 QUOTA_APPS 拒绝，先删掉不用的应用。")),
+      pubEl("div", "pub-hint pub-warn", pubT("应用数量已达上限（追加版本不计入）：服务端会以 QUOTA_APPS 拒绝，先删掉不用的应用。")),
     );
   }
   /* 这次带上来的图里有多少张是「云端已有、只发引用」—— 说清楚，作者才知道缓存真的在省流量 */
@@ -2162,6 +2234,8 @@ function pubDropRetryCaches() {
 function pubEdit() {
   PUB.showNote = false;
   pubDropRetryCaches();
+  /* 每一次表单改动都落盘（标题 / 说明 / 标签 / 勾选…）：关窗、重启后这些内容还在 */
+  pubDraftSave();
   pubPaintFoot();
 }
 /* 页脚状态 + 上传按钮的可用性（唯一的禁用判据入口，改这里就够） */
@@ -2663,7 +2737,7 @@ async function pubLoadQuota() {
       out.appsLimit = st.appsLimit == null ? null : Number(st.appsLimit);
       out.defaultBytes = Number(st.defaultBytes) || 0;
       out.defaultApps = Number(st.defaultApps) || 0;
-      /* 上架链路的两个上限（真源在服务端，客户端据此做上传前预检 —— 见 pubPreflightSize）：
+      /* 上架链路的两个上限（服务端下发，只作展示 —— 客户端不再拿它挡上传，见 pubUpload）：
          uploadLimitBytes = 一次请求最多能带多少字节；appZipLimitBytes = 单个应用包上限。 */
       out.uploadLimitBytes = Number(st.uploadLimitBytes) || 0;
       out.appZipLimitBytes = Number(st.appZipLimitBytes) || 0;
@@ -3268,19 +3342,8 @@ async function pubUpload() {
     return;
   }
   PUB.busy = true;
-  /* 上传体积预检（本轮需求）：先把「这一轮要传的东西」摆上台面 ——
-     应用包 + 图标 + 截图（截图与包都按 base64 后约 1.34 倍算），
-     超过服务端那条上架链路的请求体上限时**在这里就停下并说清楚**，
-     不要等打包、压缩、算指纹全跑完再让服务端/网关把我们拒掉（用户看到的是「上传中卡住」）。
-     上限真源在服务端（回执里下发的 storage.uploadLimitBytes）；没读到就用兜底常量。 */
-  const shotEstimate = PUB.shots.reduce((n, x) => n + (Number(x && x.bytes) || 0), 0);
-  const pre = pubPreflightSize(shotEstimate, Number(plan.bytes) || 0);
-  if (pre && pre.tooBig) {
-    PUB.busy = false;
-    pubSetNote(pre.text);
-    pubToast(pubT("应用包太大，先减小素材再上传"), "warn");
-    return;
-  }
+  /* 体积不在客户端拦（用户口径：云端可能放宽限额，依靠云端拦）：这一轮该传多少照传，
+     服务端按自己的请求体 / 包上限判 —— 超了它回的 QUOTA_* / 中文原因由 pubErrText 原样显示。 */
   const zipSig = PUB.user && PUB.user.id ? pubStr(PUB.appId) : pubStr(PUB.appId);
   pubSetNote(pubT("上传中…（① 正在打包应用）"));
   /* **一趟打包**（本轮需求 · 用户报的 bug 的根因就在旧实现的「两趟」上）：
@@ -3967,6 +4030,9 @@ async function pubClearLocalTrace() {
   const cloudId = pubStr((PUB.online && PUB.online.id) || appId);
   await pubShotsLocalDropApp(cloudId);
   if (cloudId !== appId) await pubShotsLocalDropApp(appId);
+  /* ③ 上架信息草稿：这条应用在云端没了，草稿留着只会在下次开窗时把内容套到别的应用上 */
+  pubDraftDrop(appId);
+  if (cloudId !== appId) pubDraftDrop(cloudId);
 }
 
 /* ───────────────── 入口别名 ───────────────── */

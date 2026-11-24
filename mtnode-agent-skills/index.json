@@ -1,6 +1,6 @@
 {
   "format": "mtnode-agent-skills-index-v2",
-  "updatedAt": "2026-11-23T23:30:46.557Z",
+  "updatedAt": "2026-11-24T10:49:15.425Z",
   "libraryRoot": "mtnode-agent-skills",
   "usage": "MTNode 内置 Agent 技能库。默认只注入本索引；任务匹配时再读取完整 SKILL.md（skill 工具或 read）。",
   "categories": [
@@ -15,6 +15,25 @@
           "description": "前端界面设计 / 改版 / 评审：视觉层级、排版、动效、可访问性与设计系统。",
           "path": "app/impeccable/SKILL.md",
           "version": "4.4.0",
+          "menu": "user"
+        },
+        {
+          "id": "modern-web-guidance",
+          "name": "modern-web-guidance",
+          "title": "Modern Web Guidance（现代 Web 开发规范）",
+          "description": "现代 Web 平台最佳实践检索（Chrome / Edge / Firefox / MDN 共同维护）。动手写或改任何 HTML、CSS、客户端 JS 之前先搜一次官方 guide：模态框与 popover、表格、暗色模式、anchor positioning、container queries、View Transitions、滚动驱动动画、表单与校验、自动填充、可访问性、自定义下拉、滚动条、LCP/INP/CLS、图片与脚本优先级、安全与 passkey、Web Components、日期与时区、内置 AI、WebAssembly。MTNode 自身迭代（renderer 原生 HTML/CSS/JS）、应用开发（iframe 静态页）、其它 web 相关 Agent 工作都适用；后端、CI / 构建工具类任务不用。",
+          "path": "app/modern-web-guidance/SKILL.md",
+          "version": "2026_11_16",
+          "tags": [
+            "web",
+            "html",
+            "css",
+            "javascript",
+            "可访问性",
+            "性能",
+            "表单",
+            "组件"
+          ],
           "menu": "user"
         },
         {

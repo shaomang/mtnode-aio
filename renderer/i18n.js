@@ -2162,6 +2162,8 @@
     "插话：本轮下一步就听见（不打断当前这一步）":
       "Steer: the running turn hears it at its next step (without interrupting the current one)",
     "已插话 · 将在下一步生效": "Steered · applies at the next step",
+    "这一句是你趁本轮还在跑时插进去的：它按发生的那一刻留在会话里（不是新一轮，也没有被挪到会话首尾）":
+      "You slipped this in while the run was going: it stays in the conversation at the moment it happened (not a new run, not moved to the top or bottom of the session)",
     "已注入本轮": "Injected into this run",
     "运行时已把这句话拼进本轮的收件箱（下一步就读到）":
       "The runtime spliced it into this run's inbox — it gets read at the next step",
@@ -4179,9 +4181,11 @@
     "纯净模式": "Pure mode",
     "纯净": "Pure",
     "纯净模式：移除全部 system prompt 与运行时上下文，仅保留联网搜索；该会话不再读写文件 / 改画布，省 token": "Pure mode: drops every system prompt section and the runtime context, keeping only web search — this session no longer reads/writes files or edits the canvas; saves tokens",
-    /* 本轮口径：纯净模式只裁提示词，工具照常全给（见 dsh/gateway/plugins/pure-prompt.mjs） */
-    "纯净模式：移除全部 system prompt 与运行时上下文（工具照常全部可用）；省 token、结果确定": "Pure mode: drops every system prompt section and the runtime context (all tools stay available); saves tokens, deterministic results",
-    "纯净模式：开启中，点击关闭（工具照常可用）": "Pure mode: ON — click to turn off (all tools stay available)",
+    /* 本轮口径：纯净模式 = 提示词清零 + 只留读 / 写 / 命令 / 联网搜索四类工具
+       （工具面由 dsh/gateway/tool-visibility.mjs 的 PURE_KEEP_TOOLS 裁，见
+       plugins/tool-restrict-plugin.mjs 的 restrict({ allow })） */
+    "纯净模式：移除全部 system prompt 与运行时上下文，只保留读 / 写 / 命令 / 联网搜索四类工具；省 token、结果确定": "Pure mode: drops every system prompt section and the runtime context, keeping only read / write / shell / web tools; saves tokens, deterministic results",
+    "纯净模式：开启中，点击关闭（只保留读 / 写 / 命令 / 联网搜索工具）": "Pure mode: ON — click to turn off (only read / write / shell / web tools stay available)",
     "纯净模式：开启中，点击关闭": "Pure mode: ON — click to turn off",
     /* 助手栏那一枚纯净模式的词条：会话侧那份说的是「该会话」，这一份说「助手这条」 */
     "纯净模式：开启中，点击关闭（助手栏这条不再读写文件 / 改画布）": "Pure mode: ON — click to turn off (this assistant no longer reads/writes files or edits the canvas)",
@@ -14544,8 +14548,10 @@
     "还没有截图。": "No screenshots yet.",
     "加一张截图：第 1 张就是商店里这张卡的封面。":
       "Add a screenshot: the first one is this card's cover in the store.",
-    "最多 8 张，第 1 张同时当商店封面（卡片与详情头部都用它）与图标（没单独选图标时）。开窗不会自动启动这个应用、也不会自动拍：点「拍应用窗口」才启动它并拍（窗口没开或最小化时会自动帮你启动）；一张都不加就上传的话，商店卡片会没有封面。":
-      "Up to 8; the first one doubles as the store cover (used by the card and the detail header) and the icon (when no icon is picked). Opening this window neither launches the app nor captures anything: click “Capture the app window” to launch and capture it (it launches the app for you when its window is closed or minimised). Uploading with no screenshot leaves the store card without a cover.",
+    "第 1 张同时当商店封面（卡片与详情头部都用它）与图标（没单独选图标时）。开窗不会自动启动这个应用、也不会自动拍：点「拍应用窗口」才启动它并拍（窗口没开或最小化时会自动帮你启动）；一张都不加就上传的话，商店卡片会没有封面。":
+      "The first one doubles as the store cover (used by the card and the detail header) and the icon (when no icon is picked). Opening this window neither launches the app nor captures anything: click “Capture the app window” to launch and capture it (it launches the app for you when its window is closed or minimised). Uploading with no screenshot leaves the store card without a cover.",
+    /* 草稿：关窗后再开，把上次写的内容带回来时的一句提示 */
+    "已恢复上次填写的内容": "Restored what you filled in last time",
     /* 一张截图都没有就上传：拦一句，说清后果（不静默放过、也不硬拦） */
     "还没有截图：商店卡片与详情头部会没有封面（没有单独选图标时，图标也取自第 1 张截图）。确定现在上传吗？":
       "No screenshots yet: the store card and the detail header will have no cover (with no icon picked, the icon comes from the first screenshot too). Upload anyway?",

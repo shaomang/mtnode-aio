@@ -7,6 +7,8 @@
  *  · dsh 引擎自带的工具（目标 / 任务清单 / 子代理 / 后台任务 / 提问）→ 注册在引擎包里，
  *    改不动注册，就用 ctx.tools.restrict({ deny }) 在 agent 作用域把它们从可见集摘掉
  *    （dsh-tools 明确：被 restrict 隐藏的工具整份 schema 不再进请求）。
+ * 纯净模式走的是同一条口子的反向用法：restrict({ allow: PURE_KEEP_TOOLS })，除白名单
+ * 之外一个都不发（见 PURE_TOOLS_ENV）。
  * 两条路共用同一份名单：gateway 按 run 参数算出规范名单 → spawn env MTNODE_HIDE_TOOLS
  * → 注册口 + mtnode-tool-visibility 插件各自读取。
  *
@@ -20,6 +22,49 @@
 
 /** spawn env 名：本台运行时不发给模型的工具清单（逗号分隔，规范排序）。 */
 export const HIDE_ENV = 'MTNODE_HIDE_TOOLS'
+
+/**
+ * spawn env 名：本台运行时跑「纯净模式」的工具白名单档（'1' = 开）。
+ * 与 HIDE_ENV 是两条腿：HIDE 只能点名摘除（可枚举的名字有限），纯净模式要的是
+ * 「除白名单外一个都不发」—— 用 restrict({ allow }) 反向保留（见
+ * plugins/tool-restrict-plugin.mjs），内置工具与 MTNode 自有工具一并生效。
+ *
+ * 为什么纯净模式要动工具：实测纯净轮的**系统提示已经是 0 token**，但工具定义
+ * 每次请求都整份重发 —— 23,739 token，比普通轮（16,430）还多 7.3K（纯净轮把
+ * lean / 按需裁一并关掉了）。剩下的 3.6K 才是用户原话。所以「纯净模式仍有大量
+ * token」的根子在工具 schema，不在提示词。
+ */
+export const PURE_TOOLS_ENV = 'MTNODE_PURE_TOOLS'
+
+/**
+ * 纯净模式保留的工具（用户口径：读 / 写 / 命令 / 联网搜索）。
+ *
+ * 名字必须只含 [a-z0-9_]（env 与 restrict 同一条约束）。装 allow 时逐名探测
+ * `ctx.tools.get(name, agent)`，本平台没有的那些（Windows 上没有 bash）自动跳过
+ * —— 一个不存在的名字不会把整条 allow 弄挂。
+ */
+export const PURE_KEEP_TOOLS = Object.freeze([
+  /* 文件：读 / 写 / 改 / 搜（dsh-tool-fs、dsh-tool-fs-search、dsh-tool-str-replace-editor） */
+  'read',
+  'write',
+  'edit',
+  'str_replace_editor',
+  'glob',
+  'grep',
+  /* 命令（dsh-tool-pwsh / dsh-tool-bash，按平台各挂一只） */
+  'pwsh',
+  'bash',
+  /* 联网（dsh-tool-web） */
+  'web_search',
+  'web_fetch',
+  /* 换工作目录：读写都要用，schema 很小 */
+  'working_directory',
+])
+
+/** 本台运行时是否跑纯净模式的工具白名单档。 */
+export function pureToolsOn(env) {
+  return String((env || process.env)[PURE_TOOLS_ENV] || '') === '1'
+}
 
 /**
  * 可裁名单（唯一真源）：不在这份名单里的名字一律按垃圾丢弃 —— 宿主传来的字符串

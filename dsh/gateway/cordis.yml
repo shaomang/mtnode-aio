@@ -136,7 +136,7 @@
       mtnode-unattended:
         sandbox: workspace-write
         approval: ask
-    defaultPreset: mtnode-unattended
+    defaultPreset: danger-full-access
 
 - id: tool-bash
   disabled: !!js process.platform === 'win32' || process.env.MTNODE_CHAT_ISOLATE === '1'
@@ -718,9 +718,9 @@
 
 # ── user plugins (managed from MTNode settings) ──
 
-- id: user-mcp-mwtryjrn
+- id: user-mcp-mwugpuk2
   name: '@deepseek-ai/dsh-mcp-client'
   config:
     serverName: 'mtnode-self'
     transport: 'streamable-http'
-    url: 'http://127.0.0.1:62688/mcp?token=4f5d891bf9d7c7cb855db1c1fb70c1f488ec03ebd5460c1e'
+    url: 'http://127.0.0.1:57045/mcp?token=2f33a787b37f7b2f73a59cfb034f86b5300321021f711aa1'

@@ -37063,6 +37063,14 @@ async function forkAgentSession(id) {
     model: src.model || "",
     effort: src.effort || "high",
     pure: !!src.pure,
+    /* 分支出来的会话同样算「纯净语义已迁移」：src 上点开的纯净模式要留得住，
+       别被下一次 agentSessions() 的老存档迁移按回 false（见 app-assist.js 的迁移） */
+    pureV2: true,
+    /* 模式开关（先拷问 / 快速热修）也随分支继承：它们决定这一轮的提示词档位（见
+       app-assist.js agentSessionSend 的三档判定），不继承就会静默换一档。
+       src 上没有这两位（老会话）= false → 落在基线档，与新会话默认一致。 */
+    grill: !!src.grill,
+    hotfix: !!src.hotfix,
     overclock: !!src.overclock,
     /* 开发绑定会话的「不读画布」标记同样继承：分支出来的会话仍要收尾改同一个节点 */
     noCanvasRead: !!src.noCanvasRead,

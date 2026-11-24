@@ -24,7 +24,6 @@ const REG_SUBDIR = "backend-registry";
 const ID_OK = /^[a-z0-9][a-z0-9._-]{0,47}$/i;
 const KINDS = new Set(["http", "cli"]);
 const ARG_KINDS = new Set(["text", "image", "audio", "video"]);
-const LOCK_CLASSES = new Set(["gpu", "cpu", "none"]);
 const SOURCES = new Set(["managed", "adopted"]);
 const MAX_ARGS = 24;
 const MAX_LOG_LINES = 300;
@@ -138,7 +137,6 @@ function normalizeManifest(input, opts) {
           path: s(call.path).trim() || "/",
           timeoutSec: Math.max(5, Math.min(3600, Number(call.timeoutSec) || 600)),
         },
-        lock: normLock(raw.lock),
         install: normInstall(raw.install),
         createdBy: s(o.actor || raw.createdBy || "user"),
         createdAt: Number(raw.createdAt) || Date.now(),
@@ -171,19 +169,12 @@ function normalizeManifest(input, opts) {
       adopt: null,
       call: null,
       cli,
-      lock: normLock(raw.lock),
       install: normInstall(raw.install),
       createdBy: s(o.actor || raw.createdBy || "user"),
       createdAt: Number(raw.createdAt) || Date.now(),
       updatedAt: Date.now(),
     },
   };
-}
-
-function normLock(v) {
-  const o = v && typeof v === "object" ? v : {};
-  const cls = s(o.class || "cpu").toLowerCase();
-  return { class: LOCK_CLASSES.has(cls) ? cls : "cpu", exclusive: o.exclusive !== false };
 }
 
 /** 启动命令的额外环境变量：只收「名字像环境变量、值是短字符串」的键，别的一律丢掉。 */

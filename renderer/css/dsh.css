@@ -3367,6 +3367,32 @@ button.mini.btn-sq.tpl-ico {
   padding-left: 8px;
 }
 
+/* ── 时间线里的插话项（.dsh-seg-steer）──────────────────────────────────────
+   插话按**它发生的那一刻**排在会话时间线里（不是整段会话的首或尾，见 app-assist.js 的
+   dshSteerSegEl）：琥珀左轨 + 小标签（.dsh-steer-tag，与消息级 ⚡ 气泡同一套色）+ 原话。
+   原话保留换行（用户可能贴多行），可选可复制。 */
+.dsh-seg-steer {
+  border-left: 2px solid rgba(232, 178, 74, .5);
+  padding: 1px 0 1px 8px;
+  margin: 6px 0;
+}
+
+.dsh-seg-steer>.dsh-steer-tag {
+  display: inline-block;
+  margin: 0 0 3px;
+  padding: 0 6px;
+}
+
+.dsh-seg-steer-text {
+  color: var(--ink);
+  font-size: 12.5px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
 /* ── 会话任务清单（agent 的 todo_write；✓ 成功 / ✕ 失败 / ? 未确认） ── */
 .agent-todo {
   flex: none;

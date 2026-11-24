@@ -3,9 +3,10 @@
  * 当 MTNODE_PURE=1 时，把系统提示清成「只剩引擎机制 + 纯粹的用户输入」——
  * sections / contexts 全空，省 token 且结果确定。
  *
- * **工具一个都不裁**（用户口径）：纯净模式是「提示词档」，不是「能力档」。
- * 纯净轮照样拿得到全部工具，要读文件、改画布、跑命令都行。以前这里按名字白名单
- * （只留联网搜索）过滤 tools —— 模型看着「全部工具」的说明却调不到它们，用户实报。
+ * **工具可见集由 mtnode-tool-visibility 另管**（MTNODE_PURE_TOOLS=1 →
+ * restrict({ allow: 读/写/命令/联网搜索 })）：实测纯净轮系统提示已经是 0 token，
+ * 首步 36,341 token 里 23,739 全是工具定义，所以「纯净」必须同时裁工具面才真省。
+ * 本文件只管提示词那半，两者互不依赖；只开 MTNODE_PURE 也不会把工具裁空。
  * 环境变量由 gateway.mjs 的 getRuntime 按 run 参数 pure 注入；
  * runtime key 已含 pure 标记，纯净 / 非纯净运行不会复用同一台运行时，
  * 因此本插件的 apply 阶段只对 pure 运行时生效。
@@ -44,9 +45,9 @@ export function apply(ctx) {
       ...assembled,
       sections: [],
       contexts: [],
-      /* tools 原样透传（纯净模式不裁工具，见文件头）。这里刻意不写
-         `tools: [...]`：任何按名字过滤都会在引擎加工具 / 改工具名之后静默
-         变成「纯净轮少一批工具」，而这正是用户报的那个问题。 */
+      /* tools 原样透传 —— 工具面由 mtnode-tool-visibility 按 MTNODE_PURE_TOOLS 的
+         白名单裁（见文件头）。这里刻意不在这里按名字过滤一遍：两处各裁一半，
+         「纯净轮到底还剩什么」就再也说不清了。 */
     }
   }, { prepend: true })
 }

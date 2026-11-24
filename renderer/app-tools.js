@@ -993,7 +993,8 @@ function backendAdminDescriptor() {
       "list 里 items 为空是常态；判断本机有没有某项能力要看 items + plugins 两处，别只看注册表。",
     example: 'register 的 item 示例：{"id":"whisperx","name":"WhisperX","kind":"http","desc":"词级时间戳对齐","args":[{"name":"audio","kind":"text","required":true}],"launch":{"cmd":["{dir}/venv/python.exe","-m","wx_server","--port","{port}"],"portRange":[17800,17899]},"install":{"dir":"E:\\\\tools\\\\whisperx"},"call":{"path":"/align"}}',
     limits:
-      "一个后端只导出一个工具，能力走参数（action / mode）区分；同类后端按 lock.class 互斥，只允许 1 个常驻。" +
+      "一个后端只导出一个工具，能力走参数（action / mode）区分；注册表里的后端**不做互斥**，可多个同时常驻" +
+      "（真正吃显存的插件后端由插件宿主与全局生成锁管，不在这里）。" +
       "plugins 是插件后端的只读镜像（含用户自建插件声明的 backend），不收 register 调用。",
     atLeastOne: [],
     inputs: [
