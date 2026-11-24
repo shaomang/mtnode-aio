@@ -54,10 +54,10 @@
   }
 
   /* 补全设置（本次修复）：真源是主窗面板 #fimPop 写的那份 S.config.fim，
-     缺字段就地补缺省 —— 与 renderer/app-fim.js 的 cfg() 同口径（on/auto/manual 全开、
-     去抖 350ms、128 tokens）。小窗拿它决定「要不要去抖要补全、Tab 归不归补全」，
+     缺字段就地补缺省 —— 与 renderer/app-fim.js 的 cfg() 同口径（总开关关 / 自动关 /
+     Tab 手动开、去抖 350ms、128 tokens）。小窗拿它决定「要不要去抖要补全、Tab 归不归补全」，
      但它不改这份配置，也不自己存一份。 */
-  var FIM_DEF = { on: true, auto: true, manual: true, delayMs: 350, maxTokens: 128 };
+  var FIM_DEF = { on: false, auto: false, manual: true, delayMs: 350, maxTokens: 128 };
   function fimCfgNow() {
     var out = {
       on: FIM_DEF.on,

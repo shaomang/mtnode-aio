@@ -11099,11 +11099,11 @@ app.whenReady().then(() => {
   ipcMain.handle("hostkey:run", async (e, key) => {
     const k = String(key || "");
     if (k === "fim") {
-      let on = true;
+      let on = false;
       try {
         const c = loadConfigText(join(DATA(), "config.json"));
         const f = c && c.obj && c.obj.fim;
-        on = !(f && f.on === false); /* 没写过 = 默认开，与 renderer/app-fim.js 同口径 */
+        on = !!(f && f.on === true); /* 没写过 = 默认关，与 renderer/app-fim.js 同口径 */
       } catch (_) {}
       const r = await setFimEnabled(!on);
       return Object.assign({ ok: true, key: k }, r || {});

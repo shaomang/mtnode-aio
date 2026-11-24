@@ -44,10 +44,11 @@
   const MAX_TOKENS = 96; /* 64~128：补全就一两行，给多了只会让模型开始解释 */
   const CACHE_MAX = 60; /* 缓存条数上限（先进先出淘汰） */
   /* 缺省设置（面板 app-fim-settings.js 的 DEF 与之同口径；这里只做「没配置时」的兜底）：
-     2026-11 起补全默认**开着**且自动 + 手动两种方式都开 —— 需求「补全作为基础功能打通，
-     应用里也能默认开启」。用户关掉任意一位即按配置走。 */
-  const DEF_ON = true;
-  const DEF_AUTO = true;
+     **没配过 = 总开关关、自动补全关**（用户 2026-11 复议：补全默认不开启、也不自动补全）；
+     手动那一位留开，用户自己把总开关打开后就是「按 Tab 才要一次」，不会边打字边蹦字。
+     用户改过任意一位即按配置走。 */
+  const DEF_ON = false;
+  const DEF_AUTO = false;
   const DEF_MANUAL = true;
   const DEF_DELAY = 350;
   const DEF_MAX_TOKENS = 128;
@@ -650,9 +651,9 @@
   const GHOST_SHADOW = "0 0 7px rgba(56,214,255,.18)";
   const OK_TYPES = ["text", "search", "url", "tel", "email", ""]; /* 认光标的那几型 input */
   /* 缺省（与 core 段的 DEF_* 同口径；两段是两个 IIFE，取不到对方的局部量）：
-     2026-11 起补全默认开，自动 + Tab 手动都开。 */
-  const DEF_ON = true;
-  const DEF_AUTO = true;
+     2026-11 复议后补全默认**不开启**、自动补全也关，只留 Tab 手动那一位。 */
+  const DEF_ON = false;
+  const DEF_AUTO = false;
   const DEF_MANUAL = true;
   const DEF_DELAY = 350;
   const DEF_MAX_TOKENS = 128;

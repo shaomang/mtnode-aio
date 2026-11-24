@@ -38,8 +38,9 @@
     return typeof I18n !== "undefined" && I18n.t ? I18n.t(s) : s;
   }
 
-  /* 缺省值：**开**（2026-11 起补全是基础功能）、自动与手动都开、延迟 350ms、单次最多 128 token */
-  const DEF = { on: true, auto: true, manual: true, route: "", model: "", delayMs: 350, maxTokens: 128 };
+  /* 缺省值：**关**（用户 2026-11 复议：补全默认不开启、也不自动补全）、Tab 手动留开、
+     延迟 350ms、单次最多 128 token */
+  const DEF = { on: false, auto: false, manual: true, route: "", model: "", delayMs: 350, maxTokens: 128 };
   const DELAY_MIN = 0;
   const DELAY_MAX = 3000;
   const TOK_MIN = 16;

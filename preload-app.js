@@ -688,9 +688,9 @@ function exposeWorld(key, value) {
  *   · __mtnodeFimSetEnabled(on) —— Ctrl+Tab 的写口：主进程改 config.json 的 fim.on 再广播
  *     fim:changed，主窗那颗按钮（与别的应用窗口）一起跟着变。
  * 只在声明了 showComplete 的应用里露出（与注入同一条闸）。 */
-let fimOnNow = true;
+let fimOnNow = false;
 function fimWorldBridge(fim) {
-  fimOnNow = !(fim && fim.on === false);
+  fimOnNow = !!(fim && fim.on === true); /* 没写过 = 默认关（用户 2026-11 复议：补全默认不开启） */
   const put = exposeWorld;
   put("__mtnodeFimSettings", fim && typeof fim === "object" ? fim : null);
   put("__mtnodeFimOn", () => fimOnNow === true);

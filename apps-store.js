@@ -4893,7 +4893,21 @@ async function deleteApp(id, opts) {
   /* 守卫：目标必须严格等于 <该套根>/<id>（与 uninstallApp 同一条口径）——不猜、不批量删 */
   if (path.resolve(dir) !== path.resolve(path.join(root, sid)))
     return bad(t("删除目标不是这个应用自己的目录，已拒绝"), "path_escape");
-  closeAppWindow(sid);
+  /* 关窗：与「替换」（apps:replace）同一条口径 —— 先请那只独立窗口退出，**等它真关掉**
+     再动目录。只发不等的话，删除回执到界面时窗口还在跑（用户看到的就是「删了窗口没关」），
+     而且目录里文件正被它占着，shell.trashItem 还可能失败。等不到（应用卡在收尾里）就
+     直接销毁：删除是用户已在确认框里点过的动作，窗口没理由留着。 */
+  if (isAppWindowOpen(sid)) {
+    closeAppWindow(sid);
+    const gone = await waitAppWindowClosed(sid);
+    if (!gone) {
+      const w = appWins.get(sid);
+      try {
+        if (w && !w.isDestroyed()) w.destroy();
+      } catch (_) {}
+      appWins.delete(sid);
+    }
+  }
   writeModelSelection(sid, MODEL_AUTO); /* 删除顺手清掉该应用的模型选择（不留孤儿条目） */
   let trashed = false;
   let trashError = "";
@@ -6728,7 +6742,8 @@ function hostCapabilities(e, arg) {
   return out;
 }
 /* 应用窗口里的补全设置：读的是用户自己的 config.json `fim` 段（与主窗口「输入补全」面板同一份）。
-   缺字段按主窗口同一套缺省补（开 / 自动 / Tab 手动都开），**绝不写盘** —— 应用只是读者。
+   缺字段按主窗口同一套缺省补（2026-11 复议后：总开关**关**、自动**关**、Tab 手动留开），
+   **绝不写盘** —— 应用只是读者。
    maxTokens / delayMs 也带过去，免得应用里另立一套手感。 */
 function fimSettingsOf() {
   let c = {};
@@ -6743,8 +6758,8 @@ function fimSettingsOf() {
     return Number.isFinite(n) && n >= 0 ? n : d;
   };
   return {
-    on: o.on !== false,
-    auto: o.auto !== false,
+    on: o.on === true,
+    auto: o.auto === true,
     manual: o.manual !== false,
     delayMs: num(o.delayMs, 350),
     maxTokens: Math.max(16, num(o.maxTokens, 128)),
