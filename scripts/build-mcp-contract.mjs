@@ -74,6 +74,11 @@ export const TOOL_FAMILY = {
   /* 自用回环四件（mtnode_generate / mtnode_run / mtnode_tools / mtnode_session）：
      gen 与 session 由主进程执行（mcp-media-agent.js / 会话帧），run 与 tool 由渲染层执行
      （renderer/mcp-extra.js）。它们**不进 cordis.yml** —— 网关不加载这份插件。 */
+  /* 交接面（本次需求）：外部 agent 的默认入口。mtnode_agent 由主进程编排
+     （解析 / 新建画布 → 常驻「外部交接」会话 → 跑一轮 → 结构化回执），
+     mtnode_catalog 在主进程直接回完整工具面。 */
+  mtnode_agent: 'agent',
+  mtnode_catalog: 'catalog',
   mtnode_generate: 'gen',
   mtnode_run: 'run',
   mtnode_tools: 'tool',

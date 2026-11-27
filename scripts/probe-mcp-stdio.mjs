@@ -90,10 +90,32 @@ send({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} })
 await waitFor(() => lines().some((l) => l.id === 2))
 const tools = lines().find((l) => l.id === 2)
 {
+  /* 工具面默认精简（交接优先）：桥这一侧看到的也必须是那两件 */
   const got = ((tools.result && tools.result.tools) || []).map((t) => t.name)
-  const miss = EXPECT_TOOLS.filter((n) => !got.includes(n))
-  step('stdio tools/list', got.length === EXPECT_TOOLS.length && !miss.length,
-    got.length + ' 个（契约 ' + EXPECT_TOOLS.length + (miss.length ? '，缺 ' + miss.join(',') : '') + '）')
+  step('stdio tools/list 默认精简', got.length === 2 && got[0] === 'mtnode_agent' && got[1] === 'mtnode_catalog',
+    got.length + ' 个：' + got.join(', '))
+}
+
+/* 第二层：经桥调 mtnode_catalog 展开，再拉一次工具表就是全量（同一条连接） */
+send({ jsonrpc: '2.0', id: 23, method: 'tools/call', params: { name: 'mtnode_catalog', arguments: { detail: 'brief' } } })
+await waitFor(() => lines().some((l) => l.id === 23))
+{
+  const cat = lines().find((l) => l.id === 23)
+  let obj = {}
+  try {
+    obj = JSON.parse((cat.result && cat.result.content && cat.result.content[0].text) || '{}')
+  } catch {
+    obj = {}
+  }
+  step('stdio mtnode_catalog 展开', !!obj.ok && obj.count === EXPECT_TOOLS.length, (obj.count || 0) + ' 个工具')
+}
+send({ jsonrpc: '2.0', id: 24, method: 'tools/list', params: {} })
+await waitFor(() => lines().some((l) => l.id === 24))
+{
+  const full = ((lines().find((l) => l.id === 24).result || {}).tools || []).map((t) => t.name)
+  const miss = EXPECT_TOOLS.filter((n) => !full.includes(n))
+  step('stdio 展开后全量', full.length === EXPECT_TOOLS.length && !miss.length,
+    full.length + ' 个（契约 ' + EXPECT_TOOLS.length + (miss.length ? '，缺 ' + miss.join(',') : '') + '）')
 }
 
 send({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'mtnode_canvas_get', arguments: { detail: 'minimal' } } })

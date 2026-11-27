@@ -69,15 +69,17 @@ button {
   <input id="n" maxlength="32" value="">
   <label>人设</label>
   <div class="mode">
-    <button type="button" id="modeDefault">默认</button>
+    <button type="button" id="modeNone">无</button>
+    <button type="button" id="modeCat">猫</button>
     <button type="button" id="modeCustom">自定义</button>
   </div>
-  <div id="defaultHint" class="locked">来自外星的猫</div>
+  <div id="noneHint" class="locked">不携带任何人设提示词（默认）</div>
+  <div id="catHint" class="locked" hidden>来自外星的猫（内置设定）</div>
   <div id="customWrap" hidden>
     <label>自定义人设提示词</label>
-    <textarea id="p" maxlength="4000" placeholder="在此填写自定义人设，将覆盖默认人设…"></textarea>
+    <textarea id="p" maxlength="4000" placeholder="在此填写自定义人设，只在选中本档时携带…"></textarea>
   </div>
-  <div class="hint">保存后立即生效：对话标题会更新，下一条消息起按新人设回复。</div>
+  <div class="hint">保存后立即生效：对话标题会更新，下一条消息起按新人设（或无人设）回复。</div>
   <div class="row">
     <button type="button" class="cancel" id="c">取消</button>
     <button type="button" class="ok" id="s">保存</button>
@@ -89,29 +91,34 @@ button {
       document.body.textContent = "ipc 未接通";
       return;
     }
-    let mode = "default";
-    const modeDefault = document.getElementById("modeDefault");
+    let mode = "none";
+    const modeNone = document.getElementById("modeNone");
+    const modeCat = document.getElementById("modeCat");
     const modeCustom = document.getElementById("modeCustom");
     const customWrap = document.getElementById("customWrap");
-    const defaultHint = document.getElementById("defaultHint");
+    const noneHint = document.getElementById("noneHint");
+    const catHint = document.getElementById("catHint");
     const promptEl = document.getElementById("p");
 
     function setMode(m) {
-      mode = m === "custom" ? "custom" : "default";
-      modeDefault.classList.toggle("on", mode === "default");
+      mode = m === "custom" ? "custom" : m === "cat" ? "cat" : "none";
+      modeNone.classList.toggle("on", mode === "none");
+      modeCat.classList.toggle("on", mode === "cat");
       modeCustom.classList.toggle("on", mode === "custom");
       customWrap.hidden = mode !== "custom";
-      defaultHint.hidden = mode === "custom";
+      noneHint.hidden = mode !== "none";
+      catHint.hidden = mode !== "cat";
     }
 
-    modeDefault.onclick = function () { setMode("default"); };
+    modeNone.onclick = function () { setMode("none"); };
+    modeCat.onclick = function () { setMode("cat"); };
     modeCustom.onclick = function () { setMode("custom"); };
 
     api.getConfig().then(function (r) {
       const c = (r && r.config) || {};
       document.getElementById("n").value = c.personaName || "BongoChat";
       promptEl.value = c.personaPromptCustom || "";
-      setMode(c.personaMode === "custom" ? "custom" : "default");
+      setMode(c.personaMode === "custom" ? "custom" : c.personaMode === "cat" ? "cat" : "none");
     });
 
     document.getElementById("c").onclick = function () {

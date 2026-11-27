@@ -122,8 +122,8 @@ function defaultConfig() {
     x: null,
     y: null,
     personaName: "BongoChat",
-    /* default = 内置隐藏人设；custom = 使用 personaPromptCustom */
-    personaMode: "default",
+    /* none = 不带任何人设提示词（默认）；cat = 内置猫设定；custom = personaPromptCustom */
+    personaMode: "none",
     personaPromptCustom: "",
     /* 人设变更后递增，强制 dsh 换新 workspace，避免旧会话钉死旧人设 */
     personaEpoch: 0,
@@ -159,8 +159,10 @@ function normalizeConfig(raw) {
   if (!name || name === "桌宠") name = "BongoChat";
   c.personaName = name.slice(0, 32);
 
-  /* 迁移旧 personaPrompt → mode/custom */
-  if (c.personaMode !== "custom" && c.personaMode !== "default") {
+  /* 迁移旧 personaPrompt → mode；旧 "default"（内置隐藏人设）现在落到 "none"，
+     要猫设定得显式选 cat。 */
+  const modeRaw = String(c.personaMode || "");
+  if (modeRaw !== "custom" && modeRaw !== "cat" && modeRaw !== "none") {
     if (
       c.personaPrompt &&
       !isLegacyDefaultPrompt(c.personaPrompt) &&
@@ -169,10 +171,11 @@ function normalizeConfig(raw) {
       c.personaMode = "custom";
       c.personaPromptCustom = String(c.personaPrompt).slice(0, 4000);
     } else {
-      c.personaMode = "default";
+      c.personaMode = "none";
     }
+  } else {
+    c.personaMode = modeRaw;
   }
-  c.personaMode = c.personaMode === "custom" ? "custom" : "default";
   c.personaPromptCustom = String(c.personaPromptCustom || "").slice(0, 4000);
   /* 不再把内置默认人设写入磁盘字段 */
   delete c.personaPrompt;
@@ -198,10 +201,12 @@ function personaFingerprint(cfg) {
 
 function effectivePersonaPrompt(cfg) {
   const c = cfg || loadConfig();
-  if (c.personaMode === "custom" && String(c.personaPromptCustom || "").trim()) {
-    return String(c.personaPromptCustom).slice(0, 4000);
+  if (c.personaMode === "custom") {
+    return String(c.personaPromptCustom || "").slice(0, 4000);
   }
-  return defaultPersonaPrompt();
+  /* 内置猫设定：可选项，只在显式选中时携带 */
+  if (c.personaMode === "cat") return defaultPersonaPrompt();
+  return "";
 }
 
 /** 给渲染层的配置：绝不下发内置默认人设正文 */
@@ -1264,11 +1269,12 @@ async function handleChatSend(text) {
     .map((m) => (m.role === "user" ? "用户：" : "助手：") + String(m.content || "").trim())
     .join("\n\n");
   const input = histText ? histText + "\n\n用户(最新)：" + t : t;
-  /* 独立对话应用：系统提示只引用人设，不附带 MTNode 工作流说明 */
-  const hostPersona = [
-    "你的名字是「" + cfg.personaName + "」。",
-    effectivePersonaPrompt(cfg),
-  ].join("\n");
+  /* 独立对话应用：默认不带任何提示词（personaMode=none → hostPersona 空串，
+     网关侧 bongochat 档仍走对话隔离，系统提示整份为空）；选了猫设定 / 自定义才拼上。 */
+  const personaText = effectivePersonaPrompt(cfg).trim();
+  const hostPersona = personaText
+    ? "你的名字是「" + cfg.personaName + "」。\n" + personaText
+    : "";
 
   const piProvs = mtnodePiProvidersFromApp();
   const providerRoute = dshRouteForProvider(resolved.provider);

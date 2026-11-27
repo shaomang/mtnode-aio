@@ -38,11 +38,22 @@ That is exactly what “Copy config snippet” on the panel produces (both paths
 
 **② Local HTTP** — for your own client or a remote tool: `POST http://127.0.0.1:<port>/mcp` with the header `Authorization: Bearer <token>` and an MCP JSON-RPC body (`initialize` / `tools/list` / `tools/call` / `resources/list` / `resources/read` / `prompts/list` / `prompts/get`).
 
+## First read this: by default the work is handed to MTNode's own agent
+
+When a third party connects, it sees **two** tools by default:
+
+- **`mtnode_agent` (handoff)** — hand the whole job to MTNode's own agent: you only give "what to do" (`task`) and "which project folder" (`projectFolder`, an absolute local path). MTNode resolves or creates the canvas for that folder, creates (or reuses) an "外部交接 · <project>" session, runs one round with the **default model configured in Settings**, and returns the result (reply + files changed + tool timeline + any clarifying question it needs answered). Handing off the same project again continues the previous context.
+- **`mtnode_catalog` (expand)** — call it once when you want to drive the canvas / database / assets / media yourself; it returns the full tool list plus the rules and makes this connection see every tool afterwards.
+
+Why this default: stitching together the low-level tools and reading the skills is expensive for an outside agent, while MTNode's own agent already carries them. To go back to "all tools from the start": Settings → Extensions → Server → "Tool surface: switch to full".
+
+> Also: the Settings page previously titled "APIs/Config" is now "**Default model provider**" — the handoff sessions use the default model picked there.
+
 ## What outside clients can do
 
 Tool names and parameters are **identical** to MTNode's own Agent (`mtnode_canvas_get`, `mtnode_canvas_edit`, `mtnode_app`, `mtnode_db`, `mtnode_facts`, `lt_state`, `mtnode_assets`, `mtnode_vision`), so the existing node guides and skill docs apply to third parties unchanged.
 
-Four more tools exist for “go and do it yourself”:
+Once expanded (or with the tool surface set to "full"), four more tools exist for “go and do it yourself”:
 
 - **`mtnode_generate`**: image / music / speech / video, using the models and local backends **already configured** in the app. Returns a **local absolute path** and files the artifact into the asset library; to also drop it on the canvas, pass the canvas plus its hash.
 - **`mtnode_run`**: run a single node, or a whole graph (it finds the “run” control node).

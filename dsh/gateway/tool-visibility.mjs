@@ -7,8 +7,9 @@
  *  · dsh 引擎自带的工具（目标 / 任务清单 / 子代理 / 后台任务 / 提问）→ 注册在引擎包里，
  *    改不动注册，就用 ctx.tools.restrict({ deny }) 在 agent 作用域把它们从可见集摘掉
  *    （dsh-tools 明确：被 restrict 隐藏的工具整份 schema 不再进请求）。
- * 纯净模式走的是同一条口子的反向用法：restrict({ allow: PURE_KEEP_TOOLS })，除白名单
- * 之外一个都不发（见 PURE_TOOLS_ENV）。
+ * 纯净模式走的是同一条口子的另一个方向：restrict({ deny: PURE_DROP_TOOLS }) —— 只摘
+ * MTNode 自己注入的那些工具，dsh 引擎自带的能力（读 / 写 / 命令 / 联网 / read_image 识图 /
+ * 待办 / 子代理 / 提问…）一律保留，与 dsh 独立运行基本一致（见 PURE_DROP_TOOLS）。
  * 两条路共用同一份名单：gateway 按 run 参数算出规范名单 → spawn env MTNODE_HIDE_TOOLS
  * → 注册口 + mtnode-tool-visibility 插件各自读取。
  *
@@ -24,44 +25,67 @@
 export const HIDE_ENV = 'MTNODE_HIDE_TOOLS'
 
 /**
- * spawn env 名：本台运行时跑「纯净模式」的工具白名单档（'1' = 开）。
- * 与 HIDE_ENV 是两条腿：HIDE 只能点名摘除（可枚举的名字有限），纯净模式要的是
- * 「除白名单外一个都不发」—— 用 restrict({ allow }) 反向保留（见
- * plugins/tool-restrict-plugin.mjs），内置工具与 MTNode 自有工具一并生效。
- *
- * 为什么纯净模式要动工具：实测纯净轮的**系统提示已经是 0 token**，但工具定义
- * 每次请求都整份重发 —— 23,739 token，比普通轮（16,430）还多 7.3K（纯净轮把
- * lean / 按需裁一并关掉了）。剩下的 3.6K 才是用户原话。所以「纯净模式仍有大量
- * token」的根子在工具 schema，不在提示词。
+ * spawn env 名：本台运行时跑「纯净模式」的裁工具档（'1' = 开）。
+ * 与 HIDE_ENV 是两条腿：HIDE 是「按轮按需点名摘」（名字都来自可裁名单），纯净模式
+ * 是「这一轮只摘 MTNode 自己注入的工具」—— 见 PURE_DROP_TOOLS。
  */
 export const PURE_TOOLS_ENV = 'MTNODE_PURE_TOOLS'
 
 /**
- * 纯净模式保留的工具（用户口径：读 / 写 / 命令 / 联网搜索）。
+ * 纯净模式要摘掉的工具 —— **MTNode 自己注入的那些**，不是白名单。
  *
- * 名字必须只含 [a-z0-9_]（env 与 restrict 同一条约束）。装 allow 时逐名探测
- * `ctx.tools.get(name, agent)`，本平台没有的那些（Windows 上没有 bash）自动跳过
- * —— 一个不存在的名字不会把整条 allow 弄挂。
+ * 用户口径（本轮修正）：纯净模式只排除 MTNode 相关的注入，模型自身的功能与工具调用
+ * 必须保留，与 dsh 独立运行基本一致 —— 读 / 写 / 命令 / 联网搜索 / read_image 识图 /
+ * 待办 / 子代理 / 提问 / 目标 / 后台任务 / 换工作目录，一个都不许裁（此前是一份
+ * 「只留读 / 写 / 命令 / 联网搜索」的 allow 白名单，把 read_image 与几个引擎工具一起
+ * 挡在门外，用户实报「纯净模式下识图 / 一部分模型能力用不了」正是由此而来）。
+ *
+ * 因此这里反向列举：只有列在这份名单里的名字被摘，其余（含引擎日后新增的工具）照常可见。
+ * 名字必须只含 [a-z0-9_]（env 与 restrict 同一条约束）。装 deny 时逐名探测
+ * `ctx.tools.get(name, agent)`，本平台没有的那些（未接入数据库的 mtnode_db、没开调试的
+ * mtnode_dev、Windows 上没有的 bash…）自动跳过 —— 一个不存在的名字不会把整条 deny 弄挂。
+ *
+ * 用户工具节点（tools-plugin.mjs 的 func call）名字是宿主每轮动态给的，列不进来 ——
+ * 纯净轮由网关直接把描述子清空（见 gateway.mjs handleRun 的 runTools）。
  */
-export const PURE_KEEP_TOOLS = Object.freeze([
-  /* 文件：读 / 写 / 改 / 搜（dsh-tool-fs、dsh-tool-fs-search、dsh-tool-str-replace-editor） */
-  'read',
-  'write',
-  'edit',
-  'str_replace_editor',
-  'glob',
-  'grep',
-  /* 命令（dsh-tool-pwsh / dsh-tool-bash，按平台各挂一只） */
-  'pwsh',
-  'bash',
-  /* 联网（dsh-tool-web） */
-  'web_search',
-  'web_fetch',
-  /* 换工作目录：读写都要用，schema 很小 */
-  'working_directory',
+export const PURE_DROP_TOOLS = Object.freeze([
+  /* 画布 / 应用 / 识图子代理 / 数据库 / 事实库 / 素材 / 截图 / 反查 / 清单 / 媒体读 */
+  'mtnode_app',
+  'mtnode_assets',
+  'mtnode_canvas_edit',
+  'mtnode_canvas_get',
+  'mtnode_db',
+  'mtnode_dev',
+  'mtnode_facts',
+  'mtnode_gui',
+  'mtnode_manifest',
+  'mtnode_media',
+  'mtnode_recall',
+  'mtnode_screenshot',
+  'mtnode_vision',
+  /* 本地媒体（media-plugin.mjs）：转写 / 字幕 / ffmpeg 都是 MTNode 后端能力 */
+  'audio_transcribe',
+  'audio_subtitle',
+  'ffmpeg',
+  /* 长周期任务状态（longtask-plugin.mjs）：只有状态机环节接得住 */
+  'lt_state',
+  /* 会话自己的浏览器（browser-plugin.mjs）：MTNode 自带的那台 Edge/Chrome，整族摘掉 */
+  'browser_launch',
+  'browser_snapshot',
+  'browser_navigate',
+  'browser_click',
+  'browser_type',
+  'browser_key',
+  'browser_eval',
+  'browser_wait',
+  'browser_screenshot',
+  'browser_tabs',
+  'browser_network',
+  'browser_help',
+  'browser_release',
 ])
 
-/** 本台运行时是否跑纯净模式的工具白名单档。 */
+/** 本台运行时是否跑纯净模式的裁工具档。 */
 export function pureToolsOn(env) {
   return String((env || process.env)[PURE_TOOLS_ENV] || '') === '1'
 }
@@ -91,7 +115,8 @@ export const HIDEABLE_TOOLS = Object.freeze([
   'lt_state',
   /* 会话自己的浏览器（browser-plugin.mjs 的注册口）：整族一起裁才有意义 ——
      某个入口被拒时剩下的也就干不成活，所以一族一个判据（整族不注册）。
-     画布节点 / 长任务未授权环节走 MTNODE_NO_BROWSER（纯净模式已不裁工具，见 pure-prompt.mjs），
+     画布节点 / 长任务未授权环节走 MTNODE_NO_BROWSER（纯净轮不在这条闸上：它的
+     PURE_DROP_TOOLS 里本就有 browser_* 整族，注册照挂、可见集里没有），
      整档闸在插件里先判；这里留着是为了让「工具许可被拒」也能落到同一份白名单上。 */
   'browser_launch',
   'browser_snapshot',

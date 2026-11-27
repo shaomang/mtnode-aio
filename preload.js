@@ -601,6 +601,12 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.on('plugin-selfcheck:changed', handler);
     return () => ipcRenderer.removeListener('plugin-selfcheck:changed', handler);
   },
+  /* 产出物缓存（插件详情浮层里的「清理产出物」）：长期使用后插件安装目录里的 output /
+     ComfyUI/output 会占掉几十 GB。scan(id) 只读统计；clean(id, { keepDays, dryRun }) 真删
+     （默认保留最近 10 分钟写过的文件，避免删到正在写的产物）。内核在 plugins/plugin-cache-clean.js，
+     只碰 output / ComfyUI/output / ComfyUI/input / ComfyUI/temp，不碰模型与环境。 */
+  pluginCacheScan: (id) => ipcRenderer.invoke('pluginCache:scan', { id: id || '' }),
+  pluginCacheClean: (id, opts) => ipcRenderer.invoke('pluginCache:clean', Object.assign({}, opts || {}, { id: id || '' })),
   appPluginsCatalog: () => ipcRenderer.invoke('appPlugins:catalog'),
   /* 显存门槛现状（插件对话框「显示不支持的插件」开关 + 卡片「本机显存可能不足」标注）：
      目录本身已经把不支持的插件滤掉了，这一份**不滤**，供用户手动翻出来看。
@@ -1523,6 +1529,8 @@ contextBridge.exposeInMainWorld('api', {
   /* 自用回环：把自家服务端挂进引擎的 MCP 客户端清单（generate / run / tools / session 四项），
      应用内 Agent 因此也能调自己的生成能力。作业：生成与跑节点的异步列表（内存表）。 */
   mcpSetSelfLoop: (on) => ipcRenderer.invoke('mcp:setSelfLoop', { on }),
+  /* 工具面档位：slim（默认 · 只回 mtnode_agent + mtnode_catalog） / full（老的 19 个平铺） */
+  mcpSetToolSurface: (surface) => ipcRenderer.invoke('mcp:setToolSurface', { surface }),
   mcpJobs: () => ipcRenderer.invoke('mcp:jobs'),
   /* 「Paseo 桥」面板（扩展能力管理 → 服务端 页里那一块）：桥脚本落点 / 真 Node / 数据目录 /
      provider 配置片段，以及 --check 自检（真 spawn 一次，读数据目录并探活本机服务端）。
@@ -1959,6 +1967,21 @@ contextBridge.exposeInMainWorld('api', {
     };
     ipcRenderer.on('assets:changed', h);
     return () => ipcRenderer.removeListener('assets:changed', h);
+  },
+
+  /* 任何一次保存（文件落盘 / 新建画布存档）之后主进程广播一次 files:changed：
+     文件边栏据此自动刷新（渲染层按 350ms 合并，见 app-sidebar-files.js 的 sfOnFilesChanged）。
+     cb({ paths:[绝对路径], at })；返回退订函数。 */
+  onFilesChanged: (cb) => {
+    const h = (_e, info) => {
+      try {
+        cb(info || {});
+      } catch (err) {
+        console.error('api.onFilesChanged cb error:', err);
+      }
+    };
+    ipcRenderer.on('files:changed', h);
+    return () => ipcRenderer.removeListener('files:changed', h);
   },
 
   /* ── 快捷会话小窗（mini-chat-window.js 那只独立 BrowserWindow，全局唯一）──

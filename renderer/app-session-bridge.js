@@ -74,13 +74,17 @@
     if (typeof cb !== "function") return;
     let frame;
     try {
-      frame = slimFrame({
-        sessionId: String(sid || ""),
-        runKey: String(runKey || ""),
-        type: String(type || ""),
-        data: data || {},
-        at: (data && data.at) || Date.now(),
-      });
+      frame = slimFrame(
+        {
+          sessionId: String(sid || ""),
+          runKey: String(runKey || ""),
+          type: String(type || ""),
+          data: data || {},
+          at: (data && data.at) || Date.now(),
+        },
+        /* 应用 / 插件窗口这条路逐字：正文一个字都不截（手机端 SSE 走 pushEvent，不受影响） */
+        { verbatim: true },
+      );
     } catch (_) {
       frame = { sessionId: String(sid || ""), type: String(type || ""), data: {} };
     }
@@ -214,11 +218,14 @@
     return out;
   }
 
-  function slimFrame(ev) {
+  function slimFrame(ev, opt) {
     const type = String(ev.type || "");
     /* 卡片帧（模型提问）不瘦身：只做「内联媒体换一句摘要」，
-       结构与文本原样带到手机（口径见 VERBATIM_TYPES）。 */
-    const keepAll = VERBATIM_TYPES.has(type);
+       结构与文本原样带到手机（口径见 VERBATIM_TYPES）。
+       opt.verbatim = **应用 / 插件窗口**那条路（hostDeliver）整帧逐字：应用要把模型的整份 JSON
+       取回来（story2video 的创意简报就是一个几千上万字的 JSON），4000 字一刀切会把 JSON 切在
+       中间，应用侧只能判「没按 JSON 回执」。手机端 SSE 不走这一支，仍按原限额瘦身。 */
+    const keepAll = VERBATIM_TYPES.has(type) || !!(opt && opt.verbatim);
     const out = {
       sessionId: String(ev.sessionId || ""),
       runKey: String(ev.runKey || ""),

@@ -5,11 +5,13 @@
  * 名单，经 env MTNODE_HIDE_TOOLS 下达（名单同时进 runtime key，所以一台运行时的可见集
  * 从头到尾只有一个形状，提示缓存不会被轮内改可见集打爆）。
  *
- * 纯净模式走同一条口子的反向用法：env MTNODE_PURE_TOOLS=1 时，按
- * tool-visibility.mjs 的 PURE_KEEP_TOOLS 装 `restrict({ allow })` —— 除白名单
- * （读 / 写 / 命令 / 联网搜索）之外的工具整份 schema 都不发。实测纯净轮的系统提示
- * 已是 0 token，剩下的 23.7K 全在工具定义上，所以这一档才是「纯净模式省 token」
- * 真正生效的地方。
+ * 纯净模式走同一条口子：env MTNODE_PURE_TOOLS=1 时，按
+ * tool-visibility.mjs 的 PURE_DROP_TOOLS 装 `restrict({ deny })` —— 只摘 MTNode 自己
+ * 注入的那些工具（画布 / 数据库 / 识图子代理 / 浏览器 / 媒体 / 长任务 / 素材…）。
+ * dsh 引擎自带的工具（读 / 写 / 命令 / 联网 / read_image 识图 / 待办 / 子代理 / 提问…）
+ * 一律保留：纯净轮的能力面与 dsh 独立运行基本一致（用户口径 · 本轮修正）。
+ * 以前这里是 `restrict({ allow })` 的十一只白名单，把 read_image 与引擎工具一起挡掉，
+ * 用户实报「纯净模式下识图用不了」就是那一档造成的。
  *
  * MTNode 自有的工具（画布 / 应用 / 识图 / 数据库）在各自插件的注册口就不注册了；
  * 引擎自带的工具（目标 / 任务清单 / 子代理 / 后台任务 / 提问）注册在 @deepseek-ai 的包里，
@@ -25,7 +27,7 @@
  *  · 任何异常一律放弃裁剪照常起轮 —— 省 token 的通道绝不允许把任务跑挂。
  */
 
-import { hiddenToolsFromEnv, pureToolsOn, PURE_KEEP_TOOLS } from '../tool-visibility.mjs'
+import { hiddenToolsFromEnv, pureToolsOn, PURE_DROP_TOOLS } from '../tool-visibility.mjs'
 
 export const name = 'mtnode-tool-visibility'
 
@@ -33,12 +35,13 @@ export const inject = ['tools']
 
 export function apply(ctx) {
   const hidden = hiddenToolsFromEnv()
-  /* 纯净模式（MTNODE_PURE_TOOLS=1）：反向保留白名单，除它之外一个工具 schema 都不发。
-     与 hide 名单互斥 —— allow 已经是最强档，两个都装没有意义（allow ∩ deny 只会更小，
-     反而让「纯净轮到底留了什么」说不清）。 */
-  const pureKeep = pureToolsOn()
-  if (hidden.size === 0 && !pureKeep) return
-  const want = Array.from(hidden)
+  /* 纯净模式（MTNODE_PURE_TOOLS=1）：只摘 PURE_DROP_TOOLS（MTNode 自己注入的工具），
+     引擎自带的读写 / 命令 / 联网 / 识图 / 待办 / 子代理全部保留 —— 与 dsh 独立运行一致。
+     与 hide 名单互斥：纯净档自带整份「要摘的名字」，两份名单叠起来只会让
+     「纯净轮到底剩了什么」说不清。 */
+  const pureDrop = pureToolsOn()
+  if (hidden.size === 0 && !pureDrop) return
+  const want = pureDrop ? Array.from(PURE_DROP_TOOLS) : Array.from(hidden)
   const done = new WeakSet()
   let announced = false
 
@@ -46,8 +49,7 @@ export function apply(ctx) {
     if (!agent || done.has(agent)) return
     done.add(agent)
     try {
-      if (pureKeep) restrictToKeep(agent)
-      else restrictFor(agent)
+      restrictFor(agent, want)
     } catch (err) {
       /* 裁剪失败 = 回到今天的满负载可见集，绝不因此让这一轮起不来 */
       noteFail(err)
@@ -55,36 +57,17 @@ export function apply(ctx) {
   })
 
   /**
-   * 纯净模式：只留 PURE_KEEP_TOOLS（读 / 写 / 命令 / 联网搜索）。
+   * 装一条 deny 掩码（纯净模式与按轮隐藏共用）：同名工具整份 schema 不再进请求。
    *
-   * restrict 的 allow 语义是「只保留这些全局工具」，被排除的整份 schema 不再进请求
-   * —— 这就是纯净轮省掉 23.7K token 的地方（实测见 tool-visibility.mjs 的注释）。
-   * 逐名探测存在性：restrict 点名一个未知 / 不可裁的名字会整条抛错，那样纯净模式
-   * 会静默退回全量（用户报过「纯净模式仍有大量 token」，所以这里绝不允许整条失败）。
-   *
-   * 护栏（比省 token 更重要）：allow 是「反向白名单」，探测漏掉一个名字 = 那个工具被
-   * 裁掉。所以核心工具（read / write / 一只命令工具）探测不到时干脆整条不装 ——
-   * 宁可按今天的全量跑，也不能让纯净会话读不了文件。
+   * 逐名探测存在性再装：restrict 点名一个未知 / 不可裁的名字会整条抛错。
+   * 这里失败是**安全**的（工具照旧可见，不会像 allow 那样把工具裁空），
+   * 但整条掩码装不上时仍退化成逐个名字试，能摘几个是几个。
    */
-  function restrictToKeep(agent) {
+  function restrictFor(agent, names) {
     const ac = agent.ctx
     if (!ac || !ac.tools || typeof ac.tools.restrict !== 'function') return
-    const keep = PURE_KEEP_TOOLS.filter((n) => isRestrictable(ctx, agent, n))
-    const hasCmd = keep.indexOf('pwsh') >= 0 || keep.indexOf('bash') >= 0
-    if (keep.indexOf('read') < 0 || keep.indexOf('write') < 0 || !hasCmd) {
-      noteFail(new Error('核心工具探测不到（read / write / 命令），跳过 allow 裁剪'))
-      return
-    }
-    ac.effect(() => ac.tools.restrict({ allow: keep }), 'mtnode-pure-tools()')
-    announceOnce('allow=' + keep.join(','))
-  }
-
-  /** 装一条 deny 掩码；失败时退化成逐个名字试，只放弃装不上的那些。 */
-  function restrictFor(agent) {
-    const visible = want.filter((n) => isRestrictable(ctx, agent, n))
+    const visible = names.filter((n) => isRestrictable(ctx, agent, n))
     if (visible.length === 0) return
-    const ac = agent.ctx
-    if (!ac || !ac.tools || typeof ac.tools.restrict !== 'function') return
     let firstErr = null
     try {
       ac.effect(() => ac.tools.restrict({ deny: visible }), 'mtnode-tool-visibility()')

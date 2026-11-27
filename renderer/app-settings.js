@@ -1,5 +1,5 @@
 "use strict";
-/* ============ 设置（APIs/Config） ============ */
+/* ============ 设置（默认模型提供商） ============ */
 
 /* ── 设置页写剪贴板：薄封装，实现已收敛到全渲染层唯一出口 ───────────────────
    历史：这条三级链路（① navigator.clipboard.writeText → ② preload 桥
@@ -321,7 +321,7 @@ function deepseekTopupBanner() {
 }
 
 function openSettingsBody() {
-  openOverlay(I18n.t("设置 · APIs/Config"));
+  openOverlay(I18n.t("设置 · 默认模型提供商"));
   overlayPersistent = true; // 设置栏：点击外部不关闭，只走窗底那枚「关闭」（改动本身即时生效）
   overlayKind = "settings";
   /* 每一项改动都直接写进 S.config 并落盘（见文件头「设置改动即时生效」），

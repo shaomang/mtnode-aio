@@ -19,14 +19,18 @@
   "use strict";
 
   /* ── 视图模式（列表 / 网格）：按页分别记住 ──────────────────────────────
-     key 里带版本号（v1）：以后改了语义就是换 key，老值自然作废。 */
-  var VIEW_KEY = "mtnode.apps.view.v1";
+     key 里带版本号（v2）：以后改了语义就是换 key，老值自然作废。
+     本轮升到 v2 是因为**缺省档变了**（应用商店缺省 = 列表，用户口径）：留着 v1 的话，
+     以前点过一次网格的用户会一直看到网格，「默认」对他并不生效。 */
+  var VIEW_KEY = "mtnode.apps.view.v2";
   var MODES = { apps: 1, lib: 1, mine: 1 }; /* 只有这三页有列表模式（开发页是三栏开发台） */
   var VIEW = null; /* { apps:"grid"|"list", … }，首次读盘时填 */
 
   function readView() {
     if (VIEW) return VIEW;
-    VIEW = { apps: "grid", lib: "grid", mine: "grid" };
+    /* 应用商店（apps）缺省 = 列表（用户口径：「默认应用商店展示列表」）；
+       库 / 我的应用仍缺省网格（库里看封面更快认出是哪个应用）。 */
+    VIEW = { apps: "list", lib: "grid", mine: "grid" };
     try {
       var raw = window.localStorage ? window.localStorage.getItem(VIEW_KEY) : "";
       var j = raw ? JSON.parse(raw) : null;

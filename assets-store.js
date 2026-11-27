@@ -1416,7 +1416,15 @@ function registerAssetsIpc(opts) {
         const ext = srcPath
           ? extOf(srcPath, it.type)
           : path.extname(wantAbs) || EXT_OF_TYPE[it.type] || ".bin";
-        const nextAbs = path.join(itemsDir, uniqueItemFile(itemsDir, it.id, ext, null));
+        /* 只给 base64（没有源文件路径）时扩展名跟着**真实字节**走：渲染层把 SVG
+           按 360p 光栅化成 PNG 再送进来，旧文件名若还是 .svg，不能把 PNG 装进 .svg
+           （下游按扩展名贴 MIME，装错就是一张静默坏图）。 */
+        let fixedExt = ext;
+        if (!srcPath && arg && arg.base64) {
+          const head = Buffer.from(String(arg.base64).slice(0, 24), "base64");
+          if (head.length >= 8 && head.readUInt32BE(0) === 0x89504e47) fixedExt = ".png";
+        }
+        const nextAbs = path.join(itemsDir, uniqueItemFile(itemsDir, it.id, fixedExt, null));
         if (arg && arg.empty === true && !srcPath && !(arg && arg.base64)) {
           fs.writeFileSync(nextAbs, "");
         } else if (srcPath) {

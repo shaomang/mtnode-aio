@@ -106,6 +106,14 @@ ghost 一个字都不进正文流、压不到下面的正文）；单行建议 =
    自动存盘（脏标记 + 防抖）+ 关窗前强制冲刷是默认姿势（脚手架 `store.js` + `close.js`，见第三节）。
 4. **需要后端 / 模型 / 文件能力时才调 appHost，且必须优雅降级**：没有对应接口时不假装成功、不静默丢数据。
    appHost 是**白名单桥**，只暴露第二节列出的那些方法；**没有的接口就是没有**，不要发明（见第六节）。
+5. **应用目录只有源码，整包 ≤ 2MB；后端一律「首次启动时自我安装」**（硬规则）：
+   应用目录里只放 HTML / JS / CSS / 图标 / 静态数据与 `backend/backend.json` 这类**源码与清单** ——
+   **不打包** venv、`node_modules`、模型权重、预编译二进制、随包运行时。云服务器空间与流量有限，
+   **应用整包（含上架 zip）不得超过 2MB**，超了就是有东西该挪出去；需要重能力的应用转为
+   本地后端插件（`mtnode-plugin-dev`）或把运行时装到数据目录。任何后端依赖都写成
+   **按需安装**：首次打开 / 用户点「安装」时才下载并装到**数据目录**（`<数据目录>/…`，绝不落应用安装目录，
+   `app-backend-pack.js` 只铺源码、`work/` 与 `runtime/` 留在数据目录），装完写标记、失败可重试；
+   没装后端时页面仍要能启动并说明「点这里安装」。
 
 窗口内的运行环境事实（`openWindowPlugin` 固定）：`contextIsolation: true`、`nodeIntegration: false`、`sandbox: false`；
 `setWindowOpenHandler` 只把 http/https 交给系统浏览器，其余一律 deny；`will-navigate` 阻止离开本页。
@@ -131,7 +139,7 @@ ghost 一个字都不进正文流、压不到下面的正文）；单行建议 =
 | **画布读写**（重能力，需声明 canvasHost） | `canvas.info()` / `list()` / `pick()`（用户重选绑定画布）· `graph()` / `nodes()` / `node(id)` / `form(id)`（表单带 `byLabel`）· `updateForm(id, values)` / `addNode(opts)` / `updateNode(id, patch)` / `removeNode(id)` / `connect({from,to})` / `disconnect(id)` / `save()` · **`runNode(id, {attempts})` / `nodeOutput(id)` / `cancelNode(id)`**（执行画布节点 / 读最近一次产物 / 等同画布「终止」，见 2.1.2）· `select(ids)` / `view()` / `setView(v)`（**只对用户眼前那张画布有效**，后台回 `not_foreground`） | `pluginApi.canvas.*`（同名同形；目标 = 用户当前打开的那张，插件没有绑定画布） |
 | **Agent 会话**（重能力，需声明 canvasHost） | `agent.bound()` / `sessions()` / `create(opts)` / `bind(sessionId)` / `send(text,{sessionId?})` / `cancel(sessionId)` / `onEvent(cb)`（收 `{type:"agent",sessionId,frame}`；`frame.type` = text / tool / approval / question / done / error…） | `pluginApi.agent.*` |
 | 画布工作目录文件 | `fs.root()` / `readText(rel)` / `writeText(rel, content)` / `list(rel)` / `mkdir` / `remove` / `exists`（根 = 那张画布的工作目录，越界回 `outside`，单文件 ≤ 8MB） | `pluginApi.fs.*` |
-| 本机后端工具 | `tools.list()` / `tools.call(id, args)`（「重后端」面板里已登记的工具） | `pluginApi.tools.*` |
+| 本机后端工具 | `tools.list()` / `tools.call(id, args)`（「重后端」面板里已登记的工具） · **`tools.install(id)`**（装应用自带的本地后端：铺源码到 `<数据目录>/backends/<id>/` + 登记 + 起服务 + 等 `/health`，见 `app-backend-pack.js`）—— 应用的**首次打开时自装**走这条，不把运行时塞进应用包 | `pluginApi.tools.*` |
 | **语音合成**（重能力，需声明 `canvasHost`） | `audio.synth(opts)` → `{ok, path, bytes}`（`appHost.tts(opts)` 是它的薄别名，两种写法都认）；`audio.presets()` → `{ok, dir, presets}`；`audio.status()` → `{ok, backend, running, busy}`；`audio.cancel()`。**产物写盘并回 path**（不回 base64 —— 应用没有二进制写口），`opts.outputPath` **必填**且只能落在画布工作目录内（越界 `outside`），同一后端忙时回 `busy` | —（插件窗口没有这条：合成能力用本机后端插件自己提供） |
 | **素材库**（重能力，需声明 `assetHost`） | `assets.root()` / `scan()` / `readItem({id,itemId?,index?,withDataUrl?})` / `create({catRel?,displayName,desc?})` / `addItem({id,type,title?,content?,srcPath?,base64?})` / `importFile({paths,name?,category?,desc?})` / `importFiles({id,paths})` / `updateText({id,itemId,content,title?})` / `updateMeta({id,displayName?,desc?,catRel?})` / `removeItem({id,itemId})` / `deleteAsset({id})`；`canvas.addAssetNode({id|rel,x?,y?})` 在应用画布上建一颗绑定该素材的节点。**归属硬口径：应用只能改删自己创建的素材与条目**（别人的回 `{ok:false,code:"forbidden"}`）；删除进回收站、改文本留 `.versions/` | —（插件窗口一律 `not_supported`） |
 | 联网 | `net.fetch(url)`（经宿主取 http(s)；应用页自己的 fetch 仍受 CSP / 跨域约束） | `pluginApi.net.fetch(url)` |

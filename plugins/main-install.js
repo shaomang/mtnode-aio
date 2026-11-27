@@ -25,6 +25,8 @@
  *   invoke `mtnodeInstall:fix`     { id }                                     → 请主窗口新建修复会话（delegate:"session" 事件）
  *   invoke `mtnodeInstall:ensureDir` { id }                                    → 安装开始时把「根目录 + 默认子目录名」建出来并落到该插件配置（本轮需求）
  *   invoke `mtnodeInstall:uninstall` { action:"preview"|"run"|"cancel", id }    → 卸载预览 / 真删（先停后端）/ 停手
+ *   invoke `pluginCache:scan`      { id }                                      → 产出物缓存只读统计（本轮需求）
+ *   invoke `pluginCache:clean`     { id, keepDays?, keepRecentMinutes?, dryRun? } → 清理产出物缓存（内核 plugins/plugin-cache-clean.js）
  *   send   `mtnodeInstall:session` { id, installDir, skill, name, action, code, message, hint, log } → 主窗口
  *   send   `mtnodeInstall:state`   (session)  → 安装窗（快照）
  *   send   `mtnodeInstall:event`   ({ id, kind, … }) → 安装窗（步骤 / 日志 / 终结）
@@ -39,6 +41,9 @@ const weights = require("./install-weights.js");
 const selfcheck = require("./plugin-selfcheck.js");
 /* plugin-root 的纯函数（normDir）：卸载守卫要把用户给的目录归一后再判危险目录 */
 const { normDir: rootNormDir } = require("./plugin-root.js");
+/* 产出物缓存内核（本轮需求）：插件安装目录里 output / ComfyUI/output 等长期积累的清理出口。
+   统计与删除的纪律全在那边（单点白名单 + 逐条路径校验 + 占用文件只记不中断），本模块只转手。 */
+const cacheClean = require("./plugin-cache-clean.js");
 
 /** 窗单例：同一时刻只开一只安装窗（切插件 = 原地换内容，不叠窗）。 */
 let installWin = null;
@@ -1564,6 +1569,28 @@ function initInstallHost(opts) {
     ipcMain.handle("mtnodeInstall:markReady", async () => {
       mainReady = true;
       return { ok: true };
+    });
+    /* 产出物缓存（本轮需求）：长期使用后插件安装目录里的 output / ComfyUI/output 会占掉几十 GB。
+       pluginCache:scan  { id }                                → 只读统计各缓存目录的文件数 / 占用 / 最旧最新时间
+       pluginCache:clean { id, keepDays?, keepRecentMinutes?, dryRun? } → 真删（默认保留最近 10 分钟写过的文件）
+       内核在 plugins/plugin-cache-clean.js（白名单与「为什么可以删」都写在那边）；本模块只把数据目录交给它，
+       不自己拼路径、不落盘，也不自动停后端 —— 后端在跑时只是把占用中的文件记进 errors。 */
+    ipcMain.handle("pluginCache:scan", async (e, payload) => {
+      const p = payload && typeof payload === "object" ? payload : {};
+      const id = String(p.id || "");
+      if (!id) return { ok: false, error: "bad_id", message: "缺少插件 id。" };
+      return cacheClean.scan(id, { dataDir: dataDirOf() });
+    });
+    ipcMain.handle("pluginCache:clean", async (e, payload) => {
+      const p = payload && typeof payload === "object" ? payload : {};
+      const id = String(p.id || "");
+      if (!id) return { ok: false, error: "bad_id", message: "缺少插件 id。" };
+      return cacheClean.clean(id, {
+        dataDir: dataDirOf(),
+        keepDays: p.keepDays,
+        keepRecentMinutes: p.keepRecentMinutes,
+        dryRun: p.dryRun,
+      });
     });
     return { ok: true, ipc: true };
   } catch (e) {

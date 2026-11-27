@@ -2126,11 +2126,11 @@ async function getRuntime(workspace, model, maxTokens, provider, apiKey, baseUrl
   }
   /* 纯净模式：注入 MTNODE_PURE=1 给运行时。pure-prompt 插件据此在系统提示装配时
      清空全部 system prompt 段与运行时上下文；MTNODE_PURE_TOOLS 再让
-     mtnode-tool-visibility 按 PURE_KEEP_TOOLS（读 / 写 / 命令 / 联网搜索）装
-     restrict({ allow }) —— 其余工具整份 schema 都不进请求。
-     为什么工具也要裁：宿主侧 systemPrompt 早已是空串、引擎段也清成 0 token，实测纯净轮
-     首步 36,341 token 里 23,739 全是工具定义（而且纯净轮把 lean / 按需裁都关掉了，
-     比普通轮还多 7.3K）。「纯净」只剩提示词为零、工具照给，用户体感就是「没生效」。 */
+     mtnode-tool-visibility 按 PURE_DROP_TOOLS 装 restrict({ deny }) —— 只摘 MTNode
+     自己注入的工具（画布 / 数据库 / 识图子代理 / 浏览器 / 媒体 / 素材…）。
+     引擎自带的读 / 写 / 命令 / 联网 / read_image 识图 / 待办 / 子代理一律保留：
+     纯净模式只排除 MTNode 相关的注入，模型自身能力与 dsh 独立运行基本一致
+     （用户口径 · 本轮修正；以前是十一只的 allow 白名单，把识图一起挡掉了）。 */
   if (pureOn) env.MTNODE_PURE = '1'
   else delete env.MTNODE_PURE
   if (pureOn) env.MTNODE_PURE_TOOLS = '1'
@@ -3230,15 +3230,15 @@ async function handleRun(params) {
     /* 按运行裁剪工具负载（与 getRuntime 的 lean: / nc: 同源，同一轮同一台运行时）：
        lean = 设置里的「精简工具负载」；noCanvas = 用户声明「与画布无关」的运行，
        由渲染层按节点类型 / 会话开关决议后随 run 参数下发（见 renderer/app-db.js 的 dshRunOnce）。
-       纯净模式不靠这两个标记：它有更强的一档（getRuntime 的 MTNODE_PURE_TOOLS →
-       restrict({ allow: 读/写/命令/联网搜索 })），除白名单外一个工具都不发，所以这里
+       纯净模式不靠这两个标记：它自己那一档（getRuntime 的 MTNODE_PURE_TOOLS →
+       restrict({ deny: PURE_DROP_TOOLS })）会把 MTNode 自有工具整份摘掉，所以这里
        照旧把它们压回 0（两处结论一致，免得同一份可见集在宿主与网关两侧算法不同）。 */
     const leanFlag = !!lean && !pureFlag
     const noCanvasFlag = !!noCanvas && !pureFlag
     /* 浏览器工具整档闸（与 getRuntime 的 nb: 同源）：仅会话可用 —— 画布智能节点 /
        用户声明「与画布无关」的会话 / 长任务未授权环节由宿主打这一位，
        运行时整只不注册 browser-plugin.mjs（含它的 12 个工具 schema）。
-       纯净模式不参与：它的白名单本来就不含 browser_*，整档闸装在不在都一样。 */
+       纯净模式不参与：它的 deny 名单里本来就有 browser_* 整族，整档闸装在不在都一样。 */
     const noBrowserFlag = !!noBrowser && !pureFlag
     /* 真机调试整档闸（与 getRuntime 的 ad: 同源）：只有应用开发会话由宿主打这一位
        （renderer/app-assist.js 按会话的 appId 下发 appDebug）→ 运行时才注册 mtnode_gui。
@@ -3369,11 +3369,10 @@ async function handleRun(params) {
       if (blocks[0] && blocks[0].type === 'text') blocks[0] = { type: 'text', text }
       else blocks.unshift({ type: 'text', text })
     }
-    /* 用户工具描述子（工具节点 func call）：照常注入运行时（tools-plugin.mjs），
-       但纯净轮的 allow 白名单只保留读 / 写 / 命令 / 联网，所以这一档里它们不会出现在
-       模型可见集上 —— 这是「纯净 = 最小工具集」的应有含义，不是漏发。
-       以前这里是 pure 会话传空数组，非纯净轮的工具节点全调不到，那一版才是错的。 */
-    const runTools = normRunTools(tools)
+    /* 用户工具描述子（工具节点 func call）：非纯净轮照常注入运行时（tools-plugin.mjs）。
+        纯净轮整份不给 —— 工具节点是画布上的 MTNode 注入，纯净模式只留引擎自带的能力
+        （以前靠 allow 白名单顺带挡掉，现在白名单改成 deny 名单就得在这里显式清空）。 */
+    const runTools = pureFlag ? [] : normRunTools(tools)
     const toolsJson = runTools.length ? JSON.stringify(runTools) : ''
     /* 联网搜索（DeepSeek 服务端工具）：上一轮的工具账本（原样，含 deepseek_read_url 的
        signature）落到本轮专属的一份文件里，再把「声明了哪两条 + 账本目录」交给运行时
@@ -3410,6 +3409,12 @@ async function handleRun(params) {
        不必再给 getRuntime 加位置参数。关掉要显式 delete。 */
     if (webToolsJson) settings.envPatch.MTNODE_WEB_TOOLS = webToolsJson
     else delete settings.envPatch.MTNODE_WEB_TOOLS
+    /* 桌宠 BongoChat：这一档**无论有没有人设**都进对话隔离 —— 人设为空时
+       bongochat-prompt 把人设段与运行时上下文整份清空，该轮就真的不带任何提示词
+       （人设是可选的道具，不再当成隔离开关）。同一份 envPatch 既进 spawn env 又进
+       runtime key，切档自动冷起新运行时。 */
+    if (presetId === 'bongochat') settings.envPatch.MTNODE_CHAT_ISOLATE = '1'
+    else delete settings.envPatch.MTNODE_CHAT_ISOLATE
     const rt = await getRuntime(
       workspace, model, maxTokens, route, apiKey, baseUrl, dshHome, settings.envPatch, runEffort,
       webSearchApiKey, hostPersonaText, cancelTag, reqId, pureFlag, runSession, hostSessionId, toolsJson,

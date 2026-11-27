@@ -2005,12 +2005,12 @@ function wfListEntry(p, fname) {
   } catch {}
   const hit = wfListMeta.get(p);
   if (st && hit && hit.size === st.size && hit.mtimeMs === st.mtimeMs) {
-    return { id: hit.id, name: hit.name, mtime: st.mtimeMs, nodes: hit.nodes, research: wfResearchFlag(hit.ws) };
+    return { id: hit.id, name: hit.name, mtime: st.mtimeMs, nodes: hit.nodes, workspace: hit.ws || "", research: wfResearchFlag(hit.ws) };
   }
   const j = st ? readJson(p, {}) : {};
   const id = j.id || fname.slice(0, -5);
   const ws = typeof j.workspace === "string" ? j.workspace : "";
-  const out = { id, name: j.name || id, mtime: st ? st.mtimeMs : 0, nodes: (j.nodes || []).length, research: wfResearchFlag(ws) };
+  const out = { id, name: j.name || id, mtime: st ? st.mtimeMs : 0, nodes: (j.nodes || []).length, workspace: ws, research: wfResearchFlag(ws) };
   if (st) wfListMeta.set(p, { size: st.size, mtimeMs: st.mtimeMs, id: out.id, name: out.name, nodes: out.nodes, ws });
   else wfListMeta.delete(p);
   return out;
@@ -2265,10 +2265,19 @@ ipcMain.handle("workflow:save", (e, { id, data }) => {
      一次并以字符串过桥：落盘字节完全不变（仍是 2 空格缩进格式），省掉的是渲染线程上的
      parse + 对象图克隆；主进程这一侧的 parse 也在落盘队列里做（见上面那条队列）。
      旧式直接传对象的调用（smoke.js、新建 / 重命名画布等）行为一字不变。 */
-  return writeWorkflowJson(wfPath(id), data).catch((err) => {
-    if (err && err.wfParse) return { ok: false, error: String(err.message || err) };
-    throw err;
-  });
+  /* 自动保存 250ms 就一次：只在「新建画布、存档文件第一次出现」时广播一次 ——
+     覆写既有存档不改文件名 / 目录结构，逐次刷边栏只会让文件树空转。 */
+  const file = wfPath(id);
+  const isNew = !fs.existsSync(file);
+  return writeWorkflowJson(file, data)
+    .then((r) => {
+      if (isNew) broadcastFilesChanged(file);
+      return r;
+    })
+    .catch((err) => {
+      if (err && err.wfParse) return { ok: false, error: String(err.message || err) };
+      throw err;
+    });
 });
 
 /* ── 画布 take（录制账本）──────────────────────────────────────────────────────────
@@ -3514,6 +3523,33 @@ ipcMain.handle("chat-input:deleteImages", (e, opts) => {
   return { ok: true, removed, skipped, failed };
 });
 
+/* 任何一次保存（文件落盘 / 新建画布存档）之后广播一次「文件变了」：
+   文件边栏据此自动刷新（renderer/app-sidebar-files.js 的 sfOnFilesChanged，
+   渲染层按 350ms 合并），用户不用再手点刷新。只发事件，不搬内容、不碰读侧。 */
+function broadcastFilesChanged(paths) {
+  let list = [];
+  try {
+    list = (Array.isArray(paths) ? paths : [paths]).map((p) => String(p || "")).filter(Boolean);
+  } catch {
+    list = [];
+  }
+  if (!list.length) return;
+  let wins = [];
+  try {
+    wins = BrowserWindow.getAllWindows();
+  } catch {
+    return;
+  }
+  for (const w of wins) {
+    try {
+      if (!w || w.isDestroyed() || !w.webContents || w.webContents.isDestroyed()) continue;
+      w.webContents.send("files:changed", { paths: list, at: Date.now() });
+    } catch {
+      /* 单窗失效不影响其它窗口 */
+    }
+  }
+}
+
 ipcMain.handle("file:readText", (e, p) => {
   try {
     return { ok: true, exists: true, content: fs.readFileSync(p, "utf8") };
@@ -3524,6 +3560,7 @@ ipcMain.handle("file:readText", (e, p) => {
 ipcMain.handle("file:writeText", (e, { path: p, content }) => {
   mk(path.dirname(p));
   fs.writeFileSync(p, content, "utf8");
+  broadcastFilesChanged(p);
   return { ok: true };
 });
 ipcMain.handle("file:writeBytes", (e, { path: p, data }) => {
@@ -3541,6 +3578,7 @@ ipcMain.handle("file:writeBytes", (e, { path: p, data }) => {
     buf = Buffer.from(data || []);
   }
   fs.writeFileSync(dest, buf);
+  broadcastFilesChanged(dest);
   return { ok: true };
 });
 ipcMain.handle("view:captureRect", async (e, rect) => {
@@ -3702,7 +3740,9 @@ ipcMain.handle("pdf:render", async (e, arg) => {
    内核见 pdf-write.js；渲染层由「PDF生成」节点经 preload.fileWritePdf 调用） */
 ipcMain.handle("pdf:writeText", async (e, arg) => {
   try {
-    return await pdfWrite.writeTextPdf(arg || {});
+    const r = await pdfWrite.writeTextPdf(arg || {});
+    if (r && r.ok && r.path) broadcastFilesChanged(r.path);
+    return r;
   } catch (err) {
     return { ok: false, error: String((err && err.message) || err) };
   }
@@ -4003,6 +4043,7 @@ ipcMain.handle("file:saveText", async (e, { name, content }) => {
   if (r.canceled || !r.filePath) return { ok: false, error: I18n.t("已取消") };
   try {
     fs.writeFileSync(r.filePath, String(content || ""), "utf8");
+    broadcastFilesChanged(r.filePath);
     return { ok: true, path: r.filePath };
   } catch (err) {
     return { ok: false, error: String((err && err.message) || err) };
@@ -9789,6 +9830,8 @@ ipcMain.handle("mcp:setEnabled", (event, { enabled } = {}) =>
 );
 
 ipcMain.handle("mcp:resetToken", () => ({ ok: true, token: mcp().resetToken() }));
+/* 工具面（slim = 交接优先 / full = 老口径平铺）：写盘即生效，工具表每次 tools/list 现算 */
+ipcMain.handle("mcp:setToolSurface", (event, { surface } = {}) => mcp().setToolSurface(surface));
 
 ipcMain.handle("mcp:setClientId", (event, { clientId } = {}) => ({
   ok: true,

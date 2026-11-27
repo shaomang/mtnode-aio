@@ -87,6 +87,12 @@ const TOOL_OPS = {
        run 也是异步作业 —— 跑一整张图可能几十分钟，不能让客户端挂在一次请求上。
      write:true 只影响审计与读写标注；作业类**不进写队列**（作业本身要跑几分钟，
      占着队列会把其它客户端的画布写全堵死）。 */
+  /* 交接面（本次需求）：外部 agent 的**默认**入口。执行体分两半 ——
+     mtnode_agent 由主进程编排（校验项目文件夹 → 渲染层解析/新建画布与常驻会话 →
+     发一轮并等结果 → 结构化回执），是异步作业；
+     mtnode_catalog 在主进程直接回完整工具面（不进渲染层）。 */
+  mtnode_agent: { op: "agent", family: "agent", write: true, job: true },
+  mtnode_catalog: { op: "catalog", family: "catalog", write: false, local: true },
   mtnode_generate: { op: "gen", family: "gen", write: true, local: true, job: true },
   mtnode_run: { op: "run", family: "run", write: true, job: true },
   mtnode_tools: { op: "tool", family: "tool", write: false },
@@ -99,6 +105,16 @@ const TOOL_OPS = {
 
 /** 作业等待上限：与 TOOL_TIMEOUT_MS 同值（一次工具调用最多挂 15 分钟）。 */
 const JOB_WAIT_MS = TOOL_TIMEOUT_MS;
+/** 交接（mtnode_agent）的等待上限：30 分钟（用户口径 —— 不硬杀，只是 wait:true 不挂更久）。 */
+const HANDOFF_WAIT_MS = 30 * 60 * 1000;
+
+/** 工具面的两档（设置 → 扩展能力 → 服务端「工具面」）：
+ *  slim = 默认，tools/list 只回交接面两件（mtnode_agent / mtnode_catalog）；
+ *  full = 老口径，19 个工具平铺。展开（mtnode_catalog）是**按连接**生效的运行时行为。 */
+const TOOL_SURFACE_SLIM = "slim";
+const TOOL_SURFACE_FULL = "full";
+/** 精简档下始终可见的两件（顺序即 tools/list 里的顺序：交接永远第一） */
+const HANDOFF_TOOLS = Object.freeze(["mtnode_agent", "mtnode_catalog"]);
 /** 作业自己的硬上限：跑整图 / 长视频可以超过 15 分钟，回执通道按这个等（6 小时）。 */
 const JOB_HARD_MS = 6 * 60 * 60 * 1000;
 /** 内存里最多留多少个作业（再多就把最老的挤掉）。 */
@@ -276,6 +292,10 @@ function createMcpHost(o) {
       port: 0,
       /* 自用回环：默认开 —— 让应用内的 Agent 也能用这套接口（关掉只是不再注册那条客户端） */
       selfLoop: true,
+      /* 工具面（本次需求 · 交接优先）：slim = tools/list 只回交接面两件（mtnode_agent /
+         mtnode_catalog），full = 老的 19 个工具平铺。缺省 slim —— 外部 agent 先看到的是
+         「把活交给 MTNode 的 agent」，而不是十七个底层工具；要底层工具就调一次 mtnode_catalog。 */
+      toolSurface: TOOL_SURFACE_SLIM,
     };
   }
 
@@ -427,8 +447,53 @@ function createMcpHost(o) {
 
   /* ── 能力表 ───────────────────────────────────────────────────────────── */
 
-  function toolList() {
-    return (CONTRACT.tools || []).map((t) => ({
+  /** 已经展开过完整工具面的连接（mtnode_catalog 调过一次）。两把键都认：
+   *  MCP 会话 id（客户端持 mcp-session-id 时稳定）+ 客户端标识（不持会话头的老客户端靠它）。
+   *  这是**运行期缓存**，不落盘 —— MTNode 一重启，所有连接回到精简档。 */
+  const expandedScopes = new Set();
+  let expandedAt = 0;
+
+  function scopeKeys(ctx) {
+    const out = [];
+    if (ctx && ctx.sessionId) out.push("s:" + ctx.sessionId);
+    if (ctx && ctx.clientId) out.push("c:" + ctx.clientId);
+    return out;
+  }
+
+  function isExpanded(ctx) {
+    /* surface=full：连接级声明（自用回环用 URL 参数；第三方客户端也可以这么连，
+       等价于先调一次 mtnode_catalog）。 */
+    if (ctx && ctx.surfaceFull) return true;
+    return scopeKeys(ctx).some((k) => expandedScopes.has(k));
+  }
+
+  function markExpanded(ctx) {
+    for (const k of scopeKeys(ctx)) expandedScopes.add(k);
+    expandedAt = Date.now();
+    /* 只留最近的一批（这是缓存不是配置）：连接一多不至于无限长 */
+    if (expandedScopes.size > 200) {
+      const keep = [...expandedScopes].slice(-100);
+      expandedScopes.clear();
+      for (const k of keep) expandedScopes.add(k);
+    }
+  }
+
+  /** 工具面档位（设置 → 扩展能力 → 服务端）：只认 slim / full 两个值，别的一律按默认。 */
+  function surfaceWanted() {
+    return state && state.toolSurface === TOOL_SURFACE_FULL ? TOOL_SURFACE_FULL : TOOL_SURFACE_SLIM;
+  }
+
+  function toolList(ctx) {
+    const all = (CONTRACT.tools || []).slice();
+    /* 交接面置顶：模型的注意力先落在「把活交出去」，而不是某个底层工具上。 */
+    const rank = (t) => {
+      const i = HANDOFF_TOOLS.indexOf(t.name);
+      return i >= 0 ? i : HANDOFF_TOOLS.length;
+    };
+    all.sort((a, b) => rank(a) - rank(b));
+    const slim = surfaceWanted() === TOOL_SURFACE_SLIM && !isExpanded(ctx);
+    const items = slim ? all.filter((t) => HANDOFF_TOOLS.indexOf(t.name) >= 0) : all;
+    return items.map((t) => ({
       name: t.name,
       title: t.name,
       description: t.description,
@@ -443,6 +508,14 @@ function createMcpHost(o) {
 
   function resourceList() {
     const out = { resources: [], resourceTemplates: [] };
+    /* 交接面的第二层也能当资源读：客户端不支持 tools/list_changed 时，读这一份一样拿全。 */
+    out.resources.push({
+      uri: "mtnode://guide/agent-handoff",
+      name: "agent-handoff",
+      title: "把活交给 MTNode 的 agent（交接入口 + 底层工具面 + 规范）",
+      description: "mtnode_agent / mtnode_catalog 的用法、底层工具的分组与硬规则摘要。",
+      mimeType: "text/markdown",
+    });
     for (const r of CONTRACT.resources || []) {
       if (r.uri) {
         out.resources.push({
@@ -522,6 +595,9 @@ function createMcpHost(o) {
     if (rec.status === "failed") out.error = rec.error;
     if (rec.status !== "running" && rec.result !== undefined) out.result = rec.result;
     if (rec.note) out.note = rec.note;
+    /* 交接作业的实时态（项目文件夹 / 画布 / 会话 / 待答卡片）：外部 agent 靠它决定要不要
+       回答、要不要插话、要不要停 —— 这些信息不在 result 里，而是「跑着的时候」就要看得见。 */
+    if (rec.handoff) out.agent = rec.handoff;
     return out;
   }
 
@@ -552,7 +628,7 @@ function createMcpHost(o) {
     jobPrune();
     rec.done = (async () => {
       try {
-        const r = await runner(id);
+        const r = await runner(id, rec);
         rec.result = r === undefined ? null : r;
         const failed = !!(r && typeof r === "object" && r.ok === false);
         rec.status = failed ? "failed" : "ok";
@@ -569,7 +645,8 @@ function createMcpHost(o) {
     return rec;
   }
 
-  function jobWait(rec) {
+  function jobWait(rec, waitMs) {
+    const ms = Number(waitMs) > 0 ? Number(waitMs) : JOB_WAIT_MS;
     return Promise.race([
       rec.done,
       new Promise((_, rej) => {
@@ -578,10 +655,10 @@ function createMcpHost(o) {
             rej(
               mcpFail(
                 -32603,
-                "作业超时（" + Math.round(JOB_WAIT_MS / 1000) + "s）未完成：jobId=" + rec.id + "（稍后用 status 再查）",
+                "作业超时（" + Math.round(ms / 1000) + "s）未完成：jobId=" + rec.id + "（稍后用 status 再查）",
               ),
             ),
-          JOB_WAIT_MS,
+          ms,
         );
         if (t && typeof t.unref === "function") t.unref();
       }),
@@ -700,6 +777,420 @@ function createMcpHost(o) {
 
   /* ── 工具调用 ─────────────────────────────────────────────────────────── */
 
+  /* ── 交接面（mtnode_agent / mtnode_catalog）───────────────────────────────
+     用户口径（本次需求）：外部 agent 接入 MTNode 时，**默认把整件活交给 MTNode 自己的
+     agent** —— 它带着全部技能、画布工具与本地后端；逐个调底层工具的成本高一个量级。
+     所以工具面默认收窄成两件（交接 + 展开），底层工具降为「需要时才展开」的第二层。
+
+     执行分工：
+       · 画布 / 会话的真源都在渲染层 → 「解析或新建画布 + 常驻交接会话 + 发一轮」推帧过去
+         （op = handoffPrepare / handoffSend，执行体见 renderer/mcp-extra.js）；
+       · 主进程只做编排：项目文件夹校验、作业表、事件观察（审批自动放行 / 提问转外部）、
+         结构化回执、以及 mtnode_catalog 的工具面展开。
+     谁在看这一轮：主进程用 sessionBridge 挂一个观察者（与手机端 SSE 同一条旁路），
+     所以「工具调用时间线 / 待答卡片」是**真事件**，不是事后猜的。 */
+
+  /** 左栏里交接会话的标题前缀（与用户自己的会话一眼区分）。 */
+  const HANDOFF_TITLE = "外部交接 · ";
+  /** 工具面通知流（GET /mcp 的 SSE）：key 与 expandedScopes 同一套（s:<会话> / c:<客户端>） */
+  const mcpStreams = new Map();
+
+  /** 从事件 data 里捞一个「像本机绝对路径」的值（改动清单只报真能核对的东西）。
+   *  事件形状随工具不同，所以按常见键名逐层找，找到第一个绝对路径就收。 */
+  /* dsh 的文件工具用 file_path（Anthropic 口径）；自研工具多用 path / outputPath。
+     值可以是绝对路径，也可以是相对项目文件夹的路径 —— 由 runHandoff 负责补全。 */
+  const PATH_KEYS = [
+    "file_path",
+    "filePath",
+    "path",
+    "output_path",
+    "outputPath",
+    "savedTo",
+    "output",
+    "file",
+  ];
+  function firstPath(v, depth) {
+    const d = depth || 0;
+    if (d > 3 || v == null) return "";
+    if (typeof v === "string") {
+      /* tool/call 的 arguments 在事件里是一段 JSON 字符串：还原一次再找（深度另算） */
+      const s = v.trim();
+      if (s.length > 2 && s.length < 4000 && (s[0] === "{" || s[0] === "[")) {
+        try {
+          return firstPath(JSON.parse(s), d + 1);
+        } catch {
+          return "";
+        }
+      }
+      return "";
+    }
+    if (typeof v !== "object") return "";
+    for (const k of PATH_KEYS) {
+      const x = v[k];
+      if (typeof x !== "string") continue;
+      const s = x.trim();
+      /* 认「像路径的值」：绝对路径，或带分隔符 / 带扩展名的相对路径。
+         命令类字符串（含空格的一大串、以 - 开头）不算 —— 改动清单里只放文件。 */
+      if (!s || s.length > 300 || s[0] === "-" || /\s/.test(s)) continue;
+      if (/^[A-Za-z]:[\\/]/.test(s) || /[\\/]/.test(s) || /\.[A-Za-z0-9]{1,6}$/.test(s)) return s;
+    }
+    for (const k of Object.keys(v)) {
+      const r = firstPath(v[k], d + 1);
+      if (r) return r;
+    }
+    return "";
+  }
+
+  /** 自动放行一张「停下来等人」的卡：工具审批 / 画布确认。
+   *  与渲染层 MCP 帧里 S._mcpAuthorized 的口径一致（首次连接授权 = 全量读写，不逐笔弹窗），
+   *  但**只放行这两类**；模型提问（question）绝不替人答 —— 它回给外部调用方（见 sink）。 */
+  function autoApprove(sid, id, kind) {
+    const op = kind === "canvas" ? "canvas" : "approval";
+    callRenderer(
+      "sessionApproval",
+      { id: id, sessionId: sid, kind: op, outcome: "allowed-once" },
+      { sessionId: "handoff:" + sid, clientId: "handoff", write: true, timeoutMs: 60000 },
+    ).catch((e) => log("[mcp] 交接自动放行失败：" + ((e && e.message) || e)));
+  }
+
+  /** 把「工具面变了」推给这一条连接（双轨之一；不支持通知的客户端靠 catalog 的文本清单）。 */
+  function notifyToolsChanged(ctx) {
+    const keys = scopeKeys(ctx);
+    const msg = "data: " + JSON.stringify({ jsonrpc: "2.0", method: "notifications/tools/list_changed" }) + "\n\n";
+    let sent = 0;
+    for (const [key, set] of mcpStreams) {
+      if (keys.length && keys.indexOf(key) < 0) continue;
+      for (const res of set) {
+        try {
+          res.write(msg);
+          sent++;
+        } catch {
+          /* 断了的连接交给 close 事件回收 */
+        }
+      }
+    }
+    return sent;
+  }
+
+  /** 第二层入口：回完整工具面 + 规范，并让本连接后续 tools/list 变成全量。 */
+  function catalogCall(params, ctx) {
+    const p = params || {};
+    const brief = String(p.detail || "full") === "brief";
+    markExpanded(ctx);
+    const pushed = notifyToolsChanged(ctx);
+    const head = HANDOFF_TOOLS.map((n) => (CONTRACT.tools || []).find((t) => t.name === n)).filter(Boolean);
+    const rest = (CONTRACT.tools || []).filter((t) => HANDOFF_TOOLS.indexOf(t.name) < 0);
+    const all = head.concat(rest);
+    const tools = all.map((t) =>
+      brief
+        ? { name: t.name, family: t.family, summary: oneLine(t.description, 160) }
+        : { name: t.name, family: t.family, description: t.description, inputSchema: t.inputSchema || {} },
+    );
+    return {
+      ok: true,
+      surface: TOOL_SURFACE_FULL,
+      expanded: true,
+      count: tools.length,
+      tools: tools,
+      resources: (function () {
+        const r = resourceList();
+        return r.resources;
+      })(),
+      resourceTemplates: resourceList().resourceTemplates,
+      prompts: promptList(),
+      guide: ["# MTNode 完整工具面", "", FULL_GUIDE].join("\n"),
+      notifications: pushed,
+      note:
+        "已展开：本连接后续 tools/list 回完整工具面" +
+        (pushed ? "（已推 tools/list_changed）" : "（客户端没接通知流，按上面的清单直接 tools/call 也行）") +
+        "。换连接或重启 MTNode 回到精简档。",
+    };
+  }
+
+  /** 交接族入口：run / status / read / steer / stop / answer / list。 */
+  async function agentCall(params, meta) {
+    const p = params || {};
+    const action = String(p.action || "run").trim() || "run";
+
+    if (action === "list") {
+      const list = [...jobs.values()]
+        .filter((r) => r.tool === "mtnode_agent")
+        .reverse()
+        .map((r) => ({
+          jobId: r.id,
+          status: r.status,
+          sessionId: (r.handoff && r.handoff.sessionId) || "",
+          projectFolder: (r.handoff && r.handoff.projectFolder) || "",
+          needsAnswer: !!(r.handoff && r.handoff.needsAnswer),
+          ms: (r.endedAt || Date.now()) - r.startedAt,
+        }));
+      return { ok: true, count: list.length, jobs: list };
+    }
+
+    if (action === "status") {
+      const id = String(p.jobId || "").trim();
+      /* 参数护栏一律按 MCP 口径**报错**（isError:true）：客户端据此改参数重试，
+         审计也会记成「被拒的一次调用」，而不是一次成功调用里的负结果。 */
+      if (!id) throw mcpFail(-32602, "NO_JOB_ID：status 需要 jobId（run 时回的那个）");
+      const rec = jobs.get(id);
+      if (!rec) return jobMissing(id);
+      if (rec.status === "running" && p.wait === true) {
+        try {
+          await jobWait(rec, HANDOFF_WAIT_MS);
+        } catch (e) {
+          /* wait 只是「就地多等一会」：超时照旧回当前态，不算失败 */
+        }
+      }
+      return jobState(rec);
+    }
+
+    if (action === "read") {
+      const sid = String(p.sessionId || "").trim();
+      if (!sid) throw mcpFail(-32602, "NO_SESSION：read 需要 sessionId（run 的回执里有）");
+      if (!sessionBridge) throw mcpFail(-32602, "SESSION_BRIDGE_UNAVAILABLE：会话桥不可用（主进程没注入 session-bridge.js）");
+      return sessionBridge.readSessionBody(sid, { limit: Math.max(1, Math.min(200, Number(p.limit) || 30)) });
+    }
+
+    if (action === "steer" || action === "stop") {
+      const sid = String(p.sessionId || "").trim();
+      if (!sid) throw mcpFail(-32602, action + "：需要 sessionId（run 的回执里有）");
+      if (action === "steer" && !String(p.text || "").trim())
+        throw mcpFail(-32602, "NO_TEXT：steer 需要 text（补一句要求，不打断正在跑的那一轮）");
+      return callRenderer(
+        action === "steer" ? "sessionSteer" : "sessionStop",
+        { sessionId: sid, text: String(p.text || "") },
+        Object.assign({}, meta, { write: true, timeoutMs: TOOL_TIMEOUT_MS }),
+      );
+    }
+
+    if (action === "answer") {
+      const id = String(p.id || "").trim();
+      if (!id) throw mcpFail(-32602, "NO_CARD_ID：answer 需要 id（status 回执里 needs_answer.id）");
+      return callRenderer(
+        "sessionApproval",
+        {
+          id: id,
+          sessionId: String(p.sessionId || ""),
+          kind: String(p.kind || "question"),
+          answers: Array.isArray(p.answers) ? p.answers : undefined,
+          answerText: p.answerText != null ? String(p.answerText) : "",
+          outcome: String(p.outcome || "answered"),
+        },
+        Object.assign({}, meta, { write: true, timeoutMs: TOOL_TIMEOUT_MS }),
+      );
+    }
+
+    if (action !== "run") throw mcpFail(-32602, "BAD_ACTION：未知 action：" + action);
+
+    /* ── run：把一件活交给 MTNode 的 agent ── */
+    const task = String(p.task || "").trim();
+    if (!task)
+      throw mcpFail(-32602, "NO_TASK：run 需要 task（要 MTNode 的 agent 干什么，写清目标与验收标准）");
+    const folderRaw = String(p.projectFolder || "").trim();
+    if (!folderRaw)
+      throw mcpFail(-32602, "NO_PROJECT_FOLDER：run 需要 projectFolder（项目文件夹的本机绝对路径，画布与会话都由它决定）");
+    if (!path.isAbsolute(folderRaw))
+      throw mcpFail(-32602, "PROJECT_FOLDER_NOT_ABSOLUTE：projectFolder 必须是绝对路径（收到：" + folderRaw + "）");
+    const folder = path.resolve(folderRaw);
+    let st = null;
+    try {
+      st = fs.statSync(folder);
+    } catch {
+      st = null;
+    }
+    if (!st || !st.isDirectory())
+      throw mcpFail(-32602, "PROJECT_FOLDER_MISSING：项目文件夹不存在或不是目录：" + folder + "（MTNode 不替你造目录，先建好再交接）");
+
+    const rec = jobStart("handoff", "mtnode_agent", (jobId, jobRec) =>
+      runHandoff(jobId, jobRec, { params: p, task: task, folder: folder, meta: meta }),
+    );
+    if (p.wait === true) {
+      try {
+        await jobWait(rec, HANDOFF_WAIT_MS);
+      } catch (e) {
+        /* 同上：超时回当前态 */
+      }
+      return jobState(rec);
+    }
+    return {
+      ok: true,
+      jobId: rec.id,
+      kind: "handoff",
+      status: "running",
+      projectFolder: folder,
+      hint: '已交给 MTNode 的 agent：用 action:"status" + 这个 jobId 取结果（wait:true 就地等，最长 30 分钟）。',
+    };
+  }
+
+  /** 一次交接的完整编排（作业体）：准备 → 观察 → 发一轮 → 结构化回执。 */
+  async function runHandoff(jobId, rec, o) {
+    const metaR = Object.assign({}, o.meta, { write: true });
+    rec.handoff = { projectFolder: o.folder, stage: "preparing", startedAt: new Date().toISOString() };
+
+    /* ① 解析或新建画布 + 常驻交接会话（渲染层：这两件真源都在那边） */
+    const prep = await callRenderer(
+      "handoffPrepare",
+      {
+        projectFolder: o.folder,
+        task: o.task,
+        canvas: String(o.params.canvas || "").trim(),
+        sessionId: String(o.params.sessionId || "").trim(),
+        title: String(o.params.title || "").trim(),
+      },
+      Object.assign({}, metaR, { timeoutMs: TOOL_TIMEOUT_MS }),
+    );
+    if (!prep || prep.ok === false) return prep || { ok: false, error: "PREPARE_FAILED", message: "交接准备失败（渲染层没有回执）" };
+    const sid = String(prep.sessionId || "");
+    Object.assign(rec.handoff, {
+      stage: "running",
+      canvas: {
+        id: prep.canvasId || "",
+        name: prep.canvasName || "",
+        workspace: prep.workspace || "",
+        created: !!prep.canvasCreated,
+        matched: String(prep.canvasMatchedBy || ""),
+      },
+      sessionId: sid,
+      sessionTitle: prep.sessionTitle || "",
+      model: prep.model || null,
+      reusedSession: !!prep.sessionReused,
+    });
+
+    /* ② 观察这一轮：工具时间线 / 改动文件 / 待答卡片（真事件，来自会话桥那条只读旁路） */
+    const timeline = [];
+    const files = [];
+    const notes = [];
+    if (prep.canvasCreated) notes.push("这个项目文件夹原来没有画布：已按文件夹名新建一张（工作目录 = 该文件夹）。");
+    const streamId = "handoff-" + jobId;
+    const sink = (text) => {
+      const raw = String(text || "");
+      const i = raw.indexOf("data: ");
+      if (i < 0) return;
+      let ev = null;
+      try {
+        ev = JSON.parse(raw.slice(i + 6).trim());
+      } catch {
+        return;
+      }
+      const type = String(ev.type || "");
+      const data = ev.data && typeof ev.data === "object" ? ev.data : {};
+      const at = Number(ev.at) || Date.now();
+      if (type === "approval" || type === "canvas") {
+        if (!data.id) return;
+        timeline.push({ at: at, type: type, id: String(data.id), auto: "allowed-once" });
+        autoApprove(sid, String(data.id), type);
+        return;
+      }
+      if (type === "question") {
+        rec.handoff.needsAnswer = {
+          id: String(data.id || ""),
+          questions: data.questions || null,
+          at: at,
+          how: 'action:"answer"（id + answers 或 answerText），答完这一轮继续。',
+        };
+        if (rec.handoff.stage === "running") rec.handoff.stage = "waiting_answer";
+        timeline.push({ at: at, type: "question", id: String(data.id || "") });
+        return;
+      }
+      if (type === "tool" || type === "tool-run") {
+        const name = String(data.name || data.tool || data.title || "").trim();
+        const line = { at: at, type: "tool", tool: name };
+        const p1 = firstPath(data);
+        if (p1) {
+          /* 相对路径按项目文件夹补全：外部调用方拿到的清单要能直接点开 */
+          const abs = path.isAbsolute(p1) ? p1 : path.join(o.folder, p1);
+          line.path = abs;
+          files.push(abs);
+        }
+        if (timeline.length < 80) timeline.push(line);
+      }
+    };
+    if (sessionBridge) sessionBridge.watch(sid, streamId, sink);
+    watchInRenderer(sid, true);
+
+    /* ③ 发这一轮（等到这一轮结束：问题卡住时会停在这里，外部作答后继续） */
+    let round = null;
+    try {
+      round = await callRenderer(
+        "handoffSend",
+        { sessionId: sid, task: o.task },
+        Object.assign({}, metaR, { timeoutMs: JOB_HARD_MS }),
+      );
+    } finally {
+      if (sessionBridge) sessionBridge.unwatch(streamId);
+      try {
+        if (!sessionBridge || sessionBridge.countWatchers(sid) === 0) watchInRenderer(sid, false);
+      } catch (_) {
+        /* 渲染层不在：观察本来也收不到东西 */
+      }
+    }
+
+    const reply = String((round && round.reply) || "");
+    const ok = !!(round && round.ok !== false);
+    const out = {
+      ok: ok,
+      jobId: jobId,
+      sessionId: sid,
+      sessionTitle: rec.handoff.sessionTitle,
+      canvas: rec.handoff.canvas,
+      model: rec.handoff.model,
+      reply: reply,
+      timeline: timeline.slice(-40),
+      changes: { files: [...new Set(files)].slice(0, 40) },
+      notes: notes,
+      resume:
+        '同一项目再交接会自动续用这条会话（' + sid + "）；想换话题就新起一条，想接着聊就直接再 run 一次。",
+    };
+    if (!ok) {
+      out.error = String((round && round.error) || "ROUND_FAILED");
+      out.message = String((round && (round.message || round.error)) || "这一轮没跑成");
+      notes.push('这一轮失败：先 action:"read" 读会话看卡在哪，再决定重试或换个说法。');
+    }
+    if (rec.handoff.needsAnswer) {
+      out.needsAnswer = rec.handoff.needsAnswer;
+      notes.push('这一轮停在提问上：用 action:"answer" 作答（id / answers），答完自动继续。');
+    }
+    rec.handoff.stage = ok ? "done" : "failed";
+    return out;
+  }
+
+  /** MCP 工具面通知流：GET /mcp（带 Bearer token）挂一条 SSE，服务端才有地方推
+   *  notifications/tools/list_changed。没接通知流的客户端不受影响（catalog 的文本清单照用）。 */
+  function openMcpStream(req, res) {
+    const sid = String(req.headers["mcp-session-id"] || "").trim();
+    const clientId = String(req.headers["x-mtnode-client"] || (state && state.clientId) || "").trim();
+    const key = sid ? "s:" + sid : clientId ? "c:" + clientId : "anon";
+    res.writeHead(200, {
+      "content-type": "text/event-stream; charset=utf-8",
+      "cache-control": "no-store",
+      connection: "keep-alive",
+      "x-accel-buffering": "no",
+    });
+    res.write(": mtnode mcp stream " + key + "\n\n");
+    if (!mcpStreams.has(key)) mcpStreams.set(key, new Set());
+    mcpStreams.get(key).add(res);
+    const timer = setInterval(() => {
+      try {
+        res.write(": ping " + Date.now() + "\n\n");
+      } catch {
+        /* 断了 */
+      }
+    }, SSE_HEARTBEAT_MS);
+    if (timer && typeof timer.unref === "function") timer.unref();
+    const bye = () => {
+      clearInterval(timer);
+      const set = mcpStreams.get(key);
+      if (set) {
+        set.delete(res);
+        if (!set.size) mcpStreams.delete(key);
+      }
+    };
+    req.on("close", bye);
+    req.on("error", bye);
+    log("[mcp] 工具面通知流已接上（" + key + "）");
+    return undefined;
+  }
+
   function mcpFail(code, message, data) {
     const e = new Error(message);
     e.code = code;
@@ -776,6 +1267,10 @@ function createMcpHost(o) {
     const run = async () => {
       let params = Object.assign({}, rest);
       if (op.session) return sessionToolCall(sesSpec, params, ctx);
+      /* 交接面：必须在作业分支之前 —— 它自己有作业语义（run 起作业、status 查作业），
+         交给通用 jobCall 会被当成「跑节点」起错作业。 */
+      if (op.family === "agent") return agentCall(params, meta);
+      if (op.family === "catalog") return catalogCall(params, ctx);
       if (op.family === "canvas") {
         if (target) params.canvas = target;
         if (op.write && baseHash) params.baseHash = baseHash;
@@ -1098,6 +1593,21 @@ function createMcpHost(o) {
       );
       return { uri: u, mimeType: "application/json", text: local(snap) };
     }
+    if (u === "mtnode://guide/agent-handoff") {
+      return {
+        uri: u,
+        mimeType: "text/markdown",
+        text: [
+          "# 把活交给 MTNode 的 agent",
+          "",
+          INSTRUCTIONS,
+          "",
+          "## 第二层：完整规范（与 mtnode_catalog 同一份）",
+          "",
+          FULL_GUIDE,
+        ].join("\n"),
+      };
+    }
     m = /^mtnode:\/\/skill\/([^/]+)$/.exec(u);
     if (m) {
       const body = await callRenderer("skillBody", { name: decodeURIComponent(m[1]) }, meta);
@@ -1109,7 +1619,9 @@ function createMcpHost(o) {
 
   /* ── MCP 分发 ─────────────────────────────────────────────────────────── */
 
-  const INSTRUCTIONS = [
+  /* 第二层：完整规范（mtnode_catalog 与资源 mtnode://guide/agent-handoff 回的那一份）。
+     第一层 instructions 只留「优先交接 + 怎么展开」，老的 19 工具长文全部搬到这里。 */
+  const FULL_GUIDE = [
     "MTNode 桌面端（本机）的 MCP 服务端。工具名一律以 mtnode_ / lt_ 开头，与别的 MCP 服务端不会撞名。",
     "画布类工具默认操作「当前打开的画布」；要操作别的画布时传 canvas 参数（画布 id 或精确名称，见资源 mtnode://canvases）。",
     "写画布前必须先 mtnode_canvas_get 读一遍，并把回执里的 contentHash 原样作为调用参数 baseHash 传回来；哈希对不上说明期间有人改过这张图，调用会被拒绝（重新读一次再改）。",
@@ -1120,6 +1632,16 @@ function createMcpHost(o) {
     "调用全部写进本机审计日志（数据目录 mcp-audit/），应用「扩展能力管理 → MCP 服务端」里可查看与吊销令牌。",
   ].join("\n");
 
+  /** 第一层 instructions（initialize 回给客户端的那一段）：只讲能力边界与交互守则，
+   *  并要求「先把活交给 mtnode_agent」；细节一律走第二层（mtnode_catalog / 资源）。 */
+  const INSTRUCTIONS = [
+    "MTNode 桌面端（本机）的 MCP 服务端。默认只有两个工具：mtnode_agent（交接）与 mtnode_catalog（展开底层工具面）。",
+    "① 要在这台机器上干活（建 / 改画布、跑节点、出图出音视频、读写项目文件、查数据库），优先用 mtnode_agent 把整件活交给 MTNode 自己的 agent：它带着全部 MTNode 技能、画布工具与本地后端，比你逐个调底层工具便宜得多。参数 = task（目标 + 验收标准）+ projectFolder（本机绝对路径，必填）；画布与会话由 MTNode 自己解析或新建。",
+    "② mtnode_agent 是异步作业：run 立刻回 jobId，status 取结果（wait:true 最长 30 分钟）。中途可 steer（插话）/ stop（终止）/ read（读会话历史）；模型有澄清提问时 status 会回 needs_answer，用 answer 作答后这一轮继续。",
+    "③ 需要直接操作画布 / 数据库 / 素材 / 媒体时才展开第二层：调一次 mtnode_catalog，它回完整工具清单（含参数表）与操作规范，并推 tools/list_changed（同一连接内后续 tools/list 就是全量）。",
+    "④ 展开后照老口径办事：写画布前先读（contentHash → baseHash）；完整建图硬规则在资源 mtnode://skill/mtnode-canvas-edit-rules；调用全部记进数据目录 mcp-audit/。",
+  ].join("\n");
+
   async function dispatch(method, params, ctx) {
     switch (method) {
       case "initialize": {
@@ -1128,7 +1650,8 @@ function createMcpHost(o) {
         return {
           protocolVersion: version,
           capabilities: {
-            tools: { listChanged: false },
+            /* 工具面可展开：调过 mtnode_catalog 的连接会收到 tools/list_changed */
+            tools: { listChanged: true },
             resources: { subscribe: false, listChanged: false },
             prompts: { listChanged: false },
             logging: {},
@@ -1142,7 +1665,8 @@ function createMcpHost(o) {
       case "tools/list":
         /* 会话族**刻意不在这里**：它只给 Paseo 桥内部用（走 POST /ctl 的
            tools/call 或 session/* 扁平方法），不污染第三方客户端的工具表。 */
-        return { tools: toolList() };
+        /* 工具面按档位 + 本连接是否展开过现算（见 toolList / mtnode_catalog） */
+        return { tools: toolList(ctx) };
       case "session/tools":
         return { tools: SESSION_TOOLS.map((t) => ({ name: t.name, description: t.description })) };
       case "session/list":
@@ -1195,8 +1719,10 @@ function createMcpHost(o) {
            错误文本原样回给模型，它据此改参数重试。 */
         try {
           const result = await toolCall(name, (params && params.arguments) || {}, ctx);
+          /* 展开面的回执本来就是「全量工具表」，默认 40k 会截成半截 JSON → 这一族单独放宽 */
+          const textLimit = name === "mtnode_catalog" ? 400000 : 40000;
           return {
-            content: [{ type: "text", text: safeJson(result, 40000) }],
+            content: [{ type: "text", text: safeJson(result, textLimit) }],
             structuredContent: result && typeof result === "object" ? result : { value: result },
             isError: false,
           };
@@ -1307,7 +1833,15 @@ function createMcpHost(o) {
        自检是另一个进程 spawn 出来的，父进程给它设的 env 到不了这个正在跑的 MTNode，
        靠 env 判会把控制台的「提问通道自检」永远卡死（2026-10-15 实测复现）。 */
     const selfcheck = String(req.headers["x-mtnode-selfcheck"] || "") === "1";
-    return { sessionId, clientId, selfcheck };
+    const wantFull = (() => {
+      try {
+        const u = new URL(String(req.url || "/"), "http://127.0.0.1");
+        return String(u.searchParams.get("surface") || "") === "full";
+      } catch {
+        return false;
+      }
+    })();
+    return { sessionId, clientId, selfcheck, surfaceFull: wantFull };
   }
 
   function noteCapture(kind, payload) {
@@ -1364,6 +1898,11 @@ function createMcpHost(o) {
     }
     if (req.method === "GET" && url === "/ctl/audit") {
       return sendJson(res, 200, { ok: true, entries: readAudit(50) });
+    }
+    /* MCP Streamable HTTP 的通知流：客户端开一条 GET /mcp 的 SSE，服务端才能推
+       notifications/tools/list_changed（工具面展开）。不开也不影响调用。 */
+    if (req.method === "GET" && url === "/mcp") {
+      return openMcpStream(req, res);
     }
     if (req.method !== "POST") {
       return sendJson(res, 405, { ok: false, error: "只接受 POST" });
@@ -1448,7 +1987,12 @@ function createMcpHost(o) {
       calls,
       sessions: sessions.size,
       pending: pending.size,
-      tools: toolList().length,
+      tools: toolList({}).length,
+      toolsTotal: (CONTRACT.tools || []).length,
+      /* 工具面（slim / full）+ 已展开的连接数：面板与排障用 */
+      toolSurface: surfaceWanted(),
+      toolSurfaceExpanded: expandedScopes.size,
+      toolSurfaceExpandedAt: expandedAt ? new Date(expandedAt).toISOString() : "",
       resources: (CONTRACT.resources || []).length,
       prompts: (CONTRACT.prompts || []).length,
       auditDir,
@@ -1537,6 +2081,17 @@ function createMcpHost(o) {
     pending.clear();
     /* 会话实时流一并收尾：观察者不该留在一个已经停掉的监听上 */
     for (const id of [...sseClients.keys()]) closeSse(id, "服务端关闭");
+    /* 工具面通知流（GET /mcp 的 SSE）一并断掉：服务端都停了，留着它只会让客户端等空气 */
+    for (const [key, set] of [...mcpStreams]) {
+      for (const res of set) {
+        try {
+          res.end();
+        } catch {
+          /* 已经断了 */
+        }
+      }
+      mcpStreams.delete(key);
+    }
     const s = server;
     server = null;
     port = 0;
@@ -1596,7 +2151,9 @@ function createMcpHost(o) {
             ? {
                 enabled: true,
                 serverName: SELF_LOOP_NAME,
-                url: "http://127.0.0.1:" + port + "/mcp?token=" + encodeURIComponent((state && state.token) || ""),
+                /* &surface=full：应用内 Agent 走的是完整工具面（回环的四件子集不能被精简档收走） */
+                url:
+                  "http://127.0.0.1:" + port + "/mcp?token=" + encodeURIComponent((state && state.token) || "") + "&surface=full",
                 tools: SELF_LOOP_TOOLS.slice(),
               }
             : { enabled: false, serverName: SELF_LOOP_NAME },
@@ -1630,6 +2187,14 @@ function createMcpHost(o) {
     saveState();
     syncSelfLoop();
     return { ok: true, selfLoop: !!state.selfLoop, running: !!server };
+  }
+
+  /** 面板开关：工具面（slim = 交接优先 / full = 老口径平铺）。写盘即生效 —— 工具表每次现算。 */
+  function setToolSurface(v) {
+    loadStateIfNeeded();
+    state.toolSurface = String(v || "") === TOOL_SURFACE_FULL ? TOOL_SURFACE_FULL : TOOL_SURFACE_SLIM;
+    saveState();
+    return { ok: true, toolSurface: state.toolSurface, tools: toolList({}).length };
   }
 
   function resetToken() {
@@ -1717,6 +2282,7 @@ function createMcpHost(o) {
     status,
     setEnabled,
     setSelfLoop,
+    setToolSurface,
     resetToken,
     setClientId,
     setCapture,

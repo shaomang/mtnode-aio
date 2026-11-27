@@ -1086,6 +1086,80 @@ function toggleHideWires() {
   );
 }
 
+/* ============ 顶栏「简略」：画布不加载任何图像（省显存给本地视频模型） ============
+   为什么需要它：画布上每一张预览图（节点 body、素材条目、节点层封面、视频首帧）解码出来的
+   位图都由 Chromium 的 GPU 进程按「显示尺寸」建纹理，纹理要等渲染进程销毁才归还 ——
+   本地视频模型（H3 / 图像生成）跑之前，这一批纹理就是白白占着的显存，够把 20G 的预留吃掉。
+   简略模式做的这几件事（全部是纯渲染开关，不写画布数据、不进撤销栈、不落盘）：
+     · #canvas 加 .lean-canvas 类：节点层封面（::before 的 --node-cover-img）与展开态底图
+       一律不铺（见 css/canvas.css 的「简略」段），CSS 一撤，纹理当场不再被引用；
+       同一段里预览位的 <img>/<video> 改成不显示、原位画一个 ::before 的固定虚线小框
+       （96×54 + 类型文字，纯矢量、不进 DOM —— 整幅重建时不会多挂节点）；
+     · previewLazySetLean(true)（renderer/app-preview-lazy.js）：舞台里已在显示的 <img>/<video>
+       当场摘掉 src、视频再 load() 一次放开解码器；之后新出现的预览位也不再取字节；
+     · setThumbPreviewSrc 直接跳过赋值：连请求都不发（MO 那条兜底只负责漏网的那些）；
+     · 唯一例外是「选中放行」：点中的那颗节点按正常路径取图、其余一律占位
+       （见 setThumbPreviewSrc 的 thumbLeanFocusAllowed 与 leanCanvasSyncFocus）——
+       纹理数因此有上限，最多就是选中集上的那几张，而不是整张画布的规模。
+   退出简略：强制整幅重建（S._renderSig 置空），预览按正常路径重新取图。 */
+const LEAN_CANVAS_LS = "mtnode.leanCanvas";
+
+function leanCanvasOn() {
+  return !!(typeof S !== "undefined" && S && S.leanCanvas);
+}
+
+/** 把 S.leanCanvas 落到画布类名 + 按钮态 + 预览加载闸 */
+function applyLeanCanvas() {
+  const on = leanCanvasOn();
+  const canvas = $("#canvas");
+  if (canvas) canvas.classList.toggle("lean-canvas", on);
+  const btn = $("#btnLean");
+  if (btn) {
+    btn.classList.toggle("on", on);
+    btn.setAttribute("aria-pressed", on ? "true" : "false");
+    btn.title = on
+      ? I18n.t("简略：画布不再加载图像 / 视频预览（不占显存），本地视频模型可以直接跑；再次点击恢复")
+      : I18n.t(
+          "简略：画布不再加载任何图像 / 视频预览、不铺节点层封面，把显存留给本地视频模型（H3 等）；再次点击恢复",
+        );
+  }
+  if (typeof previewLazySetLean === "function") previewLazySetLean(on);
+  /* 钉住记号只对「当次简略」有效：切换时先全部清掉，再由 leanCanvasSyncFocus 按新的
+     选中集重新钉上（否则一只旧元素会把上一轮的纹理带进下一次简略）。 */
+  clearLeanFocusPins();
+}
+
+/** 清掉舞台里所有预览的「钉住」记号（简略模式切换时调，见 applyLeanCanvas） */
+function clearLeanFocusPins() {
+  const root = $("#stage") || document;
+  if (!root || !root.querySelectorAll) return;
+  for (const el of root.querySelectorAll("img, video")) {
+    try {
+      delete el.__plKeep;
+    } catch (_) {
+      el.__plKeep = false;
+    }
+  }
+}
+
+/** 切换「简略」 */
+function toggleLeanCanvas() {
+  S.leanCanvas = !S.leanCanvas;
+  try {
+    localStorage.setItem(LEAN_CANVAS_LS, S.leanCanvas ? "1" : "0");
+  } catch {}
+  applyLeanCanvas();
+  /* 整幅重建：开着简略时新元素干脆不取图；关掉时把预览按正常路径重新取回来 */
+  S._renderSig = null;
+  if (typeof renderCanvas === "function") renderCanvas();
+  toast(
+    S.leanCanvas
+      ? I18n.t("已开启简略：画布不再加载图像预览（显存留给本地视频模型）")
+      : I18n.t("已关闭简略：画布图像预览已恢复"),
+    "ok",
+  );
+}
+
 /* ============ 画布渲染 ============ */
 
 /* ── 渲染结构签名（本轮修 bug：点击 / 移动画布时图像闪烁）─────────────────────────
@@ -1394,6 +1468,11 @@ function afterCanvasRender() {
       mediaViewPrune();
     } catch (_) {}
   }
+  /* 简略模式的「聚焦复原 / 失焦降级」：整幅重建与复用快速通道都要在收尾把预览收敛到
+     当前选中集（选中那颗补回 src、其余占位），见 leanCanvasSyncFocus。 */
+  try {
+    leanCanvasSyncFocus();
+  } catch (_) {}
 }
 
 /* 全屏进入态的「画布外框」两件东西：钉在画布左右边缘的端子层（app.js 的
@@ -17314,9 +17393,22 @@ function buildBody(node, body) {
     } else {
       const wrap = document.createElement("div");
       wrap.className = "n-img";
-      wrap.title = I18n.t("空白处或「选择图像」更换文件；点击图像可预览大图");
-      wrap.onclick = (ev) => {
-        if (ev.target && ev.target.tagName === "IMG") return;
+      /* 整块都进预览：以前只有 <img> 本体开灯箱（img 自己 stopPropagation），
+         点图片下面那行文件名 / 尺寸（.img-meta）或 img 周边留白会掉进 pickImage
+         → 弹「重新选择图片」，看着像点坏了。现在有图就一律开大图，
+         换图只走「选择图像」按钮或把文件拖到节点上。 */
+      wrap.title = node.imageAsset
+        ? I18n.t("点击此处任意位置预览大图；换图走「选择图像」或把文件拖到节点上")
+        : I18n.t("点击此处选择图像，或把文件拖到节点上");
+      wrap.onclick = () => {
+        if (node.imageAsset) {
+          if (typeof openImageLightbox === "function")
+            openImageLightbox(
+              node.imageAsset,
+              singleImageTitle(node) || fileName(node.imageAsset),
+            );
+          return;
+        }
         pickImage(node);
       };
       fillImageArea(node, wrap);
@@ -19758,8 +19850,36 @@ function thumbUrlWithBust(p, bust, edge) {
      · 同一个路径 + 同一档边长 + 同一个防缓存串不重复赋值（不白白重新解码）；
      · 缩略图协议万一取不到字节（stat / 读盘瞬时失败）→ 退回原图 file:///，
        预览宁可多解码一次，也不能变空白。 */
+/* 简略模式的「选中放行」判据：预览元素所在的节点在当前选中集（S.selSet 多选 / S.sel 主选中，
+   两者都认 —— 与 nodeSelState 同口径）里时才允许真的取图。简略档的口径从「一只都不取」变成
+   「只取选中那几颗」（见 leanCanvasSyncFocus）：纹理数因此有上限，其余一律留占位。 */
+function thumbLeanFocusAllowed(img) {
+  if (typeof leanCanvasOn !== "function" || !leanCanvasOn()) return true;
+  /* 简略档只压画布舞台（#stage）里的预览。素材库 / 素材节点设置框的行内缩略图、
+     应用网格封面也走 setThumbPreviewSrc 取图，它们不在任何 .wf-node 里，以前被
+     一并判成「不在选中集」→ src 被摘掉，只剩缩略框的深色底 —— 看着就是一张纯黑缩略图。
+     舞台外的图一律放行（本档的纹理卸载只看舞台，见 app-preview-lazy.js）。 */
+  if (!img || typeof img.closest !== "function" || !img.closest("#stage")) return true;
+  const host =
+    img && typeof img.closest === "function" ? img.closest(".wf-node") : null;
+  const nid = (host && host.dataset && host.dataset.nid) || "";
+  if (!nid || typeof S === "undefined" || !S) return false;
+  if (S.selSet && typeof S.selSet.has === "function" && S.selSet.has(nid))
+    return true;
+  return S.sel === nid;
+}
+
 function setThumbPreviewSrc(img, path, bust, edge) {
   if (!img || !path) return img;
+  /* 简略模式：连字节都不取（img 留空框，退出简略整幅重建时再正常取图）；
+     例外是「选中放行」—— 点中的那颗节点按正常路径取图，撤选后再降级回占位。 */
+  if (typeof leanCanvasOn === "function" && leanCanvasOn() && !thumbLeanFocusAllowed(img)) {
+    if (img.getAttribute("src")) img.removeAttribute("src");
+    img.__thumbPath = "";
+    /* 撤选后连「钉住」记号一起撤：否则简略档的预览卸载会继续把它当选中那颗留着 */
+    img.__plKeep = false;
+    return img;
+  }
   /* bust 不给时用「同路径稳定串」（见 thumbBustOf）：退回原图那条路也用同一个串，
      免得退回时再变一次 URL、多解码一次。 */
   const t = bust != null && bust !== "" ? bust : thumbBustOf(path);
@@ -19784,6 +19904,70 @@ function setThumbPreviewSrc(img, path, bust, edge) {
   };
   img.src = url;
   return img;
+}
+
+/* ── 简略模式的「聚焦复原 / 失焦降级」──────────────────────────────────────────
+   简略档本来一只预览都不取字节（纹理全部还给显存），但用户点中的那颗往往正是此刻要看的那
+   张图。于是这一幕按**当前选中集**收敛预览，把「一只都不留」变成「只留选中那几颗」：
+     · 选中节点里带 data-path 的 <img> → 按正常口径把 src 补回来（同一份 thumbUrlWithBust，
+       沿用元素手上的 __thumbEdge / __thumbBust：URL 不变才不会重复解码），并给它打上
+       __plKeep「钉住」记号 —— 简略档的预览卸载走 app-preview-lazy.js，它认这条记号才
+       不在属性打点里把刚补回来的 src 当场又摘掉；
+     · 其余节点 → 摘掉 src（连钉住记号一起撤），<video> 再 load() 一次把解码器与已解出的帧
+       放开（与 app-preview-lazy.js 的 previewLazyHide 同口径）。
+   于是纹理数有上限：最多就是选中集上那几张，不随画布规模增长；换选区 / 点空白时被撤下的
+   那些当场降级成 CSS 的虚线占位小框。
+   调用点两处（都是「选择变了但没重排 DOM」的出口）：
+     · app.js 的 applySelectionInPlace 收尾 —— 点选 / 多选 / 点空白只换形态的唯一出口；
+     · renderCanvas 收尾（afterCanvasRender）—— 整幅重建与复用快速通道共用。
+   退出简略走 toggleLeanCanvas：S._renderSig 置空 + renderCanvas，全部预览按正常路径重建。
+   非简略模式直接返回：预览照旧交给 app-preview-lazy.js 按视口懒加载。 */
+function leanCanvasSyncFocus() {
+  if (typeof leanCanvasOn !== "function" || !leanCanvasOn()) return 0;
+  const set = (typeof S !== "undefined" && S && S.selSet) || null;
+  const main = (typeof S !== "undefined" && S && S.sel) || "";
+  const focused = (nid) =>
+    !!nid &&
+    ((set && typeof set.has === "function" && set.has(nid)) || main === nid);
+  const root = $("#stage") || document;
+  if (!root || !root.querySelectorAll) return 0;
+  let n = 0;
+  /* 一次查全（每颗节点各查两遍在拖拽那几拍里不划算），再用 closest 找回宿主节点 */
+  for (const el of root.querySelectorAll("img[data-path], video")) {
+    const host = el.closest ? el.closest(".wf-node") : null;
+    const on = focused((host && host.dataset && host.dataset.nid) || "");
+    if (String(el.tagName || "").toUpperCase() === "VIDEO") {
+      /* 选中节点里的视频不动（简略档本来就没给它取过字节）；其余摘 src 再 load 一次 */
+      if (on || !el.getAttribute("src")) continue;
+      el.removeAttribute("src");
+      try {
+        /* 视频摘 src 之后必须 load 一次，解码器与已解出的帧才会真的放手 */
+        if (typeof el.load === "function") el.load();
+      } catch (_) {}
+      n += 1;
+      continue;
+    }
+    const p = el.dataset.path;
+    if (!p) continue;
+    if (on) {
+      /* 选中节点：补回 src（元素已经带着同一 URL 时 setThumbPreviewSrc 自己会早退），
+         并钉住它 —— 简略档的预览卸载（app-preview-lazy.js）认这条记号才不摘。 */
+      el.__plKeep = true;
+      setThumbPreviewSrc(
+        el,
+        p,
+        el.__thumbBust || undefined,
+        Number(el.__thumbEdge) > 0 ? Number(el.__thumbEdge) : undefined,
+      );
+      n += 1;
+    } else if (el.getAttribute("src") || el.__plKeep) {
+      el.__plKeep = false;
+      el.removeAttribute("src");
+      el.__thumbPath = "";
+      n += 1;
+    }
+  }
+  return n;
 }
 
 /* 任意图片来源 → 预览位地址（**唯一**一处的口径：素材库行内缩略、应用网格封面共用）：

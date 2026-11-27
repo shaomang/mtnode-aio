@@ -127,6 +127,256 @@ async function vramSnapshotSafe() {
   }
 }
 
+/* ── 常驻高占用部件：谁正开着占显存 + 一键关掉 ──────────────────────────────
+   与上面的「一键释放空闲显存」互补：那边只放**空闲**的后端（不打断别人的活，忙的一律跳过），
+   这边回答的是另一个问题 ——「我明明什么都没跑，显存怎么没了」。答案通常是某个常驻部件：
+   MOSS-TTS 语音（随应用内置的 ONNX 后端，不进 vram 注册表，状态与开关各走自己的桥）、
+   或 llama 这类「开着就一直占着卡」的本地大模型。
+   探测只读，不动任何进程；关掉的动作一律由用户自己点（不替用户杀他正在用的东西）。 */
+
+/** MOSS-TTS 语音在清单里用的合成 id（与 vram 注册表的后端 id 不同名，不会撞） */
+const VRAM_MOSS_RESIDENT = "moss-tts";
+
+/**
+ * 正在跑且占着显存的常驻部件清单：[{ id, name, running, idleReleasable }]
+ *  · MOSS-TTS 走 window.api.mossTtsState().running（它不登记 vram 释放钩子）；
+ *  · 其它本地后端走 vramSnapshot() 的 backends（running 且非 busy —— 忙的那些正在跑任务，
+ *    不列进来，也就不会被这里关掉）。
+ */
+async function vramHeavyResidents() {
+  const out = [];
+  const mossState = window.api && window.api.mossTtsState;
+  if (mossState) {
+    try {
+      const st = await mossState();
+      if (st && st.running) {
+        out.push({
+          id: VRAM_MOSS_RESIDENT,
+          name: I18n.t("MOSS-TTS 语音"),
+          running: true,
+          idleReleasable: true,
+        });
+      }
+    } catch {
+      /* 桥读不到就当它没在跑：宁可不列，也不误报一个用户关不掉的东西 */
+    }
+  }
+  const snap = await vramSnapshotSafe();
+  ((snap && snap.backends) || []).forEach((b) => {
+    if (!b || !b.running || b.busy) return;
+    out.push({
+      id: String(b.id || ""),
+      name: String(b.label || b.id || ""),
+      running: true,
+      idleReleasable: !!b.idleReleasable,
+    });
+  });
+  return out;
+}
+
+/** 把常驻清单压成一句人话：「MOSS-TTS 语音、llama.cpp（本地大模型）正开着，占着显存」 */
+async function vramOomHint(residents) {
+  const list = Array.isArray(residents) ? residents : await vramHeavyResidents();
+  if (!list.length) return "";
+  const names = I18n.listJoin(list.map((r) => String((r && (r.name || r.id)) || "")));
+  return I18n.t("{names}正开着，占着显存", { names });
+}
+
+/**
+ * 同一句提醒（显存预检被拦 / 运行期 OOM 共用这一份，别在两处各写一套）：
+ * 谁常驻占着显存 + 去哪关。返回 { list, text } —— list 给「关掉它们」用；
+ * text 为空 = 没有已知的常驻部件，没什么可提醒的（别凭空编一个「可能有人占着」）。
+ * 纯只读探测：这里绝不杀任何正在跑的任务。
+ */
+async function vramResidentsNotice() {
+  const list = await vramHeavyResidents();
+  const hint = await vramOomHint(list);
+  if (!hint) return { list, text: "" };
+  return {
+    list,
+    text:
+      hint +
+      "。" +
+      I18n.t("先关掉这些再跑：顶栏「性能」面板可以一键关掉它们（正在跑的任务不会被关掉）"),
+  };
+}
+
+/**
+ * 一键关掉常驻部件：moss-tts 走 mossTtsDisable()（关开关 + 停 worker），
+ * 其余走 vramRelease({ ids, phase:'manual' })。回逐条结果 [{ id, name, ok, text }]，
+ * 单条失败不影响其余几条（用户能看到哪一条没关掉、为什么）。
+ * known = 已经拿到的常驻清单（浮层里现成的，省一次探测）。
+ */
+async function vramReleaseResidents(ids, known) {
+  const want = (Array.isArray(ids) ? ids : [ids]).map((x) => String(x || "")).filter(Boolean);
+  if (!want.length) return [];
+  const list = Array.isArray(known) && known.length ? known : await vramHeavyResidents();
+  const nameOf = (id) => {
+    const hit = list.find((x) => x && x.id === id);
+    return String((hit && hit.name) || id);
+  };
+  const results = [];
+
+  /* ① MOSS-TTS 语音：没有 soft / hard 钩子，关开关即停 worker（模型随之退出显存） */
+  if (want.indexOf(VRAM_MOSS_RESIDENT) >= 0) {
+    const off = window.api && window.api.mossTtsDisable;
+    let ok = false;
+    let why = "";
+    if (!off) {
+      why = I18n.t("本地模型显存释放不可用（宿主桥未就绪）");
+    } else {
+      try {
+        const r = await off();
+        ok = !!(r && r.ok);
+        why = String((r && r.error) || "");
+      } catch (e) {
+        why = String((e && e.message) || e);
+      }
+    }
+    results.push({
+      id: VRAM_MOSS_RESIDENT,
+      name: nameOf(VRAM_MOSS_RESIDENT),
+      ok,
+      text: ok ? I18n.t("已关掉") : I18n.t("没关掉：") + why,
+    });
+  }
+
+  /* ② 其余本地后端：一次下发，回执按 id 摊回逐条 */
+  const backendIds = want.filter((id) => id !== VRAM_MOSS_RESIDENT);
+  if (backendIds.length) {
+    const api = vramApi();
+    let steps = [];
+    let why = "";
+    if (!api) {
+      why = I18n.t("本地模型显存释放不可用（宿主桥未就绪）");
+    } else {
+      try {
+        const r = await api({ ids: backendIds, phase: "manual", triggeredBy: "residents" });
+        steps = (r && r.steps) || [];
+      } catch (e) {
+        why = String((e && e.message) || e);
+      }
+    }
+    backendIds.forEach((id) => {
+      const st = steps.find((s) => s && String(s.id) === id);
+      const done = !!st && (st.action === "soft" || st.action === "hard");
+      const freed = st && Number(st.freedMb) > 0 ? "（" + st.freedMb + "MB）" : "";
+      results.push({
+        id,
+        name: nameOf(id),
+        ok: done,
+        text: done
+          ? I18n.t("已释放") + freed
+          : st
+            ? vramStepText(st)
+            : why || I18n.t("没有需要释放的本地模型后端"),
+      });
+    });
+  }
+  return results;
+}
+
+/** 浮层正文：一句人话 + 逐条「关闭」+ 全部关闭（关掉后就地刷新，不关窗） */
+async function vramRenderResidents() {
+  const body = document.getElementById("ovBody");
+  if (!body) return;
+  const list = await vramHeavyResidents();
+  const hint = await vramOomHint(list);
+  const rows = list
+    .map(
+      (r) =>
+        '<div class="vram-row idle">' +
+        '<span class="vram-dot"></span>' +
+        '<span class="vram-name">' +
+        escapeHtml(r.name || r.id) +
+        "</span>" +
+        '<span class="vram-state">' +
+        escapeHtml(I18n.t("已就绪（空闲，可安全释放）")) +
+        "</span>" +
+        '<button type="button" class="btn" data-vram-off="' +
+        escapeHtml(r.id) +
+        '">' +
+        I18n.t("关闭") +
+        "</button>" +
+        "</div>",
+    )
+    .join("");
+  body.innerHTML =
+    '<div class="vram-panel">' +
+    '<div class="vram-gpu">' +
+    (hint || I18n.t("没有常驻占显存的部件")) +
+    "</div>" +
+    '<div class="vram-list">' +
+    rows +
+    "</div>" +
+    '<div class="vram-actions">' +
+    '<button type="button" class="btn primary" id="vramResidentsAll"' +
+    (list.length ? "" : " disabled") +
+    ">" +
+    I18n.t("全部关闭") +
+    "</button>" +
+    '<button type="button" class="btn" id="vramResidentsRefresh">' +
+    I18n.t("刷新") +
+    "</button>" +
+    "</div>" +
+    '<div class="vram-note">' +
+    I18n.t("关掉它们，显存立刻还回来（正在跑任务的后端不在这里，不会被关掉；下次用到会重新加载）") +
+    "</div>" +
+    '<div class="vram-log" id="vramResidentsResult"></div>' +
+    "</div>";
+
+  const resultBox = document.getElementById("vramResidentsResult");
+  const runRelease = async (ids) => {
+    if (!ids.length) return;
+    if (resultBox) resultBox.innerHTML = "<div>" + escapeHtml(I18n.t("正在关闭…")) + "</div>";
+    const results = await vramReleaseResidents(ids, list);
+    const bad = results.filter((r) => !r.ok);
+    if (typeof toast === "function") {
+      toast(
+        bad.length
+          ? I18n.t("没关掉：") + bad.map((r) => r.name).join("、")
+          : I18n.t("已关掉") + I18n.listJoin(results.map((r) => r.name)),
+        bad.length ? "warn" : "ok",
+      );
+    }
+    /* 关掉的从清单里消失，这一轮的逐条结果写在下面那行 */
+    await vramRenderResidents();
+    const again = document.getElementById("vramResidentsResult");
+    if (again) {
+      again.innerHTML = results
+        .map((r) => "<div>" + escapeHtml(r.name + "：" + r.text) + "</div>")
+        .join("");
+    }
+  };
+
+  const all = document.getElementById("vramResidentsAll");
+  if (all) all.onclick = () => runRelease(list.map((r) => r.id));
+  const rf = document.getElementById("vramResidentsRefresh");
+  if (rf) rf.onclick = () => vramRenderResidents();
+  body.querySelectorAll("[data-vram-off]").forEach((btn) => {
+    btn.onclick = () => runRelease([String(btn.getAttribute("data-vram-off") || "")]);
+  });
+}
+
+/** 入口：打开「谁占着显存」浮层（持久浮层 —— 只走窗内按钮 / ✕ / Esc，点外部不关） */
+function openVramResidents() {
+  if (typeof openOverlay !== "function") return;
+  openOverlay(I18n.t("常驻占显存的部件"), { persistent: true });
+  const foot = document.getElementById("ovFoot");
+  if (foot) {
+    foot.innerHTML = "";
+    const close = document.createElement("button");
+    close.type = "button";
+    close.className = "btn";
+    close.textContent = I18n.t("关闭");
+    close.onclick = () => {
+      if (typeof closeOverlay === "function") closeOverlay();
+    };
+    foot.appendChild(close);
+  }
+  vramRenderResidents();
+}
+
 /**
  * 运行前钩子：先释放**其他**本地模型后端（除了本次要用的这个），
  * 让本次要用的后端拿到干净的卡。已有的全局任务锁被别人占着时，主进程会如实回

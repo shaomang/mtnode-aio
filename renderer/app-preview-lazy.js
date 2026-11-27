@@ -38,6 +38,10 @@ let previewLazyIoMargin = ""; // 建它时用的 rootMargin：视口尺寸变了
 let previewLazyMo = null; // #stage 上的 MutationObserver（打点）
 let previewLazyRoot = null; // #stage
 let previewLazyResizeRaf = 0;
+/* 简略模式（顶栏「简略」，renderer/app-canvas.js 的 toggleLeanCanvas）：
+   一开就把舞台里所有预览的 src 摘掉、之后一只都不再取字节 —— 图像纹理全部还给显存。
+   这一档不是「懒」而是「不取」，所以视口 / 元素是否露出来一概不看。 */
+let previewLazyLean = false;
 const previewLazyLive = new Map(); // el -> rec：正在被观察的（断开即删，不留悬挂）
 const previewLazySeen = new WeakMap(); // el -> { kind, url }：元素自己的地址记忆（随元素回收）
 
@@ -108,6 +112,7 @@ function previewLazyRemember(el, url) {
 /** 进入可视范围（含视口外一屏）：按记下的地址把图源取回来 */
 function previewLazyShow(el, rec) {
   if (!el || !rec) return;
+  if (previewLazyLean) return; // 简略模式：一律不取字节
   const url = rec.url || previewLazySrc(el) || (previewLazySeen.get(el) || {}).url || "";
   if (!url) return;
   rec.url = url;
@@ -143,11 +148,17 @@ function previewLazyShow(el, rec) {
 /** 离开可视范围（一屏之外）：摘掉 src，把地址记回元素 */
 function previewLazyHide(el, rec) {
   if (!el || !rec) return;
-  if (typeof document !== "undefined" && document.hidden) return; // 窗口隐藏 / 最小化：不判定离开
-  /* 正在显示的宿主绝不在这里被摘断：全屏占位里的、原生全屏的、此刻真压在视口里的 */
+  /* 简略模式里被应用侧「钉住」的预览（画布选中节点的聚焦复原，见 app-canvas.js 的
+     leanCanvasSyncFocus）：这一档默认全摘，但选中的那几颗要留着 —— 不认这条记号，
+     应用侧刚补回来的 src 会被下面属性打点（previewLazyOnAttr → 本函数）当场再摘掉，
+     聚焦复原等于没做。钉住的数量由选中集决定，上限就是那几颗节点上的几张。 */
+  if (previewLazyLean && el.__plKeep) return;
+  if (!previewLazyLean && typeof document !== "undefined" && document.hidden) return; // 窗口隐藏 / 最小化：不判定离开
+  /* 正在显示的宿主绝不在这里被摘断：全屏占位里的、原生全屏的、此刻真压在视口里的
+     （简略模式例外：视口里也照摘 —— 这一档的目的就是一只都不留） */
   if (el.__mvHold) return;
   if (typeof document !== "undefined" && document.fullscreenElement === el) return;
-  if (previewLazyOnScreen(el)) return;
+  if (!previewLazyLean && previewLazyOnScreen(el)) return;
   const cur = previewLazySrc(el);
   if (!cur) {
     if (rec.url) previewLazyRemember(el, rec.url);
@@ -237,8 +248,8 @@ function previewLazyWatch(el) {
   try {
     io.observe(el);
   } catch (_) {}
-  /* 首个回调要等下一帧；刚建出来就在一屏之外的，这里当场就不取字节 */
-  if (rec.url && !previewLazyNear(el)) previewLazyHide(el, rec);
+  /* 首个回调要等下一帧；刚建出来就在一屏之外（或正处在简略模式）的，这里当场就不取字节 */
+  if (rec.url && (previewLazyLean || !previewLazyNear(el))) previewLazyHide(el, rec);
   return true;
 }
 
@@ -329,6 +340,11 @@ function previewLazyOnAttr(name, el) {
     return;
   }
   el.__plCleared = "";
+  if (previewLazyLean) {
+    /* 简略模式：新到的 src 一律当场摘掉（应用侧照常赋值，字节一个都不留） */
+    previewLazyHide(el, rec);
+    return;
+  }
   if (now === rec.url) return;
   rec.url = now;
   if (!previewLazyNear(el)) previewLazyHide(el, rec);
@@ -350,6 +366,62 @@ function previewLazyOnResize() {
 function previewLazySweep() {
   for (const el of [...previewLazyLive.keys()]) if (!el.isConnected) previewLazyUnwatch(el);
   if (previewLazyRoot) previewLazyScan(previewLazyRoot);
+}
+
+/* ── 简略模式（顶栏「简略」）：舞台里一只预览都不留 ──────────────────────
+   和「一屏之外卸掉」同一套卸载口径，区别是**连视口里也不留**：
+   开 = 已加载的当场摘 src（视频再 load() 一次放开解码器），之后新到的 src 也一律摘掉；
+   关 = 按元素手上记的地址、按视口重新取回来（原来的懒加载行为照旧）。
+   为什么必须做这一档：图像纹理由 GPU 进程按解码尺寸持有，只有元素彻底不引用那张图才会
+   归还；本地视频模型（H3）跑之前要的就是这块显存。 */
+function previewLazySetLean(on) {
+  const next = !!on;
+  if (next === previewLazyLean) return previewLazyLean;
+  previewLazyLean = next;
+  if (!previewLazyRoot) return previewLazyLean;
+  if (next) previewLazyLeanSweep();
+  else previewLazyLeanRestore();
+  return previewLazyLean;
+}
+
+/** 把舞台里所有 <img>/<video> 的字节与纹理当场地掉（简略模式开启时） */
+function previewLazyLeanSweep() {
+  const root = previewLazyRoot;
+  if (!root) return 0;
+  let n = 0;
+  let els = [];
+  try {
+    els = [...root.querySelectorAll(PREVIEW_LAZY_SEL)];
+  } catch (_) {
+    els = [];
+  }
+  for (const el of els) {
+    if (!previewLazySrc(el)) continue;
+    let rec = previewLazyLive.get(el);
+    if (!rec) {
+      rec = { kind: previewLazyKind(el), url: "", at: 0, playing: false };
+      previewLazyLive.set(el, rec);
+      try {
+        if (previewLazyIo) previewLazyIo.observe(el);
+      } catch (_) {}
+    }
+    previewLazyHide(el, rec);
+    n += 1;
+  }
+  return n;
+}
+
+/** 退出简略：把还在观察、手上有地址的预览按视口重新取回来 */
+function previewLazyLeanRestore() {
+  for (const [el, rec] of previewLazyLive) {
+    if (!el.isConnected) {
+      previewLazyUnwatch(el);
+      continue;
+    }
+    if (previewLazySrc(el)) continue;
+    if (previewLazyNear(el)) previewLazyShow(el, rec);
+  }
+  previewLazySweep();
 }
 
 /** 应用侧主动清空某只预览（路径没了）时调：连地址记忆一起丢掉，免得回来时又贴旧图 */
@@ -411,6 +483,8 @@ try {
     attach: previewLazyAttach,
     release: previewLazyRelease,
     sweep: previewLazySweep,
+    setLean: previewLazySetLean,
+    leanSweep: previewLazyLeanSweep,
     stats: previewLazyStats,
   };
 } catch (_) {}

@@ -618,6 +618,32 @@ function sfRefresh() {
   sfRender();
 }
 
+/* ── 保存即刷新（本次需求）────────────────────────────────────────────────────
+   任何一次保存都在主进程落盘后广播 files:changed（main.js 的 broadcastFilesChanged）；
+   这里按 350ms 合并成一次刷树 —— 批量保存（一跑写十几个文件）只重读一次目录。
+   两个守卫，避免白刷：
+     · 落点不在当前根下面 → 与这棵树无关，直接放过；
+     · 没停在文件页 → 不刷（切回文件页本来就会重读，见 sfSetTab → sfEnterRoot）。 */
+let _sfChangedTimer = 0;
+function sfOnFilesChanged(info) {
+  const paths = Array.isArray(info && info.paths) ? info.paths.map(String) : [];
+  const root = String(SF.root || "");
+  if (root && paths.length) {
+    const rl = root.toLowerCase().replace(/[\\/]+$/, "");
+    const inRoot = paths.some((p) => {
+      const s = String(p || "").toLowerCase();
+      return !!s && (s === rl || s.startsWith(rl + "\\") || s.startsWith(rl + "/"));
+    });
+    if (!inRoot) return;
+  }
+  if (SF.tab !== "files") return;
+  if (_sfChangedTimer) clearTimeout(_sfChangedTimer);
+  _sfChangedTimer = setTimeout(() => {
+    _sfChangedTimer = 0;
+    sfRefresh();
+  }, 350);
+}
+
 /* ── 读盘 ── */
 async function sfReadDir(dir) {
   if (SF.cache.has(dir)) return SF.cache.get(dir);
@@ -1488,6 +1514,11 @@ function sfInit() {
   /* 系统剪贴板互通的两个入口：键盘快捷键 + 从资源管理器拖进树 */
   sfBindKeys();
   sfBindDrop();
+  /* 任何保存都自动刷一次（主进程 files:changed → 见上面的 sfOnFilesChanged） */
+  try {
+    if (window.api && typeof window.api.onFilesChanged === "function")
+      window.api.onFilesChanged(sfOnFilesChanged);
+  } catch (_) {}
 }
 sfInit();
 

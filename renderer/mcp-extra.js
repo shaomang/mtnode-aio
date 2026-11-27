@@ -454,10 +454,280 @@
     });
   }
 
+  /* ── 交接（外部 agent → MTNode 自己的 agent）──────────────────────────────
+     主进程 mcp-server.js 的 mtnode_agent 推这两个 op：
+       handoffPrepare：项目文件夹 → 画布（按工作目录匹配 / 没有就新建）
+                       + 常驻「外部交接 · 项目名」会话（复用 / 新建）
+       handoffSend：往那条会话发一轮并**等它结束**（模型提问卡住时会一直等，
+                    外部调用方作答后这一轮继续 —— 主进程那边靠作业表回 needs_answer）
+     为什么在渲染层：画布对象与会话的真源都只在这里（与 mtnode_run / mtnode_session 同源）。 */
+
+  const HANDOFF_PREFIX = "外部交接 · ";
+
+  function baseNameOf(p) {
+    const s = String(p || "").replace(/[\\/]+$/, "");
+    const i = Math.max(s.lastIndexOf("\\"), s.lastIndexOf("/"));
+    return i >= 0 ? s.slice(i + 1) : s;
+  }
+
+  /** 同一个文件夹的比较口径：统一分隔符、去尾斜杠、大小写不敏感（Windows）。
+   *  只用于「这张画布是不是这个项目的」，不用于落盘路径。 */
+  function samePath(a, b) {
+    const norm = (v) =>
+      String(v || "")
+        .trim()
+        .replace(/\//g, "\\")
+        .replace(/\\+$/, "")
+        .toLowerCase();
+    return !!a && !!b && norm(a) === norm(b);
+  }
+
+  function sessionRunning(st) {
+    return typeof sessionIsRunning === "function" ? !!sessionIsRunning(st) : !!(st && st.running);
+  }
+
+  function modelNow(st) {
+    const dsh = (S && S.config && S.config.dsh) || {};
+    return {
+      provider: String((st && st.provider) || dsh.provider || ""),
+      model: String((st && st.model) || dsh.model || ""),
+      effort: String((st && st.effort) || dsh.effort || ""),
+    };
+  }
+
+  async function resolveCanvasForFolder(folder, wantRef) {
+    if (wantRef) {
+      const wf = await window.MTNodeMcp.resolveWf(wantRef);
+      if (!wf) return { error: "画布不存在：" + wantRef };
+      return { wf: wf, matchedBy: "explicit" };
+    }
+    const list = (await window.api.wfList()) || [];
+    /* wfList 已按 mtime 倒序 = 最近活跃在前（用户口径：同文件夹多张图取最近活跃那张） */
+    const hit = list.find((x) => x && samePath(x.workspace, folder));
+    if (!hit) return { wf: null, matchedBy: "none" };
+    const r = await window.api.wfLoad(hit.id);
+    const wf = r && r.ok ? r.data : null;
+    if (!wf) return { error: "画布读不出来：" + hit.id };
+    return { wf: wf, matchedBy: "workspace" };
+  }
+
+  async function createCanvasForFolder(folder) {
+    const id = "wf_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+    const name = baseNameOf(folder) || "外部交接";
+    /* 与「新建画布」对话框同一份最小结构（工作目录必填；不抢用户的页签与前台画布） */
+    const wf = { id: id, name: name, nodes: [], wires: [], groups: [], marks: [], workspace: folder };
+    const r = await window.api.wfSave(id, wf);
+    if (r && r.ok === false) return { error: "新建画布失败：" + String(r.error || "写盘失败") };
+    return { wf: wf };
+  }
+
+  function handoffSessionsOf(canvasId) {
+    const list = typeof agentSessions === "function" ? agentSessions() || [] : [];
+    return list.filter(
+      (s) =>
+        s &&
+        !s.archived &&
+        String(s.canvasWfId || "") === String(canvasId || "") &&
+        String(s.title || "").indexOf(HANDOFF_PREFIX) === 0,
+    );
+  }
+
+  /** 「设置 · 默认模型提供商」此刻解析出来的那一只（全应用唯一一份解析 = dshDefaultModelPick）。
+   *  解析不出来就**如实报错并指路**，绝不偷偷换一只 —— 交接跑的是用户的钱与配额。 */
+  function handoffModel() {
+    if (typeof dshDefaultModelPick !== "function") return { ok: true, model: null };
+    let pick = null;
+    try {
+      pick = dshDefaultModelPick();
+    } catch (e) {
+      return { ok: false, error: "DEFAULT_MODEL_UNAVAILABLE", message: String((e && e.message) || e) };
+    }
+    if (!pick || !pick.ok)
+      return {
+        ok: false,
+        error: "DEFAULT_MODEL_UNAVAILABLE",
+        message: String((pick && pick.reason) || "默认模型不可用：请到 设置 · 默认模型提供商 里选一只模型。"),
+      };
+    return {
+      ok: true,
+      model: {
+        provider: String(pick.route || ""),
+        model: String(pick.model || ""),
+        effort: typeof dshDefaultEffortValue === "function" ? String(dshDefaultEffortValue() || "") : "",
+      },
+    };
+  }
+
+  function createHandoffSession(p, wf, folder, model) {
+    if (typeof newAgentSession !== "function") throw new Error("渲染层没有 newAgentSession");
+    const prevActive = String((typeof activeAgentId === "function" ? activeAgentId() : "") || "");
+    const st = newAgentSession();
+    st.title = HANDOFF_PREFIX + (String((p && p.title) || "").trim() || String(wf.name || baseNameOf(folder) || "项目"));
+    /* 标题锁死：首轮自动命名不许把它改成「项目里的第一句话」，否则下次交接就找不到这条会话了 */
+    st.titleLocked = true;
+    st.canvasWfId = String(wf.id || "");
+    st.workspace = folder;
+    st.external = true;
+    st.handoffFolder = folder;
+    /* 模型一律跟「设置 · 默认模型提供商」：新建会话本来会沿用上一条会话的选择，
+       外部交接不该继承用户上一次的临时换模型（用户口径）。 */
+    if (model) {
+      st.provider = String(model.provider || "");
+      st.model = String(model.model || "");
+      if (model.effort) st.effort = String(model.effort);
+    }
+    try {
+      if (typeof agentMarkSessionDirty === "function") agentMarkSessionDirty(st.id);
+      if (typeof agentFlushSessionSave === "function") agentFlushSessionSave();
+    } catch (_) {}
+    try {
+      S.agentActiveId = prevActive;
+      if (typeof agentFlushSessionSaveQuiet === "function") agentFlushSessionSaveQuiet();
+    } catch (_) {}
+    try {
+      if (typeof renderAgentSessionSidebar === "function") renderAgentSessionSidebar();
+    } catch (_) {}
+    return st;
+  }
+
+  async function handoffPrepare(params) {
+    const p = params || {};
+    const folder = String(p.projectFolder || "").trim();
+    if (!folder) return { ok: false, error: "NO_PROJECT_FOLDER", message: "handoffPrepare 需要 projectFolder" };
+    const wantSid = String(p.sessionId || "").trim();
+    if (wantSid) {
+      const st0 = typeof agentSessionById === "function" ? agentSessionById(wantSid) : null;
+      if (!st0) return { ok: false, error: "SESSION_GONE", message: "会话不存在或已被删除：" + wantSid };
+      if (sessionRunning(st0))
+        return {
+          ok: false,
+          error: "SESSION_BUSY",
+          message: "这条会话正在跑（" + String(st0.title || wantSid) + "）：先 status / read 看进度，或等它跑完。",
+        };
+      return {
+        ok: true,
+        sessionId: wantSid,
+        sessionTitle: String(st0.title || ""),
+        sessionReused: true,
+        canvasId: String(st0.canvasWfId || ""),
+        canvasName: "",
+        workspace: String(st0.workspace || folder),
+        model: modelNow(st0),
+      };
+    }
+    /* 默认模型先解析：不可用就别白建画布 / 会话（也避免「跑起来才发现模型没了」） */
+    const pick = handoffModel();
+    if (!pick.ok) return { ok: false, error: pick.error, message: pick.message };
+    const res = await resolveCanvasForFolder(folder, String(p.canvas || "").trim());
+    if (res.error) return { ok: false, error: "CANVAS_UNRESOLVED", message: res.error };
+    let wf = res.wf;
+    let canvasCreated = false;
+    if (!wf) {
+      const made = await createCanvasForFolder(folder);
+      if (made.error) return { ok: false, error: "CANVAS_CREATE_FAILED", message: made.error };
+      wf = made.wf;
+      canvasCreated = true;
+    }
+    const canvasId = String(wf.id || "");
+    /* 一个项目文件夹一条常驻交接会话：在跑就如实报忙，不排队、不重复起会话 */
+    const same = handoffSessionsOf(canvasId);
+    const busy = same.find((s) => sessionRunning(s));
+    if (busy)
+      return {
+        ok: false,
+        error: "SESSION_BUSY",
+        message: "这个项目的交接会话正在跑（" + String(busy.title || "") + "）：先 status / read，或 steer / stop 后再交接。",
+      };
+    let st = same[0] || null;
+    let sessionCreated = false;
+    if (!st) {
+      st = createHandoffSession(p, wf, folder, pick.model);
+      sessionCreated = true;
+    } else if (pick.model) {
+      /* 复用的常驻会话也跟着「默认模型提供商」走（用户改了设置，下次交接立刻生效） */
+      if (pick.model.provider) st.provider = String(pick.model.provider);
+      if (pick.model.model) st.model = String(pick.model.model);
+      if (pick.model.effort) st.effort = String(pick.model.effort);
+      try {
+        if (typeof agentMarkSessionDirty === "function") agentMarkSessionDirty(st.id);
+        if (typeof agentFlushSessionSave === "function") agentFlushSessionSave();
+      } catch (_) {}
+    }
+    return {
+      ok: true,
+      sessionId: String(st.id),
+      sessionTitle: String(st.title || ""),
+      sessionReused: !sessionCreated,
+      sessionCreated: sessionCreated,
+      canvasId: canvasId,
+      canvasName: String(wf.name || ""),
+      workspace: String(wf.workspace || folder),
+      canvasCreated: canvasCreated,
+      canvasMatchedBy: res.matchedBy,
+      model: pick.model || modelNow(st),
+    };
+  }
+
+  function buildHandoffMessage(p, st) {
+    const folder = String((p && p.projectFolder) || (st && st.workspace) || "").trim();
+    return [
+      "[外部交接] 这条消息由外部 agent 经 MCP 交来，请你直接动手做完。",
+      "项目文件夹：" + folder + "（画布已绑定到它；读写都落在这个目录里）",
+      "",
+      String((p && p.task) || "").trim(),
+      "",
+      "要求：把事情做完再回话；确需澄清时用 ask_user_question 提一个具体问题（外部调用方会回答）；" +
+        "收尾用一两句说清改了什么、产物在哪（外部调用方只能看到你的最后一段回复与工具时间线）。",
+    ].join("\n");
+  }
+
+  async function handoffSend(params) {
+    const p = params || {};
+    const sid = String(p.sessionId || "").trim();
+    const task = String(p.task || "").trim();
+    if (!sid) return { ok: false, error: "NO_SESSION", message: "handoffSend 需要 sessionId" };
+    if (!task) return { ok: false, error: "NO_TASK", message: "handoffSend 需要 task" };
+    const st = typeof agentSessionById === "function" ? agentSessionById(sid) : null;
+    if (!st) return { ok: false, error: "SESSION_GONE", message: "会话不存在或已被删除：" + sid };
+    if (!st._lcLoaded && typeof agentEnsureSessionBody === "function") {
+      try {
+        await agentEnsureSessionBody(st);
+      } catch (_) {}
+    }
+    if (sessionRunning(st)) return { ok: false, error: "SESSION_BUSY", message: "这条会话正在跑：等它跑完再交接。" };
+    if (typeof agentSessionSend !== "function") return { ok: false, error: "NO_SENDER", message: "渲染层没有 agentSessionSend" };
+    /* 切成活动会话是为了**落盘**（与手机端 sessionSend 同一理由）；跑完还原，不抢用户正在看的会话 */
+    const prevActive = String((typeof activeAgentId === "function" ? activeAgentId() : "") || "");
+    try {
+      S.agentActiveId = sid;
+    } catch (_) {}
+    let err = "";
+    try {
+      await agentSessionSend(buildHandoffMessage({ task: task, projectFolder: p.projectFolder }, st), { sessionId: sid });
+    } catch (e) {
+      err = String((e && e.message) || e);
+    }
+    try {
+      S.agentActiveId = prevActive;
+      if (typeof renderAgentSessionSidebar === "function") renderAgentSessionSidebar();
+    } catch (_) {}
+    const reply = lastAssistantText(st);
+    if (err) return { ok: false, error: "ROUND_FAILED", message: err, sessionId: sid, reply: reply };
+    return {
+      ok: true,
+      sessionId: sid,
+      reply: reply,
+      running: sessionRunning(st),
+      error: st.error ? String(st.error) : "",
+    };
+  }
+
   window.MTNodeMcpExtra = {
     run: run,
     tools: tools,
     sessionTask: sessionTask,
     mediaNode: mediaNode,
+    handoffPrepare: handoffPrepare,
+    handoffSend: handoffSend,
   };
 })();

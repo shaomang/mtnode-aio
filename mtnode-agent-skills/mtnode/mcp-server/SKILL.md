@@ -19,10 +19,21 @@ MTNode 平时是 MCP **客户端**（去连别人的服务器给自家 Agent 加
   - **HTTP**：`POST http://127.0.0.1:<port>/mcp`，头带 `Authorization: Bearer <token>`。
 - MTNode 没开着 → 桥会回「连不上 MTNode MCP 服务端，请打开 MTNode 后重试」；主窗口被关掉 → 调用会超时（执行在渲染层，窗口不在就没人执行）。
 
-## 二、工具面（17 个，与自家 Agent 同名同义）
+## 二、工具面（默认只有 2 个：交接优先）
+
+**默认 `tools/list` 只回两件**（本次功能）：`mtnode_agent`（第一）+ `mtnode_catalog`。外部 agent 的活优先**整件交给 MTNode 自己的 agent**（它带着全部技能、画布工具与本地后端），比逐个调底层工具便宜一个量级。
+
+- `mtnode_agent`：`task` + `projectFolder`（**必填，本机绝对路径**）→ MTNode 自己解析/新建画布、建（复用）一条「外部交接 · 项目名」会话、用设置里的默认模型跑完一轮。异步作业：`status`（`wait:true` 最长 30 分钟）/ `read` / `steer` / `stop` / `answer` / `list`。审批与画布确认自动放行；**模型提问回给调用方**（`needs_answer` → `answer`）。护栏错误码：`NO_TASK` / `NO_PROJECT_FOLDER` / `PROJECT_FOLDER_NOT_ABSOLUTE` / `PROJECT_FOLDER_MISSING` / `BAD_ACTION`。
+- `mtnode_catalog`：展开第二层 —— 回完整工具清单（含参数表）+ 规范，并给本连接推 `notifications/tools/list_changed`；不支持通知的客户端按文本清单直接 `tools/call` 也行。
+- 设置 → 扩展能力 → 服务端：「工具面：精简（默认）/ 完整」。完整 = 下面这张表一开始就全量平铺（老集成不用改）。
+- 画布 / 会话的两段真身：`renderer/mcp-extra.js` 的 `handoffPrepare` / `handoffSend`；回归 `test/smoke-mcp-handoff-surface.js`。
+
+### 展开后的底层工具（19 个，与自家 Agent 同名同义）
 
 | 工具 | 干什么 | 写 |
 | --- | --- | --- |
+| `mtnode_agent` | **交接**：把整件活交给 MTNode 的 agent（见上） | 是 |
+| `mtnode_catalog` | **展开**完整工具面（按连接生效） | 否 |
 | `mtnode_canvas_get` | 读画布：节点索引 / 配置 / 正文 / 连线 / 绘制 | 否 |
 | `mtnode_canvas_edit` | 建节点、连线、改字段、分组、绘制、删除 | 是 |
 | `mtnode_app` | 应用级：状态、画布列表、改名、选中、撤销重做、导出 PNG、长任务图存取、DSH 插件管理 | 部分 |
@@ -69,6 +80,7 @@ MTNode 平时是 MCP **客户端**（去连别人的服务器给自家 Agent 加
 - 只放行 `mtnode_generate` / `mtnode_run` / `mtnode_tools` / `mtnode_session` 四项（画布读写、GUI、数据库仍走 agent 的内置工具）。
 - 每次启动端口都变 → 那一行随之重写；关掉开关 = 撤掉那一行，服务端对第三方照旧。
 - 受总开关约束；令牌也可以走 query（同一条 url 形态），因为 dsh 的 HTTP MCP 客户端塞不了自定义请求头。
+- 那一行 url 还带 `&surface=full`：应用内 Agent 看到的是**完整工具面**（精简档只收第三方的工具表）。
 - 意义：应用内 Agent 与外部客户端**同一套鉴权、审计、作业语义**，不是另开的后门。
 
 ## 四、resources 与 prompts

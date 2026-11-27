@@ -151,6 +151,9 @@ const SOURCE_KIND = Symbol.for("mtnode.apps.sourceKind");
 const MAX_CATALOG = 512 * 1024;
 const MAX_ZIP = 200 * 1024 * 1024;
 const MAX_STORAGE = 2 * 1024 * 1024;
+/* 应用整包（上架 / 导出 zip）硬上限：应用目录只放源码，云服务器空间与流量有限。
+   运行时 / venv / node_modules / 模型权重 / 预编译二进制一律不随包，改由首次启动时自装到数据目录。 */
+const MAX_APP_PACK = 2 * 1024 * 1024;
 const STORAGE_KEY_MAX = 200;
 const MAX_PROMPT = 100 * 1024;
 const MAX_MESSAGES = 60;
@@ -5359,6 +5362,12 @@ function exportZip(id, opts) {
     const man = built.man;
     const entries = built.entries;
     const buf = zipBuffer(entries);
+    if (buf.length > MAX_APP_PACK) {
+      return Object.assign(
+        bad(t("应用整包超过 2MB：应用目录只放源码，运行时 / 依赖 / 权重请改成首次启动时自装"), "too_large"),
+        { bytes: buf.length, limit: MAX_APP_PACK }
+      );
+    }
     const out = zipPathOf(dir, man.name);
     const tmp = out + ".tmp" + process.pid;
     fs.writeFileSync(tmp, buf);

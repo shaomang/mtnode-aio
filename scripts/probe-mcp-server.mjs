@@ -93,6 +93,27 @@ function fakeRenderer(host, push) {
               },
             ],
           })
+        case 'handoffPrepare':
+          /* 交接的准备段（真身 = renderer/mcp-extra.js 的 handoffPrepare）：画布 + 常驻会话 */
+          return done({
+            ok: true,
+            sessionId: 'as-probe',
+            sessionTitle: '外部交接 · 示例',
+            sessionReused: false,
+            canvasId: 'wf-1',
+            canvasName: '示例画布',
+            workspace: frame.params.projectFolder,
+            canvasCreated: false,
+            canvasMatchedBy: 'workspace',
+            model: { provider: 'deepseek', model: 'deepseek-chat', effort: 'high' },
+          })
+        case 'handoffSend':
+          /* 交接的执行段：真身是 agentSessionSend（等这一轮结束再回） */
+          return done({ ok: true, sessionId: frame.params.sessionId, reply: '干完了：改了 2 个文件。', running: false })
+        case 'sessionSteer':
+          return done({ ok: true, sessionId: frame.params.sessionId, steered: true })
+        case 'sessionStop':
+          return done({ ok: true, sessionId: frame.params.sessionId, wasRunning: true })
         case 'skillBody':
           return done('# 画布编辑硬规则\n\n示例正文')
         case 'lt':
@@ -153,15 +174,33 @@ async function main() {
   const caps = init.body.result.capabilities || {}
   step('能力位齐备', !!(caps.tools && caps.resources && caps.prompts), Object.keys(caps).join(','))
 
+  /* 工具面默认精简（交接优先）：只回 mtnode_agent + mtnode_catalog */
+  const slim = await rpc(url, token, 'tools/list', {}, sid)
+  const slimNames = ((slim.body.result && slim.body.result.tools) || []).map((t) => t.name)
+  step('tools/list 默认精简', slimNames.length === 2 && slimNames[0] === 'mtnode_agent' && slimNames[1] === 'mtnode_catalog',
+    slimNames.length + ' 个：' + slimNames.join(', '))
+
+  /* 第二层入口：调一次 mtnode_catalog → 本连接展开出完整工具面 */
+  const cat = await rpc(url, token, 'tools/call', { name: 'mtnode_catalog', arguments: {} }, sid)
+  const catObj = (() => {
+    try {
+      return JSON.parse((cat.body.result && cat.body.result.content && cat.body.result.content[0].text) || '{}')
+    } catch {
+      return {}
+    }
+  })()
+  step('mtnode_catalog 展开', !!catObj.ok && catObj.count === EXPECT_TOOLS.length && !!catObj.guide,
+    catObj.count + ' 个工具 · 规范 ' + (catObj.guide ? catObj.guide.length : 0) + ' 字')
+
   const tools = await rpc(url, token, 'tools/list', {}, sid)
   const names = ((tools.body.result && tools.body.result.tools) || []).map((t) => t.name)
   const missingTools = EXPECT_TOOLS.filter((n) => !names.includes(n))
-  step('tools/list', names.length === EXPECT_TOOLS.length && !missingTools.length,
-    names.length + ' 个（契约 ' + EXPECT_TOOLS.length + (missingTools.length ? '，缺 ' + missingTools.join(',') : '') + '）：' + names.join(', '))
+  step('展开后 tools/list 全量', names.length === EXPECT_TOOLS.length && !missingTools.length,
+    names.length + ' 个（契约 ' + EXPECT_TOOLS.length + (missingTools.length ? '，缺 ' + missingTools.join(',') : '') + '）')
 
   const res = await rpc(url, token, 'resources/list', {}, sid)
   const r = res.body.result || {}
-  step('resources/list', (r.resources || []).length === 2 && (r.resourceTemplates || []).length === 3,
+  step('resources/list', (r.resources || []).length === 3 && (r.resourceTemplates || []).length === 3,
     (r.resources || []).length + ' 静态 / ' + (r.resourceTemplates || []).length + ' 模板')
   const prompts = await rpc(url, token, 'prompts/list', {}, sid)
   step('prompts/list', ((prompts.body.result && prompts.body.result.prompts) || []).length === 3)
@@ -177,6 +216,47 @@ async function main() {
 
   const skillRead = await rpc(url, token, 'resources/read', { uri: 'mtnode://skill/mtnode-canvas-edit-rules' }, sid)
   step('resources/read 技能正文', !!(skillRead.body.result && skillRead.body.result.contents[0].mimeType === 'text/markdown'))
+
+  /* 交接（mtnode_agent）：参数护栏 + 完整走一遍（渲染层用假回执，验的是主进程编排） */
+  const noFolder = await rpc(url, token, 'tools/call', { name: 'mtnode_agent', arguments: { task: '干点活' } }, sid)
+  /* 参数护栏走「结构化回执」（与 mtnode_run / mtnode_generate 同口径：ok:false + error 码），
+     不是 JSON-RPC 级错误 —— 客户端据此改参数重试。 */
+  const parse = (r) => {
+    try {
+      return JSON.parse((r.body.result && r.body.result.content && r.body.result.content[0].text) || '{}')
+    } catch {
+      return {}
+    }
+  }
+  const errText = (r) => ((r.body.result && r.body.result.content && r.body.result.content[0].text) || '')
+  step(
+    '交接缺 projectFolder 被拒',
+    !!(noFolder.body.result && noFolder.body.result.isError) && /^NO_PROJECT_FOLDER/.test(errText(noFolder)),
+    errText(noFolder).slice(0, 80),
+  )
+  const relFolder = await rpc(url, token, 'tools/call', { name: 'mtnode_agent', arguments: { task: '干点活', projectFolder: 'some/rel/place' } }, sid)
+  step(
+    '交接要求绝对路径',
+    !!(relFolder.body.result && relFolder.body.result.isError) && /^PROJECT_FOLDER_NOT_ABSOLUTE/.test(errText(relFolder)),
+    errText(relFolder).slice(0, 80),
+  )
+
+  const handoff = await rpc(url, token, 'tools/call', {
+    name: 'mtnode_agent',
+    arguments: { task: '把这个项目整理一下', projectFolder: tmp, wait: true },
+  }, sid)
+  const handoffJob = parse(handoff)
+  const handoffObj = handoffJob.result || {}
+  step(
+    '交接跑完并回执',
+    handoffJob.ok === true && handoffJob.status === 'ok' && handoffObj.sessionId === 'as-probe' && /干完了/.test(handoffObj.reply || ''),
+    'status=' + (handoffJob.status || '') + ' · sessionId=' + (handoffObj.sessionId || '') + ' · reply=' + (handoffObj.reply || '').slice(0, 40),
+  )
+  step(
+    '交接回执带画布与模型',
+    !!(handoffObj.canvas && handoffObj.canvas.id) && !!handoffObj.model && Array.isArray(handoffObj.timeline) && !!handoffObj.changes,
+    JSON.stringify(handoffObj.canvas || {}) + ' · ' + JSON.stringify(handoffObj.model || {}),
+  )
 
   const badArgs = await rpc(url, token, 'tools/call', { name: 'mtnode_canvas_edit', arguments: { remove: 3 } }, sid)
   step('参数类型校验', !!(badArgs.body.result && badArgs.body.result.isError), badArgs.body.result && badArgs.body.result.content[0].text)
@@ -205,6 +285,13 @@ async function main() {
 
   const self = await host.selfTest()
   step('内置自检探针', self.ok, JSON.stringify(self.steps.map((s) => s.name + (s.ok ? '=ok' : '=FAIL'))))
+
+  /* 工具面档位：切到完整 = 老口径（19 个平铺，不需要 catalog） */
+  host.setToolSurface('full')
+  const fullList = await rpc(url, token, 'tools/list', {}, sid)
+  const fullNames = ((fullList.body.result && fullList.body.result.tools) || []).map((t) => t.name)
+  step('切换完整档后 tools/list 全量', fullNames.length === EXPECT_TOOLS.length, fullNames.length + ' 个')
+  host.setToolSurface('slim')
 
   await host.stop()
   step('停止后不再监听', !host.status().running)

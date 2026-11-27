@@ -2588,13 +2588,74 @@ function startMediaBackendProbeLoop(nodeId) {
   mediaBackendProbeTimers.set(nodeId, timer);
 }
 
+/* ── 「后端已收尾、回执还没到」看门狗（本轮 bug · MiniMax H3 现场，生成族插件同源）──
+   症状（用户报）：视频/音频早就出完了，画布上那颗生成节点头部的 ▶ 却一直停在「…」+ 红色 ■
+   （node.running 永远为真），怎么等都收不回来。
+   根因：节点的运行态**只由宿主的 IPC Promise 落地**来收（playXxxNode 的 finally 里那两句）。
+   而宿主在产物落盘之后还有一段收尾（释放权重 / 量显存 / 停后端，见 h3 的 finishModelUse）：
+   这段一旦挂住（nvidia-smi 卡住、/free 不答、驱动重置把进程拖死），Promise 就永远不落地，
+   running 于是再也没人复位 —— 界面上就是「任务完成了，运行状态没复原」。
+   判据用应用自己的真相：**全局音视频锁**（media-gen-global-lock.js）。锁在谁手里 = 这台机器上
+   真有谁在跑：宿主第一件事就是 tryAcquireLock，收尾时一定放掉。所以「见过自己的锁」之后
+   连续 N 拍都不是自己的 → 后端任务确实结束了，运行态必须收回来（与 restoreMediaGenLocks
+   收「从锁恢复出来的在途任务」同一份判据，只是方向相反）。
+   为什么是连续 N 拍而不是一拍：抽卡连跑时每一发之间锁会短暂释放再拿回，留足间隔不误杀；
+   另外任务刚起跑的十几秒里可能还没拿到锁（串行链预点亮 + 显存预释放），一律不判。 */
+const MEDIA_LOCK_SETTLE_MISSES = 4;
+const MEDIA_LOCK_SETTLE_MIN_MS = 15000;
+
+/* 生成族的状态行字段各叫各的名字：一处收敛，看门狗写「已收尾」时不必再抄一遍 if/else */
+function mediaStatusTextSet(node, msg) {
+  if (!node) return;
+  const t = String(msg || "");
+  if (node.kind === "music_gen") node.musicStatus = t;
+  else if (node.kind === "yue_gen") node.yueStatus = t;
+  else if (node.kind === "breeze_gen") node.breezeStatus = t;
+  else if (node.kind === "flux3klein_gen") node.flux3kleinStatus = t;
+  else if (node.kind === "qwenimage_gen") node.qwenimageStatus = t;
+  else if (node.kind === "remotion") node.remotionStatus = t;
+  else node.videoStatus = t;
+}
+
+/* 后端任务确实收尾了、但回执没到：把运行态收回来（判据与动作见上面的看门狗）。
+   走 clearGhostRunningNode 同一套动作：作废旧执行链 → 清 running → 释放 playLock 与等待态，
+   否则 ▶ 只是「看着变回空闲」，点下去仍会 await 那个永不落地的旧 Promise。
+   ranAt0 = 起跑那一刻节点上一次成功的时间戳：只有本轮真写出了产物（ranAt 往前走了）才说「完成」，
+   否则旧产物会让一句「完成」盖在失败 / 挂着的那一轮上。 */
+function settleStuckMediaRun(node, reason, ranAt0) {
+  if (!node || !node.running) return false;
+  const fresh = Number(node.ranAt || 0) > Number(ranAt0 || 0);
+  clearGhostRunningNode(node, reason || "后端已收尾但回执未到");
+  stopMediaBackendRunWatcher(node.id);
+  stopMediaBackendProbe(node.id);
+  mediaStatusTextSet(
+    node,
+    fresh
+      ? I18n.t("完成（后端已收尾，产物已在输出里）")
+      : I18n.t("任务已结束（后端已收尾，没有拿到回执）"),
+  );
+  const ui = ensureBackendUiState(node);
+  ui.genPct = fresh ? 100 : 0;
+  ui.genMsg = "";
+  renderCanvas();
+  scheduleSave();
+  try {
+    updateRunQueuePanel();
+  } catch (_) {}
+  return true;
+}
+
 function startMediaBackendRunWatcher(node) {
   if (!node || !isMediaGenNode(node)) return;
   stopMediaBackendRunWatcher(node.id);
   /* 记录起跑时的停止代号：一旦该节点被停止 / 「全部终止」，监视器立刻自毁，
      不再探测回写（旧实现会让已终止的节点继续占用运行队列） */
   const stopTick = Number(node._stopTick) || 0;
+  const ranAt0 = Number(node.ranAt) || 0;
   const startedAt = Date.now();
+  let sawOwnLock = false;
+  let lockMisses = 0;
+  let lockPolling = false;
   const timer = setInterval(() => {
     const n = nodeById(node.id);
     if (
@@ -2609,6 +2670,37 @@ function startMediaBackendRunWatcher(node) {
       return;
     }
     probeMediaBackend(n, { quiet: true, soft: true });
+    /* 锁看门狗：一拍只查一次（IPC 慢时不叠加）；查询本身也可能挂住（IPC 无回执），
+       8s 没回就当这一拍「查不到」，既不记账也不判收尾，绝不把挂住的查询当成「锁没了」 */
+    if (lockPolling) return;
+    lockPolling = true;
+    Promise.race([
+      Promise.resolve(typeof fetchMediaGenLock === "function" ? fetchMediaGenLock() : null),
+      new Promise((res) => setTimeout(() => res(undefined), 8000)),
+    ])
+      .catch(() => null)
+      .then((lock) => {
+        lockPolling = false;
+        if (lock === undefined) return;
+        /* 这一拍里节点已被正常收尾 / 用户停止：不再按锁做判断 */
+        if (!n.running || (Number(n._stopTick) || 0) !== stopTick) {
+          sawOwnLock = false;
+          lockMisses = 0;
+          return;
+        }
+        /* 运行体还没接手（串行链预点亮 + 显存预释放那段）：这一刻本来就没有锁，不算落空 */
+        if (n._prestart) return;
+        if (lock && String(lock.nodeId || "") === String(n.id)) {
+          sawOwnLock = true;
+          lockMisses = 0;
+          return;
+        }
+        if (!sawOwnLock) return;
+        if (Date.now() - startedAt < MEDIA_LOCK_SETTLE_MIN_MS) return;
+        lockMisses += 1;
+        if (lockMisses < MEDIA_LOCK_SETTLE_MISSES) return;
+        settleStuckMediaRun(n, "后端锁已释放但回执未到", ranAt0);
+      });
   }, 2000);
   mediaBackendRunWatchers.set(node.id, timer);
   /* 后端任务进入在途：运行队列补上「在途生成 / 后端生成中」 */
@@ -7391,15 +7483,55 @@ function videoGenRefSlotsWarning(missing) {
 
 /** 显存预检被拦（宿主回 error="vram_insufficient"）→ 弹 MTNode 确认窗，用户点「仍然执行」
  *  才把同一份参数带 forceVram 重发一次。豁免只对本次这一跑生效：不写配置、不改用户任何参数。
+ *  窗里同时说清「现在谁常驻占着显存」，并给一个「关掉它们」入口：点了先一键关掉这些**空闲**常驻部件
+ *  （正在跑任务的后端不在清单里，绝不动），关完再把同一份参数重发一次 —— 与「仍然执行」同一个出口。
  *  runOnce(forceVram) 负责组装并发出请求（生成 / 后处理各自一份）。 */
 async function withVramConfirm(runOnce) {
   const r = await runOnce(false);
   if (!r || r.ok || r.error !== "vram_insufficient") return r;
-  const msg = String(r.message || "").trim() || I18n.t("显存不足，本次没有开始执行。");
+  let msg = String(r.message || "").trim() || I18n.t("显存不足，本次没有开始执行。");
+  /* 谁占着显存：只读探测已知正在跑的本机部件（不猜 nvidia-smi 的进程表、不杀任何任务） */
+  let notice = null;
+  if (typeof vramResidentsNotice === "function") {
+    try {
+      notice = await vramResidentsNotice();
+    } catch {
+      notice = null;
+    }
+  }
+  const residents = (notice && notice.list) || [];
+  if (notice && notice.text) msg += "\n\n" + notice.text;
   const go = await confirmDialog(msg, {
     title: I18n.t("显存不足"),
     okText: I18n.t("仍然执行"),
     cancelText: I18n.t("先不跑"),
+    /* 第三颗：关掉清单里的常驻部件后再重发同一份参数（关不掉也照发，逐条结果用 toast 报） */
+    extra: residents.length
+      ? {
+          label: I18n.t("关掉它们"),
+          run: async () => {
+            if (typeof vramReleaseResidents !== "function") return;
+            let results = [];
+            try {
+              results = await vramReleaseResidents(
+                residents.map((x) => String((x && x.id) || "")),
+                residents,
+              );
+            } catch {
+              results = [];
+            }
+            const list = Array.isArray(results) ? results : [];
+            const bad = list.filter((x) => x && !x.ok);
+            if (typeof toast !== "function" || !list.length) return;
+            toast(
+              bad.length
+                ? I18n.t("没关掉：") + bad.map((x) => x.name).join("、")
+                : I18n.t("已关掉") + I18n.listJoin(list.map((x) => x.name)),
+              bad.length ? "warn" : "ok",
+            );
+          },
+        }
+      : null,
     danger: true,
   });
   if (!go) return r;
@@ -7410,7 +7542,10 @@ async function withVramConfirm(runOnce) {
    与其它媒体节点的差别只有一处：**不受 quiet 抑制**。quiet 是「内部驱动」的静默口径
    （运行本层 / 控制流 / 级联），这些路径下节点本体那行内联报错用户看不到，
    失败就只剩运行队列里悄悄少一行；而视频是最贵的一跑，失败必须看得见。
-   同一句话 6 秒内只弹一次：批量里 N 颗节点一起 OOM 时不许把右下角糊满。 */
+   同一句话 6 秒内只弹一次：批量里 N 颗节点一起 OOM 时不许把右下角糊满。
+   运行期 OOM（/out of memory|OOM/ 命中）在这句红提示后面追加同一句「谁常驻占着显存 → 去哪关」的
+   提醒（复用 vramResidentsNotice / vramOomHint，与预检被拦时同一句话）；去重键仍是原来那句 line，
+   提醒只是加在显示文本里，6 秒去重逻辑一个字没动。 */
 const videoErrorToastAt = new Map();
 function videoErrorToast(node, msg) {
   let text = String(msg || "").replace(/\s+/g, " ").trim();
@@ -7425,7 +7560,23 @@ function videoErrorToast(node, msg) {
   if (videoErrorToastAt.size > 60) {
     for (const [k, t] of videoErrorToastAt) if (now - t > 6000) videoErrorToastAt.delete(k);
   }
-  toast(line, "err");
+  if (!/out of memory|OOM/i.test(line)) {
+    toast(line, "err");
+    return;
+  }
+  /* OOM：探测一下谁常驻占着显存（只读、不动任何任务），探测不出来就照旧只弹红提示 */
+  let probe = null;
+  try {
+    if (typeof vramResidentsNotice === "function") probe = vramResidentsNotice();
+  } catch {
+    probe = null;
+  }
+  Promise.resolve(probe)
+    .then((notice) => {
+      const extra = notice && notice.text ? String(notice.text) : "";
+      toast(extra ? line + " · " + extra : line, "err");
+    })
+    .catch(() => toast(line, "err"));
 }
 
 async function playVideoGenNode(node, quiet) {

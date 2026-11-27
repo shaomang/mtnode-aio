@@ -1720,6 +1720,16 @@ async function init() {
     S.hideWires = false;
   }
   applyWiresVisibility();
+  /* 「简略」：同样记住上次状态（跨重启的渲染偏好，不入画布数据）。
+     开机就生效 —— 上一次是为了跑本地视频模型关的图像预览，重开画布不该又全加载回来。 */
+  const btnLean = $("#btnLean");
+  if (btnLean) btnLean.onclick = () => toggleLeanCanvas();
+  try {
+    S.leanCanvas = localStorage.getItem(LEAN_CANVAS_LS) === "1";
+  } catch {
+    S.leanCanvas = false;
+  }
+  applyLeanCanvas();
   $("#btnSidebar").onclick = toggleSidebar;
   $("#sideFilter").addEventListener("input", renderSidebar);
   $("#wfName").addEventListener("input", (ev) => {

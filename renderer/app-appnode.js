@@ -1956,9 +1956,28 @@ const APPNODE_ROUTES = {
          会话归属都用那一份实现，不另写一套。**不收尾时摘订阅**：那把键是「后到者接管」，
          摘掉可能把别的观察者（独立窗口那条 agentSend）一起摘了；没有 iframe 时转发本身是空操作。 */
       const sesAi = typeof window !== "undefined" ? window.MTNodeSession : null;
+      /* 顺手把这一轮的正文攒一份：agentSessionSend 自己**没有返回值**（renderer/app-assist.js
+         的函数末尾就是空的），所以 send 以前只能回 text:""。应用那边（story2video 的 01 创意步）
+         要拿整份 JSON 回执：帧一路已经通了，这一份是「帧没送到」时的兜底，
+         两路都能用，应用取长的那个（见 agent-panel.js 的 ask）。 */
+      let acc = "";
+      function appNodeTakeFrame(frame) {
+        const t = String((frame && frame.type) || "");
+        if (t === "text") {
+          const d = (frame && frame.data) || {};
+          const cand = [d.text, d.delta, d.content, d.message, d.body];
+          for (const c of cand) {
+            if (typeof c === "string" && c) {
+              acc += c;
+              break;
+            }
+          }
+        }
+      }
       if (sesAi && typeof sesAi.watchHost === "function") {
         try {
           sesAi.watchHost(sid, (frame) => {
+            appNodeTakeFrame(frame);
             appNodeEmit("agent", { type: "agent", sessionId: sid, frame: frame || {} });
           });
         } catch (_) {}
@@ -1978,7 +1997,8 @@ const APPNODE_ROUTES = {
       appNodeEmit("agent", { type: "agent", sessionId: sid, frame: { type: "done", data: {} } });
       const txt =
         typeof out === "string" ? out : out && typeof out.text === "string" ? out.text : "";
-      return { ok: true, sessionId: sid, text: txt };
+      /* 正文优先取 agentSessionSend 的返回值（这一版它恒为空），空则用这一轮攒下来的流式正文 */
+      return { ok: true, sessionId: sid, text: String(txt || acc || "") };
     },
     cancel: async () => {
       const n = appNodeById(APPNODE.nodeId);

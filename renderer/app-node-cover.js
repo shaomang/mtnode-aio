@@ -93,6 +93,15 @@ function coverRepaintAll() {
    opacity 会把标题 / 描述一起变淡，所以另起一层。 */
 function applyNodeCoverToBody(node, bodyEl) {
   if (!bodyEl) return;
+  /* 简略模式（顶栏「简略」）：封面一律不铺 —— dataURL 铺出来就是一块图像纹理，
+     这一档的目的就是一只都不留（退出简略后由整幅重建重新铺上）。 */
+  if (typeof leanCanvasOn === "function" && leanCanvasOn()) {
+    bodyEl.classList.remove("has-cover");
+    bodyEl.style.removeProperty("--node-cover-img");
+    bodyEl.style.removeProperty("--node-cover-opacity");
+    bodyEl.style.backgroundImage = "";
+    return;
+  }
   const img = coverImageOf(node);
   if (!img) {
     bodyEl.classList.remove("has-cover");
@@ -111,6 +120,11 @@ function applyNodeCoverToStage(node, stage) {
   if (!stage) return;
   const img = coverImageOf(node);
   let bg = stage.querySelector(":scope > .super-stage-cover");
+  /* 简略模式：展开态底图同样不铺（已有的一并摘掉） */
+  if (typeof leanCanvasOn === "function" && leanCanvasOn()) {
+    if (bg) bg.remove();
+    return;
+  }
   if (!img) {
     if (bg) bg.remove();
     return;

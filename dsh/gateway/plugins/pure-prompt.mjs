@@ -4,9 +4,10 @@
  * sections / contexts 全空，省 token 且结果确定。
  *
  * **工具可见集由 mtnode-tool-visibility 另管**（MTNODE_PURE_TOOLS=1 →
- * restrict({ allow: 读/写/命令/联网搜索 })）：实测纯净轮系统提示已经是 0 token，
- * 首步 36,341 token 里 23,739 全是工具定义，所以「纯净」必须同时裁工具面才真省。
- * 本文件只管提示词那半，两者互不依赖；只开 MTNODE_PURE 也不会把工具裁空。
+ * restrict({ deny: PURE_DROP_TOOLS })）：只摘 MTNode 自己注入的工具，
+ * dsh 引擎自带的读 / 写 / 命令 / 联网 / read_image 识图 / 待办 / 子代理一律保留 ——
+ * 纯净模式只排除 MTNode 相关的注入，模型自身能力与 dsh 独立运行基本一致。
+ * 本文件只管提示词那半，两者互不依赖；只开 MTNODE_PURE 也不会动工具面。
  * 环境变量由 gateway.mjs 的 getRuntime 按 run 参数 pure 注入；
  * runtime key 已含 pure 标记，纯净 / 非纯净运行不会复用同一台运行时，
  * 因此本插件的 apply 阶段只对 pure 运行时生效。
@@ -46,7 +47,7 @@ export function apply(ctx) {
       sections: [],
       contexts: [],
       /* tools 原样透传 —— 工具面由 mtnode-tool-visibility 按 MTNODE_PURE_TOOLS 的
-         白名单裁（见文件头）。这里刻意不在这里按名字过滤一遍：两处各裁一半，
+         deny 名单裁（见文件头）。这里刻意不按名字过滤一遍：两处各裁一半，
          「纯净轮到底还剩什么」就再也说不清了。 */
     }
   }, { prepend: true })

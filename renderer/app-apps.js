@@ -4685,29 +4685,41 @@ function appsCoverActionsEl(spec, opts) {
   return null;
 }
 
-/* 库页卡片**下方那条通栏「启动」**（用户本轮口径：每个应用下面一条长条按钮，点它直接启动）。
+/* 卡片**下方那条通栏按钮**（库 / 应用中心 / 我的应用共用，用户口径：
+ * 「应用下方也增加等宽按钮（与库一样），显示『下载』或『启动』」）。
  *
- * 与上面「封面上不出按钮」的老口径不冲突：那条老口径说的是封面上的图标 / 文字动作行
- * （下载 / 更新 / 编辑 / 删除 …仍只走详情窗）；库里点得最多的动作 = 打开应用，
- * 所以给它一条通栏长条，把「点卡片开详情 → 再点运行」这两步省成一步。
+ *   · 已装（本机任一串根下有这一份，或调用方点名 local）→ 「启动」，绿色（.apps-launch-run）
+ *     —— 与「下载」一眼分得开；点它一步启动，省掉「点卡片开详情 → 再点运行」。
+ *   · 没装 → 「下载」（.apps-launch-get）→ 按主干最新版直接装，装完这枚自动变「启动」
+ *     （appsDownload 成功后会重拉清单并整页重绘）。
  *
- * 只有库页（appsTileEl 的 local 分支）会挂它；应用中心的远端目录卡片仍然是纯封面。
- * 按钮自己 stopPropagation：点它只启动，不连带把详情窗一起打开。 */
-function appsLaunchStripEl(spec) {
+ * 与「封面上不出按钮」的老口径不冲突：那条说的是封面上的图标 / 文字动作行（更新 / 编辑 /
+ * 删除 … 仍只走详情窗）。按钮自己 stopPropagation：点它只启动 / 下载，不连带把详情窗打开。 */
+function appsLaunchStripEl(spec, opts) {
+  const o = opts || {};
   const id = String((spec && spec.id) || "");
+  const installed = !!o.local || !!appsLocalById(id);
   const btn = document.createElement("button");
   btn.type = "button";
-  btn.className = "apps-launch";
+  btn.className = "apps-launch " + (installed ? "apps-launch-run" : "apps-launch-get");
   btn.dataset.appLaunch = id;
-  btn.textContent = appsT("启动");
-  btn.title = appsT("在独立窗口里启动这个应用（同一时间只开一个应用）");
-  btn.setAttribute("aria-label", appsT("启动") + " " + String(appsSpecTitle(spec) || id));
+  btn.dataset.appInstalled = installed ? "1" : "0";
+  btn.textContent = appsT(installed ? "启动" : "下载");
+  btn.title = installed
+    ? appsT("在独立窗口里启动这个应用（同一时间只开一个应用）")
+    : appsT("下载这个应用并装到本机（装好后这里变成「启动」）");
+  btn.setAttribute(
+    "aria-label",
+    appsT(installed ? "启动" : "下载") + " " + String(appsSpecTitle(spec) || id),
+  );
   btn.addEventListener("click", (ev) => {
     ev.preventDefault();
     ev.stopPropagation();
-    if (id) appsOpenApp(id, appsOpenKindOf(id));
+    if (!id) return;
+    if (installed) appsOpenApp(id, appsOpenKindOf(id));
+    else appsDownload(id, "install");
   });
-  /* 卡片本身绑了 Enter / 空格开详情：按钮上的回车只该启动，不能顺带开详情 */
+  /* 卡片本身绑了 Enter / 空格开详情：按钮上的回车只该启动 / 下载，不能顺带开详情 */
   btn.addEventListener("keydown", (ev) => {
     if (ev.key === "Enter" || ev.key === " ") ev.stopPropagation();
   });
@@ -4733,8 +4745,9 @@ function appsTileEl(spec, opts) {
   progTxt.hidden = true;
   card.appendChild(prog);
   card.appendChild(progTxt);
-  /* 库页：卡片下方那条通栏「启动」（见 appsLaunchStripEl 的注释） */
-  if (o.local) card.appendChild(appsLaunchStripEl(spec));
+  /* 卡片下方那条通栏按钮：库 / 我的应用 = 启动（绿），应用中心没装的 = 下载
+     （见 appsLaunchStripEl 的注释） */
+  card.appendChild(appsLaunchStripEl(spec, { local: !!o.local }));
   /* 点封面空白处 = 打开应用详情窗（与微软商店一致）；图标按钮各自 stopPropagation，不误触。
      键盘也一样：卡片自己 tabindex=0，Enter / 空格即开。 */
   card.tabIndex = 0;

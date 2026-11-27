@@ -2129,13 +2129,16 @@ body.ef-skin.theme-light .apps-tile.open {
 body.ef-skin.theme-light .apps-cover-shade {
   background: linear-gradient(180deg, rgba(29, 42, 68, 0.05), rgba(29, 42, 68, 0.14) 55%, rgba(29, 42, 68, 0.14));
 }
+/* 标题那一格现在垫的是**半透明暗色片**（apps.css 的 .apps-cover-cap，用户口径要的
+   「暗色垫 + 白字」），所以浅色主题下也必须是白字 —— 以前那种「浅底 + 深字」在这块
+   暗片上会糊掉。作者行同理，压到 82% 白。 */
 body.ef-skin.theme-light .apps-cover-name {
-  color: #1d2a44;
-  text-shadow: 0 1px 3px rgba(29, 42, 68, 0.2);
+  color: #fff;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.6);
 }
 body.ef-skin.theme-light .apps-cover-author {
-  color: rgba(29, 42, 68, 0.82);
-  text-shadow: 0 1px 3px rgba(29, 42, 68, 0.2);
+  color: rgba(255, 255, 255, 0.82);
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.6);
 }
 body.ef-skin.theme-light .apps-cover-acts .apps-ico-btn {
   background: rgba(29, 42, 68, 0.14);

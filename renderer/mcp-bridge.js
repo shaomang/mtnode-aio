@@ -450,7 +450,10 @@
           case "run":
           case "tool":
           case "sessionTask":
-          case "mediaNode": {
+          case "mediaNode":
+          /* 交接（mtnode_agent）：主进程编排，画布与会话这两件真源在这里落地 */
+          case "handoffPrepare":
+          case "handoffSend": {
             /* 自用回环三件（跑节点 / 用户工具 / 会话）+ 生成后的「建一个画布节点」：
                执行体在 renderer/mcp-extra.js（与画布那颗 ▶、agent 调工具、新会话发送同源）。 */
             const ex = window.MTNodeMcpExtra;
@@ -461,7 +464,11 @@
                   ? ex && ex.tools
                   : frame.op === "mediaNode"
                     ? ex && ex.mediaNode
-                    : ex && ex.sessionTask;
+                    : frame.op === "handoffPrepare"
+                      ? ex && ex.handoffPrepare
+                      : frame.op === "handoffSend"
+                        ? ex && ex.handoffSend
+                        : ex && ex.sessionTask;
             if (typeof fn !== "function") {
               const err = "自用回环渲染层未加载（renderer/mcp-extra.js）";
               reply(frame.id, { ok: false, error: err }, err);

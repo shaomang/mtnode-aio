@@ -2057,7 +2057,11 @@
   const AA_VIS_MIN_MARGIN = 320; /* rootMargin 至少留这么多像素（同 previewLazyMargin） */
   let aaVisIo = null; /* IntersectionObserver（窗口为根，rootMargin ≈ 一屏） */
   let aaVisIoMargin = ""; /* 建它时用的 rootMargin：视口尺寸变了要重建 */
-  const aaVisRecs = new Map(); /* 占位元素 -> rec（断开即删，不留悬挂记录） */
+  /* 观察目标是 **body 本身**，不是那块占位：占位在挂上真内容时会被 display:none，那是个零尺寸
+     盒子，IntersectionObserver 会立刻回一发 isIntersecting:false → 卸载把占位摆回来 → 又相交 →
+     再挂 —— 一帧一轮的「挂载 / 卸载」循环，视觉上就是展开后疯狂闪烁。body 在节点活着的整个期间
+     都有尺寸、从不隐藏，观察它才稳定；占位只当「真内容插在它前面」的锚点。 */
+  const aaVisRecs = new Map(); /* 观察目标（body）-> rec（断开即删，不留悬挂记录） */
   const aaVisByNode = new Map(); /* node.id -> rec（body 换掉时按节点收干净） */
 
   /** rootMargin ≈ 一屏（横竖各一屏，最小 320px）：与 app-preview-lazy.js 的 previewLazyMargin 同口径 */
@@ -2083,9 +2087,9 @@
       threshold: 0,
     });
     aaVisIoMargin = margin;
-    for (const ph of aaVisRecs.keys()) {
+    for (const obs of aaVisRecs.keys()) {
       try {
-        aaVisIo.observe(ph);
+        aaVisIo.observe(obs);
       } catch (_) {}
     }
     return aaVisIo;
@@ -2093,15 +2097,15 @@
 
   function aaVisOnIntersect(entries) {
     for (const e of entries) {
-      const ph = e.target;
-      const rec = aaVisRecs.get(ph);
+      const obs = e.target;
+      const rec = aaVisRecs.get(obs);
       if (!rec || rec.dead) continue;
-      /* 占位已不在文档里（body 被换掉 / 节点被删）：当场解除观察，不留悬挂记录 */
-      if (!ph.isConnected) {
-        aaVisRecs.delete(ph);
+      /* 观察目标或占位已不在文档里（body 被换掉 / 节点被删）：当场解除观察，不留悬挂记录 */
+      if (!obs.isConnected || !rec.ph.isConnected) {
+        aaVisRecs.delete(obs);
         if (aaVisIo) {
           try {
-            aaVisIo.unobserve(ph);
+            aaVisIo.unobserve(obs);
           } catch (_) {}
         }
         continue;
@@ -2111,19 +2115,19 @@
     }
   }
 
-  /** 扫掉「占位已经不在文档里」的登记：节点被删时观察器不会再有回调，只能靠这里收。
+  /** 扫掉「观察目标已经不在文档里」的登记：节点被删时观察器不会再有回调，只能靠这里收。
       每次建 body 顺手扫一遍（表很小，成本可忽略），不额外挂 MutationObserver。 */
   function aaVisPrune() {
     if (!aaVisRecs.size) return;
-    for (const [ph, rec] of Array.from(aaVisRecs)) {
-      if (rec.dead || (ph.isConnected && ph.parentNode)) continue;
+    for (const [obs, rec] of Array.from(aaVisRecs)) {
+      if (rec.dead || (obs.isConnected && rec.ph.parentNode)) continue;
       rec.dead = true;
       rec.built = null;
-      aaVisRecs.delete(ph);
+      aaVisRecs.delete(obs);
       if (aaVisByNode.get(rec.node.id) === rec) aaVisByNode.delete(rec.node.id);
       if (aaVisIo) {
         try {
-          aaVisIo.unobserve(ph);
+          aaVisIo.unobserve(obs);
         } catch (_) {}
       }
     }
@@ -2138,10 +2142,10 @@
     rec.dead = true;
     rec.built = null;
     aaVisByNode.delete(nodeId);
-    aaVisRecs.delete(rec.ph);
+    aaVisRecs.delete(rec.obs || rec.ph);
     if (aaVisIo) {
       try {
-        aaVisIo.unobserve(rec.ph);
+        aaVisIo.unobserve(rec.obs || rec.ph);
       } catch (_) {}
     }
     /* 播放头 / 叠加层先收掉：新一轮建起来时会重新登记，不收就会留下指向已脱离 DOM 的登记 */
@@ -2220,8 +2224,10 @@
   function aaVisGate(node, body) {
     aaVisPrune(); /* 顺手把「节点已被删」的旧登记扫掉 */
     const ph = aaVisPlaceholder();
-    const rec = { node, body, ph, built: null, dead: false };
-    aaVisRecs.set(ph, rec);
+    /* 观察 body（不是 ph）：ph 在挂上真内容时会 display:none，零尺寸盒子会被 IO 判成
+       「不相交」，于是卸载 → 占位回来 → 相交 → 再挂，一帧一轮地闪（见 aaVisRecs 的注释）。 */
+    const rec = { node, body, ph, obs: body, built: null, dead: false };
+    aaVisRecs.set(rec.obs, rec);
     aaVisByNode.set(node.id, rec);
     body.appendChild(ph);
     const io = aaVisEnsureIo();
@@ -2230,7 +2236,7 @@
       return rec;
     }
     try {
-      io.observe(ph);
+      io.observe(rec.obs);
     } catch (_) {}
     return rec;
   }
@@ -2281,8 +2287,9 @@
         continue;
       }
       try {
-        io.unobserve(rec.ph); /* 先断开再连：强制 IO 重新发一次初始回调 */
-        io.observe(rec.ph);
+        const obs = rec.obs || rec.ph;
+        io.unobserve(obs); /* 先断开再连：强制 IO 重新发一次初始回调 */
+        io.observe(obs);
       } catch (_) {}
     }
   }

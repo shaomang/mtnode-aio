@@ -87,6 +87,9 @@ const S = {
   selMarkSet: new Set(), /* 多选绘制（框选 / Ctrl+点击） */
   boxMode: false, /* 框选模式开关 */
   hideWires: false, /* 顶栏「隐藏线」：临时把连线压到几乎不可见（纯视觉，不落画布） */
+  /* 顶栏「简略」：画布不再加载任何图像 / 视频预览、不铺节点层封面（纯渲染开关，不落画布）。
+     本地视频模型（H3 等）跑之前按一下，把 GPU 进程里的图像纹理解放出来给模型用。 */
+  leanCanvas: false,
   sidebarOpen: false,
   researchSide: true, /* 研究视图的左栏（文件页）显隐，与画布侧栏互不影响 */
   sideCollapsed: {}, /* 边栏分类折叠状态 */
@@ -12105,7 +12108,26 @@ function confirmDialog(message, opts) {
     ok.className = defaultCancel ? "mini" : opts.danger ? "mini danger" : "mini primary";
     ok.textContent = opts.okText || I18n.t("确定");
     ok.onclick = () => finish(true);
+    /* opts.extra = { label, run }：第三颗按钮（可选）—— 点了先跑 opts.extra.run()（异步、期间禁用），
+       run 结束后与「确定」同一个出口结算（resolve(true)）。给「先做点别的再继续」这类替代出口用
+       （显存不足窗的「关掉它们」：先关常驻部件，再把同一份参数重发一次）。 */
+    let extra = null;
+    if (opts.extra && opts.extra.label) {
+      extra = document.createElement("button");
+      extra.type = "button";
+      extra.className = "mini";
+      extra.textContent = String(opts.extra.label);
+      extra.onclick = async () => {
+        if (done) return;
+        extra.disabled = true;
+        try {
+          await (typeof opts.extra.run === "function" ? opts.extra.run() : null);
+        } catch (_) {}
+        finish(true);
+      };
+    }
     if (foot) {
+      if (extra) foot.appendChild(extra);
       foot.appendChild(cancel);
       foot.appendChild(ok);
     }
@@ -14204,6 +14226,11 @@ function applySelectionInPlace(ids) {
   /* 绘制标注的选中框不随节点走，但撤掉节点选中时常与「清空选择」同一笔发生 */
   try {
     syncMarkSelDom();
+  } catch (_) {}
+  /* 简略模式（顶栏「简略」）：预览跟着选中集走 —— 选中那颗把图复原、其余一律占位，
+     纹理数因此有上限。见 app-canvas.js 的 leanCanvasSyncFocus；非简略模式里它是空操作。 */
+  try {
+    if (typeof leanCanvasSyncFocus === "function") leanCanvasSyncFocus();
   } catch (_) {}
 }
 /* 取「这次点选前后的选中集合」——就地换形态需要两者的并集才能把撤选的也切回去 */

@@ -423,6 +423,179 @@ function mountPluginPopConsole(pop, item) {
   _popConsoleTeardown = () => clearInterval(timer);
   return true;
 }
+/* ════════════ 详情浮层里的「产出物缓存」（清理出口）════════════════════════════
+   ComfyUI 系本地后端每跑一次生成都会在安装目录里留产物（output/、ComfyUI/output|input|temp），
+   长期能吃掉几十 GB。内核在 plugins/plugin-cache-clean.js（白名单 + 「为什么可以删」都写在那边），
+   这里只做界面：
+     · 打开浮层只做只读 scan（各目录大小 / 文件数 / 总占用），不自动删任何东西；
+     · 「清理产出物」在浮层内展开确认（逐条目录 + 「保留最近 7 天 / 全部清理」两档 + 取消），
+       确认后才调 pluginCache:clean，并按释放空间 toast；
+     · 后端运行中只给一行提示，**不自动停** —— 占用中的文件由内核跳过并记进 errors；
+     · 未安装 / 没有缓存目录（scan 不是 ok，或一个缓存目录都没有产物）→ 不渲染这块。 */
+function cacheSizeText(n) {
+  const v = Math.max(0, Number(n) || 0);
+  if (v < 1024) return v + " B";
+  if (v < 1024 * 1024) return (v / 1024).toFixed(1) + " KB";
+  if (v < 1024 * 1024 * 1024) return (v / 1024 / 1024).toFixed(1) + " MB";
+  return (v / 1024 / 1024 / 1024).toFixed(2) + " GB";
+}
+function mountPluginPopCache(pop, item) {
+  const spec = backendSpecOf(item);
+  const scanFn = pluginApiFn("pluginCacheScan");
+  const cleanFn = pluginApiFn("pluginCacheClean");
+  /* 认不出的插件（桌宠 / 窗口插件 / 没有产出物的后端）连这块都不挂 */
+  if (!spec || !scanFn || !cleanFn) return false;
+  const id = BACKEND_INSTALL_IDS[spec.key] || spec.key;
+  const box = document.createElement("div");
+  box.className = "plugin-console";
+  box.innerHTML =
+    '<div class="plugin-console-head"><span class="plugin-console-title"></span></div>' +
+    '<div class="plugin-console-status" data-cache-total></div>' +
+    '<div data-cache-dirs></div>' +
+    '<div class="np-warn-line" data-cache-warn hidden></div>' +
+    '<div class="plugin-console-acts" data-cache-acts>' +
+    '<button type="button" class="mini plugin-console-btn" data-cache-open></button>' +
+    "</div>" +
+    '<div data-cache-confirm hidden></div>';
+  box.querySelector(".plugin-console-title").textContent = I18n.t("产出物缓存");
+  const totalEl = box.querySelector("[data-cache-total]");
+  const dirsEl = box.querySelector("[data-cache-dirs]");
+  const warnEl = box.querySelector("[data-cache-warn]");
+  const actsEl = box.querySelector("[data-cache-acts]");
+  const openBtn = box.querySelector("[data-cache-open]");
+  const confirmEl = box.querySelector("[data-cache-confirm]");
+  openBtn.textContent = I18n.t("清理产出物");
+  /* .plugin-console-acts 自带 display:flex，会盖掉 [hidden] 的 display:none —— 这里用内联 display 收起 */
+  actsEl.style.display = "none";
+  totalEl.textContent = I18n.t("统计中…");
+  /* 浮层内滚轮不要穿透到浮层外（确认面板反复重建，监听只挂这一次） */
+  confirmEl.addEventListener("wheel", (ev) => ev.stopPropagation(), { passive: true });
+  pop.appendChild(box);
+
+  /* 一行「目录 · 大小 · 文件数」（.np-row / np-row-l / np-row-v 是插件浮层现成的排版类） */
+  const dirRow = (d, note) => {
+    const row = document.createElement("div");
+    row.className = "np-row";
+    const l = document.createElement("span");
+    l.className = "np-row-l";
+    l.textContent = d.rel;
+    l.style.flex = "0 0 auto"; /* 目录名（ComfyUI/output 这类）比 np-row-l 的 74px 固定宽长，别截断 */
+    const v = document.createElement("span");
+    v.className = "np-row-v";
+    v.textContent =
+      cacheSizeText(d.bytes) + " · " + (Number(d.files) || 0) + " " + I18n.t("个文件") + (note ? " · " + note : "");
+    v.title = String(d.path || "");
+    row.appendChild(l);
+    row.appendChild(v);
+    return row;
+  };
+  const live = () => box.isConnected && pop.classList.contains("on");
+
+  const paint = (r) => {
+    const dirs = (r.dirs || []).filter((d) => d.exists && (Number(d.files) || Number(d.bytes)));
+    totalEl.textContent =
+      I18n.t("总计") + " " + cacheSizeText(r.bytes) + " · " + (Number(r.files) || 0) + " " + I18n.t("个文件");
+    dirsEl.innerHTML = "";
+    for (const d of dirs) dirsEl.appendChild(dirRow(d, ""));
+    /* 确认面板逐条列出「这次会动哪些目录」（同一份 dirs，不另算一遍） */
+    const cdirs = confirmEl.querySelector("[data-cache-confirm-dirs]");
+    cdirs.innerHTML = "";
+    for (const d of dirs) cdirs.appendChild(dirRow(d, ""));
+    return dirs.length;
+  };
+
+  const runClean = async (keepDays) => {
+    const btns = confirmEl.querySelectorAll("button");
+    btns.forEach((b) => (b.disabled = true));
+    let r = null;
+    try {
+      r = await cleanFn(id, { keepDays });
+    } catch (e) {
+      r = { ok: false, error: (e && e.message) || String(e) };
+    }
+    btns.forEach((b) => (b.disabled = false));
+    if (!live()) return;
+    if (!r || !r.ok) {
+      toast(I18n.t("清理失败：") + ((r && r.error) || I18n.t("未知错误")), "err");
+      return;
+    }
+    const tail = r.errors && r.errors.length ? I18n.t("；有文件被占用未删，先停用后端再清") : "";
+    toast(I18n.t("已释放") + " " + cacheSizeText(r.freedBytes) + " · " + (Number(r.files) || 0) + " " + I18n.t("个文件") + tail, "ok");
+    confirmEl.hidden = true;
+    await refresh();
+  };
+
+  /* 确认面板：两档 + 取消（取消只是收起来，什么都不调） */
+  const buildConfirm = (dirs) => {
+    confirmEl.hidden = false;
+    confirmEl.innerHTML = "";
+    const tip = document.createElement("div");
+    tip.className = "plugin-console-status";
+    tip.textContent = I18n.t("将清理以下目录里的产物（不删目录本身；最近 10 分钟内写过的文件自动跳过）：");
+    confirmEl.appendChild(tip);
+    const list = document.createElement("div");
+    list.setAttribute("data-cache-confirm-dirs", "1");
+    for (const d of dirs) list.appendChild(dirRow(d, ""));
+    confirmEl.appendChild(list);
+    const row = document.createElement("div");
+    row.className = "plugin-console-acts";
+    row.style.marginTop = "8px";
+    const mk = (label, fn, danger) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = danger ? "mini danger plugin-console-btn" : "mini plugin-console-btn";
+      b.textContent = label;
+      b.onclick = (ev) => {
+        ev.stopPropagation();
+        fn();
+      };
+      row.appendChild(b);
+    };
+    mk(I18n.t("保留最近 7 天"), () => void runClean(7), false);
+    mk(I18n.t("全部清理"), () => void runClean(0), true);
+    mk(I18n.t("取消"), () => {
+      confirmEl.hidden = true;
+    }, false);
+    confirmEl.appendChild(row);
+  };
+
+  const refresh = async () => {
+    let r = null;
+    try {
+      r = await scanFn(id);
+    } catch (e) {
+      r = { ok: false, error: (e && e.message) || String(e) };
+    }
+    if (!live()) return;
+    /* 未安装 / 认不出的插件 / 没有缓存目录 → 整块不渲染（连标题都不留） */
+    if (!r || !r.ok || !paint(r)) {
+      box.remove();
+      return;
+    }
+    actsEl.style.display = "flex";
+    openBtn.onclick = (ev) => {
+      ev.stopPropagation();
+      buildConfirm((r.dirs || []).filter((d) => d.exists && (Number(d.files) || Number(d.bytes))));
+    };
+  };
+
+  /* 后端运行中：只提示先停用（占用中的文件会被内核跳过），**不自动停** */
+  const statusFn = pluginApiFn(spec.api + "Status");
+  if (statusFn) {
+    void (async () => {
+      try {
+        const st = await statusFn();
+        if (!live()) return;
+        if (st && st.running) {
+          warnEl.hidden = false;
+          warnEl.textContent = I18n.t("后端运行中，建议先停用：正在写的产物会被跳过，占用中的文件删不掉。");
+        }
+      } catch {}
+    })();
+  }
+  void refresh();
+  return true;
+}
 function openPluginPop(wrap, pop, card, item) {
   const already = card.classList.contains("sel");
   closePluginPop(wrap, pop);
@@ -450,6 +623,8 @@ function openPluginPop(wrap, pop, card, item) {
   /* 本地后端插件：详情浮层里内嵌只读 console（状态行 + 后端日志尾部），见 mountPluginPopConsole。
      卡片上已无「后端提示」角标（本轮需求：卡片不留任何文字），所以这里不再收起角标。 */
   mountPluginPopConsole(pop, item);
+  /* 产出物缓存（本轮需求）：本地后端插件在安装目录里攒下的产物，清理出口就在浮层里 */
+  void mountPluginPopCache(pop, item);
   /* 安装后自检的最近一次结论（本轮需求）：卡片详情里能复看「什么时候测的、产物在哪」 */
   paintPluginSelfcheckRow(pop, item.id);
   /* 安装目录**不在插件界面里显示**（本轮需求）：目录由安装窗统一显示与修改
@@ -4101,6 +4276,21 @@ function paintMcpServerPanel(info) {
           (s.selfLoopTools || []).join(" / ")
       : I18n.t("关 · 应用内 Agent 只用手上的内置工具，不经 MCP 调生成"),
   );
+  /* 工具面（本次需求 · 交接优先）：默认 slim —— 外部 agent 先看到「把活交给 MTNode 的 agent」；
+     需要底层工具再调 mtnode_catalog 展开（按连接生效，不写盘，重启回精简）。 */
+  extInfoField(
+    info,
+    I18n.t("工具面"),
+    (s.toolSurface === "full"
+      ? I18n.t("完整 · 全部工具平铺（老口径）")
+      : I18n.t("精简 · 只回 mtnode_agent（交接）+ mtnode_catalog（展开）")) +
+      (s.toolSurfaceExpanded
+        ? I18n.t(" · 已有 ") + s.toolSurfaceExpanded + I18n.t(" 条连接展开过")
+        : "") +
+      I18n.t("（共 ") +
+      (s.toolsTotal || s.tools || 0) +
+      I18n.t(" 个工具）"),
+  );
   if (s.lastError) extInfoField(info, I18n.t("最近一次错误"), s.lastError);
 
   /* 作业（生成 / 跑节点都是异步的：起作业立刻回 jobId，结果在这里看） */
@@ -4163,6 +4353,26 @@ function paintMcpServerPanel(info) {
             s.selfLoop
               ? I18n.t("自用回环已关闭")
               : I18n.t("自用回环已开启（引擎重连后生效）"),
+            "ok",
+          );
+        } catch (e) {
+          toast(I18n.t("操作失败：") + extErrorText(e), "err");
+        }
+        await fetchMcpServerState();
+        paintExtManager();
+      },
+    ],
+    [
+      s.toolSurface === "full" ? I18n.t("工具面：切回精简") : I18n.t("工具面：切到完整"),
+      "",
+      async () => {
+        try {
+          const r = await window.api.mcpSetToolSurface(s.toolSurface === "full" ? "slim" : "full");
+          if (r && r.ok === false) throw new Error(r.error);
+          toast(
+            r && r.toolSurface === "full"
+              ? I18n.t("工具面已切到完整：全部工具平铺")
+              : I18n.t("工具面已切到精简：只回交接与展开两件"),
             "ok",
           );
         } catch (e) {

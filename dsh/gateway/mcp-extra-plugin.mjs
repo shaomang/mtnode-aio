@@ -36,10 +36,107 @@ const SESSION_DESC =
   '- action:"read"：读这条会话最近的消息；action:"close"：立刻删掉（keep 的会话不删，回一句说明）。\n' +
   '- 不读、不改用户自己的会话。'
 
+/* ── 交接面（本次需求 · 外部 agent 的第一入口）────────────────────────────────
+ * 为什么要有它：外部 agent 想在这台机器上干一件 MTNode 的活（建流程、出图、跑节点、
+ * 写文件），自己拼 17 个底层工具 + 读技能的成本极高，而 MTNode 自己的智能体本来就带着
+ * 全部技能、画布工具与本地后端。所以默认把**活整件交出去**，底层工具降为「需要时才展开」
+ * 的第二层（mtnode_catalog）。 */
+const AGENT_DESC =
+  'Hand the work off to MTNode\'s own agent (the one with every MTNode skill, canvas tool and local backend). **Use this first** — do not try to drive the canvas node by node yourself.\n' +
+  '- run（默认）：给 task（要干什么，写清验收标准）+ projectFolder（**绝对路径**，外部调用方必须显式给）。MTNode 自己负责：解析或新建该文件夹对应的画布、在该文件夹下建/复用一条「外部交接」会话、用设置里的默认模型提供商跑完这一轮，再把结果回给你。\n' +
+  '- 异步：run 立刻回 jobId；action:"status" 取结果（wait:true 就地等，最长 30 分钟）。\n' +
+  '- 回执里有：助手最后一段回复、sessionId、改动清单（文件 / 画布节点 / 产物路径）、工具调用时间线、以及「停下来等人」的卡片（needs_answer）。\n' +
+  '- 审批 / 画布确认由 MTNode 自动放行；模型**澄清提问**交回给你：status 里看到 needs_answer 就用 action:"answer" 作答，这一轮继续跑。\n' +
+  '- 中途控制：action:"steer"（插话）/ "stop"（终止）/ "read"（读会话历史，续用同一个 sessionId 即可继续上次的上下文）。\n' +
+  '- 一个项目文件夹一条常驻会话（左栏可见、可接管）；同一项目再交接时自动续上下文。\n' +
+  '- 需要底层工具（画布读写 / 数据库 / 素材 / 识别 / 跑节点）时，先调 mtnode_catalog 展开。'
+
+const CATALOG_DESC =
+  'Expand the full MTNode tool surface (the second layer).\n' +
+  '- 默认工具表只有 mtnode_agent 与它自己：需要直接操作画布 / 数据库 / 素材 / 媒体 / 跑节点时先调它一次。\n' +
+  '- 回：完整的底层工具清单（名称 / 说明 / 参数表）+ 操作规范 + 资源与提示词清单；同时推一条 tools/list_changed（支持的客户端会重拉工具表）。\n' +
+  '- 展开只对**本次连接**有效，不改变别的客户端看到的工具面。'
+
 export const name = 'mtnode-mcp-extra'
 export const inject = ['tools']
 
 export function apply(ctx) {
+  ctx.tools.register(
+    defineTool({
+      name: 'mtnode_agent',
+      description: AGENT_DESC,
+      parameters: {
+        action: {
+          type: 'string',
+          enum: ['run', 'status', 'read', 'steer', 'stop', 'answer', 'list'],
+          description: 'run（默认）= 交接一件活；status = 查作业；read = 读会话；steer / stop = 中途干预；answer = 回一张提问卡；list = 列作业。',
+        },
+        task: {
+          type: 'string',
+          description: 'run：要 MTNode 的 agent 干什么。写清目标、验收标准与不要做的事；它会自己读技能、改画布、跑节点、落盘。',
+        },
+        projectFolder: {
+          type: 'string',
+          description: 'run：项目文件夹的**本机绝对路径**。画布按工作目录匹配（取最近活跃那张），没有就按文件夹名新建一张；路径必须已存在。',
+        },
+        canvas: {
+          type: 'string',
+          description: 'run：可选，指定画布 id 或精确名称（优先于 projectFolder 的自动匹配）。',
+        },
+        sessionId: {
+          type: 'string',
+          description: 'run：续用哪条会话（留空 = 该项目文件夹的常驻「外部交接」会话）；read / steer / stop / answer：目标会话 id。',
+        },
+        title: { type: 'string', description: 'run：会话标题（留空 = 「外部交接 · 项目文件夹名」）。' },
+        jobId: { type: 'string', description: 'status：run 时回的那个作业 id。' },
+        wait: { type: 'boolean', description: 'status：true = 就地等它跑完（最长 30 分钟）；默认立刻回当前状态。' },
+        text: { type: 'string', description: 'steer：插话正文（补一句要求，不打断正在跑的那一轮）。' },
+        id: { type: 'string', description: 'answer：提问卡的 id（status 回执里的 needs_answer.id）。' },
+        answers: {
+          type: 'array',
+          description: 'answer：按题作答 [{id, selected:[选项文本…]}]（与卡片里的 questions 对齐）。',
+        },
+        answerText: { type: 'string', description: 'answer：答案的可读正文（不给 answers 时用它）。' },
+        outcome: {
+          type: 'string',
+          enum: ['allowed-once', 'rejected', 'allowed-session', 'answered'],
+          description: 'answer：审批类卡片的处置（默认 allowed-once）。',
+        },
+        limit: { type: 'number', description: 'read：最多回多少条消息（默认 30，上限 200）。' },
+      },
+      timeoutMs: 1800000,
+      output: {
+        schema: { type: 'object', additionalProperties: true },
+        render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
+      },
+      async execute() {
+        throw new Error('mtnode_agent 由 MTNode 主进程编排（mcp-server.js + renderer/mcp-extra.js），不在网关里跑')
+      },
+    }),
+  )
+
+  ctx.tools.register(
+    defineTool({
+      name: 'mtnode_catalog',
+      description: CATALOG_DESC,
+      parameters: {
+        detail: {
+          type: 'string',
+          enum: ['brief', 'full'],
+          description: 'full（默认）= 工具清单 + 参数表 + 规范全文；brief = 只回名称与一句话用途。',
+        },
+      },
+      timeoutMs: 60000,
+      output: {
+        schema: { type: 'object', additionalProperties: true },
+        render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
+      },
+      async execute() {
+        throw new Error('mtnode_catalog 由 MTNode 主进程执行（mcp-server.js），不在网关里跑')
+      },
+    }),
+  )
+
   ctx.tools.register(
     defineTool({
       name: 'mtnode_generate',

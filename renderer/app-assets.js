@@ -146,6 +146,119 @@ function assetBtn(label, cls, title) {
   return b;
 }
 
+/* ── SVG：允许当图像用（用户口径：光栅化到 360p 就够）──────────────────
+   素材库只收真位图：SVG 进库前先在渲染层按「长边 360」画成 PNG 再写进库。
+   为什么不在库里留 SVG：预览层（<img>）能画 SVG，可下游一律按 png 贴字节 ——
+   参考图 / 识图 / 图像编辑接口拿到的若是 SVG 字节，就是一张静默坏图
+   （main.js 那条 vision 通路甚至把它标成 image/png）。 */
+const ASSET_SVG_RASTER_EDGE = 360;
+
+function assetSvgIsPath(p) {
+  return /\.svg$/i.test(String(p || ""));
+}
+
+/* SVG 源码里量尺寸：viewBox 优先，其次 <svg width/height>（都没有 → 0/0） */
+function assetSvgDimsOf(text) {
+  const src = String(text || "");
+  const vb = /viewBox\s*=\s*["']\s*[-\d.]+[\s,]+[-\d.]+[\s,]+([\d.]+)[\s,]+([\d.]+)/i.exec(src);
+  if (vb) return { w: Number(vb[1]) || 0, h: Number(vb[2]) || 0 };
+  const wm = /<svg[^>]*\swidth\s*=\s*["']\s*([\d.]+)/i.exec(src);
+  const hm = /<svg[^>]*\sheight\s*=\s*["']\s*([\d.]+)/i.exec(src);
+  if (wm && hm) return { w: Number(wm[1]) || 0, h: Number(hm[1]) || 0 };
+  return { w: 0, h: 0 };
+}
+
+/** 本机 SVG → PNG base64（长边 ≤360，等比）。读不到 / 画不出 → "" */
+function assetSvgPngBase64(absPath) {
+  return window.api
+    .assetReadDataUrl(absPath)
+    .then((r) => {
+      const url = r && r.ok ? String(r.dataUrl || "") : "";
+      if (!url) return "";
+      return new Promise((resolve) => {
+        const im = new Image();
+        im.onload = () => resolve(im);
+        im.onerror = () => resolve(null);
+        im.src = url;
+      }).then((im) => {
+        if (!im) return "";
+        /* 尺寸优先看 SVG 源码（viewBox / width+height）：只有 viewBox 的 SVG 在 <img> 里
+           量到的是 Chromium 给的默认 300×150 —— 拿它当长宽比，图会被拉扁。 */
+        let txt = "";
+        try {
+          txt = atob(String(url).split(",")[1] || "");
+        } catch (_) {
+          txt = "";
+        }
+        const d = assetSvgDimsOf(txt);
+        let w = d.w;
+        let h = d.h;
+        if (!(w > 0 && h > 0)) {
+          w = Number(im.naturalWidth) || 0;
+          h = Number(im.naturalHeight) || 0;
+        }
+        if (!(w > 0 && h > 0)) {
+          w = ASSET_SVG_RASTER_EDGE;
+          h = ASSET_SVG_RASTER_EDGE;
+        }
+        const big = Math.max(w, h);
+        const k = big > ASSET_SVG_RASTER_EDGE ? ASSET_SVG_RASTER_EDGE / big : 1;
+        const cw = Math.max(1, Math.round(w * k));
+        const ch = Math.max(1, Math.round(h * k));
+        const cv = document.createElement("canvas");
+        cv.width = cw;
+        cv.height = ch;
+        const g = cv.getContext("2d");
+        if (!g) return "";
+        g.imageSmoothingEnabled = true;
+        g.imageSmoothingQuality = "high";
+        g.drawImage(im, 0, 0, cw, ch);
+        return String(cv.toDataURL("image/png").split(",")[1] || "");
+      });
+    })
+    .catch(() => "");
+}
+
+/** 一个 SVG 文件 → 一条图像内容条目（库内落真 PNG）；失败回 null */
+async function assetSvgItemAdd(aid, absPath, createdBy) {
+  const b64 = await assetSvgPngBase64(absPath);
+  if (!b64) return null;
+  const title = String(absPath).split(/[\\/]/).pop().replace(/\.[^.]+$/, "");
+  const arg = { id: aid, type: "image", title: title, base64: b64 };
+  if (createdBy) arg.createdBy = createdBy;
+  const r = await window.api.assetsItemAdd(arg);
+  return r && r.ok !== false ? { item: r.item, asset: r.asset } : null;
+}
+
+/** 收一批本机文件进素材：SVG 先光栅化成 PNG，其余原样走 IPC。
+    回执形状与 assetsImportFiles 一致：{ ok, items, skipped, asset } */
+async function assetImportFilesInto(aid, paths, createdBy) {
+  const list = (Array.isArray(paths) ? paths : [paths]).filter(Boolean).map(String);
+  const svgs = list.filter(assetSvgIsPath);
+  const rest = list.filter((p) => !assetSvgIsPath(p));
+  const items = [];
+  const skipped = [];
+  let asset = null;
+  if (rest.length) {
+    const r = await window.api.assetsImportFiles(aid, rest, createdBy);
+    if (!r || r.ok === false)
+      return { ok: false, error: (r && r.error) || I18n.t("收进素材库失败") };
+    for (const it of r.items || []) items.push(it);
+    for (const s of r.skipped || []) skipped.push(s);
+    if (r.asset) asset = r.asset;
+  }
+  for (const p of svgs) {
+    const one = await assetSvgItemAdd(aid, p, createdBy);
+    if (one && one.item) {
+      items.push(one.item);
+      if (one.asset) asset = one.asset;
+    } else {
+      skipped.push(p);
+    }
+  }
+  return { ok: true, items: items, skipped: skipped, asset: asset };
+}
+
 /* ── 根目录：首次引导 + 事后更改 ─────────────────────────────────────
  * 未指定时不创建任何东西，只回 false（调用方据此放弃开框）；
  * 已指定时只读缓存路径，不弹任何东西。 */
@@ -1195,6 +1308,7 @@ function assetWireTreeDrop(el, row) {
 }
 
 function paintAssetTree(host) {
+  if (!host) return;
   host.innerHTML = "";
   const rows = assetTreeRows();
   const isOpen = (rel) => !!ASSET_LIB.expanded[String(rel || "")];
@@ -1205,6 +1319,9 @@ function paintAssetTree(host) {
         String(ASSET_LIB.selCat || "") === String(row.key || "") && !ASSET_LIB.selAssetId;
       const cat = assetEl("div", "asset-lib-catrow" + (on ? " on" : "") + (sel ? " sel" : ""));
       cat.style.paddingLeft = 8 + row.depth * 14 + "px";
+      /* 右键目标：根行 rel 为空串（属性存在即「是分类行」，值可空） */
+      cat.dataset.assetCat = String(row.key || "");
+      cat.dataset.assetCatName = String(row.name || "");
       /* ▸/▾ 只管展开 / 收起，不冒泡到「选中这个分类」 */
       const open = isOpen(row.key);
       const caret = assetEl("span", "asset-lib-caret", open ? "▾" : "▸");
@@ -1234,13 +1351,9 @@ function paintAssetTree(host) {
         assetTreeSelect(row, ev);
         paintAssetLib();
       };
-      cat.oncontextmenu = (ev) => {
-        ev.preventDefault();
-        ev.stopPropagation();
-        /* 根行也留菜单：「在此新建子文件夹 / 在资源管理器中打开」照样有用（改名 / 删除 /
-           上下移 / 移入其它分类 对根行本身没有意义，assetCatMenu 已按 atRoot 藏掉） */
-        assetCatMenu(ev.clientX, ev.clientY, String(row.key || ""), row.name);
-      };
+      /* 右键菜单不挂在这一行上（见 assetTreeCtxMenu）：以前每个分类行各自挂
+         oncontextmenu，行被重画 / 换掉一次就丢掉菜单 —— 子目录行（每次展开父级都要
+         重建）尤其容易踩到，就是「子目录右键无效」的来路。整棵树只留一个委托处理器。 */
       /* 外部文件拖到分类行＝在这个分类下新建素材（不是追加到某个已有素材） */
       assetWireFileDrop(cat, { holder: ASSET_LIB, catRel: String(row.key || "") });
       assetWireTreeDrag(cat, row);
@@ -1251,6 +1364,8 @@ function paintAssetTree(host) {
     const on = String(ASSET_LIB.selAssetId || "") === String(row.key || "");
     const ar = assetEl("div", "asset-lib-assetrow" + (on ? " on" : "") + (sel ? " sel" : ""));
     ar.style.paddingLeft = 8 + row.depth * 14 + "px";
+    /* 右键目标：素材行以前完全没有右键菜单（只有分类行有），左树里点素材右键＝没反应 */
+    ar.dataset.assetId = String(row.key || "");
     ar.appendChild(assetEl("span", "asset-lib-assetname", a.displayName || a.folder || ""));
     /* 类型徽标：文本 / 图像 / 音频 / 视频 / 混合 —— 左树里先看这个再点进去 */
     ar.appendChild(assetKindChip(a));
@@ -1283,6 +1398,11 @@ function paintAssetTree(host) {
     assetWireTreeDrop(ar, row);
     return ar;
   };
+  /* 整棵树一个委托右键处理器（行被重画多少次都不会丢） */
+  if (!host.__assetCtxWired) {
+    host.__assetCtxWired = true;
+    host.addEventListener("contextmenu", assetTreeCtxMenu);
+  }
   for (const row of rows) host.appendChild(rowEl(row));
   if (!(ASSET_LIB.scan.categories || []).length) {
     const tip = assetEl(
@@ -1292,6 +1412,55 @@ function paintAssetTree(host) {
     );
     host.appendChild(tip);
   }
+}
+
+/* 左树右键：一个委托处理器把「分类行 / 素材行」一起收进来。
+   行的身份只认 data 属性（data-asset-cat / data-asset-id），不看元素类型 ——
+   行里还有箭头、名字、徽标几颗子元素，右键落在谁身上都算这一行。
+   分类行以前是逐行挂 oncontextmenu，子目录行（每次展开父级都要重建）重画一次就丢菜单；
+   素材行则压根没有菜单。两处都在这里收口。 */
+function assetTreeCtxMenu(ev) {
+  const t =
+    ev.target && ev.target.closest
+      ? ev.target.closest("[data-asset-cat],[data-asset-id]")
+      : null;
+  if (!t) return;
+  ev.preventDefault();
+  ev.stopPropagation();
+  const catRel = t.getAttribute("data-asset-cat");
+  if (catRel !== null) {
+    assetCatMenu(
+      ev.clientX,
+      ev.clientY,
+      catRel,
+      t.getAttribute("data-asset-cat-name") || assetBaseName(catRel),
+    );
+    return;
+  }
+  const a = assetSummaryById(t.getAttribute("data-asset-id"));
+  if (a) assetRowMenu(ev.clientX, ev.clientY, a);
+}
+
+/* 左树素材行的右键（与右栏卡片菜单同一份动作；选择器里只留「绑定这个素材」） */
+function assetRowMenu(x, y, a) {
+  if (!a) return;
+  if (ASSET_LIB.mode === "pick") {
+    assetMenu(x, y, [{ label: I18n.t("绑定这个素材"), run: () => assetPickAndBind(a) }]);
+    return;
+  }
+  assetMenu(x, y, [
+    {
+      label: I18n.t("设置…"),
+      run: () => {
+        if (typeof openAssetSettings === "function") openAssetSettings(a);
+        else toast(I18n.t("素材设置界面尚未就绪"), "warn");
+      },
+    },
+    { label: I18n.t("插入到画布"), run: () => assetInsertToCanvas(a) },
+    { label: I18n.t("移动到分类…"), run: () => assetMoveAsset(a) },
+    { label: I18n.t("重新命名（文件夹）"), run: () => assetRenameAssetFolder(a) },
+    { label: I18n.t("删除素材"), danger: true, run: () => assetDeleteAsset(a) },
+  ]);
 }
 
 /* ── 顺序写盘：拖动 / 菜单上移下移 / 撤销共用这一份 ─────────────────── */
@@ -3063,7 +3232,8 @@ const ASSET_TEXT_EXTS = [
 ];
 const ASSET_PICK_FILTERS = {
   text: { name: "文本", extensions: ASSET_TEXT_EXTS },
-  image: { name: "图像", extensions: ["png", "jpg", "jpeg", "webp", "gif", "bmp"] },
+  /* SVG 也算图像：选中后由 assetImportFilesInto 光栅化成 360p PNG 再进库 */
+  image: { name: "图像", extensions: ["png", "jpg", "jpeg", "webp", "gif", "bmp", "svg"] },
   audio: { name: "音频", extensions: ["wav", "mp3", "flac", "ogg", "m4a"] },
   video: { name: "视频", extensions: ["mp4", "webm", "mov", "mkv", "avi"] },
 };
@@ -3216,6 +3386,12 @@ async function assetWriteItem(aid, itemId, payload, opts) {
   if (!assetsApiOk()) return { ok: false, error: I18n.t("素材库不可用") };
   const slot = assetHistorySlot();
   let r = null;
+  /* SVG 当图像用：换文件 / 端子同步送进来的若是 SVG，先按 360p 光栅化成 PNG
+     （库里只留位图 —— 下游一律按 png 贴字节；扩展名由主进程按字节对齐成 .png）。 */
+  if (payload && payload.srcPath && assetSvgIsPath(payload.srcPath)) {
+    const b64 = await assetSvgPngBase64(payload.srcPath);
+    if (b64) payload = Object.assign({}, payload, { base64: b64, srcPath: "" });
+  }
   try {
     r =
       typeof payload.content === "string"
@@ -4131,7 +4307,7 @@ async function assetDropNewAsset(paths, catRel) {
     const files = rest.filter((k) => k.kind === "file").map((k) => k.path);
     skipped += rest.filter((k) => k.kind === "dir").length;
     if (files.length && asset && asset.id) {
-      const r2 = await window.api.assetsImportFiles(asset.id, files);
+      const r2 = await assetImportFilesInto(asset.id, files);
       if (r2 && r2.ok) {
         added += Number((r2.items && r2.items.length) || 0);
         skipped += Number((r2.skipped && r2.skipped.length) || 0);
@@ -4183,7 +4359,7 @@ async function assetDropAppend(a, paths) {
   }
   ASSET_LIB.busy = true;
   try {
-    const r = await window.api.assetsImportFiles(target.id, files);
+    const r = await assetImportFilesInto(target.id, files);
     if (!r || !r.ok) {
       toast(I18n.t("添加内容失败：") + ((r && r.error) || ""), "err");
       return;
@@ -5184,7 +5360,7 @@ async function assetSetAddMedia(type, a) {
   if (!paths.length && picked && picked.path) paths.push(picked.path);
   if (!paths.length) return;
   await assetSetBusyRun(async () => {
-    const r = await window.api.assetsImportFiles(a.id, paths);
+    const r = await assetImportFilesInto(a.id, paths);
     if (!r || !r.ok) {
       toast(I18n.t("添加内容失败：") + ((r && r.error) || ""), "err");
       return;
@@ -5844,7 +6020,7 @@ async function assetAgentWrite(data, action) {
     if (action === "importFiles") {
       const id = String(p.id || "").trim();
       if (!id) throw new Error(I18n.t("importFiles 需要 id（往这个素材追加内容）"));
-      const r = await window.api.assetsImportFiles(id, paths, who.createdBy);
+      const r = await assetImportFilesInto(id, paths, who.createdBy);
       if (!r || r.ok === false) throw new Error((r && r.error) || I18n.t("收进素材库失败"));
       return {
         ok: true,
@@ -5864,7 +6040,7 @@ async function assetAgentWrite(data, action) {
       createdByName: who.createdByName,
     });
     if (!made || made.ok === false) throw new Error((made && made.error) || I18n.t("新建素材失败"));
-    const wr = await window.api.assetsImportFiles(made.asset.id, paths, who.createdBy);
+    const wr = await assetImportFilesInto(made.asset.id, paths, who.createdBy);
     if (!wr || wr.ok === false) throw new Error((wr && wr.error) || I18n.t("收进素材库失败"));
     return {
       ok: true,

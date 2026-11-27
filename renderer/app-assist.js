@@ -6797,8 +6797,10 @@ function paintAgentToolsChip() {
      整段 system prompt 置空、网关强制空预设文本 + 运行时清 sections/contexts）。
      缺省档（纯净关 + 其它模式也关）= 命中表基线条：只发本轮原话命中的分节，
      见 app-prompt-sections.js 的 promptTrimSections。
-     **提示词清零 + 工具白名单**：system prompt 全空，工具只留读 / 写 / 命令 / 联网搜索
-     （网关 restrict({ allow: PURE_KEEP_TOOLS })，见 dsh/gateway/tool-visibility.mjs）。
+     **提示词清零 + 只摘 MTNode 工具**：system prompt 全空，工具面只摘画布 / 数据库 /
+     识图子代理 / 浏览器 / 媒体 / 素材这些 MTNode 自有工具，引擎自带的读写 / 命令 / 联网 /
+     read_image 识图照常可用（网关 restrict({ deny: PURE_DROP_TOOLS })，见
+     dsh/gateway/tool-visibility.mjs）。
      与「先拷问需求 / 快速热修」互斥：采用那两档时纯净模式被写 false（agentPureOffByMode）；
      反过来开纯净也当场关掉那两档（三档互斥，见下面 toggle）；
    · 自动续跑 = window.LongRun.autoOn(sid)（app-longrun.js 的会话级开关，缺省关）。
@@ -6936,12 +6938,12 @@ function agentModeEntryOf(key) {
     return {
       key: "pure",
       label: "纯净模式",
-      hint: "纯净模式：移除全部 system prompt 与运行时上下文，只保留读 / 写 / 命令 / 联网搜索四类工具；省 token、结果确定",
+      hint: "纯净模式：移除全部 system prompt 与运行时上下文，只摘掉 MTNode 自己注入的工具（画布 / 数据库 / 浏览器 / 识图子代理等）；模型自带的读写 / 命令 / 联网 / 识图照常可用",
       on: !!st.pure,
       /* 开关 tooltip 复用已有整句词条（中英成对），不另造碎片键 */
       title: st.pure
-        ? "纯净模式：开启中，点击关闭（只保留读 / 写 / 命令 / 联网搜索工具）"
-        : "纯净模式：移除全部 system prompt 与运行时上下文，只保留读 / 写 / 命令 / 联网搜索四类工具；省 token、结果确定",
+        ? "纯净模式：开启中，点击关闭（MTNode 工具已摘，模型自带能力保留）"
+        : "纯净模式：移除全部 system prompt 与运行时上下文，只摘掉 MTNode 自己注入的工具（画布 / 数据库 / 浏览器 / 识图子代理等）；模型自带的读写 / 命令 / 联网 / 识图照常可用",
       toggle: () => {
         st.pure = st.pure !== true;
         /* 用户亲手点过 → 打上「语义已迁移」标记：否则 agentSessions() 的老存档迁移下一次
@@ -7112,10 +7114,10 @@ function agentModeEntryOf(key) {
       key: "assistPure",
       label: "纯净模式",
       hint:
-        "纯净模式：移除全部 system prompt 与运行时上下文，只保留读 / 写 / 命令 / 联网搜索四类工具；省 token、结果确定",
+        "纯净模式：移除全部 system prompt 与运行时上下文，只摘掉 MTNode 自己注入的工具（画布 / 数据库 / 浏览器 / 识图子代理等）；模型自带的读写 / 命令 / 联网 / 识图照常可用",
       title: on
-        ? "纯净模式：开启中，点击关闭（只保留读 / 写 / 命令 / 联网搜索工具）"
-        : "纯净模式：移除全部 system prompt 与运行时上下文，只保留读 / 写 / 命令 / 联网搜索四类工具；省 token、结果确定",
+        ? "纯净模式：开启中，点击关闭（MTNode 工具已摘，模型自带能力保留）"
+        : "纯净模式：移除全部 system prompt 与运行时上下文，只摘掉 MTNode 自己注入的工具（画布 / 数据库 / 浏览器 / 识图子代理等）；模型自带的读写 / 命令 / 联网 / 识图照常可用",
       on,
       onPick() {
         agentAssistSwitchSet("pure", !agentAssistSwitchOn("pure"));
@@ -19569,11 +19571,12 @@ async function agentSessionSend(text, opts) {
        这正是「纯净模式」改语义之前的那份设置，现在成了普通轮的默认。
      · "full" 全 量 档（开着「先拷问需求 / 快速热修」）= 那两段契约必须贴进 system prompt，
        所以这一轮回落到全量注入。
-     **工具侧口径（用户口径 · 本轮修正）**：纯净轮裁工具 —— 网关按 pure 位注入
-     MTNODE_PURE_TOOLS，运行时装 restrict({ allow: PURE_KEEP_TOOLS })，只留读 / 写 / 命令 /
-     联网搜索（真源 dsh/gateway/tool-visibility.mjs）。理由：提示词清零之后，纯净轮 36,341
-     token 的首步里 23,739 全是工具定义（比普通轮还多 7.3K）。基线条与全量档照旧全量注册，
-     所以本节主要影响「拼哪些文字」，纯净档额外影响「模型看得见哪些工具」。 */
+     **工具侧口径（用户口径 · 本轮修正）**：纯净轮只摘 MTNode 注入的工具 —— 网关按 pure 位注入
+     MTNODE_PURE_TOOLS，运行时装 restrict({ deny: PURE_DROP_TOOLS })：画布 / 数据库 /
+     识图子代理 / 浏览器 / 媒体 / 素材摘掉，引擎自带的读写 / 命令 / 联网 / read_image 识图 /
+     待办 / 子代理一律保留（真源 dsh/gateway/tool-visibility.mjs）—— 纯净 = 只排除 MTNode
+     相关注入，模型自身能力与 dsh 独立运行一致（旧版是十一只 allow 白名单，把识图挡掉了）。
+     基线条与全量档照旧全量注册，所以本节主要影响「拼哪些文字」，纯净档额外影响「模型看得见哪些工具」。 */
   const pureMode = !!st.pure;
   /* 其它模式（拷问 / 热修）在这一轮到底在不在：判据与下面注入契约用的是同一份函数、
      同一批入参（只提前算，不另立第二套）。纯粹净轮一律不算（那两段契约本就不该进）。 */

@@ -3737,10 +3737,10 @@ function dshRunOnce(input, opts) {
        （命中表真源 renderer/app-prompt-sections.js 的 promptTrimSections，与会话侧同一个函数），
        一节都没命中 → systemPrompt 空串。这正是「纯净模式」改语义之前那份设置，现在是普通轮默认。
      · 两者都不是 = 全量注入（「先拷问需求 / 快速热修」轮：那两段契约必须贴进 system prompt）。
-     工具侧口径（用户口径 · 本轮修正）：**纯净轮裁工具** —— 提示词清零之后剩下的全是
+     工具侧口径（用户口径 · 本轮修正）：**纯净轮只摘 MTNode 注入的工具** —— 提示词清零之后剩下的全是
      工具定义（实测纯净轮首步 36,341 token 里 23,739 是工具 schema，比普通轮还多 7.3K），
-     所以网关按 pure 位下发 MTNODE_PURE_TOOLS，运行时装 restrict({ allow: PURE_KEEP_TOOLS })，
-     只保留读 / 写 / 命令 / 联网搜索（真源 dsh/gateway/tool-visibility.mjs）。
+     所以网关按 pure 位下发 MTNODE_PURE_TOOLS，运行时装 restrict({ deny: PURE_DROP_TOOLS })：
+     只摘 MTNode 自有工具（画布 / 数据库 / 识图子代理 / 浏览器 / 媒体 / 素材），引擎自带的读 / 写 / 命令 / 联网 / read_image 识图照常可用（真源 dsh/gateway/tool-visibility.mjs）。
      基线条与全量档照旧全量注册（dsh/gateway/cordis.yml 里的 MTNODE_PURE 门控早已摘掉）。
      下面 leanOn / canvasFreeOn / noReadOn 这些「pure 归零」的判据保留：纯净轮有更强的一档，
      这几位的结论在 pure 轮里不再有实际作用（只减不加）。 */
@@ -3843,9 +3843,8 @@ function dshRunOnce(input, opts) {
      上的工具节点 + 工具库中开启「随时可调用」的工具。用 boundWf 而不是 S.wf：画布看着 A、
      工具与库接地按 B 的串台从此不可能 —— 描述子来自哪张图，tool-run 帧就只在那张图上找
      执行目标。
-     纯净模式也照常下发（以前这里 pureOn 给空表，非纯净轮的工具节点一个都调不到）。
-     纯净轮的可见集由网关的 allow 白名单收口（PURE_KEEP_TOOLS）：这些描述子的名字不在
-     白名单里，所以那一档模型看不到它们 —— 这是「纯净 = 最小工具集」的应有含义，不是漏发。 */
+     纯净模式不再下发这些描述子（网关 handleRun 按 pure 清空 toolsJson）：工具节点属 MTNode
+     注入，纯净轮只留引擎自带的能力 —— 这是「纯净」的应有含义，不是漏发。 */
   const agentTools = await agentUserToolsSnapshot(boundWf);
   /* 分节装配要先有配置指纹（快照的准入条件），而 dshRunSigOf 先读基础七项
      （workspace/model/provider/preset/effort/pure/maxTokens）再读网关 runtimeKey

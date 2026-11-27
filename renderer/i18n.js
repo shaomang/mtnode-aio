@@ -2423,6 +2423,7 @@
     "批量": "Batch",
     "排版": "Layout",
     "隐藏线": "Hide wires",
+    "简略": "Lite",
     "查找": "Find",
     "启用": "Enable",
     "清除": "Clear",
@@ -3762,7 +3763,32 @@
     "批量模式：逐条运行，输出批量结果": "Batch mode: run item by item, output batch results",
     "清空本节点输出（回到未处理状态）": "Clear this node's output (back to unprocessed)",
     "上下文分布 · 最近一次智能运行": "Context breakdown · Last agent run",
-    "设置 · APIs/Config": "Settings · APIs/Config",
+    "设置 · 默认模型提供商": "Settings · Default model provider",
+  /* MCP 服务端面板（本轮：工具面开关 + 交接优先） */
+  "工具面": "Tool surface",
+  "完整 · 全部工具平铺（老口径）": "Full · every tool listed (legacy)",
+  "精简 · 只回 mtnode_agent（交接）+ mtnode_catalog（展开）":
+    "Slim · only mtnode_agent (handoff) + mtnode_catalog (expand)",
+  " · 已有 ": " · ",
+  " 条连接展开过": " connection(s) already expanded",
+  "（共 ": " (of ",
+  " 个工具）": " tools)",
+  "工具面：切回精简": "Tool surface: back to slim",
+  "工具面：切到完整": "Tool surface: switch to full",
+  "工具面已切到完整：全部工具平铺": "Tool surface is now full: every tool listed",
+  "工具面已切到精简：只回交接与展开两件": "Tool surface is now slim: only handoff + expand",
+  /* 产出物缓存面板（同页既有文案，之前漏了英文对照） */
+  "产出物缓存": "Artifact cache",
+  "清理产出物": "Clean artifact cache",
+  "统计中…": "Measuring…",
+  "个文件": " files",
+  "清理失败：": "Cleanup failed: ",
+  "；有文件被占用未删，先停用后端再清": "; some files were in use and not deleted — stop the backend first, then clean again",
+  "将清理以下目录里的产物（不删目录本身；最近 10 分钟内写过的文件自动跳过）：":
+    "Will clean artifacts in these folders (folders themselves are kept; files written in the last 10 minutes are skipped):",
+  "保留最近 7 天": "Keep the last 7 days",
+  "后端运行中，建议先停用：正在写的产物会被跳过，占用中的文件删不掉。":
+    "The backend is running — stop it first if you can: files being written are skipped and files in use cannot be deleted.",
     "完全放行（不限目录 · 不询问）": "Full access (no directory limit · no prompts)",
     "一次最多连接 80 条线，已截断": "At most 80 wires per operation; truncated",
     "已复制 Base64 到剪贴板（": "Copied Base64 to clipboard (",
@@ -4180,16 +4206,13 @@
     "命令:/new 新会话 · /compact 压缩上文 · /plan 规划模式 · /rename 标题 · /export 导出会话 · /permissions 查看权限预设": "Commands: /new new session · /compact compact context · /plan plan mode · /rename title · /export export session · /permissions view permission preset",
     "纯净模式": "Pure mode",
     "纯净": "Pure",
-    "纯净模式：移除全部 system prompt 与运行时上下文，仅保留联网搜索；该会话不再读写文件 / 改画布，省 token": "Pure mode: drops every system prompt section and the runtime context, keeping only web search — this session no longer reads/writes files or edits the canvas; saves tokens",
-    /* 本轮口径：纯净模式 = 提示词清零 + 只留读 / 写 / 命令 / 联网搜索四类工具
-       （工具面由 dsh/gateway/tool-visibility.mjs 的 PURE_KEEP_TOOLS 裁，见
-       plugins/tool-restrict-plugin.mjs 的 restrict({ allow })） */
-    "纯净模式：移除全部 system prompt 与运行时上下文，只保留读 / 写 / 命令 / 联网搜索四类工具；省 token、结果确定": "Pure mode: drops every system prompt section and the runtime context, keeping only read / write / shell / web tools; saves tokens, deterministic results",
-    "纯净模式：开启中，点击关闭（只保留读 / 写 / 命令 / 联网搜索工具）": "Pure mode: ON — click to turn off (only read / write / shell / web tools stay available)",
+    /* 本轮口径：纯净模式 = 提示词清零 + 只摘 MTNode 自己注入的工具（画布 / 数据库 /
+       浏览器 / 识图子代理…），引擎自带的读写 / 命令 / 联网 / read_image 识图照常可用
+       （工具面由 dsh/gateway/tool-visibility.mjs 的 PURE_DROP_TOOLS 收口，见
+       plugins/tool-restrict-plugin.mjs 的 restrict({ deny })）。会话栏与助手栏同一套词条。 */
+    "纯净模式：移除全部 system prompt 与运行时上下文，只摘掉 MTNode 自己注入的工具（画布 / 数据库 / 浏览器 / 识图子代理等）；模型自带的读写 / 命令 / 联网 / 识图照常可用": "Pure mode: drops every system prompt section and the runtime context, and unregisters only MTNode-injected tools (canvas / database / browser / vision sub-agent …); the model's own read / write / shell / web / image-reading tools all stay available",
+    "纯净模式：开启中，点击关闭（MTNode 工具已摘，模型自带能力保留）": "Pure mode: ON — click to turn off (MTNode tools removed, the model's own tools kept)",
     "纯净模式：开启中，点击关闭": "Pure mode: ON — click to turn off",
-    /* 助手栏那一枚纯净模式的词条：会话侧那份说的是「该会话」，这一份说「助手这条」 */
-    "纯净模式：开启中，点击关闭（助手栏这条不再读写文件 / 改画布）": "Pure mode: ON — click to turn off (this assistant no longer reads/writes files or edits the canvas)",
-    "纯净模式：移除全部 system prompt 与运行时上下文，仅保留联网搜索；助手这条不再读写文件 / 改画布，省 token": "Pure mode: drops every system prompt section and the runtime context, keeping only web search — this assistant turn no longer reads/writes files or edits the canvas; saves tokens",
     "与画布无关": "Canvas-free",
     "与画布无关：该会话不注册任何画布与应用工具（读图 / 改图 / 应用操作都不发），省 token；需要改画布时先关掉它": "Canvas-free: this session registers no canvas or app tools (no canvas read / graph edit / app actions), saving tokens; turn it off first when you do need canvas edits",
     "与画布无关：开启中，点击关闭（本会话不注册任何画布与应用工具）": "Canvas-free: ON — click to turn off (this session registers no canvas or app tools)",
@@ -6307,6 +6330,13 @@
       "Show wires: restore normal visibility for all wires",
     "已临时隐藏连线（透明度 95%）": "Wires temporarily hidden (95% transparent)",
     "已恢复显示连线": "Wires restored",
+    "简略：画布不再加载图像 / 视频预览（不占显存），本地视频模型可以直接跑；再次点击恢复":
+      "Lite: the canvas no longer loads image / video previews (no VRAM cost) so a local video model can run; click again to restore",
+    "简略：画布不再加载任何图像 / 视频预览、不铺节点层封面，把显存留给本地视频模型（H3 等）；再次点击恢复":
+      "Lite: the canvas loads no image / video previews and paints no node-layer covers, leaving VRAM for local video models (H3 etc.); click again to restore",
+    "已开启简略：画布不再加载图像预览（显存留给本地视频模型）":
+      "Lite mode on: canvas image previews are no longer loaded (VRAM left for local video models)",
+    "已关闭简略：画布图像预览已恢复": "Lite mode off: canvas image previews are back",
     "请整理当前画布排版：先 mtnode_canvas_get 查看每个节点与绘制的 x/y/w/h，再根据现状自行判断，用一次 mtnode_canvas_edit（layout:false）通过 update / updateMarks 校准位置与尺寸。要求美观整洁、间距舒适、图像节点便于观察、面向用户可编辑/操作的节点靠上；框体/文字/箭头等绘制要跟着节点一起调整。不要增删节点、不要改连线，不要调用任何 layout action。完成后用一句话确认。":
       "Tidy the canvas layout: first mtnode_canvas_get to read each node/mark x/y/w/h, then judge yourself and calibrate with one mtnode_canvas_edit (layout:false) via update / updateMarks. Keep it neat with comfortable spacing, image nodes easy to view, user-editable nodes toward the top; move drawings with their nodes. Do not add/remove nodes, change wires, or call any layout action. Confirm in one short sentence when done.",
     "请整理当前画布排版：立刻调用 mtnode_app，action 为 tidy_layout。要求美观整洁、面向用户可编辑/操作的节点靠上；不要增删节点、不要改连线；完成后用一句话确认。":
@@ -6697,6 +6727,14 @@
     "无匹配": "No match",
     "Enter 下一个 · Shift+Enter 上一个 · Esc 关闭":
       "Enter next · Shift+Enter previous · Esc close",
+    /* 替换行（多行文本框才有：文本节点正文 / 源码档） */
+    "替换为": "Replace with",
+    "替换": "Replace",
+    "全部替换": "Replace all",
+    "替换当前命中（Enter）": "Replace this match (Enter)",
+    "替换本框里的全部命中": "Replace every match in this field",
+    "已全部替换 {n} 处": "Replaced {n} matches",
+    "查找与替换（Ctrl+F）": "Find & replace (Ctrl+F)",
     "画布（跨画布）": "Canvases (all canvases)",
     "会话记录": "Sessions",
     "素材库与本机文件": "Asset library & local files",
@@ -10500,6 +10538,24 @@
     "在跑任务中": "running a job",
     "已就绪（空闲，可安全释放）": "ready (idle, safe to release)",
     "关闭": "Close",
+    /* 常驻高占用部件（app-vram.js 的 vramHeavyResidents / vramOomHint / vramReleaseResidents
+       与「谁占着显存」浮层）：与上面那块同样只在本文件登记一次，别在别处重复。 */
+    "常驻占显存的部件": "Resident components holding VRAM",
+    "MOSS-TTS 语音": "MOSS-TTS voice",
+    "{names}正开着，占着显存": "{names} are running and holding VRAM",
+    "没有常驻占显存的部件": "Nothing is resident on the GPU",
+    "关掉它们，显存立刻还回来（正在跑任务的后端不在这里，不会被关掉；下次用到会重新加载）":
+      "Stopping them frees the VRAM right away (backends busy with a job are not listed here and are left alone; they reload next time they are used)",
+    "全部关闭": "Close all",
+    "已关掉": "stopped",
+    "已释放": "released",
+    "没关掉：": "not stopped: ",
+    "正在关闭…": "Stopping…",
+    /* 显存预检被拦 / 运行期 OOM 的同一句提醒（app-vram.js 的 vramResidentsNotice）：
+       两处共用这一条，别在别处再登记一份。 */
+    "先关掉这些再跑：顶栏「性能」面板可以一键关掉它们（正在跑的任务不会被关掉）":
+      "Stop these first: the Performance panel in the top bar can close them all at once (jobs that are running are never stopped)",
+    "关掉它们": "Stop them",
   });
   /* ── 系统资源面板（顶栏「性能」按钮 · renderer/app-perf.js · 主进程 perf-probe.js）──
      中文为真源，以下为英文档译文。读数取不到时一律写「量不到」（不用假数字占位）。

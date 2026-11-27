@@ -789,6 +789,133 @@
   opacity: .05
 }
 
+/* ===== 顶栏「简略」toggle：画布不铺任何图像（省显存给本地视频模型）=====
+   节点层封面是 ::before 上的一层 background-image（dataURL，见 app-node-cover.js），
+   展开态底图是 .super-stage-cover —— 这两处是画布上唯一「不是 <img> 的图像纹理」，
+   简略模式下直接不铺（元素上的 JS 也同步不写，这里再兜一层：类名一变当场生效）。
+   <img>/<video> 的卸载走 renderer/app-preview-lazy.js 的 setLean，不在这里做。 */
+.fn-canvas.lean-canvas .wf-node.super > .n-body.super-folder-body.has-cover::before,
+.fn-canvas.lean-canvas .super-stage-cover {
+  background-image: none !important;
+}
+
+/* 预览位里的位图在简略模式一律不画：元素还在（懒加载的记录、播放进度、点击灯箱都挂得住），
+   只是不再引用任何字节 —— 纹理随之归还。 */
+.fn-canvas.lean-canvas .n-img > img,
+.fn-canvas.lean-canvas .n-img > video,
+.fn-canvas.lean-canvas .n-out > img,
+.fn-canvas.lean-canvas .n-out > video,
+.fn-canvas.lean-canvas .sv-prev > img,
+.fn-canvas.lean-canvas .sv-prev > video,
+.fn-canvas.lean-canvas .sv-thumb,
+.fn-canvas.lean-canvas .bentry-thumb,
+.fn-canvas.lean-canvas .browse-img,
+.fn-canvas.lean-canvas img.n-fnmedia,
+.fn-canvas.lean-canvas video.n-fnmedia,
+.fn-canvas.lean-canvas .mv-slot > img,
+.fn-canvas.lean-canvas .mv-slot > video,
+.fn-canvas.lean-canvas .n-view-asset-thumb > .n-view-asset-el {
+  display: none !important;
+}
+
+/* 占位小框：纯向量 —— 固定 96×54 的虚线框 + 一句类型文字，不看原图尺寸，
+   只是「这里原本有一张图 / 一段视频」的记号。为什么用 ::before：整幅 renderCanvas 会把
+   每颗节点重建一遍，占位要是真元素，一屏几十颗就多挂几十个 DOM；伪元素跟着宿主走，零成本。
+   也刻意不用 box-shadow / filter / backdrop-blur —— 它们各自会建离屏纹理，
+   与「简略 = 一块位图纹理都不留」直接冲突。 */
+.fn-canvas.lean-canvas .n-img:has(> img)::before,
+.fn-canvas.lean-canvas .n-img:has(> video)::before,
+.fn-canvas.lean-canvas .n-out:has(> img)::before,
+.fn-canvas.lean-canvas .n-out:has(> video)::before,
+.fn-canvas.lean-canvas .sv-prev:has(> img)::before,
+.fn-canvas.lean-canvas .sv-prev:has(> video)::before,
+.fn-canvas.lean-canvas .sv-thumbs::before,
+.fn-canvas.lean-canvas .n-bentry-img:has(> .bentry-thumb)::before,
+.fn-canvas.lean-canvas .mv-slot:has(> img)::before,
+.fn-canvas.lean-canvas .n-view-asset-thumb.image::before,
+.fn-canvas.lean-canvas .n-view-asset-thumb.video::before,
+.fn-canvas.lean-canvas .n-view:has(> .browse-img)::before,
+.fn-canvas.lean-canvas div:has(> img.n-fnmedia)::before {
+  content: "";
+  flex: none;
+  align-self: center;
+  margin: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  width: 96px;
+  height: 54px;
+  min-width: 0;
+  border: 1px dashed var(--bd2);
+  border-radius: 6px;
+  background: none;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1;
+  letter-spacing: .5px;
+  white-space: nowrap;
+  box-shadow: none;
+  filter: none;
+  backdrop-filter: none;
+  pointer-events: none;
+  user-select: none;
+}
+
+/* 类型文字（CSS 里写死：这只是画布上的一句结构记号，不进任何可翻译文案流） */
+.fn-canvas.lean-canvas .n-img:has(> img)::before,
+.fn-canvas.lean-canvas .n-img:has(> video)::before,
+.fn-canvas.lean-canvas .n-out:has(> img)::before,
+.fn-canvas.lean-canvas .n-out:has(> video)::before,
+.fn-canvas.lean-canvas .sv-prev:has(> img)::before,
+.fn-canvas.lean-canvas .sv-prev:has(> video)::before,
+.fn-canvas.lean-canvas .sv-thumbs::before,
+.fn-canvas.lean-canvas .n-bentry-img:has(> .bentry-thumb)::before,
+.fn-canvas.lean-canvas .n-view-asset-thumb.image::before,
+.fn-canvas.lean-canvas .n-view:has(> .browse-img)::before,
+.fn-canvas.lean-canvas div:has(> img.n-fnmedia)::before {
+  content: "图像";
+}
+
+.fn-canvas.lean-canvas .mv-slot:has(> img)::before,
+.fn-canvas.lean-canvas .n-out:has(> video)::before,
+.fn-canvas.lean-canvas .n-view-asset-thumb.video::before {
+  content: "视频";
+}
+
+/* 选中放行：简略下点中的那颗节点把预览按原样放回来（其余仍是占位框），
+   纹理数因此有上限 —— 与 app-canvas.js 的 thumbLeanFocusAllowed 同一个判据（.wf-node.sel）。
+   不加这一段，聚焦复原只改了 src：.n-img / .browse-img 这些槽位仍被上面的 display:none 压着，
+   「点一下能看见原图」在输入图像节点上根本看不出来。 */
+.fn-canvas.lean-canvas .wf-node.sel .n-img > img,
+.fn-canvas.lean-canvas .wf-node.sel .n-img > video,
+.fn-canvas.lean-canvas .wf-node.sel .n-out > img,
+.fn-canvas.lean-canvas .wf-node.sel .n-out > video,
+.fn-canvas.lean-canvas .wf-node.sel .sv-prev > img,
+.fn-canvas.lean-canvas .wf-node.sel .sv-prev > video,
+.fn-canvas.lean-canvas .wf-node.sel .sv-thumb,
+.fn-canvas.lean-canvas .wf-node.sel .bentry-thumb,
+.fn-canvas.lean-canvas .wf-node.sel .browse-img,
+.fn-canvas.lean-canvas .wf-node.sel img.n-fnmedia,
+.fn-canvas.lean-canvas .wf-node.sel video.n-fnmedia,
+.fn-canvas.lean-canvas .wf-node.sel .mv-slot > img,
+.fn-canvas.lean-canvas .wf-node.sel .mv-slot > video,
+.fn-canvas.lean-canvas .wf-node.sel .n-view-asset-thumb > .n-view-asset-el {
+  display: block !important;
+}
+
+/* 占位框跟着让位（伪元素不占位时就只是叠一层虚线，容易看成「图还是坏的」） */
+.fn-canvas.lean-canvas .wf-node.sel .n-img::before,
+.fn-canvas.lean-canvas .wf-node.sel .n-out::before,
+.fn-canvas.lean-canvas .wf-node.sel .sv-prev::before,
+.fn-canvas.lean-canvas .wf-node.sel .sv-thumbs::before,
+.fn-canvas.lean-canvas .wf-node.sel .n-bentry-img::before,
+.fn-canvas.lean-canvas .wf-node.sel .mv-slot::before,
+.fn-canvas.lean-canvas .wf-node.sel .n-view-asset-thumb::before,
+.fn-canvas.lean-canvas .wf-node.sel .n-view::before {
+  content: none !important;
+}
+
 /* ===== 框选矩形 ===== */
 .box-sel {
   position: absolute;

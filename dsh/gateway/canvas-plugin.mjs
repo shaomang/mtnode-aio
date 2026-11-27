@@ -195,7 +195,7 @@ create.kind 枚举见 schema（生成族含 music_gen / yue_gen / breeze_gen / v
 
 不变量（违反即接线错）：
 - 标题必须唯一。端子先看 canvas_get 的 ports / portRule 再接线，别试连反推；动态端子的专用控制入恒为末位那颗，数据线不占它。
-- @引用：连线源在 prompt/task 里写 @标题（@标签名 注入带该标签的全部节点）；全局广播须同时接 kind "global" + globalRefs:true + 明文 @。
+- @引用（图像同理）：连线源在 prompt/task 里写 @标题（@标签名 注入带该标签的全部节点）；图像节点（input_image / 生成出的图）也必须 @ 它的标题，只把线接到端口、prompt 里不 @，节点这轮看不到那张图；全局广播须同时接 kind "global" + globalRefs:true + 明文 @。
 - 智能节点（agent_task、agent:true 的 proc_text）自己会写文件：其后不接 save、也不当数据输入；用 wait_file 控制线挡下游。
 - 图像生成节点（proc_image）每次运行只出 1 张图；batchMode "batch" 每条一次运行、每次只看该条（严禁把整批 N 条再灌进每次运行），一次看全部用 "agg"。
 - 跨节点层只能经边界端子中转：connect 遇跨层自动改写成逐层链，superConnect 同一口径；任何入口都不许留下「层内节点直连层外」的线。

@@ -18,6 +18,10 @@
 
 插件改一个参数 → 契约与校验表一起变，不需要任何人记得同步。
 
+> **工具面不再等于契约全集**：`tools/list` 默认只回 `mtnode_agent` + `mtnode_catalog`（精简档），
+> 调一次 `mtnode_catalog` 才是全量；设置里可以切成「完整」回到一律平铺。契约（本文件说的这份）
+> 始终是**全量**——档位只影响 `tools/list` 的可见性，不影响能不能 `tools/call`。
+
 ## 生成与校验
 
 ```bash
@@ -39,7 +43,7 @@ node scripts/build-mcp-contract.mjs --check  # 只比对，不一致退码 1（�
 | `dsh/gateway/assets-plugin.mjs`（`mtnode_assets`） | 同上 |
 | `dsh/gateway/gui-plugin.mjs`（`mtnode_gui`，主进程执行） | 同上 |
 | `dsh/gateway/dev-plugin.mjs`（`mtnode_dev`，主进程执行：起隔离调试实例 + CDP） | 同上 |
-| `dsh/gateway/mcp-extra-plugin.mjs`（`mtnode_generate` / `mtnode_run` / `mtnode_tools` / `mtnode_session`，回环四件） | 同上 |
+| `dsh/gateway/mcp-extra-plugin.mjs`（`mtnode_agent` / `mtnode_catalog` 交接面 + `mtnode_generate` / `mtnode_run` / `mtnode_tools` / `mtnode_session` 回环四件） | 同上 |
 | `dsh/gateway/media-read-plugin.mjs`（`mtnode_media`，主进程执行：ffprobe / ffmpeg / 本地 SenseVoice，只读） | 同上 |
 | 生成器内的 `MCP_RESOURCES` / `MCP_PROMPTS`（MCP 侧自有，无插件真源） | `resources[]` / `prompts[]` |
 
@@ -72,5 +76,9 @@ prompts[]    { name, title, description, arguments, builder(内部字段) }
   且共用那把全局音视频互斥锁。
 - `family:"run" | "tool" | "session"`：推渲染层的 `renderer/mcp-extra.js`（`window.MTNodeMcpExtra`），
   在那里复用 `playNode` / `playControlNode` / `executeAgentToolCall` / `agentSessionSend`。
+- `family:"agent"`（`mtnode_agent`）：**主进程编排**（校验项目文件夹 / 作业表 / 事件观察 / 回执），
+  只有两段推渲染层：`handoffPrepare`（项目文件夹 → 画布 + 常驻交接会话）与 `handoffSend`
+  （发一轮并等它结束）。画布与会话的真源都在渲染层，主进程不另造一套。
+- `family:"catalog"`（`mtnode_catalog`）：主进程直接回工具面（不进渲染层）。
 
 `test/smoke-mcp-server.js` 对这几支单独钉（`LOCAL_TOOLS` + 回环 op 分派）。

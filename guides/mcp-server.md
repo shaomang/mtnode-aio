@@ -92,16 +92,49 @@ curl -s http://127.0.0.1:<port>/mcp \
 - 协议版本：`2025-06-18`（也接受 `2025-03-26` / `2024-11-05` 的握手，回以自己支持的那一版）。
 - 传输：Streamable HTTP 的 JSON 响应形态（`POST /mcp`，`initialize` 回 `Mcp-Session-Id` 头）；
   通知（`notifications/*`）回 `202`、无体。stdio 侧是换行分隔 JSON-RPC。
-- 能力位：`tools`（13 个，`listChanged:false`）、`resources`（2 个静态 + 3 个模板）、`prompts`（3 份）、`logging`。
+- 能力位：`tools`（默认 **2 个**：交接 + 展开；共 19 个，`listChanged:true`）、`resources`（3 个静态 + 3 个模板）、`prompts`（3 份）、`logging`。
 - 工具调用失败按 MCP 口径回报：**JSON-RPC 成功 + `result.isError: true`**，错误文本原样给模型；
   协议级 `error` 只用于「方法不存在 / 请求非法」这类真的协议错误。
 - 工具名一律 `mtnode_*` / `lt_*` 前缀，`initialize` 的 `instructions` 里也声明了这条约定 ——
   与其它 MCP 服务端同时挂载时按前缀区分。
 
-### 3.1 工具
+### 3.0 交接优先：默认只有两个工具
+
+**为什么**：外部 agent 想在这台机器上干一件 MTNode 的活（建流程、出图、跑节点、写文件），自己拼 19 个底层工具 + 读技能的成本很高；而 MTNode 自己的智能体本来就带着全部技能、画布工具与本地后端。所以默认把**整件活交给它**。
+
+| 档位 | `tools/list` 回什么 | 什么时候用 |
+| --- | --- | --- |
+| 精简（默认） | `mtnode_agent`（**排第一**）+ `mtnode_catalog` | 正常接入：把活交给 MTNode 的 agent |
+| 展开（按连接） | 调一次 `mtnode_catalog` 之后，**同一条连接**后续 `tools/list` 回全量 19 个 | 需要自己直接操作画布 / 数据库 / 素材 / 媒体 |
+| 完整（设置） | 设置 → 扩展能力 → 服务端 → 「工具面：切到完整」= 一开始就全量平铺 | 老客户端 / 现有集成，不想改脚本 |
+
+`mtnode_agent` 的 `run`：`task` + `projectFolder`（**必填，本机绝对路径**）→ MTNode 自己解析或新建该文件夹对应的画布、在该文件夹下建（或复用）一条「外部交接 · 项目名」会话、用**设置里的默认模型提供商**跑完这一轮：
+
+- **画布**：按工作目录匹配（同文件夹多张取最近活跃那张），没有就按文件夹名新建一张；文件夹不存在直接报错（不替你造目录）。
+- **会话**：一个项目一条常驻会话（左栏可见、可接管），同一项目再交接自动续上下文；正在跑时回 `SESSION_BUSY`（不排队、不重复起第二条）。
+- **等待**：`run` 立刻回 `jobId`；`action:"status"` 取结果（`wait:true` 最长 30 分钟，**不硬杀**）。
+- **回执**：助手最后一段回复 + `sessionId` + 改动清单（工具事件里的产物路径）+ 工具调用时间线 + 未答卡片（`needs_answer`）。
+- **人的环节**：工具审批 / 画布确认**自动放行**（与首次连接授权同一口径）；模型**澄清提问**回给调用方 —— `action:"answer"` 带 `id` + `answers`（或 `answerText`）作答后这一轮继续。
+- **控制面**：`steer`（插话）/ `stop`（终止）/ `read`（读会话历史）/ `list`（列交接作业）。
+- **参数护栏**按 MCP 口径报错（`isError:true`，正文以错误码开头）：`NO_TASK` / `NO_PROJECT_FOLDER` / `PROJECT_FOLDER_NOT_ABSOLUTE` / `PROJECT_FOLDER_MISSING` / `BAD_ACTION`。
+
+`mtnode_catalog`（第二层入口）两条腿一起走：回完整清单（名称 / 说明 / 参数表）+ 规范全文 + 资源与提示词清单；同时向**本连接**的 `GET /mcp` 通知流推 `notifications/tools/list_changed`（没接通知流的客户端拿文本清单直接 `tools/call` 也行）。资源 `mtnode://guide/agent-handoff` 是同一份内容的可读入口。
+
+> 为什么不是「按客户端白名单」：白名单要人维护，而「什么时候需要底层工具」只有调用方自己知道 —— 所以给显式的展开动作 + 一个全局档位开关。
+
+两个维护边界，写清楚免得踩：
+
+- **交接不是 Paseo 远程接管**：`steer` / `stop` / `read` / `answer` 直接走会话桥的渲染层帧，**不受**「Paseo 手机接管」那个总开关约束（那个闸门只管 `mtnode_session_*` 族与 `/session/stream`）。能调它们的前提只有一条：拿到了本机 MCP 令牌。
+- **审批自动放行只覆盖两类卡**：工具审批与画布确认。模型提问（`question`）**永远**转给外部调用方，不会被自动答掉。
+
+### 3.1 工具（第二层：完整工具面）
+
+> 默认精简档下这张表**不出现在** `tools/list` 里；调过 `mtnode_catalog`（或把设置切到「完整」）才全量可见。`mtnode_agent` / `mtnode_catalog` 两件本身也在这张表里（置顶）。
 
 | 工具 | family / 渲染层 op | 写 | 说明 |
 | --- | --- | --- | --- |
+| `mtnode_agent` | agent / **主进程编排**（`handoffPrepare` / `handoffSend` 推渲染层） | 是 | **交接**：把整件活交给 MTNode 的 agent（见 §3.0）；异步作业，`status` / `read` / `steer` / `stop` / `answer` / `list` |
+| `mtnode_catalog` | catalog / **主进程执行** | 否 | **展开**：回完整工具面 + 规范，并给本连接推 `tools/list_changed` |
 | `mtnode_canvas_get` | canvas / `get` | 否 | 节点索引 → 配置 → 正文，`contentHash` 也在这里 |
 | `mtnode_canvas_edit` | canvas / `edit` | 是 | 建 / 连 / 改 / 删 / 分组 / 绘制（`create.kind` 覆盖界面可建的全部节点类型，含 `yue_gen` / `breeze_gen` 这类媒体节点；kind 建好即不可改） |
 | `mtnode_app` | canvas / `app` | 部分 | 应用级动作（含长任务图存取、插件管理） |
@@ -235,6 +268,9 @@ curl -s http://127.0.0.1:<port>/mcp \
   url = `http://127.0.0.1:<port>/mcp?token=<token>`（令牌落 `cordis-user.yml`，与 `mcp-server.json` 同一份）。
 - 只暴露**四项**：`mtnode_generate` / `mtnode_run` / `mtnode_tools` / `mtnode_session`。
   画布读写、GUI、数据库仍让 agent 走内置工具（同进程、能带确认卡），不绕远路。
+- 那一行 url 带 `&surface=full`：应用内 Agent 看到的是**完整工具面**，不会被「精简档」收成
+  `mtnode_agent` + `mtnode_catalog` 两件 —— dsh 的 HTTP MCP 客户端塞不了自定义请求头，所以用
+  URL 参数声明（语义 = 先调一次 `mtnode_catalog`，只对这一条连接生效）。
 - 每次启动端口都变 → 该行随之重写；关掉开关 = 撤掉那一行（服务端本身照跑，第三方客户端不受影响）。
 - 受**总开关**约束：MCP 服务端关着就不注册。
 - 于是「应用内 Agent 生成一张图」与「外部客户端生成一张图」走的是同一套鉴权、审计、作业语义。
@@ -271,6 +307,7 @@ node scripts/build-mcp-contract.mjs --check   # 契约与插件参数表是否�
 node scripts/probe-mcp-server.mjs             # 服务端 + 协议面 + 版本闸 + 审计（假渲染层）
 node scripts/probe-mcp-stdio.mjs              # stdio 桥端到端（真子进程）
 node test/smoke-mcp-server.js                 # 契约 / 接线 / 渲染层钩子 / 面板 的静态与逻辑回归
+node test/smoke-mcp-handoff-surface.js         # 交接优先：精简/展开/通知流/档位开关 + mtnode_agent 全编排（假渲染层+假会话桥）
 node test/smoke-mcp-self-loop.js              # 自用回环真跑：query 令牌 / 回环注册 / 作业表 / 媒体执行体（假后端）
 node test/smoke-mcp-stdio-discovery.js         # stdio 桥的**默认发现路径**（临时 APPDATA + 真子进程，不设 MTNODE_DATA_DIR）
 node test/smoke-mcp-version-gate.js           # 版本闸哈希真跑（与 detail 档位解耦 + 真改必变）
@@ -327,7 +364,7 @@ node scripts/e2e-mcp-full.mjs --data "E:\tmp\mtnode-mcp-e2e\pipeline-console" --
 
 | 路径 | 作用 |
 | --- | --- |
-| `dsh/gateway/mcp-extra-plugin.mjs` | 回环四件的契约真源（`defineTool` 参数表） |
+| `dsh/gateway/mcp-extra-plugin.mjs` | 交接面（`mtnode_agent` / `mtnode_catalog`）+ 回环四件的契约真源（`defineTool` 参数表） |
 | `mcp-server.js` | 主进程 MCP 服务端（HTTP / 协议分发 / 排队 / 版本闸 / 审计 / 抓包 / 自检 / 作业表 / 自用回环注册） |
 | `mcp-gui-agent.js` | `mtnode_gui` 的执行器（主进程直接操作窗口：注入脚本 + `capturePage` 截图） |
 | `dev-agent.js` | `mtnode_dev` 的执行器（主进程起隔离调试实例 + CDP：快照 / 点输入 / 截图 / 控制台 / reload·restart） |
@@ -339,9 +376,10 @@ node scripts/e2e-mcp-full.mjs --data "E:\tmp\mtnode-mcp-e2e\pipeline-console" --
 | `scripts/probe-mcp-server.mjs` / `scripts/probe-mcp-stdio.mjs` | 可跑探针 |
 | `scripts/e2e-mcp-full.mjs` | 干净环境全量端到端（真应用 + 真 stdio 客户端，逐条实时打印 + JSON 报告） |
 | `renderer/mcp-bridge.js` | 渲染层执行桥（帧 → 既有宿主处理函数 → 回执） |
-| `renderer/mcp-extra.js` | 回环四项的执行体：跑节点 / 跑整图 / 用户工具 / 会话任务 / 建媒体节点（`window.MTNodeMcpExtra`） |
+| `renderer/mcp-extra.js` | 回环四项的执行体：跑节点 / 跑整图 / 用户工具 / 会话任务 / 建媒体节点，以及交接的两段（`handoffPrepare`：项目文件夹 → 画布 + 常驻交接会话；`handoffSend`：发一轮并等它结束） |
 | `renderer/app-plugins.js` | 「扩展能力管理 → 服务端」页 |
 | `test/smoke-mcp-server.js` | 回归：契约 / 接线 / 帧的生命周期 / 三族回执通道 / 面板 |
 | `test/smoke-mcp-stdio-discovery.js` | 回归：stdio 桥的**默认发现路径**（打包态 `%APPDATA%\pipeline-console\pipeline-console` 布局、`data-root.json` 自定义数据目录、`MTNODE_DATA_DIR` 两种写法） |
 | `test/smoke-mcp-version-gate.js` | 回归：版本闸哈希与 detail 档位解耦、真改必变 |
 | `test/smoke-mcp-self-loop.js` | 回归：query 令牌、回环注册回调、作业表语义、媒体执行体（真 HTTP，假生成后端） |
+| `test/smoke-mcp-handoff-surface.js` | 回归：工具面精简 / 展开 / 通知流 / 档位开关，交接编排（审批自动放行、提问转外部、steer·stop·read·answer）与参数护栏 |

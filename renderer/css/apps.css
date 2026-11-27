@@ -1144,9 +1144,10 @@ button.mini.apps-ico-btn.apps-ico-txt svg {
   border-color: #6db4ff;
 }
 
-/* ── 库页卡片下方那条通栏「启动」（renderer/app-apps.js 的 appsLaunchStripEl）──
-   一条贴底的通栏长按钮：盖住整卡宽、高 30px，与封面之间一条分隔线。
-   卡片本身仍可点（开详情），这条只负责「一步启动」。 */
+/* ── 卡片下方那条通栏按钮（renderer/app-apps.js 的 appsLaunchStripEl）──
+   一条贴底的通栏长按钮（等宽 = 整卡宽、高 30px），与封面之间一条分隔线。
+   卡片本身仍可点（开详情），这条只负责「一步启动 / 一步下载」。
+   两种形态给两种颜色：启动 = 绿色（用户口径：与下载一眼分得开），下载 = 中性灰蓝。 */
 .apps-launch {
   display: flex;
   align-items: center;
@@ -1171,6 +1172,20 @@ button.mini.apps-ico-btn.apps-ico-txt svg {
   outline: none;
 }
 .apps-launch:active { transform: translateY(1px); }
+
+/* 启动（已装）：绿色。悬停仍留在绿族里，别被上面那条通用 :hover 抢成青色。 */
+.apps-launch-run {
+  border-top-color: color-mix(in srgb, var(--green, #5fd68a) 45%, var(--bd));
+  background: color-mix(in srgb, var(--green, #5fd68a) 12%, var(--panel));
+  color: var(--green, #5fd68a);
+  font-weight: 700;
+}
+.apps-launch-run:hover,
+.apps-launch-run:focus-visible {
+  border-top-color: var(--green, #5fd68a);
+  background: color-mix(in srgb, var(--green, #5fd68a) 20%, var(--panel));
+  color: var(--green, #5fd68a);
+}
 
 /* ── 封面块（16:9 固定长宽比） ── */
 .apps-cover {
@@ -1243,7 +1258,10 @@ button.mini.apps-ico-btn.apps-ico-txt svg {
   display: block;
 }
 
-/* 左下角标题 / 作者：底部黑色渐变遮罩 + 白字（亮底截图上也读得清） */
+/* 左下角标题 / 作者：底部黑色渐变遮罩 + **一块半透明暗色垫片** + 白字。
+   垫片是用户口径要的那一层（「字体下方需要垫半透明暗色 + 白色字体」）：
+   只剩渐变时，亮底截图（白 / 浅灰封面）上名字会糊成一片；垫片把文字那一格压暗，
+   无论封面是什么颜色都读得清。 */
 .apps-cover-shade {
   position: absolute;
   left: 0;
@@ -1256,13 +1274,17 @@ button.mini.apps-ico-btn.apps-ico-txt svg {
 
 .apps-cover-cap {
   position: absolute;
-  left: 10px;
-  right: 76px; /* 给右下角那排图标让位，长标题不会钻到按钮底下 */
+  left: 8px;
+  right: 8px;
   bottom: 8px;
   display: flex;
   flex-direction: column;
   gap: 1px;
   min-width: 0;
+  padding: 4px 8px 5px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, .52);
+  backdrop-filter: blur(2px);
   pointer-events: none;
 }
 

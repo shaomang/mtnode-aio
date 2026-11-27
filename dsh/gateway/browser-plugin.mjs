@@ -15,7 +15,8 @@
    注册口是唯一的裁剪点（用户已确认「仅会话可用」）：
      · MTNODE_NO_BROWSER=1（画布智能节点 / 长任务未授权的环节）→ 整个不注册；
      · MTNODE_HIDE_TOOLS 点名的工具 → 不注册（真源 tool-visibility.mjs）。
-   纯净模式（MTNODE_PURE）不在此列：它只裁 system prompt，工具照样全给。
+   纯净模式（MTNODE_PURE）不在此列：它由 mtnode-tool-visibility 在 agent 作用域按
+   PURE_DROP_TOOLS 摘掉 browser_* 整族（注册照挂，可见集里没有）。
    这些标记都由网关在 spawn 时注入并进 runtime key：同一台运行时只可能有一种可见集，
    提示缓存不会因为「轮内改可见集」而整段失效。
    ========================================================================== */

@@ -303,12 +303,27 @@ function tePullFromNode(node, silent) {
    只认「形态变没变」—— 形态一直是 browse 就早退，body 不会重建。所以编辑器写回正文后要
    显式重建一次：否则关掉 ✎ 窗口，画布上还是改之前那一版排版（用户点完横隔线回来以为「线没了」）。
    只在浏览态重建：编辑态 body 里躺着用户正在打字的 textarea，不能动。 */
+/* 保存后让画布上那颗节点立刻换成新正文（本次需求：✎ 保存 → 画布节点内容同步刷新）。
+   重建口径比上面多一档：编辑态的 body 里**没有可同步的正文框**时（JSON 参数表单这类，
+   teRenderBodyTextarea 按 value 同步不到它）也要整块重建，否则节点停在旧内容。
+   编辑态里那颗 textarea.n-text 已按 value 就地同步过，不拆它（拆了就是在用户脚下换 DOM）。
+   板身正握着焦点（用户正在框里打字）→ 记账推迟，失焦后由 flushDeferredNodeRebuilds 补做。 */
 function teRefreshBoardBrowse(node) {
-  if (!node) return;
+  if (!node || !node.id) return;
   const el = document.querySelector('.wf-node[data-nid="' + node.id + '"]');
-  if (!el || !el.classList.contains("browse")) return;
+  if (!el || typeof rebuildNodeBody !== "function") return;
   const body = typeof nodeBodyEl === "function" ? nodeBodyEl(el) : null;
-  if (body && typeof rebuildNodeBody === "function") rebuildNodeBody(node, body);
+  if (!body) return;
+  const ta = body.querySelector ? body.querySelector("textarea.n-text") : null;
+  /* JSON 容器：编辑态画的是按 node.text 解析出来的参数表单，textarea 可能有也可能没有，
+     一律当「需要重建」 */
+  const jsonish = typeof jsonContainerOf === "function" && !!jsonContainerOf(node.text);
+  if (!el.classList.contains("browse") && ta && !jsonish) return; /* 正文框已就地同步 */
+  if (typeof canvasFieldIn === "function" && canvasFieldIn(el)) {
+    if (typeof deferNodeRefresh === "function") deferNodeRefresh(node.id);
+    return;
+  }
+  rebuildNodeBody(node, body);
 }
 
 function tePushToNode() {
@@ -825,6 +840,21 @@ function teRenderToolbar() {
   mk("undo", "↶", I18n.t("撤销"));
   mk("redo", "↷", I18n.t("重做"));
   sep();
+  /* 查找 / 替换：开本对话框内的框内查找条（Ctrl+F 同一入口 · renderer/app-find.js） */
+  const find = document.createElement("button");
+  find.type = "button";
+  find.className = "rv-tool";
+  find.id = "textEditFindBtn";
+  find.textContent = "⌕";
+  find.title = I18n.t("查找与替换（Ctrl+F）");
+  find.addEventListener("mousedown", (ev) => ev.preventDefault());
+  find.onclick = (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    teOpenFind();
+  };
+  tb.appendChild(find);
+  sep();
   /* 批注入口：全文 / 局部（局部：先拖选正文，按钮亮起后再点，才摊开浮空便笺） */
   const full = document.createElement("button");
   full.type = "button";
@@ -863,6 +893,14 @@ function teRenderToolbar() {
   tb.appendChild(local);
 }
 
+/* 查找 / 替换入口：开在当前编辑面上（富文本档 = #textEditRich，源码档 = #textEditSrc）。
+   条子本体与替换逻辑在 renderer/app-find.js；Ctrl+F 走的是同一个入口。 */
+function teOpenFind() {
+  const el = _te.src ? _teSrcEl : _teRichEl;
+  if (!el) return;
+  if (typeof window.openFieldFind === "function") window.openFieldFind({ field: el });
+}
+
 /* ---------- 编辑区 ---------- */
 
 function teRichEl() {
@@ -876,6 +914,11 @@ function teRenderEditor() {
   /* 切档 / 切版本 = 换了编辑面：批注内容小窗一并收掉（它引用的那条批注可能已不在这一版） */
   const annoEditEl = teEl("textEditAnnoEdit");
   if (annoEditEl) annoEditEl.hidden = true;
+  /* 切档 / 切版本 = 换了编辑面：框内查找条指着的那颗旧节点随即被摘掉，先收掉它
+     （用户再按 Ctrl+F 或工具栏 ⌕，会重新开在当前这一面上） */
+  if (typeof window.fieldFindIsOpen === "function" && window.fieldFindIsOpen()) {
+    if (typeof window.closeFieldFind === "function") window.closeFieldFind();
+  }
   /* 两个编辑面的登记一并作废（旧 DOM 已经摘下来，不能再当正文来源） */
   _teRichEl = null;
   _teSrcEl = null;
@@ -2148,6 +2191,8 @@ function teDeleteNote(id) {
 function teMaybeShowFloatNote(ed, ev) {
   void ev;
   if (!_te.editing) return;
+  /* 框内查找条开着时，选区是它挑的命中（不是用户在划字）：别点亮局部批注、别画呼吸灯框 */
+  if (typeof window.fieldFindIsOpen === "function" && window.fieldFindIsOpen()) return;
   const host = document.getElementById("textEditDlg");
   if (!host || !host.classList.contains("on")) return;
   let snippet = "";

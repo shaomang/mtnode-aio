@@ -198,14 +198,14 @@
     toolName: subagent
     backgroundMode: continuable    # 委派嵌套上限:0 禁止委派,dsh 自身默认 3。MTNode 默认收紧到 1(与 OpenCode 的
     # subagent_depth 默认一致);用户在「设置 · 智能能力 · 子代理」改了之后,由宿主
-    # dsh-agent-policy.js 改写本值(main.js 启动时与每次保存配置后)。    maxDepth: 1
+    # dsh-agent-policy.js 改写本值(main.js 启动时与每次保存配置后)。    maxDepth: 2
 
 - id: tool-subagent-fork  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1'
   config:
     provider: fork
     toolName: subagent_fork
     backgroundMode: one-shot
-    # 同 tool-subagent:默认收紧到 1 层嵌套,由 dsh-agent-policy.js 按用户设置改写。    maxDepth: 1
+    # 同 tool-subagent:默认收紧到 1 层嵌套,由 dsh-agent-policy.js 按用户设置改写。    maxDepth: 2
 
 - id: spill-policy
   config:
@@ -267,6 +267,186 @@
       - provider: deepseek-official
         model: deepseek-v4-pro
         maxTokens: 256000
+        retainTokens: 32768
+      - provider: mtnode_p1
+        model: deepseek-v4.1-flash
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p1
+        model: cat-jam-free
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p1
+        model: deepseek-v4-pro
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p1
+        model: glm-5.2
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p1
+        model: glm-5.3
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p1
+        model: glm-5.3-flash
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p1
+        model: hy3
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p1
+        model: hy4-preview
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p1
+        model: kimi-k2.7-code
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p1
+        model: kimi-k3
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p1
+        model: longcat-2.0
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p1
+        model: longcat-2.5-preview-free
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p1
+        model: mimo-v2.5
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p1
+        model: mimo-v2.5-pro
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p1
+        model: mimo-v2.6-flash
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p1
+        model: mimo-v2.6-pro
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p1
+        model: space-bunny
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p1
+        model: step-5-preview-free
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p1
+        model: grok-4.7
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p1
+        model: muse-spark-1.2-contributor
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p1
+        model: muse-spark-1.3-contributor
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p1
+        model: gpt-5.6-luna
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p1
+        model: gpt-6-luna
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p1
+        model: claude-haiku-5-5
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p1
+        model: minimax-m3
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p1
+        model: minimax-m3.1-flash
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p1
+        model: step-5-preview
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p1
+        model: beam-free
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p1
+        model: qwen3.8-max
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p1
+        model: qwen3.8-flash
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p1
+        model: qwen3.7-plus
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p1
+        model: kimi-k3.1-pro
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p1
+        model: iceman-contributor-free
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p1
+        model: gemini-4-argon
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p1
+        model: hy4
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p1
+        model: longcat-2.5-free
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p4
+        model: aoi
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p4
+        model: Deepseek
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p4
+        model: gpt-sovits
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p4
+        model: "123"
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p5
+        model: claude-opus-5-5-thinking
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p5
+        model: claude-opus-5-5
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p5
+        model: gpt-6-luna
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p7
+        model: deepseek-v4-flash
+        maxTokens: 32768
+        retainTokens: 32768
+      - provider: mtnode_p7
+        model: gpt-image-2.5-all
+        maxTokens: 32768
         retainTokens: 32768
 
       - provider: mtnode_p1
@@ -667,9 +847,12 @@
       name: './plugins/bongochat-prompt.mjs'
 
     # 纯净模式：MTNODE_PURE=1 时清空 system prompt 的 sections / contexts（会话「纯净模式」
-    # 按钮开启）。**它只管提示词，不动工具注册** —— 纯净轮照样拿得到全部工具
-    # （用户口径：纯净模式只省 token，不许把工具也一起裁掉；本文件里凡是有工具面的插件行
-    # 一律不再按 MTNODE_PURE 禁用，只有纯注入提示词的 agent-instructions / plan-mode 仍按它禁用）。
+    # 按钮开启）。**它只管提示词，不动工具注册** —— 工具面由 mtnode-tool-visibility 按
+    # MTNODE_PURE_TOOLS 的 PURE_DROP_TOOLS 在 agent 作用域摘掉 MTNode 自有工具，
+    # 引擎自带的读写 / 命令 / 联网 / read_image 识图照常可用（用户口径：纯净只排除 MTNode
+    # 相关的注入，模型自身能力与 dsh 独立运行一致）。本文件里凡是有工具面的插件行只按
+    # MTNODE_CHAT_ISOLATE 禁用，不按 MTNODE_PURE 禁用，只有纯注入提示词的
+    # agent-instructions / plan-mode 仍按它禁用。
     - id: pure-prompt
       name: './plugins/pure-prompt.mjs'
 
@@ -718,9 +901,10 @@
 
 # ── user plugins (managed from MTNode settings) ──
 
-- id: user-mcp-mwugpuk2
+
+- id: user-mcp-mwyjy862
   name: '@deepseek-ai/dsh-mcp-client'
   config:
     serverName: 'mtnode-self'
     transport: 'streamable-http'
-    url: 'http://127.0.0.1:57045/mcp?token=2f33a787b37f7b2f73a59cfb034f86b5300321021f711aa1'
+    url: 'http://127.0.0.1:56519/mcp?token=7ddae4ae7d690f4fdf6f29bda8777e58b292247f1d300d71&surface=full'

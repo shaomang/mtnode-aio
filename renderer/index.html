@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
@@ -234,6 +234,13 @@
       <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.4 12.4c3.6 0 3.2-8.8 6.8-8.8h4.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M3 2.8l10.2 10.4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
       <span class="btn-ico-txt" data-i18n="隐藏线">隐藏线</span>
     </button>
+    <!-- 简略：画布不再加载任何图像 / 视频预览、不铺节点层封面 —— 本地视频模型（H3 等）
+         跑之前按一下，把 GPU 进程里那批图像纹理解放出来（纯渲染开关，不落画布、不进撤销栈）。
+         与「隐藏线」并列放在连线开关后面。 -->
+    <button id="btnLean" class="corner mini btn-ico" aria-label="简略" aria-pressed="false">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.4" y="3.4" width="11.2" height="9.2" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M3 12.6L13 3.4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M5.2 6.6h1.6M8.6 6.6h2.2M5.2 9.2h4.4" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg>
+      <span class="btn-ico-txt" data-i18n="简略">简略</span>
+    </button>
     <input id="wfName" class="fn-search tb-wfname" type="text" data-i18n-placeholder="画布名称…" placeholder="画布名称…" style="display:none">
     <span class="sep"></span>
     <button id="btnNewWf" class="corner mini btn-ico" aria-label="新建">
@@ -419,7 +426,7 @@
               <!-- 「模式」chip：会话级开关收纳口（与「工具」chip 同款下拉）。
                    本轮把原来平铺的两枚 chip（纯净模式 / 自动续跑）收进这一只菜单，
                    输入区只留一枚入口，状态仍逐项回显（chip 摘要 + 菜单行 开/关）。
-                   纯净模式：移除全部 system prompt 与运行时上下文，工具只留读 / 写 / 命令 / 联网搜索（见 dsh/gateway/tool-visibility.mjs 的 PURE_KEEP_TOOLS）；与「先拷问需求 / 快速热修」互斥：采用那两档时纯净模式自动失效；
+                   纯净模式：移除全部 system prompt 与运行时上下文，工具只摘 MTNode 自己注入的那些（画布 / 数据库 / 识图子代理 / 浏览器 / 媒体 / 素材，见 dsh/gateway/tool-visibility.mjs 的 PURE_DROP_TOOLS），引擎自带的读写 / 命令 / 联网 / read_image 识图照常可用；与「先拷问需求 / 快速热修」互斥：采用那两档时纯净模式自动失效；
                    自动续跑：本轮完成且目标未达成、还有下一步时自动接着跑（默认关，自己打开）。 -->
               <!-- 本轮需求：chip 键面**只有「模式」两个字**，不再往里写「纯净模式 · 自动续跑」
                    摘要（那会把这一枚顶宽，把右边几枚挤出界）。开着的开关只由 chip 变色

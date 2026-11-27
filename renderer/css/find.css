@@ -1,4 +1,4 @@
-﻿/* ============ 输入框内查找（Ctrl+F · renderer/app-find.js） ============
+/* ============ 输入框内查找（Ctrl+F · renderer/app-find.js） ============
  * 焦点在 input / textarea 里时按 Ctrl+F 呼出的框内查找条：贴右上角、不遮输入框本体
  * （用户要看着输入框里的命中逐条走）。persistent 浮层：只走 Esc / ✕ / 再按一次 Ctrl+F，
  * 不挂「点外部即关」。层级高于全局搜索（12000）—— 它是在搜索浮层的输入框里也能用的。
@@ -10,10 +10,10 @@
   right: 14px;
   z-index: 12100;
   display: none;
-  align-items: center;
-  gap: 6px;
-  height: 32px;
-  padding: 0 8px 0 10px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  padding: 6px 8px 6px 10px;
   box-sizing: border-box;
   border-radius: 8px;
   background: var(--panel);
@@ -28,6 +28,27 @@
 .fd-bar.on {
   display: flex;
   animation: fd-pop .12s ease-out;
+}
+
+/* 目标在「编辑-文本节点」对话框里时，条子挂进对话框盒子（见 app-find.js 的 fdMountBar）：
+   绝对定位在头部的档位条下方，跟着盒子缩放 / 拖动，不盖 ✕ 与放大按钮 */
+.fd-bar.fd-in-dlg {
+  position: absolute;
+  top: 78px;
+  right: 18px;
+  z-index: 20;
+}
+
+/* 每一行自己排（查找行 / 替换行）；行高固定，第二行只在多行文本里出现 */
+.fd-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+}
+
+.fd-row[hidden] {
+  display: none;
 }
 
 @keyframes fd-pop {
@@ -99,6 +120,20 @@
 
 .fd-close {
   font-size: 11px;
+}
+
+/* 文字按钮（替换 / 全部替换）：比图标按钮宽，宽度跟着文案走 */
+.fd-btn-txt {
+  width: auto;
+  min-width: 22px;
+  padding: 0 7px;
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
+/* 替换为：与查找框同宽，一眼看出是同一组的第二行 */
+.fd-rep-input {
+  width: 190px;
 }
 
 /* 命中不足一屏时不需要提示行；够宽才显示键位提示，免得条子太胖挡视线 */
