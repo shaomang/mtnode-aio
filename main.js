@@ -1290,6 +1290,24 @@ function loadDocsCatalog() {
   }
 }
 
+const MANUAL_PAGE_ALIASES = {
+  "marks-groups": "nodes-wires",
+  rollback: "nodes-wires",
+  "quick-build": "workflows",
+  approvals: "dsh",
+  "md-editing": "ai-review",
+  "moss-music": "media-gen",
+  "blender-local": "mcp-server",
+  "windows-run": "faq",
+  glossary: "faq",
+  manifest: "dev-nodes",
+};
+
+function resolveManualPageId(id) {
+  const safe = String(id || "").replace(/[^a-z0-9_-]/gi, "");
+  return MANUAL_PAGE_ALIASES[safe] || safe;
+}
+
 ipcMain.handle("guide:load", (e, opts) => {
   opts = opts || {};
   return loadMarkdownPack(
@@ -1301,7 +1319,69 @@ ipcMain.handle("guide:load", (e, opts) => {
 ipcMain.handle("docs:catalog", () => loadDocsCatalog());
 ipcMain.handle("docs:load", (e, opts) => {
   opts = opts || {};
-  return loadMarkdownPack(docsManualRoot(), opts.id, opts.locale);
+  return loadMarkdownPack(
+    docsManualRoot(),
+    resolveManualPageId(opts.id),
+    opts.locale,
+  );
+});
+ipcMain.handle("docs:search", (e, opts) => {
+  opts = opts || {};
+  const q = String(opts.query || "").trim().toLowerCase();
+  if (!q) return { ok: true, hits: [] };
+  const cat = loadDocsCatalog();
+  if (!cat.ok) return cat;
+  const locale = String(opts.locale || "").toLowerCase().startsWith("en")
+    ? "en"
+    : "zh";
+  const locKey = locale === "en" ? "en" : "zh";
+  const terms = q.split(/\s+/).filter(Boolean);
+  const hits = [];
+  for (const sec of (cat.catalog && cat.catalog.sections) || []) {
+    const secTitle =
+      (sec.title && (sec.title[locKey] || sec.title.zh || sec.title.en)) ||
+      sec.id ||
+      "";
+    for (const page of sec.pages || []) {
+      const pid = page && page.id;
+      if (!pid) continue;
+      const pageTitle =
+        (page.title && (page.title[locKey] || page.title.zh || page.title.en)) ||
+        pid;
+      const titleLow = (pageTitle + " " + secTitle + " " + pid).toLowerCase();
+      const titleMatch = terms.every((t) => titleLow.indexOf(t) >= 0);
+      const pack = loadMarkdownPack(docsManualRoot(), pid, locale);
+      const plain = pack && pack.ok
+        ? String(pack.markdown || "")
+            .replace(/!\[[^\]]*\]\([^)]+\)/g, " ")
+            .replace(/```[\s\S]*?```/g, " ")
+            .replace(/[#>*`|_\[\]]/g, " ")
+            .replace(/\s+/g, " ")
+            .trim()
+        : "";
+      const plainLow = plain.toLowerCase();
+      const bodyMatch = plainLow && terms.every((t) => plainLow.indexOf(t) >= 0);
+      if (!titleMatch && !bodyMatch) continue;
+      let snippet = "";
+      if (bodyMatch) {
+        const idx = plainLow.indexOf(terms[0]);
+        if (idx >= 0) {
+          const s = Math.max(0, idx - 26);
+          const end = Math.min(plain.length, idx + 76);
+          snippet = (s > 0 ? "…" : "") + plain.slice(s, end).trim() + (end < plain.length ? "…" : "");
+        }
+      }
+      hits.push({
+        id: pid,
+        title: pageTitle,
+        section: secTitle,
+        snippet,
+        score: titleMatch ? (bodyMatch ? 3 : 2) : 1,
+      });
+    }
+  }
+  hits.sort((a, b) => b.score - a.score);
+  return { ok: true, hits };
 });
 ipcMain.handle("docs:bundle", (e, opts) => {
   opts = opts || {};
@@ -1313,8 +1393,8 @@ ipcMain.handle("docs:bundle", (e, opts) => {
   const locKey = locale === "en" ? "en" : "zh";
   const parts = [];
   let total = 0;
-  const MAX = 80000;
-  const PAGE_MAX = 4500;
+  const MAX = 120000;
+  const PAGE_MAX = 6000;
   const sections = (cat.catalog && cat.catalog.sections) || [];
   for (const sec of sections) {
     const secTitle =

@@ -1862,23 +1862,23 @@ body.plan-resizing * {
 }
 
 .app-docs-nav {
-  width: 232px;
+  width: 248px;
   flex: none;
   display: flex;
   flex-direction: column;
   min-height: 0;
-  border-right: 2px solid var(--bd);
-  background: rgba(0, 0, 0, .18);
+  border-right: 1px solid var(--bd);
+  background: var(--panel2);
 }
 
 .app-docs-filter {
-  margin: 8px 8px 4px;
+  margin: 10px 10px 6px;
   background: var(--code);
   color: var(--ink);
   border: 1px solid var(--bd2);
-  border-radius: 3px;
-  padding: 6px 8px;
-  font-size: 12px;
+  border-radius: 5px;
+  padding: 7px 10px;
+  font-size: 12.5px;
   outline: none;
 }
 
@@ -1890,24 +1890,28 @@ body.plan-resizing * {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  padding: 4px 6px 12px;
+  padding: 4px 8px 16px;
 }
 
 .app-docs-sec {
-  margin: 6px 0 2px
+  margin: 10px 0 4px
+}
+
+.app-docs-sec:first-child {
+  margin-top: 2px
 }
 
 .app-docs-sec-title {
-  font-size: 10.5px;
-  letter-spacing: 1px;
+  font-size: 11px;
+  letter-spacing: 0.6px;
   color: var(--muted);
-  font-weight: 800;
+  font-weight: 700;
   padding: 6px 8px 4px;
   text-transform: uppercase;
 }
 
 html:not([lang="en"]) .app-docs-sec-title {
-  letter-spacing: 2px;
+  letter-spacing: 1px;
   text-transform: none
 }
 
@@ -1918,11 +1922,13 @@ html:not([lang="en"]) .app-docs-sec-title {
   background: transparent;
   border: 1px solid transparent;
   color: var(--ink);
-  padding: 5px 8px;
-  font-size: 12.5px;
+  padding: 6px 9px;
+  font-size: 13px;
+  line-height: 1.45;
   letter-spacing: 0;
-  border-radius: 3px;
+  border-radius: 5px;
   cursor: pointer;
+  margin-bottom: 1px;
 }
 
 .app-docs-page-btn:hover {
@@ -1933,7 +1939,37 @@ html:not([lang="en"]) .app-docs-sec-title {
 .app-docs-page-btn.on {
   border-color: var(--orange);
   color: var(--orange2);
+  font-weight: 600;
   background: rgba(255, 143, 46, .08);
+}
+
+.app-docs-hit-btn {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 7px 9px;
+  margin-bottom: 4px;
+}
+
+.app-docs-hit-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.app-docs-hit-sec {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.app-docs-hit-snip {
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--muted);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 .app-docs-article {
@@ -1941,22 +1977,180 @@ html:not([lang="en"]) .app-docs-sec-title {
   min-width: 0;
   min-height: 0;
   overflow: auto;
-  padding: 18px 22px 28px;
+  padding: 24px 32px 40px;
+}
+
+.app-docs-article-inner {
+  max-width: 74ch;
+  margin: 0 auto;
+  font-size: 14px;
+  line-height: 1.78;
 }
 
 .app-docs-article.md h1 {
-  font-size: 18px;
-  margin: 0 0 10px
+  font-size: 23px;
+  line-height: 1.3;
+  letter-spacing: -0.02em;
+  text-wrap: balance;
+  margin: 0 0 12px;
+  color: var(--ink);
+}
+
+.app-docs-article.md h2 {
+  font-size: 16.5px;
+  line-height: 1.4;
+  margin: 26px 0 10px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--bd);
+  color: var(--ink);
+}
+
+.app-docs-article.md h3 {
+  font-size: 14.5px;
+  line-height: 1.45;
+  margin: 18px 0 8px;
+  color: var(--orange2);
+}
+
+.app-docs-article.md p {
+  margin: 0 0 12px;
+}
+
+.app-docs-article.md ul,
+.app-docs-article.md ol {
+  margin: 0 0 14px;
+  padding-left: 22px;
+}
+
+.app-docs-article.md li {
+  margin-bottom: 5px;
+}
+
+.app-docs-article.md blockquote {
+  margin: 14px 0;
+  padding: 10px 14px;
+  border-left: 3px solid var(--orange);
+  background: var(--panel2);
+  border-radius: 0 6px 6px 0;
+  color: var(--ink);
+}
+
+.app-docs-article.md blockquote p:last-child {
+  margin-bottom: 0;
+}
+
+.app-docs-article.md table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 14px 0 18px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.app-docs-article.md th,
+.app-docs-article.md td {
+  padding: 8px 10px;
+  border: 1px solid var(--bd);
+  text-align: left;
+  vertical-align: top;
+}
+
+.app-docs-article.md th {
+  background: var(--panel2);
+  font-weight: 600;
 }
 
 .app-docs-article.md img {
   display: block;
   max-width: 100%;
   height: auto;
-  margin: 10px 0 16px;
+  margin: 14px 0 18px;
   border: 1px solid var(--bd2);
+  border-radius: 8px;
+  background: #11151d;
+}
+
+.app-docs-toc {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  margin: 0 0 18px;
+  padding: 9px 12px;
+  border: 1px solid var(--bd);
+  border-radius: 6px;
+  background: var(--panel2);
+}
+
+.app-docs-toc-label {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--muted);
+  margin-right: 2px;
+}
+
+.app-docs-toc-link {
+  font-size: 12.5px;
+  line-height: 1.4;
+  padding: 2px 8px;
   border-radius: 4px;
-  background: #0d1016;
+  border: 1px solid var(--bd);
+  color: var(--ink);
+  text-decoration: none;
+  background: var(--panel);
+}
+
+.app-docs-toc-link:hover {
+  border-color: var(--orange);
+  color: var(--orange2);
+}
+
+.app-docs-pager {
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  margin-top: 32px;
+  padding-top: 18px;
+  border-top: 1px solid var(--bd);
+}
+
+.app-docs-pager-spacer {
+  flex: 1;
+}
+
+.app-docs-pager-btn {
+  flex: 1;
+  max-width: 48%;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 10px 14px;
+  border: 1px solid var(--bd2);
+  border-radius: 6px;
+  background: var(--panel2);
+  color: var(--ink);
+  cursor: pointer;
+  text-align: left;
+}
+
+.app-docs-pager-btn.next {
+  text-align: right;
+  align-items: flex-end;
+}
+
+.app-docs-pager-btn:hover {
+  border-color: var(--orange);
+  color: var(--orange2);
+}
+
+.app-docs-pager-dir {
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.app-docs-pager-title {
+  font-size: 13.5px;
+  font-weight: 600;
 }
 
 .app-docs-ask {
@@ -1965,8 +2159,8 @@ html:not([lang="en"]) .app-docs-sec-title {
   flex: none;
   flex-direction: column;
   min-height: 0;
-  border-left: 2px solid var(--bd);
-  background: linear-gradient(180deg, #141820, var(--panel));
+  border-left: 1px solid var(--bd);
+  background: var(--panel2);
 }
 
 .app-docs-dlg.ask-on .app-docs-ask {
@@ -2015,7 +2209,7 @@ html:not([lang="en"]) .app-docs-sec-title {
 .app-docs-ask-msg .chat-bubble {
   display: inline-block;
   max-width: 100%;
-  padding: 7px 10px;
+  padding: 8px 11px;
   border-radius: 8px;
   font-size: 12.5px;
   line-height: 1.55;
@@ -2027,12 +2221,12 @@ html:not([lang="en"]) .app-docs-sec-title {
 }
 
 .app-docs-ask-msg.me .chat-bubble {
-  background: #95ec69;
-  color: #0d1016
+  background: var(--orange);
+  color: #ffffff;
 }
 
 .app-docs-ask-msg.ai .chat-bubble {
-  background: #1a1f28;
+  background: var(--panel);
   color: var(--ink);
   border: 1px solid var(--bd2);
 }

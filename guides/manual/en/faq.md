@@ -1,34 +1,48 @@
-# FAQ
+# FAQ & glossary
 
-> One-sentence goal: match the usual "nothing happened / nothing landed on disk / the bill multiplied" symptoms to their causes, and know where to ask and report.
+Hit a snag? Check this quick reference first — most everyday issues take under a minute to solve.
 
-## Quick FAQ
+## Quick troubleshooting
 
-- Pressing ▶ does nothing: check whether there is upstream input, whether a Wait for file node is holding it back, and whether the provider and its Key are configured.
-- Nothing lands on disk: save nodes follow ordinary nodes only; an agent node writes files itself, so do not put a save node after one.
-- Downstream did not update: the prompt pastes the body text instead of an `@title`, so re-running upstream never updates it.
-- Several images generated / the bill multiplied: text-to-image produces exactly one image per run; for more, use one batch item per image or raise the rolls count.
-- Media generation hangs: music and video share one VRAM lock, so only one runs at a time.
-- A batch task is unusually expensive: check whether the whole batch of N items is being fed into every run (≈N² calls); use Aggregate mode only when one run really must see everything.
-- The error makes no sense: send the error text plus the node title to the assistant in the right-hand panel — it can read the canvas and locate things directly.
+| Symptom | Common cause | Fix |
+| --- | --- | --- |
+| **Clicking ▶ does nothing** | Missing API key, empty upstream input, or blocked by a Wait-for-file node | Check **Settings → Model services** for an active key; confirm upstream nodes have output |
+| **Result wasn't saved to disk** | Normal text/image node has no Save node connected | Attach a **Save** node after normal processing nodes (Agent nodes write files themselves) |
+| **Upstream edit didn't reach downstream** | Prompt has pasted static text instead of `@NodeTitle` | Replace static text by typing `@` and picking the upstream node |
+| **Audio/video node waits in queue** | Local media backends share the GPU one job at a time | Wait for the active job (check **AI working** on the bottom bar), or lower resolution / toggle **Lean** |
+| **Batch run cost more than expected** | Whole batch fed into every call | Use **Batch mode** to process items one by one; use **Aggregate mode** only when AI must read everything at once |
+| **Imported node shows "No model"** | Original workflow used a provider you haven't set up | Open the node's **⚙ Settings** and pick one of your configured models |
+| **Confusing error message** | Network hiccup or parameter mismatch | Paste the error to the Global assistant (**✦**) or ask **Docs Q&A** in this manual |
 
-## Where to ask and report
+## Windows "Protected your PC / Unrecognized app" prompt
 
-### Questions about the canvas
+Right after a brand-new release, Windows SmartScreen may show a blue warning. To launch safely:
 
-Ask the assistant in the right-hand panel (✦) directly: it can see the canvas in front of you and can edit it too.
+1. Click **More info** in the blue dialog.
+2. Click **Run anyway** at the bottom.
+3. Windows remembers your choice for that version from then on.
 
-### To save effort
+## Freeing disk space
 
-Describe "input → processing → output format → where to save" in one sentence, let the assistant build the nodes, and then adjust the parameters yourself.
+Two built-in cleanup tools clear temporary files without touching your work:
 
-### The four pieces for a request or a bug report
+- **Global cache**: Open **Settings → Storage & cleanup**, inspect sizes, and clear only what you choose.
+- **Plugin output cache**: Open **Plugins**, click **ⓘ** on any plugin card, and clean **Output cache** (**Keep last 7 days** or **Clean all**) without touching model weights or environments.
 
-1. Environment: OS, GPU, VRAM, RAM; local backend or API.
-2. The result you want.
-3. What actually happened (error text / screenshot).
-4. What you already tried.
+## Plain-English glossary
 
-### When writing a tutorial
+- **Node**: One building block on the canvas (Input, Process, Save, Control, etc.).
+- **Port**: The small dot on a node's left (input) or right (output) edge where wires connect.
+- **Node layer**: A collapsible container holding a group of nodes — double-click to step inside.
+- **Agent node**: A node powered by an AI agent that can read files, run multiple steps, and write outputs on its own.
+- **Dev node**: A node layer designed for software projects, organized into modules, files, and classes.
+- **Thinking effort**: Controls how deeply a model reasons (`Off` to `Max`). Deeper thinking can improve complex answers but takes more time and tokens.
+- **Preset**: Sets the agent's working style (default `Minimal` for crisp direct results) without altering thinking effort.
+- **Batch vs. Aggregate**: Given multiple inputs, **Batch** runs once per item; **Aggregate** combines everything into one run.
+- **W coins**: MTNode account credits used for MTNode Relay models and tipping creators in Workshop/Apps.
 
-Keep every section in the same shape: overview + node description + several usages + a re-runnable example; later iterations change only the body, never the structure.
+## Still need help?
+
+- **Docs Q&A**: Click **Ask** at the top right of this manual to ask questions in plain language.
+- **Global assistant**: Click **✦** on the canvas — it can see your flow and help debug it live.
+- **Forum**: Sign in and open **Forum** at the top right with your steps and error screenshot.

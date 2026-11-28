@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 224" width="680" height="224">
+  <defs>
+    <marker id="arr-cyan" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,1 L7,4 L0,7 z" fill="#38bdf8"/></marker>
+    <marker id="arr-orange" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,1 L7,4 L0,7 z" fill="#f59e0b"/></marker>
+    <marker id="arr-purple" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,1 L7,4 L0,7 z" fill="#c792ea"/></marker>
+    <marker id="arr-green" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,1 L7,4 L0,7 z" fill="#4ade80"/></marker>
+    <marker id="arr-rose" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,1 L7,4 L0,7 z" fill="#fb7185"/></marker>
+    <marker id="arr-muted" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,1 L7,4 L0,7 z" fill="#a8b5c8"/></marker>
+  </defs>
+  <rect x="0.5" y="0.5" width="679" height="223" rx="10" fill="#11151d" stroke="#242c3c"/>
+  <text x="20" y="28" fill="#f1f5f9" font-size="14" font-weight="700" font-family='system-ui, -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif'>底部状态栏快捷入口</text>
+  <text x="20" y="46" fill="#a8b5c8" font-size="11.5" font-family='system-ui, -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif'>从左到右按顺序排开，在主窗口与应用窗口里都可用快捷键唤出</text>
+  <rect x="18" y="66" width="118" height="116" rx="8" fill="#21182c" stroke="#c792ea" stroke-width="1.5"/>
+  <rect x="19" y="67" width="116" height="4" rx="2" fill="#c792ea" opacity="0.85"/>
+  <rect x="28" y="78" width="76" height="18" rx="9" fill="#c792ea" opacity="0.2"/>
+  <text x="66" y="90.5" text-anchor="middle" fill="#c792ea" font-size="10.5" font-weight="700" font-family='system-ui, -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif'>Ctrl+Tab</text>
+  <text x="77" y="108" text-anchor="middle" fill="#f1f5f9" font-size="13" font-weight="700" font-family='system-ui, -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif'>输入补全</text>
+  <text x="77" y="126" text-anchor="middle" fill="#a8b5c8" font-size="11" font-family='system-ui, -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif'>边打字边预测</text>
+  <text x="77" y="140.5" text-anchor="middle" fill="#a8b5c8" font-size="11" font-family='system-ui, -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif'>按 Tab 采纳</text>
+  <rect x="148" y="66" width="118" height="116" rx="8" fill="#261d12" stroke="#f59e0b" stroke-width="1.5"/>
+  <rect x="149" y="67" width="116" height="4" rx="2" fill="#f59e0b" opacity="0.85"/>
+  <rect x="158" y="78" width="28" height="18" rx="9" fill="#f59e0b" opacity="0.2"/>
+  <text x="172" y="90.5" text-anchor="middle" fill="#f59e0b" font-size="10.5" font-weight="700" font-family='system-ui, -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif'>F1</text>
+  <text x="207" y="108" text-anchor="middle" fill="#f1f5f9" font-size="13" font-weight="700" font-family='system-ui, -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif'>快捷会话</text>
+  <text x="207" y="126" text-anchor="middle" fill="#a8b5c8" font-size="11" font-family='system-ui, -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif'>置顶小窗下指令</text>
+  <text x="207" y="140.5" text-anchor="middle" fill="#a8b5c8" font-size="11" font-family='system-ui, -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif'>只看最终回复</text>
+  <rect x="278" y="66" width="118" height="116" rx="8" fill="#12212e" stroke="#38bdf8" stroke-width="1.5"/>
+  <rect x="279" y="67" width="116" height="4" rx="2" fill="#38bdf8" opacity="0.85"/>
+  <rect x="288" y="78" width="28" height="18" rx="9" fill="#38bdf8" opacity="0.2"/>
+  <text x="302" y="90.5" text-anchor="middle" fill="#38bdf8" font-size="10.5" font-weight="700" font-family='system-ui, -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif'>F2</text>
+  <text x="337" y="108" text-anchor="middle" fill="#f1f5f9" font-size="13" font-weight="700" font-family='system-ui, -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif'>DeepSeek</text>
+  <text x="337" y="126" text-anchor="middle" fill="#a8b5c8" font-size="11" font-family='system-ui, -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif'>右侧对话抽屉</text>
+  <text x="337" y="140.5" text-anchor="middle" fill="#a8b5c8" font-size="11" font-family='system-ui, -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif'>随时查资料闲聊</text>
+  <rect x="408" y="66" width="118" height="116" rx="8" fill="#12241b" stroke="#4ade80" stroke-width="1.5"/>
+  <rect x="409" y="67" width="116" height="4" rx="2" fill="#4ade80" opacity="0.85"/>
+  <rect x="418" y="78" width="28" height="18" rx="9" fill="#4ade80" opacity="0.2"/>
+  <text x="432" y="90.5" text-anchor="middle" fill="#4ade80" font-size="10.5" font-weight="700" font-family='system-ui, -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif'>F3</text>
+  <text x="467" y="108" text-anchor="middle" fill="#f1f5f9" font-size="13" font-weight="700" font-family='system-ui, -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif'>语音播报</text>
+  <text x="467" y="126" text-anchor="middle" fill="#a8b5c8" font-size="11" font-family='system-ui, -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif'>朗读 AI 回复</text>
+  <text x="467" y="140.5" text-anchor="middle" fill="#a8b5c8" font-size="11" font-family='system-ui, -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif'>右键换音色引擎</text>
+  <rect x="538" y="66" width="124" height="116" rx="8" fill="#29151c" stroke="#fb7185" stroke-width="1.5"/>
+  <rect x="539" y="67" width="122" height="4" rx="2" fill="#fb7185" opacity="0.85"/>
+  <rect x="548" y="78" width="28" height="18" rx="9" fill="#fb7185" opacity="0.2"/>
+  <text x="562" y="90.5" text-anchor="middle" fill="#fb7185" font-size="10.5" font-weight="700" font-family='system-ui, -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif'>F4</text>
+  <text x="600" y="108" text-anchor="middle" fill="#f1f5f9" font-size="13" font-weight="700" font-family='system-ui, -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif'>语音输入</text>
+  <text x="600" y="126" text-anchor="middle" fill="#a8b5c8" font-size="11" font-family='system-ui, -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif'>说话直接变文字</text>
+  <text x="600" y="140.5" text-anchor="middle" fill="#a8b5c8" font-size="11" font-family='system-ui, -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif'>按住 F4 或持续听</text>
+  <text x="340" y="212" text-anchor="middle" fill="#a8b5c8" font-size="11.5" font-family='system-ui, -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif'>语音播报与语音输入默认跑在本机离线引擎，也可以右键切到 DeepSeek 云端</text>
+</svg>

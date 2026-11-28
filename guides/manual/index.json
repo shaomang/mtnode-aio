@@ -1,159 +1,83 @@
 {
-  "defaultPage": "providers",
+  "defaultPage": "overview",
   "sections": [
     {
       "id": "start",
       "title": {
-        "zh": "上手",
+        "zh": "快速上手",
         "en": "Get started"
       },
       "pages": [
         {
+          "id": "overview",
+          "title": {
+            "zh": "认识 MTNode",
+            "en": "Meet MTNode"
+          }
+        },
+        {
           "id": "providers",
           "title": {
-            "zh": "配置服务商与 API",
-            "en": "Providers & API"
+            "zh": "配置模型与 API Key",
+            "en": "Models & API keys"
+          }
+        },
+        {
+          "id": "quick-tools",
+          "title": {
+            "zh": "底栏工具、语音与快捷键",
+            "en": "Quick tools, voice & hotkeys"
           }
         }
       ]
     },
     {
-      "id": "content",
+      "id": "canvas",
       "title": {
-        "zh": "内容生成",
-        "en": "Content generation"
+        "zh": "画布与创作",
+        "en": "Canvas & creation"
       },
       "pages": [
         {
+          "id": "nodes-wires",
+          "title": {
+            "zh": "画布基础：节点、连线与排版",
+            "en": "Canvas basics: nodes, wires & layout"
+          }
+        },
+        {
           "id": "io-proc",
           "title": {
-            "zh": "输入 / 处理 / 保存",
-            "en": "Input / process / save"
-          }
-        },
-        {
-          "id": "media-gen",
-          "title": {
-            "zh": "出音乐 / 语音 / 视频",
-            "en": "Music / speech / video"
-          }
-        },
-        {
-          "id": "moss-music",
-          "title": {
-            "zh": "MOSS-Music：听懂一首歌",
-            "en": "MOSS-Music: understanding a track"
-          }
-        },
-        {
-          "id": "ai-review",
-          "title": {
-            "zh": "AI 审阅：批注与修订",
-            "en": "AI review: notes & revisions"
-          }
-        },
-        {
-          "id": "md-editing",
-          "title": {
-            "zh": "Markdown 编辑：换行与 Tab 缩进",
-            "en": "Markdown editing: line breaks & Tab indent"
-          }
-        },
-        {
-          "id": "fim",
-          "title": {
-            "zh": "FIM 补全：打字时的后续预测",
-            "en": "FIM completion: hints while you type"
+            "zh": "文字与图像生成",
+            "en": "Text & image generation"
           }
         },
         {
           "id": "image-edit",
           "title": {
-            "zh": "图像编辑与蒙版",
+            "zh": "图像编辑与蒙版重绘",
             "en": "Image editing & masks"
           }
-        }
-      ]
-    },
-    {
-      "id": "research",
-      "title": {
-        "zh": "研究",
-        "en": "Research"
-      },
-      "pages": [
+        },
         {
-          "id": "research",
+          "id": "ai-review",
           "title": {
-            "zh": "研究视图：笔记 · 知识图谱 · 文献库",
-            "en": "Research view: notes, graph, literature"
-          }
-        }
-      ]
-    },
-    {
-      "id": "assistant",
-      "title": {
-        "zh": "全局助手与工作流",
-        "en": "Assistant & workflows"
-      },
-      "pages": [
-        {
-          "id": "workflows",
-          "title": {
-            "zh": "保存、导入导出与工坊",
-            "en": "Save, import/export, workshop"
+            "zh": "AI 审阅与文本编辑",
+            "en": "AI review & text editing"
           }
         },
         {
-          "id": "quick-build",
+          "id": "fim",
           "title": {
-            "zh": "一句话搭工作流",
-            "en": "Build a flow in one sentence"
+            "zh": "输入补全（边打字边预测）",
+            "en": "Inline completion (FIM)"
           }
         },
         {
-          "id": "longtask",
+          "id": "media-gen",
           "title": {
-            "zh": "长周期任务（状态机 · 人在环）",
-            "en": "Long-running tasks (state machine, human in the loop)"
-          }
-        },
-        {
-          "id": "mcp-server",
-          "title": {
-            "zh": "MCP 服务端（第三方接进来）",
-            "en": "MCP server (external clients)"
-          }
-        }
-      ]
-    },
-    {
-      "id": "dev",
-      "title": {
-        "zh": "开发节点",
-        "en": "Dev nodes"
-      },
-      "pages": [
-        {
-          "id": "dev-nodes",
-          "title": {
-            "zh": "开发节点：让 AI 写项目",
-            "en": "Dev nodes"
-          }
-        },
-        {
-          "id": "app-dev",
-          "title": {
-            "zh": "开发一个应用",
-            "en": "Build an app"
-          }
-        },
-        {
-          "id": "app-publish",
-          "title": {
-            "zh": "上架应用到云端（多版本）",
-            "en": "Publish an app to the cloud (versions)"
+            "zh": "音乐、语音、视频与本地插件",
+            "en": "Music, speech, video & local plugins"
           }
         }
       ]
@@ -161,70 +85,68 @@
     {
       "id": "session",
       "title": {
-        "zh": "会话",
-        "en": "Sessions"
+        "zh": "智能会话",
+        "en": "Agent sessions"
       },
       "pages": [
         {
           "id": "dsh",
           "title": {
-            "zh": "智能能力是什么",
-            "en": "What agent mode is"
+            "zh": "智能会话与权限",
+            "en": "Agent sessions & permissions"
           }
         },
         {
           "id": "agent-nodes",
           "title": {
-            "zh": "智能任务与智能会话",
-            "en": "Agent task & session"
+            "zh": "智能节点与画布归属",
+            "en": "Agent nodes & canvas ownership"
           }
         },
         {
           "id": "agent-browser",
           "title": {
-            "zh": "会话的浏览器能力",
-            "en": "The session's browser"
-          }
-        },
-        {
-          "id": "approvals",
-          "title": {
-            "zh": "审批与权限",
-            "en": "Approvals"
+            "zh": "让 AI 帮你操作浏览器",
+            "en": "Browser automation"
           }
         },
         {
           "id": "paseo-bridge",
           "title": {
             "zh": "用手机接管会话（Paseo）",
-            "en": "Phone takeover (Paseo)"
+            "en": "Phone handoff (Paseo)"
           }
         }
       ]
     },
     {
-      "id": "tools",
+      "id": "workflow",
       "title": {
-        "zh": "工具与函数节点",
-        "en": "Tool & function nodes"
+        "zh": "工作流与素材",
+        "en": "Workflows & assets"
       },
       "pages": [
+        {
+          "id": "workflows",
+          "title": {
+            "zh": "工作流管理与一句话搭流程",
+            "en": "Workflows & one-sentence builder"
+          }
+        },
+        {
+          "id": "longtask",
+          "title": {
+            "zh": "长周期任务（多步骤与把关）",
+            "en": "Long-running tasks"
+          }
+        },
         {
           "id": "tools-functions",
           "title": {
             "zh": "工具节点与函数节点",
             "en": "Tool & function nodes"
           }
-        }
-      ]
-    },
-    {
-      "id": "assets",
-      "title": {
-        "zh": "素材库",
-        "en": "Asset library"
-      },
-      "pages": [
+        },
         {
           "id": "asset-library",
           "title": {
@@ -235,12 +157,19 @@
       ]
     },
     {
-      "id": "team",
+      "id": "knowledge",
       "title": {
-        "zh": "专家团",
-        "en": "Expert team"
+        "zh": "研究与专家团",
+        "en": "Research & team"
       },
       "pages": [
+        {
+          "id": "research",
+          "title": {
+            "zh": "研究视图：笔记、图谱与演示",
+            "en": "Research: notes, graph & slides"
+          }
+        },
         {
           "id": "one-person-company",
           "title": {
@@ -251,17 +180,54 @@
         {
           "id": "ai-facts",
           "title": {
-            "zh": "AI 事实库（给 AI 读的条例库）",
+            "zh": "AI 事实库",
             "en": "AI fact library"
           }
         }
       ]
     },
     {
-      "id": "community",
+      "id": "build",
       "title": {
-        "zh": "社区",
-        "en": "Community"
+        "zh": "开发与扩展",
+        "en": "Build & extend"
+      },
+      "pages": [
+        {
+          "id": "dev-nodes",
+          "title": {
+            "zh": "开发节点：用画布做项目",
+            "en": "Dev nodes"
+          }
+        },
+        {
+          "id": "app-dev",
+          "title": {
+            "zh": "打造自己的桌面应用",
+            "en": "Build a desktop app"
+          }
+        },
+        {
+          "id": "app-publish",
+          "title": {
+            "zh": "上架应用与多版本管理",
+            "en": "Publish & manage app versions"
+          }
+        },
+        {
+          "id": "mcp-server",
+          "title": {
+            "zh": "MCP 扩展与第三方接入",
+            "en": "MCP extensions & external clients"
+          }
+        }
+      ]
+    },
+    {
+      "id": "help",
+      "title": {
+        "zh": "社区与帮助",
+        "en": "Community & help"
       },
       "pages": [
         {
@@ -270,49 +236,12 @@
             "zh": "创意工坊与讨论区",
             "en": "Workshop & forum"
           }
-        }
-      ]
-    },
-    {
-      "id": "misc",
-      "title": {
-        "zh": "其他",
-        "en": "More"
-      },
-      "pages": [
-        {
-          "id": "nodes-wires",
-          "title": {
-            "zh": "加节点、连线与 @ 引用",
-            "en": "Nodes, wires, @ refs"
-          }
-        },
-        {
-          "id": "marks-groups",
-          "title": {
-            "zh": "框选、组与排版",
-            "en": "Box, groups, layout"
-          }
-        },
-        {
-          "id": "rollback",
-          "title": {
-            "zh": "撤销与回滚",
-            "en": "Undo & rollback"
-          }
-        },
-        {
-          "id": "glossary",
-          "title": {
-            "zh": "名词表",
-            "en": "Glossary"
-          }
         },
         {
           "id": "faq",
           "title": {
-            "zh": "常见问题",
-            "en": "FAQ"
+            "zh": "常见问题与名词速查",
+            "en": "FAQ & glossary"
           }
         }
       ]

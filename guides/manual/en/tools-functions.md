@@ -1,58 +1,19 @@
 # Tool & function nodes
 
-> In one sentence: fix repeated small calculations and small abilities into reusable nodes — a function node pins down the JS input/output conventions, and a tool node registers that ability on the "parameters are ports" footing.
+When you find yourself rebuilding the same mini-flow across canvases — or needing exact math, text splitting, or JSON formatting — use **Tool nodes** and **Function nodes**.
 
-![Tool & function nodes: parameters are ports](img/mtnode-canvas-02-ui.svg)
-*Figure: the parameter table is the port table — one more parameter means one more port.*
+![Packaging reusable steps into tools](img/mtnode-canvas-02-ui.svg)
 
-## Tool / function nodes overview
+## Tool nodes: turn a sub-flow into a reusable block
 
-### Overview
+1. **Parameters become ports**: Add an input parameter in the Tool node's parameter table and a new input port appears on the left; add an output parameter and an output port appears on the right. Type labels (`text`, `image`, etc.) prevent mismatched wiring.
+2. **Register to the Tool library**: Once saved, your tool appears in **Tool library (`K`)** on the top bar.
+3. **Reuse everywhere**: Drag it onto any canvas like a built-in node, and let Agent sessions call it automatically as a tool.
 
-These two nodes are for "turning logic into a reusable node": they can also reach program interfaces outside the app over the local network, for example a Python app or some IoT application.
+## Function nodes: quick JS for exact logic
 
-Such a node is usually implemented by delegating to the AI through the **global assistant**.
+AI models shine at writing and reasoning, while small scripts shine at exact math, formatting, filtering, and zero-cost transforms.
 
-- **Function node**: write JS directly. Input = the parameters handed down from upstream, output = whatever you return.
-- **Tool node**: define the parameters (ports) clearly, then register that ability so a session can call it on demand.
-
-### Settings
-
-The parameter table is the port table: one more parameter means one more port.
-
-Input port 0 = control input, and 1..N are the input parameters in order; output ports 0..M-1 are the output parameters, and the last position is the control output.
-
-## Function node · node notes
-
-### Under test
-
-This feature lacks test coverage, so use it with care.
-
-### What a function node is
-
-It embeds a JS (Javascript) function, for running scripts and deterministic computation. That function can be called by a tool node and can cover many things a large language model is not good at, replace part of a model's work, or call the interfaces of other programs externally. Writing it by hand is not recommended — have the AI write the function node as needed.
-
-### Input / output conventions
-
-- **Input**: `input = { params, <param name>: value }`; image / video / audio parameters are `{ kind, path }` path objects; `params` holds the JSON object injected through the **Parameters** port (9001).
-- **Output**: `return { 输出名: 值 }`, with key names matching the output port table.
-- **Port order**: input port 0 = control input, 1..N are the parameters in order, plus the **Parameters** port 9001 (a JSON object, so a batch of params needs no extra ports); output ports 0..M-1 are the outputs, and the last position is the control output.
-
-## Tool node · node notes
-
-### Under test
-
-This feature lacks test coverage, so use it with care.
-
-### What a tool node is
-
-Tool node = a node layer + a wrapper node around several function nodes and other nodes. Once registered, agent nodes and sessions can call it directly.
-
-### Key parameters
-
-- **Name / description**: the AI decides when to use it from that description. Spell out "when to use it + what goes in + what comes out".
-- **Input / output port tables**: these are its parameters and return values; the port type (text / image / video / audio) decides whether a wire can connect and how downstream selection works (save nodes pick the extension from it automatically).
-
-### Where it is used
-
-By combining various nodes you can solidify a workflow into a tool that is reusable inside a session.
+- **How it works**: Drop a **Function node**, declare its inputs/outputs, and write a short JavaScript snippet that reads `input` and `return`s the result.
+- **Don't code? Ask the assistant**: Tell the Global assistant "Create a Function node that splits text by blank lines and removes empty rows" and it will write and wire it for you.
+- **Safe execution**: Function code runs in an isolated background worker so a typo or infinite loop never freezes MTNode.

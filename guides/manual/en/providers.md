@@ -1,142 +1,56 @@
-# Providers & API
+# Models & API keys
 
-> One-sentence goal: get an API key that starts with `sk-` and enter it into MTNode — first understand what an API key is, sign up with one of the four Chinese providers, carefully consider a third-party aggregator when you need foreign models or image generation, and finally get the key and enter it in three steps.
+MTNode provides the workspace; the AI models you connect do the writing, drawing, and reasoning. Open **Settings → Model services** and pick whichever of the three setups fits you best.
 
-![From sign-up to entering it in MTNode](img/mtnode-start-01-ui.svg)
+![Three ways to connect AI models](img/mtnode-start-01-ui.svg)
 
-*Figure: the three steps to get an API key and enter it into MTNode*
+## Option 1: Use your own official API key (recommended)
 
-## What an API key is (the membership card for AI)
+### What is an API key?
 
-### What an API key is, and why you need one for AI services
+Think of an API key as a prepaid pass to a model provider. Sign up on a provider's website, claim any starter credit or top up a small amount, and create a key (usually starting with `sk-`). Paste it into MTNode and you pay only for what you use.
 
-An API key is best understood as a "membership card you paid for" with an AI model provider.
+> **Keep your key private**: Treat it like a bank password. Never post screenshots of it, paste it into chats, or commit it to public repos. If you suspect a leak, delete the old key on the provider's dashboard and create a new one (it's free).
 
-- You register an account on the provider's website and top up credit, and the platform gives you a string (usually shaped like `sk-xxxxxxxxxxxxxxxx`) — that string is the API key.
-- Enter that string into MTNode's settings (or into any caller) and you can call that provider's models: every use is billed by usage against your balance.
-- So it is essentially the credential for "your account + your money", as sensitive as a bank account number plus password. Once it leaks (posted in a group chat, screenshotted and sent to someone, written into a public repository, uploaded to a third-party site), anyone can spend your balance on model calls.
+### Popular providers (pick one to start)
 
-### Safety rules
+- **DeepSeek (great all-rounder)**: Fast, affordable, strong writing and coding. Sign up at https://platform.deepseek.com/
+- **Qwen (Alibaba Cloud Bailian)**: https://bailian.console.aliyun.com/
+- **Zhipu GLM (BigModel)**: https://bigmodel.cn/
+- **Kimi (Moonshot)**: https://platform.moonshot.cn/
 
-1. Never give the full key to anyone, never screenshot it, never paste it into a chat window, never write it into a public repository.
-2. Only create and copy keys on the provider's official pages; never buy "shared keys / top-up keys" of unknown origin.
-3. If you suspect a leak: delete the old key in the provider's console right away and create a new one — doing so is completely free.
-4. Most platforms let you set a usage cap or a low-balance alert on the key so it cannot be drained.
+### Add your key in three steps
 
-## The four major Chinese providers + sign-up URLs
+1. Sign in to the provider's console, open **API Keys**, create a new key, and copy it right away (most sites show it only once).
+2. In MTNode, open **Settings → Model services** and open the matching provider card (or click **Add provider**).
+3. Paste your key and click **Done**. All settings save automatically right away.
 
-### Mainstream Chinese model providers (pick one of the four)
+## Option 2: MTNode Relay (zero key setup)
 
-1. DeepSeek (深度求索)
-   Sign-up URL: https://platform.deepseek.com/
-2. Qwen / Tongyi (通义千问, Alibaba Cloud Bailian)
-   Sign-up URL: https://bailian.console.aliyun.com/
-3. GLM / BigModel (智谱)
-   Sign-up URL: https://bigmodel.cn/
-4. Kimi (月之暗面 Moonshot)
-   Sign-up URL: https://platform.moonshot.cn/
+If you prefer not to manage separate provider accounts, sign in to your MTNode account and top up. An **MTNode Relay** card appears automatically under **Settings → Model services** with models and key pre-configured.
 
-### Current advice
+- Click **Copy** next to the key if you also want to reuse it in other OpenAI-compatible apps (such as Codex) or the desktop pet.
+- Need a fresh key? Click **Rotate key** to issue a new one and invalidate the old key right away (up to 5 times per day).
 
-At this stage DeepSeek alone is enough: extremely good value, very fast, first tier for Chinese and code, a low sign-up barrier, and the least hassle for a beginner. The other three are worth registering and keeping as a backup, to top up only when you actually need them — the package deals they run from time to time are good value too.
+## Option 3: Free local models (llama.cpp)
 
-### The general flow
+Have a dedicated GPU and want to run open models completely offline for free? Install **llama.cpp Local Models** from the top bar **Plugins** window.
 
-Register an account (phone number / email) → verify identity and top up (most platforms give new users free credit, so you can try for free first) → open the "API Keys" page → create a key → copy it and save it immediately.
+Once installed, a **llama.cpp Local** card appears automatically in **Settings → Model services** and tracks every model you download:
 
-Note: a key is usually shown in full only once, at creation time; close the page and you can never see it again — you can only create a new one.
+- Each row shows live status (`Running` / `Loading` / `Unloaded` / `Failed`) with **Deploy** and **Stop** buttons to load or free GPU memory on demand.
+- If you pick an unloaded local model on a node or session and hit Run, MTNode starts the backend and loads that model automatically before continuing.
+- To download or remove model files, open **Console** from the plugin card.
 
-## Foreign models / GPT image generation: a third-party aggregator is worth careful consideration
+## International or image models via aggregators
 
-### What to do when you need foreign models or GPT image generation models
+If you want overseas models or GPT image generation through a third-party OpenAI-compatible aggregator, click **Add provider**, enter the platform's Base URL and API key, and verify pricing with a small balance first. For image-only endpoints, set the provider type to **Image OpenAI-compatible**.
 
-Connecting directly to foreign model APIs from mainland China is usually inconvenient — especially for GPT-series image generation models. For that need you may **carefully consider a third-party aggregator**: MTNode names and endorses none, so whether to use one, and which one, is your call.
+## Optional settings (leave blank for defaults)
 
-### Notes
+Open any provider card for four optional controls:
 
-- **First, what it is**: an aggregator gives you one account, one key and one OpenAI-compatible endpoint that forwards your calls to many models, so you do not have to solve network access yourself.
-- **It is a third party, not the vendor**: your requests are forwarded through the platform and your key is held by it; model authenticity, logging and privacy policy, and billing rules are all its own. Check the platform's credentials and reputation before using it, and **do not make it your only long-term route**.
-- **Check the cost yourself**: calling a foreign flagship model (a GPT / Claude flagship tier, for example) is usually very expensive, and the aggregator bills you on top of that. Start with a small top-up, confirm the unit price and actual output, then scale up.
-- **How to use it in MTNode**: open the "Model services (模型服务)" settings → add a provider → follow your chosen platform's own documentation to enter the Base URL (the endpoint, shaped like `https://<platform-domain>/v1`) and the API key you just got → the foreign / image models that platform offers become selectable.
-
-### Reminders
-
-- An aggregator is also pay-as-you-go: watch your balance and usage cap, and the key must never be shared.
-- Model names a platform exposes sometimes differ from the vendor's (a `-vip` suffix, for instance) — go by the platform's docs; "Image models" need a provider of their own, with the type set to "图像 OpenAI兼容" (Image · OpenAI-compatible).
-
-## Get the key and enter it into MTNode in three steps
-
-### Configure MTNode
-
-Step 1 · Register: open any of the sign-up URLs above (for example DeepSeek: https://platform.deepseek.com/) and register and sign in with a phone number or email.
-
-Step 2 · Top up / claim credit: a small top-up is fine to start (for example 10 CNY to test the water).
-
-Step 3 · Create and save the key: open the "API Keys" page → click "Create / New" → copy the string that starts with sk- → paste it into a local notepad or password manager first.
-
-### Enter the key into MTNode
-
-Open the app's "Settings → Model services (设置 → 模型服务)" → pick or add a provider (Deepseek Official) → paste the API key into the key box and hit Done on that card. Everything on the Settings page **takes effect immediately and saves itself** — there is no "Save settings" button to press, just close the window when you are done. After that you can pick that provider's models on a node and use them.
-
-### One last reminder
-
-This key is your bank account number plus password: never share it, and if you suspect a leak, delete and recreate it in the provider's console right away. The same goes for the relay key below: anyone holding it can spend your relay balance.
-
-## Don't want to buy a key yourself? Use the MTNode relay (account-managed)
-
-An account that has topped up gets an extra card, "MTNode relay service (MTNode 中转服务)", under
-Settings → Model services: the model list and the endpoint come down from MTNode's cloud, and the
-**key is filled in for you** — it is issued automatically once you sign in and is shown right on the card.
-
-### What the key on the card is for
-
-- The "API Key" row shows the **whole key** (you can select all of it); the Copy button next to it takes it away.
-- To use it in another AI tool (**Codex or any OpenAI-compatible client**): set the Base URL to the
-  `…/relay/v1` address on the card and paste this key. It is not tied to a device, so several computers can share one key.
-- The desktop pet reads the very same configuration, so you do not enter it twice.
-
-### Getting a new key
-
-The "Change key (更换 Key)" button next to it asks for confirmation, then issues a **new** key and the old
-one **stops working immediately** — other software still using it (Codex, the pet, another computer) must
-copy the new one. You can change it at most **5 times per day** (by server date; once used up, the card tells
-you how many are left). Normally you never need to: the key is valid for **3650 days**, and it only stops
-working when the account **runs out of balance** (top up and it works again).
-
-## Reading images needs no separate setup
-
-- The provider card has **no "Supports vision" checkbox** any more (it was retired). MTNode assumes the
-  model you picked can read images: sending an image, or asking the agent to look at one, goes straight to
-  the current model — it no longer looks for a "configured vision model" first and blocks on that.
-- You do not have to predict whether a model can see. If a call really fails, the session / node states it
-  plainly — **"the current model does not support image input: <upstream error>"**. Switch to a model that
-  can (DeepSeek Official's default deepseek-flash reads images) and run it again.
-- The vision tool in sessions (`mtnode_vision`, reads local image files) uses the same routing — provider
-  order, then model order; only when no usable provider exists at all does it answer "no vision model
-  available".
-
-## The local model provider (llama.cpp)
-
-Once you install **llama.cpp Local Models** from the Plugin dialog in the top bar, Settings gains a
-**llama.cpp 本地** provider whose model list is **maintained by the plugin itself** (do not type into it):
-
-- **Every model downloaded on this machine is registered**, each with a status tag: **Running** /
-  **Loading** / **Not loaded** / **Load failed**; the list is ordered by that priority, running first.
-- Each row has two buttons: **Load** (load this model now — the first load can take tens of seconds to
-  minutes) and **Stop** (unload it; the backend service keeps running). Status changes refresh this card
-  and every model dropdown **on the spot**.
-- A stopped or deleted model disappears from the list (the plugin owns that part); models you **added by
-  hand** on this card, and your manual ordering, are never wiped.
-- **Loading happens before a run**: when a node / session / assistant picks a local model that is not
-  loaded (or failed last time), MTNode loads it first and then continues (the UI shows "Loading the local
-  model…", waiting up to 10 minutes). If loading fails, that run **stops with a clear reason** — it never
-  silently switches to another model. Before loading it frees the VRAM of **idle** local backends only;
-  a backend that is running someone else's task is never interrupted.
-- **When the backend is not running**: the list still shows up (tagged "Not loaded"), and picking one
-  starts the backend automatically before loading.
-- **One install folder uses only its own copy**: if the port is serving a llama.cpp from a **different**
-  install folder, the plugin card says so and lets you choose "Use our own on a free port" or "Keep using
-  that one" — until you choose, the other copy's models are not mixed into MTNode.
-
-Downloading models, deleting them and reading engine logs still happen in the llama.cpp console
-(the Console button on the card).
+- **Model allowlist / denylist**: Narrow a long model list using `*` and `?` wildcards (for example `deepseek-*` in allowlist, or `gpt-image-*` in denylist). Excluded models stay visible in Settings with an out-of-policy badge but are hidden from pickers.
+- **Disable provider**: Temporarily hide a provider from all model pickers without deleting its key or config. Existing canvas nodes bound to it keep working.
+- **Vision (image input)**: Works out of the box with no toggle needed. If a model doesn't accept images, MTNode reports the error clearly so you can switch to a vision-capable model (such as DeepSeek's default model).
+- **Timeouts (ms)**: Connect, first-byte, and chunk idle timeouts default to 300000 ms (5 minutes). Leave empty unless you hit slow networks.

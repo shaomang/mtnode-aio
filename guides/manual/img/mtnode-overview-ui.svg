@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 286" width="680" height="286">
+  <defs>
+    <marker id="arr-cyan" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,1 L7,4 L0,7 z" fill="#38bdf8"/></marker>
+    <marker id="arr-orange" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,1 L7,4 L0,7 z" fill="#f59e0b"/></marker>
+    <marker id="arr-purple" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,1 L7,4 L0,7 z" fill="#c792ea"/></marker>
+    <marker id="arr-green" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,1 L7,4 L0,7 z" fill="#4ade80"/></marker>
+    <marker id="arr-rose" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,1 L7,4 L0,7 z" fill="#fb7185"/></marker>
+    <marker id="arr-muted" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,1 L7,4 L0,7 z" fill="#a8b5c8"/></marker>
+  </defs>
+  <rect x="0.5" y="0.5" width="679" height="285" rx="10" fill="#11151d" stroke="#242c3c"/>
+  <text x="20" y="28" fill="#f1f5f9" font-size="14" font-weight="700" font-family='system-ui, -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif'>MTNode 工作台一览</text>
+  <text x="20" y="46" fill="#a8b5c8" font-size="11.5" font-family='system-ui, -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif'>四大视图随时切换，所有文件与产出默认保存在你自己的电脑上</text>
+  <rect x="18" y="60" width="644" height="44" rx="8" fill="#141923" stroke="#242c3c" stroke-width="1.2" stroke-dasharray="5 4"/>
+  <rect x="28" y="68" width="96" height="28" rx="6" fill="#261d12" stroke="#f59e0b" stroke-width="1.25"/>
+  <text x="76" y="86" text-anchor="middle" fill="#f1f5f9" font-size="12" font-weight="600" font-family='system-ui, -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif'>画布</text>
+  <rect x="132" y="68" width="96" height="28" rx="6" fill="#12212e" stroke="#38bdf8" stroke-width="1.25"/>
+  <text x="180" y="86" text-anchor="middle" fill="#f1f5f9" font-size="12" font-weight="600" font-family='system-ui, -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif'>会话</text>
+  <rect x="236" y="68" width="96" height="28" rx="6" fill="#21182c" stroke="#c792ea" stroke-width="1.25"/>
+  <text x="284" y="86" text-anchor="middle" fill="#f1f5f9" font-size="12" font-weight="600" font-family='system-ui, -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif'>专家团</text>
+  <rect x="340" y="68" width="96" height="28" rx="6" fill="#12241b" stroke="#4ade80" stroke-width="1.25"/>
+  <text x="388" y="86" text-anchor="middle" fill="#f1f5f9" font-size="12" font-weight="600" font-family='system-ui, -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif'>研究</text>
+  <rect x="452" y="68" width="64" height="28" rx="6" fill="#1a202c" stroke="#64748b" stroke-width="1.25"/>
+  <text x="484" y="86" text-anchor="middle" fill="#f1f5f9" font-size="12" font-weight="600" font-family='system-ui, -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif'>插件</text>
+  <rect x="522" y="68" width="64" height="28" rx="6" fill="#1a202c" stroke="#64748b" stroke-width="1.25"/>
+  <text x="554" y="86" text-anchor="middle" fill="#f1f5f9" font-size="12" font-weight="600" font-family='system-ui, -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif'>工坊</text>
+  <rect x="592" y="68" width="62" height="28" rx="6" fill="#1a202c" stroke="#64748b" stroke-width="1.25"/>
+  <text x="623" y="86" text-anchor="middle" fill="#f1f5f9" font-size="12" font-weight="600" font-family='system-ui, -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif'>设置</text>
+  <rect x="18" y="116" width="130" height="102" rx="8" fill="#1a202c" stroke="#64748b" stroke-width="1.5"/>
+  <rect x="19" y="117" width="128" height="4" rx="2" fill="#64748b" opacity="0.85"/>
+  <text x="83" y="156" text-anchor="middle" fill="#f1f5f9" font-size="13" font-weight="700" font-family='system-ui, -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif'>左侧栏</text>
+  <text x="83" y="174" text-anchor="middle" fill="#a8b5c8" font-size="11" font-family='system-ui, -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif'>节点列表</text>
+  <text x="83" y="188.5" text-anchor="middle" fill="#a8b5c8" font-size="11" font-family='system-ui, -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif'>项目文件树</text>
+  <rect x="160" y="116" width="344" height="102" rx="8" fill="#261d12" stroke="#f59e0b" stroke-width="1.5"/>
+  <rect x="161" y="117" width="342" height="4" rx="2" fill="#f59e0b" opacity="0.85"/>
+  <text x="332" y="156" text-anchor="middle" fill="#f1f5f9" font-size="13" font-weight="700" font-family='system-ui, -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif'>主工作区</text>
+  <text x="332" y="174" text-anchor="middle" fill="#a8b5c8" font-size="11" font-family='system-ui, -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif'>拖拽节点、连线、运行流程</text>
+  <text x="332" y="188.5" text-anchor="middle" fill="#a8b5c8" font-size="11" font-family='system-ui, -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif'>或在这里与 AI 连续协作</text>
+  <rect x="516" y="116" width="146" height="102" rx="8" fill="#21182c" stroke="#c792ea" stroke-width="1.5"/>
+  <rect x="517" y="117" width="144" height="4" rx="2" fill="#c792ea" opacity="0.85"/>
+  <text x="589" y="156" text-anchor="middle" fill="#f1f5f9" font-size="13" font-weight="700" font-family='system-ui, -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif'>右侧全局助手 ✦</text>
+  <text x="589" y="174" text-anchor="middle" fill="#a8b5c8" font-size="11" font-family='system-ui, -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif'>一句话搭流程</text>
+  <text x="589" y="188.5" text-anchor="middle" fill="#a8b5c8" font-size="11" font-family='system-ui, -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif'>随时问答与整理</text>
+  <rect x="18" y="228" width="644" height="34" rx="8" fill="#141923" stroke="#242c3c" stroke-width="1.2" stroke-dasharray="5 4"/>
+  <text x="32" y="249" text-anchor="start" fill="#f1f5f9" font-size="11" font-weight="500" font-family='system-ui, -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif'>底部状态栏：Ctrl+Tab 补全  ·  F1 快捷会话  ·  F2 DeepSeek  ·  F3 语音播报  ·  F4 语音输入  ·  AI 工作中</text>
+  <text x="340" y="274" text-anchor="middle" fill="#a8b5c8" font-size="11.5" font-family='system-ui, -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif'>提示：顶栏切换主视图，底部状态栏放常用快捷工具（F1–F4 与 Ctrl+Tab）</text>
+</svg>

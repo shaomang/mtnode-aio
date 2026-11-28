@@ -1,83 +1,48 @@
-# What agent mode is
+# Agent sessions & permissions
 
-> One-sentence goal: one AI collaboration is one session — see what a session is first, then where sessions come from.
+When you want AI to do more than chat — read your project files, write reports, browse the web, or update your canvas — switch to the **Session** view in the top bar.
 
-## Session overview
+![Working smoothly in Agent Sessions](img/mtnode-agent-02-ui.svg)
 
-A session = one continuous collaboration with the AI. Behind the side assistant, an agent node and a dev node's buttons, it is always the same kind of session.
+## Getting started in a session
 
-Three points:
+1. **Choose a workspace**: Click **Workspace** above the input box to point the session at a folder (by default it follows your active canvas). File reads and writes stay centered there.
+2. **Pick model, preset, and thinking effort**: Click **⚙** to tune how the agent works.
+   - **Presets** set style and tool posture (the preset does not touch the thinking level — thinking depth is controlled solely by **Thinking effort**):
 
-1. **Sessions have state**: a session remembers what was said before, so “keep changing it” beats describing it all over again — but a bloated session can waste tokens and time instead.
-2. **Sessions have switches**: model, preset, thinking effort and tool permissions can all be set to fit the job.
-3. **Sessions can read and write files and search the web**: a session can hold file read/write permissions, which is what makes it powerful, and also what puts you at risk if it slips up.
-
-The 示例 · 智能任务（可运行）(Example · agent task, runnable) item on the canvas is one session entry point: change the task description, hit ▶, and watch it read a file, write a file and return only a path.
-
-### Presets
-
-Five presets are shared by sessions and agent nodes (the default is Minimal; **a preset only
-sets the persona and the tool surface — it does not touch the thinking level**, which is decided
-solely by the Thinking level control in the UI):
-
-| Preset | What it is for |
+| Preset | Best for |
 | --- | --- |
-| **Minimal (default)** | Least steps, least talk, straight to the result |
-| **Standard** | General purpose: canvas work plus file and content tasks |
-| **Lean Thinking** | Work that needs some reasoning: keep the structure, drop restating and prose |
-| **PTC** | Multi-step sequencing: break work into checkable next actions |
-| **Creative** | Open-ended writing and divergence: room for longer output |
+| **Minimal (default)** | Fewest steps, least chatter, straight to the result |
+| **Standard** | Balanced everyday canvas, file, and writing work |
+| **Lean Thinking** | Careful reasoning with crisp, uncluttered output |
+| **PTC Mode** | Step-by-step multi-stage execution you can check along the way |
+| **Creative** | Open-ended writing and brainstorming with more room to explore |
 
-## Where sessions come from
+   - **Thinking effort**: Off / Low / Medium / Standard / High / Max. Low or Medium handles most routine tasks; turn up High for deep reasoning or architecture work.
+3. **Attach documents & enable web search**:
+   - Click **＋** (or drag PDF, Word, text, or spreadsheet files into the input box) so the model reads them directly and cites exact passages.
+   - Turn on **Web search** under **Settings → Agent capabilities** (on by default for official DeepSeek and MTNode Relay) to see clickable source cards and inline citations whenever AI searches online.
 
-### Four entries
+## Stay in control while it runs
 
-- **The global assistant (✦)**: it sees and changes the canvas in front of you — build a workflow in one sentence, tidy the layout, create nodes. It is mainly for canvas work and is generally not allowed to edit local files.
-- **An agent node** (an agent task node, or a text-process node with agent mode on): each run opens a session inside it, right for “read files + several steps + write files”, and it never goes outside the canvas project folder.
-- **A dev node's Develop / Refine**: it runs in a new session bound to that block and serves only the project folder that block belongs to, though it may read content outside the project — this suits most development work.
+- **Brief mode (Raw / Brief toggle)**: Long tool runs can look noisy. Switch to **Brief mode** to read a plain-language live summary of what the agent is doing, and expand raw details anytime.
+- **Send a message mid-run**: Pressing Send while a turn is running asks whether to **Queue** (run after the current turn) or **⚡ Steer** (deliver immediately at the next step). Start a message with `/btw ` or press `Alt + Enter` to steer right away, or click **⏸ Pause** to hold and resume later.
+- **Grill-me (on by default)**: In the **Mode** menu, when you ask to build or modify something complex, the agent first asks a crisp round of multiple-choice questions to clear up ambiguity before touching anything. Simple questions and lookups run directly without extra questions.
+- **Trajectory view**: Switch to the **Trajectory** tab at the top of the session to inspect every step on an interactive timeline (drag and scroll to zoom, double-click a row to jump back to that exact spot in chat).
+- **Zoom & visual annotations**: Hold `Ctrl + Scroll` inside a session to adjust font size across 10 steps. Highlight any AI reply to leave review notes — and attach screenshots right inside the note card.
 
-### How to choose
+## Managing long conversations: Context compaction
 
-- One question and answer whose result must land on disk → an ordinary text-process node.
-- A more complex job along the canvas that reads and writes files by itself → an agent node.
-- Changing the canvas itself → the right-hand assistant.
-- Programs and software development → use a session directly (close to how Codex is used), or click a dev node's Develop button to create one.
+When a long chat starts getting heavy or pricey, click **Compact context** (or send `/compact`). After you confirm, older messages and tool results are condensed into one clean summary:
 
-### Ask me first (grill-me · on by default)
+- **Nothing is deleted**: Compacted messages fold neatly in place under a collapsible row so you can always expand and read the original messages, while freeing model memory. Click **View summary** anytime to inspect the summary.
+- **Auto-compaction**: Set an automatic trigger threshold (150K / 300K / 450K tokens, or custom) in the model menu, along with how much recent context to keep verbatim.
 
-**Where:** the first row of the Modes menu above the session input — “Ask me first (grill-me)”.
-The right-hand assistant panel has the same switch. It is **on by default**: whenever a round is
-judged to be a requirement / development / change request, the agent **asks before acting** — it
-maps that round into a decision tree and clears the whole current frontier in one go through
-MTNode's question dialog (the “🐋 the model is waiting for you” card): candidates go into the card,
-your recommended option comes first and is marked “（推荐）”, and the reason sits on the line below.
-Pick an option or write your own; from your answers it recomputes the frontier and asks the next
-round, and only starts working once you explicitly confirm there is no ambiguity.
+## Approvals, permissions & safety
 
-- **Which rounds get grilled:** ones that create or change something (files, the canvas, nodes,
-  config, features, plans). Plain Q&A, lookups, explanations, small talk and continuing work you
-  already confirmed are done straight away — no string of counter-questions. **When in doubt it does
-  not grill** (better to just do the work than to turn an ordinary question into an interrogation).
-- **While grilling it does not quietly start:** no implementation plan, no edits. Looking at the
-  current state read-only (files, canvas) is allowed, so the questions can be sharp.
-- **When it does not grill:** pure mode is on (the whole system prompt is dropped), auto-continue
-  rounds, resumed rounds, and module-bound sessions that carry a dev task brief (that brief's own
-  grill paragraph is their contract). Your own slash commands (`/plan`, `/compact`, …) are commands,
-  not requirements, and are never blocked by a question.
-- **Turning it off:** click that row in the same Modes menu (the whole row is clickable). A session
-  you switched off stays off across restarts; sessions you never touched count as on. **You can
-  always see the state** — a small “Grill me” tag above the input appears while it is on.
-- **The right-hand assistant panel** has the same switch, with “Pure mode” next to it; the rules are
-  identical to a session (its value is a global preference persisted with the config).
+Because sessions can edit files, run commands, and access the web, you stay in charge:
 
-### Turns and cleanup
-
-The top of the conversation area shows one line, “Turn N · HH:MM” — turn N is **how many times you
-have sent in this session** (the same number the trajectory view uses). The instant a new turn
-starts, the previous turn's *finished* Plan and Task list are cleared automatically (the data is
-deleted too, so switching sessions or restarting never brings them back) — that way last turn's
-records are not mistaken for what this turn should do. If the previous turn still has **unfinished**
-items the panel is kept as is and its header shows “N item(s) left over from the previous turn”;
-press Continue in the panel to keep going. While a plan is running, or while the session is paused,
-nothing is cleared (you never lose running progress or the Continue button).
-
+- **Approvals panel**: Click **Approvals** (shield icon) at the top right to pick a preset or set per-tool rules (Allow / Ask every time / Block).
+- **Confirm before risky actions**: Commands and sensitive writes pause for a clear confirmation card where you approve or reject.
+- **Subagent delegation**: Complex tasks can delegate focused sub-tasks to helper subagents so the main thread stays clean. Control the toggle and nesting depth (default 1 level) under **Settings → Agent capabilities → Subagents**.
+- **Built-in local audio & video tools**: Ask the agent directly to transcribe audio, draft subtitles, or inspect video frames — it uses local offline speech recognition and frame inspection automatically.

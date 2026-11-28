@@ -7258,6 +7258,11 @@
     "仅根据内置手册作答，不会改画布":
       "Answers from the built-in manual only; does not edit the canvas",
     "筛选目录…": "Filter topics…",
+    "搜索目录与正文…": "Search titles & text…",
+    "搜索结果": "Search results",
+    "本页目录": "On this page",
+    "上一篇": "Previous",
+    "下一篇": "Next",
     "问手册…（Enter 发送，Shift+Enter 换行）":
       "Ask the manual… (Enter send, Shift+Enter newline)",
     "生成当前画布的高清总览图": "Export a high-resolution overview of this canvas",
@@ -12612,6 +12617,38 @@
       "Let AI draw: describe the picture in the prompt, click ▶ to generate one image.",
     "生成音乐：写一段风格提示词（可加歌词），点 ▶ 得到一段音乐。":
       "Make music: write a style prompt (lyrics optional), click ▶ to get a track.",
+    "YuE2 音乐：给歌词和风格提示词，直接唱成带人声与伴奏的整首歌。":
+      "YuE2 music: give lyrics and a style prompt to generate a full vocal + instrumental song.",
+    "MOSS-Music 音乐理解：听懂一段音频或视频，输出带时间戳的歌词、曲风与和弦分析。":
+      "MOSS-Music: analyze a song or video for timestamped lyrics, mood, structure, and chords.",
+    "视频超分：把模糊的低分辨率视频逐帧放大到更清晰的画质。":
+      "Video upscale: enhance low-resolution video frame by frame to sharper quality.",
+    "视频补帧：给视频插帧提速（2 倍 / 4 倍），让画面动作更顺滑。":
+      "Video interpolate: boost frame rate (2x / 4x) for smoother motion.",
+    "InfiniteTalk 数字人：给一张人物图（或视频）加一段语音，生成口型同步的说话视频。":
+      "InfiniteTalk avatar: combine a portrait (or video) with voice audio for a lip-synced talking video.",
+    "SoulX 实时数字人：给一张人物图加一段语音，快速生成流畅的口型同步说话视频。":
+      "SoulX real-time avatar: combine a portrait with voice audio for a fast lip-synced video.",
+    "FLUX 3 本地生图：在你自己显卡上画图或改图，支持多参考图、蒙版和透明背景。":
+      "FLUX 3 local image: generate or edit images on your own GPU with multi-refs, masks, and transparency.",
+    "Qwen Image 本地生图：在你自己显卡上画图或改图，支持多参考图、蒙版和透明背景。":
+      "Qwen Image local: generate or edit images on your own GPU with multi-refs, masks, and transparency.",
+    "DeepSeek 云端语音合成：直接用官方云端接口把文字读成语音，不用装本地插件。":
+      "DeepSeek cloud TTS: turn text into speech via the official cloud API with no local plugin needed.",
+    "DeepSeek 云端语音识别：直接用官方云端接口把音频或视频转成文字，不用装本地插件。":
+      "DeepSeek cloud ASR: transcribe audio or video via the official cloud API with no local plugin needed.",
+    "文本质检：按你设定的检查规则自动审一遍文字，挑出不符合要求的地方。":
+      "Text QA: automatically check text against your rules and flag issues.",
+    "图像质检：按规则自动检查图片质量与内容是否达标。":
+      "Image QA: automatically check whether an image meets your quality and content rules.",
+    "视频质检：按规则自动检查视频画面与规格是否达标。":
+      "Video QA: automatically check whether a video meets your rules.",
+    "音频质检：按规则自动检查音频内容与质量是否达标。":
+      "Audio QA: automatically check whether an audio clip meets your rules.",
+    "文件质检：按规则自动检查文件是否存在、格式与内容是否合格。":
+      "File QA: automatically check whether a file exists and meets your requirements.",
+    "应用节点：把应用中心里的桌面小应用直接嵌到画布上使用，也能弹出独立窗口。":
+      "App node: embed a desktop app from the Apps hub on the canvas or pop it out into its own window.",
     "生成视频：用文字或图片描述画面，点 ▶ 得到一段视频。":
       "Make video: describe the shot with text or an image, click ▶ to get a clip.",
     "文字转语音：把文字读出来，点 ▶ 得到一段配音。":

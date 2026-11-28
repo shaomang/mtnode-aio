@@ -234,6 +234,14 @@ function gsEnsure() {
 }
 
 function gsPaintLabels() {
+  /* 切语言时清掉手册与节点指南的文本缓存，下次搜索按当前语言重新读取 */
+  const loc = I18n.getLocale && I18n.getLocale() === "en" ? "en" : "zh";
+  if (GS._cacheLocale && GS._cacheLocale !== loc) {
+    GS.docCatalog = null;
+    GS.docCache.clear();
+    GS.guideCache.clear();
+  }
+  GS._cacheLocale = loc;
   const layer = document.getElementById("gsLayer");
   if (!layer) return;
   const input = layer.querySelector("#gsInput");
@@ -1147,12 +1155,16 @@ function gsDocSections(cat) {
 
 const GS_GUIDES = [
   "input_text", "input_image", "input_audio", "input_video", "input_any", "input_form", "input_file",
-  "proc_text", "proc_image", "agent_task", "db_table", "remotion",
-  "music_gen", "breeze_gen", "video_gen", "save", "save_pdf", "control", "judge", "task",
+  "asset", "deliver", "ltout", "ltart", "db_table", "db_replica",
+  "proc_text", "proc_image", "agent_task", "appnode", "browser", "remotion",
+  "music_gen", "yue_gen", "breeze_gen", "moss_music", "audio_spectrum",
+  "deepseek_tts", "deepseek_asr", "video_gen", "video_upscale", "video_interp",
+  "infinitetalk_gen", "soulxflashhead_gen", "flux3_klein_gen", "qwen_image_gen",
+  "save", "save_text", "save_image", "save_pdf", "control", "judge", "task",
   /* 质检节点（五种各有自己的节点指南） */
   "qa_text", "qa_image", "qa_video", "qa_audio", "qa_file",
   "wait_file", "timer", "delayer", "sequencer", "gate", "splitter", "counter",
-  "mutex", "split", "merge", "super", "db_replica", "global", "execute",
+  "mutex", "popup", "split", "merge", "super", "global", "execute",
   "tool", "function", "net_recv", "net_send",
   "ctrl-start", "ctrl-end-ok", "ctrl-end-fail",
 ];

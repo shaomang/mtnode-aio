@@ -297,6 +297,7 @@ contextBridge.exposeInMainWorld('api', {
   guideLoad: (id, locale) => ipcRenderer.invoke('guide:load', { id, locale }),
   docsCatalog: () => ipcRenderer.invoke('docs:catalog'),
   docsLoad: (id, locale) => ipcRenderer.invoke('docs:load', { id, locale }),
+  docsSearch: (query, locale) => ipcRenderer.invoke('docs:search', { query, locale }),
   docsBundle: (locale) => ipcRenderer.invoke('docs:bundle', { locale }),
   fileWriteText: (p, c) => ipcRenderer.invoke('file:writeText', { path: p, content: c }),
   fileWriteBytes: (p, data) => ipcRenderer.invoke('file:writeBytes', { path: p, data }),

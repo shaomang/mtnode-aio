@@ -12615,8 +12615,16 @@ function ensureNodeGuideDlg() {
 }
 
 function renderGuideMarkdown(text, assets) {
-  let html = renderMarkdown(text);
   assets = assets || {};
+  const R = window.MTRender;
+  if (R && typeof R.toHtml === "function") {
+    return R.toHtml(text, {
+      escapeHtml: escapeHtml,
+      linkify: linkifyHtml,
+      assets: assets,
+    });
+  }
+  let html = renderMarkdown(text);
   html = html.replace(/<img src="([^"]+)"/g, (m, u) => {
     const raw = String(u || "").trim();
     const hit = assets[raw] || assets[decodeURIComponent(raw)];
@@ -12671,12 +12679,33 @@ const APP_DOCS = {
   catalog: null,
   pageId: "",
   filter: "",
+  searchHits: null,
+  searchTimer: 0,
+  searchToken: 0,
   chat: [],
   busy: false,
   askOpen: false,
   bundle: "",
   pageTitle: "",
 };
+
+function docsFlatPages() {
+  const cat = APP_DOCS.catalog;
+  const list = [];
+  if (!cat || !Array.isArray(cat.sections)) return list;
+  for (const sec of cat.sections) {
+    const secTitle = docsLocText(sec.title, sec.id);
+    for (const page of sec.pages || []) {
+      if (!page || !page.id) continue;
+      list.push({
+        id: page.id,
+        title: docsLocText(page.title, page.id),
+        section: secTitle,
+      });
+    }
+  }
+  return list;
+}
 
 function docsLocale() {
   return I18n.getLocale && I18n.getLocale() === "en" ? "en" : "zh";
@@ -12739,7 +12768,7 @@ function paintAppDocsChrome() {
     askBtn.title = I18n.t("文档答疑：仅根据本手册回答，不会操作画布");
   }
   if (closeBtn) closeBtn.title = I18n.t("关闭");
-  if (filter) filter.placeholder = I18n.t("筛选目录…");
+  if (filter) filter.placeholder = I18n.t("搜索目录与正文…");
   if (askTitle) askTitle.textContent = I18n.t("文档答疑");
   if (askSub)
     askSub.textContent = I18n.t("仅根据内置手册作答，不会改画布");
@@ -12747,6 +12776,36 @@ function paintAppDocsChrome() {
   if (askHide) askHide.title = I18n.t("关闭");
   if (inp)
     inp.placeholder = I18n.t("问手册…（Enter 发送，Shift+Enter 换行）");
+}
+
+function scheduleDocsSearch() {
+  if (APP_DOCS.searchTimer) {
+    clearTimeout(APP_DOCS.searchTimer);
+    APP_DOCS.searchTimer = 0;
+  }
+  const q = String(APP_DOCS.filter || "").trim();
+  if (!q) {
+    APP_DOCS.searchHits = null;
+    APP_DOCS.searchToken += 1;
+    renderDocsNav();
+    return;
+  }
+  /* 先即时按标题筛选一帧，再异步补正文全文搜索结果 */
+  APP_DOCS.searchHits = null;
+  renderDocsNav();
+  if (!window.api || typeof window.api.docsSearch !== "function") return;
+  const tok = ++APP_DOCS.searchToken;
+  APP_DOCS.searchTimer = setTimeout(async () => {
+    APP_DOCS.searchTimer = 0;
+    try {
+      const r = await window.api.docsSearch(q, docsLocale());
+      if (tok !== APP_DOCS.searchToken) return;
+      if (r && r.ok && Array.isArray(r.hits)) {
+        APP_DOCS.searchHits = r.hits;
+        renderDocsNav();
+      }
+    } catch (_) {}
+  }, 140);
 }
 
 function ensureAppDocsDlg() {
@@ -12790,7 +12849,7 @@ function ensureAppDocsDlg() {
   const filter = host.querySelector("#appDocsFilter");
   filter.addEventListener("input", () => {
     APP_DOCS.filter = filter.value || "";
-    renderDocsNav();
+    scheduleDocsSearch();
   });
   host.querySelector("#appDocsBody").addEventListener("click", (ev) => {
     const a = ev.target.closest && ev.target.closest("a");
@@ -12798,7 +12857,16 @@ function ensureAppDocsDlg() {
     const href = String(a.getAttribute("href") || "");
     if (href.charAt(0) === "#") {
       ev.preventDefault();
-      const id = href.slice(1).replace(/[^a-z0-9_-]/gi, "");
+      const raw = href.slice(1);
+      /* 页内小节锚点（#h-N）：直接滚到该标题，不换页 */
+      if (/^h-\d+$/.test(raw)) {
+        const target = host.querySelector("#appDocsBody #" + raw);
+        if (target && target.scrollIntoView) {
+          target.scrollIntoView({ behavior: "smooth", block: "start" });
+        }
+        return;
+      }
+      const id = raw.replace(/[^a-z0-9_-]/gi, "");
       if (id) loadDocsPage(id);
       return;
     }
@@ -12834,6 +12902,48 @@ function renderDocsNav() {
     empty.className = "n-empty";
     empty.textContent = I18n.t("找不到该文档");
     tree.appendChild(empty);
+    return;
+  }
+  /* 全文搜索结果就绪时，优先展示按相关度排序的命中清单（带正文摘录） */
+  if (q && Array.isArray(APP_DOCS.searchHits)) {
+    if (!APP_DOCS.searchHits.length) {
+      const empty = document.createElement("p");
+      empty.className = "n-empty";
+      empty.textContent = I18n.t("无匹配项");
+      tree.appendChild(empty);
+      return;
+    }
+    const secWrap = document.createElement("div");
+    secWrap.className = "app-docs-sec";
+    const secHead = document.createElement("div");
+    secHead.className = "app-docs-sec-title";
+    secHead.textContent = I18n.t("搜索结果") + " (" + APP_DOCS.searchHits.length + ")";
+    secWrap.appendChild(secHead);
+    for (const hit of APP_DOCS.searchHits) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "app-docs-page-btn app-docs-hit-btn";
+      if (hit.id === APP_DOCS.pageId) b.classList.add("on");
+      const titleEl = document.createElement("span");
+      titleEl.className = "app-docs-hit-title";
+      titleEl.textContent = hit.title || hit.id;
+      b.appendChild(titleEl);
+      if (hit.section) {
+        const metaEl = document.createElement("span");
+        metaEl.className = "app-docs-hit-sec";
+        metaEl.textContent = hit.section;
+        b.appendChild(metaEl);
+      }
+      if (hit.snippet) {
+        const snipEl = document.createElement("span");
+        snipEl.className = "app-docs-hit-snip";
+        snipEl.textContent = hit.snippet;
+        b.appendChild(snipEl);
+      }
+      b.onclick = () => loadDocsPage(hit.id);
+      secWrap.appendChild(b);
+    }
+    tree.appendChild(secWrap);
     return;
   }
   let shown = 0;
@@ -12890,6 +13000,77 @@ function docsPageMeta(id) {
   return null;
 }
 
+function decorateDocsArticle(body, pageId) {
+  if (!body) return;
+  const inner = body.querySelector(".app-docs-article-inner");
+  if (!inner) return;
+  /* 给 h2/h3 分配页内锚点；超过 2 个二级标题时在 H1 下方挂一行精简的页内快捷跳转 */
+  const h2s = Array.from(inner.querySelectorAll("h2"));
+  const h3s = Array.from(inner.querySelectorAll("h3"));
+  let idx = 0;
+  for (const h of h2s) h.id = "h-" + (++idx);
+  for (const h of h3s) h.id = "h-" + (++idx);
+  if (h2s.length >= 3) {
+    const toc = document.createElement("nav");
+    toc.className = "app-docs-toc";
+    toc.setAttribute("aria-label", I18n.t("本页目录"));
+    const lab = document.createElement("span");
+    lab.className = "app-docs-toc-label";
+    lab.textContent = I18n.t("本页目录");
+    toc.appendChild(lab);
+    for (const h of h2s) {
+      const a = document.createElement("a");
+      a.className = "app-docs-toc-link";
+      a.href = "#" + h.id;
+      a.textContent = (h.textContent || "").trim();
+      toc.appendChild(a);
+    }
+    const h1 = inner.querySelector("h1");
+    if (h1 && h1.nextSibling) inner.insertBefore(toc, h1.nextSibling);
+    else inner.prepend(toc);
+  }
+  /* 页脚「上一篇 / 下一篇」顺序翻页 */
+  const flat = docsFlatPages();
+  const pos = flat.findIndex((p) => p.id === pageId);
+  if (pos >= 0 && flat.length > 1) {
+    const prev = pos > 0 ? flat[pos - 1] : null;
+    const next = pos + 1 < flat.length ? flat[pos + 1] : null;
+    const nav = document.createElement("nav");
+    nav.className = "app-docs-pager";
+    if (prev) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "app-docs-pager-btn prev";
+      b.innerHTML =
+        '<span class="app-docs-pager-dir">← ' +
+        escapeHtml(I18n.t("上一篇")) +
+        '</span><span class="app-docs-pager-title">' +
+        escapeHtml(prev.title) +
+        "</span>";
+      b.onclick = () => loadDocsPage(prev.id);
+      nav.appendChild(b);
+    } else {
+      const sp = document.createElement("span");
+      sp.className = "app-docs-pager-spacer";
+      nav.appendChild(sp);
+    }
+    if (next) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "app-docs-pager-btn next";
+      b.innerHTML =
+        '<span class="app-docs-pager-dir">' +
+        escapeHtml(I18n.t("下一篇")) +
+        ' →</span><span class="app-docs-pager-title">' +
+        escapeHtml(next.title) +
+        "</span>";
+      b.onclick = () => loadDocsPage(next.id);
+      nav.appendChild(b);
+    }
+    inner.appendChild(nav);
+  }
+}
+
 async function loadDocsPage(id) {
   const host = ensureAppDocsDlg();
   const body = host.querySelector("#appDocsBody");
@@ -12914,8 +13095,22 @@ async function loadDocsPage(id) {
           "</code></p>";
       return;
     }
+    /* 旧页 id 别名重定向后，把高亮同步到真实页面 id */
+    const realId = String(r.id || safe);
+    if (realId !== APP_DOCS.pageId) {
+      APP_DOCS.pageId = realId;
+      const realMeta = docsPageMeta(realId);
+      APP_DOCS.pageTitle = realMeta
+        ? realMeta.section + " / " + realMeta.title
+        : realId;
+      renderDocsNav();
+    }
     if (body) {
-      body.innerHTML = renderGuideMarkdown(r.markdown, r.assets);
+      body.innerHTML =
+        '<div class="app-docs-article-inner">' +
+        renderGuideMarkdown(r.markdown, r.assets) +
+        "</div>";
+      decorateDocsArticle(body, realId);
       body.scrollTop = 0;
     }
   } catch (e) {
@@ -13008,7 +13203,12 @@ async function sendDocsAsk() {
   const prov =
     (S.config &&
       (S.config.providers || []).find(
-        (p) => p.type === "text_openai" && String(p.apiKey || "").trim(),
+        (p) =>
+          p &&
+          p.type === "text_openai" &&
+          !p.disabled &&
+          !(p.relay && p.relay.blocked) &&
+          String(p.apiKey || "").trim(),
       )) ||
     null;
   if (!prov) {
@@ -13088,11 +13288,13 @@ async function refreshAppDocsIfOpen() {
   if (!host || !host.classList.contains("on")) return;
   paintAppDocsChrome();
   APP_DOCS.bundle = "";
+  APP_DOCS.searchHits = null;
   try {
     const r = await window.api.docsCatalog();
     if (r && r.ok) APP_DOCS.catalog = r.catalog;
   } catch (_) {}
-  renderDocsNav();
+  if (APP_DOCS.filter && APP_DOCS.filter.trim()) scheduleDocsSearch();
+  else renderDocsNav();
   if (APP_DOCS.pageId) await loadDocsPage(APP_DOCS.pageId);
   renderDocsAskList();
 }

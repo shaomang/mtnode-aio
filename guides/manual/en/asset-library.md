@@ -1,28 +1,16 @@
-# Asset library & asset nodes
+# Asset library
 
-> In one sentence: get to know the vault outside the canvas — where assets come from and how they are reused and referenced (an asset itself is not an @ candidate), so a brand image / character art / BGM imported once can be reused everywhere.
+Brand guidelines, style sheets, recurring character portraits, and reference voice clips belong in the **Asset library** so you never have to hunt for them across folders.
 
-## Asset library overview
+## Managing your assets
 
-### Asset library
+Open **Asset library (`L`)** from the top bar to organize reusable text snippets, images, audio, and video:
 
-The **Asset library** entry in the top menu bar opens the asset library configuration window.
+- **Drag & drop import**: Import files in batches, and edit saved text snippets directly inside the library.
+- **Stored locally**: Everything lives in your local MTNode data folder and survives app upgrades.
 
-The asset library is the "vault" outside the canvas: it holds your raw material such as images, audio and video, and images, audio and video produced by generation nodes can flow back in for repeated use.
+## Using assets on the canvas
 
-The asset library's project path is independent of canvases and projects, so it can be used across projects and canvases.
-
-## Asset library · import
-
-### Import assets
-
-- In the asset library window, set a root folder and create a new asset.
-
-### Reference assets
-
-- Drag local files into a canvas.
-- Drag a wire and reference it downstream with "@".
-- Search the library by name / type, then select an asset and place it on a canvas for reference.
-- The path is fixed, so deleting a canvas or a project never loses the files.
-
-For the concrete steps, see the demo on Bilibili.
+1. Add an **Asset node** (or drag items straight from the Asset library onto the canvas).
+2. Check the entries you want — each selected item becomes its own output port.
+3. Wire any port to a downstream node and reference it with `@` in your prompt. Whenever you update that asset in the library, every canvas connected to it uses the latest version automatically.

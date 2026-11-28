@@ -1,28 +1,38 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 580 170" width="580" height="170">
-  <rect width="580" height="170" fill="#0d1016"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 210" width="680" height="210">
   <defs>
-  <marker id="arr-gold" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#f0c14d"/></marker>
-  <marker id="arr-cyan" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#38d6ff"/></marker>
-  <marker id="arr-orange" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#ff8f2e"/></marker>
-  <marker id="arr-green" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#5fd68a"/></marker>
-  <marker id="arr-red" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#ff6b6b"/></marker>
-  <marker id="arr-purple" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#c792ea"/></marker>
+    <marker id="arr-cyan" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,1 L7,4 L0,7 z" fill="#38bdf8"/></marker>
+    <marker id="arr-orange" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,1 L7,4 L0,7 z" fill="#f59e0b"/></marker>
+    <marker id="arr-purple" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,1 L7,4 L0,7 z" fill="#c792ea"/></marker>
+    <marker id="arr-green" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,1 L7,4 L0,7 z" fill="#4ade80"/></marker>
+    <marker id="arr-rose" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,1 L7,4 L0,7 z" fill="#fb7185"/></marker>
+    <marker id="arr-muted" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,1 L7,4 L0,7 z" fill="#a8b5c8"/></marker>
   </defs>
-  <rect x="20" y="50" width="120" height="48" rx="6" fill="#101820" stroke="#38d6ff" stroke-width="1.6"/>
-  <text x="80" y="71.5" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">输入节点</text>
-  <text x="80" y="84.5" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">文本 / 图像</text>
-  <line x1="140" y1="74" x2="172" y2="74" stroke="#38d6ff" stroke-width="1.8" marker-end="url(#arr-cyan)"/>
-  <rect x="172" y="50" width="130" height="48" rx="6" fill="#1a140e" stroke="#ff8f2e" stroke-width="1.6"/>
-  <text x="237" y="71.5" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">处理节点</text>
-  <text x="237" y="84.5" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">文本 / 图像生成</text>
-  <line x1="302" y1="74" x2="334" y2="74" stroke="#ff8f2e" stroke-width="1.8" marker-end="url(#arr-orange)"/>
-  <rect x="334" y="50" width="110" height="48" rx="6" fill="#1a1610" stroke="#f0c14d" stroke-width="1.6"/>
-  <text x="389" y="71.5" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">保存节点</text>
-  <text x="389" y="84.5" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">.md / .png</text>
-  <line x1="444" y1="74" x2="476" y2="74" stroke="#f0c14d" stroke-width="1.8" marker-end="url(#arr-gold)"/>
-  <rect x="476" y="50" width="90" height="48" rx="6" fill="#101610" stroke="#5fd68a" stroke-width="1.6"/>
-  <text x="521" y="78" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">▶ 控制节点</text>
-  <text x="20" y="140" fill="#5a6472" font-size="11" font-family="Segoe UI,sans-serif">上游改完重跑，下游跟着更新；控制节点 ▶ 用控制线直连到每个该重跑的节点</text>
-  <text x="290" y="158" text-anchor="middle" fill="#5a6472" font-size="11" font-family="Segoe UI,sans-serif">输入 → 处理 → 保存，再用控制节点 ▶ 一键重跑整条链</text>
+  <rect x="0.5" y="0.5" width="679" height="209" rx="10" fill="#11151d" stroke="#242c3c"/>
+  <text x="20" y="28" fill="#f1f5f9" font-size="14" font-weight="700" font-family='system-ui, -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif'>最基础的一条内容生成链</text>
+  <text x="20" y="46" fill="#a8b5c8" font-size="11.5" font-family='system-ui, -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif'>放好素材 → 交给 AI 处理 → 自动保存成文件，以后改上游就能一键重跑</text>
+  <rect x="20" y="66" width="140" height="102" rx="8" fill="#12212e" stroke="#38bdf8" stroke-width="1.5"/>
+  <rect x="21" y="67" width="138" height="4" rx="2" fill="#38bdf8" opacity="0.85"/>
+  <text x="90" y="106" text-anchor="middle" fill="#f1f5f9" font-size="13" font-weight="700" font-family='system-ui, -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif'>1. 输入节点</text>
+  <text x="90" y="124" text-anchor="middle" fill="#a8b5c8" font-size="11" font-family='system-ui, -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif'>放文字 / 图片</text>
+  <text x="90" y="138.5" text-anchor="middle" fill="#a8b5c8" font-size="11" font-family='system-ui, -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif'>音频 / 表单</text>
+  <line x1="160" y1="117" x2="198" y2="117" stroke="#38bdf8" stroke-width="1.8" marker-end="url(#arr-cyan)"/>
+  <rect x="198" y="66" width="152" height="102" rx="8" fill="#261d12" stroke="#f59e0b" stroke-width="1.5"/>
+  <rect x="199" y="67" width="150" height="4" rx="2" fill="#f59e0b" opacity="0.85"/>
+  <text x="274" y="106" text-anchor="middle" fill="#f1f5f9" font-size="13" font-weight="700" font-family='system-ui, -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif'>2. 处理节点</text>
+  <text x="274" y="124" text-anchor="middle" fill="#a8b5c8" font-size="11" font-family='system-ui, -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif'>AI 写文案 / 画图</text>
+  <text x="274" y="138.5" text-anchor="middle" fill="#a8b5c8" font-size="11" font-family='system-ui, -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif'>用 @ 引用上游</text>
+  <line x1="350" y1="117" x2="388" y2="117" stroke="#f59e0b" stroke-width="1.8" marker-end="url(#arr-orange)"/>
+  <rect x="388" y="66" width="130" height="102" rx="8" fill="#12241b" stroke="#4ade80" stroke-width="1.5"/>
+  <rect x="389" y="67" width="128" height="4" rx="2" fill="#4ade80" opacity="0.85"/>
+  <text x="453" y="106" text-anchor="middle" fill="#f1f5f9" font-size="13" font-weight="700" font-family='system-ui, -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif'>3. 保存节点</text>
+  <text x="453" y="124" text-anchor="middle" fill="#a8b5c8" font-size="11" font-family='system-ui, -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif'>自动存成</text>
+  <text x="453" y="138.5" text-anchor="middle" fill="#a8b5c8" font-size="11" font-family='system-ui, -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif'>.md / .png / .pdf</text>
+  <line x1="518" y1="117" x2="552" y2="117" stroke="#4ade80" stroke-width="1.8" marker-end="url(#arr-green)"/>
+  <rect x="552" y="66" width="108" height="102" rx="8" fill="#21182c" stroke="#c792ea" stroke-width="1.5"/>
+  <rect x="553" y="67" width="106" height="4" rx="2" fill="#c792ea" opacity="0.85"/>
+  <text x="606" y="106" text-anchor="middle" fill="#f1f5f9" font-size="13" font-weight="700" font-family='system-ui, -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif'>▶ 开始按钮</text>
+  <text x="606" y="124" text-anchor="middle" fill="#a8b5c8" font-size="11" font-family='system-ui, -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif'>连到起跑节点</text>
+  <text x="606" y="138.5" text-anchor="middle" fill="#a8b5c8" font-size="11" font-family='system-ui, -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif'>一键全流程重跑</text>
+  <text x="340" y="198" text-anchor="middle" fill="#a8b5c8" font-size="11.5" font-family='system-ui, -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif'>在提示词里输入 @节点标题 引用上游内容；改完素材点 ▶ 就能重跑整条链</text>
 </svg>

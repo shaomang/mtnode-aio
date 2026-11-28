@@ -1,39 +1,43 @@
 # AGENTS.md
-MTNode AI工作站 — Electron 桌面端 AI 工作流编排器。用户数据只写 `%APPDATA%\pipeline-console` 或用户选定项目文件夹，**任何数据都不允许保存在应用文件夹**（`app.getAppPath()` / exe 同目录）。本文件是开发 / 细化 / 建议会话共享的核心共识：新文件按「目录约定」放置，「不要修改」清单内路径一律不改。版本以根目录 `version` 文件为唯一真源。Agent 工作区 = 项目根目录。
-## 目录约定
-- **主进程**：`main.js`、`preload.js`（contextBridge 白名单桥）、`main-exec-launch.js`；持久化 `db-store.js`、`assets-store.js`、`tools-store.js`、`config-providers.js`、`media-gen-global-lock.js`。
-- **打包白名单（必读）**：`build.json` 的 `files` 是**显式白名单**；根目录新增的主进程模块只要被 `require` 就必须写进 `files`，否则解包后 `Cannot find module './xxx.js'`。同理：`renderer/**` 与 `canvas-doc/**` 是通配进白名单的目录（页面 / 渲染层脚本 / 读侧内核不用单列），但根目录的 `*.js`（`assist-isolation.js`、`preload-assist.js` 这类宿主与专用预加载）与 `preload*.js` 一律单列，漏一条就是打包后窗口都出不来。
-- **渲染层（无框架 SVG）**：`renderer/`，`app.js` 为画布主体，**脚本加载顺序 = 模块分层**（新版能力按 `renderer/index.html` 顺序放，样式进 `renderer/css/`）。
-- **画布读侧内核**：`canvas-doc/`（`canvas-doc-core.js` 纯函数内核 / `canvas-doc-worker.js` 与 `canvas-doc-client.js` 服务进程 / `canvas-doc-service.js` 主进程宿主）。渲染层以 `<script src="../canvas-doc/canvas-doc-core.js">` 直接加载同一份文件，主进程 / MCP / 脚本侧 `require("canvas-doc/...")` —— **不要复制第二份**；行号锚点写在 `docs/canvas-doc-migration.md`，改了 `main.js` 的 anchor 行要同步（`test/smoke-canvas-doc-parity.js` 会逐条对账）。
-- **两个进程隔离开关**（缺省都关，`config.json` 里手改；没有设置界面）：`canvases.docService = off|read|write`（画布文档服务进程，见 `docs/canvas-doc-migration.md` §10）与 `assist.isolation = off|on|window`（默认 **`off`**；`on` = 接管档：会话流 / 活动流 / 文件树交给独立渲染进程画，主窗不再画会话列表、会话区正文、活动流与离屏文件树，改 `config.json` 后**要重启**才生效，运行中只有 devtools 的 `window.assistIsolation.set()` 能即时切 —— 档位、停画清单与回退见 `docs/assist-isolation.md` §2 / §7）。两条都是「关掉 = 完全走今天的内嵌路径」，改它们之前先读对应文档的档位与回退口径。
-- **Agent 网关**：`dsh/`。`dsh/gateway/gateway.mjs` 是**全仓唯一 import dsh 之处**，由 `dsh-node.js` 选定的**真 Node（≥22.19）**拉起 —— dsh 拒绝 Electron 自带 Node，**别把 `process.execPath` 写回网关 spawn**；改前先读 `dsh/DESIGN.md`。
-- **本地后端**：`music3/`、`h3/`、`llama/`、`pet/`，同名 `*-pack/` 为随包脚手架（extraResources）。**音频分析**是轻量特例：`audio/`（主进程宿主，只有脚手架同步 / venv + numpy / 本机服务起停）配 `audio-pack/`（纯 Python、唯一依赖 numpy、无权重无 GPU），服务端口 8774–8783，画布入口是节点 `audio_spectrum`（MT 音频频谱分析）。
-- **应用自带的后端**：应用目录里的 `backend/backend.json`（注册中心清单）+ 源码，由 `app-backend-pack.js` 统一处理 —— 装应用 / 升级应用时 `apps-store.js` 铺到 `<数据目录>/backends/<id>/`（只铺源码，`work/` 与 `runtime/` 保留；卸载应用不删，它归注册中心管）；应用首次打开点「安装」走 `appHost.tools.install` → `main-backend-registry.js` 的 `installFromApp`（登记 + 起服务 + 等 `/health`）。launch 一律 `process.execPath` + `ELECTRON_RUN_AS_NODE=1`，**不许写死开发机的 node 绝对路径**（新用户机器上没有）。
-- **云端与内容**：`store-saas/`、`ext-repo/`、`forum/`、`web/`；插件宿主 `plugins/`；技能 `skills/`、`mtnode-agent-skills/<类目>/`（类目 `mtnode` / `app` / `plugins` / `canvas` / `music` / `writing`，新类目要在 `mtnode-agent-skills-lib.js` 的 `CATEGORY_TITLES` 补标题；front matter 写 `menu: user` 的内置技能随包进入用户技能清单与「/」菜单，不写则只进内置索引）；文档 `docs/`、手册 `guides/manual/`、节点指南 `guides/nodes/`（新增节点类型必补）；更新日志 `changelog/`（格式见 `changelog/README.md`）；测试 `test/`、`smoke.js`、`dsh/smoke-*.mjs`；构建发布 `scripts/`、`build.json`、`updater.js`、`version.js`。
-- **一次发版**：`npm run release`（NSIS 与 MSIX 同版本），只出 Store 包用 `npm run release:store`。
-## 不要修改
-- 构建产物与依赖：`node_modules/`、`dist/`、`dist_check/`、`.dsh-probe/`、`dsh/gateway/node_modules/`、`dsh/gateway/pnpm-lock.yaml`。
-- 运行时现场：`data/`、`*.log`、`dsh/smoke-home*`、`dsh/smoke-ws*`、`.commandcode/`。
-- 真源与凭据：根目录 `version` 与 `package.json` 的 `version` 不要手改；密钥只进 `%APPDATA%`，不入库不提交；各 `*-pack/` 的锁文件、venv 产物与探针脚本不提交。
-## Agent 运行时约束
-- **Agent 运行期间不得使用任何 git 命令**。
-## 协作约定
-- **数据不落应用文件夹**：数据目录、事实库、素材库、日志只写 `%APPDATA%` 或用户选定项目文件夹；启动由 `main.js` 的 `auditAppDirData()` 体检。
-- **安装脚本纯 ASCII（无 BOM）**：`*-pack/scripts/*.ps1` 等脚本内不许出现中文（注释也算），中文文案只放 `steps.json` 或界面词条；改后必跑 `test/smoke-install-scripts.js`。
-- **带输入或设置的浮层一律 persistent**：禁止「点外部 / 点蒙层自动关闭」，关闭只走窗内按钮 / ✕ / Esc / 再点一次开关；开新面板要互斥（`closeNodePopsExcept`），节点级面板要跟随与回收（`nodePopAnchor` + `repositionNodePops`）；瞬时菜单与图片灯箱不算。回归口径 `test/smoke-dialog-persistence.js`、`test/smoke-dialog-minimize.js`。
-- **发版前必须补 `changelog/v<当前版本>.md`**（面向用户、条目最多两层、不含技术细节）并同步 `changelog/README.md` 索引；`scripts/release.mjs` 打包前硬校验。
-- **插件封面图标 = 官方 logo + 透明底**：`plugins/icons/<id>.png`（1:1、≥256×256）必须取产品官方品牌资产 / 官方仓库原件，不自绘、不截图、不用第三方重绘版；优先带 alpha 的 PNG，不贴白底 / 黑底方块（卡片底色随主题变化）。细则见 `mtnode-agent-skills/plugins/plugin-dev/SKILL.md` 第五节。
-- **走安装窗的插件必须登记安装后自检**：宿主里 `registerInstallTarget({...})` 的同一处注册块要再跟一句 `registerPluginSelfcheck({ id: PLUGIN_ID, kind, check })`（内核 `plugins/plugin-selfcheck.js`）—— 它是卡片封面左上角「已装勾」的唯一判据；漏登记 = 装完那次自检根本不会启动 = 那个标识永远触发不了（llama / MOSS-Music / Paseo / 桌宠这四个不产内容的插件就是这么漏掉的，已补）。不产内容的插件用 `kind: "install"`，check 真验安装要件与运行环境（范例 `llama/install-verify.js`）。`test/smoke-install-window.js` 的回归闸逐宿主对账，`test/smoke-plugin-selfcheck-install.js` 真跑这几条。
-- **扩展能力（DSH 插件 / 技能 / MCP）统一在 `app-plugins.js` 的「扩展能力管理」对话框维护**，`app-settings.js` 只留入口。
-- **应用能力位的缺省只在一处定**：`apps-capabilities.js` 的 `APP_CAPABILITIES` —— 标了 `defaultOn: true` 的那几位就是「不声明也开」（目前 `windowChrome` 与 `showComplete`），其余缺省关。新建应用由 `renderer/app-app-flow.js` 的 `appsCreateApp` 写成**显式全开**；存量应用与云端包一律经 `normCapabilities` / `effectiveCapabilities` 归一，所以「应用里每个输入框都带 AI 补全（含多行不透明卡片 / Tab 采纳）」是**缺省行为**：不要再逐个应用去补 `showComplete: true`，想关只能显式写 `false`（单个输入框走 `data-fim="off"`）。两套注入闸门（`preload-app.js` 的 `maybeInjectAppUi`、`apps-store.js` 的 `iframeAppUiSource`）读的是同一份归一结果，改这一位先看 `test/smoke-fim.js` 的 [12] 段。
-- **提示词单一真源**：节点参数机制写在 `dsh/gateway/canvas-plugin.mjs` / `db-plugin.mjs` 的工具描述里，完整硬规则只写在 `mtnode-agent-skills/mtnode/canvas-edit-rules/SKILL.md`；加规则先判归属层，只落一处。
-- **注入提示词必须登记**：凡注入给模型的固定文本（会话 / 助手人设、任务书、子代理派单、构建器身份）一律写成 `PS("<id>", 默认文本)`，并把 id 加进 `agent-prompts/index.json` —— 不登记就进不了「设置 → 内置能力」，用户改不到；`test/smoke-agent-prompts.js` 会逐条对账。没有覆盖时 `PS` 原样返回默认文本，包一层不改行为。
-- **两个「操窗口」的工具分工**：`mtnode_gui`（`mcp-gui-agent.js`）驱动**用户正在用的那只**窗口 —— 主进程 IPC 派发，覆盖面广；`mtnode_dev`（`dev-agent.js` + `dsh/gateway/dev-plugin.mjs`）只驱动**它自己 spawn 的那只隔离实例** —— CDP，能拿控制台 / 未捕获异常 / 网络，且改完代码能 reload 或 restart。前者随时可用，后者受「扩展能力管理 → 调试」总开关（`dsh.devTools`，默认关）与开发态限制；**默认数据目录 `%APPDATA%\pipeline-console` 在代码层硬拒**，谁也不许拿它去调试。自验流程见技能 `mtnode-verify-in-app`。
-## 输入补全（FIM）的层叠与摆放
-- **真源只有一份**：`renderer/app-fim.js`（core 段 = 上下文 / 清洗 / 缓存 / 路由；overlay 段 = `document` 上的事件委托 + 摆放 + Tab/Esc 仲裁）与 `renderer/css/fim.css`。摆放口径写在 **overlay 段头注释**里，改之前先读它，别在别的文件另写一套。三种宿主（主窗口输入框、开发页 iframe 预览、独立应用窗口）走同一份代码，**不按宿主分叉**。
-- **多行补全 = 光标行下方的实色不透明卡片**（`placeCard()`）：ghost 一个字都不进正文流、不改控件排版，所以压不到下面的正文；底色是**实色 `rgb(10,16,22)`，不许调回半透明** —— 剩 6% 透明度就会把底下那几行字透出来（用户报的「看不清」就是这么回来的）；卡片里的字就是 `st.text` 原样，采纳落字与卡片逐字一致。
-- **单行 ghost = 内联半透明**（镜像层复刻字体 / 行高 / 换行，prefix 与 suffix 透明，只有 ghost 可见）；光标在文末优先内联。
-- **`mask()` 接管渲染只限「单行 ghost + 光标后面还有字」**：藏掉控件自己的字形、head/tail 按真色重画，ghost 的换行才真的把后文推下去。多行不接管（已走卡片），光标在文末也不接管。
-- **自己画不了字的控件**（`color` / `-webkit-text-fill-color` 透明，正文由别的层画 —— mt-tex 的 `#codeHl` 这类）：它接管不了渲染，所以「单行 + 这一行后面还有字」也走卡片。判据 `a < 0.25`；**别把「取不到文字色」当成透明**（假 DOM 会一路走卡片，smoke 会红）。
-- **卡片入场只动 transform、不动 opacity**：`opacity:0` 起手的动画在被判定不可见的窗口里不推进，整块卡片一个像素都不画（真机踩过）。
-- 应用侧一行代码都不用写（`capabilities.showComplete` 缺省开，见「协作约定」的能力位那条）；回归 `node test/smoke-fim.js`，真机自验按技能 `mtnode-verify-in-app`。
+
+**MTNode AI工作站**（MTNode AI Orchestrator）— Electron 桌面端 AI 工作流编排与智能体工作站。
+根目录 `version` 是版本号唯一真源；所有用户数据只能写入 `%APPDATA%\pipeline-console` 或用户选定的项目目录，**严禁写入应用安装目录**（启动由 `main.js` 的 `auditAppDirData()` 自检）。
+
+## 运行时硬约束
+
+- **禁止执行任何 `git` 命令**。
+- **不要修改以下路径**：
+  - 依赖与产物：`node_modules/`、`dist/`、`dist_check/`、`.dsh-probe/`、`dsh/gateway/node_modules/`、`dsh/gateway/pnpm-lock.yaml`
+  - 运行时现场：`data/`、`*.log`、`dsh/smoke-home*`、`dsh/smoke-ws*`、`.commandcode/`
+  - 版本与密钥：`version` 与 `package.json` 的 `version` 不手改（走 `node version.js`）；密钥只存 `%APPDATA%` 不入库；各 `*-pack/` 的 venv / 锁文件不提交。
+
+## 目录结构
+
+| 区域 | 路径与约定 |
+| --- | --- |
+| 主进程 | `main.js`、`preload.js`（contextBridge 白名单桥）、持久化 `*-store.js`、配置与运行支撑模块 |
+| 渲染层 | `renderer/`（无前端框架、无构建器）；`app.js` 为主体，按 `renderer/index.html` 的 `<script>` 顺序分层，样式进 `renderer/css/` |
+| 画布读侧内核 | `canvas-doc/`（渲染层 `<script>` 与主进程/MCP 共用同一份 `canvas-doc-core.js`，不复制；改 `main.js` 锚点需同步 `docs/canvas-doc-migration.md` 并过 `test/smoke-canvas-doc-parity.js`） |
+| Agent 网关 | `dsh/`；`dsh/gateway/gateway.mjs` 是唯一 import dsh 入口，由 `dsh-node.js` 选定的外部 Node（≥22.19）拉起，禁止传 Electron `process.execPath`（改前读 `dsh/DESIGN.md`） |
+| 本地后端插件 | `<id>/` 宿主 + `<id>-pack/` 随包脚手架（`music3` / `yue` / `h3` / `llama` / `breeze` / `moss-music` / `infinitetalk` / `soulxflashhead` / `flux3klein` / `qwenimage` / `remotion` / `blender` / `paseo` / `pet` / `audio`） |
+| 应用自带后端 | 应用目录 `backend/backend.json` + 源码由 `app-backend-pack.js` 同步到 `<数据目录>/backends/<id>/`；拉起用 `process.execPath` + `ELECTRON_RUN_AS_NODE=1`，禁止写死本机 node 路径 |
+| 文档与技能 | 工程文档 `docs/`；应用内手册 `guides/manual/`（中英双语 + SVG 图示）；节点指南 `guides/nodes/`（新增节点必补）；技能 `skills/` 与 `mtnode-agent-skills/<类目>/`（front matter 含 `menu: user` 进用户「/」菜单，新类目补 `mtnode-agent-skills-lib.js`）；更新日志 `changelog/` |
+| 测试与发版 | `npm test`（`test/run-all.mjs`，默认跑纯 Node 冒烟，重活走 `npm run test:heavy`）；发版 `npm run release`（仅 Store 用 `npm run release:store`） |
+
+## 必须遵守的开发纪律
+
+1. **打包白名单（`build.json`）**：`files` 为显式白名单。根目录新增的 `*.js`（含主进程模块与 `preload*.js`）只要被 `require` 就必须加入 `files`，否则打包后直接报错缺模块；`renderer/**`、`canvas-doc/**`、`guides/**` 已通配涵盖。
+2. **发版日志**：发版前补 `changelog/v<版本>.md`（面向用户、简洁明了、无技术黑话）并同步 `changelog/README.md`，`scripts/release.mjs` 会硬校验。
+3. **带输入或设置的浮层一律 persistent**：禁止「点外部 / 点蒙层自动关闭」，只能通过窗内按钮 / `✕` / `Esc` / 开关本身关闭；节点浮层走 `closeNodePopsExcept` 与 `repositionNodePops`（瞬时菜单与图片灯箱不算；回归 `test/smoke-dialog-persistence.js`）。
+4. **安装脚本纯 ASCII（无 BOM）**：`*-pack/scripts/*.ps1` 内禁止出现中文（含注释），中文文案放 `steps.json` 或 i18n；改后跑 `test/smoke-install-scripts.js`。
+5. **插件图标与安装自检**：`plugins/icons/<id>.png` 必须使用官方透明底 PNG（1:1、≥256×256）；走安装窗的插件必须在 `registerInstallTarget` 同处注册 `registerPluginSelfcheck`（回归 `test/smoke-install-window.js`）。
+6. **提示词单一真源与可配置登记**：节点参数说明只写在 `dsh/gateway/canvas-plugin.mjs` / `db-plugin.mjs`，画布编辑硬规则只写在 `mtnode-agent-skills/mtnode/canvas-edit-rules/SKILL.md`；凡注入给模型的固定提示词一律用 `PS("<id>", 默认文本)` 并登记进 `agent-prompts/index.json`（回归 `test/smoke-agent-prompts.js`）。
+7. **应用能力位唯一真源**：缺省开关只在 `apps-capabilities.js` 的 `APP_CAPABILITIES` 定义（`defaultOn: true` 即缺省开启，如 `windowChrome`、`showComplete`），不要逐个应用补丁式硬写。
+8. **扩展能力统一入口**：DSH 插件、技能与 MCP（含内置 MCP 服务端）统一在 `app-plugins.js` 的「扩展能力管理」维护，`app-settings.js` 只放入口。
+9. **进程隔离开关**：`canvases.docService`（`off|read|write`）与 `assist.isolation`（`off|on|window`）默认皆为 `off`，关闭即完整回退内嵌路径；改动前先读 `docs/canvas-doc-migration.md` 与 `docs/assist-isolation.md`。
+10. **GUI 驱动分工**：`mtnode_gui`（`mcp-gui-agent.js`）操作用户当前窗口；`mtnode_dev`（`dev-agent.js`）仅操作隔离调试实例（严禁指向默认数据目录 `%APPDATA%\pipeline-console`）。
+
+## 输入补全（FIM）维护要点
+
+- **单一实现**：`renderer/app-fim.js` 与 `renderer/css/fim.css` 被主窗口、开发页 iframe 与独立应用窗口共用，不按宿主分叉。
+- **渲染边界**：单行补全走内联半透明（光标后有字时才走 `mask()` 接管）；多行补全（以及文字色透明的自定义高亮控件）走光标行下方的**实色不透明卡片**（`rgb(10,16,22)`，不调回半透明以免透字）；入场动画只动 `transform` 不动 `opacity`。回归跑 `node test/smoke-fim.js`。

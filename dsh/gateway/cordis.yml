@@ -198,14 +198,14 @@
     toolName: subagent
     backgroundMode: continuable    # 委派嵌套上限:0 禁止委派,dsh 自身默认 3。MTNode 默认收紧到 1(与 OpenCode 的
     # subagent_depth 默认一致);用户在「设置 · 智能能力 · 子代理」改了之后,由宿主
-    # dsh-agent-policy.js 改写本值(main.js 启动时与每次保存配置后)。    maxDepth: 2
+    # dsh-agent-policy.js 改写本值(main.js 启动时与每次保存配置后)。    maxDepth: 1
 
 - id: tool-subagent-fork  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1'
   config:
     provider: fork
     toolName: subagent_fork
     backgroundMode: one-shot
-    # 同 tool-subagent:默认收紧到 1 层嵌套,由 dsh-agent-policy.js 按用户设置改写。    maxDepth: 2
+    # 同 tool-subagent:默认收紧到 1 层嵌套,由 dsh-agent-policy.js 按用户设置改写。    maxDepth: 1
 
 - id: spill-policy
   config:
@@ -267,186 +267,6 @@
       - provider: deepseek-official
         model: deepseek-v4-pro
         maxTokens: 256000
-        retainTokens: 32768
-      - provider: mtnode_p1
-        model: deepseek-v4.1-flash
-        maxTokens: 32768
-        retainTokens: 32768
-      - provider: mtnode_p1
-        model: cat-jam-free
-        maxTokens: 32768
-        retainTokens: 32768
-      - provider: mtnode_p1
-        model: deepseek-v4-pro
-        maxTokens: 32768
-        retainTokens: 32768
-      - provider: mtnode_p1
-        model: glm-5.2
-        maxTokens: 32768
-        retainTokens: 32768
-      - provider: mtnode_p1
-        model: glm-5.3
-        maxTokens: 32768
-        retainTokens: 32768
-      - provider: mtnode_p1
-        model: glm-5.3-flash
-        maxTokens: 32768
-        retainTokens: 32768
-      - provider: mtnode_p1
-        model: hy3
-        maxTokens: 32768
-        retainTokens: 32768
-      - provider: mtnode_p1
-        model: hy4-preview
-        maxTokens: 32768
-        retainTokens: 32768
-      - provider: mtnode_p1
-        model: kimi-k2.7-code
-        maxTokens: 32768
-        retainTokens: 32768
-      - provider: mtnode_p1
-        model: kimi-k3
-        maxTokens: 32768
-        retainTokens: 32768
-      - provider: mtnode_p1
-        model: longcat-2.0
-        maxTokens: 32768
-        retainTokens: 32768
-      - provider: mtnode_p1
-        model: longcat-2.5-preview-free
-        maxTokens: 32768
-        retainTokens: 32768
-      - provider: mtnode_p1
-        model: mimo-v2.5
-        maxTokens: 32768
-        retainTokens: 32768
-      - provider: mtnode_p1
-        model: mimo-v2.5-pro
-        maxTokens: 32768
-        retainTokens: 32768
-      - provider: mtnode_p1
-        model: mimo-v2.6-flash
-        maxTokens: 32768
-        retainTokens: 32768
-      - provider: mtnode_p1
-        model: mimo-v2.6-pro
-        maxTokens: 32768
-        retainTokens: 32768
-      - provider: mtnode_p1
-        model: space-bunny
-        maxTokens: 32768
-        retainTokens: 32768
-      - provider: mtnode_p1
-        model: step-5-preview-free
-        maxTokens: 32768
-        retainTokens: 32768
-      - provider: mtnode_p1
-        model: grok-4.7
-        maxTokens: 32768
-        retainTokens: 32768
-      - provider: mtnode_p1
-        model: muse-spark-1.2-contributor
-        maxTokens: 32768
-        retainTokens: 32768
-      - provider: mtnode_p1
-        model: muse-spark-1.3-contributor
-        maxTokens: 32768
-        retainTokens: 32768
-      - provider: mtnode_p1
-        model: gpt-5.6-luna
-        maxTokens: 32768
-        retainTokens: 32768
-      - provider: mtnode_p1
-        model: gpt-6-luna
-        maxTokens: 32768
-        retainTokens: 32768
-      - provider: mtnode_p1
-        model: claude-haiku-5-5
-        maxTokens: 32768
-        retainTokens: 32768
-      - provider: mtnode_p1
-        model: minimax-m3
-        maxTokens: 32768
-        retainTokens: 32768
-      - provider: mtnode_p1
-        model: minimax-m3.1-flash
-        maxTokens: 32768
-        retainTokens: 32768
-      - provider: mtnode_p1
-        model: step-5-preview
-        maxTokens: 32768
-        retainTokens: 32768
-      - provider: mtnode_p1
-        model: beam-free
-        maxTokens: 32768
-        retainTokens: 32768
-      - provider: mtnode_p1
-        model: qwen3.8-max
-        maxTokens: 32768
-        retainTokens: 32768
-      - provider: mtnode_p1
-        model: qwen3.8-flash
-        maxTokens: 32768
-        retainTokens: 32768
-      - provider: mtnode_p1
-        model: qwen3.7-plus
-        maxTokens: 32768
-        retainTokens: 32768
-      - provider: mtnode_p1
-        model: kimi-k3.1-pro
-        maxTokens: 32768
-        retainTokens: 32768
-      - provider: mtnode_p1
-        model: iceman-contributor-free
-        maxTokens: 32768
-        retainTokens: 32768
-      - provider: mtnode_p1
-        model: gemini-4-argon
-        maxTokens: 32768
-        retainTokens: 32768
-      - provider: mtnode_p1
-        model: hy4
-        maxTokens: 32768
-        retainTokens: 32768
-      - provider: mtnode_p1
-        model: longcat-2.5-free
-        maxTokens: 32768
-        retainTokens: 32768
-      - provider: mtnode_p4
-        model: aoi
-        maxTokens: 32768
-        retainTokens: 32768
-      - provider: mtnode_p4
-        model: Deepseek
-        maxTokens: 32768
-        retainTokens: 32768
-      - provider: mtnode_p4
-        model: gpt-sovits
-        maxTokens: 32768
-        retainTokens: 32768
-      - provider: mtnode_p4
-        model: "123"
-        maxTokens: 32768
-        retainTokens: 32768
-      - provider: mtnode_p5
-        model: claude-opus-5-5-thinking
-        maxTokens: 32768
-        retainTokens: 32768
-      - provider: mtnode_p5
-        model: claude-opus-5-5
-        maxTokens: 32768
-        retainTokens: 32768
-      - provider: mtnode_p5
-        model: gpt-6-luna
-        maxTokens: 32768
-        retainTokens: 32768
-      - provider: mtnode_p7
-        model: deepseek-v4-flash
-        maxTokens: 32768
-        retainTokens: 32768
-      - provider: mtnode_p7
-        model: gpt-image-2.5-all
-        maxTokens: 32768
         retainTokens: 32768
 
       - provider: mtnode_p1

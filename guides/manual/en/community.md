@@ -1,120 +1,47 @@
 # Workshop & forum
 
-> In one sentence: make good use of the community's two lines — browse and download (and, once signed in, upload and manage) other people's public template canvases and skills in the Creative Workshop, and browse / post in the forum once signed in — and know the scrubbing and safety etiquette that come before sharing.
+MTNode's community lives in the top bar: **Workshop** for sharing workflow templates and skills, and **Forum** for questions, bug reports, and ideas. Both share your single MTNode account (sign in at the top right via WeChat QR or username/password).
 
-## Community overview
+## Workshop: discover & share workflows and skills
 
-### Community overview
+Open **Workshop** in the top bar to switch between **Templates** (full canvas workflows) and **Skills**, sorted by newest, likes, downloads, or top-tipped:
 
-MTNode's community has two parts, both reached from the top bar:
+### Using community items
 
-- **创意工坊 (Creative Workshop)** (top bar): browse / download other people's public template canvases and skills (Skill); once signed in you can upload and manage your own entries.
-- **讨论区 (Forum)** (top right): topics and replies; **this entry only appears once you are signed in** — then you can browse, post a topic, reply and change its status.
+1. Click any card to preview details, then click **Download**.
+2. **Templates** import as a new canvas. If a node used a model you don't have configured, it silently becomes **No model** — simply pick your own model when you click **▶**.
+3. **Skills** install into your local skills folder and are ready via `/` in chat right away. Updates are always manual so your local copy never changes unexpectedly.
 
-Both share the same MTNode account (WeChat QR sign-in; an old account can sign in with a password and link it up afterwards). The account entry is **账户 (Account)** at the top right.
+### Sharing your own
 
-This section: ① Workshop · what it is → ① Forum · what it is → ① Sharing flow.
+1. Sign in, click **Upload**, choose a local canvas or skill, and add a title, description, tags, and version.
+2. **Clean private data first**: Remove API keys, client secrets, and private paths before uploading (MTNode also strips your local workspace path from uploaded templates automatically).
+3. Manage your uploads, views, likes, and updates under **Mine**.
 
-## Workshop · what it is
+## Forum: ask questions & report issues
 
-### What the Creative Workshop is
+Once signed in, **Forum** appears at the top right (it stays hidden while signed out, and signing out closes any open Forum window). It's built right into MTNode with no extra download:
 
-A public catalog: template canvases (whole workflows) and skills (Skill, a SKILL.md package) uploaded by others, which you can search, preview and download to your machine.
+- **Clear topic tags**: General / Help / Idea / Bug / Resolved. Authors can update their own topic status anytime, and admins can mark Bug topics as Resolved (or revert back to Bug).
+- **Get faster answers**: Share four things — what you wanted, which node or setting you used, the exact error message or screenshot, and what you already tried.
 
-### Track one: I want other people's things
+## Tipping & comments
 
-1. **创意工坊 (Creative Workshop)** in the top bar; switch between the **模板 (Templates) / 技能 (Skills)** panes, and sort by tags, popularity (downloads / likes) or newest, with search as well.
-2. Preview read-only first, then **下载到本机 / 下载 (Download to this machine / Download)**.
-   - **Template** = a canvas you can import; if it references a provider or model your machine does not have, nothing pops up — those nodes silently become **No model**, and only when you press ▶ do you get a prompt to pick a provider and model again in the node settings.
-   - **Skill** = once downloaded to this machine, agent nodes can call it with `/`; when the workshop has a newer version you update it by hand, because the local copy does not follow automatically.
+### Tipping creators with W coins
 
-### Track two: I want to share my own things
+Look for the **W coin** button on Workshop template/skill details or published App details (the Forum uses comments only and does not show tipping):
 
-1. Sign in first (uploading requires a sign-in).
-2. Upload a template = pick a local canvas; upload a skill = pick / paste a SKILL.md (use **使用本机技能 (Use a local skill)** to load an existing one; it needs a frontmatter `name` in kebab-case).
-3. Fill in the title, description, tags and version; manage your own entries under **我的 (Mine)** and check downloads and likes.
+- **Three fixed tiers**: `100 / 500 / 1000` (the tipping dialog shows W coins only; top-up pricing appears in the Wallet dialog).
+- **Limits & rules**: Up to 1000 W coins per tip and 1000 W coins per account per month (resets on the 1st at 00:00 Beijing time); once per item per day; **you cannot tip yourself**; tips are final and non-refundable.
+- **How creators use tips**: Received tips go to the creator's balance for MTNode Relay model usage and cannot be withdrawn as cash.
+- **Split tips for multi-author apps**: When an app family has multiple authors, the dialog lets you split your chosen tier across authors (your own share stays 0 if you are one of them).
+- **Privacy**: Everyone sees total tips and count; individual tipper names are visible only to the creator.
 
-- Uploading a template automatically strips the canvas's local-workspace information, so your local paths never travel with it.
-- Only the uploader can update a skill of that name; re-picking a file overwrites the workshop body (a new version is required).
+### Comments & 5-star ratings
 
-## Forum · what it is
+- **Read freely, sign in to post**: Workshop and App comments are readable without signing in; signed-in users can post plain-text comments (up to 2000 characters), reply to threads, and optionally leave a 1–5 star rating on templates, skills, and apps (deleting a comment removes its rating).
 
-### What the forum is
+## Community etiquette
 
-MTNode's official forum, for asking questions, getting help with errors, sharing work and suggesting features.
-
-Entry: **讨论区 (Forum)** at the top right — it **only appears once you are signed in** (while signed out the top bar has no such button; the one and only sign-in entry in MTNode is the **账户 (Account)** button at the top right). It is a built-in component shipped with the app, so there is nothing to download.
-
-### How to use it
-
-- It shares the same account as the Creative Workshop (sign in with the **Account** button at the top right); once signed in you can browse topics and replies, and also post a topic, reply and set topic status.
-- A topic has five statuses: **General / Help / Suggestion / Bug / Solved** (green badge). **The author** can change it any time from the status dropdown on their own topic page; an **administrator** can also handle bug reports right in the list: the row of a **Bug** topic has a green **Mark as solved**, and an already **Solved** row has **Back to Bug** (so a wrong click can be undone).
-- Signing out hides the forum entry again, and closes any forum window you still have open, bringing the main window back to the front.
-- Topics are kept long-term, so the same pitfall can be found later.
-
-### Question template
-
-1. What I want (the goal in one sentence).
-2. What I did (node titles / which branch of the canvas, which parameters changed).
-3. What actually happened (the error text, not half a screenshot).
-4. What I already tried (which possibilities are ruled out).
-
-Bringing a minimal reproduction is far more useful than pasting a whole log.
-
-## Tipping and comments
-
-### Tipping (support an author with W coins — not available in the forum)
-
-- You can tip: workshop templates and skills, and **published** apps in the App Center (the same entry everywhere: a **W-coin icon** button). The workshop puts one in the detail view; the **App Center keeps it only in the detail view**, on the right of the "Tips received" row — the app card cover has no tip button.
-- **The forum has no tipping**: neither a topic's detail nor a reply row carries a tip button or an accumulated-tips line — the forum only has the **Comments** tab (see below). The server-side tipping channel and the historical forum tip records stay in the database (the back office can still read them) — the UI just no longer offers an entry.
-- The money comes out of **your own W-coin balance** and goes straight to the author. There is no "top up first" step: when the balance is too low the button says "not enough W coins — top up" and opens the top-up window in one click.
-- Three fixed tiers: **100 / 500 / 1000 W coins** — you cannot type your own amount. The tip window shows **W coins only** (never a yuan equivalent); what a coin is worth is shown in the top-up window.
-- Amounts are shown as **a number followed by the W-coin icon** (the official DeepSeek logo inside a gold ring) — in the Chinese UI the word "币" is gone; hover the icon to see "鲸圆币". The wallet, the relay balance in Settings, cost read-outs and the tip window all use this one icon.
-- Two limits: **at most 1000 W coins per tip**, and **at most 1000 W coins per account per calendar month** (reset at 00:00 Beijing time on the 1st); the **same target can be tipped only once a day**; you cannot tip yourself.
-- The tip window **does not show a monthly remaining quota** (the UI exposes no quota figure): if you really hit the monthly cap, the tip is rejected and says the monthly tip quota is used up (it resets on the 1st of each month).
-- When the balance cannot be read the window says which case it is: **your sign-in has expired** (click the sentence to sign in again — the balance refreshes in place) or **the balance is unavailable right now** (network / server trouble — try again later).
-- Tips are **not refundable**: there is no revoke at all (the back office has no such entry either; records revoked in the past stay on file read-only).
-- What the author receives goes into their balance, **can be spent on calling MTNode relay models**, and **cannot be withdrawn**.
-- Tips are counted **per whole app** (rooted at the original author's branch): however many people have forked it and whichever version you look at, the total amount and count are **one and the same** number.
-- Everyone can see the **total amount and number of tips** on an entry / topic, but **the names of tippers are visible only to the author of that entry** (for an app with several authors, every author in that family counts as "the author"). If you are the author, the window lists everyone (for reconciliation); if you are not, it lists **only the tips you sent yourself** ("You tipped N · M times" plus the icon) — no other name is ever shown. If you never tipped it, you just see the public **accumulated tips** line.
-- The tip window has **no ✕ in its corner**: close it with the **Close** button at the bottom or with Esc. The **Tip** button is **orange-outlined with a transparent centre** and sits at the **bottom** of the window (not in the top-left).
-- **Multi-author apps split the tip proportionally**: when the same app family (including branches forked from it) is kept by several authors, the tip window lists **one row per author, each with a coin input** (the unit is the W-coin icon) — the **sum may not exceed the tier you picked** (anything above it is clamped), and the **last author's box always fills in the remainder** (change any other box and it follows). If you are in that group yourself, your share is fixed at **0** (you cannot tip yourself). The server still receives one total and credits each author's share separately.
-- The workshop sort now has a **Tip popularity** option: sorted by total tipped, so the best-supported entries come first (ties broken by number of tips).
-
-### Comments (ratings and discussion)
-
-- Comments live in four places: a workshop entry's detail window (**Comments** tab), an app's detail (**Comments** tab), a forum topic's detail (**Comments** tab), and each reply's own comment window. **The forum's only interaction is commenting** (its tipping entry has been removed).
-- **Comments are readable without signing in** (the Comments tabs of workshop entries and app details are not gated); **posting one requires a sign-in**. You can **reply to a comment** (parent-child quote), the same shape as forum replies. Comments on forum topics are only reachable by signed-in users, since the forum itself only opens once you are signed in.
-- **Only item comments (template / skill / app) carry a five-star rating**, and it is **optional** — skip it and it is left out of the average. Comments on forum topics and replies have no stars. For one item you only keep your latest star.
-- Cards and detail views show the **average star (one decimal) + comment count** and the accumulated tips; when nobody has rated, no fake score is shown.
-- Deleting: a comment's author can delete their own, an entry / topic author can delete comments under their own item, and an admin can delete anywhere. **Deleting a comment also drops its star**, and the average is recalculated right away.
-- Comments are plain text, at most 2000 characters, **no images**; rate limits apply (1 per minute, 50 per day).
-
-## Sharing and installing
-
-### Sharing a canvas (1-2-3)
-
-1. First remove anything private from the canvas: no API keys, private paths or client data.
-2. **创意工坊 (Creative Workshop)** in the top bar → **上传 (Upload)** → pick this canvas → fill in the title / description / tags / version → **发布 (Publish)** (sign-in required).
-3. Uploading strips the local-workspace information automatically; afterwards **我的 (Mine)** shows downloads and likes, and to change something you re-pick the file and fill in a new version.
-
-### Installing someone else's things (1-2-3)
-
-1. Preview and confirm in the workshop, then click **下载到本机 / 下载 (Download to this machine / Download)**.
-   - **Template** → imported as a new canvas; **skill** → written into your local skills directory and called by agent nodes with `/`.
-   - Components such as plugins are **downloaded on demand**, not in the installer (the forum is **built in**, so it needs no download); installing one restarts the engine, so let any running task finish first.
-2. After importing someone else's canvas, check item by item: providers and models, save paths, and whether any node needs a local backend (H3 / Music 3 / TTS / llama).
-   - When the canvas references a provider / model your machine does not have, nothing pops up: those nodes silently become **No model** (the node header names the missing one), and pressing ▶ is what prompts you to pick a provider and model again.
-3. A node missing a plugin or a backend will not run — read the node notes before pressing ▶.
-
-### Upgrading and uninstalling
-
-- Plugins and assets live under the app's config data directory, so an app upgrade keeps them.
-- Installing / uninstalling a plugin asks for confirmation first; uninstall affects only that plugin, core capabilities are untouched, and a user plugin can be mounted again.
-
-## Community safety and etiquette
-
-- Dry-run a canvas in an empty folder first instead of opening it straight on your main project.
-- Ask about an error with a minimal reproduction rather than a whole pasted log.
-- Credit other people's work; do not publish it as your own original.
-- Do not upload material involving other people's privacy, likeness or copyright without permission.
+- Test downloaded workflows in an empty folder before running them on important projects.
+- Credit original authors when remixing, and never upload private or copyrighted material without permission.

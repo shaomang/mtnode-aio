@@ -1,30 +1,26 @@
-# Agent task & session
+# Agent nodes & canvas ownership
 
-> One-sentence goal: set a session's switches the right way, make use of its supporting features, and steer clear of a few common misconceptions.
+MTNode gives you three ways to work with an AI agent: the full-screen **Session** view, **Agent nodes** right inside a workflow, and the **Global assistant (✦)** sidebar. Knowing what each owns keeps multiple tasks from stepping on each other.
 
-![会话从哪来与四组开关](img/mtnode-agent-02-ui.svg)
+## Picking the right tool
 
-*Figure: the three session entry points and the switches — model provider, model, preset, thinking effort, tool permissions*
+| What you want to do | Best choice |
+| --- | --- |
+| A single predictable transform (rewrite, translate, draw) | Regular **Text / Image node** on the canvas |
+| An autonomous multi-step stage inside a larger workflow | **Agent task node** (or Text node with Agent mode on) |
+| Create or rearrange nodes and wires on a canvas | **Global assistant (✦)** on the right edge |
+| Build software, do deep research, or iterate across turns | Full-screen **Session** view (or **Develop** on a Dev node) |
 
-## The switches (model provider · model · preset · thinking effort · tool permissions)
+## Which canvas does a session belong to?
 
-The **⚙ chip** in the composer opens the picker menu; top to bottom it has four cells:
-**model provider → preset → model → thinking effort**.
+A session adopts its canvas **the moment it is created** — whichever canvas is open then, or for sessions launched from a Dev node, the canvas holding that block.
 
-- **Model provider**: which provider this session runs on (DeepSeek official, or a provider you added under Settings → Model services). Pick the provider first; the next cell, **Model**, then lists only that provider's models. Switching provider moves the model to that provider's first model as well, so you never end up with "A's model on B's route" — a combination that only blows up at run time.
-- **Model**: a flash-tier model is enough for most work; switch up for long-document reasoning, complex extraction or code. Lists the current provider's models only.
-- **Preset**: decides the AI's persona and which abilities it carries; development work usually uses 「精简」(Lean).
-- **Thinking effort**: off / low / high / max. Higher usually means better quality and more tokens; low or high is enough day to day.
-- **Tool permissions**: which tools are allowed — file read/write, web search, canvas editing, asking questions, image reading. For ordinary jobs it is worth turning image reading off, otherwise the AI may keep taking screenshots to confirm things and waste tokens.
+- **Switch canvases freely**: Once a session is running, you can move to another canvas and keep working. That session's graph reads/writes, workspace, and database grounding always stay on **the canvas the session belongs to** — never on the one now on your screen, so it will never overwrite or delete what you're editing elsewhere.
+- **Check ownership at a glance**: In the left session list, the `▣` badge beneath each title shows which canvas that session owns.
+- **Working across canvases**: A regular session can view and edit **the canvas the session belongs to**, and does not reach across other canvases. When you need to reference or switch across multiple canvases, use the **Global assistant (✦)** and switch its scope to **Global**.
 
-## Other features
+## Tips for Agent nodes on the canvas
 
-- **Thinking translation**: reasoning is mostly in English, so to look into a segment and trace a problem, click the thinking segment on the right. It translates with **this session's own model** (the provider · model picked above) with thinking off; only when the session has no usable model yet does it fall back to the default route's flash tier.
-- **Tool arguments**: the session shows the tool-call log and the details of each call.
-- **Token report**: the bottom shows this session's token usage report and cost (DeepSeek only). The calculation cannot be exact, so treat official platform statistics as final.
-
-## Common misconceptions
-
-- Avoid one session doing everything. The more mixed the context, the higher and more expensive the usage. Split sessions by task.
-- **Tool permissions**: if a session cannot read files or reach the web and so cannot finish the job, the permission may simply be off.
-- **Thinking effort**: low / high is enough day to day; max is normally only used when setting up a new project, and when architecture is involved it is worth using a high-end model as well.
+- **No Save node required**: Agent nodes write output files directly inside your project folder and pass back paths or summaries.
+- **Per-node settings**: Each Agent node can pick its own model, preset, thinking effort, and tool permissions independently.
+- **Test in a clean folder first**: When trying a new file-writing Agent node, test it on an empty scratch folder before pointing it at your main project.

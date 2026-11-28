@@ -1,27 +1,37 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 192" width="600" height="192">
-  <rect width="600" height="192" fill="#0d1016"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 226" width="680" height="226">
   <defs>
-  <marker id="arr-gold" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#f0c14d"/></marker>
-  <marker id="arr-cyan" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#38d6ff"/></marker>
-  <marker id="arr-orange" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#ff8f2e"/></marker>
-  <marker id="arr-green" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#5fd68a"/></marker>
-  <marker id="arr-red" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#ff6b6b"/></marker>
-  <marker id="arr-purple" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#c792ea"/></marker>
+    <marker id="arr-cyan" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,1 L7,4 L0,7 z" fill="#38bdf8"/></marker>
+    <marker id="arr-orange" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,1 L7,4 L0,7 z" fill="#f59e0b"/></marker>
+    <marker id="arr-purple" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,1 L7,4 L0,7 z" fill="#c792ea"/></marker>
+    <marker id="arr-green" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,1 L7,4 L0,7 z" fill="#4ade80"/></marker>
+    <marker id="arr-rose" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,1 L7,4 L0,7 z" fill="#fb7185"/></marker>
+    <marker id="arr-muted" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,1 L7,4 L0,7 z" fill="#a8b5c8"/></marker>
   </defs>
-  <rect x="16" y="44" width="180" height="48" rx="6" fill="#161020" stroke="#c792ea" stroke-width="1.6"/>
-  <text x="106" y="65.5" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">函数节点</text>
-  <text x="106" y="78.5" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">JS：input → return</text>
-  <rect x="16" y="120" width="180" height="48" rx="6" fill="#1a1610" stroke="#f0c14d" stroke-width="1.6"/>
-  <text x="106" y="141.5" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">工具节点</text>
-  <text x="106" y="154.5" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">节点层 + 注册</text>
-  <line x1="196" y1="68" x2="250" y2="68" stroke="#c792ea" stroke-width="1.8" marker-end="url(#arr-purple)"/>
-  <line x1="196" y1="144" x2="250" y2="144" stroke="#f0c14d" stroke-width="1.8" marker-end="url(#arr-gold)"/>
-  <rect x="250" y="44" width="330" height="124" rx="6" fill="#101820" stroke="#38d6ff" stroke-width="1.6"/>
-  <text x="415" y="90.5" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">参数表 = 端子表</text>
-  <text x="415" y="103.5" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">输入端子 0 = 控制入，1..N 依次是各入参</text>
-  <text x="415" y="116.5" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">输出端子 0..M-1 是各出参，末位是控制出</text>
-  <text x="415" y="129.5" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">端子类型 text / image 决定能不能相接</text>
-  <text x="16" y="184" fill="#5a6472" font-size="11" font-family="Segoe UI,sans-serif">注册后会话与智能节点可直接调用它，把工作流固化成可复用的能力</text>
-  <text x="300" y="180" text-anchor="middle" fill="#5a6472" font-size="11" font-family="Segoe UI,sans-serif">参数表就是端子表：加一个参数就多一个端子</text>
+  <rect x="0.5" y="0.5" width="679" height="225" rx="10" fill="#11151d" stroke="#242c3c"/>
+  <text x="20" y="28" fill="#f1f5f9" font-size="14" font-weight="700" font-family='system-ui, -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif'>把常用步骤封装成可复用工具</text>
+  <text x="20" y="46" fill="#a8b5c8" font-size="11.5" font-family='system-ui, -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif'>在参数表里加一个参数，节点左右就会自动多出一个接口</text>
+  <rect x="18" y="66" width="180" height="62" rx="8" fill="#21182c" stroke="#c792ea" stroke-width="1.5"/>
+  <rect x="19" y="67" width="178" height="4" rx="2" fill="#c792ea" opacity="0.85"/>
+  <text x="108" y="93" text-anchor="middle" fill="#f1f5f9" font-size="13" font-weight="700" font-family='system-ui, -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif'>函数节点</text>
+  <text x="108" y="111" text-anchor="middle" fill="#a8b5c8" font-size="11" font-family='system-ui, -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif'>写几行 JS 做计算或整理数据</text>
+  <rect x="18" y="138" width="180" height="62" rx="8" fill="#261d12" stroke="#f59e0b" stroke-width="1.5"/>
+  <rect x="19" y="139" width="178" height="4" rx="2" fill="#f59e0b" opacity="0.85"/>
+  <text x="108" y="165" text-anchor="middle" fill="#f1f5f9" font-size="13" font-weight="700" font-family='system-ui, -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif'>工具节点</text>
+  <text x="108" y="183" text-anchor="middle" fill="#a8b5c8" font-size="11" font-family='system-ui, -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif'>把一组画布节点打包成小工具</text>
+  <line x1="198" y1="97" x2="244" y2="122" stroke="#c792ea" stroke-width="1.8" marker-end="url(#arr-purple)"/>
+  <line x1="198" y1="169" x2="244" y2="144" stroke="#f59e0b" stroke-width="1.8" marker-end="url(#arr-orange)"/>
+  <rect x="244" y="72" width="224" height="122" rx="8" fill="#12212e" stroke="#38bdf8" stroke-width="1.5"/>
+  <rect x="245" y="73" width="222" height="4" rx="2" fill="#38bdf8" opacity="0.85"/>
+  <text x="356" y="115" text-anchor="middle" fill="#f1f5f9" font-size="13" font-weight="700" font-family='system-ui, -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif'>参数表 = 节点接口</text>
+  <text x="356" y="133" text-anchor="middle" fill="#a8b5c8" font-size="11" font-family='system-ui, -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif'>· 每个入参 → 左侧输入口</text>
+  <text x="356" y="147.5" text-anchor="middle" fill="#a8b5c8" font-size="11" font-family='system-ui, -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif'>· 每个出参 → 右侧输出口</text>
+  <text x="356" y="162" text-anchor="middle" fill="#a8b5c8" font-size="11" font-family='system-ui, -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif'>· 标注类型（文字/图片）防接错</text>
+  <line x1="468" y1="133" x2="502" y2="133" stroke="#38bdf8" stroke-width="1.8" marker-end="url(#arr-cyan)"/>
+  <rect x="502" y="72" width="160" height="122" rx="8" fill="#12241b" stroke="#4ade80" stroke-width="1.5"/>
+  <rect x="503" y="73" width="158" height="4" rx="2" fill="#4ade80" opacity="0.85"/>
+  <text x="582" y="122" text-anchor="middle" fill="#f1f5f9" font-size="13" font-weight="700" font-family='system-ui, -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif'>放进工具库复用</text>
+  <text x="582" y="140" text-anchor="middle" fill="#a8b5c8" font-size="11" font-family='system-ui, -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif'>跨画布拖拽使用</text>
+  <text x="582" y="154.5" text-anchor="middle" fill="#a8b5c8" font-size="11" font-family='system-ui, -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif'>AI 会话也能直接调</text>
+  <text x="340" y="214" text-anchor="middle" fill="#a8b5c8" font-size="11.5" font-family='system-ui, -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif'>注册进「工具库」后，别的画布能直接拖出来用，智能会话里的 AI 也能自动调用</text>
 </svg>

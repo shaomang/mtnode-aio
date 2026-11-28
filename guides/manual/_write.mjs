@@ -1,15 +1,9 @@
-/* one-shot: write the built-in app manual catalog + all diagrams (zh is authored on disk; en pages are kept as-is)
+/* guides/manual/_write.mjs — 生成应用内手册目录（index.json）与 14 张清晰图示（img/*.svg）。
  *
- * 口径（与 guides/manual/README.md §1.5 一致）：
- *   - 目录：本文件的 catalog → index.json（唯一真源）；现行 defaultPage = providers，共 10 章 26 页。
- *   - 正文：以磁盘上的 guides/manual/<id>.md 为准（磁盘有就原样保留），
- *           重跑本脚本**不会**把新结构覆盖回旧的内嵌模板。
- *   - 内容真源：正文按画布「快速开始」的说明卡片重写（分区 = 章节，卡片 = 页内小节）；
- *           卡片里有的必须写进去，卡片没提的内容不写。
- *   - 英文：磁盘上已有 en/<id>.md 的保持不动；缺失时应用按 id 回落中文。
- *   - 图示：全部由本文件生成到 guides/manual/img/，命名 mtnode-{章节}-{序号}-{类型}.svg，
- *           章节 = start|canvas|flow|agent|share|edit|app，类型 = ui|flow|state
- *           （自 2026-09 起只出静态图，不再生成 demo 动效图与 -static 回退）。
+ * 约定：
+ *   - 目录真源：本文件的 catalog → guides/manual/index.json（7 章 26 页，默认首页 overview）。
+ *   - 正文以磁盘上的 guides/manual/<id>.md 与 en/<id>.md 为准，重跑本脚本不会覆盖正文。
+ *   - 图示采用高对比度深色卡片样式（浅底/深底主题下均清晰可读），文字全部通过 WCAG 对比度基线。
  */
 import fs from "fs";
 import path from "path";
@@ -19,421 +13,557 @@ const root = path.dirname(fileURLToPath(import.meta.url));
 const imgDir = path.join(root, "img");
 fs.mkdirSync(imgDir, { recursive: true });
 
-/* ─────────────────────────── SVG 渲染 ─────────────────────────── */
+/* ─────────────────────────── 调色与 SVG 渲染 ─────────────────────────── */
 
-const GOLD = "#f0c14d";
-const CYAN = "#38d6ff";
-const ORNG = "#ff8f2e";
-const GRN = "#5fd68a";
-const RED = "#ff6b6b";
+const BG = "#11151d";
+const FRAME = "#242c3c";
+const CARD = "#181e2a";
+const INK = "#f1f5f9";
+const MUTED = "#a8b5c8";
+
+const CYAN = "#38bdf8";
+const ORNG = "#f59e0b";
 const PUR = "#c792ea";
-const FILL_C = "#1a1610"; /* 金 / 控制 */
-const FILL_D = "#101820"; /* 青 / 输入 */
-const FILL_P = "#1a140e"; /* 橙 / 处理 */
-const FILL_G = "#101610"; /* 绿 / 输出 */
-const FILL_R = "#1a1010"; /* 红 / 失败 */
-const FILL_U = "#161020"; /* 紫 / 智能 */
+const GRN = "#4ade80";
+const ROSE = "#fb7185";
+const SLATE = "#64748b";
+
+const FILL_D = "#12212e";
+const FILL_P = "#261d12";
+const FILL_U = "#21182c";
+const FILL_G = "#12241b";
+const FILL_R = "#29151c";
+const FILL_S = "#1a202c";
+
+const FONT = 'system-ui, -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif';
 
 const esc = (s) =>
   String(s)
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 
-/* 简写：把图内容写成数据，别手写 SVG */
-const bx = (x, y, w, h, label, color, fill) => ({ t: "box", x, y, w, h, label, color, fill });
-const ar = (x1, y1, x2, y2, color) => ({ t: "arrow", x1, y1, x2, y2, color });
-const tx = (x, y, label, color, size, anchor) => ({ t: "text", x, y, label, color, size, anchor });
-const bd = (x, y, w, h, label, color) => ({ t: "band", x, y, w, h, label, color });
-const dl = (x, y, w, h, label, color) => ({ t: "diamond", x, y, w, h, label, color });
-const ln = (x1, y1, x2, y2, color) => ({ t: "line", x1, y1, x2, y2, color });
+const card = (x, y, w, h, title, sub, color, fill, badge) => ({
+  t: "card",
+  x,
+  y,
+  w,
+  h,
+  title,
+  sub: sub || "",
+  color: color || CYAN,
+  fill: fill || CARD,
+  badge: badge || "",
+});
+const pill = (x, y, w, h, label, color, fill) => ({
+  t: "pill",
+  x,
+  y,
+  w,
+  h,
+  label,
+  color: color || CYAN,
+  fill: fill || FILL_S,
+});
+const zone = (x, y, w, h, label, color) => ({
+  t: "zone",
+  x,
+  y,
+  w,
+  h,
+  label,
+  color: color || SLATE,
+});
+const ar = (x1, y1, x2, y2, color, label) => ({
+  t: "arrow",
+  x1,
+  y1,
+  x2,
+  y2,
+  color: color || MUTED,
+  label: label || "",
+});
+const curve = (d, color) => ({ t: "curve", d, color: color || MUTED });
+const tx = (x, y, label, color, size, anchor, weight) => ({
+  t: "text",
+  x,
+  y,
+  label,
+  color: color || MUTED,
+  size: size || 12,
+  anchor: anchor || "start",
+  weight: weight || 400,
+});
 
-function render(spec, anim) {
-  const W = spec.w || 560;
-  const H = spec.h || 200;
+function render(spec) {
+  const W = spec.w || 680;
+  const H = spec.h || 240;
   const out = [];
-  out.push(`  <rect width="${W}" height="${H}" fill="#0d1016"/>`);
   const mark = (id, c) =>
-    `  <marker id="${id}" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="${c}"/></marker>`;
-  out.push(
-    [
-      "  <defs>",
-      mark("arr-gold", GOLD),
-      mark("arr-cyan", CYAN),
-      mark("arr-orange", ORNG),
-      mark("arr-green", GRN),
-      mark("arr-red", RED),
-      mark("arr-purple", PUR),
-      "  </defs>",
-    ].join("\n"),
-  );
+    `    <marker id="${id}" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,1 L7,4 L0,7 z" fill="${c}"/></marker>`;
+  out.push("  <defs>");
+  for (const [id, c] of [
+    ["arr-cyan", CYAN],
+    ["arr-orange", ORNG],
+    ["arr-purple", PUR],
+    ["arr-green", GRN],
+    ["arr-rose", ROSE],
+    ["arr-muted", MUTED],
+  ]) {
+    out.push(mark(id, c));
+  }
+  out.push("  </defs>");
   const markerOf = (c) =>
-    c === CYAN ? "arr-cyan" : c === ORNG ? "arr-orange" : c === GRN ? "arr-green" : c === RED ? "arr-red" : c === PUR ? "arr-purple" : "arr-gold";
+    c === CYAN
+      ? "arr-cyan"
+      : c === ORNG
+        ? "arr-orange"
+        : c === PUR
+          ? "arr-purple"
+          : c === GRN
+            ? "arr-green"
+            : c === ROSE
+              ? "arr-rose"
+              : "arr-muted";
 
-  for (const it of spec.items || []) {
-    if (it.t === "box") {
-      const cx = it.x + it.w / 2;
-      const cy = it.y + it.h / 2 + 4;
-      out.push(`  <rect x="${it.x}" y="${it.y}" width="${it.w}" height="${it.h}" rx="6" fill="${it.fill || FILL_C}" stroke="${it.color || GOLD}" stroke-width="1.6"/>`);
-      for (const [i, lineStr] of String(it.label).split("\n").entries()) {
-        out.push(
-          `  <text x="${cx}" y="${cy + (i - (String(it.label).split("\n").length - 1) / 2) * 13}" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">${esc(lineStr)}</text>`,
-        );
-      }
-    } else if (it.t === "diamond") {
-      const cx = it.x + it.w / 2;
-      const cy = it.y + it.h / 2;
-      out.push(
-        `  <polygon points="${cx},${it.y} ${it.x + it.w},${cy} ${cx},${it.y + it.h} ${it.x},${cy}" fill="${FILL_C}" stroke="${it.color || GOLD}" stroke-width="1.6"/>`,
-      );
-      out.push(`  <text x="${cx}" y="${cy + 4}" text-anchor="middle" fill="#e8eef6" font-size="11" font-family="Segoe UI,sans-serif">${esc(it.label)}</text>`);
-    } else if (it.t === "band") {
-      out.push(`  <rect x="${it.x}" y="${it.y}" width="${it.w}" height="${it.h}" rx="4" fill="#141a24" stroke="${it.color || ORNG}" stroke-width="1.3"/>`);
-      out.push(`  <text x="${it.x + 10}" y="${it.y + it.h / 2 + 4}" fill="${it.color || ORNG}" font-size="11" font-family="Segoe UI,sans-serif">${esc(it.label)}</text>`);
-    } else if (it.t === "arrow" || it.t === "line") {
-      const c = it.color || GOLD;
-      const end = it.t === "arrow" ? ` marker-end="url(#${markerOf(c)})"` : "";
-      out.push(`  <line x1="${it.x1}" y1="${it.y1}" x2="${it.x2}" y2="${it.y2}" stroke="${c}" stroke-width="1.8"${end}/>`);
-    } else if (it.t === "text") {
-      out.push(
-        `  <text x="${it.x}" y="${it.y}"${it.anchor ? ` text-anchor="${it.anchor}"` : ""} fill="${it.color || "#5a6472"}" font-size="${it.size || 11}" font-family="Segoe UI,sans-serif">${esc(it.label)}</text>`,
-      );
-    }
-  }
-  if (anim) {
-    if (spec.motion) {
-      out.push(
-        `  <circle r="4.5" fill="${spec.motionColor || CYAN}"><animateMotion dur="${spec.motionDur || "6s"}" repeatCount="indefinite" path="${spec.motion}"/></circle>`,
-      );
-    }
-    for (const b of spec.blink || []) {
-      out.push(
-        `  <rect x="${b.x}" y="${b.y}" width="${b.w}" height="${b.h}" rx="6" fill="none" stroke="${b.color || GRN}" stroke-width="2.4" opacity="0.3"><animate attributeName="opacity" values="0.15;1;0.15" dur="${b.dur || "2.4s"}" repeatCount="indefinite"/></rect>`,
-      );
-    }
-  }
-  if (spec.caption) {
+  out.push(`  <rect x="0.5" y="0.5" width="${W - 1}" height="${H - 1}" rx="10" fill="${BG}" stroke="${FRAME}"/>`);
+
+  if (spec.title) {
     out.push(
-      `  <text x="${W / 2}" y="${H - 12}" text-anchor="middle" fill="#5a6472" font-size="11" font-family="Segoe UI,sans-serif">${esc(spec.caption)}</text>`,
+      `  <text x="20" y="28" fill="${INK}" font-size="14" font-weight="700" font-family='${FONT}'>${esc(spec.title)}</text>`,
     );
   }
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}">
-${out.join("\n")}
-</svg>
-`;
+  if (spec.subtitle) {
+    out.push(
+      `  <text x="20" y="46" fill="${MUTED}" font-size="11.5" font-family='${FONT}'>${esc(spec.subtitle)}</text>`,
+    );
+  }
+
+  for (const it of spec.items || []) {
+    if (it.t === "zone") {
+      out.push(
+        `  <rect x="${it.x}" y="${it.y}" width="${it.w}" height="${it.h}" rx="8" fill="#141923" stroke="${it.color}" stroke-width="1.2" stroke-dasharray="5 4"/>`,
+      );
+      if (it.label) {
+        out.push(
+          `  <text x="${it.x + 12}" y="${it.y + 18}" fill="${it.color}" font-size="11" font-weight="600" font-family='${FONT}'>${esc(it.label)}</text>`,
+        );
+      }
+    } else if (it.t === "card") {
+      out.push(
+        `  <rect x="${it.x}" y="${it.y}" width="${it.w}" height="${it.h}" rx="8" fill="${it.fill}" stroke="${it.color}" stroke-width="1.5"/>`,
+      );
+      out.push(
+        `  <rect x="${it.x + 1}" y="${it.y + 1}" width="${it.w - 2}" height="4" rx="2" fill="${it.color}" opacity="0.85"/>`,
+      );
+      const cx = it.x + it.w / 2;
+      if (it.badge) {
+        const bw = Math.max(22, it.badge.length * 8 + 12);
+        out.push(
+          `  <rect x="${it.x + 10}" y="${it.y + 12}" width="${bw}" height="18" rx="9" fill="${it.color}" opacity="0.2"/>`,
+        );
+        out.push(
+          `  <text x="${it.x + 10 + bw / 2}" y="${it.y + 24.5}" text-anchor="middle" fill="${it.color}" font-size="10.5" font-weight="700" font-family='${FONT}'>${esc(it.badge)}</text>`,
+        );
+      }
+      const titleLines = String(it.title).split("\n");
+      const subLines = it.sub ? String(it.sub).split("\n") : [];
+      const totalH = titleLines.length * 16 + (subLines.length ? 4 + subLines.length * 14 : 0);
+      let y0 = it.y + (it.badge ? 42 : Math.max(24, (it.h - totalH) / 2 + 13));
+      for (const line of titleLines) {
+        out.push(
+          `  <text x="${cx}" y="${y0}" text-anchor="middle" fill="${INK}" font-size="13" font-weight="700" font-family='${FONT}'>${esc(line)}</text>`,
+        );
+        y0 += 16;
+      }
+      if (subLines.length) {
+        y0 += 2;
+        for (const line of subLines) {
+          out.push(
+            `  <text x="${cx}" y="${y0}" text-anchor="middle" fill="${MUTED}" font-size="11" font-family='${FONT}'>${esc(line)}</text>`,
+          );
+          y0 += 14.5;
+        }
+      }
+    } else if (it.t === "pill") {
+      out.push(
+        `  <rect x="${it.x}" y="${it.y}" width="${it.w}" height="${it.h}" rx="6" fill="${it.fill}" stroke="${it.color}" stroke-width="1.25"/>`,
+      );
+      const lines = String(it.label).split("\n");
+      const cx = it.x + it.w / 2;
+      const startY = it.y + it.h / 2 + 4 - ((lines.length - 1) * 14) / 2;
+      lines.forEach((line, idx) => {
+        out.push(
+          `  <text x="${cx}" y="${startY + idx * 14}" text-anchor="middle" fill="${idx === 0 ? INK : MUTED}" font-size="${idx === 0 ? 12 : 10.5}" font-weight="${idx === 0 ? 600 : 400}" font-family='${FONT}'>${esc(line)}</text>`,
+        );
+      });
+    } else if (it.t === "arrow") {
+      out.push(
+        `  <line x1="${it.x1}" y1="${it.y1}" x2="${it.x2}" y2="${it.y2}" stroke="${it.color}" stroke-width="1.8" marker-end="url(#${markerOf(it.color)})"/>`,
+      );
+      if (it.label) {
+        const mx = (it.x1 + it.x2) / 2;
+        const my = (it.y1 + it.y2) / 2 - 7;
+        out.push(
+          `  <text x="${mx}" y="${my}" text-anchor="middle" fill="${MUTED}" font-size="10.5" font-family='${FONT}'>${esc(it.label)}</text>`,
+        );
+      }
+    } else if (it.t === "curve") {
+      out.push(
+        `  <path d="${it.d}" fill="none" stroke="${it.color}" stroke-width="1.7" marker-end="url(#${markerOf(it.color)})"/>`,
+      );
+    } else if (it.t === "text") {
+      out.push(
+        `  <text x="${it.x}" y="${it.y}" text-anchor="${it.anchor}" fill="${it.color}" font-size="${it.size}" font-weight="${it.weight}" font-family='${FONT}'>${esc(it.label)}</text>`,
+      );
+    }
+  }
+
+  if (spec.caption) {
+    out.push(
+      `  <text x="${W / 2}" y="${H - 12}" text-anchor="middle" fill="${MUTED}" font-size="11.5" font-family='${FONT}'>${esc(spec.caption)}</text>`,
+    );
+  }
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}">\n${out.join("\n")}\n</svg>\n`;
 }
 
-/* ─────────────────────────── 图示清单 ───────────────────────────
- * 口径：画布「快速开始」10 个分区 → 手册 20 页；只给 10 个关键页配静态图
- * （ui / flow / state），命名 mtnode-{章节}-{序号}-{类型}.svg，
- * 章节 = start|canvas|flow|agent|share|edit|app，与 guides/manual/README.md 一致。
- */
+/* ─────────────────────────── 14 张图示 ─────────────────────────── */
 
 const diagrams = {};
 
-/* 上手 · 配置服务商与 API（providers） */
+/* 1. 认识 MTNode（overview） */
+diagrams["mtnode-overview-ui"] = {
+  w: 680,
+  h: 286,
+  title: "MTNode 工作台一览",
+  subtitle: "四大视图随时切换，所有文件与产出默认保存在你自己的电脑上",
+  caption: "提示：顶栏切换主视图，底部状态栏放常用快捷工具（F1–F4 与 Ctrl+Tab）",
+  items: [
+    zone(18, 60, 644, 44, "", FRAME),
+    pill(28, 68, 96, 28, "画布", ORNG, FILL_P),
+    pill(132, 68, 96, 28, "会话", CYAN, FILL_D),
+    pill(236, 68, 96, 28, "专家团", PUR, FILL_U),
+    pill(340, 68, 96, 28, "研究", GRN, FILL_G),
+    pill(452, 68, 64, 28, "插件", SLATE, FILL_S),
+    pill(522, 68, 64, 28, "工坊", SLATE, FILL_S),
+    pill(592, 68, 62, 28, "设置", SLATE, FILL_S),
+    card(18, 116, 130, 102, "左侧栏", "节点列表\n项目文件树", SLATE, FILL_S),
+    card(160, 116, 344, 102, "主工作区", "拖拽节点、连线、运行流程\n或在这里与 AI 连续协作", ORNG, FILL_P),
+    card(516, 116, 146, 102, "右侧全局助手 ✦", "一句话搭流程\n随时问答与整理", PUR, FILL_U),
+    zone(18, 228, 644, 34, "", FRAME),
+    tx(32, 249, "底部状态栏：Ctrl+Tab 补全  ·  F1 快捷会话  ·  F2 DeepSeek  ·  F3 语音播报  ·  F4 语音输入  ·  AI 工作中", INK, 11, "start", 500),
+  ],
+};
+
+/* 2. 配置模型与 API Key（providers） */
 diagrams["mtnode-start-01-ui"] = {
-  w: 560,
-  h: 170,
-  caption: "拿到 API Key 并填进 MTNode 的三步：注册 → 创建 Key → 填进设置 · 模型服务",
+  w: 680,
+  h: 230,
+  title: "接入 AI 模型的三种方式",
+  subtitle: "在「设置 → 模型服务」里配置，任选一种就能立刻开工",
+  caption: "API Key 等同账号与余额凭证，切勿截图或发给他人；所有配置改完自动保存",
   items: [
-    bx(24, 56, 150, 52, "1 注册服务商", CYAN, FILL_D),
-    ar(174, 82, 214, 82, CYAN),
-    bx(214, 56, 140, 52, "2 创建 API Key", GOLD, FILL_C),
-    ar(354, 82, 394, 82, GOLD),
-    bx(394, 56, 140, 52, "3 填进 MTNode", GRN, FILL_G),
-    tx(24, 140, "Key = 账号 + 钱的凭证：不截图、不外传、不写进公开仓库，只在官方平台创建", "#5a6472", 11),
+    card(20, 66, 200, 122, "方式一：填官方 API Key", "去 DeepSeek / 千问 / 智谱 / Kimi\n官网注册 → 创建 Key\n粘贴进「模型服务」即可", CYAN, FILL_D, "推荐"),
+    card(240, 66, 200, 122, "方式二：MTNode 中转", "登录并充值后自动出现\n免填 Key、模型自动同步\n也可复制给其他软件用", ORNG, FILL_P, "省心"),
+    card(460, 66, 200, 122, "方式三：本机免费模型", "在顶栏「插件」装 llama.cpp\n下载模型跑在自己显卡上\n完全离线、不花 API 费用", GRN, FILL_G, "离线"),
   ],
 };
 
-/* 内容生成 · 输入 / 处理 / 保存（io-proc） */
+/* 3. 底栏快捷工具、语音与快捷键（quick-tools） */
+diagrams["mtnode-quick-tools-ui"] = {
+  w: 680,
+  h: 224,
+  title: "底部状态栏快捷入口",
+  subtitle: "从左到右按顺序排开，在主窗口与应用窗口里都可用快捷键唤出",
+  caption: "语音播报与语音输入默认跑在本机离线引擎，也可以右键切到 DeepSeek 云端",
+  items: [
+    card(18, 66, 118, 116, "输入补全", "边打字边预测\n按 Tab 采纳", PUR, FILL_U, "Ctrl+Tab"),
+    card(148, 66, 118, 116, "快捷会话", "置顶小窗下指令\n只看最终回复", ORNG, FILL_P, "F1"),
+    card(278, 66, 118, 116, "DeepSeek", "右侧对话抽屉\n随时查资料闲聊", CYAN, FILL_D, "F2"),
+    card(408, 66, 118, 116, "语音播报", "朗读 AI 回复\n右键换音色引擎", GRN, FILL_G, "F3"),
+    card(538, 66, 124, 116, "语音输入", "说话直接变文字\n按住 F4 或持续听", ROSE, FILL_R, "F4"),
+  ],
+};
+
+/* 4. 文字与图像生成（io-proc） */
 diagrams["mtnode-flow-01-ui"] = {
-  w: 580,
-  h: 170,
-  caption: "输入 → 处理 → 保存，再用控制节点 ▶ 一键重跑整条链",
+  w: 680,
+  h: 210,
+  title: "最基础的一条内容生成链",
+  subtitle: "放好素材 → 交给 AI 处理 → 自动保存成文件，以后改上游就能一键重跑",
+  caption: "在提示词里输入 @节点标题 引用上游内容；改完素材点 ▶ 就能重跑整条链",
   items: [
-    bx(20, 50, 120, 48, "输入节点\n文本 / 图像", CYAN, FILL_D),
-    ar(140, 74, 172, 74, CYAN),
-    bx(172, 50, 130, 48, "处理节点\n文本 / 图像生成", ORNG, FILL_P),
-    ar(302, 74, 334, 74, ORNG),
-    bx(334, 50, 110, 48, "保存节点\n.md / .png", GOLD, FILL_C),
-    ar(444, 74, 476, 74, GOLD),
-    bx(476, 50, 90, 48, "▶ 控制节点", GRN, FILL_G),
-    tx(20, 140, "上游改完重跑，下游跟着更新；控制节点 ▶ 用控制线直连到每个该重跑的节点", "#5a6472", 11),
+    card(20, 66, 140, 102, "1. 输入节点", "放文字 / 图片\n音频 / 表单", CYAN, FILL_D),
+    ar(160, 117, 198, 117, CYAN),
+    card(198, 66, 152, 102, "2. 处理节点", "AI 写文案 / 画图\n用 @ 引用上游", ORNG, FILL_P),
+    ar(350, 117, 388, 117, ORNG),
+    card(388, 66, 130, 102, "3. 保存节点", "自动存成\n.md / .png / .pdf", GRN, FILL_G),
+    ar(518, 117, 552, 117, GRN),
+    card(552, 66, 108, 102, "▶ 开始按钮", "连到起跑节点\n一键全流程重跑", PUR, FILL_U),
   ],
 };
 
-/* 内容生成 · 出音乐 / 语音 / 视频（media-gen） */
+/* 5. 音视频与本地插件（media-gen） */
 diagrams["mtnode-flow-02-flow"] = {
-  w: 620,
-  h: 226,
-  caption: "文本、图片、音频进，音乐 / 语音 / 视频与 Remotion 成片出",
+  w: 680,
+  h: 254,
+  title: "音乐、语音、视频与成片流水线",
+  subtitle: "先生成单条音画素材，再交给 Remotion 合成带字幕的完整视频",
+  caption: "本地音视频后端共享显卡排队，同一时间只跑一个重型任务；点插件卡片即可安装启停",
   items: [
-    bx(16, 46, 110, 44, "文本\n歌词 / 风格", CYAN, FILL_D),
-    bx(16, 100, 110, 44, "图片 / 音频", ORNG, FILL_P),
-    ar(126, 68, 168, 68, CYAN),
-    ar(126, 122, 168, 122, ORNG),
-    bx(168, 46, 120, 44, "音乐生成\nMusic 3", PUR, FILL_U),
-    bx(168, 100, 120, 44, "语音合成\nBreeze TTS 2", PUR, FILL_U),
-    bx(168, 154, 120, 44, "视频生成\nH3", PUR, FILL_U),
-    ar(288, 68, 330, 68, PUR),
-    ar(288, 122, 330, 122, PUR),
-    ar(288, 176, 330, 176, PUR),
-    bx(330, 100, 120, 44, "Remotion\n合成", GOLD, FILL_C),
-    ar(450, 122, 492, 122, GOLD),
-    bx(492, 100, 110, 44, "成片落盘\n.mp4", GRN, FILL_G),
-    tx(16, 212, "音乐 / 语音 / 视频共享同一把互斥锁，同一时间只跑一个音视频任务", "#5a6472", 11),
+    card(18, 68, 124, 68, "文稿 / 歌词", "风格词、口播稿", CYAN, FILL_D),
+    card(18, 150, 124, 68, "图片 / 音频", "首帧图、参考音色", ORNG, FILL_P),
+    ar(142, 102, 184, 92, CYAN),
+    ar(142, 184, 184, 184, ORNG),
+    pill(184, 66, 168, 44, "音乐与音频\nMusic 3 · YuE2 · MOSS", PUR, FILL_U),
+    pill(184, 122, 168, 44, "语音合成与识别\nBreeze 本地 · DeepSeek 云端", PUR, FILL_U),
+    pill(184, 178, 168, 44, "视频与数字人\nH3 · InfiniteTalk · SoulX", PUR, FILL_U),
+    ar(352, 88, 400, 132, PUR),
+    ar(352, 144, 400, 144, PUR),
+    ar(352, 200, 400, 156, PUR),
+    card(400, 96, 130, 96, "Remotion 合成", "字幕、卡片动画\n多片段拼装", ORNG, FILL_P),
+    ar(530, 144, 562, 144, ORNG),
+    card(562, 96, 100, 96, "保存成片", "输出 .mp4\n直接播放", GRN, FILL_G),
   ],
 };
 
-/* 内容生成 · AI 审阅（ai-review） */
+/* 6. AI 审阅（ai-review） */
 diagrams["mtnode-edit-01-ui"] = {
-  w: 580,
-  h: 196,
-  caption: "输出框点「审阅」→ 全文 / 局部批注 → 让 AI 依据批注修订 → 采用当前版写回节点",
+  w: 680,
+  h: 214,
+  title: "AI 审阅：边批注边让 AI 改稿",
+  subtitle: "不用自己重写整段，像批改作业一样标出哪里要改",
+  caption: "每一版都会完整保留，不满意随时点回滚；点「采用当前版」才写回节点",
   items: [
-    bx(16, 44, 140, 46, "生成一次文本", CYAN, FILL_D),
-    ar(156, 67, 196, 67, CYAN),
-    bx(196, 44, 140, 46, "输出框 · 审阅", ORNG, FILL_P),
-    ar(336, 67, 376, 67, ORNG),
-    bx(376, 44, 180, 46, "批注：全文 / 局部", GOLD, FILL_C),
-    bx(16, 120, 180, 46, "让 AI 依据批注修订", PUR, FILL_U),
-    ar(196, 143, 236, 143, PUR),
-    bx(236, 120, 160, 46, "每版完整留存", GOLD, FILL_C),
-    ar(396, 143, 436, 143, GOLD),
-    bx(436, 120, 130, 46, "采用当前版写回", GRN, FILL_G),
-    tx(16, 186, "仅当前版可编辑；回滚 = 该版重设为当前可编辑，其后各版作废但仍可回看", "#5a6472", 11),
+    card(18, 68, 122, 104, "1. 打开审阅", "在节点输出框\n点「审阅」按钮", CYAN, FILL_D),
+    ar(140, 120, 166, 120, CYAN),
+    card(166, 68, 134, 104, "2. 标出批注", "选中某句写意见\n或写全文要求", ORNG, FILL_P),
+    ar(300, 120, 326, 120, ORNG),
+    card(326, 68, 134, 104, "3. AI 按批注改", "自动生成新版本\n保留历史版本", PUR, FILL_U),
+    ar(460, 120, 486, 120, PUR),
+    card(486, 68, 176, 104, "4. 核对并采纳", "满意 → 采用当前版写回\n不满意 → 继续批注或回滚", GRN, FILL_G),
   ],
 };
 
-/* 内容生成 · 图像编辑与蒙版（image-edit） */
+/* 7. 图像蒙版（image-edit） */
 diagrams["mtnode-edit-02-ui"] = {
-  w: 580,
-  h: 172,
-  caption: "原图 → 涂抹蒙版（透明区 = 重绘）→ 局部重绘 → 保存",
+  w: 680,
+  h: 214,
+  title: "局部重绘：只改你想改的那一块",
+  subtitle: "给图涂上蒙版，蒙版外的画面严格保持不变",
+  caption: "提示：蒙版里只写「这块要变成什么」，不要把整张图重新描述一遍",
   items: [
-    bx(20, 50, 110, 48, "原图\n（第 1 张）", CYAN, FILL_D),
-    ar(130, 74, 160, 74, CYAN),
-    bx(160, 50, 130, 48, "涂抹蒙版\n透明区 = 重绘", ORNG, FILL_P),
-    ar(290, 74, 320, 74, ORNG),
-    bx(320, 50, 150, 48, "局部重绘\n只描述重绘区", PUR, FILL_U),
-    ar(470, 74, 500, 74, PUR),
-    bx(500, 50, 70, 48, "保存", GRN, FILL_G),
-    tx(20, 132, "蒙版要亲手涂，AI 无法代画；带蒙版时请求尺寸被钉成首张参考图的像素尺寸", "#5a6472", 11),
-    tx(20, 150, "模型不遵循蒙版时，MTNode 也会强制蒙版外像素不被改动", "#5a6472", 11),
+    card(18, 68, 130, 104, "1. 放入原图", "把原图接进\n图像节点的第 1 口", CYAN, FILL_D),
+    ar(148, 120, 180, 120, CYAN),
+    card(180, 68, 146, 104, "2. 涂抹蒙版", "点开编辑蒙版\n擦出要重绘的区域", ORNG, FILL_P),
+    ar(326, 120, 358, 120, ORNG),
+    card(358, 68, 152, 104, "3. 写重绘说明", "只描述擦掉的地方\n想要替换成什么", PUR, FILL_U),
+    ar(510, 120, 542, 120, PUR),
+    card(542, 68, 120, 104, "4. 生成并保存", "自动锁定原图尺寸\n蒙版外像素不动", GRN, FILL_G),
   ],
 };
 
-/* 全局助手与工作流 · 五条示例链（workflows） */
-diagrams["mtnode-canvas-01-flow"] = {
-  w: 600,
-  h: 204,
-  caption: "画布「快速开始」的五条示例链：改输入 → 点该区 ▶ 一键重跑",
-  items: [
-    bx(16, 44, 180, 40, "① 文字处理：原文 → 口播文案", CYAN, FILL_D),
-    bx(16, 92, 180, 40, "② 图像处理：提示词 → 配图", ORNG, FILL_P),
-    bx(16, 140, 180, 40, "③ 图像转文案：识图 → 社媒文案", GOLD, FILL_C),
-    bx(216, 44, 190, 40, "④ 一键口播视频：文稿 → 口播稿\n→ 语音 → 字幕视频", PUR, FILL_U),
-    bx(216, 92, 190, 40, "⑤ 复杂示例：产品资料 → 长介绍\n+ 社媒短文案 + 横版 / 方版图", GRN, FILL_G),
-    bx(216, 140, 190, 40, "　　分镜脚本 / 首帧 → TTS 配音\n→ H3 短片", GRN, FILL_G),
-    tx(16, 196, "每区只需改输入、点该区的 ▶；助手一般只新增、不动你已有的节点", "#5a6472", 11),
-  ],
-};
-
-/* 全局助手与工作流 · 一句话搭工作流（quick-build） */
+/* 8. 一句话搭工作流（workflows） */
 diagrams["mtnode-agent-01-flow"] = {
-  w: 580,
-  h: 166,
-  caption: "一句话交给右侧栏助手 → 助手在本画布建节点 / 连线 / 排版 → 你改输入、点 ▶ 重跑",
+  w: 680,
+  h: 210,
+  title: "一句话让助手帮你搭好工作流",
+  subtitle: "不用自己一个个找节点，先把想法说出来，再按需要微调",
+  caption: "助手默认只在空白处新增节点，不会删你原有的东西；不满意随时 Ctrl+Z 撤销",
   items: [
-    bx(20, 50, 180, 48, "一句话：输入 → 处理 → 产物", CYAN, FILL_D),
-    ar(200, 74, 240, 74, CYAN),
-    bx(240, 50, 150, 48, "助手建节点\n连线 / 排版", PUR, FILL_U),
-    ar(390, 74, 430, 74, PUR),
-    bx(430, 50, 130, 48, "改输入 · 点 ▶", GRN, FILL_G),
-    tx(20, 140, "也可以用 / 或 、 打开「生成工作流」工具；不满意随时 Ctrl+Z 撤销", "#5a6472", 11),
+    card(20, 66, 194, 102, "1. 描述你的目标", "打开右侧助手 ✦ 说清：\n输入是什么 → 怎么处理 → 要什么成品", CYAN, FILL_D),
+    ar(214, 117, 250, 117, CYAN),
+    card(250, 66, 194, 102, "2. 助手自动搭建", "在当前画布创建节点、\n写好提示词、连线并排版", PUR, FILL_U),
+    ar(444, 117, 480, 117, PUR),
+    card(480, 66, 180, 102, "3. 换素材 · 点 ▶ 跑", "把示例内容换成你的资料\n点开始按钮一键出结果", GRN, FILL_G),
   ],
 };
 
-/* 开发节点（dev-nodes） */
-diagrams["mtnode-app-01-ui"] = {
-  w: 620,
-  h: 200,
-  caption: "开发节点按「模块 → 文件 → 类 / 接口 / 枚举」逐层细化，块上是建议 / 开发 / 细化 / 打开四个按钮",
-  items: [
-    bx(16, 44, 210, 50, "项目块（模块）\ndevStatus / devFiles", GOLD, FILL_C),
-    ln(121, 94, 130, 120, GOLD),
-    ln(121, 94, 300, 120, GOLD),
-    ln(121, 94, 470, 120, GOLD),
-    bx(60, 120, 140, 44, "模块块", CYAN, FILL_D),
-    bx(230, 120, 140, 44, "文件块", ORNG, FILL_P),
-    bx(400, 120, 140, 44, "类 / 接口 / 枚举", GRN, FILL_G),
-    tx(16, 186, "块上说明分两段（功能 / 实现）；收尾回写「核心文件」清单并更新项目根 AGENTS.md", "#5a6472", 11),
-  ],
-};
-
-/* 会话 · 智能任务与智能会话（agent-nodes） */
+/* 9. 智能会话（dsh / agent-nodes） */
 diagrams["mtnode-agent-02-ui"] = {
-  w: 620,
-  h: 200,
-  caption: "会话的三个入口与四组开关：模型 · 预设档 · 思考强度 · 工具许可 / 审批",
+  w: 680,
+  h: 244,
+  title: "智能会话：怎么和 AI 顺畅协作",
+  subtitle: "会话会记住上下文，也能读写你的项目文件、联网查资料、操作画布",
+  caption: "提示：会话在创建时就绑定当前画布，之后切换别的画布也不会串台",
   items: [
-    bx(16, 44, 180, 44, "全局助手 ✦\n看画布 · 改画布", ORNG, FILL_P),
-    bx(16, 100, 180, 44, "智能节点\n读文件 + 多步 + 写文件", PUR, FILL_U),
-    bx(16, 156, 180, 44, "开发节点的开发 / 细化", GOLD, FILL_C),
-    ar(196, 66, 240, 66, ORNG),
-    ar(196, 122, 240, 122, PUR),
-    ar(196, 178, 240, 178, GOLD),
-    bx(240, 44, 360, 156, "四组开关\n· 模型：flash 级够用，长文 / 写代码换更强\n· 预设档：决定人设与工具面\n· 思考强度：off / low / high / max\n· 工具许可与审批：放开哪些工具、哪些动作要弹窗", CYAN, FILL_D),
+    card(18, 66, 196, 140, "开工前挑好设定", "· 工作区：限定操作目录\n· 模型与思考强度\n· 预设档（默认极简）\n· 附件（PDF/Word/表）与联网", CYAN, FILL_D),
+    ar(214, 136, 246, 136, CYAN),
+    card(246, 66, 200, 140, "干活中随时看与控", "· 简报模式：只看通俗结论\n· 边跑边发：排队或 ⚡插话\n· 需确认时弹审批 / 询问卡\n· 底部「AI 工作中」看进度", PUR, FILL_U),
+    ar(446, 136, 478, 136, PUR),
+    card(478, 66, 184, 140, "太长时轻装继续", "· 点「压缩上下文」收成摘要\n· 原文折叠留档不丢失\n· 按住 Ctrl+滚轮调字号\n· 支持批注与贴图追问", GRN, FILL_G),
   ],
 };
 
-/* 工具节点与函数节点（tools-functions） */
+/* 10. 工具与函数节点（tools-functions） */
 diagrams["mtnode-canvas-02-ui"] = {
-  w: 600,
-  h: 192,
-  caption: "参数表就是端子表：加一个参数就多一个端子",
+  w: 680,
+  h: 226,
+  title: "把常用步骤封装成可复用工具",
+  subtitle: "在参数表里加一个参数，节点左右就会自动多出一个接口",
+  caption: "注册进「工具库」后，别的画布能直接拖出来用，智能会话里的 AI 也能自动调用",
   items: [
-    bx(16, 44, 180, 48, "函数节点\nJS：input → return", PUR, FILL_U),
-    bx(16, 120, 180, 48, "工具节点\n节点层 + 注册", GOLD, FILL_C),
-    ar(196, 68, 250, 68, PUR),
-    ar(196, 144, 250, 144, GOLD),
-    bx(250, 44, 330, 124, "参数表 = 端子表\n输入端子 0 = 控制入，1..N 依次是各入参\n输出端子 0..M-1 是各出参，末位是控制出\n端子类型 text / image 决定能不能相接", CYAN, FILL_D),
-    tx(16, 184, "注册后会话与智能节点可直接调用它，把工作流固化成可复用的能力", "#5a6472", 11),
+    card(18, 66, 180, 62, "函数节点", "写几行 JS 做计算或整理数据", PUR, FILL_U),
+    card(18, 138, 180, 62, "工具节点", "把一组画布节点打包成小工具", ORNG, FILL_P),
+    ar(198, 97, 244, 122, PUR),
+    ar(198, 169, 244, 144, ORNG),
+    card(244, 72, 224, 122, "参数表 = 节点接口", "· 每个入参 → 左侧输入口\n· 每个出参 → 右侧输出口\n· 标注类型（文字/图片）防接错", CYAN, FILL_D),
+    ar(468, 133, 502, 133, CYAN),
+    card(502, 72, 160, 122, "放进工具库复用", "跨画布拖拽使用\nAI 会话也能直接调", GRN, FILL_G),
   ],
 };
 
-/* 开发一个应用（app-dev） */
+/* 11. 长周期任务（longtask） */
+diagrams["mtnode-longtask-flow"] = {
+  w: 680,
+  h: 218,
+  title: "长周期任务：AI 自动推进 + 关键节点人工把关",
+  subtitle: "把复杂的多阶段项目画成流程图，该自动的自动跑，该你拍板的地方会停下来等你",
+  caption: "所有阶段产出都会摆在画布上，你可以直接改内容，后面的步骤会接着用你的修改版",
+  items: [
+    card(18, 68, 142, 108, "1. 顶部任务条", "看全流程阶段图\n谁在跑、谁在等你", CYAN, FILL_D),
+    ar(160, 122, 188, 122, CYAN),
+    card(188, 68, 146, 108, "2. 自动执行环节", "AI 跑完把结果\n写进「产出节点」", PUR, FILL_U),
+    ar(334, 122, 362, 122, PUR),
+    card(362, 68, 148, 108, "3. 人工把关环节", "审批通过 / 写驳回理由\n或在交付节点传素材", ORNG, FILL_P),
+    ar(510, 122, 538, 122, ORNG),
+    card(538, 68, 124, 108, "4. 汇总与复用", "关键成品收进\n「产物节点」留档", GRN, FILL_G),
+  ],
+};
+
+/* 12. 研究视图（research） */
+diagrams["mtnode-research-flow"] = {
+  w: 680,
+  h: 222,
+  title: "研究视图：从零散资料到知识图谱与演示",
+  subtitle: "所有笔记与资料都以纯 Markdown 存在你的项目文件夹里，随时可带走",
+  caption: "用 [[笔记名]] 和 [@文献] 写出关联，知识图谱就会自动长出来",
+  items: [
+    card(18, 68, 142, 110, "1. 投入资料", "拖入文稿 / PDF\n贴链接或写检索式", CYAN, FILL_D),
+    ar(160, 123, 188, 123, CYAN),
+    card(188, 68, 148, 110, "2. 精读与笔记", "三遍读法拆解\n选句批注 / 问 AI", PUR, FILL_U),
+    ar(336, 123, 364, 123, PUR),
+    card(364, 68, 146, 110, "3. 知识图谱", "看笔记、论断与术语\n之间的关联路径", ORNG, FILL_P),
+    ar(510, 123, 538, 123, ORNG),
+    card(538, 68, 124, 110, "4. 一键做演示", "排成可放映讲义\n或导出 HTML / 视频", GRN, FILL_G),
+  ],
+};
+
+/* 13. 开发节点（dev-nodes） */
+diagrams["mtnode-app-01-ui"] = {
+  w: 680,
+  h: 228,
+  title: "开发节点：像画地图一样组织代码项目",
+  subtitle: "先定项目骨架，再逐块细化与开发，每个模块都有独立的 AI 对话上下文",
+  caption: "项目根目录会维护一份 AGENTS.md 共识文件，让每次开发都遵守同一套规矩",
+  items: [
+    card(210, 62, 260, 56, "项目块（顶层架构）", "写清项目目录、目标与整体约束", ORNG, FILL_P),
+    ar(270, 118, 124, 146, ORNG),
+    ar(340, 118, 340, 146, ORNG),
+    ar(410, 118, 556, 146, ORNG),
+    card(24, 146, 200, 58, "模块块", "建议 · 开发 · 细化", CYAN, FILL_D),
+    card(240, 146, 200, 58, "文件块", "点「打开」直接读写源码", PUR, FILL_U),
+    card(456, 146, 200, 58, "类 / 接口 / 枚举", "按需继续往下拆分", GRN, FILL_G),
+  ],
+};
+
+/* 14. 开发一个应用（app-dev） */
 diagrams["mtnode-app-02-ui"] = {
-  w: 620,
-  h: 200,
-  caption: "应用 = 静态前端 + 宿主能力桥；模型与工具留在主程序 / 画布一侧",
+  w: 680,
+  h: 222,
+  title: "应用中心：用说话的方式做一个桌面小应用",
+  subtitle: "不用从零配开发环境，选好风格就能边聊边改，做好后可独立开窗或上架分享",
+  caption: "应用数据自动存进你自己的数据目录，升级或重装软件都不会丢",
   items: [
-    bx(16, 44, 170, 46, "应用窗口\n静态 HTML / JS / CSS", CYAN, FILL_D),
-    ar(186, 67, 232, 67, CYAN),
-    bx(232, 44, 200, 46, "appHost 能力桥\ndataGet / dataSet · authMe\nstoreRequest · pickImage", PUR, FILL_U),
-    ar(432, 67, 478, 67, PUR),
-    bx(478, 44, 126, 46, "主进程\n数据目录 / 凭据", GOLD, FILL_C),
-    bx(16, 118, 170, 46, "降级：桥不在也能跑\n内存态 + 明确提示", ORNG, FILL_P),
-    bx(232, 118, 372, 46, "模型 API 与工具不在应用窗口里\n要内建 LLM / 图像 / 语音 → 升级为本地后端插件（主进程 + 控制台 + 画布节点）", GRN, FILL_G),
-    tx(16, 190, "数据只走 dataGet / dataSet（落 %APPDATA%\\pipeline-console\\app-plugins\\<id>），绝不写应用目录", "#5a6472", 11),
+    card(18, 68, 146, 110, "1. 选风格新建", "7 套预设视觉风格\n或选「自定义」", CYAN, FILL_D),
+    ar(164, 123, 192, 123, CYAN),
+    card(192, 68, 148, 110, "2. 边聊边改", "在开发页会话里\n描述想要的界面功能", PUR, FILL_U),
+    ar(340, 123, 368, 123, PUR),
+    card(368, 68, 144, 110, "3. 实时预览", "中栏当场看效果\n点「启动」独立开窗", ORNG, FILL_P),
+    ar(512, 123, 540, 123, ORNG),
+    card(540, 68, 122, 110, "4. 收藏或上架", "留在「库」里自用\n或上架分享多版本", GRN, FILL_G),
   ],
 };
-
 
 /* ─────────────────────────── 写图 ─────────────────────────── */
 let svgCount = 0;
 for (const [name, spec] of Object.entries(diagrams)) {
-  const isDemo = /-demo$/.test(name);
-  fs.writeFileSync(path.join(imgDir, name + ".svg"), render(spec, isDemo), "utf8");
+  fs.writeFileSync(path.join(imgDir, name + ".svg"), render(spec), "utf8");
   svgCount += 1;
-  if (isDemo) {
-    fs.writeFileSync(path.join(imgDir, name + "-static.svg"), render(spec, false), "utf8");
-    svgCount += 1;
-  }
 }
 
-/* ─────────────────────────── 目录 ─────────────────────────── */
+/* ─────────────────────────── 目录（7 章 26 页）─────────────────────────── */
 
 const catalog = {
-  defaultPage: "providers",
+  defaultPage: "overview",
   sections: [
     {
       id: "start",
-      title: { zh: "上手", en: "Get started" },
+      title: { zh: "快速上手", en: "Get started" },
       pages: [
-        { id: "providers", title: { zh: "配置服务商与 API", en: "Providers & API" } },
+        { id: "overview", title: { zh: "认识 MTNode", en: "Meet MTNode" } },
+        { id: "providers", title: { zh: "配置模型与 API Key", en: "Models & API keys" } },
+        { id: "quick-tools", title: { zh: "底栏工具、语音与快捷键", en: "Quick tools, voice & hotkeys" } },
       ],
     },
     {
-      id: "content",
-      title: { zh: "内容生成", en: "Content generation" },
+      id: "canvas",
+      title: { zh: "画布与创作", en: "Canvas & creation" },
       pages: [
-        { id: "io-proc", title: { zh: "输入 / 处理 / 保存", en: "Input / process / save" } },
-        { id: "media-gen", title: { zh: "出音乐 / 语音 / 视频", en: "Music / speech / video" } },
-        { id: "moss-music", title: { zh: "MOSS-Music：听懂一首歌", en: "MOSS-Music: understanding a track" } },
-        { id: "ai-review", title: { zh: "AI 审阅：批注与修订", en: "AI review: notes & revisions" } },
-        { id: "md-editing", title: { zh: "Markdown 编辑：换行与 Tab 缩进", en: "Markdown editing: line breaks & Tab indent" } },
-        { id: "fim", title: { zh: "FIM 补全：打字时的后续预测", en: "FIM completion: hints while you type" } },
-        { id: "image-edit", title: { zh: "图像编辑与蒙版", en: "Image editing & masks" } },
-      ],
-    },
-    {
-      id: "research",
-      title: { zh: "研究", en: "Research" },
-      pages: [
-        { id: "research", title: { zh: "研究视图：笔记 · 知识图谱 · 文献库", en: "Research view: notes, graph, literature" } },
-      ],
-    },
-    {
-      id: "assistant",
-      title: { zh: "全局助手与工作流", en: "Assistant & workflows" },
-      pages: [
-        { id: "workflows", title: { zh: "保存、导入导出与工坊", en: "Save, import/export, workshop" } },
-        { id: "quick-build", title: { zh: "一句话搭工作流", en: "Build a flow in one sentence" } },
-        { id: "longtask", title: { zh: "长周期任务（状态机 · 人在环）", en: "Long-running tasks (state machine, human in the loop)" } },
-        { id: "mcp-server", title: { zh: "MCP 服务端（第三方接进来）", en: "MCP server (external clients)" } },
-      ],
-    },
-    {
-      id: "dev",
-      title: { zh: "开发节点", en: "Dev nodes" },
-      pages: [
-        { id: "dev-nodes", title: { zh: "开发节点：让 AI 写项目", en: "Dev nodes" } },
-        { id: "app-dev", title: { zh: "开发一个应用", en: "Build an app" } },
-        { id: "app-publish", title: { zh: "上架应用到云端（多版本）", en: "Publish an app to the cloud (versions)" } },
+        { id: "nodes-wires", title: { zh: "画布基础：节点、连线与排版", en: "Canvas basics: nodes, wires & layout" } },
+        { id: "io-proc", title: { zh: "文字与图像生成", en: "Text & image generation" } },
+        { id: "image-edit", title: { zh: "图像编辑与蒙版重绘", en: "Image editing & masks" } },
+        { id: "ai-review", title: { zh: "AI 审阅与文本编辑", en: "AI review & text editing" } },
+        { id: "fim", title: { zh: "输入补全（边打字边预测）", en: "Inline completion (FIM)" } },
+        { id: "media-gen", title: { zh: "音乐、语音、视频与本地插件", en: "Music, speech, video & local plugins" } },
       ],
     },
     {
       id: "session",
-      title: { zh: "会话", en: "Sessions" },
+      title: { zh: "智能会话", en: "Agent sessions" },
       pages: [
-        { id: "dsh", title: { zh: "智能能力是什么", en: "What agent mode is" } },
-        { id: "agent-nodes", title: { zh: "智能任务与智能会话", en: "Agent task & session" } },
-        { id: "agent-browser", title: { zh: "会话的浏览器能力", en: "The session's browser" } },
-        { id: "approvals", title: { zh: "审批与权限", en: "Approvals" } },
-        { id: "paseo-bridge", title: { zh: "用手机接管会话（Paseo）", en: "Phone takeover (Paseo)" } },
+        { id: "dsh", title: { zh: "智能会话与权限", en: "Agent sessions & permissions" } },
+        { id: "agent-nodes", title: { zh: "智能节点与画布归属", en: "Agent nodes & canvas ownership" } },
+        { id: "agent-browser", title: { zh: "让 AI 帮你操作浏览器", en: "Browser automation" } },
+        { id: "paseo-bridge", title: { zh: "用手机接管会话（Paseo）", en: "Phone handoff (Paseo)" } },
       ],
     },
     {
-      id: "tools",
-      title: { zh: "工具与函数节点", en: "Tool & function nodes" },
+      id: "workflow",
+      title: { zh: "工作流与素材", en: "Workflows & assets" },
       pages: [
+        { id: "workflows", title: { zh: "工作流管理与一句话搭流程", en: "Workflows & one-sentence builder" } },
+        { id: "longtask", title: { zh: "长周期任务（多步骤与把关）", en: "Long-running tasks" } },
         { id: "tools-functions", title: { zh: "工具节点与函数节点", en: "Tool & function nodes" } },
-      ],
-    },
-    {
-      id: "assets",
-      title: { zh: "素材库", en: "Asset library" },
-      pages: [
         { id: "asset-library", title: { zh: "素材库与素材节点", en: "Asset library" } },
       ],
     },
     {
-      id: "team",
-      title: { zh: "专家团", en: "Expert team" },
+      id: "knowledge",
+      title: { zh: "研究与专家团", en: "Research & team" },
       pages: [
+        { id: "research", title: { zh: "研究视图：笔记、图谱与演示", en: "Research: notes, graph & slides" } },
         { id: "one-person-company", title: { zh: "AI 团队与多角色", en: "AI team & roles" } },
-        { id: "ai-facts", title: { zh: "AI 事实库（给 AI 读的条例库）", en: "AI fact library" } },
+        { id: "ai-facts", title: { zh: "AI 事实库", en: "AI fact library" } },
       ],
     },
     {
-      id: "community",
-      title: { zh: "社区", en: "Community" },
+      id: "build",
+      title: { zh: "开发与扩展", en: "Build & extend" },
+      pages: [
+        { id: "dev-nodes", title: { zh: "开发节点：用画布做项目", en: "Dev nodes" } },
+        { id: "app-dev", title: { zh: "打造自己的桌面应用", en: "Build a desktop app" } },
+        { id: "app-publish", title: { zh: "上架应用与多版本管理", en: "Publish & manage app versions" } },
+        { id: "mcp-server", title: { zh: "MCP 扩展与第三方接入", en: "MCP extensions & external clients" } },
+      ],
+    },
+    {
+      id: "help",
+      title: { zh: "社区与帮助", en: "Community & help" },
       pages: [
         { id: "community", title: { zh: "创意工坊与讨论区", en: "Workshop & forum" } },
-      ],
-    },
-    {
-      id: "misc",
-      title: { zh: "其他", en: "More" },
-      pages: [
-        { id: "nodes-wires", title: { zh: "加节点、连线与 @ 引用", en: "Nodes, wires, @ refs" } },
-        { id: "marks-groups", title: { zh: "框选、组与排版", en: "Box, groups, layout" } },
-        { id: "rollback", title: { zh: "撤销与回滚", en: "Undo & rollback" } },
-        { id: "glossary", title: { zh: "名词表", en: "Glossary" } },
-        { id: "faq", title: { zh: "常见问题", en: "FAQ" } },
+        { id: "faq", title: { zh: "常见问题与名词速查", en: "FAQ & glossary" } },
       ],
     },
   ],
@@ -441,42 +571,15 @@ const catalog = {
 
 fs.writeFileSync(path.join(root, "index.json"), JSON.stringify(catalog, null, 2) + "\n", "utf8");
 
-/* ─────────────────────────── 正文：磁盘为准 ───────────────────────────
- * 只有磁盘上还没有正文的 id 才用下面的兜底模板写一版（统一骨架）。
- * 已存在的 guides/manual/<id>.md **原样保留**，所以重跑不会把新结构盖回旧稿。
- */
+/* ─────────────────────────── 正文：磁盘为准 ─────────────────────────── */
 const pageIds = catalog.sections.flatMap((s) => s.pages.map((p) => p.id));
 
 function fallbackPage(page) {
   return `# ${page.title.zh}
 
-> 一句话目标：这一页正在撰写中，先把结构定下来。
+这一页正在整理中，先到「⚙ 设置」或相邻章节看看吧。
 
-## 目标
-
-（待补：这一页帮用户完成什么）
-
-## 前置条件
-
-- （待补）
-
-## 步骤
-
-1. **（待补）**：把要做的事写成动词开头的编号步骤。
-
-## 结果
-
-（待补：做完后屏幕上应该看到什么）
-
-## 常见错误
-
-| 现象 | 原因 | 处理 |
-| --- | --- | --- |
-| 内容缺失 | 本页尚未写完 | 参考同章节其它页面；面板里点 ⚙ 设置 可看当前默认值 |
-
-## 下一步
-
-- [从这里开始](#overview)
+- [认识 MTNode](#overview)
 `;
 }
 
@@ -484,34 +587,10 @@ let written = 0;
 for (const page of catalog.sections.flatMap((s) => s.pages)) {
   const file = path.join(root, page.id + ".md");
   if (!fs.existsSync(file)) {
-    fs.writeFileSync(file, fallbackPage(page).trim() + "\n", "utf8");
+    fs.writeFileSync(file, fallbackPage(page), "utf8");
     written += 1;
   }
 }
-
-/* 英文：磁盘上已存在的 en/<id>.md 保持不动；缺失时不生成（应用按 id 回落中文）。*/
-
-/* ── agent-nodes 的关键小节模板 ──────────────────────────────────────────────
- * 正文以磁盘为准（上面那段循环不会覆盖它），这里再保留一份同口径模板：
- * 重生成流程若哪天退回「内嵌模板优先」，也不会把「会话属于哪张画布」写回旧口径。
- */
-const AGENT_NODES_SECTION_ZH = `### 会话属于哪张画布
-
-会话在**建立的那一刻**就认下一张画布：你当时正看着哪张，它日后就读写哪张；在开发节点上点「开发 / 细化 / 问询」建的会话，所属画布就是那个功能块所在的画布。之后**你可以随意切去其他画布继续干活**，会话本轮的读写图、工作目录、数据库接地全部精准落在它自己那张图上，**不会串到你此刻正看着的画布**，也不会误改、误删你正在编辑的那张。侧栏每条会话标题下的 ▣ 与悬浮说明写的就是它的所属画布（该画布已删除会标出来）。
-
-会话**不跨画布**读写：要参考或切换其他画布，用画布右侧的**全局助手**（✦），并把它的「工作范围」切到「全局」。
-
-![会话属于哪张画布](img/mtnode-agent-03-state.svg)
-*图 2：会话在建立那一刻认下一张画布，之后切画布也不会串图*
-
-![全局助手](img/mtnode-agent-04-ui.svg)
-*图 3：画布右侧的全局助手 ✦——工作范围可切「仅当前画布 / 全局」，改画布前会先向你确认*`;
-
-const AGENT_NODES_SECTION_EN = `### Which canvas does a session belong to?
-
-A session adopts its canvas **the moment it is created**: whichever canvas you are looking at then, and for sessions started from a dev node's 开发 / 细化 / 问询 button, the canvas that feature block lives on. From then on **you are free to switch to other canvases and keep working** — that session's graph reads/writes, working directory and database grounding all land precisely on **its own** canvas, never on the one now on your screen, so it can't overwrite or delete what you are editing. The ▣ under each session title (and its tooltip) shows which canvas it owns (marked as deleted if that canvas is gone).
-
-Sessions do **not** reach across canvases: to look at or switch between several, use the **global assistant** (✦) right of the canvas with its **work scope set to global**.`;
 
 console.log(
   "manual pages on disk:",

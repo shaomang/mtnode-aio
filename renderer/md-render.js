@@ -179,12 +179,17 @@
   }
 
   function fixImages(html, o) {
+    var assets = o && o.assets && typeof o.assets === "object" ? o.assets : null;
     return String(html || "").replace(/<img\b[^>]*>/gi, function (tag) {
       var m = /src="([^"]*)"/i.exec(tag);
       if (!m) return tag;
       var src = m[1];
       if (/^(?:https?:|data:|blob:|file:|mtnode-thumb:)/i.test(src)) return tag;
       var dec = urlDecodeSafe(src);
+      if (assets) {
+        var hit = assets[src] || assets[dec];
+        if (hit) return tag.replace(m[0], 'src="' + String(hit).replace(/"/g, "%22") + '"');
+      }
       if (isLocalAbsPath(dec)) {
         var u = localFileUrl(dec, o);
         if (u) return tag.replace(m[0], 'src="' + u.replace(/"/g, "%22") + '"');

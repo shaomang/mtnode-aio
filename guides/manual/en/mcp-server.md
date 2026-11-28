@@ -1,98 +1,27 @@
-# MCP server (let outside clients in)
+# MCP extensions & external clients
 
-MTNode is normally an **MCP client**: it connects to MCP servers other people wrote and adds their tools to the Agent in a session (see “What agent mode is”). This page is about **the other half** — MTNode opening an MCP server of its own so other clients (Claude Code, Cursor, your own Agent) can connect and drive the MTNode on this machine: read and change the canvas, query database replicas and the AI fact library, browse the asset library, read images.
+MCP (Model Context Protocol) lets AI apps share tools cleanly. MTNode works in both directions: connect external MCP tools **into** MTNode, or let external AI clients like **Claude Code** and **Cursor** connect **to** MTNode to work with your canvases.
 
-## Where it lives, how to turn it on
+## 1. Adding external tools & skills to MTNode
 
-The top bar's “Plugins” dialog is not the way in — the entry is **Settings → Extension capabilities → Manage…**, on the **Server** page. It is **already on** by default (it starts listening on first launch). The page has:
+Open **Settings → Extensions → Manage…** to manage everything in one place:
 
-- **Master switch**: off = stop listening (the port disappears; a client that is already connected gets a clear error on its next call).
-- **Address**: `http://127.0.0.1:<random port>/mcp`, bound to the loopback interface only — other machines on your LAN cannot reach it.
-- **Token**: a random Bearer token the client must send. You can **reset** it at any time (after a reset, configured clients must copy the config snippet again).
-- **stdio client config snippet**: the JSON block Claude Code / Cursor style clients need, copied with one click.
-- **Self-check**: without any external client, it walks “initialize → list tools → really read the canvas once” itself; green means the whole chain works.
-- **Recent calls (audit)**: who, when, which tool, which canvas, success or failure. Logs land in `mcp-audit/` inside the data directory (rotated daily, kept 7 days). The **data directory** is `%APPDATA%\pipeline-console\pipeline-console` by default (port and token are recorded in `mcp-server.json` right there); if you changed “config data directory” in Settings, it is that one instead.
-- **Raw JSON-RPC capture**: for troubleshooting, must be switched on explicitly, keeps only the last 200 frames, memory only.
-- **Self loop** (on by default): MTNode registers itself as one of its own MCP clients (`mtnode-self`), so **agents inside the app can call its generation abilities too**. Only four tools are opened (generate / run / user tools / session); turning it off just removes that entry — the server itself keeps running.
-- **Jobs**: image / music / speech / video generation and node or whole-graph runs are **asynchronous** — a call returns a `jobId` immediately and you fetch the result separately (the page lists this run's jobs). Jobs live in memory only and are gone when MTNode closes.
+- **MCP servers**: Register external MCP servers (databases, note apps, dev tools) so Agent sessions can call them. Select any server and click **List resources** to inspect read-only resources and copy URIs.
+- **Skills**: Manage built-in and custom skills you invoke with `/` in chat or the assistant bar.
+- **Blender Local plugin (3D)**: Want AI to model or render in Blender? Install **Blender Local** from the top bar **Plugins** window — it downloads an official portable Blender, configures the MCP bridge automatically, and leaves any Blender window you open manually untouched.
 
-## Connecting a client
+## 2. Connecting external clients to MTNode (built-in MCP server)
 
-Both transports are offered by the same server:
+Let **Claude Code**, **Cursor**, or custom MCP clients read and edit your MTNode canvases, query your Asset library and AI fact library, or analyze images through MTNode.
 
-**① stdio (what most local clients use)** — merge this into the client's MCP config:
+### Setup in two steps
 
-```json
-{
-  "mcpServers": {
-    "mtnode": {
-      "command": "<MTNode install dir>\\MTNodeAIO.exe",
-      "args": ["<MTNode install dir>\\resources\\mcp-stdio.js"],
-      "env": { "ELECTRON_RUN_AS_NODE": "1" }
-    }
-  }
-}
-```
+1. Open **Settings → Extensions → Manage…** and switch to the **Server** tab (enabled by default, listening on localhost only so no other machine on your network can reach it).
+2. Click to copy the ready-made **stdio client config** (powered by the bundled `mcp-stdio.js` bridge with your local Bearer token) and paste it into your client's MCP settings.
+3. Click **Self-check** to verify the full connection end to end.
 
-That is exactly what “Copy config snippet” on the panel produces (both paths already filled in, `env` included). `command` is MTNode's own executable — it is an Electron binary, so the `env` entry `ELECTRON_RUN_AS_NODE=1` **must** be passed along for it to run the bridge script in Node mode; without it the exe starts as the main program (a second MTNode instance, zero JSON-RPC), which is what the client sees as “cannot connect”. With this in place a third-party client does **not** have to install Node; if you prefer system `node`, put `node` there instead **and delete the `env` block** (requires Node ≥ 18). The bridge script reads the port and token from the data directory itself, so you **never hand-fill an address and never paste the token into a config file**. When MTNode is not running the client sees “cannot reach the MTNode MCP server — open MTNode and try again”.
+### Security & audit logs
 
-**② Local HTTP** — for your own client or a remote tool: `POST http://127.0.0.1:<port>/mcp` with the header `Authorization: Bearer <token>` and an MCP JSON-RPC body (`initialize` / `tools/list` / `tools/call` / `resources/list` / `resources/read` / `prompts/list` / `prompts/get`).
-
-## First read this: by default the work is handed to MTNode's own agent
-
-When a third party connects, it sees **two** tools by default:
-
-- **`mtnode_agent` (handoff)** — hand the whole job to MTNode's own agent: you only give "what to do" (`task`) and "which project folder" (`projectFolder`, an absolute local path). MTNode resolves or creates the canvas for that folder, creates (or reuses) an "外部交接 · <project>" session, runs one round with the **default model configured in Settings**, and returns the result (reply + files changed + tool timeline + any clarifying question it needs answered). Handing off the same project again continues the previous context.
-- **`mtnode_catalog` (expand)** — call it once when you want to drive the canvas / database / assets / media yourself; it returns the full tool list plus the rules and makes this connection see every tool afterwards.
-
-Why this default: stitching together the low-level tools and reading the skills is expensive for an outside agent, while MTNode's own agent already carries them. To go back to "all tools from the start": Settings → Extensions → Server → "Tool surface: switch to full".
-
-> Also: the Settings page previously titled "APIs/Config" is now "**Default model provider**" — the handoff sessions use the default model picked there.
-
-## What outside clients can do
-
-Tool names and parameters are **identical** to MTNode's own Agent (`mtnode_canvas_get`, `mtnode_canvas_edit`, `mtnode_app`, `mtnode_db`, `mtnode_facts`, `lt_state`, `mtnode_assets`, `mtnode_vision`), so the existing node guides and skill docs apply to third parties unchanged.
-
-Once expanded (or with the tool surface set to "full"), four more tools exist for “go and do it yourself”:
-
-- **`mtnode_generate`**: image / music / speech / video, using the models and local backends **already configured** in the app. Returns a **local absolute path** and files the artifact into the asset library; to also drop it on the canvas, pass the canvas plus its hash.
-- **`mtnode_run`**: run a single node, or a whole graph (it finds the “run” control node).
-- **`mtnode_tools`**: list / call the **user tool nodes** on the current canvas.
-- **`mtnode_session`**: open a session and run one task in it (title prefixed “外部调用 · ”, discarded when done by default).
-
-Beyond tools, two more MCP capability kinds are open:
-
-- **Resources**: canvas list, canvas snapshot, a single node's body, built-in skill text — a client can “browse” before it acts.
-- **Prompts**: three templates — take over a canvas, build a workflow, review a canvas; MTNode's own hard rules (read the canvas before editing, batch safety) are written straight into the templates.
-
-## Three hard rules
-
-1. **Read before you write**: the `mtnode_canvas_get` receipt carries a `contentHash`; pass it back verbatim as `baseHash` to `mtnode_canvas_edit`. If the hash does not match (someone changed that canvas in between) the edit is rejected — read again, then edit. This is what stops two clients from overwriting each other.
-2. **One write at a time**: canvas writes are queued and serialised, both between third-party connections and between a third party and yourself; reads run concurrently.
-3. **The current canvas is the default target**: to touch another canvas, pass the `canvas` parameter (canvas id or exact name). One connection can work on every canvas on this machine.
-
-## Permissions and audit
-
-- **After the first-connection authorisation, full read/write**: server up plus a valid token is enough to change the canvas — no per-call confirmation dialog (otherwise third-party automation would be unusable). To take it back: turn the master switch off, or reset the token.
-- Your **own** sessions, assistant and agent nodes are untouched: their confirmation dialogs, approval level and permission panel behave exactly as before.
-- Every call (including rejected ones) is written to `mcp-audit/`: time, session, client identity, tool, canvas, duration, success/failure, error reason, parameter summary.
-
-## What outside clients cannot do (stated plainly)
-
-- **A long-running task cannot have its “confirm delivery” clicked for you**: MCP can read a long task's definition and run state and read/change this round's shared state, but “enable / advance / approve” stays in your hands on the strip.
-- **Generation does not pick models for you**: `mtnode_generate` uses what the app already has configured; if nothing is configured it says so plainly instead of swapping backends or silently degrading. Image and speech cannot be cancelled (let them finish); music and video can.
-- **The generic tools of the dsh engine** (file I/O, command execution, web search) are **not** exposed to third parties: clients already have those abilities themselves and need not go through MTNode.
-- **A session's own browser control surface** (the 13 `browser_*` tools) is **not** exposed: that is your browser session and is not handed to an outside client.
-
-## Troubleshooting
-
-| Symptom | Where to look first |
-| --- | --- |
-| Client cannot connect | Is the panel's master switch “listening”; do both parts of the client config exist (`command` → the app executable or `node`, `args` → `mcp-stdio.js`); with the app executable, does `env` carry `ELECTRON_RUN_AS_NODE=1` (without it you just get another MTNode instance and no JSON-RPC); with system Node, is the `env` block removed and `node --version` ≥ 18 |
-| Client says “cannot find the MTNode MCP server's runtime info” | First read the **per-candidate probe result** listed in that message (each candidate's path, port, liveness and why it failed): MTNode is not running, or the data directory is not the default one (the default is `%APPDATA%\pipeline-console\pipeline-console`; if you changed “config data directory” in Settings it is that one). If it still does not match, give the client the `MTNODE_DATA_DIR` environment variable, or pass `MTNODE_MCP_URL` + `MTNODE_MCP_TOKEN` directly |
-| A call returns 401 | Wrong token (did you reset it?) — copy the config snippet again |
-| A call returns “the canvas has been changed” | Someone edited that canvas after you read it: `mtnode_canvas_get` again, then edit |
-| A call **hangs and never returns** (spinning until timeout) | Was the MTNode main window closed (execution happens in the renderer — no window, nobody to execute it); if it reproduces, note the tool name that was being called and report it to us (no receipt from the renderer is a defect) |
-| You want to see exactly what the client sent | Switch on “Raw JSON-RPC capture” and reproduce once |
-
-The machine-readable contract for the interface lives in the repo: `mcp-tools.json` (generated from `dsh/gateway/*-plugin.mjs` by `node scripts/build-mcp-contract.mjs`, never edit by hand); the integration guide and per-client config samples are in `guides/mcp-server.md`.
+- **Toggle or rotate token anytime**: Turn off the master switch to stop listening immediately, or click **Reset token** if you ever want to revoke old configs.
+- **Audit trail**: See exactly when an external client called which tool on which canvas right inside the panel (logs rotate daily in `mcp-audit/` inside your data folder for 7 days).
+- **Local-only boundary**: Traffic never leaves localhost, and external clients cannot bypass your local approval rules.
